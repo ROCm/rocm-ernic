@@ -11,3 +11,12 @@ minor_changes:
     ``ernic_p4_dkms`` there with ``require_device`` on.  A lane's guest
     has no rocm-ernic checkout, and cloning one in the guest would build
     a different tree than the lane built its server from.
+  - >-
+    ``ernic_guest_setup`` gains ``ernic_guest_ionic_extra_patches``,
+    a list of further patch series to apply to the guest's ionic sources
+    on top of the base one, as paths inside the staged tree.  Empty by
+    default, so no existing caller changes.  Without it the guest's
+    ionic comes from the base series alone, so a series that adds a
+    capability --- ``patches/p4`` adds ``IONIC_LIF_CAP_P4`` --- never
+    reaches the driver that has to advertise it, and a module built
+    against a patched tree loads and never probes.

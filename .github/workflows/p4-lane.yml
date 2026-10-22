@@ -526,6 +526,11 @@ jobs:
         echo "✓ Kernel packages installed for ${KVER}"
         EOFVM
 
+    # ernic_guest_ionic_extra_patches is what makes this lane possible.
+    # The guest's ionic is built HERE, and only a tree with patches/p4
+    # advertises IONIC_LIF_CAP_P4 and creates the aux device ernic_p4
+    # binds to. Building the module against a patched tree is not
+    # enough: it would load and never probe.
     - name: Provision the VM with the Ansible collection
       shell: bash
       env:
@@ -568,7 +573,8 @@ jobs:
           -e ernic_gpu_passthrough=false \
           -e ernic_guest_agent=false \
           -e ernic_set_hostname=false \
-          -e ernic_configure_nic=false
+          -e ernic_configure_nic=false \
+          -e '{"ernic_guest_ionic_extra_patches": ["patches/p4"]}'
         # NOTE: ernic_configure_nic is deliberately left at its default
         # (true), unlike the loopback job.  Without an IPv4 address on
         # the emulated NIC the guest has no route to the endpoint at
