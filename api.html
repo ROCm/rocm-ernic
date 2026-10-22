@@ -400,6 +400,7 @@
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev13device_activeE"><code class="docutils literal notranslate"><span class="pre">device_active</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev18device_initializedE"><code class="docutils literal notranslate"><span class="pre">device_initialized</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev15device_realizedE"><code class="docutils literal notranslate"><span class="pre">device_realized</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev6faultsE"><code class="docutils literal notranslate"><span class="pre">faults</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev8ionic_dpE"><code class="docutils literal notranslate"><span class="pre">ionic_dp</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev9ionic_emuE"><code class="docutils literal notranslate"><span class="pre">ionic_emu</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev10ionic_rdmaE"><code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code></a></li>
@@ -541,6 +542,7 @@
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv427ionic_adminq_register_queueP16ionic_adminq_ctxi8uint64_t7uint8_t8uint64_t7uint8_t8uint32_t8uint32_t"><code class="docutils literal notranslate"><span class="pre">ionic_adminq_register_queue()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv428ionic_adminq_set_cq_event_cbP16ionic_adminq_ctx26ionic_adminq_cq_event_fn_tPv"><code class="docutils literal notranslate"><span class="pre">ionic_adminq_set_cq_event_cb()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv425ionic_adminq_set_datapathP16ionic_adminq_ctxP14ionic_datapath"><code class="docutils literal notranslate"><span class="pre">ionic_adminq_set_datapath()</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv423ionic_adminq_set_faultsP16ionic_adminq_ctxP15ionic_fault_set"><code class="docutils literal notranslate"><span class="pre">ionic_adminq_set_faults()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv423ionic_adminq_set_pvrdmaP16ionic_adminq_ctxPv"><code class="docutils literal notranslate"><span class="pre">ionic_adminq_set_pvrdma()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv424ionic_adminq_update_prodP16ionic_adminq_ctxi8uint16_t"><code class="docutils literal notranslate"><span class="pre">ionic_adminq_update_prod()</span></code></a></li>
 </ul>
@@ -713,8 +715,6 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <span id="_CPPv314rocm_ernic_dev"></span><span id="_CPPv214rocm_ernic_dev"></span><span id="rocm_ernic_dev"></span><span class="target" id="structrocm__ernic__dev"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">rocm_ernic_dev</span></span></span><a class="headerlink" href="#_CPPv414rocm_ernic_dev" title="Link to this definition">#</a><br /></dt>
 <dd><div class="docutils container">
 <em>#include &lt;rocm_ernic_internal.h&gt;</em></div>
-<p><a class="reference internal" href="#structrocm__ernic__dev"><span class="std std-ref">rocm_ernic_dev</span></a> - Main device structure</p>
-<p>This structure contains both the libvfio-user context and a handle to the RDMA device implementation. The actual device structures are hidden behind the opaque <a class="reference internal" href="#rocm__ernic__compat_8h_1aa775176e90432eeff34cae10175c24b9"><span class="std std-ref">pvrdma_handle_t</span></a>. </p>
 <div class="breathe-sectiondef docutils container">
 <p class="breathe-sectiondef-title rubric" id="breathe-section-title-public-members">Public Members</p>
 <dl class="cpp var">
@@ -755,6 +755,11 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N14rocm_ernic_dev15device_realizedE">
 <span id="_CPPv3N14rocm_ernic_dev15device_realizedE"></span><span id="_CPPv2N14rocm_ernic_dev15device_realizedE"></span><span id="rocm_ernic_dev::device_realized__b"></span><span class="target" id="structrocm__ernic__dev_1acb59d07710425c471c2dd3c18e9fc444"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">device_realized</span></span></span><a class="headerlink" href="#_CPPv4N14rocm_ernic_dev15device_realizedE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N14rocm_ernic_dev6faultsE">
+<span id="_CPPv3N14rocm_ernic_dev6faultsE"></span><span id="_CPPv2N14rocm_ernic_dev6faultsE"></span><span id="rocm_ernic_dev::faults__ionic_fault_setP"></span><span class="target" id="structrocm__ernic__dev_1ac061b16467babd11dc619ac50fb7d564"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ionic_fault_set</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">faults</span></span></span><a class="headerlink" href="#_CPPv4N14rocm_ernic_dev6faultsE" title="Link to this definition">#</a><br /></dt>
 <dd></dd></dl>
 
 <dl class="cpp var">
@@ -1454,6 +1459,11 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <dd></dd></dl>
 
 <dl class="cpp function">
+<dt class="sig sig-object cpp" id="_CPPv423ionic_adminq_set_faultsP16ionic_adminq_ctxP15ionic_fault_set">
+<span id="_CPPv323ionic_adminq_set_faultsP16ionic_adminq_ctxP15ionic_fault_set"></span><span id="_CPPv223ionic_adminq_set_faultsP16ionic_adminq_ctxP15ionic_fault_set"></span><span id="ionic_adminq_set_faults__ionic_adminq_ctxP.ionic_fault_setP"></span><span class="target" id="ionic__adminq_8h_1ac869f80b35313ac092f90462094533f2"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ionic_adminq_set_faults</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ionic_adminq_ctx</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">ctx</span></span>, <span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ionic_fault_set</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">faults</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv423ionic_adminq_set_faultsP16ionic_adminq_ctxP15ionic_fault_set" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv423ionic_adminq_set_pvrdmaP16ionic_adminq_ctxPv">
 <span id="_CPPv323ionic_adminq_set_pvrdmaP16ionic_adminq_ctxPv"></span><span id="_CPPv223ionic_adminq_set_pvrdmaP16ionic_adminq_ctxPv"></span><span id="ionic_adminq_set_pvrdma__ionic_adminq_ctxP.voidP"></span><span class="target" id="ionic__adminq_8h_1aa6bc699c42bab55b7892a5b223bb1976"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ionic_adminq_set_pvrdma</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ionic_adminq_ctx</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">ctx</span></span>, <span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">handle</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv423ionic_adminq_set_pvrdmaP16ionic_adminq_ctxPv" title="Link to this definition">#</a><br /></dt>
 <dd></dd></dl>
@@ -1776,6 +1786,7 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev13device_activeE"><code class="docutils literal notranslate"><span class="pre">device_active</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev18device_initializedE"><code class="docutils literal notranslate"><span class="pre">device_initialized</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev15device_realizedE"><code class="docutils literal notranslate"><span class="pre">device_realized</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev6faultsE"><code class="docutils literal notranslate"><span class="pre">faults</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev8ionic_dpE"><code class="docutils literal notranslate"><span class="pre">ionic_dp</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev9ionic_emuE"><code class="docutils literal notranslate"><span class="pre">ionic_emu</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev10ionic_rdmaE"><code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code></a></li>
@@ -1917,6 +1928,7 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv427ionic_adminq_register_queueP16ionic_adminq_ctxi8uint64_t7uint8_t8uint64_t7uint8_t8uint32_t8uint32_t"><code class="docutils literal notranslate"><span class="pre">ionic_adminq_register_queue()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv428ionic_adminq_set_cq_event_cbP16ionic_adminq_ctx26ionic_adminq_cq_event_fn_tPv"><code class="docutils literal notranslate"><span class="pre">ionic_adminq_set_cq_event_cb()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv425ionic_adminq_set_datapathP16ionic_adminq_ctxP14ionic_datapath"><code class="docutils literal notranslate"><span class="pre">ionic_adminq_set_datapath()</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv423ionic_adminq_set_faultsP16ionic_adminq_ctxP15ionic_fault_set"><code class="docutils literal notranslate"><span class="pre">ionic_adminq_set_faults()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv423ionic_adminq_set_pvrdmaP16ionic_adminq_ctxPv"><code class="docutils literal notranslate"><span class="pre">ionic_adminq_set_pvrdma()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv424ionic_adminq_update_prodP16ionic_adminq_ctxi8uint16_t"><code class="docutils literal notranslate"><span class="pre">ionic_adminq_update_prod()</span></code></a></li>
 </ul>
