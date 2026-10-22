@@ -1,0 +1,110 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+# Put the P4 control driver in a guest, for the CI lane.
+#
+# playbooks/p4-dkms-build.yml is the developer-facing entry point and
+# runs against localhost as a compile gate. This one targets the guests
+# vm-register.yml registered, and stages what the build needs from the
+# controller first -- a lane's guest has no rocm-ernic checkout, and
+# cloning one there would test a different tree than the lane built the
+# server from.
+#
+# Only the pieces the build actually reads are staged. The whole
+# repository would work and would also mean a guest carrying the server
+# sources it has no use for, and a slower copy on every run.
+- name: "CI: P4 control driver in the guest"
+  hosts: "{{ p4_hosts | default('ernic_vms') }}"
+  gather_facts: true
+  vars:
+    ernic_p4_stage_root: /opt/rocm-ernic
+  tasks:
+    - name: Create the staging root
+      become: true
+      ansible.builtin.file:
+        path: "{{ ernic_p4_stage_root }}/{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - scripts
+        - patches/p4
+        - cmake
+        - drivers/ernic_p4/uapi
+
+    # The fetch script and both patch series: the base one the rest of
+    # the stack expects, and patches/p4, which is what makes the ionic
+    # in this guest create the device ernic_p4 binds to.
+    - name: Stage the fetch script
+      become: true
+      ansible.builtin.copy:
+        src: "{{ ernic_project_root }}/scripts/fetch-ionic-sources.sh"
+        dest: "{{ ernic_p4_stage_root }}/scripts/fetch-ionic-sources.sh"
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Stage the base patch series
+      become: true
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: "{{ ernic_p4_stage_root }}/patches/"
+        owner: root
+        group: root
+        mode: "0644"
+      with_fileglob:
+        - "{{ ernic_project_root }}/patches/*.patch"
+
+    - name: Stage the P4 patch series
+      become: true
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: "{{ ernic_p4_stage_root }}/patches/p4/"
+        owner: root
+        group: root
+        mode: "0644"
+      with_fileglob:
+        - "{{ ernic_project_root }}/patches/p4/*.patch"
+
+    # The kernel ref pin. Staged rather than passed as a variable so the
+    # role reads it from the same file the host build does, and a bump
+    # cannot leave the guest on a different tree.
+    - name: Stage the kernel ref pin
+      become: true
+      ansible.builtin.copy:
+        src: "{{ ernic_project_root }}/cmake/ErnicKernelModule.cmake"
+        dest: "{{ ernic_p4_stage_root }}/cmake/ErnicKernelModule.cmake"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Stage the module sources
+      become: true
+      ansible.builtin.copy:
+        src: "{{ ernic_project_root }}/drivers/ernic_p4/{{ item }}"
+        dest: "{{ ernic_p4_stage_root }}/drivers/ernic_p4/{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - ernic_p4.c
+        - Makefile
+        - dkms.conf
+        - uapi/ernic_p4.h
+
+  roles: []
+
+- name: "CI: build and load ernic_p4"
+  hosts: "{{ p4_hosts | default('ernic_vms') }}"
+  gather_facts: true
+  roles:
+    # require_device is on because this lane starts the server with
+    # --p4-guest-scope, so the capability is advertised and the node has
+    # to appear. Letting it be absent here would turn the whole lane
+    # into a skip that reports success.
+    - role: ernic_p4_dkms
+      ernic_p4_dkms_repo_dir: /opt/rocm-ernic
+      ernic_p4_dkms_require_device: true

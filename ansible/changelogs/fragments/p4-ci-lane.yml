@@ -1,0 +1,13 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+minor_changes:
+  - >-
+    New playbook ``playbooks/p4-tests.yml``, reachable as
+    ``ci-site.yml --tags p4``, stages the P4 driver sources and both
+    patch series onto a guest from the controller and then runs
+    ``ernic_p4_dkms`` there with ``require_device`` on.  A lane's guest
+    has no rocm-ernic checkout, and cloning one in the guest would build
+    a different tree than the lane built its server from.

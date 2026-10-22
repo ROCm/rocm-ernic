@@ -39,6 +39,10 @@ _Static_assert(P4_DEVCMD_VALUE_MAX == P4_MATCH_BYTES,
 _Static_assert(P4_DEVCMD_NAME_MAX == P4_MAX_NAME,
                "the wire name length no longer matches the engine's");
 _Static_assert(P4_PORT_COUNT == 2, "struct p4_rpc_stats hard-codes two ports");
+_Static_assert((int)P4_WIRE_UPDATE_INSERT == (int)P4_UPDATE_INSERT &&
+                   (int)P4_WIRE_UPDATE_MODIFY == (int)P4_UPDATE_MODIFY &&
+                   (int)P4_WIRE_UPDATE_DELETE == (int)P4_UPDATE_DELETE,
+               "the wire update types no longer match the engine's");
 
 /*
  * The most one RPC may move in each direction.

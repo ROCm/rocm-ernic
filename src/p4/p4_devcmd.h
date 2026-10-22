@@ -118,6 +118,19 @@ enum p4_devcmd_op_table {
     P4_OP_ENTRY_UPDATE = 1, /* insert, modify or delete, per the record */
 };
 
+/*
+ * What an update does, in the record itself.
+ *
+ * The same values as the engine's own enum p4_update_type, which
+ * p4_devcmd.c asserts, but spelled here because a guest cannot see that
+ * header and still has to say which of the three it means.
+ */
+enum p4_wire_update_type {
+    P4_WIRE_UPDATE_INSERT = 0,
+    P4_WIRE_UPDATE_MODIFY = 1,
+    P4_WIRE_UPDATE_DELETE = 2,
+};
+
 enum p4_devcmd_op_stats {
     P4_OP_STATS_READ = 1,
 };

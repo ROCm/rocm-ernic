@@ -306,6 +306,23 @@
   declared such that the deparser would put it on a wire, is refused at
   load.
   `p4_engine_process_rdma()` is the entry point.
+* A VM lane runs the whole P4 stack from inside a guest.
+  `.github/workflows/p4-lane.yml`, called from `system-tests.yml` as
+  "P4 Guest-Driven fp8", boots a guest against a server started with
+  `--p4-guest-scope load` and no program loaded, builds and loads
+  `ernic_p4` there, and then runs `tests/p4_fp8_client.c`: the guest
+  pushes a compiled P4 program down through `/dev/ernic-p4`, installs
+  one table entry, posts an ordinary two-SGE RDMA write with libibverbs,
+  and checks that an elementwise fp8 sum came back.
+
+  Nothing in that program calls the engine's C API, because a guest
+  cannot. That is the point: the in-process tests can set work-request
+  fields a driver never would, and one of them was hiding a convention
+  no guest could satisfy.
+
+  The lane is the only CI that builds the server with
+  `-DERNIC_BUILD_P4=ON` and boots a guest; without that flag the server
+  has no P4 code and no `--p4*` options at all.
 * CI checks the P4 driver patch series. `driver-build.yml` gains a `p4`
   leg alongside `base` and `srq`, which applies `patches/p4` to the pinned
   kernel ref and then checks it did what it exists to do: the capability
