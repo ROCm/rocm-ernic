@@ -62,6 +62,12 @@ if [ ! -d "${KDIR}" ]; then
     exit 1
 fi
 
+# Why each candidate was passed over. Printed only if none works: a
+# bare "found nothing" here costs a CI round trip to learn which of
+# "built nothing", "built but exports nothing" and "no tree at all" it
+# was, and every one of those has happened.
+reasons=()
+
 for tree in "${TREES[@]}"; do
     symvers="${tree}/Module.symvers"
     stamp="${tree}/.symvers-kernel"
@@ -71,7 +77,9 @@ for tree in "${TREES[@]}"; do
         # dkms empties its own build directory after installing, so on a
         # provisioned guest this is the usual path, not the exception.
         rm -f "${stamp}"
-        if ! make -C "${KDIR}" M="${tree}" modules >/dev/null 2>&1; then
+        if ! log="$(make -C "${KDIR}" M="${tree}" modules 2>&1)"; then
+            reasons+=("${tree}: build failed: $(printf '%s' "${log}" |
+                tail -3 | tr '\n' ' ')")
             continue
         fi
         printf '%s\n' "${KVER}" >"${stamp}"
@@ -81,7 +89,13 @@ for tree in "${TREES[@]}"; do
         printf '%s\n' "${symvers}"
         exit 0
     fi
+    reasons+=("${tree}: built, but exports no ${SYMBOL}")
 done
 
-echo "ERROR: no Module.symvers exporting ${SYMBOL} for ${KVER}" >&2
+{
+    echo "ERROR: no Module.symvers exporting ${SYMBOL} for ${KVER}"
+    for r in "${reasons[@]}"; do
+        echo "  ${r}"
+    done
+} >&2
 exit 1

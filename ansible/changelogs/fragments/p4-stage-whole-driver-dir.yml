@@ -1,0 +1,20 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+bugfixes:
+  - >-
+    ``playbooks/p4-tests.yml`` stages the whole ``drivers/ernic_p4``
+    directory onto the guest, preserving file modes, rather than copying
+    a hand-written list of files at mode ``0644``.  A file not on the
+    list was simply absent, which surfaced much later in
+    ``ernic_p4_dkms`` as something that could not be found, and a script
+    that was on it would have arrived without its executable bit.
+  - >-
+    ``ernic_p4_dkms`` reports the module failure message, not just
+    stderr, when the ionic symbol lookup finds nothing.  A command that
+    cannot be run at all returns its reason in ``msg`` and leaves
+    ``stderr`` empty, so the diagnostic was blank in the one case it
+    existed for.  ``find-ionic-symvers.sh`` likewise now lists what it
+    rejected and why.

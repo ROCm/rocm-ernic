@@ -33,7 +33,6 @@
         - ansible/files/scripts
         - ansible/files/patches/p4
         - cmake
-        - drivers/ernic_p4/uapi
 
     # The fetch script and both patch series: the base one the rest of
     # the stack expects, and patches/p4, which is what makes the ionic
@@ -82,19 +81,19 @@
         group: root
         mode: "0644"
 
+    # The whole directory, not a list of its files. The list was one more
+    # place to remember a new file in, and forgetting it did not fail the
+    # copy -- it failed much later, in the role, as a thing that could not
+    # be found. mode: preserve keeps the executable bit the scripts need.
     - name: Stage the module sources
       become: true
       ansible.builtin.copy:
-        src: "{{ ernic_project_root }}/drivers/ernic_p4/{{ item }}"
-        dest: "{{ ernic_p4_stage_root }}/drivers/ernic_p4/{{ item }}"
+        src: "{{ ernic_project_root }}/drivers/ernic_p4/"
+        dest: "{{ ernic_p4_stage_root }}/drivers/ernic_p4/"
         owner: root
         group: root
-        mode: "0644"
-      loop:
-        - ernic_p4.c
-        - Makefile
-        - dkms.conf
-        - uapi/ernic_p4.h
+        mode: preserve
+        directory_mode: "0755"
 
   roles: []
 

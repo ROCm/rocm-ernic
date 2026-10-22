@@ -172,8 +172,10 @@
       No Module.symvers exporting ionic_adminq_post_wait could be found
       or rebuilt for {{ ansible_kernel }}. Building against the kernel's
       own symbols would produce a module that cannot insert against a
-      patched ionic. Stderr:
-      {{ ernic_p4_symvers_found.stderr | default('(none)') }}
+      patched ionic.
+      Lookup said: {{ ernic_p4_symvers_found.msg
+                      | default(ernic_p4_symvers_found.stderr
+                                | default('nothing'), true) }}
 
 # The version is read out of dkms.conf rather than repeated here, for the
 # reason the kernel ref is: two copies of a version are one bump away
