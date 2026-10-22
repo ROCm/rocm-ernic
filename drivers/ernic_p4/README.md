@@ -75,8 +75,14 @@ a scope. So:
 | `--p4-guest-scope load` | present | present, program load succeeds |
 
 A host running more than one emulated NIC gets `/dev/ernic-p4` for the
-first and `/dev/ernic-p4.N` for the rest, rather than the second probe
-failing on a name already taken.
+first and `/dev/ernic-p4.N` for the rest, so a second probe does not
+fail on a name already taken.
+
+Those numbers are this driver's, not the auxiliary bus's. ionic
+allocates aux ids from one allocator shared with its `rdma` device, so
+the first P4 device on a host is `ionic.p4.1`; naming the node after
+that id left a machine with exactly one NIC offering only
+`/dev/ernic-p4.1`, which is not what anything looks for.
 
 The node is mode 0600. The engine decides where every frame goes, so it
 is not something to open to a group by default.

@@ -21,6 +21,7 @@
 #include <linux/auxiliary_bus.h>
 #include <linux/cleanup.h>
 #include <linux/dma-mapping.h>
+#include <linux/idr.h>
 #include <linux/fs.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
@@ -45,8 +46,19 @@ MODULE_IMPORT_NS("NET_IONIC");
 #define IONIC_CMD_P4_RPC 71
 #define IONIC_CMD_P4_QUERY 72
 
+/*
+ * Numbers the character devices, which is not the same as numbering the
+ * auxiliary devices. ionic allocates aux ids from one ida shared with
+ * its rdma device, so the first P4 device on a host is ionic.p4.1, not
+ * .0 -- naming the node after that id gave /dev/ernic-p4.1 on a machine
+ * with exactly one NIC, and everything looking for /dev/ernic-p4 found
+ * nothing. What the node is called is this driver's business.
+ */
+static DEFINE_IDA(ernic_p4_ida);
+
 struct ernic_p4_dev {
 	struct ionic_lif *lif;
+	int id;
 	struct device *hwdev;
 	struct miscdevice misc;
 	char name[32];
@@ -291,13 +303,18 @@ static int ernic_p4_probe(struct auxiliary_device *adev,
 	 * One node per device rather than a fixed name: a host running
 	 * more than one emulated NIC would otherwise have the second
 	 * probe fail on a name already taken, and the operator would have
-	 * no way to say which device they meant.
+	 * no way to say which device they meant. The first is plain
+	 * /dev/ernic-p4 whatever the auxiliary bus numbered it.
 	 */
-	if (adev->id == 0)
+	pdev->id = ida_alloc(&ernic_p4_ida, GFP_KERNEL);
+	if (pdev->id < 0)
+		return pdev->id;
+
+	if (pdev->id == 0)
 		strscpy(pdev->name, "ernic-p4", sizeof(pdev->name));
 	else
 		snprintf(pdev->name, sizeof(pdev->name), "ernic-p4.%d",
-			 adev->id);
+			 pdev->id);
 
 	pdev->misc.minor = MISC_DYNAMIC_MINOR;
 	pdev->misc.name = pdev->name;
@@ -312,6 +329,7 @@ static int ernic_p4_probe(struct auxiliary_device *adev,
 	if (err) {
 		dev_err(&adev->dev, "failed to register /dev/%s: %d\n",
 			pdev->name, err);
+		ida_free(&ernic_p4_ida, pdev->id);
 		return err;
 	}
 
@@ -325,6 +343,7 @@ static void ernic_p4_remove(struct auxiliary_device *adev)
 	struct ernic_p4_dev *pdev = auxiliary_get_drvdata(adev);
 
 	misc_deregister(&pdev->misc);
+	ida_free(&ernic_p4_ida, pdev->id);
 }
 
 static const struct auxiliary_device_id ernic_p4_id_table[] = {
