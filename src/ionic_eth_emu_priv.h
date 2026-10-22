@@ -493,5 +493,25 @@ void ionic_eth_emu_handle_lif_init(struct ionic_eth_emu *emu,
 void ionic_eth_emu_handle_q_identify(struct ionic_eth_emu *emu,
                                      const uint8_t *cmd, uint8_t *comp,
                                      uint8_t *data);
+void ionic_eth_emu_handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
+                                 uint8_t *comp);
+
+/*
+ * Run one command from the Ethernet adminq ring: Q_INIT, Q_CONTROL, the RDMA
+ * opcodes and the LIF attributes, filling in the 16-byte completion.
+ */
+void ionic_eth_emu_process_adminq_cmd(struct ionic_eth_emu *emu,
+                                      const uint8_t *cmd, uint8_t *comp);
+
+/*
+ * The Rx queues frames may land on: initialized and enabled, in index order.
+ * Returns how many were written to @out.
+ */
+uint32_t ionic_eth_emu_rx_active(const struct ionic_eth_emu *emu,
+                                 uint8_t out[IONIC_EMU_ETH_QMAX]);
+
+/* The Rx queue index @frame steers to, one of the @n entries of @active. */
+uint8_t ionic_eth_emu_rx_steer(const uint8_t *active, uint32_t n,
+                               const uint8_t *frame, size_t len);
 
 #endif /* IONIC_ETH_EMU_PRIV_H */

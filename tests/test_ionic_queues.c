@@ -15,8 +15,9 @@
  * queues Q_INIT and Q_CONTROL leave active; and frames from the TAP and
  * the inbox landing on, and interrupting, the queue their flow steers to.
  *
- * The translation unit is #included to reach the devcmd handlers, and the
- * DMA entry points are backed by a plain buffer (ionic_eth_emu_fakes.h).
+ * The test links the eth emulator and calls its devcmd handlers through
+ * ionic_eth_emu_priv.h, and the DMA entry points are backed by a plain
+ * buffer (ionic_eth_emu_fakes.h).
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -25,18 +26,30 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <endian.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 
-/* Pull in the code under test (including its static functions). */
-#include "ionic_eth_emu.c"
-
+#include "ionic_emu_stats.h"
+#include "ionic_eth_emu.h"
 #include "ionic_eth_emu_fakes.h"
+#include "ionic_eth_emu_priv.h"
+#include "ionic_eth_steer.h"
+#include "ionic_profile.h"
+#include "rocm_ernic_internal.h"
+
+/* Offsets in union ionic_dev_identity and union ionic_lif_identity
+ * (ionic_if.h), written here independently of the emulator's copies. */
+#define DEVID_NINTRS_OFF        0x0cu
+#define DEVID_EQ_COUNT_OFF      0x1cu
+#define LIFID_CONFIG_QCOUNT_OFF 0x0b0u /* le32 queue_count[16], by qtype */
+#define QTYPE_SZ                12u    /* struct ionic_lif_logical_qtype */
 
 static int failures;
 
@@ -53,8 +66,8 @@ static void report(bool ok, const char *category, const char *description,
 
 /*
  * A fresh device shaped by built-in profile @name (NULL: compat) and then
- * ini @layer (NULL: none).  Exits if either is refused: rows only use
- * valid profiles.
+ * ini @layer (NULL: none).  Aborts if either is refused: rows only use
+ * valid profiles.  abort() rather than exit(), which isn't thread safe.
  */
 static struct ionic_eth_emu *new_emu(const char *name, const char *layer)
 {
@@ -64,14 +77,14 @@ static struct ionic_eth_emu *new_emu(const char *name, const char *layer)
 
     if (!emu) {
         fprintf(stderr, "ionic_eth_emu_create failed\n");
-        exit(1);
+        abort();
     }
     ionic_profile_defaults(&p);
     if ((name && ionic_profile_apply(&p, name, err, sizeof(err)) != 0) ||
         (layer && ionic_profile_apply_text(&p, "row", layer, strlen(layer), err,
                                            sizeof(err)) != 0)) {
         fprintf(stderr, "profile refused: %s\n", err);
-        exit(1);
+        abort();
     }
     ionic_eth_emu_set_profile(emu, &p);
     memset(g_mem, 0, sizeof(g_mem));
@@ -102,12 +115,12 @@ static void read_shape(struct ionic_eth_emu *emu, struct shape *s)
     uint8_t comp[16] = {0};
 
     memset(data, 0, sizeof(data));
-    handle_identify(emu, cmd, comp, data);
+    ionic_eth_emu_handle_identify(emu, cmd, comp, data);
     s->dev_nintrs = get32(data + DEVID_NINTRS_OFF);
     s->dev_eqs = get32(data + DEVID_EQ_COUNT_OFF);
 
     memset(data, 0, sizeof(data));
-    handle_lif_identify(emu, cmd, comp, data);
+    ionic_eth_emu_handle_lif_identify(emu, cmd, comp, data);
     s->rxq = get32(data + LIFID_CONFIG_QCOUNT_OFF + 4u * IONIC_QTYPE_RXQ);
     s->txq = get32(data + LIFID_CONFIG_QCOUNT_OFF + 4u * IONIC_QTYPE_TXQ);
     /* eq_qtype is the fifth ionic_lif_logical_qtype after rdma+32. */
@@ -148,7 +161,7 @@ static void q_init(struct ionic_eth_emu *emu, uint8_t qtype, uint32_t index,
     cmd[19] = 2; /* log2 of the ring depth */
     memcpy(cmd + 20, &r, 8);
     memcpy(cmd + 28, &c, 8);
-    handle_q_init(emu, cmd, comp);
+    ionic_eth_emu_handle_q_init(emu, cmd, comp);
 }
 
 /* ---- Identity and the vector budget ------------------------------------ */
@@ -318,10 +331,13 @@ static void run_qinit_case(const struct qinit_case *c)
 static void check_txq_past_count(void)
 {
     struct ionic_eth_emu *emu = new_emu(NULL, NULL);
+    /* p_index 1 in bits 15:0, qid 4 in bits 31:24. */
+    uint64_t db = 1u | (UINT64_C(4) << 24);
 
     q_init(emu, IONIC_QTYPE_TXQ, 3, 1, RING, CQ);
     g_nwrites = 0;
-    eth_txq_service(emu, 4, 1);
+    ionic_eth_emu_bar2_access(emu, (char *)&db, sizeof(db),
+                              (loff_t)IONIC_QTYPE_TXQ * 8, true);
     report(g_nwrites == 0 && !emu->eth_q[IONIC_QTYPE_TXQ][4].valid, "negative",
            "a Tx doorbell for queue 4 of 4", "ignored: no DMA, no state");
     ionic_eth_emu_destroy(emu);
@@ -587,7 +603,7 @@ static void run_hash_case(const struct hash_case *c)
 
     if (!heap) {
         fprintf(stderr, "out of memory\n");
-        exit(1);
+        abort();
     }
     memcpy(heap, f, len);
     got = ionic_eth_flow_hash(heap, len);
@@ -639,15 +655,15 @@ static void check_steer_basic(void)
         act[i] = (uint8_t)i;
 
     len = random_frame(f, &seed);
-    first = eth_rx_steer(act, 16, f, len);
+    first = ionic_eth_emu_rx_steer(act, 16, f, len);
     for (int i = 0; i < 1000; i++)
-        same = same && eth_rx_steer(act, 16, f, len) == first;
+        same = same && ionic_eth_emu_rx_steer(act, 16, f, len) == first;
     report(same, "corner", "the same 5-tuple steered 1,000 times",
            "the same queue each time");
 
     for (int i = 0; i < 4096; i++) {
         len = random_frame(f, &seed);
-        all0 = all0 && eth_rx_steer(act, 1, f, len) == 0;
+        all0 = all0 && ionic_eth_emu_rx_steer(act, 1, f, len) == 0;
     }
     report(all0, "boundary", "4,096 random tuples, n = 1",
            "every one to queue 0");
@@ -660,7 +676,7 @@ static void check_steer_basic(void)
         memset(hits, 0, sizeof(hits));
         for (int i = 0; i < 4096; i++) {
             len = random_frame(f, &seed);
-            hits[eth_rx_steer(act, n, f, len)]++;
+            hits[ionic_eth_emu_rx_steer(act, n, f, len)]++;
         }
         for (uint32_t q = 0; q < n; q++) {
             missing += hits[q] == 0;
@@ -696,7 +712,7 @@ static void q_control(struct ionic_eth_emu *emu, uint8_t qtype, uint32_t index,
     cmd[1] = qtype;
     memcpy(cmd + 4, &idx, 4);
     cmd[8] = oper;
-    process_adminq_cmd(emu, cmd, comp);
+    ionic_eth_emu_process_adminq_cmd(emu, cmd, comp);
     if (comp[0] != IONIC_RC_SUCCESS) {
         printf("FAIL setup: Q_CONTROL status %u\n", comp[0]);
         failures++;
@@ -876,12 +892,12 @@ static void run_active_case(const struct active_case *c)
             q_control(emu, op->qtype, op->index, op->oper);
     }
 
-    n = eth_rx_active(emu, act);
+    n = ionic_eth_emu_rx_active(emu, act);
     for (uint32_t i = 0; i < n; i++)
         got |= 1ull << act[i];
     for (int i = 0; n && i < 4096; i++) {
         size_t len = random_frame(f, &seed);
-        uint8_t q = eth_rx_steer(act, n, f, len);
+        uint8_t q = ionic_eth_emu_rx_steer(act, n, f, len);
 
         reached |= 1ull << q;
         stray |= (1ull << q) & ~c->want;
@@ -901,19 +917,24 @@ static void run_active_case(const struct active_case *c)
 static void check_q_control_devcmd(void)
 {
     struct ionic_eth_emu *emu = new_emu(NULL, NULL);
-    uint8_t *cmd = emu->bar0 + IONIC_BAR0_DEV_CMD_REGS_OFFSET + DEVCMD_CMD_OFF;
+    uint8_t cmd[64] = {0};
     uint32_t idx = htole32(2);
+    uint32_t doorbell = 1;
     uint8_t act[IONIC_EMU_ETH_QMAX];
     uint32_t n;
 
     q_init(emu, IONIC_QTYPE_RXQ, 2, 1, RING, CQ);
-    memset(cmd, 0, 64);
     cmd[0] = IONIC_CMD_Q_CONTROL;
     cmd[1] = IONIC_QTYPE_RXQ;
     memcpy(cmd + 4, &idx, 4);
     cmd[8] = IONIC_Q_ENABLE;
-    process_devcmd(emu);
-    n = eth_rx_active(emu, act);
+    ionic_eth_emu_bar0_access(emu, (char *)cmd, sizeof(cmd),
+                              IONIC_BAR0_DEV_CMD_REGS_OFFSET + DEVCMD_CMD_OFF,
+                              true);
+    ionic_eth_emu_bar0_access(
+        emu, (char *)&doorbell, sizeof(doorbell),
+        IONIC_BAR0_DEV_CMD_REGS_OFFSET + DEVCMD_DOORBELL_OFF, true);
+    n = ionic_eth_emu_rx_active(emu, act);
     report(n == 1 && act[0] == 2 &&
                emu->bar0[IONIC_BAR0_DEV_CMD_REGS_OFFSET + DEVCMD_COMP_OFF] ==
                    IONIC_RC_SUCCESS,
@@ -961,12 +982,12 @@ static size_t frame_for(uint8_t *f, const struct ionic_eth_emu *emu,
                         uint8_t want, uint32_t *seed)
 {
     uint8_t act[IONIC_EMU_ETH_QMAX];
-    uint32_t n = eth_rx_active(emu, act);
+    uint32_t n = ionic_eth_emu_rx_active(emu, act);
 
     for (int i = 0; i < 100000; i++) {
         size_t len = random_frame(f, seed);
 
-        if (n && eth_rx_steer(act, n, f, len) == want)
+        if (n && ionic_eth_emu_rx_steer(act, n, f, len) == want)
             return len;
     }
     /* The row that wanted it then fails on the queue it lands on. */

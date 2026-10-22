@@ -102,8 +102,6 @@ static void handle_lif_setattr(struct ionic_eth_emu *emu, const uint8_t *cmd,
                                uint8_t *comp);
 static void handle_lif_getattr(struct ionic_eth_emu *emu, const uint8_t *cmd,
                                uint8_t *comp);
-static void handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
-                          uint8_t *comp);
 static void handle_q_control(struct ionic_eth_emu *emu, const uint8_t *cmd,
                              uint8_t *comp);
 static void handle_rdma_cmd(struct ionic_eth_emu *emu, const uint8_t *cmd,
@@ -603,7 +601,7 @@ static void process_devcmd(struct ionic_eth_emu *emu)
         break;
 
     case IONIC_CMD_Q_INIT:
-        handle_q_init(emu, cmd, comp);
+        ionic_eth_emu_handle_q_init(emu, cmd, comp);
         break;
 
     case IONIC_CMD_Q_CONTROL:
@@ -1207,8 +1205,8 @@ void ionic_eth_emu_handle_q_identify(struct ionic_eth_emu *emu,
  * ionic_auxbus_register().
  * -------------------------------------------------------------------------
  */
-static void handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
-                          uint8_t *comp)
+void ionic_eth_emu_handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
+                                 uint8_t *comp)
 {
     /* ionic_q_init_cmd layout (__packed):
      *   [0]   u8  opcode
@@ -1372,12 +1370,12 @@ out:
     return ret;
 }
 
-static void process_adminq_cmd(struct ionic_eth_emu *emu, const uint8_t *cmd,
-                               uint8_t *comp)
+void ionic_eth_emu_process_adminq_cmd(struct ionic_eth_emu *emu,
+                                      const uint8_t *cmd, uint8_t *comp)
 {
     switch (cmd[0]) {
     case IONIC_CMD_Q_INIT:
-        handle_q_init(emu, cmd, comp);
+        ionic_eth_emu_handle_q_init(emu, cmd, comp);
         break;
 
     /* ionic_qcq_enable() and ionic_qcq_disable() post these here. */
@@ -1438,7 +1436,7 @@ static void eth_adminq_service(struct ionic_eth_emu *emu, uint16_t p_index)
             return;
         }
 
-        process_adminq_cmd(emu, cmd, comp);
+        ionic_eth_emu_process_adminq_cmd(emu, cmd, comp);
 
         uint16_t comp_index = le16(q->head);
         memcpy(comp + 2, &comp_index, 2);
@@ -1692,8 +1690,8 @@ static enum ionic_emu_drop rx_drop_reason(int rc)
  * The Rx queues frames may land on: initialized and enabled, in index order.
  * Returns how many were written to @out.
  */
-static uint32_t eth_rx_active(const struct ionic_eth_emu *emu,
-                              uint8_t out[IONIC_EMU_ETH_QMAX])
+uint32_t ionic_eth_emu_rx_active(const struct ionic_eth_emu *emu,
+                                 uint8_t out[IONIC_EMU_ETH_QMAX])
 {
     uint32_t n = 0;
 
@@ -1707,14 +1705,14 @@ static uint32_t eth_rx_active(const struct ionic_eth_emu *emu,
 }
 
 /* The Rx queue index @frame steers to, one of the @n entries of @active. */
-static uint8_t eth_rx_steer(const uint8_t *active, uint32_t n,
-                            const uint8_t *frame, size_t len)
+uint8_t ionic_eth_emu_rx_steer(const uint8_t *active, uint32_t n,
+                               const uint8_t *frame, size_t len)
 {
     return active[ionic_eth_flow_hash(frame, len) % n];
 }
 
 _Static_assert(IONIC_EMU_ETH_QMAX <= UINT8_MAX + 1,
-               "eth_rx_active() stores queue indices in a uint8_t");
+               "ionic_eth_emu_rx_active() stores queue indices in a uint8_t");
 
 void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
 {
@@ -1722,7 +1720,7 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
         return;
 
     uint8_t active[IONIC_EMU_ETH_QMAX];
-    uint32_t nactive = eth_rx_active(emu, active);
+    uint32_t nactive = ionic_eth_emu_rx_active(emu, active);
     if (nactive == 0)
         return;
 
@@ -1736,7 +1734,8 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
         if (len <= 0)
             break;
 
-        uint8_t qid = eth_rx_steer(active, nactive, emu->frame, (size_t)len);
+        uint8_t qid =
+            ionic_eth_emu_rx_steer(active, nactive, emu->frame, (size_t)len);
         struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_RXQ][qid];
 
         /* A TAP frame the guest cannot take is gone, as on a real NIC. */
@@ -1769,7 +1768,7 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
         if (!f)
             break;
 
-        uint8_t qid = eth_rx_steer(active, nactive, f->data, f->len);
+        uint8_t qid = ionic_eth_emu_rx_steer(active, nactive, f->data, f->len);
         struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_RXQ][qid];
 
         int rc = eth_rx_deliver(emu, q, f->data, f->len);

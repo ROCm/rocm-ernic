@@ -1467,9 +1467,8 @@ int main(int argc, char *argv[])
                                          sizeof(queues_err)) != 0) {
             fprintf(stderr, "Error: %s\n", queues_err);
             usage(argv[0]);
-            free(dev->backend_type_str);
-            free(dev);
-            exit(EXIT_FAILURE);
+            dev_free(dev);
+            return EXIT_FAILURE;
         }
     }
 

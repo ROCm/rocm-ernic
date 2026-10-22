@@ -236,7 +236,7 @@ static const struct seed seeds[] = {
 };
 
 /* Seed names are generated locally; environment data never becomes a path. */
-static void emit_seed(size_t i, const uint8_t *buf, size_t len)
+static bool emit_seed(size_t i, const uint8_t *buf, size_t len)
 {
     char path[32];
     int fd;
@@ -244,26 +244,30 @@ static void emit_seed(size_t i, const uint8_t *buf, size_t len)
     bool ok;
 
     snprintf(path, sizeof(path), "seed-%02zu", i);
-    /* Never overwrite an existing file or follow a planted symlink. */
+    /* Never overwrite an existing file or follow a planted symlink.  With
+     * _FORTIFY_SOURCE, glibc 2.40 and later give Clang an
+     * open(path, flags, mode) overload, and android-cloexec-open looks for
+     * O_CLOEXEC in its mode */
+    /* NOLINTBEGIN(android-cloexec-open) */
     fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    /* NOLINTEND(android-cloexec-open) */
     if (fd < 0) {
         fprintf(stderr, "fuzz_eth_classify: cannot create %s\n", path);
-        exit(EXIT_FAILURE);
+        return false;
     }
     f = fdopen(fd, "wb");
     if (!f) {
         close(fd);
         fprintf(stderr, "fuzz_eth_classify: cannot open %s as a stream\n",
                 path);
-        exit(EXIT_FAILURE);
+        return false;
     }
     ok = fwrite(buf, 1, len, f) == len;
     if (fclose(f) != 0)
         ok = false;
-    if (!ok) {
+    if (!ok)
         fprintf(stderr, "fuzz_eth_classify: cannot write %s\n", path);
-        exit(EXIT_FAILURE);
-    }
+    return ok;
 }
 
 int LLVMFuzzerInitialize(int *argc, char ***argv)
@@ -271,6 +275,7 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
     const char *emit = getenv("FUZZ_EMIT_SEEDS");
     bool emit_seeds = emit && strcmp(emit, "1") == 0;
     int failures = 0;
+    int unwritten = 0;
 
     (void)argc;
     (void)argv;
@@ -289,12 +294,20 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
                 printf("     %s\n", why);
             failures++;
         }
-        if (emit_seeds)
-            emit_seed(i, s->frame, s->len);
+        if (emit_seeds && !emit_seed(i, s->frame, s->len))
+            unwritten++;
     }
-    if (failures) {
-        fprintf(stderr, "fuzz_eth_classify: %d seed(s) failed\n", failures);
-        exit(1);
+    fflush(stdout);
+    if (failures || unwritten) {
+        /* libFuzzer ignores this function's return value, so a broken
+         * seed, or a corpus that could not be written, has to stop the run
+         * itself.  abort() rather than exit(), which isn't thread safe. */
+        if (failures)
+            fprintf(stderr, "fuzz_eth_classify: %d seed(s) failed\n", failures);
+        if (unwritten)
+            fprintf(stderr, "fuzz_eth_classify: %d seed(s) not written\n",
+                    unwritten);
+        abort();
     }
     return 0;
 }

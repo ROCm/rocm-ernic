@@ -107,9 +107,10 @@ byte for byte.
 
 ``--nic-profile`` can be given more than once. Each one
 names either a built-in profile (a bare name: ``compat``,
-``small-vm``, ``generic-100g``, ``generic-400g``) or a file (a
-name containing a ``/`` or ending in ``.ini``). The layers apply in order on top of
-``compat``. A profile is an ini file:
+``small-vm``, ``generic-100g``, ``generic-400g``) or a file
+(a name containing a ``/`` or ending in ``.ini``). The layers
+apply in order on top of ``compat``. A profile is an ini
+file:
 
 .. code-block:: ini
 
@@ -316,9 +317,11 @@ ports out so every fragment of a datagram stays together.
 Other frames hash on the two MAC addresses. The queue is the
 hash modulo the number of enabled queues, in index order. The
 guest's RSS key and indirection table are accepted and
-ignored. A frame whose queue has no buffer posted is dropped
-and counted in ``rx_queue_empty``; it does not fall back to
-another queue.
+ignored. A frame from the TAP whose queue has no buffer
+posted is dropped and counted in ``rx_queue_empty``; it does
+not fall back to another queue. A frame from the TCP mesh is
+held until the queue it steers to has a buffer, and the mesh
+frames behind it wait too.
 
 .. note::
 
