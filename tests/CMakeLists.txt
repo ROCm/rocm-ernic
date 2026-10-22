@@ -803,6 +803,7 @@ target_include_directories(ernic-test-gsi-mesh PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/rdma
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/src/p4
     ${PROJECT_SOURCE_DIR}/shared
     ${PROJECT_SOURCE_DIR}/src/qemu
 )
@@ -813,12 +814,21 @@ target_include_directories(ernic-test-gsi-mesh SYSTEM PRIVATE
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
-target_compile_definitions(ernic-test-gsi-mesh PRIVATE _GNU_SOURCE)
+# It builds ERNIC_HARNESS_DEVICE_SOURCES, which carries the P4 engine
+# when ERNIC_BUILD_P4 is on, so it needs the same define and the same
+# json-c as the harness target beside it.
+target_compile_definitions(ernic-test-gsi-mesh PRIVATE
+    _GNU_SOURCE
+    $<$<BOOL:${ERNIC_BUILD_P4}>:ERNIC_HAVE_P4>
+)
 target_compile_options(ernic-test-gsi-mesh PRIVATE ${GLIB2_CFLAGS_OTHER})
 target_link_directories(ernic-test-gsi-mesh PRIVATE
     ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
 target_link_libraries(ernic-test-gsi-mesh PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
+if(ERNIC_BUILD_P4)
+    target_link_libraries(ernic-test-gsi-mesh PRIVATE PkgConfig::JSONC)
+endif()
 
 # ---------------------------------------------------------------
 # Apply the project warning / hardening flags to every test target
