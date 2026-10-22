@@ -306,6 +306,14 @@
   declared such that the deparser would put it on a wire, is refused at
   load.
   `p4_engine_process_rdma()` is the entry point.
+* CI checks the P4 driver patch series. `driver-build.yml` gains a `p4`
+  leg alongside `base` and `srq`, which applies `patches/p4` to the pinned
+  kernel ref and then checks it did what it exists to do: the capability
+  bit is defined, an auxiliary device named `p4` is created, the lif
+  carries a slot for it, and `drivers/ernic_p4` still binds to the
+  resulting name. Applying cleanly is not the check -- a series that
+  applied and created nothing would leave the module loading and silently
+  never probing.
 * A guest kernel module, `drivers/ernic_p4/`, binds to that auxiliary
   device and exposes `/dev/ernic-p4`. Through it a program in the guest
   loads a compiled P4 program, installs table entries, and reads the
