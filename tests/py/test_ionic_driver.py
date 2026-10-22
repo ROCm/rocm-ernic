@@ -21,8 +21,9 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # pylint: disable=wrong-import-position
-from ernic import ionic, vfu
+from ernic import ionic
 from ernic.check import Suite
+from ernic.fixture import BaseFixture
 from ernic.server import Server, stop_and_check
 
 # QP ids 0 and 1 are the device's own: a QP created as id 1 comes up as
@@ -54,17 +55,13 @@ def no_completion(driver, cq, settle=1.0):
     return True
 
 
-class Fixture:
+class Fixture(BaseFixture):
     """Two connected RC queue pairs in one instance, over the loopback backend."""
 
     # The pieces a test reaches for; bundling them is the point.
     # pylint: disable=too-many-instance-attributes,too-few-public-methods
     def __init__(self, server):
-        self.client = vfu.VfioUserClient(server.socket_path).connect(timeout=30)
-        self.mem = vfu.GuestMemory(size=32 << 20)
-        self.client.dma_map(self.mem)
-        self.driver = ionic.IonicDriver(self.client, self.mem)
-        self.driver.bringup()
+        super().__init__(server)
         self.cq_a = self.driver.create_cq(CQ_A)
         self.cq_b = self.driver.create_cq(CQ_B)
         self.qp_a = self.driver.create_qp(QP_A, ionic.QPT_RC, self.cq_a, self.cq_a)
@@ -76,11 +73,6 @@ class Fixture:
         # and a gather that ignores the page table shows up as wrong data.
         self.mr_a = self.driver.create_mr(MR_A, VA_A, MR_LEN, reverse=True)
         self.mr_b = self.driver.create_mr(MR_B, VA_B, MR_LEN)
-
-    def close(self):
-        """Drop the client, as a guest shutting down does."""
-        self.mem.close()
-        self.client.close()
 
 
 def test_bringup(suite, fix):

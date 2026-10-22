@@ -25,8 +25,9 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # pylint: disable=wrong-import-position
-from ernic import eth, ionic, vfu
+from ernic import eth
 from ernic.check import Suite
+from ernic.fixture import BaseFixture
 from ernic.server import Server, stop_and_check
 
 STATS_RE = re.compile(r"P4 stats: (.*)$", re.MULTILINE)
@@ -48,22 +49,13 @@ def p4_stats(server):
     return out
 
 
-class Fixture:
-    """A connected client and a brought-up driver, with an Ethernet Tx queue."""
+class Fixture(BaseFixture):
+    """A brought-up driver with an Ethernet Tx queue."""
 
     # pylint: disable=too-few-public-methods
     def __init__(self, server, sg=False):
-        self.client = vfu.VfioUserClient(server.socket_path).connect(timeout=30)
-        self.mem = vfu.GuestMemory(size=32 << 20)
-        self.client.dma_map(self.mem)
-        self.driver = ionic.IonicDriver(self.client, self.mem)
-        self.driver.bringup()
+        super().__init__(server)
         self.driver.eth_q_init(eth.QTYPE_ETH_TXQ, depth_log2=3, sg=sg)
-
-    def close(self):
-        """Drop the client, as a guest shutting down does."""
-        self.mem.close()
-        self.client.close()
 
 
 def run_frames(server, frames, sg=False):
