@@ -135,3 +135,30 @@ One thing it pins that a hand-written fixture did not: p4c qualifies every
 table and action name with the control it was declared in, so this program
 has `IngressImpl.forward` and not `forward`. A control plane written
 against unqualified names works on no real artifact at all.
+
+## fp8_policy.json
+
+**Compiled, not hand written**, from `src/fp8_policy.p4` with
+`--emit-externs`:
+
+```
+build-p4c/bin/p4c-bm2-ss --std p4-16 --emit-externs \
+    -I build-p4c/p4include \
+    -o tests/data/p4/fp8_policy.json \
+    tests/data/p4/src/fp8_policy.p4
+```
+
+`--emit-externs` is required: without it p4c refuses an extern it does not
+already know, which is what makes a target-specific one compile at all.
+
+This is the fixture that pins the extern JSON shape to what the compiler
+emits rather than to what the format documentation describes. Two things
+in it were not what the documentation led us to expect, and both would
+have made a hand-written fixture wrong:
+
+* p4c names a field of the user metadata struct after the struct, so the
+  program carries `userMetadata.rdma_metadata`, not `rdma_metadata`.
+* It marks that header `metadata: false`, because a `header`-typed field
+  has a validity bit. The loader therefore checks that the deparser does
+  not emit architecture state, which is the property actually wanted,
+  rather than checking the metadata flag.

@@ -217,13 +217,11 @@ static bool p4_absent_or_empty(struct json_object *root, const char *key)
  * file is unacceptable.
  */
 static const char *const p4_unsupported_keys[] = {
-    "header_stacks",  "header_union_types",
-    "header_unions",  "header_union_stacks",
-    "parse_vsets",    "meter_arrays",
-    "counter_arrays", "register_arrays",
-    "learn_lists",    "extern_instances",
-    "checksums",      "calculations",
-    "enums",          "field_lists",
+    "header_stacks",       "header_union_types", "header_unions",
+    "header_union_stacks", "parse_vsets",        "meter_arrays",
+    "counter_arrays",      "register_arrays",    "learn_lists",
+    "checksums",           "calculations",       "enums",
+    "field_lists",
 };
 
 static int p4_check_unsupported(struct p4_walk *w, struct json_object *root)
@@ -551,21 +549,49 @@ static int p4_resolve_rdma_metadata(struct p4_walk *w)
         &w->prog->rdma_opcode,   &w->prog->rdma_qp_num, &w->prog->rdma_length,
         &w->prog->rdma_imm_data, &w->prog->rdma_rkey,
     };
-    p4_idx_t h = p4_find_header(w->prog, md);
+    /*
+     * p4c qualifies a field of the user metadata struct with the struct's
+     * name, so a program declaring rdma_metadata there really carries
+     * "userMetadata.rdma_metadata".  Match the tail, since the prefix is
+     * the compiler's business and not the architecture's.
+     */
+    p4_idx_t h = P4_IDX_NONE;
+    const char *full = NULL;
 
+    for (uint16_t i = 0; i < w->prog->nheaders; i++) {
+        const char *n = w->prog->headers[i].name;
+        size_t nl = strlen(n);
+        size_t ml = strlen(md);
+
+        if (strcmp(n, md) == 0 || (nl > ml && n[nl - ml - 1] == '.' &&
+                                   strcmp(n + nl - ml, md) == 0)) {
+            h = (p4_idx_t)i;
+            full = n;
+            break;
+        }
+    }
     if (h == P4_IDX_NONE)
         return 0;
 
-    if (!w->prog->headers[h].metadata)
-        return p4_fail(w, -EINVAL,
-                       "'%s' must be declared metadata; it is architecture "
-                       "state, not something off a wire",
-                       md);
+    /*
+     * The property that matters is that architecture state does not go on
+     * a wire, so check the deparser rather than the metadata flag: p4c
+     * marks a header-typed field of the metadata struct metadata:false,
+     * because it has a validity bit, and a program written the ordinary
+     * way would be refused for a reason that is not the real one.
+     */
+    for (uint16_t i = 0; i < w->prog->ndeparse_order; i++) {
+        if (w->prog->deparse_order[i] == h)
+            return p4_fail(w, -EINVAL,
+                           "the deparser emits '%s'; it is architecture "
+                           "state and must not go on a wire",
+                           full);
+    }
 
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         /* A field the program did not declare is simply one it never
          * reads; a field it declared at the wrong width is an error. */
-        if (!p4_resolve_arch_field(w, md, names[i], widths[i], refs[i]) &&
+        if (!p4_resolve_arch_field(w, full, names[i], widths[i], refs[i]) &&
             w->failed)
             return -EINVAL;
     }
@@ -1036,6 +1062,9 @@ static const struct {
     {"drop", P4_PRIM_DROP, 0, 1},
     {"mark_to_drop", P4_PRIM_DROP, 0, 1},
     {"no_op", P4_PRIM_NOP, 0, 0},
+    /* The call form p4c emits for an extern: _<Type>_<method>, with the
+     * instance as the first parameter. */
+    {"_Fp8_map", P4_PRIM_EXTERN, 2, 2},
 };
 
 /* One operand of a primitive. */
@@ -1082,6 +1111,27 @@ static int p4_walk_operand(struct p4_walk *w, struct json_object *p,
         return 0;
     }
 
+    if (strcmp(type, "extern") == 0) {
+        const char *iname;
+
+        if (!json_object_is_type(val, json_type_string))
+            return p4_fail(w, -EINVAL, "%s names an extern badly", where);
+        iname = json_object_get_string(val);
+        dst->inst = P4_IDX_NONE;
+        for (uint16_t i = 0; iname && i < w->prog->nexterns; i++) {
+            if (strcmp(w->prog->externs[i].name, iname) == 0) {
+                dst->inst = (p4_idx_t)i;
+                break;
+            }
+        }
+        if (dst->inst == P4_IDX_NONE)
+            return p4_fail(w, -EINVAL,
+                           "%s calls on '%s', which was never instantiated",
+                           where, iname ? iname : "");
+        dst->kind = P4_OPD_EXTERN;
+        return 0;
+    }
+
     if (strcmp(type, "runtime_data") == 0) {
         int64_t idx;
 
@@ -1106,6 +1156,94 @@ static int p4_walk_operand(struct p4_walk *w, struct json_object *p,
                    "%s uses a '%s' parameter, which is not "
                    "supported",
                    where, type);
+}
+
+/*
+ * extern_instances: the objects a program instantiated.
+ *
+ * The type is allow-listed against what this target actually provides.
+ * p4c will compile a call to any extern it is told about when given
+ * --emit-externs, so the loader is the only thing that decides which ones
+ * exist here; accepting an unknown type would load a program whose calls
+ * go nowhere.
+ */
+static int p4_walk_externs(struct p4_walk *w, struct json_object *root)
+{
+    static const struct {
+        const char *name;
+        uint8_t type;
+    } types[] = {
+        {"Fp8", P4_EXTERN_FP8},
+    };
+    struct json_object *arr;
+    size_t n;
+
+    /* Absent is fine: most programs instantiate nothing. */
+    if (!json_object_object_get_ex(root, "extern_instances", &arr))
+        return 0;
+    if (!p4_get_array(root, "extern_instances", &arr, P4_MAX_EXTERNS, &n))
+        return p4_fail(w, -EINVAL,
+                       "malformed or oversized 'extern_instances' (at most "
+                       "%d)",
+                       P4_MAX_EXTERNS);
+
+    for (size_t i = 0; i < n; i++) {
+        struct json_object *e = json_object_array_get_idx(arr, i);
+        struct p4_extern_inst *dst = &w->prog->externs[i];
+        struct json_object *attrs;
+        char type[P4_MAX_NAME + 1];
+        size_t nattr;
+        uint32_t id;
+        bool known = false;
+
+        if (!e || !json_object_is_type(e, json_type_object))
+            return p4_fail(w, -EINVAL,
+                           "extern_instances[%zu] is not an "
+                           "object",
+                           i);
+        if (!p4_get_str(e, "name", dst->name, sizeof(dst->name)))
+            return p4_fail(w, -EINVAL, "extern_instances[%zu] has a bad name",
+                           i);
+        if (!p4_get_u32(e, "id", 0, P4_MAX_ID, &id))
+            return p4_fail(w, -EINVAL, "extern '%s' has a bad id", dst->name);
+        dst->id = id;
+
+        if (!p4_get_str(e, "type", type, sizeof(type)))
+            return p4_fail(w, -EINVAL, "extern '%s' has no type", dst->name);
+        for (size_t t = 0; t < sizeof(types) / sizeof(types[0]); t++) {
+            if (strcmp(types[t].name, type) == 0) {
+                dst->type = types[t].type;
+                known = true;
+                break;
+            }
+        }
+        if (!known)
+            return p4_fail(w, -ENOSYS,
+                           "extern '%s' is of type '%s', which this target "
+                           "does not provide",
+                           dst->name, type);
+
+        /* No extern here takes an attribute, and one that arrived would
+         * be a different object from the one being asked for. */
+        if (p4_get_array(e, "attribute_values", &attrs, P4_MAX_EXTERNS,
+                         &nattr) &&
+            nattr != 0)
+            return p4_fail(w, -ENOSYS,
+                           "extern '%s' has attributes, which are not "
+                           "supported",
+                           dst->name);
+
+        for (size_t j = 0; j < i; j++) {
+            if (strcmp(w->prog->externs[j].name, dst->name) == 0)
+                return p4_fail(w, -EINVAL, "duplicate extern '%s'", dst->name);
+            if (w->prog->externs[j].id == dst->id)
+                return p4_fail(w, -EINVAL, "externs '%s' and '%s' share id %u",
+                               w->prog->externs[j].name, dst->name, dst->id);
+        }
+    }
+
+    w->prog->nexterns = (uint16_t)n;
+    return 0;
 }
 
 /* actions: runtime arguments first, since a primitive may name one. */
@@ -1215,6 +1353,8 @@ static int p4_walk_actions(struct p4_walk *w, struct json_object *root)
                                p4_primitives[which].max_params);
 
             pd->kind = p4_primitives[which].kind;
+            /* One method today, so the name that matched is the method. */
+            pd->method = P4_EXTERN_FP8_MAP;
 
             /* drop's parameter, where there is one, says nothing the
              * primitive does not already say. */
@@ -1232,12 +1372,28 @@ static int p4_walk_actions(struct p4_walk *w, struct json_object *root)
                 if (rc)
                     return rc;
             }
-            /* The destination of an assignment has to be somewhere a value
-             * can be put. */
-            if (pd->params[0].kind != P4_OPD_FIELD)
-                return p4_fail(w, -EINVAL,
-                               "%s writes to something that is not a field",
-                               where);
+            if (pd->kind == P4_PRIM_EXTERN) {
+                /* A call's first parameter is the instance it is made on,
+                 * and nothing else may be. */
+                if (pd->params[0].kind != P4_OPD_EXTERN)
+                    return p4_fail(w, -EINVAL,
+                                   "%s does not name the extern it calls on",
+                                   where);
+                for (size_t q = 1; q < nparams; q++) {
+                    if (pd->params[q].kind == P4_OPD_EXTERN)
+                        return p4_fail(w, -EINVAL,
+                                       "%s passes an extern as an argument",
+                                       where);
+                }
+            } else {
+                /* The destination of an assignment has to be somewhere a
+                 * value can be put, and an extern is never one. */
+                if (pd->params[0].kind != P4_OPD_FIELD)
+                    return p4_fail(w, -EINVAL,
+                                   "%s writes to something that is not a "
+                                   "field",
+                                   where);
+            }
             pd->nparams = (uint8_t)nparams;
         }
         dst->nprimitives = (uint16_t)np;
@@ -2102,13 +2258,18 @@ int p4_json_parse(const void *buf, size_t len, struct p4_program **out,
     rc = p4_resolve_std_metadata(&w);
     if (rc)
         goto out;
-    rc = p4_resolve_rdma_metadata(&w);
-    if (rc)
-        goto out;
     rc = p4_walk_parser(&w, root);
     if (rc)
         goto out;
     rc = p4_walk_deparser(&w, root);
+    if (rc)
+        goto out;
+    /* After the deparser, because the check that architecture state does
+     * not go on a wire needs the emit order to exist. */
+    rc = p4_resolve_rdma_metadata(&w);
+    if (rc)
+        goto out;
+    rc = p4_walk_externs(&w, root);
     if (rc)
         goto out;
     rc = p4_walk_actions(&w, root);

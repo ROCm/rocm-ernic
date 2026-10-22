@@ -1243,37 +1243,45 @@ static void test_rdma_metadata(void)
     check(load_fixture(eng, "loopback.json") == 0, "an Ethernet program "
                                                    "loads");
 
-    /* Declared at the wrong width, the field would silently carry only
-     * part of every opcode. */
+    /*
+     * Declared at the wrong width, the field would resolve on its name
+     * and then silently carry only part of every opcode. The program is
+     * otherwise complete, because the architecture fields are resolved
+     * after the deparser and a program that stops earlier never reaches
+     * the check.
+     */
     check(load_text(eng, "{\"__meta__\":{\"version\":[2,24]},"
                          "\"header_types\":[{\"name\":\"std_t\",\"id\":0,"
-                         "\"fields\":[[\"egress_spec\",9]]},"
+                         "\"fields\":[[\"ingress_port\",9],"
+                         "[\"egress_spec\",9]]},"
                          "{\"name\":\"rdma_t\",\"id\":1,"
                          "\"fields\":[[\"opcode\",4]]}],"
                          "\"headers\":[{\"name\":\"standard_metadata\","
                          "\"id\":0,\"header_type\":\"std_t\","
                          "\"metadata\":true},"
                          "{\"name\":\"rdma_metadata\",\"id\":1,"
-                         "\"header_type\":\"rdma_t\","
-                         "\"metadata\":true}]}") == -EINVAL,
+                         "\"header_type\":\"rdma_t\",\"metadata\":true}],"
+                         "\"parsers\":[{\"name\":\"p\",\"id\":0,"
+                         "\"init_state\":\"start\",\"parse_states\":["
+                         "{\"name\":\"start\",\"id\":0,\"parser_ops\":[],"
+                         "\"transition_key\":[],"
+                         "\"transitions\":[{\"value\":\"default\","
+                         "\"mask\":null,\"next_state\":null}]}]}],"
+                         "\"deparsers\":[{\"name\":\"d\",\"id\":0,"
+                         "\"order\":[]}],\"actions\":[]}") == -EINVAL,
           "an architecture field at the wrong width is refused");
     check(strstr(p4_engine_load_error(eng), "must be 8") != NULL,
           "the error says what the width must be");
 
-    /* Declared as a real header, the architecture's own state could be
-     * put on the wire by the deparser. */
-    check(load_text(eng, "{\"__meta__\":{\"version\":[2,24]},"
-                         "\"header_types\":[{\"name\":\"std_t\",\"id\":0,"
-                         "\"fields\":[[\"egress_spec\",9]]},"
-                         "{\"name\":\"rdma_t\",\"id\":1,"
-                         "\"fields\":[[\"opcode\",8]]}],"
-                         "\"headers\":[{\"name\":\"standard_metadata\","
-                         "\"id\":0,\"header_type\":\"std_t\","
-                         "\"metadata\":true},"
-                         "{\"name\":\"rdma_metadata\",\"id\":1,"
-                         "\"header_type\":\"rdma_t\","
-                         "\"metadata\":false}]}") == -EINVAL,
-          "rdma_metadata declared as a wire header is refused");
+    /*
+     * Architecture state must not reach a wire. The check is on the
+     * deparser rather than on the metadata flag, because p4c marks a
+     * header-typed field of the metadata struct metadata:false -- it has
+     * a validity bit -- so a program written the ordinary way would
+     * otherwise be refused for a reason that is not the real one.
+     */
+    check(load_fixture(eng, "fp8_policy.json") == 0,
+          "a real compiled policy program loads");
 
     (void)err;
     p4_engine_destroy(eng);

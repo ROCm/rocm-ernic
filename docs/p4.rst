@@ -61,7 +61,19 @@ happens is fixed by the caller, not chosen by a table. Wiring
 the pipeline into the RDMA path and making that arithmetic an
 extern a program calls is what will make it P4-governed.
 
-What is not built yet: checksums and calculations, which is
+An extern is how a target gives a program something the
+language cannot express. P4 has no floating-point type -- its
+base types are bit-vectors -- so fp8 arithmetic is provided
+as one rather than written in P4. A program instantiates it
+and calls it from an action, and p4c emits the call only when
+given ``--emit-externs``; the loader allow-lists the type, so
+a program calling an extern this target does not have is
+refused by name rather than loaded with a call that goes
+nowhere.
+
+What is not built yet: executing an extern call, which is
+what will connect the pipeline to the RDMA data path;
+checksums and calculations, which is
 the one thing keeping ``simple_router.json`` from loading
 unmodified; counters, meters, registers and action profiles,
 each of which is refused by name rather than ignored; and any

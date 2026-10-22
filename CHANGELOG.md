@@ -283,6 +283,12 @@
   and never a silently inert pipeline. The file goes in through the same
   chunked path a control plane uses, so there is one route into the engine
   rather than two.
+* A P4 program can instantiate and call an extern the target provides,
+  which is how fp8 arithmetic will reach a program at all: P4 has no
+  floating-point type, so it cannot be written in the language. The loader
+  reads `extern_instances`, allow-lists the type against what this target
+  actually has, and accepts the `_<Type>_<method>` call form p4c emits for
+  `--emit-externs`. Nothing executes a call yet.
 * The P4 pipeline can be run over an RDMA operation rather than a frame,
   which is the first half of putting it on the RDMA path. A program that
   declares a header called `rdma_metadata` can match on the operation's
@@ -291,7 +297,8 @@
   nothing. Nothing is parsed and nothing is deparsed, and the only thing
   the pipeline decides is whether to suppress the operation. An
   architecture field declared at the wrong width, or `rdma_metadata`
-  declared as a wire header rather than metadata, is refused at load.
+  declared such that the deparser would put it on a wire, is refused at
+  load.
   `p4_engine_process_rdma()` is the entry point; nothing calls it yet.
 * An action that cannot be carried out now fails the packet instead of
   being skipped. Nothing that runs today can fail, but an extern reaches

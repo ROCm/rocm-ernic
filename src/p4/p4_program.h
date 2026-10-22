@@ -126,18 +126,43 @@ enum p4_prim_kind {
     P4_PRIM_SUB,        /* subtract, subtract_from_field */
     P4_PRIM_DROP,       /* drop, mark_to_drop */
     P4_PRIM_NOP,        /* no_op */
+    P4_PRIM_EXTERN,     /* _<Type>_<method>: a call out of the pipeline */
+};
+
+#define P4_MAX_EXTERNS 8
+
+/*
+ * The extern types this target provides.  A program may only instantiate
+ * one of these; p4c will compile any extern it is told to with
+ * --emit-externs, so the loader is what decides which actually exist.
+ */
+enum p4_extern_type {
+    P4_EXTERN_FP8 = 0,
+};
+
+/* The methods those types have, as one space: a primitive names both. */
+enum p4_extern_method {
+    P4_EXTERN_FP8_MAP = 0,
+};
+
+struct p4_extern_inst {
+    char name[P4_MAX_NAME + 1];
+    uint32_t id;
+    uint8_t type;
 };
 
 enum p4_operand_kind {
     P4_OPD_FIELD = 0,
     P4_OPD_HEXSTR,
     P4_OPD_RUNTIME, /* an argument supplied with the table entry */
+    P4_OPD_EXTERN,  /* the instance a call is made on */
 };
 
 struct p4_operand {
     uint8_t kind;
     struct p4_field_ref field; /* P4_OPD_FIELD */
     p4_idx_t runtime;          /* P4_OPD_RUNTIME: index into runtime args */
+    p4_idx_t inst;             /* P4_OPD_EXTERN: index into externs */
     uint16_t imm_len;          /* P4_OPD_HEXSTR: bytes the digits needed */
     bool imm_negative;
     uint8_t imm[P4_MAX_IMM_BYTES];
@@ -145,6 +170,7 @@ struct p4_operand {
 
 struct p4_primitive {
     uint8_t kind;
+    uint8_t method; /* P4_PRIM_EXTERN: which one */
     uint8_t nparams;
     struct p4_operand params[P4_MAX_PRIM_PARAMS];
 };
@@ -305,6 +331,9 @@ struct p4_program {
      * without the header the pipeline is never run for an operation, and
      * a program written only for Ethernet costs that path nothing.
      */
+    uint16_t nexterns;
+    struct p4_extern_inst externs[P4_MAX_EXTERNS];
+
     bool has_rdma_metadata;
     struct p4_field_ref rdma_opcode;
     struct p4_field_ref rdma_qp_num;
