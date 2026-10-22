@@ -259,6 +259,8 @@ with a comment saying why.
   git ls-files -z -- '*.c' '*.h' | xargs -0 clang-format-18 --dry-run --Werror
   ```
 
+  Use exactly clang-format 18.1.3, CI's version.
+
 - **No warnings with GCC or Clang, Debug or Release**, each in its own
   build directory with `-DERNIC_WERROR=ON`. Warning lists:
   [`ErnicGNUCompilerOptions.cmake`](cmake/ErnicGNUCompilerOptions.cmake),
