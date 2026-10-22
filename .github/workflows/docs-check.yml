@@ -14,6 +14,12 @@ on:
       - 'service/**'
       - 'README.md'
       - 'requirements.txt'
+      # The counter lists under docs/generated/ are built from these,
+      # so a counter added in either one changes the documentation.
+      # src/**/*.h above already covers ionic_adminq_priv.h.
+      - 'src/ionic_emu_stats.c'
+      - 'tools/gen-counter-docs.py'
+      - 'cmake/ErnicDocumentation.cmake'
       - '.github/workflows/docs-check.yml'
 
 permissions:
@@ -37,6 +43,17 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y doxygen
+
+    # Before the build, not after: the sphinx-html target regenerates
+    # docs/generated/, so a check that ran afterwards would compare the
+    # files with themselves and always pass. What matters is whether
+    # what is committed matches the C sources, since that is what the
+    # site serves to anyone reading the page between deploys.
+    #
+    # --check rather than `git diff`, which only sees tracked files and
+    # would say nothing about one of them having been deleted.
+    - name: Check the generated counter lists are current
+      run: python3 tools/gen-counter-docs.py --check
 
     - name: Configure docs-only build
       run: |

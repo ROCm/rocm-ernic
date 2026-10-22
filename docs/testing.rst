@@ -157,12 +157,16 @@ Four suites are registered with CTest:
   guest's ``hw_counters`` -- the ``STATS_HDRS``,
   ``STATS_VALS``, ``QP_STATS_HDRS`` and ``QP_STATS_VALS``
   tables, that they describe themselves the way the driver
-  reads them, that their values move by exactly what the
-  traffic carried, that a buffer too small for the table gets
-  whole entries only, and that the ``--stats-file`` the
-  exporter reads carries the same numbers. Nothing in it
-  hardcodes the counter set, so a counter added to either
-  table is covered without touching the test
+  reads them, that a buffer too small for the table gets
+  whole entries only, that values for a QP that does not
+  exist are refused rather than zero-filled, and that the
+  ``--stats-file`` the exporter reads carries the same
+  numbers. It drives a SEND, an RDMA WRITE and an RDMA READ
+  of three distinct sizes, and checks that every counter in
+  both tables moves by exactly the right amount on the right
+  QP. The structural checks read whatever set the device
+  advertises, so a counter added to either table is covered
+  without touching the test
 - ``ernic-mesh-stress``: a three-node mesh under traffic
   between every pair of nodes, peers that send frames no real
   node sends, the protocol version gate in both directions,

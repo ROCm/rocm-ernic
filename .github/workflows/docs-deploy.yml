@@ -24,6 +24,14 @@ on:
       - 'src/**/*.h'
       - 'service/**'
       - 'requirements.txt'
+      # The counter lists under docs/generated/ are built from these by
+      # tools/gen-counter-docs.py, which the sphinx-html target runs.
+      # Without them a counter added to the device would change the
+      # site and never be published. src/**/*.h above already covers
+      # ionic_adminq_priv.h.
+      - 'src/ionic_emu_stats.c'
+      - 'tools/gen-counter-docs.py'
+      - 'cmake/ErnicDocumentation.cmake'
       - '.github/workflows/docs-deploy.yml'
 
 # Serialise deploys.  Unlike the pull request workflows this does NOT

@@ -179,13 +179,24 @@
   both counter sets compare with the silicon the emulator models.
 * `ernic-ionic-hw-stats` (CTest) drives the four hardware-statistics admin
   commands over the vfio-user socket the way `ionic_rdma` does: it checks
-  that each table describes itself as the driver reads it, that the values
-  move by exactly what the traffic carried, that a buffer too small for a
-  table gets whole entries only and nothing past its length, that values
-  for a QP that does not exist are refused rather than zero-filled, and
-  that the `--stats-file` the exporter reads carries the same numbers. It
-  reads whatever counter set the device advertises, so a counter added to
-  either table is covered without a test change.
+  that each table describes itself as the driver reads it, that a buffer
+  too small for a table gets whole entries only and nothing past its
+  length, that values for a QP that does not exist are refused rather than
+  zero-filled, and that the `--stats-file` the exporter reads carries the
+  same numbers. It drives a SEND, an RDMA WRITE and an RDMA READ of three
+  distinct sizes and checks that all five device and all eight per-QP
+  counters move by exactly the right amount, on the right QP. The
+  structural checks read whatever counter set the device advertises, so a
+  counter added to either table is covered without a test change.
+* `tools/gen-counter-docs.py` builds the counter lists under
+  `docs/generated/` from the C sources that define them --
+  `src/ionic_emu_stats.c` for the LIF block, `dev_stats` and `qp_stats` in
+  `src/ionic_adminq_priv.h` for the two `hw_counters` tables -- and
+  `docs/monitoring.rst` includes them instead of restating the sets. The
+  `sphinx-html` target regenerates them, Docs Check fails a change that
+  edits a counter without rerunning the script, and both docs workflows
+  now trigger on the counter sources, so adding a counter republishes the
+  site with it listed.
 * `--nic-profile NAME|PATH` (repeatable, later layers win per key) chooses
   what the emulated ionic NIC looks like to the guest: its identity (ASIC
   type and revision, firmware version) and link (speed, transceiver, maximum

@@ -365,32 +365,23 @@ its counter names from a table the device hands back.
 
 The label values are exactly the field names of
 ``struct ionic_lif_stats``, so a counter can be looked
-up in the kernel's ``ionic_if.h``.  The 74 named
-counters fall into four groups:
-
-* Ethernet traffic, ``rx_`` and ``tx_`` by destination
-  MAC class: ``rx_ucast_bytes``, ``tx_bcast_packets``
-  and the rest.
-* Drops and DMA errors: ``rx_ucast_drop_packets``,
-  ``tx_dma_error``.
-* Ring errors: ``rx_queue_empty``,
-  ``tx_desc_fetch_error``.
-* RDMA traffic and errors:
-  ``tx_rdma_ucast_bytes``, ``rx_rdma_ecn_packets``, and
-  the 27 requester and responder error counters named
-  ``rdma_req_*`` and ``rdma_resp_*``.
+up in the kernel's ``ionic_if.h``.
 
 A counter the emulator does not yet keep reads zero
 rather than disappearing; the server prints the whole
 block on every flush.
 
+.. include:: generated/lif-counters.rst
+
 .. note::
 
-   The 27 ``rdma_req_*`` and ``rdma_resp_*`` error
-   counters are named and published, but nothing in the
-   datapath increments them yet, so they read zero
-   whatever happens.  The Ethernet, drop, ring and RDMA
-   traffic counters are live.
+   The ``rdma_req_*`` and ``rdma_resp_*`` error counters
+   are named and published, but nothing in the datapath
+   increments them yet, so they read zero whatever
+   happens.  The Ethernet, drop, ring and RDMA traffic
+   counters are live, and
+   ``tests/py/test_ionic_hw_stats.py`` drives traffic
+   that moves them.
 
 Guest hw_counters and real silicon
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -421,7 +412,9 @@ names.  What a guest reads as ``total_bytes_sent`` is
 per QP as ``wqes_processed`` is
 ``ernic_qp_wqes_processed_total``.  The tables are
 defined in ``dev_stats`` and ``qp_stats`` in
-``src/ionic_adminq_priv.h``.
+``src/ionic_adminq_priv.h``:
+
+.. include:: generated/hw-counter-tables.rst
 
 So the device exports two counter sets, and they stand
 differently against the silicon the emulator models:
@@ -433,8 +426,8 @@ differently against the silicon the emulator models:
   Pensando DSC firmware maintains.  A tool that reads
   ``ip -s link`` or the LIF block directly sees what it
   would see on hardware.
-* The **hw_counters tables** do not.  The five device
-  and eight per-QP counters the emulator advertises
+* The **hw_counters tables** do not.  The device and
+  per-QP counters the emulator advertises
   (``commands``, ``total_bytes_sent``,
   ``doorbell_send`` and the rest) are its own: they
   describe the emulator's accounting, and the real

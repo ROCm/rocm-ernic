@@ -36,7 +36,11 @@ breathe_default_members = ("members",)
 
 # -- General -----------------------------------------------------
 
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+# generated/ holds the counter lists tools/gen-counter-docs.py builds
+# from the C sources.  They are included into monitoring.rst, not pages
+# of their own, and Sphinx warns about any .rst it collects that no
+# toctree names.  An excluded file can still be ``include``d.
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "generated"]
 templates_path = []
 
 # Kernel driver headers reuse type names across files and

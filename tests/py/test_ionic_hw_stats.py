@@ -41,7 +41,7 @@ from ernic.server import Server, stop_and_check
 # The fixture is the same pair of connected QPs the driver suite builds,
 # and keeping one copy of it means a change to bring-up cannot leave the
 # two suites disagreeing about what a working device looks like.
-from test_ionic_driver import MR_A, MR_B, MR_LEN, QP_A, VA_A, VA_B, Fixture
+from test_ionic_driver import MR_A, MR_B, MR_LEN, QP_A, QP_B, VA_A, VA_B, Fixture
 
 # struct ionic_v1_stat: a big-endian type_off, then a NUL-terminated name.
 STAT_HDR_SIZE = 32
@@ -217,51 +217,82 @@ def test_dev_values(suite, fix):
     suite.check(by_name.get("commands", 0) > 0, "the device counted admin commands")
 
 
-def test_dev_values_follow_traffic(suite, fix):
-    """Device byte counters move by exactly what the traffic carried."""
-    stats = fix.dev_stats
-    before = named_values(
-        stats, read_values(suite, fix, ionic.ADMIN_STATS_VALS, len(stats))
-    )
+# One SEND, one RDMA WRITE and one RDMA READ, of three sizes no two of
+# which are equal or a multiple of each other: a counter wired to the
+# wrong operation then reads wrong rather than coincidentally right.
+BURST_SEND = 768
+BURST_WRITE = 88
+BURST_READ = 192
 
-    payload = bytes(range(256)) * 3
-    fix.driver.mr_write(fix.mr_a, VA_A, payload)
+
+def drive_burst(fix):
+    """Send, write and read known, distinct byte counts between the QPs.
+
+    Three signalled work requests on A, each waited for, and one receive
+    posted on B.  Every counter in both tables moves, so each can be
+    checked against a number this function decided.
+    """
+    fix.driver.mr_write(fix.mr_a, VA_A, bytes(range(256)) * 3)
     fix.driver.post_recv(fix.qp_b, [ionic.Sge(VA_B, MR_LEN, MR_B)])
     fix.driver.post_send(
         fix.qp_a,
         ionic.OP_SEND,
         flags=ionic.WQE_SIGNALLED,
-        sge=[ionic.Sge(VA_A, len(payload), MR_A)],
+        sge=[ionic.Sge(VA_A, BURST_SEND, MR_A)],
     )
     fix.driver.wait_cq(fix.cq_b)
     fix.driver.wait_cq(fix.cq_a)
 
-    written = b"straight into the peer" * 4
-    fix.driver.mr_write(fix.mr_a, VA_A, written)
     fix.driver.post_send(
         fix.qp_a,
         ionic.OP_RDMA_WRITE,
         flags=ionic.WQE_SIGNALLED,
         remote_va=VA_B,
         rkey=MR_B,
-        sge=[ionic.Sge(VA_A, len(written), MR_A)],
+        sge=[ionic.Sge(VA_A, BURST_WRITE, MR_A)],
     )
     fix.driver.wait_cq(fix.cq_a)
 
+    fix.driver.post_send(
+        fix.qp_a,
+        ionic.OP_RDMA_READ,
+        flags=ionic.WQE_SIGNALLED,
+        remote_va=VA_B,
+        rkey=MR_B,
+        sge=[ionic.Sge(VA_A, BURST_READ, MR_A)],
+    )
+    fix.driver.wait_cq(fix.cq_a)
+
+
+def deltas(before, after):
+    """A lookup of what each counter moved by."""
+    return lambda name: after.get(name, 0) - before.get(name, 0)
+
+
+def test_dev_values_follow_traffic(suite, fix):
+    """Every device counter moves by exactly what the traffic carried."""
+    stats = fix.dev_stats
+    before = named_values(
+        stats, read_values(suite, fix, ionic.ADMIN_STATS_VALS, len(stats))
+    )
+    drive_burst(fix)
     after = named_values(
         stats, read_values(suite, fix, ionic.ADMIN_STATS_VALS, len(stats))
     )
+    delta = deltas(before, after)
 
-    def delta(name):
-        return after.get(name, 0) - before.get(name, 0)
-
-    suite.check_eq(delta("total_bytes_sent"), len(payload), "total_bytes_sent moved")
+    suite.check_eq(delta("total_bytes_sent"), BURST_SEND, "total_bytes_sent moved")
     suite.check_eq(
-        delta("total_bytes_received"), len(payload), "total_bytes_received moved"
+        delta("total_bytes_received"), BURST_SEND, "total_bytes_received moved"
     )
     suite.check_eq(
-        delta("total_bytes_rdma_write"), len(written), "total_bytes_rdma_write moved"
+        delta("total_bytes_rdma_write"), BURST_WRITE, "total_bytes_rdma_write moved"
     )
+    suite.check_eq(
+        delta("total_bytes_rdma_read"), BURST_READ, "total_bytes_rdma_read moved"
+    )
+    # Not an exact count: reading the counters is itself an admin
+    # command, so the snapshots move this one on their own.
     suite.check(delta("commands") > 0, "the admin command count moved")
 
 
@@ -273,40 +304,50 @@ def test_qp_table(suite, fix):
 
 
 def test_qp_values_follow_traffic(suite, fix):
-    """A SEND moves the sending QP's own counters, by its own byte count."""
+    """Every per-QP counter moves, on the right QP, by the right amount.
+
+    Read for both QPs: the two halves of one transfer are accounted
+    separately, and a counter folded onto the wrong QP shows up here as
+    a zero that should not be, or the reverse.
+    """
     stats = fix.qp_stats
-    before = named_values(
-        stats,
-        read_values(suite, fix, ionic.ADMIN_QP_STATS_VALS, len(stats), id_ver=QP_A),
-    )
 
-    payload = b"per-QP accounting" * 7
-    fix.driver.mr_write(fix.mr_a, VA_A, payload)
-    fix.driver.post_recv(fix.qp_b, [ionic.Sge(VA_B, MR_LEN, MR_B)])
-    fix.driver.post_send(
-        fix.qp_a,
-        ionic.OP_SEND,
-        flags=ionic.WQE_SIGNALLED,
-        sge=[ionic.Sge(VA_A, len(payload), MR_A)],
-    )
-    fix.driver.wait_cq(fix.cq_b)
-    fix.driver.wait_cq(fix.cq_a)
+    def snapshot(qp_id):
+        return named_values(
+            stats,
+            read_values(
+                suite, fix, ionic.ADMIN_QP_STATS_VALS, len(stats), id_ver=qp_id
+            ),
+        )
 
-    after = named_values(
-        stats,
-        read_values(suite, fix, ionic.ADMIN_QP_STATS_VALS, len(stats), id_ver=QP_A),
-    )
+    before_a, before_b = snapshot(QP_A), snapshot(QP_B)
+    drive_burst(fix)
+    after_a, after_b = snapshot(QP_A), snapshot(QP_B)
+    delta_a = deltas(before_a, after_a)
+    delta_b = deltas(before_b, after_b)
 
-    def delta(name):
-        return after.get(name, 0) - before.get(name, 0)
+    # The sender: three signalled work requests, each rung and reaped
+    # on its own, and the bytes of each operation under its own name.
+    suite.check_eq(delta_a("doorbell_send"), 3, "A rang the send doorbell three times")
+    suite.check_eq(delta_a("wqes_processed"), 3, "A processed three WQEs")
+    suite.check_eq(delta_a("cqes_posted"), 3, "A posted three CQEs")
+    suite.check_eq(delta_a("bytes_sent"), BURST_SEND, "A's bytes_sent")
+    suite.check_eq(delta_a("bytes_rdma_write"), BURST_WRITE, "A's bytes_rdma_write")
+    suite.check_eq(delta_a("bytes_rdma_read"), BURST_READ, "A's bytes_rdma_read")
+    suite.check_eq(delta_a("bytes_received"), 0, "A counted no receive")
+    suite.check_eq(delta_a("doorbell_recv"), 0, "A rang no receive doorbell")
 
-    suite.check_eq(delta("bytes_sent"), len(payload), "the QP's bytes_sent moved")
-    suite.check(delta("wqes_processed") > 0, "the QP processed a WQE")
-    suite.check(delta("cqes_posted") > 0, "the QP posted a CQE")
-    suite.check(delta("doorbell_send") > 0, "the QP saw a send doorbell")
-    # The receive side is a different QP, and its counters must not have
-    # been folded into this one.
-    suite.check_eq(delta("bytes_received"), 0, "the sender counted no receive")
+    # The receiver: one posted receive, one completion, the SEND's bytes
+    # -- and nothing from the WRITE or READ, which name no work request
+    # on this side.
+    suite.check_eq(delta_b("doorbell_recv"), 1, "B rang the receive doorbell once")
+    suite.check_eq(delta_b("cqes_posted"), 1, "B posted one CQE")
+    suite.check_eq(delta_b("bytes_received"), BURST_SEND, "B's bytes_received")
+    suite.check_eq(delta_b("bytes_sent"), 0, "B counted no send")
+    suite.check_eq(delta_b("doorbell_send"), 0, "B rang no send doorbell")
+    suite.check_eq(delta_b("wqes_processed"), 0, "B processed no send WQE")
+    suite.check_eq(delta_b("bytes_rdma_write"), 0, "B counted no RDMA write")
+    suite.check_eq(delta_b("bytes_rdma_read"), 0, "B counted no RDMA read")
 
 
 def test_qp_values_unknown_qp(suite, fix):
@@ -430,9 +471,9 @@ def read_stats_file(path):
 TESTS = (
     ("the device stats table", test_dev_table),
     ("device stats values", test_dev_values),
-    ("device values follow traffic", test_dev_values_follow_traffic),
+    ("every device value follows traffic", test_dev_values_follow_traffic),
     ("the per-QP stats table", test_qp_table),
-    ("per-QP values follow traffic", test_qp_values_follow_traffic),
+    ("every per-QP value follows traffic", test_qp_values_follow_traffic),
     ("values for a QP that does not exist", test_qp_values_unknown_qp),
     ("a buffer too small for the table", test_truncated_buffer),
     ("requests the device must refuse", test_rejected_requests),
