@@ -141,7 +141,7 @@ The modules under ``tests/py/ernic/`` are:
 - ``check.py`` -- the small test runner the suites report
   through
 
-Three suites are registered with CTest:
+Four suites are registered with CTest:
 
 - ``ernic-vfu-client``: version negotiation, device and
   region info, PCI configuration space, BAR access, DMA
@@ -153,6 +153,16 @@ Three suites are registered with CTest:
   sends with several SGEs or an inline payload, RDMA reads
   and writes, shared receive queues, and the keys and lengths
   that must fail
+- ``ernic-ionic-hw-stats``: the hardware statistics behind a
+  guest's ``hw_counters`` -- the ``STATS_HDRS``,
+  ``STATS_VALS``, ``QP_STATS_HDRS`` and ``QP_STATS_VALS``
+  tables, that they describe themselves the way the driver
+  reads them, that their values move by exactly what the
+  traffic carried, that a buffer too small for the table gets
+  whole entries only, and that the ``--stats-file`` the
+  exporter reads carries the same numbers. Nothing in it
+  hardcodes the counter set, so a counter added to either
+  table is covered without touching the test
 - ``ernic-mesh-stress``: a three-node mesh under traffic
   between every pair of nodes, peers that send frames no real
   node sends, the protocol version gate in both directions,
@@ -161,7 +171,7 @@ Three suites are registered with CTest:
 
 .. code-block:: bash
 
-   ctest --test-dir build -R '^ernic-(vfu|ionic-driver|mesh)'
+   ctest --test-dir build -R '^ernic-(vfu|ionic|mesh)'
 
 To run one directly, and to vary the mesh:
 

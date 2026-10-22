@@ -1418,6 +1418,20 @@ if(ERNIC_BUILD_P4)
         RUN_SERIAL TRUE
     )
 endif()
+# The hardware statistics a guest's hw_counters are built from: the
+# STATS_HDRS / STATS_VALS / QP_STATS_HDRS / QP_STATS_VALS tables, the
+# values behind them, and that the --stats-file the exporter reads
+# carries the same numbers.
+add_test(
+    NAME ernic-ionic-hw-stats
+    COMMAND ${ERNIC_PY_RUN}
+        ${CMAKE_CURRENT_SOURCE_DIR}/py/test_ionic_hw_stats.py
+        --server $<TARGET_FILE:rocm-ernic>
+)
+set_tests_properties(ernic-ionic-hw-stats PROPERTIES
+    TIMEOUT 300
+    RUN_SERIAL TRUE
+)
 
 # A three-node mesh under traffic, malformed peers, and churn.
 # Generous timeout: it starts and restarts several servers and waits
