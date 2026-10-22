@@ -66,6 +66,22 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Everything below goes into a file that is read from somewhere else: the
+# bin/ wrappers name the real binary and boost's directory, and the
+# p4include symlink names a target resolved relative to its own
+# directory, not to the caller's. A relative --prefix put a cwd-relative
+# path in all three, so the symlink pointed at <prefix>/<prefix>/... and
+# the wrappers ran only from the directory the fetch happened in. The
+# --version check at the end runs from that same directory, so it would
+# have reported success either way.
+#
+# The prefix need not exist yet -- it is removed and recreated below --
+# so it is made absolute textually rather than by cd'ing into it.
+case "${PREFIX}" in
+    /*) ;;
+    *)  PREFIX="${PWD}/${PREFIX}" ;;
+esac
+
 die() { echo "$0: $*" >&2; exit 1; }
 
 for tool in curl sha256sum dpkg-deb; do

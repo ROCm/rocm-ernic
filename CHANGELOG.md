@@ -679,6 +679,20 @@
   four entries long, so it read the next command from the middle of it. The
   Linux driver sends neither. `tests/test_ionic_adminq_poll.c` (CTest
   `ionic-adminq-poll-unit`) covers both fixes.
+* `scripts/fetch-p4c.sh` now accepts a relative `--prefix`. The prefix is
+  written into the generated `bin/` wrappers and the `p4include`
+  symlink, both of which are later read from somewhere else, so a
+  relative one produced a dangling symlink and wrappers that ran only
+  from the directory the fetch happened in. The script's own
+  `--version` check runs from that directory, so it reported success.
+
+* The Build and Test workflow installs `libjson-c-dev` unconditionally.
+  It was installed alongside meson in the step that builds libvfio-user,
+  which runs only on a cache miss, while the configure step requires
+  json-c for `-DERNIC_BUILD_P4=ON` on every run. The configure would
+  have begun failing on the first run that restored a warm libvfio-user
+  cache, which is not the run that introduced it.
+
 * The `ernic_p4_dkms` role now registers `ernic-p4` with DKMS instead of
   building the module by hand and copying it into `/lib/modules`. The
   module is pinned to the symbol CRCs of an out-of-tree ionic that is
