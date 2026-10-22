@@ -380,6 +380,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#nic-profiles">NIC Profiles</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ethernet-and-tcp-ip">Ethernet and TCP/IP</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#two-guests-on-one-bridge">Two Guests on One Bridge</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#statistics">Statistics</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-driver-patched-upstream-ionic">Guest Driver: Patched Upstream ionic</a><ul class="pst-show_toc_level nav section-nav flex-column">
@@ -589,6 +590,13 @@ RDMA port <code class="docutils literal notranslate"><span class="pre">rate</spa
 maximum frame of <code class="docutils literal notranslate"><span class="pre">mtu_max</span></code> + 18, and the port’s
 configured MTU is the smaller of <code class="docutils literal notranslate"><span class="pre">mtu_max</span></code> and 9000</p></td>
 </tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stats.interval_ms</span></code></p></td>
+<td><p>10 to 60000</p></td>
+<td><p>1000</p></td>
+<td><p>how often the LIF counters are rewritten in guest
+memory, which bounds how stale <code class="docutils literal notranslate"><span class="pre">ip</span> <span class="pre">-s</span> <span class="pre">link</span></code> can be.
+<code class="docutils literal notranslate"><span class="pre">--stats-interval-ms</span></code> overrides every layer</p></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -665,6 +673,80 @@ scatter-gather offloads, so the guest stack always hands
 down linear skbs. This keeps the descriptor handling
 simple at the cost of transmit throughput.</p>
 </div>
+</section>
+<section id="statistics">
+<h3>Statistics<a class="headerlink" href="#statistics" title="Link to this heading">#</a></h3>
+<p>The ionic driver never asks the device for Ethernet
+counters. At <code class="docutils literal notranslate"><span class="pre">LIF_INIT</span></code> it hands the device a <code class="docutils literal notranslate"><span class="pre">struct</span>
+<span class="pre">ionic_lif_info</span></code> in its own memory, and from then on reads
+<code class="docutils literal notranslate"><span class="pre">struct</span> <span class="pre">ionic_lif_stats</span></code> (byte 320 of that block) whenever
+<code class="docutils literal notranslate"><span class="pre">ip</span> <span class="pre">-s</span> <span class="pre">link</span></code>, <code class="docutils literal notranslate"><span class="pre">/proc/net/dev</span></code> or <code class="docutils literal notranslate"><span class="pre">ethtool</span> <span class="pre">-S</span></code> asks. The
+emulator counts every frame the LIF moves and rewrites that
+block from the main loop: once straight after <code class="docutils literal notranslate"><span class="pre">LIF_INIT</span></code>,
+then every <code class="docutils literal notranslate"><span class="pre">stats.interval_ms</span></code> (1000 by default). A real
+NIC’s firmware does the same.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># rewrite the counters every 100 ms</span>
+./build/rocm-ernic<span class="w"> </span>--tap<span class="w"> </span>ernic0<span class="w"> </span>--stats-interval-ms<span class="w"> </span><span class="m">100</span>
+</pre></div>
+</div>
+<p>Frames are classed by destination MAC: the group bit makes a
+frame multicast, all-ones makes it broadcast, anything else
+is unicast. What moves:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 40.0%" />
+<col style="width: 60.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Event</p></th>
+<th class="head"><p>Counters</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>frame sent or received</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">{tx,rx}_{ucast,mcast,bcast}_{bytes,packets}</span></code>; the
+driver sums them into <code class="docutils literal notranslate"><span class="pre">ip</span> <span class="pre">-s</span> <span class="pre">link</span></code> packets and bytes</p></td>
+</tr>
+<tr class="row-odd"><td><p>receive with no buffer posted, or the mesh inbox full</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_*_drop_*</span></code> and <code class="docutils literal notranslate"><span class="pre">rx_queue_empty</span></code>
+(<code class="docutils literal notranslate"><span class="pre">rx_dropped</span></code> and <code class="docutils literal notranslate"><span class="pre">rx_over_errors</span></code>)</p></td>
+</tr>
+<tr class="row-even"><td><p>frame larger than the posted buffer</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_*_drop_*</span></code> and <code class="docutils literal notranslate"><span class="pre">rx_desc_data_error</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>DMA to or from guest memory failed</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">{tx,rx}_dma_error</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>the host backend refused a transmit</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_*_drop_*</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>descriptor unreadable, or nonsensical</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_desc_fetch_error</span></code>, <code class="docutils literal notranslate"><span class="pre">tx_desc_data_error</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>doorbell on a queue that was never initialized</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_queue_disabled</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>RDMA payload sent or landed</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">{tx,rx}_rdma_ucast_{bytes,packets}</span></code>, one packet per
+message</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Frames are counted whether or not the server has a TAP:
+without one, transmitted frames are counted and discarded.
+The counters restart at zero on a device reset. After
+<code class="docutils literal notranslate"><span class="pre">LIF_RESET</span></code> or a device reset nothing more is written into
+guest memory until the next <code class="docutils literal notranslate"><span class="pre">LIF_INIT</span></code>, because the driver
+may have freed the block.</p>
+<p>The stats file (<code class="docutils literal notranslate"><span class="pre">--stats-file</span></code>) carries the same counters
+in a <code class="docutils literal notranslate"><span class="pre">LIF</span> <span class="pre">Statistics</span></code> section, one line per named field of
+<code class="docutils literal notranslate"><span class="pre">struct</span> <span class="pre">ionic_lif_stats</span></code> whether or not it is zero, so a
+test can check what the guest reports against what the
+emulator counted. They agree to within one interval.</p>
+<p>Not counted yet: <code class="docutils literal notranslate"><span class="pre">rx_queue_disabled</span></code> (the receive path
+skips queues that are not initialized) and the RDMA error
+counters at qwords 96 to 125, which stay zero.</p>
 </section>
 </section>
 <section id="guest-driver-patched-upstream-ionic">
@@ -896,6 +978,7 @@ reports an unknown link speed and width; this is cosmetic</p></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#nic-profiles">NIC Profiles</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ethernet-and-tcp-ip">Ethernet and TCP/IP</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#two-guests-on-one-bridge">Two Guests on One Bridge</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#statistics">Statistics</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-driver-patched-upstream-ionic">Guest Driver: Patched Upstream ionic</a><ul class="pst-show_toc_level nav section-nav flex-column">
