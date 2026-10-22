@@ -149,12 +149,16 @@ int p4_engine_load_begin(struct p4_engine *eng, size_t total_len)
 int p4_engine_load_chunk(struct p4_engine *eng, uint64_t offset,
                          const void *data, size_t len)
 {
-    if (!eng || !data)
+    if (!eng)
         return -EINVAL;
     if (!eng->load_buf)
         return -EINVAL; /* no load in progress */
 
-    if (len == 0 || offset != eng->load_got) {
+    /* A null buffer is a failed chunk like any other, and the contract
+     * in p4_engine.h is that a failed chunk abandons the load. Returning
+     * without abandoning let a caller retry into a half-filled buffer
+     * through this one door and no other. */
+    if (!data || len == 0 || offset != eng->load_got) {
         p4_engine_load_abort(eng);
         return -EINVAL;
     }

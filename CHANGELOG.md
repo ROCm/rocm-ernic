@@ -679,6 +679,25 @@
   four entries long, so it read the next command from the middle of it. The
   Linux driver sends neither. `tests/test_ionic_adminq_poll.c` (CTest
   `ionic-adminq-poll-unit`) covers both fixes.
+* A P4 program declaring a signed field is now refused at load rather
+  than loaded as unsigned. Nothing in the engine carries signedness:
+  field values are zero-extended and compared with a byte comparison, so
+  an `int<8>` holding `0xff` compared greater than zero instead of less.
+  The loader names the field, as it does for every other construct it
+  does not implement. A field explicitly marked unsigned, which is what
+  p4c emits for an ordinary `bit<N>`, is unaffected.
+* A rejected P4 program chunk with a null buffer now abandons the load,
+  as every other rejected chunk does and as the interface documents. It
+  returned an error without abandoning, so a control plane could retry
+  into a half-filled buffer through that one path.
+* Guest Ethernet transmit bytes are no longer counted twice when the P4
+  engine is on the wire with a host backend attached. A frame the
+  pipeline claimed and put back on the wire was counted both where the
+  guest queue serviced it and again on the way out, so an unchanged
+  frame added twice its length to the transmit byte count. Frames the
+  pipeline reflects from the uplink back to the uplink are no longer
+  counted as guest traffic either.
+
 * A send work request with more than 14 SGEs, which the 512-byte WQE
   stride the device advertises has room for, is now read whole. The device
   read the first 256 bytes of the WQE and then walked its SGE list as far as

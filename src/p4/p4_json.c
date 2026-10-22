@@ -378,6 +378,26 @@ static int p4_walk_header_types(struct p4_walk *w, struct json_object *root)
                 return p4_fail(w, -EINVAL, "header type '%s' is too wide",
                                dst->name);
 
+            /*
+             * A signed field is refused rather than loaded unsigned.
+             * Nothing here carries signedness: values are zero-extended
+             * and right-aligned by bits_get(), and value_cmp() orders
+             * them with memcmp, so an int<8> holding 0xff would compare
+             * greater than zero instead of less. Accepting the flag and
+             * discarding it is the half-executed program this loader
+             * exists to refuse.
+             */
+            if (tlen == 3) {
+                json_object *fsign = json_object_array_get_idx(tuple, 2);
+
+                if (fsign && json_object_is_type(fsign, json_type_boolean) &&
+                    json_object_get_boolean(fsign))
+                    return p4_fail(w, -ENOSYS,
+                                   "'%s.%s' is signed, which is not "
+                                   "supported",
+                                   dst->name, fd->name);
+            }
+
             fd->bits = (uint16_t)bits;
             fd->offset_bits = dst->total_bits;
             dst->total_bits = (uint16_t)(dst->total_bits + bits);

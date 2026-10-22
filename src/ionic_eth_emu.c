@@ -254,10 +254,16 @@ int ionic_eth_emu_send_to_net(struct ionic_eth_emu *emu, const void *frame,
     if (!emu->net)
         return -ENODEV;
 
-    int ret = ionic_eth_net_send(emu->net, frame, len);
-    if (ret == 0)
-        pvrdma_eth_bytes_count(emu->pvrdma_handle, len, true);
-    return ret;
+    /*
+     * Deliberately uncounted. eth_txq_service() already counts a guest
+     * frame as sent whether or not the Tx filter took it, so counting
+     * again here doubled every byte an in-process endpoint put back on
+     * the wire. And this cannot tell guest traffic from anything else:
+     * a frame the pipeline reflects from the uplink back to the uplink
+     * never came from the guest, and the counter is of guest bytes.
+     * Only the caller that knows where the frame came from can count it.
+     */
+    return ionic_eth_net_send(emu->net, frame, len);
 }
 
 void ionic_eth_emu_register_rdma_handler(struct ionic_eth_emu *emu,

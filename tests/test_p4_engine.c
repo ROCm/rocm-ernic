@@ -282,6 +282,19 @@ static void test_load_chunk_bounds(void)
     check(p4_engine_load_chunk(eng, 0, NULL, 8) == -EINVAL,
           "a NULL chunk is rejected");
 
+    /*
+     * The NULL above is rejected by the no-load-in-progress check, since
+     * the zero-length chunk already abandoned the load: it would pass
+     * whether or not NULL abandons anything. This one starts a fresh
+     * load so NULL is the first thing to fail, and then proves the load
+     * really was abandoned rather than left open to retry into.
+     */
+    check(p4_engine_load_begin(eng, 64) == 0, "begin accepted");
+    check(p4_engine_load_chunk(eng, 0, NULL, 8) == -EINVAL,
+          "a NULL chunk is rejected with a load in progress");
+    check(p4_engine_load_chunk(eng, 0, data, 32) == -EINVAL,
+          "the load was abandoned after a NULL chunk");
+
     p4_engine_load_progress(eng, &got, &total);
     check(got == 0 && total == 0, "every rejection abandoned the load");
 
@@ -430,6 +443,25 @@ static void test_load_parses(void)
           "a non-empty checksums list is unsupported, not invalid");
     check(strstr(p4_engine_load_error(eng), "checksums") != NULL,
           "the error names the feature that was used");
+
+    /*
+     * A signed field is the same kind of refusal. Nothing carries
+     * signedness: bits_get() zero-extends and value_cmp() is a memcmp,
+     * so an int<8> of 0xff would compare greater than zero. Accepting
+     * the flag and discarding it is the half-executed program the
+     * loader exists to refuse. The unsigned form beside it must still
+     * load, since p4c emits a third element of false routinely.
+     */
+    check(load_text(eng, "{\"__meta__\":{\"version\":[2,24]},"
+                         "\"header_types\":[{\"name\":\"t\",\"id\":0,"
+                         "\"fields\":[[\"a\",8,true]]}]}") == -ENOSYS,
+          "a signed field is unsupported, not silently unsigned");
+    check(strstr(p4_engine_load_error(eng), "signed") != NULL,
+          "the error says the field was signed");
+    check(load_text(eng, "{\"__meta__\":{\"version\":[2,24]},"
+                         "\"header_types\":[{\"name\":\"t\",\"id\":0,"
+                         "\"fields\":[[\"a\",8,false]]}]}") != -ENOSYS,
+          "an explicitly unsigned field still loads");
 
     /* ...but mentioning it empty is fine, which is how p4c emits it for a
      * program that does not use one. The walk then stops at the first
