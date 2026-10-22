@@ -64,6 +64,7 @@ void p4_engine_destroy(struct p4_engine *eng)
 }
 
 int p4_engine_process_rdma(struct p4_engine *eng,
+                           const struct p4_extern_ops *ops,
                            const struct p4_rdma_meta *meta, bool *suppress)
 {
     struct p4_exec_result er;
@@ -75,7 +76,7 @@ int p4_engine_process_rdma(struct p4_engine *eng,
     if (!eng->prog)
         return -ENOENT;
 
-    rc = p4_exec_run_meta(eng->prog, eng->entries, meta, &er);
+    rc = p4_exec_run_meta(eng->prog, eng->entries, ops, meta, &er);
     if (rc)
         return rc;
 

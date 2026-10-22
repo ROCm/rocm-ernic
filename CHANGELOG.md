@@ -288,7 +288,13 @@
   floating-point type, so it cannot be written in the language. The loader
   reads `extern_instances`, allow-lists the type against what this target
   actually has, and accepts the `_<Type>_<method>` call form p4c emits for
-  `--emit-externs`. Nothing executes a call yet.
+  `--emit-externs`, and the pipeline executes the call. What the program
+  decides is the policy -- whether to act and with which operation -- and
+  what it cannot decide is which memory is touched: the operand regions
+  come from the work request, not from anything a table entry can name. A
+  call made where there is no operation to work on, which is every frame,
+  fails rather than being skipped, and an extern that fails fails the
+  operation rather than letting it complete with the work not done.
 * The P4 pipeline can be run over an RDMA operation rather than a frame,
   which is the first half of putting it on the RDMA path. A program that
   declares a header called `rdma_metadata` can match on the operation's

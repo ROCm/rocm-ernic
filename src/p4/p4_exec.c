@@ -237,6 +237,7 @@ static void operand_value(const struct p4_program *prog,
  * asked for it completes successfully.
  */
 static int run_action(const struct p4_program *prog, struct p4_phv *phv,
+                      const struct p4_extern_ops *ops,
                       const struct p4_action *act, const struct p4_args *args,
                       bool *dropped)
 {
@@ -273,6 +274,30 @@ static int run_action(const struct p4_program *prog, struct p4_phv *phv,
                 value_sub(&a, &b, &r);
             phv_set(prog, phv, p->params[0].field, &r);
             break;
+        case P4_PRIM_EXTERN: {
+            struct p4_value argv[P4_MAX_PRIM_PARAMS];
+            uint8_t argc = 0;
+            int rc;
+
+            /*
+             * No operands to work on. The frame path passes no ops at
+             * all, because an extern's regions come from a work request
+             * and a frame has none; failing is the only honest answer,
+             * since carrying on would run part of an action.
+             */
+            if (!ops || !ops->call)
+                return -EPERM;
+
+            /* params[0] is the instance; the rest are the arguments. */
+            for (uint8_t q = 1; q < p->nparams; q++)
+                operand_value(prog, phv, &p->params[q], args, &argv[argc++]);
+
+            rc = ops->call(ops->ctx, prog->externs[p->params[0].inst].type,
+                           p->method, argv, argc);
+            if (rc)
+                return rc;
+            break;
+        }
         default:
             /* The loader accepts only the primitives above, so reaching
              * here means the program and the executor disagree about what
@@ -371,7 +396,8 @@ static bool eval_node(const struct p4_program *prog, const struct p4_phv *phv,
 /* ---- the pipeline ------------------------------------------------------ */
 
 static int run_pipeline(const struct p4_program *prog, struct p4_phv *phv,
-                        const struct p4_entries *ent, p4_idx_t pipe,
+                        const struct p4_entries *ent,
+                        const struct p4_extern_ops *ops, p4_idx_t pipe,
                         const struct p4_pipeline *pl, bool *dropped)
 {
     p4_idx_t node = pl->init_node;
@@ -410,7 +436,10 @@ static int run_pipeline(const struct p4_program *prog, struct p4_phv *phv,
                 args.val[i] = hit->params[i].value;
                 args.len[i] = hit->params[i].len;
             }
-            run_action(prog, phv, &prog->actions[hit->action], &args, dropped);
+            rc = run_action(prog, phv, ops, &prog->actions[hit->action], &args,
+                            dropped);
+            if (rc)
+                return rc;
             /* A hit follows the edge for the action that matched. */
             node = P4_IDX_NONE;
             for (uint16_t i = 0; i < t->nactions; i++) {
@@ -430,8 +459,8 @@ static int run_pipeline(const struct p4_program *prog, struct p4_phv *phv,
                 args.val[i] = t->default_data[i];
                 args.len[i] = t->default_data_len[i];
             }
-            rc = run_action(prog, phv, &prog->actions[t->default_action], &args,
-                            dropped);
+            rc = run_action(prog, phv, ops, &prog->actions[t->default_action],
+                            &args, dropped);
             if (rc)
                 return rc;
         }
@@ -509,6 +538,7 @@ static void meta_set(const struct p4_program *prog, struct p4_phv *phv,
 
 int p4_exec_run_meta(const struct p4_program *prog,
                      const struct p4_entries *ent,
+                     const struct p4_extern_ops *ops,
                      const struct p4_rdma_meta *meta,
                      struct p4_exec_result *res)
 {
@@ -543,8 +573,8 @@ int p4_exec_run_meta(const struct p4_program *prog,
     meta_set(prog, &phv, prog->rdma_rkey, meta->rkey);
 
     for (uint16_t p = 0; p < prog->npipelines; p++) {
-        rc = run_pipeline(prog, &phv, ent, (p4_idx_t)p, &prog->pipelines[p],
-                          &dropped);
+        rc = run_pipeline(prog, &phv, ent, ops, (p4_idx_t)p,
+                          &prog->pipelines[p], &dropped);
         if (rc)
             return rc;
     }
@@ -589,8 +619,10 @@ int p4_exec_run(const struct p4_program *prog, const struct p4_entries *ent,
         return rc;
 
     for (uint16_t p = 0; p < prog->npipelines; p++) {
-        rc = run_pipeline(prog, &phv, ent, (p4_idx_t)p, &prog->pipelines[p],
-                          &dropped);
+        /* No ops on this path: an extern's operands come from a work
+         * request, and a frame has none.  See run_action(). */
+        rc = run_pipeline(prog, &phv, ent, NULL, (p4_idx_t)p,
+                          &prog->pipelines[p], &dropped);
         if (rc)
             return rc;
     }

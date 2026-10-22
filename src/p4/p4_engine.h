@@ -104,6 +104,7 @@ void p4_engine_load_abort(struct p4_engine *eng);
 
 struct p4_update;
 struct p4_rdma_meta;
+struct p4_extern_ops;
 
 /*
  * Run the loaded program over an RDMA operation.
@@ -112,6 +113,9 @@ struct p4_rdma_meta;
  * operation's metadata and the program's own, and decides only whether to
  * suppress it.  *@suppress is set accordingly.
  *
+ * @ops is how an action's extern call reaches the operation's own memory
+ * regions; it may be NULL, which makes any such call fail the operation.
+ *
  * Returns 0, -ENOENT when no program is loaded or the loaded one declares
  * no rdma_metadata and so was never meant for this path, or another
  * negative errno when the pipeline could not be run.  A caller that gets
@@ -119,6 +123,7 @@ struct p4_rdma_meta;
  * the policy, and proceeding past a failed one bypasses it.
  */
 int p4_engine_process_rdma(struct p4_engine *eng,
+                           const struct p4_extern_ops *ops,
                            const struct p4_rdma_meta *meta, bool *suppress);
 
 /*

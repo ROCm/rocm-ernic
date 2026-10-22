@@ -71,8 +71,19 @@ a program calling an extern this target does not have is
 refused by name rather than loaded with a call that goes
 nowhere.
 
-What is not built yet: executing an extern call, which is
-what will connect the pipeline to the RDMA data path;
+What the program decides is the policy: whether to act, and
+with which operation. What it cannot decide is which memory
+is touched -- the operand regions come from the work request
+the guest posted, not from anything a table entry can name. A
+value a P4 program computed is not a capability, and letting
+an entry supply a key and an address would make the control
+plane an addressing authority over guest memory. So this is
+table-driven selection over an architecture-fixed operand
+convention, which is a real thing but less than
+"programmable" might suggest.
+
+What is not built yet: the data path does not call the
+pipeline, so nothing reaches the extern in a running server;
 checksums and calculations, which is
 the one thing keeping ``simple_router.json`` from loading
 unmodified; counters, meters, registers and action profiles,

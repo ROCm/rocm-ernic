@@ -20,6 +20,7 @@
 #include <stdint.h>
 
 #include "p4_program.h"
+#include "p4_value.h"
 
 /* Total storage for extracted headers and metadata, in bytes. */
 #define P4_PHV_BYTES 1024
@@ -42,6 +43,25 @@ struct p4_rdma_meta {
     uint32_t length;
     uint32_t imm_data;
     uint32_t rkey;
+};
+
+/*
+ * How the pipeline calls out to an extern.
+ *
+ * The architecture holds the operands and the program chooses the verb.
+ * A value a P4 program computed is not a capability: letting a table
+ * entry supply a key and an address would make the control plane an
+ * addressing authority over guest memory, which is the opposite of what
+ * the memory region table is for.  So @ctx carries the operation's own
+ * regions, the pipeline cannot see it, and the only thing crossing from
+ * the program is @args -- the operation selector.
+ *
+ * @call returns 0, or a negative errno that fails the packet.
+ */
+struct p4_extern_ops {
+    int (*call)(void *ctx, uint8_t type, uint8_t method,
+                const struct p4_value *args, uint8_t nargs);
+    void *ctx;
 };
 
 /* What running the pipeline decided. */
@@ -82,11 +102,17 @@ int p4_exec_run(const struct p4_program *prog, const struct p4_entries *ent,
  * all -- so keying the verdict on it would suppress every operation on a
  * device whose tables are empty.
  *
+ * @ops is how an action's extern call reaches the operation's regions.
+ * Passing NULL makes any such call fail the operation, which is what the
+ * frame path does: an extern's operands come from a work request, and a
+ * frame has none.
+ *
  * Returns 0, -EINVAL on a bad argument, or -ENOENT when the program
  * declares no rdma_metadata and so was never meant for this path.
  */
 int p4_exec_run_meta(const struct p4_program *prog,
                      const struct p4_entries *ent,
+                     const struct p4_extern_ops *ops,
                      const struct p4_rdma_meta *meta,
                      struct p4_exec_result *res);
 

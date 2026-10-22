@@ -27,6 +27,7 @@
 #include "p4_engine.h"
 #include "p4_exec.h"
 #include "p4_program.h"
+#include "p4_fp8.h"
 #include "p4_table.h"
 
 static int failures;
@@ -1309,7 +1310,7 @@ static void test_rdma_execute(void)
     check(load_text(eng, P4_RDMA_PROG) == 0, "the RDMA program loads");
 
     /* No entries: nothing matches, no action runs, nothing is suppressed. */
-    check(p4_engine_process_rdma(eng, &meta, &suppress) == 0,
+    check(p4_engine_process_rdma(eng, NULL, &meta, &suppress) == 0,
           "the pipeline runs over an operation");
     check(!suppress,
           "an empty table suppresses nothing, which is what keeps a device "
@@ -1326,25 +1327,132 @@ static void test_rdma_execute(void)
     checkf(p4_engine_update(eng, &up, err, sizeof(err)) == 0,
            "the entry is not installed: %s", err);
 
-    check(p4_engine_process_rdma(eng, &meta, &suppress) == 0,
+    check(p4_engine_process_rdma(eng, NULL, &meta, &suppress) == 0,
           "the pipeline runs again");
     check(suppress, "the entry's action suppressed the operation");
 
     /* An operation whose opcode is not in the table is untouched. */
     meta.opcode = 5;
-    check(p4_engine_process_rdma(eng, &meta, &suppress) == 0,
+    check(p4_engine_process_rdma(eng, NULL, &meta, &suppress) == 0,
           "another operation runs");
     check(!suppress, "an opcode with no entry is not suppressed");
 
     /* An Ethernet-only program is not for this path at all. */
     check(load_fixture(eng, "loopback.json") == 0, "an Ethernet program "
                                                    "loads");
-    check(p4_engine_process_rdma(eng, &meta, &suppress) == -ENOENT,
+    check(p4_engine_process_rdma(eng, NULL, &meta, &suppress) == -ENOENT,
           "a program with no rdma_metadata is refused on the RDMA path");
     check(!suppress, "a refused run suppresses nothing");
 
-    check(p4_engine_process_rdma(NULL, &meta, &suppress) == -EINVAL,
+    check(p4_engine_process_rdma(NULL, NULL, &meta, &suppress) == -EINVAL,
           "a NULL engine is refused");
+
+    p4_engine_destroy(eng);
+}
+
+/* Records what the pipeline asked of the extern. */
+struct extern_log {
+    unsigned calls;
+    uint8_t type;
+    uint8_t method;
+    uint8_t nargs;
+    uint8_t op;
+    int fail_with;
+};
+
+static int extern_record(void *ctx, uint8_t type, uint8_t method,
+                         const struct p4_value *args, uint8_t nargs)
+{
+    struct extern_log *l = ctx;
+
+    l->calls++;
+    l->type = type;
+    l->method = method;
+    l->nargs = nargs;
+    if (nargs)
+        l->op = args[0].b[P4_VALUE_BYTES - 1];
+    return l->fail_with;
+}
+
+/*
+ * A P4 program deciding whether an operation is reduced and with which
+ * arithmetic. This is the whole point of the exercise: the table says
+ * what happens, the extern does it, and the program chose both.
+ */
+static void test_extern_call(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    struct extern_log log;
+    struct p4_extern_ops ops;
+    struct p4_rdma_meta meta;
+    struct p4_update up;
+    bool suppress = false;
+    char err[160];
+
+    memset(&log, 0, sizeof(log));
+    ops.call = extern_record;
+    ops.ctx = &log;
+
+    memset(&meta, 0, sizeof(meta));
+    meta.opcode = 4;
+
+    check(load_fixture(eng, "fp8_policy.json") == 0,
+          "the compiled policy program loads");
+
+    /* No entry yet: the table's default action does nothing. */
+    check(p4_engine_process_rdma(eng, &ops, &meta, &suppress) == 0,
+          "an operation runs with no entry installed");
+    check(log.calls == 0, "nothing was asked of the extern");
+    check(!suppress, "and nothing was suppressed");
+
+    /* An entry saying: for this opcode, reduce with operation 1. */
+    memset(&up, 0, sizeof(up));
+    up.type = P4_UPDATE_INSERT;
+    (void)snprintf(up.table, sizeof(up.table), "Ing.policy");
+    (void)snprintf(up.action, sizeof(up.action), "Ing.reduce_with");
+    up.nmatch = 1;
+    up.match[0].len = 1;
+    up.match[0].value[P4_MATCH_BYTES - 1] = 4;
+    up.nparams = 1;
+    up.params[0].len = 1;
+    up.params[0].value[P4_MATCH_BYTES - 1] = P4_FP8_OP_MUL;
+    checkf(p4_engine_update(eng, &up, err, sizeof(err)) == 0,
+           "the entry is not installed: %s", err);
+
+    check(p4_engine_process_rdma(eng, &ops, &meta, &suppress) == 0,
+          "the operation runs again");
+    check(log.calls == 1, "the extern was called once");
+    check(log.method == P4_EXTERN_FP8_MAP, "it was asked for the map method");
+    check(log.nargs == 1, "it was given one argument");
+    check(log.op == P4_FP8_OP_MUL,
+          "the argument is the operation the table entry chose");
+
+    /* An opcode with no entry still does nothing. */
+    log.calls = 0;
+    meta.opcode = 7;
+    check(p4_engine_process_rdma(eng, &ops, &meta, &suppress) == 0,
+          "another operation runs");
+    check(log.calls == 0, "an opcode with no entry asks nothing");
+
+    /*
+     * An extern that fails must fail the operation. Without this the work
+     * request would complete successfully with the reduction not done,
+     * which is worse than refusing it.
+     */
+    log.calls = 0;
+    log.fail_with = -EFAULT;
+    meta.opcode = 4;
+    check(p4_engine_process_rdma(eng, &ops, &meta, &suppress) == -EFAULT,
+          "a failing extern fails the operation");
+    check(log.calls == 1, "it was still called");
+    log.fail_with = 0;
+
+    /*
+     * With no way to reach the operation's regions there is nothing to
+     * work on, so the call fails rather than being skipped.
+     */
+    check(p4_engine_process_rdma(eng, NULL, &meta, &suppress) == -EPERM,
+          "a call with no operand context is refused");
 
     p4_engine_destroy(eng);
 }
@@ -1361,6 +1469,7 @@ int main(void)
     test_table_entry_errors();
     test_rdma_metadata();
     test_rdma_execute();
+    test_extern_call();
     test_load_rejects_bad_input();
     test_load_chunk_bounds();
     test_load_sequence();
