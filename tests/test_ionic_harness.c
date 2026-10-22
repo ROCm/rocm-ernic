@@ -19,7 +19,6 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include <arpa/inet.h>
 #include <endian.h>
 #include <errno.h>
 #include <infiniband/verbs.h>
@@ -685,6 +684,22 @@ static void test_admin_errors(void)
     ih_poll(&h);
     check(T, ih_admin_complete(&h, IH_ADMIN_DESTROY_CQ, slot, NULL) == 0,
           "an admin WQE that hit a failed DMA was not retried");
+
+    /* A CREATE_QP posted at the last slot, so its second stride wraps to
+     * slot 0, runs, and the command after it completes from slot 1 */
+    uint32_t aq_depth = 1u << h.aq.depth_log2;
+    while (h.aq.prod % aq_depth != aq_depth - 1) {
+        if (!check(T, ih_admin(&h, IH_ADMIN_NOOP, NULL, 0, NULL) == 0,
+                   "NOOP failed"))
+            break;
+    }
+    struct ih_qp qp;
+    if (check(T, ih_qp_create(&h, &qp, 20, IH_QPT_UD, &cq, &cq, NULL),
+              "CREATE_QP wrapping the admin queue failed")) {
+        check(T, h.aq.prod % aq_depth == 1, "CREATE_QP took %u strides",
+              h.aq.prod % aq_depth + 1);
+        check(T, ih_qp_destroy(&h, &qp) == 0, "DESTROY_QP failed");
+    }
 
     check(T, ih_cq_destroy(&h, &cq) == 0, "DESTROY_CQ failed");
     teardown(T, &h);

@@ -505,16 +505,19 @@ class IonicDriver:
         strides = (ADMIN_HDR_LEN + len(body) + ADMIN_STRIDE - 1) // ADMIN_STRIDE
         if strides > 4:
             raise ValueError(f"admin body of {len(body)} bytes is too long")
-        # The device reads a multi-stride WQE linearly, so don't let one
-        # wrap: pad to the end of the ring with NOOPs, as a driver would.
-        while queue.prod % queue.depth + strides > queue.depth:
-            self.admin(ADMIN_NOOP)
         slot = queue.prod % queue.depth
         wqe = bytearray(strides * ADMIN_STRIDE)
         wqe[0] = op
         struct.pack_into("<H", wqe, 2, len(body))
         wqe[ADMIN_HDR_LEN : ADMIN_HDR_LEN + len(body)] = body
-        self.mem.write(queue.slot(queue.prod), bytes(wqe))
+        # ionic_admin_poll_locked() produces each stride as its own ring
+        # entry, so a WQE that reaches the end of the ring continues at its
+        # start.
+        for i in range(strides):
+            off = i * ADMIN_STRIDE
+            self.mem.write(
+                queue.slot(queue.prod + i), bytes(wqe[off : off + ADMIN_STRIDE])
+            )
         queue.prod += strides
         self.doorbell(QTYPE_AQ, 0, 0, queue.prod % queue.depth)
         return slot
