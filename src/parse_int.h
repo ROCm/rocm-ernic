@@ -268,6 +268,84 @@ static inline bool ernic_parse_hex(const char *s, size_t n, uint8_t *out)
 }
 
 /*
+ * Parse a bmv2 "hexstr": a 0x-prefixed, variable-width hexadecimal value
+ * that may be negative and may have an odd number of digits.
+ *
+ * Neither helper above fits one. ernic_parse_hex_u32() stops at 32 bits and
+ * takes no prefix or sign; ernic_parse_hex() needs the byte count up front
+ * and also takes no prefix. A hexstr is none of those: the bmv2 JSON format
+ * writes field values and action arguments this way, big-endian, and an
+ * action such as decrementing a TTL carries the literal "-0x1".
+ *
+ * The digits are decoded big-endian into @out, right-aligned and zero
+ * padded, so a value narrower than @out_cap keeps its magnitude. @out_len
+ * receives the number of bytes the digits themselves needed, which lets the
+ * caller reject a value wider than the field it is destined for rather than
+ * truncating it. @negative receives the sign; the magnitude in @out is
+ * unaffected by it, because what the sign means depends on the width of the
+ * target field, which is not known here.
+ *
+ * Rejects NULL, an empty string, a missing "0x", "0x" or "-0x" with no
+ * digits, any non-hex digit, trailing characters, and more digits than
+ * @out_cap can hold. On success returns true; on failure leaves every
+ * output untouched and returns false.
+ */
+static inline bool ernic_parse_hexstr(const char *s, uint8_t *out,
+                                      size_t out_cap, size_t *out_len,
+                                      bool *negative)
+{
+    if (!s || !out || !out_len || !negative || out_cap == 0) {
+        return false;
+    }
+
+    bool neg = false;
+    const char *p = s;
+
+    if (*p == '-') {
+        neg = true;
+        p++;
+    }
+    if (p[0] != '0' || p[1] != 'x') {
+        return false;
+    }
+    p += 2;
+
+    size_t digits = strlen(p);
+    if (digits == 0) {
+        return false;
+    }
+    /* Compare against the capacity rather than forming 2 * out_cap, which
+     * would wrap for a large capacity. */
+    if (digits > out_cap * 2) {
+        return false;
+    }
+    for (size_t i = 0; i < digits; i++) {
+        if (ernic_hex_digit(p[i]) < 0) {
+            return false;
+        }
+    }
+
+    /* An odd digit count means the first digit is the low half of the top
+     * byte, so pair from the right. */
+    size_t nbytes = (digits + 1) / 2;
+
+    memset(out, 0, out_cap);
+    for (size_t i = 0; i < digits; i++) {
+        /* Digit i from the right belongs in byte i/2 from the right, in the
+         * low half when i is even and the high half when it is odd. */
+        size_t from_right = digits - 1 - i;
+        size_t byte = out_cap - 1 - (from_right / 2);
+        unsigned d = (unsigned)ernic_hex_digit(p[i]);
+
+        out[byte] = (uint8_t)(out[byte] | (d << ((from_right % 2) * 4)));
+    }
+
+    *out_len = nbytes;
+    *negative = neg;
+    return true;
+}
+
+/*
  * Parse a MAC address written as six pairs of hex digits separated by
  * colons, XX:XX:XX:XX:XX:XX, in either case. Rejects anything else, such as
  * a single-digit pair, another separator, or trailing characters. On success

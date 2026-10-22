@@ -20,11 +20,11 @@
 struct ionic_eth_emu;
 
 /*
- * Callback type for RDMA devcmds (opcodes 50-53) forwarded from the
- * Ethernet admin queue to the RDMA emulation layer.
+ * Callback type for a devcmd this layer does not implement itself and
+ * forwards to the module that does: the RDMA opcodes 50-53, and the P4
+ * opcodes 70-72.
  *
- * @opaque: caller-supplied pointer (set via
- * ionic_eth_emu_register_rdma_handler)
+ * @opaque: caller-supplied pointer (set via the matching register call)
  * @cmd:    64-byte command buffer (opcode in cmd[0])
  * @comp:   16-byte completion buffer to fill on return
  */
@@ -58,6 +58,19 @@ void ionic_eth_emu_set_faults(struct ionic_eth_emu *emu,
 void ionic_eth_emu_register_rdma_handler(struct ionic_eth_emu *emu,
                                          ionic_rdma_devcmd_fn_t fn,
                                          void *opaque);
+
+/*
+ * Register the P4 devcmd handler (opcodes 70-72), likewise before any
+ * client connects.  A separate slot from the RDMA one rather than a
+ * shared dispatcher: there is exactly one of each, and a single slot
+ * registered twice would silently drop whichever registered first.
+ *
+ * Leaving it unset is the ordinary case -- a build without P4, or one
+ * where the operator granted the guest nothing -- and the opcodes then
+ * answer as any other unimplemented opcode does.
+ */
+void ionic_eth_emu_register_p4_handler(struct ionic_eth_emu *emu,
+                                       ionic_rdma_devcmd_fn_t fn, void *opaque);
 
 /* BAR access callbacks — wire these up in rocm_ernic_server.c. */
 ssize_t ionic_eth_emu_bar0_access(struct ionic_eth_emu *emu, char *buf,
@@ -120,6 +133,30 @@ void ionic_eth_emu_register_tx_filter(struct ionic_eth_emu *emu,
                                       ionic_eth_tx_filter_fn fn, void *ctx);
 
 /*
+ * Read back the registered Tx filter, so a second endpoint can take the slot
+ * and chain to the first rather than displace it.  Either output may be
+ * NULL; both are cleared when no filter is registered.
+ */
+void ionic_eth_emu_get_tx_filter(struct ionic_eth_emu *emu,
+                                 ionic_eth_tx_filter_fn *fn, void **ctx);
+
+/*
+ * The mirror image: give an in-process endpoint first refusal on every frame
+ * the host backend receives, before it reaches the guest's Rx ring.
+ *
+ * Same contract as the Tx filter -- true means the frame was consumed and
+ * must not be delivered to the guest.  A filter registered on both directions
+ * sees the whole emulated wire, which is what a programmable pipeline between
+ * the guest and the host network needs.  Frames queued by
+ * ionic_eth_emu_queue_rx_frame() do not pass through here: they come from
+ * in-process producers that have already decided where the frame goes.
+ */
+typedef bool (*ionic_eth_rx_filter_fn)(void *ctx, const void *frame,
+                                       size_t len);
+void ionic_eth_emu_register_rx_filter(struct ionic_eth_emu *emu,
+                                      ionic_eth_rx_filter_fn fn, void *ctx);
+
+/*
  * Hand a received frame to the emulated LIF from a thread that may not DMA
  * (the TCP mesh receive thread).  The frame is copied onto an internal queue
  * and delivered to the guest by the next ionic_eth_emu_poll_rx().
@@ -158,6 +195,17 @@ void ionic_eth_emu_write_stats(FILE *fp, void *opaque);
 /* Count one RDMA message of @bytes in the LIF's tx/rx_rdma_ucast_* stats. */
 void ionic_eth_emu_count_rdma(struct ionic_eth_emu *emu, uint64_t bytes,
                               bool is_tx);
+
+/*
+ * Send a frame out of the host network backend.
+ *
+ * The Tx path reaches the backend by itself; this is for an in-process
+ * endpoint that claimed a frame through a filter and has to put it back on
+ * the wire, possibly rewritten.  Returns 0, -ENODEV when no backend is
+ * attached, or a negative errno from the backend.
+ */
+int ionic_eth_emu_send_to_net(struct ionic_eth_emu *emu, const void *frame,
+                              size_t len);
 
 /*
  * Move any frames waiting on the host backend or on the off-thread queue

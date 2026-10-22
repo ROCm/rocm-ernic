@@ -28,6 +28,9 @@ Key Features
   single VM is a complete object fabric (see :doc:`s3`)
 - Working Ethernet and TCP/IP to the host via a TAP
   interface
+- An optional P4 match-action stage on the emulated wire,
+  matching the programmable datapath of the silicon the
+  device models (see :doc:`p4`)
 - Comprehensive statistics collection
 
 Quick Start
@@ -64,6 +67,7 @@ a host TAP:
    ionic
    nvmeof
    s3
+   p4
    service
    monitoring
    testing

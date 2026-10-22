@@ -141,3 +141,15 @@ docker/
 # Rendered by ci/report/publish-perf.py from the history on gh-pages.
 # The history itself is committed empty; see docs/perf-trends.rst.
 docs/perf-history/chart-*.html
+
+# Out-of-tree kernel module build artefacts (drivers/ernic_p4), left by
+# "make -C drivers/ernic_p4". The module is built in a guest against its
+# own running kernel, so nothing here is ever committed or shipped.
+*.ko
+*.mod
+*.mod.c
+*.o
+*.o.d
+.*.cmd
+Module.symvers
+modules.order

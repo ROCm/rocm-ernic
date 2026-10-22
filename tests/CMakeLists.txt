@@ -145,6 +145,39 @@ target_include_directories(test_parse_int PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
 
+# P4 engine test. The engine is frames-in/frames-out, so this links the
+# real translation unit and nothing else -- no device, no guest memory.
+if(ERNIC_BUILD_P4)
+    add_executable(ernic-test-p4-engine
+        test_p4_engine.c
+        ${PROJECT_SOURCE_DIR}/src/p4/p4_engine.c
+        ${PROJECT_SOURCE_DIR}/src/p4/p4_exec.c
+        ${PROJECT_SOURCE_DIR}/src/p4/p4_json.c
+        ${PROJECT_SOURCE_DIR}/src/p4/p4_table.c
+    )
+    target_include_directories(ernic-test-p4-engine PRIVATE
+        ${PROJECT_SOURCE_DIR}/src
+        ${PROJECT_SOURCE_DIR}/src/p4
+    )
+    target_compile_definitions(ernic-test-p4-engine PRIVATE _GNU_SOURCE)
+    target_link_libraries(ernic-test-p4-engine PRIVATE PkgConfig::JSONC)
+    # Real p4c artifacts, so the loader is held to what the compiler
+    # actually emits rather than to what the format documentation says.
+    target_compile_definitions(ernic-test-p4-engine PRIVATE
+        P4_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/p4")
+
+    # OCP FP8 E4M3 arithmetic: the extern the pipeline calls, since P4
+    # itself has no floating-point type. Pure computation, no device.
+    add_executable(ernic-test-p4-fp8
+        test_p4_fp8.c
+        ${PROJECT_SOURCE_DIR}/src/p4/p4_fp8.c
+    )
+    target_include_directories(ernic-test-p4-fp8 PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/p4
+    )
+    target_compile_definitions(ernic-test-p4-fp8 PRIVATE _GNU_SOURCE)
+endif()
+
 # NVMe-oF controller test. The controller core takes its DMA through a
 # callback pair, so the test links the real translation unit and stands a
 # byte array in for guest memory -- no VM, no RDMA device, no server.
@@ -713,6 +746,9 @@ set(ERNIC_HARNESS_DEVICE_SOURCES
     ${QEMU_COMPAT_SOURCES}
     ${QEMU_SOURCES}
 )
+if(ERNIC_BUILD_P4)
+    list(APPEND ERNIC_HARNESS_DEVICE_SOURCES ${P4_SOURCES})
+endif()
 list(TRANSFORM ERNIC_HARNESS_DEVICE_SOURCES PREPEND "${PROJECT_SOURCE_DIR}/")
 add_executable(ernic-test-ionic-harness
     test_ionic_harness.c
@@ -724,6 +760,7 @@ target_include_directories(ernic-test-ionic-harness PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/rdma
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/src/p4
     ${PROJECT_SOURCE_DIR}/shared
     ${PROJECT_SOURCE_DIR}/src/qemu
 )
@@ -734,7 +771,13 @@ target_include_directories(ernic-test-ionic-harness SYSTEM PRIVATE
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
-target_compile_definitions(ernic-test-ionic-harness PRIVATE _GNU_SOURCE)
+target_compile_definitions(ernic-test-ionic-harness PRIVATE
+    _GNU_SOURCE
+    $<$<BOOL:${ERNIC_BUILD_P4}>:ERNIC_HAVE_P4>
+    # Real p4c artifacts, so the RDMA path is held to what the compiler
+    # emits rather than to a fixture written to suit it.
+    $<$<BOOL:${ERNIC_BUILD_P4}>:P4_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/p4">
+)
 target_compile_options(ernic-test-ionic-harness PRIVATE
     ${GLIB2_CFLAGS_OTHER})
 # No libvfio-user: fake_vfu.c defines the entry points the device calls.
@@ -742,6 +785,9 @@ target_link_directories(ernic-test-ionic-harness PRIVATE
     ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
 target_link_libraries(ernic-test-ionic-harness PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
+if(ERNIC_BUILD_P4)
+    target_link_libraries(ernic-test-ionic-harness PRIVATE PkgConfig::JSONC)
+endif()
 
 # Two whole devices in one process, meshed over loopback TCP: the GSI/CM
 # path that rdma_cm depends on, which test_ud_mesh can only cover with two
@@ -757,6 +803,7 @@ target_include_directories(ernic-test-gsi-mesh PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/rdma
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/src/p4
     ${PROJECT_SOURCE_DIR}/shared
     ${PROJECT_SOURCE_DIR}/src/qemu
 )
@@ -767,12 +814,21 @@ target_include_directories(ernic-test-gsi-mesh SYSTEM PRIVATE
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
-target_compile_definitions(ernic-test-gsi-mesh PRIVATE _GNU_SOURCE)
+# It builds ERNIC_HARNESS_DEVICE_SOURCES, which carries the P4 engine
+# when ERNIC_BUILD_P4 is on, so it needs the same define and the same
+# json-c as the harness target beside it.
+target_compile_definitions(ernic-test-gsi-mesh PRIVATE
+    _GNU_SOURCE
+    $<$<BOOL:${ERNIC_BUILD_P4}>:ERNIC_HAVE_P4>
+)
 target_compile_options(ernic-test-gsi-mesh PRIVATE ${GLIB2_CFLAGS_OTHER})
 target_link_directories(ernic-test-gsi-mesh PRIVATE
     ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
 target_link_libraries(ernic-test-gsi-mesh PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
+if(ERNIC_BUILD_P4)
+    target_link_libraries(ernic-test-gsi-mesh PRIVATE PkgConfig::JSONC)
+endif()
 
 # ---------------------------------------------------------------
 # Apply the project warning / hardening flags to every test target
@@ -822,6 +878,10 @@ set(ERNIC_TEST_TARGETS
     ernic-test-log-level
     ernic-test-ionic-harness
 )
+
+if(ERNIC_BUILD_P4)
+    list(APPEND ERNIC_TEST_TARGETS ernic-test-p4-engine ernic-test-p4-fp8)
+endif()
 
 foreach(ernic_test_target IN LISTS ERNIC_TEST_TARGETS)
     ernic_set_compiler_flags(${ernic_test_target})
@@ -898,6 +958,21 @@ add_test(
     COMMAND $<TARGET_FILE:test_parse_int>
 )
 set_tests_properties(parse-int-unit PROPERTIES TIMEOUT 30)
+
+# P4 engine unit test: port model, frame bounds, and the no-program path.
+if(ERNIC_BUILD_P4)
+    add_test(
+        NAME p4-engine-unit
+        COMMAND $<TARGET_FILE:ernic-test-p4-engine>
+    )
+    set_tests_properties(p4-engine-unit PROPERTIES TIMEOUT 30)
+
+    add_test(
+        NAME p4-fp8-unit
+        COMMAND $<TARGET_FILE:ernic-test-p4-fp8>
+    )
+    set_tests_properties(p4-fp8-unit PROPERTIES TIMEOUT 30)
+endif()
 
 # NVMe-oF controller unit test: drives the capsule sequence a real
 # nvme-rdma initiator emits, from Fabrics Connect to read-after-write.
@@ -1144,9 +1219,13 @@ set_tests_properties(log-level-unit PROPERTIES TIMEOUT 60)
 # fast registration, CQ events, UD, SRQ, Ethernet Tx/Rx, and the NVMe-oF
 # CM handshake and Connect over the GSI QP, and the flush a QP entering the
 # Error state owes its outstanding work requests.
-foreach(ernic_harness_group
-        devcmds bringup admin rc atomic cq-events qp-flush qp-flush-srq
-        ud srq eth nvmeof teardown)
+set(ERNIC_HARNESS_GROUPS
+    devcmds bringup admin rc atomic cq-events qp-flush qp-flush-srq
+    ud srq eth nvmeof teardown)
+if(ERNIC_BUILD_P4)
+    list(APPEND ERNIC_HARNESS_GROUPS p4-port fp8-map p4-rdma p4-devcmd)
+endif()
+foreach(ernic_harness_group IN LISTS ERNIC_HARNESS_GROUPS)
     add_test(
         NAME ionic-harness-${ernic_harness_group}
         COMMAND $<TARGET_FILE:ernic-test-ionic-harness>
@@ -1323,6 +1402,22 @@ set_tests_properties(ernic-ionic-driver PROPERTIES
     TIMEOUT 300
     RUN_SERIAL TRUE
 )
+
+# The P4 engine on the live device: guest frames out of the Ethernet Tx
+# ring, through the pipeline, and out the far side. Starts a server per
+# case because the statistics it asserts on are reported at shutdown.
+if(ERNIC_BUILD_P4)
+    add_test(
+        NAME ernic-p4-driver
+        COMMAND ${ERNIC_PY_RUN}
+            ${CMAKE_CURRENT_SOURCE_DIR}/py/test_p4.py
+            --server $<TARGET_FILE:rocm-ernic>
+    )
+    set_tests_properties(ernic-p4-driver PROPERTIES
+        TIMEOUT 300
+        RUN_SERIAL TRUE
+    )
+endif()
 
 # A three-node mesh under traffic, malformed peers, and churn.
 # Generous timeout: it starts and restarts several servers and waits

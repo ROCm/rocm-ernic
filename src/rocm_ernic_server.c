@@ -49,6 +49,11 @@
 #include "ionic_profile.h"
 #include "nvmeof_target.h"
 #include "s3_target.h"
+#ifdef ERNIC_HAVE_P4
+#include "p4_devcmd.h"
+#include "p4_engine.h"
+#include "p4_port.h"
+#endif
 #include "parse_int.h"
 #include "rocm-ernic-warnings.h"
 
@@ -371,6 +376,69 @@ static int pvrdma_device_init(rocm_ernic_dev_t *dev)
     return 0;
 }
 
+#ifdef ERNIC_HAVE_P4
+/*
+ * Read a compiled P4 program off disk and hand it to the engine.
+ *
+ * It goes in through the same chunked path a control plane uses rather
+ * than a shortcut of its own, so the one route into the engine is
+ * exercised by every caller and there is no second way for a program to
+ * arrive.
+ */
+static int p4_load_program_file(struct p4_engine *eng, const char *path)
+{
+    uint8_t buf[65536];
+    FILE *f = fopen(path, "rbe");
+    size_t total = 0;
+    long size;
+    int rc;
+
+    if (!f) {
+        fprintf(stderr, "rocm-ernic: cannot open P4 program '%s': %s\n", path,
+                strerror(errno));
+        return -1;
+    }
+    if (fseek(f, 0, SEEK_END) != 0 || (size = ftell(f)) < 0 ||
+        fseek(f, 0, SEEK_SET) != 0) {
+        fprintf(stderr, "rocm-ernic: cannot size P4 program '%s'\n", path);
+        fclose(f);
+        return -1;
+    }
+    if ((uint64_t)size == 0 || (uint64_t)size > P4_PROGRAM_MAX) {
+        fprintf(stderr,
+                "rocm-ernic: P4 program '%s' is %ld bytes; the limit is %u\n",
+                path, size, P4_PROGRAM_MAX);
+        fclose(f);
+        return -1;
+    }
+
+    rc = p4_engine_load_begin(eng, (size_t)size);
+    while (rc == 0 && total < (size_t)size) {
+        size_t n = fread(buf, 1, sizeof(buf), f);
+
+        if (n == 0) {
+            rc = -EIO;
+            break;
+        }
+        rc = p4_engine_load_chunk(eng, total, buf, n);
+        total += n;
+    }
+    fclose(f);
+
+    if (rc == 0)
+        rc = p4_engine_load_commit(eng);
+
+    if (rc != 0) {
+        const char *why = p4_engine_load_error(eng);
+
+        fprintf(stderr, "rocm-ernic: P4 program '%s' was refused: %s\n", path,
+                why ? why : strerror(-rc));
+        return -1;
+    }
+    return 0;
+}
+#endif /* ERNIC_HAVE_P4 */
+
 /**
  * Tear down the ionic emulation layer built by ionic_device_init().
  *
@@ -381,6 +449,43 @@ static int pvrdma_device_init(rocm_ernic_dev_t *dev)
  */
 static void ionic_device_fini(rocm_ernic_dev_t *dev)
 {
+#ifdef ERNIC_HAVE_P4
+    /*
+     * One machine-parseable line, so a black-box test can tell a frame the
+     * pipeline forwarded from one it dropped.  The counters live inside the
+     * process and have no other way out.
+     */
+    if (dev->p4_port || dev->p4_engine) {
+        struct p4_stats es;
+        struct p4_port_stats ps;
+
+        p4_engine_get_stats(dev->p4_engine, &es);
+        p4_port_get_stats(dev->p4_port, &ps);
+        ernic_startup_report(
+            "rocm-ernic: P4 stats: host_in=%" PRIu64 " host_out=%" PRIu64
+            " uplink_in=%" PRIu64 " uplink_out=%" PRIu64 " dropped=%" PRIu64
+            " too_big=%" PRIu64 " parse_errors=%" PRIu64 " to_guest=%" PRIu64
+            " to_net=%" PRIu64 " to_upstream=%" PRIu64
+            " egress_errors=%" PRIu64,
+            es.frames_in[P4_PORT_HOST], es.frames_out[P4_PORT_HOST],
+            es.frames_in[P4_PORT_UPLINK], es.frames_out[P4_PORT_UPLINK],
+            es.frames_dropped, es.frames_too_big, es.parse_errors, ps.to_guest,
+            ps.to_net, ps.to_upstream, ps.egress_errors);
+    }
+
+    /* Before the datapath, which clears the Tx filter slot the P4 port is
+     * holding on the S3 endpoint's behalf. */
+    p4_port_detach(dev->p4_port);
+    dev->p4_port = NULL;
+    /* And before the engine, which both of these borrowed. */
+    ionic_datapath_set_p4_engine(dev->ionic_dp, NULL);
+    if (dev->ionic_emu)
+        ionic_eth_emu_register_p4_handler(dev->ionic_emu, NULL, NULL);
+    p4_devcmd_destroy(dev->p4_devcmd);
+    dev->p4_devcmd = NULL;
+    p4_engine_destroy(dev->p4_engine);
+    dev->p4_engine = NULL;
+#endif
     ionic_datapath_destroy(dev->ionic_dp);
     dev->ionic_dp = NULL;
     ionic_rdma_devcmd_destroy(dev->ionic_rdma);
@@ -740,6 +845,26 @@ static void usage(const char *progname)
                     "and effects: stats_vals fail\n");
     fprintf(stderr, "                       [status S]; eth_rx drop, nobuf; "
                     "eth_tx drop\n");
+#ifdef ERNIC_HAVE_P4
+    fprintf(stderr, "  -P, --p4             Put the P4 match-action engine on "
+                    "the emulated wire\n");
+    fprintf(stderr, "                       (see docs/p4.rst)\n");
+    fprintf(stderr,
+            "  -J, --p4-program PATH Load a compiled P4 program (the JSON "
+            "that\n");
+    fprintf(stderr, "                       p4c --target bmv2 --arch v1model "
+                    "emits).\n");
+    fprintf(stderr, "                       Implies --p4.\n");
+    fprintf(stderr, "  -Y, --p4-guest-scope SCOPE  What the GUEST may do to "
+                    "the engine:\n");
+    fprintf(stderr, "                       none (default), read, write, "
+                    "load.\n");
+    fprintf(stderr, "                       'load' lets the guest replace the "
+                    "program,\n");
+    fprintf(stderr, "                       and so decide where every frame "
+                    "goes.\n");
+    fprintf(stderr, "                       Implies --p4.\n");
+#endif
     fprintf(stderr, "  -h, --help           Show this help message\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Backend Types:\n");
@@ -1309,6 +1434,18 @@ int main(int argc, char *argv[])
     const char *socket_path = DEFAULT_SOCKET_PATH;
     const char *log_file_path = NULL;
     const char *tap_ifname = NULL;
+#ifdef ERNIC_HAVE_P4
+    bool p4_enabled = false;
+    /*
+     * What the guest may do with the engine.  NONE by default: a guest
+     * that can replace the P4 program decides where every frame goes and
+     * which RDMA operations become fp8 reductions, and that is not a
+     * capability to hand out because the operator happened to turn the
+     * engine on for their own use.
+     */
+    enum p4_scope p4_guest_scope = P4_SCOPE_NONE;
+    const char *p4_program = NULL;
+#endif
     const char *socket_group = NULL;
     gid_t socket_gid = 0;
     ErnicLogLevel log_level = ERNIC_LOG_WARN;
@@ -1345,6 +1482,11 @@ int main(int argc, char *argv[])
         {"stats-interval-ms", required_argument, NULL, OPT_STATS_INTERVAL},
         {"eth-queues", required_argument, NULL, OPT_ETH_QUEUES},
         {"inject", required_argument, NULL, OPT_INJECT},
+#ifdef ERNIC_HAVE_P4
+        {"p4", no_argument, NULL, 'P'},
+        {"p4-program", required_argument, NULL, 'J'},
+        {"p4-guest-scope", required_argument, NULL, 'Y'},
+#endif
         /* Backend-specific options (verbs only) */
         {"device", required_argument, NULL, 'd'},
         {"ethdev", required_argument, NULL, 'e'},
@@ -1379,8 +1521,13 @@ int main(int argc, char *argv[])
      * such as optind, so it isn't thread safe, but no other thread has
      * started yet */
     /* NOLINTNEXTLINE(concurrency-mt-unsafe) */
-    while ((opt = getopt_long(argc, argv, "s:G:b:vL:S:m:l:hT:", long_options,
-                              NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv,
+#ifdef ERNIC_HAVE_P4
+                              "s:G:b:vL:S:m:l:hT:PJ:Y:",
+#else
+                              "s:G:b:vL:S:m:l:hT:",
+#endif
+                              long_options, NULL)) != -1) {
         switch (opt) {
         /* Common options */
         case 's':
@@ -1465,6 +1612,30 @@ int main(int argc, char *argv[])
             }
             break;
         }
+#ifdef ERNIC_HAVE_P4
+        case 'P':
+            p4_enabled = true;
+            break;
+        case 'J':
+            p4_program = optarg;
+            /* A program is useless without the engine on the wire, and
+             * asking for one plainly means wanting the other. */
+            p4_enabled = true;
+            break;
+        case 'Y':
+            if (!p4_scope_parse(optarg, &p4_guest_scope)) {
+                fprintf(stderr,
+                        "rocm-ernic: --p4-guest-scope must be one of "
+                        "none, read, write, load (got '%s')\n",
+                        optarg);
+                dev_free(dev);
+                return EXIT_FAILURE;
+            }
+            /* Granting the guest a scope without the engine would be a
+             * surface onto nothing, and plainly means wanting both. */
+            p4_enabled = true;
+            break;
+#endif
         case 'h':
             usage(argv[0]);
             dev_free(dev);
@@ -1607,6 +1778,33 @@ int main(int argc, char *argv[])
         }
         ernic_startup_report("  IB Port: %u", dev->backend_port_num);
     }
+
+#ifdef ERNIC_HAVE_P4
+    /*
+     * Ahead of the socket, because a program that will be refused must not
+     * leave a listening socket behind while it is being read.  Whoever
+     * connects in that window gets a server that is about to exit, having
+     * seen nothing to say so; the socket appearing is the only readiness
+     * signal there is.  The program is read once, here, and the engine
+     * carries it to the attach below -- reading it again later would be a
+     * check-then-act on a path, which is its own problem.
+     */
+    if (p4_enabled) {
+        dev->p4_engine = p4_engine_create();
+        if (!dev->p4_engine) {
+            fprintf(stderr, "rocm-ernic: failed to create the P4 engine\n");
+            dev_free(dev);
+            return EXIT_FAILURE;
+        }
+        if (p4_program &&
+            p4_load_program_file(dev->p4_engine, p4_program) != 0) {
+            p4_engine_destroy(dev->p4_engine);
+            dev->p4_engine = NULL;
+            dev_free(dev);
+            return EXIT_FAILURE;
+        }
+    }
+#endif
 
     /* Binding fails if anything is at the path, so remove a socket that a
      * server that didn't exit cleanly left there. */
@@ -1767,6 +1965,66 @@ int main(int argc, char *argv[])
         ernic_startup_report("rocm-ernic: Ethernet attached to TAP %s",
                              assigned);
     }
+
+#ifdef ERNIC_HAVE_P4
+    /* The engine and its program were made above, before the socket.  The
+     * attach waits until here, after the TAP and the S3 endpoint, so the
+     * engine sees a complete wire and can chain to whatever already holds
+     * the Tx filter. */
+    if (p4_enabled) {
+        if (!dev->ionic_emu) {
+            fprintf(stderr,
+                    "rocm-ernic: Ethernet emulation is not initialized\n");
+            goto fail;
+        }
+
+        struct p4_port_upstream upstream;
+        memset(&upstream, 0, sizeof(upstream));
+        ionic_eth_emu_get_tx_filter(dev->ionic_emu, &upstream.fn,
+                                    &upstream.ctx);
+
+        dev->p4_port = p4_port_attach(dev->ionic_emu, dev->p4_engine,
+                                      upstream.fn ? &upstream : NULL);
+        if (!dev->p4_port) {
+            fprintf(stderr, "rocm-ernic: failed to attach the P4 engine\n");
+            goto fail;
+        }
+
+        /* The RDMA path shares the same engine, so one program governs
+         * both planes; it borrows the pointer and is given it back below. */
+        ionic_datapath_set_p4_engine(dev->ionic_dp, dev->p4_engine);
+
+        /*
+         * The guest's way in, when the operator granted one.  Here and
+         * not with the engine above, because it DMAs into guest memory
+         * and so needs the vfio-user context, which does not exist until
+         * the socket is created.  The program is still read before the
+         * socket; only the surface onto it waits.
+         */
+        if (p4_guest_scope != P4_SCOPE_NONE) {
+            dev->p4_devcmd =
+                p4_devcmd_create(dev->vfu_ctx, dev->p4_engine, p4_guest_scope);
+            if (!dev->p4_devcmd) {
+                fprintf(stderr, "rocm-ernic: failed to create the P4 command "
+                                "surface\n");
+                goto fail;
+            }
+            ionic_eth_emu_register_p4_handler(
+                dev->ionic_emu, p4_devcmd_dispatch, dev->p4_devcmd);
+        }
+
+        if (p4_program) {
+            ernic_startup_report("rocm-ernic: P4 engine attached, running "
+                                 "'%s'",
+                                 p4_program);
+        } else {
+            ernic_startup_report("rocm-ernic: P4 engine attached (no program "
+                                 "loaded; frames forwarded unchanged)");
+        }
+        ernic_startup_report("rocm-ernic: P4 guest scope: %s",
+                             p4_scope_name(p4_guest_scope));
+    }
+#endif
 
     ernic_startup_report("rocm-ernic: Device realized, waiting for client "
                          "connection...");

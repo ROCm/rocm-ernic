@@ -123,13 +123,23 @@ jobs:
 
       # build-essential, cmake, ninja-build and pkg-config are preinstalled
       # on the hosted image, so only the things it does not ship are listed.
+      #
+      # libjson-c-dev is this project's own dependency, not just
+      # libvfio-user's: the configure step below passes
+      # -DERNIC_BUILD_P4=ON, and that is a REQUIRED pkg_check_modules.
+      # It used to be installed beside meson in the libvfio-user step,
+      # which runs only on a cache miss, so the configure would have
+      # started failing the moment that cache was warm -- which on a
+      # branch with its own cache scope is not the run that introduced
+      # it.
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libibverbs-dev \
             librdmacm-dev \
-            libglib2.0-dev
+            libglib2.0-dev \
+            libjson-c-dev
 
       # The coverage report needs the llvm-profdata and llvm-cov of the
       # compiler's own LLVM version, since the profile format changes
@@ -159,11 +169,13 @@ jobs:
       - name: Clone and build libvfio-user
         if: steps.cache-libvfio-user.outputs.cache-hit != 'true'
         run: |
-          # meson and libjson-c-dev build libvfio-user and libcmocka-dev
-          # builds its tests; nothing else in this job needs them, and the
-          # cache key is static, so installing them here keeps them off the
-          # steady-state cache-hit path.
-          sudo apt-get install -y meson libjson-c-dev libcmocka-dev
+          # meson builds libvfio-user and libcmocka-dev builds its tests;
+          # nothing else in this job needs either, and the cache key is
+          # static, so installing them here keeps them off the
+          # steady-state cache-hit path. json-c is not among them: this
+          # project needs it too, so it is installed unconditionally
+          # above.
+          sudo apt-get install -y meson libcmocka-dev
           # Pin to 20e9803 (De-duplicate FDs for DMA region access, Apr 7 2026)
           # This version includes the vfu_setup_device_dma() max_regions
           # parameter added in f3742ed9 (#835).
@@ -230,6 +242,7 @@ jobs:
             "${build_type_flags[@]}" \
             -DCMAKE_INSTALL_PREFIX=/usr \
             -DERNIC_WERROR=ON \
+            -DERNIC_BUILD_P4=ON \
             -DERNIC_USE_SANITIZERS=$asan \
             -DERNIC_USE_THREAD_SANITIZER=$tsan \
             -DERNIC_USE_CODE_COVERAGE=$coverage

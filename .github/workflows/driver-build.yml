@@ -20,6 +20,11 @@ on:
       # copy alone -- which is the edit someone makes when #1799 is
       # force-pushed -- changes which tree gets built and runs no check.
       - 'ansible/roles/ernic_srq_provider/**'
+      # The P4 series and the module that binds to the device it creates.
+      # The module is not compiled here -- see the job comment -- but it
+      # is the only consumer of the capability bit the series adds, so a
+      # change to either should re-run the checks on both.
+      - 'drivers/ernic_p4/**'
       - '.github/workflows/driver-build.yml'
   workflow_dispatch:
 
@@ -60,6 +65,8 @@ jobs:
             patches: ansible/files/patches
           - series: srq
             patches: ansible/files/patches/srq
+          - series: p4
+            patches: ansible/files/patches/p4
 
     steps:
     - name: Checkout code
@@ -84,6 +91,14 @@ jobs:
           REF=$(sed -n '/^ernic_srq_dkms_sources:/,/^[a-z]/ s/^  *- *ref: *//p' \
                 ansible/roles/ernic_srq_dkms/defaults/main.yml | head -1)
           WHERE=ansible/roles/ernic_srq_dkms/defaults/main.yml
+          ;;
+        p4)
+          # Same base as the shipping series: the p4 patches are applied on top
+          # of patches/ to one tree, so a ref of its own would mean the
+          # two were checked against trees that are never combined.
+          REF=$(sed -n 's/^set(IONIC_KERNEL_REF "\([^"]*\)".*/\1/p' \
+                cmake/ErnicKernelModule.cmake)
+          WHERE=cmake/ErnicKernelModule.cmake
           ;;
         esac
         if [ -z "$REF" ]; then
@@ -189,6 +204,41 @@ jobs:
         else
           check "$ABI" '__u32[[:space:]]+srqid' 'srqid in the user ABI'
         fi
+        [ "$rc" -eq 0 ] || exit 1
+
+    # The two facts patches/p4 exists to produce. Applying cleanly is not
+    # enough: the series could land and still leave ionic_auxbus_register()
+    # creating one device, and drivers/ernic_p4 would then build, load, and
+    # silently never probe -- a failure that looks like a broken module
+    # rather than a patch that did nothing.
+    - name: Verify the P4 series created the auxiliary device
+      if: matrix.series == 'p4'
+      run: |
+        SRC=ionic-kernel-src/drivers/net/ethernet/pensando/ionic
+        rc=0
+        check() {
+          if grep -qE "$2" "$1"; then
+            echo "  ✓ $3"
+          else
+            echo "::error::$3 -- not found in $1"
+            rc=1
+          fi
+        }
+        check "$SRC/ionic_if.h" 'IONIC_LIF_CAP_P4[[:space:]]*=' \
+              'the P4 LIF capability bit is defined'
+        check "$SRC/ionic_aux.c" '"p4"' \
+              'an auxiliary device named p4 is created'
+        check "$SRC/ionic_lif.h" 'p4_adev' \
+              'the lif carries a slot for it'
+
+        # The aux device's name is the parent driver plus the string in
+        # ionic_aux.c, and the module's id_table has to spell the result.
+        # A rename on either side is a module that loads and never probes,
+        # so the two are checked against each other here rather than
+        # discovered in a guest. This step runs from the workspace root;
+        # the fetched tree is under ionic-kernel-src/.
+        check drivers/ernic_p4/ernic_p4.c '"ionic\.p4"' \
+              'the module binds to ionic.p4'
         [ "$rc" -eq 0 ] || exit 1
 
   # The userspace half, which rots for a different reason than the kernel

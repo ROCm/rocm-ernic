@@ -147,6 +147,16 @@
 /* LIF capabilities */
 #define IONIC_LIF_CAP_ETH  (1u << 0)
 #define IONIC_LIF_CAP_RDMA (1u << 1)
+/*
+ * Not an upstream bit.  ionic_if.h defines only ETH and RDMA
+ * (enum ionic_lif_capability), so bit 2 is free, and a patched guest
+ * driver uses it to decide whether to create the P4 auxiliary device.
+ * Advertised only when the operator enabled the engine AND granted the
+ * guest a scope, so a guest sees the control surface exactly when there
+ * is one to use, and real hardware -- which never sets it -- is
+ * unaffected by a driver carrying the patch.
+ */
+#define IONIC_LIF_CAP_P4 (1u << 2)
 
 /* (Ethernet logical queue type IDs — kept only for documentation purposes) */
 
@@ -424,6 +434,11 @@ struct ionic_eth_emu {
     ionic_rdma_devcmd_fn_t rdma_devcmd_fn;
     void *rdma_devcmd_opaque;
 
+    /* P4 devcmd handler (opcodes 70-72), NULL unless P4 is built and the
+     * operator granted the guest a scope. */
+    ionic_rdma_devcmd_fn_t p4_devcmd_fn;
+    void *p4_devcmd_opaque;
+
     /* Statistics sink, shared with the pvrdma resource manager. */
     pvrdma_handle_t pvrdma_handle;
 
@@ -455,6 +470,9 @@ struct ionic_eth_emu {
     /* Injected faults (ionic_fault.h), or NULL; owned by the caller. */
     struct ionic_fault *rx_fault;
     struct ionic_fault *tx_fault;
+    /* In-process endpoint offered every Rx frame before the guest. */
+    ionic_eth_rx_filter_fn rx_filter;
+    void *rx_filter_ctx;
     /* Staging buffer for one frame in either direction. */
     uint8_t frame[IONIC_ETH_NET_MTU_MAX];
 

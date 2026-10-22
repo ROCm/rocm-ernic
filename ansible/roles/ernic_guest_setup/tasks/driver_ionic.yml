@@ -103,17 +103,17 @@
       installed --- note that a mainline kernel's headers come from
       the .deb, not from apt --- or they predate the helper.
 
+# cmd rather than argv because the extra series are a list whose length
+# is not known here, and each needs its own --patches-dir.  The paths are
+# this role's own, not anything a guest supplies.
 - name: Fetch and patch the upstream ionic sources
   ansible.builtin.command:
-    argv:
-      - bash
-      - "{{ ernic_guest_ionic_dir }}/fetch-ionic-sources.sh"
-      - --source-dir
-      - "{{ ernic_ionic_source_dir }}"
-      - --kernel-ref
-      - "{{ ernic_ionic_ref }}"
-      - --patches-dir
-      - "{{ ernic_guest_ionic_dir }}/patches"
+    cmd: >-
+      bash {{ ernic_guest_ionic_dir }}/fetch-ionic-sources.sh
+      --source-dir {{ ernic_ionic_source_dir }}
+      --kernel-ref {{ ernic_ionic_ref }}
+      --patches-dir {{ ernic_guest_ionic_dir }}/patches
+      {% for d in ernic_guest_ionic_extra_patches %}--patches-dir {{ ernic_guest_ionic_dir }}/{{ d }} {% endfor %}
     creates: >-
       {{ ernic_ionic_source_dir }}/.patches-applied-{{ ernic_ionic_ref }}
 

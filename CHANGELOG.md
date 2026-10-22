@@ -193,6 +193,266 @@
   and `sequence "..."`. The first site is `stats_vals`, which makes the
   guest's `hw_counters` reads fail on demand (`effect fail`). A malformed
   fault stops the server at startup with an error naming the bad token.
+* A P4 match-action engine can be placed between the guest's Ethernet queues
+  and the host network backend, matching the programmable datapath of the
+  silicon the emulated NIC models. Build it with the `ERNIC_BUILD_P4` CMake
+  option, which is off by default, and put it on the wire with `-P` / `--p4`.
+  This first step adds the pipeline stage, the two-port model, and the frame
+  path in both directions; no program can be loaded yet, so every frame is
+  forwarded unchanged and a server started with `--p4` behaves exactly as one
+  started without it. The engine coexists with the in-band S3 control plane,
+  which still sees guest frames addressed to it first. Documented in
+  `docs/p4.rst`; `tests/test_p4_engine.c` (CTest `p4-engine-unit`) covers it.
+* The Python test harness can now drive the emulated NIC's Ethernet data
+  queues, not just its admin queues: `ernic.eth` posts frames on the Tx
+  ring, posts receive buffers, and reaps both completion rings, including
+  scatter/gather frames. `tests/py/test_p4.py` (CTest `ernic-p4-driver`)
+  uses it to put guest frames through the P4 engine on a real server over
+  vfio-user, with no VM and no root. The server reports the engine's frame
+  counters in a `P4 stats:` line at shutdown, which is what that test
+  asserts on.
+* The P4 engine accepts a program in pieces, ready for a transport to carry
+  one in: `p4_engine_load_begin()`, `p4_engine_load_chunk()` and
+  `p4_engine_load_commit()` accumulate up to `P4_PROGRAM_MAX` bytes, which
+  is 4 MiB. Pieces must cover the program in order and without gaps, and
+  anything else -- a chunk running past the declared length, one that skips
+  forward or rewrites what already arrived, or a commit before the whole
+  program has -- abandons the load rather than leaving a partly filled
+  buffer. Nothing parses the bytes yet, so a complete load reports
+  `ENOSYS`; no program can be run.
+* OCP FP8 E4M3 arithmetic for the P4 pipeline, in `src/p4/p4_fp8.c`. P4 has
+  no floating-point type -- its base types are bit-vectors -- so fp8 cannot
+  be expressed in a P4 program and is provided as an extern the program
+  calls, which is how P4 targets implement in-network reduction. It converts
+  in both directions and reduces two operand buffers to a single value with
+  `add`, `multiply` (a dot product) or `max`, accumulating in float and
+  rounding once at the end, as fp8 hardware does. Overflow saturates to
+  +/-448 rather than becoming NaN, which differs deliberately from
+  `ml_dtypes.float8_e4m3fn`: one overflowed term must not turn a whole
+  reduction into NaN. `tests/test_p4_fp8.c` (CTest `p4-fp8-unit`) checks
+  every one of the 256 encodings.
+* The emulated NIC can reduce two registered memory regions to a single
+  value and deliver it to a third, instead of the host reading two buffers
+  and writing one. `ionic_datapath_fp8_reduce()` reads both operand regions,
+  applies the fp8 extern, and writes the one-byte result out through the
+  same path an RDMA WRITE takes, so over the loopback backend it lands in
+  whatever region the destination key resolves to. Operand length is capped
+  at 4096 bytes, and an unregistered key or a length running past the end of
+  a region faults rather than reaching host memory.
+  `tests/test_ionic_harness.c` (CTest `ionic-harness-fp8-reduce`) covers it
+  across three regions, including the pages of the destination being
+  registered out of order. Note that no P4 program is involved yet: the
+  reduction calls the arithmetic directly, so which one happens is fixed by
+  the caller rather than chosen by a table.
+
+* A compiled P4 program can now be loaded, as far as its header definitions.
+  `p4_engine_load_commit()` parses the accumulated bytes as bmv2 JSON --
+  the artifact `p4c --target bmv2 --arch v1model` emits -- using json-c,
+  which becomes a dependency only when `ERNIC_BUILD_P4` is on. A program
+  that uses a feature the engine does not have yet is refused by name, so
+  `p4_engine_load_error()` reports which one rather than that the file was
+  bad. Parsing is not finished: a well-formed program still ends in
+  `ENOSYS`. A program loads and then runs: bmv2's own `loopback.json`
+  forwards a frame unchanged, and a `simple_router.json` with only its
+  checksum section removed loads and runs too. With `--p4` and a loaded
+  program, where a frame goes is decided by the program's `egress_spec`
+  rather than by the emulator, including sending it back to the port it
+  arrived on -- which is what makes a guest frame answerable without a TAP.
+  Fields of any width the loader accepts, up to 512 bits, are compared,
+  assigned and added correctly, so an IPv6 address behaves like any other
+  field.
+* `scripts/fetch-p4c.sh` puts a working p4c in a private directory, so the
+  P4 programs under `tests/data/p4/` are compiled from their `.p4` sources
+  rather than written by hand. Nothing is installed and nothing on the
+  system changes. p4lang publishes p4c for Ubuntu up to 23.04 and the
+  binary wants a boost library a current Ubuntu no longer carries, so that
+  one library is fetched beside it; both artifacts are pinned by SHA-256,
+  which is what establishes they are the right ones, since one of the two
+  hosts redirects to a mirror a TLS-inspecting proxy will not validate.
+* `tests/data/p4/minimal_forward.json` is now compiler output rather than
+  hand-written, with its source in `tests/data/p4/src/`. That changed the
+  names it carries: p4c qualifies every table and action with the control
+  it was declared in, so the program has `IngressImpl.forward` and not
+  `forward`. A control plane written against unqualified names matches no
+  real artifact.
+* `-J` / `--p4-program PATH` loads a compiled P4 program when the server
+  starts, so the engine can be given one without a guest or a control
+  plane. It implies `--p4`. A program the engine will not run stops the
+  server from starting, naming the feature that was used rather than
+  reporting that the file was bad, so a bad program is a startup failure
+  and never a silently inert pipeline. The file goes in through the same
+  chunked path a control plane uses, so there is one route into the engine
+  rather than two.
+* A P4 program can instantiate and call an extern the target provides,
+  which is how fp8 arithmetic will reach a program at all: P4 has no
+  floating-point type, so it cannot be written in the language. The loader
+  reads `extern_instances`, allow-lists the type against what this target
+  actually has, and accepts the `_<Type>_<method>` call form p4c emits for
+  `--emit-externs`, and the pipeline executes the call. What the program
+  decides is the policy -- whether to act and with which operation -- and
+  what it cannot decide is which memory is touched: the operand regions
+  come from the work request, not from anything a table entry can name. A
+  call made where there is no operation to work on, which is every frame,
+  fails rather than being skipped, and an extern that fails fails the
+  operation rather than letting it complete with the work not done.
+* The P4 pipeline can be run over an RDMA operation rather than a frame,
+  which is the first half of putting it on the RDMA path. A program that
+  declares a header called `rdma_metadata` can match on the operation's
+  opcode, queue pair, length, immediate data and destination key; one that
+  does not is an Ethernet program and that path never runs it, so it costs
+  nothing. Nothing is parsed and nothing is deparsed, and the only thing
+  the pipeline decides is whether to suppress the operation. An
+  architecture field declared at the wrong width, or `rdma_metadata`
+  declared such that the deparser would put it on a wire, is refused at
+  load.
+  `p4_engine_process_rdma()` is the entry point.
+* A VM lane runs the whole P4 stack from inside a guest.
+  `.github/workflows/p4-lane.yml`, called from `system-tests.yml` as
+  "P4 Guest-Driven fp8", boots a guest against a server started with
+  `--p4-guest-scope load` and no program loaded, builds and loads
+  `ernic_p4` there, and then runs `tests/p4_fp8_client.c`: the guest
+  pushes a compiled P4 program down through `/dev/ernic-p4`, installs
+  one table entry, posts an ordinary two-SGE RDMA write with libibverbs,
+  and checks that an elementwise fp8 sum came back.
+
+  Nothing in that program calls the engine's C API, because a guest
+  cannot. That is the point: the in-process tests can set work-request
+  fields a driver never would, and one of them was hiding a convention
+  no guest could satisfy.
+
+  The lane is the only CI that builds the server with
+  `-DERNIC_BUILD_P4=ON` and boots a guest; without that flag the server
+  has no P4 code and no `--p4*` options at all.
+* CI checks the P4 driver patch series. `driver-build.yml` gains a `p4`
+  leg alongside `base` and `srq`, which applies the p4 series to the pinned
+  kernel ref and then checks it did what it exists to do: the capability
+  bit is defined, an auxiliary device named `p4` is created, the lif
+  carries a slot for it, and `drivers/ernic_p4` still binds to the
+  resulting name. Applying cleanly is not the check -- a series that
+  applied and created nothing would leave the module loading and silently
+  never probing.
+* A guest kernel module, `drivers/ernic_p4/`, binds to that auxiliary
+  device and exposes `/dev/ernic-p4`. Through it a program in the guest
+  loads a compiled P4 program, installs table entries, and reads the
+  engine's counters, with three ioctls that each become exactly one ionic
+  admin-queue command. `drivers/ernic_p4/uapi/ernic_p4.h` is the
+  userspace header.
+
+  It is a pipe, not a policy: what a guest may do is still the operator's
+  decision, made with `--p4-guest-scope` and enforced by the device, and
+  a refusal comes back as the device's own status code rather than being
+  flattened into an errno. The node is mode 0600, and a host running more
+  than one emulated NIC gets `/dev/ernic-p4.N` for the others.
+
+  It builds against a prepared ionic source tree rather than against
+  kernel headers alone, because it uses the ionic driver's private
+  headers, which no `linux-headers` package ships. Both patch series are
+  required and the Makefile refuses a tree lacking the p4 series rather
+  than building a module that could never bind. Its `dkms.conf` falls
+  back to a path recorded at install time when `IONIC_SRC` is not in the
+  environment, so that a DKMS autoinstall on a later kernel upgrade --
+  which runs with none of the variables the original install had -- can
+  still find the sources instead of failing at exactly the moment the
+  module needed rebuilding.
+* An optional ionic driver patch series, `ansible/files/patches/p4/`,
+  gives a guest an
+  auxiliary device to bind a P4 control driver to. Upstream's
+  `ionic_auxbus_register()` creates exactly one auxiliary device, for
+  RDMA; the patch factors it so a second, named `p4`, is created when the
+  device advertises `IONIC_LIF_CAP_P4`. Real hardware never sets that bit,
+  so a kernel carrying the patch behaves exactly as it does without it.
+
+  The series is optional and is not applied by default. Build a guest
+  driver with it by naming both series:
+
+  ```
+  ansible/files/scripts/fetch-ionic-sources.sh \
+      --source-dir DIR --kernel-ref v7.2.4 \
+      --patches-dir ansible/files/patches \
+      --patches-dir ansible/files/patches/p4
+  ```
+
+  `fetch-ionic-sources.sh --patches-dir` can now be given more
+  than once, and applies the series in the order given. Giving it at all
+  still replaces the default rather than adding to it, so an existing
+  caller that names one directory is unaffected. A directory that does
+  not exist is now an error rather than a series that silently applies
+  nothing, and the digest that decides whether a tree is already up to
+  date covers the directory names, so dropping a series from a later run
+  is seen as a change.
+* A guest can now program the P4 engine itself, through ionic device
+  commands 70, 71 and 72. Until now a program could only be loaded by the
+  operator on the command line, and a table entry could not be installed
+  by anyone at all, so the fp8 reduction was unreachable outside a unit
+  test. `--p4-guest-scope` is the operator's grant and decides what the
+  guest may do: `none` (the default), `read` (identify, enumerate, read
+  counters), `write` (also install, modify and delete table entries), or
+  `load` (also replace the running program). A guest granted `load`
+  decides where every frame goes and which RDMA operations become fp8
+  reductions, which is why nothing is granted unless it is asked for.
+
+  The surface is shaped like upstream's `pds_fwctl` -- an endpoint, an
+  operation, a scope the device checks, and in/out buffers -- and keeps
+  its opcode numbers, but it is not wire-identical: `pds_fwctl` binds to a
+  `pds_core.fwctl.N` auxiliary device and wraps each command in
+  `PDS_AQ_CMD_CLIENT_CMD`, and rocm-ernic emulates ionic, not pds_core.
+  See docs/p4.rst.
+
+  The LIF capability word gains bit 2, `IONIC_LIF_CAP_P4`, advertised
+  only when the engine is on and the operator granted a scope, so a guest
+  driver can tell whether there is a control surface before it probes
+  for one. Bits 0 and 1 (ETH, RDMA) are unchanged, and real hardware
+  never sets bit 2.
+
+  Engine counters can also be read at runtime for the first time; until
+  now the only way out of the process was one line printed at shutdown.
+* The RDMA data path now runs the pipeline, so a loaded P4 program governs
+  RDMA operations and the fp8 extern does real work. The pipeline runs
+  after the operation's own memory has been checked and before it is
+  dispatched, so a program never sees a request that is already a
+  protection error.
+
+  The operand convention is the architecture's, not the program's: an RDMA
+  write whose gather list is exactly two equal-length entries supplies the
+  two operands, and the work request's rkey and address are the
+  destination. Each operand is N bytes and so is the result, while the
+  work request's own length says 2N -- a driver puts the sum of the
+  gather list there and cannot be made to say otherwise. A table entry
+  chooses the
+  arithmetic and nothing else -- it cannot name a key or an address.
+
+  An action that calls the extern must also `mark_to_drop()`, because the
+  extern writes the destination itself and the ordinary transfer would
+  land on top of the result. A program that does not is refused with
+  `IONIC_STS_LOCAL_QP_OPER_ERR` rather than quietly producing that.
+
+  With no program loaded, or with one that declares no `rdma_metadata`,
+  the data path behaves exactly as it does without P4 built at all.
+  `tests/data/p4/fp8_policy.p4` is the worked example: a table keyed on
+  the opcode turns an ordinary RDMA write into an elementwise fp8 add
+  across three memory regions, and changing the one table entry changes
+  the arithmetic.
+* An action that cannot be carried out now fails the packet instead of
+  being skipped. Nothing that runs today can fail, but an extern reaches
+  outside the pipeline and will be able to, and a failure there must not
+  leave the work silently not done while the request that asked for it
+  completes successfully.
+* Table entries can be installed, changed and removed, so the same program
+  and the same frame can be made to take a different path.
+  `p4_engine_update()` takes a record shaped like a P4Runtime update --
+  insert, modify or delete, naming a table and an action -- and is the
+  single path by which any control plane changes a table, so a
+  network-facing client and the guest's own device commands produce the
+  same record rather than each having its own way in. Exact, longest-prefix
+  and ternary matching are all supported, with the ties broken as P4
+  requires. A table's memory is taken on its first entry, not when the
+  program loads.
+* `ernic_parse_hexstr()` in `src/parse_int.h` parses a bmv2 hexstr: a
+  `0x`-prefixed, variable-width hexadecimal value that may be negative and
+  may have an odd number of digits, none of which the existing helpers
+  accept. The value is decoded big-endian and right-aligned, and the caller
+  is told how many bytes the digits needed so it can refuse one wider than
+  the field it is destined for instead of truncating it.
 
 ### Changed
 
@@ -419,6 +679,89 @@
   four entries long, so it read the next command from the middle of it. The
   Linux driver sends neither. `tests/test_ionic_adminq_poll.c` (CTest
   `ionic-adminq-poll-unit`) covers both fixes.
+* The P4 engine accepts frames up to the emulated NIC's own 9600-byte
+  buffer, rather than 9216. The P4 port claims every frame, so a frame
+  the engine refused was a frame the guest sent and nothing forwarded:
+  with `--p4` on, every frame between 9217 bytes and the 9582-byte MTU
+  the device tells the guest it may set was dropped, silently and only
+  in that configuration. A `_Static_assert` now ties the engine's limit
+  to the NIC's so they cannot drift apart again.
+
+* The Python test harness's Ethernet rings (`tests/py/ernic/eth.py`)
+  track posted buffers by ring slot rather than by posting order, which
+  is what an Ethernet completion names. The two agree for the first lap
+  of the ring and then diverge: `post_tx()` returned an ever-increasing
+  number that no completion could match, and `poll_rx()` read the frame
+  out of the oldest buffer ever posted instead of the one it was
+  delivered into. Posting over a descriptor that has not completed is
+  now refused rather than silently overwriting it. New cases in
+  `tests/py/test_p4.py` cross the wrap; the existing Tx case stopped one
+  post short of it and so passed either way.
+
+* `scripts/fetch-p4c.sh` now accepts a relative `--prefix`. The prefix is
+  written into the generated `bin/` wrappers and the `p4include`
+  symlink, both of which are later read from somewhere else, so a
+  relative one produced a dangling symlink and wrappers that ran only
+  from the directory the fetch happened in. The script's own
+  `--version` check runs from that directory, so it reported success.
+
+* The Build and Test workflow installs `libjson-c-dev` unconditionally.
+  It was installed alongside meson in the step that builds libvfio-user,
+  which runs only on a cache miss, while the configure step requires
+  json-c for `-DERNIC_BUILD_P4=ON` on every run. The configure would
+  have begun failing on the first run that restored a warm libvfio-user
+  cache, which is not the run that introduced it.
+
+* The `ernic_p4_dkms` role now registers `ernic-p4` with DKMS instead of
+  building the module by hand and copying it into `/lib/modules`. The
+  module is pinned to the symbol CRCs of an out-of-tree ionic that is
+  itself DKMS-built, so both must be rebuilt together on a kernel
+  upgrade; a hand-copied module was not rebuilt, and after the first
+  upgrade it would no longer insert. `dkms.conf` had carried
+  `AUTOINSTALL="yes"` all along -- the package was simply never
+  registered for it to apply to. The role also removes a module left in
+  `/lib/modules/<kernel>/updates/` by an earlier run, which `depmod`
+  would otherwise keep preferring over the DKMS one.
+
+  The ionic symbols are now resolved for the kernel being built for,
+  rather than by taking the first `Module.symvers` found anywhere under
+  `/var/lib/dkms`. On an upgrade that file belongs to the previous
+  kernel and its CRCs match nothing, which produces the same
+  non-insertable module as using no symbols at all. The lookup lives in
+  the new `drivers/ernic_p4/find-ionic-symvers.sh`, which the role and
+  `dkms.conf` share.
+
+* `fetch-ionic-sources.sh` now applies patch series given by relative
+  path. It changes into the source directory partway through, so a
+  relative `--patches-dir` was checked in the caller's directory and
+  then matched nothing when the series was applied: the script applied
+  no patches at all and reported success. The relative form is what both
+  the driver README and this file document, so following either produced
+  an unpatched tree and a clean exit. A relative `--source-dir` had the
+  same split, writing its sentinel somewhere other than where it had
+  looked for it. Both are resolved to absolute paths before anything
+  uses them. Callers passing absolute paths, which is what the roles and
+  CI do, are unaffected.
+
+* A P4 program declaring a signed field is now refused at load rather
+  than loaded as unsigned. Nothing in the engine carries signedness:
+  field values are zero-extended and compared with a byte comparison, so
+  an `int<8>` holding `0xff` compared greater than zero instead of less.
+  The loader names the field, as it does for every other construct it
+  does not implement. A field explicitly marked unsigned, which is what
+  p4c emits for an ordinary `bit<N>`, is unaffected.
+* A rejected P4 program chunk with a null buffer now abandons the load,
+  as every other rejected chunk does and as the interface documents. It
+  returned an error without abandoning, so a control plane could retry
+  into a half-filled buffer through that one path.
+* Guest Ethernet transmit bytes are no longer counted twice when the P4
+  engine is on the wire with a host backend attached. A frame the
+  pipeline claimed and put back on the wire was counted both where the
+  guest queue serviced it and again on the way out, so an unchanged
+  frame added twice its length to the transmit byte count. Frames the
+  pipeline reflects from the uplink back to the uplink are no longer
+  counted as guest traffic either.
+
 * A send work request with more than 14 SGEs, which the 512-byte WQE
   stride the device advertises has room for, is now read whole. The device
   read the first 256 bytes of the WQE and then walked its SGE list as far as
@@ -435,6 +778,44 @@
   more is undefined behaviour. A completion queue the data path refused
   was also reported to the guest as created. The Linux driver asks for
   nothing outside these bounds.
+* A P4 program that the engine refuses no longer leaves a listening socket
+  behind while it is being read. `--p4-program` was loaded well after
+  `vfu_create_ctx()` bound the socket, so a client connecting in that
+  window got a server that was about to exit having given it no reason:
+  the socket appearing is the only readiness signal there is. The program
+  is now read before the socket exists, and refusing one fails the start
+  with nothing published. This also makes the failure deterministic for a
+  test that waits on the socket, which is how it was found.
+* A guest could provoke undefined behaviour in the server with a single
+  `CREATE_QP` admin command. The send and receive ring depths and strides
+  arrive in that command and are shifted by -- `1u << depth_log2` when the
+  queue pair is registered, and `1u << stride_log2` on the work-request
+  path -- but unlike `CREATE_CQ` and `CREATE_SRQ`, `CREATE_QP` never
+  bounded them, so any value at or above the width of the type was
+  undefined. Both are now bounded and an out-of-range command is refused.
+  Only the upper limits are enforced: a small stride describes a useless
+  ring rather than a dangerous one, and refusing it would reject commands
+  the device has always accepted.
+* UndefinedBehaviorSanitizer reports are fatal, as the other sanitizers'
+  already were. Without `halt_on_error` it printed a report and carried
+  on, so the program exited zero and the test carried on passing -- which
+  is how the `CREATE_QP` shift above survived a green sanitizer leg. The
+  whole suite passes with it on, so nothing else was hiding behind it.
+* A guest could provoke undefined behaviour in the server with one device
+  command. `Q_INIT` logged the queue depth as `1 << ring_size` before
+  range-checking `ring_size`, which comes straight from the guest's 64-byte
+  command, so any value at or above 32 shifted a 32-bit unsigned by more
+  than its width. The log line now reports `depth_log2` instead and no
+  longer shifts.
+* A received frame larger than the receive buffer the guest had posted used
+  to wedge the Ethernet receive path permanently. The frame was put back at
+  the head of the queue, but the descriptor it did not fit was never
+  consumed, so every later pass read the same descriptor, failed the same
+  way, and delivered nothing behind it; when the failure was the completion
+  write, the payload was also re-DMAed into guest memory on every pass. Such
+  a frame is now dropped, as one arriving from the host network backend
+  already was, and only a genuinely transient failure -- the guest having
+  posted no buffer at all -- is retried.
 * A TCP mesh node that was restarted used to be unreachable for the rest of
   the mesh's life. The manager allocates node ids monotonically and never
   evicts a dead node, so the restarted process registered under a new id

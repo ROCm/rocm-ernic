@@ -33,7 +33,14 @@ on:
       - 'ci/**'
       - '.github/workflows/system-tests.yml'
       - '.github/workflows/nvmeof-lane.yml'   # the nvmeof job's body
-      - '.github/workflows/s3-lane.yml'       # the s3 job's body
+      - '.github/workflows/s3-lane.yml'
+      - '.github/workflows/p4-lane.yml'
+      # The P4 lane is the only thing that exercises these end to end,
+      # and each is useless without the others: the engine, the patch
+      # that creates the device, and the module that binds to it.
+      - 'src/p4/**'
+      - 'ansible/files/patches/p4/**'
+      - 'drivers/ernic_p4/**'       # the s3 job's body
       - '.github/actions/fetch-guest-vm/**'
   schedule:
     # 04:23 UTC.  Off the hour on purpose -- the top of the hour is
@@ -1450,6 +1457,13 @@ jobs:
       publish: >-
         ${{ github.event_name != 'pull_request' &&
             (github.event_name != 'workflow_dispatch' || inputs.publish) }}
+
+  # No permissions block and no inputs: this lane publishes nothing, so
+  # it needs neither write scopes nor a publish flag. The others carry
+  # both because they record a trend.
+  system-test-p4:
+    name: P4 Guest-Driven fp8
+    uses: $/.github/workflows/p4-lane.yml
 
   system-test-two-vms:
     name: TCP Mesh Backend System Tests (Two VMs)

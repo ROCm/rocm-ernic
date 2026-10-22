@@ -1,0 +1,26 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+galaxy_info:
+  author: Stephen Bates
+  company: Advanced Micro Devices, Inc.
+  role_name: ernic_p4_dkms
+  description: >-
+    Build and load ernic_p4.ko in a guest, so a program there can
+    reach the emulated NIC's P4 pipeline through /dev/ernic-p4
+  license: MIT
+  min_ansible_version: "2.18.0"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+        - resolute
+  galaxy_tags:
+    - rocm
+    - dkms
+    - kernel
+    - p4
+
+dependencies: []

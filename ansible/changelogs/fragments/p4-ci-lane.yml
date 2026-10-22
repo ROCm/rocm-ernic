@@ -1,0 +1,31 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+minor_changes:
+  - >-
+    New playbook ``playbooks/p4-tests.yml``, reachable as
+    ``ci-site.yml --tags p4``, stages the P4 driver sources and both
+    patch series onto a guest from the controller and then runs
+    ``ernic_p4_dkms`` there with ``require_device`` on.  A lane's guest
+    has no rocm-ernic checkout, and cloning one in the guest would build
+    a different tree than the lane built its server from.
+  - >-
+    ``ernic_guest_setup`` gains ``ernic_guest_ionic_extra_patches``,
+    a list of further patch series to apply to the guest's ionic sources
+    on top of the base one, as paths inside the staged tree.  Empty by
+    default, so no existing caller changes.  Without it the guest's
+    ionic comes from the base series alone, so a series that adds a
+    capability --- ``patches/p4`` adds ``IONIC_LIF_CAP_P4`` --- never
+    reaches the driver that has to advertise it, and a module built
+    against a patched tree loads and never probes.
+  - >-
+    ``ernic_p4_dkms`` now builds the module against the out-of-tree
+    ionic's ``Module.symvers``, found by the symbol it needs rather than
+    by package name.  ``patches/p4`` adds a field to ``struct
+    ionic_lif``, which changes the genksyms CRC of every exported symbol
+    taking that type, so a module built against the kernel's own symbols
+    records the unpatched CRC and ``modprobe`` refuses it.  A failed
+    insert now reports the kernel log, since "Invalid argument" on its
+    own says nothing.

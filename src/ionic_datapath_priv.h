@@ -177,6 +177,9 @@ struct nvmeof_cm;
 struct nvmeof_target;
 struct s3_target;
 struct s3_tcp;
+#ifdef ERNIC_HAVE_P4
+struct p4_engine;
+#endif
 
 struct ionic_datapath {
     vfu_ctx_t *vfu_ctx;
@@ -195,6 +198,16 @@ struct ionic_datapath {
     /* In-process S3 object store, NULL unless --backend s3. */
     struct s3_target *s3;
     struct s3_tcp *s3_tcp;
+
+#ifdef ERNIC_HAVE_P4
+    /*
+     * The P4 pipeline that governs RDMA operations, NULL unless a program
+     * was loaded.  The data path does not own it: the server creates it,
+     * the Ethernet port shares it, and this is a borrowed pointer that
+     * must be cleared before the engine is destroyed.
+     */
+    struct p4_engine *p4_engine;
+#endif
 
     struct ionic_qp_ring *qp;   /* indexed by driver qp_id */
     struct ionic_cq_ring *cq;   /* indexed by driver cq_id */

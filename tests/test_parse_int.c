@@ -159,6 +159,74 @@ static int run_span(const struct span_case *tc)
     return 0;
 }
 
+struct hexstr_case {
+    const char *name;
+    const char *input; /* NULL exercises the NULL path */
+    size_t cap;
+    bool expect_ok;
+    bool expect_neg;
+    size_t expect_len; /* bytes the digits needed */
+    uint8_t expect[8]; /* right-aligned in cap bytes */
+};
+
+static int run_hexstr(const struct hexstr_case *tc)
+{
+    uint8_t out[sizeof(tc->expect)];
+    size_t len = 0x5A5A;
+    bool neg = true;
+
+    if (tc->cap > sizeof(out)) {
+        printf("FAIL hexstr %-14s: cap=%zu is more than the case holds\n",
+               tc->name, tc->cap);
+        return 1;
+    }
+    memset(out, 0xA5, sizeof(out));
+
+    bool ok = ernic_parse_hexstr(tc->input, out, tc->cap, &len, &neg);
+    if (ok != tc->expect_ok) {
+        printf("FAIL hexstr %-14s: ok=%d expected %d\n", tc->name, ok,
+               tc->expect_ok);
+        return 1;
+    }
+    if (!ok) {
+        /* A failure must leave every output alone, so a caller that forgets
+         * to check cannot act on a half-written value. */
+        for (size_t i = 0; i < sizeof(out); i++) {
+            if (out[i] != 0xA5) {
+                printf("FAIL hexstr %-14s: wrote on failure\n", tc->name);
+                return 1;
+            }
+        }
+        if (len != 0x5A5A || !neg) {
+            printf("FAIL hexstr %-14s: touched len/neg on failure\n", tc->name);
+            return 1;
+        }
+        return 0;
+    }
+    if (neg != tc->expect_neg) {
+        printf("FAIL hexstr %-14s: neg=%d expected %d\n", tc->name, neg,
+               tc->expect_neg);
+        return 1;
+    }
+    if (len != tc->expect_len) {
+        printf("FAIL hexstr %-14s: len=%zu expected %zu\n", tc->name, len,
+               tc->expect_len);
+        return 1;
+    }
+    if (memcmp(out, tc->expect, tc->cap) != 0) {
+        printf("FAIL hexstr %-14s: wrong bytes\n", tc->name);
+        return 1;
+    }
+    /* Nothing past the capacity. */
+    for (size_t i = tc->cap; i < sizeof(out); i++) {
+        if (out[i] != 0xA5) {
+            printf("FAIL hexstr %-14s: wrote past the capacity\n", tc->name);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int run_hex(const struct hex_case *tc)
 {
     uint8_t out[sizeof(tc->expect)];
@@ -354,6 +422,37 @@ int main(void)
         {"overflow-T", "16777216T", false, 0},
     };
 
+    static const struct hexstr_case hexstr_cases[] = {
+        /* The shapes bmv2 actually emits. */
+        {"zero", "0x0", 4, true, false, 1, {0, 0, 0, 0}},
+        {"one-byte", "0xff", 4, true, false, 1, {0, 0, 0, 0xFF}},
+        {"odd-digits", "0xfff", 4, true, false, 2, {0, 0, 0x0F, 0xFF}},
+        {"wide", "0xdeadbeef", 4, true, false, 4, {0xDE, 0xAD, 0xBE, 0xEF}},
+        {"exactly-cap", "0xaabb", 2, true, false, 2, {0xAA, 0xBB}},
+        {"upper-case", "0xABCD", 2, true, false, 2, {0xAB, 0xCD}},
+        {"mixed-case", "0xaBcD", 2, true, false, 2, {0xAB, 0xCD}},
+        {"leading-zero", "0x0001", 2, true, false, 2, {0x00, 0x01}},
+        /* Negative: the sign is reported, the magnitude is not altered.
+         * "-0x1" is what simple_router.json uses to decrement a TTL. */
+        {"negative-one", "-0x1", 4, true, true, 1, {0, 0, 0, 1}},
+        {"negative-wide", "-0xff", 2, true, true, 1, {0, 0xFF}},
+        /* Rejections. */
+        {"null", NULL, 4, false, false, 0, {0}},
+        {"empty", "", 4, false, false, 0, {0}},
+        {"no-prefix", "ff", 4, false, false, 0, {0}},
+        {"bare-prefix", "0x", 4, false, false, 0, {0}},
+        {"bare-minus", "-", 4, false, false, 0, {0}},
+        {"minus-prefix-only", "-0x", 4, false, false, 0, {0}},
+        {"upper-prefix", "0Xff", 4, false, false, 0, {0}},
+        {"bad-digit", "0xZZ", 4, false, false, 0, {0}},
+        {"trailing-space", "0xff ", 4, false, false, 0, {0}},
+        {"inner-space", "0xf f", 4, false, false, 0, {0}},
+        {"too-wide", "0xaabbcc", 2, false, false, 0, {0}},
+        {"plus-sign", "+0x1", 4, false, false, 0, {0}},
+        {"double-minus", "--0x1", 4, false, false, 0, {0}},
+        {"decimal", "255", 4, false, false, 0, {0}},
+    };
+
     static const struct hex_case hex_cases[] = {
         {"null", NULL, 1, false, {0}},
         {"zero-n", "ab", 0, false, {0}},
@@ -405,6 +504,7 @@ int main(void)
     size_t nspan = sizeof(span_cases) / sizeof(span_cases[0]);
     size_t nsize = sizeof(size_cases) / sizeof(size_cases[0]);
     size_t nhex = sizeof(hex_cases) / sizeof(hex_cases[0]);
+    size_t nhexstr = sizeof(hexstr_cases) / sizeof(hexstr_cases[0]);
     size_t nmac = sizeof(mac_cases) / sizeof(mac_cases[0]);
     size_t np = sizeof(port_cases) / sizeof(port_cases[0]);
     for (size_t i = 0; i < ni; i++) {
@@ -425,6 +525,9 @@ int main(void)
     for (size_t i = 0; i < nsize; i++) {
         failures += run_u64("size", ernic_parse_size, &size_cases[i]);
     }
+    for (size_t i = 0; i < nhexstr; i++) {
+        failures += run_hexstr(&hexstr_cases[i]);
+    }
     for (size_t i = 0; i < nhex; i++) {
         failures += run_hex(&hex_cases[i]);
     }
@@ -440,6 +543,6 @@ int main(void)
         return 1;
     }
     printf("parse_int: all %zu cases passed\n",
-           ni + nu + nhu + n64 + nspan + nsize + nhex + nmac + np);
+           ni + nu + nhu + n64 + nspan + nsize + nhex + nhexstr + nmac + np);
     return 0;
 }

@@ -283,4 +283,71 @@ void ionic_datapath_poll(struct ionic_datapath *dp);
 /* True when a peer message is queued, so the caller can skip its idle sleep. */
 bool ionic_datapath_has_work(struct ionic_datapath *dp);
 
+#ifdef ERNIC_HAVE_P4
+
+/*
+ * Apply an fp8 operation elementwise across two registered memory regions
+ * and write the result to a third.
+ *
+ * This is in-network compute: the NIC reads both operand regions, combines
+ * them pointwise, and writes a result region of the same length, instead
+ * of the host reading two buffers and writing a third.  Combining two
+ * partial buffers is what a collective does, so this is the primitive an
+ * allreduce is built from.
+ *
+ * The regions are streamed in blocks rather than staged whole, so the
+ * length is bounded by what a guest may ask the poll loop to do in one go
+ * rather than by how much will fit on the stack.
+ *
+ * Note what this is NOT, yet: it calls the arithmetic directly and no P4
+ * program is involved, so which operation happens is fixed by the caller
+ * rather than decided by a table.  Wiring the pipeline into this path and
+ * making the arithmetic an extern a program calls is what turns it into
+ * something P4 governs; this function is then the extern's implementation
+ * rather than the whole story.
+ *
+ * @op is an enum p4_fp8_op.  @len is the length of each region in bytes,
+ * one fp8 value per byte, and the destination region is the same length.
+ *
+ * Returns 0, or a negative errno: -EINVAL for an argument out of range,
+ * -EACCES for a key the guest may not name here, -EFAULT when a region
+ * could not be read or written in full.
+ */
+
+/*
+ * The most a single request may move.  The work happens on the thread
+ * that also services the vfio-user poll loop, so this is a bound on how
+ * long a guest may stall that loop, not a bound on memory -- the streaming
+ * below would take any length.  A megabyte of elements is a visible pause;
+ * this is the point at which that was judged acceptable, and it is one
+ * constant to revisit when it is not.
+ */
+#define IONIC_FP8_MAP_MAX 262144u
+
+int ionic_datapath_fp8_map(struct ionic_datapath *dp, uint8_t op,
+                           uint32_t a_lkey, uint64_t a_va, uint32_t b_lkey,
+                           uint64_t b_va, uint32_t len, uint32_t c_rkey,
+                           uint64_t c_va);
+
+struct p4_engine;
+
+/*
+ * Give the data path the pipeline that governs RDMA operations, or NULL to
+ * take it away.
+ *
+ * Borrowed, not owned: the engine outlives nothing here, and the caller
+ * must clear it before destroying the engine.  Until one is set, and for a
+ * program that declares no rdma_metadata, the data path behaves exactly as
+ * it does without P4 built at all.
+ *
+ * What the pipeline may do to an operation is decide: it runs after the
+ * operation's own memory has been checked, so a program never sees a
+ * request that is already a protection error, and it cannot name memory --
+ * an extern it calls is given the regions the work request itself named.
+ */
+void ionic_datapath_set_p4_engine(struct ionic_datapath *dp,
+                                  struct p4_engine *eng);
+
+#endif /* ERNIC_HAVE_P4 */
+
 #endif /* IONIC_DATAPATH_H */

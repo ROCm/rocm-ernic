@@ -13,4 +13,5 @@ check-hidden = true
 skip = ./.git,./.claude/settings.local.json,./ansible/.ansible,*.patch
 
 # AER is the NVMe Asynchronous Event Request, not a misspelling of "are".
-ignore-words-list = clen,VAs,TRIMed,AER
+# inout is a P4 parameter direction, used throughout tests/data/p4/src.
+ignore-words-list = clen,VAs,TRIMed,AER,inout

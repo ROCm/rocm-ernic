@@ -1,0 +1,49 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Kernel style for the one kernel module in this tree.
+#
+# clang-format uses the nearest .clang-format to the file, so this
+# overrides the repository's userspace style for drivers/ernic_p4 only.
+# Without it the repo-wide check in AGENTS.md -- which covers every .c
+# and .h -- would reformat kernel code into four-space userspace style
+# and checkpatch would reject every line of it.
+#
+# Deliberately not a copy of the kernel's own 808-line .clang-format:
+# nearly all of that is ForEachMacros for list_for_each and friends,
+# none of which this module uses. checkpatch --strict is the real gate
+# and is what to believe if the two ever disagree.
+---
+Language: Cpp
+BasedOnStyle: LLVM
+
+# These are the kernel's own values, taken from its .clang-format at the
+# ref the ionic sources are pinned to.
+AlignAfterOpenBracket: Align
+AlignEscapedNewlines: Left
+AlignOperands: true
+AlwaysBreakAfterReturnType: None
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+AlwaysBreakBeforeMultilineStrings: false
+BreakBeforeBraces: Linux
+BreakStringLiterals: false
+ColumnLimit: 80
+ContinuationIndentWidth: 8
+Cpp11BracedListStyle: false
+IndentPPDirectives: None
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 1
+PenaltyBreakAssignment: 10
+ReflowComments: false
+IndentCaseLabels: false
+IndentWidth: 8
+PointerAlignment: Right
+SortIncludes: false
+SpaceAfterCStyleCast: false
+SpaceBeforeParens: ControlStatements
+TabWidth: 8
+UseTab: Always

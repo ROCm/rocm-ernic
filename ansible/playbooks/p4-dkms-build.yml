@@ -1,0 +1,34 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+# Build ernic_p4.ko, the guest's control driver for the P4 pipeline.
+#
+#   ansible-playbook playbooks/p4-dkms-build.yml
+#
+# Runs against localhost by default, as a build gate: it answers "does
+# the module still compile against the pinned ionic tree?", which needs
+# dkms, git, make and headers for the running kernel, and no guest, no
+# ernic and no RDMA device.
+#
+# To build and load it in a guest, and require the device node:
+#
+#   ansible-playbook -i inventory/hosts.yml playbooks/p4-dkms-build.yml \
+#       -l <guest> \
+#       -e ernic_p4_dkms_repo_dir=<path to the checkout on the guest> \
+#       -e ernic_p4_dkms_require_device=true
+#
+# ernic_p4_dkms_repo_dir must be a path ON THE TARGET: the role runs the
+# fetch script and the module build there, so the defaults only resolve
+# where the checkout already is.
+#
+# Requiring the device node is opt-in and belongs only where the server
+# is known to have been started with --p4-guest-scope. Without one the
+# NIC advertises no P4 capability, the module loads and binds to nothing,
+# and that is a correct outcome rather than a failure.
+- name: Build the ernic_p4 control driver
+  hosts: "{{ p4_dkms_hosts | default('localhost') }}"
+  gather_facts: true
+  roles:
+    - role: ernic_p4_dkms
