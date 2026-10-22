@@ -124,6 +124,16 @@ def parse_lif_counters(root):
             f"{', '.join(missing)}"
         )
 
+    # And the other way round. Every entry of enum ionic_lif_stat is a
+    # counter the device keeps, so one this parser found no name for is
+    # an initialiser it could not read, not a counter without a name.
+    # Without this a malformed entry drops out of the page quietly,
+    # which --check would then agree with: the silent staleness the
+    # whole script exists to prevent.
+    unnamed = sorted(set(index) - set(names))
+    if unnamed:
+        raise SystemExit(f"{LIF_NAMES_SRC}: no name found for: {', '.join(unnamed)}")
+
     counters = []
     for symbol, name in names.items():
         qword = index[symbol]
