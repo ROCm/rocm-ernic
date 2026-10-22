@@ -135,7 +135,7 @@
 # what this module calls, rather than guessing a package name and
 # version: a wrong guess here is a module that builds and then will not
 # insert, which is a much worse symptom than a missing file.
-- name: Find the ionic build's Module.symvers
+- name: Find an existing ionic Module.symvers
   become: true
   when: not ernic_p4_dkms_ionic_symvers
   ansible.builtin.shell:
@@ -144,10 +144,43 @@
     cmd: >-
       set -o pipefail &&
       grep -l ionic_adminq_post_wait
-      /var/lib/dkms/*/*/build/Module.symvers 2>/dev/null | head -1
+      /var/lib/dkms/*/*/build/Module.symvers
+      /usr/src/ionic-ernic-*/Module.symvers 2>/dev/null | head -1
     executable: /bin/bash
   register: ernic_p4_symvers_found
   changed_when: false
+  failed_when: false
+
+# dkms clears its build directory after installing, so after a normal
+# guest provision there is no Module.symvers anywhere -- which is how
+# the first attempt at this silently fell back to the kernel's own and
+# produced a module that would not insert.
+#
+# Rebuild it from the sources dkms itself staged, rather than from this
+# role's own checkout: same tree, same kernel, so the CRCs are the ones
+# the running ionic.ko actually exports. Nothing is installed; only
+# Module.symvers is wanted.
+- name: Regenerate the ionic symbols when dkms has cleaned them away
+  become: true
+  when:
+    - not ernic_p4_dkms_ionic_symvers
+    - not (ernic_p4_symvers_found.stdout | default('') | trim)
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      src=""
+      for d in /usr/src/ionic-ernic-*/; do
+          [ -d "$d" ] || continue
+          src="${d%/}"
+          break
+      done
+      test -n "$src"
+      make -C /lib/modules/{{ ansible_kernel }}/build M="$src" modules \
+          >/dev/null 2>&1
+      grep -l ionic_adminq_post_wait "$src/Module.symvers"
+    executable: /bin/bash
+  register: ernic_p4_symvers_built
+  changed_when: ernic_p4_symvers_built.rc == 0
   failed_when: false
 
 - name: Settle on the Module.symvers to build against
@@ -155,16 +188,30 @@
     ernic_p4_symvers: >-
       {{ ernic_p4_dkms_ionic_symvers
          if ernic_p4_dkms_ionic_symvers
-         else (ernic_p4_symvers_found.stdout | default('') | trim) }}
+         else ((ernic_p4_symvers_found.stdout | default('') | trim)
+               or (ernic_p4_symvers_built.stdout | default('') | trim)) }}
 
 - name: Report which symbols the module will be built against
+  vars:
+    ernic_p4_symvers_label: the kernel's own
   ansible.builtin.debug:
     msg: >-
-      {{ 'building against ' ~ ernic_p4_symvers
-         if ernic_p4_symvers
-         else 'no out-of-tree ionic Module.symvers found; building against
-               the kernel''s own, which is right only if the running ionic
-               is the kernel''s' }}
+      building against
+      {{ ernic_p4_symvers | default(ernic_p4_symvers_label, true) }}
+
+# Falling back to the kernel's own symbols is not a safe default here.
+# patches/p4 changes the CRC of the symbol this module calls, so the
+# fallback builds a module that compiles, installs, and then will not
+# insert -- diagnosable only from dmesg. Stop where the cause is.
+- name: Fail when the ionic symbols could not be found
+  when: ernic_p4_dkms_require_device | bool
+  ansible.builtin.assert:
+    that: ernic_p4_symvers | length > 0
+    fail_msg: >-
+      No Module.symvers exporting ionic_adminq_post_wait was found, and
+      one could not be rebuilt from /usr/src/ionic-ernic-*. Building
+      against the kernel's own symbols would produce a module that
+      cannot insert against a patched ionic.
 
 - name: Build the module
   become: true
