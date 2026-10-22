@@ -2440,7 +2440,10 @@ static void test_p4_rdma(void)
         .flags = IH_WQE_SIGNALLED,
         .remote_va = FP8R_VA_C,
         .rkey = mrc.lkey,
-        .length = P4R_N,
+        /* Deliberately not set: the harness then sums the gather list,
+         * which is what ionic_prep_common() puts in a real WQE. Setting
+         * it by hand is a thing no guest driver can do, and doing so
+         * here once hid a device-side check that no guest could pass. */
         .sge = sge,
         .nsge = 2,
     };
@@ -2525,7 +2528,6 @@ static void test_p4_rdma(void)
      */
     struct ih_send one = w;
     one.nsge = 1;
-    one.length = P4R_N;
     ih_post_send(&h, &a, &one);
     check(T, ih_cq_poll(&h, &cq, &e) && e.error,
           "a one-SGE write under the same entry completed successfully");
@@ -2845,7 +2847,10 @@ static void test_p4_devcmd(void)
         .flags = IH_WQE_SIGNALLED,
         .remote_va = FP8R_VA_C,
         .rkey = mrc.lkey,
-        .length = P4R_N,
+        /* Deliberately not set: the harness then sums the gather list,
+         * which is what ionic_prep_common() puts in a real WQE. Setting
+         * it by hand is a thing no guest driver can do, and doing so
+         * here once hid a device-side check that no guest could pass. */
         .sge = sge,
         .nsge = 2,
     };

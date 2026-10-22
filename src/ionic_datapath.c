@@ -2791,12 +2791,18 @@ static int dp_p4_fp8_map(struct dp_p4_ctx *c, uint8_t sel)
     uint64_t remote_va = ((uint64_t)be32toh(va_hi) << 32) | be32toh(va_lo);
 
     /*
-     * The destination is as long as each operand, not as long as both of
-     * them: the result is elementwise, so three regions of one length.
-     * Requiring the WQE to say so leaves no room to disagree about which
-     * length the operation meant.
+     * The work request's length is the whole gather list, because that
+     * is what a driver puts there: ionic_prep_common() sums the scatter
+     * list into wqe->common.length, so a two-operand request says 2N and
+     * cannot be made to say anything else from a verbs caller.  The
+     * result is elementwise, so the destination is N -- half of it.
+     *
+     * Checking the sum rather than the per-operand length is what makes
+     * this reachable at all.  An earlier version demanded the WQE say N,
+     * which the in-process harness could do, because it sets the field
+     * directly, and which no real guest can.
      */
-    if (be32toh(length) != c->src->len[0])
+    if (be32toh(length) != c->src->total)
         return -EINVAL;
 
     return ionic_datapath_fp8_map(c->dp, sel, c->src->lkey[0], c->src->va[0],

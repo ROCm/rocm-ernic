@@ -88,8 +88,11 @@ before it is dispatched, so a program never sees an operation
 that is already a protection error. The operand convention is
 fixed by the architecture: an RDMA write whose gather list is
 exactly two equal-length entries supplies the two operands,
-the work request's rkey and address are the destination, and
-the length applies to all three. An action that calls the
+and the work request's rkey and address are the
+destination. Each operand is N bytes and so is the result;
+the work request's own length field says 2N, because a
+driver puts the sum of the gather list there and cannot be
+made to say anything else. An action that calls the
 extern must also ``mark_to_drop()``, since the extern writes
 the destination itself and the ordinary transfer would land
 on top of the result; an operation whose program does not is

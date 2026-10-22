@@ -51,7 +51,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <vfio-user/libvfio-user.h>
+/*
+ * Not <vfio-user/libvfio-user.h>.  Everything above the module section
+ * at the bottom of this file is the wire format, which a guest has to
+ * agree with byte for byte -- the ernic_p4 kernel module and the
+ * guest-side tests include this header for exactly that.  Pulling
+ * libvfio-user in would make it includable only on the host.  C11 allows
+ * a typedef to be repeated, which is what rocm_ernic_compat.h and
+ * rocm_ernic_internal.h already rely on for rocm_ernic_dev_t.
+ */
+typedef struct vfu_ctx vfu_ctx_t;
 
 struct p4_engine;
 struct p4_devcmd;

@@ -394,8 +394,11 @@
 
   The operand convention is the architecture's, not the program's: an RDMA
   write whose gather list is exactly two equal-length entries supplies the
-  two operands, the work request's rkey and address are the destination,
-  and the length applies to all three. A table entry chooses the
+  two operands, and the work request's rkey and address are the
+  destination. Each operand is N bytes and so is the result, while the
+  work request's own length says 2N -- a driver puts the sum of the
+  gather list there and cannot be made to say otherwise. A table entry
+  chooses the
   arithmetic and nothing else -- it cannot name a key or an address.
 
   An action that calls the extern must also `mark_to_drop()`, because the

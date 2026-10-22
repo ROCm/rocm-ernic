@@ -31,7 +31,7 @@
  * enforces its own ceiling as well, so a device claiming something
  * larger cannot talk it into an unbounded allocation.
  */
-#define ERNIC_P4_REQ_MAX  (64u * 1024u)
+#define ERNIC_P4_REQ_MAX (64u * 1024u)
 #define ERNIC_P4_RESP_MAX (4u * 1024u)
 
 /**
@@ -90,8 +90,10 @@ struct ernic_p4_rpc {
 	__u32 rsvd2;
 };
 
-#define ERNIC_P4_IOC_IDENT _IOWR(ERNIC_P4_IOC_MAGIC, 0x01, struct ernic_p4_ident)
-#define ERNIC_P4_IOC_QUERY _IOWR(ERNIC_P4_IOC_MAGIC, 0x02, struct ernic_p4_query)
-#define ERNIC_P4_IOC_RPC   _IOWR(ERNIC_P4_IOC_MAGIC, 0x03, struct ernic_p4_rpc)
+#define ERNIC_P4_IOC_IDENT \
+	_IOWR(ERNIC_P4_IOC_MAGIC, 0x01, struct ernic_p4_ident)
+#define ERNIC_P4_IOC_QUERY \
+	_IOWR(ERNIC_P4_IOC_MAGIC, 0x02, struct ernic_p4_query)
+#define ERNIC_P4_IOC_RPC _IOWR(ERNIC_P4_IOC_MAGIC, 0x03, struct ernic_p4_rpc)
 
 #endif /* _UAPI_ERNIC_P4_H */

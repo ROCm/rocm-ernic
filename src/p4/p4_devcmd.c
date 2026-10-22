@@ -20,6 +20,8 @@
 #include <sys/uio.h>
 #include <syslog.h>
 
+#include <vfio-user/libvfio-user.h>
+
 #include "dma_range.h"
 #include "p4_devcmd.h"
 #include "p4_engine.h"

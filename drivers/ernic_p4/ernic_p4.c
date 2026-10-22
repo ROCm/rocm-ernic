@@ -42,7 +42,7 @@ MODULE_IMPORT_NS("NET_IONIC");
 
 /* The device's own opcodes; see src/p4/p4_devcmd.h in rocm-ernic. */
 #define IONIC_CMD_P4_IDENT 70
-#define IONIC_CMD_P4_RPC   71
+#define IONIC_CMD_P4_RPC 71
 #define IONIC_CMD_P4_QUERY 72
 
 struct ernic_p4_dev {
@@ -328,7 +328,9 @@ static void ernic_p4_remove(struct auxiliary_device *adev)
 }
 
 static const struct auxiliary_device_id ernic_p4_id_table[] = {
-	{ .name = "ionic.p4", },
+	{
+		.name = "ionic.p4",
+	},
 	{},
 };
 MODULE_DEVICE_TABLE(auxiliary, ernic_p4_id_table);
