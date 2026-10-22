@@ -189,11 +189,11 @@
   ansible.builtin.set_fact:
     ernic_p4_pkg: >-
       {{ ernic_p4_dkms_conf.content | b64decode
-         | regex_search('PACKAGE_NAME="([^"]+)"', '\\1')
+         | regex_search('PACKAGE_NAME="([^"]+)"', '\1')
          | first | default('', true) }}
     ernic_p4_ver: >-
       {{ ernic_p4_dkms_conf.content | b64decode
-         | regex_search('PACKAGE_VERSION="([^"]+)"', '\\1')
+         | regex_search('PACKAGE_VERSION="([^"]+)"', '\1')
          | first | default('', true) }}
 
 - name: Fail clearly when dkms.conf names no package
