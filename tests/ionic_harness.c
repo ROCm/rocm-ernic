@@ -562,11 +562,12 @@ int ih_admin_complete(struct ih *h, uint8_t op, int slot, uint32_t *resp_len)
 
     uint32_t sl = get_be32(cqe + 24);
     if (qtf & 2u) {
-        if (!(sl >> 24)) {
-            fail("admin op %u has the error bit with status 0", op);
+        /* The status code is the whole field, as the driver reads it. */
+        if (sl == 0 || sl > UINT8_MAX) {
+            fail("admin op %u has the error bit with status %u", op, sl);
             return -1;
         }
-        return (int)(sl >> 24);
+        return (int)sl;
     }
     if (resp_len)
         *resp_len = sl;

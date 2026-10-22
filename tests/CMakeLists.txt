@@ -398,6 +398,7 @@ add_dependencies(test_server_lifecycle rocm-ernic)
 add_executable(test_ionic_query_qp
     test_ionic_query_qp.c
     ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
 )
 target_include_directories(test_ionic_query_qp PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -417,6 +418,7 @@ target_compile_definitions(test_ionic_query_qp PRIVATE
 add_executable(ernic-test-ionic-stats
     test_ionic_stats.c
     ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
 )
 target_include_directories(ernic-test-ionic-stats PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -435,6 +437,7 @@ target_compile_definitions(ernic-test-ionic-stats PRIVATE
 add_executable(ernic-test-ionic-adminq-poll
     test_ionic_adminq_poll.c
     ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
 )
 target_include_directories(ernic-test-ionic-adminq-poll PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -455,6 +458,7 @@ target_compile_definitions(ernic-test-ionic-adminq-poll PRIVATE
 add_executable(test_ionic_srq_adminq
     test_ionic_srq_adminq.c
     ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
 )
 target_include_directories(test_ionic_srq_adminq PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -466,6 +470,17 @@ target_include_directories(test_ionic_srq_adminq SYSTEM PRIVATE
 )
 target_compile_definitions(test_ionic_srq_adminq PRIVATE
     _GNU_SOURCE)
+
+# ionic fault-injection core test: the --inject parser, the deterministic
+# patterns and the per-site fault set. Links the translation unit directly;
+# it has no external dependencies to stub.
+add_executable(ernic-test-ionic-fault
+    test_ionic_fault.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+)
+target_include_directories(ernic-test-ionic-fault PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
 
 # ionic CQ arm-semantics test. It links the datapath, reaches the private CQ
 # state through ionic_datapath_priv.h, and counts the event callback
@@ -788,6 +803,7 @@ set(ERNIC_TEST_TARGETS
     test_ionic_queues
     test_ionic_query_qp
     ernic-test-ionic-stats
+    ernic-test-ionic-fault
     ernic-test-ionic-adminq-poll
     test_server_lifecycle
     test_ionic_srq_adminq
@@ -1036,6 +1052,15 @@ add_test(
     COMMAND $<TARGET_FILE:test_ionic_srq_adminq>
 )
 set_tests_properties(ionic-srq-adminq-unit PROPERTIES TIMEOUT 30)
+
+# ionic fault-injection unit test: asserts each --inject pattern fires on
+# exactly the events it names, malformed specs are rejected naming the bad
+# token, and the canonical form parses back to the same fault.
+add_test(
+    NAME ionic-fault-unit
+    COMMAND $<TARGET_FILE:ernic-test-ionic-fault>
+)
+set_tests_properties(ionic-fault-unit PROPERTIES TIMEOUT 30)
 
 # ionic CQ arm unit test: asserts arming a CQ that still holds unreaped CQEs
 # raises the event immediately, rather than waiting for a CQE that never comes.

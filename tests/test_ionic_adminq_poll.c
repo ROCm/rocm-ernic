@@ -163,7 +163,7 @@ static bool cqe_is(uint32_t idx, uint32_t slot, uint8_t op, uint8_t status)
 
     bool error = (qtf & 2u) != 0;
     return cmd_idx == slot && cqe[2] == op && (qtf & 1u) != 0 &&
-           error == (status != 0) && (!error || status_length >> 24 == status);
+           error == (status != 0) && (!error || status_length == status);
 }
 
 /* Nothing was written to the admin CQ from completion @idx on. */

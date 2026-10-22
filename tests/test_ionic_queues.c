@@ -43,6 +43,7 @@
 #include "ionic_eth_emu_priv.h"
 #include "ionic_eth_steer.h"
 #include "ionic_profile.h"
+#include "ionic_status.h"
 #include "rocm_ernic_internal.h"
 
 /* Offsets in union ionic_dev_identity and union ionic_lif_identity

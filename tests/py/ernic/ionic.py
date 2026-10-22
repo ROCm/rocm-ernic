@@ -568,9 +568,12 @@ class IonicDriver:
 
         status_len = struct.unpack_from(">I", cqe, 24)[0]
         if qtf & 2:
-            status = status_len >> 24
-            if status == 0:
-                raise DeviceError(f"admin op {op} has the error bit with status 0")
+            # The status code is the whole field, as the driver reads it.
+            status = status_len
+            if status == 0 or status > 0xFF:
+                raise DeviceError(
+                    f"admin op {op} has the error bit with status {status}"
+                )
             return status, 0
         return 0, status_len
 

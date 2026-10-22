@@ -194,6 +194,9 @@ struct ionic_adminq_ctx {
 
     /* Data path that owns the SQ/RQ/CQ rings these commands describe. */
     struct ionic_datapath *dp;
+
+    /* Injected faults, or NULL; owned by the server. */
+    struct ionic_fault_set *faults;
 };
 
 /* -------------------------------------------------------------------------
@@ -252,5 +255,21 @@ _Static_assert(QP_STATS_COUNT <= STATS_MAX_COUNT, "qp_stats too long");
  */
 uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
                                   const uint8_t *body, uint16_t len);
+
+/* An admin completion (struct ionic_v1_cqe) is CQE_SIZE bytes; these are
+ * the color and error bits of its be32 qid_type_flags. */
+#define CQE_SIZE      32
+#define CQE_COLOR_BIT 0x01u
+#define CQE_ERROR_BIT 0x02u
+
+/*
+ * Write the admin completion for the WQE at @cmd_idx into @r's CQ and
+ * advance the CQ. @status is the ionic status code, 0 for success;
+ * @resp_len is the number of response bytes the command wrote, reported
+ * in place of the status when it succeeded.
+ */
+void ionic_adminq_post_cqe(struct ionic_adminq_ctx *ctx,
+                           struct ionic_aq_ring *r, uint16_t cmd_idx,
+                           uint8_t cmd_op, uint8_t status, uint32_t resp_len);
 
 #endif /* IONIC_ADMINQ_PRIV_H */

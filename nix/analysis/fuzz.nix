@@ -18,6 +18,7 @@
 #                        loader
 #   fuzz_eth_classify    ionic_emu_mac_class() + ionic_eth_flow_hash() — the
 #                        per-frame MAC class and Rx steering hash
+#   fuzz_fault_parse     ionic_fault_parse() — the --inject fault spec parser
 #
 # Not fuzzed yet: the rest of the ionic devcmd and datapath handlers. They
 # manipulate the RDMA resource manager and the rings, so they need more of
@@ -55,7 +56,7 @@ let
     { name = "net_headers";
       extra = [ ]; }
     { name = "ionic_stats";
-      extra = [ "src/ionic_adminq.c" ];
+      extra = [ "src/ionic_adminq.c" "src/ionic_fault.c" ];
       cflags = "-Itests -I${libvfioUser}/include";
       seeds = true; }
     { name = "profile_parse";
@@ -63,6 +64,9 @@ let
       seeds = true; }
     { name = "eth_classify";
       extra = [ "src/ionic_emu_stats.c" "src/ionic_eth_steer.c" ];
+      seeds = true; }
+    { name = "fault_parse";
+      extra = [ "src/ionic_fault.c" ];
       seeds = true; }
   ];
 
