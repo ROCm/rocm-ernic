@@ -35,13 +35,13 @@
 #include <syslog.h>
 #include <endian.h>
 #include <pthread.h>
-#include <time.h>
 #include <sys/mman.h>
 #include <sys/uio.h>
 
 #include <vfio-user/libvfio-user.h>
 
 #include "dma_range.h"
+#include "ernic_time.h"
 #include "ionic_datapath.h"
 #include "ionic_datapath_priv.h"
 #include "ionic_eth_emu.h"
@@ -2027,14 +2027,6 @@ static bool do_atomic(struct ionic_datapath *dp, const uint8_t *wqe,
  * -------------------------------------------------------------------------
  */
 
-static uint64_t dp_now_ms(void)
-{
-    struct timespec ts;
-
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
-}
-
 static bool dp_is_remote(const struct ionic_datapath *dp,
                          const struct ionic_qp_ring *q)
 {
@@ -2049,7 +2041,7 @@ static struct dp_pending *pending_alloc(struct ionic_datapath *dp)
             memset(&dp->pending[i], 0, sizeof(dp->pending[i]));
             dp->pending[i].valid = true;
             dp->pending[i].req_id = ++dp->next_req_id;
-            dp->pending[i].deadline_ms = dp_now_ms() + PENDING_MS;
+            dp->pending[i].deadline_ms = ernic_monotonic_ms() + PENDING_MS;
             return &dp->pending[i];
         }
     }
@@ -2358,7 +2350,7 @@ static bool dp_s3_tx_filter(void *ctx, const void *frame, size_t len)
 {
     struct ionic_datapath *dp = ctx;
 
-    return s3_tcp_rx_frame(dp->s3_tcp, frame, len, dp_now_ms());
+    return s3_tcp_rx_frame(dp->s3_tcp, frame, len, ernic_monotonic_ms());
 }
 
 bool ionic_datapath_attach_s3(struct ionic_datapath *dp,
@@ -3361,7 +3353,7 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
         return;
 
     if (dp->s3_tcp)
-        s3_tcp_poll(dp->s3_tcp, dp_now_ms());
+        s3_tcp_poll(dp->s3_tcp, ernic_monotonic_ms());
 
     pthread_mutex_lock(&dp->rx_lock);
     list = dp->rx_head;
@@ -3376,7 +3368,7 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
      * other QPs, and every response, keeps flowing.
      */
     struct dp_inmsg *defer_head = NULL, *defer_tail = NULL;
-    uint64_t now = dp_now_ms();
+    uint64_t now = ernic_monotonic_ms();
 
     while (list) {
         struct dp_inmsg *m = list;

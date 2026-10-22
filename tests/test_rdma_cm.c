@@ -11,14 +11,14 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-/* usleep() is POSIX, not ISO C */
+/* nanosleep() is POSIX, not ISO C */
 #define _GNU_SOURCE
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <unistd.h>
+#include <time.h>
 #include <infiniband/verbs.h>
 
 #include "ernic_device.h"
@@ -41,6 +41,13 @@ struct test_context {
 static void print_header(const char *title)
 {
     printf("\n=== %s ===\n", title);
+}
+
+static void sleep_ms(unsigned int ms)
+{
+    struct timespec ts = {(time_t)(ms / 1000), (long)(ms % 1000) * 1000000};
+
+    nanosleep(&ts, NULL);
 }
 
 static int setup_qp(struct test_context *ctx, struct ibv_qp **qp,
@@ -215,7 +222,7 @@ static int setup_resources(struct test_context *ctx)
     }
 
     /* Small delay to ensure QP1 is fully in RTS before creating QP2 */
-    usleep(100000); /* 100ms */
+    sleep_ms(100);
 
     int qp2_ret = setup_qp(ctx, &ctx->qp2, "QP2");
     if (qp2_ret < 0) {
@@ -224,7 +231,7 @@ static int setup_resources(struct test_context *ctx)
 
     /* Give auto-pairing time to occur */
     /* Auto-pairing happens when second QP reaches RTS */
-    usleep(500000); /* 500ms - ensure pairing completes */
+    sleep_ms(500); /* ensure pairing completes */
 
     return 0;
 }
@@ -236,7 +243,7 @@ static int test_connection_info_query(struct test_context *ctx)
     int ret;
 
     /* Additional delay before querying to ensure pairing is reflected */
-    usleep(500000); /* 500ms */
+    sleep_ms(500);
 
     print_header("Testing Connection Info Query");
 

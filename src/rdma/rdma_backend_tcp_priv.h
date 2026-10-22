@@ -25,7 +25,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
-#include <time.h>
 
 #include "qemu/thread.h"
 #include "rdma_backend_defs.h"
@@ -315,7 +314,7 @@ struct TcpConnection {
      */
     _Atomic bool recv_thread_exited;
     /*
-     * When the manager accepted the connection, on tcp_monotonic_ms()'s
+     * When the manager accepted the connection, on ernic_monotonic_ms()'s
      * clock, for the registration timeout.  Set before the connection goes
      * on pending_conns, and read under conn_table_lock.
      */
@@ -335,15 +334,20 @@ typedef enum {
  * registration until teardown, so a thread that found it under
  * mesh_table_lock can keep using the pointer after dropping the lock.
  * node_id, hostname and port are set before the node is published and never
- * change; is_alive and last_heartbeat are protected by mesh_table_lock.  The
- * node's connection is its entry in connections.
+ * change; is_alive and last_heartbeat_ms are protected by mesh_table_lock.
+ * The node's connection is its entry in connections.
  */
 typedef struct {
     uint32_t node_id;
     char *hostname;
     uint16_t port;
     bool is_alive;
-    time_t last_heartbeat;
+    /*
+     * When the node last answered, on ernic_monotonic_ms()'s clock.  Read
+     * the clock under the lock to compare with it, so no heartbeat recorded
+     * meanwhile can be newer than the time it's compared with.
+     */
+    uint64_t last_heartbeat_ms;
     /*
      * Nonzero while the node is due a reconnect that a pass ran out of time
      * for: the value of reconnect_deferrals when it was deferred, so the
@@ -629,7 +633,6 @@ void tcp_mesh_node_info_destroy_notify(gpointer data);
 void tcp_broadcast_mesh_topology(TcpBackendPrivate *priv);
 
 /* Sockets and messages */
-uint64_t tcp_monotonic_ms(void);
 int tcp_connect_any(const struct addrinfo *addrs, const atomic_bool *running,
                     uint64_t deadline_ms);
 int tcp_connect_to_remote(const char *host, uint16_t port,
