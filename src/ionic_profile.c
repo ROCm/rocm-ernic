@@ -398,6 +398,12 @@ int ionic_profile_set_eth_queues(struct ionic_profile *p, const char *raw,
                   IONIC_PROFILE_ETH_QUEUES_MAX, &p->queues.eth, err, err_len);
 }
 
+/* "auto" has to fit the MSI-X table for every valid queues.eth and
+ * queues.rdma_eqs. */
+_Static_assert(1u + IONIC_PROFILE_ETH_QUEUES_MAX + IONIC_PROFILE_RDMA_EQS_MAX <=
+                   IONIC_PROFILE_INTR_VECTORS_MAX,
+               "intr_vectors = auto must not exceed the most vectors allowed");
+
 uint32_t ionic_profile_intr_vectors(const struct ionic_profile *p)
 {
     if (p->queues.intr_vectors != IONIC_PROFILE_INTR_VECTORS_AUTO)

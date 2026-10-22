@@ -6,9 +6,10 @@
  * ionic_lif_size() then wants 1 + min(queues, vCPUs) + min(EQs, vCPUs)
  * vectors and halves its EQs or queues until that fits.  These rows check
  * that each NIC profile's [queues] keys reach the identity, that the
- * vector budget fits where the profile says it should, that queue indices
- * past the profile's count are refused without touching memory, and that
- * every one of the 128 vectors has room in BAR0.
+ * vector budget fits where the profile says it should, and that queue
+ * indices past the profile's count are refused without touching memory.
+ * That every one of the 128 vectors has room in BAR0 is a compile-time
+ * check, in rocm_ernic_internal.h and ionic_eth_emu_priv.h.
  *
  * Then Rx steering: the flow hash against an independent FNV-1a reference
  * over well-formed, tagged, fragmented and truncated frames; the set of Rx
@@ -365,23 +366,6 @@ static void check_vectors(void)
     ionic_eth_emu_destroy(emu);
 }
 
-/* Where each per-vector structure ends with every vector in use. */
-static void check_bar0_layout(void)
-{
-    uint32_t n = IONIC_MSIX_MAX_VECTORS;
-
-    report(n >= 97, "positive", "IONIC_MSIX_MAX_VECTORS",
-           "at least 1 + 64 + 32 = 97, the most a profile can ask for");
-    report(IONIC_BAR0_INTR_CTRL_OFFSET + n * INTR_REG_STRIDE <=
-               IONIC_BAR0_REGS_SIZE,
-           "corner", "intr_ctrl for 128 vectors",
-           "ends inside the 32 KB register window");
-    report(IONIC_BAR0_MSIX_TABLE + n * 16u <= IONIC_BAR0_MSIX_PBA, "corner",
-           "the MSI-X table for 128 vectors", "ends before the PBA");
-    report(IONIC_BAR0_MSIX_PBA + (n + 63u) / 64u * 8u <= IONIC_BAR0_TOTAL_SIZE,
-           "corner", "the MSI-X PBA for 128 vectors", "ends inside BAR0");
-}
-
 /* ---- Flow hash ---------------------------------------------------------- */
 
 /* A reference FNV-1a 32, written independently of ionic_eth_steer.c. */
@@ -492,8 +476,14 @@ static uint32_t ref_hash(const struct flow *fl, enum ref_kind kind,
     return h;
 }
 
-#define V4(a, b, c, d) {a, b, c, d}
-#define V6(last)       {0x20, 0x01, 0x0d, 0xb8, [15] = (last)}
+#define V4(a, b, c, d) \
+    {                  \
+        a, b, c, d     \
+    }
+#define V6(last)                              \
+    {                                         \
+        0x20, 0x01, 0x0d, 0xb8, [15] = (last) \
+    }
 
 struct hash_case {
     const char *category;
@@ -509,22 +499,16 @@ struct hash_case {
  * The EtherType and protocol are arguments, not defaults a row overrides,
  * so no row initializes a field twice.
  */
-#define FL_IP4(etype, ipproto, ...) \
-    {.ethertype = (etype),          \
-     .proto = (ipproto),            \
-     .src = V4(10, 0, 0, 1),        \
-     .dst = V4(10, 0, 0, 2),        \
-     .sport = 40000,                \
-     .dport = 5201,                 \
-     __VA_ARGS__}
-#define FL_IP6(ipproto, ...) \
-    {.ethertype = 0x86dd,    \
-     .proto = (ipproto),     \
-     .src = V6(1),           \
-     .dst = V6(2),           \
-     .sport = 50000,         \
-     .dport = 4791,          \
-     __VA_ARGS__}
+#define FL_IP4(etype, ipproto, ...)                                        \
+    {                                                                      \
+        .ethertype = (etype), .proto = (ipproto), .src = V4(10, 0, 0, 1),  \
+        .dst = V4(10, 0, 0, 2), .sport = 40000, .dport = 5201, __VA_ARGS__ \
+    }
+#define FL_IP6(ipproto, ...)                                                 \
+    {                                                                        \
+        .ethertype = 0x86dd, .proto = (ipproto), .src = V6(1), .dst = V6(2), \
+        .sport = 50000, .dport = 4791, __VA_ARGS__                           \
+    }
 #define FL_TCP4(...) FL_IP4(0x0800, 6, __VA_ARGS__)
 #define FL_UDP6(...) FL_IP6(17, __VA_ARGS__)
 
@@ -1001,12 +985,21 @@ static bool cq_posted(uint32_t q)
     return (g_mem[RXQ_CQ(q) + ETH_COMP_SIZE - 1] & ADMIN_COMP_COLOR_MASK) != 0;
 }
 
+/*
+ * The frame the fake TAP offers next.  Static, so the pointer left in
+ * g_net_rx_frame never refers to a caller's stack.
+ */
+static uint8_t tap_buf[128];
+
 static void tap_frame(struct ionic_eth_emu *emu, const uint8_t *f, size_t len)
 {
     static int fake_net;
 
+    if (len > sizeof(tap_buf))
+        abort(); /* every frame here is built in 128 bytes */
+    memcpy(tap_buf, f, len);
     emu->net = (struct ionic_eth_net *)&fake_net;
-    g_net_rx_frame = f;
+    g_net_rx_frame = tap_buf;
     g_net_rx_len = len;
     ionic_eth_emu_poll_rx(emu);
     emu->net = NULL;
@@ -1087,7 +1080,7 @@ static void check_delivery(void)
     seed = 14;
     l1 = random_frame(f1, &seed);
     tap_frame(emu, f1, l1);
-    report(g_net_rx_frame == f1 && g_nwrites == 0, "negative",
+    report(g_net_rx_frame != NULL && g_nwrites == 0, "negative",
            "a TAP frame with every Rx queue disabled",
            "the TAP is not read and nothing is written to the guest");
     g_net_rx_frame = NULL;
@@ -1232,7 +1225,6 @@ int main(void)
         run_qinit_case(&qinit_cases[i]);
     check_txq_past_count();
     check_vectors();
-    check_bar0_layout();
     for (size_t i = 0; i < sizeof(hash_cases) / sizeof(hash_cases[0]); i++)
         run_hash_case(&hash_cases[i]);
     check_steer_basic();
