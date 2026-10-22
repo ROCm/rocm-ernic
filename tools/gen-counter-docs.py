@@ -138,14 +138,42 @@ def parse_lif_counters(root):
     return counters
 
 
+# An initialiser that builds entries from a list macro rather than
+# writing them out -- IONIC_DP_RDMA_COUNTERS(DEV_RDMA_STAT) and the like.
+# Reading the names out of one means expanding it, which is a C
+# preprocessor's job and not this script's.
+MACRO_ENTRY = re.compile(r"\b([A-Z][A-Z0-9_]{2,})\s*\(")
+
+
 def parse_hw_table(text, table):
-    """The counter names of one adminq_stat table, in table order."""
-    match = re.search(
-        rf"adminq_stat\s+{table}\[\]\s*=\s*\{{(.*?)\n\}};", text, re.DOTALL
-    )
+    """The counter names of one adminq_stat table, in table order.
+
+    Only literal ``{"name", offsetof(...)}`` entries are understood. A
+    table that generates entries from a list macro is refused rather
+    than half-read: the counters it adds are real, and a short list here
+    is the silent staleness this script exists to prevent. Teach the
+    parser the macro, or write the entries out.
+    """
+    # Up to the first "};", wherever it sits: an entry ends in ")}," so
+    # the first "};" is the end of the table. Anchoring on "\n};" instead
+    # would run past a table whose last entry shares the closing line,
+    # swallowing whatever was declared after it.
+    match = re.search(rf"adminq_stat\s+{table}\[\]\s*=\s*\{{(.*?)\}};", text, re.DOTALL)
     if not match:
         raise SystemExit(f"{HW_TABLES_SRC}: table {table} not found")
-    names = re.findall(r"\{\s*\"([a-z0-9_]+)\"", match.group(1))
+    body = match.group(1)
+
+    # offsetof() is how every literal entry names its field, so it is the
+    # one all-caps-looking call that does not mean a generated entry.
+    generated = {name for name in MACRO_ENTRY.findall(body) if name != "OFFSETOF"}
+    if generated:
+        raise SystemExit(
+            f"{HW_TABLES_SRC}: table {table} builds entries with "
+            f"{', '.join(sorted(generated))}, which this script cannot "
+            f"expand. Its counters would be missing from the docs."
+        )
+
+    names = re.findall(r"\{\s*\"([a-z0-9_]+)\"", body)
     if not names:
         raise SystemExit(f"{HW_TABLES_SRC}: table {table} names no counters")
     if len(set(names)) != len(names):

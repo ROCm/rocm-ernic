@@ -375,13 +375,21 @@ block on every flush.
 
 .. note::
 
-   The ``rdma_req_*`` and ``rdma_resp_*`` error counters
-   are named and published, but nothing in the datapath
-   increments them yet, so they read zero whatever
-   happens.  The Ethernet, drop, ring and RDMA traffic
-   counters are live, and
+   Not every counter is live yet.  The Ethernet, drop,
+   ring and RDMA traffic counters are, and
    ``tests/py/test_ionic_hw_stats.py`` drives traffic
-   that moves them.
+   that moves them.  The ``rdma_req_*`` and
+   ``rdma_resp_*`` error counters are named and
+   published, but nothing in the datapath increments
+   them, so they read zero whatever happens: a zero
+   there means "not counted", not "did not happen".
+
+   Wiring them up is
+   `PR #237 <https://github.com/ROCm/rocm-ernic/pull/237>`_.
+   Whoever lands it should delete this paragraph, and
+   will find that the counter lists below and the
+   structural checks in the test pick the new counters
+   up on their own.
 
 Guest hw_counters and real silicon
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
