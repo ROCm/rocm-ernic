@@ -16,6 +16,8 @@
 #                        (tests/ionic_adminq_fakes.h)
 #   fuzz_profile_parse   ionic_profile_apply_text() — the --nic-profile ini
 #                        loader
+#   fuzz_eth_classify    ionic_emu_mac_class() + ionic_eth_flow_hash() — the
+#                        per-frame MAC class and Rx steering hash
 #
 # Not fuzzed yet: the rest of the ionic devcmd and datapath handlers. They
 # manipulate the RDMA resource manager and the rings, so they need more of
@@ -58,6 +60,9 @@ let
       seeds = true; }
     { name = "profile_parse";
       extra = [ "src/ionic_profile.c" "src/ionic_profiles.c" ];
+      seeds = true; }
+    { name = "eth_classify";
+      extra = [ "src/ionic_emu_stats.c" "src/ionic_eth_steer.c" ];
       seeds = true; }
   ];
 

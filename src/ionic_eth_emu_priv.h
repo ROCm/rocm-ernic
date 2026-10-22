@@ -140,6 +140,10 @@
 #define IONIC_CMD_Q_INIT      40
 #define IONIC_CMD_Q_CONTROL   41
 
+/* ionic_q_control_cmd.oper; IONIC_Q_HANG_RESET (2) is acknowledged as is */
+#define IONIC_Q_DISABLE 0
+#define IONIC_Q_ENABLE  1
+
 /* Completion status codes (enum ionic_status_code in ionic_if.h) */
 #define IONIC_RC_SUCCESS 0
 #define IONIC_RC_EOPCODE 2
@@ -259,15 +263,16 @@
 #define IONIC_MAX_STRIDE    9          /* log2(512) bytes/WQE   */
 #define IONIC_PAGE_SIZE_CAP (1u << 12) /* 4K pages supported     */
 
-/* Number of emulated EQs / AQs we report in LIF identity */
-#define IONIC_EMU_EQ_COUNT   32
+/* Number of emulated AQs we report in LIF identity; the EQ count is the
+ * profile's queues.rdma_eqs. */
 #define IONIC_EMU_AQ_COUNT   4
 #define IONIC_EMU_QP_COUNT   (1u << 15)
 #define IONIC_EMU_CQ_COUNT   (1u << 16)
 #define IONIC_EMU_UDMA_SHIFT 3 /* 8 queues per group */
 
-/* Ethernet Tx/Rx queue pairs offered to the LIF. */
-#define IONIC_EMU_ETH_QCOUNT 4
+/* Room for the most Ethernet Tx/Rx queue pairs a profile can offer; the
+ * LIF advertises the profile's queues.eth of them. */
+#define IONIC_EMU_ETH_QMAX IONIC_PROFILE_ETH_QUEUES_MAX
 
 /* -------------------------------------------------------------------------
  * dev_cmd_regs layout, relative to IONIC_BAR0_DEV_CMD_REGS_OFFSET.
@@ -353,6 +358,18 @@ _Static_assert(DEVCMD_COMP_OFF == DEVCMD_CMD_OFF + 64u,
 #define INTR_MASK_ASSERT_OFF 12
 #define INTR_CRED_UNMASK     0x10000u
 
+/* Every vector's intr_ctrl block, and its intr_status bit, must sit inside
+ * the register window the driver maps. */
+_Static_assert(
+    IONIC_BAR0_INTR_CTRL_OFFSET + IONIC_MSIX_MAX_VECTORS * INTR_REG_STRIDE <=
+        IONIC_BAR0_SIZE,
+    "intr_ctrl for every vector must fit in the BAR0 register window");
+_Static_assert(IONIC_BAR0_INTR_STATUS_OFFSET + IONIC_MSIX_MAX_VECTORS / 8u <=
+                   IONIC_BAR0_INTR_CTRL_OFFSET,
+               "intr_status for every vector must end before intr_ctrl");
+_Static_assert(IONIC_PROFILE_INTR_VECTORS_MAX <= IONIC_MSIX_MAX_VECTORS,
+               "a profile may not ask for more vectors than the device has");
+
 /* Bounds the inbox so a fast mesh peer cannot grow it without limit; the
  * blocking producer stalls above this, which back-pressures the mesh TCP
  * connection the same way the old PVRDMA Rx ring did. */
@@ -364,6 +381,7 @@ struct eth_inbox_frame;
 /* State captured from Q_INIT for an Ethernet logical queue. */
 struct eth_queue {
     bool valid;
+    bool enabled; /* Q_CONTROL ENABLE seen since Q_INIT; Rx serves only these */
     uint16_t intr_index;
     uint64_t ring_base;
     uint64_t cq_ring_base;
@@ -425,7 +443,7 @@ struct ionic_eth_emu {
     uint32_t intr_pending[IONIC_MSIX_MAX_VECTORS];
 
     /* Ethernet logical queues, indexed by [IONIC_QTYPE_*][queue index]. */
-    struct eth_queue eth_q[IONIC_QTYPE_ETH_MAX][IONIC_EMU_ETH_QCOUNT];
+    struct eth_queue eth_q[IONIC_QTYPE_ETH_MAX][IONIC_EMU_ETH_QMAX];
 
     /* Station MAC reported by LIF_IDENTIFY. */
     uint8_t mac[6];
@@ -475,5 +493,25 @@ void ionic_eth_emu_handle_lif_init(struct ionic_eth_emu *emu,
 void ionic_eth_emu_handle_q_identify(struct ionic_eth_emu *emu,
                                      const uint8_t *cmd, uint8_t *comp,
                                      uint8_t *data);
+void ionic_eth_emu_handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
+                                 uint8_t *comp);
+
+/*
+ * Run one command from the Ethernet adminq ring: Q_INIT, Q_CONTROL, the RDMA
+ * opcodes and the LIF attributes, filling in the 16-byte completion.
+ */
+void ionic_eth_emu_process_adminq_cmd(struct ionic_eth_emu *emu,
+                                      const uint8_t *cmd, uint8_t *comp);
+
+/*
+ * The Rx queues frames may land on: initialized and enabled, in index order.
+ * Returns how many were written to @out.
+ */
+uint32_t ionic_eth_emu_rx_active(const struct ionic_eth_emu *emu,
+                                 uint8_t out[IONIC_EMU_ETH_QMAX]);
+
+/* The Rx queue index @frame steers to, one of the @n entries of @active. */
+uint8_t ionic_eth_emu_rx_steer(const uint8_t *active, uint32_t n,
+                               const uint8_t *frame, size_t len);
 
 #endif /* IONIC_ETH_EMU_PRIV_H */

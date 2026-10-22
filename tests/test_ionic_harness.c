@@ -200,8 +200,10 @@ static void test_devcmds(void)
     check(T, ih_devcmd(&h, cmd, comp, data, 512) == 0, "IDENTIFY failed");
     check(T, get_le32(data + DEVID_NLIFS) == 1, "nlifs is %u",
           get_le32(data + DEVID_NLIFS));
-    check(T, get_le32(data + DEVID_NINTRS) == IONIC_MSIX_MAX_VECTORS,
-          "nintrs is %u", get_le32(data + DEVID_NINTRS));
+    /* The default compat profile's intr_vectors; IONIC_MSIX_MAX_VECTORS is
+     * only the most a profile may ask for. */
+    check(T, get_le32(data + DEVID_NINTRS) == 32, "nintrs is %u",
+          get_le32(data + DEVID_NINTRS));
     check(T, get_le32(data + DEVID_COAL_DIV) != 0,
           "intr_coal_div is 0, which ethtool divides by");
 
@@ -1493,6 +1495,18 @@ static bool q_init(struct ih *h, uint8_t qtype, uint16_t intr,
     return ih_devcmd(h, cmd, comp, NULL, 0) == 0;
 }
 
+/* Q_CONTROL ENABLE, which the driver sends once a queue is initialized. */
+static bool q_enable(struct ih *h, uint8_t qtype, uint32_t index)
+{
+    uint8_t cmd[64] = {0}, comp[16];
+
+    cmd[0] = IH_CMD_Q_CONTROL;
+    cmd[1] = qtype;
+    put_le32(cmd + 4, index);
+    cmd[8] = 1; /* IONIC_Q_ENABLE */
+    return ih_devcmd(h, cmd, comp, NULL, 0) == 0;
+}
+
 static void test_eth(void)
 {
     const char *T = "eth";
@@ -1516,6 +1530,8 @@ static void test_eth(void)
           "Q_INIT of the Tx queue failed");
     check(T, q_init(&h, IH_QTYPE_ETH_RXQ, RX_INTR, 3, rxr, rxc, 0),
           "Q_INIT of the Rx queue failed");
+    check(T, q_enable(&h, IH_QTYPE_ETH_TXQ, 0), "enabling the Tx queue failed");
+    check(T, q_enable(&h, IH_QTYPE_ETH_RXQ, 0), "enabling the Rx queue failed");
     ih_intr_mask(&h, TX_INTR, false);
     ih_intr_mask(&h, RX_INTR, false);
 

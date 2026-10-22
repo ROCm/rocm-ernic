@@ -294,7 +294,7 @@ with a comment saying why.
   ctest --test-dir build -T memcheck --output-on-failure \
     --overwrite "MemoryCheckCommand=$(command -v valgrind)" \
     --overwrite "MemoryCheckCommandOptions=--leak-check=full --track-origins=yes --num-callers=40 --error-exitcode=1" \
-    -E '^(pci-config-test|find-rdma-device-tuple|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ionic-stats-interval-cli|cmake-subproject)$'
+    -E '^(pci-config-test|find-rdma-device-tuple|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli|cmake-subproject)$'
   ```
 
   The excluded tests run scripts, CMake, or a server launcher. Reports
@@ -314,7 +314,7 @@ with a comment saying why.
   opts="--log-file=$PWD/build/valgrind-server/%p.log --leak-check=full --track-origins=yes --num-callers=40 --error-exitcode=1"
   ERNIC_TEST_SERVER_WRAPPER="valgrind $opts" \
     ctest --test-dir build --output-on-failure \
-    -R '^(pci-config-test|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ionic-stats-interval-cli)$'
+    -R '^(pci-config-test|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli)$'
   valgrind --trace-children=yes $opts build/tests/test_server_lifecycle
   grep -L 'ERROR SUMMARY: 0 errors' build/valgrind-server/*.log
   ```

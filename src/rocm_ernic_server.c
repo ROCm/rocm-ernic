@@ -598,8 +598,9 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     msix_cap.next =
         0; /* Will be filled by libvfio-user if there are more caps */
 
-    /* One interrupt per Ethernet queue pair plus at least four RDMA EQs. */
-    uint32_t nr_intrs = IONIC_MSIX_MAX_VECTORS;
+    /* The profile's vector count: the driver budgets 1 (adminq) + one per
+     * Ethernet queue pair + one per RDMA EQ, and halves to fit if short. */
+    uint32_t nr_intrs = ionic_profile_intr_vectors(&dev->profile);
 
     /* Message Control: bits [10:0] = Table Size-1 */
     msix_cap.ctrl = (uint16_t)((nr_intrs - 1u) & 0x7FFu);
@@ -718,6 +719,15 @@ static void usage(const char *progname)
             IONIC_PROFILE_STATS_INTERVAL_MIN, IONIC_PROFILE_STATS_INTERVAL_MAX);
     fprintf(stderr, "                       stats.interval_ms, 1000). Beats "
                     "every profile.\n");
+    fprintf(stderr, "      --eth-queues N   Ethernet Rx/Tx queues offered to "
+                    "the guest,\n");
+    fprintf(stderr,
+            "                       %u-%u (default: the profile's "
+            "queues.eth, 4).\n",
+            IONIC_PROFILE_ETH_QUEUES_MIN, IONIC_PROFILE_ETH_QUEUES_MAX);
+    fprintf(stderr, "                       Beats every profile; the guest "
+                    "uses at most\n");
+    fprintf(stderr, "                       one per vCPU.\n");
     fprintf(stderr, "  -h, --help           Show this help message\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Backend Types:\n");
@@ -1292,10 +1302,16 @@ int main(int argc, char *argv[])
     bool log_level_set = false;
     bool print_profile = false;
     const char *stats_interval_arg = NULL;
+    const char *eth_queues_arg = NULL;
     int ret, opt;
 
     /* Long-only options take values past the single-character ones. */
-    enum { OPT_NIC_PROFILE = 0x100, OPT_PRINT_PROFILE, OPT_STATS_INTERVAL };
+    enum {
+        OPT_NIC_PROFILE = 0x100,
+        OPT_PRINT_PROFILE,
+        OPT_STATS_INTERVAL,
+        OPT_ETH_QUEUES,
+    };
 
     /* Command-line option definitions */
     static struct option long_options[] = {
@@ -1313,6 +1329,7 @@ int main(int argc, char *argv[])
         {"nic-profile", required_argument, NULL, OPT_NIC_PROFILE},
         {"print-profile", no_argument, NULL, OPT_PRINT_PROFILE},
         {"stats-interval-ms", required_argument, NULL, OPT_STATS_INTERVAL},
+        {"eth-queues", required_argument, NULL, OPT_ETH_QUEUES},
         /* Backend-specific options (verbs only) */
         {"device", required_argument, NULL, 'd'},
         {"ethdev", required_argument, NULL, 'e'},
@@ -1414,6 +1431,10 @@ int main(int argc, char *argv[])
             /* Applied after every --nic-profile, which it beats. */
             stats_interval_arg = optarg;
             break;
+        case OPT_ETH_QUEUES:
+            /* Applied after every --nic-profile, which it beats. */
+            eth_queues_arg = optarg;
+            break;
         case 'h':
             usage(argv[0]);
             dev_free(dev);
@@ -1432,6 +1453,19 @@ int main(int argc, char *argv[])
                 &dev->profile, stats_interval_arg, "--stats-interval-ms",
                 interval_err, sizeof(interval_err)) != 0) {
             fprintf(stderr, "Error: %s\n", interval_err);
+            usage(argv[0]);
+            dev_free(dev);
+            return EXIT_FAILURE;
+        }
+    }
+
+    if (eth_queues_arg) {
+        char queues_err[256];
+
+        if (ionic_profile_set_eth_queues(&dev->profile, eth_queues_arg,
+                                         "--eth-queues", queues_err,
+                                         sizeof(queues_err)) != 0) {
+            fprintf(stderr, "Error: %s\n", queues_err);
             usage(argv[0]);
             dev_free(dev);
             return EXIT_FAILURE;
@@ -1514,6 +1548,16 @@ int main(int argc, char *argv[])
     }
     ernic_startup_report("  NIC profile: %s (hash 0x%016" PRIx64 ")",
                          dev->profile.chain, ionic_profile_hash(&dev->profile));
+    ernic_startup_report("  NIC queues: %" PRIu32 " Ethernet, %" PRIu32
+                         " RDMA EQs, %" PRIu32 " MSI-X vectors",
+                         dev->profile.queues.eth, dev->profile.queues.rdma_eqs,
+                         ionic_profile_intr_vectors(&dev->profile));
+    {
+        char warning[512];
+
+        if (ionic_profile_warning(&dev->profile, warning, sizeof(warning)))
+            ernic_startup_report("  NIC profile warning: %s", warning);
+    }
 
     /* Show backend-specific options only for verbs backend */
     if (!strcmp(get_backend_type_base(dev->backend_type_str), "verbs")) {

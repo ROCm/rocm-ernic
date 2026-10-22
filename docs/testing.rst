@@ -63,7 +63,8 @@ CTest as ``ionic-ci``. It needs no VM and no RDMA device:
   and with no extra flags at all
 - PCI identity is ``0x1dd8:0x1002``
 - BAR geometry is 64 KB BAR0 (32 KB register window) and
-  4 MB BAR2, with 32 MSI-X vectors
+  4 MB BAR2, with 32 MSI-X vectors under ``compat`` and 97
+  under ``generic-400g``
 - Clean shutdown on ``SIGTERM``
 - The stats file carries the full counter set
 - ``--tap`` attaches to an existing host TAP
@@ -272,7 +273,8 @@ valgrind would only check the script for:
 
    skip='pci-config-test|find-rdma-device-tuple|server-lifecycle'
    skip+='|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci'
-   skip+='|ionic-stats-interval-cli|cmake-subproject'
+   skip+='|ionic-stats-interval-cli|ionic-eth-queues-cli'
+   skip+='|cmake-subproject'
    opts='--leak-check=full --track-origins=yes --num-callers=40'
    opts+=' --error-exitcode=1'
    ctest --test-dir build -T memcheck --output-on-failure \
@@ -298,7 +300,7 @@ as above:
 
    srv='pci-config-test|ionic-server-smoke'
    srv+='|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci'
-   srv+='|ionic-stats-interval-cli'
+   srv+='|ionic-stats-interval-cli|ionic-eth-queues-cli'
    logs="$PWD/build/valgrind-server"
    rm -rf "$logs"
    mkdir "$logs"

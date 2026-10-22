@@ -105,3 +105,21 @@ add_test(
         $<TARGET_FILE:fuzz_replay_profile_parse>
 )
 set_tests_properties(fuzz-seed-files-profile_parse PROPERTIES TIMEOUT 30)
+
+# The per-frame MAC class and Rx steering hash: pure functions of the frame
+# bytes, with their own seed table.
+ernic_add_fuzz_replay(eth_classify
+    ${PROJECT_SOURCE_DIR}/src/ionic_emu_stats.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_eth_steer.c
+)
+target_compile_definitions(fuzz_replay_eth_classify PRIVATE
+    FUZZ_HARNESS_HAS_INITIALIZE
+)
+
+# Check private seed files and rejection of existing filesystem entries.
+add_test(
+    NAME fuzz-seed-files-eth_classify
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/test_fuzz_seed_files.sh
+        $<TARGET_FILE:fuzz_replay_eth_classify>
+)
+set_tests_properties(fuzz-seed-files-eth_classify PROPERTIES TIMEOUT 30)

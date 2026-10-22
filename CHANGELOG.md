@@ -158,6 +158,13 @@
   `--stats-interval-ms`, 10 to 60000, default 1000) and cleared on reset.
   `--stats-file` gains a "LIF Statistics" section. Documented in
   `docs/ionic.rst`.
+* The ionic NIC's Ethernet queue count is a profile setting, from 1 to 64:
+  the `[queues]` keys `eth`, `rdma_eqs` and `intr_vectors` (or `auto`), or
+  `--eth-queues`. The device has up to 128 MSI-X vectors (was 32), sized by
+  the profile. Every enabled Rx queue is served, with frames steered by a
+  flow hash of the IPv4 or IPv6 5-tuple (VLAN and QinQ aware); before, only
+  Rx queue 0 received. The `compat` profile still offers 4 queues and 32
+  vectors.
 
 ### Changed
 
