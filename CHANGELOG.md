@@ -394,6 +394,14 @@
 
 ### Fixed
 
+* The log level is safe to read from any thread. The first log call looks
+  up `ERNIC_LOG_LEVEL`, and two threads making it together raced: both
+  could warn about an invalid value, and one could overwrite a level just
+  set by `ernic_log_set_level()` with the environment's. The server looks
+  the level up before it starts any thread, so it never raced, but code
+  that logs first from a worker thread did. `tests/test_log_level.c`
+  (CTest `log-level-unit`) runs threads racing the first call in hundreds
+  of fresh processes.
 * An RDMA admin command longer than one 64-byte ring entry is now read from
   the entries that follow it in the ring, wrapping to the start of the
   admin queue as the Linux driver writes it. The device read on past the
