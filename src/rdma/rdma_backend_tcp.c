@@ -2840,21 +2840,40 @@ static void tcp_advertise_local_gids(TcpBackendPrivate *priv)
 
     uint32_t node = tcp_local_node(priv);
 
-    tcp_gid_claims_set(priv, node, tcp_const_gids(priv->local_gids),
-                       priv->num_local_gids);
+    /* Held across both the snapshot and the send; see the field's comment. */
+    qemu_mutex_lock(&priv->gid_advertise_lock);
+
+    /*
+     * local_gids is read on the main thread and on a receive thread, so copy
+     * it under the lock that guards it.  The copy, not the field, is what the
+     * rest of this function uses: tcp_broadcast_gid_table() and
+     * tcp_send_node_gids() take connection locks that the data path holds
+     * across multi-megabyte writes, so lock cannot be held that long.
+     */
+    uint8_t gids[TCP_MAX_NODE_GIDS][16];
+    uint32_t num_gids;
+
+    qemu_mutex_lock(&priv->lock);
+    num_gids = priv->num_local_gids;
+    memcpy(gids, priv->local_gids, sizeof(gids));
+    qemu_mutex_unlock(&priv->lock);
+
+    tcp_gid_claims_set(priv, node, tcp_const_gids(gids), num_gids);
 
     if (priv->is_manager) {
         /* The manager is the authority: push the whole table, which is also
          * how a claimant learns its advertisement was rejected. */
         tcp_broadcast_gid_table(priv);
+        qemu_mutex_unlock(&priv->gid_advertise_lock);
         return;
     }
 
     TcpNodeGidsPayload mine;
 
-    tcp_fill_node_gids(&mine, node, tcp_const_gids(priv->local_gids),
-                       priv->num_local_gids);
+    tcp_fill_node_gids(&mine, node, tcp_const_gids(gids), num_gids);
     tcp_send_node_gids(priv, priv->manager_conn, &mine);
+
+    qemu_mutex_unlock(&priv->gid_advertise_lock);
 }
 
 /* Send one advertisement on an already-locked-free connection. */
@@ -3722,6 +3741,7 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
     qemu_mutex_init(&priv->conn_table_lock);
     qemu_mutex_init(&priv->gid_table_lock);
     qemu_mutex_init(&priv->gid_broadcast_lock);
+    qemu_mutex_init(&priv->gid_advertise_lock);
     qemu_mutex_init(&priv->topology_broadcast_lock);
 
     priv->num_local_gids =
@@ -3958,6 +3978,7 @@ error:
     qemu_mutex_destroy(&priv->conn_table_lock);
     qemu_mutex_destroy(&priv->gid_table_lock);
     qemu_mutex_destroy(&priv->gid_broadcast_lock);
+    qemu_mutex_destroy(&priv->gid_advertise_lock);
     qemu_mutex_destroy(&priv->topology_broadcast_lock);
     g_free(priv);
     return -1;
@@ -4021,6 +4042,7 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
     qemu_mutex_destroy(&priv->conn_table_lock);
     qemu_mutex_destroy(&priv->gid_table_lock);
     qemu_mutex_destroy(&priv->gid_broadcast_lock);
+    qemu_mutex_destroy(&priv->gid_advertise_lock);
     qemu_mutex_destroy(&priv->topology_broadcast_lock);
 
     g_free(priv);

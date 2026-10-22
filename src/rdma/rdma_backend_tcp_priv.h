@@ -414,7 +414,24 @@ struct TcpBackendPrivate {
      */
     QemuMutex gid_broadcast_lock;
 
-    /* This node's own GIDs, from ERNIC_TCP_GUEST_GIDS. */
+    /*
+     * Serialises a whole advertisement of this node's own claims -- snapshot
+     * and send together -- for the same reason gid_broadcast_lock serialises
+     * a broadcast.  The snapshot is taken under lock, which has to be dropped
+     * before sending, so without this an advertisement from the main thread
+     * (a guest adding or removing an address) and one from a receive thread
+     * (registration completing) could land out of order, leaving the manager
+     * holding a claim set this node has already replaced.
+     *
+     * Taken before lock, before gid_broadcast_lock, and before a connection
+     * lock; nothing takes it while holding any of them.
+     */
+    QemuMutex gid_advertise_lock;
+
+    /*
+     * This node's own GIDs, seeded from ERNIC_TCP_GUEST_GIDS and then changed
+     * by the guest through tcp_claim_gid().  Both are protected by lock.
+     */
     uint8_t local_gids[TCP_MAX_NODE_GIDS][16];
     uint32_t num_local_gids;
 
