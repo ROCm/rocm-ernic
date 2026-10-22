@@ -1,0 +1,958 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="./" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>P4 Match-Action Engine &#8212; rocm-ernic 0.2.0</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="_static/styles/sphinx-book-theme.css?v=4418a689" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="_static/documentation_options.js?v=7f7c277e"></script>
+    <script src="_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/scripts/sphinx-book-theme.js?v=fab101a9"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'p4';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="systemd Service and ernicctl" href="service.html" />
+    <link rel="prev" title="S3 over RDMA Object Store" href="s3.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.2.0" />
+  
+    
+    <script src="_static/searchtools.js"></script>
+    <script src="_static/language_data.js"></script>
+    <script src="searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search..."
+         aria-label="Search..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="index.html">
+  
+  
+  
+  
+  
+  
+    <p class="title logo__title">rocm-ernic 0.2.0</p>
+  
+</a></div>
+        <div class="sidebar-primary-item">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button></div>
+        <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
+    <div class="bd-toc-item navbar-nav active">
+        <p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="building.html">Building and Installing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usage.html">Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ionic.html">The ionic Device</a></li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof.html">NVMe-oF Controller</a></li>
+<li class="toctree-l1"><a class="reference internal" href="s3.html">S3 over RDMA Object Store</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">P4 Match-Action Engine</a></li>
+<li class="toctree-l1"><a class="reference internal" href="service.html">systemd Service and ernicctl</a></li>
+<li class="toctree-l1"><a class="reference internal" href="monitoring.html">Prometheus Monitoring and Grafana Dashboard</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing.html">Testing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="performance.html">Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof-performance.html">NVMe-oF Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="perf-trends.html">Performance trends</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="api.html">API Reference</a></li>
+</ul>
+
+    </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+
+<div class="sbt-scroll-pixel-helper"></div>
+
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item"><button class="sidebar-toggle primary-toggle btn btn-sm" title="Toggle primary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <span class="fa-solid fa-bars"></span>
+</button></div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+
+<div class="article-header-buttons">
+
+
+<a href="https://github.com/ROCm/rocm-ernic" target="_blank"
+   class="btn btn-sm btn-source-repository-button"
+   title="Source repository"
+   data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fab fa-github"></i>
+  </span>
+
+</a>
+
+
+
+
+
+
+<div class="dropdown dropdown-download-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Download this page">
+    <i class="fas fa-download"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="_sources/p4.rst" target="_blank"
+   class="btn btn-sm btn-download-source-button dropdown-item"
+   title="Download source file"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file"></i>
+  </span>
+<span class="btn__text-container">.rst</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li>
+<button onclick="window.print()"
+  class="btn btn-sm btn-download-pdf-button dropdown-item"
+  title="Print to PDF"
+  data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file-pdf"></i>
+  </span>
+<span class="btn__text-container">.pdf</span>
+</button>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+<button onclick="toggleFullScreen()"
+  class="btn btn-sm btn-fullscreen-button pst-navbar-icon"
+  title="Fullscreen mode"
+  data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-expand"></i>
+  </span>
+
+</button>
+
+
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div>
+
+
+<button class="btn btn-sm pst-navbar-icon search-button search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass fa-lg"></i>
+</button>
+<button class="sidebar-toggle secondary-toggle btn btn-sm pst-navbar-icon" title="Toggle secondary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <span class="fa-solid fa-list"></span>
+</button>
+</div></div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="jb-print-docs-body" class="onlyprint">
+    <h1>P4 Match-Action Engine</h1>
+    <!-- Table of contents -->
+    <div id="print-main-content">
+        <div id="jb-print-toc">
+            
+            <div>
+                <h2> Contents </h2>
+            </div>
+            <nav aria-label="Page">
+                <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#status">Status</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-guest-s-control-surface">The guest’s control surface</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#shaped-like-pds-fwctl-not-pds-fwctl">Shaped like pds_fwctl, not pds_fwctl</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-capability-bit">The capability bit</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-port-model">The port model</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#programs">Programs</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#loading-a-program">Loading a program</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#table-entries">Table entries</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#alignment-with-amd-pensando-silicon">Alignment with AMD Pensando silicon</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#where-this-differs-from-the-silicon">Where this differs from the silicon</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#security">Security</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#testing">Testing</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#reading-the-counters">Reading the counters</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#what-cannot-be-tested-without-privilege">What cannot be tested without privilege</a></li>
+</ul>
+</li>
+</ul>
+            </nav>
+        </div>
+    </div>
+</div>
+
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="p4-match-action-engine">
+<h1>P4 Match-Action Engine<a class="headerlink" href="#p4-match-action-engine" title="Link to this heading">#</a></h1>
+<p>The device rocm-ernic emulates is, in silicon, a P4-programmable
+DPU: its datapath is a match-action pipeline loaded at run time
+rather than a fixed function. The P4 engine is the emulator’s
+equivalent. It sits between the guest’s Ethernet queues and the
+host network backend and decides, for every frame in either
+direction, where the frame goes and what it looks like when it
+gets there.</p>
+<p>This is built only when the <code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_P4</span></code> CMake option is on,
+which it is not by default:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cmake<span class="w"> </span>-B<span class="w"> </span>build<span class="w"> </span>-G<span class="w"> </span>Ninja<span class="w"> </span>-DERNIC_BUILD_P4<span class="o">=</span>ON
+cmake<span class="w"> </span>--build<span class="w"> </span>build
+
+./build/rocm-ernic<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--socket<span class="w"> </span>/tmp/vfio-user-rocm-ernic.sock<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--backend<span class="w"> </span>loopback<span class="w"> </span>--tap<span class="w"> </span>ernic0<span class="w"> </span>--p4
+</pre></div>
+</div>
+<p>Give it a program with <code class="docutils literal notranslate"><span class="pre">--p4-program</span></code>, which implies
+<code class="docutils literal notranslate"><span class="pre">--p4</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>./build/rocm-ernic<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--socket<span class="w"> </span>/tmp/vfio-user-rocm-ernic.sock<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--backend<span class="w"> </span>loopback<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--p4-program<span class="w"> </span>tests/data/p4/loopback.json
+</pre></div>
+</div>
+<p>A program the engine will not run stops the server starting,
+and says which feature it used. A bad program is a startup
+failure, never a silently inert pipeline.</p>
+<p>The RDMA backend is unrelated to any of this. The engine is
+on the Ethernet path, and the RDMA backends never touch it,
+so <code class="docutils literal notranslate"><span class="pre">--backend</span></code> makes no difference to what the pipeline
+sees.</p>
+<section id="status">
+<h2>Status<a class="headerlink" href="#status" title="Link to this heading">#</a></h2>
+<p>The engine loads a compiled P4 program and runs it. bmv2’s
+own <code class="docutils literal notranslate"><span class="pre">loopback.json</span></code> forwards a frame unchanged;
+<code class="docutils literal notranslate"><span class="pre">simple_router.json</span></code> loads once its checksum section is
+removed. Table entries can be installed, changed and removed,
+so the same program and the same frame can be made to take a
+different path.</p>
+<p>The pipeline is on the Ethernet path only. RDMA traffic does
+not reach it, so the elementwise fp8 operation in the RDMA
+data path (<code class="docutils literal notranslate"><span class="pre">ionic_datapath_fp8_map()</span></code>) calls the arithmetic
+directly rather than through a program – which operation
+happens is fixed by the caller, not chosen by a table. Wiring
+the pipeline into the RDMA path and making that arithmetic an
+extern a program calls is what will make it P4-governed.</p>
+<p>An extern is how a target gives a program something the
+language cannot express. P4 has no floating-point type – its
+base types are bit-vectors – so fp8 arithmetic is provided
+as one rather than written in P4. A program instantiates it
+and calls it from an action, and p4c emits the call only when
+given <code class="docutils literal notranslate"><span class="pre">--emit-externs</span></code>; the loader allow-lists the type, so
+a program calling an extern this target does not have is
+refused by name rather than loaded with a call that goes
+nowhere.</p>
+<p>What the program decides is the policy: whether to act, and
+with which operation. What it cannot decide is which memory
+is touched – the operand regions come from the work request
+the guest posted, not from anything a table entry can name. A
+value a P4 program computed is not a capability, and letting
+an entry supply a key and an address would make the control
+plane an addressing authority over guest memory. So this is
+table-driven selection over an architecture-fixed operand
+convention, which is a real thing but less than
+“programmable” might suggest.</p>
+<p>The RDMA data path runs the pipeline for every send work
+request, after the request’s own memory has been checked and
+before it is dispatched, so a program never sees an operation
+that is already a protection error. The operand convention is
+fixed by the architecture: an RDMA write whose gather list is
+exactly two equal-length entries supplies the two operands,
+and the work request’s rkey and address are the
+destination. Each operand is N bytes and so is the result;
+the work request’s own length field says 2N, because a
+driver puts the sum of the gather list there and cannot be
+made to say anything else. An action that calls the
+extern must also <code class="docutils literal notranslate"><span class="pre">mark_to_drop()</span></code>, since the extern writes
+the destination itself and the ordinary transfer would land
+on top of the result; an operation whose program does not is
+failed rather than allowed to do that.</p>
+<p><code class="docutils literal notranslate"><span class="pre">tests/data/p4/fp8_policy.p4</span></code> is the worked example. A
+table keyed on the opcode turns an ordinary RDMA write into
+an elementwise fp8 add across three memory regions, and
+changing the one table entry changes the arithmetic with no
+change to the device.</p>
+<p>What is not built yet:
+checksums and calculations, which is
+the one thing keeping <code class="docutils literal notranslate"><span class="pre">simple_router.json</span></code> from loading
+unmodified; and counters, meters, registers and action
+profiles, each of which is refused by name rather than
+ignored.</p>
+</section>
+<section id="the-guest-s-control-surface">
+<h2>The guest’s control surface<a class="headerlink" href="#the-guest-s-control-surface" title="Link to this heading">#</a></h2>
+<p>A guest reaches the engine through ionic device commands 70,
+71 and 72 – identify, RPC and query – which arrive both
+through the BAR0 devcmd window and over the Ethernet admin
+queue, as the RDMA commands do. Through them a driver can
+push a compiled program down in chunks, install, modify and
+delete table entries, and read the engine’s counters.</p>
+<p>What the guest may do is the operator’s decision, not the
+guest’s. <code class="docutils literal notranslate"><span class="pre">--p4-guest-scope</span></code> takes one of:</p>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">none</span></code></dt><dd><p>The default. The surface answers nothing, not even
+identify, and the P4 capability bit is not advertised.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">read</span></code></dt><dd><p>Identify the surface, enumerate its endpoints and
+operations, and read counters.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">write</span></code></dt><dd><p>Also install, modify and delete table entries.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">load</span></code></dt><dd><p>Also replace the running program.</p>
+</dd>
+</dl>
+<p>The grades are ordered and a wider one includes the narrower
+ones. Nothing is granted by default because a guest that can
+replace the program decides where every frame goes and which
+RDMA operations become fp8 reductions; that is not a
+capability to hand out as a side effect of the operator
+enabling the engine for their own use. Each operation
+declares the scope it needs, <code class="docutils literal notranslate"><span class="pre">query</span></code> advertises that scope,
+and the device refuses a request for which either the
+operator’s grant or the caller’s own claim is too narrow –
+the operator’s grant first, so that probing cannot reveal
+which operations exist.</p>
+<section id="shaped-like-pds-fwctl-not-pds-fwctl">
+<h3>Shaped like pds_fwctl, not pds_fwctl<a class="headerlink" href="#shaped-like-pds-fwctl-not-pds-fwctl" title="Link to this heading">#</a></h3>
+<p>The opcode numbers are upstream’s
+(<code class="docutils literal notranslate"><span class="pre">PDS_FWCTL_CMD_IDENT</span></code> = 70, <code class="docutils literal notranslate"><span class="pre">_RPC</span></code> = 71, <code class="docutils literal notranslate"><span class="pre">_QUERY</span></code> = 72,
+from <code class="docutils literal notranslate"><span class="pre">include/linux/pds/pds_adminq.h</span></code>) and so is the shape:
+an endpoint id, an operation id, a scope the device checks,
+and request and response buffers named by guest address.</p>
+<p>The wire format is not. Upstream’s <code class="docutils literal notranslate"><span class="pre">pds_fwctl</span></code> binds to a
+<code class="docutils literal notranslate"><span class="pre">pds_core.fwctl.N</span></code> auxiliary device and never sends those
+opcodes as a top-level command: the driver registers for a
+client id and wraps each one in <code class="docutils literal notranslate"><span class="pre">PDS_AQ_CMD_CLIENT_CMD</span></code>
+with a 60-byte inner payload. rocm-ernic emulates ionic, not
+pds_core, so there is no pds_core admin queue to wrap into
+and the commands travel on their own. A pds_core-like control
+device, if one is ever emulated, can present the same
+operations without renumbering them.</p>
+<p>One upstream behaviour is deliberately not copied. Its driver
+walks the entry count a device reports in a query straight
+out of the DMA buffer, without checking it against the length
+it asked for, so an over-reporting device walks the host off
+the end of a page. A query here reports both what fitted the
+buffer and how many entries exist, so a guest can retry with
+a larger one.</p>
+</section>
+<section id="the-capability-bit">
+<h3>The capability bit<a class="headerlink" href="#the-capability-bit" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">ionic_if.h</span></code> defines two LIF capability bits, <code class="docutils literal notranslate"><span class="pre">ETH</span></code> and
+<code class="docutils literal notranslate"><span class="pre">RDMA</span></code>, so bit 2 is free and is used here as
+<code class="docutils literal notranslate"><span class="pre">IONIC_LIF_CAP_P4</span></code>. It is advertised in <code class="docutils literal notranslate"><span class="pre">LIF_IDENTIFY</span></code>
+only when the engine is on and the operator granted a scope,
+which is how a patched guest driver decides whether to create
+a P4 auxiliary device. It is keyed on the command surface
+actually being registered rather than on a separate flag, so
+the bit and the surface cannot disagree: a guest told it has
+the capability and then refused every command would have no
+way to tell that from a broken device. Real hardware never
+sets the bit, so a driver carrying the patch is unaffected by
+it.</p>
+</section>
+</section>
+<section id="the-port-model">
+<h2>The port model<a class="headerlink" href="#the-port-model" title="Link to this heading">#</a></h2>
+<p>The pipeline sees the emulated NIC as a two-port device:</p>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">P4_PORT_HOST</span></code> (0)</dt><dd><p>The guest’s Ethernet queues. A frame ingresses here when the
+guest transmits it, and egresses here by being injected into
+the guest’s receive ring.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">P4_PORT_UPLINK</span></code> (1)</dt><dd><p>The host network backend, which is the TAP interface attached
+with <code class="docutils literal notranslate"><span class="pre">--tap</span></code>. Without one, nothing ingresses on this port
+and a frame sent to it is dropped.</p>
+</dd>
+</dl>
+<p>A P4 program’s <code class="docutils literal notranslate"><span class="pre">ingress_port</span></code> and <code class="docutils literal notranslate"><span class="pre">egress_spec</span></code> metadata
+carry these values.</p>
+<p>The engine attaches to the emulated NIC through the two frame
+filters the Ethernet emulator already provides, so no frame path
+is duplicated. It takes the transmit filter slot and chains to
+whoever held it: a frame addressed to the in-band S3 control
+plane is consumed there and never reaches the pipeline, which is
+right, because that endpoint is not on the wire the pipeline
+models.</p>
+<p>Everything runs on the thread that owns the vfio-user context –
+the transmit filter is called from the doorbell path and the
+receive filter from the server’s poll loop, both of which are
+already that thread. No lock is taken and no thread is started.</p>
+</section>
+<section id="programs">
+<h2>Programs<a class="headerlink" href="#programs" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">scripts/fetch-p4c.sh</span></code> puts a working p4c under <code class="docutils literal notranslate"><span class="pre">build-p4c</span></code>
+without installing anything, so a program can be compiled
+rather than written by hand:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>scripts/fetch-p4c.sh
+build-p4c/bin/p4c-bm2-ss<span class="w"> </span>--std<span class="w"> </span>p4-16<span class="w"> </span>-I<span class="w"> </span>build-p4c/p4include<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-o<span class="w"> </span>program.json<span class="w"> </span>program.p4
+</pre></div>
+</div>
+<p>Add <code class="docutils literal notranslate"><span class="pre">--emit-externs</span></code> for a program that calls a
+target-specific extern; without it p4c refuses one it does
+not know.</p>
+<p>A program will be supplied as a <strong>bmv2 JSON file</strong>: the
+target-independent artifact that</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>p4c<span class="w"> </span>--target<span class="w"> </span>bmv2<span class="w"> </span>--arch<span class="w"> </span>v1model<span class="w"> </span>--std<span class="w"> </span>p4-16<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-o<span class="w"> </span>program.json<span class="w"> </span>program.p4
+</pre></div>
+</div>
+<p>emits for any P4 program. Nothing in rocm-ernic links
+<a class="reference external" href="https://github.com/p4lang/behavioral-model">bmv2</a> itself; the
+JSON is the interface. bmv2 is still useful as a behavioural
+oracle, and the conformance tests run the same program and the
+same frames through stock bmv2 to generate what the engine is
+expected to produce.</p>
+</section>
+<section id="loading-a-program">
+<h2>Loading a program<a class="headerlink" href="#loading-a-program" title="Link to this heading">#</a></h2>
+<p>A program is loaded in pieces, because it is far larger than
+any one device command carries, and parsed with json-c. The
+dependency is taken only when <code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_P4</span></code> is on, so a
+build without the engine – which is what a superproject sees
+first – keeps the dependency set it had before.</p>
+<p>A program loads completely – the header definitions, the
+parse state machine, the deparser’s emit order, the actions,
+and the pipelines with their tables and conditionals – and
+then runs: parse, walk the pipeline, deparse.</p>
+<p>Where a frame goes is the program’s decision. It writes
+<code class="docutils literal notranslate"><span class="pre">standard_metadata.egress_spec</span></code>, and the engine turns that
+into an egress port, so a program without that field cannot
+say where a packet goes and is refused at load. An
+<code class="docutils literal notranslate"><span class="pre">egress_spec</span></code> naming a port this two-port device does not
+have is a drop, never an index – a ported program may well
+name one.</p>
+<p>Values are carried in a fixed-width big-endian buffer wide
+enough for any field the loader accepts, so a 128-bit address
+is compared, assigned and added exactly like a nine-bit port
+number. Nothing is limited to what fits in a machine word,
+and two values are comparable with one <code class="docutils literal notranslate"><span class="pre">memcmp</span></code> because
+both are right-aligned in the same width.</p>
+<p>A frame the program cannot be run over is dropped rather than
+forwarded unexamined. Failing open would put a frame on the
+wire that the pipeline never saw, which defeats the point of
+having one.</p>
+</section>
+<section id="table-entries">
+<h2>Table entries<a class="headerlink" href="#table-entries" title="Link to this heading">#</a></h2>
+<p>A loaded program is immutable; its entries are not, so they
+live beside it rather than in it. <code class="docutils literal notranslate"><span class="pre">p4_engine_update()</span></code>
+takes a record shaped like a P4Runtime update – insert,
+modify or delete, naming a table and an action by name – and
+is the single path by which any control plane changes a
+table. A network-facing client and the guest’s own device
+commands are both meant to produce one of these, rather than
+each having its own way in.</p>
+<p>Exact, longest-prefix and ternary matching all work, and the
+ties are broken as P4 requires: the longest prefix wins for
+LPM, the highest priority for ternary. A table’s memory is
+taken when its first entry arrives, not when the program
+loads, so a program declaring large tables and putting
+nothing in them costs nothing.</p>
+<p>A table with no entry for a packet takes its default action,
+which is why <code class="docutils literal notranslate"><span class="pre">minimal_forward.json</span></code> drops a frame until an
+entry for its destination is installed, and forwards it
+afterwards.</p>
+<p>The pipeline graph is checked for cycles at load time, by an
+iterative depth-first search with an explicit stack. A loop
+there would spin the thread that also services the vfio-user
+poll loop, and it is reachable through four different kinds
+of edge – an action’s next table, a table’s miss target, and
+either arm of a condition – so the check covers all of them
+rather than the obvious one.</p>
+<p>Two bmv2 behaviours are worth knowing because they are not in
+the format documentation. A table carrying an <code class="docutils literal notranslate"><span class="pre">entries</span></code> key
+is immutable in bmv2 <em>and</em> takes its size from that list, so
+an empty one is a permanently empty table rather than a
+harmless default; it is refused. And <code class="docutils literal notranslate"><span class="pre">max_size</span></code> is the only
+number in the document that names a large allocation without
+the document’s own size bounding it, so the entries all
+tables ask for between them are budgeted against a single
+ceiling. A program that gets that far is well formed,
+uses nothing unsupported, and has a consistent header layout,
+and is then refused with <code class="docutils literal notranslate"><span class="pre">ENOSYS</span></code> because the rest of the
+walk does not exist yet.</p>
+<p>Unknown keys are ignored, not rejected. That is deliberate:
+<code class="docutils literal notranslate"><span class="pre">p4c</span></code> emits <code class="docutils literal notranslate"><span class="pre">program</span></code>, <code class="docutils literal notranslate"><span class="pre">source_info</span></code>, <code class="docutils literal notranslate"><span class="pre">action_ids</span></code> and
+<code class="docutils literal notranslate"><span class="pre">force_arith</span></code>, none of which appear in bmv2’s own
+<code class="docutils literal notranslate"><span class="pre">JSON_format.md</span></code>, so a loader strict about unknown keys
+refuses every real artifact. A feature that <em>is</em> known and not
+implemented is a different case, and is refused by name –
+<code class="docutils literal notranslate"><span class="pre">p4_engine_load_error()</span></code> returns something like
+<code class="docutils literal notranslate"><span class="pre">'checksums'</span> <span class="pre">is</span> <span class="pre">not</span> <span class="pre">supported</span> <span class="pre">yet</span></code> – so a user learns which
+P4 feature they used.</p>
+<p>One consequence worth stating: <code class="docutils literal notranslate"><span class="pre">simple_router.json</span></code>, the
+example bmv2’s own format documentation links to, does <strong>not</strong>
+load. Its <code class="docutils literal notranslate"><span class="pre">calculations</span></code> and <code class="docutils literal notranslate"><span class="pre">checksums</span></code> carry the IPv4
+checksum, which is not implemented. <code class="docutils literal notranslate"><span class="pre">loopback.json</span></code> has both
+empty and gets as far as the walker does.</p>
+<p>Every document is untrusted, so there is no clamping and no
+truncation anywhere in the loader: an oversized array, a name
+with a newline in it, a width given as a floating-point
+number, a duplicate name or id, and a reference to something
+that does not exist are each a rejection.</p>
+</section>
+<section id="alignment-with-amd-pensando-silicon">
+<h2>Alignment with AMD Pensando silicon<a class="headerlink" href="#alignment-with-amd-pensando-silicon" title="Link to this heading">#</a></h2>
+<p>The point of consuming a standard artifact rather than inventing
+a table format is that work done here should transfer to the real
+device. Three things line up by construction:</p>
+<ul class="simple">
+<li><p><strong>bmv2 JSON and p4info as the program artifacts</strong>, so any P4
+program <code class="docutils literal notranslate"><span class="pre">p4c</span></code> can compile is loadable.</p></li>
+<li><p><strong>P4Runtime semantics on the update path</strong> – entities,
+<code class="docutils literal notranslate"><span class="pre">INSERT</span></code>/<code class="docutils literal notranslate"><span class="pre">MODIFY</span></code>/<code class="docutils literal notranslate"><span class="pre">DELETE</span></code>, and role plus election-id
+arbitration – so the network-facing control API is the one the
+ecosystem already speaks.</p></li>
+<li><p><strong>The</strong> <a class="reference external" href="https://github.com/sonic-net/DASH">DASH</a> <strong>pipeline as
+the target program.</strong> <code class="docutils literal notranslate"><span class="pre">dash-pipeline/bmv2/dash_pipeline.p4</span></code>
+models the DASH overlay dataplane and is the closest open
+artifact to what the DPU runs. It is written for
+<code class="docutils literal notranslate"><span class="pre">TARGET_BMV2_V1MODEL</span></code> and carries <code class="docutils literal notranslate"><span class="pre">&#64;SaiTable</span></code> and
+<code class="docutils literal notranslate"><span class="pre">&#64;SaiVal</span></code> annotations that <code class="docutils literal notranslate"><span class="pre">p4c</span></code> emits into p4info, so the
+SAI naming comes with it.</p></li>
+</ul>
+</section>
+<section id="where-this-differs-from-the-silicon">
+<h2>Where this differs from the silicon<a class="headerlink" href="#where-this-differs-from-the-silicon" title="Link to this heading">#</a></h2>
+<p>These are real divergences, recorded rather than papered over.</p>
+<dl class="simple">
+<dt>The control path</dt><dd><p>On hardware the Ethernet path is <code class="docutils literal notranslate"><span class="pre">ionic</span></code> and the control
+path is <code class="docutils literal notranslate"><span class="pre">pds_core</span></code>, a separate PCI function on the auxiliary
+bus, reached from the host through
+<a class="reference external" href="https://docs.kernel.org/userspace-api/fwctl/pds_fwctl.html">pds_fwctl</a>
+with an <em>(endpoint id, operation id, buffers)</em> RPC whose scope
+the driver checks. rocm-ernic emulates only <code class="docutils literal notranslate"><span class="pre">ionic</span></code>, so the
+host-facing API will first appear as ionic device commands
+shaped like those RPCs. A faithful emulation eventually means
+a <code class="docutils literal notranslate"><span class="pre">pds_core</span></code>-like control device.</p>
+</dd>
+<dt>The architecture</dt><dd><p>The DPU’s P4 architecture is not v1model, and the real
+architecture file is proprietary. v1model is used here because
+DASH uses it.</p>
+</dd>
+<dt>Port numbering</dt><dd><p><code class="docutils literal notranslate"><span class="pre">P4_PORT_HOST</span></code> is 0 and <code class="docutils literal notranslate"><span class="pre">P4_PORT_UPLINK</span></code> is 1, and that is
+our convention rather than one inherited from DASH. DASH’s two
+bmv2 ports are both underlay-facing, and its pipeline derives
+direction from the outer VXLAN VNI
+(<code class="docutils literal notranslate"><span class="pre">stages/direction_lookup.p4</span></code>), never from an ingress port –
+<code class="docutils literal notranslate"><span class="pre">standard_metadata.ingress_port</span></code> appears once in its whole
+bmv2 tree, as a default echo. Two consequences for a ported
+DASH program: it will drop every frame arriving on
+<code class="docutils literal notranslate"><span class="pre">P4_PORT_HOST</span></code>, because guest traffic has no underlay encap
+for the <code class="docutils literal notranslate"><span class="pre">vip</span></code> table to match, and it can set an
+<code class="docutils literal notranslate"><span class="pre">egress_spec</span></code> of 2, which this two-port model must reject
+rather than index.</p>
+</dd>
+<dt>Stateful connection tracking</dt><dd><p>DASH’s own roadmap notes that stock bmv2 lacks the stateful
+processing DASH wants. This engine has the same gap.</p>
+</dd>
+<dt>Arithmetic width</dt><dd><p>bmv2 evaluates expressions at infinite precision and truncates
+on assignment to a field. A fixed-width C engine will not
+always agree. The supported width is documented with the
+loader, and the conformance tests pin the behaviour for the
+programs the engine claims to run.</p>
+</dd>
+</dl>
+</section>
+<section id="security">
+<h2>Security<a class="headerlink" href="#security" title="Link to this heading">#</a></h2>
+<p>The guest is untrusted, and so is a program file. Both the
+program and every table entry are validated against the loaded
+program before use: field, header, action and table identifiers
+are range-checked, frame lengths are bounded at both ends of the
+pipeline, and a frame larger than the engine will handle is
+rejected and counted rather than truncated. See <code class="docutils literal notranslate"><span class="pre">AGENTS.md</span></code> for
+the rules this code is held to.</p>
+</section>
+<section id="testing">
+<h2>Testing<a class="headerlink" href="#testing" title="Link to this heading">#</a></h2>
+<p>Three tiers, none of which needs a VM, RDMA hardware or root.</p>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">p4-engine-unit</span></code> (<code class="docutils literal notranslate"><span class="pre">tests/test_p4_engine.c</span></code>)</dt><dd><p>The engine as a function: the port model, the input validation,
+the frame bounds and the statistics. Links the engine’s
+translation unit and nothing else.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">ionic-harness-p4-port</span></code> (<code class="docutils literal notranslate"><span class="pre">tests/test_ionic_harness.c</span></code>)</dt><dd><p>The engine attached to the whole in-process device, with
+libvfio-user replaced by a fake. Covers the transmit filter
+chain: a frame claimed by the endpoint that already held the
+slot must not reach the pipeline, one it declines must, and
+detaching must hand the slot back rather than leave it empty.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">ernic-p4-driver</span></code> (<code class="docutils literal notranslate"><span class="pre">tests/py/test_p4.py</span></code>)</dt><dd><p>The engine on a <strong>real server process</strong>, reached over a real
+vfio-user socket with real DMA. <code class="docutils literal notranslate"><span class="pre">ernic.eth</span></code> drives the
+emulated NIC’s Ethernet transmit ring the way the guest driver
+does, so the frames the pipeline sees are gathered out of guest
+memory rather than handed over in-process. This is the tier that
+tests the server rather than the emulator.</p>
+</dd>
+</dl>
+<section id="reading-the-counters">
+<h3>Reading the counters<a class="headerlink" href="#reading-the-counters" title="Link to this heading">#</a></h3>
+<p>The engine’s counters live inside the process. The server prints
+them as one line at shutdown, at the default log level:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>rocm-ernic: P4 stats: host_in=3 host_out=0 uplink_in=0 uplink_out=3 \
+  dropped=0 too_big=0 parse_errors=0 to_guest=0 to_net=0 \
+  to_upstream=0 egress_errors=3
+</pre></div>
+</div>
+<p>With no TAP attached, a frame forwarded to the uplink port has
+nowhere to go, so <code class="docutils literal notranslate"><span class="pre">egress_errors</span></code> counts it. That is the expected
+result today and is what the Python test asserts on.</p>
+</section>
+<section id="what-cannot-be-tested-without-privilege">
+<h3>What cannot be tested without privilege<a class="headerlink" href="#what-cannot-be-tested-without-privilege" title="Link to this heading">#</a></h3>
+<p>Creating a TAP needs <code class="docutils literal notranslate"><span class="pre">CAP_NET_ADMIN</span></code>, so <strong>ingress on the uplink
+port is unreachable in a registered test</strong>: the receive filter is
+applied only to frames read from the host backend. Attaching to a
+pre-created, user-owned persistent TAP does not need privilege, and
+is the pattern <code class="docutils literal notranslate"><span class="pre">tests/test_ionic_ci.sh</span></code> already uses for its
+optional checks.</p>
+<p>The other gap is the round trip. Sending a frame back to the port
+it arrived on needs a table entry that sets <code class="docutils literal notranslate"><span class="pre">egress_spec</span></code>, which
+needs a loaded program, so until then a guest frame can only be
+observed leaving towards the uplink.</p>
+</section>
+</section>
+</section>
+
+
+                </article>
+              
+
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="s3.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">S3 over RDMA Object Store</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="service.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">systemd Service and ernicctl</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item"><div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> Contents
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#status">Status</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-guest-s-control-surface">The guest’s control surface</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#shaped-like-pds-fwctl-not-pds-fwctl">Shaped like pds_fwctl, not pds_fwctl</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-capability-bit">The capability bit</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-port-model">The port model</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#programs">Programs</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#loading-a-program">Loading a program</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#table-entries">Table entries</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#alignment-with-amd-pensando-silicon">Alignment with AMD Pensando silicon</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#where-this-differs-from-the-silicon">Where this differs from the silicon</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#security">Security</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#testing">Testing</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#reading-the-counters">Reading the counters</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#what-cannot-be-tested-without-privilege">What cannot be tested without privilege</a></li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+<div class="bd-footer-content__inner container">
+  
+  <div class="footer-item">
+    
+<p class="component-author">
+By Advanced Micro Devices, Inc.
+</p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+
+  <p class="copyright">
+    
+      © Copyright 2025-2026 Advanced Micro Devices, Inc. All rights reserved..
+      <br/>
+    
+  </p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+</div>
+          </footer>
+        
+
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+  </footer>
+  </body>
+</html>

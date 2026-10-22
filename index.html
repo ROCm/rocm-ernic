@@ -197,6 +197,7 @@
 <li class="toctree-l1"><a class="reference internal" href="ionic.html">The ionic Device</a></li>
 <li class="toctree-l1"><a class="reference internal" href="nvmeof.html">NVMe-oF Controller</a></li>
 <li class="toctree-l1"><a class="reference internal" href="s3.html">S3 over RDMA Object Store</a></li>
+<li class="toctree-l1"><a class="reference internal" href="p4.html">P4 Match-Action Engine</a></li>
 <li class="toctree-l1"><a class="reference internal" href="service.html">systemd Service and ernicctl</a></li>
 <li class="toctree-l1"><a class="reference internal" href="monitoring.html">Prometheus Monitoring and Grafana Dashboard</a></li>
 <li class="toctree-l1"><a class="reference internal" href="testing.html">Testing</a></li>
@@ -421,6 +422,9 @@ in-band HTTP endpoint on the emulated wire, so the same
 single VM is a complete object fabric (see <a class="reference internal" href="s3.html"><span class="doc">S3 over RDMA Object Store</span></a>)</p></li>
 <li><p>Working Ethernet and TCP/IP to the host via a TAP
 interface</p></li>
+<li><p>An optional P4 match-action stage on the emulated wire,
+matching the programmable datapath of the silicon the
+device models (see <a class="reference internal" href="p4.html"><span class="doc">P4 Match-Action Engine</span></a>)</p></li>
 <li><p>Comprehensive statistics collection</p></li>
 </ul>
 </section>
@@ -514,6 +518,19 @@ a host TAP:</p>
 <li class="toctree-l2"><a class="reference internal" href="s3.html#testing">Testing</a></li>
 <li class="toctree-l2"><a class="reference internal" href="s3.html#performance">Performance</a></li>
 <li class="toctree-l2"><a class="reference internal" href="s3.html#limitations">Limitations</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="p4.html">P4 Match-Action Engine</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="p4.html#status">Status</a></li>
+<li class="toctree-l2"><a class="reference internal" href="p4.html#the-guest-s-control-surface">The guest’s control surface</a></li>
+<li class="toctree-l2"><a class="reference internal" href="p4.html#the-port-model">The port model</a></li>
+<li class="toctree-l2"><a class="reference internal" href="p4.html#programs">Programs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="p4.html#loading-a-program">Loading a program</a></li>
+<li class="toctree-l2"><a class="reference internal" href="p4.html#table-entries">Table entries</a></li>
+<li class="toctree-l2"><a class="reference internal" href="p4.html#alignment-with-amd-pensando-silicon">Alignment with AMD Pensando silicon</a></li>
+<li class="toctree-l2"><a class="reference internal" href="p4.html#where-this-differs-from-the-silicon">Where this differs from the silicon</a></li>
+<li class="toctree-l2"><a class="reference internal" href="p4.html#security">Security</a></li>
+<li class="toctree-l2"><a class="reference internal" href="p4.html#testing">Testing</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="service.html">systemd Service and ernicctl</a><ul>

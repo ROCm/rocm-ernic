@@ -1,0 +1,493 @@
+.. SPDX-License-Identifier: MIT
+.. Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+
+P4 Match-Action Engine
+======================
+
+The device rocm-ernic emulates is, in silicon, a P4-programmable
+DPU: its datapath is a match-action pipeline loaded at run time
+rather than a fixed function. The P4 engine is the emulator's
+equivalent. It sits between the guest's Ethernet queues and the
+host network backend and decides, for every frame in either
+direction, where the frame goes and what it looks like when it
+gets there.
+
+This is built only when the ``ERNIC_BUILD_P4`` CMake option is on,
+which it is not by default:
+
+.. code-block:: bash
+
+   cmake -B build -G Ninja -DERNIC_BUILD_P4=ON
+   cmake --build build
+
+   ./build/rocm-ernic \
+     --socket /tmp/vfio-user-rocm-ernic.sock \
+     --backend loopback --tap ernic0 --p4
+
+Give it a program with ``--p4-program``, which implies
+``--p4``:
+
+.. code-block:: bash
+
+   ./build/rocm-ernic \
+     --socket /tmp/vfio-user-rocm-ernic.sock \
+     --backend loopback \
+     --p4-program tests/data/p4/loopback.json
+
+A program the engine will not run stops the server starting,
+and says which feature it used. A bad program is a startup
+failure, never a silently inert pipeline.
+
+The RDMA backend is unrelated to any of this. The engine is
+on the Ethernet path, and the RDMA backends never touch it,
+so ``--backend`` makes no difference to what the pipeline
+sees.
+
+Status
+------
+
+The engine loads a compiled P4 program and runs it. bmv2's
+own ``loopback.json`` forwards a frame unchanged;
+``simple_router.json`` loads once its checksum section is
+removed. Table entries can be installed, changed and removed,
+so the same program and the same frame can be made to take a
+different path.
+
+The pipeline is on the Ethernet path only. RDMA traffic does
+not reach it, so the elementwise fp8 operation in the RDMA
+data path (``ionic_datapath_fp8_map()``) calls the arithmetic
+directly rather than through a program -- which operation
+happens is fixed by the caller, not chosen by a table. Wiring
+the pipeline into the RDMA path and making that arithmetic an
+extern a program calls is what will make it P4-governed.
+
+An extern is how a target gives a program something the
+language cannot express. P4 has no floating-point type -- its
+base types are bit-vectors -- so fp8 arithmetic is provided
+as one rather than written in P4. A program instantiates it
+and calls it from an action, and p4c emits the call only when
+given ``--emit-externs``; the loader allow-lists the type, so
+a program calling an extern this target does not have is
+refused by name rather than loaded with a call that goes
+nowhere.
+
+What the program decides is the policy: whether to act, and
+with which operation. What it cannot decide is which memory
+is touched -- the operand regions come from the work request
+the guest posted, not from anything a table entry can name. A
+value a P4 program computed is not a capability, and letting
+an entry supply a key and an address would make the control
+plane an addressing authority over guest memory. So this is
+table-driven selection over an architecture-fixed operand
+convention, which is a real thing but less than
+"programmable" might suggest.
+
+The RDMA data path runs the pipeline for every send work
+request, after the request's own memory has been checked and
+before it is dispatched, so a program never sees an operation
+that is already a protection error. The operand convention is
+fixed by the architecture: an RDMA write whose gather list is
+exactly two equal-length entries supplies the two operands,
+and the work request's rkey and address are the
+destination. Each operand is N bytes and so is the result;
+the work request's own length field says 2N, because a
+driver puts the sum of the gather list there and cannot be
+made to say anything else. An action that calls the
+extern must also ``mark_to_drop()``, since the extern writes
+the destination itself and the ordinary transfer would land
+on top of the result; an operation whose program does not is
+failed rather than allowed to do that.
+
+``tests/data/p4/fp8_policy.p4`` is the worked example. A
+table keyed on the opcode turns an ordinary RDMA write into
+an elementwise fp8 add across three memory regions, and
+changing the one table entry changes the arithmetic with no
+change to the device.
+
+What is not built yet:
+checksums and calculations, which is
+the one thing keeping ``simple_router.json`` from loading
+unmodified; and counters, meters, registers and action
+profiles, each of which is refused by name rather than
+ignored.
+
+The guest's control surface
+---------------------------
+
+A guest reaches the engine through ionic device commands 70,
+71 and 72 -- identify, RPC and query -- which arrive both
+through the BAR0 devcmd window and over the Ethernet admin
+queue, as the RDMA commands do. Through them a driver can
+push a compiled program down in chunks, install, modify and
+delete table entries, and read the engine's counters.
+
+What the guest may do is the operator's decision, not the
+guest's. ``--p4-guest-scope`` takes one of:
+
+``none``
+   The default. The surface answers nothing, not even
+   identify, and the P4 capability bit is not advertised.
+
+``read``
+   Identify the surface, enumerate its endpoints and
+   operations, and read counters.
+
+``write``
+   Also install, modify and delete table entries.
+
+``load``
+   Also replace the running program.
+
+The grades are ordered and a wider one includes the narrower
+ones. Nothing is granted by default because a guest that can
+replace the program decides where every frame goes and which
+RDMA operations become fp8 reductions; that is not a
+capability to hand out as a side effect of the operator
+enabling the engine for their own use. Each operation
+declares the scope it needs, ``query`` advertises that scope,
+and the device refuses a request for which either the
+operator's grant or the caller's own claim is too narrow --
+the operator's grant first, so that probing cannot reveal
+which operations exist.
+
+Shaped like pds_fwctl, not pds_fwctl
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The opcode numbers are upstream's
+(``PDS_FWCTL_CMD_IDENT`` = 70, ``_RPC`` = 71, ``_QUERY`` = 72,
+from ``include/linux/pds/pds_adminq.h``) and so is the shape:
+an endpoint id, an operation id, a scope the device checks,
+and request and response buffers named by guest address.
+
+The wire format is not. Upstream's ``pds_fwctl`` binds to a
+``pds_core.fwctl.N`` auxiliary device and never sends those
+opcodes as a top-level command: the driver registers for a
+client id and wraps each one in ``PDS_AQ_CMD_CLIENT_CMD``
+with a 60-byte inner payload. rocm-ernic emulates ionic, not
+pds_core, so there is no pds_core admin queue to wrap into
+and the commands travel on their own. A pds_core-like control
+device, if one is ever emulated, can present the same
+operations without renumbering them.
+
+One upstream behaviour is deliberately not copied. Its driver
+walks the entry count a device reports in a query straight
+out of the DMA buffer, without checking it against the length
+it asked for, so an over-reporting device walks the host off
+the end of a page. A query here reports both what fitted the
+buffer and how many entries exist, so a guest can retry with
+a larger one.
+
+The capability bit
+^^^^^^^^^^^^^^^^^^
+
+``ionic_if.h`` defines two LIF capability bits, ``ETH`` and
+``RDMA``, so bit 2 is free and is used here as
+``IONIC_LIF_CAP_P4``. It is advertised in ``LIF_IDENTIFY``
+only when the engine is on and the operator granted a scope,
+which is how a patched guest driver decides whether to create
+a P4 auxiliary device. It is keyed on the command surface
+actually being registered rather than on a separate flag, so
+the bit and the surface cannot disagree: a guest told it has
+the capability and then refused every command would have no
+way to tell that from a broken device. Real hardware never
+sets the bit, so a driver carrying the patch is unaffected by
+it.
+
+The port model
+--------------
+
+The pipeline sees the emulated NIC as a two-port device:
+
+``P4_PORT_HOST`` (0)
+   The guest's Ethernet queues. A frame ingresses here when the
+   guest transmits it, and egresses here by being injected into
+   the guest's receive ring.
+
+``P4_PORT_UPLINK`` (1)
+   The host network backend, which is the TAP interface attached
+   with ``--tap``. Without one, nothing ingresses on this port
+   and a frame sent to it is dropped.
+
+A P4 program's ``ingress_port`` and ``egress_spec`` metadata
+carry these values.
+
+The engine attaches to the emulated NIC through the two frame
+filters the Ethernet emulator already provides, so no frame path
+is duplicated. It takes the transmit filter slot and chains to
+whoever held it: a frame addressed to the in-band S3 control
+plane is consumed there and never reaches the pipeline, which is
+right, because that endpoint is not on the wire the pipeline
+models.
+
+Everything runs on the thread that owns the vfio-user context --
+the transmit filter is called from the doorbell path and the
+receive filter from the server's poll loop, both of which are
+already that thread. No lock is taken and no thread is started.
+
+Programs
+--------
+
+``scripts/fetch-p4c.sh`` puts a working p4c under ``build-p4c``
+without installing anything, so a program can be compiled
+rather than written by hand:
+
+.. code-block:: bash
+
+   scripts/fetch-p4c.sh
+   build-p4c/bin/p4c-bm2-ss --std p4-16 -I build-p4c/p4include \
+       -o program.json program.p4
+
+Add ``--emit-externs`` for a program that calls a
+target-specific extern; without it p4c refuses one it does
+not know.
+
+
+A program will be supplied as a **bmv2 JSON file**: the
+target-independent artifact that
+
+.. code-block:: bash
+
+   p4c --target bmv2 --arch v1model --std p4-16 \
+     -o program.json program.p4
+
+emits for any P4 program. Nothing in rocm-ernic links
+`bmv2 <https://github.com/p4lang/behavioral-model>`_ itself; the
+JSON is the interface. bmv2 is still useful as a behavioural
+oracle, and the conformance tests run the same program and the
+same frames through stock bmv2 to generate what the engine is
+expected to produce.
+
+Loading a program
+-----------------
+
+A program is loaded in pieces, because it is far larger than
+any one device command carries, and parsed with json-c. The
+dependency is taken only when ``ERNIC_BUILD_P4`` is on, so a
+build without the engine -- which is what a superproject sees
+first -- keeps the dependency set it had before.
+
+A program loads completely -- the header definitions, the
+parse state machine, the deparser's emit order, the actions,
+and the pipelines with their tables and conditionals -- and
+then runs: parse, walk the pipeline, deparse.
+
+Where a frame goes is the program's decision. It writes
+``standard_metadata.egress_spec``, and the engine turns that
+into an egress port, so a program without that field cannot
+say where a packet goes and is refused at load. An
+``egress_spec`` naming a port this two-port device does not
+have is a drop, never an index -- a ported program may well
+name one.
+
+Values are carried in a fixed-width big-endian buffer wide
+enough for any field the loader accepts, so a 128-bit address
+is compared, assigned and added exactly like a nine-bit port
+number. Nothing is limited to what fits in a machine word,
+and two values are comparable with one ``memcmp`` because
+both are right-aligned in the same width.
+
+A frame the program cannot be run over is dropped rather than
+forwarded unexamined. Failing open would put a frame on the
+wire that the pipeline never saw, which defeats the point of
+having one.
+
+Table entries
+-------------
+
+A loaded program is immutable; its entries are not, so they
+live beside it rather than in it. ``p4_engine_update()``
+takes a record shaped like a P4Runtime update -- insert,
+modify or delete, naming a table and an action by name -- and
+is the single path by which any control plane changes a
+table. A network-facing client and the guest's own device
+commands are both meant to produce one of these, rather than
+each having its own way in.
+
+Exact, longest-prefix and ternary matching all work, and the
+ties are broken as P4 requires: the longest prefix wins for
+LPM, the highest priority for ternary. A table's memory is
+taken when its first entry arrives, not when the program
+loads, so a program declaring large tables and putting
+nothing in them costs nothing.
+
+A table with no entry for a packet takes its default action,
+which is why ``minimal_forward.json`` drops a frame until an
+entry for its destination is installed, and forwards it
+afterwards.
+
+The pipeline graph is checked for cycles at load time, by an
+iterative depth-first search with an explicit stack. A loop
+there would spin the thread that also services the vfio-user
+poll loop, and it is reachable through four different kinds
+of edge -- an action's next table, a table's miss target, and
+either arm of a condition -- so the check covers all of them
+rather than the obvious one.
+
+Two bmv2 behaviours are worth knowing because they are not in
+the format documentation. A table carrying an ``entries`` key
+is immutable in bmv2 *and* takes its size from that list, so
+an empty one is a permanently empty table rather than a
+harmless default; it is refused. And ``max_size`` is the only
+number in the document that names a large allocation without
+the document's own size bounding it, so the entries all
+tables ask for between them are budgeted against a single
+ceiling. A program that gets that far is well formed,
+uses nothing unsupported, and has a consistent header layout,
+and is then refused with ``ENOSYS`` because the rest of the
+walk does not exist yet.
+
+Unknown keys are ignored, not rejected. That is deliberate:
+``p4c`` emits ``program``, ``source_info``, ``action_ids`` and
+``force_arith``, none of which appear in bmv2's own
+``JSON_format.md``, so a loader strict about unknown keys
+refuses every real artifact. A feature that *is* known and not
+implemented is a different case, and is refused by name --
+``p4_engine_load_error()`` returns something like
+``'checksums' is not supported yet`` -- so a user learns which
+P4 feature they used.
+
+One consequence worth stating: ``simple_router.json``, the
+example bmv2's own format documentation links to, does **not**
+load. Its ``calculations`` and ``checksums`` carry the IPv4
+checksum, which is not implemented. ``loopback.json`` has both
+empty and gets as far as the walker does.
+
+Every document is untrusted, so there is no clamping and no
+truncation anywhere in the loader: an oversized array, a name
+with a newline in it, a width given as a floating-point
+number, a duplicate name or id, and a reference to something
+that does not exist are each a rejection.
+
+Alignment with AMD Pensando silicon
+-----------------------------------
+
+The point of consuming a standard artifact rather than inventing
+a table format is that work done here should transfer to the real
+device. Three things line up by construction:
+
+- **bmv2 JSON and p4info as the program artifacts**, so any P4
+  program ``p4c`` can compile is loadable.
+- **P4Runtime semantics on the update path** -- entities,
+  ``INSERT``/``MODIFY``/``DELETE``, and role plus election-id
+  arbitration -- so the network-facing control API is the one the
+  ecosystem already speaks.
+- **The** `DASH <https://github.com/sonic-net/DASH>`_ **pipeline as
+  the target program.** ``dash-pipeline/bmv2/dash_pipeline.p4``
+  models the DASH overlay dataplane and is the closest open
+  artifact to what the DPU runs. It is written for
+  ``TARGET_BMV2_V1MODEL`` and carries ``@SaiTable`` and
+  ``@SaiVal`` annotations that ``p4c`` emits into p4info, so the
+  SAI naming comes with it.
+
+Where this differs from the silicon
+-----------------------------------
+
+These are real divergences, recorded rather than papered over.
+
+The control path
+   On hardware the Ethernet path is ``ionic`` and the control
+   path is ``pds_core``, a separate PCI function on the auxiliary
+   bus, reached from the host through
+   `pds_fwctl <https://docs.kernel.org/userspace-api/fwctl/pds_fwctl.html>`_
+   with an *(endpoint id, operation id, buffers)* RPC whose scope
+   the driver checks. rocm-ernic emulates only ``ionic``, so the
+   host-facing API will first appear as ionic device commands
+   shaped like those RPCs. A faithful emulation eventually means
+   a ``pds_core``-like control device.
+
+The architecture
+   The DPU's P4 architecture is not v1model, and the real
+   architecture file is proprietary. v1model is used here because
+   DASH uses it.
+
+Port numbering
+   ``P4_PORT_HOST`` is 0 and ``P4_PORT_UPLINK`` is 1, and that is
+   our convention rather than one inherited from DASH. DASH's two
+   bmv2 ports are both underlay-facing, and its pipeline derives
+   direction from the outer VXLAN VNI
+   (``stages/direction_lookup.p4``), never from an ingress port --
+   ``standard_metadata.ingress_port`` appears once in its whole
+   bmv2 tree, as a default echo. Two consequences for a ported
+   DASH program: it will drop every frame arriving on
+   ``P4_PORT_HOST``, because guest traffic has no underlay encap
+   for the ``vip`` table to match, and it can set an
+   ``egress_spec`` of 2, which this two-port model must reject
+   rather than index.
+
+Stateful connection tracking
+   DASH's own roadmap notes that stock bmv2 lacks the stateful
+   processing DASH wants. This engine has the same gap.
+
+Arithmetic width
+   bmv2 evaluates expressions at infinite precision and truncates
+   on assignment to a field. A fixed-width C engine will not
+   always agree. The supported width is documented with the
+   loader, and the conformance tests pin the behaviour for the
+   programs the engine claims to run.
+
+Security
+--------
+
+The guest is untrusted, and so is a program file. Both the
+program and every table entry are validated against the loaded
+program before use: field, header, action and table identifiers
+are range-checked, frame lengths are bounded at both ends of the
+pipeline, and a frame larger than the engine will handle is
+rejected and counted rather than truncated. See ``AGENTS.md`` for
+the rules this code is held to.
+
+Testing
+-------
+
+Three tiers, none of which needs a VM, RDMA hardware or root.
+
+``p4-engine-unit`` (``tests/test_p4_engine.c``)
+   The engine as a function: the port model, the input validation,
+   the frame bounds and the statistics. Links the engine's
+   translation unit and nothing else.
+
+``ionic-harness-p4-port`` (``tests/test_ionic_harness.c``)
+   The engine attached to the whole in-process device, with
+   libvfio-user replaced by a fake. Covers the transmit filter
+   chain: a frame claimed by the endpoint that already held the
+   slot must not reach the pipeline, one it declines must, and
+   detaching must hand the slot back rather than leave it empty.
+
+``ernic-p4-driver`` (``tests/py/test_p4.py``)
+   The engine on a **real server process**, reached over a real
+   vfio-user socket with real DMA. ``ernic.eth`` drives the
+   emulated NIC's Ethernet transmit ring the way the guest driver
+   does, so the frames the pipeline sees are gathered out of guest
+   memory rather than handed over in-process. This is the tier that
+   tests the server rather than the emulator.
+
+Reading the counters
+^^^^^^^^^^^^^^^^^^^^
+
+The engine's counters live inside the process. The server prints
+them as one line at shutdown, at the default log level:
+
+.. code-block:: text
+
+   rocm-ernic: P4 stats: host_in=3 host_out=0 uplink_in=0 uplink_out=3 \
+     dropped=0 too_big=0 parse_errors=0 to_guest=0 to_net=0 \
+     to_upstream=0 egress_errors=3
+
+With no TAP attached, a frame forwarded to the uplink port has
+nowhere to go, so ``egress_errors`` counts it. That is the expected
+result today and is what the Python test asserts on.
+
+What cannot be tested without privilege
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Creating a TAP needs ``CAP_NET_ADMIN``, so **ingress on the uplink
+port is unreachable in a registered test**: the receive filter is
+applied only to frames read from the host backend. Attaching to a
+pre-created, user-owned persistent TAP does not need privilege, and
+is the pattern ``tests/test_ionic_ci.sh`` already uses for its
+optional checks.
+
+The other gap is the round trip. Sending a frame back to the port
+it arrived on needs a table entry that sets ``egress_spec``, which
+needs a loaded program, so until then a guest frame can only be
+observed leaving towards the uplink.
