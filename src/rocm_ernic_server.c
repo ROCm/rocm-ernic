@@ -1743,6 +1743,33 @@ int main(int argc, char *argv[])
         ernic_startup_report("  IB Port: %u", dev->backend_port_num);
     }
 
+#ifdef ERNIC_HAVE_P4
+    /*
+     * Ahead of the socket, because a program that will be refused must not
+     * leave a listening socket behind while it is being read.  Whoever
+     * connects in that window gets a server that is about to exit, having
+     * seen nothing to say so; the socket appearing is the only readiness
+     * signal there is.  The program is read once, here, and the engine
+     * carries it to the attach below -- reading it again later would be a
+     * check-then-act on a path, which is its own problem.
+     */
+    if (p4_enabled) {
+        dev->p4_engine = p4_engine_create();
+        if (!dev->p4_engine) {
+            fprintf(stderr, "rocm-ernic: failed to create the P4 engine\n");
+            dev_free(dev);
+            return EXIT_FAILURE;
+        }
+        if (p4_program &&
+            p4_load_program_file(dev->p4_engine, p4_program) != 0) {
+            p4_engine_destroy(dev->p4_engine);
+            dev->p4_engine = NULL;
+            dev_free(dev);
+            return EXIT_FAILURE;
+        }
+    }
+#endif
+
     /* Binding fails if anything is at the path, so remove a socket that a
      * server that didn't exit cleanly left there. */
     if (!remove_stale_socket(socket_path)) {
@@ -1904,18 +1931,14 @@ int main(int argc, char *argv[])
     }
 
 #ifdef ERNIC_HAVE_P4
-    /* After the TAP and the S3 endpoint, so the engine sees a complete wire
-     * and can chain to whatever already holds the Tx filter. */
+    /* The engine and its program were made above, before the socket.  The
+     * attach waits until here, after the TAP and the S3 endpoint, so the
+     * engine sees a complete wire and can chain to whatever already holds
+     * the Tx filter. */
     if (p4_enabled) {
         if (!dev->ionic_emu) {
             fprintf(stderr,
                     "rocm-ernic: Ethernet emulation is not initialized\n");
-            goto fail;
-        }
-
-        dev->p4_engine = p4_engine_create();
-        if (!dev->p4_engine) {
-            fprintf(stderr, "rocm-ernic: failed to create the P4 engine\n");
             goto fail;
         }
 
@@ -1936,8 +1959,6 @@ int main(int argc, char *argv[])
         ionic_datapath_set_p4_engine(dev->ionic_dp, dev->p4_engine);
 
         if (p4_program) {
-            if (p4_load_program_file(dev->p4_engine, p4_program) != 0)
-                goto fail;
             ernic_startup_report("rocm-ernic: P4 engine attached, running "
                                  "'%s'",
                                  p4_program);

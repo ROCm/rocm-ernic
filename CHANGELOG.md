@@ -592,6 +592,29 @@
   more is undefined behaviour. A completion queue the data path refused
   was also reported to the guest as created. The Linux driver asks for
   nothing outside these bounds.
+* A P4 program that the engine refuses no longer leaves a listening socket
+  behind while it is being read. `--p4-program` was loaded well after
+  `vfu_create_ctx()` bound the socket, so a client connecting in that
+  window got a server that was about to exit having given it no reason:
+  the socket appearing is the only readiness signal there is. The program
+  is now read before the socket exists, and refusing one fails the start
+  with nothing published. This also makes the failure deterministic for a
+  test that waits on the socket, which is how it was found.
+* A guest could provoke undefined behaviour in the server with a single
+  `CREATE_QP` admin command. The send and receive ring depths and strides
+  arrive in that command and are shifted by -- `1u << depth_log2` when the
+  queue pair is registered, and `1u << stride_log2` on the work-request
+  path -- but unlike `CREATE_CQ` and `CREATE_SRQ`, `CREATE_QP` never
+  bounded them, so any value at or above the width of the type was
+  undefined. Both are now bounded and an out-of-range command is refused.
+  Only the upper limits are enforced: a small stride describes a useless
+  ring rather than a dangerous one, and refusing it would reject commands
+  the device has always accepted.
+* UndefinedBehaviorSanitizer reports are fatal, as the other sanitizers'
+  already were. Without `halt_on_error` it printed a report and carried
+  on, so the program exited zero and the test carried on passing -- which
+  is how the `CREATE_QP` shift above survived a green sanitizer leg. The
+  whole suite passes with it on, so nothing else was hiding behind it.
 * A guest could provoke undefined behaviour in the server with one device
   command. `Q_INIT` logged the queue depth as `1 << ring_size` before
   range-checking `ring_size`, which comes straight from the guest's 64-byte
