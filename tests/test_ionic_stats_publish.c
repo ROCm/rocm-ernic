@@ -22,10 +22,10 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 
 #include "ionic_emu_stats.h"
 #include "ionic_eth_emu.h"
@@ -82,7 +82,9 @@ static struct ionic_eth_emu *new_emu(uint32_t interval_ms)
 
     if (!emu) {
         fprintf(stderr, "ionic_eth_emu_create failed\n");
-        exit(1);
+        /* Every row needs a device; abort() rather than exit(), which
+         * isn't thread safe. */
+        abort();
     }
 
     memset(g_mem, POISON, sizeof(g_mem));
@@ -453,15 +455,15 @@ static void address_boundaries(void)
          "mapping rejected; all guest bytes preserved",
          GUEST_MEM_SIZE - IONIC_LIF_INFO_STATS_OFF - IONIC_LIF_STATS_BYTES + 1,
          1, 0},
-        {"boundary", "last representable complete block",
+        /* ernic_dma_range_ok() needs gpa + len to fit in 64 bits, so the
+         * last block that reaches the mapping ends at UINT64_MAX. */
+        {"boundary", "block ends at UINT64_MAX",
          "valid arithmetic; unmapped range rejected",
-         UINT64_MAX - IONIC_LIF_INFO_STATS_OFF - (IONIC_LIF_STATS_BYTES - 1), 1,
-         0},
+         UINT64_MAX - IONIC_LIF_INFO_STATS_OFF - IONIC_LIF_STATS_BYTES, 1, 0},
         {"boundary", "block end overflows by one byte",
          "reject before DMA; all guest bytes preserved",
-         UINT64_MAX - IONIC_LIF_INFO_STATS_OFF - (IONIC_LIF_STATS_BYTES - 1) +
-             1,
-         0, 0},
+         UINT64_MAX - IONIC_LIF_INFO_STATS_OFF - IONIC_LIF_STATS_BYTES + 1, 0,
+         0},
         {"boundary", "offset reaches UINT64_MAX",
          "block cannot fit; reject before DMA",
          UINT64_MAX - IONIC_LIF_INFO_STATS_OFF, 0, 0},
@@ -533,9 +535,9 @@ static void lif_status_address_boundaries(void)
          GUEST_MEM_SIZE - IONIC_LIF_INFO_STATUS_OFF - 63, 1, 0},
         {"boundary", "status ends at UINT64_MAX",
          "valid arithmetic; unmapped range rejected",
-         UINT64_MAX - IONIC_LIF_INFO_STATUS_OFF - 63, 1, 0},
+         UINT64_MAX - IONIC_LIF_INFO_STATUS_OFF - 64, 1, 0},
         {"boundary", "status end overflows by one", "reject before DMA",
-         UINT64_MAX - IONIC_LIF_INFO_STATUS_OFF - 62, 0, 0},
+         UINT64_MAX - IONIC_LIF_INFO_STATUS_OFF - 63, 0, 0},
         {"corner", "status offset wraps to zero",
          "reject before DMA; address zero untouched",
          UINT64_MAX - IONIC_LIF_INFO_STATUS_OFF + 1, 0, 0},
@@ -811,7 +813,6 @@ static char *stats_text(void *opaque, size_t *len)
     return buf;
 }
 
-/* The value on the "  @name ... : N" line, or -1 as UINT64_MAX if absent. */
 /* The number from @p to the end of its line, or UINT64_MAX if it isn't one. */
 static uint64_t line_u64(const char *p)
 {
@@ -820,6 +821,7 @@ static uint64_t line_u64(const char *p)
     return ernic_parse_u64_span(p, strcspn(p, "\n"), &v) ? v : UINT64_MAX;
 }
 
+/* The value on the "  @name ... : N" line, or -1 as UINT64_MAX if absent. */
 static uint64_t stats_value(const char *text, const char *name)
 {
     size_t n = strlen(name);

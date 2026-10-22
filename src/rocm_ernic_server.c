@@ -1433,9 +1433,8 @@ int main(int argc, char *argv[])
                 interval_err, sizeof(interval_err)) != 0) {
             fprintf(stderr, "Error: %s\n", interval_err);
             usage(argv[0]);
-            free(dev->backend_type_str);
-            free(dev);
-            exit(EXIT_FAILURE);
+            dev_free(dev);
+            return EXIT_FAILURE;
         }
     }
 
