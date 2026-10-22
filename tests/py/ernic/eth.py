@@ -59,14 +59,54 @@ class EthQueue:
         self.ring = ring
         self.cq_ring = cq_ring
         self.sg_ring = sg_ring
-        self.prod = 0  # next descriptor slot to fill
+        self.prod = 0  # descriptors posted, ever
+        self.cons = 0  # completions consumed, ever
         self.cq_index = 0  # next completion slot to read
         self.cq_color = True  # colour that marks a completion as new
+        # What is posted in each ring slot, as (address, bytes), or None.
+        # Indexed by ring slot rather than by posting order, because a
+        # completion names a slot: the two agree only until the ring wraps.
+        self.posted = [None] * self.depth
 
     @property
     def depth(self):
         """Entries in the ring."""
         return 1 << self.depth_log2
+
+    @property
+    def outstanding(self):
+        """Descriptors posted but not yet completed."""
+        return self.prod - self.cons
+
+    def claim(self, count=1):
+        """Reserve @count ring slots, or raise.
+
+        The device reads a descriptor when it gets to it, not when the
+        doorbell rings, so posting over an uncompleted one does not fail --
+        it replaces a frame that has not been sent yet, and the test sees a
+        wrong frame or a missing completion somewhere else entirely.
+        """
+        if count > self.depth:
+            raise ValueError(f"{count} descriptors will not fit a ring of {self.depth}")
+        if self.outstanding + count > self.depth:
+            raise DeviceError(
+                f"ring is full: {self.outstanding} of {self.depth} "
+                f"outstanding, {count} more requested; consume completions "
+                f"first"
+            )
+        return self.prod % self.depth
+
+    def release(self, index):
+        """Take back what was posted in slot @index, or raise."""
+        if not 0 <= index < self.depth:
+            raise DeviceError(
+                f"completion names slot {index}, outside a ring of " f"{self.depth}"
+            )
+        entry = self.posted[index]
+        if entry is None:
+            raise DeviceError(f"completion names unposted slot {index}")
+        self.posted[index] = None
+        return entry
 
     def desc_slot(self, index):
         """Guest physical address of descriptor @index."""
@@ -82,6 +122,7 @@ class EthQueue:
 
     def advance_cq(self):
         """Step the completion consumer, flipping colour on wrap."""
+        self.cons += 1
         self.cq_index += 1
         if self.cq_index == self.depth:
             self.cq_index = 0
@@ -177,10 +218,10 @@ class EthQueueMixin:
         if tail >= len(frame):
             raise ValueError("the SG fragments cover the whole frame")
 
+        index = queue.claim()
         buf = self.mem.alloc(len(frame))
         self.mem.write(buf, frame)
 
-        index = queue.prod % queue.depth
         desc = bytearray(ETH_DESC_SIZE)
         # addr is stored shifted, with the SG element count beside it.
         struct.pack_into("<Q", desc, 0, (buf << 12) | (len(split) << 8))
@@ -196,13 +237,22 @@ class EthQueueMixin:
                 off += flen
             self.mem.write(queue.sg_slot(index), bytes(sg))
 
+        queue.posted[index] = (buf, len(frame))
         queue.prod += 1
         self.doorbell(QTYPE_ETH_TXQ, queue.index, 0, queue.prod % queue.depth)
-        return queue.prod - 1
+        # The ring slot, not the posting number: a completion names a slot,
+        # so returning anything else gives a caller two numbers that agree
+        # for the first lap of the ring and then quietly stop agreeing.
+        return index
 
     def poll_tx(self):
         """Return the completed descriptor index, or None. ionic_txq_comp."""
-        return self._poll_eth_comp(self.eth_tx)
+        comp = self._poll_eth_comp(self.eth_tx)
+        if comp is None:
+            return None
+        index, raw = comp
+        self.eth_tx.release(index)
+        return index, raw
 
     def wait_tx(self, timeout=None):
         """Wait for the next Tx completion, or raise DeviceError."""
@@ -213,8 +263,7 @@ class EthQueueMixin:
         queue = self.eth_rx
         if queue is None:
             raise DeviceError("no Rx queue; call eth_q_init first")
-        if count > queue.depth:
-            raise ValueError("more buffers than the ring holds")
+        queue.claim(count)
 
         buffers = []
         for _ in range(count):
@@ -225,10 +274,10 @@ class EthQueueMixin:
             struct.pack_into("<H", desc, 6, size)
             struct.pack_into("<Q", desc, 8, buf)
             self.mem.write(queue.desc_slot(index), bytes(desc))
+            queue.posted[index] = (buf, size)
             queue.prod += 1
 
         self.doorbell(QTYPE_ETH_RXQ, queue.index, 0, queue.prod % queue.depth)
-        self.rx_buffers.extend(buffers)
         return buffers
 
     def poll_rx(self):
@@ -239,9 +288,16 @@ class EthQueueMixin:
             return None
         index, raw = comp
         length = struct.unpack_from("<H", raw, 12)[0]
-        if index >= len(self.rx_buffers):
-            raise DeviceError(f"Rx completion names unposted buffer {index}")
-        return self.mem.read(self.rx_buffers[index], length)
+        # The slot the completion names, not the n-th buffer ever posted:
+        # those are the same number only until the ring wraps, after which
+        # the frame would be read out of the oldest buffer instead of the
+        # one it was delivered into.
+        buf, size = queue.release(index)
+        if length > size:
+            raise DeviceError(
+                f"Rx completion claims {length} bytes in a {size}-byte buffer"
+            )
+        return self.mem.read(buf, length)
 
     def wait_rx(self, timeout=None):
         """Wait for the next received frame, or raise DeviceError."""

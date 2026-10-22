@@ -679,6 +679,17 @@
   four entries long, so it read the next command from the middle of it. The
   Linux driver sends neither. `tests/test_ionic_adminq_poll.c` (CTest
   `ionic-adminq-poll-unit`) covers both fixes.
+* The Python test harness's Ethernet rings (`tests/py/ernic/eth.py`)
+  track posted buffers by ring slot rather than by posting order, which
+  is what an Ethernet completion names. The two agree for the first lap
+  of the ring and then diverge: `post_tx()` returned an ever-increasing
+  number that no completion could match, and `poll_rx()` read the frame
+  out of the oldest buffer ever posted instead of the one it was
+  delivered into. Posting over a descriptor that has not completed is
+  now refused rather than silently overwriting it. New cases in
+  `tests/py/test_p4.py` cross the wrap; the existing Tx case stopped one
+  post short of it and so passed either way.
+
 * `scripts/fetch-p4c.sh` now accepts a relative `--prefix`. The prefix is
   written into the generated `bin/` wrappers and the `p4include`
   symlink, both of which are later read from somewhere else, so a

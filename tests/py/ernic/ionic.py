@@ -364,7 +364,6 @@ class IonicDriver(EthQueueMixin):
         self.eth_acq = None
         self.eth_tx = None
         self.eth_rx = None
-        self.rx_buffers = []
         self.eq = None
         self.aq = None
         self.acq = None

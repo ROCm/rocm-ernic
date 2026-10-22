@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # pylint: disable=wrong-import-position
 from ernic import eth
 from ernic.check import Suite
+from ernic.errors import DeviceError
 from ernic.fixture import BaseFixture
 from ernic.server import Server, stop_and_check
 
@@ -182,14 +183,79 @@ def test_bad_program_refused(suite, server_factory):
 
 
 def test_tx_completions(suite, server_factory):
-    """The Tx ring completes with the engine attached, as it does without."""
+    """The Tx ring completes with the engine attached, as it does without.
+
+    Three times round a depth-8 ring, not five posts into it: the number
+    post_tx returns and the slot the completion names agree for the first
+    lap whatever either of them means, so a test that stops short of the
+    wrap passes with the two swapped.
+    """
     with server_factory(["--p4"]) as server:
         fix = Fixture(server)
         try:
-            for i in range(5):
+            depth = fix.driver.eth_tx.depth
+            for i in range(3 * depth):
                 posted = fix.driver.post_tx(bytes([0x33]) * (64 + i))
                 got = fix.driver.wait_tx()
-                suite.check_eq(got[0], posted, "completion names the descriptor")
+                suite.check_eq(got[0], posted, f"completion {i} names the slot")
+        finally:
+            fix.close()
+        stop_server(server)
+
+
+def test_rx_ring_wraps(suite, server_factory):
+    """A frame received after the Rx ring wraps is read from its own buffer.
+
+    The completion names a ring slot. Looked up instead in the list of
+    every buffer ever posted, the two agree for the first lap and then
+    diverge, and the frame is read out of the oldest buffer rather than
+    the one it was delivered into -- which, since the Rx buffers all start
+    zeroed, reads as a frame of the right length and the wrong contents.
+    """
+    prog = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "data", "p4", "loopback.json"
+    )
+    with server_factory(["--p4-program", prog]) as server:
+        fix = Fixture(server)
+        try:
+            fix.driver.eth_q_init(eth.QTYPE_ETH_RXQ, depth_log2=3)
+            depth = fix.driver.eth_rx.depth
+            for i in range(2 * depth + 1):
+                fix.driver.post_rx_buffers(count=1, size=2048)
+                sent = bytes([i & 0xFF]) * 64
+                fix.driver.post_tx(sent)
+                fix.driver.wait_tx()
+                got = fix.driver.wait_rx(timeout=5.0)
+                suite.check(got == sent, f"frame {i} came back from its buffer")
+        finally:
+            fix.close()
+        stop_server(server)
+
+
+def test_tx_ring_refuses_to_overrun(suite, server_factory):
+    """Posting over an uncompleted descriptor is refused, not silently done.
+
+    The device reads a descriptor when it reaches it, not when the
+    doorbell rings, so overwriting a slot whose frame has not been sent
+    loses that frame with no error anywhere near the cause.
+    """
+    with server_factory(["--p4"]) as server:
+        fix = Fixture(server)
+        try:
+            depth = fix.driver.eth_tx.depth
+            for _ in range(depth):
+                fix.driver.post_tx(bytes(64))
+            try:
+                fix.driver.post_tx(bytes(64))
+                suite.check(False, "a full Tx ring refused another descriptor")
+            except DeviceError as exc:
+                suite.check("full" in str(exc), "it said the ring was full")
+            # Draining it makes room again, so this is a bound, not a wall.
+            for _ in range(depth):
+                fix.driver.wait_tx()
+            fix.driver.post_tx(bytes(64))
+            fix.driver.wait_tx()
+            suite.check(True, "the ring takes descriptors again once drained")
         finally:
             fix.close()
         stop_server(server)
@@ -200,6 +266,8 @@ TESTS = (
     ("a scatter/gather frame is one frame", test_scatter_gather_frame),
     ("the engine is off without --p4", test_disabled_by_default),
     ("Tx completes with the engine attached", test_tx_completions),
+    ("the Rx ring wraps correctly", test_rx_ring_wraps),
+    ("a full Tx ring is refused", test_tx_ring_refuses_to_overrun),
     ("a frame makes the round trip through the pipeline", test_round_trip),
     ("a compiled program decides where frames go", test_program_loaded),
     ("a program using an absent feature is refused", test_bad_program_refused),
