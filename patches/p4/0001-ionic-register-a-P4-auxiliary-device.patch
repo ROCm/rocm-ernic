@@ -1,0 +1,146 @@
+From 5de776ee141dc6fabc7e25658a880809052c4675 Mon Sep 17 00:00:00 2001
+From: rocm-ernic <rocm-ernic@localhost>
+Date: Wed, 21 Oct 2026 20:31:39 -0600
+Subject: [PATCH] ionic: register a P4 auxiliary device
+
+The emulated NIC in rocm-ernic offers a P4 match-action pipeline that a
+guest programs through device commands 70-72. A driver needs an
+auxiliary device to bind to for that, and ionic_auxbus_register()
+created exactly one, for RDMA.
+
+Factor the body out so a second device can be created the same way, and
+add one named "p4", gated on a new LIF capability bit. ionic_if.h
+defined only ETH and RDMA, so bit 2 is free. Hardware that does not
+advertise it gets no P4 device and is unaffected; an emulated device
+advertises it only when its operator has granted the guest a scope on
+the engine.
+
+A failure to add the P4 device is warned about rather than propagated.
+The two devices are independent, and taking RDMA down because the
+optional one failed would turn a missing extra into a regression.
+
+Signed-off-by: rocm-ernic <rocm-ernic@localhost>
+---
+ .../net/ethernet/pensando/ionic/ionic_aux.c   | 53 ++++++++++++++-----
+ .../net/ethernet/pensando/ionic/ionic_if.h    |  2 +
+ .../net/ethernet/pensando/ionic/ionic_lif.h   |  1 +
+ 3 files changed, 44 insertions(+), 12 deletions(-)
+
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_aux.c b/drivers/net/ethernet/pensando/ionic/ionic_aux.c
+index 4f193d0ee..21f06ad7e 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_aux.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_aux.c
+@@ -17,13 +17,14 @@ static void ionic_auxbus_release(struct device *dev)
+ 	kfree(ionic_adev);
+ }
+ 
+-int ionic_auxbus_register(struct ionic_lif *lif)
++static int ionic_auxbus_add_one(struct ionic_lif *lif, const char *name,
++				u64 cap, struct ionic_aux_dev **slot)
+ {
+ 	struct ionic_aux_dev *ionic_adev;
+ 	struct auxiliary_device *aux_dev;
+ 	int err, id;
+ 
+-	if (!(le64_to_cpu(lif->ionic->ident.lif.capabilities) & IONIC_LIF_CAP_RDMA))
++	if (!(le64_to_cpu(lif->ionic->ident.lif.capabilities) & cap))
+ 		return 0;
+ 
+ 	ionic_adev = kzalloc_obj(*ionic_adev);
+@@ -40,7 +41,7 @@ int ionic_auxbus_register(struct ionic_lif *lif)
+ 	}
+ 
+ 	aux_dev->id = id;
+-	aux_dev->name = "rdma";
++	aux_dev->name = name;
+ 	aux_dev->dev.parent = &lif->ionic->pdev->dev;
+ 	aux_dev->dev.release = ionic_auxbus_release;
+ 	ionic_adev->lif = lif;
+@@ -61,21 +62,49 @@ int ionic_auxbus_register(struct ionic_lif *lif)
+ 		return err;
+ 	}
+ 
+-	lif->ionic_adev = ionic_adev;
++	*slot = ionic_adev;
+ 	return 0;
+ }
+ 
+-void ionic_auxbus_unregister(struct ionic_lif *lif)
++static void ionic_auxbus_del_one(struct ionic_aux_dev **slot)
+ {
+-	mutex_lock(&lif->adev_lock);
+-	if (!lif->ionic_adev)
+-		goto out;
++	if (!*slot)
++		return;
++
++	auxiliary_device_delete(&(*slot)->adev);
++	auxiliary_device_uninit(&(*slot)->adev);
++	*slot = NULL;
++}
+ 
+-	auxiliary_device_delete(&lif->ionic_adev->adev);
+-	auxiliary_device_uninit(&lif->ionic_adev->adev);
++int ionic_auxbus_register(struct ionic_lif *lif)
++{
++	int err;
+ 
+-	lif->ionic_adev = NULL;
+-out:
++	err = ionic_auxbus_add_one(lif, "rdma", IONIC_LIF_CAP_RDMA,
++				   &lif->ionic_adev);
++	if (err)
++		return err;
++
++	/* A device that offers no P4 pipeline does not advertise the
++	 * capability, so this is a no-op on every existing adapter. A
++	 * failure here is not allowed to take the RDMA device down with
++	 * it: the two are independent, and the one that worked is still
++	 * worth having.
++	 */
++	err = ionic_auxbus_add_one(lif, "p4", IONIC_LIF_CAP_P4,
++				   &lif->p4_adev);
++	if (err)
++		dev_warn(lif->ionic->dev,
++			 "Failed to add p4 aux device: %d\n", err);
++
++	return 0;
++}
++
++void ionic_auxbus_unregister(struct ionic_lif *lif)
++{
++	mutex_lock(&lif->adev_lock);
++	ionic_auxbus_del_one(&lif->p4_adev);
++	ionic_auxbus_del_one(&lif->ionic_adev);
+ 	mutex_unlock(&lif->adev_lock);
+ }
+ 
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_if.h b/drivers/net/ethernet/pensando/ionic/ionic_if.h
+index 0a201422d..e7af087fb 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_if.h
++++ b/drivers/net/ethernet/pensando/ionic/ionic_if.h
+@@ -363,10 +363,12 @@ struct ionic_lif_identify_comp {
+  * enum ionic_lif_capability - LIF capabilities
+  * @IONIC_LIF_CAP_ETH:     LIF supports Ethernet
+  * @IONIC_LIF_CAP_RDMA:    LIF supports RDMA
++ * @IONIC_LIF_CAP_P4:      LIF offers a P4 pipeline control surface
+  */
+ enum ionic_lif_capability {
+ 	IONIC_LIF_CAP_ETH        = BIT(0),
+ 	IONIC_LIF_CAP_RDMA       = BIT(1),
++	IONIC_LIF_CAP_P4         = BIT(2),
+ };
+ 
+ /**
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_lif.h b/drivers/net/ethernet/pensando/ionic/ionic_lif.h
+index d34692462..60985536e 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_lif.h
++++ b/drivers/net/ethernet/pensando/ionic/ionic_lif.h
+@@ -226,6 +226,7 @@ struct ionic_lif {
+ 	u32 info_sz;
+ 	struct ionic_qtype_info qtype_info[IONIC_QTYPE_MAX];
+ 	struct ionic_aux_dev *ionic_adev;
++	struct ionic_aux_dev *p4_adev;
+ 	struct mutex adev_lock;	/* lock for aux_dev actions */
+ 
+ 	u8 rss_hash_key[IONIC_RSS_HASH_KEY_SIZE];

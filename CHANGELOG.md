@@ -306,6 +306,29 @@
   declared such that the deparser would put it on a wire, is refused at
   load.
   `p4_engine_process_rdma()` is the entry point.
+* An optional ionic driver patch series, `patches/p4/`, gives a guest an
+  auxiliary device to bind a P4 control driver to. Upstream's
+  `ionic_auxbus_register()` creates exactly one auxiliary device, for
+  RDMA; the patch factors it so a second, named `p4`, is created when the
+  device advertises `IONIC_LIF_CAP_P4`. Real hardware never sets that bit,
+  so a kernel carrying the patch behaves exactly as it does without it.
+
+  The series is optional and is not applied by default. Build a guest
+  driver with it by naming both series:
+
+  ```
+  scripts/fetch-ionic-sources.sh --source-dir DIR --kernel-ref v7.2.4 \
+      --patches-dir patches --patches-dir patches/p4
+  ```
+
+  `scripts/fetch-ionic-sources.sh --patches-dir` can now be given more
+  than once, and applies the series in the order given. Giving it at all
+  still replaces the default rather than adding to it, so an existing
+  caller that names one directory is unaffected. A directory that does
+  not exist is now an error rather than a series that silently applies
+  nothing, and the digest that decides whether a tree is already up to
+  date covers the directory names, so dropping a series from a later run
+  is seen as a change.
 * A guest can now program the P4 engine itself, through ionic device
   commands 70, 71 and 72. Until now a program could only be loaded by the
   operator on the command line, and a table entry could not be installed
