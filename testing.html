@@ -1009,7 +1009,8 @@ driver. Its <code class="docutils literal notranslate"><span class="pre">ionic-p
 <code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code> straight out
 of <code class="docutils literal notranslate"><span class="pre">cmake/ErnicKernelModule.cmake</span></code>, sparse-clones the two
 ionic subtrees at that ref, and applies every
-<code class="docutils literal notranslate"><span class="pre">patches/*.patch</span></code> with <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">am</span></code>, failing the pull
+<code class="docutils literal notranslate"><span class="pre">ansible/files/patches/*.patch</span></code> with <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">am</span></code>,
+failing the pull
 request if one no longer applies. The ionic modules
 themselves are not built there: they need headers matching
 <code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code> — the sources track IB-core helpers

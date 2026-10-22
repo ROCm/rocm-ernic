@@ -693,7 +693,8 @@ on the run’s summary page.</p>
 <section id="guest-ionic-modules">
 <h2>Guest ionic Modules<a class="headerlink" href="#guest-ionic-modules" title="Link to this heading">#</a></h2>
 <p>The guest-side driver is the upstream
-Linux ionic driver with the patches in <code class="docutils literal notranslate"><span class="pre">patches/</span></code> applied.
+Linux ionic driver with the patches in
+<code class="docutils literal notranslate"><span class="pre">ansible/files/patches/</span></code> applied.
 Configure with <code class="docutils literal notranslate"><span class="pre">-DERNIC_BUILD_KMOD=ON</span></code> to get the DKMS
 targets, and run them in the guest:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cmake<span class="w"> </span>-B<span class="w"> </span>build<span class="w"> </span>-G<span class="w"> </span>Ninja<span class="w"> </span>-DERNIC_BUILD_KMOD<span class="o">=</span>ON

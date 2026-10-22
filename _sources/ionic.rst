@@ -11,8 +11,9 @@ rocm-ernic presents a single PCIe device to the guest:
      - Guest driver
    * - ``1dd8:1002`` / ``1dd8:5400``
      - Upstream Linux ``ionic.ko`` + ``ionic_rdma.ko``,
-       with the UC queue-pair patch in ``patches/``
-       applied, and the upstream ``providers/ionic`` in
+       with the UC queue-pair patch in
+       ``ansible/files/patches/`` applied, and the
+       upstream ``providers/ionic`` in
        rdma-core
 
 The server emulates the register and queue protocol of the
@@ -261,7 +262,17 @@ Guest Driver: Patched Upstream ionic
 
 The guest driver is *not* built from this repository. The
 build fetches a pinned upstream Linux tree, applies the
-patches in ``patches/``, and hands the result to DKMS.
+patches in ``ansible/files/patches/``, and hands the
+result to DKMS.
+
+.. note::
+
+   The patch series and the two scripts that apply it
+   live in the Ansible collection so that a consumer
+   installing ``sbates130272.rocm_ernic`` gets them at
+   the same ref as the roles that apply them; see
+   ``ansible/files/README.md``. The installed layout
+   under ``share/rocm-ernic`` is unchanged.
 
 Patches currently carried:
 
@@ -296,7 +307,8 @@ modules are needed:
 subtrees --- ``drivers/net/ethernet/pensando/ionic`` and
 ``drivers/infiniband/hw/ionic`` --- from
 ``IONIC_KERNEL_REF`` (default ``v7.2.4``) and applies
-``patches/*.patch`` in filename order with ``git am``. The
+``ansible/files/patches/*.patch`` in filename order with
+``git am``. The
 DKMS package is registered as ``ionic-ernic``.
 
 .. warning::
@@ -356,7 +368,8 @@ Bumping the Upstream Baseline
 Change ``IONIC_KERNEL_REF`` in
 ``cmake/ErnicKernelModule.cmake`` and re-run
 ``fetch-ionic-sources``. If a patch no longer applies,
-rebase it and refresh the file in ``patches/``. The
+rebase it and refresh the file in
+``ansible/files/patches/``. The
 ``ionic-patches`` CI job reads the pinned ref straight out
 of the cmake file and fails the pull request if any patch
 stops applying, so the two cannot drift apart.
