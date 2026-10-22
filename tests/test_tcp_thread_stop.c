@@ -5459,6 +5459,19 @@ static const char *lt_reconnect_run(enum lt_scenario scenario)
     }
     if (!why && scenario == LT_GIDS_BACK && lt_resolve(fx.priv) != 1)
         why = "the reconnected node did not get its GID back";
+    /*
+     * A registration that collected this node as unreachable before the
+     * reconnect must not act on that list now: withdrawing here would undo
+     * the revival and leave the node alive with claims that are not, which
+     * nothing recovers from -- the heartbeat handler only restores them on
+     * the transition out of dead, and the node never makes it again.
+     */
+    if (!why && scenario == LT_GIDS_BACK) {
+        if (tcp_withdraw_if_still_unreachable(fx.priv, 1))
+            why = "a stale withdrawal fired against a reconnected node";
+        else if (lt_resolve(fx.priv) != 1)
+            why = "a stale withdrawal undid the reconnect's revival";
+    }
     if (!why && !conn_retired(held))
         why = "the old connection wasn't retired";
     if (!why && atomic_load(&g_joins) != 1)

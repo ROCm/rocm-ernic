@@ -4,15 +4,20 @@
 
 ### Added
 
-* A node can claim and withdraw GIDs while it is running, instead of only
-  announcing the set `ERNIC_TCP_GUEST_GIDS` named at startup. The claim is
-  recorded locally and re-advertised to the mesh, so an address a guest
-  configures after the mesh has formed resolves on its peers rather than
-  nowhere. `ERNIC_TCP_GUEST_GIDS` still works and is still the way to
-  declare a guest's addresses up front; nothing needs changing to keep the
-  old behaviour. The mesh protocol is unchanged -- `TCP_MSG_NODE_GIDS`
-  already carried "this node's current set" and its handler replaces rather
-  than merges -- so a node doing this interoperates with one that does not.
+* The mesh backend can claim and withdraw a node's GIDs while it is running,
+  rather than only announcing the set `ERNIC_TCP_GUEST_GIDS` named at
+  startup: the claim is recorded locally and re-advertised to the mesh, and
+  peers resolve the address from then on. The mesh protocol is unchanged --
+  `TCP_MSG_NODE_GIDS` already carried "this node's current set" and its
+  handler replaces rather than merges -- so a node doing this interoperates
+  with one that does not.
+  **This is an internal entry point, not yet a guest-visible feature.**
+  Nothing dispatches a guest's GID-table change to it, so configuring an
+  address inside a guest after the mesh has formed still does not advertise
+  it. `ERNIC_TCP_GUEST_GIDS` remains the only way to declare a guest's
+  addresses, and an address not listed there is still unreachable. What this
+  adds is the mesh half of the lifecycle, and a test that exercises it; the
+  dispatch from a guest GID update is still to come.
 * `ernic-test-gsi-mesh` (CTest `gsi-mesh`) runs two whole devices in one
   process, joined over loopback TCP by the real mesh backend, and checks
   that a GID claimed after the mesh formed resolves to the peer's node from

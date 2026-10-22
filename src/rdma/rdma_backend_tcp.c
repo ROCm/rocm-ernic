@@ -726,6 +726,45 @@ static uint32_t tcp_collect_dead_claimants(TcpBackendPrivate *priv,
     return n;
 }
 
+/*
+ * Take @node_id out of resolution if it is still unreachable, and say
+ * whether it was.  Returns false when the node has a live connection again,
+ * leaving its claims alone.
+ *
+ * The re-check is the point.  tcp_collect_dead_claimants() runs under
+ * mesh_table_lock and the caller then drops it, and in that window the
+ * health check can reconnect to one of the nodes it collected: that
+ * publishes a connection and restores the node's claims
+ * (tcp_health_check_reconnect()).  Withdrawing on the strength of the stale
+ * list would undo the revival and leave the node is_alive with claims that
+ * are not, which nothing recovers from -- the heartbeat handler only
+ * restores claims on the transition out of dead, and the node never makes
+ * it again.  So the connection is looked at again here, under the lock
+ * reconnect publishes beneath, which makes the two atomic with respect to
+ * each other.
+ *
+ * Lock order: conn_table_lock and gid_table_lock under mesh_table_lock,
+ * both as documented; see tcp_health_check_scan(), which does the same.
+ */
+bool tcp_withdraw_if_still_unreachable(TcpBackendPrivate *priv,
+                                       uint32_t node_id)
+{
+    TcpConnection *conn;
+    bool withdrawn = false;
+
+    qemu_mutex_lock(&priv->mesh_table_lock);
+    conn = tcp_connection_lookup(priv, node_id);
+    if (!conn || tcp_conn_dead(conn)) {
+        tcp_gid_claims_set_alive(priv, node_id, false);
+        withdrawn = true;
+    }
+    if (conn)
+        tcp_connection_unref(conn);
+    qemu_mutex_unlock(&priv->mesh_table_lock);
+
+    return withdrawn;
+}
+
 /* Parse manager config: "manager:<ip>:<port>" or "manager:listen:<port>" */
 static int parse_tcp_config_manager(const char *config, char **manager_host,
                                     uint16_t *manager_port, bool *listen_mode)
@@ -1961,26 +2000,24 @@ void *tcp_recv_thread_per_conn(void *opaque)
                                  assigned_id, worker_host, worker_port);
 
                 /*
-                 * With no lock held: tcp_gid_claims_set_alive() takes
-                 * gid_table_lock, which nothing else in this handler holds.
-                 * The whole table is broadcast below, so the withdrawal
-                 * reaches the other workers with the rest of it.
-                 *
                  * Marked not-alive rather than discarded: that is enough to
                  * take the node out of resolution, so it stops contesting
                  * the GIDs the registering node is about to claim, and it
                  * leaves the claims to restore if the health check later
                  * reconnects to the node rather than it having restarted.
+                 *
+                 * The whole table is broadcast below, so the withdrawal
+                 * reaches the other workers with the rest of it.
                  */
                 for (uint32_t i = 0; i < num_stale; i++) {
                     uint32_t id = stale[i];
 
                     if (id == assigned_id)
                         continue;
-                    rdma_info_report("TCP: node %u is gone; withdrawing its "
-                                     "GIDs as node %u registers",
-                                     id, assigned_id);
-                    tcp_gid_claims_set_alive(priv, id, false);
+                    if (tcp_withdraw_if_still_unreachable(priv, id))
+                        rdma_info_report("TCP: node %u is gone; withdrawing "
+                                         "its GIDs as node %u registers",
+                                         id, assigned_id);
                 }
 
                 /* Send registration response.  Zeroed first: the whole
@@ -4442,7 +4479,12 @@ static int tcp_add_gid(RdmaBackendDev *backend_dev, const char *ifname,
  * The ops signature gives an index into the device's GID table, not the GID
  * itself, and this backend keeps no index-to-GID map -- the table belongs to
  * the guest kernel.  Withdrawal therefore goes through
- * tcp_backend_claim_gid(), which the data path calls with the GID in hand.
+ * tcp_backend_claim_gid(), which takes the GID itself.
+ *
+ * Nothing dispatches to these ops today, here or in any other backend, and
+ * tcp_backend_claim_gid() has no caller outside the tests: a guest's
+ * addresses reach the mesh through ERNIC_TCP_GUEST_GIDS at startup.  Wiring
+ * a guest GID-table update to the claim is what would make these live.
  */
 static int tcp_del_gid(RdmaBackendDev *backend_dev, const char *ifname,
                        int gid_idx)
@@ -4587,8 +4629,13 @@ uint32_t tcp_backend_node_from_gid(RdmaBackendDev *backend_dev,
 
 /*
  * Claim @gid for this node (@add) or withdraw it, and re-advertise to the
- * mesh.  The data path calls this when the guest's GID table changes, so that
- * a peer can resolve an address that did not exist when the mesh formed.
+ * mesh, so that a peer can resolve an address that did not exist when the
+ * mesh formed.
+ *
+ * No production caller yet: a guest's addresses still reach the mesh only
+ * through ERNIC_TCP_GUEST_GIDS, read once at startup.  What is missing is
+ * the dispatch from a guest GID-table update to here; the mesh side of it
+ * works and is covered by the gsi-mesh test, which is the only caller.
  *
  * Harmless on a non-mesh backend: loopback and none have no peers to tell.
  */

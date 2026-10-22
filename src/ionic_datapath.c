@@ -1872,20 +1872,30 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
     bool truncated = copied < src->total;
 
     /*
-     * A truncated receive completes in error, and that error is the end of
-     * the queue pair as far as a consumer is concerned: a provider that
-     * sees one stops polling normally and flushes the rest, so every
-     * request after it comes back as IB_WC_WR_FLUSH_ERR and the original
-     * cause is nowhere in sight. Saying so here is the difference between
-     * "the receive buffer was too small" and a consumer reporting only
-     * that its work requests were flushed, which is what libfabric's rxm
-     * does and what made this expensive to find.
+     * A short receive completes in error, and that error is the end of the
+     * queue pair as far as a consumer is concerned: a provider that sees one
+     * stops polling normally and flushes the rest, so every request after it
+     * comes back as IB_WC_WR_FLUSH_ERR and the original cause is nowhere in
+     * sight. Saying so here is the difference between a diagnosis and a
+     * consumer reporting only that its work requests were flushed, which is
+     * what libfabric's rxm does and what made this expensive to find.
+     *
+     * The status is reported rather than named: this branch is not only the
+     * buffer running out. dp_fault_status() returns the protection or access
+     * fault instead when a scatter SGE would not resolve, and calling that
+     * LOCAL_LEN_ERR would send whoever reads this looking for a receive that
+     * was too small when the key was the problem. The capacity is dst.total,
+     * what the guest posted; @copied is only what reached it, which is zero
+     * when the first SGE already failed.
      */
-    if (truncated)
+    if (truncated) {
+        uint32_t status = dp_fault_status(dp, IONIC_STS_LOCAL_LEN_ERR);
+
         vfu_log(dp->vfu_ctx, LOG_WARNING,
-                "ionic_datapath: QP %u receive truncated: %u bytes posted, "
-                "%u arrived from QP %u; completing LOCAL_LEN_ERR",
-                dst_qp_id, copied, src->total, src_qp_id);
+                "ionic_datapath: QP %u receive short: %u bytes posted, %u "
+                "arrived from QP %u, %u landed; completing status %u",
+                dst_qp_id, dst.total, src->total, src_qp_id, copied, status);
+    }
 
     ionic_dp_rdma_bytes(dp, dst_qp_id, copied, PVRDMA_STAT_RECV, DP_RDMA_RX);
 

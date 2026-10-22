@@ -651,6 +651,12 @@ void *tcp_worker_peer_thread(void *opaque);
 bool tcp_worker_publish_peer(TcpBackendPrivate *priv,
                              const TcpPeerTarget *target, TcpConnection *conn);
 void *tcp_manager_health_check_thread(void *opaque);
+/*
+ * Withdraw a node's GID claims only if it is still unreachable; false when
+ * it has a live connection again, which a stale list cannot be trusted for.
+ */
+bool tcp_withdraw_if_still_unreachable(TcpBackendPrivate *priv,
+                                       uint32_t node_id);
 bool tcp_health_check_reconnect(TcpBackendPrivate *priv,
                                 const TcpHealthCheckItem *item,
                                 uint64_t deadline_ms);
