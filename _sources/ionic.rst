@@ -558,17 +558,75 @@ Working:
   ``IB_WR_LOCAL_INV`` as local work requests, which is what
   a stock ``nvme-rdma`` initiator uses to produce the keys
   in its keyed SGLs
+- guest-to-guest ``rdma_cm``, and the transfers that follow
+  it: ``rping`` between two guests on a mesh connects,
+  exchanges its payloads -- SEND, RDMA READ and RDMA WRITE,
+  verified at both ends -- and exits 0
+- flushing a QP that enters the Error state, so that work
+  requests still outstanding are completed with
+  ``IBV_WC_WR_FLUSH_ERR`` rather than left to a consumer that
+  waits for them forever. One completion per queue, which is
+  what the device owes: it names no work request, and the
+  driver completes what it has posted from its own records.
+  A QP bound to an SRQ flushes its send queue only, because
+  the receives in an SRQ belong to the SRQ and other QPs are
+  still drawing from them
+- restarting a mesh worker. It comes back as a new node --
+  it asks for an id of ``0xFFFFFFFF`` every time, and its
+  listening port is ephemeral, so nothing in the
+  registration says which node it used to be -- and the GIDs
+  it claimed before are withdrawn so that they follow it to
+  its new id rather than being claimed by two nodes at once
+  and resolving to neither. The manager withdraws what an
+  unreachable node claimed both when its health check
+  notices one has died and when any worker registers, the
+  second being what covers a worker that comes back inside
+  the health-check interval. The withdrawal is reversible:
+  the claims are kept and only stop counting, so a node that
+  was merely silent and then answers a heartbeat, or that
+  the health check reconnects to, owns its addresses again
+  without registering afresh -- which, not having restarted,
+  it never would
 
 Not yet working:
 
-- ``rdma_cm`` connection establishment between two guests,
-  and therefore ``rping``: only the link-local GID is
-  populated, and GSI traffic is not forwarded between
-  endpoints. The ``nvmeof`` backend sidesteps this by
-  answering the CM exchange inside the server rather than
-  routing it to a peer, so ``nvme connect -t rdma`` has a
-  responder even though guest-to-guest ``rdma_cm`` does not
-  (see :doc:`nvmeof`)
+- ``rping`` prints ``poll error -5`` once as it tears down,
+  from a bug in the rdma-core ionic provider rather than in
+  the device. The provider keeps receive metadata in slots
+  taken off a free list and records which slot a queue
+  position used in ``rq.meta_idx``;
+  ``ionic_poll_recv()`` reads it back through that index, but
+  ``ionic_flush_recv()`` uses the raw ``wqe_id`` as the slot
+  number. The two agree only until the first completion
+  permutes the free list, after which the flush walk reads a
+  slot that has already been returned, calls it "wqe not
+  posted" and gives ``ibv_poll_cq()`` ``-EIO``. Present in
+  rdma-core v61.0 and still in master
+  (``providers/ionic/ionic_verbs.c``). The exchange itself is
+  unaffected and ``rping`` exits 0.
+
+  Establishment was broken until recently, and both reasons
+  this page used to give were wrong: GSI traffic *is*
+  forwarded between endpoints, which ``ernic-test-gsi-mesh``
+  demonstrates, and both the link-local and the v4-mapped
+  GID are populated. What actually stopped it was the shape
+  of the 40-byte header in front of a datagram -- the device
+  claimed RoCEv2 over IPv4 in the completion while writing an
+  IPv6 GRH, so ``ib_cm`` read the middle of the destination
+  GID as the sender's address, ARPed for ``0.0.255.255``,
+  and dropped every CM REQ with ``-ETIMEDOUT`` and no
+  reject. Fixed, pinned in both directions by
+  ``ionic-harness-ud``, ``ionic-harness-nvmeof`` and
+  ``gsi-mesh``, and confirmed on a two-guest pair: with the
+  previous build the client printed nothing and the server's
+  neighbour table held ``0.0.255.255 FAILED``; with the fix
+  that entry is gone and the connection is accepted.
+
+  The ``nvmeof`` backend does not depend on any of this: it
+  answers the CM exchange inside the server rather than
+  routing it to a peer, so ``nvme connect -t rdma`` has
+  always had a responder (see :doc:`nvmeof`)
+
 - Shared receive queues, which the upstream RDMA driver does
   not implement in its ``ib_device_ops``
 - The PCI Express capability is not advertised, so the guest

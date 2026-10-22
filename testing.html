@@ -381,6 +381,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-ionic-ci-sh">test_ionic_ci.sh</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#in-process-ionic-device-harness">In-process ionic device harness</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#driving-a-server-from-python">Driving a server from Python</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#two-devices-in-one-process">Two devices in one process</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nvme-of-tests">NVMe-oF tests</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#s3-over-rdma-tests">S3-over-RDMA tests</a></li>
 </ul>
@@ -578,6 +579,34 @@ descriptors are counted</p></li>
 <p>Like the shell suites, they run the server under the command
 in <code class="docutils literal notranslate"><span class="pre">ERNIC_TEST_SERVER_WRAPPER</span></code>, so CI’s valgrind leg
 covers them too.</p>
+</section>
+<section id="two-devices-in-one-process">
+<h3>Two devices in one process<a class="headerlink" href="#two-devices-in-one-process" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">ernic-test-gsi-mesh</span></code> (CTest <code class="docutils literal notranslate"><span class="pre">gsi-mesh</span></code>) builds the same
+harness twice: one device as the mesh manager and one as a
+worker, joined over loopback TCP by the real TCP backend. It
+checks that the two register, that a GID claimed <em>after</em> the
+mesh has formed is advertised and resolves to the claiming
+node from the other side, and that neither node resolves its
+peer’s address to itself. It then sends a CM-shaped MAD on
+QP1 and checks both that it reaches the peer’s QP1 rather
+than coming back round, and that it arrives behind the right
+header: the two nodes’ GIDs are v4-mapped, so a forwarded
+datagram has to look like RoCEv2 over IPv4, flagged as such,
+with the <em>sender’s</em> address as its source. Forwarding the MAD
+correctly and describing it wrongly looks identical from
+every other angle, and is what used to strand <code class="docutils literal notranslate"><span class="pre">rdma_cm</span></code>.</p>
+<p>That is the path <code class="docutils literal notranslate"><span class="pre">rdma_cm</span></code> depends on and the one
+<code class="docutils literal notranslate"><span class="pre">ERNIC_TCP_GUEST_GIDS</span></code> cannot cover: it is read once at
+startup, and one environment variable cannot describe two
+devices in one process. <code class="docutils literal notranslate"><span class="pre">test_ud_mesh</span></code> covers the same
+journey for a UD datagram, but needs two VMs and two real
+devices, so it cannot run in CI.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>-R<span class="w"> </span>gsi-mesh
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">ERNIC_TEST_MESH_PORT</span></code> moves the port it listens on, for a
+runner that already has something on the default.</p>
 </section>
 <section id="nvme-of-tests">
 <h3>NVMe-oF tests<a class="headerlink" href="#nvme-of-tests" title="Link to this heading">#</a></h3>
@@ -1176,6 +1205,7 @@ this is a public repository.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-ionic-ci-sh">test_ionic_ci.sh</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#in-process-ionic-device-harness">In-process ionic device harness</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#driving-a-server-from-python">Driving a server from Python</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#two-devices-in-one-process">Two devices in one process</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nvme-of-tests">NVMe-oF tests</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#s3-over-rdma-tests">S3-over-RDMA tests</a></li>
 </ul>

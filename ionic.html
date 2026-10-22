@@ -984,17 +984,73 @@ in-tree <code class="docutils literal notranslate"><span class="pre">rdma_verify
 <code class="docutils literal notranslate"><span class="pre">IB_WR_LOCAL_INV</span></code> as local work requests, which is what
 a stock <code class="docutils literal notranslate"><span class="pre">nvme-rdma</span></code> initiator uses to produce the keys
 in its keyed SGLs</p></li>
+<li><p>guest-to-guest <code class="docutils literal notranslate"><span class="pre">rdma_cm</span></code>, and the transfers that follow
+it: <code class="docutils literal notranslate"><span class="pre">rping</span></code> between two guests on a mesh connects,
+exchanges its payloads – SEND, RDMA READ and RDMA WRITE,
+verified at both ends – and exits 0</p></li>
+<li><p>flushing a QP that enters the Error state, so that work
+requests still outstanding are completed with
+<code class="docutils literal notranslate"><span class="pre">IBV_WC_WR_FLUSH_ERR</span></code> rather than left to a consumer that
+waits for them forever. One completion per queue, which is
+what the device owes: it names no work request, and the
+driver completes what it has posted from its own records.
+A QP bound to an SRQ flushes its send queue only, because
+the receives in an SRQ belong to the SRQ and other QPs are
+still drawing from them</p></li>
+<li><p>restarting a mesh worker. It comes back as a new node –
+it asks for an id of <code class="docutils literal notranslate"><span class="pre">0xFFFFFFFF</span></code> every time, and its
+listening port is ephemeral, so nothing in the
+registration says which node it used to be – and the GIDs
+it claimed before are withdrawn so that they follow it to
+its new id rather than being claimed by two nodes at once
+and resolving to neither. The manager withdraws what an
+unreachable node claimed both when its health check
+notices one has died and when any worker registers, the
+second being what covers a worker that comes back inside
+the health-check interval. The withdrawal is reversible:
+the claims are kept and only stop counting, so a node that
+was merely silent and then answers a heartbeat, or that
+the health check reconnects to, owns its addresses again
+without registering afresh – which, not having restarted,
+it never would</p></li>
 </ul>
 <p>Not yet working:</p>
-<ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">rdma_cm</span></code> connection establishment between two guests,
-and therefore <code class="docutils literal notranslate"><span class="pre">rping</span></code>: only the link-local GID is
-populated, and GSI traffic is not forwarded between
-endpoints. The <code class="docutils literal notranslate"><span class="pre">nvmeof</span></code> backend sidesteps this by
-answering the CM exchange inside the server rather than
-routing it to a peer, so <code class="docutils literal notranslate"><span class="pre">nvme</span> <span class="pre">connect</span> <span class="pre">-t</span> <span class="pre">rdma</span></code> has a
-responder even though guest-to-guest <code class="docutils literal notranslate"><span class="pre">rdma_cm</span></code> does not
-(see <a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>)</p></li>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">rping</span></code> prints <code class="docutils literal notranslate"><span class="pre">poll</span> <span class="pre">error</span> <span class="pre">-5</span></code> once as it tears down,
+from a bug in the rdma-core ionic provider rather than in
+the device. The provider keeps receive metadata in slots
+taken off a free list and records which slot a queue
+position used in <code class="docutils literal notranslate"><span class="pre">rq.meta_idx</span></code>;
+<code class="docutils literal notranslate"><span class="pre">ionic_poll_recv()</span></code> reads it back through that index, but
+<code class="docutils literal notranslate"><span class="pre">ionic_flush_recv()</span></code> uses the raw <code class="docutils literal notranslate"><span class="pre">wqe_id</span></code> as the slot
+number. The two agree only until the first completion
+permutes the free list, after which the flush walk reads a
+slot that has already been returned, calls it “wqe not
+posted” and gives <code class="docutils literal notranslate"><span class="pre">ibv_poll_cq()</span></code> <code class="docutils literal notranslate"><span class="pre">-EIO</span></code>. Present in
+rdma-core v61.0 and still in master
+(<code class="docutils literal notranslate"><span class="pre">providers/ionic/ionic_verbs.c</span></code>). The exchange itself is
+unaffected and <code class="docutils literal notranslate"><span class="pre">rping</span></code> exits 0.</p>
+<p>Establishment was broken until recently, and both reasons
+this page used to give were wrong: GSI traffic <em>is</em>
+forwarded between endpoints, which <code class="docutils literal notranslate"><span class="pre">ernic-test-gsi-mesh</span></code>
+demonstrates, and both the link-local and the v4-mapped
+GID are populated. What actually stopped it was the shape
+of the 40-byte header in front of a datagram – the device
+claimed RoCEv2 over IPv4 in the completion while writing an
+IPv6 GRH, so <code class="docutils literal notranslate"><span class="pre">ib_cm</span></code> read the middle of the destination
+GID as the sender’s address, ARPed for <code class="docutils literal notranslate"><span class="pre">0.0.255.255</span></code>,
+and dropped every CM REQ with <code class="docutils literal notranslate"><span class="pre">-ETIMEDOUT</span></code> and no
+reject. Fixed, pinned in both directions by
+<code class="docutils literal notranslate"><span class="pre">ionic-harness-ud</span></code>, <code class="docutils literal notranslate"><span class="pre">ionic-harness-nvmeof</span></code> and
+<code class="docutils literal notranslate"><span class="pre">gsi-mesh</span></code>, and confirmed on a two-guest pair: with the
+previous build the client printed nothing and the server’s
+neighbour table held <code class="docutils literal notranslate"><span class="pre">0.0.255.255</span> <span class="pre">FAILED</span></code>; with the fix
+that entry is gone and the connection is accepted.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">nvmeof</span></code> backend does not depend on any of this: it
+answers the CM exchange inside the server rather than
+routing it to a peer, so <code class="docutils literal notranslate"><span class="pre">nvme</span> <span class="pre">connect</span> <span class="pre">-t</span> <span class="pre">rdma</span></code> has
+always had a responder (see <a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>)</p>
+</li>
 <li><p>Shared receive queues, which the upstream RDMA driver does
 not implement in its <code class="docutils literal notranslate"><span class="pre">ib_device_ops</span></code></p></li>
 <li><p>The PCI Express capability is not advertised, so the guest
