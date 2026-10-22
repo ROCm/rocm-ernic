@@ -70,6 +70,14 @@ int ionic_eth_emu_trigger_irq(struct ionic_eth_emu *emu, int vec)
     return 0;
 }
 
+void ionic_eth_emu_count_rdma(struct ionic_eth_emu *emu, uint64_t bytes,
+                              bool is_tx)
+{
+    (void)emu;
+    (void)bytes;
+    (void)is_tx;
+}
+
 uint32_t ionic_mesh_local_node(pvrdma_handle_t handle)
 {
     (void)handle;

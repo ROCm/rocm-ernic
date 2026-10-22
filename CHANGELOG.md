@@ -150,6 +150,14 @@
   the startup log and stats file name the profile chain and its hash. An
   unknown key or out-of-range value is an error naming the file, line and
   key. Documented in `docs/ionic.rst`.
+* The emulated ionic NIC publishes its LIF statistics block to the guest, so
+  `ip -s link` and the driver's `ethtool -S` LIF counters are real: packets
+  and bytes by unicast, multicast and broadcast, the drops the driver reports
+  as `rx_dropped` and `rx_over_errors`, and RDMA payload. The block is
+  refreshed every `stats.interval_ms` (profile key, or
+  `--stats-interval-ms`, 10 to 60000, default 1000) and cleared on reset.
+  `--stats-file` gains a "LIF Statistics" section. Documented in
+  `docs/ionic.rst`.
 
 ### Changed
 

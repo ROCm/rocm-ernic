@@ -12,6 +12,9 @@
  *   speed_mbps = 400000
  *   xcvr = fiber
  *
+ *   [stats]
+ *   interval_ms = 100
+ *
  * The built-in "compat" profile is today's device, byte for byte, and is
  * always the base.  Each --nic-profile layers a built-in profile (a bare
  * name) or a file (a name with a '/' or ending in ".ini") on top, key by
@@ -61,6 +64,14 @@ enum ionic_profile_xcvr {
 #define IONIC_PROFILE_MTU_MIN        1500u
 #define IONIC_PROFILE_MTU_MAX        (9600u - IONIC_PROFILE_FRAME_OVERHEAD)
 
+/*
+ * stats.interval_ms is how often the device rewrites the statistics blocks
+ * in guest memory.  The driver never asks for them, so this is also how
+ * stale `ip -s link` may be.  --stats-interval-ms overrides it.
+ */
+#define IONIC_PROFILE_STATS_INTERVAL_MIN 10u
+#define IONIC_PROFILE_STATS_INTERVAL_MAX 60000u
+
 /* The built-in profile names and files that formed a profile, in order. */
 #define IONIC_PROFILE_CHAIN_MAX 512u
 
@@ -78,6 +89,9 @@ struct ionic_profile {
         uint8_t xcvr;        /* enum ionic_profile_xcvr */
         uint32_t mtu_max;
     } link;
+    struct {
+        uint32_t interval_ms;
+    } stats;
     char chain[IONIC_PROFILE_CHAIN_MAX];
 };
 
@@ -107,6 +121,15 @@ int ionic_profile_apply(struct ionic_profile *p, const char *spec, char *err,
  * Returns the length it needed, as snprintf() does.
  */
 int ionic_profile_format(const struct ionic_profile *p, char *buf, size_t len);
+
+/*
+ * Set stats.interval_ms from a decimal string, with the key's range check.
+ * The --stats-interval-ms option uses it so the flag and the key accept the
+ * same values.  Returns 0, or -1 with a message naming @where in @err.
+ */
+int ionic_profile_set_stats_interval(struct ionic_profile *p, const char *raw,
+                                     const char *where, char *err,
+                                     size_t err_len);
 
 /*
  * A 64-bit FNV-1a hash of @p's values (not its chain), so two runs with the

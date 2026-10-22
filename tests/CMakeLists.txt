@@ -227,6 +227,7 @@ add_executable(test_ionic_intr_pending
     ${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.c
     ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
     ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_emu_stats.c
 )
 target_include_directories(test_ionic_intr_pending PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -253,6 +254,7 @@ add_executable(test_ionic_port_info
     ${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.c
     ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
     ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_emu_stats.c
 )
 target_include_directories(test_ionic_port_info PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -288,6 +290,18 @@ target_compile_definitions(test_ionic_profile PRIVATE
 target_link_directories(test_ionic_profile PRIVATE ${GLIB2_LIBRARY_DIRS})
 target_link_libraries(test_ionic_profile PRIVATE ${GLIB2_LIBRARIES})
 
+# LIF counter block test: MAC classification, drop accounting, the
+# little-endian rendering and each index against the kernel's struct
+# ionic_lif_stats. Pure: no ionic TU.
+add_executable(test_ionic_emu_stats test_ionic_emu_stats.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_emu_stats.c
+)
+target_include_directories(test_ionic_emu_stats PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_compile_definitions(test_ionic_emu_stats PRIVATE _GNU_SOURCE)
+target_link_libraries(test_ionic_emu_stats PRIVATE pthread)
+
 # ionic NIC identity test. It links the eth emulator, calls its devcmd
 # handlers through ionic_eth_emu_priv.h, checks the compat profile against
 # golden bytes captured before profiles existed, and checks where each
@@ -297,6 +311,7 @@ add_executable(test_ionic_identity
     ${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.c
     ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
     ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_emu_stats.c
 )
 target_include_directories(test_ionic_identity PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -311,6 +326,30 @@ target_compile_definitions(test_ionic_identity PRIVATE
     _GNU_SOURCE)
 target_link_directories(test_ionic_identity PRIVATE ${GLIB2_LIBRARY_DIRS})
 target_link_libraries(test_ionic_identity PRIVATE ${GLIB2_LIBRARIES})
+
+# ionic statistics publish test. It links the eth emulator, reaches its state
+# through ionic_eth_emu_priv.h, drives the datapath against a fake guest
+# memory and checks what lands in the guest's struct ionic_lif_stats, and
+# when.
+add_executable(test_ionic_stats_publish
+    test_ionic_stats_publish.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_emu_stats.c
+)
+target_include_directories(test_ionic_stats_publish PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_include_directories(test_ionic_stats_publish SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_ionic_stats_publish PRIVATE
+    _GNU_SOURCE)
+target_link_directories(test_ionic_stats_publish PRIVATE ${GLIB2_LIBRARY_DIRS})
+target_link_libraries(test_ionic_stats_publish PRIVATE ${GLIB2_LIBRARIES})
 
 # Server lifecycle test: forks the real server and drives it through
 # startup, clients that drop out of vfio-user negotiation, and SIGTERM/SIGINT
@@ -651,7 +690,9 @@ set(ERNIC_TEST_TARGETS
     test_ionic_intr_pending
     test_ionic_port_info
     test_ionic_profile
+    test_ionic_emu_stats
     test_ionic_identity
+    test_ionic_stats_publish
     test_ionic_query_qp
     ernic-test-ionic-stats
     test_server_lifecycle
@@ -832,6 +873,14 @@ add_test(
 )
 set_tests_properties(ionic-profile-unit PROPERTIES TIMEOUT 30)
 
+# LIF counter block unit test: a counter in the wrong qword shows up as the
+# wrong `ip -s link` field in the guest, so every index is pinned.
+add_test(
+    NAME ionic-emu-stats-unit
+    COMMAND $<TARGET_FILE:test_ionic_emu_stats>
+)
+set_tests_properties(ionic-emu-stats-unit PROPERTIES TIMEOUT 30)
+
 # ionic NIC identity unit test: asserts compat is byte-identical to the
 # device before profiles, and each identity/link key reaches the field the
 # driver reads.
@@ -840,6 +889,14 @@ add_test(
     COMMAND $<TARGET_FILE:test_ionic_identity>
 )
 set_tests_properties(ionic-identity-unit PROPERTIES TIMEOUT 30)
+
+# ionic statistics publish unit test: when the LIF block is rewritten in guest
+# memory, where, and what the datapath counted into it.
+add_test(
+    NAME ionic-stats-publish-unit
+    COMMAND $<TARGET_FILE:test_ionic_stats_publish>
+)
+set_tests_properties(ionic-stats-publish-unit PROPERTIES TIMEOUT 30)
 
 # ionic QUERY_QP unit test: asserts the command writes the QP's real state
 # into the side buffers the driver reads, rather than leaving them zeroed and
@@ -958,6 +1015,18 @@ add_test(
 set_tests_properties(ionic-server-smoke PROPERTIES
     TIMEOUT 15
     RUN_SERIAL TRUE
+    SKIP_RETURN_CODE 77
+)
+
+# --stats-interval-ms range checks and precedence over --nic-profile, read
+# back through --print-profile.  The server exits before opening a socket.
+add_test(
+    NAME ionic-stats-interval-cli
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_ionic_stats_interval_cli.sh
+        $<TARGET_FILE:rocm-ernic>
+)
+set_tests_properties(ionic-stats-interval-cli PROPERTIES
+    TIMEOUT 30
     SKIP_RETURN_CODE 77
 )
 

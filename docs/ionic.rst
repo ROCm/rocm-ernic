@@ -171,6 +171,12 @@ device shape.
      - the largest MTU the guest may set. The LIF reports a
        maximum frame of ``mtu_max`` + 18, and the port's
        configured MTU is the smaller of ``mtu_max`` and 9000
+   * - ``stats.interval_ms``
+     - 10 to 60000
+     - 1000
+     - how often the LIF counters are rewritten in guest
+       memory, which bounds how stale ``ip -s link`` can be.
+       ``--stats-interval-ms`` overrides every layer
 
 The built-in ``small-vm`` profile is ``compat`` for now; the
 queue and interrupt keys it is meant to shrink are not in
@@ -256,6 +262,71 @@ memory; no extra thread is created.
    scatter-gather offloads, so the guest stack always hands
    down linear skbs. This keeps the descriptor handling
    simple at the cost of transmit throughput.
+
+Statistics
+^^^^^^^^^^
+
+The ionic driver never asks the device for Ethernet
+counters. At ``LIF_INIT`` it hands the device a ``struct
+ionic_lif_info`` in its own memory, and from then on reads
+``struct ionic_lif_stats`` (byte 320 of that block) whenever
+``ip -s link``, ``/proc/net/dev`` or ``ethtool -S`` asks. The
+emulator counts every frame the LIF moves and rewrites that
+block from the main loop: once straight after ``LIF_INIT``,
+then every ``stats.interval_ms`` (1000 by default). A real
+NIC's firmware does the same.
+
+.. code-block:: bash
+
+   # rewrite the counters every 100 ms
+   ./build/rocm-ernic --tap ernic0 --stats-interval-ms 100
+
+Frames are classed by destination MAC: the group bit makes a
+frame multicast, all-ones makes it broadcast, anything else
+is unicast. What moves:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Event
+     - Counters
+   * - frame sent or received
+     - ``{tx,rx}_{ucast,mcast,bcast}_{bytes,packets}``; the
+       driver sums them into ``ip -s link`` packets and bytes
+   * - receive with no buffer posted, or the mesh inbox full
+     - ``rx_*_drop_*`` and ``rx_queue_empty``
+       (``rx_dropped`` and ``rx_over_errors``)
+   * - frame larger than the posted buffer
+     - ``rx_*_drop_*`` and ``rx_desc_data_error``
+   * - DMA to or from guest memory failed
+     - ``{tx,rx}_dma_error``
+   * - the host backend refused a transmit
+     - ``tx_*_drop_*``
+   * - descriptor unreadable, or nonsensical
+     - ``tx_desc_fetch_error``, ``tx_desc_data_error``
+   * - doorbell on a queue that was never initialized
+     - ``tx_queue_disabled``
+   * - RDMA payload sent or landed
+     - ``{tx,rx}_rdma_ucast_{bytes,packets}``, one packet per
+       message
+
+Frames are counted whether or not the server has a TAP:
+without one, transmitted frames are counted and discarded.
+The counters restart at zero on a device reset. After
+``LIF_RESET`` or a device reset nothing more is written into
+guest memory until the next ``LIF_INIT``, because the driver
+may have freed the block.
+
+The stats file (``--stats-file``) carries the same counters
+in a ``LIF Statistics`` section, one line per named field of
+``struct ionic_lif_stats`` whether or not it is zero, so a
+test can check what the guest reports against what the
+emulator counted. They agree to within one interval.
+
+Not counted yet: ``rx_queue_disabled`` (the receive path
+skips queues that are not initialized) and the RDMA error
+counters at qwords 96 to 125, which stay zero.
 
 Guest Driver: Patched Upstream ionic
 ------------------------------------

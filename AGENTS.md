@@ -259,6 +259,8 @@ with a comment saying why.
   git ls-files -z -- '*.c' '*.h' | xargs -0 clang-format-18 --dry-run --Werror
   ```
 
+  Use exactly clang-format 18.1.3, CI's version.
+
 - **No warnings with GCC or Clang, Debug or Release**, each in its own
   build directory with `-DERNIC_WERROR=ON`. Warning lists:
   [`ErnicGNUCompilerOptions.cmake`](cmake/ErnicGNUCompilerOptions.cmake),
@@ -292,7 +294,7 @@ with a comment saying why.
   ctest --test-dir build -T memcheck --output-on-failure \
     --overwrite "MemoryCheckCommand=$(command -v valgrind)" \
     --overwrite "MemoryCheckCommandOptions=--leak-check=full --track-origins=yes --num-callers=40 --error-exitcode=1" \
-    -E '^(pci-config-test|find-rdma-device-tuple|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|cmake-subproject)$'
+    -E '^(pci-config-test|find-rdma-device-tuple|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ionic-stats-interval-cli|cmake-subproject)$'
   ```
 
   The excluded tests run scripts, CMake, or a server launcher. Reports
@@ -312,7 +314,7 @@ with a comment saying why.
   opts="--log-file=$PWD/build/valgrind-server/%p.log --leak-check=full --track-origins=yes --num-callers=40 --error-exitcode=1"
   ERNIC_TEST_SERVER_WRAPPER="valgrind $opts" \
     ctest --test-dir build --output-on-failure \
-    -R '^(pci-config-test|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci)$'
+    -R '^(pci-config-test|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ionic-stats-interval-cli)$'
   valgrind --trace-children=yes $opts build/tests/test_server_lifecycle
   grep -L 'ERROR SUMMARY: 0 errors' build/valgrind-server/*.log
   ```
