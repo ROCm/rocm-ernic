@@ -377,6 +377,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#bar-layout">BAR Layout</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#nic-profiles">NIC Profiles</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ethernet-and-tcp-ip">Ethernet and TCP/IP</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#two-guests-on-one-bridge">Two Guests on One Bridge</a></li>
 </ul>
@@ -493,6 +494,106 @@ queue type, the page index the process ID</p></td>
 </div>
 <p>32 MSI-X vectors are advertised.</p>
 </section>
+</section>
+<section id="nic-profiles">
+<h2>NIC Profiles<a class="headerlink" href="#nic-profiles" title="Link to this heading">#</a></h2>
+<p>A NIC profile is the shape of the emulated NIC: what it
+reports about itself (ASIC type and revision, firmware
+version) and its link (speed, transceiver, largest MTU).
+Without <code class="docutils literal notranslate"><span class="pre">--nic-profile</span></code> the server runs the built-in
+<code class="docutils literal notranslate"><span class="pre">compat</span></code> profile, which is the device described above,
+byte for byte.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># layer a file over compat; later layers win, key by key</span>
+./build/rocm-ernic<span class="w"> </span>--tap<span class="w"> </span>ernic0<span class="w"> </span>--nic-profile<span class="w"> </span>./fast.ini
+
+<span class="c1"># show the merged profile and exit</span>
+./build/rocm-ernic<span class="w"> </span>--nic-profile<span class="w"> </span>./fast.ini<span class="w"> </span>--print-profile
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">--nic-profile</span></code> can be given more than once. Each one
+names either a built-in profile (a bare name: <code class="docutils literal notranslate"><span class="pre">compat</span></code>,
+<code class="docutils literal notranslate"><span class="pre">small-vm</span></code>) or a file (a name containing a <code class="docutils literal notranslate"><span class="pre">/</span></code> or ending
+in <code class="docutils literal notranslate"><span class="pre">.ini</span></code>). The layers apply in order on top of
+<code class="docutils literal notranslate"><span class="pre">compat</span></code>. A profile is an ini file:</p>
+<div class="highlight-ini notranslate"><div class="highlight"><pre><span></span><span class="c1"># fast.ini</span>
+<span class="k">[identity]</span>
+<span class="na">fw_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">1.8.0-E-32</span>
+
+<span class="k">[link]</span>
+<span class="na">speed_mbps</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">400000</span>
+<span class="na">xcvr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">fiber</span>
+</pre></div>
+</div>
+<p>Validation is strict. An unknown section or key, a duplicate
+key, a value of the wrong type or a value out of range stops
+the server with the file, line and key named, so a typo
+can’t quietly leave a default in place. A layer that fails
+changes nothing.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--print-profile</span></code> writes the merged profile as an ini file
+that loads back to the same values. Its header names the
+layers and a 64-bit hash of the values; the startup log and
+the <code class="docutils literal notranslate"><span class="pre">nic_profile</span></code> line in the stats file carry the same
+chain and hash, so two runs can be checked for the same
+device shape.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 35.0%" />
+<col style="width: 15.0%" />
+<col style="width: 25.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Key</p></th>
+<th class="head"><p>Values</p></th>
+<th class="head"><p><code class="docutils literal notranslate"><span class="pre">compat</span></code></p></th>
+<th class="head"><p>Guest effect</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">identity.asic_type</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">none</span></code>, <code class="docutils literal notranslate"><span class="pre">capri</span></code>, <code class="docutils literal notranslate"><span class="pre">elba</span></code>, <code class="docutils literal notranslate"><span class="pre">giglio</span></code>, <code class="docutils literal notranslate"><span class="pre">salina</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">none</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">dev_info</span></code> ASIC type. The driver runs its periodic
+doorbell re-check (<code class="docutils literal notranslate"><span class="pre">ionic_doorbell_wa()</span></code>) only for
+<code class="docutils literal notranslate"><span class="pre">none</span></code> and <code class="docutils literal notranslate"><span class="pre">elba</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">identity.asic_rev</span></code></p></td>
+<td><p>0 to 255</p></td>
+<td><p>0</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">dev_info</span></code> ASIC revision</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">identity.fw_version</span></code></p></td>
+<td><p>1 to 31 printable ASCII characters; no <code class="docutils literal notranslate"><span class="pre">\</span></code>, no
+leading or trailing space</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rocm-ernic-1.0</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ethtool</span> <span class="pre">-i</span></code> <code class="docutils literal notranslate"><span class="pre">firmware-version</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">link.speed_mbps</span></code></p></td>
+<td><p>1000, 10000, 25000, 40000, 50000, 100000, 200000,
+400000</p></td>
+<td><p>100000</p></td>
+<td><p>port and LIF link speed: <code class="docutils literal notranslate"><span class="pre">ethtool</span></code> <code class="docutils literal notranslate"><span class="pre">Speed</span></code>, the
+RDMA port <code class="docutils literal notranslate"><span class="pre">rate</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">link.xcvr</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">copper</span></code>, <code class="docutils literal notranslate"><span class="pre">fiber</span></code>, <code class="docutils literal notranslate"><span class="pre">none</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">copper</span></code></p></td>
+<td><p>transceiver: <code class="docutils literal notranslate"><span class="pre">ethtool</span></code> <code class="docutils literal notranslate"><span class="pre">Port</span></code> is <code class="docutils literal notranslate"><span class="pre">Direct</span> <span class="pre">Attach</span>
+<span class="pre">Copper</span></code>, <code class="docutils literal notranslate"><span class="pre">FIBRE</span></code> or <code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">link.mtu_max</span></code></p></td>
+<td><p>1500 to 9582</p></td>
+<td><p>9198</p></td>
+<td><p>the largest MTU the guest may set. The LIF reports a
+maximum frame of <code class="docutils literal notranslate"><span class="pre">mtu_max</span></code> + 18, and the port’s
+configured MTU is the smaller of <code class="docutils literal notranslate"><span class="pre">mtu_max</span></code> and 9000</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The built-in <code class="docutils literal notranslate"><span class="pre">small-vm</span></code> profile is <code class="docutils literal notranslate"><span class="pre">compat</span></code> for now; the
+queue and interrupt keys it is meant to shrink are not in
+the schema yet.</p>
 </section>
 <section id="ethernet-and-tcp-ip">
 <h2>Ethernet and TCP/IP<a class="headerlink" href="#ethernet-and-tcp-ip" title="Link to this heading">#</a></h2>
@@ -779,6 +880,7 @@ reports an unknown link speed and width; this is cosmetic</p></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#bar-layout">BAR Layout</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#nic-profiles">NIC Profiles</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ethernet-and-tcp-ip">Ethernet and TCP/IP</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#two-guests-on-one-bridge">Two Guests on One Bridge</a></li>
 </ul>
