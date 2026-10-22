@@ -12,12 +12,13 @@ while IFS='|' read -r mode category description expected; do
     mkdir "$work"
     printf 'preserve me\n' > "$work/victim"
     cp "$work/victim" "$work/expected"
+    # A seed that can't be written aborts the harness: 128 + SIGABRT.
     want=0
     case "$mode" in
-        regular) cp "$work/victim" "$work/seed-00"; want=1 ;;
-        symlink) ln -s victim "$work/seed-00"; want=1 ;;
-        fifo) mkfifo "$work/seed-00"; want=1 ;;
-        directory) mkdir "$work/seed-00"; want=1 ;;
+        regular) cp "$work/victim" "$work/seed-00"; want=134 ;;
+        symlink) ln -s victim "$work/seed-00"; want=134 ;;
+        fifo) mkfifo "$work/seed-00"; want=134 ;;
+        directory) mkdir "$work/seed-00"; want=134 ;;
     esac
     rc=0
     (
@@ -61,8 +62,8 @@ done <<'CASES'
 private|positive/boundary|emit under umask 000|success; every seed is a regular file with mode 0600
 unset|negative|emission flag absent|successful replay; no seed files
 invalid|negative|path supplied instead of flag 1|successful replay; environment value never used as a path
-regular|negative|first seed already exists|exit 1; existing content preserved
-symlink|corner|first seed is a symlink|exit 1; link and target preserved
-fifo|corner|first seed is a FIFO with no reader|exit 1 promptly; FIFO preserved
-directory|corner|first seed is a directory|exit 1; directory preserved
+regular|negative|first seed already exists|abort; existing content preserved
+symlink|corner|first seed is a symlink|abort; link and target preserved
+fifo|corner|first seed is a FIFO with no reader|abort promptly; FIFO preserved
+directory|corner|first seed is a directory|abort; directory preserved
 CASES

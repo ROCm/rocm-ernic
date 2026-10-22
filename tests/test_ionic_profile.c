@@ -399,7 +399,12 @@ static char g_tmpdir[256];
 /* Private, exclusive files even with a permissive caller umask. */
 static FILE *scratch_open(const char *path)
 {
+    /* With _FORTIFY_SOURCE, glibc 2.40 and later give Clang an
+     * open(path, flags, mode) overload, and android-cloexec-open looks for
+     * O_CLOEXEC in its mode */
+    /* NOLINTBEGIN(android-cloexec-open) */
     int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    /* NOLINTEND(android-cloexec-open) */
     FILE *f;
 
     if (fd < 0)
@@ -410,21 +415,26 @@ static FILE *scratch_open(const char *path)
     return f;
 }
 
-/* Write @text to @name in the scratch directory; returns its path. */
+/* Write @text to @name in the scratch directory; returns its path, or NULL
+ * after printing why. */
 static const char *scratch_file(const char *name, const char *text)
 {
     static char path[512];
     FILE *f;
+    bool ok;
 
     snprintf(path, sizeof(path), "%s/%s", g_tmpdir, name);
     f = scratch_open(path);
-    if (!f || fputs(text, f) < 0) {
-        printf("FAIL setup: cannot write %s\n", path);
-        exit(1);
+    if (!f) {
+        printf("     setup: cannot create %s\n", path);
+        return NULL;
     }
-    if (fclose(f) != 0) {
-        printf("FAIL setup: cannot close %s\n", path);
-        exit(1);
+    ok = fputs(text, f) >= 0;
+    if (fclose(f) != 0)
+        ok = false;
+    if (!ok) {
+        printf("     setup: cannot write %s\n", path);
+        return NULL;
     }
     return path;
 }
@@ -483,6 +493,12 @@ static void run_spec_case(const struct spec_case *c)
 
     if (spec[0] == '@') {
         spec = c->file ? scratch_file(spec + 1, c->file) : g_tmpdir;
+        if (!spec) {
+            printf("FAIL %s: %s; expected: %s\n", c->category, c->description,
+                   c->expected);
+            failures++;
+            return;
+        }
         if (strncmp(c->want_chain, "compat + @", 10) == 0)
             snprintf(want_chain, sizeof(want_chain), "compat + %s", spec);
         else
@@ -527,7 +543,7 @@ static void check_builtin_matches_file(const char *name)
     bool ok = false;
 
     snprintf(path, sizeof(path), "%s/%s.ini", ERNIC_PROFILES_DIR, name);
-    f = fopen(path, "rb");
+    f = fopen(path, "rbe");
     if (f && text) {
         size_t len = 0;
 
