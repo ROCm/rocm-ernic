@@ -4,12 +4,12 @@
 # Included from build_one.yml, once per ref, when
 # ernic_srq_dkms_fetch_on_controller is set. Everything here runs with
 # delegate_to: localhost and become: false, the way ernic_srq_provider's
-# controller-side tasks do -- the scripts and patches/srq are paths in the
-# controller's checkout and exist nowhere else.
+# controller-side tasks do -- the scripts and patches/srq are files of this
+# collection, which is installed on the controller and nowhere else.
 #
 # The split is not a style choice. setup-ionic-dkms.sh builds for
 # KVER=$(uname -r) on whichever host runs it, so the BUILD has to happen on the
-# target; the fetch has to happen where the checkout and the network are.
+# target; the fetch has to happen where the collection and the network are.
 
 - name: "Discard any controller checkout for {{ ernic_srq_src.ref[:12] }}"
   delegate_to: localhost

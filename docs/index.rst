@@ -99,8 +99,8 @@ The emulator itself is ``GPL-2.0-or-later``:
 - The VMware/Linux uAPI header ``src/qemu/vmw_pvrdma-abi.h`` is
   instead dual ``GPL-2.0`` / ``BSD-2-Clause``.
 
-The patches under ``patches/`` modify the Linux ionic drivers and
-rdma-core's ionic provider, and are licensed under the terms of the files
+The patches under ``ansible/files/patches/`` modify the Linux ionic drivers
+and rdma-core's ionic provider, and are licensed under the terms of the files
 they modify: mostly ``GPL-2.0`` for the kernel drivers and
 ``GPL-2.0 OR Linux-OpenIB`` for rdma-core.
 

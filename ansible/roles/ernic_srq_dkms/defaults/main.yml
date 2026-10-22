@@ -52,7 +52,15 @@ ernic_srq_dkms_sources:
 # patches/srq carries a copy of this repo's own UC address-handle patch as
 # 0009 -- without it an SRQ build would silently lose a fix the normal build
 # has.
-ernic_srq_dkms_patches_dir: "{{ playbook_dir }}/../../patches/srq"
+#
+# Resolved from the role, not from the playbook: the series ships INSIDE the
+# collection (ansible/files/, see its README), so this default is correct with
+# no caller configuration, whichever playbook named the role and whether the
+# collection was installed from a tarball, from git or run out of the repo.
+# role_path is <collection>/roles/ernic_srq_dkms, so ../../files is the
+# collection's own files/. Still overridable -- pointing it at a working tree
+# is a legitimate thing to do.
+ernic_srq_dkms_patches_dir: "{{ role_path }}/../../files/patches/srq"
 
 ernic_srq_dkms_source_root: /var/tmp/ionic-srq-src
 
@@ -68,11 +76,15 @@ ernic_srq_dkms_install: false
 # reporting max_srq=0 with no indication why.
 ernic_srq_dkms_require_srq: true
 
-# Where the repo's own scripts live, relative to the playbook. Two levels, not
-# one: playbook_dir is ansible/playbooks, so ../scripts is ansible/scripts,
-# which does not exist -- the scripts are at the repository root, the same
-# depth as patches/ above.
-ernic_srq_dkms_scripts_dir: "{{ playbook_dir }}/../../scripts"
+# Where fetch-ionic-sources.sh and setup-ionic-dkms.sh live. Shipped in the
+# collection beside the patches, and resolved from the role for the same
+# reason as ernic_srq_dkms_patches_dir above.
+#
+# Keep this and ernic_srq_dkms_patches_dir pointing into the same tree:
+# fetch-ionic-sources.sh defaults its own patches directory to
+# ${SCRIPT_DIR}/../patches, so a scripts directory from one checkout and a
+# patch series from another is a combination that half works.
+ernic_srq_dkms_scripts_dir: "{{ role_path }}/../../files/scripts"
 
 # Re-fetch the ionic sources even when a checkout for this ref already exists.
 # On by default: the role's purpose is to prove patches/srq applies and builds,
@@ -88,8 +100,8 @@ ernic_srq_dkms_force_fetch: true
 # Off by default, because the plain case -- this role run against localhost as a
 # build gate -- wants neither the copy nor the staging directory. Turn it on for
 # a remote target, which is the only way the role works there at all: the two
-# scripts and patches/srq live at paths relative to the controller's checkout,
-# so invoking them on a guest asks it to run files it does not have.
+# scripts and patches/srq are files of the collection, which is installed on the
+# controller, so invoking them on a guest asks it to run files it does not have.
 #
 # It also keeps the git clone where the network is. A guest's outbound path is
 # user-mode NAT that nothing else depends on, and a failure in it would present

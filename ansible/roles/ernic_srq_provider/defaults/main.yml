@@ -20,7 +20,16 @@
 ernic_srq_provider_base: bd3282a1cf1025c7869a8664c2d54266a4dded44
 ernic_srq_provider_repo: https://github.com/linux-rdma/rdma-core.git
 
-ernic_srq_provider_patches_dir: "{{ playbook_dir }}/../../patches/rdma-core"
+# Resolved from the role, not from the playbook: the series ships INSIDE the
+# collection (ansible/files/, see its README), so this default is correct with
+# no caller configuration, whichever playbook named the role. role_path is
+# <collection>/roles/ernic_srq_provider, so ../../files is the collection's own
+# files/. Still overridable -- pointing it at a working tree is a legitimate
+# thing to do.
+#
+# The README travels with the series because the base SHA above is read back
+# out of it, below.
+ernic_srq_provider_patches_dir: "{{ role_path }}/../../files/patches/rdma-core"
 ernic_srq_provider_readme: "{{ ernic_srq_provider_patches_dir }}/README.md"
 
 ernic_srq_provider_source_dir: /var/tmp/rdma-core-srq

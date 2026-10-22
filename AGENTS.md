@@ -380,9 +380,15 @@ with a comment saying why.
 - **Shebangs**: `#!/usr/bin/env bash` for scripts run from the source
   tree (tests, `ci/`, most of `scripts/`), for systems like NixOS.
   Scripts installed onto a host or guest that may run as root
-  (`service/`, the driver pack's `setup-ionic-dkms.sh` and
-  `fetch-ionic-sources.sh`, the Ansible collection's `files/`) keep
-  `#!/bin/bash`.
+  (`service/`, the Ansible collection's `files/`, and the driver
+  pack's `ansible/files/scripts/setup-ionic-dkms.sh` and
+  `fetch-ionic-sources.sh`) keep an absolute `#!/bin/bash`, so they
+  don't depend on `PATH`.
+  Those two write it `#!/bin/bash -eu`, redundantly with their own
+  `set -euo pipefail`: they ship inside the Ansible collection, and
+  `ansible-test sanity`'s shebang check runs over everything in it and
+  accepts only `#!/bin/sh`, `#!/bin/bash -eu`, `#!/bin/bash -eux` and
+  the `#!/usr/bin/env` forms. Don't "tidy" the flags away.
 - **ShellCheck 0.11.0**, default checks only (no
   `--list-optional`), over every `*.sh`, `*.sh.in`, and extension-less
   executable with a shell shebang (CI:
@@ -504,7 +510,7 @@ AMD copyright lines carry no year. Don't add one to a new file or
   rights reserved"), followed by the QEMU GPL boilerplate.
 
 Leave third-party copyright lines exactly as they are, years included.
-Patches under `patches/` take the licenses of the Linux ionic and
+Patches under `ansible/files/patches/` take the licenses of the Linux ionic and
 rdma-core files they modify (see `LICENSE.md`); don't add a copyright or
 license notice to them.
 

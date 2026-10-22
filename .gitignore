@@ -54,18 +54,19 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Patch files (exclude patches/ directory which ships driver patches)
+# Patch files.  The driver patch series ships in the Ansible collection,
+# at ansible/files/patches; see its README for why it lives there.
 *.patch
 *.diff
 # Both levels: the single-star form does not reach a subdirectory, so
-# patches/srq/*.patch stayed ignored and the SRQ series was invisible to
-# git status -- which looks like "nothing to commit" rather than "your
-# patches are not in the tree", and ships a branch whose CI cannot find
-# the series it is meant to apply.
-!patches/*.patch
-!patches/*.diff
-!patches/**/*.patch
-!patches/**/*.diff
+# the srq/*.patch under it stayed ignored and the SRQ series was
+# invisible to git status -- which looks like "nothing to commit" rather
+# than "your patches are not in the tree", and ships a branch whose CI
+# cannot find the series it is meant to apply.
+!ansible/files/patches/*.patch
+!ansible/files/patches/*.diff
+!ansible/files/patches/**/*.patch
+!ansible/files/patches/**/*.diff
 
 # Log files
 *.log

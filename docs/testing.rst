@@ -670,7 +670,8 @@ driver. Its ``ionic-patches`` job reads
 ``IONIC_KERNEL_REF`` straight out
 of ``cmake/ErnicKernelModule.cmake``, sparse-clones the two
 ionic subtrees at that ref, and applies every
-``patches/*.patch`` with ``git am``, failing the pull
+``ansible/files/patches/*.patch`` with ``git am``,
+failing the pull
 request if one no longer applies. The ionic modules
 themselves are not built there: they need headers matching
 ``IONIC_KERNEL_REF`` --- the sources track IB-core helpers

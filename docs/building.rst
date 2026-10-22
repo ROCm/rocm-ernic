@@ -320,7 +320,8 @@ Guest ionic Modules
 -------------------
 
 The guest-side driver is the upstream
-Linux ionic driver with the patches in ``patches/`` applied.
+Linux ionic driver with the patches in
+``ansible/files/patches/`` applied.
 Configure with ``-DERNIC_BUILD_KMOD=ON`` to get the DKMS
 targets, and run them in the guest:
 
