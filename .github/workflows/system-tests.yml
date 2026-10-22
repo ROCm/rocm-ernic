@@ -17,9 +17,11 @@ on:
       - 'tests/**'                # rdma_verify, test_write_imm, ...
       - 'CMakeLists.txt'
       - 'cmake/**'
-      - 'ansible/**'              # ernic_host_setup / ernic_guest_setup
-      - 'scripts/**'              # find-rdma-device, DKMS, diagnostics
-      - 'patches/**'              # staged into the guest in ionic mode
+      # ernic_host_setup / ernic_guest_setup, and ansible/files -- the
+      # ionic patch series and the two DKMS scripts, staged into the
+      # guest in ionic mode
+      - 'ansible/**'
+      - 'scripts/**'              # find-rdma-device, diagnostics
       - 'udev/**'                 # driver_common installs these
       # Everything under ci/ drives these lanes: guest-image.env is the
       # guest image pin itself, lib/common.sh reads it, and jobs/ is what
@@ -1147,7 +1149,7 @@ jobs:
     # it has never once exercised the emulator's SRQ adminq handlers.
     #
     # These two steps close that gap by rebuilding the guest driver from
-    # patches/srq first.  They run last on purpose: they swap the ionic
+    # the SRQ series first.  They run last on purpose: they swap the ionic
     # modules out from under the guest, so anything after them would be
     # testing a different driver than the one the lane booted.
     #
@@ -1170,7 +1172,7 @@ jobs:
     # leaving ernic_vms empty and the play reporting success having
     # built nothing.
     #
-    # These block.  patches/srq is rebased onto v7.2.4 -- the ref
+    # These block.  The SRQ series is rebased onto v7.2.4 -- the ref
     # IONIC_KERNEL_REF pins and the kernel the guest image runs -- so
     # there is no version mismatch to tolerate: the series applies with
     # git am and builds as a DKMS package on 7.2.4-070204-generic,
@@ -1184,22 +1186,20 @@ jobs:
         export ANSIBLE_HOST_KEY_CHECKING=false
         export ANSIBLE_PRIVATE_KEY_FILE="$SSH_KEY_PRIVATE"
         export ANSIBLE_ROLES_PATH="$PWD/ansible/roles"
-        PROJECT_ROOT="$PWD"
 
         cd ansible
-        # The ref is not named here.  It comes from the role defaults,
-        # which is the single source for "which kernel carries SRQ"; a
-        # copy here would let this lane keep testing the old one after a
-        # bump.  Same for the patches directory, passed only because the
-        # default is playbook_dir-relative and so depends on which
-        # playbook was named on the command line.
+        # Nothing about the inputs is named here.  The ref comes from the
+        # role defaults, which is the single source for "which kernel
+        # carries SRQ"; a copy here would let this lane keep testing the
+        # old one after a bump.  The patch series and the scripts come
+        # from the role too -- they ship in the collection, so the role
+        # resolves them from itself and this lane exercises exactly what
+        # an external consumer gets.
         ansible-playbook playbooks/vm-register.yml \
                          playbooks/srq-dkms-build.yml \
           --skip-tags srq-provider \
           -e srq_dkms_hosts=ernic_vms \
           -e ernic_run_dir=/tmp/ernic-ci \
-          -e ernic_srq_dkms_patches_dir="$PROJECT_ROOT/patches/srq" \
-          -e ernic_srq_dkms_scripts_dir="$PROJECT_ROOT/scripts" \
           -e ernic_srq_dkms_fetch_on_controller=true \
           -e ernic_srq_dkms_install=true \
           -e ernic_srq_dkms_reload=true \
@@ -1214,7 +1214,7 @@ jobs:
 
     # The step above installs the kernel half, which is what makes the
     # device advertise max_srq.  This is the userspace half, and without
-    # it the pair is the contradiction patches/rdma-core/README.md
+    # it the pair is the contradiction the rdma-core series' README.md
     # describes: the driver reports max_srq=256 and ibv_create_srq()
     # returns EOPNOTSUPP, because libibverbs dispatches into the guest's
     # stock ionic provider, which has no create_srq op.  SRQ is in no
@@ -1223,8 +1223,8 @@ jobs:
     #
     # Driven through the ernic_srq_provider role rather than a second
     # copy of its steps: the role pins the rdma-core base, checks that
-    # pin against patches/rdma-core/README.md, and asserts the built
-    # provider actually carries the verbs before and after the build.  A
+    # pin against that README, and asserts the built provider actually
+    # carries the verbs before and after the build.  A
     # hand-rolled copy here would be a third place to bump.
     #
     # vm-register.yml runs first and untagged, in the same invocation, so
@@ -1242,18 +1242,16 @@ jobs:
         export ANSIBLE_HOST_KEY_CHECKING=false
         export ANSIBLE_PRIVATE_KEY_FILE="$SSH_KEY_PRIVATE"
         export ANSIBLE_ROLES_PATH="$PWD/ansible/roles"
-        PROJECT_ROOT="$PWD"
 
         cd ansible
-        # The patch directory is passed rather than left to the role
-        # default, which is playbook_dir-relative and so depends on which
-        # playbook was named on the command line.
+        # The patch directory is left to the role default, which resolves
+        # to the series shipped in the collection -- so this lane proves
+        # what an external consumer gets rather than what a checkout has.
         ansible-playbook playbooks/vm-register.yml \
                          playbooks/srq-dkms-build.yml \
           --skip-tags srq-kernel \
           -e srq_dkms_hosts=ernic_vms \
-          -e ernic_run_dir=/tmp/ernic-ci \
-          -e ernic_srq_provider_patches_dir="$PROJECT_ROOT/patches/rdma-core"
+          -e ernic_run_dir=/tmp/ernic-ci
 
         echo "srq_provider=installed" >> "$GITHUB_OUTPUT"
         echo "✓ SRQ-capable rdma-core provider installed"

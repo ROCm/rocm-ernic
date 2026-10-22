@@ -25,11 +25,12 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 The MIT terms above cover the build system and the deployment and
 automation code: the `CMakeLists.txt` files, `flake.nix`, `cmake/`,
-`docs/`, `ansible/`, `ci/`, `.github/`, `prometheus/`, `udev/`,
+`docs/`, `ansible/` apart from the patch series it carries in
+`ansible/files/patches/`, `ci/`, `.github/`, `prometheus/`, `udev/`,
 `scripts/`, `service/`, `tools/`, and `nix/` apart from the fuzz harnesses
 below. They also cover the headers in `shared/`, which carry their own
 third-party notices where they were derived from other projects, and the
-READMEs in `patches/`.
+READMEs in `ansible/files/patches/`.
 
 The emulator itself is `GPL-2.0-or-later` (see `LICENSE_GPL.md`):
 
@@ -41,23 +42,25 @@ The emulator itself is `GPL-2.0-or-later` (see `LICENSE_GPL.md`):
   `src/qemu/vmw_pvrdma-abi.h` is instead dual `GPL-2.0` / `BSD-2-Clause`,
   as stated in its header comment.
 
-The patches under `patches/` modify code from other projects and are
-licensed under the terms of the files they modify:
+The patches under `ansible/files/patches/` modify code from other projects
+and are licensed under the terms of the files they modify:
 
-* `patches/srq/` and the patch at the top of `patches/` modify the Linux
+* `ansible/files/patches/srq/` and the patch at the top of
+  `ansible/files/patches/` modify the Linux
   ionic drivers. The RDMA driver in `drivers/infiniband/hw/ionic/` is
   `GPL-2.0`, the uAPI header `include/uapi/rdma/ionic-abi.h` is
   `GPL-2.0 WITH Linux-syscall-note`, and the Ethernet driver's
   `drivers/net/ethernet/pensando/ionic/ionic_if.h` is
   `(GPL-2.0 OR Linux-OpenIB) OR BSD-2-Clause`.
 
-* `patches/rdma-core/` modifies rdma-core's ionic provider in
+* `ansible/files/patches/rdma-core/` modifies rdma-core's ionic provider in
   `providers/ionic/`, which is `GPL-2.0 OR Linux-OpenIB`, and rdma-core's
   copy of the uAPI header in `kernel-headers/rdma/ionic-abi.h`, which is
   `GPL-2.0 WITH Linux-syscall-note`.
 
-`scripts/setup-ionic-dkms.sh` is MIT, but the `dkms.conf` it writes for
-the patched ionic drivers is `GPL-2.0`, like the drivers it builds. The
+`ansible/files/scripts/setup-ionic-dkms.sh` is MIT, but the `dkms.conf` it
+writes for the patched ionic drivers is `GPL-2.0`, like the drivers it
+builds. The
 `GPL-2.0` tag inside the script belongs to that generated file.
 
 The groupings above are a summary; the per-file notice is authoritative.

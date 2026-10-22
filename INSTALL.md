@@ -90,7 +90,8 @@ cmake -B build -G Ninja -DCMAKE_PREFIX_PATH="$HOME/.local"
 ### Guest ionic modules
 
 The guest runs the upstream Linux `ionic` and `ionic_rdma` drivers
-with the patches in `patches/` applied, against a kernel >= 6.18. Configure
+with the patches in `ansible/files/patches/` applied, against a kernel >= 6.18.
+Configure
 with `-DERNIC_BUILD_KMOD=ON` and run these targets inside the guest:
 
 ```

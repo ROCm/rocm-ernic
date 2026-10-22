@@ -7,8 +7,8 @@
 # ionic-ernic package.
 #
 # The guest has outbound internet, so it sparse-clones the kernel
-# itself with the same scripts/fetch-ionic-sources.sh the host build
-# uses.  The .patches-applied-<ref> sentinel that script writes makes
+# itself with the same fetch-ionic-sources.sh the host build uses,
+# staged from the collection by stage_sources.yml.  The .patches-applied-<ref> sentinel that script writes makes
 # re-runs cheap, so there is no separate Ansible stamp here.
 
 ---

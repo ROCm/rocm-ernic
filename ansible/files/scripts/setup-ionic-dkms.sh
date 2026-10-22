@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -eu
 # Copyright (c) Advanced Micro Devices, Inc.
 # All rights reserved.
 #
@@ -20,6 +20,12 @@
 #   --kernel-ref REF   Kernel tag/SHA (used in DKMS package version)
 #   --build-only       Build but do not install
 #   --uninstall        Remove the DKMS modules
+#
+# The "-eu" on the shebang is redundant with the "set" below and is there
+# for ansible-test's shebang check, which runs over everything in the
+# collection and accepts "#!/bin/bash -eu" but not a bare "#!/bin/bash".
+# This script is installed onto hosts and guests and may run as root, so
+# it keeps an absolute /bin/bash rather than /usr/bin/env.
 
 set -euo pipefail
 

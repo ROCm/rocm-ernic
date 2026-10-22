@@ -2,9 +2,15 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Push what the guest needs to build its driver from the
-# controller's rocm-ernic checkout: the kernel patches and the two
-# helper scripts.  The guest fetches the upstream ionic sources itself.
+# Push what the guest needs to build its driver: the kernel patches
+# and the two helper scripts.  The guest fetches the upstream ionic
+# sources itself.
+#
+# These come from the collection's own files/, not from the
+# ernic_source checkout, so the series a guest builds is the one the
+# roles here were written against rather than whatever a separately
+# pinned second clone happens to hold.  ernic_source is still needed
+# for the udev rules, find-rdma-device.sh and the ionic kernel ref.
 
 ---
 - name: Create the ionic staging directory
@@ -15,13 +21,13 @@
 
 - name: Copy the ionic kernel patches
   ansible.builtin.copy:
-    src: "{{ ernic_source_dir }}/patches/"
+    src: "{{ ernic_guest_patches_dir }}/"
     dest: "{{ ernic_guest_ionic_dir }}/patches/"
     mode: "0644"
 
 - name: Copy the ionic helper scripts
   ansible.builtin.copy:
-    src: "{{ ernic_source_dir }}/scripts/{{ item }}"
+    src: "{{ ernic_guest_scripts_dir }}/{{ item }}"
     dest: "{{ ernic_guest_ionic_dir }}/{{ item }}"
     mode: "0755"
   loop:

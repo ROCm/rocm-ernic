@@ -5,7 +5,7 @@
 ---
 namespace: sbates130272
 name: rocm_ernic
-version: 0.2.0
+version: 0.3.0
 # The Galaxy importer looks for a file literally named README.md
 # in the artifact root and rejects the upload without one -- it
 # does not consult this key.  So README.md is the Galaxy landing
@@ -74,7 +74,18 @@ build_ignore:
   - playbooks
   - group_vars
   - inventory
-  # No top-level *.sh or templates/ exist today.  Both are kept as
-  # standing denies so re-adding one does not quietly publish it.
+  # No templates/ exists today; kept as a standing deny so re-adding
+  # one does not quietly publish it.
   - templates
-  - "*.sh"
+  #
+  # There is deliberately no "*.sh" here, though there used to be.
+  # ansible-galaxy matches these patterns with fnmatch against the path
+  # relative to the collection root, and fnmatch translates "*" to ".*",
+  # which crosses "/" -- so "*.sh" matches files/scripts/*.sh as readily
+  # as a top-level script, and would silently ship a collection with no
+  # build scripts in it.  It applies to a "type: git" install too, so
+  # that would reach consumers, not just Galaxy.  There is no way to
+  # anchor a pattern at the root, so the denylist cannot express "top
+  # level only"; the build job in
+  # .github/workflows/ansible-collection.yml asserts the artifact's
+  # contents in both directions instead.

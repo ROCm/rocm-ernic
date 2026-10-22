@@ -14,8 +14,8 @@
   a QEMU that doesn't run as root can connect, and still can after a restart.
 * The server presents an AMD Pensando ionic NIC (`1dd8:1002`, subsystem
   `1dd8:5400`) so the guest can use the upstream Linux `ionic` and
-  `ionic_rdma` drivers. The guest-side patch in `patches/` is built into a DKMS
-  package by the `ERNIC_BUILD_KMOD` targets.
+  `ionic_rdma` drivers. The guest-side patch in `ansible/files/patches/` is
+  built into a DKMS package by the `ERNIC_BUILD_KMOD` targets.
 * `-T` / `--tap IFNAME` attaches the emulated Ethernet interface to a host TAP,
   giving the guest a routable Ethernet segment with working ARP, ICMP, and
   TCP/IP.
@@ -153,6 +153,29 @@
 
 ### Changed
 
+* **Breaking:** the ionic driver patch series and the two scripts that build
+  it moved into the Ansible collection: `patches/` is now
+  `ansible/files/patches/`, and `scripts/fetch-ionic-sources.sh` and
+  `scripts/setup-ionic-dkms.sh` are now under `ansible/files/scripts/`.
+  Anything that invoked them by path from a checkout has to be updated; the
+  `ERNIC_BUILD_KMOD` CMake targets and the CI jobs in this repository already
+  are. The **installed** layout under `share/rocm-ernic` is unchanged, so the
+  driver pack, `vm-driver-install.sh` and anything reading the install prefix
+  see what they always did.
+
+  This makes a consumer of the `sbates130272.rocm_ernic` collection
+  self-contained: the `ernic_srq_dkms` and `ernic_srq_provider` roles now
+  default to the series shipped beside them, so building the SRQ-capable
+  `ionic`/`ionic_rdma` modules and an rdma-core with `ionic_create_srq` needs
+  no second clone of this repository and no `*_patches_dir` or
+  `*_scripts_dir` override. Before, the roles came from the collection's pin
+  and the patches they applied came from a separately pinned checkout, with
+  nothing enforcing that the two agreed — a mismatch whose symptom is a guest
+  reporting `max_srq = 0` with every other check green.
+
+  The two scripts' shebang is now `#!/bin/bash -eu` rather than
+  `#!/bin/bash`, which is what `ansible-test sanity` accepts for a file
+  shipped in a collection. They already ran under `set -euo pipefail`.
 * The QEMU-derived PVRDMA resource manager and backend device moved from
   `third-party/qemu/` to `src/qemu/`, with its `hw/rdma/` and `include/`
   subdirectories flattened into it, and `third-party/` is gone. The code
