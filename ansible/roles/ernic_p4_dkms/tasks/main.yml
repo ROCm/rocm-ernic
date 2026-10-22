@@ -284,6 +284,43 @@
     path: "{{ ernic_p4_dkms_device }}"
   register: ernic_p4_node
 
+# The module loading and the device appearing are two different things,
+# and the reasons they diverge are all off in the guest's own state: what
+# aux devices the ionic created, which ionic is loaded, and whether the
+# tree it was built from carried the series at all. Collect those before
+# failing, because each previous round of this cost a CI run to learn one
+# fact that was sitting right here.
+- name: Collect why the device is missing
+  become: true
+  when:
+    - ernic_p4_dkms_load | bool
+    - ernic_p4_dkms_require_device | bool
+    - not ernic_p4_node.stat.exists
+  ansible.builtin.shell:
+    cmd: |
+      set -uo pipefail
+      echo "aux devices:"
+      find /sys/bus/auxiliary/devices/ -maxdepth 1 -mindepth 1 -printf '  %f\n' \
+          2>/dev/null || echo "  (none)"
+      echo "loaded ionic:"
+      modinfo -n ionic 2>/dev/null | sed 's/^/  /' || echo "  (not loaded)"
+      echo "fetch sentinels (a stale one skips the re-fetch):"
+      find /var/tmp/ionic-src -maxdepth 1 -name '.patches-applied-*' \
+          -printf '  %f\n' 2>/dev/null || echo "  (none)"
+      echo "capability bit in the tree ionic was built from:"
+      for d in /var/tmp/ionic-src /usr/src/ionic-ernic-*; do
+          [ -d "$d" ] || continue
+          if grep -rqs IONIC_LIF_CAP_P4 "$d"; then
+              echo "  $d: present"
+          else
+              echo "  $d: ABSENT"
+          fi
+      done
+    executable: /bin/bash
+  register: ernic_p4_why
+  changed_when: false
+  failed_when: false
+
 - name: Fail when the device was required and did not appear
   when:
     - ernic_p4_dkms_load | bool
@@ -291,10 +328,12 @@
   ansible.builtin.assert:
     that: ernic_p4_node.stat.exists
     fail_msg: >-
-      {{ ernic_p4_dkms_device }} did not appear. The module is loaded, so
-      either the NIC does not advertise IONIC_LIF_CAP_P4 -- the server was
-      started without --p4-guest-scope -- or the ionic driver in this
-      guest lacks patches/p4 and created no "p4" auxiliary device.
+      {{ ernic_p4_dkms_device }} did not appear, though ernic_p4 is
+      loaded. An "ABSENT" below means the ionic in this guest was built
+      without patches/p4, so it creates no "p4" auxiliary device for the
+      module to bind to; no aux devices at all means the NIC advertised
+      no capability, i.e. the server ran without --p4-guest-scope.
+      {{ ernic_p4_why.stdout | default('(nothing collected)') }}
 
 - name: Report what happened
   ansible.builtin.debug:
