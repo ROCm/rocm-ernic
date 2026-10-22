@@ -18,7 +18,6 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdint.h>
 #include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,7 +38,10 @@ struct want {
     uint32_t mtu_max;
 };
 
-#define COMPAT {0, 0, "rocm-ernic-1.0", 100000, 0, 9198}
+/* The fields of a struct want for compat.  Braced at each use: a macro whose
+ * body is a braced list formats differently in clang-format 18.1.3 and
+ * 18.1.8. */
+#define COMPAT_VALUES 0, 0, "rocm-ernic-1.0", 100000, 0, 9198
 
 static bool profile_is(const struct ionic_profile *p, const struct want *w)
 {
@@ -132,111 +134,111 @@ static const struct text_case text_cases[] = {
      "error naming the line and the section",
      {"# c\n[quues]\neth = 64\n"},
      "layer1:2: unknown section [quues] (known sections: identity, link)",
-     COMPAT},
+     {COMPAT_VALUES}},
     {"negative",
      "a section a later PR adds, [queues]",
      "rejected as unknown in this build",
      {"[queues]\neth = 64\n"},
      "layer1:1: unknown section [queues]",
-     COMPAT},
+     {COMPAT_VALUES}},
     {"negative",
      "a mistyped key, link.sped_mbps",
      "error naming the line and the key; nothing changes",
      {"[link]\nxcvr = fiber\nsped_mbps = 400000\n"},
      "layer1:3: unknown key 'link.sped_mbps'",
-     COMPAT},
+     {COMPAT_VALUES}},
     {"negative",
      "a speed that is not an IONIC_SPEED_* value",
      "error listing the supported speeds",
      {"[link]\nspeed_mbps = 12345\n"},
      "layer1:2: link.speed_mbps: '12345' is not a supported speed (1000, "
      "10000, 25000, 40000, 50000, 100000, 200000 or 400000 Mbps)",
-     COMPAT},
+     {COMPAT_VALUES}},
     {"negative",
      "mtu_max = big",
      "error naming the key and the type",
      {"[link]\nmtu_max = big\n"},
      "layer1:2: link.mtu_max: integer expected, got 'big'",
-     COMPAT},
+     {COMPAT_VALUES}},
     {"negative",
      "an asic_type that does not exist",
      "error listing the ASIC types",
      {"[identity]\nasic_type = vega\n"},
      "layer1:2: identity.asic_type: 'vega' is not one of none, capri, elba, "
      "giglio, salina",
-     COMPAT},
+     {COMPAT_VALUES}},
     {"negative",
      "an xcvr that does not exist",
      "error listing the choices",
      {"[link]\nxcvr = dac\n"},
      "layer1:2: link.xcvr: 'dac' is not one of copper, fiber, none",
-     COMPAT},
+     {COMPAT_VALUES}},
     {"negative",
      "a fw_version of 32 characters",
      "error giving the length and the limit",
      {"[identity]\nfw_version = abcdefghijklmnopqrstuvwxyz012345\n"},
      "layer1:2: identity.fw_version: 32 characters; at most 31",
-     COMPAT},
+     {COMPAT_VALUES}},
     {"negative",
      "a fw_version with a backslash escape",
      "rejected: a backslash can't round-trip",
      {"[identity]\nfw_version = a\\\\b\n"},
      "identity.fw_version: must be 1 to 31 printable ASCII characters",
-     COMPAT},
+     {COMPAT_VALUES}},
     {"negative",
      "a key before any section",
      "error naming the line and the key",
      {"speed_mbps = 1000\n"},
      "layer1:1: key 'speed_mbps' is outside any [section]",
-     COMPAT},
+     {COMPAT_VALUES}},
     {"negative",
      "a key set twice in one layer",
      "error naming both lines, not the last one silently winning",
      {"[link]\nspeed_mbps = 1000\nspeed_mbps = 10000\n"},
      "layer1:3: key 'link.speed_mbps' is set twice (first at line 2)",
-     COMPAT},
+     {COMPAT_VALUES}},
     {"negative",
      "a section repeated in one layer",
      "error naming both lines",
      {"[link]\nxcvr = fiber\n[identity]\n[link]\n"},
      "layer1:4: section [link] appears twice (first at line 1)",
-     COMPAT},
+     {COMPAT_VALUES}},
     {"negative",
      "a line that is neither a section nor a key",
      "error naming the line",
      {"[link]\nfast please\n"},
      "layer1:2: expected '[section]', 'key = value' or a '#' comment",
-     COMPAT},
+     {COMPAT_VALUES}},
     {"negative",
      "a GKeyFile locale key, fw_version[de]",
      "rejected as a syntax error, not as a separate key",
      {"[identity]\nfw_version[de] = x\n"},
      "layer1:2: expected '[section]', 'key = value'",
-     COMPAT},
+     {COMPAT_VALUES}},
     {"negative",
      "a negative speed",
      "integer expected",
      {"[link]\nspeed_mbps = -1\n"},
      "layer1:2: link.speed_mbps: integer expected, got '-1'",
-     COMPAT},
+     {COMPAT_VALUES}},
     {"negative",
      "a speed with a '+' sign",
      "integer expected",
      {"[link]\nspeed_mbps = +100000\n"},
      "integer expected, got '+100000'",
-     COMPAT},
+     {COMPAT_VALUES}},
     {"negative",
      "a fw_version that is not ASCII",
      "rejected; nothing changes",
      {"[identity]\nfw_version = v1\xc3\xa9\n"},
      "layer1",
-     COMPAT},
+     {COMPAT_VALUES}},
     {"negative",
      "an empty section name '[]'",
      "error naming the line",
      {"[]\n"},
      "layer1:1: a section header is '[name]'",
-     COMPAT},
+     {COMPAT_VALUES}},
 
     /* boundary */
     {"boundary",
@@ -256,7 +258,7 @@ static const struct text_case text_cases[] = {
      "out of range 0..255",
      {"[identity]\nasic_rev = 256\n"},
      "layer1:2: identity.asic_rev: '256' out of range 0..255",
-     COMPAT},
+     {COMPAT_VALUES}},
     {"boundary",
      "speed 1000, the slowest",
      "accepted",
@@ -268,13 +270,13 @@ static const struct text_case text_cases[] = {
      "not a supported speed",
      {"[link]\nspeed_mbps = 999\n"},
      "'999' is not a supported speed",
-     COMPAT},
+     {COMPAT_VALUES}},
     {"boundary",
      "speed 400001, one above the fastest",
      "not a supported speed",
      {"[link]\nspeed_mbps = 400001\n"},
      "'400001' is not a supported speed",
-     COMPAT},
+     {COMPAT_VALUES}},
     {"boundary",
      "mtu_max 1500 and 9582 in two layers",
      "the last, 9582",
@@ -286,26 +288,31 @@ static const struct text_case text_cases[] = {
      "out of range 1500..9582",
      {"[link]\nmtu_max = 1499\n"},
      "layer1:2: link.mtu_max: '1499' out of range 1500..9582",
-     COMPAT},
+     {COMPAT_VALUES}},
     {"boundary",
      "mtu_max 9583",
      "out of range 1500..9582",
      {"[link]\nmtu_max = 9583\n"},
      "'9583' out of range 1500..9582",
-     COMPAT},
+     {COMPAT_VALUES}},
     {"boundary",
      "mtu_max one past UINT64_MAX",
      "out of range, no wrap",
      {"[link]\nmtu_max = 18446744073709551616\n"},
      "'18446744073709551616' out of range",
-     COMPAT},
+     {COMPAT_VALUES}},
     {"boundary",
      "an empty fw_version",
      "rejected",
      {"[identity]\nfw_version =\n"},
      "identity.fw_version: must be 1 to 31",
-     COMPAT},
-    {"boundary", "an empty layer", "no key changes", {""}, NULL, COMPAT},
+     {COMPAT_VALUES}},
+    {"boundary",
+     "an empty layer",
+     "no key changes",
+     {""},
+     NULL,
+     {COMPAT_VALUES}},
 
     /* corner */
     {"corner",
@@ -345,13 +352,13 @@ static const struct text_case text_cases[] = {
      "accepted; nothing changes",
      {"[identity]\n[link]\n"},
      NULL,
-     COMPAT},
+     {COMPAT_VALUES}},
     {"corner",
      "the same key in two layers",
      "allowed: the later layer wins",
      {"[link]\nxcvr = fiber\n", "[link]\nxcvr = copper\n"},
      NULL,
-     COMPAT},
+     {COMPAT_VALUES}},
 };
 
 static void run_text_case(const struct text_case *c)
@@ -394,7 +401,9 @@ static void run_text_case(const struct text_case *c)
 
 /* ---- Profiles by name or path ------------------------------------------ */
 
-static char g_tmpdir[256];
+/* The scratch directory.  Always under /tmp, not $TMPDIR: a path built from
+ * the environment is what CodeQL's cpp/path-injection reports. */
+static char g_tmpdir[] = "/tmp/ernic-profile-XXXXXX";
 
 /* Private, exclusive files even with a permissive caller umask. */
 static FILE *scratch_open(const char *path)
@@ -569,7 +578,7 @@ static void check_compat_sets_every_key(void)
     const char *far = "[identity]\nasic_type = salina\nasic_rev = 9\n"
                       "fw_version = far\n[link]\nspeed_mbps = 1000\n"
                       "xcvr = none\nmtu_max = 1500\n";
-    const struct want compat = COMPAT;
+    const struct want compat = {COMPAT_VALUES};
     bool ok;
 
     ionic_profile_defaults(&p);
@@ -658,7 +667,7 @@ static void check_nul_byte(void)
     static const char text[] = "[link]\nxcvr = fib\0er\n";
     struct ionic_profile p;
     char err[256] = "";
-    const struct want compat = COMPAT;
+    const struct want compat = {COMPAT_VALUES};
     bool ok;
 
     ionic_profile_defaults(&p);
@@ -744,10 +753,6 @@ static void check_file_boundaries(void)
 
 int main(void)
 {
-    const char *tmp = getenv("TMPDIR");
-
-    snprintf(g_tmpdir, sizeof(g_tmpdir), "%s/test_ionic_profile.XXXXXX",
-             tmp && tmp[0] ? tmp : "/tmp");
     if (!mkdtemp(g_tmpdir)) {
         printf("FAIL setup: mkdtemp %s\n", g_tmpdir);
         return 1;
