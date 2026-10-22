@@ -41,8 +41,21 @@ struct p4_engine;
 #define P4_PORT_UPLINK 1u /* the host network backend (TAP) */
 #define P4_PORT_COUNT  2u
 
-/* Largest frame the engine will accept or produce. */
-#define P4_FRAME_MAX 9216u
+/*
+ * Largest frame the engine will accept or produce.
+ *
+ * This is the emulated NIC's frame buffer size, not a round jumbo number:
+ * p4_port.c claims every frame unconditionally, so anything the engine
+ * refuses here is a frame the guest sent and nobody forwards.  At 9216
+ * that silently dropped every frame between 9217 bytes and the 9582-byte
+ * MTU the guest is allowed to configure -- and only when --p4 was on, so
+ * it read as the engine breaking jumbo frames rather than as a limit.
+ *
+ * p4_port.c asserts this covers IONIC_ETH_NET_MTU_MAX, which is where the
+ * two numbers would otherwise drift apart again.  The engine itself keeps
+ * no dependency on the emulator's headers.
+ */
+#define P4_FRAME_MAX 9600u
 
 /*
  * Largest program the engine will accept.  A bmv2 JSON for a pipeline the

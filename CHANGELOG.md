@@ -679,6 +679,14 @@
   four entries long, so it read the next command from the middle of it. The
   Linux driver sends neither. `tests/test_ionic_adminq_poll.c` (CTest
   `ionic-adminq-poll-unit`) covers both fixes.
+* The P4 engine accepts frames up to the emulated NIC's own 9600-byte
+  buffer, rather than 9216. The P4 port claims every frame, so a frame
+  the engine refused was a frame the guest sent and nothing forwarded:
+  with `--p4` on, every frame between 9217 bytes and the 9582-byte MTU
+  the device tells the guest it may set was dropped, silently and only
+  in that configuration. A `_Static_assert` now ties the engine's limit
+  to the NIC's so they cannot drift apart again.
+
 * The Python test harness's Ethernet rings (`tests/py/ernic/eth.py`)
   track posted buffers by ring slot rather than by posting order, which
   is what an Ethernet completion names. The two agree for the first lap

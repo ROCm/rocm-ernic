@@ -203,6 +203,39 @@ def test_tx_completions(suite, server_factory):
         stop_server(server)
 
 
+def test_jumbo_frame_round_trip(suite, server_factory):
+    """A frame at the largest MTU the guest may set survives the pipeline.
+
+    The P4 port claims every frame, so a frame the engine refuses is one
+    the guest sent and nothing forwards -- silently, and only with --p4
+    on. The engine's own size test is written in terms of its own limit
+    and so passes at any value of it; this one is written in terms of
+    what the device tells the guest it may send.
+    """
+    prog = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "data", "p4", "loopback.json"
+    )
+    with server_factory(["--p4-program", prog]) as server:
+        fix = Fixture(server)
+        try:
+            fix.driver.eth_q_init(eth.QTYPE_ETH_RXQ, depth_log2=3)
+            fix.driver.post_rx_buffers(count=2, size=eth.ETH_MTU_MAX)
+
+            # 9600 less the VLAN_ETH_HLEN the driver subtracts to get
+            # link.mtu_max, i.e. the largest frame a conforming guest can
+            # put on this ring.
+            sent = bytes(range(256)) * 37 + bytes(range(110))
+            suite.check_eq(len(sent), 9582, "the test frame is at mtu_max")
+            fix.driver.post_tx(sent)
+            fix.driver.wait_tx()
+
+            got = fix.driver.wait_rx(timeout=5.0)
+            suite.check(got == sent, "the jumbo frame came back intact")
+        finally:
+            fix.close()
+        stop_server(server)
+
+
 def test_rx_ring_wraps(suite, server_factory):
     """A frame received after the Rx ring wraps is read from its own buffer.
 
@@ -266,6 +299,7 @@ TESTS = (
     ("a scatter/gather frame is one frame", test_scatter_gather_frame),
     ("the engine is off without --p4", test_disabled_by_default),
     ("Tx completes with the engine attached", test_tx_completions),
+    ("a jumbo frame makes the round trip", test_jumbo_frame_round_trip),
     ("the Rx ring wraps correctly", test_rx_ring_wraps),
     ("a full Tx ring is refused", test_tx_ring_refuses_to_overrun),
     ("a frame makes the round trip through the pipeline", test_round_trip),

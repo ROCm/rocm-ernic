@@ -12,8 +12,17 @@
 #include <string.h>
 
 #include "ionic_eth_emu.h"
+#include "ionic_eth_net.h"
 #include "p4_engine.h"
 #include "p4_port.h"
+
+/*
+ * The engine must accept anything the emulator can hand it: p4_port_frame()
+ * below claims every frame, so a frame the engine refuses is one the guest
+ * sent and nothing forwards.
+ */
+_Static_assert(P4_FRAME_MAX >= IONIC_ETH_NET_MTU_MAX,
+               "the engine would silently drop frames the NIC can carry");
 
 struct p4_port {
     struct ionic_eth_emu *emu;
