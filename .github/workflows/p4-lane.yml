@@ -646,7 +646,12 @@ jobs:
           "${IBV_FLAGS[@]}"
         ls -l /dev/ernic-p4
         set +e
-        timeout 60s ./p4_fp8_client fp8_policy.json
+        # As root: the node is mode 0600 and owned by root, because a
+        # process that can reach the engine decides where every frame
+        # goes. Compiling as the ordinary user and running as root keeps
+        # the build off the root account.
+        sudo -n RDMA_DEVICE="$RDMA_DEVICE" \
+          timeout 60s ./p4_fp8_client fp8_policy.json
         exit $?
         EOFVM
         P4_EXIT=$?

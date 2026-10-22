@@ -268,19 +268,32 @@ int main(int argc, char **argv)
 
     p4_fd = open(P4_NODE, O_RDWR | O_CLOEXEC);
     if (p4_fd < 0) {
+        int err = errno;
+
         /*
-         * Not a failure on its own. The node exists only when the
-         * server was started with --p4-guest-scope, and a guest talking
-         * to one without it is a correct configuration. A lane that
-         * started the server itself knows better and treats 77 here as
-         * a failure, exactly as it does for the other guest tests.
+         * A node that is not there is not a failure on its own: it
+         * exists only when the server was started with
+         * --p4-guest-scope, and a guest talking to one without it is a
+         * correct configuration. A lane that started the server itself
+         * treats 77 as a failure, as it does for the other guest tests.
+         *
+         * Anything else is. The node is mode 0600 and owned by root
+         * because the engine decides where every frame goes, so a
+         * caller that is not root gets EACCES -- which is a caller
+         * problem, not an absent device, and saying "the server was
+         * started without --p4-guest-scope" about it sends the reader
+         * to the wrong end of the system entirely.
          */
-        fprintf(stderr,
-                "%s: %s -- the server was started without "
-                "--p4-guest-scope, or ernic_p4 is not loaded\n",
-                P4_NODE, strerror(errno));
+        fprintf(stderr, "%s: %s\n", P4_NODE, strerror(err));
+        if (err == ENOENT)
+            fprintf(stderr,
+                    "  the server was started without --p4-guest-scope, "
+                    "or ernic_p4 is not loaded\n");
+        else if (err == EACCES || err == EPERM)
+            fprintf(stderr, "  the node is owned by root and mode 0600; "
+                            "run this as root\n");
         ibv_free_device_list(dev_list);
-        return 77;
+        return err == ENOENT ? 77 : 1;
     }
 
     memset(&id, 0, sizeof(id));
