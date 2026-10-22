@@ -5,6 +5,7 @@
 
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <strings.h>
@@ -15,10 +16,12 @@
  * Log level state.  Initialised lazily from ERNIC_LOG_LEVEL so that
  * anything logged before main() finishes parsing its options already
  * honours the environment; an explicit ernic_log_set_level() from the
- * command line overrides it.
+ * command line overrides it.  Every *_report() on every thread reads it,
+ * so it's atomic, and LOG_LEVEL_UNRESOLVED means ERNIC_LOG_LEVEL hasn't
+ * been looked up yet.
  */
-static ErnicLogLevel g_log_level = ERNIC_LOG_WARN;
-static bool g_log_level_resolved = false;
+#define LOG_LEVEL_UNRESOLVED (-1)
+static atomic_int g_log_level = LOG_LEVEL_UNRESOLVED;
 
 bool ernic_log_parse_level(const char *s, ErnicLogLevel *out)
 {
@@ -67,32 +70,46 @@ const char *ernic_log_level_name(ErnicLogLevel lvl)
 
 void ernic_log_set_level(ErnicLogLevel lvl)
 {
-    g_log_level = lvl;
-    g_log_level_resolved = true;
+    atomic_store(&g_log_level, (int)lvl);
 }
 
+/*
+ * Threads that make the first call together all read the environment, but
+ * only the one whose compare-exchange stores the result warns about a bad
+ * value, and a level that ernic_log_set_level() stored in the meantime
+ * isn't overwritten.  (pthread_once() would deadlock instead: the warning
+ * logs, which calls back into this function.)
+ */
 ErnicLogLevel ernic_log_get_level(void)
 {
-    if (!g_log_level_resolved) {
-        const char *env = getenv("ERNIC_LOG_LEVEL");
-        ErnicLogLevel lvl;
+    int cur = atomic_load(&g_log_level);
 
-        /* Mark resolved first: the bad-value warning below logs, and
-         * that would otherwise recurse back into this function. */
-        g_log_level = ERNIC_LOG_WARN;
-        g_log_level_resolved = true;
+    if (cur == LOG_LEVEL_UNRESOLVED) {
+        const char *env = getenv("ERNIC_LOG_LEVEL");
+        ErnicLogLevel lvl = ERNIC_LOG_WARN;
+        bool invalid = false;
 
         if (env && env[0] != '\0') {
-            if (ernic_log_parse_level(env, &lvl)) {
-                g_log_level = lvl;
+            ErnicLogLevel parsed;
+
+            if (ernic_log_parse_level(env, &parsed)) {
+                lvl = parsed;
             } else {
+                invalid = true;
+            }
+        }
+
+        /* On failure, cur is updated to the level another thread stored. */
+        if (atomic_compare_exchange_strong(&g_log_level, &cur, (int)lvl)) {
+            cur = (int)lvl;
+            if (invalid) {
                 warn_report("Ignoring invalid ERNIC_LOG_LEVEL='%s' "
                             "(expected none|error|warn|info|debug)",
                             env);
             }
         }
     }
-    return g_log_level;
+    return (ErnicLogLevel)cur;
 }
 
 bool ernic_log_enabled(ErnicLogLevel lvl)

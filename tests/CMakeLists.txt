@@ -663,6 +663,19 @@ target_link_directories(test_qemu_stubs PRIVATE
 target_link_libraries(test_qemu_stubs PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
+# Log level test: ERNIC_LOG_LEVEL parsing, and threads racing the first
+# lookup. It links error-report.c directly.
+add_executable(ernic-test-log-level test_log_level.c
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
+)
+target_include_directories(ernic-test-log-level PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+)
+# pipe2() and environ
+target_compile_definitions(ernic-test-log-level PRIVATE _GNU_SOURCE)
+target_link_libraries(ernic-test-log-level PRIVATE pthread)
+
 # In-process ionic device harness. It links every source the server is
 # built from except rocm_ernic_server.c, with fake_vfu.c standing in for
 # libvfio-user, and ionic_harness.c drives the device the way the guest
@@ -785,6 +798,7 @@ set(ERNIC_TEST_TARGETS
     ernic-test-tcp-thread-stop
     test_rdma_res_tbl
     test_qemu_stubs
+    ernic-test-log-level
     ernic-test-ionic-harness
 )
 
@@ -1086,6 +1100,13 @@ add_test(
     COMMAND $<TARGET_FILE:test_qemu_stubs>
 )
 set_tests_properties(qemu-stubs-unit PROPERTIES TIMEOUT 30)
+
+# Log level unit test: ERNIC_LOG_LEVEL, and the race on its first lookup
+add_test(
+    NAME log-level-unit
+    COMMAND $<TARGET_FILE:ernic-test-log-level>
+)
+set_tests_properties(log-level-unit PROPERTIES TIMEOUT 60)
 
 # In-process ionic device harness: the whole device, driven as the guest
 # driver drives it, one CTest test per group so a failure names its area.
