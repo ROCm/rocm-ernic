@@ -62,11 +62,6 @@ static inline void qemu_mutex_unlock(QemuMutex *mutex)
     pthread_mutex_unlock(&mutex->lock);
 }
 
-/* QEMU_LOCK_GUARD - automatic lock/unlock using C99 for-loop scope */
-#define QEMU_LOCK_GUARD(lock)                             \
-    for (int _guard = (qemu_mutex_lock(lock), 1); _guard; \
-         _guard = 0, qemu_mutex_unlock(lock))
-
 /* Thread creation and management */
 int qemu_thread_create(QemuThread *thread, void *(*start_routine)(void *),
                        void *arg);

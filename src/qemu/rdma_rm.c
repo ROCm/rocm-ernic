@@ -24,7 +24,7 @@
 #include <glib.h> /* For GBytes and GHashTable */
 
 #include "qemu/bitmap.h" /* For bitmap operations */
-#include "qemu/thread.h" /* For QEMU_LOCK_GUARD */
+#include "qemu/thread.h" /* For qemu_mutex_lock() */
 #include "rdma_utils.h"
 #include "rdma_backend.h"
 #include "rdma_backend_ops.h" /* For RdmaBackendOps definition */
@@ -160,12 +160,14 @@ static inline void *rdma_res_tbl_alloc(RdmaRmResTbl *tbl, uint32_t *handle)
 
 static inline void rdma_res_tbl_dealloc(RdmaRmResTbl *tbl, uint32_t handle)
 {
-    QEMU_LOCK_GUARD(&tbl->lock);
+    qemu_mutex_lock(&tbl->lock);
 
     if (handle < tbl->tbl_sz) {
         clear_bit(handle, tbl->bitmap);
         tbl->used--;
     }
+
+    qemu_mutex_unlock(&tbl->lock);
 }
 
 int rdma_rm_alloc_pd(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,

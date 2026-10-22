@@ -50,6 +50,10 @@
  * backend are thin wrappers over the allocator. The resource manager's
  * backend externs are stubbed, as no path under test reaches them.
  *
+ * The dealloc-locks case checks that freeing a handle changes the bitmap
+ * and the count under the table's lock, as allocating one does. A no-op
+ * lock guard once took the lock and released it again before the free.
+ *
  * The init-* cases cover rdma_rm_init() itself: it must reject device
  * limits that would size a table wrongly (a negative limit), and when a
  * table can't be allocated it must free the tables it had already built and
@@ -76,6 +80,8 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <sched.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -85,6 +91,8 @@
 #include <glib.h>
 #include <infiniband/verbs.h>
 
+#include "qemu/bitmap.h"
+#include "qemu/thread.h"
 #include "rdma_backend.h"
 #include "rdma_backend_defs.h"
 #include "rdma_backend_ops.h"
@@ -587,6 +595,140 @@ static bool test_init_succeeds(const char *name,
     return ok;
 }
 
+/* ---- Locking case ------------------------------------------------------
+ *
+ * This thread frees and reallocates the table's one entry LOCK_CYCLES
+ * times, while an observer thread takes the table's lock over and over and
+ * checks that the bitmap and the count agree. After each free, this thread
+ * waits for the observer to take the lock and see the entry free, so every
+ * cycle overlaps the observer's checks however the threads are scheduled.
+ *
+ * Under TSan, that makes the test fail on every run if a free changes the
+ * bitmap or the count after releasing the lock: the handshake uses relaxed
+ * atomics, which order nothing, so only the lock orders the free against
+ * the observer's read, and TSan reports the first cycle's free as a data
+ * race (halt_on_error). Without TSan, the observer catches it only if it
+ * takes the lock between the two changes, so a pass there proves less.
+ */
+#define LOCK_CYCLES UINT32_C(10000)
+
+typedef struct {
+    RdmaRmResTbl *tbl;
+    /*
+     * The handshake. Relaxed throughout: the lock must be the only ordering
+     * between the threads' table accesses (see above), and each thread only
+     * needs to see the other's store eventually, which relaxed guarantees.
+     */
+    _Atomic uint32_t freed; /* cycles whose free this thread has done */
+    _Atomic uint32_t seen;  /* those whose free the observer has seen */
+    atomic_bool done;       /* this thread has finished every cycle */
+    /* The observer's; read only after the join. */
+    uint32_t mismatches; /* checks where the bitmap and count disagreed */
+    uint32_t not_freed;  /* frees after which the entry was still in use */
+} LockObserver;
+
+static void *lock_observer(void *arg)
+{
+    LockObserver *obs = arg;
+    uint32_t seen = 0;
+
+    while (!atomic_load_explicit(&obs->done, memory_order_relaxed)) {
+        /* Loaded before taking the lock, so if it shows a new free, the
+         * lock is taken after that free released it. */
+        uint32_t freed =
+            atomic_load_explicit(&obs->freed, memory_order_relaxed);
+
+        qemu_mutex_lock(&obs->tbl->lock);
+        bool taken = test_bit(0, obs->tbl->bitmap);
+        uint32_t used = obs->tbl->used;
+        qemu_mutex_unlock(&obs->tbl->lock);
+
+        if (used != (taken ? 1U : 0U)) {
+            obs->mismatches++;
+        }
+        if (freed != seen) {
+            /* The entry can't be reallocated until this is acknowledged. */
+            if (taken || used != 0) {
+                obs->not_freed++;
+            }
+            seen = freed;
+            atomic_store_explicit(&obs->seen, seen, memory_order_relaxed);
+        }
+        sched_yield();
+    }
+    return NULL;
+}
+
+static bool test_dealloc_locks(void)
+{
+    const char *name = "dealloc-locks";
+    bool ok = true;
+    struct ibv_device_attr a = one_each;
+    LockObserver obs;
+    QemuThread thread;
+    uint32_t handle = UINT32_MAX;
+
+    memset(&dev_res, 0, sizeof(dev_res));
+    alloc_injectors_reset();
+    if (rdma_rm_init(&dev_res, &a) != 0 ||
+        rdma_rm_alloc_cq(&dev_res, NULL, 1, &handle) != 0) {
+        abort();
+    }
+
+    obs.tbl = &dev_res.cq_tbl;
+    atomic_init(&obs.freed, 0);
+    atomic_init(&obs.seen, 0);
+    atomic_init(&obs.done, false);
+    obs.mismatches = 0;
+    obs.not_freed = 0;
+    if (qemu_thread_create(&thread, lock_observer, &obs) != 0) {
+        abort();
+    }
+
+    /* The observer runs until done is set, so it acknowledges every free
+     * and these waits end. */
+    for (uint32_t cycle = 1; cycle <= LOCK_CYCLES; cycle++) {
+        uint32_t again = UINT32_MAX;
+
+        rdma_rm_dealloc_cq(&dev_res, handle);
+        atomic_store_explicit(&obs.freed, cycle, memory_order_relaxed);
+        while (atomic_load_explicit(&obs.seen, memory_order_relaxed) != cycle) {
+            sched_yield();
+        }
+
+        if (rdma_rm_alloc_cq(&dev_res, NULL, 1, &again) != 0 ||
+            again != handle) {
+            if (ok) {
+                printf("FAIL %-18s: reallocating handle %u gave %u\n", name,
+                       handle, again);
+            }
+            ok = false;
+        }
+    }
+    atomic_store_explicit(&obs.done, true, memory_order_relaxed);
+    qemu_thread_join(&thread);
+
+    if (obs.mismatches != 0) {
+        printf("FAIL %-18s: the bitmap and the count disagreed under the "
+               "lock %u time(s)\n",
+               name, obs.mismatches);
+        ok = false;
+    }
+    if (obs.not_freed != 0) {
+        printf("FAIL %-18s: the entry was still in use under the lock after "
+               "%u of %u frees\n",
+               name, obs.not_freed, LOCK_CYCLES);
+        ok = false;
+    }
+
+    rdma_rm_fini(&dev_res);
+
+    if (ok) {
+        printf("ok   %-18s\n", name);
+    }
+    return ok;
+}
+
 /* ---- MR cases ----------------------------------------------------------
  *
  * An MR in the resource manager is a table slot and the backend's MR. It
@@ -941,6 +1083,10 @@ int main(void)
         failures++;
     }
     if (!test_dealloc_reopens_one_slot()) {
+        failures++;
+    }
+
+    if (!test_dealloc_locks()) {
         failures++;
     }
 
