@@ -1739,8 +1739,13 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
          * they have to be flushed. MODIFY_QP carries the state alone in this
          * field -- unlike CREATE_QP, which packs the type into the low
          * nibble -- so the whole byte is the state here.
+         *
+         * IB_QP_STATE gates it for the same reason rdma_rm_modify_qp() only
+         * applies the state under that bit: without it the byte is whatever
+         * the driver left there, and a command changing some other attribute
+         * would flush a queue pair that never entered Error.
          */
-        if (type_state == IONIC_QPS_ERR)
+        if ((attr_mask & (1u << 0)) && type_state == IONIC_QPS_ERR)
             ionic_datapath_flush_qp(ctx->dp, qp_id);
         return 0;
     }

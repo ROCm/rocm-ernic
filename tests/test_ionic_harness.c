@@ -1206,6 +1206,18 @@ static void test_qp_flush(void)
     check(T, cq_empty(h, &r.cqb),
           "a state change other than Error raised a completion");
 
+    /*
+     * The state byte only means anything under IB_QP_STATE. A command that
+     * changes something else leaves whatever the driver last put there, so a
+     * flush keyed on the byte alone would tear down a live QP.
+     */
+    check(T,
+          ih_qp_modify(h, RC_QP_B, IH_QP_QKEY, IH_QPS_ERR, 0x1234, NULL, 0) ==
+              0,
+          "MODIFY_QP of the qkey failed");
+    check(T, cq_empty(h, &r.cqb),
+          "a MODIFY_QP without IB_QP_STATE flushed the queue pair");
+
     check(T, ih_qp_modify(h, RC_QP_B, IH_QP_STATE, IH_QPS_ERR, 0, NULL, 0) == 0,
           "MODIFY_QP to Error failed");
 

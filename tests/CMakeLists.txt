@@ -1048,10 +1048,12 @@ add_test(
 # 180s, not the 60 the harness groups use: this one waits on a real TCP
 # registration handshake between two devices, and the memcheck lane runs it
 # under valgrind, where that handshake is far slower than the work itself.
+#
+# No SKIP_RETURN_CODE: the test needs no VM, no RDMA device and no root, so
+# every way it can fail to start is a regression that has to be red.
 set_tests_properties(gsi-mesh PROPERTIES
     TIMEOUT 180
     RUN_SERIAL TRUE
-    SKIP_RETURN_CODE 77
 )
 
 # ionic server smoke test: start the server, verify socket and banner.

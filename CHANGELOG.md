@@ -17,7 +17,10 @@
   process, joined over loopback TCP by the real mesh backend, and checks
   that a GID claimed after the mesh formed resolves to the peer's node from
   both sides. It needs no VM, no RDMA device and no root, so it runs in
-  every CI build leg. `ERNIC_TEST_MESH_PORT` moves its listening port.
+  every CI build leg. `ERNIC_TEST_MESH_PORT` moves its listening port, and
+  is rejected with a failure if it is not a port number. The test never
+  skips: needing nothing optional, every way it can fail to start is a
+  regression.
 * `-L` / `--log-level` and the `ERNIC_LOG_LEVEL` environment variable select
   the server log verbosity (`none`, `error`, `warn`, `info`, `debug`).
 * `-G` / `--socket-group GROUP` lets the members of a group, given by name
@@ -449,6 +452,12 @@
   nodes claiming one GID still contest it, as before. `gsi-mesh` covers the
   restart end to end by destroying the worker device, recreating it, and
   checking its GID follows it to the new node id.
+  The withdrawal is reversible: the claims are kept and only stop counting
+  towards resolution, so a node that was merely silent for three health-check
+  intervals and then answers a heartbeat, or that the health check reconnects
+  to, owns its addresses again. Only a node that restarted registers afresh
+  and re-advertises; one that did not would otherwise have come back live and
+  permanently unreachable.
 * A QP entering the Error state now flushes its queues, so a work request
   still outstanding is completed with `IBV_WC_WR_FLUSH_ERR` instead of left
   for a consumer that waits on it forever. `MODIFY_QP` recorded the new state
@@ -466,6 +475,19 @@
   blocked consumer. A QP bound to an SRQ flushes only its send queue, because
   the receives in an SRQ belong to the SRQ and other QPs are still drawing
   from them. Covered by the `qp-flush` and `qp-flush-srq` CTests.
+  The flush also cancels the QP's deferred requests -- a READ or atomic sent
+  to another instance and waiting on its answer -- before it is published. A
+  pending request holds the guest memory its response is to land in, and the
+  flush is what lets the consumer complete the work request and reuse that
+  memory; the peer is a separate process and nothing here can stop it
+  answering late. Without this a response arriving after the flush wrote into
+  a buffer that was no longer the request's and posted a second completion for
+  a work request the driver had already flushed. Covered by
+  `ionic-rq-wrap-unit`.
+  The flush is driven only by a `MODIFY_QP` that carries `IB_QP_STATE`,
+  matching `rdma_rm_modify_qp()`, so a command changing some other attribute
+  no longer flushes a live queue pair on the strength of a state byte the
+  driver did not mean.
 * A UD or GSI receive is now reported as RoCEv2 over IPv4 when the addresses
   are v4-mapped, instead of being flagged IPv4 while carrying an IPv6 GRH.
   The two disagreed: `IONIC_V1_CQE_RECV_IS_IPV4` was set on every receive

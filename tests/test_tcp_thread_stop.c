@@ -1689,6 +1689,13 @@ static const char *rc_setup(struct rc_fixture *fx, uint16_t port,
         g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
     priv->pending_conns = g_ptr_array_new();
     qemu_mutex_init(&priv->conn_table_lock);
+    /* The GID claim tables tcp_init() builds, which a reconnect updates */
+    priv->node_gids =
+        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+    priv->gid_owner = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
+                                            tcp_gid_key_free, NULL);
+    qemu_mutex_init(&priv->gid_table_lock);
+    qemu_mutex_init(&priv->gid_broadcast_lock);
     tcp_bufpool_init(&priv->recv_pool);
 
     for (uint32_t i = 0; i < nodes && i < RC_MAX_NODES; i++) {
@@ -1745,6 +1752,10 @@ static void rc_teardown(struct rc_fixture *fx)
     if (fx->stray_peer >= 0)
         close(fx->stray_peer);
     tcp_bufpool_destroy(&priv->recv_pool);
+    g_hash_table_destroy(priv->gid_owner);
+    g_hash_table_destroy(priv->node_gids);
+    qemu_mutex_destroy(&priv->gid_broadcast_lock);
+    qemu_mutex_destroy(&priv->gid_table_lock);
     qemu_mutex_destroy(&priv->conn_table_lock);
     qemu_mutex_destroy(&priv->topology_broadcast_lock);
     qemu_mutex_destroy(&priv->mesh_table_lock);
@@ -5279,6 +5290,7 @@ enum lt_scenario {
     LT_HELD,   /* the test holds the old connection across the reconnect */
     LT_SENDER, /* another thread is blocked sending on it */
     LT_REGISTER_VS_STOP, /* a registration lands while the stop runs */
+    LT_GIDS_BACK,        /* the node went silent; the reconnect gets it back */
 };
 
 struct lt_case {
@@ -5304,7 +5316,24 @@ static const struct lt_case lt_cases[] = {
      "it ends up in the connections table, not the pending list, and its "
      "thread is joined once",
      LT_REGISTER_VS_STOP},
+    {"positive", "a reconnect to a node the manager had declared dead",
+     "the node owns its GIDs again, which it never re-advertises: it did not "
+     "restart, so it never registers again",
+     LT_GIDS_BACK},
 };
+
+/* The one GID of LT_GIDS_BACK: ::ffff:192.168.251.9, the form
+ * adminq_parse_roce_hdr() builds for an IPv4 address. */
+static const uint8_t lt_gid[16] = {0, 0, 0,    0,    0,   0,   0,   0,
+                                   0, 0, 0xff, 0xff, 192, 168, 251, 9};
+
+static uint32_t lt_resolve(TcpBackendPrivate *priv)
+{
+    union ibv_gid gid;
+
+    memcpy(gid.raw, lt_gid, 16);
+    return tcp_resolve_node_from_gid(priv, &gid);
+}
 
 /* What the blocked sender of LT_SENDER sends with, and gets back */
 struct lt_sender {
@@ -5390,6 +5419,21 @@ static const char *lt_reconnect_run(enum lt_scenario scenario)
         if (!held)
             why = "node 1 has no connection";
     }
+    if (!why && scenario == LT_GIDS_BACK) {
+        /*
+         * Node 1 claimed an address, then went quiet for three intervals and
+         * the manager declared it dead, which takes its claims out of
+         * resolution. It did not restart, so nothing will make it advertise
+         * again: the reconnect below is the only thing that can give the
+         * address back.
+         */
+        tcp_gid_claims_set(fx.priv, 1, (const uint8_t(*)[16]) & lt_gid, 1);
+        if (lt_resolve(fx.priv) != 1)
+            why = "the claim did not take effect";
+        tcp_gid_claims_set_alive(fx.priv, 1, false);
+        if (!why && lt_resolve(fx.priv) != UINT32_MAX)
+            why = "a node declared dead still owned its GID";
+    }
     if (!why && scenario == LT_SENDER) {
         sender.dev.backend_type = RDMA_BACKEND_TYPE_TCP;
         sender.dev.backend_private = fx.priv;
@@ -5413,6 +5457,8 @@ static const char *lt_reconnect_run(enum lt_scenario scenario)
         if (!why && atomic_load(&sender.rc) != -EIO)
             why = "the blocked send didn't fail with -EIO";
     }
+    if (!why && scenario == LT_GIDS_BACK && lt_resolve(fx.priv) != 1)
+        why = "the reconnected node did not get its GID back";
     if (!why && !conn_retired(held))
         why = "the old connection wasn't retired";
     if (!why && atomic_load(&g_joins) != 1)

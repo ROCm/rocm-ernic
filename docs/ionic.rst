@@ -514,7 +514,12 @@ Working:
   unreachable node claimed both when its health check
   notices one has died and when any worker registers, the
   second being what covers a worker that comes back inside
-  the health-check interval
+  the health-check interval. The withdrawal is reversible:
+  the claims are kept and only stop counting, so a node that
+  was merely silent and then answers a heartbeat, or that
+  the health check reconnects to, owns its addresses again
+  without registering afresh -- which, not having restarted,
+  it never would
 
 Not yet working:
 

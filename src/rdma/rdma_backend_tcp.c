@@ -1961,10 +1961,16 @@ void *tcp_recv_thread_per_conn(void *opaque)
                                  assigned_id, worker_host, worker_port);
 
                 /*
-                 * With no lock held: tcp_gid_claims_set() takes
+                 * With no lock held: tcp_gid_claims_set_alive() takes
                  * gid_table_lock, which nothing else in this handler holds.
                  * The whole table is broadcast below, so the withdrawal
                  * reaches the other workers with the rest of it.
+                 *
+                 * Marked not-alive rather than discarded: that is enough to
+                 * take the node out of resolution, so it stops contesting
+                 * the GIDs the registering node is about to claim, and it
+                 * leaves the claims to restore if the health check later
+                 * reconnects to the node rather than it having restarted.
                  */
                 for (uint32_t i = 0; i < num_stale; i++) {
                     uint32_t id = stale[i];
@@ -1974,7 +1980,7 @@ void *tcp_recv_thread_per_conn(void *opaque)
                     rdma_info_report("TCP: node %u is gone; withdrawing its "
                                      "GIDs as node %u registers",
                                      id, assigned_id);
-                    tcp_gid_claims_set(priv, id, NULL, 0);
+                    tcp_gid_claims_set_alive(priv, id, false);
                 }
 
                 /* Send registration response.  Zeroed first: the whole
@@ -3035,22 +3041,8 @@ static bool tcp_node_silent(const TcpBackendPrivate *priv,
  * the ones due a reconnect attempt.  Returns true if a node was newly
  * declared dead, which the rest of the mesh has to be told.
  */
-/*
- * Note the node as having just died, for the caller to withdraw its GIDs
- * once it has dropped mesh_table_lock. Collected rather than withdrawn here
- * because tcp_gid_claims_set() takes gid_table_lock, and taking that under
- * mesh_table_lock would be the only place in the backend that orders the
- * two -- gid_table_lock is deliberately independent, since the data path
- * takes it on every RTR and UD send.
- */
-static void tcp_health_check_note_died(GArray *died, uint32_t node_id)
-{
-    if (died)
-        g_array_append_val(died, node_id);
-}
-
 static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items,
-                                  GArray *died, time_t now)
+                                  time_t now)
 {
     bool newly_dead = false;
     GHashTableIter iter;
@@ -3080,7 +3072,6 @@ static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items,
                 node->is_alive = false;
                 tcp_gid_claims_set_alive(priv, node->node_id, false);
                 newly_dead = true;
-                tcp_health_check_note_died(died, node->node_id);
             }
             item.disconnected = true;
         }
@@ -3093,7 +3084,6 @@ static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items,
                 node->is_alive = false;
                 tcp_gid_claims_set_alive(priv, node->node_id, false);
                 newly_dead = true;
-                tcp_health_check_note_died(died, node->node_id);
             }
 
             /* Attempt reconnection with exponential backoff (max 60 s) */
@@ -3293,6 +3283,14 @@ bool tcp_health_check_reconnect(TcpBackendPrivate *priv,
     qemu_mutex_unlock(&priv->conn_table_lock);
     node->is_alive = true;
     node->last_heartbeat = time(NULL);
+    /*
+     * The node is reachable again, so its addresses are its own again. The
+     * same restoration the heartbeat-revival path does, for the other way a
+     * node comes back: without it a reconnected node is live and unreachable
+     * until it registers afresh, which a node that never restarted will not
+     * do. gid_table_lock under mesh_table_lock is the documented order.
+     */
+    tcp_gid_claims_set_alive(priv, node->node_id, true);
     qemu_mutex_unlock(&priv->mesh_table_lock);
 
     rdma_info_report("TCP: Reconnected to node %u", node->node_id);
@@ -3356,8 +3354,6 @@ void *tcp_manager_health_check_thread(void *opaque)
 {
     TcpBackendPrivate *priv = (TcpBackendPrivate *)opaque;
     GArray *items = g_array_new(FALSE, FALSE, sizeof(TcpHealthCheckItem));
-    /* Nodes this pass declared dead, whose GIDs it has to withdraw */
-    GArray *died = g_array_new(FALSE, FALSE, sizeof(uint32_t));
 
     rdma_info_report("TCP: Manager health check thread started");
 
@@ -3365,25 +3361,8 @@ void *tcp_manager_health_check_thread(void *opaque)
         /* The accept thread reaps too, but only when a peer connects */
         tcp_reap_pending_conns(priv);
 
-        bool newly_dead = tcp_health_check_scan(priv, items, died, time(NULL));
+        bool newly_dead = tcp_health_check_scan(priv, items, time(NULL));
         tcp_health_check_retire(priv, items);
-
-        /*
-         * A dead node's GIDs are not its own any more. Left standing they
-         * are worse than absent: when the guest behind it comes back it
-         * registers as a new node and claims them again, both nodes are
-         * then seen to claim them, and a contested GID resolves to neither
-         * -- so the address stops working at the moment it should start.
-         *
-         * Withdrawn here, with no lock held, because tcp_gid_claims_set()
-         * takes gid_table_lock and the scan above runs under
-         * mesh_table_lock.
-         */
-        for (guint i = 0; i < died->len; i++)
-            tcp_gid_claims_set(priv, g_array_index(died, uint32_t, i), NULL, 0);
-        if (died->len && priv->is_manager)
-            tcp_broadcast_gid_table(priv);
-        g_array_set_size(died, 0);
 
         for (guint i = 0; i < items->len; i++) {
             const TcpHealthCheckItem *item =
@@ -3403,6 +3382,15 @@ void *tcp_manager_health_check_thread(void *opaque)
             qemu_mutex_unlock(&conn->lock);
         }
 
+        /*
+         * A node the scan declared dead had its claims marked not-alive,
+         * which takes it out of resolution without discarding what it
+         * claimed. Discarding would be a one-way door: the node has no way
+         * to re-advertise except by registering again, so a node that is
+         * merely silent for three intervals and then answers, or that this
+         * pass reconnects to, would come back live and unreachable. The
+         * broadcast tells the workers, who keep no liveness of their own.
+         */
         if (newly_dead) {
             tcp_broadcast_mesh_topology(priv);
             tcp_broadcast_gid_table(priv);
@@ -3419,8 +3407,12 @@ void *tcp_manager_health_check_thread(void *opaque)
         if (tcp_health_check_reconnects(
                 priv, items,
                 tcp_monotonic_ms() +
-                    (uint64_t)priv->health_check_interval_sec * 1000u))
+                    (uint64_t)priv->health_check_interval_sec * 1000u)) {
             tcp_broadcast_mesh_topology(priv);
+            /* A reconnected node owns its GIDs again; the workers took the
+             * manager's word for it owning nothing. */
+            tcp_broadcast_gid_table(priv);
+        }
         tcp_health_check_release(items);
 
         /*
@@ -3444,7 +3436,6 @@ void *tcp_manager_health_check_thread(void *opaque)
     }
 
     g_array_free(items, TRUE);
-    g_array_free(died, TRUE);
     rdma_info_report("TCP: Manager health check thread exiting");
     return NULL;
 }

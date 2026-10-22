@@ -44,6 +44,7 @@
 #include <time.h>
 
 #include "ionic_harness.h"
+#include "parse_int.h"
 #include "rocm_ernic_compat.h"
 
 /* The mesh listens on loopback. Overridable so a CI runner that already has
@@ -177,22 +178,34 @@ static uint32_t gm_wait_resolve(struct ih *a, struct ih *b, struct ih *h,
 int main(void)
 {
     const char *env = getenv("ERNIC_TEST_MESH_PORT");
-    unsigned port = env ? (unsigned)strtoul(env, NULL, 10) : GM_PORT_DEFAULT;
+    uint16_t port = GM_PORT_DEFAULT;
+
+    if (env && !ernic_parse_port(env, &port)) {
+        fprintf(stderr, "FAIL: ERNIC_TEST_MESH_PORT=\"%s\" is not a port\n",
+                env);
+        return 1;
+    }
+
     char mgr[64], wrk[64];
 
-    snprintf(mgr, sizeof(mgr), "tcp:manager:listen:%u", port);
-    snprintf(wrk, sizeof(wrk), "tcp:worker:127.0.0.1:%u", port);
+    snprintf(mgr, sizeof(mgr), "tcp:manager:listen:%u", (unsigned)port);
+    snprintf(wrk, sizeof(wrk), "tcp:worker:127.0.0.1:%u", (unsigned)port);
 
     struct ih a, b;
 
+    /*
+     * Creating either device needs no VM, no RDMA hardware and no root, so a
+     * failure here is a regression in device realization or the backend, not
+     * a reason to skip: it must fail the test.
+     */
     if (!ih_create(&a, mgr)) {
-        fprintf(stderr, "SKIP: no mesh manager on port %u\n", port);
-        return 77;
+        fprintf(stderr, "FAIL: no mesh manager on port %u\n", (unsigned)port);
+        return 1;
     }
     if (!ih_create(&b, wrk)) {
         ih_destroy(&a);
-        fprintf(stderr, "SKIP: no mesh worker\n");
-        return 77;
+        fprintf(stderr, "FAIL: no mesh worker\n");
+        return 1;
     }
     if (!gm_check(ih_bringup(&a) && ih_bringup(&b), "device bring-up failed"))
         goto out;

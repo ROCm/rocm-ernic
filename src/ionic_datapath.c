@@ -1528,6 +1528,9 @@ static void cq_post_flush(struct ionic_datapath *dp, uint32_t cq_id,
     cq_post(dp, cq_id, body, IONIC_STS_WQE_FLUSHED_ERR, type, qid, true);
 }
 
+/* Defined with the other pending_* helpers, below the transmit path. */
+static uint32_t pending_cancel_qp(struct ionic_datapath *dp, uint32_t qp_id);
+
 /*
  * A QP has entered the Error state: start the flush on both its queues.
  *
@@ -1558,12 +1561,26 @@ void ionic_datapath_flush_qp(struct ionic_datapath *dp, uint32_t qp_id)
     if (!q->valid)
         return;
 
+    /*
+     * Before the flush is published, not after. A pending entry holds the
+     * SGE list of a READ or atomic this QP posted, naming guest memory the
+     * consumer is about to get back: the flush CQE is what lets it complete
+     * those work requests and free or reuse the buffer. A response that
+     * arrives after that -- the peer is a whole other instance, and nothing
+     * here can stop it answering -- would find the entry still valid,
+     * dp_scatter() into memory that is no longer the request's, and post a
+     * second completion for a work request the driver has already flushed.
+     */
+    uint32_t cancelled = pending_cancel_qp(dp, qp_id);
+
     cq_post_flush(dp, q->sq_cq_id, qp_id, CQE_TYPE_SEND_NPG);
     if (!q->has_srq)
         cq_post_flush(dp, q->rq_cq_id, qp_id, CQE_TYPE_RECV);
 
-    vfu_log(dp->vfu_ctx, LOG_INFO, "ionic_datapath: QP %u flushed%s", qp_id,
-            q->has_srq ? " (send only, receives belong to its SRQ)" : "");
+    vfu_log(dp->vfu_ctx, LOG_INFO,
+            "ionic_datapath: QP %u flushed%s, %u deferred request(s) cancelled",
+            qp_id, q->has_srq ? " (send only, receives belong to its SRQ)" : "",
+            cancelled);
 }
 
 static void cq_post_send_msn(struct ionic_datapath *dp, uint32_t cq_id,
@@ -2036,6 +2053,28 @@ static struct dp_pending *pending_find(struct ionic_datapath *dp,
         if (dp->pending[i].valid && dp->pending[i].req_id == req_id)
             return &dp->pending[i];
     return NULL;
+}
+
+/*
+ * Drop every deferred request of a QP that is flushing, and say how many.
+ *
+ * Dropped silently: the flush CQE the caller is about to post already tells
+ * the driver to complete everything it still has outstanding on this queue,
+ * so a completion here would be a second one for the same work request. What
+ * matters is that the entry stops being findable, since its SGE list names
+ * memory the consumer is free to reuse the moment the flush lands.
+ */
+static uint32_t pending_cancel_qp(struct ionic_datapath *dp, uint32_t qp_id)
+{
+    uint32_t n = 0;
+
+    for (int i = 0; i < MAX_PENDING; i++) {
+        if (dp->pending[i].valid && dp->pending[i].qp_id == qp_id) {
+            dp->pending[i].valid = false;
+            n++;
+        }
+    }
+    return n;
 }
 
 /* Retire a deferred work request now that its peer has answered. */
