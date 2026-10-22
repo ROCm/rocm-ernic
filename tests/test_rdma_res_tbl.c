@@ -80,6 +80,7 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <sched.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -596,27 +597,47 @@ static bool test_init_succeeds(const char *name,
 
 /* ---- Locking case ------------------------------------------------------
  *
- * An observer thread takes the table's lock over and over and checks that
- * the bitmap and the count agree, while this thread frees and reallocates
- * the table's one entry until the observer is done. Under TSan, a free that
- * changes either one without the lock is reported as a data race, which
- * fails the test (halt_on_error). Without TSan, the observer catches it
- * only if it takes the lock between the two changes, so a pass there
- * proves less.
+ * This thread frees and reallocates the table's one entry LOCK_CYCLES
+ * times, while an observer thread takes the table's lock over and over and
+ * checks that the bitmap and the count agree. After each free, this thread
+ * waits for the observer to take the lock and see the entry free, so every
+ * cycle overlaps the observer's checks however the threads are scheduled.
+ *
+ * Under TSan, that makes the test fail on every run if a free changes the
+ * bitmap or the count after releasing the lock: the handshake uses relaxed
+ * atomics, which order nothing, so only the lock orders the free against
+ * the observer's read, and TSan reports the first cycle's free as a data
+ * race (halt_on_error). Without TSan, the observer catches it only if it
+ * takes the lock between the two changes, so a pass there proves less.
  */
-#define LOCK_CHECKS UINT32_C(100000)
+#define LOCK_CYCLES UINT32_C(10000)
 
 typedef struct {
     RdmaRmResTbl *tbl;
-    atomic_bool done;    /* set by the observer when it finishes */
-    uint32_t mismatches; /* the observer's; read only after the join */
+    /*
+     * The handshake. Relaxed throughout: the lock must be the only ordering
+     * between the threads' table accesses (see above), and each thread only
+     * needs to see the other's store eventually, which relaxed guarantees.
+     */
+    _Atomic uint32_t freed; /* cycles whose free this thread has done */
+    _Atomic uint32_t seen;  /* those whose free the observer has seen */
+    atomic_bool done;       /* this thread has finished every cycle */
+    /* The observer's; read only after the join. */
+    uint32_t mismatches; /* checks where the bitmap and count disagreed */
+    uint32_t not_freed;  /* frees after which the entry was still in use */
 } LockObserver;
 
 static void *lock_observer(void *arg)
 {
     LockObserver *obs = arg;
+    uint32_t seen = 0;
 
-    for (uint32_t i = 0; i < LOCK_CHECKS; i++) {
+    while (!atomic_load_explicit(&obs->done, memory_order_relaxed)) {
+        /* Loaded before taking the lock, so if it shows a new free, the
+         * lock is taken after that free released it. */
+        uint32_t freed =
+            atomic_load_explicit(&obs->freed, memory_order_relaxed);
+
         qemu_mutex_lock(&obs->tbl->lock);
         bool taken = test_bit(0, obs->tbl->bitmap);
         uint32_t used = obs->tbl->used;
@@ -625,8 +646,16 @@ static void *lock_observer(void *arg)
         if (used != (taken ? 1U : 0U)) {
             obs->mismatches++;
         }
+        if (freed != seen) {
+            /* The entry can't be reallocated until this is acknowledged. */
+            if (taken || used != 0) {
+                obs->not_freed++;
+            }
+            seen = freed;
+            atomic_store_explicit(&obs->seen, seen, memory_order_relaxed);
+        }
+        sched_yield();
     }
-    atomic_store(&obs->done, true);
     return NULL;
 }
 
@@ -647,18 +676,26 @@ static bool test_dealloc_locks(void)
     }
 
     obs.tbl = &dev_res.cq_tbl;
+    atomic_init(&obs.freed, 0);
+    atomic_init(&obs.seen, 0);
     atomic_init(&obs.done, false);
     obs.mismatches = 0;
+    obs.not_freed = 0;
     if (qemu_thread_create(&thread, lock_observer, &obs) != 0) {
         abort();
     }
 
-    /* The observer stops on its own, so this loop ends; a failure here
-     * still runs until it does, so the join can't hang. */
-    while (!atomic_load(&obs.done)) {
+    /* The observer runs until done is set, so it acknowledges every free
+     * and these waits end. */
+    for (uint32_t cycle = 1; cycle <= LOCK_CYCLES; cycle++) {
         uint32_t again = UINT32_MAX;
 
         rdma_rm_dealloc_cq(&dev_res, handle);
+        atomic_store_explicit(&obs.freed, cycle, memory_order_relaxed);
+        while (atomic_load_explicit(&obs.seen, memory_order_relaxed) != cycle) {
+            sched_yield();
+        }
+
         if (rdma_rm_alloc_cq(&dev_res, NULL, 1, &again) != 0 ||
             again != handle) {
             if (ok) {
@@ -668,12 +705,19 @@ static bool test_dealloc_locks(void)
             ok = false;
         }
     }
+    atomic_store_explicit(&obs.done, true, memory_order_relaxed);
     qemu_thread_join(&thread);
 
     if (obs.mismatches != 0) {
         printf("FAIL %-18s: the bitmap and the count disagreed under the "
-               "lock %u time(s) in %u\n",
-               name, obs.mismatches, LOCK_CHECKS);
+               "lock %u time(s)\n",
+               name, obs.mismatches);
+        ok = false;
+    }
+    if (obs.not_freed != 0) {
+        printf("FAIL %-18s: the entry was still in use under the lock after "
+               "%u of %u frees\n",
+               name, obs.not_freed, LOCK_CYCLES);
         ok = false;
     }
 
