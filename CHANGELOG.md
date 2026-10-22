@@ -331,7 +331,12 @@
   kernel headers alone, because it uses the ionic driver's private
   headers, which no `linux-headers` package ships. Both patch series are
   required and the Makefile refuses a tree lacking `patches/p4` rather
-  than building a module that could never bind.
+  than building a module that could never bind. Its `dkms.conf` falls
+  back to a path recorded at install time when `IONIC_SRC` is not in the
+  environment, so that a DKMS autoinstall on a later kernel upgrade --
+  which runs with none of the variables the original install had -- can
+  still find the sources instead of failing at exactly the moment the
+  module needed rebuilding.
 * An optional ionic driver patch series, `patches/p4/`, gives a guest an
   auxiliary device to bind a P4 control driver to. Upstream's
   `ionic_auxbus_register()` creates exactly one auxiliary device, for
