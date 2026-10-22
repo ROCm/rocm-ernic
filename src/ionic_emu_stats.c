@@ -95,6 +95,7 @@ static int drop_reason_idx(bool is_tx, enum ionic_emu_drop why)
         return is_tx ? IONIC_LIF_TX_QUEUE_DISABLED
                      : IONIC_LIF_RX_QUEUE_DISABLED;
     case IONIC_EMU_DROP_SEND:
+    case IONIC_EMU_DROP_INJECTED:
     default:
         return -1;
     }

@@ -21,6 +21,8 @@
 
 static const char *const site_names[IONIC_FAULT_SITE_COUNT] = {
     [IONIC_FAULT_SITE_STATS_VALS] = "stats_vals",
+    [IONIC_FAULT_SITE_ETH_RX] = "eth_rx",
+    [IONIC_FAULT_SITE_ETH_TX] = "eth_tx",
 };
 
 /*
@@ -29,19 +31,52 @@ static const char *const site_names[IONIC_FAULT_SITE_COUNT] = {
  * this build" rather than "unknown".
  */
 static const char *const later_sites[] = {
-    "eth_rx", "eth_tx", "rdma_rx", "rdma_tx", "qp_stats_vals", "stats_publish",
+    "rdma_rx",
+    "rdma_tx",
+    "qp_stats_vals",
+    "stats_publish",
 };
 static const char *const later_patterns[] = {"random", "state", "gemodel"};
 static const char *const later_gates[] = {"window", "start", "stop", "limit",
                                           "seed"};
-/* The other stats-read effects: valid for stats_vals, not built yet. */
-static const char *const later_stats_effects[] = {
-    "stale", "zero", "reset", "wrap", "delay", "timeout", "hang",
-};
-/* Effects of other sites, never valid for a stats site. */
-static const char *const other_site_effects[] = {
-    "drop", "nobuf",   "corrupt", "duplicate",  "pause", "rnr",
-    "ecn",  "seq_err", "cnp",     "retransmit", "skip",
+#define SITE_BIT(s) (1u << (s))
+#define ON_STATS    SITE_BIT(IONIC_FAULT_SITE_STATS_VALS)
+#define ON_ETH_RX   SITE_BIT(IONIC_FAULT_SITE_ETH_RX)
+#define ON_ETH_TX   SITE_BIT(IONIC_FAULT_SITE_ETH_TX)
+
+_Static_assert(IONIC_FAULT_SITE_COUNT <= 32, "a site mask is an unsigned int");
+
+/*
+ * Every effect the design names, the built sites it is valid for (none for
+ * an effect of a site not built yet) and whether this build has it.  A
+ * name that is valid but not built says "not supported in this build";
+ * its effect field is never read.
+ */
+static const struct {
+    const char *name;
+    enum ionic_fault_effect effect;
+    unsigned int sites;
+    bool built;
+} effects[] = {
+    {"fail", IONIC_FAULT_EFFECT_FAIL, ON_STATS, true},
+    {"drop", IONIC_FAULT_EFFECT_DROP, ON_ETH_RX | ON_ETH_TX, true},
+    {"nobuf", IONIC_FAULT_EFFECT_NOBUF, ON_ETH_RX, true},
+    {"stale", IONIC_FAULT_EFFECT_FAIL, ON_STATS, false},
+    {"zero", IONIC_FAULT_EFFECT_FAIL, ON_STATS, false},
+    {"reset", IONIC_FAULT_EFFECT_FAIL, ON_STATS, false},
+    {"wrap", IONIC_FAULT_EFFECT_FAIL, ON_STATS, false},
+    {"delay", IONIC_FAULT_EFFECT_FAIL, ON_STATS, false},
+    {"timeout", IONIC_FAULT_EFFECT_FAIL, ON_STATS, false},
+    {"hang", IONIC_FAULT_EFFECT_FAIL, ON_STATS, false},
+    {"corrupt", IONIC_FAULT_EFFECT_FAIL, ON_ETH_RX, false},
+    {"duplicate", IONIC_FAULT_EFFECT_FAIL, ON_ETH_RX, false},
+    {"pause", IONIC_FAULT_EFFECT_FAIL, ON_ETH_RX, false},
+    {"rnr", IONIC_FAULT_EFFECT_FAIL, 0, false},
+    {"ecn", IONIC_FAULT_EFFECT_FAIL, 0, false},
+    {"seq_err", IONIC_FAULT_EFFECT_FAIL, 0, false},
+    {"cnp", IONIC_FAULT_EFFECT_FAIL, 0, false},
+    {"retransmit", IONIC_FAULT_EFFECT_FAIL, 0, false},
+    {"skip", IONIC_FAULT_EFFECT_FAIL, 0, false},
 };
 
 struct status_name {
@@ -354,6 +389,7 @@ static int parse_effect(const char **p, struct ionic_fault *f, char *err,
 {
     const char *site = site_names[f->site];
     struct tok t;
+    size_t e;
 
     if (!next_tok(p, &t)) {
         set_err(err, err_len, "effect required");
@@ -368,42 +404,56 @@ static int parse_effect(const char **p, struct ionic_fault *f, char *err,
         return -1;
     }
 
-    if (tok_is(&t, "fail")) {
-        f->effect = IONIC_FAULT_EFFECT_FAIL;
-        f->status = IONIC_RC_EIO;
-        while (next_tok(p, &t)) {
-            size_t i;
-
-            if (!tok_is(&t, "status")) {
-                bad_tok(&t, err, err_len);
-                return -1;
-            }
-            if (!next_tok(p, &t)) {
-                set_err(err, err_len, "status needs a name");
-                return -1;
-            }
-            for (i = 0; i < ARRAY_LEN(status_names); i++)
-                if (tok_is(&t, status_names[i].name))
-                    break;
-            if (i == ARRAY_LEN(status_names)) {
-                set_err(err, err_len, "unknown status '%.*s'", tok_prn(&t),
-                        t.p);
-                return -1;
-            }
-            f->status = (uint8_t)status_names[i].code;
+    for (e = 0; e < ARRAY_LEN(effects); e++)
+        if (tok_is(&t, effects[e].name))
+            break;
+    if (e == ARRAY_LEN(effects)) {
+        set_err(err, err_len, "unknown effect '%.*s'", tok_prn(&t), t.p);
+        return -1;
+    }
+    if (!(effects[e].sites & SITE_BIT(f->site))) {
+        set_err(err, err_len, "effect %.*s not valid for site %s", tok_prn(&t),
+                t.p, site);
+        return -1;
+    }
+    if (!effects[e].built) {
+        set_err(err, err_len, "effect %.*s not supported in this build",
+                tok_prn(&t), t.p);
+        return -1;
+    }
+    f->effect = effects[e].effect;
+    f->status = 0;
+    if (f->effect != IONIC_FAULT_EFFECT_FAIL) {
+        /* drop and nobuf take no arguments. */
+        if (next_tok(p, &t)) {
+            bad_tok(&t, err, err_len);
+            return -1;
         }
         return 0;
     }
 
-    if (tok_in(&t, later_stats_effects, ARRAY_LEN(later_stats_effects)))
-        set_err(err, err_len, "effect %.*s not supported in this build",
-                tok_prn(&t), t.p);
-    else if (tok_in(&t, other_site_effects, ARRAY_LEN(other_site_effects)))
-        set_err(err, err_len, "effect %.*s not valid for site %s", tok_prn(&t),
-                t.p, site);
-    else
-        set_err(err, err_len, "unknown effect '%.*s'", tok_prn(&t), t.p);
-    return -1;
+    f->status = IONIC_RC_EIO;
+    while (next_tok(p, &t)) {
+        size_t i;
+
+        if (!tok_is(&t, "status")) {
+            bad_tok(&t, err, err_len);
+            return -1;
+        }
+        if (!next_tok(p, &t)) {
+            set_err(err, err_len, "status needs a name");
+            return -1;
+        }
+        for (i = 0; i < ARRAY_LEN(status_names); i++)
+            if (tok_is(&t, status_names[i].name))
+                break;
+        if (i == ARRAY_LEN(status_names)) {
+            set_err(err, err_len, "unknown status '%.*s'", tok_prn(&t), t.p);
+            return -1;
+        }
+        f->status = (uint8_t)status_names[i].code;
+    }
+    return 0;
 }
 
 int ionic_fault_parse(const char *spec, struct ionic_fault *out, char *err,
@@ -531,15 +581,24 @@ int ionic_fault_format(const struct ionic_fault *f, char *buf, size_t len)
         break;
     }
 
-    if (f->effect == IONIC_FAULT_EFFECT_FAIL) {
+    switch (f->effect) {
+    case IONIC_FAULT_EFFECT_FAIL:
         st = status_name(f->status);
         if (st)
             out_add(buf, len, &pos, " effect fail status %s", st);
         else
             out_add(buf, len, &pos, " effect fail status %u",
                     (unsigned int)f->status);
-    } else {
+        break;
+    case IONIC_FAULT_EFFECT_DROP:
+        out_add(buf, len, &pos, " effect drop");
+        break;
+    case IONIC_FAULT_EFFECT_NOBUF:
+        out_add(buf, len, &pos, " effect nobuf");
+        break;
+    default:
         out_add(buf, len, &pos, " effect unknown");
+        break;
     }
 
     return pos > INT_MAX ? -1 : (int)pos;

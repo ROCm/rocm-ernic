@@ -42,6 +42,7 @@
 #include "ionic_eth_emu_fakes.h"
 #include "ionic_eth_emu_priv.h"
 #include "ionic_eth_steer.h"
+#include "ionic_fault.h"
 #include "ionic_profile.h"
 #include "ionic_status.h"
 #include "rocm_ernic_internal.h"
@@ -1181,22 +1182,31 @@ static void check_held_frame_transition(void)
         bool pause_all;
     } cases[] = {
         {"positive", "buffer arrives on original queue",
-         "one delivery to queue 3, no drop", 3, false},
+         "held frame advances once; next frame drops on event 2", 3, false},
         {"corner", "original queue disabled while frame held",
-         "re-steer once to sole active queue 2", 2, false},
+         "re-steer to queue 2 without advancing twice; next frame drops", 2,
+         false},
         {"negative", "all queues disabled while frame held",
-         "retain frame without DMA, deliver once after enable", 3, true},
+         "pause preserves pattern; deliver once after enable, next frame drops",
+         3, true},
     };
     for (size_t row = 0; row < sizeof(cases) / sizeof(cases[0]); row++) {
         struct ionic_eth_emu *emu = rx_emu(4, 0);
+        struct ionic_fault_set *set = ionic_fault_set_new();
+        struct ionic_fault *fault;
+        char err[128];
         uint8_t frame[128];
         uint32_t seed = 111;
         size_t len = frame_for(frame, emu, 3, &seed);
         bool ok;
 
+        ok = set && ionic_fault_set_add(set, "eth_rx: after 2 effect drop", err,
+                                        sizeof(err)) == 0;
+        ionic_eth_emu_set_faults(emu, set);
+        fault = ionic_fault_set_get(set, IONIC_FAULT_SITE_ETH_RX);
         ionic_eth_emu_queue_rx_frame(emu, frame, len);
         ionic_eth_emu_poll_rx(emu);
-        ok = emu->inbox_count == 1 && g_nwrites == 0;
+        ok = ok && emu->inbox_count == 1 && g_nwrites == 0;
         for (uint32_t q = 0; q < 4; q++)
             q_control(emu, IONIC_QTYPE_RXQ, q, IONIC_Q_DISABLE);
         if (cases[row].pause_all) {
@@ -1212,10 +1222,114 @@ static void check_held_frame_transition(void)
              ionic_eth_emu_get_stats(emu)->lif[IONIC_LIF_RX_QUEUE_EMPTY] == 0;
         for (uint32_t q = 0; q < 4; q++)
             ok = ok && cq_posted(q) == (q == cases[row].target);
+        ok = ok && fault && fault->eligible == 1 && fault->fired == 0;
+        ionic_eth_emu_queue_rx_frame(emu, frame, len);
+        ionic_eth_emu_poll_rx(emu);
+        ok = ok && fault && fault->eligible == 2 && fault->fired == 1 &&
+             emu->inbox_count == 0 && g_nwrites == 2;
         report(ok, cases[row].category, cases[row].description,
                cases[row].expected);
         ionic_eth_emu_destroy(emu);
+        ionic_fault_set_free(set);
     }
+}
+
+static void check_fault_poll_budget(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        unsigned int frames;
+    } rows[] = {
+        {"negative", "empty inbox", "no eligible events", 0},
+        {"positive", "one frame", "one eligible event and drop", 1},
+        {"boundary", "one below poll limit", "63 events in first poll", 63},
+        {"boundary", "exact poll limit", "64 events in first poll", 64},
+        {"corner", "one above poll limit", "64 events, then one on next poll",
+         65},
+    };
+    for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
+        struct ionic_eth_emu *emu = rx_emu(2, 0);
+        struct ionic_fault_set *set = ionic_fault_set_new();
+        struct ionic_fault *rx;
+        uint8_t frame[128];
+        uint32_t seed = 141;
+        size_t len = frame_for(frame, emu, 1, &seed);
+        char err[128];
+        unsigned int first = rows[row].frames > 64 ? 64 : rows[row].frames;
+        bool ok = set && ionic_fault_set_add(set, "eth_rx: every 1 effect drop",
+                                             err, sizeof(err)) == 0;
+
+        ionic_eth_emu_set_faults(emu, set);
+        rx = ionic_fault_set_get(set, IONIC_FAULT_SITE_ETH_RX);
+        for (unsigned int n = 0; n < rows[row].frames; n++)
+            ok = ionic_eth_emu_queue_rx_frame(emu, frame, len) == 0 && ok;
+        ionic_eth_emu_poll_rx(emu);
+        ok = ok && rx && rx->eligible == first && rx->fired == first &&
+             emu->inbox_count == rows[row].frames - first && g_nwrites == 0;
+        ionic_eth_emu_poll_rx(emu);
+        ok = ok && rx && rx->eligible == rows[row].frames &&
+             rx->fired == rows[row].frames && emu->inbox_count == 0 &&
+             g_nwrites == 0;
+        report(ok, rows[row].category, rows[row].description,
+               rows[row].expected);
+        ionic_eth_emu_destroy(emu);
+        ionic_fault_set_free(set);
+    }
+}
+
+static void check_two_queue_faults(void)
+{
+    struct ionic_eth_emu *emu = rx_emu(2, 1);
+    struct ionic_fault_set *set = ionic_fault_set_new();
+    struct ionic_fault *rx, *tx;
+    uint8_t frame[128];
+    uint32_t seed = 151;
+    char err[128];
+    bool ok = set &&
+              ionic_fault_set_add(set, "eth_rx: every 2 effect drop", err,
+                                  sizeof(err)) == 0 &&
+              ionic_fault_set_add(set, "eth_tx: every 3 effect drop", err,
+                                  sizeof(err)) == 0;
+    static const uint8_t destinations[] = {0, 1, 1};
+
+    ionic_eth_emu_set_faults(emu, set);
+    rx = ionic_fault_set_get(set, IONIC_FAULT_SITE_ETH_RX);
+    tx = ionic_fault_set_get(set, IONIC_FAULT_SITE_ETH_TX);
+    for (size_t i = 0; i < sizeof(destinations); i++) {
+        size_t len = frame_for(frame, emu, destinations[i], &seed);
+
+        tap_frame(emu, frame, len);
+    }
+    ok = ok && rx && tx && rx->eligible == 3 && rx->fired == 1 &&
+         tx->eligible == 0 && cq_posted(0) && cq_posted(1) &&
+         emu->eth_q[IONIC_QTYPE_RXQ][0].head == 1 &&
+         emu->eth_q[IONIC_QTYPE_RXQ][1].head == 1;
+    q_init(emu, IONIC_QTYPE_TXQ, 1, 22, 0x100, 0x200);
+    q_control(emu, IONIC_QTYPE_TXQ, 1, IONIC_Q_ENABLE);
+    for (uint16_t i = 0; i < 3; i++) {
+        uint64_t cmd = htole64((uint64_t)0x300 << TXQ_DESC_ADDR_SHIFT);
+        uint16_t len = htole16(64);
+        uint8_t *desc = g_mem + 0x100 + (size_t)i * ETH_DESC_SIZE;
+        /* p_index i + 1 in bits 15:0, qid 1 in bits 31:24. */
+        uint64_t db = (uint64_t)(i + 1) | (UINT64_C(1) << 24);
+
+        memcpy(g_mem + 0x300, frame, 64);
+        memcpy(desc, &cmd, 8);
+        memcpy(desc + 8, &len, 2);
+        ionic_eth_emu_bar2_access(emu, (char *)&db, sizeof(db),
+                                  (loff_t)IONIC_QTYPE_TXQ * 8, true);
+    }
+    ok = ok && rx && tx && rx->eligible == 3 && rx->fired == 1 &&
+         tx->eligible == 3 && tx->fired == 1 &&
+         emu->eth_q[IONIC_QTYPE_TXQ][1].head == 3 &&
+         emu->eth_q[IONIC_QTYPE_TXQ][0].head == 0;
+    report(ok, "corner", "interleaved flows on two RX queues and TX queue 1",
+           "RX pattern shared across queues; drops consume no RX buffer; TX "
+           "advances independently and completes drops");
+    ionic_eth_emu_destroy(emu);
+    ionic_fault_set_free(set);
 }
 
 int main(void)
@@ -1233,6 +1347,8 @@ int main(void)
         run_active_case(&active_cases[i]);
     check_q_control_devcmd();
     check_delivery();
+    check_fault_poll_budget();
+    check_two_queue_faults();
     check_hash_goldens();
     check_ring_wrap();
     check_held_frame_transition();

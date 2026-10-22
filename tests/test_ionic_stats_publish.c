@@ -31,6 +31,7 @@
 #include "ionic_eth_emu.h"
 #include "ionic_eth_emu_fakes.h"
 #include "ionic_eth_emu_priv.h"
+#include "ionic_fault.h"
 #include "ionic_profile.h"
 #include "parse_int.h"
 
@@ -93,6 +94,7 @@ static struct ionic_eth_emu *new_emu(uint32_t interval_ms)
     g_fail_writes = 0;
     g_nwarnings = 0;
     g_net_send_rc = 0;
+    g_net_sends = 0;
     g_net_rx_frame = NULL;
     g_net_rx_len = 0;
     ionic_profile_defaults(&p);
@@ -775,6 +777,335 @@ static const struct publish_case datapath_cases[] = {
      "last rc -28, rx_bcast_drop 1/64", inbox_full},
 };
 
+/* ---- Fault rows (eth_rx, eth_tx) ----------------------------------------- */
+
+/* A fault set holding @spec, attached to @emu; free it after the emu. */
+static struct ionic_fault_set *attach_fault(struct ionic_eth_emu *emu,
+                                            const char *spec)
+{
+    struct ionic_fault_set *set = ionic_fault_set_new();
+    char err[128];
+
+    if (!set || ionic_fault_set_add(set, spec, err, sizeof(err)) != 0) {
+        fprintf(stderr, "fault '%s': %s\n", spec, set ? err : "no memory");
+        /* abort() rather than exit(), which isn't thread safe. */
+        abort();
+    }
+    ionic_eth_emu_set_faults(emu, set);
+    return set;
+}
+
+static const struct ionic_fault *site_fault(const struct ionic_fault_set *set,
+                                            enum ionic_fault_site site)
+{
+    static const struct ionic_fault none;
+    const struct ionic_fault *f = ionic_fault_set_get(set, site);
+
+    return f ? f : &none;
+}
+
+static void fault_rx_drop(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+    struct ionic_fault_set *set =
+        attach_fault(emu, "eth_rx: every 1 effect drop");
+
+    setup_rxq(emu, 1, RX_BUF_CAP);
+    rx_tap(emu, mac_ucast, 64);
+    snprintf(got, len,
+             "rx_ucast %" PRIu64 ", rx_ucast_drop %" PRIu64
+             ", rx_queue_empty %" PRIu64 ", head %u, fired %" PRIu64,
+             counter(emu, IONIC_LIF_RX_UCAST_PACKETS),
+             counter(emu, IONIC_LIF_RX_UCAST_DROP_PACKETS),
+             counter(emu, IONIC_LIF_RX_QUEUE_EMPTY),
+             (unsigned)emu->eth_q[IONIC_QTYPE_RXQ][0].head,
+             site_fault(set, IONIC_FAULT_SITE_ETH_RX)->fired);
+    emu->net = NULL;
+    ionic_eth_emu_destroy(emu);
+    ionic_fault_set_free(set);
+}
+
+static void fault_rx_nobuf(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+    struct ionic_fault_set *set =
+        attach_fault(emu, "eth_rx: every 1 effect nobuf");
+
+    setup_rxq(emu, 1, RX_BUF_CAP);
+    rx_tap(emu, mac_ucast, 64);
+    snprintf(got, len,
+             "rx_ucast %" PRIu64 ", rx_ucast_drop %" PRIu64 "/%" PRIu64
+             ", rx_queue_empty %" PRIu64 ", head %u",
+             counter(emu, IONIC_LIF_RX_UCAST_PACKETS),
+             counter(emu, IONIC_LIF_RX_UCAST_DROP_PACKETS),
+             counter(emu, IONIC_LIF_RX_UCAST_DROP_BYTES),
+             counter(emu, IONIC_LIF_RX_QUEUE_EMPTY),
+             (unsigned)emu->eth_q[IONIC_QTYPE_RXQ][0].head);
+    emu->net = NULL;
+    ionic_eth_emu_destroy(emu);
+    ionic_fault_set_free(set);
+}
+
+static void fault_tx_drop(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+    struct ionic_fault_set *set =
+        attach_fault(emu, "eth_tx: every 1 effect drop");
+    static int fake_net;
+
+    setup_txq(emu);
+    emu->net = (struct ionic_eth_net *)&fake_net;
+    tx_frame(emu, mac_ucast, 100);
+    snprintf(got, len,
+             "tx_ucast %" PRIu64 ", tx_ucast_drop %" PRIu64 "/%" PRIu64
+             ", head %u, sends %u",
+             counter(emu, IONIC_LIF_TX_UCAST_PACKETS),
+             counter(emu, IONIC_LIF_TX_UCAST_DROP_PACKETS),
+             counter(emu, IONIC_LIF_TX_UCAST_DROP_BYTES),
+             (unsigned)emu->eth_q[IONIC_QTYPE_TXQ][0].head, g_net_sends);
+    emu->net = NULL;
+    ionic_eth_emu_destroy(emu);
+    ionic_fault_set_free(set);
+}
+
+static void fault_tx_every_2(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+    struct ionic_fault_set *set =
+        attach_fault(emu, "eth_tx: every 2 effect drop");
+
+    setup_txq(emu);
+    for (int i = 0; i < 4; i++)
+        tx_frame(emu, mac_ucast, 100);
+    snprintf(got, len,
+             "tx_ucast %" PRIu64 "/%" PRIu64 ", tx_ucast_drop %" PRIu64
+             "/%" PRIu64,
+             counter(emu, IONIC_LIF_TX_UCAST_PACKETS),
+             counter(emu, IONIC_LIF_TX_UCAST_BYTES),
+             counter(emu, IONIC_LIF_TX_UCAST_DROP_PACKETS),
+             counter(emu, IONIC_LIF_TX_UCAST_DROP_BYTES));
+    ionic_eth_emu_destroy(emu);
+    ionic_fault_set_free(set);
+}
+
+static void fault_rx_no_queue(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+    struct ionic_fault_set *set =
+        attach_fault(emu, "eth_rx: every 1 effect drop");
+
+    rx_tap(emu, mac_ucast, 64);
+    snprintf(got, len, "eligible %" PRIu64,
+             site_fault(set, IONIC_FAULT_SITE_ETH_RX)->eligible);
+    emu->net = NULL;
+    ionic_eth_emu_destroy(emu);
+    ionic_fault_set_free(set);
+}
+
+static void fault_tx_len_zero(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+    struct ionic_fault_set *set =
+        attach_fault(emu, "eth_tx: every 1 effect drop");
+
+    setup_txq(emu);
+    tx_one(emu, TX_BUF, 0);
+    snprintf(got, len, "eligible %" PRIu64 ", tx_desc_data_error %" PRIu64,
+             site_fault(set, IONIC_FAULT_SITE_ETH_TX)->eligible,
+             counter(emu, IONIC_LIF_TX_DESC_DATA_ERROR));
+    ionic_eth_emu_destroy(emu);
+    ionic_fault_set_free(set);
+}
+
+static void fault_rx_after_2(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+    struct ionic_fault_set *set =
+        attach_fault(emu, "eth_rx: after 2 count 1 effect drop");
+
+    setup_rxq(emu, 2, RX_BUF_CAP);
+    for (int i = 0; i < 3; i++)
+        rx_tap(emu, mac_ucast, 64);
+    snprintf(got, len,
+             "rx_ucast %" PRIu64 ", eligible %" PRIu64 ", fired %" PRIu64,
+             counter(emu, IONIC_LIF_RX_UCAST_PACKETS),
+             site_fault(set, IONIC_FAULT_SITE_ETH_RX)->eligible,
+             site_fault(set, IONIC_FAULT_SITE_ETH_RX)->fired);
+    emu->net = NULL;
+    ionic_eth_emu_destroy(emu);
+    ionic_fault_set_free(set);
+}
+
+static void fault_inbox_held(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+    struct ionic_fault_set *set =
+        attach_fault(emu, "eth_rx: after 2 effect drop");
+
+    setup_rxq(emu, 0, RX_BUF_CAP);
+    ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast, 64), 64);
+    for (int i = 0; i < 3; i++)
+        ionic_eth_emu_poll_rx(emu);
+    snprintf(got, len,
+             "eligible %" PRIu64 ", fired %" PRIu64 ", still queued %u",
+             site_fault(set, IONIC_FAULT_SITE_ETH_RX)->eligible,
+             site_fault(set, IONIC_FAULT_SITE_ETH_RX)->fired, emu->inbox_count);
+    ionic_eth_emu_destroy(emu);
+    ionic_fault_set_free(set);
+}
+
+static void fault_inbox_nobuf(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+    struct ionic_fault_set *set =
+        attach_fault(emu, "eth_rx: every 1 effect nobuf");
+
+    setup_rxq(emu, 1, RX_BUF_CAP);
+    ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast, 64), 64);
+    ionic_eth_emu_poll_rx(emu);
+    snprintf(got, len,
+             "rx_ucast_drop %" PRIu64 ", rx_queue_empty %" PRIu64
+             ", still queued %u",
+             counter(emu, IONIC_LIF_RX_UCAST_DROP_PACKETS),
+             counter(emu, IONIC_LIF_RX_QUEUE_EMPTY), emu->inbox_count);
+    ionic_eth_emu_destroy(emu);
+    ionic_fault_set_free(set);
+}
+
+static void fault_other_site(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+    struct ionic_fault_set *set =
+        attach_fault(emu, "stats_vals: every 1 effect fail");
+
+    setup_txq(emu);
+    setup_rxq(emu, 1, RX_BUF_CAP);
+    tx_frame(emu, mac_ucast, 100);
+    rx_tap(emu, mac_ucast, 64);
+    snprintf(got, len,
+             "tx_ucast %" PRIu64 ", rx_ucast %" PRIu64
+             ", stats_vals eligible %" PRIu64,
+             counter(emu, IONIC_LIF_TX_UCAST_PACKETS),
+             counter(emu, IONIC_LIF_RX_UCAST_PACKETS),
+             site_fault(set, IONIC_FAULT_SITE_STATS_VALS)->eligible);
+    emu->net = NULL;
+    ionic_eth_emu_destroy(emu);
+    ionic_fault_set_free(set);
+}
+
+static unsigned int g_filter_calls;
+
+static bool count_filter(void *ctx, const void *frame, size_t len)
+{
+    (void)ctx;
+    (void)frame;
+    (void)len;
+    g_filter_calls++;
+    return true;
+}
+
+static void fault_tx_filter(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+    struct ionic_fault_set *set =
+        attach_fault(emu, "eth_tx: every 2 effect drop");
+
+    g_filter_calls = 0;
+    ionic_eth_emu_register_tx_filter(emu, count_filter, NULL);
+    setup_txq(emu);
+    tx_frame(emu, mac_ucast, 100);
+    tx_frame(emu, mac_ucast, 100);
+    snprintf(got, len, "filter calls %u, tx_ucast_drop %" PRIu64,
+             g_filter_calls, counter(emu, IONIC_LIF_TX_UCAST_DROP_PACKETS));
+    ionic_eth_emu_destroy(emu);
+    ionic_fault_set_free(set);
+}
+
+static void tx_fault_preconditions(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        uint64_t address;
+        uint16_t length;
+        bool bad_ring;
+        bool valid;
+    } rows[] = {
+        {"negative", "zero payload length",
+         "no event before complete frame exists", TX_BUF, 0, false, true},
+        {"negative", "unmapped payload", "no event on payload DMA failure",
+         GUEST_MEM_SIZE, 64, false, true},
+        {"boundary", "unmapped descriptor",
+         "no event on descriptor DMA failure", TX_BUF, 64, true, true},
+        {"corner", "uninitialized TX queue",
+         "no event before queue registration", TX_BUF, 64, false, false},
+    };
+    for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
+        struct ionic_eth_emu *emu = new_emu(1000);
+        struct ionic_fault_set *set =
+            attach_fault(emu, "eth_tx: after 1 effect drop");
+        const struct ionic_fault *fault =
+            site_fault(set, IONIC_FAULT_SITE_ETH_TX);
+        struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_TXQ][0];
+        bool ok;
+
+        setup_txq(emu);
+        q->valid = rows[row].valid;
+        if (rows[row].bad_ring)
+            q->ring_base = GUEST_MEM_SIZE;
+        tx_one(emu, rows[row].address, rows[row].length);
+        ok = fault->eligible == 0 && fault->fired == 0;
+        q->ring_base = TX_RING;
+        q->valid = true;
+        tx_frame(emu, mac_ucast, 64);
+        ok = ok && fault->eligible == 1 && fault->fired == 1 &&
+             counter(emu, IONIC_LIF_TX_UCAST_DROP_PACKETS) == 1;
+        printf("%s %s: %s; expected: %s; next valid frame fires event 1\n",
+               ok ? "ok" : "FAIL", rows[row].category, rows[row].description,
+               rows[row].expected);
+        if (!ok)
+            failures++;
+        ionic_eth_emu_destroy(emu);
+        ionic_fault_set_free(set);
+    }
+}
+
+static const struct publish_case fault_cases[] = {
+    {"positive", "eth_rx every 1 drop, a buffer posted",
+     "rx_ucast 0, rx_ucast_drop 0, rx_queue_empty 0, head 0, fired 1 (lost "
+     "before the NIC: no counter)",
+     fault_rx_drop},
+    {"positive", "eth_rx every 1 nobuf, a buffer posted",
+     "rx_ucast 0, rx_ucast_drop 1/64, rx_queue_empty 1, head 0 (as if the "
+     "ring were empty)",
+     fault_rx_nobuf},
+    {"positive", "eth_tx every 1 drop, a host backend attached",
+     "tx_ucast 0, tx_ucast_drop 1/100, head 1, sends 0 (completed, not sent)",
+     fault_tx_drop},
+    {"positive", "eth_tx every 2 drop over 4 frames",
+     "tx_ucast 2/200, tx_ucast_drop 2/200", fault_tx_every_2},
+    {"negative", "eth_rx fault with no Rx queue enabled",
+     "eligible 0 (no frame is read)", fault_rx_no_queue},
+    {"negative", "eth_tx fault on a descriptor of length 0",
+     "eligible 0, tx_desc_data_error 1 (only gathered frames count)",
+     fault_tx_len_zero},
+    {"boundary", "eth_rx after 2 count 1 over 3 TAP frames, 2 buffers",
+     "rx_ucast 2, eligible 3, fired 1", fault_rx_after_2},
+    {"corner", "a mesh frame held back for a buffer over 3 polls",
+     "eligible 1, fired 0, still queued 1 (one event per frame)",
+     fault_inbox_held},
+    {"corner", "a mesh frame under eth_rx every 1 nobuf",
+     "rx_ucast_drop 1, rx_queue_empty 1, still queued 0", fault_inbox_nobuf},
+    {"corner", "a set holding only a stats_vals fault",
+     "tx_ucast 1, rx_ucast 1, stats_vals eligible 0 (the datapath is "
+     "untouched)",
+     fault_other_site},
+    {"corner", "eth_tx every 2 drop with an in-process Tx filter",
+     "filter calls 1, tx_ucast_drop 1 (a dropped frame is not offered)",
+     fault_tx_filter},
+};
+
 /*
  * A row passes when @got equals the part of @expected before any " (": the
  * parenthesis is commentary for the reader.
@@ -959,11 +1290,13 @@ static const struct publish_case stats_file_cases[] = {
 
 int main(void)
 {
+    tx_fault_preconditions();
     address_boundaries();
     lif_status_address_boundaries();
     run_cases(publish_cases, sizeof(publish_cases) / sizeof(publish_cases[0]));
     run_cases(datapath_cases,
               sizeof(datapath_cases) / sizeof(datapath_cases[0]));
+    run_cases(fault_cases, sizeof(fault_cases) / sizeof(fault_cases[0]));
     run_cases(stats_file_cases,
               sizeof(stats_file_cases) / sizeof(stats_file_cases[0]));
 

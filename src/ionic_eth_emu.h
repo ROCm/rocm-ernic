@@ -45,6 +45,15 @@ struct ionic_profile;
 void ionic_eth_emu_set_profile(struct ionic_eth_emu *emu,
                                const struct ionic_profile *profile);
 
+/*
+ * Inject the eth_rx and eth_tx faults of @faults (ionic_fault.h), or none
+ * for NULL.  The set is the caller's and must outlive the device.  Call
+ * before any client connects.
+ */
+struct ionic_fault_set;
+void ionic_eth_emu_set_faults(struct ionic_eth_emu *emu,
+                              const struct ionic_fault_set *faults);
+
 /* Register the RDMA devcmd handler (called before any client connects). */
 void ionic_eth_emu_register_rdma_handler(struct ionic_eth_emu *emu,
                                          ionic_rdma_devcmd_fn_t fn,

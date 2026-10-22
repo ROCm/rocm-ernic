@@ -452,6 +452,9 @@ struct ionic_eth_emu {
     /* In-process endpoint offered every Tx frame before the backend. */
     ionic_eth_tx_filter_fn tx_filter;
     void *tx_filter_ctx;
+    /* Injected faults (ionic_fault.h), or NULL; owned by the caller. */
+    struct ionic_fault *rx_fault;
+    struct ionic_fault *tx_fault;
     /* Staging buffer for one frame in either direction. */
     uint8_t frame[IONIC_ETH_NET_MTU_MAX];
 
