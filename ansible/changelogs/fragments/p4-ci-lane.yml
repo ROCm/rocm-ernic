@@ -20,3 +20,12 @@ minor_changes:
     capability --- ``patches/p4`` adds ``IONIC_LIF_CAP_P4`` --- never
     reaches the driver that has to advertise it, and a module built
     against a patched tree loads and never probes.
+  - >-
+    ``ernic_p4_dkms`` now builds the module against the out-of-tree
+    ionic's ``Module.symvers``, found by the symbol it needs rather than
+    by package name.  ``patches/p4`` adds a field to ``struct
+    ionic_lif``, which changes the genksyms CRC of every exported symbol
+    taking that type, so a module built against the kernel's own symbols
+    records the unpatched CRC and ``modprobe`` refuses it.  A failed
+    insert now reports the kernel log, since "Invalid argument" on its
+    own says nothing.

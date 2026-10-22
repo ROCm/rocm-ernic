@@ -53,6 +53,16 @@ ernic_p4_dkms_src_pointer: /etc/ernic-p4-ionic-src
 # that can report success against last week's sources is not doing that.
 ernic_p4_dkms_force_fetch: true
 
+# Module.symvers of the ionic the guest actually runs.
+#
+# ionic is out of tree here, and patches/p4 adds a field to
+# struct ionic_lif, so every exported symbol taking that type gets a
+# different genksyms CRC. A module built against the kernel's own
+# Module.symvers records the unpatched CRC and modprobe refuses it.
+# Empty means search the DKMS tree for one that exports the symbol this
+# module needs.
+ernic_p4_dkms_ionic_symvers: ""
+
 # Load the module once it is built. Off makes this a build-only check.
 ernic_p4_dkms_load: true
 

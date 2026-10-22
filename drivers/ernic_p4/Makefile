@@ -16,6 +16,17 @@
 KDIR ?= /lib/modules/$(shell uname -r)/build
 IONIC_SRC ?=
 
+# Module.symvers of the ionic build this module will load against.
+#
+# ionic is itself out of tree here (DKMS), and patches/p4 adds a field
+# to struct ionic_lif, which changes the genksyms CRC of every exported
+# symbol taking that type -- ionic_adminq_post_wait among them. Built
+# against the kernel's own Module.symvers instead, this module records
+# the CRC of whatever ionic the distro shipped, and insmod rejects it
+# against the patched one. Empty is allowed, for a tree where the
+# running ionic is the kernel's.
+IONIC_SYMVERS ?=
+
 # Where the ionic driver lives inside a kernel tree.  Kept as a variable
 # rather than spelled out at each use: it appears four times, and the
 # whole path written out is a 40-character run of [A-Za-z0-9/], which is
@@ -28,6 +39,9 @@ obj-m += ernic_p4.o
 ccflags-y += -I$(IONIC_INC)
 ccflags-y += -I$(src)
 
+KBUILD_EXTRA_SYMBOLS := $(IONIC_SYMVERS)
+export KBUILD_EXTRA_SYMBOLS
+
 all:
 	@test -n "$(IONIC_SRC)" || \
 	  { echo "ERROR: IONIC_SRC must name a patched ionic source tree" >&2; \
@@ -37,6 +51,9 @@ all:
 	@grep -q IONIC_LIF_CAP_P4 "$(IONIC_INC)/ionic_if.h" || \
 	  { echo "ERROR: $(IONIC_SRC) lacks patches/p4; the aux device this" >&2; \
 	    echo "       module binds to would never be created" >&2; exit 1; }
+	@test -z "$(IONIC_SYMVERS)" || test -f "$(IONIC_SYMVERS)" || \
+	  { echo "ERROR: IONIC_SYMVERS=$(IONIC_SYMVERS) does not exist" >&2; \
+	    exit 1; }
 	$(MAKE) -C $(KDIR) M=$(CURDIR) modules
 
 clean:

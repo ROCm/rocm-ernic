@@ -130,6 +130,42 @@
     group: root
     mode: "0644"
 
+# The ionic the guest runs is DKMS-built, so its exported symbols are
+# not in the kernel's Module.symvers. Find the one that actually exports
+# what this module calls, rather than guessing a package name and
+# version: a wrong guess here is a module that builds and then will not
+# insert, which is a much worse symptom than a missing file.
+- name: Find the ionic build's Module.symvers
+  become: true
+  when: not ernic_p4_dkms_ionic_symvers
+  ansible.builtin.shell:
+    # pipefail is lint's requirement, not a behaviour change: finding
+    # nothing is an ordinary outcome here, which failed_when covers.
+    cmd: >-
+      set -o pipefail &&
+      grep -l ionic_adminq_post_wait
+      /var/lib/dkms/*/*/build/Module.symvers 2>/dev/null | head -1
+    executable: /bin/bash
+  register: ernic_p4_symvers_found
+  changed_when: false
+  failed_when: false
+
+- name: Settle on the Module.symvers to build against
+  ansible.builtin.set_fact:
+    ernic_p4_symvers: >-
+      {{ ernic_p4_dkms_ionic_symvers
+         if ernic_p4_dkms_ionic_symvers
+         else (ernic_p4_symvers_found.stdout | default('') | trim) }}
+
+- name: Report which symbols the module will be built against
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'building against ' ~ ernic_p4_symvers
+         if ernic_p4_symvers
+         else 'no out-of-tree ionic Module.symvers found; building against
+               the kernel''s own, which is right only if the running ionic
+               is the kernel''s' }}
+
 - name: Build the module
   become: true
   environment:
@@ -139,6 +175,7 @@
     params:
       KDIR: "/lib/modules/{{ ansible_kernel }}/build"
       IONIC_SRC: "{{ ernic_p4_dkms_source_dir }}"
+      IONIC_SYMVERS: "{{ ernic_p4_symvers }}"
 
 - name: Install the module where modprobe will find it
   become: true
@@ -156,12 +193,31 @@
     cmd: "depmod -a {{ ansible_kernel }}"
   changed_when: true
 
+# A failed insert says only "Invalid argument"; the reason is in the
+# kernel log. Capturing it here is the difference between a diagnosis
+# and another round trip through CI.
 - name: Load the module
-  become: true
   when: ernic_p4_dkms_load | bool
-  community.general.modprobe:
-    name: ernic_p4
-    state: present
+  block:
+    - name: Insert ernic_p4
+      become: true
+      community.general.modprobe:
+        name: ernic_p4
+        state: present
+  rescue:
+    - name: Collect the kernel's complaint
+      become: true
+      ansible.builtin.command:
+        cmd: dmesg --notime --level=err,warn
+      register: ernic_p4_dmesg
+      changed_when: false
+      failed_when: false
+
+    - name: Fail with what the kernel said
+      ansible.builtin.fail:
+        msg: >-
+          ernic_p4 would not insert. Kernel log:
+          {{ (ernic_p4_dmesg.stdout_lines | default([]))[-25:] | join(' | ') }}
 
 # Loaded is not bound. The module can load against a NIC that advertises
 # no P4 capability and sit there with no device to probe, which is a
