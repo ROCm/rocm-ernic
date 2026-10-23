@@ -2062,7 +2062,7 @@ int main(int argc, char *argv[])
         }
 
         /* Run device - process requests from client */
-        int loop_count = 0;
+        uint64_t loop_count = 0;
         uint64_t next_stats_write_ms = 0;
         GMainContext *main_context = g_main_context_default();
         /* Acquire the main context so we can iterate it */
@@ -2093,7 +2093,7 @@ int main(int argc, char *argv[])
              */
             if (dev->client_lost || (ret < 0 && errno == ENOTCONN)) {
                 ernic_startup_report(
-                    "rocm-ernic: Client disconnected after %d loops",
+                    "rocm-ernic: Client disconnected after %" PRIu64 " loops",
                     loop_count);
                 if (dev->pvrdma_handle) {
                     pvrdma_set_stats_connection_state(
@@ -2106,12 +2106,13 @@ int main(int argc, char *argv[])
             } else if (ret < 0 && errno == EINTR) {
                 /* Interrupted by signal */
                 vfu_log(vfu_ctx, LOG_INFO,
-                        "Interrupted by signal after %d loops", loop_count);
+                        "Interrupted by signal after %" PRIu64 " loops",
+                        loop_count);
                 break;
             } else if (ret < 0) {
                 vfu_log(vfu_ctx, LOG_ERR,
-                        "vfu_run_ctx() failed after %d loops: %s", loop_count,
-                        strerror(errno));
+                        "vfu_run_ctx() failed after %" PRIu64 " loops: %s",
+                        loop_count, strerror(errno));
                 break;
             }
 
@@ -2161,7 +2162,8 @@ int main(int argc, char *argv[])
                 ernic_sleep_us(100);
             }
         }
-        vfu_log(vfu_ctx, LOG_INFO, ">>> Event loop exited after %d iterations",
+        vfu_log(vfu_ctx, LOG_INFO,
+                ">>> Event loop exited after %" PRIu64 " iterations",
                 loop_count);
         /* Release the main context */
         g_main_context_pop_thread_default(main_context);
