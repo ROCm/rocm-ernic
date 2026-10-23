@@ -565,13 +565,14 @@ static void test_handshake(void)
      * stays reported until a reset clears CC.EN, and re-enabling after it
      * reports a ready controller that is not shut down.
      */
-    check("cc-shutdown", set_cc(aq, h, 15, cc_en | (1u << 14)) == 0,
+    check("cc-shutdown", set_cc(aq, h, 15, cc_en | NVME_CC_SHN_NORMAL) == 0,
           "Property Set CC.SHN failed");
-    check("cc-shutdown", (get_csts(aq, h, 16) & 0xc) == NVME_CSTS_SHST_CMPLT,
+    check("cc-shutdown",
+          (get_csts(aq, h, 16) & NVME_CSTS_SHST_MASK) == NVME_CSTS_SHST_CMPLT,
           "CSTS.SHST did not complete for CC.SHN with CC.EN set");
     set_cc(aq, h, 17, cc_en);
     check("cc-shutdown-held",
-          (get_csts(aq, h, 18) & 0xc) == NVME_CSTS_SHST_CMPLT,
+          (get_csts(aq, h, 18) & NVME_CSTS_SHST_MASK) == NVME_CSTS_SHST_CMPLT,
           "CSTS.SHST was cleared by a CC write that was not a reset");
     set_cc(aq, h, 19, cc_en & ~NVME_CC_ENABLE);
     check("cc-reset", get_csts(aq, h, 20) == 0,
