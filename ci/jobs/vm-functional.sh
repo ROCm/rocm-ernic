@@ -9,7 +9,8 @@
 # Provisions the guests (kernel driver + rdma-core v62
 # provider + NIC addressing) and runs the sanity suite:
 # ping, iperf3, ibv_rc_pingpong and a perftest
-# handshake between the two VMs.
+# handshake between the two VMs, then the RDMA-Tutorial
+# examples.
 #
 # The test logic lives in the existing Ansible plays;
 # this wrapper supplies CI-specific variables and turns
@@ -74,6 +75,7 @@ _ci_ansible_run() {
         -e "ernic_vm_ssh_base_port=${CI_VM_SSH_BASE_PORT}" \
         -e "ernic_vm_ssh_user=${CI_VM_SSH_USER}" \
         -e "ernic_vm_name_base=${CI_VM_NAME_BASE}" \
+        -e "ernic_nic_subnet=${CI_NIC_SUBNET}" \
         -e "ernic_build=false" \
         -e "ernic_gpu_passthrough=${CI_GPU_PASSTHROUGH}" \
         "$@" </dev/null
@@ -89,6 +91,11 @@ group_end
 group_start "RDMA sanity suite"
 run_check vm-functional "sanity-tests" \
     ci_ansible --tags sanity
+group_end
+
+group_start "RDMA-Tutorial examples"
+run_check vm-functional "tutorial-tests" \
+    ci_ansible --tags tutorial
 group_end
 
 # ── Direct connectivity probes ────────────────────

@@ -69,6 +69,7 @@ _ci_ansible_run() {
         -e "ernic_instances=${ERNIC_INSTANCES}" \
         -e "ernic_vm_ssh_base_port=${CI_VM_SSH_BASE_PORT}" \
         -e "ernic_vm_ssh_user=${CI_VM_SSH_USER}" \
+        -e "ernic_nic_subnet=${CI_NIC_SUBNET}" \
         -e "results_dir=${PERF_CSV_DIR}" \
         -e "ernic_build=false" \
         -e "ernic_gpu_passthrough=${CI_GPU_PASSTHROUGH}" \

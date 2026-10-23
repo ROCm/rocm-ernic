@@ -1,0 +1,157 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Run examples from the RDMA-Tutorial
+# (https://github.com/jcxue/RDMA-Tutorial) between two VMs: the
+# server on VM1 and the client on VM2, so every verb crosses the
+# rocm-ernic mesh.
+#
+# The tutorial keeps each example as a commit rather than a
+# directory. The controller clones it, checks each example's
+# commit out, applies the RoCE patch from
+# files/rdma-tutorial/<name>.patch (upstream addresses the peer
+# by InfiniBand LID, which the emulated NIC has no use for), and
+# copies the result into both guests, which build it. The guests
+# need no network access and no git.
+#
+# This play assumes exactly two VMs (ernic_vm_1 and ernic_vm_2)
+# with IPs already configured by guest-setup.yml.
+
+---
+- name: RDMA-Tutorial examples
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../group_vars/all.yml
+
+  vars:
+    vm1_ssh: >-
+      ssh {{ ernic_guest_ssh_id_opts }}
+      -o StrictHostKeyChecking=no
+      -o UserKnownHostsFile=/dev/null
+      -o BatchMode=yes
+      -o ConnectTimeout=15
+      -o ServerAliveInterval=10
+      -o ServerAliveCountMax=3
+      -p {{ ernic_vm_ssh_base_port | int }}
+      {{ ernic_vm_ssh_user }}@localhost
+    vm2_ssh: >-
+      ssh {{ ernic_guest_ssh_id_opts }}
+      -o StrictHostKeyChecking=no
+      -o UserKnownHostsFile=/dev/null
+      -o BatchMode=yes
+      -o ConnectTimeout=15
+      -o ServerAliveInterval=10
+      -o ServerAliveCountMax=3
+      -p {{ ernic_vm_ssh_base_port | int + 1 }}
+      {{ ernic_vm_ssh_user }}@localhost
+    vm1_ip: "{{ ernic_nic_subnet }}.10"
+
+    # Each example is pinned to its upstream commit, because the
+    # patch named after it is written against that commit. args are
+    # the example's positional arguments between the server name
+    # and the port: example 1 takes none, and example 2 takes
+    # msg_size and num_concurr_msgs.
+    tutorial_examples:
+      - name: send-recv
+        commit: 65893ec63c9eb004c310e25112c73a80d026c2c3
+        args: []
+      - name: write
+        commit: f73736ed7a7d496f9acfc899e5d1997e791718ed
+        args: [64, 1]
+    tutorial_patch_dir: >-
+      {{ ernic_project_root }}/ansible/playbooks/files/rdma-tutorial
+    tutorial_guest_dir: /tmp/rdma-tutorial
+    tutorial_results: []
+
+  tasks:
+    - name: Skip all tests if requested
+      ansible.builtin.meta: end_play
+      when: not (ernic_tests | bool)
+
+    # The examples time from the 1/10 mark, and report a throughput
+    # computed from an uninitialised start time if they never reach it.
+    - name: Assert the operation count is usable
+      ansible.builtin.assert:
+        that:
+          - ernic_rdma_tutorial_ops | int >= 10
+        fail_msg: >-
+          ernic_rdma_tutorial_ops is {{ ernic_rdma_tutorial_ops }}, but
+          must be at least 10.
+
+    # Detected per guest, by the emulated PCI tuple rather than by
+    # name; see scripts/find-rdma-device.sh. The examples otherwise
+    # open whichever device the guest lists first.
+    - name: Detect the RDMA device in each guest
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: >-
+          {{ item }} 'sh -s'
+          < {{ ernic_project_root }}/scripts/find-rdma-device.sh
+      loop:
+        - "{{ vm1_ssh }}"
+        - "{{ vm2_ssh }}"
+      loop_control:
+        label: "{{ 'vm1' if item == vm1_ssh else 'vm2' }}"
+      register: tutorial_dev_detect
+      changed_when: false
+      failed_when: false
+
+    - name: Assert an RDMA device was detected in each guest
+      ansible.builtin.assert:
+        that:
+          - tutorial_dev_detect.results[0].stdout | trim | length > 0
+          - tutorial_dev_detect.results[1].stdout | trim | length > 0
+        fail_msg: >-
+          No RDMA device matching PCI 0x1dd8:0x1002 subsystem
+          0x1dd8:0x5400 found on VM1 ('{{
+          tutorial_dev_detect.results[0].stdout | trim }}') or VM2 ('{{
+          tutorial_dev_detect.results[1].stdout | trim }}'), so the
+          driver did not bind or the port never came up.
+
+    - name: Set the RDMA device names
+      ansible.builtin.set_fact:
+        tutorial_dev_vm1: "{{ tutorial_dev_detect.results[0].stdout | trim }}"
+        tutorial_dev_vm2: "{{ tutorial_dev_detect.results[1].stdout | trim }}"
+
+    - name: Create a controller directory for the tutorial checkout
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: -rdma-tutorial
+      register: tutorial_tmp
+
+    - name: Run the examples
+      block:
+        - name: Run each example
+          ansible.builtin.include_tasks: tasks/rdma-tutorial-example.yml
+          loop: "{{ tutorial_examples }}"
+          loop_control:
+            loop_var: tutorial_example
+            index_var: tutorial_example_index
+            label: "{{ tutorial_example.name }}"
+
+      always:
+        - name: Remove the controller checkout
+          ansible.builtin.file:
+            path: "{{ tutorial_tmp.path }}"
+            state: absent
+
+    - name: RDMA-Tutorial summary
+      ansible.builtin.debug:
+        msg: >-
+          {{ ['=== RDMA-Tutorial Results ===']
+             + tutorial_results | map(attribute='line') | list }}
+
+    # Counted as well as checked, so an example that never got as far
+    # as recording a result cannot pass by omission.
+    - name: Fail if any example failed
+      ansible.builtin.assert:
+        that:
+          - tutorial_results | length == tutorial_examples | length
+          - tutorial_results | rejectattr('pass') | list | length == 0
+        fail_msg: >-
+          RDMA-Tutorial examples failed:
+          {{ tutorial_results | rejectattr('pass')
+             | map(attribute='name') | join(', ') }}. Check the output
+          above for details.

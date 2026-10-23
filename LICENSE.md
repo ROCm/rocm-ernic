@@ -26,8 +26,9 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 The MIT terms above cover the build system and the deployment and
 automation code: the `CMakeLists.txt` files, `flake.nix`, `cmake/`,
 `docs/`, `ansible/` apart from the patch series it carries in
-`ansible/files/patches/`, `ci/`, `.github/`, `prometheus/`, `udev/`,
-`scripts/`, `service/`, `tools/`, and `nix/` apart from the fuzz harnesses
+`ansible/files/patches/` and `ansible/playbooks/files/rdma-tutorial/`,
+`ci/`, `.github/`, `prometheus/`, `udev/`, `scripts/`, `service/`,
+`tools/`, and `nix/` apart from the fuzz harnesses
 below. They also cover the headers in `shared/`, which carry their own
 third-party notices where they were derived from other projects, and the
 READMEs in `ansible/files/patches/`.
@@ -58,6 +59,11 @@ and are licensed under the terms of the files they modify:
   copy of the uAPI header in `kernel-headers/rdma/ionic-abi.h`, which is
   `GPL-2.0 WITH Linux-syscall-note`.
 
+The patches under `ansible/playbooks/files/rdma-tutorial/` modify the
+examples of [RDMA-Tutorial](https://github.com/jcxue/RDMA-Tutorial), which
+is `Apache-2.0`, and are `Apache-2.0` too. Each one says at its head which
+upstream commit it applies to and what it changes.
+
 `ansible/files/scripts/setup-ionic-dkms.sh` is MIT, but the `dkms.conf` it
 writes for the patched ionic drivers is `GPL-2.0`, like the drivers it
 builds. The
@@ -67,5 +73,6 @@ The groupings above are a summary; the per-file notice is authoritative.
 Every `.c` and `.h` file carries an `SPDX-License-Identifier` tag. Some
 other files -- build fragments, dotfiles, documentation, data -- carry no
 notice at all and take the license of the directory they sit in. The
-patches carry no notice of their own; the SPDX tag on each file they
-modify, in its own project, is authoritative for them.
+patches under `ansible/files/patches/` carry no notice of their own; the
+SPDX tag on each file they modify, in its own project, is authoritative
+for them.

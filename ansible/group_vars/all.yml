@@ -227,6 +227,19 @@ ernic_perf_reliability_size: 65536
 ernic_perf_pingpong_iters: 1
 ernic_perf_pingpong_size: 4096
 
+# ── RDMA-Tutorial examples ──────────────────────
+# playbooks/tutorial-tests.yml; the examples and the commits
+# they are pinned to are listed there.  Each example runs
+# ernic_rdma_tutorial_ops operations, the first tenth as
+# warm-up: upstream's 5 and 10 million take tens of minutes over
+# the emulated NIC.  The timeout bounds each server and client
+# process, in seconds, and the examples listen on consecutive
+# ports from ernic_rdma_tutorial_port.
+ernic_rdma_tutorial_repo: "https://github.com/jcxue/RDMA-Tutorial.git"
+ernic_rdma_tutorial_ops: 10000
+ernic_rdma_tutorial_timeout: 120
+ernic_rdma_tutorial_port: 18600
+
 # ── GPU passthrough (vfio-pci) ──────────────────
 # Off: the pinned image is flavour "ionic" and ships no ROCm, so
 # the rocm-xio tasks in ernic_guest_setup have nothing to drive.

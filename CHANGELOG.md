@@ -487,6 +487,18 @@
   accept. The value is decoded big-endian and right-aligned, and the caller
   is told how many bytes the digits needed so it can refuse one wider than
   the field it is destined for instead of truncating it.
+* `ansible/playbooks/tutorial-tests.yml` runs examples 1 (RC send/recv) and
+  2 (RC RDMA write) from [RDMA-Tutorial](https://github.com/jcxue/RDMA-Tutorial)
+  between two guests, server in one and client in the other. It is
+  `--tags tutorial` in `site.yml` and `ci-site.yml`, part of `functional`
+  in `ci-site.yml`, and runs after the sanity play in the two-VM job of
+  `system-tests.yml` and in `ci/jobs/vm-functional.sh`. The examples
+  address the peer by InfiniBand LID, so the play applies a patch from
+  `ansible/playbooks/files/rdma-tutorial/` that switches them to RoCE GIDs.
+  The controller clones the tutorial from GitHub and copies the patched
+  sources into the guests, which then need no network access. Upstream's
+  5 and 10 million operations take tens of minutes over the emulated NIC,
+  so each example runs `ernic_rdma_tutorial_ops` (default 10000) instead.
 * The ionic NIC publishes its port (MAC) statistics, the 89 counters
   `ethtool -S` shows as `frames_*` and `octets_*`, which the driver used to
   list as 0: frames and octets by result, by unicast, multicast and
@@ -720,6 +732,16 @@
 * The server's startup line `Added MSI-X capability at offset` now prints
   the offset in hex. It printed the decimal value after a `0x` prefix, so a
   capability at `0x40` was reported at `0x64`.
+* The self-hosted CI's instances (`ci/jobs/vm-up.sh`) now advertise each
+  guest's IPv4 address as a GID, as well as the link-local one the launcher
+  derives from its MAC. The mesh routes a destination GID only to the
+  instance that advertised it, so a test addressing the peer by its
+  IPv4-mapped GID, as `vm-functional.sh`'s `rc-pingpong` probe, the
+  perftest runs and the RDMA-Tutorial examples do, failed to bring its QP to
+  RTR. Each instance's MAC is now pinned to `02:a0:d1:00:00:<n>`, as in the
+  hosted two-VM job, so its link-local GID can be named; an `ERNIC_MAC_<n>`
+  or `ERNIC_GUEST_GIDS_<n>` already in the environment is kept. The guests'
+  subnet is `CI_NIC_SUBNET` (default `192.168.200`).
 * The `nvmeof` backend now completes a shutdown that the host requests by
   setting `CC.SHN` with `CC.EN` still set, as the NVMe specification has it,
   and keeps reporting it until a reset clears `CC.EN`. It reported
