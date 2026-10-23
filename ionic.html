@@ -381,7 +381,10 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#nic-profiles">NIC Profiles</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ethernet-and-tcp-ip">Ethernet and TCP/IP</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#two-guests-on-one-bridge">Two Guests on One Bridge</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#statistics">Statistics</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#statistics">Statistics</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#port-mac-statistics">Port (MAC) statistics</a></li>
+</ul>
+</li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-driver-patched-upstream-ionic">Guest Driver: Patched Upstream ionic</a><ul class="pst-show_toc_level nav section-nav flex-column">
@@ -834,6 +837,66 @@ The guest’s separate RDMA <code class="docutils literal notranslate"><span cla
 the device serves from the admin queue rather than from
 this block, and how the two counter sets compare with
 the silicon, are in <a class="reference internal" href="monitoring.html"><span class="doc">Prometheus Monitoring and Grafana Dashboard</span></a>.</p>
+<section id="port-mac-statistics">
+<h4>Port (MAC) statistics<a class="headerlink" href="#port-mac-statistics" title="Link to this heading">#</a></h4>
+<p>At <code class="docutils literal notranslate"><span class="pre">PORT_INIT</span></code> the driver hands the device a <code class="docutils literal notranslate"><span class="pre">struct</span>
+<span class="pre">ionic_port_info</span></code>. Its <code class="docutils literal notranslate"><span class="pre">struct</span> <span class="pre">ionic_port_stats</span></code> (byte 576,
+89 counters) is what <code class="docutils literal notranslate"><span class="pre">ethtool</span> <span class="pre">-S</span></code> lists under the port
+names such as <code class="docutils literal notranslate"><span class="pre">frames_rx_ok</span></code> and <code class="docutils literal notranslate"><span class="pre">frames_rx_64b</span></code>. The
+emulator counts these at the wire, the way a MAC sees it, and
+publishes them on the same tick as the LIF block.</p>
+<p>A frame’s wire length is its length padded to 60 bytes, as a
+sending MAC pads it, plus the 4-byte FCS. A 42-byte ARP from
+the TAP is therefore a 64-byte frame. What moves:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 40.0%" />
+<col style="width: 60.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Event</p></th>
+<th class="head"><p>Counters</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>frame sent</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">frames_tx_all</span></code>, <code class="docutils literal notranslate"><span class="pre">_ok</span></code>, <code class="docutils literal notranslate"><span class="pre">octets_tx_total</span></code>,
+<code class="docutils literal notranslate"><span class="pre">_ok</span></code>, the size bucket, the cast class</p></td>
+</tr>
+<tr class="row-odd"><td><p>frame received</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">frames_rx_all</span></code>, <code class="docutils literal notranslate"><span class="pre">_ok</span></code>, <code class="docutils literal notranslate"><span class="pre">octets_rx_all</span></code>, <code class="docutils literal notranslate"><span class="pre">_ok</span></code>,
+the size bucket, the cast class</p></td>
+</tr>
+<tr class="row-even"><td><p>VLAN tag (0x8100, or a 0x88a8 outer tag)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">frames_rx_vlan_good</span></code> or <code class="docutils literal notranslate"><span class="pre">frames_tx_vlan</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">frames_{rx,tx}_pri_N</span></code> from the tag’s PCP; untagged
+frames count as <code class="docutils literal notranslate"><span class="pre">_pri_0</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>received frame over the port’s maximum
+(<code class="docutils literal notranslate"><span class="pre">link.mtu_max</span></code> + 18)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">frames_rx_too_long</span></code>, <code class="docutils literal notranslate"><span class="pre">_oversized</span></code>, <code class="docutils literal notranslate"><span class="pre">_bad_all</span></code>;
+the MAC drops it and the LIF never sees it</p></td>
+</tr>
+<tr class="row-even"><td><p>received with no buffer posted, or the mesh inbox full</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">frames_rx_dropped</span></code>, on top of the counters for a
+received frame: the MAC took it in, the LIF dropped it</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The size buckets run 64, 65–127, 128–255, 256–511,
+512–1023, 1024–1518, 1519–2047, 2048–4095, 4096–8191,
+8192–9215 and 9216 and up (<code class="docutils literal notranslate"><span class="pre">_other</span></code>), so <code class="docutils literal notranslate"><span class="pre">ping</span> <span class="pre">-s</span> <span class="pre">1472</span></code> lands in
+<code class="docutils literal notranslate"><span class="pre">frames_rx_1024b_1518b</span></code>. Because every frame is padded,
+<code class="docutils literal notranslate"><span class="pre">frames_rx_undersized</span></code> and <code class="docutils literal notranslate"><span class="pre">_less_than_64b</span></code> stay zero, as
+do the counters only a real wire can move: bad FCS, jabber,
+fragments and pause frames.</p>
+<p><code class="docutils literal notranslate"><span class="pre">PORT_RESET</span></code> stops the port writes but not the LIF ones,
+and <code class="docutils literal notranslate"><span class="pre">LIF_RESET</span></code> does the reverse. <code class="docutils literal notranslate"><span class="pre">PORT_RESET</span></code> also zeroes
+the port counters, so the next <code class="docutils literal notranslate"><span class="pre">PORT_INIT</span></code> starts from 0;
+the LIF counters are kept. The stats file has a
+<code class="docutils literal notranslate"><span class="pre">Port</span> <span class="pre">Statistics</span></code> section, one line per counter.</p>
+</section>
 </section>
 </section>
 <section id="guest-driver-patched-upstream-ionic">
@@ -1121,7 +1184,10 @@ reports an unknown link speed and width; this is cosmetic</p></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#nic-profiles">NIC Profiles</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ethernet-and-tcp-ip">Ethernet and TCP/IP</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#two-guests-on-one-bridge">Two Guests on One Bridge</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#statistics">Statistics</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#statistics">Statistics</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#port-mac-statistics">Port (MAC) statistics</a></li>
+</ul>
+</li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-driver-patched-upstream-ionic">Guest Driver: Patched Upstream ionic</a><ul class="pst-show_toc_level nav section-nav flex-column">
