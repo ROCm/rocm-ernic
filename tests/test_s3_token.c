@@ -18,10 +18,10 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <inttypes.h>
 #include <limits.h>
 #include <stdarg.h>
 #include <stdbool.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -96,11 +96,9 @@ static void test_decode_reference(void)
     if (t.rkey != 0xdeadbeefu)
         fail(name, "rkey 0x%x, want 0xdeadbeef", t.rkey);
     if (t.remote_addr != 0x00007f1122334000ull)
-        fail(name, "addr 0x%llx, want 0x7f1122334000",
-             (unsigned long long)t.remote_addr);
+        fail(name, "addr 0x%" PRIx64 ", want 0x7f1122334000", t.remote_addr);
     if (t.length != 0x100000ull)
-        fail(name, "length 0x%llx, want 0x100000",
-             (unsigned long long)t.length);
+        fail(name, "length 0x%" PRIx64 ", want 0x100000", t.length);
     if (t.port_num != 1)
         fail(name, "port_num %u, want 1", t.port_num);
     if (t.lid != 0)
@@ -168,11 +166,9 @@ static void test_parse_header_three_field(void)
         return;
     }
     if (t.remote_addr != 0x7f2000000000ull)
-        fail(name, "addr override not applied: 0x%llx",
-             (unsigned long long)t.remote_addr);
+        fail(name, "addr override not applied: 0x%" PRIx64, t.remote_addr);
     if (t.length != 0x40000ull)
-        fail(name, "length override not applied: 0x%llx",
-             (unsigned long long)t.length);
+        fail(name, "length override not applied: 0x%" PRIx64, t.length);
     if (t.rkey != 0xdeadbeefu)
         fail(name, "overrides clobbered rkey");
 

@@ -228,8 +228,8 @@ static ssize_t bar0_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
         (size_t)offset + count > IONIC_BAR0_TOTAL_SIZE) {
         vfu_log(vfu_ctx, LOG_ERR,
                 "ionic BAR0 access out of bounds or straddling the "
-                "register/MSI-X split: offset=%#lx count=%zu",
-                (unsigned long)offset, count);
+                "register/MSI-X split: offset=%#" PRIx64 " count=%zu",
+                (uint64_t)offset, count);
         errno = EINVAL;
         return -1;
     }

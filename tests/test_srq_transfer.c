@@ -33,6 +33,7 @@
  */
 
 #include <errno.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -262,9 +263,8 @@ int main(void)
         }
         for (int i = 0; i < n; i++) {
             if (wc[i].status != IBV_WC_SUCCESS) {
-                fprintf(stderr, "completion %d: %s (wr_id=0x%llx)\n", i,
-                        ibv_wc_status_str(wc[i].status),
-                        (unsigned long long)wc[i].wr_id);
+                fprintf(stderr, "completion %d: %s (wr_id=0x%" PRIx64 ")\n", i,
+                        ibv_wc_status_str(wc[i].status), wc[i].wr_id);
                 goto out;
             }
             if (wc[i].opcode == IBV_WC_SEND) {
@@ -274,9 +274,10 @@ int main(void)
                 recv_len = wc[i].byte_len;
                 if (wc[i].wr_id != 0xBEEF) {
                     fprintf(stderr,
-                            "recv completion carries wr_id 0x%llx, expected "
+                            "recv completion carries wr_id 0x%" PRIx64
+                            ", expected "
                             "0xBEEF -- the WQE did not come from the SRQ\n",
-                            (unsigned long long)wc[i].wr_id);
+                            wc[i].wr_id);
                     goto out;
                 }
             }

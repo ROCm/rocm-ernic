@@ -19,6 +19,7 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -289,9 +290,9 @@ int main(int argc, char **argv)
     if (*result == 100 && *remote_word == 123) {
         printf("ok   %-16s 100 + 23 -> 123, returned 100\n", "ATOMIC FA");
     } else {
-        printf("FAIL %-16s returned %lu, memory %lu (want 100 / 123)\n",
-               "ATOMIC FA", (unsigned long)*result,
-               (unsigned long)*remote_word);
+        printf("FAIL %-16s returned %" PRIu64 ", memory %" PRIu64
+               " (want 100 / 123)\n",
+               "ATOMIC FA", *result, *remote_word);
         failures++;
     }
 
@@ -303,9 +304,9 @@ int main(int argc, char **argv)
     if (*result == 123 && *remote_word == 777) {
         printf("ok   %-16s 123 == 123 -> 777, returned 123\n", "ATOMIC CS hit");
     } else {
-        printf("FAIL %-16s returned %lu, memory %lu (want 123 / 777)\n",
-               "ATOMIC CS hit", (unsigned long)*result,
-               (unsigned long)*remote_word);
+        printf("FAIL %-16s returned %" PRIu64 ", memory %" PRIu64
+               " (want 123 / 777)\n",
+               "ATOMIC CS hit", *result, *remote_word);
         failures++;
     }
 
@@ -318,9 +319,9 @@ int main(int argc, char **argv)
         printf("ok   %-16s 777 != 5 -> unchanged, returned 777\n",
                "ATOMIC CS miss");
     } else {
-        printf("FAIL %-16s returned %lu, memory %lu (want 777 / 777)\n",
-               "ATOMIC CS miss", (unsigned long)*result,
-               (unsigned long)*remote_word);
+        printf("FAIL %-16s returned %" PRIu64 ", memory %" PRIu64
+               " (want 777 / 777)\n",
+               "ATOMIC CS miss", *result, *remote_word);
         failures++;
     }
 

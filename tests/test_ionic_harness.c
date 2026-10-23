@@ -961,8 +961,9 @@ static void run_rc_case(const char *test, struct rc *r, const struct rc_case *c,
             check(test, e.type == IH_CQE_TYPE_RECV && e.qid == RC_QP_B,
                   "%s: receive completion type %u qid %u", c->what, e.type,
                   e.qid);
-            check(test, e.wqe_id == recv_id, "%s: receive wqe_id %lu, not %lu",
-                  c->what, (unsigned long)e.wqe_id, (unsigned long)recv_id);
+            check(test, e.wqe_id == recv_id,
+                  "%s: receive wqe_id %" PRIu64 ", not %" PRIu64, c->what,
+                  e.wqe_id, recv_id);
             check(test, e.recv_op == op && e.src_qpn == RC_QP_A,
                   "%s: receive op %u from QP %u", c->what, e.recv_op,
                   e.src_qpn);
@@ -1162,11 +1163,11 @@ static void atomic(const char *test, struct rc *r, uint8_t op, uint64_t add,
         return;
 
     ih_mr_read(h, &r->mra, result, &v, 8);
-    check(test, v == want_old, "atomic returned %lu, expected %lu",
-          (unsigned long)v, (unsigned long)want_old);
+    check(test, v == want_old, "atomic returned %" PRIu64 ", expected %" PRIu64,
+          v, want_old);
     ih_mr_read(h, &r->mrb, target, &v, 8);
-    check(test, v == want_new, "atomic left %lu, expected %lu",
-          (unsigned long)v, (unsigned long)want_new);
+    check(test, v == want_new, "atomic left %" PRIu64 ", expected %" PRIu64, v,
+          want_new);
 }
 
 static void test_atomic_and_reg_mr(void)
@@ -1671,8 +1672,8 @@ static void test_srq(void)
               "send %u did not complete", i);
         if (check(T, ih_cq_poll(&h, &cqf, &e), "SRQ receive %u missing", i)) {
             check(T, !e.error && e.qid == 30 && e.wqe_id == ids[i],
-                  "SRQ receive %u completed for QP %u WQE %lu", i, e.qid,
-                  (unsigned long)e.wqe_id);
+                  "SRQ receive %u completed for QP %u WQE %" PRIu64, i, e.qid,
+                  e.wqe_id);
             ih_mr_read(&h, &mr, mr.va + 512 + 64 * i, got, sizeof(got));
             check(T, memcmp(got, v, sizeof(v)) == 0,
                   "SRQ receive %u carried the wrong data", i);
@@ -2161,8 +2162,8 @@ static void test_p4_port(void)
     check(T, estats.frames_out[P4_PORT_UPLINK] == 1,
           "the pipeline did not forward to the uplink");
     check(T, pstats.egress_errors == 1,
-          "a forward with no host backend should fail, egress_errors=%llu",
-          (unsigned long long)pstats.egress_errors);
+          "a forward with no host backend should fail, egress_errors=%" PRIu64,
+          pstats.egress_errors);
     check(T, pstats.to_net == 0,
           "a frame left through a backend that is not "
           "attached");

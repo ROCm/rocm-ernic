@@ -97,9 +97,16 @@ cmake --build build
   (`<stdatomic.h>`) and threads (`qemu/thread.h` over pthreads) are
   available; see [Thread safety](#thread-safety).
 - **Use explicitly sized types**: `uint32_t`, `uint64_t`, `size_t` for
-  sizes, never `long` for a wire or 64-bit value. Print with `PRIu64`,
-  `PRIx32`, `%zu` (not `%lu`/`%ld`); write constants with `UINT64_C()`,
-  not `L`/`UL`.
+  sizes, never `long` for a wire or 64-bit value. Write constants with
+  `UINT64_C()`, not `L`/`UL`.
+- **Print fixed-width types with `<inttypes.h>` macros**: `"%" PRIu64`,
+  `"%#" PRIx64`, `PRId64`, `PRIx32`; `%zu` for `size_t`. Never
+  `%lu`/`%lx`/`%llu` for a `uint64_t`, and don't cast it to `unsigned
+  long` or `unsigned long long` to fit one: `uint64_t` is `unsigned long`
+  on x86-64 Linux, so an uncast `%lx` compiles cleanly here but is wrong
+  where it isn't, and a cast just hides the type. `%ld` is right only for
+  a real `long` (e.g. `ftell()`). A signed offset such as `loff_t` is cast
+  to `uint64_t` only where it's known to be non-negative.
 - **Parse numbers only with [`src/parse_int.h`](src/parse_int.h)**
   (`ernic_parse_int()`, `_u64()`, `_size()`, `_port()`; `_u64_span()`
   for a number inside a longer string), never `ato*`, `strto*`, or

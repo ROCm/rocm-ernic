@@ -241,7 +241,7 @@ static int poll_completions(struct test_context *ctx, int expected_sends,
                 return -1;
             }
             ctx->completed_sends++;
-            printf("  Send completion: wr_id=%lu, bytes=%u\n", wc.wr_id,
+            printf("  Send completion: wr_id=%" PRIu64 ", bytes=%u\n", wc.wr_id,
                    wc.byte_len);
             total_polled++;
         }
@@ -255,7 +255,7 @@ static int poll_completions(struct test_context *ctx, int expected_sends,
                 return -1;
             }
             ctx->completed_recvs++;
-            printf("  Recv completion: wr_id=%lu, bytes=%u\n", wc.wr_id,
+            printf("  Recv completion: wr_id=%" PRIu64 ", bytes=%u\n", wc.wr_id,
                    wc.byte_len);
             total_polled++;
         }

@@ -475,9 +475,9 @@ ssize_t ionic_eth_emu_bar2_access(struct ionic_eth_emu *emu, char *buf,
         int qtype = (int)((offset % IONIC_DB_PAGE_SIZE) / 8);
 
         vfu_log(emu->vfu_ctx, LOG_DEBUG,
-                "ionic_eth_emu: doorbell BAR2 off=%#lx qtype=%d qid=%u "
+                "ionic_eth_emu: doorbell BAR2 off=%#" PRIx64 " qtype=%d qid=%u "
                 "ring=%u p_index=%u",
-                (unsigned long)offset, qtype, qid, ring, p_index);
+                (uint64_t)offset, qtype, qid, ring, p_index);
 
         /* Ethernet logical queues (adminq, notifyq, Rx, Tx) own doorbell
          * slots 0-4; the RDMA hardware qtypes start at 5, so there is no
@@ -547,10 +547,9 @@ void ionic_eth_emu_publish_stats(struct ionic_eth_emu *emu, uint64_t now_ms)
         eth_dma_rw(emu->vfu_ctx, pa, block, sizeof(block), true) < 0) {
         if (!emu->stats_write_failed)
             vfu_log(emu->vfu_ctx, LOG_WARNING,
-                    "ionic_eth_emu: LIF stats write to %#lx failed; retrying "
-                    "every %u ms",
-                    (unsigned long)pa,
-                    (unsigned)emu->profile.stats.interval_ms);
+                    "ionic_eth_emu: LIF stats write to %#" PRIx64
+                    " failed; retrying every %u ms",
+                    pa, (unsigned)emu->profile.stats.interval_ms);
         emu->stats_write_failed = true;
         return;
     }
@@ -1101,15 +1100,16 @@ void ionic_eth_emu_handle_port_init(struct ionic_eth_emu *emu,
 
         if (eth_dma_rw(emu->vfu_ctx, info_pa, info, sizeof(info), true) < 0)
             vfu_log(emu->vfu_ctx, LOG_ERR,
-                    "ionic_eth_emu: PORT_INIT: port info write to %#lx failed",
-                    (unsigned long)info_pa);
+                    "ionic_eth_emu: PORT_INIT: port info write to %#" PRIx64
+                    " failed",
+                    info_pa);
     }
 
     comp[0] = 0; /* status OK */
 
     vfu_log(emu->vfu_ctx, LOG_INFO,
-            "ionic_eth_emu: PORT_INIT speed=%uMbps info_pa=%#lx",
-            (unsigned)emu->profile.link.speed_mbps, (unsigned long)info_pa);
+            "ionic_eth_emu: PORT_INIT speed=%uMbps info_pa=%#" PRIx64,
+            (unsigned)emu->profile.link.speed_mbps, info_pa);
 }
 
 /* -------------------------------------------------------------------------
@@ -1146,8 +1146,8 @@ void ionic_eth_emu_handle_lif_init(struct ionic_eth_emu *emu,
                        status, sizeof(status), true) < 0)
             vfu_log(emu->vfu_ctx, LOG_ERR,
                     "ionic_eth_emu: LIF_INIT: link status write for info base "
-                    "%#lx failed",
-                    (unsigned long)info_pa);
+                    "%#" PRIx64 " failed",
+                    info_pa);
     }
 
     emu->lif_initialized = true;
@@ -1315,10 +1315,9 @@ void ionic_eth_emu_handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
      * down, so it is logged as one rather than shifted by. */
     vfu_log(emu->vfu_ctx, LOG_INFO,
             "ionic_eth_emu: Q_INIT qtype=%u index=%u intr=%u depth=2^%u "
-            "ring=%#lx cq=%#lx",
-            qtype, index, intr_index, ring_size,
-            (unsigned long)le64toh(ring_base),
-            (unsigned long)le64toh(cq_ring_base));
+            "ring=%#" PRIx64 " cq=%#" PRIx64,
+            qtype, index, intr_index, ring_size, (uint64_t)le64toh(ring_base),
+            (uint64_t)le64toh(cq_ring_base));
 
     if (qtype < IONIC_QTYPE_ETH_MAX && index < eth_qcount(emu) &&
         ring_size < 16) {

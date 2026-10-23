@@ -20,7 +20,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-#include <stdint.h>
+#include <inttypes.h>
 #include <stdbool.h>
 #include <string.h>
 #include <stdlib.h>
@@ -285,7 +285,7 @@ static void handle_create_eq(struct ionic_rdma_devcmd_state *s,
 
     vfu_log(s->vfu_ctx, LOG_INFO,
             "ionic_rdma_devcmd: CREATE_EQ qid=%u intr=%u depth=2^%u "
-            "dma=%#lx",
+            "dma=%#" PRIx64,
             qid, cid, s->eq[idx].depth_log2, dma_addr);
 
     comp[0] = 0; /* status OK */
@@ -328,7 +328,7 @@ static void handle_create_cq(struct ionic_rdma_devcmd_state *s,
 
     vfu_log(s->vfu_ctx, LOG_INFO,
             "ionic_rdma_devcmd: CREATE_CQ (admin) qid=%u depth=2^%u "
-            "dma=%#lx",
+            "dma=%#" PRIx64,
             qid, s->pending_cq_depth_log2, dma_addr);
 
     comp[0] = 0;
@@ -386,7 +386,7 @@ static void handle_create_adminq(struct ionic_rdma_devcmd_state *s,
 
     vfu_log(s->vfu_ctx, LOG_INFO,
             "ionic_rdma_devcmd: CREATE_ADMINQ qid=%u cq_id=%u depth=2^%u "
-            "dma=%#lx cq_dma=%#lx",
+            "dma=%#" PRIx64 " cq_dma=%#" PRIx64,
             qid, s->aq[idx].cq_id, s->aq[idx].depth_log2, dma_addr,
             s->aq[idx].cq_dma_addr);
 
@@ -507,12 +507,12 @@ int ionic_rdma_devcmd_post_cq_event(struct ionic_rdma_devcmd_state *s,
     uint64_t gpa = eq->dma_addr + (uint64_t)eq->prod * (1u << eq->stride_log2);
 
     vfu_log(s->vfu_ctx, LOG_DEBUG,
-            "ionic_rdma_devcmd: EQE eq=%u cq=%u prod=%u color=%u gpa=%#lx",
-            eq_id, cq_id, eq->prod, eq->color, (unsigned long)gpa);
+            "ionic_rdma_devcmd: EQE eq=%u cq=%u prod=%u color=%u gpa=%#" PRIx64,
+            eq_id, cq_id, eq->prod, eq->color, gpa);
 
     if (rdma_dma_write(s->vfu_ctx, gpa, &be_evt, sizeof(be_evt)) < 0) {
         vfu_log(s->vfu_ctx, LOG_ERR,
-                "ionic_rdma_devcmd: EQE write to %#lx failed", gpa);
+                "ionic_rdma_devcmd: EQE write to %#" PRIx64 " failed", gpa);
         return -EIO;
     }
 
