@@ -4,7 +4,7 @@
 # socket, run a command (typically a qemu-vm.nix launcher using
 # nixosModules.ernic-guest) with ERNIC_SOCKET exported, then stop the server.
 #
-#   ernic-run [--socket PATH] [--backend SPEC] [--stats-file F] [--log-file F] -- CMD [ARGS...]
+#   ernic-run [--socket PATH] [--backend SPEC] [--mac ADDR] [--stats-file F] [--log-file F] -- CMD [ARGS...]
 #
 # Exit status is CMD's. It is non-zero if the server never creates its
 # socket, or exits before CMD finishes.
@@ -16,7 +16,7 @@ pkgs.writeShellApplication {
   runtimeInputs = [ rocm-ernic pkgs.coreutils pkgs.util-linux ];
   text = ''
     usage() {
-      echo 'usage: ernic-run [--socket PATH] [--backend SPEC] [--stats-file F] [--log-file F] -- CMD [ARGS...]' >&2
+      echo 'usage: ernic-run [--socket PATH] [--backend SPEC] [--mac ADDR] [--stats-file F] [--log-file F] -- CMD [ARGS...]' >&2
       exit 2
     }
     socket=""
@@ -45,7 +45,7 @@ pkgs.writeShellApplication {
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --socket) [ "$#" -ge 2 ] || usage; socket=$2; shift 2 ;;
-        --backend|--stats-file|--log-file) [ "$#" -ge 2 ] || usage; server_args+=("$1" "$2"); shift 2 ;;
+        --backend|--mac|--stats-file|--log-file) [ "$#" -ge 2 ] || usage; server_args+=("$1" "$2"); shift 2 ;;
         --) shift; break ;;
         *) usage ;;
       esac

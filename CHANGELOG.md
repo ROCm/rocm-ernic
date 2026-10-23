@@ -487,6 +487,14 @@
   accept. The value is decoded big-endian and right-aligned, and the caller
   is told how many bytes the digits needed so it can refuse one wider than
   the field it is destined for instead of truncating it.
+* `nix run .#ionic-vm-pair` (x86_64 hosts) boots two NixOS guests, each with
+  its own emulated ionic NIC, joined by the TCP backend so RDMA between them
+  goes through the two servers; `ernic-pair-pingpong` in a guest runs
+  `ibv_rc_pingpong` against the other, and `--ssh-port N` forwards ssh to
+  both (on N and N+1). `nix run .#run-ionic-pair-test` checks RDMA RC
+  ping-pong both ways. Neither needs root, a TAP or RDMA hardware.
+  `ernic-run` gains `--mac`. The Nix Check workflow builds the new
+  `pair-launchers` check. Documented in `nix/README.md`.
 
 ### Changed
 
