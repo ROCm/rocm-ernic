@@ -700,6 +700,11 @@
 
 ### Fixed
 
+* If the server opened its `--log-file` but couldn't make it its stdout or
+  stderr, it carried on, writing some or all of its log to wherever it was
+  started with instead. It now says why on the stderr it inherited and
+  exits non-zero. `server-lifecycle` covers it, except in sanitizer builds
+  and under valgrind, where it can't set up the failure.
 * `--backend tcp`, with no `manager:` or `worker:` role, crashed the server
   with a segmentation fault. The TCP backend now refuses it with "TCP
   backend: No config" and the server exits non-zero. `server-lifecycle`

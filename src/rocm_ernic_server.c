@@ -1725,8 +1725,14 @@ int main(int argc, char *argv[])
         if (fd < 0) {
             err(EXIT_FAILURE, "Failed to open log file: %s", log_file_path);
         }
-        dup2(fd, STDOUT_FILENO);
-        dup2(fd, STDERR_FILENO);
+        /* stderr changes only if both succeed, so on failure the reason
+         * still goes to the inherited one */
+        if (dup2(fd, STDOUT_FILENO) < 0 || dup2(fd, STDERR_FILENO) < 0) {
+            warn("Failed to redirect output to log file: %s", log_file_path);
+            close(fd);
+            dev_free(dev);
+            return EXIT_FAILURE;
+        }
         close(fd);
     }
 

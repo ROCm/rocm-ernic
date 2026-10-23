@@ -44,6 +44,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -52,6 +53,10 @@
 #include <sys/xattr.h>
 #include <time.h>
 #include <unistd.h>
+
+#ifdef ERNIC_HAVE_VALGRIND_H
+#include <valgrind/valgrind.h>
+#endif
 
 #define SOCKET_WAIT_MS 20000 /* sanitizer builds start slowly */
 #define EXIT_WAIT_MS   20000
@@ -451,6 +456,8 @@ struct lifecycle_case {
     bool fake_manager; /* hold @PORT@ open as a manager that never answers */
     bool set_umask;    /* run the server under umask, not the inherited one */
     mode_t umask;      /* the umask for set_umask */
+    bool fd_limit;     /* run the server with stdin closed and RLIMIT_NOFILE 1,
+                          so the one file it can open is fd 0 */
     enum dir_acl acl;  /* put the socket in a directory with this ACL */
     enum sock_pre pre; /* what's at the socket's path beforehand */
     enum sock_group group;
@@ -746,6 +753,28 @@ static const struct lifecycle_case cases[] = {
      .want_dropped = 0,
      .want_shutdown = 0,
      .want_line = "Usage:"},
+    /* The log file opens as fd 0, and fd 1 is past the limit, so dup2()
+     * can't make it stdout.  stderr is still the inherited one, the row's
+     * log. */
+    {.category = "negative",
+     .description = "--log-file opens but can't be made stdout",
+     .expected = "the server says why on its inherited stderr and exits "
+                 "non-zero before creating the socket",
+     .backend = "loopback",
+     .fd_limit = true,
+     .opt = "--log-file",
+     .opt_arg = "/dev/null",
+     .want_socket = false,
+     .want_gone = true,
+     .settle = false,
+     .action = IDLE,
+     .clients = 0,
+     .sig = 0,
+     .sigs = 0,
+     .want_exit = -1,
+     .want_dropped = 0,
+     .want_shutdown = 0,
+     .want_line = "Failed to redirect output to log file"},
     /* A default ACL on the directory is copied onto the socket, and a named
      * entry in it lets that user connect whatever the mode says, so the
      * server refuses to serve the socket.  It checks before --socket-group
@@ -1102,6 +1131,23 @@ static const struct lifecycle_case cases[] = {
 static const char *const g_server = ERNIC_SERVER_PATH;
 
 /*
+ * Whether the server can run under a low RLIMIT_NOFILE, which fd_limit rows
+ * need.  A sanitizer's runtime hangs at startup with it below 4.  Valgrind
+ * doesn't pass a change to the limit on to the kernel, so a server started
+ * from under it never gets the limit.
+ */
+static bool fd_limit_works(void)
+{
+#ifdef ERNIC_SERVER_SANITIZED
+    return false;
+#elif defined(ERNIC_HAVE_VALGRIND_H)
+    return RUNNING_ON_VALGRIND == 0;
+#else
+    return true;
+#endif
+}
+
+/*
  * The scratch directory.  It's always under /tmp, not $TMPDIR: the server's
  * socket goes in it, and a socket path has to fit the 108 bytes of sun_path.
  */
@@ -1213,9 +1259,21 @@ static pid_t start_server(const struct lifecycle_case *c, const char *backend,
             environ = env;
         if (c->set_umask)
             umask(c->umask);
-        dup2(fd, STDOUT_FILENO);
-        dup2(fd, STDERR_FILENO);
+        if (dup2(fd, STDOUT_FILENO) < 0 || dup2(fd, STDERR_FILENO) < 0)
+            _exit(126);
         close(fd);
+        /* getrlimit() and setrlimit() aren't on POSIX's async-signal-safe
+         * list, but glibc's are bare system calls that take no lock */
+        if (c->fd_limit) {
+            struct rlimit lim;
+
+            close(STDIN_FILENO);
+            if (getrlimit(RLIMIT_NOFILE, &lim) < 0)
+                _exit(126);
+            lim.rlim_cur = 1;
+            if (setrlimit(RLIMIT_NOFILE, &lim) < 0)
+                _exit(126);
+        }
         /* The options a row may add, packed to the front, since execl()
          * stops at the first NULL */
         const char *opt[4] = {NULL, NULL, NULL, NULL};
@@ -1394,6 +1452,11 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
     if (c->pre == PRE_NO_SEARCH && geteuid() == 0) {
         printf("ok   %s: %s; not applicable as root\n", c->category,
                c->description);
+        return 0;
+    }
+    if (c->fd_limit && !fd_limit_works()) {
+        printf("ok   %s: %s; not applicable with a sanitizer or valgrind\n",
+               c->category, c->description);
         return 0;
     }
 
