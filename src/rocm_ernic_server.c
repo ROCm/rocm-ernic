@@ -1223,10 +1223,27 @@ static bool resolve_group(const char *spec, gid_t *gid)
 }
 
 /*
+ * Check that @st, found at @path, is the socket @created: the one the first
+ * socket_access_ok() found there.  Prints why and returns false if it isn't.
+ */
+static bool socket_is_created(const char *path, const struct stat *st,
+                              const struct stat *created)
+{
+    if (S_ISSOCK(st->st_mode) && st->st_dev == created->st_dev &&
+        st->st_ino == created->st_ino)
+        return true;
+    fprintf(stderr,
+            "rocm-ernic: %s is no longer the socket the server created; "
+            "keep the socket out of directories others can write to\n",
+            path);
+    return false;
+}
+
+/*
  * Give the socket at @path the group @gid (@name, for messages), then mode
- * 0660 to let that group in.  @checked is what socket_access_ok() found at
- * @path.  Prints why and returns false if it can't, or if @path no longer
- * leads to that socket.
+ * 0660 to let that group in.  @created is what the first socket_access_ok()
+ * found at @path.  Prints why and returns false if it can't, or if @path no
+ * longer leads to that socket.
  *
  * Both changes act on a descriptor for the socket that was checked, so
  * putting something else at @path, such as a symlink or a hard link to
@@ -1239,7 +1256,7 @@ static bool resolve_group(const char *spec, gid_t *gid)
  * to the file the descriptor holds, whatever is at @path now.
  */
 static bool socket_set_group(const char *path, const char *name, gid_t gid,
-                             const struct stat *checked)
+                             const struct stat *created)
 {
     char fd_path[32];
     struct stat st;
@@ -1257,14 +1274,8 @@ static bool socket_set_group(const char *path, const char *name, gid_t gid,
                 strerror(errno));
         goto out;
     }
-    if (!S_ISSOCK(st.st_mode) || st.st_dev != checked->st_dev ||
-        st.st_ino != checked->st_ino) {
-        fprintf(stderr,
-                "rocm-ernic: %s is no longer the socket the server created; "
-                "keep the socket out of directories others can write to\n",
-                path);
+    if (!socket_is_created(path, &st, created))
         goto out;
-    }
     if (fchownat(fd, "", (uid_t)-1, gid, AT_EMPTY_PATH) < 0) {
         int e = errno;
 
@@ -1295,10 +1306,11 @@ out:
 /*
  * Check that exactly the socket's owner, and root, can connect to it, plus
  * the group @want_gid if it isn't NULL: mode 0600, or 0660 with that group,
- * and no access ACL.  Whatever is at @path is checked as it is, without
+ * and no access ACL; and, if @created isn't NULL, that it's still the socket
+ * an earlier call found.  Whatever is at @path is checked as it is, without
  * following a symlink.  Prints why and returns false if anyone else may be
- * able to connect, if the owner or group may not be able to, or if it can't
- * tell.  On success *st holds what was checked.
+ * able to connect, if the owner or group may not be able to, if it's another
+ * file, or if it can't tell.  On success *st holds what was checked.
  *
  * The umask the socket was created under only lets the owner in, and the
  * kernel applies it to a UNIX socket itself, so the mode check is a
@@ -1307,7 +1319,7 @@ out:
  * in it lets that user or group connect whatever the mode says.
  */
 static bool socket_access_ok(const char *path, const gid_t *want_gid,
-                             struct stat *st)
+                             const struct stat *created, struct stat *st)
 {
     mode_t want_mode = want_gid ? 0660 : 0600;
 
@@ -1316,6 +1328,8 @@ static bool socket_access_ok(const char *path, const gid_t *want_gid,
                 strerror(errno));
         return false;
     }
+    if (created && !socket_is_created(path, st, created))
+        return false;
     if (!S_ISSOCK(st->st_mode)) {
         fprintf(stderr, "rocm-ernic: %s is not a socket\n", path);
         return false;
@@ -1899,19 +1913,26 @@ int main(int argc, char *argv[])
      *
      * With --socket-group, then give the socket that group, and only then
      * let the group in, so no other group can connect even briefly; and
-     * check it again, as QEMU will find it.  Both changes act on the socket
-     * the first check found, through a descriptor, so whoever can replace
-     * entries in the socket's directory can't point them at another file.
-     * They could still swap in a socket of their own after the second check,
-     * unless the directory is sticky like /tmp.  (A shared directory, sticky
-     * or not, lets them take the name before the server starts, which is why
-     * docs/usage.rst says to keep the socket out of one.) */
+     * check it again, as QEMU will find it, and that it's still the socket
+     * the first check found.  Both changes act on that socket through a
+     * descriptor, so whoever can replace entries in the socket's directory
+     * can't point them at another file.  They could still swap in a socket
+     * of their own after the second check, unless the directory is sticky
+     * like /tmp.  (A shared directory, sticky or not, lets them take the
+     * name before the first check, which is why docs/usage.rst says to keep
+     * the socket out of one.  The first check is the server's only anchor:
+     * fstat() on the listening socket describes the socket, not the file.) */
+    struct stat created_st;
     struct stat sock_st;
 
-    if (!socket_access_ok(socket_path, NULL, &sock_st) ||
-        (socket_group &&
-         (!socket_set_group(socket_path, socket_group, socket_gid, &sock_st) ||
-          !socket_access_ok(socket_path, &socket_gid, &sock_st)))) {
+    if (!socket_access_ok(socket_path, NULL, NULL, &created_st)) {
+        goto fail;
+    }
+    sock_st = created_st;
+    if (socket_group &&
+        (!socket_set_group(socket_path, socket_group, socket_gid,
+                           &created_st) ||
+         !socket_access_ok(socket_path, &socket_gid, &created_st, &sock_st))) {
         goto fail;
     }
     ernic_startup_report("rocm-ernic: ✓ Socket permissions set to %04o, "
