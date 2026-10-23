@@ -700,6 +700,13 @@
 
 ### Fixed
 
+* With `--socket-group`, the server changed the socket's mode by its path,
+  following a symlink. In a directory other users can write to, a symlink
+  swapped in at the socket's name could make a server running as root give
+  another file mode `0660`. The server now changes the group and mode of
+  the socket it created through a descriptor. If something else has taken
+  its place, it says so and exits non-zero. It sets the mode through
+  `/proc/self/fd`, so `/proc` has to be mounted.
 * If the server opened its `--log-file` but couldn't make it its stdout or
   stderr, it carried on, writing some or all of its log to wherever it was
   started with instead. It now says why on the stderr it inherited and
