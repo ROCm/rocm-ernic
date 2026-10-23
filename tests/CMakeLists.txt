@@ -184,9 +184,11 @@ endif()
 add_executable(test_nvmeof_target
     test_nvmeof_target.c
     ${PROJECT_SOURCE_DIR}/src/nvmeof_target.c
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
 )
 target_include_directories(test_nvmeof_target PRIVATE
     ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
 )
 target_include_directories(test_nvmeof_target SYSTEM PRIVATE
     ${VFIO_USER_INCLUDE_DIRS}
@@ -199,9 +201,11 @@ add_executable(test_nvmeof_cm
     test_nvmeof_cm.c
     ${PROJECT_SOURCE_DIR}/src/nvmeof_cm.c
     ${PROJECT_SOURCE_DIR}/src/nvmeof_target.c
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
 )
 target_include_directories(test_nvmeof_cm PRIVATE
     ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
 )
 target_include_directories(test_nvmeof_cm SYSTEM PRIVATE
     ${VFIO_USER_INCLUDE_DIRS}

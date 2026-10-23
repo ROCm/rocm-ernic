@@ -215,21 +215,34 @@ static uint16_t set_cc(struct nvmeof_queue *q, struct host_mem *h, uint16_t cid,
     c.b[NVMEOF_SQE_FCTYPE_OFF] = NVMEOF_FCTYPE_PROPERTY_SET;
     nvme_put_le32(c.b + NVMEOF_PROP_OFFSET_OFF, NVMEOF_PROP_CC);
     nvme_put_le64(c.b + NVMEOF_PROP_VALUE_OFF, cc);
-    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    if (nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp) !=
+        NVMEOF_EXEC_DONE) {
+        return UINT16_MAX;
+    }
     return rsp_status(rsp);
 }
 
-static uint32_t get_csts(struct nvmeof_queue *q, struct host_mem *h,
-                         uint16_t cid)
+/*
+ * Read CSTS into *csts. Returns the status of the Property Get, or
+ * UINT16_MAX if the target produced no response; *csts is only meaningful
+ * on 0.
+ */
+static uint16_t get_csts(struct nvmeof_queue *q, struct host_mem *h,
+                         uint16_t cid, uint32_t *csts)
 {
     struct capsule c;
     uint8_t rsp[NVME_CQE_SIZE];
 
+    *csts = 0;
     cap_init(&c, NVME_ADMIN_FABRICS, cid);
     c.b[NVMEOF_SQE_FCTYPE_OFF] = NVMEOF_FCTYPE_PROPERTY_GET;
     nvme_put_le32(c.b + NVMEOF_PROP_OFFSET_OFF, NVMEOF_PROP_CSTS);
-    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
-    return nvme_get_le32(rsp + NVME_CQE_RESULT_OFF);
+    if (nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp) !=
+        NVMEOF_EXEC_DONE) {
+        return UINT16_MAX;
+    }
+    *csts = nvme_get_le32(rsp + NVME_CQE_RESULT_OFF);
+    return rsp_status(rsp);
 }
 
 /* ------------------------------------------------------------------ */
@@ -457,8 +470,10 @@ static void test_handshake(void)
 
     /* Enable the controller and confirm CSTS.RDY follows CC.EN. */
     const uint32_t cc_en = NVME_CC_ENABLE | (6 << 16) | (4 << 20);
+    uint32_t csts;
     check("prop-cc", set_cc(aq, h, 4, cc_en) == 0, "Property Set CC failed");
-    check("prop-csts", get_csts(aq, h, 5) & NVME_CSTS_RDY,
+    check("prop-csts",
+          get_csts(aq, h, 5, &csts) == 0 && (csts & NVME_CSTS_RDY) != 0,
           "CSTS.RDY did not follow CC.EN");
 
     /* Identify Controller. */
@@ -568,18 +583,41 @@ static void test_handshake(void)
     check("cc-shutdown", set_cc(aq, h, 15, cc_en | NVME_CC_SHN_NORMAL) == 0,
           "Property Set CC.SHN failed");
     check("cc-shutdown",
-          (get_csts(aq, h, 16) & NVME_CSTS_SHST_MASK) == NVME_CSTS_SHST_CMPLT,
+          get_csts(aq, h, 16, &csts) == 0 &&
+              (csts & NVME_CSTS_SHST_MASK) == NVME_CSTS_SHST_CMPLT,
           "CSTS.SHST did not complete for CC.SHN with CC.EN set");
-    set_cc(aq, h, 17, cc_en);
+    check("cc-shutdown-held", set_cc(aq, h, 17, cc_en) == 0,
+          "Property Set CC failed");
     check("cc-shutdown-held",
-          (get_csts(aq, h, 18) & NVME_CSTS_SHST_MASK) == NVME_CSTS_SHST_CMPLT,
+          get_csts(aq, h, 18, &csts) == 0 &&
+              (csts & NVME_CSTS_SHST_MASK) == NVME_CSTS_SHST_CMPLT,
           "CSTS.SHST was cleared by a CC write that was not a reset");
-    set_cc(aq, h, 19, cc_en & ~NVME_CC_ENABLE);
-    check("cc-reset", get_csts(aq, h, 20) == 0,
+    check("cc-reset", set_cc(aq, h, 19, cc_en & ~NVME_CC_ENABLE) == 0,
+          "Property Set CC failed");
+    check("cc-reset", get_csts(aq, h, 20, &csts) == 0 && csts == 0,
           "CSTS is not clear after a reset");
-    set_cc(aq, h, 21, cc_en);
-    check("cc-reenable", get_csts(aq, h, 22) == NVME_CSTS_RDY,
+    check("cc-reenable", set_cc(aq, h, 21, cc_en) == 0,
+          "Property Set CC failed");
+    check("cc-reenable",
+          get_csts(aq, h, 22, &csts) == 0 && csts == NVME_CSTS_RDY,
           "CSTS is not RDY alone after re-enabling");
+
+    /*
+     * A shutdown requested with CC.EN clear is reported too, but enabling the
+     * controller afterwards mustn't carry it over.
+     */
+    check("cc-shutdown-disabled",
+          set_cc(aq, h, 23, (cc_en & ~NVME_CC_ENABLE) | NVME_CC_SHN_NORMAL) ==
+              0,
+          "Property Set CC.SHN failed");
+    check("cc-shutdown-disabled",
+          get_csts(aq, h, 24, &csts) == 0 && csts == NVME_CSTS_SHST_CMPLT,
+          "CSTS.SHST did not complete for CC.SHN with CC.EN clear");
+    check("cc-enable-after-shutdown", set_cc(aq, h, 25, cc_en) == 0,
+          "Property Set CC failed");
+    check("cc-enable-after-shutdown",
+          get_csts(aq, h, 26, &csts) == 0 && csts == NVME_CSTS_RDY,
+          "CSTS.SHST carried over from a shutdown while disabled");
 
 out:
     free(h);
@@ -1088,7 +1126,7 @@ static void test_file_backing(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* Writeback for Flush and FUA                                        */
+/* Writeback for Flush, FUA and shutdown                              */
 /* ------------------------------------------------------------------ */
 
 /* What the target asked of sync_spy() since the last sync_reset(). */
@@ -1176,8 +1214,9 @@ static struct nvmeof_queue *sync_target(const char *opts, struct host_mem *h,
 
 /*
  * Restarting over the same image reads the host page cache, so it can't
- * tell writeback from none.  Watch the calls instead: Flush and FUA must
- * ask for a synchronous writeback of what they cover, and fail if it does.
+ * tell writeback from none.  Watch the calls instead: Flush, FUA and a
+ * shutdown must ask for a synchronous writeback of what they cover, and
+ * Flush and FUA fail if it does.
  */
 static void test_sync(void)
 {
@@ -1252,6 +1291,49 @@ static void test_sync(void)
         }
         check("sync-fail", sync_log.calls == 3,
               "not every command tried to write back");
+
+        /*
+         * A shutdown, requested with CC.EN set or clear, writes back the
+         * whole namespace once.  A reset, enabling the controller, and
+         * repeating the notification don't.
+         */
+        struct nvmeof_queue *aq = nvmeof_target_find_queue(t, 1);
+        const uint32_t cc = (6u << 16) | (4u << 20);
+        const uint32_t ens[] = {NVME_CC_ENABLE, 0};
+        uint32_t csts;
+        for (size_t i = 0; i < sizeof(ens) / sizeof(ens[0]); i++) {
+            const uint32_t shn = cc | ens[i] | NVME_CC_SHN_NORMAL;
+            sync_reset(false);
+            check("sync-shutdown",
+                  set_cc(aq, h, 70, cc) == 0 &&
+                      set_cc(aq, h, 71, cc | ens[i]) == 0 &&
+                      sync_log.calls == 0,
+                  "a reset or enable failed, or wrote back");
+            check("sync-shutdown",
+                  set_cc(aq, h, 72, shn) == 0 && set_cc(aq, h, 73, shn) == 0,
+                  "Property Set CC.SHN failed");
+            check("sync-shutdown",
+                  sync_log.calls == 1 && sync_log.flags == MS_SYNC &&
+                      sync_log.addr == base && sync_log.len == (1u << 20),
+                  "a shutdown did not write the namespace back once, "
+                  "synchronously");
+            check("sync-shutdown",
+                  get_csts(aq, h, 74, &csts) == 0 &&
+                      (csts & NVME_CSTS_SHST_MASK) == NVME_CSTS_SHST_CMPLT,
+                  "the shutdown was not reported complete");
+        }
+
+        /* A failed writeback is only logged: the shutdown still completes. */
+        sync_reset(true);
+        check("sync-shutdown-fail",
+              set_cc(aq, h, 75, cc) == 0 &&
+                  set_cc(aq, h, 76, cc | NVME_CC_ENABLE | NVME_CC_SHN_NORMAL) ==
+                      0,
+              "a failed writeback failed Property Set CC.SHN");
+        check("sync-shutdown-fail",
+              sync_log.calls == 1 && get_csts(aq, h, 77, &csts) == 0 &&
+                  (csts & NVME_CSTS_SHST_MASK) == NVME_CSTS_SHST_CMPLT,
+              "a failed writeback kept the shutdown from completing");
     }
     nvmeof_target_destroy(t);
 
@@ -1265,6 +1347,13 @@ static void test_sync(void)
             check("sync-ram", io_one(ioq, h, fua_ops[i], 9, NVME_RW_FUA) == 0,
                   "a FUA write on a RAM namespace failed");
         }
+        struct nvmeof_queue *aq = nvmeof_target_find_queue(t, 1);
+        uint32_t csts;
+        check("sync-ram",
+              set_cc(aq, h, 78, NVME_CC_ENABLE | NVME_CC_SHN_NORMAL) == 0 &&
+                  get_csts(aq, h, 79, &csts) == 0 &&
+                  (csts & NVME_CSTS_SHST_MASK) == NVME_CSTS_SHST_CMPLT,
+              "a shutdown of a RAM namespace did not complete");
         check("sync-ram", sync_log.calls == 0,
               "a RAM namespace tried to write back");
     }

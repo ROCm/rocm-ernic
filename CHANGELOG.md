@@ -700,6 +700,22 @@
 
 ### Fixed
 
+* The `nvmeof` backend now completes a shutdown that the host requests by
+  setting `CC.SHN` with `CC.EN` still set, as the NVMe specification has it,
+  and keeps reporting it until a reset clears `CC.EN`. It reported
+  `CSTS.SHST` complete only when `CC.EN` was clear, so a host following the
+  specification polled until its shutdown timeout: SPDK waits at least ten
+  seconds per controller it detaches, which makes twenty for a process that
+  probes through the discovery NQN. Enabling the controller clears
+  `CSTS.SHST`, including after a shutdown requested with `CC.EN` clear.
+* A shutdown of a file-backed `nvmeof` namespace now writes the namespace
+  back to the image's storage before the controller reports it complete.
+  The controller reports a volatile write cache for such a namespace, and a
+  host needn't send Flush before it shuts the controller down, so writes it
+  hadn't flushed were left in the host page cache, and lost if the host
+  crashed before writing them back itself. If the writeback fails, the
+  server logs an error and completes the shutdown anyway. The server's main
+  loop waits for it, as it does for Flush.
 * A file-backed `nvmeof` namespace (`file=`) is now durable when the guest
   asks for it to be. The controller reported no volatile write cache, so the
   guest never sent Flush or Force Unit Access and a guest's `fsync()`
