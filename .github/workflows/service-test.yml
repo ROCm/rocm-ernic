@@ -148,7 +148,7 @@ jobs:
           https://github.com/nutanix/libvfio-user.git \
           /tmp/libvfio-user
         cd /tmp/libvfio-user
-        git checkout 8039244
+        git checkout 5b9c722
         meson setup build --prefix=/usr \
           -Dwarning_level=0
         ninja -C build
