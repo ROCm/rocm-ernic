@@ -16,6 +16,7 @@ import argparse
 import errno
 import os
 import re
+import socket
 import struct
 import sys
 import tempfile
@@ -24,7 +25,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # pylint: disable=wrong-import-position
-from ernic import vfu
+from ernic import ionic, vfu
 from ernic.check import Suite
 from ernic.server import Server, stop_and_check
 
@@ -36,6 +37,15 @@ PCI_SUBDEVICE_ID_ROCM_ERNIC = 0x5400
 
 BAR0_SIZE = 64 << 10
 IONIC_DEV_SIG = 0x44455649  # "DEVI"
+
+# struct ionic_lif_info: the status block at 256, link_status at +10.
+LIF_INFO_LINK_STATUS_OFF = 256 + 10
+PORT_OPER_STATUS_UP = 1
+
+# What the server logs when a client goes, and when a LIF statistics
+# write to guest memory fails.
+CLIENT_DISCONNECTED = "Client disconnected after"
+LIF_STATS_WRITE_FAILED = "LIF stats write to"
 
 
 def refused(suite, what, func, *expected):
@@ -299,6 +309,73 @@ def test_reset_and_reconnect(suite, client, socket_path):
         )
 
 
+def test_hang_up_mid_command(suite, server):
+    """A client that hangs up while the device answers a command.
+
+    The command is LIF_INIT, which writes the link status into guest
+    memory and has the device publish the LIF statistics on that pass of
+    its loop. The client shuts its receiving side first, so the reply
+    fails; libvfio-user then resets the context, unmapping guest memory,
+    and vfu_run_ctx() returns in the same pass that ran the command. The
+    server must not go on to publish into memory that is no longer
+    mapped: with a libvfio-user that keeps a stale region pointer, that
+    write lands in freed, unmapped memory and kills the server.
+    """
+    client = vfu.VfioUserClient(server.socket_path).connect(timeout=30)
+    # Counted only now: the server logs the last client's going before it
+    # attaches the next, but that can be after the last test returned.
+    disconnects = server.log_text().count(CLIENT_DISCONNECTED)
+    mem = vfu.GuestMemory(size=1 << 20)
+    try:
+        client.dma_map(mem)
+        driver = ionic.IonicDriver(client, mem)
+        for opcode in (
+            ionic.CMD_IDENTIFY,
+            ionic.CMD_RESET,
+            ionic.CMD_PORT_IDENTIFY,
+            ionic.CMD_LIF_IDENTIFY,
+        ):
+            cmd = bytearray(64)
+            cmd[0] = opcode
+            driver.devcmd_ok(bytes(cmd))
+
+        # ionic_dev_cmd_go(), as devcmd() does it, but the doorbell that
+        # runs the command goes out after the client stops receiving, so
+        # the server's reply to it fails.
+        cmd = bytearray(64)
+        cmd[0] = ionic.CMD_LIF_INIT
+        struct.pack_into("<Q", cmd, 8, driver.lif_info)
+        driver.bar0_write(ionic.BAR0_DEVCMD_CMD, bytes(cmd))
+        driver.bar0_write32(ionic.BAR0_DEVCMD_DONE, 0)
+        client.sock.shutdown(socket.SHUT_RD)
+        client.send_command(
+            vfu.VFIO_USER_REGION_WRITE,
+            struct.pack("<QII", ionic.BAR0_DEVCMD, vfu.VFU_PCI_DEV_BAR0_REGION_IDX, 4)
+            + struct.pack("<I", 1),
+        )
+
+        suite.check(
+            server.wait_for_count(CLIENT_DISCONNECTED, disconnects + 1, timeout=30),
+            "the server saw the client go",
+        )
+        # The command ran before the reset: the link status is in memory
+        # the client still holds.
+        link = mem.read(driver.lif_info + LIF_INFO_LINK_STATUS_OFF, 2)
+        suite.check_eq(
+            struct.unpack("<H", link)[0],
+            PORT_OPER_STATUS_UP,
+            "LIF_INIT ran before the hang-up took effect",
+        )
+        suite.check(
+            LIF_STATS_WRITE_FAILED not in server.log_text(),
+            "the server published no statistics after the client went",
+        )
+        suite.check(server.is_running(), "the server is still running")
+    finally:
+        client.close()
+        mem.close()
+
+
 def main():
     """Start a server, run the protocol tests against it, and stop it."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -329,6 +406,11 @@ def main():
                 test_reset_and_reconnect,
                 client,
                 server.socket_path,
+            )
+            suite.run(
+                "a client that hangs up mid-command",
+                test_hang_up_mid_command,
+                server,
             )
         finally:
             stop_and_check(suite, server)

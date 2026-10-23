@@ -54,7 +54,7 @@ jobs:
           sudo apt-get install -y meson libjson-c-dev
           git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user
           cd /tmp/libvfio-user
-          git checkout 20e9803
+          git checkout 8039244
           meson setup build --prefix=/usr -Dwarning_level=0
           ninja -C build
           sudo ninja -C build install
