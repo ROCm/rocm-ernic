@@ -484,6 +484,7 @@ Useful overrides:
 | `CI_VM_ACCEL` | `kvm` | set `tcg` to emulate |
 | `CI_TAP_PREFIX` | `ernic-ci-tap` | per-instance TAP name prefix |
 | `CI_TAP_BRIDGE` | `ernic-ci-br0` | bridge the TAPs are enslaved to |
+| `CI_NIC_SUBNET` | `192.168.200` | /24 the guest NICs are addressed on (guest *n* gets host 10*n*), advertised as each instance's GID |
 | `ERNIC_INSTANCES` | `2` | number of VMs |
 | `CI_VM_SSH_BASE_PORT` | `2350` | first guest ssh port |
 | `CI_KEEP_OVERLAYS` | `false` | keep qcow2 after teardown |

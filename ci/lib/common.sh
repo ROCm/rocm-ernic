@@ -45,6 +45,12 @@ ERNIC_TCP_PORT="${ERNIC_TCP_PORT:-6420}"
 # reason the VM names are.
 CI_TAP_PREFIX="${CI_TAP_PREFIX:-ernic-ci-tap}"
 CI_TAP_BRIDGE="${CI_TAP_BRIDGE:-ernic-ci-br0}"
+# The /24 the guests' NICs are addressed on: vm-register.yml
+# gives guest <n> ${CI_NIC_SUBNET}.<10n>.  ernic_env advertises
+# those addresses as the instances' GIDs, and vm-functional.sh
+# and perf.sh hand the same subnet to the plays, so the two
+# agree.
+CI_NIC_SUBNET="${CI_NIC_SUBNET:-192.168.200}"
 # Prefer the checked-out copies over whatever is
 # installed system-wide: CI must test the tree it was
 # handed, and /usr/local is root-owned so a CI run can
@@ -256,7 +262,44 @@ ernic_env() {
     export ERNIC_QEMU_PATH="${CI_QEMU_PATH}"
     [ -n "${CI_VM_SSH_IDENTITY:-}" ] && \
         export ERNIC_VM_SSH_IDENTITY="${CI_VM_SSH_IDENTITY}"
+
+    # The mesh routes a destination GID only to the instance that
+    # advertised it.  By default the launcher advertises just the
+    # link-local GID derived from the MAC, but the RDMA tests address
+    # the peer by its IPv4-mapped GID (perftest -x 1, ibv_rc_pingpong
+    # -g 1, the RDMA-Tutorial examples), so list both:
+    # ERNIC_GUEST_GIDS_<n> replaces the default rather than adding to
+    # it.  The MAC is pinned so the link-local can be named here; an
+    # ERNIC_MAC_<n> or ERNIC_GUEST_GIDS_<n> already set is kept.
+    local i mac mac_var gids_var
+    for (( i = 1; i <= ERNIC_INSTANCES; i++ )); do
+        mac_var="ERNIC_MAC_${i}"
+        gids_var="ERNIC_GUEST_GIDS_${i}"
+        if [ -z "${!mac_var:-}" ]; then
+            printf -v "${mac_var}" '02:a0:d1:00:%02x:%02x' \
+                $(( (i >> 8) & 0xff )) $(( i & 0xff ))
+        fi
+        mac="${!mac_var}"
+        export "${mac_var?}"
+        if [ -z "${!gids_var:-}" ]; then
+            printf -v "${gids_var}" '%s,%s.%d' \
+                "$(linklocal_from_mac "${mac}")" \
+                "${CI_NIC_SUBNET}" $(( 10 * i ))
+        fi
+        export "${gids_var?}"
+    done
     return 0
+}
+
+# The IPv6 link-local address a guest autoconfigures from MAC $1:
+# fe80::/64 plus the MAC's EUI-64.  The same derivation as
+# gen_linklocal_from_mac() in service/rocm-ernic-launcher.
+linklocal_from_mac() {
+    local b1 b2 b3 b4 b5 b6
+    IFS=':' read -r b1 b2 b3 b4 b5 b6 <<< "$1"
+    b1=$(printf '%02x' $(( 0x${b1} ^ 0x02 )))
+    printf 'fe80::%s%s:%sff:fe%s:%s%s\n' \
+        "${b1}" "${b2}" "${b3}" "${b4}" "${b5}" "${b6}"
 }
 
 # ssh command for CI VM N (1-based).

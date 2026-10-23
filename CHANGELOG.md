@@ -715,6 +715,16 @@
 * The server's startup line `Added MSI-X capability at offset` now prints
   the offset in hex. It printed the decimal value after a `0x` prefix, so a
   capability at `0x40` was reported at `0x64`.
+* The self-hosted CI's instances (`ci/jobs/vm-up.sh`) now advertise each
+  guest's IPv4 address as a GID, as well as the link-local one the launcher
+  derives from its MAC. The mesh routes a destination GID only to the
+  instance that advertised it, so a test addressing the peer by its
+  IPv4-mapped GID, as `vm-functional.sh`'s `rc-pingpong` probe, the
+  perftest runs and the RDMA-Tutorial examples do, failed to bring its QP to
+  RTR. Each instance's MAC is now pinned to `02:a0:d1:00:00:<n>`, as in the
+  hosted two-VM job, so its link-local GID can be named; an `ERNIC_MAC_<n>`
+  or `ERNIC_GUEST_GIDS_<n>` already in the environment is kept. The guests'
+  subnet is `CI_NIC_SUBNET` (default `192.168.200`).
 * The `nvmeof` backend now completes a shutdown that the host requests by
   setting `CC.SHN` with `CC.EN` still set, as the NVMe specification has it,
   and keeps reporting it until a reset clears `CC.EN`. It reported

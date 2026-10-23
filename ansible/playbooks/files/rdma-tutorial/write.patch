@@ -15,12 +15,14 @@ is RoCE, which addresses it by GID, so this:
   the first one.
 - Lets TOT_NUM_OPS and NUM_WARMING_UP_OPS be set at build time: the
   defaults take tens of minutes over the emulated NIC.
-- Links libibverbs, which the example calls directly.
+- Links libibverbs, which the example calls directly, instead of
+  librdmacm, which it never calls and which the guest image has no
+  link-time library for.
 - Includes <stdlib.h> for atoi(), which GCC 14 and later reject
   undeclared.
 
 diff --git a/Makefile b/Makefile
-index 162bcbc..bda03f8 100644
+index 162bcbc..ad5ad4c 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -2,7 +2,7 @@ CC=gcc
@@ -28,7 +30,7 @@ index 162bcbc..bda03f8 100644
  INCLUDES=
  LDFLAGS=
 -LIBS=-pthread -lrdmacm
-+LIBS=-pthread -libverbs -lrdmacm
++LIBS=-pthread -libverbs
  
  SRCS=main.c client.c config.c ib.c server.c setup_ib.c sock.c
  OBJS=$(SRCS:.c=.o)
