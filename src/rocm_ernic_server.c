@@ -75,23 +75,19 @@ static const char *get_backend_type_base(const char *backend_str);
 /* Socket path for vfio-user communication */
 #define DEFAULT_SOCKET_PATH "/tmp/vfio-user-rocm-ernic.sock"
 
-/* Global context for signal handling */
-static vfu_ctx_t *g_vfu_ctx = NULL;
+/* Flags shared with signal_handler() */
 static volatile sig_atomic_t g_shutdown_requested = 0;
 static volatile sig_atomic_t g_cleanup_in_progress = 0;
 
 /**
- * Signal handler for graceful shutdown
+ * Signal handler for graceful shutdown.  It only sets a flag, which the
+ * main loop polls.
  */
 static void signal_handler(int signo)
 {
     if (signo == SIGINT || signo == SIGTERM) {
         if (!g_cleanup_in_progress) {
             g_shutdown_requested = 1;
-            /* If we have a vfu_ctx, try to interrupt it */
-            if (g_vfu_ctx) {
-                /* Signal will cause vfu_run_ctx() to return with EINTR */
-            }
         }
     }
 }
@@ -1469,7 +1465,6 @@ static void server_teardown(rocm_ernic_dev_t *dev, vfu_ctx_t *vfu_ctx)
     }
 
     vfu_destroy_ctx(vfu_ctx);
-    g_vfu_ctx = NULL;
 
     dev_free(dev);
 }
@@ -1941,7 +1936,6 @@ int main(int argc, char *argv[])
                          "group %u, for %s",
                          (unsigned)(sock_st.st_mode & 07777),
                          (unsigned)sock_st.st_gid, socket_path);
-    g_vfu_ctx = vfu_ctx;
     dev->vfu_ctx = vfu_ctx;
 
     /* Setup logging */
