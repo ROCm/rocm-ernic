@@ -49,6 +49,7 @@
 #define RX_BUF     0x0e00u /* two buffers of RX_BUF_CAP */
 #define RX_BUF_CAP 1024u
 #define Q_DEPTH    4u
+#define PORT_PA    0x2000u /* a struct ionic_port_info */
 
 _Static_assert(LIF_PA + IONIC_LIF_INFO_STATS_OFF + IONIC_LIF_STATS_BYTES <=
                    TX_RING,
@@ -58,6 +59,13 @@ _Static_assert(RX_BUF + 2 * RX_BUF_CAP <= LIF_PA2,
 _Static_assert(LIF_PA2 + IONIC_LIF_INFO_STATS_OFF + IONIC_LIF_STATS_BYTES <=
                    GUEST_MEM_SIZE,
                "the second info block is past the end of guest memory");
+
+_Static_assert(PORT_PA >= LIF_PA2 + IONIC_LIF_INFO_STATS_OFF +
+                              IONIC_LIF_STATS_BYTES &&
+                   PORT_PA + IONIC_PORT_INFO_STATS_OFF +
+                           IONIC_PORT_STATS_BYTES + 64 <=
+                       GUEST_MEM_SIZE,
+               "the port info block overlaps or runs past guest memory");
 
 static int failures;
 
@@ -137,6 +145,32 @@ static uint64_t guest_qword(uint64_t pa, unsigned int idx)
 
     memcpy(&v, g_mem + pa + IONIC_LIF_INFO_STATS_OFF + (size_t)idx * 8, 8);
     return le64toh(v);
+}
+
+/* Port counter @idx as the guest sees it at PORT_PA + 576. */
+static uint64_t guest_port_qword(unsigned int idx)
+{
+    uint64_t v;
+
+    memcpy(&v, g_mem + PORT_PA + IONIC_PORT_INFO_STATS_OFF + (size_t)idx * 8,
+           8);
+    return le64toh(v);
+}
+
+static void port_init(struct ionic_eth_emu *emu, uint64_t pa)
+{
+    devcmd(emu, IONIC_CMD_PORT_INIT, pa);
+    /* PORT_INIT writes config and status; rows count from here. */
+    g_nwrites = 0;
+}
+
+static uint64_t port_counter(struct ionic_eth_emu *emu, unsigned int idx)
+{
+    const struct ionic_emu_stats *st = ionic_eth_emu_get_stats(emu);
+
+    if (!st)
+        abort(); /* only a NULL emu has no stats */
+    return st->port[idx];
 }
 
 static uint64_t counter(struct ionic_eth_emu *emu, unsigned int idx)
@@ -565,6 +599,120 @@ static void lif_status_address_boundaries(void)
     }
 }
 
+/* ---- Port (MAC) stats block -------------------------------------------- */
+
+#define PORT_BLOCK (PORT_PA + IONIC_PORT_INFO_STATS_OFF)
+#define LIF_BLOCK  (LIF_PA + IONIC_LIF_INFO_STATS_OFF)
+
+static void port_init_then_publish(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+
+    port_init(emu, PORT_PA);
+    memset(g_mem, POISON, sizeof(g_mem));
+    ionic_eth_emu_publish_stats(emu, 5000);
+    snprintf(got, len,
+             "writes %u, block poisoned %zu, status poisoned %zu, sprom "
+             "poisoned %zu",
+             g_nwrites, poisoned(PORT_BLOCK, IONIC_PORT_STATS_BYTES),
+             poisoned(PORT_PA, IONIC_PORT_INFO_STATS_OFF),
+             poisoned(PORT_BLOCK + IONIC_PORT_STATS_BYTES, 64));
+    ionic_eth_emu_destroy(emu);
+}
+
+static void port_traffic_then_publish(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+
+    port_init(emu, PORT_PA);
+    setup_txq(emu);
+    setup_rxq(emu, 2, RX_BUF_CAP);
+    tx_frame(emu, mac_ucast, 100);
+    tx_frame(emu, mac_ucast, 200);
+    rx_tap(emu, mac_bcast, 42);
+    ionic_eth_emu_publish_stats(emu, 5000);
+    snprintf(got, len,
+             "frames_tx_ok %" PRIu64 ", octets_tx_ok %" PRIu64
+             ", frames_rx_broadcast %" PRIu64 ", frames_rx_64b %" PRIu64,
+             guest_port_qword(IONIC_PORT_FRAMES_TX_OK),
+             guest_port_qword(IONIC_PORT_OCTETS_TX_OK),
+             guest_port_qword(IONIC_PORT_FRAMES_RX_BROADCAST),
+             guest_port_qword(IONIC_PORT_FRAMES_RX_64B));
+    emu->net = NULL;
+    ionic_eth_emu_destroy(emu);
+}
+
+/* LIF and port both initialised, then @opcode; which blocks are written? */
+static void blocks_after(uint8_t opcode, char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(10);
+
+    lif_init(emu, LIF_PA);
+    port_init(emu, PORT_PA);
+    devcmd(emu, opcode, 0);
+    memset(g_mem, POISON, sizeof(g_mem));
+    g_nwrites = 0;
+    ionic_eth_emu_publish_stats(emu, 1000);
+    snprintf(got, len, "writes %u, lif written %d, port written %d", g_nwrites,
+             poisoned(LIF_BLOCK, IONIC_LIF_STATS_BYTES) == 0,
+             poisoned(PORT_BLOCK, IONIC_PORT_STATS_BYTES) == 0);
+    ionic_eth_emu_destroy(emu);
+}
+
+static void after_port_reset(char *got, size_t len)
+{
+    blocks_after(IONIC_CMD_PORT_RESET, got, len);
+}
+
+static void after_nop_port(char *got, size_t len)
+{
+    blocks_after(IONIC_CMD_NOP, got, len);
+}
+
+static void after_lif_reset_port(char *got, size_t len)
+{
+    blocks_after(IONIC_CMD_LIF_RESET, got, len);
+}
+
+static void after_device_reset_port(char *got, size_t len)
+{
+    blocks_after(IONIC_CMD_RESET, got, len);
+}
+
+static void before_port_init(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(10);
+
+    lif_init(emu, LIF_PA);
+    memset(g_mem, POISON, sizeof(g_mem));
+    ionic_eth_emu_publish_stats(emu, 1000);
+    snprintf(got, len, "writes %u, port block poisoned %zu", g_nwrites,
+             poisoned(PORT_BLOCK, IONIC_PORT_STATS_BYTES));
+    ionic_eth_emu_destroy(emu);
+}
+
+static const struct publish_case port_publish_cases[] = {
+    {"positive", "PORT_INIT(pa), then publish",
+     "writes 1, block poisoned 0, status poisoned 576, sprom poisoned 64 (only "
+     "the 712 bytes at +576)",
+     port_init_then_publish},
+    {"positive", "Tx 100 + 200 bytes unicast, Rx a 42-byte broadcast, publish",
+     "frames_tx_ok 2, octets_tx_ok 308, frames_rx_broadcast 1, frames_rx_64b 1",
+     port_traffic_then_publish},
+    {"positive", "LIF and port initialised, a NOP, then publish",
+     "writes 2, lif written 1, port written 1", after_nop_port},
+    {"negative", "LIF_RESET, then publish",
+     "writes 1, lif written 0, port written 1 (+576 still, +320 no more)",
+     after_lif_reset_port},
+    {"negative", "LIF_INIT only, then publish",
+     "writes 1, port block poisoned 712", before_port_init},
+    {"negative", "PORT_RESET, then publish",
+     "writes 1, lif written 1, port written 0 (+320 still, +576 no more)",
+     after_port_reset},
+    {"negative", "device reset, then publish",
+     "writes 0, lif written 0, port written 0", after_device_reset_port},
+};
+
 static const struct publish_case publish_cases[] = {
     {"positive", "LIF_INIT(pa), then publish",
      "writes 1, block poisoned 0, before 320, after 64", lif_init_then_publish},
@@ -748,6 +896,132 @@ static void inbox_full(char *got, size_t len)
              counter(emu, IONIC_LIF_RX_BCAST_DROP_BYTES));
     ionic_eth_emu_destroy(emu);
 }
+
+/* A device whose port takes frames up to 1018 bytes (MTU 1000). */
+static struct ionic_eth_emu *new_emu_mtu1000(void)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+
+    emu->profile.link.mtu_max = 1000;
+    return emu;
+}
+
+static void rx_tap_at(size_t frame_len, char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu_mtu1000();
+
+    setup_rxq(emu, 1, RX_BUF_CAP);
+    rx_tap(emu, mac_ucast, frame_len);
+    snprintf(got, len,
+             "rx_ucast %" PRIu64 ", rx_desc_data_error %" PRIu64
+             ", frames_rx_too_long %" PRIu64 ", frames_rx_ok %" PRIu64,
+             counter(emu, IONIC_LIF_RX_UCAST_PACKETS),
+             counter(emu, IONIC_LIF_RX_DESC_DATA_ERROR),
+             port_counter(emu, IONIC_PORT_FRAMES_RX_TOO_LONG),
+             port_counter(emu, IONIC_PORT_FRAMES_RX_OK));
+    emu->net = NULL;
+    ionic_eth_emu_destroy(emu);
+}
+
+static void rx_tap_too_long(char *got, size_t len)
+{
+    rx_tap_at(1019, got, len);
+}
+
+static void rx_tap_max_frame(char *got, size_t len)
+{
+    rx_tap_at(1018, got, len);
+}
+
+static void rx_tap_no_buffer_port(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+
+    setup_rxq(emu, 0, RX_BUF_CAP);
+    rx_tap(emu, mac_ucast, 64);
+    snprintf(got, len, "frames_rx_ok %" PRIu64 ", frames_rx_dropped %" PRIu64,
+             port_counter(emu, IONIC_PORT_FRAMES_RX_OK),
+             port_counter(emu, IONIC_PORT_FRAMES_RX_DROPPED));
+    emu->net = NULL;
+    ionic_eth_emu_destroy(emu);
+}
+
+/* A mesh frame waits through two polls for a buffer, then is delivered. */
+static void inbox_wait_port(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+    uint64_t waiting;
+
+    setup_rxq(emu, 0, RX_BUF_CAP);
+    ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast, 64), 64);
+    ionic_eth_emu_poll_rx(emu);
+    ionic_eth_emu_poll_rx(emu);
+    waiting = port_counter(emu, IONIC_PORT_FRAMES_RX_ALL);
+    setup_rxq(emu, 1, RX_BUF_CAP);
+    ionic_eth_emu_poll_rx(emu);
+    snprintf(got, len,
+             "frames_rx_all waiting %" PRIu64 ", after %" PRIu64
+             ", frames_rx_dropped %" PRIu64 ", rx_ucast %" PRIu64,
+             waiting, port_counter(emu, IONIC_PORT_FRAMES_RX_ALL),
+             port_counter(emu, IONIC_PORT_FRAMES_RX_DROPPED),
+             counter(emu, IONIC_LIF_RX_UCAST_PACKETS));
+    ionic_eth_emu_destroy(emu);
+}
+
+static void inbox_too_long_port(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu_mtu1000();
+
+    setup_rxq(emu, 2, RX_BUF_CAP);
+    ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast, 1019), 1019);
+    ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast, 60), 60);
+    ionic_eth_emu_poll_rx(emu);
+    snprintf(got, len,
+             "frames_rx_too_long %" PRIu64 ", rx_ucast %" PRIu64
+             ", still queued %u",
+             port_counter(emu, IONIC_PORT_FRAMES_RX_TOO_LONG),
+             counter(emu, IONIC_LIF_RX_UCAST_PACKETS), emu->inbox_count);
+    ionic_eth_emu_destroy(emu);
+}
+
+static void tx_send_fails_port(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+    static int fake_net;
+
+    emu->net = (struct ionic_eth_net *)&fake_net;
+    g_net_send_rc = -EAGAIN;
+    setup_txq(emu);
+    tx_frame(emu, mac_ucast, 100);
+    snprintf(got, len, "frames_tx_all %" PRIu64 ", tx_ucast_drop %" PRIu64,
+             port_counter(emu, IONIC_PORT_FRAMES_TX_ALL),
+             counter(emu, IONIC_LIF_TX_UCAST_DROP_PACKETS));
+    emu->net = NULL;
+    ionic_eth_emu_destroy(emu);
+}
+
+static const struct publish_case port_datapath_cases[] = {
+    {"negative", "Rx from the TAP one byte over the port's maximum frame",
+     "rx_ucast 0, rx_desc_data_error 0, frames_rx_too_long 1, frames_rx_ok 0 "
+     "(the MAC drops it; the LIF never sees it)",
+     rx_tap_too_long},
+    {"boundary", "Rx from the TAP at exactly the maximum frame",
+     "rx_ucast 1, rx_desc_data_error 0, frames_rx_too_long 0, frames_rx_ok 1",
+     rx_tap_max_frame},
+    {"positive", "Rx from the TAP with no buffer posted",
+     "frames_rx_ok 1, frames_rx_dropped 1 (the MAC took it, the LIF dropped "
+     "it)",
+     rx_tap_no_buffer_port},
+    {"corner", "a mesh frame waits two polls for a buffer, then one is posted",
+     "frames_rx_all waiting 1, after 1, frames_rx_dropped 0, rx_ucast 1 "
+     "(counted once at the MAC)",
+     inbox_wait_port},
+    {"corner", "a mesh frame over the maximum, then one that fits",
+     "frames_rx_too_long 1, rx_ucast 1, still queued 0", inbox_too_long_port},
+    {"corner", "Tx refused by the host backend",
+     "frames_tx_all 0, tx_ucast_drop 1 (it never reached the wire)",
+     tx_send_fails_port},
+};
 
 static const struct publish_case datapath_cases[] = {
     {"positive", "Tx with no host backend (a sink)", "tx_ucast 1/100", tx_sink},
@@ -1284,7 +1558,51 @@ static void file_longest_name(char *got, size_t len)
     snprintf(got, len, "longest %zu, width %d", longest, LIF_STAT_NAME_WIDTH);
 }
 
+static void file_port_section(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+    unsigned int lines = 0, misaligned = 0;
+    const char *sec;
+    char *text;
+    size_t n;
+
+    setup_txq(emu);
+    tx_frame(emu, mac_ucast, 100);
+    text = stats_text(emu, &n);
+    sec = strstr(text, "\nPort Statistics:\n");
+    if (sec) {
+        for (const char *l = sec + strlen("\nPort Statistics:\n");
+             *l && *l != '\n'; l = strchr(l, '\n') + 1) {
+            lines++;
+            if (strncmp(l + 2 + PORT_STAT_NAME_WIDTH, " : ", 3) != 0)
+                misaligned++;
+        }
+    }
+    snprintf(got, len,
+             "header %d, lines %u, misaligned %u, frames_tx_ok %" PRIu64
+             ", octets_tx_ok %" PRIu64,
+             sec != NULL, lines, misaligned, stats_value(text, "frames_tx_ok"),
+             stats_value(text, "octets_tx_ok"));
+    free(text);
+    ionic_eth_emu_destroy(emu);
+}
+
+static void file_port_longest_name(char *got, size_t len)
+{
+    size_t longest = 0;
+
+    for (unsigned int q = 0; q < IONIC_PORT_STATS_QWORDS; q++)
+        if (strlen(ionic_emu_port_stat_name(q)) > longest)
+            longest = strlen(ionic_emu_port_stat_name(q));
+    snprintf(got, len, "longest %zu, width %d", longest, PORT_STAT_NAME_WIDTH);
+}
+
 static const struct publish_case stats_file_cases[] = {
+    {"positive", "the port section after Tx 100 bytes",
+     "header 1, lines 89, misaligned 0, frames_tx_ok 1, octets_tx_ok 104",
+     file_port_section},
+    {"boundary", "the port name column fits the longest port counter name",
+     "longest 23, width 23", file_port_longest_name},
     {"positive", "Tx 100 + 200 bytes unicast, then the stats file",
      "tx_ucast_packets 2, tx_ucast_bytes 300", file_traffic},
     {"positive", "the section's shape on an idle device",
@@ -1310,6 +1628,10 @@ int main(void)
     run_cases(datapath_cases,
               sizeof(datapath_cases) / sizeof(datapath_cases[0]));
     run_cases(fault_cases, sizeof(fault_cases) / sizeof(fault_cases[0]));
+    run_cases(port_publish_cases,
+              sizeof(port_publish_cases) / sizeof(port_publish_cases[0]));
+    run_cases(port_datapath_cases,
+              sizeof(port_datapath_cases) / sizeof(port_datapath_cases[0]));
     run_cases(stats_file_cases,
               sizeof(stats_file_cases) / sizeof(stats_file_cases[0]));
 

@@ -487,6 +487,12 @@
   accept. The value is decoded big-endian and right-aligned, and the caller
   is told how many bytes the digits needed so it can refuse one wider than
   the field it is destined for instead of truncating it.
+* The ionic NIC publishes its port (MAC) statistics, the 89 counters
+  `ethtool -S` shows as `frames_*` and `octets_*`, which the driver used to
+  list as 0: frames and octets by result, by unicast, multicast and
+  broadcast, and by size bucket, counted as on the wire. They are published
+  with the LIF statistics and cleared on PORT_RESET. Documented in
+  `docs/ionic.rst`.
 
 ### Changed
 

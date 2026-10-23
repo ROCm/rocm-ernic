@@ -46,6 +46,7 @@ int ionic_emu_mac_class(const uint8_t *frame, size_t len)
 void ionic_emu_stats_reset(struct ionic_emu_stats *st)
 {
     memset(st->lif, 0, sizeof(st->lif));
+    memset(st->port, 0, sizeof(st->port));
     for (unsigned int c = 0; c < IONIC_EMU_MAC_CLASSES; c++) {
         atomic_store(&st->inbox_drop_bytes[c], 0);
         atomic_store(&st->inbox_drop_packets[c], 0);
@@ -139,11 +140,139 @@ void ionic_emu_stats_fold(struct ionic_emu_stats *st)
 {
     for (unsigned int c = 0; c < IONIC_EMU_MAC_CLASSES; c++) {
         unsigned int idx = rx_drop_bytes_idx[c];
+        uint64_t packets = atomic_exchange(&st->inbox_drop_packets[c], 0);
 
         st->lif[idx] += atomic_exchange(&st->inbox_drop_bytes[c], 0);
-        st->lif[PACKETS_OF(idx)] +=
-            atomic_exchange(&st->inbox_drop_packets[c], 0);
+        st->lif[PACKETS_OF(idx)] += packets;
+        /* The port took these in; the LIF had nowhere to put them. */
+        st->port[IONIC_PORT_FRAMES_RX_DROPPED] += packets;
     }
+}
+
+/* ---- Port (MAC) counters ---------------------------------------------- */
+
+/*
+ * The largest wire length, FCS included, in each size bucket but the last;
+ * frames_{rx,tx}_less_than_64b through _other are consecutive qwords.
+ */
+static const size_t bucket_max[] = {63,   64,   127,  255,  511, 1023,
+                                    1518, 2047, 4095, 8191, 9215};
+#define SIZE_BUCKETS (sizeof(bucket_max) / sizeof(bucket_max[0]) + 1u)
+#define RX_BUCKETS \
+    (IONIC_PORT_FRAMES_RX_OTHER - IONIC_PORT_FRAMES_RX_LESS_THAN_64B + 1)
+#define TX_BUCKETS \
+    (IONIC_PORT_FRAMES_TX_OTHER - IONIC_PORT_FRAMES_TX_LESS_THAN_64B + 1)
+_Static_assert(RX_BUCKETS == SIZE_BUCKETS, "one rx qword per size bucket");
+_Static_assert(TX_BUCKETS == SIZE_BUCKETS, "one tx qword per size bucket");
+
+static unsigned int size_bucket(size_t wire)
+{
+    unsigned int b = 0;
+
+    while (b < SIZE_BUCKETS - 1u && wire > bucket_max[b])
+        b++;
+    return b;
+}
+
+/* The PCP of the outer 802.1Q or 802.1ad tag, or -1 if there is none. */
+static int frame_pcp(const uint8_t *frame, size_t len)
+{
+    uint16_t tpid;
+
+    if (!frame || len < 16)
+        return -1;
+    tpid = (uint16_t)(frame[12] << 8 | frame[13]);
+    if (tpid != 0x8100 && tpid != 0x88a8)
+        return -1;
+    return frame[14] >> 5;
+}
+
+/* The unicast/multicast/broadcast qwords follow the class order. */
+_Static_assert(
+    (int)IONIC_PORT_FRAMES_RX_MULTICAST ==
+            (int)IONIC_PORT_FRAMES_RX_UNICAST + (int)IONIC_EMU_MCAST &&
+        (int)IONIC_PORT_FRAMES_RX_BROADCAST ==
+            (int)IONIC_PORT_FRAMES_RX_UNICAST + (int)IONIC_EMU_BCAST &&
+        (int)IONIC_PORT_FRAMES_TX_MULTICAST ==
+            (int)IONIC_PORT_FRAMES_TX_UNICAST + (int)IONIC_EMU_MCAST &&
+        (int)IONIC_PORT_FRAMES_TX_BROADCAST ==
+            (int)IONIC_PORT_FRAMES_TX_UNICAST + (int)IONIC_EMU_BCAST,
+    "class qwords in ionic_emu_mac_class order");
+
+bool ionic_emu_port_frame(struct ionic_emu_stats *st, const uint8_t *frame,
+                          size_t len, bool is_tx, size_t max_frame)
+{
+    uint64_t *p = st->port;
+    size_t wire;
+    int c, pcp;
+    unsigned int pri;
+
+    if (len == 0)
+        return true;
+    wire = (len < IONIC_EMU_MIN_FRAME ? IONIC_EMU_MIN_FRAME : len) +
+           IONIC_EMU_FCS_LEN;
+    c = ionic_emu_mac_class(frame, len);
+    pcp = frame_pcp(frame, len);
+    pri = pcp < 0 ? 0u : (unsigned int)pcp;
+
+    if (is_tx) {
+        p[IONIC_PORT_FRAMES_TX_ALL]++;
+        p[IONIC_PORT_OCTETS_TX_TOTAL] += wire;
+        p[IONIC_PORT_FRAMES_TX_LESS_THAN_64B + size_bucket(wire)]++;
+        p[IONIC_PORT_FRAMES_TX_OK]++;
+        p[IONIC_PORT_OCTETS_TX_OK] += wire;
+        if (c >= 0)
+            p[IONIC_PORT_FRAMES_TX_UNICAST + (unsigned int)c]++;
+        if (pcp >= 0)
+            p[IONIC_PORT_FRAMES_TX_VLAN]++;
+        p[IONIC_PORT_FRAMES_TX_PRI_0 + pri]++;
+        return true;
+    }
+
+    p[IONIC_PORT_FRAMES_RX_ALL]++;
+    p[IONIC_PORT_OCTETS_RX_ALL] += wire;
+    p[IONIC_PORT_FRAMES_RX_LESS_THAN_64B + size_bucket(wire)]++;
+    if (max_frame && len > max_frame) {
+        p[IONIC_PORT_FRAMES_RX_TOO_LONG]++;
+        p[IONIC_PORT_FRAMES_RX_OVERSIZED]++;
+        p[IONIC_PORT_FRAMES_RX_BAD_ALL]++;
+        return false;
+    }
+    p[IONIC_PORT_FRAMES_RX_OK]++;
+    p[IONIC_PORT_OCTETS_RX_OK] += wire;
+    if (c >= 0)
+        p[IONIC_PORT_FRAMES_RX_UNICAST + (unsigned int)c]++;
+    if (pcp >= 0)
+        p[IONIC_PORT_FRAMES_RX_VLAN_GOOD]++;
+    p[IONIC_PORT_FRAMES_RX_PRI_0 + pri]++;
+    return true;
+}
+
+void ionic_emu_port_rx_dropped(struct ionic_emu_stats *st)
+{
+    st->port[IONIC_PORT_FRAMES_RX_DROPPED]++;
+}
+
+void ionic_emu_port_fill(struct ionic_emu_stats *st,
+                         uint8_t out[IONIC_PORT_STATS_BYTES])
+{
+    ionic_emu_stats_fold(st);
+    for (unsigned int q = 0; q < IONIC_PORT_STATS_QWORDS; q++) {
+        uint64_t v = htole64(st->port[q]);
+
+        memcpy(out + (size_t)q * 8u, &v, sizeof(v));
+    }
+}
+
+static const char *const port_stat_names[IONIC_PORT_STATS_QWORDS] = {
+#define IONIC_PORT_STAT_NAME(id, name) [IONIC_PORT_##id] = #name,
+    IONIC_PORT_STATS(IONIC_PORT_STAT_NAME)
+#undef IONIC_PORT_STAT_NAME
+};
+
+const char *ionic_emu_port_stat_name(unsigned int idx)
+{
+    return idx < IONIC_PORT_STATS_QWORDS ? port_stat_names[idx] : NULL;
 }
 
 void ionic_emu_stats_fill(struct ionic_emu_stats *st,
