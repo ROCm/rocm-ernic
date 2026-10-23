@@ -374,7 +374,10 @@
             </div>
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#starting-the-server">Starting the Server</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#starting-the-server">Starting the Server</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#file-backed-namespaces">File-backed namespaces</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#connecting-from-the-guest">Connecting from the Guest</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-it-works">How It Works</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#connection-establishment">Connection establishment</a></li>
@@ -455,7 +458,8 @@ memory-region budget that caps <code class="docutils literal notranslate"><span 
 <td><p><code class="docutils literal notranslate"><span class="pre">64M</span></code></p></td>
 <td><p>Namespace capacity. Accepts <code class="docutils literal notranslate"><span class="pre">K</span></code>/<code class="docutils literal notranslate"><span class="pre">M</span></code>/<code class="docutils literal notranslate"><span class="pre">G</span></code>/<code class="docutils literal notranslate"><span class="pre">T</span></code>
 and the <code class="docutils literal notranslate"><span class="pre">KiB</span></code>/<code class="docutils literal notranslate"><span class="pre">MiB</span></code> spellings; must be a whole
-number of blocks.</p></td>
+number of blocks. Without it, an existing <code class="docutils literal notranslate"><span class="pre">file=</span></code>
+image keeps its own size.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">bs=</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">512</span></code></p></td>
@@ -463,10 +467,13 @@ number of blocks.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">file=</span></code></p></td>
 <td><p>unset</p></td>
-<td><p>Back the namespace with this file instead of
-anonymous memory. Created if absent, and truncated to
-<code class="docutils literal notranslate"><span class="pre">size=</span></code> either way – an existing image larger than
-<code class="docutils literal notranslate"><span class="pre">size=</span></code> is shrunk.</p></td>
+<td><p>Back the namespace with this regular file instead
+of anonymous memory. A new or empty file is created
+at <code class="docutils literal notranslate"><span class="pre">size=</span></code>. An existing image is never shrunk: a
+<code class="docutils literal notranslate"><span class="pre">size=</span></code> larger than the image grows it, a smaller
+one is refused, and without <code class="docutils literal notranslate"><span class="pre">size=</span></code> the image has
+to be a whole number of blocks. See
+<a class="reference internal" href="#nvmeof-durability"><span class="std std-ref">File-backed namespaces</span></a>.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">nqn=</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">nvmet-test</span></code></p></td>
@@ -515,6 +522,31 @@ presented, rather than surfacing later as a failed connect:</p>
 <span class="go">    at 192.168.200.1:4420</span>
 </pre></div>
 </div>
+<p>The size it logs is the one settled on, which for an existing
+<code class="docutils literal notranslate"><span class="pre">file=</span></code> image without <code class="docutils literal notranslate"><span class="pre">size=</span></code> is the image’s.</p>
+<section id="file-backed-namespaces">
+<span id="nvmeof-durability"></span><h3>File-backed namespaces<a class="headerlink" href="#file-backed-namespaces" title="Link to this heading">#</a></h3>
+<p>A <code class="docutils literal notranslate"><span class="pre">file=</span></code> image may hold an earlier run’s data, so the
+server never shrinks it. One it can’t use without losing data
+is refused when the device is created, after the options have
+been accepted:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp">$ </span>./build/rocm-ernic<span class="w"> </span>--backend<span class="w"> </span>nvmeof:file<span class="o">=</span>/var/tmp/ns0.img,size<span class="o">=</span>64M
+<span class="go">nvmeof backend: /var/tmp/ns0.img is 1073741824 bytes; size=67108864 \</span>
+<span class="go">    would truncate it</span>
+</pre></div>
+</div>
+<p>Drop <code class="docutils literal notranslate"><span class="pre">size=</span></code> to keep the image’s size, or give a larger one
+to grow it.</p>
+<p>Writes land in the host page cache, so the controller reports
+a volatile write cache for a file-backed namespace. The guest
+then sends Flush when a filesystem or application asks for
+its data to be durable (<code class="docutils literal notranslate"><span class="pre">fsync()</span></code>, a journal commit), and
+sets Force Unit Access on writes that have to be durable on
+their own. The controller completes either only once the data
+has reached the image’s storage. A RAM namespace has no
+stable storage, so it reports no write cache and those
+requests are no-ops.</p>
+</section>
 </section>
 <section id="connecting-from-the-guest">
 <h2>Connecting from the Guest<a class="headerlink" href="#connecting-from-the-guest" title="Link to this heading">#</a></h2>
@@ -754,6 +786,10 @@ no multipath, no reservations.</p></li>
 <li><p>Connections do not survive a server restart; a
 file-backed namespace does, but the guest has to
 reconnect.</p></li>
+<li><p>Flush and Force Unit Access on a file-backed namespace
+wait for the host’s writeback in the server’s main loop,
+so the device doesn’t respond to anything else until
+the data is written.</p></li>
 </ul>
 </section>
 </section>
@@ -805,7 +841,10 @@ reconnect.</p></li>
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#starting-the-server">Starting the Server</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#starting-the-server">Starting the Server</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#file-backed-namespaces">File-backed namespaces</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#connecting-from-the-guest">Connecting from the Guest</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-it-works">How It Works</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#connection-establishment">Connection establishment</a></li>
