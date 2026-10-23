@@ -145,9 +145,12 @@ then sends Flush when a filesystem or application asks for
 its data to be durable (``fsync()``, a journal commit), and
 sets Force Unit Access on writes that have to be durable on
 their own. The controller completes either only once the data
-has reached the image's storage. A RAM namespace has no
-stable storage, so it reports no write cache and those
-requests are no-ops.
+has reached the image's storage. A shutdown notification
+(``CC.SHN``) writes back the whole namespace too, before the
+controller reports the shutdown complete; if that fails, the
+server logs an error and completes the shutdown anyway. A RAM
+namespace has no stable storage, so it reports no write cache
+and those requests are no-ops.
 
 Connecting from the Guest
 -------------------------
@@ -411,7 +414,7 @@ Limitations
 - Connections do not survive a server restart; a
   file-backed namespace does, but the guest has to
   reconnect.
-- Flush and Force Unit Access on a file-backed namespace
-  wait for the host's writeback in the server's main loop,
-  so the device doesn't respond to anything else until
-  the data is written.
+- Flush, Force Unit Access and a shutdown notification on
+  a file-backed namespace wait for the host's writeback in
+  the server's main loop, so the device doesn't respond to
+  anything else until the data is written.
