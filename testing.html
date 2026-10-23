@@ -404,6 +404,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#running-the-full-workflow">Running the full workflow</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#running-individual-plays">Running individual plays</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#variable-overrides">Variable overrides</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rdma-tutorial-examples">RDMA-Tutorial examples</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-guest-image">The guest image</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-rocm-ernic-ansible-collection">The rocm_ernic Ansible collection</a></li>
 </ul>
@@ -830,7 +831,8 @@ ping<span class="w"> </span><span class="m">192</span>.168.200.20
 the multi-VM test workflow: building the server, installing
 the systemd service, provisioning already-running guests
 with the driver and the ionic rdma-core provider, and
-running iperf3, perftest and NVMe-oF tests against them. The
+running iperf3, perftest, RDMA-Tutorial and NVMe-oF tests
+against them. The
 guest disk is not built here; see <a class="reference internal" href="#ansible-guest-image"><span class="std std-ref">The guest image</span></a>.</p>
 <section id="prerequisites">
 <h3>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h3>
@@ -885,7 +887,7 @@ has to be repeated.</p>
 run unprivileged. Drive those with <code class="docutils literal notranslate"><span class="pre">ci-site.yml</span></code>, which
 imports no host-setup play and so neither tears them down nor
 touches the systemd service.</p>
-<p><code class="docutils literal notranslate"><span class="pre">site.yml</span></code> runs five plays in order:</p>
+<p><code class="docutils literal notranslate"><span class="pre">site.yml</span></code> runs six plays in order:</p>
 <ol class="arabic simple">
 <li><p><strong>host-setup</strong> – builds the project, installs the
 service and <code class="docutils literal notranslate"><span class="pre">ernicctl</span></code>, templates the env file, and
@@ -902,6 +904,9 @@ emulated NICs.</p></li>
 <li><p><strong>sanity-tests</strong> – runs <code class="docutils literal notranslate"><span class="pre">iperf3</span></code> between two VMs
 for TCP/IP validation and <code class="docutils literal notranslate"><span class="pre">ib_send_bw</span></code> /
 <code class="docutils literal notranslate"><span class="pre">ibv_rc_pingpong</span></code> for RDMA verification.</p></li>
+<li><p><strong>tutorial-tests</strong> – builds examples from the
+RDMA-Tutorial and runs each between the two VMs; see
+<a class="reference internal" href="#ansible-rdma-tutorial"><span class="std std-ref">RDMA-Tutorial examples</span></a>.</p></li>
 <li><p><strong>performance-tests</strong> – the TCP and RDMA sweeps.</p></li>
 </ol>
 <p>The setup plays are thin wrappers around the roles of the
@@ -915,6 +920,7 @@ for TCP/IP validation and <code class="docutils literal notranslate"><span class
 ansible-playbook<span class="w"> </span>playbooks/vm-register.yml
 ansible-playbook<span class="w"> </span>playbooks/guest-setup.yml
 ansible-playbook<span class="w"> </span>playbooks/sanity-tests.yml
+ansible-playbook<span class="w"> </span>playbooks/tutorial-tests.yml
 ansible-playbook<span class="w"> </span>playbooks/nvmeof-tests.yml
 ansible-playbook<span class="w"> </span>playbooks/s3-tests.yml
 ansible-playbook<span class="w"> </span>playbooks/performance-tests.yml
@@ -949,6 +955,40 @@ repo; the per-role defaults live in each role’s
 Anything set in <code class="docutils literal notranslate"><span class="pre">group_vars/all.yml</span></code> wins over a role
 default. See <code class="docutils literal notranslate"><span class="pre">ansible/PLAYBOOKS.md</span></code> for additional usage
 notes.</p>
+</section>
+<section id="rdma-tutorial-examples">
+<span id="ansible-rdma-tutorial"></span><h3>RDMA-Tutorial examples<a class="headerlink" href="#rdma-tutorial-examples" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">playbooks/tutorial-tests.yml</span></code> runs examples from
+<a class="reference external" href="https://github.com/jcxue/RDMA-Tutorial">RDMA-Tutorial</a>,
+a short introduction to programming with verbs, to check
+that code written the way it teaches works over rocm-ernic.
+It covers example 1 (RC send/recv) and example 2 (RC RDMA
+write), with the server in VM 1 and the client in VM 2.</p>
+<p>The tutorial keeps each example as a commit, and they
+address the peer by InfiniBand LID. The play pins each
+example to its commit and applies a patch from
+<code class="docutils literal notranslate"><span class="pre">ansible/playbooks/files/rdma-tutorial/</span></code> that exchanges
+the peers’ IPv4-mapped GIDs instead, as RoCE needs, and uses
+the port’s active MTU. It also sets <code class="docutils literal notranslate"><span class="pre">SO_REUSEADDR</span></code> on the
+server’s socket, so a rerun can bind the same port while the
+last run’s connection is still in <code class="docutils literal notranslate"><span class="pre">TIME_WAIT</span></code>. The
+controller clones the tutorial and applies the patches, and
+copies the result into the guests, which build it, so they
+need neither network access nor git.
+Like perftest’s <code class="docutils literal notranslate"><span class="pre">-x</span> <span class="pre">1</span></code>, the IPv4-mapped GID reaches a peer
+only if its instance advertises the guest’s IPv4 address
+(<code class="docutils literal notranslate"><span class="pre">ERNIC_GUEST_GIDS_&lt;n&gt;</span></code>, or <code class="docutils literal notranslate"><span class="pre">ernic_guest_gids</span></code> in the
+host-setup role), as both CI lanes do.</p>
+<p>An example passes when the client and the server both exit
+0 and each has logged its throughput, which it does only
+after its last operation. Upstream runs 5 or 10 million
+operations, which take tens of minutes over the emulated NIC;
+<code class="docutils literal notranslate"><span class="pre">ernic_rdma_tutorial_ops</span></code> (default 10000) sets the count.
+<code class="docutils literal notranslate"><span class="pre">ernic_rdma_tutorial_timeout</span></code> bounds each process and
+<code class="docutils literal notranslate"><span class="pre">ernic_rdma_tutorial_port</span></code> picks the ports they connect on.</p>
+<p>Both CI lanes that run the sanity play run this one after
+it: the two-VM job in <code class="docutils literal notranslate"><span class="pre">system-tests.yml</span></code> and
+<code class="docutils literal notranslate"><span class="pre">ci/jobs/vm-functional.sh</span></code>.</p>
 </section>
 <section id="the-guest-image">
 <span id="ansible-guest-image"></span><h3>The guest image<a class="headerlink" href="#the-guest-image" title="Link to this heading">#</a></h3>
@@ -1115,7 +1155,8 @@ attracting those jobs rather than failing them.</p>
 is redirected under a workspace the CI user owns rather
 than <code class="docutils literal notranslate"><span class="pre">/run</span></code>, <code class="docutils literal notranslate"><span class="pre">/var/log</span></code> and <code class="docutils literal notranslate"><span class="pre">/usr/local</span></code>.</p>
 <p>Test logic is not duplicated: <code class="docutils literal notranslate"><span class="pre">ansible/ci-site.yml</span></code>
-drives the same guest-setup, sanity and performance plays
+drives the same guest-setup, sanity, RDMA-Tutorial and
+performance plays
 described above, supplying only the inventory
 registration that <code class="docutils literal notranslate"><span class="pre">site.yml</span></code> would normally provide.</p>
 <p>Check whether a node is ready:</p>
@@ -1242,6 +1283,7 @@ this is a public repository.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#running-the-full-workflow">Running the full workflow</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#running-individual-plays">Running individual plays</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#variable-overrides">Variable overrides</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rdma-tutorial-examples">RDMA-Tutorial examples</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-guest-image">The guest image</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-rocm-ernic-ansible-collection">The rocm_ernic Ansible collection</a></li>
 </ul>
