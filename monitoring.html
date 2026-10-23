@@ -383,6 +383,8 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#network-traffic">Network Traffic</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#device-health-and-events">Device Health and Events</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#per-qp-metrics">Per-QP Metrics</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#lif-counters">LIF Counters</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-hw-counters-and-real-silicon">Guest hw_counters and real silicon</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#grafana-dashboard">Grafana Dashboard</a></li>
@@ -421,10 +423,12 @@ vs TCP/IP ratios, FLR events, and VM lifecycle.</p>
 <li><p><a class="reference internal" href="#network-traffic" id="id7">Network Traffic</a></p></li>
 <li><p><a class="reference internal" href="#device-health-and-events" id="id8">Device Health and Events</a></p></li>
 <li><p><a class="reference internal" href="#per-qp-metrics" id="id9">Per-QP Metrics</a></p></li>
+<li><p><a class="reference internal" href="#lif-counters" id="id10">LIF Counters</a></p></li>
+<li><p><a class="reference internal" href="#guest-hw-counters-and-real-silicon" id="id11">Guest hw_counters and real silicon</a></p></li>
 </ul>
 </li>
-<li><p><a class="reference internal" href="#grafana-dashboard" id="id10">Grafana Dashboard</a></p></li>
-<li><p><a class="reference internal" href="#useful-promql-examples" id="id11">Useful PromQL Examples</a></p></li>
+<li><p><a class="reference internal" href="#grafana-dashboard" id="id12">Grafana Dashboard</a></p></li>
+<li><p><a class="reference internal" href="#useful-promql-examples" id="id13">Useful PromQL Examples</a></p></li>
 </ul>
 </nav>
 <section id="architecture">
@@ -825,9 +829,506 @@ Labels: <code class="docutils literal notranslate"><span class="pre">ernic_id</s
 </table>
 </div>
 </section>
+<section id="lif-counters">
+<h3><a class="toc-backref" href="#id10" role="doc-backlink">LIF Counters</a><a class="headerlink" href="#lif-counters" title="Link to this heading">#</a></h3>
+<p>The emulated NIC keeps the ionic LIF statistics block,
+the 1 KiB <code class="docutils literal notranslate"><span class="pre">struct</span> <span class="pre">ionic_lif_stats</span></code> it writes into
+guest memory and the guest reads for <code class="docutils literal notranslate"><span class="pre">ip</span> <span class="pre">-s</span> <span class="pre">link</span></code>.
+This is a different counter set from the guest’s RDMA
+<code class="docutils literal notranslate"><span class="pre">hw_counters</span></code>, which the device serves from the admin
+queue; the next section covers those.  The exporter
+publishes the whole block as a single metric, with the
+counter in a label:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 38.0%" />
+<col style="width: 10.0%" />
+<col style="width: 52.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Metric</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ernic_lif_counter_total</span></code></p></td>
+<td><p>Counter</p></td>
+<td><p>One LIF statistics counter, under its
+<code class="docutils literal notranslate"><span class="pre">ionic_if.h</span></code> name.
+Labels: <code class="docutils literal notranslate"><span class="pre">ernic_id</span></code>, <code class="docutils literal notranslate"><span class="pre">role</span></code>, <code class="docutils literal notranslate"><span class="pre">counter</span></code>.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>This is one metric with a <code class="docutils literal notranslate"><span class="pre">counter</span></code> label rather than
+one metric per counter because the set belongs to the
+device, not to the exporter: a counter the emulator
+starts keeping is published the moment the server
+writes it, with no exporter release.  The guest’s
+<code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code> driver makes the same bargain – it takes
+its counter names from a table the device hands back.</p>
+<p>The label values are exactly the field names of
+<code class="docutils literal notranslate"><span class="pre">struct</span> <span class="pre">ionic_lif_stats</span></code>, so a counter can be looked
+up in the kernel’s <code class="docutils literal notranslate"><span class="pre">ionic_if.h</span></code>.</p>
+<p>A counter the emulator does not yet keep reads zero
+rather than disappearing; the server prints the whole
+block on every flush.</p>
+<p>The block has 74 named counters:</p>
+<ul class="simple">
+<li><p>Ethernet traffic: 12 counters, from
+<code class="docutils literal notranslate"><span class="pre">rx_ucast_bytes</span></code> to <code class="docutils literal notranslate"><span class="pre">tx_bcast_packets</span></code>.</p></li>
+<li><p>Drop and DMA error: 14 counters, from
+<code class="docutils literal notranslate"><span class="pre">rx_ucast_drop_bytes</span></code> to <code class="docutils literal notranslate"><span class="pre">tx_dma_error</span></code>.</p></li>
+<li><p>Ring error: 10 counters, from
+<code class="docutils literal notranslate"><span class="pre">rx_queue_disabled</span></code> to <code class="docutils literal notranslate"><span class="pre">tx_queue_empty</span></code>.</p></li>
+<li><p>RDMA traffic: 11 counters, from
+<code class="docutils literal notranslate"><span class="pre">tx_rdma_ucast_bytes</span></code> to <code class="docutils literal notranslate"><span class="pre">rx_rdma_ecn_packets</span></code>.</p></li>
+<li><p>RDMA error: 27 counters, from
+<code class="docutils literal notranslate"><span class="pre">rdma_req_rx_pkt_seq_err</span></code> to <code class="docutils literal notranslate"><span class="pre">rdma_resp_tx_rnr_retry_err</span></code>.</p></li>
+</ul>
+<p>Every one of them, with its qword index in
+<code class="docutils literal notranslate"><span class="pre">struct</span> <span class="pre">ionic_lif_stats</span></code>:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 10.0%" />
+<col style="width: 48.0%" />
+<col style="width: 42.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Qword</p></th>
+<th class="head"><p>Counter</p></th>
+<th class="head"><p>Group</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>0</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_ucast_bytes</span></code></p></td>
+<td><p>Ethernet traffic</p></td>
+</tr>
+<tr class="row-odd"><td><p>1</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_ucast_packets</span></code></p></td>
+<td><p>Ethernet traffic</p></td>
+</tr>
+<tr class="row-even"><td><p>2</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_mcast_bytes</span></code></p></td>
+<td><p>Ethernet traffic</p></td>
+</tr>
+<tr class="row-odd"><td><p>3</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_mcast_packets</span></code></p></td>
+<td><p>Ethernet traffic</p></td>
+</tr>
+<tr class="row-even"><td><p>4</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_bcast_bytes</span></code></p></td>
+<td><p>Ethernet traffic</p></td>
+</tr>
+<tr class="row-odd"><td><p>5</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_bcast_packets</span></code></p></td>
+<td><p>Ethernet traffic</p></td>
+</tr>
+<tr class="row-even"><td><p>8</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_ucast_drop_bytes</span></code></p></td>
+<td><p>Drop and DMA error</p></td>
+</tr>
+<tr class="row-odd"><td><p>9</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_ucast_drop_packets</span></code></p></td>
+<td><p>Drop and DMA error</p></td>
+</tr>
+<tr class="row-even"><td><p>10</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_mcast_drop_bytes</span></code></p></td>
+<td><p>Drop and DMA error</p></td>
+</tr>
+<tr class="row-odd"><td><p>11</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_mcast_drop_packets</span></code></p></td>
+<td><p>Drop and DMA error</p></td>
+</tr>
+<tr class="row-even"><td><p>12</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_bcast_drop_bytes</span></code></p></td>
+<td><p>Drop and DMA error</p></td>
+</tr>
+<tr class="row-odd"><td><p>13</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_bcast_drop_packets</span></code></p></td>
+<td><p>Drop and DMA error</p></td>
+</tr>
+<tr class="row-even"><td><p>14</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_dma_error</span></code></p></td>
+<td><p>Drop and DMA error</p></td>
+</tr>
+<tr class="row-odd"><td><p>16</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_ucast_bytes</span></code></p></td>
+<td><p>Ethernet traffic</p></td>
+</tr>
+<tr class="row-even"><td><p>17</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_ucast_packets</span></code></p></td>
+<td><p>Ethernet traffic</p></td>
+</tr>
+<tr class="row-odd"><td><p>18</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_mcast_bytes</span></code></p></td>
+<td><p>Ethernet traffic</p></td>
+</tr>
+<tr class="row-even"><td><p>19</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_mcast_packets</span></code></p></td>
+<td><p>Ethernet traffic</p></td>
+</tr>
+<tr class="row-odd"><td><p>20</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_bcast_bytes</span></code></p></td>
+<td><p>Ethernet traffic</p></td>
+</tr>
+<tr class="row-even"><td><p>21</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_bcast_packets</span></code></p></td>
+<td><p>Ethernet traffic</p></td>
+</tr>
+<tr class="row-odd"><td><p>24</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_ucast_drop_bytes</span></code></p></td>
+<td><p>Drop and DMA error</p></td>
+</tr>
+<tr class="row-even"><td><p>25</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_ucast_drop_packets</span></code></p></td>
+<td><p>Drop and DMA error</p></td>
+</tr>
+<tr class="row-odd"><td><p>26</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_mcast_drop_bytes</span></code></p></td>
+<td><p>Drop and DMA error</p></td>
+</tr>
+<tr class="row-even"><td><p>27</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_mcast_drop_packets</span></code></p></td>
+<td><p>Drop and DMA error</p></td>
+</tr>
+<tr class="row-odd"><td><p>28</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_bcast_drop_bytes</span></code></p></td>
+<td><p>Drop and DMA error</p></td>
+</tr>
+<tr class="row-even"><td><p>29</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_bcast_drop_packets</span></code></p></td>
+<td><p>Drop and DMA error</p></td>
+</tr>
+<tr class="row-odd"><td><p>30</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_dma_error</span></code></p></td>
+<td><p>Drop and DMA error</p></td>
+</tr>
+<tr class="row-even"><td><p>32</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_queue_disabled</span></code></p></td>
+<td><p>Ring error</p></td>
+</tr>
+<tr class="row-odd"><td><p>33</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_queue_empty</span></code></p></td>
+<td><p>Ring error</p></td>
+</tr>
+<tr class="row-even"><td><p>34</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_queue_error</span></code></p></td>
+<td><p>Ring error</p></td>
+</tr>
+<tr class="row-odd"><td><p>35</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_desc_fetch_error</span></code></p></td>
+<td><p>Ring error</p></td>
+</tr>
+<tr class="row-even"><td><p>36</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_desc_data_error</span></code></p></td>
+<td><p>Ring error</p></td>
+</tr>
+<tr class="row-odd"><td><p>40</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_queue_disabled</span></code></p></td>
+<td><p>Ring error</p></td>
+</tr>
+<tr class="row-even"><td><p>41</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_queue_error</span></code></p></td>
+<td><p>Ring error</p></td>
+</tr>
+<tr class="row-odd"><td><p>42</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_desc_fetch_error</span></code></p></td>
+<td><p>Ring error</p></td>
+</tr>
+<tr class="row-even"><td><p>43</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_desc_data_error</span></code></p></td>
+<td><p>Ring error</p></td>
+</tr>
+<tr class="row-odd"><td><p>44</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_queue_empty</span></code></p></td>
+<td><p>Ring error</p></td>
+</tr>
+<tr class="row-even"><td><p>48</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_rdma_ucast_bytes</span></code></p></td>
+<td><p>RDMA traffic</p></td>
+</tr>
+<tr class="row-odd"><td><p>49</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_rdma_ucast_packets</span></code></p></td>
+<td><p>RDMA traffic</p></td>
+</tr>
+<tr class="row-even"><td><p>50</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_rdma_mcast_bytes</span></code></p></td>
+<td><p>RDMA traffic</p></td>
+</tr>
+<tr class="row-odd"><td><p>51</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_rdma_mcast_packets</span></code></p></td>
+<td><p>RDMA traffic</p></td>
+</tr>
+<tr class="row-even"><td><p>52</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tx_rdma_cnp_packets</span></code></p></td>
+<td><p>RDMA traffic</p></td>
+</tr>
+<tr class="row-odd"><td><p>56</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_rdma_ucast_bytes</span></code></p></td>
+<td><p>RDMA traffic</p></td>
+</tr>
+<tr class="row-even"><td><p>57</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_rdma_ucast_packets</span></code></p></td>
+<td><p>RDMA traffic</p></td>
+</tr>
+<tr class="row-odd"><td><p>58</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_rdma_mcast_bytes</span></code></p></td>
+<td><p>RDMA traffic</p></td>
+</tr>
+<tr class="row-even"><td><p>59</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_rdma_mcast_packets</span></code></p></td>
+<td><p>RDMA traffic</p></td>
+</tr>
+<tr class="row-odd"><td><p>60</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_rdma_cnp_packets</span></code></p></td>
+<td><p>RDMA traffic</p></td>
+</tr>
+<tr class="row-even"><td><p>61</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rx_rdma_ecn_packets</span></code></p></td>
+<td><p>RDMA traffic</p></td>
+</tr>
+<tr class="row-odd"><td><p>96</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_req_rx_pkt_seq_err</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-even"><td><p>97</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_req_rx_rnr_retry_err</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-odd"><td><p>98</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_req_rx_remote_access_err</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-even"><td><p>99</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_req_rx_remote_inv_req_err</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-odd"><td><p>100</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_req_rx_remote_oper_err</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-even"><td><p>101</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_req_rx_implied_nak_seq_err</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-odd"><td><p>102</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_req_rx_cqe_err</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-even"><td><p>103</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_req_rx_cqe_flush_err</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-odd"><td><p>104</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_req_rx_dup_responses</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-even"><td><p>105</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_req_rx_invalid_packets</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-odd"><td><p>106</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_req_tx_local_access_err</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-even"><td><p>107</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_req_tx_local_oper_err</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-odd"><td><p>108</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_req_tx_memory_mgmt_err</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-even"><td><p>112</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_resp_rx_dup_requests</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-odd"><td><p>113</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_resp_rx_out_of_buffer</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-even"><td><p>114</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_resp_rx_out_of_seq_pkts</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-odd"><td><p>115</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_resp_rx_cqe_err</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-even"><td><p>116</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_resp_rx_cqe_flush_err</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-odd"><td><p>117</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_resp_rx_local_len_err</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-even"><td><p>118</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_resp_rx_inv_request_err</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-odd"><td><p>119</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_resp_rx_local_qp_oper_err</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-even"><td><p>120</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_resp_rx_out_of_atomic_resource</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-odd"><td><p>121</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_resp_tx_pkt_seq_err</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-even"><td><p>122</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_resp_tx_remote_inv_req_err</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-odd"><td><p>123</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_resp_tx_remote_access_err</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-even"><td><p>124</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_resp_tx_remote_oper_err</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+<tr class="row-odd"><td><p>125</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rdma_resp_tx_rnr_retry_err</span></code></p></td>
+<td><p>RDMA error</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Not every counter is live yet.  The Ethernet, drop,
+ring and RDMA traffic counters are, and
+<code class="docutils literal notranslate"><span class="pre">tests/py/test_ionic_hw_stats.py</span></code> drives traffic
+that moves them.  The <code class="docutils literal notranslate"><span class="pre">rdma_req_*</span></code> and
+<code class="docutils literal notranslate"><span class="pre">rdma_resp_*</span></code> error counters are named and
+published, but nothing in the datapath increments
+them, so they read zero whatever happens: a zero
+there means “not counted”, not “did not happen”.</p>
+<p>Wiring them up is
+<a class="reference external" href="https://github.com/ROCm/rocm-ernic/pull/237">PR #237</a>.
+Whoever lands it should delete this paragraph, and
+will find that the counter lists below and the
+structural checks in the test pick the new counters
+up on their own.</p>
+</div>
+</section>
+<section id="guest-hw-counters-and-real-silicon">
+<h3><a class="toc-backref" href="#id11" role="doc-backlink">Guest hw_counters and real silicon</a><a class="headerlink" href="#guest-hw-counters-and-real-silicon" title="Link to this heading">#</a></h3>
+<p>A guest running the in-tree <code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code> driver gets
+its own view of the device’s counters, independent of
+the exporter, under
+<code class="docutils literal notranslate"><span class="pre">/sys/class/infiniband/&lt;dev&gt;/ports/1/hw_counters</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>rdma<span class="w"> </span>statistic<span class="w"> </span>show<span class="w"> </span>link<span class="w"> </span>ionic_0/1
+rdma<span class="w"> </span>statistic<span class="w"> </span>qp<span class="w"> </span><span class="nb">set</span><span class="w"> </span>link<span class="w"> </span>ionic_0/1<span class="w"> </span>auto<span class="w"> </span><span class="nb">type</span><span class="w"> </span>on
+rdma<span class="w"> </span>statistic<span class="w"> </span>qp<span class="w"> </span>show
+</pre></div>
+</div>
+<p>Those come from four admin commands –
+<code class="docutils literal notranslate"><span class="pre">STATS_HDRS</span></code> and <code class="docutils literal notranslate"><span class="pre">QP_STATS_HDRS</span></code> hand back a table
+naming the counters, <code class="docutils literal notranslate"><span class="pre">STATS_VALS</span></code> and
+<code class="docutils literal notranslate"><span class="pre">QP_STATS_VALS</span></code> fill in the values.  The driver takes
+the names, value types and offsets from that table, so
+the device decides what a guest sees.</p>
+<p>The values behind those tables are the server’s own
+device and per-QP counters, not the LIF block, and the
+exporter has always published them – under different
+names.  What a guest reads as <code class="docutils literal notranslate"><span class="pre">total_bytes_sent</span></code> is
+<code class="docutils literal notranslate"><span class="pre">ernic_rdma_bytes_sent_total</span></code> here, and what it reads
+per QP as <code class="docutils literal notranslate"><span class="pre">wqes_processed</span></code> is
+<code class="docutils literal notranslate"><span class="pre">ernic_qp_wqes_processed_total</span></code>.  The tables are
+defined in <code class="docutils literal notranslate"><span class="pre">dev_stats</span></code> and <code class="docutils literal notranslate"><span class="pre">qp_stats</span></code> in
+<code class="docutils literal notranslate"><span class="pre">src/ionic_adminq_priv.h</span></code>:</p>
+<p>The device table, 5 counters:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 100.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Counter</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">commands</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">total_bytes_sent</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">total_bytes_received</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">total_bytes_rdma_read</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">total_bytes_rdma_write</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The per-QP table, 8 counters:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 100.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Counter</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">doorbell_send</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">doorbell_recv</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">wqes_processed</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cqes_posted</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">bytes_sent</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">bytes_received</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">bytes_rdma_read</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">bytes_rdma_write</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>So the device exports two counter sets, and they stand
+differently against the silicon the emulator models:</p>
+<ul class="simple">
+<li><p>The <strong>LIF statistics block</strong> matches.  All 74 named
+counters are at the qword offsets, and under the
+names, that <code class="docutils literal notranslate"><span class="pre">struct</span> <span class="pre">ionic_lif_stats</span></code> gives them in
+the kernel’s <code class="docutils literal notranslate"><span class="pre">ionic_if.h</span></code>, which is the layout the
+Pensando DSC firmware maintains.  A tool that reads
+<code class="docutils literal notranslate"><span class="pre">ip</span> <span class="pre">-s</span> <span class="pre">link</span></code> or the LIF block directly sees what it
+would see on hardware.</p></li>
+<li><p>The <strong>hw_counters tables</strong> do not.  The device and
+per-QP counters the emulator advertises
+(<code class="docutils literal notranslate"><span class="pre">commands</span></code>, <code class="docutils literal notranslate"><span class="pre">total_bytes_sent</span></code>,
+<code class="docutils literal notranslate"><span class="pre">doorbell_send</span></code> and the rest) are its own: they
+describe the emulator’s accounting, and the real
+firmware’s names for its tables are not published in
+the kernel tree or anywhere else we can check.  The
+wire format is right and the driver is happy, but a
+dashboard keyed on these names is keyed on rocm-ernic,
+not on the DSC.</p></li>
+</ul>
+<p>This is a naming difference, not a protocol one.  The
+ABI is firmware-defined on both sides: the driver never
+assumes a counter set, so the emulator is free to
+advertise its own, and there is no guest-visible
+breakage either way.  Anyone with DSC hardware can
+settle the question by comparing the output of
+<code class="docutils literal notranslate"><span class="pre">rdma</span> <span class="pre">statistic</span> <span class="pre">show</span></code> there with <code class="docutils literal notranslate"><span class="pre">dev_stats</span></code>.</p>
+</section>
 </section>
 <section id="grafana-dashboard">
-<h2><a class="toc-backref" href="#id10" role="doc-backlink">Grafana Dashboard</a><a class="headerlink" href="#grafana-dashboard" title="Link to this heading">#</a></h2>
+<h2><a class="toc-backref" href="#id12" role="doc-backlink">Grafana Dashboard</a><a class="headerlink" href="#grafana-dashboard" title="Link to this heading">#</a></h2>
 <p>The dashboard JSON is at
 <code class="docutils literal notranslate"><span class="pre">prometheus/grafana/ernic-dashboard.json</span></code> in the
 source tree and
@@ -848,12 +1349,18 @@ rate panels; a per-QP traffic table.</p></li>
 <li><p><strong>Server Health</strong> – FLR reset count over time,
 commands/s, interrupts/s, MMIO read/write rates,
 and stats write count.</p></li>
+<li><p><strong>LIF Counters (ionic_lif_stats)</strong> – the ionic
+LIF statistics block: RDMA packet rate, RDMA error
+rate, Ethernet drop and ring-error rate, and a table
+of every counter that has moved.  The two rate
+panels filter out flat-zero series, so a line
+appearing is itself the signal.</p></li>
 <li><p><strong>VM Metrics</strong> – guest-side panels for VM CPU,
 memory and disk I/O, TCP/IP rates on the
 <code class="docutils literal notranslate"><span class="pre">rocm-ernic0</span></code> and management interfaces, RDMA port
 data and packet rates, and GPU temperature,
 utilisation, power, clock and PCIe bandwidth.</p>
-<p>Unlike rows 1-4, this row does not read from
+<p>Unlike rows 1-5, this row does not read from
 <code class="docutils literal notranslate"><span class="pre">ernic-exporter</span></code>.  Its panels query <code class="docutils literal notranslate"><span class="pre">node_*</span></code>,
 <code class="docutils literal notranslate"><span class="pre">rdma_port_*</span></code> and <code class="docutils literal notranslate"><span class="pre">gpu_*</span></code> series from separate
 <code class="docutils literal notranslate"><span class="pre">ernic-vm-node</span></code>, <code class="docutils literal notranslate"><span class="pre">ernic-vm-rdma</span></code> and
@@ -871,7 +1378,7 @@ and <code class="docutils literal notranslate"><span class="pre">$role</span></c
 data.  Default refresh is 10 s with a 1 h time window.</p>
 </section>
 <section id="useful-promql-examples">
-<h2><a class="toc-backref" href="#id11" role="doc-backlink">Useful PromQL Examples</a><a class="headerlink" href="#useful-promql-examples" title="Link to this heading">#</a></h2>
+<h2><a class="toc-backref" href="#id13" role="doc-backlink">Useful PromQL Examples</a><a class="headerlink" href="#useful-promql-examples" title="Link to this heading">#</a></h2>
 <p>Aggregate RDMA throughput across all instances:</p>
 <div class="highlight-promql notranslate"><div class="highlight"><pre><span></span><span class="k">sum</span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">ernic_rdma_bytes_total</span><span class="p">[</span><span class="s">5m</span><span class="p">]</span><span class="o">))</span>
 </pre></div>
@@ -880,6 +1387,26 @@ data.  Default refresh is 10 s with a 1 h time window.</p>
 <div class="highlight-promql notranslate"><div class="highlight"><pre><span></span><span class="w">  </span><span class="kr">rate</span><span class="o">(</span><span class="nv">ernic_rdma_bytes_total</span><span class="p">[</span><span class="s">5m</span><span class="p">]</span><span class="o">)</span>
 <span class="o">/</span><span class="w"> </span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">ernic_rdma_bytes_total</span><span class="p">[</span><span class="s">5m</span><span class="p">]</span><span class="o">)</span>
 <span class="w">   </span><span class="o">+</span><span class="w"> </span><span class="kr">rate</span><span class="o">(</span><span class="nv">ernic_ip_bytes_total</span><span class="p">[</span><span class="s">5m</span><span class="p">]</span><span class="o">))</span>
+</pre></div>
+</div>
+<p>Any RDMA error the device reported, across the
+cluster:</p>
+<div class="highlight-promql notranslate"><div class="highlight"><pre><span></span><span class="k">sum</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">counter</span><span class="o">)</span><span class="w"> </span><span class="o">(</span>
+<span class="w">  </span><span class="kr">rate</span><span class="o">(</span><span class="nv">ernic_lif_counter_total</span><span class="p">{</span>
+<span class="w">    </span><span class="nl">counter</span><span class="o">=~</span><span class="p">"</span><span class="s">rdma_(req|resp)_.*</span><span class="p">"}[</span><span class="s">5m</span><span class="p">]</span><span class="o">)</span>
+<span class="o">)</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">0</span>
+</pre></div>
+</div>
+<p>One LIF counter by name, as a guest would read it from
+<code class="docutils literal notranslate"><span class="pre">hw_counters</span></code>:</p>
+<div class="highlight-promql notranslate"><div class="highlight"><pre><span></span><span class="nv">ernic_lif_counter_total</span><span class="p">{</span><span class="nl">counter</span><span class="o">=</span><span class="p">"</span><span class="s">tx_rdma_ucast_bytes</span><span class="p">"}</span>
+</pre></div>
+</div>
+<p>Frames the emulated datapath dropped:</p>
+<div class="highlight-promql notranslate"><div class="highlight"><pre><span></span><span class="k">sum</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">ernic_id</span><span class="o">)</span><span class="w"> </span><span class="o">(</span>
+<span class="w">  </span><span class="kr">rate</span><span class="o">(</span><span class="nv">ernic_lif_counter_total</span><span class="p">{</span>
+<span class="w">    </span><span class="nl">counter</span><span class="o">=~</span><span class="p">"</span><span class="s">.*_drop_packets</span><span class="p">"}[</span><span class="s">5m</span><span class="p">]</span><span class="o">)</span>
+<span class="o">)</span>
 </pre></div>
 </div>
 <p>Alert when any instance is down:</p>
@@ -949,6 +1476,8 @@ data.  Default refresh is 10 s with a 1 h time window.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#network-traffic">Network Traffic</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#device-health-and-events">Device Health and Events</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#per-qp-metrics">Per-QP Metrics</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#lif-counters">LIF Counters</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-hw-counters-and-real-silicon">Guest hw_counters and real silicon</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#grafana-dashboard">Grafana Dashboard</a></li>

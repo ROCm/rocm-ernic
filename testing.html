@@ -551,7 +551,7 @@ and a fixture that starts a manager and some workers</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">check.py</span></code> – the small test runner the suites report
 through</p></li>
 </ul>
-<p>Three suites are registered with CTest:</p>
+<p>Four suites are registered with CTest:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">ernic-vfu-client</span></code>: version negotiation, device and
 region info, PCI configuration space, BAR access, DMA
@@ -563,13 +563,27 @@ memory regions whose pages are deliberately out of order,
 sends with several SGEs or an inline payload, RDMA reads
 and writes, shared receive queues, and the keys and lengths
 that must fail</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ernic-ionic-hw-stats</span></code>: the hardware statistics behind a
+guest’s <code class="docutils literal notranslate"><span class="pre">hw_counters</span></code> – the <code class="docutils literal notranslate"><span class="pre">STATS_HDRS</span></code>,
+<code class="docutils literal notranslate"><span class="pre">STATS_VALS</span></code>, <code class="docutils literal notranslate"><span class="pre">QP_STATS_HDRS</span></code> and <code class="docutils literal notranslate"><span class="pre">QP_STATS_VALS</span></code>
+tables, that they describe themselves the way the driver
+reads them, that a buffer too small for the table gets
+whole entries only, that values for a QP that does not
+exist are refused rather than zero-filled, and that the
+<code class="docutils literal notranslate"><span class="pre">--stats-file</span></code> the exporter reads carries the same
+numbers. It drives a SEND, an RDMA WRITE and an RDMA READ
+of three distinct sizes, and checks that every counter in
+both tables moves by exactly the right amount on the right
+QP. The structural checks read whatever set the device
+advertises, so a counter added to either table is covered
+without touching the test</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">ernic-mesh-stress</span></code>: a three-node mesh under traffic
 between every pair of nodes, peers that send frames no real
 node sends, the protocol version gate in both directions,
 and nodes killed and restarted while the manager’s
 descriptors are counted</p></li>
 </ul>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>-R<span class="w"> </span><span class="s1">'^ernic-(vfu|ionic-driver|mesh)'</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>-R<span class="w"> </span><span class="s1">'^ernic-(vfu|ionic|mesh)'</span>
 </pre></div>
 </div>
 <p>To run one directly, and to vary the mesh:</p>

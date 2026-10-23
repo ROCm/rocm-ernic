@@ -395,6 +395,14 @@ Not counted yet: ``rx_queue_disabled`` (the receive path
 skips queues that are not initialized) and the RDMA error
 counters at qwords 96 to 125, which stay zero.
 
+``ernic-exporter`` reads that section and publishes every
+counter as ``ernic_lif_counter_total``, labelled with the
+``ionic_if.h`` name; the Grafana dashboard graphs them.
+The guest's separate RDMA ``hw_counters`` view, which
+the device serves from the admin queue rather than from
+this block, and how the two counter sets compare with
+the silicon, are in :doc:`monitoring`.
+
 Guest Driver: Patched Upstream ionic
 ------------------------------------
 
