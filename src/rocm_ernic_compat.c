@@ -62,24 +62,29 @@ pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
     /* Store backend type and config in device for later use */
     pvrdma->backend_dev.backend_type = backend_type;
 
-    /* Extract backend config (part after ':') from backend string */
-    const char *colon = strchr(backend_type_str, ':');
+    /* Extract backend config (part after ':') from backend string, which
+     * may be NULL, meaning "none" */
+    const char *colon = backend_type_str ? strchr(backend_type_str, ':') : NULL;
     const char *backend_config_from_string = colon ? (colon + 1) : NULL;
+    const char *name = NULL;
 
     /* Set backend device configuration based on backend type */
     if (backend_type == RDMA_BACKEND_TYPE_VERBS) {
         /* For verbs backend, prefer explicit ib_dev_name, fallback to config
          * string */
-        if (ib_dev_name) {
-            pvrdma->backend_device_name = strdup(ib_dev_name);
-        } else if (backend_config_from_string) {
-            pvrdma->backend_device_name = strdup(backend_config_from_string);
-        }
+        name = ib_dev_name ? ib_dev_name : backend_config_from_string;
     } else if (backend_config_from_string) {
         /* For other backends (loopback, etc), use config from backend string */
-        pvrdma->backend_device_name = strdup(backend_config_from_string);
-        rdma_info_report("Backend config string: '%s'",
-                         pvrdma->backend_device_name);
+        name = backend_config_from_string;
+        rdma_info_report("Backend config string: '%s'", name);
+    }
+    if (name) {
+        pvrdma->backend_device_name = strdup(name);
+        if (!pvrdma->backend_device_name) {
+            rdma_error_report("Failed to allocate the backend config");
+            free(pvrdma);
+            return NULL;
+        }
     }
 
     /* Copy MAC address from rocm_ernic_dev */
@@ -494,6 +499,10 @@ void pvrdma_set_stats_file(pvrdma_handle_t handle, const char *stats_file)
     free(pvrdma->stats.stats_file);
     if (stats_file) {
         pvrdma->stats.stats_file = strdup(stats_file);
+        if (!pvrdma->stats.stats_file) {
+            rdma_error_report("stats file: out of memory for its path; "
+                              "statistics won't be written");
+        }
     } else {
         pvrdma->stats.stats_file = NULL;
     }
@@ -511,10 +520,16 @@ void pvrdma_set_stats_instance_info(pvrdma_handle_t handle,
 
     free(pvrdma->stats_socket_path);
     pvrdma->stats_socket_path = socket_path ? strdup(socket_path) : NULL;
+    if (socket_path && !pvrdma->stats_socket_path) {
+        rdma_error_report("stats file: out of memory for the socket path");
+    }
 
     free(pvrdma->stats_backend_str);
     pvrdma->stats_backend_str =
         backend_type_str ? strdup(backend_type_str) : NULL;
+    if (backend_type_str && !pvrdma->stats_backend_str) {
+        rdma_error_report("stats file: out of memory for the backend");
+    }
 }
 
 void pvrdma_set_stats_pci_ids(pvrdma_handle_t handle, uint16_t vid,
@@ -540,6 +555,10 @@ void pvrdma_set_stats_connection_state(pvrdma_handle_t handle,
     free(pvrdma->stats_connection_str);
     pvrdma->stats_connection_str =
         connection_str ? strdup(connection_str) : NULL;
+    if (connection_str && !pvrdma->stats_connection_str) {
+        rdma_error_report("stats file: out of memory for the connection "
+                          "state");
+    }
 }
 
 void pvrdma_set_stats_nic_profile(pvrdma_handle_t handle, const char *profile)

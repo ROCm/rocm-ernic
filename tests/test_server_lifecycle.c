@@ -590,6 +590,23 @@ static const struct lifecycle_case cases[] = {
      .want_dropped = 0,
      .want_shutdown = 0,
      .want_line = "Registration timeout"},
+    /* A bare "tcp" names no role, so the backend is given no config */
+    {.category = "negative",
+     .description = "TCP backend with no manager or worker role",
+     .expected = "the backend refuses it and the server exits non-zero, "
+                 "rather than crashing",
+     .backend = "tcp",
+     .want_socket = false,
+     .want_gone = true,
+     .settle = false,
+     .action = IDLE,
+     .clients = 0,
+     .sig = 0,
+     .sigs = 0,
+     .want_exit = -1,
+     .want_dropped = 0,
+     .want_shutdown = 0,
+     .want_line = "TCP backend: No config"},
     /* Attaching the TAP comes after the backend has started its threads.
      * '/' is never valid in an interface name, so the attach fails whether
      * or not the test can create TAP devices.  "Cleaning up" is logged at

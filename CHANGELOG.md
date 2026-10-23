@@ -700,6 +700,15 @@
 
 ### Fixed
 
+* `--backend tcp`, with no `manager:` or `worker:` role, crashed the server
+  with a segmentation fault. The TCP backend now refuses it with "TCP
+  backend: No config" and the server exits non-zero. `server-lifecycle`
+  covers it.
+* The server checks for running out of memory where it copies the
+  `--backend` and `--stats-file` arguments and the backend's configuration,
+  and exits with an error rather than crashing or running without them. If
+  it can't copy the stats file's path, or a string the stats file shows, it
+  logs an error rather than silently leaving it out.
 * A guest could make the server read and write freed memory. The RDMA
   driver's `RDMA_RESET_LIF` command freed the RDMA admin queue's state, but
   the Ethernet emulator kept a pointer to it until the guest created a new

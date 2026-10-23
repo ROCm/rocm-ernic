@@ -39,6 +39,7 @@
 #include "ionic_eth_emu.h"
 #include "ionic_eth_emu_priv.h"
 #include "ionic_eth_net.h"
+#include "ionic_profile.h"
 #include "rocm_ernic_compat.h"
 
 /* ---- Fake guest memory ------------------------------------------------- */
@@ -238,6 +239,10 @@ static void test_transceiver_is_published(void)
 {
     struct ionic_eth_emu *emu = ionic_eth_emu_create(NULL, 4096);
 
+    CHECK(emu != NULL, "ionic_eth_emu_create failed");
+    if (!emu)
+        return;
+
     memset(g_mem, 0, sizeof(g_mem));
     run_port_init(emu, PORT_INFO_PA);
 
@@ -267,6 +272,10 @@ static void test_speed_is_non_zero(void)
 {
     struct ionic_eth_emu *emu = ionic_eth_emu_create(NULL, 4096);
 
+    CHECK(emu != NULL, "ionic_eth_emu_create failed");
+    if (!emu)
+        return;
+
     memset(g_mem, 0, sizeof(g_mem));
     run_port_init(emu, PORT_INFO_PA);
 
@@ -291,6 +300,10 @@ static void test_speed_is_non_zero(void)
 static void test_port_is_up(void)
 {
     struct ionic_eth_emu *emu = ionic_eth_emu_create(NULL, 4096);
+
+    CHECK(emu != NULL, "ionic_eth_emu_create failed");
+    if (!emu)
+        return;
 
     memset(g_mem, 0, sizeof(g_mem));
     run_port_init(emu, PORT_INFO_PA);
@@ -335,6 +348,10 @@ static void test_null_info_pa_is_harmless(void)
 {
     struct ionic_eth_emu *emu = ionic_eth_emu_create(NULL, 4096);
 
+    CHECK(emu != NULL, "ionic_eth_emu_create failed");
+    if (!emu)
+        return;
+
     memset(g_mem, 0xa5, sizeof(g_mem));
     run_port_init(emu, 0);
 
@@ -348,6 +365,10 @@ static void test_port_init_is_idempotent(void)
 {
     struct ionic_eth_emu *emu = ionic_eth_emu_create(NULL, 4096);
     uint8_t first[IONIC_PORT_INFO_PUBLISHED_LEN];
+
+    CHECK(emu != NULL, "ionic_eth_emu_create failed");
+    if (!emu)
+        return;
 
     memset(g_mem, 0, sizeof(g_mem));
     run_port_init(emu, PORT_INFO_PA);
@@ -368,6 +389,10 @@ static void test_write_stays_within_the_published_window(void)
 {
     struct ionic_eth_emu *emu = ionic_eth_emu_create(NULL, 4096);
     size_t i;
+
+    CHECK(emu != NULL, "ionic_eth_emu_create failed");
+    if (!emu)
+        return;
 
     memset(g_mem, 0, sizeof(g_mem));
     memset(g_mem + PORT_INFO_PA + IONIC_PORT_INFO_PUBLISHED_LEN, 0x5a, 256);
@@ -447,6 +472,10 @@ static void test_srq_capability_is_published(void)
     uint8_t comp[16] = {0};
     uint32_t qid_count;
 
+    CHECK(emu != NULL, "ionic_eth_emu_create failed");
+    if (!emu)
+        return;
+
     memset(data, 0xaa, sizeof(data)); /* poison: prove we write every field */
     ionic_eth_emu_handle_lif_identify(emu, cmd, comp, data);
 
@@ -482,6 +511,10 @@ static void test_srq_gate_needs_count_and_alloc_bit(void)
     uint8_t cmd[64] = {0};
     uint8_t comp[16] = {0};
     uint32_t qid_count;
+
+    CHECK(emu != NULL, "ionic_eth_emu_create failed");
+    if (!emu)
+        return;
 
     memset(data, 0, sizeof(data));
     ionic_eth_emu_handle_lif_identify(emu, cmd, comp, data);

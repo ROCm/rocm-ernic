@@ -1494,6 +1494,11 @@ int main(int argc, char *argv[])
     /* Set defaults */
     dev->backend_type_str =
         strdup("loopback"); /* Default to "loopback" backend */
+    if (!dev->backend_type_str) {
+        fprintf(stderr, "Error: out of memory\n");
+        dev_free(dev);
+        return EXIT_FAILURE;
+    }
     ionic_profile_defaults(&dev->profile);
     dev->backend_port_num = 1;
     dev->verbose = false;
@@ -1532,6 +1537,11 @@ int main(int argc, char *argv[])
         case 'b':
             free(dev->backend_type_str);
             dev->backend_type_str = strdup(optarg);
+            if (!dev->backend_type_str) {
+                fprintf(stderr, "Error: --backend: out of memory\n");
+                dev_free(dev);
+                return EXIT_FAILURE;
+            }
             break;
         case 'v':
             dev->verbose = true;
@@ -1550,6 +1560,11 @@ int main(int argc, char *argv[])
             /* Store stats file path - will be set after device init */
             free(dev->stats_file_path);
             dev->stats_file_path = strdup(optarg);
+            if (!dev->stats_file_path) {
+                fprintf(stderr, "Error: --stats-file: out of memory\n");
+                dev_free(dev);
+                return EXIT_FAILURE;
+            }
             break;
         case 'l':
             log_file_path = optarg;
