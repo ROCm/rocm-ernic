@@ -40,6 +40,7 @@
 #include <strings.h>
 #include <sys/socket.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "parse_int.h"
 #include "s3_http.h"
@@ -94,7 +95,8 @@ struct s3_target {
     unsigned obj_cap;
 
     struct s3_upload uploads[S3_MAX_UPLOADS];
-    uint32_t next_upload;
+    uint64_t upload_base; /* random offset for upload ids; upload_alloc() */
+    uint64_t next_upload;
 
     uint64_t used;
 };
@@ -439,6 +441,12 @@ struct s3_target *s3_target_create(const struct s3_target_cfg *cfg, char *err,
         free(t);
         return NULL;
     }
+    /* Without entropy the ids are still unique within this target, just
+     * no longer distinct from a previous run's, which is no reason to
+     * refuse to start. */
+    if (getentropy(&t->upload_base, sizeof(t->upload_base)) != 0) {
+        t->upload_base = 0;
+    }
     t->next_upload = 1;
     return t;
 }
@@ -622,8 +630,16 @@ static struct s3_upload *upload_alloc(struct s3_target *t, const char *key)
         }
         memset(u, 0, sizeof(*u));
         u->in_use = true;
-        snprintf(u->id, sizeof(u->id), "%08x%08x", t->next_upload++,
-                 (unsigned)(uintptr_t)u & 0xffffffffu);
+        /*
+         * The id goes back to the client, so nothing of the host's goes
+         * into it.  The counter makes it unique among this target's
+         * uploads (the sum may wrap, but adding a fixed base still maps
+         * distinct counts to distinct ids), and the random base makes an
+         * id a client kept from before a restart all but certain to name
+         * no upload in the new run.
+         */
+        snprintf(u->id, sizeof(u->id), "%016" PRIx64,
+                 t->upload_base + t->next_upload++);
         snprintf(u->key, sizeof(u->key), "%s", key);
         return u;
     }

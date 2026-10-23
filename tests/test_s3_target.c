@@ -1385,6 +1385,83 @@ static void test_overlong_upload_id(void)
     ok(name);
 }
 
+/* Initiate an upload of @key on @t and lift its id into @id. */
+static bool initiate(struct s3_target *t, const char *key, char *id,
+                     size_t idlen, const char *name)
+{
+    struct reply r;
+    char target[128];
+    bool got;
+
+    snprintf(target, sizeof(target), "/ernic/%s?uploads", key);
+    if (!exec_req(t, &r, NULL, NULL, "POST", target, NULL, NULL, NULL, 0)) {
+        fail(name, "initiate %s could not be built", key);
+        return false;
+    }
+    got = take_upload_id(r.text, id, idlen, name);
+    reply_free(&r);
+    return got;
+}
+
+static bool upload_id_shape_ok(const char *id)
+{
+    return strlen(id) == 16 && strspn(id, "0123456789abcdef") == 16;
+}
+
+/*
+ * An uploadId goes back to the client, so it must carry nothing of the
+ * host's.  It once held the low half of the upload slot's heap address,
+ * so two uploads in turn through the same slot shared their last eight
+ * hex digits.
+ */
+static void test_upload_id(void)
+{
+    const char *name = "upload-id";
+    struct s3_target *t = make_target(NULL);
+    struct s3_target *t2 = NULL;
+    struct reply r;
+    char first[64] = "", second[64] = "", other[64] = "";
+    char target[128];
+
+    if (t == NULL)
+        return;
+
+    if (!initiate(t, "k", first, sizeof(first), name))
+        goto out;
+    snprintf(target, sizeof(target), "/ernic/k?uploadId=%s", first);
+    if (exec_req(t, &r, NULL, NULL, "DELETE", target, NULL, NULL, NULL, 0)) {
+        if (r.resp.status != 204)
+            fail(name, "abort gave status %d, want 204", r.resp.status);
+        reply_free(&r);
+    }
+    /* With the first aborted, the second takes the same slot. */
+    if (!initiate(t, "k", second, sizeof(second), name))
+        goto out;
+
+    if (!upload_id_shape_ok(first) || !upload_id_shape_ok(second))
+        fail(name, "ids \"%s\" and \"%s\" are not 16 lowercase hex digits",
+             first, second);
+    if (strcmp(first + 8, second + 8) == 0)
+        fail(name, "two uploads through one slot share a suffix: %s, %s", first,
+             second);
+
+    /* A fresh target, as after a restart, must not hand out the ids the
+     * old one did, or a client's stale id would name a stranger's upload
+     * of the same key. */
+    t2 = make_target(NULL);
+    if (t2 == NULL)
+        goto out;
+    if (!initiate(t2, "k", other, sizeof(other), name))
+        goto out;
+    if (strcmp(first, other) == 0)
+        fail(name, "two targets both began with upload id %s", first);
+
+    ok(name);
+out:
+    s3_target_destroy(t2);
+    s3_target_destroy(t);
+}
+
 /* Capacity and the object-slot ceiling are what stop a runaway client
  * from turning the emulator into an OOM kill. */
 static void test_capacity(void)
@@ -1604,6 +1681,7 @@ int main(void)
     test_multipart_errors();
     test_multipart_part_rejected();
     test_overlong_upload_id();
+    test_upload_id();
     test_capacity();
     test_multipart_capacity();
     test_peer_token();
