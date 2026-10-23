@@ -18,6 +18,9 @@ is RoCE, which addresses it by GID, so this:
 - Links libibverbs, which the example calls directly, instead of
   librdmacm, which it never calls and which the guest image has no
   link-time library for.
+- Sets SO_REUSEADDR on the server's socket before binding it: every run
+  uses the same port, and a rerun must not fail with EADDRINUSE while
+  the last run's connection is still in TIME_WAIT.
 
 diff --git a/Makefile b/Makefile
 index 162bcbc..ad5ad4c 100644
@@ -254,10 +257,31 @@ index 5f93a6d..9988460 100644
      char   *ib_buf;
      size_t  ib_buf_size;
 diff --git a/sock.c b/sock.c
-index e7e58ed..446c477 100644
+index e7e58ed..adcafba 100644
 --- a/sock.c
 +++ b/sock.c
-@@ -146,8 +146,11 @@ int sock_set_qp_info(int sock_fd, struct QPInfo *qp_info)
+@@ -57,6 +57,7 @@ int sock_create_bind (char *port)
+     struct addrinfo hints;
+     struct addrinfo *result, *rp;
+     int sock_fd = -1, ret = 0;
++    int reuse = 1;
+ 
+     memset(&hints, 0, sizeof(struct addrinfo));
+     hints.ai_socktype = SOCK_STREAM;
+@@ -72,6 +73,12 @@ int sock_create_bind (char *port)
+             continue;
+         }
+ 
++        /* The port is reused by the next run, which must not fail
++         * while the last connection is still in TIME_WAIT. */
++        ret = setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, &reuse,
++                         sizeof(reuse));
++        check(ret==0, "setsockopt SO_REUSEADDR.");
++
+         ret = bind(sock_fd, rp->ai_addr, rp->ai_addrlen);
+         if (ret == 0) {
+             /* bind success */
+@@ -146,8 +153,11 @@ int sock_set_qp_info(int sock_fd, struct QPInfo *qp_info)
      int n;
      struct QPInfo tmp_qp_info;
  
@@ -269,7 +293,7 @@ index e7e58ed..446c477 100644
      
      n = sock_write(sock_fd, (char *)&tmp_qp_info, sizeof(struct QPInfo));
      check(n==sizeof(struct QPInfo), "write qp_info to socket.");
-@@ -168,6 +171,7 @@ int sock_get_qp_info(int sock_fd, struct QPInfo *qp_info)
+@@ -168,6 +178,7 @@ int sock_get_qp_info(int sock_fd, struct QPInfo *qp_info)
  
      qp_info->lid       = ntohs(tmp_qp_info.lid);
      qp_info->qp_num    = ntohl(tmp_qp_info.qp_num);

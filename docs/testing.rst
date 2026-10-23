@@ -616,9 +616,12 @@ address the peer by InfiniBand LID. The play pins each
 example to its commit and applies a patch from
 ``ansible/playbooks/files/rdma-tutorial/`` that exchanges
 the peers' IPv4-mapped GIDs instead, as RoCE needs, and uses
-the port's active MTU. The controller clones the tutorial and
-applies the patches, and copies the result into the guests,
-which build it, so they need neither network access nor git.
+the port's active MTU. It also sets ``SO_REUSEADDR`` on the
+server's socket, so a rerun can bind the same port while the
+last run's connection is still in ``TIME_WAIT``. The
+controller clones the tutorial and applies the patches, and
+copies the result into the guests, which build it, so they
+need neither network access nor git.
 Like perftest's ``-x 1``, the IPv4-mapped GID reaches a peer
 only if its instance advertises the guest's IPv4 address
 (``ERNIC_GUEST_GIDS_<n>``, or ``ernic_guest_gids`` in the
