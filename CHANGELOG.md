@@ -700,6 +700,12 @@
 
 ### Fixed
 
+* A guest could make the server read and write freed memory. The RDMA
+  driver's `RDMA_RESET_LIF` command freed the RDMA admin queue's state, but
+  the Ethernet emulator kept a pointer to it until the guest created a new
+  admin queue, and an admin queue doorbell in between used it. The pointer
+  is now cleared when the state is freed, so such a doorbell is ignored.
+  `ionic-harness-rdma-reset` covers it.
 * The server no longer touches guest memory after its client goes. When a
   client hangs up, libvfio-user unmaps all guest memory before returning to
   the server, but the server still ran that pass's Rx, statistics, admin

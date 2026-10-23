@@ -1215,13 +1215,13 @@ set_tests_properties(log-level-unit PROPERTIES TIMEOUT 60)
 
 # In-process ionic device harness: the whole device, driven as the guest
 # driver drives it, one CTest test per group so a failure names its area.
-# Bring-up and devcmds, refused admin commands, RC transfers, atomics and
-# fast registration, CQ events, UD, SRQ, Ethernet Tx/Rx, and the NVMe-oF
-# CM handshake and Connect over the GSI QP, and the flush a QP entering the
-# Error state owes its outstanding work requests.
+# Bring-up and devcmds, RDMA_RESET_LIF, refused admin commands, RC
+# transfers, atomics and fast registration, CQ events, UD, SRQ, Ethernet
+# Tx/Rx, and the NVMe-oF CM handshake and Connect over the GSI QP, and the
+# flush a QP entering the Error state owes its outstanding work requests.
 set(ERNIC_HARNESS_GROUPS
-    devcmds bringup admin rc atomic cq-events qp-flush qp-flush-srq
-    ud srq eth nvmeof teardown)
+    devcmds bringup rdma-reset admin rc atomic cq-events qp-flush
+    qp-flush-srq ud srq eth nvmeof teardown)
 if(ERNIC_BUILD_P4)
     list(APPEND ERNIC_HARNESS_GROUPS p4-port fp8-map p4-rdma p4-devcmd)
 endif()
