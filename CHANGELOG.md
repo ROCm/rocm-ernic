@@ -700,6 +700,22 @@
 
 ### Fixed
 
+* A file-backed `nvmeof` namespace (`file=`) is now durable when the guest
+  asks for it to be. The controller reported no volatile write cache, so the
+  guest never sent Flush or Force Unit Access and a guest's `fsync()`
+  completed with the data still in the host page cache; a Flush from another
+  initiator only started writeback. The controller now reports a write cache
+  for a file-backed namespace and completes Flush, and writes with Force
+  Unit Access, only once the data is on the image's storage, failing them if
+  writeback fails. A RAM namespace is unchanged. While the host writes back,
+  the server's main loop waits; see `docs/nvmeof.rst`.
+* `--backend nvmeof:file=PATH` no longer truncates an existing image. Without
+  `size=`, an image with data keeps its own size (it was cut or grown to the
+  64 MiB default); an image that isn't a whole number of blocks is refused.
+  A `size=` smaller than the image is refused instead of shrinking it, and a
+  larger one still grows it. A `file=` that isn't a regular file, such as a
+  block device, is refused with a message saying so. The server logs the
+  size it settled on.
 * With `--socket-group`, the server changed the socket's mode by its path,
   following a symlink. In a directory other users can write to, a symlink
   swapped in at the socket's name could make a server running as root give

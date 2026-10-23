@@ -122,6 +122,12 @@ void nvmeof_target_destroy(struct nvmeof_target *t)
 {
     (void)t;
 }
+const struct nvmeof_target_cfg *nvmeof_target_config(
+    const struct nvmeof_target *t)
+{
+    (void)t;
+    return NULL;
+}
 struct nvmeof_queue *nvmeof_target_find_queue(struct nvmeof_target *t,
                                               uint32_t handle)
 {

@@ -103,6 +103,9 @@ static inline void nvme_put_le64(uint8_t *p, uint64_t v)
 #define NVME_SQE_CDW14_OFF  56
 #define NVME_SQE_CDW15_OFF  60
 
+/* Read, Write and Write Zeroes: Force Unit Access, in cdw12 */
+#define NVME_RW_FUA (1u << 30)
+
 /* Fabrics commands overlay the same 64 bytes with fctype at offset 4. */
 #define NVMEOF_SQE_FCTYPE_OFF 4
 
@@ -229,6 +232,11 @@ enum {
     NVME_SC_INVALID_NS = 0x0b,
     NVME_SC_LBA_RANGE = 0x80,
     NVME_SC_CAP_EXCEEDED = 0x81,
+};
+
+/* Media and data integrity (SCT 2) status codes */
+enum {
+    NVME_SC_WRITE_FAULT = 0x80,
 };
 
 /* Command-specific (SCT 1) status codes used by Fabrics Connect */

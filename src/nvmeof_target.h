@@ -43,6 +43,7 @@ struct nvmeof_target_cfg {
     char model[41];
     char *file;          /* NULL: anonymous memory */
     uint64_t size;       /* namespace capacity in bytes */
+    bool size_set;       /* size= was given; else an image keeps its size */
     uint32_t block_size; /* 512 or 4096 */
     uint32_t nsid;
     uint32_t traddr;     /* target IPv4, host byte order */
@@ -70,6 +71,11 @@ void nvmeof_target_cfg_defaults(struct nvmeof_target_cfg *cfg);
 bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
                              char *err, size_t errlen);
 
+/*
+ * An image file that already has data keeps its size unless size= is set,
+ * and a size= smaller than the image is refused rather than truncating it;
+ * nvmeof_target_config() reports the size settled on.
+ */
 struct nvmeof_target *nvmeof_target_create(const struct nvmeof_target_cfg *cfg,
                                            char *err, size_t errlen);
 void nvmeof_target_destroy(struct nvmeof_target *t);

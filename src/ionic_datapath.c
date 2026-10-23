@@ -563,6 +563,8 @@ bool ionic_datapath_attach_nvmeof(struct ionic_datapath *dp,
         return false;
     }
 
+    /* The target's copy has the size an existing image file settled on. */
+    cfg = nvmeof_target_config(dp->nvmeof);
     vfu_log(dp->vfu_ctx, LOG_INFO,
             "ionic_datapath: nvmeof target '%s' %" PRIu64
             " bytes bs=%u at %u.%u.%u.%u:%u",

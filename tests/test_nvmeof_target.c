@@ -19,12 +19,15 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "nvmeof.h"
@@ -300,9 +303,21 @@ static void test_config(void)
     check("config-defaults", cfg.size == (64u << 20),
           "default size is not 64M");
     check("config-defaults", cfg.block_size == 512, "default bs is not 512");
+    check("config-defaults", !cfg.size_set, "the default size counts as set");
+
+    /* Only an explicit size= overrides an existing image's size. */
+    char err[128];
+    if (!nvmeof_target_cfg_parse(&cfg, "bs=4096", err, sizeof(err))) {
+        fail("config-size-set", "bs=4096 rejected: %s", err);
+    }
+    check("config-size-set", !cfg.size_set, "size counts as set without size=");
+    if (!nvmeof_target_cfg_parse(&cfg, "size=64M", err, sizeof(err))) {
+        fail("config-size-set", "size=64M rejected: %s", err);
+    }
+    check("config-size-set", cfg.size_set,
+          "size= equal to the default does not count as set");
 
     /* A later file= must replace an earlier one without leaking. */
-    char err[128];
     nvmeof_target_cfg_defaults(&cfg);
     if (!nvmeof_target_cfg_parse(&cfg, "file=/tmp/a,file=/tmp/b", err,
                                  sizeof(err))) {
@@ -444,6 +459,8 @@ static void test_handshake(void)
           "sqes/cqes do not pin 64/16-byte entries");
     check("id-ctrl", nvme_get_le16(h->buf + 514) != 0, "maxcmd is zero");
     check("id-ctrl", nvme_get_le32(h->buf + 516) == 1, "nn is not 1");
+    check("id-ctrl", h->buf[525] == 0,
+          "a RAM namespace advertises a volatile write cache");
 
     /* Identify Namespace: 1 MiB of 512-byte blocks. */
     memset(h->buf, 0, NVME_IDENTIFY_SIZE);
@@ -633,7 +650,15 @@ static void test_io(void)
           memcmp(back + 2048, src + 2048, nbytes - 2048) == 0,
           "Write Zeroes disturbed the blocks after it");
 
-    /* Flush and Dataset Management are accepted no-ops. */
+    /* On a RAM namespace, Flush, FUA and Dataset Management are accepted
+     * no-ops. */
+    cap_init(&c, NVME_CMD_WRITE_ZEROES, 28);
+    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    nvme_put_le64(c.b + NVME_SQE_CDW10_OFF, 18);
+    nvme_put_le32(c.b + NVME_SQE_CDW12_OFF, NVME_RW_FUA);
+    nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
+    check("io-fua", rsp_status(rsp) == 0, "Write Zeroes with FUA failed");
+
     cap_init(&c, NVME_CMD_FLUSH, 25);
     nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
     nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
@@ -858,7 +883,7 @@ static void test_discovery(void)
 /* ------------------------------------------------------------------ */
 
 static void write_one_block(struct nvmeof_queue *q, struct host_mem *h,
-                            uint64_t slba, const uint8_t *data)
+                            uint64_t slba, uint32_t cdw12, const uint8_t *data)
 {
     struct capsule c;
     uint8_t rsp[NVME_CQE_SIZE];
@@ -867,12 +892,43 @@ static void write_one_block(struct nvmeof_queue *q, struct host_mem *h,
     cap_init(&c, NVME_CMD_WRITE, 50);
     nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
     nvme_put_le64(c.b + NVME_SQE_CDW10_OFF, slba);
+    nvme_put_le32(c.b + NVME_SQE_CDW12_OFF, cdw12);
     cap_keyed_sgl(&c, HOST_BASE, 512, HOST_RKEY);
     nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
     if (rsp_status(rsp) != 0) {
         fail("file-backing", "write failed with status 0x%04x",
              rsp_status(rsp));
     }
+}
+
+/* Read one block into the start of host memory; returns the status. */
+static uint16_t read_one_block(struct nvmeof_queue *q, struct host_mem *h,
+                               uint64_t slba)
+{
+    struct capsule c;
+    uint8_t rsp[NVME_CQE_SIZE];
+
+    memset(h->buf, 0, 512);
+    cap_init(&c, NVME_CMD_READ, 52);
+    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    nvme_put_le64(c.b + NVME_SQE_CDW10_OFF, slba);
+    cap_keyed_sgl(&c, HOST_BASE, 512, HOST_RKEY);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    return rsp_status(rsp);
+}
+
+/* Identify Controller's vwc byte, or -1 if Identify failed. */
+static int read_vwc(struct nvmeof_queue *aq, struct host_mem *h)
+{
+    struct capsule c;
+    uint8_t rsp[NVME_CQE_SIZE];
+
+    memset(h->buf, 0xa5, NVME_IDENTIFY_SIZE);
+    cap_init(&c, NVME_ADMIN_IDENTIFY, 54);
+    nvme_put_le32(c.b + NVME_SQE_CDW10_OFF, NVME_ID_CNS_CTRL);
+    cap_keyed_sgl(&c, HOST_BASE, NVME_IDENTIFY_SIZE, HOST_RKEY);
+    nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
+    return rsp_status(rsp) == 0 ? h->buf[525] : -1;
 }
 
 static void test_file_backing(void)
@@ -893,14 +949,16 @@ static void test_file_backing(void)
     h->rkey = HOST_RKEY;
 
     uint8_t pattern[512];
+    uint8_t fua_pattern[512];
     for (int i = 0; i < 512; i++) {
         pattern[i] = (uint8_t)(i ^ 0x5a);
+        fua_pattern[i] = (uint8_t)(i ^ 0xc3);
     }
 
     char opts[256];
     snprintf(opts, sizeof(opts), "size=1M,file=%s", path);
 
-    /* First instance: connect, write one block, shut down. */
+    /* First instance: connect, write two blocks, shut down. */
     struct nvmeof_target *t = make_target(opts);
     if (t != NULL) {
         uint8_t rsp[NVME_CQE_SIZE];
@@ -908,34 +966,53 @@ static void test_file_backing(void)
         do_connect(aq, h, 0, 31, "nvmet-test", "nqn.host", rsp);
         struct nvmeof_queue *ioq = nvmeof_target_open_queue(t, 2);
         do_connect(ioq, h, 1, 31, "nvmet-test", "nqn.host", rsp);
-        write_one_block(ioq, h, 3, pattern);
+
+        /* Without a volatile write cache, the host sends neither Flush nor
+         * FUA, and a guest's fsync() never reaches the image. */
+        int vwc = read_vwc(aq, h);
+        check("file-vwc", vwc == 0x05,
+              "a file-backed namespace does not advertise a volatile write "
+              "cache that needs the namespace's own NSID to flush");
+
+        write_one_block(ioq, h, 3, 0, pattern);
+        write_one_block(ioq, h, 4, NVME_RW_FUA, fua_pattern);
 
         struct capsule c;
+        cap_init(&c, NVME_CMD_WRITE_ZEROES, 53);
+        nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+        nvme_put_le64(c.b + NVME_SQE_CDW10_OFF, 5);
+        nvme_put_le32(c.b + NVME_SQE_CDW12_OFF, NVME_RW_FUA);
+        nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
+        check("file-fua", rsp_status(rsp) == 0, "Write Zeroes with FUA failed");
+
         cap_init(&c, NVME_CMD_FLUSH, 51);
         nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
         nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
+        check("file-flush", rsp_status(rsp) == 0, "Flush failed");
         nvmeof_target_destroy(t);
     }
 
-    /* Second instance over the same file must see the block. */
+    /* Second instance over the same file, without size=, must keep the
+     * image's size and see both blocks. */
+    snprintf(opts, sizeof(opts), "file=%s", path);
     t = make_target(opts);
     if (t != NULL) {
         uint8_t rsp[NVME_CQE_SIZE];
-        struct capsule c;
         struct nvmeof_queue *aq = nvmeof_target_open_queue(t, 1);
         do_connect(aq, h, 0, 31, "nvmet-test", "nqn.host", rsp);
         struct nvmeof_queue *ioq = nvmeof_target_open_queue(t, 2);
         do_connect(ioq, h, 1, 31, "nvmet-test", "nqn.host", rsp);
 
-        memset(h->buf, 0, 512);
-        cap_init(&c, NVME_CMD_READ, 52);
-        nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
-        nvme_put_le64(c.b + NVME_SQE_CDW10_OFF, 3);
-        cap_keyed_sgl(&c, HOST_BASE, 512, HOST_RKEY);
-        nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
-        check("file-backing", rsp_status(rsp) == 0, "read back failed");
+        check("file-backing", nvmeof_target_config(t)->size == (1u << 20),
+              "reopening an image without size= did not keep its size");
+        check("file-backing", read_one_block(ioq, h, 3) == 0,
+              "read back failed");
         check("file-backing", memcmp(h->buf, pattern, 512) == 0,
               "file-backed namespace did not survive a restart");
+        check("file-fua", read_one_block(ioq, h, 4) == 0,
+              "FUA read back failed");
+        check("file-fua", memcmp(h->buf, fua_pattern, 512) == 0,
+              "a FUA write did not survive a restart");
         nvmeof_target_destroy(t);
     }
 
@@ -965,6 +1042,139 @@ static void test_file_backing(void)
 
     unlink(path);
     free(h);
+}
+
+/* Parse opts and create a target, leaving any error in err. */
+static struct nvmeof_target *try_target(const char *opts, char *err,
+                                        size_t errlen)
+{
+    struct nvmeof_target_cfg cfg;
+    struct nvmeof_target *t = NULL;
+
+    nvmeof_target_cfg_defaults(&cfg);
+    if (nvmeof_target_cfg_parse(&cfg, opts, err, errlen)) {
+        t = nvmeof_target_create(&cfg, err, errlen);
+    }
+    free(cfg.file);
+    return t;
+}
+
+/* Size of the open file, or UINT64_MAX if fstat() fails. */
+static uint64_t fd_size(int fd)
+{
+    struct stat st;
+
+    if (fstat(fd, &st) != 0 || st.st_size < 0) {
+        return UINT64_MAX;
+    }
+    return (uint64_t)st.st_size;
+}
+
+/*
+ * An image may hold an earlier run's data, so the size a target settles on
+ * must never cost the image its end.
+ */
+static void test_image_size(void)
+{
+    char path[] = "/tmp/ernic-nvmeof-sizeXXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0) {
+        fail("image-size", "mkstemp failed");
+        return;
+    }
+
+    const uint64_t def = UINT64_C(64) << 20;
+    char opts[256];
+    char err[256] = "";
+    struct nvmeof_target *t;
+
+    /* An empty image is sized to the default. */
+    snprintf(opts, sizeof(opts), "file=%s", path);
+    t = try_target(opts, err, sizeof(err));
+    if (t == NULL) {
+        fail("image-new", "an empty image was refused: %s", err);
+    } else {
+        check("image-new", nvmeof_target_config(t)->size == def,
+              "an empty image was not given the default size");
+    }
+    nvmeof_target_destroy(t);
+    check("image-new", fd_size(fd) == def,
+          "an empty image was not grown to the default size");
+
+    /* A size= smaller than the image is refused, and the image kept. */
+    snprintf(opts, sizeof(opts), "size=1M,file=%s", path);
+    t = try_target(opts, err, sizeof(err));
+    check("image-shrink", t == NULL,
+          "a size= smaller than the image was taken");
+    check("image-shrink", strstr(err, "would truncate") != NULL,
+          "refusing to shrink the image did not say why");
+    nvmeof_target_destroy(t);
+    check("image-shrink", fd_size(fd) == def, "a refused size= truncated it");
+
+    /* A larger one grows it. */
+    snprintf(opts, sizeof(opts), "size=128M,file=%s", path);
+    t = try_target(opts, err, sizeof(err));
+    if (t == NULL) {
+        fail("image-grow", "a size= larger than the image was refused: %s",
+             err);
+    } else {
+        check("image-grow", nvmeof_target_config(t)->size == 2 * def,
+              "growing the image did not change the namespace size");
+    }
+    nvmeof_target_destroy(t);
+    check("image-grow", fd_size(fd) == 2 * def, "the image was not grown");
+
+    /* Without size=, an image that isn't whole blocks is refused rather
+     * than having its tail cut off or hidden. */
+    if (ftruncate(fd, (off_t)def + 100) != 0) {
+        fail("image-partial", "cannot resize %s", path);
+    } else {
+        snprintf(opts, sizeof(opts), "file=%s", path);
+        t = try_target(opts, err, sizeof(err));
+        check("image-partial", t == NULL,
+              "an image of a partial block was taken without size=");
+        check("image-partial", strstr(err, "not a multiple of bs") != NULL,
+              "refusing a partial block did not say why");
+        nvmeof_target_destroy(t);
+        check("image-partial", fd_size(fd) == def + 100,
+              "a refused image was resized");
+    }
+
+    /* Something that isn't a regular file can't be sized or mapped as one. */
+    t = try_target("file=/dev/null", err, sizeof(err));
+    check("image-not-file", t == NULL, "/dev/null was taken as an image");
+    check("image-not-file", strstr(err, "not a regular file") != NULL,
+          "refusing /dev/null did not say why");
+    nvmeof_target_destroy(t);
+
+    /* An image that can't be grown is refused.  The file size limit makes
+     * ftruncate() fail with EFBIG, once SIGXFSZ isn't killing us for it. */
+    struct rlimit old_lim;
+    if (ftruncate(fd, 0) != 0 || getrlimit(RLIMIT_FSIZE, &old_lim) != 0) {
+        fail("image-no-room", "cannot set up %s", path);
+    } else {
+        struct rlimit lim = old_lim;
+        lim.rlim_cur = 1u << 20;
+        void (*old_handler)(int) = signal(SIGXFSZ, SIG_IGN);
+        if (old_handler == SIG_ERR || setrlimit(RLIMIT_FSIZE, &lim) != 0) {
+            fail("image-no-room", "cannot limit the file size");
+        } else {
+            snprintf(opts, sizeof(opts), "size=2M,file=%s", path);
+            t = try_target(opts, err, sizeof(err));
+            setrlimit(RLIMIT_FSIZE, &old_lim);
+            check("image-no-room", t == NULL,
+                  "an image past the file size limit was taken");
+            check("image-no-room", strstr(err, "cannot size") != NULL,
+                  "failing to grow the image did not say why");
+            nvmeof_target_destroy(t);
+        }
+        if (old_handler != SIG_ERR) {
+            signal(SIGXFSZ, old_handler);
+        }
+    }
+
+    close(fd);
+    unlink(path);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1012,6 +1222,7 @@ int main(void)
     test_io();
     test_discovery();
     test_file_backing();
+    test_image_size();
     test_queue_table();
 
     if (failures == 0) {

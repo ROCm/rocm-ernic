@@ -904,6 +904,8 @@ static void usage(const char *progname)
     fprintf(stderr, "                    Options (comma-separated):\n");
     fprintf(stderr, "                      size=BYTES   - Namespace size, "
                     "K/M/G/T suffixes (default: 64M)\n");
+    fprintf(stderr, "                                     (default with "
+                    "file=: an existing image's size)\n");
     fprintf(stderr, "                      file=PATH    - Back the namespace "
                     "with a file instead of RAM\n");
     fprintf(stderr,
