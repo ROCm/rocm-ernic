@@ -1223,12 +1223,60 @@ static bool resolve_group(const char *spec, gid_t *gid)
 }
 
 /*
- * Give the socket at @path the group @gid (@name, for messages), then mode
- * 0660 to let that group in.  Prints why and returns false if it can't.
+ * Check that @st, found at @path, is the socket @created: the one the first
+ * socket_access_ok() found there.  Prints why and returns false if it isn't.
  */
-static bool socket_set_group(const char *path, const char *name, gid_t gid)
+static bool socket_is_created(const char *path, const struct stat *st,
+                              const struct stat *created)
 {
-    if (lchown(path, (uid_t)-1, gid) < 0) {
+    if (S_ISSOCK(st->st_mode) && st->st_dev == created->st_dev &&
+        st->st_ino == created->st_ino)
+        return true;
+    fprintf(stderr,
+            "rocm-ernic: %s is no longer the socket the server created; "
+            "keep the socket out of directories others can write to\n",
+            path);
+    return false;
+}
+
+/*
+ * Give the socket at @path the group @gid (@name, for messages), then mode
+ * 0660 to let that group in.  @created is what the first socket_access_ok()
+ * found at @path.  Prints why and returns false if it can't, or if @path no
+ * longer leads to that socket.
+ *
+ * Both changes act on a descriptor for the socket that was checked, so
+ * putting something else at @path, such as a symlink or a hard link to
+ * another file, can't redirect them.  The descriptor comes from O_PATH: a
+ * UNIX socket can't be opened for I/O, and fchmod() on the listening socket
+ * would change the socket, not the file.  fchmod() refuses an O_PATH
+ * descriptor, and fchmodat() takes AT_EMPTY_PATH only from Linux 6.6 and
+ * glibc 2.39, so the mode is set through the descriptor's /proc/self/fd
+ * link, as glibc's fchmodat() does for AT_SYMLINK_NOFOLLOW.  That link leads
+ * to the file the descriptor holds, whatever is at @path now.
+ */
+static bool socket_set_group(const char *path, const char *name, gid_t gid,
+                             const struct stat *created)
+{
+    char fd_path[32];
+    struct stat st;
+    bool ok = false;
+    int n;
+    int fd = open(path, O_PATH | O_NOFOLLOW | O_CLOEXEC);
+
+    if (fd < 0) {
+        fprintf(stderr, "rocm-ernic: cannot open socket %s: %s\n", path,
+                strerror(errno));
+        return false;
+    }
+    if (fstat(fd, &st) < 0) {
+        fprintf(stderr, "rocm-ernic: cannot stat socket %s: %s\n", path,
+                strerror(errno));
+        goto out;
+    }
+    if (!socket_is_created(path, &st, created))
+        goto out;
+    if (fchownat(fd, "", (uid_t)-1, gid, AT_EMPTY_PATH) < 0) {
         int e = errno;
 
         fprintf(stderr, "rocm-ernic: cannot give socket %s the group %s: %s\n",
@@ -1236,23 +1284,33 @@ static bool socket_set_group(const char *path, const char *name, gid_t gid)
         if (e == EPERM)
             fprintf(stderr, "rocm-ernic: the server has to run as root or "
                             "be a member of that group\n");
-        return false;
+        goto out;
     }
-    if (chmod(path, 0660) < 0) {
-        fprintf(stderr, "rocm-ernic: cannot make socket %s mode 0660: %s\n",
-                path, strerror(errno));
-        return false;
+    n = snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
+    if (n < 0 || (size_t)n >= sizeof(fd_path)) {
+        fprintf(stderr, "rocm-ernic: cannot name descriptor %d\n", fd);
+        goto out;
     }
-    return true;
+    if (chmod(fd_path, 0660) < 0) {
+        fprintf(stderr,
+                "rocm-ernic: cannot make socket %s mode 0660 through %s: %s\n",
+                path, fd_path, strerror(errno));
+        goto out;
+    }
+    ok = true;
+out:
+    close(fd);
+    return ok;
 }
 
 /*
  * Check that exactly the socket's owner, and root, can connect to it, plus
  * the group @want_gid if it isn't NULL: mode 0600, or 0660 with that group,
- * and no access ACL.  Whatever is at @path is checked as it is, without
+ * and no access ACL; and, if @created isn't NULL, that it's still the socket
+ * an earlier call found.  Whatever is at @path is checked as it is, without
  * following a symlink.  Prints why and returns false if anyone else may be
- * able to connect, if the owner or group may not be able to, or if it can't
- * tell.  On success *st holds what was checked.
+ * able to connect, if the owner or group may not be able to, if it's another
+ * file, or if it can't tell.  On success *st holds what was checked.
  *
  * The umask the socket was created under only lets the owner in, and the
  * kernel applies it to a UNIX socket itself, so the mode check is a
@@ -1261,7 +1319,7 @@ static bool socket_set_group(const char *path, const char *name, gid_t gid)
  * in it lets that user or group connect whatever the mode says.
  */
 static bool socket_access_ok(const char *path, const gid_t *want_gid,
-                             struct stat *st)
+                             const struct stat *created, struct stat *st)
 {
     mode_t want_mode = want_gid ? 0660 : 0600;
 
@@ -1270,6 +1328,8 @@ static bool socket_access_ok(const char *path, const gid_t *want_gid,
                 strerror(errno));
         return false;
     }
+    if (created && !socket_is_created(path, st, created))
+        return false;
     if (!S_ISSOCK(st->st_mode)) {
         fprintf(stderr, "rocm-ernic: %s is not a socket\n", path);
         return false;
@@ -1853,20 +1913,26 @@ int main(int argc, char *argv[])
      *
      * With --socket-group, then give the socket that group, and only then
      * let the group in, so no other group can connect even briefly; and
-     * check it again, as QEMU will find it.  Both changes act on the path,
-     * which is safe only because nobody untrusted can replace entries in the
-     * socket's directory: one they could write to, unless it's sticky like
-     * /tmp, would let them swap in a socket of their own anyway.  (A shared
-     * directory, sticky or not, lets them take the name before the server
-     * starts, which is why docs/usage.rst says to keep the socket out of
-     * one.)  The second check would catch a path that no longer leads to
-     * this socket, but only after the change. */
+     * check it again, as QEMU will find it, and that it's still the socket
+     * the first check found.  Both changes act on that socket through a
+     * descriptor, so whoever can replace entries in the socket's directory
+     * can't point them at another file.  They could still swap in a socket
+     * of their own after the second check, unless the directory is sticky
+     * like /tmp.  (A shared directory, sticky or not, lets them take the
+     * name before the first check, which is why docs/usage.rst says to keep
+     * the socket out of one.  The first check is the server's only anchor:
+     * fstat() on the listening socket describes the socket, not the file.) */
+    struct stat created_st;
     struct stat sock_st;
 
-    if (!socket_access_ok(socket_path, NULL, &sock_st) ||
-        (socket_group &&
-         (!socket_set_group(socket_path, socket_group, socket_gid) ||
-          !socket_access_ok(socket_path, &socket_gid, &sock_st)))) {
+    if (!socket_access_ok(socket_path, NULL, NULL, &created_st)) {
+        goto fail;
+    }
+    sock_st = created_st;
+    if (socket_group &&
+        (!socket_set_group(socket_path, socket_group, socket_gid,
+                           &created_st) ||
+         !socket_access_ok(socket_path, &socket_gid, &created_st, &sock_st))) {
         goto fail;
     }
     ernic_startup_report("rocm-ernic: ✓ Socket permissions set to %04o, "
