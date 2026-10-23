@@ -26,9 +26,11 @@
 #include <sys/mman.h> /* PROT_READ, PROT_WRITE */
 #include <sys/uio.h>
 
+#include <infiniband/verbs.h>
 #include <vfio-user/libvfio-user.h>
 
 #include "dma_range.h"
+#include "ernic_ib.h"
 #include "ionic_adminq.h"
 #include "ionic_adminq_priv.h"
 #include "ionic_datapath.h"
@@ -713,23 +715,22 @@ static uint8_t handle_create_cq_op(struct ionic_adminq_ctx *ctx,
  *   u8   type_state   [62]     qp_type | (state<<4)
  * -------------------------------------------------------------------------
  */
-/* enum ionic_qp_type (RC=0, UC=1, RD=2, UD=3, ...) is not enum ib_qp_type
- * (SMI=0, GSI=1, RC=2, UC=3, UD=4), and rdma_rm speaks the latter.  The driver
- * also folds GSI into UD, but reserves qpid 1 (== IB_QPT_GSI) for it, which is
- * the only way to tell the two apart on the wire. */
+/* enum ionic_qp_type is not enum ibv_qp_type, and rdma_rm speaks the latter.
+ * The driver also folds GSI into UD, but reserves qpid 1 for it, which is the
+ * only way to tell the two apart on the wire. */
 static uint8_t ionic_qpt_to_ib(uint8_t ionic_qpt, uint32_t qp_id)
 {
     if (qp_id == 1)
-        return 1; /* IB_QPT_GSI */
+        return ERNIC_IB_QPT_GSI;
     switch (ionic_qpt) {
-    case 0:
-        return 2; /* IB_QPT_RC */
-    case 1:
-        return 3; /* IB_QPT_UC */
-    case 3:
-        return 4; /* IB_QPT_UD */
+    case IONIC_QPT_RC:
+        return IBV_QPT_RC;
+    case IONIC_QPT_UC:
+        return IBV_QPT_UC;
+    case IONIC_QPT_UD:
+        return IBV_QPT_UD;
     default:
-        return 2;
+        return IBV_QPT_RC;
     }
 }
 
@@ -1646,6 +1647,8 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
             return 0;
         }
 
+        /* The kernel's enum ib_qp_attr_mask, whose bits are those of
+         * userspace's enum ibv_qp_attr_mask. */
         uint32_t attr_mask_be;
         memcpy(&attr_mask_be, body + 0, 4);
         uint32_t attr_mask = be32toh(attr_mask_be);
@@ -1699,18 +1702,18 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
                     dgid[14], dgid[15]);
 
         /*
-         * IB_QP_QKEY: the same field, read the other way. The datapath needs
+         * IBV_QP_QKEY: the same field, read the other way. The datapath needs
          * it because a datagram is only delivered into a QP that presents
          * that QP's Q_Key -- without it the destination QPN alone selected
          * any queue in the device, including other processes' and GSI.
          */
-        if (attr_mask & (1u << 6))
+        if (attr_mask & IBV_QP_QKEY)
             ionic_datapath_set_qkey(ctx->dp, qp_id, qkey_dest_qpn);
 
-        /* IB_QP_DEST_QPN: the driver names the peer by its own qpid, but the
+        /* IBV_QP_DEST_QPN: the driver names the peer by its own qpid, but the
          * backend routes on its QPNs.  For UD this field is the qkey instead,
          * so only translate when the mask says it is a destination QPN. */
-        if (attr_mask & (1u << 20)) {
+        if (attr_mask & IBV_QP_DEST_QPN) {
             uint32_t dest_node =
                 ionic_dp_node_from_gid(ctx->dp, dgid_valid ? dgid : NULL);
 
@@ -1764,12 +1767,12 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
          * field -- unlike CREATE_QP, which packs the type into the low
          * nibble -- so the whole byte is the state here.
          *
-         * IB_QP_STATE gates it for the same reason rdma_rm_modify_qp() only
+         * IBV_QP_STATE gates it for the same reason rdma_rm_modify_qp() only
          * applies the state under that bit: without it the byte is whatever
          * the driver left there, and a command changing some other attribute
          * would flush a queue pair that never entered Error.
          */
-        if ((attr_mask & (1u << 0)) && type_state == IONIC_QPS_ERR)
+        if ((attr_mask & IBV_QP_STATE) && type_state == IONIC_QPS_ERR)
             ionic_datapath_flush_qp(ctx->dp, qp_id);
         return 0;
     }
@@ -1808,7 +1811,7 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
             return 1;
         }
 
-        uint8_t state = 0, path_mtu = 3 /* IBV_MTU_1024 */;
+        uint8_t state = 0, path_mtu = IBV_MTU_1024;
         uint32_t dest_qpn = 0, access = 0, rq_psn = 0, sq_psn = 0;
         if (ionic_rm_query_qp(ctx->pvrdma_handle, qpn, &state, &path_mtu,
                               &dest_qpn, &access, &rq_psn, &sq_psn) != 0) {
@@ -1821,12 +1824,12 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
          * translation; the MTU does, because the driver subtracts 7 from the
          * low nibble to recover the ibv_mtu enum. */
         uint16_t flags = 0;
-        if (access & (1u << 1)) /* IBV_ACCESS_REMOTE_WRITE */
-            flags |= 1u << 0;   /* IONIC_QPF_REMOTE_WRITE */
-        if (access & (1u << 2)) /* IBV_ACCESS_REMOTE_READ */
-            flags |= 1u << 1;   /* IONIC_QPF_REMOTE_READ */
-        if (access & (1u << 3)) /* IBV_ACCESS_REMOTE_ATOMIC */
-            flags |= 1u << 2;   /* IONIC_QPF_REMOTE_ATOMIC */
+        if (access & IBV_ACCESS_REMOTE_WRITE)
+            flags |= 1u << 0; /* IONIC_QPF_REMOTE_WRITE */
+        if (access & IBV_ACCESS_REMOTE_READ)
+            flags |= 1u << 1; /* IONIC_QPF_REMOTE_READ */
+        if (access & IBV_ACCESS_REMOTE_ATOMIC)
+            flags |= 1u << 2; /* IONIC_QPF_REMOTE_ATOMIC */
 
         /* struct ionic_v1_admin_query_qp_sq, all big-endian (20 bytes). */
         uint8_t sqbuf[20] = {0};

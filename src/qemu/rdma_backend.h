@@ -19,6 +19,7 @@
 #ifndef RDMA_BACKEND_H
 #define RDMA_BACKEND_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -26,12 +27,6 @@
 
 struct ibv_srq_attr;
 union ibv_gid;
-
-/* Add definition for QP0 and QP1 as there is no userspace enums for them */
-enum ibv_special_qp_type {
-    IBV_QPT_SMI = 0,
-    IBV_QPT_GSI = 1,
-};
 
 /* Multi-backend abstraction functions */
 const RdmaBackendOps *rdma_backend_get_ops(RdmaBackendType type);

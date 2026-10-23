@@ -55,6 +55,18 @@ enum ionic_v1_admin_op {
 };
 
 /*
+ * QP types, as the low nibble of CREATE_QP's type_state carries them. See
+ * enum ionic_qp_type in the kernel's ionic_fw.h; these are not enum
+ * ibv_qp_type's numbers.
+ */
+enum ionic_qp_type {
+    IONIC_QPT_RC = 0,
+    IONIC_QPT_UC = 1,
+    IONIC_QPT_RD = 2,
+    IONIC_QPT_UD = 3,
+};
+
+/*
  * QP states, as MODIFY_QP's type_state carries them. CREATE_QP packs the
  * queue type into the low nibble of its own type_state and the state above
  * it; MODIFY_QP's field is the state on its own. See enum ionic_qp_state in

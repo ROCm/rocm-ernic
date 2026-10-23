@@ -37,11 +37,11 @@ static int none_query_port(RdmaBackendDev *backend_dev,
                            struct ibv_port_attr *attr)
 {
     memset(attr, 0, sizeof(*attr));
-    attr->state = 4;      /* IBV_PORT_ACTIVE */
-    attr->max_mtu = 5;    /* IBV_MTU_4096 */
-    attr->active_mtu = 3; /* IBV_MTU_1024 */
+    attr->state = IBV_PORT_ACTIVE;
+    attr->max_mtu = IBV_MTU_4096;
+    attr->active_mtu = IBV_MTU_1024;
     attr->gid_tbl_len = 1;
-    attr->port_cap_flags = (1 << 16); /* IBV_PORT_CM_SUP */
+    attr->port_cap_flags = IBV_PORT_CM_SUP;
     attr->max_msg_sz = 0x80000000;
     attr->pkey_tbl_len = 1;
     attr->active_width = 1;

@@ -35,8 +35,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <infiniband/verbs.h>
 #include <vfio-user/libvfio-user.h>
 
+#include "ernic_ib.h"
 #include "ionic_datapath.h"
 #include "ionic_datapath_priv.h"
 #include "ionic_eth_emu.h"
@@ -510,10 +512,10 @@ static void test_ring_span_saturates(void)
  */
 static void test_ud_delivery_is_refused_to_the_wrong_queue(void)
 {
-    struct ionic_qp_ring rc = {.valid = true, .ib_qp_type = 2 /* RC */};
-    struct ionic_qp_ring uc = {.valid = true, .ib_qp_type = 3 /* UC */};
-    struct ionic_qp_ring ud = {.valid = true, .ib_qp_type = 4 /* UD */};
-    struct ionic_qp_ring gsi = {.valid = true, .ib_qp_type = 1 /* GSI */};
+    struct ionic_qp_ring rc = {.valid = true, .ib_qp_type = IBV_QPT_RC};
+    struct ionic_qp_ring uc = {.valid = true, .ib_qp_type = IBV_QPT_UC};
+    struct ionic_qp_ring ud = {.valid = true, .ib_qp_type = IBV_QPT_UD};
+    struct ionic_qp_ring gsi = {.valid = true, .ib_qp_type = ERNIC_IB_QPT_GSI};
 
     /*
      * A connected send is not subject to any of this, and saying so is the
@@ -595,7 +597,7 @@ static void test_registration_accepts_an_ordinary_ring(void)
     check(dp->cq[1].valid, "a CQ with an ordinary geometry registers");
     check(dp->cq[1].depth == 64, "the CQ kept its depth");
 
-    ionic_datapath_register_qp(dp, RQ_QP_ID, 2 /* RC */, 1, &ring, 1, &ring);
+    ionic_datapath_register_qp(dp, RQ_QP_ID, IBV_QPT_RC, 1, &ring, 1, &ring);
     check(dp->qp[RQ_QP_ID].valid, "a QP with ordinary rings registers");
 
     check(ionic_datapath_register_srq(dp, SRQ_QID, &ring) == 0,

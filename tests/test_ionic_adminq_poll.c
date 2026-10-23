@@ -41,11 +41,10 @@
 
 /* ---- Layouts, from the driver's side (ionic_fw.h) ----------------------- */
 
-#define STRIDE       64u /* ADMIN_WQE_STRIDE */
-#define HDR_LEN      4u  /* ADMIN_WQE_HDR_LEN */
-#define CQE_LEN      32u
-#define QP_BODY_LEN  64u /* IONIC_ADMIN_CREATE_QP_IN_V1_LEN */
-#define IONIC_QPT_UD 3u
+#define STRIDE      64u /* ADMIN_WQE_STRIDE */
+#define HDR_LEN     4u  /* ADMIN_WQE_HDR_LEN */
+#define CQE_LEN     32u
+#define QP_BODY_LEN 64u /* IONIC_ADMIN_CREATE_QP_IN_V1_LEN */
 
 /* The admin queue and its CQ. The AQ is followed by poison, which is what
  * reading on past its end finds. */
