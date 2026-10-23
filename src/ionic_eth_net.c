@@ -40,7 +40,7 @@ struct ionic_eth_net *ionic_eth_net_open_tap(const char *ifname,
     if (!net)
         return NULL;
 
-    net->fd = open("/dev/net/tun", O_RDWR | O_CLOEXEC);
+    net->fd = open("/dev/net/tun", O_RDWR | O_CLOEXEC | O_NONBLOCK);
     if (net->fd < 0) {
         free(net);
         return NULL;
@@ -54,14 +54,6 @@ struct ionic_eth_net *ionic_eth_net_open_tap(const char *ifname,
         strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
 
     if (ioctl(net->fd, TUNSETIFF, &ifr) < 0) {
-        int err = errno;
-        close(net->fd);
-        free(net);
-        errno = err;
-        return NULL;
-    }
-
-    if (fcntl(net->fd, F_SETFL, O_NONBLOCK) < 0) {
         int err = errno;
         close(net->fd);
         free(net);
