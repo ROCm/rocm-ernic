@@ -16,6 +16,8 @@
 
 #include <vfio-user/libvfio-user.h>
 
+#include "rocm_ernic_compat.h"
+
 /* Opaque emulator state. */
 struct ionic_eth_emu;
 
@@ -85,9 +87,10 @@ int ionic_eth_emu_trigger_irq(struct ionic_eth_emu *emu, int vec);
 /*
  * Set the pvrdma handle so the emulator can record interrupts and Ethernet
  * bytes into the shared statistics block.
- * @handle: pvrdma_handle_t (void *) from pvrdma_device_create().
+ * @handle: from pvrdma_device_create().
  */
-void ionic_eth_emu_set_pvrdma(struct ionic_eth_emu *emu, void *handle);
+void ionic_eth_emu_set_pvrdma(struct ionic_eth_emu *emu,
+                              pvrdma_handle_t handle);
 
 /* Register the datapath handler for doorbell writes (BAR2). */
 struct ionic_datapath;

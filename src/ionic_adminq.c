@@ -358,10 +358,11 @@ void ionic_adminq_set_cq_event_cb(struct ionic_adminq_ctx *ctx,
     }
 }
 
-void ionic_adminq_set_pvrdma(struct ionic_adminq_ctx *ctx, void *handle)
+void ionic_adminq_set_pvrdma(struct ionic_adminq_ctx *ctx,
+                             pvrdma_handle_t handle)
 {
     if (ctx)
-        ctx->pvrdma_handle = (pvrdma_handle_t)handle;
+        ctx->pvrdma_handle = handle;
 }
 
 void ionic_adminq_update_prod(struct ionic_adminq_ctx *ctx, int aq_idx,
