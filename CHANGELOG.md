@@ -1098,9 +1098,18 @@
   field exactly, so their lines came out as `NAME: 4` and were dropped by the
   parser. The exporter also no longer attributes a device-level key that
   appears after the per-QP block to the last QP it saw.
-* The `--stats-file` file is created with mode `0644`, less the umask, like the
-  `--log-file` file. It was created with `0666`, so under a permissive umask
-  any local user could rewrite the counters `ernic-exporter` reports.
+* The `--stats-file` file is mode `0644`, whatever the umask. It was created
+  with `0666`, so under a permissive umask any local user could rewrite the
+  counters `ernic-exporter` reports.
+* The `--stats-file` file is replaced whole on every update instead of being
+  truncated and rewritten in place, so `ernic-exporter` and `ernicctl` can no
+  longer read it empty or half written. Each update goes to a temporary file
+  in the same directory (the stats file's name plus six random characters)
+  that is then renamed over it, so the server now needs write permission on
+  that directory. A failed write, previously unnoticed, is logged and leaves
+  the last good file in place, and "Write count" now counts only updates
+  that were published. A symlink at the stats path is replaced, not written
+  through. Covered by the new `pvrdma-stats-unit` CTest test.
 
 * MSI-X assertions raised while a vector is masked are latched and replayed
   when the driver unmasks, instead of being dropped. Every vector comes out of

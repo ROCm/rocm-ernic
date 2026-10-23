@@ -1893,8 +1893,8 @@ int main(int argc, char *argv[])
      * afterwards would be too late: a connection queued in between would be
      * kept.  --socket-group widens it to 0660 below, once the group is the
      * one asked for.  The umask is per process, so this must stay ahead of
-     * the first thread, and it's restored so the log and stats files get the
-     * caller's. */
+     * the first thread, and it's restored so the log file gets the caller's.
+     * (The stats file is always 0644; see pvrdma_write_stats_impl().) */
     mode_t old_umask = umask(S_IXUSR | S_IRWXG | S_IRWXO);
     vfu_ctx =
         vfu_create_ctx(VFU_TRANS_SOCK, socket_path, LIBVFIO_USER_FLAG_ATTACH_NB,
