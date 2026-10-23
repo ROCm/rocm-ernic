@@ -691,6 +691,29 @@ static void before_port_init(char *got, size_t len)
     ionic_eth_emu_destroy(emu);
 }
 
+static void port_reset_then_reinit(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+
+    lif_init(emu, LIF_PA);
+    port_init(emu, PORT_PA);
+    setup_rxq(emu, 2, RX_BUF_CAP);
+    rx_tap(emu, mac_bcast, 42);
+    ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast, 64), 64);
+    devcmd(emu, IONIC_CMD_PORT_RESET, 0);
+    port_init(emu, PORT_PA);
+    memset(g_mem, POISON, sizeof(g_mem));
+    ionic_eth_emu_publish_stats(emu, 5000);
+    snprintf(got, len,
+             "frames_rx_all %" PRIu64 ", frames_rx_broadcast %" PRIu64
+             ", rx_bcast_packets %" PRIu64,
+             guest_port_qword(IONIC_PORT_FRAMES_RX_ALL),
+             guest_port_qword(IONIC_PORT_FRAMES_RX_BROADCAST),
+             counter(emu, IONIC_LIF_RX_BCAST_PACKETS));
+    emu->net = NULL;
+    ionic_eth_emu_destroy(emu);
+}
+
 static const struct publish_case port_publish_cases[] = {
     {"positive", "PORT_INIT(pa), then publish",
      "writes 1, block poisoned 0, status poisoned 576, sprom poisoned 64 (only "
@@ -709,6 +732,10 @@ static const struct publish_case port_publish_cases[] = {
     {"negative", "PORT_RESET, then publish",
      "writes 1, lif written 1, port written 0 (+320 still, +576 no more)",
      after_port_reset},
+    {"positive", "Rx traffic, PORT_RESET, PORT_INIT again, then publish",
+     "frames_rx_all 0, frames_rx_broadcast 0, rx_bcast_packets 1 (the port "
+     "restarts from zero; the LIF keeps its count)",
+     port_reset_then_reinit},
     {"negative", "device reset, then publish",
      "writes 0, lif written 0, port written 0", after_device_reset_port},
 };
@@ -1000,6 +1027,22 @@ static void tx_send_fails_port(char *got, size_t len)
     ionic_eth_emu_destroy(emu);
 }
 
+static void inbox_full_port(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+
+    for (unsigned int i = 0; i <= ETH_INBOX_MAX_FRAMES; i++)
+        ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_bcast, 64), 64);
+    snprintf(got, len,
+             "frames_rx_all %" PRIu64 ", frames_rx_broadcast %" PRIu64
+             ", frames_rx_65b_127b %" PRIu64 ", frames_rx_dropped %" PRIu64,
+             port_counter(emu, IONIC_PORT_FRAMES_RX_ALL),
+             port_counter(emu, IONIC_PORT_FRAMES_RX_BROADCAST),
+             port_counter(emu, IONIC_PORT_FRAMES_RX_65B_127B),
+             port_counter(emu, IONIC_PORT_FRAMES_RX_DROPPED));
+    ionic_eth_emu_destroy(emu);
+}
+
 static const struct publish_case port_datapath_cases[] = {
     {"negative", "Rx from the TAP one byte over the port's maximum frame",
      "rx_ucast 0, rx_desc_data_error 0, frames_rx_too_long 1, frames_rx_ok 0 "
@@ -1018,6 +1061,11 @@ static const struct publish_case port_datapath_cases[] = {
      inbox_wait_port},
     {"corner", "a mesh frame over the maximum, then one that fits",
      "frames_rx_too_long 1, rx_ucast 1, still queued 0", inbox_too_long_port},
+    {"positive", "the mesh inbox overflows by one broadcast",
+     "frames_rx_all 1, frames_rx_broadcast 1, frames_rx_65b_127b 1, "
+     "frames_rx_dropped 1 (the MAC took it in; the queued ones are counted "
+     "when polled)",
+     inbox_full_port},
     {"corner", "Tx refused by the host backend",
      "frames_tx_all 0, tx_ucast_drop 1 (it never reached the wire)",
      tx_send_fails_port},
@@ -1508,7 +1556,8 @@ static void file_inbox_folded(char *got, size_t len)
     size_t n;
 
     /* The mesh thread's counter, folded by the writer. */
-    ionic_emu_stats_rx_inbox_full(&emu->stats, make_frame(mac_ucast, 64), 64);
+    ionic_emu_stats_rx_inbox_full(&emu->stats, make_frame(mac_ucast, 64), 64,
+                                  0);
     text = stats_text(emu, &n);
     again = stats_text(emu, &n);
     snprintf(got, len,

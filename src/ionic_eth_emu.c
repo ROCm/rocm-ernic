@@ -215,6 +215,14 @@ void ionic_eth_emu_destroy(struct ionic_eth_emu *emu)
     free(emu);
 }
 
+/* The largest frame the port takes in, FCS excluded: what LIF_IDENTIFY
+ * advertises as max_frame_size.  The profile is fixed at create, so any
+ * thread may read it. */
+static size_t port_max_frame(const struct ionic_eth_emu *emu)
+{
+    return (size_t)emu->profile.link.mtu_max + IONIC_PROFILE_FRAME_OVERHEAD;
+}
+
 int ionic_eth_emu_queue_rx_frame(struct ionic_eth_emu *emu, const void *frame,
                                  size_t len)
 {
@@ -234,7 +242,8 @@ int ionic_eth_emu_queue_rx_frame(struct ionic_eth_emu *emu, const void *frame,
     if (emu->inbox_count >= ETH_INBOX_MAX_FRAMES) {
         pthread_mutex_unlock(&emu->inbox_lock);
         free(f);
-        ionic_emu_stats_rx_inbox_full(&emu->stats, frame, len);
+        ionic_emu_stats_rx_inbox_full(&emu->stats, frame, len,
+                                      port_max_frame(emu));
         return -ENOSPC;
     }
     if (emu->inbox_tail)
@@ -572,9 +581,8 @@ void ionic_eth_emu_publish_stats(struct ionic_eth_emu *emu, uint64_t now_ms)
         uint8_t block[IONIC_PORT_STATS_BYTES];
 
         ionic_emu_port_fill(&emu->stats, block);
-        publish_block(emu, "port", emu->port_info_pa,
-                      IONIC_PORT_INFO_STATS_OFF, block, sizeof(block),
-                      &emu->port_stats_write_failed);
+        publish_block(emu, "port", emu->port_info_pa, IONIC_PORT_INFO_STATS_OFF,
+                      block, sizeof(block), &emu->port_stats_write_failed);
     }
 }
 
@@ -700,8 +708,10 @@ static void process_devcmd(struct ionic_eth_emu *emu)
         break;
 
     case IONIC_CMD_PORT_RESET:
-        /* The guest may free the port info block after this. */
+        /* The guest may free the port info block after this, and firmware
+         * zeroes the port counters, so a later PORT_INIT starts from 0. */
         emu->port_info_pa = 0;
+        ionic_emu_port_clear(&emu->stats);
         comp[0] = 0;
         break;
 
@@ -1794,13 +1804,6 @@ static int eth_rx_deliver(struct ionic_eth_emu *emu, struct eth_queue *q,
     q->head = (uint16_t)((q->head + 1) % q->depth);
     eth_cq_advance(q);
     return 0;
-}
-
-/* The largest frame the port takes in, FCS excluded: what LIF_IDENTIFY
- * advertises as max_frame_size. */
-static size_t port_max_frame(const struct ionic_eth_emu *emu)
-{
-    return (size_t)emu->profile.link.mtu_max + IONIC_PROFILE_FRAME_OVERHEAD;
 }
 
 /*

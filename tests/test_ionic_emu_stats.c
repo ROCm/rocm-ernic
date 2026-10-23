@@ -310,7 +310,7 @@ static void run_op(struct ionic_emu_stats *st, const struct count_case *c)
         ionic_emu_stats_drop(st, f, c->in.len, c->in.is_tx, c->in.why);
         break;
     case OP_INBOX_FULL:
-        ionic_emu_stats_rx_inbox_full(st, f, c->in.len);
+        ionic_emu_stats_rx_inbox_full(st, f, c->in.len, 0);
         break;
     case OP_RDMA:
         ionic_emu_stats_rdma(st, c->in.len, c->in.is_tx);
@@ -428,7 +428,7 @@ static void test_fill(void)
                          IONIC_EMU_DROP_NO_BUFFER);
     ionic_emu_stats_drop(&st, frame_to(mac_mcast, 64), 64, false,
                          IONIC_EMU_DROP_TOO_BIG);
-    ionic_emu_stats_rx_inbox_full(&st, frame_to(mac_bcast, 64), 64);
+    ionic_emu_stats_rx_inbox_full(&st, frame_to(mac_bcast, 64), 64, 0);
     memset(out, 0xee, sizeof(out));
     ionic_emu_stats_fill(&st, out);
     sum = qword_at(out, IONIC_LIF_RX_UCAST_DROP_PACKETS) +
@@ -471,7 +471,7 @@ static void test_fill(void)
     /* corner: reset() zeroes every qword, including the atomics */
     for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++)
         st.lif[q] = q + 1;
-    ionic_emu_stats_rx_inbox_full(&st, frame_to(mac_ucast, 64), 64);
+    ionic_emu_stats_rx_inbox_full(&st, frame_to(mac_ucast, 64), 64, 0);
     ionic_emu_stats_reset(&st);
     ionic_emu_stats_fill(&st, out);
     {
@@ -486,7 +486,7 @@ static void test_fill(void)
 
     /* corner: folding twice counts the inbox drop once */
     ionic_emu_stats_reset(&st);
-    ionic_emu_stats_rx_inbox_full(&st, frame_to(mac_ucast, 64), 64);
+    ionic_emu_stats_rx_inbox_full(&st, frame_to(mac_ucast, 64), 64, 0);
     ionic_emu_stats_fold(&st);
     ionic_emu_stats_fold(&st);
     ionic_emu_stats_fill(&st, out);
@@ -860,6 +860,187 @@ static void test_port_buckets(void)
     }
 }
 
+/*
+ * A frame the mesh inbox had no room for: the MAC took it in, so the port
+ * counts it as it would any received frame, and the LIF dropped it.
+ */
+struct inbox_port_case {
+    const char *category;
+    const char *description;
+    const char *expected;
+    struct {
+        const uint8_t *dst;
+        size_t len;
+        uint16_t tpid;
+        int pcp; /* UNTAGGED, or the PCP of a tag with @tpid */
+        size_t max_frame;
+    } in;
+    uint64_t lif_drops; /* rx_*_drop_packets, all classes */
+    /* Every listed counter must hold its value; every other one must be 0. */
+    struct expect_counter want[MAX_PORT_EXPECT];
+};
+
+static const struct inbox_port_case inbox_port_cases[] = {
+    {"positive",
+     "inbox full, 60-byte unicast",
+     "frames_rx_all/_ok 1, octets_rx_all/_ok 64, frames_rx_64b, _unicast, "
+     "_pri_0 and _dropped 1; one LIF drop",
+     {mac_ucast, 60, 0, UNTAGGED, MAX_FRAME_1500},
+     1,
+     {{IONIC_PORT_FRAMES_RX_OK, 1},
+      {IONIC_PORT_FRAMES_RX_ALL, 1},
+      {IONIC_PORT_OCTETS_RX_OK, 64},
+      {IONIC_PORT_OCTETS_RX_ALL, 64},
+      {IONIC_PORT_FRAMES_RX_64B, 1},
+      {IONIC_PORT_FRAMES_RX_UNICAST, 1},
+      {IONIC_PORT_FRAMES_RX_PRI_0, 1},
+      {IONIC_PORT_FRAMES_RX_DROPPED, 1},
+      PEND}},
+    {"positive",
+     "inbox full, 1000-byte broadcast tagged PCP 5",
+     "frames_rx_broadcast, _vlan_good, _pri_5, _512b_1023b and _dropped 1; "
+     "octets 1004",
+     {mac_bcast, 1000, 0x8100, 5, MAX_FRAME_1500},
+     1,
+     {{IONIC_PORT_FRAMES_RX_OK, 1},
+      {IONIC_PORT_FRAMES_RX_ALL, 1},
+      {IONIC_PORT_OCTETS_RX_OK, 1004},
+      {IONIC_PORT_OCTETS_RX_ALL, 1004},
+      {IONIC_PORT_FRAMES_RX_512B_1023B, 1},
+      {IONIC_PORT_FRAMES_RX_BROADCAST, 1},
+      {IONIC_PORT_FRAMES_RX_VLAN_GOOD, 1},
+      {IONIC_PORT_FRAMES_RX_PRI_5, 1},
+      {IONIC_PORT_FRAMES_RX_DROPPED, 1},
+      PEND}},
+    {"boundary",
+     "inbox full, exactly the maximum frame",
+     "frames_rx_ok 1 and _dropped 1, not too long; one LIF drop",
+     {mac_ucast, MAX_FRAME_1500, 0, UNTAGGED, MAX_FRAME_1500},
+     1,
+     {{IONIC_PORT_FRAMES_RX_OK, 1},
+      {IONIC_PORT_FRAMES_RX_ALL, 1},
+      {IONIC_PORT_OCTETS_RX_OK, MAX_FRAME_1500 + 4},
+      {IONIC_PORT_OCTETS_RX_ALL, MAX_FRAME_1500 + 4},
+      {IONIC_PORT_FRAMES_RX_1519B_2047B, 1},
+      {IONIC_PORT_FRAMES_RX_UNICAST, 1},
+      {IONIC_PORT_FRAMES_RX_PRI_0, 1},
+      {IONIC_PORT_FRAMES_RX_DROPPED, 1},
+      PEND}},
+    {"negative",
+     "inbox full, one byte over the maximum frame",
+     "frames_rx_too_long, _oversized and _bad_all 1, not _dropped; no LIF "
+     "drop (the MAC refused it first)",
+     {mac_ucast, MAX_FRAME_1500 + 1, 0, UNTAGGED, MAX_FRAME_1500},
+     0,
+     {{IONIC_PORT_FRAMES_RX_ALL, 1},
+      {IONIC_PORT_OCTETS_RX_ALL, MAX_FRAME_1500 + 5},
+      {IONIC_PORT_FRAMES_RX_1519B_2047B, 1},
+      {IONIC_PORT_FRAMES_RX_TOO_LONG, 1},
+      {IONIC_PORT_FRAMES_RX_OVERSIZED, 1},
+      {IONIC_PORT_FRAMES_RX_BAD_ALL, 1},
+      PEND}},
+    {"corner",
+     "inbox full with a frame too short to classify",
+     "nothing counted at the port or the LIF",
+     {mac_ucast, 4, 0, UNTAGGED, MAX_FRAME_1500},
+     0,
+     {PEND}},
+};
+
+static void test_port_inbox_full(void)
+{
+    static struct ionic_emu_stats st;
+
+    for (size_t i = 0;
+         i < sizeof(inbox_port_cases) / sizeof(inbox_port_cases[0]); i++) {
+        const struct inbox_port_case *c = &inbox_port_cases[i];
+        const uint8_t *f =
+            tagged_to(c->in.dst, c->in.len, c->in.tpid, c->in.pcp);
+        uint64_t drops;
+        char got[512];
+        char lif[48] = "";
+        bool ok;
+
+        ionic_emu_stats_reset(&st);
+        ionic_emu_stats_rx_inbox_full(&st, f, c->in.len, c->in.max_frame);
+        /* Nothing reaches the port until the main thread folds. */
+        ok = port_matches(&st, (const struct expect_counter[]){PEND}, 1, got,
+                          sizeof(got));
+        ionic_emu_stats_fold(&st);
+        ok =
+            port_matches(&st, c->want, MAX_PORT_EXPECT, got, sizeof(got)) && ok;
+        drops = st.lif[IONIC_LIF_RX_UCAST_DROP_PACKETS] +
+                st.lif[IONIC_LIF_RX_MCAST_DROP_PACKETS] +
+                st.lif[IONIC_LIF_RX_BCAST_DROP_PACKETS];
+        if (drops != c->lif_drops) {
+            ok = false;
+            snprintf(lif, sizeof(lif), " lif drops %" PRIu64, drops);
+        }
+        if (ok) {
+            printf("ok %s: %s\n", c->category, c->description);
+        } else {
+            printf("FAIL %s: %s; expected: %s; got: %s%s\n", c->category,
+                   c->description, c->expected, got, lif);
+            failures++;
+        }
+    }
+}
+
+/* PORT_RESET's ionic_emu_port_clear(): the port restarts, the LIF does not. */
+static void test_port_clear(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        unsigned int frames;      /* received and counted before the clear */
+        unsigned int inbox_drops; /* still pending in the atomics */
+        unsigned int after;       /* received after the clear */
+    } cases[] = {
+        {"positive", "traffic, then clear", "port 0, LIF rx_ucast_packets 3", 3,
+         0, 0},
+        {"corner", "an inbox drop not folded yet, then clear",
+         "port 0, LIF rx_ucast_drop_packets 1 (folded, not lost)", 0, 1, 0},
+        {"positive", "traffic, clear, then one more frame",
+         "port frames_rx_all 1, LIF rx_ucast_packets 3", 2, 0, 1},
+        {"boundary", "clear with nothing counted", "port 0, LIF 0", 0, 0, 0},
+    };
+    static struct ionic_emu_stats st;
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        const uint8_t *f = frame_to(mac_ucast, 60);
+        uint64_t port_sum = 0;
+
+        ionic_emu_stats_reset(&st);
+        for (unsigned int n = 0; n < cases[i].frames; n++) {
+            ionic_emu_port_frame(&st, f, 60, false, MAX_FRAME_1500);
+            ionic_emu_stats_frame(&st, f, 60, false);
+        }
+        for (unsigned int n = 0; n < cases[i].inbox_drops; n++)
+            ionic_emu_stats_rx_inbox_full(&st, f, 60, MAX_FRAME_1500);
+        ionic_emu_port_clear(&st);
+        for (unsigned int n = 0; n < cases[i].after; n++) {
+            ionic_emu_port_frame(&st, f, 60, false, MAX_FRAME_1500);
+            ionic_emu_stats_frame(&st, f, 60, false);
+        }
+        ionic_emu_stats_fold(&st);
+        for (unsigned int q = 0; q < IONIC_PORT_STATS_QWORDS; q++)
+            if (q != IONIC_PORT_FRAMES_RX_ALL)
+                port_sum += cases[i].after ? 0 : st.port[q];
+        check_u64(cases[i].category, cases[i].description, cases[i].expected,
+                  cases[i].after, st.port[IONIC_PORT_FRAMES_RX_ALL]);
+        check_u64(cases[i].category, cases[i].description,
+                  "every other port counter 0", 0, port_sum);
+        check_u64(cases[i].category, cases[i].description,
+                  "LIF rx_ucast_packets kept",
+                  (uint64_t)cases[i].frames + cases[i].after,
+                  st.lif[IONIC_LIF_RX_UCAST_PACKETS]);
+        check_u64(cases[i].category, cases[i].description,
+                  "LIF rx_ucast_drop_packets kept", cases[i].inbox_drops,
+                  st.lif[IONIC_LIF_RX_UCAST_DROP_PACKETS]);
+    }
+}
+
 static void test_port_misc(void)
 {
     static struct ionic_emu_stats st;
@@ -895,7 +1076,7 @@ static void test_port_misc(void)
 
     /* positive: a mesh inbox overflow is a port rx drop too, once */
     ionic_emu_stats_reset(&st);
-    ionic_emu_stats_rx_inbox_full(&st, frame_to(mac_ucast, 64), 64);
+    ionic_emu_stats_rx_inbox_full(&st, frame_to(mac_ucast, 64), 64, 0);
     ionic_emu_port_fill(&st, out);
     ionic_emu_port_fill(&st, out);
     check_u64("positive", "mesh inbox full, then fill() twice",
@@ -1147,7 +1328,7 @@ static void *produce_drops(void *opaque)
     while (!atomic_load(p->start))
         sched_yield();
     for (unsigned int i = 0; i < p->count; i++)
-        ionic_emu_stats_rx_inbox_full(p->stats, p->frame, 64);
+        ionic_emu_stats_rx_inbox_full(p->stats, p->frame, 64, 0);
     atomic_fetch_add(p->done, 1);
     return NULL;
 }
@@ -1211,6 +1392,11 @@ static void test_concurrent_fold(void)
             check_u64("corner", cases[row].description, "pending packets empty",
                       0, atomic_load(&st.inbox_drop_packets[c]));
         }
+        check_u64("corner", cases[row].description,
+                  "frames_rx_all and frames_rx_dropped exact at the port",
+                  (uint64_t)cases[row].count * 3 * 2,
+                  st.port[IONIC_PORT_FRAMES_RX_ALL] +
+                      st.port[IONIC_PORT_FRAMES_RX_DROPPED]);
     }
 }
 
@@ -1450,6 +1636,8 @@ int main(void)
     test_port_counting();
     test_port_buckets();
     test_port_misc();
+    test_port_inbox_full();
+    test_port_clear();
     test_port_layout();
 
     if (failures)

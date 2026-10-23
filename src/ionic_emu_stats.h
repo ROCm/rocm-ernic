@@ -290,6 +290,8 @@ struct ionic_emu_stats {
     /* Mesh inbox overflow, counted off the main thread; see fold(). */
     _Atomic uint64_t inbox_drop_bytes[IONIC_EMU_MAC_CLASSES];
     _Atomic uint64_t inbox_drop_packets[IONIC_EMU_MAC_CLASSES];
+    /* What the MAC counted for those frames, by ionic_port_stat. */
+    _Atomic uint64_t inbox_port[IONIC_PORT_STATS_QWORDS];
 };
 
 /*
@@ -313,9 +315,15 @@ void ionic_emu_stats_frame(struct ionic_emu_stats *st, const uint8_t *frame,
 void ionic_emu_stats_drop(struct ionic_emu_stats *st, const uint8_t *frame,
                           size_t len, bool is_tx, enum ionic_emu_drop why);
 
-/* The mesh inbox was full.  Safe to call from any thread. */
+/*
+ * The mesh inbox was full, so the frame is gone.  The MAC took it in, as
+ * ionic_emu_port_frame() counts it with @max_frame, and the LIF had nowhere
+ * to put it, unless the MAC refused it first for being too long.  Safe to
+ * call from any thread.
+ */
 void ionic_emu_stats_rx_inbox_full(struct ionic_emu_stats *st,
-                                   const uint8_t *frame, size_t len);
+                                   const uint8_t *frame, size_t len,
+                                   size_t max_frame);
 
 /* One RDMA message of @bytes moved by the RDMA datapath. */
 void ionic_emu_stats_rdma(struct ionic_emu_stats *st, uint64_t bytes,
@@ -335,8 +343,14 @@ bool ionic_emu_port_frame(struct ionic_emu_stats *st, const uint8_t *frame,
 /* A frame the MAC took in but the LIF dropped (any ionic_emu_drop on rx). */
 void ionic_emu_port_rx_dropped(struct ionic_emu_stats *st);
 
-/* Move the inbox atomics into the block, zeroing them.  Main thread only. */
+/* Move the inbox atomics into the blocks, zeroing them.  Main thread only. */
 void ionic_emu_stats_fold(struct ionic_emu_stats *st);
+
+/*
+ * PORT_RESET: fold, then zero the port counters.  The LIF counters are kept,
+ * as LIF_RESET is a separate command.  Main thread only.
+ */
+void ionic_emu_port_clear(struct ionic_emu_stats *st);
 
 /*
  * Fold, then render struct ionic_lif_stats into @out (little-endian, every

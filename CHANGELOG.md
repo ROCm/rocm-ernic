@@ -491,8 +491,9 @@
   `ethtool -S` shows as `frames_*` and `octets_*`, which the driver used to
   list as 0: frames and octets by result, by unicast, multicast and
   broadcast, and by size bucket, counted as on the wire. They are published
-  with the LIF statistics and cleared on PORT_RESET. Documented in
-  `docs/ionic.rst`.
+  with the LIF statistics and cleared on PORT_RESET. A frame dropped for
+  want of a receive buffer, or because the mesh inbox is full, counts as
+  received and as `frames_rx_dropped`. Documented in `docs/ionic.rst`.
 
 ### Changed
 

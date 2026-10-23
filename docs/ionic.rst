@@ -438,7 +438,8 @@ the TAP is therefore a 64-byte frame. What moves:
      - ``frames_rx_too_long``, ``_oversized``, ``_bad_all``;
        the MAC drops it and the LIF never sees it
    * - received with no buffer posted, or the mesh inbox full
-     - ``frames_rx_dropped``
+     - ``frames_rx_dropped``, on top of the counters for a
+       received frame: the MAC took it in, the LIF dropped it
 
 The size buckets run 64, 65–127, 128–255, 256–511,
 512–1023, 1024–1518, 1519–2047, 2048–4095, 4096–8191,
@@ -449,7 +450,9 @@ do the counters only a real wire can move: bad FCS, jabber,
 fragments and pause frames.
 
 ``PORT_RESET`` stops the port writes but not the LIF ones,
-and ``LIF_RESET`` does the reverse. The stats file has a
+and ``LIF_RESET`` does the reverse. ``PORT_RESET`` also zeroes
+the port counters, so the next ``PORT_INIT`` starts from 0;
+the LIF counters are kept. The stats file has a
 ``Port Statistics`` section, one line per counter.
 
 Guest Driver: Patched Upstream ionic
