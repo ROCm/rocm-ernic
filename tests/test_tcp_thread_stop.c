@@ -5052,9 +5052,14 @@ static const char *sender_heartbeat(TcpBackendPrivate *priv, int w1)
         return "a node is missing";
     if (alive2 || last2 != dead_since)
         return "node 2 was revived by a heartbeat that wasn't its own";
-    return last1 >= before ? NULL
-                           : "the heartbeat wasn't credited to node 1, whose "
-                             "connection it came on";
+    /*
+     * On a machine up for less than 1000 s, dead_since wraps to a value
+     * above before, so it has to be ruled out separately.
+     */
+    return last1 != dead_since && last1 >= before
+               ? NULL
+               : "the heartbeat wasn't credited to node 1, whose connection "
+                 "it came on";
 }
 
 /*
