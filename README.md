@@ -35,10 +35,10 @@ complete object fabric — see [`docs/s3.rst`](docs/s3.rst)).
 The server emulates an AMD Pensando ionic NIC (`1dd8:1002`, subsystem
 `1dd8:5400`), so the guest runs the upstream Linux `ionic` and
 `ionic_rdma` drivers with only the small UC address-handle patch in
-[`patches/`](patches/) applied, and the upstream `providers/ionic` in
-rdma-core. `--tap IFNAME` attaches the
-emulated Ethernet interface to a host TAP, giving the guest a real routable
-segment with working ARP, ICMP, and TCP/IP. See
+[`ansible/files/patches/`](ansible/files/patches/) applied, and the upstream
+`providers/ionic` in rdma-core. `--tap IFNAME` attaches the emulated Ethernet
+interface to a host TAP, giving the guest a real routable segment with working
+ARP, ICMP, and TCP/IP. See
 [`docs/ionic.rst`](docs/ionic.rst) for details.
 
 ## Installing and Using rocm-ernic
@@ -64,10 +64,11 @@ API reference.
 ## License
 
 [MIT](LICENSE.md) for the build system, documentation, and the deployment and automation code;
-everything under `src/`, `tests/`, and `third-party/`, and the fuzz harnesses in
+everything under `src/` and `tests/`, and the fuzz harnesses in
 `nix/analysis/fuzz/`, is `GPL-2.0-or-later` unless its per-file SPDX declaration
-says otherwise. The patches under `patches/` take the licenses of the Linux and
-rdma-core files they modify. The per-file SPDX header is authoritative; see
+says otherwise. The patches under `ansible/files/patches/` take the licenses of
+the Linux and rdma-core files they modify. The per-file SPDX header is
+authoritative; see
 [LICENSE.md](LICENSE.md) for details.
 
 <!-- References -->

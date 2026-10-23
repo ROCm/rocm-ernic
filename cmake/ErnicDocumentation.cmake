@@ -94,6 +94,24 @@ if(ERNIC_BUILD_DOCS)
       VERBATIM
     )
 
+    # ── Generated counter lists: C sources -> RST ──────
+    # docs/monitoring.rst includes these rather than restating the
+    # counter sets, so the published page cannot go stale when one is
+    # added.  They are written into the source tree, not the build
+    # tree, because Sphinx reads docs/ from there; they are committed
+    # too, so a plain sphinx-build renders a complete page. Docs Check
+    # runs the same script with --check and fails if they have drifted.
+    set(ERNIC_COUNTER_DOCS_GEN
+      "${PROJECT_SOURCE_DIR}/tools/gen-counter-docs.py")
+
+    add_custom_target(ernic-counter-docs
+      COMMAND ${Python3_EXECUTABLE} ${ERNIC_COUNTER_DOCS_GEN}
+        --root ${PROJECT_SOURCE_DIR}
+      WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+      COMMENT "Generating the counter lists for the documentation"
+      VERBATIM
+    )
+
     # ── Sphinx target: RST + Doxygen XML -> HTML ───────
     add_custom_target(sphinx-html
       COMMAND ${SPHINX_BUILD}
@@ -101,7 +119,7 @@ if(ERNIC_BUILD_DOCS)
         -c ${PROJECT_BINARY_DIR}/docs-sphinx
         ${PROJECT_SOURCE_DIR}/docs
         ${ERNIC_DOC_PATH}/html
-      DEPENDS doxygen docs-venv
+      DEPENDS doxygen docs-venv ernic-counter-docs
       WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
       COMMENT "Building Sphinx HTML documentation"
       VERBATIM

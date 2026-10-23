@@ -1,6 +1,7 @@
 /*
  *
- * Unit tests for the resource-table allocator in rdma_rm.c.
+ * Unit tests for the resource manager in rdma_rm.c, mostly its table
+ * allocator.
  *
  * Regression coverage for an off-by-one. find_first_zero_bit() returns the
  * size it was given when no zero bit exists, so a full table yields tbl_sz
@@ -33,19 +34,42 @@
  * and the ragged case's table overflow is checked against an explicit
  * guard band rather than left to ASan.
  *
- * Scope: the damage is confined to the allocator, so that is all this file
- * covers. It is tempting to also assert that the over-capacity handle never
- * resolves through rdma_res_tbl_get(), since handles are guest-visible (an
- * rkey is an MR handle). That assertion is vacuous in both directions --
+ * Scope: the damage is confined to the allocator, so that is all the table
+ * cases cover. It is tempting to also assert that the over-capacity handle
+ * never resolves through rdma_res_tbl_get(), since handles are guest-visible
+ * (an rkey is an MR handle). That assertion is vacuous in both directions --
  * rdma_res_tbl_get() guards with `handle < tbl->tbl_sz`, which is correct
  * and was never part of this bug, so it rejects the out-of-range handle on
- * fixed and unfixed builds alike. The over-capacity pointer reaches a
- * caller only as the allocator's return value, which the cases below check
+ * fixed and unfixed builds alike. The over-capacity slot reaches a caller
+ * only through the allocator's result, which the cases below check
  * directly.
  *
- * The allocator is static inline, so it is reached by #including the
- * translation unit; the resource manager's backend externs are stubbed,
- * as no path under test reaches them.
+ * The allocator is static inline in rdma_rm.c, so it is reached through
+ * the resource manager's public API instead: rdma_rm_init() sizes the CQ
+ * table as max_cq, and rdma_rm_alloc_cq() and rdma_rm_dealloc_cq() given no
+ * backend are thin wrappers over the allocator. The resource manager's
+ * backend externs are stubbed, as no path under test reaches them.
+ *
+ * The dealloc-locks case checks that freeing a handle changes the bitmap
+ * and the count under the table's lock, as allocating one does. A no-op
+ * lock guard once took the lock and released it again before the free.
+ *
+ * The init-* cases cover rdma_rm_init() itself: it must reject device
+ * limits that would size a table wrongly (a negative limit), and when a
+ * table can't be allocated it must free the tables it had already built and
+ * leave nothing for rdma_rm_fini() to free twice.
+ * g_try_malloc() and g_try_malloc0_n() are defined here so a case can make
+ * a given table's entry or bitmap allocation fail.
+ *
+ * The mr-* cases cover an MR's life in the resource manager, with no backend
+ * and with a stub one that records its calls: the MR owns no memory, so the
+ * backend must be given none, and freeing the MR, once or twice, must
+ * destroy the backend's MR exactly once and free its slot.
+ *
+ * The gid-index-* cases cover the GID index used at RTR, which the backend
+ * maps from the guest's and returns as an int. It must be range-checked
+ * before it is narrowed to the uint8_t qp_state_rtr() takes, so 200 is
+ * passed on, and 256 and an error are refused.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -54,89 +78,30 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <errno.h>
+#include <inttypes.h>
+#include <sched.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "rocm-ernic-warnings.h"
+#include <glib.h>
+#include <infiniband/verbs.h>
 
-/*
- * rdma_rm.c includes rdma_utils.h from its own directory, which is not a
- * SYSTEM include path here, so the logging macros it defines would be checked
- * as our code. Including it first through the SYSTEM path, as the main build
- * does, keeps them vendored: under -pedantic, GCC 13 and older report a
- * variadic macro called with no variadic arguments in a way that ignores
- * diagnostic pragmas, so the macros below cannot silence it.
+#include "qemu/bitmap.h"
+#include "qemu/thread.h"
+#include "rdma_backend.h"
+#include "rdma_backend_defs.h"
+#include "rdma_backend_ops.h"
+#include "rdma_rm.h"
+#include "rdma_rm_defs.h"
+
+/* ---- Stubs for the backend entry points rdma_rm.c calls. None of them are
+ * reachable from the table allocator; they exist only to satisfy the link.
  */
-#include "rdma_utils.h" // IWYU pragma: keep
-
-/*
- * Pull in the code under test (including its static functions). rdma_rm.c
- * is vendored, so the warnings it raises are silenced here rather than fixed;
- * the suppression covers only the #included code.
- */
-ROCM_ERNIC_WARN_IMPLICIT_CONVERSION_OFF
-ROCM_ERNIC_WARN_SIGN_CONVERSION_OFF
-ROCM_ERNIC_WARN_FORMAT_MISMATCH_OFF
-ROCM_ERNIC_WARN_FORMAT_NONVOID_POINTER_OFF
-ROCM_ERNIC_WARN_VOID_POINTER_ARITH_OFF
-#include "hw/rdma/rdma_rm.c"
-ROCM_ERNIC_WARN_VOID_POINTER_ARITH_ON
-ROCM_ERNIC_WARN_FORMAT_NONVOID_POINTER_ON
-ROCM_ERNIC_WARN_FORMAT_MISMATCH_ON
-ROCM_ERNIC_WARN_SIGN_CONVERSION_ON
-ROCM_ERNIC_WARN_IMPLICIT_CONVERSION_ON
-
-#include "hw/pci/pci.h" /* declares the pci_dma_* stubs below */
-
-/* ---- Stubs for the backend entry points rdma_rm.c calls, and for the two
- * DMA symbols the linked qemu-stubs TU references but does not define.
- * None of them are reachable from the table allocator; they exist only to
- * satisfy the link.
- */
-void *pci_dma_map(PCIDevice *dev, uint64_t addr, uint64_t *len, int dir)
-{
-    (void)dev;
-    (void)addr;
-    (void)len;
-    (void)dir;
-    return NULL;
-}
-void pci_dma_unmap(PCIDevice *dev, void *buffer, uint64_t len, int dir,
-                   uint64_t access_len)
-{
-    (void)dev;
-    (void)buffer;
-    (void)len;
-    (void)dir;
-    (void)access_len;
-}
-
-int rdma_backend_add_gid(RdmaBackendDev *backend_dev, const char *ifname,
-                         union ibv_gid *gid)
-{
-    (void)backend_dev;
-    (void)ifname;
-    (void)gid;
-    return -1;
-}
-int rdma_backend_del_gid(RdmaBackendDev *backend_dev, const char *ifname,
-                         union ibv_gid *gid)
-{
-    (void)backend_dev;
-    (void)ifname;
-    (void)gid;
-    return -1;
-}
-int rdma_backend_get_gid_index(RdmaBackendDev *backend_dev, union ibv_gid *gid)
-{
-    (void)backend_dev;
-    (void)gid;
-    return -1;
-}
 int rdma_backend_create_srq(RdmaBackendSRQ *srq, RdmaBackendPD *pd,
                             uint32_t max_wr, uint32_t max_sge,
                             uint32_t srq_limit)
@@ -162,10 +127,62 @@ int rdma_backend_modify_srq(RdmaBackendSRQ *srq, struct ibv_srq_attr *srq_attr,
     (void)srq_attr_mask;
     return -1;
 }
-void rdma_backend_destroy_srq(RdmaBackendSRQ *srq, RdmaDeviceResources *dev_res)
+void rdma_backend_destroy_srq(RdmaBackendSRQ *srq)
 {
     (void)srq;
-    (void)dev_res;
+}
+
+/* ---- Allocation failure injection -------------------------------------
+ *
+ * res_tbl_init() allocates each table's entries with g_try_malloc(), and
+ * its bitmap through bitmap_new(), whose g_try_new0() calls
+ * g_try_malloc0_n(). Nothing else the test reaches calls either. These
+ * definitions take the place of glib's, so a case can fail either
+ * allocation for a given table. g_free() frees glib's allocations with
+ * free(), so it frees these too.
+ */
+#define NO_FAILURE UINT32_MAX
+
+/* The calls to one allocation function, and which of them to fail. */
+typedef struct {
+    uint32_t calls;
+    uint32_t fail_at; /* 0-based, or NO_FAILURE */
+} AllocInjector;
+
+static AllocInjector entry_allocs = {0, NO_FAILURE};
+static AllocInjector bitmap_allocs = {0, NO_FAILURE};
+
+static void alloc_injectors_reset(void)
+{
+    entry_allocs = (AllocInjector){0, NO_FAILURE};
+    bitmap_allocs = (AllocInjector){0, NO_FAILURE};
+}
+
+static bool alloc_should_fail(AllocInjector *inj)
+{
+    return inj->calls++ == inj->fail_at;
+}
+
+gpointer g_try_malloc(gsize n_bytes)
+{
+    if (alloc_should_fail(&entry_allocs)) {
+        return NULL;
+    }
+    /* Like glib's, return NULL for zero bytes. */
+    return n_bytes ? malloc(n_bytes) : NULL;
+}
+
+gpointer g_try_malloc0_n(gsize n_blocks, gsize n_block_bytes)
+{
+    if (alloc_should_fail(&bitmap_allocs)) {
+        return NULL;
+    }
+    /* Like glib's, return NULL for zero bytes. calloc() checks the product
+     * for overflow, as glib does. */
+    if (n_blocks == 0 || n_block_bytes == 0) {
+        return NULL;
+    }
+    return calloc(n_blocks, n_block_bytes);
 }
 
 /* ---- Fixture ----------------------------------------------------------- */
@@ -177,29 +194,44 @@ void rdma_backend_destroy_srq(RdmaBackendSRQ *srq, RdmaDeviceResources *dev_res)
  * bitmap and only the table memset goes out of bounds. */
 #define TBL_SZ_RAGGED 100
 
-#define RES_SZ     32
 #define GUARD_BYTE 0xC7u
 
 /*
- * res_tbl_init() allocates tbl->tbl itself, so a guard band cannot be placed
- * around it in the usual way. Instead the table is re-pointed at the middle
- * of a larger buffer of our own: the allocator only ever indexes off
+ * rdma_rm_init() allocates the table itself, so a guard band cannot be
+ * placed around it in the usual way. Instead the table is re-pointed at the
+ * middle of a larger buffer of our own: the allocator only ever indexes off
  * tbl->tbl, so it cannot tell the difference, and the one-past-the-end
- * memset lands in a readable guard band instead of an ASan redzone. That
+ * write lands in a readable guard band instead of an ASan redzone. That
  * keeps the failure reportable rather than fatal, and keeps the ragged case
- * meaningful in a non-sanitized build.
+ * meaningful in a non-sanitized build. The original table is put back
+ * before rdma_rm_fini() frees it.
  */
+static RdmaDeviceResources dev_res;
 static void *orig_tbl;
 static uint8_t *backing;
 static size_t backing_len;
+static size_t res_sz;
 
-static void tbl_init_guarded(RdmaRmResTbl *tbl, const char *name,
-                             uint32_t tbl_sz)
+static RdmaRmResTbl *tbl_init_guarded(uint32_t tbl_sz)
 {
-    res_tbl_init(name, tbl, tbl_sz, RES_SZ);
+    /* Every other table gets one entry, so none is created empty. */
+    struct ibv_device_attr attr = {
+        .max_qp = 1,
+        .max_cq = (int)tbl_sz,
+        .max_mr = 1,
+        .max_pd = 1,
+        .max_srq = 1,
+    };
+    RdmaRmResTbl *tbl = &dev_res.cq_tbl;
+
+    memset(&dev_res, 0, sizeof(dev_res));
+    if (rdma_rm_init(&dev_res, &attr) != 0 || tbl->tbl_sz != tbl_sz) {
+        abort();
+    }
+    res_sz = tbl->res_sz;
 
     /* One spare element's worth of guard on each side. */
-    backing_len = (size_t)(tbl_sz + 2) * RES_SZ;
+    backing_len = (size_t)(tbl_sz + 2) * res_sz;
     backing = malloc(backing_len);
     if (!backing) {
         abort();
@@ -207,13 +239,14 @@ static void tbl_init_guarded(RdmaRmResTbl *tbl, const char *name,
     memset(backing, GUARD_BYTE, backing_len);
 
     orig_tbl = tbl->tbl;
-    tbl->tbl = backing + RES_SZ;
+    tbl->tbl = backing + res_sz;
+    return tbl;
 }
 
 static void tbl_destroy_guarded(RdmaRmResTbl *tbl)
 {
     tbl->tbl = orig_tbl;
-    res_tbl_free(tbl);
+    rdma_rm_fini(&dev_res);
     free(backing);
     backing = NULL;
 }
@@ -223,7 +256,7 @@ static bool guards_intact(const char *name)
 {
     bool ok = true;
 
-    for (size_t i = 0; i < RES_SZ; i++) {
+    for (size_t i = 0; i < res_sz; i++) {
         if (backing[i] != GUARD_BYTE) {
             printf(
                 "FAIL %-18s: low guard byte %zu is 0x%02x, expected 0x%02x\n",
@@ -232,7 +265,7 @@ static bool guards_intact(const char *name)
             break;
         }
     }
-    for (size_t i = backing_len - RES_SZ; i < backing_len; i++) {
+    for (size_t i = backing_len - res_sz; i < backing_len; i++) {
         if (backing[i] != GUARD_BYTE) {
             printf("FAIL %-18s: high guard byte %zu is 0x%02x, expected "
                    "0x%02x -- an over-capacity handle was written past the "
@@ -251,16 +284,14 @@ static bool guards_intact(const char *name)
  *
  * On the unfixed code the refusal never happens: find_first_zero_bit()
  * returns tbl_sz, the `>` guard admits it, and the allocator hands back a
- * pointer one element past the end of the table having already scribbled
- * on it. Under ASan the TBL_SZ_EXACT case aborts inside set_bit() before
+ * slot one element past the end of the table having already scribbled on
+ * it. Under ASan the TBL_SZ_EXACT case aborts inside set_bit() before
  * returning at all, which is also a failure -- just a louder one.
  */
 static bool test_fill_to_capacity(const char *name, uint32_t tbl_sz)
 {
-    RdmaRmResTbl tbl;
     bool ok = true;
-
-    tbl_init_guarded(&tbl, "test", tbl_sz);
+    RdmaRmResTbl *tbl = tbl_init_guarded(tbl_sz);
 
     /* Every handle up to capacity must be allocated, distinct, in range. */
     bool *seen = calloc(tbl_sz, sizeof(*seen));
@@ -269,12 +300,12 @@ static bool test_fill_to_capacity(const char *name, uint32_t tbl_sz)
     }
     for (uint32_t i = 0; i < tbl_sz; i++) {
         uint32_t handle = UINT32_MAX;
-        void *res = rdma_res_tbl_alloc(&tbl, &handle);
+        int rc = rdma_rm_alloc_cq(&dev_res, NULL, 1, &handle);
 
-        if (!res) {
-            printf("FAIL %-18s: allocation %u of %u returned NULL before the "
+        if (rc != 0) {
+            printf("FAIL %-18s: allocation %u of %u returned %d before the "
                    "table was full\n",
-                   name, i, tbl_sz);
+                   name, i, tbl_sz, rc);
             ok = false;
             break;
         }
@@ -294,9 +325,9 @@ static bool test_fill_to_capacity(const char *name, uint32_t tbl_sz)
     }
     free(seen);
 
-    if (ok && tbl.used != tbl_sz) {
+    if (ok && tbl->used != tbl_sz) {
         printf("FAIL %-18s: used is %u after filling, expected %u\n", name,
-               tbl.used, tbl_sz);
+               tbl->used, tbl_sz);
         ok = false;
     }
 
@@ -305,26 +336,26 @@ static bool test_fill_to_capacity(const char *name, uint32_t tbl_sz)
      * so a bare "it wasn't written" cannot masquerade as a valid result. */
     if (ok) {
         uint32_t handle = UINT32_MAX;
-        void *res = rdma_res_tbl_alloc(&tbl, &handle);
+        int rc = rdma_rm_alloc_cq(&dev_res, NULL, 1, &handle);
 
-        if (res != NULL) {
-            printf("FAIL %-18s: allocation from a full table returned %p with "
-                   "handle %u, expected NULL (table size %u)\n",
-                   name, res, handle, tbl_sz);
+        if (rc != -ENOMEM) {
+            printf("FAIL %-18s: allocation from a full table returned %d with "
+                   "handle %u, expected %d (table size %u)\n",
+                   name, rc, handle, -ENOMEM, tbl_sz);
             ok = false;
         }
         if (!guards_intact(name)) {
             ok = false;
         }
-        if (tbl.used != tbl_sz) {
+        if (tbl->used != tbl_sz) {
             printf("FAIL %-18s: used is %u after a refused allocation, "
                    "expected %u\n",
-                   name, tbl.used, tbl_sz);
+                   name, tbl->used, tbl_sz);
             ok = false;
         }
     }
 
-    tbl_destroy_guarded(&tbl);
+    tbl_destroy_guarded(tbl);
 
     if (ok) {
         printf("ok   %-18s\n", name);
@@ -341,14 +372,12 @@ static bool test_fill_to_capacity(const char *name, uint32_t tbl_sz)
 static bool test_dealloc_reopens_one_slot(void)
 {
     const char *name = "dealloc-realloc";
-    RdmaRmResTbl tbl;
     bool ok = true;
-
-    tbl_init_guarded(&tbl, "test", TBL_SZ_EXACT);
+    RdmaRmResTbl *tbl = tbl_init_guarded(TBL_SZ_EXACT);
 
     for (uint32_t i = 0; i < TBL_SZ_EXACT; i++) {
         uint32_t handle;
-        if (!rdma_res_tbl_alloc(&tbl, &handle)) {
+        if (rdma_rm_alloc_cq(&dev_res, NULL, 1, &handle) != 0) {
             printf("FAIL %-18s: could not fill the table (failed at %u)\n",
                    name, i);
             ok = false;
@@ -360,14 +389,14 @@ static bool test_dealloc_reopens_one_slot(void)
      * handle, since find_first_zero_bit() scans from zero. */
     const uint32_t freed = TBL_SZ_EXACT / 2;
     if (ok) {
-        rdma_res_tbl_dealloc(&tbl, freed);
+        rdma_rm_dealloc_cq(&dev_res, freed);
 
         uint32_t handle = UINT32_MAX;
-        void *res = rdma_res_tbl_alloc(&tbl, &handle);
-        if (!res) {
+        int rc = rdma_rm_alloc_cq(&dev_res, NULL, 1, &handle);
+        if (rc != 0) {
             printf("FAIL %-18s: allocation after freeing handle %u returned "
-                   "NULL\n",
-                   name, freed);
+                   "%d\n",
+                   name, freed, rc);
             ok = false;
         } else if (handle != freed) {
             printf("FAIL %-18s: expected the freed handle %u, got %u\n", name,
@@ -379,7 +408,7 @@ static bool test_dealloc_reopens_one_slot(void)
     /* Full again, so refused again. */
     if (ok) {
         uint32_t handle = UINT32_MAX;
-        if (rdma_res_tbl_alloc(&tbl, &handle) != NULL) {
+        if (rdma_rm_alloc_cq(&dev_res, NULL, 1, &handle) != -ENOMEM) {
             printf("FAIL %-18s: table refilled to capacity still allocated "
                    "(handle %u)\n",
                    name, handle);
@@ -390,7 +419,651 @@ static bool test_dealloc_reopens_one_slot(void)
         }
     }
 
-    tbl_destroy_guarded(&tbl);
+    tbl_destroy_guarded(tbl);
+
+    if (ok) {
+        printf("ok   %-18s\n", name);
+    }
+    return ok;
+}
+
+/* ---- rdma_rm_init() cases ---------------------------------------------- */
+
+/* The tables rdma_rm_init() builds, in the order it builds them. */
+static RdmaRmResTbl *const rm_tables[] = {
+    &dev_res.pd_tbl, &dev_res.cq_tbl,  &dev_res.mr_tbl,
+    &dev_res.qp_tbl, &dev_res.srq_tbl,
+};
+#define RM_TABLE_COUNT ((uint32_t)(sizeof(rm_tables) / sizeof(rm_tables[0])))
+
+/* One entry in every table. */
+static const struct ibv_device_attr one_each = {
+    .max_qp = 1,
+    .max_cq = 1,
+    .max_mr = 1,
+    .max_pd = 1,
+    .max_srq = 1,
+};
+
+/* True if rdma_rm_init() left nothing allocated in dev_res. */
+static bool rm_init_left_nothing(const char *name)
+{
+    bool ok = true;
+
+    for (uint32_t i = 0; i < RM_TABLE_COUNT; i++) {
+        if (rm_tables[i]->bitmap || rm_tables[i]->tbl) {
+            printf("FAIL %-18s: table %s is still allocated\n", name,
+                   rm_tables[i]->name);
+            ok = false;
+        }
+    }
+    if (dev_res.qp_hash) {
+        printf("FAIL %-18s: the QP hash table is still allocated\n", name);
+        ok = false;
+    }
+    return ok;
+}
+
+/*
+ * Device limits that would size a table wrongly must be refused before
+ * anything is allocated. rdma_rm_fini() runs afterwards, as the server's
+ * teardown does after a failed init, and must find nothing to free.
+ */
+static bool test_init_rejects(const char *name,
+                              const struct ibv_device_attr *attr,
+                              int expected_rc)
+{
+    bool ok = true;
+    struct ibv_device_attr a = *attr;
+
+    memset(&dev_res, 0, sizeof(dev_res));
+    alloc_injectors_reset();
+
+    int rc = rdma_rm_init(&dev_res, &a);
+    if (rc != expected_rc) {
+        printf("FAIL %-18s: rdma_rm_init() returned %d, expected %d\n", name,
+               rc, expected_rc);
+        ok = false;
+    }
+    if (entry_allocs.calls != 0 || bitmap_allocs.calls != 0) {
+        printf("FAIL %-18s: %u table(s) and %u bitmap(s) allocated before "
+               "the limits were refused\n",
+               name, entry_allocs.calls, bitmap_allocs.calls);
+        ok = false;
+    }
+    if (!rm_init_left_nothing(name)) {
+        ok = false;
+    }
+
+    rdma_rm_fini(&dev_res);
+
+    if (ok) {
+        printf("ok   %-18s\n", name);
+    }
+    return ok;
+}
+
+/*
+ * Fail each table's entry allocation in turn, or each table's bitmap
+ * allocation. rdma_rm_init() must report it and free what it had already
+ * built, including, when the bitmap fails, the same table's entries (LSan
+ * and valgrind report anything it doesn't), and rdma_rm_fini() afterwards
+ * must not free any of it again (ASan and valgrind report that).
+ */
+static bool test_init_unwinds(const char *name, bool fail_bitmap)
+{
+    bool ok = true;
+
+    for (uint32_t fail_at = 0; fail_at < RM_TABLE_COUNT; fail_at++) {
+        struct ibv_device_attr a = one_each;
+        /* The failing table's entries are allocated before its bitmap. */
+        uint32_t expected_entries = fail_at + 1;
+        uint32_t expected_bitmaps = fail_bitmap ? fail_at + 1 : fail_at;
+
+        memset(&dev_res, 0, sizeof(dev_res));
+        alloc_injectors_reset();
+        if (fail_bitmap) {
+            bitmap_allocs.fail_at = fail_at;
+        } else {
+            entry_allocs.fail_at = fail_at;
+        }
+
+        int rc = rdma_rm_init(&dev_res, &a);
+
+        if (rc != -ENOMEM) {
+            printf("FAIL %-18s: with table %u failed, rdma_rm_init() "
+                   "returned %d, expected %d\n",
+                   name, fail_at, rc, -ENOMEM);
+            ok = false;
+        }
+        if (entry_allocs.calls != expected_entries ||
+            bitmap_allocs.calls != expected_bitmaps) {
+            printf("FAIL %-18s: with table %u failed, rdma_rm_init() "
+                   "allocated %u table(s) and %u bitmap(s), expected %u and "
+                   "%u\n",
+                   name, fail_at, entry_allocs.calls, bitmap_allocs.calls,
+                   expected_entries, expected_bitmaps);
+            ok = false;
+        }
+        if (!rm_init_left_nothing(name)) {
+            ok = false;
+        }
+
+        rdma_rm_fini(&dev_res);
+    }
+
+    if (ok) {
+        printf("ok   %-18s\n", name);
+    }
+    return ok;
+}
+
+/*
+ * A successful init allocates each table's entries and bitmap once, so
+ * test_init_unwinds() reaches every one of them. Zero limits are valid:
+ * g_try_malloc() returns NULL for an empty table, and that must not be
+ * taken for a failure.
+ */
+static bool test_init_succeeds(const char *name,
+                               const struct ibv_device_attr *attr)
+{
+    bool ok = true;
+    struct ibv_device_attr a = *attr;
+
+    memset(&dev_res, 0, sizeof(dev_res));
+    alloc_injectors_reset();
+
+    int rc = rdma_rm_init(&dev_res, &a);
+    if (rc != 0) {
+        printf("FAIL %-18s: rdma_rm_init() returned %d\n", name, rc);
+        ok = false;
+    } else if (entry_allocs.calls != RM_TABLE_COUNT ||
+               bitmap_allocs.calls != RM_TABLE_COUNT) {
+        printf("FAIL %-18s: rdma_rm_init() allocated %u table(s) and %u "
+               "bitmap(s), expected %u of each\n",
+               name, entry_allocs.calls, bitmap_allocs.calls, RM_TABLE_COUNT);
+        ok = false;
+    }
+
+    if (rc == 0) {
+        rdma_rm_fini(&dev_res);
+    }
+
+    if (ok) {
+        printf("ok   %-18s\n", name);
+    }
+    return ok;
+}
+
+/* ---- Locking case ------------------------------------------------------
+ *
+ * This thread frees and reallocates the table's one entry LOCK_CYCLES
+ * times, while an observer thread takes the table's lock over and over and
+ * checks that the bitmap and the count agree. After each free, this thread
+ * waits for the observer to take the lock and see the entry free, so every
+ * cycle overlaps the observer's checks however the threads are scheduled.
+ *
+ * Under TSan, that makes the test fail on every run if a free changes the
+ * bitmap or the count after releasing the lock: the handshake uses relaxed
+ * atomics, which order nothing, so only the lock orders the free against
+ * the observer's read, and TSan reports the first cycle's free as a data
+ * race (halt_on_error). Without TSan, the observer catches it only if it
+ * takes the lock between the two changes, so a pass there proves less.
+ */
+#define LOCK_CYCLES UINT32_C(10000)
+
+typedef struct {
+    RdmaRmResTbl *tbl;
+    /*
+     * The handshake. Relaxed throughout: the lock must be the only ordering
+     * between the threads' table accesses (see above), and each thread only
+     * needs to see the other's store eventually, which relaxed guarantees.
+     */
+    _Atomic uint32_t freed; /* cycles whose free this thread has done */
+    _Atomic uint32_t seen;  /* those whose free the observer has seen */
+    atomic_bool done;       /* this thread has finished every cycle */
+    /* The observer's; read only after the join. */
+    uint32_t mismatches; /* checks where the bitmap and count disagreed */
+    uint32_t not_freed;  /* frees after which the entry was still in use */
+} LockObserver;
+
+static void *lock_observer(void *arg)
+{
+    LockObserver *obs = arg;
+    uint32_t seen = 0;
+
+    while (!atomic_load_explicit(&obs->done, memory_order_relaxed)) {
+        /* Loaded before taking the lock, so if it shows a new free, the
+         * lock is taken after that free released it. */
+        uint32_t freed =
+            atomic_load_explicit(&obs->freed, memory_order_relaxed);
+
+        qemu_mutex_lock(&obs->tbl->lock);
+        bool taken = test_bit(0, obs->tbl->bitmap);
+        uint32_t used = obs->tbl->used;
+        qemu_mutex_unlock(&obs->tbl->lock);
+
+        if (used != (taken ? 1U : 0U)) {
+            obs->mismatches++;
+        }
+        if (freed != seen) {
+            /* The entry can't be reallocated until this is acknowledged. */
+            if (taken || used != 0) {
+                obs->not_freed++;
+            }
+            seen = freed;
+            atomic_store_explicit(&obs->seen, seen, memory_order_relaxed);
+        }
+        sched_yield();
+    }
+    return NULL;
+}
+
+static bool test_dealloc_locks(void)
+{
+    const char *name = "dealloc-locks";
+    bool ok = true;
+    struct ibv_device_attr a = one_each;
+    LockObserver obs;
+    QemuThread thread;
+    uint32_t handle = UINT32_MAX;
+
+    memset(&dev_res, 0, sizeof(dev_res));
+    alloc_injectors_reset();
+    if (rdma_rm_init(&dev_res, &a) != 0 ||
+        rdma_rm_alloc_cq(&dev_res, NULL, 1, &handle) != 0) {
+        abort();
+    }
+
+    obs.tbl = &dev_res.cq_tbl;
+    atomic_init(&obs.freed, 0);
+    atomic_init(&obs.seen, 0);
+    atomic_init(&obs.done, false);
+    obs.mismatches = 0;
+    obs.not_freed = 0;
+    if (qemu_thread_create(&thread, lock_observer, &obs) != 0) {
+        abort();
+    }
+
+    /* The observer runs until done is set, so it acknowledges every free
+     * and these waits end. */
+    for (uint32_t cycle = 1; cycle <= LOCK_CYCLES; cycle++) {
+        uint32_t again = UINT32_MAX;
+
+        rdma_rm_dealloc_cq(&dev_res, handle);
+        atomic_store_explicit(&obs.freed, cycle, memory_order_relaxed);
+        while (atomic_load_explicit(&obs.seen, memory_order_relaxed) != cycle) {
+            sched_yield();
+        }
+
+        if (rdma_rm_alloc_cq(&dev_res, NULL, 1, &again) != 0 ||
+            again != handle) {
+            if (ok) {
+                printf("FAIL %-18s: reallocating handle %u gave %u\n", name,
+                       handle, again);
+            }
+            ok = false;
+        }
+    }
+    atomic_store_explicit(&obs.done, true, memory_order_relaxed);
+    qemu_thread_join(&thread);
+
+    if (obs.mismatches != 0) {
+        printf("FAIL %-18s: the bitmap and the count disagreed under the "
+               "lock %u time(s)\n",
+               name, obs.mismatches);
+        ok = false;
+    }
+    if (obs.not_freed != 0) {
+        printf("FAIL %-18s: the entry was still in use under the lock after "
+               "%u of %u frees\n",
+               name, obs.not_freed, LOCK_CYCLES);
+        ok = false;
+    }
+
+    rdma_rm_fini(&dev_res);
+
+    if (ok) {
+        printf("ok   %-18s\n", name);
+    }
+    return ok;
+}
+
+/* ---- MR cases ----------------------------------------------------------
+ *
+ * An MR in the resource manager is a table slot and the backend's MR. It
+ * owns no memory, so allocating one must hand the backend no address, and
+ * freeing one must destroy the backend's MR exactly once and free the slot,
+ * however often it is called.
+ */
+
+/* What the recording backend's MR operations were called with. */
+typedef struct {
+    uint32_t create_calls;
+    uint32_t destroy_calls;
+    int create_rc; /* what create_mr returns */
+    const RdmaBackendMR *created;
+    const RdmaBackendMR *destroyed;
+    const void *addr;
+    size_t length;
+    uint64_t guest_start;
+    int access;
+} MrCalls;
+
+static MrCalls mr_calls;
+
+static int rec_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
+{
+    (void)backend_dev;
+    (void)pd;
+    return 0;
+}
+
+static int rec_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, void *addr,
+                         size_t length, uint64_t guest_start, int access)
+{
+    (void)pd;
+    mr_calls.create_calls++;
+    mr_calls.created = mr;
+    mr_calls.addr = addr;
+    mr_calls.length = length;
+    mr_calls.guest_start = guest_start;
+    mr_calls.access = access;
+    return mr_calls.create_rc;
+}
+
+static void rec_destroy_mr(RdmaBackendMR *mr)
+{
+    mr_calls.destroy_calls++;
+    mr_calls.destroyed = mr;
+}
+
+/* No mr_lkey, so the resource manager uses the handle as the lkey. */
+static const RdmaBackendOps recording_ops = {
+    .name = "recording",
+    .create_pd = rec_create_pd,
+    .create_mr = rec_create_mr,
+    .destroy_mr = rec_destroy_mr,
+};
+
+#define MR_ACCESS (IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE)
+
+/* Init with one entry in every table and allocate a PD, with the recording
+ * backend or none. */
+static uint32_t mr_setup(RdmaBackendDev *backend_dev)
+{
+    struct ibv_device_attr a = one_each;
+    uint32_t pd_handle;
+
+    memset(&dev_res, 0, sizeof(dev_res));
+    alloc_injectors_reset();
+    memset(&mr_calls, 0, sizeof(mr_calls));
+    if (rdma_rm_init(&dev_res, &a) != 0 ||
+        rdma_rm_alloc_pd(&dev_res, backend_dev, &pd_handle) != 0) {
+        abort();
+    }
+    return pd_handle;
+}
+
+static bool test_mr_lifecycle(const char *name, bool with_backend)
+{
+    bool ok = true;
+    RdmaBackendDev backend_dev;
+
+    memset(&backend_dev, 0, sizeof(backend_dev));
+    backend_dev.backend_ops = &recording_ops;
+    uint32_t pd_handle = mr_setup(with_backend ? &backend_dev : NULL);
+    const uint32_t expected_calls = with_backend ? 1 : 0;
+
+    uint32_t handle = UINT32_MAX;
+    uint32_t lkey = UINT32_MAX;
+    uint32_t rkey = UINT32_MAX;
+    int rc =
+        rdma_rm_alloc_mr(&dev_res, pd_handle, MR_ACCESS, &handle, &lkey, &rkey);
+    RdmaRmMR *mr = rc == 0 ? rdma_rm_get_mr(&dev_res, handle) : NULL;
+
+    if (rc != 0 || !mr) {
+        printf("FAIL %-18s: rdma_rm_alloc_mr() returned %d\n", name, rc);
+        ok = false;
+    } else if (lkey != handle || rkey != handle) {
+        printf("FAIL %-18s: lkey %u and rkey %u, expected the handle %u\n",
+               name, lkey, rkey, handle);
+        ok = false;
+    }
+
+    if (ok && mr_calls.create_calls != expected_calls) {
+        printf("FAIL %-18s: create_mr called %u time(s), expected %u\n", name,
+               mr_calls.create_calls, expected_calls);
+        ok = false;
+    }
+    if (ok && with_backend) {
+        if (mr_calls.created != &mr->backend_mr) {
+            printf("FAIL %-18s: create_mr was not given the MR's backend MR\n",
+                   name);
+            ok = false;
+        }
+        if (mr_calls.addr || mr_calls.length != 0 ||
+            mr_calls.guest_start != 0) {
+            printf("FAIL %-18s: create_mr was given memory (addr %p, length "
+                   "%zu, guest_start %" PRIu64 "), but an MR has none\n",
+                   name, mr_calls.addr, mr_calls.length, mr_calls.guest_start);
+            ok = false;
+        }
+        if (mr_calls.access != MR_ACCESS) {
+            printf("FAIL %-18s: create_mr was given access %#x, expected "
+                   "%#x\n",
+                   name, (unsigned int)mr_calls.access,
+                   (unsigned int)MR_ACCESS);
+            ok = false;
+        }
+    }
+
+    /* Free it twice: the second call must find nothing to free. */
+    if (ok) {
+        rdma_rm_dealloc_mr(&dev_res, handle);
+        rdma_rm_dealloc_mr(&dev_res, handle);
+
+        if (mr_calls.destroy_calls != expected_calls) {
+            printf("FAIL %-18s: destroy_mr called %u time(s), expected %u\n",
+                   name, mr_calls.destroy_calls, expected_calls);
+            ok = false;
+        } else if (with_backend && mr_calls.destroyed != &mr->backend_mr) {
+            printf("FAIL %-18s: destroy_mr was not given the MR's backend "
+                   "MR\n",
+                   name);
+            ok = false;
+        }
+        if (rdma_rm_get_mr(&dev_res, handle)) {
+            printf("FAIL %-18s: handle %u still resolves after being freed\n",
+                   name, handle);
+            ok = false;
+        }
+        if (dev_res.mr_tbl.used != 0) {
+            printf("FAIL %-18s: used is %u after freeing the only MR\n", name,
+                   dev_res.mr_tbl.used);
+            ok = false;
+        }
+    }
+
+    /* The table has one entry, so the slot must be reusable. */
+    if (ok) {
+        uint32_t again = UINT32_MAX;
+        rc = rdma_rm_alloc_mr(&dev_res, pd_handle, MR_ACCESS, &again, &lkey,
+                              &rkey);
+        if (rc != 0 || again != handle) {
+            printf("FAIL %-18s: reallocating returned %d with handle %u, "
+                   "expected 0 with handle %u\n",
+                   name, rc, again, handle);
+            ok = false;
+        }
+    }
+
+    rdma_rm_fini(&dev_res);
+
+    if (ok) {
+        printf("ok   %-18s\n", name);
+    }
+    return ok;
+}
+
+/* A backend that can't create the MR must leave the slot free and have
+ * nothing to destroy. */
+static bool test_mr_backend_fails(void)
+{
+    const char *name = "mr-backend-fails";
+    bool ok = true;
+    RdmaBackendDev backend_dev;
+
+    memset(&backend_dev, 0, sizeof(backend_dev));
+    backend_dev.backend_ops = &recording_ops;
+    uint32_t pd_handle = mr_setup(&backend_dev);
+    mr_calls.create_rc = -EINVAL;
+
+    uint32_t handle = UINT32_MAX;
+    uint32_t lkey;
+    uint32_t rkey;
+    int rc =
+        rdma_rm_alloc_mr(&dev_res, pd_handle, MR_ACCESS, &handle, &lkey, &rkey);
+
+    if (rc != -EIO) {
+        printf("FAIL %-18s: rdma_rm_alloc_mr() returned %d, expected %d\n",
+               name, rc, -EIO);
+        ok = false;
+    }
+    if (dev_res.mr_tbl.used != 0) {
+        printf("FAIL %-18s: used is %u after a failed allocation\n", name,
+               dev_res.mr_tbl.used);
+        ok = false;
+    }
+    if (mr_calls.destroy_calls != 0) {
+        printf("FAIL %-18s: destroy_mr called for an MR never created\n", name);
+        ok = false;
+    }
+
+    rdma_rm_fini(&dev_res);
+
+    if (ok) {
+        printf("ok   %-18s\n", name);
+    }
+    return ok;
+}
+
+/* ---- GID index cases ---------------------------------------------------
+ *
+ * Moving a QP to RTR asks the backend to map the guest's GID index to its
+ * own, as an int, and passes the result on to qp_state_rtr() as a uint8_t.
+ * The result has to be range-checked before it is narrowed: an index of 128
+ * or more is valid, and one above UINT8_MAX would otherwise be truncated to
+ * a different GID.
+ */
+
+/* What get_backend_gid_index returns, and what qp_state_rtr was given. */
+static int gid_index_result;
+static uint32_t rtr_calls;
+static uint8_t rtr_sgid_idx;
+
+static int gid_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
+                         RdmaBackendCQ *scq, RdmaBackendCQ *rcq,
+                         RdmaBackendSRQ *srq, uint32_t max_send_wr,
+                         uint32_t max_recv_wr, uint32_t max_send_sge,
+                         uint32_t max_recv_sge)
+{
+    (void)qp;
+    (void)qp_type;
+    (void)pd;
+    (void)scq;
+    (void)rcq;
+    (void)srq;
+    (void)max_send_wr;
+    (void)max_recv_wr;
+    (void)max_send_sge;
+    (void)max_recv_sge;
+    return 0;
+}
+
+static int gid_get_backend_gid_index(RdmaBackendDev *backend_dev, int sgid_idx)
+{
+    (void)backend_dev;
+    (void)sgid_idx;
+    return gid_index_result;
+}
+
+static int gid_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
+                            uint8_t qp_type, uint8_t sgid_idx,
+                            union ibv_gid *dgid, uint32_t dqpn, uint32_t rq_psn,
+                            uint32_t qkey, bool qkey_set)
+{
+    (void)backend_dev;
+    (void)qp;
+    (void)qp_type;
+    (void)dgid;
+    (void)dqpn;
+    (void)rq_psn;
+    (void)qkey;
+    (void)qkey_set;
+    rtr_calls++;
+    rtr_sgid_idx = sgid_idx;
+    return 0;
+}
+
+static const RdmaBackendOps gid_ops = {
+    .name = "gid-index",
+    .create_pd = rec_create_pd,
+    .create_qp = gid_create_qp,
+    .get_backend_gid_index = gid_get_backend_gid_index,
+    .qp_state_rtr = gid_qp_state_rtr,
+};
+
+/*
+ * Move a fresh RC QP to RTR with the backend mapping its GID index to
+ * backend_idx. RTR must succeed and pass backend_idx on when it fits a
+ * uint8_t, and fail with -EIO, never reaching qp_state_rtr(), when it
+ * doesn't.
+ */
+static bool test_gid_index(const char *name, int backend_idx)
+{
+    bool ok = true;
+    RdmaBackendDev backend_dev;
+    struct ibv_device_attr a = one_each;
+    union ibv_gid dgid;
+    uint32_t pd_handle, cq_handle, qpn;
+    const bool fits = backend_idx >= 0 && backend_idx <= UINT8_MAX;
+
+    memset(&backend_dev, 0, sizeof(backend_dev));
+    backend_dev.backend_ops = &gid_ops;
+    memset(&dgid, 0, sizeof(dgid));
+    memset(&dev_res, 0, sizeof(dev_res));
+    alloc_injectors_reset();
+    gid_index_result = backend_idx;
+    rtr_calls = 0;
+    rtr_sgid_idx = 0;
+
+    if (rdma_rm_init(&dev_res, &a) != 0 ||
+        rdma_rm_alloc_pd(&dev_res, &backend_dev, &pd_handle) != 0 ||
+        rdma_rm_alloc_cq(&dev_res, NULL, 1, &cq_handle) != 0 ||
+        rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, 1, 1, cq_handle, 1, 1,
+                         cq_handle, &qpn, 0, 0, NULL) != 0) {
+        abort();
+    }
+
+    int rc = rdma_rm_modify_qp(&dev_res, &backend_dev, qpn, IBV_QP_STATE, 3,
+                               &dgid, 0, IBV_QPS_RTR, 0, 0, 0);
+
+    if (fits) {
+        if (rc != 0 || rtr_calls != 1 || rtr_sgid_idx != backend_idx) {
+            printf("FAIL %-18s: RTR returned %d with qp_state_rtr called %u "
+                   "time(s) with sgid_idx %u, expected 0, once, with %d\n",
+                   name, rc, rtr_calls, rtr_sgid_idx, backend_idx);
+            ok = false;
+        }
+    } else if (rc != -EIO || rtr_calls != 0) {
+        printf("FAIL %-18s: RTR returned %d with qp_state_rtr called %u "
+               "time(s) (sgid_idx %u), expected %d and never\n",
+               name, rc, rtr_calls, rtr_sgid_idx, -EIO);
+        ok = false;
+    }
+
+    rdma_rm_fini(&dev_res);
 
     if (ok) {
         printf("ok   %-18s\n", name);
@@ -401,6 +1074,7 @@ static bool test_dealloc_reopens_one_slot(void)
 int main(void)
 {
     int failures = 0;
+    struct ibv_device_attr attr;
 
     if (!test_fill_to_capacity("full-exact-word", TBL_SZ_EXACT)) {
         failures++;
@@ -409,6 +1083,51 @@ int main(void)
         failures++;
     }
     if (!test_dealloc_reopens_one_slot()) {
+        failures++;
+    }
+
+    if (!test_dealloc_locks()) {
+        failures++;
+    }
+
+    if (!test_init_succeeds("init-one-each", &one_each)) {
+        failures++;
+    }
+    memset(&attr, 0, sizeof(attr));
+    if (!test_init_succeeds("init-all-zero", &attr)) {
+        failures++;
+    }
+
+    attr = one_each;
+    attr.max_mr = -1;
+    if (!test_init_rejects("init-negative-mr", &attr, -EINVAL)) {
+        failures++;
+    }
+
+    if (!test_init_unwinds("init-unwind-table", false)) {
+        failures++;
+    }
+    if (!test_init_unwinds("init-unwind-bitmap", true)) {
+        failures++;
+    }
+
+    if (!test_mr_lifecycle("mr-no-backend", false)) {
+        failures++;
+    }
+    if (!test_mr_lifecycle("mr-backend", true)) {
+        failures++;
+    }
+    if (!test_mr_backend_fails()) {
+        failures++;
+    }
+
+    if (!test_gid_index("gid-index-200", 200)) {
+        failures++;
+    }
+    if (!test_gid_index("gid-index-256", 256)) {
+        failures++;
+    }
+    if (!test_gid_index("gid-index-error", -EINVAL)) {
         failures++;
     }
 

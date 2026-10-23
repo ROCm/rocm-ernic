@@ -12,6 +12,7 @@
 #ifndef IONIC_ADMINQ_H
 #define IONIC_ADMINQ_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <vfio-user/libvfio-user.h>
 
@@ -28,8 +29,11 @@ void ionic_adminq_destroy(struct ionic_adminq_ctx *ctx);
  * @aq_depth_log2:  log2 of AQ ring depth (entries = 2^aq_depth_log2)
  * @cq_dma:         guest PA of the admin CQ ring
  * @cq_depth_log2:  log2 of CQ ring depth
+ *
+ * Returns false, registering nothing, if aq_idx is out of range or either
+ * depth is above IONIC_RING_MAX_DEPTH_LOG2.
  */
-void ionic_adminq_register_queue(struct ionic_adminq_ctx *ctx, int aq_idx,
+bool ionic_adminq_register_queue(struct ionic_adminq_ctx *ctx, int aq_idx,
                                  uint64_t aq_dma, uint8_t aq_depth_log2,
                                  uint64_t cq_dma, uint8_t cq_depth_log2,
                                  uint32_t cq_id, uint32_t eq_id);
@@ -53,6 +57,14 @@ void ionic_adminq_set_pvrdma(struct ionic_adminq_ctx *ctx, void *handle);
 struct ionic_datapath;
 void ionic_adminq_set_datapath(struct ionic_adminq_ctx *ctx,
                                struct ionic_datapath *dp);
+
+/*
+ * Give the admin queue the faults to inject (ionic_fault.h), or NULL for
+ * none.  The set stays owned by the caller and must outlive the queue.
+ */
+struct ionic_fault_set;
+void ionic_adminq_set_faults(struct ionic_adminq_ctx *ctx,
+                             struct ionic_fault_set *faults);
 
 /*
  * Update the AQ producer index from a BAR2 doorbell write.

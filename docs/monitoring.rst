@@ -330,6 +330,129 @@ except ``ernic_qp_count``, which has no ``qp`` label:
      - Counter
      - Receive doorbell rings on this QP.
 
+LIF Counters
+^^^^^^^^^^^^
+
+The emulated NIC keeps the ionic LIF statistics block,
+the 1 KiB ``struct ionic_lif_stats`` it writes into
+guest memory and the guest reads for ``ip -s link``.
+This is a different counter set from the guest's RDMA
+``hw_counters``, which the device serves from the admin
+queue; the next section covers those.  The exporter
+publishes the whole block as a single metric, with the
+counter in a label:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 38 10 52
+
+   * - Metric
+     - Type
+     - Description
+   * - ``ernic_lif_counter_total``
+     - Counter
+     - One LIF statistics counter, under its
+       ``ionic_if.h`` name.
+       Labels: ``ernic_id``, ``role``, ``counter``.
+
+This is one metric with a ``counter`` label rather than
+one metric per counter because the set belongs to the
+device, not to the exporter: a counter the emulator
+starts keeping is published the moment the server
+writes it, with no exporter release.  The guest's
+``ionic_rdma`` driver makes the same bargain -- it takes
+its counter names from a table the device hands back.
+
+The label values are exactly the field names of
+``struct ionic_lif_stats``, so a counter can be looked
+up in the kernel's ``ionic_if.h``.
+
+A counter the emulator does not yet keep reads zero
+rather than disappearing; the server prints the whole
+block on every flush.
+
+.. include:: generated/lif-counters.rst
+
+.. note::
+
+   Not every counter is live yet.  The Ethernet, drop,
+   ring and RDMA traffic counters are, and
+   ``tests/py/test_ionic_hw_stats.py`` drives traffic
+   that moves them.  The ``rdma_req_*`` and
+   ``rdma_resp_*`` error counters are named and
+   published, but nothing in the datapath increments
+   them, so they read zero whatever happens: a zero
+   there means "not counted", not "did not happen".
+
+   Wiring them up is
+   `PR #237 <https://github.com/ROCm/rocm-ernic/pull/237>`_.
+   Whoever lands it should delete this paragraph, and
+   will find that the counter lists below and the
+   structural checks in the test pick the new counters
+   up on their own.
+
+Guest hw_counters and real silicon
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A guest running the in-tree ``ionic_rdma`` driver gets
+its own view of the device's counters, independent of
+the exporter, under
+``/sys/class/infiniband/<dev>/ports/1/hw_counters``:
+
+.. code-block:: bash
+
+   rdma statistic show link ionic_0/1
+   rdma statistic qp set link ionic_0/1 auto type on
+   rdma statistic qp show
+
+Those come from four admin commands --
+``STATS_HDRS`` and ``QP_STATS_HDRS`` hand back a table
+naming the counters, ``STATS_VALS`` and
+``QP_STATS_VALS`` fill in the values.  The driver takes
+the names, value types and offsets from that table, so
+the device decides what a guest sees.
+
+The values behind those tables are the server's own
+device and per-QP counters, not the LIF block, and the
+exporter has always published them -- under different
+names.  What a guest reads as ``total_bytes_sent`` is
+``ernic_rdma_bytes_sent_total`` here, and what it reads
+per QP as ``wqes_processed`` is
+``ernic_qp_wqes_processed_total``.  The tables are
+defined in ``dev_stats`` and ``qp_stats`` in
+``src/ionic_adminq_priv.h``:
+
+.. include:: generated/hw-counter-tables.rst
+
+So the device exports two counter sets, and they stand
+differently against the silicon the emulator models:
+
+* The **LIF statistics block** matches.  All 74 named
+  counters are at the qword offsets, and under the
+  names, that ``struct ionic_lif_stats`` gives them in
+  the kernel's ``ionic_if.h``, which is the layout the
+  Pensando DSC firmware maintains.  A tool that reads
+  ``ip -s link`` or the LIF block directly sees what it
+  would see on hardware.
+* The **hw_counters tables** do not.  The device and
+  per-QP counters the emulator advertises
+  (``commands``, ``total_bytes_sent``,
+  ``doorbell_send`` and the rest) are its own: they
+  describe the emulator's accounting, and the real
+  firmware's names for its tables are not published in
+  the kernel tree or anywhere else we can check.  The
+  wire format is right and the driver is happy, but a
+  dashboard keyed on these names is keyed on rocm-ernic,
+  not on the DSC.
+
+This is a naming difference, not a protocol one.  The
+ABI is firmware-defined on both sides: the driver never
+assumes a counter set, so the emulator is free to
+advertise its own, and there is no guest-visible
+breakage either way.  Anyone with DSC hardware can
+settle the question by comparing the output of
+``rdma statistic show`` there with ``dev_stats``.
+
 Grafana Dashboard
 -----------------
 
@@ -358,13 +481,20 @@ Dashboard rows:
    commands/s, interrupts/s, MMIO read/write rates,
    and stats write count.
 
-5. **VM Metrics** -- guest-side panels for VM CPU,
+5. **LIF Counters (ionic_lif_stats)** -- the ionic
+   LIF statistics block: RDMA packet rate, RDMA error
+   rate, Ethernet drop and ring-error rate, and a table
+   of every counter that has moved.  The two rate
+   panels filter out flat-zero series, so a line
+   appearing is itself the signal.
+
+6. **VM Metrics** -- guest-side panels for VM CPU,
    memory and disk I/O, TCP/IP rates on the
    ``rocm-ernic0`` and management interfaces, RDMA port
    data and packet rates, and GPU temperature,
    utilisation, power, clock and PCIe bandwidth.
 
-   Unlike rows 1-4, this row does not read from
+   Unlike rows 1-5, this row does not read from
    ``ernic-exporter``.  Its panels query ``node_*``,
    ``rdma_port_*`` and ``gpu_*`` series from separate
    ``ernic-vm-node``, ``ernic-vm-rdma`` and
@@ -396,6 +526,32 @@ Per-instance IP vs RDMA ratio:
      rate(ernic_rdma_bytes_total[5m])
    / (rate(ernic_rdma_bytes_total[5m])
       + rate(ernic_ip_bytes_total[5m]))
+
+Any RDMA error the device reported, across the
+cluster:
+
+.. code-block:: promql
+
+   sum by (counter) (
+     rate(ernic_lif_counter_total{
+       counter=~"rdma_(req|resp)_.*"}[5m])
+   ) > 0
+
+One LIF counter by name, as a guest would read it from
+``hw_counters``:
+
+.. code-block:: promql
+
+   ernic_lif_counter_total{counter="tx_rdma_ucast_bytes"}
+
+Frames the emulated datapath dropped:
+
+.. code-block:: promql
+
+   sum by (ernic_id) (
+     rate(ernic_lif_counter_total{
+       counter=~".*_drop_packets"}[5m])
+   )
 
 Alert when any instance is down:
 

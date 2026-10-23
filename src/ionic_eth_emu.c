@@ -29,6 +29,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
@@ -42,13 +43,24 @@
 
 #include <vfio-user/libvfio-user.h>
 
+#include "dma_range.h"
 #include "ionic_eth_emu.h"
-#include "rocm_ernic_compat.h" /* IONIC_EMU_SRQ_COUNT, shared with the backend */
+#include "ionic_eth_emu_priv.h"
+#include "ionic_emu_stats.h"
 #include "ionic_eth_net.h"
+#include "ionic_eth_steer.h"
+#include "ionic_profile.h"
 #include "ionic_datapath.h"
 #include "ionic_adminq.h"
+#include "ionic_status.h"
+#include "ionic_fault.h"
 #include "rocm_ernic_compat.h"
 #include "rocm_ernic_internal.h"
+
+/* The data path refuses a WQE stride above the max_stride advertised here,
+ * and sizes its WQE buffers for it. */
+_Static_assert(IONIC_MAX_STRIDE == IONIC_WQE_MAX_STRIDE_LOG2,
+               "advertised max_stride must match the data path's");
 
 /* -------------------------------------------------------------------------
  * Inline helpers matching linux/byteorder conventions (host = little-endian
@@ -68,400 +80,39 @@ static inline uint64_t le64(uint64_t v)
     return htole64(v);
 }
 
-/* -------------------------------------------------------------------------
- * ionic_if.h constants we need without pulling in the full kernel header.
- * Keep in sync with the pinned kernel ref.
- * -------------------------------------------------------------------------
- */
-#define IONIC_DEV_INFO_SIGNATURE 0x44455649u /* 'DEVI' */
-#define IONIC_DEV_INFO_VERSION   1
-#define IONIC_FW_STS_F_RUNNING   0x01u
-
-/* BAR0 layout offsets */
-#define IONIC_BAR0_DEV_INFO_REGS_OFFSET 0x0000u
-#define IONIC_BAR0_DEV_CMD_REGS_OFFSET  0x0800u
-#define IONIC_BAR0_INTR_STATUS_OFFSET   0x1000u
-#define IONIC_BAR0_INTR_CTRL_OFFSET     0x2000u
-#define IONIC_BAR0_SIZE                 0x8000u /* 32 KB */
-
-/* dev_info_regs field offsets (union ionic_dev_info_regs in ionic_if.h).
- * fw_version is at +0x0c, NOT +0x08 -- +0x08 is fw_heartbeat, which the
- * driver's watchdog polls.  A constant non-zero heartbeat makes
- * ionic_heartbeat_check() report "FW heartbeat stalled" and return
- * -ENXIO, which tears the LIF down. */
-#define DEVINFO_SIGNATURE_OFF    0x00u
-#define DEVINFO_VERSION_OFF      0x04u
-#define DEVINFO_ASIC_TYPE_OFF    0x05u
-#define DEVINFO_ASIC_REV_OFF     0x06u
-#define DEVINFO_FW_STATUS_OFF    0x07u
-#define DEVINFO_FW_HEARTBEAT_OFF 0x08u
-#define DEVINFO_FW_VERSION_OFF   0x0cu /* char[32] */
-#define DEVINFO_SERIAL_NUM_OFF   0x2cu /* char[32] */
-#define DEVINFO_FWVERS_BUFLEN    32u
-#define DEVINFO_SERIAL_BUFLEN    32u
-
-#define IONIC_DEV_CMD_DONE 0x00000001u
-
-/* Device command opcodes (only those we actually handle are defined here) */
-#define IONIC_CMD_NOP             0
-#define IONIC_CMD_IDENTIFY        1
-#define IONIC_CMD_INIT            2
-#define IONIC_CMD_RESET           3
-#define IONIC_CMD_GETATTR         4
-#define IONIC_CMD_SETATTR         5
-#define IONIC_CMD_PORT_IDENTIFY   10
-#define IONIC_CMD_PORT_INIT       11
-#define IONIC_CMD_PORT_RESET      12
-#define IONIC_CMD_PORT_GETATTR    13
-#define IONIC_CMD_PORT_SETATTR    14
-#define IONIC_CMD_LIF_IDENTIFY    20
-#define IONIC_CMD_LIF_INIT        21
-#define IONIC_PORT_OPER_STATUS_UP 1
-#define IONIC_LIF_INFO_STATUS_OFF 256u
-
-/* struct ionic_port_info, as the driver lays it out in the DMA area whose
- * address arrives in PORT_INIT.  Offsets rather than a struct because only
- * these fields are published; the sprom and statistics blocks that follow
- * are left as the driver allocated them.
- *
- *   union ionic_port_config   config;   0   (__le32 words[64])
- *   struct ionic_port_status  status;   256 (__packed)
- *       __le32 id;                      256
- *       __le32 speed;                   260
- *       u8     status;                  264
- *       __le16 link_down_count;         265
- *       u8     fec_type;                267
- *       u8     rsvd[48];                268
- *       struct ionic_xcvr_status xcvr;  316
- *           u8     state;               316
- *           u8     phy;                 317
- *           __le16 pid;                 318
- */
-#define IONIC_PORT_INFO_CONFIG_SPEED_OFF  0u
-#define IONIC_PORT_INFO_CONFIG_MTU_OFF    4u
-#define IONIC_PORT_INFO_CONFIG_STATE_OFF  8u
-#define IONIC_PORT_INFO_STATUS_SPEED_OFF  260u
-#define IONIC_PORT_INFO_STATUS_STATUS_OFF 264u
-#define IONIC_PORT_INFO_XCVR_STATE_OFF    316u
-#define IONIC_PORT_INFO_XCVR_PHY_OFF      317u
-#define IONIC_PORT_INFO_XCVR_PID_OFF      318u
-/* Everything above the highest field written, so one DMA write covers it. */
-#define IONIC_PORT_INFO_PUBLISHED_LEN 320u
-
-#define IONIC_PORT_ADMIN_STATE_UP    2
-#define IONIC_XCVR_STATE_INSERTED    1
-#define IONIC_PHY_TYPE_COPPER        1
-#define IONIC_XCVR_PID_QSFP_100G_CR4 1
-#define IONIC_ETH_LINK_SPEED_MBPS    100000
-#define IONIC_ETH_MTU                9000
-#define IONIC_CMD_LIF_RESET          22
-#define IONIC_CMD_LIF_GETATTR        23
-#define IONIC_CMD_LIF_SETATTR        24
-#define IONIC_CMD_Q_IDENTIFY         39
-#define IONIC_CMD_Q_INIT             40
-#define IONIC_CMD_Q_CONTROL          41
-
-/* Completion status codes (enum ionic_status_code in ionic_if.h) */
-#define IONIC_RC_SUCCESS 0
-#define IONIC_RC_EOPCODE 2
-
-/* LIF capabilities */
-#define IONIC_LIF_CAP_ETH  (1u << 0)
-#define IONIC_LIF_CAP_RDMA (1u << 1)
-
-/* ASIC type for emulated device */
-#define IONIC_ASIC_TYPE_NONE 0
-
-/* (Ethernet logical queue type IDs — kept only for documentation purposes) */
-
-/* RDMA queue type hardware IDs (what the RDMA driver sees) */
-#define IONIC_RDMA_QTYPE_AQ 5
-#define IONIC_RDMA_QTYPE_SQ 6
-#define IONIC_RDMA_QTYPE_RQ 7
-#define IONIC_RDMA_QTYPE_CQ 8
-#define IONIC_RDMA_QTYPE_EQ 9
-/* Next free logical qtype. The driver takes this value from the identity
- * rather than assuming one, so the number is ours to choose; it only has to
- * not collide with the five above. */
-#define IONIC_RDMA_QTYPE_SRQ 10
-
-/* Byte offsets within the rdma section of union ionic_lif_identity. Literal
- * because srq_qtype does not follow the other qtypes contiguously -- see the
- * comment at the write site. */
-#define LIF_ID_SRQ_QTYPE_OFF     96
-#define LIF_ID_ALLOC_QID_CAP_OFF 113
-
-/* enum ionic_lif_rdma_alloc_qid: which queue types firmware allocates qids
- * for. CQ is BIT(0) and is not claimed here -- CREATE_CQ still takes the
- * driver's cqid. */
-#define IONIC_LIF_RDMA_ALLOC_QID_SRQ (1u << 1)
-
-/* Emulated RDMA capability version (must match ionic_fw.h expectations) */
-#define IONIC_RDMA_VERSION    1
-#define IONIC_RDMA_QP_OPCODES 16
-/*
- * Highest admin opcode supported, plus one. The driver gates each command on
- * this watermark rather than on a per-opcode bitmap:
- *
- *   if (dev->lif_cfg.admin_opcodes <= IONIC_V1_ADMIN_CREATE_SRQ)
- *           return -EOPNOTSUPP;
- *
- * so 19 (the old IONIC_V1_ADMIN_OPCODES_MAX) refuses CREATE_SRQ=26 ..
- * DESTROY_SRQ=29 and the guest reports no SRQ no matter what the identity
- * advertises. 30 is the new OPCODES_MAX.
- *
- * This also nominally claims 19-25, which upstream has left unassigned for
- * series still in flight. That is safe only because unassigned means the
- * driver never emits them; revisit when those land, since claiming an opcode
- * we do not handle is how a guest command hangs rather than fails.
- */
-#define IONIC_RDMA_ADMIN_OPCODES 30
-
-/* Page table and MR counts for emulated device */
-/* 2M page table entries. This is the knob that sets the guest's maximum
- * memory-region size, and it is not obvious from here, so: the driver does
- *
- *   attr->max_mr_size = dev->lif_cfg.npts_per_lif * PAGE_SIZE / 2;
- *   (drivers/infiniband/hw/ionic/ionic_ibdev.c:37)
- *
- * -- an explicit halving, presumably for page-table headroom. At the previous
- * (1u << 20) that reported 1048576 * 4096 / 2 = 0x80000000, i.e. 2 GiB, which
- * reads like something truncating a 4 GiB constant and is not: it is this
- * formula working as intended. 1u << 21 reports 4 GiB.
- *
- * Nothing is allocated from this value on either side -- the emulator uses it
- * only in the LIF_IDENTIFY response below, and the driver uses it only for
- * max_mr_size and max_fast_reg_page_list_len (ionic_ibdev.c:37,74) -- so
- * raising it costs no memory.
- *
- * It matters because LMCache registers its whole L1 arena as ONE memory
- * region (nixl_impl.py:341), so max_mr_size is a hard ceiling on per-node L1.
- *
- * WHY SO LARGE. Real HCAs advertise max_mr_size as effectively unbounded
- * (ConnectX-class parts report UINT64_MAX) and let pinnable host memory be
- * the real limit. A small advertised cap is an emulation artifact that
- * surfaces as a mystifying ENOMEM from ibv_reg_mr long before the host is
- * anywhere near out of memory, so match the hardware convention and let
- * memory do the limiting.
- *
- * 1u << 31 reports 2^31 * 4096 / 2 = 2^42 = 4 TiB. The arithmetic is safe:
- * npts_per_lif is u32 and PAGE_SIZE is unsigned long, so the product is done
- * in 64 bits, and max_fast_reg_page_list_len (npts/2 = 2^30) still fits the
- * u32 it is assigned to. A literal 0xFFFFFFFF is avoided deliberately -- it
- * would be ~8 TiB but reads like a sentinel.
- *
- * MAX_MR_SIZE in third-party/qemu/hw/rdma/rdma_rm_defs.h (1UL << 32) does NOT
- * constrain this: it is referenced only by rocm_ernic_compat.c's pvrdma
- * dev_attr, which the ionic guest driver never reads, and no registration
- * path validates against it.
- */
-#define IONIC_NPTS_PER_LIF  (1u << 31) /* 2G PTEs -> 4 TiB max_mr_size */
-#define IONIC_NMRS_PER_LIF  (1u << 17) /* 128K MRs              */
-#define IONIC_NAHS_PER_LIF  (1u << 15) /* 32K AHs               */
-#define IONIC_MAX_STRIDE    9          /* log2(512) bytes/WQE   */
-#define IONIC_PAGE_SIZE_CAP (1u << 12) /* 4K pages supported     */
-
-/* Number of emulated EQs / AQs we report in LIF identity */
-#define IONIC_EMU_EQ_COUNT   32
-#define IONIC_EMU_AQ_COUNT   4
-#define IONIC_EMU_QP_COUNT   (1u << 15)
-#define IONIC_EMU_CQ_COUNT   (1u << 16)
-#define IONIC_EMU_UDMA_SHIFT 3 /* 8 queues per group */
-
-/* Ethernet Tx/Rx queue pairs offered to the LIF. */
-#define IONIC_EMU_ETH_QCOUNT 4
-
-/* -------------------------------------------------------------------------
- * dev_cmd_regs layout, relative to IONIC_BAR0_DEV_CMD_REGS_OFFSET.
- *
- * These are the offsets of union ionic_dev_cmd_regs in ionic_if.h; the
- * driver reaches every field through that struct, so the struct is the
- * contract, not the IONIC_BAR0_DEV_CMD_* macros.
- *
- *   +0x00  doorbell   u32   (w1 triggers cmd processing)
- *   +0x04  done       u32   (bit 0 = 1 when complete)
- *   +0x08  cmd        union ionic_dev_cmd      (words[16], 64 B)
- *   +0x48  comp       union ionic_dev_cmd_comp (words[4],  16 B)
- *   +0x58  rsvd[48]
- *   +0x88  data[478]  u32   (1912 B, ends exactly at +0x800)
- *
- * Note IONIC_BAR0_DEV_CMD_DATA_REGS_OFFSET (0x0c00) is vestigial in
- * upstream -- no driver code references it.  The real data window is at
- * dev_cmd_regs+0x88, i.e. absolute BAR0 offset 0x0888.  Placing it at
- * 0x0c00 silently breaks every IDENTIFY-style command.
- * -------------------------------------------------------------------------
- */
-#define DEVCMD_DOORBELL_OFF 0x00u
-#define DEVCMD_DONE_OFF     0x04u
-#define DEVCMD_CMD_OFF      0x08u
-#define DEVCMD_COMP_OFF     0x48u
-#define DEVCMD_DATA_OFF     0x88u
-#define DEVCMD_DATA_SIZE    1912u
-
-/* -------------------------------------------------------------------------
- * Emulator state
- * -------------------------------------------------------------------------
- */
-
-/* Size of the emulated BAR0 shadow buffer (32 KB).
- * This must equal the BAR0 size advertised to the guest in setup_bars(),
- * or the driver gets a window it cannot address. */
-#define BAR0_BUF_SIZE IONIC_BAR0_SIZE
-
-/* The dev_cmd data window ends exactly where intr_status begins; a
- * larger data area would silently corrupt the interrupt registers. */
-_Static_assert(IONIC_BAR0_DEV_CMD_REGS_OFFSET + DEVCMD_DATA_OFF +
-                       DEVCMD_DATA_SIZE ==
-                   IONIC_BAR0_INTR_STATUS_OFFSET,
-               "dev_cmd data window must abut intr_status at 0x1000");
-_Static_assert(DEVCMD_DATA_OFF == DEVCMD_COMP_OFF + 16u + 48u,
-               "dev_cmd data must follow comp[16] + rsvd[48]");
-_Static_assert(DEVCMD_COMP_OFF == DEVCMD_CMD_OFF + 64u,
-               "dev_cmd comp must follow cmd[64]");
-
-/* Ethernet logical queue types (enum ionic_logical_qtype).  These index both
- * ionic_lif_config.queue_count[] and the LIF's doorbell page, and are
- * disjoint from the RDMA hardware qtypes 5-9 used by ionic_rdma.ko. */
-#define IONIC_QTYPE_ADMINQ  0
-#define IONIC_QTYPE_NOTIFYQ 1
-#define IONIC_QTYPE_RXQ     2
-#define IONIC_QTYPE_TXQ     3
-#define IONIC_QTYPE_ETH_MAX 5
-
-/* struct ionic_admin_cmd / ionic_admin_comp are fixed-size ring entries. */
-#define ADMIN_CMD_SIZE        64u
-#define ADMIN_COMP_SIZE       16u
-#define ADMIN_COMP_COLOR_MASK 0x80u
-
-/* struct ionic_txq_desc / ionic_rxq_desc / their completions are all 16 B. */
-#define ETH_DESC_SIZE 16u
-#define ETH_COMP_SIZE 16u
-
-/* struct ionic_txq_sg_elem: le64 addr, le16 len, le16 rsvd[3]. */
-#define TXQ_SG_ELEM_SIZE 16u
-#define TXQ_SG_MAX_ELEMS 8u
-
-/* encode_txq_desc_cmd(): flags[3:0] opcode[7:4] nsge[11:8] addr[63:12]. */
-#define TXQ_DESC_NSGE_SHIFT  8
-#define TXQ_DESC_ADDR_SHIFT  12
-#define TXQ_DESC_NIBBLE_MASK 0xfu
-
-/* struct ionic_intr is 32 bytes: coal_init, mask, credits, mask_assert, coal.
- * mask and mask_assert take IONIC_INTR_MASK_SET/CLEAR; a write to credits
- * with the UNMASK bit is how NAPI re-arms the vector. */
-#define INTR_REG_STRIDE      32
-#define INTR_MASK_OFF        4
-#define INTR_CREDITS_OFF     8
-#define INTR_MASK_ASSERT_OFF 12
-#define INTR_CRED_UNMASK     0x10000u
-
-/* State captured from Q_INIT for an Ethernet logical queue. */
-struct eth_queue {
-    bool valid;
-    uint16_t intr_index;
-    uint64_t ring_base;
-    uint64_t cq_ring_base;
-    uint64_t sg_ring_base;
-    uint16_t depth;
-    uint16_t head;     /* next descriptor to consume */
-    uint16_t prod;     /* last producer index the driver rang for */
-    uint16_t cq_index; /* next completion slot to fill */
-    uint8_t cq_color;  /* colour bit the driver is currently expecting */
-};
-
-struct ionic_eth_emu {
-    vfu_ctx_t *vfu_ctx;
-
-    /* Shadow copy of BAR0 contents.  Reads are served from here;
-     * writes update it and, when the doorbell byte is written, trigger
-     * command processing. */
-    uint8_t bar0[BAR0_BUF_SIZE];
-
-    /* Shadow copy of BAR2 (doorbell pages). */
-    uint8_t *bar2;
-    size_t bar2_size;
-
-    /* True once LIF_INIT has completed. */
-    bool lif_initialized;
-    uint16_t lif_hw_index;
-
-    /* RDMA devcmd handler (registered after construction). */
-    ionic_rdma_devcmd_fn_t rdma_devcmd_fn;
-    void *rdma_devcmd_opaque;
-
-    /* Statistics sink, shared with the pvrdma resource manager. */
-    pvrdma_handle_t pvrdma_handle;
-
-    /* Data-path handler for BAR2 doorbell writes. */
-    struct ionic_datapath *dp;
-    /* Admin queue context for AQ doorbell producer-index updates. */
-    struct ionic_adminq_ctx *adminq;
-
-    /* Interrupt controller shadow (per-vector: mask, mask-on-assert). */
-    uint32_t intr_mask[IONIC_MSIX_MAX_VECTORS];
-    uint32_t intr_mask_assert[IONIC_MSIX_MAX_VECTORS];
-    /* Set when a vector asserted while masked; replayed on unmask. */
-    uint32_t intr_pending[IONIC_MSIX_MAX_VECTORS];
-
-    /* Ethernet logical queues, indexed by [IONIC_QTYPE_*][queue index]. */
-    struct eth_queue eth_q[IONIC_QTYPE_ETH_MAX][IONIC_EMU_ETH_QCOUNT];
-
-    /* Station MAC reported by LIF_IDENTIFY. */
-    uint8_t mac[6];
-
-    /* Host network backend, or NULL when Tx is a sink. */
-    struct ionic_eth_net *net;
-    /* In-process endpoint offered every Tx frame before the backend. */
-    ionic_eth_tx_filter_fn tx_filter;
-    void *tx_filter_ctx;
-    /* Staging buffer for one frame in either direction. */
-    uint8_t frame[IONIC_ETH_NET_MTU_MAX];
-
-    /*
-     * Frames handed over by threads that may not DMA -- today only the TCP
-     * mesh receive thread.  Producers append under @inbox_lock; the main
-     * loop drains the queue from ionic_eth_emu_poll_rx().
-     */
-    struct eth_inbox_frame *inbox_head;
-    struct eth_inbox_frame *inbox_tail;
-    unsigned inbox_count;
-    pthread_mutex_t inbox_lock;
-};
-
-/* Bounds the inbox so a fast mesh peer cannot grow it without limit; the
- * blocking producer stalls above this, which back-pressures the mesh TCP
- * connection the same way the old PVRDMA Rx ring did. */
-#define ETH_INBOX_MAX_FRAMES 256
-
 struct eth_inbox_frame {
     struct eth_inbox_frame *next;
     size_t len;
+    /* The eth_rx fault has seen it: a frame held back for want of a buffer
+     * is one event, however many polls it waits. */
+    bool fault_seen;
     uint8_t data[];
 };
+
+/* The Ethernet queue pairs the LIF offers: queues.eth, which the profile
+ * loader keeps inside eth_q[]. */
+static uint32_t eth_qcount(const struct ionic_eth_emu *emu)
+{
+    uint32_t n = emu->profile.queues.eth;
+
+    return n <= IONIC_EMU_ETH_QMAX ? n : IONIC_EMU_ETH_QMAX;
+}
 
 /* -------------------------------------------------------------------------
  * Forward declarations
  * -------------------------------------------------------------------------
  */
 static void process_devcmd(struct ionic_eth_emu *emu);
-static void handle_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
-                            uint8_t *comp, uint8_t *data);
-static void handle_port_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
-                             uint8_t *comp);
-static void handle_lif_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
-                                uint8_t *comp, uint8_t *data);
-static void handle_lif_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
-                            uint8_t *comp);
 static void handle_lif_setattr(struct ionic_eth_emu *emu, const uint8_t *cmd,
                                uint8_t *comp);
 static void handle_lif_getattr(struct ionic_eth_emu *emu, const uint8_t *cmd,
                                uint8_t *comp);
-static void handle_q_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
-                              uint8_t *comp, uint8_t *data);
-static void handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
-                          uint8_t *comp);
+static void handle_q_control(struct ionic_eth_emu *emu, const uint8_t *cmd,
+                             uint8_t *comp);
 static void handle_rdma_cmd(struct ionic_eth_emu *emu, const uint8_t *cmd,
                             uint8_t *comp);
+static void handle_p4_cmd(struct ionic_eth_emu *emu, const uint8_t *cmd,
+                          uint8_t *comp);
 static void eth_adminq_service(struct ionic_eth_emu *emu, uint16_t p_index);
 static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
                             uint16_t p_index);
@@ -472,6 +123,36 @@ static int eth_dma_rw(vfu_ctx_t *vfu_ctx, uint64_t gpa, void *buf, size_t len,
  * Construction / destruction
  * -------------------------------------------------------------------------
  */
+
+/* Fill dev_info_regs in the BAR0 shadow from the profile's identity.
+ * ionic.ko reads signature at offset 0 to confirm the device is alive,
+ * and fw_status bit 0 to confirm firmware is running. */
+static void write_dev_info(struct ionic_eth_emu *emu)
+{
+    uint8_t *info = emu->bar0 + IONIC_BAR0_DEV_INFO_REGS_OFFSET;
+
+    uint32_t sig = le32(IONIC_DEV_INFO_SIGNATURE);
+    memcpy(info + DEVINFO_SIGNATURE_OFF, &sig, 4);
+    info[DEVINFO_VERSION_OFF] = IONIC_DEV_INFO_VERSION;
+    info[DEVINFO_ASIC_TYPE_OFF] = emu->profile.identity.asic_type;
+    info[DEVINFO_ASIC_REV_OFF] = emu->profile.identity.asic_rev;
+    info[DEVINFO_FW_STATUS_OFF] = IONIC_FW_STS_F_RUNNING;
+
+    /* Leave fw_heartbeat at 0: ionic_heartbeat_check() special-cases a
+     * zero heartbeat as "early FW with no heartbeat" and treats it as
+     * healthy, so we do not need a ticking counter to keep the LIF up. */
+    uint32_t hb = 0;
+    memcpy(info + DEVINFO_FW_HEARTBEAT_OFF, &hb, 4);
+
+    /* fw_version is at most 31 characters, so the zeroed tail always
+     * leaves it NUL-terminated. */
+    memset(info + DEVINFO_FW_VERSION_OFF, 0, DEVINFO_FWVERS_BUFLEN);
+    memcpy(
+        info + DEVINFO_FW_VERSION_OFF, emu->profile.identity.fw_version,
+        strnlen(emu->profile.identity.fw_version, DEVINFO_FWVERS_BUFLEN - 1));
+    strncpy((char *)(info + DEVINFO_SERIAL_NUM_OFF), "rocm-ernic-emulated",
+            DEVINFO_SERIAL_BUFLEN);
+}
 
 struct ionic_eth_emu *ionic_eth_emu_create(vfu_ctx_t *vfu_ctx, size_t bar2_size)
 {
@@ -489,34 +170,32 @@ struct ionic_eth_emu *ionic_eth_emu_create(vfu_ctx_t *vfu_ctx, size_t bar2_size)
     }
     pthread_mutex_init(&emu->inbox_lock, NULL);
 
-    /* Initialise dev_info_regs in BAR0 shadow.
-     * ionic.ko reads signature at offset 0 to confirm the device is alive,
-     * and fw_status bit 0 to confirm firmware is running. */
-    uint8_t *info = emu->bar0 + IONIC_BAR0_DEV_INFO_REGS_OFFSET;
-
-    uint32_t sig = le32(IONIC_DEV_INFO_SIGNATURE);
-    memcpy(info + DEVINFO_SIGNATURE_OFF, &sig, 4);
-    info[DEVINFO_VERSION_OFF] = IONIC_DEV_INFO_VERSION;
-    info[DEVINFO_ASIC_TYPE_OFF] = IONIC_ASIC_TYPE_NONE;
-    info[DEVINFO_ASIC_REV_OFF] = 0;
-    info[DEVINFO_FW_STATUS_OFF] = IONIC_FW_STS_F_RUNNING;
-
-    /* Leave fw_heartbeat at 0: ionic_heartbeat_check() special-cases a
-     * zero heartbeat as "early FW with no heartbeat" and treats it as
-     * healthy, so we do not need a ticking counter to keep the LIF up. */
-    uint32_t hb = 0;
-    memcpy(info + DEVINFO_FW_HEARTBEAT_OFF, &hb, 4);
-
-    strncpy((char *)(info + DEVINFO_FW_VERSION_OFF), "rocm-ernic-1.0",
-            DEVINFO_FWVERS_BUFLEN);
-    strncpy((char *)(info + DEVINFO_SERIAL_NUM_OFF), "rocm-ernic-emulated",
-            DEVINFO_SERIAL_BUFLEN);
+    ionic_profile_defaults(&emu->profile);
+    write_dev_info(emu);
 
     /* Mask all interrupts initially. */
     for (int i = 0; i < IONIC_MSIX_MAX_VECTORS; i++)
         emu->intr_mask[i] = 1;
 
     return emu;
+}
+
+void ionic_eth_emu_set_profile(struct ionic_eth_emu *emu,
+                               const struct ionic_profile *profile)
+{
+    if (!emu || !profile)
+        return;
+    emu->profile = *profile;
+    write_dev_info(emu);
+}
+
+void ionic_eth_emu_set_faults(struct ionic_eth_emu *emu,
+                              const struct ionic_fault_set *faults)
+{
+    if (!emu)
+        return;
+    emu->rx_fault = ionic_fault_set_get(faults, IONIC_FAULT_SITE_ETH_RX);
+    emu->tx_fault = ionic_fault_set_get(faults, IONIC_FAULT_SITE_ETH_TX);
 }
 
 void ionic_eth_emu_destroy(struct ionic_eth_emu *emu)
@@ -546,12 +225,14 @@ int ionic_eth_emu_queue_rx_frame(struct ionic_eth_emu *emu, const void *frame,
         return -ENOMEM;
     f->next = NULL;
     f->len = len;
+    f->fault_seen = false;
     memcpy(f->data, frame, len);
 
     pthread_mutex_lock(&emu->inbox_lock);
     if (emu->inbox_count >= ETH_INBOX_MAX_FRAMES) {
         pthread_mutex_unlock(&emu->inbox_lock);
         free(f);
+        ionic_emu_stats_rx_inbox_full(&emu->stats, frame, len);
         return -ENOSPC;
     }
     if (emu->inbox_tail)
@@ -565,12 +246,39 @@ int ionic_eth_emu_queue_rx_frame(struct ionic_eth_emu *emu, const void *frame,
     return 0;
 }
 
+int ionic_eth_emu_send_to_net(struct ionic_eth_emu *emu, const void *frame,
+                              size_t len)
+{
+    if (!emu || !frame || len == 0 || len > IONIC_ETH_NET_MTU_MAX)
+        return -EINVAL;
+    if (!emu->net)
+        return -ENODEV;
+
+    /*
+     * Deliberately uncounted. eth_txq_service() already counts a guest
+     * frame as sent whether or not the Tx filter took it, so counting
+     * again here doubled every byte an in-process endpoint put back on
+     * the wire. And this cannot tell guest traffic from anything else:
+     * a frame the pipeline reflects from the uplink back to the uplink
+     * never came from the guest, and the counter is of guest bytes.
+     * Only the caller that knows where the frame came from can count it.
+     */
+    return ionic_eth_net_send(emu->net, frame, len);
+}
+
 void ionic_eth_emu_register_rdma_handler(struct ionic_eth_emu *emu,
                                          ionic_rdma_devcmd_fn_t fn,
                                          void *opaque)
 {
     emu->rdma_devcmd_fn = fn;
     emu->rdma_devcmd_opaque = opaque;
+}
+
+void ionic_eth_emu_register_p4_handler(struct ionic_eth_emu *emu,
+                                       ionic_rdma_devcmd_fn_t fn, void *opaque)
+{
+    emu->p4_devcmd_fn = fn;
+    emu->p4_devcmd_opaque = opaque;
 }
 
 void ionic_eth_emu_register_datapath(struct ionic_eth_emu *emu,
@@ -584,6 +292,22 @@ void ionic_eth_emu_register_tx_filter(struct ionic_eth_emu *emu,
 {
     emu->tx_filter = fn;
     emu->tx_filter_ctx = ctx;
+}
+
+void ionic_eth_emu_get_tx_filter(struct ionic_eth_emu *emu,
+                                 ionic_eth_tx_filter_fn *fn, void **ctx)
+{
+    if (fn)
+        *fn = emu ? emu->tx_filter : NULL;
+    if (ctx)
+        *ctx = emu ? emu->tx_filter_ctx : NULL;
+}
+
+void ionic_eth_emu_register_rx_filter(struct ionic_eth_emu *emu,
+                                      ionic_eth_rx_filter_fn fn, void *ctx)
+{
+    emu->rx_filter = fn;
+    emu->rx_filter_ctx = ctx;
 }
 
 void ionic_eth_emu_register_adminq(struct ionic_eth_emu *emu,
@@ -765,7 +489,7 @@ ssize_t ionic_eth_emu_bar2_access(struct ionic_eth_emu *emu, char *buf,
                 eth_adminq_service(emu, p_index);
             } else if (qtype == IONIC_QTYPE_TXQ) {
                 eth_txq_service(emu, qid, p_index);
-            } else if (qtype == IONIC_QTYPE_RXQ && qid < IONIC_EMU_ETH_QCOUNT) {
+            } else if (qtype == IONIC_QTYPE_RXQ && qid < eth_qcount(emu)) {
                 /* Rx descriptors are buffers the driver hands us to fill;
                  * record how many are posted and wait for traffic. */
                 struct eth_queue *rq = &emu->eth_q[IONIC_QTYPE_RXQ][qid];
@@ -789,6 +513,81 @@ ssize_t ionic_eth_emu_bar2_access(struct ionic_eth_emu *emu, char *buf,
     }
 
     return (ssize_t)count;
+}
+
+/* -------------------------------------------------------------------------
+ * Statistics
+ *
+ * The driver reads struct ionic_lif_stats out of the LIF info block and
+ * never asks for it to be refreshed, so the device rewrites it on a timer.
+ * -------------------------------------------------------------------------
+ */
+
+void ionic_eth_emu_publish_stats(struct ionic_eth_emu *emu, uint64_t now_ms)
+{
+    uint8_t block[IONIC_LIF_STATS_BYTES];
+    uint64_t pa;
+    bool address_valid;
+
+    if (!emu || !emu->lif_info_pa)
+        return;
+    if (!emu->stats_publish_now &&
+        now_ms - emu->stats_last_ms < emu->profile.stats.interval_ms)
+        return;
+    emu->stats_publish_now = false;
+    emu->stats_last_ms = now_ms;
+
+    /* fill() writes all of @block, so no stack bytes reach the guest. */
+    ionic_emu_stats_fill(&emu->stats, block);
+    address_valid = emu->lif_info_pa <=
+                    UINT64_MAX - IONIC_LIF_INFO_STATS_OFF - (sizeof(block) - 1);
+    pa = address_valid ? emu->lif_info_pa + IONIC_LIF_INFO_STATS_OFF
+                       : emu->lif_info_pa;
+    if (!address_valid ||
+        eth_dma_rw(emu->vfu_ctx, pa, block, sizeof(block), true) < 0) {
+        if (!emu->stats_write_failed)
+            vfu_log(emu->vfu_ctx, LOG_WARNING,
+                    "ionic_eth_emu: LIF stats write to %#lx failed; retrying "
+                    "every %u ms",
+                    (unsigned long)pa,
+                    (unsigned)emu->profile.stats.interval_ms);
+        emu->stats_write_failed = true;
+        return;
+    }
+    emu->stats_write_failed = false;
+}
+
+const struct ionic_emu_stats *ionic_eth_emu_get_stats(struct ionic_eth_emu *emu)
+{
+    if (!emu)
+        return NULL;
+    ionic_emu_stats_fold(&emu->stats);
+    return &emu->stats;
+}
+
+void ionic_eth_emu_write_stats(FILE *fp, void *opaque)
+{
+    const struct ionic_emu_stats *st = ionic_eth_emu_get_stats(opaque);
+
+    if (!fp || !st)
+        return;
+    fprintf(fp, "LIF Statistics:\n");
+    for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++) {
+        const char *name = ionic_emu_lif_stat_name(q);
+
+        /* " : " is what ernic-exporter splits on; keep the space. */
+        if (name)
+            fprintf(fp, "  %-*s : %" PRIu64 "\n", LIF_STAT_NAME_WIDTH, name,
+                    st->lif[q]);
+    }
+    fprintf(fp, "\n");
+}
+
+void ionic_eth_emu_count_rdma(struct ionic_eth_emu *emu, uint64_t bytes,
+                              bool is_tx)
+{
+    if (emu)
+        ionic_emu_stats_rdma(&emu->stats, bytes, is_tx);
 }
 
 /* -------------------------------------------------------------------------
@@ -816,11 +615,18 @@ static void process_devcmd(struct ionic_eth_emu *emu)
         break;
 
     case IONIC_CMD_IDENTIFY:
-        handle_identify(emu, cmd, comp, data);
+        ionic_eth_emu_handle_identify(emu, cmd, comp, data);
+        break;
+
+    case IONIC_CMD_RESET:
+        /* Firmware zeroes its counters on reset, and the guest may free the
+         * LIF info block once the device is reset. */
+        emu->lif_info_pa = 0;
+        ionic_emu_stats_reset(&emu->stats);
+        comp[0] = IONIC_RC_SUCCESS;
         break;
 
     case IONIC_CMD_INIT:
-    case IONIC_CMD_RESET:
     case IONIC_CMD_GETATTR:
     case IONIC_CMD_SETATTR:
         /* Device-level init/reset/attrs: nothing to configure in the
@@ -829,15 +635,16 @@ static void process_devcmd(struct ionic_eth_emu *emu)
         break;
 
     case IONIC_CMD_LIF_IDENTIFY:
-        handle_lif_identify(emu, cmd, comp, data);
+        ionic_eth_emu_handle_lif_identify(emu, cmd, comp, data);
         break;
 
     case IONIC_CMD_LIF_INIT:
-        handle_lif_init(emu, cmd, comp);
+        ionic_eth_emu_handle_lif_init(emu, cmd, comp);
         break;
 
     case IONIC_CMD_LIF_RESET:
         emu->lif_initialized = false;
+        emu->lif_info_pa = 0;
         comp[0] = 0;
         break;
 
@@ -850,19 +657,19 @@ static void process_devcmd(struct ionic_eth_emu *emu)
         break;
 
     case IONIC_CMD_Q_IDENTIFY:
-        handle_q_identify(emu, cmd, comp, data);
+        ionic_eth_emu_handle_q_identify(emu, cmd, comp, data);
         break;
 
     case IONIC_CMD_Q_INIT:
-        handle_q_init(emu, cmd, comp);
+        ionic_eth_emu_handle_q_init(emu, cmd, comp);
         break;
 
     case IONIC_CMD_Q_CONTROL:
-        comp[0] = 0;
+        handle_q_control(emu, cmd, comp);
         break;
 
     case IONIC_CMD_PORT_INIT:
-        handle_port_init(emu, cmd, comp);
+        ionic_eth_emu_handle_port_init(emu, cmd, comp);
         break;
 
     case IONIC_CMD_PORT_IDENTIFY:
@@ -880,6 +687,13 @@ static void process_devcmd(struct ionic_eth_emu *emu)
     case 52:
     case 53:
         handle_rdma_cmd(emu, cmd, comp);
+        break;
+
+    /* P4 devcmds 70-72 forwarded to p4_devcmd.c */
+    case 70:
+    case 71:
+    case 72:
+        handle_p4_cmd(emu, cmd, comp);
         break;
 
     default:
@@ -917,8 +731,9 @@ static void process_devcmd(struct ionic_eth_emu *emu)
 #define DEVID_EQ_COUNT_OFF       0x1cu
 /* capabilities is at 0x30; left zero. */
 
-static void handle_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
-                            uint8_t *comp, uint8_t *data)
+void ionic_eth_emu_handle_identify(struct ionic_eth_emu *emu,
+                                   const uint8_t *cmd, uint8_t *comp,
+                                   uint8_t *data)
 {
     (void)cmd;
 
@@ -946,14 +761,15 @@ static void handle_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
 
     PUT32(DEVID_NLIFS_OFF, 1); /* single LIF for eth + RDMA */
 
-    /* nintrs bounds ionic_lif_size(): it needs 1 (adminq) + nxqs + neqs. */
-    PUT32(DEVID_NINTRS_OFF, IONIC_MSIX_MAX_VECTORS);
+    /* nintrs bounds ionic_lif_size(): it needs 1 (adminq) + nxqs + neqs.
+     * It is also the MSI-X table size the server sets up. */
+    PUT32(DEVID_NINTRS_OFF, ionic_profile_intr_vectors(&emu->profile));
     PUT32(DEVID_NDBPGS_OFF, IONIC_EMU_QP_COUNT + 4);
 
     /* ethtool divides by intr_coal_div, so it must not be zero. */
     PUT32(DEVID_INTR_COAL_MULT_OFF, 1);
     PUT32(DEVID_INTR_COAL_DIV_OFF, 1);
-    PUT32(DEVID_EQ_COUNT_OFF, IONIC_EMU_EQ_COUNT);
+    PUT32(DEVID_EQ_COUNT_OFF, emu->profile.queues.rdma_eqs);
 #undef PUT32
 
     comp[0] = IONIC_RC_SUCCESS;
@@ -968,16 +784,26 @@ static void handle_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
  * IDs, page table size, MR count, etc.
  * -------------------------------------------------------------------------
  */
-static void handle_lif_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
-                                uint8_t *comp, uint8_t *data)
+void ionic_eth_emu_handle_lif_identify(struct ionic_eth_emu *emu,
+                                       const uint8_t *cmd, uint8_t *comp,
+                                       uint8_t *data)
 {
     (void)cmd;
 
     /* ionic_lif_identity: 478 * 4 = 1912 bytes, fills the data area. */
     memset(data, 0, DEVCMD_DATA_SIZE);
 
-    /* capabilities: ETH | RDMA */
-    uint64_t caps = le64((uint64_t)(IONIC_LIF_CAP_ETH | IONIC_LIF_CAP_RDMA));
+    /*
+     * capabilities: ETH | RDMA, plus P4 when there is a P4 control
+     * surface to find.  Keyed on the handler rather than on a separate
+     * flag so the bit and the surface cannot disagree: a guest told it
+     * has the capability and then refused every command would have no
+     * way to tell that from a broken device.
+     */
+    uint64_t cap_bits = IONIC_LIF_CAP_ETH | IONIC_LIF_CAP_RDMA;
+    if (emu->p4_devcmd_fn)
+        cap_bits |= IONIC_LIF_CAP_P4;
+    uint64_t caps = le64(cap_bits);
     memcpy(data, &caps, 8);
 
     /* Absolute offsets into union ionic_lif_identity, from offsetof() against
@@ -1013,15 +839,18 @@ static void handle_lif_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
     memcpy(data + LIFID_RSS_IND_TBL_SZ_OFF, &rss, 2);
 
     PUT32(LIFID_MIN_FRAME_SIZE_OFF, 64);
-    PUT32(LIFID_MAX_FRAME_SIZE_OFF, 9216);
+    /* The driver lets the guest set an MTU up to max_frame_size -
+     * VLAN_ETH_HLEN (ionic_lif.c), so this is link.mtu_max plus 18. */
+    PUT32(LIFID_MAX_FRAME_SIZE_OFF,
+          emu->profile.link.mtu_max + IONIC_PROFILE_FRAME_OVERHEAD);
 
     /* ionic_lif_config.  queue_count[] is not advisory: ionic_lif_size() reads
      * TXQ/RXQ straight out of it and hands the result to alloc_etherdev_mqs(),
      * which returns NULL (-ENOMEM) if it is zero. */
     PUT_QCOUNT(IONIC_QTYPE_ADMINQ, 1);
     PUT_QCOUNT(IONIC_QTYPE_NOTIFYQ, 1);
-    PUT_QCOUNT(IONIC_QTYPE_RXQ, IONIC_EMU_ETH_QCOUNT);
-    PUT_QCOUNT(IONIC_QTYPE_TXQ, IONIC_EMU_ETH_QCOUNT);
+    PUT_QCOUNT(IONIC_QTYPE_RXQ, eth_qcount(emu));
+    PUT_QCOUNT(IONIC_QTYPE_TXQ, eth_qcount(emu));
 
     memcpy(data + LIFID_CONFIG_NAME_OFF, "ernic0", 7);
 
@@ -1032,20 +861,7 @@ static void handle_lif_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
 #undef PUT_QCOUNT
 #undef PUT32
 
-    /* rdma section offset in union ionic_lif_identity (all packed):
-     *   __le64 capabilities = 8
-     *   eth (packed struct from ionic_if.h lines 563-576):
-     *     u8 version(1) + u8 rsvd[3](3) + le32 max_ucast(4) +
-     *     le32 max_mcast(4) + le16 rss_ind_tbl(2) + le32 min_frame(4) +
-     *     le32 max_frame(4) + u8 rsvd2[2](2) + le64 hwstamp_tx(8) +
-     *     le64 hwstamp_rx(8) + u8 rsvd3[88](88) +
-     *     union ionic_lif_config config (words[64] = 256) = 384
-     *   total offset = 8 + 384 = 392
-     * Verified: rsvd3[88] present in kernel source (ionic_if.h grep confirms).
-     * cross-check: words[478] * 4 = 1912 bytes total; 1912 - 392 = 1520 for
-     * rdma+pad.
-     */
-#define LIF_ID_RDMA_OFF 392
+    /* LIF_ID_RDMA_OFF is worked out in ionic_eth_emu_priv.h. */
     uint8_t *rdma = data + LIF_ID_RDMA_OFF;
 
     rdma[0] = IONIC_RDMA_VERSION;       /* version       */
@@ -1124,10 +940,16 @@ static void handle_lif_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
     /* eq_qtype at rdma+80 */
     uint8_t *eq = rdma + 32 + 4 * QTYPE_SZ;
     eq[0] = IONIC_RDMA_QTYPE_EQ;
-    u = le32(IONIC_EMU_EQ_COUNT);
+    /* ionic_lif_size() takes min(this, online vCPUs) EQs. */
+    u = le32(emu->profile.queues.rdma_eqs);
     memcpy(eq + 4, &u, 4);
     u = le32(0);
     memcpy(eq + 8, &u, 4);
+
+    /* stats_type (le16), straight after eq_qtype. */
+    uint16_t stats_type =
+        le16((uint16_t)(IONIC_LIF_RDMA_STAT_GLOBAL | IONIC_LIF_RDMA_STAT_QP));
+    memcpy(rdma + LIF_ID_RDMA_STATS_TYPE_OFF, &stats_type, 2);
 
     /*
      * srq_qtype, and NOT at rdma+32+5*QTYPE_SZ. The five qtypes above are
@@ -1209,8 +1031,41 @@ static void handle_lif_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
  * reported".
  * -------------------------------------------------------------------------
  */
-static void handle_port_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
-                             uint8_t *comp)
+/*
+ * The transceiver part id for a link.xcvr and speed (enum ionic_xcvr_pid in
+ * ionic_if.h).  ethtool lists the link modes a pid supports, so the pid
+ * matches the speed: a CR4/CR copper cable, or an SR module for fiber.
+ * Speeds with no such pid report IONIC_XCVR_PID_UNKNOWN (0).
+ */
+static uint16_t xcvr_pid(uint8_t xcvr, uint32_t speed_mbps)
+{
+    static const struct {
+        uint32_t speed;
+        uint16_t copper;
+        uint16_t fiber;
+    } pids[] = {
+        {1000, IONIC_XCVR_PID_SFP_1000BASE_T, IONIC_XCVR_PID_UNKNOWN},
+        {10000, IONIC_XCVR_PID_SFP_10GBASE_CU, IONIC_XCVR_PID_SFP_10GBASE_SR},
+        {25000, IONIC_XCVR_PID_SFP_25GBASE_CR_S, IONIC_XCVR_PID_SFP_25GBASE_SR},
+        {40000, IONIC_XCVR_PID_QSFP_40GBASE_CR4,
+         IONIC_XCVR_PID_QSFP_40GBASE_SR4},
+        {50000, IONIC_XCVR_PID_QSFP_50G_CR2, IONIC_XCVR_PID_UNKNOWN},
+        {100000, IONIC_XCVR_PID_QSFP_100G_CR4, IONIC_XCVR_PID_QSFP_100G_SR4},
+        {200000, IONIC_XCVR_PID_QSFP_200G_CR4, IONIC_XCVR_PID_QSFP_200G_SR4},
+        {400000, IONIC_XCVR_PID_QSFP_400G_CR4, IONIC_XCVR_PID_QSFP_400G_SR4},
+    };
+
+    if (xcvr == IONIC_PROFILE_XCVR_NONE)
+        return IONIC_XCVR_PID_UNKNOWN;
+    for (size_t i = 0; i < sizeof(pids) / sizeof(pids[0]); i++)
+        if (pids[i].speed == speed_mbps)
+            return xcvr == IONIC_PROFILE_XCVR_FIBER ? pids[i].fiber
+                                                    : pids[i].copper;
+    return IONIC_XCVR_PID_UNKNOWN;
+}
+
+void ionic_eth_emu_handle_port_init(struct ionic_eth_emu *emu,
+                                    const uint8_t *cmd, uint8_t *comp)
 {
     /* cmd layout: opcode(1) index(1) rsvd(6) info_pa(8) rsvd2(48) */
     uint64_t info_pa;
@@ -1219,9 +1074,12 @@ static void handle_port_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
 
     if (info_pa) {
         uint8_t info[IONIC_PORT_INFO_PUBLISHED_LEN];
-        uint32_t speed = le32(IONIC_ETH_LINK_SPEED_MBPS);
-        uint32_t mtu = le32(IONIC_ETH_MTU);
-        uint16_t pid = le16(IONIC_XCVR_PID_QSFP_100G_CR4);
+        const struct ionic_profile *prof = &emu->profile;
+        uint32_t speed = le32(prof->link.speed_mbps);
+        uint32_t mtu =
+            le32(prof->link.mtu_max < IONIC_ETH_MTU ? prof->link.mtu_max
+                                                    : IONIC_ETH_MTU);
+        uint16_t pid = le16(xcvr_pid(prof->link.xcvr, prof->link.speed_mbps));
 
         memset(info, 0, sizeof(info));
         memcpy(info + IONIC_PORT_INFO_CONFIG_SPEED_OFF, &speed, 4);
@@ -1229,8 +1087,16 @@ static void handle_port_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
         info[IONIC_PORT_INFO_CONFIG_STATE_OFF] = IONIC_PORT_ADMIN_STATE_UP;
         memcpy(info + IONIC_PORT_INFO_STATUS_SPEED_OFF, &speed, 4);
         info[IONIC_PORT_INFO_STATUS_STATUS_OFF] = IONIC_PORT_OPER_STATUS_UP;
-        info[IONIC_PORT_INFO_XCVR_STATE_OFF] = IONIC_XCVR_STATE_INSERTED;
-        info[IONIC_PORT_INFO_XCVR_PHY_OFF] = IONIC_PHY_TYPE_COPPER;
+        if (prof->link.xcvr != IONIC_PROFILE_XCVR_NONE) {
+            info[IONIC_PORT_INFO_XCVR_STATE_OFF] = IONIC_XCVR_STATE_INSERTED;
+            info[IONIC_PORT_INFO_XCVR_PHY_OFF] =
+                prof->link.xcvr == IONIC_PROFILE_XCVR_FIBER
+                    ? IONIC_PHY_TYPE_FIBER
+                    : IONIC_PHY_TYPE_COPPER;
+        } else {
+            info[IONIC_PORT_INFO_XCVR_STATE_OFF] = IONIC_XCVR_STATE_REMOVED;
+            info[IONIC_PORT_INFO_XCVR_PHY_OFF] = IONIC_PHY_TYPE_NONE;
+        }
         memcpy(info + IONIC_PORT_INFO_XCVR_PID_OFF, &pid, 2);
 
         if (eth_dma_rw(emu->vfu_ctx, info_pa, info, sizeof(info), true) < 0)
@@ -1243,15 +1109,15 @@ static void handle_port_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
 
     vfu_log(emu->vfu_ctx, LOG_INFO,
             "ionic_eth_emu: PORT_INIT speed=%uMbps info_pa=%#lx",
-            (unsigned)IONIC_ETH_LINK_SPEED_MBPS, (unsigned long)info_pa);
+            (unsigned)emu->profile.link.speed_mbps, (unsigned long)info_pa);
 }
 
 /* -------------------------------------------------------------------------
  * LIF_INIT (opcode 21)
  * -------------------------------------------------------------------------
  */
-static void handle_lif_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
-                            uint8_t *comp)
+void ionic_eth_emu_handle_lif_init(struct ionic_eth_emu *emu,
+                                   const uint8_t *cmd, uint8_t *comp)
 {
     /* cmd layout: opcode(1) type(1) index(2) rsvd(4) info_pa(8) rsvd2(48) */
     uint16_t lif_index;
@@ -1271,18 +1137,23 @@ static void handle_lif_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
     if (info_pa) {
         uint8_t status[64] = {0};
         uint16_t up = le16(IONIC_PORT_OPER_STATUS_UP);
-        uint32_t speed = le32(100000); /* Mbps */
+        uint32_t speed = le32(emu->profile.link.speed_mbps); /* Mbps */
         memcpy(status + 10, &up, 2);
         memcpy(status + 12, &speed, 4);
-        if (eth_dma_rw(emu->vfu_ctx, info_pa + IONIC_LIF_INFO_STATUS_OFF,
+        if (info_pa >
+                UINT64_MAX - IONIC_LIF_INFO_STATUS_OFF - (sizeof(status) - 1) ||
+            eth_dma_rw(emu->vfu_ctx, info_pa + IONIC_LIF_INFO_STATUS_OFF,
                        status, sizeof(status), true) < 0)
             vfu_log(emu->vfu_ctx, LOG_ERR,
-                    "ionic_eth_emu: LIF_INIT: link status write to %#lx failed",
-                    (unsigned long)(info_pa + IONIC_LIF_INFO_STATUS_OFF));
+                    "ionic_eth_emu: LIF_INIT: link status write for info base "
+                    "%#lx failed",
+                    (unsigned long)info_pa);
     }
 
     emu->lif_initialized = true;
     emu->lif_hw_index = lif_index;
+    emu->lif_info_pa = info_pa;
+    emu->stats_publish_now = true;
 
     comp[0] = 0; /* status OK */
     comp[1] = 0; /* rsvd      */
@@ -1336,8 +1207,9 @@ static void handle_lif_getattr(struct ionic_eth_emu *emu, const uint8_t *cmd,
  * The driver uses this to learn WQE stride ranges and speculative SGE counts.
  * -------------------------------------------------------------------------
  */
-static void handle_q_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
-                              uint8_t *comp, uint8_t *data)
+void ionic_eth_emu_handle_q_identify(struct ionic_eth_emu *emu,
+                                     const uint8_t *cmd, uint8_t *comp,
+                                     uint8_t *data)
 {
     uint8_t qtype = cmd[3]; /* ionic_logical_qtype */
     vfu_log(emu->vfu_ctx, LOG_DEBUG, "ionic_eth_emu: Q_IDENTIFY qtype=%u",
@@ -1409,8 +1281,8 @@ static void handle_q_identify(struct ionic_eth_emu *emu, const uint8_t *cmd,
  * ionic_auxbus_register().
  * -------------------------------------------------------------------------
  */
-static void handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
-                          uint8_t *comp)
+void ionic_eth_emu_handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
+                                 uint8_t *comp)
 {
     /* ionic_q_init_cmd layout (__packed):
      *   [0]   u8  opcode
@@ -1439,14 +1311,16 @@ static void handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
     memcpy(&cq_ring_base, cmd + 28, 8);
     memcpy(&sg_ring_base, cmd + 36, 8);
 
+    /* ring_size is the guest's exponent, and isn't checked until further
+     * down, so it is logged as one rather than shifted by. */
     vfu_log(emu->vfu_ctx, LOG_INFO,
-            "ionic_eth_emu: Q_INIT qtype=%u index=%u intr=%u depth=%u "
+            "ionic_eth_emu: Q_INIT qtype=%u index=%u intr=%u depth=2^%u "
             "ring=%#lx cq=%#lx",
-            qtype, index, intr_index, 1u << ring_size,
+            qtype, index, intr_index, ring_size,
             (unsigned long)le64toh(ring_base),
             (unsigned long)le64toh(cq_ring_base));
 
-    if (qtype < IONIC_QTYPE_ETH_MAX && index < IONIC_EMU_ETH_QCOUNT &&
+    if (qtype < IONIC_QTYPE_ETH_MAX && index < eth_qcount(emu) &&
         ring_size < 16) {
         struct eth_queue *q = &emu->eth_q[qtype][index];
         *q = (struct eth_queue){
@@ -1485,6 +1359,45 @@ static void handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
 }
 
 /* -------------------------------------------------------------------------
+ * Q_CONTROL (opcode 41)
+ *
+ * ionic_qcq_enable() sends ENABLE once a queue is initialized and
+ * ionic_qcq_disable() sends DISABLE before tearing it down.  Only the Rx
+ * side acts on it: frames are steered across the enabled Rx queues, so a
+ * guest that runs fewer channels than the LIF offers never has a frame
+ * land on a queue it is not servicing.  HANG_RESET and unknown queues
+ * succeed with no effect, as every other stateless command does here.
+ *
+ * struct ionic_q_control_cmd: opcode@0, type@1, lif_index le16 @2,
+ * index le32 @4, oper@8.
+ * -------------------------------------------------------------------------
+ */
+static void handle_q_control(struct ionic_eth_emu *emu, const uint8_t *cmd,
+                             uint8_t *comp)
+{
+    uint8_t qtype = cmd[1];
+    uint32_t index;
+    uint8_t oper = cmd[8];
+
+    memcpy(&index, cmd + 4, 4);
+    index = le32toh(index);
+
+    vfu_log(emu->vfu_ctx, LOG_DEBUG,
+            "ionic_eth_emu: Q_CONTROL type=%u index=%u oper=%u", qtype, index,
+            oper);
+
+    if (qtype < IONIC_QTYPE_ETH_MAX && index < eth_qcount(emu)) {
+        struct eth_queue *q = &emu->eth_q[qtype][index];
+
+        if (oper == IONIC_Q_ENABLE)
+            q->enabled = true;
+        else if (oper == IONIC_Q_DISABLE)
+            q->enabled = false;
+    }
+    comp[0] = IONIC_RC_SUCCESS;
+}
+
+/* -------------------------------------------------------------------------
  * Ethernet admin queue
  *
  * Unlike the devcmd path, adminq commands are DMA'd: the driver writes
@@ -1505,6 +1418,11 @@ static int eth_dma_rw(vfu_ctx_t *vfu_ctx, uint64_t gpa, void *buf, size_t len,
 
     if (!sg)
         return -ENOMEM;
+
+    if (!ernic_dma_range_ok(gpa, len)) {
+        free(sg);
+        return -EINVAL;
+    }
 
     ret = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)gpa, len, sg, 1,
                           is_write ? PROT_WRITE : PROT_READ);
@@ -1528,12 +1446,17 @@ out:
     return ret;
 }
 
-static void process_adminq_cmd(struct ionic_eth_emu *emu, const uint8_t *cmd,
-                               uint8_t *comp)
+void ionic_eth_emu_process_adminq_cmd(struct ionic_eth_emu *emu,
+                                      const uint8_t *cmd, uint8_t *comp)
 {
     switch (cmd[0]) {
     case IONIC_CMD_Q_INIT:
-        handle_q_init(emu, cmd, comp);
+        ionic_eth_emu_handle_q_init(emu, cmd, comp);
+        break;
+
+    /* ionic_qcq_enable() and ionic_qcq_disable() post these here. */
+    case IONIC_CMD_Q_CONTROL:
+        handle_q_control(emu, cmd, comp);
         break;
 
     /* ionic_rdma_devcmd() is a misnomer: RDMA opcodes 50-53 go out over the
@@ -1543,6 +1466,13 @@ static void process_adminq_cmd(struct ionic_eth_emu *emu, const uint8_t *cmd,
     case 52:
     case 53:
         handle_rdma_cmd(emu, cmd, comp);
+        break;
+
+    /* P4 devcmds, which reach the engine the same two ways. */
+    case 70:
+    case 71:
+    case 72:
+        handle_p4_cmd(emu, cmd, comp);
         break;
 
     /* The station MAC does not come from LIF_IDENTIFY: ionic_lif_alloc()
@@ -1589,7 +1519,7 @@ static void eth_adminq_service(struct ionic_eth_emu *emu, uint16_t p_index)
             return;
         }
 
-        process_adminq_cmd(emu, cmd, comp);
+        ionic_eth_emu_process_adminq_cmd(emu, cmd, comp);
 
         uint16_t comp_index = le16(q->head);
         memcpy(comp + 2, &comp_index, 2);
@@ -1622,10 +1552,11 @@ static void eth_cq_advance(struct eth_queue *q)
 /* Pull one transmitted frame out of guest memory into emu->frame.  Returns
  * the assembled length, or 0 if the descriptor cannot be gathered. */
 static size_t eth_tx_gather(struct ionic_eth_emu *emu, struct eth_queue *q,
-                            uint16_t index)
+                            uint16_t index, enum ionic_emu_drop *why)
 {
     uint8_t desc[ETH_DESC_SIZE];
 
+    *why = IONIC_EMU_DROP_DESC_FETCH;
     if (eth_dma_rw(emu->vfu_ctx, q->ring_base + (uint64_t)index * ETH_DESC_SIZE,
                    desc, sizeof(desc), false) < 0)
         return 0;
@@ -1644,10 +1575,12 @@ static size_t eth_tx_gather(struct ionic_eth_emu *emu, struct eth_queue *q,
     /* len is the whole frame; the head descriptor carries the first fragment
      * and the SG ring carries the rest.  We advertise no offloads, so the
      * driver never posts a TSO descriptor whose len exceeds one frame. */
+    *why = IONIC_EMU_DROP_DESC_DATA;
     if (!len || len > sizeof(emu->frame))
         return 0;
 
     if (!nsge) {
+        *why = IONIC_EMU_DROP_DMA;
         if (eth_dma_rw(emu->vfu_ctx, addr, emu->frame, len, false) < 0)
             return 0;
         return len;
@@ -1655,6 +1588,8 @@ static size_t eth_tx_gather(struct ionic_eth_emu *emu, struct eth_queue *q,
 
     if (nsge > TXQ_SG_MAX_ELEMS)
         return 0;
+
+    *why = IONIC_EMU_DROP_DESC_FETCH;
 
     uint8_t sg[TXQ_SG_MAX_ELEMS * TXQ_SG_ELEM_SIZE];
     if (eth_dma_rw(emu->vfu_ctx,
@@ -1671,9 +1606,11 @@ static size_t eth_tx_gather(struct ionic_eth_emu *emu, struct eth_queue *q,
         memcpy(&elen, sg + (size_t)i * TXQ_SG_ELEM_SIZE + 8, 2);
         sg_total += le16toh(elen);
     }
+    *why = IONIC_EMU_DROP_DESC_DATA;
     if (sg_total >= len)
         return 0;
 
+    *why = IONIC_EMU_DROP_DMA;
     size_t head_len = len - sg_total;
     if (eth_dma_rw(emu->vfu_ctx, addr, emu->frame, head_len, false) < 0)
         return 0;
@@ -1705,28 +1642,42 @@ static size_t eth_tx_gather(struct ionic_eth_emu *emu, struct eth_queue *q,
 static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
                             uint16_t p_index)
 {
-    if (qid >= IONIC_EMU_ETH_QCOUNT)
+    if (qid >= eth_qcount(emu))
         return;
 
     struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_TXQ][qid];
-    if (!q->valid)
+    if (!q->valid) {
+        ionic_emu_stats_drop(&emu->stats, NULL, 0, true,
+                             IONIC_EMU_DROP_DISABLED);
         return;
+    }
 
     uint16_t prod = (uint16_t)(p_index % q->depth);
     q->prod = prod;
 
     for (unsigned n = 0; q->head != prod && n < q->depth; n++) {
-        if (emu->net || emu->tx_filter) {
-            size_t len = eth_tx_gather(emu, q, q->head);
-            if (len) {
-                bool taken =
-                    emu->tx_filter != NULL &&
-                    emu->tx_filter(emu->tx_filter_ctx, emu->frame, len);
-                if (!taken && emu->net) {
-                    ionic_eth_net_send(emu->net, emu->frame, len);
-                }
+        /* Gathered even when Tx is a sink, so the frame is still counted as
+         * sent: a NIC with nothing on the far end of its link counts too. */
+        enum ionic_emu_drop why;
+        size_t len = eth_tx_gather(emu, q, q->head, &why);
+        if (!len) {
+            ionic_emu_stats_drop(&emu->stats, NULL, 0, true, why);
+        } else if (ionic_fault_event(emu->tx_fault)) {
+            /* eth_tx drop: lost on the wire, so the guest still gets its
+             * completion and only the drop counters see it. */
+            ionic_emu_stats_drop(&emu->stats, emu->frame, len, true,
+                                 IONIC_EMU_DROP_INJECTED);
+        } else {
+            bool taken = emu->tx_filter != NULL &&
+                         emu->tx_filter(emu->tx_filter_ctx, emu->frame, len);
+            if (!taken && emu->net &&
+                ionic_eth_net_send(emu->net, emu->frame, len) < 0)
+                ionic_emu_stats_drop(&emu->stats, emu->frame, len, true,
+                                     IONIC_EMU_DROP_SEND);
+            else
+                ionic_emu_stats_frame(&emu->stats, emu->frame, len, true);
+            if (emu->net || emu->tx_filter)
                 pvrdma_eth_bytes_count(emu->pvrdma_handle, len, true);
-            }
         }
 
         /* struct ionic_txq_comp: status @0, comp_index le16 @2, colour @15. */
@@ -1736,9 +1687,11 @@ static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
         comp[ETH_COMP_SIZE - 1] =
             q->cq_color ? (uint8_t)ADMIN_COMP_COLOR_MASK : 0;
 
-        eth_dma_rw(emu->vfu_ctx,
-                   q->cq_ring_base + (uint64_t)q->cq_index * ETH_COMP_SIZE,
-                   comp, sizeof(comp), true);
+        if (eth_dma_rw(emu->vfu_ctx,
+                       q->cq_ring_base + (uint64_t)q->cq_index * ETH_COMP_SIZE,
+                       comp, sizeof(comp), true) < 0)
+            ionic_emu_stats_drop(&emu->stats, NULL, 0, true,
+                                 IONIC_EMU_DROP_DMA);
 
         q->head = (uint16_t)((q->head + 1) % q->depth);
         eth_cq_advance(q);
@@ -1768,7 +1721,7 @@ static int eth_rx_deliver(struct ionic_eth_emu *emu, struct eth_queue *q,
     if (eth_dma_rw(emu->vfu_ctx,
                    q->ring_base + (uint64_t)q->head * ETH_DESC_SIZE, desc,
                    sizeof(desc), false) < 0)
-        return -EIO;
+        return -EFAULT;
 
     /* struct ionic_rxq_desc: opcode@0, rsvd[5], len le16 @6, addr le64 @8. */
     uint16_t cap;
@@ -1806,32 +1759,116 @@ static int eth_rx_deliver(struct ionic_eth_emu *emu, struct eth_queue *q,
     return 0;
 }
 
+/*
+ * Apply the eth_rx fault to a frame about to be delivered.  Returns true
+ * when the fault fired and the frame is gone.
+ */
+static bool eth_rx_fault(struct ionic_eth_emu *emu, const uint8_t *frame,
+                         size_t len)
+{
+    if (!ionic_fault_event(emu->rx_fault))
+        return false;
+    /* drop: lost before the NIC saw it, so no LIF counter moves. */
+    if (emu->rx_fault->effect == IONIC_FAULT_EFFECT_NOBUF)
+        ionic_emu_stats_drop(&emu->stats, frame, len, false,
+                             IONIC_EMU_DROP_NO_BUFFER);
+    return true;
+}
+
+/* The lif_stats reason for an eth_rx_deliver() error. */
+static enum ionic_emu_drop rx_drop_reason(int rc)
+{
+    switch (rc) {
+    case -ENOBUFS:
+        return IONIC_EMU_DROP_NO_BUFFER;
+    case -EMSGSIZE:
+        return IONIC_EMU_DROP_TOO_BIG;
+    case -EFAULT:
+        return IONIC_EMU_DROP_DESC_FETCH;
+    default:
+        return IONIC_EMU_DROP_DMA;
+    }
+}
+
+/*
+ * The Rx queues frames may land on: initialized and enabled, in index order.
+ * Returns how many were written to @out.
+ */
+uint32_t ionic_eth_emu_rx_active(const struct ionic_eth_emu *emu,
+                                 uint8_t out[IONIC_EMU_ETH_QMAX])
+{
+    uint32_t n = 0;
+
+    for (uint32_t i = 0; i < eth_qcount(emu); i++) {
+        const struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_RXQ][i];
+
+        if (q->valid && q->enabled)
+            out[n++] = (uint8_t)i;
+    }
+    return n;
+}
+
+/* The Rx queue index @frame steers to, one of the @n entries of @active. */
+uint8_t ionic_eth_emu_rx_steer(const uint8_t *active, uint32_t n,
+                               const uint8_t *frame, size_t len)
+{
+    return active[ionic_eth_flow_hash(frame, len) % n];
+}
+
+_Static_assert(IONIC_EMU_ETH_QMAX <= UINT8_MAX + 1,
+               "ionic_eth_emu_rx_active() stores queue indices in a uint8_t");
+
 void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
 {
     if (!emu)
         return;
 
-    struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_RXQ][0];
-    if (!q->valid)
+    uint8_t active[IONIC_EMU_ETH_QMAX];
+    uint32_t nactive = ionic_eth_emu_rx_active(emu, active);
+    if (nactive == 0)
         return;
 
+    /* The queues that took a frame this poll, each interrupted once. */
+    bool hit[IONIC_EMU_ETH_QMAX] = {false};
+
     /* Bounded per poll so a busy tap cannot starve the RDMA admin queue. */
-    bool delivered = false;
     for (unsigned n = 0; emu->net && n < 64; n++) {
         ssize_t len =
             ionic_eth_net_recv(emu->net, emu->frame, sizeof(emu->frame));
         if (len <= 0)
             break;
+        if (eth_rx_fault(emu, emu->frame, (size_t)len))
+            continue;
 
-        if (eth_rx_deliver(emu, q, emu->frame, (size_t)len) == 0) {
-            delivered = true;
+        /* A frame the pipeline consumed is neither delivered nor
+         * dropped by the NIC, so it skips both branches below rather
+         * than being counted as either.  Before the steering, because a
+         * frame that never reaches a queue has no business picking one. */
+        if (emu->rx_filter &&
+            emu->rx_filter(emu->rx_filter_ctx, emu->frame, (size_t)len))
+            continue;
+
+        uint8_t qid =
+            ionic_eth_emu_rx_steer(active, nactive, emu->frame, (size_t)len);
+        struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_RXQ][qid];
+
+        /* A TAP frame the guest cannot take is gone, as on a real NIC. */
+        int rc = eth_rx_deliver(emu, q, emu->frame, (size_t)len);
+        if (rc == 0) {
+            hit[qid] = true;
+            ionic_emu_stats_frame(&emu->stats, emu->frame, (size_t)len, false);
             pvrdma_eth_bytes_count(emu->pvrdma_handle, (uint64_t)len, false);
+        } else {
+            ionic_emu_stats_drop(&emu->stats, emu->frame, (size_t)len, false,
+                                 rx_drop_reason(rc));
         }
     }
 
     /* Frames queued by off-thread producers (TCP mesh).  A frame that the
      * guest has no buffer for is put back at the head so ordering holds and
-     * the producer keeps seeing back-pressure. */
+     * the producer keeps seeing back-pressure; that is not a drop.  A frame
+     * that can never be delivered (too big, or a DMA failure) is dropped
+     * and counted, so it cannot block the queue behind it. */
     for (unsigned n = 0; n < 64; n++) {
         pthread_mutex_lock(&emu->inbox_lock);
         struct eth_inbox_frame *f = emu->inbox_head;
@@ -1844,10 +1881,24 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
         pthread_mutex_unlock(&emu->inbox_lock);
         if (!f)
             break;
+        if (!f->fault_seen && eth_rx_fault(emu, f->data, f->len)) {
+            free(f);
+            continue;
+        }
+        f->fault_seen = true;
 
-        if (eth_rx_deliver(emu, q, f->data, f->len) == 0) {
-            delivered = true;
+        uint8_t qid = ionic_eth_emu_rx_steer(active, nactive, f->data, f->len);
+        struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_RXQ][qid];
+
+        int rc = eth_rx_deliver(emu, q, f->data, f->len);
+        if (rc == 0) {
+            hit[qid] = true;
+            ionic_emu_stats_frame(&emu->stats, f->data, f->len, false);
             pvrdma_eth_bytes_count(emu->pvrdma_handle, (uint64_t)f->len, false);
+            free(f);
+        } else if (rc != -ENOBUFS) {
+            ionic_emu_stats_drop(&emu->stats, f->data, f->len, false,
+                                 rx_drop_reason(rc));
             free(f);
         } else {
             pthread_mutex_lock(&emu->inbox_lock);
@@ -1861,8 +1912,11 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
         }
     }
 
-    if (delivered)
-        ionic_eth_emu_trigger_irq(emu, q->intr_index);
+    for (uint32_t i = 0; i < nactive; i++) {
+        if (hit[active[i]])
+            ionic_eth_emu_trigger_irq(
+                emu, emu->eth_q[IONIC_QTYPE_RXQ][active[i]].intr_index);
+    }
 }
 
 int ionic_eth_emu_attach_tap(struct ionic_eth_emu *emu, const char *ifname,
@@ -1892,6 +1946,28 @@ static void handle_rdma_cmd(struct ionic_eth_emu *emu, const uint8_t *cmd,
         return;
     }
     emu->rdma_devcmd_fn(emu->rdma_devcmd_opaque, cmd, comp);
+}
+
+/*
+ * P4 devcmds (opcodes 70-72) -> p4_devcmd.c.
+ *
+ * With no handler the opcode is unknown, which is the truth: the engine
+ * is not built, or the operator granted the guest nothing. That is
+ * deliberately NOT the silent success handle_rdma_cmd() returns -- a
+ * driver probing for the control surface has to be able to tell that it
+ * is absent, and a success with an unfilled completion would read as a
+ * device that identified as having no capabilities.
+ */
+static void handle_p4_cmd(struct ionic_eth_emu *emu, const uint8_t *cmd,
+                          uint8_t *comp)
+{
+    if (!emu->p4_devcmd_fn) {
+        vfu_log(emu->vfu_ctx, LOG_DEBUG,
+                "ionic_eth_emu: P4 devcmd opcode=%u but no handler", cmd[0]);
+        comp[0] = IONIC_RC_EOPCODE;
+        return;
+    }
+    emu->p4_devcmd_fn(emu->p4_devcmd_opaque, cmd, comp);
 }
 
 /* -------------------------------------------------------------------------

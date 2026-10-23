@@ -51,6 +51,29 @@ ernic_guest_source_stamp: >-
 # The patches and the two helper scripts are staged here; the
 # guest then fetches the upstream ionic sources itself.
 ernic_guest_ionic_dir: /tmp/ionic
+# Where they are staged FROM, on the controller.  Both ship in the
+# collection (ansible/files/, see its README) rather than being read
+# out of the ernic_source checkout, so a consumer gets the series the
+# roles were written against without pinning a second clone to match.
+# role_path is <collection>/roles/ernic_guest_setup, so ../../files is
+# the collection's own files/.  Overridable, for a working tree.
+#
+# Point both at one tree: stage_sources.yml flattens them into
+# ernic_guest_ionic_dir, so a scripts directory from one checkout and a
+# patch series from another arrive in the guest looking like a matched
+# pair.
+ernic_guest_patches_dir: "{{ role_path }}/../../files/patches"
+# Extra patch series to apply on top of the base one, as paths inside the
+# staged tree (the whole of files/patches is copied, subdirectories
+# included, so e.g. "patches/p4" is already there).  Empty by default:
+# the optional series are optional.
+#
+# This is how the guest's ionic gets a capability the base series does
+# not give it.  A series applied only where a module is BUILT and not
+# where ionic itself is built produces a module that loads and never
+# probes, because the device it binds to is never created.
+ernic_guest_ionic_extra_patches: []
+ernic_guest_scripts_dir: "{{ role_path }}/../../files/scripts"
 # Where the sparse kernel checkout lands.  Outside /tmp so a
 # reboot does not force a re-clone.
 ernic_ionic_source_dir: /var/tmp/ionic-src

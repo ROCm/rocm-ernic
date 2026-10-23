@@ -13,9 +13,9 @@
  * socketpair and asserts every byte past num_nodes is zero. Without the
  * zero-fill the poison shows up on the wire and the test fails.
  *
- * The static function is reached by #including the translation unit; the
- * broadcast path only needs the mesh/connection hash tables, so the rest of
- * the backend's externals are stubbed out.
+ * The test links rdma_backend_tcp.c and reaches the broadcast through
+ * rdma_backend_tcp_priv.h; the broadcast path only needs the mesh/connection
+ * hash tables, so the rest of the backend's externals are stubbed out.
  *
  * Table-driven: empty mesh (every slot unused), single node, a few nodes, and
  * a full mesh (no tail at all).
@@ -27,6 +27,9 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <arpa/inet.h>
+#include <stdatomic.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -36,8 +39,11 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-/* Pull in the code under test (including its static functions) */
-#include "rdma/rdma_backend_tcp.c"
+#include <glib.h>
+
+#include "qemu/error-report.h"
+#include "qemu/thread.h"
+#include "rdma/rdma_backend_tcp_priv.h"
 
 /* ---- Stubs for the TU's external symbols -------------------------------
  * None of these are reachable from the topology-broadcast path; they exist
@@ -55,65 +61,17 @@ void info_report(const char *fmt, ...)
 {
     (void)fmt;
 }
-int qemu_thread_create(QemuThread *thread, const char *name,
-                       void *(*start_routine)(void *), void *arg, int mode)
+int qemu_thread_create(QemuThread *thread, void *(*start_routine)(void *),
+                       void *arg)
 {
     (void)thread;
-    (void)name;
     (void)start_routine;
     (void)arg;
-    (void)mode;
     return 0;
-}
-void qemu_thread_exit(void *retval)
-{
-    (void)retval;
-    abort();
 }
 void qemu_thread_join(QemuThread *thread)
 {
     (void)thread;
-}
-void *pci_dma_map(PCIDevice *dev, uint64_t addr, uint64_t *len, int dir)
-{
-    (void)dev;
-    (void)addr;
-    (void)len;
-    (void)dir;
-    return NULL;
-}
-void pci_dma_unmap(PCIDevice *dev, void *buffer, uint64_t len, int dir,
-                   uint64_t access_len)
-{
-    (void)dev;
-    (void)buffer;
-    (void)len;
-    (void)dir;
-    (void)access_len;
-}
-int pci_dma_sync(PCIDevice *dev, uint64_t guest_addr, uint64_t len)
-{
-    (void)dev;
-    (void)guest_addr;
-    (void)len;
-    return 0;
-}
-void rdma_backend_complete_work(enum ibv_wc_status status, uint32_t vendor_err,
-                                uint32_t byte_len, uint32_t qp_num,
-                                enum ibv_wc_opcode opcode, void *ctx)
-{
-    (void)status;
-    (void)vendor_err;
-    (void)byte_len;
-    (void)qp_num;
-    (void)opcode;
-    (void)ctx;
-}
-RdmaRmMR *rdma_rm_get_mr(RdmaDeviceResources *dev_res, uint32_t mr_handle)
-{
-    (void)dev_res;
-    (void)mr_handle;
-    return NULL;
 }
 
 /* ---- Test helpers ------------------------------------------------------ */
@@ -228,7 +186,7 @@ static void fill_mesh(GHashTable *mesh_nodes, uint32_t n)
         char hostname[64];
         snprintf(hostname, sizeof(hostname), "node-%u.example", i);
         MeshNodeInfo *node =
-            mesh_node_info_new(i + 100, hostname, (uint16_t)(9000 + i));
+            tcp_mesh_node_info_new(i + 100, hostname, (uint16_t)(9000 + i));
         g_hash_table_insert(mesh_nodes, GUINT_TO_POINTER(i + 100), node);
     }
 }
@@ -240,7 +198,7 @@ static void empty_mesh(GHashTable *mesh_nodes)
 
     g_hash_table_iter_init(&iter, mesh_nodes);
     while (g_hash_table_iter_next(&iter, &key, &value)) {
-        mesh_node_info_free((MeshNodeInfo *)value);
+        tcp_mesh_node_info_free((MeshNodeInfo *)value);
     }
     g_hash_table_remove_all(mesh_nodes);
 }

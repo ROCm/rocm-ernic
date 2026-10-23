@@ -19,14 +19,14 @@
 #include "ionic_eth_emu.h"
 #include "ionic_rdma_devcmd.h"
 #include "ionic_datapath.h"
+#include "ionic_profile.h"
 
 /* Forward declarations */
 typedef struct rocm_ernic_dev rocm_ernic_dev_t;
 
 /* ---------------------------------------------------------------------------
  * Legacy PVRDMA BAR layout (kept for reference during ionic migration).
- * These are used by the PVRDMA emulation layer in
- * third-party/qemu/hw/rdma/vmw/.
+ * These are used by the PVRDMA emulation layer in src/qemu/.
  * ---------------------------------------------------------------------------
  */
 #ifndef RDMA_BAR0_MSIX_SIZE
@@ -91,8 +91,22 @@ typedef struct rocm_ernic_dev rocm_ernic_dev_t;
 /* ionic MSI-X vectors.  ionic_lif_size() budgets 1 (adminq) + one per Tx/Rx
  * queue pair + one per RDMA EQ, and ionic_create_rdma_admin() hard-fails with
  * -EINVAL below IONIC_EQ_COUNT_MIN = 4 EQs, so a 4-vector table cannot carry
- * both halves of the driver.  Advertise the full table instead. */
-#define IONIC_MSIX_MAX_VECTORS 32
+ * both halves of the driver.  This is the most any NIC profile may ask for:
+ * 1 + 64 queue pairs + 32 EQs = 97 fits.  The table actually set up is the
+ * profile's queues.intr_vectors. */
+#define IONIC_MSIX_MAX_VECTORS 128
+
+/* An MSI-X table entry is 16 bytes and the PBA one bit per vector, in
+ * qwords; both must fit where the capability says they are. */
+_Static_assert(IONIC_BAR0_MSIX_TABLE >= IONIC_BAR0_REGS_SIZE,
+               "the MSI-X table must sit above the ionic register window");
+_Static_assert(IONIC_BAR0_MSIX_TABLE + IONIC_MSIX_MAX_VECTORS * 16u <=
+                   IONIC_BAR0_MSIX_PBA,
+               "the MSI-X table for every vector must end before the PBA");
+_Static_assert(IONIC_BAR0_MSIX_PBA +
+                       (IONIC_MSIX_MAX_VECTORS + 63u) / 64u * 8u <=
+                   IONIC_BAR0_TOTAL_SIZE,
+               "the MSI-X PBA for every vector must fit in BAR0");
 
 /**
  * rocm_ernic_dev - Main device structure
@@ -101,6 +115,8 @@ typedef struct rocm_ernic_dev rocm_ernic_dev_t;
  * the RDMA device implementation. The actual device structures are
  * hidden behind the opaque pvrdma_handle_t.
  */
+struct ionic_fault_set;
+
 struct rocm_ernic_dev {
     /* libvfio-user context */
     vfu_ctx_t *vfu_ctx;
@@ -112,6 +128,15 @@ struct rocm_ernic_dev {
     struct ionic_eth_emu *ionic_emu;
     struct ionic_rdma_devcmd_state *ionic_rdma;
     struct ionic_datapath *ionic_dp;
+
+#ifdef ERNIC_HAVE_P4
+    /* P4 match-action stage between the guest and the host network */
+    struct p4_engine *p4_engine;
+    /* The guest's command surface onto it, NULL unless the operator
+     * granted the guest a scope with --p4-guest-scope. */
+    struct p4_devcmd *p4_devcmd;
+    struct p4_port *p4_port;
+#endif
 
     /* BAR memory backing stores */
     void *bar0_mem; /* MSI-X table/PBA shadow, above the ionic register block */
@@ -131,9 +156,15 @@ struct rocm_ernic_dev {
     /* Statistics */
     char *stats_file_path; /* Path to stats output file */
 
+    /* Faults from --inject, or NULL (ionic_fault.h) */
+    struct ionic_fault_set *faults;
+
     /* MAC address */
     uint8_t mac_addr[6]; /* Device MAC address */
     bool mac_addr_set;   /* Whether MAC address was explicitly set */
+
+    /* NIC identity and link: compat plus each --nic-profile layer */
+    struct ionic_profile profile;
 };
 
 #endif /* ROCM_ERNIC_INTERNAL_H */

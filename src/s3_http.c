@@ -17,6 +17,7 @@
 #include <string.h>
 #include <strings.h>
 
+#include "parse_int.h"
 #include "s3_http.h"
 
 /*
@@ -231,15 +232,13 @@ ssize_t s3_http_parse(const void *buf, size_t len, struct s3_http_request *req)
 
     const char *cl = s3_http_header_get(req, "content-length");
     if (cl != NULL) {
-        char *end = NULL;
-        unsigned long long v = strtoull(cl, &end, 10);
+        uint64_t v;
         /*
          * S3_HTTP_REQUEST_MAX bounds a connection's receive buffer, so it
          * bounds a body on the socket -- an object announced by a token
          * never lands there and is as large as the store will allow.
          */
-        if (end == cl || *end != '\0' ||
-            (!req->rdma && v > S3_HTTP_REQUEST_MAX))
+        if (!ernic_parse_u64(cl, &v) || (!req->rdma && v > S3_HTTP_REQUEST_MAX))
             return -EINVAL;
         req->content_length = (size_t)v;
     }

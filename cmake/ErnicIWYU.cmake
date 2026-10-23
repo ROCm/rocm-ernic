@@ -17,14 +17,6 @@ option(ERNIC_USE_IWYU
   "Run include-what-you-use when compiling" OFF)
 
 if(ERNIC_USE_IWYU)
-    # The vendored sources are compiled in the same targets as ours, and
-    # the SKIP_LINTING source property, which keeps IWYU off them, is new
-    # in CMake 3.27
-    if(CMAKE_VERSION VERSION_LESS 3.27)
-        message(FATAL_ERROR
-          "ERNIC_USE_IWYU needs CMake 3.27 or later")
-    endif()
-
     # IWYU parses with its own clang, which rejects the options that it
     # doesn't know, such as -fzero-init-padding-bits, which the build
     # uses with GCC 15 and later
@@ -66,8 +58,7 @@ endif()
 # Run include-what-you-use on a target's sources
 #
 # This is set per target instead of with CMAKE_C_INCLUDE_WHAT_YOU_USE so
-# that a superproject's targets aren't checked. ernic_set_compiler_flags()
-# keeps it off the vendored sources under third-party/.
+# that a superproject's targets aren't checked.
 function(ernic_set_iwyu target)
     if(NOT ERNIC_USE_IWYU)
         return()

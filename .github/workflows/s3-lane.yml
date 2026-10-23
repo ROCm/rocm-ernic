@@ -287,7 +287,6 @@ jobs:
           fi
 
           if [ -S /tmp/vfio-user-rocm-ernic.sock ]; then
-            chmod 666 /tmp/vfio-user-rocm-ernic.sock 2>/dev/null || true
             echo "✓ Server started (PID: $SERVER_PID)"
             ls -la /tmp/vfio-user-rocm-ernic.sock
             exit 0
@@ -315,8 +314,13 @@ jobs:
         SSH_PORT=2222
 
         # NOTE: memory-backend-memfd is REQUIRED for vfio-user DMA to work
+        #
+        # hpet=off: now and then a nested guest's kernel hangs for good
+        # just after setting up the HPET.  See "boot hang" in
+        # scripts/qemu-vm-diagnose.sh, which says what to do if it
+        # still happens.
         qemu-system-x86_64 \
-          -machine "q35,accel=${QEMU_ACCEL},memory-backend=mem0" \
+          -machine "q35,accel=${QEMU_ACCEL},memory-backend=mem0,hpet=off" \
           -cpu "${QEMU_CPU}" \
           -smp "${VM_VCPUS}" \
           -m "${VM_MEM_MB}M" \
@@ -388,8 +392,12 @@ jobs:
           StrictHostKeyChecking no
           UserKnownHostsFile "$HOME/.ssh/known_hosts"
         EOF
+        # SSH_KEY_PRIVATE and VM_USER are not exported through
+        # $GITHUB_ENV: they come from vm-info.json in the downloaded
+        # image, and a newline in either would let it define any
+        # variable, such as BASH_ENV, for every later step.  The steps
+        # that need them map them from steps.vm_info.outputs instead.
         echo "SSH_CONFIG=$SSH_CONFIG" >> "$GITHUB_ENV"
-        echo "SSH_KEY_PRIVATE=$SSH_KEY_PRIVATE" >> "$GITHUB_ENV"
         echo "✓ SSH_CONFIG=$SSH_CONFIG:"
         cat "$SSH_CONFIG"
 
@@ -404,7 +412,6 @@ jobs:
         for i in {1..60}; do
           if ssh -F "$SSH_CONFIG" -o ConnectTimeout=5 -p "$SSH_PORT" "${VM_USER}@localhost" 'echo VM Ready' 2>/tmp/ssh-attempt.err; then
             echo "✓ VM SSH is ready (attempt $i/60)"
-            echo "VM_USER=$VM_USER" >> "$GITHUB_ENV"
             exit 0
           fi
           echo "Attempt $i/60: $(tr '\n' ' ' < /tmp/ssh-attempt.err | cut -c1-160)"
@@ -426,6 +433,8 @@ jobs:
 
     - name: Verify the ionic PCI function is present in the VM
       shell: bash
+      env:
+        VM_USER: ${{ steps.vm_info.outputs.vm_user }}
       run: |
         echo "=== Verifying the emulated PCI function in the VM ==="
 
@@ -486,6 +495,8 @@ jobs:
 
     - name: Install kernel headers, build tools and pciutils in VM
       shell: bash
+      env:
+        VM_USER: ${{ steps.vm_info.outputs.vm_user }}
       run: |
         echo "=== Installing kernel headers, build tools and pciutils in VM ==="
         ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" << 'EOFVM'
@@ -523,6 +534,9 @@ jobs:
 
     - name: Provision the VM with the Ansible collection
       shell: bash
+      env:
+        VM_USER: ${{ steps.vm_info.outputs.vm_user }}
+        SSH_KEY_PRIVATE: ${{ steps.vm_info.outputs.ssh_key_private }}
       run: |
         echo "=== Provisioning the guest via ernic_guest_setup ==="
         ERNIC_RUN_DIR=/tmp/ernic-ci
@@ -570,6 +584,8 @@ jobs:
 
     - name: Verify the RDMA device and the running object store
       shell: bash
+      env:
+        VM_USER: ${{ steps.vm_info.outputs.vm_user }}
       run: |
         echo "=== Verifying the RDMA device and the s3 endpoint ==="
 
@@ -622,13 +638,14 @@ jobs:
         ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
           "ip -4 -br addr show rocm-ernic0; ip route" || true
 
-        echo "RDMA_DEVICE=$DEVICE" >> "$GITHUB_ENV"
         echo "✓ $DEVICE is PORT_ACTIVE and the object store is up"
 
     - name: S3-over-RDMA end-to-end tests (Ansible)
       shell: bash
       env:
         PUBLISH: ${{ inputs.publish }}
+        VM_USER: ${{ steps.vm_info.outputs.vm_user }}
+        SSH_KEY_PRIVATE: ${{ steps.vm_info.outputs.ssh_key_private }}
       run: |
         echo "=== S3 over RDMA against the in-process store ==="
         ERNIC_RUN_DIR=/tmp/ernic-ci

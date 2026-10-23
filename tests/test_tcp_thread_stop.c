@@ -65,6 +65,13 @@
  * free meanwhile, that a stop or the interval ends the wait, and that a
  * connection the peer opened meanwhile is kept.
  *
+ * A worker must take its node id only from the manager, only once, and must
+ * not introduce itself to its peers until it has it.  The worker
+ * registration rows run tcp_init() as a worker against a manager played by
+ * the test.  The manager refuses the worker or answers it twice, a peer
+ * answers instead, or a peer connects, or a topology update arrives, before
+ * the manager answers.
+ *
  * A message's header can arrive in parts, and tcp_recv_message() has to wait
  * for the rest rather than lose the part it has read.  The partial rows split
  * messages at several points and check what is read, and that a stop, a
@@ -78,11 +85,10 @@
  * isn't retried in a tight loop.
  *
  * The node a message's header names as its sender is whatever the sender
- * wrote.  The sender rows name another node in a heartbeat and in data-path
- * requests, and check that the heartbeat is credited, and the answer sent,
- * by connection instead, and that data that waits for a receive is completed
- * on the connection it came on.  They also check that a dead node that
- * answers a heartbeat again is reported alive to the rest of the mesh.
+ * wrote.  The sender rows name another node in a heartbeat, and check that
+ * the heartbeat is credited by connection instead.  They also check that a
+ * dead node that answers a heartbeat again is reported alive to the rest of
+ * the mesh, and that the retired data-path messages are ignored.
  *
  * A connection is reference counted.  A thread that looked one up used to
  * get a bare pointer, and the health check's reconnect freed the old
@@ -91,14 +97,24 @@
  * while another thread is blocked sending on it, and have a pending
  * connection register while teardown stops its receive thread.
  *
+ * A worker kept its connection to another worker after that worker hung up,
+ * and the two never connected again.  The dead connection rows run two
+ * workers, have the manager report one's peer dead and then alive, and have
+ * the peer drop the connection, and check that the worker closes its end and
+ * connects again.  They also check that a connection from a peer that hung
+ * up is closed.  The publish rows, and the duplicate handshake rows, check
+ * what a worker does with a new connection when the table already has a
+ * live or a dead one to the same node.  A worker now also takes topology
+ * updates only from the manager, which a topology row checks.
+ *
  * Each row starts (or deliberately does not start) the real threads, stops
  * them, and checks that the stop returned promptly, that the threads really
  * exited, and how many joins it took.  The health-check rows also check
  * that the thread still runs once per interval when nobody stops it.  A
  * per-row alarm() turns a hang into a named failure rather than a ctest
- * timeout.  The translation unit is #included to reach the static
- * functions, and its externals are stubbed; the thread entry points are
- * backed by real pthreads.
+ * timeout.  The test links rdma_backend_tcp.c, reaches its internals
+ * through rdma_backend_tcp_priv.h, and stubs its externals; the thread
+ * entry points are backed by real pthreads.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -112,6 +128,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
@@ -131,21 +148,16 @@
 #include <valgrind/valgrind.h>
 #endif
 
-/* Pull in the code under test (including its static functions) */
-#include "rdma/rdma_backend_tcp.c"
+#include <glib.h>
+
+#include "qemu/error-report.h"
+#include "qemu/thread.h"
+#include "rdma/rdma_backend_ops.h"
+#include "rdma/rdma_backend_tcp_priv.h"
+#include "rdma_backend.h"
+#include "rdma_backend_defs.h"
 
 /* ---- Stubs ------------------------------------------------------------- */
-
-/* The one memory region there is, while a row sets it; see the sender rows */
-static _Atomic(RdmaRmMR *) g_mr;
-
-RdmaRmMR *rdma_rm_get_mr(RdmaDeviceResources *dev_res, uint32_t mr_handle)
-{
-    RdmaRmMR *mr = atomic_load(&g_mr);
-
-    (void)dev_res;
-    return mr && mr->rkey == mr_handle ? mr : NULL;
-}
 
 static atomic_int g_errors; /* error_report() calls */
 
@@ -161,83 +173,6 @@ void warn_report(const char *fmt, ...)
 void info_report(const char *fmt, ...)
 {
     (void)fmt;
-}
-
-/*
- * DMA mappings, which only a work request through a DMA memory region makes
- * (see the sender rows): each pci_dma_map() hands out the next slot, and
- * pci_dma_unmap() counts the unmaps of each.  The rows map only from the
- * test's own thread, but a receive thread may unmap.
- */
-#define DMA_SLOTS    4
-#define DMA_SLOT_LEN 64u
-
-static uint8_t g_dma_mem[DMA_SLOTS][DMA_SLOT_LEN];
-static atomic_int g_dma_maps;
-static atomic_int g_dma_unmaps[DMA_SLOTS];
-static atomic_int g_dma_stray_unmaps; /* of an address that isn't a slot */
-
-static void dma_reset(void)
-{
-    atomic_store(&g_dma_maps, 0);
-    for (int i = 0; i < DMA_SLOTS; i++)
-        atomic_store(&g_dma_unmaps[i], 0);
-    atomic_store(&g_dma_stray_unmaps, 0);
-}
-
-/* Whether every mapping handed out has been unmapped once, and only once. */
-static bool dma_unmapped_once(void)
-{
-    for (int i = 0; i < atomic_load(&g_dma_maps); i++)
-        if (atomic_load(&g_dma_unmaps[i]) != 1)
-            return false;
-    return atomic_load(&g_dma_stray_unmaps) == 0;
-}
-
-void *pci_dma_map(PCIDevice *dev, uint64_t addr, uint64_t *len, int dir)
-{
-    int slot = atomic_load(&g_dma_maps);
-
-    (void)dev;
-    (void)addr;
-    (void)dir;
-    if (slot >= DMA_SLOTS || *len > DMA_SLOT_LEN)
-        return NULL;
-    atomic_store(&g_dma_maps, slot + 1);
-    return g_dma_mem[slot];
-}
-void pci_dma_unmap(PCIDevice *dev, void *buffer, uint64_t len, int dir,
-                   uint64_t access_len)
-{
-    (void)dev;
-    (void)len;
-    (void)dir;
-    (void)access_len;
-    for (int i = 0; i < DMA_SLOTS; i++) {
-        if (buffer == g_dma_mem[i]) {
-            atomic_fetch_add(&g_dma_unmaps[i], 1);
-            return;
-        }
-    }
-    atomic_fetch_add(&g_dma_stray_unmaps, 1);
-}
-int pci_dma_sync(PCIDevice *dev, uint64_t guest_addr, uint64_t len)
-{
-    (void)dev;
-    (void)guest_addr;
-    (void)len;
-    return 0;
-}
-void rdma_backend_complete_work(enum ibv_wc_status status, uint32_t vendor_err,
-                                uint32_t byte_len, uint32_t qp_num,
-                                enum ibv_wc_opcode opcode, void *ctx)
-{
-    (void)status;
-    (void)vendor_err;
-    (void)byte_len;
-    (void)qp_num;
-    (void)opcode;
-    (void)ctx;
 }
 
 /*
@@ -272,14 +207,12 @@ static void *trampoline_run(void *opaque)
     return ret;
 }
 
-int qemu_thread_create(QemuThread *thread, const char *name,
-                       void *(*start_routine)(void *), void *arg, int mode)
+int qemu_thread_create(QemuThread *thread, void *(*start_routine)(void *),
+                       void *arg)
 {
     struct trampoline *t;
     int left = atomic_load(&g_creates_left);
 
-    (void)name;
-    (void)mode;
     while (left > 0 &&
            !atomic_compare_exchange_weak(&g_creates_left, &left, left - 1))
         ;
@@ -298,10 +231,6 @@ int qemu_thread_create(QemuThread *thread, const char *name,
     }
     atomic_fetch_add(&g_creates, 1);
     return 0;
-}
-void qemu_thread_exit(void *retval)
-{
-    pthread_exit(retval);
 }
 void qemu_thread_join(QemuThread *thread)
 {
@@ -359,6 +288,16 @@ static bool still_listening(int fd)
     return getsockopt(fd, SOL_SOCKET, SO_ACCEPTCONN, &on, &len) == 0 && on;
 }
 
+/* Whether fd is close-on-exec, and non-blocking exactly when nonblocking is */
+static bool fd_flags_are(int fd, bool nonblocking)
+{
+    int fd_flags = fcntl(fd, F_GETFD);
+    int status_flags = fcntl(fd, F_GETFL);
+
+    return fd_flags >= 0 && status_flags >= 0 && (fd_flags & FD_CLOEXEC) &&
+           ((status_flags & O_NONBLOCK) != 0) == nonblocking;
+}
+
 static double now_s(void)
 {
     struct timespec ts;
@@ -372,6 +311,67 @@ static void sleep_ms(uint32_t ms)
     struct timespec ts = {(time_t)(ms / 1000), (long)(ms % 1000) * 1000000};
 
     nanosleep(&ts, NULL);
+}
+
+/*
+ * priv's connection to id, live or dead, or NULL, for comparing with one the
+ * caller holds a reference to; it can be freed once the lock is dropped.
+ */
+static const TcpConnection *table_get(TcpBackendPrivate *priv, uint32_t id)
+{
+    const TcpConnection *conn;
+
+    qemu_mutex_lock(&priv->conn_table_lock);
+    conn = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(id));
+    qemu_mutex_unlock(&priv->conn_table_lock);
+    return conn;
+}
+
+/*
+ * Wait up to 5 s for priv's connection to id to be a live one other than
+ * old, which the caller holds a reference to if it isn't NULL.  Returns it,
+ * with a reference, or NULL.
+ */
+static TcpConnection *wait_live(TcpBackendPrivate *priv, uint32_t id,
+                                const TcpConnection *old)
+{
+    for (int i = 0; i < 500; i++) {
+        TcpConnection *conn = tcp_connection_lookup(priv, id);
+
+        if (conn && conn != old && !tcp_conn_dead(conn))
+            return conn;
+        tcp_connection_unref(conn);
+        sleep_ms(10);
+    }
+    return NULL;
+}
+
+/* Wait up to 5 s for conn's receive thread to return. */
+static bool wait_dead(TcpConnection *conn)
+{
+    for (int i = 0; i < 500 && !tcp_conn_dead(conn); i++)
+        sleep_ms(10);
+    return tcp_conn_dead(conn);
+}
+
+/* Whether conn is retired: closed, marked down, and its thread stopped. */
+static bool conn_retired(TcpConnection *conn)
+{
+    int fd;
+
+    qemu_mutex_lock(&conn->lock);
+    fd = conn->sockfd;
+    qemu_mutex_unlock(&conn->lock);
+    return fd == -1 && !atomic_load(&conn->is_connected) &&
+           !atomic_load(&conn->recv_thread_running);
+}
+
+/* Wait up to 5 s for conn to be retired. */
+static bool wait_retired(TcpConnection *conn)
+{
+    for (int i = 0; i < 500 && !conn_retired(conn); i++)
+        sleep_ms(10);
+    return conn_retired(conn);
 }
 
 /* ---- Accept thread ----------------------------------------------------- */
@@ -439,8 +439,7 @@ static int run_case(const struct stop_case *c)
 
     if (c->setup != NOT_STARTED) {
         atomic_store(&priv->accept_thread_running, true);
-        qemu_thread_create(&priv->accept_thread, "tcp-accept",
-                           tcp_accept_thread, priv, QEMU_THREAD_JOINABLE);
+        qemu_thread_create(&priv->accept_thread, tcp_accept_thread, priv);
         if (c->setup == BLOCKED)
             sleep_ms(100);
     }
@@ -565,7 +564,7 @@ static int run_health_case(const struct health_case *c)
     qemu_cond_init(&priv->health_check_cond);
     priv->health_check_interval_sec = c->interval;
     priv->mesh_nodes = g_hash_table_new_full(
-        g_direct_hash, g_direct_equal, NULL, mesh_node_info_destroy_notify);
+        g_direct_hash, g_direct_equal, NULL, tcp_mesh_node_info_destroy_notify);
     qemu_mutex_init(&priv->mesh_table_lock);
     /* Each pass reaps the pending connections, of which there are none */
     priv->pending_conns = g_ptr_array_new();
@@ -574,12 +573,12 @@ static int run_health_case(const struct health_case *c)
     qemu_mutex_init(&priv->conn_table_lock);
 
     if (c->peer) {
-        MeshNodeInfo *node = mesh_node_info_new(1, "peer", 0);
+        MeshNodeInfo *node = tcp_mesh_node_info_new(1, "peer", 0);
 
         if (!node || socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
             printf("FAIL health %s: %s; could not set up the peer\n",
                    c->category, c->description);
-            mesh_node_info_free(node);
+            tcp_mesh_node_info_free(node);
             ok = false;
             goto out;
         }
@@ -596,9 +595,8 @@ static int run_health_case(const struct health_case *c)
     alarm(ROW_TIMEOUT_S);
     if (c->setup != NOT_STARTED) {
         atomic_store(&priv->health_check_running, true);
-        qemu_thread_create(&priv->health_check_thread, "tcp-health",
-                           tcp_manager_health_check_thread, priv,
-                           QEMU_THREAD_JOINABLE);
+        qemu_thread_create(&priv->health_check_thread,
+                           tcp_manager_health_check_thread, priv);
         if (c->setup == BLOCKED)
             sleep_ms(100);
     }
@@ -696,7 +694,10 @@ static TcpConnection *recv_conn_new(TcpBackendPrivate *priv, uint32_t id,
     TcpConnection *conn;
     int sv[2];
 
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0)
+    /* A successful socketpair() always gives two descriptors, but the static
+     * analyzer doesn't know that, and would otherwise follow *peer into a
+     * send() as -1. */
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0 || sv[0] < 0 || sv[1] < 0)
         return NULL;
     conn = tcp_connection_new(id, "peer", 0);
     conn->priv = priv;
@@ -707,9 +708,7 @@ static TcpConnection *recv_conn_new(TcpBackendPrivate *priv, uint32_t id,
     *peer = sv[1];
     if (start) {
         atomic_store(&conn->recv_thread_running, true);
-        qemu_thread_create(&conn->recv_thread, "tcp-recv",
-                           tcp_recv_thread_per_conn, conn,
-                           QEMU_THREAD_JOINABLE);
+        qemu_thread_create(&conn->recv_thread, tcp_recv_thread_per_conn, conn);
     }
     return conn;
 }
@@ -903,19 +902,19 @@ struct fini_case {
     const char *description;
     const char *expected;
     enum mgr_block block;
-    const char *interval; /* ERNIC_TCP_HEALTH_INTERVAL */
+    uint32_t interval; /* health_check_interval_sec */
 };
 
 static const struct fini_case fini_cases[] = {
     {"positive", "a manager with two registered workers",
-     "tcp_fini() returns and every thread exits", BLOCK_NONE, "3600"},
+     "tcp_fini() returns and every thread exits", BLOCK_NONE, LONG_INTERVAL_S},
     {"negative", "a worker that stops reading the manager's heartbeats",
      "the blocked heartbeat gives up, so the health-check join returns",
-     BLOCK_HEARTBEAT, "1"},
+     BLOCK_HEARTBEAT, 1},
     {"negative", "a worker that stops reading while another registers",
      "the broadcast blocked under conn_table_lock gives up, so the receive "
      "threads can be stopped",
-     BLOCK_BROADCAST, "3600"},
+     BLOCK_BROADCAST, LONG_INTERVAL_S},
 };
 
 /* A TCP port that is free on every address, as the manager binds. */
@@ -960,8 +959,7 @@ static int worker_attach(TcpBackendPrivate *priv, TcpConnection **connp)
     qemu_mutex_lock(&priv->conn_table_lock);
     g_ptr_array_add(priv->pending_conns, conn);
     atomic_store(&conn->recv_thread_running, true);
-    qemu_thread_create(&conn->recv_thread, "tcp-recv-pending",
-                       tcp_recv_thread_per_conn, conn, QEMU_THREAD_JOINABLE);
+    qemu_thread_create(&conn->recv_thread, tcp_recv_thread_per_conn, conn);
     qemu_mutex_unlock(&priv->conn_table_lock);
     if (connp)
         *connp = conn;
@@ -1080,18 +1078,22 @@ static int run_fini_case(const struct fini_case *c)
     atomic_store(&g_exits, 0);
     memset(&dev, 0, sizeof(dev));
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
-    /* No backend threads exist yet, so nothing reads the environment */
-    setenv("ERNIC_TCP_HEALTH_INTERVAL", c->interval, 1);
 
     g_current_row = c->description;
     alarm(ROW_TIMEOUT_S);
-    if (port == 0 || tcp_init(&dev, config) != 0) {
+    if (port == 0 || tcp_init_with_interval(&dev, config, c->interval) != 0) {
         printf("FAIL fini %s: %s; could not start a manager\n", c->category,
                c->description);
         alarm(0);
         return 1;
     }
     priv = dev.backend_private;
+
+    /* The accept thread blocks in accept() until teardown wakes it */
+    if (!fd_flags_are(priv->listen_fd, false)) {
+        why = "the listen socket isn't close-on-exec and blocking";
+        goto stop;
+    }
 
     w1 = worker_register(priv);
     if (w1 < 0 || !wait_for_registered(priv, 1)) {
@@ -1131,7 +1133,7 @@ static int run_fini_case(const struct fini_case *c)
 
 stop:
     start = now_s();
-    tcp_fini(&dev);
+    rdma_backend_ops_tcp.fini(&dev);
     took = now_s() - start;
     alarm(0);
 
@@ -1233,8 +1235,6 @@ static int run_create_case(const struct create_case *c)
     atomic_store(&g_exits, 0);
     memset(&dev, 0, sizeof(dev));
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
-    /* No backend threads exist yet, so nothing reads the environment */
-    setenv("ERNIC_TCP_HEALTH_INTERVAL", "3600", 1);
 
     g_current_row = c->description;
     alarm(ROW_TIMEOUT_S);
@@ -1244,7 +1244,7 @@ static int run_create_case(const struct create_case *c)
     }
     if (c->when == FAIL_IN_INIT)
         atomic_store(&g_creates_left, c->creates_left);
-    init_ret = tcp_init(&dev, config);
+    init_ret = tcp_init_with_interval(&dev, config, LONG_INTERVAL_S);
 
     if (c->when == FAIL_ON_ACCEPT && init_ret == 0) {
         TcpBackendPrivate *priv = dev.backend_private;
@@ -1264,7 +1264,7 @@ static int run_create_case(const struct create_case *c)
     }
     atomic_store(&g_creates_left, -1);
     if (init_ret == 0)
-        tcp_fini(&dev);
+        rdma_backend_ops_tcp.fini(&dev);
 
 out:
     alarm(0);
@@ -1304,6 +1304,13 @@ out:
  * header that had only partly arrived, losing the bytes it had read, and
  * then read the rest as a header of its own and refuse it.  It now waits for
  * the rest, until it is stopped or the handshake's deadline passes.
+ *
+ * A second peer can claim the node of a connection the thread has already
+ * published.  The thread used to refuse it whatever the state of that
+ * connection, so a node whose connection had died could never connect again.
+ * It now replaces a dead connection, but still refuses a second peer while
+ * the first is connected: replacing a live one would let anyone who can
+ * reach the port take over a working link by claiming its node.
  */
 
 #define HS_NODE 7 /* the node id the test's peers claim */
@@ -1320,6 +1327,8 @@ enum hs_peer {
     HS_EMPTY,        /* a handshake with no payload */
     HS_SHORT,        /* a handshake one byte short */
     HS_OTHER_HANGUP, /* another message type, then a peer that hangs up */
+    HS_DUP_LIVE,     /* a good peer, then a second claiming its node */
+    HS_DUP_DEAD,     /* the same, once the first has hung up */
 };
 
 struct hs_case {
@@ -1346,6 +1355,14 @@ static const struct hs_case hs_cases[] = {
     {"corner", "another message type, then a peer that hangs up",
      "both refused, the message freed once; the next is accepted",
      HS_OTHER_HANGUP},
+    {"negative",
+     "a second peer's handshake claiming the node of a connected peer",
+     "refused; the first peer's connection is kept", HS_DUP_LIVE},
+    {"corner",
+     "a second peer's handshake claiming the node of a peer that hung up",
+     "answered; the dead connection is replaced, closed, and its thread "
+     "joined once",
+     HS_DUP_DEAD},
 };
 
 /*
@@ -1391,6 +1408,24 @@ static bool hs_waits(enum hs_peer peer)
     return peer == HS_SILENT || peer == HS_PARTIAL;
 }
 
+/* The rows in which a second peer follows the good one */
+static bool hs_dup(enum hs_peer peer)
+{
+    return peer == HS_DUP_LIVE || peer == HS_DUP_DEAD;
+}
+
+/*
+ * The joins a row takes: the accept thread's, and, unless the row leaves it
+ * waiting, the good peer's receive thread's.  The second peer of HS_DUP_DEAD
+ * gets a receive thread too.
+ */
+static int hs_joins(enum hs_peer peer)
+{
+    if (hs_waits(peer))
+        return 1;
+    return peer == HS_DUP_DEAD ? 3 : 2;
+}
+
 /* Connect a peer that sends what the row says, and check it's refused. */
 static const char *hs_bad_peer(enum hs_peer peer, uint16_t port, int *fd)
 {
@@ -1402,6 +1437,8 @@ static const char *hs_bad_peer(enum hs_peer peer, uint16_t port, int *fd)
     switch (peer) {
     case HS_GOOD:
     case HS_SPLIT:
+    case HS_DUP_LIVE:
+    case HS_DUP_DEAD:
         return "not a bad peer";
     case HS_SILENT:
         sleep_ms(200); /* let the thread start waiting for the handshake */
@@ -1447,6 +1484,7 @@ static const char *hs_good_peer(TcpBackendPrivate *priv, uint16_t port,
                                 bool split, int *fd)
 {
     TcpConnection *conn;
+    bool flags_ok;
 
     *fd = connect_loopback(port);
     if (*fd < 0)
@@ -1458,10 +1496,61 @@ static const char *hs_good_peer(TcpBackendPrivate *priv, uint16_t port,
     /* The thread answers after it has published the connection */
     if (!recv_type(*fd, TCP_MSG_HANDSHAKE_RESP, 5000))
         return "the good handshake wasn't answered";
-    qemu_mutex_lock(&priv->conn_table_lock);
-    conn = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(HS_NODE));
-    qemu_mutex_unlock(&priv->conn_table_lock);
-    return conn ? NULL : "the good peer's connection isn't in the table";
+    conn = tcp_connection_lookup(priv, HS_NODE);
+    if (!conn)
+        return "the good peer's connection isn't in the table";
+    qemu_mutex_lock(&conn->lock);
+    flags_ok = fd_flags_are(conn->sockfd, true);
+    qemu_mutex_unlock(&conn->lock);
+    tcp_connection_unref(conn);
+    return flags_ok ? NULL
+                    : "the accepted socket isn't close-on-exec and "
+                      "non-blocking";
+}
+
+/*
+ * HS_DUP_LIVE and HS_DUP_DEAD: once the good peer, at *good, is connected, a
+ * second peer, at *second, sends a handshake claiming the same node.  For
+ * HS_DUP_DEAD the good peer hangs up first, and the test waits for its
+ * connection to die.
+ */
+static const char *hs_second_peer(TcpBackendPrivate *priv, uint16_t port,
+                                  enum hs_peer peer, int *good, int *second)
+{
+    TcpConnection *first = tcp_connection_lookup(priv, HS_NODE);
+    const char *why = NULL;
+
+    if (!first)
+        return "the good peer's connection isn't in the table";
+    if (peer == HS_DUP_DEAD) {
+        close(*good);
+        *good = -1;
+        if (!wait_dead(first))
+            why = "the good peer's connection didn't die when it hung up";
+    }
+    if (!why) {
+        *second = connect_loopback(port);
+        if (*second < 0 || !send_hs(*second, TCP_MSG_HANDSHAKE,
+                                    (uint32_t)sizeof(TcpHandshakePayload)))
+            why = "could not connect the second peer";
+    }
+
+    if (!why && peer == HS_DUP_LIVE) {
+        if (!closed_by_peer(*second))
+            why = "the second peer wasn't refused";
+        else if (table_get(priv, HS_NODE) != first)
+            why = "the connected peer's connection was replaced";
+    } else if (!why) {
+        /* Answered once the dead connection is replaced and retired */
+        if (!recv_type(*second, TCP_MSG_HANDSHAKE_RESP, 5000))
+            why = "the second peer wasn't answered";
+        else if (table_get(priv, HS_NODE) == first)
+            why = "the dead connection wasn't replaced";
+        else if (!conn_retired(first))
+            why = "the dead connection wasn't closed";
+    }
+    tcp_connection_unref(first);
+    return why;
 }
 
 static int run_hs_case(const struct hs_case *c)
@@ -1471,7 +1560,7 @@ static int run_hs_case(const struct hs_case *c)
     socklen_t len = sizeof(addr);
     const char *why = NULL;
     int bad = -1, good = -1;
-    int want_joins = hs_waits(c->peer) ? 1 : 2;
+    int want_joins = hs_joins(c->peer);
     double start, took = 0.0;
     bool ok;
 
@@ -1497,13 +1586,16 @@ static int run_hs_case(const struct hs_case *c)
         why = "could not open a listening socket";
     } else {
         atomic_store(&priv->accept_thread_running, true);
-        qemu_thread_create(&priv->accept_thread, "tcp-accept",
-                           tcp_accept_thread, priv, QEMU_THREAD_JOINABLE);
-        if (c->peer != HS_GOOD && c->peer != HS_SPLIT)
+        qemu_thread_create(&priv->accept_thread, tcp_accept_thread, priv);
+        if (c->peer != HS_GOOD && c->peer != HS_SPLIT && !hs_dup(c->peer))
             why = hs_bad_peer(c->peer, ntohs(addr.sin_port), &bad);
         if (!why && !hs_waits(c->peer))
             why = hs_good_peer(priv, ntohs(addr.sin_port), c->peer == HS_SPLIT,
                                &good);
+        /* bad gets the second peer */
+        if (!why && hs_dup(c->peer))
+            why = hs_second_peer(priv, ntohs(addr.sin_port), c->peer, &good,
+                                 &bad);
     }
 
     start = now_s();
@@ -1590,13 +1682,20 @@ static const char *rc_setup(struct rc_fixture *fx, uint16_t port,
     qemu_cond_init(&priv->health_check_cond);
     priv->health_check_interval_sec = interval;
     priv->mesh_nodes = g_hash_table_new_full(
-        g_direct_hash, g_direct_equal, NULL, mesh_node_info_destroy_notify);
+        g_direct_hash, g_direct_equal, NULL, tcp_mesh_node_info_destroy_notify);
     qemu_mutex_init(&priv->mesh_table_lock);
     qemu_mutex_init(&priv->topology_broadcast_lock);
     priv->connections = g_hash_table_new_full(
         g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
     priv->pending_conns = g_ptr_array_new();
     qemu_mutex_init(&priv->conn_table_lock);
+    /* The GID claim tables tcp_init() builds, which a reconnect updates */
+    priv->node_gids =
+        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+    priv->gid_owner = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
+                                            tcp_gid_key_free, NULL);
+    qemu_mutex_init(&priv->gid_table_lock);
+    qemu_mutex_init(&priv->gid_broadcast_lock);
     tcp_bufpool_init(&priv->recv_pool);
 
     for (uint32_t i = 0; i < nodes && i < RC_MAX_NODES; i++) {
@@ -1607,7 +1706,7 @@ static const char *rc_setup(struct rc_fixture *fx, uint16_t port,
             return "could not set up an old connection";
         g_hash_table_insert(priv->connections, GUINT_TO_POINTER(id),
                             tcp_connection_ref(fx->old[i]));
-        fx->node[i] = mesh_node_info_new(id, "127.0.0.1", port);
+        fx->node[i] = tcp_mesh_node_info_new(id, "127.0.0.1", port);
         if (!fx->node[i])
             return "could not create a mesh node";
         fx->node[i]->is_alive = false; /* already reported dead: no broadcast */
@@ -1632,9 +1731,8 @@ static void rc_start(struct rc_fixture *fx, time_t dead_s)
     for (uint32_t i = 0; i < fx->nodes; i++)
         fx->node[i]->last_heartbeat = time(NULL) - dead_s;
     atomic_store(&fx->priv->health_check_running, true);
-    qemu_thread_create(&fx->priv->health_check_thread, "tcp-health",
-                       tcp_manager_health_check_thread, fx->priv,
-                       QEMU_THREAD_JOINABLE);
+    qemu_thread_create(&fx->priv->health_check_thread,
+                       tcp_manager_health_check_thread, fx->priv);
 }
 
 static void rc_teardown(struct rc_fixture *fx)
@@ -1654,6 +1752,10 @@ static void rc_teardown(struct rc_fixture *fx)
     if (fx->stray_peer >= 0)
         close(fx->stray_peer);
     tcp_bufpool_destroy(&priv->recv_pool);
+    g_hash_table_destroy(priv->gid_owner);
+    g_hash_table_destroy(priv->node_gids);
+    qemu_mutex_destroy(&priv->gid_broadcast_lock);
+    qemu_mutex_destroy(&priv->gid_table_lock);
     qemu_mutex_destroy(&priv->conn_table_lock);
     qemu_mutex_destroy(&priv->topology_broadcast_lock);
     qemu_mutex_destroy(&priv->mesh_table_lock);
@@ -1878,7 +1980,8 @@ struct connect_case {
 
 static const struct connect_case connect_cases[] = {
     {"positive", "connect to a listening port",
-     "a connected socket, left non-blocking", CT_LISTENING, 0, true, 0.0, 1.0},
+     "a connected socket, left non-blocking and close-on-exec", CT_LISTENING, 0,
+     true, 0.0, 1.0},
     {"negative", "connect to a port nothing listens on", "fails at once",
      CT_CLOSED, 0, false, 0.0, 1.0},
     {"boundary", "connect to a node that doesn't answer, with a 1 s timeout",
@@ -1959,7 +2062,7 @@ static int run_connect_case(const struct connect_case *c)
             fd = tcp_connect_any(ai, NULL, deadline_ms);
         took = now_s() - start;
         ok = (fd >= 0) == c->want_fd && took >= c->min_s && took < c->max_s &&
-             (fd < 0 || (fcntl(fd, F_GETFL, 0) & O_NONBLOCK));
+             (fd < 0 || fd_flags_are(fd, true));
     }
     alarm(0);
 
@@ -2388,7 +2491,7 @@ static int run_queue_case(void)
         else if ((fresh = accept_within(answering)) < 0 ||
                  !recv_type(fresh, TCP_MSG_HANDSHAKE, 5000))
             why = "the third node's new connection sent no handshake";
-        else if (!tcp_has_connection(fx.priv, 3))
+        else if (!tcp_has_live_connection(fx.priv, 3))
             why = "the third node has no connection";
     }
 
@@ -2493,12 +2596,11 @@ static int run_reg_case(const struct reg_case *c)
     atomic_store(&g_exits, 0);
     memset(&dev, 0, sizeof(dev));
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
-    /* No backend threads exist yet, so nothing reads the environment */
-    setenv("ERNIC_TCP_HEALTH_INTERVAL", "3600", 1);
 
     g_current_row = c->description;
     alarm(ROW_TIMEOUT_S);
-    if (port == 0 || tcp_init(&dev, config) != 0) {
+    if (port == 0 ||
+        tcp_init_with_interval(&dev, config, LONG_INTERVAL_S) != 0) {
         printf("FAIL registration %s: %s; could not start a manager\n",
                c->category, c->description);
         alarm(0);
@@ -2554,7 +2656,7 @@ static int run_reg_case(const struct reg_case *c)
     /* A connection in the table twice is freed twice, and ASan aborts */
     fflush(stdout);
 
-    tcp_fini(&dev);
+    rdma_backend_ops_tcp.fini(&dev);
     alarm(0);
     if (fd >= 0)
         close(fd);
@@ -2579,6 +2681,10 @@ static int run_reg_case(const struct reg_case *c)
  * during the pass drops isn't connected to, or its new connection is closed
  * before the handshake, which would have the peer publish it.
  *
+ * Only the manager's updates count.  A worker used to take one from any
+ * connection, and an update now also decides which of the worker's
+ * connections it closes, so a peer could take down its links.
+ *
  * The worker here is node TP_LOCAL.  Its connection to the manager is a
  * socketpair whose other end the test writes the updates to, and its
  * peer-connect thread is running.  The peers are loopback listeners, and a
@@ -2602,6 +2708,7 @@ enum tp_scenario {
     TP_NO_THREADS, /* the new connection's receive thread can't start */
     TP_DROPPED, /* a peer reported dead while the worker connects to another */
     TP_DIES,    /* a peer reported dead while the worker connects to it */
+    TP_FROM_PEER, /* an update from a peer, then from the manager */
 };
 
 struct tp_case {
@@ -2652,6 +2759,12 @@ static const struct tp_case tp_cases[] = {
      "an update reporting a peer dead while the worker's connect to it is in "
      "progress",
      "closed without a handshake, not published", TP_DIES, LONG_INTERVAL_S},
+    {"negative",
+     "an update on a peer's connection, then the same update from the "
+     "manager",
+     "the peer's is ignored, and the peer it names connected to only after "
+     "the manager's",
+     TP_FROM_PEER, LONG_INTERVAL_S},
 };
 
 /* A worker that is node TP_LOCAL, with a connection to the manager. */
@@ -2676,8 +2789,19 @@ struct tp_net {
     uint32_t nfds;
 };
 
-/* Set up fx and start its threads; returns NULL, or what failed. */
-static const char *tp_setup(struct tp_fixture *fx, uint32_t interval)
+static bool tp_start_peers(struct tp_fixture *fx)
+{
+    return tcp_start_thread(&fx->priv->peer_thread, "tcp-peers",
+                            tcp_worker_peer_thread, fx->priv,
+                            &fx->priv->peer_thread_running);
+}
+
+/*
+ * Set up fx and start its threads, the peer-connect thread only if peers;
+ * returns NULL, or what failed.
+ */
+static const char *tp_setup(struct tp_fixture *fx, uint32_t interval,
+                            bool peers)
 {
     TcpBackendPrivate *priv = g_new0(TcpBackendPrivate, 1);
 
@@ -2703,9 +2827,7 @@ static const char *tp_setup(struct tp_fixture *fx, uint32_t interval)
     priv->manager_conn = recv_conn_new(priv, 0, true, &fx->mgr);
     if (!priv->manager_conn)
         return "could not connect to the manager";
-    if (!tcp_start_thread(&priv->peer_thread, "tcp-peers",
-                          tcp_worker_peer_thread, priv,
-                          &priv->peer_thread_running))
+    if (peers && !tp_start_peers(fx))
         return "could not start the peer-connect thread";
     return NULL;
 }
@@ -2828,6 +2950,7 @@ static const char *tp_listen(struct tp_net *net, enum tp_scenario scenario)
         break;
     case TP_CONNECTS:
     case TP_NO_THREADS:
+    case TP_FROM_PEER:
         ok = tp_listener(net, 0, true);
         break;
     default:
@@ -2851,8 +2974,8 @@ static void tp_entry(TcpMeshTopologyPayload *topo, uint32_t id, uint16_t port,
     topo->num_nodes = htonl(n + 1);
 }
 
-/* Send topo as the manager. */
-static bool tp_send(struct tp_fixture *fx, const TcpMeshTopologyPayload *topo)
+/* Send topo on fd, as the manager does. */
+static bool send_topology(int fd, const TcpMeshTopologyPayload *topo)
 {
     struct {
         TcpMsgHeader hdr;
@@ -2864,7 +2987,38 @@ static bool tp_send(struct tp_fixture *fx, const TcpMeshTopologyPayload *topo)
     msg.hdr.msg_type = htonl(TCP_MSG_MESH_TOPOLOGY);
     msg.hdr.msg_len = htonl((uint32_t)sizeof(msg.topo));
     memcpy(&msg.topo, topo, sizeof(msg.topo));
-    return send(fx->mgr, &msg, sizeof(msg), 0) == (ssize_t)sizeof(msg);
+    return send(fd, &msg, sizeof(msg), 0) == (ssize_t)sizeof(msg);
+}
+
+/* Send topo as the manager. */
+static bool tp_send(struct tp_fixture *fx, const TcpMeshTopologyPayload *topo)
+{
+    return send_topology(fx->mgr, topo);
+}
+
+/*
+ * Have the worker's latest update name only *target, as if the receive
+ * thread had handed it over, for a row that doesn't run the thread that
+ * would act on it.
+ */
+static void tp_set_target(struct tp_fixture *fx, const TcpPeerTarget *target)
+{
+    qemu_mutex_lock(&fx->priv->peer_lock);
+    g_array_set_size(fx->priv->peer_targets, 0);
+    g_array_append_vals(fx->priv->peer_targets, target, 1);
+    qemu_mutex_unlock(&fx->priv->peer_lock);
+}
+
+/* A target for node id at port on loopback */
+static TcpPeerTarget tp_target(uint32_t id, uint16_t port)
+{
+    TcpPeerTarget target;
+
+    memset(&target, 0, sizeof(target));
+    target.node_id = id;
+    snprintf(target.host, sizeof(target.host), "127.0.0.1");
+    target.port = port;
+    return target;
 }
 
 /*
@@ -2926,19 +3080,36 @@ static const char *tp_connected_to(struct tp_fixture *fx, struct tp_net *net,
     return tp_lookup(fx, id) ? NULL : "the connection wasn't published";
 }
 
-/* A connection to id, as the accept thread would publish it. */
+/*
+ * A connection to id, as the accept thread would publish it, or, if port
+ * isn't 0, as the worker would if it had connected to id at port on
+ * loopback.  Its receive thread is started if start.  *fd, if fd isn't NULL,
+ * gets the peer's end, which is closed at the end of the row.
+ */
 static TcpConnection *tp_publish(struct tp_fixture *fx, struct tp_net *net,
-                                 uint32_t id, bool start)
+                                 uint32_t id, uint16_t port, bool start,
+                                 int *fd)
 {
     int peer = -1;
-    TcpConnection *conn = recv_conn_new(fx->priv, id, start, &peer);
+    TcpConnection *conn = recv_conn_new(fx->priv, id, false, &peer);
 
     tp_keep(net, peer);
-    if (conn) {
-        qemu_mutex_lock(&fx->priv->conn_table_lock);
-        g_hash_table_insert(fx->priv->connections, GUINT_TO_POINTER(id), conn);
-        qemu_mutex_unlock(&fx->priv->conn_table_lock);
+    if (fd)
+        *fd = peer;
+    if (!conn)
+        return NULL;
+    if (port != 0) {
+        g_free(conn->remote_host);
+        conn->remote_host = g_strdup("127.0.0.1");
+        conn->remote_port = port;
     }
+    if (start) {
+        atomic_store(&conn->recv_thread_running, true);
+        qemu_thread_create(&conn->recv_thread, tcp_recv_thread_per_conn, conn);
+    }
+    qemu_mutex_lock(&fx->priv->conn_table_lock);
+    g_hash_table_insert(fx->priv->connections, GUINT_TO_POINTER(id), conn);
+    qemu_mutex_unlock(&fx->priv->conn_table_lock);
     return conn;
 }
 
@@ -3035,7 +3206,7 @@ static const char *tp_race(struct tp_fixture *fx, struct tp_net *net)
     /* Past the check for a connection, which the race has to beat */
     if (!tp_attempts(fx, 1))
         return "the worker never connected";
-    theirs = tp_publish(fx, net, TP_PEER, true);
+    theirs = tp_publish(fx, net, TP_PEER, 0, true, NULL);
     if (!theirs)
         return "could not set up the peer's connection";
 
@@ -3133,6 +3304,56 @@ static const char *tp_dies(struct tp_fixture *fx, struct tp_net *net)
     return tp_count(fx) == 0 ? NULL : "the connection was published";
 }
 
+/*
+ * TP_FROM_PEER: the update comes on the connection of TP_LOWER, a peer.  The
+ * heartbeat that connection answers after it shows it was handled, by being
+ * ignored: the worker has no peers to connect to.  The same update from the
+ * manager is then acted on.
+ */
+static const char *tp_from_peer(struct tp_fixture *fx, struct tp_net *net,
+                                const TcpMeshTopologyPayload *topo)
+{
+    guint targets;
+    int peer = -1, fd;
+
+    if (!tp_publish(fx, net, TP_LOWER, 0, true, &peer))
+        return "could not set up the peer's connection";
+    if (!send_topology(peer, topo))
+        return "could not send the update as the peer";
+    if (!send_heartbeat(peer, TP_LOWER) ||
+        !wait_for_type(peer, TCP_MSG_HEARTBEAT, 2000))
+        return "the heartbeat after the update wasn't answered";
+
+    qemu_mutex_lock(&fx->priv->peer_lock);
+    targets = fx->priv->peer_targets->len;
+    qemu_mutex_unlock(&fx->priv->peer_lock);
+    if (targets != 0 ||
+        atomic_load(&fx->priv->tcp_stats.peer_connect_attempts) != 0)
+        return "the worker took the peer's update";
+
+    if (!tp_send(fx, topo))
+        return "could not send the update as the manager";
+    return tp_connected_to(fx, net, net->lfd[0], TP_PEER, &fd);
+}
+
+/*
+ * TP_SKIPS: the worker connected to TP_OTHER at net->port[0] on an earlier
+ * update, which named it there.  The peer-connect thread is started only
+ * once both are in place: each pass closes a connection to a higher id that
+ * the latest update doesn't name at its address, as a first pass with no
+ * update would.
+ */
+static const char *tp_skips_setup(struct tp_fixture *fx, struct tp_net *net)
+{
+    TcpPeerTarget earlier = tp_target(TP_OTHER, net->port[0]);
+
+    tp_set_target(fx, &earlier);
+    if (!tp_publish(fx, net, TP_OTHER, net->port[0], false, NULL))
+        return "could not set up the existing connection";
+    return tp_start_peers(fx) ? NULL
+                              : "could not start the peer-connect thread";
+}
+
 /* Build the row's update; returns NULL, or what failed. */
 static const char *tp_topology(struct tp_fixture *fx, struct tp_net *net,
                                enum tp_scenario scenario,
@@ -3147,9 +3368,7 @@ static const char *tp_topology(struct tp_fixture *fx, struct tp_net *net,
         tp_entry(topo, TP_OTHER, net->port[0], true);
         tp_entry(topo, TP_PEER, net->port[0], false);
         tp_entry(topo, TP_THIRD, net->port[1], true);
-        return tp_publish(fx, net, TP_OTHER, false)
-                   ? NULL
-                   : "could not set up the existing connection";
+        return tp_skips_setup(fx, net);
     case TP_STARVES:
     case TP_DROPPED:
         tp_entry(topo, TP_PEER, net->port[0], true);
@@ -3161,6 +3380,7 @@ static const char *tp_topology(struct tp_fixture *fx, struct tp_net *net,
     case TP_RACE:
     case TP_NO_THREADS:
     case TP_DIES:
+    case TP_FROM_PEER:
         tp_entry(topo, TP_PEER, net->port[0], true);
         return NULL;
     default:
@@ -3179,6 +3399,8 @@ static const char *tp_run(struct tp_fixture *fx, struct tp_net *net,
 
     if (why)
         return why;
+    if (scenario == TP_FROM_PEER)
+        return tp_from_peer(fx, net, &topo);
     if (scenario == TP_NO_THREADS)
         atomic_store(&g_creates_left, 0);
     if (!tp_send(fx, &topo))
@@ -3203,6 +3425,7 @@ static const char *tp_run(struct tp_fixture *fx, struct tp_net *net,
         return tp_dropped(fx, net);
     case TP_DIES:
         return tp_dies(fx, net);
+    case TP_FROM_PEER: /* sent above */
     default:
         return "unknown scenario";
     }
@@ -3229,7 +3452,8 @@ static int run_tp_case(const struct tp_case *c)
     g_current_row = c->description;
     alarm(ROW_TIMEOUT_S);
 
-    why = tp_setup(&fx, c->interval);
+    /* TP_SKIPS starts the peer-connect thread itself */
+    why = tp_setup(&fx, c->interval, c->scenario != TP_SKIPS);
     if (!why)
         why = tp_listen(&net, c->scenario);
     else
@@ -3257,6 +3481,581 @@ static int run_tp_case(const struct tp_case *c)
     fflush(stdout);
 
     tp_close(&net);
+    return ok ? 0 : 1;
+}
+
+/* ---- A worker's registration ------------------------------------------- */
+
+/*
+ * A worker takes its node id from the manager's REGISTER_RESP.  It used to
+ * take one from any connection, at any time, so a peer could rewrite a
+ * worker's id, and with it the GIDs the worker claims, by sending it a
+ * REGISTER_RESP.  Only the manager's connection may answer now, and only
+ * once, with an id a worker can have.  An answer that refuses the worker
+ * makes tcp_init() fail at once, rather than at the registration timeout.
+ *
+ * A worker also used to start its accept and peer-connect threads before it
+ * registered, while its id still read as 0, the manager's.  A peer that
+ * connected meanwhile was told it was talking to the manager.  A topology
+ * update that came before the answer, as the broadcast for another node's
+ * registration can, had the worker connect to its peers as node 0, and to
+ * peers with lower ids, which connect to it.  The threads now start once the
+ * worker has its id, and an update before then is ignored.  The last rows
+ * have one of them fail to start, after which tcp_init() has to join the
+ * threads it did start.
+ *
+ * Each row runs tcp_init() as a worker on a thread of its own, against a
+ * manager the test plays over loopback.  The worker's id is above HS_NODE,
+ * which the peers that connect to it claim, so each has the lower id, as the
+ * protocol requires.  The peer-connect thread closes a connection from a
+ * higher id that no update names, on a pass that can come at any time.
+ */
+
+#define WR_ID       8  /* the id the manager assigns */
+#define WR_OTHER_ID 9  /* the id a second answer, or a peer's, names */
+#define WR_LOWER    2  /* a node with a lower id, which the worker leaves be */
+#define WR_HIGHER   10 /* one with a higher id, which the worker connects to */
+
+enum wr_scenario {
+    WR_ASSIGNED,       /* the manager assigns WR_ID */
+    WR_REFUSED,        /* the manager refuses the registration */
+    WR_OLD_VERSION,    /* an answer with no version, as a pre-v4 manager's */
+    WR_SHORT,          /* an answer too short to hold an id */
+    WR_ID_ZERO,        /* the manager assigns 0 */
+    WR_ID_NONE,        /* the manager assigns UINT32_MAX */
+    WR_TWICE,          /* a second answer, naming WR_OTHER_ID */
+    WR_FROM_PEER,      /* a peer's answer, naming WR_OTHER_ID */
+    WR_EARLY_PEER,     /* a peer's handshake before the answer */
+    WR_EARLY_TOPOLOGY, /* a topology update before the answer */
+    WR_NO_ACCEPT,      /* registered, but the accept thread can't start */
+    WR_NO_PEERS,       /* registered, but the peer-connect thread can't */
+};
+
+struct wr_case {
+    const char *category;
+    const char *description;
+    const char *expected;
+    enum wr_scenario scenario;
+};
+
+static const struct wr_case wr_cases[] = {
+    {"positive", "the manager assigns the worker an id",
+     "tcp_init() succeeds, and the worker takes the id and advertises its "
+     "GIDs as that node",
+     WR_ASSIGNED},
+    {"negative", "the manager refuses the registration",
+     "tcp_init() fails at once, not at the registration timeout", WR_REFUSED},
+    {"negative", "an answer with no version, as a pre-v4 manager sends",
+     "tcp_init() fails at once", WR_OLD_VERSION},
+    {"boundary", "an answer one byte too short to hold a pre-v4 manager's",
+     "refused: tcp_init() fails at once", WR_SHORT},
+    {"boundary", "the manager assigns node id 0, its own",
+     "refused: tcp_init() fails at once", WR_ID_ZERO},
+    {"boundary", "the manager assigns node id UINT32_MAX",
+     "refused: tcp_init() fails at once", WR_ID_NONE},
+    {"corner", "a second answer from the manager, naming another id",
+     "ignored: the id is unchanged, and the GIDs aren't advertised again",
+     WR_TWICE},
+    {"negative", "an answer from a peer, naming another id",
+     "ignored: the id is unchanged, and nobody is sent an advertisement",
+     WR_FROM_PEER},
+    {"corner", "a peer's handshake before the manager answers",
+     "answered only once the worker has its id, with that id", WR_EARLY_PEER},
+    {"corner",
+     "a topology update before the manager answers, naming a lower and a "
+     "higher id",
+     "ignored: the worker connects only to the peer a later update names, as "
+     "its own id",
+     WR_EARLY_TOPOLOGY},
+    {"negative", "the worker registers, and its accept thread can't be created",
+     "tcp_init() fails, and joins the thread it started", WR_NO_ACCEPT},
+    {"negative",
+     "the worker registers, and its peer-connect thread can't be created",
+     "tcp_init() fails, and joins the threads it started", WR_NO_PEERS},
+};
+
+/*
+ * How many of the worker's qemu_thread_create() calls succeed, for g_creates
+ * to stop at: the first is the receive thread for the manager's connection,
+ * then the accept thread, then the peer-connect thread.  -1 for all.
+ */
+static int wr_creates_left(enum wr_scenario scenario)
+{
+    switch (scenario) {
+    case WR_NO_ACCEPT:
+        return 1;
+    case WR_NO_PEERS:
+        return 2;
+    case WR_ASSIGNED:
+    case WR_REFUSED:
+    case WR_OLD_VERSION:
+    case WR_SHORT:
+    case WR_ID_ZERO:
+    case WR_ID_NONE:
+    case WR_TWICE:
+    case WR_FROM_PEER:
+    case WR_EARLY_PEER:
+    case WR_EARLY_TOPOLOGY:
+    default:
+        return -1;
+    }
+}
+
+/* tcp_init() as a worker, run on a thread of its own by wr_init_run() */
+struct wr_init {
+    RdmaBackendDev dev;
+    char config[64];
+    uint32_t interval; /* health_check_interval_sec */
+    pthread_t tid;
+    bool running; /* tid hasn't been joined */
+    int ret;
+    double took; /* how long tcp_init() took */
+};
+
+static void *wr_init_run(void *opaque)
+{
+    struct wr_init *in = opaque;
+    double start = now_s();
+
+    in->ret = tcp_init_with_interval(&in->dev, in->config, in->interval);
+    in->took = now_s() - start;
+    return NULL;
+}
+
+/* Wait for tcp_init() to return; its results are in `in` once it has. */
+static void wr_init_join(struct wr_init *in)
+{
+    if (in->running) {
+        pthread_join(in->tid, NULL);
+        in->running = false;
+    }
+}
+
+/* Read the next message on fd, waiting up to timeout_ms for it to start. */
+static bool wr_recv(int fd, TcpMsgHeader *hdr, void **payload, int timeout_ms)
+{
+    struct pollfd pfd = {.fd = fd, .events = POLLIN};
+
+    *payload = NULL;
+    return poll(&pfd, 1, timeout_ms) == 1 &&
+           tcp_recv_message(fd, hdr, payload, NULL, NULL, 0) == 0;
+}
+
+/*
+ * Read messages on fd, for up to timeout_ms, until one of type arrives, and
+ * return its header and payload, which the caller frees.  The NODE_GIDS on
+ * the way, if type isn't that, are counted in *gids, if it isn't NULL.
+ */
+static bool wr_until(int fd, TcpMsgType type, int timeout_ms, TcpMsgHeader *hdr,
+                     void **payload, int *gids)
+{
+    double end = now_s() + timeout_ms / 1000.0;
+
+    while (now_s() < end) {
+        int left = (int)((end - now_s()) * 1000.0);
+
+        if (!wr_recv(fd, hdr, payload, left > 0 ? left : 1))
+            return false;
+        if (hdr->msg_type == type)
+            return true;
+        if (gids && hdr->msg_type == TCP_MSG_NODE_GIDS)
+            (*gids)++;
+        g_free(*payload);
+    }
+    *payload = NULL;
+    return false;
+}
+
+/*
+ * The node id in the next message of type on fd, from its payload: a
+ * handshake's or an advertisement's.  UINT32_MAX if none arrives within 5 s.
+ * *src, if it isn't NULL, gets the sender the header names.
+ */
+static uint32_t wr_node_in(int fd, TcpMsgType type, uint32_t *src)
+{
+    TcpMsgHeader hdr;
+    void *payload;
+    uint32_t id = UINT32_MAX;
+
+    if (!wr_until(fd, type, 5000, &hdr, &payload, NULL))
+        return UINT32_MAX;
+    /* Both payloads start with the node id, in network order */
+    if (payload && hdr.msg_len >= sizeof(uint32_t)) {
+        memcpy(&id, payload, sizeof(id));
+        id = ntohl(id);
+    }
+    if (src)
+        *src = hdr.src_node_id;
+    g_free(payload);
+    return id;
+}
+
+/*
+ * Whether fd's other end answers a heartbeat within 2 s, having handled
+ * everything sent before it; *gids counts the advertisements it sent first.
+ */
+static bool wr_settled(int fd, int *gids)
+{
+    TcpMsgHeader hdr;
+    void *payload;
+
+    if (!send_heartbeat(fd, 0) ||
+        !wr_until(fd, TCP_MSG_HEARTBEAT, 2000, &hdr, &payload, gids))
+        return false;
+    g_free(payload);
+    return true;
+}
+
+/*
+ * Send a REGISTER_RESP assigning id, with result, as the manager does.  len
+ * is the payload's length: TCP_REGISTER_RESP_LEN_V3 leaves off the version.
+ */
+static bool send_register_resp(int fd, uint32_t id, int32_t result,
+                               uint32_t len)
+{
+    struct {
+        TcpMsgHeader hdr;
+        TcpRegisterRespPayload resp;
+    } msg;
+    size_t size = sizeof(msg.hdr) + len;
+
+    if (len > sizeof(msg.resp))
+        return false;
+    memset(&msg, 0, sizeof(msg));
+    msg.hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
+    msg.hdr.msg_type = htonl(TCP_MSG_REGISTER_RESP);
+    msg.hdr.msg_len = htonl(len);
+    msg.resp.assigned_node_id = htonl(id);
+    msg.resp.num_nodes = htonl(2);
+    msg.resp.result = htonl((uint32_t)result);
+    msg.resp.version = htonl(TCP_PROTOCOL_VERSION);
+    return send(fd, &msg, size, 0) == (ssize_t)size;
+}
+
+static bool wr_assign(int mgr, uint32_t id)
+{
+    return send_register_resp(mgr, id, 0,
+                              (uint32_t)sizeof(TcpRegisterRespPayload));
+}
+
+/*
+ * Accept the worker's connection on lfd and read its registration; *port
+ * gets the port it listens on for its peers.  Returns NULL, or what failed.
+ */
+static const char *wr_registered(int lfd, int *mgr, uint16_t *port)
+{
+    TcpMsgHeader hdr;
+    void *payload;
+    const char *why = NULL;
+
+    *mgr = accept_within(lfd);
+    if (*mgr < 0)
+        return "the worker never connected to the manager";
+    if (!wr_recv(*mgr, &hdr, &payload, 5000))
+        return "the worker sent no registration";
+    if (hdr.msg_type != TCP_MSG_REGISTER_NODE || !payload ||
+        hdr.msg_len < sizeof(TcpRegisterNodePayload))
+        why = "the worker's first message wasn't a registration";
+    else
+        *port = ntohs(((const TcpRegisterNodePayload *)payload)->port);
+    g_free(payload);
+    return why;
+}
+
+/* The worker's id, once tcp_init() has succeeded */
+static uint32_t wr_local(struct wr_init *in)
+{
+    return tcp_local_node(in->dev.backend_private);
+}
+
+/*
+ * A handshake from a peer claiming to be node HS_NODE on a new connection to
+ * the worker's listen port; returns the connection, or -1.
+ */
+static int wr_peer(uint16_t port)
+{
+    int fd = connect_loopback(port);
+
+    if (fd >= 0 && !send_hs(fd, TCP_MSG_HANDSHAKE,
+                            (uint32_t)sizeof(TcpHandshakePayload))) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+/* After the answer that registers the worker as WR_ID */
+static const char *wr_after_assign(struct wr_init *in, int mgr)
+{
+    if (in->ret != 0)
+        return "tcp_init() failed";
+    if (wr_local(in) != WR_ID)
+        return "the worker didn't take the id it was assigned";
+    if (wr_node_in(mgr, TCP_MSG_NODE_GIDS, NULL) != WR_ID)
+        return "the worker didn't advertise its GIDs as its own id";
+    return NULL;
+}
+
+/* WR_TWICE, once the worker has registered */
+static const char *wr_twice(struct wr_init *in, int mgr)
+{
+    int gids = 0;
+
+    if (!wr_assign(mgr, WR_OTHER_ID) || !wr_settled(mgr, &gids))
+        return "the worker stopped answering the manager";
+    if (wr_local(in) != WR_ID)
+        return "the second answer changed the worker's id";
+    return gids == 0 ? NULL : "the worker advertised its GIDs again";
+}
+
+/* WR_FROM_PEER, once the worker has registered */
+static const char *wr_from_peer(struct wr_init *in, int mgr, uint16_t port,
+                                int *peer)
+{
+    uint32_t src = UINT32_MAX;
+    int peer_gids = 0, mgr_gids = 0;
+
+    *peer = wr_peer(port);
+    if (*peer < 0)
+        return "the peer could not connect";
+    if (wr_node_in(*peer, TCP_MSG_HANDSHAKE_RESP, &src) != WR_ID ||
+        src != WR_ID)
+        return "the peer's handshake wasn't answered as WR_ID";
+    if (!send_register_resp(*peer, WR_OTHER_ID, 0,
+                            (uint32_t)sizeof(TcpRegisterRespPayload)) ||
+        !wr_settled(*peer, &peer_gids) || !wr_settled(mgr, &mgr_gids))
+        return "the worker stopped answering";
+    if (wr_local(in) != WR_ID)
+        return "the peer changed the worker's id";
+    return peer_gids == 0 && mgr_gids == 0
+               ? NULL
+               : "the worker advertised its GIDs again";
+}
+
+/*
+ * WR_EARLY_PEER, before the manager answers: a peer's handshake isn't
+ * answered until then, and is then answered as WR_ID.
+ */
+static const char *wr_early_peer(struct wr_init *in, int mgr, uint16_t port,
+                                 int *peer)
+{
+    struct pollfd pfd = {.events = POLLIN};
+    uint32_t src = UINT32_MAX;
+
+    *peer = wr_peer(port);
+    if (*peer < 0)
+        return "the peer could not connect";
+    pfd.fd = *peer;
+    if (poll(&pfd, 1, 300) != 0)
+        return "the worker answered the handshake before it had an id";
+    if (!wr_assign(mgr, WR_ID))
+        return "could not answer the registration";
+    wr_init_join(in);
+    if (in->ret != 0)
+        return "tcp_init() failed";
+    if (wr_node_in(*peer, TCP_MSG_HANDSHAKE_RESP, &src) != WR_ID ||
+        src != WR_ID)
+        return "the handshake wasn't answered as the assigned id";
+    return NULL;
+}
+
+/*
+ * WR_EARLY_TOPOLOGY, before the manager answers: an update naming WR_LOWER
+ * at low and WR_HIGHER at high.  The worker connects to nothing until a
+ * second update, after the answer, names WR_HIGHER alone, and then
+ * introduces itself to it as WR_ID.
+ */
+static const char *wr_early_topology(struct wr_init *in, int mgr, int low,
+                                     int high, int *peer)
+{
+    TcpMeshTopologyPayload topo;
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    struct pollfd pfd = {.fd = low, .events = POLLIN};
+    uint16_t low_port, high_port;
+
+    if (getsockname(low, (struct sockaddr *)&addr, &len) < 0)
+        return "could not find the peers' ports";
+    low_port = ntohs(addr.sin_port);
+    len = sizeof(addr);
+    if (getsockname(high, (struct sockaddr *)&addr, &len) < 0)
+        return "could not find the peers' ports";
+    high_port = ntohs(addr.sin_port);
+
+    memset(&topo, 0, sizeof(topo));
+    tp_entry(&topo, WR_LOWER, low_port, true);
+    tp_entry(&topo, WR_HIGHER, high_port, true);
+    if (!send_topology(mgr, &topo))
+        return "could not send the first update";
+    sleep_ms(300); /* time for a worker that didn't ignore it to connect */
+    if (!wr_assign(mgr, WR_ID))
+        return "could not answer the registration";
+    wr_init_join(in);
+    if (in->ret != 0)
+        return "tcp_init() failed";
+
+    memset(&topo, 0, sizeof(topo));
+    tp_entry(&topo, WR_HIGHER, high_port, true);
+    if (!send_topology(mgr, &topo))
+        return "could not send the second update";
+    *peer = accept_within(high);
+    if (*peer < 0)
+        return "the worker never connected to the higher id";
+    if (wr_node_in(*peer, TCP_MSG_HANDSHAKE, NULL) != WR_ID)
+        return "the worker didn't introduce itself as the assigned id";
+    return poll(&pfd, 1, 0) == 0 ? NULL
+                                 : "the worker connected to the lower id";
+}
+
+/* Play the manager, and any peers, for the row; returns NULL or what failed */
+static const char *wr_run(const struct wr_case *c, struct wr_init *in, int lfd,
+                          int *mgr, int *peer)
+{
+    const char *why;
+    uint16_t port = 0;
+    int low = -1, high = -1;
+
+    why = wr_registered(lfd, mgr, &port);
+    if (why)
+        return why;
+
+    switch (c->scenario) {
+    case WR_ASSIGNED:
+    case WR_TWICE:
+    case WR_FROM_PEER:
+        if (!wr_assign(*mgr, WR_ID))
+            return "could not answer the registration";
+        wr_init_join(in);
+        why = wr_after_assign(in, *mgr);
+        if (!why && c->scenario == WR_TWICE)
+            why = wr_twice(in, *mgr);
+        if (!why && c->scenario == WR_FROM_PEER)
+            why = wr_from_peer(in, *mgr, port, peer);
+        return why;
+    case WR_REFUSED:
+        if (!send_register_resp(*mgr, 0, -EPROTO,
+                                (uint32_t)sizeof(TcpRegisterRespPayload)))
+            return "could not answer the registration";
+        break;
+    case WR_OLD_VERSION:
+        if (!send_register_resp(*mgr, WR_ID, 0, TCP_REGISTER_RESP_LEN_V3))
+            return "could not answer the registration";
+        break;
+    case WR_SHORT:
+        if (!send_register_resp(*mgr, WR_ID, 0, TCP_REGISTER_RESP_LEN_V3 - 1))
+            return "could not answer the registration";
+        break;
+    case WR_ID_ZERO:
+        if (!wr_assign(*mgr, 0))
+            return "could not answer the registration";
+        break;
+    case WR_ID_NONE:
+        if (!wr_assign(*mgr, UINT32_MAX))
+            return "could not answer the registration";
+        break;
+    case WR_NO_ACCEPT:
+    case WR_NO_PEERS:
+        if (!wr_assign(*mgr, WR_ID))
+            return "could not answer the registration";
+        break;
+    case WR_EARLY_PEER:
+        return wr_early_peer(in, *mgr, port, peer);
+    case WR_EARLY_TOPOLOGY:
+        low = listen_loopback();
+        high = listen_loopback();
+        why = low < 0 || high < 0
+                  ? "could not open the peers' listeners"
+                  : wr_early_topology(in, *mgr, low, high, peer);
+        if (low >= 0)
+            close(low);
+        if (high >= 0)
+            close(high);
+        return why;
+    default:
+        return "unknown scenario";
+    }
+
+    /* The rows in which tcp_init() fails */
+    wr_init_join(in);
+    if (in->ret == 0)
+        return "tcp_init() succeeded";
+    return in->took < 2.0 ? NULL : "tcp_init() waited for the timeout";
+}
+
+/*
+ * Run one registration row: start tcp_init() as a worker, play the manager
+ * for it, then stop the worker, if it started, and check that every thread
+ * it created exited.
+ */
+static int run_wr_case(const struct wr_case *c)
+{
+    struct wr_init in;
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    const char *why = NULL;
+    int lfd, mgr = -1, peer = -1;
+    int creates_left = wr_creates_left(c->scenario);
+    bool ok;
+
+    atomic_store(&g_creates, 0);
+    atomic_store(&g_joins, 0);
+    atomic_store(&g_exits, 0);
+    atomic_store(&g_create_failures, 0);
+    memset(&in, 0, sizeof(in));
+    in.interval = LONG_INTERVAL_S;
+    in.ret = -1;
+
+    g_current_row = c->description;
+    alarm(ROW_TIMEOUT_S);
+    lfd = listen_loopback();
+    if (lfd < 0 || getsockname(lfd, (struct sockaddr *)&addr, &len) < 0) {
+        why = "could not open the manager's listener";
+    } else {
+        snprintf(in.config, sizeof(in.config), "tcp:worker:127.0.0.1:%u",
+                 (unsigned)ntohs(addr.sin_port));
+        atomic_store(&g_creates_left, creates_left);
+        /* Not counted: it isn't one of the worker's threads */
+        if (pthread_create(&in.tid, NULL, wr_init_run, &in) != 0)
+            why = "could not start tcp_init()";
+        else
+            in.running = true;
+    }
+    if (!why)
+        why = wr_run(c, &in, lfd, &mgr, &peer);
+
+    /* A row that failed before the answer: refuse, so tcp_init() returns */
+    if (in.running && mgr >= 0)
+        send_register_resp(mgr, 0, -EPROTO,
+                           (uint32_t)sizeof(TcpRegisterRespPayload));
+    wr_init_join(&in);
+    atomic_store(&g_creates_left, -1);
+    if (in.ret == 0)
+        rdma_backend_ops_tcp.fini(&in.dev);
+    alarm(0);
+    if (!why && creates_left >= 0 &&
+        (atomic_load(&g_creates) != creates_left ||
+         atomic_load(&g_create_failures) != 1))
+        why = "the thread that couldn't be created wasn't the expected one";
+    if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
+                 atomic_load(&g_exits) != atomic_load(&g_creates)))
+        why = "a thread the worker started wasn't joined exactly once";
+
+    ok = !why;
+    printf("%s worker registration %s: %s; expected: %s\n",
+           ok ? "ok  " : "FAIL", c->category, c->description, c->expected);
+    if (!ok)
+        printf("     %s; tcp_init() returned %d after %.3f s, %d thread(s) "
+               "created, %d joined, %d exited\n",
+               why, in.ret, in.took, atomic_load(&g_creates),
+               atomic_load(&g_joins), atomic_load(&g_exits));
+    fflush(stdout);
+
+    if (peer >= 0)
+        close(peer);
+    if (mgr >= 0)
+        close(mgr);
+    if (lfd >= 0)
+        close(lfd);
     return ok ? 0 : 1;
 }
 
@@ -3554,39 +4353,39 @@ struct reap_case {
     const char *description;
     const char *expected;
     enum reap_scenario scenario;
-    const char *interval; /* ERNIC_TCP_HEALTH_INTERVAL */
+    uint32_t interval; /* health_check_interval_sec */
 };
 
 static const struct reap_case reap_cases[] = {
     {"positive", "100 peers that connect and hang up without registering",
      "each is closed, and its thread joined, by the time the next connects: "
      "one left waiting, and 2 descriptors more open, not 102",
-     REAP_PROBES, "3600"},
+     REAP_PROBES, LONG_INTERVAL_S},
     {"negative", "a peer refused for running an older protocol version",
      "sent the refusal, then closed by the next health-check pass",
-     REAP_REFUSED, "1"},
+     REAP_REFUSED, 1},
     {"negative",
      "a peer that, before registering, sends an ionic message for a "
      "registered worker",
      "not relayed; the connection is closed by the next health-check pass",
-     REAP_EARLY, "1"},
+     REAP_EARLY, 1},
     {"negative", "a peer that has sent nothing for the registration timeout",
-     "closed by the next health-check pass", REAP_TIMEOUT, "1"},
+     "closed by the next health-check pass", REAP_TIMEOUT, 1},
     {"boundary", "a peer that has sent nothing, with time left to register",
-     "kept through two health-check passes", REAP_YOUNG, "1"},
+     "kept through two health-check passes", REAP_YOUNG, 1},
     {"boundary", "64 peers waiting to register, then another",
      "the next is closed at once; once one of the 64 hangs up, the one after "
      "it is let in",
-     REAP_CAP, "3600"},
+     REAP_CAP, LONG_INTERVAL_S},
     {"negative", "a peer that connects while the manager is out of descriptors",
      "accept() is retried every 100 ms, not in a loop that floods the log, "
      "and succeeds once descriptors are free",
-     REAP_NO_FDS, "3600"},
+     REAP_NO_FDS, LONG_INTERVAL_S},
     {"negative", "a registered worker that hangs up",
      "the next health-check pass closes its connection, joins its thread, "
      "takes it out of the connections table, and reports it dead to the "
      "other workers",
-     REAP_HANGUP, "1"},
+     REAP_HANGUP, 1},
 };
 
 /* The peers' descriptors a row keeps open, closed at the end of the row */
@@ -4024,7 +4823,7 @@ static const char *reap_hangup(TcpBackendPrivate *priv, struct reap_fds *k)
 
     if (!why && (!node || alive))
         why = "node 2 is gone, or still alive";
-    else if (!why && tcp_has_connection(priv, 2))
+    else if (!why && table_get(priv, 2))
         why = "worker 2's connection is still in the connections table";
     else if (!why && (fd != -1 || atomic_load(&conn->recv_thread_running)))
         why = "worker 2's connection wasn't closed";
@@ -4103,12 +4902,10 @@ static int run_reap_case(const struct reap_case *c)
     memset(&k, 0, sizeof(k));
     memset(&dev, 0, sizeof(dev));
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
-    /* No backend threads exist yet, so nothing reads the environment */
-    setenv("ERNIC_TCP_HEALTH_INTERVAL", c->interval, 1);
 
     g_current_row = c->description;
     alarm(ROW_TIMEOUT_S);
-    if (port == 0 || tcp_init(&dev, config) != 0) {
+    if (port == 0 || tcp_init_with_interval(&dev, config, c->interval) != 0) {
         printf("FAIL reap %s: %s; could not start a manager\n", c->category,
                c->description);
         alarm(0);
@@ -4117,7 +4914,7 @@ static int run_reap_case(const struct reap_case *c)
     why = reap_run(dev.backend_private, port, c->scenario, &k, &errors);
 
     start = now_s();
-    tcp_fini(&dev);
+    rdma_backend_ops_tcp.fini(&dev);
     took = now_s() - start;
     alarm(0);
     if (!why && took >= 2.0)
@@ -4147,45 +4944,31 @@ static int run_reap_case(const struct reap_case *c)
 /*
  * A message's header names the node that sent it, and the sender writes
  * that.  The manager used to credit a heartbeat to the node the header named,
- * so any registered worker could keep another, dead, node alive.  Every node
- * also sent its answer to a data-path request, a completion or the memory
- * asked for, to the node the request named, so a peer could have it
- * delivered to another node.  A heartbeat is now credited to the node whose
- * connection it came on, and an answer goes back on the connection the
- * request came on.
- *
- * Data that arrives before a receive is posted waits for one, and its
- * completion goes out when the receive is posted, from another thread.  That
- * one went to whichever connection the node the data named had by then.  It
- * now goes back on the connection the data came on, which the waiting data
- * holds a reference to: the pending rows check it reaches worker 1, and that
- * nothing is sent, and nothing is used after it is freed, if worker 1's
- * connection is retired while the data waits.  Teardown frees what is still
- * queued on a QP: the teardown rows leave data waiting, with worker 1's
- * connection in the table or retired, and check that teardown drops the
- * data's reference; and leave an RDMA write waiting for its completion and
- * a receive waiting for data, both mapped through a DMA memory region, and
- * check that teardown unmaps each mapping once.
+ * so any registered worker could keep another, dead, node alive.  A heartbeat
+ * is now credited to the node whose connection it came on.
  *
  * A node the manager had declared dead that answered a heartbeat again
  * stayed dead to the rest of the mesh until its topology next changed.  The
  * manager now reports it alive.
  *
- * Each row starts a manager with tcp_init(), on a one-hour interval so the
- * health check leaves the nodes alone, and registers two workers over
- * socketpairs, as in the fini rows: nodes 1 and 2.
+ * The data-path messages the PVRDMA device used are retired.  Their handlers
+ * answered a request, a completion or the memory asked for, and kept data
+ * that came before a receive was posted until the QP was destroyed, which a
+ * peer could use to grow the node's memory without bound.  A retired message
+ * now gets no answer and nothing of it is kept.
+ *
+ * Each row starts a manager with tcp_init(), stops its health-check thread,
+ * and registers two workers over socketpairs, as in the fini rows: nodes 1
+ * and 2.  The health check's first pass comes as soon as the thread runs,
+ * which can be after the row has set up the nodes' liveness or drained the
+ * workers' sockets, and its heartbeats, or a node it declares dead, would
+ * then fail the row.  Stopping the thread first makes that pass come first.
  */
 
 enum sender_scenario {
     SENDER_HEARTBEAT, /* worker 1's heartbeat names node 2, which is dead */
     SENDER_REVIVES,   /* node 2, declared dead, answers a heartbeat */
-    SENDER_WRITE,     /* worker 1's RDMA write names node 2 as its sender */
-    SENDER_READ,      /* worker 1's RDMA read names node 2 as its sender */
-    SENDER_PENDING,   /* worker 1's data, naming node 2, waits for a receive */
-    SENDER_PENDING_GONE,  /* and worker 1's connection is retired meanwhile */
-    SENDER_TEARDOWN_KEPT, /* data waits, never received, at teardown */
-    SENDER_TEARDOWN_RETIRED, /* and worker 1's connection is retired first */
-    SENDER_TEARDOWN_QUEUED,  /* a write and a receive still queued */
+    SENDER_RETIRED,   /* worker 1 sends the retired data-path messages */
 };
 
 struct sender_case {
@@ -4200,57 +4983,17 @@ static const struct sender_case sender_cases[] = {
      "credited to node 1; node 2 stays dead", SENDER_HEARTBEAT},
     {"positive", "node 2, declared dead, answers a heartbeat",
      "node 2 is alive again, and worker 1 is told so", SENDER_REVIVES},
-    {"negative", "worker 1 sends an RDMA write naming node 2 as its sender",
-     "the write lands, and the completion goes to worker 1, not worker 2",
-     SENDER_WRITE},
-    {"negative", "worker 1 asks to read memory, naming node 2 as its sender",
-     "the memory goes to worker 1, not worker 2", SENDER_READ},
     {"negative",
-     "worker 1 sends data naming node 2 as its sender, before a receive is "
-     "posted",
-     "once one is, the data lands and the completion goes to worker 1, not "
-     "worker 2",
-     SENDER_PENDING},
-    {"corner",
-     "worker 1 sends data before a receive is posted, and its connection is "
-     "retired before one is",
-     "the data lands, no completion is sent, and the connection is freed",
-     SENDER_PENDING_GONE},
-    {"corner",
-     "worker 1 sends data before a receive is posted, and none is before "
-     "teardown",
-     "teardown frees the data and drops its reference to worker 1's "
-     "connection, as well as the table's",
-     SENDER_TEARDOWN_KEPT},
-    {"corner",
-     "worker 1 sends data before a receive is posted, its connection is "
-     "retired, and no receive is posted before teardown",
-     "teardown frees the data and drops the connection's last reference but "
-     "the test's",
-     SENDER_TEARDOWN_RETIRED},
-    {"corner",
-     "an RDMA write waits for worker 1's completion, and a receive for data, "
-     "both mapped through a DMA memory region, at teardown",
-     "teardown unmaps each mapping once and frees both requests",
-     SENDER_TEARDOWN_QUEUED},
+     "worker 1 sends each retired data-path message, naming node 2 as its "
+     "sender",
+     "ignored: nothing is sent to either worker, and worker 1 is still "
+     "answered",
+     SENDER_RETIRED},
 };
 
-/* The memory region the RDMA rows write and read, at g_mr while they run */
-#define SENDER_MR_START UINT64_C(0x10000)
-#define SENDER_MR_RKEY  0x5eedu
-#define SENDER_LEN      8u
-#define SENDER_BYTE     0xab /* what the write writes */
-
-#define SENDER_QPN      12u    /* the QP the requests are addressed to */
-#define SENDER_DMA_KEY  0xd3au /* a DMA memory region's key */
-#define SENDER_DMA_ADDR UINT64_C(0x20000)
-
-static uint8_t g_sender_mem[SENDER_LEN];
-static RdmaRmMR g_sender_mr;
-static RdmaRmMR g_sender_dma_mr; /* starts at 0 with no length: DMA */
-static TcpCQ g_sender_cq;        /* the QP these rows add has to have one */
-/* A reference a teardown row keeps to worker 1's connection past tcp_fini() */
-static TcpConnection *g_sender_held;
+/* The payload each retired message carries */
+#define SENDER_LEN  8u
+#define SENDER_BYTE 0xab
 
 /* Set node id's liveness and the time of its last heartbeat. */
 static void node_set(TcpBackendPrivate *priv, uint32_t id, bool alive,
@@ -4281,37 +5024,6 @@ static bool node_get(TcpBackendPrivate *priv, uint32_t id, bool *alive,
     }
     qemu_mutex_unlock(&priv->mesh_table_lock);
     return node != NULL;
-}
-
-/*
- * Send an RDMA write of SENDER_LEN bytes of SENDER_BYTE to the region, or a
- * request to read SENDER_LEN bytes of it, naming node src as the sender.
- * The operation header is in host byte order, as the backend sends it.
- */
-static bool send_rdma(int fd, TcpMsgType type, uint32_t src)
-{
-    TcpMsgHeader hdr;
-    TcpRdmaOpHeader op;
-    uint8_t buf[sizeof(hdr) + sizeof(op) + SENDER_LEN];
-    size_t len =
-        type == TCP_MSG_RDMA_WRITE ? sizeof(buf) : sizeof(hdr) + sizeof(op);
-
-    memset(&hdr, 0, sizeof(hdr));
-    hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
-    hdr.msg_type = htonl(type);
-    hdr.msg_len = htonl((uint32_t)(len - sizeof(hdr)));
-    hdr.seq = htonl(1);
-    hdr.src_node_id = htonl(src);
-    hdr.src_qpn = htonl(11);
-    hdr.dst_qpn = htonl(SENDER_QPN);
-    memset(&op, 0, sizeof(op));
-    op.remote_addr = SENDER_MR_START;
-    op.rkey = SENDER_MR_RKEY;
-    op.data_len = SENDER_LEN;
-    memset(buf, SENDER_BYTE, sizeof(buf));
-    memcpy(buf, &hdr, sizeof(hdr));
-    memcpy(buf + sizeof(hdr), &op, sizeof(op));
-    return send(fd, buf, len, 0) == (ssize_t)len;
 }
 
 /*
@@ -4379,66 +5091,90 @@ static const char *sender_revives(TcpBackendPrivate *priv, int w1, int w2)
     return NULL;
 }
 
-/* SENDER_WRITE and SENDER_READ */
-static const char *sender_rdma(int w1, int w2, enum sender_scenario scenario)
-{
-    bool is_write = scenario == SENDER_WRITE;
-    TcpMsgType answer = is_write ? TCP_MSG_COMPLETION : TCP_MSG_RDMA_READ_RESP;
-
-    if (!send_rdma(w1, is_write ? TCP_MSG_RDMA_WRITE : TCP_MSG_RDMA_READ_REQ,
-                   2))
-        return "could not send the request";
-    if (!wait_for_type(w1, answer, 2000))
-        return "the answer didn't come back to worker 1";
-    if (count_type(w2, answer) != 0)
-        return "the answer went to worker 2";
-    if (is_write) {
-        for (uint32_t i = 0; i < SENDER_LEN; i++)
-            if (g_sender_mem[i] != SENDER_BYTE)
-                return "the write didn't land";
-    }
-    return NULL;
-}
-
-/* Send SENDER_LEN bytes of SENDER_BYTE as data for SENDER_QPN from node src */
-static bool send_data(int fd, uint32_t src)
+/* Send SENDER_LEN bytes of SENDER_BYTE as a message of type from node src */
+static bool send_payload(int fd, TcpMsgType type, uint32_t src)
 {
     TcpMsgHeader hdr;
     uint8_t buf[sizeof(hdr) + SENDER_LEN];
 
     memset(&hdr, 0, sizeof(hdr));
     hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
-    hdr.msg_type = htonl(TCP_MSG_DATA);
+    hdr.msg_type = htonl(type);
     hdr.msg_len = htonl(SENDER_LEN);
     hdr.seq = htonl(1);
     hdr.src_node_id = htonl(src);
     hdr.src_qpn = htonl(11);
-    hdr.dst_qpn = htonl(SENDER_QPN);
+    hdr.dst_qpn = htonl(12);
     memset(buf, SENDER_BYTE, sizeof(buf));
     memcpy(buf, &hdr, sizeof(hdr));
     return send(fd, buf, sizeof(buf), 0) == (ssize_t)sizeof(buf);
 }
 
 /*
- * Add SENDER_QPN to the manager's QPs, connected to node remote, as
- * tcp_create_qp() and an RTR would.
+ * Read messages from fd until one of type arrives, for up to timeout_ms.
+ * Returns how many others came first, or -1 if none of type came.
  */
-static void sender_qp_add(TcpBackendPrivate *priv, uint32_t remote)
+static int others_before(int fd, TcpMsgType type, int timeout_ms)
 {
-    TcpQP *tqp = g_new0(TcpQP, 1);
+    double end = now_s() + timeout_ms / 1000.0;
+    int others = 0;
 
-    tqp->qpn = SENDER_QPN;
-    tqp->backend_dev = priv->backend_dev;
-    tqp->remote_node_id = remote;
-    tqp->scq = &g_sender_cq;
-    tqp->rcq = &g_sender_cq;
-    tqp->send_queue = g_queue_new();
-    tqp->recv_queue = g_queue_new();
-    tqp->pending_data = g_queue_new();
-    qemu_mutex_init(&tqp->lock);
-    qemu_mutex_lock(&priv->lock);
-    g_hash_table_insert(priv->qps, GUINT_TO_POINTER(SENDER_QPN), tqp);
-    qemu_mutex_unlock(&priv->lock);
+    while (now_s() < end) {
+        struct pollfd pfd = {.fd = fd, .events = POLLIN};
+        int left = (int)((end - now_s()) * 1000.0);
+        TcpMsgHeader hdr;
+        void *payload = NULL;
+
+        if (poll(&pfd, 1, left > 0 ? left : 1) != 1)
+            continue;
+        if (tcp_recv_message(fd, &hdr, &payload, NULL, NULL, 0) < 0)
+            return -1;
+        g_free(payload);
+        if (hdr.msg_type == type)
+            return others;
+        others++;
+    }
+    return -1;
+}
+
+/*
+ * SENDER_RETIRED.  Worker 1's receive thread on the manager handles one
+ * message at a time, so once it has answered a heartbeat sent after the
+ * retired messages, anything it sent for them, to either worker, is already
+ * waiting.
+ */
+static const char *sender_retired(int w1, int w2)
+{
+    static const TcpMsgType retired[] = {
+        TCP_MSG_RESERVED_3,  TCP_MSG_RESERVED_4,  TCP_MSG_RESERVED_5,
+        TCP_MSG_RESERVED_6,  TCP_MSG_RESERVED_7,  TCP_MSG_RESERVED_8,
+        TCP_MSG_RESERVED_9,  TCP_MSG_RESERVED_10, TCP_MSG_RESERVED_11,
+        TCP_MSG_RESERVED_21, TCP_MSG_RESERVED_22, TCP_MSG_RESERVED_23,
+    };
+    struct pollfd pfd = {.fd = w2, .events = POLLIN};
+
+    /* Finish the registrations, and discard what they sent */
+    if (!worker_settled(w1, 1) || !worker_settled(w2, 2))
+        return "a registration wasn't finished";
+    count_type(w1, TCP_MSG_HEARTBEAT_RESP);
+    count_type(w2, TCP_MSG_HEARTBEAT_RESP);
+
+    for (size_t i = 0; i < sizeof(retired) / sizeof(retired[0]); i++)
+        if (!send_payload(w1, retired[i], 2))
+            return "could not send a retired message";
+    if (!send_heartbeat(w1, 1))
+        return "could not send the heartbeat";
+
+    switch (others_before(w1, TCP_MSG_HEARTBEAT_RESP, 2000)) {
+    case -1:
+        return "the heartbeat after the retired messages wasn't answered";
+    case 0:
+        break;
+    default:
+        return "a retired message was answered";
+    }
+    return poll(&pfd, 1, 0) == 0 ? NULL
+                                 : "a retired message sent worker 2 something";
 }
 
 /*
@@ -4462,129 +5198,6 @@ static bool retire_node_conn(TcpBackendPrivate *priv, uint32_t id)
     return taken;
 }
 
-/* How many requests or buffers wait on each of SENDER_QPN's queues */
-static void sender_queued(TcpBackendPrivate *priv, guint *sends, guint *recvs,
-                          guint *pending)
-{
-    TcpQP *tqp;
-
-    qemu_mutex_lock(&priv->lock);
-    tqp = g_hash_table_lookup(priv->qps, GUINT_TO_POINTER(SENDER_QPN));
-    *sends = tqp ? g_queue_get_length(tqp->send_queue) : 0;
-    *recvs = tqp ? g_queue_get_length(tqp->recv_queue) : 0;
-    *pending = tqp ? g_queue_get_length(tqp->pending_data) : 0;
-    qemu_mutex_unlock(&priv->lock);
-}
-
-/*
- * Have worker 1's data, naming node 2 as its sender, wait for a receive on
- * SENDER_QPN.  The manager has finished with the data once it has answered a
- * heartbeat sent after it.
- */
-static const char *sender_buffer(TcpBackendPrivate *priv, int w1)
-{
-    guint sends, recvs, pending;
-
-    sender_qp_add(priv, 0);
-    if (!send_data(w1, 2))
-        return "could not send the data";
-    if (!worker_settled(w1, 1))
-        return "the data wasn't taken";
-    sender_queued(priv, &sends, &recvs, &pending);
-    return pending == 1 ? NULL : "the data isn't waiting for a receive";
-}
-
-/* SENDER_PENDING and SENDER_PENDING_GONE */
-static const char *sender_pending(TcpBackendPrivate *priv, int w1, int w2,
-                                  enum sender_scenario scenario)
-{
-    RdmaBackendQP qp;
-    struct ibv_sge sge;
-    const char *why = sender_buffer(priv, w1);
-
-    if (why)
-        return why;
-    if (scenario == SENDER_PENDING_GONE && !retire_node_conn(priv, 1))
-        return "worker 1's connection wasn't in the table";
-    count_type(w2, TCP_MSG_COMPLETION);
-
-    memset(&qp, 0, sizeof(qp));
-    qp.ibqp = (struct ibv_qp *)(uintptr_t)SENDER_QPN;
-    memset(&sge, 0, sizeof(sge));
-    sge.addr = SENDER_MR_START;
-    sge.length = SENDER_LEN;
-    sge.lkey = SENDER_MR_RKEY;
-    tcp_post_recv(priv->backend_dev, &qp, IBV_QPT_RC, &sge, 1, NULL);
-
-    for (uint32_t i = 0; i < SENDER_LEN; i++)
-        if (g_sender_mem[i] != SENDER_BYTE)
-            return "the data didn't land";
-    if (count_type(w2, TCP_MSG_COMPLETION) != 0)
-        return "the completion went to worker 2";
-    /* Sent before tcp_post_recv() returned, if at all */
-    if (scenario == SENDER_PENDING_GONE)
-        return count_type(w1, TCP_MSG_COMPLETION) == 0
-                   ? NULL
-                   : "a completion went out on a retired connection";
-    return wait_for_type(w1, TCP_MSG_COMPLETION, 2000)
-               ? NULL
-               : "the completion didn't come back to worker 1";
-}
-
-/*
- * SENDER_TEARDOWN_KEPT and SENDER_TEARDOWN_RETIRED.  The row keeps a
- * reference to worker 1's connection in g_sender_held, which must be the
- * only one left once tcp_fini() has freed the waiting data.
- */
-static const char *sender_teardown_pending(TcpBackendPrivate *priv, int w1,
-                                           enum sender_scenario scenario)
-{
-    const char *why = sender_buffer(priv, w1);
-
-    if (why)
-        return why;
-    g_sender_held = tcp_connection_lookup(priv, 1);
-    if (!g_sender_held)
-        return "worker 1 has no connection";
-    if (scenario == SENDER_TEARDOWN_RETIRED && !retire_node_conn(priv, 1))
-        return "worker 1's connection wasn't in the table";
-    return NULL;
-}
-
-/*
- * SENDER_TEARDOWN_QUEUED.  A receive with no data waiting stays queued, and
- * a request to worker 1, which never answers, waits on the send queue for
- * its completion.  Each maps its one entry through the DMA region.  With no
- * completion context the request's opcode is 0, PVRDMA_WR_RDMA_WRITE, so it
- * goes out as an RDMA write.
- */
-static const char *sender_teardown_queued(TcpBackendPrivate *priv, int w1)
-{
-    RdmaBackendQP qp;
-    struct ibv_sge sge;
-    guint sends, recvs, pending;
-
-    atomic_store(&g_mr, &g_sender_dma_mr);
-    sender_qp_add(priv, 1);
-    memset(&qp, 0, sizeof(qp));
-    qp.ibqp = (struct ibv_qp *)(uintptr_t)SENDER_QPN;
-    memset(&sge, 0, sizeof(sge));
-    sge.addr = SENDER_DMA_ADDR;
-    sge.length = SENDER_LEN;
-    sge.lkey = SENDER_DMA_KEY;
-
-    tcp_post_recv(priv->backend_dev, &qp, IBV_QPT_RC, &sge, 1, NULL);
-    tcp_post_send(priv->backend_dev, &qp, IBV_QPT_RC, &sge, 1, 0, NULL, NULL, 0,
-                  0, NULL);
-    if (!wait_for_type(w1, TCP_MSG_RDMA_WRITE, 2000))
-        return "the write didn't reach worker 1";
-    sender_queued(priv, &sends, &recvs, &pending);
-    if (sends != 1 || recvs != 1)
-        return "the write and the receive aren't both queued";
-    return atomic_load(&g_dma_maps) == 2 ? NULL
-                                         : "the requests weren't both mapped";
-}
-
 static const char *sender_run(TcpBackendPrivate *priv, int w1, int w2,
                               enum sender_scenario scenario)
 {
@@ -4593,17 +5206,8 @@ static const char *sender_run(TcpBackendPrivate *priv, int w1, int w2,
         return sender_heartbeat(priv, w1);
     case SENDER_REVIVES:
         return sender_revives(priv, w1, w2);
-    case SENDER_WRITE:
-    case SENDER_READ:
-        return sender_rdma(w1, w2, scenario);
-    case SENDER_PENDING:
-    case SENDER_PENDING_GONE:
-        return sender_pending(priv, w1, w2, scenario);
-    case SENDER_TEARDOWN_KEPT:
-    case SENDER_TEARDOWN_RETIRED:
-        return sender_teardown_pending(priv, w1, scenario);
-    case SENDER_TEARDOWN_QUEUED:
-        return sender_teardown_queued(priv, w1);
+    case SENDER_RETIRED:
+        return sender_retired(w1, w2);
     default:
         return "unknown scenario";
     }
@@ -4622,32 +5226,20 @@ static int run_sender_case(const struct sender_case *c)
     atomic_store(&g_creates, 0);
     atomic_store(&g_joins, 0);
     atomic_store(&g_exits, 0);
-    memset(g_sender_mem, 0, sizeof(g_sender_mem));
-    memset(&g_sender_mr, 0, sizeof(g_sender_mr));
-    g_sender_mr.virt = g_sender_mem;
-    g_sender_mr.start = SENDER_MR_START;
-    g_sender_mr.length = sizeof(g_sender_mem);
-    g_sender_mr.rkey = SENDER_MR_RKEY;
-    memset(&g_sender_dma_mr, 0, sizeof(g_sender_dma_mr));
-    g_sender_dma_mr.rkey = SENDER_DMA_KEY;
-    atomic_store(&g_mr, &g_sender_mr);
-    dma_reset();
-    g_sender_held = NULL;
     memset(&dev, 0, sizeof(dev));
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
-    /* No backend threads exist yet, so nothing reads the environment */
-    setenv("ERNIC_TCP_HEALTH_INTERVAL", "3600", 1);
 
     g_current_row = c->description;
     alarm(ROW_TIMEOUT_S);
-    if (port == 0 || tcp_init(&dev, config) != 0) {
+    if (port == 0 ||
+        tcp_init_with_interval(&dev, config, LONG_INTERVAL_S) != 0) {
         printf("FAIL sender %s: %s; could not start a manager\n", c->category,
                c->description);
         alarm(0);
-        atomic_store(&g_mr, NULL);
         return 1;
     }
     priv = dev.backend_private;
+    tcp_stop_health_check_thread(priv);
 
     w1 = worker_register(priv);
     if (w1 < 0 || !wait_for_registered(priv, 1))
@@ -4657,21 +5249,11 @@ static int run_sender_case(const struct sender_case *c)
     else
         why = sender_run(priv, w1, w2, c->scenario);
 
-    tcp_fini(&dev);
+    rdma_backend_ops_tcp.fini(&dev);
     alarm(0);
-    atomic_store(&g_mr, NULL);
     if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
                  atomic_load(&g_exits) != atomic_load(&g_creates)))
         why = "a thread wasn't joined exactly once";
-    if (!why && !dma_unmapped_once())
-        why = "a DMA mapping wasn't unmapped exactly once";
-    if (g_sender_held) {
-        if (!why && atomic_load(&g_sender_held->refcount) != 1)
-            why = "teardown left a reference to worker 1's connection";
-        /* Frees it; LeakSanitizer reports it, and the data, otherwise */
-        tcp_connection_unref(g_sender_held);
-        g_sender_held = NULL;
-    }
 
     ok = !why;
     printf("%s sender %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
@@ -4708,6 +5290,7 @@ enum lt_scenario {
     LT_HELD,   /* the test holds the old connection across the reconnect */
     LT_SENDER, /* another thread is blocked sending on it */
     LT_REGISTER_VS_STOP, /* a registration lands while the stop runs */
+    LT_GIDS_BACK,        /* the node went silent; the reconnect gets it back */
 };
 
 struct lt_case {
@@ -4733,7 +5316,24 @@ static const struct lt_case lt_cases[] = {
      "it ends up in the connections table, not the pending list, and its "
      "thread is joined once",
      LT_REGISTER_VS_STOP},
+    {"positive", "a reconnect to a node the manager had declared dead",
+     "the node owns its GIDs again, which it never re-advertises: it did not "
+     "restart, so it never registers again",
+     LT_GIDS_BACK},
 };
+
+/* The one GID of LT_GIDS_BACK: ::ffff:192.168.251.9, the form
+ * adminq_parse_roce_hdr() builds for an IPv4 address. */
+static const uint8_t lt_gid[16] = {0, 0, 0,    0,    0,   0,   0,   0,
+                                   0, 0, 0xff, 0xff, 192, 168, 251, 9};
+
+static uint32_t lt_resolve(TcpBackendPrivate *priv)
+{
+    union ibv_gid gid;
+
+    memcpy(gid.raw, lt_gid, 16);
+    return tcp_resolve_node_from_gid(priv, &gid);
+}
 
 /* What the blocked sender of LT_SENDER sends with, and gets back */
 struct lt_sender {
@@ -4786,18 +5386,6 @@ static const char *lt_reconnect(struct rc_fixture *fx, TcpConnection *old,
                                        : "the node has no new connection";
 }
 
-/* Whether conn is retired: closed, marked down, and its thread stopped. */
-static bool lt_retired(TcpConnection *conn)
-{
-    int fd;
-
-    qemu_mutex_lock(&conn->lock);
-    fd = conn->sockfd;
-    qemu_mutex_unlock(&conn->lock);
-    return fd == -1 && !atomic_load(&conn->is_connected) &&
-           !atomic_load(&conn->recv_thread_running);
-}
-
 /*
  * LT_HELD and LT_SENDER.  The fixture's reference to the old connection is
  * dropped first, so that the table's and the test's are the only ones, and
@@ -4831,6 +5419,21 @@ static const char *lt_reconnect_run(enum lt_scenario scenario)
         if (!held)
             why = "node 1 has no connection";
     }
+    if (!why && scenario == LT_GIDS_BACK) {
+        /*
+         * Node 1 claimed an address, then went quiet for three intervals and
+         * the manager declared it dead, which takes its claims out of
+         * resolution. It did not restart, so nothing will make it advertise
+         * again: the reconnect below is the only thing that can give the
+         * address back.
+         */
+        tcp_gid_claims_set(fx.priv, 1, (const uint8_t(*)[16]) & lt_gid, 1);
+        if (lt_resolve(fx.priv) != 1)
+            why = "the claim did not take effect";
+        tcp_gid_claims_set_alive(fx.priv, 1, false);
+        if (!why && lt_resolve(fx.priv) != UINT32_MAX)
+            why = "a node declared dead still owned its GID";
+    }
     if (!why && scenario == LT_SENDER) {
         sender.dev.backend_type = RDMA_BACKEND_TYPE_TCP;
         sender.dev.backend_private = fx.priv;
@@ -4854,7 +5457,22 @@ static const char *lt_reconnect_run(enum lt_scenario scenario)
         if (!why && atomic_load(&sender.rc) != -EIO)
             why = "the blocked send didn't fail with -EIO";
     }
-    if (!why && !lt_retired(held))
+    if (!why && scenario == LT_GIDS_BACK && lt_resolve(fx.priv) != 1)
+        why = "the reconnected node did not get its GID back";
+    /*
+     * A registration that collected this node as unreachable before the
+     * reconnect must not act on that list now: withdrawing here would undo
+     * the revival and leave the node alive with claims that are not, which
+     * nothing recovers from -- the heartbeat handler only restores them on
+     * the transition out of dead, and the node never makes it again.
+     */
+    if (!why && scenario == LT_GIDS_BACK) {
+        if (tcp_withdraw_if_still_unreachable(fx.priv, 1))
+            why = "a stale withdrawal fired against a reconnected node";
+        else if (lt_resolve(fx.priv) != 1)
+            why = "a stale withdrawal undid the reconnect's revival";
+    }
+    if (!why && !conn_retired(held))
         why = "the old connection wasn't retired";
     if (!why && atomic_load(&g_joins) != 1)
         why = "the old receive thread wasn't joined exactly once";
@@ -4911,9 +5529,7 @@ static const char *lt_register_vs_stop(void)
 
     memset(&dev, 0, sizeof(dev));
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
-    /* No backend threads exist yet, so nothing reads the environment */
-    setenv("ERNIC_TCP_HEALTH_INTERVAL", "3600", 1);
-    if (port == 0 || tcp_init(&dev, config) != 0)
+    if (port == 0 || tcp_init_with_interval(&dev, config, LONG_INTERVAL_S) != 0)
         return "could not start a manager";
     priv = dev.backend_private;
     tcp_stop_health_check_thread(priv);
@@ -4956,7 +5572,7 @@ static const char *lt_register_vs_stop(void)
 
 out:
     /* Joins nothing more; ASan reports it if the connection is freed twice */
-    tcp_fini(&dev);
+    rdma_backend_ops_tcp.fini(&dev);
     if (fd >= 0)
         close(fd);
     return why;
@@ -4990,6 +5606,462 @@ static int run_lt_case(const struct lt_case *c)
     return ok ? 0 : 1;
 }
 
+/* ---- Publishing a worker's connection to a peer ------------------------ */
+
+/*
+ * A worker publishes a connection it made to a peer only after sending the
+ * handshake, and by then the table can have a connection to the peer: the
+ * peer's own, which the accept thread published, or one that has died.  The
+ * worker used to close its new connection whenever there was one, so a dead
+ * one was kept until shutdown.  tcp_worker_publish_peer() now keeps only a
+ * live one, and replaces a dead one.  It also closes the new connection if
+ * the latest topology update no longer names the peer, which it checks under
+ * the locks it publishes under.
+ *
+ * Each row calls it on a worker, set up as for the topology rows, whose
+ * peer-connect thread isn't running, so no pass changes the table meanwhile.
+ * The new connection is a socketpair, as is the one already in the table.
+ */
+
+enum pp_scenario {
+    PP_LIVE,    /* the table has a live connection to the peer */
+    PP_DEAD,    /* the table has a dead one */
+    PP_DROPPED, /* the latest update doesn't name the peer */
+};
+
+struct pp_case {
+    const char *category;
+    const char *description;
+    const char *expected;
+    enum pp_scenario scenario;
+};
+
+static const struct pp_case pp_cases[] = {
+    {"negative", "the table has a live connection to the peer",
+     "kept; the new connection is closed, with no receive thread started",
+     PP_LIVE},
+    {"positive", "the table has a dead connection to the peer",
+     "the data path sends through the manager meanwhile; replaced by the new "
+     "connection, which gets a receive thread, and the dead one is closed and "
+     "its thread joined once",
+     PP_DEAD},
+    {"negative", "the latest update no longer names the peer",
+     "the new connection is closed, not published", PP_DROPPED},
+};
+
+/*
+ * Publish a new connection to TP_PEER, at *ours on the peer's side, once the
+ * row has set the table up; *theirs gets the connection already there, with
+ * a reference.
+ */
+static const char *pp_run(struct tp_fixture *fx, struct tp_net *net,
+                          enum pp_scenario scenario, TcpConnection **theirs,
+                          int *ours)
+{
+    TcpPeerTarget target = tp_target(TP_PEER, net->port[0]);
+    TcpConnection *conn;
+    int fd = -1, creates;
+    bool published;
+
+    if (scenario != PP_DROPPED) {
+        tp_set_target(fx, &target);
+        conn = tp_publish(fx, net, TP_PEER, 0, true, &fd);
+        if (!conn)
+            return "could not set up the connection in the table";
+        *theirs = tcp_connection_ref(conn);
+    }
+    if (scenario == PP_DEAD) {
+        TcpConnection *route;
+
+        /* Its peer hangs up; fd is closed at the end of the row */
+        if (shutdown(fd, SHUT_RDWR) < 0 || !wait_dead(*theirs))
+            return "the connection in the table didn't die";
+        /* The manager's relay, the one other way to the peer */
+        route = tcp_route_to_node(fx->priv, TP_PEER);
+        tcp_connection_unref(route);
+        if (route != fx->priv->manager_conn)
+            return "the data path still picks the dead connection";
+    }
+
+    conn = recv_conn_new(fx->priv, TP_PEER, false, ours);
+    if (!conn)
+        return "could not set up the new connection";
+    creates = atomic_load(&g_creates);
+    published = tcp_worker_publish_peer(fx->priv, &target, conn);
+
+    if (scenario == PP_DEAD) {
+        if (!published || table_get(fx->priv, TP_PEER) != conn)
+            return "the new connection wasn't published";
+        if (atomic_load(&g_creates) != creates + 1)
+            return "the new connection got no receive thread";
+        return conn_retired(*theirs) ? NULL
+                                     : "the dead connection wasn't closed";
+    }
+    if (published)
+        return "the new connection was published";
+    if (!closed_by_peer(*ours))
+        return "the new connection wasn't closed";
+    if (atomic_load(&g_creates) != creates)
+        return "a receive thread was started for the new connection";
+    return table_get(fx->priv, TP_PEER) == *theirs
+               ? NULL
+               : "the connection in the table was changed";
+}
+
+static int run_pp_case(const struct pp_case *c)
+{
+    struct tp_fixture fx;
+    struct tp_net net;
+    TcpConnection *theirs = NULL;
+    const char *why;
+    int ours = -1;
+    bool ok;
+
+    atomic_store(&g_creates, 0);
+    atomic_store(&g_joins, 0);
+    atomic_store(&g_exits, 0);
+    g_current_row = c->description;
+    alarm(ROW_TIMEOUT_S);
+
+    why = tp_setup(&fx, LONG_INTERVAL_S, false);
+    /* For a port to name, and the peer's ends to close */
+    if (!why)
+        why = tp_listen(&net, TP_CONNECTS);
+    else
+        tp_listen(&net, TP_CONNECTS);
+    if (!why)
+        why = pp_run(&fx, &net, c->scenario, &theirs, &ours);
+
+    tp_teardown(&fx);
+    alarm(0);
+    tcp_connection_unref(theirs);
+    if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
+                 atomic_load(&g_exits) != atomic_load(&g_creates)))
+        why = "a thread wasn't joined exactly once";
+
+    ok = !why;
+    printf("%s publish %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
+           c->category, c->description, c->expected);
+    if (!ok)
+        printf("     %s; %d thread(s) created, %d joined, %d exited\n", why,
+               atomic_load(&g_creates), atomic_load(&g_joins),
+               atomic_load(&g_exits));
+    fflush(stdout);
+
+    if (ours >= 0)
+        close(ours);
+    tp_close(&net);
+    return ok ? 0 : 1;
+}
+
+/* ---- Dead connections between workers ---------------------------------- */
+
+/*
+ * A worker kept its connection to another worker after that worker hung up,
+ * with the socket in CLOSE_WAIT, until it shut down.  Its receive thread
+ * returned, and nothing else took any notice: the data path went on sending
+ * into the socket, the peer-connect thread skipped the peer as connected,
+ * and the accept thread refused the peer's next connection as a duplicate,
+ * so the two never connected again.  A worker also kept its connection to a
+ * peer the manager reported dead, so one that died without hanging up looked
+ * connected until a send failed.
+ *
+ * A receive thread now marks its connection dead as it returns, and the data
+ * path passes it over.  Each pass of the peer-connect thread closes the dead
+ * connections, and the ones to peers the latest topology update no longer
+ * names, then connects to the peers it does name.  The accept thread replaces
+ * a dead connection.
+ *
+ * Each row runs tcp_init() for two workers, nodes DC_A and DC_B, against a
+ * manager the test plays over loopback, as the worker registration rows do.
+ * DC_A connects to DC_B, which has the higher id.
+ */
+
+#define DC_A 3
+#define DC_B 8 /* higher than HS_NODE, the lower peer of DC_ACCEPTED */
+
+enum dc_scenario {
+    DC_DEAD_THEN_ALIVE, /* the manager reports DC_B dead, then alive */
+    DC_HANGS_UP,        /* DC_B drops its connection to DC_A */
+    DC_ACCEPTED,        /* a peer that connected to DC_B hangs up */
+};
+
+struct dc_case {
+    const char *category;
+    const char *description;
+    const char *expected;
+    enum dc_scenario scenario;
+    uint32_t interval; /* health_check_interval_sec */
+};
+
+static const struct dc_case dc_cases[] = {
+    {"positive", "the manager reports the worker's peer dead, then alive",
+     "the worker closes its connection, which ends the peer's, and connects "
+     "again, and the peer replaces its dead connection; each old one is "
+     "closed and its thread joined once",
+     DC_DEAD_THEN_ALIVE, LONG_INTERVAL_S},
+    {"negative",
+     "the peer drops its connection to the worker, on a 1 s interval",
+     "the worker closes its end and connects again, with no update",
+     DC_HANGS_UP, 1},
+    {"negative",
+     "a peer that connected to the worker hangs up, on a 1 s interval",
+     "the worker closes the connection, rather than keeping it in CLOSE_WAIT",
+     DC_ACCEPTED, 1},
+};
+
+/* A worker, its connection to the manager, and the port it listens on */
+struct dc_worker {
+    struct wr_init in;
+    int mgr; /* the manager's end */
+    uint16_t port;
+};
+
+static void dc_init(struct dc_worker *w, uint32_t interval)
+{
+    memset(w, 0, sizeof(*w));
+    w->in.interval = interval;
+    w->in.ret = -1;
+    w->mgr = -1;
+}
+
+/*
+ * Start w and register it, as node id, with the manager listening on lfd at
+ * port; returns NULL, or what failed.
+ */
+static const char *dc_start(struct dc_worker *w, int lfd, uint16_t port,
+                            uint32_t id)
+{
+    const char *why;
+
+    snprintf(w->in.config, sizeof(w->in.config), "tcp:worker:127.0.0.1:%u",
+             (unsigned)port);
+    if (pthread_create(&w->in.tid, NULL, wr_init_run, &w->in) != 0)
+        return "could not start tcp_init()";
+    w->in.running = true;
+    why = wr_registered(lfd, &w->mgr, &w->port);
+    if (why)
+        return why;
+    if (!wr_assign(w->mgr, id))
+        return "could not answer the registration";
+    wr_init_join(&w->in);
+    return w->in.ret == 0 ? NULL : "tcp_init() failed";
+}
+
+/* Stop w, if it started. */
+static void dc_stop(struct dc_worker *w)
+{
+    /* Failed before the answer: refuse, so tcp_init() returns */
+    if (w->in.running && w->mgr >= 0)
+        send_register_resp(w->mgr, 0, -EPROTO,
+                           (uint32_t)sizeof(TcpRegisterRespPayload));
+    wr_init_join(&w->in);
+    if (w->in.ret == 0)
+        rdma_backend_ops_tcp.fini(&w->in.dev);
+    if (w->mgr >= 0)
+        close(w->mgr);
+}
+
+static TcpBackendPrivate *dc_priv(struct dc_worker *w)
+{
+    return w->in.dev.backend_private;
+}
+
+/* Tell a, as the manager, that b is node DC_B, alive or dead. */
+static bool dc_report(struct dc_worker *a, struct dc_worker *b, bool alive)
+{
+    TcpMeshTopologyPayload topo;
+
+    memset(&topo, 0, sizeof(topo));
+    tp_entry(&topo, DC_B, b->port, alive);
+    return send_topology(a->mgr, &topo);
+}
+
+/*
+ * The connections a row looks at, each with a reference, dropped at the end
+ * of the row: ab is DC_A's to DC_B, and ba DC_B's to DC_A; ab2 and ba2 are
+ * the ones that replace them.  DC_ACCEPTED uses ba for its peer's.
+ */
+struct dc_conns {
+    TcpConnection *ab, *ba, *ab2, *ba2;
+};
+
+/*
+ * Have a connect to b, and wait for both to publish the connection.  Returns
+ * NULL, or what failed.
+ */
+static const char *dc_connect(struct dc_worker *a, struct dc_worker *b,
+                              struct dc_conns *held)
+{
+    if (!dc_report(a, b, true))
+        return "could not report the peer alive";
+    held->ab = wait_live(dc_priv(a), DC_B, NULL);
+    if (!held->ab)
+        return "the worker didn't connect to its peer";
+    held->ba = wait_live(dc_priv(b), DC_A, NULL);
+    return held->ba ? NULL : "the peer didn't publish the worker's connection";
+}
+
+/*
+ * DC_DEAD_THEN_ALIVE.  DC_B's peer-connect thread is stopped first, so its
+ * dead connection is still in its table when DC_A connects again, and the
+ * accept thread has to replace it.  Its first pass runs whenever the thread
+ * is scheduled, whatever the interval, and could otherwise come after the
+ * connection died and close it.  DC_B connects to nobody in this row.
+ */
+static const char *dc_dead_then_alive(struct dc_worker *a, struct dc_worker *b,
+                                      struct dc_conns *held)
+{
+    const char *why;
+
+    tcp_stop_peer_thread(dc_priv(b));
+    why = dc_connect(a, b, held);
+    if (why)
+        return why;
+    if (!dc_report(a, b, false))
+        return "could not report the peer dead";
+    if (!wait_retired(held->ab) || table_get(dc_priv(a), DC_B))
+        return "the worker kept its connection to a peer reported dead";
+    if (!wait_dead(held->ba))
+        return "the peer's connection didn't die when the worker closed its "
+               "own";
+    if (table_get(dc_priv(b), DC_A) != held->ba)
+        return "the peer's dead connection left its table early";
+
+    if (!dc_report(a, b, true))
+        return "could not report the peer alive again";
+    held->ab2 = wait_live(dc_priv(a), DC_B, held->ab);
+    if (!held->ab2)
+        return "the worker didn't connect again";
+    held->ba2 = wait_live(dc_priv(b), DC_A, held->ba);
+    if (!held->ba2)
+        return "the peer didn't replace its dead connection";
+    return wait_retired(held->ba) ? NULL
+                                  : "the peer's dead connection wasn't closed";
+}
+
+/*
+ * DC_HANGS_UP: DC_B takes its connection out of its table and retires it,
+ * as it would one it was done with.  DC_A's next pass, within an interval,
+ * finds its end dead and connects again.
+ */
+static const char *dc_hangs_up(struct dc_worker *a, struct dc_worker *b,
+                               struct dc_conns *held)
+{
+    const char *why = dc_connect(a, b, held);
+
+    if (why)
+        return why;
+    if (!retire_node_conn(dc_priv(b), DC_A))
+        return "the peer's connection wasn't in its table";
+    held->ab2 = wait_live(dc_priv(a), DC_B, held->ab);
+    if (!held->ab2)
+        return "the worker didn't connect again";
+    if (!wait_retired(held->ab))
+        return "the worker's dead connection wasn't closed";
+    held->ba2 = wait_live(dc_priv(b), DC_A, held->ba);
+    return held->ba2 ? NULL : "the peer didn't publish the new connection";
+}
+
+/*
+ * DC_ACCEPTED: a peer claiming HS_NODE, lower than DC_B, connects to DC_B
+ * and hangs up.  DC_B's next pass, within an interval, closes the
+ * connection.
+ */
+static const char *dc_accepted(struct dc_worker *b, struct dc_conns *held)
+{
+    int peer = wr_peer(b->port);
+    uint32_t answered;
+
+    if (peer < 0)
+        return "the peer could not connect";
+    answered = wr_node_in(peer, TCP_MSG_HANDSHAKE_RESP, NULL);
+    /* Published before the answer */
+    held->ba = tcp_connection_lookup(dc_priv(b), HS_NODE);
+    close(peer);
+    if (answered != DC_B || !held->ba)
+        return "the worker didn't take the peer's connection";
+    if (!wait_retired(held->ba))
+        return "the connection of the peer that hung up wasn't closed";
+    return table_get(dc_priv(b), HS_NODE)
+               ? "the connection of the peer that hung up is still in the "
+                 "table"
+               : NULL;
+}
+
+static const char *dc_run(enum dc_scenario scenario, struct dc_worker *a,
+                          struct dc_worker *b, struct dc_conns *held)
+{
+    switch (scenario) {
+    case DC_DEAD_THEN_ALIVE:
+        return dc_dead_then_alive(a, b, held);
+    case DC_HANGS_UP:
+        return dc_hangs_up(a, b, held);
+    case DC_ACCEPTED:
+        return dc_accepted(b, held);
+    default:
+        return "unknown scenario";
+    }
+}
+
+/*
+ * Run one row: start the workers, play the manager and the peers for the
+ * row, then stop the workers and check that every thread they started was
+ * joined exactly once.
+ */
+static int run_dc_case(const struct dc_case *c)
+{
+    struct dc_worker a, b;
+    struct dc_conns held = {NULL, NULL, NULL, NULL};
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    const char *why = NULL;
+    int lfd;
+    bool ok;
+
+    atomic_store(&g_creates, 0);
+    atomic_store(&g_joins, 0);
+    atomic_store(&g_exits, 0);
+    dc_init(&a, c->interval);
+    dc_init(&b, c->interval);
+
+    g_current_row = c->description;
+    alarm(ROW_TIMEOUT_S);
+    lfd = listen_loopback();
+    if (lfd < 0 || getsockname(lfd, (struct sockaddr *)&addr, &len) < 0)
+        why = "could not open the manager's listener";
+    if (!why)
+        why = dc_start(&a, lfd, ntohs(addr.sin_port), DC_A);
+    if (!why)
+        why = dc_start(&b, lfd, ntohs(addr.sin_port), DC_B);
+    if (!why)
+        why = dc_run(c->scenario, &a, &b, &held);
+
+    dc_stop(&a);
+    dc_stop(&b);
+    alarm(0);
+    tcp_connection_unref(held.ab);
+    tcp_connection_unref(held.ba);
+    tcp_connection_unref(held.ab2);
+    tcp_connection_unref(held.ba2);
+    if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
+                 atomic_load(&g_exits) != atomic_load(&g_creates)))
+        why = "a thread wasn't joined exactly once";
+
+    ok = !why;
+    printf("%s dead connection %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
+           c->category, c->description, c->expected);
+    if (!ok)
+        printf("     %s; %d thread(s) created, %d joined, %d exited\n", why,
+               atomic_load(&g_creates), atomic_load(&g_joins),
+               atomic_load(&g_exits));
+    fflush(stdout);
+
+    if (lfd >= 0)
+        close(lfd);
+    return ok ? 0 : 1;
+}
+
 int main(void)
 {
     int failures = 0;
@@ -5018,6 +6090,8 @@ int main(void)
         failures += run_reg_case(&reg_cases[i]);
     for (size_t i = 0; i < sizeof(tp_cases) / sizeof(tp_cases[0]); i++)
         failures += run_tp_case(&tp_cases[i]);
+    for (size_t i = 0; i < sizeof(wr_cases) / sizeof(wr_cases[0]); i++)
+        failures += run_wr_case(&wr_cases[i]);
     for (size_t i = 0; i < sizeof(sp_cases) / sizeof(sp_cases[0]); i++)
         failures += run_sp_case(&sp_cases[i]);
     for (size_t i = 0; i < sizeof(reap_cases) / sizeof(reap_cases[0]); i++)
@@ -5026,6 +6100,10 @@ int main(void)
         failures += run_sender_case(&sender_cases[i]);
     for (size_t i = 0; i < sizeof(lt_cases) / sizeof(lt_cases[0]); i++)
         failures += run_lt_case(&lt_cases[i]);
+    for (size_t i = 0; i < sizeof(pp_cases) / sizeof(pp_cases[0]); i++)
+        failures += run_pp_case(&pp_cases[i]);
+    for (size_t i = 0; i < sizeof(dc_cases) / sizeof(dc_cases[0]); i++)
+        failures += run_dc_case(&dc_cases[i]);
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);

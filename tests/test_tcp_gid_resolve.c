@@ -17,9 +17,9 @@
  * the device whatever its backend, so the last cases check that all of them
  * refuse a backend that isn't TCP.
  *
- * The static functions are reached by #including the translation unit;
- * resolution needs only the GID table, so the rest of the backend's
- * externals are stubbed out.
+ * The test links rdma_backend_tcp.c and reaches its helpers through
+ * rdma_backend_tcp_priv.h; resolution needs only the GID table, so the rest
+ * of the backend's externals are stubbed out.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -30,13 +30,24 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <netinet/in.h>
+#include <stdatomic.h>
+#include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* Pull in the code under test (including its static functions) */
-#include "rdma/rdma_backend_tcp.c"
+#include <glib.h>
+#include <infiniband/verbs.h>
+
+#include "qemu/error-report.h"
+#include "qemu/thread.h"
+#include "rdma/rdma_backend_ops.h"
+#include "rdma/rdma_backend_tcp_priv.h"
+#include "rdma_backend.h"
+#include "rdma_backend_defs.h"
 
 /* ---- Stubs for the TU's external symbols -------------------------------
  * None of these are reachable from the resolution path; they exist only to
@@ -54,65 +65,17 @@ void info_report(const char *fmt, ...)
 {
     (void)fmt;
 }
-int qemu_thread_create(QemuThread *thread, const char *name,
-                       void *(*start_routine)(void *), void *arg, int mode)
+int qemu_thread_create(QemuThread *thread, void *(*start_routine)(void *),
+                       void *arg)
 {
     (void)thread;
-    (void)name;
     (void)start_routine;
     (void)arg;
-    (void)mode;
     return 0;
-}
-void qemu_thread_exit(void *retval)
-{
-    (void)retval;
-    abort();
 }
 void qemu_thread_join(QemuThread *thread)
 {
     (void)thread;
-}
-void *pci_dma_map(PCIDevice *dev, uint64_t addr, uint64_t *len, int dir)
-{
-    (void)dev;
-    (void)addr;
-    (void)len;
-    (void)dir;
-    return NULL;
-}
-void pci_dma_unmap(PCIDevice *dev, void *buffer, uint64_t len, int dir,
-                   uint64_t access_len)
-{
-    (void)dev;
-    (void)buffer;
-    (void)len;
-    (void)dir;
-    (void)access_len;
-}
-int pci_dma_sync(PCIDevice *dev, uint64_t guest_addr, uint64_t len)
-{
-    (void)dev;
-    (void)guest_addr;
-    (void)len;
-    return 0;
-}
-void rdma_backend_complete_work(enum ibv_wc_status status, uint32_t vendor_err,
-                                uint32_t byte_len, uint32_t qp_num,
-                                enum ibv_wc_opcode opcode, void *ctx)
-{
-    (void)status;
-    (void)vendor_err;
-    (void)byte_len;
-    (void)qp_num;
-    (void)opcode;
-    (void)ctx;
-}
-RdmaRmMR *rdma_rm_get_mr(RdmaDeviceResources *dev_res, uint32_t mr_handle)
-{
-    (void)dev_res;
-    (void)mr_handle;
-    return NULL;
 }
 
 /* ---- Test helpers ------------------------------------------------------ */
@@ -293,11 +256,10 @@ static void test_env_parsing(void)
 
     printf("  ERNIC_TCP_GUEST_GIDS parsing\n");
 
-    unsetenv("ERNIC_TCP_GUEST_GIDS");
-    CHECK(tcp_parse_guest_gids(out) == 0, "unset env yielded GIDs");
+    CHECK(tcp_parse_guest_gids(NULL, out) == 0, "unset env yielded GIDs");
+    CHECK(tcp_parse_guest_gids("", out) == 0, "empty env yielded GIDs");
 
-    setenv("ERNIC_TCP_GUEST_GIDS", "192.168.100.11, fe80::3 ,bogus", 1);
-    uint32_t n = tcp_parse_guest_gids(out);
+    uint32_t n = tcp_parse_guest_gids("192.168.100.11, fe80::3 ,bogus", out);
     CHECK(n == 2, "expected 2 parsed GIDs, got %u", n);
 
     gid_v4(expect, 11);
@@ -309,8 +271,6 @@ static void test_env_parsing(void)
     expect[1] = 0x80;
     expect[15] = 0x03;
     CHECK(memcmp(out[1], expect, 16) == 0, "IPv6 entry was not stored raw");
-
-    unsetenv("ERNIC_TCP_GUEST_GIDS");
 }
 
 /* The advertisement goes on the wire whole, so the slots past num_gids must
@@ -382,9 +342,8 @@ static void test_gid_formatting(void)
  *
  * UD names its peer per work request, so the INIT->RTR transition carries
  * a zero GID. Requiring one there rejected every ordinary UD QP with -EIO
- * once the resolver stopped guessing. remote_node_id must stay UINT32_MAX
- * rather than the default 0, or a send that misses the per-send lookup
- * silently goes to the manager.
+ * once the resolver stopped guessing. A connected QP must still name a GID
+ * some node owns.
  */
 static void test_ud_rtr_needs_no_destination(void)
 {
@@ -393,7 +352,6 @@ static void test_ud_rtr_needs_no_destination(void)
     RdmaBackendQP bqp;
     union ibv_gid zero, known;
     uint8_t raw[16];
-    TcpQP *tqp;
     int rc;
 
     printf("  UD reaches RTR without a destination GID\n");
@@ -404,38 +362,25 @@ static void test_ud_rtr_needs_no_destination(void)
     dev.backend_type = RDMA_BACKEND_TYPE_TCP;
     bqp.ibqp = (struct ibv_qp *)(uintptr_t)7u;
 
-    qemu_mutex_init(&priv->lock);
-    priv->qps = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
-                                      (GDestroyNotify)g_free);
-    tqp = g_new0(TcpQP, 1);
-    tqp->qpn = 7;
-    tqp->remote_node_id = 0; /* the default tcp_create_qp() leaves */
-    g_hash_table_insert(priv->qps, GUINT_TO_POINTER(7u), tqp);
-
     gid_v4(raw, 11);
     tcp_gid_claims_set(priv, 2, (const uint8_t(*)[16]) & raw, 1);
     memset(&zero, 0, sizeof(zero));
     memcpy(known.raw, raw, 16);
 
-    /* UD with no destination: accepted, and left unrouted. */
-    rc = tcp_qp_state_rtr(&dev, &bqp, IBV_QPT_UD, 0, &zero, 99, 0, 0, false);
+    /* UD with no destination: accepted. */
+    rc = rdma_backend_ops_tcp.qp_state_rtr(&dev, &bqp, IBV_QPT_UD, 0, &zero, 99,
+                                           0, 0, false);
     CHECK(rc == 0, "UD RTR rejected with rc=%d", rc);
-    CHECK(tqp->remote_node_id == UINT32_MAX,
-          "UD QP left routed to node %u; a send would go there silently",
-          tqp->remote_node_id);
 
     /* A connected QP still must resolve, and still must fail when it cannot. */
-    rc = tcp_qp_state_rtr(&dev, &bqp, IBV_QPT_RC, 0, &zero, 99, 0, 0, false);
+    rc = rdma_backend_ops_tcp.qp_state_rtr(&dev, &bqp, IBV_QPT_RC, 0, &zero, 99,
+                                           0, 0, false);
     CHECK(rc != 0, "RC RTR accepted an unresolvable GID");
 
-    rc = tcp_qp_state_rtr(&dev, &bqp, IBV_QPT_RC, 0, &known, 99, 0, 0, false);
+    rc = rdma_backend_ops_tcp.qp_state_rtr(&dev, &bqp, IBV_QPT_RC, 0, &known,
+                                           99, 0, 0, false);
     CHECK(rc == 0, "RC RTR rejected a resolvable GID (rc=%d)", rc);
-    CHECK(tqp->remote_node_id == 2, "RC QP routed to node %u, expected 2",
-          tqp->remote_node_id);
 
-    g_hash_table_destroy(priv->qps);
-    priv->qps = NULL;
-    qemu_mutex_destroy(&priv->lock);
     priv_free(priv);
 }
 
@@ -495,6 +440,63 @@ static void test_contested_gid_stays_contested(void)
     priv_free(priv);
 }
 
+/*
+ * A worker that restarts comes back as a new node, and the manager has to
+ * recognise it and withdraw what it claimed before.
+ *
+ * It asks for an id of 0xFFFFFFFF every time, so there is nothing in the
+ * registration that says "I was node 1", and its listening port is
+ * ephemeral so the address it registers from is no help either. What marks
+ * the old node is that it can no longer be reached. Without the withdrawal
+ * both ids claim the guest's
+ * GIDs, a contested GID resolves to neither, and the guest becomes
+ * unreachable at the moment it came back -- which is worse than it having
+ * stayed away, and does not heal, because nothing retires a claim.
+ */
+static void test_returning_worker_reclaims_its_gids(void)
+{
+    TcpBackendPrivate *priv = priv_new();
+    uint8_t g[1][16];
+
+    printf("  a restarted worker's GIDs follow it to its new node id\n");
+
+    priv->mesh_nodes = g_hash_table_new_full(
+        g_direct_hash, g_direct_equal, NULL, tcp_mesh_node_info_destroy_notify);
+    qemu_mutex_init(&priv->mesh_table_lock);
+
+    /* The worker's first registration, and the GIDs it then advertised. */
+    g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(1u),
+                        tcp_mesh_node_info_new(1, "10.0.0.5", 6320));
+
+    gid_v4(g[0], 70);
+    tcp_gid_claims_set(priv, 1, (const uint8_t(*)[16])g, 1);
+    CHECK(resolve(priv, g[0]) == 1, "the first registration did not resolve");
+
+    /* It restarts. Node 1's connection is gone, so its claims are
+     * withdrawn -- which is what the manager does for every unreachable
+     * node when any worker registers, and what the health check does when
+     * it notices one has died. */
+    tcp_gid_claims_set(priv, 1, NULL, 0);
+    g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(2u),
+                        tcp_mesh_node_info_new(2, "10.0.0.5", 6320));
+
+    /* It advertises the same GIDs again under the new id. */
+    tcp_gid_claims_set(priv, 2, (const uint8_t(*)[16])g, 1);
+    CHECK(resolve(priv, g[0]) == 2,
+          "the GID did not follow the worker to node 2 (got %u)",
+          resolve(priv, g[0]));
+
+    /* Without the withdrawal this is what would have happened instead. */
+    tcp_gid_claims_set(priv, 1, (const uint8_t(*)[16])g, 1);
+    CHECK(resolve(priv, g[0]) == UINT32_MAX,
+          "a stale claim left alongside the new one still resolved");
+
+    g_hash_table_destroy(priv->mesh_nodes);
+    qemu_mutex_destroy(&priv->mesh_table_lock);
+    priv->mesh_nodes = NULL;
+    priv_free(priv);
+}
+
 /* An empty advertisement withdraws a node's claims -- how the manager
  * revokes, and the case a broadcast of surviving entries could not express. */
 static void test_empty_advertisement_withdraws(void)
@@ -511,6 +513,62 @@ static void test_empty_advertisement_withdraws(void)
     tcp_gid_claims_set(priv, 4, NULL, 0);
     CHECK(resolve(priv, g[0]) == UINT32_MAX,
           "withdrawn GID still resolves to node %u", resolve(priv, g[0]));
+
+    priv_free(priv);
+}
+
+/*
+ * A node the manager has declared dead keeps its claims but stops owning
+ * them, and takes them up again when it answers.
+ *
+ * This is what makes a restart survivable. A restarted node registers
+ * under a new id -- ids are allocated monotonically and a dead node is
+ * never evicted -- so without this its guest's GID is claimed by the id
+ * it had and the id it now has, the duplicate rule resolves it to
+ * neither, and the address stays unreachable for the rest of the mesh's
+ * life.
+ */
+static void test_dead_node_stops_owning_its_gids(void)
+{
+    TcpBackendPrivate *priv = priv_new();
+    uint8_t g[1][16];
+
+    printf("  a dead node stops owning its GIDs\n");
+
+    gid_v4(g[0], 70);
+    tcp_gid_claims_set(priv, 5, (const uint8_t(*)[16])g, 1);
+    CHECK(resolve(priv, g[0]) == 5, "claim did not take effect");
+
+    tcp_gid_claims_set_alive(priv, 5, false);
+    CHECK(resolve(priv, g[0]) == UINT32_MAX,
+          "a dead node still owns its GID (node %u)", resolve(priv, g[0]));
+
+    /* The claims are kept, so answering again is enough to get them back:
+     * a node that is merely late never re-advertises. */
+    tcp_gid_claims_set_alive(priv, 5, true);
+    CHECK(resolve(priv, g[0]) == 5,
+          "a revived node did not get its GID back (got %u)",
+          resolve(priv, g[0]));
+
+    /* The same guest returning under a new id owns the address, rather
+     * than deadlocking against the id it used to have. */
+    tcp_gid_claims_set_alive(priv, 5, false);
+    tcp_gid_claims_set(priv, 6, (const uint8_t(*)[16])g, 1);
+    CHECK(resolve(priv, g[0]) == 6,
+          "a restarted node did not take its own GID (got %u)",
+          resolve(priv, g[0]));
+
+    /* Two live claimants are still a contest; death is not a way to win
+     * one. */
+    tcp_gid_claims_set_alive(priv, 5, true);
+    CHECK(resolve(priv, g[0]) == UINT32_MAX,
+          "two live claimants resolved to node %u", resolve(priv, g[0]));
+
+    /* Marking a node with no claims live or dead does nothing. */
+    tcp_gid_claims_set_alive(priv, 99, false);
+    tcp_gid_claims_set_alive(priv, 99, true);
+    CHECK(resolve(priv, g[0]) == UINT32_MAX,
+          "a node with no claims changed the table");
 
     priv_free(priv);
 }
@@ -748,7 +806,9 @@ int main(void)
     test_gid_formatting();
     test_ud_rtr_needs_no_destination();
     test_contested_gid_stays_contested();
+    test_returning_worker_reclaims_its_gids();
     test_empty_advertisement_withdraws();
+    test_dead_node_stops_owning_its_gids();
     test_hooks_refuse_other_backends();
     test_hooks_refuse_missing_backend();
     test_hooks_on_tcp();

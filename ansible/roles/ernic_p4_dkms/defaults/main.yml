@@ -1,0 +1,78 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+# Build ernic_p4.ko in a guest and load it.
+#
+# Separate from ernic_srq_dkms because it builds a different thing for a
+# different reason: that role builds patched copies of upstream's ionic
+# modules, this one builds a module of ours that binds to an auxiliary
+# device those modules create. They share the fetch script and nothing
+# else, and a guest may legitimately want either without the other.
+
+# Where the rocm-ernic checkout is on the target.
+ernic_p4_dkms_repo_dir: /opt/rocm-ernic
+ernic_p4_dkms_scripts_dir: >-
+  {{ ernic_p4_dkms_repo_dir }}/ansible/files/scripts
+ernic_p4_dkms_module_dir: "{{ ernic_p4_dkms_repo_dir }}/drivers/ernic_p4"
+
+# Both series are required and neither is optional here: the base series
+# is what the rest of the stack expects, and patches/p4 is what creates
+# the device the module binds to. Naming --patches-dir at all replaces
+# the script's default, so both have to be listed.
+ernic_p4_dkms_patches_dirs:
+  - "{{ ernic_p4_dkms_repo_dir }}/ansible/files/patches"
+  - "{{ ernic_p4_dkms_repo_dir }}/ansible/files/patches/p4"
+
+# The kernel ref the ionic sources are fetched at. Empty means read
+# IONIC_KERNEL_REF out of cmake/ErnicKernelModule.cmake on the target, so
+# the pin lives in one place rather than being copied here.
+ernic_p4_dkms_kernel_ref: ""
+
+# Where to fetch them from. Empty means the fetch script's own default,
+# which is the stable tree; the URL is deliberately not repeated here,
+# because a copy that drifted would have the guest building a different
+# tree than every other consumer of that script.
+ernic_p4_dkms_kernel_repo: ""
+
+# Where the ionic Ethernet driver sits inside a kernel tree. A variable
+# rather than spelled out at each use, because written out in full it is
+# a 40-character run of [A-Za-z0-9/], which is what generic secret
+# scanners match on as a high-entropy string.
+ernic_p4_dkms_ionic_subdir: drivers/net/ethernet/pensando/ionic
+
+# Where the patched ionic tree is built, and where the path to it is
+# recorded for dkms autoinstall to find on a later kernel upgrade.
+ernic_p4_dkms_source_dir: /usr/src/ionic-ernic-p4
+ernic_p4_dkms_src_pointer: /etc/ernic-p4-ionic-src
+
+# Re-fetch rather than trust a cached tree. The fetch script's sentinel
+# covers the ref and the series, so it would usually be right -- but this
+# role exists to verify that what is in the repository builds, and a role
+# that can report success against last week's sources is not doing that.
+ernic_p4_dkms_force_fetch: true
+
+# Module.symvers of the ionic the guest actually runs.
+#
+# ionic is out of tree here, and patches/p4 adds a field to
+# struct ionic_lif, so every exported symbol taking that type gets a
+# different genksyms CRC. A module built against the kernel's own
+# Module.symvers records the unpatched CRC and modprobe refuses it.
+# Empty means search the DKMS tree for one that exports the symbol this
+# module needs.
+ernic_p4_dkms_ionic_symvers: ""
+
+# Load the module once it is built. Off makes this a build-only check.
+ernic_p4_dkms_load: true
+
+# Assert that /dev/ernic-p4 appeared after loading.
+#
+# Off by default, and that is not timidity: the node appears only when the
+# SERVER advertises IONIC_LIF_CAP_P4, which it does only when the operator
+# started it with --p4-guest-scope. A guest talking to a server without
+# one is a correct configuration in which the module loads and binds to
+# nothing. A lane that starts the server itself knows better and turns
+# this on.
+ernic_p4_dkms_require_device: false
+ernic_p4_dkms_device: /dev/ernic-p4

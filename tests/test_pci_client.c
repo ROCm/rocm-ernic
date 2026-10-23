@@ -323,6 +323,9 @@ int main(int argc, char **argv)
         {NULL, 0, NULL, 0}};
 
     int c;
+    /* getopt_long() keeps its state in globals, such as optind, so it isn't
+     * thread safe, but this program has only one thread */
+    /* NOLINTNEXTLINE(concurrency-mt-unsafe) */
     while ((c = getopt_long(argc, argv, "s:h", long_options, NULL)) != -1) {
         switch (c) {
         case 's':

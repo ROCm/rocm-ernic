@@ -11,8 +11,9 @@ rocm-ernic presents a single PCIe device to the guest:
      - Guest driver
    * - ``1dd8:1002`` / ``1dd8:5400``
      - Upstream Linux ``ionic.ko`` + ``ionic_rdma.ko``,
-       with the UC queue-pair patch in ``patches/``
-       applied, and the upstream ``providers/ionic`` in
+       with the UC queue-pair patch in
+       ``ansible/files/patches/`` applied, and the
+       upstream ``providers/ionic`` in
        rdma-core
 
 The server emulates the register and queue protocol of the
@@ -81,7 +82,155 @@ upstream driver expects:
      - Doorbell pages; the offset within a page encodes the
        queue type, the page index the process ID
 
-32 MSI-X vectors are advertised.
+The MSI-X table has room for 128 vectors; the device
+advertises the profile's ``queues.intr_vectors`` of them (32
+under ``compat``).
+
+NIC Profiles
+------------
+
+A NIC profile is the shape of the emulated NIC: what it
+reports about itself (ASIC type and revision, firmware
+version), its link (speed, transceiver, largest MTU) and the
+queues and interrupt vectors it offers.
+Without ``--nic-profile`` the server runs the built-in
+``compat`` profile, which is the device described above,
+byte for byte.
+
+.. code-block:: bash
+
+   # layer a file over compat; later layers win, key by key
+   ./build/rocm-ernic --tap ernic0 --nic-profile ./fast.ini
+
+   # show the merged profile and exit
+   ./build/rocm-ernic --nic-profile ./fast.ini --print-profile
+
+``--nic-profile`` can be given more than once. Each one
+names either a built-in profile (a bare name: ``compat``,
+``small-vm``, ``generic-100g``, ``generic-400g``) or a file
+(a name containing a ``/`` or ending in ``.ini``). The layers
+apply in order on top of ``compat``. A profile is an ini
+file:
+
+.. code-block:: ini
+
+   # fast.ini
+   [identity]
+   fw_version = 1.8.0-E-32
+
+   [link]
+   speed_mbps = 400000
+   xcvr = fiber
+
+Validation is strict. An unknown section or key, a duplicate
+key, a value of the wrong type or a value out of range stops
+the server with the file, line and key named, so a typo
+can't quietly leave a default in place. A layer that fails
+changes nothing.
+
+``--print-profile`` writes the merged profile as an ini file
+that loads back to the same values. Its header names the
+layers and a 64-bit hash of the values; the startup log and
+the ``nic_profile`` line in the stats file carry the same
+chain and hash, so two runs can be checked for the same
+device shape.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 35 15 25
+
+   * - Key
+     - Values
+     - ``compat``
+     - Guest effect
+   * - ``identity.asic_type``
+     - ``none``, ``capri``, ``elba``, ``giglio``, ``salina``
+     - ``none``
+     - ``dev_info`` ASIC type. The driver runs its periodic
+       doorbell re-check (``ionic_doorbell_wa()``) only for
+       ``none`` and ``elba``
+   * - ``identity.asic_rev``
+     - 0 to 255
+     - 0
+     - ``dev_info`` ASIC revision
+   * - ``identity.fw_version``
+     - 1 to 31 printable ASCII characters; no ``\``, no
+       leading or trailing space
+     - ``rocm-ernic-1.0``
+     - ``ethtool -i`` ``firmware-version``
+   * - ``link.speed_mbps``
+     - 1000, 10000, 25000, 40000, 50000, 100000, 200000,
+       400000
+     - 100000
+     - port and LIF link speed: ``ethtool`` ``Speed``, the
+       RDMA port ``rate``
+   * - ``link.xcvr``
+     - ``copper``, ``fiber``, ``none``
+     - ``copper``
+     - transceiver: ``ethtool`` ``Port`` is ``Direct Attach
+       Copper``, ``FIBRE`` or ``None``
+   * - ``link.mtu_max``
+     - 1500 to 9582
+     - 9198
+     - the largest MTU the guest may set. The LIF reports a
+       maximum frame of ``mtu_max`` + 18, and the port's
+       configured MTU is the smaller of ``mtu_max`` and 9000
+   * - ``stats.interval_ms``
+     - 10 to 60000
+     - 1000
+     - how often the LIF counters are rewritten in guest
+       memory, which bounds how stale ``ip -s link`` can be.
+       ``--stats-interval-ms`` overrides every layer
+   * - ``queues.eth``
+     - 1 to 64
+     - 4
+     - Ethernet queue pairs the LIF offers: the most
+       ``ethtool -l`` can set ``combined`` to, and the
+       ``rx_N_*``/``tx_N_*`` rows in ``ethtool -S``.
+       ``--eth-queues`` overrides every layer
+   * - ``queues.rdma_eqs``
+     - 4 to 32
+     - 32
+     - RDMA event queues; the RDMA driver needs at least 4
+   * - ``queues.intr_vectors``
+     - ``auto``, or 2 to 128
+     - 32
+     - MSI-X vectors the device advertises. ``auto`` is
+       1 + ``queues.eth`` + ``queues.rdma_eqs``, enough for
+       every queue and EQ to have its own
+
+The built-in profiles:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 80
+
+   * - Name
+     - Shape
+   * - ``compat``
+     - the device described above: 4 queues, 32 EQs, 32
+       vectors, 100 Gb/s copper
+   * - ``small-vm``
+     - ``compat`` cut down for a guest with a few vCPUs: 2
+       queues, 4 EQs, ``auto`` (7) vectors
+   * - ``generic-100g``
+     - 16 queues, 32 EQs, ``auto`` (49) vectors, 100 Gb/s
+       fiber
+   * - ``generic-400g``
+     - 64 queues, 32 EQs, ``auto`` (97) vectors, 400 Gb/s
+       fiber
+
+The guest driver (``ionic_lif_size()``) wants one vector for
+the admin and notify queues, one per queue pair and one per
+EQ, each count capped at the online vCPUs. If that is more
+than the device advertises it halves its notify queues, then
+its EQs, then its queue pairs until it fits. A profile whose
+``queues.intr_vectors`` is below 1 + ``queues.eth`` +
+``queues.rdma_eqs`` therefore works, but a guest with enough
+vCPUs gets fewer EQs or queues than the profile names; the
+server says so at startup. ``compat`` is such a profile (1 +
+4 + 32 = 37 > 32), kept that way so its guest sees exactly
+what it saw before profiles existed.
 
 Ethernet and TCP/IP
 -------------------
@@ -152,10 +301,27 @@ The transmit path gathers the head fragment plus any
 scatter-gather elements out of guest memory and writes the
 frame to the TAP file descriptor. The receive path drains the
 TAP from the server's main loop and DMAs each frame into a
-descriptor the guest has posted on the receive queue. Both
-directions run on the thread that owns the vfio-user context,
-because that is the only thread permitted to DMA into guest
-memory; no extra thread is created.
+descriptor the guest has posted on one of its receive queues.
+Both directions run on the thread that owns the vfio-user
+context, because that is the only thread permitted to DMA
+into guest memory; no extra thread is created.
+
+Received frames are spread over the receive queues the guest
+has enabled (``Q_CONTROL``; ``ethtool -L`` changes the set)
+by a fixed hash of the flow, so one flow always lands on one
+queue and each queue's interrupt fires on its own vector. The
+hash is 32-bit FNV-1a over the IPv4 or IPv6 source and
+destination address, the protocol, and for TCP, UDP and SCTP
+the two ports, after up to two VLAN tags; fragments leave the
+ports out so every fragment of a datagram stays together.
+Other frames hash on the two MAC addresses. The queue is the
+hash modulo the number of enabled queues, in index order. The
+guest's RSS key and indirection table are accepted and
+ignored. A frame from the TAP whose queue has no buffer
+posted is dropped and counted in ``rx_queue_empty``; it does
+not fall back to another queue. A frame from the TCP mesh is
+held until the queue it steers to has a buffer, and the mesh
+frames behind it wait too.
 
 .. note::
 
@@ -164,12 +330,95 @@ memory; no extra thread is created.
    down linear skbs. This keeps the descriptor handling
    simple at the cost of transmit throughput.
 
+Statistics
+^^^^^^^^^^
+
+The ionic driver never asks the device for Ethernet
+counters. At ``LIF_INIT`` it hands the device a ``struct
+ionic_lif_info`` in its own memory, and from then on reads
+``struct ionic_lif_stats`` (byte 320 of that block) whenever
+``ip -s link``, ``/proc/net/dev`` or ``ethtool -S`` asks. The
+emulator counts every frame the LIF moves and rewrites that
+block from the main loop: once straight after ``LIF_INIT``,
+then every ``stats.interval_ms`` (1000 by default). A real
+NIC's firmware does the same.
+
+.. code-block:: bash
+
+   # rewrite the counters every 100 ms
+   ./build/rocm-ernic --tap ernic0 --stats-interval-ms 100
+
+Frames are classed by destination MAC: the group bit makes a
+frame multicast, all-ones makes it broadcast, anything else
+is unicast. What moves:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Event
+     - Counters
+   * - frame sent or received
+     - ``{tx,rx}_{ucast,mcast,bcast}_{bytes,packets}``; the
+       driver sums them into ``ip -s link`` packets and bytes
+   * - receive with no buffer posted, or the mesh inbox full
+     - ``rx_*_drop_*`` and ``rx_queue_empty``
+       (``rx_dropped`` and ``rx_over_errors``)
+   * - frame larger than the posted buffer
+     - ``rx_*_drop_*`` and ``rx_desc_data_error``
+   * - DMA to or from guest memory failed
+     - ``{tx,rx}_dma_error``
+   * - the host backend refused a transmit
+     - ``tx_*_drop_*``
+   * - descriptor unreadable, or nonsensical
+     - ``tx_desc_fetch_error``, ``tx_desc_data_error``
+   * - doorbell on a queue that was never initialized
+     - ``tx_queue_disabled``
+   * - RDMA payload sent or landed
+     - ``{tx,rx}_rdma_ucast_{bytes,packets}``, one packet per
+       message
+
+Frames are counted whether or not the server has a TAP:
+without one, transmitted frames are counted and discarded.
+The counters restart at zero on a device reset. After
+``LIF_RESET`` or a device reset nothing more is written into
+guest memory until the next ``LIF_INIT``, because the driver
+may have freed the block.
+
+The stats file (``--stats-file``) carries the same counters
+in a ``LIF Statistics`` section, one line per named field of
+``struct ionic_lif_stats`` whether or not it is zero, so a
+test can check what the guest reports against what the
+emulator counted. They agree to within one interval.
+
+Not counted yet: ``rx_queue_disabled`` (the receive path
+skips queues that are not initialized) and the RDMA error
+counters at qwords 96 to 125, which stay zero.
+
+``ernic-exporter`` reads that section and publishes every
+counter as ``ernic_lif_counter_total``, labelled with the
+``ionic_if.h`` name; the Grafana dashboard graphs them.
+The guest's separate RDMA ``hw_counters`` view, which
+the device serves from the admin queue rather than from
+this block, and how the two counter sets compare with
+the silicon, are in :doc:`monitoring`.
+
 Guest Driver: Patched Upstream ionic
 ------------------------------------
 
 The guest driver is *not* built from this repository. The
 build fetches a pinned upstream Linux tree, applies the
-patches in ``patches/``, and hands the result to DKMS.
+patches in ``ansible/files/patches/``, and hands the
+result to DKMS.
+
+.. note::
+
+   The patch series and the two scripts that apply it
+   live in the Ansible collection so that a consumer
+   installing ``sbates130272.rocm_ernic`` gets them at
+   the same ref as the roles that apply them; see
+   ``ansible/files/README.md``. The installed layout
+   under ``share/rocm-ernic`` is unchanged.
 
 Patches currently carried:
 
@@ -204,7 +453,8 @@ modules are needed:
 subtrees --- ``drivers/net/ethernet/pensando/ionic`` and
 ``drivers/infiniband/hw/ionic`` --- from
 ``IONIC_KERNEL_REF`` (default ``v7.2.4``) and applies
-``patches/*.patch`` in filename order with ``git am``. The
+``ansible/files/patches/*.patch`` in filename order with
+``git am``. The
 DKMS package is registered as ``ionic-ernic``.
 
 .. warning::
@@ -264,7 +514,8 @@ Bumping the Upstream Baseline
 Change ``IONIC_KERNEL_REF`` in
 ``cmake/ErnicKernelModule.cmake`` and re-run
 ``fetch-ionic-sources``. If a patch no longer applies,
-rebase it and refresh the file in ``patches/``. The
+rebase it and refresh the file in
+``ansible/files/patches/``. The
 ``ionic-patches`` CI job reads the pinned ref straight out
 of the cmake file and fails the pull request if any patch
 stops applying, so the two cannot drift apart.
@@ -315,17 +566,75 @@ Working:
   ``IB_WR_LOCAL_INV`` as local work requests, which is what
   a stock ``nvme-rdma`` initiator uses to produce the keys
   in its keyed SGLs
+- guest-to-guest ``rdma_cm``, and the transfers that follow
+  it: ``rping`` between two guests on a mesh connects,
+  exchanges its payloads -- SEND, RDMA READ and RDMA WRITE,
+  verified at both ends -- and exits 0
+- flushing a QP that enters the Error state, so that work
+  requests still outstanding are completed with
+  ``IBV_WC_WR_FLUSH_ERR`` rather than left to a consumer that
+  waits for them forever. One completion per queue, which is
+  what the device owes: it names no work request, and the
+  driver completes what it has posted from its own records.
+  A QP bound to an SRQ flushes its send queue only, because
+  the receives in an SRQ belong to the SRQ and other QPs are
+  still drawing from them
+- restarting a mesh worker. It comes back as a new node --
+  it asks for an id of ``0xFFFFFFFF`` every time, and its
+  listening port is ephemeral, so nothing in the
+  registration says which node it used to be -- and the GIDs
+  it claimed before are withdrawn so that they follow it to
+  its new id rather than being claimed by two nodes at once
+  and resolving to neither. The manager withdraws what an
+  unreachable node claimed both when its health check
+  notices one has died and when any worker registers, the
+  second being what covers a worker that comes back inside
+  the health-check interval. The withdrawal is reversible:
+  the claims are kept and only stop counting, so a node that
+  was merely silent and then answers a heartbeat, or that
+  the health check reconnects to, owns its addresses again
+  without registering afresh -- which, not having restarted,
+  it never would
 
 Not yet working:
 
-- ``rdma_cm`` connection establishment between two guests,
-  and therefore ``rping``: only the link-local GID is
-  populated, and GSI traffic is not forwarded between
-  endpoints. The ``nvmeof`` backend sidesteps this by
-  answering the CM exchange inside the server rather than
-  routing it to a peer, so ``nvme connect -t rdma`` has a
-  responder even though guest-to-guest ``rdma_cm`` does not
-  (see :doc:`nvmeof`)
+- ``rping`` prints ``poll error -5`` once as it tears down,
+  from a bug in the rdma-core ionic provider rather than in
+  the device. The provider keeps receive metadata in slots
+  taken off a free list and records which slot a queue
+  position used in ``rq.meta_idx``;
+  ``ionic_poll_recv()`` reads it back through that index, but
+  ``ionic_flush_recv()`` uses the raw ``wqe_id`` as the slot
+  number. The two agree only until the first completion
+  permutes the free list, after which the flush walk reads a
+  slot that has already been returned, calls it "wqe not
+  posted" and gives ``ibv_poll_cq()`` ``-EIO``. Present in
+  rdma-core v61.0 and still in master
+  (``providers/ionic/ionic_verbs.c``). The exchange itself is
+  unaffected and ``rping`` exits 0.
+
+  Establishment was broken until recently, and both reasons
+  this page used to give were wrong: GSI traffic *is*
+  forwarded between endpoints, which ``ernic-test-gsi-mesh``
+  demonstrates, and both the link-local and the v4-mapped
+  GID are populated. What actually stopped it was the shape
+  of the 40-byte header in front of a datagram -- the device
+  claimed RoCEv2 over IPv4 in the completion while writing an
+  IPv6 GRH, so ``ib_cm`` read the middle of the destination
+  GID as the sender's address, ARPed for ``0.0.255.255``,
+  and dropped every CM REQ with ``-ETIMEDOUT`` and no
+  reject. Fixed, pinned in both directions by
+  ``ionic-harness-ud``, ``ionic-harness-nvmeof`` and
+  ``gsi-mesh``, and confirmed on a two-guest pair: with the
+  previous build the client printed nothing and the server's
+  neighbour table held ``0.0.255.255 FAILED``; with the fix
+  that entry is gone and the connection is accepted.
+
+  The ``nvmeof`` backend does not depend on any of this: it
+  answers the CM exchange inside the server rather than
+  routing it to a peer, so ``nvme connect -t rdma`` has
+  always had a responder (see :doc:`nvmeof`)
+
 - Shared receive queues, which the upstream RDMA driver does
   not implement in its ``ib_device_ops``
 - The PCI Express capability is not advertised, so the guest

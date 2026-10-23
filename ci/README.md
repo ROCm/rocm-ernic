@@ -186,25 +186,38 @@ reaches the node unless someone asks for it:
 ways in are `workflow_dispatch` and the nightly schedule.
 
 That is a deliberate trade. Pull requests get no automatic
-lab-node coverage; a maintainer runs `/run-ci` when they
+lab-node coverage; a maintainer starts a run when they
 want it. The GitHub-hosted workflows still run on every
 pull request as usual, so contributors are not left
 without feedback.
 
-### Testing fork pull requests
+### Starting a run
 
-Fork pull requests **are** runnable, via the `pr` input:
+From the repository's Actions tab, pick *rocm-ernic -
+Self-Hosted CI* and press *Run workflow*. It asks for:
+
+| Input | Values |
+|---|---|
+| `tier` | `build` (build, ctest and loopback), `functional` (default; adds two-VM RDMA and NVMe-oF), `full` (adds performance sweeps) |
+| `accel` | `kvm` (default), or `tcg` to run the VMs under emulation, with no valid performance numbers |
+| `pr` | pull request number to test; leave empty to test the branch chosen in the dialog |
+
+Or from the command line:
 
 ```bash
 gh workflow run self-hosted-ci.yml --ref develop -f pr=123
 ```
 
-or just `/run-ci` on the pull request.
+### Testing fork pull requests
+
+Fork pull requests **are** runnable: give their number as
+the `pr` input, and leave the branch at `develop`.
 
 What makes that acceptable is the split between the
-workflow and the code it tests. The dispatch targets the
-workflow file on the **default branch**, and passes only a
-pull request number. Each job then checks out
+workflow and the code it tests. The run takes the workflow
+file from the branch chosen when it is started (`--ref`),
+and only a pull request number from the input. Each job
+then checks out
 `refs/pull/<pr>/head`, which resolves for forks. So a fork
 supplies code to compile and run, but cannot change what
 the workflow does with it, and cannot start a run at all:
@@ -234,52 +247,6 @@ diff you have actually read.
 The workflow also takes a `concurrency` lock. Two
 simultaneous runs would collide on VM ssh ports, the
 instance manifest and the qcow2 overlays.
-
-## Triggering from a comment
-
-`.github/workflows/ci-command.yml` adds a slash command
-usable from any pull request or issue:
-
-| Command | Runs |
-|---|---|
-| `/run-ci` | build, loopback, two-VM RDMA and NVMe-oF functional |
-| `/run-ci build` | build, ctest and loopback only |
-| `/run-ci functional` | same as bare `/run-ci` |
-| `/run-ci full` | functional plus performance sweeps |
-| `/run-ci full tcg` | VMs under emulation, no valid perf |
-| `/run-ci help` | print usage |
-
-Arguments are order-insensitive and case-insensitive, so
-`/run-ci tcg full` and `/run-ci FULL TCG` both work.
-
-The dispatcher reacts to the comment, dispatches the
-workflow against the right ref, and replies with a link
-to the run.
-
-Three properties keep this honest on a public repository:
-
-1. The dispatcher runs on `ubuntu-latest`, never on the
-   self-hosted runner, so untrusted comment text is
-   never processed on the lab node.
-2. The commenter must have write access or above,
-   checked against the API at trigger time.
-3. The dispatch always targets the workflow file on the
-   default branch and passes the pull request number as an
-   input, so a fork supplies the code under test but not
-   the workflow that runs it.
-
-Fork pull requests are eligible. See *What this does not
-protect* above before running one.
-
-`issue_comment` always runs the workflow file from the
-default branch, so this gate cannot be weakened by a
-pull request.
-
-Note that `workflow_dispatch` only resolves workflows
-present on the default branch. Both
-`self-hosted-ci.yml` and `ci-command.yml` must be merged
-to `develop` before the command works, even when targeting
-a topic branch.
 
 ## Reporting back
 

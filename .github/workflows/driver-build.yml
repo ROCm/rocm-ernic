@@ -7,17 +7,24 @@ on:
   pull_request:
     branches: [ develop ]
     paths:
-      - 'patches/**'
-      - 'scripts/fetch-ionic-sources.sh'
-      - 'scripts/setup-ionic-dkms.sh'
+      # The series and the two scripts that apply them live in the
+      # Ansible collection, so that a consumer installing it gets them at
+      # the ref of the roles that apply them.  See ansible/files/README.md.
+      - 'ansible/files/**'
       - 'cmake/ErnicKernelModule.cmake'
       - 'ansible/roles/ernic_srq_dkms/**'
       # The rdma-core base SHA lives here as well as in
-      # patches/rdma-core/README.md, and the rdma-core-patches job below
+      # ansible/files/patches/rdma-core/README.md, and the
+      # rdma-core-patches job below
       # now checks the two agree. Without this entry, bumping the role's
       # copy alone -- which is the edit someone makes when #1799 is
       # force-pushed -- changes which tree gets built and runs no check.
       - 'ansible/roles/ernic_srq_provider/**'
+      # The P4 series and the module that binds to the device it creates.
+      # The module is not compiled here -- see the job comment -- but it
+      # is the only consumer of the capability bit the series adds, so a
+      # change to either should re-run the checks on both.
+      - 'drivers/ernic_p4/**'
       - '.github/workflows/driver-build.yml'
   workflow_dispatch:
 
@@ -30,20 +37,22 @@ concurrency:
 
 jobs:
   # rocm-ernic does not ship a driver of its own: it runs the upstream
-  # Linux ionic.ko and ionic_rdma.ko with the patches in patches/ applied.
+  # Linux ionic.ko and ionic_rdma.ko with the patches in
+  # ansible/files/patches/ applied.
   # What CI can check on a hosted runner is that the pinned upstream ref still
   # exists and that every patch still applies to it -- the modules themselves
   # need kernel >= 6.18 headers, which hosted runners do not have.  Compiling
   # and loading them is the VM lane's job, in the SRQ steps of
   # .github/workflows/system-tests.yml.
   #
-  # Two series are checked, because there are two.  patches/ is what the
-  # shipping driver is built from, pinned to the cmake ref; patches/srq is the
-  # SRQ-enabling series, pinned to its own (newer) ref because the SRQ commits
-  # apply to no older tag.  They rot independently and for different reasons --
-  # ours when upstream ionic moves, the SRQ series when its prerequisites land
-  # upstream and the carried copies start applying twice -- so a single job
-  # covering only patches/ left the SRQ series untested until a guest failed.
+  # Two series are checked, because there are two.  The patch at the top of
+  # ansible/files/patches is what the shipping driver is built from, pinned to
+  # the cmake ref; its srq/ subdirectory is the SRQ-enabling series, pinned to
+  # its own (newer) ref because the SRQ commits apply to no older tag.  They
+  # rot independently and for different reasons -- ours when upstream ionic
+  # moves, the SRQ series when its prerequisites land upstream and the carried
+  # copies start applying twice -- so a single job covering only the base
+  # series left the SRQ series untested until a guest failed.
   ionic-patches:
     name: Apply ionic Driver Patches (${{ matrix.series }})
     runs-on: ubuntu-24.04
@@ -53,9 +62,11 @@ jobs:
       matrix:
         include:
           - series: base
-            patches: patches
+            patches: ansible/files/patches
           - series: srq
-            patches: patches/srq
+            patches: ansible/files/patches/srq
+          - series: p4
+            patches: ansible/files/patches/p4
 
     steps:
     - name: Checkout code
@@ -81,6 +92,14 @@ jobs:
                 ansible/roles/ernic_srq_dkms/defaults/main.yml | head -1)
           WHERE=ansible/roles/ernic_srq_dkms/defaults/main.yml
           ;;
+        p4)
+          # Same base as the shipping series: the p4 patches are applied on top
+          # of patches/ to one tree, so a ref of its own would mean the
+          # two were checked against trees that are never combined.
+          REF=$(sed -n 's/^set(IONIC_KERNEL_REF "\([^"]*\)".*/\1/p' \
+                cmake/ErnicKernelModule.cmake)
+          WHERE=cmake/ErnicKernelModule.cmake
+          ;;
         esac
         if [ -z "$REF" ]; then
           echo "::error::could not read the kernel ref from $WHERE"
@@ -90,6 +109,10 @@ jobs:
         echo "ref=$REF" >> "$GITHUB_OUTPUT"
 
     - name: Fetch upstream ionic sources and apply patches
+      env:
+        # Read from files a PR can change, so pass it through the environment
+        # rather than expanding it into the script.
+        KERNEL_REF: ${{ steps.ref.outputs.ref }}
       run: |
         git config --global user.email "ci@rocm-ernic.invalid"
         git config --global user.name "rocm-ernic CI"
@@ -100,9 +123,9 @@ jobs:
         # it lacked include/uapi/rdma, so the SRQ series -- which touches
         # ionic-abi.h -- would have failed here on a file that was simply not
         # checked out, reported as "patch does not apply".
-        ./scripts/fetch-ionic-sources.sh \
+        ./ansible/files/scripts/fetch-ionic-sources.sh \
           --source-dir "$PWD/ionic-kernel-src" \
-          --kernel-ref "${{ steps.ref.outputs.ref }}" \
+          --kernel-ref "$KERNEL_REF" \
           --patches-dir "$PWD/${{ matrix.patches }}"
 
     - name: Verify the patched tree
@@ -153,7 +176,7 @@ jobs:
         [ "$rc" -eq 0 ] || exit 1
         echo "all $want patch subjects present as commits"
 
-    # The three facts patches/srq exists to produce.  Without these the series
+    # The three facts the srq series exists to produce.  Without these it
     # can apply cleanly and still yield a driver reporting max_srq=0, which is
     # exactly the state the SRQ work exists to leave behind -- and it would
     # surface three lanes later as UCX declining rc_verbs.
@@ -183,8 +206,44 @@ jobs:
         fi
         [ "$rc" -eq 0 ] || exit 1
 
+    # The two facts patches/p4 exists to produce. Applying cleanly is not
+    # enough: the series could land and still leave ionic_auxbus_register()
+    # creating one device, and drivers/ernic_p4 would then build, load, and
+    # silently never probe -- a failure that looks like a broken module
+    # rather than a patch that did nothing.
+    - name: Verify the P4 series created the auxiliary device
+      if: matrix.series == 'p4'
+      run: |
+        SRC=ionic-kernel-src/drivers/net/ethernet/pensando/ionic
+        rc=0
+        check() {
+          if grep -qE "$2" "$1"; then
+            echo "  ✓ $3"
+          else
+            echo "::error::$3 -- not found in $1"
+            rc=1
+          fi
+        }
+        check "$SRC/ionic_if.h" 'IONIC_LIF_CAP_P4[[:space:]]*=' \
+              'the P4 LIF capability bit is defined'
+        check "$SRC/ionic_aux.c" '"p4"' \
+              'an auxiliary device named p4 is created'
+        check "$SRC/ionic_lif.h" 'p4_adev' \
+              'the lif carries a slot for it'
+
+        # The aux device's name is the parent driver plus the string in
+        # ionic_aux.c, and the module's id_table has to spell the result.
+        # A rename on either side is a module that loads and never probes,
+        # so the two are checked against each other here rather than
+        # discovered in a guest. This step runs from the workspace root;
+        # the fetched tree is under ionic-kernel-src/.
+        check drivers/ernic_p4/ernic_p4.c '"ionic\.p4"' \
+              'the module binds to ionic.p4'
+        [ "$rc" -eq 0 ] || exit 1
+
   # The userspace half, which rots for a different reason than the kernel
-  # half does. patches/rdma-core carries linux-rdma/rdma-core#1799, still
+  # half does. ansible/files/patches/rdma-core carries
+  # linux-rdma/rdma-core#1799, still
   # open; the hazard it guards against is that PR being rebased or merged
   # upstream, at which point these either stop applying or start applying
   # twice. Same check, different repository -- so a separate job rather than
@@ -202,7 +261,7 @@ jobs:
     - name: Apply the series to its pinned base
       run: |
         set -euo pipefail
-        PATCHES=patches/rdma-core
+        PATCHES=ansible/files/patches/rdma-core
 
         # The base is recorded in the README rather than a separate pin file:
         # one SHA, in the document that explains why it is that SHA.
@@ -297,8 +356,8 @@ jobs:
             echo "::error::$fn not found; has the series been restructured?"
             rc=1
           elif printf '%s\n' "$body" | grep -q 'cq_qtype'; then
-            echo "::error::$fn rings cq_qtype -- patches/rdma-core/0005 is"
-            echo "  missing or was dropped in a rebase. See that directory's"
+            echo "::error::$fn rings cq_qtype -- 0005 of the rdma-core"
+            echo "  series is missing or was dropped in a rebase. See its"
             echo "  README: 0005 and 0006 are local fixes, not upstream's."
             rc=1
           elif ! printf '%s\n' "$body" | grep -q 'rq_qtype'; then

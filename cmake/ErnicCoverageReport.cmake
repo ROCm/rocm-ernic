@@ -28,8 +28,8 @@ if(NOT profiles)
 endif()
 
 # Many of the sources are compiled into more than one binary, and the
-# unit tests that #include a translation unit compile it against their
-# own stubs, so llvm-cov warns that some functions have mismatched data:
+# unit tests compile the source under test against their own stubs, so
+# llvm-cov warns that some functions have mismatched data:
 # the profiles have another copy of the function, but not the copy in
 # that binary, which didn't run. -sparse leaves out functions that never
 # ran, so the copies that did run are the ones reported.

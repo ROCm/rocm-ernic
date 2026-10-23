@@ -277,8 +277,8 @@ bool ih_destroy(struct ih *h)
     if (dev) {
         /*
          * The server's ionic_device_fini(), then its pvrdma teardown, both
-         * before the context goes, as in the server: the backend's teardown
-         * puts back mappings through it.
+         * before the context goes, as in the server: the device's teardown
+         * puts back any mappings through it.
          */
         ionic_datapath_destroy(dev->ionic_dp);
         ionic_rdma_devcmd_destroy(dev->ionic_rdma);
@@ -299,7 +299,6 @@ void ih_poll(struct ih *h)
     rocm_ernic_dev_t *dev = h->dev;
 
     /* The body of the server's main loop, minus vfu_run_ctx(). */
-    pvrdma_drain_pending_interrupts(dev->pvrdma_handle);
     ionic_eth_emu_poll_rx(dev->ionic_emu);
 
     struct ionic_adminq_ctx *aqctx =
@@ -435,7 +434,13 @@ int ih_eth_admin(struct ih *h, const uint8_t cmd[64], uint8_t comp[16])
     return comp[0];
 }
 
-bool ih_eq_next(struct ih *h, uint32_t *cq_id)
+/*
+ * The next event off the EQ ring itself, ignoring anything an admin wait
+ * has already stepped over. The admin wait uses this rather than
+ * ih_eq_next(), which would hand back the events it is holding and leave it
+ * stepping over the same ones forever.
+ */
+static bool eq_next_ring(struct ih *h, uint32_t *cq_id)
 {
     uint8_t b[4];
 
@@ -450,6 +455,18 @@ bool ih_eq_next(struct ih *h, uint32_t *cq_id)
     return true;
 }
 
+bool ih_eq_next(struct ih *h, uint32_t *cq_id)
+{
+    /* Anything an admin wait stepped over comes back first, in order. */
+    if (h->eq_held_n) {
+        *cq_id = h->eq_held[0];
+        memmove(h->eq_held, h->eq_held + 1,
+                (--h->eq_held_n) * sizeof(h->eq_held[0]));
+        return true;
+    }
+    return eq_next_ring(h, cq_id);
+}
+
 int ih_admin_post(struct ih *h, uint8_t op, const void *body, uint16_t len)
 {
     struct ih_ring *q = &h->aq;
@@ -459,13 +476,6 @@ int ih_admin_post(struct ih *h, uint8_t op, const void *body, uint16_t len)
     if (strides > 4)
         return fail_rc("admin body of %u bytes is too long", len);
 
-    /* The device reads a multi-stride WQE linearly, so don't let one wrap:
-     * pad to the end of the ring with NOOPs, as a driver would have to. */
-    while (q->prod % ring_depth(q) + strides > ring_depth(q)) {
-        if (ih_admin(h, IH_ADMIN_NOOP, NULL, 0, NULL) != 0)
-            return -1;
-    }
-
     uint32_t slot = q->prod % ring_depth(q);
 
     memset(buf, 0, sizeof(buf));
@@ -473,9 +483,13 @@ int ih_admin_post(struct ih *h, uint8_t op, const void *body, uint16_t len)
     put_le16(buf + 2, len);
     if (len)
         memcpy(buf + ADMIN_HDR_LEN, body, len);
-    if (!fake_vfu_write(h->vfu, ring_slot(q, q->prod), buf,
-                        strides * ADMIN_STRIDE))
-        return fail_rc("admin WQE write failed");
+    /* ionic_admin_poll_locked() produces each stride as its own ring entry,
+     * so a WQE that reaches the end of the ring continues at its start. */
+    for (uint32_t i = 0; i < strides; i++) {
+        if (!fake_vfu_write(h->vfu, ring_slot(q, q->prod + i),
+                            buf + i * ADMIN_STRIDE, ADMIN_STRIDE))
+            return fail_rc("admin WQE write failed");
+    }
     q->prod += strides;
     ih_doorbell(h, IH_QTYPE_AQ, 0, 0, (uint16_t)(q->prod % ring_depth(q)));
     return (int)slot;
@@ -519,20 +533,41 @@ int ih_admin_complete(struct ih *h, uint8_t op, int slot, uint32_t *resp_len)
         return -1;
     }
 
-    /* The driver only looks at the admin CQ when the EQ says to. */
+    /*
+     * The driver only looks at the admin CQ when the EQ says to. Other CQs'
+     * events may be queued ahead of it -- an admin command can complete work
+     * on a data CQ, which MODIFY_QP to Error does when it flushes -- so step
+     * over them and hold them for ih_eq_next() rather than requiring the
+     * admin event to be first.
+     */
     uint32_t ev_cq;
-    if (!ih_eq_next(h, &ev_cq) || ev_cq != IH_ACQ_ID) {
+    bool saw_admin = false;
+
+    while (eq_next_ring(h, &ev_cq)) {
+        if (ev_cq == IH_ACQ_ID) {
+            saw_admin = true;
+            break;
+        }
+        if (h->eq_held_n == IH_EQ_HELD_MAX) {
+            fail("more than %u EQ events ahead of admin op %u's",
+                 IH_EQ_HELD_MAX, op);
+            return -1;
+        }
+        h->eq_held[h->eq_held_n++] = ev_cq;
+    }
+    if (!saw_admin) {
         fail("admin op %u completed with no event on the EQ", op);
         return -1;
     }
 
     uint32_t sl = get_be32(cqe + 24);
     if (qtf & 2u) {
-        if (!(sl >> 24)) {
-            fail("admin op %u has the error bit with status 0", op);
+        /* The status code is the whole field, as the driver reads it. */
+        if (sl == 0 || sl > UINT8_MAX) {
+            fail("admin op %u has the error bit with status %u", op, sl);
             return -1;
         }
-        return (int)(sl >> 24);
+        return (int)sl;
     }
     if (resp_len)
         *resp_len = sl;
@@ -660,13 +695,24 @@ bool ih_qp_create(struct ih *h, struct ih_qp *qp, uint32_t id, uint8_t type,
                   const struct ih_cq *scq, const struct ih_cq *rcq,
                   const struct ih_srq *srq)
 {
+    return ih_qp_create_stride(h, qp, id, type, scq, rcq, srq, WQE_STRIDE_LOG2);
+}
+
+bool ih_qp_create_stride(struct ih *h, struct ih_qp *qp, uint32_t id,
+                         uint8_t type, const struct ih_cq *scq,
+                         const struct ih_cq *rcq, const struct ih_srq *srq,
+                         uint8_t sq_stride_log2)
+{
     uint8_t body[64] = {0};
 
+    if (sq_stride_log2 > IH_WQE_MAX_STRIDE_LOG2)
+        return fail("SQ stride 2^%u is above 2^%u", sq_stride_log2,
+                    IH_WQE_MAX_STRIDE_LOG2);
     memset(qp, 0, sizeof(*qp));
     qp->id = id;
     qp->type = type;
     qp->next_wqe_id = 1;
-    if (!ring_alloc(h, &qp->sq, QP_DEPTH_LOG2, WQE_STRIDE_LOG2))
+    if (!ring_alloc(h, &qp->sq, QP_DEPTH_LOG2, sq_stride_log2))
         return false;
     if (!srq && !ring_alloc(h, &qp->rq, QP_DEPTH_LOG2, WQE_STRIDE_LOG2))
         return false;
@@ -674,7 +720,7 @@ bool ih_qp_create(struct ih *h, struct ih_qp *qp, uint32_t id, uint8_t type,
     /* struct ionic_admin_create_qp */
     put_le32(body + 8, scq->id);
     body[12] = QP_DEPTH_LOG2;
-    body[13] = WQE_STRIDE_LOG2;
+    body[13] = sq_stride_log2;
     body[15] = 12;
     put_le32(body + 20, 1);
     put_le64(body + 24, qp->sq.gpa);
@@ -984,8 +1030,8 @@ static void put_sges(uint8_t *wqe, const struct ih_sge *sge, uint8_t nsge)
 
 uint64_t ih_post_send(struct ih *h, struct ih_qp *qp, const struct ih_send *s)
 {
-    const uint32_t stride = 1u << WQE_STRIDE_LOG2;
-    uint8_t wqe[1u << WQE_STRIDE_LOG2];
+    const uint32_t stride = 1u << qp->sq.stride_log2;
+    uint8_t wqe[1u << IH_WQE_MAX_STRIDE_LOG2];
     uint64_t wqe_id = qp->next_wqe_id++;
     uint32_t total = 0;
 
@@ -1065,8 +1111,7 @@ uint64_t ih_post_send(struct ih *h, struct ih_qp *qp, const struct ih_send *s)
         }
     }
 
-    if (!fake_vfu_write(h->vfu, ring_slot(&qp->sq, qp->sq.prod), wqe,
-                        sizeof(wqe))) {
+    if (!fake_vfu_write(h->vfu, ring_slot(&qp->sq, qp->sq.prod), wqe, stride)) {
         fail("SQ write failed");
         return 0;
     }
@@ -1138,10 +1183,22 @@ bool ih_cq_poll(struct ih *h, struct ih_cq *cq, struct ih_cqe *cqe)
         uint32_t qpn_op = get_be32(b + 8);
 
         memcpy(&cqe->wqe_id, b, 8);
-        cqe->recv_op = (uint8_t)((qpn_op >> 24) & 0x7fu);
+        /* 0x1f, as the driver masks it: bits 30 and 31 of src_qpn_op are
+         * IS_VLAN and IS_IPV4, not part of the opcode. */
+        cqe->recv_op = (uint8_t)((qpn_op >> 24) & 0x1fu);
         cqe->src_qpn = qpn_op & 0xffffffu;
-        cqe->has_smac = (qpn_op & 0x80000000u) != 0;
+        cqe->is_ipv4 = (qpn_op & 0x80000000u) != 0;
         memcpy(cqe->smac, b + 12, 6);
+        /*
+         * There is no SMAC-valid bit on the wire: the driver sets
+         * IB_WC_WITH_SMAC for every UD/GSI completion and copies the field
+         * unconditionally. Presence is therefore inferred from the field
+         * itself, which the device only fills in for a datagram. This used
+         * to read IS_IPV4 instead, which held only while the device set
+         * that bit on every receive that carried a MAC.
+         */
+        static const uint8_t no_mac[6] = {0};
+        cqe->has_smac = memcmp(cqe->smac, no_mac, sizeof(no_mac)) != 0;
         memcpy(&cqe->imm_be, b + 20, 4);
         break;
     }

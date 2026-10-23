@@ -14,13 +14,14 @@ on:
     # in-repo driver path to list.
     paths:
       - 'src/**'                  # the vfio-user server under test
-      - 'third-party/**'          # vendored QEMU code built into it
       - 'tests/**'                # rdma_verify, test_write_imm, ...
       - 'CMakeLists.txt'
       - 'cmake/**'
-      - 'ansible/**'              # ernic_host_setup / ernic_guest_setup
-      - 'scripts/**'              # find-rdma-device, DKMS, diagnostics
-      - 'patches/**'              # staged into the guest in ionic mode
+      # ernic_host_setup / ernic_guest_setup, and ansible/files -- the
+      # ionic patch series and the two DKMS scripts, staged into the
+      # guest in ionic mode
+      - 'ansible/**'
+      - 'scripts/**'              # find-rdma-device, diagnostics
       - 'udev/**'                 # driver_common installs these
       # Everything under ci/ drives these lanes: guest-image.env is the
       # guest image pin itself, lib/common.sh reads it, and jobs/ is what
@@ -32,7 +33,14 @@ on:
       - 'ci/**'
       - '.github/workflows/system-tests.yml'
       - '.github/workflows/nvmeof-lane.yml'   # the nvmeof job's body
-      - '.github/workflows/s3-lane.yml'       # the s3 job's body
+      - '.github/workflows/s3-lane.yml'
+      - '.github/workflows/p4-lane.yml'
+      # The P4 lane is the only thing that exercises these end to end,
+      # and each is useless without the others: the engine, the patch
+      # that creates the device, and the module that binds to it.
+      - 'src/p4/**'
+      - 'ansible/files/patches/p4/**'
+      - 'drivers/ernic_p4/**'       # the s3 job's body
       - '.github/actions/fetch-guest-vm/**'
   schedule:
     # 04:23 UTC.  Off the hour on purpose -- the top of the hour is
@@ -339,7 +347,7 @@ jobs:
 
         ./build/rocm-ernic \
           --socket /tmp/vfio-user-rocm-ernic.sock \
-          --backend loopback:mode=preserve \
+          --backend loopback \
           --verbose > /tmp/vfu_server.log 2>&1 &
         
         SERVER_PID=$!
@@ -359,7 +367,6 @@ jobs:
           
           # Check if socket exists and is a socket file
           if [ -S /tmp/vfio-user-rocm-ernic.sock ]; then
-            chmod 666 /tmp/vfio-user-rocm-ernic.sock 2>/dev/null || true
             echo "✓ Server started (PID: $SERVER_PID)"
             echo "✓ Socket created: /tmp/vfio-user-rocm-ernic.sock"
             ls -la /tmp/vfio-user-rocm-ernic.sock
@@ -401,8 +408,13 @@ jobs:
         
         # Start VM with vfio-user device
         # NOTE: memory-backend-memfd is REQUIRED for vfio-user DMA to work
+        #
+        # hpet=off: now and then a nested guest's kernel hangs for good
+        # just after setting up the HPET.  See "boot hang" in
+        # scripts/qemu-vm-diagnose.sh, which says what to do if it
+        # still happens.
         qemu-system-x86_64 \
-          -machine "q35,accel=${QEMU_ACCEL},memory-backend=mem0" \
+          -machine "q35,accel=${QEMU_ACCEL},memory-backend=mem0,hpet=off" \
           -cpu "${QEMU_CPU}" \
           -smp "${VM_VCPUS}" \
           -m "${VM_MEM_MB}M" \
@@ -723,10 +735,10 @@ jobs:
     - name: Verify RDMA device with running server
       shell: bash
       run: |
-        echo "=== Verifying RDMA device via loopback:mode=preserve backend ==="
+        echo "=== Verifying RDMA device via loopback backend ==="
 
         # The VM was launched against the server started in the
-        # "Start rocm-ernic server" step (loopback:mode=preserve on
+        # "Start rocm-ernic server" step (loopback on
         # /tmp/vfio-user-rocm-ernic.sock).  We must NOT kill that
         # server or cycle configs -- doing so severs the vfio-user
         # connection and destabilises the VM.
@@ -823,7 +835,7 @@ jobs:
         ssh -F "$SSH_CONFIG" -p "$SSH_PORT" \
           "${VM_USER}@localhost" "mkdir -p /tmp/write-imm-smoke"
         scp -F "$SSH_CONFIG" -P "$SSH_PORT" \
-          tests/test_write_imm.c tests/ernic_device.h \
+          tests/test_write_imm.c tests/ernic_device.h src/parse_int.h \
           "${VM_USER}@localhost:/tmp/write-imm-smoke/"
 
         # $RDMA_DEVICE is passed in rather than rediscovered: "Verify
@@ -884,7 +896,7 @@ jobs:
         ssh -F "$SSH_CONFIG" -p "$SSH_PORT" \
           "${VM_USER}@localhost" "mkdir -p /tmp/srq-smoke"
         scp -F "$SSH_CONFIG" -P "$SSH_PORT" \
-          tests/test_srq.c tests/ernic_device.h \
+          tests/test_srq.c tests/ernic_device.h src/parse_int.h \
           "${VM_USER}@localhost:/tmp/srq-smoke/"
 
         set +e
@@ -938,7 +950,7 @@ jobs:
         scp -F "$SSH_CONFIG" -P "$SSH_PORT" \
           tests/test_data_transfer.c tests/test_rdma_cm.c \
           tests/test_ud_transfer.c tests/test_ud_sq_reclaim.c \
-          tests/ernic_device.h \
+          tests/ernic_device.h src/parse_int.h \
           "${VM_USER}@localhost:/tmp/guest-rdma-tests/"
 
         FAILED=0
@@ -1144,7 +1156,7 @@ jobs:
     # it has never once exercised the emulator's SRQ adminq handlers.
     #
     # These two steps close that gap by rebuilding the guest driver from
-    # patches/srq first.  They run last on purpose: they swap the ionic
+    # the SRQ series first.  They run last on purpose: they swap the ionic
     # modules out from under the guest, so anything after them would be
     # testing a different driver than the one the lane booted.
     #
@@ -1167,7 +1179,7 @@ jobs:
     # leaving ernic_vms empty and the play reporting success having
     # built nothing.
     #
-    # These block.  patches/srq is rebased onto v7.2.4 -- the ref
+    # These block.  The SRQ series is rebased onto v7.2.4 -- the ref
     # IONIC_KERNEL_REF pins and the kernel the guest image runs -- so
     # there is no version mismatch to tolerate: the series applies with
     # git am and builds as a DKMS package on 7.2.4-070204-generic,
@@ -1181,22 +1193,20 @@ jobs:
         export ANSIBLE_HOST_KEY_CHECKING=false
         export ANSIBLE_PRIVATE_KEY_FILE="$SSH_KEY_PRIVATE"
         export ANSIBLE_ROLES_PATH="$PWD/ansible/roles"
-        PROJECT_ROOT="$PWD"
 
         cd ansible
-        # The ref is not named here.  It comes from the role defaults,
-        # which is the single source for "which kernel carries SRQ"; a
-        # copy here would let this lane keep testing the old one after a
-        # bump.  Same for the patches directory, passed only because the
-        # default is playbook_dir-relative and so depends on which
-        # playbook was named on the command line.
+        # Nothing about the inputs is named here.  The ref comes from the
+        # role defaults, which is the single source for "which kernel
+        # carries SRQ"; a copy here would let this lane keep testing the
+        # old one after a bump.  The patch series and the scripts come
+        # from the role too -- they ship in the collection, so the role
+        # resolves them from itself and this lane exercises exactly what
+        # an external consumer gets.
         ansible-playbook playbooks/vm-register.yml \
                          playbooks/srq-dkms-build.yml \
           --skip-tags srq-provider \
           -e srq_dkms_hosts=ernic_vms \
           -e ernic_run_dir=/tmp/ernic-ci \
-          -e ernic_srq_dkms_patches_dir="$PROJECT_ROOT/patches/srq" \
-          -e ernic_srq_dkms_scripts_dir="$PROJECT_ROOT/scripts" \
           -e ernic_srq_dkms_fetch_on_controller=true \
           -e ernic_srq_dkms_install=true \
           -e ernic_srq_dkms_reload=true \
@@ -1211,7 +1221,7 @@ jobs:
 
     # The step above installs the kernel half, which is what makes the
     # device advertise max_srq.  This is the userspace half, and without
-    # it the pair is the contradiction patches/rdma-core/README.md
+    # it the pair is the contradiction the rdma-core series' README.md
     # describes: the driver reports max_srq=256 and ibv_create_srq()
     # returns EOPNOTSUPP, because libibverbs dispatches into the guest's
     # stock ionic provider, which has no create_srq op.  SRQ is in no
@@ -1220,8 +1230,8 @@ jobs:
     #
     # Driven through the ernic_srq_provider role rather than a second
     # copy of its steps: the role pins the rdma-core base, checks that
-    # pin against patches/rdma-core/README.md, and asserts the built
-    # provider actually carries the verbs before and after the build.  A
+    # pin against that README, and asserts the built provider actually
+    # carries the verbs before and after the build.  A
     # hand-rolled copy here would be a third place to bump.
     #
     # vm-register.yml runs first and untagged, in the same invocation, so
@@ -1239,18 +1249,16 @@ jobs:
         export ANSIBLE_HOST_KEY_CHECKING=false
         export ANSIBLE_PRIVATE_KEY_FILE="$SSH_KEY_PRIVATE"
         export ANSIBLE_ROLES_PATH="$PWD/ansible/roles"
-        PROJECT_ROOT="$PWD"
 
         cd ansible
-        # The patch directory is passed rather than left to the role
-        # default, which is playbook_dir-relative and so depends on which
-        # playbook was named on the command line.
+        # The patch directory is left to the role default, which resolves
+        # to the series shipped in the collection -- so this lane proves
+        # what an external consumer gets rather than what a checkout has.
         ansible-playbook playbooks/vm-register.yml \
                          playbooks/srq-dkms-build.yml \
           --skip-tags srq-kernel \
           -e srq_dkms_hosts=ernic_vms \
-          -e ernic_run_dir=/tmp/ernic-ci \
-          -e ernic_srq_provider_patches_dir="$PROJECT_ROOT/patches/rdma-core"
+          -e ernic_run_dir=/tmp/ernic-ci
 
         echo "srq_provider=installed" >> "$GITHUB_OUTPUT"
         echo "✓ SRQ-capable rdma-core provider installed"
@@ -1295,6 +1303,7 @@ jobs:
           "mkdir -p /tmp/srq-test"
         scp -F "$SSH_CONFIG" -P "$SSH_PORT" \
           tests/test_srq.c tests/test_srq_transfer.c tests/ernic_device.h \
+          src/parse_int.h \
           "${VM_USER}@localhost:/tmp/srq-test/"
 
         # test_srq first, then test_srq_transfer: the first says the verbs
@@ -1448,6 +1457,13 @@ jobs:
       publish: >-
         ${{ github.event_name != 'pull_request' &&
             (github.event_name != 'workflow_dispatch' || inputs.publish) }}
+
+  # No permissions block and no inputs: this lane publishes nothing, so
+  # it needs neither write scopes nor a publish flag. The others carry
+  # both because they record a trend.
+  system-test-p4:
+    name: P4 Guest-Driven fp8
+    uses: $/.github/workflows/p4-lane.yml
 
   system-test-two-vms:
     name: TCP Mesh Backend System Tests (Two VMs)
@@ -1910,7 +1926,6 @@ jobs:
           
           # Check if socket exists and is a socket file
           if [ -S /tmp/vfio-user-server1.sock ]; then
-            chmod 666 /tmp/vfio-user-server1.sock 2>/dev/null || true
             echo "✓ Server 1 started (PID: $SERVER1_PID)"
             echo "✓ Socket created: /tmp/vfio-user-server1.sock"
             ls -la /tmp/vfio-user-server1.sock
@@ -2019,7 +2034,6 @@ jobs:
         
           # Check if socket exists and is a socket file
           if [ -S /tmp/vfio-user-server2.sock ]; then
-            chmod 666 /tmp/vfio-user-server2.sock 2>/dev/null || true
             echo "✓ Server 2 started (PID: $SERVER2_PID)"
             echo "✓ Socket created: /tmp/vfio-user-server2.sock"
             ls -la /tmp/vfio-user-server2.sock
@@ -2208,9 +2222,13 @@ jobs:
         echo "=== Starting VM 1 ==="
         VM_DISK_1="${COPY_VM_DISK_1}"
         SSH_PORT_1=2222
-        
+
+        # hpet=off: now and then a nested guest's kernel hangs for good
+        # just after setting up the HPET.  See "boot hang" in
+        # scripts/qemu-vm-diagnose.sh, which says what to do if it
+        # still happens.
         qemu-system-x86_64 \
-          -machine "q35,accel=${QEMU_ACCEL},memory-backend=mem1" \
+          -machine "q35,accel=${QEMU_ACCEL},memory-backend=mem1,hpet=off" \
           -cpu "${QEMU_CPU}" \
           -smp "${VM_VCPUS}" \
           -m "${VM_MEM_MB}M" \
@@ -2253,9 +2271,10 @@ jobs:
         echo "=== Starting VM 2 ==="
         VM_DISK_2="${COPY_VM_DISK_2}"
         SSH_PORT_2=2223
-        
+
+        # hpet=off: see Start VM 1.
         qemu-system-x86_64 \
-          -machine "q35,accel=${QEMU_ACCEL},memory-backend=mem2" \
+          -machine "q35,accel=${QEMU_ACCEL},memory-backend=mem2,hpet=off" \
           -cpu "${QEMU_CPU}" \
           -smp "${VM_VCPUS}" \
           -m "${VM_MEM_MB}M" \

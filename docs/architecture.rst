@@ -327,10 +327,10 @@ Inside the Server
         sees QEMU types)
               │
               ▼
-       third-party/qemu/hw/rdma   resource manager (rdma_rm)
+       src/qemu/                  resource manager (rdma_rm)
        src/rdma/                  backend vtable: none,
                                   loopback, tcp mesh
-       src/qemu-compat/           the QEMU APIs the vendored
+       src/qemu-compat/           the QEMU APIs the QEMU-derived
                                   code expects
 
 The ionic Front End
@@ -345,7 +345,7 @@ The Device Core
 ^^^^^^^^^^^^^^^
 
 The device core is ``src/rocm_ernic_compat.c``,
-``third-party/qemu/``, and ``src/rdma/``.
+``src/qemu/``, and ``src/rdma/``.
 
 rocm-ernic began as an emulator of the VMware paravirtual RDMA
 device (PVRDMA), using the device model from QEMU's
@@ -381,11 +381,9 @@ world are:
    a second (``--stats-file``, consumed by ``ernic-exporter``;
    see :doc:`monitoring`).
 
-The core does **not** move data for the ionic device. The
-backends' ``post_send`` and ``post_recv`` entry points, and the
-vendored completion code in ``pvrdma_qp_ops.c``, belonged to the
-PVRDMA data path; nothing in the ionic path calls them. All data
-movement happens in ``ionic_datapath.c``.
+The core does **not** move data for the ionic device, or post
+its completions. All data movement happens in
+``ionic_datapath.c``.
 
 The Main Loop
 ^^^^^^^^^^^^^
@@ -397,7 +395,7 @@ QEMU to connect. Once QEMU has connected, it loops:
    accesses arrive here as callbacks, and **BAR 2 doorbells for
    send queues are executed inside the callback** (see
    `The Data Path`_).
-#. Run any GLib idle callbacks and deliver deferred interrupts.
+#. Run any GLib idle callbacks.
 #. Move received Ethernet frames from the TAP, or from frames
    other threads queued, into the guest's receive ring.
 #. Process new entries on the RDMA admin queues.
@@ -770,9 +768,9 @@ Topology
 - The manager is node 0. Workers connect to it, register, and
   get node ids 1, 2, and so on, in the order they arrive.
 - The manager broadcasts the topology; workers connect directly
-  to each other (the lower id connects to the higher). A message
-  for a node with no direct connection is relayed by the
-  manager.
+  to each other (the lower id connects to the higher), and
+  connect again if the connection drops. A message for a node
+  with no direct connection is relayed by the manager.
 - The manager sends heartbeats, notices dead nodes, and
   reconnects them.
 - The protocol carries a magic number and a version, checked at
@@ -992,9 +990,7 @@ mesh exists and whether a target is attached.
      - What it means for the guest
    * - ``loopback`` (default)
      - Single VM. Every peer QP is in the same guest. Resources
-       are tracked in memory. The ``mode=`` and ``md5`` options
-       apply to the old PVRDMA data path and don't affect the
-       ionic data path.
+       are tracked in memory.
    * - ``tcp``
      - Multi-VM. The mesh described in `More Than One VM: the
        TCP Mesh`_.
@@ -1037,13 +1033,14 @@ Threads
      - Heartbeats, dead-node detection, reconnects
    * - peer connect
      - ``tcp`` worker
-     - Connects to peers as the topology changes
+     - Connects to peers as the topology changes, and closes dead
+       connections
 
 The rule is that **only the main thread touches guest memory**.
 Every other thread hands work to it through a locked queue: the
 data path's inbound message queue, or the Ethernet emulator's
-frame inbox. The vendored QEMU code's own completion thread is
-never started.
+frame inbox. The completion thread the QEMU code had upstream
+is gone.
 
 Shared state between threads uses mutexes or C11 atomics. The
 thread-safety section of ``AGENTS.md``, in the repository root,
@@ -1146,14 +1143,14 @@ Where to Look in the Source
    * - ``src/rocm_ernic_compat.c``, ``.h``
      - Bridge to the QEMU-derived core; guest-memory mapping for
        it; mesh wrappers; shared limits
-   * - ``third-party/qemu/hw/rdma/``
-     - Vendored resource manager and backend dispatch
+   * - ``src/qemu/``
+     - Resource manager and backend dispatch, forked from QEMU
    * - ``src/rdma/rdma_backend_*.c``
      - Backend registry; none, loopback, and TCP mesh backends
    * - ``src/rdma/pvrdma_stats.c``
      - Statistics file
    * - ``src/qemu-compat/``
-     - Stand-ins for the QEMU APIs the vendored code calls
+     - Stand-ins for the QEMU APIs the QEMU-derived code calls
    * - ``src/nvmeof_cm.c``, ``src/nvmeof_target.c``
      - In-process NVMe-oF CM responder and controller
    * - ``src/s3_tcp.c``, ``src/s3_http.c``, ``src/s3_token.c``,

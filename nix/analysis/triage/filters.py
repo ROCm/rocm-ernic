@@ -6,26 +6,21 @@ layout:
   - src/net/                       wire-protocol parsers (rdma-cm)
                                    — untrusted input
   - src/rdma/                      RDMA backends (loopback, TCP mesh)
-  - third-party/qemu/hw/rdma/      vendored QEMU PVRDMA device model
+  - src/qemu/                      QEMU-derived PVRDMA device model
+                                   — handles guest input
   - tests/                         test programs
-
-Unlike the xdp2 original, the vendored QEMU code under third-party/ is not
-treated as unactionable: it ships in the emulator and handles guest input
-alongside the parsers we also fuzz, so it stays in the triage view and is
-marked security-sensitive to raise its priority.
 """
 
 from finding import Finding
 
 
-# Truly non-actionable third-party trees. The code rocm-ernic vendors is
-# kept in view (see above), so this stays empty; the is_third_party()
-# fallback still drops anything outside ANALYSIS_ROOTS (tests, build
-# artifacts).
+# Truly non-actionable third-party trees. rocm-ernic vendors none, so this
+# stays empty; the is_third_party() fallback still drops anything outside
+# ANALYSIS_ROOTS (tests, build artifacts).
 THIRD_PARTY_PATTERNS = []
 
 # Trees whose findings are in scope for triage.
-ANALYSIS_ROOTS = ('src/', 'third-party/')
+ANALYSIS_ROOTS = ('src/',)
 
 # Generated files — rocm-ernic has no code-generation step, so none.
 GENERATED_FILE_PATTERNS = []
@@ -64,7 +59,7 @@ SECURITY_PATHS = [
     'src/net/',
     'src/rdma/',
     'src/parse_int.h',
-    'third-party/qemu/hw/rdma/',
+    'src/qemu/',
     'src/rocm_ernic',
 ]
 

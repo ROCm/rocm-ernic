@@ -160,6 +160,8 @@ build_client() {
     vm_ssh "${n}" "mkdir -p ${GUEST_DIR}" >/dev/null || return 1
     vm_ssh "${n}" "cat > ${GUEST_DIR}/s3_rdma_client.c" \
         <"${PROJECT_ROOT}/tests/s3_rdma_client.c" || return 1
+    vm_ssh "${n}" "cat > ${GUEST_DIR}/parse_int.h" \
+        <"${PROJECT_ROOT}/src/parse_int.h" || return 1
     vm_ssh "${n}" "cd ${GUEST_DIR} && cc -O2 -Wall -Wextra \
         -o s3_rdma_client s3_rdma_client.c \
         \$(pkg-config --libs libibverbs)" 2>&1

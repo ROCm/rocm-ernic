@@ -140,24 +140,34 @@ def parse_stats_file(path):
     return result
 
 
-# pylint: disable-next=too-many-branches
+# The header the server writes above the LIF counter
+# block.  Those counters keep their ionic_if.h names, so
+# they are kept apart from the device section rather than
+# merged into it: the two name spaces are not ours to
+# keep collision-free.
+LIF_SECTION = "LIF Statistics:"
+
+
+# pylint: disable-next=too-many-branches,too-many-statements
 def parse_stats_file_with_qps(path):
-    """Parse a .stats file returning device stats and
+    """Parse a .stats file returning device, LIF and
     per-QP stats.
 
-    Returns (device_stats_dict, {qp_handle: qp_dict}).
-    The device dict uses the same flat key:value format
-    as parse_stats_file.  The QP dict captures per-QP
-    counters from the indented sections.
+    Returns (device_dict, lif_dict, {qp_handle: qp_dict}).
+    The device and LIF dicts use the same flat key:value
+    format as parse_stats_file.  The QP dict captures
+    per-QP counters from the indented sections.
     """
     device = {}
+    lif = {}
     qps = {}
     if not os.path.isfile(path):
-        return device, qps
+        return device, lif, qps
     try:
         with open(path, encoding="utf-8") as fh:
             current_qp = None
             in_opcode_section = False
+            in_lif_section = False
             for line in fh:
                 stripped = line.strip()
                 if not stripped:
@@ -170,6 +180,7 @@ def parse_stats_file_with_qps(path):
                         current_qp = qp_handle
                         qps[current_qp] = {}
                         in_opcode_section = False
+                        in_lif_section = False
                     except (ValueError, IndexError):
                         current_qp = None
                     continue
@@ -186,6 +197,7 @@ def parse_stats_file_with_qps(path):
                     if stripped.endswith(":"):
                         current_qp = None
                         in_opcode_section = False
+                        in_lif_section = stripped == LIF_SECTION
                     continue
 
                 key, _, val = stripped.partition(" : ")
@@ -202,17 +214,22 @@ def parse_stats_file_with_qps(path):
                             qps[current_qp][f"opcode_{key}"] = int_val
                     else:
                         qps[current_qp][key] = int_val if int_val is not None else val
+                elif in_lif_section:
+                    # A non-integer here is a malformed line, not a
+                    # counter; the LIF block is numbers only.
+                    if int_val is not None:
+                        lif[key] = int_val
                 else:
                     device[key] = int_val if int_val is not None else val
     except OSError:
         pass
-    return device, qps
+    return device, lif, qps
 
 
 def read_all_stats_with_qps():
     """Read stats + QP data for every *.stats file.
 
-    Returns {instance_id_int: (device_dict, qps_dict)}.
+    Returns {instance_id_int: (device, lif, qps)}.
     """
     result = {}
     for sf in glob.glob(os.path.join(RUN_DIR, "*.stats")):
@@ -240,6 +257,24 @@ def read_all_stats_with_qps():
 
 INSTANCE_LABELS = ["ernic_id", "role"]
 QP_LABELS = ["ernic_id", "role", "qp"]
+LIF_LABELS = ["ernic_id", "role", "counter"]
+
+# The counters of struct ionic_lif_stats, under their
+# ionic_if.h names -- the block the device keeps current
+# in guest memory and the guest reads for ip -s link.
+# Not the guest's RDMA hw_counters, which the device
+# serves from its own device and per-QP counters; those
+# are the INSTANCE_COUNTERS and QP_COUNTERS below.
+#
+# One metric with the counter in a label, not one metric
+# per counter, because the set is the device's to
+# define: a counter it starts keeping shows up here
+# without an exporter release.
+LIF_COUNTER_METRIC = "ernic_lif_counter_total"
+LIF_COUNTER_HELP = (
+    "ionic LIF statistics block counter, by its ionic_if.h name "
+    "(the block a guest reads for ip -s link)"
+)
 
 # Per-instance counters that map 1:1 onto a key in the
 # .stats file: (metric name, stats key, help).
@@ -409,6 +444,11 @@ class ErnicCollector:
             "Number of active Queue Pairs",
             labels=INSTANCE_LABELS,
         )
+        m_lif = CounterMetricFamily(
+            LIF_COUNTER_METRIC,
+            LIF_COUNTER_HELP,
+            labels=LIF_LABELS,
+        )
 
         counters = {
             name: CounterMetricFamily(
@@ -479,10 +519,10 @@ class ErnicCollector:
                 )
 
             # Device stats
-            stats_pair = all_stats.get(inst["id"])
-            if stats_pair is None:
+            stats_entry = all_stats.get(inst["id"])
+            if stats_entry is None:
                 continue
-            stats, qps = stats_pair
+            stats, lif, qps = stats_entry
 
             for name, key, _ in INSTANCE_COUNTERS:
                 counters[name].add_metric(
@@ -494,6 +534,12 @@ class ErnicCollector:
                     inst_labels,
                     sum(stat_int(stats, k) for k in keys),
                 )
+
+            # Every counter the server wrote, zero or not: the server
+            # prints the whole block every time, so a counter that
+            # stops being yielded means the block itself changed.
+            for counter, value in lif.items():
+                m_lif.add_metric([iid, role, counter], value)
 
             conn = stats.get("connection", "unknown")
             if not isinstance(conn, str):
@@ -524,6 +570,7 @@ class ErnicCollector:
         yield m_vm_gpu
         yield m_conn
         yield m_qp_count
+        yield m_lif
         for name, _, _ in INSTANCE_COUNTERS + INSTANCE_AGGREGATES + QP_COUNTERS:
             yield counters[name]
 

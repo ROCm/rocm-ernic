@@ -31,17 +31,21 @@
 #define _GNU_SOURCE
 #endif
 
+#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netinet/in.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #include "ionic_datapath.h" /* IONIC_MAX_MR_QUEUES -- the queue-count ceiling */
 #include "nvmeof_target.h"
+#include "parse_int.h"
 
 #define NVMEOF_DEFAULT_NQN        "nvmet-test"
 #define NVMEOF_DEFAULT_SIZE       (64ull << 20)
@@ -109,92 +113,14 @@ void nvmeof_target_cfg_defaults(struct nvmeof_target_cfg *cfg)
     cfg->queue_depth = NVMEOF_DEFAULT_DEPTH;
 }
 
-static bool parse_size(const char *s, uint64_t *out)
-{
-    char *end = NULL;
-    unsigned long long v;
-
-    if (*s == '\0' || *s == '-') {
-        return false;
-    }
-    errno = 0;
-    v = strtoull(s, &end, 0);
-    if (errno != 0 || end == s) {
-        return false;
-    }
-
-    uint64_t mult = 1;
-    switch (*end) {
-    case 'k':
-    case 'K':
-        mult = 1ull << 10;
-        end++;
-        break;
-    case 'm':
-    case 'M':
-        mult = 1ull << 20;
-        end++;
-        break;
-    case 'g':
-    case 'G':
-        mult = 1ull << 30;
-        end++;
-        break;
-    case 't':
-    case 'T':
-        mult = 1ull << 40;
-        end++;
-        break;
-    default:
-        break;
-    }
-    /* Accept the "MiB"/"MB" spellings people reach for out of habit. */
-    if (mult != 1) {
-        if (*end == 'i' || *end == 'I') {
-            end++;
-        }
-        if (*end == 'b' || *end == 'B') {
-            end++;
-        }
-    }
-    if (*end != '\0') {
-        return false;
-    }
-    if (v != 0 && v > UINT64_MAX / mult) {
-        return false;
-    }
-    *out = (uint64_t)v * mult;
-    return true;
-}
-
 static bool parse_ipv4(const char *s, uint32_t *out)
 {
-    unsigned o[4];
-    char extra;
+    struct in_addr a;
 
-    if (sscanf(s, "%u.%u.%u.%u%c", &o[0], &o[1], &o[2], &o[3], &extra) != 4) {
+    if (inet_pton(AF_INET, s, &a) != 1) {
         return false;
     }
-    for (int i = 0; i < 4; i++) {
-        if (o[i] > 255) {
-            return false;
-        }
-    }
-    *out = (o[0] << 24) | (o[1] << 16) | (o[2] << 8) | o[3];
-    return true;
-}
-
-static bool parse_u32(const char *s, uint32_t *out)
-{
-    char *end = NULL;
-    unsigned long v;
-
-    errno = 0;
-    v = strtoul(s, &end, 0);
-    if (errno != 0 || end == s || *end != '\0' || v > UINT32_MAX) {
-        return false;
-    }
-    *out = (uint32_t)v;
+    *out = ntohl(a.s_addr);
     return true;
 }
 
@@ -248,7 +174,7 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
                 snprintf(cfg->subnqn, sizeof(cfg->subnqn), "%s", val);
             }
         } else if (strcmp(key, "size") == 0) {
-            if (!parse_size(val, &cfg->size) || cfg->size == 0) {
+            if (!ernic_parse_size(val, &cfg->size) || cfg->size == 0) {
                 set_err(err, errlen, "bad size '%s'", val);
                 ok = false;
             }
@@ -266,7 +192,7 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
             }
         } else if (strcmp(key, "bs") == 0) {
             uint32_t bs;
-            if (!parse_u32(val, &bs) ||
+            if (!ernic_parse_u32(val, &bs) ||
                 (bs != 512 && bs != 1024 && bs != 2048 && bs != 4096)) {
                 set_err(err, errlen,
                         "bs must be 512, 1024, 2048 or 4096 (got '%s')", val);
@@ -276,7 +202,7 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
             }
         } else if (strcmp(key, "nsid") == 0) {
             uint32_t v;
-            if (!parse_u32(val, &v) || v == 0 || v == 0xffffffffu) {
+            if (!ernic_parse_u32(val, &v) || v == 0 || v == 0xffffffffu) {
                 set_err(err, errlen, "bad nsid '%s'", val);
                 ok = false;
             } else {
@@ -289,7 +215,7 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
             }
         } else if (strcmp(key, "port") == 0) {
             uint32_t v;
-            if (!parse_u32(val, &v) || v == 0 || v > 65535) {
+            if (!ernic_parse_u32(val, &v) || v == 0 || v > 65535) {
                 set_err(err, errlen, "bad port '%s'", val);
                 ok = false;
             } else {
@@ -297,7 +223,8 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
             }
         } else if (strcmp(key, "queues") == 0) {
             uint32_t v;
-            if (!parse_u32(val, &v) || v == 0 || v > IONIC_MAX_MR_QUEUES) {
+            if (!ernic_parse_u32(val, &v) || v == 0 ||
+                v > IONIC_MAX_MR_QUEUES) {
                 /* The ceiling is the memory-region budget, not the NVMe spec:
                  * the initiator pre-allocates IONIC_MR_PER_QUEUE regions per
                  * queue at connect time.  Refusing here turns what was a bare

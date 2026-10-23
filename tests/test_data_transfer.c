@@ -2,7 +2,6 @@
  * Comprehensive Data Transfer Test
  *
  * Tests actual send/recv operations with the loopback backend
- * Verifies data integrity and pattern generation
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -24,14 +23,6 @@
 
 #define BUFFER_SIZE  4096
 #define TEST_PATTERN 0xABu
-
-/* Test pattern types to verify */
-typedef enum {
-    PATTERN_CUSTOM,    /* Use our own test pattern */
-    PATTERN_ZEROS,     /* Verify zeros pattern */
-    PATTERN_ONES,      /* Verify ones pattern */
-    PATTERN_INCREMENT, /* Verify incrementing pattern */
-} test_pattern_t;
 
 /* Global test resources */
 struct test_context {
@@ -350,13 +341,6 @@ static int test_basic_send_recv(struct test_context *ctx)
     }
 
     printf("\n✓ Both operations completed!\n");
-
-    /* Note: With loopback backend in "preserve" mode, data isn't actually
-     * copied */
-    /* The loopback backend only simulates the operation */
-    printf("\nNote: Loopback backend simulates data transfer\n");
-    printf("      Actual data verification depends on backend pattern "
-           "configuration\n");
 
     return 0;
 }

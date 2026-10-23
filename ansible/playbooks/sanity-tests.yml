@@ -331,7 +331,7 @@
     # The only test in the tree that crosses the mesh wire with a datagram.
     # ib_send_bw and ibv_rc_pingpong above are RC, and every UD test in
     # tests/ puts both endpoints on one node, where a self-GID resolves to
-    # the local node and tcp_post_send() takes its local-delivery shortcut.
+    # the local node and the ionic data path delivers it in-process.
     # This addresses the AH with the PEER's GID, which is what selects
     # tcp_resolve_node_from_gid()'s remote path.
     #
@@ -376,8 +376,9 @@
         cmd: >-
           set -o pipefail;
           {{ item }} 'mkdir -p /tmp/ud-mesh' &&
-          tar -C {{ ernic_project_root }}/tests -cf -
-          test_ud_mesh.c ernic_device.h |
+          tar -cf -
+          -C {{ ernic_project_root }}/tests test_ud_mesh.c ernic_device.h
+          -C {{ ernic_project_root }}/src parse_int.h |
           {{ item }} 'tar -C /tmp/ud-mesh -xf -'
       loop:
         - "{{ vm1_ssh }}"

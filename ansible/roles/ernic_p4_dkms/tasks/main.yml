@@ -1,0 +1,382 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+# Build ernic_p4.ko in a guest and load it.
+#
+# See defaults/main.yml for why this is a separate role from
+# ernic_srq_dkms, and why requiring /dev/ernic-p4 is opt-in.
+
+# Asserted rather than installed. This runs on hosts whose package set is
+# somebody else's decision, and installing a kernel-headers package on a
+# host whose running kernel does not match it is a way to build against
+# the wrong tree.
+- name: Check the build prerequisites are present
+  become: true
+  ansible.builtin.command:
+    cmd: "{{ item }} --version"
+  changed_when: false
+  failed_when: false
+  register: ernic_p4_prereq
+  loop:
+    - dkms
+    - git
+    - make
+
+- name: Fail clearly when a prerequisite is missing
+  ansible.builtin.assert:
+    that: item.rc == 0
+    fail_msg: >-
+      {{ item.item }} is not available on this host. Building ernic_p4
+      needs dkms, git and make, plus headers for the running kernel
+      ({{ ansible_kernel }}).
+  loop: "{{ ernic_p4_prereq.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Check the module sources are on the target
+  ansible.builtin.stat:
+    path: "{{ ernic_p4_dkms_module_dir }}/ernic_p4.c"
+  register: ernic_p4_src
+
+- name: Fail clearly when the module sources are missing
+  ansible.builtin.assert:
+    that: ernic_p4_src.stat.exists
+    fail_msg: >-
+      {{ ernic_p4_dkms_module_dir }}/ernic_p4.c is not on this host. This
+      role builds the module out of a rocm-ernic checkout; point
+      ernic_p4_dkms_repo_dir at one.
+
+# The pin lives in cmake/ErnicKernelModule.cmake and is read from there
+# rather than copied into this role's defaults, so a bump in one place
+# cannot leave the guest building a different tree than the host expects.
+- name: Read the file the kernel ref is pinned in
+  when: not ernic_p4_dkms_kernel_ref
+  ansible.builtin.slurp:
+    src: "{{ ernic_p4_dkms_repo_dir }}/cmake/ErnicKernelModule.cmake"
+  register: ernic_p4_cmake
+
+- name: Settle on the kernel ref
+  ansible.builtin.set_fact:
+    ernic_p4_ref: >-
+      {{ ernic_p4_dkms_kernel_ref
+         if ernic_p4_dkms_kernel_ref
+         else (ernic_p4_cmake.content | b64decode
+               | regex_search('set\(IONIC_KERNEL_REF "([^"]+)"', '\1')
+               | first | default('', true)) }}
+
+- name: Fail clearly when no kernel ref could be resolved
+  ansible.builtin.assert:
+    that: ernic_p4_ref | length > 0
+    fail_msg: >-
+      No kernel ref: ernic_p4_dkms_kernel_ref is unset and
+      IONIC_KERNEL_REF could not be read from
+      {{ ernic_p4_dkms_repo_dir }}/cmake/ErnicKernelModule.cmake.
+
+- name: Discard any cached ionic checkout
+  become: true
+  when: ernic_p4_dkms_force_fetch | bool
+  ansible.builtin.file:
+    path: "{{ ernic_p4_dkms_source_dir }}"
+    state: absent
+
+- name: Fetch ionic sources with both patch series
+  become: true
+  ansible.builtin.command:
+    cmd: >-
+      {{ ernic_p4_dkms_scripts_dir }}/fetch-ionic-sources.sh
+      --source-dir {{ ernic_p4_dkms_source_dir }}
+      --kernel-ref {{ ernic_p4_ref }}
+      {% if ernic_p4_dkms_kernel_repo %}--repo {{ ernic_p4_dkms_kernel_repo }}
+      {% endif %}
+      {% for d in ernic_p4_dkms_patches_dirs %}--patches-dir {{ d }} {% endfor %}
+    creates: "{{ ernic_p4_dkms_source_dir }}/drivers/net/ethernet"
+
+# The check that makes a tree without patches/p4 loud.
+#
+# Without it the module builds against a tree whose ionic creates one
+# auxiliary device, loads, and never probes -- which reads as a broken
+# module rather than a missing patch series, and is the failure this
+# whole path is most likely to produce.
+- name: Confirm the tree carries the P4 capability bit
+  become: true
+  ansible.builtin.command:
+    cmd: >-
+      grep -q IONIC_LIF_CAP_P4
+      {{ ernic_p4_dkms_source_dir }}/{{ ernic_p4_dkms_ionic_subdir }}/ionic_if.h
+  register: ernic_p4_cap
+  changed_when: false
+  failed_when: false
+
+- name: Fail when the tree lacks patches/p4
+  ansible.builtin.assert:
+    that: ernic_p4_cap.rc == 0
+    fail_msg: >-
+      {{ ernic_p4_dkms_source_dir }} has no IONIC_LIF_CAP_P4, so its ionic
+      creates no "p4" auxiliary device and ernic_p4 would load and never
+      bind. Check that ernic_p4_dkms_patches_dirs names patches/p4 as well
+      as patches.
+
+# Recorded before the build, because dkms autoinstall on a later kernel
+# upgrade runs from a context with none of this role's variables and
+# reads the path from here.
+- name: Record where the ionic sources are, for dkms autoinstall
+  become: true
+  ansible.builtin.copy:
+    content: "{{ ernic_p4_dkms_source_dir }}\n"
+    dest: "{{ ernic_p4_dkms_src_pointer }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+# The ionic the guest runs is DKMS-built, so its exported symbols are
+# not in the kernel's Module.symvers. Finding the right ones is the same
+# problem dkms autoinstall has on a later kernel upgrade, so it is solved
+# once, in the script both call, rather than twice.
+- name: Find the ionic symbols to build against
+  become: true
+  when: not ernic_p4_dkms_ionic_symvers
+  ansible.builtin.command:
+    cmd: >-
+      {{ ernic_p4_dkms_module_dir }}/find-ionic-symvers.sh
+      {{ ansible_kernel }}
+  register: ernic_p4_symvers_found
+  changed_when: false
+  failed_when: false
+
+- name: Settle on the Module.symvers to build against
+  ansible.builtin.set_fact:
+    ernic_p4_symvers: >-
+      {{ ernic_p4_dkms_ionic_symvers
+         if ernic_p4_dkms_ionic_symvers
+         else (ernic_p4_symvers_found.stdout | default('') | trim) }}
+
+- name: Report which symbols the module will be built against
+  vars:
+    ernic_p4_symvers_label: the kernel's own
+  ansible.builtin.debug:
+    msg: >-
+      building against
+      {{ ernic_p4_symvers | default(ernic_p4_symvers_label, true) }}
+
+# Falling back to the kernel's own symbols is not a safe default here.
+# patches/p4 changes the CRC of the symbol this module calls, so the
+# fallback builds a module that compiles, installs, and then will not
+# insert -- diagnosable only from dmesg. Stop where the cause is.
+- name: Fail when the ionic symbols could not be found
+  when: ernic_p4_dkms_require_device | bool
+  ansible.builtin.assert:
+    that: ernic_p4_symvers | length > 0
+    fail_msg: >-
+      No Module.symvers exporting ionic_adminq_post_wait could be found
+      or rebuilt for {{ ansible_kernel }}. Building against the kernel's
+      own symbols would produce a module that cannot insert against a
+      patched ionic.
+      Lookup said: {{ ernic_p4_symvers_found.msg
+                      | default(ernic_p4_symvers_found.stderr
+                                | default('nothing'), true) }}
+
+# The version is read out of dkms.conf rather than repeated here, for the
+# reason the kernel ref is: two copies of a version are one bump away
+# from registering a package under a name nothing else uses.
+- name: Read the packaged module version
+  ansible.builtin.slurp:
+    src: "{{ ernic_p4_dkms_module_dir }}/dkms.conf"
+  register: ernic_p4_dkms_conf
+
+- name: Settle on the package name and version
+  ansible.builtin.set_fact:
+    ernic_p4_pkg: >-
+      {{ ernic_p4_dkms_conf.content | b64decode
+         | regex_search('PACKAGE_NAME="([^"]+)"', '\1')
+         | first | default('', true) }}
+    ernic_p4_ver: >-
+      {{ ernic_p4_dkms_conf.content | b64decode
+         | regex_search('PACKAGE_VERSION="([^"]+)"', '\1')
+         | first | default('', true) }}
+
+- name: Fail clearly when dkms.conf names no package
+  ansible.builtin.assert:
+    that:
+      - ernic_p4_pkg | length > 0
+      - ernic_p4_ver | length > 0
+    fail_msg: >-
+      {{ ernic_p4_dkms_module_dir }}/dkms.conf declares no PACKAGE_NAME
+      or PACKAGE_VERSION, so there is nothing to register with dkms.
+
+# An earlier version of this role put the module here by hand. depmod
+# prefers updates/ over updates/dkms/, so a guest provisioned by both
+# would keep loading the stale one and the dkms rebuild would have no
+# effect -- the failure this change exists to remove, arrived at from
+# the other side.
+#
+# Removed before the install, and the handler flushed straight after,
+# because the task that inserts the module is in this same play: left to
+# run at the end of it, depmod would rebuild the map only after modprobe
+# had already loaded the stale module it was meant to hide.
+- name: Remove a hand-installed module from an earlier run
+  become: true
+  ansible.builtin.file:
+    path: "/lib/modules/{{ ansible_kernel }}/updates/ernic_p4.ko"
+    state: absent
+  notify: Rebuild the module dependency map
+
+- name: Apply the removal before anything builds on it
+  ansible.builtin.meta: flush_handlers
+
+# Built through dkms rather than with a bare make and a copy into
+# /lib/modules.
+#
+# The module has to be rebuilt on a kernel upgrade -- it is pinned to the
+# CRCs of an out-of-tree ionic that is itself DKMS-built and will be
+# rebuilt too -- and a hand-copied .ko is not, so after the first upgrade
+# the guest had a module that would no longer insert and nothing that
+# would notice. dkms.conf carried AUTOINSTALL="yes" the whole time; the
+# package was simply never registered for it to apply to.
+- name: Stage the module sources where dkms expects them
+  become: true
+  ansible.builtin.copy:
+    src: "{{ ernic_p4_dkms_module_dir }}/"
+    dest: "/usr/src/{{ ernic_p4_pkg }}-{{ ernic_p4_ver }}/"
+    remote_src: true
+    owner: root
+    group: root
+    mode: preserve
+    directory_mode: "0755"
+
+# Re-registering over an existing build is how a changed source tree gets
+# ignored: dkms keeps the version it already has. Removing first makes
+# this role rebuild what is in the checkout, which is the only thing it
+# is here to prove.
+- name: Drop any previous registration
+  become: true
+  ansible.builtin.command:
+    cmd: "dkms remove {{ ernic_p4_pkg }}/{{ ernic_p4_ver }} --all"
+  register: ernic_p4_dkms_removed
+  changed_when: ernic_p4_dkms_removed.rc == 0
+  failed_when: false
+
+- name: Register the module with dkms
+  become: true
+  ansible.builtin.command:
+    cmd: "dkms add {{ ernic_p4_pkg }}/{{ ernic_p4_ver }}"
+  changed_when: true
+
+- name: Build and install the module
+  become: true
+  environment:
+    IONIC_SRC: "{{ ernic_p4_dkms_source_dir }}"
+    IONIC_SYMVERS: "{{ ernic_p4_symvers }}"
+  ansible.builtin.command:
+    cmd: >-
+      dkms {{ item }} {{ ernic_p4_pkg }}/{{ ernic_p4_ver }}
+      -k {{ ansible_kernel }}
+  loop:
+    - build
+    - install
+  changed_when: true
+
+# A failed insert says only "Invalid argument"; the reason is in the
+# kernel log. Capturing it here is the difference between a diagnosis
+# and another round trip through CI.
+- name: Load the module
+  when: ernic_p4_dkms_load | bool
+  block:
+    - name: Insert ernic_p4
+      become: true
+      community.general.modprobe:
+        name: ernic_p4
+        state: present
+  rescue:
+    - name: Collect the kernel's complaint
+      become: true
+      ansible.builtin.command:
+        cmd: dmesg --notime --level=err,warn
+      register: ernic_p4_dmesg
+      changed_when: false
+      failed_when: false
+
+    - name: Fail with what the kernel said
+      ansible.builtin.fail:
+        msg: >-
+          ernic_p4 would not insert. Kernel log:
+          {{ (ernic_p4_dmesg.stdout_lines | default([]))[-25:] | join(' | ') }}
+
+# Loaded is not bound. The module can load against a NIC that advertises
+# no P4 capability and sit there with no device to probe, which is a
+# correct outcome and not one to assert away.
+- name: Confirm the module is loaded
+  become: true
+  when: ernic_p4_dkms_load | bool
+  ansible.builtin.command:
+    cmd: grep -q '^ernic_p4 ' /proc/modules
+  register: ernic_p4_loaded
+  changed_when: false
+  failed_when: ernic_p4_loaded.rc != 0
+
+- name: Look for the character device
+  when: ernic_p4_dkms_load | bool
+  ansible.builtin.stat:
+    path: "{{ ernic_p4_dkms_device }}"
+  register: ernic_p4_node
+
+# The module loading and the device appearing are two different things,
+# and the reasons they diverge are all off in the guest's own state: what
+# aux devices the ionic created, which ionic is loaded, and whether the
+# tree it was built from carried the series at all. Collect those before
+# failing, because each previous round of this cost a CI run to learn one
+# fact that was sitting right here.
+- name: Collect why the device is missing
+  become: true
+  when:
+    - ernic_p4_dkms_load | bool
+    - ernic_p4_dkms_require_device | bool
+    - not ernic_p4_node.stat.exists
+  ansible.builtin.shell:
+    cmd: |
+      set -uo pipefail
+      echo "aux devices:"
+      find /sys/bus/auxiliary/devices/ -maxdepth 1 -mindepth 1 -printf '  %f\n' \
+          2>/dev/null || echo "  (none)"
+      echo "loaded ionic:"
+      modinfo -n ionic 2>/dev/null | sed 's/^/  /' || echo "  (not loaded)"
+      echo "fetch sentinels (a stale one skips the re-fetch):"
+      find /var/tmp/ionic-src -maxdepth 1 -name '.patches-applied-*' \
+          -printf '  %f\n' 2>/dev/null || echo "  (none)"
+      echo "capability bit in the tree ionic was built from:"
+      for d in /var/tmp/ionic-src /usr/src/ionic-ernic-*; do
+          [ -d "$d" ] || continue
+          if grep -rqs IONIC_LIF_CAP_P4 "$d"; then
+              echo "  $d: present"
+          else
+              echo "  $d: ABSENT"
+          fi
+      done
+    executable: /bin/bash
+  register: ernic_p4_why
+  changed_when: false
+  failed_when: false
+
+- name: Fail when the device was required and did not appear
+  when:
+    - ernic_p4_dkms_load | bool
+    - ernic_p4_dkms_require_device | bool
+  ansible.builtin.assert:
+    that: ernic_p4_node.stat.exists
+    fail_msg: >-
+      {{ ernic_p4_dkms_device }} did not appear, though ernic_p4 is
+      loaded. An "ABSENT" below means the ionic in this guest was built
+      without patches/p4, so it creates no "p4" auxiliary device for the
+      module to bind to; no aux devices at all means the NIC advertised
+      no capability, i.e. the server ran without --p4-guest-scope.
+      {{ ernic_p4_why.stdout | default('(nothing collected)') }}
+
+- name: Report what happened
+  ansible.builtin.debug:
+    msg: >-
+      ernic_p4 built against {{ ernic_p4_ref }};
+      {{ 'loaded' if ernic_p4_dkms_load | bool else 'not loaded' }};
+      {{ ernic_p4_dkms_device ~ ' present'
+         if ernic_p4_node.stat.exists | default(false)
+         else ernic_p4_dkms_device ~ ' absent (no P4 capability advertised)' }}
