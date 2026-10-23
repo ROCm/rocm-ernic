@@ -163,6 +163,40 @@
   `stats_type`, and the STATS_HDRS, STATS_VALS, QP_STATS_HDRS and
   QP_STATS_VALS admin commands are implemented; before, the driver created no
   counters at all.
+* `ernic-exporter` publishes the ionic LIF statistics block as
+  `ernic_lif_counter_total{ernic_id,role,counter}`, one series per named
+  field of `struct ionic_lif_stats` under its `ionic_if.h` name (74 of
+  them): Ethernet traffic by MAC class, drops, DMA and ring errors, RDMA
+  traffic, and the `rdma_req_*` / `rdma_resp_*` error counters. This is the
+  block a guest reads for `ip -s link`, and the exporter never published
+  any of it before. The counter is in a label rather than in the metric
+  name so that a counter the device starts keeping is published without an
+  exporter release. The Grafana dashboard gains a **LIF Counters
+  (ionic_lif_stats)** row: RDMA packet rate, RDMA error rate, Ethernet drop
+  and ring-error rate, and a table of every counter that has moved.
+  `docs/monitoring.rst` documents the metric, the separate guest-side
+  `hw_counters` view and which exporter metrics already carry it, and how
+  both counter sets compare with the silicon the emulator models.
+* `ernic-ionic-hw-stats` (CTest) drives the four hardware-statistics admin
+  commands over the vfio-user socket the way `ionic_rdma` does: it checks
+  that each table describes itself as the driver reads it, that a buffer
+  too small for a table gets whole entries only and nothing past its
+  length, that values for a QP that does not exist are refused rather than
+  zero-filled, and that the `--stats-file` the exporter reads carries the
+  same numbers. It drives a SEND, an RDMA WRITE and an RDMA READ of three
+  distinct sizes and checks that all five device and all eight per-QP
+  counters move by exactly the right amount, on the right QP. The
+  structural checks read whatever counter set the device advertises, so a
+  counter added to either table is covered without a test change.
+* `tools/gen-counter-docs.py` builds the counter lists under
+  `docs/generated/` from the C sources that define them --
+  `src/ionic_emu_stats.c` for the LIF block, `dev_stats` and `qp_stats` in
+  `src/ionic_adminq_priv.h` for the two `hw_counters` tables -- and
+  `docs/monitoring.rst` includes them instead of restating the sets. The
+  `sphinx-html` target regenerates them, Docs Check fails a change that
+  edits a counter without rerunning the script, and both docs workflows
+  now trigger on the counter sources, so adding a counter republishes the
+  site with it listed.
 * `--nic-profile NAME|PATH` (repeatable, later layers win per key) chooses
   what the emulated ionic NIC looks like to the guest: its identity (ASIC
   type and revision, firmware version) and link (speed, transceiver, maximum

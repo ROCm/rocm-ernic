@@ -22,6 +22,7 @@ import os
 import shlex
 import signal
 import subprocess
+import tempfile
 import time
 
 from . import vfu
@@ -29,6 +30,43 @@ from . import vfu
 # How long a server gets to exit after SIGTERM before it counts as hung.
 # Generous because a sanitizer or valgrind build is slow to tear down.
 DEFAULT_STOP_TIMEOUT = 20.0
+
+
+def run_vfu_suite(suite, binary, tests, fixture, extra_args=None):
+    """Run @tests against a loopback server in a throwaway directory.
+
+    The server, its socket and its log live under a temporary directory
+    that goes away with the run, and the server is always stopped and
+    checked, so a sanitizer report in it fails the suite even when a
+    test raised.
+
+    @fixture is called with the started server and the run directory,
+    and returns the object the tests are handed; anything a suite needs
+    to set up per run belongs there. @extra_args, if given, is called
+    with the run directory and returns extra server arguments, for a
+    suite that needs the server pointed at a path inside it.
+
+    Shared by the test programs that drive a real server over vfio-user,
+    which otherwise differ only in what they ask it for.
+    """
+    with tempfile.TemporaryDirectory(prefix="ernic-vfu-") as run_dir:
+        server = Server(
+            binary,
+            os.path.join(run_dir, "ionic.sock"),
+            log_path=os.path.join(run_dir, "server.log"),
+            extra_args=() if extra_args is None else extra_args(run_dir),
+        )
+        server.start(timeout=60)
+        fix = None
+        try:
+            fix = fixture(server, run_dir)
+            for name, func in tests:
+                suite.run(name, func, fix)
+        finally:
+            if fix is not None:
+                fix.close()
+            stop_and_check(suite, server)
+    suite.finish()
 
 
 def stop_and_check(suite, server, label="server"):
