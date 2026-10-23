@@ -20,6 +20,7 @@
 #include "rdma_rm_defs.h"
 #include "rdma_utils.h"
 #include "rocm_ernic_compat.h"
+#include "ernic_time.h"
 #include "parse_int.h"
 #include "qemu/thread.h"
 #include "rocm-ernic-warnings.h"
@@ -669,7 +670,7 @@ MeshNodeInfo *tcp_mesh_node_info_new(uint32_t node_id, const char *hostname,
     }
     node->port = port;
     node->is_alive = true;
-    node->last_heartbeat = time(NULL);
+    node->last_heartbeat_ms = ernic_monotonic_ms();
     return node;
 }
 
@@ -918,19 +919,10 @@ static void tcp_tune_sockbuf(int sockfd)
     }
 }
 
-/* Milliseconds on the monotonic clock, for timeouts. */
-uint64_t tcp_monotonic_ms(void)
-{
-    struct timespec ts;
-
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
-}
-
 /*
  * Wait for the non-blocking connect() in progress on sockfd to finish.
  * Returns 0 once it has succeeded, or -1 with errno set: to the connect's
- * own error, to ETIMEDOUT once tcp_monotonic_ms() reaches deadline_ms (if
+ * own error, to ETIMEDOUT once ernic_monotonic_ms() reaches deadline_ms (if
  * deadline_ms isn't zero), or to ECANCELED once *running is cleared (if
  * running isn't NULL).
  */
@@ -947,7 +939,7 @@ static int tcp_wait_connected(int sockfd, const atomic_bool *running,
             errno = ECANCELED;
             return -1;
         }
-        if (deadline_ms != 0 && tcp_monotonic_ms() >= deadline_ms) {
+        if (deadline_ms != 0 && ernic_monotonic_ms() >= deadline_ms) {
             errno = ETIMEDOUT;
             return -1;
         }
@@ -1001,7 +993,7 @@ int tcp_connect_any(const struct addrinfo *addrs, const atomic_bool *running,
          * with ETIMEDOUT, moves on to the next address.
          */
         if (err == ECANCELED ||
-            (deadline_ms != 0 && tcp_monotonic_ms() >= deadline_ms))
+            (deadline_ms != 0 && ernic_monotonic_ms() >= deadline_ms))
             break;
     }
     errno = err;
@@ -1015,7 +1007,7 @@ int tcp_connect_any(const struct addrinfo *addrs, const atomic_bool *running,
  * hold the caller until the kernel gives up on it, about two minutes.  A
  * caller that passes its thread's stop flag in running gets control back
  * within 100 ms of the flag being cleared, and a nonzero deadline_ms, a time
- * on tcp_monotonic_ms()'s clock, gives up then, however many addresses host
+ * on ernic_monotonic_ms()'s clock, gives up then, however many addresses host
  * has.  With neither, it waits as long as a blocking connect() would.
  * Resolving host can still block.
  */
@@ -1239,7 +1231,7 @@ static int tcp_send_message(TcpBackendPrivate *priv, int sockfd,
  * the first got are already there, waiting for each part as it comes.  A peer
  * can withhold the rest, or trickle it, indefinitely, so the wait gives up
  * once *running is cleared, if running isn't NULL (otherwise the thread's stop
- * would wait on the peer), or once tcp_monotonic_ms() reaches deadline_ms, if
+ * would wait on the peer), or once ernic_monotonic_ms() reaches deadline_ms, if
  * deadline_ms isn't zero.  what names the part being read, for the log.
  */
 static int tcp_recv_rest(int sockfd, void *buf, size_t len, size_t got,
@@ -1253,7 +1245,7 @@ static int tcp_recv_rest(int sockfd, void *buf, size_t len, size_t got,
             rdma_info_report("TCP: Stopped while receiving %s", what);
             return -1;
         }
-        if (deadline_ms != 0 && tcp_monotonic_ms() >= deadline_ms) {
+        if (deadline_ms != 0 && ernic_monotonic_ms() >= deadline_ms) {
             rdma_error_report("TCP: Timed out receiving %s", what);
             return -1;
         }
@@ -1556,7 +1548,7 @@ bool tcp_worker_publish_peer(TcpBackendPrivate *priv,
 
 /*
  * Connect a worker to target and publish the connection, giving up at
- * deadline_ms (on tcp_monotonic_ms()'s clock) or when *running is cleared.
+ * deadline_ms (on ernic_monotonic_ms()'s clock) or when *running is cleared.
  * Returns true if the connection was published.
  *
  * Called on the peer-connect thread without conn_table_lock, which every
@@ -1713,7 +1705,7 @@ static void tcp_worker_peer_pass(TcpBackendPrivate *priv, const GArray *targets)
             continue;
         }
         tcp_worker_connect_peer(priv, target, &priv->peer_thread_running,
-                                tcp_monotonic_ms() +
+                                ernic_monotonic_ms() +
                                     (uint64_t)priv->health_check_interval_sec *
                                         1000u);
     }
@@ -2293,7 +2285,7 @@ void *tcp_recv_thread_per_conn(void *opaque)
                     MeshNodeInfo *node = g_hash_table_lookup(
                         priv->mesh_nodes, GUINT_TO_POINTER(conn->node_id));
                     if (node) {
-                        node->last_heartbeat = time(NULL);
+                        node->last_heartbeat_ms = ernic_monotonic_ms();
                         revived = !node->is_alive;
                         node->is_alive = true;
                     }
@@ -2470,7 +2462,7 @@ static void tcp_reap_pending_conns(TcpBackendPrivate *priv)
 
     qemu_mutex_lock(&priv->conn_table_lock);
     /* Read under the lock, so no connection on the list is newer */
-    uint64_t now_ms = tcp_monotonic_ms();
+    uint64_t now_ms = ernic_monotonic_ms();
 
     for (guint i = 0; i < priv->pending_conns->len;) {
         TcpConnection *conn = g_ptr_array_index(priv->pending_conns, i);
@@ -2519,11 +2511,8 @@ void *tcp_accept_thread(void *opaque)
         sockfd = accept4(priv->listen_fd, (struct sockaddr *)&client_addr,
                          &client_len, SOCK_CLOEXEC | SOCK_NONBLOCK);
 
+        /* The listen socket is blocking, so there's no EAGAIN to retry */
         if (sockfd < 0) {
-            if (errno == EAGAIN) {
-                usleep(100000); /* 100ms */
-                continue;
-            }
             if (!atomic_load(&priv->accept_thread_running)) {
                 break;
             }
@@ -2538,7 +2527,7 @@ void *tcp_accept_thread(void *opaque)
             if (priv->is_manager) {
                 tcp_reap_pending_conns(priv);
             }
-            usleep(100000); /* 100ms */
+            ernic_sleep_us(100000); /* 100 ms */
             continue;
         }
 
@@ -2564,7 +2553,7 @@ void *tcp_accept_thread(void *opaque)
             conn->sockfd = sockfd;
             atomic_store(&conn->is_connected, true);
             conn->priv = priv;
-            conn->accepted_ms = tcp_monotonic_ms();
+            conn->accepted_ms = ernic_monotonic_ms();
 
             /*
              * Start receive thread - it will handle REGISTER_NODE, which
@@ -2599,7 +2588,7 @@ void *tcp_accept_thread(void *opaque)
              * no longer than one that sends nothing.
              */
             uint64_t deadline_ms =
-                tcp_monotonic_ms() + TCP_HANDSHAKE_TIMEOUT_MS;
+                ernic_monotonic_ms() + TCP_HANDSHAKE_TIMEOUT_MS;
             int recv_ret;
 
             for (;;) {
@@ -2633,13 +2622,19 @@ void *tcp_accept_thread(void *opaque)
                         close(sockfd);
                         goto next_connection;
                     }
-                    if (tcp_monotonic_ms() >= deadline_ms) {
+                    if (ernic_monotonic_ms() >= deadline_ms) {
                         rdma_error_report("TCP: Timeout waiting for handshake "
                                           "from incoming connection");
                         close(sockfd);
                         goto next_connection;
                     }
-                    usleep(100000); /* 100ms */
+                    /*
+                     * Wait for it, but no more than 100 ms at a time:
+                     * stopping the thread doesn't wake this poll().
+                     */
+                    struct pollfd pfd = {.fd = sockfd, .events = POLLIN};
+
+                    poll(&pfd, 1, 100);
                     continue;
                 } else {
                     /* An error, a hang-up, a stop, or the deadline */
@@ -3062,13 +3057,13 @@ void tcp_retire_conn(TcpConnection *conn)
 
 /*
  * Whether node has gone too long without a heartbeat, which is three
- * intervals.  The caller holds mesh_table_lock.
+ * intervals.  The caller holds mesh_table_lock, and read now_ms under it.
  */
 static bool tcp_node_silent(const TcpBackendPrivate *priv,
-                            const MeshNodeInfo *node, time_t now)
+                            const MeshNodeInfo *node, uint64_t now_ms)
 {
-    return now - node->last_heartbeat >
-           (time_t)priv->health_check_interval_sec * 3;
+    return now_ms - node->last_heartbeat_ms >
+           (uint64_t)priv->health_check_interval_sec * 3000u;
 }
 
 /*
@@ -3078,19 +3073,21 @@ static bool tcp_node_silent(const TcpBackendPrivate *priv,
  * the ones due a reconnect attempt.  Returns true if a node was newly
  * declared dead, which the rest of the mesh has to be told.
  */
-static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items,
-                                  time_t now)
+static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items)
 {
     bool newly_dead = false;
     GHashTableIter iter;
     gpointer value;
 
     qemu_mutex_lock(&priv->mesh_table_lock);
+    /* Read under the lock, so no heartbeat is newer */
+    uint64_t now_ms = ernic_monotonic_ms();
+
     g_hash_table_iter_init(&iter, priv->mesh_nodes);
     while (g_hash_table_iter_next(&iter, NULL, &value)) {
         MeshNodeInfo *node = (MeshNodeInfo *)value;
         TcpHealthCheckItem item = {node, NULL, false, false};
-        time_t dead_sec = now - node->last_heartbeat;
+        uint64_t dead_sec = (now_ms - node->last_heartbeat_ms) / 1000u;
 
         if (node->node_id == tcp_local_node(priv))
             continue;
@@ -3113,18 +3110,18 @@ static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items,
             item.disconnected = true;
         }
 
-        if (tcp_node_silent(priv, node, now)) {
+        if (tcp_node_silent(priv, node, now_ms)) {
             if (node->is_alive) {
                 rdma_warn_report("TCP: Node %u failed health check (last "
-                                 "heartbeat: %ld seconds ago)",
-                                 node->node_id, (long)dead_sec);
+                                 "heartbeat: %" PRIu64 " seconds ago)",
+                                 node->node_id, dead_sec);
                 node->is_alive = false;
                 tcp_gid_claims_set_alive(priv, node->node_id, false);
                 newly_dead = true;
             }
 
             /* Attempt reconnection with exponential backoff (max 60 s) */
-            time_t backoff = 1;
+            uint64_t backoff = 1;
             while (backoff * 2 <= dead_sec && backoff < 60)
                 backoff *= 2;
             if (backoff > 60)
@@ -3228,7 +3225,7 @@ static bool tcp_node_still_silent(TcpBackendPrivate *priv, MeshNodeInfo *node)
     bool silent;
 
     qemu_mutex_lock(&priv->mesh_table_lock);
-    silent = tcp_node_silent(priv, node, time(NULL));
+    silent = tcp_node_silent(priv, node, ernic_monotonic_ms());
     qemu_mutex_unlock(&priv->mesh_table_lock);
     if (!silent)
         rdma_info_report("TCP: Node %u has answered; not reconnecting",
@@ -3238,7 +3235,7 @@ static bool tcp_node_still_silent(TcpBackendPrivate *priv, MeshNodeInfo *node)
 
 /*
  * Reconnect to item->node, retiring item->conn, giving up at deadline_ms
- * (on tcp_monotonic_ms()'s clock).  Called with no lock held: the connect
+ * (on ernic_monotonic_ms()'s clock).  Called with no lock held: the connect
  * can take until the deadline, the handshake can wait on the peer, and
  * retiring the old connection joins its receive thread, whose handlers take
  * mesh_table_lock.  Returns true if the node has a new connection.
@@ -3319,7 +3316,7 @@ bool tcp_health_check_reconnect(TcpBackendPrivate *priv,
     }
     qemu_mutex_unlock(&priv->conn_table_lock);
     node->is_alive = true;
-    node->last_heartbeat = time(NULL);
+    node->last_heartbeat_ms = ernic_monotonic_ms();
     /*
      * The node is reachable again, so its addresses are its own again. The
      * same restoration the heartbeat-revival path does, for the other way a
@@ -3338,7 +3335,7 @@ bool tcp_health_check_reconnect(TcpBackendPrivate *priv,
 
 /*
  * The reconnect phase of a health-check pass: try the items due a
- * reconnect, until deadline_ms (on tcp_monotonic_ms()'s clock) or a stop.
+ * reconnect, until deadline_ms (on ernic_monotonic_ms()'s clock) or a stop.
  * Returns true if a node was reconnected.
  *
  * A node whose turn comes after the deadline is deferred: it is due on the
@@ -3361,7 +3358,7 @@ bool tcp_health_check_reconnects(TcpBackendPrivate *priv, GArray *items,
 
         if (!item->reconnect)
             continue;
-        if (tcp_monotonic_ms() >= deadline_ms) {
+        if (ernic_monotonic_ms() >= deadline_ms) {
             /* Already in line, it keeps its place */
             if (item->node->reconnect_deferred == 0)
                 item->node->reconnect_deferred = ++priv->reconnect_deferrals;
@@ -3398,7 +3395,7 @@ void *tcp_manager_health_check_thread(void *opaque)
         /* The accept thread reaps too, but only when a peer connects */
         tcp_reap_pending_conns(priv);
 
-        bool newly_dead = tcp_health_check_scan(priv, items, time(NULL));
+        bool newly_dead = tcp_health_check_scan(priv, items);
         tcp_health_check_retire(priv, items);
 
         for (guint i = 0; i < items->len; i++) {
@@ -3443,7 +3440,7 @@ void *tcp_manager_health_check_thread(void *opaque)
          */
         if (tcp_health_check_reconnects(
                 priv, items,
-                tcp_monotonic_ms() +
+                ernic_monotonic_ms() +
                     (uint64_t)priv->health_check_interval_sec * 1000u)) {
             tcp_broadcast_mesh_topology(priv);
             /* A reconnected node owns its GIDs again; the workers took the

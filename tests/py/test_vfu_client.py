@@ -15,9 +15,11 @@ SPDX-License-Identifier: GPL-2.0-or-later
 import argparse
 import errno
 import os
+import re
 import struct
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -227,6 +229,60 @@ def test_irqs(suite, client):
             os.close(fd)
 
 
+def read_stats(path):
+    """The stats file's connection state and write count.
+
+    None if the file isn't there yet, or was read part-way through being
+    rewritten.
+    """
+    try:
+        with open(path, encoding="utf-8") as stats:
+            text = stats.read()
+    except OSError:
+        return None
+    state = re.search(r"^  connection *: (.*)$", text, re.M)
+    count = re.search(r"^Write count : ([0-9]+)$", text, re.M)
+    if not state or not count:
+        return None
+    return state.group(1), int(count.group(1))
+
+
+def test_stats_file(suite, stats_path):
+    """The server rewrites --stats-file about once a second while attached.
+
+    Two rewrites after the first look take at least a second between them;
+    a server that rewrote it on every pass of its loop would get there in
+    milliseconds.
+    """
+    deadline = time.monotonic() + 15
+    first = None
+    last = None
+    while time.monotonic() < deadline:
+        looked = time.monotonic()
+        stats = read_stats(stats_path)
+        if stats is not None:
+            last = stats
+        if stats is not None and stats[0] == "connected":
+            if first is None:
+                first = (looked, stats[1])
+            elif stats[1] >= first[1] + 2:
+                took = time.monotonic() - first[0]
+                suite.check(
+                    took >= 0.9,
+                    "the stats file was rewritten twice in %.2f s while "
+                    "attached, and no faster than once a second",
+                    took,
+                )
+                return
+        time.sleep(0.05)
+    suite.check(
+        False,
+        "the stats file wasn't rewritten twice within 15 s while attached "
+        "(last read: %r)",
+        last,
+    )
+
+
 def test_reset_and_reconnect(suite, client, socket_path):
     """A device reset, and a second client after the first detaches."""
     client.reset()
@@ -251,10 +307,12 @@ def main():
 
     suite = Suite("rocm-ernic vfio-user protocol tests")
     with tempfile.TemporaryDirectory(prefix="ernic-vfu-") as run_dir:
+        stats_path = os.path.join(run_dir, "stats")
         server = Server(
             args.server,
             os.path.join(run_dir, "vfu.sock"),
             log_path=os.path.join(run_dir, "server.log"),
+            extra_args=("--stats-file", stats_path),
         )
         server.start(timeout=60)
         try:
@@ -265,6 +323,7 @@ def main():
             suite.run("BAR access and its bounds", test_bar_access, client)
             suite.run("DMA mapping", test_dma, client)
             suite.run("interrupts", test_irqs, client)
+            suite.run("stats file", test_stats_file, stats_path)
             suite.run(
                 "reset and reconnect",
                 test_reset_and_reconnect,

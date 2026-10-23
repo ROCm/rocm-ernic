@@ -694,6 +694,15 @@
 
 ### Fixed
 
+* The TCP mesh manager's health check measures how long a node has been
+  silent on the monotonic clock. It used the wall clock, so an NTP step or
+  a change to the date could have it declare every node dead at once, or
+  leave a dead node alive, until the clock caught up. The `--stats-file`
+  file is rewritten once a second on the monotonic clock too, which
+  `ernic-vfu-client` now checks while a client is attached.
+* The server notices a client connecting at once, rather than up to 100 ms
+  later, and a worker in the TCP mesh reads a peer's handshake as soon as it
+  arrives. Both waited out a fixed sleep before looking again.
 * The log level is safe to read from any thread. The first log call looks
   up `ERNIC_LOG_LEVEL`, and two threads making it together raced: both
   could warn about an invalid value, and one could overwrite a level just

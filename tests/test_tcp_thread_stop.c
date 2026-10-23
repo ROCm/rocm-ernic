@@ -123,7 +123,6 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include <arpa/inet.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -149,7 +148,9 @@
 #endif
 
 #include <glib.h>
+#include <infiniband/verbs.h>
 
+#include "ernic_time.h"
 #include "qemu/error-report.h"
 #include "qemu/thread.h"
 #include "rdma/rdma_backend_ops.h"
@@ -587,7 +588,7 @@ static int run_health_case(const struct health_case *c)
         atomic_store(&conn->is_connected, true);
         g_hash_table_insert(priv->connections, GUINT_TO_POINTER(1), conn);
         node->is_alive = true;
-        node->last_heartbeat = time(NULL);
+        node->last_heartbeat_ms = ernic_monotonic_ms();
         g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(1), node);
     }
 
@@ -955,7 +956,7 @@ static int worker_attach(TcpBackendPrivate *priv, TcpConnection **connp)
     atomic_store(&conn->is_connected, true);
     conn->priv = priv;
     /* Or a reap would find it past the registration timeout */
-    conn->accepted_ms = tcp_monotonic_ms();
+    conn->accepted_ms = ernic_monotonic_ms();
     qemu_mutex_lock(&priv->conn_table_lock);
     g_ptr_array_add(priv->pending_conns, conn);
     atomic_store(&conn->recv_thread_running, true);
@@ -1719,17 +1720,17 @@ static const char *rc_setup(struct rc_fixture *fx, uint16_t port,
 
 /*
  * Make the nodes look dead_s seconds dead, and start the health-check
- * thread.  It starts just after the second ticks over, so its first pass,
- * which comes at once, sees exactly dead_s.
+ * thread.  Its first pass comes at once, well within a second, so it sees
+ * exactly dead_s whole seconds.  On a machine up for less than dead_s, the
+ * time wraps, but the age the scan works out from it, in unsigned
+ * arithmetic, is still right.
  */
-static void rc_start(struct rc_fixture *fx, time_t dead_s)
+static void rc_start(struct rc_fixture *fx, uint64_t dead_s)
 {
-    time_t t0 = time(NULL);
+    uint64_t last_ms = ernic_monotonic_ms() - dead_s * 1000u;
 
-    while (time(NULL) == t0)
-        sleep_ms(5);
     for (uint32_t i = 0; i < fx->nodes; i++)
-        fx->node[i]->last_heartbeat = time(NULL) - dead_s;
+        fx->node[i]->last_heartbeat_ms = last_ms;
     atomic_store(&fx->priv->health_check_running, true);
     qemu_thread_create(&fx->priv->health_check_thread,
                        tcp_manager_health_check_thread, fx->priv);
@@ -1894,7 +1895,7 @@ struct rc_case {
     enum rc_scenario scenario;
     uint32_t nodes;
     uint32_t interval; /* health_check_interval_sec, the reconnects' budget */
-    time_t dead_s;
+    uint64_t dead_s;
 };
 
 static const struct rc_case rc_cases[] = {
@@ -2055,7 +2056,7 @@ static int run_connect_case(const struct connect_case *c)
     if (port[0] != 0 && (addrs == 1 || port[1] != 0)) {
         start = now_s();
         if (c->timeout_s != 0)
-            deadline_ms = tcp_monotonic_ms() + c->timeout_s * UINT64_C(1000);
+            deadline_ms = ernic_monotonic_ms() + c->timeout_s * UINT64_C(1000);
         if (addrs == 1)
             fd = tcp_connect_to_remote("127.0.0.1", port[0], NULL, deadline_ms);
         else
@@ -2464,7 +2465,8 @@ static int run_queue_case(void)
     if (!why) {
         fx.node[2]->port = ntohs(addr.sin_port);
         for (uint32_t i = 0; i < fx.nodes; i++)
-            fx.node[i]->last_heartbeat = time(NULL) - 4 * LONG_INTERVAL_S;
+            fx.node[i]->last_heartbeat_ms =
+                ernic_monotonic_ms() - 4 * LONG_INTERVAL_S * 1000u;
         /* The connects stop when this is cleared; no thread is started */
         atomic_store(&fx.priv->health_check_running, true);
 
@@ -2479,7 +2481,7 @@ static int run_queue_case(void)
             }
             /* Long enough to try one node that doesn't answer, and no more */
             tcp_health_check_reconnects(fx.priv, items,
-                                        tcp_monotonic_ms() + 300);
+                                        ernic_monotonic_ms() + 300);
             passes++;
         }
         atomic_store(&fx.priv->health_check_running, false);
@@ -4205,7 +4207,7 @@ static const char *sp_read(const struct sp_case *c, int fd,
     } want[] = {{TCP_MSG_HEARTBEAT, 100, SP_A_LEN, 0xa5},
                 {TCP_MSG_HANDSHAKE, 200, SP_B_LEN, 0x5a}};
     uint64_t deadline_ms =
-        c->deadline_ms ? tcp_monotonic_ms() + c->deadline_ms : 0;
+        c->deadline_ms ? ernic_monotonic_ms() + c->deadline_ms : 0;
 
     for (int i = 0; i <= c->want_msgs; i++) {
         TcpMsgHeader hdr;
@@ -4286,7 +4288,7 @@ static int run_sp_case(const struct sp_case *c)
         why = "the last call returned the wrong value";
     /*
      * A wait that ends early, or on the writer, rather than at the deadline.
-     * tcp_monotonic_ms() truncates to the millisecond, so the deadline can
+     * ernic_monotonic_ms() truncates to the millisecond, so the deadline can
      * fall just before start + deadline_ms.
      */
     if (!why && c->deadline_ms &&
@@ -4621,7 +4623,7 @@ static const char *reap_young(TcpBackendPrivate *priv, uint16_t port,
 static void reap_renew(TcpBackendPrivate *priv)
 {
     qemu_mutex_lock(&priv->conn_table_lock);
-    uint64_t now_ms = tcp_monotonic_ms();
+    uint64_t now_ms = ernic_monotonic_ms();
 
     for (guint i = 0; i < priv->pending_conns->len; i++) {
         TcpConnection *conn = g_ptr_array_index(priv->pending_conns, i);
@@ -4642,7 +4644,7 @@ static const char *reap_cap(TcpBackendPrivate *priv, uint16_t port,
     int base = atomic_load(&g_creates);
     int cap = (int)TCP_MAX_PENDING_CONNS;
     uint32_t first = k->n;
-    uint64_t start_ms = tcp_monotonic_ms();
+    uint64_t start_ms = ernic_monotonic_ms();
     guint waiting;
 
     for (int i = 0; i < cap; i++) {
@@ -4656,11 +4658,12 @@ static const char *reap_cap(TcpBackendPrivate *priv, uint16_t port,
      */
     waiting = pending_count(priv);
     if (waiting != TCP_MAX_PENDING_CONNS) {
-        snprintf(
-            why, sizeof(why),
-            "only %u of the %d peers under the cap are waiting, %d "
-            "receive thread(s) exited, and they took %" PRIu64 " ms to connect",
-            waiting, cap, atomic_load(&g_exits), tcp_monotonic_ms() - start_ms);
+        snprintf(why, sizeof(why),
+                 "only %u of the %d peers under the cap are waiting, %d "
+                 "receive thread(s) exited, and they took %" PRIu64
+                 " ms to connect",
+                 waiting, cap, atomic_load(&g_exits),
+                 ernic_monotonic_ms() - start_ms);
         return why;
     }
     reap_renew(priv);
@@ -4997,7 +5000,7 @@ static const struct sender_case sender_cases[] = {
 
 /* Set node id's liveness and the time of its last heartbeat. */
 static void node_set(TcpBackendPrivate *priv, uint32_t id, bool alive,
-                     time_t last)
+                     uint64_t last_ms)
 {
     MeshNodeInfo *node;
 
@@ -5005,14 +5008,14 @@ static void node_set(TcpBackendPrivate *priv, uint32_t id, bool alive,
     node = g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(id));
     if (node) {
         node->is_alive = alive;
-        node->last_heartbeat = last;
+        node->last_heartbeat_ms = last_ms;
     }
     qemu_mutex_unlock(&priv->mesh_table_lock);
 }
 
 /* Get them; false if there is no node id. */
 static bool node_get(TcpBackendPrivate *priv, uint32_t id, bool *alive,
-                     time_t *last)
+                     uint64_t *last_ms)
 {
     MeshNodeInfo *node;
 
@@ -5020,7 +5023,7 @@ static bool node_get(TcpBackendPrivate *priv, uint32_t id, bool *alive,
     node = g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(id));
     if (node) {
         *alive = node->is_alive;
-        *last = node->last_heartbeat;
+        *last_ms = node->last_heartbeat_ms;
     }
     qemu_mutex_unlock(&priv->mesh_table_lock);
     return node != NULL;
@@ -5033,12 +5036,13 @@ static bool node_get(TcpBackendPrivate *priv, uint32_t id, bool *alive,
  */
 static const char *sender_heartbeat(TcpBackendPrivate *priv, int w1)
 {
-    time_t dead_since = time(NULL) - 1000, before, last1, last2;
+    uint64_t dead_since = ernic_monotonic_ms() - UINT64_C(1000000), before,
+             last1, last2;
     bool alive1, alive2;
 
     node_set(priv, 1, true, dead_since);
     node_set(priv, 2, false, dead_since);
-    before = time(NULL);
+    before = ernic_monotonic_ms();
     if (!send_heartbeat(w1, 2))
         return "could not send the heartbeat";
     if (!wait_for_type(w1, TCP_MSG_HEARTBEAT_RESP, 2000))
@@ -5048,9 +5052,14 @@ static const char *sender_heartbeat(TcpBackendPrivate *priv, int w1)
         return "a node is missing";
     if (alive2 || last2 != dead_since)
         return "node 2 was revived by a heartbeat that wasn't its own";
-    return last1 >= before ? NULL
-                           : "the heartbeat wasn't credited to node 1, whose "
-                             "connection it came on";
+    /*
+     * On a machine up for less than 1000 s, dead_since wraps to a value
+     * above before, so it has to be ruled out separately.
+     */
+    return last1 != dead_since && last1 >= before
+               ? NULL
+               : "the heartbeat wasn't credited to node 1, whose connection "
+                 "it came on";
 }
 
 /*
@@ -5075,13 +5084,13 @@ static bool worker_settled(int fd, uint32_t id)
  */
 static const char *sender_revives(TcpBackendPrivate *priv, int w1, int w2)
 {
-    time_t last;
+    uint64_t last;
     bool alive;
 
     if (!worker_settled(w1, 1) || !worker_settled(w2, 2))
         return "a registration wasn't finished";
     count_type(w1, TCP_MSG_MESH_TOPOLOGY);
-    node_set(priv, 2, false, time(NULL) - 1000);
+    node_set(priv, 2, false, ernic_monotonic_ms() - UINT64_C(1000000));
     if (!send_heartbeat(w2, 2))
         return "could not send the heartbeat";
     if (!reported(w1, 2, true, 2000))
@@ -5366,11 +5375,12 @@ static const char *lt_reconnect(struct rc_fixture *fx, TcpConnection *old,
 
     /* The scan's reference, released at the end of the pass */
     item.conn = tcp_connection_lookup(fx->priv, 1);
-    fx->node[0]->last_heartbeat = time(NULL) - 4 * LONG_INTERVAL_S;
+    fx->node[0]->last_heartbeat_ms =
+        ernic_monotonic_ms() - 4 * LONG_INTERVAL_S * 1000u;
     /* The connect gives up when this is cleared; no thread is started */
     atomic_store(&fx->priv->health_check_running, true);
-    reconnected =
-        tcp_health_check_reconnect(fx->priv, &item, tcp_monotonic_ms() + 5000);
+    reconnected = tcp_health_check_reconnect(fx->priv, &item,
+                                             ernic_monotonic_ms() + 5000);
     atomic_store(&fx->priv->health_check_running, false);
     tcp_connection_unref(item.conn);
 

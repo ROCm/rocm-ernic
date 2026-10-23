@@ -21,7 +21,6 @@
 #include <err.h>
 #include <signal.h>
 #include <stdbool.h>
-#include <stdint.h>
 #include <grp.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -30,7 +29,7 @@
 #include <syslog.h>
 #include <getopt.h>
 #include <inttypes.h>
-#include <time.h>
+#include <poll.h>
 
 #include <vfio-user/libvfio-user.h>
 #include <vfio-user/pci_defs.h>
@@ -40,6 +39,7 @@
 /* Internal headers */
 #include "rocm_ernic_internal.h"
 #include "rocm_ernic_compat.h"
+#include "ernic_time.h"
 #include "qemu/error-report.h"
 #include "ionic_adminq.h"
 #include "ionic_datapath.h"
@@ -762,15 +762,6 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
                          MSIX_PBA_BIR, (unsigned)pba_off);
 
     return 0;
-}
-
-/* Milliseconds on a clock that never jumps, for the stats publish tick. */
-static uint64_t monotonic_ms(void)
-{
-    struct timespec ts;
-
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
 }
 
 /**
@@ -2035,8 +2026,15 @@ int main(int argc, char *argv[])
         ret = vfu_attach_ctx(vfu_ctx);
         if (ret < 0) {
             if (errno == EAGAIN) {
-                /* No client yet, sleep and retry */
-                usleep(100000); /* 100ms */
+                /*
+                 * No client yet: wait for one on the listening socket.  A
+                 * signal ends the wait; the timeout bounds the delay when
+                 * one arrives just before poll() starts.
+                 */
+                struct pollfd pfd = {.fd = vfu_get_poll_fd(vfu_ctx),
+                                     .events = POLLIN};
+
+                poll(&pfd, 1, 100);
                 continue;
             } else if (errno == EINTR) {
                 /* Interrupted by signal, check shutdown flag */
@@ -2062,17 +2060,17 @@ int main(int argc, char *argv[])
 
         /* Run device - process requests from client */
         int loop_count = 0;
-        time_t last_stats_write = 0;
+        uint64_t next_stats_write_ms = 0;
         GMainContext *main_context = g_main_context_default();
         /* Acquire the main context so we can iterate it */
         g_main_context_push_thread_default(main_context);
         while (!g_shutdown_requested) {
             /* Write stats periodically (every ~1 second) */
             if (dev->stats_file_path && dev->pvrdma_handle) {
-                time_t now = time(NULL);
-                if (now > last_stats_write) {
+                uint64_t now_ms = ernic_monotonic_ms();
+                if (now_ms >= next_stats_write_ms) {
                     pvrdma_write_stats(dev->pvrdma_handle);
-                    last_stats_write = now;
+                    next_stats_write_ms = now_ms + 1000u;
                 }
             }
 
@@ -2089,7 +2087,8 @@ int main(int argc, char *argv[])
              * This has to happen on this thread: only it may DMA. */
             if (dev->ionic_emu) {
                 ionic_eth_emu_poll_rx(dev->ionic_emu);
-                ionic_eth_emu_publish_stats(dev->ionic_emu, monotonic_ms());
+                ionic_eth_emu_publish_stats(dev->ionic_emu,
+                                            ernic_monotonic_ms());
             }
 
             /* ionic: poll admin queue rings for new WQEs */
@@ -2152,7 +2151,7 @@ int main(int argc, char *argv[])
              */
             if (ret == 0 && !had_events &&
                 !ionic_datapath_has_work(dev->ionic_dp)) {
-                usleep(100);
+                ernic_sleep_us(100);
             }
         }
         vfu_log(vfu_ctx, LOG_INFO, ">>> Event loop exited after %d iterations",
