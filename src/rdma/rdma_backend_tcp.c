@@ -3735,6 +3735,13 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
     TcpBackendPrivate *priv;
     int ret;
 
+    /* NULL for a bare "--backend tcp", which names no role */
+    if (!config) {
+        rdma_error_report("TCP backend: No config. Must be "
+                          "tcp:manager:... or tcp:worker:...");
+        return -EINVAL;
+    }
+
     rdma_info_report("TCP backend: Initializing");
 
     priv = g_new0(TcpBackendPrivate, 1);

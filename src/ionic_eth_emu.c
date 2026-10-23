@@ -1766,7 +1766,7 @@ static int eth_rx_deliver(struct ionic_eth_emu *emu, struct eth_queue *q,
 static bool eth_rx_fault(struct ionic_eth_emu *emu, const uint8_t *frame,
                          size_t len)
 {
-    if (!ionic_fault_event(emu->rx_fault))
+    if (!emu->rx_fault || !ionic_fault_event(emu->rx_fault))
         return false;
     /* drop: lost before the NIC saw it, so no LIF counter moves. */
     if (emu->rx_fault->effect == IONIC_FAULT_EFFECT_NOBUF)

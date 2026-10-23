@@ -1333,7 +1333,7 @@ static uint8_t handle_stats_op(struct ionic_adminq_ctx *ctx, uint8_t op,
             ionic_fault_set_get(ctx->faults, IONIC_FAULT_SITE_STATS_VALS);
         struct pvrdma_dev_counters c;
 
-        if (ionic_fault_event(f)) {
+        if (f && ionic_fault_event(f)) {
             vfu_log(ctx->vfu_ctx, LOG_INFO,
                     "ionic_adminq STATS_VALS: injected fail status %u "
                     "(event %" PRIu64 ")",

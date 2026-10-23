@@ -1154,12 +1154,20 @@ static uint64_t line_u64(const char *p)
     return ernic_parse_u64_span(p, strcspn(p, "\n"), &v) ? v : UINT64_MAX;
 }
 
+/* The line after @l's, or NULL if @l's is the last. */
+static const char *next_line(const char *l)
+{
+    const char *nl = strchr(l, '\n');
+
+    return nl ? nl + 1 : NULL;
+}
+
 /* The value on the "  @name ... : N" line, or -1 as UINT64_MAX if absent. */
 static uint64_t stats_value(const char *text, const char *name)
 {
     size_t n = strlen(name);
 
-    for (const char *l = text; l && *l; l = strchr(l, '\n'), l = l ? l + 1 : l)
+    for (const char *l = text; l && *l; l = next_line(l))
         if (!strncmp(l, "  ", 2) && !strncmp(l + 2, name, n) &&
             l[2 + n] == ' ') {
             const char *sep = strstr(l, " : ");
@@ -1196,8 +1204,13 @@ static void file_shape(char *got, size_t len)
     for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++)
         named += ionic_emu_lif_stat_name(q) != NULL;
     text = stats_text(emu, &n);
-    for (const char *l = strchr(text, '\n') + 1; *l && *l != '\n';
-         l = strchr(l, '\n') + 1) {
+    if (!text) {
+        snprintf(got, len, "no stats text");
+        ionic_eth_emu_destroy(emu);
+        return;
+    }
+    for (const char *l = next_line(text); l && *l && *l != '\n';
+         l = next_line(l)) {
         lines++;
         /* Two spaces, a 35-wide name, then " : ". */
         if (strncmp(l + 2 + LIF_STAT_NAME_WIDTH, " : ", 3) != 0)
