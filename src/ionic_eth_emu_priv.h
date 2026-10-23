@@ -430,6 +430,12 @@ struct ionic_eth_emu {
     /* The last write failed and was logged; log again only after one works. */
     bool stats_write_failed;
 
+    /* The struct ionic_port_info PORT_INIT pointed at, or 0.  Cleared by
+     * PORT_RESET and device reset, for the same reason as lif_info_pa. */
+    uint64_t port_info_pa;
+    /* As stats_write_failed, for the port block. */
+    bool port_stats_write_failed;
+
     /* RDMA devcmd handler (registered after construction). */
     ionic_rdma_devcmd_fn_t rdma_devcmd_fn;
     void *rdma_devcmd_opaque;
@@ -490,6 +496,10 @@ struct ionic_eth_emu {
 /* The width of the names in the stats file's "LIF Statistics" section: the
  * longest ionic_if.h name, rdma_resp_rx_out_of_atomic_resource, is 35. */
 #define LIF_STAT_NAME_WIDTH 35
+
+/* The same, for the "Port Statistics" section: the longest port name,
+ * frames_rx_less_than_64b, is 23. */
+#define PORT_STAT_NAME_WIDTH 23
 
 /*
  * Device command handlers, each given the 64-byte command, the 16-byte

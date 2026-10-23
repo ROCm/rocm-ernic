@@ -39,6 +39,8 @@ BAR0_INTR_MASK = 4
 
 IONIC_DEV_SIG = 0x44455649  # "DEVI"
 DEVCMD_DATA_BYTES = 1912
+# union ionic_lif_identity: le32 eth.max_frame_size
+LIFID_MAX_FRAME_SIZE_OFF = 0x01A
 # BAR2 doorbell qtypes: the Ethernet logical queues, then the RDMA
 # hardware qtypes the LIF identity advertises.
 QTYPE_ETH_ADMINQ = 0
@@ -588,6 +590,17 @@ class IonicDriver(EthQueueMixin):
         if status != 0:
             raise DeviceError(f"admin op {op} failed with status {status}")
         return resp_len
+
+    def max_frame_size(self):
+        """The largest frame LIF_IDENTIFY says the port takes, FCS excluded.
+
+        The driver lets the guest set an MTU of up to this less
+        VLAN_ETH_HLEN, so a tagged frame at that MTU is exactly this long.
+        """
+        cmd = bytearray(64)
+        cmd[0] = CMD_LIF_IDENTIFY
+        data = self.devcmd_ok(bytes(cmd), LIFID_MAX_FRAME_SIZE_OFF + 4)
+        return struct.unpack_from("<I", data, LIFID_MAX_FRAME_SIZE_OFF)[0]
 
     # ---- bring-up -------------------------------------------------------
 

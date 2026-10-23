@@ -487,9 +487,23 @@
   accept. The value is decoded big-endian and right-aligned, and the caller
   is told how many bytes the digits needed so it can refuse one wider than
   the field it is destined for instead of truncating it.
+* The ionic NIC publishes its port (MAC) statistics, the 89 counters
+  `ethtool -S` shows as `frames_*` and `octets_*`, which the driver used to
+  list as 0: frames and octets by result, by unicast, multicast and
+  broadcast, and by size bucket, counted as on the wire. They are published
+  with the LIF statistics and cleared on PORT_RESET. A frame dropped for
+  want of a receive buffer, or because the mesh inbox is full, counts as
+  received and as `frames_rx_dropped`. Documented in `docs/ionic.rst`.
 
 ### Changed
 
+* The ionic NIC drops a received frame longer than the maximum frame size it
+  advertises (`link.mtu_max` + 18 bytes, 9216 in the default profile) before
+  the guest sees it, as a real MAC does, and counts it in the port's
+  `frames_rx_too_long`, `frames_rx_oversized` and `frames_rx_bad_all`. Before,
+  any frame that fit the guest's receive buffer was delivered. This applies to
+  frames from the TAP, the mesh and the P4 engine alike, so a sender of jumbo
+  frames has to keep within the guest's profile.
 * CI, the release build and the Nix flake use libvfio-user 5b9c722 instead
   of 20e9803 (the flake, 323f4cb). Build against 5b9c722 or later: before
   it, the upper half of a 64-bit BAR smaller than 4 GiB, as BAR0 and BAR2
