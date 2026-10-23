@@ -25,9 +25,9 @@
  */
 
 #include <arpa/inet.h>
+#include <inttypes.h>
 #include <stdarg.h>
 #include <stdbool.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1002,8 +1002,8 @@ static void test_split_request(void)
     if (s3_target_object_count(fx.target) != 1)
         fail(name, "the PUT did not create an object");
     if (s3_target_bytes_used(fx.target) != 11)
-        fail(name, "stored %llu bytes, want 11",
-             (unsigned long long)s3_target_bytes_used(fx.target));
+        fail(name, "stored %" PRIu64 " bytes, want 11",
+             s3_target_bytes_used(fx.target));
 
     /* A duplicate segment must be discarded, not appended. */
     cap_reset(&fx.cap);
@@ -1109,11 +1109,10 @@ static void test_conn_limit(void)
 
     const struct s3_tcp_stats *st = s3_tcp_statistics(fx.tcp);
     if (st->refused != 1)
-        fail(name, "refused counter is %llu, want 1",
-             (unsigned long long)st->refused);
+        fail(name, "refused counter is %" PRIu64 ", want 1", st->refused);
     if (st->accepts != slots)
-        fail(name, "accepts counter is %llu, want %u",
-             (unsigned long long)st->accepts, slots);
+        fail(name, "accepts counter is %" PRIu64 ", want %u", st->accepts,
+             slots);
 
     ok(name);
 out:

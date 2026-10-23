@@ -24,9 +24,9 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <inttypes.h>
 #include <stdarg.h>
 #include <stdbool.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -324,7 +324,7 @@ static void test_cfg_parse(void)
         if (strcmp(cfg.bucket, "data") != 0)
             fail(name, "bucket \"%s\"", cfg.bucket);
         if (cfg.capacity != 4ull * 1024 * 1024)
-            fail(name, "capacity %llu", (unsigned long long)cfg.capacity);
+            fail(name, "capacity %" PRIu64, cfg.capacity);
         if (cfg.traddr != 0x0a000005u)
             fail(name, "traddr 0x%08x", cfg.traddr);
         if (cfg.trsvcid != 8080)
@@ -338,8 +338,7 @@ static void test_cfg_parse(void)
     if (!s3_target_cfg_parse(&cfg, "size=1T", err, sizeof(err)))
         fail(name, "rejected size=1T: %s", err);
     else if (cfg.capacity != 1ull << 40)
-        fail(name, "size=1T gave capacity %llu",
-             (unsigned long long)cfg.capacity);
+        fail(name, "size=1T gave capacity %" PRIu64, cfg.capacity);
 
     static const char *bad[] = {
         "bucket=",      "bucket=No_Caps_Allowed",
@@ -393,8 +392,7 @@ static void test_body_put_get(void)
     if (s3_target_object_count(t) != 1)
         fail(name, "object count %u after one PUT", s3_target_object_count(t));
     if (s3_target_bytes_used(t) != strlen(payload))
-        fail(name, "bytes used %llu",
-             (unsigned long long)s3_target_bytes_used(t));
+        fail(name, "bytes used %" PRIu64, s3_target_bytes_used(t));
 
     if (!exec_req(t, &r, NULL, NULL, "GET", "/ernic/fox.txt", NULL, NULL, NULL,
                   0)) {
@@ -499,8 +497,8 @@ static void test_rdma_put_get(void)
         if (code != 200)
             fail(name, "reply code %d", code);
         if (peer.length != len)
-            fail(name, "reply token length %llu, want %zu",
-                 (unsigned long long)peer.length, len);
+            fail(name, "reply token length %" PRIu64 ", want %zu", peer.length,
+                 len);
         if (!s3_target_is_target_qpn(peer.qp_num))
             fail(name, "reply qpn 0x%x is not in the target range",
                  peer.qp_num);
@@ -512,8 +510,8 @@ static void test_rdma_put_get(void)
     reply_free(&r);
 
     if (s3_target_bytes_used(t) != len)
-        fail(name, "stored %llu bytes, want %zu",
-             (unsigned long long)s3_target_bytes_used(t), len);
+        fail(name, "stored %" PRIu64 " bytes, want %zu",
+             s3_target_bytes_used(t), len);
 
     /* GET the object back into a different window of the same buffer and
      * compare, which is what a real client's verify step does. */
@@ -535,12 +533,11 @@ static void test_rdma_put_get(void)
 
     const struct s3_target_stats *st = s3_target_statistics(t);
     if (st->puts != 1 || st->gets != 1)
-        fail(name, "stats: %llu puts, %llu gets", (unsigned long long)st->puts,
-             (unsigned long long)st->gets);
+        fail(name, "stats: %" PRIu64 " puts, %" PRIu64 " gets", st->puts,
+             st->gets);
     if (st->write_bytes != len || st->read_bytes != len)
-        fail(name, "stats: %llu written, %llu read",
-             (unsigned long long)st->write_bytes,
-             (unsigned long long)st->read_bytes);
+        fail(name, "stats: %" PRIu64 " written, %" PRIu64 " read",
+             st->write_bytes, st->read_bytes);
 
     ok(name);
 out:
@@ -580,8 +577,8 @@ static void test_rdma_put_with_content_length(void)
     if (r.resp.status != 200)
         fail(name, "status %d: %s", r.resp.status, r.text);
     else if (s3_target_bytes_used(t) != len)
-        fail(name, "stored %llu bytes, want %zu",
-             (unsigned long long)s3_target_bytes_used(t), len);
+        fail(name, "stored %" PRIu64 " bytes, want %zu",
+             s3_target_bytes_used(t), len);
     else
         ok(name);
     reply_free(&r);
@@ -1133,8 +1130,8 @@ static void test_multipart(void)
     if (s3_target_object_count(t) != 1)
         fail(name, "complete did not produce exactly one object");
     if (s3_target_bytes_used(t) != part * nparts)
-        fail(name, "reassembled %llu bytes, want %zu",
-             (unsigned long long)s3_target_bytes_used(t), part * nparts);
+        fail(name, "reassembled %" PRIu64 " bytes, want %zu",
+             s3_target_bytes_used(t), part * nparts);
 
     /* Read it back and compare against what we uploaded. */
     const uint64_t dst = 512u * 1024;
@@ -1560,8 +1557,8 @@ static void test_multipart_capacity(void)
         reply_free(&r);
     }
     if (s3_target_bytes_used(t) != sizeof(payload))
-        fail(name, "a part in flight leaves used at %llu, want %zu",
-             (unsigned long long)s3_target_bytes_used(t), sizeof(payload));
+        fail(name, "a part in flight leaves used at %" PRIu64 ", want %zu",
+             s3_target_bytes_used(t), sizeof(payload));
 
     /* Those 3000 bytes are gone from the 4096 the store has, whoever asks. */
     snprintf(target, sizeof(target), "/ernic/b?partNumber=1&uploadId=%s",
@@ -1590,8 +1587,8 @@ static void test_multipart_capacity(void)
         reply_free(&r);
     }
     if (s3_target_bytes_used(t) != sizeof(payload))
-        fail(name, "complete left used at %llu, want %zu",
-             (unsigned long long)s3_target_bytes_used(t), sizeof(payload));
+        fail(name, "complete left used at %" PRIu64 ", want %zu",
+             s3_target_bytes_used(t), sizeof(payload));
     if (s3_target_object_count(t) != 1)
         fail(name, "complete left %u objects, want 1",
              s3_target_object_count(t));
@@ -1599,8 +1596,8 @@ static void test_multipart_capacity(void)
     if (exec_req(t, &r, NULL, NULL, "DELETE", "/ernic/a", NULL, NULL, NULL, 0))
         reply_free(&r);
     if (s3_target_bytes_used(t) != 0)
-        fail(name, "delete left used at %llu, want 0",
-             (unsigned long long)s3_target_bytes_used(t));
+        fail(name, "delete left used at %" PRIu64 ", want 0",
+             s3_target_bytes_used(t));
 
     /* An abandoned upload gives its bytes back when it is aborted. */
     snprintf(target, sizeof(target), "/ernic/b?partNumber=1&uploadId=%s",
@@ -1619,8 +1616,8 @@ static void test_multipart_capacity(void)
         reply_free(&r);
     }
     if (s3_target_bytes_used(t) != 0)
-        fail(name, "abort left used at %llu, want 0",
-             (unsigned long long)s3_target_bytes_used(t));
+        fail(name, "abort left used at %" PRIu64 ", want 0",
+             s3_target_bytes_used(t));
     if (exec_req(t, &r, NULL, NULL, "PUT", "/ernic/plain", NULL, NULL, payload,
                  sizeof(payload))) {
         if (r.resp.status != 200)
@@ -1652,9 +1649,9 @@ static void test_peer_token(void)
     if (peer.rkey != 0x1234u)
         fail(name, "rkey 0x%x", peer.rkey);
     if (peer.remote_addr != 0x5000ull)
-        fail(name, "addr 0x%llx", (unsigned long long)peer.remote_addr);
+        fail(name, "addr 0x%" PRIx64, peer.remote_addr);
     if (peer.length != 4096)
-        fail(name, "length %llu", (unsigned long long)peer.length);
+        fail(name, "length %" PRIu64, peer.length);
     if (!s3_token_gid_ipv4(&peer, dotted, sizeof(dotted)))
         fail(name, "the peer GID is not IPv4-mapped");
     else if (strcmp(dotted, "10.11.12.13") != 0)

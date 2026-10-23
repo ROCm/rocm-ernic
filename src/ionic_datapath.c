@@ -1054,9 +1054,9 @@ void ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
     /* DEBUG, not INFO: fast registration re-binds an MR per I/O, so this
      * fires once per NVMe command on the nvmeof path. */
     vfu_log(dp->vfu_ctx, LOG_DEBUG,
-            "ionic_datapath: MR lkey=%#x va=%#lx len=%lu pages=%u pgsz=2^%u",
-            lkey, (unsigned long)va, (unsigned long)length, m->buf.npages,
-            m->buf.page_size_log2);
+            "ionic_datapath: MR lkey=%#x va=%#" PRIx64 " len=%" PRIu64
+            " pages=%u pgsz=2^%u",
+            lkey, va, length, m->buf.npages, m->buf.page_size_log2);
 }
 
 void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey)
@@ -3261,10 +3261,10 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
             rdma_xfer(dp, &src, rkey, remote_va, length, to_remote);
         if (moved != length) {
             vfu_log(dp->vfu_ctx, LOG_WARNING,
-                    "ionic_datapath: QP %u RDMA %s rkey=%#x va=%#lx moved "
-                    "%u of %u bytes",
-                    qp_id, to_remote ? "write" : "read", rkey,
-                    (unsigned long)remote_va, moved, length);
+                    "ionic_datapath: QP %u RDMA %s rkey=%#x va=%#" PRIx64
+                    " moved %u of %u bytes",
+                    qp_id, to_remote ? "write" : "read", rkey, remote_va, moved,
+                    length);
             /*
              * Blame the end that was actually out of bounds.  Both ends
              * resolve through the same MR table, so without this an SGE of
@@ -3502,9 +3502,9 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
 
         if (dp_host_to_sge(dp, rkey, remote_va, payload, n) != length) {
             vfu_log(dp->vfu_ctx, LOG_WARNING,
-                    "ionic_datapath: remote write rkey=%#x va=%#lx of %u bytes "
-                    "failed",
-                    rkey, (unsigned long)remote_va, length);
+                    "ionic_datapath: remote write rkey=%#x va=%#" PRIx64
+                    " of %u bytes failed",
+                    rkey, remote_va, length);
             status = IONIC_STS_REMOTE_ACC_ERR;
         } else {
             /* The responder counts what landed in its own memory too, so each
@@ -3531,9 +3531,9 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
             status = IONIC_STS_REMOTE_ACC_ERR;
         else if (dp_sge_to_host(dp, rkey, remote_va, data, length) != length) {
             vfu_log(dp->vfu_ctx, LOG_WARNING,
-                    "ionic_datapath: remote read rkey=%#x va=%#lx of %u bytes "
-                    "failed",
-                    rkey, (unsigned long)remote_va, length);
+                    "ionic_datapath: remote read rkey=%#x va=%#" PRIx64
+                    " of %u bytes failed",
+                    rkey, remote_va, length);
             status = IONIC_STS_REMOTE_ACC_ERR;
         } else {
             ionic_dp_rdma_bytes(dp, stat_qp, length, PVRDMA_STAT_RDMA_READ,
@@ -3554,8 +3554,9 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
                               le64toh(h->swap_add), le64toh(h->compare),
                               &old)) {
             vfu_log(dp->vfu_ctx, LOG_WARNING,
-                    "ionic_datapath: remote atomic rkey=%#x va=%#lx failed",
-                    rkey, (unsigned long)remote_va);
+                    "ionic_datapath: remote atomic rkey=%#x va=%#" PRIx64
+                    " failed",
+                    rkey, remote_va);
             status = IONIC_STS_REMOTE_ACC_ERR;
         }
         dp_wire_reply(dp, src_node, IONIC_WIRE_ATOMIC_RESP, h, status,

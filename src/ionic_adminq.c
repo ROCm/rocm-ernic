@@ -343,8 +343,8 @@ bool ionic_adminq_register_queue(struct ionic_adminq_ctx *ctx, int aq_idx,
         ctx->aq_count = aq_idx + 1;
 
     vfu_log(ctx->vfu_ctx, LOG_INFO,
-            "ionic_adminq: registered AQ[%d] aq_dma=%#lx depth=%u "
-            "cq_dma=%#lx cq_depth=%u cq_id=%u eq_id=%u",
+            "ionic_adminq: registered AQ[%d] aq_dma=%#" PRIx64 " depth=%u "
+            "cq_dma=%#" PRIx64 " cq_depth=%u cq_id=%u eq_id=%u",
             aq_idx, aq_dma, r->aq_depth, cq_dma, r->cq_depth, cq_id, eq_id);
     return true;
 }
@@ -574,13 +574,13 @@ void ionic_adminq_post_cqe(struct ionic_adminq_ctx *ctx,
         r->cq_dma + (uint64_t)(r->cq_prod % r->cq_depth) * CQE_SIZE;
     if (dma_write(ctx->vfu_ctx, cqe_gpa, cqe, CQE_SIZE) < 0) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
-                "ionic_adminq: failed to write CQE to %#lx", cqe_gpa);
+                "ionic_adminq: failed to write CQE to %#" PRIx64, cqe_gpa);
         return;
     }
 
     vfu_log(ctx->vfu_ctx, LOG_DEBUG,
             "ionic_adminq: CQE aq_id=%u cq_id=%u eq_id=%u cmd_idx=%u op=%u "
-            "prod=%u color=%u gpa=%#lx",
+            "prod=%u color=%u gpa=%#" PRIx64,
             r->aq_id, r->cq_id, r->eq_id, cmd_idx, cmd_op, r->cq_prod,
             (unsigned int)r->cq_color, cqe_gpa);
 

@@ -14,6 +14,7 @@
 #include "ionic_harness.h"
 
 #include <endian.h>
+#include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -916,7 +917,7 @@ static bool mr_copy(struct ih *h, const struct ih_mr *mr, uint64_t va,
                     void *buf, size_t len, bool to_guest)
 {
     if (va < mr->va || len > mr->len || va - mr->va > mr->len - len)
-        return fail("[%#lx, +%zu) is outside MR %#x", (unsigned long)va, len,
+        return fail("[%#" PRIx64 ", +%zu) is outside MR %#x", va, len,
                     mr->lkey);
 
     uint64_t off = va - mr->va + mr->va % IH_PAGE_SIZE;
@@ -932,8 +933,7 @@ static bool mr_copy(struct ih *h, const struct ih_mr *mr, uint64_t va,
                       ? fake_vfu_write(h->vfu, gpa, (uint8_t *)buf + done, n)
                       : fake_vfu_read(h->vfu, gpa, (uint8_t *)buf + done, n);
         if (!ok)
-            return fail("MR page at %#lx is not guest memory",
-                        (unsigned long)gpa);
+            return fail("MR page at %#" PRIx64 " is not guest memory", gpa);
         done += n;
         off += n;
     }

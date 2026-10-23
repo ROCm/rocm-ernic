@@ -22,9 +22,9 @@
  */
 
 #include <endian.h>
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/uio.h>
@@ -705,10 +705,11 @@ static void check_alternating_qps(void)
         ok = rc == qp_cases[row].rc &&
              (rc ? memcmp(before, g_mem + BUF_GPA, sizeof(before)) == 0
                  : le64toh(first) == qp_cases[row].first);
-        printf("%s %s; expected: rc %u, own first value %#llx or unchanged "
+        printf("%s %s; expected: rc %u, own first value %#" PRIx64
+               " or unchanged "
                "buffer on failure\n",
                ok ? "ok" : "FAIL", qp_cases[row].description, qp_cases[row].rc,
-               (unsigned long long)qp_cases[row].first);
+               qp_cases[row].first);
         if (!ok)
             failures++;
     }

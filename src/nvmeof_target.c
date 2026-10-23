@@ -34,6 +34,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <netinet/in.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -251,8 +252,8 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
     free(dup);
 
     if (ok && cfg->size % cfg->block_size != 0) {
-        set_err(err, errlen, "size %llu is not a multiple of bs %u",
-                (unsigned long long)cfg->size, cfg->block_size);
+        set_err(err, errlen, "size %" PRIu64 " is not a multiple of bs %u",
+                cfg->size, cfg->block_size);
         ok = false;
     }
     return ok;
@@ -294,9 +295,8 @@ struct nvmeof_target *nvmeof_target_create(const struct nvmeof_target_cfg *cfg,
             goto fail;
         }
         if (ftruncate(t->ns_fd, (off_t)t->ns_len) != 0) {
-            set_err(err, errlen, "cannot size %s to %llu bytes: %s",
-                    t->cfg.file, (unsigned long long)t->ns_len,
-                    strerror(errno));
+            set_err(err, errlen, "cannot size %s to %zu bytes: %s", t->cfg.file,
+                    t->ns_len, strerror(errno));
             goto fail;
         }
         t->ns_data = mmap(NULL, t->ns_len, PROT_READ | PROT_WRITE, MAP_SHARED,
@@ -307,8 +307,8 @@ struct nvmeof_target *nvmeof_target_create(const struct nvmeof_target_cfg *cfg,
     }
     if (t->ns_data == MAP_FAILED) {
         t->ns_data = NULL;
-        set_err(err, errlen, "cannot map %llu bytes of namespace: %s",
-                (unsigned long long)t->ns_len, strerror(errno));
+        set_err(err, errlen, "cannot map %zu bytes of namespace: %s", t->ns_len,
+                strerror(errno));
         goto fail;
     }
 

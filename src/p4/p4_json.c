@@ -6,6 +6,7 @@
  */
 
 #include <errno.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -269,11 +270,12 @@ static int p4_check_meta(struct p4_walk *w, struct json_object *root)
 
     if (major != 2)
         return p4_fail(w, -ENOSYS,
-                       "JSON format major version %lld is not supported",
-                       (long long)major);
+                       "JSON format major version %" PRId64 " is not supported",
+                       major);
     if (minor < 0 || minor > 255)
-        return p4_fail(w, -EINVAL, "JSON format minor version %lld is absurd",
-                       (long long)minor);
+        return p4_fail(w, -EINVAL,
+                       "JSON format minor version %" PRId64 " is absurd",
+                       minor);
 
     return 0;
 }
@@ -368,9 +370,9 @@ static int p4_walk_header_types(struct p4_walk *w, struct json_object *root)
                                fd->name);
             bits = json_object_get_int64(fbits);
             if (bits < 1 || bits > P4_MAX_FIELD_BITS)
-                return p4_fail(w, -EINVAL, "'%s.%s' is %lld bits, want 1 to %d",
-                               dst->name, fd->name, (long long)bits,
-                               P4_MAX_FIELD_BITS);
+                return p4_fail(w, -EINVAL,
+                               "'%s.%s' is %" PRId64 " bits, want 1 to %d",
+                               dst->name, fd->name, bits, P4_MAX_FIELD_BITS);
 
             /* Subtraction first: the sum must never be formed and then
              * checked, because it would wrap. */
@@ -1164,8 +1166,9 @@ static int p4_walk_operand(struct p4_walk *w, struct json_object *p,
         /* An index at or past the count would read an argument the table
          * entry never supplies. */
         if (idx < 0 || idx >= act->nruntime)
-            return p4_fail(w, -EINVAL, "%s uses runtime argument %lld of %u",
-                           where, (long long)idx, act->nruntime);
+            return p4_fail(w, -EINVAL,
+                           "%s uses runtime argument %" PRId64 " of %u", where,
+                           idx, act->nruntime);
         dst->kind = P4_OPD_RUNTIME;
         dst->runtime = (p4_idx_t)idx;
         return 0;
