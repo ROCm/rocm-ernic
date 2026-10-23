@@ -418,6 +418,11 @@ target_compile_definitions(test_ionic_queues PRIVATE
 target_link_directories(test_ionic_queues PRIVATE ${GLIB2_LIBRARY_DIRS})
 target_link_libraries(test_ionic_queues PRIVATE ${GLIB2_LIBRARIES})
 
+# Valgrind's header, whose RUNNING_ON_VALGRIND lets a test skip what can't
+# work under valgrind.
+include(CheckIncludeFile)
+check_include_file(valgrind/valgrind.h ERNIC_HAVE_VALGRIND_H)
+
 # Server lifecycle test: forks the real server and drives it through
 # startup, clients that drop out of vfio-user negotiation, and SIGTERM/SIGINT
 # shutdown. Needs no symbols from the server, so it is a plain program. The
@@ -427,6 +432,19 @@ target_link_libraries(test_ionic_queues PRIVATE ${GLIB2_LIBRARIES})
 add_executable(test_server_lifecycle test_server_lifecycle.c)
 target_compile_definitions(test_server_lifecycle PRIVATE _GNU_SOURCE
     "ERNIC_SERVER_PATH=\"$<TARGET_FILE:rocm-ernic>\"")
+# A sanitizer runtime hangs at startup with RLIMIT_NOFILE below 4, and
+# valgrind doesn't pass a lowered limit on to the kernel, so the server
+# never gets it. The test skips the row that needs it in a sanitizer build
+# or under valgrind; without valgrind's header, it can't tell, and the row
+# runs.
+if(ERNIC_USE_SANITIZERS OR ERNIC_USE_THREAD_SANITIZER)
+    target_compile_definitions(test_server_lifecycle PRIVATE
+        ERNIC_SERVER_SANITIZED)
+endif()
+if(ERNIC_HAVE_VALGRIND_H)
+    target_compile_definitions(test_server_lifecycle PRIVATE
+        ERNIC_HAVE_VALGRIND_H)
+endif()
 add_dependencies(test_server_lifecycle rocm-ernic)
 
 # ionic QUERY_QP test. It links the admin queue, calls
@@ -657,8 +675,6 @@ target_compile_definitions(ernic-test-tcp-thread-stop PRIVATE
 # The test skips a row that can't work under valgrind, which it detects
 # with RUNNING_ON_VALGRIND from valgrind's header. Without the header, the
 # row always runs.
-include(CheckIncludeFile)
-check_include_file(valgrind/valgrind.h ERNIC_HAVE_VALGRIND_H)
 if(ERNIC_HAVE_VALGRIND_H)
     target_compile_definitions(ernic-test-tcp-thread-stop PRIVATE
         ERNIC_HAVE_VALGRIND_H)

@@ -13,11 +13,15 @@ rocm-ernic will move into the
 by [TheRock](https://github.com/ROCm/TheRock). Make changes that survive
 that move:
 
-- **Ask before changing compile or link options, dependency handling, or
-  other non-trivial CMake.** A superproject has requirements a standalone
-  build doesn't show. For example, `ERNIC_WERROR` is off by default so a
-  compiler we haven't tried doesn't break a downstream build; CI turns it
-  on.
+- **Don't change link options without asking**: linker flags
+  (`ernic_set_linker_flags()`, `target_link_options()`), `-pthread`, or
+  whether something links statically or shared. TheRock is fussy about
+  them, and a change that builds and tests fine here can break it. Other
+  CMake changes are fine, within the rules below.
+- **Keep the defaults safe for a superproject**, which has requirements a
+  standalone build doesn't show. For example, `ERNIC_WERROR` is off by
+  default so a compiler we haven't tried doesn't break a downstream build;
+  CI turns it on.
 - **Don't assume rocm-ernic is the top-level project.** New CMake code
   uses `PROJECT_*_DIR` or `CMAKE_CURRENT_*_DIR`, not
   `CMAKE_SOURCE_DIR`/`CMAKE_BINARY_DIR` (which older code, especially
@@ -188,7 +192,8 @@ Security beats speed and convenience.
   `-fstack-protector-strong`, `-fstack-clash-protection`, and PIE, full
   RELRO, and non-executable stack from `ernic_set_linker_flags()`
   ([`ErnicCompilerOptions.cmake`](cmake/ErnicCompilerOptions.cmake)).
-  Ask before changing any compile or link option.
+  Don't weaken or remove any of it, and don't change the link options
+  without asking (see [Project direction](#project-direction)).
 - **Fix security scan findings** from CodeQL
   ([codeql.yml](.github/workflows/codeql.yml)) and the PR scan
   ([pr-security-scan.yml](.github/workflows/pr-security-scan.yml)); don't
