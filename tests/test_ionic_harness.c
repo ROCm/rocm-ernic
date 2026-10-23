@@ -3137,7 +3137,7 @@ static void test_teardown(void)
                backend))
         return;
 
-    PVRDMADev *pvrdma = (PVRDMADev *)h.dev->pvrdma_handle;
+    PVRDMADev *pvrdma = h.dev->pvrdma_handle;
     bool made =
         check(T, ionic_rm_alloc_pd(pvrdma, &pd) == 0, "no PD") &&
         check(T, ionic_rm_alloc_cq(pvrdma, 16, &cq) == 0, "no CQ") &&

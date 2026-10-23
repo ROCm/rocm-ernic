@@ -13,6 +13,8 @@
 #include <stdbool.h>
 #include <vfio-user/libvfio-user.h>
 
+#include "rocm_ernic_compat.h"
+
 struct ionic_eth_emu;
 struct ionic_datapath;
 
@@ -259,9 +261,10 @@ bool ionic_datapath_attach_s3(struct ionic_datapath *dp,
 /*
  * Set the pvrdma handle so the datapath can post sends via the backend.
  * Call this once after ionic_device_init() and pvrdma_device_realize().
- * @handle: pvrdma_handle_t (void *) from pvrdma_device_create().
+ * @handle: from pvrdma_device_create().
  */
-void ionic_datapath_set_pvrdma(struct ionic_datapath *dp, void *handle);
+void ionic_datapath_set_pvrdma(struct ionic_datapath *dp,
+                               pvrdma_handle_t handle);
 
 /*
  * Process a doorbell write from BAR2.

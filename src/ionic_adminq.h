@@ -16,6 +16,8 @@
 #include <stdint.h>
 #include <vfio-user/libvfio-user.h>
 
+#include "rocm_ernic_compat.h"
+
 struct ionic_adminq_ctx;
 
 struct ionic_adminq_ctx *ionic_adminq_create(vfu_ctx_t *vfu_ctx);
@@ -47,8 +49,9 @@ void ionic_adminq_set_cq_event_cb(struct ionic_adminq_ctx *ctx,
                                   ionic_adminq_cq_event_fn_t fn, void *opaque);
 
 /* Set the pvrdma handle used by the ionic_rm_* compat wrappers.
- * @handle is a pvrdma_handle_t (void *) from pvrdma_device_create(). */
-void ionic_adminq_set_pvrdma(struct ionic_adminq_ctx *ctx, void *handle);
+ * @handle is from pvrdma_device_create(). */
+void ionic_adminq_set_pvrdma(struct ionic_adminq_ctx *ctx,
+                             pvrdma_handle_t handle);
 
 /*
  * Give the admin queue a datapath to register CQ/QP/MR rings with, so that

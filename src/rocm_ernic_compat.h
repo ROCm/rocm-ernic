@@ -2,7 +2,7 @@
  * Compatibility Bridge: RDMA Device ↔ libvfio-user
  *
  * This header provides a clean wrapper API that isolates QEMU header
- * dependencies. Only vfu_compat_bridge.c sees QEMU internals.
+ * dependencies. Only rocm_ernic_compat.c sees QEMU internals.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -22,10 +22,16 @@ typedef struct rocm_ernic_dev rocm_ernic_dev_t;
 /*
  * Opaque handle to RDMA device
  *
- * This hides the QEMU PVRDMADev structure from our code.
- * Only vfu_compat_bridge.c knows the real type.
+ * This hides the QEMU PVRDMADev structure from our code: the struct is
+ * incomplete here, and only rocm_ernic_compat.c, which includes pvrdma.h,
+ * can see its members. Unlike a void *, the compiler diagnoses any other
+ * pointer passed where a handle belongs.
+ *
+ * The typedef alone would declare the struct, but without a separate
+ * declaration IWYU asks this header to include pvrdma.h.
  */
-typedef void *pvrdma_handle_t;
+struct PVRDMADev; // IWYU pragma: keep
+typedef struct PVRDMADev *pvrdma_handle_t;
 
 /*
  * RDMA Device Management

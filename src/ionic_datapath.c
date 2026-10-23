@@ -574,7 +574,8 @@ bool ionic_datapath_attach_nvmeof(struct ionic_datapath *dp,
     return true;
 }
 
-void ionic_datapath_set_pvrdma(struct ionic_datapath *dp, void *handle)
+void ionic_datapath_set_pvrdma(struct ionic_datapath *dp,
+                               pvrdma_handle_t handle)
 {
     uint32_t node;
     bool changed;
@@ -582,7 +583,7 @@ void ionic_datapath_set_pvrdma(struct ionic_datapath *dp, void *handle)
     if (!dp)
         return;
 
-    dp->pvrdma_handle = (pvrdma_handle_t)handle;
+    dp->pvrdma_handle = handle;
     if (!handle)
         return;
 

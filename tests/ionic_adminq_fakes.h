@@ -463,13 +463,22 @@ int pvrdma_get_qp_counters(pvrdma_handle_t handle, uint32_t qp_id,
 
 /* ---- Fixture ----------------------------------------------------------- */
 
+/*
+ * The fakes stand in for the bridge, so they also supply the device it would
+ * hand out. The code under test only compares the handle with NULL.
+ */
+struct PVRDMADev {
+    int unused;
+};
+static struct PVRDMADev g_fake_pvrdma;
+
 static struct ionic_adminq_ctx g_ctx;
 
 /* Two mapped QPs, a poisoned guest memory, and counters that succeed. */
 static void ctx_reset(void)
 {
     memset(&g_ctx, 0, sizeof(g_ctx));
-    g_ctx.pvrdma_handle = (pvrdma_handle_t)&g_ctx; /* only tested for NULL */
+    g_ctx.pvrdma_handle = &g_fake_pvrdma;
     g_ctx.qp_map[0].valid = true;
     g_ctx.qp_map[0].qp_id = QP_ID;
     g_ctx.qp_map[0].qpn = QP_QPN;

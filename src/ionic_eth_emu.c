@@ -316,9 +316,9 @@ void ionic_eth_emu_register_adminq(struct ionic_eth_emu *emu,
     emu->adminq = adminq;
 }
 
-void ionic_eth_emu_set_pvrdma(struct ionic_eth_emu *emu, void *handle)
+void ionic_eth_emu_set_pvrdma(struct ionic_eth_emu *emu, pvrdma_handle_t handle)
 {
-    emu->pvrdma_handle = (pvrdma_handle_t)handle;
+    emu->pvrdma_handle = handle;
 }
 
 void ionic_eth_emu_set_mac(struct ionic_eth_emu *emu, const uint8_t mac[6])
