@@ -11,7 +11,6 @@ on:
     branches: [ develop ]
     paths: &paths
       - 'src/**'
-      - 'third-party/**'
       - 'tests/**'
       - 'service/**'
       # src/rocm_ernic_server.c and src/rdma/rdma_backend_tcp.c include
@@ -124,13 +123,23 @@ jobs:
 
       # build-essential, cmake, ninja-build and pkg-config are preinstalled
       # on the hosted image, so only the things it does not ship are listed.
+      #
+      # libjson-c-dev is this project's own dependency, not just
+      # libvfio-user's: the configure step below passes
+      # -DERNIC_BUILD_P4=ON, and that is a REQUIRED pkg_check_modules.
+      # It used to be installed beside meson in the libvfio-user step,
+      # which runs only on a cache miss, so the configure would have
+      # started failing the moment that cache was warm -- which on a
+      # branch with its own cache scope is not the run that introduced
+      # it.
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libibverbs-dev \
             librdmacm-dev \
-            libglib2.0-dev
+            libglib2.0-dev \
+            libjson-c-dev
 
       # The coverage report needs the llvm-profdata and llvm-cov of the
       # compiler's own LLVM version, since the profile format changes
@@ -160,11 +169,13 @@ jobs:
       - name: Clone and build libvfio-user
         if: steps.cache-libvfio-user.outputs.cache-hit != 'true'
         run: |
-          # meson and libjson-c-dev build libvfio-user and libcmocka-dev
-          # builds its tests; nothing else in this job needs them, and the
-          # cache key is static, so installing them here keeps them off the
-          # steady-state cache-hit path.
-          sudo apt-get install -y meson libjson-c-dev libcmocka-dev
+          # meson builds libvfio-user and libcmocka-dev builds its tests;
+          # nothing else in this job needs either, and the cache key is
+          # static, so installing them here keeps them off the
+          # steady-state cache-hit path. json-c is not among them: this
+          # project needs it too, so it is installed unconditionally
+          # above.
+          sudo apt-get install -y meson libcmocka-dev
           # Pin to 20e9803 (De-duplicate FDs for DMA region access, Apr 7 2026)
           # This version includes the vfu_setup_device_dma() max_regions
           # parameter added in f3742ed9 (#835).
@@ -231,6 +242,7 @@ jobs:
             "${build_type_flags[@]}" \
             -DCMAKE_INSTALL_PREFIX=/usr \
             -DERNIC_WERROR=ON \
+            -DERNIC_BUILD_P4=ON \
             -DERNIC_USE_SANITIZERS=$asan \
             -DERNIC_USE_THREAD_SANITIZER=$tsan \
             -DERNIC_USE_CODE_COVERAGE=$coverage
@@ -326,7 +338,7 @@ jobs:
           ctest --test-dir build -T memcheck --output-on-failure --no-tests=error -j"$(nproc)" \
             --overwrite "MemoryCheckCommand=$(command -v valgrind)" \
             --overwrite "MemoryCheckCommandOptions=--leak-check=full --track-origins=yes --num-callers=40 --error-exitcode=1" \
-            -E '^(pci-config-test|find-rdma-device-tuple|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|cmake-subproject)$' \
+            -E '^(pci-config-test|find-rdma-device-tuple|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli|cmake-subproject|ernic-vfu-client|ernic-ionic-driver|ernic-ionic-hw-stats|ernic-mesh-stress)$' \
             || status=$?
           shopt -s nullglob
           for log in build/Testing/Temporary/MemoryChecker.*.log; do
@@ -348,6 +360,11 @@ jobs:
       # valgrind writes a log for each process, and the step fails if any
       # log lacks a clean summary, which includes a server that was killed
       # before valgrind could write one.
+      #
+      # ernic-mesh-stress is left out for that last reason: it SIGKILLs
+      # nodes on purpose, to see what the manager does with one that dies
+      # without cleaning up, so its servers cannot all write a summary. It
+      # runs under the sanitizers instead, in the other legs.
       - name: Test the server with valgrind
         if: matrix.valgrind == 'on'
         run: |
@@ -359,10 +376,10 @@ jobs:
           export ERNIC_TEST_SERVER_WRAPPER
           status=0
           ctest --test-dir build --output-on-failure --no-tests=error \
-            -R '^(pci-config-test|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci)$' \
+            -R '^(pci-config-test|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ernic-vfu-client|ernic-ionic-driver|ernic-ionic-hw-stats|ionic-stats-interval-cli|ionic-eth-queues-cli)$' \
             || status=$?
           "${valgrind}" --trace-children=yes "${opts[@]}" \
-            build/tests/test_server_lifecycle build/rocm-ernic || status=$?
+            build/tests/test_server_lifecycle || status=$?
           SERVER_BIN=build/rocm-ernic \
           TEST_BIN=build/tests/test_data_transfer \
           tests/test_loopback_ci.sh || status=$?

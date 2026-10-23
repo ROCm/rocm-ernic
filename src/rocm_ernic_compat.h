@@ -14,11 +14,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h> /* FILE, for pvrdma_set_stats_section() */
 
 /* Forward declarations */
 typedef struct rocm_ernic_dev rocm_ernic_dev_t;
-typedef uint64_t dma_addr_t;
-typedef uint64_t hwaddr;
 
 /*
  * Opaque handle to RDMA device
@@ -83,8 +82,7 @@ void pvrdma_uar_mmio_count(pvrdma_handle_t handle, bool is_write);
  * pvrdma_irq_count - Record one delivered MSI-X interrupt
  * @handle: Device handle
  *
- * post_interrupt() counts its own; this is for the ionic path, which triggers
- * the vector itself.
+ * The ionic path triggers the vector itself and reports it here.
  */
 void pvrdma_irq_count(pvrdma_handle_t handle);
 
@@ -163,9 +161,48 @@ void pvrdma_qp_cqe_count(pvrdma_handle_t handle, uint32_t qp_id);
  */
 void pvrdma_qp_stats_forget(pvrdma_handle_t handle, uint32_t qp_id);
 
-/*
- * Command Execution - pvrdma_exec_cmd is declared in pvrdma.h
+/* Device totals, as reported to the guest by the ionic STATS_VALS command. */
+struct pvrdma_dev_counters {
+    uint64_t commands;
+    uint64_t total_bytes_sent;
+    uint64_t total_bytes_received;
+    uint64_t total_bytes_rdma_read;
+    uint64_t total_bytes_rdma_write;
+};
+
+/* One QP's counters, as reported by the ionic QP_STATS_VALS command. */
+struct pvrdma_qp_counters {
+    uint64_t doorbell_send;
+    uint64_t doorbell_recv;
+    uint64_t wqes_processed;
+    uint64_t cqes_posted;
+    uint64_t bytes_sent;
+    uint64_t bytes_received;
+    uint64_t bytes_rdma_read;
+    uint64_t bytes_rdma_write;
+};
+
+/**
+ * pvrdma_get_dev_counters - Snapshot the device totals
+ * @handle: Device handle
+ * @out: Filled on success, zeroed on failure
+ *
+ * Returns 0, or -EINVAL for a NULL handle or @out.
  */
+int pvrdma_get_dev_counters(pvrdma_handle_t handle,
+                            struct pvrdma_dev_counters *out);
+
+/**
+ * pvrdma_get_qp_counters - Snapshot one QP's counters
+ * @handle: Device handle
+ * @qp_id: QP to read
+ * @out: Filled on success, zeroed on failure
+ *
+ * A QP that has not counted anything yet reads as all zeros; this does not
+ * create an entry for it.  Returns 0, or -EINVAL for a NULL handle or @out.
+ */
+int pvrdma_get_qp_counters(pvrdma_handle_t handle, uint32_t qp_id,
+                           struct pvrdma_qp_counters *out);
 
 /*
  * Statistics
@@ -207,6 +244,23 @@ void pvrdma_set_stats_connection_state(pvrdma_handle_t handle,
                                        const char *connection_str);
 
 /**
+ * pvrdma_set_stats_nic_profile - Set the NIC profile for stats display
+ * @handle:  Device handle
+ * @profile: the profile chain and hash, e.g. "compat (hash 0x...)" (may be
+ *           NULL; shown as "(not set)" in stats file)
+ */
+void pvrdma_set_stats_nic_profile(pvrdma_handle_t handle, const char *profile);
+
+/**
+ * pvrdma_set_stats_section - Add a section to the stats file
+ * @handle: Device handle
+ * @fn:     writes the section, after "Device Statistics" (NULL removes it)
+ * @opaque: passed to @fn
+ */
+void pvrdma_set_stats_section(pvrdma_handle_t handle,
+                              void (*fn)(FILE *fp, void *opaque), void *opaque);
+
+/**
  * pvrdma_inc_stats_reset_count - Increment device reset count for stats
  * @handle: Device handle
  */
@@ -217,22 +271,6 @@ void pvrdma_inc_stats_reset_count(pvrdma_handle_t handle);
  * @handle: Device handle
  */
 void pvrdma_write_stats(pvrdma_handle_t handle);
-
-/*
- * Bridge Functions: DMA and Interrupts
- *
- * These are called FROM QEMU code TO interact with libvfio-user.
- * They need access to vfu_ctx which we get from the device.
- */
-
-/* DMA functions are now pci_dma_map/unmap declared in hw/pci/pci.h */
-
-/**
- * pvrdma_drain_pending_interrupts - deliver any CQ
- * completion interrupts queued by background threads.
- * Must be called from the main (vfio-user) thread.
- */
-void pvrdma_drain_pending_interrupts(pvrdma_handle_t handle);
 
 /*
  * Thin wrappers for the ionic migration path.
@@ -435,9 +473,10 @@ typedef void (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node,
  * DEPTH: 2^16 entries matches the max_srq_wr the device advertises (0xffff),
  * so no legitimate driver asks for more.
  *
- * STRIDE: 2^8 is the WQE buffer the receive path reads into -- see the
- * rwqe[256] in deliver_recv(). The driver's SRQ WQE is 64 bytes, so this is
- * two doublings of headroom above anything real.
+ * STRIDE: 2^8. The driver's SRQ WQE is 64 bytes, so this is two doublings
+ * of headroom above anything real, and it fits the WQE buffer the receive
+ * path reads into (rwqe in deliver_recv(), which ionic_datapath.c
+ * static-asserts).
  *
  * The stride needs a floor as well as a ceiling, and for a different
  * reason. deliver_recv() reads min(stride, sizeof rwqe) bytes and then
@@ -454,6 +493,17 @@ typedef void (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node,
 uint32_t ionic_mesh_local_node(pvrdma_handle_t handle);
 uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle,
                                   const uint8_t *dest_gid_16bytes);
+/*
+ * Claim @gid_16bytes for this node, or withdraw it, and re-advertise to the
+ * mesh.  Returns 0 on a non-mesh backend, which has no peers to tell.
+ *
+ * The mesh's only GID source in practice is still ERNIC_TCP_GUEST_GIDS, read
+ * once at startup: nothing dispatches a guest GID-table change to here, so a
+ * guest address that appears later resolves nowhere.  This is the entry
+ * point that would fix that, and the gsi-mesh test is its only caller.
+ */
+int ionic_mesh_claim_gid(pvrdma_handle_t handle, const uint8_t *gid_16bytes,
+                         bool add);
 /* Header and body stay separate all the way down to writev. */
 int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
                      size_t hdr_len, const void *body, size_t body_len);

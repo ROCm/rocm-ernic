@@ -36,10 +36,8 @@ NC='\033[0m' # No Color
 # Test configurations
 declare -a CONFIGS=(
     "loopback"
-    "loopback:mode=preserve"
-    "loopback:mode=zeros"
-    "loopback:mode=random"
-    "loopback:md5"
+    # Options the backend took before its PVRDMA data path was removed. It
+    # accepts and ignores them, so a command line that names them still works.
     "loopback:mode=preserve,md5"
 )
 
@@ -148,7 +146,6 @@ test_config() {
     local socket_ready=0
     for _ in {1..10}; do
         if [ -S "$socket_path" ]; then
-            chmod 666 "$socket_path" 2>/dev/null || true
             socket_ready=1
             break
         fi

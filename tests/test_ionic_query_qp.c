@@ -8,11 +8,11 @@
  * which is exactly what ibv_query_qp saw while this opcode was a stub, on
  * a queue pair that had been driven all the way to RTS.
  *
- * These tests drive dispatch_wqe() directly against a fake guest memory,
- * so they pin the encoding of the two buffers: the state and MTU nibbles
- * the driver unpacks from state_pmtu, and the access flags it ORs across
- * both. The translation unit is #included to reach dispatch_wqe(), and its
- * external symbols are stubbed.
+ * These tests drive ionic_adminq_dispatch_wqe() directly against a fake
+ * guest memory, so they pin the encoding of the two buffers: the state and
+ * MTU nibbles the driver unpacks from state_pmtu, and the access flags it
+ * ORs across both. The test links ionic_adminq.c, reaches its context
+ * through ionic_adminq_priv.h, and stubs its external symbols.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -21,14 +21,19 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <endian.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/uio.h>
 
-/* Pull in the code under test (including its static functions). */
-#include "ionic_adminq.c"
+#include <vfio-user/libvfio-user.h>
+
+#include "ionic_adminq_priv.h"
+#include "ionic_datapath.h"
+#include "rocm_ernic_compat.h"
 
 /* ---- Fake guest memory ------------------------------------------------- */
 
@@ -341,6 +346,12 @@ void ionic_datapath_set_qkey(struct ionic_datapath *dp, uint32_t qp_id,
     (void)qkey;
 }
 
+void ionic_datapath_flush_qp(struct ionic_datapath *dp, uint32_t qp_id)
+{
+    (void)dp;
+    (void)qp_id;
+}
+
 void ionic_datapath_set_dest(struct ionic_datapath *dp, uint32_t qp_id,
                              uint32_t dest_qp_id, uint32_t dest_node_id)
 {
@@ -373,6 +384,24 @@ void pvrdma_qp_stats_forget(pvrdma_handle_t handle, uint32_t qp_id)
 {
     (void)handle;
     (void)qp_id;
+}
+/* Not exercised here; a variable so the handler's error paths stay live. */
+static int g_counters_rc;
+
+int pvrdma_get_dev_counters(pvrdma_handle_t handle,
+                            struct pvrdma_dev_counters *out)
+{
+    (void)handle;
+    memset(out, 0, sizeof(*out));
+    return g_counters_rc;
+}
+int pvrdma_get_qp_counters(pvrdma_handle_t handle, uint32_t qp_id,
+                           struct pvrdma_qp_counters *out)
+{
+    (void)handle;
+    (void)qp_id;
+    memset(out, 0, sizeof(*out));
+    return g_counters_rc;
 }
 
 /* ---- Test helpers ------------------------------------------------------ */
@@ -449,8 +478,9 @@ static void test_state_reaches_the_side_buffer(void)
     ctx_reset();
     build_body(body, QP_ID, SQ_GPA, RQ_GPA);
 
-    check("query-accepted", dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body,
-                                         sizeof(body)) == 0);
+    check("query-accepted",
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body,
+                                    sizeof(body)) == 0);
     check("query-used-backend-qpn", g_queried_qpn == QP_QPN);
     check("state-nibble-is-rts", (g_mem[RQ_GPA] >> 4) == 3);
     /* The driver computes path_mtu as (state_pmtu & 0xf) - 7. */
@@ -469,8 +499,8 @@ static void test_every_state_round_trips(void)
         ctx_reset();
         g_state = s;
         build_body(body, QP_ID, SQ_GPA, RQ_GPA);
-        if (dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body, sizeof(body)) !=
-                0 ||
+        if (ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body,
+                                      sizeof(body)) != 0 ||
             (g_mem[RQ_GPA] >> 4) != s)
             ok = false;
     }
@@ -489,7 +519,8 @@ static void test_access_flags_are_translated(void)
 
     ctx_reset();
     build_body(body, QP_ID, SQ_GPA, RQ_GPA);
-    (void)dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body, sizeof(body));
+    (void)ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body,
+                                    sizeof(body));
 
     memcpy(&sq_be, g_mem + SQ_GPA + 2, 2);
     /* IONIC_QPF_REMOTE_WRITE | IONIC_QPF_REMOTE_READ */
@@ -499,7 +530,8 @@ static void test_access_flags_are_translated(void)
     ctx_reset();
     g_access = 1u << 3; /* REMOTE_ATOMIC alone */
     build_body(body, QP_ID, SQ_GPA, RQ_GPA);
-    (void)dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body, sizeof(body));
+    (void)ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body,
+                                    sizeof(body));
     check("atomic-flag-translated", rq_flags() == 0x4);
 }
 
@@ -511,7 +543,8 @@ static void test_dest_qpn_is_reported(void)
 
     ctx_reset();
     build_body(body, QP_ID, SQ_GPA, RQ_GPA);
-    (void)dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body, sizeof(body));
+    (void)ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body,
+                                    sizeof(body));
 
     memcpy(&be, g_mem + SQ_GPA + 8, 4);
     check("dest-qpn-reported", be32toh(be) == g_dest_qpn);
@@ -531,7 +564,8 @@ static void test_psns_are_reported(void)
 
     ctx_reset();
     build_body(body, QP_ID, SQ_GPA, RQ_GPA);
-    (void)dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body, sizeof(body));
+    (void)ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body,
+                                    sizeof(body));
 
     memcpy(&rq_be, g_mem + SQ_GPA + 16, 4);
     memcpy(&sq_be, g_mem + RQ_GPA + 4, 4);
@@ -542,7 +576,8 @@ static void test_psns_are_reported(void)
     g_rq_psn = 0xff000001;
     g_sq_psn = 0xff000002;
     build_body(body, QP_ID, SQ_GPA, RQ_GPA);
-    (void)dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body, sizeof(body));
+    (void)ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body,
+                                    sizeof(body));
 
     memcpy(&rq_be, g_mem + SQ_GPA + 16, 4);
     memcpy(&sq_be, g_mem + RQ_GPA + 4, 4);
@@ -560,8 +595,9 @@ static void test_unknown_qp_fails(void)
 
     ctx_reset();
     build_body(body, QP_ID + 1, SQ_GPA, RQ_GPA);
-    check("unknown-qp-rejected", dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP,
-                                              body, sizeof(body)) != 0);
+    check("unknown-qp-rejected",
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body,
+                                    sizeof(body)) != 0);
     check("unknown-qp-wrote-nothing", g_mem[RQ_GPA] == 0);
 }
 
@@ -574,8 +610,8 @@ static void test_query_failure_fails_the_command(void)
     g_query_rc = -22;
     build_body(body, QP_ID, SQ_GPA, RQ_GPA);
     check("query-failure-rejected",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body, sizeof(body)) !=
-              0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body,
+                                    sizeof(body)) != 0);
 }
 
 /* A short body has no addresses in it to trust. */
@@ -585,7 +621,7 @@ static void test_short_body_writes_nothing(void)
 
     ctx_reset();
     build_body(body, QP_ID, SQ_GPA, RQ_GPA);
-    (void)dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body, 33);
+    (void)ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body, 33);
     check("short-body-wrote-nothing", g_mem[RQ_GPA] == 0 && g_mem[SQ_GPA] == 0);
 }
 
@@ -619,8 +655,8 @@ static void test_modify_qp_unresolved_gid_only_fails_on_a_mesh(void)
     g_local_node = UINT32_MAX;
     g_node_from_gid = UINT32_MAX;
     check("loopback-modify-accepted",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_QP, body, sizeof(body)) ==
-              0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_QP, body,
+                                    sizeof(body)) == 0);
 
     /* Mesh attached and no node owns the GID: must fail, not guess. */
     ctx_reset();
@@ -628,8 +664,8 @@ static void test_modify_qp_unresolved_gid_only_fails_on_a_mesh(void)
     g_local_node = 0;
     g_node_from_gid = UINT32_MAX;
     check("mesh-modify-unresolved-rejected",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_QP, body, sizeof(body)) !=
-              0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_QP, body,
+                                    sizeof(body)) != 0);
 
     /* Mesh attached and the GID resolves: must proceed. */
     ctx_reset();
@@ -637,8 +673,8 @@ static void test_modify_qp_unresolved_gid_only_fails_on_a_mesh(void)
     g_local_node = 0;
     g_node_from_gid = 2;
     check("mesh-modify-resolved-accepted",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_QP, body, sizeof(body)) ==
-              0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_QP, body,
+                                    sizeof(body)) == 0);
 }
 
 int main(void)

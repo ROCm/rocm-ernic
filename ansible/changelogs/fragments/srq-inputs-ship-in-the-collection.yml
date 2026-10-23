@@ -1,0 +1,26 @@
+---
+major_changes:
+  - >-
+    The collection now ships the ionic driver patch series and the two
+    scripts that build it, under ``files/`` --- ``files/patches/srq``,
+    ``files/patches/rdma-core`` and their READMEs, the base UC
+    address-handle patch, ``files/scripts/fetch-ionic-sources.sh`` and
+    ``files/scripts/setup-ionic-dkms.sh``.  ``ernic_srq_dkms``,
+    ``ernic_srq_provider`` and ``ernic_guest_setup`` default to the shipped
+    copies, resolved from ``role_path``, so a consumer needs no
+    ``ernic_source`` checkout and no ``*_patches_dir`` or ``*_scripts_dir``
+    override to build and install the SRQ-capable ``ionic`` and
+    ``ionic_rdma`` modules and an rdma-core whose ``providers/ionic``
+    carries ``ionic_create_srq``.  The roles and the series they apply now
+    come from one artifact at one ref, so they cannot disagree.
+minor_changes:
+  - >-
+    The ``*_patches_dir`` and ``*_scripts_dir`` variables of the SRQ roles,
+    and the new ``ernic_guest_patches_dir`` and ``ernic_guest_scripts_dir``
+    of ``ernic_guest_setup``, stay overridable: pointing them at a working
+    tree still works.
+  - >-
+    ``ernic_source`` no longer probes a checkout for ``patches/`` or the two
+    ionic scripts, which are no longer at the repository root.  It still
+    resolves the checkout the udev rules, ``find-rdma-device.sh``, the
+    ionic kernel ref and the host build come from.

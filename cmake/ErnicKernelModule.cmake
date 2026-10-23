@@ -11,7 +11,8 @@
 #
 # The ionic sources are fetched from a pinned kernel tag/SHA so the
 # build is reproducible.  Bump IONIC_KERNEL_REF to track a new kernel
-# release; re-verify that patches/*.patch still apply cleanly.
+# release; re-verify that ansible/files/patches/*.patch still apply
+# cleanly.
 #
 # Included from the top-level CMakeLists.txt.
 
@@ -46,19 +47,22 @@ set(IONIC_KERNEL_REPO
 
 set(IONIC_SOURCE_DIR
     "${PROJECT_BINARY_DIR}/ionic-kernel-src")
+# The patch series and the two scripts live in the Ansible collection, so
+# that a consumer installing sbates130272.rocm_ernic gets them at the same
+# ref as the roles that apply them.  See ansible/files/README.md.
 set(IONIC_PATCHES_DIR
-    "${PROJECT_SOURCE_DIR}/patches")
+    "${PROJECT_SOURCE_DIR}/ansible/files/patches")
 set(IONIC_DKMS_SCRIPT
-    "${PROJECT_SOURCE_DIR}/scripts/setup-ionic-dkms.sh")
+    "${PROJECT_SOURCE_DIR}/ansible/files/scripts/setup-ionic-dkms.sh")
 set(IONIC_FETCH_SCRIPT
-    "${PROJECT_SOURCE_DIR}/scripts/fetch-ionic-sources.sh")
+    "${PROJECT_SOURCE_DIR}/ansible/files/scripts/fetch-ionic-sources.sh")
 
 # ---------------------------------------------------------------------------
 # Helper: fetch-and-patch target
 # ---------------------------------------------------------------------------
 # This custom target:
 #   1. Sparse-clones only the two ionic subtrees from the pinned ref.
-#   2. Applies patches/*.patch in filename order via git am.
+#   2. Applies ansible/files/patches/*.patch in filename order via git am.
 # It is a dependency of the build/install targets so it runs once and
 # is skipped on subsequent builds if the sentinel file exists.
 

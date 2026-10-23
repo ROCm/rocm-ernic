@@ -203,6 +203,15 @@ static void test_parse_errors(void)
         "GET /x\r\n\r\n",                     /* no version */
         "GET /x HTTP/1.1\r\nnocolon\r\n\r\n", /* header without a colon */
         "PUT /x HTTP/1.1\r\nContent-Length: abc\r\n\r\n",
+        "PUT /x HTTP/1.1\r\nContent-Length: 5x\r\n\r\n",
+        "PUT /x HTTP/1.1\r\nContent-Length: +5\r\n\r\n",
+        /* With a token no length is too long for the socket, so only the
+         * parser stands between these and a length of SIZE_MAX: strtoull()
+         * wrapped the first and saturated the second. */
+        "PUT /x HTTP/1.1\r\nx-amz-rdma-token: t\r\n"
+        "Content-Length: -1\r\n\r\n",
+        "PUT /x HTTP/1.1\r\nx-amz-rdma-token: t\r\n"
+        "Content-Length: 99999999999999999999\r\n\r\n",
         /* Chunked must be refused, not read as identity: the length
          * prefixes would land in the object as if they were data. */
         "PUT /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n",

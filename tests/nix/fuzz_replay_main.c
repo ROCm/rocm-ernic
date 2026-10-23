@@ -59,14 +59,15 @@ static void fill_pattern(uint8_t *buf, size_t size, uint32_t seed)
 }
 
 /* Hand one input to the harness in an exact-size heap buffer, so ASan
- * traps an over-read even when the harness copies it again. */
-static void run_one(const uint8_t *data, size_t size)
+ * traps an over-read even when the harness copies it again.  Returns 0, or
+ * -1 if there was no memory for the copy. */
+static int run_one(const uint8_t *data, size_t size)
 {
     uint8_t *buf = malloc(size ? size : 1);
 
     if (!buf) {
         fprintf(stderr, "fuzz-replay: out of memory\n");
-        exit(EXIT_FAILURE);
+        return -1;
     }
     if (size) {
         memcpy(buf, data, size);
@@ -75,6 +76,7 @@ static void run_one(const uint8_t *data, size_t size)
     (void)LLVMFuzzerTestOneInput(buf, size);
 
     free(buf);
+    return 0;
 }
 
 static int replay_file(const char *path)
@@ -103,10 +105,10 @@ static int replay_file(const char *path)
     fclose(f);
 
     printf("fuzz-replay: %s (%zu bytes)\n", path, n);
-    run_one(buf, n);
+    int ret = run_one(buf, n);
 
     free(buf);
-    return 0;
+    return ret;
 }
 
 static int replay_generated(void)
@@ -132,10 +134,16 @@ static int replay_generated(void)
         size_t size = generated_sizes[i];
 
         memset(buf, 0, size);
-        run_one(buf, size);
+        int ret = run_one(buf, size);
 
-        fill_pattern(buf, size, (uint32_t)i);
-        run_one(buf, size);
+        if (ret == 0) {
+            fill_pattern(buf, size, (uint32_t)i);
+            ret = run_one(buf, size);
+        }
+        if (ret != 0) {
+            free(buf);
+            return -1;
+        }
     }
 
     printf("fuzz-replay: %zu generated inputs OK\n", count * 2);

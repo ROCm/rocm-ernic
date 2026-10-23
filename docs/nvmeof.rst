@@ -199,11 +199,11 @@ Management.
 Read and Write move their payload with keyed SGLs: the
 controller issues RDMA READ or WRITE against the guest's
 memory key from inside the data path, using the same
-``rdma_pci_dma_map`` machinery the rest of the emulator
-uses. ``ioccsz`` is reported as 4 -- a 64-byte capsule with
-no room after the command -- so the host always sends a
-keyed SGL rather than in-capsule data, and there is exactly
-one data path to get right.
+memory-region lookup and guest-memory DMA as the rest of
+the ionic data path. ``ioccsz`` is reported as 4 -- a
+64-byte capsule with no room after the command -- so the
+host always sends a keyed SGL rather than in-capsule data,
+and there is exactly one data path to get right.
 
 The key in that SGL comes from fast registration. A stock
 ``nvme-rdma`` initiator has ``register_always`` on, so it

@@ -1,0 +1,12 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+# Only for the removal of a hand-installed module left by an earlier
+# version of this role; "dkms install" runs depmod itself.
+- name: Rebuild the module dependency map
+  become: true
+  ansible.builtin.command:
+    cmd: "depmod -a {{ ansible_kernel }}"
+  changed_when: true

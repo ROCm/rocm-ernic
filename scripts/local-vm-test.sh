@@ -123,9 +123,12 @@ log_info "Log: $SERVER_LOG"
 sudo rm -f "${SOCKET_PATH}"
 # The log is opened as the invoking user on purpose, so it can be read
 # without sudo. Piping through 'sudo tee' instead would make $! tee's PID.
+# The server runs as root, and the VM below as the invoking user, so the
+# socket gets that user's group or QEMU couldn't connect to it.
 # shellcheck disable=SC2024
 sudo "${PROJECT_ROOT}/build/rocm-ernic" \
     --socket "${SOCKET_PATH}" \
+    --socket-group "$(id -g)" \
     "${BACKEND_ARGS[@]}" \
     > "${SERVER_LOG}" 2>&1 &
 

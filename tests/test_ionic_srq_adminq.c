@@ -19,8 +19,9 @@
  * much later as posts vanishing in the datapath rather than as an error from
  * ibv_create_srq().
  *
- * Like the other adminq tests, the translation unit is #included to reach
- * dispatch_wqe() and its external symbols are stubbed.
+ * Like the other adminq tests, it links ionic_adminq.c, drives
+ * ionic_adminq_dispatch_wqe() through ionic_adminq_priv.h, and stubs the
+ * external symbols.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -29,15 +30,20 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include <stdarg.h>
+#include <endian.h>
+#include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/uio.h>
 
-/* Pull in the code under test (including its static functions). */
-#include "ionic_adminq.c"
+#include <vfio-user/libvfio-user.h>
+
+#include "ionic_adminq_priv.h"
+#include "ionic_datapath.h"
+#include "rocm_ernic_compat.h"
 
 /* ---- Fake guest memory ------------------------------------------------- */
 
@@ -310,6 +316,12 @@ void ionic_datapath_set_qkey(struct ionic_datapath *dp, uint32_t qp_id,
     (void)qkey;
 }
 
+void ionic_datapath_flush_qp(struct ionic_datapath *dp, uint32_t qp_id)
+{
+    (void)dp;
+    (void)qp_id;
+}
+
 void ionic_datapath_set_dest(struct ionic_datapath *dp, uint32_t qp_id,
                              uint32_t dest_qp_id, uint32_t dest_node_id)
 {
@@ -342,6 +354,22 @@ void pvrdma_qp_stats_forget(pvrdma_handle_t handle, uint32_t qp_id)
 {
     (void)handle;
     (void)qp_id;
+}
+/* The statistics commands are not under test here. */
+int pvrdma_get_dev_counters(pvrdma_handle_t handle,
+                            struct pvrdma_dev_counters *out)
+{
+    (void)handle;
+    memset(out, 0, sizeof(*out));
+    return 0;
+}
+int pvrdma_get_qp_counters(pvrdma_handle_t handle, uint32_t qp_id,
+                           struct pvrdma_qp_counters *out)
+{
+    (void)handle;
+    (void)qp_id;
+    memset(out, 0, sizeof(*out));
+    return 0;
 }
 
 /* ---- Recording SRQ stubs ----------------------------------------------- */
@@ -512,7 +540,8 @@ static uint32_t create_one(void)
     uint8_t body[IONIC_ADMIN_CREATE_SRQ_IN_V1_LEN];
 
     build_create(body, RESP_GPA, IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
-    if (dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body, sizeof(body)))
+    if (ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body,
+                                  sizeof(body)))
         return 0;
     return resp_srq_id();
 }
@@ -533,8 +562,9 @@ static void test_create_reports_id_and_length(void)
     ctx_reset();
     build_create(body, RESP_GPA, IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
 
-    check("create-accepted", dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ,
-                                          body, sizeof(body)) == 0);
+    check("create-accepted",
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body,
+                                    sizeof(body)) == 0);
     check("create-allocated-once", g_alloc_calls == 1);
     /* At or above the QP id space, or an RQ doorbell cannot be told apart.
      * Not strictly above: the first id is the base itself now that ids come
@@ -562,8 +592,8 @@ static void test_create_rejects_short_body(void)
     build_create(body, RESP_GPA, IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
 
     check("create-short-body-refused",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body,
-                       IONIC_ADMIN_CREATE_SRQ_IN_V1_LEN - 1) != 0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body,
+                                    IONIC_ADMIN_CREATE_SRQ_IN_V1_LEN - 1) != 0);
     check("create-short-body-allocated-nothing", g_alloc_calls == 0);
 }
 
@@ -581,14 +611,16 @@ static void test_modify_and_query_resolve_the_id(void)
     build_id_body(body, sizeof(body), srq_id);
     memcpy(body + 4, &limit_le, 2);
     check("modify-accepted",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_SRQ, body, 6) == 0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_SRQ, body,
+                                    6) == 0);
     check("modify-reached-the-allocated-handle",
           g_modify_handle == SRQ_HANDLE_BASE);
     check("modify-carried-the-limit", g_modify_limit == 99);
 
     build_id_body(body, sizeof(body), srq_id);
     check("query-accepted",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_SRQ, body, 4) == 0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_SRQ, body,
+                                    4) == 0);
 }
 
 /* An id the emulator never issued must not resolve to someone else's SRQ. */
@@ -601,9 +633,11 @@ static void test_unknown_id_is_refused(void)
 
     build_id_body(body, sizeof(body), IONIC_SRQ_QID_BASE + 4242u);
     check("modify-unknown-id-refused",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_SRQ, body, 6) != 0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_SRQ, body,
+                                    6) != 0);
     check("query-unknown-id-refused",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_SRQ, body, 4) != 0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_SRQ, body,
+                                    4) != 0);
 }
 
 /* DESTROY frees the resource, tells the datapath, and retires the id. */
@@ -617,7 +651,8 @@ static void test_destroy_releases_everything(void)
 
     build_id_body(body, sizeof(body), srq_id);
     check("destroy-accepted",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_DESTROY_SRQ, body, 4) == 0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_DESTROY_SRQ, body,
+                                    4) == 0);
     check("destroy-freed-the-resource", g_dealloc_calls == 1);
     check("destroy-freed-the-right-handle",
           g_last_dealloc_handle == SRQ_HANDLE_BASE);
@@ -626,7 +661,8 @@ static void test_destroy_releases_everything(void)
 
     build_id_body(body, sizeof(body), srq_id);
     check("destroyed-id-no-longer-resolves",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_SRQ, body, 6) != 0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_SRQ, body,
+                                    6) != 0);
 }
 
 /*
@@ -700,7 +736,8 @@ static void test_ids_are_recycled_across_churn(void)
             break;
         }
         build_id_body(body, sizeof(body), id);
-        if (dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_DESTROY_SRQ, body, 4) != 0) {
+        if (ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_DESTROY_SRQ, body,
+                                      4) != 0) {
             in_range = false;
             break;
         }
@@ -722,23 +759,23 @@ static void test_oversized_exponents_are_refused(void)
     build_create(body, RESP_GPA, IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
     body[26] = 32; /* depth_log2: the shift-by-32 that is UB */
     check("depth-exponent-32-refused",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body, sizeof(body)) !=
-              0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body,
+                                    sizeof(body)) != 0);
     check("depth-exponent-32-allocated-nothing", g_alloc_calls == 0);
 
     ctx_reset();
     build_create(body, RESP_GPA, IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
     body[26] = IONIC_SRQ_MAX_DEPTH_LOG2 + 1;
     check("depth-exponent-past-advertised-max-refused",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body, sizeof(body)) !=
-              0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body,
+                                    sizeof(body)) != 0);
 
     ctx_reset();
     build_create(body, RESP_GPA, IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
     body[27] = IONIC_SRQ_MAX_STRIDE_LOG2 + 1;
     check("stride-exponent-past-wqe-buffer-refused",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body, sizeof(body)) !=
-              0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body,
+                                    sizeof(body)) != 0);
     check("stride-exponent-refusal-allocated-nothing", g_alloc_calls == 0);
 
     /*
@@ -752,16 +789,16 @@ static void test_oversized_exponents_are_refused(void)
     build_create(body, RESP_GPA, IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
     body[27] = IONIC_SRQ_MIN_STRIDE_LOG2 - 1;
     check("stride-exponent-below-the-wqe-header-refused",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body, sizeof(body)) !=
-              0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body,
+                                    sizeof(body)) != 0);
     check("small-stride-refusal-allocated-nothing", g_alloc_calls == 0);
 
     ctx_reset();
     build_create(body, RESP_GPA, IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
     body[27] = 0;
     check("stride-exponent-zero-refused",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body, sizeof(body)) !=
-              0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body,
+                                    sizeof(body)) != 0);
 
     /* Both ends of the advertised range still work, so these are bounds and
      * not off-by-ones. */
@@ -770,15 +807,15 @@ static void test_oversized_exponents_are_refused(void)
     body[26] = IONIC_SRQ_MAX_DEPTH_LOG2;
     body[27] = IONIC_SRQ_MAX_STRIDE_LOG2;
     check("max-advertised-geometry-accepted",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body, sizeof(body)) ==
-              0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body,
+                                    sizeof(body)) == 0);
 
     ctx_reset();
     build_create(body, RESP_GPA, IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
     body[27] = IONIC_SRQ_MIN_STRIDE_LOG2;
     check("min-advertised-stride-accepted",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body, sizeof(body)) ==
-              0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body,
+                                    sizeof(body)) == 0);
 }
 
 /*
@@ -796,8 +833,8 @@ static void test_registration_failure_fails_the_command(void)
     build_create(body, RESP_GPA, IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
 
     check("register-failure-refuses-create",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body, sizeof(body)) !=
-              0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body,
+                                    sizeof(body)) != 0);
     check("register-failure-frees-the-resource", g_dealloc_calls == 1);
     check("register-failure-wrote-no-id", g_mem[RESP_GPA] == 0);
     g_register_srq_rc = 0;
@@ -827,7 +864,8 @@ static void test_zero_limit_is_accepted(void)
     build_id_body(body, sizeof(body), srq_id);
     memcpy(body + 4, &limit_le, 2);
     check("zero-limit-accepted",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_SRQ, body, 6) == 0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_SRQ, body,
+                                    6) == 0);
     check("zero-limit-never-reached-the-resource-manager", g_modify_calls == 0);
 
     /* A real limit still goes through, so this is not a blanket bypass. */
@@ -835,7 +873,8 @@ static void test_zero_limit_is_accepted(void)
     build_id_body(body, sizeof(body), srq_id);
     memcpy(body + 4, &limit_le, 2);
     check("nonzero-limit-accepted",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_SRQ, body, 6) == 0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_SRQ, body,
+                                    6) == 0);
     check("nonzero-limit-forwarded",
           g_modify_calls == 1 && g_modify_limit == 4);
 
@@ -845,10 +884,12 @@ static void test_zero_limit_is_accepted(void)
     build_id_body(body, sizeof(body), srq_id);
     memcpy(body + 4, &limit_le, 2);
     check("zero-limit-accepted-again",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_SRQ, body, 6) == 0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_SRQ, body,
+                                    6) == 0);
     build_id_body(body, sizeof(body), srq_id);
     check("query-after-zero-limit-accepted",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_SRQ, body, 4) == 0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_SRQ, body,
+                                    4) == 0);
 }
 
 /*
@@ -885,7 +926,15 @@ static void build_qp_body(uint8_t body[64], uint32_t qp_id, uint32_t cq_id,
 
     memset(body, 0, 64);
     memcpy(body + 8, &cq_le, 4);  /* sq_cq_id */
+    body[12] = 4;                 /* sq_depth_log2 */
+    body[13] = 7;                 /* sq_stride_log2 */
     memcpy(body + 32, &cq_le, 4); /* rq_cq_id */
+    /* A QP bound to an SRQ has no RQ, and the driver leaves its geometry
+     * zero. */
+    if (srq_id == 0xffffffffu) {
+        body[36] = 4; /* rq_depth_log2 */
+        body[37] = 7; /* rq_stride_log2 */
+    }
     memcpy(body + 40, &srq_le, 4);
     memcpy(body + 56, &id_ver_le, 4);
     body[62] = 0; /* ionic qp type 0 -> IB_QPT_RC */
@@ -899,8 +948,9 @@ static void test_qp_binding_checks_the_srq_id(void)
 
     ctx_reset();
     build_cq_body(cqb, TEST_CQ_ID);
-    check("bind-precondition-cq", dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_CQ,
-                                               cqb, sizeof(cqb)) == 0);
+    check("bind-precondition-cq",
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_CQ, cqb,
+                                    sizeof(cqb)) == 0);
     srq_id = create_one();
     check("bind-precondition-srq", srq_id != 0);
 
@@ -908,19 +958,20 @@ static void test_qp_binding_checks_the_srq_id(void)
      * actually takes -- the guard must not break it. */
     build_qp_body(qpb, TEST_QP_ID, TEST_CQ_ID, srq_id);
     check("bind-known-srq-accepted",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_QP, qpb, sizeof(qpb)) ==
-              0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_QP, qpb,
+                                    sizeof(qpb)) == 0);
     check("bind-known-srq-bound-once", g_bind_calls == 1);
     check("bind-known-srq-bound-to-it", g_bound_srq_id == srq_id);
 
     /* In range for the datapath table, but no SRQ was ever created there. */
     ctx_reset();
     build_cq_body(cqb, TEST_CQ_ID);
-    (void)dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_CQ, cqb, sizeof(cqb));
+    (void)ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_CQ, cqb,
+                                    sizeof(cqb));
     build_qp_body(qpb, TEST_QP_ID, TEST_CQ_ID, IONIC_SRQ_QID_BASE + 7);
     check("bind-unknown-srq-refused",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_QP, qpb, sizeof(qpb)) !=
-              0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_QP, qpb,
+                                    sizeof(qpb)) != 0);
     check("bind-unknown-srq-never-bound", g_bind_calls == 0);
     /* And refused before anything was allocated. Checking after
      * ionic_rm_alloc_qp() would turn each rejected command into a
@@ -932,11 +983,12 @@ static void test_qp_binding_checks_the_srq_id(void)
      * the handler should refuse first. */
     ctx_reset();
     build_cq_body(cqb, TEST_CQ_ID);
-    (void)dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_CQ, cqb, sizeof(cqb));
+    (void)ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_CQ, cqb,
+                                    sizeof(cqb));
     build_qp_body(qpb, TEST_QP_ID, TEST_CQ_ID, 1u);
     check("bind-out-of-range-srq-refused",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_QP, qpb, sizeof(qpb)) !=
-              0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_QP, qpb,
+                                    sizeof(qpb)) != 0);
     check("bind-out-of-range-never-bound", g_bind_calls == 0);
     check("bind-out-of-range-allocated-no-qp", g_qp_alloc_calls == 0);
 
@@ -944,11 +996,12 @@ static void test_qp_binding_checks_the_srq_id(void)
      * it, so refusing it would break the device rather than harden it. */
     ctx_reset();
     build_cq_body(cqb, TEST_CQ_ID);
-    (void)dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_CQ, cqb, sizeof(cqb));
+    (void)ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_CQ, cqb,
+                                    sizeof(cqb));
     build_qp_body(qpb, TEST_QP_ID, TEST_CQ_ID, 0xffffffffu);
     check("no-srq-sentinel-accepted",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_QP, qpb, sizeof(qpb)) ==
-              0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_QP, qpb,
+                                    sizeof(qpb)) == 0);
     check("no-srq-sentinel-never-bound", g_bind_calls == 0);
 }
 
@@ -966,20 +1019,22 @@ static void test_create_qp_body_must_reach_type_state(void)
 
     ctx_reset();
     build_cq_body(cqb, TEST_CQ_ID);
-    (void)dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_CQ, cqb, sizeof(cqb));
+    (void)ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_CQ, cqb,
+                                    sizeof(cqb));
     build_qp_body(qpb, TEST_QP_ID, TEST_CQ_ID, 0xffffffffu);
 
     /* One short of the last field. */
     check("create-qp-body-62-refused",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_QP, qpb,
-                       IONIC_ADMIN_CREATE_QP_IN_V1_LEN - 1) != 0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_QP, qpb,
+                                    IONIC_ADMIN_CREATE_QP_IN_V1_LEN - 1) != 0);
     /* The old guard's value, which reads three bytes past what was sent. */
     check("create-qp-body-60-refused",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_QP, qpb, 60) != 0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_QP, qpb,
+                                    60) != 0);
     /* Exactly enough is enough. */
     check("create-qp-body-63-accepted",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_QP, qpb,
-                       IONIC_ADMIN_CREATE_QP_IN_V1_LEN) == 0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_QP, qpb,
+                                    IONIC_ADMIN_CREATE_QP_IN_V1_LEN) == 0);
 }
 
 /*
@@ -998,8 +1053,8 @@ static void test_create_fails_when_the_id_cannot_be_returned(void)
     ctx_reset();
     build_create(body, RESP_GPA, IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN - 1);
     check("short-response-buffer-refused",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body, sizeof(body)) !=
-              0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body,
+                                    sizeof(body)) != 0);
     check("short-response-buffer-freed-the-resource", g_dealloc_calls == 1);
     check("short-response-buffer-unregistered",
           g_unregistered_srq_id != 0 || g_registered_srq_id == 0);
@@ -1011,8 +1066,8 @@ static void test_create_fails_when_the_id_cannot_be_returned(void)
     ctx_reset();
     build_create(body, 0, IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
     check("zero-response-address-refused",
-          dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body, sizeof(body)) !=
-              0);
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body,
+                                    sizeof(body)) != 0);
     check("zero-response-address-freed-the-resource", g_dealloc_calls == 1);
     check("zero-response-address-released-the-slot", create_one() != 0);
 }

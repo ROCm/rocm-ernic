@@ -24,6 +24,7 @@ import pathlib
 import pwd
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -44,6 +45,7 @@ DEFAULTS = {
     "ERNIC_LOG_LEVEL": "warn",
     "ERNIC_TAP_PREFIX": "ernic-tap",
     "ERNIC_TAP_BRIDGE": "ernicbr0",
+    "ERNIC_SOCKET_GROUP": "",
     "ERNIC_DRIVER_SOURCE": "/usr/share/rocm-ernic/patches",
     "ERNIC_DRIVER_TARBALL": "/tmp/rocm-ernic-driver.tar.gz",
     "ERNIC_QEMU_MINIMAL": os.path.expanduser("~/Projects/qemu-minimal"),
@@ -129,12 +131,30 @@ def guest_gids_for(inst):
     sys.exit(1)
 
 
+def socket_ready(sock_path):
+    """Whether the server's socket is there with its final permissions.
+
+    The server creates it mode 0600 and, with ERNIC_SOCKET_GROUP, gives it
+    the group and widens it to 0660 just after, so a QEMU that isn't root
+    can't connect until then.
+    """
+    try:
+        st = os.lstat(sock_path)
+    except FileNotFoundError:
+        return False
+    want = 0o660 if CFG["ERNIC_SOCKET_GROUP"] else 0o600
+    return stat.S_ISSOCK(st.st_mode) and stat.S_IMODE(st.st_mode) == want
+
+
 def server_mode_args(instance_id):
     """Per-instance command line for the server, matching the launcher."""
+    args = []
+    if CFG["ERNIC_SOCKET_GROUP"]:
+        args += ["--socket-group", CFG["ERNIC_SOCKET_GROUP"]]
     tap = f"{CFG['ERNIC_TAP_PREFIX']}{instance_id}"
     if os.path.isdir(f"/sys/class/net/{tap}"):
-        return ["--tap", tap]
-    return []
+        args += ["--tap", tap]
+    return args
 
 
 def _cfg_vm_ssh_host():
@@ -1377,20 +1397,21 @@ def cmd_hot_reload(args):
     # pylint: disable-next=consider-using-with
     proc = subprocess.Popen(cmd, env=env)
 
+    # A server that refuses its socket, such as for a group it can't give
+    # it, removes it and exits, so stop waiting as soon as it has; and don't
+    # re-attach the VM until the socket has its final permissions.
     for _ in range(30):
-        if os.path.exists(sock_path) and pathlib.Path(sock_path).is_socket():
+        if proc.poll() is not None:
+            print(f"ERROR: Server exited; see {logfile}.", file=sys.stderr)
+            sys.exit(1)
+        if socket_ready(sock_path):
             break
         time.sleep(0.5)
     else:
-        print("ERROR: Socket not created.", file=sys.stderr)
-        sys.exit(1)
-
-    if proc.poll() is not None:
-        print("ERROR: Server exited.", file=sys.stderr)
+        print(f"ERROR: Socket not ready; see {logfile}.", file=sys.stderr)
         sys.exit(1)
 
     inst["pid"] = proc.pid
-    os.chmod(sock_path, 0o666)
 
     # Step 5: re-attach to VM
     if had_vm and vm_snapshot:

@@ -9,7 +9,8 @@
  * Run by nix/analysis/semgrep.nix as `semgrep --test`: a `ruleid:` comment
  * says the next line must be reported, an `ok:` comment says it must not.
  * Each case is labelled with its category and the outcome it expects. A
- * `todoruleid:` comment marks a line the rule should report but can't yet.
+ * `todoruleid:` comment marks a line the rule should report but can't yet,
+ * and a `todook:` comment one it reports but shouldn't.
  * semgrep --test checks every rule against this file, so the gotos in the
  * goto guards carry goto-usage annotations too.
  */
@@ -295,4 +296,55 @@ void reversed_guard(void)
         return;
     // ruleid: malloc-no-null-check
     *p = 7;
+}
+
+/* corner: inside if (p), p is replaced by an unchecked allocation ->
+ * reported */
+void reallocated_inside_guard(void)
+{
+    int *p = malloc(sizeof(*p));
+
+    if (p) {
+        free(p);
+        p = malloc(sizeof(*p));
+        // ruleid: malloc-no-null-check
+        *p = 14;
+        free(p);
+    }
+}
+
+/* negative: inside if (p), the replacement is checked too -> not reported */
+void reallocated_inside_guard_checked(void)
+{
+    int *p = malloc(sizeof(*p));
+
+    if (p) {
+        free(p);
+        p = malloc(sizeof(*p));
+        if (!p)
+            return;
+        // ok: malloc-no-null-check
+        *p = 15;
+        free(p);
+    }
+}
+
+/*
+ * corner: inside if (p), a use before p is replaced -> shouldn't be
+ * reported, but is: the rule drops the branch's check altogether once the
+ * branch assigns p
+ */
+void used_inside_guard_before_reallocation(void)
+{
+    int *p = malloc(sizeof(*p));
+
+    if (p) {
+        // todook: malloc-no-null-check
+        *p = 16;
+        free(p);
+        p = malloc(sizeof(*p));
+        if (p == NULL)
+            return;
+        free(p);
+    }
 }

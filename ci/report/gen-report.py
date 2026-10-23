@@ -32,9 +32,14 @@ import json
 import os
 import statistics
 import sys
-import xml.etree.ElementTree as ET
+import xml.parsers.expat
 from collections import defaultdict
 from datetime import datetime, timezone
+
+# Bandit flags any import from xml.etree. Nothing here parses with it:
+# parse_xml() parses with expat and refuses a DOCTYPE, as defusedxml does,
+# and TreeBuilder only builds the tree from expat's callbacks.
+from xml.etree.ElementTree import TreeBuilder  # nosec B405
 
 # ── CSV schema handling ───────────────────────────
 #
@@ -107,14 +112,42 @@ def load_jsonl(results_dir):
     return checks
 
 
+class XMLDoctypeError(ValueError):
+    """An XML file has a DOCTYPE, which parse_xml() refuses."""
+
+
+def parse_xml(path):
+    """Parse an XML file and return its root element, refusing any DOCTYPE.
+
+    xml.etree.ElementTree.parse() expands the entities a document
+    declares in its DOCTYPE, so a small file can expand to gigabytes
+    (the "billion laughs" attack). A junit report never has a DOCTYPE,
+    so refuse a file that does, before any declaration in it is read,
+    the way defusedxml does without the dependency.
+    """
+
+    def refuse_doctype(*_args):
+        raise XMLDoctypeError(f"{path}: has a DOCTYPE")
+
+    builder = TreeBuilder()
+    parser = xml.parsers.expat.ParserCreate()
+    parser.StartDoctypeDeclHandler = refuse_doctype
+    parser.StartElementHandler = builder.start
+    parser.EndElementHandler = builder.end
+    parser.CharacterDataHandler = builder.data
+    with open(path, "rb") as fh:
+        parser.ParseFile(fh)
+    return builder.close()
+
+
 def load_junit(results_dir):
     """Load Ansible junit callback results as checks."""
     checks = []
     pattern = os.path.join(results_dir, "junit", "*.xml")
     for path in sorted(glob.glob(pattern)):
         try:
-            root = ET.parse(path).getroot()
-        except ET.ParseError:
+            root = parse_xml(path)
+        except (xml.parsers.expat.ExpatError, XMLDoctypeError):
             continue
         suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
         for suite in suites:

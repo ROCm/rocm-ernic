@@ -1,8 +1,7 @@
 # nix/analysis/flawfinder.nix
 #
 # flawfinder source scanner — pattern-matches risky C library calls.
-# Works on raw source (no compile DB needed); scans src/ and third-party/,
-# so it covers both our code and the vendored QEMU sources.
+# Works on raw source (no compile DB needed); scans src/.
 { pkgs, mkSourceReport }:
 
 let
@@ -21,7 +20,6 @@ let
         --context \
         --singleline \
         "$source_dir/src" \
-        "$source_dir/third-party" \
         > "$output_dir/report.txt" 2>&1 || true
 
       # flawfinder prints a summary line "Hits = N"

@@ -56,9 +56,9 @@ struct RdmaBackendOps {
     uint32_t (*mr_rkey)(const RdmaBackendMR *mr);
 
     /* Completion Queue operations */
-    int (*create_cq)(RdmaBackendDev *backend_dev, RdmaBackendCQ *cq, int cqe);
+    int (*create_cq)(RdmaBackendDev *backend_dev, RdmaBackendCQ *cq,
+                     uint32_t cqe);
     void (*destroy_cq)(RdmaBackendCQ *cq);
-    void (*poll_cq)(RdmaDeviceResources *rdma_dev_res, RdmaBackendCQ *cq);
 
     /* Queue Pair operations */
     int (*create_qp)(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
@@ -80,18 +80,6 @@ struct RdmaBackendOps {
                         uint32_t qkey, bool qkey_set);
     int (*query_qp)(RdmaBackendQP *qp, struct ibv_qp_attr *attr, int attr_mask,
                     struct ibv_qp_init_attr *init_attr);
-    void (*query_remote_conn_info)(RdmaBackendQP *qp, uint64_t *remote_addr,
-                                   uint32_t *rkey);
-
-    /* Data path operations */
-    void (*post_send)(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
-                      uint8_t qp_type, struct ibv_sge *sge, uint32_t num_sge,
-                      uint8_t sgid_idx, union ibv_gid *sgid,
-                      union ibv_gid *dgid, uint32_t dqpn, uint32_t dqkey,
-                      void *ctx);
-    void (*post_recv)(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
-                      uint8_t qp_type, struct ibv_sge *sge, uint32_t num_sge,
-                      void *ctx);
 
     /* GID management */
     int (*add_gid)(RdmaBackendDev *backend_dev, const char *ifname,
@@ -107,8 +95,6 @@ struct RdmaBackendOps {
     int (*query_srq)(RdmaBackendSRQ *srq, struct ibv_srq_attr *srq_attr);
     int (*modify_srq)(RdmaBackendSRQ *srq, struct ibv_srq_attr *srq_attr,
                       int srq_attr_mask);
-    void (*post_srq_recv)(RdmaBackendSRQ *srq, struct ibv_sge *sge,
-                          uint32_t num_sge, void *ctx);
 };
 
 /* Backend implementations, registered in rdma_backend_core.c */

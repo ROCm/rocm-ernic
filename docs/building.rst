@@ -133,10 +133,7 @@ Warnings as Errors
 
 ``ERNIC_WERROR`` adds ``-Werror`` to every target that
 ``ernic_set_compiler_flags()`` sets up: the server, the test
-programs, and the fuzz harness replay programs. The vendored
-QEMU sources under ``third-party/`` are compiled with ``-w``
-regardless, so the flag only governs code this project
-maintains.
+programs, and the fuzz harness replay programs.
 
 It defaults to ``OFF`` so that a packager or downstream
 consumer building with a compiler version we have not tested
@@ -198,8 +195,8 @@ for example, the sanitizer runtimes aren't installed:
    cmake --build build-asan
    ctest --test-dir build-asan
 
-The sanitizers instrument everything rocm-ernic compiles,
-including the vendored QEMU sources. Libraries that come from
+The sanitizers instrument everything rocm-ernic compiles.
+Libraries that come from
 the system, such as libvfio-user, GLib, and libibverbs, are not
 instrumented.
 
@@ -275,9 +272,7 @@ include-what-you-use
 <https://include-what-you-use.org/>`_ (IWYU) on the server's
 and the tests' sources as they compile, which prints the
 ``#include`` lines it suggests adding or removing. The
-suggestions don't fail the build, and some are wrong. The
-vendored sources in ``third-party/`` are skipped. It needs
-CMake 3.27 or later.
+suggestions don't fail the build, and some are wrong.
 
 IWYU parses with its own clang, which rejects compiler options
 that it doesn't know, so build with the clang that IWYU is
@@ -305,11 +300,9 @@ clang-tidy
 <https://clang.llvm.org/extra/clang-tidy/>`__ on the server's
 and the tests' sources as they compile, with the checks in
 ``.clang-tidy``. Every finding is an error, so it fails the
-build. The vendored sources in ``third-party/`` and their
-headers are skipped. It needs CMake 3.27 or later, clang-tidy 19
-or later, and Clang as the C compiler, since clang-tidy rejects
-the options that the build uses with GCC. Use the clang of the
-same version as clang-tidy:
+build. It needs clang-tidy 19 or later, and Clang as the C
+compiler, since clang-tidy rejects the options that the build
+uses with GCC. Use the clang of the same version as clang-tidy:
 
 .. code-block:: bash
 
@@ -327,7 +320,8 @@ Guest ionic Modules
 -------------------
 
 The guest-side driver is the upstream
-Linux ionic driver with the patches in ``patches/`` applied.
+Linux ionic driver with the patches in
+``ansible/files/patches/`` applied.
 Configure with ``-DERNIC_BUILD_KMOD=ON`` to get the DKMS
 targets, and run them in the guest:
 

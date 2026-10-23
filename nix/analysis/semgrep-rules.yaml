@@ -93,11 +93,15 @@ rules:
       # $PTR bound to `!p`, and clearing that expression keeps the guard
       # above from clearing the p inside it. Unlike a guard, this clears p
       # only inside the branch, and the else branch too, which semgrep
-      # can't tell apart from it.
+      # can't tell apart from it. A branch that assigns p clears nothing:
+      # the check no longer covers the new value, and semgrep can't tell
+      # the uses before the assignment from those after it.
       - patterns:
           - pattern-either:
               - pattern-inside: if ($PTR) { ... }
               - pattern-inside: if ($PTR != NULL) { ... }
+          - pattern-not-inside: if ($PTR) { ... $PTR = $X; ... }
+          - pattern-not-inside: if ($PTR != NULL) { ... $PTR = $X; ... }
           - pattern: $PTR
           - metavariable-regex:
               metavariable: $PTR

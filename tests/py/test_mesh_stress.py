@@ -1,0 +1,538 @@
+#!/usr/bin/env python3
+"""Stress the TCP mesh with real server processes and no VM.
+
+Three kinds of pressure, all of them reachable from a hosted runner:
+
+  * Traffic. Every ordered pair of nodes sends to every other, and the
+    bytes are checked. A mesh that resolved every destination to one
+    node -- which is what the GID bug did -- passes a two-node test and
+    fails this one.
+  * Malformed input. A peer that sends a bad magic, a length past the
+    cap, a frame a byte at a time, or nothing at all must be refused
+    without taking the node down or disturbing the traffic above.
+  * Churn and resources. Nodes are killed and restarted while the mesh
+    runs, and the manager's descriptors are counted across the loop: a
+    count that climbs, or sockets left in CLOSE_WAIT, is the leak.
+
+Every node is then held to a shutdown deadline, because the TCP backend
+is known to hang there, and to exiting with status 0, which is how a
+sanitizer report from a server process reaches this test.
+
+Copyright (C) Advanced Micro Devices, Inc.
+
+SPDX-License-Identifier: GPL-2.0-or-later
+"""
+
+import argparse
+import os
+import struct
+import sys
+import tempfile
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# pylint: disable=wrong-import-position
+from ernic import ionic, mesh
+from ernic.check import Suite
+from ernic.server import Server
+
+# QP and CQ numbering. Ids 0 and 1 belong to the device, so start above
+# them; each node's QP for talking to node j is QP_BASE + j, which keeps
+# the destination a node names unambiguous.
+QP_BASE = 16
+CQ_ID = 1
+MR_KEY = 0x0100_0001
+MR_VA = 0x0000_7F00_0000_0000
+MR_LEN = 2 * ionic.PAGE_SIZE
+
+MESH_SIZE = 3
+
+
+def bring_up(node, peers):
+    """Attach a driver to @node and give it a QP for each peer."""
+    driver = node.attach()
+    cq = driver.create_cq(CQ_ID)
+    mr = driver.create_mr(MR_KEY, MR_VA, MR_LEN)
+    qps = {}
+    for peer in peers:
+        if peer == node.index:
+            continue
+        qps[peer] = driver.create_qp(QP_BASE + peer, ionic.QPT_RC, cq, cq)
+    return driver, cq, mr, qps
+
+
+def connect_side(driver, qp, dest_qpn, hdr, retry_for=0.0):
+    """Take one QP to RTS, retrying RTR while @retry_for lasts.
+
+    RTR is where the destination GID is resolved, so it is the step that
+    fails while a node that has just restarted is still being relearned
+    by its peers. Retrying it waits for the mesh to converge without
+    asking any node's log what it believes.
+    """
+    driver.modify_qp(qp.id, ionic.QP_STATE, ionic.QPS_INIT)
+    mask = ionic.QP_STATE | ionic.QP_AV | ionic.QP_DEST_QPN | ionic.QP_RQ_PSN
+    deadline = time.monotonic() + retry_for
+    while True:
+        status = driver.modify_qp(qp.id, mask, ionic.QPS_RTR, dest_qpn, hdr)
+        if status == 0:
+            break
+        if time.monotonic() >= deadline:
+            raise ionic.DeviceError(
+                f"QP {qp.id} never reached RTR for peer {dest_qpn} "
+                f"(status {status})"
+            )
+        time.sleep(0.5)
+    status = driver.modify_qp(qp.id, ionic.QP_STATE | ionic.QP_SQ_PSN, ionic.QPS_RTS)
+    if status != 0:
+        raise ionic.DeviceError(f"QP {qp.id} did not reach RTS (status {status})")
+
+
+# pylint: disable-next=too-many-arguments,too-many-positional-arguments
+def connect_pair(mesh_, drivers, qps, src, dst, retry_for=0.0):
+    """Point src's QP for dst, and dst's for src, at each other."""
+    to_dst = ionic.roce_hdr_v4(
+        ionic.ipv4(mesh_.guest_ip(src)), ionic.ipv4(mesh_.guest_ip(dst))
+    )
+    to_src = ionic.roce_hdr_v4(
+        ionic.ipv4(mesh_.guest_ip(dst)), ionic.ipv4(mesh_.guest_ip(src))
+    )
+    connect_side(drivers[src], qps[src][dst], QP_BASE + src, to_dst, retry_for)
+    connect_side(drivers[dst], qps[dst][src], QP_BASE + dst, to_src, retry_for)
+
+
+def test_formation(suite, mesh_):
+    """The mesh forms, and every node learns every node's GID."""
+    suite.check(mesh_.wait_formed(60), "every worker registered with the manager")
+    suite.check(mesh_.wait_gids(60), "every node learned every other node's GID")
+    for index in range(mesh_.size):
+        suite.check(mesh_.nodes[index].server.is_running(), f"node {index} is running")
+
+
+def test_traffic_matrix(suite, mesh_, state):
+    """Every ordered pair of nodes sends to every other, and writes to it."""
+    drivers, cqs, mrs, qps = state
+    for src in range(mesh_.size):
+        for dst in range(mesh_.size):
+            if src == dst:
+                continue
+            payload = f"from node {src} to node {dst}: ".encode() + bytes(range(200))
+            drivers[src].mr_write(mrs[src], MR_VA, payload)
+            drivers[dst].mr_write(mrs[dst], MR_VA, b"\0" * len(payload))
+            drivers[dst].post_recv(qps[dst][src], [ionic.Sge(MR_VA, MR_LEN, MR_KEY)])
+            drivers[src].post_send(
+                qps[src][dst],
+                ionic.OP_SEND,
+                flags=ionic.WQE_SIGNALLED,
+                sge=[ionic.Sge(MR_VA, len(payload), MR_KEY)],
+            )
+            recv = drivers[dst].wait_cq(cqs[dst], timeout=20)
+            send = drivers[src].wait_cq(cqs[src], timeout=20)
+            ok = (
+                not recv.error
+                and not send.error
+                and recv.qid == QP_BASE + src
+                and drivers[dst].mr_read(mrs[dst], MR_VA, len(payload)) == payload
+            )
+            suite.check(ok, "SEND from node %d arrived at node %d intact", src, dst)
+
+
+def test_write_matrix(suite, mesh_, state):
+    """An RDMA WRITE lands in the right node's memory and in no other's."""
+    drivers, cqs, mrs, qps = state
+    for src in range(mesh_.size):
+        for dst in range(mesh_.size):
+            if src == dst:
+                continue
+            payload = f"write {src}->{dst} ".encode() * 16
+            for index in range(mesh_.size):
+                drivers[index].mr_write(mrs[index], MR_VA, b"\0" * len(payload))
+            drivers[src].mr_write(mrs[src], MR_VA, payload)
+            drivers[src].post_send(
+                qps[src][dst],
+                ionic.OP_RDMA_WRITE,
+                flags=ionic.WQE_SIGNALLED,
+                remote_va=MR_VA,
+                rkey=MR_KEY,
+                sge=[ionic.Sge(MR_VA, len(payload), MR_KEY)],
+            )
+            send = drivers[src].wait_cq(cqs[src], timeout=20)
+            landed = drivers[dst].mr_read(mrs[dst], MR_VA, len(payload))
+            suite.check(
+                not send.error and landed == payload,
+                "WRITE from node %d landed on node %d",
+                src,
+                dst,
+            )
+            for other in range(mesh_.size):
+                if other in (src, dst):
+                    continue
+                suite.check(
+                    drivers[other].mr_read(mrs[other], MR_VA, len(payload))
+                    == b"\0" * len(payload),
+                    "the WRITE %d->%d did not touch node %d",
+                    src,
+                    dst,
+                    other,
+                )
+
+
+def test_unknown_gid(suite, mesh_, state):
+    """A QP aimed at a GID no node owns must fail, not pick a default.
+
+    This is the property the GID table exists for: a wrong node here is
+    a silent write into another guest's memory that nothing downstream
+    catches.
+    """
+    drivers, cqs, _mrs, _qps = state
+    driver = drivers[0]
+    qp = driver.create_qp(QP_BASE + 40, ionic.QPT_RC, cqs[0], cqs[0])
+    hdr = ionic.roce_hdr_v4(ionic.ipv4(mesh_.guest_ip(0)), ionic.ipv4("198.51.100.77"))
+    status = driver.modify_qp(qp.id, ionic.QP_STATE, ionic.QPS_INIT)
+    suite.check_eq(status, 0, "the QP reaches INIT")
+    status = driver.modify_qp(
+        qp.id,
+        ionic.QP_STATE | ionic.QP_AV | ionic.QP_DEST_QPN | ionic.QP_RQ_PSN,
+        ionic.QPS_RTR,
+        QP_BASE,
+        hdr,
+    )
+    suite.check(status != 0, "RTR to a GID no node owns is refused")
+    suite.check(
+        "no mesh node owns" in mesh_.nodes[0].server.log_text(),
+        "the refusal names the unresolved GID in the log",
+    )
+
+
+def test_malformed_peers(suite, mesh_):
+    """Frames no real node sends, and peers that never finish registering.
+
+    Each row checks what the manager did about the frame, not just that
+    it is still running: a manager that ignored the payload cap, or that
+    never reaped a peer which connected and said nothing, would survive
+    all of this.
+    """
+    port = mesh_.port
+    manager = mesh_.nodes[0].server
+
+    with mesh.MeshPeer(port=port) as peer:
+        peer.send_raw(struct.pack(mesh.HEADER_FMT, 0xDEADBEEF, 12, 0, 1, 0, 0, 0, 0))
+        suite.check(
+            peer.wait_closed(10.0),
+            "a frame with a bad magic gets the connection closed",
+        )
+
+    with mesh.MeshPeer(port=port) as peer:
+        # A length past the 16 MiB cap, with nothing behind it. The
+        # manager must reject it on the header alone rather than waiting
+        # for a gigabyte that is never coming.
+        peer.send_raw(
+            struct.pack(
+                mesh.HEADER_FMT, mesh.MAGIC, mesh.MSG_IONIC, 1 << 30, 1, 0, 0, 0, 0
+            )
+        )
+        suite.check(
+            manager.wait_for_log(f"payload too large: {1 << 30}", 10),
+            "the payload cap is enforced on the header, and says so",
+        )
+        suite.check(
+            peer.wait_closed(10.0), "the oversized frame gets the connection closed"
+        )
+
+    with mesh.MeshPeer(port=port) as peer:
+        peer.send_raw(b"\x00" * (mesh.HEADER_SIZE - 1))
+        suite.check(
+            peer.wait_closed(mesh.REGISTER_TIMEOUT_MS / 1000.0 + 10.0),
+            "a truncated header does not hold a connection open forever",
+        )
+
+    with mesh.MeshPeer(port=port) as peer:
+        body = mesh.register_payload()
+        peer.send_dribbled(
+            mesh.pack_header(mesh.MSG_REGISTER_NODE, len(body)) + body, chunk=7
+        )
+        message = peer.recv_message()
+        suite.check(
+            message is not None and message[0] == mesh.MSG_REGISTER_RESP,
+            "a registration delivered a few bytes at a time is still parsed",
+        )
+
+    # A peer that connects and says nothing. The manager gives it
+    # TCP_REGISTER_TIMEOUT_MS to register and then reaps it, so this one
+    # is left connected rather than closed from here -- closing it would
+    # pass whether or not the reaper works.
+    with mesh.MeshPeer(port=port) as peer:
+        suite.check(
+            manager.wait_for_log("which didn't register", 30),
+            "a peer that never registers is reaped",
+        )
+        suite.check(
+            peer.wait_closed(10.0),
+            "the reaped peer's connection is closed from the manager's end",
+        )
+
+    suite.check(manager.is_running(), "the manager survived every malformed peer")
+
+
+def test_peer_advertisement(suite, mesh_):
+    """A peer that registers and advertises a GID owns it, and loses it.
+
+    Exercises the advertisement from the outside, which is the only way
+    to check the encoding: the payload's node id and count are network
+    byte order, and a little-endian one decodes as sixteen million GIDs
+    and is refused.
+
+    The second half is the liveness rule end to end: when the peer hangs
+    up, the manager declares it dead and stops it owning the address, so
+    the same address can be claimed again by whoever comes back with it.
+    """
+    manager = mesh_.nodes[0].server
+    claimed = "10.0.99.7"
+    wanted = f"owns GID {mesh.gid_log_form(claimed)}"
+
+    peer = mesh.MeshPeer(port=mesh_.port).connect()
+    try:
+        _node_id, _num, result, _version = peer.register(hostname=b"advertiser")
+        suite.check_eq(result, 0, "the peer registered")
+        peer.advertise_gids([claimed])
+        suite.check(
+            manager.wait_for_log(wanted, 15),
+            "the manager accepted the advertisement and recorded the owner",
+        )
+    finally:
+        peer.close()
+
+    suite.check(
+        manager.wait_for_log("unreachable while it is away", 60),
+        "the manager stops a hung-up node owning its GIDs",
+    )
+
+
+def test_version_gate(suite, mesh_):
+    """A pre-v4 peer is refused, and says why.
+
+    A node running the old GID heuristic never advertises its GIDs and
+    routes every peer to one default on its own side, so admitting one
+    puts a silently misrouting node in the mesh.
+    """
+    manager = mesh_.nodes[0].server
+    before = manager.log_text().count("Registered node")
+    with mesh.MeshPeer(port=mesh_.port) as peer:
+        _node_id, _num, result, version = peer.register(
+            hostname=b"oldpeer", version=None
+        )
+    suite.check(result != 0, "the manager refused a pre-v4 worker")
+    suite.check(
+        version == mesh.PROTOCOL_VERSION,
+        f"the refusal carries the version it wants ({version})",
+    )
+    suite.check(
+        manager.wait_for_log("refusing registration from a v0 peer", 10),
+        "the manager logged why it refused",
+    )
+    suite.check_eq(
+        manager.log_text().count("Registered node"),
+        before,
+        "the refused peer was not admitted anyway",
+    )
+
+
+def test_worker_refuses_old_manager(suite, binary, run_dir):
+    """A worker refuses a manager that answers the way a pre-v4 one does.
+
+    An old manager cannot refuse us, so the worker has to refuse it.
+    """
+    with mesh.FakeManager(version=None) as fake:
+        worker = Server(
+            binary,
+            os.path.join(run_dir, "oldmgr.sock"),
+            backend=f"tcp:worker:127.0.0.1:{fake.port}",
+            log_path=os.path.join(run_dir, "oldmgr.log"),
+            log_level="info",
+            env={"ERNIC_TCP_GUEST_GIDS": "10.0.9.9"},
+        )
+        worker.start(timeout=60, wait=False)
+        try:
+            suite.check(
+                worker.wait_for_log("manager speaks v0", 30),
+                "the worker refused a pre-v4 manager",
+            )
+            suite.check(
+                "Registered with manager" not in worker.log_text(),
+                "the worker did not report success against it",
+            )
+        finally:
+            # A worker that refuses the manager fails to start, so it
+            # exits non-zero by design. What matters is that it exits:
+            # a node that refuses and then hangs is as bad as one that
+            # joins.
+            try:
+                status = worker.stop(check=False)
+                suite.check(
+                    status != 0,
+                    f"the refused worker exited rather than joining "
+                    f"(status {status})",
+                )
+            except Exception as exc:  # pylint: disable=broad-except
+                suite.check(False, "the refused worker: %s", exc)
+
+
+def test_churn(suite, mesh_, rounds=3):
+    """Kill and restart a worker, and watch the manager's descriptors.
+
+    Each sample is taken after something observable has happened, not
+    after a fixed sleep: the manager retires a dead connection on its
+    next health-check pass, which is up to an interval away, so a sleep
+    shorter than that samples before the sweep and a sleep longer than
+    it is a guess that will be wrong on a slow runner. A count that
+    climbs across rounds is the socket leak; sockets left in CLOSE_WAIT
+    name it.
+    """
+    manager = mesh_.nodes[0].server
+    victim = mesh_.size - 1
+    counts = []
+    for round_index in range(rounds):
+        registrations = mesh_.registrations()
+        disconnects = manager.log_text().count("disconnected")
+
+        mesh_.nodes[victim].detach()
+        mesh_.nodes[victim].server.kill()
+        suite.check(
+            not mesh_.nodes[victim].server.is_running(),
+            f"round {round_index}: node {victim} killed",
+        )
+        suite.check(
+            manager.wait_for_count("disconnected", disconnects + 1, 60),
+            f"round {round_index}: the manager noticed and retired the connection",
+        )
+
+        mesh_.start_node(victim, timeout=60)
+        suite.check(
+            mesh_.wait_registrations(registrations + 1, 60),
+            f"round {round_index}: node {victim} restarted and re-registered",
+        )
+        counts.append(manager.fd_count())
+
+    suite.check(manager.is_running(), f"the manager survived {rounds} rounds of churn")
+    suite.check_eq(
+        manager.close_wait_count(),
+        0,
+        "the manager has no sockets left in CLOSE_WAIT after the churn",
+    )
+    growth = counts[-1] - counts[0]
+    suite.check(
+        growth <= 2,
+        f"the manager's descriptor count is stable across churn ({counts})",
+    )
+
+
+# pylint: disable-next=too-many-locals
+def test_traffic_after_churn(suite, mesh_):
+    """Every node still talks, the one that restarted included.
+
+    A restarted node registers under a new id -- the manager allocates
+    ids monotonically and never evicts a dead one -- so for a moment its
+    guest GID is claimed by both the id it had and the id it now has, and
+    the duplicate-claim rule resolves it to neither. The manager's health
+    check then notices the old id is gone and withdraws its claims, which
+    leaves the new id the sole claimant and the address reachable again.
+
+    Convergence is what is asserted: the mesh gets a bounded time to get
+    there, and traffic has to flow to the restarted node afterwards. The
+    rule that makes the contested window safe is checked separately, in
+    the unresolved-GID test -- an address with two claimants must refuse,
+    never pick one.
+    """
+    peers = list(range(mesh_.size))
+    drivers, cqs, mrs, qps = {}, {}, {}, {}
+    for index in peers:
+        mesh_.nodes[index].detach()
+        driver, cq, mr, node_qps = bring_up(mesh_.nodes[index], peers)
+        drivers[index], cqs[index], mrs[index], qps[index] = driver, cq, mr, node_qps
+
+    # A pair that never restarted, and the pair that did.
+    connect_pair(mesh_, drivers, qps, 0, 1, retry_for=30.0)
+    suite.check(True, "two nodes that did not restart reconnect at once")
+    victim = mesh_.size - 1
+    connect_pair(mesh_, drivers, qps, 0, victim, retry_for=90.0)
+    suite.check(True, "the restarted node's GID resolves again")
+
+    for src, dst in ((0, 1), (0, victim), (victim, 0)):
+        payload = f"after the churn {src}->{dst} ".encode() * 8
+        drivers[src].mr_write(mrs[src], MR_VA, payload)
+        drivers[dst].mr_write(mrs[dst], MR_VA, b"\0" * len(payload))
+        drivers[dst].post_recv(qps[dst][src], [ionic.Sge(MR_VA, MR_LEN, MR_KEY)])
+        drivers[src].post_send(
+            qps[src][dst],
+            ionic.OP_SEND,
+            flags=ionic.WQE_SIGNALLED,
+            sge=[ionic.Sge(MR_VA, len(payload), MR_KEY)],
+        )
+        recv = drivers[dst].wait_cq(cqs[dst], timeout=30)
+        send = drivers[src].wait_cq(cqs[src], timeout=30)
+        landed = drivers[dst].mr_read(mrs[dst], MR_VA, len(payload))
+        suite.check(
+            not recv.error and not send.error and landed == payload,
+            f"a SEND from node {src} to node {dst} arrived after the churn",
+        )
+
+
+def run_traffic_tests(suite, mesh_):
+    """Attach a driver to every node and run the traffic tests."""
+    peers = list(range(mesh_.size))
+    drivers, cqs, mrs, qps = {}, {}, {}, {}
+    for index in peers:
+        driver, cq, mr, node_qps = bring_up(mesh_.nodes[index], peers)
+        drivers[index], cqs[index], mrs[index], qps[index] = driver, cq, mr, node_qps
+    for src in peers:
+        for dst in peers:
+            if src < dst:
+                connect_pair(mesh_, drivers, qps, src, dst)
+    state = (drivers, cqs, mrs, qps)
+    suite.run("traffic between every pair of nodes", test_traffic_matrix, mesh_, state)
+    suite.run("RDMA WRITE reaches one node only", test_write_matrix, mesh_, state)
+    suite.run("a destination no node owns is refused", test_unknown_gid, mesh_, state)
+
+
+def main():
+    """Stand up a mesh, stress it, and hold every node to its deadline."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--server", required=True, help="path to the rocm-ernic binary")
+    parser.add_argument(
+        "--size", type=int, default=MESH_SIZE, help="nodes in the mesh (default 3)"
+    )
+    args = parser.parse_args()
+
+    suite = Suite("rocm-ernic TCP mesh stress tests")
+    with tempfile.TemporaryDirectory(prefix="ernic-mesh-") as run_dir:
+        # Inside the try: a mesh whose third node fails to start still
+        # has two running servers that the finally has to stop, or they
+        # outlive the temporary directory being removed.
+        mesh_ = mesh.Mesh(args.server, run_dir, size=args.size)
+        try:
+            mesh_.start(timeout=60)
+            suite.run("mesh formation", test_formation, mesh_)
+            run_traffic_tests(suite, mesh_)
+            suite.run("malformed peers", test_malformed_peers, mesh_)
+            suite.run("a peer's GID advertisement", test_peer_advertisement, mesh_)
+            suite.run("the protocol version gate", test_version_gate, mesh_)
+            suite.run(
+                "a worker refuses a pre-v4 manager",
+                test_worker_refuses_old_manager,
+                args.server,
+                run_dir,
+            )
+            suite.run("node churn", test_churn, mesh_)
+            suite.run("traffic after churn", test_traffic_after_churn, mesh_)
+        finally:
+            problems = mesh_.stop()
+            suite.check(
+                not problems,
+                "every node exited cleanly and within its deadline"
+                + ("" if not problems else f": {'; '.join(problems)}"),
+            )
+    suite.finish()
+
+
+if __name__ == "__main__":
+    main()

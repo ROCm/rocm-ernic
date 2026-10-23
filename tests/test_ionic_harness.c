@@ -19,7 +19,6 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include <arpa/inet.h>
 #include <endian.h>
 #include <errno.h>
 #include <infiniband/verbs.h>
@@ -36,13 +35,21 @@
 #include "fake_vfu.h"
 #include "ionic_eth_emu.h"
 #include "ionic_harness.h"
+#include "ionic_status.h"
 #include "nvmeof.h"
 #include "nvmeof_cm.h"
-#include "rdma_backend_ops.h"
+#ifdef ERNIC_HAVE_P4
+#include "ionic_datapath.h"
+#include "p4_devcmd.h"
+#include "p4_engine.h"
+#include "p4_fp8.h"
+#include "p4_port.h"
+#include "p4_table.h"
+#endif
+#include "pvrdma.h"
 #include "rdma_rm.h"
 #include "rocm_ernic_compat.h"
 #include "rocm_ernic_internal.h"
-#include "vmw/pvrdma.h"
 
 static int failures;
 
@@ -96,6 +103,30 @@ static uint32_t get_be32(const uint8_t *p)
 
     memcpy(&v, p, 4);
     return be32toh(v);
+}
+
+static bool all_zero(const uint8_t *p, size_t len)
+{
+    for (size_t i = 0; i < len; i++)
+        if (p[i])
+            return false;
+    return true;
+}
+
+/*
+ * The one's-complement sum of a header, which for a correct IPv4 checksum
+ * comes to 0xffff -- summing the checksum field in with everything else
+ * rather than recomputing it around a hole.
+ */
+static uint16_t ones_sum16(const uint8_t *p, size_t len)
+{
+    uint32_t sum = 0;
+
+    for (size_t i = 0; i + 1 < len; i += 2)
+        sum += get_be16(p + i);
+    while (sum >> 16)
+        sum = (sum & 0xffffu) + (sum >> 16);
+    return (uint16_t)sum;
 }
 
 static void put_le16(uint8_t *p, uint16_t v)
@@ -201,8 +232,10 @@ static void test_devcmds(void)
     check(T, ih_devcmd(&h, cmd, comp, data, 512) == 0, "IDENTIFY failed");
     check(T, get_le32(data + DEVID_NLIFS) == 1, "nlifs is %u",
           get_le32(data + DEVID_NLIFS));
-    check(T, get_le32(data + DEVID_NINTRS) == IONIC_MSIX_MAX_VECTORS,
-          "nintrs is %u", get_le32(data + DEVID_NINTRS));
+    /* The default compat profile's intr_vectors; IONIC_MSIX_MAX_VECTORS is
+     * only the most a profile may ask for. */
+    check(T, get_le32(data + DEVID_NINTRS) == 32, "nintrs is %u",
+          get_le32(data + DEVID_NINTRS));
     check(T, get_le32(data + DEVID_COAL_DIV) != 0,
           "intr_coal_div is 0, which ethtool divides by");
 
@@ -413,6 +446,93 @@ static void build_unknown_id(uint8_t *body)
     put_le32(body + 56, 0x00777777u);
 }
 
+/*
+ * Ring geometry the device must refuse. The exponents are guest bytes the
+ * device shifts by, so 32 is undefined behavior if it gets through (UBSan
+ * reports it); the others are just outside the bounds, which a build
+ * without sanitizers sees as the command succeeding.
+ */
+
+/* CREATE_CQ for CQ 2, on the group's EQ */
+static void build_cq(uint8_t *body, uint8_t depth_log2, uint8_t stride_log2)
+{
+    body[4] = depth_log2;
+    body[5] = stride_log2;
+    body[7] = 12;
+    put_le32(body + 12, 2);
+    put_le32(body + 20, 1);
+}
+
+static void build_cq_depth_32(uint8_t *body)
+{
+    build_cq(body, 32, 5);
+}
+
+static void build_cq_depth_25(uint8_t *body)
+{
+    build_cq(body, 25, 5);
+}
+
+static void build_cq_stride_4(uint8_t *body)
+{
+    build_cq(body, 4, 4);
+}
+
+static void build_cq_stride_17(uint8_t *body)
+{
+    build_cq(body, 4, 17);
+}
+
+/* CREATE_QP for QP 3 on CQ 1, with an RQ of its own */
+static void build_qp(uint8_t *body, uint8_t sq_depth_log2,
+                     uint8_t sq_stride_log2, uint8_t rq_depth_log2,
+                     uint8_t rq_stride_log2)
+{
+    put_le32(body + 8, 1);
+    body[12] = sq_depth_log2;
+    body[13] = sq_stride_log2;
+    put_le32(body + 32, 1);
+    body[36] = rq_depth_log2;
+    body[37] = rq_stride_log2;
+    put_le32(body + 40, 0xffffffffu);
+    put_le32(body + 56, 3);
+}
+
+static void build_qp_sq_depth_32(uint8_t *body)
+{
+    build_qp(body, 32, 7, 4, 7);
+}
+
+static void build_qp_sq_stride_32(uint8_t *body)
+{
+    build_qp(body, 4, 32, 4, 7);
+}
+
+static void build_qp_sq_stride_4(uint8_t *body)
+{
+    build_qp(body, 4, 4, 4, 7);
+}
+
+static void build_qp_sq_stride_10(uint8_t *body)
+{
+    build_qp(body, 4, 10, 4, 7);
+}
+
+static void build_qp_rq_stride_10(uint8_t *body)
+{
+    build_qp(body, 4, 7, 4, 10);
+}
+
+static void build_qp_rq_depth_32(uint8_t *body)
+{
+    build_qp(body, 4, 7, 32, 7);
+}
+
+static void build_qp_rq_stride_4(uint8_t *body)
+{
+    build_qp(body, 4, 7, 4, 4);
+}
+
 static void build_srq_too_deep(uint8_t *body)
 {
     body[26] = 20;
@@ -433,6 +553,27 @@ static const struct bad_admin bad_admins[] = {
      1},
     {"CREATE_QP on an unknown SRQ", IH_ADMIN_CREATE_QP, 64,
      build_qp_unknown_srq, 1},
+    {"CREATE_CQ 2^32 deep", IH_ADMIN_CREATE_CQ, 34, build_cq_depth_32, 1},
+    {"CREATE_CQ deeper than 2^24", IH_ADMIN_CREATE_CQ, 34, build_cq_depth_25,
+     1},
+    {"CREATE_CQ with a stride below a CQE", IH_ADMIN_CREATE_CQ, 34,
+     build_cq_stride_4, 1},
+    {"CREATE_CQ with a stride above 2^16", IH_ADMIN_CREATE_CQ, 34,
+     build_cq_stride_17, 1},
+    {"CREATE_QP with an SQ 2^32 deep", IH_ADMIN_CREATE_QP, 64,
+     build_qp_sq_depth_32, 1},
+    {"CREATE_QP with an SQ stride of 2^32", IH_ADMIN_CREATE_QP, 64,
+     build_qp_sq_stride_32, 1},
+    {"CREATE_QP with an SQ stride below a WQE header", IH_ADMIN_CREATE_QP, 64,
+     build_qp_sq_stride_4, 1},
+    {"CREATE_QP with an SQ stride above the advertised 2^9", IH_ADMIN_CREATE_QP,
+     64, build_qp_sq_stride_10, 1},
+    {"CREATE_QP with an RQ stride above the advertised 2^9", IH_ADMIN_CREATE_QP,
+     64, build_qp_rq_stride_10, 1},
+    {"CREATE_QP with an RQ 2^32 deep", IH_ADMIN_CREATE_QP, 64,
+     build_qp_rq_depth_32, 1},
+    {"CREATE_QP with an RQ stride below a WQE header", IH_ADMIN_CREATE_QP, 64,
+     build_qp_rq_stride_4, 1},
     {"DESTROY_MR of an unknown MR", IH_ADMIN_DESTROY_MR, 4, build_unknown_id,
      1},
     {"MODIFY_QP of an unknown QP", IH_ADMIN_MODIFY_QP, 60, build_unknown_id, 1},
@@ -450,6 +591,7 @@ static const struct bad_admin bad_admins[] = {
     {"short QUERY_SRQ", IH_ADMIN_QUERY_SRQ, 2, build_none, 1},
     {"QUERY_SRQ of an unknown SRQ", IH_ADMIN_QUERY_SRQ, 4, build_unknown_id, 1},
     {"short DESTROY_SRQ", IH_ADMIN_DESTROY_SRQ, 2, build_none, 1},
+    {"short STATS_HDRS", IH_ADMIN_STATS_HDRS, 0, build_none, IONIC_RC_EINVAL},
     /* Harmless, so not refused */
     {"DESTROY_SRQ of an unknown SRQ", IH_ADMIN_DESTROY_SRQ, 4, build_unknown_id,
      0},
@@ -458,9 +600,59 @@ static const struct bad_admin bad_admins[] = {
     {"DESTROY_QP of an unknown QP", IH_ADMIN_DESTROY_QP, 4, build_unknown_id,
      0},
     {"NOOP", IH_ADMIN_NOOP, 0, build_none, 0},
-    {"STATS_HDRS", IH_ADMIN_STATS_HDRS, 0, build_none, 0},
     {"QUERY_AH", IH_ADMIN_QUERY_AH, 0, build_none, 0},
 };
+
+/* RDMA queue devcmds, sent over the Ethernet admin queue, whose geometry
+ * must be refused */
+struct bad_queue {
+    const char *what;
+    uint8_t op;
+    uint8_t depth_log2, stride_log2;
+};
+
+static const struct bad_queue bad_queues[] = {
+    {"CREATE_EQ 2^32 deep", IH_CMD_RDMA_EQ, 32, 2},
+    {"CREATE_EQ deeper than 2^24", IH_CMD_RDMA_EQ, 25, 2},
+    {"CREATE_EQ with a stride below an EQE", IH_CMD_RDMA_EQ, 4, 1},
+    {"CREATE_EQ with a stride above 2^16", IH_CMD_RDMA_EQ, 4, 17},
+    {"admin CREATE_CQ 2^32 deep", IH_CMD_RDMA_CQ, 32, 5},
+    /* Sent after a good admin CREATE_CQ, so only its depth is wrong */
+    {"CREATE_ADMINQ 2^32 deep", IH_CMD_RDMA_ADMINQ, 32, 6},
+};
+
+/* Queue id 5 is clear of the harness's own EQ and admin queues. */
+static int rdma_queue_cmd(struct ih *h, uint8_t op, uint8_t depth_log2,
+                          uint8_t stride_log2)
+{
+    uint8_t cmd[64] = {0}, comp[16];
+
+    cmd[0] = op;
+    put_le32(cmd + 4, 5u | 1u << 24);
+    put_le32(cmd + 8, IH_EQ_ID);
+    cmd[14] = depth_log2;
+    cmd[15] = stride_log2;
+    return ih_eth_admin(h, cmd, comp);
+}
+
+static void test_queue_geometry_errors(const char *T, struct ih *h)
+{
+    for (size_t i = 0; i < sizeof(bad_queues) / sizeof(bad_queues[0]); i++) {
+        const struct bad_queue *c = &bad_queues[i];
+
+        if (c->op == IH_CMD_RDMA_ADMINQ)
+            check(T, rdma_queue_cmd(h, IH_CMD_RDMA_CQ, 6, 5) == 0,
+                  "admin CREATE_CQ failed");
+        int rc = rdma_queue_cmd(h, c->op, c->depth_log2, c->stride_log2);
+        check(T, rc == 1, "%s: status %d, expected 1", c->what, rc);
+    }
+
+    /* A refused CREATE_EQ takes none of the device's 32 EQ slots */
+    for (int i = 0; i < 40; i++)
+        (void)rdma_queue_cmd(h, IH_CMD_RDMA_EQ, 32, 2);
+    check(T, rdma_queue_cmd(h, IH_CMD_RDMA_EQ, 4, 2) == 0,
+          "CREATE_EQ failed after refused ones");
+}
 
 static void test_admin_errors(void)
 {
@@ -485,6 +677,8 @@ static void test_admin_errors(void)
               c->want);
     }
 
+    test_queue_geometry_errors(T, &h);
+
     /* A WQE the device can't read stays queued and runs on the next poll,
      * rather than being skipped */
     uint8_t body[4] = {0};
@@ -499,6 +693,22 @@ static void test_admin_errors(void)
     ih_poll(&h);
     check(T, ih_admin_complete(&h, IH_ADMIN_DESTROY_CQ, slot, NULL) == 0,
           "an admin WQE that hit a failed DMA was not retried");
+
+    /* A CREATE_QP posted at the last slot, so its second stride wraps to
+     * slot 0, runs, and the command after it completes from slot 1 */
+    uint32_t aq_depth = 1u << h.aq.depth_log2;
+    while (h.aq.prod % aq_depth != aq_depth - 1) {
+        if (!check(T, ih_admin(&h, IH_ADMIN_NOOP, NULL, 0, NULL) == 0,
+                   "NOOP failed"))
+            break;
+    }
+    struct ih_qp qp;
+    if (check(T, ih_qp_create(&h, &qp, 20, IH_QPT_UD, &cq, &cq, NULL),
+              "CREATE_QP wrapping the admin queue failed")) {
+        check(T, h.aq.prod % aq_depth == 1, "CREATE_QP took %u strides",
+              h.aq.prod % aq_depth + 1);
+        check(T, ih_qp_destroy(&h, &qp) == 0, "DESTROY_QP failed");
+    }
 
     check(T, ih_cq_destroy(&h, &cq) == 0, "DESTROY_CQ failed");
     teardown(T, &h);
@@ -724,6 +934,65 @@ static void run_rc_case(const char *test, struct rc *r, const struct rc_case *c,
           c->what);
 }
 
+/*
+ * A SEND from an SQ with the largest stride the device advertises, 2^9,
+ * gathering from as many SGEs as that holds, 30, one byte from each. It
+ * arrives whole only if the device reads the whole WQE. It used to read 256
+ * bytes of it and then walk SGEs as far as the stride went, past the end of
+ * the buffer it had read into.
+ */
+#define WIDE_CQ_C 3
+#define WIDE_CQ_D 4
+#define WIDE_QP_C 12
+#define WIDE_QP_D 13
+#define WIDE_NSGE (((1u << IH_WQE_MAX_STRIDE_LOG2) - 32u) / 16u)
+
+static void widest_wqe_send(const char *T, struct rc *r)
+{
+    struct ih *h = &r->h;
+    struct ih_cq cqc, cqd;
+    struct ih_qp c, d;
+    struct ih_cqe e;
+
+    memset(&e, 0, sizeof(e));
+    bool ok = ih_cq_create(h, &cqc, WIDE_CQ_C, 6) &&
+              ih_cq_create(h, &cqd, WIDE_CQ_D, 6) &&
+              ih_qp_create_stride(h, &c, WIDE_QP_C, IH_QPT_RC, &cqc, &cqc, NULL,
+                                  IH_WQE_MAX_STRIDE_LOG2) &&
+              ih_qp_create(h, &d, WIDE_QP_D, IH_QPT_RC, &cqd, &cqd, NULL) &&
+              ih_qp_connect(h, &c, &d);
+    if (!check(T, ok, "widest-WQE setup failed"))
+        return;
+
+    uint8_t want[WIDE_NSGE], got[WIDE_NSGE];
+    struct ih_sge sge[WIDE_NSGE];
+    fill(want, sizeof(want), 0x77);
+    memset(got, 0, sizeof(got));
+    ih_mr_write(h, &r->mra, VA_A, want, sizeof(want));
+    ih_mr_write(h, &r->mrb, VA_B, got, sizeof(got));
+    for (uint32_t i = 0; i < WIDE_NSGE; i++)
+        sge[i] = (struct ih_sge){.va = VA_A + i, .len = 1, .lkey = MR_A};
+
+    struct ih_sge into = {.va = VA_B, .len = sizeof(got), .lkey = MR_B};
+    ih_post_recv(h, &d, &into, 1);
+    struct ih_send s = {.op = IH_OP_SEND, .sge = sge, .nsge = WIDE_NSGE};
+    ih_post_send(h, &c, &s);
+
+    check(T, ih_cq_poll(h, &cqc, &e) && !e.error,
+          "a SEND of %u SGEs did not complete", WIDE_NSGE);
+    check(T, ih_cq_poll(h, &cqd, &e) && !e.error && e.status_len == WIDE_NSGE,
+          "a SEND of %u SGEs was received as %u bytes", WIDE_NSGE,
+          e.status_len);
+    ih_mr_read(h, &r->mrb, VA_B, got, sizeof(got));
+    check(T, memcmp(got, want, sizeof(got)) == 0,
+          "a SEND of %u SGEs did not arrive whole", WIDE_NSGE);
+
+    check(T, ih_qp_destroy(h, &c) == 0, "DESTROY_QP C failed");
+    check(T, ih_qp_destroy(h, &d) == 0, "DESTROY_QP D failed");
+    check(T, ih_cq_destroy(h, &cqc) == 0, "DESTROY_CQ C failed");
+    check(T, ih_cq_destroy(h, &cqd) == 0, "DESTROY_CQ D failed");
+}
+
 static void test_rc(void)
 {
     const char *T = "rc";
@@ -804,6 +1073,7 @@ static void test_rc(void)
             break;
     }
 
+    widest_wqe_send(T, &r);
     rc_teardown(T, &r);
 }
 
@@ -920,6 +1190,131 @@ static void test_atomic_and_reg_mr(void)
           "DESTROY_MR of the fast-registered MR failed");
 
     rc_teardown(T, &r);
+}
+
+/* ---- Flush when a QP enters the Error state ----------------------------- */
+
+/*
+ * A work request outstanding when its QP goes to Error has to be completed,
+ * or whoever posted it waits for it forever. rping is the case that found
+ * this: it keeps a receive posted for the life of the connection, so after
+ * rdma_disconnect its completion thread sat in ibv_get_cq_event() and the
+ * process never exited.
+ *
+ * The device signals this with one completion per queue rather than one per
+ * work request -- it carries no wqe_id, and the driver matches it to what it
+ * has posted -- so what is checked here is that both queues raise one, that
+ * it is marked an error with the flushed status, and that it raises the CQ
+ * event. The event is the half that unwedges a blocked consumer.
+ */
+static void test_qp_flush(void)
+{
+    const char *T = "qp-flush";
+    struct rc r;
+    struct ih *h = &r.h;
+    struct ih_cqe e;
+
+    if (!rc_setup(T, &r))
+        return;
+
+    /* The receive a consumer is still waiting on when the peer goes away. */
+    struct ih_sge dst = {.va = VA_B, .len = 64, .lkey = MR_B};
+    ih_post_recv(h, &r.b, &dst, 1);
+    check(T, cq_empty(h, &r.cqb), "a posted receive completed on its own");
+
+    /* Armed, so the event the flush raises is visible. */
+    ih_cq_arm(h, &r.cqb);
+    check(T, eq_count(h, RC_CQ_B) == 0, "arming an empty CQ fired");
+
+    /* Only Error flushes. A move to RTS must leave the receive posted. */
+    check(T, ih_qp_modify(h, RC_QP_B, IH_QP_STATE, IH_QPS_RTS, 0, NULL, 0) == 0,
+          "MODIFY_QP to RTS failed");
+    check(T, cq_empty(h, &r.cqb),
+          "a state change other than Error raised a completion");
+
+    /*
+     * The state byte only means anything under IB_QP_STATE. A command that
+     * changes something else leaves whatever the driver last put there, so a
+     * flush keyed on the byte alone would tear down a live QP.
+     */
+    check(T,
+          ih_qp_modify(h, RC_QP_B, IH_QP_QKEY, IH_QPS_ERR, 0x1234, NULL, 0) ==
+              0,
+          "MODIFY_QP of the qkey failed");
+    check(T, cq_empty(h, &r.cqb),
+          "a MODIFY_QP without IB_QP_STATE flushed the queue pair");
+
+    check(T, ih_qp_modify(h, RC_QP_B, IH_QP_STATE, IH_QPS_ERR, 0, NULL, 0) == 0,
+          "MODIFY_QP to Error failed");
+
+    unsigned n = 0;
+    bool saw_recv = false, saw_send = false;
+
+    while (ih_cq_poll(h, &r.cqb, &e)) {
+        n++;
+        check(T, e.error, "a flush completion is not marked an error");
+        check(T, e.status_len == IH_STS_WQE_FLUSHED_ERR,
+              "flush status %u, want %u", e.status_len, IH_STS_WQE_FLUSHED_ERR);
+        saw_recv |= e.type == IH_CQE_TYPE_RECV;
+        saw_send |= e.type == IH_CQE_TYPE_SEND_NPG;
+    }
+    check(T, n == 2, "Error raised %u completions, want one per queue", n);
+    check(T, saw_recv, "the receive queue was not flushed");
+    check(T, saw_send, "the send queue was not flushed");
+    check(T, eq_count(h, RC_CQ_B) >= 1,
+          "the flush raised no event: a consumer blocked in "
+          "ibv_get_cq_event() would never wake");
+
+    rc_teardown(T, &r);
+}
+
+/*
+ * The receives of a QP bound to a shared receive queue are not its own, so
+ * Error must not flush them: the SRQ is still live and other QPs are still
+ * drawing from it. Only the send queue flushes.
+ */
+static void test_qp_flush_srq(void)
+{
+    const char *T = "qp-flush-srq";
+    struct ih h;
+    struct ih_cq cqf;
+    struct ih_qp f;
+    struct ih_srq srq;
+    struct ih_cqe e;
+
+    if (!setup(T, &h, "loopback"))
+        return;
+
+    if (!check(T, ih_srq_create(&h, &srq, 4) == 0, "CREATE_SRQ failed")) {
+        teardown(T, &h);
+        return;
+    }
+    if (!check(T,
+               ih_cq_create(&h, &cqf, 5, 5) &&
+                   ih_qp_create(&h, &f, 30, IH_QPT_RC, &cqf, &cqf, &srq),
+               "SRQ-bound QP setup failed")) {
+        teardown(T, &h);
+        return;
+    }
+
+    check(T, ih_qp_modify(&h, 30, IH_QP_STATE, IH_QPS_ERR, 0, NULL, 0) == 0,
+          "MODIFY_QP to Error failed");
+
+    unsigned n = 0;
+    bool saw_recv = false;
+
+    while (ih_cq_poll(&h, &cqf, &e)) {
+        n++;
+        saw_recv |= e.type == IH_CQE_TYPE_RECV;
+    }
+    check(T, !saw_recv,
+          "an SRQ-bound QP flushed receives that belong to its SRQ");
+    check(T, n == 1, "Error raised %u completions, want only the send one", n);
+
+    check(T, ih_qp_destroy(&h, &f) == 0, "DESTROY_QP failed");
+    check(T, ih_srq_destroy(&h, &srq) == 0, "DESTROY_SRQ failed");
+    check(T, ih_cq_destroy(&h, &cqf) == 0, "DESTROY_CQ failed");
+    teardown(T, &h);
 }
 
 /* ---- CQ arming and events ---------------------------------------------- */
@@ -1074,16 +1469,30 @@ static void test_ud(void)
               "UD receive is for the wrong WQE or sender");
         check(T, e.has_smac, "UD receive carries no source MAC");
         ih_mr_read(&h, &mr, dst_va, got, sizeof(got));
-        static const uint8_t v4[12] = {0, 0, 0, 0, 0,    0,
-                                       0, 0, 0, 0, 0xff, 0xff};
-        check(T, got[0] == 0x60 && get_be16(got + 4) == sizeof(want),
-              "GRH version or payload length is wrong");
-        check(T,
-              memcmp(got + 8, v4, 12) == 0 && get_be32(got + 20) == UD_SIP &&
-                  memcmp(got + 24, v4, 12) == 0 && get_be32(got + 36) == UD_DIP,
-              "GRH addresses do not come from the address handle");
+        /*
+         * A v4-mapped address handle means RoCEv2 over IPv4, and that is
+         * reported as the packet's IPv4 header in the LAST 20 bytes of the
+         * 40-byte field -- union rdma_network_hdr is reserved[20] then
+         * struct iphdr -- not as an IPv6 GRH with GIDs at 8 and 24.
+         *
+         * The flag is checked with the bytes because nothing else ties them
+         * together: it becomes wc->network_hdr_type, and a receiver reads
+         * the addresses at 32 and 36 on the strength of that alone. Claiming
+         * IPv4 over an IPv6 GRH is what made ib_cm resolve the middle of the
+         * destination GID as the sender's address and drop every CM REQ.
+         */
+        const uint8_t *ip = got + IH_GRH_SIZE - 20;
+        check(T, e.is_ipv4, "an IPv4 UD receive is not flagged as one");
+        check(T, all_zero(got, 20), "the first 20 bytes are not reserved");
+        check(T, ip[0] == 0x45 && get_be16(ip + 2) == 20 + sizeof(want),
+              "the IPv4 header's version or total length is wrong");
+        check(T, ip[9] == 17, "the IPv4 header does not name UDP");
+        check(T, ones_sum16(ip, 20) == 0xffff,
+              "the IPv4 header's checksum does not verify");
+        check(T, get_be32(ip + 12) == UD_SIP && get_be32(ip + 16) == UD_DIP,
+              "the IPv4 addresses do not come from the address handle");
         check(T, memcmp(got + IH_GRH_SIZE, want, sizeof(want)) == 0,
-              "UD payload is not behind the GRH");
+              "UD payload is not behind the 40-byte header");
     }
 
     /* The wrong Q_Key, and a connected destination, are refused even with a
@@ -1273,6 +1682,18 @@ static bool q_init(struct ih *h, uint8_t qtype, uint16_t intr,
     return ih_devcmd(h, cmd, comp, NULL, 0) == 0;
 }
 
+/* Q_CONTROL ENABLE, which the driver sends once a queue is initialized. */
+static bool q_enable(struct ih *h, uint8_t qtype, uint32_t index)
+{
+    uint8_t cmd[64] = {0}, comp[16];
+
+    cmd[0] = IH_CMD_Q_CONTROL;
+    cmd[1] = qtype;
+    put_le32(cmd + 4, index);
+    cmd[8] = 1; /* IONIC_Q_ENABLE */
+    return ih_devcmd(h, cmd, comp, NULL, 0) == 0;
+}
+
 static void test_eth(void)
 {
     const char *T = "eth";
@@ -1288,10 +1709,16 @@ static void test_eth(void)
     const uint64_t rxr = fake_vfu_alloc(h.vfu, 8 * 16, 64);
     const uint64_t rxc = fake_vfu_alloc(h.vfu, 8 * 16, 64);
     const uint64_t bufs = fake_vfu_alloc(h.vfu, 8 * 2048, 4096);
+    /* A ring size the device can't shift by: UBSan reports a Q_INIT that
+     * does. The status isn't checked, since the device doesn't yet refuse
+     * a Q_INIT it can't set up. */
+    (void)q_init(&h, IH_QTYPE_ETH_TXQ, TX_INTR, 32, txr, txc, txsg);
     check(T, q_init(&h, IH_QTYPE_ETH_TXQ, TX_INTR, 3, txr, txc, txsg),
           "Q_INIT of the Tx queue failed");
     check(T, q_init(&h, IH_QTYPE_ETH_RXQ, RX_INTR, 3, rxr, rxc, 0),
           "Q_INIT of the Rx queue failed");
+    check(T, q_enable(&h, IH_QTYPE_ETH_TXQ, 0), "enabling the Tx queue failed");
+    check(T, q_enable(&h, IH_QTYPE_ETH_RXQ, 0), "enabling the Rx queue failed");
     ih_intr_mask(&h, TX_INTR, false);
     ih_intr_mask(&h, RX_INTR, false);
 
@@ -1362,8 +1789,12 @@ static void test_eth(void)
     check(T, fake_vfu_irq_count(h.vfu, RX_INTR) == 1, "Rx raised %u interrupts",
           fake_vfu_irq_count(h.vfu, RX_INTR));
 
-    /* A frame too big for the next buffer waits rather than being cut, and
-     * is freed with the device */
+    /*
+     * A frame too big for the next buffer is dropped, not cut and not held.
+     * Holding it would wedge the queue: head does not advance, so every
+     * later pass reads the same descriptor and fails the same way, and no
+     * frame behind it is ever delivered.
+     */
     check(T,
           ionic_eth_emu_queue_rx_frame(h.dev->ionic_emu, frame,
                                        sizeof(frame)) == 0,
@@ -1371,6 +1802,21 @@ static void test_eth(void)
     ih_poll(&h);
     check(T, fake_vfu_irq_count(h.vfu, RX_INTR) == 1,
           "a frame that does not fit was delivered");
+
+    /* ...and the next frame that does fit still gets through. */
+    uint8_t small[64];
+    fill(small, sizeof(small), 0x77);
+    check(T,
+          ionic_eth_emu_queue_rx_frame(h.dev->ionic_emu, small,
+                                       sizeof(small)) == 0,
+          "queueing a second Rx frame failed");
+    ih_poll(&h);
+    check(T, fake_vfu_irq_count(h.vfu, RX_INTR) == 2,
+          "an oversized frame wedged the Rx queue behind it");
+    uint8_t got_small[64];
+    fake_vfu_read(h.vfu, bufs + 2048 * 2, got_small, sizeof(got_small));
+    check(T, memcmp(got_small, small, sizeof(small)) == 0,
+          "the frame behind the oversized one is wrong");
 
     /* Tx without a filter is a sink, and a doorbell for a queue that was
      * never initialized is ignored */
@@ -1461,13 +1907,14 @@ static bool gsi_exchange(const char *test, struct ih *h, struct ih_qp *gsi,
         ih_post_recv(h, gsi, &rx, 1);
     ih_post_send(h, gsi, &s);
 
-    bool sent = false, got = false;
+    bool sent = false, got = false, recv_ipv4 = false;
     while (ih_cq_poll(h, cq, &e)) {
         if (e.type == IH_CQE_TYPE_SEND_NPG) {
             sent = true;
         } else if (e.type == IH_CQE_TYPE_RECV) {
             got = check(test, !e.error && e.status_len == rx.len,
                         "GSI reply length %u", e.status_len);
+            recv_ipv4 = e.is_ipv4;
         }
     }
     check(test, sent, "the GSI send did not complete");
@@ -1477,7 +1924,25 @@ static bool gsi_exchange(const char *test, struct ih *h, struct ih_qp *gsi,
         return false;
     uint8_t buf[IH_GRH_SIZE + IB_MAD_SIZE];
     ih_mr_read(h, mr, rx.va, buf, sizeof(buf));
-    check(test, buf[0] == 0x60, "the GSI reply has no GRH");
+    /*
+     * build_req() fills the CM REQ's GIDs with 0x11 and 0x22, which are not
+     * v4-mapped, so this is the other branch: a real IPv6 GRH, with the
+     * GIDs where struct ib_grh keeps them and the completion's IPv4 flag
+     * clear. The ud test covers the RoCEv2-over-IPv4 form. Between them the
+     * dispatch is pinned both ways, which matters because the two forms put
+     * the addresses 24 bytes apart and the flag is all a receiver has to
+     * tell them apart.
+     */
+    uint8_t controller[16], guest[16];
+    memset(controller, 0x22, sizeof(controller));
+    memset(guest, 0x11, sizeof(guest));
+    check(test, !recv_ipv4, "a GSI reply carrying a GRH is flagged IPv4");
+    check(test, buf[0] == 0x60 && get_be16(buf + 4) == IB_MAD_SIZE,
+          "the GSI reply has no GRH, or the wrong payload length");
+    check(test,
+          memcmp(buf + 8, controller, 16) == 0 &&
+              memcmp(buf + 24, guest, 16) == 0,
+          "the GRH's GIDs are not where a GRH keeps them");
     memcpy(reply, buf + IH_GRH_SIZE, IB_MAD_SIZE);
     return true;
 }
@@ -1528,6 +1993,947 @@ static void capsule_init(uint8_t *c, uint8_t opcode, uint16_t cid,
     nvme_put_le32(d + 11, key);
     d[15] = NVME_SGL_TYPE_KEYED_DATA << 4;
 }
+
+#ifdef ERNIC_HAVE_P4
+
+/* ---- The P4 port's place in the Tx filter chain ------------------------- */
+
+struct p4_upstream {
+    unsigned offered;
+    unsigned claimed;
+};
+
+/*
+ * Claims only frames carrying the magic first byte, so one test exercises
+ * both branches of the chain: a frame the previous filter holder consumes,
+ * which must never reach the pipeline, and one it declines, which must.
+ */
+#define P4_UPSTREAM_MAGIC 0xAAu
+
+static bool p4_upstream_filter(void *ctx, const void *frame, size_t len)
+{
+    struct p4_upstream *u = ctx;
+    const uint8_t *bytes = frame;
+
+    u->offered++;
+    if (len == 0 || bytes[0] != P4_UPSTREAM_MAGIC)
+        return false;
+    u->claimed++;
+    return true;
+}
+
+/* Put one frame on the Tx ring and ring the doorbell for it. */
+static void p4_tx_one(struct ih *h, uint64_t txr, uint64_t buf, uint8_t first,
+                      uint16_t index)
+{
+    uint8_t frame[64];
+    uint8_t desc[16] = {0};
+
+    fill(frame, sizeof(frame), 0x55);
+    frame[0] = first;
+    fake_vfu_write(h->vfu, buf, frame, sizeof(frame));
+
+    put_le64(desc, buf << 12);
+    put_le16(desc + 8, (uint16_t)sizeof(frame));
+    fake_vfu_write(h->vfu, txr + (uint64_t)index * 16u, desc, sizeof(desc));
+    ih_doorbell(h, IH_QTYPE_ETH_TXQ, 0, 0, (uint16_t)(index + 1));
+}
+
+static void test_p4_port(void)
+{
+    const char *T = "p4-port";
+    struct ih h;
+    struct p4_upstream up;
+    struct p4_port_upstream chain;
+    struct p4_stats estats;
+    struct p4_port_stats pstats;
+
+    if (!setup(T, &h, "loopback"))
+        return;
+
+    const uint64_t txr = fake_vfu_alloc(h.vfu, 8 * 16, 64);
+    const uint64_t txc = fake_vfu_alloc(h.vfu, 8 * 16, 64);
+    const uint64_t buf = fake_vfu_alloc(h.vfu, 4096, 4096);
+    check(T, q_init(&h, IH_QTYPE_ETH_TXQ, TX_INTR, 3, txr, txc, 0),
+          "Q_INIT of the Tx queue failed");
+    ih_intr_mask(&h, TX_INTR, false);
+
+    /* Stand in for the S3 control plane, which really does hold this slot. */
+    memset(&up, 0, sizeof(up));
+    ionic_eth_emu_register_tx_filter(h.dev->ionic_emu, p4_upstream_filter, &up);
+
+    memset(&chain, 0, sizeof(chain));
+    ionic_eth_emu_get_tx_filter(h.dev->ionic_emu, &chain.fn, &chain.ctx);
+    check(T, chain.fn == p4_upstream_filter && chain.ctx == &up,
+          "the registered Tx filter did not read back");
+
+    struct p4_engine *eng = p4_engine_create();
+    if (!check(T, eng != NULL, "p4_engine_create failed")) {
+        teardown(T, &h);
+        return;
+    }
+    struct p4_port *port = p4_port_attach(h.dev->ionic_emu, eng, &chain);
+    if (!check(T, port != NULL, "p4_port_attach failed")) {
+        p4_engine_destroy(eng);
+        teardown(T, &h);
+        return;
+    }
+
+    /* A frame the previous holder claims must not reach the pipeline. */
+    p4_tx_one(&h, txr, buf, P4_UPSTREAM_MAGIC, 0);
+    p4_engine_get_stats(eng, &estats);
+    p4_port_get_stats(port, &pstats);
+    check(T, up.claimed == 1, "the chained filter claimed %u frames",
+          up.claimed);
+    check(T, estats.frames_in[P4_PORT_HOST] == 0,
+          "a claimed frame reached the pipeline");
+    check(T, pstats.to_upstream == 1, "the claimed frame was not counted");
+
+    /* One it declines must, and with no backend attached its forward to the
+     * uplink fails, which is the only observable the engine has today. */
+    p4_tx_one(&h, txr, buf, 0xBBu, 1);
+    p4_engine_get_stats(eng, &estats);
+    p4_port_get_stats(port, &pstats);
+    check(T, up.offered == 2, "the chained filter saw %u frames", up.offered);
+    check(T, up.claimed == 1,
+          "the chained filter claimed a frame it should "
+          "have declined");
+    check(T, estats.frames_in[P4_PORT_HOST] == 1,
+          "the declined frame did not reach the pipeline");
+    check(T, estats.frames_out[P4_PORT_UPLINK] == 1,
+          "the pipeline did not forward to the uplink");
+    check(T, pstats.egress_errors == 1,
+          "a forward with no host backend should fail, egress_errors=%llu",
+          (unsigned long long)pstats.egress_errors);
+    check(T, pstats.to_net == 0,
+          "a frame left through a backend that is not "
+          "attached");
+
+    /* Detaching must hand the slot back, not leave it empty. */
+    p4_port_detach(port);
+    ionic_eth_emu_get_tx_filter(h.dev->ionic_emu, &chain.fn, &chain.ctx);
+    check(T, chain.fn == p4_upstream_filter && chain.ctx == &up,
+          "detach did not restore the previous Tx filter");
+
+    p4_tx_one(&h, txr, buf, P4_UPSTREAM_MAGIC, 2);
+    check(T, up.claimed == 2, "the restored filter did not claim after detach");
+    p4_engine_get_stats(eng, &estats);
+    check(T, estats.frames_in[P4_PORT_HOST] == 1,
+          "the pipeline ran after it was detached");
+
+    p4_engine_destroy(eng);
+    ionic_eth_emu_register_tx_filter(h.dev->ionic_emu, NULL, NULL);
+    teardown(T, &h);
+}
+/* ---- In-network elementwise compute across three memory regions ------- */
+
+#define FP8R_MR_A   0x03000001u
+#define FP8R_MR_B   0x03000002u
+#define FP8R_MR_C   0x03000003u
+#define FP8R_VA_A   UINT64_C(0x7F2000000000)
+#define FP8R_VA_B   UINT64_C(0x7F3000000000)
+#define FP8R_VA_C   UINT64_C(0x7F4000000000)
+#define FP8R_MR_LEN (4u * IH_PAGE_SIZE)
+
+/*
+ * The worked example: the NIC reads two operand regions, combines them
+ * pointwise, and writes a result region of the same length. Combining two
+ * partial buffers is what a collective does, so this is the primitive an
+ * allreduce is built from.
+ *
+ * Nothing here is on the Ethernet wire -- this is the RDMA plane, where
+ * the loopback backend resolves a key to a local region.
+ */
+static void test_fp8_map(void)
+{
+    const char *T = "fp8-map";
+    struct ih h;
+    struct ih_mr mra, mrb, mrc;
+    /* Longer than one streaming block, so the chunking is exercised and a
+     * loop that dropped the offset would show up as a wrong tail. */
+    enum { N = 5000 };
+    static uint8_t a[N], b[N], got[N];
+
+    if (!setup(T, &h, "loopback"))
+        return;
+
+    if (!check(T,
+               ih_mr_create(&h, &mra, FP8R_MR_A, FP8R_VA_A, FP8R_MR_LEN,
+                            IH_ACCESS_ALL, false) &&
+                   ih_mr_create(&h, &mrb, FP8R_MR_B, FP8R_VA_B, FP8R_MR_LEN,
+                                IH_ACCESS_ALL, false) &&
+                   /* C's pages are reversed, so a write that ignores the
+                    * page table lands in the wrong place and shows up. */
+                   ih_mr_create(&h, &mrc, FP8R_MR_C, FP8R_VA_C, FP8R_MR_LEN,
+                                IH_ACCESS_ALL, true),
+               "the three memory regions were not registered")) {
+        teardown(T, &h);
+        return;
+    }
+
+    /* 1.0 everywhere in A, 2.0 everywhere in B. */
+    memset(a, 0x38, sizeof(a));
+    memset(b, 0x40, sizeof(b));
+    /* ...except one element, so a result that ignored position would be
+     * indistinguishable from one that did not. */
+    a[1234] = 0x48; /* 4.0 */
+    check(T, ih_mr_write(&h, &mra, FP8R_VA_A, a, sizeof(a)), "write to A");
+    check(T, ih_mr_write(&h, &mrb, FP8R_VA_B, b, sizeof(b)), "write to B");
+
+    check(T,
+          ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
+                                 FP8R_VA_A, mrb.lkey, FP8R_VA_B, N, mrc.lkey,
+                                 FP8R_VA_C) == 0,
+          "the elementwise add failed");
+    check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, sizeof(got)),
+          "read back from C");
+
+    {
+        unsigned wrong = 0;
+        unsigned first = 0;
+
+        for (unsigned i = 0; i < N; i++) {
+            /* 1+2 is 3 (0x44) everywhere but the one element, where
+             * 4+2 is 6 (0x4C). */
+            uint8_t want = (i == 1234) ? 0x4Cu : 0x44u;
+
+            if (got[i] != want) {
+                if (!wrong)
+                    first = i;
+                wrong++;
+            }
+        }
+        check(T, wrong == 0, "%u of %u elements are wrong, the first at %u",
+              wrong, (unsigned)N, first);
+    }
+
+    /* Multiply, over a length that is not a multiple of the block. */
+    memset(a, 0x40, sizeof(a)); /* 2.0 */
+    memset(b, 0x44, sizeof(b)); /* 3.0 */
+    check(T, ih_mr_write(&h, &mra, FP8R_VA_A, a, sizeof(a)), "write to A");
+    check(T, ih_mr_write(&h, &mrb, FP8R_VA_B, b, sizeof(b)), "write to B");
+    check(T,
+          ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_MUL, mra.lkey,
+                                 FP8R_VA_A, mrb.lkey, FP8R_VA_B, 3001, mrc.lkey,
+                                 FP8R_VA_C) == 0,
+          "the elementwise multiply failed");
+    check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, 3001), "read back from C");
+    {
+        unsigned wrong = 0;
+
+        for (unsigned i = 0; i < 3001; i++) {
+            if (got[i] != 0x4Cu) /* 2*3 is 6 */
+                wrong++;
+        }
+        check(T, wrong == 0, "%u of 3001 products are wrong", wrong);
+    }
+
+    /*
+     * Key 0 is IONIC_DMA_LKEY, which bypasses the region table and treats
+     * the address as a bus address. A guest-supplied request must not be
+     * able to name it.
+     */
+    check(T,
+          ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_ADD, 0, FP8R_VA_A,
+                                 mrb.lkey, FP8R_VA_B, 64, mrc.lkey,
+                                 FP8R_VA_C) == -EACCES,
+          "key 0 was accepted as an operand");
+    check(T,
+          ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
+                                 FP8R_VA_A, mrb.lkey, FP8R_VA_B, 64, 0,
+                                 FP8R_VA_C) == -EACCES,
+          "key 0 was accepted as a destination");
+
+    /* A key that was never registered must fault, not read host memory. */
+    check(T,
+          ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_ADD, 0xDEADBEEFu,
+                                 FP8R_VA_A, mrb.lkey, FP8R_VA_B, 64, mrc.lkey,
+                                 FP8R_VA_C) == -EACCES,
+          "an unregistered operand key was accepted");
+    check(T,
+          ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
+                                 FP8R_VA_A, mrb.lkey, FP8R_VA_B, 64,
+                                 0xDEADBEEFu, FP8R_VA_C) == -EACCES,
+          "an unregistered destination key was accepted");
+
+    /*
+     * A length past the end of a region is refused before anything moves,
+     * rather than part way through with a half-written destination.
+     */
+    check(T,
+          ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
+                                 FP8R_VA_A + FP8R_MR_LEN - 8, mrb.lkey,
+                                 FP8R_VA_B, 64, mrc.lkey, FP8R_VA_C) == -EACCES,
+          "a read past the end of a region was accepted");
+    {
+        /* ...and the destination really was left alone. */
+        uint8_t probe[8];
+        uint8_t before[8];
+
+        memset(before, 0x5A, sizeof(before));
+        check(T, ih_mr_write(&h, &mrc, FP8R_VA_C, before, sizeof(before)),
+              "prime C");
+        (void)ionic_datapath_fp8_map(
+            h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey, FP8R_VA_A, mrb.lkey,
+            FP8R_VA_B + FP8R_MR_LEN - 8, 64, mrc.lkey, FP8R_VA_C);
+        check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, probe, sizeof(probe)),
+              "read C back");
+        check(T, memcmp(probe, before, sizeof(probe)) == 0,
+              "a refused request wrote to the destination anyway");
+    }
+
+    /* Bounds on the request itself. */
+    check(T,
+          ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
+                                 FP8R_VA_A, mrb.lkey, FP8R_VA_B, 0, mrc.lkey,
+                                 FP8R_VA_C) == -EINVAL,
+          "a zero length was accepted");
+    check(T,
+          ionic_datapath_fp8_map(
+              h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey, FP8R_VA_A, mrb.lkey,
+              FP8R_VA_B, IONIC_FP8_MAP_MAX + 1, mrc.lkey, FP8R_VA_C) == -EINVAL,
+          "a length over the cap was accepted");
+    check(T,
+          ionic_datapath_fp8_map(h.dev->ionic_dp, 99, mra.lkey, FP8R_VA_A,
+                                 mrb.lkey, FP8R_VA_B, 64, mrc.lkey,
+                                 FP8R_VA_C) == -EINVAL,
+          "an unknown operation was accepted");
+
+    check(T, ih_mr_destroy(&h, &mra) == 0, "DESTROY_MR A failed");
+    check(T, ih_mr_destroy(&h, &mrb) == 0, "DESTROY_MR B failed");
+    check(T, ih_mr_destroy(&h, &mrc) == 0, "DESTROY_MR C failed");
+    ih_mr_free(&mra);
+    ih_mr_free(&mrb);
+    ih_mr_free(&mrc);
+
+    teardown(T, &h);
+}
+
+/* ---- A P4 program governing an RDMA operation -------------------------- */
+
+#define P4R_CQ     7
+#define P4R_QP_A   40
+#define P4R_QP_B   41
+#define P4R_N      3000u
+#define P4R_MR_LEN (4u * IH_PAGE_SIZE)
+
+/* The bytes of a compiled fixture, or NULL. The caller frees them. */
+static char *p4d_read_file(const char *name, size_t *out_len)
+{
+    char path[512];
+    FILE *f;
+    long n;
+    char *buf;
+
+    (void)snprintf(path, sizeof(path), "%s/%s", P4_FIXTURE_DIR, name);
+    f = fopen(path, "rbe"); /* e: O_CLOEXEC */
+    if (!f)
+        return NULL;
+    if (fseek(f, 0, SEEK_END) != 0 || (n = ftell(f)) < 0 ||
+        fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return NULL;
+    }
+    buf = malloc((size_t)n);
+    if (!buf) {
+        fclose(f);
+        return NULL;
+    }
+    if (fread(buf, 1, (size_t)n, f) != (size_t)n) {
+        free(buf);
+        fclose(f);
+        return NULL;
+    }
+    fclose(f);
+    *out_len = (size_t)n;
+    return buf;
+}
+
+static int p4r_load(struct p4_engine *eng, const char *name)
+{
+    size_t n = 0;
+    char *buf = p4d_read_file(name, &n);
+    int rc;
+
+    if (!buf)
+        return -ENOENT;
+    rc = p4_engine_load_begin(eng, n);
+    if (rc == 0)
+        rc = p4_engine_load_chunk(eng, 0, buf, n);
+    if (rc == 0)
+        rc = p4_engine_load_commit(eng);
+    free(buf);
+    return rc;
+}
+
+/*
+ * The whole of what was asked for, in one path: a compiled P4 program
+ * decides, from an RDMA operation's opcode, that an elementwise fp8 add
+ * happens, and the result lands in a third region.
+ *
+ * What makes this P4 rather than a hard-coded offload is that the same
+ * operation does an ordinary RDMA write when the table says nothing, and
+ * the arithmetic changes when the table entry changes -- with no change
+ * here, and with the program never naming a key or an address.
+ */
+static void test_p4_rdma(void)
+{
+    const char *T = "p4-rdma";
+    struct ih h;
+    struct ih_cq cq;
+    struct ih_qp a, b;
+    struct ih_mr mra, mrb, mrc;
+    struct ih_cqe e;
+    struct p4_update up;
+    char err[160];
+    static uint8_t opa[P4R_N], opb[P4R_N], got[P4R_N];
+
+    if (!setup(T, &h, "loopback"))
+        return;
+
+    bool ok = ih_cq_create(&h, &cq, P4R_CQ, 6) &&
+              ih_qp_create(&h, &a, P4R_QP_A, IH_QPT_RC, &cq, &cq, NULL) &&
+              ih_qp_create(&h, &b, P4R_QP_B, IH_QPT_RC, &cq, &cq, NULL) &&
+              ih_qp_connect(&h, &a, &b) &&
+              ih_mr_create(&h, &mra, FP8R_MR_A, FP8R_VA_A, P4R_MR_LEN,
+                           IH_ACCESS_ALL, false) &&
+              ih_mr_create(&h, &mrb, FP8R_MR_B, FP8R_VA_B, P4R_MR_LEN,
+                           IH_ACCESS_ALL, false) &&
+              /* Reversed pages again: a write that ignores the page table
+               * lands somewhere else and the comparison says so. */
+              ih_mr_create(&h, &mrc, FP8R_MR_C, FP8R_VA_C, P4R_MR_LEN,
+                           IH_ACCESS_ALL, true);
+    if (!check(T, ok, "P4 RDMA setup failed")) {
+        ih_mr_free(&mra);
+        ih_mr_free(&mrb);
+        ih_mr_free(&mrc);
+        teardown(T, &h);
+        return;
+    }
+
+    struct p4_engine *eng = p4_engine_create();
+    if (!check(T, eng != NULL, "p4_engine_create failed")) {
+        ih_mr_free(&mra);
+        ih_mr_free(&mrb);
+        ih_mr_free(&mrc);
+        teardown(T, &h);
+        return;
+    }
+    check(T, p4r_load(eng, "fp8_policy.json") == 0,
+          "the compiled policy program did not load");
+    ionic_datapath_set_p4_engine(h.dev->ionic_dp, eng);
+
+    /* 1.0 in A, 2.0 in B, with one element of A at 4.0 so a result that
+     * ignored position could not pass. */
+    memset(opa, 0x38, sizeof(opa));
+    memset(opb, 0x40, sizeof(opb));
+    opa[777] = 0x48;
+    check(T, ih_mr_write(&h, &mra, FP8R_VA_A, opa, sizeof(opa)), "write to A");
+    check(T, ih_mr_write(&h, &mrb, FP8R_VA_B, opb, sizeof(opb)), "write to B");
+
+    struct ih_sge sge[2] = {
+        {.va = FP8R_VA_A, .len = P4R_N, .lkey = mra.lkey},
+        {.va = FP8R_VA_B, .len = P4R_N, .lkey = mrb.lkey},
+    };
+    struct ih_send w = {
+        .op = IH_OP_RDMA_WRITE,
+        .flags = IH_WQE_SIGNALLED,
+        .remote_va = FP8R_VA_C,
+        .rkey = mrc.lkey,
+        /* Deliberately not set: the harness then sums the gather list,
+         * which is what ionic_prep_common() puts in a real WQE. Setting
+         * it by hand is a thing no guest driver can do, and doing so
+         * here once hid a device-side check that no guest could pass. */
+        .sge = sge,
+        .nsge = 2,
+    };
+
+    /*
+     * With the table empty this is just an RDMA write, so the two operand
+     * regions arrive in C one after the other. That is the baseline the
+     * entry has to change: without it, "the result is right" could be true
+     * of a device that ignored the pipeline entirely.
+     */
+    ih_post_send(&h, &a, &w);
+    check(T, ih_cq_poll(&h, &cq, &e) && !e.error,
+          "the plain write did not complete");
+    check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, sizeof(got)), "read back C");
+    check(T, memcmp(got, opa, sizeof(got)) == 0,
+          "with no entry the operation was not an ordinary write");
+
+    /* Now the entry: for an RDMA write, add the two operands elementwise. */
+    memset(&up, 0, sizeof(up));
+    up.type = P4_UPDATE_INSERT;
+    (void)snprintf(up.table, sizeof(up.table), "Ing.policy");
+    (void)snprintf(up.action, sizeof(up.action), "Ing.reduce_with");
+    up.nmatch = 1;
+    up.match[0].len = 1;
+    up.match[0].value[P4_MATCH_BYTES - 1] = IH_OP_RDMA_WRITE;
+    up.nparams = 1;
+    up.params[0].len = 1;
+    up.params[0].value[P4_MATCH_BYTES - 1] = P4_FP8_OP_ADD;
+    check(T, p4_engine_update(eng, &up, err, sizeof(err)) == 0,
+          "the entry was not installed: %s", err);
+
+    memset(got, 0, sizeof(got));
+    check(T, ih_mr_write(&h, &mrc, FP8R_VA_C, got, sizeof(got)), "clear C");
+
+    ih_post_send(&h, &a, &w);
+    check(T, ih_cq_poll(&h, &cq, &e) && !e.error,
+          "the governed operation did not complete");
+    check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, sizeof(got)),
+          "read back the result");
+    {
+        unsigned wrong = 0, first = 0;
+
+        for (unsigned i = 0; i < P4R_N; i++) {
+            uint8_t want = (i == 777) ? 0x4Cu : 0x44u; /* 4+2=6, else 1+2=3 */
+
+            if (got[i] != want) {
+                if (!wrong)
+                    first = i;
+                wrong++;
+            }
+        }
+        check(T, wrong == 0,
+              "%u of %u elements are wrong, the first at %u -- the program "
+              "did not govern the operation",
+              wrong, P4R_N, first);
+    }
+
+    /*
+     * Change only the table entry and the arithmetic changes: 1*2 is 2
+     * (0x40) and 4*2 is 8 (0x50). Nothing in the device was told.
+     */
+    up.type = P4_UPDATE_MODIFY;
+    up.params[0].value[P4_MATCH_BYTES - 1] = P4_FP8_OP_MUL;
+    check(T, p4_engine_update(eng, &up, err, sizeof(err)) == 0,
+          "the entry was not modified: %s", err);
+
+    ih_post_send(&h, &a, &w);
+    check(T, ih_cq_poll(&h, &cq, &e) && !e.error,
+          "the multiply did not complete");
+    check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, sizeof(got)),
+          "read back the product");
+    check(T, got[0] == 0x40u && got[777] == 0x50u,
+          "changing the entry did not change the arithmetic: got %#x, %#x",
+          got[0], got[777]);
+
+    /*
+     * The operand convention is the architecture's, not the program's. A
+     * gather list that is not two equal-length entries is not a compute
+     * operation, and the extern refuses it rather than inventing one -- so
+     * the operation fails instead of silently doing an ordinary write over
+     * a destination the guest expected a result in.
+     */
+    struct ih_send one = w;
+    one.nsge = 1;
+    ih_post_send(&h, &a, &one);
+    check(T, ih_cq_poll(&h, &cq, &e) && e.error,
+          "a one-SGE write under the same entry completed successfully");
+
+    /*
+     * A program whose action calls the extern but does not drop would have
+     * the ordinary transfer land on top of the result. There is nothing
+     * downstream to notice that, so the operation is refused here instead.
+     */
+    {
+        struct p4_engine *nodrop = p4_engine_create();
+
+        if (check(T, nodrop != NULL, "p4_engine_create failed")) {
+            check(T, p4r_load(nodrop, "fp8_nodrop.json") == 0,
+                  "the no-drop program did not load");
+            up.type = P4_UPDATE_INSERT;
+            check(T, p4_engine_update(nodrop, &up, err, sizeof(err)) == 0,
+                  "the entry was not installed: %s", err);
+            ionic_datapath_set_p4_engine(h.dev->ionic_dp, nodrop);
+            ih_post_send(&h, &a, &w);
+            check(T, ih_cq_poll(&h, &cq, &e) && e.error,
+                  "an extern call without a drop was allowed to transfer "
+                  "over its own result");
+            ionic_datapath_set_p4_engine(h.dev->ionic_dp, eng);
+            p4_engine_destroy(nodrop);
+        }
+    }
+
+    /* Taking the engine away restores the device's own behaviour. */
+    ionic_datapath_set_p4_engine(h.dev->ionic_dp, NULL);
+    memset(got, 0, sizeof(got));
+    check(T, ih_mr_write(&h, &mrc, FP8R_VA_C, got, sizeof(got)), "clear C");
+    ih_post_send(&h, &a, &w);
+    check(T, ih_cq_poll(&h, &cq, &e) && !e.error,
+          "the write did not complete with the engine detached");
+    check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, sizeof(got)), "read back C");
+    check(T, memcmp(got, opa, sizeof(got)) == 0,
+          "detaching the engine did not restore the ordinary write");
+
+    p4_engine_destroy(eng);
+
+    check(T, ih_qp_destroy(&h, &a) == 0, "DESTROY_QP A failed");
+    check(T, ih_qp_destroy(&h, &b) == 0, "DESTROY_QP B failed");
+    check(T, ih_mr_destroy(&h, &mra) == 0, "DESTROY_MR A failed");
+    check(T, ih_mr_destroy(&h, &mrb) == 0, "DESTROY_MR B failed");
+    check(T, ih_mr_destroy(&h, &mrc) == 0, "DESTROY_MR C failed");
+    ih_mr_free(&mra);
+    ih_mr_free(&mrb);
+    ih_mr_free(&mrc);
+    check(T, ih_cq_destroy(&h, &cq) == 0, "DESTROY_CQ failed");
+
+    teardown(T, &h);
+}
+
+
+/* ---- The guest's own way in to the engine ------------------------------ */
+
+/*
+ * Build a devcmd in the 64-byte buffer the BAR0 window takes.  Everything
+ * the guest sends is little-endian, which on this host is a memcpy, but
+ * going through htole32/htole64 is what makes that an assumption the
+ * compiler checks rather than one the test embeds.
+ */
+static void p4d_put32(uint8_t *p, uint32_t v)
+{
+    uint32_t le = htole32(v);
+    memcpy(p, &le, 4);
+}
+
+static void p4d_put64(uint8_t *p, uint64_t v)
+{
+    uint64_t le = htole64(v);
+    memcpy(p, &le, 8);
+}
+
+/* One RPC, with no request or response buffer unless given. */
+static int p4d_rpc(struct ih *h, uint8_t scope, uint32_t ep, uint32_t op,
+                   uint64_t req_pa, uint32_t req_len, uint64_t resp_pa,
+                   uint32_t resp_len, uint8_t comp[16])
+{
+    uint8_t cmd[64] = {0};
+
+    cmd[0] = IONIC_CMD_P4_RPC;
+    cmd[1] = scope;
+    p4d_put32(cmd + 4, ep);
+    p4d_put32(cmd + 8, op);
+    p4d_put32(cmd + 12, req_len);
+    p4d_put64(cmd + 16, req_pa);
+    p4d_put32(cmd + 24, resp_len);
+    p4d_put64(cmd + 32, resp_pa);
+    return ih_devcmd(h, cmd, comp, NULL, 0);
+}
+
+/*
+ * The whole guest-facing story: a guest identifies the control surface,
+ * enumerates what it may do, pushes a compiled P4 program down in chunks,
+ * installs a table entry, and then sees an ordinary RDMA write become an
+ * elementwise fp8 add.
+ *
+ * Every step goes through the BAR0 devcmd window, which is the same path
+ * a driver in a VM uses -- nothing here calls the engine's C API, which
+ * is exactly what made the existing coverage unable to speak for a guest.
+ */
+static void test_p4_devcmd(void)
+{
+    const char *T = "p4-devcmd";
+    struct ih h;
+    struct ih_cq cq;
+    struct ih_qp a, b;
+    struct ih_mr mra, mrb, mrc;
+    struct ih_cqe e;
+    uint8_t comp[16];
+    static uint8_t opa[P4R_N], opb[P4R_N], got[P4R_N];
+    size_t prog_len = 0;
+    char *prog;
+
+    if (!setup(T, &h, "loopback"))
+        return;
+
+    struct p4_engine *eng = p4_engine_create();
+    if (!check(T, eng != NULL, "p4_engine_create failed")) {
+        teardown(T, &h);
+        return;
+    }
+    struct p4_devcmd *pd = p4_devcmd_create(h.vfu, eng, P4_SCOPE_LOAD);
+    if (!check(T, pd != NULL, "p4_devcmd_create failed")) {
+        p4_engine_destroy(eng);
+        teardown(T, &h);
+        return;
+    }
+    ionic_eth_emu_register_p4_handler(h.dev->ionic_emu, p4_devcmd_dispatch, pd);
+    ionic_datapath_set_p4_engine(h.dev->ionic_dp, eng);
+
+    const uint64_t buf = fake_vfu_alloc(h.vfu, 4096, 4096);
+
+    /* IDENT: what the device is, and what this guest may do with it. */
+    {
+        uint8_t cmd[64] = {0};
+        struct p4_devcmd_ident id;
+
+        cmd[0] = IONIC_CMD_P4_IDENT;
+        p4d_put32(cmd + 4, (uint32_t)sizeof(id));
+        p4d_put64(cmd + 8, buf);
+        check(T, ih_devcmd(&h, cmd, comp, NULL, 0) == P4_STS_OK,
+              "IDENT failed");
+        fake_vfu_read(h.vfu, buf, &id, sizeof(id));
+        check(T, le32toh(id.abi_version) == 1, "IDENT reported ABI %u",
+              le32toh(id.abi_version));
+        check(T, le32toh(id.scope) == P4_SCOPE_LOAD,
+              "IDENT reported scope %u, not the one granted",
+              le32toh(id.scope));
+        check(T, le32toh(id.max_program) == P4_PROGRAM_MAX,
+              "IDENT reported a program limit of %u", le32toh(id.max_program));
+        check(T, le32toh(id.endpoints) == 3, "IDENT reported %u endpoints",
+              le32toh(id.endpoints));
+    }
+
+    /* QUERY(ROOT): the endpoints, and QUERY(ENDPOINT): their operations. */
+    {
+        uint8_t cmd[64] = {0};
+        struct p4_devcmd_query_data qd;
+
+        cmd[0] = IONIC_CMD_P4_QUERY;
+        cmd[1] = P4_QUERY_ROOT;
+        p4d_put32(cmd + 4, 4096);
+        p4d_put64(cmd + 8, buf);
+        check(T, ih_devcmd(&h, cmd, comp, NULL, 0) == P4_STS_OK,
+              "QUERY(ROOT) failed");
+        fake_vfu_read(h.vfu, buf, &qd, sizeof(qd));
+        check(T, le32toh(qd.num_entries) == 3 && le32toh(qd.total) == 3,
+              "QUERY(ROOT) returned %u of %u", le32toh(qd.num_entries),
+              le32toh(qd.total));
+
+        /*
+         * A buffer too small for everything must report what fits AND what
+         * exists, so the guest can retry rather than walk off its own
+         * buffer trusting a count the device chose.
+         */
+        p4d_put32(cmd + 4, (uint32_t)(sizeof(qd) + 4));
+        check(T, ih_devcmd(&h, cmd, comp, NULL, 0) == P4_STS_OK,
+              "QUERY(ROOT) with a small buffer failed");
+        fake_vfu_read(h.vfu, buf, &qd, sizeof(qd));
+        check(T, le32toh(qd.num_entries) == 1 && le32toh(qd.total) == 3,
+              "a truncated QUERY reported %u of %u, not 1 of 3",
+              le32toh(qd.num_entries), le32toh(qd.total));
+
+        cmd[1] = P4_QUERY_ENDPOINT;
+        p4d_put32(cmd + 4, 4096);
+        p4d_put32(cmd + 16, P4_EP_PROGRAM);
+        check(T, ih_devcmd(&h, cmd, comp, NULL, 0) == P4_STS_OK,
+              "QUERY(PROGRAM) failed");
+        fake_vfu_read(h.vfu, buf, &qd, sizeof(qd));
+        check(T, le32toh(qd.num_entries) == 4,
+              "the program endpoint offers %u operations, not 4",
+              le32toh(qd.num_entries));
+
+        /* An endpoint the device does not have is named as such. */
+        p4d_put32(cmd + 16, 0x5eu);
+        check(T, ih_devcmd(&h, cmd, comp, NULL, 0) == P4_STS_EOPCODE,
+              "a query for an absent endpoint was not refused");
+    }
+
+    /* Push the compiled program down, in chunks, as a driver would. */
+    prog = p4d_read_file("fp8_policy.json", &prog_len);
+    if (!check(T, prog != NULL, "could not read the program fixture")) {
+        goto out;
+    }
+    {
+        uint8_t body[8] = {0};
+        const uint64_t req = fake_vfu_alloc(h.vfu, 65536, 4096);
+        size_t off = 0;
+
+        p4d_put32(body, (uint32_t)prog_len);
+        fake_vfu_write(h.vfu, req, body, sizeof(body));
+        check(T,
+              p4d_rpc(&h, P4_SCOPE_LOAD, P4_EP_PROGRAM, P4_OP_LOAD_BEGIN, req,
+                      (uint32_t)sizeof(struct p4_rpc_load_begin), 0, 0,
+                      comp) == P4_STS_OK,
+              "LOAD_BEGIN failed");
+
+        while (off < prog_len) {
+            uint8_t hdr[16] = {0};
+            size_t n = prog_len - off;
+
+            if (n > 4096)
+                n = 4096;
+            p4d_put64(hdr, off);
+            p4d_put32(hdr + 8, (uint32_t)n);
+            fake_vfu_write(h.vfu, req, hdr, sizeof(hdr));
+            fake_vfu_write(h.vfu, req + sizeof(hdr), prog + off, n);
+            if (!check(T,
+                       p4d_rpc(&h, P4_SCOPE_LOAD, P4_EP_PROGRAM,
+                               P4_OP_LOAD_CHUNK, req,
+                               (uint32_t)(sizeof(hdr) + n), 0, 0,
+                               comp) == P4_STS_OK,
+                       "LOAD_CHUNK at %zu failed", off))
+                break;
+            off += n;
+        }
+
+        check(T,
+              p4d_rpc(&h, P4_SCOPE_LOAD, P4_EP_PROGRAM, P4_OP_LOAD_COMMIT, 0, 0,
+                      0, 0, comp) == P4_STS_OK,
+              "LOAD_COMMIT failed");
+        check(T, p4_engine_has_program(eng),
+              "the engine has no program after a guest loaded one");
+    }
+    free(prog);
+
+    /* Install the table entry that turns the write into a reduction. */
+    {
+        const uint64_t req = fake_vfu_alloc(h.vfu, 4096, 4096);
+        uint8_t body[sizeof(struct p4_rpc_entry_update) +
+                     sizeof(struct p4_rpc_entry_match) +
+                     sizeof(struct p4_rpc_entry_param)] = {0};
+        struct p4_rpc_entry_update u;
+        struct p4_rpc_entry_match m;
+        struct p4_rpc_entry_param pa;
+
+        memset(&u, 0, sizeof(u));
+        memset(&m, 0, sizeof(m));
+        memset(&pa, 0, sizeof(pa));
+        u.type = P4_UPDATE_INSERT;
+        u.nmatch = htole16(1);
+        u.nparams = htole16(1);
+        (void)snprintf(u.table, sizeof(u.table), "Ing.policy");
+        (void)snprintf(u.action, sizeof(u.action), "Ing.reduce_with");
+        m.len = htole16(1);
+        m.value[P4_DEVCMD_VALUE_MAX - 1] = IH_OP_RDMA_WRITE;
+        pa.len = htole16(1);
+        pa.value[P4_DEVCMD_VALUE_MAX - 1] = P4_FP8_OP_ADD;
+
+        memcpy(body, &u, sizeof(u));
+        memcpy(body + sizeof(u), &m, sizeof(m));
+        memcpy(body + sizeof(u) + sizeof(m), &pa, sizeof(pa));
+        fake_vfu_write(h.vfu, req, body, sizeof(body));
+
+        check(T,
+              p4d_rpc(&h, P4_SCOPE_WRITE, P4_EP_TABLE, P4_OP_ENTRY_UPDATE, req,
+                      (uint32_t)sizeof(body), 0, 0, comp) == P4_STS_OK,
+              "the guest could not install a table entry");
+        /* Installing it twice is how the test knows the first one is
+         * really there, rather than having been accepted and dropped. */
+        check(T,
+              p4d_rpc(&h, P4_SCOPE_WRITE, P4_EP_TABLE, P4_OP_ENTRY_UPDATE, req,
+                      (uint32_t)sizeof(body), 0, 0, comp) == P4_STS_EEXIST,
+              "a duplicate entry was not refused");
+    }
+
+    /* And now the point of all of it: the guest's own RDMA write becomes
+     * an elementwise fp8 add, because of an entry the guest installed. */
+    bool ok = ih_cq_create(&h, &cq, P4R_CQ, 6) &&
+              ih_qp_create(&h, &a, P4R_QP_A, IH_QPT_RC, &cq, &cq, NULL) &&
+              ih_qp_create(&h, &b, P4R_QP_B, IH_QPT_RC, &cq, &cq, NULL) &&
+              ih_qp_connect(&h, &a, &b) &&
+              ih_mr_create(&h, &mra, FP8R_MR_A, FP8R_VA_A, P4R_MR_LEN,
+                           IH_ACCESS_ALL, false) &&
+              ih_mr_create(&h, &mrb, FP8R_MR_B, FP8R_VA_B, P4R_MR_LEN,
+                           IH_ACCESS_ALL, false) &&
+              ih_mr_create(&h, &mrc, FP8R_MR_C, FP8R_VA_C, P4R_MR_LEN,
+                           IH_ACCESS_ALL, true);
+    if (!check(T, ok, "RDMA setup failed"))
+        goto out_mr;
+
+    memset(opa, 0x38, sizeof(opa)); /* 1.0 */
+    memset(opb, 0x40, sizeof(opb)); /* 2.0 */
+    opa[321] = 0x48;                /* 4.0, so position matters */
+    check(T, ih_mr_write(&h, &mra, FP8R_VA_A, opa, sizeof(opa)), "write A");
+    check(T, ih_mr_write(&h, &mrb, FP8R_VA_B, opb, sizeof(opb)), "write B");
+
+    struct ih_sge sge[2] = {
+        {.va = FP8R_VA_A, .len = P4R_N, .lkey = mra.lkey},
+        {.va = FP8R_VA_B, .len = P4R_N, .lkey = mrb.lkey},
+    };
+    struct ih_send w = {
+        .op = IH_OP_RDMA_WRITE,
+        .flags = IH_WQE_SIGNALLED,
+        .remote_va = FP8R_VA_C,
+        .rkey = mrc.lkey,
+        /* Deliberately not set: the harness then sums the gather list,
+         * which is what ionic_prep_common() puts in a real WQE. Setting
+         * it by hand is a thing no guest driver can do, and doing so
+         * here once hid a device-side check that no guest could pass. */
+        .sge = sge,
+        .nsge = 2,
+    };
+    ih_post_send(&h, &a, &w);
+    check(T, ih_cq_poll(&h, &cq, &e) && !e.error,
+          "the governed operation did not complete");
+    check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, sizeof(got)),
+          "read back the result");
+    {
+        unsigned wrong = 0, first = 0;
+
+        for (unsigned i = 0; i < P4R_N; i++) {
+            uint8_t want = (i == 321) ? 0x4Cu : 0x44u;
+
+            if (got[i] != want) {
+                if (!wrong)
+                    first = i;
+                wrong++;
+            }
+        }
+        check(T, wrong == 0,
+              "%u of %u elements wrong, first at %u -- a guest-installed "
+              "entry did not govern the operation",
+              wrong, P4R_N, first);
+    }
+
+    /* Counters come back the same way, which is the only runtime read of
+     * them there has ever been. */
+    {
+        const uint64_t rb = fake_vfu_alloc(h.vfu, 4096, 4096);
+        struct p4_rpc_stats st;
+
+        check(T,
+              p4d_rpc(&h, P4_SCOPE_READ, P4_EP_STATS, P4_OP_STATS_READ, 0, 0,
+                      rb, (uint32_t)sizeof(st), comp) == P4_STS_OK,
+              "STATS_READ failed");
+        fake_vfu_read(h.vfu, rb, &st, sizeof(st));
+        check(T, le64toh(st.frames_in[P4_PORT_HOST]) == 0,
+              "the Ethernet plane saw %" PRIu64 " frames in an RDMA test",
+              le64toh(st.frames_in[P4_PORT_HOST]));
+    }
+
+out_mr:
+    ih_mr_destroy(&h, &mra);
+    ih_mr_destroy(&h, &mrb);
+    ih_mr_destroy(&h, &mrc);
+    ih_mr_free(&mra);
+    ih_mr_free(&mrb);
+    ih_mr_free(&mrc);
+out:
+    /*
+     * A narrower grant refuses the wide operations and keeps the narrow
+     * ones, and the refusal does not depend on what the caller claims:
+     * the operator's grant is checked before the caller's own scope.
+     */
+    ionic_datapath_set_p4_engine(h.dev->ionic_dp, NULL);
+    p4_devcmd_destroy(pd);
+    pd = p4_devcmd_create(h.vfu, eng, P4_SCOPE_READ);
+    if (check(T, pd != NULL, "p4_devcmd_create failed")) {
+        ionic_eth_emu_register_p4_handler(h.dev->ionic_emu, p4_devcmd_dispatch,
+                                          pd);
+        check(T,
+              p4d_rpc(&h, P4_SCOPE_LOAD, P4_EP_PROGRAM, P4_OP_LOAD_BEGIN, 0, 8,
+                      0, 0, comp) == P4_STS_EPERM,
+              "a read-only guest was allowed to begin a program load");
+        check(T,
+              p4d_rpc(&h, P4_SCOPE_WRITE, P4_EP_TABLE, P4_OP_ENTRY_UPDATE, 0,
+                      200, 0, 0, comp) == P4_STS_EPERM,
+              "a read-only guest was allowed to change a table");
+        check(T,
+              p4d_rpc(&h, P4_SCOPE_READ, P4_EP_STATS, P4_OP_STATS_READ, 0, 0,
+                      buf, (uint32_t)sizeof(struct p4_rpc_stats),
+                      comp) == P4_STS_OK,
+              "a read-only guest could not read the counters");
+    }
+
+    ionic_eth_emu_register_p4_handler(h.dev->ionic_emu, NULL, NULL);
+    p4_devcmd_destroy(pd);
+    p4_engine_destroy(eng);
+    teardown(T, &h);
+}
+
+#endif /* ERNIC_HAVE_P4 */
 
 static void test_nvmeof(void)
 {
@@ -1631,14 +3037,10 @@ static void test_nvmeof(void)
 /* ---- Teardown ---------------------------------------------------------- */
 
 /*
- * A backend's teardown puts back the guest memory it mapped for work
- * requests still queued, and pci_dma_unmap() does that through the context
- * each mapping was made with, so the device has to go before the context:
- * ih_destroy() does it in that order, as the server does.  The TCP backend
- * keeps a receive queued until data comes for it, so one posted with
- * nothing to fill it is still mapped at teardown, and fake_vfu_destroy()
- * reports it if teardown doesn't put it back.  Nothing in the device posts
- * to this backend's queues, so the receive goes in through its ops table.
+ * Tear down a TCP-backed device with resources still allocated: a manager,
+ * so no peer is needed.  Teardown must free what the TCP backend and the
+ * resource manager hold for them, which LeakSanitizer checks, and leave no
+ * guest memory mapped.
  */
 
 /* A TCP port on loopback that nothing was listening on a moment ago. */
@@ -1688,25 +3090,10 @@ static void test_teardown(void)
               ionic_rm_alloc_mr(pvrdma, pd, IBV_ACCESS_LOCAL_WRITE, &mr) == 0,
               "no DMA memory region");
 
-    if (made) {
-        RdmaRmQP *qp = rdma_rm_get_qp(&pvrdma->rdma_dev_res, qpn);
-        struct ibv_sge sge = {
-            .addr = fake_vfu_alloc(h.vfu, 64, 64),
-            .length = 64,
-            .lkey = mr,
-        };
+    if (made)
+        check(T, rdma_rm_get_qp(&pvrdma->rdma_dev_res, qpn) != NULL,
+              "QP %u isn't in the resource manager", qpn);
 
-        if (check(T, qp != NULL, "QP %u isn't in the resource manager", qpn)) {
-            rdma_backend_ops_tcp.post_recv(&pvrdma->backend_dev,
-                                           &qp->backend_qp, IBV_QPT_RC, &sge, 1,
-                                           NULL);
-            check(T, fake_vfu_mapped(h.vfu) == 1,
-                  "the receive has %zu entries mapped, not 1",
-                  fake_vfu_mapped(h.vfu));
-        }
-    }
-
-    /* Fails, and says so, if the mapping is left */
     teardown(T, &h);
 }
 
@@ -1722,9 +3109,17 @@ static const struct {
     {"rc", test_rc},
     {"atomic", test_atomic_and_reg_mr},
     {"cq-events", test_cq_events},
+    {"qp-flush", test_qp_flush},
+    {"qp-flush-srq", test_qp_flush_srq},
     {"ud", test_ud},
     {"srq", test_srq},
     {"eth", test_eth},
+#ifdef ERNIC_HAVE_P4
+    {"p4-port", test_p4_port},
+    {"fp8-map", test_fp8_map},
+    {"p4-rdma", test_p4_rdma},
+    {"p4-devcmd", test_p4_devcmd},
+#endif
     {"nvmeof", test_nvmeof},
     {"teardown", test_teardown},
 };

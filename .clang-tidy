@@ -67,12 +67,9 @@ Checks:
   - -cert-dcl37-c  # TODO: the same check
   - -cert-dcl51-cpp  # TODO: the same check
   - -bugprone-signed-bitwise  # TODO(602)
-  - -bugprone-suspicious-include  # TODO(12): tests that #include a .c file
   - -bugprone-suspicious-memory-comparison  # TODO(2)
   - -cert-exp42-c  # TODO: the same check
   - -cert-flp37-c  # TODO: the same check
-  - -bugprone-unchecked-string-to-number-conversion  # TODO(10)
-  - -cert-err34-c  # TODO: the same check
   - -cert-err33-c  # TODO(426): unchecked return values
   - -clang-analyzer-core.CallAndMessage  # TODO(7)
   - -clang-analyzer-core.NonNullParamChecker  # TODO(2)
@@ -96,7 +93,6 @@ Checks:
   - -clang-analyzer-unix.Stream  # TODO(1)
   # A compiler warning, new in Clang 23, which clang-tidy reports too
   - -clang-diagnostic-unused-but-set-global  # TODO(4)
-  - -concurrency-mt-unsafe  # TODO(22)
   - -cppcoreguidelines-avoid-non-const-global-variables  # TODO(116)
   - -cppcoreguidelines-init-variables  # TODO(545)
   - -cppcoreguidelines-interfaces-global-init  # TODO(1)
@@ -115,7 +111,6 @@ Checks:
   - -performance-no-int-to-ptr  # TODO(47)
   - -readability-avoid-nested-conditional-operator  # TODO(7)
   - -readability-braces-around-statements  # TODO(1490)
-  - -readability-duplicate-include  # TODO(1)
   - -readability-else-after-return  # TODO(3)
   - -readability-function-cognitive-complexity  # TODO(59)
   # hipObject turns this off
@@ -150,10 +145,6 @@ CheckOptions:
   # clang-format from packing several elements onto a line
   readability-trailing-comma.SingleLineCommaPolicy: Ignore
 
-# Report problems in every header that isn't a system header, except the
-# vendored ones under third-party/, which aren't ours to fix. Most of
-# those are SYSTEM includes anyway, but a test can #include a vendored .c
-# file (test_rdma_res_tbl.c includes rdma_rm.c).
+# Report problems in every header that isn't a system header
 HeaderFilterRegex: '.*'
-ExcludeHeaderFilterRegex: '.*/third-party/.*'
 SystemHeaders: false

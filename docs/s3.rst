@@ -251,8 +251,8 @@ The interesting part is what is *not* here: no queue pair is
 ever connected. One guest owns every registration in the
 emulator, so an ``rkey`` arriving in a token resolves in the
 same memory-region table as any local ``lkey``, and the
-target DMAs against it directly through the same
-``rdma_pci_dma_map`` machinery the rest of the emulator uses.
+target DMAs against it directly, with the same guest-memory
+DMA the rest of the ionic data path uses.
 The client still creates a real RC queue pair and puts its
 QPN in the token, because that is what it would have to do on
 hardware and the field is checked -- but nothing on this path
@@ -312,8 +312,9 @@ Server-side coverage runs without a VM and is part of
 
 The end-to-end RDMA transfer needs a guest, because it needs
 a real ``ibv_reg_mr`` for the token to describe.
-:file:`tests/s3_rdma_client.c` is a single self-contained
-libibverbs client, built inside the guest and run there. It
+:file:`tests/s3_rdma_client.c` is a libibverbs client,
+built inside the guest and run there with nothing else from
+the tree but the header-only :file:`src/parse_int.h`. It
 opens the RDMA device, registers one buffer, splits it in
 half -- low half the ``PUT`` source, high half the ``GET``
 destination -- and mints a token per request. In functional

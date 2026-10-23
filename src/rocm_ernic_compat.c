@@ -8,96 +8,25 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <pthread.h>
-#include <sys/mman.h> /* For PROT_READ, PROT_WRITE */
-#include <sys/uio.h>
 
 #include <glib.h>
 #include <infiniband/verbs.h>
-
-/* Define libvfio-user types we need - full structs to avoid incomplete type */
-#include <vfio-user/libvfio-user.h>
-
 #include "rocm_ernic_compat.h"
 #include "rocm_ernic_internal.h"
 
-/*
- * QEMU headers. The vendored header trees are SYSTEM include directories,
- * so the compiler already keeps their warnings quiet.
- */
-#include "vmw/pvrdma.h"
-#include "vmw/pvrdma_qp_ops.h"
+/* QEMU-derived headers, from src/qemu/ */
+#include "pvrdma.h"
 #include "rdma_backend.h"
 #include "rdma_backend_defs.h"
 #include "rdma/rdma_backend_ops.h"
 #include "rdma_rm.h"
 #include "rdma_rm_defs.h"
+#include "rdma/pvrdma_stats.h"
 #include "rdma_utils.h"
-#include "standard-headers/rdma/vmw_pvrdma-abi.h"
-#include "hw/pci/pci.h"
-
-/*
- * DMA Mapping Tracking
- * We must track SGL/iovec pairs to properly call vfu_sgl_put().
- * Uses a GHashTable keyed by host_addr for O(1) lookup and
- * unlimited capacity (the old 256-entry fixed array overflowed
- * after sustained QP churn and caused heap corruption).
- */
-typedef struct dma_mapping {
-    dma_addr_t guest_addr;
-    size_t len;
-    dma_sg_t *sg;
-    struct iovec iov;
-    void *host_addr;
-    vfu_ctx_t *vfu_ctx;
-} dma_mapping_t;
-
-static void dma_mapping_free(gpointer data);
-
-static GHashTable *dma_map_table;
-
-/*
- * Protects dma_map_table.  Recursive so that
- * g_hash_table_remove/replace value destructors and vfu_sgl_* paths
- * cannot deadlock if they re-enter map/sync/unmap on the same thread.
- */
-static pthread_mutex_t dma_map_lock;
-static pthread_once_t dma_map_once = PTHREAD_ONCE_INIT;
-
-static void dma_map_global_init(void)
-{
-    pthread_mutexattr_t attr;
-
-    pthread_mutexattr_init(&attr);
-    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
-    pthread_mutex_init(&dma_map_lock, &attr);
-    pthread_mutexattr_destroy(&attr);
-
-    dma_map_table = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
-                                          dma_mapping_free);
-}
-
-static void dma_map_ensure(void)
-{
-    pthread_once(&dma_map_once, dma_map_global_init);
-}
-
-#define DMA_MAP_LOCK()   pthread_mutex_lock(&dma_map_lock)
-#define DMA_MAP_UNLOCK() pthread_mutex_unlock(&dma_map_lock)
-
-static void dma_mapping_free(gpointer data)
-{
-    dma_mapping_t *m = (dma_mapping_t *)data;
-    if (m->vfu_ctx && m->sg) {
-        vfu_sgl_put(m->vfu_ctx, m->sg, &m->iov, 1);
-    }
-    free(m->sg);
-    g_free(m);
-}
+#include "vmw_pvrdma-abi.h"
 
 /*
  * Device Management
@@ -123,8 +52,6 @@ pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
         return NULL;
     }
 
-    /* Initialize PCIDevice wrapper for bridge functions */
-    pvrdma->parent_obj.vfu_dev = dev;
     pvrdma->parent_obj.vfu_ctx = dev->vfu_ctx;
 
     /* Parse backend type and extract config */
@@ -155,14 +82,8 @@ pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
                          pvrdma->backend_device_name);
     }
 
-    if (eth_dev_name) {
-        pvrdma->backend_eth_device_name = strdup(eth_dev_name);
-    }
-    pvrdma->backend_port_num = port_num;
-
     /* Copy MAC address from rocm_ernic_dev */
     memcpy(pvrdma->mac_addr, dev->mac_addr, 6);
-    pvrdma->mac_addr_set = dev->mac_addr_set;
 
     /* Initialize device attributes with defaults */
     pvrdma->dev_attr.max_qp = MAX_QP;
@@ -217,11 +138,7 @@ pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
     pvrdma->stats.qp_stats =
         g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
     pvrdma->stats.stats_file = NULL;
-    pvrdma->stats.stats_fp = NULL;
     pvrdma->stats.stats_write_count = 0;
-
-    /* Set interrupt mask to 0 (interrupts enabled) */
-    pvrdma->interrupt_mask = 0;
 
     rdma_info_report("PVRDMA device created (handle=%p)", (void *)pvrdma);
 
@@ -237,19 +154,10 @@ void pvrdma_device_destroy(pvrdma_handle_t handle)
     }
 
     /* Clean up resource manager */
-    rdma_rm_fini(&pvrdma->rdma_dev_res, &pvrdma->backend_dev,
-                 pvrdma->backend_eth_device_name);
+    rdma_rm_fini(&pvrdma->rdma_dev_res);
 
     /* Clean up backend using the new abstraction */
     rdma_backend_fini_with_ops(&pvrdma->backend_dev);
-
-    /* Undo pvrdma_qp_ops_init() from pvrdma_device_realize(). Its state is
-     * global, so without this a second device in the same process leaks
-     * the first one's deferred-completion queue. It has to follow the
-     * backend's fini, which joins the TCP receive threads: they post
-     * completions into that queue. Safe on a device that was never
-     * realized, since the fini tolerates state that was never set up. */
-    pvrdma_qp_ops_fini();
 
     /* Free stats hash table */
     if (pvrdma->stats.qp_stats) {
@@ -266,20 +174,11 @@ void pvrdma_device_destroy(pvrdma_handle_t handle)
     pvrdma->stats_backend_str = NULL;
     free(pvrdma->stats_connection_str);
     pvrdma->stats_connection_str = NULL;
-    if (pvrdma->stats.stats_fp) {
-        fclose(pvrdma->stats.stats_fp);
-        pvrdma->stats.stats_fp = NULL;
-    }
+    (void)pvrdma_stats_set_nic_profile(NULL);
+    pvrdma_stats_set_section(NULL, NULL);
 
     /* Free device names */
     free(pvrdma->backend_device_name);
-    free(pvrdma->backend_eth_device_name);
-
-    /* Free TCP connections */
-    if (pvrdma->tcp_connections) {
-        g_hash_table_destroy(pvrdma->tcp_connections);
-        pvrdma->tcp_connections = NULL;
-    }
 
     free(pvrdma);
 
@@ -310,17 +209,6 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
             rdma_backend_type_to_string(pvrdma->backend_dev.backend_type));
         return -EIO;
     }
-
-    /* CRITICAL: Link backend_dev to the device resources */
-    pvrdma->backend_dev.rdma_dev_res = &pvrdma->rdma_dev_res;
-    rdma_info_report("Linked backend_dev to rdma_dev_res at %p",
-                     (void *)pvrdma->backend_dev.rdma_dev_res);
-
-    /* CRITICAL: Set PCIDevice pointer for DMA operations */
-    /* PVRDMADev has PCIDevice parent_obj as first field, so we can cast */
-    pvrdma->backend_dev.dev = (PCIDevice *)pvrdma;
-    rdma_info_report("Set backend_dev->dev to PCIDevice at %p",
-                     (void *)pvrdma->backend_dev.dev);
 
     /* Query device capabilities from backend to populate dev_attr */
     if (pvrdma->backend_dev.backend_ops &&
@@ -353,15 +241,6 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
         return -EIO;
     }
     rdma_info_report("Resource manager initialized with dev_attr tables");
-
-    /* Initialize QP operations and register completion handler */
-    rc = pvrdma_qp_ops_init();
-    if (rc < 0) {
-        rdma_error_report("Failed to initialize QP operations (rc=%d)", rc);
-        return -EIO;
-    }
-    rdma_info_report(
-        "QP operations initialized, completion handler registered");
 
     rdma_info_report("PVRDMA device realized successfully");
 
@@ -541,6 +420,61 @@ void pvrdma_qp_stats_forget(pvrdma_handle_t handle, uint32_t qp_id)
     g_hash_table_remove(pvrdma->stats.qp_stats, GUINT_TO_POINTER(qp_id));
 }
 
+int pvrdma_get_dev_counters(pvrdma_handle_t handle,
+                            struct pvrdma_dev_counters *out)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+
+    if (!out) {
+        return -EINVAL;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!pvrdma) {
+        return -EINVAL;
+    }
+
+    out->commands = pvrdma->stats.commands;
+    out->total_bytes_sent = pvrdma->stats.total_bytes_sent;
+    out->total_bytes_received = pvrdma->stats.total_bytes_received;
+    out->total_bytes_rdma_read = pvrdma->stats.total_bytes_rdma_read;
+    out->total_bytes_rdma_write = pvrdma->stats.total_bytes_rdma_write;
+    return 0;
+}
+
+int pvrdma_get_qp_counters(pvrdma_handle_t handle, uint32_t qp_id,
+                           struct pvrdma_qp_counters *out)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    const PVRDMAQPStats *qp = NULL;
+
+    if (!out) {
+        return -EINVAL;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!pvrdma) {
+        return -EINVAL;
+    }
+
+    /* A plain lookup: pvrdma_get_qp_stats() would insert an entry. */
+    if (pvrdma->stats.qp_stats && qp_id != PVRDMA_STAT_NO_QP) {
+        qp = g_hash_table_lookup(pvrdma->stats.qp_stats,
+                                 GUINT_TO_POINTER(qp_id));
+    }
+    if (!qp) {
+        return 0;
+    }
+
+    out->doorbell_send = qp->doorbell_send;
+    out->doorbell_recv = qp->doorbell_recv;
+    out->wqes_processed = qp->wqes_processed;
+    out->cqes_posted = qp->cqes_posted;
+    out->bytes_sent = qp->bytes_sent;
+    out->bytes_received = qp->bytes_received;
+    out->bytes_rdma_read = qp->bytes_rdma_read;
+    out->bytes_rdma_write = qp->bytes_rdma_write;
+    return 0;
+}
+
 /*
  * Command Execution - pvrdma_exec_cmd is implemented in pvrdma_cmd.c
  */
@@ -608,6 +542,19 @@ void pvrdma_set_stats_connection_state(pvrdma_handle_t handle,
         connection_str ? strdup(connection_str) : NULL;
 }
 
+void pvrdma_set_stats_nic_profile(pvrdma_handle_t handle, const char *profile)
+{
+    if (handle && pvrdma_stats_set_nic_profile(profile) != 0)
+        rdma_error_report("stats file: out of memory for the NIC profile");
+}
+
+void pvrdma_set_stats_section(pvrdma_handle_t handle,
+                              void (*fn)(FILE *fp, void *opaque), void *opaque)
+{
+    if (handle)
+        pvrdma_stats_set_section(fn, opaque);
+}
+
 void pvrdma_inc_stats_reset_count(pvrdma_handle_t handle)
 {
     PVRDMADev *pvrdma = (PVRDMADev *)handle;
@@ -628,250 +575,6 @@ void pvrdma_write_stats(pvrdma_handle_t handle)
     pvrdma_write_stats_impl(pvrdma);
 }
 
-void pvrdma_drain_pending_interrupts(pvrdma_handle_t handle)
-{
-    PVRDMADev *pvrdma = (PVRDMADev *)handle;
-
-    if (!pvrdma) {
-        return;
-    }
-
-    pvrdma_drain_deferred_completions();
-
-    if (__atomic_exchange_n(&pvrdma->pending_cq_interrupt, 0,
-                            __ATOMIC_ACQUIRE)) {
-        post_interrupt(pvrdma, INTR_VEC_CMD_COMPLETION_Q);
-    }
-}
-
-/*
- * DMA Mapping (called FROM QEMU code)
- */
-
-/* Implement pci_dma_map - called by QEMU PVRDMA code via hw/pci/pci.h */
-void *pci_dma_map(PCIDevice *dev, dma_addr_t addr, dma_addr_t *plen, int dir)
-{
-    vfu_ctx_t *vfu_ctx;
-    dma_sg_t *sg;
-    struct iovec iov;
-    void *host_addr;
-    int ret;
-    size_t sg_size;
-
-    /* Check for obviously invalid addresses */
-    if (addr == 0) {
-        rdma_error_report("DMA map: guest address is NULL!");
-        if (plen)
-            *plen = 0;
-        return NULL;
-    }
-
-    if (!dev) {
-        rdma_error_report("DMA map: NULL device pointer");
-        if (plen)
-            *plen = 0;
-        return NULL;
-    }
-
-    if (!dev->vfu_ctx) {
-        rdma_error_report("DMA map: NULL vfu_ctx in PCIDevice (dev=%p)",
-                          (void *)dev);
-        rdma_error_report(
-            "  This means vfu_ctx was not set in pvrdma_device_create");
-        if (plen)
-            *plen = 0;
-        return NULL;
-    }
-
-    if (!plen) {
-        rdma_error_report("DMA map: NULL plen pointer");
-        return NULL;
-    }
-
-    vfu_ctx = dev->vfu_ctx;
-
-    (void)dir; /* Direction not used with vfio-user */
-
-    /* Get SG size */
-    sg_size = dma_sg_size();
-
-    /* Allocate scatter-gather entry */
-    sg = malloc(sg_size);
-    if (!sg) {
-        rdma_error_report("DMA map: Failed to allocate SG entry of size %zu",
-                          sg_size);
-        *plen = 0;
-        return NULL;
-    }
-
-    /* Convert guest physical address to scatter-gather list */
-    ret = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)addr, *plen, sg,
-                          1, PROT_READ | PROT_WRITE);
-    if (ret < 0) {
-        rdma_error_report(
-            "DMA map: vfu_addr_to_sgl FAILED for addr=%#lx: %s (errno=%d)",
-            addr, strerror(errno), errno);
-        rdma_error_report("  This usually means the guest address is not in "
-                          "any registered DMA region");
-        free(sg);
-        *plen = 0;
-        return NULL;
-    }
-
-    /* Get host virtual address */
-    ret = vfu_sgl_get(vfu_ctx, sg, &iov, 1, 0);
-    if (ret < 0) {
-        rdma_error_report(
-            "DMA map: vfu_sgl_get FAILED for addr=%#lx: %s (errno=%d)", addr,
-            strerror(errno), errno);
-        rdma_error_report("  This usually means the memory is not mapped "
-                          "(vaddr=NULL in DMA region)");
-        free(sg);
-        *plen = 0;
-        return NULL;
-    }
-
-    host_addr = iov.iov_base;
-    *plen = iov.iov_len; /* Update with actual mapped length */
-
-    if (!host_addr) {
-        rdma_error_report(
-            "DMA map: vfu_sgl_get returned NULL iov_base for guest=%#lx", addr);
-        rdma_error_report("  This means the region is not memory-mapped");
-        free(sg);
-        *plen = 0;
-        return NULL;
-    }
-
-    dma_mapping_t *m = g_new0(dma_mapping_t, 1);
-    m->guest_addr = addr;
-    m->len = *plen;
-    m->sg = sg;
-    m->iov = iov;
-    m->host_addr = host_addr;
-    m->vfu_ctx = vfu_ctx;
-
-    dma_map_ensure();
-    DMA_MAP_LOCK();
-    g_hash_table_replace(dma_map_table, host_addr, m);
-    DMA_MAP_UNLOCK();
-
-    return host_addr;
-}
-
-/*
- * Helper: Sync DMA writes back to guest by calling vfu_sgl_put()
- * This releases the memory mapping and ensures writes are visible to the guest.
- */
-int pci_dma_sync(PCIDevice *dev, dma_addr_t guest_addr, dma_addr_t len)
-{
-    (void)dev;
-
-    dma_map_ensure();
-    DMA_MAP_LOCK();
-
-    GHashTableIter sync_iter;
-    gpointer skey, svalue;
-    g_hash_table_iter_init(&sync_iter, dma_map_table);
-
-    while (g_hash_table_iter_next(&sync_iter, &skey, &svalue)) {
-        dma_mapping_t *mapping = (dma_mapping_t *)svalue;
-
-        /* Check if this address is within the mapped region */
-        if (guest_addr >= mapping->guest_addr &&
-            guest_addr + len <= mapping->guest_addr + mapping->len) {
-            /* Call vfu_sgl_put() to sync writes back to guest */
-            if (!mapping->vfu_ctx || !mapping->sg) {
-                rdma_error_report("DMA sync: NULL vfu_ctx or sg");
-                DMA_MAP_UNLOCK();
-                return -EINVAL;
-            }
-            vfu_sgl_put(mapping->vfu_ctx, mapping->sg, &mapping->iov, 1);
-
-            /* Re-acquire the mapping for future use */
-            int ret =
-                vfu_sgl_get(mapping->vfu_ctx, mapping->sg, &mapping->iov, 1, 0);
-            if (ret < 0) {
-                rdma_error_report("DMA sync: Failed to re-acquire mapping: %s",
-                                  strerror(errno));
-                DMA_MAP_UNLOCK();
-                return -1;
-            }
-
-            DMA_MAP_UNLOCK();
-            return 0;
-        }
-    }
-
-    DMA_MAP_UNLOCK();
-    rdma_error_report("DMA sync: No mapping found for guest=%#lx", guest_addr);
-    return -1;
-}
-
-/* Implement pci_dma_unmap - called by QEMU PVRDMA code via hw/pci/pci.h */
-void pci_dma_unmap(PCIDevice *dev, void *buffer, dma_addr_t len, int dir,
-                   dma_addr_t access_len)
-{
-    (void)dev;
-    (void)len;
-    (void)dir;
-    (void)access_len;
-
-    dma_map_ensure();
-    DMA_MAP_LOCK();
-
-    if (!g_hash_table_remove(dma_map_table, buffer)) {
-        rdma_debug_report(
-            "DMA unmap: Mapping not found for buffer=%p (already unmapped?)",
-            buffer);
-    }
-
-    DMA_MAP_UNLOCK();
-}
-
-/*
- * Interrupt Handling (called FROM QEMU code)
- */
-
-void post_interrupt(PVRDMADev *pvrdma, unsigned vector)
-{
-    vfu_ctx_t *vfu_ctx;
-    int ret;
-
-    if (!pvrdma || !pvrdma->parent_obj.vfu_dev || !pvrdma->parent_obj.vfu_ctx) {
-        rdma_error_report("post_interrupt: invalid device pointer");
-        return;
-    }
-
-    vfu_ctx = pvrdma->parent_obj.vfu_ctx;
-
-    if (vector >= RDMA_MAX_INTRS) {
-        rdma_error_report("post_interrupt: invalid vector %u", vector);
-        return;
-    }
-
-    /* Check interrupt mask */
-    if (pvrdma->interrupt_mask) {
-        rdma_debug_report("Interrupt vector %u masked", vector);
-        return;
-    }
-
-    /* Trigger MSI-X interrupt via libvfio-user */
-    ret = vfu_irq_trigger(vfu_ctx, vector);
-    if (ret < 0) {
-        rdma_error_report("Failed to trigger IRQ vector %u: %s", vector,
-                          strerror(errno));
-        return;
-    }
-
-    pvrdma->stats.interrupts++;
-}
-
-/* -------------------------------------------------------------------------
- * Resource accessors for the ionic migration path (ionic_adminq.c).
- * -------------------------------------------------------------------------
- */
-
 /* -------------------------------------------------------------------------
  * Thin wrappers for ionic_adminq.c (cannot include rdma_rm.h directly).
  * -------------------------------------------------------------------------
@@ -883,7 +586,7 @@ int ionic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe, uint32_t *cq_handle)
     if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
         return -EINVAL;
     return rdma_rm_alloc_cq(&pvrdma->rdma_dev_res, &pvrdma->backend_dev, cqe,
-                            cq_handle, NULL);
+                            cq_handle);
 }
 
 void ionic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
@@ -902,7 +605,7 @@ int ionic_rm_alloc_srq(pvrdma_handle_t handle, uint32_t pd_handle,
     if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
         return -EINVAL;
     return rdma_rm_alloc_srq(&pvrdma->rdma_dev_res, pd_handle, max_wr, max_sge,
-                             srq_limit, srq_handle, NULL);
+                             srq_limit, srq_handle);
 }
 
 void ionic_rm_dealloc_srq(pvrdma_handle_t handle, uint32_t srq_handle)
@@ -967,7 +670,7 @@ int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle)
     if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
         return -EINVAL;
     return rdma_rm_alloc_pd(&pvrdma->rdma_dev_res, &pvrdma->backend_dev,
-                            pd_handle, 0);
+                            pd_handle);
 }
 
 int ionic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
@@ -981,8 +684,7 @@ int ionic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
     RdmaRmQP *out_qp = NULL;
     return rdma_rm_alloc_qp(&pvrdma->rdma_dev_res, pd_handle, qp_type,
                             max_send_wr, 16, send_cq_handle, max_recv_wr, 16,
-                            recv_cq_handle, NULL, qpn, 0, 0, 0, 0, NULL,
-                            &out_qp);
+                            recv_cq_handle, qpn, 0, 0, &out_qp);
 }
 
 void ionic_rm_dealloc_qp(pvrdma_handle_t handle, uint32_t qpn)
@@ -1000,8 +702,8 @@ int ionic_rm_alloc_mr(pvrdma_handle_t handle, uint32_t pd_handle,
     if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
         return -EINVAL;
     uint32_t lkey = 0, rkey = 0;
-    return rdma_rm_alloc_mr(&pvrdma->rdma_dev_res, pd_handle, 0, 0, NULL,
-                            (int)access_flags, mr_handle, &lkey, &rkey);
+    return rdma_rm_alloc_mr(&pvrdma->rdma_dev_res, pd_handle, (int)access_flags,
+                            mr_handle, &lkey, &rkey);
 }
 
 void ionic_rm_dealloc_mr(pvrdma_handle_t handle, uint32_t mr_handle)
@@ -1055,11 +757,11 @@ int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
     if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
         return -EINVAL;
 
-    ret = rdma_rm_query_qp(
-        &pvrdma->rdma_dev_res, &pvrdma->backend_dev, qpn, &attr,
-        IBV_QP_STATE | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN | IBV_QP_ACCESS_FLAGS |
-            IBV_QP_RQ_PSN | IBV_QP_SQ_PSN,
-        &init_attr);
+    ret = rdma_rm_query_qp(&pvrdma->rdma_dev_res, qpn, &attr,
+                           IBV_QP_STATE | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
+                               IBV_QP_ACCESS_FLAGS | IBV_QP_RQ_PSN |
+                               IBV_QP_SQ_PSN,
+                           &init_attr);
     if (ret)
         return ret;
 
@@ -1105,6 +807,19 @@ uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle,
 
     memcpy(&dgid, dest_gid_16bytes, sizeof(dgid));
     return tcp_backend_node_from_gid(&pvrdma->backend_dev, &dgid);
+}
+
+int ionic_mesh_claim_gid(pvrdma_handle_t handle, const uint8_t *gid_16bytes,
+                         bool add)
+{
+    PVRDMADev *pvrdma = (PVRDMADev *)handle;
+    union ibv_gid gid;
+
+    if (!pvrdma || !gid_16bytes)
+        return -EINVAL;
+
+    memcpy(&gid, gid_16bytes, sizeof(gid));
+    return tcp_backend_claim_gid(&pvrdma->backend_dev, &gid, add);
 }
 
 int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,

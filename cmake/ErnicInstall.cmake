@@ -83,15 +83,19 @@ if(ERNIC_INSTALL_SERVICE)
         DESTINATION ${ERNIC_SHARE_DIR}
     )
 
-    # ionic driver patches and helper scripts
+    # ionic driver patches and helper scripts.  They live in the Ansible
+    # collection (ansible/files/, see its README) so a consumer of the
+    # collection gets them at the ref of the roles that apply them; the
+    # installed layout under ERNIC_SHARE_DIR is what it always was, which
+    # is what the driver pack and the in-VM installer see.
     install(DIRECTORY
-        ${PROJECT_SOURCE_DIR}/patches/
+        ${PROJECT_SOURCE_DIR}/ansible/files/patches/
         DESTINATION ${ERNIC_SHARE_DIR}/patches
         FILES_MATCHING PATTERN "*.patch"
     )
     install(PROGRAMS
-        ${PROJECT_SOURCE_DIR}/scripts/setup-ionic-dkms.sh
-        ${PROJECT_SOURCE_DIR}/scripts/fetch-ionic-sources.sh
+        ${PROJECT_SOURCE_DIR}/ansible/files/scripts/setup-ionic-dkms.sh
+        ${PROJECT_SOURCE_DIR}/ansible/files/scripts/fetch-ionic-sources.sh
         DESTINATION ${ERNIC_SHARE_DIR}
     )
 

@@ -12,7 +12,8 @@
  * with the receive posted to the SRQ rather than to the QP:
  *
  *   post_srq_recv -> SRQ ring + doorbell on the RQ qtype, which is what
- *                    patches/rdma-core/0005 corrects the provider to ring
+ *                    ansible/files/patches/rdma-core/0005 corrects the
+ *                    provider to ring
  *   post_send     -> SQ ring + doorbell
  *   emulator        deliver_recv() must take the WQE from the SRQ's ring,
  *                   not from the QP's own (empty) RQ

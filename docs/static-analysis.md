@@ -7,15 +7,24 @@
 > S4 by #67. S3 remains open as #68. Re-run `nix build .#analysis-deep` for
 > the current state rather than relying on the statuses below.
 >
-> **D2, D3 and D4 no longer have any code to regress.** The mesh never
-> sent a DHCP request, so `src/net/dhcp_server.c` was unreachable and has
-> been removed along with its fuzz harness; the same change removed
-> `src/net/eth_rx_inject.c`, named under **Paths** below.
+> **D2, D3, D4 and S3 no longer have any code to regress.** The mesh
+> never sent a DHCP request, so `src/net/dhcp_server.c` was unreachable and
+> has been removed along with its fuzz harness; the same change removed
+> `src/net/eth_rx_inject.c`, named under **Paths** below. The loopback
+> SGE-copy helpers of S3 went with the rest of the loopback backend's
+> PVRDMA data path.
+>
+> **Two of the compiler diagnostics at the end of Appendix A are gone.**
+> The `-Wgnu-zero-variadic-macro-arguments` warnings came from the
+> `rdma_*_report()` logging macros in `rdma_utils.h`, which no longer use
+> the GNU `##__VA_ARGS__` extension. `pvrdma_qp_ops.c`, whose `qatomic`
+> operations the analyzer rejected, has been removed.
 >
 > **Paths.** File paths and line numbers are as of that commit. The
-> `src/from-qemu/` tree has since been split up: the vendored QEMU files
+> `src/from-qemu/` tree has since been split up: the QEMU-derived files
 > (`rdma_backend.c`, `pvrdma_qp_ops.c` and the `standard-headers/` uAPI
-> headers among them) are under `third-party/qemu/`; the DHCP, rdma_cm and
+> headers among them) went to `third-party/qemu/` and are now in
+> `src/qemu/`; the DHCP, rdma_cm and
 > Ethernet RX code and `net_headers.h` are in `src/net/`; the RDMA backends
 > (`rdma_backend_loopback.c`, `rdma_backend_tcp.c`) are in `src/rdma/`; and
 > the QEMU stubs and shim headers are in `src/qemu-compat/`.

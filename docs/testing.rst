@@ -63,7 +63,8 @@ CTest as ``ionic-ci``. It needs no VM and no RDMA device:
   and with no extra flags at all
 - PCI identity is ``0x1dd8:0x1002``
 - BAR geometry is 64 KB BAR0 (32 KB register window) and
-  4 MB BAR2, with 32 MSI-X vectors
+  4 MB BAR2, with 32 MSI-X vectors under ``compat`` and 97
+  under ``generic-400g``
 - Clean shutdown on ``SIGTERM``
 - The stats file carries the full counter set
 - ``--tap`` attaches to an existing host TAP
@@ -115,6 +116,109 @@ To run one group directly, pass its name, for example
 ``build/tests/ernic-test-ionic-harness rc``. Setting
 ``ERNIC_FAKE_VFU_LOG_LEVEL`` to a syslog level (``7`` for
 everything) prints the device's ``vfu_log()`` messages.
+
+Driving a server from Python
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``tests/py/`` stands in for a guest VM. Where the harness
+above replaces libvfio-user, these suites keep it: they speak
+the vfio-user protocol to a real ``rocm-ernic`` process over
+its Unix socket, as a VMM does. Guest memory is a ``memfd``
+that the client mmaps and hands to the server in a
+``DMA_MAP``, so the server maps the same pages and the real
+DMA path runs. Nothing here needs a VM, RDMA hardware, root,
+or any package outside the standard library.
+
+The modules under ``tests/py/ernic/`` are:
+
+- ``vfu.py`` -- the vfio-user client and ``GuestMemory``
+- ``server.py`` -- starting server processes, holding them to
+  a shutdown deadline, and counting the descriptors they hold
+- ``ionic.py`` -- the ionic driver, the Python counterpart of
+  ``tests/ionic_harness.c``
+- ``mesh.py`` -- the TCP mesh wire protocol, a fake manager,
+  and a fixture that starts a manager and some workers
+- ``check.py`` -- the small test runner the suites report
+  through
+
+Four suites are registered with CTest:
+
+- ``ernic-vfu-client``: version negotiation, device and
+  region info, PCI configuration space, BAR access, DMA
+  mapping, interrupts, reset and reconnect -- and the
+  offsets, counts, addresses and vector ranges a client must
+  not get away with
+- ``ernic-ionic-driver``: bring-up, connected queue pairs,
+  memory regions whose pages are deliberately out of order,
+  sends with several SGEs or an inline payload, RDMA reads
+  and writes, shared receive queues, and the keys and lengths
+  that must fail
+- ``ernic-ionic-hw-stats``: the hardware statistics behind a
+  guest's ``hw_counters`` -- the ``STATS_HDRS``,
+  ``STATS_VALS``, ``QP_STATS_HDRS`` and ``QP_STATS_VALS``
+  tables, that they describe themselves the way the driver
+  reads them, that a buffer too small for the table gets
+  whole entries only, that values for a QP that does not
+  exist are refused rather than zero-filled, and that the
+  ``--stats-file`` the exporter reads carries the same
+  numbers. It drives a SEND, an RDMA WRITE and an RDMA READ
+  of three distinct sizes, and checks that every counter in
+  both tables moves by exactly the right amount on the right
+  QP. The structural checks read whatever set the device
+  advertises, so a counter added to either table is covered
+  without touching the test
+- ``ernic-mesh-stress``: a three-node mesh under traffic
+  between every pair of nodes, peers that send frames no real
+  node sends, the protocol version gate in both directions,
+  and nodes killed and restarted while the manager's
+  descriptors are counted
+
+.. code-block:: bash
+
+   ctest --test-dir build -R '^ernic-(vfu|ionic|mesh)'
+
+To run one directly, and to vary the mesh:
+
+.. code-block:: bash
+
+   python3 -I tests/py/test_mesh_stress.py \
+       --server build/rocm-ernic --size 5
+
+Like the shell suites, they run the server under the command
+in ``ERNIC_TEST_SERVER_WRAPPER``, so CI's valgrind leg
+covers them too.
+
+Two devices in one process
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``ernic-test-gsi-mesh`` (CTest ``gsi-mesh``) builds the same
+harness twice: one device as the mesh manager and one as a
+worker, joined over loopback TCP by the real TCP backend. It
+checks that the two register, that a GID claimed *after* the
+mesh has formed is advertised and resolves to the claiming
+node from the other side, and that neither node resolves its
+peer's address to itself. It then sends a CM-shaped MAD on
+QP1 and checks both that it reaches the peer's QP1 rather
+than coming back round, and that it arrives behind the right
+header: the two nodes' GIDs are v4-mapped, so a forwarded
+datagram has to look like RoCEv2 over IPv4, flagged as such,
+with the *sender's* address as its source. Forwarding the MAD
+correctly and describing it wrongly looks identical from
+every other angle, and is what used to strand ``rdma_cm``.
+
+That is the path ``rdma_cm`` depends on and the one
+``ERNIC_TCP_GUEST_GIDS`` cannot cover: it is read once at
+startup, and one environment variable cannot describe two
+devices in one process. ``test_ud_mesh`` covers the same
+journey for a UD datagram, but needs two VMs and two real
+devices, so it cannot run in CI.
+
+.. code-block:: bash
+
+   ctest --test-dir build -R gsi-mesh
+
+``ERNIC_TEST_MESH_PORT`` moves the port it listens on, for a
+runner that already has something on the default.
 
 NVMe-oF tests
 ^^^^^^^^^^^^^
@@ -215,6 +319,7 @@ valgrind would only check the script for:
 
    skip='pci-config-test|find-rdma-device-tuple|server-lifecycle'
    skip+='|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci'
+   skip+='|ionic-stats-interval-cli|ionic-eth-queues-cli'
    skip+='|cmake-subproject'
    opts='--leak-check=full --track-origins=yes --num-callers=40'
    opts+=' --error-exitcode=1'
@@ -241,14 +346,14 @@ as above:
 
    srv='pci-config-test|ionic-server-smoke'
    srv+='|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci'
+   srv+='|ionic-stats-interval-cli|ionic-eth-queues-cli'
    logs="$PWD/build/valgrind-server"
    rm -rf "$logs"
    mkdir "$logs"
    opts+=" --log-file=$logs/%p.log"
    export ERNIC_TEST_SERVER_WRAPPER="valgrind $opts"
    ctest --test-dir build --output-on-failure -R "^($srv)$"
-   valgrind --trace-children=yes $opts \
-     build/tests/test_server_lifecycle build/rocm-ernic
+   valgrind --trace-children=yes $opts build/tests/test_server_lifecycle
    grep -L 'ERROR SUMMARY: 0 errors' "$logs"/*.log
 
 The last command lists the logs with a report.
@@ -614,7 +719,8 @@ driver. Its ``ionic-patches`` job reads
 ``IONIC_KERNEL_REF`` straight out
 of ``cmake/ErnicKernelModule.cmake``, sparse-clones the two
 ionic subtrees at that ref, and applies every
-``patches/*.patch`` with ``git am``, failing the pull
+``ansible/files/patches/*.patch`` with ``git am``,
+failing the pull
 request if one no longer applies. The ionic modules
 themselves are not built there: they need headers matching
 ``IONIC_KERNEL_REF`` --- the sources track IB-core helpers

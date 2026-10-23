@@ -20,6 +20,7 @@ target_compile_definitions(test_data_transfer PRIVATE
     _GNU_SOURCE
 )
 target_include_directories(test_data_transfer PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 target_link_directories(test_data_transfer PRIVATE
@@ -34,6 +35,7 @@ add_executable(test_rdma_cm
     test_rdma_cm.c
 )
 target_include_directories(test_rdma_cm PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 target_link_directories(test_rdma_cm PRIVATE
@@ -65,6 +67,7 @@ foreach(guest_test ${ERNIC_GUEST_ONLY_TESTS})
     add_executable(${guest_test} ${guest_test}.c)
     target_compile_definitions(${guest_test} PRIVATE _GNU_SOURCE)
     target_include_directories(${guest_test} PRIVATE
+        ${PROJECT_SOURCE_DIR}/src
         ${ERNIC_IBVERBS_INCLUDE_DIRS}
     )
     target_link_directories(${guest_test} PRIVATE ${IBVERBS_LIBRARY_DIRS})
@@ -72,53 +75,6 @@ foreach(guest_test ${ERNIC_GUEST_ONLY_TESTS})
 endforeach()
 
 # -- Unit tests --------------------------------------------------
-
-# Vendored QEMU sources that tests compile as separate translation units.
-# Suppressing warnings per-source rather than per-target keeps the vendored
-# C quiet (matching the main build) while the test's own source is still
-# warning-checked -- a target-wide -w would disable warnings everywhere,
-# since GCC honours -w regardless of where it appears in the flag list.
-set(ERNIC_TEST_VENDORED_SOURCES
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_backend.c
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_utils.c
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_rm.c
-)
-set_source_files_properties(${ERNIC_TEST_VENDORED_SOURCES}
-    PROPERTIES COMPILE_OPTIONS "-w"
-)
-
-# rdma_backend_query_port test. Links the backend TU plus the utility /
-# resource-manager / qemu-stub sources it depends on; the query_port paths
-# under test never reach libibverbs or the DMA layer.
-add_executable(test_rdma_backend_query_port
-    test_rdma_backend_query_port.c
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_backend.c
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_utils.c
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_rm.c
-    ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
-    ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
-    ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_type_stubs.c
-)
-target_include_directories(test_rdma_backend_query_port PRIVATE
-    ${PROJECT_SOURCE_DIR}/src
-    ${PROJECT_SOURCE_DIR}/src/rdma
-    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
-)
-# The vendored header trees are SYSTEM includes so their warnings stay quiet
-# while the test source itself is still warning-checked. The vendored .c
-# files are silenced per-source via ERNIC_TEST_VENDORED_SOURCES.
-target_include_directories(test_rdma_backend_query_port SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
-    ${GLIB2_INCLUDE_DIRS}
-    ${ERNIC_IBVERBS_INCLUDE_DIRS}
-)
-target_compile_definitions(test_rdma_backend_query_port PRIVATE
-    _GNU_SOURCE)
-target_link_directories(test_rdma_backend_query_port PRIVATE
-    ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
-target_link_libraries(test_rdma_backend_query_port PRIVATE
-    ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
 # -- test_write_imm (requires libibverbs) ------------------------
 add_executable(test_write_imm
@@ -128,6 +84,7 @@ target_compile_definitions(test_write_imm PRIVATE
     _POSIX_C_SOURCE=200809L
 )
 target_include_directories(test_write_imm PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 target_link_directories(test_write_imm PRIVATE
@@ -145,12 +102,20 @@ target_compile_definitions(test_ernic_device PRIVATE
     ERNIC_TEST_FIXTURE_ROOT="${CMAKE_CURRENT_BINARY_DIR}/ernic-device-fixture"
 )
 target_include_directories(test_ernic_device PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 
 # net_headers.h checksum helpers are header-only and self-contained.
 add_executable(test_net_checksum test_net_checksum.c)
 target_include_directories(test_net_checksum PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+# The bounds check every guest DMA address and length passes before it
+# reaches vfu_addr_to_sgl(). Header-only, so it links nothing.
+add_executable(test_dma_range test_dma_range.c)
+target_include_directories(test_dma_range PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
 
@@ -164,10 +129,10 @@ add_executable(test_rdma_cm_proto
 target_include_directories(test_rdma_cm_proto PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/src/qemu
 )
-# Vendored header trees are SYSTEM includes.
+# Headers from outside the project are SYSTEM includes.
 target_include_directories(test_rdma_cm_proto SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${GLIB2_INCLUDE_DIRS}
 )
 target_compile_definitions(test_rdma_cm_proto PRIVATE _GNU_SOURCE)
@@ -179,6 +144,39 @@ add_executable(test_parse_int test_parse_int.c)
 target_include_directories(test_parse_int PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
+
+# P4 engine test. The engine is frames-in/frames-out, so this links the
+# real translation unit and nothing else -- no device, no guest memory.
+if(ERNIC_BUILD_P4)
+    add_executable(ernic-test-p4-engine
+        test_p4_engine.c
+        ${PROJECT_SOURCE_DIR}/src/p4/p4_engine.c
+        ${PROJECT_SOURCE_DIR}/src/p4/p4_exec.c
+        ${PROJECT_SOURCE_DIR}/src/p4/p4_json.c
+        ${PROJECT_SOURCE_DIR}/src/p4/p4_table.c
+    )
+    target_include_directories(ernic-test-p4-engine PRIVATE
+        ${PROJECT_SOURCE_DIR}/src
+        ${PROJECT_SOURCE_DIR}/src/p4
+    )
+    target_compile_definitions(ernic-test-p4-engine PRIVATE _GNU_SOURCE)
+    target_link_libraries(ernic-test-p4-engine PRIVATE PkgConfig::JSONC)
+    # Real p4c artifacts, so the loader is held to what the compiler
+    # actually emits rather than to what the format documentation says.
+    target_compile_definitions(ernic-test-p4-engine PRIVATE
+        P4_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/p4")
+
+    # OCP FP8 E4M3 arithmetic: the extern the pipeline calls, since P4
+    # itself has no floating-point type. Pure computation, no device.
+    add_executable(ernic-test-p4-fp8
+        test_p4_fp8.c
+        ${PROJECT_SOURCE_DIR}/src/p4/p4_fp8.c
+    )
+    target_include_directories(ernic-test-p4-fp8 PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/p4
+    )
+    target_compile_definitions(ernic-test-p4-fp8 PRIVATE _GNU_SOURCE)
+endif()
 
 # NVMe-oF controller test. The controller core takes its DMA through a
 # callback pair, so the test links the real translation unit and stands a
@@ -253,34 +251,19 @@ add_executable(test_s3_tcp
 target_include_directories(test_s3_tcp PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(test_s3_tcp PRIVATE _GNU_SOURCE)
 
-# Loopback SGE-copy test. It #includes the loopback translation unit to
-# reach its static helpers and stubs the DMA layer with an identity
-# mapping, so no RDMA subsystem link is needed.
-add_executable(test_loopback_sge_copy test_loopback_sge_copy.c)
-target_include_directories(test_loopback_sge_copy PRIVATE
-    ${PROJECT_SOURCE_DIR}/src
-    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+# ionic MSI-X mask/pending test. It links the ionic emulator, reaches the
+# per-vector interrupt state through ionic_eth_emu_priv.h, and stubs
+# vfu_irq_trigger() with a per-vector counter, so no vfio-user link or live
+# context is needed.
+add_executable(test_ionic_intr_pending
+    test_ionic_intr_pending.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_emu_stats.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_eth_steer.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
 )
-# Vendored and third-party header trees are SYSTEM includes, matching the
-# main target. The #included translation unit is reached through src, so
-# it is warning-checked.
-target_include_directories(test_loopback_sge_copy SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
-    ${GLIB2_INCLUDE_DIRS}
-    ${ERNIC_IBVERBS_INCLUDE_DIRS}
-)
-target_compile_definitions(test_loopback_sge_copy PRIVATE
-    _GNU_SOURCE)
-target_link_directories(test_loopback_sge_copy PRIVATE
-    ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
-target_link_libraries(test_loopback_sge_copy PRIVATE
-    ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES})
-
-# ionic MSI-X mask/pending test. It #includes the ionic emulator translation
-# unit to reach the per-vector interrupt state and stubs vfu_irq_trigger()
-# with a per-vector counter, so no vfio-user link or live context is needed.
-add_executable(test_ionic_intr_pending test_ionic_intr_pending.c)
 target_include_directories(test_ionic_intr_pending PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
@@ -294,12 +277,22 @@ target_include_directories(test_ionic_intr_pending SYSTEM PRIVATE
 )
 target_compile_definitions(test_ionic_intr_pending PRIVATE
     _GNU_SOURCE)
+target_link_directories(test_ionic_intr_pending PRIVATE ${GLIB2_LIBRARY_DIRS})
+target_link_libraries(test_ionic_intr_pending PRIVATE ${GLIB2_LIBRARIES})
 
-# ionic PORT_INIT port-info test. It #includes the eth emulator translation
-# unit and backs the DMA entry points with a plain buffer, so the structure
-# the driver reads its link speed out of can be inspected directly -- no
-# guest, no VM and no vfio-user socket.
-add_executable(test_ionic_port_info test_ionic_port_info.c)
+# ionic PORT_INIT port-info test. It links the eth emulator, calls its
+# handlers through ionic_eth_emu_priv.h, and backs the DMA entry points with
+# a plain buffer, so the structure the driver reads its link speed out of
+# can be inspected directly -- no guest, no VM and no vfio-user socket.
+add_executable(test_ionic_port_info
+    test_ionic_port_info.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_emu_stats.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_eth_steer.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+)
 target_include_directories(test_ionic_port_info PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
@@ -313,17 +306,138 @@ target_include_directories(test_ionic_port_info SYSTEM PRIVATE
 )
 target_compile_definitions(test_ionic_port_info PRIVATE
     _GNU_SOURCE)
+target_link_directories(test_ionic_port_info PRIVATE ${GLIB2_LIBRARY_DIRS})
+target_link_libraries(test_ionic_port_info PRIVATE ${GLIB2_LIBRARIES})
+
+# NIC profile loader test: ini layering, strict validation and atomic
+# layers, built-in profiles by name and files by path. Pure: no ionic TU.
+add_executable(test_ionic_profile test_ionic_profile.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
+)
+target_include_directories(test_ionic_profile PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_include_directories(test_ionic_profile SYSTEM PRIVATE
+    ${GLIB2_INCLUDE_DIRS}
+)
+target_compile_definitions(test_ionic_profile PRIVATE
+    _GNU_SOURCE
+    ERNIC_PROFILES_DIR="${PROJECT_SOURCE_DIR}/profiles")
+target_link_directories(test_ionic_profile PRIVATE ${GLIB2_LIBRARY_DIRS})
+target_link_libraries(test_ionic_profile PRIVATE ${GLIB2_LIBRARIES})
+
+# LIF counter block test: MAC classification, drop accounting, the
+# little-endian rendering and each index against the kernel's struct
+# ionic_lif_stats. Pure: no ionic TU.
+add_executable(test_ionic_emu_stats test_ionic_emu_stats.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_emu_stats.c
+)
+target_include_directories(test_ionic_emu_stats PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_compile_definitions(test_ionic_emu_stats PRIVATE _GNU_SOURCE)
+target_link_libraries(test_ionic_emu_stats PRIVATE pthread)
+
+# ionic NIC identity test. It links the eth emulator, calls its devcmd
+# handlers through ionic_eth_emu_priv.h, checks the compat profile against
+# golden bytes captured before profiles existed, and checks where each
+# identity and link key lands.
+add_executable(test_ionic_identity
+    test_ionic_identity.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_emu_stats.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_eth_steer.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+)
+target_include_directories(test_ionic_identity PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_include_directories(test_ionic_identity SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_ionic_identity PRIVATE
+    _GNU_SOURCE)
+target_link_directories(test_ionic_identity PRIVATE ${GLIB2_LIBRARY_DIRS})
+target_link_libraries(test_ionic_identity PRIVATE ${GLIB2_LIBRARIES})
+
+# ionic statistics publish test. It links the eth emulator, reaches its state
+# through ionic_eth_emu_priv.h, drives the datapath against a fake guest
+# memory and checks what lands in the guest's struct ionic_lif_stats, and
+# when.
+add_executable(test_ionic_stats_publish
+    test_ionic_stats_publish.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_emu_stats.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_eth_steer.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+)
+target_include_directories(test_ionic_stats_publish PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_include_directories(test_ionic_stats_publish SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_ionic_stats_publish PRIVATE
+    _GNU_SOURCE)
+target_link_directories(test_ionic_stats_publish PRIVATE ${GLIB2_LIBRARY_DIRS})
+target_link_libraries(test_ionic_stats_publish PRIVATE ${GLIB2_LIBRARIES})
+
+# ionic queues test. It links the eth emulator, calls its devcmd handlers
+# through ionic_eth_emu_priv.h, and checks the queue, EQ and vector counts
+# each NIC profile advertises, and that queue indices past the count are
+# refused.
+add_executable(test_ionic_queues
+    test_ionic_queues.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_emu_stats.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_eth_steer.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+)
+target_include_directories(test_ionic_queues PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_include_directories(test_ionic_queues SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_ionic_queues PRIVATE
+    _GNU_SOURCE)
+target_link_directories(test_ionic_queues PRIVATE ${GLIB2_LIBRARY_DIRS})
+target_link_libraries(test_ionic_queues PRIVATE ${GLIB2_LIBRARIES})
 
 # Server lifecycle test: forks the real server and drives it through
 # startup, clients that drop out of vfio-user negotiation, and SIGTERM/SIGINT
-# shutdown. Needs no symbols from the server, so it is a plain program.
+# shutdown. Needs no symbols from the server, so it is a plain program. The
+# server's path is compiled in rather than passed on the command line: a
+# program that runs whatever its arguments name is what CodeQL's
+# cpp/uncontrolled-process-operation reports.
 add_executable(test_server_lifecycle test_server_lifecycle.c)
-target_compile_definitions(test_server_lifecycle PRIVATE _GNU_SOURCE)
+target_compile_definitions(test_server_lifecycle PRIVATE _GNU_SOURCE
+    "ERNIC_SERVER_PATH=\"$<TARGET_FILE:rocm-ernic>\"")
+add_dependencies(test_server_lifecycle rocm-ernic)
 
-# ionic QUERY_QP test. It #includes the admin queue translation unit to reach
-# dispatch_wqe() and backs the DMA entry points with a plain buffer, so the
-# side buffers the driver reads its answer out of can be inspected directly.
-add_executable(test_ionic_query_qp test_ionic_query_qp.c)
+# ionic QUERY_QP test. It links the admin queue, calls
+# ionic_adminq_dispatch_wqe() through ionic_adminq_priv.h, and backs the DMA
+# entry points with a plain buffer, so the side buffers the driver reads its
+# answer out of can be inspected directly.
+add_executable(test_ionic_query_qp
+    test_ionic_query_qp.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+)
 target_include_directories(test_ionic_query_qp PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
@@ -335,14 +449,57 @@ target_include_directories(test_ionic_query_qp SYSTEM PRIVATE
 target_compile_definitions(test_ionic_query_qp PRIVATE
     _GNU_SOURCE)
 
+# ionic hardware statistics test. It links the admin queue, calls
+# ionic_adminq_dispatch_wqe() through ionic_adminq_priv.h, and backs DMA with
+# a plain buffer, so the header table and values the driver builds
+# hw_counters from can be checked.
+add_executable(ernic-test-ionic-stats
+    test_ionic_stats.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+)
+target_include_directories(ernic-test-ionic-stats PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_include_directories(ernic-test-ionic-stats SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(ernic-test-ionic-stats PRIVATE
+    _GNU_SOURCE)
+
+# ionic admin queue poll test. It links the admin queue, stubs the rest with
+# ionic_adminq_fakes.h, and writes WQEs into a ring in fake guest memory, so
+# what ionic_adminq_poll() reads off the ring for each one can be checked.
+add_executable(ernic-test-ionic-adminq-poll
+    test_ionic_adminq_poll.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+)
+target_include_directories(ernic-test-ionic-adminq-poll PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_include_directories(ernic-test-ionic-adminq-poll SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(ernic-test-ionic-adminq-poll PRIVATE
+    _GNU_SOURCE)
+
 # ionic SRQ adminq unit test: drives CREATE/MODIFY/QUERY/DESTROY_SRQ through
-# dispatch_wqe() against the same fake guest memory, so the response buffer
-# AND the reported length can both be inspected -- the pair that was wrong
-# while CREATE_SRQ wrote an id the driver was never told to read. Also pins
-# the id-map capacity against the advertised max_srq.
-add_executable(test_ionic_srq_adminq test_ionic_srq_adminq.c)
+# ionic_adminq_dispatch_wqe() against the same fake guest memory, so the
+# response buffer AND the reported length can both be inspected -- the pair
+# that was wrong while CREATE_SRQ wrote an id the driver was never told to
+# read. Also pins the id-map capacity against the advertised max_srq.
+add_executable(test_ionic_srq_adminq
+    test_ionic_srq_adminq.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+)
 target_include_directories(test_ionic_srq_adminq PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src
 )
 target_include_directories(test_ionic_srq_adminq SYSTEM PRIVATE
     ${VFIO_USER_INCLUDE_DIRS}
@@ -352,10 +509,24 @@ target_include_directories(test_ionic_srq_adminq SYSTEM PRIVATE
 target_compile_definitions(test_ionic_srq_adminq PRIVATE
     _GNU_SOURCE)
 
-# ionic CQ arm-semantics test. It #includes the datapath translation unit to
-# reach the private CQ state and counts the event callback in-process, so no
-# vfio-user link or guest memory is needed.
-add_executable(test_ionic_cq_arm test_ionic_cq_arm.c)
+# ionic fault-injection core test: the --inject parser, the deterministic
+# patterns and the per-site fault set. Links the translation unit directly;
+# it has no external dependencies to stub.
+add_executable(ernic-test-ionic-fault
+    test_ionic_fault.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+)
+target_include_directories(ernic-test-ionic-fault PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+# ionic CQ arm-semantics test. It links the datapath, reaches the private CQ
+# state through ionic_datapath_priv.h, and counts the event callback
+# in-process, so no guest memory is needed.
+add_executable(test_ionic_cq_arm
+    test_ionic_cq_arm.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_datapath.c
+)
 target_include_directories(test_ionic_cq_arm PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
@@ -376,9 +547,14 @@ target_link_directories(test_ionic_cq_arm PRIVATE
 target_link_libraries(test_ionic_cq_arm PRIVATE
     ${VFIO_USER_LINK_LIBRARIES} ${GLIB2_LIBRARIES} pthread)
 
-add_executable(test_ionic_rq_wrap test_ionic_rq_wrap.c)
+# ionic receive-ring and buffer test. Like the CQ arm test, it links the
+# datapath and reaches its rings through ionic_datapath_priv.h.
+add_executable(test_ionic_rq_wrap
+    test_ionic_rq_wrap.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_datapath.c
+)
 target_include_directories(test_ionic_rq_wrap PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src
 )
 # Third-party headers are SYSTEM includes, matching the main target, so
 # their warnings stay quiet while the ionic sources under test are still
@@ -397,21 +573,22 @@ target_link_directories(test_ionic_rq_wrap PRIVATE
 target_link_libraries(test_ionic_rq_wrap PRIVATE
     ${VFIO_USER_LINK_LIBRARIES} ${GLIB2_LIBRARIES} pthread)
 
-# TCP mesh-topology broadcast test. It #includes the TCP backend translation
-# unit to reach its static helpers and stubs the backend's externals, so no
-# RDMA subsystem link is needed; the broadcast goes over a socketpair.
-add_executable(test_tcp_mesh_topology test_tcp_mesh_topology.c)
+# TCP mesh-topology broadcast test. It links the TCP backend, reaches its
+# helpers through rdma_backend_tcp_priv.h, and stubs the backend's externals,
+# so no RDMA subsystem link is needed; the broadcast goes over a socketpair.
+add_executable(test_tcp_mesh_topology
+    test_tcp_mesh_topology.c
+    ${PROJECT_SOURCE_DIR}/src/rdma/rdma_backend_tcp.c
+)
 target_include_directories(test_tcp_mesh_topology PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
     ${PROJECT_SOURCE_DIR}/shared
+    ${PROJECT_SOURCE_DIR}/src/qemu
 )
-# Vendored and third-party header trees are SYSTEM includes, matching the
-# main target. The #included translation unit is reached through src, so
-# it is warning-checked.
+# Headers from outside the project are SYSTEM includes, matching the main
+# target, so the backend and the test are still warning-checked.
 target_include_directories(test_tcp_mesh_topology SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${VFIO_USER_INCLUDE_DIRS}
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
@@ -426,22 +603,23 @@ target_link_directories(test_tcp_mesh_topology PRIVATE
 target_link_libraries(test_tcp_mesh_topology PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
-# TCP GID -> node resolution test. Like the mesh-topology test it #includes
-# the TCP backend translation unit to reach its static helpers and stubs the
-# backend's externals; resolution needs only the GID table, so no socket or
-# thread is involved.
-add_executable(test_tcp_gid_resolve test_tcp_gid_resolve.c)
+# TCP GID -> node resolution test. Like the mesh-topology test it links the
+# TCP backend, reaches its helpers through rdma_backend_tcp_priv.h, and stubs
+# the backend's externals; resolution needs only the GID table, so no socket
+# or thread is involved.
+add_executable(test_tcp_gid_resolve
+    test_tcp_gid_resolve.c
+    ${PROJECT_SOURCE_DIR}/src/rdma/rdma_backend_tcp.c
+)
 target_include_directories(test_tcp_gid_resolve PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
     ${PROJECT_SOURCE_DIR}/shared
+    ${PROJECT_SOURCE_DIR}/src/qemu
 )
-# Vendored and third-party header trees are SYSTEM includes, matching the
-# main target. The #included translation unit is reached through src, so
-# it is warning-checked.
+# Headers from outside the project are SYSTEM includes, matching the main
+# target, so the backend and the test are still warning-checked.
 target_include_directories(test_tcp_gid_resolve SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${VFIO_USER_INCLUDE_DIRS}
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
@@ -453,49 +631,23 @@ target_link_directories(test_tcp_gid_resolve PRIVATE
 target_link_libraries(test_tcp_gid_resolve PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
-# TCP memory-region bounds test. Like the mesh-topology test it #includes the
-# TCP backend translation unit to reach its static helpers and stubs the
-# backend's externals; the wire-driven cases run the real receive thread over
-# a socketpair.
-add_executable(test_tcp_mr_bounds test_tcp_mr_bounds.c)
-target_include_directories(test_tcp_mr_bounds PRIVATE
-    ${PROJECT_SOURCE_DIR}/src
-    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
-    ${PROJECT_SOURCE_DIR}/shared
+# TCP thread stop test. It links the TCP backend and runs the real accept,
+# health-check and receive threads on loopback sockets and socketpairs, with
+# the thread entry points backed by pthreads, so a stop that never returns
+# fails the test.
+add_executable(ernic-test-tcp-thread-stop
+    test_tcp_thread_stop.c
+    ${PROJECT_SOURCE_DIR}/src/rdma/rdma_backend_tcp.c
 )
-# Vendored and third-party header trees are SYSTEM includes, matching the
-# main target. The #included translation unit is reached through src, so
-# it is warning-checked.
-target_include_directories(test_tcp_mr_bounds SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
-    ${VFIO_USER_INCLUDE_DIRS}
-    ${GLIB2_INCLUDE_DIRS}
-    ${ERNIC_IBVERBS_INCLUDE_DIRS}
-)
-target_compile_definitions(test_tcp_mr_bounds PRIVATE
-    _GNU_SOURCE)
-target_link_directories(test_tcp_mr_bounds PRIVATE
-    ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
-target_link_libraries(test_tcp_mr_bounds PRIVATE
-    ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
-
-# TCP thread stop test. It #includes the TCP backend translation unit and runs
-# the real accept, health-check and receive threads on loopback sockets and
-# socketpairs, with the thread entry points backed by pthreads, so a stop that
-# never returns fails the test.
-add_executable(ernic-test-tcp-thread-stop test_tcp_thread_stop.c)
 target_include_directories(ernic-test-tcp-thread-stop PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
     ${PROJECT_SOURCE_DIR}/shared
+    ${PROJECT_SOURCE_DIR}/src/qemu
 )
-# Vendored and third-party header trees are SYSTEM includes, matching the
-# main target. The #included translation unit is reached through src, so
-# it is warning-checked.
+# Headers from outside the project are SYSTEM includes, matching the main
+# target, so the backend and the test are still warning-checked.
 target_include_directories(ernic-test-tcp-thread-stop SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${VFIO_USER_INCLUDE_DIRS}
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
@@ -516,33 +668,24 @@ target_link_directories(ernic-test-tcp-thread-stop PRIVATE
 target_link_libraries(ernic-test-tcp-thread-stop PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
-# RDMA resource-table allocator test. It #includes the resource-manager
-# translation unit to reach its static inline allocator and stubs the backend
-# entry points it calls, so no RDMA subsystem link is needed. rdma_rm.c is
-# vendored; the test silences the warnings it raises with the
-# rocm-ernic-warnings.h macros around the #include, so the test's own code is
-# still warning-checked.
+# RDMA resource-table allocator test. rdma_rm.c keeps its allocator
+# static inline, so the test drives it through the resource
+# manager's CQ table. It stubs the backend entry points rdma_rm.c
+# calls, so no RDMA subsystem link is needed.
 add_executable(test_rdma_res_tbl test_rdma_res_tbl.c
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma/rdma_utils.c
+    ${PROJECT_SOURCE_DIR}/src/qemu/rdma_rm.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
-    ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_type_stubs.c
 )
-# third-party/qemu is a normal include here: the test reaches rdma_rm.c
-# through it and relies on its own warning-suppression macros, not the
-# include path, to silence that file.
 target_include_directories(test_rdma_res_tbl PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/rdma
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
-    ${PROJECT_SOURCE_DIR}/third-party/qemu
-    ${PROJECT_SOURCE_DIR}/shared
+    ${PROJECT_SOURCE_DIR}/src/qemu
 )
-# Vendored and third-party header trees are SYSTEM includes, matching the
-# main target.
+# Headers from outside the project are SYSTEM includes, matching the main
+# target.
 target_include_directories(test_rdma_res_tbl SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
@@ -553,18 +696,16 @@ target_link_directories(test_rdma_res_tbl PRIVATE
 target_link_libraries(test_rdma_res_tbl PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
-# QEMU utility stubs test: bitmap word boundaries, the oversize-map abort,
-# and qemu_poll_ns() timeout handling. It links the stubs translation unit
-# directly. The vendored header trees are SYSTEM includes, as in the main
-# build, so the test source itself is still warning-checked.
+# QEMU utility stubs test: bitmap word boundaries and the oversize-map
+# abort. It links the stubs translation unit directly.
 add_executable(test_qemu_stubs test_qemu_stubs.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
 )
 target_include_directories(test_qemu_stubs PRIVATE
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/src/qemu
 )
 target_include_directories(test_qemu_stubs SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
@@ -574,6 +715,19 @@ target_link_directories(test_qemu_stubs PRIVATE
     ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
 target_link_libraries(test_qemu_stubs PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
+
+# Log level test: ERNIC_LOG_LEVEL parsing, and threads racing the first
+# lookup. It links error-report.c directly.
+add_executable(ernic-test-log-level test_log_level.c
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
+)
+target_include_directories(ernic-test-log-level PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+)
+# pipe2() and environ
+target_compile_definitions(ernic-test-log-level PRIVATE _GNU_SOURCE)
+target_link_libraries(ernic-test-log-level PRIVATE pthread)
 
 # In-process ionic device harness. It links every source the server is
 # built from except rocm_ernic_server.c, with fake_vfu.c standing in for
@@ -590,37 +744,40 @@ set(ERNIC_HARNESS_DEVICE_SOURCES
     ${RDMA_BACKEND_SOURCES}
     ${NET_SOURCES}
     ${QEMU_COMPAT_SOURCES}
+    ${QEMU_SOURCES}
 )
+if(ERNIC_BUILD_P4)
+    list(APPEND ERNIC_HARNESS_DEVICE_SOURCES ${P4_SOURCES})
+endif()
 list(TRANSFORM ERNIC_HARNESS_DEVICE_SOURCES PREPEND "${PROJECT_SOURCE_DIR}/")
-set(ERNIC_HARNESS_VENDORED_SOURCES ${ERNIC_VENDORED_SOURCES})
-list(TRANSFORM ERNIC_HARNESS_VENDORED_SOURCES
-    PREPEND "${PROJECT_SOURCE_DIR}/")
-set_source_files_properties(${ERNIC_HARNESS_VENDORED_SOURCES}
-    PROPERTIES COMPILE_OPTIONS "-w"
-)
 add_executable(ernic-test-ionic-harness
     test_ionic_harness.c
     ionic_harness.c
     fake_vfu.c
     ${ERNIC_HARNESS_DEVICE_SOURCES}
-    ${ERNIC_HARNESS_VENDORED_SOURCES}
 )
 target_include_directories(ernic-test-ionic-harness PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/rdma
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/src/p4
     ${PROJECT_SOURCE_DIR}/shared
+    ${PROJECT_SOURCE_DIR}/src/qemu
 )
-# Vendored and third-party header trees are SYSTEM includes, matching the
-# main target.
+# Headers from outside the project are SYSTEM includes, matching the main
+# target.
 target_include_directories(ernic-test-ionic-harness SYSTEM PRIVATE
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/include
-    ${PROJECT_SOURCE_DIR}/third-party/qemu/hw/rdma
     ${VFIO_USER_INCLUDE_DIRS}
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
-target_compile_definitions(ernic-test-ionic-harness PRIVATE _GNU_SOURCE)
+target_compile_definitions(ernic-test-ionic-harness PRIVATE
+    _GNU_SOURCE
+    $<$<BOOL:${ERNIC_BUILD_P4}>:ERNIC_HAVE_P4>
+    # Real p4c artifacts, so the RDMA path is held to what the compiler
+    # emits rather than to a fixture written to suit it.
+    $<$<BOOL:${ERNIC_BUILD_P4}>:P4_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/p4">
+)
 target_compile_options(ernic-test-ionic-harness PRIVATE
     ${GLIB2_CFLAGS_OTHER})
 # No libvfio-user: fake_vfu.c defines the entry points the device calls.
@@ -628,11 +785,56 @@ target_link_directories(ernic-test-ionic-harness PRIVATE
     ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
 target_link_libraries(ernic-test-ionic-harness PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
+if(ERNIC_BUILD_P4)
+    target_link_libraries(ernic-test-ionic-harness PRIVATE PkgConfig::JSONC)
+endif()
+
+# Two whole devices in one process, meshed over loopback TCP: the GSI/CM
+# path that rdma_cm depends on, which test_ud_mesh can only cover with two
+# VMs. Same sources as the harness above -- it is the harness, twice.
+add_executable(ernic-test-gsi-mesh
+    test_gsi_mesh.c
+    ionic_harness.c
+    fake_vfu.c
+    ${ERNIC_HARNESS_DEVICE_SOURCES}
+    ${ERNIC_HARNESS_VENDORED_SOURCES}
+)
+target_include_directories(ernic-test-gsi-mesh PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/rdma
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/src/p4
+    ${PROJECT_SOURCE_DIR}/shared
+    ${PROJECT_SOURCE_DIR}/src/qemu
+)
+# Headers from outside the project are SYSTEM includes, matching the main
+# target.
+target_include_directories(ernic-test-gsi-mesh SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+# It builds ERNIC_HARNESS_DEVICE_SOURCES, which carries the P4 engine
+# when ERNIC_BUILD_P4 is on, so it needs the same define and the same
+# json-c as the harness target beside it.
+target_compile_definitions(ernic-test-gsi-mesh PRIVATE
+    _GNU_SOURCE
+    $<$<BOOL:${ERNIC_BUILD_P4}>:ERNIC_HAVE_P4>
+)
+target_compile_options(ernic-test-gsi-mesh PRIVATE ${GLIB2_CFLAGS_OTHER})
+target_link_directories(ernic-test-gsi-mesh PRIVATE
+    ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
+target_link_libraries(ernic-test-gsi-mesh PRIVATE
+    ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
+if(ERNIC_BUILD_P4)
+    target_link_libraries(ernic-test-gsi-mesh PRIVATE PkgConfig::JSONC)
+endif()
 
 # ---------------------------------------------------------------
 # Apply the project warning / hardening flags to every test target
 # ---------------------------------------------------------------
 set(ERNIC_TEST_TARGETS
+    ernic-test-gsi-mesh
     test_pci_client
     test_data_transfer
     test_rdma_cm
@@ -642,9 +844,9 @@ set(ERNIC_TEST_TARGETS
     test_ud_sq_reclaim
     test_ud_mesh
     test_ernic_device
-    test_rdma_backend_query_port
     test_write_imm
     test_net_checksum
+    test_dma_range
     test_rdma_cm_proto
     test_parse_int
     test_nvmeof_target
@@ -653,22 +855,33 @@ set(ERNIC_TEST_TARGETS
     test_s3_http
     test_s3_target
     test_s3_tcp
-    test_loopback_sge_copy
     test_ionic_intr_pending
     test_ionic_port_info
+    test_ionic_profile
+    test_ionic_emu_stats
+    test_ionic_identity
+    test_ionic_stats_publish
+    test_ionic_queues
     test_ionic_query_qp
+    ernic-test-ionic-stats
+    ernic-test-ionic-fault
+    ernic-test-ionic-adminq-poll
     test_server_lifecycle
     test_ionic_srq_adminq
     test_ionic_cq_arm
     test_ionic_rq_wrap
     test_tcp_mesh_topology
     test_tcp_gid_resolve
-    test_tcp_mr_bounds
     ernic-test-tcp-thread-stop
     test_rdma_res_tbl
     test_qemu_stubs
+    ernic-test-log-level
     ernic-test-ionic-harness
 )
+
+if(ERNIC_BUILD_P4)
+    list(APPEND ERNIC_TEST_TARGETS ernic-test-p4-engine ernic-test-p4-fp8)
+endif()
 
 foreach(ernic_test_target IN LISTS ERNIC_TEST_TARGETS)
     ernic_set_compiler_flags(${ernic_test_target})
@@ -718,19 +931,19 @@ set_tests_properties(ernic-device-tuple-unit PROPERTIES
 # real inside the VM by the loopback job in system-tests.yml, where a device
 # is guaranteed and exit 77 is treated as a failure.
 
-# rdma_backend_query_port NULL-guard / dispatch unit test
-add_test(
-    NAME rdma-backend-query-port-unit
-    COMMAND $<TARGET_FILE:test_rdma_backend_query_port>
-)
-set_tests_properties(rdma-backend-query-port-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
-
 # TCP/UDP checksum helper unit test (table-driven)
 add_test(
     NAME net-checksum-unit
     COMMAND $<TARGET_FILE:test_net_checksum>
 )
 set_tests_properties(net-checksum-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+
+# Guest DMA range check unit test (table-driven)
+add_test(
+    NAME dma-range-unit
+    COMMAND $<TARGET_FILE:test_dma_range>
+)
+set_tests_properties(dma-range-unit PROPERTIES TIMEOUT 30)
 
 # rdma_cm protocol parser unit test (table-driven)
 add_test(
@@ -745,6 +958,21 @@ add_test(
     COMMAND $<TARGET_FILE:test_parse_int>
 )
 set_tests_properties(parse-int-unit PROPERTIES TIMEOUT 30)
+
+# P4 engine unit test: port model, frame bounds, and the no-program path.
+if(ERNIC_BUILD_P4)
+    add_test(
+        NAME p4-engine-unit
+        COMMAND $<TARGET_FILE:ernic-test-p4-engine>
+    )
+    set_tests_properties(p4-engine-unit PROPERTIES TIMEOUT 30)
+
+    add_test(
+        NAME p4-fp8-unit
+        COMMAND $<TARGET_FILE:ernic-test-p4-fp8>
+    )
+    set_tests_properties(p4-fp8-unit PROPERTIES TIMEOUT 30)
+endif()
 
 # NVMe-oF controller unit test: drives the capsule sequence a real
 # nvme-rdma initiator emits, from Fabrics Connect to read-after-write.
@@ -794,13 +1022,6 @@ add_test(
 )
 set_tests_properties(s3-tcp-unit PROPERTIES TIMEOUT 60)
 
-# Loopback SGE-copy boundary-walking unit test
-add_test(
-    NAME loopback-sge-copy-unit
-    COMMAND $<TARGET_FILE:test_loopback_sge_copy>
-)
-set_tests_properties(loopback-sge-copy-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
-
 # ionic MSI-X mask/pending unit test: asserts an assertion raised on a masked
 # vector is latched and replayed on unmask rather than dropped.
 add_test(
@@ -827,12 +1048,54 @@ set_tests_properties(ionic-port-info-unit PROPERTIES TIMEOUT 30)
 # check. One server per row, each on its own socket.
 add_test(
     NAME server-lifecycle
-    COMMAND $<TARGET_FILE:test_server_lifecycle> $<TARGET_FILE:rocm-ernic>
+    COMMAND $<TARGET_FILE:test_server_lifecycle>
 )
 set_tests_properties(server-lifecycle PROPERTIES
     TIMEOUT 300
     SKIP_RETURN_CODE 77
 )
+
+# NIC profile loader unit test: asserts strict validation (every error names
+# the source, line and key), atomic layers, and that the built-in profiles
+# match the files shipped in profiles/.
+add_test(
+    NAME ionic-profile-unit
+    COMMAND $<TARGET_FILE:test_ionic_profile>
+)
+set_tests_properties(ionic-profile-unit PROPERTIES TIMEOUT 30)
+
+# LIF counter block unit test: a counter in the wrong qword shows up as the
+# wrong `ip -s link` field in the guest, so every index is pinned.
+add_test(
+    NAME ionic-emu-stats-unit
+    COMMAND $<TARGET_FILE:test_ionic_emu_stats>
+)
+set_tests_properties(ionic-emu-stats-unit PROPERTIES TIMEOUT 30)
+
+# ionic NIC identity unit test: asserts compat is byte-identical to the
+# device before profiles, and each identity/link key reaches the field the
+# driver reads.
+add_test(
+    NAME ionic-identity-unit
+    COMMAND $<TARGET_FILE:test_ionic_identity>
+)
+set_tests_properties(ionic-identity-unit PROPERTIES TIMEOUT 30)
+
+# ionic statistics publish unit test: when the LIF block is rewritten in guest
+# memory, where, and what the datapath counted into it.
+add_test(
+    NAME ionic-stats-publish-unit
+    COMMAND $<TARGET_FILE:test_ionic_stats_publish>
+)
+set_tests_properties(ionic-stats-publish-unit PROPERTIES TIMEOUT 30)
+
+# ionic queues unit test: the queue, EQ and MSI-X vector counts each NIC
+# profile advertises, and whether the driver's vector budget fits them.
+add_test(
+    NAME ionic-queues-unit
+    COMMAND $<TARGET_FILE:test_ionic_queues>
+)
+set_tests_properties(ionic-queues-unit PROPERTIES TIMEOUT 30)
 
 # ionic QUERY_QP unit test: asserts the command writes the QP's real state
 # into the side buffers the driver reads, rather than leaving them zeroed and
@@ -843,6 +1106,24 @@ add_test(
 )
 set_tests_properties(ionic-query-qp-unit PROPERTIES TIMEOUT 30)
 
+# ionic hardware statistics unit test: asserts the four stats admin commands
+# answer with the header table and LE64 values the driver turns into its
+# hw_counters files, clamped to the buffer, and fail on an unknown QP.
+add_test(
+    NAME ionic-stats-unit
+    COMMAND $<TARGET_FILE:ernic-test-ionic-stats>
+)
+set_tests_properties(ionic-stats-unit PROPERTIES TIMEOUT 30)
+
+# ionic admin queue poll unit test: asserts a WQE runs only on bytes read
+# from its own ring entries, so one claiming more strides than were produced
+# or than fit is refused, and one that wraps is finished from slot 0.
+add_test(
+    NAME ionic-adminq-poll-unit
+    COMMAND $<TARGET_FILE:ernic-test-ionic-adminq-poll>
+)
+set_tests_properties(ionic-adminq-poll-unit PROPERTIES TIMEOUT 30)
+
 # ionic SRQ adminq unit test: the four SRQ handlers had no in-process
 # coverage, which is how CREATE_SRQ shipped writing its id into a response
 # the driver was told was zero bytes long.
@@ -851,6 +1132,15 @@ add_test(
     COMMAND $<TARGET_FILE:test_ionic_srq_adminq>
 )
 set_tests_properties(ionic-srq-adminq-unit PROPERTIES TIMEOUT 30)
+
+# ionic fault-injection unit test: asserts each --inject pattern fires on
+# exactly the events it names, malformed specs are rejected naming the bad
+# token, and the canonical form parses back to the same fault.
+add_test(
+    NAME ionic-fault-unit
+    COMMAND $<TARGET_FILE:ernic-test-ionic-fault>
+)
+set_tests_properties(ionic-fault-unit PROPERTIES TIMEOUT 30)
 
 # ionic CQ arm unit test: asserts arming a CQ that still holds unreaped CQEs
 # raises the event immediately, rather than waiting for a CQE that never comes.
@@ -886,15 +1176,6 @@ add_test(
 )
 set_tests_properties(tcp-gid-resolve-unit PROPERTIES TIMEOUT 30)
 
-# TCP memory-region bounds unit test: asserts that remote addresses whose
-# addr+len wraps 64 bits are rejected rather than resolving to a host pointer
-# below the registered region.
-add_test(
-    NAME tcp-mr-bounds-unit
-    COMMAND $<TARGET_FILE:test_tcp_mr_bounds>
-)
-set_tests_properties(tcp-mr-bounds-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
-
 # TCP thread stop unit test: asserts stopping the accept thread returns while
 # it is blocked in accept(), stopping the health-check thread returns without
 # waiting out its interval, every receive thread is stopped and joined once,
@@ -918,20 +1199,33 @@ add_test(
 )
 set_tests_properties(rdma-res-tbl-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
-# QEMU utility stubs unit test (bitmap, qemu_poll_ns)
+# QEMU utility stubs unit test (bitmap)
 add_test(
     NAME qemu-stubs-unit
     COMMAND $<TARGET_FILE:test_qemu_stubs>
 )
 set_tests_properties(qemu-stubs-unit PROPERTIES TIMEOUT 30)
 
+# Log level unit test: ERNIC_LOG_LEVEL, and the race on its first lookup
+add_test(
+    NAME log-level-unit
+    COMMAND $<TARGET_FILE:ernic-test-log-level>
+)
+set_tests_properties(log-level-unit PROPERTIES TIMEOUT 60)
+
 # In-process ionic device harness: the whole device, driven as the guest
 # driver drives it, one CTest test per group so a failure names its area.
 # Bring-up and devcmds, refused admin commands, RC transfers, atomics and
 # fast registration, CQ events, UD, SRQ, Ethernet Tx/Rx, and the NVMe-oF
-# CM handshake and Connect over the GSI QP.
-foreach(ernic_harness_group
-        devcmds bringup admin rc atomic cq-events ud srq eth nvmeof teardown)
+# CM handshake and Connect over the GSI QP, and the flush a QP entering the
+# Error state owes its outstanding work requests.
+set(ERNIC_HARNESS_GROUPS
+    devcmds bringup admin rc atomic cq-events qp-flush qp-flush-srq
+    ud srq eth nvmeof teardown)
+if(ERNIC_BUILD_P4)
+    list(APPEND ERNIC_HARNESS_GROUPS p4-port fp8-map p4-rdma p4-devcmd)
+endif()
+foreach(ernic_harness_group IN LISTS ERNIC_HARNESS_GROUPS)
     add_test(
         NAME ionic-harness-${ernic_harness_group}
         COMMAND $<TARGET_FILE:ernic-test-ionic-harness>
@@ -940,6 +1234,23 @@ foreach(ernic_harness_group
     set_tests_properties(ionic-harness-${ernic_harness_group} PROPERTIES
         TIMEOUT 60)
 endforeach()
+
+# The GSI/CM mesh path: two devices in one process over loopback TCP.
+# RUN_SERIAL because it binds a fixed port; ERNIC_TEST_MESH_PORT moves it.
+add_test(
+    NAME gsi-mesh
+    COMMAND $<TARGET_FILE:ernic-test-gsi-mesh>
+)
+# 180s, not the 60 the harness groups use: this one waits on a real TCP
+# registration handshake between two devices, and the memcheck lane runs it
+# under valgrind, where that handshake is far slower than the work itself.
+#
+# No SKIP_RETURN_CODE: the test needs no VM, no RDMA device and no root, so
+# every way it can fail to start is a regression that has to be red.
+set_tests_properties(gsi-mesh PROPERTIES
+    TIMEOUT 180
+    RUN_SERIAL TRUE
+)
 
 # ionic server smoke test: start the server, verify socket and banner.
 # Tests that the ionic emulation layer initialises without crashing.
@@ -951,6 +1262,30 @@ add_test(
 set_tests_properties(ionic-server-smoke PROPERTIES
     TIMEOUT 15
     RUN_SERIAL TRUE
+    SKIP_RETURN_CODE 77
+)
+
+# --stats-interval-ms range checks and precedence over --nic-profile, read
+# back through --print-profile.  The server exits before opening a socket.
+add_test(
+    NAME ionic-stats-interval-cli
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_ionic_stats_interval_cli.sh
+        $<TARGET_FILE:rocm-ernic>
+)
+set_tests_properties(ionic-stats-interval-cli PROPERTIES
+    TIMEOUT 30
+    SKIP_RETURN_CODE 77
+)
+
+# --eth-queues range checks and precedence over --nic-profile, read back
+# through --print-profile.  The server exits before opening a socket.
+add_test(
+    NAME ionic-eth-queues-cli
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_ionic_eth_queues_cli.sh
+        $<TARGET_FILE:rocm-ernic>
+)
+set_tests_properties(ionic-eth-queues-cli PROPERTIES
+    TIMEOUT 30
     SKIP_RETURN_CODE 77
 )
 
@@ -1019,6 +1354,98 @@ set_tests_properties(s3-ci PROPERTIES
     RUN_SERIAL TRUE
     SKIP_RETURN_CODE 77
     ENVIRONMENT "SERVER_BIN=$<TARGET_FILE:rocm-ernic>"
+)
+
+# ---------------------------------------------------------------
+# Python suites that drive real servers over the vfio-user socket
+# ---------------------------------------------------------------
+# tests/py/ stands in for a guest VM: it speaks the vfio-user protocol to
+# a real rocm-ernic process, maps guest memory from a memfd the server
+# maps too, and plays the ionic driver against it. None of it needs a VM,
+# RDMA hardware, or root. See docs/testing.rst.
+#
+# REQUIRED: python3 is already a run-time dependency of the shell suites
+# (test_tcp_mesh_ci.sh and the CI job scripts), so a host that builds the
+# tests without it cannot run them. Registering these only when it happens
+# to be found would let CI pass with three fewer tests and no sign of it,
+# and a skipped or missing test is exactly what must not pass quietly.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+# -I keeps the interpreter from picking up anything outside the tree: the
+# suites put tests/py on sys.path themselves.
+set(ERNIC_PY_RUN ${Python3_EXECUTABLE} -I)
+
+# The vfio-user protocol itself: version negotiation, regions, DMA
+# mapping, interrupts, and the offsets, counts and ranges a client
+# must not get away with.
+add_test(
+    NAME ernic-vfu-client
+    COMMAND ${ERNIC_PY_RUN}
+        ${CMAKE_CURRENT_SOURCE_DIR}/py/test_vfu_client.py
+        --server $<TARGET_FILE:rocm-ernic>
+)
+set_tests_properties(ernic-vfu-client PROPERTIES
+    TIMEOUT 180
+    RUN_SERIAL TRUE
+)
+
+# The ionic driver over that protocol: bring-up, queue pairs, memory
+# regions, work requests and completions, through a server process
+# rather than the in-process harness in ionic_harness.c.
+add_test(
+    NAME ernic-ionic-driver
+    COMMAND ${ERNIC_PY_RUN}
+        ${CMAKE_CURRENT_SOURCE_DIR}/py/test_ionic_driver.py
+        --server $<TARGET_FILE:rocm-ernic>
+)
+set_tests_properties(ernic-ionic-driver PROPERTIES
+    TIMEOUT 300
+    RUN_SERIAL TRUE
+)
+
+# The P4 engine on the live device: guest frames out of the Ethernet Tx
+# ring, through the pipeline, and out the far side. Starts a server per
+# case because the statistics it asserts on are reported at shutdown.
+if(ERNIC_BUILD_P4)
+    add_test(
+        NAME ernic-p4-driver
+        COMMAND ${ERNIC_PY_RUN}
+            ${CMAKE_CURRENT_SOURCE_DIR}/py/test_p4.py
+            --server $<TARGET_FILE:rocm-ernic>
+    )
+    set_tests_properties(ernic-p4-driver PROPERTIES
+        TIMEOUT 300
+        RUN_SERIAL TRUE
+    )
+endif()
+# The hardware statistics a guest's hw_counters are built from: the
+# STATS_HDRS / STATS_VALS / QP_STATS_HDRS / QP_STATS_VALS tables, the
+# values behind them, and that the --stats-file the exporter reads
+# carries the same numbers.
+add_test(
+    NAME ernic-ionic-hw-stats
+    COMMAND ${ERNIC_PY_RUN}
+        ${CMAKE_CURRENT_SOURCE_DIR}/py/test_ionic_hw_stats.py
+        --server $<TARGET_FILE:rocm-ernic>
+)
+set_tests_properties(ernic-ionic-hw-stats PROPERTIES
+    TIMEOUT 300
+    RUN_SERIAL TRUE
+)
+
+# A three-node mesh under traffic, malformed peers, and churn.
+# Generous timeout: it starts and restarts several servers and waits
+# on mesh convergence, in every build leg including thread-sanitizer
+# Release, where that chain is slow.
+add_test(
+    NAME ernic-mesh-stress
+    COMMAND ${ERNIC_PY_RUN}
+        ${CMAKE_CURRENT_SOURCE_DIR}/py/test_mesh_stress.py
+        --server $<TARGET_FILE:rocm-ernic>
+)
+set_tests_properties(ernic-mesh-stress PROPERTIES
+    TIMEOUT 600
+    RUN_SERIAL TRUE
 )
 
 # ---------------------------------------------------------------

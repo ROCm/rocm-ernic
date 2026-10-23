@@ -13,16 +13,17 @@
 #
 #   ansible-playbook -i inventory/hosts.yml playbooks/srq-dkms-build.yml \
 #       -e ernic_srq_dkms_install=true -l <guest> \
-#       -e ernic_srq_dkms_scripts_dir=<path on the guest>/scripts \
-#       -e ernic_srq_dkms_patches_dir=<path on the guest>/patches/srq
+#       -e ernic_srq_dkms_fetch_on_controller=true
 #
-# Both paths must be overridden for a remote host: the role invokes
-# the two scripts ON the target, but their defaults are playbook_dir-
-# relative, i.e. controller paths, so they only resolve where the
-# checkout already is. The 'Build the SRQ-capable ionic driver in the
-# VM' step in .github/workflows/system-tests.yml stages the scripts and
-# the patch series into the guest and drives them over ssh instead,
-# which is the worked example of doing this remotely.
+# The scripts and the patch series ship in the collection and the role
+# resolves them from itself, so nothing has to be pointed anywhere.
+# fetch_on_controller is what makes a remote target work: the role
+# otherwise invokes the two scripts ON the target, where the collection
+# is not installed. With it set, the controller fetches and patches and
+# ships the tree over, and only the build runs on the guest -- which it
+# must, since setup-ionic-dkms.sh builds for the running kernel.
+# The 'Build the SRQ-capable ionic driver in the VM' step in
+# .github/workflows/system-tests.yml is the worked example.
 #
 # The refs it builds are in roles/ernic_srq_dkms/defaults/main.yml, pinned as
 # SHAs because rdma/for-next is rebased.

@@ -79,9 +79,8 @@ Per-tool targets: `analysis-clang-tidy`, `analysis-cppcheck`,
 
 Triage (`nix/analysis/triage/`) loads every tool's report, drops noise and
 out-of-scope paths, deduplicates, cross-references findings flagged by
-multiple tools, and ranks by priority. `src/net/`, `src/rdma/` and the
-vendored `third-party/qemu/hw/rdma/` (the untrusted-input paths) are
-treated as security-sensitive.
+multiple tools, and ranks by priority. `src/net/`, `src/rdma/` and
+`src/qemu/` (the untrusted-input paths) are treated as security-sensitive.
 
 `analysis-semgrep` first runs `semgrep --test` on each rule fixture in
 `nix/analysis/semgrep-tests/`, where a `// ruleid:` comment marks a line
@@ -250,7 +249,10 @@ uses the self-contained `loopback` backend with the socket under
 
 **Deployment note.** rocm-ernic and QEMU rendezvous over a **UNIX socket** (the
 `vfio-user-pci` transport), so a container must share that socket path with
-whoever attaches to it — bind-mount the socket directory. The `loopback` and
+whoever attaches to it — bind-mount the socket directory. The socket is mode
+`0600`, so only root and the server's user can connect; to let a host QEMU
+that runs as another user in, pass `--socket-group` the numeric gid of a group
+it's in (group names in the image aren't the host's). The `loopback` and
 `tcp` backends containerize cleanly; the `verbs` backend needs host RDMA
 devices (`/dev/infiniband`) and elevated privileges, so it is not a clean
 container target.

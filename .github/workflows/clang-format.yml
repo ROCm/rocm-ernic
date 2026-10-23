@@ -40,11 +40,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang-format-18
 
-      # Everything tracked except third-party/, which is vendored and
-      # formatted to its upstream's style rather than ours.
       - name: Run clang-format check
         run: |
-          mapfile -t files < <(git ls-files -- '*.c' '*.h' ':!:third-party/')
+          mapfile -t files < <(git ls-files -- '*.c' '*.h')
 
           needs_format=0
           for file in "${files[@]}"; do

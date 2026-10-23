@@ -41,8 +41,16 @@
 
 #include <vfio-user/libvfio-user.h>
 
+#include "dma_range.h"
 #include "ionic_datapath.h"
+#ifdef ERNIC_HAVE_P4
+#include "p4_engine.h"
+#include "p4_exec.h"
+#include "p4_fp8.h"
+#endif
+#include "ionic_datapath_priv.h"
 #include "ionic_eth_emu.h"
+#include "net/net_headers.h"
 #include "nvmeof.h"
 #include "nvmeof_cm.h"
 #include "nvmeof_target.h"
@@ -120,6 +128,11 @@ static unsigned int ionic_op_to_pvrdma_wr(uint8_t op)
  * a 5 and a 32 to drift apart in separate headers. */
 _Static_assert((1u << IONIC_SRQ_MIN_STRIDE_LOG2) >= WQE_PLD_OFF,
                "SRQ stride floor must cover the WQE header");
+_Static_assert((1u << IONIC_WQE_MIN_STRIDE_LOG2) >= WQE_PLD_OFF,
+               "WQE stride floor must cover the WQE header");
+/* deliver_recv() reads an SRQ's WQEs into a buffer sized for a QP's. */
+_Static_assert(IONIC_SRQ_MAX_STRIDE_LOG2 <= IONIC_WQE_MAX_STRIDE_LOG2,
+               "SRQ stride ceiling must fit the receive WQE buffer");
 
 /* The datagram half of the send body: which address handle, and which
  * remote QPN. Connected sends ignore both. */
@@ -157,6 +170,9 @@ _Static_assert((1u << IONIC_SRQ_MIN_STRIDE_LOG2) >= WQE_PLD_OFF,
 #define CQE_TYPE_SEND_MSN (2u << 5)
 #define CQE_TYPE_SEND_NPG (3u << 5)
 
+_Static_assert((1u << IONIC_CQ_MIN_STRIDE_LOG2) == CQE_SIZE,
+               "CQ stride floor must be one CQE");
+
 /* enum ionic_v1_cqe_src_qpn_bits */
 #define CQE_RECV_OP_SHIFT    24
 #define CQE_RECV_OP_SEND     0
@@ -175,138 +191,11 @@ _Static_assert((1u << IONIC_SRQ_MIN_STRIDE_LOG2) >= WQE_PLD_OFF,
 #define IONIC_STS_LOCAL_LEN_ERR      1
 #define IONIC_STS_LOCAL_QP_OPER_ERR  2
 #define IONIC_STS_LOCAL_PROT_ERR     3
+#define IONIC_STS_WQE_FLUSHED_ERR    4
 #define IONIC_STS_LOCAL_ACC_ERR      7
 #define IONIC_STS_REMOTE_ACC_ERR     9
 #define IONIC_STS_RETRY_EXCEEDED     11
 #define IONIC_STS_RNR_RETRY_EXCEEDED 12
-
-/* -------------------------------------------------------------------------
- * State
- * -------------------------------------------------------------------------
- */
-
-#define MAX_QP (1u << 15)
-#define MAX_CQ (1u << 16)
-/* The same count ionic_eth_emu.c puts in the LIF identity as the guest's
- * max_srq, so an srq_id the guest is entitled to use always indexes this
- * table. */
-#define MAX_SRQ IONIC_EMU_SRQ_COUNT
-/* Matches the nahs_per_lif the LIF identity advertises, so an ah_id the
- * guest is entitled to allocate always indexes this table. */
-#define MAX_AH (1u << 15)
-/* Sized with the rdma_rm table and the admin queue's map; see
- * IONIC_MAX_MR in ionic_datapath.h for why they have to agree. */
-#define MAX_MR  IONIC_MAX_MR
-#define MAX_SGE 32
-
-/* In-flight work requests waiting for a peer instance to answer. */
-#define MAX_PENDING 1024
-#define PENDING_MS  30000
-
-
-/* A guest buffer: either directly addressed or described by a page table. */
-struct dp_buf {
-    uint64_t base;   /* direct GPA when npages <= 1                    */
-    uint64_t *pages; /* page-table contents when npages > 1            */
-    uint32_t npages;
-    uint8_t page_size_log2;
-    uint32_t first_off; /* byte offset of the region within page 0      */
-};
-
-struct ionic_qp_ring {
-    bool valid;
-    uint8_t ib_qp_type;
-
-    struct dp_buf sq_buf;
-    struct dp_buf rq_buf;
-    uint32_t sq_depth;
-    uint32_t rq_depth;
-    uint8_t sq_stride_log2;
-    uint8_t rq_stride_log2;
-    uint32_t sq_cq_id;
-    uint32_t rq_cq_id;
-
-    uint32_t sq_cons;
-    uint32_t rq_prod;
-    uint32_t rq_cons;
-    uint32_t msn; /* running send sequence for SEND_MSN completions */
-
-    /*
-     * The Q_Key a datagram must present to be delivered into this QP, set
-     * by MODIFY_QP with IB_QP_QKEY. Only meaningful for UD and GSI; a
-     * connected QP never consults it, because it never accepts a datagram
-     * at all.
-     */
-    uint32_t qkey;
-    bool qkey_valid;
-
-    bool dest_valid;
-    uint32_t dest_qp_id;
-    uint32_t dest_node_id; /* UINT32_MAX = local / no mesh */
-
-    /* Bound to a shared receive queue, in which case rq_buf/rq_prod/rq_cons
-     * above are unused and every receive is taken from dp->srq[srq_id]. */
-    bool has_srq;
-    uint32_t srq_id;
-};
-
-/*
- * A resolved address handle: where a UD send's ah_id points.
- */
-struct ionic_ah {
-    bool valid;
-    uint8_t dgid[16];
-    /* The guest's own GID, taken from the same RoCE header template the
-     * destination came out of. Needed to put a truthful source in the GRH of
-     * a datagram leaving for another instance; see dp_ud_grh(). */
-    uint8_t sgid[16];
-    bool sgid_valid;
-    uint8_t dmac[6];
-    uint32_t node_id; /* UINT32_MAX = local / no mesh */
-};
-
-/*
- * A shared receive queue's ring. Same shape as a QP's RQ, plus a lock,
- * because unlike an RQ this is drawn from by several QPs and the local
- * send path and the mesh receive path run on different threads.
- */
-struct ionic_srq_ring {
-    bool valid;
-    struct dp_buf buf;
-    uint32_t depth;
-    uint8_t stride_log2;
-    uint32_t prod;
-    uint32_t cons;
-    pthread_mutex_t lock;
-};
-
-struct ionic_cq_ring {
-    bool valid;
-    struct dp_buf buf;
-    uint32_t depth;
-    uint8_t stride_log2;
-    uint32_t prod;
-    uint32_t cons; /* guest's consumer index, wrapped, from its ring-0 db */
-    bool color;
-    bool armed;
-    uint32_t eq_id;
-};
-
-struct dp_mr {
-    bool valid;
-    uint32_t lkey;
-    uint64_t va;
-    uint64_t length;
-    struct dp_buf buf;
-};
-
-struct dp_sge_list {
-    uint64_t va[MAX_SGE];
-    uint32_t len[MAX_SGE];
-    uint32_t lkey[MAX_SGE];
-    uint32_t count;
-    uint32_t total;
-};
 
 /* -------------------------------------------------------------------------
  * Cross-instance wire protocol
@@ -365,25 +254,6 @@ struct ionic_wire_hdr {
 #define IONIC_WIRE_MAX_PAYLOAD \
     ((uint32_t)(IONIC_MESH_MAX_MSG - sizeof(struct ionic_wire_hdr)))
 
-/*
- * A work request that has been transmitted but not yet answered.  Remote
- * completions have to wait for the peer: posting one at transmit time would
- * report a latency that excludes the network, and for READ and atomics the
- * result has not even arrived yet.
- */
-struct dp_pending {
-    bool valid;
-    uint32_t req_id;
-    uint32_t qp_id;
-    uint64_t wqe_id;
-    uint32_t msn;
-    bool use_msn;    /* RC/UC retire by MSN, everything else by SQ index */
-    bool signalled;  /* NPG completions are only posted when asked for */
-    uint32_t length; /* expected READ/ATOMIC response size */
-    struct dp_sge_list local; /* scatter target for the response */
-    uint64_t deadline_ms;
-};
-
 /* A mesh message parked by the receive thread for the vfu thread to apply. */
 struct dp_inmsg {
     struct dp_inmsg *next;
@@ -401,64 +271,21 @@ struct dp_inmsg {
  */
 #define RNR_RETRY_MS 5000u
 
-struct ionic_datapath {
-    vfu_ctx_t *vfu_ctx;
-    struct ionic_eth_emu *eth_emu;
-    pvrdma_handle_t pvrdma_handle;
+/* -------------------------------------------------------------------------
+ * Byte accounting
+ * -------------------------------------------------------------------------
+ */
 
-    ionic_dp_cq_event_fn_t cq_event_fn;
-    void *cq_event_opaque;
-
-    /* In-process NVMe-oF controller, NULL unless --backend nvmeof. */
-    struct nvmeof_target *nvmeof;
-    struct nvmeof_cm *nvmeof_cm;
-    uint8_t nvmeof_sgid[16]; /* controller GID, learned from the CM REQ */
-    uint8_t nvmeof_dgid[16]; /* the guest's own GID                    */
-
-    /* In-process S3 object store, NULL unless --backend s3. */
-    struct s3_target *s3;
-    struct s3_tcp *s3_tcp;
-
-    struct ionic_qp_ring *qp;   /* indexed by driver qp_id */
-    struct ionic_cq_ring *cq;   /* indexed by driver cq_id */
-    struct ionic_srq_ring *srq; /* indexed by driver srq_id */
-    struct ionic_ah *ah;        /* indexed by driver ah_id */
-    struct dp_mr mr[MAX_MR];
-
-    uint32_t qp_count;
-    uint32_t cq_count;
-    uint32_t srq_count;
-    uint32_t ah_count;
-
-    /* Mesh state.  local_node is UINT32_MAX until a mesh backend is
-     * attached, which keeps every peer local for loopback runs. */
-    uint32_t local_node;
-    /* The poll loop re-attaches the handle every iteration, so the mesh
-     * state is only worth logging when it actually changes. */
-    bool mesh_reported;
-    uint32_t next_req_id;
-    struct dp_pending pending[MAX_PENDING];
-
-    pthread_mutex_t rx_lock;
-    struct dp_inmsg *rx_head;
-    struct dp_inmsg *rx_tail;
-    /*
-     * Messages on @rx_head that have never been tried.  Only these justify
-     * skipping the main loop's idle sleep: a message put back by the RNR
-     * defer path will still be undeliverable on the next pass, so treating it
-     * as work would spin the loop until the peer posts a receive.
-     */
-    uint32_t rx_fresh;
-
-    /*
-     * Why the last transfer stopped short.  A byte count on its own cannot
-     * say: a short copy is a receive buffer that ran out, an SGE outside the
-     * MR its key names, or a guest mapping that refused the DMA -- and those
-     * are three different completion statuses.  Everything that touches this
-     * runs on the vfu thread, so a plain field is enough.
-     */
-    uint32_t fault;
-};
+void ionic_dp_rdma_bytes(struct ionic_datapath *dp, uint32_t qp_id,
+                         uint64_t bytes, enum pvrdma_stat_op op,
+                         unsigned int dirs)
+{
+    pvrdma_rdma_bytes_count(dp->pvrdma_handle, qp_id, bytes, op);
+    if (dirs & DP_RDMA_TX)
+        ionic_eth_emu_count_rdma(dp->eth_emu, bytes, true);
+    if (dirs & DP_RDMA_RX)
+        ionic_eth_emu_count_rdma(dp->eth_emu, bytes, false);
+}
 
 /* -------------------------------------------------------------------------
  * DMA helpers
@@ -482,6 +309,9 @@ static int dp_dma_rw(vfu_ctx_t *vfu_ctx, uint64_t gpa, void *buf, size_t len,
 
     if (!len)
         return 0;
+
+    if (!ernic_dma_range_ok(gpa, len))
+        return -EINVAL;
 
     sg = malloc(dma_sg_size() * DP_DMA_SGL_MAX);
     if (!sg)
@@ -550,7 +380,7 @@ static int dp_dma_write(vfu_ctx_t *vfu_ctx, uint64_t gpa, const void *buf,
  * -------------------------------------------------------------------------
  */
 
-static void buf_release(struct dp_buf *b)
+void ionic_dp_buf_release(struct dp_buf *b)
 {
     free(b->pages);
     memset(b, 0, sizeof(*b));
@@ -562,10 +392,10 @@ static void buf_release(struct dp_buf *b)
  *
  * The exponents are guest bytes. The SRQ pair is bounded at the adminq
  * before it gets here, but the QP pair is not yet, so this must not shift by
- * the width of the type or more. Returning 0 makes buf_init() refuse, which
- * is the right answer for a geometry describing more memory than exists.
+ * the width of the type or more. Returning 0 makes ionic_dp_buf_init() refuse,
+ * which is the right answer for a geometry describing more memory than exists.
  */
-static uint64_t ring_span_bytes(uint8_t depth_log2, uint8_t stride_log2)
+uint64_t ionic_dp_ring_span_bytes(uint8_t depth_log2, uint8_t stride_log2)
 {
     unsigned total = (unsigned)depth_log2 + (unsigned)stride_log2;
 
@@ -587,11 +417,11 @@ static uint64_t ring_span_bytes(uint8_t depth_log2, uint8_t stride_log2)
  * one for a region that does not start on a page boundary. Anything beyond
  * that is not a geometry the device could honour.
  */
-static int buf_init(struct ionic_datapath *dp, struct dp_buf *b,
-                    const struct ionic_dp_buf_desc *desc, uint64_t va,
-                    uint64_t span)
+int ionic_dp_buf_init(struct ionic_datapath *dp, struct dp_buf *b,
+                      const struct ionic_dp_buf_desc *desc, uint64_t va,
+                      uint64_t span)
 {
-    buf_release(b);
+    ionic_dp_buf_release(b);
     if (desc->page_size_log2 > 30)
         return -EINVAL;
     b->page_size_log2 = desc->page_size_log2 ? desc->page_size_log2 : 12;
@@ -622,7 +452,7 @@ static int buf_init(struct ionic_datapath *dp, struct dp_buf *b,
     }
     if (dp_dma_read(dp->vfu_ctx, desc->dma_addr, b->pages,
                     (size_t)desc->map_count * 8) < 0) {
-        buf_release(b);
+        ionic_dp_buf_release(b);
         return -EIO;
     }
     for (uint32_t i = 0; i < desc->map_count; i++)
@@ -808,22 +638,22 @@ void ionic_datapath_destroy(struct ionic_datapath *dp)
     pthread_mutex_destroy(&dp->rx_lock);
 
     for (uint32_t i = 0; i < dp->qp_count; i++) {
-        buf_release(&dp->qp[i].sq_buf);
-        buf_release(&dp->qp[i].rq_buf);
+        ionic_dp_buf_release(&dp->qp[i].sq_buf);
+        ionic_dp_buf_release(&dp->qp[i].rq_buf);
     }
     for (uint32_t i = 0; i < dp->cq_count; i++)
-        buf_release(&dp->cq[i].buf);
+        ionic_dp_buf_release(&dp->cq[i].buf);
     for (int i = 0; i < MAX_MR; i++)
-        buf_release(&dp->mr[i].buf);
+        ionic_dp_buf_release(&dp->mr[i].buf);
     free(dp->qp);
     free(dp->cq);
     for (uint32_t i = 0; i < dp->srq_count; i++) {
-        /* Each live SRQ owns the page table buf_init() built for it.
+        /* Each live SRQ owns the page table ionic_dp_buf_init() built for it.
          * Destroying only the mutex leaked one allocation per SRQ on every
          * normal device shutdown. The mutex is destroyed for every slot,
          * live or not, because every slot's was initialised at create. */
         if (dp->srq[i].valid)
-            buf_release(&dp->srq[i].buf);
+            ionic_dp_buf_release(&dp->srq[i].buf);
         pthread_mutex_destroy(&dp->srq[i].lock);
     }
     free(dp->srq);
@@ -844,19 +674,22 @@ void ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
         return;
 
     struct ionic_cq_ring *c = &dp->cq[cq_id];
-    uint8_t stride_log2 = ring->stride_log2 ? ring->stride_log2 : 5;
+    uint8_t stride_log2 = ionic_dp_cq_stride_log2(ring);
 
     /*
      * The guest picks this geometry, so it has to be checked before it is
      * used: a stride below CQE_SIZE would make each completion overwrite the
      * one after it, and the shifts are undefined once the exponent reaches the
-     * width of the type.
+     * width of the type. The admin queue refuses such a CQ before this is
+     * called; this keeps the shifts below defined whoever the caller is.
      */
-    if (stride_log2 < 5 || stride_log2 > 16 || ring->depth_log2 > 24) {
+    if (!ionic_dp_ring_geometry_ok(ring->depth_log2, stride_log2,
+                                   IONIC_CQ_MIN_STRIDE_LOG2,
+                                   IONIC_RING_MAX_STRIDE_LOG2)) {
         vfu_log(dp->vfu_ctx, LOG_ERR,
                 "ionic_datapath: CQ %u bad geometry depth=2^%u stride=2^%u",
                 cq_id, ring->depth_log2, stride_log2);
-        buf_release(&c->buf);
+        ionic_dp_buf_release(&c->buf);
         c->valid = false;
         return;
     }
@@ -867,8 +700,9 @@ void ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
      * time. Reading it here made the span zero and rejected every CQ in
      * the device, so nothing ever completed while data still moved.
      */
-    if (buf_init(dp, &c->buf, &ring->buf, 0,
-                 ring_span_bytes(ring->depth_log2, stride_log2)) < 0) {
+    if (ionic_dp_buf_init(
+            dp, &c->buf, &ring->buf, 0,
+            ionic_dp_ring_span_bytes(ring->depth_log2, stride_log2)) < 0) {
         vfu_log(dp->vfu_ctx, LOG_ERR,
                 "ionic_datapath: CQ %u page table read failed", cq_id);
         c->valid = false;
@@ -892,7 +726,7 @@ void ionic_datapath_unregister_cq(struct ionic_datapath *dp, uint32_t cq_id)
 {
     if (!dp || cq_id >= dp->cq_count)
         return;
-    buf_release(&dp->cq[cq_id].buf);
+    ionic_dp_buf_release(&dp->cq[cq_id].buf);
     dp->cq[cq_id].valid = false;
 }
 
@@ -906,10 +740,34 @@ void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
         return;
 
     struct ionic_qp_ring *q = &dp->qp[qp_id];
-    if (buf_init(dp, &q->sq_buf, &sq->buf, 0,
-                 ring_span_bytes(sq->depth_log2, sq->stride_log2)) < 0 ||
-        buf_init(dp, &q->rq_buf, &rq->buf, 0,
-                 ring_span_bytes(rq->depth_log2, rq->stride_log2)) < 0) {
+
+    /*
+     * The depths and strides are guest bytes, shifted below. The admin queue
+     * refuses a QP whose rings are out of bounds before this is called; this
+     * keeps the shifts defined whoever the caller is. The RQ has no stride
+     * floor here because a QP bound to an SRQ has no ring of its own and
+     * leaves its geometry zero; the admin queue checks the floor when it
+     * does have one.
+     */
+    if (!ionic_dp_ring_geometry_ok(sq->depth_log2, sq->stride_log2,
+                                   IONIC_WQE_MIN_STRIDE_LOG2,
+                                   IONIC_WQE_MAX_STRIDE_LOG2) ||
+        !ionic_dp_ring_geometry_ok(rq->depth_log2, rq->stride_log2, 0,
+                                   IONIC_WQE_MAX_STRIDE_LOG2)) {
+        vfu_log(dp->vfu_ctx, LOG_ERR,
+                "ionic_datapath: QP %u bad geometry sq(depth=2^%u stride=2^%u) "
+                "rq(depth=2^%u stride=2^%u)",
+                qp_id, sq->depth_log2, sq->stride_log2, rq->depth_log2,
+                rq->stride_log2);
+        return;
+    }
+
+    if (ionic_dp_buf_init(
+            dp, &q->sq_buf, &sq->buf, 0,
+            ionic_dp_ring_span_bytes(sq->depth_log2, sq->stride_log2)) < 0 ||
+        ionic_dp_buf_init(
+            dp, &q->rq_buf, &rq->buf, 0,
+            ionic_dp_ring_span_bytes(rq->depth_log2, rq->stride_log2)) < 0) {
         vfu_log(dp->vfu_ctx, LOG_ERR,
                 "ionic_datapath: QP %u page table read failed", qp_id);
         return;
@@ -946,8 +804,8 @@ void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id)
         return;
     if (dp->nvmeof_cm)
         nvmeof_cm_drop_qp(dp->nvmeof_cm, qp_id);
-    buf_release(&dp->qp[qp_id].sq_buf);
-    buf_release(&dp->qp[qp_id].rq_buf);
+    ionic_dp_buf_release(&dp->qp[qp_id].sq_buf);
+    ionic_dp_buf_release(&dp->qp[qp_id].rq_buf);
     dp->qp[qp_id].valid = false;
 }
 
@@ -1003,12 +861,13 @@ int ionic_datapath_register_srq(struct ionic_datapath *dp, uint32_t srq_id,
     if (sr->valid) {
         /* Re-registering an id the guest reused: drop the old page table
          * rather than leaking it. */
-        buf_release(&sr->buf);
+        ionic_dp_buf_release(&sr->buf);
         sr->valid = false;
     }
 
-    if (buf_init(dp, &sr->buf, &rq->buf, 0,
-                 ring_span_bytes(rq->depth_log2, rq->stride_log2)) < 0) {
+    if (ionic_dp_buf_init(
+            dp, &sr->buf, &rq->buf, 0,
+            ionic_dp_ring_span_bytes(rq->depth_log2, rq->stride_log2)) < 0) {
         pthread_mutex_unlock(&sr->lock);
         vfu_log(dp->vfu_ctx, LOG_ERR,
                 "ionic_datapath: SRQ %u page table read failed", srq_id);
@@ -1039,7 +898,7 @@ void ionic_datapath_unregister_srq(struct ionic_datapath *dp, uint32_t srq_id)
     pthread_mutex_lock(&sr->lock);
     if (sr->valid) {
         sr->valid = false;
-        buf_release(&sr->buf);
+        ionic_dp_buf_release(&sr->buf);
         sr->depth = 0;
         sr->stride_log2 = 0;
         sr->prod = sr->cons = 0;
@@ -1182,7 +1041,7 @@ void ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
 
     /* A memory region's span is its length; the guest said so in
      * CREATE_MR and the rkey checks already hold it to that. */
-    if (buf_init(dp, &m->buf, buf, va, length) < 0) {
+    if (ionic_dp_buf_init(dp, &m->buf, buf, va, length) < 0) {
         vfu_log(dp->vfu_ctx, LOG_ERR,
                 "ionic_datapath: MR %#x page table read failed", lkey);
         return;
@@ -1205,7 +1064,7 @@ void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey)
     struct dp_mr *m = dp ? mr_find(dp, lkey) : NULL;
     if (!m)
         return;
-    buf_release(&m->buf);
+    ionic_dp_buf_release(&m->buf);
     m->valid = false;
 }
 
@@ -1406,6 +1265,85 @@ static uint32_t dp_host_to_sge(struct ionic_datapath *dp, uint32_t lkey,
     return done;
 }
 
+#ifdef ERNIC_HAVE_P4
+/*
+ * Blocks the operands are streamed through.  Small enough that three of
+ * them on the stack of a function on the poll-loop thread is unremarkable,
+ * large enough that a megabyte moves in a few dozen passes.
+ */
+#define FP8_MAP_CHUNK 2048u
+
+/*
+ * Is @key one the guest may name as an operand here?
+ *
+ * Key 0 is IONIC_DMA_LKEY, which means "the va is already a bus address"
+ * and bypasses the memory region table entirely -- mr_covers() returns
+ * true for it without looking anything up.  That is a deliberate internal
+ * convention, and it is not one a guest-supplied compute request may use:
+ * it would let the request name any memory the VMM exported rather than
+ * only what the guest registered.
+ */
+static bool fp8_key_ok(struct ionic_datapath *dp, uint32_t key, uint64_t va,
+                       uint32_t len)
+{
+    return key != 0 && mr_covers(dp, key, va, len);
+}
+
+int ionic_datapath_fp8_map(struct ionic_datapath *dp, uint8_t op,
+                           uint32_t a_lkey, uint64_t a_va, uint32_t b_lkey,
+                           uint64_t b_va, uint32_t len, uint32_t c_rkey,
+                           uint64_t c_va)
+{
+    /*
+     * Both operands are staged a block at a time rather than combined in
+     * place.  They are independently scattered across guest pages and the
+     * operation has to see matching elements of each, which a page-at-a-
+     * time walk of two separate scatter lists does not give.
+     */
+    uint8_t a[FP8_MAP_CHUNK];
+    uint8_t b[FP8_MAP_CHUNK];
+    uint8_t c[FP8_MAP_CHUNK];
+    uint32_t done = 0;
+
+    if (!dp || len == 0 || len > IONIC_FP8_MAP_MAX)
+        return -EINVAL;
+
+    /*
+     * Every region is checked in full before a byte moves.  Checking as we
+     * go would leave a half-written destination behind when the tail of an
+     * operand turned out not to be registered, which is the transfer-then-
+     * report pattern the rest of this file was fixed away from.
+     */
+    if (!fp8_key_ok(dp, a_lkey, a_va, len) ||
+        !fp8_key_ok(dp, b_lkey, b_va, len) ||
+        !fp8_key_ok(dp, c_rkey, c_va, len))
+        return -EACCES;
+
+    while (done < len) {
+        uint32_t n = len - done;
+
+        if (n > FP8_MAP_CHUNK)
+            n = FP8_MAP_CHUNK;
+
+        if (dp_sge_to_host(dp, a_lkey, a_va + done, a, n) != n ||
+            dp_sge_to_host(dp, b_lkey, b_va + done, b, n) != n)
+            return -EFAULT;
+
+        if (!p4_fp8_map((enum p4_fp8_op)op, a, b, n, c))
+            return -EINVAL;
+
+        /* Out through the same path an RDMA WRITE takes, so the result
+         * reaches the destination the way any other payload would. */
+        if (dp_host_to_sge(dp, c_rkey, c_va + done, c, n) != n)
+            return -EFAULT;
+
+        done += n;
+    }
+
+    return 0;
+}
+#endif /* ERNIC_HAVE_P4 */
+
 /* -------------------------------------------------------------------------
  * CQ posting
  * -------------------------------------------------------------------------
@@ -1473,6 +1411,21 @@ static void cq_post(struct ionic_datapath *dp, uint32_t cq_id,
     qtf = htobe32(qtf);
     memcpy(cqe + 28, &qtf, 4);
 
+    /*
+     * No error completion goes out unannounced. One of these ends the queue
+     * pair for the consumer -- a provider that polls one stops polling
+     * normally and flushes everything behind it, so every later request
+     * comes back IB_WC_WR_FLUSH_ERR and the thing that actually went wrong
+     * is no longer visible from outside. Saying it here is the difference
+     * between a named fault and a consumer that reports only that its work
+     * was flushed.
+     */
+    if (error && status_len != IONIC_STS_WQE_FLUSHED_ERR)
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: CQ %u completing QP %u in error: status %u, "
+                "cqe type %u",
+                cq_id, qid, status_len, type >> 5);
+
     uint32_t stride = 1u << c->stride_log2;
     uint64_t base = (uint64_t)(c->prod % c->depth) * stride;
 
@@ -1498,10 +1451,109 @@ static void cq_post(struct ionic_datapath *dp, uint32_t cq_id,
     cq_fire_event(dp, c, cq_id);
 }
 
+/* ::ffff:a.b.c.d -- the GID an IPv4 RoCEv2 port advertises for itself. */
+static bool dp_gid_is_v4mapped(const uint8_t gid[16])
+{
+    static const uint8_t prefix[12] = {0, 0, 0, 0, 0,    0,
+                                       0, 0, 0, 0, 0xff, 0xff};
+    return memcmp(gid, prefix, sizeof(prefix)) == 0;
+}
+
+/* The IPv6 form: a real GRH, with the GIDs where struct ib_grh keeps them. */
+static void dp_grh_ipv6(uint8_t grh[IB_GRH_SIZE], uint32_t paylen,
+                        const uint8_t *sgid, const uint8_t *dgid)
+{
+    memset(grh, 0, IB_GRH_SIZE);
+    grh[0] = 0x60; /* IPv6 version nibble, as RoCEv2 GRHs carry */
+    uint16_t pl = htobe16((uint16_t)paylen);
+    memcpy(grh + 4, &pl, 2);
+    grh[6] = 0x1b; /* IB_GRH_NEXT_HDR */
+    grh[7] = 64;
+    if (sgid)
+        memcpy(grh + 8, sgid, 16);
+    if (dgid)
+        memcpy(grh + 24, dgid, 16);
+}
+
+/*
+ * The IPv4 form, which is not a GRH at all: RoCEv2 over IPv4 reports the
+ * packet's IPv4 header, and the IB spec puts it in the *last* 20 bytes of
+ * the 40-byte field. The kernel reads it through union rdma_network_hdr,
+ * which is struct iphdr behind reserved[20], so the source address lands at
+ * offset 32 and the destination at 36 -- nowhere near offsets 8 and 24,
+ * where the IPv6 form keeps its GIDs. Real hardware delivers exactly this.
+ *
+ * Which form a receiver applies is decided by the completion, not by looking
+ * at the bytes: the driver turns CQE_RECV_IS_IPV4 into wc->network_hdr_type
+ * and the kernel parses by that alone. So the flag and the header have to be
+ * built together, or a mismatch is read as a well-formed header at the wrong
+ * offsets rather than rejected -- see dp_grh_is_ipv4().
+ */
+static void dp_grh_ipv4(uint8_t grh[IB_GRH_SIZE], uint32_t paylen,
+                        const uint8_t *sgid, const uint8_t *dgid)
+{
+    struct ip_header ip;
+
+    memset(grh, 0, IB_GRH_SIZE);
+    memset(&ip, 0, sizeof(ip));
+    ip.version_ihl = 0x45; /* IPv4, a 5-word header with no options */
+    ip.total_len = htobe16((uint16_t)(sizeof(ip) + paylen));
+    ip.ttl = 64;
+    ip.protocol = IP_PROTOCOL_UDP; /* RoCEv2 rides UDP port 4791 */
+    memcpy(&ip.src_ip, sgid + 12, 4);
+    memcpy(&ip.dst_ip, dgid + 12, 4);
+    ip.checksum = ip_checksum(&ip, sizeof(ip));
+
+    memcpy(grh + IB_GRH_SIZE - sizeof(ip), &ip, sizeof(ip));
+}
+
+/*
+ * Build whichever form the addresses call for. A v4-mapped pair means the
+ * port is RoCEv2 over IPv4 and the receiver will parse an IPv4 header;
+ * anything else -- a link-local fe80:: GID, or no address handle at all --
+ * stays IPv6.
+ *
+ * Which form was chosen is deliberately not returned: the completion reads
+ * it back off the bytes with dp_grh_is_ipv4() instead, so that a header
+ * built here and one that arrived from another mesh instance are flagged by
+ * the same rule, with no second copy of the decision to drift.
+ */
+static void dp_grh_build(uint8_t grh[IB_GRH_SIZE], uint32_t paylen,
+                         const uint8_t *sgid, const uint8_t *dgid)
+{
+    if (sgid && dgid && dp_gid_is_v4mapped(sgid) && dp_gid_is_v4mapped(dgid)) {
+        dp_grh_ipv4(grh, paylen, sgid, dgid);
+        return;
+    }
+    dp_grh_ipv6(grh, paylen, sgid, dgid);
+}
+
+/*
+ * Which form a 40-byte header already in hand is in.
+ *
+ * The completion flag is derived from the delivered bytes rather than
+ * threaded down from whoever built them, because a datagram from another
+ * mesh instance arrives with its header already on the front: it was built
+ * by the sender, and the mesh protocol carries no room to say which form it
+ * chose. Reading it here keeps the flag true for a locally built header and
+ * a received one alike, with nothing to drift.
+ *
+ * Both halves are checked. The IPv4 form leaves bytes 0..19 zero and starts
+ * its header with a 0x4 version nibble at offset 20; the IPv6 form has 0x6
+ * at offset 0 and arbitrary GID bytes at 20. Neither test alone separates
+ * them -- an IPv6 GRH whose sgid happens to hold 0x4x at offset 20 would
+ * pass the second.
+ */
+static bool dp_grh_is_ipv4(const uint8_t *grh, uint32_t len)
+{
+    return grh && len >= IB_GRH_SIZE && (grh[0] & 0xf0) != 0x60 &&
+           (grh[IB_GRH_SIZE - 20] & 0xf0) == 0x40;
+}
+
 static void cq_post_recv(struct ionic_datapath *dp, uint32_t cq_id,
                          uint32_t qid, uint64_t rq_wqe_id, uint32_t src_qpn,
                          uint8_t recv_op, uint32_t imm_be, uint32_t byte_len,
-                         bool error, const uint8_t *src_mac)
+                         bool error, const uint8_t *src_mac, bool is_ipv4)
 {
     uint8_t body[CQE_SIZE - 8];
     memset(body, 0, sizeof(body));
@@ -1513,19 +1565,106 @@ static void cq_post_recv(struct ionic_datapath *dp, uint32_t cq_id,
         ((uint32_t)recv_op << CQE_RECV_OP_SHIFT) | (src_qpn & 0xffffffu);
     /*
      * A UD or GSI completion is only usable if it also names the sender's
-     * link layer: the driver turns src_mac and the IPv4 bit into
-     * IB_WC_WITH_SMAC and a network_hdr_type, and ib_cm refuses a MAD whose
-     * work completion has neither.
+     * link layer: the driver turns src_mac into IB_WC_WITH_SMAC, and ib_cm
+     * refuses a MAD whose work completion does not carry one.
      */
-    if (src_mac) {
-        qpn_op |= CQE_RECV_IS_IPV4;
+    if (src_mac)
         memcpy(body + 12, src_mac, 6);
-    }
+    /*
+     * Separate from the MAC, and deliberately so. This bit becomes
+     * wc->network_hdr_type, which decides where the receiver reads the
+     * datagram's addresses out of the 40-byte header; setting it alongside
+     * the MAC claimed IPv4 for every UD receive while dp_ud_grh() was still
+     * writing the IPv6 form, so the kernel read the middle of the
+     * destination GID as the source address. It must follow the header.
+     */
+    if (is_ipv4)
+        qpn_op |= CQE_RECV_IS_IPV4;
     qpn_op = htobe32(qpn_op);
     memcpy(body + 8, &qpn_op, 4);
     memcpy(body + 20, &imm_be, 4); /* recv.imm_data_rkey, already be32 */
 
     cq_post(dp, cq_id, body, byte_len, CQE_TYPE_RECV, qid, error);
+}
+
+/*
+ * Tell the driver a queue has gone into flush.
+ *
+ * This is one completion per queue, not one per outstanding work request.
+ * The flush CQE consumes no WQE and carries no wqe_id -- the driver ignores
+ * the field -- it only says "this queue is flushing now", and the driver
+ * then completes whatever it still has posted with IB_WC_WR_FLUSH_ERR out
+ * of its own records. The device cannot do that part itself: the wr_id a
+ * consumer gets back lives in driver memory and was never handed down here.
+ *
+ * It goes through cq_post() rather than writing the ring directly because
+ * the event matters as much as the CQE. A consumer blocked in
+ * ibv_get_cq_event() is woken by nothing else, and that is exactly where a
+ * process sits when it has disconnected and is waiting for its last receive
+ * to come back.
+ */
+static void cq_post_flush(struct ionic_datapath *dp, uint32_t cq_id,
+                          uint32_t qid, uint32_t type)
+{
+    uint8_t body[CQE_SIZE - 8];
+
+    memset(body, 0, sizeof(body));
+    cq_post(dp, cq_id, body, IONIC_STS_WQE_FLUSHED_ERR, type, qid, true);
+}
+
+/* Defined with the other pending_* helpers, below the transmit path. */
+static uint32_t pending_cancel_qp(struct ionic_datapath *dp, uint32_t qp_id);
+
+/*
+ * A QP has entered the Error state: start the flush on both its queues.
+ *
+ * Every work request still outstanding has to be completed -- with
+ * IB_WC_WR_FLUSH_ERR -- or a consumer waits for it forever. That is not
+ * pedantry about the spec: rping keeps a receive posted for the whole
+ * connection, so when it disconnects its completion thread sits in
+ * ibv_get_cq_event() and the process never exits. Anything that drains its
+ * CQ on teardown behaves the same way.
+ *
+ * The send queue is flushed even when it looks idle. A send completes when
+ * the peer acknowledges it, so "nothing left here" is not the same as
+ * "nothing outstanding", and the driver is the side that knows; it treats
+ * this as a hint and starts flushing once it has polled everything that can
+ * still complete normally.
+ *
+ * A QP bound to a shared receive queue gets no receive flush. The WQEs in
+ * an SRQ are the SRQ's, not this QP's -- other QPs are still drawing from
+ * them -- and flushing a queue that is still live would complete another
+ * QP's receives out from under it.
+ */
+void ionic_datapath_flush_qp(struct ionic_datapath *dp, uint32_t qp_id)
+{
+    if (!dp || qp_id >= dp->qp_count)
+        return;
+
+    struct ionic_qp_ring *q = &dp->qp[qp_id];
+    if (!q->valid)
+        return;
+
+    /*
+     * Before the flush is published, not after. A pending entry holds the
+     * SGE list of a READ or atomic this QP posted, naming guest memory the
+     * consumer is about to get back: the flush CQE is what lets it complete
+     * those work requests and free or reuse the buffer. A response that
+     * arrives after that -- the peer is a whole other instance, and nothing
+     * here can stop it answering -- would find the entry still valid,
+     * dp_scatter() into memory that is no longer the request's, and post a
+     * second completion for a work request the driver has already flushed.
+     */
+    uint32_t cancelled = pending_cancel_qp(dp, qp_id);
+
+    cq_post_flush(dp, q->sq_cq_id, qp_id, CQE_TYPE_SEND_NPG);
+    if (!q->has_srq)
+        cq_post_flush(dp, q->rq_cq_id, qp_id, CQE_TYPE_RECV);
+
+    vfu_log(dp->vfu_ctx, LOG_INFO,
+            "ionic_datapath: QP %u flushed%s, %u deferred request(s) cancelled",
+            qp_id, q->has_srq ? " (send only, receives belong to its SRQ)" : "",
+            cancelled);
 }
 
 static void cq_post_send_msn(struct ionic_datapath *dp, uint32_t cq_id,
@@ -1584,6 +1723,31 @@ static void parse_sges(const uint8_t *wqe, uint32_t stride, uint8_t num_sge,
         out->total += out->len[i];
         out->count++;
     }
+}
+
+/*
+ * Does every SGE of a work request name memory this guest registered?
+ *
+ * The SGEs of a send queue WQE are always local: the gather source of a
+ * SEND or an RDMA WRITE, the scatter destination of an RDMA READ, the
+ * result buffer of an atomic. So a key that resolves to nothing, or a
+ * length that runs past the region it names, is a local protection error
+ * and belongs on this QP's own send completion.
+ *
+ * A zero-length SGE is skipped rather than checked. It accesses nothing,
+ * and the key in one is not required to be valid -- UCX's rc_verbs flush
+ * posts exactly that.
+ */
+static bool dp_local_sges_ok(struct ionic_datapath *dp,
+                             const struct dp_sge_list *l)
+{
+    for (uint32_t i = 0; i < l->count; i++) {
+        if (l->len[i] == 0)
+            continue;
+        if (!mr_covers(dp, l->lkey[i], l->va[i], l->len[i]))
+            return false;
+    }
+    return true;
 }
 
 /* Walk an SGE list into or out of a linear host buffer. */
@@ -1703,7 +1867,9 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
     uint64_t run;
     uint64_t gpa = buf_gpa(ring_buf, (uint64_t)slot * stride, &run);
 
-    uint8_t rwqe[256];
+    /* Big enough for the largest stride a QP's RQ or an SRQ can have, so
+     * the whole WQE is read. */
+    uint8_t rwqe[1u << IONIC_WQE_MAX_STRIDE_LOG2];
     uint32_t read_sz = stride < sizeof(rwqe) ? stride : (uint32_t)sizeof(rwqe);
     if (!run || run < read_sz ||
         dp_dma_read(dp->vfu_ctx, gpa, rwqe, read_sz) < 0) {
@@ -1719,11 +1885,11 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
     /*
      * read_sz, not stride: parse_sges() derives how many SGEs it may walk
      * from the size it is given, and only read_sz bytes were read. Passing
-     * the full stride let a guest-chosen stride_log2 >= 9 authorise walking
-     * up to MAX_SGE entries -- byte 543 of this 256-byte buffer -- because
-     * parse_sges() caps on MAX_SGE and avail/16 but has no idea how much of
-     * the WQE actually arrived. The two agree for every real stride; they
-     * differ only in the case that reads off the end.
+     * a stride larger than the buffer would authorise walking up to
+     * MAX_SGE entries -- byte 543 -- because parse_sges() caps on MAX_SGE
+     * and avail/16 but has no idea how much of the WQE actually arrived.
+     * The ring geometry checks keep the two equal; read_sz is what keeps
+     * the walk inside rwqe if they ever aren't.
      */
     parse_sges(rwqe, read_sz, rwqe[9], &dst);
 
@@ -1789,8 +1955,33 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
      */
     bool truncated = copied < src->total;
 
-    pvrdma_rdma_bytes_count(dp->pvrdma_handle, dst_qp_id, copied,
-                            PVRDMA_STAT_RECV);
+    /*
+     * A short receive completes in error, and that error is the end of the
+     * queue pair as far as a consumer is concerned: a provider that sees one
+     * stops polling normally and flushes the rest, so every request after it
+     * comes back as IB_WC_WR_FLUSH_ERR and the original cause is nowhere in
+     * sight. Saying so here is the difference between a diagnosis and a
+     * consumer reporting only that its work requests were flushed, which is
+     * what libfabric's rxm does and what made this expensive to find.
+     *
+     * The status is reported rather than named: this branch is not only the
+     * buffer running out. dp_fault_status() returns the protection or access
+     * fault instead when a scatter SGE would not resolve, and calling that
+     * LOCAL_LEN_ERR would send whoever reads this looking for a receive that
+     * was too small when the key was the problem. The capacity is dst.total,
+     * what the guest posted; @copied is only what reached it, which is zero
+     * when the first SGE already failed.
+     */
+    if (truncated) {
+        uint32_t status = dp_fault_status(dp, IONIC_STS_LOCAL_LEN_ERR);
+
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: QP %u receive short: %u bytes posted, %u "
+                "arrived from QP %u, %u landed; completing status %u",
+                dst_qp_id, dst.total, src->total, src_qp_id, copied, status);
+    }
+
+    ionic_dp_rdma_bytes(dp, dst_qp_id, copied, PVRDMA_STAT_RECV, DP_RDMA_RX);
 
     /* GSI (1) and UD (4) receives carry a source MAC; nothing else does. */
     uint8_t smac[6];
@@ -1801,7 +1992,8 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
     cq_post_recv(
         dp, dq->rq_cq_id, dst_qp_id, rq_wqe_id, src_qp_id, recv_op, imm_be,
         truncated ? dp_fault_status(dp, IONIC_STS_LOCAL_LEN_ERR) : copied,
-        truncated, ud ? smac : NULL);
+        truncated, ud ? smac : NULL,
+        ud && dp_grh_is_ipv4(src_host, src->total));
 
     return copied;
 }
@@ -1955,6 +2147,28 @@ static struct dp_pending *pending_find(struct ionic_datapath *dp,
         if (dp->pending[i].valid && dp->pending[i].req_id == req_id)
             return &dp->pending[i];
     return NULL;
+}
+
+/*
+ * Drop every deferred request of a QP that is flushing, and say how many.
+ *
+ * Dropped silently: the flush CQE the caller is about to post already tells
+ * the driver to complete everything it still has outstanding on this queue,
+ * so a completion here would be a second one for the same work request. What
+ * matters is that the entry stops being findable, since its SGE list names
+ * memory the consumer is free to reuse the moment the flush lands.
+ */
+static uint32_t pending_cancel_qp(struct ionic_datapath *dp, uint32_t qp_id)
+{
+    uint32_t n = 0;
+
+    for (int i = 0; i < MAX_PENDING; i++) {
+        if (dp->pending[i].valid && dp->pending[i].qp_id == qp_id) {
+            dp->pending[i].valid = false;
+            n++;
+        }
+    }
+    return n;
 }
 
 /* Retire a deferred work request now that its peer has answered. */
@@ -2147,12 +2361,12 @@ static bool remote_post(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         /* A READ has moved nothing yet; it is counted when the response
          * scatters into p->local. */
         if (wire_op == IONIC_WIRE_WRITE || wire_op == IONIC_WIRE_WRITE_IMM)
-            pvrdma_rdma_bytes_count(dp->pvrdma_handle, qp_id, payload_len,
-                                    PVRDMA_STAT_RDMA_WRITE);
+            ionic_dp_rdma_bytes(dp, qp_id, payload_len, PVRDMA_STAT_RDMA_WRITE,
+                                DP_RDMA_TX);
         else if (wire_op != IONIC_WIRE_READ_REQ &&
                  wire_op != IONIC_WIRE_ATOMIC_REQ)
-            pvrdma_rdma_bytes_count(dp->pvrdma_handle, qp_id, payload_len,
-                                    PVRDMA_STAT_SEND);
+            ionic_dp_rdma_bytes(dp, qp_id, payload_len, PVRDMA_STAT_SEND,
+                                DP_RDMA_TX);
     } else {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: QP %u send to node %u failed", qp_id,
@@ -2276,14 +2490,8 @@ bool ionic_datapath_attach_s3(struct ionic_datapath *dp,
 static void dp_nvmeof_grh(struct ionic_datapath *dp, uint8_t grh[IB_GRH_SIZE],
                           uint32_t paylen)
 {
-    memset(grh, 0, IB_GRH_SIZE);
-    grh[0] = 0x60; /* IPv6 version nibble, as RoCEv2 GRHs carry */
-    uint16_t pl = htobe16((uint16_t)paylen);
-    memcpy(grh + 4, &pl, 2);
-    grh[6] = 0x1b; /* IB_GRH_NEXT_HDR */
-    grh[7] = 64;
-    memcpy(grh + 8, dp->nvmeof_sgid, 16);  /* controller */
-    memcpy(grh + 24, dp->nvmeof_dgid, 16); /* guest */
+    /* sgid is the controller, dgid the guest. */
+    dp_grh_build(grh, paylen, dp->nvmeof_sgid, dp->nvmeof_dgid);
 }
 
 /*
@@ -2299,19 +2507,14 @@ static void dp_nvmeof_grh(struct ionic_datapath *dp, uint8_t grh[IB_GRH_SIZE],
 static void dp_ud_grh(struct ionic_datapath *dp, uint8_t grh[IB_GRH_SIZE],
                       uint32_t paylen, const struct ionic_ah *ah)
 {
-    memset(grh, 0, IB_GRH_SIZE);
-    grh[0] = 0x60; /* IPv6 version nibble, as RoCEv2 GRHs carry */
-    uint16_t pl = htobe16((uint16_t)paylen);
-    memcpy(grh + 4, &pl, 2);
-    grh[6] = 0x1b; /* IB_GRH_NEXT_HDR */
-    grh[7] = 64;
-
     /*
      * The addresses are not decoration. A receiver is entitled to check
      * them, and UCX's ud_verbs does: it compares the GRH's destination GID
      * against its own and silently drops anything that does not match, so a
      * zeroed GRH makes every datagram vanish on arrival with no error on
-     * either side.
+     * either side. It copes with either form -- it picks them apart the same
+     * way dp_grh_is_ipv4() does, on the version nibble at offset 0, and for
+     * the IPv4 one compares just the four address bytes at the end.
      *
      * The destination comes from the handle the sender used. So does the
      * source, but from the other address in the same RoCE header template:
@@ -2325,10 +2528,9 @@ static void dp_ud_grh(struct ionic_datapath *dp, uint8_t grh[IB_GRH_SIZE],
      * sender's. A consumer that replies to the GRH source then answers
      * itself.
      */
-    if (ah) {
-        memcpy(grh + 8, ah->sgid_valid ? ah->sgid : ah->dgid, 16); /* sgid */
-        memcpy(grh + 24, ah->dgid, 16);                            /* dgid */
-    }
+    dp_grh_build(grh, paylen,
+                 ah ? (ah->sgid_valid ? ah->sgid : ah->dgid) : NULL,
+                 ah ? ah->dgid : NULL);
     (void)dp;
 }
 
@@ -2472,9 +2674,9 @@ static bool qp_is_datagram(const struct ionic_qp_ring *q)
     return q->ib_qp_type == 1 /* GSI */ || q->ib_qp_type == 4 /* UD */;
 }
 
-static const char *ud_delivery_refused(const struct ionic_qp_ring *sq,
-                                       const struct ionic_qp_ring *dq,
-                                       uint32_t sent_qkey)
+const char *ionic_dp_ud_delivery_refused(const struct ionic_qp_ring *sq,
+                                         const struct ionic_qp_ring *dq,
+                                         uint32_t sent_qkey)
 {
     /*
      * Only a datagram send is subject to these rules, and taking the
@@ -2492,6 +2694,235 @@ static const char *ud_delivery_refused(const struct ionic_qp_ring *sq,
     return NULL;
 }
 
+/*
+ * Send-side completion. RC/UC "remote" work requests are retired by a
+ * running MSN sequence; everything else by the SQ index (NPG). Both are
+ * needed for EVERY WQE, signalled or not.
+ *
+ * The signalled-only version of the NPG case was a deadlock. The driver
+ * retires its send queue in ionic_poll_send() by walking sq_meta from
+ * sq.cons and refusing to step over an entry that has no completion:
+ *
+ *     if (!meta->remote && !meta->local_comp)
+ *             goto out_empty;
+ *
+ * local_comp is set by ionic_comp_npg() for the one index a CQE names, and
+ * whether a user-visible work completion is produced is decided after
+ * that, by meta->signal. So the signal flag selects what the driver
+ * reports; it does not select what the device must report. Skip an
+ * unsignalled WQE here and sq.cons stops at it forever: the queue fills,
+ * post_send starts refusing, and the guest goes quiet with nothing dropped
+ * and nothing logged.
+ *
+ * UCX's ud_verbs is the consumer that finds this -- it posts a 256-deep
+ * send queue mostly unsignalled, so it ran to about 243 round trips at
+ * full speed and then both peers parked waiting for each other. The REG_MR
+ * and LOCAL_INV path in process_sq_wqe() completes unconditionally for the
+ * same reason.
+ */
+static void dp_complete_send(struct ionic_datapath *dp, struct ionic_qp_ring *q,
+                             uint32_t qp_id, uint64_t wqe_id, bool remote,
+                             uint32_t status)
+{
+    if (remote) {
+        q->msn++;
+        cq_post_send_msn(dp, q->sq_cq_id, qp_id, q->msn, status);
+    } else {
+        cq_post_send_npg(dp, q->sq_cq_id, qp_id, wqe_id);
+    }
+}
+
+#ifdef ERNIC_HAVE_P4
+void ionic_datapath_set_p4_engine(struct ionic_datapath *dp,
+                                  struct p4_engine *eng)
+{
+    if (dp)
+        dp->p4_engine = eng;
+}
+
+/*
+ * What an extern called from the pipeline is given.
+ *
+ * Everything an operation may touch is in here, and the pipeline cannot
+ * see any of it: the program chooses the verb and the architecture
+ * supplies the operands.  @ran records that an extern did work, which the
+ * caller needs in order to refuse an operation that would then also
+ * transfer over the result.
+ */
+struct dp_p4_ctx {
+    struct ionic_datapath *dp;
+    const struct dp_sge_list *src;
+    const uint8_t *wqe;
+    uint32_t read_sz;
+    uint32_t qp_id;
+    uint8_t op;
+    bool ran;
+};
+
+/*
+ * The operand convention for a compute operation.
+ *
+ * An RDMA WRITE whose gather list has exactly two equal-length entries:
+ * those are the two operands, the WQE's rkey and virtual address are the
+ * destination, and the WQE's length is how long each of the three is.
+ * That is the three-region shape a collective wants, expressed entirely in
+ * things the guest had to register and post for itself.
+ *
+ * It is fixed here rather than carried in the P4 program on purpose.  A
+ * table entry that could name a key and an address would be an addressing
+ * authority over guest memory; what a program may say is which arithmetic
+ * to apply, and @sel is the whole of it.
+ */
+static int dp_p4_fp8_map(struct dp_p4_ctx *c, uint8_t sel)
+{
+    if (c->op != IONIC_V1_OP_RDMA_WRITE && c->op != IONIC_V1_OP_RDMA_WRITE_IMM)
+        return -EOPNOTSUPP;
+    if (c->read_sz < WQE_SEND_LEN_OFF + 4u)
+        return -EINVAL;
+    if (c->src->count != 2 || c->src->len[0] != c->src->len[1])
+        return -EINVAL;
+
+    uint32_t va_hi, va_lo, rkey, length;
+    memcpy(&va_hi, c->wqe + WQE_RDMA_VA_HI_OFF, 4);
+    memcpy(&va_lo, c->wqe + WQE_RDMA_VA_LO_OFF, 4);
+    memcpy(&rkey, c->wqe + WQE_RDMA_RKEY_OFF, 4);
+    memcpy(&length, c->wqe + WQE_SEND_LEN_OFF, 4);
+
+    uint64_t remote_va = ((uint64_t)be32toh(va_hi) << 32) | be32toh(va_lo);
+
+    /*
+     * The work request's length is the whole gather list, because that
+     * is what a driver puts there: ionic_prep_common() sums the scatter
+     * list into wqe->common.length, so a two-operand request says 2N and
+     * cannot be made to say anything else from a verbs caller.  The
+     * result is elementwise, so the destination is N -- half of it.
+     *
+     * Checking the sum rather than the per-operand length is what makes
+     * this reachable at all.  An earlier version demanded the WQE say N,
+     * which the in-process harness could do, because it sets the field
+     * directly, and which no real guest can.
+     */
+    if (be32toh(length) != c->src->total)
+        return -EINVAL;
+
+    return ionic_datapath_fp8_map(c->dp, sel, c->src->lkey[0], c->src->va[0],
+                                  c->src->lkey[1], c->src->va[1],
+                                  c->src->len[0], be32toh(rkey), remote_va);
+}
+
+static int dp_p4_extern_call(void *ctx, uint8_t type, uint8_t method,
+                             const struct p4_value *args, uint8_t nargs)
+{
+    struct dp_p4_ctx *c = ctx;
+
+    if (type != P4_EXTERN_FP8 || method != P4_EXTERN_FP8_MAP || nargs != 1)
+        return -ENOSYS;
+
+    /*
+     * The selector is one byte of a value that is wide enough for any
+     * field the loader accepts.  A program that declared it wider and put
+     * something in the top is not selecting an operation we have, so it is
+     * refused rather than truncated.
+     */
+    for (size_t i = 0; i + 1 < P4_VALUE_BYTES; i++)
+        if (args[0].b[i])
+            return -EINVAL;
+
+    int rc = dp_p4_fp8_map(c, args[0].b[P4_VALUE_BYTES - 1]);
+    if (rc == 0)
+        c->ran = true;
+    return rc;
+}
+
+/*
+ * Run the pipeline over one send WQE.
+ *
+ * Returns the completion status, and sets *@done when the ordinary
+ * dispatch must not run: either because the program suppressed the
+ * operation, or because the status is an error.
+ */
+static uint32_t dp_p4_policy(struct ionic_datapath *dp, uint32_t qp_id,
+                             uint8_t op, const uint8_t *wqe, uint32_t read_sz,
+                             const struct dp_sge_list *src, uint32_t imm_be,
+                             bool *done)
+{
+    struct dp_p4_ctx ctx = {
+        .dp = dp,
+        .src = src,
+        .wqe = wqe,
+        .read_sz = read_sz,
+        .qp_id = qp_id,
+        .op = op,
+        .ran = false,
+    };
+    const struct p4_extern_ops ops = {
+        .call = dp_p4_extern_call,
+        .ctx = &ctx,
+    };
+    struct p4_rdma_meta meta;
+    bool suppress = false;
+
+    /* Goes nowhere near a wire, but it is the pipeline's whole view of the
+     * operation, so no field of it is left to whatever was on the stack. */
+    memset(&meta, 0, sizeof(meta));
+    meta.opcode = op;
+    meta.qp_num = qp_id;
+    meta.length = src->total;
+    meta.imm_data = be32toh(imm_be);
+    if ((op == IONIC_V1_OP_RDMA_WRITE || op == IONIC_V1_OP_RDMA_WRITE_IMM ||
+         op == IONIC_V1_OP_RDMA_READ) &&
+        read_sz >= WQE_RDMA_RKEY_OFF + 4u) {
+        uint32_t rkey;
+        memcpy(&rkey, wqe + WQE_RDMA_RKEY_OFF, 4);
+        meta.rkey = be32toh(rkey);
+    }
+
+    int rc = p4_engine_process_rdma(dp->p4_engine, &ops, &meta, &suppress);
+
+    /*
+     * No program, or one that was never meant for this path, is not a
+     * refusal: the device behaves as it does with no pipeline at all.
+     * Every other error is, because the pipeline is the policy and
+     * carrying on past a failed one is exactly bypassing it.
+     */
+    if (rc == -ENOENT)
+        return IONIC_STS_OK;
+    if (rc < 0) {
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: QP %u op %u P4 pipeline failed (%d)", qp_id,
+                op, rc);
+        *done = true;
+        return IONIC_STS_LOCAL_QP_OPER_ERR;
+    }
+
+    /*
+     * An extern that wrote the destination and an operation that then also
+     * transfers would both write the same region, and the ordinary
+     * transfer would land second: the guest would get its raw payload
+     * where it asked for a result, with nothing to say so.  A program
+     * whose action calls the extern has to mark_to_drop() as well, and one
+     * that forgets is refused rather than quietly producing that.
+     *
+     * The extern has already run by this point, so the destination holds
+     * the result: what the error prevents is the transfer landing on top
+     * of it, and what it tells the guest is not to trust the region.
+     */
+    if (ctx.ran && !suppress) {
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: QP %u op %u P4 program called an extern but "
+                "did not suppress the operation; the transfer would overwrite "
+                "the result",
+                qp_id, op);
+        *done = true;
+        return IONIC_STS_LOCAL_QP_OPER_ERR;
+    }
+
+    if (suppress)
+        *done = true;
+    return IONIC_STS_OK;
+}
+#endif /* ERNIC_HAVE_P4 */
+
 static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                            uint32_t qp_id, uint32_t slot)
 {
@@ -2499,7 +2930,9 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
     uint64_t run;
     uint64_t gpa = buf_gpa(&q->sq_buf, (uint64_t)slot * stride, &run);
 
-    uint8_t wqe[256];
+    /* Big enough for the largest stride an SQ can have, so the whole WQE is
+     * read. */
+    uint8_t wqe[1u << IONIC_WQE_MAX_STRIDE_LOG2];
     uint32_t read_sz = stride < sizeof(wqe) ? stride : (uint32_t)sizeof(wqe);
     if (!run || run < read_sz ||
         dp_dma_read(dp->vfu_ctx, gpa, wqe, read_sz) < 0)
@@ -2552,11 +2985,55 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         src.lkey[0] = 0;
         src.total = inl_len;
     } else {
-        parse_sges(wqe, stride, wqe[9], &src);
+        /* read_sz, not stride, for the reason given in deliver_recv(). */
+        parse_sges(wqe, read_sz, wqe[9], &src);
     }
 
     bool remote = q->ib_qp_type != 1 /* GSI */ && q->ib_qp_type != 4 /* UD */;
     uint32_t status = IONIC_STS_OK;
+
+    /*
+     * Every SGE above names this guest's own memory, so a key it never
+     * registered, or a length running past the region it names, is a local
+     * protection error and belongs on this QP's send completion.
+     *
+     * Checked here, before the work request is dispatched either way,
+     * because each operation's own failure path reports on whichever side
+     * noticed. A local SEND whose gather failed completed successfully for
+     * the sender and put the error on the peer's receive completion, which
+     * told the sender nothing and blamed a QP that did nothing wrong; a
+     * remote one sent the peer a request it could not satisfy. Nothing is
+     * transferred in either case -- that part was always true -- but the
+     * guest is now told whose fault it was, as IB requires.
+     */
+    if (!dp_local_sges_ok(dp, &src)) {
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: QP %u op %u names memory it has not "
+                "registered",
+                qp_id, op);
+        dp_complete_send(dp, q, qp_id, wqe_id, remote,
+                         IONIC_STS_LOCAL_PROT_ERR);
+        return;
+    }
+
+#ifdef ERNIC_HAVE_P4
+    /*
+     * The pipeline runs here: after the operation's own memory has been
+     * checked and before it is dispatched anywhere.  A program therefore
+     * never sees a request that is already a protection error, and an
+     * extern it calls cannot be the first thing to touch a region the
+     * guest did not register.
+     */
+    if (dp->p4_engine) {
+        bool done = false;
+        uint32_t p4_status =
+            dp_p4_policy(dp, qp_id, op, wqe, read_sz, &src, imm_be, &done);
+        if (done) {
+            dp_complete_send(dp, q, qp_id, wqe_id, remote, p4_status);
+            return;
+        }
+    }
+#endif
 
     /*
      * The peer QP lives in another instance: hand the request to the mesh and
@@ -2694,7 +3171,7 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
             memcpy(&sent_qkey_be, wqe + WQE_SEND_QKEY_OFF, 4);
 
             const char *refused =
-                ud_delivery_refused(q, dq, be32toh(sent_qkey_be));
+                ionic_dp_ud_delivery_refused(q, dq, be32toh(sent_qkey_be));
             if (refused) {
                 vfu_log(dp->vfu_ctx, LOG_WARNING,
                         "ionic_datapath: QP %u datagram to QP %u refused: %s",
@@ -2743,8 +3220,8 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                     "%u bytes from QP %u",
                     dst_id, src.total, qp_id);
         else
-            pvrdma_rdma_bytes_count(dp->pvrdma_handle, qp_id, src.total,
-                                    PVRDMA_STAT_SEND);
+            ionic_dp_rdma_bytes(dp, qp_id, src.total, PVRDMA_STAT_SEND,
+                                DP_RDMA_TX);
         break;
     }
 
@@ -2762,6 +3239,32 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         length = be32toh(length);
 
         bool to_remote = op != IONIC_V1_OP_RDMA_READ;
+
+        /*
+         * Check the far end's range before moving anything, not after.
+         * rdma_xfer() walks until it runs out of region, so an
+         * over-long length used to transfer everything that fitted and
+         * only then report the overrun: a write left its first bytes in
+         * the tail of the peer's region, and a read had already copied
+         * them out. Both stay inside the registered region, so neither
+         * reaches memory the key does not cover, but an operation the
+         * device rejects should not have moved anything.
+         *
+         * Zero length is exempt, and has to be: it accesses nothing, the
+         * spec does not require the R_Key to be validated for one, and
+         * UCX's rc_verbs flush is a zero-length RDMA_WRITE with rkey 0.
+         * The mesh responder path exempts it for the same reason.
+         */
+        if (length != 0 && !mr_covers(dp, rkey, remote_va, length)) {
+            vfu_log(dp->vfu_ctx, LOG_WARNING,
+                    "ionic_datapath: QP %u RDMA %s rkey=%#x va=%#" PRIx64
+                    " len=%u is outside the region",
+                    qp_id, to_remote ? "write" : "read", rkey, remote_va,
+                    length);
+            status = IONIC_STS_REMOTE_ACC_ERR;
+            break;
+        }
+
         uint32_t moved =
             rdma_xfer(dp, &src, rkey, remote_va, length, to_remote);
         if (moved != length) {
@@ -2782,9 +3285,10 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
             break;
         }
 
-        pvrdma_rdma_bytes_count(dp->pvrdma_handle, qp_id, moved,
-                                to_remote ? PVRDMA_STAT_RDMA_WRITE
-                                          : PVRDMA_STAT_RDMA_READ);
+        ionic_dp_rdma_bytes(dp, qp_id, moved,
+                            to_remote ? PVRDMA_STAT_RDMA_WRITE
+                                      : PVRDMA_STAT_RDMA_READ,
+                            DP_RDMA_TX | DP_RDMA_RX);
 
         /* Only the _IMM form consumes a receive on the far side, and it does
          * so with no payload: the data already landed via the rkey.  The
@@ -2819,38 +3323,7 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         break;
     }
 
-    /*
-     * Send-side completion. RC/UC "remote" work requests are retired by a
-     * running MSN sequence; everything else by the SQ index (NPG). Both are
-     * needed for EVERY WQE, signalled or not.
-     *
-     * The signalled-only version of the NPG case was a deadlock. The driver
-     * retires its send queue in ionic_poll_send() by walking sq_meta from
-     * sq.cons and refusing to step over an entry that has no completion:
-     *
-     *     if (!meta->remote && !meta->local_comp)
-     *             goto out_empty;
-     *
-     * local_comp is set by ionic_comp_npg() for the one index a CQE names,
-     * and whether a user-visible work completion is produced is decided
-     * after that, by meta->signal. So the signal flag selects what the
-     * driver reports; it does not select what the device must report. Skip
-     * an unsignalled WQE here and sq.cons stops at it forever: the queue
-     * fills, post_send starts refusing, and the guest goes quiet with
-     * nothing dropped and nothing logged.
-     *
-     * UCX's ud_verbs is the consumer that finds this -- it posts a 256-deep
-     * send queue mostly unsignalled, so it ran to about 243 round trips at
-     * full speed and then both peers parked waiting for each other. The
-     * REG_MR and LOCAL_INV path above already completes unconditionally for
-     * this reason.
-     */
-    if (remote) {
-        q->msn++;
-        cq_post_send_msn(dp, q->sq_cq_id, qp_id, q->msn, status);
-    } else {
-        cq_post_send_npg(dp, q->sq_cq_id, qp_id, wqe_id);
-    }
+    dp_complete_send(dp, q, qp_id, wqe_id, remote, status);
 }
 
 /* -------------------------------------------------------------------------
@@ -3044,8 +3517,8 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
         } else {
             /* The responder counts what landed in its own memory too, so each
              * instance's totals describe the traffic it actually moved. */
-            pvrdma_rdma_bytes_count(dp->pvrdma_handle, stat_qp, n,
-                                    PVRDMA_STAT_RDMA_WRITE);
+            ionic_dp_rdma_bytes(dp, stat_qp, n, PVRDMA_STAT_RDMA_WRITE,
+                                DP_RDMA_RX);
 
             if (h->op == IONIC_WIRE_WRITE_IMM && dq) {
                 struct dp_sge_list written = {.count = 0, .total = n};
@@ -3071,8 +3544,8 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
                     rkey, (unsigned long)remote_va, length);
             status = IONIC_STS_REMOTE_ACC_ERR;
         } else {
-            pvrdma_rdma_bytes_count(dp->pvrdma_handle, stat_qp, length,
-                                    PVRDMA_STAT_RDMA_READ);
+            ionic_dp_rdma_bytes(dp, stat_qp, length, PVRDMA_STAT_RDMA_READ,
+                                DP_RDMA_TX);
         }
 
         dp_wire_reply(dp, src_node, IONIC_WIRE_READ_RESP, h, status,
@@ -3118,8 +3591,8 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
 
             /* The requester's READ bytes only exist once they have landed. */
             if (h->op == IONIC_WIRE_READ_RESP)
-                pvrdma_rdma_bytes_count(dp->pvrdma_handle, p->qp_id, got,
-                                        PVRDMA_STAT_RDMA_READ);
+                ionic_dp_rdma_bytes(dp, p->qp_id, got, PVRDMA_STAT_RDMA_READ,
+                                    DP_RDMA_RX);
         }
         pending_complete(dp, p, status);
         break;
@@ -3263,11 +3736,6 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
  *   le16 qid_hi    [4:5]
  * -------------------------------------------------------------------------
  */
-
-/* Hardware qtypes we advertise in Q_IDENTIFY (see ionic_eth_emu.c). */
-#define DP_QTYPE_SQ 6
-#define DP_QTYPE_RQ 7
-#define DP_QTYPE_CQ 8
 
 /*
  * Advance a receive ring's producer from a doorbell's index.

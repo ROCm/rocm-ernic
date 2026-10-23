@@ -26,9 +26,9 @@ struct ionic_datapath;
  * reachable before the first capsule moves.
  *
  * IONIC_MAX_MR sizes three tables that all have to hold that many: the
- * rdma_rm resource table (MAX_MR in third-party/qemu/hw/rdma/rdma_rm_defs.h,
- * which cannot include this header), the data path's own dp_mr array, and the
- * admin queue's driver-id-to-handle map.  Whichever is smallest is the real
+ * rdma_rm resource table (MAX_MR in src/qemu/rdma_rm_defs.h, which cannot
+ * include this header), the data path's own dp_mr array, and the admin
+ * queue's driver-id-to-handle map.  Whichever is smallest is the real
  * ceiling, so they are kept equal deliberately.
  *
  * It is not sized for the maximum 64 queues: dp_reg_mr() walks the whole
@@ -59,6 +59,55 @@ struct ionic_dp_ring_desc {
     uint8_t depth_log2;
     uint8_t stride_log2;
 };
+
+/*
+ * Bounds on the ring geometry a guest may ask for.
+ *
+ * The driver sends each ring's depth and stride as log2 exponents, and the
+ * device works with 1u << depth_log2 and 1u << stride_log2. Shifting a
+ * 32-bit value by 32 or more is undefined, so every exponent from the guest
+ * is checked against these before anything shifts by it, and a command
+ * asking for more is refused rather than clamped: a ring of a size the
+ * driver didn't ask for is one neither side agrees about. SRQs have tighter
+ * bounds of their own (IONIC_SRQ_* in rocm_ernic_compat.h).
+ *
+ * DEPTH: 2^24 entries. The Linux driver's admin and event queues are 2^6
+ * and 2^9 (IONIC_AQ_DEPTH and IONIC_EQ_DEPTH, rounded up to a power of
+ * two), and the data path has always refused a deeper CQ.
+ *
+ * STRIDE: 2^16 bytes for the rings of fixed-size entries, the largest CQ
+ * stride the data path has accepted. A send or receive queue's stride is
+ * held to the max_stride the device advertises in its LIF identity
+ * (IONIC_MAX_STRIDE in ionic_eth_emu_priv.h), 2^9, and the data path reads
+ * a whole WQE of that size, so it never sees part of one.
+ *
+ * The floors are the size of what each ring holds, since entries any
+ * smaller would overlap: a CQE is 32 bytes, and so is the part of a send or
+ * receive WQE ahead of its payload (WQE_PLD_OFF in ionic_datapath.c), which
+ * the data path reads from every WQE.
+ */
+#define IONIC_RING_MAX_DEPTH_LOG2  24u
+#define IONIC_RING_MAX_STRIDE_LOG2 16u
+#define IONIC_CQ_MIN_STRIDE_LOG2   5u
+#define IONIC_WQE_MIN_STRIDE_LOG2  5u
+#define IONIC_WQE_MAX_STRIDE_LOG2  9u
+
+/* True if a ring's exponents are within the bounds above. */
+static inline bool ionic_dp_ring_geometry_ok(uint8_t depth_log2,
+                                             uint8_t stride_log2,
+                                             uint8_t min_stride_log2,
+                                             uint8_t max_stride_log2)
+{
+    return depth_log2 <= IONIC_RING_MAX_DEPTH_LOG2 &&
+           stride_log2 >= min_stride_log2 && stride_log2 <= max_stride_log2;
+}
+
+/* A CQ's stride; the driver may leave it 0 for the size of one CQE. */
+static inline uint8_t ionic_dp_cq_stride_log2(
+    const struct ionic_dp_ring_desc *ring)
+{
+    return ring->stride_log2 ? ring->stride_log2 : IONIC_CQ_MIN_STRIDE_LOG2;
+}
 
 /* Raised once completions have been written to a CQ. */
 typedef void (*ionic_dp_cq_event_fn_t)(void *opaque, uint32_t eq_id,
@@ -113,6 +162,17 @@ int ionic_datapath_register_srq(struct ionic_datapath *dp, uint32_t srq_id,
 void ionic_datapath_unregister_srq(struct ionic_datapath *dp, uint32_t srq_id);
 void ionic_datapath_bind_qp_srq(struct ionic_datapath *dp, uint32_t qp_id,
                                 uint32_t srq_id);
+
+/*
+ * Begin the flush on a QP that has entered the Error state, so that work
+ * requests still outstanding are completed with IB_WC_WR_FLUSH_ERR instead
+ * of left to a consumer that waits for them forever. One completion per
+ * queue: it names no work request, and the driver completes what it has
+ * posted from its own records. Receives are left alone for a QP bound to an
+ * SRQ, because those WQEs belong to the SRQ and other QPs are still using
+ * them.
+ */
+void ionic_datapath_flush_qp(struct ionic_datapath *dp, uint32_t qp_id);
 
 /*
  * Address handles.
@@ -222,5 +282,72 @@ void ionic_datapath_poll(struct ionic_datapath *dp);
 
 /* True when a peer message is queued, so the caller can skip its idle sleep. */
 bool ionic_datapath_has_work(struct ionic_datapath *dp);
+
+#ifdef ERNIC_HAVE_P4
+
+/*
+ * Apply an fp8 operation elementwise across two registered memory regions
+ * and write the result to a third.
+ *
+ * This is in-network compute: the NIC reads both operand regions, combines
+ * them pointwise, and writes a result region of the same length, instead
+ * of the host reading two buffers and writing a third.  Combining two
+ * partial buffers is what a collective does, so this is the primitive an
+ * allreduce is built from.
+ *
+ * The regions are streamed in blocks rather than staged whole, so the
+ * length is bounded by what a guest may ask the poll loop to do in one go
+ * rather than by how much will fit on the stack.
+ *
+ * Note what this is NOT, yet: it calls the arithmetic directly and no P4
+ * program is involved, so which operation happens is fixed by the caller
+ * rather than decided by a table.  Wiring the pipeline into this path and
+ * making the arithmetic an extern a program calls is what turns it into
+ * something P4 governs; this function is then the extern's implementation
+ * rather than the whole story.
+ *
+ * @op is an enum p4_fp8_op.  @len is the length of each region in bytes,
+ * one fp8 value per byte, and the destination region is the same length.
+ *
+ * Returns 0, or a negative errno: -EINVAL for an argument out of range,
+ * -EACCES for a key the guest may not name here, -EFAULT when a region
+ * could not be read or written in full.
+ */
+
+/*
+ * The most a single request may move.  The work happens on the thread
+ * that also services the vfio-user poll loop, so this is a bound on how
+ * long a guest may stall that loop, not a bound on memory -- the streaming
+ * below would take any length.  A megabyte of elements is a visible pause;
+ * this is the point at which that was judged acceptable, and it is one
+ * constant to revisit when it is not.
+ */
+#define IONIC_FP8_MAP_MAX 262144u
+
+int ionic_datapath_fp8_map(struct ionic_datapath *dp, uint8_t op,
+                           uint32_t a_lkey, uint64_t a_va, uint32_t b_lkey,
+                           uint64_t b_va, uint32_t len, uint32_t c_rkey,
+                           uint64_t c_va);
+
+struct p4_engine;
+
+/*
+ * Give the data path the pipeline that governs RDMA operations, or NULL to
+ * take it away.
+ *
+ * Borrowed, not owned: the engine outlives nothing here, and the caller
+ * must clear it before destroying the engine.  Until one is set, and for a
+ * program that declares no rdma_metadata, the data path behaves exactly as
+ * it does without P4 built at all.
+ *
+ * What the pipeline may do to an operation is decide: it runs after the
+ * operation's own memory has been checked, so a program never sees a
+ * request that is already a protection error, and it cannot name memory --
+ * an extern it calls is given the regions the work request itself named.
+ */
+void ionic_datapath_set_p4_engine(struct ionic_datapath *dp,
+                                  struct p4_engine *eng);
+
+#endif /* ERNIC_HAVE_P4 */
 
 #endif /* IONIC_DATAPATH_H */

@@ -149,7 +149,7 @@ jobs:
       - name: Assert the artifact ships only collection content
         run: |
           unexpected=$(tar tzf ./*.tar.gz \
-            | grep -vE '^(roles|meta|changelogs|tests)/' \
+            | grep -vE '^(roles|meta|changelogs|tests|files)/' \
             | grep -vE '^(MANIFEST\.json|FILES\.json|LICENSE|README\.md|CHANGELOG\.rst)$' \
             || true)
           if [ -n "${unexpected}" ]; then
@@ -158,6 +158,61 @@ jobs:
             echo "Add them to build_ignore in ansible/galaxy.yml."
             exit 1
           fi
+
+      # The other direction, and the more dangerous one.  build_ignore is
+      # matched with fnmatch against the path relative to the collection
+      # root, and fnmatch's "*" crosses "/", so a pattern as innocuous as
+      # "*.sh" takes files/scripts/ out of the artifact -- and out of a
+      # "type: git" install, which is how the consumers of this collection
+      # install it.  A collection that silently stops shipping the SRQ
+      # inputs puts every one of them back to a guest reporting max_srq=0,
+      # and this job is the only place that can see it.
+      #
+      # Counts as well as names: a dropped or renamed patch is the failure
+      # mode that otherwise reaches a guest, since the roles apply
+      # whatever *.patch they find.
+      - name: Assert the artifact ships the SRQ inputs
+        run: |
+          listing=$(tar tvzf ./*.tar.gz)
+          rc=0
+
+          require() {
+            if ! printf '%s\n' "${listing}" | grep -qE "[[:space:]]${1}\$"; then
+              echo "::error::${1} is missing from the collection artifact"
+              rc=1
+            fi
+          }
+          require_exec() {
+            require "${1}"
+            if ! printf '%s\n' "${listing}" \
+                 | grep -E "[[:space:]]${1}\$" | grep -q '^-..x'; then
+              echo "::error::${1} ships without an execute bit"
+              rc=1
+            fi
+          }
+          count() {
+            n=$(printf '%s\n' "${listing}" \
+                | grep -cE "[[:space:]]${1}\$" || true)
+            if [ "${n}" -ne "${2}" ]; then
+              echo "::error::expected ${2} files matching ${1}, found ${n}"
+              rc=1
+            fi
+          }
+
+          require_exec 'files/scripts/fetch-ionic-sources.sh'
+          require_exec 'files/scripts/setup-ionic-dkms.sh'
+          # The base series, which fetch-ionic-sources.sh applies by
+          # default, and the two READMEs.  ernic_srq_provider parses its
+          # pinned base SHA out of the rdma-core one, so that file is an
+          # input, not documentation.
+          require 'files/patches/0002-ionic-allocate-an-address-handle-for-UC-queue-pairs.patch'
+          require 'files/patches/srq/README.md'
+          require 'files/patches/rdma-core/README.md'
+          count 'files/patches/srq/.*\.patch' 9
+          count 'files/patches/rdma-core/.*\.patch' 6
+
+          [ "${rc}" -eq 0 ] || exit 1
+          echo "✓ the SRQ patch series and both scripts ship in the artifact"
 
       - name: Upload collection artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

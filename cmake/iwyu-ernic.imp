@@ -1,20 +1,9 @@
 [
   { "symbol": ["PCIDevice", "private", "\"hw/pci/pci_device.h\"", "public"] },
-  { "symbol": ["PCIDevice", "private", "\"hw/pci/msix.h\"", "public"] },
-  { "symbol": ["PCIDevice", "private", "<rdma_utils.h>", "public"] },
-  { "symbol": ["MemoryRegion", "private", "\"exec/memory.h\"", "public"] },
-  { "symbol": ["MemoryRegion", "private", "\"hw/pci/pci_device.h\"", "public"] },
-  { "symbol": ["MemoryRegion", "private", "\"hw/pci/msix.h\"", "public"] },
-  { "symbol": ["Error", "private", "\"qapi/error.h\"", "public"] },
-  { "symbol": ["Error", "private", "\"hw/pci/pci_device.h\"", "public"] },
-  { "symbol": ["dma_addr_t", "private", "\"exec/memory.h\"", "public"] },
-  { "symbol": ["dma_addr_t", "private", "\"rocm_ernic_compat.h\"", "public"] },
-  { "symbol": ["hwaddr", "private", "\"exec/memory.h\"", "public"] },
-  { "symbol": ["hwaddr", "private", "\"rocm_ernic_compat.h\"", "public"] },
-  { "symbol": ["hwaddr", "private", "\"hw/pci/pci_device.h\"", "public"] },
+  { "symbol": ["RdmaDeviceResources", "private", "\"rdma_backend_defs.h\"", "public"] },
+  { "symbol": ["RdmaDeviceResources", "private", "\"rdma_backend_ops.h\"", "public"] },
   { "symbol": ["rocm_ernic_dev_t", "private", "\"rocm_ernic_compat.h\"", "public"] },
   { "symbol": ["rocm_ernic_dev_t", "private", "\"rocm_ernic_internal.h\"", "public"] },
-  { "symbol": ["rocm_ernic_dev_t", "private", "\"hw/pci/pci_device.h\"", "public"] },
   { "symbol": ["vfu_ctx_t", "private", "<vfio-user/libvfio-user.h>", "public"] },
   { "symbol": ["vfu_ctx_t", "private", "\"hw/pci/pci_device.h\"", "public"] }
 ]

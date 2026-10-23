@@ -28,6 +28,9 @@ Key Features
   single VM is a complete object fabric (see :doc:`s3`)
 - Working Ethernet and TCP/IP to the host via a TAP
   interface
+- An optional P4 match-action stage on the emulated wire,
+  matching the programmable datapath of the silicon the
+  device models (see :doc:`p4`)
 - Comprehensive statistics collection
 
 Quick Start
@@ -64,6 +67,7 @@ a host TAP:
    ionic
    nvmeof
    s3
+   p4
    service
    monitoring
    testing
@@ -80,7 +84,7 @@ a host TAP:
 Acknowledgments
 ---------------
 
-The RDMA device logic in ``third-party/qemu/`` is adapted from the
+The RDMA device logic in ``src/qemu/`` is adapted from the
 QEMU PVRDMA implementation. The original authors of that work:
 
 - Yuval Shaia <yuval.shaia@oracle.com> (Oracle)
@@ -94,14 +98,13 @@ under the
 `MIT license <https://github.com/ROCm/rocm-ernic/blob/develop/LICENSE.md>`_.
 The emulator itself is ``GPL-2.0-or-later``:
 
-- Everything under ``src/``, ``tests/`` and ``third-party/``, and the fuzz
-  harnesses in ``nix/analysis/fuzz/``, which build against ``src/``.
-- The VMware/Linux uAPI headers under
-  ``third-party/qemu/include/standard-headers/`` are instead
-  dual ``GPL-2.0`` / ``BSD-2-Clause``.
+- Everything under ``src/`` and ``tests/``, and the fuzz harnesses in
+  ``nix/analysis/fuzz/``, which build against ``src/``.
+- The VMware/Linux uAPI header ``src/qemu/vmw_pvrdma-abi.h`` is
+  instead dual ``GPL-2.0`` / ``BSD-2-Clause``.
 
-The patches under ``patches/`` modify the Linux ionic drivers and
-rdma-core's ionic provider, and are licensed under the terms of the files
+The patches under ``ansible/files/patches/`` modify the Linux ionic drivers
+and rdma-core's ionic provider, and are licensed under the terms of the files
 they modify: mostly ``GPL-2.0`` for the kernel drivers and
 ``GPL-2.0 OR Linux-OpenIB`` for rdma-core.
 
