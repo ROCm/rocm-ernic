@@ -67,6 +67,8 @@ __pycache__/
 !ansible/files/patches/*.diff
 !ansible/files/patches/**/*.patch
 !ansible/files/patches/**/*.diff
+# The RDMA-Tutorial patches that playbooks/tutorial-tests.yml applies.
+!ansible/playbooks/files/rdma-tutorial/*.patch
 
 # Log files
 *.log

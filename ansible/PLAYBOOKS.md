@@ -101,6 +101,9 @@ ansible-playbook playbooks/guest-setup.yml
 # Sanity tests (iperf3 + perftest)
 ansible-playbook playbooks/sanity-tests.yml
 
+# RDMA-Tutorial examples, server in VM1 and client in VM2
+ansible-playbook playbooks/tutorial-tests.yml
+
 # NVMe-oF against the in-process controller.  Needs only one
 # guest, and the instance must have been started on the
 # nvmeof backend (--backend nvmeof:size=256M,bs=4096).
@@ -197,6 +200,7 @@ ansible/                  # this directory is the collection
     ├── vm-register.yml        # instances.json -> ernic_vms
     ├── guest-setup.yml        # -> ernic_guest_setup
     ├── sanity-tests.yml       # iperf3 + perftest
+    ├── tutorial-tests.yml     # RDMA-Tutorial examples
     ├── nvmeof-tests.yml       # NVMe-oF, one guest
     ├── tcp-performance-tests.yml  # iperf3 sweeps
     └── performance-tests.yml  # Full BW/lat sweeps
@@ -228,6 +232,16 @@ ansible/                  # this directory is the collection
    emulated Ethernet NICs for TCP/IP validation, then runs
    perftest tools (`ib_send_bw`, `ibv_rc_pingpong`) for
    RDMA verification.
+
+   **tutorial-tests** follows it, and runs examples 1 (RC
+   send/recv) and 2 (RC RDMA write) from
+   [RDMA-Tutorial](https://github.com/jcxue/RDMA-Tutorial)
+   between the same two VMs. The controller clones the
+   tutorial, checks out each example's commit, applies the
+   RoCE patch from `playbooks/files/rdma-tutorial/` (upstream
+   addresses the peer by InfiniBand LID), and copies it into
+   the guests, which build it. `ernic_rdma_tutorial_ops` sets
+   how many operations each runs.
 
    **nvmeof-tests** is the odd one out, and is numbered with
    no phase of its own because it is not part of the

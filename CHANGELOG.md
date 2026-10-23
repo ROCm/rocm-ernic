@@ -487,6 +487,18 @@
   accept. The value is decoded big-endian and right-aligned, and the caller
   is told how many bytes the digits needed so it can refuse one wider than
   the field it is destined for instead of truncating it.
+* `ansible/playbooks/tutorial-tests.yml` runs examples 1 (RC send/recv) and
+  2 (RC RDMA write) from [RDMA-Tutorial](https://github.com/jcxue/RDMA-Tutorial)
+  between two guests, server in one and client in the other. It is
+  `--tags tutorial` in `site.yml` and `ci-site.yml`, part of `functional`
+  in `ci-site.yml`, and runs after the sanity play in the two-VM job of
+  `system-tests.yml` and in `ci/jobs/vm-functional.sh`. The examples
+  address the peer by InfiniBand LID, so the play applies a patch from
+  `ansible/playbooks/files/rdma-tutorial/` that switches them to RoCE GIDs.
+  The controller clones the tutorial from GitHub and copies the patched
+  sources into the guests, which then need no network access. Upstream's
+  5 and 10 million operations take tens of minutes over the emulated NIC,
+  so each example runs `ernic_rdma_tutorial_ops` (default 10000) instead.
 
 ### Changed
 

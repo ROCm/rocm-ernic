@@ -461,7 +461,8 @@ The ``ansible/`` directory contains playbooks that automate
 the multi-VM test workflow: building the server, installing
 the systemd service, provisioning already-running guests
 with the driver and the ionic rdma-core provider, and
-running iperf3, perftest and NVMe-oF tests against them. The
+running iperf3, perftest, RDMA-Tutorial and NVMe-oF tests
+against them. The
 guest disk is not built here; see :ref:`ansible-guest-image`.
 
 Prerequisites
@@ -524,7 +525,7 @@ run unprivileged. Drive those with ``ci-site.yml``, which
 imports no host-setup play and so neither tears them down nor
 touches the systemd service.
 
-``site.yml`` runs five plays in order:
+``site.yml`` runs six plays in order:
 
 1. **host-setup** -- builds the project, installs the
    service and ``ernicctl``, templates the env file, and
@@ -541,7 +542,10 @@ touches the systemd service.
 4. **sanity-tests** -- runs ``iperf3`` between two VMs
    for TCP/IP validation and ``ib_send_bw`` /
    ``ibv_rc_pingpong`` for RDMA verification.
-5. **performance-tests** -- the TCP and RDMA sweeps.
+5. **tutorial-tests** -- builds examples from the
+   RDMA-Tutorial and runs each between the two VMs; see
+   :ref:`ansible-rdma-tutorial`.
+6. **performance-tests** -- the TCP and RDMA sweeps.
 
 The setup plays are thin wrappers around the roles of the
 ``sbates130272.rocm_ernic`` collection, whose source lives in
@@ -558,6 +562,7 @@ Each play can also be run separately:
    ansible-playbook playbooks/vm-register.yml
    ansible-playbook playbooks/guest-setup.yml
    ansible-playbook playbooks/sanity-tests.yml
+   ansible-playbook playbooks/tutorial-tests.yml
    ansible-playbook playbooks/nvmeof-tests.yml
    ansible-playbook playbooks/s3-tests.yml
    ansible-playbook playbooks/performance-tests.yml
@@ -593,6 +598,39 @@ repo; the per-role defaults live in each role's
 Anything set in ``group_vars/all.yml`` wins over a role
 default. See ``ansible/PLAYBOOKS.md`` for additional usage
 notes.
+
+.. _ansible-rdma-tutorial:
+
+RDMA-Tutorial examples
+^^^^^^^^^^^^^^^^^^^^^^
+
+``playbooks/tutorial-tests.yml`` runs examples from
+`RDMA-Tutorial <https://github.com/jcxue/RDMA-Tutorial>`_,
+a short introduction to programming with verbs, to check
+that code written the way it teaches works over rocm-ernic.
+It covers example 1 (RC send/recv) and example 2 (RC RDMA
+write), with the server in VM 1 and the client in VM 2.
+
+The tutorial keeps each example as a commit, and they
+address the peer by InfiniBand LID. The play pins each
+example to its commit and applies a patch from
+``ansible/playbooks/files/rdma-tutorial/`` that exchanges
+the peers' IPv4-mapped GIDs instead, as RoCE needs, and uses
+the port's active MTU. The controller clones the tutorial and
+applies the patches, and copies the result into the guests,
+which build it, so they need neither network access nor git.
+
+An example passes when the client and the server both exit
+0 and each has logged its throughput, which it does only
+after its last operation. Upstream runs 5 or 10 million
+operations, which take tens of minutes over the emulated NIC;
+``ernic_rdma_tutorial_ops`` (default 10000) sets the count.
+``ernic_rdma_tutorial_timeout`` bounds each process and
+``ernic_rdma_tutorial_port`` picks the ports they connect on.
+
+Both CI lanes that run the sanity play run this one after
+it: the two-VM job in ``system-tests.yml`` and
+``ci/jobs/vm-functional.sh``.
 
 .. _ansible-guest-image:
 
@@ -769,7 +807,8 @@ is redirected under a workspace the CI user owns rather
 than ``/run``, ``/var/log`` and ``/usr/local``.
 
 Test logic is not duplicated: ``ansible/ci-site.yml``
-drives the same guest-setup, sanity and performance plays
+drives the same guest-setup, sanity, RDMA-Tutorial and
+performance plays
 described above, supplying only the inventory
 registration that ``site.yml`` would normally provide.
 

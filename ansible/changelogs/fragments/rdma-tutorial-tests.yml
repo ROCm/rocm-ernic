@@ -1,0 +1,19 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+minor_changes:
+  - >-
+    New playbook ``playbooks/tutorial-tests.yml``, reachable as
+    ``--tags tutorial`` from ``site.yml`` and ``ci-site.yml`` and part of
+    ``ci-site.yml``'s ``functional`` tag, runs examples 1 (RC send/recv)
+    and 2 (RC RDMA write) from RDMA-Tutorial
+    (https://github.com/jcxue/RDMA-Tutorial) with the server in the
+    first guest and the client in the second.  The
+    controller clones the tutorial, applies a patch from
+    ``playbooks/files/rdma-tutorial/`` that moves each example from
+    InfiniBand LIDs to RoCE GIDs, and copies the result into the guests,
+    which build it.  ``ernic_rdma_tutorial_ops``,
+    ``ernic_rdma_tutorial_timeout`` and ``ernic_rdma_tutorial_port`` in
+    ``group_vars/all.yml`` tune it.

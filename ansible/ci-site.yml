@@ -20,7 +20,8 @@
 #       --tags functional
 #
 # Tags:
-#   functional -- guest setup + sanity tests
+#   functional -- guest setup + sanity tests + RDMA-Tutorial examples
+#   tutorial   -- RDMA-Tutorial examples
 #   nvmeof     -- single-VM NVMe-oF against the in-process controller
 #   s3         -- single-VM S3 over RDMA against the in-process store
 #   p4         -- single-VM guest-driven P4 fp8 reduction
@@ -38,6 +39,10 @@
 - name: "CI: sanity tests (ping, iperf3, perftest)"
   ansible.builtin.import_playbook: playbooks/sanity-tests.yml
   tags: [functional, sanity]
+
+- name: "CI: RDMA-Tutorial examples"
+  ansible.builtin.import_playbook: playbooks/tutorial-tests.yml
+  tags: [functional, tutorial]
 
 # Single-VM lane: the instance runs the NVMe-oF controller
 # itself, so this is NOT part of the `functional` tag -- it

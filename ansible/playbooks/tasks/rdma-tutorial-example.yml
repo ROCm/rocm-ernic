@@ -1,0 +1,229 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Build and run one RDMA-Tutorial example: the server on VM1, the
+# client on VM2. Included by playbooks/tutorial-tests.yml once per
+# entry in tutorial_examples, as tutorial_example, and appends the
+# outcome to tutorial_results instead of failing, so every example
+# runs and the play asserts on them all at the end. A failure to
+# prepare or build one still fails the play there.
+
+---
+- name: "Set the run parameters for {{ tutorial_example.name }}"
+  ansible.builtin.set_fact:
+    tutorial_unit: "rdma-tutorial-{{ tutorial_example.name }}"
+    tutorial_dir: "{{ tutorial_guest_dir }}/{{ tutorial_example.name }}"
+    tutorial_port: >-
+      {{ ernic_rdma_tutorial_port | int + tutorial_example_index | int }}
+    tutorial_args: "{{ tutorial_example.args | map('string') | join(' ') }}"
+
+# force discards the previous example's patch. Retried because it
+# fetches from GitHub, and a network hiccup there says nothing about
+# rocm-ernic.
+- name: "Check out the example on the controller ({{ tutorial_example.name }})"
+  ansible.builtin.git:
+    repo: "{{ ernic_rdma_tutorial_repo }}"
+    dest: "{{ tutorial_tmp.path }}/src"
+    version: "{{ tutorial_example.commit }}"
+    force: true
+  register: tutorial_checkout
+  until: tutorial_checkout is succeeded
+  retries: 3
+  delay: 10
+
+# ansible.builtin.git cannot apply a patch.
+- name: "Apply the RoCE patch for {{ tutorial_example.name }}"
+  ansible.builtin.command: # noqa: command-instead-of-module
+    cmd: >-
+      git apply
+      {{ tutorial_patch_dir }}/{{ tutorial_example.name }}.patch
+    chdir: "{{ tutorial_tmp.path }}/src"
+  changed_when: true
+
+- name: "Copy the example into both guests ({{ tutorial_example.name }})"
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: >-
+      set -o pipefail;
+      tar -C {{ tutorial_tmp.path }}/src --exclude=.git -cf - . |
+      {{ item }}
+      'rm -rf {{ tutorial_dir }} &&
+      mkdir -p {{ tutorial_dir }} &&
+      tar -C {{ tutorial_dir }} -xf -'
+  loop:
+    - "{{ vm1_ssh }}"
+    - "{{ vm2_ssh }}"
+  loop_control:
+    label: "{{ 'vm1' if item == vm1_ssh else 'vm2' }}"
+  changed_when: true
+
+# Without -Werror, which upstream sets: the code predates the guest's
+# compiler, which warns about things it did not, and the warnings are
+# upstream's, not ours.
+- name: "Build the example in both guests ({{ tutorial_example.name }})"
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      {{ item }} 'bash -s' <<'EOF'
+      set -euo pipefail
+      cd {{ tutorial_dir }}
+      make CFLAGS="-Wall -O2" \
+        INCLUDES="-DTOT_NUM_OPS={{ ernic_rdma_tutorial_ops | int }} \
+          -DNUM_WARMING_UP_OPS={{ ernic_rdma_tutorial_ops | int // 10 }}"
+      EOF
+  loop:
+    - "{{ vm1_ssh }}"
+    - "{{ vm2_ssh }}"
+  loop_control:
+    label: "{{ 'vm1' if item == vm1_ssh else 'vm2' }}"
+  changed_when: true
+
+- name: "Run {{ tutorial_example.name }}"
+  block:
+    # A transient system unit, not nohup: the guest image ships
+    # KillUserProcesses=yes, so anything left in the login session
+    # dies when this ssh returns. RemainAfterExit keeps the unit, and
+    # with it the server's exit status, until the always: below stops
+    # it; otherwise a server that exited 0 is unloaded and its status
+    # reads the same as one that never ran.
+    - name: "Start the server on VM1 ({{ tutorial_example.name }})"
+      ansible.builtin.command:
+        cmd: >-
+          {{ vm1_ssh }}
+          'sudo systemctl stop {{ tutorial_unit }} 2>/dev/null;
+          sudo systemctl reset-failed {{ tutorial_unit }} 2>/dev/null;
+          sudo systemd-run --unit={{ tutorial_unit }}
+          -p User={{ ernic_vm_ssh_user }}
+          -p WorkingDirectory={{ tutorial_dir }}
+          -p RemainAfterExit=yes
+          -p StandardOutput=truncate:{{ tutorial_dir }}/server.out
+          --setenv=RDMA_TUTORIAL_DEV={{ tutorial_dev_vm1 }}
+          timeout {{ ernic_rdma_tutorial_timeout | int }}
+          {{ tutorial_dir }}/rdma-tutorial {{ tutorial_args }}
+          {{ tutorial_port }}'
+      changed_when: true
+
+    # The server sets up its device, CQ and QP before it listens.
+    # This reads the listener table, and stops waiting if the server
+    # exits, so the client fails and the logs below say why. Running
+    # out of retries marks the task failed whatever failed_when says,
+    # so ignore_errors is what lets the client, the logs and the next
+    # example run; the play's final assert still fails on the result.
+    - name: "Wait for the server to listen ({{ tutorial_example.name }})"
+      ansible.builtin.command:
+        cmd: >-
+          {{ vm1_ssh }}
+          'systemctl is-active {{ tutorial_unit }};
+          ss -Hltn "sport = :{{ tutorial_port }}"'
+      register: tutorial_listen
+      until: >-
+        tutorial_listen.rc == 0
+        and (tutorial_listen.stdout_lines | length > 1
+             or tutorial_listen.stdout_lines[:1] != ['active'])
+      retries: 30
+      delay: 1
+      changed_when: false
+      ignore_errors: true
+
+    - name: "Run the client on VM2 ({{ tutorial_example.name }})"
+      ansible.builtin.command:
+        cmd: >-
+          {{ vm2_ssh }}
+          'cd {{ tutorial_dir }} &&
+          RDMA_TUTORIAL_DEV={{ tutorial_dev_vm2 }}
+          timeout {{ ernic_rdma_tutorial_timeout | int }}
+          ./rdma-tutorial {{ vm1_ip }} {{ tutorial_args }}
+          {{ tutorial_port }}'
+      register: tutorial_client
+      changed_when: false
+      failed_when: false
+
+    # With RemainAfterExit, a server that exited 0 goes to "exited"
+    # and one that failed to "failed"; either leaves "running".
+    - name: "Wait for the server to finish ({{ tutorial_example.name }})"
+      ansible.builtin.command:
+        cmd: >-
+          {{ vm1_ssh }}
+          'systemctl show -p SubState --value {{ tutorial_unit }}'
+      register: tutorial_substate
+      until: tutorial_substate.stdout | trim != 'running'
+      retries: "{{ ernic_rdma_tutorial_timeout | int // 5 + 2 }}"
+      delay: 5
+      changed_when: false
+      failed_when: false
+
+    - name: "Collect the server's exit status ({{ tutorial_example.name }})"
+      ansible.builtin.command:
+        cmd: >-
+          {{ vm1_ssh }}
+          'systemctl show -p Result -p ExecMainCode -p ExecMainStatus
+          {{ tutorial_unit }}'
+      register: tutorial_server_status
+      changed_when: false
+      failed_when: false
+
+    # server.out is the unit's stdout and stderr, where the example
+    # reports errors; server.log and client.log are the examples' own
+    # logs, which end in a throughput line only when the run finished.
+    - name: "Collect the server output ({{ tutorial_example.name }})"
+      ansible.builtin.command:
+        cmd: >-
+          {{ vm1_ssh }}
+          'cd {{ tutorial_dir }} &&
+          for f in server.out server.log; do
+          echo "==> $f <=="; cat "$f"; done'
+      register: tutorial_server_log
+      changed_when: false
+      failed_when: false
+
+    - name: "Collect the client log ({{ tutorial_example.name }})"
+      ansible.builtin.command:
+        cmd: >-
+          {{ vm2_ssh }} 'cat {{ tutorial_dir }}/client.log'
+      register: tutorial_client_log
+      changed_when: false
+      failed_when: false
+
+    - name: "Display the results ({{ tutorial_example.name }})"
+      ansible.builtin.debug:
+        msg:
+          - "client exit status: {{ tutorial_client.rc }}"
+          - "client output:"
+          - "{{ tutorial_client.stdout_lines + tutorial_client.stderr_lines }}"
+          - "client.log:"
+          - "{{ tutorial_client_log.stdout_lines }}"
+          - "server status:"
+          - "{{ tutorial_server_status.stdout_lines }}"
+          - "server output:"
+          - "{{ tutorial_server_log.stdout_lines }}"
+
+    # The exit status alone is not enough: both examples print usage
+    # and exit 0 when given the wrong arguments, and log "Run Finished"
+    # on failure as well as success. The throughput line is written
+    # only after the last operation completes.
+    - name: "Record the result ({{ tutorial_example.name }})"
+      vars:
+        tutorial_pass: >-
+          {{ tutorial_client.rc == 0
+             and 'Result=success' in tutorial_server_status.stdout_lines
+             and 'ExecMainStatus=0' in tutorial_server_status.stdout_lines
+             and 'throughput =' in tutorial_server_log.stdout
+             and 'throughput =' in tutorial_client_log.stdout }}
+      ansible.builtin.set_fact:
+        tutorial_results: >-
+          {{ tutorial_results + [{
+               'name': tutorial_example.name,
+               'pass': tutorial_pass | bool,
+               'line': tutorial_example.name ~ ': '
+                       ~ ('PASS' if tutorial_pass | bool else 'FAIL')}] }}
+
+  always:
+    - name: "Stop the server unit ({{ tutorial_example.name }})"
+      ansible.builtin.command:
+        cmd: >-
+          {{ vm1_ssh }}
+          'sudo systemctl stop {{ tutorial_unit }};
+          sudo systemctl reset-failed {{ tutorial_unit }}'
+      changed_when: false
+      failed_when: false
