@@ -517,7 +517,6 @@ static const uint8_t *tagged_to(const uint8_t *dst, size_t len, uint16_t tpid,
 }
 
 #define MAX_PORT_EXPECT 10
-#define PEND            {-1, 0}
 
 struct port_case {
     const char *category;
@@ -550,7 +549,7 @@ static const struct port_case port_cases[] = {
       {IONIC_PORT_FRAMES_RX_64B, 1},
       {IONIC_PORT_FRAMES_RX_UNICAST, 1},
       {IONIC_PORT_FRAMES_RX_PRI_0, 1},
-      PEND}},
+      {END_VALUES}}},
     {"positive",
      "rx multicast",
      "frames_rx_multicast 1, not unicast or broadcast",
@@ -563,7 +562,7 @@ static const struct port_case port_cases[] = {
       {IONIC_PORT_FRAMES_RX_65B_127B, 1},
       {IONIC_PORT_FRAMES_RX_MULTICAST, 1},
       {IONIC_PORT_FRAMES_RX_PRI_0, 1},
-      PEND}},
+      {END_VALUES}}},
     {"positive",
      "tx 1000-byte broadcast",
      "frames_tx_ok/_all 1, octets_tx_ok/_total 1004, frames_tx_512b_1023b, "
@@ -577,7 +576,7 @@ static const struct port_case port_cases[] = {
       {IONIC_PORT_FRAMES_TX_512B_1023B, 1},
       {IONIC_PORT_FRAMES_TX_BROADCAST, 1},
       {IONIC_PORT_FRAMES_TX_PRI_0, 1},
-      PEND}},
+      {END_VALUES}}},
     {"positive",
      "rx 802.1Q frame with PCP 5",
      "frames_rx_vlan_good 1 and frames_rx_pri_5 1",
@@ -591,7 +590,7 @@ static const struct port_case port_cases[] = {
       {IONIC_PORT_FRAMES_RX_UNICAST, 1},
       {IONIC_PORT_FRAMES_RX_VLAN_GOOD, 1},
       {IONIC_PORT_FRAMES_RX_PRI_5, 1},
-      PEND}},
+      {END_VALUES}}},
     {"positive",
      "tx 802.1Q frame with PCP 3",
      "frames_tx_vlan 1 and frames_tx_pri_3 1",
@@ -605,7 +604,7 @@ static const struct port_case port_cases[] = {
       {IONIC_PORT_FRAMES_TX_MULTICAST, 1},
       {IONIC_PORT_FRAMES_TX_VLAN, 1},
       {IONIC_PORT_FRAMES_TX_PRI_3, 1},
-      PEND}},
+      {END_VALUES}}},
 
     {"negative",
      "rx 1519 bytes on a port whose maximum frame is 1518",
@@ -620,13 +619,13 @@ static const struct port_case port_cases[] = {
       {IONIC_PORT_FRAMES_RX_ALL, 1},
       {IONIC_PORT_OCTETS_RX_ALL, 1523},
       {IONIC_PORT_FRAMES_RX_1519B_2047B, 1},
-      PEND}},
+      {END_VALUES}}},
     {"negative",
      "zero-length frame",
      "no counter moves",
      {mac_ucast, 0, false, 0, UNTAGGED, MAX_FRAME_1500},
      true,
-     {PEND}},
+     {{END_VALUES}}},
     {"negative",
      "tx 1600 bytes (no maximum applies to tx)",
      "sent and counted, frames_tx_1519b_2047b 1",
@@ -639,7 +638,7 @@ static const struct port_case port_cases[] = {
       {IONIC_PORT_FRAMES_TX_1519B_2047B, 1},
       {IONIC_PORT_FRAMES_TX_UNICAST, 1},
       {IONIC_PORT_FRAMES_TX_PRI_0, 1},
-      PEND}},
+      {END_VALUES}}},
 
     {"boundary",
      "rx 59-byte frame",
@@ -654,7 +653,7 @@ static const struct port_case port_cases[] = {
       {IONIC_PORT_FRAMES_RX_64B, 1},
       {IONIC_PORT_FRAMES_RX_UNICAST, 1},
       {IONIC_PORT_FRAMES_RX_PRI_0, 1},
-      PEND}},
+      {END_VALUES}}},
     {"boundary",
      "rx 42-byte broadcast (an unpadded ARP from the TAP)",
      "counted as 64 on the wire, frames_rx_broadcast 1",
@@ -667,7 +666,7 @@ static const struct port_case port_cases[] = {
       {IONIC_PORT_FRAMES_RX_64B, 1},
       {IONIC_PORT_FRAMES_RX_BROADCAST, 1},
       {IONIC_PORT_FRAMES_RX_PRI_0, 1},
-      PEND}},
+      {END_VALUES}}},
     {"boundary",
      "rx exactly the maximum frame, 1518 bytes",
      "accepted: frames_rx_ok 1, frames_rx_1519b_2047b 1 (1522 with FCS)",
@@ -680,7 +679,7 @@ static const struct port_case port_cases[] = {
       {IONIC_PORT_FRAMES_RX_1519B_2047B, 1},
       {IONIC_PORT_FRAMES_RX_UNICAST, 1},
       {IONIC_PORT_FRAMES_RX_PRI_0, 1},
-      PEND}},
+      {END_VALUES}}},
     {"boundary",
      "rx 802.1Q frame with PCP 7",
      "frames_rx_pri_7 1",
@@ -694,7 +693,7 @@ static const struct port_case port_cases[] = {
       {IONIC_PORT_FRAMES_RX_UNICAST, 1},
       {IONIC_PORT_FRAMES_RX_VLAN_GOOD, 1},
       {IONIC_PORT_FRAMES_RX_PRI_7, 1},
-      PEND}},
+      {END_VALUES}}},
     {"boundary",
      "rx 802.1Q frame with PCP 0",
      "frames_rx_pri_0 1 and frames_rx_vlan_good 1",
@@ -708,7 +707,7 @@ static const struct port_case port_cases[] = {
       {IONIC_PORT_FRAMES_RX_UNICAST, 1},
       {IONIC_PORT_FRAMES_RX_VLAN_GOOD, 1},
       {IONIC_PORT_FRAMES_RX_PRI_0, 1},
-      PEND}},
+      {END_VALUES}}},
 
     {"corner",
      "rx 802.1ad (QinQ) outer tag with PCP 6",
@@ -723,7 +722,7 @@ static const struct port_case port_cases[] = {
       {IONIC_PORT_FRAMES_RX_UNICAST, 1},
       {IONIC_PORT_FRAMES_RX_VLAN_GOOD, 1},
       {IONIC_PORT_FRAMES_RX_PRI_6, 1},
-      PEND}},
+      {END_VALUES}}},
     {"corner",
      "rx 4-byte frame, too short for a destination MAC",
      "counted as a 64-byte frame of no class",
@@ -735,7 +734,7 @@ static const struct port_case port_cases[] = {
       {IONIC_PORT_OCTETS_RX_ALL, 64},
       {IONIC_PORT_FRAMES_RX_64B, 1},
       {IONIC_PORT_FRAMES_RX_PRI_0, 1},
-      PEND}},
+      {END_VALUES}}},
     {"corner",
      "rx 9212 bytes (9216 on the wire) with no maximum (max_frame 0)",
      "accepted, frames_rx_other 1",
@@ -748,7 +747,7 @@ static const struct port_case port_cases[] = {
       {IONIC_PORT_FRAMES_RX_OTHER, 1},
       {IONIC_PORT_FRAMES_RX_UNICAST, 1},
       {IONIC_PORT_FRAMES_RX_PRI_0, 1},
-      PEND}},
+      {END_VALUES}}},
 };
 
 /* Compare every port qword with @want; describe the differences in @got. */
@@ -895,7 +894,7 @@ static const struct inbox_port_case inbox_port_cases[] = {
       {IONIC_PORT_FRAMES_RX_UNICAST, 1},
       {IONIC_PORT_FRAMES_RX_PRI_0, 1},
       {IONIC_PORT_FRAMES_RX_DROPPED, 1},
-      PEND}},
+      {END_VALUES}}},
     {"positive",
      "inbox full, 1000-byte broadcast tagged PCP 5",
      "frames_rx_broadcast, _vlan_good, _pri_5, _512b_1023b and _dropped 1; "
@@ -911,7 +910,7 @@ static const struct inbox_port_case inbox_port_cases[] = {
       {IONIC_PORT_FRAMES_RX_VLAN_GOOD, 1},
       {IONIC_PORT_FRAMES_RX_PRI_5, 1},
       {IONIC_PORT_FRAMES_RX_DROPPED, 1},
-      PEND}},
+      {END_VALUES}}},
     {"boundary",
      "inbox full, exactly the maximum frame",
      "frames_rx_ok 1 and _dropped 1, not too long; one LIF drop",
@@ -925,7 +924,7 @@ static const struct inbox_port_case inbox_port_cases[] = {
       {IONIC_PORT_FRAMES_RX_UNICAST, 1},
       {IONIC_PORT_FRAMES_RX_PRI_0, 1},
       {IONIC_PORT_FRAMES_RX_DROPPED, 1},
-      PEND}},
+      {END_VALUES}}},
     {"negative",
      "inbox full, one byte over the maximum frame",
      "frames_rx_too_long, _oversized and _bad_all 1, not _dropped; no LIF "
@@ -938,13 +937,13 @@ static const struct inbox_port_case inbox_port_cases[] = {
       {IONIC_PORT_FRAMES_RX_TOO_LONG, 1},
       {IONIC_PORT_FRAMES_RX_OVERSIZED, 1},
       {IONIC_PORT_FRAMES_RX_BAD_ALL, 1},
-      PEND}},
+      {END_VALUES}}},
     {"corner",
      "inbox full with a frame too short to classify",
      "nothing counted at the port or the LIF",
      {mac_ucast, 4, 0, UNTAGGED, MAX_FRAME_1500},
      0,
-     {PEND}},
+     {{END_VALUES}}},
 };
 
 static void test_port_inbox_full(void)
@@ -964,8 +963,8 @@ static void test_port_inbox_full(void)
         ionic_emu_stats_reset(&st);
         ionic_emu_stats_rx_inbox_full(&st, f, c->in.len, c->in.max_frame);
         /* Nothing reaches the port until the main thread folds. */
-        ok = port_matches(&st, (const struct expect_counter[]){PEND}, 1, got,
-                          sizeof(got));
+        ok = port_matches(&st, (const struct expect_counter[]){{END_VALUES}}, 1,
+                          got, sizeof(got));
         ionic_emu_stats_fold(&st);
         ok =
             port_matches(&st, c->want, MAX_PORT_EXPECT, got, sizeof(got)) && ok;

@@ -204,7 +204,7 @@ def test_tx_completions(suite, server_factory):
 
 
 def test_jumbo_frame_round_trip(suite, server_factory):
-    """A frame at the largest MTU the guest may set survives the pipeline.
+    """A frame at the largest size the device advertises survives the pipeline.
 
     The P4 port claims every frame, so a frame the engine refuses is one
     the guest sent and nothing forwards -- silently, and only with --p4
@@ -221,11 +221,15 @@ def test_jumbo_frame_round_trip(suite, server_factory):
             fix.driver.eth_q_init(eth.QTYPE_ETH_RXQ, depth_log2=3)
             fix.driver.post_rx_buffers(count=2, size=eth.ETH_MTU_MAX)
 
-            # 9600 less the VLAN_ETH_HLEN the driver subtracts to get
-            # link.mtu_max, i.e. the largest frame a conforming guest can
-            # put on this ring.
-            sent = bytes(range(256)) * 37 + bytes(range(110))
-            suite.check_eq(len(sent), 9582, "the test frame is at mtu_max")
+            # The largest frame a conforming guest can put on this ring:
+            # one tagged frame at the largest MTU the driver allows. The
+            # port refuses anything longer, as a real MAC does.
+            max_frame = fix.driver.max_frame_size()
+            suite.check(
+                1518 < max_frame <= eth.ETH_MTU_MAX,
+                f"the device advertises jumbo frames ({max_frame} bytes)",
+            )
+            sent = bytes(i & 0xFF for i in range(max_frame))
             fix.driver.post_tx(sent)
             fix.driver.wait_tx()
 

@@ -497,6 +497,13 @@
 
 ### Changed
 
+* The ionic NIC drops a received frame longer than the maximum frame size it
+  advertises (`link.mtu_max` + 18 bytes, 9216 in the default profile) before
+  the guest sees it, as a real MAC does, and counts it in the port's
+  `frames_rx_too_long`, `frames_rx_oversized` and `frames_rx_bad_all`. Before,
+  any frame that fit the guest's receive buffer was delivered. This applies to
+  frames from the TAP, the mesh and the P4 engine alike, so a sender of jumbo
+  frames has to keep within the guest's profile.
 * CI and the release build use libvfio-user 8039244, the commit the VM
   lanes' container images already use, instead of 20e9803. Build against
   5d64ebf or later: before it, unmapping all of a client's memory left
