@@ -1276,6 +1276,11 @@
   a sign in it, such as `bytes=--64`, which was read as a huge suffix and
   returned the whole object, is now answered with `416`, as other malformed
   ranges are. `partNumber` is read as decimal; `0x10` used to be part 16.
+* The `s3` backend's multipart `uploadId` no longer contains part of a heap
+  address from the server process. It is now a per-server counter offset by
+  a random value chosen at startup, so an id a client kept from before a
+  server restart almost certainly names no upload after it. It is still 16
+  hex digits.
 * An ionic admin command that fails now carries its status code as the whole
   `status_length` of the completion, as the driver reads it, so the guest's
   log shows `opcode 5 error 3` instead of `error 50331648`. Each statistics
