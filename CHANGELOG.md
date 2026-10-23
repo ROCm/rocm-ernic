@@ -711,6 +711,10 @@
   the context is reset, including after a failed reply, which libvfio-user
   reports as success. `ernic-vfu-client` covers a client that hangs up while
   its command is being answered.
+* The server's count of main-loop passes, which it logs when the client
+  disconnects or the loop ends, is 64-bit. It was a signed `int`, which
+  overflows (undefined behavior) after 2^31 passes: a few days of uptime
+  when idle, sooner under load.
 * The TCP mesh manager's health check measures how long a node has been
   silent on the monotonic clock. It used the wall clock, so an NTP step or
   a change to the date could have it declare every node dead at once, or
