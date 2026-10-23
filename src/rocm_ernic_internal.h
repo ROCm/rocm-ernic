@@ -152,6 +152,12 @@ struct rocm_ernic_dev {
     bool device_realized;    /* Backend initialized */
     bool device_active;      /* Client connected and device running */
     bool verbose;            /* Verbose logging enabled */
+    /*
+     * The client went and libvfio-user reset the context, unmapping all
+     * guest memory.  Set by device_reset_cb(), inside vfu_run_ctx(), and
+     * cleared on attach; only the main thread touches it.
+     */
+    bool client_lost;
 
     /* Statistics */
     char *stats_file_path; /* Path to stats output file */

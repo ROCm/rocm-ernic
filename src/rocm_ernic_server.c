@@ -290,6 +290,7 @@ static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
         /* Socket/connection lost */
         vfu_log(vfu_ctx, LOG_INFO, "Client connection lost");
         dev->device_active = false;
+        dev->client_lost = true;
         conn_str = "disconnected (lost connection)";
         break;
 
@@ -1498,6 +1499,7 @@ int main(int argc, char *argv[])
     dev->verbose = false;
     dev->device_initialized = false;
     dev->device_active = false;
+    dev->client_lost = false;
     dev->mac_addr_set = false;
     /* Default MAC: 72:6f:63:6d:2d:6e (first 6 bytes of "rocm-nic" in ASCII hex)
      */
@@ -2054,6 +2056,7 @@ int main(int argc, char *argv[])
         }
 
         ernic_startup_report("rocm-ernic: Client connected!");
+        dev->client_lost = false;
         if (dev->pvrdma_handle) {
             pvrdma_set_stats_connection_state(dev->pvrdma_handle, "connected");
         }
@@ -2077,6 +2080,40 @@ int main(int argc, char *argv[])
             /* Debug logging disabled - too verbose */
             ret = vfu_run_ctx(vfu_ctx);
             loop_count++;
+
+            /*
+             * Checked before anything else runs.  When the client goes,
+             * libvfio-user resets the context, unmapping all guest memory,
+             * before vfu_run_ctx() returns, so the pollers below would DMA
+             * to addresses that no longer map to anything.  The return
+             * value doesn't always say so: after a reset because a reply
+             * failed, vfu_run_ctx() returns success.  device_reset_cb()
+             * sees every reset.  The pollers can also change errno, which
+             * says why vfu_run_ctx() failed.
+             */
+            if (dev->client_lost || (ret < 0 && errno == ENOTCONN)) {
+                ernic_startup_report(
+                    "rocm-ernic: Client disconnected after %d loops",
+                    loop_count);
+                if (dev->pvrdma_handle) {
+                    pvrdma_set_stats_connection_state(
+                        dev->pvrdma_handle, "disconnected (client closed)");
+                    if (dev->stats_file_path) {
+                        pvrdma_write_stats(dev->pvrdma_handle);
+                    }
+                }
+                break;
+            } else if (ret < 0 && errno == EINTR) {
+                /* Interrupted by signal */
+                vfu_log(vfu_ctx, LOG_INFO,
+                        "Interrupted by signal after %d loops", loop_count);
+                break;
+            } else if (ret < 0) {
+                vfu_log(vfu_ctx, LOG_ERR,
+                        "vfu_run_ctx() failed after %d loops: %s", loop_count,
+                        strerror(errno));
+                break;
+            }
 
             /* Process GLib idle callbacks (for WQE continuation) */
             /* Always iterate once (non-blocking) to process idle callbacks */
@@ -2115,32 +2152,6 @@ int main(int argc, char *argv[])
                     /* Apply anything peer instances sent us; like the Rx poll
                      * above, this has to run on the DMA-capable thread. */
                     ionic_datapath_poll(dev->ionic_dp);
-                }
-            }
-
-            if (ret < 0) {
-                if (errno == ENOTCONN) {
-                    ernic_startup_report(
-                        "rocm-ernic: Client disconnected after %d loops",
-                        loop_count);
-                    if (dev->pvrdma_handle) {
-                        pvrdma_set_stats_connection_state(
-                            dev->pvrdma_handle, "disconnected (client closed)");
-                        if (dev->stats_file_path) {
-                            pvrdma_write_stats(dev->pvrdma_handle);
-                        }
-                    }
-                    break;
-                } else if (errno == EINTR) {
-                    /* Interrupted by signal */
-                    vfu_log(vfu_ctx, LOG_INFO,
-                            "Interrupted by signal after %d loops", loop_count);
-                    break;
-                } else {
-                    vfu_log(vfu_ctx, LOG_ERR,
-                            "vfu_run_ctx() failed after %d loops: %s",
-                            loop_count, strerror(errno));
-                    break;
                 }
             }
 

@@ -490,6 +490,12 @@
 
 ### Changed
 
+* CI and the release build use libvfio-user 8039244, the commit the VM
+  lanes' container images already use, instead of 20e9803. Build against
+  5d64ebf or later: before it, unmapping all of a client's memory left
+  libvfio-user's region lookup cache pointing at the freed region, so a
+  later DMA to an address in it read freed memory and wrote to an unmapped
+  address.
 * **Breaking:** the ionic driver patch series and the two scripts that build
   it moved into the Ansible collection: `patches/` is now
   `ansible/files/patches/`, and `scripts/fetch-ionic-sources.sh` and
@@ -694,6 +700,17 @@
 
 ### Fixed
 
+* The server no longer touches guest memory after its client goes. When a
+  client hangs up, libvfio-user unmaps all guest memory before returning to
+  the server, but the server still ran that pass's Rx, statistics, admin
+  queue and data path work, which DMA into it. With a libvfio-user before
+  5d64ebf, whose region lookup cache could still point at the freed
+  mapping, that wrote into freed, unmapped memory and could crash the
+  server (seen in CI under valgrind, publishing the LIF statistics); with a
+  later one the writes failed. The server now ends the session as soon as
+  the context is reset, including after a failed reply, which libvfio-user
+  reports as success. `ernic-vfu-client` covers a client that hangs up while
+  its command is being answered.
 * The TCP mesh manager's health check measures how long a node has been
   silent on the monotonic clock. It used the wall clock, so an NTP step or
   a change to the date could have it declare every node dead at once, or
