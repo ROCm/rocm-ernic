@@ -700,6 +700,9 @@
 
 ### Fixed
 
+* The server's startup line `Added MSI-X capability at offset` now prints
+  the offset in hex. It printed the decimal value after a `0x` prefix, so a
+  capability at `0x40` was reported at `0x64`.
 * The `nvmeof` backend now completes a shutdown that the host requests by
   setting `CC.SHN` with `CC.EN` still set, as the NVMe specification has it,
   and keeps reporting it until a reset clears `CC.EN`. It reported

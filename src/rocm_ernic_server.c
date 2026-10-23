@@ -729,8 +729,9 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
         return (int)ret;
     }
 
-    ernic_startup_report("rocm-ernic: Added MSI-X capability at offset 0x%zd",
-                         ret);
+    /* ret is a non-negative offset here, so the cast to size_t is exact */
+    ernic_startup_report("rocm-ernic: Added MSI-X capability at offset %#zx",
+                         (size_t)ret);
 
     /* Ensure standard PCI header tail (0x34-0x3f) is set for config reads */
     {
