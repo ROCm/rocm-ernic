@@ -606,6 +606,13 @@ UAR writes, interrupts)</p></li>
 <p>Statistics are automatically written on server exit
 (<code class="docutils literal notranslate"><span class="pre">SIGINT</span></code> / <code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code>) in addition to the periodic
 updates.</p>
+<p>Each update is written to a temporary file next to the stats
+file (its name with six random characters appended), which
+then replaces the stats file, so a reader always sees one
+whole update. The server therefore needs write permission on
+the stats file’s directory. The file is mode <code class="docutils literal notranslate"><span class="pre">0644</span></code>
+whatever the umask. If an update can’t be written, the server
+logs why and leaves the previous file in place.</p>
 </section>
 <section id="development-workflow-hot-reload">
 <h2>Development Workflow: Hot Reload<a class="headerlink" href="#development-workflow-hot-reload" title="Link to this heading">#</a></h2>
