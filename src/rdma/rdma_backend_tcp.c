@@ -2497,6 +2497,7 @@ void *tcp_accept_thread(void *opaque)
     TcpBackendPrivate *priv = (TcpBackendPrivate *)opaque;
     struct sockaddr_in client_addr;
     socklen_t client_len;
+    char client_host[INET_ADDRSTRLEN];
     int sockfd;
     TcpMsgHeader hdr;
     void *payload = NULL;
@@ -2537,8 +2538,17 @@ void *tcp_accept_thread(void *opaque)
 
         tcp_tune_sockbuf(sockfd);
 
-        rdma_info_report("TCP: Accepted connection from %s:%u",
-                         inet_ntoa(client_addr.sin_addr),
+        /* Can't fail for AF_INET into INET_ADDRSTRLEN bytes */
+        if (!inet_ntop(AF_INET, &client_addr.sin_addr, client_host,
+                       sizeof(client_host))) {
+            rdma_error_report("TCP: Failed to format the address of an "
+                              "incoming connection: %s",
+                              strerror(errno));
+            close(sockfd);
+            continue;
+        }
+
+        rdma_info_report("TCP: Accepted connection from %s:%u", client_host,
                          ntohs(client_addr.sin_port));
 
         if (priv->is_manager) {
@@ -2547,9 +2557,8 @@ void *tcp_accept_thread(void *opaque)
 
             /* Manager mode: accept connection and let receive thread handle
              * REGISTER_NODE.  The node id is unknown until registration. */
-            conn =
-                tcp_connection_new(UINT32_MAX, inet_ntoa(client_addr.sin_addr),
-                                   ntohs(client_addr.sin_port));
+            conn = tcp_connection_new(UINT32_MAX, client_host,
+                                      ntohs(client_addr.sin_port));
             conn->sockfd = sockfd;
             atomic_store(&conn->is_connected, true);
             conn->priv = priv;
@@ -2699,8 +2708,7 @@ void *tcp_accept_thread(void *opaque)
             }
 
             /* Create connection object */
-            conn = tcp_connection_new(remote_node_id,
-                                      inet_ntoa(client_addr.sin_addr),
+            conn = tcp_connection_new(remote_node_id, client_host,
                                       ntohs(client_addr.sin_port));
             conn->sockfd = sockfd;
             atomic_store(&conn->is_connected, true);
