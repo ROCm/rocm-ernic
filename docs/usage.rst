@@ -221,6 +221,14 @@ Statistics are automatically written on server exit
 (``SIGINT`` / ``SIGTERM``) in addition to the periodic
 updates.
 
+Each update is written to a temporary file next to the stats
+file (its name with six random characters appended), which
+then replaces the stats file, so a reader always sees one
+whole update. The server therefore needs write permission on
+the stats file's directory. The file is mode ``0644``
+whatever the umask. If an update can't be written, the server
+logs why and leaves the previous file in place.
+
 Development Workflow: Hot Reload
 --------------------------------
 

@@ -499,15 +499,32 @@
   sources into the guests, which then need no network access. Upstream's
   5 and 10 million operations take tens of minutes over the emulated NIC,
   so each example runs `ernic_rdma_tutorial_ops` (default 10000) instead.
+* The ionic NIC publishes its port (MAC) statistics, the 89 counters
+  `ethtool -S` shows as `frames_*` and `octets_*`, which the driver used to
+  list as 0: frames and octets by result, by unicast, multicast and
+  broadcast, and by size bucket, counted as on the wire. They are published
+  with the LIF statistics and cleared on PORT_RESET. A frame dropped for
+  want of a receive buffer, or because the mesh inbox is full, counts as
+  received and as `frames_rx_dropped`. Documented in `docs/ionic.rst`.
 
 ### Changed
 
-* CI and the release build use libvfio-user 8039244, the commit the VM
-  lanes' container images already use, instead of 20e9803. Build against
-  5d64ebf or later: before it, unmapping all of a client's memory left
-  libvfio-user's region lookup cache pointing at the freed region, so a
-  later DMA to an address in it read freed memory and wrote to an unmapped
-  address.
+* The ionic NIC drops a received frame longer than the maximum frame size it
+  advertises (`link.mtu_max` + 18 bytes, 9216 in the default profile) before
+  the guest sees it, as a real MAC does, and counts it in the port's
+  `frames_rx_too_long`, `frames_rx_oversized` and `frames_rx_bad_all`. Before,
+  any frame that fit the guest's receive buffer was delivered. This applies to
+  frames from the TAP, the mesh and the P4 engine alike, so a sender of jumbo
+  frames has to keep within the guest's profile.
+* CI, the release build and the Nix flake use libvfio-user 5b9c722 instead
+  of 20e9803 (the flake, 323f4cb). Build against 5b9c722 or later: before
+  it, the upper half of a 64-bit BAR smaller than 4 GiB, as BAR0 and BAR2
+  are, wasn't writable, so a guest couldn't place either BAR above 4 GiB,
+  and sizing the BAR reported the wrong size. Before 5d64ebf, unmapping all
+  of a client's memory also left libvfio-user's region lookup cache
+  pointing at the freed region, so a later DMA to an address in it read
+  freed memory and wrote to an unmapped address. The VM lanes' container
+  images still carry 8039244, which has the second fix but not the first.
 * **Breaking:** the ionic driver patch series and the two scripts that build
   it moved into the Ansible collection: `patches/` is now
   `ansible/files/patches/`, and `scripts/fetch-ionic-sources.sh` and
@@ -1120,9 +1137,18 @@
   field exactly, so their lines came out as `NAME: 4` and were dropped by the
   parser. The exporter also no longer attributes a device-level key that
   appears after the per-QP block to the last QP it saw.
-* The `--stats-file` file is created with mode `0644`, less the umask, like the
-  `--log-file` file. It was created with `0666`, so under a permissive umask
-  any local user could rewrite the counters `ernic-exporter` reports.
+* The `--stats-file` file is mode `0644`, whatever the umask. It was created
+  with `0666`, so under a permissive umask any local user could rewrite the
+  counters `ernic-exporter` reports.
+* The `--stats-file` file is replaced whole on every update instead of being
+  truncated and rewritten in place, so `ernic-exporter` and `ernicctl` can no
+  longer read it empty or half written. Each update goes to a temporary file
+  in the same directory (the stats file's name plus six random characters)
+  that is then renamed over it, so the server now needs write permission on
+  that directory. A failed write, previously unnoticed, is logged and leaves
+  the last good file in place, and "Write count" now counts only updates
+  that were published. A symlink at the stats path is replaced, not written
+  through. Covered by the new `pvrdma-stats-unit` CTest test.
 
 * MSI-X assertions raised while a vector is masked are latched and replayed
   when the driver unmasks, instead of being dropped. Every vector comes out of

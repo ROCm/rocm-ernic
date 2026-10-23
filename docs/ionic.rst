@@ -403,6 +403,58 @@ the device serves from the admin queue rather than from
 this block, and how the two counter sets compare with
 the silicon, are in :doc:`monitoring`.
 
+Port (MAC) statistics
+~~~~~~~~~~~~~~~~~~~~~
+
+At ``PORT_INIT`` the driver hands the device a ``struct
+ionic_port_info``. Its ``struct ionic_port_stats`` (byte 576,
+89 counters) is what ``ethtool -S`` lists under the port
+names such as ``frames_rx_ok`` and ``frames_rx_64b``. The
+emulator counts these at the wire, the way a MAC sees it, and
+publishes them on the same tick as the LIF block.
+
+A frame's wire length is its length padded to 60 bytes, as a
+sending MAC pads it, plus the 4-byte FCS. A 42-byte ARP from
+the TAP is therefore a 64-byte frame. What moves:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Event
+     - Counters
+   * - frame sent
+     - ``frames_tx_all``, ``_ok``, ``octets_tx_total``,
+       ``_ok``, the size bucket, the cast class
+   * - frame received
+     - ``frames_rx_all``, ``_ok``, ``octets_rx_all``, ``_ok``,
+       the size bucket, the cast class
+   * - VLAN tag (0x8100, or a 0x88a8 outer tag)
+     - ``frames_rx_vlan_good`` or ``frames_tx_vlan``, and
+       ``frames_{rx,tx}_pri_N`` from the tag's PCP; untagged
+       frames count as ``_pri_0``
+   * - received frame over the port's maximum
+       (``link.mtu_max`` + 18)
+     - ``frames_rx_too_long``, ``_oversized``, ``_bad_all``;
+       the MAC drops it and the LIF never sees it
+   * - received with no buffer posted, or the mesh inbox full
+     - ``frames_rx_dropped``, on top of the counters for a
+       received frame: the MAC took it in, the LIF dropped it
+
+The size buckets run 64, 65–127, 128–255, 256–511,
+512–1023, 1024–1518, 1519–2047, 2048–4095, 4096–8191,
+8192–9215 and 9216 and up (``_other``), so ``ping -s 1472`` lands in
+``frames_rx_1024b_1518b``. Because every frame is padded,
+``frames_rx_undersized`` and ``_less_than_64b`` stay zero, as
+do the counters only a real wire can move: bad FCS, jabber,
+fragments and pause frames.
+
+``PORT_RESET`` stops the port writes but not the LIF ones,
+and ``LIF_RESET`` does the reverse. ``PORT_RESET`` also zeroes
+the port counters, so the next ``PORT_INIT`` starts from 0;
+the LIF counters are kept. The stats file has a
+``Port Statistics`` section, one line per counter.
+
 Guest Driver: Patched Upstream ionic
 ------------------------------------
 

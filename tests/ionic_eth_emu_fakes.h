@@ -38,7 +38,7 @@
  * Large enough for a published port_info plus the LIF info block, with the
  * two placed far enough apart that a write to one cannot reach the other.
  */
-#define GUEST_MEM_SIZE 8192
+#define GUEST_MEM_SIZE 16384
 static uint8_t g_mem[GUEST_MEM_SIZE];
 
 /* DMA writes seen since the test last cleared it. */

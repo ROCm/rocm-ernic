@@ -242,8 +242,7 @@ def test_irqs(suite, client):
 def read_stats(path):
     """The stats file's connection state and write count.
 
-    None if the file isn't there yet, or was read part-way through being
-    rewritten.
+    None if the file isn't there yet, or lacks either line.
     """
     try:
         with open(path, encoding="utf-8") as stats:

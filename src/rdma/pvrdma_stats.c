@@ -12,11 +12,11 @@
  */
 
 #include <errno.h>
-#include <fcntl.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <glib.h>
 
@@ -68,7 +68,9 @@ void pvrdma_write_stats_impl(PVRDMADev *dev)
     GHashTableIter iter;
     gpointer key, value;
     FILE *fp;
+    char *tmp_path;
     int fd;
+    int write_err;
     const char *opcode_names[] = {"RDMA_WRITE",
                                   "RDMA_WRITE_WITH_IMM",
                                   "SEND",
@@ -97,26 +99,33 @@ void pvrdma_write_stats_impl(PVRDMADev *dev)
         return;
     }
 
-    /* open() rather than fopen(), which would create the file with mode 0666
-     * less the umask.  With _FORTIFY_SOURCE, glibc 2.40 and later give Clang
-     * an open(path, flags, mode) overload, and android-cloexec-open looks for
-     * O_CLOEXEC in its mode */
-    /* NOLINTBEGIN(android-cloexec-open) */
-    fd = open(dev->stats.stats_file, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,
-              0644);
-    /* NOLINTEND(android-cloexec-open) */
+    /* ernic-exporter and ernicctl read the file whenever they like, so it's
+     * never rewritten in place, where they could find it empty or half
+     * written.  The new contents go to a temporary file in the same
+     * directory, and rename() replaces the old file with it in one step: a
+     * reader opens one whole file or the other.  mkstemp() creates the file
+     * 0600, which would lock out an exporter running as another user. */
+    tmp_path = g_strconcat(dev->stats.stats_file, ".XXXXXX", NULL);
+    fd = mkstemp(tmp_path);
     if (fd < 0) {
-        rdma_error_report("Failed to open stats file %s: %s",
+        rdma_error_report("Failed to create a temporary file for stats file "
+                          "%s: %s",
                           dev->stats.stats_file, strerror(errno));
+        g_free(tmp_path);
         return;
     }
-    fp = fdopen(fd, "w");
+    fp = fchmod(fd, 0644) == 0 ? fdopen(fd, "w") : NULL;
     if (!fp) {
-        rdma_error_report("Failed to open stats file %s: %s",
+        rdma_error_report("Failed to open %s for stats file %s: %s", tmp_path,
                           dev->stats.stats_file, strerror(errno));
         close(fd);
+        unlink(tmp_path);
+        g_free(tmp_path);
         return;
     }
+
+    /* Says why a write below failed, if nothing after it changes errno */
+    errno = 0;
 
     fprintf(fp, "=== ROCm ERNIC Statistics ===\n");
     fprintf(fp, "Instance:\n");
@@ -230,6 +239,35 @@ void pvrdma_write_stats_impl(PVRDMADev *dev)
         fprintf(fp, "  (no QPs created yet)\n\n");
     }
 
-    fclose(fp);
+    /* A failed fprintf() above leaves the error indicator set; fflush()
+     * reports a failure writing what's still buffered, and fclose() can
+     * fail after that.  A file missing any of it must not replace the old
+     * one. */
+    write_err = 0;
+    if (fflush(fp) != 0 || ferror(fp)) {
+        write_err = errno ? errno : EIO;
+    }
+    if (fclose(fp) != 0 && !write_err) {
+        write_err = errno;
+    }
+    if (write_err) {
+        rdma_error_report("Failed to write stats file %s: %s",
+                          dev->stats.stats_file, strerror(write_err));
+        unlink(tmp_path);
+        g_free(tmp_path);
+        return;
+    }
+
+    if (rename(tmp_path, dev->stats.stats_file) != 0) {
+        rdma_error_report("Failed to replace stats file %s: %s",
+                          dev->stats.stats_file, strerror(errno));
+        unlink(tmp_path);
+        g_free(tmp_path);
+        return;
+    }
+    g_free(tmp_path);
+
+    /* Counts files published, so a reader that sees it go up knows it's
+     * looking at a new one */
     dev->stats.stats_write_count++;
 }
