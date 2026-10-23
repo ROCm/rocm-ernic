@@ -898,11 +898,18 @@ static uint16_t do_property_set(struct nvmeof_queue *q, const uint8_t *sqe)
     }
 
     t->ctrl.cc = (uint32_t)val;
+    uint32_t shn = (t->ctrl.cc >> 14) & 0x3;
     if (t->ctrl.cc & NVME_CC_ENABLE) {
-        t->ctrl.csts = NVME_CSTS_RDY;
+        /*
+         * A host shuts down by setting CC.SHN with CC.EN still set, and the
+         * shutdown stays reported until a reset clears CC.EN.
+         */
+        t->ctrl.csts = NVME_CSTS_RDY | (t->ctrl.csts & 0xc);
+        if (shn != 0) {
+            t->ctrl.csts |= NVME_CSTS_SHST_CMPLT;
+        }
     } else {
         /* Shutdown or disable: report both not-ready and shutdown done. */
-        uint32_t shn = (t->ctrl.cc >> 14) & 0x3;
         t->ctrl.csts = shn != 0 ? NVME_CSTS_SHST_CMPLT : 0;
     }
     return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);

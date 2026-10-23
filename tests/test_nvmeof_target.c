@@ -205,6 +205,33 @@ static int do_connect(struct nvmeof_queue *q, struct host_mem *h, uint16_t qid,
     return nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
 }
 
+static uint16_t set_cc(struct nvmeof_queue *q, struct host_mem *h, uint16_t cid,
+                       uint32_t cc)
+{
+    struct capsule c;
+    uint8_t rsp[NVME_CQE_SIZE];
+
+    cap_init(&c, NVME_ADMIN_FABRICS, cid);
+    c.b[NVMEOF_SQE_FCTYPE_OFF] = NVMEOF_FCTYPE_PROPERTY_SET;
+    nvme_put_le32(c.b + NVMEOF_PROP_OFFSET_OFF, NVMEOF_PROP_CC);
+    nvme_put_le64(c.b + NVMEOF_PROP_VALUE_OFF, cc);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    return rsp_status(rsp);
+}
+
+static uint32_t get_csts(struct nvmeof_queue *q, struct host_mem *h,
+                         uint16_t cid)
+{
+    struct capsule c;
+    uint8_t rsp[NVME_CQE_SIZE];
+
+    cap_init(&c, NVME_ADMIN_FABRICS, cid);
+    c.b[NVMEOF_SQE_FCTYPE_OFF] = NVMEOF_FCTYPE_PROPERTY_GET;
+    nvme_put_le32(c.b + NVMEOF_PROP_OFFSET_OFF, NVMEOF_PROP_CSTS);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    return nvme_get_le32(rsp + NVME_CQE_RESULT_OFF);
+}
+
 /* ------------------------------------------------------------------ */
 /* Configuration parsing                                              */
 /* ------------------------------------------------------------------ */
@@ -429,19 +456,9 @@ static void test_handshake(void)
           "VS is not 1.4.0");
 
     /* Enable the controller and confirm CSTS.RDY follows CC.EN. */
-    cap_init(&c, NVME_ADMIN_FABRICS, 4);
-    c.b[NVMEOF_SQE_FCTYPE_OFF] = NVMEOF_FCTYPE_PROPERTY_SET;
-    nvme_put_le32(c.b + NVMEOF_PROP_OFFSET_OFF, NVMEOF_PROP_CC);
-    nvme_put_le64(c.b + NVMEOF_PROP_VALUE_OFF,
-                  NVME_CC_ENABLE | (6 << 16) | (4 << 20));
-    nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
-    check("prop-cc", rsp_status(rsp) == 0, "Property Set CC failed");
-
-    cap_init(&c, NVME_ADMIN_FABRICS, 5);
-    c.b[NVMEOF_SQE_FCTYPE_OFF] = NVMEOF_FCTYPE_PROPERTY_GET;
-    nvme_put_le32(c.b + NVMEOF_PROP_OFFSET_OFF, NVMEOF_PROP_CSTS);
-    nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
-    check("prop-csts", nvme_get_le32(rsp + NVME_CQE_RESULT_OFF) & NVME_CSTS_RDY,
+    const uint32_t cc_en = NVME_CC_ENABLE | (6 << 16) | (4 << 20);
+    check("prop-cc", set_cc(aq, h, 4, cc_en) == 0, "Property Set CC failed");
+    check("prop-csts", get_csts(aq, h, 5) & NVME_CSTS_RDY,
           "CSTS.RDY did not follow CC.EN");
 
     /* Identify Controller. */
@@ -542,6 +559,26 @@ static void test_handshake(void)
     check("short-capsule",
           nvmeof_queue_exec(aq, c.b, 32, &host_ops, h, rsp) < 0,
           "a 32-byte capsule was accepted");
+
+    /*
+     * A host shuts down by setting CC.SHN with CC.EN still set. The shutdown
+     * stays reported until a reset clears CC.EN, and re-enabling after it
+     * reports a ready controller that is not shut down.
+     */
+    check("cc-shutdown", set_cc(aq, h, 15, cc_en | (1u << 14)) == 0,
+          "Property Set CC.SHN failed");
+    check("cc-shutdown", (get_csts(aq, h, 16) & 0xc) == NVME_CSTS_SHST_CMPLT,
+          "CSTS.SHST did not complete for CC.SHN with CC.EN set");
+    set_cc(aq, h, 17, cc_en);
+    check("cc-shutdown-held",
+          (get_csts(aq, h, 18) & 0xc) == NVME_CSTS_SHST_CMPLT,
+          "CSTS.SHST was cleared by a CC write that was not a reset");
+    set_cc(aq, h, 19, cc_en & ~NVME_CC_ENABLE);
+    check("cc-reset", get_csts(aq, h, 20) == 0,
+          "CSTS is not clear after a reset");
+    set_cc(aq, h, 21, cc_en);
+    check("cc-reenable", get_csts(aq, h, 22) == NVME_CSTS_RDY,
+          "CSTS is not RDY alone after re-enabling");
 
 out:
     free(h);
