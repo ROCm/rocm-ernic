@@ -164,7 +164,7 @@ jobs:
             /usr/lib/x86_64-linux-gnu/libvfio-user*
             /usr/lib/x86_64-linux-gnu/pkgconfig/libvfio-user.pc
             /usr/include/vfio-user
-          key: libvfio-user-8039244-${{ matrix.os }}
+          key: libvfio-user-5b9c722-${{ matrix.os }}
 
       - name: Clone and build libvfio-user
         if: steps.cache-libvfio-user.outputs.cache-hit != 'true'
@@ -176,15 +176,19 @@ jobs:
           # project needs it too, so it is installed unconditionally
           # above.
           sudo apt-get install -y meson libcmocka-dev
-          # Pin to 8039244 (headers: allow including the installed headers
-          # from C++, Sep 8 2026), the build the VM lanes' container images
-          # use. It needs the vfu_setup_device_dma() max_regions parameter
+          # Pin to 5b9c722 (pci: preserve upper address bits of small
+          # 64-bit BARs, Oct 23 2026). Before it, the upper half of a
+          # 64-bit BAR smaller than 4 GiB, as BAR0 and BAR2 are, wasn't
+          # writable, so a guest couldn't place the BAR above 4 GiB. It
+          # also needs the vfu_setup_device_dma() max_regions parameter
           # added in f3742ed9 (#835), and 5d64ebf (#842): before it,
           # removing every DMA region, as a reset on disconnect does, left
-          # a cached region pointer to freed memory for the next DMA.
+          # a cached region pointer to freed memory for the next DMA. The
+          # VM lanes' container images are still built with 8039244, the
+          # commit before it.
           git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user
           cd /tmp/libvfio-user
-          git checkout 8039244
+          git checkout 5b9c722
           meson setup build --prefix=/usr -Dwarning_level=0
           ninja -C build
           sudo ninja -C build install

@@ -21,11 +21,11 @@
     "libvfio-user": {
       "flake": false,
       "locked": {
-        "lastModified": 1787057784,
-        "narHash": "sha256-VRwnY/JX3NAhXypM5tTZSpEQvWsAWgdrsii5kNkpEYg=",
+        "lastModified": 1792778315,
+        "narHash": "sha256-8YY8giJBH4HwnPtKJDy9leoOJWCkjQ3x+WaCartFclY=",
         "owner": "nutanix",
         "repo": "libvfio-user",
-        "rev": "323f4cb6cddc3713fb7aebe44436f28b28b5413a",
+        "rev": "5b9c7220647e45a0bbfc2a22bef05bbfd56e5742",
         "type": "github"
       },
       "original": {

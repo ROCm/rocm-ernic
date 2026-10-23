@@ -504,12 +504,15 @@
   any frame that fit the guest's receive buffer was delivered. This applies to
   frames from the TAP, the mesh and the P4 engine alike, so a sender of jumbo
   frames has to keep within the guest's profile.
-* CI and the release build use libvfio-user 8039244, the commit the VM
-  lanes' container images already use, instead of 20e9803. Build against
-  5d64ebf or later: before it, unmapping all of a client's memory left
-  libvfio-user's region lookup cache pointing at the freed region, so a
-  later DMA to an address in it read freed memory and wrote to an unmapped
-  address.
+* CI, the release build and the Nix flake use libvfio-user 5b9c722 instead
+  of 20e9803 (the flake, 323f4cb). Build against 5b9c722 or later: before
+  it, the upper half of a 64-bit BAR smaller than 4 GiB, as BAR0 and BAR2
+  are, wasn't writable, so a guest couldn't place either BAR above 4 GiB,
+  and sizing the BAR reported the wrong size. Before 5d64ebf, unmapping all
+  of a client's memory also left libvfio-user's region lookup cache
+  pointing at the freed region, so a later DMA to an address in it read
+  freed memory and wrote to an unmapped address. The VM lanes' container
+  images still carry 8039244, which has the second fix but not the first.
 * **Breaking:** the ionic driver patch series and the two scripts that build
   it moved into the Ansible collection: `patches/` is now
   `ansible/files/patches/`, and `scripts/fetch-ionic-sources.sh` and
