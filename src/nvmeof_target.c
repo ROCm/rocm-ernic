@@ -42,10 +42,12 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "ionic_datapath.h" /* IONIC_MAX_MR_QUEUES -- the queue-count ceiling */
 #include "nvmeof_target.h"
+#include "nvmeof_target_priv.h"
 #include "parse_int.h"
 
 #define NVMEOF_DEFAULT_NQN        "nvmet-test"
@@ -89,7 +91,9 @@ struct nvmeof_target {
 
     uint8_t *ns_data;
     size_t ns_len;
-    int ns_fd;
+    int ns_fd;           /* -1 for a RAM namespace */
+    uint64_t page_size;  /* msync() wants a page-aligned start */
+    nvmeof_sync_fn sync; /* msync(), or a test's stand-in */
 
     struct nvmeof_queue *queues;
     unsigned queue_cap;
@@ -178,6 +182,8 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
             if (!ernic_parse_size(val, &cfg->size) || cfg->size == 0) {
                 set_err(err, errlen, "bad size '%s'", val);
                 ok = false;
+            } else {
+                cfg->size_set = true;
             }
         } else if (strcmp(key, "file") == 0) {
             if (*val == '\0') {
@@ -263,6 +269,54 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
 /* Lifecycle                                                          */
 /* ------------------------------------------------------------------ */
 
+/*
+ * Settle the namespace size against the image file, which may hold an
+ * earlier run's data.  Without size=, an image that has data keeps its own
+ * size; an empty or new one is sized to cfg.size.  A size= larger than the
+ * image grows it, and one smaller is refused, as is an image that isn't a
+ * whole number of blocks: either would lose the end of the data.
+ */
+static bool size_image(struct nvmeof_target *t, char *err, size_t errlen)
+{
+    struct stat st;
+
+    if (fstat(t->ns_fd, &st) != 0) {
+        set_err(err, errlen, "cannot stat %s: %s", t->cfg.file,
+                strerror(errno));
+        return false;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        set_err(err, errlen, "%s is not a regular file", t->cfg.file);
+        return false;
+    }
+
+    /* A regular file's st_size is never negative. */
+    uint64_t have = (uint64_t)st.st_size;
+    if (have != 0 && !t->cfg.size_set) {
+        if (have % t->cfg.block_size != 0) {
+            set_err(err, errlen,
+                    "%s is %" PRIu64 " bytes, not a multiple of bs %u; "
+                    "give a size= of whole blocks to grow it",
+                    t->cfg.file, have, t->cfg.block_size);
+            return false;
+        }
+        t->cfg.size = have;
+    } else if (have > t->cfg.size) {
+        set_err(err, errlen,
+                "%s is %" PRIu64 " bytes; size=%" PRIu64 " would truncate it",
+                t->cfg.file, have, t->cfg.size);
+        return false;
+    }
+
+    t->ns_len = (size_t)t->cfg.size;
+    if (have < t->cfg.size && ftruncate(t->ns_fd, (off_t)t->ns_len) != 0) {
+        set_err(err, errlen, "cannot size %s to %zu bytes: %s", t->cfg.file,
+                t->ns_len, strerror(errno));
+        return false;
+    }
+    return true;
+}
+
 struct nvmeof_target *nvmeof_target_create(const struct nvmeof_target_cfg *cfg,
                                            char *err, size_t errlen)
 {
@@ -276,6 +330,7 @@ struct nvmeof_target *nvmeof_target_create(const struct nvmeof_target_cfg *cfg,
     t->cfg.file = NULL;
     t->ns_fd = -1;
     t->ns_len = (size_t)cfg->size;
+    t->sync = msync;
 
     if (cfg->file != NULL) {
         t->cfg.file = strdup(cfg->file);
@@ -294,11 +349,16 @@ struct nvmeof_target *nvmeof_target_create(const struct nvmeof_target_cfg *cfg,
                     strerror(errno));
             goto fail;
         }
-        if (ftruncate(t->ns_fd, (off_t)t->ns_len) != 0) {
-            set_err(err, errlen, "cannot size %s to %zu bytes: %s", t->cfg.file,
-                    t->ns_len, strerror(errno));
+        if (!size_image(t, err, errlen)) {
             goto fail;
         }
+        long page = sysconf(_SC_PAGESIZE);
+        if (page <= 0) {
+            set_err(err, errlen, "cannot read the page size: %s",
+                    strerror(errno));
+            goto fail;
+        }
+        t->page_size = (uint64_t)page;
         t->ns_data = mmap(NULL, t->ns_len, PROT_READ | PROT_WRITE, MAP_SHARED,
                           t->ns_fd, 0);
     } else {
@@ -352,6 +412,11 @@ const struct nvmeof_target_stats *nvmeof_target_stats(
     const struct nvmeof_target *t)
 {
     return &t->stats;
+}
+
+void nvmeof_target_set_sync(struct nvmeof_target *t, nvmeof_sync_fn fn)
+{
+    t->sync = fn;
 }
 
 /* ------------------------------------------------------------------ */
@@ -574,7 +639,14 @@ static void build_id_ctrl(const struct nvmeof_target *t, uint8_t *buf)
     nvme_put_le32(buf + 516, t->ctrl.discovery ? 0 : 1); /* nn */
     nvme_put_le16(buf + 520, 0x0008); /* oncs: Write Zeroes */
     buf[524] = 0;                     /* fna */
-    buf[525] = 0;                     /* vwc: no volatile write cache */
+
+    /*
+     * vwc: a file-backed namespace has one, the host page cache, so say so
+     * (bit 0) or the host never sends Flush or sets FUA.  Bits 2:1 = 10b:
+     * Flush needs the namespace's own NSID, not the broadcast one.  A RAM
+     * namespace has no stable media to write back to.
+     */
+    buf[525] = t->ns_fd >= 0 ? 0x05 : 0;
 
     /*
      * sgls: supported (bit 0), keyed SGLs (bit 2, which nvme-rdma treats
@@ -1096,6 +1168,30 @@ static uint16_t io_range(struct nvmeof_target *t, const uint8_t *sqe,
     return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
 }
 
+/*
+ * Write [off, off + len) of a file-backed namespace through to stable
+ * media, for Flush and FUA.  msync(), not fdatasync(): POSIX only promises
+ * that stores to a shared mapping reach the file through msync().  It
+ * blocks the caller until writeback is done.
+ *
+ * A failure sets DNR: Linux reports a writeback error once and may already
+ * have dropped the dirty pages, so a retry could succeed with the data lost.
+ */
+static uint16_t ns_sync(struct nvmeof_target *t, uint64_t off, uint64_t len)
+{
+    if (t->ns_fd < 0) {
+        return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
+    }
+
+    /* ns_data is page-aligned, being an mmap(). */
+    uint64_t start = off - off % t->page_size;
+    if (t->sync(t->ns_data + start, (size_t)(off + len - start), MS_SYNC) !=
+        0) {
+        return nvme_status(NVME_SCT_MEDIA, NVME_SC_WRITE_FAULT, 1);
+    }
+    return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
+}
+
 static uint16_t exec_io(struct nvmeof_queue *q, const uint8_t *capsule,
                         size_t capsule_len, const struct nvmeof_dma_ops *dma,
                         void *ctx)
@@ -1106,6 +1202,10 @@ static uint16_t exec_io(struct nvmeof_queue *q, const uint8_t *capsule,
     uint64_t off, len;
     uint16_t st;
 
+    /* FUA on a Read asks for the media's copy, which the mapping already
+     * is, so only writes act on it. */
+    bool fua = (nvme_get_le32(capsule + NVME_SQE_CDW12_OFF) & NVME_RW_FUA) != 0;
+
     t->stats.io_cmds++;
 
     if (nsid != t->cfg.nsid) {
@@ -1114,10 +1214,7 @@ static uint16_t exec_io(struct nvmeof_queue *q, const uint8_t *capsule,
 
     switch (opcode) {
     case NVME_CMD_FLUSH:
-        if (t->ns_fd >= 0) {
-            msync(t->ns_data, t->ns_len, MS_ASYNC);
-        }
-        return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
+        return ns_sync(t, 0, t->ns_len);
 
     case NVME_CMD_DSM:
         /* Deallocate is advisory; honouring it is optional. */
@@ -1130,7 +1227,8 @@ static uint16_t exec_io(struct nvmeof_queue *q, const uint8_t *capsule,
         }
         memset(t->ns_data + off, 0, (size_t)len);
         t->stats.write_bytes += len;
-        return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
+        return fua ? ns_sync(t, off, len)
+                   : nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
 
     case NVME_CMD_READ:
     case NVME_CMD_WRITE: {
@@ -1157,6 +1255,9 @@ static uint16_t exec_io(struct nvmeof_queue *q, const uint8_t *capsule,
                           t->ns_data + off, (uint32_t)len);
             if (st == 0) {
                 t->stats.write_bytes += len;
+                if (fua) {
+                    st = ns_sync(t, off, len);
+                }
             }
         }
         return st;

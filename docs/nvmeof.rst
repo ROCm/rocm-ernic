@@ -61,16 +61,20 @@ The backend string is ``nvmeof`` optionally followed by
      - ``64M``
      - Namespace capacity. Accepts ``K``/``M``/``G``/``T``
        and the ``KiB``/``MiB`` spellings; must be a whole
-       number of blocks.
+       number of blocks. Without it, an existing ``file=``
+       image keeps its own size.
    * - ``bs=``
      - ``512``
      - Logical block size. One of 512, 1024, 2048 or 4096.
    * - ``file=``
      - unset
-     - Back the namespace with this file instead of
-       anonymous memory. Created if absent, and truncated to
-       ``size=`` either way -- an existing image larger than
-       ``size=`` is shrunk.
+     - Back the namespace with this regular file instead
+       of anonymous memory. A new or empty file is created
+       at ``size=``. An existing image is never shrunk: a
+       ``size=`` larger than the image grows it, a smaller
+       one is refused, and without ``size=`` the image has
+       to be a whole number of blocks. See
+       :ref:`nvmeof-durability`.
    * - ``nqn=``
      - ``nvmet-test``
      - Subsystem NQN the guest connects to.
@@ -112,6 +116,38 @@ A successful start logs the controller at ``info``:
 
    ionic_datapath: nvmeof target 'nvmet-test' 1073741824 bytes bs=4096 \
        at 192.168.200.1:4420
+
+The size it logs is the one settled on, which for an existing
+``file=`` image without ``size=`` is the image's.
+
+.. _nvmeof-durability:
+
+File-backed namespaces
+^^^^^^^^^^^^^^^^^^^^^^
+
+A ``file=`` image may hold an earlier run's data, so the
+server never shrinks it. One it can't use without losing data
+is refused when the device is created, after the options have
+been accepted:
+
+.. code-block:: console
+
+   $ ./build/rocm-ernic --backend nvmeof:file=/var/tmp/ns0.img,size=64M
+   nvmeof backend: /var/tmp/ns0.img is 1073741824 bytes; size=67108864 \
+       would truncate it
+
+Drop ``size=`` to keep the image's size, or give a larger one
+to grow it.
+
+Writes land in the host page cache, so the controller reports
+a volatile write cache for a file-backed namespace. The guest
+then sends Flush when a filesystem or application asks for
+its data to be durable (``fsync()``, a journal commit), and
+sets Force Unit Access on writes that have to be durable on
+their own. The controller completes either only once the data
+has reached the image's storage. A RAM namespace has no
+stable storage, so it reports no write cache and those
+requests are no-ops.
 
 Connecting from the Guest
 -------------------------
@@ -375,3 +411,7 @@ Limitations
 - Connections do not survive a server restart; a
   file-backed namespace does, but the guest has to
   reconnect.
+- Flush and Force Unit Access on a file-backed namespace
+  wait for the host's writeback in the server's main loop,
+  so the device doesn't respond to anything else until
+  the data is written.
