@@ -22,6 +22,7 @@
 #include <endian.h>
 #include <errno.h>
 #include <infiniband/verbs.h>
+#include <inttypes.h>
 #include <netinet/in.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -34,7 +35,10 @@
 
 #include "fake_vfu.h"
 #include "ionic_eth_emu.h"
+/* For the emulator's admin queue pointer, which rdma-reset checks */
+#include "ionic_eth_emu_priv.h"
 #include "ionic_harness.h"
+#include "ionic_rdma_devcmd.h"
 #include "ionic_status.h"
 #include "nvmeof.h"
 #include "nvmeof_cm.h"
@@ -402,6 +406,60 @@ static void test_bringup(void)
     check(T, fake_vfu_irq_count(h.vfu, IH_ETH_ADMINQ_INTR) == irqs + 3,
           "the credit unmask did not replay the latched interrupt");
     ih_bar0_write32(&h, intr + 12, 0);
+
+    teardown(T, &h);
+}
+
+/* ---- RDMA_RESET_LIF ---------------------------------------------------- */
+
+/*
+ * RDMA_RESET_LIF frees the admin queue context, and the Ethernet emulator
+ * keeps a pointer to it for the AQ doorbell. That pointer must go with the
+ * context: a doorbell before the guest creates a new admin queue would
+ * otherwise read and write freed memory. The doorbell here comes in that
+ * window, where the sanitizer and valgrind runs see any such access.
+ */
+static void test_rdma_reset(void)
+{
+    const char *T = "rdma-reset";
+    struct ih h;
+    struct ih_cq cq;
+    uint8_t cmd[64], comp[16];
+
+    if (!setup(T, &h, "loopback"))
+        return;
+
+    const struct ionic_eth_emu *emu = h.dev->ionic_emu;
+    struct ionic_rdma_devcmd_state *rdma = h.dev->ionic_rdma;
+
+    check(T,
+          emu->adminq != NULL &&
+              emu->adminq == ionic_rdma_devcmd_get_adminq_ctx(rdma),
+          "bring-up left the emulator without the admin queue");
+
+    memset(cmd, 0, sizeof(cmd));
+    cmd[0] = IH_CMD_RDMA_RESET;
+    check(T, ih_eth_admin(&h, cmd, comp) == 0, "RDMA_RESET_LIF failed");
+    check(T, ionic_rdma_devcmd_get_adminq_ctx(rdma) == NULL,
+          "RDMA_RESET_LIF kept the admin queue");
+    check(T, emu->adminq == NULL,
+          "the emulator still points at the freed admin queue");
+
+    /* A doorbell for the admin queue that is gone, then a loop pass */
+    ih_doorbell(&h, IH_QTYPE_AQ, 0, 0, 1);
+    ih_poll(&h);
+
+    /* The driver's next bring-up makes a new admin queue, which the
+     * emulator must use without the server's loop re-registering it */
+    if (check(T, ih_bringup(&h), "bring-up after RDMA_RESET_LIF failed")) {
+        check(T,
+              emu->adminq != NULL &&
+                  emu->adminq == ionic_rdma_devcmd_get_adminq_ctx(rdma),
+              "the emulator doesn't have the new admin queue");
+        if (check(T, ih_cq_create(&h, &cq, 1, 4),
+                  "CREATE_CQ on the new admin queue failed"))
+            check(T, ih_cq_destroy(&h, &cq) == 0, "DESTROY_CQ failed");
+    }
 
     teardown(T, &h);
 }
@@ -3105,6 +3163,7 @@ static const struct {
 } groups[] = {
     {"devcmds", test_devcmds},
     {"bringup", test_bringup},
+    {"rdma-reset", test_rdma_reset},
     {"admin", test_admin_errors},
     {"rc", test_rc},
     {"atomic", test_atomic_and_reg_mr},

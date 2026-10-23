@@ -2135,10 +2135,6 @@ int main(int argc, char *argv[])
                 if (aqctx) {
                     ionic_adminq_set_pvrdma(aqctx, dev->pvrdma_handle);
                     ionic_adminq_set_faults(aqctx, dev->faults);
-                    /* Wire adminq into eth_emu so AQ doorbells update
-                     * the producer index for correct poll-loop termination. */
-                    if (dev->ionic_emu)
-                        ionic_eth_emu_register_adminq(dev->ionic_emu, aqctx);
                     /* CREATE_CQ/QP/MR describe the guest rings the data path
                      * later needs, so it has to be reachable from here. */
                     ionic_adminq_set_datapath(aqctx, dev->ionic_dp);

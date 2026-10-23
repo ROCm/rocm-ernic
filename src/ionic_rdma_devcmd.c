@@ -167,6 +167,32 @@ out:
 }
 
 /* -------------------------------------------------------------------------
+ * The admin queue context
+ *
+ * The Ethernet emulator keeps its own pointer to the context, to pass AQ
+ * doorbells on, and this file is the only place that creates and frees it.
+ * So this file keeps that pointer in step: a context freed while the
+ * emulator still points at it lets the guest, with an AQ doorbell, read and
+ * write freed memory.
+ * -------------------------------------------------------------------------
+ */
+
+static void publish_adminq_ctx(struct ionic_rdma_devcmd_state *s)
+{
+    if (s->eth_emu)
+        ionic_eth_emu_register_adminq(s->eth_emu, s->adminq_ctx);
+}
+
+static void drop_adminq_ctx(struct ionic_rdma_devcmd_state *s)
+{
+    struct ionic_adminq_ctx *ctx = s->adminq_ctx;
+
+    s->adminq_ctx = NULL;
+    publish_adminq_ctx(s);
+    ionic_adminq_destroy(ctx);
+}
+
+/* -------------------------------------------------------------------------
  * Construction / destruction
  * -------------------------------------------------------------------------
  */
@@ -184,7 +210,7 @@ void ionic_rdma_devcmd_destroy(struct ionic_rdma_devcmd_state *s)
 {
     if (!s)
         return;
-    ionic_adminq_destroy(s->adminq_ctx);
+    drop_adminq_ctx(s);
     free(s);
 }
 
@@ -206,8 +232,7 @@ static void handle_rdma_reset(struct ionic_rdma_devcmd_state *s,
     s->aq_count = 0;
     s->pending_cq_valid = false;
 
-    ionic_adminq_destroy(s->adminq_ctx);
-    s->adminq_ctx = NULL;
+    drop_adminq_ctx(s);
 
     comp[0] = 0; /* status OK */
 }
@@ -374,6 +399,7 @@ static void handle_create_adminq(struct ionic_rdma_devcmd_state *s,
             comp[0] = 1;
             return;
         }
+        publish_adminq_ctx(s);
     }
     ionic_adminq_set_cq_event_cb(s->adminq_ctx, rdma_cq_event_cb, s);
     if (!ionic_adminq_register_queue(s->adminq_ctx, idx, dma_addr,
@@ -431,8 +457,10 @@ struct ionic_adminq_ctx *ionic_rdma_devcmd_get_adminq_ctx(
 void ionic_rdma_devcmd_set_eth_emu(struct ionic_rdma_devcmd_state *s,
                                    struct ionic_eth_emu *eth_emu)
 {
-    if (s)
-        s->eth_emu = eth_emu;
+    if (!s)
+        return;
+    s->eth_emu = eth_emu;
+    publish_adminq_ctx(s);
 }
 
 void ionic_rdma_devcmd_set_datapath(struct ionic_rdma_devcmd_state *s,

@@ -305,7 +305,6 @@ void ih_poll(struct ih *h)
         ionic_rdma_devcmd_get_adminq_ctx(dev->ionic_rdma);
     if (aqctx) {
         ionic_adminq_set_pvrdma(aqctx, dev->pvrdma_handle);
-        ionic_eth_emu_register_adminq(dev->ionic_emu, aqctx);
         ionic_adminq_set_datapath(aqctx, dev->ionic_dp);
         ionic_rdma_devcmd_set_datapath(dev->ionic_rdma, dev->ionic_dp);
         ionic_adminq_poll(aqctx, h->vfu);

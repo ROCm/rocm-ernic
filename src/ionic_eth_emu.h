@@ -94,7 +94,11 @@ struct ionic_datapath;
 void ionic_eth_emu_register_datapath(struct ionic_eth_emu *emu,
                                      struct ionic_datapath *dp);
 
-/* Register the admin queue context for AQ doorbell producer-index updates. */
+/*
+ * Register the admin queue context for AQ doorbell producer-index updates,
+ * or NULL when there is none.  ionic_rdma_devcmd.c owns the context and
+ * calls this whenever it creates or frees one.
+ */
 struct ionic_adminq_ctx;
 void ionic_eth_emu_register_adminq(struct ionic_eth_emu *emu,
                                    struct ionic_adminq_ctx *adminq);

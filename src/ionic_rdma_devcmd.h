@@ -25,7 +25,11 @@ void ionic_rdma_devcmd_destroy(struct ionic_rdma_devcmd_state *s);
 void ionic_rdma_devcmd_dispatch(void *opaque, const uint8_t *cmd,
                                 uint8_t *comp);
 
-/* Supply the emulator used to raise EQ MSI-X vectors. */
+/*
+ * Supply the emulator used to raise EQ MSI-X vectors.  It is also handed
+ * the admin queue context for AQ doorbells, and told when that goes, so it
+ * has to outlive @s: ionic_rdma_devcmd_destroy() clears its pointer.
+ */
 void ionic_rdma_devcmd_set_eth_emu(struct ionic_rdma_devcmd_state *s,
                                    struct ionic_eth_emu *eth_emu);
 
