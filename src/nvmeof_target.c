@@ -49,6 +49,7 @@
 #include "nvmeof_target.h"
 #include "nvmeof_target_priv.h"
 #include "parse_int.h"
+#include "qemu/error-report.h"
 
 #define NVMEOF_DEFAULT_NQN        "nvmet-test"
 #define NVMEOF_DEFAULT_SIZE       (64ull << 20)
@@ -887,6 +888,31 @@ static uint16_t do_property_get(struct nvmeof_queue *q, const uint8_t *sqe,
     return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
 }
 
+/*
+ * Write [off, off + len) of a file-backed namespace through to stable
+ * media, for Flush, FUA and a shutdown.  msync(), not fdatasync(): POSIX
+ * only promises that stores to a shared mapping reach the file through
+ * msync().  It blocks the caller until writeback is done, and leaves errno
+ * set if it fails.
+ *
+ * A failure sets DNR: Linux reports a writeback error once and may already
+ * have dropped the dirty pages, so a retry could succeed with the data lost.
+ */
+static uint16_t ns_sync(struct nvmeof_target *t, uint64_t off, uint64_t len)
+{
+    if (t->ns_fd < 0) {
+        return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
+    }
+
+    /* ns_data is page-aligned, being an mmap(). */
+    uint64_t start = off - off % t->page_size;
+    if (t->sync(t->ns_data + start, (size_t)(off + len - start), MS_SYNC) !=
+        0) {
+        return nvme_status(NVME_SCT_MEDIA, NVME_SC_WRITE_FAULT, 1);
+    }
+    return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
+}
+
 static uint16_t do_property_set(struct nvmeof_queue *q, const uint8_t *sqe)
 {
     struct nvmeof_target *t = q->target;
@@ -897,12 +923,38 @@ static uint16_t do_property_set(struct nvmeof_queue *q, const uint8_t *sqe)
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_INVALID_FIELD, 1);
     }
 
+    bool was_enabled = (t->ctrl.cc & NVME_CC_ENABLE) != 0;
+    uint32_t old_shn = t->ctrl.cc & NVME_CC_SHN_MASK;
     t->ctrl.cc = (uint32_t)val;
+    uint32_t shn = t->ctrl.cc & NVME_CC_SHN_MASK;
+
+    /*
+     * A shutdown notification tells the controller power may go once it
+     * reports the shutdown complete, and a host needn't send Flush first,
+     * so the volatile write cache is written back before CSTS.SHST says so.
+     * Only a write that sets CC.SHN does it, not one that leaves it set.
+     * A Property Set has no status that fits a failed writeback, so log it
+     * and complete the shutdown anyway.
+     */
+    if (shn != 0 && old_shn == 0 && ns_sync(t, 0, t->ns_len) != 0) {
+        error_report("nvmeof: writing back %s for a shutdown failed: %s",
+                     t->cfg.file, strerror(errno));
+    }
+
     if (t->ctrl.cc & NVME_CC_ENABLE) {
-        t->ctrl.csts = NVME_CSTS_RDY;
+        /*
+         * A host shuts down by setting CC.SHN with CC.EN still set, and the
+         * shutdown stays reported until a reset clears CC.EN. Enabling the
+         * controller starts afresh: a shutdown reported while it was disabled
+         * doesn't carry over.
+         */
+        t->ctrl.csts = NVME_CSTS_RDY |
+                       (was_enabled ? t->ctrl.csts & NVME_CSTS_SHST_MASK : 0);
+        if (shn != 0) {
+            t->ctrl.csts |= NVME_CSTS_SHST_CMPLT;
+        }
     } else {
         /* Shutdown or disable: report both not-ready and shutdown done. */
-        uint32_t shn = (t->ctrl.cc >> 14) & 0x3;
         t->ctrl.csts = shn != 0 ? NVME_CSTS_SHST_CMPLT : 0;
     }
     return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
@@ -1165,30 +1217,6 @@ static uint16_t io_range(struct nvmeof_target *t, const uint8_t *sqe,
     }
     *off = slba * t->cfg.block_size;
     *len = (uint64_t)nlb * t->cfg.block_size;
-    return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
-}
-
-/*
- * Write [off, off + len) of a file-backed namespace through to stable
- * media, for Flush and FUA.  msync(), not fdatasync(): POSIX only promises
- * that stores to a shared mapping reach the file through msync().  It
- * blocks the caller until writeback is done.
- *
- * A failure sets DNR: Linux reports a writeback error once and may already
- * have dropped the dirty pages, so a retry could succeed with the data lost.
- */
-static uint16_t ns_sync(struct nvmeof_target *t, uint64_t off, uint64_t len)
-{
-    if (t->ns_fd < 0) {
-        return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
-    }
-
-    /* ns_data is page-aligned, being an mmap(). */
-    uint64_t start = off - off % t->page_size;
-    if (t->sync(t->ns_data + start, (size_t)(off + len - start), MS_SYNC) !=
-        0) {
-        return nvme_status(NVME_SCT_MEDIA, NVME_SC_WRITE_FAULT, 1);
-    }
     return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
 }
 

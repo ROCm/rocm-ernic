@@ -294,7 +294,10 @@ enum {
 };
 
 #define NVME_CC_ENABLE       0x1u
+#define NVME_CC_SHN_MASK     0xc000u
+#define NVME_CC_SHN_NORMAL   0x4000u
 #define NVME_CSTS_RDY        0x1u
+#define NVME_CSTS_SHST_MASK  0xcu
 #define NVME_CSTS_SHST_CMPLT 0x8u
 
 /* -------------------------------------------------------------------------
