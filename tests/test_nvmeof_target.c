@@ -19,6 +19,7 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <errno.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -26,12 +27,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include "nvmeof.h"
 #include "nvmeof_target.h"
+#include "nvmeof_target_priv.h"
 
 #define HOST_BUF_SIZE (256 * 1024)
 #define HOST_BASE     0x40000000ull
@@ -993,7 +996,9 @@ static void test_file_backing(void)
     }
 
     /* Second instance over the same file, without size=, must keep the
-     * image's size and see both blocks. */
+     * image's size and see both blocks.  That shows the writes reach the
+     * file, not that they reach stable storage, which the host page cache
+     * hides here; test_sync() checks that. */
     snprintf(opts, sizeof(opts), "file=%s", path);
     t = make_target(opts);
     if (t != NULL) {
@@ -1008,11 +1013,11 @@ static void test_file_backing(void)
         check("file-backing", read_one_block(ioq, h, 3) == 0,
               "read back failed");
         check("file-backing", memcmp(h->buf, pattern, 512) == 0,
-              "file-backed namespace did not survive a restart");
+              "a write did not reach the image");
         check("file-fua", read_one_block(ioq, h, 4) == 0,
               "FUA read back failed");
         check("file-fua", memcmp(h->buf, fua_pattern, 512) == 0,
-              "a FUA write did not survive a restart");
+              "a FUA write did not reach the image");
         nvmeof_target_destroy(t);
     }
 
@@ -1039,6 +1044,193 @@ static void test_file_backing(void)
         check("ram-backing", zeroed, "a fresh RAM namespace was not zero");
         nvmeof_target_destroy(t);
     }
+
+    unlink(path);
+    free(h);
+}
+
+/* ------------------------------------------------------------------ */
+/* Writeback for Flush and FUA                                        */
+/* ------------------------------------------------------------------ */
+
+/* What the target asked of sync_spy() since the last sync_reset(). */
+static struct {
+    unsigned calls;
+    uint8_t *addr;
+    size_t len;
+    int flags;
+    bool fail; /* fail every call with EIO */
+} sync_log;
+
+static void sync_reset(bool fail)
+{
+    memset(&sync_log, 0, sizeof(sync_log));
+    sync_log.fail = fail;
+}
+
+static int sync_spy(void *addr, size_t len, int flags)
+{
+    sync_log.calls++;
+    sync_log.addr = addr;
+    sync_log.len = len;
+    sync_log.flags = flags;
+    if (sync_log.fail) {
+        errno = EIO;
+        return -1;
+    }
+    return msync(addr, len, flags);
+}
+
+/* Run one I/O command on block slba (ignored by Flush); returns its status.
+ * Read and Write move one block through the start of host memory. */
+static uint16_t io_one(struct nvmeof_queue *q, struct host_mem *h,
+                       uint8_t opcode, uint64_t slba, uint32_t cdw12)
+{
+    struct capsule c;
+    uint8_t rsp[NVME_CQE_SIZE];
+
+    cap_init(&c, opcode, 60);
+    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    if (opcode != NVME_CMD_FLUSH) {
+        nvme_put_le64(c.b + NVME_SQE_CDW10_OFF, slba);
+        nvme_put_le32(c.b + NVME_SQE_CDW12_OFF, cdw12);
+    }
+    if (opcode == NVME_CMD_READ || opcode == NVME_CMD_WRITE) {
+        cap_keyed_sgl(&c, HOST_BASE, 512, HOST_RKEY);
+    }
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    return rsp_status(rsp);
+}
+
+/* Open a target on opts with sync_spy() in place of msync(), and connect
+ * an admin and an I/O queue.  Returns the I/O queue, or NULL. */
+static struct nvmeof_queue *sync_target(const char *opts, struct host_mem *h,
+                                        struct nvmeof_target **out)
+{
+    uint8_t rsp[NVME_CQE_SIZE];
+
+    *out = make_target(opts);
+    if (*out == NULL) {
+        return NULL;
+    }
+    nvmeof_target_set_sync(*out, sync_spy);
+
+    /* The admin Connect starts a new association, which resets the queue
+     * table, so the I/O queue is opened after it. */
+    struct nvmeof_queue *aq = nvmeof_target_open_queue(*out, 1);
+    if (aq == NULL ||
+        do_connect(aq, h, 0, 31, "nvmet-test", "nqn.host", rsp) !=
+            NVMEOF_EXEC_DONE ||
+        rsp_status(rsp) != 0) {
+        fail("sync-setup", "admin Connect to '%s' failed", opts);
+        return NULL;
+    }
+    struct nvmeof_queue *ioq = nvmeof_target_open_queue(*out, 2);
+    if (ioq == NULL ||
+        do_connect(ioq, h, 1, 31, "nvmet-test", "nqn.host", rsp) !=
+            NVMEOF_EXEC_DONE ||
+        rsp_status(rsp) != 0) {
+        fail("sync-setup", "I/O queue Connect to '%s' failed", opts);
+        return NULL;
+    }
+    return ioq;
+}
+
+/*
+ * Restarting over the same image reads the host page cache, so it can't
+ * tell writeback from none.  Watch the calls instead: Flush and FUA must
+ * ask for a synchronous writeback of what they cover, and fail if it does.
+ */
+static void test_sync(void)
+{
+    char path[] = "/tmp/ernic-nvmeof-syncXXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0) {
+        fail("sync", "mkstemp failed");
+        return;
+    }
+    close(fd);
+
+    struct host_mem *h = calloc(1, sizeof(*h));
+    long page = sysconf(_SC_PAGESIZE);
+    if (h == NULL || page <= 0) {
+        fail("sync", "setup failed");
+        free(h);
+        unlink(path);
+        return;
+    }
+    h->rkey = HOST_RKEY;
+
+    const uint16_t fault = nvme_status(NVME_SCT_MEDIA, NVME_SC_WRITE_FAULT, 1);
+    const uint8_t fua_ops[] = {NVME_CMD_WRITE, NVME_CMD_WRITE_ZEROES};
+
+    char opts[256];
+    snprintf(opts, sizeof(opts), "size=1M,file=%s", path);
+    struct nvmeof_target *t;
+    struct nvmeof_queue *ioq = sync_target(opts, h, &t);
+    if (ioq != NULL) {
+        /* Flush writes back the whole namespace. */
+        sync_reset(false);
+        check("sync-flush", io_one(ioq, h, NVME_CMD_FLUSH, 0, 0) == 0,
+              "Flush failed");
+        check("sync-flush",
+              sync_log.calls == 1 && sync_log.flags == MS_SYNC &&
+                  sync_log.len == (1u << 20),
+              "Flush did not write the namespace back synchronously");
+        uint8_t *base = sync_log.addr;
+
+        /* FUA writes back the pages the write touched.  Block 9 doesn't
+         * start a page, so the range has to be rounded down to one. */
+        const uint64_t off = 9 * 512;
+        const uint64_t start = off - off % (uint64_t)page;
+        for (size_t i = 0; i < sizeof(fua_ops); i++) {
+            sync_reset(false);
+            check("sync-fua", io_one(ioq, h, fua_ops[i], 9, NVME_RW_FUA) == 0,
+                  "a FUA write failed");
+            check("sync-fua",
+                  sync_log.calls == 1 && sync_log.flags == MS_SYNC &&
+                      sync_log.addr == base + start &&
+                      sync_log.len == off + 512 - start,
+                  "a FUA write did not write its pages back synchronously");
+        }
+
+        /* Without FUA, and for a Read with it, nothing is written back. */
+        sync_reset(false);
+        io_one(ioq, h, NVME_CMD_WRITE, 9, 0);
+        io_one(ioq, h, NVME_CMD_WRITE_ZEROES, 9, 0);
+        io_one(ioq, h, NVME_CMD_READ, 9, NVME_RW_FUA);
+        check("sync-no-fua", sync_log.calls == 0,
+              "a command without FUA, or a Read, waited for writeback");
+
+        /* A failed writeback fails the command, and says not to retry. */
+        sync_reset(true);
+        check("sync-fail", io_one(ioq, h, NVME_CMD_FLUSH, 0, 0) == fault,
+              "a failed writeback did not fail Flush with Write Fault, DNR");
+        for (size_t i = 0; i < sizeof(fua_ops); i++) {
+            check("sync-fail",
+                  io_one(ioq, h, fua_ops[i], 9, NVME_RW_FUA) == fault,
+                  "a failed writeback did not fail a FUA write with Write "
+                  "Fault, DNR");
+        }
+        check("sync-fail", sync_log.calls == 3,
+              "not every command tried to write back");
+    }
+    nvmeof_target_destroy(t);
+
+    /* A RAM namespace has nothing to write back. */
+    ioq = sync_target("size=1M", h, &t);
+    if (ioq != NULL) {
+        sync_reset(true);
+        check("sync-ram", io_one(ioq, h, NVME_CMD_FLUSH, 0, 0) == 0,
+              "Flush on a RAM namespace failed");
+        for (size_t i = 0; i < sizeof(fua_ops); i++) {
+            check("sync-ram", io_one(ioq, h, fua_ops[i], 9, NVME_RW_FUA) == 0,
+                  "a FUA write on a RAM namespace failed");
+        }
+        check("sync-ram", sync_log.calls == 0,
+              "a RAM namespace tried to write back");
+    }
+    nvmeof_target_destroy(t);
 
     unlink(path);
     free(h);
@@ -1222,6 +1414,7 @@ int main(void)
     test_io();
     test_discovery();
     test_file_backing();
+    test_sync();
     test_image_size();
     test_queue_table();
 

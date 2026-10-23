@@ -47,6 +47,7 @@
 
 #include "ionic_datapath.h" /* IONIC_MAX_MR_QUEUES -- the queue-count ceiling */
 #include "nvmeof_target.h"
+#include "nvmeof_target_priv.h"
 #include "parse_int.h"
 
 #define NVMEOF_DEFAULT_NQN        "nvmet-test"
@@ -90,8 +91,9 @@ struct nvmeof_target {
 
     uint8_t *ns_data;
     size_t ns_len;
-    int ns_fd;          /* -1 for a RAM namespace */
-    uint64_t page_size; /* msync() wants a page-aligned start */
+    int ns_fd;           /* -1 for a RAM namespace */
+    uint64_t page_size;  /* msync() wants a page-aligned start */
+    nvmeof_sync_fn sync; /* msync(), or a test's stand-in */
 
     struct nvmeof_queue *queues;
     unsigned queue_cap;
@@ -328,6 +330,7 @@ struct nvmeof_target *nvmeof_target_create(const struct nvmeof_target_cfg *cfg,
     t->cfg.file = NULL;
     t->ns_fd = -1;
     t->ns_len = (size_t)cfg->size;
+    t->sync = msync;
 
     if (cfg->file != NULL) {
         t->cfg.file = strdup(cfg->file);
@@ -409,6 +412,11 @@ const struct nvmeof_target_stats *nvmeof_target_stats(
     const struct nvmeof_target *t)
 {
     return &t->stats;
+}
+
+void nvmeof_target_set_sync(struct nvmeof_target *t, nvmeof_sync_fn fn)
+{
+    t->sync = fn;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1177,7 +1185,8 @@ static uint16_t ns_sync(struct nvmeof_target *t, uint64_t off, uint64_t len)
 
     /* ns_data is page-aligned, being an mmap(). */
     uint64_t start = off - off % t->page_size;
-    if (msync(t->ns_data + start, (size_t)(off + len - start), MS_SYNC) != 0) {
+    if (t->sync(t->ns_data + start, (size_t)(off + len - start), MS_SYNC) !=
+        0) {
         return nvme_status(NVME_SCT_MEDIA, NVME_SC_WRITE_FAULT, 1);
     }
     return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
