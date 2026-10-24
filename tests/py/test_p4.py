@@ -386,9 +386,7 @@ def test_cvt_guest_loads_program(suite, server_factory):
             p4.load_program(fix.driver, convert_program())
             status = p4.entry(
                 fix.driver,
-                p4.P4_UPDATE_INSERT,
-                "Ing.policy",
-                "Ing.convert",
+                (p4.P4_UPDATE_INSERT, "Ing.policy", "Ing.convert"),
                 matches=[bytes([ionic.OP_RDMA_WRITE])],
                 params=[bytes([p4.P4_FMT_FP16]), bytes([p4.P4_FMT_FP8_E4M3])],
             )
@@ -414,9 +412,7 @@ def test_cvt_narrowing(suite, server_factory):
             suite.check_eq(
                 p4.entry(
                     fix.driver,
-                    p4.P4_UPDATE_INSERT,
-                    "Ing.policy",
-                    "Ing.convert",
+                    (p4.P4_UPDATE_INSERT, "Ing.policy", "Ing.convert"),
                     matches=[bytes([ionic.OP_RDMA_WRITE])],
                     params=[bytes([p4.P4_FMT_FP16]), bytes([p4.P4_FMT_FP8_E4M3])],
                 ),
@@ -472,9 +468,7 @@ def test_cvt_widening(suite, server_factory):
             suite.check_eq(
                 p4.entry(
                     fix.driver,
-                    p4.P4_UPDATE_INSERT,
-                    "Ing.policy",
-                    "Ing.convert",
+                    (p4.P4_UPDATE_INSERT, "Ing.policy", "Ing.convert"),
                     matches=[bytes([ionic.OP_RDMA_WRITE])],
                     params=[bytes([p4.P4_FMT_FP4_E2M1]), bytes([p4.P4_FMT_FP16])],
                 ),
@@ -521,9 +515,7 @@ def test_cvt_plain_write_untouched(suite, server_factory):
             p4.load_program(fix.driver, convert_program())
             p4.entry(
                 fix.driver,
-                p4.P4_UPDATE_INSERT,
-                "Ing.policy",
-                "Ing.convert",
+                (p4.P4_UPDATE_INSERT, "Ing.policy", "Ing.convert"),
                 matches=[bytes([ionic.OP_RDMA_WRITE])],
                 params=[bytes([p4.P4_FMT_FP16]), bytes([p4.P4_FMT_FP8_E4M3])],
             )
