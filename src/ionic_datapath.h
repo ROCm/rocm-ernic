@@ -333,20 +333,21 @@ int ionic_datapath_fp8_map(struct ionic_datapath *dp, uint8_t op,
                            uint64_t c_va);
 
 /*
- * Convert a region of 16-bit floating point to fp8, elementwise.
+ * Convert a region of floating point from one format to another,
+ * elementwise, in either direction.
  *
- * @in_len bytes at (@a_lkey, @a_va) hold @in_len / 2 values of @fmt (an
- * enum p4_fp8_src_fmt); the result is @in_len / 2 fp8 bytes at
- * (@c_rkey, @c_va).  This is the one narrowing operation the engine has,
- * and the only one whose destination is not the same length as its
- * source, so the caller may not assume the three regions are equal.
+ * @src_fmt and @dst_fmt are enum p4_fmt values.  @in_len bytes at
+ * (@a_lkey, @a_va) hold however many elements of @src_fmt that is; the
+ * result is the same number of @dst_fmt elements at (@c_rkey, @c_va),
+ * which is longer, shorter or the same length depending on the pair.
  *
- * Both regions are checked in full before a byte moves, as the map does.
- * Returns 0, or a negative errno.
+ * This is the only operation whose destination length is not its source
+ * length, so each region is checked against its own, in full, before a
+ * byte moves.  Returns 0, or a negative errno.
  */
-int ionic_datapath_fp8_cvt(struct ionic_datapath *dp, uint8_t fmt,
-                           uint32_t a_lkey, uint64_t a_va, uint32_t in_len,
-                           uint32_t c_rkey, uint64_t c_va);
+int ionic_datapath_fmt_convert(struct ionic_datapath *dp, uint8_t src_fmt,
+                               uint8_t dst_fmt, uint32_t a_lkey, uint64_t a_va,
+                               uint32_t in_len, uint32_t c_rkey, uint64_t c_va);
 
 struct p4_engine;
 

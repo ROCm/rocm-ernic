@@ -15,13 +15,32 @@ name: rocm-ernic - P4 Lane
 # workflow runs with the CALLING job's token, so the scopes are the
 # caller's business, not this file's.
 #
-# Unlike the S3 and NVMe-oF lanes this one takes no `publish` input and
-# records no trend. It measures nothing: the result is a fixed set of
-# fp8 values that are either right or wrong, and a number to plot would
-# only be how long a 4 KiB reduction took on a shared runner.
+# This lane used to take no `publish` input and record no trend, because
+# the fp8 reduction is a fixed set of values that are either right or
+# wrong. The conversion sweep changed that: it is a size sweep like the
+# other lanes', so it feeds a "p4cvt" series on the same terms, and the
+# same rule keeps a pull request from publishing.
+#
+# What the number measures is the whole guest-to-result path -- doorbell,
+# WQE, the conversion, the DMA back -- not the arithmetic alone. At
+# 4 KiB the round trip dominates it, which is why the sweep carries
+# 64 KiB as well.
 
 on:
   workflow_call:
+    inputs:
+      publish:
+        description: >-
+          Record this run's conversion sweep in docs/perf-history and
+          rebuild Pages. Requires contents: write on the CALLING job.
+        type: boolean
+        required: false
+        default: false
+
+env:
+  # Where the conversion client drops its sweep. gen-report.py globs
+  # <results>/perf-csv/*.csv, so the directory shape is the contract.
+  P4_RESULTS: /tmp/ernic-p4-results
 
 jobs:
   system-test-p4:
@@ -671,6 +690,68 @@ jobs:
         fi
         echo "✓ a guest loaded a P4 program and reduced fp8 through it"
 
+    # The second half of what the engine can be asked for: the same
+    # table, the same one-entry work request, but a conversion rather
+    # than a reduction -- and in both directions, which is the part a
+    # narrowing-only interface could not express.
+    - name: Guest-driven format conversion over P4
+      shell: bash
+      env:
+        VM_USER: ${{ steps.vm_info.outputs.vm_user }}
+      run: |
+        echo "=== Guest-driven format conversion ==="
+        ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
+          "mkdir -p /tmp/p4-cvt"
+        scp -F "$SSH_CONFIG" -P "$SSH_PORT" \
+          tests/p4_convert_client.c tests/ernic_device.h src/parse_int.h \
+          src/p4/p4_devcmd.h src/p4/p4_fmt.h src/p4/p4_fmt.c \
+          drivers/ernic_p4/uapi/ernic_p4.h \
+          tests/data/p4/fp8_convert.json \
+          "${VM_USER}@localhost:/tmp/p4-cvt/"
+
+        set +e
+        ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
+          "RDMA_DEVICE='$RDMA_DEVICE' bash -s" <<'EOFVM'
+        set -e
+        cd /tmp/p4-cvt
+        read -ra IBV_FLAGS <<< "$(pkg-config --cflags --libs libibverbs)"
+        gcc -O2 -Wall -Wextra \
+          -o p4_convert_client p4_convert_client.c p4_fmt.c -I. \
+          "${IBV_FLAGS[@]}"
+        set +e
+        # As root, for the same reason the fp8 client is: the node is
+        # mode 0600 and owned by root.
+        sudo -n RDMA_DEVICE="$RDMA_DEVICE" \
+          timeout 300s ./p4_convert_client fp8_convert.json \
+            --csv /tmp/p4-cvt/p4-convert.csv
+        exit $?
+        EOFVM
+        CVT_EXIT=$?
+        set -e
+
+        if [ "$CVT_EXIT" -eq 77 ]; then
+          echo "::error::the conversion client skipped (77) although the"
+          echo "server granted the load scope and RDMA_DEVICE was set."
+          exit 1
+        fi
+        if [ "$CVT_EXIT" -ne 0 ]; then
+          echo "::error::guest-driven conversion failed (exit $CVT_EXIT)"
+          exit 1
+        fi
+        echo "✓ a guest converted between six formats, both directions"
+
+        # Bring the sweep back where gen-report.py looks for it.
+        mkdir -p "$P4_RESULTS/perf-csv"
+        scp -F "$SSH_CONFIG" -P "$SSH_PORT" \
+          "${VM_USER}@localhost:/tmp/p4-cvt/p4-convert.csv" \
+          "$P4_RESULTS/perf-csv/" || true
+        if [ -s "$P4_RESULTS/perf-csv/p4-convert.csv" ]; then
+          echo "=== conversion sweep ==="
+          cat "$P4_RESULTS/perf-csv/p4-convert.csv"
+        else
+          echo "::warning::no conversion sweep came back from the guest"
+        fi
+
     - name: Check the server survived the run
       if: always()
       shell: bash
@@ -715,6 +796,29 @@ jobs:
         if-no-files-found: ignore
 
     # ── Publish (nightly only) ───────────────────────
+    - name: Upload the conversion sweep
+      if: inputs.publish && always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: p4-convert-perf-csv
+        path: ${{ env.P4_RESULTS }}/perf-csv/
+        if-no-files-found: warn
+
+    - name: Publish the P4 conversion trend
+      # Only a green run on develop may move the published history: a
+      # failed lane's numbers describe a broken engine, and a branch's
+      # describe the branch. A hosted runner is noisier than the
+      # self-hosted node, which is why this feeds its own series.
+      if: >-
+        inputs.publish &&
+        success() &&
+        github.ref == 'refs/heads/develop'
+      uses: $/.github/actions/publish-perf
+      with:
+        results: ${{ env.P4_RESULTS }}
+        subject: P4 format conversion
+        token: ${{ secrets.GITHUB_TOKEN }}
+
     - name: Cleanup
       if: always()
       run: |

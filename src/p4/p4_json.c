@@ -1090,7 +1090,7 @@ static const struct {
     /* The call form p4c emits for an extern: _<Type>_<method>, with the
      * instance as the first parameter. */
     {"_Fp8_map", P4_PRIM_EXTERN, 2, 2, P4_EXTERN_FP8_MAP},
-    {"_Fp8_cvt", P4_PRIM_EXTERN, 2, 2, P4_EXTERN_FP8_CVT},
+    {"_Fp8_cvt", P4_PRIM_EXTERN, 3, 3, P4_EXTERN_FP8_CVT},
 };
 
 /* One operand of a primitive. */

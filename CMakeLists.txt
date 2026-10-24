@@ -210,6 +210,7 @@ set(P4_SOURCES
     src/p4/p4_engine.c
     src/p4/p4_exec.c
     src/p4/p4_fp8.c
+    src/p4/p4_fmt.c
     src/p4/p4_json.c
     src/p4/p4_table.c
     src/p4/p4_port.c

@@ -25,7 +25,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # pylint: disable=wrong-import-position
-from ernic import eth
+from ernic import eth, ionic
 from ernic.check import Suite
 from ernic.errors import DeviceError
 from ernic.fixture import BaseFixture
@@ -298,6 +298,257 @@ def test_tx_ring_refuses_to_overrun(suite, server_factory):
         stop_server(server)
 
 
+# ---- Format conversion on the RDMA path --------------------------------
+#
+# Everything above drives the Ethernet path, which is where the engine
+# decides where a frame goes.  These drive the other plane: an RDMA WRITE
+# the program turns into an elementwise format conversion.  The whole
+# control path is the guest's -- the program is pushed down and the table
+# entry installed through the device commands, not through --p4-program --
+# so this is the Python mirror of what the VM lane does with a real
+# driver, and it runs with no VM at all.
+
+CVT_CQ_A, CVT_CQ_B = 11, 12
+CVT_QP_A, CVT_QP_B = 60, 61
+CVT_MR_SRC, CVT_MR_DST = 0x05000001, 0x05000002
+CVT_VA_SRC = 0x7E1000000000
+CVT_VA_DST = 0x7E2000000000
+CVT_MR_LEN = 4 * 4096
+
+# Four fp16 encodings with something to say: 1.0, 2.0, a NaN, and an
+# infinity, which E4M3 has no room for and must saturate rather than
+# poison the buffer with.
+FP16_SAMPLES = (0x3C00, 0x4000, 0x7E00, 0x7C00)
+# What each becomes in E4M3, per the conventions in p4_fmt.h.
+E4M3_WANT = (0x38, 0x40, 0x7F, 0x7E)
+
+
+def fp16_buffer(n_elems):
+    """@n_elems little-endian fp16 values cycling through FP16_SAMPLES."""
+    out = bytearray()
+    for i in range(n_elems):
+        out += int(FP16_SAMPLES[i % len(FP16_SAMPLES)]).to_bytes(2, "little")
+    return bytes(out)
+
+
+class CvtFixture(BaseFixture):
+    """Two connected RC queue pairs and a source and destination region."""
+
+    # pylint: disable=too-few-public-methods
+    def __init__(self, server):
+        super().__init__(server)
+        self.cq_a = self.driver.create_cq(CVT_CQ_A)
+        self.cq_b = self.driver.create_cq(CVT_CQ_B)
+        self.qp_a = self.driver.create_qp(CVT_QP_A, ionic.QPT_RC, self.cq_a, self.cq_a)
+        self.qp_b = self.driver.create_qp(CVT_QP_B, ionic.QPT_RC, self.cq_b, self.cq_b)
+        hdr = ionic.roce_hdr_v4(ionic.ipv4("192.168.0.1"), ionic.ipv4("192.168.0.2"))
+        self.driver.connect_qp(self.qp_a, CVT_QP_B, hdr)
+        self.driver.connect_qp(self.qp_b, CVT_QP_A, hdr)
+        # Reversed pages on the destination, so a write that ignores the
+        # page table lands somewhere else and the comparison says so.
+        self.mr_src = self.driver.create_mr(CVT_MR_SRC, CVT_VA_SRC, CVT_MR_LEN)
+        self.mr_dst = self.driver.create_mr(
+            CVT_MR_DST, CVT_VA_DST, CVT_MR_LEN, reverse=True
+        )
+
+
+def convert_program():
+    """The compiled conversion program, as bytes."""
+    path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..",
+        "data",
+        "p4",
+        "fp8_convert.json",
+    )
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+def test_cvt_guest_loads_program(suite, server_factory):
+    """A guest pushes the conversion program down and installs an entry.
+
+    The control path only: that the surface answers, that the program the
+    compiler emitted is accepted through the device commands, and that an
+    entry naming the action it declares is installed.
+    """
+    with server_factory(["--p4", "--p4-guest-scope", "load"]) as server:
+        fix = CvtFixture(server)
+        try:
+            ident = fix.driver.p4_ident()
+            suite.check(ident is not None, "the P4 surface answered IDENT")
+            if ident:
+                suite.check_eq(
+                    ident["scope"],
+                    ionic.P4_SCOPE_LOAD,
+                    "it reports the scope the operator granted",
+                )
+            fix.driver.p4_load_program(convert_program())
+            status = fix.driver.p4_entry(
+                ionic.P4_UPDATE_INSERT,
+                "Ing.policy",
+                "Ing.convert",
+                matches=[bytes([ionic.OP_RDMA_WRITE])],
+                params=[bytes([ionic.P4_FMT_FP16]), bytes([ionic.P4_FMT_FP8_E4M3])],
+            )
+            suite.check_eq(status, 0, "the conversion entry was installed")
+        finally:
+            fix.close()
+        stop_server(server)
+
+
+def test_cvt_narrowing(suite, server_factory):
+    """fp16 in one region becomes fp8 in a region half as long.
+
+    The work request is an ordinary one-entry RDMA WRITE; only the table
+    entry makes it a conversion.
+    """
+    n_elems = 512
+    src = fp16_buffer(n_elems)
+
+    with server_factory(["--p4", "--p4-guest-scope", "load"]) as server:
+        fix = CvtFixture(server)
+        try:
+            fix.driver.p4_load_program(convert_program())
+            suite.check_eq(
+                fix.driver.p4_entry(
+                    ionic.P4_UPDATE_INSERT,
+                    "Ing.policy",
+                    "Ing.convert",
+                    matches=[bytes([ionic.OP_RDMA_WRITE])],
+                    params=[bytes([ionic.P4_FMT_FP16]), bytes([ionic.P4_FMT_FP8_E4M3])],
+                ),
+                0,
+                "the fp16 to E4M3 entry was installed",
+            )
+            fix.driver.mr_write(fix.mr_src, CVT_VA_SRC, src)
+            # Poison the destination, so writing past the result shows.
+            fix.driver.mr_write(fix.mr_dst, CVT_VA_DST, b"\xa5" * len(src))
+
+            fix.driver.post_send(
+                fix.qp_a,
+                ionic.OP_RDMA_WRITE,
+                flags=ionic.WQE_SIGNALLED,
+                sge=[ionic.Sge(CVT_VA_SRC, len(src), CVT_MR_SRC)],
+                remote_va=CVT_VA_DST,
+                rkey=CVT_MR_DST,
+            )
+            comp = fix.driver.wait_cq(fix.cq_a)
+            suite.check_eq(comp.status, 0, "the conversion completed")
+
+            got = fix.driver.mr_read(fix.mr_dst, CVT_VA_DST, len(src))
+            want = bytes(E4M3_WANT[i % len(E4M3_WANT)] for i in range(n_elems))
+            suite.check_eq(got[:n_elems], want, "every fp16 element became its fp8")
+            # The result is half the source; the rest must be untouched.
+            suite.check_eq(
+                got[n_elems:],
+                b"\xa5" * (len(src) - n_elems),
+                "nothing was written past the end of the result",
+            )
+        finally:
+            fix.close()
+        stop_server(server)
+
+
+def test_cvt_widening(suite, server_factory):
+    """The same program widens, because the entry names both formats.
+
+    fp4 is the narrowest format and fp16 one of the widest, so this is
+    the direction the earlier design could not express at all: the
+    destination is four times the source.
+    """
+    # Eight fp4 elements: 1.0, 2.0, 4.0, 6.0 twice over.  Two to a byte,
+    # low nibble first, so 0x42 is (1.0, 2.0).
+    src = bytes([0x42, 0x76, 0x42, 0x76])
+    n_elems = len(src) * 2
+    want_f16 = (0x3C00, 0x4000, 0x4400, 0x4600)  # 1.0, 2.0, 4.0, 6.0
+
+    with server_factory(["--p4", "--p4-guest-scope", "load"]) as server:
+        fix = CvtFixture(server)
+        try:
+            fix.driver.p4_load_program(convert_program())
+            suite.check_eq(
+                fix.driver.p4_entry(
+                    ionic.P4_UPDATE_INSERT,
+                    "Ing.policy",
+                    "Ing.convert",
+                    matches=[bytes([ionic.OP_RDMA_WRITE])],
+                    params=[bytes([ionic.P4_FMT_FP4_E2M1]), bytes([ionic.P4_FMT_FP16])],
+                ),
+                0,
+                "the fp4 to fp16 entry was installed",
+            )
+            fix.driver.mr_write(fix.mr_src, CVT_VA_SRC, src)
+            fix.driver.mr_write(fix.mr_dst, CVT_VA_DST, b"\x00" * 64)
+
+            fix.driver.post_send(
+                fix.qp_a,
+                ionic.OP_RDMA_WRITE,
+                flags=ionic.WQE_SIGNALLED,
+                sge=[ionic.Sge(CVT_VA_SRC, len(src), CVT_MR_SRC)],
+                remote_va=CVT_VA_DST,
+                rkey=CVT_MR_DST,
+            )
+            comp = fix.driver.wait_cq(fix.cq_a)
+            suite.check_eq(comp.status, 0, "the widening completed")
+
+            got = fix.driver.mr_read(fix.mr_dst, CVT_VA_DST, 2 * n_elems)
+            want = bytearray()
+            for i in range(n_elems):
+                want += int(want_f16[i % 4]).to_bytes(2, "little")
+            suite.check_eq(got, bytes(want), "every fp4 element became its fp16")
+        finally:
+            fix.close()
+        stop_server(server)
+
+
+def test_cvt_plain_write_untouched(suite, server_factory):
+    """A two-entry gather list is not the conversion shape.
+
+    The table is keyed on the opcode, which cannot tell a conversion from
+    an ordinary write, so the action fires for both. The extern declines
+    anything that is not one source region and the operation stays the
+    ordinary gathered write it looks like, rather than failing the QP.
+    """
+    half = fp16_buffer(64)
+
+    with server_factory(["--p4", "--p4-guest-scope", "load"]) as server:
+        fix = CvtFixture(server)
+        try:
+            fix.driver.p4_load_program(convert_program())
+            fix.driver.p4_entry(
+                ionic.P4_UPDATE_INSERT,
+                "Ing.policy",
+                "Ing.convert",
+                matches=[bytes([ionic.OP_RDMA_WRITE])],
+                params=[bytes([ionic.P4_FMT_FP16]), bytes([ionic.P4_FMT_FP8_E4M3])],
+            )
+            fix.driver.mr_write(fix.mr_src, CVT_VA_SRC, half + half)
+            fix.driver.post_send(
+                fix.qp_a,
+                ionic.OP_RDMA_WRITE,
+                flags=ionic.WQE_SIGNALLED,
+                sge=[
+                    ionic.Sge(CVT_VA_SRC, len(half), CVT_MR_SRC),
+                    ionic.Sge(CVT_VA_SRC + len(half), len(half), CVT_MR_SRC),
+                ],
+                remote_va=CVT_VA_DST,
+                rkey=CVT_MR_DST,
+            )
+            comp = fix.driver.wait_cq(fix.cq_a)
+            suite.check_eq(
+                comp.status, 0, "a two-entry write under the entry was not refused"
+            )
+            suite.check_eq(
+                fix.driver.mr_read(fix.mr_dst, CVT_VA_DST, 2 * len(half)),
+                half + half,
+                "it stayed an ordinary gathered transfer",
+            )
+        finally:
+            fix.close()
+        stop_server(server)
+
+
 TESTS = (
     ("guest frames reach the engine", test_engine_sees_guest_frames),
     ("a scatter/gather frame is one frame", test_scatter_gather_frame),
@@ -309,6 +560,10 @@ TESTS = (
     ("a frame makes the round trip through the pipeline", test_round_trip),
     ("a compiled program decides where frames go", test_program_loaded),
     ("a program using an absent feature is refused", test_bad_program_refused),
+    ("a guest loads the conversion program", test_cvt_guest_loads_program),
+    ("fp16 narrows to fp8 on the RDMA path", test_cvt_narrowing),
+    ("fp4 widens to fp16 on the RDMA path", test_cvt_widening),
+    ("a two-entry write stays an ordinary transfer", test_cvt_plain_write_untouched),
 )
 
 

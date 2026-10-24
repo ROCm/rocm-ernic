@@ -98,6 +98,20 @@ CHARTS = (
         "unit": "GB/s",
         "higher_is_better": True,
     },
+    # The P4 lane's conversion sweep. Rated over the SOURCE bytes, which
+    # is the side a caller sizes its buffer by; the destination is a
+    # different length for every format pair. 1 MiB is absent by
+    # construction rather than by omission -- a conversion is capped at
+    # 256 Ki elements, which 1 MiB of a 16-bit source is twice over.
+    {
+        "key": "p4_convert",
+        "section": "bandwidth",
+        "metric": "bw_avg_GBs",
+        "verb": "p4cvt",
+        "title": "P4 fp16-to-fp8 conversion bandwidth over time",
+        "unit": "GB/s",
+        "higher_is_better": True,
+    },
 )
 
 # Reference palette, categorical slots 1-3.  Validated with

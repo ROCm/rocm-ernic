@@ -165,14 +165,21 @@ have made a hand-written fixture wrong:
 ## fp8_convert.json
 
 **Compiled, not hand written**, from `src/fp8_convert.p4` with the same
-command. It is the other shape the `Fp8` extern has: `cvt(fmt)` rather
-than `map(op)`.
+command. It is the other shape the `Fp8` extern has:
+`cvt(src_fmt, dst_fmt)` rather than `map(op)`.
 
 Where `fp8_policy.p4` reduces two equal-length operands into a result of
-the same length, this one **narrows**: it reads a single region of 16-bit
-floating point and writes a result half as long, one fp8 byte per source
-element. The table entry says which 16-bit format the source is in --
-`0` for IEEE binary16, `1` for bfloat16.
+the same length, this one **converts**: it reads a single region and
+writes the same number of elements in another format. The table entry
+names both formats, so one program narrows or widens depending only on
+what the control plane put in it -- the destination may be longer than
+the source, shorter, or the same length.
+
+The format numbers are the `enum p4_fmt` values in `src/p4/p4_fmt.h`:
+`0` fp32, `1` fp16, `2` bf16, `3` fp8 E4M3, `4` fp8 E5M2, `5` fp4 E2M1.
+The last is the OCP microscaling 4-bit format, packed two elements to a
+byte, low nibble first; an odd element count is half a byte at one end
+and is refused.
 
 Which operation a work request asks for is its gather list, not anything
 the program names: two equal entries is a reduction, one entry is a
@@ -180,9 +187,9 @@ conversion. A request that is neither has not asked for arithmetic at
 all and is dispatched as the ordinary transfer it is.
 
 It is the only operation whose destination is not the same length as its
-source, which is why `ionic_datapath_fp8_cvt()` is a separate entry point
-rather than a selector on the map: checking one length against all three
-regions, as the map does, would read half again too far.
+source, which is why `ionic_datapath_fmt_convert()` is a separate entry
+point rather than a selector on the map: checking one length against all
+three regions, as the map does, would read the wrong amount at one end.
 
 ## fp8_nodrop.json
 

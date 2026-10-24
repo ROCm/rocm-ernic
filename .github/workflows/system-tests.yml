@@ -1458,12 +1458,24 @@ jobs:
         ${{ github.event_name != 'pull_request' &&
             (github.event_name != 'workflow_dispatch' || inputs.publish) }}
 
-  # No permissions block and no inputs: this lane publishes nothing, so
-  # it needs neither write scopes nor a publish flag. The others carry
-  # both because they record a trend.
   system-test-p4:
     name: P4 Guest-Driven fp8
+    # This lane records a trend now -- the conversion sweep -- so it
+    # needs the same write scopes the other publishing lanes hold.
+    permissions:
+      contents: write
+      # Dispatching docs-deploy after the publish commit: a push made
+      # with this job's own GITHUB_TOKEN is exempt from triggering
+      # other workflows, so Pages would otherwise never rebuild.
+      actions: write
     uses: $/.github/workflows/p4-lane.yml
+    with:
+      # The same rule every publishing lane uses, so each series is fed
+      # on identical terms: never from a pull request, and a manual run
+      # does whatever the dispatch asked for.
+      publish: >-
+        ${{ github.event_name != 'pull_request' &&
+            (github.event_name != 'workflow_dispatch' || inputs.publish) }}
 
   system-test-two-vms:
     name: TCP Mesh Backend System Tests (Two VMs)

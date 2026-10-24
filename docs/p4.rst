@@ -127,35 +127,80 @@ an elementwise fp8 add across three memory regions, and
 changing the one table entry changes the arithmetic with no
 change to the device.
 
-Narrowing: fp16 and bf16 to fp8
-```````````````````````````````
+Converting between formats
+``````````````````````````
 
-The extern's other method, ``cvt(fmt)``, reads **one**
-region of 16-bit floating point and writes a result half as
-long -- one fp8 byte per source element. The table entry
-says which format the source is in: ``0`` for IEEE
-binary16, ``1`` for bfloat16.
+The extern's other method, ``cvt(src_fmt, dst_fmt)``, reads
+**one** region and writes the same number of elements in
+another format -- longer, shorter or the same length. The
+table entry names both formats, so one program narrows or
+widens depending only on what the control plane put in it.
 
-The operand convention follows from that: an RDMA write
-whose gather list has exactly **one** entry is the source,
-and the work request's rkey and address are the
+The formats, as the numbers a table entry carries
+(``enum p4_fmt``, ``src/p4/p4_fmt.h``):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 8 24 68
+
+   * - #
+     - Format
+     - Layout
+   * - 0
+     - ``fp32``
+     - IEEE 754 binary32, 1-8-23
+   * - 1
+     - ``fp16``
+     - IEEE 754 binary16, 1-5-10
+   * - 2
+     - ``bf16``
+     - bfloat16, 1-8-7
+   * - 3
+     - ``fp8_e4m3``
+     - OCP FP8 E4M3, 1-4-3; no infinity
+   * - 4
+     - ``fp8_e5m2``
+     - OCP FP8 E5M2, 1-5-2
+   * - 5
+     - ``fp4_e2m1``
+     - OCP MXFP4 E2M1, 1-2-1; no infinity or NaN
+
+``fp4_e2m1`` is the only one narrower than a byte, so its
+elements are packed two to a byte, element *i* in byte
+*i / 2* and in the low nibble when *i* is even. An odd
+element count is therefore half a byte at one end and is
+refused rather than rounded.
+
+The operand convention follows from reading one region: an
+RDMA write whose gather list has exactly **one** entry is the
+source, and the work request's rkey and address are the
 destination. One entry rather than two is what tells a
 conversion from a reduction, and it is the shape a driver
-already produces for an ordinary one-buffer write, so a
-program selecting a conversion gets it from a work request
-the guest could already post.
+already produces for an ordinary one-buffer write.
 
-This is the only operation whose destination is not the
-same length as its source. Each region is checked against
-its own length, and nothing beyond the result is written.
+This is the only operation whose destination is not the same
+length as its source. Each region is checked against its own
+length, and nothing beyond the result is written.
 
-The narrowing conventions are the file's own: round to
-nearest with ties to even, a magnitude above E4M3's range
-saturates to +/-448 rather than becoming NaN, and a NaN
-stays NaN. An infinity -- which fp16 has and E4M3 does not
--- saturates too, for the same reason overflow does. Each
-element is converted on its own, so one infinity or NaN does
-not disturb its neighbours.
+Two conventions, and both follow from what a format can
+represent rather than from taste. A magnitude too large for
+the destination becomes an infinity if the format has one and
+**saturates** to the largest finite magnitude if it does not
+-- which is what AMD's conversion instructions do, and what a
+reduction needs, since one overflowed term becoming an
+infinity would poison a whole sum. And a NaN stays a NaN
+wherever there is an encoding for one; ``fp4_e2m1`` has none,
+so a NaN saturates there too, sign preserved. That is lossy
+and cannot be otherwise.
+
+Rounding is to nearest with ties to even throughout. The
+generic codec is held to ``p4_fp8.c`` for E4M3 -- all 256
+decodings and a four-million-float encode sweep must agree
+exactly -- which is how it inherits that file's own
+validation against ``ml_dtypes``; fp16 is checked against
+numpy for all 65536 encodings in both directions, and every
+encoding of every format must survive a decode and re-encode
+unchanged unless it is a NaN.
 
 ``tests/data/p4/fp8_convert.p4`` is the worked example.
 

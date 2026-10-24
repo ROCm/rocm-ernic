@@ -47,6 +47,7 @@
 #include "p4_devcmd.h"
 #include "p4_engine.h"
 #include "p4_fp8.h"
+#include "p4_fmt.h"
 #include "p4_port.h"
 #include "p4_table.h"
 #endif
@@ -3259,7 +3260,8 @@ static void test_p4_cvt(void)
             src[2u * i + 1u] = (uint8_t)(v >> 8);
         }
     }
-    check(T, p4_fp8_convert(P4_FP8_SRC_FP16, src, P4C_N_ELEMS, want),
+    check(T,
+          p4_fmt_convert(P4_FMT_FP16, P4_FMT_FP8_E4M3, src, P4C_N_ELEMS, want),
           "the oracle refused the source buffer");
     check(T, ih_mr_write(&h, &mra, FP8R_VA_A, src, sizeof(src)),
           "write the fp16 source");
@@ -3289,17 +3291,19 @@ static void test_p4_cvt(void)
     check(T, memcmp(got, src, P4C_N_IN) == 0,
           "with no entry the operation was not an ordinary write");
 
-    /* Now the entry: convert from fp16 (format 0). */
+    /* Now the entry: fp16 in, fp8 E4M3 out. */
     memset(&up, 0, sizeof(up));
     up.type = P4_UPDATE_INSERT;
     (void)snprintf(up.table, sizeof(up.table), "Ing.policy");
-    (void)snprintf(up.action, sizeof(up.action), "Ing.convert_from");
+    (void)snprintf(up.action, sizeof(up.action), "Ing.convert");
     up.nmatch = 1;
     up.match[0].len = 1;
     up.match[0].value[P4_MATCH_BYTES - 1] = IH_OP_RDMA_WRITE;
-    up.nparams = 1;
+    up.nparams = 2;
     up.params[0].len = 1;
-    up.params[0].value[P4_MATCH_BYTES - 1] = P4_FP8_SRC_FP16;
+    up.params[0].value[P4_MATCH_BYTES - 1] = P4_FMT_FP16;
+    up.params[1].len = 1;
+    up.params[1].value[P4_MATCH_BYTES - 1] = P4_FMT_FP8_E4M3;
     check(T, p4_engine_update(eng, &up, err, sizeof(err)) == 0,
           "the conversion entry was not installed: %s", err);
 
