@@ -123,10 +123,18 @@ libvfio-user (ERNIC_BUNDLE_VFIO_USER)")
 
     # A library built outside /usr usually has an RPATH to its own
     # directory, which on another machine could be anyone's. It only
-    # needs the system's libraries, so remove it.
+    # needs the system's libraries, so remove it. The prefix is the one
+    # being installed to, unless CMAKE_INSTALL_LIBDIR is absolute.
+    if(IS_ABSOLUTE "${ernic_vfio_user_dir}")
+        set(ernic_vfio_user_installed "${ernic_vfio_user_dir}")
+    else()
+        set(ernic_vfio_user_installed
+          "\${CMAKE_INSTALL_PREFIX}/${ernic_vfio_user_dir}")
+    endif()
+    string(APPEND ernic_vfio_user_installed "/${ernic_vfio_user_soname}")
     install(CODE "
         file(RPATH_REMOVE FILE
-          \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${ernic_vfio_user_dir}/${ernic_vfio_user_soname}\")
+          \"\$ENV{DESTDIR}${ernic_vfio_user_installed}\")
         "
         COMPONENT ernic_server
     )

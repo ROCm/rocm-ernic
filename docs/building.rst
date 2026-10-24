@@ -118,9 +118,9 @@ The nightly packages are made like this, installed under
 
 ``cpack`` needs ``dpkg-shlibdeps``, from ``dpkg-dev``, and
 ``file`` to find the packages' dependencies. The nightly build
-workflow,
-``.github/workflows/nightly.yml``, publishes the packages for
-each supported Ubuntu release as the ``nightly`` prerelease.
+workflow, ``.github/workflows/nightly.yml``, publishes the
+packages for each supported Ubuntu release as the ``nightly``
+prerelease.
 
 Build Options
 -------------
@@ -205,7 +205,9 @@ Build Options
    * - ``ERNIC_PACKAGE_RELEASE``
      - ``local``
      - The release part of the DEB packages' version, after the
-       project's version (see :ref:`packages`)
+       project's version (see :ref:`packages`): letters, digits,
+       ``+``, ``.``, and ``~``, but not a value CMake takes as
+       false, such as ``0``, which CPack would leave out
    * - ``CMAKE_INSTALL_PREFIX``
      - ``/usr/local``
      - Installation prefix

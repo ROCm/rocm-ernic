@@ -51,7 +51,8 @@ Quick Start
    #    requirements are in /usr/share/rocm-ernic with the
    #    rocm-ernic-exporter package, and in
    #    /usr/local/share/rocm-ernic with a default CMake
-   #    install.
+   #    install. On Ubuntu, python3 -m venv needs
+   #    python3-venv, which the package depends on.
    python3 -m venv /opt/ernic-exporter-venv
    /opt/ernic-exporter-venv/bin/pip install \
        -r /usr/share/rocm-ernic/requirements-exporter.txt

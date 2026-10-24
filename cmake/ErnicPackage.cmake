@@ -26,8 +26,20 @@ include_guard(GLOBAL)
 set(ERNIC_PACKAGE_RELEASE "local" CACHE STRING
     "The release of the DEB packages, the part of their version after \
 the project's version")
+# A Debian revision: letters, digits, "+", ".", and "~". It also can't be
+# a value that CMake takes as false, such as 0 or N: CPack would leave it
+# out of the version, and the exporter's dependency on this release of
+# the server could never be met.
+if(NOT ERNIC_PACKAGE_RELEASE MATCHES "^[A-Za-z0-9.+~]+$")
+    message(FATAL_ERROR
+      "ERNIC_PACKAGE_RELEASE (\"${ERNIC_PACKAGE_RELEASE}\") must be one or "
+      "more letters, digits, \"+\", \".\", and \"~\"")
+endif()
 if(NOT ERNIC_PACKAGE_RELEASE)
-    message(FATAL_ERROR "ERNIC_PACKAGE_RELEASE can't be empty")
+    message(FATAL_ERROR
+      "ERNIC_PACKAGE_RELEASE (\"${ERNIC_PACKAGE_RELEASE}\") is a value "
+      "CMake takes as false, which CPack would leave out of the packages' "
+      "version. Use another, such as 1.")
 endif()
 
 set(CPACK_PACKAGE_NAME rocm-ernic)
@@ -90,11 +102,13 @@ endif()
 # It reads the server's statistics files, so it depends on the server
 # from the same build. It's Python, so it's for every architecture.
 # prometheus_client isn't a dependency: Ubuntu's is too old, so it's
-# installed in a virtual environment (see docs/monitoring.rst).
+# installed in a virtual environment (see docs/monitoring.rst), which the
+# service runs the exporter from. Ubuntu's python3 can't make one without
+# python3-venv.
 set(CPACK_DEBIAN_ERNIC_EXPORTER_PACKAGE_NAME rocm-ernic-exporter)
 set(CPACK_DEBIAN_ERNIC_EXPORTER_PACKAGE_ARCHITECTURE all)
 set(CPACK_DEBIAN_ERNIC_EXPORTER_PACKAGE_DEPENDS
-    "python3, rocm-ernic (= ${CPACK_PACKAGE_VERSION}-${ERNIC_PACKAGE_RELEASE})")
+    "python3, python3-venv, rocm-ernic (= ${CPACK_PACKAGE_VERSION}-${ERNIC_PACKAGE_RELEASE})")
 set(CPACK_DEBIAN_ERNIC_EXPORTER_DESCRIPTION
     "A Prometheus exporter for the statistics of the rocm-ernic server, with
 its systemd service and a Grafana dashboard.")

@@ -23,7 +23,8 @@
   libvfio-user's `LICENSE`, which is installed with it, and fails to
   configure unless the library is linked with full RELRO, like the server.
   `ERNIC_PACKAGE_RELEASE` sets the release part of the packages' version
-  (default `local`).
+  (default `local`); it can't be a value CMake takes as false, such as `0`,
+  which CPack would leave out of the version.
 * An install now includes rocm-ernic's licenses, in
   `<prefix>/share/doc/rocm-ernic`.
 
