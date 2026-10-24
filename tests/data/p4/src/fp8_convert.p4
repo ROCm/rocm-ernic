@@ -1,21 +1,25 @@
 /*
- * An RDMA policy that narrows: a table keyed on the operation's opcode
- * turns an ordinary RDMA write into an elementwise fp16-to-fp8
- * conversion, and the table entry says which 16-bit format the source is
- * in.
+ * An RDMA policy that converts: a table keyed on the operation's opcode
+ * turns an ordinary RDMA write into an elementwise format conversion, and
+ * the table entry names both formats -- so the same program narrows
+ * (fp32 to fp4, say) or widens (fp4 to fp16) depending only on what the
+ * control plane put in the table.
  *
  * This is the other shape the extern has.  fp8_policy.p4 calls map(),
  * which combines two equal-length operands into a result of the same
  * length; this calls cvt(), which reads ONE operand and writes a result
- * half as long, because the source is 16 bits per element and the result
- * is 8.  Which one a work request is comes from its gather list -- two
- * equal entries is a reduction, one entry is a conversion -- so the same
- * device serves both without the program naming any memory.
+ * that may be longer, shorter or the same length.  Which one a work
+ * request is comes from its gather list -- two equal entries is a
+ * reduction, one entry is a conversion -- so the same device serves both
+ * without the program naming any memory.
+ *
+ * The format numbers are the enum p4_fmt values in src/p4/p4_fmt.h:
+ * 0 fp32, 1 fp16, 2 bf16, 3 fp8 E4M3, 4 fp8 E5M2, 5 fp4 E2M1.
  *
  * P4 has no floating-point type at all, so neither the arithmetic nor the
  * conversion can be written in the language; both are externs the target
  * provides.  What the program decides is the policy: whether to convert,
- * and from which format.
+ * and between which formats.
  *
  * Compile with:
  *   scripts/fetch-p4c.sh
@@ -37,7 +41,7 @@
 extern Fp8 {
     Fp8();
     void map(in bit<8> op);
-    void cvt(in bit<8> fmt);
+    void cvt(in bit<8> src_fmt, in bit<8> dst_fmt);
 }
 
 header rdma_t {
@@ -58,15 +62,18 @@ control Ing(inout headers_t h, inout metadata_t m, inout standard_metadata_t s) 
     /*
      * The extern writes the destination itself, so the operation must not
      * also transfer: the ordinary RDMA write would land second and put
-     * the raw fp16 payload where the converted result belongs.  The
+     * the raw source payload where the converted result belongs.  The
      * device refuses an operation whose program called the extern without
      * dropping, rather than letting that happen quietly.
      */
-    action convert_from(bit<8> fmt) { fp8.cvt(fmt); mark_to_drop(s); }
+    action convert(bit<8> src_fmt, bit<8> dst_fmt) {
+        fp8.cvt(src_fmt, dst_fmt);
+        mark_to_drop(s);
+    }
     action passthrough() { }
     table policy {
         key = { m.rdma_metadata.opcode : exact; }
-        actions = { convert_from; passthrough; }
+        actions = { convert; passthrough; }
         default_action = passthrough();
         size = 64;
     }

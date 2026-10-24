@@ -108,7 +108,7 @@
       "id" : 0,
       "source_info" : {
         "filename" : "tests/data/p4/src/fp8_convert.p4",
-        "line" : 77,
+        "line" : 84,
         "column" : 8,
         "source_fragment" : "D"
       },
@@ -123,11 +123,15 @@
   "learn_lists" : [],
   "actions" : [
     {
-      "name" : "Ing.convert_from",
+      "name" : "Ing.convert",
       "id" : 0,
       "runtime_data" : [
         {
-          "name" : "fmt",
+          "name" : "src_fmt",
+          "bitwidth" : 8
+        },
+        {
+          "name" : "dst_fmt",
           "bitwidth" : 8
         }
       ],
@@ -142,13 +146,17 @@
             {
               "type" : "runtime_data",
               "value" : 0
+            },
+            {
+              "type" : "runtime_data",
+              "value" : 1
             }
           ],
           "source_info" : {
             "filename" : "tests/data/p4/src/fp8_convert.p4",
-            "line" : 65,
-            "column" : 38,
-            "source_fragment" : "fp8.cvt(fmt)"
+            "line" : 70,
+            "column" : 8,
+            "source_fragment" : "fp8.cvt(src_fmt, dst_fmt)"
           }
         },
         {
@@ -161,8 +169,8 @@
           ],
           "source_info" : {
             "filename" : "tests/data/p4/src/fp8_convert.p4",
-            "line" : 65,
-            "column" : 52,
+            "line" : 71,
+            "column" : 8,
             "source_fragment" : "mark_to_drop(s)"
           }
         }
@@ -181,7 +189,7 @@
       "id" : 0,
       "source_info" : {
         "filename" : "tests/data/p4/src/fp8_convert.p4",
-        "line" : 56,
+        "line" : 60,
         "column" : 8,
         "source_fragment" : "Ing"
       },
@@ -192,7 +200,7 @@
           "id" : 0,
           "source_info" : {
             "filename" : "tests/data/p4/src/fp8_convert.p4",
-            "line" : 67,
+            "line" : 74,
             "column" : 10,
             "source_fragment" : "policy"
           },
@@ -211,10 +219,10 @@
           "support_timeout" : false,
           "direct_meters" : null,
           "action_ids" : [0, 1],
-          "actions" : ["Ing.convert_from", "Ing.passthrough"],
+          "actions" : ["Ing.convert", "Ing.passthrough"],
           "base_default_next" : null,
           "next_tables" : {
-            "Ing.convert_from" : null,
+            "Ing.convert" : null,
             "Ing.passthrough" : null
           },
           "default_entry" : {
@@ -233,7 +241,7 @@
       "id" : 1,
       "source_info" : {
         "filename" : "tests/data/p4/src/fp8_convert.p4",
-        "line" : 75,
+        "line" : 82,
         "column" : 8,
         "source_fragment" : "Eg"
       },

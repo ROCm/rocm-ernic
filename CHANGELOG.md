@@ -35,21 +35,45 @@
 
 ### Added
 
-* **The P4 fp8 extern narrows as well as reduces.** A new method,
-  `cvt(fmt)`, reads one region of 16-bit floating point and writes a
-  result half as long -- one fp8 byte per source element -- with the table
-  entry choosing the source format: `0` for IEEE binary16, `1` for
-  bfloat16. A work request asks for it by its gather list, as the
+* **The P4 fp8 extern converts between formats as well as reducing.** A
+  new method, `cvt(src_fmt, dst_fmt)`, reads one region and writes the
+  same number of elements in another format -- **in either direction**,
+  so the destination may be longer than the source, shorter, or the same
+  length. The table entry names both formats, so one program narrows or
+  widens depending only on what the control plane put in it.
+
+  Six formats, as the numbers a table entry carries: `0` fp32, `1` fp16,
+  `2` bf16, `3` fp8 E4M3, `4` fp8 E5M2, `5` **fp4 E2M1** -- the OCP
+  microscaling 4-bit format the AMD data paths use, packed two elements
+  to a byte, low nibble first. An odd count of a 4-bit format is half a
+  byte at one end and is refused rather than rounded.
+
+  A work request asks for a conversion by its gather list, as the
   reduction does: two equal entries is a reduction, **one entry is a
   conversion**, and anything else is an ordinary transfer. It is the only
   operation whose destination is not the same length as its source, so
   each region is checked against its own length and nothing past the
-  result is written. `tests/data/p4/fp8_convert.p4` is the worked example,
-  with `fp8_convert.json` compiled from it. The narrowing follows the same
-  conventions as the rest of the fp8 code: round to nearest with ties to
-  even, and a magnitude above E4M3's range -- an infinity included, which
-  fp16 has and E4M3 does not -- saturates to +/-448 rather than becoming
-  NaN.
+  result is written. `tests/data/p4/fp8_convert.p4` is the worked
+  example, with `fp8_convert.json` compiled from it.
+
+  Conversion follows the same conventions as the rest of the fp8 code:
+  round to nearest with ties to even, and a magnitude too large for the
+  destination becomes an infinity if that format has one and saturates to
+  its largest finite magnitude if it does not -- an infinity narrowing
+  into E4M3 or FP4 saturates for the same reason an overflow does. A NaN
+  survives wherever there is an encoding for one; FP4 E2M1 has neither
+  infinity nor NaN, so a NaN saturates there too, sign preserved.
+* **The P4 lane records a conversion trend.** It measures fp16-to-fp8
+  throughput at 4 KiB and 64 KiB and publishes a `p4cvt` series, so
+  `perf-trends` gains a P4 conversion chart. The number is the whole
+  guest-to-result path, not the arithmetic alone. 1 MiB is absent by
+  construction: a conversion is capped at 256 Ki elements, which 1 MiB of
+  a 16-bit source is twice over.
+* **The Python driver reaches the P4 control surface.** `tests/py` can
+  now IDENT the surface, push a program down in chunks, install table
+  entries and read the engine's counters, so the conversion is covered
+  over a real vfio-user socket with no VM at all -- narrowing, widening,
+  and a two-entry write staying an ordinary transfer.
 
 
 * Nightly DEB packages: every night that `develop` changes, the `nightly`

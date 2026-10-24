@@ -320,120 +320,6 @@ static void test_map(void)
 }
 
 
-/* One little-endian fp16 or bf16 element, for the conversion tests. */
-static void put16(uint8_t *dst, uint16_t raw)
-{
-    dst[0] = (uint8_t)(raw & 0xFFu);
-    dst[1] = (uint8_t)(raw >> 8);
-}
-
-/*
- * fp16 -> fp8.  The decode half was checked against numpy for all 65536
- * encodings; what is pinned here is the behaviour the conversion adds on
- * top -- the narrowing conventions, which are the same ones the rest of
- * the file keeps.
- */
-static void test_convert_fp16(void)
-{
-    static const struct {
-        uint16_t in;
-        uint8_t want;
-        const char *what;
-    } cases[] = {
-        {0x3C00u, 0x38u, "1.0"},
-        {0x4000u, 0x40u, "2.0"},
-        {0x4200u, 0x44u, "3.0"},
-        {0x4400u, 0x48u, "4.0"},
-        {0x4600u, 0x4Cu, "6.0"},
-        {0xBC00u, 0xB8u, "-1.0"},
-        {0x0000u, 0x00u, "+0"},
-        {0x8000u, 0x80u, "-0"},
-        {0x5C00u, 0x78u, "256.0, exactly representable"},
-        {0x5F00u, P4_FP8_MAX, "448.0, the largest finite value"},
-        /* E4M3 has no infinities, so these saturate rather than becoming
-         * NaN: one overflowed term must not destroy a whole reduction. */
-        {0x5F80u, P4_FP8_MAX, "480 saturates"},
-        {0x7BFFu, P4_FP8_MAX, "65504, fp16's largest, saturates"},
-        {0x7C00u, P4_FP8_MAX, "+infinity saturates"},
-        {0xFC00u, (uint8_t)(0x80u | P4_FP8_MAX), "-infinity saturates"},
-        {0x7E00u, P4_FP8_NAN, "NaN stays NaN"},
-        {0x1800u, 0x01u, "2^-9, the smallest fp8 subnormal"},
-        {0x0001u, 0x00u, "fp16's smallest subnormal flushes"},
-    };
-    uint8_t in[2], got;
-
-    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-        put16(in, cases[i].in);
-        check(p4_fp8_convert(P4_FP8_SRC_FP16, in, 1, &got),
-              "p4_fp8_convert refused a well-formed element");
-        checkf(got == cases[i].want, "fp16 %s: got %#x, want %#x",
-               cases[i].what, got, cases[i].want);
-    }
-}
-
-/* bf16 is float32's top half, so its exponent range is far wider than
- * E4M3's and the saturating convention does most of the work. */
-static void test_convert_bf16(void)
-{
-    static const struct {
-        uint16_t in;
-        uint8_t want;
-        const char *what;
-    } cases[] = {
-        {0x3F80u, 0x38u, "1.0"},
-        {0x4000u, 0x40u, "2.0"},
-        {0x4080u, 0x48u, "4.0"},
-        {0xBF80u, 0xB8u, "-1.0"},
-        {0x43E0u, P4_FP8_MAX, "448.0"},
-        {0x7F80u, P4_FP8_MAX, "+infinity saturates"},
-        {0x0000u, 0x00u, "+0"},
-    };
-    uint8_t in[2], got;
-
-    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-        put16(in, cases[i].in);
-        check(p4_fp8_convert(P4_FP8_SRC_BF16, in, 1, &got),
-              "p4_fp8_convert refused a well-formed bf16 element");
-        checkf(got == cases[i].want, "bf16 %s: got %#x, want %#x",
-               cases[i].what, got, cases[i].want);
-    }
-}
-
-/*
- * A whole buffer, and the arguments the conversion must refuse.  The
- * elementwise property matters here for the same reason it does for the
- * map: one bad element must not disturb its neighbours.
- */
-static void test_convert_buffer(void)
-{
-    uint8_t in[8 * 2], out[8];
-    static const uint16_t raw[8] = {0x3C00u, 0x7E00u, 0x4000u, 0x7C00u,
-                                    0x4400u, 0x0000u, 0xBC00u, 0x4600u};
-    static const uint8_t want[8] = {0x38u, P4_FP8_NAN, 0x40u, P4_FP8_MAX,
-                                    0x48u, 0x00u,      0xB8u, 0x4Cu};
-
-    for (size_t i = 0; i < 8; i++)
-        put16(in + 2u * i, raw[i]);
-
-    check(p4_fp8_convert(P4_FP8_SRC_FP16, in, 8, out),
-          "p4_fp8_convert refused a well-formed buffer");
-    for (size_t i = 0; i < 8; i++)
-        checkf(out[i] == want[i], "buffer element %zu: got %#x, want %#x", i,
-               out[i], want[i]);
-
-    /* A NaN and an infinity in the middle left everything else alone,
-     * which the per-element checks above have just shown. */
-
-    check(!p4_fp8_convert((enum p4_fp8_src_fmt)0x55u, in, 8, out),
-          "an unknown source format was accepted");
-    check(!p4_fp8_convert(P4_FP8_SRC_FP16, NULL, 8, out),
-          "a NULL source was accepted");
-    check(!p4_fp8_convert(P4_FP8_SRC_FP16, in, 8, NULL),
-          "a NULL destination was accepted");
-    check(p4_fp8_convert(P4_FP8_SRC_FP16, in, 0, out),
-          "an empty conversion was refused");
-}
-
 int main(void)
 {
     test_known_encodings();
@@ -442,9 +328,6 @@ int main(void)
     test_saturation_and_rounding();
     test_reduce();
     test_map();
-    test_convert_fp16();
-    test_convert_bf16();
-    test_convert_buffer();
 
     if (failures) {
         printf("p4_fp8: %d check(s) FAILED\n", failures);
