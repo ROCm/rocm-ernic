@@ -128,7 +128,7 @@ changing the one table entry changes the arithmetic with no
 change to the device.
 
 Converting between formats
-``````````````````````````
+^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The extern's other method, ``cvt(src_fmt, dst_fmt)``, reads
 **one** region and writes the same number of elements in

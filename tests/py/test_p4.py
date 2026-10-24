@@ -25,7 +25,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # pylint: disable=wrong-import-position
-from ernic import eth, ionic
+from ernic import eth, ionic, p4
 from ernic.check import Suite
 from ernic.errors import DeviceError
 from ernic.fixture import BaseFixture
@@ -375,21 +375,22 @@ def test_cvt_guest_loads_program(suite, server_factory):
     with server_factory(["--p4", "--p4-guest-scope", "load"]) as server:
         fix = CvtFixture(server)
         try:
-            ident = fix.driver.p4_ident()
+            ident = p4.ident(fix.driver)
             suite.check(ident is not None, "the P4 surface answered IDENT")
             if ident:
                 suite.check_eq(
                     ident["scope"],
-                    ionic.P4_SCOPE_LOAD,
+                    p4.P4_SCOPE_LOAD,
                     "it reports the scope the operator granted",
                 )
-            fix.driver.p4_load_program(convert_program())
-            status = fix.driver.p4_entry(
-                ionic.P4_UPDATE_INSERT,
+            p4.load_program(fix.driver, convert_program())
+            status = p4.entry(
+                fix.driver,
+                p4.P4_UPDATE_INSERT,
                 "Ing.policy",
                 "Ing.convert",
                 matches=[bytes([ionic.OP_RDMA_WRITE])],
-                params=[bytes([ionic.P4_FMT_FP16]), bytes([ionic.P4_FMT_FP8_E4M3])],
+                params=[bytes([p4.P4_FMT_FP16]), bytes([p4.P4_FMT_FP8_E4M3])],
             )
             suite.check_eq(status, 0, "the conversion entry was installed")
         finally:
@@ -409,14 +410,15 @@ def test_cvt_narrowing(suite, server_factory):
     with server_factory(["--p4", "--p4-guest-scope", "load"]) as server:
         fix = CvtFixture(server)
         try:
-            fix.driver.p4_load_program(convert_program())
+            p4.load_program(fix.driver, convert_program())
             suite.check_eq(
-                fix.driver.p4_entry(
-                    ionic.P4_UPDATE_INSERT,
+                p4.entry(
+                    fix.driver,
+                    p4.P4_UPDATE_INSERT,
                     "Ing.policy",
                     "Ing.convert",
                     matches=[bytes([ionic.OP_RDMA_WRITE])],
-                    params=[bytes([ionic.P4_FMT_FP16]), bytes([ionic.P4_FMT_FP8_E4M3])],
+                    params=[bytes([p4.P4_FMT_FP16]), bytes([p4.P4_FMT_FP8_E4M3])],
                 ),
                 0,
                 "the fp16 to E4M3 entry was installed",
@@ -466,14 +468,15 @@ def test_cvt_widening(suite, server_factory):
     with server_factory(["--p4", "--p4-guest-scope", "load"]) as server:
         fix = CvtFixture(server)
         try:
-            fix.driver.p4_load_program(convert_program())
+            p4.load_program(fix.driver, convert_program())
             suite.check_eq(
-                fix.driver.p4_entry(
-                    ionic.P4_UPDATE_INSERT,
+                p4.entry(
+                    fix.driver,
+                    p4.P4_UPDATE_INSERT,
                     "Ing.policy",
                     "Ing.convert",
                     matches=[bytes([ionic.OP_RDMA_WRITE])],
-                    params=[bytes([ionic.P4_FMT_FP4_E2M1]), bytes([ionic.P4_FMT_FP16])],
+                    params=[bytes([p4.P4_FMT_FP4_E2M1]), bytes([p4.P4_FMT_FP16])],
                 ),
                 0,
                 "the fp4 to fp16 entry was installed",
@@ -515,13 +518,14 @@ def test_cvt_plain_write_untouched(suite, server_factory):
     with server_factory(["--p4", "--p4-guest-scope", "load"]) as server:
         fix = CvtFixture(server)
         try:
-            fix.driver.p4_load_program(convert_program())
-            fix.driver.p4_entry(
-                ionic.P4_UPDATE_INSERT,
+            p4.load_program(fix.driver, convert_program())
+            p4.entry(
+                fix.driver,
+                p4.P4_UPDATE_INSERT,
                 "Ing.policy",
                 "Ing.convert",
                 matches=[bytes([ionic.OP_RDMA_WRITE])],
-                params=[bytes([ionic.P4_FMT_FP16]), bytes([ionic.P4_FMT_FP8_E4M3])],
+                params=[bytes([p4.P4_FMT_FP16]), bytes([p4.P4_FMT_FP8_E4M3])],
             )
             fix.driver.mr_write(fix.mr_src, CVT_VA_SRC, half + half)
             fix.driver.post_send(
