@@ -2915,22 +2915,18 @@ static int dp_p4_fmt_convert(struct dp_p4_ctx *c, uint8_t src_fmt,
     if (c->read_sz < WQE_SEND_LEN_OFF + 4u)
         return -EINVAL;
 
-    uint32_t va_hi, va_lo, rkey, length;
-    memcpy(&va_hi, c->wqe + WQE_RDMA_VA_HI_OFF, 4);
-    memcpy(&va_lo, c->wqe + WQE_RDMA_VA_LO_OFF, 4);
-    memcpy(&rkey, c->wqe + WQE_RDMA_RKEY_OFF, 4);
-    memcpy(&length, c->wqe + WQE_SEND_LEN_OFF, 4);
-
-    uint64_t remote_va = ((uint64_t)be32toh(va_hi) << 32) | be32toh(va_lo);
+    uint64_t remote_va = ernic_get_be64(c->wqe + WQE_RDMA_VA_OFF);
+    uint32_t rkey = ernic_get_be32(c->wqe + WQE_RDMA_RKEY_OFF);
+    uint32_t length = ernic_get_be32(c->wqe + WQE_SEND_LEN_OFF);
 
     /* The driver sums the gather list into the length field; with one
      * entry that is the source length, and it has to agree. */
-    if (be32toh(length) != c->src->total)
+    if (length != c->src->total)
         return -EINVAL;
 
     return ionic_datapath_fmt_convert(c->dp, src_fmt, dst_fmt, c->src->lkey[0],
-                                      c->src->va[0], c->src->len[0],
-                                      be32toh(rkey), remote_va);
+                                      c->src->va[0], c->src->len[0], rkey,
+                                      remote_va);
 }
 
 static int dp_p4_extern_call(void *ctx, uint8_t type, uint8_t method,

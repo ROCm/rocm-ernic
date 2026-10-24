@@ -21,14 +21,23 @@
   prefers DKMS's per-kernel copy, falls back to the shared build directory,
   and says when the log it found was written for a different kernel than
   the one that failed.
+* **`tcp-thread-stop-unit` no longer trips its watchdog under valgrind.**
+  The per-row watchdog is a hang detector, but its ten seconds were a
+  native-speed budget, and the slowest legitimate row -- 64 peers connected
+  one at a time, each with a receive thread, then a 65th -- runs every one
+  of those threads on one core under valgrind. It took well under a second
+  natively and ran out of time on a loaded four-CPU CI runner with 63 of
+  the 64 peers connected, which failed the valgrind leg intermittently.
+  The budget is six times larger under valgrind, which is still far
+  below what a genuinely stuck row would take.
 * **The thread-stop test's watchdog says what it was waiting for.** When a
   row runs over its timeout the watchdog kills the process, which leaves
   every thread running, and valgrind then reports each one's thread-local
   storage as possibly lost -- so a timeout was reported as a memory leak
-  whose stacks pointed at whatever had created the threads. It now prints
-  the threads created, joined and exited alongside the row name, which
-  distinguishes a join that never ran from a thread that never left its
-  loop.
+  whose stacks pointed at whatever had created the threads, and the leak
+  was the only part anyone saw. It now prints the threads created, joined
+  and exited alongside the row name, which is what identified the row above
+  as merely unfinished rather than stuck.
 
 * **An extern that already wrote the destination no longer lets the
   ordinary transfer land on top of it.** An action may call the extern
