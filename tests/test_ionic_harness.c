@@ -3020,173 +3020,6 @@ out:
     teardown(T, &h);
 }
 
-#endif /* ERNIC_HAVE_P4 */
-
-static void test_nvmeof(void)
-{
-    const char *T = "nvmeof";
-    struct ih h;
-    struct ih_cq gcq, rcq;
-    struct ih_qp gsi, rc;
-    struct ih_mr mr = {0};
-    uint8_t mad[IB_MAD_SIZE], reply[IB_MAD_SIZE];
-
-    if (!setup(T, &h, NV_BACKEND))
-        return;
-
-    /* The driver creates QP 1 as UD, and that id is what makes it GSI */
-    bool ok = ih_cq_create(&h, &gcq, NV_GSI_CQ, 5) &&
-              ih_cq_create(&h, &rcq, NV_RC_CQ, 5) &&
-              ih_qp_create(&h, &gsi, 1, IH_QPT_UD, &gcq, &gcq, NULL) &&
-              ih_qp_create(&h, &rc, NV_RC_QP, IH_QPT_RC, &rcq, &rcq, NULL) &&
-              ih_mr_create(&h, &mr, NV_MR, NV_VA, 2 * IH_PAGE_SIZE,
-                           IH_ACCESS_ALL, false);
-    if (!check(T, ok, "NVMe-oF setup failed")) {
-        ih_mr_free(&mr);
-        teardown(T, &h);
-        return;
-    }
-
-    /* REQ draws a REP that names the controller's QP */
-    build_req(mad);
-    if (!gsi_exchange(T, &h, &gsi, &gcq, &mr, mad, true, reply)) {
-        ih_mr_free(&mr);
-        teardown(T, &h);
-        return;
-    }
-    check(T, get_be16(reply + 16) == 0x0013, "the REQ drew attribute %#x",
-          get_be16(reply + 16));
-    uint32_t local_comm = get_be32(reply + 24);
-    uint32_t target_qpn = get_be32(reply + 36) >> 8;
-    check(T, nvmeof_cm_is_target_qpn(target_qpn),
-          "REP offers QPN %#x, outside the controller range", target_qpn);
-
-    /* RTU completes the handshake and draws nothing */
-    mad_hdr(mad, 0x0014, 0x1234567800000001ull);
-    put_be32(mad + 24, 0xabcd0001u);
-    put_be32(mad + 28, local_comm);
-    gsi_exchange(T, &h, &gsi, &gcq, &mr, mad, false, reply);
-
-    /* Point the RC QP at the controller and connect the admin queue */
-    uint8_t hdr[64];
-    size_t hdr_len = ih_roce_hdr_v4(hdr, sizeof(hdr), 0xc0a8c814u, NV_TRADDR);
-    ok =
-        ih_qp_modify(&h, NV_RC_QP, IH_QP_STATE, IH_QPS_INIT, 0, NULL, 0) == 0 &&
-        ih_qp_modify(&h, NV_RC_QP, IH_QP_STATE | IH_QP_AV | IH_QP_DEST_QPN,
-                     IH_QPS_RTR, target_qpn, hdr, (uint32_t)hdr_len) == 0 &&
-        ih_qp_modify(&h, NV_RC_QP, IH_QP_STATE, IH_QPS_RTS, 0, NULL, 0) == 0;
-    check(T, ok, "moving the RC QP to RTS failed");
-
-    uint8_t data[NVMEOF_CONNECT_DATA_SIZE] = {0};
-    memcpy(data + NVMEOF_CONNECT_HOSTID_OFF, "0123456789abcdef", 16);
-    nvme_put_le16(data + NVMEOF_CONNECT_CNTLID_OFF, 0xffff);
-    snprintf((char *)data + NVMEOF_CONNECT_SUBNQN_OFF, 256, "%s", NV_NQN);
-    snprintf((char *)data + NVMEOF_CONNECT_HOSTNQN_OFF, 256, "%s",
-             "nqn.2014-08.org.nvmexpress:uuid:harness");
-    ih_mr_write(&h, &mr, mr.va + NV_CONNECT_OFF, data, sizeof(data));
-
-    uint8_t cap[NVME_SQE_SIZE];
-    capsule_init(cap, NVME_ADMIN_FABRICS, 1, mr.va + NV_CONNECT_OFF,
-                 sizeof(data), NV_MR);
-    cap[NVMEOF_SQE_FCTYPE_OFF] = NVMEOF_FCTYPE_CONNECT;
-    nvme_put_le16(cap + NVMEOF_CONNECT_QID_OFF, 0);
-    nvme_put_le16(cap + NVMEOF_CONNECT_SQSIZE_OFF, 31);
-    int sts = nvme_exchange(T, &h, &rc, &rcq, &mr, cap);
-    check(T, sts == 0, "Connect status %#x", (unsigned)sts);
-
-    /* Identify Controller writes through the keyed SGL into the MR */
-    capsule_init(cap, NVME_ADMIN_IDENTIFY, 2, mr.va + NV_IDENT_OFF,
-                 NVME_IDENTIFY_SIZE, NV_MR);
-    nvme_put_le32(cap + NVME_SQE_CDW10_OFF, NVME_ID_CNS_CTRL);
-    sts = nvme_exchange(T, &h, &rc, &rcq, &mr, cap);
-    check(T, sts == 0, "Identify status %#x", (unsigned)sts);
-    char subnqn[32] = "";
-    ih_mr_read(&h, &mr, mr.va + NV_IDENT_OFF + 768, subnqn, sizeof(subnqn) - 1);
-    check(T, strcmp(subnqn, NV_NQN) == 0, "Identify subnqn is '%s'", subnqn);
-
-    /* DREQ draws a DREP */
-    mad_hdr(mad, 0x0015, 0x1234567800000002ull);
-    put_be32(mad + 24, 0xabcd0001u);
-    put_be32(mad + 28, local_comm);
-    put_be32(mad + 32, target_qpn << 8);
-    if (gsi_exchange(T, &h, &gsi, &gcq, &mr, mad, true, reply))
-        check(T, get_be16(reply + 16) == 0x0016, "the DREQ drew attribute %#x",
-              get_be16(reply + 16));
-
-    check(T, ih_qp_destroy(&h, &rc) == 0 && ih_qp_destroy(&h, &gsi) == 0,
-          "DESTROY_QP failed");
-    check(T, ih_mr_destroy(&h, &mr) == 0, "DESTROY_MR failed");
-    check(T, ih_cq_destroy(&h, &gcq) == 0 && ih_cq_destroy(&h, &rcq) == 0,
-          "DESTROY_CQ failed");
-    teardown(T, &h);
-}
-
-/* ---- Teardown ---------------------------------------------------------- */
-
-/*
- * Tear down a TCP-backed device with resources still allocated: a manager,
- * so no peer is needed.  Teardown must free what the TCP backend and the
- * resource manager hold for them, which LeakSanitizer checks, and leave no
- * guest memory mapped.
- */
-
-/* A TCP port on loopback that nothing was listening on a moment ago. */
-static uint16_t free_tcp_port(void)
-{
-    struct sockaddr_in addr;
-    socklen_t len = sizeof(addr);
-    uint16_t port = 0;
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-
-    if (fd < 0)
-        return 0;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0 &&
-        getsockname(fd, (struct sockaddr *)&addr, &len) == 0)
-        port = ntohs(addr.sin_port);
-    close(fd);
-    return port;
-}
-
-static void test_teardown(void)
-{
-    static const char T[] = "teardown";
-    char backend[64];
-    struct ih h;
-    uint32_t pd = 0, cq = 0, qpn = 0, mr = 0;
-    uint16_t port = free_tcp_port();
-
-    if (!check(T, port != 0, "no free TCP port"))
-        return;
-    snprintf(backend, sizeof(backend), "tcp:manager:listen:%u", (unsigned)port);
-    if (!check(T, ih_create(&h, backend), "device for '%s' not created",
-               backend))
-        return;
-
-    PVRDMADev *pvrdma = h.dev->pvrdma_handle;
-    bool made =
-        check(T, ionic_rm_alloc_pd(pvrdma, &pd) == 0, "no PD") &&
-        check(T, ionic_rm_alloc_cq(pvrdma, 16, &cq) == 0, "no CQ") &&
-        check(T,
-              ionic_rm_alloc_qp(pvrdma, pd, IBV_QPT_RC, 16, 16, cq, cq, &qpn) ==
-                  0,
-              "no QP") &&
-        check(T,
-              ionic_rm_alloc_mr(pvrdma, pd, IBV_ACCESS_LOCAL_WRITE, &mr) == 0,
-              "no DMA memory region");
-
-    if (made)
-        check(T, rdma_rm_get_qp(&pvrdma->rdma_dev_res, qpn) != NULL,
-              "QP %u isn't in the resource manager", qpn);
-
-    teardown(T, &h);
-}
-
-/* ---- Driver ------------------------------------------------------------ */
-
-
 /* ---- Narrowing: fp16 in one region, fp8 in a shorter one ------------- */
 
 /*
@@ -3368,6 +3201,173 @@ static void test_p4_cvt(void)
     ih_mr_free(&mrc);
     teardown(T, &h);
 }
+
+#endif /* ERNIC_HAVE_P4 */
+
+static void test_nvmeof(void)
+{
+    const char *T = "nvmeof";
+    struct ih h;
+    struct ih_cq gcq, rcq;
+    struct ih_qp gsi, rc;
+    struct ih_mr mr = {0};
+    uint8_t mad[IB_MAD_SIZE], reply[IB_MAD_SIZE];
+
+    if (!setup(T, &h, NV_BACKEND))
+        return;
+
+    /* The driver creates QP 1 as UD, and that id is what makes it GSI */
+    bool ok = ih_cq_create(&h, &gcq, NV_GSI_CQ, 5) &&
+              ih_cq_create(&h, &rcq, NV_RC_CQ, 5) &&
+              ih_qp_create(&h, &gsi, 1, IH_QPT_UD, &gcq, &gcq, NULL) &&
+              ih_qp_create(&h, &rc, NV_RC_QP, IH_QPT_RC, &rcq, &rcq, NULL) &&
+              ih_mr_create(&h, &mr, NV_MR, NV_VA, 2 * IH_PAGE_SIZE,
+                           IH_ACCESS_ALL, false);
+    if (!check(T, ok, "NVMe-oF setup failed")) {
+        ih_mr_free(&mr);
+        teardown(T, &h);
+        return;
+    }
+
+    /* REQ draws a REP that names the controller's QP */
+    build_req(mad);
+    if (!gsi_exchange(T, &h, &gsi, &gcq, &mr, mad, true, reply)) {
+        ih_mr_free(&mr);
+        teardown(T, &h);
+        return;
+    }
+    check(T, get_be16(reply + 16) == 0x0013, "the REQ drew attribute %#x",
+          get_be16(reply + 16));
+    uint32_t local_comm = get_be32(reply + 24);
+    uint32_t target_qpn = get_be32(reply + 36) >> 8;
+    check(T, nvmeof_cm_is_target_qpn(target_qpn),
+          "REP offers QPN %#x, outside the controller range", target_qpn);
+
+    /* RTU completes the handshake and draws nothing */
+    mad_hdr(mad, 0x0014, 0x1234567800000001ull);
+    put_be32(mad + 24, 0xabcd0001u);
+    put_be32(mad + 28, local_comm);
+    gsi_exchange(T, &h, &gsi, &gcq, &mr, mad, false, reply);
+
+    /* Point the RC QP at the controller and connect the admin queue */
+    uint8_t hdr[64];
+    size_t hdr_len = ih_roce_hdr_v4(hdr, sizeof(hdr), 0xc0a8c814u, NV_TRADDR);
+    ok =
+        ih_qp_modify(&h, NV_RC_QP, IH_QP_STATE, IH_QPS_INIT, 0, NULL, 0) == 0 &&
+        ih_qp_modify(&h, NV_RC_QP, IH_QP_STATE | IH_QP_AV | IH_QP_DEST_QPN,
+                     IH_QPS_RTR, target_qpn, hdr, (uint32_t)hdr_len) == 0 &&
+        ih_qp_modify(&h, NV_RC_QP, IH_QP_STATE, IH_QPS_RTS, 0, NULL, 0) == 0;
+    check(T, ok, "moving the RC QP to RTS failed");
+
+    uint8_t data[NVMEOF_CONNECT_DATA_SIZE] = {0};
+    memcpy(data + NVMEOF_CONNECT_HOSTID_OFF, "0123456789abcdef", 16);
+    nvme_put_le16(data + NVMEOF_CONNECT_CNTLID_OFF, 0xffff);
+    snprintf((char *)data + NVMEOF_CONNECT_SUBNQN_OFF, 256, "%s", NV_NQN);
+    snprintf((char *)data + NVMEOF_CONNECT_HOSTNQN_OFF, 256, "%s",
+             "nqn.2014-08.org.nvmexpress:uuid:harness");
+    ih_mr_write(&h, &mr, mr.va + NV_CONNECT_OFF, data, sizeof(data));
+
+    uint8_t cap[NVME_SQE_SIZE];
+    capsule_init(cap, NVME_ADMIN_FABRICS, 1, mr.va + NV_CONNECT_OFF,
+                 sizeof(data), NV_MR);
+    cap[NVMEOF_SQE_FCTYPE_OFF] = NVMEOF_FCTYPE_CONNECT;
+    nvme_put_le16(cap + NVMEOF_CONNECT_QID_OFF, 0);
+    nvme_put_le16(cap + NVMEOF_CONNECT_SQSIZE_OFF, 31);
+    int sts = nvme_exchange(T, &h, &rc, &rcq, &mr, cap);
+    check(T, sts == 0, "Connect status %#x", (unsigned)sts);
+
+    /* Identify Controller writes through the keyed SGL into the MR */
+    capsule_init(cap, NVME_ADMIN_IDENTIFY, 2, mr.va + NV_IDENT_OFF,
+                 NVME_IDENTIFY_SIZE, NV_MR);
+    nvme_put_le32(cap + NVME_SQE_CDW10_OFF, NVME_ID_CNS_CTRL);
+    sts = nvme_exchange(T, &h, &rc, &rcq, &mr, cap);
+    check(T, sts == 0, "Identify status %#x", (unsigned)sts);
+    char subnqn[32] = "";
+    ih_mr_read(&h, &mr, mr.va + NV_IDENT_OFF + 768, subnqn, sizeof(subnqn) - 1);
+    check(T, strcmp(subnqn, NV_NQN) == 0, "Identify subnqn is '%s'", subnqn);
+
+    /* DREQ draws a DREP */
+    mad_hdr(mad, 0x0015, 0x1234567800000002ull);
+    put_be32(mad + 24, 0xabcd0001u);
+    put_be32(mad + 28, local_comm);
+    put_be32(mad + 32, target_qpn << 8);
+    if (gsi_exchange(T, &h, &gsi, &gcq, &mr, mad, true, reply))
+        check(T, get_be16(reply + 16) == 0x0016, "the DREQ drew attribute %#x",
+              get_be16(reply + 16));
+
+    check(T, ih_qp_destroy(&h, &rc) == 0 && ih_qp_destroy(&h, &gsi) == 0,
+          "DESTROY_QP failed");
+    check(T, ih_mr_destroy(&h, &mr) == 0, "DESTROY_MR failed");
+    check(T, ih_cq_destroy(&h, &gcq) == 0 && ih_cq_destroy(&h, &rcq) == 0,
+          "DESTROY_CQ failed");
+    teardown(T, &h);
+}
+
+/* ---- Teardown ---------------------------------------------------------- */
+
+/*
+ * Tear down a TCP-backed device with resources still allocated: a manager,
+ * so no peer is needed.  Teardown must free what the TCP backend and the
+ * resource manager hold for them, which LeakSanitizer checks, and leave no
+ * guest memory mapped.
+ */
+
+/* A TCP port on loopback that nothing was listening on a moment ago. */
+static uint16_t free_tcp_port(void)
+{
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    uint16_t port = 0;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (fd < 0)
+        return 0;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0 &&
+        getsockname(fd, (struct sockaddr *)&addr, &len) == 0)
+        port = ntohs(addr.sin_port);
+    close(fd);
+    return port;
+}
+
+static void test_teardown(void)
+{
+    static const char T[] = "teardown";
+    char backend[64];
+    struct ih h;
+    uint32_t pd = 0, cq = 0, qpn = 0, mr = 0;
+    uint16_t port = free_tcp_port();
+
+    if (!check(T, port != 0, "no free TCP port"))
+        return;
+    snprintf(backend, sizeof(backend), "tcp:manager:listen:%u", (unsigned)port);
+    if (!check(T, ih_create(&h, backend), "device for '%s' not created",
+               backend))
+        return;
+
+    PVRDMADev *pvrdma = h.dev->pvrdma_handle;
+    bool made =
+        check(T, ionic_rm_alloc_pd(pvrdma, &pd) == 0, "no PD") &&
+        check(T, ionic_rm_alloc_cq(pvrdma, 16, &cq) == 0, "no CQ") &&
+        check(T,
+              ionic_rm_alloc_qp(pvrdma, pd, IBV_QPT_RC, 16, 16, cq, cq, &qpn) ==
+                  0,
+              "no QP") &&
+        check(T,
+              ionic_rm_alloc_mr(pvrdma, pd, IBV_ACCESS_LOCAL_WRITE, &mr) == 0,
+              "no DMA memory region");
+
+    if (made)
+        check(T, rdma_rm_get_qp(&pvrdma->rdma_dev_res, qpn) != NULL,
+              "QP %u isn't in the resource manager", qpn);
+
+    teardown(T, &h);
+}
+
+/* ---- Driver ------------------------------------------------------------ */
+
 
 static const struct {
     const char *name;
