@@ -5241,14 +5241,15 @@ static int run_ra_case(const struct ra_case *c)
  * The replacement rows have node 1 of an mgr_fixture, which the manager has
  * declared dead, register again, while the test holds a reference to its old
  * connection, or while another thread is blocked sending on it.  The
- * registration row has a pending connection register while teardown is
- * stopping its receive thread.
+ * registration rows have a pending connection register, as a new node or
+ * again under a node's id, while teardown is stopping its receive thread.
  */
 
 enum lt_scenario {
     LT_HELD,   /* the test holds the old connection across the replacement */
     LT_SENDER, /* another thread is blocked sending on it */
     LT_REGISTER_VS_STOP, /* a registration lands while the stop runs */
+    LT_AGAIN_VS_STOP,    /* a node registering again does */
     LT_GIDS_BACK, /* the node went silent; registering again gets it back */
 };
 
@@ -5276,6 +5277,12 @@ static const struct lt_case lt_cases[] = {
      "it ends up in the connections table, not the pending list, and its "
      "thread is joined once",
      LT_REGISTER_VS_STOP},
+    {"corner",
+     "a node registers again while teardown stops the receive threads, its "
+     "old connection's among them",
+     "refused: the old connection, which the stop has claimed, stays in the "
+     "table rather than being freed under it, and each thread is joined once",
+     LT_AGAIN_VS_STOP},
     {"positive",
      "a node the manager had declared dead registers again under its id",
      "the node owns its GIDs again at once, and a withdrawal decided before "
@@ -5445,25 +5452,32 @@ static void *lt_stop(void *opaque)
 }
 
 /*
- * LT_REGISTER_VS_STOP.  The test holds mesh_table_lock, which registration
- * needs, while the receive thread reads a REGISTER_NODE: once the message is
- * read, the thread handles it whatever its stop flag says.  The stop then
- * runs, on another thread, and claims the receive thread while the connection
- * is still pending; only then is the lock let go, and the registration moves
- * the connection while the stop waits to join its thread.  The health-check
- * and accept threads are stopped first, as teardown stops them.
+ * LT_REGISTER_VS_STOP and, if again, LT_AGAIN_VS_STOP.  The test holds
+ * mesh_table_lock, which registration needs, while the receive thread reads
+ * a REGISTER_NODE: once the message is read, the thread handles it whatever
+ * its stop flag says.  The stop then runs, on another thread, and claims the
+ * receive thread while the connection is still pending; only then is the lock
+ * let go, and the registration is handled while the stop waits to join its
+ * thread.  The health-check and accept threads are stopped first, and
+ * stopping set, as teardown does.
+ *
+ * For LT_AGAIN_VS_STOP, worker 1 has registered, and been declared dead, and
+ * the registration asks for its id.  The stop claims worker 1's connection
+ * too, keeping only a pointer to it to join its thread with; a registration
+ * that took it out of the table then would free it under the stop.
  */
-static const char *lt_register_vs_stop(void)
+static const char *lt_register_vs_stop(bool again)
 {
     RdmaBackendDev dev;
     TcpBackendPrivate *priv;
     TcpConnection *conn = NULL, *in_table;
+    const TcpConnection *old = NULL;
     char config[64];
     const char *why = NULL;
     pthread_t stopper;
     uint16_t port = free_port();
     guint pending;
-    int fd = -1, joins;
+    int fd = -1, w1 = -1, joins;
 
     memset(&dev, 0, sizeof(dev));
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
@@ -5473,14 +5487,25 @@ static const char *lt_register_vs_stop(void)
     tcp_stop_health_check_thread(priv);
     tcp_stop_accept_thread(priv);
 
+    if (again) {
+        w1 = worker_register(priv);
+        if (w1 < 0 || !wait_for_registered(priv, 1) || !worker_settled(w1, 1)) {
+            why = "worker 1 did not register";
+            goto out;
+        }
+        old = table_get(priv, 1);
+        node_set(priv, 1, false, ernic_monotonic_ms() - UINT64_C(1000000));
+    }
     fd = worker_attach(priv, &conn);
     if (fd < 0) {
         why = "could not attach the worker";
         goto out;
     }
     joins = atomic_load(&g_joins);
+    atomic_store(&priv->stopping, true);
     qemu_mutex_lock(&priv->mesh_table_lock);
-    if (!send_register(fd, "127.0.0.1", UINT32_MAX) || !lt_consumed(conn)) {
+    if (!send_register(fd, "127.0.0.1", again ? 1 : UINT32_MAX) ||
+        !lt_consumed(conn)) {
         qemu_mutex_unlock(&priv->mesh_table_lock);
         why = "the registration wasn't read";
         goto out;
@@ -5490,6 +5515,7 @@ static const char *lt_register_vs_stop(void)
         why = "could not start the stop";
         goto out;
     }
+    /* The stop claims every thread in one pass under conn_table_lock */
     for (int i = 0; i < 500 && atomic_load(&conn->recv_thread_running); i++)
         sleep_ms(10);
     if (atomic_load(&conn->recv_thread_running))
@@ -5501,18 +5527,22 @@ static const char *lt_register_vs_stop(void)
     in_table = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(1));
     pending = priv->pending_conns->len;
     qemu_mutex_unlock(&priv->conn_table_lock);
-    if (!why && in_table != conn)
-        why = "the connection isn't in the connections table";
-    else if (!why && pending != 0)
-        why = "the connection is still on the pending list";
-    else if (!why && atomic_load(&g_joins) - joins != 1)
-        why = "the receive thread wasn't joined exactly once";
+    if (!why && in_table != (again ? old : conn))
+        why = again ? "the claimed connection was replaced"
+                    : "the connection isn't in the connections table";
+    else if (!why && pending != (again ? 1u : 0u))
+        why = again ? "the refused connection isn't on the pending list"
+                    : "the connection is still on the pending list";
+    else if (!why && atomic_load(&g_joins) - joins != (again ? 2 : 1))
+        why = "a receive thread wasn't joined exactly once";
 
 out:
     /* Joins nothing more; ASan reports it if the connection is freed twice */
     rdma_backend_ops_tcp.fini(&dev);
     if (fd >= 0)
         close(fd);
+    if (w1 >= 0)
+        close(w1);
     return why;
 }
 
@@ -5526,8 +5556,10 @@ static int run_lt_case(const struct lt_case *c)
     atomic_store(&g_exits, 0);
     g_current_row = c->description;
     alarm(ROW_TIMEOUT_S);
-    why = c->scenario == LT_REGISTER_VS_STOP ? lt_register_vs_stop()
-                                             : lt_replace_run(c->scenario);
+    if (c->scenario == LT_REGISTER_VS_STOP || c->scenario == LT_AGAIN_VS_STOP)
+        why = lt_register_vs_stop(c->scenario == LT_AGAIN_VS_STOP);
+    else
+        why = lt_replace_run(c->scenario);
     alarm(0);
     if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
                  atomic_load(&g_exits) != atomic_load(&g_creates)))
@@ -6010,9 +6042,12 @@ static int run_dc_case(const struct dc_case *c)
  * since a worker timed nothing.  The worker now owns the link: its
  * peer-connect thread connects and registers again, asking for its own id,
  * when the connection has ended, or when nothing has come on it for three
- * intervals.  A pass that has heard nothing for an interval first sends the
- * manager a heartbeat, which the manager answers, so a manager whose own
- * interval is longer isn't taken for silent.
+ * intervals.  A check that finds nothing has come for an interval first
+ * sends the manager a heartbeat, which the manager answers, so a manager
+ * whose own interval is longer isn't taken for silent.  The checks come
+ * between connects to peers, which can take an interval each, and don't wait
+ * on the connection's lock, which a send to a manager that has stopped
+ * reading holds.
  *
  * Each row runs tcp_init() for a worker, node WL_ID, on a 1 s interval,
  * against a manager the test plays over loopback, as the dead connection rows
@@ -6020,15 +6055,22 @@ static int run_dc_case(const struct dc_case *c)
  */
 
 #define WL_ID 4
-#define WL_HIGHER                                                           \
-    6              /* a peer with a higher id, which the worker connects to \
-                    */
-#define WL_OTHER 9 /* a node whose GIDs the manager tells the worker */
+/* A peer with a higher id, which the worker connects to */
+#define WL_HIGHER 6
+/* A node whose GIDs the manager tells the worker */
+#define WL_OTHER 9
+/* Peers with higher ids that don't answer, for WL_BUSY */
+#define WL_SLOW       3
+#define WL_SLOW_FIRST 10
+/* What WL_STUCK sends: more than a socket and its peer's hold */
+#define WL_STUCK_LEN (TCP_MAX_PAYLOAD_LEN - 16u)
 
 enum wl_scenario {
     WL_HANGS_UP, /* the manager closes the connection */
     WL_SILENT,   /* the manager stops sending, without closing it */
     WL_ANSWERED, /* it sends nothing, but answers the worker's heartbeats */
+    WL_BUSY,     /* the same, while the worker connects to slow peers */
+    WL_STUCK,    /* it stops reading, with a send to it under way */
     WL_REFUSED,  /* it refuses the worker's first registration again */
     WL_OTHER_ID, /* it registers the worker again as another node */
     WL_GONE,     /* nothing listens on its port for a while */
@@ -6054,6 +6096,19 @@ static const struct wl_case wl_cases[] = {
      WL_SILENT},
     {"positive", "the manager sends nothing, but answers heartbeats",
      "the worker sends heartbeats and keeps its connection", WL_ANSWERED},
+    {"boundary",
+     "the manager sends nothing, but answers heartbeats, while the worker "
+     "connects to three peers that don't answer, on a 1 s interval",
+     "the worker sends heartbeats between the connects, which take three "
+     "intervals, and keeps its connection",
+     WL_BUSY},
+    {"negative",
+     "the manager stops reading and sending, while the data path is blocked "
+     "sending to it",
+     "the worker doesn't wait for the connection's lock: three intervals on, "
+     "it closes the connection, which fails the send with -EIO, and registers "
+     "again",
+     WL_STUCK},
     {"negative", "the manager refuses the worker's registration once",
      "the worker keeps its id, and registers again on its next pass",
      WL_REFUSED},
@@ -6226,30 +6281,128 @@ static const char *wl_again(struct dc_worker *w, int lfd, int high,
 }
 
 /*
- * WL_ANSWERED: for longer than the three intervals the worker waits before it
- * gives up on a silent manager, the manager says nothing of its own, but
- * answers each heartbeat.
+ * WL_BUSY: tell the worker of WL_SLOW peers that don't answer, so that each
+ * of its passes spends an interval connecting to each.  *slow gets their
+ * listeners and the connections filling their backlogs, two each, for the
+ * caller to close.
  */
-static const char *wl_answered(struct dc_worker *w, int lfd)
+static const char *wl_slow_peers(struct dc_worker *w, int *slow)
+{
+    TcpMeshTopologyPayload topo;
+
+    memset(&topo, 0, sizeof(topo));
+    for (uint32_t i = 0; i < WL_SLOW; i++) {
+        uint16_t port;
+
+        slow[2 * i] = listen_unanswering(&port, &slow[2 * i + 1]);
+        if (slow[2 * i] < 0)
+            return "could not open the peers' listeners";
+        tp_entry(&topo, WL_SLOW_FIRST + i, port, true);
+    }
+    return send_topology(w->mgr, &topo) ? NULL
+                                        : "could not send the topology update";
+}
+
+/*
+ * WL_ANSWERED and WL_BUSY: for longer than the three intervals the worker
+ * waits before it gives up on a silent manager, the manager says nothing of
+ * its own, but answers each heartbeat.
+ */
+static const char *wl_answered(struct dc_worker *w, int lfd, bool busy)
 {
     struct pollfd pfd = {.fd = lfd, .events = POLLIN};
-    double end = now_s() + 4.5;
+    int slow[2 * WL_SLOW];
+    const char *why = NULL;
+    double end;
     int answered = 0;
 
-    while (now_s() < end) {
+    for (uint32_t i = 0; i < 2 * WL_SLOW; i++)
+        slow[i] = -1;
+    if (busy)
+        why = wl_slow_peers(w, slow);
+    end = now_s() + (busy ? 5.5 : 4.5);
+
+    while (!why && now_s() < end) {
         int left = (int)((end - now_s()) * 1000.0);
 
         if (wait_for_type(w->mgr, TCP_MSG_HEARTBEAT, left > 0 ? left : 1)) {
             if (!send_header(w->mgr, TCP_MSG_HEARTBEAT_RESP, 0))
-                return "could not answer the heartbeat";
+                why = "could not answer the heartbeat";
             answered++;
         }
     }
-    if (answered == 0)
-        return "the worker sent the quiet manager no heartbeat";
-    if (poll(&pfd, 1, 0) != 0 || wl_attempts(w) != 0)
-        return "the worker connected again to a manager that answered";
+    if (!why && answered == 0)
+        why = "the worker sent the quiet manager no heartbeat";
+    else if (!why && (poll(&pfd, 1, 0) != 0 || wl_attempts(w) != 0))
+        why = "the worker connected again to a manager that answered";
+    else if (!why && busy &&
+             atomic_load(&dc_priv(w)->tcp_stats.peer_connect_attempts) <
+                 WL_SLOW)
+        why = "the worker didn't connect to the slow peers";
+    for (uint32_t i = 0; i < 2 * WL_SLOW; i++)
+        if (slow[i] >= 0)
+            close(slow[i]);
+    return why;
+}
+
+/* WL_STUCK's sender, on the worker's data path, and what it got back */
+struct wl_sender {
+    RdmaBackendDev dev;
+    uint8_t *body;
+    atomic_int rc;
+};
+
+static void *wl_send(void *opaque)
+{
+    static const uint8_t hdr[16];
+    struct wl_sender *sender = opaque;
+
+    /* No direct connection to WL_OTHER, so the manager would relay it */
+    atomic_store(&sender->rc, tcp_backend_send_ionic_v(
+                                  &sender->dev, WL_OTHER, hdr, sizeof(hdr),
+                                  sender->body, WL_STUCK_LEN));
     return NULL;
+}
+
+/*
+ * WL_STUCK: the manager reads nothing, so a send to it larger than its
+ * socket and the worker's together can hold waits for room, holding the
+ * connection's lock.  The manager sends nothing either, and the worker has
+ * to give up on it without waiting for that lock.  old is the worker's
+ * connection to the manager.
+ */
+static const char *wl_stuck(struct dc_worker *w, int lfd, int high,
+                            struct wl_fds *k, TcpConnection *old)
+{
+    struct wl_sender sender;
+    struct pollfd pfd = {.fd = lfd, .events = POLLIN};
+    pthread_t tid;
+    const char *why = NULL;
+    int mgr = -1;
+
+    memset(&sender, 0, sizeof(sender));
+    sender.dev.backend_type = RDMA_BACKEND_TYPE_TCP;
+    sender.dev.backend_private = dc_priv(w);
+    sender.body = g_malloc0(WL_STUCK_LEN);
+    atomic_init(&sender.rc, 1);
+    if (pthread_create(&tid, NULL, wl_send, &sender) != 0) {
+        g_free(sender.body);
+        return "could not start the sender";
+    }
+    if (!held_elsewhere(&old->lock))
+        why = "the send never blocked on the manager's connection";
+    /* Three intervals after the manager last said anything, and then some */
+    else if (poll(&pfd, 1, 8000) != 1)
+        why = "the worker didn't connect to the manager again";
+    else
+        why = wl_registers(w, lfd, k, &mgr);
+    if (!why && !wait_retired(old))
+        why = "the old connection wasn't closed";
+    pthread_join(tid, NULL);
+    g_free(sender.body);
+    if (!why && atomic_load(&sender.rc) != -EIO)
+        why = "the blocked send didn't fail with -EIO";
+    return why ? why : wl_accepted(w, mgr, high);
 }
 
 /*
@@ -6370,7 +6523,11 @@ static const char *wl_run(enum wl_scenario scenario, struct dc_worker *w,
         why = wl_again(w, *lfd, high, k, old, scenario == WL_SILENT);
         break;
     case WL_ANSWERED:
-        why = wl_answered(w, *lfd);
+    case WL_BUSY:
+        why = wl_answered(w, *lfd, scenario == WL_BUSY);
+        break;
+    case WL_STUCK:
+        why = wl_stuck(w, *lfd, high, k, old);
         break;
     case WL_REFUSED:
     case WL_OTHER_ID:

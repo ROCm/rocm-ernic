@@ -492,6 +492,9 @@ def test_worker_paused(suite, mesh_):
     manager = mesh_.nodes[0].server
     victim = mesh_.nodes[mesh_.size - 1].server
     node_id = mesh_.node_id(mesh_.size - 1)
+    if node_id is None:
+        suite.check(False, "the worker to pause has no node id")
+        return
     closing = f"node {node_id}, which has stopped answering"
     again = f"Node {node_id} registered again"
     marks = (
@@ -562,7 +565,11 @@ def run_link_tests(suite, binary, run_dir):
     mesh_ = mesh.Mesh(binary, os.path.join(run_dir, "link"), health_interval=1)
     try:
         mesh_.start(timeout=60)
-        suite.check(mesh_.wait_formed(60), "the second mesh formed")
+        # Not wait_formed(): the manager logs a registration before it
+        # answers it. A worker takes GID tables only once it has its
+        # answer, so every node knowing every GID means every worker has
+        # its id.
+        suite.check(mesh_.wait_gids(60), "the second mesh formed")
         suite.run("a paused worker", test_worker_paused, mesh_)
         suite.run("a paused manager", test_manager_paused, mesh_)
     finally:

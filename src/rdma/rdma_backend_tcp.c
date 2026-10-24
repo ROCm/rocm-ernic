@@ -752,6 +752,13 @@ static bool tcp_node_id_taken(TcpBackendPrivate *priv, uint32_t node_id)
  * with, and why in *why, for the caller to log once it has dropped them.  The
  * caller holds mesh_table_lock and conn_table_lock.
  *
+ * Nothing is taken once teardown has begun.  tcp_stop_recv_threads() claims
+ * each connection's thread under conn_table_lock and joins it afterwards,
+ * through a pointer that holds no reference: taken out and retired here, the
+ * connection would be freed under it.  stopping is set before that claim, and
+ * read here under the same lock, so a registration either sees it or takes
+ * the connection out before teardown can claim it.
+ *
  * The address is a check against a mistake, not an attacker: a peer can
  * claim any address, and any peer can register.  A node's hostname and port
  * never change, and a worker keeps its listening port as long as it runs, so
@@ -766,6 +773,10 @@ static int tcp_register_again(TcpBackendPrivate *priv, uint32_t node_id,
     TcpConnection *conn;
 
     *old = NULL;
+    if (atomic_load(&priv->stopping)) {
+        *why = "the manager is shutting down";
+        return -ESHUTDOWN;
+    }
     if (!node || node_id == tcp_local_node(priv)) {
         *why = "no worker in the mesh has that id";
         return -ENOENT;
@@ -1792,7 +1803,8 @@ static void tcp_worker_peer_sweep(TcpBackendPrivate *priv)
  * answer delays the ones after it by no more than that, and can't keep them
  * from connecting.  A target that an update during the pass no longer names
  * is skipped; one the update added is left to the next pass, which comes
- * straight after.
+ * straight after.  Before each connect, the worker's connection to the
+ * manager is checked (tcp_worker_manager_pass()).
  */
 static void tcp_worker_peer_pass(TcpBackendPrivate *priv, const GArray *targets)
 {
@@ -1806,6 +1818,8 @@ static void tcp_worker_peer_pass(TcpBackendPrivate *priv, const GArray *targets)
             !tcp_worker_peer_current(priv, target)) {
             continue;
         }
+        /* The last connect can have taken an interval */
+        tcp_worker_manager_pass(priv);
         tcp_worker_connect_peer(priv, target, &priv->peer_thread_running,
                                 ernic_monotonic_ms() +
                                     (uint64_t)priv->health_check_interval_sec *
@@ -1814,14 +1828,55 @@ static void tcp_worker_peer_pass(TcpBackendPrivate *priv, const GArray *targets)
 }
 
 /*
+ * Send the manager a heartbeat on conn without waiting for anything: not for
+ * conn->lock, which a thread sending to a manager that has stopped reading
+ * holds for as long as the manager doesn't read, and not for room in the
+ * socket, which is non-blocking.  Either would hold up the thread that has
+ * to notice the manager is gone.  A busy lock or a full socket sends
+ * nothing, and the next check tries again.
+ *
+ * Returns false if the connection can't be used any more: the send failed,
+ * or sent only part of the heartbeat, which would leave the manager reading
+ * the rest as the start of the next message.
+ */
+static bool tcp_worker_probe_manager(TcpBackendPrivate *priv,
+                                     TcpConnection *conn)
+{
+    TcpMsgHeader hdr;
+    bool usable = true;
+
+    if (qemu_mutex_trylock(&conn->lock) != 0) {
+        return true;
+    }
+    if (conn->sockfd >= 0) {
+        ssize_t ret;
+
+        /* As tcp_send_message2() fills it in, with no payload */
+        memset(&hdr, 0, sizeof(hdr));
+        hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
+        hdr.msg_type = htonl(TCP_MSG_HEARTBEAT);
+        hdr.seq = htonl(atomic_fetch_add_explicit(&priv->next_seq, 1,
+                                                  memory_order_relaxed));
+        hdr.src_node_id = htonl(tcp_local_node(priv));
+        ret = send(conn->sockfd, &hdr, sizeof(hdr), MSG_NOSIGNAL);
+        usable = ret == (ssize_t)sizeof(hdr) ||
+                 (ret < 0 && (errno == EAGAIN || errno == EINTR));
+    }
+    qemu_mutex_unlock(&conn->lock);
+    return usable;
+}
+
+/*
  * The manager's part of a pass of the peer-connect thread.  A worker owns its
  * link to the manager; the manager never connects to a worker.  So when the
  * connection has ended, or nothing has come on it for three intervals, the
  * worker gives up on it, and connects and registers again, under the id it
- * has, giving up on the connect after an interval.  A pass that finds nothing
- * has come for an interval first sends the manager a heartbeat, which the
- * manager answers, so a manager whose own interval is longer than this
- * worker's isn't taken for silent.
+ * has, giving up on the connect after an interval.  A check that finds
+ * nothing has come for an interval first sends the manager a heartbeat
+ * (tcp_worker_probe_manager()), which the manager answers, so a manager
+ * whose own interval is longer than this worker's isn't taken for silent.
+ * For that, checks have to come less than two intervals apart, so a pass
+ * makes one before each connect to a peer, which can take an interval.
  *
  * Until it has registered again the worker has no connection to the manager:
  * it hears nothing of the mesh, and can reach only the nodes it has a
@@ -1845,24 +1900,23 @@ void tcp_worker_manager_pass(TcpBackendPrivate *priv)
         uint64_t quiet_ms = ernic_monotonic_ms() - last_ms;
         TcpConnection *old;
 
-        if (!tcp_conn_dead(conn) && quiet_ms <= 3 * interval_ms) {
-            if (quiet_ms >= interval_ms) {
-                qemu_mutex_lock(&conn->lock);
-                if (conn->sockfd >= 0) {
-                    tcp_send_message(
-                        priv, conn->sockfd, TCP_MSG_HEARTBEAT, NULL, 0,
-                        atomic_fetch_add_explicit(&priv->next_seq, 1,
-                                                  memory_order_relaxed),
-                        tcp_local_node(priv), 0, 0, 0);
-                }
-                qemu_mutex_unlock(&conn->lock);
+        bool dead = tcp_conn_dead(conn);
+        bool broken = false;
+
+        if (!dead && quiet_ms <= 3 * interval_ms) {
+            if (quiet_ms < interval_ms ||
+                tcp_worker_probe_manager(priv, conn)) {
+                tcp_connection_unref(conn);
+                return;
             }
-            tcp_connection_unref(conn);
-            return;
+            broken = true;
         }
 
-        if (tcp_conn_dead(conn)) {
+        if (dead) {
             rdma_warn_report("TCP: The connection to the manager has ended; "
+                             "connecting to it again");
+        } else if (broken) {
+            rdma_warn_report("TCP: Failed to send the manager a heartbeat; "
                              "connecting to it again");
         } else {
             rdma_warn_report("TCP: Nothing from the manager for %" PRIu64
