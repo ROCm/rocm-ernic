@@ -48,10 +48,10 @@ Status
 
 The engine loads a compiled P4 program and runs it. bmv2's
 own ``loopback.json`` forwards a frame unchanged;
-``simple_router.json`` loads once its checksum section is
-removed. Table entries can be installed, changed and removed,
-so the same program and the same frame can be made to take a
-different path.
+``simple_router.json`` does not load (see below). Table
+entries can be installed, changed and removed, so the same
+program and the same frame can be made to take a different
+path.
 
 The pipeline is on the Ethernet path only. RDMA traffic does
 not reach it, so the elementwise fp8 operation in the RDMA
@@ -104,12 +104,9 @@ an elementwise fp8 add across three memory regions, and
 changing the one table entry changes the arithmetic with no
 change to the device.
 
-What is not built yet:
-checksums and calculations, which is
-the one thing keeping ``simple_router.json`` from loading
-unmodified; and counters, meters, registers and action
-profiles, each of which is refused by name rather than
-ignored.
+What is not built yet: checksums and calculations; negative
+literals in actions; and counters, meters, registers and
+action profiles. Each is refused by name rather than ignored.
 
 The guest's control surface
 ---------------------------
@@ -349,8 +346,16 @@ P4 feature they used.
 One consequence worth stating: ``simple_router.json``, the
 example bmv2's own format documentation links to, does **not**
 load. Its ``calculations`` and ``checksums`` carry the IPv4
-checksum, which is not implemented. ``loopback.json`` has both
-empty and gets as far as the walker does.
+checksum, which is not implemented. Removing them is not
+enough: it decrements the TTL with ``add_to_field`` and the
+literal ``-0x1``, and a negative literal is refused too.
+``p4c`` emits one only for a signed ``int<W>`` value, which
+is refused as a signed field anyway, and compiles an unsigned
+``ttl - 1`` to ``(ttl + 0xff) & 0xff``. Running ``-0x1`` as
+``0x1`` would make the TTL go up, and what a negative value
+means depends on the width it is stored into, which an extern
+argument does not have. ``loopback.json`` has both empty and
+gets as far as the walker does.
 
 Every document is untrusted, so there is no clamping and no
 truncation anywhere in the loader: an oversized array, a name

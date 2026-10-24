@@ -287,11 +287,10 @@
   `p4_engine_load_error()` reports which one rather than that the file was
   bad. Parsing is not finished: a well-formed program still ends in
   `ENOSYS`. A program loads and then runs: bmv2's own `loopback.json`
-  forwards a frame unchanged, and a `simple_router.json` with only its
-  checksum section removed loads and runs too. With `--p4` and a loaded
-  program, where a frame goes is decided by the program's `egress_spec`
-  rather than by the emulator, including sending it back to the port it
-  arrived on -- which is what makes a guest frame answerable without a TAP.
+  forwards a frame unchanged. With `--p4` and a loaded program, where a
+  frame goes is decided by the program's `egress_spec` rather than by the
+  emulator, including sending it back to the port it arrived on -- which is
+  what makes a guest frame answerable without a TAP.
   Fields of any width the loader accepts, up to 512 bits, are compared,
   assigned and added correctly, so an IPv6 address behaves like any other
   field.
@@ -916,6 +915,13 @@
   The loader names the field, as it does for every other construct it
   does not implement. A field explicitly marked unsigned, which is what
   p4c emits for an ordinary `bit<N>`, is unaffected.
+* A P4 program whose action uses a negative literal such as `-0x1` is now
+  refused at load. The sign was dropped, so `add_to_field(ttl, -0x1)`, the
+  TTL decrement in bmv2's `simple_router.json`, incremented the TTL instead;
+  that program no longer loads even with its checksums removed. p4c emits
+  a negative literal only for a signed `int<W>` value, which was already
+  refused as a signed field, and compiles an unsigned `ttl - 1` to
+  `(ttl + 0xff) & 0xff`, so programs it compiles are unaffected.
 * A rejected P4 program chunk with a null buffer now abandons the load,
   as every other rejected chunk does and as the interface documents. It
   returned an error without abandoning, so a control plane could retry

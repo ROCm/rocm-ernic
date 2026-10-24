@@ -164,7 +164,6 @@ struct p4_operand {
     p4_idx_t runtime;          /* P4_OPD_RUNTIME: index into runtime args */
     p4_idx_t inst;             /* P4_OPD_EXTERN: index into externs */
     uint16_t imm_len;          /* P4_OPD_HEXSTR: bytes the digits needed */
-    bool imm_negative;
     uint8_t imm[P4_MAX_IMM_BYTES];
 };
 

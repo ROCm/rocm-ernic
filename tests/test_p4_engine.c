@@ -29,6 +29,7 @@
 #include "p4_program.h"
 #include "p4_fp8.h"
 #include "p4_table.h"
+#include "p4_value.h"
 
 static int failures;
 
@@ -551,8 +552,10 @@ static void test_load_parses(void)
                                 "\"value\":\"standard_metadata\"}]}]}")) ==
               -EINVAL,
           "mark_to_drop with its metadata parameter is walked");
+
+    /* Rejections. */
     /* A negative literal, which simple_router.json uses to decrement a
-     * TTL and which neither older hexstr helper accepted. */
+     * TTL. Run as its magnitude, it would make that TTL go up. */
     check(load_text(eng, P4_ACT("{\"name\":\"t\",\"id\":0,"
                                 "\"runtime_data\":[],"
                                 "\"primitives\":[{\"op\":\"add_to_field\","
@@ -560,10 +563,10 @@ static void test_load_parses(void)
                                 "{\"type\":\"field\","
                                 "\"value\":[\"eth\",\"ty\"]},"
                                 "{\"type\":\"hexstr\","
-                                "\"value\":\"-0x1\"}]}]}")) == -EINVAL,
-          "a negative literal is walked");
-
-    /* Rejections. */
+                                "\"value\":\"-0x1\"}]}]}")) == -ENOSYS,
+          "a negative literal is refused");
+    check(strstr(p4_engine_load_error(eng), "negative") != NULL,
+          "the error says the literal is negative");
     check(load_text(eng, P4_ACT("{\"name\":\"a\",\"id\":0,"
                                 "\"runtime_data\":[],"
                                 "\"primitives\":[{\"op\":\"push\","

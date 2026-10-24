@@ -46,17 +46,16 @@ so it is the regression test for "unknown keys are ignored silently".
 
 A full IPv4 router: `extract` parser ops, `lpm` and `exact` tables,
 `modify_field` / `add_to_field` / `drop` primitives with `field`, `hexstr` and
-`runtime_data` parameters, and a conditional using `and`, `valid` and `>`. All
-of that is inside the phase 1 subset.
+`runtime_data` parameters, and a conditional using `and`, `valid` and `>`.
 
-It is a negative fixture for exactly one reason: `calculations` and `checksums`
-are non-empty — the `csum16` IPv4 header checksum (`ipv4_checksum`, targeting
-`ipv4.hdrChecksum`) — which phase 1 rejects. **It flips to a positive fixture
-when checksum support lands**, so the test that asserts rejection should be
-rewritten then rather than the file replaced.
-
-It is also the fixture for signed bmv2 hexstrs: it contains `"-0x1"`, which
-neither hexstr helper in `src/parse_int.h` accepts.
+It is a negative fixture for two reasons. `calculations` and `checksums` are
+non-empty — the `csum16` IPv4 header checksum (`ipv4_checksum`, targeting
+`ipv4.hdrChecksum`) — and are refused first. Without them, `set_nhop`'s TTL
+decrement, `add_to_field` with the hexstr `"-0x1"`, is refused, because the
+loader refuses negative literals. p4c emits one only for a signed `int<W>`
+value, which is refused as a signed field anyway, and compiles an unsigned
+`ttl - 1` to `(ttl + 0xff) & 0xff`. The test that asserts rejection checks for
+the checksum.
 
 `__meta__.version` is `[2, 0]`. It has no `field_aliases`, `errors`, `enums`,
 `extern_instances` or `header_union*` keys at all, so it also covers the

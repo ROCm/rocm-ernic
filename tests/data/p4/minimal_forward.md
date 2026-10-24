@@ -186,7 +186,7 @@ has something to resolve.
 Between them these cover two of the subset's primitives (`assign`, `drop`) and
 two of its three parameter types (`field`, `runtime_data`). **`hexstr`
 parameters are not exercised here**; `simple_router.json` has them, including
-the negative `"-0x1"`.
+the negative `"-0x1"`, which the loader refuses.
 
 `assign` is the spelling modern `p4c` emits; `modify_field` is the legacy
 alias for the same thing and is what `simple_router.json` uses. `drop` takes
