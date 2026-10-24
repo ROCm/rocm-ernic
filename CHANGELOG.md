@@ -30,19 +30,22 @@
 * The `ernic-package-deb` CTest test builds the DEB packages and checks
   them: exactly the expected files in each package, their modes, the
   dependencies (including one for every library the server and its private
-  libvfio-user need), the configuration file, no `/usr/local` paths in a
-  package installed elsewhere, and the server's `DT_RPATH`. It's registered
-  in a top-level build when `dpkg-dev`, `file`, and `readelf` are
-  installed, and runs in the Build and Test workflow, which now configures
-  with `-DERNIC_INSTALL_SERVICE=ON` so the service and exporter packages are
-  checked on every change. A change to the install rules has to update the
-  test's file lists (`tests/package/run-package-test.cmake`).
+  libvfio-user need), the configuration file, which every systemd unit has
+  to read, no `/usr/local` paths in a package installed elsewhere, and the
+  server's `DT_RPATH`. It's registered in a top-level build when
+  `dpkg-dev`, `file`, and `readelf` are installed, and runs in the Build and
+  Test workflow, which now configures with `-DERNIC_INSTALL_SERVICE=ON` so
+  the service and exporter packages are checked too, and now also runs for
+  changes to `prometheus/` and `ansible/files/`, whose files are packaged.
+  A change to the install rules has to update the test's file lists
+  (`tests/package/run-package-test.cmake`).
 * The nightly workflow installs the packages in a clean Ubuntu container,
   without their recommendations, and checks that the server runs with its
   private libvfio-user, that `ernicctl` runs, and that the exporter, set up
   in a virtual environment as docs/monitoring.rst says, serves metrics with
   the command its systemd unit runs. The packages are published only if
-  that passes.
+  that passes. Pull requests that change what's installed, in `service/`,
+  `prometheus/`, or `ansible/files/`, run the workflow too.
 
 * The mesh backend can claim and withdraw a node's GIDs while it is running,
   rather than only announcing the set `ERNIC_TCP_GUEST_GIDS` named at

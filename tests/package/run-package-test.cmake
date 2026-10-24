@@ -450,19 +450,21 @@ if(NOT INSTALL_PREFIX STREQUAL "/usr/local")
 endif()
 
 # Every program a unit runs from under the prefix is in a package, and
-# each unit reads the packaged configuration, when that's in /etc. An
-# Exec line's command can start with characters that change how systemd
-# runs it, such as "-", which are removed.
+# each unit reads the packaged configuration, and nothing else, when
+# that's in /etc. An Exec line's command can start with characters that
+# change how systemd runs it, such as "-", which are removed.
 file(GLOB units ${root}${units_dir}/*.service)
 foreach(unit IN LISTS units)
     string(REPLACE "${root}" "" unit_path "${unit}")
     file(STRINGS ${unit} lines REGEX "^(Exec[A-Za-z]*|EnvironmentFile)=")
+    set(reads_env_file OFF)
     foreach(line IN LISTS lines)
         if(line MATCHES "^EnvironmentFile=-?(.*)$")
             set(env_file "${CMAKE_MATCH_1}")
             if(ENV_FILE MATCHES "^/etc/" AND NOT env_file STREQUAL ENV_FILE)
                 fail("${unit_path} reads ${env_file}, not ${ENV_FILE}")
             endif()
+            set(reads_env_file ON)
             continue()
         endif()
         string(REGEX REPLACE "^Exec[A-Za-z]*=[-@:+!]*" "" command "${line}")
@@ -474,6 +476,9 @@ foreach(unit IN LISTS units)
             endif()
         endforeach()
     endforeach()
+    if(ENV_FILE MATCHES "^/etc/" AND NOT reads_env_file)
+        fail("${unit_path} doesn't read ${ENV_FILE} (no EnvironmentFile=)")
+    endif()
 endforeach()
 if(INSTALL_SERVICE AND NOT units)
     fail("found no systemd units in the packages")

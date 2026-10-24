@@ -7,9 +7,9 @@ name: rocm-ernic - Nightly
 # "nightly" prerelease, which each run replaces. There's one set of
 # packages for each Ubuntu release in the build matrix.
 #
-# A pull request that changes this file or the packaging builds the
-# packages as a check, and so does a manual run from any branch, but only
-# a run on develop publishes them.
+# A pull request that changes this file, the packaging, or what's
+# installed builds the packages and installs them as a check, and so does
+# a manual run from any branch, but only a run on develop publishes them.
 on:
   # Every day at 06:41 UTC
   schedule:
@@ -21,6 +21,11 @@ on:
       - 'cmake/ErnicInstall.cmake'
       - 'cmake/ErnicPackage.cmake'
       - 'tests/package/**'
+      # What the packages install: the service files, ernicctl, the
+      # exporter, and the driver pack's patches and scripts
+      - 'service/**'
+      - 'prometheus/**'
+      - 'ansible/files/**'
   workflow_dispatch:
 
 # Pull request runs are checks, so a newer commit cancels the run for

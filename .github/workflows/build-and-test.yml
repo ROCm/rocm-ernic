@@ -18,6 +18,10 @@ on:
       # matrix compiles. Without this entry, editing a warning suppression
       # skipped every build leg and all of ctest.
       - 'shared/**'
+      # The exporter and the driver pack's patches and scripts are
+      # installed, and ernic-package-deb checks the packages they're in
+      - 'prometheus/**'
+      - 'ansible/files/**'
       - 'CMakeLists.txt'
       - 'cmake/**'
       - '.github/workflows/build-and-test.yml'
