@@ -188,7 +188,11 @@ int ionic_eth_emu_trigger_irq(struct ionic_eth_emu *emu, int vec)
  * call to deliver the peer's traffic.
  */
 
-static int g_mesh;
+/* Stands in for the device the bridge hands out; only its address is used. */
+struct PVRDMADev {
+    int unused;
+};
+static struct PVRDMADev g_mesh;
 static uint32_t g_local_node = UINT32_MAX;
 static ionic_mesh_recv_fn g_recv_fn;
 static void *g_recv_opaque;
@@ -223,6 +227,12 @@ struct nvmeof_target *nvmeof_target_create(const struct nvmeof_target_cfg *cfg,
 void nvmeof_target_destroy(struct nvmeof_target *t)
 {
     (void)t;
+}
+const struct nvmeof_target_cfg *nvmeof_target_config(
+    const struct nvmeof_target *t)
+{
+    (void)t;
+    return NULL;
 }
 struct nvmeof_queue *nvmeof_target_find_queue(struct nvmeof_target *t,
                                               uint32_t handle)
