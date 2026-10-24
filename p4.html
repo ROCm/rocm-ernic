@@ -441,10 +441,10 @@ sees.</p>
 <h2>Status<a class="headerlink" href="#status" title="Link to this heading">#</a></h2>
 <p>The engine loads a compiled P4 program and runs it. bmv2’s
 own <code class="docutils literal notranslate"><span class="pre">loopback.json</span></code> forwards a frame unchanged;
-<code class="docutils literal notranslate"><span class="pre">simple_router.json</span></code> loads once its checksum section is
-removed. Table entries can be installed, changed and removed,
-so the same program and the same frame can be made to take a
-different path.</p>
+<code class="docutils literal notranslate"><span class="pre">simple_router.json</span></code> does not load (see below). Table
+entries can be installed, changed and removed, so the same
+program and the same frame can be made to take a different
+path.</p>
 <p>The pipeline is on the Ethernet path only. RDMA traffic does
 not reach it, so the elementwise fp8 operation in the RDMA
 data path (<code class="docutils literal notranslate"><span class="pre">ionic_datapath_fp8_map()</span></code>) calls the arithmetic
@@ -491,12 +491,9 @@ table keyed on the opcode turns an ordinary RDMA write into
 an elementwise fp8 add across three memory regions, and
 changing the one table entry changes the arithmetic with no
 change to the device.</p>
-<p>What is not built yet:
-checksums and calculations, which is
-the one thing keeping <code class="docutils literal notranslate"><span class="pre">simple_router.json</span></code> from loading
-unmodified; and counters, meters, registers and action
-profiles, each of which is refused by name rather than
-ignored.</p>
+<p>What is not built yet: checksums and calculations; negative
+literals in actions; and counters, meters, registers and
+action profiles. Each is refused by name rather than ignored.</p>
 </section>
 <section id="the-guest-s-control-surface">
 <h2>The guest’s control surface<a class="headerlink" href="#the-guest-s-control-surface" title="Link to this heading">#</a></h2>
@@ -704,8 +701,16 @@ P4 feature they used.</p>
 <p>One consequence worth stating: <code class="docutils literal notranslate"><span class="pre">simple_router.json</span></code>, the
 example bmv2’s own format documentation links to, does <strong>not</strong>
 load. Its <code class="docutils literal notranslate"><span class="pre">calculations</span></code> and <code class="docutils literal notranslate"><span class="pre">checksums</span></code> carry the IPv4
-checksum, which is not implemented. <code class="docutils literal notranslate"><span class="pre">loopback.json</span></code> has both
-empty and gets as far as the walker does.</p>
+checksum, which is not implemented. Removing them is not
+enough: it decrements the TTL with <code class="docutils literal notranslate"><span class="pre">add_to_field</span></code> and the
+literal <code class="docutils literal notranslate"><span class="pre">-0x1</span></code>, and a negative literal is refused too.
+<code class="docutils literal notranslate"><span class="pre">p4c</span></code> emits one only for a signed <code class="docutils literal notranslate"><span class="pre">int&lt;W&gt;</span></code> value, which
+is refused as a signed field anyway, and compiles an unsigned
+<code class="docutils literal notranslate"><span class="pre">ttl</span> <span class="pre">-</span> <span class="pre">1</span></code> to <code class="docutils literal notranslate"><span class="pre">(ttl</span> <span class="pre">+</span> <span class="pre">0xff)</span> <span class="pre">&amp;</span> <span class="pre">0xff</span></code>. Running <code class="docutils literal notranslate"><span class="pre">-0x1</span></code> as
+<code class="docutils literal notranslate"><span class="pre">0x1</span></code> would make the TTL go up, and what a negative value
+means depends on the width it is stored into, which an extern
+argument does not have. <code class="docutils literal notranslate"><span class="pre">loopback.json</span></code> has both empty and
+gets as far as the walker does.</p>
 <p>Every document is untrusted, so there is no clamping and no
 truncation anywhere in the loader: an oversized array, a name
 with a newline in it, a width given as a floating-point
