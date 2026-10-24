@@ -35,6 +35,23 @@
 
 ### Added
 
+* **The P4 fp8 extern narrows as well as reduces.** A new method,
+  `cvt(fmt)`, reads one region of 16-bit floating point and writes a
+  result half as long -- one fp8 byte per source element -- with the table
+  entry choosing the source format: `0` for IEEE binary16, `1` for
+  bfloat16. A work request asks for it by its gather list, as the
+  reduction does: two equal entries is a reduction, **one entry is a
+  conversion**, and anything else is an ordinary transfer. It is the only
+  operation whose destination is not the same length as its source, so
+  each region is checked against its own length and nothing past the
+  result is written. `tests/data/p4/fp8_convert.p4` is the worked example,
+  with `fp8_convert.json` compiled from it. The narrowing follows the same
+  conventions as the rest of the fp8 code: round to nearest with ties to
+  even, and a magnitude above E4M3's range -- an infinity included, which
+  fp16 has and E4M3 does not -- saturates to +/-448 rather than becoming
+  NaN.
+
+
 * Nightly DEB packages: every night that `develop` changes, the `nightly`
   prerelease is replaced with packages of it for Ubuntu 24.04 and 26.04
   (`.github/workflows/nightly.yml`, modelled on hipObject's). `rocm-ernic`

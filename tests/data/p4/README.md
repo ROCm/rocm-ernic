@@ -162,6 +162,28 @@ have made a hand-written fixture wrong:
   not emit architecture state, which is the property actually wanted,
   rather than checking the metadata flag.
 
+## fp8_convert.json
+
+**Compiled, not hand written**, from `src/fp8_convert.p4` with the same
+command. It is the other shape the `Fp8` extern has: `cvt(fmt)` rather
+than `map(op)`.
+
+Where `fp8_policy.p4` reduces two equal-length operands into a result of
+the same length, this one **narrows**: it reads a single region of 16-bit
+floating point and writes a result half as long, one fp8 byte per source
+element. The table entry says which 16-bit format the source is in --
+`0` for IEEE binary16, `1` for bfloat16.
+
+Which operation a work request asks for is its gather list, not anything
+the program names: two equal entries is a reduction, one entry is a
+conversion. A request that is neither has not asked for arithmetic at
+all and is dispatched as the ordinary transfer it is.
+
+It is the only operation whose destination is not the same length as its
+source, which is why `ionic_datapath_fp8_cvt()` is a separate entry point
+rather than a selector on the map: checking one length against all three
+regions, as the map does, would read half again too far.
+
 ## fp8_nodrop.json
 
 **Compiled, not hand written**, from `src/fp8_nodrop.p4` with the same
