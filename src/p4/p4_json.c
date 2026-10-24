@@ -1127,9 +1127,22 @@ static int p4_walk_operand(struct p4_walk *w, struct json_object *p,
         if (!vs ||
             !ernic_parse_hexstr(vs, dst->imm, sizeof(dst->imm), &n, &neg))
             return p4_fail(w, -EINVAL, "%s has a malformed literal", where);
+        /*
+         * A negative literal is valid bmv2. p4c emits one only for a signed
+         * int<W> value, which is refused as a signed field anyway, and
+         * writes an unsigned x - 1 as x + 0xff; the P4_14 compiler also
+         * emitted one (simple_router.json's "-0x1" TTL decrement). It is
+         * refused rather than run as its magnitude: what it means depends
+         * on the width of the destination, and an extern argument has
+         * none.
+         */
+        if (neg)
+            return p4_fail(w, -ENOSYS,
+                           "%s has a negative literal, which is not "
+                           "supported",
+                           where);
         dst->kind = P4_OPD_HEXSTR;
         dst->imm_len = (uint16_t)n;
-        dst->imm_negative = neg;
         return 0;
     }
 
