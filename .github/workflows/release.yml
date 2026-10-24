@@ -13,8 +13,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# The release is installed under /usr/local, the prefix its files name
+# (see ernic_install_with_paths() in cmake/ErnicInstall.cmake), staged in
+# RELEASE_DESTDIR. INSTALL_PREFIX is where that puts it.
 env:
-  INSTALL_PREFIX: /tmp/rocm-ernic-release
+  RELEASE_DESTDIR: /tmp/rocm-ernic-release
+  INSTALL_PREFIX: /tmp/rocm-ernic-release/usr/local
 
 jobs:
   build:
@@ -88,7 +92,7 @@ jobs:
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX="${INSTALL_PREFIX}" \
+            -DCMAKE_INSTALL_PREFIX=/usr/local \
             -DERNIC_INSTALL_SERVICE=ON \
             -DERNIC_WERROR=ON
 
@@ -96,7 +100,7 @@ jobs:
         run: cmake --build build
 
       - name: Install release tree
-        run: cmake --install build
+        run: DESTDIR="${RELEASE_DESTDIR}" cmake --install build
 
       - name: Verify installed release payload
         run: |

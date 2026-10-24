@@ -8,6 +8,8 @@ on:
     branches: [ develop ]
     paths:
       - 'service/**'
+      - 'prometheus/ernic-exporter'
+      - 'prometheus/ernic-exporter.service'
       - 'cmake/ErnicInstall.cmake'
       - '.github/workflows/service-test.yml'
   workflow_dispatch:
@@ -197,6 +199,47 @@ jobs:
           "${PREFIX}/lib/systemd/system/rocm-ernic.service"
         check_file \
           "${PREFIX}/lib/systemd/system/rocm-ernic-driver-pack.service"
+        check_file "${PREFIX}/bin/ernic-exporter"
+        check_file "${PREFIX}/lib/systemd/system/ernic-exporter.service"
+        check_file "${PREFIX}/share/doc/rocm-ernic/LICENSE.md"
+        check_file "${PREFIX}/share/doc/rocm-ernic/LICENSE_GPL.md"
+
+        echo ""
+        echo "=== Paths in the installed files ==="
+        # The files in service/ and prometheus/ name the paths of an install
+        # to /usr/local. The installed copies have to name this install's.
+        installed=(
+          "${PREFIX}/bin/ernicctl"
+          "${PREFIX}/bin/ernic-exporter"
+          "${PREFIX}/libexec/rocm-ernic/rocm-ernic-launcher"
+          "${PREFIX}/libexec/rocm-ernic/rocm-ernic-driver-pack"
+          "${PREFIX}/etc/rocm-ernic/rocm-ernic.env"
+          "${PREFIX}/lib/systemd/system/rocm-ernic.service"
+          "${PREFIX}/lib/systemd/system/rocm-ernic-driver-pack.service"
+          "${PREFIX}/lib/systemd/system/ernic-exporter.service"
+        )
+        if grep -Fn /usr/local/ "${installed[@]}"; then
+          echo "FAIL: installed files refer to /usr/local"
+          exit 1
+        fi
+        check_line() {
+          if grep -Fqx -- "$2" "$1"; then
+            echo "OK: $1: $2"
+          else
+            echo "MISSING: $1: $2"
+            exit 1
+          fi
+        }
+        check_line "${PREFIX}/lib/systemd/system/rocm-ernic.service" \
+          "ExecStart=${PREFIX}/libexec/rocm-ernic/rocm-ernic-launcher"
+        check_line "${PREFIX}/etc/rocm-ernic/rocm-ernic.env" \
+          "ERNIC_BIN=${PREFIX}/bin/rocm-ernic"
+        check_line "${PREFIX}/etc/rocm-ernic/rocm-ernic.env" \
+          "ERNIC_DRIVER_SOURCE=${PREFIX}/share/rocm-ernic/patches"
+        check_line "${PREFIX}/bin/ernicctl" \
+          "LAUNCHER = \"${PREFIX}/libexec/rocm-ernic/rocm-ernic-launcher\""
+        check_line "${PREFIX}/libexec/rocm-ernic/rocm-ernic-launcher" \
+          "ERNIC_BIN=\"\${ERNIC_BIN:-${PREFIX}/bin/rocm-ernic}\""
 
         echo ""
         echo "=== ionic driver files ==="

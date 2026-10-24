@@ -26,7 +26,7 @@ if [ -f "${ENV_FILE}" ]; then
     set +a
 fi
 
-ERNIC_SHARE_DIR="${ERNIC_SHARE_DIR:-/usr/share/rocm-ernic}"
+ERNIC_SHARE_DIR="${ERNIC_SHARE_DIR:-/usr/local/share/rocm-ernic}"
 ERNIC_DRIVER_SOURCE="${ERNIC_DRIVER_SOURCE:-${ERNIC_SHARE_DIR}/patches}"
 ERNIC_DRIVER_TARBALL="${ERNIC_DRIVER_TARBALL:-/tmp/rocm-ernic-driver.tar.gz}"
 

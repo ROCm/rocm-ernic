@@ -337,6 +337,11 @@ include(ErnicKernelModule)
 # IONIC_KERNEL_REF, which is defined there.
 include(ErnicInstall)
 
+# Packages, for a top-level build only (see ErnicPackage.cmake)
+if(PROJECT_IS_TOP_LEVEL)
+    include(ErnicPackage)
+endif()
+
 # ---------------------------------------------------------------
 # Documentation (optional, requires -DERNIC_BUILD_DOCS=ON)
 # ---------------------------------------------------------------
@@ -362,6 +367,7 @@ else()
     message("    libvfio-user : "
       "${VFIO_USER_FALLBACK_LIB} (fallback)")
 endif()
+message("    Private libvfio-user : ${ERNIC_BUNDLE_VFIO_USER}")
 message("    glib-2.0     : ${GLIB2_VERSION}")
 message("    libibverbs   : ${IBVERBS_VERSION}")
 message("")

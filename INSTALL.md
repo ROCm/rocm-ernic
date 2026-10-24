@@ -42,6 +42,27 @@ That presents the emulated ionic device (`1dd8:1002`, subsystem
 `1dd8:5400`) to any client that
 connects to the socket.
 
+## Nightly packages
+
+Every night that `develop` changes, DEB packages of it for Ubuntu 24.04 and
+26.04 are published as the
+[`nightly` prerelease](https://github.com/ROCm/rocm-ernic/releases/tag/nightly).
+They're development builds for testing, not supported releases. Download the
+packages for your Ubuntu release (the file names end with it) and install
+them:
+
+```
+sudo apt install ./rocm-ernic_<version>_amd64.deb ./rocm-ernic-exporter_<version>_all.deb
+sudo systemctl daemon-reload
+```
+
+`rocm-ernic` has the server, with its own copy of libvfio-user, the systemd
+service, `ernicctl`, and the guest driver pack, installed under `/usr`. Its
+configuration is in `/etc/rocm-ernic/rocm-ernic.env` (see
+[docs/service.rst](docs/service.rst)). `rocm-ernic-exporter` has the
+Prometheus exporter, which also needs `prometheus_client` (see
+[docs/monitoring.rst](docs/monitoring.rst)).
+
 ## Building rocm-ernic
 
 > [!NOTE]
@@ -85,6 +106,9 @@ cmake -B build -G Ninja -DCMAKE_PREFIX_PATH="$HOME/.local"
 | IONIC\_KERNEL\_REF | v7.2.4 | Kernel tag/SHA the ionic sources are fetched from (>= v6.18) |
 | IONIC\_KERNEL\_REPO | kernel.org stable | Linux kernel git repository the ionic sources are fetched from |
 | ERNIC\_INSTALL\_SERVICE | OFF | Also install the systemd units, `ernicctl`, launcher, and Prometheus exporter |
+| ERNIC\_BUNDLE\_VFIO\_USER | OFF | Install a private copy of libvfio-user that only the installed server uses, for packages |
+| ERNIC\_VFIO\_USER\_LICENSE | (none) | libvfio-user's `LICENSE` file, installed with the private copy; required by `ERNIC_BUNDLE_VFIO_USER` |
+| ERNIC\_PACKAGE\_RELEASE | local | The release part of the DEB packages' version |
 | CMAKE\_INSTALL\_PREFIX | /usr/local | Installation prefix |
 
 ### Guest ionic modules
@@ -120,7 +144,8 @@ ctest --test-dir build
 ### Install
 
 The default install prefix is `/usr/local`. A default install places only the
-`rocm-ernic` server in `<prefix>/bin`.
+`rocm-ernic` server in `<prefix>/bin` and its licenses in
+`<prefix>/share/doc/rocm-ernic`.
 
 ```
 sudo cmake --install build
@@ -135,7 +160,12 @@ cmake --install build --prefix /tmp/rocm-ernic-test
 To also install the systemd units, `ernicctl`, the launcher, the Prometheus
 exporter, and the ionic driver patches, configure with
 `-DERNIC_INSTALL_SERVICE=ON`. See [docs/service.rst](docs/service.rst) for the
-full list of installed files.
+full list of installed files. These files name each other's installed paths,
+taken from `CMAKE_INSTALL_PREFIX` when the project is configured, so configure
+with the prefix they'll be installed to rather than using `--prefix` here.
+
+To make DEB packages, as the nightly build does, see
+[Packages](docs/building.rst#packages) in docs/building.rst.
 
 ### Documentation
 

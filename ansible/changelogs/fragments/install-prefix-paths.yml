@@ -1,0 +1,14 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+bugfixes:
+  - >-
+    ``ernic_host_setup`` points ``ernic_driver_source`` at the patches it
+    installs, under ``ernic_install_prefix``
+    (``/usr/local/share/rocm-ernic/patches`` by default), rather than at
+    ``/usr/share/rocm-ernic/patches``, where nothing installs them unless
+    the prefix is ``/usr``.  ``ernic_bin`` follows ``ernic_install_prefix``
+    too, so changing the prefix no longer leaves the service starting a
+    server from the old one.
