@@ -458,7 +458,12 @@ loop is needed.</p>
 <section id="quick-start">
 <h2><a class="toc-backref" href="#id2" role="doc-backlink">Quick Start</a><a class="headerlink" href="#quick-start" title="Link to this heading">#</a></h2>
 <p><strong>Manual (single host):</strong></p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># 1. Install the exporter's Python dependency</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># 1. Install the exporter's Python dependency. The</span>
+<span class="c1">#    requirements are in /usr/share/rocm-ernic with the</span>
+<span class="c1">#    rocm-ernic-exporter package, and in</span>
+<span class="c1">#    /usr/local/share/rocm-ernic with a default CMake</span>
+<span class="c1">#    install. On Ubuntu, python3 -m venv needs</span>
+<span class="c1">#    python3-venv, which the package depends on.</span>
 python3<span class="w"> </span>-m<span class="w"> </span>venv<span class="w"> </span>/opt/ernic-exporter-venv
 /opt/ernic-exporter-venv/bin/pip<span class="w"> </span>install<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>-r<span class="w"> </span>/usr/share/rocm-ernic/requirements-exporter.txt

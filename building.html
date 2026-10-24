@@ -377,6 +377,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#dependencies">Dependencies</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#compilation">Compilation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation">Installation</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#packages">Packages</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#build-options">Build Options</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#warnings-as-errors">Warnings as Errors</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sanitizers">Sanitizers</a></li>
@@ -430,12 +431,86 @@ cmake<span class="w"> </span>--build<span class="w"> </span>build
 </pre></div>
 </div>
 <p>By default the binary installs to <code class="docutils literal notranslate"><span class="pre">/usr/local/bin/rocm-ernic</span></code>,
-and that is the only file a default install places.
+and its licenses to <code class="docutils literal notranslate"><span class="pre">/usr/local/share/doc/rocm-ernic</span></code>; a
+default install places nothing else.
 Override the destination with <code class="docutils literal notranslate"><span class="pre">-DCMAKE_INSTALL_PREFIX=&lt;path&gt;</span></code>.</p>
 <p>Configure with <code class="docutils literal notranslate"><span class="pre">-DERNIC_INSTALL_SERVICE=ON</span></code> to additionally
 install the systemd units, <code class="docutils literal notranslate"><span class="pre">ernicctl</span></code>, the launcher, the
 Prometheus exporter, and the ionic driver patches;
-<a class="reference internal" href="service.html"><span class="doc">systemd Service and ernicctl</span></a> lists the full set of installed files.</p>
+<a class="reference internal" href="service.html"><span class="doc">systemd Service and ernicctl</span></a> lists the full set of installed files. These
+files refer to each other by their installed paths, which come
+from <code class="docutils literal notranslate"><span class="pre">CMAKE_INSTALL_PREFIX</span></code> when the project is configured, so
+to install them somewhere else, configure with that prefix rather
+than passing <code class="docutils literal notranslate"><span class="pre">--prefix</span></code> to <code class="docutils literal notranslate"><span class="pre">cmake</span> <span class="pre">--install</span></code>. To stage an
+install, use <code class="docutils literal notranslate"><span class="pre">DESTDIR</span></code>.</p>
+</section>
+<section id="packages">
+<span id="id1"></span><h2>Packages<a class="headerlink" href="#packages" title="Link to this heading">#</a></h2>
+<p>CPack makes DEB packages of the installed files, one for each
+install component:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 70.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Package</p></th>
+<th class="head"><p>Contents</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rocm-ernic</span></code></p></td>
+<td><p>The server, and with <code class="docutils literal notranslate"><span class="pre">ERNIC_INSTALL_SERVICE</span></code>, the
+systemd service, <code class="docutils literal notranslate"><span class="pre">ernicctl</span></code>, and the guest driver pack.
+<code class="docutils literal notranslate"><span class="pre">/etc/rocm-ernic/rocm-ernic.env</span></code> is a configuration file,
+which upgrades don’t replace.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">rocm-ernic-exporter</span></code></p></td>
+<td><p>The Prometheus exporter, its systemd unit, and the Grafana
+dashboard (<code class="docutils literal notranslate"><span class="pre">ERNIC_INSTALL_SERVICE</span></code> only). It needs
+<code class="docutils literal notranslate"><span class="pre">prometheus_client</span></code> in a virtual environment; see
+<a class="reference internal" href="monitoring.html"><span class="doc">Prometheus Monitoring and Grafana Dashboard</span></a>.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Ubuntu doesn’t package libvfio-user, and libvfio-user keeps the
+soname <code class="docutils literal notranslate"><span class="pre">libvfio-user.so.0</span></code> through incompatible changes, so a
+package can’t rely on another copy of it. With
+<code class="docutils literal notranslate"><span class="pre">-DERNIC_BUNDLE_VFIO_USER=ON</span></code>, the package has its own copy, in
+<code class="docutils literal notranslate"><span class="pre">&lt;libdir&gt;/rocm-ernic</span></code>, which only the installed server loads:
+the server finds it through a <code class="docutils literal notranslate"><span class="pre">DT_RPATH</span></code> relative to its own
+location, which <code class="docutils literal notranslate"><span class="pre">LD_LIBRARY_PATH</span></code> can’t override. The copy has
+to be linked with full RELRO, like the server, which configuring
+checks.</p>
+<p>The nightly packages are made like this, installed under
+<code class="docutils literal notranslate"><span class="pre">/usr</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># libvfio-user, built for the package</span>
+<span class="nb">cd</span><span class="w"> </span>libvfio-user
+<span class="nv">LDFLAGS</span><span class="o">=</span><span class="s2">"-Wl,-z,relro,-z,now"</span><span class="w"> </span>meson<span class="w"> </span>setup<span class="w"> </span>build<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--prefix<span class="o">=</span><span class="s2">"</span><span class="nv">$HOME</span><span class="s2">/vfu-pkg"</span><span class="w"> </span>--libdir<span class="o">=</span>lib<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--buildtype<span class="o">=</span>debugoptimized<span class="w"> </span>-Ddebug-logs<span class="o">=</span>disabled<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-Dwarning_level<span class="o">=</span><span class="m">0</span>
+meson<span class="w"> </span>compile<span class="w"> </span>-C<span class="w"> </span>build<span class="w"> </span>vfio-user
+meson<span class="w"> </span>install<span class="w"> </span>-C<span class="w"> </span>build<span class="w"> </span>--no-rebuild<span class="w"> </span>--tags<span class="w"> </span>runtime,devel
+
+<span class="c1"># rocm-ernic</span>
+<span class="nb">cd</span><span class="w"> </span>../rocm-ernic
+cmake<span class="w"> </span>-B<span class="w"> </span>build<span class="w"> </span>-G<span class="w"> </span>Ninja<span class="w"> </span>-DCMAKE_BUILD_TYPE<span class="o">=</span>Release<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-DCMAKE_INSTALL_PREFIX<span class="o">=</span>/usr<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-DCMAKE_PREFIX_PATH<span class="o">=</span><span class="s2">"</span><span class="nv">$HOME</span><span class="s2">/vfu-pkg"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-DERNIC_INSTALL_SERVICE<span class="o">=</span>ON<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-DERNIC_BUNDLE_VFIO_USER<span class="o">=</span>ON<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-DERNIC_VFIO_USER_LICENSE<span class="o">=</span><span class="s2">"</span><span class="nv">$PWD</span><span class="s2">/../libvfio-user/LICENSE"</span>
+cmake<span class="w"> </span>--build<span class="w"> </span>build
+<span class="nb">cd</span><span class="w"> </span>build<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>cpack<span class="w"> </span>-G<span class="w"> </span>DEB
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">cpack</span></code> needs <code class="docutils literal notranslate"><span class="pre">dpkg-shlibdeps</span></code>, from <code class="docutils literal notranslate"><span class="pre">dpkg-dev</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">file</span></code> to find the packages’ dependencies. The nightly build
+workflow, <code class="docutils literal notranslate"><span class="pre">.github/workflows/nightly.yml</span></code>, publishes the
+packages for each supported Ubuntu release as the <code class="docutils literal notranslate"><span class="pre">nightly</span></code>
+prerelease.</p>
 </section>
 <section id="build-options">
 <h2>Build Options<a class="headerlink" href="#build-options" title="Link to this heading">#</a></h2>
@@ -529,7 +604,24 @@ fetched from</p></td>
 launcher, and the Prometheus exporter
 (see <a class="reference internal" href="service.html"><span class="doc">systemd Service and ernicctl</span></a>)</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CMAKE_INSTALL_PREFIX</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_BUNDLE_VFIO_USER</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
+<td><p>Install a private copy of libvfio-user that only the
+installed server uses, for packages (see <a class="reference internal" href="#packages"><span class="std std-ref">Packages</span></a>)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VFIO_USER_LICENSE</span></code></p></td>
+<td><p>(none)</p></td>
+<td><p>libvfio-user’s <code class="docutils literal notranslate"><span class="pre">LICENSE</span></code> file, installed with the private
+copy; required by <code class="docutils literal notranslate"><span class="pre">ERNIC_BUNDLE_VFIO_USER</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_PACKAGE_RELEASE</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">local</span></code></p></td>
+<td><p>The release part of the DEB packages’ version, after the
+project’s version (see <a class="reference internal" href="#packages"><span class="std std-ref">Packages</span></a>): letters, digits,
+<code class="docutils literal notranslate"><span class="pre">+</span></code>, <code class="docutils literal notranslate"><span class="pre">.</span></code>, and <code class="docutils literal notranslate"><span class="pre">~</span></code>, but not a value CMake takes as
+false, such as <code class="docutils literal notranslate"><span class="pre">0</span></code>, which CPack would leave out</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CMAKE_INSTALL_PREFIX</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">/usr/local</span></code></p></td>
 <td><p>Installation prefix</p></td>
 </tr>
@@ -563,7 +655,7 @@ cannot suppress. Those lanes are informational and do not
 gate merges.</p>
 </section>
 <section id="sanitizers">
-<span id="id1"></span><h2>Sanitizers<a class="headerlink" href="#sanitizers" title="Link to this heading">#</a></h2>
+<span id="id2"></span><h2>Sanitizers<a class="headerlink" href="#sanitizers" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_SANITIZERS</span></code> builds the server and the test programs
 with every sanitizer except ThreadSanitizer that the compiler
 supports and that can be combined with AddressSanitizer:</p>
@@ -623,7 +715,7 @@ as CI does, or reduce the randomization with
 <code class="docutils literal notranslate"><span class="pre">sudo</span> <span class="pre">sysctl</span> <span class="pre">vm.mmap_rnd_bits=28</span></code>.</p>
 </section>
 <section id="code-coverage">
-<span id="id2"></span><h2>Code Coverage<a class="headerlink" href="#code-coverage" title="Link to this heading">#</a></h2>
+<span id="id3"></span><h2>Code Coverage<a class="headerlink" href="#code-coverage" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_CODE_COVERAGE</span></code> instruments the server and the
 test programs with LLVM source-based coverage. It needs Clang,
 and the <code class="docutils literal notranslate"><span class="pre">llvm-profdata</span></code> and <code class="docutils literal notranslate"><span class="pre">llvm-cov</span></code> of the same LLVM
@@ -673,7 +765,7 @@ itself fails. <code class="docutils literal notranslate"><span class="pre">AGENT
 locally and which suggestions to ignore.</p>
 </section>
 <section id="clang-tidy">
-<span id="id4"></span><h2>clang-tidy<a class="headerlink" href="#clang-tidy" title="Link to this heading">#</a></h2>
+<span id="id5"></span><h2>clang-tidy<a class="headerlink" href="#clang-tidy" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">ERNIC_USE_CLANG_TIDY</span></code> runs <a class="reference external" href="https://clang.llvm.org/extra/clang-tidy/">clang-tidy</a> on the server’s
 and the tests’ sources as they compile, with the checks in
 <code class="docutils literal notranslate"><span class="pre">.clang-tidy</span></code>. Every finding is an error, so it fails the
@@ -776,6 +868,7 @@ cmake<span class="w"> </span>--build<span class="w"> </span>build<span class="w"
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#dependencies">Dependencies</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#compilation">Compilation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation">Installation</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#packages">Packages</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#build-options">Build Options</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#warnings-as-errors">Warnings as Errors</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sanitizers">Sanitizers</a></li>
