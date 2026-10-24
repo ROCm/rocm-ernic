@@ -8,45 +8,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "byteorder.h"
 #include "s3_token.h"
 
 static const char HEX[] = "0123456789abcdef";
-
-static void put_le16(uint8_t *p, uint16_t v)
-{
-    p[0] = (uint8_t)v;
-    p[1] = (uint8_t)(v >> 8);
-}
-
-static void put_le32(uint8_t *p, uint32_t v)
-{
-    p[0] = (uint8_t)v;
-    p[1] = (uint8_t)(v >> 8);
-    p[2] = (uint8_t)(v >> 16);
-    p[3] = (uint8_t)(v >> 24);
-}
-
-static void put_le64(uint8_t *p, uint64_t v)
-{
-    put_le32(p, (uint32_t)v);
-    put_le32(p + 4, (uint32_t)(v >> 32));
-}
-
-static uint16_t get_le16(const uint8_t *p)
-{
-    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
-}
-
-static uint32_t get_le32(const uint8_t *p)
-{
-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
-           ((uint32_t)p[3] << 24);
-}
-
-static uint64_t get_le64(const uint8_t *p)
-{
-    return (uint64_t)get_le32(p) | ((uint64_t)get_le32(p + 4) << 32);
-}
 
 /*
  * Unsigned throughout: on plain signed char the subtractions below are
@@ -71,13 +36,13 @@ void s3_token_encode(const struct s3_token *tok, char *out)
     uint8_t buf[S3_TOKEN_BIN_LEN];
 
     buf[0] = tok->transport;
-    put_le32(buf + 1, tok->qp_num);
+    ernic_put_le32(buf + 1, tok->qp_num);
     memcpy(buf + 5, tok->gid, 16);
-    put_le32(buf + 21, tok->rkey);
-    put_le64(buf + 25, tok->remote_addr);
-    put_le64(buf + 33, tok->length);
+    ernic_put_le32(buf + 21, tok->rkey);
+    ernic_put_le64(buf + 25, tok->remote_addr);
+    ernic_put_le64(buf + 33, tok->length);
     buf[41] = tok->port_num;
-    put_le16(buf + 42, tok->lid);
+    ernic_put_le16(buf + 42, tok->lid);
 
     for (size_t i = 0; i < sizeof(buf); i++) {
         out[i * 2] = HEX[(buf[i] >> 4) & 0xf];
@@ -102,13 +67,13 @@ bool s3_token_decode(const char *hex, struct s3_token *out)
 
     memset(out, 0, sizeof(*out));
     out->transport = buf[0];
-    out->qp_num = get_le32(buf + 1);
+    out->qp_num = ernic_get_le32(buf + 1);
     memcpy(out->gid, buf + 5, 16);
-    out->rkey = get_le32(buf + 21);
-    out->remote_addr = get_le64(buf + 25);
-    out->length = get_le64(buf + 33);
+    out->rkey = ernic_get_le32(buf + 21);
+    out->remote_addr = ernic_get_le64(buf + 25);
+    out->length = ernic_get_le64(buf + 33);
     out->port_num = buf[41];
-    out->lid = get_le16(buf + 42);
+    out->lid = ernic_get_le16(buf + 42);
     return true;
 }
 

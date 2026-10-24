@@ -17,7 +17,6 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include <endian.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <stdbool.h>
@@ -27,6 +26,7 @@
 #include <string.h>
 #include <sys/types.h>
 
+#include "byteorder.h"
 #include "ionic_emu_stats.h"
 #include "ionic_eth_emu.h"
 #include "ionic_eth_emu_fakes.h"
@@ -118,12 +118,11 @@ static struct ionic_eth_emu *new_emu(uint32_t interval_ms)
 static void devcmd(struct ionic_eth_emu *emu, uint8_t opcode, uint64_t info_pa)
 {
     uint8_t cmd[64];
-    uint64_t pa = htole64(info_pa);
     uint32_t doorbell = 1;
 
     memset(cmd, 0, sizeof(cmd));
     cmd[0] = opcode;
-    memcpy(cmd + 8, &pa, 8);
+    ernic_put_le64(cmd + 8, info_pa);
     ionic_eth_emu_bar0_access(emu, (char *)cmd, sizeof(cmd),
                               IONIC_BAR0_DEV_CMD_REGS_OFFSET + DEVCMD_CMD_OFF,
                               true);
@@ -141,20 +140,15 @@ static void lif_init(struct ionic_eth_emu *emu, uint64_t pa)
 
 static uint64_t guest_qword(uint64_t pa, unsigned int idx)
 {
-    uint64_t v;
-
-    memcpy(&v, g_mem + pa + IONIC_LIF_INFO_STATS_OFF + (size_t)idx * 8, 8);
-    return le64toh(v);
+    return ernic_get_le64(g_mem + pa + IONIC_LIF_INFO_STATS_OFF +
+                          (size_t)idx * 8);
 }
 
 /* Port counter @idx as the guest sees it at PORT_PA + 576. */
 static uint64_t guest_port_qword(unsigned int idx)
 {
-    uint64_t v;
-
-    memcpy(&v, g_mem + PORT_PA + IONIC_PORT_INFO_STATS_OFF + (size_t)idx * 8,
-           8);
-    return le64toh(v);
+    return ernic_get_le64(g_mem + PORT_PA + IONIC_PORT_INFO_STATS_OFF +
+                          (size_t)idx * 8);
 }
 
 static void port_init(struct ionic_eth_emu *emu, uint64_t pa)
@@ -216,12 +210,10 @@ static void tx_one(struct ionic_eth_emu *emu, uint64_t addr, uint16_t len)
 {
     const struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_TXQ][0];
     uint8_t *d = g_mem + TX_RING + (size_t)q->head * ETH_DESC_SIZE;
-    uint64_t cmd = htole64(addr << TXQ_DESC_ADDR_SHIFT);
-    uint16_t l = htole16(len);
 
     memset(d, 0, ETH_DESC_SIZE);
-    memcpy(d, &cmd, 8);
-    memcpy(d + 8, &l, 2);
+    ernic_put_le64(d, addr << TXQ_DESC_ADDR_SHIFT);
+    ernic_put_le16(d + 8, len);
     tx_doorbell(emu, (uint16_t)(q->head + 1));
 }
 
@@ -246,12 +238,10 @@ static void setup_rxq(struct ionic_eth_emu *emu, uint16_t posted, uint16_t cap)
     q->prod = posted;
     for (uint16_t i = 0; i < posted && i < 2; i++) {
         uint8_t *d = g_mem + RX_RING + (size_t)i * ETH_DESC_SIZE;
-        uint16_t c = htole16(cap);
-        uint64_t a = htole64(RX_BUF + (uint64_t)i * RX_BUF_CAP);
 
         memset(d, 0, ETH_DESC_SIZE);
-        memcpy(d + 6, &c, 2);
-        memcpy(d + 8, &a, 8);
+        ernic_put_le16(d + 6, cap);
+        ernic_put_le64(d + 8, RX_BUF + (uint64_t)i * RX_BUF_CAP);
     }
 }
 

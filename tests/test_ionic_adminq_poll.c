@@ -25,7 +25,6 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include <endian.h>
 #include <infiniband/verbs.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -34,6 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "byteorder.h"
 #include "ionic_adminq.h"
 #include "ionic_adminq_priv.h"
 
@@ -62,37 +62,25 @@ static int failures;
 
 /* ---- Helpers ----------------------------------------------------------- */
 
-static void put_le32(uint8_t *p, uint32_t v)
-{
-    v = htole32(v);
-    memcpy(p, &v, 4);
-}
-
-static void put_le64(uint8_t *p, uint64_t v)
-{
-    v = htole64(v);
-    memcpy(p, &v, 8);
-}
-
 /* A CREATE_QP for a UD QP on CQ_ID, valid in every field. type_state is the
  * last byte the handler reads, at [62], in the WQE's second stride. */
 static void build_create_qp(uint8_t *body)
 {
     memset(body, 0, QP_BODY_LEN);
-    put_le32(body + 8, CQ_ID);
+    ernic_put_le32(body + 8, CQ_ID);
     body[12] = 4;  /* sq_depth_log2 */
     body[13] = 7;  /* sq_stride_log2 */
     body[15] = 12; /* sq_page_size_log2 */
-    put_le32(body + 20, 1);
-    put_le64(body + 24, 0x10000);
-    put_le32(body + 32, CQ_ID);
+    ernic_put_le32(body + 20, 1);
+    ernic_put_le64(body + 24, 0x10000);
+    ernic_put_le32(body + 32, CQ_ID);
     body[36] = 4;
     body[37] = 7;
     body[39] = 12;
-    put_le32(body + 40, 0xffffffffu); /* no SRQ */
-    put_le32(body + 44, 1);
-    put_le64(body + 48, 0x20000);
-    put_le32(body + 56, 3u | 1u << 24);
+    ernic_put_le32(body + 40, 0xffffffffu); /* no SRQ */
+    ernic_put_le32(body + 44, 1);
+    ernic_put_le64(body + 48, 0x20000);
+    ernic_put_le32(body + 56, 3u | 1u << 24);
     body[62] = IONIC_QPT_UD;
 }
 
@@ -111,8 +99,7 @@ static void write_wqe(uint64_t gpa, uint32_t depth, uint32_t slot, uint8_t op,
         wqe[i] = (uint8_t)(i * 7 + 1);
     wqe[0] = op;
     wqe[1] = 0;
-    uint16_t len_le = htole16(len);
-    memcpy(wqe + 2, &len_le, 2);
+    ernic_put_le16(wqe + 2, len);
     if (op == IONIC_V1_ADMIN_CREATE_QP)
         build_create_qp(wqe + HDR_LEN);
 
@@ -150,15 +137,9 @@ static void ring_doorbell(uint32_t depth, uint32_t slot, uint32_t produced)
 static bool cqe_is(uint32_t idx, uint32_t slot, uint8_t op, uint8_t status)
 {
     const uint8_t *cqe = g_mem + ACQ_GPA + idx * CQE_LEN;
-    uint16_t cmd_idx;
-    uint32_t status_length, qtf;
-
-    memcpy(&cmd_idx, cqe, 2);
-    memcpy(&status_length, cqe + 24, 4);
-    memcpy(&qtf, cqe + 28, 4);
-    cmd_idx = be16toh(cmd_idx);
-    status_length = be32toh(status_length);
-    qtf = be32toh(qtf);
+    uint16_t cmd_idx = ernic_get_be16(cqe);
+    uint32_t status_length = ernic_get_be32(cqe + 24);
+    uint32_t qtf = ernic_get_be32(cqe + 28);
 
     bool error = (qtf & 2u) != 0;
     return cmd_idx == slot && cqe[2] == op && (qtf & 1u) != 0 &&

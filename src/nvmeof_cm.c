@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "byteorder.h"
 #include "nvmeof_cm.h"
 #include "nvmeof_target.h"
 
@@ -169,57 +170,6 @@ enum {
 #define RDMA_PS_TCP 0x0106
 
 /* ------------------------------------------------------------------ */
-/* Byte helpers                                                       */
-/* ------------------------------------------------------------------ */
-
-static uint16_t get_be16(const uint8_t *p)
-{
-    return (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
-}
-
-static uint32_t get_be32(const uint8_t *p)
-{
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
-           ((uint32_t)p[2] << 8) | p[3];
-}
-
-static uint64_t get_be64(const uint8_t *p)
-{
-    return ((uint64_t)get_be32(p) << 32) | get_be32(p + 4);
-}
-
-static void put_be16(uint8_t *p, uint16_t v)
-{
-    p[0] = (uint8_t)(v >> 8);
-    p[1] = (uint8_t)v;
-}
-
-static void put_be32(uint8_t *p, uint32_t v)
-{
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)v;
-}
-
-static void put_be64(uint8_t *p, uint64_t v)
-{
-    put_be32(p, (uint32_t)(v >> 32));
-    put_be32(p + 4, (uint32_t)v);
-}
-
-static uint16_t get_le16(const uint8_t *p)
-{
-    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
-}
-
-static void put_le16(uint8_t *p, uint16_t v)
-{
-    p[0] = (uint8_t)v;
-    p[1] = (uint8_t)(v >> 8);
-}
-
-/* ------------------------------------------------------------------ */
 /* Connection table                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -337,7 +287,7 @@ static void mad_reply_hdr(uint8_t *rsp, const uint8_t *req, uint16_t attr_id)
     rsp[MAD_METHOD_OFF] = IB_MGMT_METHOD_SEND;
     /* The transaction ID ties the reply to the request that caused it. */
     memcpy(rsp + MAD_TID_OFF, req + MAD_TID_OFF, 8);
-    put_be16(rsp + MAD_ATTR_ID_OFF, attr_id);
+    ernic_put_be16(rsp + MAD_ATTR_ID_OFF, attr_id);
 }
 
 static size_t build_rej(uint8_t *rsp, const uint8_t *req, uint8_t msg_rejected,
@@ -345,16 +295,17 @@ static size_t build_rej(uint8_t *rsp, const uint8_t *req, uint8_t msg_rejected,
 {
     mad_reply_hdr(rsp, req, CM_ATTR_REJ);
     /* A REJ for a REQ has no local comm ID of its own to offer yet. */
-    put_be32(rsp + CM_REJ_LOCAL_COMM_ID, 0);
-    put_be32(rsp + CM_REJ_REMOTE_COMM_ID, get_be32(req + CM_REQ_LOCAL_COMM_ID));
+    ernic_put_be32(rsp + CM_REJ_LOCAL_COMM_ID, 0);
+    ernic_put_be32(rsp + CM_REJ_REMOTE_COMM_ID,
+                   ernic_get_be32(req + CM_REQ_LOCAL_COMM_ID));
     rsp[CM_REJ_MSG_REJECTED] = (uint8_t)(msg_rejected << 6);
     rsp[CM_REJ_INFO_LENGTH] = 0;
-    put_be16(rsp + CM_REJ_REASON, reason);
+    ernic_put_be16(rsp + CM_REJ_REASON, reason);
 
     if (reason == IB_CM_REJ_CONSUMER_DEFINED) {
         /* nvme-rdma decodes this as struct nvme_rdma_cm_rej. */
-        put_le16(rsp + CM_REJ_PRIVATE_DATA, NVME_RDMA_CM_FMT_1_0);
-        put_le16(rsp + CM_REJ_PRIVATE_DATA + 2, nvme_sts);
+        ernic_put_le16(rsp + CM_REJ_PRIVATE_DATA, NVME_RDMA_CM_FMT_1_0);
+        ernic_put_le16(rsp + CM_REJ_PRIVATE_DATA + 2, nvme_sts);
     }
     return IB_MAD_SIZE;
 }
@@ -366,9 +317,9 @@ static size_t build_rej(uint8_t *rsp, const uint8_t *req, uint8_t msg_rejected,
 static size_t handle_req(struct nvmeof_cm *cm, const uint8_t *req, uint8_t *rsp,
                          struct nvmeof_cm_result *res)
 {
-    uint64_t service_id = get_be64(req + CM_REQ_SERVICE_ID);
-    uint32_t remote_comm_id = get_be32(req + CM_REQ_LOCAL_COMM_ID);
-    uint32_t guest_qpn = get_be32(req + CM_REQ_LOCAL_QPN) >> 8;
+    uint64_t service_id = ernic_get_be64(req + CM_REQ_SERVICE_ID);
+    uint32_t remote_comm_id = ernic_get_be32(req + CM_REQ_LOCAL_COMM_ID);
+    uint32_t guest_qpn = ernic_get_be32(req + CM_REQ_LOCAL_QPN) >> 8;
     uint8_t responder_resources = req[CM_REQ_LOCAL_QPN + 3];
     uint8_t initiator_depth = req[CM_REQ_LOCAL_EECN + 3];
     uint8_t transport_service = (req[CM_REQ_REMOTE_EECN + 3] >> 1) & 0x3;
@@ -395,17 +346,17 @@ static size_t handle_req(struct nvmeof_cm *cm, const uint8_t *req, uint8_t *rsp,
     }
     uint8_t ip_version = priv[CMA_HDR_IP_VERSION_OFF] >> 4;
     if (ip_version == 4) {
-        uint32_t dst = get_be32(priv + CMA_HDR_DST_ADDR_OFF + 12);
+        uint32_t dst = ernic_get_be32(priv + CMA_HDR_DST_ADDR_OFF + 12);
         if (dst != cm->traddr) {
             return build_rej(rsp, req, 0, IB_CM_REJ_INVALID_SERVICE_ID, 0);
         }
     }
 
     const uint8_t *nvme = priv + CMA_HDR_SIZE;
-    uint16_t recfmt = get_le16(nvme + NVME_RDMA_CM_REQ_RECFMT_OFF);
-    uint16_t qid = get_le16(nvme + NVME_RDMA_CM_REQ_QID_OFF);
-    uint16_t hrqsize = get_le16(nvme + NVME_RDMA_CM_REQ_HRQSIZE_OFF);
-    uint16_t hsqsize = get_le16(nvme + NVME_RDMA_CM_REQ_HSQSIZE_OFF);
+    uint16_t recfmt = ernic_get_le16(nvme + NVME_RDMA_CM_REQ_RECFMT_OFF);
+    uint16_t qid = ernic_get_le16(nvme + NVME_RDMA_CM_REQ_QID_OFF);
+    uint16_t hrqsize = ernic_get_le16(nvme + NVME_RDMA_CM_REQ_HRQSIZE_OFF);
+    uint16_t hsqsize = ernic_get_le16(nvme + NVME_RDMA_CM_REQ_HSQSIZE_OFF);
 
     if (recfmt != NVME_RDMA_CM_FMT_1_0) {
         return build_rej(rsp, req, 0, IB_CM_REJ_CONSUMER_DEFINED,
@@ -462,21 +413,23 @@ static size_t handle_req(struct nvmeof_cm *cm, const uint8_t *req, uint8_t *rsp,
 
     /* Build the REP. */
     mad_reply_hdr(rsp, req, CM_ATTR_REP);
-    put_be32(rsp + CM_REP_LOCAL_COMM_ID, c->local_comm_id);
-    put_be32(rsp + CM_REP_REMOTE_COMM_ID, c->remote_comm_id);
-    put_be32(rsp + CM_REP_LOCAL_QKEY, 0);
-    put_be32(rsp + CM_REP_LOCAL_QPN, c->local_qpn << 8);
-    put_be32(rsp + CM_REP_STARTING_PSN, c->start_psn << 8);
+    ernic_put_be32(rsp + CM_REP_LOCAL_COMM_ID, c->local_comm_id);
+    ernic_put_be32(rsp + CM_REP_REMOTE_COMM_ID, c->remote_comm_id);
+    ernic_put_be32(rsp + CM_REP_LOCAL_QKEY, 0);
+    ernic_put_be32(rsp + CM_REP_LOCAL_QPN, c->local_qpn << 8);
+    ernic_put_be32(rsp + CM_REP_STARTING_PSN, c->start_psn << 8);
     rsp[CM_REP_RESP_RESOURCES] = initiator_depth;
     rsp[CM_REP_INITIATOR_DEPTH] = responder_resources;
     rsp[CM_REP_TARGET_ACK] = (uint8_t)(14u << 3); /* target ack delay */
     rsp[CM_REP_RNR_RETRY] = (uint8_t)(7u << 5);   /* infinite RNR retry */
-    put_be64(rsp + CM_REP_LOCAL_CA_GUID,
-             get_be64(req + CM_REQ_LOCAL_CA_GUID) ^ 0x1dd800000000ull);
+    ernic_put_be64(rsp + CM_REP_LOCAL_CA_GUID,
+                   ernic_get_be64(req + CM_REQ_LOCAL_CA_GUID) ^
+                       0x1dd800000000ull);
 
     uint8_t *rep_priv = rsp + CM_REP_PRIVATE_DATA;
-    put_le16(rep_priv + NVME_RDMA_CM_REP_RECFMT_OFF, NVME_RDMA_CM_FMT_1_0);
-    put_le16(rep_priv + NVME_RDMA_CM_REP_CRQSIZE_OFF, hrqsize);
+    ernic_put_le16(rep_priv + NVME_RDMA_CM_REP_RECFMT_OFF,
+                   NVME_RDMA_CM_FMT_1_0);
+    ernic_put_le16(rep_priv + NVME_RDMA_CM_REP_CRQSIZE_OFF, hrqsize);
 
     res->action = NVMEOF_CM_ACT_BIND;
     res->guest_qpn = c->guest_qpn;
@@ -507,7 +460,7 @@ bool nvmeof_cm_handle_mad(struct nvmeof_cm *cm, const void *mad, size_t len,
         return false;
     }
 
-    uint16_t attr = get_be16(m + MAD_ATTR_ID_OFF);
+    uint16_t attr = ernic_get_be16(m + MAD_ATTR_ID_OFF);
     struct nvmeof_cm_conn *c;
 
     switch (attr) {
@@ -517,7 +470,7 @@ bool nvmeof_cm_handle_mad(struct nvmeof_cm *cm, const void *mad, size_t len,
 
     case CM_ATTR_RTU:
         /* The initiator's remote_comm_id is the ID we handed it in the REP. */
-        c = conn_by_local_id(cm, get_be32(m + CM_RTU_REMOTE_COMM_ID));
+        c = conn_by_local_id(cm, ernic_get_be32(m + CM_RTU_REMOTE_COMM_ID));
         if (c == NULL) {
             return true; /* nothing to reply to a stale RTU */
         }
@@ -529,14 +482,16 @@ bool nvmeof_cm_handle_mad(struct nvmeof_cm *cm, const void *mad, size_t len,
         return true;
 
     case CM_ATTR_DREQ:
-        c = conn_by_local_id(cm, get_be32(m + CM_DREQ_REMOTE_COMM_ID));
+        c = conn_by_local_id(cm, ernic_get_be32(m + CM_DREQ_REMOTE_COMM_ID));
         if (c == NULL) {
-            c = conn_by_guest_qpn(cm, get_be32(m + CM_DREQ_REMOTE_QPN) >> 8);
+            c = conn_by_guest_qpn(cm,
+                                  ernic_get_be32(m + CM_DREQ_REMOTE_QPN) >> 8);
         }
         mad_reply_hdr(rsp, m, CM_ATTR_DREP);
-        put_be32(rsp + CM_DREP_LOCAL_COMM_ID, c != NULL ? c->local_comm_id : 0);
-        put_be32(rsp + CM_DREP_REMOTE_COMM_ID,
-                 get_be32(m + CM_DREQ_LOCAL_COMM_ID));
+        ernic_put_be32(rsp + CM_DREP_LOCAL_COMM_ID,
+                       c != NULL ? c->local_comm_id : 0);
+        ernic_put_be32(rsp + CM_DREP_REMOTE_COMM_ID,
+                       ernic_get_be32(m + CM_DREQ_LOCAL_COMM_ID));
         res->rsp_len = IB_MAD_SIZE;
         if (c != NULL) {
             res->action = NVMEOF_CM_ACT_UNBIND;
@@ -552,7 +507,7 @@ bool nvmeof_cm_handle_mad(struct nvmeof_cm *cm, const void *mad, size_t len,
         return true;
 
     case CM_ATTR_REJ:
-        c = conn_by_local_id(cm, get_be32(m + CM_REJ_REMOTE_COMM_ID));
+        c = conn_by_local_id(cm, ernic_get_be32(m + CM_REJ_REMOTE_COMM_ID));
         if (c != NULL) {
             res->action = NVMEOF_CM_ACT_UNBIND;
             res->guest_qpn = c->guest_qpn;

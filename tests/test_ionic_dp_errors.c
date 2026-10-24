@@ -24,14 +24,18 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <endian.h>
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/uio.h>
 
 #include <vfio-user/libvfio-user.h>
 
+#include "byteorder.h"
 #include "ionic_datapath.h"
 #include "ionic_datapath_priv.h"
 #include "ionic_eth_emu.h"
@@ -435,18 +439,6 @@ static const char *const counter_name[IONIC_DP_RDMA_COUNT] = {
 
 static uint32_t g_sq_slot[QP_C + 1];
 
-static void put_be32(uint8_t *p, uint32_t v)
-{
-    v = htobe32(v);
-    memcpy(p, &v, 4);
-}
-
-static void put_be64(uint8_t *p, uint64_t v)
-{
-    v = htobe64(v);
-    memcpy(p, &v, 8);
-}
-
 static void register_qp_as(struct ionic_datapath *dp, uint32_t qp_id,
                            uint32_t cq_id, uint8_t type)
 {
@@ -543,21 +535,21 @@ static void post_send(struct ionic_datapath *dp, uint32_t qp_id,
         w->op == IONIC_V1_OP_ATOMIC_CS || w->op == IONIC_V1_OP_ATOMIC_FA;
 
     memset(e, 0, 1u << WQE_STRIDE);
-    put_be64(e, slot);
+    ernic_put_be64(e, slot);
     e[8] = w->op;
     e[9] = 1;
-    put_be32(e + WQE_RDMA_VA_HI_OFF, (uint32_t)(w->rva >> 32));
-    put_be32(e + WQE_RDMA_VA_LO_OFF, (uint32_t)w->rva);
-    put_be32(e + WQE_RDMA_RKEY_OFF, w->rkey);
+    ernic_put_be32(e + WQE_RDMA_VA_HI_OFF, (uint32_t)(w->rva >> 32));
+    ernic_put_be32(e + WQE_RDMA_VA_LO_OFF, (uint32_t)w->rva);
+    ernic_put_be32(e + WQE_RDMA_RKEY_OFF, w->rkey);
     if (atomic) {
-        put_be32(e + WQE_ATOMIC_SWAP_ADD_OFF + 4, 1); /* fetch-add 1 */
-        put_be64(e + WQE_ATOMIC_SGE_OFF, w->va);
-        put_be32(e + WQE_ATOMIC_SGE_OFF + 12, w->lkey);
+        ernic_put_be32(e + WQE_ATOMIC_SWAP_ADD_OFF + 4, 1); /* fetch-add 1 */
+        ernic_put_be64(e + WQE_ATOMIC_SGE_OFF, w->va);
+        ernic_put_be32(e + WQE_ATOMIC_SGE_OFF + 12, w->lkey);
     } else {
-        put_be32(e + WQE_SEND_LEN_OFF, w->len);
-        put_be64(e + WQE_PLD_OFF, w->va);
-        put_be32(e + WQE_PLD_OFF + 8, w->len);
-        put_be32(e + WQE_PLD_OFF + 12, w->lkey);
+        ernic_put_be32(e + WQE_SEND_LEN_OFF, w->len);
+        ernic_put_be64(e + WQE_PLD_OFF, w->va);
+        ernic_put_be32(e + WQE_PLD_OFF + 8, w->len);
+        ernic_put_be32(e + WQE_PLD_OFF + 12, w->lkey);
     }
     ionic_datapath_doorbell(dp, DP_QTYPE_SQ,
                             (uint64_t)(g_sq_slot[qp_id] & 0xffffu) |
@@ -573,10 +565,10 @@ static void post_recv(struct ionic_datapath *dp, uint32_t qp_id, uint32_t len)
     uint8_t *e = g_mem + RQ_GPA(qp_id) + ((size_t)slot << WQE_STRIDE);
 
     memset(e, 0, 1u << WQE_STRIDE);
-    put_be64(e, 0x100u + slot);
+    ernic_put_be64(e, 0x100u + slot);
     e[9] = 1;
-    put_be64(e + WQE_PLD_OFF, RECV_GPA);
-    put_be32(e + WQE_PLD_OFF + 8, len);
+    ernic_put_be64(e + WQE_PLD_OFF, RECV_GPA);
+    ernic_put_be32(e + WQE_PLD_OFF + 8, len);
     q->rq_prod++;
 }
 

@@ -12,6 +12,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "byteorder.h"
 #include "ionic_eth_steer.h"
 
 #define FNV1A_PRIME 0x01000193u
@@ -52,11 +53,6 @@ static uint32_t fnv1a(uint32_t h, const uint8_t *p, size_t n)
     return h;
 }
 
-static uint16_t be16_at(const uint8_t *p)
-{
-    return (uint16_t)((uint16_t)(p[0] << 8) | p[1]);
-}
-
 static bool has_ports(uint8_t proto)
 {
     return proto == IPPROTO_NUM_TCP || proto == IPPROTO_NUM_UDP ||
@@ -91,9 +87,10 @@ static bool hash_ipv4(const uint8_t *frame, size_t len, size_t l3,
     ihl = (size_t)(ip[0] & 0x0fu) * 4u;
     if (ihl < IPV4_HDR_MIN || ihl > len - l3)
         return false;
-    *out = hash_l3(frame, len, l3 + IPV4_ADDRS_OFF, IPV4_ADDRS_LEN,
-                   ip + IPV4_PROTO_OFF, l3 + ihl,
-                   (be16_at(ip + IPV4_FRAG_OFF) & IPV4_FRAG_MF_MASK) == 0);
+    *out =
+        hash_l3(frame, len, l3 + IPV4_ADDRS_OFF, IPV4_ADDRS_LEN,
+                ip + IPV4_PROTO_OFF, l3 + ihl,
+                (ernic_get_be16(ip + IPV4_FRAG_OFF) & IPV4_FRAG_MF_MASK) == 0);
     return true;
 }
 
@@ -123,7 +120,7 @@ uint32_t ionic_eth_flow_hash(const uint8_t *frame, size_t len)
 
         if (len - off < ETH_TYPE_LEN)
             break;
-        type = be16_at(frame + off);
+        type = ernic_get_be16(frame + off);
         off += ETH_TYPE_LEN;
         if ((type == ETHERTYPE_8021Q || type == ETHERTYPE_8021AD) &&
             tags < VLAN_TAGS_MAX) {

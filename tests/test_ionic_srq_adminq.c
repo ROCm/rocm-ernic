@@ -30,7 +30,6 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include <endian.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -41,6 +40,7 @@
 
 #include <vfio-user/libvfio-user.h>
 
+#include "byteorder.h"
 #include "ionic_adminq_priv.h"
 #include "ionic_datapath.h"
 #include "rocm_ernic_compat.h"
@@ -520,37 +520,28 @@ static void ctx_reset(void)
 /* The 42-byte ionic_admin_create_srq body the driver posts. */
 static void build_create(uint8_t *body, uint64_t resp_gpa, uint32_t resp_len)
 {
-    uint16_t limit_le = htole16(SRQ_LIMIT);
-    uint32_t resp_len_le = htole32(resp_len);
-    uint64_t resp_le = htole64(resp_gpa);
-
     memset(body, 0, IONIC_ADMIN_CREATE_SRQ_IN_V1_LEN);
-    memcpy(body + 22, &limit_le, 2);
+    ernic_put_le16(body + 22, SRQ_LIMIT);
     body[26] = SRQ_DEPTH_LOG2; /* depth_log2 */
     /* 6 is what the ionic driver actually asks for: a 64-byte SRQ WQE.
      * It also has to clear IONIC_SRQ_MIN_STRIDE_LOG2, which this used
      * to sit below. */
     body[27] = 6;  /* stride_log2 */
     body[28] = 12; /* page_size_log2 */
-    memcpy(body + 30, &resp_len_le, 4);
-    memcpy(body + 34, &resp_le, 8);
+    ernic_put_le32(body + 30, resp_len);
+    ernic_put_le64(body + 34, resp_gpa);
 }
 
 /* id-only bodies: MODIFY takes a 2-byte limit after it. */
 static void build_id_body(uint8_t *body, size_t len, uint32_t srq_id)
 {
-    uint32_t id_le = htole32(srq_id);
-
     memset(body, 0, len);
-    memcpy(body, &id_le, 4);
+    ernic_put_le32(body, srq_id);
 }
 
 static uint32_t resp_srq_id(void)
 {
-    uint32_t le;
-
-    memcpy(&le, g_mem + RESP_GPA, 4);
-    return le32toh(le);
+    return ernic_get_le32(g_mem + RESP_GPA);
 }
 
 /* Create one SRQ and return the id the handler reported by DMA. */
@@ -621,14 +612,13 @@ static void test_modify_and_query_resolve_the_id(void)
 {
     uint8_t body[8];
     uint32_t srq_id;
-    uint16_t limit_le = htole16(99);
 
     ctx_reset();
     srq_id = create_one();
     check("modify-precondition-created", srq_id != 0);
 
     build_id_body(body, sizeof(body), srq_id);
-    memcpy(body + 4, &limit_le, 2);
+    ernic_put_le16(body + 4, 99);
     check("modify-accepted",
           ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_SRQ, body,
                                     6) == 0);
@@ -873,24 +863,21 @@ static void test_zero_limit_is_accepted(void)
 {
     uint8_t body[8];
     uint32_t srq_id;
-    uint16_t limit_le;
 
     ctx_reset();
     srq_id = create_one();
     check("zero-limit-precondition-created", srq_id != 0);
 
-    limit_le = htole16(0);
     build_id_body(body, sizeof(body), srq_id);
-    memcpy(body + 4, &limit_le, 2);
+    ernic_put_le16(body + 4, 0);
     check("zero-limit-accepted",
           ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_SRQ, body,
                                     6) == 0);
     check("zero-limit-never-reached-the-resource-manager", g_modify_calls == 0);
 
     /* A real limit still goes through, so this is not a blanket bypass. */
-    limit_le = htole16(4);
     build_id_body(body, sizeof(body), srq_id);
-    memcpy(body + 4, &limit_le, 2);
+    ernic_put_le16(body + 4, 4);
     check("nonzero-limit-accepted",
           ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_SRQ, body,
                                     6) == 0);
@@ -899,9 +886,8 @@ static void test_zero_limit_is_accepted(void)
 
     /* And QUERY reports what was set, including back down to zero, which
      * the resource manager's copy could never show. */
-    limit_le = htole16(0);
     build_id_body(body, sizeof(body), srq_id);
-    memcpy(body + 4, &limit_le, 2);
+    ernic_put_le16(body + 4, 0);
     check("zero-limit-accepted-again",
           ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_SRQ, body,
                                     6) == 0);
@@ -926,36 +912,30 @@ static void test_zero_limit_is_accepted(void)
 
 static void build_cq_body(uint8_t body[34], uint32_t cq_id)
 {
-    uint32_t id_ver_le = htole32(cq_id);
-
     memset(body, 0, 34);
     body[4] = 6;  /* depth_log2  */
     body[5] = 5;  /* stride_log2 */
     body[7] = 12; /* page_size_log2 */
-    memcpy(body + 12, &id_ver_le, 4);
+    ernic_put_le32(body + 12, cq_id);
 }
 
 /* 64 rather than 60: the handler reads type_state at body[62]. */
 static void build_qp_body(uint8_t body[64], uint32_t qp_id, uint32_t cq_id,
                           uint32_t srq_id)
 {
-    uint32_t cq_le = htole32(cq_id);
-    uint32_t id_ver_le = htole32(qp_id);
-    uint32_t srq_le = htole32(srq_id);
-
     memset(body, 0, 64);
-    memcpy(body + 8, &cq_le, 4);  /* sq_cq_id */
-    body[12] = 4;                 /* sq_depth_log2 */
-    body[13] = 7;                 /* sq_stride_log2 */
-    memcpy(body + 32, &cq_le, 4); /* rq_cq_id */
+    ernic_put_le32(body + 8, cq_id);  /* sq_cq_id */
+    body[12] = 4;                     /* sq_depth_log2 */
+    body[13] = 7;                     /* sq_stride_log2 */
+    ernic_put_le32(body + 32, cq_id); /* rq_cq_id */
     /* A QP bound to an SRQ has no RQ, and the driver leaves its geometry
      * zero. */
     if (srq_id == 0xffffffffu) {
         body[36] = 4; /* rq_depth_log2 */
         body[37] = 7; /* rq_stride_log2 */
     }
-    memcpy(body + 40, &srq_le, 4);
-    memcpy(body + 56, &id_ver_le, 4);
+    ernic_put_le32(body + 40, srq_id);
+    ernic_put_le32(body + 56, qp_id);
     body[62] = 0; /* ionic qp type 0 -> IB_QPT_RC */
 }
 

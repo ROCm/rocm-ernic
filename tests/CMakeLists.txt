@@ -165,6 +165,12 @@ target_include_directories(test_parse_int PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
 
+# Byte-order accessor (byteorder.h) unit test (header-only).
+add_executable(ernic-test-byteorder test_byteorder.c)
+target_include_directories(ernic-test-byteorder PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+
 # P4 engine test. The engine is frames-in/frames-out, so this links the
 # real translation unit and nothing else -- no device, no guest memory.
 if(ERNIC_BUILD_P4)
@@ -934,6 +940,7 @@ set(ERNIC_TEST_TARGETS
     test_dma_range
     test_rdma_cm_proto
     test_parse_int
+    ernic-test-byteorder
     test_nvmeof_target
     test_nvmeof_cm
     test_s3_token
@@ -1046,6 +1053,13 @@ add_test(
     COMMAND $<TARGET_FILE:test_parse_int>
 )
 set_tests_properties(parse-int-unit PROPERTIES TIMEOUT 30)
+
+# Byte-order accessors against hand-written byte images
+add_test(
+    NAME byteorder-unit
+    COMMAND $<TARGET_FILE:ernic-test-byteorder>
+)
+set_tests_properties(byteorder-unit PROPERTIES TIMEOUT 30)
 
 # P4 engine unit test: port model, frame bounds, and the no-program path.
 if(ERNIC_BUILD_P4)

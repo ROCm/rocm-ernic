@@ -33,6 +33,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "byteorder.h"
 #include "fake_vfu.h"
 #include "ionic_eth_emu.h"
 /* For the emulator's admin queue pointer, which rdma-reset checks */
@@ -77,38 +78,6 @@ static bool check(const char *test, bool cond, const char *fmt, ...)
 
 /* ---- Helpers ----------------------------------------------------------- */
 
-static uint32_t get_le32(const uint8_t *p)
-{
-    uint32_t v;
-
-    memcpy(&v, p, 4);
-    return le32toh(v);
-}
-
-static uint16_t get_le16(const uint8_t *p)
-{
-    uint16_t v;
-
-    memcpy(&v, p, 2);
-    return le16toh(v);
-}
-
-static uint16_t get_be16(const uint8_t *p)
-{
-    uint16_t v;
-
-    memcpy(&v, p, 2);
-    return be16toh(v);
-}
-
-static uint32_t get_be32(const uint8_t *p)
-{
-    uint32_t v;
-
-    memcpy(&v, p, 4);
-    return be32toh(v);
-}
-
 static bool all_zero(const uint8_t *p, size_t len)
 {
     for (size_t i = 0; i < len; i++)
@@ -127,46 +96,10 @@ static uint16_t ones_sum16(const uint8_t *p, size_t len)
     uint32_t sum = 0;
 
     for (size_t i = 0; i + 1 < len; i += 2)
-        sum += get_be16(p + i);
+        sum += ernic_get_be16(p + i);
     while (sum >> 16)
         sum = (sum & 0xffffu) + (sum >> 16);
     return (uint16_t)sum;
-}
-
-static void put_le16(uint8_t *p, uint16_t v)
-{
-    v = htole16(v);
-    memcpy(p, &v, 2);
-}
-
-static void put_le32(uint8_t *p, uint32_t v)
-{
-    v = htole32(v);
-    memcpy(p, &v, 4);
-}
-
-static void put_le64(uint8_t *p, uint64_t v)
-{
-    v = htole64(v);
-    memcpy(p, &v, 8);
-}
-
-static void put_be16(uint8_t *p, uint16_t v)
-{
-    v = htobe16(v);
-    memcpy(p, &v, 2);
-}
-
-static void put_be32(uint8_t *p, uint32_t v)
-{
-    v = htobe32(v);
-    memcpy(p, &v, 4);
-}
-
-static void put_be64(uint8_t *p, uint64_t v)
-{
-    v = htobe64(v);
-    memcpy(p, &v, 8);
 }
 
 /* A byte pattern that differs from row to row and from byte to byte. */
@@ -234,13 +167,13 @@ static void test_devcmds(void)
     memset(cmd, 0, sizeof(cmd));
     cmd[0] = IH_CMD_IDENTIFY;
     check(T, ih_devcmd(&h, cmd, comp, data, 512) == 0, "IDENTIFY failed");
-    check(T, get_le32(data + DEVID_NLIFS) == 1, "nlifs is %u",
-          get_le32(data + DEVID_NLIFS));
+    check(T, ernic_get_le32(data + DEVID_NLIFS) == 1, "nlifs is %u",
+          ernic_get_le32(data + DEVID_NLIFS));
     /* The default compat profile's intr_vectors; IONIC_MSIX_MAX_VECTORS is
      * only the most a profile may ask for. */
-    check(T, get_le32(data + DEVID_NINTRS) == 32, "nintrs is %u",
-          get_le32(data + DEVID_NINTRS));
-    check(T, get_le32(data + DEVID_COAL_DIV) != 0,
+    check(T, ernic_get_le32(data + DEVID_NINTRS) == 32, "nintrs is %u",
+          ernic_get_le32(data + DEVID_NINTRS));
+    check(T, ernic_get_le32(data + DEVID_COAL_DIV) != 0,
           "intr_coal_div is 0, which ethtool divides by");
 
     memset(cmd, 0, sizeof(cmd));
@@ -265,8 +198,8 @@ static void test_devcmds(void)
         check(T, rdma[qtypes[i].off] == qtypes[i].qtype,
               "qtype at rdma+%u is %u, expected %u", qtypes[i].off,
               rdma[qtypes[i].off], qtypes[i].qtype);
-    check(T, get_le32(rdma + 100) == IONIC_EMU_SRQ_COUNT, "srq qid_count is %u",
-          get_le32(rdma + 100));
+    check(T, ernic_get_le32(rdma + 100) == IONIC_EMU_SRQ_COUNT,
+          "srq qid_count is %u", ernic_get_le32(rdma + 100));
     check(T, rdma[113] & 2u, "SRQ qid allocation not advertised");
     check(T, rdma[LIFID_RDMA_ADMIN_OPS] > IH_ADMIN_DESTROY_SRQ,
           "admin_opcodes %u refuses the SRQ commands",
@@ -350,18 +283,18 @@ static void test_bringup(void)
 
     /* PORT_INIT published the port as an up 100G copper link */
     fake_vfu_read(h.vfu, h.port_info, buf, 64);
-    check(T, get_le32(buf + 0) == 100000, "port config speed is %u",
-          get_le32(buf + 0));
+    check(T, ernic_get_le32(buf + 0) == 100000, "port config speed is %u",
+          ernic_get_le32(buf + 0));
     fake_vfu_read(h.vfu, h.port_info + 256, buf, 64);
-    check(T, get_le32(buf + 4) == 100000 && buf[8] == 1,
-          "port status is speed %u state %u", get_le32(buf + 4), buf[8]);
+    check(T, ernic_get_le32(buf + 4) == 100000 && buf[8] == 1,
+          "port status is speed %u state %u", ernic_get_le32(buf + 4), buf[8]);
     check(T, buf[60] == 1 && buf[61] == 1,
           "no copper transceiver in the port status");
 
     /* LIF_INIT published the link as up */
     fake_vfu_read(h.vfu, h.lif_info + 256, buf, 16);
-    check(T, buf[10] == 1 && get_le32(buf + 12) == 100000,
-          "LIF status is link %u speed %u", buf[10], get_le32(buf + 12));
+    check(T, buf[10] == 1 && ernic_get_le32(buf + 12) == 100000,
+          "LIF status is link %u speed %u", buf[10], ernic_get_le32(buf + 12));
 
     /* Every Ethernet admin command raised the adminq's vector */
     unsigned irqs = fake_vfu_irq_count(h.vfu, IH_ETH_ADMINQ_INTR);
@@ -481,27 +414,27 @@ static void build_none(uint8_t *body)
 
 static void build_qp_unknown_cq(uint8_t *body)
 {
-    put_le32(body + 8, 4000);
-    put_le32(body + 32, 4001);
-    put_le32(body + 40, 0xffffffffu);
-    put_le32(body + 56, 3);
+    ernic_put_le32(body + 8, 4000);
+    ernic_put_le32(body + 32, 4001);
+    ernic_put_le32(body + 40, 0xffffffffu);
+    ernic_put_le32(body + 56, 3);
 }
 
 static void build_qp_unknown_srq(uint8_t *body)
 {
     /* CQ 1 exists in this group */
-    put_le32(body + 8, 1);
-    put_le32(body + 32, 1);
-    put_le32(body + 40, IONIC_SRQ_QID_BASE + 7);
-    put_le32(body + 56, 3);
+    ernic_put_le32(body + 8, 1);
+    ernic_put_le32(body + 32, 1);
+    ernic_put_le32(body + 40, IONIC_SRQ_QID_BASE + 7);
+    ernic_put_le32(body + 56, 3);
 }
 
 static void build_unknown_id(uint8_t *body)
 {
     /* MR, QP and SRQ ids, all at offset 0 or in id_ver */
-    put_le32(body + 0, 0x00777777u);
-    put_le32(body + 28, 0x00777777u);
-    put_le32(body + 56, 0x00777777u);
+    ernic_put_le32(body + 0, 0x00777777u);
+    ernic_put_le32(body + 28, 0x00777777u);
+    ernic_put_le32(body + 56, 0x00777777u);
 }
 
 /*
@@ -517,8 +450,8 @@ static void build_cq(uint8_t *body, uint8_t depth_log2, uint8_t stride_log2)
     body[4] = depth_log2;
     body[5] = stride_log2;
     body[7] = 12;
-    put_le32(body + 12, 2);
-    put_le32(body + 20, 1);
+    ernic_put_le32(body + 12, 2);
+    ernic_put_le32(body + 20, 1);
 }
 
 static void build_cq_depth_32(uint8_t *body)
@@ -546,14 +479,14 @@ static void build_qp(uint8_t *body, uint8_t sq_depth_log2,
                      uint8_t sq_stride_log2, uint8_t rq_depth_log2,
                      uint8_t rq_stride_log2)
 {
-    put_le32(body + 8, 1);
+    ernic_put_le32(body + 8, 1);
     body[12] = sq_depth_log2;
     body[13] = sq_stride_log2;
-    put_le32(body + 32, 1);
+    ernic_put_le32(body + 32, 1);
     body[36] = rq_depth_log2;
     body[37] = rq_stride_log2;
-    put_le32(body + 40, 0xffffffffu);
-    put_le32(body + 56, 3);
+    ernic_put_le32(body + 40, 0xffffffffu);
+    ernic_put_le32(body + 56, 3);
 }
 
 static void build_qp_sq_depth_32(uint8_t *body)
@@ -686,8 +619,8 @@ static int rdma_queue_cmd(struct ih *h, uint8_t op, uint8_t depth_log2,
     uint8_t cmd[64] = {0}, comp[16];
 
     cmd[0] = op;
-    put_le32(cmd + 4, 5u | 1u << 24);
-    put_le32(cmd + 8, IH_EQ_ID);
+    ernic_put_le32(cmd + 4, 5u | 1u << 24);
+    ernic_put_le32(cmd + 8, IH_EQ_ID);
     cmd[14] = depth_log2;
     cmd[15] = stride_log2;
     return ih_eth_admin(h, cmd, comp);
@@ -740,7 +673,7 @@ static void test_admin_errors(void)
     /* A WQE the device can't read stays queued and runs on the next poll,
      * rather than being skipped */
     uint8_t body[4] = {0};
-    put_le32(body, 9999);
+    ernic_put_le32(body, 9999);
     int slot = ih_admin_post(&h, IH_ADMIN_DESTROY_CQ, body, 4);
     fake_vfu_fail_nth_map(h.vfu, 1);
     ih_poll(&h);
@@ -1064,9 +997,9 @@ static void test_rc(void)
     /* QUERY_QP writes the state into the side buffers the driver reads */
     uint8_t body[34] = {0};
     const uint64_t sq_buf = h->scratch + 1024, rq_buf = h->scratch + 1088;
-    put_le64(body + 8, sq_buf);
-    put_le64(body + 16, rq_buf);
-    put_le32(body + 28, RC_QP_A);
+    ernic_put_le64(body + 8, sq_buf);
+    ernic_put_le64(body + 16, rq_buf);
+    ernic_put_le32(body + 28, RC_QP_A);
     check(T, ih_admin(h, IH_ADMIN_QUERY_QP, body, sizeof(body), NULL) == 0,
           "QUERY_QP failed");
     uint8_t rqb[12];
@@ -1213,8 +1146,8 @@ static void test_atomic_and_reg_mr(void)
     struct ih_mr fr;
     const uint32_t fr_id = 0x00000003u, fr_key = 0x04000000u | fr_id;
     uint8_t body[45] = {0};
-    put_le32(body + 20, 0x03000000u | fr_id);
-    put_le16(body + 40, IH_ACCESS_ALL);
+    ernic_put_le32(body + 20, 0x03000000u | fr_id);
+    ernic_put_le16(body + 40, IH_ACCESS_ALL);
     check(T, ih_admin(h, IH_ADMIN_CREATE_MR, body, sizeof(body), NULL) == 0,
           "CREATE_MR of an unbound MR failed");
     if (!check(T,
@@ -1260,7 +1193,7 @@ static void test_atomic_and_reg_mr(void)
                 IH_STS_REMOTE_ACC_ERR);
 
     ih_mr_free(&fr);
-    put_le32(body, 0x03000000u | fr_id);
+    ernic_put_le32(body, 0x03000000u | fr_id);
     check(T, ih_admin(h, IH_ADMIN_DESTROY_MR, body, 4, NULL) == 0,
           "DESTROY_MR of the fast-registered MR failed");
 
@@ -1559,12 +1492,14 @@ static void test_ud(void)
         const uint8_t *ip = got + IH_GRH_SIZE - 20;
         check(T, e.is_ipv4, "an IPv4 UD receive is not flagged as one");
         check(T, all_zero(got, 20), "the first 20 bytes are not reserved");
-        check(T, ip[0] == 0x45 && get_be16(ip + 2) == 20 + sizeof(want),
+        check(T, ip[0] == 0x45 && ernic_get_be16(ip + 2) == 20 + sizeof(want),
               "the IPv4 header's version or total length is wrong");
         check(T, ip[9] == 17, "the IPv4 header does not name UDP");
         check(T, ones_sum16(ip, 20) == 0xffff,
               "the IPv4 header's checksum does not verify");
-        check(T, get_be32(ip + 12) == UD_SIP && get_be32(ip + 16) == UD_DIP,
+        check(T,
+              ernic_get_be32(ip + 12) == UD_SIP &&
+                  ernic_get_be32(ip + 16) == UD_DIP,
               "the IPv4 addresses do not come from the address handle");
         check(T, memcmp(got + IH_GRH_SIZE, want, sizeof(want)) == 0,
               "UD payload is not behind the 40-byte header");
@@ -1605,20 +1540,20 @@ static void test_ud(void)
     memset(hdr + 18 + 24, 0x30, 16);
     fake_vfu_write(h.vfu, h.scratch, hdr, sizeof(hdr));
     uint8_t body[24] = {0};
-    put_le64(body, h.scratch);
-    put_le32(body + 8, 18 + 40);
-    put_le32(body + 16, 6);
+    ernic_put_le64(body, h.scratch);
+    ernic_put_le32(body + 8, 18 + 40);
+    ernic_put_le32(body + 16, 6);
     check(T, ih_admin(&h, IH_ADMIN_CREATE_AH, body, sizeof(body), NULL) == 0,
           "CREATE_AH from an IPv6 header failed");
     /* And one the device can't parse, which is still not fatal */
     hdr[16] = 0x12;
     fake_vfu_write(h.vfu, h.scratch, hdr, sizeof(hdr));
-    put_le32(body + 16, 7);
+    ernic_put_le32(body + 16, 7);
     check(T, ih_admin(&h, IH_ADMIN_CREATE_AH, body, sizeof(body), NULL) == 0,
           "CREATE_AH from an unparsable header failed");
 
     for (uint32_t ah = 5; ah <= 7; ah++) {
-        put_le32(body, ah);
+        ernic_put_le32(body, ah);
         check(T, ih_admin(&h, IH_ADMIN_DESTROY_AH, body, 4, NULL) == 0,
               "DESTROY_AH %u failed", ah);
     }
@@ -1698,11 +1633,11 @@ static void test_srq(void)
 
     /* MODIFY_SRQ with a limit and with none, then QUERY_SRQ */
     uint8_t body[8] = {0};
-    put_le32(body, srq.id);
-    put_le16(body + 4, 4);
+    ernic_put_le32(body, srq.id);
+    ernic_put_le16(body + 4, 4);
     check(T, ih_admin(&h, IH_ADMIN_MODIFY_SRQ, body, 6, NULL) == 0,
           "MODIFY_SRQ to 4 failed");
-    put_le16(body + 4, 0);
+    ernic_put_le16(body + 4, 0);
     check(T, ih_admin(&h, IH_ADMIN_MODIFY_SRQ, body, 6, NULL) == 0,
           "MODIFY_SRQ to 0 failed");
     check(T, ih_admin(&h, IH_ADMIN_QUERY_SRQ, body, 4, NULL) == 0,
@@ -1749,11 +1684,11 @@ static bool q_init(struct ih *h, uint8_t qtype, uint16_t intr,
 
     cmd[0] = IH_CMD_Q_INIT;
     cmd[4] = qtype;
-    put_le16(cmd + 14, intr);
+    ernic_put_le16(cmd + 14, intr);
     cmd[19] = depth_log2;
-    put_le64(cmd + 20, ring);
-    put_le64(cmd + 28, cq);
-    put_le64(cmd + 36, sg);
+    ernic_put_le64(cmd + 20, ring);
+    ernic_put_le64(cmd + 28, cq);
+    ernic_put_le64(cmd + 36, sg);
     return ih_devcmd(h, cmd, comp, NULL, 0) == 0;
 }
 
@@ -1764,7 +1699,7 @@ static bool q_enable(struct ih *h, uint8_t qtype, uint32_t index)
 
     cmd[0] = IH_CMD_Q_CONTROL;
     cmd[1] = qtype;
-    put_le32(cmd + 4, index);
+    ernic_put_le32(cmd + 4, index);
     cmd[8] = 1; /* IONIC_Q_ENABLE */
     return ih_devcmd(h, cmd, comp, NULL, 0) == 0;
 }
@@ -1806,18 +1741,18 @@ static void test_eth(void)
     fake_vfu_write(h.vfu, bufs, frame, sizeof(frame));
 
     uint8_t desc[16] = {0};
-    put_le64(desc, bufs << 12);
-    put_le16(desc + 8, 120);
+    ernic_put_le64(desc, bufs << 12);
+    ernic_put_le16(desc + 8, 120);
     fake_vfu_write(h.vfu, txr, desc, sizeof(desc));
 
-    put_le64(desc, (bufs << 12) | 2u << 8);
-    put_le16(desc + 8, sizeof(frame));
+    ernic_put_le64(desc, (bufs << 12) | 2u << 8);
+    ernic_put_le16(desc + 8, sizeof(frame));
     fake_vfu_write(h.vfu, txr + 16, desc, sizeof(desc));
     uint8_t sg[2 * 16] = {0};
-    put_le64(sg, bufs + 50);
-    put_le16(sg + 8, 100);
-    put_le64(sg + 16, bufs + 150);
-    put_le16(sg + 24, 50);
+    ernic_put_le64(sg, bufs + 50);
+    ernic_put_le16(sg + 8, 100);
+    ernic_put_le64(sg + 16, bufs + 150);
+    ernic_put_le16(sg + 24, 50);
     fake_vfu_write(h.vfu, txsg + 1 * 8 * 16, sg, sizeof(sg));
 
     ih_doorbell(&h, IH_QTYPE_ETH_TXQ, 0, 0, 2);
@@ -1837,8 +1772,8 @@ static void test_eth(void)
     /* Frames handed in off-thread land in the guest's Rx buffers */
     for (unsigned i = 0; i < 2; i++) {
         memset(desc, 0, sizeof(desc));
-        put_le16(desc + 6, i == 0 ? 2048 : 64);
-        put_le64(desc + 8, bufs + 2048 * (i + 1));
+        ernic_put_le16(desc + 6, i == 0 ? 2048 : 64);
+        ernic_put_le64(desc + 8, bufs + 2048 * (i + 1));
         fake_vfu_write(h.vfu, rxr + 16 * i, desc, sizeof(desc));
     }
     ih_doorbell(&h, IH_QTYPE_ETH_RXQ, 0, 0, 2);
@@ -1859,7 +1794,7 @@ static void test_eth(void)
     fake_vfu_read(h.vfu, bufs + 2048, got, sizeof(got));
     check(T, memcmp(got, frame, sizeof(frame)) == 0, "the Rx frame is wrong");
     fake_vfu_read(h.vfu, rxc, comp, sizeof(comp));
-    check(T, (comp[15] & 0x80u) && get_le16(comp + 12) == sizeof(frame),
+    check(T, (comp[15] & 0x80u) && ernic_get_le16(comp + 12) == sizeof(frame),
           "the Rx completion does not carry the frame length");
     check(T, fake_vfu_irq_count(h.vfu, RX_INTR) == 1, "Rx raised %u interrupts",
           fake_vfu_irq_count(h.vfu, RX_INTR));
@@ -1933,30 +1868,30 @@ static void mad_hdr(uint8_t *m, uint16_t attr, uint64_t tid)
     m[1] = 0x07; /* CM class */
     m[2] = 2;
     m[3] = 3; /* SEND */
-    put_be64(m + 8, tid);
-    put_be16(m + 16, attr);
+    ernic_put_be64(m + 8, tid);
+    ernic_put_be16(m + 16, attr);
 }
 
 static void build_req(uint8_t *m)
 {
     mad_hdr(m, 0x0010, 0x1234567800000001ull);
-    put_be32(m + 24, 0xabcd0001u);
-    put_be64(m + 32, ((uint64_t)0x0106 << 16) | NV_PORT);
-    put_be64(m + 40, 0x0002c9030012abcdull);
-    put_be32(m + 56, (NV_RC_QP << 8) | 4);
-    put_be32(m + 60, 4);
-    put_be32(m + 64, 20u << 3);
-    put_be32(m + 68, 0x123456u << 8);
+    ernic_put_be32(m + 24, 0xabcd0001u);
+    ernic_put_be64(m + 32, ((uint64_t)0x0106 << 16) | NV_PORT);
+    ernic_put_be64(m + 40, 0x0002c9030012abcdull);
+    ernic_put_be32(m + 56, (NV_RC_QP << 8) | 4);
+    ernic_put_be32(m + 60, 4);
+    ernic_put_be32(m + 64, 20u << 3);
+    ernic_put_be32(m + 68, 0x123456u << 8);
     memset(m + 80, 0x11, 16); /* primary local GID: the guest */
     memset(m + 96, 0x22, 16); /* primary remote GID: the target */
 
     uint8_t *priv = m + 164;
     priv[1] = 4 << 4;
-    put_be16(priv + 2, NV_PORT);
-    put_be32(priv + 4 + 12, 0xc0a8c814u);
-    put_be32(priv + 20 + 12, NV_TRADDR);
-    put_le16(priv + 36 + 4, 32); /* hrqsize */
-    put_le16(priv + 36 + 6, 31); /* hsqsize */
+    ernic_put_be16(priv + 2, NV_PORT);
+    ernic_put_be32(priv + 4 + 12, 0xc0a8c814u);
+    ernic_put_be32(priv + 20 + 12, NV_TRADDR);
+    ernic_put_le16(priv + 36 + 4, 32); /* hrqsize */
+    ernic_put_le16(priv + 36 + 6, 31); /* hsqsize */
 }
 
 /* Send a MAD on the GSI QP and return the reply delivered back to it. */
@@ -2012,7 +1947,7 @@ static bool gsi_exchange(const char *test, struct ih *h, struct ih_qp *gsi,
     memset(controller, 0x22, sizeof(controller));
     memset(guest, 0x11, sizeof(guest));
     check(test, !recv_ipv4, "a GSI reply carrying a GRH is flagged IPv4");
-    check(test, buf[0] == 0x60 && get_be16(buf + 4) == IB_MAD_SIZE,
+    check(test, buf[0] == 0x60 && ernic_get_be16(buf + 4) == IB_MAD_SIZE,
           "the GSI reply has no GRH, or the wrong payload length");
     check(test,
           memcmp(buf + 8, controller, 16) == 0 &&
@@ -2046,7 +1981,7 @@ static int nvme_exchange(const char *test, struct ih *h, struct ih_qp *qp,
                   "response capsule length %u", e.status_len)) {
             uint8_t rsp[NVME_CQE_SIZE];
             ih_mr_read(h, mr, rx.va, rsp, sizeof(rsp));
-            status = nvme_get_le16(rsp + NVME_CQE_STATUS_OFF) >> 1;
+            status = ernic_get_le16(rsp + NVME_CQE_STATUS_OFF) >> 1;
         }
     }
     return status;
@@ -2057,15 +1992,15 @@ static void capsule_init(uint8_t *c, uint8_t opcode, uint16_t cid,
 {
     memset(c, 0, NVME_SQE_SIZE);
     c[NVME_SQE_OPCODE_OFF] = opcode;
-    nvme_put_le16(c + NVME_SQE_CID_OFF, cid);
+    ernic_put_le16(c + NVME_SQE_CID_OFF, cid);
 
     /* A keyed SGL data block descriptor */
     uint8_t *d = c + NVME_SQE_DPTR_OFF;
-    nvme_put_le64(d, addr);
+    ernic_put_le64(d, addr);
     d[8] = (uint8_t)len;
     d[9] = (uint8_t)(len >> 8);
     d[10] = (uint8_t)(len >> 16);
-    nvme_put_le32(d + 11, key);
+    ernic_put_le32(d + 11, key);
     d[15] = NVME_SGL_TYPE_KEYED_DATA << 4;
 }
 
@@ -2108,8 +2043,8 @@ static void p4_tx_one(struct ih *h, uint64_t txr, uint64_t buf, uint8_t first,
     frame[0] = first;
     fake_vfu_write(h->vfu, buf, frame, sizeof(frame));
 
-    put_le64(desc, buf << 12);
-    put_le16(desc + 8, (uint16_t)sizeof(frame));
+    ernic_put_le64(desc, buf << 12);
+    ernic_put_le16(desc + 8, (uint16_t)sizeof(frame));
     fake_vfu_write(h->vfu, txr + (uint64_t)index * 16u, desc, sizeof(desc));
     ih_doorbell(h, IH_QTYPE_ETH_TXQ, 0, 0, (uint16_t)(index + 1));
 }
@@ -2661,24 +2596,10 @@ static void test_p4_rdma(void)
 /* ---- The guest's own way in to the engine ------------------------------ */
 
 /*
- * Build a devcmd in the 64-byte buffer the BAR0 window takes.  Everything
- * the guest sends is little-endian, which on this host is a memcpy, but
- * going through htole32/htole64 is what makes that an assumption the
- * compiler checks rather than one the test embeds.
+ * One RPC, with no request or response buffer unless given, built in the
+ * 64-byte buffer the BAR0 window takes. Everything the guest sends is
+ * little-endian.
  */
-static void p4d_put32(uint8_t *p, uint32_t v)
-{
-    uint32_t le = htole32(v);
-    memcpy(p, &le, 4);
-}
-
-static void p4d_put64(uint8_t *p, uint64_t v)
-{
-    uint64_t le = htole64(v);
-    memcpy(p, &le, 8);
-}
-
-/* One RPC, with no request or response buffer unless given. */
 static int p4d_rpc(struct ih *h, uint8_t scope, uint32_t ep, uint32_t op,
                    uint64_t req_pa, uint32_t req_len, uint64_t resp_pa,
                    uint32_t resp_len, uint8_t comp[16])
@@ -2687,12 +2608,12 @@ static int p4d_rpc(struct ih *h, uint8_t scope, uint32_t ep, uint32_t op,
 
     cmd[0] = IONIC_CMD_P4_RPC;
     cmd[1] = scope;
-    p4d_put32(cmd + 4, ep);
-    p4d_put32(cmd + 8, op);
-    p4d_put32(cmd + 12, req_len);
-    p4d_put64(cmd + 16, req_pa);
-    p4d_put32(cmd + 24, resp_len);
-    p4d_put64(cmd + 32, resp_pa);
+    ernic_put_le32(cmd + 4, ep);
+    ernic_put_le32(cmd + 8, op);
+    ernic_put_le32(cmd + 12, req_len);
+    ernic_put_le64(cmd + 16, req_pa);
+    ernic_put_le32(cmd + 24, resp_len);
+    ernic_put_le64(cmd + 32, resp_pa);
     return ih_devcmd(h, cmd, comp, NULL, 0);
 }
 
@@ -2744,8 +2665,8 @@ static void test_p4_devcmd(void)
         struct p4_devcmd_ident id;
 
         cmd[0] = IONIC_CMD_P4_IDENT;
-        p4d_put32(cmd + 4, (uint32_t)sizeof(id));
-        p4d_put64(cmd + 8, buf);
+        ernic_put_le32(cmd + 4, (uint32_t)sizeof(id));
+        ernic_put_le64(cmd + 8, buf);
         check(T, ih_devcmd(&h, cmd, comp, NULL, 0) == P4_STS_OK,
               "IDENT failed");
         fake_vfu_read(h.vfu, buf, &id, sizeof(id));
@@ -2767,8 +2688,8 @@ static void test_p4_devcmd(void)
 
         cmd[0] = IONIC_CMD_P4_QUERY;
         cmd[1] = P4_QUERY_ROOT;
-        p4d_put32(cmd + 4, 4096);
-        p4d_put64(cmd + 8, buf);
+        ernic_put_le32(cmd + 4, 4096);
+        ernic_put_le64(cmd + 8, buf);
         check(T, ih_devcmd(&h, cmd, comp, NULL, 0) == P4_STS_OK,
               "QUERY(ROOT) failed");
         fake_vfu_read(h.vfu, buf, &qd, sizeof(qd));
@@ -2781,7 +2702,7 @@ static void test_p4_devcmd(void)
          * exists, so the guest can retry rather than walk off its own
          * buffer trusting a count the device chose.
          */
-        p4d_put32(cmd + 4, (uint32_t)(sizeof(qd) + 4));
+        ernic_put_le32(cmd + 4, (uint32_t)(sizeof(qd) + 4));
         check(T, ih_devcmd(&h, cmd, comp, NULL, 0) == P4_STS_OK,
               "QUERY(ROOT) with a small buffer failed");
         fake_vfu_read(h.vfu, buf, &qd, sizeof(qd));
@@ -2790,8 +2711,8 @@ static void test_p4_devcmd(void)
               le32toh(qd.num_entries), le32toh(qd.total));
 
         cmd[1] = P4_QUERY_ENDPOINT;
-        p4d_put32(cmd + 4, 4096);
-        p4d_put32(cmd + 16, P4_EP_PROGRAM);
+        ernic_put_le32(cmd + 4, 4096);
+        ernic_put_le32(cmd + 16, P4_EP_PROGRAM);
         check(T, ih_devcmd(&h, cmd, comp, NULL, 0) == P4_STS_OK,
               "QUERY(PROGRAM) failed");
         fake_vfu_read(h.vfu, buf, &qd, sizeof(qd));
@@ -2800,7 +2721,7 @@ static void test_p4_devcmd(void)
               le32toh(qd.num_entries));
 
         /* An endpoint the device does not have is named as such. */
-        p4d_put32(cmd + 16, 0x5eu);
+        ernic_put_le32(cmd + 16, 0x5eu);
         check(T, ih_devcmd(&h, cmd, comp, NULL, 0) == P4_STS_EOPCODE,
               "a query for an absent endpoint was not refused");
     }
@@ -2815,7 +2736,7 @@ static void test_p4_devcmd(void)
         const uint64_t req = fake_vfu_alloc(h.vfu, 65536, 4096);
         size_t off = 0;
 
-        p4d_put32(body, (uint32_t)prog_len);
+        ernic_put_le32(body, (uint32_t)prog_len);
         fake_vfu_write(h.vfu, req, body, sizeof(body));
         check(T,
               p4d_rpc(&h, P4_SCOPE_LOAD, P4_EP_PROGRAM, P4_OP_LOAD_BEGIN, req,
@@ -2829,8 +2750,8 @@ static void test_p4_devcmd(void)
 
             if (n > 4096)
                 n = 4096;
-            p4d_put64(hdr, off);
-            p4d_put32(hdr + 8, (uint32_t)n);
+            ernic_put_le64(hdr, off);
+            ernic_put_le32(hdr + 8, (uint32_t)n);
             fake_vfu_write(h.vfu, req, hdr, sizeof(hdr));
             fake_vfu_write(h.vfu, req + sizeof(hdr), prog + off, n);
             if (!check(T,
@@ -3042,17 +2963,17 @@ static void test_nvmeof(void)
         teardown(T, &h);
         return;
     }
-    check(T, get_be16(reply + 16) == 0x0013, "the REQ drew attribute %#x",
-          get_be16(reply + 16));
-    uint32_t local_comm = get_be32(reply + 24);
-    uint32_t target_qpn = get_be32(reply + 36) >> 8;
+    check(T, ernic_get_be16(reply + 16) == 0x0013, "the REQ drew attribute %#x",
+          ernic_get_be16(reply + 16));
+    uint32_t local_comm = ernic_get_be32(reply + 24);
+    uint32_t target_qpn = ernic_get_be32(reply + 36) >> 8;
     check(T, nvmeof_cm_is_target_qpn(target_qpn),
           "REP offers QPN %#x, outside the controller range", target_qpn);
 
     /* RTU completes the handshake and draws nothing */
     mad_hdr(mad, 0x0014, 0x1234567800000001ull);
-    put_be32(mad + 24, 0xabcd0001u);
-    put_be32(mad + 28, local_comm);
+    ernic_put_be32(mad + 24, 0xabcd0001u);
+    ernic_put_be32(mad + 28, local_comm);
     gsi_exchange(T, &h, &gsi, &gcq, &mr, mad, false, reply);
 
     /* Point the RC QP at the controller and connect the admin queue */
@@ -3067,7 +2988,7 @@ static void test_nvmeof(void)
 
     uint8_t data[NVMEOF_CONNECT_DATA_SIZE] = {0};
     memcpy(data + NVMEOF_CONNECT_HOSTID_OFF, "0123456789abcdef", 16);
-    nvme_put_le16(data + NVMEOF_CONNECT_CNTLID_OFF, 0xffff);
+    ernic_put_le16(data + NVMEOF_CONNECT_CNTLID_OFF, 0xffff);
     snprintf((char *)data + NVMEOF_CONNECT_SUBNQN_OFF, 256, "%s", NV_NQN);
     snprintf((char *)data + NVMEOF_CONNECT_HOSTNQN_OFF, 256, "%s",
              "nqn.2014-08.org.nvmexpress:uuid:harness");
@@ -3077,15 +2998,15 @@ static void test_nvmeof(void)
     capsule_init(cap, NVME_ADMIN_FABRICS, 1, mr.va + NV_CONNECT_OFF,
                  sizeof(data), NV_MR);
     cap[NVMEOF_SQE_FCTYPE_OFF] = NVMEOF_FCTYPE_CONNECT;
-    nvme_put_le16(cap + NVMEOF_CONNECT_QID_OFF, 0);
-    nvme_put_le16(cap + NVMEOF_CONNECT_SQSIZE_OFF, 31);
+    ernic_put_le16(cap + NVMEOF_CONNECT_QID_OFF, 0);
+    ernic_put_le16(cap + NVMEOF_CONNECT_SQSIZE_OFF, 31);
     int sts = nvme_exchange(T, &h, &rc, &rcq, &mr, cap);
     check(T, sts == 0, "Connect status %#x", (unsigned)sts);
 
     /* Identify Controller writes through the keyed SGL into the MR */
     capsule_init(cap, NVME_ADMIN_IDENTIFY, 2, mr.va + NV_IDENT_OFF,
                  NVME_IDENTIFY_SIZE, NV_MR);
-    nvme_put_le32(cap + NVME_SQE_CDW10_OFF, NVME_ID_CNS_CTRL);
+    ernic_put_le32(cap + NVME_SQE_CDW10_OFF, NVME_ID_CNS_CTRL);
     sts = nvme_exchange(T, &h, &rc, &rcq, &mr, cap);
     check(T, sts == 0, "Identify status %#x", (unsigned)sts);
     char subnqn[32] = "";
@@ -3094,12 +3015,12 @@ static void test_nvmeof(void)
 
     /* DREQ draws a DREP */
     mad_hdr(mad, 0x0015, 0x1234567800000002ull);
-    put_be32(mad + 24, 0xabcd0001u);
-    put_be32(mad + 28, local_comm);
-    put_be32(mad + 32, target_qpn << 8);
+    ernic_put_be32(mad + 24, 0xabcd0001u);
+    ernic_put_be32(mad + 28, local_comm);
+    ernic_put_be32(mad + 32, target_qpn << 8);
     if (gsi_exchange(T, &h, &gsi, &gcq, &mr, mad, true, reply))
-        check(T, get_be16(reply + 16) == 0x0016, "the DREQ drew attribute %#x",
-              get_be16(reply + 16));
+        check(T, ernic_get_be16(reply + 16) == 0x0016,
+              "the DREQ drew attribute %#x", ernic_get_be16(reply + 16));
 
     check(T, ih_qp_destroy(&h, &rc) == 0 && ih_qp_destroy(&h, &gsi) == 0,
           "DESTROY_QP failed");
