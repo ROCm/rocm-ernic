@@ -262,7 +262,34 @@ int p4_engine_process(struct p4_engine *eng, uint32_t in_port,
             res->verdict = P4_VERDICT_DROP;
             return 0;
         }
-        if (er.dropped || er.egress_spec >= P4_PORT_COUNT) {
+        if (er.dropped) {
+            eng->stats.frames_dropped++;
+            res->verdict = P4_VERDICT_DROP;
+            return 0;
+        }
+        /*
+         * A program that ran without assigning egress_spec has not chosen
+         * a port.  Treat that as no opinion and forward as the no-program
+         * path does, rather than reading the field's initial zero as a
+         * request for port 0.
+         *
+         * Zero is P4_PORT_HOST, so the old reading sent every frame a
+         * guest transmitted straight back into its own receive ring: the
+         * guest's network became a silent loopback, counted as forwarded
+         * rather than dropped.  Any program written for the RDMA path
+         * does this, including tests/data/p4/fp8_policy.p4, which is the
+         * worked example -- loading it cost the guest its Ethernet.
+         *
+         * A program that does mean port 0 says so, and is unaffected.
+         */
+        if (!er.egress_assigned) {
+            res->verdict = P4_VERDICT_FORWARD;
+            res->egress_port = p4_peer_port(in_port);
+            res->len = er.len;
+            eng->stats.frames_out[res->egress_port]++;
+            return 0;
+        }
+        if (er.egress_spec >= P4_PORT_COUNT) {
             /* An egress_spec outside this device's ports is a drop, not an
              * index: a ported program may name a port we do not have. */
             eng->stats.frames_dropped++;

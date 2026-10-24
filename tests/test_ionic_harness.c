@@ -2596,16 +2596,27 @@ static void test_p4_rdma(void)
 
     /*
      * The operand convention is the architecture's, not the program's. A
-     * gather list that is not two equal-length entries is not a compute
-     * operation, and the extern refuses it rather than inventing one -- so
-     * the operation fails instead of silently doing an ordinary write over
-     * a destination the guest expected a result in.
+     * gather list that is not two equal-length entries has not asked for
+     * arithmetic at all, so the extern declines it and the operation
+     * dispatches as the ordinary write it is.
+     *
+     * Failing it instead is what made a guest that installed a reduce
+     * entry unable to do an ordinary RDMA WRITE on any QP of the device:
+     * the table is keyed on the opcode, which cannot tell the two apart,
+     * so the action fires for every write.
      */
     struct ih_send one = w;
     one.nsge = 1;
+    memset(got, 0, sizeof(got));
+    check(T, ih_mr_write(&h, &mrc, FP8R_VA_C, got, sizeof(got)),
+          "clear C before the one-SGE write");
     ih_post_send(&h, &a, &one);
-    check(T, ih_cq_poll(&h, &cq, &e) && e.error,
-          "a one-SGE write under the same entry completed successfully");
+    check(T, ih_cq_poll(&h, &cq, &e) && !e.error,
+          "a one-SGE write under the same entry was refused");
+    check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, sizeof(got)),
+          "read back the one-SGE write");
+    check(T, memcmp(got, opa, sizeof(got)) == 0,
+          "the one-SGE write did not land as an ordinary transfer");
 
     /*
      * A program whose action calls the extern but does not drop would have

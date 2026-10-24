@@ -98,6 +98,29 @@ the destination itself and the ordinary transfer would land
 on top of the result; an operation whose program does not is
 failed rather than allowed to do that.
 
+**All three regions are local.** The destination the work
+request names is checked against this device's own memory
+region table and written with a local DMA, exactly as the two
+operands are, so a reduction never crosses the mesh. An rkey
+belonging to a peer node is refused with a local QP operation
+error, which is deliberate: a reduction that could write a
+remote key would make the compute path an addressing
+authority over another guest's memory. What a collective gets
+here is therefore "reduce locally, then ship the result",
+which costs a second RDMA operation -- not an in-network
+reduction.
+
+**A table keyed on the opcode also matches ordinary writes.**
+The opcode cannot tell a reduction from a plain RDMA write, so
+the action fires for both. A request that is not the
+two-equal-operand shape has not asked for arithmetic: the
+extern declines it, the pipeline stops at the call, and the
+operation dispatches as it would with no program at all. That
+is why a one-SGE RDMA write still works on a device whose
+guest installed a reduce entry. A request that *is* the
+compute shape but is otherwise bad -- an unregistered key, an
+operand over the ceiling -- is still failed.
+
 ``tests/data/p4/fp8_policy.p4`` is the worked example. A
 table keyed on the opcode turns an ordinary RDMA write into
 an elementwise fp8 add across three memory regions, and
@@ -207,6 +230,19 @@ The pipeline sees the emulated NIC as a two-port device:
 
 A P4 program's ``ingress_port`` and ``egress_spec`` metadata
 carry these values.
+
+A program that runs to completion **without assigning**
+``egress_spec`` has not chosen a port, and the frame is
+forwarded to the other port -- what the device does with no
+program loaded. The field's initial zero is not read as a
+request for ``P4_PORT_HOST``: doing that sent every frame a
+guest transmitted straight back into its own receive ring,
+turning the guest's network into a silent loopback that was
+counted as forwarded rather than dropped. Every program
+written for the RDMA path does this, ``fp8_policy.p4``
+included, so loading the worked example used to cost the
+guest its Ethernet. A program that does mean port 0 assigns
+it, and is unaffected.
 
 The engine attaches to the emulated NIC through the two frame
 filters the Ethernet emulator already provides, so no frame path

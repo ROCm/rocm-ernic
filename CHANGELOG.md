@@ -2,6 +2,37 @@
 
 ## UNRELEASED - rocm-ernic 0.0.1
 
+### Fixed
+
+* **A P4 program that selects an fp8 reduction no longer breaks ordinary
+  RDMA WRITE.** A table keyed on the opcode -- which is what
+  `tests/data/p4/fp8_policy.p4` does, and the only key that can select a
+  reduction -- matches every RDMA WRITE, not just the two-equal-operand
+  compute shape. The extern used to fail anything else, and the device
+  turned that into a local QP operation error, so a guest that installed a
+  reduce entry lost ordinary RDMA WRITE on every QP of the device: a
+  one-SGE write, a two-SGE write with unequal lengths and a three-SGE
+  write all killed their QP. A request that is not the compute shape is
+  now declined by the extern and dispatched as an ordinary transfer, as it
+  would be with no program loaded. A request that *is* the compute shape
+  but is otherwise bad still fails.
+* **Loading a P4 program no longer costs the guest its Ethernet.** A
+  program that runs without assigning `standard_metadata.egress_spec` has
+  not chosen a port; the frame is now forwarded to the other port, which is
+  what the device does with no program at all. The field's initial zero
+  used to be read as `P4_PORT_HOST`, so every frame a guest transmitted was
+  injected straight back into its own receive ring -- a silent loopback,
+  counted as forwarded rather than dropped, with no error anywhere. Every
+  program written for the RDMA path does this, `fp8_policy.p4` included, so
+  loading the worked example took the guest's network away and with it the
+  ARP and neighbour discovery that RoCE address resolution needs.
+* **The `rdma_*` counters in the stats file's LIF block now carry real
+  values.** They were named in `--stats-file`, and in the LIF statistics
+  block DMAed to the guest, but nothing ever incremented them: they read
+  zero for ever while a guest reading `hw_counters` saw the real figures.
+  The datapath's RDMA error counters are now copied into the LIF block
+  before either consumer reads it.
+
 ### Added
 
 * Nightly DEB packages: every night that `develop` changes, the `nightly`

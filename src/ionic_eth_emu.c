@@ -540,6 +540,73 @@ ssize_t ionic_eth_emu_bar2_access(struct ionic_eth_emu *emu, char *buf,
  * run past UINT64_MAX is refused rather than written to a wrapped address;
  * the log then names @base, which is the value the guest gave us.
  */
+/*
+ * Copy the datapath's RDMA error counters into the LIF statistics block.
+ *
+ * The datapath owns the events that move these -- it is where a completion
+ * error is raised -- and serves them to the guest through the adminq STATS
+ * tables, which is what fills `hw_counters`.  struct ionic_lif_stats has
+ * slots for the same counters, because real hardware reports them there
+ * too, so the LIF block has to be told about them before anything reads
+ * it.
+ *
+ * Without this the `rdma_*` lines in --stats-file, and the same fields in
+ * the block DMAed to the guest, read zero for ever while a guest reading
+ * hw_counters sees the real values: a measurement that is always wrong,
+ * which is worse than one that is absent.
+ *
+ * Most names match, so the mapping is spelled out rather than derived --
+ * three do not, and a silent mismatch here would put a counter in the
+ * wrong slot.  Main loop thread only, as ionic_datapath_rdma_counters()
+ * requires.
+ */
+#define IONIC_LIF_RDMA_STAT_MAP(X)                                           \
+    X(REQ_RX_PKT_SEQ_ERR, IONIC_LIF_RDMA_REQ_RX_PKT_SEQ_ERR)                 \
+    X(REQ_RX_RNR_RETRY_ERR, IONIC_LIF_RDMA_REQ_RX_RNR_RETRY_ERR)             \
+    X(REQ_RX_REMOTE_ACCESS_ERR, IONIC_LIF_RDMA_REQ_RX_REMOTE_ACCESS_ERR)     \
+    X(REQ_RX_REMOTE_INV_REQ_ERR, IONIC_LIF_RDMA_REQ_RX_REMOTE_INV_REQ_ERR)   \
+    X(REQ_RX_REMOTE_OPER_ERR, IONIC_LIF_RDMA_REQ_RX_REMOTE_OPER_ERR)         \
+    X(REQ_RX_IMPLIED_NAK_SEQ_ERR, IONIC_LIF_RDMA_REQ_RX_IMPLIED_NAK_SEQ_ERR) \
+    X(REQ_RX_CQE_ERR, IONIC_LIF_RDMA_REQ_RX_CQE_ERR)                         \
+    X(REQ_RX_CQE_FLUSH_ERR, IONIC_LIF_RDMA_REQ_RX_CQE_FLUSH_ERR)             \
+    X(REQ_RX_DUP_RESPONSES, IONIC_LIF_RDMA_REQ_RX_DUP_RESPONSES)             \
+    X(REQ_RX_INVALID_PACKETS, IONIC_LIF_RDMA_REQ_RX_INVALID_PACKETS)         \
+    X(REQ_TX_LOCAL_ACCESS_ERR, IONIC_LIF_RDMA_REQ_TX_LOCAL_ACCESS_ERR)       \
+    X(REQ_TX_LOCAL_OPER_ERR, IONIC_LIF_RDMA_REQ_TX_LOCAL_OPER_ERR)           \
+    X(REQ_TX_MEMORY_MGMT_ERR, IONIC_LIF_RDMA_REQ_TX_MEMORY_MGMT_ERR)         \
+    X(RESP_RX_DUP_REQUESTS, IONIC_LIF_RDMA_RESP_RX_DUP_REQUESTS)             \
+    X(RESP_RX_OUT_OF_BUFFER, IONIC_LIF_RDMA_RESP_RX_OUT_OF_BUFFER)           \
+    X(RESP_RX_OUT_OF_SEQ_PKTS, IONIC_LIF_RDMA_RESP_RX_OUT_OF_SEQ_PKTS)       \
+    X(RESP_RX_CQE_ERR, IONIC_LIF_RDMA_RESP_RX_CQE_ERR)                       \
+    X(RESP_RX_CQE_FLUSH_ERR, IONIC_LIF_RDMA_RESP_RX_CQE_FLUSH_ERR)           \
+    X(RESP_RX_LOCAL_LEN_ERR, IONIC_LIF_RDMA_RESP_RX_LOCAL_LEN_ERR)           \
+    X(RESP_RX_INV_REQUEST_ERR, IONIC_LIF_RDMA_RESP_RX_INV_REQUEST_ERR)       \
+    X(RESP_RX_LOCAL_QP_OPER_ERR, IONIC_LIF_RDMA_RESP_RX_LOCAL_QP_OPER_ERR)   \
+    X(RESP_RX_OUT_OF_ATOMIC_RES,                                             \
+      IONIC_LIF_RDMA_RESP_RX_OUT_OF_ATOMIC_RESOURCE)                         \
+    X(RESP_TX_PKT_SEQ_ERR, IONIC_LIF_RDMA_RESP_TX_PKT_SEQ_ERR)               \
+    X(RESP_TX_REMOTE_INV_REQ_ERR, IONIC_LIF_RDMA_RESP_TX_REMOTE_INV_REQ_ERR) \
+    X(RESP_TX_REMOTE_ACCESS_ERR, IONIC_LIF_RDMA_RESP_TX_REMOTE_ACCESS_ERR)   \
+    X(RESP_TX_REMOTE_OPER_ERR, IONIC_LIF_RDMA_RESP_TX_REMOTE_OPER_ERR)       \
+    X(RESP_TX_RNR_RETRY_ERR, IONIC_LIF_RDMA_RESP_TX_RNR_RETRY_ERR)           \
+    X(TX_CNP_PKTS, IONIC_LIF_TX_RDMA_CNP_PACKETS)                            \
+    X(RX_CNP_PKTS, IONIC_LIF_RX_RDMA_CNP_PACKETS)                            \
+    X(RX_ECN_PKTS, IONIC_LIF_RX_RDMA_ECN_PACKETS)
+
+static void refresh_rdma_lif_stats(struct ionic_eth_emu *emu)
+{
+    uint64_t v[IONIC_DP_RDMA_COUNT];
+
+    if (!emu || !emu->dp)
+        return;
+
+    ionic_datapath_rdma_counters(emu->dp, IONIC_DP_DEVICE, v);
+#define IONIC_LIF_RDMA_STAT_COPY(dp_id, lif_id) \
+    emu->stats.lif[lif_id] = v[IONIC_DP_##dp_id];
+    IONIC_LIF_RDMA_STAT_MAP(IONIC_LIF_RDMA_STAT_COPY)
+#undef IONIC_LIF_RDMA_STAT_COPY
+}
+
 static void publish_block(struct ionic_eth_emu *emu, const char *what,
                           uint64_t base, uint64_t off, uint8_t *block,
                           size_t len, bool *failed)
@@ -569,6 +636,10 @@ void ionic_eth_emu_publish_stats(struct ionic_eth_emu *emu, uint64_t now_ms)
     emu->stats_publish_now = false;
     emu->stats_last_ms = now_ms;
 
+    /* The RDMA error counters live in the datapath; copy them in before
+     * the block is rendered, so the guest's copy agrees with hw_counters. */
+    refresh_rdma_lif_stats(emu);
+
     /* fill() writes all of each block, so no stack bytes reach the guest. */
     if (emu->lif_info_pa) {
         uint8_t block[IONIC_LIF_STATS_BYTES];
@@ -590,6 +661,7 @@ const struct ionic_emu_stats *ionic_eth_emu_get_stats(struct ionic_eth_emu *emu)
 {
     if (!emu)
         return NULL;
+    refresh_rdma_lif_stats(emu);
     ionic_emu_stats_fold(&emu->stats);
     return &emu->stats;
 }
