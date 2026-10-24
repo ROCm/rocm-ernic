@@ -392,6 +392,8 @@
 </li>
       <li><a href="api.html#_CPPv419ionic_datapath_pollP14ionic_datapath">ionic_datapath_poll (C++ function)</a>
 </li>
+      <li><a href="api.html#_CPPv428ionic_datapath_rdma_countersPK14ionic_datapath8uint32_tA19IONIC_DP_RDMA_COUNT_8uint64_t">ionic_datapath_rdma_counters (C++ function)</a>
+</li>
       <li><a href="api.html#_CPPv426ionic_datapath_register_ahP14ionic_datapath8uint32_tAL16E_K7uint8_tAL16E_K7uint8_tAL6E_K7uint8_t8uint32_t">ionic_datapath_register_ah (C++ function)</a>
 </li>
       <li><a href="api.html#_CPPv426ionic_datapath_register_cqP14ionic_datapath8uint32_t8uint32_tPK18ionic_dp_ring_desc">ionic_datapath_register_cq (C++ function)</a>
@@ -434,9 +436,81 @@
 </li>
       <li><a href="api.html#_CPPv423ionic_dp_cq_stride_log2PK18ionic_dp_ring_desc">ionic_dp_cq_stride_log2 (C++ function)</a>
 </li>
+      <li><a href="api.html#c.IONIC_DP_DEVICE">IONIC_DP_DEVICE (C macro)</a>
+</li>
       <li><a href="api.html#_CPPv419ionic_dp_local_nodeP14ionic_datapath">ionic_dp_local_node (C++ function)</a>
 </li>
       <li><a href="api.html#_CPPv422ionic_dp_node_from_gidP14ionic_datapathPK7uint8_t">ionic_dp_node_from_gid (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv421ionic_dp_rdma_counter">ionic_dp_rdma_counter (C++ enum)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter19IONIC_DP_RDMA_COUNTE">ionic_dp_rdma_counter::IONIC_DP_RDMA_COUNT (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter23IONIC_DP_REQ_RX_CQE_ERRE">ionic_dp_rdma_counter::IONIC_DP_REQ_RX_CQE_ERR (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter29IONIC_DP_REQ_RX_CQE_FLUSH_ERRE">ionic_dp_rdma_counter::IONIC_DP_REQ_RX_CQE_FLUSH_ERR (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter29IONIC_DP_REQ_RX_DUP_RESPONSESE">ionic_dp_rdma_counter::IONIC_DP_REQ_RX_DUP_RESPONSES (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter35IONIC_DP_REQ_RX_IMPLIED_NAK_SEQ_ERRE">ionic_dp_rdma_counter::IONIC_DP_REQ_RX_IMPLIED_NAK_SEQ_ERR (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter31IONIC_DP_REQ_RX_INVALID_PACKETSE">ionic_dp_rdma_counter::IONIC_DP_REQ_RX_INVALID_PACKETS (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter27IONIC_DP_REQ_RX_PKT_SEQ_ERRE">ionic_dp_rdma_counter::IONIC_DP_REQ_RX_PKT_SEQ_ERR (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter33IONIC_DP_REQ_RX_REMOTE_ACCESS_ERRE">ionic_dp_rdma_counter::IONIC_DP_REQ_RX_REMOTE_ACCESS_ERR (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter34IONIC_DP_REQ_RX_REMOTE_INV_REQ_ERRE">ionic_dp_rdma_counter::IONIC_DP_REQ_RX_REMOTE_INV_REQ_ERR (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter31IONIC_DP_REQ_RX_REMOTE_OPER_ERRE">ionic_dp_rdma_counter::IONIC_DP_REQ_RX_REMOTE_OPER_ERR (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter29IONIC_DP_REQ_RX_RNR_RETRY_ERRE">ionic_dp_rdma_counter::IONIC_DP_REQ_RX_RNR_RETRY_ERR (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter32IONIC_DP_REQ_TX_LOCAL_ACCESS_ERRE">ionic_dp_rdma_counter::IONIC_DP_REQ_TX_LOCAL_ACCESS_ERR (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter30IONIC_DP_REQ_TX_LOCAL_OPER_ERRE">ionic_dp_rdma_counter::IONIC_DP_REQ_TX_LOCAL_OPER_ERR (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter31IONIC_DP_REQ_TX_MEMORY_MGMT_ERRE">ionic_dp_rdma_counter::IONIC_DP_REQ_TX_MEMORY_MGMT_ERR (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter24IONIC_DP_RESP_RX_CQE_ERRE">ionic_dp_rdma_counter::IONIC_DP_RESP_RX_CQE_ERR (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter30IONIC_DP_RESP_RX_CQE_FLUSH_ERRE">ionic_dp_rdma_counter::IONIC_DP_RESP_RX_CQE_FLUSH_ERR (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter29IONIC_DP_RESP_RX_DUP_REQUESTSE">ionic_dp_rdma_counter::IONIC_DP_RESP_RX_DUP_REQUESTS (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter32IONIC_DP_RESP_RX_INV_REQUEST_ERRE">ionic_dp_rdma_counter::IONIC_DP_RESP_RX_INV_REQUEST_ERR (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter30IONIC_DP_RESP_RX_LOCAL_LEN_ERRE">ionic_dp_rdma_counter::IONIC_DP_RESP_RX_LOCAL_LEN_ERR (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter34IONIC_DP_RESP_RX_LOCAL_QP_OPER_ERRE">ionic_dp_rdma_counter::IONIC_DP_RESP_RX_LOCAL_QP_OPER_ERR (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter34IONIC_DP_RESP_RX_OUT_OF_ATOMIC_RESE">ionic_dp_rdma_counter::IONIC_DP_RESP_RX_OUT_OF_ATOMIC_RES (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter30IONIC_DP_RESP_RX_OUT_OF_BUFFERE">ionic_dp_rdma_counter::IONIC_DP_RESP_RX_OUT_OF_BUFFER (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter32IONIC_DP_RESP_RX_OUT_OF_SEQ_PKTSE">ionic_dp_rdma_counter::IONIC_DP_RESP_RX_OUT_OF_SEQ_PKTS (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter28IONIC_DP_RESP_TX_PKT_SEQ_ERRE">ionic_dp_rdma_counter::IONIC_DP_RESP_TX_PKT_SEQ_ERR (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter34IONIC_DP_RESP_TX_REMOTE_ACCESS_ERRE">ionic_dp_rdma_counter::IONIC_DP_RESP_TX_REMOTE_ACCESS_ERR (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter35IONIC_DP_RESP_TX_REMOTE_INV_REQ_ERRE">ionic_dp_rdma_counter::IONIC_DP_RESP_TX_REMOTE_INV_REQ_ERR (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter32IONIC_DP_RESP_TX_REMOTE_OPER_ERRE">ionic_dp_rdma_counter::IONIC_DP_RESP_TX_REMOTE_OPER_ERR (C++ enumerator)</a>
+</li>
+  </ul></td>
+  <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter30IONIC_DP_RESP_TX_RNR_RETRY_ERRE">ionic_dp_rdma_counter::IONIC_DP_RESP_TX_RNR_RETRY_ERR (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter20IONIC_DP_RX_CNP_PKTSE">ionic_dp_rdma_counter::IONIC_DP_RX_CNP_PKTS (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter20IONIC_DP_RX_ECN_PKTSE">ionic_dp_rdma_counter::IONIC_DP_RX_ECN_PKTS (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter20IONIC_DP_TX_CNP_PKTSE">ionic_dp_rdma_counter::IONIC_DP_TX_CNP_PKTS (C++ enumerator)</a>
+</li>
+      <li><a href="api.html#c.IONIC_DP_RDMA_COUNTERS">IONIC_DP_RDMA_COUNTERS (C macro)</a>
+</li>
+      <li><a href="api.html#c.IONIC_DP_RDMA_ENUM">IONIC_DP_RDMA_ENUM (C macro)</a>
 </li>
       <li><a href="api.html#_CPPv418ionic_dp_ring_desc">ionic_dp_ring_desc (C++ struct)</a>
 </li>
@@ -462,8 +536,6 @@
 </li>
       <li><a href="api.html#_CPPv420ionic_eth_emu_createP9vfu_ctx_t6size_t">ionic_eth_emu_create (C++ function)</a>
 </li>
-  </ul></td>
-  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api.html#_CPPv421ionic_eth_emu_destroyP13ionic_eth_emu">ionic_eth_emu_destroy (C++ function)</a>
 </li>
       <li><a href="api.html#_CPPv423ionic_eth_emu_get_statsP13ionic_eth_emu">ionic_eth_emu_get_stats (C++ function)</a>

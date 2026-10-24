@@ -1208,20 +1208,24 @@ block on every flush.</p>
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>Not every counter is live yet.  The Ethernet, drop,
-ring and RDMA traffic counters are, and
-<code class="docutils literal notranslate"><span class="pre">tests/py/test_ionic_hw_stats.py</span></code> drives traffic
-that moves them.  The <code class="docutils literal notranslate"><span class="pre">rdma_req_*</span></code> and
-<code class="docutils literal notranslate"><span class="pre">rdma_resp_*</span></code> error counters are named and
-published, but nothing in the datapath increments
-them, so they read zero whatever happens: a zero
-there means “not counted”, not “did not happen”.</p>
-<p>Wiring them up is
-<a class="reference external" href="https://github.com/ROCm/rocm-ernic/pull/237">PR #237</a>.
-Whoever lands it should delete this paragraph, and
-will find that the counter lists below and the
-structural checks in the test pick the new counters
-up on their own.</p>
+<p>Not every counter in <em>this</em> block is live.  The
+Ethernet, drop, ring and RDMA traffic counters are,
+and <code class="docutils literal notranslate"><span class="pre">tests/py/test_ionic_hw_stats.py</span></code> drives
+traffic that moves them.  The <code class="docutils literal notranslate"><span class="pre">rdma_req_*</span></code> and
+<code class="docutils literal notranslate"><span class="pre">rdma_resp_*</span></code> error counters at qwords 96 to 125
+are named and published, but nothing increments
+them here, so they read zero whatever happens: a
+zero there means “not counted”, not “did not
+happen”.</p>
+<p>The device does count those errors, and serves them
+to the guest through the admin queue; see <a class="reference internal" href="#guest-hw-counters-and-real-silicon">Guest
+hw_counters and real silicon</a> below.  What is
+missing is the path from the data path’s counters
+into this block, so <code class="docutils literal notranslate"><span class="pre">ernic_lif_counter_total</span></code> –
+the exporter’s view – still shows zeros where the
+guest’s <code class="docutils literal notranslate"><span class="pre">hw_counters</span></code> shows real numbers.  Reading
+a zero in Grafana is not evidence that the fabric is
+clean.</p>
 </div>
 </section>
 <section id="guest-hw-counters-and-real-silicon">
@@ -1247,10 +1251,15 @@ exporter has always published them – under different
 names.  What a guest reads as <code class="docutils literal notranslate"><span class="pre">total_bytes_sent</span></code> is
 <code class="docutils literal notranslate"><span class="pre">ernic_rdma_bytes_sent_total</span></code> here, and what it reads
 per QP as <code class="docutils literal notranslate"><span class="pre">wqes_processed</span></code> is
-<code class="docutils literal notranslate"><span class="pre">ernic_qp_wqes_processed_total</span></code>.  The tables are
-defined in <code class="docutils literal notranslate"><span class="pre">dev_stats</span></code> and <code class="docutils literal notranslate"><span class="pre">qp_stats</span></code> in
-<code class="docutils literal notranslate"><span class="pre">src/ionic_adminq_priv.h</span></code>:</p>
-<p>The device table, 5 counters:</p>
+<code class="docutils literal notranslate"><span class="pre">ernic_qp_wqes_processed_total</span></code>.  The RDMA error
+counters are the exception: the data path keeps them
+per device and per QP, and only this view reports
+them, so the exporter has no metric that carries them
+yet.  The tables are defined in <code class="docutils literal notranslate"><span class="pre">dev_stats</span></code> and
+<code class="docutils literal notranslate"><span class="pre">qp_stats</span></code> in <code class="docutils literal notranslate"><span class="pre">src/ionic_adminq_priv.h</span></code>, the first
+entries written out and the rest generated from
+<code class="docutils literal notranslate"><span class="pre">IONIC_DP_RDMA_COUNTERS</span></code> in <code class="docutils literal notranslate"><span class="pre">src/ionic_datapath.h</span></code>:</p>
+<p>The device table, 35 counters:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <colgroup>
 <col style="width: 100.0%" />
@@ -1270,10 +1279,70 @@ defined in <code class="docutils literal notranslate"><span class="pre">dev_stat
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">total_bytes_rdma_write</span></code></p></td>
 </tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">req_rx_pkt_seq_err</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">req_rx_rnr_retry_err</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">req_rx_remote_access_err</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">req_rx_remote_inv_req_err</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">req_rx_remote_oper_err</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">req_rx_implied_nak_seq_err</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">req_rx_cqe_err</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">req_rx_cqe_flush_err</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">req_rx_dup_responses</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">req_rx_invalid_packets</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">req_tx_local_access_err</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">req_tx_local_oper_err</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">req_tx_memory_mgmt_err</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">resp_rx_dup_requests</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">resp_rx_out_of_buffer</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">resp_rx_out_of_seq_pkts</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">resp_rx_cqe_err</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">resp_rx_cqe_flush_err</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">resp_rx_local_len_err</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">resp_rx_inv_request_err</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">resp_rx_local_qp_oper_err</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">resp_rx_out_of_atomic_res</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">resp_tx_pkt_seq_err</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">resp_tx_remote_inv_req_err</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">resp_tx_remote_access_err</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">resp_tx_remote_oper_err</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">resp_tx_rnr_retry_err</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">tx_cnp_pkts</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">rx_cnp_pkts</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rx_ecn_pkts</span></code></p></td>
+</tr>
 </tbody>
 </table>
 </div>
-<p>The per-QP table, 8 counters:</p>
+<p>The per-QP table, 38 counters:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <colgroup>
 <col style="width: 100.0%" />
@@ -1298,6 +1367,66 @@ defined in <code class="docutils literal notranslate"><span class="pre">dev_stat
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">bytes_rdma_read</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">bytes_rdma_write</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">req_rx_pkt_seq_err</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">req_rx_rnr_retry_err</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">req_rx_remote_access_err</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">req_rx_remote_inv_req_err</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">req_rx_remote_oper_err</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">req_rx_implied_nak_seq_err</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">req_rx_cqe_err</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">req_rx_cqe_flush_err</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">req_rx_dup_responses</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">req_rx_invalid_packets</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">req_tx_local_access_err</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">req_tx_local_oper_err</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">req_tx_memory_mgmt_err</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">resp_rx_dup_requests</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">resp_rx_out_of_buffer</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">resp_rx_out_of_seq_pkts</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">resp_rx_cqe_err</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">resp_rx_cqe_flush_err</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">resp_rx_local_len_err</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">resp_rx_inv_request_err</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">resp_rx_local_qp_oper_err</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">resp_rx_out_of_atomic_res</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">resp_tx_pkt_seq_err</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">resp_tx_remote_inv_req_err</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">resp_tx_remote_access_err</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">resp_tx_remote_oper_err</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">resp_tx_rnr_retry_err</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">tx_cnp_pkts</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rx_cnp_pkts</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">rx_ecn_pkts</span></code></p></td>
 </tr>
 </tbody>
 </table>
