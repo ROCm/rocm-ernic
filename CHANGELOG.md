@@ -4,6 +4,23 @@
 
 ### Fixed
 
+* **An extern that already wrote the destination no longer lets the
+  ordinary transfer land on top of it.** An action may call the extern
+  more than once -- `cvt()` and then `map()`, say -- and the second call
+  declines when the work request is not that operation's shape. The
+  dispatch-as-an-ordinary-transfer path then ran even though the first
+  call had written the result, so the guest got its raw payload where it
+  asked for a converted one, with a successful completion. The
+  fall-through is now taken only when nothing ran;
+  `tests/data/p4/fp8_cvt_then_map.p4` is the program that makes it
+  happen, and the device refuses it.
+* **An out-of-range `enum p4_fmt` is refused rather than indexing the
+  format table.** `p4_fmt_valid()` took a `uint8_t`, so a wider bad value
+  was narrowed before it was checked -- `(enum p4_fmt)256` validated as
+  format 0 and then read `fmt_table[256]`. It takes the enum now. Not
+  reachable from a guest, whose formats arrive as bytes, but the check
+  was in the wrong order.
+
 * **A P4 program that selects an fp8 reduction no longer breaks ordinary
   RDMA WRITE.** A table keyed on the opcode -- which is what
   `tests/data/p4/fp8_policy.p4` does, and the only key that can select a
@@ -627,6 +644,24 @@
   `ernic-rdma-errors` (`nix build .#ernic-rdma-errors`, or the CMake target),
   run in a guest, makes each of these errors happen and checks that its
   counters moved.
+
+### Limitations
+
+* **A P4 conversion's destination may not overlap its source**, and the
+  device does not check that it does not. The conversion is streamed a
+  chunk at a time, so a destination that overlaps the part of the source
+  still to be read destroys it before it is used, and the operation
+  completes successfully with wrong results from that point on. Widening
+  reaches it easily: fp16 to fp32 into the same address writes two bytes
+  for every one it has read.
+
+  Unchecked because checking it is not a range comparison -- two keys
+  may be registered over the same guest pages, so overlap has to be
+  decided on what the keys resolve to -- and the answer that also covers
+  that case is to stage the whole source before writing any of it. Until
+  then a guest that overlaps the two regions corrupts its own memory
+  with its own keys: it reaches nothing it has not registered, and every
+  region is still checked for that.
 
 ### Changed
 

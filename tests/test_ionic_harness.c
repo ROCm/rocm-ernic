@@ -2458,7 +2458,7 @@ static void test_p4_rdma(void)
     struct ih h;
     struct ih_cq cq;
     struct ih_qp a, b;
-    struct ih_mr mra, mrb, mrc;
+    struct ih_mr mra = {0}, mrb = {0}, mrc = {0};
     struct ih_cqe e;
     struct p4_update up;
     char err[160];
@@ -3041,7 +3041,10 @@ static void test_p4_cvt(void)
     struct ih h;
     struct ih_cq cq;
     struct ih_qp a, b;
-    struct ih_mr mra, mrc;
+    /* Zeroed: the setup chain below short-circuits, so a failure before
+     * ih_mr_create() leaves a descriptor untouched and the failure path
+     * still frees both.  ih_mr_free() does an unguarded free(). */
+    struct ih_mr mra = {0}, mrc = {0};
     struct ih_cqe e;
     struct p4_update up;
     char err[160];
@@ -3194,6 +3197,116 @@ static void test_p4_cvt(void)
         check(T, memcmp(got, src, 128) == 0,
               "the two-entry write was not an ordinary gathered transfer");
     }
+
+    ionic_datapath_set_p4_engine(h.dev->ionic_dp, NULL);
+    p4_engine_destroy(eng);
+    ih_mr_free(&mra);
+    ih_mr_free(&mrc);
+    teardown(T, &h);
+}
+
+/*
+ * An action that converts and then asks for an arithmetic the request
+ * cannot be: the extern writes the destination, the second call
+ * declines, and the operation must FAIL rather than dispatch the
+ * ordinary transfer over the result it has already produced.
+ *
+ * Without this the ordinary write lands on top of the converted bytes
+ * and the guest is told the operation succeeded, which is the one thing
+ * the "called an extern but did not suppress" check exists to prevent.
+ */
+static void test_p4_cvt_then_map(void)
+{
+    const char *T = "p4-cvt-map";
+    struct ih h;
+    struct ih_cq cq;
+    struct ih_qp a, b;
+    struct ih_mr mra = {0}, mrc = {0};
+    struct ih_cqe e;
+    struct p4_update up;
+    char err[160];
+    static uint8_t src[P4C_N_IN], got[P4C_N_IN];
+
+    if (!setup(T, &h, "loopback"))
+        return;
+
+    bool ok = ih_cq_create(&h, &cq, P4R_CQ, 6) &&
+              ih_qp_create(&h, &a, P4R_QP_A, IH_QPT_RC, &cq, &cq, NULL) &&
+              ih_qp_create(&h, &b, P4R_QP_B, IH_QPT_RC, &cq, &cq, NULL) &&
+              ih_qp_connect(&h, &a, &b) &&
+              ih_mr_create(&h, &mra, FP8R_MR_A, FP8R_VA_A, P4R_MR_LEN,
+                           IH_ACCESS_ALL, false) &&
+              ih_mr_create(&h, &mrc, FP8R_MR_C, FP8R_VA_C, P4R_MR_LEN,
+                           IH_ACCESS_ALL, true);
+    if (!check(T, ok, "setup failed")) {
+        ih_mr_free(&mra);
+        ih_mr_free(&mrc);
+        teardown(T, &h);
+        return;
+    }
+
+    struct p4_engine *eng = p4_engine_create();
+    if (!check(T, eng != NULL, "p4_engine_create failed")) {
+        ih_mr_free(&mra);
+        ih_mr_free(&mrc);
+        teardown(T, &h);
+        return;
+    }
+    check(T, p4r_load(eng, "fp8_cvt_then_map.json") == 0,
+          "the two-extern program did not load");
+    ionic_datapath_set_p4_engine(h.dev->ionic_dp, eng);
+
+    memset(src, 0x3C, sizeof(src)); /* fp16 1.0, low byte first */
+    for (uint32_t i = 1; i < P4C_N_IN; i += 2)
+        src[i] = 0x3Cu;
+    check(T, ih_mr_write(&h, &mra, FP8R_VA_A, src, sizeof(src)),
+          "write the source");
+    memset(got, 0xA5, sizeof(got));
+    check(T, ih_mr_write(&h, &mrc, FP8R_VA_C, got, sizeof(got)), "poison C");
+
+    memset(&up, 0, sizeof(up));
+    up.type = P4_UPDATE_INSERT;
+    (void)snprintf(up.table, sizeof(up.table), "Ing.policy");
+    (void)snprintf(up.action, sizeof(up.action), "Ing.convert_then_reduce");
+    up.nmatch = 1;
+    up.match[0].len = 1;
+    up.match[0].value[P4_MATCH_BYTES - 1] = IH_OP_RDMA_WRITE;
+    up.nparams = 3;
+    up.params[0].len = 1;
+    up.params[0].value[P4_MATCH_BYTES - 1] = P4_FMT_FP16;
+    up.params[1].len = 1;
+    up.params[1].value[P4_MATCH_BYTES - 1] = P4_FMT_FP8_E4M3;
+    up.params[2].len = 1;
+    up.params[2].value[P4_MATCH_BYTES - 1] = P4_FP8_OP_ADD;
+    check(T, p4_engine_update(eng, &up, err, sizeof(err)) == 0,
+          "the entry was not installed: %s", err);
+
+    /* One gather entry: a conversion's shape, and not a reduction's. */
+    struct ih_sge sge = {.va = FP8R_VA_A, .len = P4C_N_IN, .lkey = mra.lkey};
+    struct ih_send w = {
+        .op = IH_OP_RDMA_WRITE,
+        .flags = IH_WQE_SIGNALLED,
+        .remote_va = FP8R_VA_C,
+        .rkey = mrc.lkey,
+        .sge = &sge,
+        .nsge = 1,
+    };
+
+    ih_post_send(&h, &a, &w);
+    check(T, ih_cq_poll(&h, &cq, &e) && e.error,
+          "an operation whose extern ran and then declined was not failed");
+
+    /*
+     * And nothing transferred: the raw fp16 source must not be sitting
+     * in the destination. The converted prefix may be there -- the
+     * extern wrote it before the second call declined -- but the bytes
+     * past it are what an ordinary write would have reached.
+     */
+    check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, sizeof(got)), "read back C");
+    check(T,
+          memcmp(got + P4C_N_ELEMS, src + P4C_N_ELEMS,
+                 P4C_N_IN - P4C_N_ELEMS) != 0,
+          "the ordinary transfer landed on top of the converted result");
 
     ionic_datapath_set_p4_engine(h.dev->ionic_dp, NULL);
     p4_engine_destroy(eng);
@@ -3390,6 +3503,7 @@ static const struct {
     {"fp8-map", test_fp8_map},
     {"p4-rdma", test_p4_rdma},
     {"p4-cvt", test_p4_cvt},
+    {"p4-cvt-map", test_p4_cvt_then_map},
     {"p4-devcmd", test_p4_devcmd},
 #endif
     {"nvmeof", test_nvmeof},

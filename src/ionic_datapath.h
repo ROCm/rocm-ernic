@@ -344,6 +344,24 @@ int ionic_datapath_fp8_map(struct ionic_datapath *dp, uint8_t op,
  * This is the only operation whose destination length is not its source
  * length, so each region is checked against its own, in full, before a
  * byte moves.  Returns 0, or a negative errno.
+ *
+ * The destination may not overlap the source, and nothing here checks
+ * that it does not.  The conversion streams a chunk at a time -- read,
+ * convert, write -- so a destination that overlaps the part of the
+ * source still to be read is overwritten before it is used, and the
+ * operation then completes successfully with wrong results from that
+ * point on.  Widening makes it easy to reach: fp16 to fp32 into the same
+ * address writes two bytes for every one it has read, so the second
+ * chunk's input is gone before the first chunk is finished.
+ *
+ * Not checked because checking it properly is not a range comparison.
+ * Two different keys may be registered over the same guest pages, so
+ * overlap has to be decided on what the keys resolve to rather than on
+ * the keys themselves, and the honest fix is to stage the whole source
+ * before writing any of it.  Until then this is the guest corrupting its
+ * own memory with its own keys -- it can reach nothing it has not
+ * registered, and every region is still checked for that -- so it is
+ * recorded here rather than guessed at.
  */
 int ionic_datapath_fmt_convert(struct ionic_datapath *dp, uint8_t src_fmt,
                                uint8_t dst_fmt, uint32_t a_lkey, uint64_t a_va,
