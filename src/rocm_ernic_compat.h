@@ -512,9 +512,20 @@ uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle,
  */
 int ionic_mesh_claim_gid(pvrdma_handle_t handle, const uint8_t *gid_16bytes,
                          bool add);
-/* Header and body stay separate all the way down to writev. */
+/*
+ * Send a message to another node without waiting for it: 0 once queued, or a
+ * negative errno.  -EAGAIN means a request (!reply) found the queue to
+ * dst_node full, and is to be tried again later; a reply is queued past that
+ * point.  See tcp_backend_send_ionic_v().
+ */
 int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
-                     size_t hdr_len, const void *body, size_t body_len);
+                     size_t hdr_len, const void *body, size_t body_len,
+                     bool reply);
+/*
+ * Whether a request of len bytes, header included, to dst_node would be
+ * queued now rather than refused with -EAGAIN; true when there is no mesh.
+ */
+bool ionic_mesh_has_room(pvrdma_handle_t handle, uint32_t dst_node, size_t len);
 void ionic_mesh_set_recv_cb(pvrdma_handle_t handle, ionic_mesh_recv_fn fn,
                             void *opaque);
 

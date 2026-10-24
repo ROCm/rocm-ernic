@@ -655,7 +655,7 @@ static int64_t call_hook(RdmaBackendDev *dev, enum hook hook)
         return 0;
     case HOOK_SEND:
         return tcp_backend_send_ionic_v(dev, MESH_PEER, hdr, sizeof(hdr), NULL,
-                                        0);
+                                        0, false);
     default:
         abort(); /* every row names one of the cases above */
     }
@@ -782,7 +782,8 @@ static void test_hooks_on_tcp(void)
     CHECK(!priv->ionic_recv_fn && !priv->ionic_recv_opaque,
           "receive callback not cleared");
 
-    rc = tcp_backend_send_ionic_v(&dev, MESH_PEER, hdr, sizeof(hdr), NULL, 0);
+    rc = tcp_backend_send_ionic_v(&dev, MESH_PEER, hdr, sizeof(hdr), NULL, 0,
+                                  false);
     CHECK(rc == -ENOTCONN,
           "send to an unconnected node returned %d, expected -ENOTCONN", rc);
 

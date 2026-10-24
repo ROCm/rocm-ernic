@@ -25,10 +25,10 @@
  */
 
 #include <endian.h>
+#include <errno.h>
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/uio.h>
@@ -158,11 +158,23 @@ static uint8_t g_wire[WIRE_MAX][WIRE_BYTES];
 static size_t g_wire_len[WIRE_MAX];
 static size_t g_nwire;
 
+/*
+ * What the mesh says: whether ionic_mesh_has_room() finds room to queue a
+ * request, and, unless it is 0, what ionic_mesh_sendv() returns instead of
+ * taking the message.
+ */
+static bool g_room;
+static int g_send_rc;
+
 int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
-                     size_t hdr_len, const void *body, size_t body_len)
+                     size_t hdr_len, const void *body, size_t body_len,
+                     bool reply)
 {
     (void)handle;
+    (void)reply;
     (void)dst_node;
+    if (g_send_rc != 0)
+        return g_send_rc;
     if (g_nwire >= WIRE_MAX || hdr_len + body_len > WIRE_BYTES)
         return -1;
     memcpy(g_wire[g_nwire], hdr, hdr_len);
@@ -211,6 +223,13 @@ uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle, const uint8_t *gid)
     (void)handle;
     (void)gid;
     return UINT32_MAX;
+}
+bool ionic_mesh_has_room(pvrdma_handle_t handle, uint32_t dst_node, size_t len)
+{
+    (void)handle;
+    (void)dst_node;
+    (void)len;
+    return g_room;
 }
 void ionic_mesh_set_recv_cb(pvrdma_handle_t handle, ionic_mesh_recv_fn fn,
                             void *opaque)
@@ -480,6 +499,8 @@ static struct ionic_datapath *setup(void)
     for (size_t i = 0; i < MR_LEN; i++)
         g_mem[SRC_GPA + i] = (uint8_t)i;
     g_nwire = 0;
+    g_room = true;
+    g_send_rc = 0;
     g_now_ms = T0;
     g_local_node = UINT32_MAX;
     g_recv_fn = NULL;
@@ -851,6 +872,66 @@ static void run_pending_past_deadline(struct ionic_datapath *dp)
     run_pending_at(dp, T0 + PENDING_MS + 1);
 }
 
+/* The mesh can't send the request at all: it has no connection to node 1 */
+static void run_remote_send_failed(struct ionic_datapath *dp)
+{
+    remote(dp, QP_B);
+    g_send_rc = -ENOTCONN;
+    post_send(dp, QP_A, &WRITE_OK);
+    poll_at(dp, T0 + 1);
+}
+
+/* The mesh's queue to node 1 is full: the WRITE waits, and isn't gathered */
+static void run_remote_busy(struct ionic_datapath *dp)
+{
+    remote(dp, QP_B);
+    g_room = false;
+    post_send(dp, QP_A, &WRITE_OK);
+    poll_at(dp, T0 + 1);
+    poll_at(dp, T0 + PENDING_MS + 1);
+    if (g_nwire != 0) {
+        printf("FAIL: a WRITE was sent with no room to queue it\n");
+        failures++;
+    }
+}
+
+/* Then the queue drains, and the next pass sends it */
+static void run_remote_busy_then_room(struct ionic_datapath *dp)
+{
+    run_remote_busy(dp);
+    g_room = true;
+    poll_at(dp, g_now_ms + 1);
+    pump(dp);
+}
+
+/*
+ * The mesh refuses with -EAGAIN after all, as it does when the route to the
+ * node changed after it found room, and then takes it.
+ */
+static void run_remote_send_busy(struct ionic_datapath *dp)
+{
+    remote(dp, QP_B);
+    g_send_rc = -EAGAIN;
+    post_send(dp, QP_A, &WRITE_OK);
+    poll_at(dp, T0 + 1);
+    g_send_rc = 0;
+    poll_at(dp, T0 + 2);
+    pump(dp);
+}
+
+/* QP_A moves to ERR while its WRITE waits for room, and room comes after */
+static void run_remote_busy_flush(struct ionic_datapath *dp)
+{
+    run_remote_busy(dp);
+    ionic_datapath_flush_qp(dp, QP_A);
+    g_room = true;
+    poll_at(dp, g_now_ms + 1);
+    if (g_nwire != 0) {
+        printf("FAIL: a flushed WRITE was sent once there was room\n");
+        failures++;
+    }
+}
+
 static void run_reregister(struct ionic_datapath *dp)
 {
     run_unsupported_op(dp);
@@ -982,6 +1063,24 @@ static const struct dp_case cases[] = {
      "an error completion on a CQ that was never registered",
      "no counter moves: the guest never saw the error",
      run_unknown_cq,
+     {{0}},
+     {{0}},
+     {{0}}},
+    {"negative",
+     "remote RDMA WRITE the mesh can't send, having no connection to the "
+     "node",
+     "completes with retry-exceeded, as a request the peer never answers "
+     "does: an implied NAK sequence error and a CQE error, not a remote "
+     "access error",
+     run_remote_send_failed,
+     {W(REQ_RX_IMPLIED_NAK_SEQ_ERR, 1), W(REQ_RX_CQE_ERR, 1)},
+     {{0}},
+     {{0}}},
+    {"negative",
+     "remote RDMA WRITE while the mesh has no room to queue it, past "
+     "PENDING_MS",
+     "no counter moves: the WRITE waits, and nothing times out",
+     run_remote_busy,
      {{0}},
      {{0}},
      {{0}}},
@@ -1301,6 +1400,19 @@ static const struct sq_case sq_cases[] = {
     {"corner", "QP re-registered while its send queue waits",
      "the wait is forgotten: nothing completes at RNR_RETRY_MS",
      run_local_rnr_reregister, 0, false, 0, 0},
+    {"negative", "remote RDMA WRITE while the mesh has no room to queue it",
+     "nothing is sent or completed, and the send queue waits at the WRITE, "
+     "past PENDING_MS",
+     run_remote_busy, 0, false, 1, 0},
+    {"positive", "the mesh then has room",
+     "the next pass sends the WRITE, which completes, and the queue moves on",
+     run_remote_busy_then_room, 1, false, 0, 1},
+    {"corner", "the mesh refuses the WRITE with -EAGAIN, then takes it",
+     "it waits for a pass, then is sent and completes", run_remote_send_busy, 1,
+     false, 0, 1},
+    {"corner", "QP flushed while its WRITE waits for room, then room comes",
+     "only the two flush completions: the WRITE is never sent",
+     run_remote_busy_flush, 2, false, 0, 1},
 };
 
 static bool recv_delivered(void)

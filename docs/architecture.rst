@@ -778,6 +778,15 @@ Topology
   and registers under the id it has. A worker that has heard
   nothing for an interval sends the manager a heartbeat of
   its own, so the two needn't share an interval.
+- A send to a node that stays connected but stops reading
+  gives up once nothing has gone out for the send timeout,
+  ``ERNIC_TCP_SEND_TIMEOUT_MS`` (10000 by default), and shuts
+  the connection down, which has it closed as if the node had
+  hung up. The manager gives up in half the time, so that when
+  it relays to a node that has stopped reading, it gives up on
+  that node before the worker whose message it is relaying
+  gives up on the manager. The health check's heartbeat skips
+  a node it would have to wait for.
 - The protocol carries a magic number and a version, checked at
   registration and handshake.
 
@@ -846,8 +855,13 @@ When the data path executes a WQE on a connected (RC or UC) QP
 whose peer is on another node:
 
 #. It gathers the payload (for SEND and WRITE) out of guest
-   memory, builds the wire header, and sends the message to the
-   peer's server.
+   memory, builds the wire header, and queues the message for
+   the peer's server. The main thread never waits for a peer:
+   each connection has a send thread that writes what is
+   queued. A connection takes up to 32 MiB of requests; a WQE
+   that doesn't fit stays on the send queue, which stops there,
+   and is tried again on a later pass, as a NIC out of transmit
+   credits holds its queue. Replies have twice the room.
 #. It records the request in a **pending table** and does not
    post a completion yet. The completion must wait for the
    peer, both so the reported latency includes the network and
@@ -878,12 +892,15 @@ its own. Two parts of RoCE's error handling are imitated:
 - **Lost peer.** A request whose reply never arrives completes
   with a retry-exceeded error after 30 seconds, so a peer that
   dies after accepting a request doesn't wedge the guest's send
-  queue. This covers missing replies, not blocked sends.
-  Requests and replies are sent synchronously from the main
-  thread, and a send to a peer that is still connected but has
-  stopped reading waits until the peer reads or the server
-  shuts down. While it waits, the main thread does nothing
-  else, timeouts included, so the whole device stalls.
+  queue. A request that can't be sent at all, because there is
+  no connection to the peer, completes with the same error at
+  once. A peer that is still connected but has stopped reading
+  holds up only its own connection's send thread, until the
+  send timeout shuts the connection down; the requests still
+  queued for it are lost, and complete after the 30 seconds.
+  The WQEs waiting for room in the queue then go to the
+  manager to relay, on a worker, or fail at once, if there is
+  no route left.
 
 The Ethernet Side
 -----------------
@@ -1033,6 +1050,10 @@ Threads
    * - receive (one per connection)
      - ``tcp``
      - Reads mesh messages and queues them for the main thread
+   * - send (one per connection)
+     - ``tcp``, once the data path sends on it
+     - Writes the messages the main thread queues for the
+       connection's peer, so the main thread never waits for one
    * - health check
      - ``tcp`` manager
      - Heartbeats, dead-node detection, closing dead nodes'

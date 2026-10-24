@@ -682,13 +682,28 @@ void ionic_datapath_unregister_cq(struct ionic_datapath *dp, uint32_t cq_id)
     dp->cq[cq_id].valid = false;
 }
 
-/* Lets @q's send queue move past the WQE that was waiting for a receive. */
-static void sq_rnr_clear(struct ionic_datapath *dp, struct ionic_qp_ring *q)
+/*
+ * Lets @q's send queue move past the WQE that was waiting, for a receive or
+ * for room in the mesh's send queue.
+ */
+static void sq_stall_clear(struct ionic_datapath *dp, struct ionic_qp_ring *q)
 {
-    if (!q->sq_rnr)
+    if (!q->sq_rnr && !q->sq_busy)
         return;
     q->sq_rnr = false;
+    q->sq_busy = false;
     dp->sq_stalled--;
+}
+
+/*
+ * Stops @q's send queue on a WQE for another node until the mesh has room to
+ * queue it; the stalled-queue retry in ionic_datapath_poll() tries it again.
+ */
+static void sq_busy_set(struct ionic_datapath *dp, struct ionic_qp_ring *q)
+{
+    if (!q->sq_rnr && !q->sq_busy)
+        dp->sq_stalled++;
+    q->sq_busy = true;
 }
 
 void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
@@ -740,7 +755,7 @@ void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
     q->rq_stride_log2 = rq->stride_log2;
     q->sq_cq_id = sq_cq_id;
     q->rq_cq_id = rq_cq_id;
-    sq_rnr_clear(dp, q);
+    sq_stall_clear(dp, q);
     q->sq_cons = q->sq_prod = 0;
     q->rq_prod = q->rq_cons = 0;
     q->msn = 0;
@@ -767,7 +782,7 @@ void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id)
         return;
     if (dp->nvmeof_cm)
         nvmeof_cm_drop_qp(dp->nvmeof_cm, qp_id);
-    sq_rnr_clear(dp, &dp->qp[qp_id]);
+    sq_stall_clear(dp, &dp->qp[qp_id]);
     ionic_dp_buf_release(&dp->qp[qp_id].sq_buf);
     ionic_dp_buf_release(&dp->qp[qp_id].rq_buf);
     dp->qp[qp_id].valid = false;
@@ -1748,7 +1763,7 @@ void ionic_datapath_flush_qp(struct ionic_datapath *dp, uint32_t qp_id)
      * land a message the driver has already reported flushed, and complete
      * its work request a second time.
      */
-    sq_rnr_clear(dp, q);
+    sq_stall_clear(dp, q);
     q->sq_cons = q->sq_prod;
 
     cq_post_flush(dp, q->sq_cq_id, qp_id, CQE_TYPE_SEND_NPG);
@@ -2266,10 +2281,10 @@ static void pending_complete(struct ionic_datapath *dp, struct dp_pending *p,
 
 static int dp_mesh_tx(struct ionic_datapath *dp, uint32_t dst_node,
                       const struct ionic_wire_hdr *hdr, const uint8_t *payload,
-                      uint32_t payload_len)
+                      uint32_t payload_len, bool reply)
 {
     return ionic_mesh_sendv(dp->pvrdma_handle, dst_node, hdr, sizeof(*hdr),
-                            payload, payload_len);
+                            payload, payload_len, reply);
 }
 
 static void wire_hdr_init(struct ionic_wire_hdr *h, uint8_t op,
@@ -2284,10 +2299,25 @@ static void wire_hdr_init(struct ionic_wire_hdr *h, uint8_t op,
     h->req_id = htole32(req_id);
 }
 
+/* What remote_post() did with a work request */
+enum dp_post {
+    DP_POST_SENT,        /* queued for the peer; its answer completes it */
+    DP_POST_BUSY,        /* the mesh has no room for it yet: try it again */
+    DP_POST_SEND_FAILED, /* the mesh refused it: no connection to the peer */
+    DP_POST_FAILED,      /* refused here, before the mesh saw it */
+};
+
 /*
  * Transmit one WQE to the instance that owns the peer QP and park it until
- * the answer comes back.  Returns false when the request could not be sent,
- * leaving the caller to post an immediate error completion.
+ * the answer comes back.  Unless it returns DP_POST_SENT, nothing is parked:
+ * DP_POST_BUSY leaves the caller to try the same WQE again on a later pass,
+ * and the failures to post an immediate error completion.
+ *
+ * The mesh never waits for the peer: a request it has no room to queue comes
+ * back busy, which stops the send queue the way a NIC out of transmit
+ * credits does, until the peer has read what is queued.  A peer that has
+ * stopped reading has its connection shut down by the send that times out
+ * on it, and the request then fails.
  */
 /*
  * @dest_qp_id and @dest_node_id are passed rather than read from @q because
@@ -2299,24 +2329,24 @@ static void wire_hdr_init(struct ionic_wire_hdr *h, uint8_t op,
  * header is constructed in exactly one place for local and mesh delivery
  * alike. NULL means gather from @src, which names guest memory.
  */
-static bool remote_post(struct ionic_datapath *dp, struct ionic_qp_ring *q,
-                        uint32_t qp_id, uint8_t op, uint64_t wqe_id,
-                        bool use_msn, bool signalled,
-                        const struct dp_sge_list *src, const uint8_t *wqe,
-                        uint32_t dest_qp_id, uint32_t dest_node_id,
-                        const uint8_t *src_host)
+static enum dp_post remote_post(struct ionic_datapath *dp,
+                                struct ionic_qp_ring *q, uint32_t qp_id,
+                                uint8_t op, uint64_t wqe_id, bool use_msn,
+                                bool signalled, const struct dp_sge_list *src,
+                                const uint8_t *wqe, uint32_t dest_qp_id,
+                                uint32_t dest_node_id, const uint8_t *src_host)
 {
     struct ionic_wire_hdr hdr;
     uint8_t *payload = NULL;
     uint32_t payload_len = 0;
     uint8_t wire_op;
-    bool ok = false;
+    enum dp_post result = DP_POST_FAILED;
 
     struct dp_pending *p = pending_alloc(dp);
     if (!p) {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: QP %u pending table full", qp_id);
-        return false;
+        return DP_POST_FAILED;
     }
 
     p->qp_id = qp_id;
@@ -2349,7 +2379,7 @@ static bool remote_post(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         break;
     default:
         p->valid = false;
-        return false;
+        return DP_POST_FAILED;
     }
 
     wire_hdr_init(&hdr, wire_op, qp_id, dest_qp_id, p->req_id);
@@ -2403,6 +2433,16 @@ static bool remote_post(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         goto out;
     }
 
+    /*
+     * Asked before the gather, which a busy WQE would otherwise repeat on
+     * every pass until there is room, for up to 16 MiB each time.
+     */
+    if (!ionic_mesh_has_room(dp->pvrdma_handle, dest_node_id,
+                             sizeof(hdr) + payload_len)) {
+        result = DP_POST_BUSY;
+        goto out;
+    }
+
     if (payload_len) {
         payload = malloc(payload_len);
         if (!payload)
@@ -2417,8 +2457,9 @@ static bool remote_post(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         }
     }
 
-    ok = dp_mesh_tx(dp, dest_node_id, &hdr, payload, payload_len) == 0;
-    if (ok) {
+    int rc = dp_mesh_tx(dp, dest_node_id, &hdr, payload, payload_len, false);
+    if (rc == 0) {
+        result = DP_POST_SENT;
         /* Claim the MSN only once the request is really on the wire, so a
          * failed send does not leave a hole the driver would wait on. */
         if (use_msn)
@@ -2433,17 +2474,21 @@ static bool remote_post(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                  wire_op != IONIC_WIRE_ATOMIC_REQ)
             ionic_dp_rdma_bytes(dp, qp_id, payload_len, PVRDMA_STAT_SEND,
                                 DP_RDMA_TX);
+    } else if (rc == -EAGAIN) {
+        /* The room checked above went to a route that changed since */
+        result = DP_POST_BUSY;
     } else {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: QP %u send to node %u failed", qp_id,
                 dest_node_id);
+        result = DP_POST_SEND_FAILED;
     }
 
 out:
     free(payload);
-    if (!ok)
+    if (result != DP_POST_SENT)
         p->valid = false;
-    return ok;
+    return result;
 }
 
 /* -------------------------------------------------------------------------
@@ -3108,7 +3153,7 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
     memcpy(&wqe_id, wqe + 0, 8);
 
     uint8_t op = wqe[8];
-    if (!q->sq_rnr) /* a retry is the same WQE again */
+    if (!q->sq_rnr && !q->sq_busy) /* a retry is the same WQE again */
         pvrdma_qp_wqe_count(dp->pvrdma_handle, qp_id,
                             ionic_op_to_pvrdma_wr(op));
 
@@ -3204,15 +3249,30 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
      * leave the completion parked until the peer answers.
      */
     if (dp_is_remote(dp, q)) {
-        if (remote_post(dp, q, qp_id, op, wqe_id, remote,
-                        (flags & IONIC_V1_FLAG_SIG) != 0, &src, wqe,
-                        q->dest_qp_id, q->dest_node_id, NULL))
+        switch (remote_post(dp, q, qp_id, op, wqe_id, remote,
+                            (flags & IONIC_V1_FLAG_SIG) != 0, &src, wqe,
+                            q->dest_qp_id, q->dest_node_id, NULL)) {
+        case DP_POST_SENT:
             return true;
+        case DP_POST_BUSY:
+            sq_busy_set(dp, q);
+            return false;
+        case DP_POST_SEND_FAILED:
+            /*
+             * The peer can't be reached, which is what a request that is
+             * never answered reports too (see ionic_datapath_poll()).
+             */
+            status = IONIC_STS_RETRY_EXCEEDED;
+            break;
+        case DP_POST_FAILED:
+        default:
+            status = IONIC_STS_REMOTE_ACC_ERR;
+            break;
+        }
 
         if (remote) {
             q->msn++;
-            cq_post_send_msn(dp, q->sq_cq_id, qp_id, q->msn,
-                             IONIC_STS_REMOTE_ACC_ERR);
+            cq_post_send_msn(dp, q->sq_cq_id, qp_id, q->msn, status);
         } else if (flags & IONIC_V1_FLAG_SIG) {
             cq_post_send_npg(dp, q->sq_cq_id, qp_id, wqe_id);
         }
@@ -3300,8 +3360,14 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                  * to report from the peer's ack, so the ack is bookkeeping
                  * here and nothing more.
                  */
-                if (!remote_post(dp, q, qp_id, op, wqe_id, false, false, &gsrc,
-                                 wqe, dst_id, ah->node_id, gbuf)) {
+                enum dp_post posted =
+                    remote_post(dp, q, qp_id, op, wqe_id, false, false, &gsrc,
+                                wqe, dst_id, ah->node_id, gbuf);
+                if (posted == DP_POST_BUSY) {
+                    sq_busy_set(dp, q);
+                    return false;
+                }
+                if (posted != DP_POST_SENT) {
                     vfu_log(dp->vfu_ctx, LOG_WARNING,
                             "ionic_datapath: QP %u UD send to node %u failed",
                             qp_id, ah->node_id);
@@ -3392,9 +3458,10 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                 break;
             }
             if (!q->sq_rnr) {
+                if (!q->sq_busy)
+                    dp->sq_stalled++;
                 q->sq_rnr = true;
                 q->sq_rnr_since_ms = now;
-                dp->sq_stalled++;
                 dp_count(dp, dst_id, IONIC_DP_RESP_RX_OUT_OF_BUFFER);
             }
             if (now - q->sq_rnr_since_ms < RNR_RETRY_MS) {
@@ -3519,7 +3586,8 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
 
 /*
  * Runs @q's send queue from sq_cons up to the last doorbell, stopping at a
- * SEND that is waiting for a receive.
+ * SEND that is waiting for a receive, or at a WQE for another node that the
+ * mesh has no room to queue yet.
  */
 static void sq_service(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                        uint32_t qp_id)
@@ -3528,7 +3596,7 @@ static void sq_service(struct ionic_datapath *dp, struct ionic_qp_ring *q,
          q->sq_cons % q->sq_depth != q->sq_prod && n < q->sq_depth; n++) {
         if (!process_sq_wqe(dp, q, qp_id, q->sq_cons % q->sq_depth))
             return;
-        sq_rnr_clear(dp, q);
+        sq_stall_clear(dp, q);
         q->sq_cons++;
     }
 }
@@ -3584,7 +3652,11 @@ static void dp_wire_reply(struct ionic_datapath *dp, uint32_t dst_node,
                   le32toh(req->req_id));
     r.status = htole32(status);
     r.length = htole32(payload_len);
-    dp_mesh_tx(dp, dst_node, &r, payload, payload_len);
+    /*
+     * A reply the mesh can't queue is lost, and the requester's own timeout
+     * for it completes the request; the mesh has logged why.
+     */
+    dp_mesh_tx(dp, dst_node, &r, payload, payload_len, true);
 
     if (status == IONIC_STS_REMOTE_ACC_ERR)
         dp_count(dp, le32toh(req->dst_qp_id),
@@ -3937,9 +4009,12 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
         pthread_mutex_unlock(&dp->rx_lock);
     }
 
-    /* Retry the send queues that are waiting for a local peer's receive. */
+    /*
+     * Retry the send queues that are waiting for a local peer's receive, or
+     * for room to queue a request to another node.
+     */
     for (uint32_t i = 0; dp->sq_stalled && i < dp->qp_count; i++)
-        if (dp->qp[i].valid && dp->qp[i].sq_rnr)
+        if (dp->qp[i].valid && (dp->qp[i].sq_rnr || dp->qp[i].sq_busy))
             sq_service(dp, &dp->qp[i], i);
 
     /* A peer that never answers must not wedge the guest's send queue. */

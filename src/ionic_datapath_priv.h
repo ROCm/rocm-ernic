@@ -131,6 +131,9 @@ struct ionic_qp_ring {
      * for, since @sq_rnr_since_ms; counted in ionic_datapath.sq_stalled. */
     bool sq_rnr;
     uint64_t sq_rnr_since_ms;
+    /* The send queue is stopped on a WQE for another node that the mesh has
+     * no room to queue yet; also counted in ionic_datapath.sq_stalled. */
+    bool sq_busy;
     uint32_t rq_prod;
     uint32_t rq_cons;
     uint32_t msn; /* running send sequence for SEND_MSN completions */
@@ -314,7 +317,8 @@ struct ionic_datapath {
      */
     uint32_t fault;
 
-    /* QPs whose send queue is stopped behind an RNR (sq_rnr). */
+    /* QPs whose send queue is stopped behind an RNR (sq_rnr), or on a full
+     * mesh send queue (sq_busy). */
     uint32_t sq_stalled;
 
     /*

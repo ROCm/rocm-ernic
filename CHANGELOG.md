@@ -711,6 +711,35 @@
 
 ### Changed
 
+* A mesh node that stays connected but stops reading -- its process paused
+  or wedged -- no longer stalls the nodes sending to it. Before, a send to it
+  waited for room for as long as that took, and on the device's main thread
+  that froze the whole device: the guest's register accesses and doorbells
+  waited on it, and so did the request timeouts. Now:
+  * A send gives up once nothing has gone out for the new
+    `ERNIC_TCP_SEND_TIMEOUT_MS` (10000 by default; a manager gives up in
+    half that), and closes the connection, which the node's peers then
+    connect again or retire as for a node that hung up. Messages still
+    queued on the connection are lost, and their requests complete in error
+    when their own 30-second timeout runs out.
+  * The device's main thread no longer sends the data path's messages
+    itself: it queues them, and a thread for each connection, started when
+    the data path first uses it, sends them. A connection queues up to 32
+    MiB of requests (64 MiB with replies); past that, the guest's send queue
+    waits, as on a NIC out of transmit credits, rather than the device.
+  * Broadcasts to every node no longer hold the connection table's lock
+    while they send, so a node that has stopped reading no longer holds up
+    the data path's lookups on a manager, and the manager's health check
+    skips the heartbeat to a node it would have to wait for, rather than
+    stopping the heartbeats to every node after it.
+  * A remote request that can't be sent at all, because there is no
+    connection to its node, now completes with retry-exceeded, as a request
+    the peer never answers does, and counts in `req_rx_implied_nak_seq_err`,
+    rather than as a remote access error.
+
+  `tcp-thread-stop-unit` and `ionic-dp-errors-unit` cover these, and
+  `ernic-mesh-stress` now has a peer stop reading while a node sends it more
+  than it can hold, and checks that the node goes on serving its guest.
 * The installed systemd units, launcher, driver pack, `ernicctl`,
   exporter, and `rocm-ernic.env` name each other by the paths of the
   prefix the project was configured with, rather than always
@@ -1689,11 +1718,6 @@
 
 ### Known issues
 
-* While the TCP backend is running, a mesh node that stops reading can stall
-  the node sending to it. A send waits for room in the socket for as long as
-  it takes, and a broadcast to every node does that while holding the
-  connection table's lock, which the data path needs too. Only shutdown makes
-  such a send give up.
 * The TCP backend still looks up mesh nodes' hostnames with a lookup that
   can't be interrupted or given a deadline. A worker advertises its
   `gethostname()`, which its peers look up before each connect, and looks up

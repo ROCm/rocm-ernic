@@ -432,15 +432,21 @@ class Mesh:
         port=None,
         log_level="info",
         health_interval=None,
+        send_timeout_ms=None,
     ):
         self.binary = binary
         self.run_dir = run_dir
         self.size = size
         self.port = port or free_port()
         self.log_level = log_level
-        # ERNIC_TCP_HEALTH_INTERVAL for every node, in seconds; None for
-        # the default
-        self.health_interval = health_interval
+        # The backend's settings every node gets: the health-check
+        # interval in seconds, and the send timeout in milliseconds, each
+        # left at the server's default when None
+        self.tcp_env = {}
+        if health_interval is not None:
+            self.tcp_env["ERNIC_TCP_HEALTH_INTERVAL"] = str(health_interval)
+        if send_timeout_ms is not None:
+            self.tcp_env["ERNIC_TCP_SEND_TIMEOUT_MS"] = str(send_timeout_ms)
         self.nodes = []
         os.makedirs(run_dir, exist_ok=True)
 
@@ -479,9 +485,7 @@ class Mesh:
         """Start one node and wait for its vfio-user socket."""
         guest_ip = self.guest_ip(index)
         log_path = os.path.join(self.run_dir, f"node{index}.log")
-        env = {"ERNIC_TCP_GUEST_GIDS": guest_ip}
-        if self.health_interval is not None:
-            env["ERNIC_TCP_HEALTH_INTERVAL"] = str(self.health_interval)
+        env = {"ERNIC_TCP_GUEST_GIDS": guest_ip, **self.tcp_env}
         node_server = Server(
             self.binary,
             os.path.join(self.run_dir, f"node{index}.sock"),

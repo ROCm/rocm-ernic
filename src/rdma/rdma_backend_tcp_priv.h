@@ -64,6 +64,21 @@
  * workers starting together comes near it.  A connection past it is closed.
  */
 #define TCP_MAX_PENDING_CONNS 64u
+/*
+ * How long a send may go without a byte leaving before it gives up and shuts
+ * the connection down, unless ERNIC_TCP_SEND_TIMEOUT_MS says otherwise.  A
+ * manager gives up in half the time (see tcp_send_timeout_ms()).
+ */
+#define TCP_DEFAULT_SEND_TIMEOUT_MS 10000u
+/*
+ * How many bytes of the data path's messages a connection queues for its
+ * send thread.  A request that would take the queue past
+ * TCP_SENDQ_REQUEST_BYTES is refused with -EAGAIN, and the data path tries it
+ * again later; a reply, past TCP_SENDQ_REPLY_BYTES, is refused with -ENOBUFS.
+ * Either fits one message of the largest size in an empty queue.
+ */
+#define TCP_SENDQ_REQUEST_BYTES (2u * TCP_MAX_PAYLOAD_LEN)
+#define TCP_SENDQ_REPLY_BYTES   (4u * TCP_MAX_PAYLOAD_LEN)
 
 /* ionic sizes its own wire payload against this; keep the two in step. */
 _Static_assert(IONIC_MESH_MAX_MSG == TCP_MAX_PAYLOAD_LEN,
@@ -247,6 +262,15 @@ typedef struct {
 
 typedef struct TcpBackendPrivate TcpBackendPrivate;
 
+/* A TCP_MSG_IONIC waiting on a connection's send queue */
+typedef struct {
+    uint32_t seq;
+    uint32_t src_node;
+    uint32_t dst_node;
+    uint32_t len;
+    uint8_t data[]; /* the data path's header and body, together */
+} TcpQueuedMsg;
+
 /*
  * Per-connection state.
  *
@@ -258,9 +282,10 @@ typedef struct TcpBackendPrivate TcpBackendPrivate;
  * under: a caller of tcp_connection_lookup() or tcp_route_to_node(), or a
  * health-check pass.  The last tcp_connection_unref() frees it.
  *
- * The receive thread holds no reference of its own.  Instead, a connection
- * is retired, which joins the thread, before the reference that published it
- * is dropped, so the connection outlives its thread.  To unpublish one, take
+ * Neither its receive thread nor its send thread holds a reference of its
+ * own.  Instead, a connection is retired, which joins both, before the
+ * reference that published it is dropped, so the connection outlives its
+ * threads.  To unpublish one, take
  * it out of its table under the table's lock, which hands the table's
  * reference to the caller, then retire it and drop that reference with no
  * lock held.  Only one thread can take it out, so only one retires it, which
@@ -328,8 +353,35 @@ struct TcpConnection {
      * manager has gone silent (see tcp_worker_manager_pass()).
      */
     _Atomic uint64_t last_rx_ms;
+    /*
+     * Serialises writes to sockfd, and protects sockfd itself.  A writer
+     * holds it for a whole message, which can mean waiting for the peer to
+     * read, for up to tcp_send_timeout_ms() without progress.
+     */
     QemuMutex lock;
     TcpBackendPrivate *priv;
+
+    /*
+     * The data path's messages, queued for send_thread, so the device's main
+     * thread never waits for the peer (see tcp_backend_send_ionic_v()).
+     * Everything below is protected by sendq_lock, which is taken with no
+     * other lock held, or under conn_table_lock, and nothing is taken under
+     * it.  sendq_cond is signalled when a message is queued and when the
+     * queue is closed.
+     *
+     * sendq_bytes counts each message's payload until it has been written.
+     * sendq_closed is set, never cleared, when the connection is retired or
+     * a send on it fails; nothing is queued after that, and what was queued
+     * is dropped.  send_thread is started by the first message queued, and
+     * send_thread_started is set while there is a thread to join.
+     */
+    QemuMutex sendq_lock;
+    QemuCond sendq_cond;
+    GQueue sendq; /* of TcpQueuedMsg */
+    size_t sendq_bytes;
+    bool sendq_closed;
+    bool send_thread_started;
+    QemuThread send_thread;
 };
 
 /* Multi-node configuration modes */
@@ -412,11 +464,11 @@ struct TcpBackendPrivate {
 
     /*
      * Serialises a whole broadcast -- snapshot and fan-out together.
-     * gid_table_lock cannot do it: the sends take connection locks that the
-     * data path holds across multi-megabyte writes, so it has to be dropped
-     * before sending.  Two manager receive threads would then interleave,
-     * and an older snapshot could land after a newer one, leaving workers
-     * with claims the manager has already replaced.
+     * gid_table_lock cannot do it: the sends take connection locks, which
+     * a sender holds while it waits for a peer to read, so it has to be
+     * dropped before sending.  Two manager receive threads would then
+     * interleave, and an older snapshot could land after a newer one, leaving
+     * workers with claims the manager has already replaced.
      */
     QemuMutex gid_broadcast_lock;
 
@@ -456,6 +508,14 @@ struct TcpBackendPrivate {
      * don't wait on that peer.
      */
     atomic_bool stopping;
+
+    /*
+     * How long a send may go without progress, from ERNIC_TCP_SEND_TIMEOUT_MS
+     * or TCP_DEFAULT_SEND_TIMEOUT_MS; see tcp_send_timeout_ms().  Atomic
+     * only so the tests can shorten it on a running backend; it guards no
+     * other data, so relaxed accesses are enough.
+     */
+    _Atomic uint32_t send_timeout_ms;
 
     /* Manager-specific fields */
     bool is_manager;
@@ -648,6 +708,10 @@ TcpConnection *tcp_route_to_node(TcpBackendPrivate *priv, uint32_t node_id);
 bool tcp_conn_table_take(TcpBackendPrivate *priv, uint32_t node_id,
                          TcpConnection *conn);
 void tcp_retire_conn(TcpConnection *conn);
+int tcp_conn_enqueue(TcpConnection *conn, const void *hdr, size_t hdr_len,
+                     const void *body, size_t body_len, uint32_t dst_node,
+                     bool reply);
+void tcp_broadcast_gid_table(TcpBackendPrivate *priv);
 
 /* The manager's table of mesh nodes */
 MeshNodeInfo *tcp_mesh_node_info_new(uint32_t node_id, const char *hostname,
@@ -657,6 +721,7 @@ void tcp_mesh_node_info_destroy_notify(gpointer data);
 void tcp_broadcast_mesh_topology(TcpBackendPrivate *priv);
 
 /* Sockets and messages */
+uint32_t tcp_send_timeout_ms(TcpBackendPrivate *priv);
 int tcp_connect_any(const struct addrinfo *addrs, const atomic_bool *running,
                     uint64_t deadline_ms);
 int tcp_connect_to_remote(const char *host, uint16_t port,
