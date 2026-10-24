@@ -757,6 +757,22 @@
   with an RNR-retry-exceeded completion. It used to be dropped at once, with a
   successful completion. UC, UD and GSI sends with no receive are still
   dropped.
+* A TCP mesh manager no longer connects to its workers. It closes the
+  connection of a node that hasn't answered for three health-check intervals
+  (`ERNIC_TCP_HEALTH_INTERVAL`, 5 seconds by default), as it already did one
+  whose node hung up, and the worker connects again itself: when its
+  connection to the manager ends, or nothing has come on it for three of the
+  worker's own intervals, it registers again, asking for its own node id. A
+  worker that has heard nothing from the manager for an interval sends it a
+  heartbeat, which the manager answers, so the two needn't be set to the same
+  interval. The manager gives a worker its id back if it registers from the
+  address it registered before and can't still be answering on its old
+  connection, and otherwise refuses it, without giving it another id; the
+  worker asks again an interval later. The protocol version is unchanged, so
+  upgrade a mesh's manager and workers together: a worker from before this
+  release never connects to the manager again, and a manager from before it
+  gives a worker that asks for its id a new one, which the worker refuses,
+  and then stops asking.
 
 ### Removed
 
@@ -1492,6 +1508,19 @@
   `status_length` of the completion, as the driver reads it, so the guest's
   log shows `opcode 5 error 3` instead of `error 50331648`. Each statistics
   error has its own status code. The errno the guest sees doesn't change.
+* A TCP mesh worker whose connection to the manager dropped was cut off from
+  the mesh until it restarted. The manager connected to the worker instead,
+  but a worker takes topology updates and GID tables only on the connection it
+  opened itself, so it ignored them, couldn't reach a node it had no
+  connection of its own to, and kept its old connection in CLOSE_WAIT. It now
+  connects to the manager again and registers under its own id (see Changed),
+  and takes the mesh's updates on the new connection. A connection to the
+  manager that dies without a hang-up, in a partition or a host that stops,
+  is noticed too, by either end. A node the manager had declared dead owns its
+  GIDs again as soon as it registers again, rather than once it advertises
+  them. `ernic-mesh-stress` now also pauses a worker, and then the manager,
+  past the health check, on a mesh of its own, and checks that the workers
+  register again under their own ids.
 
 ### Limitations
 
@@ -1504,13 +1533,8 @@
   such a send give up.
 * The TCP backend still looks up mesh nodes' hostnames with a lookup that
   can't be interrupted or given a deadline. A worker advertises its
-  `gethostname()`, which its peers and the manager's health check look up
-  before each connect, so a slow DNS server can make SIGTERM wait for the
-  resolver to give up, which its configured timeouts and retries bound. A
-  hostname that resolves from `/etc/hosts`, or a numeric address, doesn't
-  wait.
-* A TCP mesh worker whose connection to the manager drops doesn't connect to
-  it again. The manager connects to the worker instead, but the worker takes
-  topology updates and GID tables only on the connection it opened itself, so
-  it ignores the manager's from then on, and doesn't learn of workers that
-  join, die, or come back, or of their GIDs, until it restarts.
+  `gethostname()`, which its peers look up before each connect, and looks up
+  the manager's configured host each time it connects to it again, so a slow
+  DNS server can make SIGTERM wait for the resolver to give up, which its
+  configured timeouts and retries bound. A hostname that resolves from
+  `/etc/hosts`, or a numeric address, doesn't wait.

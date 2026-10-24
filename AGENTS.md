@@ -620,12 +620,14 @@ nodes and the `-T` TAP plus bridge setup. Covered by
 ### Dead and restarted mesh nodes
 
 Nodes are never evicted from `mesh_nodes`; a dead one is marked
-`is_alive = false`. A node that went quiet returns under its id, but a
-restarted one registers again and gets a new id (ids are monotonic, so
-not stable across runs). Both ids then claim the same GIDs.
+`is_alive = false`. A node that went quiet returns under its id (a
+worker that loses its connection to the manager registers again asking
+for it, `tcp_register_again()`), but a restarted one registers again and
+gets a new id (ids are monotonic, so not stable across runs). Both ids
+then claim the same GIDs.
 
 So `TcpNodeGids` has an `alive` flag, which the manager clears when it
-declares a node dead and sets when it answers again, and
+declares a node dead and sets when it answers or registers again, and
 `tcp_gid_index_rebuild()` skips non-alive claimants: the returning guest
 owns its addresses under its new id, and a late node regains them
 without re-advertising. Two *live* claimants still resolve to nothing.
@@ -643,10 +645,12 @@ Covered by `test_dead_node_stops_owning_its_gids()` in
 
 - A manager reaps connections that never registered
   (`tcp_reap_pending_conns()`) and retires a registered node's connection
-  when it hangs up (`tcp_health_check_retire()`). A worker closes a dead
-  connection to another worker on its peer-connect thread's next pass
-  (`tcp_worker_peer_sweep()`), and they reconnect; the accept thread and
-  `tcp_worker_publish_peer()` replace a dead connection, never a live
+  when it hangs up or stops answering (`tcp_health_check_retire()`). It
+  never connects to a node; a worker owns its link to the manager and
+  connects again itself (`tcp_worker_manager_pass()`). A worker closes a
+  dead connection to another worker on its peer-connect thread's next
+  pass (`tcp_worker_peer_sweep()`), and they reconnect; the accept thread
+  and `tcp_worker_publish_peer()` replace a dead connection, never a live
   one. `TcpConnection` is reference counted, so the data path may hold
   one after it leaves its table; see its comment for the rules.
 - A failed `accept()` (e.g. `EMFILE`, which leaves the connection queued)
