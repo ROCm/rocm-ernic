@@ -510,7 +510,15 @@ cmake<span class="w"> </span>--build<span class="w"> </span>build
 <code class="docutils literal notranslate"><span class="pre">file</span></code> to find the packages’ dependencies. The nightly build
 workflow, <code class="docutils literal notranslate"><span class="pre">.github/workflows/nightly.yml</span></code>, publishes the
 packages for each supported Ubuntu release as the <code class="docutils literal notranslate"><span class="pre">nightly</span></code>
-prerelease.</p>
+prerelease, once they’ve installed and run in a clean container.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">ernic-package-deb</span></code> CTest test builds the packages of the
+build’s configuration and checks their files, file modes,
+dependencies, configuration file, and the paths in the service
+files, and, with <code class="docutils literal notranslate"><span class="pre">ERNIC_BUNDLE_VFIO_USER</span></code>, the server’s
+<code class="docutils literal notranslate"><span class="pre">DT_RPATH</span></code>. It’s registered in a top-level build when
+<code class="docutils literal notranslate"><span class="pre">dpkg-dev</span></code>, <code class="docutils literal notranslate"><span class="pre">file</span></code>, and <code class="docutils literal notranslate"><span class="pre">readelf</span></code> are installed. A change to
+the install rules has to update its lists of files, in
+<code class="docutils literal notranslate"><span class="pre">tests/package/run-package-test.cmake</span></code>.</p>
 </section>
 <section id="build-options">
 <h2>Build Options<a class="headerlink" href="#build-options" title="Link to this heading">#</a></h2>
