@@ -1,0 +1,28 @@
+---
+bugfixes:
+  - >-
+    ``setup-ionic-dkms.sh`` registers the ionic package with
+    ``AUTOINSTALL="no"``, so DKMS builds it only for the kernel the script
+    was asked for.  The sources track the kernel they came from --- the
+    ``v7.2.4`` ionic includes ``<rdma/iter.h>``, which no 7.0 kernel has ---
+    and autoinstall built for every kernel with headers installed, which on
+    a guest carrying both its running kernel and the distribution's own is a
+    build that cannot succeed.  ``ernic_guest_setup`` already asserts that
+    the running kernel matches the sources, but autoinstall went around that
+    check.  It also made the failure hard to read: DKMS gives a module one
+    build directory shared by every kernel, so the losing build left its
+    ``make.log`` there under the other's name.
+  - >-
+    ``setup-ionic-dkms.sh`` prints the ``make.log`` for the kernel that
+    actually failed, preferring DKMS's per-kernel copy over the shared build
+    directory, and says so when the log it found names a different kernel.
+    A failed build leaves no per-kernel log, so the shared one is all there
+    is, and reading it as this build's turned a missing-header error on one
+    kernel into an inexplicable failure on another.
+breaking_changes:
+  - >-
+    DKMS no longer rebuilds the ionic modules by itself after a kernel
+    upgrade; run ``setup-ionic-dkms.sh`` again against the new kernel, or
+    re-run the role that drives it (``ernic_guest_setup``, or
+    ``ernic_srq_dkms`` for the SRQ series).  Automatic rebuilds could only
+    ever target kernels these sources do not build against.

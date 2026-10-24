@@ -4,6 +4,32 @@
 
 ### Fixed
 
+* **Breaking:** **The ionic DKMS package is built only for the kernel it
+  was asked for.** `setup-ionic-dkms.sh` registered it with
+  `AUTOINSTALL="yes"`, so DKMS built it for every kernel with headers
+  installed. These sources track the kernel they came from -- the `v7.2.4`
+  ionic includes `<rdma/iter.h>`, which no 7.0 kernel has -- so on a guest
+  carrying both its running kernel and the distribution's own, one of those
+  builds could never succeed, and it failed the whole run. It also hid the
+  reason: DKMS gives a module one build directory shared by every kernel,
+  so the losing build left its `make.log` there under the other's name, and
+  the error reported was a missing header on a kernel nobody had asked
+  about. **After a kernel upgrade, run the script again** (or re-run
+  `ernic_guest_setup`, or `ernic_srq_dkms` for the SRQ series); DKMS will
+  no longer rebuild these modules by itself.
+* **A failed ionic DKMS build reports the right `make.log`.** It now
+  prefers DKMS's per-kernel copy, falls back to the shared build directory,
+  and says when the log it found was written for a different kernel than
+  the one that failed.
+* **The thread-stop test's watchdog says what it was waiting for.** When a
+  row runs over its timeout the watchdog kills the process, which leaves
+  every thread running, and valgrind then reports each one's thread-local
+  storage as possibly lost -- so a timeout was reported as a memory leak
+  whose stacks pointed at whatever had created the threads. It now prints
+  the threads created, joined and exited alongside the row name, which
+  distinguishes a join that never ran from a thread that never left its
+  loop.
+
 * **An extern that already wrote the destination no longer lets the
   ordinary transfer land on top of it.** An action may call the extern
   more than once -- `cvt()` and then `map()`, say -- and the second call

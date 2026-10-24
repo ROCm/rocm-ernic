@@ -155,7 +155,24 @@ DEST_MODULE_LOCATION[0]="/updates/dkms"
 BUILT_MODULE_NAME[1]="ionic_rdma"
 DEST_MODULE_LOCATION[1]="/updates/dkms"
 
-AUTOINSTALL="yes"
+# No autoinstall.  These sources are one kernel's ionic, and they only
+# build against a kernel close enough to the ref they came from: the
+# v7.2.4 driver includes <rdma/iter.h>, which no 7.0 kernel has, so a
+# build for one fails with "fatal error: rdma/iter.h: No such file or
+# directory".  Autoinstall does not know that and builds for every kernel
+# with headers installed, which on a CI guest carrying both its running
+# kernel and the distribution's own is a build that cannot succeed.
+#
+# It also cannot fail quietly.  DKMS gives a module ONE build directory,
+# the "build" directory named in MAKE below, shared by every kernel it
+# builds for, so an autoinstall running beside the explicit build has them
+# both in the same tree -- and the failing one leaves its make.log there
+# under the other's name.  That is what made this look like the wrong
+# kernel being built rather than a second one being built at all.
+#
+# So this script builds for exactly the kernel it was asked for, and a
+# kernel upgrade needs it run again.
+AUTOINSTALL="no"
 
 MAKE="make -C \${kernel_source_dir} M=\${dkms_tree}/\${PACKAGE_NAME}/\${PACKAGE_VERSION}/build modules"
 CLEAN="make -C \${kernel_source_dir} M=\${dkms_tree}/\${PACKAGE_NAME}/\${PACKAGE_VERSION}/build clean"
@@ -173,13 +190,32 @@ sudo dkms add "${PKG_NAME}/${PKG_VERSION}"
 KVER="$(uname -r)"
 echo "Building ionic + ionic_rdma for ${KVER}..."
 if ! sudo dkms build "${PKG_NAME}/${PKG_VERSION}" -k "${KVER}"; then
-    MAKE_LOG="/var/lib/dkms/${PKG_NAME}/${PKG_VERSION}/build/make.log"
+    DKMS_DIR="/var/lib/dkms/${PKG_NAME}/${PKG_VERSION}"
+    # DKMS moves the log to a per-kernel directory once a build SUCCEEDS;
+    # a failed one leaves it in the shared build directory, which is the
+    # case we are in here.  Prefer the per-kernel copy anyway: if both
+    # exist, the shared one is the more likely to have been overwritten.
+    MAKE_LOG="${DKMS_DIR}/${KVER}/$(uname -m)/log/make.log"
+    sudo test -r "${MAKE_LOG}" || MAKE_LOG="${DKMS_DIR}/build/make.log"
     echo ""
-    echo "ERROR: DKMS build failed."
+    echo "ERROR: DKMS build failed for ${KVER}."
     echo "Check: ${MAKE_LOG}"
     # In CI the guest is torn down straight after this, so the log has to be
     # emitted here or the actual compile error is lost.
-    if [ -r "${MAKE_LOG}" ]; then
+    if sudo test -r "${MAKE_LOG}"; then
+        # That directory is shared by every kernel this module builds for,
+        # so say which kernel the log is actually for.  A log naming a
+        # kernel other than the one that just failed is a different build's,
+        # and the error in it is not the one being chased.
+        LOG_KVER="$(sudo sed -n \
+            's/^DKMS .*make\.log for .* for kernel \([^ ]*\) .*/\1/p' \
+            "${MAKE_LOG}" | head -1)"
+        if [ -n "${LOG_KVER}" ] && [ "${LOG_KVER}" != "${KVER}" ]; then
+            echo ""
+            echo "WARNING: this log is for kernel ${LOG_KVER}, not ${KVER}."
+            echo "  Another build shared the directory and overwrote it;"
+            echo "  the error below is that build's, not this one's."
+        fi
         echo ""
         echo "=== ${MAKE_LOG} (last 200 lines) ==="
         sudo tail -200 "${MAKE_LOG}"
@@ -209,7 +245,9 @@ sudo dkms install "${PKG_NAME}/${PKG_VERSION}" -k "${KVER}"
 echo ""
 echo "=== ionic + ionic_rdma installed via DKMS ==="
 echo ""
-echo "DKMS will rebuild on kernel upgrades."
+echo "Built for ${KVER} only. These sources track the kernel they came"
+echo "from, so run this again after a kernel upgrade; DKMS will not"
+echo "rebuild them by itself."
 echo ""
 echo "To load now:"
 echo "  sudo modprobe ionic"

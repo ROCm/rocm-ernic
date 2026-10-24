@@ -246,6 +246,45 @@ void qemu_thread_join(QemuThread *thread)
 
 static const char *volatile g_current_row = "";
 
+/*
+ * Write "label<n>" with write(), which is async-signal-safe; printf() is
+ * not.  n is one of the thread counters, so it needs no sign and no more
+ * than ten digits.
+ */
+static void watchdog_count(const char *label, size_t label_len, int n)
+{
+    char buf[16];
+    size_t i = sizeof(buf);
+
+    if (n < 0) {
+        n = 0;
+    }
+    do {
+        buf[--i] = (char)('0' + n % 10);
+        n /= 10;
+    } while (n > 0 && i > 0);
+
+    if (write(STDOUT_FILENO, label, label_len) < 0 ||
+        write(STDOUT_FILENO, buf + i, sizeof(buf) - i) < 0) {
+        _exit(1);
+    }
+}
+
+#define WATCHDOG_COUNT(label, n) watchdog_count(label, sizeof(label) - 1, n)
+
+/*
+ * The row took longer than ROW_TIMEOUT_S, so something it was waiting for
+ * never happened and the process has to be killed for ctest to see it.
+ *
+ * The counters go out with the row name because killing the process leaves
+ * every thread still running, and valgrind then reports each one's thread-
+ * local storage as possibly lost: a run that ends here is reported as a
+ * memory leak whose stacks point at whatever created the threads, which
+ * says nothing about what hung.  Created against joined against exited does
+ * say: threads that exited but were not joined mean a join never ran, and
+ * threads that never exited mean one is stuck in the loop it was told to
+ * leave.
+ */
 _Noreturn static void watchdog(int sig)
 {
     static const char msg[] = "FAIL hung stopping a thread: ";
@@ -253,9 +292,14 @@ _Noreturn static void watchdog(int sig)
     (void)sig;
     /* write() is async-signal-safe; the row text is a string literal. */
     if (write(STDOUT_FILENO, msg, sizeof(msg) - 1) < 0 ||
-        write(STDOUT_FILENO, g_current_row, strlen(g_current_row)) < 0 ||
-        write(STDOUT_FILENO, "\n", 1) < 0)
+        write(STDOUT_FILENO, g_current_row, strlen(g_current_row)) < 0)
         _exit(1);
+    WATCHDOG_COUNT("; threads created ", atomic_load(&g_creates));
+    WATCHDOG_COUNT(", joined ", atomic_load(&g_joins));
+    WATCHDOG_COUNT(", exited ", atomic_load(&g_exits));
+    if (write(STDOUT_FILENO, "\n", 1) < 0) {
+        _exit(1);
+    }
     _exit(1);
 }
 
