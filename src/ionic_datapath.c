@@ -49,6 +49,7 @@
 #include "p4_engine.h"
 #include "p4_exec.h"
 #include "p4_fp8.h"
+#include "p4_fmt.h"
 #endif
 #include "ionic_datapath_priv.h"
 #include "ionic_eth_emu.h"
@@ -1303,6 +1304,78 @@ int ionic_datapath_fp8_map(struct ionic_datapath *dp, uint8_t op,
 
     return 0;
 }
+
+/*
+ * Elements converted per pass.  Even, so a 4-bit format's chunk always
+ * lands on a byte boundary at both ends, and small enough that the two
+ * staging buffers -- at most four bytes an element each way -- are an
+ * unremarkable amount of stack on the poll-loop thread.
+ */
+#define FMT_CVT_CHUNK_ELEMS 512u
+
+int ionic_datapath_fmt_convert(struct ionic_datapath *dp, uint8_t src_fmt,
+                               uint8_t dst_fmt, uint32_t a_lkey, uint64_t a_va,
+                               uint32_t in_len, uint32_t c_rkey, uint64_t c_va)
+{
+    uint8_t in[FMT_CVT_CHUNK_ELEMS * 4u];
+    uint8_t out[FMT_CVT_CHUNK_ELEMS * 4u];
+    size_t n_elems, out_len;
+    uint32_t done = 0;
+
+    if (!dp || in_len == 0)
+        return -EINVAL;
+    if (!p4_fmt_valid(src_fmt) || !p4_fmt_valid(dst_fmt))
+        return -EINVAL;
+
+    /*
+     * A source length that is not a whole number of elements, or an
+     * element count the destination cannot hold in whole bytes, is
+     * malformed rather than merely unsupported: a half element at either
+     * end is not an array of either format.
+     */
+    n_elems = p4_fmt_elems((enum p4_fmt)src_fmt, in_len);
+    if (n_elems == 0)
+        return -EINVAL;
+    if (n_elems > IONIC_FP8_MAP_MAX)
+        return -EINVAL;
+    out_len = p4_fmt_bytes((enum p4_fmt)dst_fmt, n_elems);
+    if (out_len == 0)
+        return -EINVAL;
+
+    /* Each region against its own length; they differ here. */
+    if (!fp8_key_ok(dp, a_lkey, a_va, in_len) ||
+        !fp8_key_ok(dp, c_rkey, c_va, (uint32_t)out_len))
+        return -EACCES;
+
+    while (done < n_elems) {
+        size_t n = n_elems - done;
+        size_t in_bytes, out_bytes;
+
+        if (n > FMT_CVT_CHUNK_ELEMS)
+            n = FMT_CVT_CHUNK_ELEMS;
+        in_bytes = p4_fmt_bytes((enum p4_fmt)src_fmt, n);
+        out_bytes = p4_fmt_bytes((enum p4_fmt)dst_fmt, n);
+
+        if (dp_sge_to_host(dp, a_lkey,
+                           a_va + p4_fmt_bytes((enum p4_fmt)src_fmt, done), in,
+                           (uint32_t)in_bytes) != in_bytes)
+            return -EFAULT;
+
+        if (!p4_fmt_convert((enum p4_fmt)src_fmt, (enum p4_fmt)dst_fmt, in, n,
+                            out))
+            return -EINVAL;
+
+        if (dp_host_to_sge(dp, c_rkey,
+                           c_va + p4_fmt_bytes((enum p4_fmt)dst_fmt, done), out,
+                           (uint32_t)out_bytes) != out_bytes)
+            return -EFAULT;
+
+        done += (uint32_t)n;
+    }
+
+    return 0;
+}
+
 #endif /* ERNIC_HAVE_P4 */
 
 /* -------------------------------------------------------------------------
@@ -2769,6 +2842,22 @@ void ionic_datapath_set_p4_engine(struct ionic_datapath *dp,
 }
 
 /*
+ * The work request did not ask for a compute operation at all.
+ *
+ * Distinct from a malformed one, and the distinction matters: a program's
+ * table is keyed on things like the opcode, which cannot tell a reduction
+ * apart from an ordinary RDMA WRITE, so the action fires for both.  A
+ * request that is not the two-equal-operand shape has not asked for
+ * arithmetic, and failing it would take ordinary RDMA WRITE away from
+ * every QP on a device whose guest installed a reduce entry.
+ *
+ * ENOEXEC is used because nothing else in the engine or the datapath
+ * returns it, so it cannot be confused with a real failure from the
+ * pipeline.
+ */
+#define DP_P4_NOT_COMPUTE (-ENOEXEC)
+
+/*
  * What an extern called from the pipeline is given.
  *
  * Everything an operation may touch is in here, and the pipeline cannot
@@ -2803,11 +2892,16 @@ struct dp_p4_ctx {
  */
 static int dp_p4_fp8_map(struct dp_p4_ctx *c, uint8_t sel)
 {
+    /*
+     * Neither of these is an error: they say the request is an ordinary
+     * transfer, not a compute request.  See DP_P4_NOT_COMPUTE.
+     */
     if (c->op != IONIC_V1_OP_RDMA_WRITE && c->op != IONIC_V1_OP_RDMA_WRITE_IMM)
-        return -EOPNOTSUPP;
-    if (c->read_sz < WQE_SEND_LEN_OFF + 4u)
-        return -EINVAL;
+        return DP_P4_NOT_COMPUTE;
     if (c->src->count != 2 || c->src->len[0] != c->src->len[1])
+        return DP_P4_NOT_COMPUTE;
+
+    if (c->read_sz < WQE_SEND_LEN_OFF + 4u)
         return -EINVAL;
 
     uint32_t va_hi, va_lo, rkey, length;
@@ -2838,25 +2932,90 @@ static int dp_p4_fp8_map(struct dp_p4_ctx *c, uint8_t sel)
                                   c->src->len[0], be32toh(rkey), remote_va);
 }
 
+/*
+ * The operand convention for a conversion.
+ *
+ * An RDMA WRITE whose gather list has exactly ONE entry: that is the
+ * source, and the WQE's rkey and virtual address are the destination.
+ * One entry rather than two is what tells a conversion from a reduction,
+ * and it is the shape a driver produces for an ordinary one-buffer write,
+ * so a program that selects a conversion gets it from a work request the
+ * guest could already post.
+ *
+ * The destination may be longer than the source, shorter, or the same --
+ * the program names both formats and either may be the wider.  That is
+ * the one place the architecture's "three regions of length N" does not
+ * hold, so the length is not checked against the destination here;
+ * ionic_datapath_fmt_convert() checks each region against its own.
+ */
+static int dp_p4_fmt_convert(struct dp_p4_ctx *c, uint8_t src_fmt,
+                             uint8_t dst_fmt)
+{
+    /* As in dp_p4_fp8_map(): neither of these is an error, they say the
+     * request is an ordinary transfer rather than a conversion. */
+    if (c->op != IONIC_V1_OP_RDMA_WRITE && c->op != IONIC_V1_OP_RDMA_WRITE_IMM)
+        return DP_P4_NOT_COMPUTE;
+    if (c->src->count != 1)
+        return DP_P4_NOT_COMPUTE;
+
+    if (c->read_sz < WQE_SEND_LEN_OFF + 4u)
+        return -EINVAL;
+
+    uint32_t va_hi, va_lo, rkey, length;
+    memcpy(&va_hi, c->wqe + WQE_RDMA_VA_HI_OFF, 4);
+    memcpy(&va_lo, c->wqe + WQE_RDMA_VA_LO_OFF, 4);
+    memcpy(&rkey, c->wqe + WQE_RDMA_RKEY_OFF, 4);
+    memcpy(&length, c->wqe + WQE_SEND_LEN_OFF, 4);
+
+    uint64_t remote_va = ((uint64_t)be32toh(va_hi) << 32) | be32toh(va_lo);
+
+    /* The driver sums the gather list into the length field; with one
+     * entry that is the source length, and it has to agree. */
+    if (be32toh(length) != c->src->total)
+        return -EINVAL;
+
+    return ionic_datapath_fmt_convert(c->dp, src_fmt, dst_fmt, c->src->lkey[0],
+                                      c->src->va[0], c->src->len[0],
+                                      be32toh(rkey), remote_va);
+}
+
 static int dp_p4_extern_call(void *ctx, uint8_t type, uint8_t method,
                              const struct p4_value *args, uint8_t nargs)
 {
     struct dp_p4_ctx *c = ctx;
 
-    if (type != P4_EXTERN_FP8 || method != P4_EXTERN_FP8_MAP || nargs != 1)
+    if (type != P4_EXTERN_FP8)
         return -ENOSYS;
+    /* map(op) names one arithmetic; cvt(src, dst) names two formats. */
+    if (method == P4_EXTERN_FP8_MAP) {
+        if (nargs != 1)
+            return -ENOSYS;
+    } else if (method == P4_EXTERN_FP8_CVT) {
+        if (nargs != 2)
+            return -ENOSYS;
+    } else {
+        return -ENOSYS;
+    }
 
     /*
-     * The selector is one byte of a value that is wide enough for any
-     * field the loader accepts.  A program that declared it wider and put
-     * something in the top is not selecting an operation we have, so it is
-     * refused rather than truncated.
+     * Each selector is one byte of a value that is wide enough for any
+     * field the loader accepts.  A program that declared one wider and
+     * put something in the top is not selecting an operation we have, so
+     * it is refused rather than truncated.  Every argument is checked,
+     * not just the first: cvt() has two.
      */
-    for (size_t i = 0; i + 1 < P4_VALUE_BYTES; i++)
-        if (args[0].b[i])
-            return -EINVAL;
+    for (uint8_t a = 0; a < nargs; a++)
+        for (size_t i = 0; i + 1 < P4_VALUE_BYTES; i++)
+            if (args[a].b[i])
+                return -EINVAL;
 
-    int rc = dp_p4_fp8_map(c, args[0].b[P4_VALUE_BYTES - 1]);
+    int rc;
+
+    if (method == P4_EXTERN_FP8_MAP)
+        rc = dp_p4_fp8_map(c, args[0].b[P4_VALUE_BYTES - 1]);
+    else
+        rc = dp_p4_fmt_convert(c, args[0].b[P4_VALUE_BYTES - 1],
+                               args[1].b[P4_VALUE_BYTES - 1]);
     if (rc == 0)
         c->ran = true;
     return rc;
@@ -2914,6 +3073,27 @@ static uint32_t dp_p4_policy(struct ionic_datapath *dp, uint32_t qp_id,
      * carrying on past a failed one is exactly bypassing it.
      */
     if (rc == -ENOENT)
+        return IONIC_STS_OK;
+    /*
+     * The program selected an arithmetic for a request that is not a
+     * compute request -- an ordinary RDMA WRITE, most of the time, because
+     * a table keyed on the opcode cannot tell the two apart.  The extern
+     * wrote nothing and the pipeline stopped at the call, so nothing has
+     * been decided about this operation and nothing was suppressed: let it
+     * dispatch as it would with no program at all.
+     *
+     * Failing here instead is what made a guest that installed a reduce
+     * entry unable to do an ordinary RDMA WRITE on any QP of the device.
+     *
+     * Only when NOTHING ran, though.  An action may call the extern more
+     * than once -- cvt() and then map(), say -- and the first call can
+     * have written the destination before the second declined.  Falling
+     * through then would put the ordinary transfer on top of a result
+     * that is already there, and report success, which is the very thing
+     * the ctx.ran check below exists to prevent.  An operation that got
+     * that far is failed instead.
+     */
+    if (rc == DP_P4_NOT_COMPUTE && !ctx.ran)
         return IONIC_STS_OK;
     if (rc < 0) {
         vfu_log(dp->vfu_ctx, LOG_WARNING,

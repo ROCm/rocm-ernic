@@ -24,6 +24,13 @@ struct p4_phv {
     uint8_t data[P4_PHV_BYTES];
     uint16_t offset[P4_MAX_HEADERS]; /* byte offset of each header */
     bool valid[P4_MAX_HEADERS];
+    /*
+     * Whether anything the program ran assigned standard_metadata's
+     * egress_spec.  A program that never does has expressed no opinion
+     * about where the frame goes, which is not the same as asking for
+     * port 0 -- see p4_engine_process().
+     */
+    bool egress_assigned;
 };
 
 /* Bytes a header occupies, rounded up from its width in bits. */
@@ -77,6 +84,12 @@ static void phv_set(const struct p4_program *prog, struct p4_phv *phv,
                     struct p4_field_ref ref, const struct p4_value *v)
 {
     const struct p4_field *f = field_of(prog, ref);
+
+    /* Every assignment the program makes comes through here, so this is
+     * the one place that can see egress_spec being written. */
+    if (ref.header == prog->egress_spec.header &&
+        ref.field == prog->egress_spec.field)
+        phv->egress_assigned = true;
 
     bits_set(phv->data, (uint32_t)phv->offset[ref.header] * 8u + f->offset_bits,
              f->bits, v);
@@ -628,6 +641,7 @@ int p4_exec_run(const struct p4_program *prog, const struct p4_entries *ent,
     }
 
     res->dropped = dropped;
+    res->egress_assigned = phv.egress_assigned;
     {
         struct p4_value v;
 

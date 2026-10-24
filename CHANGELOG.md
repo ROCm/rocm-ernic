@@ -2,7 +2,96 @@
 
 ## UNRELEASED - rocm-ernic 0.0.1
 
+### Fixed
+
+* **An extern that already wrote the destination no longer lets the
+  ordinary transfer land on top of it.** An action may call the extern
+  more than once -- `cvt()` and then `map()`, say -- and the second call
+  declines when the work request is not that operation's shape. The
+  dispatch-as-an-ordinary-transfer path then ran even though the first
+  call had written the result, so the guest got its raw payload where it
+  asked for a converted one, with a successful completion. The
+  fall-through is now taken only when nothing ran;
+  `tests/data/p4/fp8_cvt_then_map.p4` is the program that makes it
+  happen, and the device refuses it.
+* **An out-of-range `enum p4_fmt` is refused rather than indexing the
+  format table.** `p4_fmt_valid()` took a `uint8_t`, so a wider bad value
+  was narrowed before it was checked -- `(enum p4_fmt)256` validated as
+  format 0 and then read `fmt_table[256]`. It takes the enum now. Not
+  reachable from a guest, whose formats arrive as bytes, but the check
+  was in the wrong order.
+
+* **A P4 program that selects an fp8 reduction no longer breaks ordinary
+  RDMA WRITE.** A table keyed on the opcode -- which is what
+  `tests/data/p4/fp8_policy.p4` does, and the only key that can select a
+  reduction -- matches every RDMA WRITE, not just the two-equal-operand
+  compute shape. The extern used to fail anything else, and the device
+  turned that into a local QP operation error, so a guest that installed a
+  reduce entry lost ordinary RDMA WRITE on every QP of the device: a
+  one-SGE write, a two-SGE write with unequal lengths and a three-SGE
+  write all killed their QP. A request that is not the compute shape is
+  now declined by the extern and dispatched as an ordinary transfer, as it
+  would be with no program loaded. A request that *is* the compute shape
+  but is otherwise bad still fails.
+* **Loading a P4 program no longer costs the guest its Ethernet.** A
+  program that runs without assigning `standard_metadata.egress_spec` has
+  not chosen a port; the frame is now forwarded to the other port, which is
+  what the device does with no program at all. The field's initial zero
+  used to be read as `P4_PORT_HOST`, so every frame a guest transmitted was
+  injected straight back into its own receive ring -- a silent loopback,
+  counted as forwarded rather than dropped, with no error anywhere. Every
+  program written for the RDMA path does this, `fp8_policy.p4` included, so
+  loading the worked example took the guest's network away and with it the
+  ARP and neighbour discovery that RoCE address resolution needs.
+* **The `rdma_*` counters in the stats file's LIF block now carry real
+  values.** They were named in `--stats-file`, and in the LIF statistics
+  block DMAed to the guest, but nothing ever incremented them: they read
+  zero for ever while a guest reading `hw_counters` saw the real figures.
+  The datapath's RDMA error counters are now copied into the LIF block
+  before either consumer reads it.
+
 ### Added
+
+* **The P4 fp8 extern converts between formats as well as reducing.** A
+  new method, `cvt(src_fmt, dst_fmt)`, reads one region and writes the
+  same number of elements in another format -- **in either direction**,
+  so the destination may be longer than the source, shorter, or the same
+  length. The table entry names both formats, so one program narrows or
+  widens depending only on what the control plane put in it.
+
+  Six formats, as the numbers a table entry carries: `0` fp32, `1` fp16,
+  `2` bf16, `3` fp8 E4M3, `4` fp8 E5M2, `5` **fp4 E2M1** -- the OCP
+  microscaling 4-bit format the AMD data paths use, packed two elements
+  to a byte, low nibble first. An odd count of a 4-bit format is half a
+  byte at one end and is refused rather than rounded.
+
+  A work request asks for a conversion by its gather list, as the
+  reduction does: two equal entries is a reduction, **one entry is a
+  conversion**, and anything else is an ordinary transfer. It is the only
+  operation whose destination is not the same length as its source, so
+  each region is checked against its own length and nothing past the
+  result is written. `tests/data/p4/fp8_convert.p4` is the worked
+  example, with `fp8_convert.json` compiled from it.
+
+  Conversion follows the same conventions as the rest of the fp8 code:
+  round to nearest with ties to even, and a magnitude too large for the
+  destination becomes an infinity if that format has one and saturates to
+  its largest finite magnitude if it does not -- an infinity narrowing
+  into E4M3 or FP4 saturates for the same reason an overflow does. A NaN
+  survives wherever there is an encoding for one; FP4 E2M1 has neither
+  infinity nor NaN, so a NaN saturates there too, sign preserved.
+* **The P4 lane records a conversion trend.** It measures fp16-to-fp8
+  throughput at 4 KiB and 64 KiB and publishes a `p4cvt` series, so
+  `perf-trends` gains a P4 conversion chart. The number is the whole
+  guest-to-result path, not the arithmetic alone. 1 MiB is absent by
+  construction: a conversion is capped at 256 Ki elements, which 1 MiB of
+  a 16-bit source is twice over.
+* **The Python driver reaches the P4 control surface.** `tests/py` can
+  now IDENT the surface, push a program down in chunks, install table
+  entries and read the engine's counters, so the conversion is covered
+  over a real vfio-user socket with no VM at all -- narrowing, widening,
+  and a two-entry write staying an ordinary transfer.
+
 
 * Nightly DEB packages: every night that `develop` changes, the `nightly`
   prerelease is replaced with packages of it for Ubuntu 24.04 and 26.04
@@ -555,6 +644,24 @@
   `ernic-rdma-errors` (`nix build .#ernic-rdma-errors`, or the CMake target),
   run in a guest, makes each of these errors happen and checks that its
   counters moved.
+
+### Limitations
+
+* **A P4 conversion's destination may not overlap its source**, and the
+  device does not check that it does not. The conversion is streamed a
+  chunk at a time, so a destination that overlaps the part of the source
+  still to be read destroys it before it is used, and the operation
+  completes successfully with wrong results from that point on. Widening
+  reaches it easily: fp16 to fp32 into the same address writes two bytes
+  for every one it has read.
+
+  Unchecked because checking it is not a range comparison -- two keys
+  may be registered over the same guest pages, so overlap has to be
+  decided on what the keys resolve to -- and the answer that also covers
+  that case is to stage the whole source before writing any of it. Until
+  then a guest that overlaps the two regions corrupts its own memory
+  with its own keys: it reaches nothing it has not registered, and every
+  region is still checked for that.
 
 ### Changed
 

@@ -98,11 +98,131 @@ the destination itself and the ordinary transfer would land
 on top of the result; an operation whose program does not is
 failed rather than allowed to do that.
 
+**All three regions are local.** The destination the work
+request names is checked against this device's own memory
+region table and written with a local DMA, exactly as the two
+operands are, so a reduction never crosses the mesh. An rkey
+belonging to a peer node is refused with a local QP operation
+error, which is deliberate: a reduction that could write a
+remote key would make the compute path an addressing
+authority over another guest's memory. What a collective gets
+here is therefore "reduce locally, then ship the result",
+which costs a second RDMA operation -- not an in-network
+reduction.
+
+**A table keyed on the opcode also matches ordinary writes.**
+The opcode cannot tell a reduction from a plain RDMA write, so
+the action fires for both. A request that is not the
+two-equal-operand shape has not asked for arithmetic: the
+extern declines it, the pipeline stops at the call, and the
+operation dispatches as it would with no program at all. That
+is why a one-SGE RDMA write still works on a device whose
+guest installed a reduce entry. A request that *is* the
+compute shape but is otherwise bad -- an unregistered key, an
+operand over the ceiling -- is still failed.
+
 ``tests/data/p4/fp8_policy.p4`` is the worked example. A
 table keyed on the opcode turns an ordinary RDMA write into
 an elementwise fp8 add across three memory regions, and
 changing the one table entry changes the arithmetic with no
 change to the device.
+
+Converting between formats
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The extern's other method, ``cvt(src_fmt, dst_fmt)``, reads
+**one** region and writes the same number of elements in
+another format -- longer, shorter or the same length. The
+table entry names both formats, so one program narrows or
+widens depending only on what the control plane put in it.
+
+The formats, as the numbers a table entry carries
+(``enum p4_fmt``, ``src/p4/p4_fmt.h``):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 8 24 68
+
+   * - #
+     - Format
+     - Layout
+   * - 0
+     - ``fp32``
+     - IEEE 754 binary32, 1-8-23
+   * - 1
+     - ``fp16``
+     - IEEE 754 binary16, 1-5-10
+   * - 2
+     - ``bf16``
+     - bfloat16, 1-8-7
+   * - 3
+     - ``fp8_e4m3``
+     - OCP FP8 E4M3, 1-4-3; no infinity
+   * - 4
+     - ``fp8_e5m2``
+     - OCP FP8 E5M2, 1-5-2
+   * - 5
+     - ``fp4_e2m1``
+     - OCP MXFP4 E2M1, 1-2-1; no infinity or NaN
+
+``fp4_e2m1`` is the only one narrower than a byte, so its
+elements are packed two to a byte, element *i* in byte
+*i / 2* and in the low nibble when *i* is even. An odd
+element count is therefore half a byte at one end and is
+refused rather than rounded.
+
+The operand convention follows from reading one region: an
+RDMA write whose gather list has exactly **one** entry is the
+source, and the work request's rkey and address are the
+destination. One entry rather than two is what tells a
+conversion from a reduction, and it is the shape a driver
+already produces for an ordinary one-buffer write.
+
+This is the only operation whose destination is not the same
+length as its source. Each region is checked against its own
+length, and nothing beyond the result is written.
+
+**The destination may not overlap the source**, and the
+device does not check that it does not. A conversion is
+streamed a chunk at a time -- read, convert, write -- so a
+destination overlapping the part of the source still to be
+read destroys it before it is used, and the operation then
+completes successfully with wrong results from that point
+on. Widening reaches it easily: fp16 to fp32 into the same
+address writes two bytes for every one it has read, so the
+second chunk's input is gone before the first is finished.
+
+It is unchecked because checking it is not a range
+comparison. Two keys may be registered over the same guest
+pages, so overlap has to be decided on what the keys resolve
+to rather than on the keys themselves, and the answer that
+also covers that case is to stage the whole source before
+writing any of it. Until then a guest that overlaps the two
+regions corrupts its own memory with its own keys: it
+reaches nothing it has not registered, and every region is
+still checked for that.
+
+Two conventions, and both follow from what a format can
+represent rather than from taste. A magnitude too large for
+the destination becomes an infinity if the format has one and
+**saturates** to the largest finite magnitude if it does not
+-- which is what AMD's conversion instructions do, and what a
+reduction needs, since one overflowed term becoming an
+infinity would poison a whole sum. And a NaN stays a NaN
+wherever there is an encoding for one; ``fp4_e2m1`` has none,
+so a NaN saturates there too, sign preserved. That is lossy
+and cannot be otherwise.
+
+Rounding is to nearest with ties to even throughout. The
+generic codec is held to ``p4_fp8.c`` for E4M3 -- all 256
+decodings and a four-million-float encode sweep must agree
+exactly -- which is how it inherits that file's own
+validation against ``ml_dtypes``; fp16 is checked against
+numpy for all 65536 encodings in both directions, and every
+encoding of every format must survive a decode and re-encode
+unchanged unless it is a NaN.
+
+``tests/data/p4/fp8_convert.p4`` is the worked example.
 
 What is not built yet: checksums and calculations; negative
 literals in actions; and counters, meters, registers and
@@ -207,6 +327,19 @@ The pipeline sees the emulated NIC as a two-port device:
 
 A P4 program's ``ingress_port`` and ``egress_spec`` metadata
 carry these values.
+
+A program that runs to completion **without assigning**
+``egress_spec`` has not chosen a port, and the frame is
+forwarded to the other port -- what the device does with no
+program loaded. The field's initial zero is not read as a
+request for ``P4_PORT_HOST``: doing that sent every frame a
+guest transmitted straight back into its own receive ring,
+turning the guest's network into a silent loopback that was
+counted as forwarded rather than dropped. Every program
+written for the RDMA path does this, ``fp8_policy.p4``
+included, so loading the worked example used to cost the
+guest its Ethernet. A program that does mean port 0 assigns
+it, and is unaffected.
 
 The engine attaches to the emulated NIC through the two frame
 filters the Ethernet emulator already provides, so no frame path

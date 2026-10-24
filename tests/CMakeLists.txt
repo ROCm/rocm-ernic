@@ -196,6 +196,21 @@ if(ERNIC_BUILD_P4)
         ${PROJECT_SOURCE_DIR}/src/p4
     )
     target_compile_definitions(ernic-test-p4-fp8 PRIVATE _GNU_SOURCE)
+
+    # The formats the conversion extern moves between, in either
+    # direction. Links p4_fp8.c as well, because the strongest check it
+    # makes is that the generic codec reproduces that one exactly for
+    # E4M3 -- which is how it inherits p4_fp8.c's own validation against
+    # ml_dtypes.
+    add_executable(ernic-test-p4-fmt
+        test_p4_fmt.c
+        ${PROJECT_SOURCE_DIR}/src/p4/p4_fmt.c
+        ${PROJECT_SOURCE_DIR}/src/p4/p4_fp8.c
+    )
+    target_include_directories(ernic-test-p4-fmt PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/p4
+    )
+    target_compile_definitions(ernic-test-p4-fmt PRIVATE _GNU_SOURCE)
 endif()
 
 # NVMe-oF controller test. The controller core takes its DMA through a
@@ -1060,6 +1075,14 @@ if(ERNIC_BUILD_P4)
         COMMAND $<TARGET_FILE:ernic-test-p4-fp8>
     )
     set_tests_properties(p4-fp8-unit PROPERTIES TIMEOUT 30)
+
+    # Sweeps every encoding of every format and a few million floats, so
+    # it gets longer than the 30 s the other unit tests take.
+    add_test(
+        NAME p4-fmt-unit
+        COMMAND $<TARGET_FILE:ernic-test-p4-fmt>
+    )
+    set_tests_properties(p4-fmt-unit PROPERTIES TIMEOUT 120)
 endif()
 
 # NVMe-oF controller unit test: drives the capsule sequence a real
@@ -1327,7 +1350,8 @@ set(ERNIC_HARNESS_GROUPS
     devcmds bringup rdma-reset admin rc atomic cq-events qp-flush
     qp-flush-srq ud srq eth nvmeof teardown)
 if(ERNIC_BUILD_P4)
-    list(APPEND ERNIC_HARNESS_GROUPS p4-port fp8-map p4-rdma p4-devcmd)
+    list(APPEND ERNIC_HARNESS_GROUPS p4-port fp8-map p4-rdma p4-cvt p4-cvt-map
+                                      p4-devcmd)
 endif()
 foreach(ernic_harness_group IN LISTS ERNIC_HARNESS_GROUPS)
     add_test(
