@@ -632,21 +632,32 @@ Working:
   the receives in an SRQ belong to the SRQ and other QPs are
   still drawing from them
 - restarting a mesh worker. It comes back as a new node --
-  it asks for an id of ``0xFFFFFFFF`` every time, and its
-  listening port is ephemeral, so nothing in the
-  registration says which node it used to be -- and the GIDs
-  it claimed before are withdrawn so that they follow it to
-  its new id rather than being claimed by two nodes at once
-  and resolving to neither. The manager withdraws what an
-  unreachable node claimed both when its health check
-  notices one has died and when any worker registers, the
-  second being what covers a worker that comes back inside
-  the health-check interval. The withdrawal is reversible:
-  the claims are kept and only stop counting, so a node that
-  was merely silent and then answers a heartbeat, or that
-  the health check reconnects to, owns its addresses again
-  without registering afresh -- which, not having restarted,
-  it never would
+  it asks for an id of ``0xFFFFFFFF``, as any worker does
+  when it starts, and its listening port is ephemeral, so
+  nothing in the registration says which node it used to be
+  -- and the GIDs it claimed before are withdrawn so that
+  they follow it to its new id rather than being claimed by
+  two nodes at once and resolving to neither. The manager
+  withdraws what an unreachable node claimed both when its
+  health check notices one has died and when any worker
+  registers, the second being what covers a worker that
+  comes back inside the health-check interval. The
+  withdrawal is reversible: the claims are kept and only
+  stop counting, so a node that was merely silent and then
+  answers a heartbeat, or that registers again under its own
+  id, owns its addresses again without advertising them
+  afresh
+- losing a mesh worker's connection to the manager. The
+  worker connects again and registers under the id it has
+  when the connection ends, or when nothing has come on it
+  for three health-check intervals, and the manager gives
+  the id back if the worker asks from the address it
+  registered and can't still be answering on the connection
+  it had. The manager closes the connection of a node that
+  stops answering, rather than connecting to it. While a
+  worker has no connection to the manager it hears nothing
+  of the mesh, and reaches only the nodes it has a
+  connection of its own to
 
 Not yet working:
 

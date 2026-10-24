@@ -13,6 +13,9 @@ Three kinds of pressure, all of them reachable from a hosted runner:
   * Churn and resources. Nodes are killed and restarted while the mesh
     runs, and the manager's descriptors are counted across the loop: a
     count that climbs, or sockets left in CLOSE_WAIT, is the leak.
+  * Lost links. On a second mesh, a worker and then the manager are
+    paused past the health check, and the workers have to register
+    again under their own ids.
 
 Every node is then held to a shutdown deadline, because the TCP backend
 is known to hang there, and to exiting with status 0, which is how a
@@ -477,6 +480,107 @@ def test_traffic_after_churn(suite, mesh_):
         )
 
 
+def test_worker_paused(suite, mesh_):
+    """A worker paused past the health check registers again under its id.
+
+    The manager closes the connection of a node that stops answering, and
+    doesn't connect to it. When the worker runs again it finds the
+    connection ended, connects to the manager, and asks for its own id
+    back, which it gets: the mesh has no new node, and the worker takes
+    the mesh's word on the new connection.
+    """
+    manager = mesh_.nodes[0].server
+    victim = mesh_.nodes[mesh_.size - 1].server
+    node_id = mesh_.node_id(mesh_.size - 1)
+    if node_id is None:
+        suite.check(False, "the worker to pause has no node id")
+        return
+    closing = f"node {node_id}, which has stopped answering"
+    again = f"Node {node_id} registered again"
+    marks = (
+        mesh_.registrations(),
+        manager.log_text().count(closing),
+        manager.log_text().count(again),
+        victim.log_text().count("Received mesh topology"),
+    )
+
+    victim.pause()
+    try:
+        closed = manager.wait_for_count(closing, marks[1] + 1, 30)
+    finally:
+        victim.resume()
+    suite.check(closed, "the manager closed the paused worker's connection")
+    suite.check(
+        manager.wait_for_count(again, marks[2] + 1, 30),
+        f"node {node_id} registered again under its own id",
+    )
+    suite.check(
+        victim.wait_for_count("Received mesh topology", marks[3] + 1, 30),
+        "the worker takes topology updates on its new connection",
+    )
+    suite.check_eq(mesh_.registrations(), marks[0], "the mesh has no new node")
+
+
+def test_manager_paused(suite, mesh_):
+    """Every worker registers again once a paused manager runs again.
+
+    Paused, the manager answers nothing. Each worker sends it a heartbeat
+    and, three intervals on, gives up on the connection and connects
+    again, which the paused manager's kernel accepts and nobody answers.
+    When the manager runs again, it finds every node silent and closes
+    their connections too. However the two cross, each worker has to end
+    up registered again under its own id, with no new node.
+    """
+    manager = mesh_.nodes[0].server
+    workers = [node.server for node in mesh_.nodes[1:]]
+    registrations = mesh_.registrations()
+    gave_up = [w.log_text().count("Nothing from the manager") for w in workers]
+    again = [w.log_text().count("Registered with the manager again") for w in workers]
+
+    manager.pause()
+    try:
+        silent = all(
+            w.wait_for_count("Nothing from the manager", mark + 1, 30)
+            for w, mark in zip(workers, gave_up)
+        )
+    finally:
+        manager.resume()
+    suite.check(silent, "every worker gave up on the paused manager")
+    suite.check(
+        all(
+            w.wait_for_count("Registered with the manager again", mark + 1, 60)
+            for w, mark in zip(workers, again)
+        ),
+        "every worker registered again",
+    )
+    suite.check_eq(mesh_.registrations(), registrations, "the mesh has no new node")
+
+
+def run_link_tests(suite, binary, run_dir):
+    """Cut workers off from the manager, on a mesh of their own.
+
+    Its health-check interval is 1 s rather than the default 5 s, so a
+    node goes silent in seconds.
+    """
+    mesh_ = mesh.Mesh(binary, os.path.join(run_dir, "link"), health_interval=1)
+    try:
+        mesh_.start(timeout=60)
+        # Not wait_formed(): the manager logs a registration before it
+        # answers it. A worker takes GID tables only once it has its
+        # answer, so every node knowing every GID means every worker has
+        # its id.
+        suite.check(mesh_.wait_gids(60), "the second mesh formed")
+        suite.run("a paused worker", test_worker_paused, mesh_)
+        suite.run("a paused manager", test_manager_paused, mesh_)
+    finally:
+        problems = mesh_.stop()
+        suite.check(
+            not problems,
+            "every node of the second mesh exited cleanly and within its deadline"
+            + ("" if not problems else f": {'; '.join(problems)}"),
+        )
+
+
 def run_traffic_tests(suite, mesh_):
     """Attach a driver to every node and run the traffic tests."""
     peers = list(range(mesh_.size))
@@ -531,6 +635,7 @@ def main():
                 "every node exited cleanly and within its deadline"
                 + ("" if not problems else f": {'; '.join(problems)}"),
             )
+        run_link_tests(suite, args.server, run_dir)
     suite.finish()
 
 

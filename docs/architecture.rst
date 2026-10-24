@@ -772,7 +772,12 @@ Topology
   connect again if the connection drops. A message for a node
   with no direct connection is relayed by the manager.
 - The manager sends heartbeats, notices dead nodes, and
-  reconnects them.
+  closes their connections. It never connects to a worker:
+  a worker whose connection to the manager ends, or carries
+  nothing for three health-check intervals, connects again
+  and registers under the id it has. A worker that has heard
+  nothing for an interval sends the manager a heartbeat of
+  its own, so the two needn't share an interval.
 - The protocol carries a magic number and a version, checked at
   registration and handshake.
 
@@ -1030,11 +1035,13 @@ Threads
      - Reads mesh messages and queues them for the main thread
    * - health check
      - ``tcp`` manager
-     - Heartbeats, dead-node detection, reconnects
+     - Heartbeats, dead-node detection, closing dead nodes'
+       connections
    * - peer connect
      - ``tcp`` worker
      - Connects to peers as the topology changes, and closes dead
-       connections
+       connections; connects to the manager again when its
+       connection is lost
 
 The rule is that **only the main thread touches guest memory**.
 Every other thread hands work to it through a locked queue: the

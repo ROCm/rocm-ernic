@@ -252,6 +252,8 @@ typedef struct TcpBackendPrivate TcpBackendPrivate;
  *
  * A connection is reference counted.  Whatever publishes it holds a
  * reference: its slot in connections or pending_conns, or priv->manager_conn.
+ * So does a worker registering on a connection it has opened to the manager,
+ * until the answer publishes it as manager_conn, or it retires it.
  * So does anything that goes on using it after dropping the lock it was found
  * under: a caller of tcp_connection_lookup() or tcp_route_to_node(), or a
  * health-check pass.  The last tcp_connection_unref() frees it.
@@ -319,6 +321,13 @@ struct TcpConnection {
      * on pending_conns, and read under conn_table_lock.
      */
     uint64_t accepted_ms;
+    /*
+     * When a message last arrived on the connection, on ernic_monotonic_ms()'s
+     * clock: set when the connection is made, and by its receive thread on
+     * each message.  A worker reads its manager connection's to notice the
+     * manager has gone silent (see tcp_worker_manager_pass()).
+     */
+    _Atomic uint64_t last_rx_ms;
     QemuMutex lock;
     TcpBackendPrivate *priv;
 };
@@ -348,25 +357,18 @@ typedef struct {
      * meanwhile can be newer than the time it's compared with.
      */
     uint64_t last_heartbeat_ms;
-    /*
-     * Nonzero while the node is due a reconnect that a pass ran out of time
-     * for: the value of reconnect_deferrals when it was deferred, so the
-     * nodes deferred longest go first.  Used only by the health-check
-     * thread, so it needs no lock.
-     */
-    uint64_t reconnect_deferred;
 } MeshNodeInfo;
 
 struct TcpBackendPrivate {
     /* Node identity */
     /*
      * This node's ID.  The manager's is 0 from the start.  A worker's is 0,
-     * which no worker is given, until the manager answers its registration:
-     * the receive thread for manager_conn stores it, once, before tcp_init()
-     * starts the threads that introduce this node to its peers (see
-     * tcp_worker_registration_done()).  Atomic as a precaution: no thread
-     * reads it while it can still change, but that rests on the order
-     * tcp_init() starts threads in.
+     * which no worker is given, until the manager answers its first
+     * registration: the receive thread for the registering connection stores
+     * it, once, before tcp_init() starts the threads that introduce this node
+     * to its peers.  A worker that registers again keeps it.  Atomic as a
+     * precaution: no thread reads it while it can still change, but that
+     * rests on the order tcp_init() starts threads in.
      */
     _Atomic uint32_t local_node_id;
     TcpMode mode; /* Operation mode */
@@ -478,29 +480,51 @@ struct TcpBackendPrivate {
     atomic_bool health_check_running;
     QemuMutex health_check_lock;
     QemuCond health_check_cond;
+    /*
+     * Also a worker's: how often its peer-connect thread runs, and so how
+     * soon it notices that the manager has gone silent.
+     */
     uint32_t health_check_interval_sec; /* Default: 5 seconds */
     uint32_t next_available_node_id;    /* For auto-assigning node IDs */
-    /* Reconnects deferred so far; health-check thread only (see MeshNodeInfo)
-     */
-    uint64_t reconnect_deferrals;
 
     /* Worker-specific fields */
     char *manager_host;
     uint16_t manager_port;
     /*
-     * Connection to the manager, holding a reference.  Set by tcp_init()
-     * before it starts any thread but this connection's own receive thread,
-     * and released only at teardown, so every thread can read it without a
-     * lock.
+     * The worker's connection to the manager, holding a reference, or NULL
+     * while there is none.  The answer to a registration publishes the
+     * connection it came on here (see tcp_worker_registration_done());
+     * the peer-connect thread clears it when it gives up on the connection,
+     * before it registers again; teardown releases it.  Changed only under
+     * conn_table_lock.
+     *
+     * Read under conn_table_lock to take a reference to it, since a load
+     * followed by a ref could race the last unref of a connection being
+     * replaced.  A receive thread only compares its own connection with it,
+     * which needs no lock: the load is atomic, and its own connection is
+     * alive, so it can't be mistaken for a freed one at the same address.
      */
-    TcpConnection *manager_conn;
+    TcpConnection *_Atomic manager_conn;
     /*
-     * Set when the manager has answered this worker's registration, whether
-     * it gave the worker an id or not; see tcp_worker_registration_done().
-     * Protected by registration_mutex, and registration_cond is signalled
-     * when it is set.
+     * The registration under way, all protected by registration_mutex:
+     * registering is the connection whose REGISTER_RESP is awaited, with no
+     * reference of its own (the thread registering holds one), or NULL;
+     * registration_complete is set once that answer has come, and
+     * registration_accepted if it registered this node.  registration_cond
+     * is signalled when the answer comes, and when the peer-connect thread
+     * is stopped.  Taken before conn_table_lock, which the answer publishes
+     * manager_conn under.
+     *
+     * registers_again, also under registration_mutex, is cleared for good
+     * when the manager answers this worker's registering again with another
+     * id.  Only a manager that predates registering again does that: it
+     * gives a worker that asks for a taken id a new one, so each time the
+     * worker asked, the mesh would gain a node.
      */
+    TcpConnection *registering;
     bool registration_complete;
+    bool registration_accepted;
+    bool registers_again;
     QemuCond registration_cond;
     QemuMutex registration_mutex;
 
@@ -543,9 +567,9 @@ struct TcpBackendPrivate {
 
     /* TCP-layer counters */
     struct {
-        _Atomic uint64_t reconnect_attempts;
-        _Atomic uint64_t reconnect_successes;
         _Atomic uint64_t peer_connect_attempts; /* a worker's, to its peers */
+        /* A worker's, registering again with the manager */
+        _Atomic uint64_t manager_reconnects;
     } tcp_stats;
 
     QemuMutex lock;
@@ -577,8 +601,8 @@ typedef struct {
 typedef struct {
     MeshNodeInfo *node;
     TcpConnection *conn;
-    bool reconnect;    /* due a reconnect attempt */
     bool disconnected; /* conn's receive thread has exited: retire conn */
+    bool silent;       /* the node stopped answering: retire conn */
 } TcpHealthCheckItem;
 
 /*
@@ -660,11 +684,12 @@ void *tcp_manager_health_check_thread(void *opaque);
  */
 bool tcp_withdraw_if_still_unreachable(TcpBackendPrivate *priv,
                                        uint32_t node_id);
-bool tcp_health_check_reconnect(TcpBackendPrivate *priv,
-                                const TcpHealthCheckItem *item,
-                                uint64_t deadline_ms);
-bool tcp_health_check_reconnects(TcpBackendPrivate *priv, GArray *items,
-                                 uint64_t deadline_ms);
+void tcp_health_check_retire(TcpBackendPrivate *priv, GArray *items);
+TcpConnection *tcp_worker_manager_conn(TcpBackendPrivate *priv);
+int tcp_worker_register_with_manager(TcpBackendPrivate *priv,
+                                     const atomic_bool *running,
+                                     uint64_t deadline_ms);
+void tcp_worker_manager_pass(TcpBackendPrivate *priv);
 
 /* Teardown */
 void tcp_stop_accept_thread(TcpBackendPrivate *priv);

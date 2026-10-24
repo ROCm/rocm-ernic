@@ -19,6 +19,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 """
 
 import os
+import re
 import socket
 import struct
 import threading
@@ -422,12 +423,24 @@ class Mesh:
     that IP resolves to that node and to no other.
     """
 
-    def __init__(self, binary, run_dir, size=3, port=None, log_level="info"):
+    # pylint: disable-next=too-many-arguments,too-many-positional-arguments
+    def __init__(
+        self,
+        binary,
+        run_dir,
+        size=3,
+        port=None,
+        log_level="info",
+        health_interval=None,
+    ):
         self.binary = binary
         self.run_dir = run_dir
         self.size = size
         self.port = port or free_port()
         self.log_level = log_level
+        # ERNIC_TCP_HEALTH_INTERVAL for every node, in seconds; None for
+        # the default
+        self.health_interval = health_interval
         self.nodes = []
         os.makedirs(run_dir, exist_ok=True)
 
@@ -466,13 +479,16 @@ class Mesh:
         """Start one node and wait for its vfio-user socket."""
         guest_ip = self.guest_ip(index)
         log_path = os.path.join(self.run_dir, f"node{index}.log")
+        env = {"ERNIC_TCP_GUEST_GIDS": guest_ip}
+        if self.health_interval is not None:
+            env["ERNIC_TCP_HEALTH_INTERVAL"] = str(self.health_interval)
         node_server = Server(
             self.binary,
             os.path.join(self.run_dir, f"node{index}.sock"),
             backend=self.node_backend(index),
             log_path=log_path,
             log_level=self.log_level,
-            env={"ERNIC_TCP_GUEST_GIDS": guest_ip},
+            env=env,
             extra_args=["--mac", f"72:6f:63:6d:00:{index:02x}"],
         )
         node_server.start(timeout=timeout)
@@ -482,12 +498,29 @@ class Mesh:
         self.nodes[index] = node
         return node
 
+    def node_id(self, index):
+        """The mesh node id node @index was given, or None.
+
+        Ids go in the order workers register, which isn't the order they
+        were started in: a server opens its vfio-user socket before its
+        backend registers.
+        """
+        if index == 0:
+            return 0
+        found = re.search(
+            r"Registered with manager, assigned node_id=(\d+)",
+            self.nodes[index].server.log_text(),
+        )
+        return int(found.group(1)) if found else None
+
     def registrations(self):
         """How many workers the manager has registered since it started.
 
         Cumulative, because the manager's log is: a node that dies and
         restarts registers again and the count goes up rather than being
-        replaced. That is why wait_formed() takes a mark.
+        replaced. That is why wait_formed() takes a mark. A worker that
+        kept running and registers again under its own id isn't a new
+        node, and isn't counted.
         """
         return self.nodes[0].server.log_text().count("Registered node")
 

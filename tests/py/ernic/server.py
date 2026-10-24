@@ -202,6 +202,19 @@ class Server:
                 f"not the SIGKILL it was sent: {self.tail_log()}"
             )
 
+    def pause(self):
+        """SIGSTOP, for a node that stops answering without going away.
+
+        Its sockets stay open, and the kernel goes on accepting and
+        acknowledging for it, so its peers see a connection that is up
+        but silent, as a partition or a hung host would leave it.
+        """
+        self.proc.send_signal(signal.SIGSTOP)
+
+    def resume(self):
+        """SIGCONT, to let a paused server run again."""
+        self.proc.send_signal(signal.SIGCONT)
+
     def stop(self, timeout=DEFAULT_STOP_TIMEOUT, check=True):
         """SIGTERM the server and wait for it, holding it to the deadline.
 
@@ -213,6 +226,8 @@ class Server:
             return 0
         if self.proc.poll() is None:
             self.proc.send_signal(signal.SIGTERM)
+            # A paused server would hold the signal until it ran again
+            self.proc.send_signal(signal.SIGCONT)
         hung = False
         try:
             self.proc.wait(timeout=timeout)

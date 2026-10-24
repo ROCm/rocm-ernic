@@ -166,29 +166,80 @@ static inline bool tcp_worker_registered(TcpBackendPrivate *priv)
 }
 
 /*
- * Record the manager's answer to this worker's registration and wake
- * tcp_worker_register_with_manager(): the node id the manager assigned, or 0
- * if it refused the registration or its answer can't be used.  Only the
- * first answer counts.  Returns false, recording nothing, if the
- * registration has already been answered.
+ * Take the manager's answer, on conn, to this worker's registration, and wake
+ * tcp_worker_register_with_manager(): *assigned_id is the node id the manager
+ * gave, or 0 if it refused the registration or its answer can't be used.
+ * Only an answer on the connection registering, and only the first, counts.
+ * Returns false, taking nothing, otherwise.
  *
- * The id is stored under the mutex, with the flag, because the waiter reads
- * both under it on another thread.
+ * A first registration gives this node its id.  A later one, on a new
+ * connection after the last one was given up on, must give it the id it
+ * already has, or it is refused here, and *assigned_id set to 0, and the
+ * worker doesn't register again (see registers_again).
+ *
+ * An accepted answer publishes conn as manager_conn, before the waiter wakes
+ * and before this thread reads the next message on conn: the manager follows
+ * the answer with the topology and the GID table, which a worker takes only
+ * from manager_conn.  manager_conn is NULL until then: the registering
+ * thread gave up on the last connection before it connected again.
  */
 static bool tcp_worker_registration_done(TcpBackendPrivate *priv,
-                                         uint32_t node_id)
+                                         TcpConnection *conn,
+                                         uint32_t *assigned_id)
 {
-    bool first;
+    uint32_t local = tcp_local_node(priv);
+    uint32_t offered = *assigned_id;
+    bool taken;
+
+    if (local != 0 && offered != local) {
+        *assigned_id = 0;
+    }
 
     qemu_mutex_lock(&priv->registration_mutex);
-    first = !priv->registration_complete;
-    if (first) {
-        atomic_store(&priv->local_node_id, node_id);
+    taken = conn == priv->registering && !priv->registration_complete;
+    if (taken) {
+        if (offered != 0 && *assigned_id == 0) {
+            priv->registers_again = false;
+        }
+        if (*assigned_id != 0) {
+            atomic_store(&priv->local_node_id, *assigned_id);
+            qemu_mutex_lock(&priv->conn_table_lock);
+            atomic_store(&priv->manager_conn, tcp_connection_ref(conn));
+            qemu_mutex_unlock(&priv->conn_table_lock);
+        }
         priv->registration_complete = true;
+        priv->registration_accepted = *assigned_id != 0;
         qemu_cond_signal(&priv->registration_cond);
     }
     qemu_mutex_unlock(&priv->registration_mutex);
-    return first;
+
+    if (taken && offered != 0 && *assigned_id == 0) {
+        rdma_error_report("TCP: the manager registered this node again as "
+                          "node %u, but it is node %u; refusing.  It predates "
+                          "workers registering again, so this node won't try "
+                          "again, and hears nothing from the mesh until it "
+                          "restarts",
+                          offered, local);
+    }
+    return taken;
+}
+
+/*
+ * The worker's connection to the manager, with a reference the caller drops
+ * with tcp_connection_unref(), or NULL if it has none: the manager has none,
+ * and a worker has none while it registers again.
+ */
+TcpConnection *tcp_worker_manager_conn(TcpBackendPrivate *priv)
+{
+    TcpConnection *conn;
+
+    qemu_mutex_lock(&priv->conn_table_lock);
+    conn = atomic_load(&priv->manager_conn);
+    if (conn) {
+        tcp_connection_ref(conn);
+    }
+    qemu_mutex_unlock(&priv->conn_table_lock);
+    return conn;
 }
 
 /* Forward declarations */
@@ -198,7 +249,6 @@ static void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
                                const TcpNodeGidsPayload *payload);
 static int tcp_send_handshake(TcpConnection *conn, uint32_t local_node_id,
                               TcpMsgType msg_type);
-static int tcp_worker_register_with_manager(TcpBackendPrivate *priv);
 
 static TcpBackendPrivate *get_private(RdmaBackendDev *backend_dev)
 {
@@ -523,6 +573,7 @@ TcpConnection *tcp_connection_new(uint32_t node_id, const char *host,
     atomic_init(&conn->is_connected, false);
     atomic_init(&conn->recv_thread_running, false);
     atomic_init(&conn->recv_thread_exited, false);
+    atomic_init(&conn->last_rx_ms, ernic_monotonic_ms());
     qemu_mutex_init(&conn->lock);
     return conn;
 }
@@ -588,10 +639,11 @@ TcpConnection *tcp_route_to_node(TcpBackendPrivate *priv, uint32_t node_id)
     }
     tcp_connection_unref(conn);
 
-    conn = priv->manager_conn;
+    conn = tcp_worker_manager_conn(priv);
     if (conn && atomic_load(&conn->is_connected)) {
-        return tcp_connection_ref(conn);
+        return conn;
     }
+    tcp_connection_unref(conn);
     return NULL;
 }
 
@@ -685,14 +737,76 @@ static bool tcp_node_id_taken(TcpBackendPrivate *priv, uint32_t node_id)
 }
 
 /*
+ * Whether a registration from host:port asking for node_id can have it back.
+ * A worker asks for its own id when it has given up on its connection to the
+ * manager and connected again.  It gets the id if it is a worker in the mesh,
+ * registered from that address, that can't be answering on the connection it
+ * had: the connection is gone or has ended, or the health check has declared
+ * the node dead.  The manager may not have noticed yet that the connection
+ * has ended, so a worker that is refused for that asks again on its next
+ * pass.
+ *
+ * If it can, takes the node's old connection, if it has one, out of
+ * connections, for the caller to retire once it has dropped the locks, and
+ * returns 0 with it in *old.  Otherwise returns the negative errno to refuse
+ * with, and why in *why, for the caller to log once it has dropped them.  The
+ * caller holds mesh_table_lock and conn_table_lock.
+ *
+ * Nothing is taken once teardown has begun.  tcp_stop_recv_threads() claims
+ * each connection's thread under conn_table_lock and joins it afterwards,
+ * through a pointer that holds no reference: taken out and retired here, the
+ * connection would be freed under it.  stopping is set before that claim, and
+ * read here under the same lock, so a registration either sees it or takes
+ * the connection out before teardown can claim it.
+ *
+ * The address is a check against a mistake, not an attacker: a peer can
+ * claim any address, and any peer can register.  A node's hostname and port
+ * never change, and a worker keeps its listening port as long as it runs, so
+ * another port is another process.
+ */
+static int tcp_register_again(TcpBackendPrivate *priv, uint32_t node_id,
+                              const char *host, uint16_t port,
+                              TcpConnection **old, const char **why)
+{
+    const MeshNodeInfo *node =
+        g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(node_id));
+    TcpConnection *conn;
+
+    *old = NULL;
+    if (atomic_load(&priv->stopping)) {
+        *why = "the manager is shutting down";
+        return -ESHUTDOWN;
+    }
+    if (!node || node_id == tcp_local_node(priv)) {
+        *why = "no worker in the mesh has that id";
+        return -ENOENT;
+    }
+    if (strcmp(node->hostname, host) != 0 || node->port != port) {
+        *why = "the node registered from another address";
+        return -EACCES;
+    }
+    conn = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(node_id));
+    if (conn && !tcp_conn_dead(conn) && node->is_alive) {
+        *why = "the node is still connected";
+        return -EBUSY;
+    }
+    if (conn) {
+        tcp_conn_table_take(priv, node_id, conn);
+        *old = conn;
+    }
+    return 0;
+}
+
+/*
  * Collect the nodes whose connection has gone, so the caller can withdraw
  * what they claimed once it has dropped mesh_table_lock.
  *
  * A worker that restarts registers again as a brand new node -- it asks for
- * an id of 0xFFFFFFFF every time, and the address it registers from is no
- * help either, since its listening port is ephemeral and changes with it.
- * So rather than try to recognise it, drop the claims of whoever can no
- * longer be reached: a node with no live connection cannot be the one
+ * an id of 0xFFFFFFFF, as on any first registration, and the address it
+ * registers from is no help either, since its listening port is ephemeral
+ * and changes with it.  (Only a worker that kept running asks for its own id
+ * back.)  So rather than try to recognise it, drop the claims of whoever can
+ * no longer be reached: a node with no live connection cannot be the one
  * answering for an address, whether or not it is the same guest coming
  * back. Left standing, its claims contest the ones the returning worker is
  * about to make, and a contested GID resolves to neither -- so the guest
@@ -733,16 +847,15 @@ static uint32_t tcp_collect_dead_claimants(TcpBackendPrivate *priv,
  * leaving its claims alone.
  *
  * The re-check is the point.  tcp_collect_dead_claimants() runs under
- * mesh_table_lock and the caller then drops it, and in that window the
- * health check can reconnect to one of the nodes it collected: that
+ * mesh_table_lock and the caller then drops it, and in that window one of
+ * the nodes it collected can register again under its own id: that
  * publishes a connection and restores the node's claims
- * (tcp_health_check_reconnect()).  Withdrawing on the strength of the stale
- * list would undo the revival and leave the node is_alive with claims that
- * are not, which nothing recovers from -- the heartbeat handler only
- * restores claims on the transition out of dead, and the node never makes
- * it again.  So the connection is looked at again here, under the lock
- * reconnect publishes beneath, which makes the two atomic with respect to
- * each other.
+ * (tcp_register_again()).  Withdrawing on the strength of the stale list
+ * would undo the revival and leave the node is_alive with claims that are
+ * not, which nothing recovers from -- the heartbeat handler only restores
+ * claims on the transition out of dead, and the node never makes it again.
+ * So the connection is looked at again here, under the lock a registration
+ * publishes beneath, which makes the two atomic with respect to each other.
  *
  * Lock order: conn_table_lock and gid_table_lock under mesh_table_lock,
  * both as documented; see tcp_health_check_scan(), which does the same.
@@ -1690,7 +1803,8 @@ static void tcp_worker_peer_sweep(TcpBackendPrivate *priv)
  * answer delays the ones after it by no more than that, and can't keep them
  * from connecting.  A target that an update during the pass no longer names
  * is skipped; one the update added is left to the next pass, which comes
- * straight after.
+ * straight after.  Before each connect, the worker's connection to the
+ * manager is checked (tcp_worker_manager_pass()).
  */
 static void tcp_worker_peer_pass(TcpBackendPrivate *priv, const GArray *targets)
 {
@@ -1704,6 +1818,8 @@ static void tcp_worker_peer_pass(TcpBackendPrivate *priv, const GArray *targets)
             !tcp_worker_peer_current(priv, target)) {
             continue;
         }
+        /* The last connect can have taken an interval */
+        tcp_worker_manager_pass(priv);
         tcp_worker_connect_peer(priv, target, &priv->peer_thread_running,
                                 ernic_monotonic_ms() +
                                     (uint64_t)priv->health_check_interval_sec *
@@ -1712,7 +1828,128 @@ static void tcp_worker_peer_pass(TcpBackendPrivate *priv, const GArray *targets)
 }
 
 /*
- * Worker peer-connect thread.  Connects to the peers in the latest topology
+ * Send the manager a heartbeat on conn without waiting for anything: not for
+ * conn->lock, which a thread sending to a manager that has stopped reading
+ * holds for as long as the manager doesn't read, and not for room in the
+ * socket, which is non-blocking.  Either would hold up the thread that has
+ * to notice the manager is gone.  A busy lock or a full socket sends
+ * nothing, and the next check tries again.
+ *
+ * Returns false if the connection can't be used any more: the send failed,
+ * or sent only part of the heartbeat, which would leave the manager reading
+ * the rest as the start of the next message.
+ */
+static bool tcp_worker_probe_manager(TcpBackendPrivate *priv,
+                                     TcpConnection *conn)
+{
+    TcpMsgHeader hdr;
+    bool usable = true;
+
+    if (qemu_mutex_trylock(&conn->lock) != 0) {
+        return true;
+    }
+    if (conn->sockfd >= 0) {
+        ssize_t ret;
+
+        /* As tcp_send_message2() fills it in, with no payload */
+        memset(&hdr, 0, sizeof(hdr));
+        hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
+        hdr.msg_type = htonl(TCP_MSG_HEARTBEAT);
+        hdr.seq = htonl(atomic_fetch_add_explicit(&priv->next_seq, 1,
+                                                  memory_order_relaxed));
+        hdr.src_node_id = htonl(tcp_local_node(priv));
+        ret = send(conn->sockfd, &hdr, sizeof(hdr), MSG_NOSIGNAL);
+        usable = ret == (ssize_t)sizeof(hdr) ||
+                 (ret < 0 && (errno == EAGAIN || errno == EINTR));
+    }
+    qemu_mutex_unlock(&conn->lock);
+    return usable;
+}
+
+/*
+ * The manager's part of a pass of the peer-connect thread.  A worker owns its
+ * link to the manager; the manager never connects to a worker.  So when the
+ * connection has ended, or nothing has come on it for three intervals, the
+ * worker gives up on it, and connects and registers again, under the id it
+ * has, giving up on the connect after an interval.  A check that finds
+ * nothing has come for an interval first sends the manager a heartbeat
+ * (tcp_worker_probe_manager()), which the manager answers, so a manager
+ * whose own interval is longer than this worker's isn't taken for silent.
+ * For that, checks have to come less than two intervals apart, so a pass
+ * makes one before each connect to a peer, which can take an interval.
+ *
+ * Until it has registered again the worker has no connection to the manager:
+ * it hears nothing of the mesh, and can reach only the nodes it has a
+ * connection of its own to.  A registration the manager refuses, as it does
+ * while it still has the node's last connection, is tried again on the next
+ * pass.
+ *
+ * Only this thread clears manager_conn, and nothing sets it while it is set,
+ * so the connection given up on is the one taken out.  The thread is stopped
+ * before the receive threads at teardown, so it never takes one out from
+ * under tcp_stop_recv_threads().
+ */
+void tcp_worker_manager_pass(TcpBackendPrivate *priv)
+{
+    uint64_t interval_ms = (uint64_t)priv->health_check_interval_sec * 1000u;
+    TcpConnection *conn = tcp_worker_manager_conn(priv);
+
+    if (conn) {
+        /* Before the clock, so no message recorded meanwhile is newer */
+        uint64_t last_ms = atomic_load(&conn->last_rx_ms);
+        uint64_t quiet_ms = ernic_monotonic_ms() - last_ms;
+        TcpConnection *old;
+
+        bool dead = tcp_conn_dead(conn);
+        bool broken = false;
+
+        if (!dead && quiet_ms <= 3 * interval_ms) {
+            if (quiet_ms < interval_ms ||
+                tcp_worker_probe_manager(priv, conn)) {
+                tcp_connection_unref(conn);
+                return;
+            }
+            broken = true;
+        }
+
+        if (dead) {
+            rdma_warn_report("TCP: The connection to the manager has ended; "
+                             "connecting to it again");
+        } else if (broken) {
+            rdma_warn_report("TCP: Failed to send the manager a heartbeat; "
+                             "connecting to it again");
+        } else {
+            rdma_warn_report("TCP: Nothing from the manager for %" PRIu64
+                             " s; connecting to it again",
+                             quiet_ms / 1000u);
+        }
+
+        /* Takes over manager_conn's reference */
+        qemu_mutex_lock(&priv->conn_table_lock);
+        old = atomic_exchange(&priv->manager_conn, NULL);
+        qemu_mutex_unlock(&priv->conn_table_lock);
+        if (old) {
+            tcp_retire_conn(old);
+            tcp_connection_unref(old);
+        }
+        tcp_connection_unref(conn);
+    }
+
+    qemu_mutex_lock(&priv->registration_mutex);
+    bool again = priv->registers_again;
+    qemu_mutex_unlock(&priv->registration_mutex);
+    if (!again) {
+        return;
+    }
+    atomic_fetch_add_explicit(&priv->tcp_stats.manager_reconnects, 1,
+                              memory_order_relaxed);
+    tcp_worker_register_with_manager(priv, &priv->peer_thread_running,
+                                     ernic_monotonic_ms() + interval_ms);
+}
+
+/*
+ * Worker peer-connect thread.  Keeps the worker's connection to the manager
+ * (tcp_worker_manager_pass()), connects to the peers in the latest topology
  * update, and closes the connections the worker is done with: a pass comes
  * as soon as an update arrives, and otherwise a health-check interval
  * (ERNIC_TCP_HEALTH_INTERVAL) after the last one, so a peer that couldn't be
@@ -1731,6 +1968,8 @@ void *tcp_worker_peer_thread(void *opaque)
     rdma_info_report("TCP: Peer-connect thread started");
 
     while (atomic_load(&priv->peer_thread_running)) {
+        tcp_worker_manager_pass(priv);
+
         qemu_mutex_lock(&priv->peer_lock);
         g_array_set_size(targets, 0);
         g_array_append_vals(targets, priv->peer_targets->data,
@@ -1763,6 +2002,30 @@ void *tcp_worker_peer_thread(void *opaque)
     g_array_free(targets, TRUE);
     rdma_info_report("TCP: Peer-connect thread exiting");
     return NULL;
+}
+
+/*
+ * Answer a registration on conn by refusing it, with result, a negative
+ * errno.  Under conn->lock, like every write to a connection's socket.  The
+ * caller then stops reading conn, since nothing the peer sends now is of
+ * use; the connection is still pending, and the next reap closes it.
+ */
+static void tcp_refuse_registration(TcpBackendPrivate *priv,
+                                    TcpConnection *conn, uint32_t dst,
+                                    int32_t result)
+{
+    TcpRegisterRespPayload nak;
+
+    memset(&nak, 0, sizeof(nak));
+    nak.result = htonl((uint32_t)result);
+    nak.version = htonl(TCP_PROTOCOL_VERSION);
+
+    qemu_mutex_lock(&conn->lock);
+    tcp_send_message(
+        priv, conn->sockfd, TCP_MSG_REGISTER_RESP, &nak, sizeof(nak),
+        atomic_fetch_add_explicit(&priv->next_seq, 1, memory_order_relaxed),
+        tcp_local_node(priv), dst, 0, 0);
+    qemu_mutex_unlock(&conn->lock);
 }
 
 /* Per-connection receive thread */
@@ -1806,6 +2069,7 @@ void *tcp_recv_thread_per_conn(void *opaque)
                                  conn->node_id);
                 break;
             }
+            atomic_store(&conn->last_rx_ms, ernic_monotonic_ms());
 
             /*
              * A manager's connection that hasn't registered (its node id is
@@ -1868,33 +2132,14 @@ void *tcp_recv_thread_per_conn(void *opaque)
                 }
 
                 if (peer_version != TCP_PROTOCOL_VERSION) {
-                    TcpRegisterRespPayload nak;
-
                     rdma_error_report(
                         "TCP: refusing registration from a v%u peer "
                         "(this mesh is v%u); a peer that predates the GID "
                         "advertisement routes every destination to one "
                         "default node",
                         peer_version, TCP_PROTOCOL_VERSION);
-
-                    memset(&nak, 0, sizeof(nak));
-                    nak.result = htonl((uint32_t)(int32_t)-EPROTO);
-                    nak.version = htonl(TCP_PROTOCOL_VERSION);
-
-                    qemu_mutex_lock(&conn->lock);
-                    tcp_send_message(
-                        priv, conn->sockfd, TCP_MSG_REGISTER_RESP, &nak,
-                        sizeof(nak),
-                        atomic_fetch_add_explicit(&priv->next_seq, 1,
-                                                  memory_order_relaxed),
-                        tcp_local_node(priv), hdr.src_node_id, 0, 0);
-                    qemu_mutex_unlock(&conn->lock);
-
-                    /*
-                     * Nothing the peer sends now is of use, so stop reading
-                     * it.  The connection is still pending, and the next
-                     * reap closes it.
-                     */
+                    tcp_refuse_registration(priv, conn, hdr.src_node_id,
+                                            -EPROTO);
                     hang_up = true;
                     break;
                 }
@@ -1947,56 +2192,113 @@ void *tcp_recv_thread_per_conn(void *opaque)
                 }
 
 
-                /* Assign node ID */
+                /*
+                 * A new node gets the next id no node or connection has.  A
+                 * worker that asks for an id is asking for its own back,
+                 * having connected again (tcp_register_again()); it gets
+                 * that or nothing, never another, which would leave it
+                 * claiming its GIDs under two ids.
+                 */
                 uint32_t assigned_id = requested_id;
-                if (requested_id == 0xFFFFFFFF ||
-                    tcp_node_id_taken(priv, requested_id)) {
-                    /* Auto-assign: find next available ID */
+                bool again = requested_id != 0xFFFFFFFF;
+                TcpConnection *replaced = NULL;
+                const char *why = NULL;
+                int refused = 0;
+
+                if (again) {
+                    refused =
+                        tcp_register_again(priv, requested_id, worker_host,
+                                           worker_port, &replaced, &why);
+                } else {
                     assigned_id = priv->next_available_node_id;
                     while (tcp_node_id_taken(priv, assigned_id)) {
                         assigned_id++;
                     }
                     priv->next_available_node_id = assigned_id + 1;
+
+                    MeshNodeInfo *node = tcp_mesh_node_info_new(
+                        assigned_id, worker_host, worker_port);
+                    if (!node) {
+                        rdma_error_report("TCP: Failed to create mesh node "
+                                          "info for worker node %u",
+                                          assigned_id);
+                        /* Still unregistered, so teardown has to find it */
+                        g_ptr_array_add(priv->pending_conns, conn);
+                        qemu_mutex_unlock(&priv->conn_table_lock);
+                        qemu_mutex_unlock(&priv->mesh_table_lock);
+                        break;
+                    }
+                    g_hash_table_insert(priv->mesh_nodes,
+                                        GUINT_TO_POINTER(assigned_id), node);
                 }
 
-                /* Create mesh node info */
-                MeshNodeInfo *node = tcp_mesh_node_info_new(
-                    assigned_id, worker_host, worker_port);
-                if (!node) {
-                    rdma_error_report("TCP: Failed to create mesh node info "
-                                      "for worker node %u",
-                                      assigned_id);
-                    /* Still unregistered, so teardown has to find it */
+                if (refused != 0) {
+                    /* Still unregistered, so the reap closes it */
                     g_ptr_array_add(priv->pending_conns, conn);
                     qemu_mutex_unlock(&priv->conn_table_lock);
                     qemu_mutex_unlock(&priv->mesh_table_lock);
+                    rdma_error_report("TCP: refusing a registration from "
+                                      "%s:%u as node %u: %s",
+                                      worker_host, worker_port, requested_id,
+                                      why);
+                    tcp_refuse_registration(priv, conn, hdr.src_node_id,
+                                            refused);
+                    hang_up = true;
                     break;
                 }
 
-                /* Update connection with assigned node ID */
-                conn->node_id = assigned_id;
-
                 /*
-                 * Add to the mesh and connections tables.  The connection
-                 * takes its reference from pending_conns with it, and can't
-                 * be refused: assigned_id is in neither table.
+                 * The connection takes its reference from pending_conns
+                 * with it into connections, and can't be refused:
+                 * assigned_id has no entry there, or had one that
+                 * tcp_register_again() just took out.
                  */
-                g_hash_table_insert(priv->mesh_nodes,
-                                    GUINT_TO_POINTER(assigned_id), node);
+                conn->node_id = assigned_id;
                 tcp_conn_table_add(priv, assigned_id, conn);
-
                 qemu_mutex_unlock(&priv->conn_table_lock);
+
+                if (again) {
+                    MeshNodeInfo *node = g_hash_table_lookup(
+                        priv->mesh_nodes, GUINT_TO_POINTER(assigned_id));
+
+                    node->is_alive = true;
+                    node->last_heartbeat_ms = ernic_monotonic_ms();
+                    /*
+                     * The node's addresses are its own again, without its
+                     * advertising them: a node the health check declared
+                     * dead had its claims taken out of resolution, and the
+                     * broadcast below would otherwise tell the workers it
+                     * owns nothing until its advertisement came.  Under
+                     * mesh_table_lock, with the connection published, so
+                     * tcp_withdraw_if_still_unreachable() can't act on a
+                     * stale finding of it dead in between.
+                     */
+                    tcp_gid_claims_set_alive(priv, assigned_id, true);
+                }
+                /* For the answer, read under the lock that guards the table */
+                uint32_t num_nodes = g_hash_table_size(priv->mesh_nodes);
                 qemu_mutex_unlock(&priv->mesh_table_lock);
 
-                rdma_info_report("TCP: Registered node %u at %s:%u",
-                                 assigned_id, worker_host, worker_port);
+                if (replaced) {
+                    tcp_retire_conn(replaced);
+                    tcp_connection_unref(replaced);
+                }
+                if (again) {
+                    rdma_info_report("TCP: Node %u registered again from "
+                                     "%s:%u",
+                                     assigned_id, worker_host, worker_port);
+                } else {
+                    rdma_info_report("TCP: Registered node %u at %s:%u",
+                                     assigned_id, worker_host, worker_port);
+                }
 
                 /*
                  * Marked not-alive rather than discarded: that is enough to
                  * take the node out of resolution, so it stops contesting
                  * the GIDs the registering node is about to claim, and it
-                 * leaves the claims to restore if the health check later
-                 * reconnects to the node rather than it having restarted.
+                 * leaves the claims to restore if the node answers a
+                 * heartbeat again, or registers again under its own id,
+                 * rather than having restarted.
                  *
                  * The whole table is broadcast below, so the withdrawal
                  * reaches the other workers with the rest of it.
@@ -2018,7 +2320,7 @@ void *tcp_recv_thread_per_conn(void *opaque)
                 TcpRegisterRespPayload resp;
                 memset(&resp, 0, sizeof(resp));
                 resp.assigned_node_id = htonl(assigned_id);
-                resp.num_nodes = htonl(g_hash_table_size(priv->mesh_nodes));
+                resp.num_nodes = htonl(num_nodes);
                 resp.result = htonl(0); /* Success */
                 resp.version = htonl(TCP_PROTOCOL_VERSION);
 
@@ -2061,18 +2363,16 @@ void *tcp_recv_thread_per_conn(void *opaque)
                 }
 
                 /*
-                 * Only the manager assigns this node its id, and only once.
-                 * The answer rewrites the id and the GIDs this node claims,
-                 * so one accepted from a peer, or a second one, would let
-                 * another node take this one's place in the mesh.
-                 * manager_conn is the connection this node opened to the
-                 * manager itself; a peer can't be it.
+                 * Only the manager assigns this node its id, and only once
+                 * for each registration.  The answer sets the id and the
+                 * GIDs this node claims, and which connection it takes the
+                 * mesh's word from, so one accepted from a peer, or a second
+                 * one, would let another node take this one's place in the
+                 * mesh.  tcp_worker_registration_done() takes only the first
+                 * answer on the connection this node opened to the manager
+                 * itself to register; a peer's can't be it.
                  */
-                if (conn != priv->manager_conn) {
-                    rdma_error_report("TCP: REGISTER_RESP from a connection "
-                                      "that is not the manager; ignoring");
-                    break;
-                }
+                bool first = !tcp_worker_registered(priv);
 
                 /* The id to record: 0 if the answer refuses this node */
                 uint32_t assigned_id = 0;
@@ -2127,22 +2427,30 @@ void *tcp_recv_thread_per_conn(void *opaque)
                  * A refusal ends the wait too, so tcp_init() fails at once
                  * rather than at the registration timeout.
                  */
-                if (!tcp_worker_registration_done(priv, assigned_id)) {
-                    rdma_error_report("TCP: ignoring a REGISTER_RESP after "
-                                      "registration was answered");
+                if (!tcp_worker_registration_done(priv, conn, &assigned_id)) {
+                    rdma_error_report("TCP: ignoring a REGISTER_RESP that "
+                                      "answers no registration under way");
                     break;
                 }
                 if (assigned_id == 0) {
                     break;
                 }
 
-                rdma_info_report(
-                    "TCP: Registered with manager, assigned node_id=%u",
-                    assigned_id);
+                if (first) {
+                    rdma_info_report(
+                        "TCP: Registered with manager, assigned node_id=%u",
+                        assigned_id);
+                } else {
+                    rdma_info_report("TCP: Registered with the manager again "
+                                     "as node %u",
+                                     assigned_id);
+                }
 
                 /*
                  * The node id is only known now, so this is the first point
-                 * at which this node can say which GIDs are its own.
+                 * at which this node can say which GIDs are its own.  On
+                 * registering again, a change this node made to them while
+                 * it had no connection to the manager was never sent.
                  */
                 tcp_advertise_local_gids(priv);
                 break;
@@ -2167,23 +2475,20 @@ void *tcp_recv_thread_per_conn(void *opaque)
                  * peers this worker connects to, and which of its
                  * connections it closes (tcp_worker_peer_sweep()), so one
                  * from a peer could take down the worker's links.
+                 *
+                 * That also ignores an update that comes before the answer
+                 * to this node's registration, which is what publishes
+                 * manager_conn.  Which peers this node connects to depends
+                 * on its id.  The manager publishes a new worker's
+                 * connection before it answers the registration, so the
+                 * broadcast for another node's registration can come first.
+                 * It follows its answer with a broadcast of its own, so
+                 * nothing is lost.
                  */
-                if (conn != priv->manager_conn) {
+                if (conn != atomic_load(&priv->manager_conn)) {
                     rdma_error_report("TCP: MESH_TOPOLOGY from a connection "
-                                      "that is not the manager; ignoring");
-                    break;
-                }
-
-                /*
-                 * Which peers this node connects to depends on its id.  The
-                 * manager publishes a new worker's connection before it
-                 * answers the registration, so the broadcast for another
-                 * node's registration can come first.  It follows its answer
-                 * with a broadcast of its own, so nothing is lost.
-                 */
-                if (!tcp_worker_registered(priv)) {
-                    rdma_info_report("TCP: Ignoring a mesh topology update "
-                                     "that came before registration");
+                                      "that is not the manager's, or before "
+                                      "registration; ignoring");
                     break;
                 }
 
@@ -2235,8 +2540,9 @@ void *tcp_recv_thread_per_conn(void *opaque)
                  *
                  * On a worker the only legitimate source is the manager
                  * relaying on others' behalf, which is the one connection
-                 * this node opened itself.  Matching on src_node_id == 0
-                 * instead would let any peer claim to be the manager.
+                 * this node opened itself, once the manager has accepted its
+                 * registration on it.  Matching on src_node_id == 0 instead
+                 * would let any peer claim to be the manager.
                  */
                 if (priv->is_manager) {
                     if (conn->node_id == UINT32_MAX ||
@@ -2247,10 +2553,10 @@ void *tcp_recv_thread_per_conn(void *opaque)
                             conn->node_id, node_id);
                         break;
                     }
-                } else if (conn != priv->manager_conn) {
+                } else if (conn != atomic_load(&priv->manager_conn)) {
                     rdma_error_report("TCP: NODE_GIDS for node %u from a "
-                                      "connection that is not the manager; "
-                                      "ignoring",
+                                      "connection that is not the manager's, "
+                                      "or before registration; ignoring",
                                       node_id);
                     break;
                 }
@@ -2276,8 +2582,11 @@ void *tcp_recv_thread_per_conn(void *opaque)
                      * the header names: the sender writes src_node_id, and
                      * trusting it would let any node keep another, dead,
                      * node alive.  Every connection that gets this far is a
-                     * registered node's or a reconnect to one, and carries
-                     * that node's id.
+                     * registered node's, and carries that node's id.
+                     *
+                     * A worker's own heartbeat, when it has heard nothing
+                     * from the manager for an interval, comes here too: the
+                     * answer is what tells it the manager is still there.
                      */
                     bool revived = false;
 
@@ -2328,7 +2637,11 @@ void *tcp_recv_thread_per_conn(void *opaque)
             }
 
             case TCP_MSG_HEARTBEAT_RESP: {
-                /* Acknowledgement — no action needed. */
+                /*
+                 * Acknowledgement — no action needed.  That it came at all,
+                 * recorded in last_rx_ms as for any message, is what a
+                 * worker that sent a heartbeat is waiting to see.
+                 */
                 break;
             }
 
@@ -2914,10 +3227,16 @@ static void tcp_advertise_local_gids(TcpBackendPrivate *priv)
         return;
     }
 
+    /*
+     * With no connection to the manager, nothing is sent: the answer to the
+     * next registration advertises the set again.
+     */
     TcpNodeGidsPayload mine;
+    TcpConnection *mgr = tcp_worker_manager_conn(priv);
 
     tcp_fill_node_gids(&mine, node, tcp_const_gids(gids), num_gids);
-    tcp_send_node_gids(priv, priv->manager_conn, &mine);
+    tcp_send_node_gids(priv, mgr, &mine);
+    tcp_connection_unref(mgr);
 
     qemu_mutex_unlock(&priv->gid_advertise_lock);
 }
@@ -3076,10 +3395,10 @@ static bool tcp_node_silent(const TcpBackendPrivate *priv,
 
 /*
  * The part of a health-check pass that needs mesh_table_lock: note each
- * other node's connection, taking a reference to it, declare dead the nodes
- * whose connection has ended and those that have stopped answering, and pick
- * the ones due a reconnect attempt.  Returns true if a node was newly
- * declared dead, which the rest of the mesh has to be told.
+ * other node's connection, taking a reference to it, and declare dead the
+ * nodes whose connection has ended and those that have stopped answering.
+ * Returns true if a node was newly declared dead, which the rest of the mesh
+ * has to be told.
  */
 static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items)
 {
@@ -3095,7 +3414,6 @@ static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items)
     while (g_hash_table_iter_next(&iter, NULL, &value)) {
         MeshNodeInfo *node = (MeshNodeInfo *)value;
         TcpHealthCheckItem item = {node, NULL, false, false};
-        uint64_t dead_sec = (now_ms - node->last_heartbeat_ms) / 1000u;
 
         if (node->node_id == tcp_local_node(priv))
             continue;
@@ -3122,27 +3440,17 @@ static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items)
             if (node->is_alive) {
                 rdma_warn_report("TCP: Node %u failed health check (last "
                                  "heartbeat: %" PRIu64 " seconds ago)",
-                                 node->node_id, dead_sec);
+                                 node->node_id,
+                                 (now_ms - node->last_heartbeat_ms) / 1000u);
                 node->is_alive = false;
                 tcp_gid_claims_set_alive(priv, node->node_id, false);
                 newly_dead = true;
             }
-
-            /* Attempt reconnection with exponential backoff (max 60 s) */
-            uint64_t backoff = 1;
-            while (backoff * 2 <= dead_sec && backoff < 60)
-                backoff *= 2;
-            if (backoff > 60)
-                backoff = 60;
-            item.reconnect =
-                (node->reconnect_deferred != 0 || dead_sec % backoff == 0) &&
-                node->hostname != NULL;
-        } else {
-            node->reconnect_deferred = 0;
+            item.silent = true;
         }
 
         /* Every reference taken above lands in items, to be released */
-        if (item.conn || item.reconnect)
+        if (item.conn)
             g_array_append_val(items, item);
     }
     qemu_mutex_unlock(&priv->mesh_table_lock);
@@ -3173,19 +3481,49 @@ static void tcp_health_check_unpublish(TcpBackendPrivate *priv,
 }
 
 /*
- * Retire the connections the scan found ended, and take them out of
- * connections.  Otherwise each would keep its descriptor, in CLOSE_WAIT,
- * until a reconnect to the node succeeds, which may be never.  Threads that
- * still hold one see their sends on it fail, and the data path no longer
- * finds it.
+ * Whether node is still silent.  The scan's verdict can be out of date by
+ * the time it's acted on: a node can answer a heartbeat late, on the
+ * connection that would be retired.
  */
-static void tcp_health_check_retire(TcpBackendPrivate *priv, GArray *items)
+static bool tcp_node_still_silent(TcpBackendPrivate *priv, MeshNodeInfo *node)
+{
+    bool silent;
+
+    qemu_mutex_lock(&priv->mesh_table_lock);
+    silent = tcp_node_silent(priv, node, ernic_monotonic_ms());
+    qemu_mutex_unlock(&priv->mesh_table_lock);
+    if (!silent)
+        rdma_info_report("TCP: Node %u has answered; keeping its connection",
+                         node->node_id);
+    return silent;
+}
+
+/*
+ * Retire the connections the scan found ended, or whose node has stopped
+ * answering, and take them out of connections.  Threads that still hold one
+ * see their sends on it fail, and the data path no longer finds it.
+ *
+ * An ended connection would otherwise keep its descriptor, in CLOSE_WAIT,
+ * until the node registered again, which may be never.  A silent node's
+ * connection may never end at all: the node can have gone without hanging
+ * up, in a partition, say, or a NAT that forgot the connection, or be a
+ * process that has been paused.  Kept, it would stay published, and the node
+ * couldn't register again (tcp_register_again()).  Retired, it ends on the
+ * node's side, if the node is still there to see it, and the node connects
+ * to the manager again; the manager never connects to a node itself.
+ */
+void tcp_health_check_retire(TcpBackendPrivate *priv, GArray *items)
 {
     for (guint i = 0; i < items->len; i++) {
         TcpHealthCheckItem *item = &g_array_index(items, TcpHealthCheckItem, i);
 
-        if (!item->disconnected)
+        if (!item->disconnected &&
+            !(item->silent && tcp_node_still_silent(priv, item->node)))
             continue;
+        if (!item->disconnected)
+            rdma_info_report("TCP: Closing the connection to node %u, which "
+                             "has stopped answering",
+                             item->node->node_id);
         tcp_health_check_unpublish(priv, item->node->node_id, item->conn);
         tcp_connection_unref(item->conn);
         item->conn = NULL;
@@ -3205,192 +3543,15 @@ static void tcp_health_check_release(GArray *items)
 }
 
 /*
- * Deferred reconnects first, the longest deferred first.  g_array_sort() is
- * stable, so the rest keep the scan's order.
- */
-static gint tcp_health_check_item_cmp(gconstpointer a, gconstpointer b)
-{
-    uint64_t x = ((const TcpHealthCheckItem *)a)->node->reconnect_deferred;
-    uint64_t y = ((const TcpHealthCheckItem *)b)->node->reconnect_deferred;
-
-    if (x == y)
-        return 0;
-    if (x == 0)
-        return 1;
-    if (y == 0)
-        return -1;
-    return x < y ? -1 : 1;
-}
-
-/*
- * Whether node is still silent.  The scan's verdict can be out of date by
- * the time it's acted on: a node that answers a heartbeat late, on the
- * connection a reconnect would retire, has its heartbeat recorded while the
- * reconnect is under way.
- */
-static bool tcp_node_still_silent(TcpBackendPrivate *priv, MeshNodeInfo *node)
-{
-    bool silent;
-
-    qemu_mutex_lock(&priv->mesh_table_lock);
-    silent = tcp_node_silent(priv, node, ernic_monotonic_ms());
-    qemu_mutex_unlock(&priv->mesh_table_lock);
-    if (!silent)
-        rdma_info_report("TCP: Node %u has answered; not reconnecting",
-                         node->node_id);
-    return silent;
-}
-
-/*
- * Reconnect to item->node, retiring item->conn, giving up at deadline_ms
- * (on ernic_monotonic_ms()'s clock).  Called with no lock held: the connect
- * can take until the deadline, the handshake can wait on the peer, and
- * retiring the old connection joins its receive thread, whose handlers take
- * mesh_table_lock.  Returns true if the node has a new connection.
- *
- * The old connection leaves the connections table before the new one is
- * made, so its end-of-file reaches the node ahead of the new handshake, and
- * a reconnect that fails leaves no entry for the next attempt to retire
- * again.  A thread still holding the old connection keeps it, retired, until
- * it drops its reference.
- *
- * A node that answers before the connect, or during it, is left alone.  One
- * that answers once its old connection is being retired gets the new
- * connection anyway; if that fails, the node goes silent again, so a later
- * pass reconnects to it.
- */
-bool tcp_health_check_reconnect(TcpBackendPrivate *priv,
-                                const TcpHealthCheckItem *item,
-                                uint64_t deadline_ms)
-{
-    MeshNodeInfo *node = item->node;
-
-    if (!tcp_node_still_silent(priv, node))
-        return false;
-
-    rdma_info_report("TCP: Attempting reconnect to node %u (%s:%u)",
-                     node->node_id, node->hostname, node->port);
-    int fd = tcp_connect_to_remote(node->hostname, node->port,
-                                   &priv->health_check_running, deadline_ms);
-    if (fd < 0)
-        return false;
-    if (!tcp_node_still_silent(priv, node)) {
-        close(fd);
-        return false;
-    }
-    atomic_fetch_add_explicit(&priv->tcp_stats.reconnect_attempts, 1,
-                              memory_order_relaxed);
-
-    if (item->conn) {
-        tcp_health_check_unpublish(priv, node->node_id, item->conn);
-    }
-
-    TcpConnection *new_conn =
-        tcp_connection_new(node->node_id, node->hostname, node->port);
-    new_conn->priv = priv;
-    new_conn->sockfd = fd;
-    atomic_store(&new_conn->is_connected, true);
-
-    if (tcp_send_handshake(new_conn, tcp_local_node(priv), TCP_MSG_HANDSHAKE) <
-        0) {
-        rdma_error_report("TCP: Failed to send handshake after reconnect to "
-                          "node %u",
-                          node->node_id);
-        tcp_connection_unref(new_conn);
-        return false;
-    }
-
-    char tname[32];
-    snprintf(tname, sizeof(tname), "tcp-recv-%u", node->node_id);
-    if (!tcp_start_recv_thread(new_conn, tname)) {
-        tcp_connection_unref(new_conn);
-        return false;
-    }
-
-    /*
-     * Both tables together, so no thread finds one updated and not the
-     * other.  Only this thread changes a registered node's entry, which it
-     * has just removed, so the add isn't refused in practice; if it were,
-     * the new connection is dropped rather than the one in the table.
-     */
-    qemu_mutex_lock(&priv->mesh_table_lock);
-    qemu_mutex_lock(&priv->conn_table_lock);
-    if (!tcp_conn_table_add(priv, node->node_id, new_conn)) {
-        qemu_mutex_unlock(&priv->conn_table_lock);
-        qemu_mutex_unlock(&priv->mesh_table_lock);
-        tcp_retire_conn(new_conn);
-        tcp_connection_unref(new_conn);
-        return false;
-    }
-    qemu_mutex_unlock(&priv->conn_table_lock);
-    node->is_alive = true;
-    node->last_heartbeat_ms = ernic_monotonic_ms();
-    /*
-     * The node is reachable again, so its addresses are its own again. The
-     * same restoration the heartbeat-revival path does, for the other way a
-     * node comes back: without it a reconnected node is live and unreachable
-     * until it registers afresh, which a node that never restarted will not
-     * do. gid_table_lock under mesh_table_lock is the documented order.
-     */
-    tcp_gid_claims_set_alive(priv, node->node_id, true);
-    qemu_mutex_unlock(&priv->mesh_table_lock);
-
-    rdma_info_report("TCP: Reconnected to node %u", node->node_id);
-    atomic_fetch_add_explicit(&priv->tcp_stats.reconnect_successes, 1,
-                              memory_order_relaxed);
-    return true;
-}
-
-/*
- * The reconnect phase of a health-check pass: try the items due a
- * reconnect, until deadline_ms (on ernic_monotonic_ms()'s clock) or a stop.
- * Returns true if a node was reconnected.
- *
- * A node whose turn comes after the deadline is deferred: it is due on the
- * next pass whatever its backoff, and goes first, after any node deferred
- * before it.  The first in line is always tried, so every deferred node
- * moves up a place each pass until it has its turn.  Otherwise a node that
- * never answers would use up every pass's time, and the nodes behind it
- * would never be tried.
- */
-bool tcp_health_check_reconnects(TcpBackendPrivate *priv, GArray *items,
-                                 uint64_t deadline_ms)
-{
-    bool reconnected = false;
-
-    g_array_sort(items, tcp_health_check_item_cmp);
-    for (guint i = 0;
-         i < items->len && atomic_load(&priv->health_check_running); i++) {
-        const TcpHealthCheckItem *item =
-            &g_array_index(items, TcpHealthCheckItem, i);
-
-        if (!item->reconnect)
-            continue;
-        if (ernic_monotonic_ms() >= deadline_ms) {
-            /* Already in line, it keeps its place */
-            if (item->node->reconnect_deferred == 0)
-                item->node->reconnect_deferred = ++priv->reconnect_deferrals;
-            continue;
-        }
-        item->node->reconnect_deferred = 0;
-        if (tcp_health_check_reconnect(priv, item, deadline_ms))
-            reconnected = true;
-    }
-    return reconnected;
-}
-
-/*
  * Manager health check thread.  Each pass releases the connections that are
- * done waiting to register, retires the connections of nodes that have
- * hung up, sends every other node a heartbeat, declares dead the nodes that
- * have hung up or haven't answered for three intervals, and tries to
- * reconnect to them.
+ * done waiting to register, declares dead the nodes that have hung up or
+ * haven't answered for three intervals, retires their connections, and sends
+ * every other node a heartbeat.  A node whose connection is retired connects
+ * and registers again itself, if it can (tcp_worker_manager_pass()).
  *
- * Only the scan holds mesh_table_lock.  The rest of the pass can wait on a
- * peer for as long as a connect takes, which would keep registrations
- * waiting, and a reconnect joins the old connection's receive thread, which
- * takes mesh_table_lock to record a heartbeat; holding the lock across the
- * join would deadlock with it.
+ * Only the scan holds mesh_table_lock.  Retiring a connection joins its
+ * receive thread, which takes mesh_table_lock to record a heartbeat; holding
+ * the lock across the join would deadlock with it.
  */
 void *tcp_manager_health_check_thread(void *opaque)
 {
@@ -3423,39 +3584,21 @@ void *tcp_manager_health_check_thread(void *opaque)
             }
             qemu_mutex_unlock(&conn->lock);
         }
+        tcp_health_check_release(items);
 
         /*
          * A node the scan declared dead had its claims marked not-alive,
          * which takes it out of resolution without discarding what it
-         * claimed. Discarding would be a one-way door: the node has no way
-         * to re-advertise except by registering again, so a node that is
-         * merely silent for three intervals and then answers, or that this
-         * pass reconnects to, would come back live and unreachable. The
-         * broadcast tells the workers, who keep no liveness of their own.
+         * claimed. Discarding would be a one-way door: a node that is merely
+         * silent for three intervals and then answers would come back live
+         * and unreachable, and one that registers again would be advertised
+         * as owning nothing until its own advertisement came.  The broadcast
+         * tells the workers, who keep no liveness of their own.
          */
         if (newly_dead) {
             tcp_broadcast_mesh_topology(priv);
             tcp_broadcast_gid_table(priv);
         }
-
-        /*
-         * All of the pass's reconnects share one interval.  No heartbeat
-         * goes out until the next pass, an interval after this one ends,
-         * and a node is declared dead after three intervals without one.
-         * With the reconnects bounded, the answer to this pass's heartbeat,
-         * or the registration of a node that joins meanwhile, is less than
-         * three intervals old when the next pass looks at it.
-         */
-        if (tcp_health_check_reconnects(
-                priv, items,
-                ernic_monotonic_ms() +
-                    (uint64_t)priv->health_check_interval_sec * 1000u)) {
-            tcp_broadcast_mesh_topology(priv);
-            /* A reconnected node owns its GIDs again; the workers took the
-             * manager's word for it owning nothing. */
-            tcp_broadcast_gid_table(priv);
-        }
-        tcp_health_check_release(items);
 
         /*
          * Wait out the interval, or until tcp_stop_health_check_thread()
@@ -3482,12 +3625,67 @@ void *tcp_manager_health_check_thread(void *opaque)
     return NULL;
 }
 
-/* Worker registers with manager */
-static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
+/*
+ * End the registration under way, on priv->registering, and return whether
+ * the manager accepted it.  If wait, its answer is waited for first, for up
+ * to TCP_REGISTER_TIMEOUT_MS, or until *running is cleared, if running isn't
+ * NULL; tcp_stop_peer_thread() signals registration_cond as it clears the
+ * peer-connect thread's.  An answer that comes once this has returned is
+ * ignored, and one that was taken was taken before this looked, since both
+ * happen under registration_mutex.
+ */
+static bool tcp_worker_end_registration(TcpBackendPrivate *priv,
+                                        const atomic_bool *running, bool wait)
+{
+    struct timespec deadline;
+    bool accepted;
+
+    clock_gettime(CLOCK_MONOTONIC, &deadline);
+    deadline.tv_sec += TCP_REGISTER_TIMEOUT_MS / 1000;
+
+    qemu_mutex_lock(&priv->registration_mutex);
+    while (wait && !priv->registration_complete &&
+           (!running || atomic_load(running))) {
+        if (!qemu_cond_timedwait_until(&priv->registration_cond,
+                                       &priv->registration_mutex, &deadline)) {
+            break;
+        }
+    }
+    bool unanswered = wait && !priv->registration_complete;
+    accepted = priv->registration_complete && priv->registration_accepted;
+    priv->registering = NULL;
+    qemu_mutex_unlock(&priv->registration_mutex);
+
+    if (unanswered && running && !atomic_load(running)) {
+        rdma_info_report("TCP: Stopped while registering");
+    } else if (unanswered) {
+        rdma_error_report("TCP: Registration timeout");
+    }
+    return accepted;
+}
+
+/*
+ * Connect to the manager and register: as a new node, asking for any id, if
+ * this node has none yet, and otherwise under the id it has.  The connect
+ * gives up at deadline_ms (on ernic_monotonic_ms()'s clock) if it isn't zero,
+ * and it and the wait for the answer give up when *running is cleared, if
+ * running isn't NULL (see tcp_connect_to_remote()).
+ *
+ * Returns 0 once the manager has accepted the registration, whose answer
+ * published the new connection as manager_conn
+ * (tcp_worker_registration_done()), or -1, the new connection retired.  The
+ * caller has no manager_conn: tcp_init() hasn't had one yet, and the
+ * peer-connect thread has given up on the last one.
+ */
+int tcp_worker_register_with_manager(TcpBackendPrivate *priv,
+                                     const atomic_bool *running,
+                                     uint64_t deadline_ms)
 {
     TcpRegisterNodePayload reg;
-    int ret;
+    TcpConnection *conn;
     char hostname[256];
+    uint32_t local = tcp_local_node(priv);
+    int fd, ret;
 
     /* Get local hostname */
     if (gethostname(hostname, sizeof(hostname)) < 0) {
@@ -3495,29 +3693,30 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
     }
     hostname[sizeof(hostname) - 1] = '\0';
 
-    /* Connect to manager */
-    priv->manager_conn =
-        tcp_connection_new(0, priv->manager_host, priv->manager_port);
-    priv->manager_conn->priv = priv;
-    priv->manager_conn->sockfd =
-        tcp_connect_to_remote(priv->manager_host, priv->manager_port, NULL, 0);
-
-    if (priv->manager_conn->sockfd < 0) {
+    fd = tcp_connect_to_remote(priv->manager_host, priv->manager_port, running,
+                               deadline_ms);
+    if (fd < 0) {
         rdma_error_report("TCP: Failed to connect to manager at %s:%u",
                           priv->manager_host, priv->manager_port);
-        tcp_connection_unref(priv->manager_conn);
-        priv->manager_conn = NULL;
         return -1;
     }
+    conn = tcp_connection_new(0, priv->manager_host, priv->manager_port);
+    conn->priv = priv;
+    conn->sockfd = fd;
+    atomic_store(&conn->is_connected, true);
 
-    atomic_store(&priv->manager_conn->is_connected, true);
+    /* Before the receive thread starts, so it can take the answer */
+    qemu_mutex_lock(&priv->registration_mutex);
+    priv->registering = conn;
+    priv->registration_complete = false;
+    priv->registration_accepted = false;
+    qemu_mutex_unlock(&priv->registration_mutex);
 
-    /* Start receive thread for manager connection */
-    char thread_name[32];
-    snprintf(thread_name, sizeof(thread_name), "tcp-mgr-recv");
-    if (!tcp_start_recv_thread(priv->manager_conn, thread_name)) {
-        tcp_connection_unref(priv->manager_conn);
-        priv->manager_conn = NULL;
+    if (!tcp_start_recv_thread(conn, "tcp-mgr-recv")) {
+        qemu_mutex_lock(&priv->registration_mutex);
+        priv->registering = NULL;
+        qemu_mutex_unlock(&priv->registration_mutex);
+        tcp_connection_unref(conn);
         return -1;
     }
 
@@ -3525,49 +3724,32 @@ static int tcp_worker_register_with_manager(TcpBackendPrivate *priv)
     memset(&reg, 0, sizeof(reg));
     g_strlcpy(reg.hostname, hostname, sizeof(reg.hostname));
     reg.port = htons(priv->listen_port);
-    reg.requested_node_id = htonl(0xFFFFFFFF); /* Auto-assign */
+    reg.requested_node_id = htonl(local != 0 ? local : 0xFFFFFFFF);
     reg.version = htonl(TCP_PROTOCOL_VERSION);
 
     /* Send registration request, under conn->lock like every write to a
      * connection's socket: its receive thread is already running and
      * writes to the socket too. */
-    qemu_mutex_lock(&priv->manager_conn->lock);
+    qemu_mutex_lock(&conn->lock);
     ret = tcp_send_message(
-        priv, priv->manager_conn->sockfd, TCP_MSG_REGISTER_NODE, &reg,
-        sizeof(reg),
-        atomic_fetch_add_explicit(&priv->next_seq, 1, memory_order_relaxed), 0,
-        0, 0, 0);
-    qemu_mutex_unlock(&priv->manager_conn->lock);
+        priv, conn->sockfd, TCP_MSG_REGISTER_NODE, &reg, sizeof(reg),
+        atomic_fetch_add_explicit(&priv->next_seq, 1, memory_order_relaxed),
+        local, 0, 0, 0);
+    qemu_mutex_unlock(&conn->lock);
     if (ret < 0) {
         rdma_error_report("TCP: Failed to send registration request");
-        return -1;
-    }
-
-    /* Wait for registration to complete (handled by receive thread) */
-    qemu_mutex_lock(&priv->registration_mutex);
-    struct timespec deadline;
-    clock_gettime(CLOCK_MONOTONIC, &deadline);
-    deadline.tv_sec += TCP_REGISTER_TIMEOUT_MS / 1000;
-
-    while (!priv->registration_complete) {
-        if (!qemu_cond_timedwait_until(&priv->registration_cond,
-                                       &priv->registration_mutex, &deadline) &&
-            !priv->registration_complete) {
-            qemu_mutex_unlock(&priv->registration_mutex);
-            rdma_error_report("TCP: Registration timeout");
-            return -1;
-        }
     }
 
     /* The receive thread logged why if the manager refused this node */
-    bool success = tcp_worker_registered(priv);
-    qemu_mutex_unlock(&priv->registration_mutex);
-
-    if (!success) {
+    if (!tcp_worker_end_registration(priv, running, ret == 0)) {
         rdma_error_report("TCP: Registration failed");
+        tcp_retire_conn(conn);
+        tcp_connection_unref(conn);
         return -1;
     }
 
+    /* manager_conn holds its own reference now */
+    tcp_connection_unref(conn);
     rdma_info_report("TCP: Successfully registered with manager");
     return 0;
 }
@@ -3619,9 +3801,11 @@ void tcp_stop_health_check_thread(TcpBackendPrivate *priv)
 /*
  * Stop a worker's peer-connect thread and wait for it.  The thread spends
  * most of its time waiting out an interval, and the rest connecting, which
- * gives up within 100 ms of the flag being cleared.  The flag is cleared
- * under peer_lock, with peer_cond signalled, so the thread can't miss it.  A
- * no-op when the thread was never started.
+ * gives up within 100 ms of the flag being cleared, or waiting for the
+ * answer to a registration.  The flag is cleared under peer_lock, with
+ * peer_cond signalled, so the thread can't miss it, and registration_cond is
+ * signalled under registration_mutex, which the thread checks the flag under
+ * before it waits for an answer.  A no-op when the thread was never started.
  */
 void tcp_stop_peer_thread(TcpBackendPrivate *priv)
 {
@@ -3632,6 +3816,9 @@ void tcp_stop_peer_thread(TcpBackendPrivate *priv)
     atomic_store(&priv->peer_thread_running, false);
     qemu_cond_signal(&priv->peer_cond);
     qemu_mutex_unlock(&priv->peer_lock);
+    qemu_mutex_lock(&priv->registration_mutex);
+    qemu_cond_signal(&priv->registration_cond);
+    qemu_mutex_unlock(&priv->registration_mutex);
     qemu_thread_join(&priv->peer_thread);
 }
 
@@ -3679,8 +3866,9 @@ void tcp_stop_recv_threads(TcpBackendPrivate *priv)
             tcp_claim_recv_thread(batch,
                                   g_ptr_array_index(priv->pending_conns, i));
         }
-        if (priv->manager_conn) {
-            tcp_claim_recv_thread(batch, priv->manager_conn);
+        TcpConnection *mgr = atomic_load(&priv->manager_conn);
+        if (mgr) {
+            tcp_claim_recv_thread(batch, mgr);
         }
         qemu_mutex_unlock(&priv->conn_table_lock);
 
@@ -3719,8 +3907,9 @@ void tcp_free_pending_conns(TcpBackendPrivate *priv)
  * down.  With the flag set, such a send fails within one poll interval and
  * releases its locks.
  *
- * The health-check, accept and peer-connect threads add connections, so
- * they go before the receive threads.
+ * The health-check, accept and peer-connect threads add connections, and
+ * the peer-connect thread replaces manager_conn, so they go before the
+ * receive threads.
  */
 void tcp_stop_threads(TcpBackendPrivate *priv)
 {
@@ -3768,9 +3957,8 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
     priv->next_cq_handle = 1;
     priv->next_qpn = 100;
     atomic_init(&priv->next_seq, 1);
-    atomic_init(&priv->tcp_stats.reconnect_attempts, 0);
-    atomic_init(&priv->tcp_stats.reconnect_successes, 0);
     atomic_init(&priv->tcp_stats.peer_connect_attempts, 0);
+    atomic_init(&priv->tcp_stats.manager_reconnects, 0);
 
     priv->listen_fd = -1;
     priv->is_listening = false;
@@ -3807,8 +3995,11 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
     priv->next_available_node_id = 1; /* Manager starts assigning from 1 */
     priv->manager_host = NULL;
     priv->manager_port = 0;
-    priv->manager_conn = NULL;
+    atomic_init(&priv->manager_conn, NULL);
+    priv->registering = NULL;
     priv->registration_complete = false;
+    priv->registration_accepted = false;
+    priv->registers_again = true;
     qemu_cond_init(&priv->registration_cond);
     qemu_mutex_init(&priv->registration_mutex);
 
@@ -3946,8 +4137,11 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
         }
         priv->is_listening = true;
 
-        /* Register with manager */
-        ret = tcp_worker_register_with_manager(priv);
+        /*
+         * Register with manager.  This connect, unlike the peer-connect
+         * thread's later ones, has no deadline and can't be stopped.
+         */
+        ret = tcp_worker_register_with_manager(priv, NULL, 0);
         if (ret < 0) {
             /* manager_host already assigned to priv->manager_host, will be
              * freed in error path */
@@ -3958,9 +4152,9 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
          * Start the accept and peer-connect threads only now that this node
          * has its id.  Both introduce the node to its peers with it, and
          * before registration it reads as 0, the manager's.  A peer that
-         * connects before then waits in the listen socket's backlog.  This
-         * also means every thread that reads manager_conn starts after it
-         * is set.
+         * connects before then waits in the listen socket's backlog.  The
+         * peer-connect thread is also what connects to the manager again if
+         * the connection made here is lost.
          */
         if (!tcp_start_thread(&priv->accept_thread, "tcp-accept",
                               tcp_accept_thread, priv,
@@ -4004,9 +4198,7 @@ error:
     if (priv->mesh_table_lock.initialized) {
         qemu_mutex_destroy(&priv->mesh_table_lock);
     }
-    if (priv->manager_conn) {
-        tcp_connection_unref(priv->manager_conn);
-    }
+    tcp_connection_unref(atomic_load(&priv->manager_conn));
     qemu_cond_destroy(&priv->registration_cond);
     qemu_mutex_destroy(&priv->registration_mutex);
     g_free(priv->manager_host);
@@ -4066,9 +4258,7 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
     if (priv->mesh_table_lock.initialized) {
         qemu_mutex_destroy(&priv->mesh_table_lock);
     }
-    if (priv->manager_conn) {
-        tcp_connection_unref(priv->manager_conn);
-    }
+    tcp_connection_unref(atomic_load(&priv->manager_conn));
     qemu_cond_destroy(&priv->registration_cond);
     qemu_mutex_destroy(&priv->registration_mutex);
     g_free(priv->manager_host);
