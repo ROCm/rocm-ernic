@@ -42,13 +42,85 @@ Installation
    sudo cmake --install build
 
 By default the binary installs to ``/usr/local/bin/rocm-ernic``,
-and that is the only file a default install places.
+and its licenses to ``/usr/local/share/doc/rocm-ernic``; a
+default install places nothing else.
 Override the destination with ``-DCMAKE_INSTALL_PREFIX=<path>``.
 
 Configure with ``-DERNIC_INSTALL_SERVICE=ON`` to additionally
 install the systemd units, ``ernicctl``, the launcher, the
 Prometheus exporter, and the ionic driver patches;
-:doc:`service` lists the full set of installed files.
+:doc:`service` lists the full set of installed files. These
+files refer to each other by their installed paths, which come
+from ``CMAKE_INSTALL_PREFIX`` when the project is configured, so
+to install them somewhere else, configure with that prefix rather
+than passing ``--prefix`` to ``cmake --install``. To stage an
+install, use ``DESTDIR``.
+
+.. _packages:
+
+Packages
+--------
+
+CPack makes DEB packages of the installed files, one for each
+install component:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Package
+     - Contents
+   * - ``rocm-ernic``
+     - The server, and with ``ERNIC_INSTALL_SERVICE``, the
+       systemd service, ``ernicctl``, and the guest driver pack.
+       ``/etc/rocm-ernic/rocm-ernic.env`` is a configuration file,
+       which upgrades don't replace.
+   * - ``rocm-ernic-exporter``
+     - The Prometheus exporter, its systemd unit, and the Grafana
+       dashboard (``ERNIC_INSTALL_SERVICE`` only). It needs
+       ``prometheus_client`` in a virtual environment; see
+       :doc:`monitoring`.
+
+Ubuntu doesn't package libvfio-user, and libvfio-user keeps the
+soname ``libvfio-user.so.0`` through incompatible changes, so a
+package can't rely on another copy of it. With
+``-DERNIC_BUNDLE_VFIO_USER=ON``, the package has its own copy, in
+``<libdir>/rocm-ernic``, which only the installed server loads:
+the server finds it through a ``DT_RPATH`` relative to its own
+location, which ``LD_LIBRARY_PATH`` can't override. The copy has
+to be linked with full RELRO, like the server, which configuring
+checks.
+
+The nightly packages are made like this, installed under
+``/usr``:
+
+.. code-block:: bash
+
+   # libvfio-user, built for the package
+   cd libvfio-user
+   LDFLAGS="-Wl,-z,relro,-z,now" meson setup build \
+     --prefix="$HOME/vfu-pkg" --libdir=lib \
+     --buildtype=debugoptimized -Ddebug-logs=disabled \
+     -Dwarning_level=0
+   meson compile -C build vfio-user
+   meson install -C build --no-rebuild --tags runtime,devel
+
+   # rocm-ernic
+   cd ../rocm-ernic
+   cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+     -DCMAKE_INSTALL_PREFIX=/usr \
+     -DCMAKE_PREFIX_PATH="$HOME/vfu-pkg" \
+     -DERNIC_INSTALL_SERVICE=ON \
+     -DERNIC_BUNDLE_VFIO_USER=ON \
+     -DERNIC_VFIO_USER_LICENSE="$PWD/../libvfio-user/LICENSE"
+   cmake --build build
+   cd build && cpack -G DEB
+
+``cpack`` needs ``dpkg-shlibdeps``, from ``dpkg-dev``, and
+``file`` to find the packages' dependencies. The nightly build
+workflow,
+``.github/workflows/nightly.yml``, publishes the packages for
+each supported Ubuntu release as the ``nightly`` prerelease.
 
 Build Options
 -------------
@@ -122,6 +194,18 @@ Build Options
      - Also install the systemd units, ``ernicctl``, the
        launcher, and the Prometheus exporter
        (see :doc:`service`)
+   * - ``ERNIC_BUNDLE_VFIO_USER``
+     - ``OFF``
+     - Install a private copy of libvfio-user that only the
+       installed server uses, for packages (see :ref:`packages`)
+   * - ``ERNIC_VFIO_USER_LICENSE``
+     - (none)
+     - libvfio-user's ``LICENSE`` file, installed with the private
+       copy; required by ``ERNIC_BUNDLE_VFIO_USER``
+   * - ``ERNIC_PACKAGE_RELEASE``
+     - ``local``
+     - The release part of the DEB packages' version, after the
+       project's version (see :ref:`packages`)
    * - ``CMAKE_INSTALL_PREFIX``
      - ``/usr/local``
      - Installation prefix

@@ -15,7 +15,7 @@ ernic_install_prefix: /usr/local
 
 # ── Service / env-file settings ──────────────────
 ernic_config_dir: /etc/rocm-ernic
-ernic_bin: /usr/local/bin/rocm-ernic
+ernic_bin: "{{ ernic_install_prefix }}/bin/rocm-ernic"
 ernic_run_dir: /run/rocm-ernic
 ernic_log_dir: /var/log/rocm-ernic
 ernic_instances: 2
@@ -41,7 +41,7 @@ ernic_tap_bridge_ip: ""
 
 # ── Driver distribution ─────────────────────────
 # The kernel patches plus the fetch/DKMS helpers.
-ernic_driver_source: /usr/share/rocm-ernic/patches
+ernic_driver_source: "{{ ernic_install_prefix }}/share/rocm-ernic/patches"
 ernic_driver_tarball: /tmp/rocm-ernic-driver.tar.gz
 
 # ── QEMU / VM defaults written into the env file ─

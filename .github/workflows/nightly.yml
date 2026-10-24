@@ -1,0 +1,370 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+name: rocm-ernic - Nightly
+
+# Builds DEB packages of develop every night and publishes them as the
+# "nightly" prerelease, which each run replaces. There's one set of
+# packages for each Ubuntu release in the build matrix.
+#
+# A pull request that changes this file or the packaging builds the
+# packages as a check, and so does a manual run from any branch, but only
+# a run on develop publishes them.
+on:
+  # Every day at 06:41 UTC
+  schedule:
+    - cron: "41 6 * * *"
+  pull_request:
+    branches: [develop]
+    paths:
+      - '.github/workflows/nightly.yml'
+      - 'cmake/ErnicInstall.cmake'
+      - 'cmake/ErnicPackage.cmake'
+  workflow_dispatch:
+
+# Pull request runs are checks, so a newer commit cancels the run for
+# the older one. Every other run shares one group and is never
+# cancelled, so only one run publishes at a time.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+# Every run step uses bash, including in container jobs, where the runner
+# would otherwise pick sh. "bash -e {0}" and not "bash": the bare name adds
+# -o pipefail, which these scripts are not written for.
+defaults:
+  run:
+    shell: bash -e {0}
+
+# The build and the publish are separate jobs so that the token that can
+# write to the repository is never present while the repository's code
+# (cmake, the compiler, the tests) runs. The build jobs have a read-only
+# token and don't keep it; the publish job has the write token but only
+# uploads the packages the build jobs made.
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.version.outputs.build }}
+      release: ${{ steps.version.outputs.release }}
+    steps:
+      # The package release is "0.<commit time>.g<short hash>", from the
+      # commit's UTC committer time to the second. It sorts each night's
+      # packages above the night before's, and below the "1" of a real
+      # release. The build jobs add "~<Ubuntu release>", which keeps the
+      # file names apart.
+      #
+      # A scheduled run skips the build when the "nightly" release is
+      # already complete on this commit, since the packages would be the
+      # same. The tag alone doesn't show that: it can outlive its release
+      # (see the publish job). The release has to be published too. gh
+      # release create keeps a release a draft until every asset has
+      # uploaded, and a draft has no tag, so a published release with
+      # the tag on this commit has all of this commit's packages. If gh
+      # can't read the release, the run builds and publishes it again.
+      - name: Compute the package release
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          nightly_ref=$(git ls-remote \
+            "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" \
+            refs/tags/nightly)
+          nightly_sha=${nightly_ref%%$'\t'*}
+          if [[ "${GITHUB_EVENT_NAME}" == schedule \
+              && "${nightly_sha}" == "${GITHUB_SHA}" \
+              && "$(gh release view nightly -R "${GITHUB_REPOSITORY}" \
+                    --json isDraft --jq .isDraft)" == false ]]; then
+            echo "::notice::the nightly is already ${GITHUB_SHA}"
+            echo "build=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          commit_date=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}" \
+            --jq .commit.committer.date)
+          commit_time=$(date -u -d "${commit_date}" +%Y%m%d%H%M%S)
+          release="0.${commit_time}.g${GITHUB_SHA::7}"
+          echo "Package release: ${release}"
+          {
+            echo "build=true"
+            echo "release=${release}"
+          } >> "${GITHUB_OUTPUT}"
+
+  build:
+    name: Build (Ubuntu ${{ matrix.ubuntu }})
+    needs: version
+    if: needs.version.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      # Publish nothing unless every package builds, but let every job
+      # finish so a failure in one doesn't hide the state of the others
+      fail-fast: false
+      matrix:
+        ubuntu: ['24.04', '26.04']
+    container:
+      image: ubuntu:${{ matrix.ubuntu }}
+    steps:
+      # git is installed before the checkout so that it makes a repository,
+      # which the build reads the commit from. dpkg-dev has dpkg-shlibdeps,
+      # which finds the packages' dependencies; CPack also needs file to
+      # find the programs to run it on. meson and libcmocka-dev
+      # build libvfio-user, which needs cmocka even though only its tests
+      # use it.
+      - name: Install dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            cmake \
+            dpkg-dev \
+            file \
+            git \
+            libcmocka-dev \
+            libglib2.0-dev \
+            libibverbs-dev \
+            libjson-c-dev \
+            librdmacm-dev \
+            meson \
+            ninja-build \
+            pkg-config \
+            python3
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The packages have their own copy of libvfio-user (see
+      # ERNIC_BUNDLE_VFIO_USER in cmake/ErnicInstall.cmake). It's built
+      # into a directory of its own, so the build can't find a copy
+      # anywhere else, and so dpkg-shlibdeps has to find the packages'
+      # copy. Keep the pinned commit in step with build-and-test.yml, which
+      # says why it is this one.
+      #
+      # Only the library is built: its tests don't build with Ubuntu
+      # 26.04's cmocka. It's optimized, with debug information, but without
+      # the extra debug logging that a build with debug information turns
+      # on by default. It's linked with full RELRO, like the server, which
+      # the configure step checks; Ubuntu's GCC adds the server's other
+      # hardening by default.
+      - name: Build libvfio-user
+        env:
+          LDFLAGS: -Wl,-z,relro,-z,now
+        run: |
+          git clone https://github.com/nutanix/libvfio-user.git \
+            "${RUNNER_TEMP}/libvfio-user"
+          cd "${RUNNER_TEMP}/libvfio-user"
+          git checkout 5b9c722
+          meson setup build \
+            --prefix="${RUNNER_TEMP}/libvfio-user-install" \
+            --libdir=lib \
+            --buildtype=debugoptimized \
+            -Ddebug-logs=disabled \
+            -Dwarning_level=0
+          meson compile -C build vfio-user
+          meson install -C build --no-rebuild --tags runtime,devel
+
+      # Installed under /usr, so the service files name the paths the
+      # packages install to.
+      #
+      # Warnings aren't errors here. The build workflow checks them, but
+      # only on Ubuntu 24.04, so another release's compiler can warn about
+      # code that workflow passes. That shouldn't stop the packages.
+      - name: Configure
+        env:
+          RELEASE: ${{ needs.version.outputs.release }}~${{ matrix.ubuntu }}
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DCMAKE_PREFIX_PATH="${RUNNER_TEMP}/libvfio-user-install" \
+            -DERNIC_WERROR=OFF \
+            -DERNIC_INSTALL_SERVICE=ON \
+            -DERNIC_BUNDLE_VFIO_USER=ON \
+            -DERNIC_VFIO_USER_LICENSE="${RUNNER_TEMP}/libvfio-user/LICENSE" \
+            -DERNIC_PACKAGE_RELEASE="${RELEASE}"
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Package
+        run: |
+          cd build && cpack -G DEB -B "${PWD}/packages"
+          ls -l packages/*.deb
+
+      # Install the packages the way a user would, in this container, and
+      # check that the server runs with the packages' libvfio-user. Its
+      # RPATH has to be a DT_RPATH, which LD_LIBRARY_PATH can't override,
+      # and the library mustn't have one at all. The service files have to
+      # name where the packages install things, not /usr/local.
+      - name: Check the packages
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get install -y ./build/packages/*.deb
+          multiarch=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
+          private="/usr/lib/${multiarch}/rocm-ernic/libvfio-user.so.0"
+
+          ldd /usr/bin/rocm-ernic
+          rocm-ernic --help > /dev/null 2>&1
+          ernicctl --help > /dev/null
+          loaded=$(ldd /usr/bin/rocm-ernic \
+            | awk '$1 == "libvfio-user.so.0" { print $3 }')
+          if [[ -z "${loaded}" \
+              || "$(realpath -- "${loaded}")" != "${private}" ]]; then
+            echo "::error::rocm-ernic doesn't load ${private}"
+            exit 1
+          fi
+          if ! readelf -d /usr/bin/rocm-ernic | grep -Fq '(RPATH)'; then
+            echo "::error::rocm-ernic has no DT_RPATH"
+            exit 1
+          fi
+          if readelf -d "${private}" | grep -Eq '\((RPATH|RUNPATH)\)'; then
+            echo "::error::${private} has an RPATH"
+            exit 1
+          fi
+
+          files=(
+            /etc/rocm-ernic/rocm-ernic.env
+            /usr/bin/ernicctl
+            /usr/bin/ernic-exporter
+            /usr/libexec/rocm-ernic/rocm-ernic-launcher
+            /usr/libexec/rocm-ernic/rocm-ernic-driver-pack
+            /usr/lib/systemd/system/rocm-ernic.service
+            /usr/lib/systemd/system/rocm-ernic-driver-pack.service
+            /usr/lib/systemd/system/ernic-exporter.service
+          )
+          if grep -Fn /usr/local/ "${files[@]}"; then
+            echo "::error::installed files refer to /usr/local"
+            exit 1
+          fi
+          if [[ "$(dpkg-query -W -f '${Conffiles}' rocm-ernic)" \
+              != *" /etc/rocm-ernic/rocm-ernic.env "* ]]; then
+            echo "::error::rocm-ernic.env isn't a configuration file"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rocm-ernic-nightly-ubuntu${{ matrix.ubuntu }}
+          path: build/packages/*.deb
+          if-no-files-found: error
+          # Long enough to re-run a failed publish
+          retention-days: 7
+
+  # Only a run on develop publishes, and a pull request's run never does
+  publish:
+    name: Publish
+    needs: [version, build]
+    if: >-
+      github.event_name != 'pull_request'
+      && github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and its tag
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: rocm-ernic-nightly-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/packages
+
+      # Replace the old release and tag with new ones on this commit. The
+      # old release is gone until the new one is created, a few seconds
+      # later. --latest=false keeps the nightly from ever being shown as
+      # the latest release.
+      - name: Publish the nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE: ${{ needs.version.outputs.release }}
+        run: |
+          cd "${RUNNER_TEMP}/packages"
+
+          # GitHub replaces the "~" in an asset's name with "." when it
+          # uploads it, so rename the packages to the names they'll be
+          # downloaded with, or SHA256SUMS won't match them. Only the file
+          # names change: the versions in the packages keep their "~".
+          for f in *.deb; do
+            if [[ "${f}" == *"~"* ]]; then
+              mv -- "${f}" "${f//\~/.}"
+            fi
+          done
+          sha256sum -- *.deb > SHA256SUMS
+
+          # GitHub shows each line break in a release's notes, so each
+          # paragraph is one line
+          notes="${RUNNER_TEMP}/notes.md"
+          cat > "${notes}" << EOF
+          A development build of rocm-ernic from develop at ${GITHUB_SHA}, package release ${RELEASE}. It's replaced every night that develop changes.
+
+          This build is for testing. It isn't a supported release, and anything in it can change at any time.
+
+          Pick the packages for your Ubuntu release: the file names end with it. rocm-ernic has the server, with its own copy of libvfio-user, the systemd service, ernicctl, and the guest driver pack. rocm-ernic-exporter has the Prometheus exporter, which also needs prometheus_client in a virtual environment (see docs/monitoring.rst).
+
+          \`\`\`bash
+          sudo apt install ./rocm-ernic_<version>_amd64.deb ./rocm-ernic-exporter_<version>_all.deb
+          sudo systemctl daemon-reload
+          \`\`\`
+
+          The configuration is in \`/etc/rocm-ernic/rocm-ernic.env\`, which upgrades keep. SHA256SUMS has the checksums of the packages; check the packages you downloaded with \`sha256sum --check --ignore-missing SHA256SUMS\` in the directory you downloaded them to.
+          EOF
+
+          if gh release view nightly > /dev/null 2>&1; then
+            gh release delete nightly --cleanup-tag --yes
+          fi
+          # A tag can outlive its release, for example if a run failed
+          # between deleting the release and creating the new one
+          tag_status=0
+          git ls-remote --exit-code \
+              "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" \
+              refs/tags/nightly > /dev/null || tag_status=$?
+          case "${tag_status}" in
+            0)
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/nightly"
+              ;;
+            2) ;;
+            *)
+              echo "::error::could not query the nightly tag"
+              exit 1
+              ;;
+          esac
+
+          gh release create nightly \
+            --prerelease \
+            --latest=false \
+            --target "${GITHUB_SHA}" \
+            --title "rocm-ernic nightly" \
+            --notes-file "${notes}" \
+            -- *.deb SHA256SUMS
+
+      # Download the release the way a user would and check that it has
+      # the files that were uploaded, under the same names, and that they
+      # match SHA256SUMS. GitHub can change an asset's name when it
+      # uploads it, which breaks SHA256SUMS. The release is already
+      # published, so a failure here means it's broken and needs fixing.
+      - name: Check the published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          published="${RUNNER_TEMP}/published"
+          gh release download nightly --dir "${published}"
+          cd "${published}"
+          if ! diff -u \
+              <(cd "${RUNNER_TEMP}/packages" && printf '%s\n' *) \
+              <(printf '%s\n' *); then
+            echo "::error::the release's files aren't the ones uploaded"
+            exit 1
+          fi
+          sha256sum --check --strict SHA256SUMS

@@ -47,7 +47,11 @@ Quick Start
 
 .. code-block:: bash
 
-   # 1. Install the exporter's Python dependency
+   # 1. Install the exporter's Python dependency. The
+   #    requirements are in /usr/share/rocm-ernic with the
+   #    rocm-ernic-exporter package, and in
+   #    /usr/local/share/rocm-ernic with a default CMake
+   #    install.
    python3 -m venv /opt/ernic-exporter-venv
    /opt/ernic-exporter-venv/bin/pip install \
        -r /usr/share/rocm-ernic/requirements-exporter.txt

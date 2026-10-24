@@ -4,6 +4,29 @@
 
 ### Added
 
+* Nightly DEB packages: every night that `develop` changes, the `nightly`
+  prerelease is replaced with packages of it for Ubuntu 24.04 and 26.04
+  (`.github/workflows/nightly.yml`, modelled on hipObject's). `rocm-ernic`
+  has the server, the systemd service, `ernicctl`, and the guest driver
+  pack, installed under `/usr`, with `/etc/rocm-ernic/rocm-ernic.env` as a
+  configuration file that upgrades keep; `rocm-ernic-exporter` has the
+  Prometheus exporter. They're unsupported development builds. The server in
+  them has its own copy of libvfio-user, so nothing else needs installing;
+  see INSTALL.md.
+* `cpack -G DEB` in a build directory makes those packages (see Packages in
+  docs/building.rst). `-DERNIC_BUNDLE_VFIO_USER=ON` installs a private copy
+  of the libvfio-user the server was linked with, in
+  `<libdir>/rocm-ernic`, which only the installed server loads, through a
+  `DT_RPATH` that `LD_LIBRARY_PATH` can't override: libvfio-user keeps the
+  soname `libvfio-user.so.0` through incompatible changes, so no other copy
+  can be trusted to match. It needs `ERNIC_VFIO_USER_LICENSE` set to
+  libvfio-user's `LICENSE`, which is installed with it, and fails to
+  configure unless the library is linked with full RELRO, like the server.
+  `ERNIC_PACKAGE_RELEASE` sets the release part of the packages' version
+  (default `local`).
+* An install now includes rocm-ernic's licenses, in
+  `<prefix>/share/doc/rocm-ernic`.
+
 * The mesh backend can claim and withdraw a node's GIDs while it is running,
   rather than only announcing the set `ERNIC_TCP_GUEST_GIDS` named at
   startup: the claim is recorded locally and re-advertised to the mesh, and
@@ -508,6 +531,20 @@
   received and as `frames_rx_dropped`. Documented in `docs/ionic.rst`.
 
 ### Changed
+
+* The installed systemd units, launcher, driver pack, `ernicctl`,
+  exporter, and `rocm-ernic.env` name each other by the paths of the
+  prefix the project was configured with, rather than always
+  `/usr/local/...` and, for the driver patches, `/usr/share/rocm-ernic`.
+  An install to `/usr/local` is unchanged except for the patches: the
+  default `ERNIC_DRIVER_SOURCE` (in `rocm-ernic.env`, `ernicctl` and the
+  driver pack) is now `/usr/local/share/rocm-ernic/patches`, where that
+  install puts them. Since the paths come from configuring, install to
+  another prefix by configuring with it, not with `cmake --install
+  --prefix`, which moves the files without changing what they refer to.
+* With `-DCMAKE_INSTALL_PREFIX=/usr`, `rocm-ernic.env` installs to
+  `/etc/rocm-ernic`, where the service and `ernicctl` read it, instead of
+  `/usr/etc/rocm-ernic`.
 
 * The ionic NIC drops a received frame longer than the maximum frame size it
   advertises (`link.mtu_max` + 18 bytes, 9216 in the default profile) before

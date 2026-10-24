@@ -44,7 +44,11 @@ Prerequisites
 Installation
 ------------
 
-Build and install with CMake:
+The nightly ``rocm-ernic`` and ``rocm-ernic-exporter`` packages
+install all of this under ``/usr``, with the configuration in
+``/etc/rocm-ernic/rocm-ernic.env`` (see ``INSTALL.md``).
+
+Otherwise, build and install with CMake:
 
 .. code-block:: bash
 
@@ -83,19 +87,24 @@ This installs:
        ``ernic-exporter.service``
 
 All destinations are relative to ``CMAKE_INSTALL_PREFIX``,
-shown here for the default ``/usr/local``.
+shown here for the default ``/usr/local``, except that with
+the prefix ``/usr``, the environment file goes in
+``/etc/rocm-ernic/``. The installed units, scripts,
+``ernicctl``, and environment file name each other by their
+paths under the prefix the project was configured with.
 
 .. note::
 
    The systemd units and ``ernicctl`` read the environment
-   file from ``/etc/rocm-ernic/rocm-ernic.env``, but the
-   install rule places it under the install prefix. With the
-   default prefix it lands in ``/usr/local/etc/rocm-ernic/``,
-   so copy or symlink it into ``/etc/rocm-ernic/`` before
-   starting the service. Likewise, systemd does not read
-   units from ``/usr/local/lib/systemd/system`` by default;
-   install with ``-DCMAKE_INSTALL_PREFIX=/usr`` or copy the
-   units into ``/etc/systemd/system/``.
+   file from ``/etc/rocm-ernic/rocm-ernic.env``. Under any
+   prefix but ``/usr``, the install rule places it under the
+   prefix: with the default prefix it lands in
+   ``/usr/local/etc/rocm-ernic/``, so copy or symlink it into
+   ``/etc/rocm-ernic/`` before starting the service. Likewise,
+   systemd does not read units from
+   ``/usr/local/lib/systemd/system`` by default; install with
+   ``-DCMAKE_INSTALL_PREFIX=/usr`` or copy the units into
+   ``/etc/systemd/system/``.
 
 After installation, reload systemd and optionally
 enable the service at boot:
@@ -111,7 +120,9 @@ Configuration
 All settings live in ``/etc/rocm-ernic/rocm-ernic.env``
 (a shell-sourceable key=value file used by systemd's
 ``EnvironmentFile=`` directive).  Edit this file to
-match your environment.
+match your environment. The defaults below are for an
+install under ``/usr/local``; under another prefix, such as
+the packages' ``/usr``, the paths are under that prefix.
 
 Server settings
 ^^^^^^^^^^^^^^^
@@ -270,7 +281,7 @@ Driver settings
      - Default
      - Description
    * - ``ERNIC_DRIVER_SOURCE``
-     - ``/usr/share/rocm-ernic/patches``
+     - ``/usr/local/share/rocm-ernic/patches``
      - Patched ionic sources to pack for the guest
    * - ``ERNIC_DRIVER_TARBALL``
      - ``/tmp/rocm-ernic-driver.tar.gz``
