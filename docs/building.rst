@@ -120,7 +120,16 @@ The nightly packages are made like this, installed under
 ``file`` to find the packages' dependencies. The nightly build
 workflow, ``.github/workflows/nightly.yml``, publishes the
 packages for each supported Ubuntu release as the ``nightly``
-prerelease.
+prerelease, once they've installed and run in a clean container.
+
+The ``ernic-package-deb`` CTest test builds the packages of the
+build's configuration and checks their files, file modes,
+dependencies, configuration file, and the paths in the service
+files, and, with ``ERNIC_BUNDLE_VFIO_USER``, the server's
+``DT_RPATH``. It's registered in a top-level build when
+``dpkg-dev``, ``file``, and ``readelf`` are installed. A change to
+the install rules has to update its lists of files, in
+``tests/package/run-package-test.cmake``.
 
 Build Options
 -------------

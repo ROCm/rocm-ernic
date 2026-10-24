@@ -1509,3 +1509,8 @@ add_subdirectory(nix)
 # Build as a subproject of another CMake project
 # ---------------------------------------------------------------
 add_subdirectory(subproject)
+
+# ---------------------------------------------------------------
+# Build and check the DEB packages
+# ---------------------------------------------------------------
+add_subdirectory(package)

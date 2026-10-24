@@ -20,6 +20,7 @@ on:
       - '.github/workflows/nightly.yml'
       - 'cmake/ErnicInstall.cmake'
       - 'cmake/ErnicPackage.cmake'
+      - 'tests/package/**'
   workflow_dispatch:
 
 # Pull request runs are checks, so a newer commit cancels the run for
@@ -195,64 +196,25 @@ jobs:
         run: cmake --build build
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: |
+          ctest --test-dir build --output-on-failure \
+            -E '^ernic-package-deb$'
+
+      # ernic-package-deb (tests/package/run-package-test.cmake) builds
+      # the packages and checks their files, modes, dependencies,
+      # configuration file, the paths in the service files, and the
+      # server's DT_RPATH to its libvfio-user. It's only registered if
+      # the tools it needs are installed, so --no-tests=error makes sure
+      # it ran.
+      - name: Check the packages
+        run: |
+          ctest --test-dir build --output-on-failure --no-tests=error \
+            -R '^ernic-package-deb$'
 
       - name: Package
         run: |
           cd build && cpack -G DEB -B "${PWD}/packages"
           ls -l packages/*.deb
-
-      # Install the packages the way a user would, in this container, and
-      # check that the server runs with the packages' libvfio-user. Its
-      # RPATH has to be a DT_RPATH, which LD_LIBRARY_PATH can't override,
-      # and the library mustn't have one at all. The service files have to
-      # name where the packages install things, not /usr/local.
-      - name: Check the packages
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          apt-get install -y ./build/packages/*.deb
-          multiarch=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
-          private="/usr/lib/${multiarch}/rocm-ernic/libvfio-user.so.0"
-
-          ldd /usr/bin/rocm-ernic
-          rocm-ernic --help > /dev/null 2>&1
-          ernicctl --help > /dev/null
-          loaded=$(ldd /usr/bin/rocm-ernic \
-            | awk '$1 == "libvfio-user.so.0" { print $3 }')
-          if [[ -z "${loaded}" \
-              || "$(realpath -- "${loaded}")" != "${private}" ]]; then
-            echo "::error::rocm-ernic doesn't load ${private}"
-            exit 1
-          fi
-          if ! readelf -d /usr/bin/rocm-ernic | grep -Fq '(RPATH)'; then
-            echo "::error::rocm-ernic has no DT_RPATH"
-            exit 1
-          fi
-          if readelf -d "${private}" | grep -Eq '\((RPATH|RUNPATH)\)'; then
-            echo "::error::${private} has an RPATH"
-            exit 1
-          fi
-
-          files=(
-            /etc/rocm-ernic/rocm-ernic.env
-            /usr/bin/ernicctl
-            /usr/bin/ernic-exporter
-            /usr/libexec/rocm-ernic/rocm-ernic-launcher
-            /usr/libexec/rocm-ernic/rocm-ernic-driver-pack
-            /usr/lib/systemd/system/rocm-ernic.service
-            /usr/lib/systemd/system/rocm-ernic-driver-pack.service
-            /usr/lib/systemd/system/ernic-exporter.service
-          )
-          if grep -Fn /usr/local/ "${files[@]}"; then
-            echo "::error::installed files refer to /usr/local"
-            exit 1
-          fi
-          if [[ "$(dpkg-query -W -f '${Conffiles}' rocm-ernic)" \
-              != *" /etc/rocm-ernic/rocm-ernic.env "* ]]; then
-            echo "::error::rocm-ernic.env isn't a configuration file"
-            exit 1
-          fi
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -262,10 +224,100 @@ jobs:
           # Long enough to re-run a failed publish
           retention-days: 7
 
+  # Install the packages the way a user would, on a clean system: a
+  # container with nothing the build installed, so a dependency the
+  # packages don't declare is missing, as it would be for a user. Then
+  # check that the programs run.
+  install:
+    name: Install (Ubuntu ${{ matrix.ubuntu }})
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: ['24.04', '26.04']
+    container:
+      image: ubuntu:${{ matrix.ubuntu }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rocm-ernic-nightly-ubuntu${{ matrix.ubuntu }}
+          path: ${{ runner.temp }}/packages
+
+      # Without the packages' recommendations, so that the programs run
+      # with only what the packages depend on
+      - name: Install the packages
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            "${RUNNER_TEMP}"/packages/*.deb
+
+      # The server is linked with BIND_NOW, so running it at all resolves
+      # every symbol it uses from the libraries it loads. It has to load
+      # the packages' own libvfio-user.
+      - name: Check the server
+        run: |
+          # The usage goes to stderr, with any error from the loader
+          if ! usage=$(rocm-ernic --help 2>&1); then
+            echo "${usage}"
+            echo "::error::rocm-ernic --help failed"
+            exit 1
+          fi
+          private=$(dpkg -L rocm-ernic | grep '/rocm-ernic/libvfio-user\.so\.0$')
+          ldd /usr/bin/rocm-ernic
+          loaded=$(ldd /usr/bin/rocm-ernic \
+            | awk '$1 == "libvfio-user.so.0" { print $3 }')
+          if [[ -z "${loaded}" \
+              || "$(realpath -- "${loaded}")" != "${private}" ]]; then
+            echo "::error::rocm-ernic doesn't load ${private}"
+            exit 1
+          fi
+
+      - name: Check ernicctl
+        run: ernicctl --help > /dev/null
+
+      # Set the exporter up as docs/monitoring.rst says, with
+      # prometheus_client in a virtual environment, then run the command
+      # its systemd unit runs and wait for it to serve metrics
+      - name: Check the exporter
+        run: |
+          python3 -m venv /opt/ernic-exporter-venv
+          /opt/ernic-exporter-venv/bin/pip install --quiet \
+            -r /usr/share/rocm-ernic/requirements-exporter.txt
+
+          exec_start=$(sed -n 's/^ExecStart=//p' \
+            /usr/lib/systemd/system/ernic-exporter.service)
+          read -r -a command <<< "${exec_start}"
+          "${command[@]}" 9840 &
+          exporter=$!
+
+          url=http://127.0.0.1:9840/metrics
+          deadline=$((SECONDS + 30))
+          until python3 -c 'import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=5)' \
+              "${url}" 2> /dev/null; do
+            if ! kill -0 "${exporter}" 2> /dev/null; then
+              echo "::error::the exporter exited"
+              exit 1
+            fi
+            if ((SECONDS >= deadline)); then
+              echo "::error::the exporter didn't serve ${url}"
+              kill -KILL "${exporter}"
+              exit 1
+            fi
+            sleep 1
+          done
+          # SIGKILL: the exporter doesn't exit on SIGTERM. Its handler
+          # calls server.shutdown() on the thread serve_forever() runs
+          # on, which waits for serve_forever() to return.
+          kill -KILL "${exporter}"
+          wait "${exporter}" || true
+
   # Only a run on develop publishes, and a pull request's run never does
   publish:
     name: Publish
-    needs: [version, build]
+    needs: [version, build, install]
     if: >-
       github.event_name != 'pull_request'
       && github.ref == 'refs/heads/develop'
