@@ -244,6 +244,16 @@ void ionic_datapath_unregister_cq(struct ionic_datapath *dp, uint32_t cq_id)
     (void)dp;
     (void)cq_id;
 }
+/* This test drives the SRQ opcodes; the counters a VALS would read are all
+ * zero, which is what a QP that has seen no error reports anyway. */
+void ionic_datapath_rdma_counters(const struct ionic_datapath *dp,
+                                  uint32_t qp_id,
+                                  uint64_t out[IONIC_DP_RDMA_COUNT])
+{
+    (void)dp;
+    (void)qp_id;
+    memset(out, 0, sizeof(*out) * IONIC_DP_RDMA_COUNT);
+}
 void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
                                 uint8_t ib_qp_type, uint32_t sq_cq_id,
                                 const struct ionic_dp_ring_desc *sq,

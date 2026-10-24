@@ -30,6 +30,26 @@ target_link_libraries(test_data_transfer PRIVATE
     ${IBVERBS_LIBRARIES}
 )
 
+# -- ernic-rdma-errors (guest tool; requires libibverbs) ---------
+# Run in a guest on an ionic_rdma device, not by ctest: it makes the RDMA
+# errors the emulator counts happen and checks hw_counters moved.
+add_executable(ernic-rdma-errors
+    guest/ernic_rdma_errors.c
+)
+target_compile_definitions(ernic-rdma-errors PRIVATE
+    _GNU_SOURCE
+)
+target_include_directories(ernic-rdma-errors PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_link_directories(ernic-rdma-errors PRIVATE
+    ${IBVERBS_LIBRARY_DIRS}
+)
+target_link_libraries(ernic-rdma-errors PRIVATE
+    ${IBVERBS_LIBRARIES}
+)
+
 # -- test_rdma_cm (requires libibverbs) --------------------------
 add_executable(test_rdma_cm
     test_rdma_cm.c
@@ -541,6 +561,28 @@ add_executable(ernic-test-ionic-fault
 target_include_directories(ernic-test-ionic-fault PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
+add_executable(test_ionic_counter_snapshot test_ionic_counter_snapshot.c)
+add_test(NAME ionic-counter-snapshot-unit COMMAND test_ionic_counter_snapshot)
+set_tests_properties(ionic-counter-snapshot-unit PROPERTIES TIMEOUT 30)
+
+# ionic RDMA error-counter test. It links the datapath, reaches its state
+# through ionic_datapath_priv.h, and fakes guest memory, the mesh and the
+# clock, so each error path runs end to end with no vfio-user link and the
+# RNR and pending-timeout rows sit exactly on their boundaries.
+add_executable(test_ionic_dp_errors
+    test_ionic_dp_errors.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_datapath.c
+)
+target_include_directories(test_ionic_dp_errors PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_include_directories(test_ionic_dp_errors SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(test_ionic_dp_errors PRIVATE _GNU_SOURCE)
+target_link_libraries(test_ionic_dp_errors PRIVATE pthread)
 
 # ionic CQ arm-semantics test. It links the datapath, reaches the private CQ
 # state through ionic_datapath_priv.h, and counts the event callback
@@ -879,6 +921,7 @@ set(ERNIC_TEST_TARGETS
     ernic-test-gsi-mesh
     test_pci_client
     test_data_transfer
+    ernic-rdma-errors
     test_rdma_cm
     test_srq
     test_srq_transfer
@@ -911,6 +954,8 @@ set(ERNIC_TEST_TARGETS
     test_server_lifecycle
     test_ionic_srq_adminq
     test_ionic_cq_arm
+    test_ionic_counter_snapshot
+    test_ionic_dp_errors
     test_ionic_rq_wrap
     test_tcp_mesh_topology
     test_tcp_gid_resolve
@@ -1192,6 +1237,15 @@ add_test(
     COMMAND $<TARGET_FILE:test_ionic_cq_arm>
 )
 set_tests_properties(ionic-cq-arm-unit PROPERTIES TIMEOUT 30)
+
+# ionic RDMA error-counter unit test: asserts each RDMA error the data path
+# hands the guest moves exactly the hw_counters it names, on the device and
+# on the QP involved, and nothing else.
+add_test(
+    NAME ionic-dp-errors-unit
+    COMMAND $<TARGET_FILE:test_ionic_dp_errors>
+)
+set_tests_properties(ionic-dp-errors-unit PROPERTIES TIMEOUT 30)
 
 # ionic receive-ring unit test: the doorbell's producer index is masked to the
 # ring by the driver, so reading it as a free-running counter broke on the
