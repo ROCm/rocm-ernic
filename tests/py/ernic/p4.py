@@ -15,6 +15,7 @@ Copyright (C) Advanced Micro Devices, Inc.
 SPDX-License-Identifier: GPL-2.0-or-later
 """
 
+import collections
 import struct
 
 from .errors import DeviceError
@@ -131,7 +132,19 @@ def ident(drv):
     }
 
 
-def rpc(drv, ep, op, scope, req=b"", resp_len=0):
+# An RPC names an endpoint, an operation on it, and the scope the caller
+# claims -- "an endpoint id, an operation id, a scope the device checks",
+# as docs/p4.rst puts it. One thing, so it travels as one.
+Call = collections.namedtuple("Call", "ep op scope")
+
+LOAD_BEGIN = Call(P4_EP_PROGRAM, P4_OP_LOAD_BEGIN, P4_SCOPE_LOAD)
+LOAD_CHUNK = Call(P4_EP_PROGRAM, P4_OP_LOAD_CHUNK, P4_SCOPE_LOAD)
+LOAD_COMMIT = Call(P4_EP_PROGRAM, P4_OP_LOAD_COMMIT, P4_SCOPE_LOAD)
+ENTRY_UPDATE = Call(P4_EP_TABLE, P4_OP_ENTRY_UPDATE, P4_SCOPE_WRITE)
+STATS_READ = Call(P4_EP_STATS, P4_OP_STATS_READ, P4_SCOPE_READ)
+
+
+def rpc(drv, call, req=b"", resp_len=0):
     """One P4 RPC. Returns (status, response bytes).
 
     The request and the response get separate buffers because the
@@ -149,10 +162,10 @@ def rpc(drv, ep, op, scope, req=b"", resp_len=0):
     cmd = struct.pack(
         "<BBHIIIQIIQ",
         CMD_P4_RPC,
-        scope,
+        call.scope,
         0,
-        ep,
-        op,
+        call.ep,
+        call.op,
         len(req),
         req_pa,
         resp_len,
@@ -174,13 +187,7 @@ def load_program(drv, blob, chunk=4096):
 
     Raises DeviceError naming the step that was refused.
     """
-    status, _ = rpc(
-        drv,
-        P4_EP_PROGRAM,
-        P4_OP_LOAD_BEGIN,
-        P4_SCOPE_LOAD,
-        struct.pack("<II", len(blob), 0),
-    )
+    status, _ = rpc(drv, LOAD_BEGIN, struct.pack("<II", len(blob), 0))
     if status != 0:
         raise DeviceError(f"P4 LOAD_BEGIN refused: status {status}")
 
@@ -191,22 +198,25 @@ def load_program(drv, blob, chunk=4096):
         # and payload with one DMA and a chunk cannot name memory its
         # own header did not.
         body = struct.pack("<QII", off, len(part), 0) + part
-        status, _ = rpc(drv, P4_EP_PROGRAM, P4_OP_LOAD_CHUNK, P4_SCOPE_LOAD, body)
+        status, _ = rpc(drv, LOAD_CHUNK, body)
         if status != 0:
             raise DeviceError(f"P4 LOAD_CHUNK at {off} refused: status {status}")
 
-    status, _ = rpc(drv, P4_EP_PROGRAM, P4_OP_LOAD_COMMIT, P4_SCOPE_LOAD)
+    status, _ = rpc(drv, LOAD_COMMIT)
     if status != 0:
         raise DeviceError(f"P4 LOAD_COMMIT refused: status {status}")
 
 
-def entry(drv, update_type, table, action, matches=(), params=()):
-    """Insert, modify or delete one table entry. Returns the status."""
+def entry(drv, update, matches=(), params=()):
+    """Insert, modify or delete one table entry. Returns the status.
+
+    @update is (update_type, table, action): which change, to which
+    table's which action.
+    """
+    update_type, table, action = update
     status, _ = rpc(
         drv,
-        P4_EP_TABLE,
-        P4_OP_ENTRY_UPDATE,
-        P4_SCOPE_WRITE,
+        ENTRY_UPDATE,
         p4_entry_update(update_type, table, action, matches, params),
     )
     return status
@@ -214,7 +224,7 @@ def entry(drv, update_type, table, action, matches=(), params=()):
 
 def stats(drv):
     """Read the engine's counters through the guest surface."""
-    status, data = rpc(drv, P4_EP_STATS, P4_OP_STATS_READ, P4_SCOPE_READ, resp_len=56)
+    status, data = rpc(drv, STATS_READ, resp_len=56)
     if status != 0 or len(data) < 56:
         return None
     vals = struct.unpack("<7Q", data[:56])
