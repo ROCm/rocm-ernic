@@ -38,9 +38,11 @@
 #include <sys/mman.h>
 #include <sys/uio.h>
 
+#include <infiniband/verbs.h>
 #include <vfio-user/libvfio-user.h>
 
 #include "dma_range.h"
+#include "ernic_ib.h"
 #include "ernic_time.h"
 #include "ionic_datapath.h"
 #ifdef ERNIC_HAVE_P4
@@ -1798,6 +1800,12 @@ static uint32_t dp_scatter(struct ionic_datapath *dp,
     return done;
 }
 
+/* GSI is the one datagram QP type besides UD. */
+static bool qp_is_datagram(const struct ionic_qp_ring *q)
+{
+    return q->ib_qp_type == ERNIC_IB_QPT_GSI || q->ib_qp_type == IBV_QPT_UD;
+}
+
 /*
  * Synthesize the source MAC reported with a UD/GSI completion.  There is no
  * Ethernet frame behind any of this, so the address only has to be stable and
@@ -1986,9 +1994,9 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
 
     ionic_dp_rdma_bytes(dp, dst_qp_id, copied, PVRDMA_STAT_RECV, DP_RDMA_RX);
 
-    /* GSI (1) and UD (4) receives carry a source MAC; nothing else does. */
+    /* GSI and UD receives carry a source MAC; nothing else does. */
     uint8_t smac[6];
-    bool ud = dq->ib_qp_type == 1 || dq->ib_qp_type == 4;
+    bool ud = qp_is_datagram(dq);
     if (ud)
         dp_src_mac(dp, src_qp_id, smac);
 
@@ -2664,11 +2672,6 @@ static bool dp_nvmeof_rc_send(struct ionic_datapath *dp,
  * state QP1 is in before the kernel configures it; refusing there would
  * break GSI rather than protect it.
  */
-static bool qp_is_datagram(const struct ionic_qp_ring *q)
-{
-    return q->ib_qp_type == 1 /* GSI */ || q->ib_qp_type == 4 /* UD */;
-}
-
 const char *ionic_dp_ud_delivery_refused(const struct ionic_qp_ring *sq,
                                          const struct ionic_qp_ring *dq,
                                          uint32_t sent_qkey)
@@ -2984,7 +2987,7 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         parse_sges(wqe, read_sz, wqe[9], &src);
     }
 
-    bool remote = q->ib_qp_type != 1 /* GSI */ && q->ib_qp_type != 4 /* UD */;
+    bool remote = !qp_is_datagram(q);
     uint32_t status = IONIC_STS_OK;
 
     /*
@@ -3066,7 +3069,8 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
          * on GSI and every command capsule after it on the QP that handshake
          * bound.  Both are answered here and never reach the peer lookup.
          */
-        if (q->ib_qp_type == 1 /* GSI */ && dp_nvmeof_gsi(dp, q, qp_id, &src))
+        if (q->ib_qp_type == ERNIC_IB_QPT_GSI &&
+            dp_nvmeof_gsi(dp, q, qp_id, &src))
             break;
         if (remote && dp_nvmeof_rc_send(dp, q, qp_id, &src))
             break;
@@ -3085,7 +3089,7 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
          */
         uint32_t dst_id;
         const struct ionic_ah *ah = NULL;
-        if (q->ib_qp_type == 1 /* GSI */ || q->ib_qp_type == 4 /* UD */) {
+        if (qp_is_datagram(q)) {
             uint32_t ah_id_be, dest_qpn_be;
             memcpy(&ah_id_be, wqe + WQE_SEND_AH_OFF, 4);
             memcpy(&dest_qpn_be, wqe + WQE_SEND_DEST_QPN_OFF, 4);
@@ -3193,7 +3197,7 @@ static void process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         uint8_t udbuf[IB_GRH_SIZE + 8192];
         struct dp_sge_list udsrc;
         const uint8_t *src_host = NULL;
-        if (dq->ib_qp_type == 1 || dq->ib_qp_type == 4) {
+        if (qp_is_datagram(dq)) {
             uint32_t plen = src.total;
             if (plen > sizeof(udbuf) - IB_GRH_SIZE)
                 plen = (uint32_t)(sizeof(udbuf) - IB_GRH_SIZE);

@@ -23,6 +23,7 @@
 
 #include <glib.h> /* For GBytes and GHashTable */
 
+#include "ernic_ib.h"
 #include "qemu/bitmap.h" /* For bitmap operations */
 #include "qemu/thread.h" /* For qemu_mutex_lock() */
 #include "rdma_utils.h"
@@ -490,10 +491,10 @@ int rdma_rm_modify_qp(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
         return -EINVAL;
     }
 
-    if (qp->qp_type == IBV_QPT_SMI) {
+    if (qp->qp_type == ERNIC_IB_QPT_SMI) {
         rdma_error_report("Got QP0 request");
         return -EPERM;
-    } else if (qp->qp_type == IBV_QPT_GSI) {
+    } else if (qp->qp_type == ERNIC_IB_QPT_GSI) {
         return 0;
     }
 

@@ -1,8 +1,9 @@
 /*
  * Compatibility Bridge: RDMA Device ↔ libvfio-user
  *
- * This header provides a clean wrapper API that isolates QEMU header
- * dependencies. Only rocm_ernic_compat.c sees QEMU internals.
+ * The interface through which the device front end (the ionic emulation and
+ * the server) reaches the RDMA core in src/qemu/, so that the front end
+ * doesn't include the core's headers. rocm_ernic_compat.c implements it.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -23,9 +24,10 @@ typedef struct rocm_ernic_dev rocm_ernic_dev_t;
  * Opaque handle to RDMA device
  *
  * This hides the QEMU PVRDMADev structure from our code: the struct is
- * incomplete here, and only rocm_ernic_compat.c, which includes pvrdma.h,
- * can see its members. Unlike a void *, the compiler diagnoses any other
- * pointer passed where a handle belongs.
+ * incomplete here, and only the files that include pvrdma.h
+ * (rocm_ernic_compat.c and src/rdma/pvrdma_stats.c) can see its members.
+ * Unlike a void *, the compiler diagnoses any other pointer passed where a
+ * handle belongs.
  *
  * The typedef alone would declare the struct, but without a separate
  * declaration IWYU asks this header to include pvrdma.h.
@@ -337,7 +339,7 @@ int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle);
  * ionic_rm_alloc_qp - Allocate a queue pair
  * @handle:        pvrdma device handle
  * @pd_handle:     protection domain handle
- * @qp_type:       QP type (enum ibv_qp_type)
+ * @qp_type:       QP type (enum ibv_qp_type, or ERNIC_IB_QPT_GSI)
  * @max_send_wr:   max send work requests
  * @max_recv_wr:   max recv work requests
  * @send_cq_handle: CQ handle for send completions

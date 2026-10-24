@@ -57,7 +57,7 @@ struct dp_buf {
 
 struct ionic_qp_ring {
     bool valid;
-    uint8_t ib_qp_type;
+    uint8_t ib_qp_type; /* enum ibv_qp_type, or ERNIC_IB_QPT_GSI */
 
     struct dp_buf sq_buf;
     struct dp_buf rq_buf;
