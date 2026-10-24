@@ -582,7 +582,10 @@ without touching the test</p></li>
 between every pair of nodes, peers that send frames no real
 node sends, the protocol version gate in both directions,
 and nodes killed and restarted while the manager’s
-descriptors are counted</p></li>
+descriptors are counted; then, on a second mesh with a 1 s
+health-check interval, a worker and then the manager
+paused past the health check, after which the workers
+have to register again under their own ids</p></li>
 </ul>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>-R<span class="w"> </span><span class="s1">'^ernic-(vfu|ionic|mesh)'</span>
 </pre></div>

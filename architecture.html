@@ -1241,7 +1241,12 @@ to each other (the lower id connects to the higher), and
 connect again if the connection drops. A message for a node
 with no direct connection is relayed by the manager.</p></li>
 <li><p>The manager sends heartbeats, notices dead nodes, and
-reconnects them.</p></li>
+closes their connections. It never connects to a worker:
+a worker whose connection to the manager ends, or carries
+nothing for three health-check intervals, connects again
+and registers under the id it has. A worker that has heard
+nothing for an interval sends the manager a heartbeat of
+its own, so the two needn’t share an interval.</p></li>
 <li><p>The protocol carries a magic number and a version, checked at
 registration and handshake.</p></li>
 </ul>
@@ -1525,12 +1530,14 @@ access, every interrupt</p></td>
 </tr>
 <tr class="row-odd"><td><p>health check</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">tcp</span></code> manager</p></td>
-<td><p>Heartbeats, dead-node detection, reconnects</p></td>
+<td><p>Heartbeats, dead-node detection, closing dead nodes’
+connections</p></td>
 </tr>
 <tr class="row-even"><td><p>peer connect</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">tcp</span></code> worker</p></td>
 <td><p>Connects to peers as the topology changes, and closes dead
-connections</p></td>
+connections; connects to the manager again when its
+connection is lost</p></td>
 </tr>
 </tbody>
 </table>

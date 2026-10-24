@@ -171,7 +171,10 @@ Four suites are registered with CTest:
   between every pair of nodes, peers that send frames no real
   node sends, the protocol version gate in both directions,
   and nodes killed and restarted while the manager's
-  descriptors are counted
+  descriptors are counted; then, on a second mesh with a 1 s
+  health-check interval, a worker and then the manager
+  paused past the health check, after which the workers
+  have to register again under their own ids
 
 .. code-block:: bash
 
