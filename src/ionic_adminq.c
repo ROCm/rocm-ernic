@@ -1499,8 +1499,12 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
                                    ernic_get_le64(body + 8), &mrbuf);
 
         vfu_log(ctx->vfu_ctx, LOG_INFO,
-                "ionic_adminq CREATE_MR mr_id=%u handle=%u access=%#x pd=%u",
-                mr_id, mr_handle, access, pd_handle);
+                "ionic_adminq CREATE_MR mr_id=%u handle=%u access=%#x pd=%u "
+                "va=%#" PRIx64 " len=%" PRIu64 " pt=%#" PRIx64
+                " maps=%u pgsz_log2=%u",
+                mr_id, mr_handle, access, pd_handle, le64toh(va),
+                le64toh(length), le64toh(dma_addr), le32toh(map_count),
+                body[44]);
         return 0;
     }
 

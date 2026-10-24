@@ -2727,6 +2727,22 @@ void ionic_datapath_set_p4_engine(struct ionic_datapath *dp,
 }
 
 /*
+ * The work request did not ask for a compute operation at all.
+ *
+ * Distinct from a malformed one, and the distinction matters: a program's
+ * table is keyed on things like the opcode, which cannot tell a reduction
+ * apart from an ordinary RDMA WRITE, so the action fires for both.  A
+ * request that is not the two-equal-operand shape has not asked for
+ * arithmetic, and failing it would take ordinary RDMA WRITE away from
+ * every QP on a device whose guest installed a reduce entry.
+ *
+ * ENOEXEC is used because nothing else in the engine or the datapath
+ * returns it, so it cannot be confused with a real failure from the
+ * pipeline.
+ */
+#define DP_P4_NOT_COMPUTE (-ENOEXEC)
+
+/*
  * What an extern called from the pipeline is given.
  *
  * Everything an operation may touch is in here, and the pipeline cannot
@@ -2761,11 +2777,16 @@ struct dp_p4_ctx {
  */
 static int dp_p4_fp8_map(struct dp_p4_ctx *c, uint8_t sel)
 {
+    /*
+     * Neither of these is an error: they say the request is an ordinary
+     * transfer, not a compute request.  See DP_P4_NOT_COMPUTE.
+     */
     if (c->op != IONIC_V1_OP_RDMA_WRITE && c->op != IONIC_V1_OP_RDMA_WRITE_IMM)
-        return -EOPNOTSUPP;
-    if (c->read_sz < WQE_SEND_LEN_OFF + 4u)
-        return -EINVAL;
+        return DP_P4_NOT_COMPUTE;
     if (c->src->count != 2 || c->src->len[0] != c->src->len[1])
+        return DP_P4_NOT_COMPUTE;
+
+    if (c->read_sz < WQE_SEND_LEN_OFF + 4u)
         return -EINVAL;
 
     uint64_t remote_va = ernic_get_be64(c->wqe + WQE_RDMA_VA_OFF);
@@ -2866,6 +2887,19 @@ static uint32_t dp_p4_policy(struct ionic_datapath *dp, uint32_t qp_id,
      * carrying on past a failed one is exactly bypassing it.
      */
     if (rc == -ENOENT)
+        return IONIC_STS_OK;
+    /*
+     * The program selected an arithmetic for a request that is not a
+     * compute request -- an ordinary RDMA WRITE, most of the time, because
+     * a table keyed on the opcode cannot tell the two apart.  The extern
+     * wrote nothing and the pipeline stopped at the call, so nothing has
+     * been decided about this operation and nothing was suppressed: let it
+     * dispatch as it would with no program at all.
+     *
+     * Failing here instead is what made a guest that installed a reduce
+     * entry unable to do an ordinary RDMA WRITE on any QP of the device.
+     */
+    if (rc == DP_P4_NOT_COMPUTE)
         return IONIC_STS_OK;
     if (rc < 0) {
         vfu_log(dp->vfu_ctx, LOG_WARNING,

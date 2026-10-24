@@ -67,6 +67,12 @@ struct p4_extern_ops {
 /* What running the pipeline decided. */
 struct p4_exec_result {
     bool dropped;
+    /*
+     * True when the program assigned egress_spec.  False means it ran to
+     * completion without choosing a port, which the frame path treats as
+     * "no opinion" rather than as a request for port 0.
+     */
+    bool egress_assigned;
     uint32_t egress_spec;
     size_t len; /* bytes written to the output buffer */
 };
