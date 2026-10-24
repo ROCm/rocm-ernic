@@ -18,6 +18,10 @@ on:
       # matrix compiles. Without this entry, editing a warning suppression
       # skipped every build leg and all of ctest.
       - 'shared/**'
+      # The exporter and the driver pack's patches and scripts are
+      # installed, and ernic-package-deb checks the packages they're in
+      - 'prometheus/**'
+      - 'ansible/files/**'
       - 'CMakeLists.txt'
       - 'cmake/**'
       - '.github/workflows/build-and-test.yml'
@@ -248,6 +252,7 @@ jobs:
             -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
             "${build_type_flags[@]}" \
             -DCMAKE_INSTALL_PREFIX=/usr \
+            -DERNIC_INSTALL_SERVICE=ON \
             -DERNIC_WERROR=ON \
             -DERNIC_BUILD_P4=ON \
             -DERNIC_USE_SANITIZERS=$asan \
@@ -314,6 +319,17 @@ jobs:
           $TEST_WRAP ctest --test-dir build --output-on-failure \
             -R '^ionic-ci$'
 
+      # ernic-package-deb (tests/package/run-package-test.cmake) builds
+      # the DEB packages, with the service files (ERNIC_INSTALL_SERVICE
+      # above), and checks their files, modes, and dependencies. It's only
+      # registered if dpkg-dev, file, and readelf are installed, as they
+      # are on the hosted image, so --no-tests=error makes sure it ran.
+      # It runs CMake and CPack, not the server, so it needs no setarch.
+      - name: Check the packages
+        run: |
+          ctest --test-dir build --output-on-failure --no-tests=error \
+            -R '^ernic-package-deb$'
+
       - name: Run remaining tests
         env:
           SANITIZER: ${{ matrix.sanitizer }}
@@ -323,7 +339,7 @@ jobs:
             TEST_WRAP="setarch $(uname -m) -R"
           fi
           $TEST_WRAP ctest --test-dir build --output-on-failure \
-            -E '^ionic-ci$' \
+            -E '^(ionic-ci|ernic-package-deb)$' \
             --output-junit build/Testing/ctest-junit.xml
 
       # Runs the test programs under valgrind's memcheck. Valgrind makes a
@@ -345,7 +361,7 @@ jobs:
           ctest --test-dir build -T memcheck --output-on-failure --no-tests=error -j"$(nproc)" \
             --overwrite "MemoryCheckCommand=$(command -v valgrind)" \
             --overwrite "MemoryCheckCommandOptions=--leak-check=full --track-origins=yes --num-callers=40 --error-exitcode=1" \
-            -E '^(pci-config-test|find-rdma-device-tuple|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli|cmake-subproject|ernic-vfu-client|ernic-ionic-driver|ernic-ionic-hw-stats|ernic-mesh-stress)$' \
+            -E '^(pci-config-test|find-rdma-device-tuple|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli|cmake-subproject|ernic-package-deb|ernic-vfu-client|ernic-ionic-driver|ernic-ionic-hw-stats|ernic-mesh-stress)$' \
             || status=$?
           shopt -s nullglob
           for log in build/Testing/Temporary/MemoryChecker.*.log; do
