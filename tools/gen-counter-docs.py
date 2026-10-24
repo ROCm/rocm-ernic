@@ -151,18 +151,40 @@ def parse_lif_counters(root):
 # An initialiser that builds entries from a list macro rather than
 # writing them out -- IONIC_DP_RDMA_COUNTERS(DEV_RDMA_STAT) and the like.
 # Reading the names out of one means expanding it, which is a C
-# preprocessor's job and not this script's.
+# preprocessor's job; this script expands only the list macros named
+# below, and refuses a table that uses any other.
 MACRO_ENTRY = re.compile(r"\b([A-Z][A-Z0-9_]{2,})\s*\(")
 
+# List macro -> the header that defines it. Each is an X-macro whose rows
+# are X(SYMBOL, "name"), in the order the counters appear in the table.
+LIST_MACRO_SRC = {"IONIC_DP_RDMA_COUNTERS": "src/ionic_datapath.h"}
 
-def parse_hw_table(text, table):
+
+def parse_list_macro(root, macro):
+    """The counter names an X-macro's rows name, in order."""
+    path = LIST_MACRO_SRC[macro]
+    text = (root / path).read_text(encoding="utf-8")
+
+    # The definition runs to the first line that does not end in a
+    # backslash, which is the last row.
+    match = re.search(rf"#define\s+{macro}\(X\)((?:.*?\\\n)*.*?\n)", text, re.DOTALL)
+    if not match:
+        raise SystemExit(f"{path}: list macro {macro} not found")
+    names = re.findall(r"X\(\s*[A-Z0-9_]+\s*,\s*\"([a-z0-9_]+)\"\s*\)", match.group(1))
+    if not names:
+        raise SystemExit(f"{path}: list macro {macro} names no counters")
+    return names
+
+
+def parse_hw_table(root, text, table):
     """The counter names of one adminq_stat table, in table order.
 
-    Only literal ``{"name", offsetof(...)}`` entries are understood. A
-    table that generates entries from a list macro is refused rather
-    than half-read: the counters it adds are real, and a short list here
-    is the silent staleness this script exists to prevent. Teach the
-    parser the macro, or write the entries out.
+    Literal ``{"name", offsetof(...)}`` entries are read as they stand,
+    and a call to one of the list macros in LIST_MACRO_SRC is expanded
+    where it appears. Any other generated entry is refused rather than
+    half-read: the counters it adds are real, and a short list here is
+    the silent staleness this script exists to prevent. Teach the parser
+    the macro, or write the entries out.
     """
     # Up to the first "};", wherever it sits: an entry ends in ")}," so
     # the first "};" is the end of the table. Anchoring on "\n};" instead
@@ -176,14 +198,27 @@ def parse_hw_table(text, table):
     # offsetof() is how every literal entry names its field, so it is the
     # one all-caps-looking call that does not mean a generated entry.
     generated = {name for name in MACRO_ENTRY.findall(body) if name != "OFFSETOF"}
-    if generated:
+    unknown = sorted(generated - set(LIST_MACRO_SRC))
+    if unknown:
         raise SystemExit(
             f"{HW_TABLES_SRC}: table {table} builds entries with "
-            f"{', '.join(sorted(generated))}, which this script cannot "
+            f"{', '.join(unknown)}, which this script cannot "
             f"expand. Its counters would be missing from the docs."
         )
 
-    names = re.findall(r"\{\s*\"([a-z0-9_]+)\"", body)
+    # Literal entries and macro calls, in the order they appear, so an
+    # expansion lands where the table puts it rather than at the end.
+    entry = re.compile(
+        r"\{\s*\"(?P<name>[a-z0-9_]+)\"|\b(?P<macro>"
+        + "|".join(LIST_MACRO_SRC)
+        + r")\s*\("
+    )
+    names = []
+    for found in entry.finditer(body):
+        if found.group("name"):
+            names.append(found.group("name"))
+        else:
+            names.extend(parse_list_macro(root, found.group("macro")))
     if not names:
         raise SystemExit(f"{HW_TABLES_SRC}: table {table} names no counters")
     if len(set(names)) != len(names):
@@ -276,8 +311,8 @@ def main():
     pages = {
         "lif-counters.rst": render_lif(counters),
         "hw-counter-tables.rst": render_hw(
-            parse_hw_table(hw_text, "dev_stats"),
-            parse_hw_table(hw_text, "qp_stats"),
+            parse_hw_table(root, hw_text, "dev_stats"),
+            parse_hw_table(root, hw_text, "qp_stats"),
         ),
     }
 

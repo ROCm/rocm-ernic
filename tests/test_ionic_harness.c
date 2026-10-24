@@ -1089,11 +1089,27 @@ static void test_rc(void)
     ih_post_send(h, &r.a, &w);
     expect_send(T, "unsignalled RDMA_WRITE", &r, 0);
 
-    /* A SEND with nothing posted is dropped; the sender still completes */
+    /*
+     * A connected SEND with nothing posted waits for a receive, as a
+     * requester behind an RNR NAK retries, rather than being dropped and
+     * completed.  Neither side completes while it waits, and the send queue
+     * stays on it: posting the receive releases it on the next poll.  The
+     * drop only happens once RNR_RETRY_MS has passed, which ernic-rdma-errors
+     * and test_ionic_dp_errors cover; this checks the wait itself.
+     */
     struct ih_send s = {.op = IH_OP_SEND, .sge = &s1, .nsge = 1};
     ih_post_send(h, &r.a, &s);
-    expect_send(T, "SEND with no receive", &r, 0);
+    check(T, cq_empty(h, &r.cqa),
+          "a SEND with no receive completed the sender");
     check(T, cq_empty(h, &r.cqb), "a SEND with no receive completed one");
+
+    struct ih_sge held = {.va = VA_B, .len = 1, .lkey = MR_B};
+    ih_post_recv(h, &r.b, &held, 1);
+    ih_poll(h);
+    expect_send(T, "SEND released by a late receive", &r, 0);
+    struct ih_cqe held_e;
+    check(T, ih_cq_poll(h, &r.cqb, &held_e) && !held_e.error,
+          "a SEND released by a late receive did not deliver");
 
     /* Bus addresses (lkey 0) across a guest DMA region boundary take more
      * than one scatter/gather entry on both sides */

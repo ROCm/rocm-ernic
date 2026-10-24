@@ -333,6 +333,14 @@ void ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
     (void)length;
     (void)buf;
 }
+void ionic_datapath_rdma_counters(const struct ionic_datapath *dp,
+                                  uint32_t qp_id,
+                                  uint64_t out[IONIC_DP_RDMA_COUNT])
+{
+    (void)dp;
+    (void)qp_id;
+    memset(out, 0, IONIC_DP_RDMA_COUNT * sizeof(out[0]));
+}
 void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey)
 {
     (void)dp;

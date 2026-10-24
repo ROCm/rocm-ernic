@@ -529,6 +529,13 @@
   with the LIF statistics and cleared on PORT_RESET. A frame dropped for
   want of a receive buffer, or because the mesh inbox is full, counts as
   received and as `frames_rx_dropped`. Documented in `docs/ionic.rst`.
+* The ionic NIC's `hw_counters` include the 30 RDMA error counters the real
+  firmware reports, such as `req_rx_cqe_err`, `resp_rx_out_of_buffer`,
+  `req_rx_rnr_retry_err` and `resp_tx_remote_access_err`, for the device and
+  for each QP. A QP's counters start again at 0 when it is re-created.
+  `ernic-rdma-errors` (`nix build .#ernic-rdma-errors`, or the CMake target),
+  run in a guest, makes each of these errors happen and checks that its
+  counters moved.
 
 ### Changed
 
@@ -726,6 +733,11 @@
     `ERNIC_TCP_SOCKBUF` is ignored, as other malformed values already were.
 * The `s3` backend's `size=` accepts a `T` multiplier, as
   `docs/s3.rst` says and the `nvmeof` backend's does.
+* A local RC SEND that finds no posted receive now waits, as a real
+  requester retries behind an RNR NAK, for up to 5 seconds before failing
+  with an RNR-retry-exceeded completion. It used to be dropped at once, with a
+  successful completion. UC, UD and GSI sends with no receive are still
+  dropped.
 
 ### Removed
 

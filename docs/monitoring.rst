@@ -380,21 +380,25 @@ block on every flush.
 
 .. note::
 
-   Not every counter is live yet.  The Ethernet, drop,
-   ring and RDMA traffic counters are, and
-   ``tests/py/test_ionic_hw_stats.py`` drives traffic
-   that moves them.  The ``rdma_req_*`` and
-   ``rdma_resp_*`` error counters are named and
-   published, but nothing in the datapath increments
-   them, so they read zero whatever happens: a zero
-   there means "not counted", not "did not happen".
+   Not every counter in *this* block is live.  The
+   Ethernet, drop, ring and RDMA traffic counters are,
+   and ``tests/py/test_ionic_hw_stats.py`` drives
+   traffic that moves them.  The ``rdma_req_*`` and
+   ``rdma_resp_*`` error counters at qwords 96 to 125
+   are named and published, but nothing increments
+   them here, so they read zero whatever happens: a
+   zero there means "not counted", not "did not
+   happen".
 
-   Wiring them up is
-   `PR #237 <https://github.com/ROCm/rocm-ernic/pull/237>`_.
-   Whoever lands it should delete this paragraph, and
-   will find that the counter lists below and the
-   structural checks in the test pick the new counters
-   up on their own.
+   The device does count those errors, and serves them
+   to the guest through the admin queue; see `Guest
+   hw_counters and real silicon`_ below.  What is
+   missing is the path from the data path's counters
+   into this block, so ``ernic_lif_counter_total`` --
+   the exporter's view -- still shows zeros where the
+   guest's ``hw_counters`` shows real numbers.  Reading
+   a zero in Grafana is not evidence that the fabric is
+   clean.
 
 Guest hw_counters and real silicon
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -423,9 +427,14 @@ exporter has always published them -- under different
 names.  What a guest reads as ``total_bytes_sent`` is
 ``ernic_rdma_bytes_sent_total`` here, and what it reads
 per QP as ``wqes_processed`` is
-``ernic_qp_wqes_processed_total``.  The tables are
-defined in ``dev_stats`` and ``qp_stats`` in
-``src/ionic_adminq_priv.h``:
+``ernic_qp_wqes_processed_total``.  The RDMA error
+counters are the exception: the data path keeps them
+per device and per QP, and only this view reports
+them, so the exporter has no metric that carries them
+yet.  The tables are defined in ``dev_stats`` and
+``qp_stats`` in ``src/ionic_adminq_priv.h``, the first
+entries written out and the rest generated from
+``IONIC_DP_RDMA_COUNTERS`` in ``src/ionic_datapath.h``:
 
 .. include:: generated/hw-counter-tables.rst
 

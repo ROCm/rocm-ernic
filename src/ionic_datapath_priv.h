@@ -46,6 +46,63 @@
 #define MAX_PENDING 1024
 #define PENDING_MS  30000
 
+/*
+ * How long an inbound SEND waits for the receiver to post a work request
+ * before we give up on it.  A peer legitimately outruns its own RQ posting,
+ * which real RoCE answers with an RNR NAK and a requester-side retry; here the
+ * message simply stays queued and is retried on later polls.
+ */
+#define RNR_RETRY_MS 5000u
+
+/* -------------------------------------------------------------------------
+ * Cross-instance wire protocol
+ *
+ * Two guests on the bridge each have their own emulator, so a QP pointed at
+ * the other one has no local ring to deliver into and no local MR to resolve
+ * its rkey against.  The mesh backend carries these messages between the two
+ * as opaque payloads (TCP_MSG_IONIC); everything below is private to the
+ * ionic layer.
+ *
+ * rkeys stay per-instance and are resolved against the *receiver's* MR
+ * table, which is correct: an rkey only ever means something to the side
+ * that advertised it.
+ * -------------------------------------------------------------------------
+ */
+
+#define IONIC_WIRE_MAGIC 0x434e4f49u /* "IONC" */
+
+enum ionic_wire_op {
+    IONIC_WIRE_SEND = 1,
+    IONIC_WIRE_SEND_IMM,
+    IONIC_WIRE_SEND_INV,
+    IONIC_WIRE_WRITE,
+    IONIC_WIRE_WRITE_IMM,
+    IONIC_WIRE_READ_REQ,
+    IONIC_WIRE_READ_RESP,
+    IONIC_WIRE_ATOMIC_REQ,
+    IONIC_WIRE_ATOMIC_RESP,
+    IONIC_WIRE_ACK,
+};
+
+/* Little-endian on the wire, except @imm_be which is passed through in the
+ * big-endian form the WQE and CQE both use. */
+struct ionic_wire_hdr {
+    uint32_t magic;
+    uint8_t op;
+    uint8_t atomic_cs; /* ATOMIC_REQ: 1 = compare-swap, 0 = fetch-add */
+    uint16_t rsvd;
+    uint32_t src_qp_id;
+    uint32_t dst_qp_id;
+    uint32_t req_id;
+    uint32_t rkey;
+    uint32_t length;
+    uint32_t imm_be;
+    uint32_t status;
+    uint64_t remote_va;
+    uint64_t swap_add;
+    uint64_t compare;
+} __attribute__((packed));
+
 /* A guest buffer: either directly addressed or described by a page table. */
 struct dp_buf {
     uint64_t base;   /* direct GPA when npages <= 1                    */
@@ -69,6 +126,11 @@ struct ionic_qp_ring {
     uint32_t rq_cq_id;
 
     uint32_t sq_cons;
+    uint32_t sq_prod; /* the last SQ doorbell's index, wrapped */
+    /* The send queue is stopped on a SEND the peer has posted no receive
+     * for, since @sq_rnr_since_ms; counted in ionic_datapath.sq_stalled. */
+    bool sq_rnr;
+    uint64_t sq_rnr_since_ms;
     uint32_t rq_prod;
     uint32_t rq_cons;
     uint32_t msn; /* running send sequence for SEND_MSN completions */
@@ -90,6 +152,9 @@ struct ionic_qp_ring {
      * above are unused and every receive is taken from dp->srq[srq_id]. */
     bool has_srq;
     uint32_t srq_id;
+
+    /* This QP's share of ionic_datapath.rdma, zeroed at registration. */
+    uint64_t rdma[IONIC_DP_RDMA_COUNT];
 };
 
 /*
@@ -248,6 +313,23 @@ struct ionic_datapath {
      * runs on the vfu thread, so a plain field is enough.
      */
     uint32_t fault;
+
+    /* QPs whose send queue is stopped behind an RNR (sq_rnr). */
+    uint32_t sq_stalled;
+
+    /*
+     * RDMA error counters for the whole device (IONIC_DP_RDMA_COUNTERS).
+     * Like @fault, they only move on the vfu thread.
+     */
+    uint64_t rdma[IONIC_DP_RDMA_COUNT];
+
+    /*
+     * The clock, in milliseconds, that the RNR wait and the deadlines on
+     * @pending run on.  NULL, as ionic_datapath_create() leaves it, is
+     * CLOCK_MONOTONIC; a unit test sets its own, to land exactly on those
+     * deadlines.  Read on the vfu thread only.
+     */
+    uint64_t (*now_ms)(void);
 };
 
 /* Hardware qtypes we advertise in Q_IDENTIFY (see ionic_eth_emu.c). */

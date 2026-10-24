@@ -353,4 +353,68 @@ void ionic_datapath_set_p4_engine(struct ionic_datapath *dp,
 
 #endif /* ERNIC_HAVE_P4 */
 
+/*
+ * RDMA error and congestion counters, served by the STATS and QP_STATS admin
+ * commands after the device and QP totals, so the guest's hw_counters
+ * directory carries them.
+ *
+ * The names are the rdma_* fields of struct ionic_lif_stats in the driver's
+ * ionic_if.h, in that order and without the prefix: they are the only
+ * Pensando names for these events that are published.  The driver keeps 27
+ * characters of a stat name, so resp_rx_out_of_atomic_resource is cut to
+ * resp_rx_out_of_atomic_res.  Counters with no emulator event behind them yet
+ * (packet sequence, duplicates, flushes, CNP and ECN) are listed so the
+ * directory has the real device's shape, and read 0.
+ */
+#define IONIC_DP_RDMA_COUNTERS(X)                               \
+    X(REQ_RX_PKT_SEQ_ERR, "req_rx_pkt_seq_err")                 \
+    X(REQ_RX_RNR_RETRY_ERR, "req_rx_rnr_retry_err")             \
+    X(REQ_RX_REMOTE_ACCESS_ERR, "req_rx_remote_access_err")     \
+    X(REQ_RX_REMOTE_INV_REQ_ERR, "req_rx_remote_inv_req_err")   \
+    X(REQ_RX_REMOTE_OPER_ERR, "req_rx_remote_oper_err")         \
+    X(REQ_RX_IMPLIED_NAK_SEQ_ERR, "req_rx_implied_nak_seq_err") \
+    X(REQ_RX_CQE_ERR, "req_rx_cqe_err")                         \
+    X(REQ_RX_CQE_FLUSH_ERR, "req_rx_cqe_flush_err")             \
+    X(REQ_RX_DUP_RESPONSES, "req_rx_dup_responses")             \
+    X(REQ_RX_INVALID_PACKETS, "req_rx_invalid_packets")         \
+    X(REQ_TX_LOCAL_ACCESS_ERR, "req_tx_local_access_err")       \
+    X(REQ_TX_LOCAL_OPER_ERR, "req_tx_local_oper_err")           \
+    X(REQ_TX_MEMORY_MGMT_ERR, "req_tx_memory_mgmt_err")         \
+    X(RESP_RX_DUP_REQUESTS, "resp_rx_dup_requests")             \
+    X(RESP_RX_OUT_OF_BUFFER, "resp_rx_out_of_buffer")           \
+    X(RESP_RX_OUT_OF_SEQ_PKTS, "resp_rx_out_of_seq_pkts")       \
+    X(RESP_RX_CQE_ERR, "resp_rx_cqe_err")                       \
+    X(RESP_RX_CQE_FLUSH_ERR, "resp_rx_cqe_flush_err")           \
+    X(RESP_RX_LOCAL_LEN_ERR, "resp_rx_local_len_err")           \
+    X(RESP_RX_INV_REQUEST_ERR, "resp_rx_inv_request_err")       \
+    X(RESP_RX_LOCAL_QP_OPER_ERR, "resp_rx_local_qp_oper_err")   \
+    X(RESP_RX_OUT_OF_ATOMIC_RES, "resp_rx_out_of_atomic_res")   \
+    X(RESP_TX_PKT_SEQ_ERR, "resp_tx_pkt_seq_err")               \
+    X(RESP_TX_REMOTE_INV_REQ_ERR, "resp_tx_remote_inv_req_err") \
+    X(RESP_TX_REMOTE_ACCESS_ERR, "resp_tx_remote_access_err")   \
+    X(RESP_TX_REMOTE_OPER_ERR, "resp_tx_remote_oper_err")       \
+    X(RESP_TX_RNR_RETRY_ERR, "resp_tx_rnr_retry_err")           \
+    X(TX_CNP_PKTS, "tx_cnp_pkts")                               \
+    X(RX_CNP_PKTS, "rx_cnp_pkts")                               \
+    X(RX_ECN_PKTS, "rx_ecn_pkts")
+
+#define IONIC_DP_RDMA_ENUM(id, name) IONIC_DP_##id,
+enum ionic_dp_rdma_counter {
+    IONIC_DP_RDMA_COUNTERS(IONIC_DP_RDMA_ENUM) IONIC_DP_RDMA_COUNT
+};
+#undef IONIC_DP_RDMA_ENUM
+
+/* The qp_id that asks ionic_datapath_rdma_counters() for the device totals. */
+#define IONIC_DP_DEVICE UINT32_MAX
+
+/*
+ * Snapshot the RDMA counters of one QP, by driver qp_id, or of the whole
+ * device with IONIC_DP_DEVICE.  A QP that is not registered reads as zeros,
+ * as does everything when @dp is NULL.  Call it on the thread that owns the
+ * vfio-user context, which is the only one that moves them.
+ */
+void ionic_datapath_rdma_counters(const struct ionic_datapath *dp,
+                                  uint32_t qp_id,
+                                  uint64_t out[IONIC_DP_RDMA_COUNT]);
+
 #endif /* IONIC_DATAPATH_H */

@@ -223,38 +223,73 @@ struct ionic_adminq_ctx {
 #define STAT_TYPE_SHIFT 28
 #define STAT_TYPE_LE64  4u
 #define STAT_VAL_SIZE   8
-#define STATS_MAX_COUNT 8
+/* The driver accepts up to 128 entries; 64 leaves room to grow. */
+#define STATS_MAX_COUNT 64
 
 struct adminq_stat {
     const char *name;
-    size_t off; /* of the uint64_t in the counters struct */
+    size_t off; /* of the uint64_t in the values struct */
 };
 
-/* The names match the --stats-file labels, so the two views line up. */
-static const struct adminq_stat dev_stats[] = {
-    {"commands", offsetof(struct pvrdma_dev_counters, commands)},
-    {"total_bytes_sent",
-     offsetof(struct pvrdma_dev_counters, total_bytes_sent)},
-    {"total_bytes_received",
-     offsetof(struct pvrdma_dev_counters, total_bytes_received)},
-    {"total_bytes_rdma_read",
-     offsetof(struct pvrdma_dev_counters, total_bytes_rdma_read)},
-    {"total_bytes_rdma_write",
-     offsetof(struct pvrdma_dev_counters, total_bytes_rdma_write)},
+/*
+ * What a VALS command reports: the pvrdma totals, then the data path's RDMA
+ * error counters (IONIC_DP_RDMA_COUNTERS), at the offsets the HDRS table
+ * gives.
+ */
+struct adminq_dev_vals {
+    struct pvrdma_dev_counters pv;
+    uint64_t rdma[IONIC_DP_RDMA_COUNT];
 };
+
+struct adminq_qp_vals {
+    struct pvrdma_qp_counters pv;
+    uint64_t rdma[IONIC_DP_RDMA_COUNT];
+};
+
+#define DEV_RDMA_STAT(id, name)                     \
+    {name, offsetof(struct adminq_dev_vals, rdma) + \
+               (size_t)IONIC_DP_##id * sizeof(uint64_t)},
+#define QP_RDMA_STAT(id, name)                     \
+    {name, offsetof(struct adminq_qp_vals, rdma) + \
+               (size_t)IONIC_DP_##id * sizeof(uint64_t)},
+
+/*
+ * The first five names match the --stats-file labels, so the two views line
+ * up; existing readers of them see the same files as before.
+ */
+static const struct adminq_stat dev_stats[] = {
+    {"commands", offsetof(struct adminq_dev_vals, pv.commands)},
+    {"total_bytes_sent", offsetof(struct adminq_dev_vals, pv.total_bytes_sent)},
+    {"total_bytes_received",
+     offsetof(struct adminq_dev_vals, pv.total_bytes_received)},
+    {"total_bytes_rdma_read",
+     offsetof(struct adminq_dev_vals, pv.total_bytes_rdma_read)},
+    {"total_bytes_rdma_write",
+     offsetof(struct adminq_dev_vals, pv.total_bytes_rdma_write)},
+    IONIC_DP_RDMA_COUNTERS(DEV_RDMA_STAT)};
 #define DEV_STATS_COUNT (sizeof(dev_stats) / sizeof(dev_stats[0]))
 
 static const struct adminq_stat qp_stats[] = {
-    {"doorbell_send", offsetof(struct pvrdma_qp_counters, doorbell_send)},
-    {"doorbell_recv", offsetof(struct pvrdma_qp_counters, doorbell_recv)},
-    {"wqes_processed", offsetof(struct pvrdma_qp_counters, wqes_processed)},
-    {"cqes_posted", offsetof(struct pvrdma_qp_counters, cqes_posted)},
-    {"bytes_sent", offsetof(struct pvrdma_qp_counters, bytes_sent)},
-    {"bytes_received", offsetof(struct pvrdma_qp_counters, bytes_received)},
-    {"bytes_rdma_read", offsetof(struct pvrdma_qp_counters, bytes_rdma_read)},
-    {"bytes_rdma_write", offsetof(struct pvrdma_qp_counters, bytes_rdma_write)},
-};
+    {"doorbell_send", offsetof(struct adminq_qp_vals, pv.doorbell_send)},
+    {"doorbell_recv", offsetof(struct adminq_qp_vals, pv.doorbell_recv)},
+    {"wqes_processed", offsetof(struct adminq_qp_vals, pv.wqes_processed)},
+    {"cqes_posted", offsetof(struct adminq_qp_vals, pv.cqes_posted)},
+    {"bytes_sent", offsetof(struct adminq_qp_vals, pv.bytes_sent)},
+    {"bytes_received", offsetof(struct adminq_qp_vals, pv.bytes_received)},
+    {"bytes_rdma_read", offsetof(struct adminq_qp_vals, pv.bytes_rdma_read)},
+    {"bytes_rdma_write", offsetof(struct adminq_qp_vals, pv.bytes_rdma_write)},
+    IONIC_DP_RDMA_COUNTERS(QP_RDMA_STAT)};
 #define QP_STATS_COUNT (sizeof(qp_stats) / sizeof(qp_stats[0]))
+
+#undef DEV_RDMA_STAT
+#undef QP_RDMA_STAT
+
+/* The driver keeps 27 characters of a name; a longer one would collide. */
+#define RDMA_STAT_NAME_FITS(id, name)             \
+    _Static_assert(sizeof(name) <= STAT_NAME_LEN, \
+                   "stat name " name " is over 27 characters");
+IONIC_DP_RDMA_COUNTERS(RDMA_STAT_NAME_FITS)
+#undef RDMA_STAT_NAME_FITS
 
 _Static_assert(DEV_STATS_COUNT <= STATS_MAX_COUNT, "dev_stats too long");
 _Static_assert(QP_STATS_COUNT <= STATS_MAX_COUNT, "qp_stats too long");
