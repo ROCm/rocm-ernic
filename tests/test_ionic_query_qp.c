@@ -21,7 +21,6 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include <endian.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -31,6 +30,7 @@
 
 #include <vfio-user/libvfio-user.h>
 
+#include "byteorder.h"
 #include "ionic_adminq_priv.h"
 #include "ionic_datapath.h"
 #include "rocm_ernic_compat.h"
@@ -464,21 +464,15 @@ static void ctx_reset(void)
 static void build_body(uint8_t *body, uint32_t qp_id, uint64_t sq_gpa,
                        uint64_t rq_gpa)
 {
-    uint64_t sq_le = htole64(sq_gpa), rq_le = htole64(rq_gpa);
-    uint32_t id_ver = htole32(qp_id | (1u << 24));
-
     memset(body, 0, 34);
-    memcpy(body + 8, &sq_le, 8);
-    memcpy(body + 16, &rq_le, 8);
-    memcpy(body + 28, &id_ver, 4);
+    ernic_put_le64(body + 8, sq_gpa);
+    ernic_put_le64(body + 16, rq_gpa);
+    ernic_put_le32(body + 28, qp_id | (1u << 24));
 }
 
 static uint16_t rq_flags(void)
 {
-    uint16_t be;
-
-    memcpy(&be, g_mem + RQ_GPA + 8, 2);
-    return be16toh(be);
+    return ernic_get_be16(g_mem + RQ_GPA + 8);
 }
 
 /* ---- Tests ------------------------------------------------------------- */
@@ -532,17 +526,17 @@ static void test_every_state_round_trips(void)
 static void test_access_flags_are_translated(void)
 {
     uint8_t body[34];
-    uint16_t sq_be;
+    uint16_t sq_flags;
 
     ctx_reset();
     build_body(body, QP_ID, SQ_GPA, RQ_GPA);
     (void)ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body,
                                     sizeof(body));
 
-    memcpy(&sq_be, g_mem + SQ_GPA + 2, 2);
+    sq_flags = ernic_get_be16(g_mem + SQ_GPA + 2);
     /* IONIC_QPF_REMOTE_WRITE | IONIC_QPF_REMOTE_READ */
-    check("access-flags-in-ionic-order", be16toh(sq_be) == 0x3);
-    check("access-flags-in-both-buffers", rq_flags() == be16toh(sq_be));
+    check("access-flags-in-ionic-order", sq_flags == 0x3);
+    check("access-flags-in-both-buffers", rq_flags() == sq_flags);
 
     ctx_reset();
     g_access = 1u << 3; /* REMOTE_ATOMIC alone */
@@ -556,15 +550,14 @@ static void test_access_flags_are_translated(void)
 static void test_dest_qpn_is_reported(void)
 {
     uint8_t body[34];
-    uint32_t be;
 
     ctx_reset();
     build_body(body, QP_ID, SQ_GPA, RQ_GPA);
     (void)ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body,
                                     sizeof(body));
 
-    memcpy(&be, g_mem + SQ_GPA + 8, 4);
-    check("dest-qpn-reported", be32toh(be) == g_dest_qpn);
+    check("dest-qpn-reported",
+          ernic_get_be32(g_mem + SQ_GPA + 8) == g_dest_qpn);
 }
 
 /*
@@ -577,17 +570,17 @@ static void test_dest_qpn_is_reported(void)
 static void test_psns_are_reported(void)
 {
     uint8_t body[34];
-    uint32_t rq_be, sq_be;
+    uint32_t rq_psn, sq_psn;
 
     ctx_reset();
     build_body(body, QP_ID, SQ_GPA, RQ_GPA);
     (void)ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body,
                                     sizeof(body));
 
-    memcpy(&rq_be, g_mem + SQ_GPA + 16, 4);
-    memcpy(&sq_be, g_mem + RQ_GPA + 4, 4);
-    check("rq-psn-in-sq-buffer", be32toh(rq_be) == g_rq_psn);
-    check("sq-psn-in-rq-buffer", be32toh(sq_be) == g_sq_psn);
+    rq_psn = ernic_get_be32(g_mem + SQ_GPA + 16);
+    sq_psn = ernic_get_be32(g_mem + RQ_GPA + 4);
+    check("rq-psn-in-sq-buffer", rq_psn == g_rq_psn);
+    check("sq-psn-in-rq-buffer", sq_psn == g_sq_psn);
 
     ctx_reset();
     g_rq_psn = 0xff000001;
@@ -596,9 +589,9 @@ static void test_psns_are_reported(void)
     (void)ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body,
                                     sizeof(body));
 
-    memcpy(&rq_be, g_mem + SQ_GPA + 16, 4);
-    memcpy(&sq_be, g_mem + RQ_GPA + 4, 4);
-    check("psns-masked-to-24-bits", be32toh(rq_be) == 1 && be32toh(sq_be) == 2);
+    rq_psn = ernic_get_be32(g_mem + SQ_GPA + 16);
+    sq_psn = ernic_get_be32(g_mem + RQ_GPA + 4);
+    check("psns-masked-to-24-bits", rq_psn == 1 && sq_psn == 2);
 }
 
 /*
@@ -654,12 +647,9 @@ static void test_short_body_writes_nothing(void)
  */
 static void build_modify_body(uint8_t *body, uint32_t qp_id)
 {
-    uint32_t attr_mask_be = htobe32(1u << 20); /* IB_QP_DEST_QPN */
-    uint32_t id_ver = htole32(qp_id | (1u << 24));
-
     memset(body, 0, 60);
-    memcpy(body + 0, &attr_mask_be, 4);
-    memcpy(body + 56, &id_ver, 4);
+    ernic_put_be32(body + 0, 1u << 20); /* IB_QP_DEST_QPN */
+    ernic_put_le32(body + 56, qp_id | (1u << 24));
 }
 
 static void test_modify_qp_unresolved_gid_only_fails_on_a_mesh(void)

@@ -13,7 +13,6 @@
 
 #include "ionic_harness.h"
 
-#include <endian.h>
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -21,6 +20,7 @@
 #include <string.h>
 #include <sys/types.h>
 
+#include "byteorder.h"
 #include "fake_vfu.h"
 #include "ionic_adminq.h"
 #include "ionic_datapath.h"
@@ -91,83 +91,6 @@ static int fail_rc(const char *fmt, ...)
     va_end(ap);
     fputc('\n', stderr);
     return -1;
-}
-
-/* ---- Byte order helpers ------------------------------------------------ */
-
-static void put_le16(uint8_t *p, uint16_t v)
-{
-    v = htole16(v);
-    memcpy(p, &v, 2);
-}
-
-static void put_le32(uint8_t *p, uint32_t v)
-{
-    v = htole32(v);
-    memcpy(p, &v, 4);
-}
-
-static void put_le64(uint8_t *p, uint64_t v)
-{
-    v = htole64(v);
-    memcpy(p, &v, 8);
-}
-
-static void put_be16(uint8_t *p, uint16_t v)
-{
-    v = htobe16(v);
-    memcpy(p, &v, 2);
-}
-
-static void put_be32(uint8_t *p, uint32_t v)
-{
-    v = htobe32(v);
-    memcpy(p, &v, 4);
-}
-
-static void put_be64(uint8_t *p, uint64_t v)
-{
-    v = htobe64(v);
-    memcpy(p, &v, 8);
-}
-
-static uint16_t get_le16(const uint8_t *p)
-{
-    uint16_t v;
-
-    memcpy(&v, p, 2);
-    return le16toh(v);
-}
-
-static uint32_t get_le32(const uint8_t *p)
-{
-    uint32_t v;
-
-    memcpy(&v, p, 4);
-    return le32toh(v);
-}
-
-static uint16_t get_be16(const uint8_t *p)
-{
-    uint16_t v;
-
-    memcpy(&v, p, 2);
-    return be16toh(v);
-}
-
-static uint32_t get_be32(const uint8_t *p)
-{
-    uint32_t v;
-
-    memcpy(&v, p, 4);
-    return be32toh(v);
-}
-
-/* The wire splits 64-bit RDMA addresses and operands into be32 halves. */
-static void put_be32_pair(uint8_t *p, uint64_t v)
-{
-    put_be32(p, (uint32_t)(v >> 32));
-    put_be32(p + 4, (uint32_t)v);
 }
 
 /* ---- Rings ------------------------------------------------------------- */
@@ -346,14 +269,14 @@ uint32_t ih_bar0_read32(struct ih *h, uint32_t off)
     uint8_t b[4];
 
     ih_bar0_read(h, off, b, 4);
-    return get_le32(b);
+    return ernic_get_le32(b);
 }
 
 void ih_bar0_write32(struct ih *h, uint32_t off, uint32_t val)
 {
     uint8_t b[4];
 
-    put_le32(b, val);
+    ernic_put_le32(b, val);
     ih_bar0_write(h, off, b, 4);
 }
 
@@ -372,7 +295,7 @@ void ih_doorbell(struct ih *h, int qtype, uint32_t qid, uint8_t ring,
                    (uint64_t)((qid >> 8) & 0xffffu) << 32;
     uint8_t b[8];
 
-    put_le64(b, val);
+    ernic_put_le64(b, val);
     pvrdma_uar_mmio_count(h->dev->pvrdma_handle, true);
     /* The kernel's doorbell page is page 0, one u64 slot per qtype. */
     if (ionic_eth_emu_bar2_access(h->dev->ionic_emu, (char *)b, sizeof(b),
@@ -426,9 +349,9 @@ int ih_eth_admin(struct ih *h, const uint8_t cmd[64], uint8_t comp[16])
         return -1;
     }
     cq->cons++;
-    if (get_le16(comp + 2) != slot) {
+    if (ernic_get_le16(comp + 2) != slot) {
         fail("eth admin completion for slot %u, expected %u",
-             get_le16(comp + 2), slot);
+             ernic_get_le16(comp + 2), slot);
         return -1;
     }
     return comp[0];
@@ -447,7 +370,7 @@ static bool eq_next_ring(struct ih *h, uint32_t *cq_id)
     /* struct ionic_v1_eqe: be32 of colour, type, code and qid */
     if (!fake_vfu_read(h->vfu, ring_slot(&h->eq, h->eq.cons), b, 4))
         return false;
-    uint32_t evt = get_be32(b);
+    uint32_t evt = ernic_get_be32(b);
     if (((evt & 1u) != 0) != ring_color(&h->eq))
         return false;
     h->eq.cons++;
@@ -480,7 +403,7 @@ int ih_admin_post(struct ih *h, uint8_t op, const void *body, uint16_t len)
 
     memset(buf, 0, sizeof(buf));
     buf[0] = op;
-    put_le16(buf + 2, len);
+    ernic_put_le16(buf + 2, len);
     if (len)
         memcpy(buf + ADMIN_HDR_LEN, body, len);
     /* ionic_admin_poll_locked() produces each stride as its own ring entry,
@@ -519,16 +442,16 @@ int ih_admin_complete(struct ih *h, uint8_t op, int slot, uint32_t *resp_len)
     uint8_t cqe[32];
     if (!fake_vfu_read(h->vfu, ring_slot(cq, cq->cons), cqe, sizeof(cqe)))
         return fail_rc("admin CQ read failed");
-    uint32_t qtf = get_be32(cqe + 28);
+    uint32_t qtf = ernic_get_be32(cqe + 28);
     if (((qtf & 1u) != 0) != ring_color(cq))
         return IH_ADMIN_PENDING;
     cq->cons++;
 
-    if (get_be16(cqe) != (uint32_t)slot || cqe[2] != op || (qtf >> 8) != 0 ||
-        ((qtf >> 5) & 7u) != IH_CQE_TYPE_ADMIN) {
+    if (ernic_get_be16(cqe) != (uint32_t)slot || cqe[2] != op ||
+        (qtf >> 8) != 0 || ((qtf >> 5) & 7u) != IH_CQE_TYPE_ADMIN) {
         fail("admin completion for op %u slot %u (qid %u type %u), expected "
              "op %u slot %u",
-             cqe[2], get_be16(cqe), qtf >> 8, (qtf >> 5) & 7u, op,
+             cqe[2], ernic_get_be16(cqe), qtf >> 8, (qtf >> 5) & 7u, op,
              (unsigned)slot);
         return -1;
     }
@@ -560,7 +483,7 @@ int ih_admin_complete(struct ih *h, uint8_t op, int slot, uint32_t *resp_len)
         return -1;
     }
 
-    uint32_t sl = get_be32(cqe + 24);
+    uint32_t sl = ernic_get_be32(cqe + 24);
     if (qtf & 2u) {
         /* The status code is the whole field, as the driver reads it. */
         if (sl == 0 || sl > UINT8_MAX) {
@@ -594,13 +517,13 @@ bool ih_bringup(struct ih *h)
 
     memset(cmd, 0, sizeof(cmd));
     cmd[0] = IH_CMD_PORT_INIT;
-    put_le64(cmd + 8, h->port_info);
+    ernic_put_le64(cmd + 8, h->port_info);
     if (ih_devcmd(h, cmd, comp, NULL, 0) != 0)
         return fail("PORT_INIT failed");
 
     memset(cmd, 0, sizeof(cmd));
     cmd[0] = IH_CMD_LIF_INIT;
-    put_le64(cmd + 8, h->lif_info);
+    ernic_put_le64(cmd + 8, h->lif_info);
     if (ih_devcmd(h, cmd, comp, NULL, 0) != 0)
         return fail("LIF_INIT failed");
 
@@ -611,11 +534,11 @@ bool ih_bringup(struct ih *h)
     memset(cmd, 0, sizeof(cmd));
     cmd[0] = IH_CMD_Q_INIT;
     cmd[4] = IH_QTYPE_ETH_ADMINQ;
-    put_le32(cmd + 8, 0);
-    put_le16(cmd + 14, IH_ETH_ADMINQ_INTR);
+    ernic_put_le32(cmd + 8, 0);
+    ernic_put_le16(cmd + 14, IH_ETH_ADMINQ_INTR);
     cmd[19] = ETH_AQ_DEPTH_LOG2;
-    put_le64(cmd + 20, h->eth_aq.gpa);
-    put_le64(cmd + 28, h->eth_acq.gpa);
+    ernic_put_le64(cmd + 20, h->eth_aq.gpa);
+    ernic_put_le64(cmd + 28, h->eth_acq.gpa);
     if (ih_devcmd(h, cmd, comp, NULL, 0) != 0)
         return fail("Q_INIT of the adminq failed");
 
@@ -646,11 +569,11 @@ bool ih_bringup(struct ih *h)
             return false;
         memset(cmd, 0, sizeof(cmd));
         cmd[0] = queues[i].op;
-        put_le32(cmd + 4, queues[i].qid | 1u << 24);
-        put_le32(cmd + 8, queues[i].cid);
+        ernic_put_le32(cmd + 4, queues[i].qid | 1u << 24);
+        ernic_put_le32(cmd + 8, queues[i].cid);
         cmd[14] = queues[i].depth_log2;
         cmd[15] = queues[i].stride_log2;
-        put_le64(cmd + 16, queues[i].ring->gpa);
+        ernic_put_le64(cmd + 16, queues[i].ring->gpa);
         if (ih_eth_admin(h, cmd, comp) != 0)
             return fail("RDMA queue devcmd %u failed", queues[i].op);
     }
@@ -672,13 +595,13 @@ bool ih_cq_create(struct ih *h, struct ih_cq *cq, uint32_t id,
         return false;
 
     /* struct ionic_admin_create_cq */
-    put_le32(body + 0, IH_EQ_ID);
+    ernic_put_le32(body + 0, IH_EQ_ID);
     body[4] = depth_log2;
     body[5] = CQE_STRIDE_LOG2;
     body[7] = 12;
-    put_le32(body + 12, id | 1u << 24);
-    put_le32(body + 20, 1);
-    put_le64(body + 24, cq->ring.gpa);
+    ernic_put_le32(body + 12, id | 1u << 24);
+    ernic_put_le32(body + 20, 1);
+    ernic_put_le64(body + 24, cq->ring.gpa);
     int rc = ih_admin(h, IH_ADMIN_CREATE_CQ, body, sizeof(body), NULL);
     return rc == 0 || fail("CREATE_CQ %u: %d", id, rc);
 }
@@ -687,7 +610,7 @@ int ih_cq_destroy(struct ih *h, struct ih_cq *cq)
 {
     uint8_t body[4];
 
-    put_le32(body, cq->id);
+    ernic_put_le32(body, cq->id);
     return ih_admin(h, IH_ADMIN_DESTROY_CQ, body, sizeof(body), NULL);
 }
 
@@ -718,25 +641,25 @@ bool ih_qp_create_stride(struct ih *h, struct ih_qp *qp, uint32_t id,
         return false;
 
     /* struct ionic_admin_create_qp */
-    put_le32(body + 8, scq->id);
+    ernic_put_le32(body + 8, scq->id);
     body[12] = QP_DEPTH_LOG2;
     body[13] = sq_stride_log2;
     body[15] = 12;
-    put_le32(body + 20, 1);
-    put_le64(body + 24, qp->sq.gpa);
-    put_le32(body + 32, rcq->id);
+    ernic_put_le32(body + 20, 1);
+    ernic_put_le64(body + 24, qp->sq.gpa);
+    ernic_put_le32(body + 32, rcq->id);
     if (srq) {
         /* An SRQ-bound QP leaves its own receive ring empty. */
-        put_le32(body + 40, srq->id);
+        ernic_put_le32(body + 40, srq->id);
     } else {
         body[36] = QP_DEPTH_LOG2;
         body[37] = WQE_STRIDE_LOG2;
         body[39] = 12;
-        put_le32(body + 40, 0xffffffffu);
-        put_le32(body + 44, 1);
-        put_le64(body + 48, qp->rq.gpa);
+        ernic_put_le32(body + 40, 0xffffffffu);
+        ernic_put_le32(body + 44, 1);
+        ernic_put_le64(body + 48, qp->rq.gpa);
     }
-    put_le32(body + 56, id | 1u << 24);
+    ernic_put_le32(body + 56, id | 1u << 24);
     body[62] = type;
     int rc = ih_admin(h, IH_ADMIN_CREATE_QP, body, sizeof(body), NULL);
     return rc == 0 || fail("CREATE_QP %u: %d", id, rc);
@@ -746,7 +669,7 @@ int ih_qp_destroy(struct ih *h, struct ih_qp *qp)
 {
     uint8_t body[4];
 
-    put_le32(body, qp->id);
+    ernic_put_le32(body, qp->id);
     return ih_admin(h, IH_ADMIN_DESTROY_QP, body, sizeof(body), NULL);
 }
 
@@ -761,17 +684,17 @@ int ih_qp_modify(struct ih *h, uint32_t qp_id, uint32_t attr_mask,
     if (hdr) {
         if (hdr_len > 255 || !fake_vfu_write(h->vfu, h->scratch, hdr, hdr_len))
             return fail_rc("bad RoCE header template");
-        put_le32(body + 32, hdr_len << 24);
-        put_le64(body + 48, h->scratch);
+        ernic_put_le32(body + 32, hdr_len << 24);
+        ernic_put_le64(body + 48, h->scratch);
     }
 
     /* struct ionic_admin_mod_qp */
-    put_be32(body + 0, attr_mask);
-    put_le32(body + 8, 0x100);  /* rq_psn */
-    put_le32(body + 12, 0x200); /* sq_psn */
-    put_le32(body + 16, qkey_dest_qpn);
+    ernic_put_be32(body + 0, attr_mask);
+    ernic_put_le32(body + 8, 0x100);  /* rq_psn */
+    ernic_put_le32(body + 12, 0x200); /* sq_psn */
+    ernic_put_le32(body + 16, qkey_dest_qpn);
     body[39] = state;
-    put_le32(body + 56, qp_id | 1u << 24);
+    ernic_put_le32(body + 56, qp_id | 1u << 24);
     return ih_admin(h, IH_ADMIN_MODIFY_QP, body, sizeof(body), NULL);
 }
 
@@ -786,18 +709,18 @@ size_t ih_roce_hdr_v4(uint8_t *buf, size_t cap, uint32_t sip, uint32_t dip)
     memset(buf, 0, len);
     memcpy(buf, dmac, 6);
     memcpy(buf + 6, smac, 6);
-    put_be16(buf + 12, 0x0800);
+    ernic_put_be16(buf + 12, 0x0800);
 
     uint8_t *ip = buf + 14;
     ip[0] = 0x45;
-    put_be16(ip + 2, 20 + 8);
+    ernic_put_be16(ip + 2, 20 + 8);
     ip[8] = 64;
     ip[9] = 17; /* UDP */
-    put_be32(ip + 12, sip);
-    put_be32(ip + 16, dip);
+    ernic_put_be32(ip + 12, sip);
+    ernic_put_be32(ip + 16, dip);
 
-    put_be16(buf + 34 + 2, ROCE_UDP_PORT);
-    put_be16(buf + 34 + 4, 8);
+    ernic_put_be16(buf + 34 + 2, ROCE_UDP_PORT);
+    ernic_put_be16(buf + 34 + 4, 8);
     return len;
 }
 
@@ -862,7 +785,7 @@ bool ih_mr_alloc(struct ih *h, struct ih_mr *mr, uint32_t lkey, uint64_t va,
     for (uint32_t i = 0; i < mr->npages; i++) {
         uint8_t le[8];
 
-        put_le64(le, mr->pages[i]);
+        ernic_put_le64(le, mr->pages[i]);
         fake_vfu_write(h->vfu, mr->pt_gpa + i * sizeof(uint64_t), le, 8);
     }
     return true;
@@ -889,12 +812,12 @@ bool ih_mr_create(struct ih *h, struct ih_mr *mr, uint32_t lkey, uint64_t va,
         return false;
 
     /* struct ionic_admin_create_mr */
-    put_le64(body + 0, va);
-    put_le64(body + 8, len);
-    put_le32(body + 20, lkey);
-    put_le32(body + 28, mr->npages);
-    put_le64(body + 32, mr_dma_addr(mr));
-    put_le16(body + 40, (uint16_t)access);
+    ernic_put_le64(body + 0, va);
+    ernic_put_le64(body + 8, len);
+    ernic_put_le32(body + 20, lkey);
+    ernic_put_le32(body + 28, mr->npages);
+    ernic_put_le64(body + 32, mr_dma_addr(mr));
+    ernic_put_le16(body + 40, (uint16_t)access);
     body[44] = 12;
     int rc = ih_admin(h, IH_ADMIN_CREATE_MR, body, sizeof(body), NULL);
     if (rc != 0) {
@@ -908,7 +831,7 @@ int ih_mr_destroy(struct ih *h, struct ih_mr *mr)
 {
     uint8_t body[4];
 
-    put_le32(body, mr->lkey);
+    ernic_put_le32(body, mr->lkey);
     ih_mr_free(mr);
     return ih_admin(h, IH_ADMIN_DESTROY_MR, body, sizeof(body), NULL);
 }
@@ -966,13 +889,13 @@ int ih_srq_create(struct ih *h, struct ih_srq *srq, uint8_t depth_log2)
     fake_vfu_write(h->vfu, resp, poison, sizeof(poison));
 
     /* struct ionic_admin_create_srq */
-    put_le64(body + 0, srq->ring.gpa);
-    put_le32(body + 8, 1);
+    ernic_put_le64(body + 0, srq->ring.gpa);
+    ernic_put_le32(body + 8, 1);
     body[26] = depth_log2;
     body[27] = WQE_STRIDE_LOG2;
     body[28] = 12;
-    put_le32(body + 30, 5);
-    put_le64(body + 34, resp);
+    ernic_put_le32(body + 30, 5);
+    ernic_put_le64(body + 34, resp);
 
     uint32_t resp_len = 0;
     int rc = ih_admin(h, IH_ADMIN_CREATE_SRQ, body, sizeof(body), &resp_len);
@@ -982,7 +905,7 @@ int ih_srq_create(struct ih *h, struct ih_srq *srq, uint8_t depth_log2)
     /* struct ionic_admin_create_srq_resp: le32 id, u8 udma_idx */
     uint8_t r[5];
     fake_vfu_read(h->vfu, resp, r, sizeof(r));
-    srq->id = get_le32(r);
+    srq->id = ernic_get_le32(r);
     if (resp_len != 5) {
         fail("CREATE_SRQ reported a %u-byte response", resp_len);
         return -1;
@@ -994,7 +917,7 @@ int ih_srq_destroy(struct ih *h, struct ih_srq *srq)
 {
     uint8_t body[4];
 
-    put_le32(body, srq->id);
+    ernic_put_le32(body, srq->id);
     return ih_admin(h, IH_ADMIN_DESTROY_SRQ, body, sizeof(body), NULL);
 }
 
@@ -1008,9 +931,9 @@ int ih_ah_create(struct ih *h, uint32_t ah_id, uint32_t sip, uint32_t dip)
         return -1;
 
     /* struct ionic_admin_create_ah */
-    put_le64(body + 0, h->scratch);
-    put_le32(body + 8, (uint32_t)hdr_len);
-    put_le32(body + 16, ah_id | 1u << 24);
+    ernic_put_le64(body + 0, h->scratch);
+    ernic_put_le32(body + 8, (uint32_t)hdr_len);
+    ernic_put_le32(body + 16, ah_id | 1u << 24);
     return ih_admin(h, IH_ADMIN_CREATE_AH, body, sizeof(body), NULL);
 }
 
@@ -1021,9 +944,9 @@ static void put_sges(uint8_t *wqe, const struct ih_sge *sge, uint8_t nsge)
     for (uint8_t i = 0; i < nsge; i++) {
         uint8_t *p = wqe + WQE_PLD_OFF + 16u * i;
 
-        put_be64(p, sge[i].va);
-        put_be32(p + 8, sge[i].len);
-        put_be32(p + 12, sge[i].lkey);
+        ernic_put_be64(p, sge[i].va);
+        ernic_put_be32(p + 8, sge[i].len);
+        ernic_put_be32(p + 12, sge[i].lkey);
     }
 }
 
@@ -1047,10 +970,10 @@ uint64_t ih_post_send(struct ih *h, struct ih_qp *qp, const struct ih_send *s)
     memcpy(wqe, &wqe_id, 8);
     wqe[8] = s->op;
     wqe[9] = s->nsge;
-    put_be16(wqe + 10, s->flags);
+    ernic_put_be16(wqe + 10, s->flags);
     if (s->op == IH_OP_SEND_INV || s->op == IH_OP_LOCAL_INV ||
         s->op == IH_OP_REG_MR)
-        put_be32(wqe + 12, s->key);
+        ernic_put_be32(wqe + 12, s->key);
     else
         memcpy(wqe + 12, &s->imm_be, 4);
 
@@ -1058,32 +981,34 @@ uint64_t ih_post_send(struct ih *h, struct ih_qp *qp, const struct ih_send *s)
     case IH_OP_RDMA_READ:
     case IH_OP_RDMA_WRITE:
     case IH_OP_RDMA_WRITE_IMM:
-        put_be32_pair(wqe + 16, s->remote_va);
-        put_be32(wqe + 24, s->rkey);
-        put_be32(wqe + 28, s->length ? s->length : total);
+        /* The wire splits 64-bit addresses and operands into be32 halves,
+         * high half first: the same bytes as one be64. */
+        ernic_put_be64(wqe + 16, s->remote_va);
+        ernic_put_be32(wqe + 24, s->rkey);
+        ernic_put_be32(wqe + 28, s->length ? s->length : total);
         break;
 
     case IH_OP_ATOMIC_CS:
     case IH_OP_ATOMIC_FA:
         /* struct ionic_v1_atomic_bdy: one fixed 8-byte result SGE */
-        put_be32_pair(wqe + 16, s->remote_va);
-        put_be32(wqe + 24, s->rkey);
-        put_be32_pair(wqe + 28, s->swap_add);
-        put_be32_pair(wqe + 36, s->compare);
+        ernic_put_be64(wqe + 16, s->remote_va);
+        ernic_put_be32(wqe + 24, s->rkey);
+        ernic_put_be64(wqe + 28, s->swap_add);
+        ernic_put_be64(wqe + 36, s->compare);
         if (s->nsge) {
-            put_be64(wqe + 48, s->sge[0].va);
-            put_be32(wqe + 56, 8);
-            put_be32(wqe + 60, s->sge[0].lkey);
+            ernic_put_be64(wqe + 48, s->sge[0].va);
+            ernic_put_be32(wqe + 56, 8);
+            ernic_put_be32(wqe + 60, s->sge[0].lkey);
         }
         break;
 
     case IH_OP_REG_MR:
         /* struct ionic_v1_reg_mr_bdy */
         if (s->mr) {
-            put_be64(wqe + 16, s->mr->va);
-            put_be64(wqe + 24, s->mr->len);
-            put_be64(wqe + 40, mr_dma_addr(s->mr));
-            put_be32(wqe + 48, s->mr->npages);
+            ernic_put_be64(wqe + 16, s->mr->va);
+            ernic_put_be64(wqe + 24, s->mr->len);
+            ernic_put_be64(wqe + 40, mr_dma_addr(s->mr));
+            ernic_put_be32(wqe + 48, s->mr->npages);
             wqe[55] = 12;
         }
         break;
@@ -1093,10 +1018,10 @@ uint64_t ih_post_send(struct ih *h, struct ih_qp *qp, const struct ih_send *s)
 
     default:
         /* The sends, and anything a test makes up */
-        put_be32(wqe + 16, s->ah_id);
-        put_be32(wqe + 20, s->dest_qpn);
-        put_be32(wqe + 24, s->qkey);
-        put_be32(wqe + 28, total);
+        ernic_put_be32(wqe + 16, s->ah_id);
+        ernic_put_be32(wqe + 20, s->dest_qpn);
+        ernic_put_be32(wqe + 24, s->qkey);
+        ernic_put_be32(wqe + 28, total);
         break;
     }
 
@@ -1104,7 +1029,7 @@ uint64_t ih_post_send(struct ih *h, struct ih_qp *qp, const struct ih_send *s)
         s->op != IH_OP_REG_MR) {
         if (s->flags & IH_WQE_INLINE) {
             memcpy(wqe + WQE_PLD_OFF, s->inline_data, s->inline_len);
-            put_be32(wqe + 28, s->inline_len);
+            ernic_put_be32(wqe + 28, s->inline_len);
         } else {
             put_sges(wqe, s->sge, s->nsge);
         }
@@ -1166,7 +1091,7 @@ bool ih_cq_poll(struct ih *h, struct ih_cq *cq, struct ih_cqe *cqe)
         return false;
 
     /* struct ionic_v1_cqe */
-    uint32_t qtf = get_be32(b + 28);
+    uint32_t qtf = ernic_get_be32(b + 28);
     if (((qtf & 1u) != 0) != ring_color(r))
         return false;
     r->cons++;
@@ -1175,11 +1100,11 @@ bool ih_cq_poll(struct ih *h, struct ih_cq *cq, struct ih_cqe *cqe)
     cqe->type = (uint8_t)((qtf >> 5) & 7u);
     cqe->error = (qtf & 2u) != 0;
     cqe->qid = qtf >> 8;
-    cqe->status_len = get_be32(b + 24);
+    cqe->status_len = ernic_get_be32(b + 24);
 
     switch (cqe->type) {
     case IH_CQE_TYPE_RECV: {
-        uint32_t qpn_op = get_be32(b + 8);
+        uint32_t qpn_op = ernic_get_be32(b + 8);
 
         memcpy(&cqe->wqe_id, b, 8);
         /* 0x1f, as the driver masks it: bits 30 and 31 of src_qpn_op are
@@ -1202,7 +1127,7 @@ bool ih_cq_poll(struct ih *h, struct ih_cq *cq, struct ih_cqe *cqe)
         break;
     }
     case IH_CQE_TYPE_SEND_MSN:
-        cqe->msn = get_be32(b + 4);
+        cqe->msn = ernic_get_be32(b + 4);
         break;
     case IH_CQE_TYPE_SEND_NPG:
         memcpy(&cqe->wqe_id, b + 16, 8);

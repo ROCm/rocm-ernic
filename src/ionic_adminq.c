@@ -22,13 +22,13 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <syslog.h>
-#include <endian.h>
 #include <sys/mman.h> /* PROT_READ, PROT_WRITE */
 #include <sys/uio.h>
 
 #include <infiniband/verbs.h>
 #include <vfio-user/libvfio-user.h>
 
+#include "byteorder.h"
 #include "dma_range.h"
 #include "ernic_ib.h"
 #include "ionic_adminq.h"
@@ -547,8 +547,7 @@ void ionic_adminq_post_cqe(struct ionic_adminq_ctx *ctx,
     uint8_t cqe[CQE_SIZE];
     memset(cqe, 0, CQE_SIZE);
 
-    uint16_t ci = htobe16(cmd_idx);
-    memcpy(cqe + 0, &ci, 2);
+    ernic_put_be16(cqe + 0, cmd_idx);
     cqe[2] = cmd_op;
 
     /* status_length is one field doing two jobs: the status code itself when
@@ -560,8 +559,7 @@ void ionic_adminq_post_cqe(struct ionic_adminq_ctx *ctx,
      * ibv_create_srq() returning "Operation not supported" on a device that
      * had just handled the command. The ops that DMA no response still send
      * 0, which is their correct length. */
-    uint32_t sl = htobe32(status ? (uint32_t)status : resp_len);
-    memcpy(cqe + 24, &sl, 4);
+    ernic_put_be32(cqe + 24, status ? (uint32_t)status : resp_len);
 
     /* qid_type_flags: bit 0 = color, bit 1 = error, bits[7:5] = type
      * (0 = admin), bits[31:8] = the AQ id, which the driver checks against
@@ -569,8 +567,7 @@ void ionic_adminq_post_cqe(struct ionic_adminq_ctx *ctx,
     uint32_t qtf = (r->aq_id << 8) |
                    (uint32_t)(r->cq_color ? CQE_COLOR_BIT : 0) |
                    (status ? CQE_ERROR_BIT : 0);
-    qtf = htobe32(qtf);
-    memcpy(cqe + 28, &qtf, 4);
+    ernic_put_be32(cqe + 28, qtf);
 
     /* Write CQE to guest memory */
     uint64_t cqe_gpa =
@@ -631,23 +628,17 @@ static uint8_t handle_create_cq_op(struct ionic_adminq_ctx *ctx,
         return 1;
     }
 
-    uint32_t id_ver;
-    memcpy(&id_ver, body + 12, 4);
-    id_ver = le32toh(id_ver);
+    uint32_t id_ver = ernic_get_le32(body + 12);
     uint32_t cq_id = id_ver & 0x00ffffffu;
 
     /* ionic_admin_create_cq: eq_id[0:3], depth_log2[4], stride_log2[5],
      * dir_size_log2[6], page_size_log2[7], cq_flags[8:11], id_ver[12:15],
      * tbl_index[16:19], map_count[20:23], dma_addr[24:31], dbid_flags[32:33] */
-    uint32_t eq_id, map_count;
-    uint64_t dma_addr;
-    memcpy(&eq_id, body + 0, 4);
-    memcpy(&map_count, body + 20, 4);
-    memcpy(&dma_addr, body + 24, 8);
+    uint32_t eq_id = ernic_get_le32(body + 0);
 
     struct ionic_dp_ring_desc ring = {
-        .buf = {.dma_addr = le64toh(dma_addr),
-                .map_count = le32toh(map_count),
+        .buf = {.dma_addr = ernic_get_le64(body + 24),
+                .map_count = ernic_get_le32(body + 20),
                 .page_size_log2 = body[7]},
         .depth_log2 = body[4],
         .stride_log2 = body[5],
@@ -682,7 +673,7 @@ static uint8_t handle_create_cq_op(struct ionic_adminq_ctx *ctx,
 
     adminq_map_cq(ctx, cq_id, cq_handle);
 
-    ionic_datapath_register_cq(ctx->dp, cq_id, le32toh(eq_id), &ring);
+    ionic_datapath_register_cq(ctx->dp, cq_id, eq_id, &ring);
 
     vfu_log(ctx->vfu_ctx, LOG_INFO,
             "ionic_adminq CREATE_CQ cq_id=%u handle=%u depth=2^%u", cq_id,
@@ -787,12 +778,9 @@ static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
         return 1;
     }
 
-    uint16_t low_wqes_limit;
-    uint32_t resp_buf_len;
-    uint64_t resp_dma_addr;
-    memcpy(&low_wqes_limit, body + 22, 2);
-    memcpy(&resp_buf_len, body + 30, 4);
-    memcpy(&resp_dma_addr, body + 34, 8);
+    uint16_t low_wqes_limit = ernic_get_le16(body + 22);
+    uint32_t resp_buf_len = ernic_get_le32(body + 30);
+    uint64_t resp_dma_addr = ernic_get_le64(body + 34);
 
     /*
      * Bound the ring geometry before anything shifts by it. body[26..28] are
@@ -827,8 +815,7 @@ static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
     uint32_t max_wr = 1u << body[26];
     uint32_t srq_handle;
     ret = ionic_rm_alloc_srq(ctx->pvrdma_handle, pd_handle, max_wr,
-                             IONIC_MAX_SRQ_SGES, le16toh(low_wqes_limit),
-                             &srq_handle);
+                             IONIC_MAX_SRQ_SGES, low_wqes_limit, &srq_handle);
     if (ret) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
                 "ionic_adminq CREATE_SRQ: rdma_rm_alloc_srq failed (%d)", ret);
@@ -839,7 +826,7 @@ static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
      * RQ doorbell carries either a QP id or this, and only the range tells
      * them apart. See IONIC_SRQ_QID_BASE. */
     uint32_t srq_id;
-    if (!adminq_alloc_srq(ctx, srq_handle, le16toh(low_wqes_limit), &srq_id)) {
+    if (!adminq_alloc_srq(ctx, srq_handle, low_wqes_limit, &srq_id)) {
         ionic_rm_dealloc_srq(ctx->pvrdma_handle, srq_handle);
         return 1;
     }
@@ -859,13 +846,9 @@ static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
      * remove, arriving by a different road.
      */
     {
-        uint32_t srq_map_count;
-        uint64_t srq_dma;
-        memcpy(&srq_map_count, body + 8, 4);
-        memcpy(&srq_dma, body + 0, 8);
         struct ionic_dp_ring_desc srq_ring = {
-            .buf = {.dma_addr = le64toh(srq_dma),
-                    .map_count = le32toh(srq_map_count),
+            .buf = {.dma_addr = ernic_get_le64(body + 0),
+                    .map_count = ernic_get_le32(body + 8),
                     .page_size_log2 = body[28]},
             .depth_log2 = body[26],
             .stride_log2 = body[27],
@@ -893,13 +876,12 @@ static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
      * the driver holding the zero its buffer came with, which names SRQ id
      * IONIC_SRQ_QID_BASE + 0 -- a real and probably someone else's queue.
      */
-    if (le32toh(resp_buf_len) < IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN ||
-        !resp_dma_addr) {
+    if (resp_buf_len < IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN || !resp_dma_addr) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
                 "ionic_adminq CREATE_SRQ %u: response buffer is %u bytes at "
                 "%#" PRIx64 ", need %u at a non-zero address; the driver "
                 "could not learn the id",
-                srq_id, le32toh(resp_buf_len), le64toh(resp_dma_addr),
+                srq_id, resp_buf_len, resp_dma_addr,
                 IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
         adminq_srq_unwind(ctx, srq_id, srq_handle);
         return 1;
@@ -907,11 +889,9 @@ static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
 
     {
         uint8_t resp[IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN] = {0};
-        uint32_t id_le = htole32(srq_id);
-        memcpy(resp, &id_le, 4);
+        ernic_put_le32(resp, srq_id);
         resp[4] = 0; /* udma_idx: single udma in this emulation */
-        if (dma_write(ctx->vfu_ctx, le64toh(resp_dma_addr), resp,
-                      sizeof(resp)) < 0) {
+        if (dma_write(ctx->vfu_ctx, resp_dma_addr, resp, sizeof(resp)) < 0) {
             vfu_log(ctx->vfu_ctx, LOG_ERR,
                     "ionic_adminq CREATE_SRQ %u: response DMA failed", srq_id);
             adminq_srq_unwind(ctx, srq_id, srq_handle);
@@ -924,7 +904,7 @@ static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
 
     vfu_log(ctx->vfu_ctx, LOG_INFO,
             "ionic_adminq CREATE_SRQ srq_id=%u handle=%u depth=2^%u limit=%u",
-            srq_id, srq_handle, body[26], le16toh(low_wqes_limit));
+            srq_id, srq_handle, body[26], low_wqes_limit);
     return 0;
 }
 
@@ -940,11 +920,7 @@ static uint8_t handle_modify_srq_op(struct ionic_adminq_ctx *ctx,
         return 1;
     }
 
-    uint32_t qid;
-    uint16_t low_wqes_limit;
-    memcpy(&qid, body + 0, 4);
-    memcpy(&low_wqes_limit, body + 4, 2);
-    qid = le32toh(qid);
+    uint32_t qid = ernic_get_le32(body + 0);
 
     struct ionic_srq_map_entry *e = adminq_srq_entry(ctx, qid);
     if (!e) {
@@ -953,7 +929,7 @@ static uint8_t handle_modify_srq_op(struct ionic_adminq_ctx *ctx,
         return 1;
     }
 
-    uint32_t limit = le16toh(low_wqes_limit);
+    uint32_t limit = ernic_get_le16(body + 4);
 
     /*
      * Zero disables the low-watermark and is a legal value; the resource
@@ -997,9 +973,7 @@ static uint8_t handle_query_srq_op(struct ionic_adminq_ctx *ctx,
         return 1;
     }
 
-    uint32_t qid;
-    memcpy(&qid, body + 0, 4);
-    qid = le32toh(qid);
+    uint32_t qid = ernic_get_le32(body + 0);
 
     const struct ionic_srq_map_entry *e = adminq_srq_entry(ctx, qid);
     if (!e) {
@@ -1035,9 +1009,7 @@ static uint8_t handle_destroy_srq_op(struct ionic_adminq_ctx *ctx,
         return 1;
     }
 
-    uint32_t qid;
-    memcpy(&qid, body + 0, 4);
-    qid = le32toh(qid);
+    uint32_t qid = ernic_get_le32(body + 0);
 
     uint32_t handle;
     if (!adminq_lookup_srq(ctx, qid, &handle)) {
@@ -1074,13 +1046,9 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
         return 1;
     }
 
-    uint32_t sq_cq_id, rq_cq_id, id_ver;
-    memcpy(&sq_cq_id, body + 8, 4);
-    memcpy(&rq_cq_id, body + 32, 4);
-    memcpy(&id_ver, body + 56, 4);
-    sq_cq_id = le32toh(sq_cq_id);
-    rq_cq_id = le32toh(rq_cq_id);
-    uint32_t qp_id = le32toh(id_ver) & 0x00ffffffu;
+    uint32_t sq_cq_id = ernic_get_le32(body + 8);
+    uint32_t rq_cq_id = ernic_get_le32(body + 32);
+    uint32_t qp_id = ernic_get_le32(body + 56) & 0x00ffffffu;
 
     uint8_t type_state = body[62];
     uint8_t ib_qp_type = ionic_qpt_to_ib(type_state & 0x0fu, qp_id);
@@ -1108,9 +1076,7 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
      * leave qp_id mapped on every rejected command, so a guest could
      * exhaust the table with commands the device is busy refusing.
      */
-    uint32_t rq_tbl_index_srq_id;
-    memcpy(&rq_tbl_index_srq_id, body + 40, 4);
-    rq_tbl_index_srq_id = le32toh(rq_tbl_index_srq_id);
+    uint32_t rq_tbl_index_srq_id = ernic_get_le32(body + 40);
     if (rq_tbl_index_srq_id != 0xffffffffu &&
         !adminq_srq_entry(ctx, rq_tbl_index_srq_id)) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
@@ -1119,23 +1085,16 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
         return 1;
     }
 
-    uint32_t sq_map_count, rq_map_count;
-    uint64_t sq_dma, rq_dma;
-    memcpy(&sq_map_count, body + 20, 4);
-    memcpy(&sq_dma, body + 24, 8);
-    memcpy(&rq_map_count, body + 44, 4);
-    memcpy(&rq_dma, body + 48, 8);
-
     struct ionic_dp_ring_desc sq = {
-        .buf = {.dma_addr = le64toh(sq_dma),
-                .map_count = le32toh(sq_map_count),
+        .buf = {.dma_addr = ernic_get_le64(body + 24),
+                .map_count = ernic_get_le32(body + 20),
                 .page_size_log2 = body[15]},
         .depth_log2 = body[12],
         .stride_log2 = body[13],
     };
     struct ionic_dp_ring_desc rq = {
-        .buf = {.dma_addr = le64toh(rq_dma),
-                .map_count = le32toh(rq_map_count),
+        .buf = {.dma_addr = ernic_get_le64(body + 48),
+                .map_count = ernic_get_le32(body + 44),
                 .page_size_log2 = body[39]},
         .depth_log2 = body[36],
         .stride_log2 = body[37],
@@ -1256,13 +1215,13 @@ static uint8_t stats_write_hdrs(struct ionic_adminq_ctx *ctx, uint64_t dma,
 
     memset(buf, 0, sizeof(buf));
     for (size_t i = 0; i < count && i < entries; i++) {
-        uint32_t type_off = htobe32(STAT_TYPE_LE64 << STAT_TYPE_SHIFT |
-                                    (uint32_t)(i * STAT_VAL_SIZE));
         size_t name_len = strlen(stats[i].name);
 
         if (name_len > STAT_NAME_LEN - 1)
             name_len = STAT_NAME_LEN - 1;
-        memcpy(buf + i * STAT_HDR_SIZE, &type_off, 4);
+        ernic_put_be32(buf + i * STAT_HDR_SIZE,
+                       STAT_TYPE_LE64 << STAT_TYPE_SHIFT |
+                           (uint32_t)(i * STAT_VAL_SIZE));
         memcpy(buf + i * STAT_HDR_SIZE + 4, stats[i].name, name_len);
     }
 
@@ -1289,9 +1248,8 @@ static uint8_t stats_write_vals(struct ionic_adminq_ctx *ctx, uint64_t dma,
     for (size_t i = 0; i < n; i++) {
         uint64_t v;
 
-        memcpy(&v, (const uint8_t *)counters + stats[i].off, STAT_VAL_SIZE);
-        v = htole64(v);
-        memcpy(buf + i * STAT_VAL_SIZE, &v, STAT_VAL_SIZE);
+        memcpy(&v, (const uint8_t *)counters + stats[i].off, sizeof(v));
+        ernic_put_le64(buf + i * STAT_VAL_SIZE, v);
     }
 
     return dma_write(ctx->vfu_ctx, dma, buf, n * STAT_VAL_SIZE) < 0
@@ -1311,12 +1269,9 @@ static uint8_t handle_stats_op(struct ionic_adminq_ctx *ctx, uint8_t op,
                 op);
         return IONIC_RC_EINVAL;
     }
-    memcpy(&dma, body, 8);
-    dma = le64toh(dma);
-    memcpy(&length, body + 8, 4);
-    length = le32toh(length);
-    memcpy(&id_ver, body + 12, 4);
-    id_ver = le32toh(id_ver);
+    dma = ernic_get_le64(body);
+    length = ernic_get_le32(body + 8);
+    id_ver = ernic_get_le32(body + 12);
     if (!dma) {
         vfu_log(ctx->vfu_ctx, LOG_ERR, "ionic_adminq stats op=%u: no buffer",
                 op);
@@ -1409,14 +1364,9 @@ static uint8_t handle_create_ah_op(struct ionic_adminq_ctx *ctx,
         return 1;
     }
 
-    uint64_t hdr_dma;
-    uint32_t hdr_len, id_ver;
-    memcpy(&hdr_dma, body + 0, 8);
-    memcpy(&hdr_len, body + 8, 4);
-    memcpy(&id_ver, body + 16, 4);
-    hdr_dma = le64toh(hdr_dma);
-    hdr_len = le32toh(hdr_len);
-    uint32_t ah_id = le32toh(id_ver) & 0x00ffffffu;
+    uint64_t hdr_dma = ernic_get_le64(body + 0);
+    uint32_t hdr_len = ernic_get_le32(body + 8);
+    uint32_t ah_id = ernic_get_le32(body + 16) & 0x00ffffffu;
 
     uint8_t dgid[16] = {0};
     uint8_t sgid[16] = {0};
@@ -1454,9 +1404,7 @@ static uint8_t handle_destroy_ah_op(struct ionic_adminq_ctx *ctx,
         return 1;
     }
 
-    uint32_t ah_id;
-    memcpy(&ah_id, body + 0, 4);
-    ah_id = le32toh(ah_id) & 0x00ffffffu;
+    uint32_t ah_id = ernic_get_le32(body + 0) & 0x00ffffffu;
 
     ionic_datapath_unregister_ah(ctx->dp, ah_id);
     return 0;
@@ -1508,16 +1456,12 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
          *   u8   pt_type    [42]
          *   u8   dir_size_log2  [43]
          *   u8   page_size_log2 [44] */
-        uint32_t id_ver;
-        memcpy(&id_ver, body + 20, 4);
         /* The full mrid, key byte included, is what userspace puts in an SGE
          * lkey; the low 24 bits alone are the id we track resources by. */
-        uint32_t mrid = le32toh(id_ver);
+        uint32_t mrid = ernic_get_le32(body + 20);
         uint32_t mr_id = mrid & 0x00ffffffu;
 
-        uint16_t mrf;
-        memcpy(&mrf, body + 40, 2);
-        uint32_t access = le16toh(mrf) & IONIC_MRF_ACCESS_MASK;
+        uint32_t access = ernic_get_le16(body + 40) & IONIC_MRF_ACCESS_MASK;
 
         uint32_t pd_handle;
         int ret = adminq_get_pd(ctx, &pd_handle);
@@ -1547,18 +1491,12 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
             return 1;
         }
 
-        uint64_t va, length, dma_addr;
-        uint32_t map_count;
-        memcpy(&va, body + 0, 8);
-        memcpy(&length, body + 8, 8);
-        memcpy(&map_count, body + 28, 4);
-        memcpy(&dma_addr, body + 32, 8);
-
-        struct ionic_dp_buf_desc mrbuf = {.dma_addr = le64toh(dma_addr),
-                                          .map_count = le32toh(map_count),
+        struct ionic_dp_buf_desc mrbuf = {.dma_addr = ernic_get_le64(body + 32),
+                                          .map_count =
+                                              ernic_get_le32(body + 28),
                                           .page_size_log2 = body[44]};
-        ionic_datapath_register_mr(ctx->dp, mrid, le64toh(va), le64toh(length),
-                                   &mrbuf);
+        ionic_datapath_register_mr(ctx->dp, mrid, ernic_get_le64(body + 0),
+                                   ernic_get_le64(body + 8), &mrbuf);
 
         vfu_log(ctx->vfu_ctx, LOG_INFO,
                 "ionic_adminq CREATE_MR mr_id=%u handle=%u access=%#x pd=%u",
@@ -1571,8 +1509,7 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
             return 0;
         }
         uint32_t mrid, mr_handle;
-        memcpy(&mrid, body, 4);
-        mrid = le32toh(mrid);
+        mrid = ernic_get_le32(body);
         uint32_t mr_id = mrid & 0x00ffffffu;
         ionic_datapath_unregister_mr(ctx->dp, mrid);
         /* A miss now means the resource is stranded: nothing else holds the
@@ -1594,8 +1531,7 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
             return 0;
         }
         uint32_t cq_id, cq_handle;
-        memcpy(&cq_id, body, 4);
-        cq_id = le32toh(cq_id);
+        cq_id = ernic_get_le32(body);
         ionic_datapath_unregister_cq(ctx->dp, cq_id);
         if (!adminq_lookup_cq(ctx, cq_id, &cq_handle))
             return 0; /* never created here; nothing to release */
@@ -1609,8 +1545,7 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
             return 0;
         }
         uint32_t qp_id, qpn;
-        memcpy(&qp_id, body, 4);
-        qp_id = le32toh(qp_id);
+        qp_id = ernic_get_le32(body);
         ionic_datapath_unregister_qp(ctx->dp, qp_id);
         /* Per-QP stats are keyed on the driver-side qp_id, not the resource
          * manager's qpn, so drop them here while qp_id is still in hand. */
@@ -1655,19 +1590,13 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
 
         /* The kernel's enum ib_qp_attr_mask, whose bits are those of
          * userspace's enum ibv_qp_attr_mask. */
-        uint32_t attr_mask_be;
-        memcpy(&attr_mask_be, body + 0, 4);
-        uint32_t attr_mask = be32toh(attr_mask_be);
+        uint32_t attr_mask = ernic_get_be32(body + 0);
 
         uint32_t rq_psn, sq_psn, qkey_dest_qpn, id_ver;
-        memcpy(&rq_psn, body + 8, 4);
-        rq_psn = le32toh(rq_psn);
-        memcpy(&sq_psn, body + 12, 4);
-        sq_psn = le32toh(sq_psn);
-        memcpy(&qkey_dest_qpn, body + 16, 4);
-        qkey_dest_qpn = le32toh(qkey_dest_qpn);
-        memcpy(&id_ver, body + 56, 4);
-        id_ver = le32toh(id_ver);
+        rq_psn = ernic_get_le32(body + 8);
+        sq_psn = ernic_get_le32(body + 12);
+        qkey_dest_qpn = ernic_get_le32(body + 16);
+        id_ver = ernic_get_le32(body + 56);
 
         uint8_t type_state = body[39];
         uint32_t qp_id = id_ver & 0x00ffffffu;
@@ -1689,10 +1618,8 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         uint8_t sgid[16] = {0}; /* parsed but unused here; see CREATE_AH */
         uint8_t dmac[6] = {0};
 
-        memcpy(&ah_id_len, body + 32, 4);
-        ah_id_len = le32toh(ah_id_len);
-        memcpy(&ah_dma, body + 48, 8);
-        ah_dma = le64toh(ah_dma);
+        ah_id_len = ernic_get_le32(body + 32);
+        ah_dma = ernic_get_le64(body + 48);
 
         uint32_t hdr_len = ah_id_len >> 24;
         if (hdr_len && ah_dma)
@@ -1802,12 +1729,9 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
 
         uint64_t sq_dma, rq_dma;
         uint32_t id_ver;
-        memcpy(&sq_dma, body + 8, 8);
-        sq_dma = le64toh(sq_dma);
-        memcpy(&rq_dma, body + 16, 8);
-        rq_dma = le64toh(rq_dma);
-        memcpy(&id_ver, body + 28, 4);
-        id_ver = le32toh(id_ver);
+        sq_dma = ernic_get_le64(body + 8);
+        rq_dma = ernic_get_le64(body + 16);
+        id_ver = ernic_get_le32(body + 28);
 
         uint32_t qp_id = id_ver & 0x00ffffffu;
         uint32_t qpn;
@@ -1839,12 +1763,9 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
 
         /* struct ionic_v1_admin_query_qp_sq, all big-endian (20 bytes). */
         uint8_t sqbuf[20] = {0};
-        uint16_t flags_be = htobe16(flags);
-        uint32_t dest_be = htobe32(dest_qpn);
-        uint32_t rq_psn_be = htobe32(rq_psn & 0xffffffu);
-        memcpy(sqbuf + 2, &flags_be, 2);
-        memcpy(sqbuf + 8, &dest_be, 4);
-        memcpy(sqbuf + 16, &rq_psn_be, 4);
+        ernic_put_be16(sqbuf + 2, flags);
+        ernic_put_be32(sqbuf + 8, dest_qpn);
+        ernic_put_be32(sqbuf + 16, rq_psn & 0xffffffu);
 
         /* struct ionic_v1_admin_query_qp_rq (12 bytes).  rrq/rsq depth are
          * log2 depths: the driver reports BIT(depth) - 1 as the rd_atomic
@@ -1855,9 +1776,8 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         rqbuf[1] = 0x77; /* retry_cnt 7, rnr_retry 7 */
         rqbuf[2] = 1;
         rqbuf[3] = 1;
-        uint32_t sq_psn_be = htobe32(sq_psn & 0xffffffu);
-        memcpy(rqbuf + 4, &sq_psn_be, 4);
-        memcpy(rqbuf + 8, &flags_be, 2);
+        ernic_put_be32(rqbuf + 4, sq_psn & 0xffffffu);
+        ernic_put_be16(rqbuf + 8, flags);
 
         if (sq_dma && dma_write(ctx->vfu_ctx, sq_dma, sqbuf, sizeof(sqbuf)) < 0)
             return 1;
@@ -1974,9 +1894,7 @@ void ionic_adminq_poll(struct ionic_adminq_ctx *ctx, vfu_ctx_t *vfu_ctx)
                 break;
 
             uint8_t op = wqe_buf[0];
-            uint16_t len;
-            memcpy(&len, wqe_buf + 2, 2);
-            len = le16toh(len);
+            uint16_t len = ernic_get_le16(wqe_buf + 2);
 
             /* Counted as the driver counts them: CREATE_QP's 64-byte body
              * and the header are 68 bytes, so 2 strides. */

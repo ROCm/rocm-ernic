@@ -24,7 +24,6 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include <endian.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -34,6 +33,7 @@
 
 #include <vfio-user/libvfio-user.h>
 
+#include "byteorder.h"
 #include "ionic_adminq.h"
 #include "ionic_datapath.h"
 #include "ionic_eth_emu.h"
@@ -198,16 +198,12 @@ static int failures;
 
 static uint32_t rd32(uint32_t off)
 {
-    uint32_t v;
-    memcpy(&v, g_mem + PORT_INFO_PA + off, 4);
-    return le32toh(v);
+    return ernic_get_le32(g_mem + PORT_INFO_PA + off);
 }
 
 static uint16_t rd16(uint32_t off)
 {
-    uint16_t v;
-    memcpy(&v, g_mem + PORT_INFO_PA + off, 2);
-    return le16toh(v);
+    return ernic_get_le16(g_mem + PORT_INFO_PA + off);
 }
 
 static uint8_t rd8(uint32_t off)
@@ -220,10 +216,9 @@ static void run_port_init(struct ionic_eth_emu *emu, uint64_t info_pa)
 {
     uint8_t cmd[64] = {0};
     uint8_t comp[16] = {0};
-    uint64_t pa = htole64(info_pa);
 
     cmd[0] = IONIC_CMD_PORT_INIT;
-    memcpy(cmd + 8, &pa, 8);
+    ernic_put_le64(cmd + 8, info_pa);
     ionic_eth_emu_handle_port_init(emu, cmd, comp);
     CHECK(comp[0] == 0, "PORT_INIT returned status %u, expected 0", comp[0]);
 }
@@ -422,7 +417,7 @@ static void test_lif_identity_advertises_rdma_stats(void)
     static uint8_t data[DEVCMD_DATA_SIZE];
     const uint8_t cmd[64] = {0};
     uint8_t comp[16] = {0};
-    uint16_t le;
+    uint16_t stats_type;
 
     CHECK(emu != NULL, "ionic_eth_emu_create failed");
     if (!emu)
@@ -432,9 +427,10 @@ static void test_lif_identity_advertises_rdma_stats(void)
           "stats_type offset drifted from the ionic_if.h layout");
 
     ionic_eth_emu_handle_lif_identify(emu, cmd, comp, data);
-    memcpy(&le, data + LIF_ID_RDMA_OFF + LIF_ID_RDMA_STATS_TYPE_OFF, 2);
-    CHECK(le16toh(le) == (IONIC_LIF_RDMA_STAT_GLOBAL | IONIC_LIF_RDMA_STAT_QP),
-          "stats_type is %#x, want GLOBAL|QP", (unsigned)le16toh(le));
+    stats_type =
+        ernic_get_le16(data + LIF_ID_RDMA_OFF + LIF_ID_RDMA_STATS_TYPE_OFF);
+    CHECK(stats_type == (IONIC_LIF_RDMA_STAT_GLOBAL | IONIC_LIF_RDMA_STAT_QP),
+          "stats_type is %#x, want GLOBAL|QP", (unsigned)stats_type);
     CHECK(data[LIF_ID_RDMA_OFF + LIF_ID_RDMA_STATS_TYPE_OFF + 2] == 0,
           "the byte after stats_type (rsvd) was written");
 
@@ -470,7 +466,6 @@ static void test_srq_capability_is_published(void)
     uint8_t data[DEVCMD_DATA_SIZE];
     uint8_t cmd[64] = {0};
     uint8_t comp[16] = {0};
-    uint32_t qid_count;
 
     CHECK(emu != NULL, "ionic_eth_emu_create failed");
     if (!emu)
@@ -485,12 +480,12 @@ static void test_srq_capability_is_published(void)
     CHECK(srq[0] == IONIC_RDMA_QTYPE_SRQ, "srq_qtype.qtype is %u, expected %u",
           srq[0], (unsigned)IONIC_RDMA_QTYPE_SRQ);
 
-    memcpy(&qid_count, srq + 4, 4);
+    uint32_t qid_count = ernic_get_le32(srq + 4);
     /* This is the value the driver copies into max_srq. Zero here is exactly
      * the state that makes UCX drop rc_verbs and leaves nixl with ud_verbs,
      * which cannot do one-sided RDMA at all. */
-    CHECK(le32toh(qid_count) == IONIC_EMU_SRQ_COUNT,
-          "srq_qtype.qid_count is %u, expected %u", le32toh(qid_count),
+    CHECK(qid_count == IONIC_EMU_SRQ_COUNT,
+          "srq_qtype.qid_count is %u, expected %u", qid_count,
           (unsigned)IONIC_EMU_SRQ_COUNT);
 
     CHECK((rdma[LIF_ID_ALLOC_QID_CAP_OFF] & IONIC_LIF_RDMA_ALLOC_QID_SRQ) != 0,
@@ -510,7 +505,6 @@ static void test_srq_gate_needs_count_and_alloc_bit(void)
     uint8_t data[DEVCMD_DATA_SIZE];
     uint8_t cmd[64] = {0};
     uint8_t comp[16] = {0};
-    uint32_t qid_count;
 
     CHECK(emu != NULL, "ionic_eth_emu_create failed");
     if (!emu)
@@ -520,12 +514,12 @@ static void test_srq_gate_needs_count_and_alloc_bit(void)
     ionic_eth_emu_handle_lif_identify(emu, cmd, comp, data);
 
     const uint8_t *rdma = data + LIF_ID_RDMA_OFF;
-    memcpy(&qid_count, rdma + LIF_ID_SRQ_QTYPE_OFF + 4, 4);
+    uint32_t qid_count = ernic_get_le32(rdma + LIF_ID_SRQ_QTYPE_OFF + 4);
 
-    CHECK(le32toh(qid_count) != 0 &&
+    CHECK(qid_count != 0 &&
               (rdma[LIF_ID_ALLOC_QID_CAP_OFF] & IONIC_LIF_RDMA_ALLOC_QID_SRQ),
           "the guest's SRQ gate is not satisfied: count=%u cap=0x%02x",
-          le32toh(qid_count), rdma[LIF_ID_ALLOC_QID_CAP_OFF]);
+          qid_count, rdma[LIF_ID_ALLOC_QID_CAP_OFF]);
 
     ionic_eth_emu_destroy(emu);
 }

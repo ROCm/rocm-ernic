@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "byteorder.h"
 #include "nvmeof_cm.h"
 #include "nvmeof_target.h"
 
@@ -97,48 +98,6 @@ static void check(const char *name, bool cond, const char *detail)
 #define TEST_PORT    4420
 #define TEST_SERVICE (((uint64_t)0x0106 << 16) | TEST_PORT)
 
-static void put_be16(uint8_t *p, uint16_t v)
-{
-    p[0] = (uint8_t)(v >> 8);
-    p[1] = (uint8_t)v;
-}
-
-static void put_be32(uint8_t *p, uint32_t v)
-{
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)v;
-}
-
-static void put_be64(uint8_t *p, uint64_t v)
-{
-    put_be32(p, (uint32_t)(v >> 32));
-    put_be32(p + 4, (uint32_t)v);
-}
-
-static uint16_t get_be16(const uint8_t *p)
-{
-    return (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
-}
-
-static uint32_t get_be32(const uint8_t *p)
-{
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
-           ((uint32_t)p[2] << 8) | p[3];
-}
-
-static void put_le16(uint8_t *p, uint16_t v)
-{
-    p[0] = (uint8_t)v;
-    p[1] = (uint8_t)(v >> 8);
-}
-
-static uint16_t get_le16(const uint8_t *p)
-{
-    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
-}
-
 static void mad_hdr(uint8_t *m, uint16_t attr, uint64_t tid)
 {
     memset(m, 0, IB_MAD_SIZE);
@@ -146,8 +105,8 @@ static void mad_hdr(uint8_t *m, uint16_t attr, uint64_t tid)
     m[MAD_CLASS] = 0x07;
     m[2] = 2; /* class version */
     m[MAD_METHOD] = 3;
-    put_be64(m + MAD_TID, tid);
-    put_be16(m + MAD_ATTR_ID, attr);
+    ernic_put_be64(m + MAD_TID, tid);
+    ernic_put_be16(m + MAD_ATTR_ID, attr);
 }
 
 struct req_params {
@@ -182,27 +141,28 @@ static void req_defaults(struct req_params *p)
 static void build_req(uint8_t *m, const struct req_params *p)
 {
     mad_hdr(m, ATTR_REQ, 0xdeadbeefcafe0001ull);
-    put_be32(m + REQ_LOCAL_COMM_ID, p->comm_id);
-    put_be64(m + REQ_SERVICE_ID, p->service_id);
-    put_be64(m + REQ_LOCAL_CA_GUID, 0x0002c9030012abcdull);
-    put_be32(m + REQ_LOCAL_QPN, (p->qpn << 8) | 4 /* responder resources */);
-    put_be32(m + REQ_LOCAL_EECN, 4 /* initiator depth */);
-    put_be32(m + REQ_REMOTE_EECN,
-             (uint32_t)((p->transport_service & 0x3) << 1) | (20u << 3));
-    put_be32(m + REQ_STARTING_PSN, 0x123456 << 8);
+    ernic_put_be32(m + REQ_LOCAL_COMM_ID, p->comm_id);
+    ernic_put_be64(m + REQ_SERVICE_ID, p->service_id);
+    ernic_put_be64(m + REQ_LOCAL_CA_GUID, 0x0002c9030012abcdull);
+    ernic_put_be32(m + REQ_LOCAL_QPN,
+                   (p->qpn << 8) | 4 /* responder resources */);
+    ernic_put_be32(m + REQ_LOCAL_EECN, 4 /* initiator depth */);
+    ernic_put_be32(m + REQ_REMOTE_EECN,
+                   (uint32_t)((p->transport_service & 0x3) << 1) | (20u << 3));
+    ernic_put_be32(m + REQ_STARTING_PSN, 0x123456 << 8);
 
     uint8_t *priv = m + REQ_PRIVATE;
     priv[0] = p->cma_version;
     priv[1] = (uint8_t)(p->ip_version << 4);
-    put_be16(priv + 2, TEST_PORT);
-    put_be32(priv + 4 + 12, 0xc0a8c814u); /* src 192.168.200.20 */
-    put_be32(priv + 20 + 12, p->dst_ip);
+    ernic_put_be16(priv + 2, TEST_PORT);
+    ernic_put_be32(priv + 4 + 12, 0xc0a8c814u); /* src 192.168.200.20 */
+    ernic_put_be32(priv + 20 + 12, p->dst_ip);
 
     uint8_t *nvme = priv + 36;
-    put_le16(nvme + 0, p->recfmt);
-    put_le16(nvme + 2, p->qid);
-    put_le16(nvme + 4, p->hrqsize);
-    put_le16(nvme + 6, p->hsqsize);
+    ernic_put_le16(nvme + 0, p->recfmt);
+    ernic_put_le16(nvme + 2, p->qid);
+    ernic_put_le16(nvme + 4, p->hrqsize);
+    ernic_put_le16(nvme + 6, p->hsqsize);
 }
 
 /* ------------------------------------------------------------------ */
@@ -247,31 +207,32 @@ static void test_full_handshake(void)
     check("rep-hdr", rsp[0] == 1 && rsp[MAD_CLASS] == 0x07 && rsp[2] == 2,
           "REP MAD header is not a class 7 version 2 datagram");
     check("rep-hdr", rsp[MAD_METHOD] == 3, "REP is not a SEND method");
-    check("rep-hdr", get_be16(rsp + MAD_ATTR_ID) == ATTR_REP,
+    check("rep-hdr", ernic_get_be16(rsp + MAD_ATTR_ID) == ATTR_REP,
           "REP does not carry the REP attribute id");
     check("rep-hdr", memcmp(rsp + MAD_TID, req + MAD_TID, 8) == 0,
           "REP does not echo the request transaction id");
 
     /* Body. */
-    check("rep-body", get_be32(rsp + REP_REMOTE_COMM_ID) == p.comm_id,
+    check("rep-body", ernic_get_be32(rsp + REP_REMOTE_COMM_ID) == p.comm_id,
           "REP does not echo the initiator's comm id");
-    uint32_t local_comm_id = get_be32(rsp + REP_LOCAL_COMM_ID);
+    uint32_t local_comm_id = ernic_get_be32(rsp + REP_LOCAL_COMM_ID);
     check("rep-body", local_comm_id != 0, "REP offers no local comm id");
 
-    uint32_t rep_qpn = get_be32(rsp + REP_LOCAL_QPN) >> 8;
+    uint32_t rep_qpn = ernic_get_be32(rsp + REP_LOCAL_QPN) >> 8;
     check("rep-body", rep_qpn == res.local_qpn,
           "REP QPN does not match the reported one");
     check("rep-body", nvmeof_cm_is_target_qpn(rep_qpn),
           "REP QPN is outside the controller range");
-    check("rep-body", (get_be32(rsp + REP_LOCAL_QPN) & 0xff) == 0,
+    check("rep-body", (ernic_get_be32(rsp + REP_LOCAL_QPN) & 0xff) == 0,
           "REP QPN is not left-shifted into bits 31:8");
-    check("rep-body", (get_be32(rsp + REP_STARTING_PSN) >> 8) == res.start_psn,
+    check("rep-body",
+          (ernic_get_be32(rsp + REP_STARTING_PSN) >> 8) == res.start_psn,
           "REP starting PSN does not match the reported one");
 
     /* nvme_rdma_cm_rep private data. */
-    check("rep-priv", get_le16(rsp + REP_PRIVATE) == 0,
+    check("rep-priv", ernic_get_le16(rsp + REP_PRIVATE) == 0,
           "REP private data recfmt is not 1.0");
-    check("rep-priv", get_le16(rsp + REP_PRIVATE + 2) == p.hrqsize,
+    check("rep-priv", ernic_get_le16(rsp + REP_PRIVATE + 2) == p.hrqsize,
           "REP crqsize does not echo the initiator's hrqsize");
 
     /* The controller queue must exist now, before any capsule arrives. */
@@ -283,8 +244,8 @@ static void test_full_handshake(void)
     /* RTU completes the handshake. */
     uint8_t rtu[IB_MAD_SIZE];
     mad_hdr(rtu, ATTR_RTU, 0xdeadbeefcafe0001ull);
-    put_be32(rtu + RTU_LOCAL_COMM_ID, p.comm_id);
-    put_be32(rtu + RTU_REMOTE_COMM_ID, local_comm_id);
+    ernic_put_be32(rtu + RTU_LOCAL_COMM_ID, p.comm_id);
+    ernic_put_be32(rtu + RTU_REMOTE_COMM_ID, local_comm_id);
     nvmeof_cm_handle_mad(cm, rtu, sizeof(rtu), rsp, &res);
     check("rtu", res.action == NVMEOF_CM_ACT_ESTABLISHED,
           "RTU did not establish the connection");
@@ -312,14 +273,15 @@ static void test_full_handshake(void)
     /* Disconnect: DREQ draws a DREP and releases the queue. */
     uint8_t dreq[IB_MAD_SIZE];
     mad_hdr(dreq, ATTR_DREQ, 0xdeadbeefcafe0009ull);
-    put_be32(dreq + DREQ_LOCAL_COMM_ID, p2.comm_id);
-    put_be32(dreq + DREQ_REMOTE_COMM_ID, get_be32(rsp + REP_LOCAL_COMM_ID));
-    put_be32(dreq + DREQ_REMOTE_QPN, res.local_qpn << 8);
+    ernic_put_be32(dreq + DREQ_LOCAL_COMM_ID, p2.comm_id);
+    ernic_put_be32(dreq + DREQ_REMOTE_COMM_ID,
+                   ernic_get_be32(rsp + REP_LOCAL_COMM_ID));
+    ernic_put_be32(dreq + DREQ_REMOTE_QPN, res.local_qpn << 8);
     nvmeof_cm_handle_mad(cm, dreq, sizeof(dreq), rsp, &res);
     check("dreq", res.rsp_len == IB_MAD_SIZE, "DREQ did not draw a DREP");
-    check("dreq", get_be16(rsp + MAD_ATTR_ID) == ATTR_DREP,
+    check("dreq", ernic_get_be16(rsp + MAD_ATTR_ID) == ATTR_DREP,
           "the reply to a DREQ is not a DREP");
-    check("dreq", get_be32(rsp + RTU_REMOTE_COMM_ID) == p2.comm_id,
+    check("dreq", ernic_get_be32(rsp + RTU_REMOTE_COMM_ID) == p2.comm_id,
           "DREP does not echo the initiator's comm id");
     check("dreq", res.action == NVMEOF_CM_ACT_UNBIND, "DREQ did not unbind");
     check("dreq", res.guest_qpn == p2.qpn, "DREQ unbound the wrong QP");
@@ -330,8 +292,8 @@ static void test_full_handshake(void)
 
     /* A DREQ for a connection we do not know still gets a DREP. */
     mad_hdr(dreq, ATTR_DREQ, 0xdeadbeefcafe000aull);
-    put_be32(dreq + DREQ_REMOTE_COMM_ID, 0x0badf00d);
-    put_be32(dreq + DREQ_REMOTE_QPN, 0x00999900);
+    ernic_put_be32(dreq + DREQ_REMOTE_COMM_ID, 0x0badf00d);
+    ernic_put_be32(dreq + DREQ_REMOTE_QPN, 0x00999900);
     nvmeof_cm_handle_mad(cm, dreq, sizeof(dreq), rsp, &res);
     check("stale-dreq", res.rsp_len == IB_MAD_SIZE,
           "a stale DREQ was left unanswered");
@@ -340,7 +302,7 @@ static void test_full_handshake(void)
 
     /* A stale RTU must be ignored, not crash or bind. */
     mad_hdr(rtu, ATTR_RTU, 1);
-    put_be32(rtu + RTU_REMOTE_COMM_ID, 0x0badf00d);
+    ernic_put_be32(rtu + RTU_REMOTE_COMM_ID, 0x0badf00d);
     nvmeof_cm_handle_mad(cm, rtu, sizeof(rtu), rsp, &res);
     check("stale-rtu", res.action == NVMEOF_CM_ACT_NONE && res.rsp_len == 0,
           "a stale RTU was acted on");
@@ -369,7 +331,7 @@ static void run_rej(struct nvmeof_cm *cm, struct nvmeof_target *t,
         fail("reject", "%s: no reply produced", what);
         return;
     }
-    if (get_be16(rsp + MAD_ATTR_ID) != ATTR_REJ) {
+    if (ernic_get_be16(rsp + MAD_ATTR_ID) != ATTR_REJ) {
         fail("reject", "%s: accepted instead of rejected", what);
         return;
     }
@@ -380,20 +342,20 @@ static void run_rej(struct nvmeof_cm *cm, struct nvmeof_target *t,
         fail("reject", "%s: a rejected REQ left a controller queue behind",
              what);
     }
-    if (get_be32(rsp + REJ_REMOTE_COMM_ID) != p->comm_id) {
+    if (ernic_get_be32(rsp + REJ_REMOTE_COMM_ID) != p->comm_id) {
         fail("reject", "%s: REJ does not echo the initiator's comm id", what);
     }
     if ((rsp[REJ_MSG_REJECTED] >> 6) != 0) {
         fail("reject", "%s: REJ does not name the REQ as the rejected message",
              what);
     }
-    uint16_t got = get_be16(rsp + REJ_REASON);
+    uint16_t got = ernic_get_be16(rsp + REJ_REASON);
     if (got != reason) {
         fail("reject", "%s: reason %u, expected %u", what, got, reason);
     }
-    if (reason == 28 && get_le16(rsp + REJ_PRIVATE + 2) != nvme_sts) {
+    if (reason == 28 && ernic_get_le16(rsp + REJ_PRIVATE + 2) != nvme_sts) {
         fail("reject", "%s: nvme status 0x%02x, expected 0x%02x", what,
-             get_le16(rsp + REJ_PRIVATE + 2), nvme_sts);
+             ernic_get_le16(rsp + REJ_PRIVATE + 2), nvme_sts);
     }
 }
 
@@ -551,7 +513,7 @@ static void test_reconnect(void)
         p.qid = (uint16_t)(i % (cfg->max_queues + 1u));
         build_req(req, &p);
         nvmeof_cm_handle_mad(cm, req, sizeof(req), rsp, &res);
-        if (get_be16(rsp + MAD_ATTR_ID) == ATTR_REP) {
+        if (ernic_get_be16(rsp + MAD_ATTR_ID) == ATTR_REP) {
             accepted++;
         }
     }

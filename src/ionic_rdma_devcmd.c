@@ -27,12 +27,12 @@
 #include <stdio.h>
 #include <errno.h>
 #include <syslog.h>
-#include <endian.h>
 #include <sys/mman.h>
 #include <sys/uio.h>
 
 #include <vfio-user/libvfio-user.h>
 
+#include "byteorder.h"
 #include "dma_range.h"
 #include "ionic_rdma_devcmd.h"
 #include "ionic_eth_emu.h"
@@ -247,14 +247,9 @@ static void handle_create_eq(struct ionic_rdma_devcmd_state *s,
         return;
     }
 
-    uint32_t qid_ver, cid;
-    uint64_t dma_addr;
-    memcpy(&qid_ver, cmd + RDMA_QUEUE_QID_VER_OFF, 4);
-    memcpy(&cid, cmd + RDMA_QUEUE_CID_OFF, 4);
-    memcpy(&dma_addr, cmd + RDMA_QUEUE_DMA_OFF, 8);
-    qid_ver = le32toh(qid_ver);
-    cid = le32toh(cid);
-    dma_addr = le64toh(dma_addr);
+    uint32_t qid_ver = ernic_get_le32(cmd + RDMA_QUEUE_QID_VER_OFF);
+    uint32_t cid = ernic_get_le32(cmd + RDMA_QUEUE_CID_OFF);
+    uint64_t dma_addr = ernic_get_le64(cmd + RDMA_QUEUE_DMA_OFF);
 
     uint32_t qid = qid_ver & 0x00ffffffu;
     uint8_t depth_log2 = cmd[RDMA_QUEUE_DEPTH_OFF];
@@ -294,14 +289,9 @@ static void handle_create_eq(struct ionic_rdma_devcmd_state *s,
 static void handle_create_cq(struct ionic_rdma_devcmd_state *s,
                              const uint8_t *cmd, uint8_t *comp)
 {
-    uint32_t qid_ver, cid;
-    uint64_t dma_addr;
-    memcpy(&qid_ver, cmd + RDMA_QUEUE_QID_VER_OFF, 4);
-    memcpy(&cid, cmd + RDMA_QUEUE_CID_OFF, 4);
-    memcpy(&dma_addr, cmd + RDMA_QUEUE_DMA_OFF, 8);
-    qid_ver = le32toh(qid_ver);
-    cid = le32toh(cid);
-    dma_addr = le64toh(dma_addr);
+    uint32_t qid_ver = ernic_get_le32(cmd + RDMA_QUEUE_QID_VER_OFF);
+    uint32_t cid = ernic_get_le32(cmd + RDMA_QUEUE_CID_OFF);
+    uint64_t dma_addr = ernic_get_le64(cmd + RDMA_QUEUE_DMA_OFF);
 
     uint32_t qid = qid_ver & 0x00ffffffu;
 
@@ -350,12 +340,8 @@ static void handle_create_adminq(struct ionic_rdma_devcmd_state *s,
         return;
     }
 
-    uint32_t qid_ver;
-    uint64_t dma_addr;
-    memcpy(&qid_ver, cmd + RDMA_QUEUE_QID_VER_OFF, 4);
-    memcpy(&dma_addr, cmd + RDMA_QUEUE_DMA_OFF, 8);
-    qid_ver = le32toh(qid_ver);
-    dma_addr = le64toh(dma_addr);
+    uint32_t qid_ver = ernic_get_le32(cmd + RDMA_QUEUE_QID_VER_OFF);
+    uint64_t dma_addr = ernic_get_le64(cmd + RDMA_QUEUE_DMA_OFF);
 
     uint32_t qid = qid_ver & 0x00ffffffu;
 
@@ -498,8 +484,8 @@ int ionic_rdma_devcmd_post_cq_event(struct ionic_rdma_devcmd_state *s,
      *   bits 31:8 qid
      * The driver walks the ring until the colour stops matching, so the
      * entry has to be written before the interrupt is raised. */
-    uint32_t evt = (cq_id << 8) | (eq->color ? 1u : 0u);
-    uint32_t be_evt = htobe32(evt);
+    uint8_t eqe[4];
+    ernic_put_be32(eqe, (cq_id << 8) | (eq->color ? 1u : 0u));
 
     /* Both exponents were bounded at CREATE_EQ, so the shifts are defined
      * and prod * stride < 2^(24 + 16) fits a uint64_t. */
@@ -510,7 +496,7 @@ int ionic_rdma_devcmd_post_cq_event(struct ionic_rdma_devcmd_state *s,
             "ionic_rdma_devcmd: EQE eq=%u cq=%u prod=%u color=%u gpa=%#" PRIx64,
             eq_id, cq_id, eq->prod, eq->color, gpa);
 
-    if (rdma_dma_write(s->vfu_ctx, gpa, &be_evt, sizeof(be_evt)) < 0) {
+    if (rdma_dma_write(s->vfu_ctx, gpa, eqe, sizeof(eqe)) < 0) {
         vfu_log(s->vfu_ctx, LOG_ERR,
                 "ionic_rdma_devcmd: EQE write to %#" PRIx64 " failed", gpa);
         return -EIO;

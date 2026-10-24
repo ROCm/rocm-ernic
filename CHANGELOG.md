@@ -773,6 +773,16 @@
   release never connects to the manager again, and a manager from before it
   gives a worker that asks for its id a new one, which the worker refuses,
   and then stops asking.
+* For contributors: wire fields in byte buffers are read and written with
+  the `ernic_get_*`/`ernic_put_*` accessors in the new `src/byteorder.h`
+  (little- and big-endian, 16, 32 and 64 bits), which replace the copies
+  in `nvmeof.h` (`nvme_get_le32()` and the rest are now
+  `ernic_get_le32()` and so on), `nvmeof_cm.c`, `s3_token.c`,
+  `ionic_eth_emu.c` and the tests, and the `memcpy()` plus `le32toh()`
+  sequences in the ionic device code. Use them rather than writing another
+  set. The new `byteorder-unit` CTest test checks each against byte images
+  written out by hand. `tests/s3_rdma_client.c`, which is built inside a
+  guest from the files copied to it, keeps its own.
 
 ### Removed
 

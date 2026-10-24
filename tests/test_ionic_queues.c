@@ -27,7 +27,6 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include <endian.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <stdbool.h>
@@ -37,6 +36,7 @@
 #include <string.h>
 #include <sys/types.h>
 
+#include "byteorder.h"
 #include "ionic_emu_stats.h"
 #include "ionic_eth_emu.h"
 #include "ionic_eth_emu_fakes.h"
@@ -95,14 +95,6 @@ static struct ionic_eth_emu *new_emu(const char *name, const char *layer)
     return emu;
 }
 
-static uint32_t get32(const uint8_t *p)
-{
-    uint32_t v;
-
-    memcpy(&v, p, 4);
-    return le32toh(v);
-}
-
 /* What the identity blocks tell the driver. */
 struct shape {
     uint32_t rxq, txq;   /* LIF identity queue_count[RXQ], [TXQ] */
@@ -119,15 +111,18 @@ static void read_shape(struct ionic_eth_emu *emu, struct shape *s)
 
     memset(data, 0, sizeof(data));
     ionic_eth_emu_handle_identify(emu, cmd, comp, data);
-    s->dev_nintrs = get32(data + DEVID_NINTRS_OFF);
-    s->dev_eqs = get32(data + DEVID_EQ_COUNT_OFF);
+    s->dev_nintrs = ernic_get_le32(data + DEVID_NINTRS_OFF);
+    s->dev_eqs = ernic_get_le32(data + DEVID_EQ_COUNT_OFF);
 
     memset(data, 0, sizeof(data));
     ionic_eth_emu_handle_lif_identify(emu, cmd, comp, data);
-    s->rxq = get32(data + LIFID_CONFIG_QCOUNT_OFF + 4u * IONIC_QTYPE_RXQ);
-    s->txq = get32(data + LIFID_CONFIG_QCOUNT_OFF + 4u * IONIC_QTYPE_TXQ);
+    s->rxq =
+        ernic_get_le32(data + LIFID_CONFIG_QCOUNT_OFF + 4u * IONIC_QTYPE_RXQ);
+    s->txq =
+        ernic_get_le32(data + LIFID_CONFIG_QCOUNT_OFF + 4u * IONIC_QTYPE_TXQ);
     /* eq_qtype is the fifth ionic_lif_logical_qtype after rdma+32. */
-    s->lif_eqs = get32(data + LIF_ID_RDMA_OFF + 32u + 4u * QTYPE_SZ + 4u);
+    s->lif_eqs =
+        ernic_get_le32(data + LIF_ID_RDMA_OFF + 32u + 4u * QTYPE_SZ + 4u);
 }
 
 static uint32_t min_u32(uint32_t a, uint32_t b)
@@ -153,17 +148,14 @@ static void q_init(struct ionic_eth_emu *emu, uint8_t qtype, uint32_t index,
 {
     uint8_t cmd[64] = {0};
     uint8_t comp[16] = {0};
-    uint32_t idx = htole32(index);
-    uint16_t in = htole16(intr);
-    uint64_t r = htole64(ring), c = htole64(cq);
 
     cmd[0] = IONIC_CMD_Q_INIT;
     cmd[4] = qtype;
-    memcpy(cmd + 8, &idx, 4);
-    memcpy(cmd + 14, &in, 2);
+    ernic_put_le32(cmd + 8, index);
+    ernic_put_le16(cmd + 14, intr);
     cmd[19] = 2; /* log2 of the ring depth */
-    memcpy(cmd + 20, &r, 8);
-    memcpy(cmd + 28, &c, 8);
+    ernic_put_le64(cmd + 20, ring);
+    ernic_put_le64(cmd + 28, cq);
     ionic_eth_emu_handle_q_init(emu, cmd, comp);
 }
 
@@ -405,12 +397,6 @@ struct flow {
 static const uint8_t frame_macs[12] = {0x02, 0, 0, 0, 0, 0x01,
                                        0x02, 0, 0, 0, 0, 0x02};
 
-static void put16(uint8_t *p, uint16_t v)
-{
-    p[0] = (uint8_t)(v >> 8);
-    p[1] = (uint8_t)v;
-}
-
 static bool flow_is_v6(const struct flow *fl)
 {
     return fl->ethertype == 0x86dd;
@@ -426,11 +412,12 @@ static size_t build_flow(uint8_t *f, const struct flow *fl, size_t *l3,
     memset(f, 0xa5, 128);
     memcpy(f, frame_macs, 12);
     for (unsigned int i = 0; i < 3 && fl->tags[i]; i++) {
-        put16(f + off, fl->tags[i]);
-        put16(f + off + 2, (uint16_t)(0x0100u + i)); /* TCI: VID 256 + i */
+        ernic_put_be16(f + off, fl->tags[i]);
+        /* TCI: VID 256 + i */
+        ernic_put_be16(f + off + 2, (uint16_t)(0x0100u + i));
         off += 4;
     }
-    put16(f + off, fl->ethertype);
+    ernic_put_be16(f + off, fl->ethertype);
     off += 2;
     *l3 = off;
     if (flow_is_v6(fl)) {
@@ -446,7 +433,7 @@ static size_t build_flow(uint8_t *f, const struct flow *fl, size_t *l3,
 
         memset(f + off, 0, (size_t)ihl * 4u);
         f[off] = (uint8_t)(((fl->version ? fl->version : 4) << 4) | ihl);
-        put16(f + off + 6, fl->frag);
+        ernic_put_be16(f + off + 6, fl->frag);
         f[off + 8] = 64;
         f[off + 9] = fl->proto;
         memcpy(f + off + 12, fl->src, 4);
@@ -454,8 +441,8 @@ static size_t build_flow(uint8_t *f, const struct flow *fl, size_t *l3,
         off += (size_t)ihl * 4u;
     }
     *l4 = off;
-    put16(f + off, fl->sport);
-    put16(f + off + 2, fl->dport);
+    ernic_put_be16(f + off, fl->sport);
+    ernic_put_be16(f + off + 2, fl->dport);
     return off + 4 + 8;
 }
 
@@ -692,11 +679,10 @@ static void q_control(struct ionic_eth_emu *emu, uint8_t qtype, uint32_t index,
                       uint8_t oper)
 {
     uint8_t cmd[64] = {0}, comp[16] = {0xff};
-    uint32_t idx = htole32(index);
 
     cmd[0] = IONIC_CMD_Q_CONTROL;
     cmd[1] = qtype;
-    memcpy(cmd + 4, &idx, 4);
+    ernic_put_le32(cmd + 4, index);
     cmd[8] = oper;
     ionic_eth_emu_process_adminq_cmd(emu, cmd, comp);
     if (comp[0] != IONIC_RC_SUCCESS) {
@@ -904,7 +890,6 @@ static void check_q_control_devcmd(void)
 {
     struct ionic_eth_emu *emu = new_emu(NULL, NULL);
     uint8_t cmd[64] = {0};
-    uint32_t idx = htole32(2);
     uint32_t doorbell = 1;
     uint8_t act[IONIC_EMU_ETH_QMAX];
     uint32_t n;
@@ -912,7 +897,7 @@ static void check_q_control_devcmd(void)
     q_init(emu, IONIC_QTYPE_RXQ, 2, 1, RING, CQ);
     cmd[0] = IONIC_CMD_Q_CONTROL;
     cmd[1] = IONIC_QTYPE_RXQ;
-    memcpy(cmd + 4, &idx, 4);
+    ernic_put_le32(cmd + 4, 2);
     cmd[8] = IONIC_Q_ENABLE;
     ionic_eth_emu_bar0_access(emu, (char *)cmd, sizeof(cmd),
                               IONIC_BAR0_DEV_CMD_REGS_OFFSET + DEVCMD_CMD_OFF,
@@ -949,14 +934,12 @@ static struct ionic_eth_emu *rx_emu(uint32_t n, uint32_t posted)
 
     for (uint32_t i = 0; i < n; i++) {
         uint8_t *d = g_mem + RXQ_RING(i);
-        uint16_t cap = htole16(RXQ_BUF_CAP);
-        uint64_t a = htole64(RXQ_BUF(i));
 
         q_init(emu, IONIC_QTYPE_RXQ, i, (uint16_t)RXQ_VEC(i), RXQ_RING(i),
                RXQ_CQ(i));
         q_control(emu, IONIC_QTYPE_RXQ, i, IONIC_Q_ENABLE);
-        memcpy(d + 6, &cap, 2);
-        memcpy(d + 8, &a, 8);
+        ernic_put_le16(d + 6, RXQ_BUF_CAP);
+        ernic_put_le64(d + 8, RXQ_BUF(i));
         emu->eth_q[IONIC_QTYPE_RXQ][i].prod = (uint16_t)posted;
     }
     g_nwrites = 0;
@@ -1153,13 +1136,11 @@ static void check_ring_wrap(void)
         for (unsigned int n = 0; n < cases[row].packets; n++) {
             unsigned int slot = n % 4;
             uint8_t *comp = g_mem + RXQ_CQ(1) + slot * ETH_COMP_SIZE;
-            uint16_t index, bytes;
 
             q->prod = (uint16_t)((q->head + 1) % 4);
             tap_frame(emu, frame, len);
-            memcpy(&index, comp + 2, 2);
-            memcpy(&bytes, comp + 12, 2);
-            ok = ok && le16toh(index) == slot && le16toh(bytes) == len &&
+            ok = ok && ernic_get_le16(comp + 2) == slot &&
+                 ernic_get_le16(comp + 12) == len &&
                  !!(comp[15] & ADMIN_COMP_COLOR_MASK) == ((n / 4) % 2 == 0) &&
                  q->head == (n + 1) % 4 && q->cq_index == (n + 1) % 4 &&
                  memcmp(g_mem + RXQ_BUF(1), frame, len) == 0;
@@ -1309,15 +1290,13 @@ static void check_two_queue_faults(void)
     q_init(emu, IONIC_QTYPE_TXQ, 1, 22, 0x100, 0x200);
     q_control(emu, IONIC_QTYPE_TXQ, 1, IONIC_Q_ENABLE);
     for (uint16_t i = 0; i < 3; i++) {
-        uint64_t cmd = htole64((uint64_t)0x300 << TXQ_DESC_ADDR_SHIFT);
-        uint16_t len = htole16(64);
         uint8_t *desc = g_mem + 0x100 + (size_t)i * ETH_DESC_SIZE;
         /* p_index i + 1 in bits 15:0, qid 1 in bits 31:24. */
         uint64_t db = (uint64_t)(i + 1) | (UINT64_C(1) << 24);
 
         memcpy(g_mem + 0x300, frame, 64);
-        memcpy(desc, &cmd, 8);
-        memcpy(desc + 8, &len, 2);
+        ernic_put_le64(desc, (uint64_t)0x300 << TXQ_DESC_ADDR_SHIFT);
+        ernic_put_le16(desc + 8, 64);
         ionic_eth_emu_bar2_access(emu, (char *)&db, sizeof(db),
                                   (loff_t)IONIC_QTYPE_TXQ * 8, true);
     }

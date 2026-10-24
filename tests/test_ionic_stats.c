@@ -21,21 +21,17 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include <endian.h>
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/uio.h>
 
-#include <vfio-user/libvfio-user.h>
-
+#include "byteorder.h"
 #include "ionic_adminq_priv.h"
 #include "ionic_datapath.h"
 #include "ionic_fault.h"
 #include "ionic_status.h"
-#include "rocm_ernic_compat.h"
 
 #include "ionic_adminq_fakes.h"
 
@@ -47,13 +43,10 @@ static int failures;
 static void build_body(uint8_t *body, size_t len, uint64_t dma, uint32_t length,
                        uint32_t id_ver)
 {
-    uint64_t dma_le = htole64(dma);
-    uint32_t length_le = htole32(length), id_ver_le = htole32(id_ver);
-
     memset(body, 0, len);
-    memcpy(body, &dma_le, 8);
-    memcpy(body + 8, &length_le, 4);
-    memcpy(body + 12, &id_ver_le, 4);
+    ernic_put_le64(body, dma);
+    ernic_put_le32(body + 8, length);
+    ernic_put_le32(body + 12, id_ver);
 }
 
 /* Bytes from @gpa up to and including the last one that is not POISON. */
@@ -78,9 +71,8 @@ static bool hdrs_match(uint64_t gpa, const struct adminq_stat *stats,
     for (size_t i = 0; i < entries; i++) {
         const uint8_t *e = g_mem + gpa + i * STAT_HDR_SIZE;
         char name[STAT_NAME_LEN];
-        uint32_t be;
+        uint32_t type_off = ernic_get_be32(e);
 
-        memcpy(&be, e, 4);
         memcpy(name, e + 4, sizeof(name));
         if (i >= count) {
             static const uint8_t zero[STAT_HDR_SIZE];
@@ -89,8 +81,8 @@ static bool hdrs_match(uint64_t gpa, const struct adminq_stat *stats,
                 return false;
             continue;
         }
-        if (be32toh(be) >> STAT_TYPE_SHIFT != STAT_TYPE_LE64 ||
-            (be32toh(be) & 0x0fffffffu) != i * STAT_VAL_SIZE)
+        if (type_off >> STAT_TYPE_SHIFT != STAT_TYPE_LE64 ||
+            (type_off & 0x0fffffffu) != i * STAT_VAL_SIZE)
             return false;
         if (name[STAT_NAME_LEN - 1] != '\0' || strcmp(name, stats[i].name) != 0)
             return false;
@@ -105,10 +97,7 @@ static bool hdrs_match(uint64_t gpa, const struct adminq_stat *stats,
 static bool vals_match(uint64_t gpa, size_t n, uint64_t (*value)(size_t))
 {
     for (size_t i = 0; i < n; i++) {
-        uint64_t le;
-
-        memcpy(&le, g_mem + gpa + i * STAT_VAL_SIZE, 8);
-        if (le64toh(le) != value(i))
+        if (ernic_get_le64(g_mem + gpa + i * STAT_VAL_SIZE) != value(i))
             return false;
     }
     return true;
@@ -616,10 +605,8 @@ static void run_cqe_case(const struct cqe_case *c)
     r.cq_dma = CQE_GPA;
     r.cq_depth = 1;
     ionic_adminq_post_cqe(&g_ctx, &r, 0, VALS, c->status, 0);
-    memcpy(&sl, g_mem + CQE_GPA + 24, 4);
-    memcpy(&qtf, g_mem + CQE_GPA + 28, 4);
-    sl = be32toh(sl);
-    qtf = be32toh(qtf);
+    sl = ernic_get_be32(g_mem + CQE_GPA + 24);
+    qtf = ernic_get_be32(g_mem + CQE_GPA + 28);
     ok = sl == c->want_status_length &&
          ((qtf & CQE_ERROR_BIT) != 0) == c->want_error_bit;
 
@@ -778,10 +765,10 @@ static void check_alternating_qps(void)
         memcpy(before, g_mem + BUF_GPA, sizeof(before));
         build_body(body, sizeof(body), BUF_GPA, 64, qp_cases[row].id | VER1);
         rc = ionic_adminq_dispatch_wqe(&g_ctx, QP_VALS, body, 17);
-        memcpy(&first, g_mem + BUF_GPA, 8);
+        first = ernic_get_le64(g_mem + BUF_GPA);
         ok = rc == qp_cases[row].rc &&
              (rc ? memcmp(before, g_mem + BUF_GPA, sizeof(before)) == 0
-                 : le64toh(first) == qp_cases[row].first);
+                 : first == qp_cases[row].first);
         printf("%s %s; expected: rc %u, own first value %#" PRIx64
                " or unchanged "
                "buffer on failure\n",

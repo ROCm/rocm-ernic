@@ -14,16 +14,16 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include <endian.h>
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdint.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <pthread.h>
 #include <sched.h>
 
+#include "byteorder.h"
 #include "ionic_emu_stats.h"
 
 static int failures;
@@ -400,10 +400,7 @@ static void test_classify(void)
 
 static uint64_t qword_at(const uint8_t *buf, unsigned int idx)
 {
-    uint64_t v;
-
-    memcpy(&v, buf + (size_t)idx * 8, 8);
-    return le64toh(v);
+    return ernic_get_le64(buf + (size_t)idx * 8);
 }
 
 static void test_fill(void)

@@ -6,8 +6,8 @@
  * specifications.  Offsets are spelled out as macros rather than packed
  * structs: every field on the wire is little-endian regardless of host
  * byte order, and the capsules arrive as byte buffers scattered out of
- * guest memory, so the accessors below are the only sanctioned way to
- * read them.
+ * guest memory, so the accessors in byteorder.h are the only sanctioned
+ * way to read them.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -17,7 +17,6 @@
 #define NVMEOF_H
 
 #include <stdint.h>
-#include <string.h>
 
 /* -------------------------------------------------------------------------
  * Capsule geometry
@@ -36,47 +35,6 @@
 #define NVMEOF_NQN_MAX   224
 
 #define NVMEOF_DISCOVERY_NQN "nqn.2014-08.org.nvmexpress.discovery"
-
-/* -------------------------------------------------------------------------
- * Little-endian accessors
- * -------------------------------------------------------------------------
- */
-
-static inline uint16_t nvme_get_le16(const uint8_t *p)
-{
-    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
-}
-
-static inline uint32_t nvme_get_le32(const uint8_t *p)
-{
-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
-           ((uint32_t)p[3] << 24);
-}
-
-static inline uint64_t nvme_get_le64(const uint8_t *p)
-{
-    return (uint64_t)nvme_get_le32(p) | ((uint64_t)nvme_get_le32(p + 4) << 32);
-}
-
-static inline void nvme_put_le16(uint8_t *p, uint16_t v)
-{
-    p[0] = (uint8_t)v;
-    p[1] = (uint8_t)(v >> 8);
-}
-
-static inline void nvme_put_le32(uint8_t *p, uint32_t v)
-{
-    p[0] = (uint8_t)v;
-    p[1] = (uint8_t)(v >> 8);
-    p[2] = (uint8_t)(v >> 16);
-    p[3] = (uint8_t)(v >> 24);
-}
-
-static inline void nvme_put_le64(uint8_t *p, uint64_t v)
-{
-    nvme_put_le32(p, (uint32_t)v);
-    nvme_put_le32(p + 4, (uint32_t)(v >> 32));
-}
 
 /* -------------------------------------------------------------------------
  * Submission queue entry (command capsule header)

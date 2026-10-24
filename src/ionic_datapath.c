@@ -41,6 +41,7 @@
 #include <infiniband/verbs.h>
 #include <vfio-user/libvfio-user.h>
 
+#include "byteorder.h"
 #include "dma_range.h"
 #include "ernic_ib.h"
 #include "ernic_time.h"
@@ -143,10 +144,11 @@ _Static_assert(IONIC_SRQ_MAX_STRIDE_LOG2 <= IONIC_WQE_MAX_STRIDE_LOG2,
 #define WQE_SEND_QKEY_OFF     24
 
 /* struct ionic_v1_common_bdy.rdma overlays the send body: two be32 halves of
- * the remote va at 16/20, then the remote rkey, then the shared length. */
-#define WQE_RDMA_VA_HI_OFF 16
-#define WQE_RDMA_VA_LO_OFF 20
-#define WQE_RDMA_RKEY_OFF  24
+ * the remote va at 16/20, high half first, so together one be64, then the
+ * remote rkey, then the shared length. The atomic operands are split the
+ * same way. */
+#define WQE_RDMA_VA_OFF   16
+#define WQE_RDMA_RKEY_OFF 24
 
 /* struct ionic_v1_atomic_bdy shares the first three fields with the rdma body
  * and then carries its operands and a single fixed 8-byte result SGE. */
@@ -1048,20 +1050,15 @@ static void dp_reg_mr(struct ionic_datapath *dp, const uint8_t *wqe,
             ionic_datapath_unregister_mr(dp, dp->mr[i].lkey);
     }
 
-    uint64_t va, length, dma_addr;
-    uint32_t map_count;
-    memcpy(&va, wqe + WQE_REG_MR_VA_OFF, 8);
-    memcpy(&length, wqe + WQE_REG_MR_LENGTH_OFF, 8);
-    memcpy(&dma_addr, wqe + WQE_REG_MR_DMA_ADDR_OFF, 8);
-    memcpy(&map_count, wqe + WQE_REG_MR_MAP_COUNT_OFF, 4);
-
     struct ionic_dp_buf_desc buf = {
-        .dma_addr = be64toh(dma_addr),
-        .map_count = be32toh(map_count),
+        .dma_addr = ernic_get_be64(wqe + WQE_REG_MR_DMA_ADDR_OFF),
+        .map_count = ernic_get_be32(wqe + WQE_REG_MR_MAP_COUNT_OFF),
         .page_size_log2 = wqe[WQE_REG_MR_PAGE_SZ_L2_OFF],
     };
 
-    ionic_datapath_register_mr(dp, key, be64toh(va), be64toh(length), &buf);
+    ionic_datapath_register_mr(dp, key, ernic_get_be64(wqe + WQE_REG_MR_VA_OFF),
+                               ernic_get_be64(wqe + WQE_REG_MR_LENGTH_OFF),
+                               &buf);
 }
 
 /* -------------------------------------------------------------------------
@@ -1418,14 +1415,12 @@ static void cq_post(struct ionic_datapath *dp, uint32_t cq_id,
 
     memcpy(cqe, cqe_body, CQE_SIZE - 8);
 
-    uint32_t sl = htobe32(status_len);
-    memcpy(cqe + 24, &sl, 4);
+    ernic_put_be32(cqe + 24, status_len);
 
     uint32_t qtf = (uint32_t)(c->color ? CQE_COLOR_BIT : 0) |
                    (error ? CQE_ERROR_BIT : 0) | type |
                    ((qid & 0xffffffu) << 8);
-    qtf = htobe32(qtf);
-    memcpy(cqe + 28, &qtf, 4);
+    ernic_put_be32(cqe + 28, qtf);
 
     /*
      * No error completion goes out unannounced. One of these ends the queue
@@ -1483,8 +1478,7 @@ static void dp_grh_ipv6(uint8_t grh[IB_GRH_SIZE], uint32_t paylen,
 {
     memset(grh, 0, IB_GRH_SIZE);
     grh[0] = 0x60; /* IPv6 version nibble, as RoCEv2 GRHs carry */
-    uint16_t pl = htobe16((uint16_t)paylen);
-    memcpy(grh + 4, &pl, 2);
+    ernic_put_be16(grh + 4, (uint16_t)paylen);
     grh[6] = 0x1b; /* IB_GRH_NEXT_HDR */
     grh[7] = 64;
     if (sgid)
@@ -1598,8 +1592,7 @@ static void cq_post_recv(struct ionic_datapath *dp, uint32_t cq_id,
      */
     if (is_ipv4)
         qpn_op |= CQE_RECV_IS_IPV4;
-    qpn_op = htobe32(qpn_op);
-    memcpy(body + 8, &qpn_op, 4);
+    ernic_put_be32(body + 8, qpn_op);
     memcpy(body + 20, &imm_be, 4); /* recv.imm_data_rkey, already be32 */
 
     cq_post(dp, cq_id, body, byte_len, CQE_TYPE_RECV, qid, error);
@@ -1701,8 +1694,7 @@ static void cq_post_send_msn(struct ionic_datapath *dp, uint32_t cq_id,
     uint8_t body[CQE_SIZE - 8];
     memset(body, 0, sizeof(body));
 
-    uint32_t m = htobe32(msn);
-    memcpy(body + 4, &m, 4); /* send.msg_msn */
+    ernic_put_be32(body + 4, msn); /* send.msg_msn */
 
     cq_post(dp, cq_id, body, status, CQE_TYPE_SEND_MSN, qid,
             status != IONIC_STS_OK);
@@ -1740,14 +1732,9 @@ static void parse_sges(const uint8_t *wqe, uint32_t stride, uint8_t num_sge,
 
     for (uint32_t i = 0; i < max_sge; i++) {
         const uint8_t *p = wqe + WQE_PLD_OFF + i * 16;
-        uint64_t va;
-        uint32_t len, lkey;
-        memcpy(&va, p + 0, 8);
-        memcpy(&len, p + 8, 4);
-        memcpy(&lkey, p + 12, 4);
-        out->va[i] = be64toh(va);
-        out->len[i] = be32toh(len);
-        out->lkey[i] = be32toh(lkey);
+        out->va[i] = ernic_get_be64(p + 0);
+        out->len[i] = ernic_get_be32(p + 8);
+        out->lkey[i] = ernic_get_be32(p + 12);
         out->total += out->len[i];
         out->count++;
     }
@@ -2065,16 +2052,6 @@ static uint32_t rdma_xfer(struct ionic_datapath *dp,
     return done;
 }
 
-/* Read the be32 pair at @off as one 64-bit value: the wire splits every
- * address and operand into high and low halves. */
-static uint64_t wqe_be64_pair(const uint8_t *wqe, uint32_t off)
-{
-    uint32_t hi, lo;
-    memcpy(&hi, wqe + off, 4);
-    memcpy(&lo, wqe + off + 4, 4);
-    return ((uint64_t)be32toh(hi) << 32) | be32toh(lo);
-}
-
 /*
  * Compare-and-swap or fetch-and-add on 8 bytes of remote memory, with the
  * original value returned to the local SGE.  Both operands and remote memory
@@ -2085,19 +2062,14 @@ static uint64_t wqe_be64_pair(const uint8_t *wqe, uint32_t off)
 static bool do_atomic(struct ionic_datapath *dp, const uint8_t *wqe,
                       bool compare_swap)
 {
-    uint64_t remote_va = wqe_be64_pair(wqe, WQE_RDMA_VA_HI_OFF);
-    uint64_t swap_add = wqe_be64_pair(wqe, WQE_ATOMIC_SWAP_ADD_OFF);
-    uint64_t compare = wqe_be64_pair(wqe, WQE_ATOMIC_COMPARE_OFF);
-    uint32_t rkey;
-    memcpy(&rkey, wqe + WQE_RDMA_RKEY_OFF, 4);
-    rkey = be32toh(rkey);
+    uint64_t remote_va = ernic_get_be64(wqe + WQE_RDMA_VA_OFF);
+    uint64_t swap_add = ernic_get_be64(wqe + WQE_ATOMIC_SWAP_ADD_OFF);
+    uint64_t compare = ernic_get_be64(wqe + WQE_ATOMIC_COMPARE_OFF);
+    uint32_t rkey = ernic_get_be32(wqe + WQE_RDMA_RKEY_OFF);
 
-    uint64_t local_va, run;
-    uint32_t local_lkey;
-    memcpy(&local_va, wqe + WQE_ATOMIC_SGE_OFF, 8);
-    memcpy(&local_lkey, wqe + WQE_ATOMIC_SGE_OFF + 12, 4);
-    local_va = be64toh(local_va);
-    local_lkey = be32toh(local_lkey);
+    uint64_t local_va = ernic_get_be64(wqe + WQE_ATOMIC_SGE_OFF);
+    uint32_t local_lkey = ernic_get_be32(wqe + WQE_ATOMIC_SGE_OFF + 12);
+    uint64_t run;
 
     /*
      * The two ends fail differently even though one table resolves both, so
@@ -2318,17 +2290,12 @@ static bool remote_post(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         payload_len = src->total;
     } else if (wire_op == IONIC_WIRE_WRITE || wire_op == IONIC_WIRE_WRITE_IMM ||
                wire_op == IONIC_WIRE_READ_REQ) {
-        uint32_t va_hi, va_lo, rkey, length, imm_be;
-        memcpy(&va_hi, wqe + WQE_RDMA_VA_HI_OFF, 4);
-        memcpy(&va_lo, wqe + WQE_RDMA_VA_LO_OFF, 4);
-        memcpy(&rkey, wqe + WQE_RDMA_RKEY_OFF, 4);
-        memcpy(&length, wqe + WQE_SEND_LEN_OFF, 4);
+        uint32_t length = ernic_get_be32(wqe + WQE_SEND_LEN_OFF);
+        uint32_t imm_be;
         memcpy(&imm_be, wqe + 12, 4);
 
-        length = be32toh(length);
-        hdr.remote_va =
-            htole64(((uint64_t)be32toh(va_hi) << 32) | be32toh(va_lo));
-        hdr.rkey = htole32(be32toh(rkey));
+        hdr.remote_va = htole64(ernic_get_be64(wqe + WQE_RDMA_VA_OFF));
+        hdr.rkey = htole32(ernic_get_be32(wqe + WQE_RDMA_RKEY_OFF));
         hdr.length = htole32(length);
         hdr.imm_be = imm_be;
 
@@ -2340,24 +2307,17 @@ static bool remote_post(struct ionic_datapath *dp, struct ionic_qp_ring *q,
             payload_len = length;
         }
     } else { /* ATOMIC_REQ */
-        uint32_t rkey;
-        memcpy(&rkey, wqe + WQE_RDMA_RKEY_OFF, 4);
-
         hdr.atomic_cs = op == IONIC_V1_OP_ATOMIC_CS;
-        hdr.rkey = htole32(be32toh(rkey));
-        hdr.remote_va = htole64(wqe_be64_pair(wqe, WQE_RDMA_VA_HI_OFF));
-        hdr.swap_add = htole64(wqe_be64_pair(wqe, WQE_ATOMIC_SWAP_ADD_OFF));
-        hdr.compare = htole64(wqe_be64_pair(wqe, WQE_ATOMIC_COMPARE_OFF));
+        hdr.rkey = htole32(ernic_get_be32(wqe + WQE_RDMA_RKEY_OFF));
+        hdr.remote_va = htole64(ernic_get_be64(wqe + WQE_RDMA_VA_OFF));
+        hdr.swap_add = htole64(ernic_get_be64(wqe + WQE_ATOMIC_SWAP_ADD_OFF));
+        hdr.compare = htole64(ernic_get_be64(wqe + WQE_ATOMIC_COMPARE_OFF));
         hdr.length = htole32(8);
 
         /* The original value comes back into the WQE's single local SGE. */
-        uint64_t local_va;
-        uint32_t local_lkey;
-        memcpy(&local_va, wqe + WQE_ATOMIC_SGE_OFF, 8);
-        memcpy(&local_lkey, wqe + WQE_ATOMIC_SGE_OFF + 12, 4);
         p->local.count = 1;
-        p->local.va[0] = be64toh(local_va);
-        p->local.lkey[0] = be32toh(local_lkey);
+        p->local.va[0] = ernic_get_be64(wqe + WQE_ATOMIC_SGE_OFF);
+        p->local.lkey[0] = ernic_get_be32(wqe + WQE_ATOMIC_SGE_OFF + 12);
         p->local.len[0] = 8;
         p->local.total = 8;
         p->length = 8;
@@ -2574,9 +2534,7 @@ static void dp_ud_grh(struct ionic_datapath *dp, uint8_t grh[IB_GRH_SIZE],
  */
 static void dp_nvmeof_learn_gids(struct ionic_datapath *dp, const uint8_t *mad)
 {
-    uint16_t attr;
-    memcpy(&attr, mad + 16, 2);
-    if (be16toh(attr) != 0x0010) /* CM_ATTR_REQ */
+    if (ernic_get_be16(mad + 16) != 0x0010) /* CM_ATTR_REQ */
         return;
     memcpy(dp->nvmeof_dgid, mad + 80, 16); /* primary local  = guest */
     memcpy(dp->nvmeof_sgid, mad + 96, 16); /* primary remote = us    */
@@ -2810,13 +2768,9 @@ static int dp_p4_fp8_map(struct dp_p4_ctx *c, uint8_t sel)
     if (c->src->count != 2 || c->src->len[0] != c->src->len[1])
         return -EINVAL;
 
-    uint32_t va_hi, va_lo, rkey, length;
-    memcpy(&va_hi, c->wqe + WQE_RDMA_VA_HI_OFF, 4);
-    memcpy(&va_lo, c->wqe + WQE_RDMA_VA_LO_OFF, 4);
-    memcpy(&rkey, c->wqe + WQE_RDMA_RKEY_OFF, 4);
-    memcpy(&length, c->wqe + WQE_SEND_LEN_OFF, 4);
-
-    uint64_t remote_va = ((uint64_t)be32toh(va_hi) << 32) | be32toh(va_lo);
+    uint64_t remote_va = ernic_get_be64(c->wqe + WQE_RDMA_VA_OFF);
+    uint32_t rkey = ernic_get_be32(c->wqe + WQE_RDMA_RKEY_OFF);
+    uint32_t length = ernic_get_be32(c->wqe + WQE_SEND_LEN_OFF);
 
     /*
      * The work request's length is the whole gather list, because that
@@ -2830,12 +2784,12 @@ static int dp_p4_fp8_map(struct dp_p4_ctx *c, uint8_t sel)
      * which the in-process harness could do, because it sets the field
      * directly, and which no real guest can.
      */
-    if (be32toh(length) != c->src->total)
+    if (length != c->src->total)
         return -EINVAL;
 
     return ionic_datapath_fp8_map(c->dp, sel, c->src->lkey[0], c->src->va[0],
                                   c->src->lkey[1], c->src->va[1],
-                                  c->src->len[0], be32toh(rkey), remote_va);
+                                  c->src->len[0], rkey, remote_va);
 }
 
 static int dp_p4_extern_call(void *ctx, uint8_t type, uint8_t method,
@@ -2900,9 +2854,7 @@ static uint32_t dp_p4_policy(struct ionic_datapath *dp, uint32_t qp_id,
     if ((op == IONIC_V1_OP_RDMA_WRITE || op == IONIC_V1_OP_RDMA_WRITE_IMM ||
          op == IONIC_V1_OP_RDMA_READ) &&
         read_sz >= WQE_RDMA_RKEY_OFF + 4u) {
-        uint32_t rkey;
-        memcpy(&rkey, wqe + WQE_RDMA_RKEY_OFF, 4);
-        meta.rkey = be32toh(rkey);
+        meta.rkey = ernic_get_be32(wqe + WQE_RDMA_RKEY_OFF);
     }
 
     int rc = p4_engine_process_rdma(dp->p4_engine, &ops, &meta, &suppress);
@@ -2974,9 +2926,7 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         pvrdma_qp_wqe_count(dp->pvrdma_handle, qp_id,
                             ionic_op_to_pvrdma_wr(op));
 
-    uint16_t flags;
-    memcpy(&flags, wqe + 10, 2);
-    flags = be16toh(flags);
+    uint16_t flags = ernic_get_be16(wqe + 10);
 
     uint32_t imm_be;
     memcpy(&imm_be, wqe + 12, 4);
@@ -2991,9 +2941,9 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
      */
     if (op == IONIC_V1_OP_REG_MR || op == IONIC_V1_OP_LOCAL_INV) {
         if (op != IONIC_V1_OP_REG_MR)
-            ionic_datapath_unregister_mr(dp, be32toh(imm_be));
+            ionic_datapath_unregister_mr(dp, ernic_get_be32(wqe + 12));
         else if (read_sz >= WQE_REG_MR_MIN_SZ)
-            dp_reg_mr(dp, wqe, be32toh(imm_be));
+            dp_reg_mr(dp, wqe, ernic_get_be32(wqe + 12));
         else
             vfu_log(dp->vfu_ctx, LOG_WARNING,
                     "ionic_datapath: QP %u REG_MR WQE truncated (%u bytes)",
@@ -3006,9 +2956,7 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
     if (flags & IONIC_V1_FLAG_INL) {
         /* Inline data lives in the payload area itself; describe it as a
          * single lkey-0 SGE pointing at the WQE's own guest pages. */
-        uint32_t inl_len;
-        memcpy(&inl_len, wqe + WQE_SEND_LEN_OFF, 4);
-        inl_len = be32toh(inl_len);
+        uint32_t inl_len = ernic_get_be32(wqe + WQE_SEND_LEN_OFF);
         src.count = 1;
         src.va[0] = gpa + WQE_PLD_OFF;
         src.len[0] = inl_len;
@@ -3122,12 +3070,9 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         uint32_t dst_id;
         const struct ionic_ah *ah = NULL;
         if (qp_is_datagram(q)) {
-            uint32_t ah_id_be, dest_qpn_be;
-            memcpy(&ah_id_be, wqe + WQE_SEND_AH_OFF, 4);
-            memcpy(&dest_qpn_be, wqe + WQE_SEND_DEST_QPN_OFF, 4);
-            dst_id = be32toh(dest_qpn_be);
+            dst_id = ernic_get_be32(wqe + WQE_SEND_DEST_QPN_OFF);
 
-            uint32_t ah_id = be32toh(ah_id_be);
+            uint32_t ah_id = ernic_get_be32(wqe + WQE_SEND_AH_OFF);
             ah = ah_id < dp->ah_count && dp->ah[ah_id].valid ? &dp->ah[ah_id]
                                                              : NULL;
             if (!ah && ah_id) {
@@ -3198,11 +3143,8 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
          * datagram's rules refuses every RC and UC SEND in the device.
          */
         {
-            uint32_t sent_qkey_be;
-            memcpy(&sent_qkey_be, wqe + WQE_SEND_QKEY_OFF, 4);
-
-            const char *refused =
-                ionic_dp_ud_delivery_refused(q, dq, be32toh(sent_qkey_be));
+            const char *refused = ionic_dp_ud_delivery_refused(
+                q, dq, ernic_get_be32(wqe + WQE_SEND_QKEY_OFF));
             if (refused) {
                 vfu_log(dp->vfu_ctx, LOG_WARNING,
                         "ionic_datapath: QP %u datagram to QP %u refused: %s",
@@ -3287,15 +3229,9 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
     case IONIC_V1_OP_RDMA_READ:
     case IONIC_V1_OP_RDMA_WRITE:
     case IONIC_V1_OP_RDMA_WRITE_IMM: {
-        uint32_t va_hi, va_lo, rkey, length;
-        memcpy(&va_hi, wqe + WQE_RDMA_VA_HI_OFF, 4);
-        memcpy(&va_lo, wqe + WQE_RDMA_VA_LO_OFF, 4);
-        memcpy(&rkey, wqe + WQE_RDMA_RKEY_OFF, 4);
-        memcpy(&length, wqe + WQE_SEND_LEN_OFF, 4);
-
-        uint64_t remote_va = ((uint64_t)be32toh(va_hi) << 32) | be32toh(va_lo);
-        rkey = be32toh(rkey);
-        length = be32toh(length);
+        uint64_t remote_va = ernic_get_be64(wqe + WQE_RDMA_VA_OFF);
+        uint32_t rkey = ernic_get_be32(wqe + WQE_RDMA_RKEY_OFF);
+        uint32_t length = ernic_get_be32(wqe + WQE_SEND_LEN_OFF);
 
         bool to_remote = op != IONIC_V1_OP_RDMA_READ;
 

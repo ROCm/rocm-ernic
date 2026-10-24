@@ -12,8 +12,10 @@
 
 #include "ionic_emu_stats.h"
 
-#include <endian.h>
+#include <stdatomic.h>
 #include <string.h>
+
+#include "byteorder.h"
 
 /* The first counter of each per-class pair, indexed by ionic_emu_mac_class. */
 static const unsigned int rx_bytes_idx[IONIC_EMU_MAC_CLASSES] = {
@@ -316,11 +318,8 @@ void ionic_emu_port_fill(struct ionic_emu_stats *st,
                          uint8_t out[IONIC_PORT_STATS_BYTES])
 {
     ionic_emu_stats_fold(st);
-    for (unsigned int q = 0; q < IONIC_PORT_STATS_QWORDS; q++) {
-        uint64_t v = htole64(st->port[q]);
-
-        memcpy(out + (size_t)q * 8u, &v, sizeof(v));
-    }
+    for (unsigned int q = 0; q < IONIC_PORT_STATS_QWORDS; q++)
+        ernic_put_le64(out + (size_t)q * 8u, st->port[q]);
 }
 
 static const char *const port_stat_names[IONIC_PORT_STATS_QWORDS] = {
@@ -340,13 +339,10 @@ void ionic_emu_stats_fill(struct ionic_emu_stats *st,
     ionic_emu_stats_fold(st);
     memset(out, 0, IONIC_LIF_STATS_BYTES);
     for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++) {
-        uint64_t v;
-
         /* Only named counters reach the guest; reserved slots stay zero. */
         if (!ionic_emu_lif_stat_name(q))
             continue;
-        v = htole64(st->lif[q]);
-        memcpy(out + (size_t)q * 8u, &v, sizeof(v));
+        ernic_put_le64(out + (size_t)q * 8u, st->lif[q]);
     }
 }
 

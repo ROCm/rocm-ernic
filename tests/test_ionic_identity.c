@@ -23,13 +23,13 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include <endian.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
+#include "byteorder.h"
 #include "golden/ionic_compat_identity.h"
 #include "ionic_eth_emu.h"
 #include "ionic_eth_emu_fakes.h"
@@ -99,7 +99,6 @@ static void capture(struct ionic_eth_emu *emu, struct blocks *out)
 {
     static uint8_t data[DEVCMD_DATA_SIZE];
     uint8_t cmd[64], comp[16];
-    uint64_t pa;
 
     memset(out, 0, sizeof(*out));
     memcpy(out->b[BLK_DEV_INFO], emu->bar0 + IONIC_BAR0_DEV_INFO_REGS_OFFSET,
@@ -127,18 +126,16 @@ static void capture(struct ionic_eth_emu *emu, struct blocks *out)
 
     memset(g_mem, 0, sizeof(g_mem));
     memset(cmd, 0, sizeof(cmd));
-    pa = htole64(PORT_INFO_PA);
     cmd[0] = IONIC_CMD_PORT_INIT;
-    memcpy(cmd + 8, &pa, 8);
+    ernic_put_le64(cmd + 8, PORT_INFO_PA);
     ionic_eth_emu_handle_port_init(emu, cmd, comp);
     memcpy(out->b[BLK_PORT_INFO], g_mem + PORT_INFO_PA,
            IONIC_PORT_INFO_PUBLISHED_LEN);
 
     memset(g_mem, 0, sizeof(g_mem));
     memset(cmd, 0, sizeof(cmd));
-    pa = htole64(LIF_INFO_PA);
     cmd[0] = IONIC_CMD_LIF_INIT;
-    memcpy(cmd + 8, &pa, 8);
+    ernic_put_le64(cmd + 8, LIF_INFO_PA);
     ionic_eth_emu_handle_lif_init(emu, cmd, comp);
     memcpy(out->b[BLK_LIF_STATUS],
            g_mem + LIF_INFO_PA + IONIC_LIF_INFO_STATUS_OFF,

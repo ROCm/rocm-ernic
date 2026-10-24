@@ -43,6 +43,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "byteorder.h"
 #include "ionic_harness.h"
 #include "parse_int.h"
 #include "rocm_ernic_compat.h"
@@ -150,12 +151,6 @@ static void gm_drain(struct ih *h, struct gm_ep *ep, struct gm_counts *c)
             c->sends++;
         }
     }
-}
-
-static uint32_t gm_be32(const uint8_t *p)
-{
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
-           ((uint32_t)p[2] << 8) | p[3];
 }
 
 /*
@@ -352,11 +347,11 @@ int main(void)
 
         gm_check(cb.recv_ipv4, "the forwarded MAD is not flagged IPv4");
         gm_check(ip[0] == 0x45, "the forwarded MAD carries no IPv4 header");
-        gm_check(gm_be32(ip + 12) == GM_IP_A,
+        gm_check(ernic_get_be32(ip + 12) == GM_IP_A,
                  "the forwarded MAD's source address is %u.%u.%u.%u, want the "
                  "sender's 192.168.250.1",
                  ip[12], ip[13], ip[14], ip[15]);
-        gm_check(gm_be32(ip + 16) == GM_IP_B,
+        gm_check(ernic_get_be32(ip + 16) == GM_IP_B,
                  "the forwarded MAD's destination address is %u.%u.%u.%u, want "
                  "the peer's 192.168.250.2",
                  ip[16], ip[17], ip[18], ip[19]);

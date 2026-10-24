@@ -32,6 +32,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "byteorder.h"
 #include "nvmeof.h"
 #include "nvmeof_target.h"
 #include "nvmeof_target_priv.h"
@@ -137,26 +138,26 @@ static void cap_init(struct capsule *c, uint8_t opcode, uint16_t cid)
     memset(c, 0, sizeof(*c));
     c->len = NVME_SQE_SIZE;
     c->b[NVME_SQE_OPCODE_OFF] = opcode;
-    nvme_put_le16(c->b + NVME_SQE_CID_OFF, cid);
+    ernic_put_le16(c->b + NVME_SQE_CID_OFF, cid);
 }
 
 static void cap_keyed_sgl(struct capsule *c, uint64_t addr, uint32_t len,
                           uint32_t key)
 {
     uint8_t *d = c->b + NVME_SQE_DPTR_OFF;
-    nvme_put_le64(d, addr);
+    ernic_put_le64(d, addr);
     d[8] = (uint8_t)len;
     d[9] = (uint8_t)(len >> 8);
     d[10] = (uint8_t)(len >> 16);
-    nvme_put_le32(d + 11, key);
+    ernic_put_le32(d + 11, key);
     d[15] = NVME_SGL_TYPE_KEYED_DATA << 4;
 }
 
 static void cap_inline_sgl(struct capsule *c, const void *data, uint32_t len)
 {
     uint8_t *d = c->b + NVME_SQE_DPTR_OFF;
-    nvme_put_le64(d, 0);
-    nvme_put_le32(d + 8, len);
+    ernic_put_le64(d, 0);
+    ernic_put_le32(d + 8, len);
     d[15] =
         (uint8_t)((NVME_SGL_TYPE_DATA_BLOCK << 4) | NVME_SGL_SUBTYPE_OFFSET);
     memcpy(c->b + NVME_SQE_SIZE, data, len);
@@ -165,7 +166,7 @@ static void cap_inline_sgl(struct capsule *c, const void *data, uint32_t len)
 
 static uint16_t rsp_status(const uint8_t *rsp)
 {
-    return nvme_get_le16(rsp + NVME_CQE_STATUS_OFF);
+    return ernic_get_le16(rsp + NVME_CQE_STATUS_OFF);
 }
 
 static uint8_t rsp_sc(const uint8_t *rsp)
@@ -197,8 +198,8 @@ static int do_connect(struct nvmeof_queue *q, struct host_mem *h, uint16_t qid,
     /* The CID is an opaque 16-bit tag, so wrapping it is harmless. */
     cap_init(&c, NVME_ADMIN_FABRICS, (uint16_t)(0x10u + qid));
     c.b[NVMEOF_SQE_FCTYPE_OFF] = NVMEOF_FCTYPE_CONNECT;
-    nvme_put_le16(c.b + NVMEOF_CONNECT_QID_OFF, qid);
-    nvme_put_le16(c.b + NVMEOF_CONNECT_SQSIZE_OFF, sqsize);
+    ernic_put_le16(c.b + NVMEOF_CONNECT_QID_OFF, qid);
+    ernic_put_le16(c.b + NVMEOF_CONNECT_SQSIZE_OFF, sqsize);
     cap_keyed_sgl(&c, addr, NVMEOF_CONNECT_DATA_SIZE, HOST_RKEY);
     stage_connect_data(h, addr, subnqn, hostnqn);
 
@@ -213,8 +214,8 @@ static uint16_t set_cc(struct nvmeof_queue *q, struct host_mem *h, uint16_t cid,
 
     cap_init(&c, NVME_ADMIN_FABRICS, cid);
     c.b[NVMEOF_SQE_FCTYPE_OFF] = NVMEOF_FCTYPE_PROPERTY_SET;
-    nvme_put_le32(c.b + NVMEOF_PROP_OFFSET_OFF, NVMEOF_PROP_CC);
-    nvme_put_le64(c.b + NVMEOF_PROP_VALUE_OFF, cc);
+    ernic_put_le32(c.b + NVMEOF_PROP_OFFSET_OFF, NVMEOF_PROP_CC);
+    ernic_put_le64(c.b + NVMEOF_PROP_VALUE_OFF, cc);
     if (nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp) !=
         NVMEOF_EXEC_DONE) {
         return UINT16_MAX;
@@ -236,12 +237,12 @@ static uint16_t get_csts(struct nvmeof_queue *q, struct host_mem *h,
     *csts = 0;
     cap_init(&c, NVME_ADMIN_FABRICS, cid);
     c.b[NVMEOF_SQE_FCTYPE_OFF] = NVMEOF_FCTYPE_PROPERTY_GET;
-    nvme_put_le32(c.b + NVMEOF_PROP_OFFSET_OFF, NVMEOF_PROP_CSTS);
+    ernic_put_le32(c.b + NVMEOF_PROP_OFFSET_OFF, NVMEOF_PROP_CSTS);
     if (nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp) !=
         NVMEOF_EXEC_DONE) {
         return UINT16_MAX;
     }
-    *csts = nvme_get_le32(rsp + NVME_CQE_RESULT_OFF);
+    *csts = ernic_get_le32(rsp + NVME_CQE_RESULT_OFF);
     return rsp_status(rsp);
 }
 
@@ -425,7 +426,7 @@ static void test_handshake(void)
     do_connect(aq, h, 0, 31, "nvmet-test", "nqn.2014-08.org.nvmexpress:uuid:t",
                rsp);
     check("connect-admin", rsp_status(rsp) == 0, "admin Connect failed");
-    check("connect-admin", nvme_get_le16(rsp + NVME_CQE_RESULT_OFF) == 1,
+    check("connect-admin", ernic_get_le16(rsp + NVME_CQE_RESULT_OFF) == 1,
           "Connect did not return cntlid 1");
     check("connect-admin", nvmeof_queue_connected(aq), "queue not marked live");
 
@@ -446,9 +447,9 @@ static void test_handshake(void)
     cap_init(&c, NVME_ADMIN_FABRICS, 2);
     c.b[NVMEOF_SQE_FCTYPE_OFF] = NVMEOF_FCTYPE_PROPERTY_GET;
     c.b[NVMEOF_PROP_ATTRIB_OFF] = 1;
-    nvme_put_le32(c.b + NVMEOF_PROP_OFFSET_OFF, NVMEOF_PROP_CAP);
+    ernic_put_le32(c.b + NVMEOF_PROP_OFFSET_OFF, NVMEOF_PROP_CAP);
     nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
-    uint64_t cap = nvme_get_le64(rsp + NVME_CQE_RESULT_OFF);
+    uint64_t cap = ernic_get_le64(rsp + NVME_CQE_RESULT_OFF);
     check("prop-cap", rsp_status(rsp) == 0, "Property Get CAP failed");
     check("prop-cap", (cap & 0xffff) == 127, "MQES is not queue_depth - 1");
     check("prop-cap", (cap >> 37) & 1,
@@ -463,9 +464,9 @@ static void test_handshake(void)
     /* Property Get VS. */
     cap_init(&c, NVME_ADMIN_FABRICS, 3);
     c.b[NVMEOF_SQE_FCTYPE_OFF] = NVMEOF_FCTYPE_PROPERTY_GET;
-    nvme_put_le32(c.b + NVMEOF_PROP_OFFSET_OFF, NVMEOF_PROP_VS);
+    ernic_put_le32(c.b + NVMEOF_PROP_OFFSET_OFF, NVMEOF_PROP_VS);
     nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
-    check("prop-vs", nvme_get_le32(rsp + NVME_CQE_RESULT_OFF) == 0x00010400,
+    check("prop-vs", ernic_get_le32(rsp + NVME_CQE_RESULT_OFF) == 0x00010400,
           "VS is not 1.4.0");
 
     /* Enable the controller and confirm CSTS.RDY follows CC.EN. */
@@ -479,50 +480,50 @@ static void test_handshake(void)
     /* Identify Controller. */
     memset(h->buf, 0xa5, NVME_IDENTIFY_SIZE);
     cap_init(&c, NVME_ADMIN_IDENTIFY, 6);
-    nvme_put_le32(c.b + NVME_SQE_CDW10_OFF, NVME_ID_CNS_CTRL);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, NVME_ID_CNS_CTRL);
     cap_keyed_sgl(&c, HOST_BASE, NVME_IDENTIFY_SIZE, HOST_RKEY);
     nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
     check("id-ctrl", rsp_status(rsp) == 0, "Identify Controller failed");
     check("id-ctrl", strcmp((char *)h->buf + 768, "nvmet-test") == 0,
           "Identify Controller subnqn mismatch");
-    uint32_t sgls = nvme_get_le32(h->buf + 536);
+    uint32_t sgls = ernic_get_le32(h->buf + 536);
     check("id-ctrl", (sgls & (1u << 2)) != 0,
           "keyed SGL support not advertised (nvme-rdma requires it)");
-    check("id-ctrl", nvme_get_le32(h->buf + 1792) == 4,
+    check("id-ctrl", ernic_get_le32(h->buf + 1792) == 4,
           "ioccsz is not 4; the host would send in-capsule write data");
     check("id-ctrl", h->buf[512] == 0x66 && h->buf[513] == 0x44,
           "sqes/cqes do not pin 64/16-byte entries");
-    check("id-ctrl", nvme_get_le16(h->buf + 514) != 0, "maxcmd is zero");
-    check("id-ctrl", nvme_get_le32(h->buf + 516) == 1, "nn is not 1");
+    check("id-ctrl", ernic_get_le16(h->buf + 514) != 0, "maxcmd is zero");
+    check("id-ctrl", ernic_get_le32(h->buf + 516) == 1, "nn is not 1");
     check("id-ctrl", h->buf[525] == 0,
           "a RAM namespace advertises a volatile write cache");
 
     /* Identify Namespace: 1 MiB of 512-byte blocks. */
     memset(h->buf, 0, NVME_IDENTIFY_SIZE);
     cap_init(&c, NVME_ADMIN_IDENTIFY, 7);
-    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
-    nvme_put_le32(c.b + NVME_SQE_CDW10_OFF, NVME_ID_CNS_NS);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, NVME_ID_CNS_NS);
     cap_keyed_sgl(&c, HOST_BASE, NVME_IDENTIFY_SIZE, HOST_RKEY);
     nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
-    check("id-ns", nvme_get_le64(h->buf) == 2048, "nsze is not 1 MiB / 512");
+    check("id-ns", ernic_get_le64(h->buf) == 2048, "nsze is not 1 MiB / 512");
     check("id-ns", h->buf[130] == 9, "LBA data size is not 2^9");
 
     /* Active namespace list. */
     memset(h->buf, 0, NVME_IDENTIFY_SIZE);
     cap_init(&c, NVME_ADMIN_IDENTIFY, 8);
-    nvme_put_le32(c.b + NVME_SQE_CDW10_OFF, NVME_ID_CNS_NS_ACTIVE_LIST);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, NVME_ID_CNS_NS_ACTIVE_LIST);
     cap_keyed_sgl(&c, HOST_BASE, NVME_IDENTIFY_SIZE, HOST_RKEY);
     nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
-    check("id-ns-list", nvme_get_le32(h->buf) == 1,
+    check("id-ns-list", ernic_get_le32(h->buf) == 1,
           "active namespace list does not start with nsid 1");
-    check("id-ns-list", nvme_get_le32(h->buf + 4) == 0,
+    check("id-ns-list", ernic_get_le32(h->buf + 4) == 0,
           "active namespace list is not zero-terminated");
 
     /* Namespace descriptor list must carry a well-formed UUID. */
     memset(h->buf, 0, NVME_IDENTIFY_SIZE);
     cap_init(&c, NVME_ADMIN_IDENTIFY, 9);
-    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
-    nvme_put_le32(c.b + NVME_SQE_CDW10_OFF, NVME_ID_CNS_NS_DESC_LIST);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, NVME_ID_CNS_NS_DESC_LIST);
     cap_keyed_sgl(&c, HOST_BASE, NVME_IDENTIFY_SIZE, HOST_RKEY);
     nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
     check("id-ns-desc", h->buf[0] == 3 && h->buf[1] == 16,
@@ -533,7 +534,7 @@ static void test_handshake(void)
 
     /* Unknown CNS. */
     cap_init(&c, NVME_ADMIN_IDENTIFY, 10);
-    nvme_put_le32(c.b + NVME_SQE_CDW10_OFF, 0x55);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, 0x55);
     cap_keyed_sgl(&c, HOST_BASE, NVME_IDENTIFY_SIZE, HOST_RKEY);
     nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
     check("id-bad-cns", rsp_sc(rsp) == NVME_SC_INVALID_FIELD,
@@ -541,10 +542,10 @@ static void test_handshake(void)
 
     /* Set Features: Number of Queues is clamped to what we can serve. */
     cap_init(&c, NVME_ADMIN_SET_FEATURES, 11);
-    nvme_put_le32(c.b + NVME_SQE_CDW10_OFF, NVME_FEAT_NUM_QUEUES);
-    nvme_put_le32(c.b + NVME_SQE_CDW11_OFF, 0x00ff00ff);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, NVME_FEAT_NUM_QUEUES);
+    ernic_put_le32(c.b + NVME_SQE_CDW11_OFF, 0x00ff00ff);
     nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
-    uint32_t nq = nvme_get_le32(rsp + NVME_CQE_RESULT_OFF);
+    uint32_t nq = ernic_get_le32(rsp + NVME_CQE_RESULT_OFF);
     check("set-num-queues", rsp_status(rsp) == 0, "Set Features failed");
     check("set-num-queues", (nq & 0xffff) == 7 && (nq >> 16) == 7,
           "queue count was not clamped to the configured maximum");
@@ -567,7 +568,7 @@ static void test_handshake(void)
           "unknown admin opcode was not rejected");
 
     /* The response capsule must echo the command identifier. */
-    check("cqe-cid", nvme_get_le16(rsp + NVME_CQE_CID_OFF) == 14,
+    check("cqe-cid", ernic_get_le16(rsp + NVME_CQE_CID_OFF) == 14,
           "response capsule did not echo the command id");
 
     /* A truncated capsule is a transport error, not a status. */
@@ -668,9 +669,9 @@ static void test_io(void)
     }
 
     cap_init(&c, NVME_CMD_WRITE, 20);
-    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
-    nvme_put_le64(c.b + NVME_SQE_CDW10_OFF, 16); /* SLBA */
-    nvme_put_le32(c.b + NVME_SQE_CDW12_OFF, nblocks - 1);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le64(c.b + NVME_SQE_CDW10_OFF, 16); /* SLBA */
+    ernic_put_le32(c.b + NVME_SQE_CDW12_OFF, nblocks - 1);
     cap_keyed_sgl(&c, data_addr, nbytes, HOST_RKEY);
     nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
     check("io-write", rsp_status(rsp) == 0, "Write failed");
@@ -681,9 +682,9 @@ static void test_io(void)
     memset(back, 0, nbytes);
 
     cap_init(&c, NVME_CMD_READ, 21);
-    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
-    nvme_put_le64(c.b + NVME_SQE_CDW10_OFF, 16);
-    nvme_put_le32(c.b + NVME_SQE_CDW12_OFF, nblocks - 1);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le64(c.b + NVME_SQE_CDW10_OFF, 16);
+    ernic_put_le32(c.b + NVME_SQE_CDW12_OFF, nblocks - 1);
     cap_keyed_sgl(&c, back_addr, nbytes, HOST_RKEY);
     nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
     check("io-read", rsp_status(rsp) == 0, "Read failed");
@@ -693,8 +694,8 @@ static void test_io(void)
     /* Reading an untouched LBA must give zeros, not stale data. */
     memset(back, 0xee, 512);
     cap_init(&c, NVME_CMD_READ, 22);
-    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
-    nvme_put_le64(c.b + NVME_SQE_CDW10_OFF, 1000);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le64(c.b + NVME_SQE_CDW10_OFF, 1000);
     cap_keyed_sgl(&c, back_addr, 512, HOST_RKEY);
     nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
     bool zeroed = true;
@@ -705,17 +706,17 @@ static void test_io(void)
 
     /* Write Zeroes over the middle of the pattern. */
     cap_init(&c, NVME_CMD_WRITE_ZEROES, 23);
-    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
-    nvme_put_le64(c.b + NVME_SQE_CDW10_OFF, 18);
-    nvme_put_le32(c.b + NVME_SQE_CDW12_OFF, 1); /* two blocks */
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le64(c.b + NVME_SQE_CDW10_OFF, 18);
+    ernic_put_le32(c.b + NVME_SQE_CDW12_OFF, 1); /* two blocks */
     nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
     check("io-write-zeroes", rsp_status(rsp) == 0, "Write Zeroes failed");
 
     memset(back, 0xee, nbytes);
     cap_init(&c, NVME_CMD_READ, 24);
-    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
-    nvme_put_le64(c.b + NVME_SQE_CDW10_OFF, 16);
-    nvme_put_le32(c.b + NVME_SQE_CDW12_OFF, nblocks - 1);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le64(c.b + NVME_SQE_CDW10_OFF, 16);
+    ernic_put_le32(c.b + NVME_SQE_CDW12_OFF, nblocks - 1);
     cap_keyed_sgl(&c, back_addr, nbytes, HOST_RKEY);
     nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
     check("io-write-zeroes", memcmp(back, src, 1024) == 0,
@@ -732,27 +733,27 @@ static void test_io(void)
     /* On a RAM namespace, Flush, FUA and Dataset Management are accepted
      * no-ops. */
     cap_init(&c, NVME_CMD_WRITE_ZEROES, 28);
-    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
-    nvme_put_le64(c.b + NVME_SQE_CDW10_OFF, 18);
-    nvme_put_le32(c.b + NVME_SQE_CDW12_OFF, NVME_RW_FUA);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le64(c.b + NVME_SQE_CDW10_OFF, 18);
+    ernic_put_le32(c.b + NVME_SQE_CDW12_OFF, NVME_RW_FUA);
     nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
     check("io-fua", rsp_status(rsp) == 0, "Write Zeroes with FUA failed");
 
     cap_init(&c, NVME_CMD_FLUSH, 25);
-    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
     nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
     check("io-flush", rsp_status(rsp) == 0, "Flush failed");
 
     cap_init(&c, NVME_CMD_DSM, 26);
-    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
     nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
     check("io-dsm", rsp_status(rsp) == 0, "Dataset Management failed");
 
     /* Past the end of the namespace. */
     cap_init(&c, NVME_CMD_READ, 27);
-    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
-    nvme_put_le64(c.b + NVME_SQE_CDW10_OFF, 2047);
-    nvme_put_le32(c.b + NVME_SQE_CDW12_OFF, 7); /* eight blocks, one fits */
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le64(c.b + NVME_SQE_CDW10_OFF, 2047);
+    ernic_put_le32(c.b + NVME_SQE_CDW12_OFF, 7); /* eight blocks, one fits */
     cap_keyed_sgl(&c, back_addr, nbytes, HOST_RKEY);
     nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
     check("io-lba-range", rsp_sc(rsp) == NVME_SC_LBA_RANGE,
@@ -760,8 +761,8 @@ static void test_io(void)
 
     /* Starting beyond the last block. */
     cap_init(&c, NVME_CMD_READ, 28);
-    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
-    nvme_put_le64(c.b + NVME_SQE_CDW10_OFF, 1ull << 40);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le64(c.b + NVME_SQE_CDW10_OFF, 1ull << 40);
     cap_keyed_sgl(&c, back_addr, 512, HOST_RKEY);
     nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
     check("io-lba-range", rsp_sc(rsp) == NVME_SC_LBA_RANGE,
@@ -769,7 +770,7 @@ static void test_io(void)
 
     /* Wrong namespace. */
     cap_init(&c, NVME_CMD_READ, 29);
-    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 7);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 7);
     cap_keyed_sgl(&c, back_addr, 512, HOST_RKEY);
     nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
     check("io-bad-nsid", rsp_sc(rsp) == NVME_SC_INVALID_NS,
@@ -777,7 +778,7 @@ static void test_io(void)
 
     /* A bad rkey must surface as a transfer error, not a wrong-data read. */
     cap_init(&c, NVME_CMD_READ, 30);
-    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
     cap_keyed_sgl(&c, back_addr, 512, HOST_RKEY + 1);
     nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
     check("io-bad-rkey", rsp_sc(rsp) == NVME_SC_DATA_XFER_ERROR,
@@ -785,8 +786,8 @@ static void test_io(void)
 
     /* An SGL shorter than the command's block count is malformed. */
     cap_init(&c, NVME_CMD_WRITE, 31);
-    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
-    nvme_put_le32(c.b + NVME_SQE_CDW12_OFF, 7);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_CDW12_OFF, 7);
     cap_keyed_sgl(&c, data_addr, 512, HOST_RKEY);
     nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
     check("io-short-sgl", rsp_sc(rsp) == NVME_SC_SGL_INVALID_DATA,
@@ -794,7 +795,7 @@ static void test_io(void)
 
     /* An unsupported SGL descriptor type. */
     cap_init(&c, NVME_CMD_READ, 32);
-    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
     cap_keyed_sgl(&c, back_addr, 512, HOST_RKEY);
     c.b[NVME_SQE_DPTR_OFF + 15] = NVME_SGL_TYPE_SEGMENT << 4;
     nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
@@ -803,7 +804,7 @@ static void test_io(void)
 
     /* Reading into an in-capsule descriptor is not a thing. */
     cap_init(&c, NVME_CMD_READ, 33);
-    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
     uint8_t scratch[512] = {0};
     cap_inline_sgl(&c, scratch, sizeof(scratch));
     nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
@@ -815,8 +816,8 @@ static void test_io(void)
         scratch[i] = (uint8_t)(0x40 + (i & 0x1f));
     }
     cap_init(&c, NVME_CMD_WRITE, 34);
-    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
-    nvme_put_le64(c.b + NVME_SQE_CDW10_OFF, 64);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le64(c.b + NVME_SQE_CDW10_OFF, 64);
     cap_inline_sgl(&c, scratch, sizeof(scratch));
     nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
     check("io-inline-write", rsp_status(rsp) == 0,
@@ -824,8 +825,8 @@ static void test_io(void)
 
     memset(back, 0, 512);
     cap_init(&c, NVME_CMD_READ, 35);
-    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
-    nvme_put_le64(c.b + NVME_SQE_CDW10_OFF, 64);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le64(c.b + NVME_SQE_CDW10_OFF, 64);
     cap_keyed_sgl(&c, back_addr, 512, HOST_RKEY);
     nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
     check("io-inline-write", memcmp(back, scratch, 512) == 0,
@@ -833,7 +834,7 @@ static void test_io(void)
 
     /* A capsule claiming more in-capsule data than it carries. */
     cap_init(&c, NVME_CMD_WRITE, 36);
-    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
     cap_inline_sgl(&c, scratch, sizeof(scratch));
     c.len = NVME_SQE_SIZE + 16;
     nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
@@ -889,7 +890,7 @@ static void test_discovery(void)
      */
     memset(h->buf, 0xa5, NVME_IDENTIFY_SIZE);
     cap_init(&c, NVME_ADMIN_IDENTIFY, 39);
-    nvme_put_le32(c.b + NVME_SQE_CDW10_OFF, NVME_ID_CNS_CTRL);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, NVME_ID_CNS_CTRL);
     cap_keyed_sgl(&c, HOST_BASE, NVME_IDENTIFY_SIZE, HOST_RKEY);
     nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
     check("discovery", rsp_status(rsp) == 0,
@@ -898,18 +899,18 @@ static void test_discovery(void)
           "cntrltype does not report a discovery controller");
     check("discovery", strcmp((char *)h->buf + 768, NVMEOF_DISCOVERY_NQN) == 0,
           "Identify Controller names the subsystem, not the discovery NQN");
-    check("discovery", nvme_get_le32(h->buf + 516) == 0,
+    check("discovery", ernic_get_le32(h->buf + 516) == 0,
           "a discovery controller must report nn as zero");
 
     const size_t want = NVMEOF_DISC_HDR_SIZE + NVMEOF_DISC_ENTRY_SIZE;
     memset(h->buf, 0xcc, want);
     cap_init(&c, NVME_ADMIN_GET_LOG_PAGE, 40);
-    nvme_put_le32(c.b + NVME_SQE_CDW10_OFF,
-                  NVME_LOG_DISCOVERY | (uint32_t)(((want / 4) - 1) << 16));
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF,
+                   NVME_LOG_DISCOVERY | (uint32_t)(((want / 4) - 1) << 16));
     cap_keyed_sgl(&c, HOST_BASE, (uint32_t)want, HOST_RKEY);
     nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
     check("discovery", rsp_status(rsp) == 0, "Get Log Page 0x70 failed");
-    check("discovery", nvme_get_le64(h->buf + NVMEOF_DISC_NUMREC_OFF) == 1,
+    check("discovery", ernic_get_le64(h->buf + NVMEOF_DISC_NUMREC_OFF) == 1,
           "discovery log does not report exactly one record");
 
     const uint8_t *e = h->buf + NVMEOF_DISC_HDR_SIZE;
@@ -933,10 +934,10 @@ static void test_discovery(void)
     /* The host reads the header first, then re-reads with an offset. */
     memset(h->buf, 0, want);
     cap_init(&c, NVME_ADMIN_GET_LOG_PAGE, 41);
-    nvme_put_le32(c.b + NVME_SQE_CDW10_OFF,
-                  NVME_LOG_DISCOVERY |
-                      (uint32_t)(((NVMEOF_DISC_ENTRY_SIZE / 4) - 1) << 16));
-    nvme_put_le64(c.b + NVME_SQE_CDW12_OFF, NVMEOF_DISC_HDR_SIZE);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF,
+                   NVME_LOG_DISCOVERY |
+                       (uint32_t)(((NVMEOF_DISC_ENTRY_SIZE / 4) - 1) << 16));
+    ernic_put_le64(c.b + NVME_SQE_CDW12_OFF, NVMEOF_DISC_HDR_SIZE);
     cap_keyed_sgl(&c, HOST_BASE, NVMEOF_DISC_ENTRY_SIZE, HOST_RKEY);
     nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
     check("discovery-offset", rsp_status(rsp) == 0,
@@ -947,7 +948,7 @@ static void test_discovery(void)
 
     /* An unknown log page is rejected rather than silently zero-filled. */
     cap_init(&c, NVME_ADMIN_GET_LOG_PAGE, 42);
-    nvme_put_le32(c.b + NVME_SQE_CDW10_OFF, 0x7e);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, 0x7e);
     cap_keyed_sgl(&c, HOST_BASE, 512, HOST_RKEY);
     nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
     check("discovery", rsp_sc(rsp) == NVME_SC_INVALID_FIELD,
@@ -969,9 +970,9 @@ static void write_one_block(struct nvmeof_queue *q, struct host_mem *h,
 
     memcpy(h->buf, data, 512);
     cap_init(&c, NVME_CMD_WRITE, 50);
-    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
-    nvme_put_le64(c.b + NVME_SQE_CDW10_OFF, slba);
-    nvme_put_le32(c.b + NVME_SQE_CDW12_OFF, cdw12);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le64(c.b + NVME_SQE_CDW10_OFF, slba);
+    ernic_put_le32(c.b + NVME_SQE_CDW12_OFF, cdw12);
     cap_keyed_sgl(&c, HOST_BASE, 512, HOST_RKEY);
     nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
     if (rsp_status(rsp) != 0) {
@@ -989,8 +990,8 @@ static uint16_t read_one_block(struct nvmeof_queue *q, struct host_mem *h,
 
     memset(h->buf, 0, 512);
     cap_init(&c, NVME_CMD_READ, 52);
-    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
-    nvme_put_le64(c.b + NVME_SQE_CDW10_OFF, slba);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le64(c.b + NVME_SQE_CDW10_OFF, slba);
     cap_keyed_sgl(&c, HOST_BASE, 512, HOST_RKEY);
     nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
     return rsp_status(rsp);
@@ -1004,7 +1005,7 @@ static int read_vwc(struct nvmeof_queue *aq, struct host_mem *h)
 
     memset(h->buf, 0xa5, NVME_IDENTIFY_SIZE);
     cap_init(&c, NVME_ADMIN_IDENTIFY, 54);
-    nvme_put_le32(c.b + NVME_SQE_CDW10_OFF, NVME_ID_CNS_CTRL);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, NVME_ID_CNS_CTRL);
     cap_keyed_sgl(&c, HOST_BASE, NVME_IDENTIFY_SIZE, HOST_RKEY);
     nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
     return rsp_status(rsp) == 0 ? h->buf[525] : -1;
@@ -1058,14 +1059,14 @@ static void test_file_backing(void)
 
         struct capsule c;
         cap_init(&c, NVME_CMD_WRITE_ZEROES, 53);
-        nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
-        nvme_put_le64(c.b + NVME_SQE_CDW10_OFF, 5);
-        nvme_put_le32(c.b + NVME_SQE_CDW12_OFF, NVME_RW_FUA);
+        ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+        ernic_put_le64(c.b + NVME_SQE_CDW10_OFF, 5);
+        ernic_put_le32(c.b + NVME_SQE_CDW12_OFF, NVME_RW_FUA);
         nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
         check("file-fua", rsp_status(rsp) == 0, "Write Zeroes with FUA failed");
 
         cap_init(&c, NVME_CMD_FLUSH, 51);
-        nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+        ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
         nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
         check("file-flush", rsp_status(rsp) == 0, "Flush failed");
         nvmeof_target_destroy(t);
@@ -1109,8 +1110,8 @@ static void test_file_backing(void)
 
         memset(h->buf, 0xff, 512);
         cap_init(&c, NVME_CMD_READ, 53);
-        nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
-        nvme_put_le64(c.b + NVME_SQE_CDW10_OFF, 3);
+        ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+        ernic_put_le64(c.b + NVME_SQE_CDW10_OFF, 3);
         cap_keyed_sgl(&c, HOST_BASE, 512, HOST_RKEY);
         nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
         bool zeroed = true;
@@ -1166,10 +1167,10 @@ static uint16_t io_one(struct nvmeof_queue *q, struct host_mem *h,
     uint8_t rsp[NVME_CQE_SIZE];
 
     cap_init(&c, opcode, 60);
-    nvme_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
     if (opcode != NVME_CMD_FLUSH) {
-        nvme_put_le64(c.b + NVME_SQE_CDW10_OFF, slba);
-        nvme_put_le32(c.b + NVME_SQE_CDW12_OFF, cdw12);
+        ernic_put_le64(c.b + NVME_SQE_CDW10_OFF, slba);
+        ernic_put_le32(c.b + NVME_SQE_CDW12_OFF, cdw12);
     }
     if (opcode == NVME_CMD_READ || opcode == NVME_CMD_WRITE) {
         cap_keyed_sgl(&c, HOST_BASE, 512, HOST_RKEY);

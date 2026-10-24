@@ -45,6 +45,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "byteorder.h"
 #include "ionic_datapath.h" /* IONIC_MAX_MR_QUEUES -- the queue-count ceiling */
 #include "nvmeof_target.h"
 #include "nvmeof_target_priv.h"
@@ -511,18 +512,18 @@ static bool parse_sgl(const uint8_t *sqe, struct nvmeof_sgl *sgl)
     uint8_t subtype = d[15] & 0xf;
 
     memset(sgl, 0, sizeof(*sgl));
-    sgl->addr = nvme_get_le64(d);
+    sgl->addr = ernic_get_le64(d);
 
     switch (type) {
     case NVME_SGL_TYPE_KEYED_DATA:
         sgl->keyed = true;
         sgl->length =
             (uint32_t)d[8] | ((uint32_t)d[9] << 8) | ((uint32_t)d[10] << 16);
-        sgl->key = nvme_get_le32(d + 11);
+        sgl->key = ernic_get_le32(d + 11);
         return true;
     case NVME_SGL_TYPE_DATA_BLOCK:
     case NVME_SGL_TYPE_TRANSPORT_DATA:
-        sgl->length = nvme_get_le32(d + 8);
+        sgl->length = ernic_get_le32(d + 8);
         sgl->in_capsule = (subtype == NVME_SGL_SUBTYPE_OFFSET) ||
                           (type == NVME_SGL_TYPE_TRANSPORT_DATA);
         return true;
@@ -612,34 +613,34 @@ static void build_id_ctrl(const struct nvmeof_target *t, uint8_t *buf)
     const struct nvmeof_target_cfg *c = &t->cfg;
 
     memset(buf, 0, NVME_IDENTIFY_SIZE);
-    nvme_put_le16(buf + 0, 0x1dd8); /* vid: AMD Pensando */
-    nvme_put_le16(buf + 2, 0x1dd8); /* ssvid */
+    ernic_put_le16(buf + 0, 0x1dd8); /* vid: AMD Pensando */
+    ernic_put_le16(buf + 2, 0x1dd8); /* ssvid */
     ascii_field(buf + 4, 20, c->serial);
     ascii_field(buf + 24, 40, c->model);
     ascii_field(buf + 64, 8, "1.0");
     buf[72] = 6; /* rab */
     buf[77] = NVMEOF_MDTS;
-    nvme_put_le16(buf + 78, NVMEOF_CNTLID);
-    nvme_put_le32(buf + 80, 0x00010400); /* ver: 1.4.0 */
+    ernic_put_le16(buf + 78, NVMEOF_CNTLID);
+    ernic_put_le32(buf + 80, 0x00010400); /* ver: 1.4.0 */
 
     buf[111] = t->ctrl.discovery ? 2 : 1; /* cntrltype */
 
-    nvme_put_le16(buf + 256, 0); /* oacs */
-    buf[259] = 3;                /* aerl */
-    buf[261] = 0x02;             /* lpa: no extended data */
-    buf[262] = 0;                /* elpe */
+    ernic_put_le16(buf + 256, 0); /* oacs */
+    buf[259] = 3;                 /* aerl */
+    buf[261] = 0x02;              /* lpa: no extended data */
+    buf[262] = 0;                 /* elpe */
 
     /* Keep Alive is mandatory over fabrics.  KAS is in 100ms units, so this
      * is a 1s granularity, matching what nvmet advertises; the host's default
      * KATO is 5s. */
-    nvme_put_le16(buf + 320, 10); /* kas, in 100ms units */
+    ernic_put_le16(buf + 320, 10); /* kas, in 100ms units */
 
-    buf[512] = 0x66;                                     /* sqes: 64B fixed */
-    buf[513] = 0x44;                                     /* cqes: 16B fixed */
-    nvme_put_le16(buf + 514, t->cfg.queue_depth);        /* maxcmd */
-    nvme_put_le32(buf + 516, t->ctrl.discovery ? 0 : 1); /* nn */
-    nvme_put_le16(buf + 520, 0x0008); /* oncs: Write Zeroes */
-    buf[524] = 0;                     /* fna */
+    buf[512] = 0x66;                                      /* sqes: 64B fixed */
+    buf[513] = 0x44;                                      /* cqes: 16B fixed */
+    ernic_put_le16(buf + 514, t->cfg.queue_depth);        /* maxcmd */
+    ernic_put_le32(buf + 516, t->ctrl.discovery ? 0 : 1); /* nn */
+    ernic_put_le16(buf + 520, 0x0008); /* oncs: Write Zeroes */
+    buf[524] = 0;                      /* fna */
 
     /*
      * vwc: a file-backed namespace has one, the host page cache, so say so
@@ -653,7 +654,7 @@ static void build_id_ctrl(const struct nvmeof_target *t, uint8_t *buf)
      * sgls: supported (bit 0), keyed SGLs (bit 2, which nvme-rdma treats
      * as mandatory), and SGL address-as-offset (bit 20) for in-capsule.
      */
-    nvme_put_le32(buf + 536, (1u << 0) | (1u << 2) | (1u << 20));
+    ernic_put_le32(buf + 536, (1u << 0) | (1u << 2) | (1u << 20));
 
     /*
      * A discovery association has to name the discovery NQN here.  Linux
@@ -664,11 +665,11 @@ static void build_id_ctrl(const struct nvmeof_target *t, uint8_t *buf)
     snprintf((char *)buf + 768, 256, "%s",
              t->ctrl.discovery ? NVMEOF_DISCOVERY_NQN : c->subnqn);
 
-    nvme_put_le32(buf + 1792, 4); /* ioccsz: 64 bytes, no in-capsule data */
-    nvme_put_le32(buf + 1796, 1); /* iorcsz: 16 bytes */
-    nvme_put_le16(buf + 1800, 0); /* icdoff */
-    buf[1802] = 0;                /* ctrattr */
-    buf[1803] = 1;                /* msdbd */
+    ernic_put_le32(buf + 1792, 4); /* ioccsz: 64 bytes, no in-capsule data */
+    ernic_put_le32(buf + 1796, 1); /* iorcsz: 16 bytes */
+    ernic_put_le16(buf + 1800, 0); /* icdoff */
+    buf[1802] = 0;                 /* ctrattr */
+    buf[1803] = 1;                 /* msdbd */
 }
 
 static void build_id_ns(const struct nvmeof_target *t, uint8_t *buf)
@@ -676,18 +677,18 @@ static void build_id_ns(const struct nvmeof_target *t, uint8_t *buf)
     uint64_t blocks = t->cfg.size / t->cfg.block_size;
 
     memset(buf, 0, NVME_IDENTIFY_SIZE);
-    nvme_put_le64(buf + 0, blocks);  /* nsze */
-    nvme_put_le64(buf + 8, blocks);  /* ncap */
-    nvme_put_le64(buf + 16, blocks); /* nuse */
-    buf[24] = 0;                     /* nsfeat */
-    buf[25] = 0;                     /* nlbaf: one format */
-    buf[26] = 0;                     /* flbas: format 0 */
-    buf[27] = 0;                     /* mc */
-    buf[28] = 0;                     /* dpc */
-    buf[29] = 0;                     /* dps */
+    ernic_put_le64(buf + 0, blocks);  /* nsze */
+    ernic_put_le64(buf + 8, blocks);  /* ncap */
+    ernic_put_le64(buf + 16, blocks); /* nuse */
+    buf[24] = 0;                      /* nsfeat */
+    buf[25] = 0;                      /* nlbaf: one format */
+    buf[26] = 0;                      /* flbas: format 0 */
+    buf[27] = 0;                      /* mc */
+    buf[28] = 0;                      /* dpc */
+    buf[29] = 0;                      /* dps */
 
     /* LBA format 0: ms = 0, lbads = log2(block size), rp = best. */
-    nvme_put_le16(buf + 128, 0);
+    ernic_put_le16(buf + 128, 0);
     buf[130] = lba_shift(t->cfg.block_size);
     buf[131] = 0;
 }
@@ -724,9 +725,9 @@ static void build_discovery_log(const struct nvmeof_target *t, uint8_t *buf,
     if (len < NVMEOF_DISC_HDR_SIZE) {
         return;
     }
-    nvme_put_le64(buf + NVMEOF_DISC_GENCTR_OFF, 1);
-    nvme_put_le64(buf + NVMEOF_DISC_NUMREC_OFF, 1);
-    nvme_put_le16(buf + NVMEOF_DISC_RECFMT_OFF, 0);
+    ernic_put_le64(buf + NVMEOF_DISC_GENCTR_OFF, 1);
+    ernic_put_le64(buf + NVMEOF_DISC_NUMREC_OFF, 1);
+    ernic_put_le16(buf + NVMEOF_DISC_RECFMT_OFF, 0);
 
     if (len < NVMEOF_DISC_HDR_SIZE + NVMEOF_DISC_ENTRY_SIZE) {
         return;
@@ -736,9 +737,9 @@ static void build_discovery_log(const struct nvmeof_target *t, uint8_t *buf,
     e[NVMEOF_DISC_E_ADRFAM_OFF] = NVMEOF_ADRFAM_IPV4;
     e[NVMEOF_DISC_E_SUBTYPE_OFF] = NVMEOF_SUBTYPE_NVME;
     e[NVMEOF_DISC_E_TREQ_OFF] = 0;
-    nvme_put_le16(e + NVMEOF_DISC_E_PORTID_OFF, 1);
-    nvme_put_le16(e + NVMEOF_DISC_E_CNTLID_OFF, 0xffff); /* dynamic */
-    nvme_put_le16(e + NVMEOF_DISC_E_ASQSZ_OFF, t->cfg.queue_depth);
+    ernic_put_le16(e + NVMEOF_DISC_E_PORTID_OFF, 1);
+    ernic_put_le16(e + NVMEOF_DISC_E_CNTLID_OFF, 0xffff); /* dynamic */
+    ernic_put_le16(e + NVMEOF_DISC_E_ASQSZ_OFF, t->cfg.queue_depth);
     snprintf((char *)e + NVMEOF_DISC_E_TRSVCID_OFF, 32, "%u", t->cfg.trsvcid);
     snprintf((char *)e + NVMEOF_DISC_E_SUBNQN_OFF, 256, "%s", t->cfg.subnqn);
     snprintf((char *)e + NVMEOF_DISC_E_TRADDR_OFF, 256, "%u.%u.%u.%u",
@@ -749,7 +750,7 @@ static void build_discovery_log(const struct nvmeof_target *t, uint8_t *buf,
     tsas[0] = NVMEOF_RDMA_QPTYPE_CONNECTED;
     tsas[1] = NVMEOF_RDMA_PRTYPE_NONE;
     tsas[2] = NVMEOF_RDMA_CMS_RDMA_CM;
-    nvme_put_le16(tsas + 8, 0xffff); /* pkey */
+    ernic_put_le16(tsas + 8, 0xffff); /* pkey */
 }
 
 /* ------------------------------------------------------------------ */
@@ -771,10 +772,10 @@ static uint16_t do_connect(struct nvmeof_queue *q, const uint8_t *sqe,
                            uint8_t *rsp)
 {
     struct nvmeof_target *t = q->target;
-    uint16_t recfmt = nvme_get_le16(sqe + NVMEOF_CONNECT_RECFMT_OFF);
-    uint16_t qid = nvme_get_le16(sqe + NVMEOF_CONNECT_QID_OFF);
-    uint16_t sqsize = nvme_get_le16(sqe + NVMEOF_CONNECT_SQSIZE_OFF);
-    uint32_t kato = nvme_get_le32(sqe + NVMEOF_CONNECT_KATO_OFF);
+    uint16_t recfmt = ernic_get_le16(sqe + NVMEOF_CONNECT_RECFMT_OFF);
+    uint16_t qid = ernic_get_le16(sqe + NVMEOF_CONNECT_QID_OFF);
+    uint16_t sqsize = ernic_get_le16(sqe + NVMEOF_CONNECT_SQSIZE_OFF);
+    uint32_t kato = ernic_get_le32(sqe + NVMEOF_CONNECT_KATO_OFF);
 
     if (recfmt != 0) {
         return nvme_status(NVME_SCT_CMD_SPECIFIC, NVMEOF_SC_CONNECT_FORMAT, 1);
@@ -852,7 +853,7 @@ static uint16_t do_connect(struct nvmeof_queue *q, const uint8_t *sqe,
     t->stats.connects++;
 
     /* Connect returns the controller ID in the low half of the result. */
-    nvme_put_le16(rsp + NVME_CQE_RESULT_OFF, NVMEOF_CNTLID);
+    ernic_put_le16(rsp + NVME_CQE_RESULT_OFF, NVMEOF_CNTLID);
     return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
 }
 
@@ -861,7 +862,7 @@ static uint16_t do_property_get(struct nvmeof_queue *q, const uint8_t *sqe,
 {
     struct nvmeof_target *t = q->target;
     uint8_t attrib = sqe[NVMEOF_PROP_ATTRIB_OFF];
-    uint32_t off = nvme_get_le32(sqe + NVMEOF_PROP_OFFSET_OFF);
+    uint32_t off = ernic_get_le32(sqe + NVMEOF_PROP_OFFSET_OFF);
     uint64_t v;
 
     switch (off) {
@@ -884,7 +885,7 @@ static uint16_t do_property_get(struct nvmeof_queue *q, const uint8_t *sqe,
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_INVALID_FIELD, 1);
     }
 
-    nvme_put_le64(rsp + NVME_CQE_RESULT_OFF, v);
+    ernic_put_le64(rsp + NVME_CQE_RESULT_OFF, v);
     return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
 }
 
@@ -916,8 +917,8 @@ static uint16_t ns_sync(struct nvmeof_target *t, uint64_t off, uint64_t len)
 static uint16_t do_property_set(struct nvmeof_queue *q, const uint8_t *sqe)
 {
     struct nvmeof_target *t = q->target;
-    uint32_t off = nvme_get_le32(sqe + NVMEOF_PROP_OFFSET_OFF);
-    uint64_t val = nvme_get_le64(sqe + NVMEOF_PROP_VALUE_OFF);
+    uint32_t off = ernic_get_le32(sqe + NVMEOF_PROP_OFFSET_OFF);
+    uint64_t val = ernic_get_le64(sqe + NVMEOF_PROP_VALUE_OFF);
 
     if (off != NVMEOF_PROP_CC) {
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_INVALID_FIELD, 1);
@@ -991,8 +992,8 @@ static uint16_t do_identify(struct nvmeof_queue *q, const uint8_t *sqe,
                             const struct nvmeof_dma_ops *dma, void *ctx)
 {
     struct nvmeof_target *t = q->target;
-    uint32_t cdw10 = nvme_get_le32(sqe + NVME_SQE_CDW10_OFF);
-    uint32_t nsid = nvme_get_le32(sqe + NVME_SQE_NSID_OFF);
+    uint32_t cdw10 = ernic_get_le32(sqe + NVME_SQE_CDW10_OFF);
+    uint32_t nsid = ernic_get_le32(sqe + NVME_SQE_NSID_OFF);
     uint8_t cns = cdw10 & 0xff;
     uint8_t buf[NVME_IDENTIFY_SIZE];
 
@@ -1015,7 +1016,7 @@ static uint16_t do_identify(struct nvmeof_queue *q, const uint8_t *sqe,
     case NVME_ID_CNS_NS_ACTIVE_LIST:
         memset(buf, 0, sizeof(buf));
         if (!t->ctrl.discovery && nsid < t->cfg.nsid) {
-            nvme_put_le32(buf, t->cfg.nsid);
+            ernic_put_le32(buf, t->cfg.nsid);
         }
         break;
     case NVME_ID_CNS_NS_DESC_LIST:
@@ -1035,15 +1036,15 @@ static uint16_t do_get_log_page(struct nvmeof_queue *q, const uint8_t *sqe,
                                 const struct nvmeof_dma_ops *dma, void *ctx)
 {
     struct nvmeof_target *t = q->target;
-    uint32_t cdw10 = nvme_get_le32(sqe + NVME_SQE_CDW10_OFF);
-    uint32_t cdw11 = nvme_get_le32(sqe + NVME_SQE_CDW11_OFF);
+    uint32_t cdw10 = ernic_get_le32(sqe + NVME_SQE_CDW10_OFF);
+    uint32_t cdw11 = ernic_get_le32(sqe + NVME_SQE_CDW11_OFF);
     uint8_t lid = cdw10 & 0xff;
 
     /* NUMD is a 0-based count of dwords split across cdw10 and cdw11. */
     uint64_t numd =
         ((cdw10 >> 16) & 0xffff) | ((uint64_t)(cdw11 & 0xffff) << 16);
     uint64_t want = (numd + 1) * 4;
-    uint64_t off = nvme_get_le64(sqe + NVME_SQE_CDW12_OFF);
+    uint64_t off = ernic_get_le64(sqe + NVME_SQE_CDW12_OFF);
 
     struct nvmeof_sgl sgl;
     if (!parse_sgl(sqe, &sgl)) {
@@ -1102,8 +1103,8 @@ static uint16_t do_set_features(struct nvmeof_queue *q, const uint8_t *sqe,
                                 uint8_t *rsp)
 {
     struct nvmeof_target *t = q->target;
-    uint32_t cdw10 = nvme_get_le32(sqe + NVME_SQE_CDW10_OFF);
-    uint32_t cdw11 = nvme_get_le32(sqe + NVME_SQE_CDW11_OFF);
+    uint32_t cdw10 = ernic_get_le32(sqe + NVME_SQE_CDW10_OFF);
+    uint32_t cdw11 = ernic_get_le32(sqe + NVME_SQE_CDW11_OFF);
     uint8_t fid = cdw10 & 0xff;
 
     switch (fid) {
@@ -1120,16 +1121,16 @@ static uint16_t do_set_features(struct nvmeof_queue *q, const uint8_t *sqe,
         }
         t->ctrl.num_io_queues =
             (uint16_t)((want_sq < want_cq ? want_sq : want_cq) + 1);
-        nvme_put_le32(rsp + NVME_CQE_RESULT_OFF,
-                      (uint32_t)want_sq | ((uint32_t)want_cq << 16));
+        ernic_put_le32(rsp + NVME_CQE_RESULT_OFF,
+                       (uint32_t)want_sq | ((uint32_t)want_cq << 16));
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
     }
     case NVME_FEAT_ASYNC_EVENT:
-        nvme_put_le32(rsp + NVME_CQE_RESULT_OFF, cdw11);
+        ernic_put_le32(rsp + NVME_CQE_RESULT_OFF, cdw11);
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
     case NVME_FEAT_KATO:
         t->ctrl.kato = cdw11;
-        nvme_put_le32(rsp + NVME_CQE_RESULT_OFF, cdw11);
+        ernic_put_le32(rsp + NVME_CQE_RESULT_OFF, cdw11);
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
     default:
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_INVALID_FIELD, 1);
@@ -1140,7 +1141,7 @@ static uint16_t do_get_features(struct nvmeof_queue *q, const uint8_t *sqe,
                                 uint8_t *rsp)
 {
     struct nvmeof_target *t = q->target;
-    uint32_t cdw10 = nvme_get_le32(sqe + NVME_SQE_CDW10_OFF);
+    uint32_t cdw10 = ernic_get_le32(sqe + NVME_SQE_CDW10_OFF);
     uint8_t fid = cdw10 & 0xff;
     uint16_t n;
 
@@ -1148,14 +1149,14 @@ static uint16_t do_get_features(struct nvmeof_queue *q, const uint8_t *sqe,
     case NVME_FEAT_NUM_QUEUES:
         n = (uint16_t)(t->ctrl.num_io_queues > 0 ? t->ctrl.num_io_queues - 1
                                                  : 0);
-        nvme_put_le32(rsp + NVME_CQE_RESULT_OFF,
-                      (uint32_t)n | ((uint32_t)n << 16));
+        ernic_put_le32(rsp + NVME_CQE_RESULT_OFF,
+                       (uint32_t)n | ((uint32_t)n << 16));
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
     case NVME_FEAT_KATO:
-        nvme_put_le32(rsp + NVME_CQE_RESULT_OFF, t->ctrl.kato);
+        ernic_put_le32(rsp + NVME_CQE_RESULT_OFF, t->ctrl.kato);
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
     case NVME_FEAT_ASYNC_EVENT:
-        nvme_put_le32(rsp + NVME_CQE_RESULT_OFF, 0);
+        ernic_put_le32(rsp + NVME_CQE_RESULT_OFF, 0);
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
     default:
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_INVALID_FIELD, 1);
@@ -1186,7 +1187,7 @@ static int exec_admin(struct nvmeof_queue *q, const uint8_t *capsule,
         return NVMEOF_EXEC_DONE;
     case NVME_ADMIN_ABORT:
         /* Nothing is ever queued long enough to abort; report not-found. */
-        nvme_put_le32(rsp + NVME_CQE_RESULT_OFF, 1);
+        ernic_put_le32(rsp + NVME_CQE_RESULT_OFF, 1);
         *status = nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
         return NVMEOF_EXEC_DONE;
     case NVME_ADMIN_ASYNC_EVENT:
@@ -1208,8 +1209,8 @@ static int exec_admin(struct nvmeof_queue *q, const uint8_t *capsule,
 static uint16_t io_range(struct nvmeof_target *t, const uint8_t *sqe,
                          uint64_t *off, uint64_t *len)
 {
-    uint64_t slba = nvme_get_le64(sqe + NVME_SQE_CDW10_OFF);
-    uint32_t nlb = (nvme_get_le32(sqe + NVME_SQE_CDW12_OFF) & 0xffff) + 1u;
+    uint64_t slba = ernic_get_le64(sqe + NVME_SQE_CDW10_OFF);
+    uint32_t nlb = (ernic_get_le32(sqe + NVME_SQE_CDW12_OFF) & 0xffff) + 1u;
 
     uint64_t blocks = t->cfg.size / t->cfg.block_size;
     if (slba >= blocks || nlb > blocks - slba) {
@@ -1226,13 +1227,14 @@ static uint16_t exec_io(struct nvmeof_queue *q, const uint8_t *capsule,
 {
     struct nvmeof_target *t = q->target;
     uint8_t opcode = capsule[NVME_SQE_OPCODE_OFF];
-    uint32_t nsid = nvme_get_le32(capsule + NVME_SQE_NSID_OFF);
+    uint32_t nsid = ernic_get_le32(capsule + NVME_SQE_NSID_OFF);
     uint64_t off, len;
     uint16_t st;
 
     /* FUA on a Read asks for the media's copy, which the mapping already
      * is, so only writes act on it. */
-    bool fua = (nvme_get_le32(capsule + NVME_SQE_CDW12_OFF) & NVME_RW_FUA) != 0;
+    bool fua =
+        (ernic_get_le32(capsule + NVME_SQE_CDW12_OFF) & NVME_RW_FUA) != 0;
 
     t->stats.io_cmds++;
 
@@ -1316,7 +1318,7 @@ int nvmeof_queue_exec(struct nvmeof_queue *q, const void *capsule, size_t len,
 
     struct nvmeof_target *t = q->target;
     uint8_t opcode = sqe[NVME_SQE_OPCODE_OFF];
-    uint16_t cid = nvme_get_le16(sqe + NVME_SQE_CID_OFF);
+    uint16_t cid = ernic_get_le16(sqe + NVME_SQE_CID_OFF);
     uint16_t status;
     int rc;
 
@@ -1352,9 +1354,9 @@ int nvmeof_queue_exec(struct nvmeof_queue *q, const void *capsule, size_t len,
         q->sq_head = (uint16_t)((q->sq_head + 1u) % ((uint32_t)q->sqsize + 1u));
     }
 
-    nvme_put_le16(out + NVME_CQE_SQHD_OFF, q->sq_head);
-    nvme_put_le16(out + NVME_CQE_SQID_OFF, q->qid);
-    nvme_put_le16(out + NVME_CQE_CID_OFF, cid);
-    nvme_put_le16(out + NVME_CQE_STATUS_OFF, status);
+    ernic_put_le16(out + NVME_CQE_SQHD_OFF, q->sq_head);
+    ernic_put_le16(out + NVME_CQE_SQID_OFF, q->qid);
+    ernic_put_le16(out + NVME_CQE_CID_OFF, cid);
+    ernic_put_le16(out + NVME_CQE_STATUS_OFF, status);
     return NVMEOF_EXEC_DONE;
 }
