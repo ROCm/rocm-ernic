@@ -143,6 +143,7 @@ enum p4_extern_type {
 /* The methods those types have, as one space: a primitive names both. */
 enum p4_extern_method {
     P4_EXTERN_FP8_MAP = 0,
+    P4_EXTERN_FP8_CVT = 1,
 };
 
 struct p4_extern_inst {

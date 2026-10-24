@@ -59,6 +59,19 @@ enum p4_fp8_op {
     P4_FP8_OP_MAX = 2,
 };
 
+/*
+ * The 16-bit source formats a conversion reads.
+ *
+ * Both are laid out in guest memory as an ordinary array, so each element
+ * is read little-endian -- the order a driver filling the region writes
+ * it in -- rather than in a wire order.
+ */
+enum p4_fp8_src_fmt {
+    P4_FP8_SRC_FP16 =
+        0, /* IEEE 754 binary16: 1 sign, 5 exponent, 10 significand */
+    P4_FP8_SRC_BF16 = 1, /* bfloat16: 1 sign, 8 exponent, 7 significand */
+};
+
 /* True when @v is one of the two NaN encodings. */
 bool p4_fp8_is_nan(uint8_t v);
 
@@ -102,5 +115,25 @@ bool p4_fp8_map(enum p4_fp8_op op, const uint8_t *a, const uint8_t *b, size_t n,
  */
 bool p4_fp8_reduce(enum p4_fp8_op op, const uint8_t *a, const uint8_t *b,
                    size_t n, uint8_t *out);
+
+/* Decode one little-endian 16-bit value of @fmt to float. */
+float p4_fp8_src_to_float(enum p4_fp8_src_fmt fmt, const uint8_t in[2]);
+
+/*
+ * Convert @n 16-bit values at @in to @n fp8 values at @out, so @in is
+ * 2 * @n bytes and @out is @n.
+ *
+ * This is a narrowing conversion and takes the same conventions as the
+ * rest of the file: round to nearest with ties to even, a magnitude above
+ * E4M3's range saturates to +/-448 rather than becoming NaN, and a NaN
+ * stays NaN.  An infinity -- which fp16 has and E4M3 does not -- saturates
+ * too, for the reason overflow does: in a reduction one infinity must not
+ * take the rest of the buffer with it.
+ *
+ * @out may not alias @in.  Returns false and writes nothing on a bad
+ * argument.
+ */
+bool p4_fp8_convert(enum p4_fp8_src_fmt fmt, const uint8_t *in, size_t n,
+                    uint8_t *out);
 
 #endif /* P4_FP8_H */

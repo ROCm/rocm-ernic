@@ -1303,6 +1303,60 @@ int ionic_datapath_fp8_map(struct ionic_datapath *dp, uint8_t op,
 
     return 0;
 }
+
+int ionic_datapath_fp8_cvt(struct ionic_datapath *dp, uint8_t fmt,
+                           uint32_t a_lkey, uint64_t a_va, uint32_t in_len,
+                           uint32_t c_rkey, uint64_t c_va)
+{
+    /*
+     * Two source bytes per result byte, so the input block is twice the
+     * output block.  Both still fit a poll-loop thread's stack easily.
+     */
+    uint8_t in[FP8_MAP_CHUNK * 2u];
+    uint8_t out[FP8_MAP_CHUNK];
+    uint32_t out_len;
+    uint32_t done = 0;
+
+    if (!dp || in_len == 0)
+        return -EINVAL;
+    /* A half-element tail is not 16-bit data, whatever the program meant. */
+    if (in_len % 2u != 0)
+        return -EINVAL;
+
+    out_len = in_len / 2u;
+    if (out_len > IONIC_FP8_MAP_MAX)
+        return -EINVAL;
+
+    /*
+     * The source is twice the destination here, which is the whole reason
+     * this is a separate entry point: checking one length against both
+     * regions, as the map does, would read a region half again too far.
+     */
+    if (!fp8_key_ok(dp, a_lkey, a_va, in_len) ||
+        !fp8_key_ok(dp, c_rkey, c_va, out_len))
+        return -EACCES;
+
+    while (done < out_len) {
+        uint32_t n = out_len - done;
+
+        if (n > FP8_MAP_CHUNK)
+            n = FP8_MAP_CHUNK;
+
+        if (dp_sge_to_host(dp, a_lkey, a_va + (uint64_t)done * 2u, in,
+                           n * 2u) != n * 2u)
+            return -EFAULT;
+
+        if (!p4_fp8_convert((enum p4_fp8_src_fmt)fmt, in, n, out))
+            return -EINVAL;
+
+        if (dp_host_to_sge(dp, c_rkey, c_va + done, out, n) != n)
+            return -EFAULT;
+
+        done += n;
+    }
+
+    return 0;
+}
 #endif /* ERNIC_HAVE_P4 */
 
 /* -------------------------------------------------------------------------
@@ -2859,12 +2913,59 @@ static int dp_p4_fp8_map(struct dp_p4_ctx *c, uint8_t sel)
                                   c->src->len[0], be32toh(rkey), remote_va);
 }
 
+/*
+ * The operand convention for a conversion.
+ *
+ * An RDMA WRITE whose gather list has exactly ONE entry: that is the
+ * source, and the WQE's rkey and virtual address are the destination.
+ * One entry rather than two is what tells a conversion from a reduction,
+ * and it is the shape a driver produces for an ordinary one-buffer write,
+ * so a program that selects a conversion gets it from a work request the
+ * guest could already post.
+ *
+ * The destination is half the source, because this narrows 16-bit values
+ * to 8-bit ones.  That is the one place the architecture's "three regions
+ * of length N" does not hold, so the length is not checked against the
+ * destination here -- ionic_datapath_fp8_cvt() checks each region against
+ * its own length.
+ */
+static int dp_p4_fp8_cvt(struct dp_p4_ctx *c, uint8_t fmt)
+{
+    /* As in dp_p4_fp8_map(): neither of these is an error, they say the
+     * request is an ordinary transfer rather than a conversion. */
+    if (c->op != IONIC_V1_OP_RDMA_WRITE && c->op != IONIC_V1_OP_RDMA_WRITE_IMM)
+        return DP_P4_NOT_COMPUTE;
+    if (c->src->count != 1)
+        return DP_P4_NOT_COMPUTE;
+
+    if (c->read_sz < WQE_SEND_LEN_OFF + 4u)
+        return -EINVAL;
+
+    uint32_t va_hi, va_lo, rkey, length;
+    memcpy(&va_hi, c->wqe + WQE_RDMA_VA_HI_OFF, 4);
+    memcpy(&va_lo, c->wqe + WQE_RDMA_VA_LO_OFF, 4);
+    memcpy(&rkey, c->wqe + WQE_RDMA_RKEY_OFF, 4);
+    memcpy(&length, c->wqe + WQE_SEND_LEN_OFF, 4);
+
+    uint64_t remote_va = ((uint64_t)be32toh(va_hi) << 32) | be32toh(va_lo);
+
+    /* The driver sums the gather list into the length field; with one
+     * entry that is the source length, and it has to agree. */
+    if (be32toh(length) != c->src->total)
+        return -EINVAL;
+
+    return ionic_datapath_fp8_cvt(c->dp, fmt, c->src->lkey[0], c->src->va[0],
+                                  c->src->len[0], be32toh(rkey), remote_va);
+}
+
 static int dp_p4_extern_call(void *ctx, uint8_t type, uint8_t method,
                              const struct p4_value *args, uint8_t nargs)
 {
     struct dp_p4_ctx *c = ctx;
 
-    if (type != P4_EXTERN_FP8 || method != P4_EXTERN_FP8_MAP || nargs != 1)
+    if (type != P4_EXTERN_FP8 || nargs != 1)
+        return -ENOSYS;
+    if (method != P4_EXTERN_FP8_MAP && method != P4_EXTERN_FP8_CVT)
         return -ENOSYS;
 
     /*
@@ -2877,7 +2978,9 @@ static int dp_p4_extern_call(void *ctx, uint8_t type, uint8_t method,
         if (args[0].b[i])
             return -EINVAL;
 
-    int rc = dp_p4_fp8_map(c, args[0].b[P4_VALUE_BYTES - 1]);
+    uint8_t sel = args[0].b[P4_VALUE_BYTES - 1];
+    int rc = (method == P4_EXTERN_FP8_MAP) ? dp_p4_fp8_map(c, sel)
+                                           : dp_p4_fp8_cvt(c, sel);
     if (rc == 0)
         c->ran = true;
     return rc;

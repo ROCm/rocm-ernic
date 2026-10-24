@@ -1327,7 +1327,8 @@ set(ERNIC_HARNESS_GROUPS
     devcmds bringup rdma-reset admin rc atomic cq-events qp-flush
     qp-flush-srq ud srq eth nvmeof teardown)
 if(ERNIC_BUILD_P4)
-    list(APPEND ERNIC_HARNESS_GROUPS p4-port fp8-map p4-rdma p4-devcmd)
+    list(APPEND ERNIC_HARNESS_GROUPS p4-port fp8-map p4-rdma p4-cvt
+                                      p4-devcmd)
 endif()
 foreach(ernic_harness_group IN LISTS ERNIC_HARNESS_GROUPS)
     add_test(

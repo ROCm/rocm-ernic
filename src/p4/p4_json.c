@@ -1074,19 +1074,23 @@ static const struct {
     uint8_t kind;
     uint8_t min_params;
     uint8_t max_params;
+    /* Only meaningful for P4_PRIM_EXTERN; the name that matched is what
+     * says which method was called. */
+    uint8_t method;
 } p4_primitives[] = {
-    {"assign", P4_PRIM_ASSIGN, 2, 2},
-    {"modify_field", P4_PRIM_ASSIGN, 2, 2},
-    {"add", P4_PRIM_ADD, 3, 3},
-    {"add_to_field", P4_PRIM_ADD, 2, 2},
-    {"subtract", P4_PRIM_SUB, 3, 3},
-    {"subtract_from_field", P4_PRIM_SUB, 2, 2},
-    {"drop", P4_PRIM_DROP, 0, 1},
-    {"mark_to_drop", P4_PRIM_DROP, 0, 1},
-    {"no_op", P4_PRIM_NOP, 0, 0},
+    {"assign", P4_PRIM_ASSIGN, 2, 2, 0},
+    {"modify_field", P4_PRIM_ASSIGN, 2, 2, 0},
+    {"add", P4_PRIM_ADD, 3, 3, 0},
+    {"add_to_field", P4_PRIM_ADD, 2, 2, 0},
+    {"subtract", P4_PRIM_SUB, 3, 3, 0},
+    {"subtract_from_field", P4_PRIM_SUB, 2, 2, 0},
+    {"drop", P4_PRIM_DROP, 0, 1, 0},
+    {"mark_to_drop", P4_PRIM_DROP, 0, 1, 0},
+    {"no_op", P4_PRIM_NOP, 0, 0, 0},
     /* The call form p4c emits for an extern: _<Type>_<method>, with the
      * instance as the first parameter. */
-    {"_Fp8_map", P4_PRIM_EXTERN, 2, 2},
+    {"_Fp8_map", P4_PRIM_EXTERN, 2, 2, P4_EXTERN_FP8_MAP},
+    {"_Fp8_cvt", P4_PRIM_EXTERN, 2, 2, P4_EXTERN_FP8_CVT},
 };
 
 /* One operand of a primitive. */
@@ -1389,8 +1393,7 @@ static int p4_walk_actions(struct p4_walk *w, struct json_object *root)
                                p4_primitives[which].max_params);
 
             pd->kind = p4_primitives[which].kind;
-            /* One method today, so the name that matched is the method. */
-            pd->method = P4_EXTERN_FP8_MAP;
+            pd->method = p4_primitives[which].method;
 
             /* drop's parameter, where there is one, says nothing the
              * primitive does not already say. */

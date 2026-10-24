@@ -127,6 +127,38 @@ an elementwise fp8 add across three memory regions, and
 changing the one table entry changes the arithmetic with no
 change to the device.
 
+Narrowing: fp16 and bf16 to fp8
+```````````````````````````````
+
+The extern's other method, ``cvt(fmt)``, reads **one**
+region of 16-bit floating point and writes a result half as
+long -- one fp8 byte per source element. The table entry
+says which format the source is in: ``0`` for IEEE
+binary16, ``1`` for bfloat16.
+
+The operand convention follows from that: an RDMA write
+whose gather list has exactly **one** entry is the source,
+and the work request's rkey and address are the
+destination. One entry rather than two is what tells a
+conversion from a reduction, and it is the shape a driver
+already produces for an ordinary one-buffer write, so a
+program selecting a conversion gets it from a work request
+the guest could already post.
+
+This is the only operation whose destination is not the
+same length as its source. Each region is checked against
+its own length, and nothing beyond the result is written.
+
+The narrowing conventions are the file's own: round to
+nearest with ties to even, a magnitude above E4M3's range
+saturates to +/-448 rather than becoming NaN, and a NaN
+stays NaN. An infinity -- which fp16 has and E4M3 does not
+-- saturates too, for the same reason overflow does. Each
+element is converted on its own, so one infinity or NaN does
+not disturb its neighbours.
+
+``tests/data/p4/fp8_convert.p4`` is the worked example.
+
 What is not built yet: checksums and calculations; negative
 literals in actions; and counters, meters, registers and
 action profiles. Each is refused by name rather than ignored.
