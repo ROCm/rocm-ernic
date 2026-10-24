@@ -3036,8 +3036,16 @@ static uint32_t dp_p4_policy(struct ionic_datapath *dp, uint32_t qp_id,
      *
      * Failing here instead is what made a guest that installed a reduce
      * entry unable to do an ordinary RDMA WRITE on any QP of the device.
+     *
+     * Only when NOTHING ran, though.  An action may call the extern more
+     * than once -- cvt() and then map(), say -- and the first call can
+     * have written the destination before the second declined.  Falling
+     * through then would put the ordinary transfer on top of a result
+     * that is already there, and report success, which is the very thing
+     * the ctx.ran check below exists to prevent.  An operation that got
+     * that far is failed instead.
      */
-    if (rc == DP_P4_NOT_COMPUTE)
+    if (rc == DP_P4_NOT_COMPUTE && !ctx.ran)
         return IONIC_STS_OK;
     if (rc < 0) {
         vfu_log(dp->vfu_ctx, LOG_WARNING,

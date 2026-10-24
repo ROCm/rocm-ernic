@@ -54,8 +54,14 @@ enum p4_fmt {
     P4_FMT_COUNT
 };
 
-/* True when @f is a format this target has. */
-bool p4_fmt_valid(uint8_t f);
+/*
+ * True when @f is a format this target has.
+ *
+ * Takes the enum rather than a byte: the value has to be checked before
+ * anything narrows it, or a wider bad value validates as a narrow good
+ * one and then indexes the table with the original.
+ */
+bool p4_fmt_valid(enum p4_fmt f);
 
 /*
  * Bits one element occupies.  4 for FP4, which is the only one narrower

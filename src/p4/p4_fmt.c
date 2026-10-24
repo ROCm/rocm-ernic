@@ -48,16 +48,25 @@ static const struct fmt_desc fmt_table[P4_FMT_COUNT] = {
     [P4_FMT_FP4_E2M1] = {2, 1, 1, false, false, "fp4_e2m1"},
 };
 
-bool p4_fmt_valid(uint8_t f)
+bool p4_fmt_valid(enum p4_fmt f)
 {
-    return f < P4_FMT_COUNT;
+    /*
+     * The whole value, not a narrowed copy of it.  Taking a uint8_t here
+     * meant a caller's (enum p4_fmt)256 validated as format 0 and then
+     * indexed fmt_table[] with 256 -- checking a range after narrowing
+     * into it rather than before.
+     *
+     * Compared as unsigned so a negative value, which an enum may hold,
+     * fails rather than passing a signed test.
+     */
+    return (unsigned)f < (unsigned)P4_FMT_COUNT;
 }
 
 unsigned p4_fmt_bits(enum p4_fmt f)
 {
     const struct fmt_desc *d;
 
-    if (!p4_fmt_valid((uint8_t)f))
+    if (!p4_fmt_valid(f))
         return 0;
     d = &fmt_table[f];
     return 1u + d->exp_bits + d->man_bits;
@@ -65,7 +74,7 @@ unsigned p4_fmt_bits(enum p4_fmt f)
 
 const char *p4_fmt_name(enum p4_fmt f)
 {
-    return p4_fmt_valid((uint8_t)f) ? fmt_table[f].name : "?";
+    return p4_fmt_valid(f) ? fmt_table[f].name : "?";
 }
 
 size_t p4_fmt_bytes(enum p4_fmt f, size_t n)
@@ -241,7 +250,7 @@ static float fmt_decode_raw(const struct fmt_desc *d, uint32_t raw)
 
 float p4_fmt_decode(enum p4_fmt f, const uint8_t *base, size_t i)
 {
-    if (!p4_fmt_valid((uint8_t)f) || !base)
+    if (!p4_fmt_valid(f) || !base)
         return 0.0f;
     if (f == P4_FMT_FP32)
         return bits_float(fmt_load(f, base, i)); /* identity */
@@ -409,7 +418,7 @@ void p4_fmt_encode(enum p4_fmt f, float v, uint8_t *base, size_t i)
 {
     struct fmt_enc e;
 
-    if (!p4_fmt_valid((uint8_t)f) || !base)
+    if (!p4_fmt_valid(f) || !base)
         return;
     if (f == P4_FMT_FP32) {
         fmt_store(f, base, i, float_bits(v)); /* identity */
@@ -427,7 +436,7 @@ bool p4_fmt_convert(enum p4_fmt src, enum p4_fmt dst, const uint8_t *in,
 
     if (!in || !out)
         return false;
-    if (!p4_fmt_valid((uint8_t)src) || !p4_fmt_valid((uint8_t)dst))
+    if (!p4_fmt_valid(src) || !p4_fmt_valid(dst))
         return false;
     /* A half-byte at either end is not an array of either format. */
     if (p4_fmt_bytes(src, n) == 0 && n != 0)

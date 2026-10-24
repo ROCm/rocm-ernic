@@ -53,6 +53,7 @@
 #include "ernic_p4.h"
 #include "p4_devcmd.h"
 #include "p4_fmt.h"
+#include "parse_int.h"
 
 /* The device opcode an RDMA WRITE arrives as; see src/ionic_datapath.c. */
 #define IONIC_V1_OP_RDMA_WRITE 4
@@ -380,7 +381,7 @@ static void case_convert(struct ctx *c, enum p4_fmt src, enum p4_fmt dst,
  * so the series lines up with the other bandwidth sweeps.
  */
 static void bench(struct ctx *c, FILE *csv, enum p4_fmt src, enum p4_fmt dst,
-                  size_t in_len, unsigned iters, unsigned runs)
+                  size_t in_len, uint32_t iters, uint32_t runs)
 {
     size_t n = p4_fmt_elems(src, in_len);
 
@@ -402,20 +403,20 @@ static void bench(struct ctx *c, FILE *csv, enum p4_fmt src, enum p4_fmt dst,
 
         if (run_convert(c, (uint32_t)in_len, &st) != 0 ||
             st != IBV_WC_SUCCESS) {
-            fprintf(stderr, "bench: warm-up failed\n");
+            bad("bench: warm-up failed at %zu bytes", in_len);
             return;
         }
     }
 
-    for (unsigned r = 0; r < runs; r++) {
+    for (uint32_t r = 0; r < runs; r++) {
         double t0 = now_s(), dt, gbs, mpps;
 
-        for (unsigned i = 0; i < iters; i++) {
+        for (uint32_t i = 0; i < iters; i++) {
             enum ibv_wc_status st;
 
             if (run_convert(c, (uint32_t)in_len, &st) != 0 ||
                 st != IBV_WC_SUCCESS) {
-                fprintf(stderr, "bench: a conversion failed\n");
+                bad("bench: a conversion failed at %zu bytes", in_len);
                 return;
             }
         }
@@ -435,7 +436,7 @@ int main(int argc, char **argv)
 {
     const char *prog = "fp8_convert.json";
     const char *csv_path = NULL;
-    unsigned iters = 200, runs = 5;
+    uint32_t iters = 200, runs = 5;
     struct ibv_device **dev_list = NULL;
     struct ibv_device *ibdev;
     enum ernic_device_result lookup;
@@ -453,11 +454,19 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--csv") == 0 && i + 1 < argc)
             csv_path = argv[++i];
-        else if (strcmp(argv[i], "--iters") == 0 && i + 1 < argc)
-            iters = (unsigned)strtoul(argv[++i], NULL, 10);
-        else if (strcmp(argv[i], "--runs") == 0 && i + 1 < argc)
-            runs = (unsigned)strtoul(argv[++i], NULL, 10);
-        else
+        else if (strcmp(argv[i], "--iters") == 0 && i + 1 < argc) {
+            if (!ernic_parse_u32(argv[++i], &iters) || iters == 0) {
+                fprintf(stderr, "--iters wants a positive count, not '%s'\n",
+                        argv[i]);
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--runs") == 0 && i + 1 < argc) {
+            if (!ernic_parse_u32(argv[++i], &runs) || runs == 0) {
+                fprintf(stderr, "--runs wants a positive count, not '%s'\n",
+                        argv[i]);
+                return 1;
+            }
+        } else
             prog = argv[i];
     }
 
@@ -669,7 +678,14 @@ int main(int argc, char **argv)
         bench(&c, csv, P4_FMT_FP16, P4_FMT_FP8_E4M3, 65536, iters, runs);
         fclose(csv);
         csv = NULL;
-        printf("# wrote %s\n", csv_path);
+        if (g_fail) {
+            /* A half-measured sweep must not be published as a good run,
+             * so the file goes with the failure that produced it. */
+            (void)remove(csv_path);
+            printf("# removed %s: the sweep did not complete\n", csv_path);
+        } else {
+            printf("# wrote %s\n", csv_path);
+        }
     }
 
     printf("# %u passed, %u failed\n", g_pass, g_fail);
