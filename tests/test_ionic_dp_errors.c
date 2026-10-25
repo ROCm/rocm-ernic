@@ -1554,12 +1554,15 @@ static void check_late_responses(void)
  * reach the peer once its work request has completed: when its QP is
  * flushed, or when it times out.  The completions tell the consumer it
  * didn't run, so it is taken back before they are posted.  A destroyed QP's
- * requests complete nothing, and still go out.
+ * requests complete nothing, and still go out, and a QP given its qp_id next
+ * takes back only its own: requests are called by the QP's mesh_id, new at
+ * each registration, not by its qp_id.
  */
 enum mc_scenario {
     MC_TAGGED,     /* a remote WRITE and its ACK */
     MC_FLUSH,      /* QP_A flushed with its WRITE outstanding */
     MC_UNREGISTER, /* QP_A destroyed with its WRITE outstanding */
+    MC_REUSED,     /* and a new QP_A, flushed */
     MC_DEADLINE,   /* the WRITE unanswered at PENDING_MS */
     MC_EXPIRED,    /* and just past it */
 };
@@ -1584,9 +1587,9 @@ static const char *mc_run(struct ionic_datapath *dp, enum mc_scenario scenario)
     if (g_nwire != 1 || g_wire_reply[0])
         return "the WRITE wasn't sent as a request";
     memcpy(&h, g_wire[0], sizeof(h));
-    tag = (uint64_t)QP_A << 32 | le32toh(h.req_id);
+    tag = (uint64_t)dp->qp[QP_A].mesh_id << 32 | le32toh(h.req_id);
     if (g_wire_tag[0] != tag)
-        return "the WRITE isn't called by QP_A and its request id";
+        return "the WRITE isn't called by QP_A's mesh_id and its request id";
 
     cqes = dp->cq[CQ_ID].prod;
     g_dp = dp;
@@ -1607,6 +1610,17 @@ static const char *mc_run(struct ionic_datapath *dp, enum mc_scenario scenario)
     case MC_UNREGISTER:
         ionic_datapath_unregister_qp(dp, QP_A);
         return g_ncancel == 0 ? NULL : "QP_A's requests were taken back";
+    case MC_REUSED:
+        ionic_datapath_unregister_qp(dp, QP_A);
+        register_qp(dp, QP_A, CQ_ID);
+        remote(dp, QP_B);
+        ionic_datapath_flush_qp(dp, QP_A);
+        if (g_ncancel != 1 || g_cancel_mask != MC_QP_MASK ||
+            g_cancel_tag >> 32 != dp->qp[QP_A].mesh_id)
+            return "the new QP_A's requests weren't taken back once";
+        return (g_cancel_tag & MC_QP_MASK) != (tag & MC_QP_MASK)
+                   ? NULL
+                   : "the destroyed QP_A's WRITE was taken back with them";
     case MC_DEADLINE:
         poll_at(dp, T0 + PENDING_MS);
         return g_ncancel == 0 && dp->cq[CQ_ID].prod == cqes
@@ -1632,8 +1646,8 @@ static void check_mesh_cancel(void)
         enum mc_scenario scenario;
     } rows[] = {
         {"positive", "a remote WRITE, and the ACK QP_B sends for it",
-         "the WRITE goes to the mesh as a request called by QP_A and its "
-         "request id, the ACK as a reply, and nothing is taken back",
+         "the WRITE goes to the mesh as a request called by QP_A's mesh_id "
+         "and its request id, the ACK as a reply, and nothing is taken back",
          MC_TAGGED},
         {"positive", "QP_A flushed while its WRITE is outstanding",
          "the mesh takes back QP_A's requests once, before the flush "
@@ -1643,6 +1657,12 @@ static void check_mesh_cancel(void)
          "nothing is taken back: the WRITE still goes out, as a consumer "
          "that destroys a QP straight after an unsignaled WRITE counts on",
          MC_UNREGISTER},
+        {"corner",
+         "QP_A destroyed with its WRITE outstanding, then a new "
+         "QP_A flushed",
+         "the mesh takes back the new QP_A's requests, and not the destroyed "
+         "one's WRITE, which still goes out",
+         MC_REUSED},
         {"boundary", "the WRITE still unanswered at PENDING_MS",
          "nothing is taken back or completed", MC_DEADLINE},
         {"positive", "the WRITE unanswered just past PENDING_MS",
@@ -1667,10 +1687,106 @@ static void check_mesh_cancel(void)
     }
 }
 
+/*
+ * A reply to a QP that is gone.  Its requests still go out
+ * (check_mesh_cancel()), so their replies still come back, but nothing may land
+ * or complete for them: the consumer has its memory back, and a QP that took
+ * the qp_id since isn't the one that asked.
+ */
+enum dr_when {
+    DR_DESTROYED, /* QP_A destroyed before its request is answered */
+    DR_REUSED,    /* and a new QP_A created */
+    DR_RECREATED, /* a new QP_A created over the old, with no destroy */
+};
+
+static const char *dr_run(struct ionic_datapath *dp, const struct wqe *w,
+                          enum dr_when when)
+{
+    /* From a READ's landing place through an atomic's */
+    uint8_t before[RESULT_GPA + 8 - SRC_GPA];
+    uint32_t cqes;
+
+    remote(dp, QP_B);
+    /* An atomic's original value is zero; let it show where it lands. */
+    memset(g_mem + RESULT_GPA, 0xa5, 8);
+    post_send(dp, QP_A, w);
+    if (g_nwire != 1 || g_wire_reply[0])
+        return "the request wasn't sent";
+    wire_feed(dp);
+    poll_at(dp, g_now_ms);
+    if (g_nwire != 1 || !g_wire_reply[0])
+        return "the peer didn't answer it";
+
+    memcpy(before, g_mem + SRC_GPA, sizeof(before));
+    cqes = dp->cq[CQ_ID].prod;
+    if (when != DR_RECREATED)
+        ionic_datapath_unregister_qp(dp, QP_A);
+    if (when != DR_DESTROYED) {
+        register_qp(dp, QP_A, CQ_ID);
+        remote(dp, QP_B);
+    }
+    wire_feed(dp);
+    poll_at(dp, g_now_ms);
+
+    if (dp->cq[CQ_ID].prod != cqes)
+        return "the answer was completed";
+    if (memcmp(before, g_mem + SRC_GPA, sizeof(before)) != 0)
+        return "the answer landed in the consumer's memory";
+    return NULL;
+}
+
+static void check_destroyed_qp_replies(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        const struct wqe *w;
+        enum dr_when when;
+    } rows[] = {
+        {"negative", "a READ answered after QP_A is destroyed",
+         "the result lands nowhere, and nothing completes", &READ_OK,
+         DR_DESTROYED},
+        {"negative",
+         "a READ answered after QP_A is destroyed and its qp_id reused",
+         "the result lands nowhere, and the new QP_A completes nothing",
+         &READ_OK, DR_REUSED},
+        {"negative",
+         "a fetch-and-add answered after QP_A is destroyed and its qp_id "
+         "reused",
+         "the original value lands nowhere, and the new QP_A completes "
+         "nothing",
+         &FADD_OK, DR_REUSED},
+        {"negative",
+         "a WRITE acknowledged after QP_A is destroyed and its qp_id reused",
+         "the new QP_A completes nothing", &WRITE_OK, DR_REUSED},
+        {"corner",
+         "a READ answered after a new QP_A is created over the old one, "
+         "which was never destroyed",
+         "the result lands nowhere, and the new QP_A completes nothing",
+         &READ_OK, DR_RECREATED},
+    };
+
+    for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
+        struct ionic_datapath *dp = setup();
+        const char *why = dp ? dr_run(dp, rows[row].w, rows[row].when)
+                             : "could not create a data path";
+
+        ionic_datapath_destroy(dp);
+        printf("%s %s: %s; expected: %s\n", why ? "FAIL" : "ok  ",
+               rows[row].category, rows[row].description, rows[row].expected);
+        if (why) {
+            printf("     %s\n", why);
+            failures++;
+        }
+    }
+}
+
 int main(void)
 {
     check_late_responses();
     check_mesh_cancel();
+    check_destroyed_qp_replies();
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
         run_case(&cases[i]);
     for (size_t i = 0; i < sizeof(getter_cases) / sizeof(getter_cases[0]); i++)
