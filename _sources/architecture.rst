@@ -1192,6 +1192,8 @@ Where to Look in the Source
      - RDMA control path
    * - ``src/ionic_datapath.c``
      - RDMA data path and inter-server wire protocol
+   * - ``src/ernic_dma.c``
+     - Copying to and from guest memory, for all of the above
    * - ``src/rocm_ernic_compat.c``, ``.h``
      - Bridge to the QEMU-derived core; guest-memory mapping for
        it; mesh wrappers; shared limits
