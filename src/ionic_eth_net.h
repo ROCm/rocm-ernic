@@ -14,6 +14,9 @@
 /* Largest frame we will move in either direction (jumbo + VLAN + slack). */
 #define IONIC_ETH_NET_MTU_MAX 9600
 
+/* Longest interface name Linux accepts: IFNAMSIZ less the terminator. */
+#define IONIC_ETH_NET_IFNAME_MAX 15
+
 struct ionic_eth_net;
 
 /*
@@ -22,7 +25,9 @@ struct ionic_eth_net;
  * only form that works without CAP_NET_ADMIN.  On success the interface name
  * actually assigned is copied into @out_ifname.
  *
- * Returns NULL and sets errno on failure.
+ * Returns NULL and sets errno on failure: ENAMETOOLONG if @ifname is longer
+ * than IONIC_ETH_NET_IFNAME_MAX, since a shortened name could name a
+ * different interface.
  */
 struct ionic_eth_net *ionic_eth_net_open_tap(const char *ifname,
                                              char *out_ifname,

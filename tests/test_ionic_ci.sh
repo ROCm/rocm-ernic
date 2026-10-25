@@ -12,7 +12,7 @@
 #   4. Server reports correct MSI-X vector count (32)
 #   5. Server exits cleanly on SIGTERM
 #      ... and a NIC profile's queue count sets the MSI-X vectors
-#   6. --tap attaches when a tap exists
+#   6. --tap attaches when a tap exists, and refuses an overlong name
 #   7. A stats file carries the full counter set
 
 set -euo pipefail
@@ -181,6 +181,36 @@ else
     }
     pass "attached to TAP $TAP_IF"
 fi
+
+# --- Test 8b: an overlong --tap name is refused ---
+# Linux interface names have at most 15 characters. A longer one used to be
+# cut short, and could attach to a different interface.
+echo ""
+echo "Test 8b: --tap with a 16-character name is refused"
+kill "$SERVER_PID" 2>/dev/null || true
+wait "$SERVER_PID" 2>/dev/null || true
+SERVER_PID=""
+rm -f "$SOCKET" "$LOG"
+"${SERVER_WRAPPER[@]}" "$SERVER_BIN" --backend loopback \
+    --socket "$SOCKET" --tap ernic-tap-16char > "$LOG" 2>&1 &
+SERVER_PID=$!
+elapsed=0
+while [ $elapsed -lt 20 ] && kill -0 "$SERVER_PID" 2>/dev/null; do
+    sleep 0.5; elapsed=$((elapsed + 1))
+done
+if kill -0 "$SERVER_PID" 2>/dev/null; then
+    cat "$LOG"
+    fail "server kept running with an overlong --tap"
+fi
+status=0
+wait "$SERVER_PID" || status=$?
+SERVER_PID=""
+[ "$status" -ne 0 ] || { cat "$LOG"; fail "server exited 0 with an overlong --tap"; }
+grep -q "TAP name 'ernic-tap-16char' is too long (at most 15 characters)" "$LOG" || {
+    cat "$LOG"
+    fail "server did not report the overlong --tap name"
+}
+pass "overlong --tap name refused"
 
 # --- Test 9: the server comes up with no extra flags ---
 echo ""

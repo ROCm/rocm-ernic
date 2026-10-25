@@ -27,6 +27,9 @@
 
 #include "ionic_eth_net.h"
 
+_Static_assert(IONIC_ETH_NET_IFNAME_MAX == IFNAMSIZ - 1,
+               "IONIC_ETH_NET_IFNAME_MAX must match the kernel's IFNAMSIZ");
+
 struct ionic_eth_net {
     int fd;
     char ifname[IFNAMSIZ];
@@ -36,6 +39,14 @@ struct ionic_eth_net *ionic_eth_net_open_tap(const char *ifname,
                                              char *out_ifname,
                                              size_t out_ifname_len)
 {
+    /* Refuse a name that doesn't fit rather than cutting it short: the
+     * shortened name may be a different interface. */
+    size_t ifname_len = ifname ? strnlen(ifname, IFNAMSIZ) : 0;
+    if (ifname_len > IONIC_ETH_NET_IFNAME_MAX) {
+        errno = ENAMETOOLONG;
+        return NULL;
+    }
+
     struct ionic_eth_net *net = calloc(1, sizeof(*net));
     if (!net)
         return NULL;
@@ -50,8 +61,9 @@ struct ionic_eth_net *ionic_eth_net_open_tap(const char *ifname,
     memset(&ifr, 0, sizeof(ifr));
     /* IFF_NO_PI: we want raw frames, not the 4-byte tun_pi prefix. */
     ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
-    if (ifname && *ifname)
-        strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
+    /* ifr is zeroed, so the name stays terminated. */
+    if (ifname_len > 0)
+        memcpy(ifr.ifr_name, ifname, ifname_len);
 
     if (ioctl(net->fd, TUNSETIFF, &ifr) < 0) {
         int err = errno;

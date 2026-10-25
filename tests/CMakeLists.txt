@@ -150,6 +150,17 @@ target_include_directories(ernic-test-dma SYSTEM PRIVATE
 )
 target_compile_definitions(ernic-test-dma PRIVATE _GNU_SOURCE)
 
+# The TAP backend (ionic_eth_net.c) refuses an interface name too long for
+# the kernel rather than cutting it short. Needs no TAP device or privileges.
+add_executable(ernic-test-ionic-eth-net
+    test_ionic_eth_net.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_eth_net.c
+)
+target_include_directories(ernic-test-ionic-eth-net PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_compile_definitions(ernic-test-ionic-eth-net PRIVATE _GNU_SOURCE)
+
 # -- Parser unit tests -------------------------------------------
 # Strict integer parser (parse_int.h) unit test (header-only).
 add_executable(test_parse_int test_parse_int.c)
@@ -984,6 +995,7 @@ set(ERNIC_TEST_TARGETS
     test_write_imm
     test_dma_range
     ernic-test-dma
+    ernic-test-ionic-eth-net
     test_parse_int
     ernic-test-byteorder
     test_nvmeof_target
@@ -1084,6 +1096,13 @@ add_test(
     COMMAND $<TARGET_FILE:ernic-test-dma>
 )
 set_tests_properties(ernic-dma-unit PROPERTIES TIMEOUT 30)
+
+# TAP backend: an overlong interface name is refused, not truncated
+add_test(
+    NAME ionic-eth-net-unit
+    COMMAND $<TARGET_FILE:ernic-test-ionic-eth-net>
+)
+set_tests_properties(ionic-eth-net-unit PROPERTIES TIMEOUT 30)
 
 # Strict integer parser unit test (table-driven)
 add_test(
