@@ -6765,6 +6765,7 @@ enum st_scenario {
     ST_TOO_LONG,   /* lengths whose sum wraps */
     ST_STEADY,     /* a node that reads, under steady traffic */
     ST_COALESCE,   /* heartbeats queue behind a busy connection */
+    ST_UNPUBLISH,  /* a connection with a queue leaves the table */
 };
 
 struct st_case {
@@ -6822,6 +6823,13 @@ static const struct st_case st_cases[] = {
      "heartbeat and the node sends a hundred of its own",
      "the queue holds one heartbeat and one answer, not one answer for each",
      ST_COALESCE},
+    {"corner",
+     "a node's connection is taken out of the table, as before it is retired, "
+     "while its send thread is blocked and a request waits behind it",
+     "the queue is closed and the request dropped at once, before the "
+     "connection is retired, so a cancel that no longer finds the connection "
+     "misses nothing; the next send to the node fails",
+     ST_UNPUBLISH},
 };
 
 /* A worker's send timeout in these rows; the manager's is half */
@@ -7267,6 +7275,46 @@ static const char *st_coalesce(struct mgr_fixture *fx)
     return NULL;
 }
 
+/* ST_UNPUBLISH */
+static const char *st_unpublish(struct mgr_fixture *fx)
+{
+    TcpConnection *conn = fx->old[0];
+    const char *why = NULL;
+    bool taken, closed;
+    guint queued;
+    size_t bytes;
+    int rc;
+
+    if (st_send(fx->priv, 100, false) != 0)
+        return "the first message wasn't queued";
+    if (!held_elsewhere(&conn->lock))
+        return "the send thread never blocked on the node";
+    if (st_send(fx->priv, 200, false) != 0)
+        return "the request wasn't queued";
+
+    /* As the health check, reconnects and replacements do */
+    qemu_mutex_lock(&fx->priv->conn_table_lock);
+    taken = tcp_conn_table_take(fx->priv, 1, conn);
+    qemu_mutex_unlock(&fx->priv->conn_table_lock);
+    if (!taken)
+        return "the connection couldn't be taken out of the table";
+
+    qemu_mutex_lock(&conn->sendq_lock);
+    closed = conn->sendq_closed;
+    queued = conn->sendq.length;
+    bytes = conn->sendq_bytes;
+    qemu_mutex_unlock(&conn->sendq_lock);
+    if (!closed || queued != 0 || bytes != 0)
+        why = "the queue was still open, or still held the request";
+    else if ((rc = st_send(fx->priv, 0, false)) != -ENOTCONN && rc != -EPIPE)
+        why = "the next send to the node didn't fail";
+
+    /* The table's reference is now this row's, to retire and drop */
+    tcp_retire_conn(conn);
+    tcp_connection_unref(conn);
+    return why;
+}
+
 static int run_st_case(const struct st_case *c)
 {
     struct mgr_fixture fx;
@@ -7310,8 +7358,11 @@ static int run_st_case(const struct st_case *c)
             why = st_steady(&fx);
             break;
         case ST_COALESCE:
-        default:
             why = st_coalesce(&fx);
+            break;
+        case ST_UNPUBLISH:
+        default:
+            why = st_unpublish(&fx);
             break;
         }
     }

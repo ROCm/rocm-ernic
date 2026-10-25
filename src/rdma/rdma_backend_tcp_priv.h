@@ -383,9 +383,11 @@ struct TcpConnection {
      * queued and when the queue is closed.
      *
      * sendq_bytes counts each message's payload until it has been written.
-     * sendq_closed is set, never cleared, when the connection is retired or
-     * a send on it fails; nothing is queued after that, and what was queued
-     * is dropped.  send_thread is started by the first message queued, and
+     * sendq_closed is set, never cleared, when the connection leaves its
+     * table or manager_conn (tcp_conn_unpublished()), when it is retired, or
+     * when a send on it fails; nothing is queued after that, and what was
+     * queued is dropped.  send_thread is started by the first message queued,
+     * and
      * send_thread_started is set while there is a thread to join.
      */
     QemuMutex sendq_lock;

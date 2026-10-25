@@ -243,6 +243,7 @@ TcpConnection *tcp_worker_manager_conn(TcpBackendPrivate *priv)
 }
 
 /* Forward declarations */
+static void tcp_sendq_close(TcpConnection *conn);
 static void tcp_stop_send_thread(TcpConnection *conn);
 static void tcp_advertise_local_gids(TcpBackendPrivate *priv);
 static void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
@@ -701,10 +702,27 @@ static bool tcp_conn_table_add(TcpBackendPrivate *priv, uint32_t node_id,
 }
 
 /*
+ * Close conn's send queue as it leaves connections or manager_conn, under
+ * conn_table_lock, which guards both.  tcp_backend_ionic_cancel() finds a
+ * connection only there, so a queue left open until the connection is
+ * retired, after the lock is dropped, could start a request the cancel had
+ * taken back everywhere else.  What was queued is dropped, as retiring the
+ * connection would drop it; the message being written goes out, as it would
+ * have anyway.
+ */
+static void tcp_conn_unpublished(TcpConnection *conn)
+{
+    qemu_mutex_lock(&conn->sendq_lock);
+    tcp_sendq_close(conn);
+    qemu_mutex_unlock(&conn->sendq_lock);
+}
+
+/*
  * Take node_id's entry out of connections if it is still conn, handing the
  * table's reference to the caller, who then retires conn and drops the
- * reference with no lock held (see TcpConnection).  Returns whether it was
- * taken.  The caller holds conn_table_lock.
+ * reference with no lock held (see TcpConnection).  Its send queue is closed
+ * at once (tcp_conn_unpublished()).  Returns whether it was taken.  The
+ * caller holds conn_table_lock.
  */
 bool tcp_conn_table_take(TcpBackendPrivate *priv, uint32_t node_id,
                          TcpConnection *conn)
@@ -714,6 +732,7 @@ bool tcp_conn_table_take(TcpBackendPrivate *priv, uint32_t node_id,
         return false;
     }
     g_hash_table_steal(priv->connections, GUINT_TO_POINTER(node_id));
+    tcp_conn_unpublished(conn);
     return true;
 }
 
@@ -2187,6 +2206,7 @@ static void tcp_worker_peer_sweep(TcpBackendPrivate *priv)
         }
         /* Hands the table's reference over, as tcp_conn_table_take() does */
         g_hash_table_iter_steal(&iter);
+        tcp_conn_unpublished(conn);
         g_ptr_array_add(swept, conn);
     }
     qemu_mutex_unlock(&priv->conn_table_lock);
@@ -2295,6 +2315,9 @@ void tcp_worker_manager_pass(TcpBackendPrivate *priv)
         /* Takes over manager_conn's reference */
         qemu_mutex_lock(&priv->conn_table_lock);
         old = atomic_exchange(&priv->manager_conn, NULL);
+        if (old) {
+            tcp_conn_unpublished(old);
+        }
         qemu_mutex_unlock(&priv->conn_table_lock);
         if (old) {
             tcp_retire_conn(old);
@@ -5204,9 +5227,10 @@ bool tcp_backend_ionic_has_room(RdmaBackendDev *backend_dev, uint32_t dst_node,
  *
  * Only what no send thread has started to write: the message being written,
  * and what is already in the socket or on its way, still arrive, as frames
- * already on the wire do.  Replies are left alone, and so are the queues of
- * connections that have left the table already, which are being retired
- * and whose sockets are shut down.  Called on the device's main thread, the
+ * already on the wire do.  Replies are left alone.  A connection that has
+ * left the table, or manager_conn, had its queue closed as it left
+ * (tcp_conn_unpublished()), so nothing more goes out on it to miss.  Called
+ * on the device's main thread, the
  * only one that queues the data path's messages, so nothing that matches is
  * queued meanwhile.
  */

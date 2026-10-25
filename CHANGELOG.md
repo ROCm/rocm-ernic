@@ -4,6 +4,16 @@
 
 ### Fixed
 
+* **A request completed in error no longer reaches a node whose connection
+  is being closed.** A flush or request timeout takes back the requests
+  still queued for the peer, but it finds them through the connection
+  table, and a connection taken out of the table -- because the node hung
+  up or stopped answering, or a worker was giving up on its manager -- kept
+  its queue open until it was retired. A flush or timeout in between missed
+  that queue, and a WRITE or atomic the guest had just been told failed
+  could still go out. The queue is now closed as the connection leaves the
+  table, and what it held is dropped, as retiring the connection would have
+  dropped it.
 * **Breaking:** **The ionic DKMS package is built only for the kernel it
   was asked for.** `setup-ionic-dkms.sh` registered it with
   `AUTOINSTALL="yes"`, so DKMS built it for every kernel with headers
