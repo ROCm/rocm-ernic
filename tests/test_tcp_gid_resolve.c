@@ -625,7 +625,6 @@ struct backend_case {
 static const struct backend_case other_backends[] = {
     {RDMA_BACKEND_TYPE_NONE, "none"},
     {RDMA_BACKEND_TYPE_LOOPBACK, "loopback"},
-    {RDMA_BACKEND_TYPE_VERBS, "verbs"},
     {RDMA_BACKEND_TYPE_NVMEOF, "nvmeof"},
     {RDMA_BACKEND_TYPE_S3, "s3"},
 };

@@ -142,12 +142,9 @@ struct rocm_ernic_dev {
     void *bar0_mem; /* MSI-X table/PBA shadow, above the ionic register block */
 
     /* Backend device configuration */
-    char *backend_type_str;    /* Backend type: none, loopback, verbs:device */
-    char *backend_device_name; /* IB device (e.g., "mlx5_0") */
-    char *backend_eth_device;  /* Eth device (e.g., "eth0") */
-    uint8_t backend_port_num;  /* IB port number */
+    char *backend_type_str; /* Backend and options: loopback, nvmeof:size=1G */
     /* The backend backend_type_str names, from pvrdma_backend_name(): "none",
-     * "loopback", "verbs", ...  Set by the server's option validation */
+     * "loopback", "tcp", ...  Set by the server's option validation */
     const char *backend_name;
 
     /* Device state flags */

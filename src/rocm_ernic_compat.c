@@ -33,9 +33,7 @@
  */
 
 pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
-                                     const char *backend_type_str,
-                                     const char *ib_dev_name,
-                                     const char *eth_dev_name, uint8_t port_num)
+                                     const char *backend_type_str)
 {
     PVRDMADev *pvrdma;
     RdmaBackendType backend_type;
@@ -70,20 +68,10 @@ pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
     /* Extract backend config (part after ':') from backend string, which
      * may be NULL, meaning "none" */
     const char *colon = backend_type_str ? strchr(backend_type_str, ':') : NULL;
-    const char *backend_config_from_string = colon ? (colon + 1) : NULL;
-    const char *name = NULL;
+    const char *name = colon ? (colon + 1) : NULL;
 
-    /* Set backend device configuration based on backend type */
-    if (backend_type == RDMA_BACKEND_TYPE_VERBS) {
-        /* For verbs backend, prefer explicit ib_dev_name, fallback to config
-         * string */
-        name = ib_dev_name ? ib_dev_name : backend_config_from_string;
-    } else if (backend_config_from_string) {
-        /* For other backends (loopback, etc), use config from backend string */
-        name = backend_config_from_string;
-        rdma_info_report("Backend config string: '%s'", name);
-    }
     if (name) {
+        rdma_info_report("Backend config string: '%s'", name);
         pvrdma->backend_device_name = strdup(name);
         if (!pvrdma->backend_device_name) {
             rdma_error_report("Failed to allocate the backend config");

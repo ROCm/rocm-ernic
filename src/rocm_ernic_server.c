@@ -368,9 +368,7 @@ static int pvrdma_device_init(rocm_ernic_dev_t *dev)
     int ret;
 
     /* Create PVRDMA device using wrapper API with selected backend */
-    dev->pvrdma_handle = pvrdma_device_create(
-        dev, dev->backend_type_str, dev->backend_device_name,
-        dev->backend_eth_device, dev->backend_port_num);
+    dev->pvrdma_handle = pvrdma_device_create(dev, dev->backend_type_str);
 
     if (!dev->pvrdma_handle) {
         fprintf(stderr, "Failed to create PVRDMA device\n");
@@ -798,7 +796,7 @@ static void usage(const char *progname)
                     "only its owner\n");
     fprintf(stderr, "                       and root can (mode 0600)\n");
     fprintf(stderr, "  -b, --backend TYPE   RDMA backend: "
-                    "none|loopback|verbs|tcp|nvmeof|s3\n");
+                    "none|loopback|tcp|nvmeof|s3\n");
     fprintf(stderr, "                       (default: loopback)\n");
     fprintf(stderr, "  -L, --log-level LEVEL Log verbosity: "
                     "none|error|warn|info|debug\n");
@@ -880,27 +878,6 @@ static void usage(const char *progname)
     fprintf(stderr, "Backend Types:\n");
     fprintf(stderr, "  none: No backend (minimal stubs)\n");
     fprintf(stderr, "  loopback: Internal loopback emulation\n");
-    fprintf(stderr, "  verbs: libibverbs hardware backend\n");
-    fprintf(stderr, "                    Options (comma-separated):\n");
-    fprintf(stderr,
-            "                      device=NAME   - InfiniBand device name "
-            "(required)\n");
-    fprintf(stderr,
-            "                      ethdev=NAME  - Ethernet device name for GID "
-            "resolution\n");
-    fprintf(
-        stderr,
-        "                      port=NUM     - IB port number (default: 1)\n");
-    fprintf(stderr, "                    Examples:\n");
-    fprintf(stderr,
-            "                      verbs:device=mlx5_0                    - "
-            "Device only\n");
-    fprintf(stderr,
-            "                      verbs:device=mlx5_0,ethdev=eth0         - "
-            "Device and ethdev\n");
-    fprintf(stderr,
-            "                      verbs:device=mlx5_0,ethdev=eth0,port=1 - "
-            "All options\n");
     fprintf(stderr, "  tcp: TCP/IP network backend\n");
     fprintf(stderr,
             "                    Manager Mode (centralized discovery):\n");
@@ -975,102 +952,6 @@ static void usage(const char *progname)
 }
 
 /**
- * Parse comma-separated verbs backend options with key=value syntax
- * Format: verbs:device=NAME[,ethdev=NAME][,port=NUM]
- * @backend_str: Backend string (e.g., "verbs:device=mlx5_0" or
- *              "verbs:device=mlx5_0,ethdev=eth0,port=1")
- * @device: Output parameter for device name (caller must free)
- * @ethdev: Output parameter for ethdev name (caller must free)
- * @port: Output parameter for port number
- * @return: 0 on success; -1 on error, with *device and *ethdev freed and
- *          set to NULL
- */
-static int parse_verbs_options(const char *backend_str, char **device,
-                               char **ethdev, uint8_t *port)
-{
-    const char *colon = strchr(backend_str, ':');
-    if (!colon) {
-        return -1;
-    }
-
-    const char *options = colon + 1;
-    if (!*options) {
-        return -1;
-    }
-
-    /* Parse comma-separated key=value pairs */
-    char *options_copy = strdup(options);
-    if (!options_copy) {
-        return -1;
-    }
-
-    char *saveptr = NULL;
-    char *token = strtok_r(options_copy, ",", &saveptr);
-
-    while (token) {
-        char *equals = strchr(token, '=');
-        if (!equals) {
-            /* Legacy format: just device name without key=value */
-            if (!*device) {
-                *device = strdup(token);
-                if (!*device) {
-                    goto fail;
-                }
-            }
-        } else {
-            *equals = '\0';
-            char *key = token;
-            char *value = equals + 1;
-
-            if (!strcmp(key, "device")) {
-                if (*device) {
-                    free(*device);
-                }
-                *device = strdup(value);
-                if (!*device) {
-                    goto fail;
-                }
-            } else if (!strcmp(key, "ethdev")) {
-                if (*ethdev) {
-                    free(*ethdev);
-                }
-                *ethdev = strdup(value);
-                if (!*ethdev) {
-                    goto fail;
-                }
-            } else if (!strcmp(key, "port")) {
-                int port_val;
-                if (!ernic_parse_int(value, &port_val) || port_val < 1 ||
-                    port_val > 255) {
-                    fprintf(stderr,
-                            "Error: Invalid port number '%s' (must be "
-                            "1-255)\n",
-                            value);
-                    goto fail;
-                }
-                *port = (uint8_t)port_val;
-            } else {
-                fprintf(stderr,
-                        "Warning: Unknown verbs option '%s', ignoring\n", key);
-            }
-        }
-        token = strtok_r(NULL, ",", &saveptr);
-    }
-
-    free(options_copy);
-    return 0;
-
-fail:
-    /* Hand back nothing, so the caller has nothing to free. */
-    free(options_copy);
-    free(*device);
-    free(*ethdev);
-    *device = NULL;
-    *ethdev = NULL;
-    return -1;
-}
-
-/**
  * Validate backend-specific options, and set dev->backend_name
  * @dev: Device structure with parsed options
  * @return: 0 on success, -1 on error
@@ -1081,69 +962,11 @@ static int validate_backend_options(rocm_ernic_dev_t *dev)
 
     if (!backend_type) {
         fprintf(stderr, "Error: Unknown backend '%s'\n", dev->backend_type_str);
-        fprintf(stderr, "  Expected one of: none, loopback, verbs, tcp, "
-                        "nvmeof, s3, optionally followed by ':' and its "
-                        "options\n");
+        fprintf(stderr, "  Expected one of: none, loopback, tcp, nvmeof, s3, "
+                        "optionally followed by ':' and its options\n");
         return -1;
     }
     dev->backend_name = backend_type;
-
-    bool is_verbs = !strcmp(backend_type, "verbs");
-
-    /* For verbs backend, parse options from backend string */
-    if (is_verbs) {
-        char *device = NULL;
-        char *ethdev = NULL;
-        uint8_t port = 1;
-
-        /* Parse comma-separated options from backend string */
-        if (parse_verbs_options(dev->backend_type_str, &device, &ethdev,
-                                &port) == 0) {
-            /* Override with parsed values if not set via command-line */
-            if (device && !dev->backend_device_name) {
-                dev->backend_device_name = device;
-            } else {
-                free(device); /* Command-line takes precedence */
-            }
-
-            if (ethdev && !dev->backend_eth_device) {
-                dev->backend_eth_device = ethdev;
-            } else {
-                free(ethdev); /* Command-line takes precedence */
-            }
-
-            if (port != 1 && dev->backend_port_num == 1) {
-                dev->backend_port_num = port;
-            }
-        }
-
-        /* Device name is required for verbs backend */
-        if (!dev->backend_device_name) {
-            fprintf(stderr,
-                    "Error: Device name required for 'verbs' backend\n");
-            fprintf(stderr,
-                    "  Use: --backend verbs:device=NAME[,ethdev=NAME][,port="
-                    "NUM]\n");
-            fprintf(stderr, "  Example: --backend verbs:device=mlx5_0\n");
-            fprintf(stderr,
-                    "  Example: --backend verbs:device=mlx5_0,ethdev=eth0\n");
-            fprintf(stderr,
-                    "  Example: --backend verbs:device=mlx5_0,ethdev=eth0,port="
-                    "1\n");
-            return -1;
-        }
-    } else {
-        /* For non-verbs backends, clear any backend-specific options */
-        if (dev->backend_device_name) {
-            free(dev->backend_device_name);
-            dev->backend_device_name = NULL;
-        }
-        if (dev->backend_eth_device) {
-            free(dev->backend_eth_device);
-            dev->backend_eth_device = NULL;
-        }
-        dev->backend_port_num = 1;
-    }
 
     /* Reject a malformed namespace spec now rather than after the guest has
      * already attached and the failure looks like a device problem. */
@@ -1447,8 +1270,6 @@ static void dev_free(rocm_ernic_dev_t *dev)
     free(dev->stats_file_path);
     ionic_fault_set_free(dev->faults);
     free(dev->bar0_mem);
-    free(dev->backend_device_name);
-    free(dev->backend_eth_device);
     free(dev->backend_type_str);
     free(dev);
 }
@@ -1544,10 +1365,6 @@ int main(int argc, char *argv[])
         {"p4-program", required_argument, NULL, 'J'},
         {"p4-guest-scope", required_argument, NULL, 'Y'},
 #endif
-        /* Backend-specific options (verbs only) */
-        {"device", required_argument, NULL, 'd'},
-        {"ethdev", required_argument, NULL, 'e'},
-        {"port", required_argument, NULL, 'p'},
         {NULL, 0, NULL, 0}};
 
     /* Allocate device structure */
@@ -1565,7 +1382,6 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
     ionic_profile_defaults(&dev->profile);
-    dev->backend_port_num = 1;
     dev->verbose = false;
     dev->device_initialized = false;
     dev->device_active = false;
@@ -1850,17 +1666,6 @@ int main(int argc, char *argv[])
 
         if (f && ionic_fault_format(f, spec, sizeof(spec)) >= 0)
             ernic_startup_report("  Fault: %s", spec);
-    }
-
-    /* Show backend-specific options only for verbs backend */
-    if (!strcmp(dev->backend_name, "verbs")) {
-        if (dev->backend_device_name) {
-            ernic_startup_report("  IB Device: %s", dev->backend_device_name);
-        }
-        if (dev->backend_eth_device) {
-            ernic_startup_report("  Eth Device: %s", dev->backend_eth_device);
-        }
-        ernic_startup_report("  IB Port: %u", dev->backend_port_num);
     }
 
 #ifdef ERNIC_HAVE_P4

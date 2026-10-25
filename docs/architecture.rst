@@ -1049,10 +1049,6 @@ mesh exists and whether a target is attached.
    * - ``none``
      - Stub resource operations; meant for PCI enumeration and
        driver bring-up.
-   * - ``verbs``
-     - Accepted on the command line and documented as
-       forwarding to a real HCA, but **not implemented**: the
-       registry entry is empty, so the server fails to start.
 
 Threads
 -------
@@ -1168,8 +1164,6 @@ What Is Not Emulated
 - **Ethernet offloads** (checksum, TSO, scatter-gather) are not
   offered.
 - **Statistics admin commands** succeed but return nothing.
-- **The verbs backend** has no implementation (see
-  `Backends`_).
 - **Performance** is that of a software device: every doorbell
   is a socket message, every byte is copied by the server's CPU,
   and the main loop polls.

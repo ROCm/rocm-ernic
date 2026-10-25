@@ -21,9 +21,7 @@
 # Deployment note: rocm-ernic and QEMU rendezvous over a UNIX socket (the
 # `vfio-user-pci` transport), so a container must share that socket path with
 # whoever attaches to it — bind-mount the socket directory (default below:
-# /run/rocm-ernic). The `loopback` and `tcp` backends containerize cleanly;
-# the `verbs` backend needs host RDMA devices (/dev/infiniband) and elevated
-# privileges, so it is not a clean container target.
+# /run/rocm-ernic). The `loopback` and `tcp` backends containerize cleanly.
 #
 # Usage (from flake.nix):
 #   oci-image       = import ./nix/oci.nix { inherit pkgs lib rocm-ernic; };

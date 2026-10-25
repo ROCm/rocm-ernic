@@ -320,14 +320,14 @@
     refused), and `ip=` is dotted decimal with no leading zeros, signs or
     spaces. `s3`'s `size=` accepts a `T` multiplier, like `nvmeof`'s.
   * `--mac` takes exactly six colon-separated pairs of hex digits.
-  * Ports for the `verbs` and `tcp` backends must be all digits (`port=1x`,
-    `port=+1` and `port= 1` were port 1), and a leading space or `+` in
+  * Ports for the `tcp` backend must be all digits (`port=1x`, `port=+1`
+    and `port= 1` were port 1), and a leading space or `+` in
     `ERNIC_TCP_LISTEN_BACKLOG`, `ERNIC_TCP_HEALTH_INTERVAL` or
     `ERNIC_TCP_SOCKBUF` makes the value ignored, as other malformed values
     already were.
 * **Breaking:** **An unknown `--backend` name stops the server.** The name,
   everything before the first `:`, must be exactly `none`, `loopback`,
-  `verbs`, `tcp`, `nvmeof` or `s3`. Before, any other name ran the server
+  `tcp`, `nvmeof` or `s3`. Before, any other name ran the server
   with no backend, after a warning, and one that only started with a
   backend's name was partly taken for it: `loopbackjunk` ran as
   `loopback`, and `s3junk` and `nvmeofjunk` started the S3 or NVMe-oF
@@ -510,6 +510,12 @@
   with `gh workflow run self-hosted-ci.yml -f pr=N`; see `ci/README.md`.
 * **The `ERNIC_IONIC_KERNEL_REF` environment hook** (see Fixed: the driver
   pack's ionic baseline).
+* **Breaking:** **The `verbs` backend and the `--device`, `--ethdev` and
+  `--port` options.** The backend was never implemented: `--backend
+  verbs:...` created the socket and then failed to set up the device, and
+  the three options, though listed, always printed the usage and exited.
+  `verbs` is now an unknown backend, refused before the socket is created,
+  and the options are unknown options. Use `loopback` or `tcp`.
 
 ### Fixed
 

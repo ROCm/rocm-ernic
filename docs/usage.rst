@@ -13,12 +13,6 @@ Start the server with a UNIX socket and the desired backend:
      --socket /tmp/vfio-user-rocm-ernic.sock \
      --backend loopback
 
-   # RDMA verbs backend (requires RDMA hardware)
-   ./build/rocm-ernic \
-     --socket /tmp/vfio-user-rocm-ernic.sock \
-     --backend verbs:device=mlx5_0,ethdev=eth0,port=1 \
-     --log-level info
-
    # In-process NVMe-oF controller the guest can connect to
    ./build/rocm-ernic \
      --socket /tmp/vfio-user-rocm-ernic.sock \

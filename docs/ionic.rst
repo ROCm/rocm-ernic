@@ -54,8 +54,8 @@ There is no flag to select the device. ``--tap`` (short
 ``-T``) attaches the emulated Ethernet LIF to a host TAP
 interface.
 
-All the RDMA backends (``loopback``, ``tcp``, ``verbs``,
-``none``) work the same way: the backend choice governs the
+All the RDMA backends (``loopback``, ``tcp``, ``none``) work
+the same way: the backend choice governs the
 RDMA data path, while ``--tap`` governs the Ethernet data
 path.
 

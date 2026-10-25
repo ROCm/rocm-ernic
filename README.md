@@ -25,9 +25,8 @@ Userspace emulated RDMA NIC for virtual machines, built on
 [libvfio-user][libvfio]. Provides full RDMA functionality to guest VMs without
 requiring physical RDMA hardware or an in-guest software stack such as
 [Soft-RoCE][softroce]. Backends include loopback (for testing and CI), TCP/IP
-(multi-node without hardware), native verbs (real InfiniBand HCA
-pass-through), and nvmeof (an in-process NVMe over Fabrics target, so a single
-VM and a single server instance are a complete fabric — see
+(multi-node without hardware), nvmeof (an in-process NVMe over Fabrics
+target, so a single VM and a single server instance are a complete fabric — see
 [`docs/nvmeof.rst`](docs/nvmeof.rst)), and s3 (an in-process S3-over-RDMA
 object store with its own in-band HTTP endpoint, so the same single VM is a
 complete object fabric — see [`docs/s3.rst`](docs/s3.rst)).
