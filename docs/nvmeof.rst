@@ -265,6 +265,14 @@ against the same MR table ``CREATE_MR`` fills. Without them
 the controller's RDMA READ and WRITE would resolve keys that
 name nothing.
 
+A keyed SGL naming key 0 fails with a data transfer error,
+and a data block descriptor that is neither keyed nor in
+capsule fails with an invalid SGL descriptor type. Key 0 is
+the driver's reserved DMA key, which names a raw guest bus
+address rather than a registration, and any guest process
+that can connect a queue pair to the controller chooses the
+key, so honoring it would expose all of guest memory.
+
 Testing
 -------
 

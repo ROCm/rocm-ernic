@@ -525,6 +525,11 @@ static bool parse_sgl(const uint8_t *sqe, struct nvmeof_sgl *sgl)
  * Move len bytes from the controller buffer src out to wherever the
  * command's SGL points.  In-capsule descriptors are input-only, so a
  * controller-to-host transfer through one is a malformed request.
+ *
+ * Only a keyed descriptor names host memory over RDMA.  A data block that
+ * isn't in capsule carries a bare address and no key, and handing it to
+ * the DMA ops with the key left at 0 would ask for that address as a raw
+ * guest bus address, so it is refused here, in both directions.
  */
 static uint16_t sgl_write(const struct nvmeof_sgl *sgl,
                           const struct nvmeof_dma_ops *dma, void *ctx,
@@ -533,7 +538,7 @@ static uint16_t sgl_write(const struct nvmeof_sgl *sgl,
     if (len == 0) {
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
     }
-    if (sgl->in_capsule) {
+    if (!sgl->keyed) {
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_SGL_INVALID_TYPE, 1);
     }
     if (sgl->length < len) {
@@ -566,6 +571,9 @@ static uint16_t sgl_read(const struct nvmeof_sgl *sgl, const uint8_t *capsule,
         }
         memcpy(dst, capsule + off, len);
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
+    }
+    if (!sgl->keyed) {
+        return nvme_status(NVME_SCT_GENERIC, NVME_SC_SGL_INVALID_TYPE, 1);
     }
     if (dma->from_host(ctx, sgl->key, sgl->addr, dst, len) != len) {
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_DATA_XFER_ERROR, 1);

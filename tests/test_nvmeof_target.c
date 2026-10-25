@@ -164,6 +164,15 @@ static void cap_inline_sgl(struct capsule *c, const void *data, uint32_t len)
     c->len = NVME_SQE_SIZE + len;
 }
 
+/* A data block descriptor naming a bare address: no key, not in capsule. */
+static void cap_addr_sgl(struct capsule *c, uint64_t addr, uint32_t len)
+{
+    uint8_t *d = c->b + NVME_SQE_DPTR_OFF;
+    ernic_put_le64(d, addr);
+    ernic_put_le32(d + 8, len);
+    d[15] = NVME_SGL_TYPE_DATA_BLOCK << 4;
+}
+
 static uint16_t rsp_status(const uint8_t *rsp)
 {
     return ernic_get_le16(rsp + NVME_CQE_STATUS_OFF);
@@ -892,6 +901,33 @@ static void test_io(void)
     nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
     check("io-inline-read", rsp_sc(rsp) == NVME_SC_SGL_INVALID_TYPE,
           "a Read into an in-capsule SGL was accepted");
+
+    /*
+     * A data block that isn't in capsule has no key, so passing it to the
+     * DMA ops would ask for key 0, which the data path's sge_gpa() reads as
+     * a raw bus address.  Make the fake honor key 0 as sge_gpa() does, so
+     * only the target's own refusal stops either direction.
+     */
+    h->rkey = 0;
+    memset(back, 0xee, 512);
+    cap_init(&c, NVME_CMD_READ, 37);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le64(c.b + NVME_SQE_CDW10_OFF, 16);
+    cap_addr_sgl(&c, back_addr, 512);
+    nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
+    check("io-addr-sgl-read", rsp_sc(rsp) == NVME_SC_SGL_INVALID_TYPE,
+          "a Read through an unkeyed address SGL was accepted");
+    check("io-addr-sgl-read", back[0] == 0xee && back[511] == 0xee,
+          "a Read through an unkeyed address SGL wrote host memory");
+
+    cap_init(&c, NVME_CMD_WRITE, 38);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le64(c.b + NVME_SQE_CDW10_OFF, 16);
+    cap_addr_sgl(&c, back_addr, 512);
+    nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
+    check("io-addr-sgl-write", rsp_sc(rsp) == NVME_SC_SGL_INVALID_TYPE,
+          "a Write through an unkeyed address SGL was accepted");
+    h->rkey = HOST_RKEY;
 
     /* An in-capsule write, the one direction that form makes sense. */
     for (int i = 0; i < 512; i++) {

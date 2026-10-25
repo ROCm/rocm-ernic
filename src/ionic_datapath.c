@@ -2485,53 +2485,49 @@ out:
 }
 
 /* -------------------------------------------------------------------------
- * In-process NVMe-oF controller
+ * In-process targets: the NVMe-oF controller and the S3 store
  * -------------------------------------------------------------------------
  */
 
 /*
- * The controller reaches guest memory the same way a peer's RDMA READ or
- * WRITE would: through the rkey the initiator put in the command's keyed
- * SGL.  Here that key resolves in the same MR table as any lkey, because one
- * guest owns every registration this emulator holds.
+ * The targets reach guest memory the same way a peer's RDMA READ or WRITE
+ * would: through the rkey the client put in its request, a keyed SGL for
+ * NVMe-oF and the x-amz-rdma-token for S3.  Here that key resolves in the
+ * same MR table as any lkey, because one guest owns every registration this
+ * emulator holds.
+ *
+ * Except key 0.  sge_gpa() reads it as IONIC_DMA_LKEY and hands back the
+ * address as a bus address with no MR lookup and no bound, which is for the
+ * guest kernel's own buffers.  Any guest process that can reach a target
+ * chooses the key, so honoring 0 would let an unprivileged one read or write
+ * all of guest memory.  Refusing it moves nothing, which both targets report
+ * as a failed transfer.  dp_handle_wire() refuses it from mesh peers for the
+ * same reason.
  */
-static uint32_t dp_nvmeof_from_host(void *ctx, uint32_t key, uint64_t addr,
+static uint32_t dp_target_from_host(void *ctx, uint32_t key, uint64_t addr,
                                     void *dst, uint32_t len)
 {
+    if (key == 0)
+        return 0;
     return dp_sge_to_host(ctx, key, addr, dst, len);
 }
 
-static uint32_t dp_nvmeof_to_host(void *ctx, uint32_t key, uint64_t addr,
+static uint32_t dp_target_to_host(void *ctx, uint32_t key, uint64_t addr,
                                   const void *src, uint32_t len)
 {
+    if (key == 0)
+        return 0;
     return dp_host_to_sge(ctx, key, addr, src, len);
 }
 
 static const struct nvmeof_dma_ops dp_nvmeof_dma_ops = {
-    .from_host = dp_nvmeof_from_host,
-    .to_host = dp_nvmeof_to_host,
+    .from_host = dp_target_from_host,
+    .to_host = dp_target_to_host,
 };
 
-/*
- * The S3 target reaches guest memory through the rkey in the client's
- * x-amz-rdma-token, which resolves in the same MR table as any lkey for the
- * same reason the NVMe-oF controller's does.
- */
-static uint32_t dp_s3_from_host(void *ctx, uint32_t key, uint64_t addr,
-                                void *dst, uint32_t len)
-{
-    return dp_sge_to_host(ctx, key, addr, dst, len);
-}
-
-static uint32_t dp_s3_to_host(void *ctx, uint32_t key, uint64_t addr,
-                              const void *src, uint32_t len)
-{
-    return dp_host_to_sge(ctx, key, addr, src, len);
-}
-
 static const struct s3_dma_ops dp_s3_dma_ops = {
-    .from_host = dp_s3_from_host,
-    .to_host = dp_s3_to_host,
+    .from_host = dp_target_from_host,
+    .to_host = dp_target_to_host,
 };
 
 /* The control plane's replies go back to the guest as received frames. */

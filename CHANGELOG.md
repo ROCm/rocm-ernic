@@ -224,8 +224,9 @@
   * `ernic-test-ionic-harness` (`ionic-harness-*`) runs the whole ionic
     device in-process over a fake libvfio-user and drives it as the guest
     drivers do: bring-up, the RDMA admin queue, RC and UD transfers,
-    atomics, fast registration, SRQs, CQ events, QP flush, Ethernet, and
-    the NVMe-oF connect. It raised coverage of `src/` from about 51% to 67%.
+    atomics, fast registration, SRQs, CQ events, QP flush, Ethernet, the
+    NVMe-oF connect, and the S3 store's RDMA GET and PUT. It raised
+    coverage of `src/` from about 51% to 67%.
     Its `admin-dma`, `dp-dma` and `eth-dma` groups refuse guest memory
     accesses one at a time, as libvfio-user does for an address the client
     has unmapped, and `tables` fills the EQ, admin queue and MR tables.
@@ -533,6 +534,15 @@
 
 ### Fixed
 
+* **Any guest process could read and write all guest memory through the S3
+  and NVMe-oF targets.** Key 0 is the ionic driver's reserved DMA key, which
+  the device reads as a raw guest bus address, and both targets passed the
+  client's key straight through. A process that could reach either target
+  could name key 0 in an `x-amz-rdma-token` or a keyed SGL and reach any
+  guest page, kernel memory included. Both now refuse it: S3 answers `500`
+  and NVMe-oF a data transfer error. NVMe-oF also refuses a data block SGL
+  that is neither keyed nor in capsule, which carried no key at all, as an
+  invalid SGL descriptor type. Host memory was never reachable.
 * **Memory errors a guest could cause in the ionic device.** A malicious or
   buggy guest could make the server:
   * use freed memory, with an admin queue doorbell after `RDMA_RESET_LIF`;

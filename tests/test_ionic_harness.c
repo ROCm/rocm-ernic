@@ -58,6 +58,7 @@
 #include "rdma_rm.h"
 #include "rocm_ernic_compat.h"
 #include "rocm_ernic_internal.h"
+#include "s3_token.h"
 
 static int failures;
 
@@ -4043,6 +4044,30 @@ static void test_nvmeof(void)
     ih_mr_read(&h, &mr, mr.va + NV_IDENT_OFF + 768, subnqn, sizeof(subnqn) - 1);
     check(T, strcmp(subnqn, NV_NQN) == 0, "Identify subnqn is '%s'", subnqn);
 
+    /*
+     * Key 0 is IONIC_DMA_LKEY, which the data path resolves as a raw guest
+     * bus address without the MR table. Any guest process can put it in a
+     * keyed SGL, so the controller must refuse it: aim an Identify at a page
+     * no MR covers and check the page is untouched.
+     */
+    static uint8_t raw_page[IH_PAGE_SIZE];
+    uint64_t raw = fake_vfu_alloc(h.vfu, IH_PAGE_SIZE, IH_PAGE_SIZE);
+    if (check(T, raw != 0, "out of guest memory for the unregistered page")) {
+        memset(raw_page, 0xee, sizeof(raw_page));
+        fake_vfu_write(h.vfu, raw, raw_page, sizeof(raw_page));
+        capsule_init(cap, NVME_ADMIN_IDENTIFY, 3, raw, NVME_IDENTIFY_SIZE, 0);
+        ernic_put_le32(cap + NVME_SQE_CDW10_OFF, NVME_ID_CNS_CTRL);
+        sts = nvme_exchange(T, &h, &rc, &rcq, &mr, cap);
+        check(T, (sts & 0xff) == NVME_SC_DATA_XFER_ERROR,
+              "Identify through key 0 status %#x", (unsigned)sts);
+        fake_vfu_read(h.vfu, raw, raw_page, sizeof(raw_page));
+        unsigned changed = 0;
+        for (size_t i = 0; i < sizeof(raw_page); i++)
+            changed += raw_page[i] != 0xee;
+        check(T, changed == 0,
+              "Identify through key 0 wrote %u bytes no MR covers", changed);
+    }
+
     /* DREQ draws a DREP */
     mad_hdr(mad, 0x0015, 0x1234567800000002ull);
     ernic_put_be32(mad + 24, 0xabcd0001u);
@@ -4057,6 +4082,181 @@ static void test_nvmeof(void)
     check(T, ih_mr_destroy(&h, &mr) == 0, "DESTROY_MR failed");
     check(T, ih_cq_destroy(&h, &gcq) == 0 && ih_cq_destroy(&h, &rcq) == 0,
           "DESTROY_CQ failed");
+    teardown(T, &h);
+}
+
+/* ---- The S3 store's RDMA data plane ------------------------------------- */
+
+#define S3H_BACKEND    "s3:size=1M"
+#define S3H_TARGET_IP  0xc0a8c801u /* 192.168.200.1, the default */
+#define S3H_GUEST_IP   0xc0a8c809u /* 192.168.200.9 */
+#define S3H_PORT       9000u
+#define S3H_GUEST_PORT 44001u
+#define S3H_ISS        0x1000u /* the store's first initial sequence number */
+#define S3H_TCP_SYN    0x02u
+#define S3H_TCP_PSH    0x08u
+#define S3H_TCP_ACK    0x10u
+#define S3H_MR         0x0a00000au
+#define S3H_VA         UINT64_C(0x7f7000000000)
+#define S3H_LEN        64u
+
+/*
+ * One TCP connection from the guest to the store. Its segments go straight
+ * to the Tx filter the store registers, which is where the Ethernet Tx path
+ * would hand them; the store's answers are queued for the guest's Rx and
+ * never read, since everything this test checks is in guest memory.
+ */
+struct s3h_conn {
+    ionic_eth_tx_filter_fn fn;
+    void *ctx;
+    uint32_t seq;
+};
+
+/* Send one segment. The store doesn't verify checksums, so none are set. */
+static bool s3h_segment(struct s3h_conn *c, uint8_t flags, const char *data)
+{
+    static const uint8_t guest_mac[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
+    uint8_t f[14 + 20 + 20 + 512];
+    size_t len = data ? strlen(data) : 0;
+
+    if (len > sizeof(f) - 54)
+        return false;
+    memset(f, 0, sizeof(f));
+    memset(f, 0xff, 6); /* broadcast, which the store accepts */
+    memcpy(f + 6, guest_mac, sizeof(guest_mac));
+    ernic_put_be16(f + 12, 0x0800);
+
+    uint8_t *ip = f + 14;
+    ip[0] = 0x45;
+    ernic_put_be16(ip + 2, (uint16_t)(40 + len));
+    ip[8] = 64;
+    ip[9] = 6; /* TCP */
+    ernic_put_be32(ip + 12, S3H_GUEST_IP);
+    ernic_put_be32(ip + 16, S3H_TARGET_IP);
+
+    uint8_t *tcp = ip + 20;
+    ernic_put_be16(tcp, S3H_GUEST_PORT);
+    ernic_put_be16(tcp + 2, S3H_PORT);
+    ernic_put_be32(tcp + 4, c->seq);
+    /* Acknowledge the SYN-ACK and nothing after it: the answers are unread */
+    ernic_put_be32(tcp + 8, (flags & S3H_TCP_ACK) ? S3H_ISS + 1 : 0);
+    tcp[12] = 5 << 4;
+    tcp[13] = flags;
+    ernic_put_be16(tcp + 14, 0xffff);
+    if (len)
+        memcpy(tcp + 20, data, len);
+
+    c->seq += (uint32_t)len + ((flags & S3H_TCP_SYN) ? 1u : 0u);
+    return c->fn(c->ctx, f, 54 + len);
+}
+
+/* An RDMA GET or PUT of S3H_LEN bytes, naming (rkey, addr) in its token. */
+static bool s3h_request(struct s3h_conn *c, const char *method, const char *key,
+                        uint32_t rkey, uint64_t addr)
+{
+    struct s3_token tok;
+    char hex[S3_TOKEN_HEX_LEN + 1];
+    char req[384];
+
+    memset(&tok, 0, sizeof(tok));
+    tok.transport = S3_TRANSPORT_RC;
+    tok.qp_num = 2;
+    tok.gid[10] = 0xff;
+    tok.gid[11] = 0xff;
+    ernic_put_be32(tok.gid + 12, S3H_GUEST_IP);
+    tok.rkey = rkey;
+    tok.remote_addr = addr;
+    tok.length = S3H_LEN;
+    tok.port_num = 1;
+    s3_token_encode(&tok, hex);
+
+    /* What tests/s3_rdma_client.c sends: a Content-Length with no body */
+    int n =
+        snprintf(req, sizeof(req),
+                 "%s /ernic/%s HTTP/1.1\r\n"
+                 "Host: 192.168.200.1:9000\r\n"
+                 "x-amz-rdma-token: %s\r\n"
+                 "Content-Length: %u\r\n\r\n",
+                 method, key, hex, strcmp(method, "PUT") == 0 ? S3H_LEN : 0u);
+    return n > 0 && (size_t)n < sizeof(req) &&
+           s3h_segment(c, S3H_TCP_PSH | S3H_TCP_ACK, req);
+}
+
+/*
+ * The store moves object bytes by the rkey in the client's token. Key 0 is
+ * IONIC_DMA_LKEY, which the data path resolves as a raw guest bus address
+ * without the MR table, and any guest process can put it in a token, so the
+ * store must refuse it in both directions. The registered-key requests
+ * around the key-0 ones show the connection was serving throughout.
+ */
+static void test_s3(void)
+{
+    const char *T = "s3";
+    struct ih h;
+    struct ih_mr mr = {0};
+    struct s3h_conn c = {.seq = 0x2000u};
+    static uint8_t raw_page[IH_PAGE_SIZE];
+    uint8_t pattern[S3H_LEN], got[S3H_LEN], zero[S3H_LEN] = {0};
+    unsigned changed = 0;
+
+    if (!setup(T, &h, S3H_BACKEND))
+        return;
+
+    ionic_eth_emu_get_tx_filter(h.dev->ionic_emu, &c.fn, &c.ctx);
+    uint64_t raw = fake_vfu_alloc(h.vfu, IH_PAGE_SIZE, IH_PAGE_SIZE);
+    if (!check(T,
+               c.fn != NULL && raw != 0 &&
+                   ih_mr_create(&h, &mr, S3H_MR, S3H_VA, IH_PAGE_SIZE,
+                                IH_ACCESS_ALL, false),
+               "S3 setup failed")) {
+        ih_mr_free(&mr);
+        teardown(T, &h);
+        return;
+    }
+
+    for (unsigned i = 0; i < S3H_LEN; i++)
+        pattern[i] = (uint8_t)(i * 7 + 1);
+    ih_mr_write(&h, &mr, S3H_VA, pattern, S3H_LEN);
+    ih_mr_write(&h, &mr, S3H_VA + 0xc00, zero, S3H_LEN);
+    memset(raw_page, 0xee, sizeof(raw_page));
+    fake_vfu_write(h.vfu, raw, raw_page, sizeof(raw_page));
+
+    check(T, s3h_segment(&c, S3H_TCP_SYN, NULL), "the store passed on a SYN");
+
+    /* A PUT out of the region and a GET back into it, by its key */
+    check(T,
+          s3h_request(&c, "PUT", "obj", mr.lkey, S3H_VA) &&
+              s3h_request(&c, "GET", "obj", mr.lkey, S3H_VA + 0x800),
+          "the store passed on a request");
+    ih_mr_read(&h, &mr, S3H_VA + 0x800, got, S3H_LEN);
+    check(T, memcmp(got, pattern, S3H_LEN) == 0,
+          "an RDMA PUT and GET by a registered key did not round-trip");
+
+    /* A GET by key 0 would write the object into a page no MR covers */
+    check(T, s3h_request(&c, "GET", "obj", 0, raw),
+          "the store passed on a request");
+    fake_vfu_read(h.vfu, raw, raw_page, sizeof(raw_page));
+    for (size_t i = 0; i < sizeof(raw_page); i++)
+        changed += raw_page[i] != 0xee;
+    check(T, changed == 0, "a GET by key 0 wrote %u bytes no MR covers",
+          changed);
+
+    /* A PUT by key 0 would store that page, for a GET to read back */
+    check(T,
+          s3h_request(&c, "PUT", "leak", 0, raw) &&
+              s3h_request(&c, "GET", "leak", mr.lkey, S3H_VA + 0xc00),
+          "the store passed on a request");
+    ih_mr_read(&h, &mr, S3H_VA + 0xc00, got, S3H_LEN);
+    check(T, memcmp(got, zero, S3H_LEN) == 0,
+          "a PUT by key 0 stored memory no MR covers");
+
+    check(T, s3h_request(&c, "GET", "obj", mr.lkey, S3H_VA + 0x400),
+          "the store passed on a request");
+    ih_mr_read(&h, &mr, S3H_VA + 0x400, got, S3H_LEN);
+    check(T, memcmp(got, pattern, S3H_LEN) == 0,
+          "the store stopped serving after the key-0 requests");
+
+    check(T, ih_mr_destroy(&h, &mr) == 0, "DESTROY_MR failed");
     teardown(T, &h);
 }
 
@@ -4473,6 +4673,7 @@ static const struct {
     {"p4-devcmd", test_p4_devcmd},
 #endif
     {"nvmeof", test_nvmeof},
+    {"s3", test_s3},
     {"teardown", test_teardown},
     {"backend-names", test_backend_names},
     {"none", test_none},
