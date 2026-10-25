@@ -536,7 +536,8 @@ struct TcpBackendPrivate {
 
     /* Manager-specific fields */
     bool is_manager;
-    GHashTable *mesh_nodes; /* node_id -> MeshNodeInfo* */
+    /* node_id -> MeshNodeInfo*; at most TCP_MAX_MESH_NODES of them */
+    GHashTable *mesh_nodes;
     /* Protects mesh_nodes; taken before conn_table_lock when both are held */
     QemuMutex mesh_table_lock;
     /*

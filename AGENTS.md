@@ -638,18 +638,20 @@ empty advertisement meaning.
 The broadcasts carry at most `TCP_MAX_MESH_NODES` (64) nodes, so when a
 new node registers in a full table, the manager evicts the node that has
 been dead longest and has no live connection (`tcp_evict_dead_node()`),
-drops its claims, and advertises it as owning nothing. An evicted id is
-never given out again. **Never keep a `MeshNodeInfo *` after dropping
-`mesh_table_lock`**: eviction frees it. Keep the node id and look it up
-again, as `TcpHealthCheckItem` does. A receive thread can outlive its
-connection's place in the table, so the manager records a worker's
-advertisement only while its node is in `mesh_nodes`, checked under that
-lock (`tcp_gid_claims_set_if_member()`); otherwise a late one would put
-an evicted node's claims back. Nothing is evicted once teardown has
-begun (`priv->stopping`), as with `tcp_register_again()`. A worker cut
-off from the manager misses the eviction's empty advertisement, and later
-GID tables don't mention the node, so a worker drops the claims of every
-node a topology update from the manager leaves out
+drops its claims, and advertises it as owning nothing. If no node can be
+evicted, it refuses the new one with `-ENOSPC`, so the table never holds
+more than the broadcasts carry. An evicted id is never given out again.
+**Never keep a `MeshNodeInfo *` after dropping `mesh_table_lock`**:
+eviction frees it. Keep the node id and look it up again, as
+`TcpHealthCheckItem` does. A receive thread can outlive its connection's
+place in the table, so the manager records a worker's advertisement only
+while its node is in `mesh_nodes`, checked under that lock
+(`tcp_gid_claims_set_if_member()`); otherwise a late one would put an
+evicted node's claims back. Nothing is evicted once teardown has begun
+(`priv->stopping`), as with `tcp_register_again()`. A worker cut off from
+the manager misses the eviction's empty advertisement, and later GID
+tables don't mention the node, so a worker drops the claims of every node
+a topology update from the manager leaves out
 (`tcp_gid_claims_prune()`).
 
 Don't make the index read `is_alive` from `mesh_nodes`: that takes
