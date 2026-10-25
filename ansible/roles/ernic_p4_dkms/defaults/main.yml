@@ -43,7 +43,7 @@ ernic_p4_dkms_kernel_repo: ""
 ernic_p4_dkms_ionic_subdir: drivers/net/ethernet/pensando/ionic
 
 # Where the patched ionic tree is built, and where the path to it is
-# recorded for dkms autoinstall to find on a later kernel upgrade.
+# recorded for a later dkms build, which has none of this role's variables.
 ernic_p4_dkms_source_dir: /usr/src/ionic-ernic-p4
 ernic_p4_dkms_src_pointer: /etc/ernic-p4-ionic-src
 

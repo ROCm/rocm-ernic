@@ -325,11 +325,15 @@
   shipped beside them, so a consumer of `sbates130272.rocm_ernic` needs no
   second checkout to build SRQ-capable modules, and can no longer get
   patches that don't match its roles (whose symptom was `max_srq = 0`).
-* **Breaking:** **The ionic DKMS package is built only for the kernel it
-  was asked for**, not for every kernel with headers installed, where a
-  build that could never succeed failed the whole run. **After a kernel
-  upgrade, run `setup-ionic-dkms.sh` again** (or `ernic_guest_setup`, or
-  `ernic_srq_dkms`); DKMS no longer rebuilds the module by itself.
+* **Breaking:** **The ionic and `ernic-p4` DKMS packages are built only
+  for the kernel they were asked for**, not for every kernel with headers
+  installed, where a build that could never succeed failed the whole run
+  (and an `ernic-p4` built for a kernel without the patched ionic
+  wouldn't insert). DKMS no longer rebuilds either by itself. **After a
+  kernel upgrade, run `setup-ionic-dkms.sh` again** (or
+  `ernic_guest_setup`, or `ernic_srq_dkms`); for P4, re-run
+  `ernic_guest_setup` with `patches/p4` in
+  `ernic_guest_ionic_extra_patches`, then `ernic_p4_dkms`.
 * **`fetch-ionic-sources.sh --patches-dir` can be given more than once**,
   applying the series in order. Giving it at all still replaces the
   default. A directory that doesn't exist is an error, and dropping a

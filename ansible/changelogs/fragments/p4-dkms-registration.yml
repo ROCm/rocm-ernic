@@ -10,9 +10,7 @@ bugfixes:
     the module into ``/lib/modules``.  The module is pinned to the
     symbol CRCs of an out-of-tree ionic that is itself DKMS-built, so
     the two must be rebuilt together on a kernel upgrade; a hand-copied
-    module was not rebuilt and would no longer insert after the first
-    one.  ``dkms.conf`` had carried ``AUTOINSTALL="yes"`` all along ---
-    the package was never registered for it to apply to.
+    module outlived the upgrade and then would no longer insert.
   - >-
     ``ernic_p4_dkms`` removes a module left in
     ``/lib/modules/<kernel>/updates/`` by an earlier version of the

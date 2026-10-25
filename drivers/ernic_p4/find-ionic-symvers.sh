@@ -14,9 +14,8 @@
 # saying a symbol "disagrees about version" to point at the cause.
 #
 # "The wrong CRCs" includes the right tree built for the wrong kernel,
-# which is the case that matters on an upgrade: dkms autoinstall runs
-# for the NEW kernel, while anything lying around was built for the old
-# one. A Module.symvers carries no record of which kernel produced it,
+# which is the case that matters on an upgrade: the rebuild is for the
+# NEW kernel, while anything lying around was built for the old one. A Module.symvers carries no record of which kernel produced it,
 # so each tree gets a stamp naming one, and an unstamped or mismatched
 # tree is rebuilt rather than believed.
 #
@@ -26,7 +25,7 @@
 # "make M=" against the latter would try to build the kernel.
 #
 # Absolute shebang: this is installed under /usr/src and runs as root
-# from dkms autoinstall, where PATH is not ours to assume.
+# from dkms, where PATH is not ours to assume.
 
 set -euo pipefail
 
