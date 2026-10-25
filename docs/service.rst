@@ -151,7 +151,8 @@ Server settings
      - TCP port for the manager/worker mesh
    * - ``ERNIC_MANAGER_IP``
      - ``127.0.0.1``
-     - IP address workers connect to
+     - Host name, or IPv4 or IPv6 address, workers
+       connect to. An IPv6 address needs no brackets.
    * - ``ERNIC_GUEST_GIDS_<n>``
      - derived
      - Comma-separated guest RoCE addresses owned by

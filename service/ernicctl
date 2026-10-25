@@ -1363,10 +1363,14 @@ def cmd_hot_reload(args):
     if CFG["ERNIC_VERBOSE"] == "true":
         level = "debug"
 
+    # An IPv6 address goes in brackets, as [addr]:port, as the launcher does
+    manager = CFG["ERNIC_MANAGER_IP"]
+    if ":" in manager and not manager.startswith("["):
+        manager = f"[{manager}]"
     backend = (
         f"tcp:manager:listen:{CFG['ERNIC_TCP_PORT']}"
         if inst["role"] == "manager"
-        else f"tcp:worker:{CFG['ERNIC_MANAGER_IP']}:{CFG['ERNIC_TCP_PORT']}"
+        else f"tcp:worker:{manager}:{CFG['ERNIC_TCP_PORT']}"
     )
 
     stats = os.path.join(RUN_DIR, f"{inst['id']}.stats")
