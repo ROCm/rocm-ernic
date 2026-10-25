@@ -30,6 +30,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/uio.h>
 
@@ -552,15 +553,27 @@ static void remote(struct ionic_datapath *dp, uint32_t dest_qp)
     ionic_datapath_set_dest(dp, QP_A, dest_qp, PEER_NODE);
 }
 
-/* Deliver @len bytes from the peer node, as the mesh's receive thread does. */
+/*
+ * Deliver @len bytes from the peer node, as the mesh's receive thread does: in
+ * a buffer from malloc(), which the data path takes.
+ */
 static void mesh_recv(const void *buf, size_t len)
 {
+    void *copy;
+
     if (!g_recv_fn) {
         printf("FAIL: the data path registered no mesh receive callback\n");
         failures++;
         return;
     }
-    g_recv_fn(g_recv_opaque, PEER_NODE, buf, len);
+    copy = malloc(len);
+    if (!copy) {
+        printf("FAIL: no memory for a %zu-byte mesh message\n", len);
+        failures++;
+        return;
+    }
+    memcpy(copy, buf, len);
+    g_recv_fn(g_recv_opaque, PEER_NODE, copy, len);
 }
 
 struct wqe {
@@ -1782,11 +1795,90 @@ static void check_destroyed_qp_replies(void)
     }
 }
 
+/*
+ * Message sizes at the mesh's edge.  The data path takes the buffer the mesh
+ * received a message into rather than copying it, so it has to free it
+ * however the message ends: refused for its size, applied by a poll (here
+ * dropped, for its zero magic), or still queued when the data path is
+ * destroyed.  What the rows can see is whether the message was queued; a
+ * buffer that is never freed, or freed twice, is for the sanitizers and
+ * valgrind to report.
+ */
+enum mr_end {
+    MR_REFUSED,   /* too short or too long to queue */
+    MR_POLLED,    /* queued, then dropped by a poll */
+    MR_DESTROYED, /* queued, then freed with the data path */
+};
+
+static const char *mr_run(struct ionic_datapath *dp, size_t len,
+                          enum mr_end end)
+{
+    void *buf;
+
+    remote(dp, QP_B);
+    if (!g_recv_fn)
+        return "the data path registered no mesh receive callback";
+    buf = calloc(1, len);
+    if (!buf)
+        return "no memory for the message";
+    g_recv_fn(g_recv_opaque, PEER_NODE, buf, len);
+
+    if (ionic_datapath_has_work(dp) != (end != MR_REFUSED))
+        return end == MR_REFUSED ? "the message was queued"
+                                 : "the message wasn't queued";
+    if (end == MR_POLLED) {
+        poll_at(dp, g_now_ms + 1);
+        if (ionic_datapath_has_work(dp))
+            return "the poll left the message queued";
+    }
+    return NULL;
+}
+
+static void check_mesh_recv_sizes(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        size_t len;
+        enum mr_end end;
+    } rows[] = {
+        {"negative", "a message one byte shorter than the wire header",
+         "refused, not queued", sizeof(struct ionic_wire_hdr) - 1, MR_REFUSED},
+        {"boundary", "a message that is just the wire header",
+         "queued, then dropped by the next poll", sizeof(struct ionic_wire_hdr),
+         MR_POLLED},
+        {"boundary", "a message of IONIC_MESH_MAX_MSG bytes",
+         "queued, then dropped by the next poll", IONIC_MESH_MAX_MSG,
+         MR_POLLED},
+        {"negative", "a message one byte over IONIC_MESH_MAX_MSG",
+         "refused, not queued", (size_t)IONIC_MESH_MAX_MSG + 1, MR_REFUSED},
+        {"corner", "a message still queued when the data path is destroyed",
+         "freed with the data path", sizeof(struct ionic_wire_hdr),
+         MR_DESTROYED},
+    };
+
+    for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
+        struct ionic_datapath *dp = setup();
+        const char *why = dp ? mr_run(dp, rows[row].len, rows[row].end)
+                             : "could not create a data path";
+
+        ionic_datapath_destroy(dp);
+        printf("%s %s: %s; expected: %s\n", why ? "FAIL" : "ok  ",
+               rows[row].category, rows[row].description, rows[row].expected);
+        if (why) {
+            printf("     %s\n", why);
+            failures++;
+        }
+    }
+}
+
 int main(void)
 {
     check_late_responses();
     check_mesh_cancel();
     check_destroyed_qp_replies();
+    check_mesh_recv_sizes();
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
         run_case(&cases[i]);
     for (size_t i = 0; i < sizeof(getter_cases) / sizeof(getter_cases[0]); i++)

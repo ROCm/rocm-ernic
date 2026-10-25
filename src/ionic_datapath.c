@@ -208,15 +208,25 @@ _Static_assert((1u << IONIC_CQ_MIN_STRIDE_LOG2) == CQE_SIZE,
 #define IONIC_WIRE_MAX_PAYLOAD \
     ((uint32_t)(IONIC_MESH_MAX_MSG - sizeof(struct ionic_wire_hdr)))
 
-/* A mesh message parked by the receive thread for the vfu thread to apply. */
+/*
+ * A mesh message parked by the receive thread for the vfu thread to apply.
+ * buf is the mesh's own buffer, taken over rather than copied: a message can
+ * be up to IONIC_MESH_MAX_MSG bytes.  Free with dp_inmsg_free().
+ */
 struct dp_inmsg {
     struct dp_inmsg *next;
     uint32_t src_node;
     size_t len;
     uint64_t first_try_ms; /* 0 until the first delivery attempt */
     bool rnr_counted;      /* resp_rx_out_of_buffer already has it */
-    uint8_t buf[];
+    uint8_t *buf;          /* from malloc(), owned */
 };
+
+static void dp_inmsg_free(struct dp_inmsg *m)
+{
+    free(m->buf);
+    free(m);
+}
 
 /* -------------------------------------------------------------------------
  * Byte accounting
@@ -402,7 +412,7 @@ struct ionic_datapath *ionic_datapath_create(vfu_ctx_t *vfu_ctx,
     return dp;
 }
 
-static void dp_mesh_recv(void *opaque, uint32_t src_node, const void *buf,
+static void dp_mesh_recv(void *opaque, uint32_t src_node, void *buf,
                          size_t len);
 
 bool ionic_datapath_attach_nvmeof(struct ionic_datapath *dp,
@@ -493,7 +503,7 @@ void ionic_datapath_destroy(struct ionic_datapath *dp)
     pthread_mutex_lock(&dp->rx_lock);
     for (struct dp_inmsg *m = dp->rx_head; m;) {
         struct dp_inmsg *next = m->next;
-        free(m);
+        dp_inmsg_free(m);
         m = next;
     }
     dp->rx_head = dp->rx_tail = NULL;
@@ -3587,30 +3597,37 @@ static void sq_service(struct ionic_datapath *dp, struct ionic_qp_ring *q,
  *
  * Messages arrive on a backend receive thread, which must not touch guest
  * memory: every DMA belongs to the thread that owns the vfio-user context.
- * So dp_mesh_recv() only copies the bytes onto a queue, and the server's main
+ * So dp_mesh_recv() only puts the message on a queue, and the server's main
  * loop drains it here through ionic_datapath_poll().
  * -------------------------------------------------------------------------
  */
 
-static void dp_mesh_recv(void *opaque, uint32_t src_node, const void *buf,
-                         size_t len)
+/*
+ * Takes buf (see ionic_mesh_recv_fn): frees it at once if the message is
+ * refused, or queues it, to be freed once the message is applied.
+ */
+static void dp_mesh_recv(void *opaque, uint32_t src_node, void *buf, size_t len)
 {
     struct ionic_datapath *dp = opaque;
 
     if (len < sizeof(struct ionic_wire_hdr) ||
-        len > sizeof(struct ionic_wire_hdr) + IONIC_WIRE_MAX_PAYLOAD)
+        len > sizeof(struct ionic_wire_hdr) + IONIC_WIRE_MAX_PAYLOAD) {
+        free(buf);
         return;
+    }
 
-    struct dp_inmsg *m = malloc(sizeof(*m) + len);
-    if (!m)
+    struct dp_inmsg *m = malloc(sizeof(*m));
+    if (!m) {
+        free(buf);
         return;
+    }
 
     m->next = NULL;
     m->src_node = src_node;
     m->len = len;
     m->first_try_ms = 0;
     m->rnr_counted = false;
-    memcpy(m->buf, buf, len);
+    m->buf = buf;
 
     pthread_mutex_lock(&dp->rx_lock);
     if (dp->rx_tail)
@@ -3959,7 +3976,7 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
 
             if (dp_handle_wire(dp, m->src_node, m->buf, m->len,
                                now - m->first_try_ms < RNR_RETRY_MS)) {
-                free(m);
+                dp_inmsg_free(m);
                 continue;
             }
 

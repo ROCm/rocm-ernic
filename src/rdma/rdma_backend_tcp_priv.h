@@ -264,20 +264,6 @@ typedef struct {
     bool alive;
 } TcpNodeGids;
 
-/*
- * Receive buffer pool -- avoids per-message g_malloc
- * on the hot path.
- */
-#define TCP_BUFPOOL_SLOTS 64
-#define TCP_BUFPOOL_BUFSZ (64u * 1024)
-
-typedef struct {
-    void *bufs[TCP_BUFPOOL_SLOTS];
-    int head;
-    int count;
-    QemuMutex lock;
-} TcpBufPool;
-
 typedef struct TcpBackendPrivate TcpBackendPrivate;
 
 /*
@@ -649,12 +635,10 @@ struct TcpBackendPrivate {
     /* Sequence number for protocol */
     _Atomic uint32_t next_seq;
 
-    /* Receive buffer pool */
-    TcpBufPool recv_pool;
-
     /* Sink for TCP_MSG_IONIC, registered by the ionic data path.  Called on
-     * a receive thread, so the callee must hand off to its own thread.  Both
-     * are protected by lock. */
+     * a receive thread, so the callee must hand off to its own thread; it
+     * takes the payload with it, so a large one isn't copied.  Both are
+     * protected by lock. */
     tcp_ionic_recv_fn ionic_recv_fn;
     void *ionic_recv_opaque;
 
@@ -704,10 +688,6 @@ typedef struct {
  * rdma_backend_tcp.c. tcp_init(), tcp_fini() and the other entry points the
  * device uses are reached through rdma_backend_ops_tcp instead.
  */
-
-/* Receive buffer pool */
-void tcp_bufpool_init(TcpBufPool *pool);
-void tcp_bufpool_destroy(TcpBufPool *pool);
 
 /* GIDs and the GID -> node table */
 char *tcp_gid_str(const uint8_t gid[16], char buf[TCP_GID_STR_LEN]);
@@ -768,8 +748,7 @@ int tcp_listen_socket(int family, uint16_t *port);
 bool tcp_format_peer_addr(const struct sockaddr_storage *ss, char *host,
                           size_t len, uint16_t *port);
 int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
-                     TcpBufPool *pool, atomic_bool *running,
-                     uint64_t deadline_ms);
+                     atomic_bool *running, uint64_t deadline_ms);
 
 /* Setup */
 const char *tcp_config_role(const char *config, TcpMode *mode);

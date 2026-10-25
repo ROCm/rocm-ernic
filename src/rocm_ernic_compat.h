@@ -427,9 +427,13 @@ int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
  * ionic_mesh_local_node() and ionic_mesh_node_from_gid() return UINT32_MAX
  * when the instance has no mesh backend (loopback or none), which the caller
  * reads as "every peer is local".
+ *
+ * An ionic_mesh_recv_fn owns buf, which is from malloc(), and must free() it
+ * on every path, rejections included.  It must match tcp_ionic_recv_fn, which
+ * ionic_mesh_set_recv_cb() casts it to.
  */
-typedef void (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node,
-                                   const void *buf, size_t len);
+typedef void (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node, void *buf,
+                                   size_t len);
 
 /*
  * Largest single message ionic_mesh_sendv() accepts, header included.  Mirrors

@@ -408,6 +408,13 @@
     a remote access error.
 * **TCP mesh: a worker ignores topology updates** that don't come on its
   own connection to the manager, as it already did the GID table.
+* **TCP mesh: received RDMA messages aren't copied.** The receive thread
+  hands the data path the buffer it read a message into. Before, the data
+  path copied every message, and one over 64 KiB (they go up to 16 MiB)
+  needed two allocations of its size. The 4 MiB of receive buffers each mesh
+  node allocated at startup are gone. A node that runs out of memory for a
+  message closes that connection, which is then reconnected; before, the
+  server aborted.
 * **libvfio-user 5b9c722 or later is required** (CI, the release build and
   the Nix flake now use it). Before it, a 64-bit BAR smaller than 4 GiB,
   as BAR0 and BAR2 are, couldn't be placed above 4 GiB and sized wrongly;
