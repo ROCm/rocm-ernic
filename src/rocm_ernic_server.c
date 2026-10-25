@@ -903,13 +903,17 @@ static void usage(const char *progname)
     fprintf(stderr, "  tcp: TCP/IP network backend\n");
     fprintf(stderr,
             "                    Manager Mode (centralized discovery):\n");
-    fprintf(stderr, "                      tcp:manager:<ip>:<port>     - "
-                    "Manager at IP:port\n");
+    fprintf(stderr, "                      tcp:manager:<host>:<port>   - "
+                    "Manager at host:port\n");
     fprintf(stderr, "                      tcp:manager:listen:<port>    - "
                     "Manager listening on port\n");
     fprintf(stderr, "                    Worker Mode (connects to manager):\n");
     fprintf(stderr,
-            "                      tcp:worker:<manager_ip>:<manager_port>\n");
+            "                      tcp:worker:<manager_host>:<manager_port>\n");
+    fprintf(stderr, "                    A host is a name or an IPv4 or IPv6 "
+                    "address; an IPv6\n"
+                    "                    address goes in brackets: "
+                    "[fe80::1%%eth0]:5000\n");
     fprintf(stderr, "                    Examples:\n");
     fprintf(stderr, "                      Manager/Worker:\n");
     fprintf(stderr, "                        tcp:manager:listen:5000           "

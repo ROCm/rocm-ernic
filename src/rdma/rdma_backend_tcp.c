@@ -1174,109 +1174,91 @@ const char *tcp_config_role(const char *config, TcpMode *mode)
 }
 
 /*
+ * Split @s, "host:port", into a newly allocated *host and *port.  An IPv6
+ * address goes in brackets, as in a URL ("[fe80::1%eth0]:5000"), and *host
+ * is what's inside them.  A host outside brackets can't contain a colon, so a
+ * bare IPv6 address, or anything after the port, is refused rather than split
+ * somewhere else.  Returns 0, or -EINVAL having logged why, starting with
+ * @who.
+ */
+int tcp_parse_host_port(const char *s, const char *who, char **host,
+                        uint16_t *port)
+{
+    const char *start = s;
+    const char *end;
+    const char *port_str;
+    const char *why;
+
+    if (s[0] == '[') {
+        start = s + 1;
+        end = strchr(start, ']');
+        if (!end || end[1] != ':') {
+            why = "no ']:' after the IPv6 address";
+            goto invalid;
+        }
+        /* Brackets are for IPv6 addresses, which always have a colon */
+        if (memchr(start, ':', (size_t)(end - start)) == NULL ||
+            memchr(start, '[', (size_t)(end - start)) != NULL) {
+            why = "not an IPv6 address in the brackets";
+            goto invalid;
+        }
+    } else {
+        end = s + strcspn(s, ":[]");
+        if (*end != ':') {
+            why = *end ? "a bracket outside an IPv6 address" : "no port";
+            goto invalid;
+        }
+    }
+
+    if (end == start) {
+        why = "no host";
+        goto invalid;
+    }
+
+    port_str = end + (*end == ']' ? 2 : 1);
+    if (strchr(port_str, ':')) {
+        why = "more than one ':' (an IPv6 address goes in brackets)";
+        goto invalid;
+    }
+    if (!ernic_parse_port(port_str, port)) {
+        why = "an invalid port";
+        goto invalid;
+    }
+
+    *host = g_strndup(start, (gsize)(end - start));
+    return 0;
+
+invalid:
+    rdma_error_report("%s: invalid address \"%s\": %s; expected host:port or "
+                      "[IPv6 address]:port",
+                      who, s, why);
+    return -EINVAL;
+}
+
+/*
  * Parse a manager config, after its "manager:" (see tcp_config_role()):
- * "<ip>:<port>" or "listen:<port>"
+ * "<host>:<port>" or "listen:<port>".  *manager_host is left NULL for
+ * "listen:".
  */
 static int parse_tcp_config_manager(const char *args, char **manager_host,
                                     uint16_t *manager_port, bool *listen_mode)
 {
-    char *config_copy, *saveptr, *token;
-    char *host_str = NULL;
-    uint16_t port_val = 0;
-    bool listen = false;
+    const char *port_str = tcp_skip_prefix(args, "listen:");
 
-    config_copy = g_strdup(args);
-    token = strtok_r(config_copy, ":", &saveptr);
-
-    if (!token) {
-        g_free(config_copy);
-        rdma_error_report("TCP manager: missing host or 'listen'");
-        return -EINVAL;
-    }
-
-    if (!strcmp(token, "listen")) {
-        listen = true;
-        token = strtok_r(NULL, ":", &saveptr);
-        if (!token) {
-            g_free(config_copy);
-            rdma_error_report("TCP manager: missing port for listen mode");
+    if (port_str || strcmp(args, "listen") == 0) {
+        if (!port_str || !ernic_parse_port(port_str, manager_port)) {
+            rdma_error_report("TCP manager: invalid port for listen mode: "
+                              "\"%s\"",
+                              args);
             return -EINVAL;
         }
-        if (!ernic_parse_port(token, &port_val)) {
-            port_val = 0; /* rejected below by the port_val == 0 check */
-        }
-        host_str = g_strdup("0.0.0.0");
-    } else {
-        host_str = g_strdup(token);
-        token = strtok_r(NULL, ":", &saveptr);
-        if (!token) {
-            g_free(config_copy);
-            g_free(host_str);
-            rdma_error_report("TCP manager: missing port");
-            return -EINVAL;
-        }
-        if (!ernic_parse_port(token, &port_val)) {
-            port_val = 0; /* rejected below by the port_val == 0 check */
-        }
+        *manager_host = NULL;
+        *listen_mode = true;
+        return 0;
     }
 
-    if (port_val == 0) {
-        g_free(config_copy);
-        g_free(host_str);
-        rdma_error_report("TCP manager: invalid port");
-        return -EINVAL;
-    }
-
-    *manager_host = host_str;
-    *manager_port = port_val;
-    *listen_mode = listen;
-    g_free(config_copy);
-    return 0;
-}
-
-/*
- * Parse a worker config, after its "worker:" (see tcp_config_role()):
- * "<manager_ip>:<manager_port>"
- */
-static int parse_tcp_config_worker(const char *args, char **manager_host,
-                                   uint16_t *manager_port)
-{
-    char *config_copy, *saveptr, *token;
-    char *host_str = NULL;
-    uint16_t port_val = 0;
-
-    config_copy = g_strdup(args);
-    token = strtok_r(config_copy, ":", &saveptr);
-
-    if (!token) {
-        g_free(config_copy);
-        rdma_error_report("TCP worker: missing manager host");
-        return -EINVAL;
-    }
-    host_str = g_strdup(token);
-
-    token = strtok_r(NULL, ":", &saveptr);
-    if (!token) {
-        g_free(config_copy);
-        g_free(host_str);
-        rdma_error_report("TCP worker: missing manager port");
-        return -EINVAL;
-    }
-    if (!ernic_parse_port(token, &port_val)) {
-        port_val = 0; /* rejected below by the port_val == 0 check */
-    }
-
-    if (port_val == 0) {
-        g_free(config_copy);
-        g_free(host_str);
-        rdma_error_report("TCP worker: invalid manager port");
-        return -EINVAL;
-    }
-
-    *manager_host = host_str;
-    *manager_port = port_val;
-    g_free(config_copy);
-    return 0;
+    *listen_mode = false;
+    return tcp_parse_host_port(args, "TCP manager", manager_host, manager_port);
 }
 
 /*
@@ -1357,13 +1339,34 @@ static int tcp_wait_connected(int sockfd, const atomic_bool *running,
  * the one deadline (see tcp_wait_connected()).  Returns the socket,
  * non-blocking, or -1 with errno set by the last attempt.  Gives up on the
  * remaining addresses once the deadline passes or *running is cleared.
+ *
+ * With a deadline, an address gets only its share of the time left, so one
+ * that doesn't answer leaves time for those after it.  Otherwise a name
+ * whose first address drops connection requests, such as an IPv6 address
+ * on a network that doesn't route IPv6, would use up every attempt's
+ * deadline, and its other addresses would never be tried.
  */
 int tcp_connect_any(const struct addrinfo *addrs, const atomic_bool *running,
                     uint64_t deadline_ms)
 {
     int err = ENOENT;
+    uint32_t left = 0;
 
     for (const struct addrinfo *rp = addrs; rp; rp = rp->ai_next) {
+        left++;
+    }
+
+    for (const struct addrinfo *rp = addrs; rp; rp = rp->ai_next, left--) {
+        uint64_t attempt_ms = deadline_ms;
+        uint64_t now_ms;
+
+        if (deadline_ms != 0 && left > 1) {
+            now_ms = ernic_monotonic_ms();
+            if (now_ms < deadline_ms) {
+                attempt_ms = now_ms + (deadline_ms - now_ms) / left;
+            }
+        }
+
         int sockfd = socket(rp->ai_family,
                             rp->ai_socktype | SOCK_CLOEXEC | SOCK_NONBLOCK,
                             rp->ai_protocol);
@@ -1374,14 +1377,15 @@ int tcp_connect_any(const struct addrinfo *addrs, const atomic_bool *running,
 
         if (connect(sockfd, rp->ai_addr, rp->ai_addrlen) == 0 ||
             (errno == EINPROGRESS &&
-             tcp_wait_connected(sockfd, running, deadline_ms) == 0))
+             tcp_wait_connected(sockfd, running, attempt_ms) == 0))
             return sockfd;
 
         err = errno;
         close(sockfd);
         /*
          * Any other failure, including the kernel giving up on this address
-         * with ETIMEDOUT, moves on to the next address.
+         * with ETIMEDOUT or its share of the time running out, moves on to
+         * the next address.
          */
         if (err == ECANCELED ||
             (deadline_ms != 0 && ernic_monotonic_ms() >= deadline_ms))
@@ -1392,7 +1396,19 @@ int tcp_connect_any(const struct addrinfo *addrs, const atomic_bool *running,
 }
 
 /*
+ * host and port as a newly allocated "host:port", or "[host]:port" when host is
+ * an IPv6 address, for a log message.  g_free() it.
+ */
+static char *tcp_addr_str(const char *host, uint16_t port)
+{
+    return g_strdup_printf(strchr(host, ':') ? "[%s]:%u" : "%s:%u", host,
+                           (unsigned)port);
+}
+
+/*
  * Connect to host:port and return the connected socket, non-blocking, or -1.
+ * host is a name or an IPv4 or IPv6 address, and a name is tried at each
+ * address it resolves to, of either family.
  *
  * The connect itself is non-blocking, so a host that doesn't answer doesn't
  * hold the caller until the kernel gives up on it, about two minutes.  A
@@ -1407,11 +1423,12 @@ int tcp_connect_to_remote(const char *host, uint16_t port,
 {
     struct addrinfo hints, *res;
     char port_str[8];
+    char *addr;
     int sockfd;
     int err;
 
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;
+    hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
 
     snprintf(port_str, sizeof(port_str), "%u", port);
@@ -1427,86 +1444,133 @@ int tcp_connect_to_remote(const char *host, uint16_t port,
     err = errno;
     freeaddrinfo(res);
 
+    addr = tcp_addr_str(host, port);
     if (sockfd < 0 && err == ECANCELED) {
-        rdma_info_report("TCP: Stopped while connecting to %s:%u", host, port);
-        return -1;
-    }
-    if (sockfd < 0) {
-        rdma_error_report("TCP: Failed to connect to %s:%u: %s", host, port,
+        rdma_info_report("TCP: Stopped while connecting to %s", addr);
+    } else if (sockfd < 0) {
+        rdma_error_report("TCP: Failed to connect to %s: %s", addr,
                           strerror(err));
-        return -1;
+    } else {
+        /* Disable Nagle -- send immediately */
+        int flag = 1;
+        setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+
+        tcp_tune_sockbuf(sockfd);
+
+        rdma_info_report("TCP: Connected to %s", addr);
     }
-
-    /* Disable Nagle -- send immediately */
-    int flag = 1;
-    setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
-
-    tcp_tune_sockbuf(sockfd);
-
-    rdma_info_report("TCP: Connected to %s:%u", host, port);
+    g_free(addr);
     return sockfd;
 }
 
 /*
- * Listen on *port, on every address.  If *port is 0, the kernel picks a free
- * port, which is stored in *port.  Asking for it on the socket that keeps it
- * is the only way to be sure no other process has taken it.
+ * Listen on *port, on every address of family, AF_INET6 or AF_INET.  An
+ * AF_INET6 socket takes IPv4 connections too, which arrive from
+ * ::ffff:a.b.c.d.  If *port is 0, the kernel picks a free port, which is
+ * stored in *port.  Asking for it on the socket that keeps it is the only way
+ * to be sure no other process has taken it.  Returns the socket, or -1 with
+ * errno set, having logged why unless the host doesn't support family
+ * (EAFNOSUPPORT).
+ */
+int tcp_listen_socket(int family, uint16_t *port)
+{
+    union {
+        struct sockaddr sa;
+        struct sockaddr_in in;
+        struct sockaddr_in6 in6;
+    } addr;
+    socklen_t addr_len;
+    uint16_t bound;
+    const char *what;
+    int sockfd;
+    int err;
+    int on = 1;
+    int off = 0;
+
+    memset(&addr, 0, sizeof(addr));
+    if (family == AF_INET6) {
+        addr.in6.sin6_family = AF_INET6;
+        addr.in6.sin6_addr = in6addr_any;
+        addr.in6.sin6_port = htons(*port);
+        addr_len = sizeof(addr.in6);
+    } else if (family == AF_INET) {
+        addr.in.sin_family = AF_INET;
+        addr.in.sin_addr.s_addr = htonl(INADDR_ANY);
+        addr.in.sin_port = htons(*port);
+        addr_len = sizeof(addr.in);
+    } else {
+        errno = EAFNOSUPPORT;
+        return -1;
+    }
+
+    sockfd = socket(family, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (sockfd < 0) {
+        err = errno;
+        if (err != EAFNOSUPPORT) {
+            rdma_error_report("TCP: Failed to create listen socket: %s",
+                              strerror(err));
+        }
+        errno = err;
+        return -1;
+    }
+
+    what = "set SO_REUSEADDR on";
+    if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) < 0) {
+        goto fail;
+    }
+
+    /* Linux takes both families by default, but net.ipv6.bindv6only can
+     * change that */
+    what = "set IPV6_V6ONLY on";
+    if (family == AF_INET6 &&
+        setsockopt(sockfd, IPPROTO_IPV6, IPV6_V6ONLY, &off, sizeof(off)) < 0) {
+        goto fail;
+    }
+
+    what = "bind";
+    if (bind(sockfd, &addr.sa, addr_len) < 0) {
+        goto fail;
+    }
+
+    what = "read the port of";
+    addr_len = sizeof(addr);
+    if (getsockname(sockfd, &addr.sa, &addr_len) < 0) {
+        goto fail;
+    }
+    bound = ntohs(family == AF_INET6 ? addr.in6.sin6_port : addr.in.sin_port);
+
+    what = "listen on";
+    if (listen(sockfd, tcp_env_int("ERNIC_TCP_LISTEN_BACKLOG",
+                                   TCP_DEFAULT_LISTEN_BACKLOG)) < 0) {
+        goto fail;
+    }
+
+    *port = bound;
+    rdma_info_report("TCP: Listening on port %u (%s)", *port,
+                     family == AF_INET6 ? "IPv4 and IPv6" : "IPv4 only");
+    return sockfd;
+
+fail:
+    err = errno;
+    rdma_error_report("TCP: Failed to %s the listen socket on port %u: %s",
+                      what, *port, strerror(err));
+    close(sockfd);
+    errno = err;
+    return -1;
+}
+
+/*
+ * Listen on *port (see tcp_listen_socket()) on every IPv4 and IPv6 address,
+ * or on every IPv4 one on a host without IPv6, such as one booted with
+ * ipv6.disable=1.
  */
 static int tcp_listen_on_port(uint16_t *port)
 {
-    struct sockaddr_in server_addr;
-    socklen_t addr_len = sizeof(server_addr);
-    int sockfd;
-    int ret;
-    int opt = 1;
+    int sockfd = tcp_listen_socket(AF_INET6, port);
 
-    sockfd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (sockfd < 0) {
-        rdma_error_report("TCP: Failed to create listen socket: %s",
-                          strerror(errno));
-        return -1;
+    if (sockfd < 0 && errno == EAFNOSUPPORT) {
+        sockfd = tcp_listen_socket(AF_INET, port);
     }
-
-    ret = setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    if (ret < 0) {
-        rdma_error_report("TCP: Failed to set SO_REUSEADDR: %s",
-                          strerror(errno));
-        close(sockfd);
-        return -1;
-    }
-
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(*port);
-
-    ret = bind(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr));
-    if (ret < 0) {
-        rdma_error_report("TCP: Failed to bind to port %u: %s", *port,
-                          strerror(errno));
-        close(sockfd);
-        return -1;
-    }
-
-    ret = getsockname(sockfd, (struct sockaddr *)&server_addr, &addr_len);
-    if (ret < 0) {
-        rdma_error_report("TCP: Failed to read the listen socket's port: %s",
-                          strerror(errno));
-        close(sockfd);
-        return -1;
-    }
-
-    ret = listen(sockfd, tcp_env_int("ERNIC_TCP_LISTEN_BACKLOG",
-                                     TCP_DEFAULT_LISTEN_BACKLOG));
-    if (ret < 0) {
-        rdma_error_report("TCP: Failed to listen on port %u: %s",
-                          ntohs(server_addr.sin_port), strerror(errno));
-        close(sockfd);
-        return -1;
-    }
-
-    *port = ntohs(server_addr.sin_port);
-    rdma_info_report("TCP: Listening on port %u", *port);
     return sockfd;
 }
 
@@ -3473,23 +3537,66 @@ static void tcp_reap_pending_conns(TcpBackendPrivate *priv)
 
     for (guint i = 0; i < reaped->len; i++) {
         TcpConnection *conn = g_ptr_array_index(reaped, i);
+        char *addr = tcp_addr_str(conn->remote_host, conn->remote_port);
 
-        rdma_info_report("TCP: Closing the connection from %s:%u, which "
-                         "didn't register",
-                         conn->remote_host, conn->remote_port);
+        rdma_info_report("TCP: Closing the connection from %s, which didn't "
+                         "register",
+                         addr);
+        g_free(addr);
         tcp_retire_conn(conn);
         tcp_connection_unref(conn);
     }
     g_ptr_array_free(reaped, TRUE);
 }
 
+/*
+ * Format the address of an accepted peer, ss, into host, len bytes, and
+ * *port.  An IPv4 peer on an IPv6 socket, ::ffff:a.b.c.d, is shown as
+ * a.b.c.d, as an IPv4 socket would show it.  Returns false with errno set if
+ * ss isn't an IPv4 or IPv6 address or host is too small (INET6_ADDRSTRLEN
+ * always fits).
+ */
+bool tcp_format_peer_addr(const struct sockaddr_storage *ss, char *host,
+                          size_t len, uint16_t *port)
+{
+    const void *in_addr;
+    int family = ss->ss_family;
+
+    if (family == AF_INET) {
+        const struct sockaddr_in *sin = (const struct sockaddr_in *)ss;
+
+        in_addr = &sin->sin_addr;
+        *port = ntohs(sin->sin_port);
+    } else if (family == AF_INET6) {
+        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)ss;
+
+        in_addr = &sin6->sin6_addr;
+        if (IN6_IS_ADDR_V4MAPPED(&sin6->sin6_addr)) {
+            /* The IPv4 address is the last 4 bytes */
+            in_addr = &sin6->sin6_addr.s6_addr[12];
+            family = AF_INET;
+        }
+        *port = ntohs(sin6->sin6_port);
+    } else {
+        errno = EAFNOSUPPORT;
+        return false;
+    }
+    /* len only matters to inet_ntop() up to INET6_ADDRSTRLEN */
+    if (len > INET6_ADDRSTRLEN) {
+        len = INET6_ADDRSTRLEN;
+    }
+    return inet_ntop(family, in_addr, host, (socklen_t)len) != NULL;
+}
+
 /* Accept thread - accepts incoming connections and adds them to table */
 void *tcp_accept_thread(void *opaque)
 {
     TcpBackendPrivate *priv = (TcpBackendPrivate *)opaque;
-    struct sockaddr_in client_addr;
+    struct sockaddr_storage client_addr;
     socklen_t client_len;
-    char client_host[INET_ADDRSTRLEN];
+    char client_host[INET6_ADDRSTRLEN];
+    uint16_t client_port;
+    char *client_str;
     int sockfd;
     TcpMsgHeader hdr;
     void *payload = NULL;
@@ -3500,6 +3607,7 @@ void *tcp_accept_thread(void *opaque)
     rdma_info_report("TCP: Accept thread started");
 
     while (atomic_load(&priv->accept_thread_running)) {
+        memset(&client_addr, 0, sizeof(client_addr));
         client_len = sizeof(client_addr);
         sockfd = accept4(priv->listen_fd, (struct sockaddr *)&client_addr,
                          &client_len, SOCK_CLOEXEC | SOCK_NONBLOCK);
@@ -3530,9 +3638,9 @@ void *tcp_accept_thread(void *opaque)
 
         tcp_tune_sockbuf(sockfd);
 
-        /* Can't fail for AF_INET into INET_ADDRSTRLEN bytes */
-        if (!inet_ntop(AF_INET, &client_addr.sin_addr, client_host,
-                       sizeof(client_host))) {
+        /* Can't fail: the listen socket is IPv4 or IPv6 */
+        if (!tcp_format_peer_addr(&client_addr, client_host,
+                                  sizeof(client_host), &client_port)) {
             rdma_error_report("TCP: Failed to format the address of an "
                               "incoming connection: %s",
                               strerror(errno));
@@ -3540,8 +3648,9 @@ void *tcp_accept_thread(void *opaque)
             continue;
         }
 
-        rdma_info_report("TCP: Accepted connection from %s:%u", client_host,
-                         ntohs(client_addr.sin_port));
+        client_str = tcp_addr_str(client_host, client_port);
+        rdma_info_report("TCP: Accepted connection from %s", client_str);
+        g_free(client_str);
 
         if (priv->is_manager) {
             /* Make room before counting what's waiting */
@@ -3549,8 +3658,7 @@ void *tcp_accept_thread(void *opaque)
 
             /* Manager mode: accept connection and let receive thread handle
              * REGISTER_NODE.  The node id is unknown until registration. */
-            conn = tcp_connection_new(UINT32_MAX, client_host,
-                                      ntohs(client_addr.sin_port));
+            conn = tcp_connection_new(UINT32_MAX, client_host, client_port);
             conn->sockfd = sockfd;
             atomic_store(&conn->is_connected, true);
             conn->priv = priv;
@@ -3566,10 +3674,11 @@ void *tcp_accept_thread(void *opaque)
             qemu_mutex_lock(&priv->conn_table_lock);
             if (priv->pending_conns->len >= TCP_MAX_PENDING_CONNS) {
                 qemu_mutex_unlock(&priv->conn_table_lock);
+                client_str = tcp_addr_str(client_host, client_port);
                 rdma_error_report("TCP: %u connections are already waiting "
-                                  "to register; closing the one from %s:%u",
-                                  TCP_MAX_PENDING_CONNS, conn->remote_host,
-                                  conn->remote_port);
+                                  "to register; closing the one from %s",
+                                  TCP_MAX_PENDING_CONNS, client_str);
+                g_free(client_str);
                 tcp_connection_unref(conn);
                 continue;
             }
@@ -3700,8 +3809,7 @@ void *tcp_accept_thread(void *opaque)
             }
 
             /* Create connection object */
-            conn = tcp_connection_new(remote_node_id, client_host,
-                                      ntohs(client_addr.sin_port));
+            conn = tcp_connection_new(remote_node_id, client_host, client_port);
             conn->sockfd = sockfd;
             atomic_store(&conn->is_connected, true);
             conn->priv = priv;
@@ -4425,8 +4533,10 @@ int tcp_worker_register_with_manager(TcpBackendPrivate *priv,
     fd = tcp_connect_to_remote(priv->manager_host, priv->manager_port, running,
                                deadline_ms);
     if (fd < 0) {
-        rdma_error_report("TCP: Failed to connect to manager at %s:%u",
-                          priv->manager_host, priv->manager_port);
+        char *addr = tcp_addr_str(priv->manager_host, priv->manager_port);
+
+        rdma_error_report("TCP: Failed to connect to manager at %s", addr);
+        g_free(addr);
         return -1;
     }
     conn = tcp_connection_new(0, priv->manager_host, priv->manager_port);
@@ -4764,7 +4874,7 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
     qemu_mutex_init(&priv->registration_mutex);
 
     if (mode == TCP_MODE_MANAGER) {
-        /* Manager mode: tcp:manager:<ip>:<port> or tcp:manager:listen:<port> */
+        /* Manager mode: tcp:manager:<host>:<port> or ...:listen:<port> */
         char *manager_host = NULL;
         uint16_t manager_port = 0;
         bool listen_mode = false;
@@ -4794,23 +4904,12 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
         }
         qemu_mutex_init(&priv->mesh_table_lock);
 
-        /* Add manager itself to mesh table */
-        /* Use "localhost" in listen mode (0.0.0.0) so workers can connect */
-        /* Otherwise use the configured hostname */
-        const char *manager_hostname;
-        if (listen_mode) {
-            manager_hostname = "localhost";
-        } else {
-            if (!manager_host || !*manager_host) {
-                rdma_error_report("TCP: Manager hostname is NULL or empty");
-                g_free(manager_host);
-                goto error;
-            }
-            manager_hostname = manager_host;
-        }
-
-        MeshNodeInfo *manager_node =
-            tcp_mesh_node_info_new(0, manager_hostname, manager_port);
+        /*
+         * Add the manager itself to the mesh table, under the configured
+         * host, or "localhost" in listen mode, which names none
+         */
+        MeshNodeInfo *manager_node = tcp_mesh_node_info_new(
+            0, listen_mode ? "localhost" : manager_host, manager_port);
         if (!manager_node) {
             rdma_error_report("TCP: Failed to allocate manager node info");
             g_free(manager_host);
@@ -4844,13 +4943,14 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
         rdma_info_report("TCP backend: Manager initialized");
 
     } else {
-        /* Worker mode: tcp:worker:<manager_ip>:<manager_port> */
+        /* Worker mode: tcp:worker:<manager_host>:<manager_port> */
         char *manager_host = NULL;
         uint16_t manager_port = 0;
 
         priv->is_manager = false;
 
-        ret = parse_tcp_config_worker(args, &manager_host, &manager_port);
+        ret = tcp_parse_host_port(args, "TCP worker", &manager_host,
+                                  &manager_port);
         if (ret < 0) {
             goto error;
         }

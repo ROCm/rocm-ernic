@@ -24,6 +24,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/socket.h>
 #include <sys/types.h>
 
 #include "qemu/thread.h"
@@ -752,12 +753,17 @@ int tcp_connect_any(const struct addrinfo *addrs, const atomic_bool *running,
                     uint64_t deadline_ms);
 int tcp_connect_to_remote(const char *host, uint16_t port,
                           const atomic_bool *running, uint64_t deadline_ms);
+int tcp_listen_socket(int family, uint16_t *port);
+bool tcp_format_peer_addr(const struct sockaddr_storage *ss, char *host,
+                          size_t len, uint16_t *port);
 int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
                      TcpBufPool *pool, atomic_bool *running,
                      uint64_t deadline_ms);
 
 /* Setup */
 const char *tcp_config_role(const char *config, TcpMode *mode);
+int tcp_parse_host_port(const char *s, const char *who, char **host,
+                        uint16_t *port);
 int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
                            uint32_t health_interval_s);
 

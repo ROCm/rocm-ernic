@@ -232,7 +232,12 @@ start_instance() {
     elif [ "${role}" = "manager" ]; then
         backend="tcp:manager:listen:${ERNIC_TCP_PORT}"
     else
-        backend="tcp:worker:${ERNIC_MANAGER_IP}:${ERNIC_TCP_PORT}"
+        # An IPv6 address goes in brackets, as [addr]:port
+        local manager="${ERNIC_MANAGER_IP}"
+        if [[ "${manager}" == *:* && "${manager}" != \[* ]]; then
+            manager="[${manager}]"
+        fi
+        backend="tcp:worker:${manager}:${ERNIC_TCP_PORT}"
     fi
 
     rm -f "${sock}"

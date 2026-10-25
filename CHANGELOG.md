@@ -172,6 +172,13 @@
   guest-visible feature: nothing passes a guest's GID-table change to it,
   so `ERNIC_TCP_GUEST_GIDS` is still the only way to declare a guest's
   addresses, and an address not listed there is unreachable.
+* **The TCP mesh runs over IPv6.** Every node listens on all IPv4 and IPv6
+  addresses with one socket (IPv4 only on a host without IPv6), and a host
+  name is tried at each address it resolves to, of either family; before,
+  the mesh was IPv4 only. An IPv6 address in a `--backend` config goes in
+  brackets, `tcp:worker:[fe80::1%eth0]:5000`. `ERNIC_MANAGER_IP` may be an
+  IPv6 address, without brackets: the launcher and `ernicctl hot-reload`
+  add them.
 * **DEB packages.** `cpack -G DEB` builds `rocm-ernic` (the server, the
   systemd service, `ernicctl` and the guest driver pack, under `/usr`, with
   `/etc/rocm-ernic/rocm-ernic.env` as a configuration file that upgrades
@@ -651,6 +658,12 @@
   so `--backend tcp:worker:mesh-manager:5000` failed to start, saying a
   manager config must start with `manager:`. The role is now read only from
   the start of the config.
+* **TCP mesh: a malformed address in the config is refused.** The
+  `--backend tcp:` address was split at every `:` and anything after the
+  port ignored, so `tcp:worker:fe80::1:9000` connected to host `fe80` on
+  port 1, and `tcp:worker:host:5000:junk` was taken for `host:5000`. The
+  server now refuses to start with such a config, saying what is wrong
+  with the address.
 * **NVMe-oF backend.**
   * A shutdown requested with `CC.EN` still set, as the specification has
     it, now completes. Hosts polled until their timeout (SPDK waited ten
