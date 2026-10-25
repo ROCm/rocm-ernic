@@ -791,7 +791,8 @@ static void destroy_qp_hash_key(gpointer data)
  * On failure everything rdma_rm_init() set up is released and its pointers
  * cleared, so a later rdma_rm_fini() on the same dev_res is still safe.
  */
-int rdma_rm_init(RdmaDeviceResources *dev_res, struct ibv_device_attr *dev_attr)
+int rdma_rm_init(RdmaDeviceResources *dev_res,
+                 const struct ibv_device_attr *dev_attr)
 {
     int ret;
 

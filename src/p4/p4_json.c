@@ -74,7 +74,7 @@ static int p4_fail(struct p4_walk *w, int rc, const char *fmt, ...)
  * below calls one without having checked the type first.
  */
 
-static bool p4_get_obj(struct json_object *parent, const char *key,
+static bool p4_get_obj(const struct json_object *parent, const char *key,
                        struct json_object **out)
 {
     struct json_object *v;
@@ -87,7 +87,7 @@ static bool p4_get_obj(struct json_object *parent, const char *key,
     return true;
 }
 
-static bool p4_get_array(struct json_object *parent, const char *key,
+static bool p4_get_array(const struct json_object *parent, const char *key,
                          struct json_object **out, size_t cap, size_t *len)
 {
     struct json_object *v;
@@ -116,8 +116,8 @@ static bool p4_get_array(struct json_object *parent, const char *key,
  * The printable check is not cosmetic.  Names reach the log and the error
  * messages above, so a newline or an ANSI escape in one is log injection.
  */
-static bool p4_get_str(struct json_object *parent, const char *key, char *out,
-                       size_t out_cap)
+static bool p4_get_str(const struct json_object *parent, const char *key,
+                       char *out, size_t out_cap)
 {
     struct json_object *v;
     const char *s;
@@ -159,7 +159,7 @@ static bool p4_get_str(struct json_object *parent, const char *key, char *out,
  * what keeps NaN and Infinity out: json-c's tokener accepts all three as
  * doubles even under JSON_TOKENER_STRICT.
  */
-static bool p4_get_u32(struct json_object *parent, const char *key,
+static bool p4_get_u32(const struct json_object *parent, const char *key,
                        uint32_t min, uint32_t max, uint32_t *out)
 {
     struct json_object *v;
@@ -181,7 +181,8 @@ static bool p4_get_u32(struct json_object *parent, const char *key,
     return true;
 }
 
-static bool p4_get_bool(struct json_object *parent, const char *key, bool *out)
+static bool p4_get_bool(const struct json_object *parent, const char *key,
+                        bool *out)
 {
     struct json_object *v;
 
@@ -198,7 +199,7 @@ static bool p4_get_bool(struct json_object *parent, const char *key, bool *out)
  * construct that is understood but not implemented is detected: the program
  * may mention it as long as it does not use it.
  */
-static bool p4_absent_or_empty(struct json_object *root, const char *key)
+static bool p4_absent_or_empty(const struct json_object *root, const char *key)
 {
     struct json_object *v;
 
@@ -226,7 +227,8 @@ static const char *const p4_unsupported_keys[] = {
     "field_lists",
 };
 
-static int p4_check_unsupported(struct p4_walk *w, struct json_object *root)
+static int p4_check_unsupported(struct p4_walk *w,
+                                const struct json_object *root)
 {
     for (size_t i = 0;
          i < sizeof(p4_unsupported_keys) / sizeof(p4_unsupported_keys[0]);
@@ -245,7 +247,7 @@ static int p4_check_unsupported(struct p4_walk *w, struct json_object *root)
  * the major is readable.  The documented current version is 2.24 and the
  * format has carried major 2 since version 2.0.
  */
-static int p4_check_meta(struct p4_walk *w, struct json_object *root)
+static int p4_check_meta(struct p4_walk *w, const struct json_object *root)
 {
     struct json_object *meta, *version, *elem;
     int64_t major, minor;
@@ -287,7 +289,8 @@ static int p4_check_meta(struct p4_walk *w, struct json_object *root)
  * field, which this does not support; length_exp and max_length go with it
  * and are accepted only as null.
  */
-static int p4_walk_header_types(struct p4_walk *w, struct json_object *root)
+static int p4_walk_header_types(struct p4_walk *w,
+                                const struct json_object *root)
 {
     struct json_object *arr;
     size_t n;
@@ -424,7 +427,7 @@ static int p4_walk_header_types(struct p4_walk *w, struct json_object *root)
 }
 
 /* headers: instances, each naming a header_type that must already exist. */
-static int p4_walk_headers(struct p4_walk *w, struct json_object *root)
+static int p4_walk_headers(struct p4_walk *w, const struct json_object *root)
 {
     struct json_object *arr;
     size_t n;
@@ -642,7 +645,7 @@ static int p4_resolve_std_metadata(struct p4_walk *w)
 }
 
 /* Read a two-element ["header", "field"] array into names. */
-static bool p4_pair_strings(struct json_object *arr, char *a, size_t acap,
+static bool p4_pair_strings(const struct json_object *arr, char *a, size_t acap,
                             char *b, size_t bcap)
 {
     struct json_object *e;
@@ -675,7 +678,7 @@ static bool p4_pair_strings(struct json_object *arr, char *a, size_t acap,
  * "regular" parameter: extract_VL takes a computed length, which needs the
  * expression machinery this does not have.
  */
-static int p4_walk_parser_ops(struct p4_walk *w, struct json_object *st,
+static int p4_walk_parser_ops(struct p4_walk *w, const struct json_object *st,
                               struct p4_parse_state *dst)
 {
     struct json_object *ops;
@@ -737,7 +740,8 @@ static int p4_walk_parser_ops(struct p4_walk *w, struct json_object *st,
 }
 
 /* The select key: a list of field references whose widths give its width. */
-static int p4_walk_transition_key(struct p4_walk *w, struct json_object *st,
+static int p4_walk_transition_key(struct p4_walk *w,
+                                  const struct json_object *st,
                                   struct p4_parse_state *dst)
 {
     struct json_object *keys;
@@ -799,7 +803,7 @@ static int p4_walk_transition_key(struct p4_walk *w, struct json_object *st,
  * loopback.json emits, and {"type": "default", "value": null}, which p4c
  * emits for a program with a select.
  */
-static int p4_walk_transitions(struct p4_walk *w, struct json_object *st,
+static int p4_walk_transitions(struct p4_walk *w, const struct json_object *st,
                                struct p4_parse_state *dst)
 {
     struct json_object *arr;
@@ -901,7 +905,7 @@ static int p4_walk_transitions(struct p4_walk *w, struct json_object *st,
  * next_state unset; pass two resolves them against the complete set of
  * names, so nothing in pass one can fail on a name it has not seen.
  */
-static int p4_walk_parser(struct p4_walk *w, struct json_object *root)
+static int p4_walk_parser(struct p4_walk *w, const struct json_object *root)
 {
     struct json_object *arr, *parser, *states;
     char init[P4_MAX_NAME + 1];
@@ -1013,7 +1017,7 @@ static int p4_walk_parser(struct p4_walk *w, struct json_object *root)
 }
 
 /* deparsers: exactly one, naming the header instances it emits in order. */
-static int p4_walk_deparser(struct p4_walk *w, struct json_object *root)
+static int p4_walk_deparser(struct p4_walk *w, const struct json_object *root)
 {
     struct json_object *arr, *dep, *order;
     size_t n, no;
@@ -1097,7 +1101,7 @@ static const struct {
 };
 
 /* One operand of a primitive. */
-static int p4_walk_operand(struct p4_walk *w, struct json_object *p,
+static int p4_walk_operand(struct p4_walk *w, const struct json_object *p,
                            const struct p4_action *act, struct p4_operand *dst,
                            const char *where)
 {
@@ -1210,7 +1214,7 @@ static int p4_walk_operand(struct p4_walk *w, struct json_object *p,
  * exist here; accepting an unknown type would load a program whose calls
  * go nowhere.
  */
-static int p4_walk_externs(struct p4_walk *w, struct json_object *root)
+static int p4_walk_externs(struct p4_walk *w, const struct json_object *root)
 {
     static const struct {
         const char *name;
@@ -1290,7 +1294,7 @@ static int p4_walk_externs(struct p4_walk *w, struct json_object *root)
 }
 
 /* actions: runtime arguments first, since a primitive may name one. */
-static int p4_walk_actions(struct p4_walk *w, struct json_object *root)
+static int p4_walk_actions(struct p4_walk *w, const struct json_object *root)
 {
     struct json_object *arr;
     size_t n;
@@ -1457,7 +1461,7 @@ static const struct {
     {"and", P4_EXPR_AND, false},    {"or", P4_EXPR_OR, false},
 };
 
-static int p4_walk_expr(struct p4_walk *w, struct json_object *tv,
+static int p4_walk_expr(struct p4_walk *w, const struct json_object *tv,
                         struct p4_conditional *cond, p4_idx_t *slot,
                         unsigned depth, const char *where);
 
@@ -1466,7 +1470,7 @@ static int p4_walk_expr(struct p4_walk *w, struct json_object *tv,
  * own, which always lands after this one, keeping a child's index greater
  * than its parent's.
  */
-static int p4_walk_expr_operand(struct p4_walk *w, struct json_object *tv,
+static int p4_walk_expr_operand(struct p4_walk *w, const struct json_object *tv,
                                 struct p4_conditional *cond,
                                 struct p4_expr_operand *dst, unsigned depth,
                                 const char *where)
@@ -1550,7 +1554,7 @@ static int p4_walk_expr_operand(struct p4_walk *w, struct json_object *tv,
  * tokener's own depth limit bounds the document, but nothing bounds how
  * deep this walk recurses except this.
  */
-static int p4_walk_expr(struct p4_walk *w, struct json_object *tv,
+static int p4_walk_expr(struct p4_walk *w, const struct json_object *tv,
                         struct p4_conditional *cond, p4_idx_t *slot,
                         unsigned depth, const char *where)
 {
@@ -1685,8 +1689,8 @@ static int p4_resolve_next(struct p4_walk *w, const struct p4_pipeline *pl,
 }
 
 /* One table's key, actions and size. The next pointers come later. */
-static int p4_walk_table(struct p4_walk *w, struct json_object *t,
-                         struct p4_pipeline *pl, struct p4_table *dst,
+static int p4_walk_table(struct p4_walk *w, const struct json_object *t,
+                         const struct p4_pipeline *pl, struct p4_table *dst,
                          uint32_t *total_entries)
 {
     struct json_object *key, *acts, *v;
@@ -1904,8 +1908,9 @@ static int p4_walk_table(struct p4_walk *w, struct json_object *t,
  * both: a map carrying each would say two different things about where a
  * hit goes.
  */
-static int p4_walk_next_tables(struct p4_walk *w, struct json_object *t,
-                               struct p4_pipeline *pl, struct p4_table *dst)
+static int p4_walk_next_tables(struct p4_walk *w, const struct json_object *t,
+                               const struct p4_pipeline *pl,
+                               struct p4_table *dst)
 {
     struct json_object *nt, *v;
     bool by_hit = false, by_action = false;
@@ -2066,7 +2071,7 @@ static int p4_check_acyclic(struct p4_walk *w, const struct p4_pipeline *pl)
 }
 
 /* One pipeline: its tables and conditionals, then the graph between them. */
-static int p4_walk_pipeline(struct p4_walk *w, struct json_object *p,
+static int p4_walk_pipeline(struct p4_walk *w, const struct json_object *p,
                             struct p4_pipeline *pl)
 {
     struct json_object *tables, *conds, *v;
@@ -2193,7 +2198,7 @@ static int p4_walk_pipeline(struct p4_walk *w, struct json_object *p,
     return p4_check_acyclic(w, pl);
 }
 
-static int p4_walk_pipelines(struct p4_walk *w, struct json_object *root)
+static int p4_walk_pipelines(struct p4_walk *w, const struct json_object *root)
 {
     struct json_object *arr;
     size_t n;

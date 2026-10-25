@@ -144,7 +144,7 @@ void ionic_eth_emu_register_tx_filter(struct ionic_eth_emu *emu,
  * and chain to the first rather than displace it.  Either output may be
  * NULL; both are cleared when no filter is registered.
  */
-void ionic_eth_emu_get_tx_filter(struct ionic_eth_emu *emu,
+void ionic_eth_emu_get_tx_filter(const struct ionic_eth_emu *emu,
                                  ionic_eth_tx_filter_fn *fn, void **ctx);
 
 /*
@@ -209,8 +209,8 @@ void ionic_eth_emu_count_rdma(struct ionic_eth_emu *emu, uint64_t bytes,
  * the wire, possibly rewritten.  Returns 0, -ENODEV when no backend is
  * attached, or a negative errno from the backend.
  */
-int ionic_eth_emu_send_to_net(struct ionic_eth_emu *emu, const void *frame,
-                              size_t len);
+int ionic_eth_emu_send_to_net(const struct ionic_eth_emu *emu,
+                              const void *frame, size_t len);
 
 /*
  * Move any frames waiting on the host backend or on the off-thread queue

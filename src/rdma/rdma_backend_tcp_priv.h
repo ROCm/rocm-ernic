@@ -704,7 +704,7 @@ struct TcpBackendPrivate {
 };
 
 /* This node's ID; see local_node_id for why it is atomic. */
-static inline uint32_t tcp_local_node(TcpBackendPrivate *priv)
+static inline uint32_t tcp_local_node(const TcpBackendPrivate *priv)
 {
     return atomic_load(&priv->local_node_id);
 }
@@ -713,7 +713,7 @@ static inline uint32_t tcp_local_node(TcpBackendPrivate *priv)
  * Whether a worker has its node id.  Until it does, its id reads as 0, the
  * manager's, which it must not present as its own.
  */
-static inline bool tcp_worker_registered(TcpBackendPrivate *priv)
+static inline bool tcp_worker_registered(const TcpBackendPrivate *priv)
 {
     return tcp_local_node(priv) != 0;
 }
@@ -783,7 +783,7 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
 bool tcp_start_thread(QemuThread *thread, const char *name, void *(*fn)(void *),
                       void *arg, atomic_bool *running);
 void tcp_stop_threads(TcpBackendPrivate *priv);
-void tcp_recv_ionic(TcpConnection *conn, TcpRecvMsg *msg);
+void tcp_recv_ionic(const TcpConnection *conn, TcpRecvMsg *msg);
 
 /* tcp_wire.c: sockets, and messages on them */
 void tcp_tune_sockbuf(int sockfd);
@@ -796,18 +796,18 @@ int tcp_listen_socket(int family, uint16_t *port);
 int tcp_listen_on_port(uint16_t *port);
 bool tcp_format_peer_addr(const struct sockaddr_storage *ss, char *host,
                           size_t len, uint16_t *port);
-uint32_t tcp_send_timeout_ms(TcpBackendPrivate *priv);
-int tcp_send_message2(TcpBackendPrivate *priv, TcpConnection *conn,
+uint32_t tcp_send_timeout_ms(const TcpBackendPrivate *priv);
+int tcp_send_message2(const TcpBackendPrivate *priv, TcpConnection *conn,
                       TcpMsgType msg_type, const void *payload,
                       size_t payload_len, const void *payload2,
                       size_t payload2_len, uint32_t seq, uint32_t src_node,
                       uint32_t dst_node, uint32_t src_qpn, uint32_t dst_qpn);
-int tcp_send_message(TcpBackendPrivate *priv, TcpConnection *conn,
+int tcp_send_message(const TcpBackendPrivate *priv, TcpConnection *conn,
                      TcpMsgType msg_type, const void *payload,
                      size_t payload_len, uint32_t seq, uint32_t src_node,
                      uint32_t dst_node, uint32_t src_qpn, uint32_t dst_qpn);
 int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
-                     atomic_bool *running, uint64_t deadline_ms);
+                     const atomic_bool *running, uint64_t deadline_ms);
 
 /*
  * tcp_conn.c: connections, their send queues and threads, and the accept
@@ -818,7 +818,7 @@ TcpConnection *tcp_connection_new(uint32_t node_id, const char *host,
 TcpConnection *tcp_connection_ref(TcpConnection *conn);
 void tcp_connection_unref(TcpConnection *conn);
 void tcp_connection_destroy_notify(gpointer data);
-bool tcp_conn_dead(TcpConnection *conn);
+bool tcp_conn_dead(const TcpConnection *conn);
 TcpConnection *tcp_connection_lookup(TcpBackendPrivate *priv, uint32_t node_id);
 GPtrArray *tcp_conns_snapshot(TcpBackendPrivate *priv);
 bool tcp_has_live_connection(TcpBackendPrivate *priv, uint32_t node_id);
@@ -874,7 +874,7 @@ void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
                         const TcpNodeGidsPayload *payload);
 void tcp_advertise_local_gids(TcpBackendPrivate *priv);
 int tcp_claim_gid(TcpBackendPrivate *priv, const union ibv_gid *gid, bool add);
-void tcp_recv_node_gids(TcpConnection *conn, const TcpRecvMsg *msg);
+void tcp_recv_node_gids(const TcpConnection *conn, const TcpRecvMsg *msg);
 
 /*
  * tcp_manager.c: the table of mesh nodes, registration, the broadcasts (see
@@ -925,7 +925,7 @@ void tcp_worker_manager_pass(TcpBackendPrivate *priv);
 void *tcp_worker_peer_thread(void *opaque);
 void tcp_stop_peer_thread(TcpBackendPrivate *priv);
 void tcp_worker_recv_register_resp(TcpConnection *conn, const TcpRecvMsg *msg);
-void tcp_worker_recv_topology(TcpConnection *conn, const TcpRecvMsg *msg);
+void tcp_worker_recv_topology(const TcpConnection *conn, const TcpRecvMsg *msg);
 void tcp_worker_accept(TcpBackendPrivate *priv, int sockfd, const char *host,
                        uint16_t port);
 

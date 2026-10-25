@@ -201,12 +201,12 @@ bool fake_vfu_write(vfu_ctx_t *ctx, uint64_t gpa, const void *buf, size_t len)
     return copy(ctx, gpa, (void *)(uintptr_t)buf, len, true);
 }
 
-unsigned fake_vfu_irq_count(vfu_ctx_t *ctx, uint32_t vec)
+unsigned fake_vfu_irq_count(const vfu_ctx_t *ctx, uint32_t vec)
 {
     return ctx && vec < FAKE_VFU_MAX_IRQS ? ctx->irq_count[vec] : 0;
 }
 
-unsigned long fake_vfu_map_count(vfu_ctx_t *ctx)
+unsigned long fake_vfu_map_count(const vfu_ctx_t *ctx)
 {
     return ctx ? ctx->map_calls : 0;
 }
@@ -223,7 +223,7 @@ void fake_vfu_fail_nth_get(vfu_ctx_t *ctx, unsigned long n)
         ctx->fail_get_at = n ? ctx->get_calls + n : 0;
 }
 
-size_t fake_vfu_mapped(vfu_ctx_t *ctx)
+size_t fake_vfu_mapped(const vfu_ctx_t *ctx)
 {
     return ctx ? ctx->mapped : 0;
 }

@@ -83,8 +83,8 @@ struct ernic_p4_dev {
  * match errno on any architecture, so turning them into one here would
  * lose which refusal it was.
  */
-static int ernic_p4_post(struct ernic_p4_dev *pdev, void *cmd64, u32 *status,
-			 u32 *resp_len)
+static int ernic_p4_post(struct ernic_p4_dev *pdev, const void *cmd64,
+			 u32 *status, u32 *resp_len)
 {
 	struct ionic_admin_ctx ctx;
 	int err;

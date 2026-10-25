@@ -386,7 +386,7 @@ static unsigned count_http_payloads(const struct capture *cap)
     return n;
 }
 
-static void check_all_checksums(const char *name, struct capture *cap)
+static void check_all_checksums(const char *name, const struct capture *cap)
 {
     for (unsigned i = 0; i < cap->n; i++)
         if (!checksums_ok(name, cap->f[i].buf, cap->f[i].len))

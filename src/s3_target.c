@@ -712,7 +712,7 @@ static void s3_error(struct s3_target *t, struct s3_http_response *resp,
  * not: a client that posted a token is waiting on that header to learn
  * whether its buffer was touched, and gets no other signal.
  */
-static void rdma_reply(struct s3_target *t, struct s3_http_response *resp,
+static void rdma_reply(const struct s3_target *t, struct s3_http_response *resp,
                        int code, const struct s3_token *req_tok, uint64_t bytes)
 {
     struct s3_token peer;
@@ -827,7 +827,7 @@ static bool have_token(const struct s3_http_request *req, struct s3_token *tok,
     return true;
 }
 
-static void handle_list_buckets(struct s3_target *t,
+static void handle_list_buckets(const struct s3_target *t,
                                 struct s3_http_response *resp)
 {
     char when[32];
@@ -845,7 +845,7 @@ static void handle_list_buckets(struct s3_target *t,
         t->cfg.bucket, when);
 }
 
-static void handle_list_objects(struct s3_target *t,
+static void handle_list_objects(const struct s3_target *t,
                                 const struct s3_http_request *req,
                                 struct s3_http_response *resp)
 {

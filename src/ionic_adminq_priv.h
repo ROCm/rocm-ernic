@@ -326,7 +326,7 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
  * @resp_len is the number of response bytes the command wrote, reported
  * in place of the status when it succeeded.
  */
-void ionic_adminq_post_cqe(struct ionic_adminq_ctx *ctx,
+void ionic_adminq_post_cqe(const struct ionic_adminq_ctx *ctx,
                            struct ionic_aq_ring *r, uint16_t cmd_idx,
                            uint8_t cmd_op, uint8_t status, uint32_t resp_len);
 

@@ -236,7 +236,7 @@ static int setup_resources(struct test_context *ctx)
     return 0;
 }
 
-static int test_connection_info_query(struct test_context *ctx)
+static int test_connection_info_query(const struct test_context *ctx)
 {
     struct ibv_qp_attr qp_attr;
     struct ibv_qp_init_attr init_attr;

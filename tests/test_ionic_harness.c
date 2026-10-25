@@ -411,6 +411,8 @@ struct bad_admin {
     int want; /* completion status */
 };
 
+/* Every row's build has this signature, though this one writes nothing */
+/* NOLINTNEXTLINE(readability-non-const-parameter) */
 static void build_none(uint8_t *body)
 {
     (void)body;

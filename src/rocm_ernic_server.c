@@ -606,7 +606,7 @@ static int ionic_device_init(rocm_ernic_dev_t *dev)
  * Setup PCI configuration for the emulated ionic device.  Returns 0, or -1
  * after saying why.
  */
-static int setup_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
+static int setup_pci_config(vfu_ctx_t *vfu_ctx, const rocm_ernic_dev_t *dev)
 {
     int ret;
 
@@ -691,7 +691,7 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
  * 2. Setup interrupt vectors with vfu_setup_device_nr_irqs()
  * 3. libvfio-user will then manage the table/PBA in BAR0
  */
-static int setup_interrupts(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
+static int setup_interrupts(vfu_ctx_t *vfu_ctx, const rocm_ernic_dev_t *dev)
 {
     ssize_t ret;
 
@@ -1343,7 +1343,7 @@ int main(int argc, char *argv[])
     };
 
     /* Command-line option definitions */
-    static struct option long_options[] = {
+    static const struct option long_options[] = {
         /* Common options */
         {"socket", required_argument, NULL, 's'},
         {"socket-group", required_argument, NULL, 'G'},

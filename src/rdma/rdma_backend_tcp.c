@@ -1020,7 +1020,7 @@ void tcp_backend_set_ionic_recv_cb(RdmaBackendDev *backend_dev,
  * path, which takes the payload with it.  On the manager, a message
  * addressed to another node is relayed to it (tcp_manager_relay_ionic()).
  */
-void tcp_recv_ionic(TcpConnection *conn, TcpRecvMsg *msg)
+void tcp_recv_ionic(const TcpConnection *conn, TcpRecvMsg *msg)
 {
     TcpBackendPrivate *priv = conn->priv;
     tcp_ionic_recv_fn fn;

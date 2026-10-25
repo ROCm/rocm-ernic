@@ -140,7 +140,7 @@ struct p4_extern_ops;
  * treats some error as "no decision" (an extern declining a request that
  * is not its kind) must still honour a drop made ahead of it.
  */
-int p4_engine_process_rdma(struct p4_engine *eng,
+int p4_engine_process_rdma(const struct p4_engine *eng,
                            const struct p4_extern_ops *ops,
                            const struct p4_rdma_meta *meta, bool *suppress);
 

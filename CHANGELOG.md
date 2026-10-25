@@ -469,6 +469,11 @@
   * Unit tests are sanitized only when `ERNIC_USE_SANITIZERS` or
     `ERNIC_USE_THREAD_SANITIZER` is on, like the server, so a plain build
     no longer needs the sanitizer runtimes.
+  * GCC and Clang build with `-Wwrite-strings`, so a string literal is a
+    `const char[]` and passing one as a `char *` is a warning (an error
+    with `ERNIC_WERROR`). clang-tidy's `readability-non-const-parameter`
+    is enabled, which reports a pointer parameter to a built-in type that
+    could point to const.
 * **Stricter linting in CI.** ansible-lint 26.10.1 runs with `--strict`.
   ShellCheck excludes no checks; suppress one only on its command, with a
   reason. actionlint 1.7.12 checks the workflows (runner labels in

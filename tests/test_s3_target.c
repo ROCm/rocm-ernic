@@ -111,7 +111,7 @@ struct host_mem {
     bool wrong_key;    /* refuse anything that is not HOST_RKEY */
 };
 
-static bool host_range_ok(struct host_mem *h, uint32_t key, uint64_t addr,
+static bool host_range_ok(const struct host_mem *h, uint32_t key, uint64_t addr,
                           uint32_t len, uint64_t *off)
 {
     if (h->wrong_key && key != HOST_RKEY)
@@ -354,7 +354,7 @@ static void test_cfg_parse(void)
     else if (cfg.capacity != 1ull << 40)
         fail(name, "size=1T gave capacity %" PRIu64, cfg.capacity);
 
-    static const char *bad[] = {
+    static const char *const bad[] = {
         "bucket=",      "bucket=No_Caps_Allowed",
         "ip=256.1.1.1", "ip=not-an-address",
         "ip=10.0.0.5x", "port=0",
@@ -386,7 +386,7 @@ static void test_cfg_parse(void)
         fail(name, "maxpart=4294967295 gave %" PRIu32, cfg.max_part);
 
     /* No options, as NULL or as "", leave every default alone. */
-    static const char *none[] = {NULL, ""};
+    static const char *const none[] = {NULL, ""};
     for (size_t i = 0; i < sizeof(none) / sizeof(none[0]); i++) {
         struct s3_target_cfg want;
         s3_target_cfg_defaults(&want);
@@ -849,7 +849,7 @@ static void test_body_ranged_get(void)
         fail(name, "bytes=10-19: Content-Range \"%s\"", cr ? cr : "(absent)");
     reply_free(&r);
 
-    static const char *bad[] = {
+    static const char *const bad[] = {
         "bytes=5",     /* no dash */
         "bytes=-0",    /* a suffix of no bytes */
         "bytes=100-",  /* starts at the end */
@@ -1150,7 +1150,7 @@ static void test_list_objects(void)
     if (t == NULL)
         return;
 
-    static const char *keys[] = {"a/one", "a/two", "b/three", "top"};
+    static const char *const keys[] = {"a/one", "a/two", "b/three", "top"};
     for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
         char target[64];
         snprintf(target, sizeof(target), "/ernic/%s", keys[i]);
@@ -1700,7 +1700,7 @@ static void test_multipart_capacity(void)
 
     memset(payload, 'q', sizeof(payload));
 
-    static const char *keys[] = {"a", "b"};
+    static const char *const keys[] = {"a", "b"};
     for (int i = 0; i < 2; i++) {
         snprintf(target, sizeof(target), "/ernic/%s?uploads", keys[i]);
         if (!exec_req(t, &r, NULL, NULL, "POST", target, NULL, NULL, NULL, 0)) {

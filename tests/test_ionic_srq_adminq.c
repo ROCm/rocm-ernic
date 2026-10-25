@@ -353,12 +353,13 @@ void ionic_datapath_set_dest(struct ionic_datapath *dp, uint32_t qp_id,
 static uint32_t g_local_node = UINT32_MAX;
 static uint32_t g_node_from_gid;
 
-uint32_t ionic_dp_local_node(struct ionic_datapath *dp)
+uint32_t ionic_dp_local_node(const struct ionic_datapath *dp)
 {
     (void)dp;
     return g_local_node;
 }
-uint32_t ionic_dp_node_from_gid(struct ionic_datapath *dp, const uint8_t *dgid)
+uint32_t ionic_dp_node_from_gid(const struct ionic_datapath *dp,
+                                const uint8_t *dgid)
 {
     (void)dp;
     (void)dgid;

@@ -259,7 +259,7 @@ int tcp_worker_register_with_manager(TcpBackendPrivate *priv,
  * the one with the lower id connects, so the two don't connect to each other
  * at once; the manager, node 0, is already connected through manager_conn.
  */
-static void tcp_topology_targets(TcpBackendPrivate *priv,
+static void tcp_topology_targets(const TcpBackendPrivate *priv,
                                  const TcpMeshTopologyPayload *topo,
                                  uint32_t num_nodes, GArray *targets)
 {
@@ -325,8 +325,9 @@ static void tcp_worker_set_peers(TcpBackendPrivate *priv,
  * Whether the latest topology update has the worker connect to node_id at
  * host and port.  The caller holds peer_lock.
  */
-static bool tcp_worker_peer_named(TcpBackendPrivate *priv, uint32_t node_id,
-                                  const char *host, uint16_t port)
+static bool tcp_worker_peer_named(const TcpBackendPrivate *priv,
+                                  uint32_t node_id, const char *host,
+                                  uint16_t port)
 {
     for (guint i = 0; i < priv->peer_targets->len; i++) {
         const TcpPeerTarget *latest =
@@ -903,7 +904,7 @@ void tcp_worker_recv_register_resp(TcpConnection *conn, const TcpRecvMsg *msg)
  * of the nodes it leaves out are dropped, and the peers in it handed to the
  * peer-connect thread.
  */
-void tcp_worker_recv_topology(TcpConnection *conn, const TcpRecvMsg *msg)
+void tcp_worker_recv_topology(const TcpConnection *conn, const TcpRecvMsg *msg)
 {
     TcpBackendPrivate *priv = conn->priv;
     const TcpMeshTopologyPayload *topo = msg->payload;
@@ -957,7 +958,7 @@ void tcp_worker_recv_topology(TcpConnection *conn, const TcpRecvMsg *msg)
  * sends only part of one holds up the peers behind it no longer than one
  * that sends nothing.
  */
-static bool tcp_worker_recv_handshake(TcpBackendPrivate *priv, int sockfd,
+static bool tcp_worker_recv_handshake(const TcpBackendPrivate *priv, int sockfd,
                                       uint32_t *node_id, uint32_t *version)
 {
     uint64_t deadline_ms = ernic_monotonic_ms() + TCP_HANDSHAKE_TIMEOUT_MS;

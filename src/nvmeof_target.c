@@ -896,7 +896,8 @@ static uint16_t do_property_get(struct nvmeof_queue *q, const uint8_t *sqe,
  * A failure sets DNR: Linux reports a writeback error once and may already
  * have dropped the dirty pages, so a retry could succeed with the data lost.
  */
-static uint16_t ns_sync(struct nvmeof_target *t, uint64_t off, uint64_t len)
+static uint16_t ns_sync(const struct nvmeof_target *t, uint64_t off,
+                        uint64_t len)
 {
     if (t->ns_fd < 0) {
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
@@ -911,7 +912,8 @@ static uint16_t ns_sync(struct nvmeof_target *t, uint64_t off, uint64_t len)
     return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
 }
 
-static uint16_t do_property_set(struct nvmeof_queue *q, const uint8_t *sqe)
+static uint16_t do_property_set(const struct nvmeof_queue *q,
+                                const uint8_t *sqe)
 {
     struct nvmeof_target *t = q->target;
     uint32_t off = ernic_get_le32(sqe + NVMEOF_PROP_OFFSET_OFF);
@@ -985,7 +987,7 @@ static uint16_t exec_fabrics(struct nvmeof_queue *q, const uint8_t *capsule,
 /* Admin commands                                                     */
 /* ------------------------------------------------------------------ */
 
-static uint16_t do_identify(struct nvmeof_queue *q, const uint8_t *sqe,
+static uint16_t do_identify(const struct nvmeof_queue *q, const uint8_t *sqe,
                             const struct nvmeof_dma_ops *dma, void *ctx)
 {
     struct nvmeof_target *t = q->target;
@@ -1029,7 +1031,8 @@ static uint16_t do_identify(struct nvmeof_queue *q, const uint8_t *sqe,
     return sgl_write(&sgl, dma, ctx, buf, sizeof(buf));
 }
 
-static uint16_t do_get_log_page(struct nvmeof_queue *q, const uint8_t *sqe,
+static uint16_t do_get_log_page(const struct nvmeof_queue *q,
+                                const uint8_t *sqe,
                                 const struct nvmeof_dma_ops *dma, void *ctx)
 {
     struct nvmeof_target *t = q->target;
@@ -1203,7 +1206,7 @@ static int exec_admin(struct nvmeof_queue *q, const uint8_t *capsule,
 /* NVM commands                                                       */
 /* ------------------------------------------------------------------ */
 
-static uint16_t io_range(struct nvmeof_target *t, const uint8_t *sqe,
+static uint16_t io_range(const struct nvmeof_target *t, const uint8_t *sqe,
                          uint64_t *off, uint64_t *len)
 {
     uint64_t slba = ernic_get_le64(sqe + NVME_SQE_CDW10_OFF);
@@ -1218,7 +1221,7 @@ static uint16_t io_range(struct nvmeof_target *t, const uint8_t *sqe,
     return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
 }
 
-static uint16_t exec_io(struct nvmeof_queue *q, const uint8_t *capsule,
+static uint16_t exec_io(const struct nvmeof_queue *q, const uint8_t *capsule,
                         size_t capsule_len, const struct nvmeof_dma_ops *dma,
                         void *ctx)
 {

@@ -71,10 +71,10 @@ bool fake_vfu_read(vfu_ctx_t *ctx, uint64_t gpa, void *buf, size_t len);
 bool fake_vfu_write(vfu_ctx_t *ctx, uint64_t gpa, const void *buf, size_t len);
 
 /* Interrupts raised on @vec since the context was created. */
-unsigned fake_vfu_irq_count(vfu_ctx_t *ctx, uint32_t vec);
+unsigned fake_vfu_irq_count(const vfu_ctx_t *ctx, uint32_t vec);
 
 /* Calls to vfu_addr_to_sgl() so far, failed ones included. */
-unsigned long fake_vfu_map_count(vfu_ctx_t *ctx);
+unsigned long fake_vfu_map_count(const vfu_ctx_t *ctx);
 
 /*
  * Make the @n'th call to vfu_addr_to_sgl() from now fail with ENOENT, as
@@ -92,6 +92,6 @@ void fake_vfu_fail_nth_map(vfu_ctx_t *ctx, unsigned long n);
 void fake_vfu_fail_nth_get(vfu_ctx_t *ctx, unsigned long n);
 
 /* Scatter/gather entries currently got and not yet put back. */
-size_t fake_vfu_mapped(vfu_ctx_t *ctx);
+size_t fake_vfu_mapped(const vfu_ctx_t *ctx);
 
 #endif /* FAKE_VFU_H */

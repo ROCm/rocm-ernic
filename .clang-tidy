@@ -119,7 +119,6 @@ Checks:
   - -readability-magic-numbers  # TODO(4073)
   - -cppcoreguidelines-avoid-magic-numbers  # TODO: the same check
   - -readability-math-missing-parentheses  # TODO(187)
-  - -readability-non-const-parameter  # TODO(27)
   - -readability-redundant-casting  # TODO(24)
   - -readability-redundant-nested-if  # TODO(3)
   - -readability-redundant-parentheses  # TODO(3)

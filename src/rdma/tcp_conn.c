@@ -130,7 +130,7 @@ TcpConnection *tcp_connection_new(uint32_t node_id, const char *host,
  * it, and it can't be sent on, but it keeps its descriptor until whoever
  * takes it out of its table retires it.
  */
-bool tcp_conn_dead(TcpConnection *conn)
+bool tcp_conn_dead(const TcpConnection *conn)
 {
     return atomic_load(&conn->recv_thread_exited);
 }
@@ -398,7 +398,7 @@ static int tcp_sendq_start(TcpConnection *conn)
  * A message to queue on conn, with len bytes of payload left for the caller
  * to fill in.
  */
-static TcpQueuedMsg *tcp_queued_msg_new(TcpConnection *conn,
+static TcpQueuedMsg *tcp_queued_msg_new(const TcpConnection *conn,
                                         TcpMsgType msg_type, uint32_t dst_node,
                                         size_t len)
 {
@@ -481,7 +481,8 @@ int tcp_conn_enqueue(TcpConnection *conn, const void *hdr, size_t hdr_len,
  * answer.  They are pushed at the head and data at the tail, so they are all
  * in the run at the head.  The caller holds sendq_lock.
  */
-static bool tcp_sendq_has_heartbeat(TcpConnection *conn, TcpMsgType msg_type)
+static bool tcp_sendq_has_heartbeat(const TcpConnection *conn,
+                                    TcpMsgType msg_type)
 {
     for (GList *link = conn->sendq.head; link != NULL; link = link->next) {
         const TcpQueuedMsg *msg = link->data;

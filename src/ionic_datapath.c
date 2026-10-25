@@ -235,7 +235,7 @@ static void dp_inmsg_free(struct dp_inmsg *m)
  * -------------------------------------------------------------------------
  */
 
-void ionic_dp_rdma_bytes(struct ionic_datapath *dp, uint32_t qp_id,
+void ionic_dp_rdma_bytes(const struct ionic_datapath *dp, uint32_t qp_id,
                          uint64_t bytes, enum pvrdma_stat_op op,
                          unsigned int dirs)
 {
@@ -288,7 +288,7 @@ uint64_t ionic_dp_ring_span_bytes(uint8_t depth_log2, uint8_t stride_log2)
  * one for a region that does not start on a page boundary. Anything beyond
  * that is not a geometry the device could honour.
  */
-int ionic_dp_buf_init(struct ionic_datapath *dp, struct dp_buf *b,
+int ionic_dp_buf_init(const struct ionic_datapath *dp, struct dp_buf *b,
                       const struct ionic_dp_buf_desc *desc, uint64_t va,
                       uint64_t span)
 {
@@ -723,7 +723,7 @@ static uint64_t dp_mesh_tag(uint32_t mesh_id, uint32_t req_id)
 }
 
 /* Take back every request q has queued in the mesh */
-static void dp_mesh_cancel_qp(struct ionic_datapath *dp,
+static void dp_mesh_cancel_qp(const struct ionic_datapath *dp,
                               const struct ionic_qp_ring *q)
 {
     ionic_mesh_cancel(dp->pvrdma_handle, dp_mesh_tag(q->mesh_id, 0),
@@ -731,7 +731,7 @@ static void dp_mesh_cancel_qp(struct ionic_datapath *dp,
 }
 
 /* Take back p's request, if the mesh still has it queued */
-static void dp_mesh_cancel_request(struct ionic_datapath *dp,
+static void dp_mesh_cancel_request(const struct ionic_datapath *dp,
                                    const struct dp_pending *p)
 {
     ionic_mesh_cancel(dp->pvrdma_handle, p->tag, UINT64_MAX);
@@ -952,14 +952,15 @@ void ionic_datapath_set_dest(struct ionic_datapath *dp, uint32_t qp_id,
  * "the mesh has no node for this GID", which are both UINT32_MAX out of
  * ionic_dp_node_from_gid().
  */
-uint32_t ionic_dp_local_node(struct ionic_datapath *dp)
+uint32_t ionic_dp_local_node(const struct ionic_datapath *dp)
 {
     if (!dp || !dp->pvrdma_handle)
         return UINT32_MAX;
     return ionic_mesh_local_node(dp->pvrdma_handle);
 }
 
-uint32_t ionic_dp_node_from_gid(struct ionic_datapath *dp, const uint8_t *dgid)
+uint32_t ionic_dp_node_from_gid(const struct ionic_datapath *dp,
+                                const uint8_t *dgid)
 {
     if (!dp || !dp->pvrdma_handle)
         return UINT32_MAX;
@@ -1383,8 +1384,8 @@ int ionic_datapath_fmt_convert(struct ionic_datapath *dp, uint8_t src_fmt,
  * from inside its own completion handler -- nvme-rdma does exactly that, with
  * the LOCAL_INV it issues on the Connect response.
  */
-static void cq_fire_event(struct ionic_datapath *dp, struct ionic_cq_ring *c,
-                          uint32_t cq_id)
+static void cq_fire_event(const struct ionic_datapath *dp,
+                          struct ionic_cq_ring *c, uint32_t cq_id)
 {
     if (!c->armed)
         return;
@@ -1395,8 +1396,9 @@ static void cq_fire_event(struct ionic_datapath *dp, struct ionic_cq_ring *c,
         ionic_eth_emu_trigger_irq(dp->eth_emu, (int)c->eq_id);
 }
 
-static int cq_write(struct ionic_datapath *dp, struct ionic_cq_ring *c,
-                    uint64_t off, const uint8_t *src, size_t len)
+static int cq_write(const struct ionic_datapath *dp,
+                    const struct ionic_cq_ring *c, uint64_t off,
+                    const uint8_t *src, size_t len)
 {
     size_t done = 0;
 
@@ -1895,7 +1897,7 @@ static bool qp_is_datagram(const struct ionic_qp_ring *q)
  * locally administered; deriving it from the sending QP keeps peers apart in
  * a guest-side trace.
  */
-static void dp_src_mac(struct ionic_datapath *dp, uint32_t src_qp_id,
+static void dp_src_mac(const struct ionic_datapath *dp, uint32_t src_qp_id,
                        uint8_t mac[6])
 {
     (void)dp;
@@ -2270,7 +2272,7 @@ static void pending_complete(struct ionic_datapath *dp, struct dp_pending *p,
  * tag names a request to the mesh, for dp_mesh_cancel_qp() and
  * dp_mesh_cancel_request(); a reply's is ignored.
  */
-static int dp_mesh_tx(struct ionic_datapath *dp, uint32_t dst_node,
+static int dp_mesh_tx(const struct ionic_datapath *dp, uint32_t dst_node,
                       uint64_t tag, const struct ionic_wire_hdr *hdr,
                       const uint8_t *payload, uint32_t payload_len, bool reply)
 {
@@ -2587,8 +2589,8 @@ bool ionic_datapath_attach_s3(struct ionic_datapath *dp,
 }
 
 /* Build the global route header a UD receive is expected to carry. */
-static void dp_nvmeof_grh(struct ionic_datapath *dp, uint8_t grh[IB_GRH_SIZE],
-                          uint32_t paylen)
+static void dp_nvmeof_grh(const struct ionic_datapath *dp,
+                          uint8_t grh[IB_GRH_SIZE], uint32_t paylen)
 {
     /* sgid is the controller, dgid the guest. */
     dp_grh_build(grh, paylen, dp->nvmeof_sgid, dp->nvmeof_dgid);
@@ -2604,7 +2606,7 @@ static void dp_nvmeof_grh(struct ionic_datapath *dp, uint8_t grh[IB_GRH_SIZE],
  * payload at the right offset -- which is the reason this exists -- are
  * served either way.
  */
-static void dp_ud_grh(struct ionic_datapath *dp, uint8_t grh[IB_GRH_SIZE],
+static void dp_ud_grh(const struct ionic_datapath *dp, uint8_t grh[IB_GRH_SIZE],
                       uint32_t paylen, const struct ionic_ah *ah)
 {
     /*
@@ -2882,7 +2884,7 @@ struct dp_p4_ctx {
  * authority over guest memory; what a program may say is which arithmetic
  * to apply, and @sel is the whole of it.
  */
-static int dp_p4_fp8_map(struct dp_p4_ctx *c, uint8_t sel)
+static int dp_p4_fp8_map(const struct dp_p4_ctx *c, uint8_t sel)
 {
     /*
      * Neither of these is an error: they say the request is an ordinary
@@ -2936,7 +2938,7 @@ static int dp_p4_fp8_map(struct dp_p4_ctx *c, uint8_t sel)
  * hold, so the length is not checked against the destination here;
  * ionic_datapath_fmt_convert() checks each region against its own.
  */
-static int dp_p4_fmt_convert(struct dp_p4_ctx *c, uint8_t src_fmt,
+static int dp_p4_fmt_convert(const struct dp_p4_ctx *c, uint8_t src_fmt,
                              uint8_t dst_fmt)
 {
     /* As in dp_p4_fp8_map(): neither of these is an error, they say the

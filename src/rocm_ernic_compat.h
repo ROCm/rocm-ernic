@@ -58,7 +58,7 @@ const char *pvrdma_backend_name(const char *backend_type_str);
  * Returns: Opaque handle to RDMA device, or NULL on failure, including an
  * unknown backend
  */
-pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
+pvrdma_handle_t pvrdma_device_create(const rocm_ernic_dev_t *dev,
                                      const char *backend_type_str);
 
 /**

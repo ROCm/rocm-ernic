@@ -114,6 +114,9 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
         -Wunused-macros
         -Wvariadic-macros
         -Wvla
+        # Give string literals the type const char[], so that writing
+        # through one, or passing one as a char *, is diagnosed
+        -Wwrite-strings
 
         # QEMU-ported code has many unused parameters
         -Wno-unused-parameter

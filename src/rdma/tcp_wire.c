@@ -401,7 +401,7 @@ bool tcp_format_peer_addr(const struct sockaddr_storage *ss, char *host,
  * up, and the manager reads the sending worker again, before the sending
  * worker gives up on its connection to the manager.
  */
-uint32_t tcp_send_timeout_ms(TcpBackendPrivate *priv)
+uint32_t tcp_send_timeout_ms(const TcpBackendPrivate *priv)
 {
     uint32_t ms =
         atomic_load_explicit(&priv->send_timeout_ms, memory_order_relaxed);
@@ -432,7 +432,7 @@ uint32_t tcp_send_timeout_ms(TcpBackendPrivate *priv)
  * the peer-connect thread's sweep on a worker, and, for a worker's
  * manager_conn, by its next pass, which registers again.
  */
-int tcp_send_message2(TcpBackendPrivate *priv, TcpConnection *conn,
+int tcp_send_message2(const TcpBackendPrivate *priv, TcpConnection *conn,
                       TcpMsgType msg_type, const void *payload,
                       size_t payload_len, const void *payload2,
                       size_t payload2_len, uint32_t seq, uint32_t src_node,
@@ -552,7 +552,7 @@ broken:
     return -1;
 }
 
-int tcp_send_message(TcpBackendPrivate *priv, TcpConnection *conn,
+int tcp_send_message(const TcpBackendPrivate *priv, TcpConnection *conn,
                      TcpMsgType msg_type, const void *payload,
                      size_t payload_len, uint32_t seq, uint32_t src_node,
                      uint32_t dst_node, uint32_t src_qpn, uint32_t dst_qpn)
@@ -570,7 +570,7 @@ int tcp_send_message(TcpBackendPrivate *priv, TcpConnection *conn,
  * deadline_ms isn't zero.  what names the part being read, for the log.
  */
 static int tcp_recv_rest(int sockfd, void *buf, size_t len, size_t got,
-                         atomic_bool *running, uint64_t deadline_ms,
+                         const atomic_bool *running, uint64_t deadline_ms,
                          const char *what)
 {
     ssize_t ret;
@@ -620,7 +620,7 @@ static int tcp_recv_rest(int sockfd, void *buf, size_t len, size_t got,
  * the ionic data path, which frees it with free().
  */
 int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
-                     atomic_bool *running, uint64_t deadline_ms)
+                     const atomic_bool *running, uint64_t deadline_ms)
 {
     ssize_t ret;
 
