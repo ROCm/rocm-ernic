@@ -17,7 +17,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
-#include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,20 +26,8 @@
 
 #include <glib.h>
 
+#include "ernic_err.h"
 #include "ionic_profile.h"
-
-__attribute__((format(printf, 3, 4))) static void set_err(char *err,
-                                                          size_t err_len,
-                                                          const char *fmt, ...)
-{
-    va_list ap;
-
-    if (!err || err_len == 0)
-        return;
-    va_start(ap, fmt);
-    (void)vsnprintf(err, err_len, fmt, ap);
-    va_end(ap);
-}
 
 /* ---- Schema ------------------------------------------------------------ */
 
@@ -218,7 +205,8 @@ static int scan_text(struct scan *sc, const char *source, const char *text,
         line++;
         pos = (size_t)(e - text) + (eol ? 1 : 0);
         if (memchr(s, '\0', (size_t)(e - s))) {
-            set_err(err, err_len, "%s:%u: NUL byte in the text", source, line);
+            ernic_set_err(err, err_len, "%s:%u: NUL byte in the text", source,
+                          line);
             return -1;
         }
         while (s < e && is_blank(*s))
@@ -230,28 +218,31 @@ static int scan_text(struct scan *sc, const char *source, const char *text,
 
         if (*s == '[') {
             if (e[-1] != ']' || !take_name(s + 1, e - 1, name)) {
-                set_err(err, err_len,
-                        "%s:%u: a section header is '[name]', with letters, "
-                        "digits, '_', '-' or '.'",
-                        source, line);
+                ernic_set_err(
+                    err, err_len,
+                    "%s:%u: a section header is '[name]', with letters, "
+                    "digits, '_', '-' or '.'",
+                    source, line);
                 return -1;
             }
             if (!known_group(name)) {
-                set_err(err, err_len,
-                        "%s:%u: unknown section [%s] (known sections: %s)",
-                        source, line, name, known_groups);
+                ernic_set_err(
+                    err, err_len,
+                    "%s:%u: unknown section [%s] (known sections: %s)", source,
+                    line, name, known_groups);
                 return -1;
             }
             prev = scan_find(sc, name, "");
             if (prev) {
-                set_err(err, err_len,
-                        "%s:%u: section [%s] appears twice (first at line %u)",
-                        source, line, name, prev->line);
+                ernic_set_err(
+                    err, err_len,
+                    "%s:%u: section [%s] appears twice (first at line %u)",
+                    source, line, name, prev->line);
                 return -1;
             }
             memcpy(group, name, sizeof(group));
             if (!scan_add(sc, group, "", line)) {
-                set_err(err, err_len, "%s: out of memory", source);
+                ernic_set_err(err, err_len, "%s: out of memory", source);
                 return -1;
             }
             continue;
@@ -263,31 +254,32 @@ static int scan_text(struct scan *sc, const char *source, const char *text,
         while (ke && ke > s && is_blank(ke[-1]))
             ke--;
         if (!eq || !take_name(s, ke, name)) {
-            set_err(err, err_len,
-                    "%s:%u: expected '[section]', 'key = value' or a '#' "
-                    "comment",
-                    source, line);
+            ernic_set_err(err, err_len,
+                          "%s:%u: expected '[section]', 'key = value' or a '#' "
+                          "comment",
+                          source, line);
             return -1;
         }
         if (group[0] == '\0') {
-            set_err(err, err_len, "%s:%u: key '%s' is outside any [section]",
-                    source, line, name);
+            ernic_set_err(err, err_len,
+                          "%s:%u: key '%s' is outside any [section]", source,
+                          line, name);
             return -1;
         }
         if (!find_key(group, name)) {
-            set_err(err, err_len, "%s:%u: unknown key '%s.%s'", source, line,
-                    group, name);
+            ernic_set_err(err, err_len, "%s:%u: unknown key '%s.%s'", source,
+                          line, group, name);
             return -1;
         }
         prev = scan_find(sc, group, name);
         if (prev) {
-            set_err(err, err_len,
-                    "%s:%u: key '%s.%s' is set twice (first at line %u)",
-                    source, line, group, name, prev->line);
+            ernic_set_err(err, err_len,
+                          "%s:%u: key '%s.%s' is set twice (first at line %u)",
+                          source, line, group, name, prev->line);
             return -1;
         }
         if (!scan_add(sc, group, name, line)) {
-            set_err(err, err_len, "%s: out of memory", source);
+            ernic_set_err(err, err_len, "%s: out of memory", source);
             return -1;
         }
     }
@@ -346,7 +338,8 @@ static int number(const char *raw, const char *where, uint64_t *v, char *err,
     int rc = parse_u64(raw, v);
 
     if (rc == -1)
-        set_err(err, err_len, "%s: integer expected, got '%.40s'", where, raw);
+        ernic_set_err(err, err_len, "%s: integer expected, got '%.40s'", where,
+                      raw);
     return rc == -2 ? 1 : rc;
 }
 
@@ -361,9 +354,9 @@ int ionic_profile_set_stats_interval(struct ionic_profile *p, const char *raw,
         return -1;
     if (rc != 0 || v < IONIC_PROFILE_STATS_INTERVAL_MIN ||
         v > IONIC_PROFILE_STATS_INTERVAL_MAX) {
-        set_err(err, err_len, "%s: '%.40s' out of range %u..%u ms", where, raw,
-                IONIC_PROFILE_STATS_INTERVAL_MIN,
-                IONIC_PROFILE_STATS_INTERVAL_MAX);
+        ernic_set_err(err, err_len, "%s: '%.40s' out of range %u..%u ms", where,
+                      raw, IONIC_PROFILE_STATS_INTERVAL_MIN,
+                      IONIC_PROFILE_STATS_INTERVAL_MAX);
         return -1;
     }
     p->stats.interval_ms = (uint32_t)v;
@@ -383,8 +376,8 @@ static int ranged(const char *raw, const char *where, uint32_t min,
     if (rc < 0)
         return -1;
     if (rc != 0 || v < min || v > max) {
-        set_err(err, err_len, "%s: '%.40s' out of range %u..%u", where, raw,
-                min, max);
+        ernic_set_err(err, err_len, "%s: '%.40s' out of range %u..%u", where,
+                      raw, min, max);
         return -1;
     }
     *out = (uint32_t)v;
@@ -420,11 +413,12 @@ int ionic_profile_warning(const struct ionic_profile *p, char *msg,
 
     if (have >= want)
         return 0;
-    set_err(msg, msg_len,
-            "queues.intr_vectors = %" PRIu32 " is less than 1 + queues.eth + "
-            "queues.rdma_eqs = %" PRIu32 "; a guest with enough vCPUs halves "
-            "its RDMA EQs or Ethernet queues to fit",
-            have, want);
+    ernic_set_err(
+        msg, msg_len,
+        "queues.intr_vectors = %" PRIu32 " is less than 1 + queues.eth + "
+        "queues.rdma_eqs = %" PRIu32 "; a guest with enough vCPUs halves "
+        "its RDMA EQs or Ethernet queues to fit",
+        have, want);
     return 1;
 }
 
@@ -440,10 +434,11 @@ static int set_value(struct ionic_profile *q, const struct schema_key *k,
     case KEY_ASIC_TYPE:
         idx = pick_name(asic_names, N_ELEMS(asic_names), raw);
         if (idx < 0) {
-            set_err(err, err_len,
-                    "%s: '%.40s' is not one of none, capri, elba, giglio, "
-                    "salina",
-                    where, raw);
+            ernic_set_err(
+                err, err_len,
+                "%s: '%.40s' is not one of none, capri, elba, giglio, "
+                "salina",
+                where, raw);
             return -1;
         }
         q->identity.asic_type = (uint8_t)idx;
@@ -452,9 +447,9 @@ static int set_value(struct ionic_profile *q, const struct schema_key *k,
     case KEY_XCVR:
         idx = pick_name(xcvr_names, N_ELEMS(xcvr_names), raw);
         if (idx < 0) {
-            set_err(err, err_len,
-                    "%s: '%.40s' is not one of copper, fiber, none", where,
-                    raw);
+            ernic_set_err(err, err_len,
+                          "%s: '%.40s' is not one of copper, fiber, none",
+                          where, raw);
             return -1;
         }
         q->link.xcvr = (uint8_t)idx;
@@ -462,15 +457,16 @@ static int set_value(struct ionic_profile *q, const struct schema_key *k,
 
     case KEY_FW_VERSION:
         if (strlen(str) > IONIC_PROFILE_FW_VERSION_MAX) {
-            set_err(err, err_len, "%s: %zu characters; at most %u", where,
-                    strlen(str), IONIC_PROFILE_FW_VERSION_MAX);
+            ernic_set_err(err, err_len, "%s: %zu characters; at most %u", where,
+                          strlen(str), IONIC_PROFILE_FW_VERSION_MAX);
             return -1;
         }
         if (!fw_version_ok(str)) {
-            set_err(err, err_len,
-                    "%s: must be 1 to %u printable ASCII characters other "
-                    "than '\\', with no leading or trailing space",
-                    where, IONIC_PROFILE_FW_VERSION_MAX);
+            ernic_set_err(
+                err, err_len,
+                "%s: must be 1 to %u printable ASCII characters other "
+                "than '\\', with no leading or trailing space",
+                where, IONIC_PROFILE_FW_VERSION_MAX);
             return -1;
         }
         memcpy(q->identity.fw_version, str, strlen(str) + 1);
@@ -481,8 +477,8 @@ static int set_value(struct ionic_profile *q, const struct schema_key *k,
         if (rc < 0)
             return -1;
         if (rc != 0 || v > 255) {
-            set_err(err, err_len, "%s: '%.40s' out of range 0..255", where,
-                    raw);
+            ernic_set_err(err, err_len, "%s: '%.40s' out of range 0..255",
+                          where, raw);
             return -1;
         }
         q->identity.asic_rev = (uint8_t)v;
@@ -497,10 +493,11 @@ static int set_value(struct ionic_profile *q, const struct schema_key *k,
                 q->link.speed_mbps = speeds[i];
                 return 0;
             }
-        set_err(err, err_len,
-                "%s: '%.40s' is not a supported speed (1000, 10000, 25000, "
-                "40000, 50000, 100000, 200000 or 400000 Mbps)",
-                where, raw);
+        ernic_set_err(
+            err, err_len,
+            "%s: '%.40s' is not a supported speed (1000, 10000, 25000, "
+            "40000, 50000, 100000, 200000 or 400000 Mbps)",
+            where, raw);
         return -1;
 
     case KEY_MTU:
@@ -508,8 +505,9 @@ static int set_value(struct ionic_profile *q, const struct schema_key *k,
         if (rc < 0)
             return -1;
         if (rc != 0 || v < IONIC_PROFILE_MTU_MIN || v > IONIC_PROFILE_MTU_MAX) {
-            set_err(err, err_len, "%s: '%.40s' out of range %u..%u", where, raw,
-                    IONIC_PROFILE_MTU_MIN, IONIC_PROFILE_MTU_MAX);
+            ernic_set_err(err, err_len, "%s: '%.40s' out of range %u..%u",
+                          where, raw, IONIC_PROFILE_MTU_MIN,
+                          IONIC_PROFILE_MTU_MAX);
             return -1;
         }
         q->link.mtu_max = (uint32_t)v;
@@ -529,9 +527,9 @@ static int set_value(struct ionic_profile *q, const struct schema_key *k,
             return 0;
         }
         if (parse_u64(raw, &v) == -1) {
-            set_err(err, err_len,
-                    "%s: 'auto' or an integer expected, got '%.40s'", where,
-                    raw);
+            ernic_set_err(err, err_len,
+                          "%s: 'auto' or an integer expected, got '%.40s'",
+                          where, raw);
             return -1;
         }
         return ranged(raw, where, IONIC_PROFILE_INTR_VECTORS_MIN,
@@ -542,7 +540,7 @@ static int set_value(struct ionic_profile *q, const struct schema_key *k,
         return ionic_profile_set_stats_interval(q, raw, where, err, err_len);
 
     default:
-        set_err(err, err_len, "%s: no handler for this key", where);
+        ernic_set_err(err, err_len, "%s: no handler for this key", where);
         return -1;
     }
 }
@@ -560,7 +558,7 @@ int ionic_profile_apply_text(struct ionic_profile *p, const char *source,
     if (!source)
         source = "profile";
     if (!text && len) {
-        set_err(err, err_len, "%s: no text", source);
+        ernic_set_err(err, err_len, "%s: no text", source);
         return -1;
     }
     if (scan_text(&sc, source, text, len, err, err_len) != 0)
@@ -569,8 +567,8 @@ int ionic_profile_apply_text(struct ionic_profile *p, const char *source,
     kf = g_key_file_new();
     if (len &&
         !g_key_file_load_from_data(kf, text, len, G_KEY_FILE_NONE, &gerr)) {
-        set_err(err, err_len, "%s: %s", source,
-                gerr ? gerr->message : "not a valid key file");
+        ernic_set_err(err, err_len, "%s: %s", source,
+                      gerr ? gerr->message : "not a valid key file");
         goto out;
     }
 
@@ -594,7 +592,7 @@ int ionic_profile_apply_text(struct ionic_profile *p, const char *source,
             set = set_value(&q, k, g_strstrip(raw), g_strstrip(str), where, err,
                             err_len);
         } else {
-            set_err(err, err_len, "%s: value could not be read", where);
+            ernic_set_err(err, err_len, "%s: value could not be read", where);
             set = -1;
         }
         g_free(raw);
@@ -633,22 +631,23 @@ static char *read_file(const char *path, size_t *len, char *err, size_t err_len)
     int fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
 
     if (fd < 0) {
-        set_err(err, err_len, "cannot open NIC profile '%s': %s", path,
-                strerror(errno));
+        ernic_set_err(err, err_len, "cannot open NIC profile '%s': %s", path,
+                      strerror(errno));
         return NULL;
     }
     if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
-        set_err(err, err_len, "NIC profile '%s' is not a regular file", path);
+        ernic_set_err(err, err_len, "NIC profile '%s' is not a regular file",
+                      path);
         goto fail;
     }
     if (st.st_size > (off_t)IONIC_PROFILE_FILE_MAX) {
-        set_err(err, err_len, "NIC profile '%s' is larger than %u bytes", path,
-                IONIC_PROFILE_FILE_MAX);
+        ernic_set_err(err, err_len, "NIC profile '%s' is larger than %u bytes",
+                      path, IONIC_PROFILE_FILE_MAX);
         goto fail;
     }
     buf = malloc((size_t)st.st_size + 1);
     if (!buf) {
-        set_err(err, err_len, "NIC profile '%s': out of memory", path);
+        ernic_set_err(err, err_len, "NIC profile '%s': out of memory", path);
         goto fail;
     }
     while (got < (size_t)st.st_size) {
@@ -657,8 +656,9 @@ static char *read_file(const char *path, size_t *len, char *err, size_t err_len)
         if (n < 0 && errno == EINTR)
             continue;
         if (n <= 0) {
-            set_err(err, err_len, "cannot read NIC profile '%s': %s", path,
-                    n < 0 ? strerror(errno) : "file shrank while reading");
+            ernic_set_err(
+                err, err_len, "cannot read NIC profile '%s': %s", path,
+                n < 0 ? strerror(errno) : "file shrank while reading");
             goto fail;
         }
         got += (size_t)n;
@@ -684,12 +684,12 @@ int ionic_profile_apply(struct ionic_profile *p, const char *spec, char *err,
     int rc;
 
     if (!spec || spec[0] == '\0') {
-        set_err(err, err_len, "empty NIC profile name");
+        ernic_set_err(err, err_len, "empty NIC profile name");
         return -1;
     }
     if (used + 3 + strlen(spec) >= sizeof(q.chain)) {
-        set_err(err, err_len, "NIC profile '%s': too many profile layers",
-                spec);
+        ernic_set_err(err, err_len, "NIC profile '%s': too many profile layers",
+                      spec);
         return -1;
     }
     if (is_path(spec)) {
@@ -700,10 +700,11 @@ int ionic_profile_apply(struct ionic_profile *p, const char *spec, char *err,
     } else {
         text = ionic_profile_builtin(spec);
         if (!text) {
-            set_err(err, err_len,
-                    "unknown NIC profile '%s' (built-in profiles: %s; a file "
-                    "path needs a '/' or an .ini suffix)",
-                    spec, ionic_profile_builtin_names());
+            ernic_set_err(
+                err, err_len,
+                "unknown NIC profile '%s' (built-in profiles: %s; a file "
+                "path needs a '/' or an .ini suffix)",
+                spec, ionic_profile_builtin_names());
             return -1;
         }
         len = strlen(text);

@@ -11,11 +11,11 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
-#include <stdarg.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 
+#include "ernic_err.h"
 #include "net/net_headers.h"
 #include "s3_http.h"
 #include "s3_target.h"
@@ -37,20 +37,6 @@
 #define S3_TCP_TXBUF_MAX (16u << 20)
 
 #define FRAME_MAX 1514u
-
-static void set_err(char *err, size_t errlen, const char *fmt, ...)
-    __attribute__((format(printf, 3, 4)));
-
-static void set_err(char *err, size_t errlen, const char *fmt, ...)
-{
-    if (err == NULL || errlen == 0) {
-        return;
-    }
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(err, errlen, fmt, ap);
-    va_end(ap);
-}
 
 enum s3_conn_state {
     S3_CONN_FREE = 0,
@@ -826,13 +812,13 @@ struct s3_tcp *s3_tcp_create(const struct s3_tcp_cfg *cfg,
                              size_t errlen)
 {
     if (target == NULL || tx == NULL) {
-        set_err(err, errlen, "s3 tcp needs a target and a transmit hook");
+        ernic_set_err(err, errlen, "s3 tcp needs a target and a transmit hook");
         return NULL;
     }
 
     struct s3_tcp *s = calloc(1, sizeof(*s));
     if (s == NULL) {
-        set_err(err, errlen, "out of memory");
+        ernic_set_err(err, errlen, "out of memory");
         return NULL;
     }
 
@@ -843,7 +829,7 @@ struct s3_tcp *s3_tcp_create(const struct s3_tcp_cfg *cfg,
     s->conn_cap = s->cfg.max_conns;
     s->conns = calloc(s->conn_cap, sizeof(*s->conns));
     if (s->conns == NULL) {
-        set_err(err, errlen, "out of memory");
+        ernic_set_err(err, errlen, "out of memory");
         free(s);
         return NULL;
     }

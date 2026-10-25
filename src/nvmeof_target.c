@@ -36,7 +36,6 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <netinet/in.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,6 +45,7 @@
 #include <unistd.h>
 
 #include "byteorder.h"
+#include "ernic_err.h"
 #include "ionic_datapath.h" /* IONIC_MAX_MR_QUEUES -- the queue-count ceiling */
 #include "nvmeof_target.h"
 #include "nvmeof_target_priv.h"
@@ -131,20 +131,6 @@ static bool parse_ipv4(const char *s, uint32_t *out)
     return true;
 }
 
-static void set_err(char *err, size_t errlen, const char *fmt, ...)
-    __attribute__((format(printf, 3, 4)));
-
-static void set_err(char *err, size_t errlen, const char *fmt, ...)
-{
-    if (err == NULL || errlen == 0) {
-        return;
-    }
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(err, errlen, fmt, ap);
-    va_end(ap);
-}
-
 bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
                              char *err, size_t errlen)
 {
@@ -154,7 +140,7 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
 
     char *dup = strdup(opts);
     if (dup == NULL) {
-        set_err(err, errlen, "out of memory");
+        ernic_set_err(err, errlen, "out of memory");
         return false;
     }
 
@@ -164,7 +150,7 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
          tok = strtok_r(NULL, ",", &save)) {
         char *eq = strchr(tok, '=');
         if (eq == NULL) {
-            set_err(err, errlen, "option '%s' is not key=value", tok);
+            ernic_set_err(err, errlen, "option '%s' is not key=value", tok);
             ok = false;
             break;
         }
@@ -174,28 +160,28 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
 
         if (strcmp(key, "nqn") == 0) {
             if (*val == '\0' || strlen(val) >= NVMEOF_NQN_MAX) {
-                set_err(err, errlen, "nqn must be 1..%d characters",
-                        NVMEOF_NQN_MAX - 1);
+                ernic_set_err(err, errlen, "nqn must be 1..%d characters",
+                              NVMEOF_NQN_MAX - 1);
                 ok = false;
             } else {
                 snprintf(cfg->subnqn, sizeof(cfg->subnqn), "%s", val);
             }
         } else if (strcmp(key, "size") == 0) {
             if (!ernic_parse_size(val, &cfg->size) || cfg->size == 0) {
-                set_err(err, errlen, "bad size '%s'", val);
+                ernic_set_err(err, errlen, "bad size '%s'", val);
                 ok = false;
             } else {
                 cfg->size_set = true;
             }
         } else if (strcmp(key, "file") == 0) {
             if (*val == '\0') {
-                set_err(err, errlen, "file needs a path");
+                ernic_set_err(err, errlen, "file needs a path");
                 ok = false;
             } else {
                 free(cfg->file);
                 cfg->file = strdup(val);
                 if (cfg->file == NULL) {
-                    set_err(err, errlen, "out of memory");
+                    ernic_set_err(err, errlen, "out of memory");
                     ok = false;
                 }
             }
@@ -203,8 +189,9 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
             uint32_t bs;
             if (!ernic_parse_u32(val, &bs) ||
                 (bs != 512 && bs != 1024 && bs != 2048 && bs != 4096)) {
-                set_err(err, errlen,
-                        "bs must be 512, 1024, 2048 or 4096 (got '%s')", val);
+                ernic_set_err(err, errlen,
+                              "bs must be 512, 1024, 2048 or 4096 (got '%s')",
+                              val);
                 ok = false;
             } else {
                 cfg->block_size = bs;
@@ -212,20 +199,20 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
         } else if (strcmp(key, "nsid") == 0) {
             uint32_t v;
             if (!ernic_parse_u32(val, &v) || v == 0 || v == 0xffffffffu) {
-                set_err(err, errlen, "bad nsid '%s'", val);
+                ernic_set_err(err, errlen, "bad nsid '%s'", val);
                 ok = false;
             } else {
                 cfg->nsid = v;
             }
         } else if (strcmp(key, "ip") == 0) {
             if (!parse_ipv4(val, &cfg->traddr)) {
-                set_err(err, errlen, "bad IPv4 address '%s'", val);
+                ernic_set_err(err, errlen, "bad IPv4 address '%s'", val);
                 ok = false;
             }
         } else if (strcmp(key, "port") == 0) {
             uint32_t v;
             if (!ernic_parse_u32(val, &v) || v == 0 || v > 65535) {
-                set_err(err, errlen, "bad port '%s'", val);
+                ernic_set_err(err, errlen, "bad port '%s'", val);
                 ok = false;
             } else {
                 cfg->trsvcid = (uint16_t)v;
@@ -239,11 +226,11 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
                  * queue at connect time.  Refusing here turns what was a bare
                  * "invalid arguments/configuration" from nvme connect, long
                  * after startup, into a message that names the real limit. */
-                set_err(err, errlen,
-                        "queues must be 1..%d, one per %d memory regions in a "
-                        "table of %d (got '%s')",
-                        IONIC_MAX_MR_QUEUES, IONIC_MR_PER_QUEUE, IONIC_MAX_MR,
-                        val);
+                ernic_set_err(
+                    err, errlen,
+                    "queues must be 1..%d, one per %d memory regions in a "
+                    "table of %d (got '%s')",
+                    IONIC_MAX_MR_QUEUES, IONIC_MR_PER_QUEUE, IONIC_MAX_MR, val);
                 ok = false;
             } else {
                 cfg->max_queues = (uint16_t)v;
@@ -253,15 +240,16 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
         } else if (strcmp(key, "serial") == 0) {
             snprintf(cfg->serial, sizeof(cfg->serial), "%s", val);
         } else {
-            set_err(err, errlen, "unknown nvmeof option '%s'", key);
+            ernic_set_err(err, errlen, "unknown nvmeof option '%s'", key);
             ok = false;
         }
     }
     free(dup);
 
     if (ok && cfg->size % cfg->block_size != 0) {
-        set_err(err, errlen, "size %" PRIu64 " is not a multiple of bs %u",
-                cfg->size, cfg->block_size);
+        ernic_set_err(err, errlen,
+                      "size %" PRIu64 " is not a multiple of bs %u", cfg->size,
+                      cfg->block_size);
         ok = false;
     }
     return ok;
@@ -283,12 +271,12 @@ static bool size_image(struct nvmeof_target *t, char *err, size_t errlen)
     struct stat st;
 
     if (fstat(t->ns_fd, &st) != 0) {
-        set_err(err, errlen, "cannot stat %s: %s", t->cfg.file,
-                strerror(errno));
+        ernic_set_err(err, errlen, "cannot stat %s: %s", t->cfg.file,
+                      strerror(errno));
         return false;
     }
     if (!S_ISREG(st.st_mode)) {
-        set_err(err, errlen, "%s is not a regular file", t->cfg.file);
+        ernic_set_err(err, errlen, "%s is not a regular file", t->cfg.file);
         return false;
     }
 
@@ -296,24 +284,25 @@ static bool size_image(struct nvmeof_target *t, char *err, size_t errlen)
     uint64_t have = (uint64_t)st.st_size;
     if (have != 0 && !t->cfg.size_set) {
         if (have % t->cfg.block_size != 0) {
-            set_err(err, errlen,
-                    "%s is %" PRIu64 " bytes, not a multiple of bs %u; "
-                    "give a size= of whole blocks to grow it",
-                    t->cfg.file, have, t->cfg.block_size);
+            ernic_set_err(err, errlen,
+                          "%s is %" PRIu64 " bytes, not a multiple of bs %u; "
+                          "give a size= of whole blocks to grow it",
+                          t->cfg.file, have, t->cfg.block_size);
             return false;
         }
         t->cfg.size = have;
     } else if (have > t->cfg.size) {
-        set_err(err, errlen,
-                "%s is %" PRIu64 " bytes; size=%" PRIu64 " would truncate it",
-                t->cfg.file, have, t->cfg.size);
+        ernic_set_err(err, errlen,
+                      "%s is %" PRIu64 " bytes; size=%" PRIu64
+                      " would truncate it",
+                      t->cfg.file, have, t->cfg.size);
         return false;
     }
 
     t->ns_len = (size_t)t->cfg.size;
     if (have < t->cfg.size && ftruncate(t->ns_fd, (off_t)t->ns_len) != 0) {
-        set_err(err, errlen, "cannot size %s to %zu bytes: %s", t->cfg.file,
-                t->ns_len, strerror(errno));
+        ernic_set_err(err, errlen, "cannot size %s to %zu bytes: %s",
+                      t->cfg.file, t->ns_len, strerror(errno));
         return false;
     }
     return true;
@@ -324,7 +313,7 @@ struct nvmeof_target *nvmeof_target_create(const struct nvmeof_target_cfg *cfg,
 {
     struct nvmeof_target *t = calloc(1, sizeof(*t));
     if (t == NULL) {
-        set_err(err, errlen, "out of memory");
+        ernic_set_err(err, errlen, "out of memory");
         return NULL;
     }
 
@@ -337,7 +326,7 @@ struct nvmeof_target *nvmeof_target_create(const struct nvmeof_target_cfg *cfg,
     if (cfg->file != NULL) {
         t->cfg.file = strdup(cfg->file);
         if (t->cfg.file == NULL) {
-            set_err(err, errlen, "out of memory");
+            ernic_set_err(err, errlen, "out of memory");
             goto fail;
         }
         /* With _FORTIFY_SOURCE, glibc 2.40 and later give Clang an
@@ -347,8 +336,8 @@ struct nvmeof_target *nvmeof_target_create(const struct nvmeof_target_cfg *cfg,
         t->ns_fd = open(t->cfg.file, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
         /* NOLINTEND(android-cloexec-open) */
         if (t->ns_fd < 0) {
-            set_err(err, errlen, "cannot open %s: %s", t->cfg.file,
-                    strerror(errno));
+            ernic_set_err(err, errlen, "cannot open %s: %s", t->cfg.file,
+                          strerror(errno));
             goto fail;
         }
         if (!size_image(t, err, errlen)) {
@@ -356,8 +345,8 @@ struct nvmeof_target *nvmeof_target_create(const struct nvmeof_target_cfg *cfg,
         }
         long page = sysconf(_SC_PAGESIZE);
         if (page <= 0) {
-            set_err(err, errlen, "cannot read the page size: %s",
-                    strerror(errno));
+            ernic_set_err(err, errlen, "cannot read the page size: %s",
+                          strerror(errno));
             goto fail;
         }
         t->page_size = (uint64_t)page;
@@ -369,15 +358,15 @@ struct nvmeof_target *nvmeof_target_create(const struct nvmeof_target_cfg *cfg,
     }
     if (t->ns_data == MAP_FAILED) {
         t->ns_data = NULL;
-        set_err(err, errlen, "cannot map %zu bytes of namespace: %s", t->ns_len,
-                strerror(errno));
+        ernic_set_err(err, errlen, "cannot map %zu bytes of namespace: %s",
+                      t->ns_len, strerror(errno));
         goto fail;
     }
 
     t->queue_cap = (unsigned)cfg->max_queues + 1;
     t->queues = calloc(t->queue_cap, sizeof(*t->queues));
     if (t->queues == NULL) {
-        set_err(err, errlen, "out of memory");
+        ernic_set_err(err, errlen, "out of memory");
         goto fail;
     }
 
