@@ -776,6 +776,30 @@ void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
             q->rq_depth, q->rq_stride_log2, rq_cq_id);
 }
 
+/*
+ * What the mesh calls a request: its QP in the high half, so a QP's requests
+ * can be taken back together, and its pending entry's req_id in the low.
+ */
+static uint64_t dp_mesh_tag(uint32_t qp_id, uint32_t req_id)
+{
+    return (uint64_t)qp_id << 32 | req_id;
+}
+
+/* Take back every request qp_id has queued in the mesh */
+static void dp_mesh_cancel_qp(struct ionic_datapath *dp, uint32_t qp_id)
+{
+    ionic_mesh_cancel(dp->pvrdma_handle, dp_mesh_tag(qp_id, 0),
+                      UINT64_C(0xffffffff00000000));
+}
+
+/* Take back p's request, if the mesh still has it queued */
+static void dp_mesh_cancel_request(struct ionic_datapath *dp,
+                                   const struct dp_pending *p)
+{
+    ionic_mesh_cancel(dp->pvrdma_handle, dp_mesh_tag(p->qp_id, p->req_id),
+                      UINT64_MAX);
+}
+
 void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id)
 {
     if (!dp || qp_id >= dp->qp_count)
@@ -783,7 +807,7 @@ void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id)
     if (dp->nvmeof_cm)
         nvmeof_cm_drop_qp(dp->nvmeof_cm, qp_id);
     /* A destroyed QP's requests don't go out either; see the flush */
-    ionic_mesh_cancel(dp->pvrdma_handle, qp_id);
+    dp_mesh_cancel_qp(dp, qp_id);
     sq_stall_clear(dp, &dp->qp[qp_id]);
     ionic_dp_buf_release(&dp->qp[qp_id].sq_buf);
     ionic_dp_buf_release(&dp->qp[qp_id].rq_buf);
@@ -1764,7 +1788,7 @@ void ionic_datapath_flush_qp(struct ionic_datapath *dp, uint32_t qp_id)
      * consumer was told it hadn't run.  A NIC doesn't transmit a work request
      * it has flushed.
      */
-    ionic_mesh_cancel(dp->pvrdma_handle, qp_id);
+    dp_mesh_cancel_qp(dp, qp_id);
 
     /*
      * The flush completes every send outstanding, the one held for a
@@ -2289,13 +2313,16 @@ static void pending_complete(struct ionic_datapath *dp, struct dp_pending *p,
     p->valid = false;
 }
 
-/* qp_id is the local QP the message is from (see ionic_mesh_cancel()) */
+/*
+ * tag names a request to the mesh, for dp_mesh_cancel_qp() and
+ * dp_mesh_cancel_request(); a reply's is ignored.
+ */
 static int dp_mesh_tx(struct ionic_datapath *dp, uint32_t dst_node,
-                      uint32_t qp_id, const struct ionic_wire_hdr *hdr,
+                      uint64_t tag, const struct ionic_wire_hdr *hdr,
                       const uint8_t *payload, uint32_t payload_len, bool reply)
 {
     return ionic_mesh_sendv(dp->pvrdma_handle, dst_node, hdr, sizeof(*hdr),
-                            payload, payload_len, qp_id, reply);
+                            payload, payload_len, tag, reply);
 }
 
 static void wire_hdr_init(struct ionic_wire_hdr *h, uint8_t op,
@@ -2468,8 +2495,8 @@ static enum dp_post remote_post(struct ionic_datapath *dp,
         }
     }
 
-    int rc =
-        dp_mesh_tx(dp, dest_node_id, qp_id, &hdr, payload, payload_len, false);
+    int rc = dp_mesh_tx(dp, dest_node_id, dp_mesh_tag(qp_id, p->req_id), &hdr,
+                        payload, payload_len, false);
     if (rc == 0) {
         result = DP_POST_SENT;
         /* Claim the MSN only once the request is really on the wire, so a
@@ -3668,8 +3695,7 @@ static void dp_wire_reply(struct ionic_datapath *dp, uint32_t dst_node,
      * A reply the mesh can't queue is lost, and the requester's own timeout
      * for it completes the request; the mesh has logged why.
      */
-    dp_mesh_tx(dp, dst_node, le32toh(req->dst_qp_id), &r, payload, payload_len,
-               true);
+    dp_mesh_tx(dp, dst_node, 0, &r, payload, payload_len, true);
 
     if (status == IONIC_STS_REMOTE_ACC_ERR)
         dp_count(dp, le32toh(req->dst_qp_id),
@@ -4037,6 +4063,12 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
             vfu_log(dp->vfu_ctx, LOG_WARNING,
                     "ionic_datapath: QP %u request %u timed out", p->qp_id,
                     p->req_id);
+            /*
+             * A peer that is slow but still reading never trips the mesh's
+             * send timeout, so the request can still be queued.  Sent after
+             * this, a WRITE or atomic would run after its error completion.
+             */
+            dp_mesh_cancel_request(dp, p);
             pending_complete(dp, p, IONIC_STS_RETRY_EXCEEDED);
         }
     }

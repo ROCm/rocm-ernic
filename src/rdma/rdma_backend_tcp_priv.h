@@ -79,6 +79,12 @@
  */
 #define TCP_SENDQ_REQUEST_BYTES (2u * TCP_MAX_PAYLOAD_LEN)
 #define TCP_SENDQ_REPLY_BYTES   (4u * TCP_MAX_PAYLOAD_LEN)
+/* So a limit less a message's length, at most TCP_MAX_PAYLOAD_LEN, can't wrap
+ */
+_Static_assert(TCP_SENDQ_REQUEST_BYTES >= TCP_MAX_PAYLOAD_LEN,
+               "a request's queue limit must hold the largest message");
+_Static_assert(TCP_SENDQ_REPLY_BYTES >= TCP_MAX_PAYLOAD_LEN,
+               "a reply's queue limit must hold the largest message");
 
 /* ionic sizes its own wire payload against this; keep the two in step. */
 _Static_assert(IONIC_MESH_MAX_MSG == TCP_MAX_PAYLOAD_LEN,
@@ -271,8 +277,8 @@ typedef struct {
     uint32_t seq;
     uint32_t src_node;
     uint32_t dst_node;
-    uint32_t qp_id; /* a TCP_MSG_IONIC's local QP, for tcp_sendq_cancel() */
-    bool reply;     /* a TCP_MSG_IONIC that answers the peer's request */
+    uint64_t tag; /* a TCP_MSG_IONIC's name, for tcp_sendq_cancel() */
+    bool reply;   /* a TCP_MSG_IONIC that answers the peer's request */
     uint32_t len;
     uint8_t data[]; /* the data path's header and body, together */
 } TcpQueuedMsg;
@@ -717,7 +723,7 @@ bool tcp_conn_table_take(TcpBackendPrivate *priv, uint32_t node_id,
 void tcp_retire_conn(TcpConnection *conn);
 int tcp_conn_enqueue(TcpConnection *conn, const void *hdr, size_t hdr_len,
                      const void *body, size_t body_len, uint32_t dst_node,
-                     uint32_t qp_id, bool reply);
+                     uint64_t tag, bool reply);
 void tcp_broadcast_gid_table(TcpBackendPrivate *priv);
 
 /* The manager's table of mesh nodes */

@@ -156,7 +156,7 @@ void vfu_log(vfu_ctx_t *vfu_ctx, int level, const char *fmt, ...)
 
 static uint8_t g_wire[WIRE_MAX][WIRE_BYTES];
 static size_t g_wire_len[WIRE_MAX];
-static uint32_t g_wire_qp[WIRE_MAX]; /* the QP each message is from */
+static uint64_t g_wire_tag[WIRE_MAX]; /* what each message is called */
 static bool g_wire_reply[WIRE_MAX];
 static size_t g_nwire;
 
@@ -170,7 +170,7 @@ static int g_send_rc;
 
 int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
                      size_t hdr_len, const void *body, size_t body_len,
-                     uint32_t qp_id, bool reply)
+                     uint64_t tag, bool reply)
 {
     (void)handle;
     (void)dst_node;
@@ -181,7 +181,7 @@ int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
     memcpy(g_wire[g_nwire], hdr, hdr_len);
     if (body_len)
         memcpy(g_wire[g_nwire] + hdr_len, body, body_len);
-    g_wire_qp[g_nwire] = qp_id;
+    g_wire_tag[g_nwire] = tag;
     g_wire_reply[g_nwire] = reply;
     g_wire_len[g_nwire++] = hdr_len + body_len;
     return 0;
@@ -461,18 +461,20 @@ static const char *const counter_name[IONIC_DP_RDMA_COUNT] = {
 
 /*
  * The data path under test, and what it asked the mesh to cancel: how many
- * times, the last QP, and how many completions CQ_ID had then.
+ * times, the last tag and mask, and how many completions CQ_ID had then.
  */
 static struct ionic_datapath *g_dp;
 static uint32_t g_ncancel;
-static uint32_t g_cancel_qp;
+static uint64_t g_cancel_tag;
+static uint64_t g_cancel_mask;
 static uint32_t g_cancel_cqes;
 
-void ionic_mesh_cancel(pvrdma_handle_t handle, uint32_t qp_id)
+void ionic_mesh_cancel(pvrdma_handle_t handle, uint64_t tag, uint64_t mask)
 {
     (void)handle;
     g_ncancel++;
-    g_cancel_qp = qp_id;
+    g_cancel_tag = tag;
+    g_cancel_mask = mask;
     g_cancel_cqes = g_dp ? g_dp->cq[CQ_ID].prod : 0;
 }
 
@@ -523,7 +525,8 @@ static struct ionic_datapath *setup(void)
     g_send_rc = 0;
     g_dp = NULL;
     g_ncancel = 0;
-    g_cancel_qp = UINT32_MAX;
+    g_cancel_tag = 0;
+    g_cancel_mask = 0;
     g_cancel_cqes = 0;
     g_now_ms = T0;
     g_local_node = UINT32_MAX;
@@ -1546,50 +1549,78 @@ static void check_late_responses(void)
 }
 
 /*
- * What the mesh is told about a QP's messages: which QP each is from, and
- * which to take back.  A request the mesh still has queued when its QP is
- * flushed or destroyed must not reach the peer, and the flush completions
- * tell the consumer it didn't run, so it is taken back before they are
- * posted.
+ * What the mesh is told about a QP's messages: what each request is called,
+ * and which to take back.  A request the mesh still has queued must not
+ * reach the peer once its work request has completed: when its QP is
+ * flushed or destroyed, or when it times out.  The completions tell the
+ * consumer it didn't run, so it is taken back before they are posted.
  */
 enum mc_scenario {
     MC_TAGGED,     /* a remote WRITE and its ACK */
     MC_FLUSH,      /* QP_A flushed with its WRITE outstanding */
     MC_UNREGISTER, /* QP_A destroyed with its WRITE outstanding */
+    MC_DEADLINE,   /* the WRITE unanswered at PENDING_MS */
+    MC_EXPIRED,    /* and just past it */
 };
+
+#define MC_QP_MASK UINT64_C(0xffffffff00000000)
+
+/* Whether the last cancel took back what is called tag, with exactly mask */
+static bool mc_cancelled(uint64_t tag, uint64_t mask)
+{
+    return g_ncancel == 1 && g_cancel_mask == mask &&
+           (g_cancel_tag & mask) == (tag & mask);
+}
 
 static const char *mc_run(struct ionic_datapath *dp, enum mc_scenario scenario)
 {
+    struct ionic_wire_hdr h;
+    uint64_t tag;
     uint32_t cqes;
 
     remote(dp, QP_B);
     post_send(dp, QP_A, &WRITE_OK);
-    if (g_nwire != 1 || g_wire_qp[0] != QP_A || g_wire_reply[0])
-        return "the WRITE wasn't sent as a request from QP_A";
+    if (g_nwire != 1 || g_wire_reply[0])
+        return "the WRITE wasn't sent as a request";
+    memcpy(&h, g_wire[0], sizeof(h));
+    tag = (uint64_t)QP_A << 32 | le32toh(h.req_id);
+    if (g_wire_tag[0] != tag)
+        return "the WRITE isn't called by QP_A and its request id";
 
+    cqes = dp->cq[CQ_ID].prod;
+    g_dp = dp;
     switch (scenario) {
     case MC_TAGGED:
         wire_feed(dp);
         poll_at(dp, g_now_ms);
-        if (g_nwire != 1 || g_wire_qp[0] != QP_B || !g_wire_reply[0])
-            return "the ACK wasn't sent as a reply from QP_B";
+        if (g_nwire != 1 || !g_wire_reply[0])
+            return "the ACK wasn't sent as a reply";
         return g_ncancel == 0 ? NULL : "a request was taken back";
     case MC_FLUSH:
-        cqes = dp->cq[CQ_ID].prod;
-        g_dp = dp;
         ionic_datapath_flush_qp(dp, QP_A);
-        g_dp = NULL;
-        if (g_ncancel != 1 || g_cancel_qp != QP_A)
+        if (!mc_cancelled(tag, MC_QP_MASK))
             return "QP_A's requests weren't taken back once";
         if (g_cancel_cqes != cqes || dp->cq[CQ_ID].prod != cqes + 2)
             return "they weren't taken back before the flush completions";
         return NULL;
     case MC_UNREGISTER:
-    default:
         ionic_datapath_unregister_qp(dp, QP_A);
-        return g_ncancel == 1 && g_cancel_qp == QP_A
+        return mc_cancelled(tag, MC_QP_MASK)
                    ? NULL
                    : "QP_A's requests weren't taken back once";
+    case MC_DEADLINE:
+        poll_at(dp, T0 + PENDING_MS);
+        return g_ncancel == 0 && dp->cq[CQ_ID].prod == cqes
+                   ? NULL
+                   : "the WRITE was given up on at its deadline";
+    case MC_EXPIRED:
+    default:
+        poll_at(dp, T0 + PENDING_MS + 1);
+        if (!mc_cancelled(tag, UINT64_MAX))
+            return "the WRITE wasn't taken back once, alone";
+        if (g_cancel_cqes != cqes || dp->cq[CQ_ID].prod != cqes + 1)
+            return "it wasn't taken back before its error completion";
+        return NULL;
     }
 }
 
@@ -1602,9 +1633,8 @@ static void check_mesh_cancel(void)
         enum mc_scenario scenario;
     } rows[] = {
         {"positive", "a remote WRITE, and the ACK QP_B sends for it",
-         "the WRITE goes to the mesh as a request from QP_A, the ACK as a "
-         "reply "
-         "from QP_B, and nothing is taken back",
+         "the WRITE goes to the mesh as a request called by QP_A and its "
+         "request id, the ACK as a reply, and nothing is taken back",
          MC_TAGGED},
         {"positive", "QP_A flushed while its WRITE is outstanding",
          "the mesh takes back QP_A's requests once, before the flush "
@@ -1612,6 +1642,12 @@ static void check_mesh_cancel(void)
          MC_FLUSH},
         {"positive", "QP_A destroyed while its WRITE is outstanding",
          "the mesh takes back QP_A's requests once", MC_UNREGISTER},
+        {"boundary", "the WRITE still unanswered at PENDING_MS",
+         "nothing is taken back or completed", MC_DEADLINE},
+        {"positive", "the WRITE unanswered just past PENDING_MS",
+         "the mesh takes back that request alone, once, before its "
+         "retry-exceeded completion is posted",
+         MC_EXPIRED},
     };
 
     for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
@@ -1619,6 +1655,7 @@ static void check_mesh_cancel(void)
         const char *why = dp ? mc_run(dp, rows[row].scenario)
                              : "could not create a data path";
 
+        g_dp = NULL;
         ionic_datapath_destroy(dp);
         printf("%s %s: %s; expected: %s\n", why ? "FAIL" : "ok  ",
                rows[row].category, rows[row].description, rows[row].expected);

@@ -788,7 +788,8 @@ Topology
   gives up on the manager. A heartbeat, or the answer to one,
   never waits for another sender: when the connection is busy
   it goes on the connection's send queue, ahead of the data, so
-  steady traffic to a node doesn't keep its heartbeats out.
+  steady traffic to a node doesn't keep its heartbeats out. The
+  queue holds one heartbeat and one answer at most.
 - The protocol carries a magic number and a version, checked at
   registration and handshake.
 
@@ -864,9 +865,10 @@ whose peer is on another node:
    that doesn't fit stays on the send queue, which stops there,
    and is tried again on a later pass, as a NIC out of transmit
    credits holds its queue. Replies have twice the room. When a
-   QP is flushed or destroyed, its requests still queued are
-   taken back, so none reaches the peer after its work request
-   has completed; one already being written still arrives.
+   QP is flushed or destroyed, or a request times out (see
+   **Lost peer**, below), the requests still queued are taken
+   back, so none reaches the peer after its work request has
+   completed; one already being written still arrives.
 #. It records the request in a **pending table** and does not
    post a completion yet. The completion must wait for the
    peer, both so the reported latency includes the network and

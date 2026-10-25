@@ -1523,7 +1523,7 @@ static TcpQueuedMsg *tcp_queued_msg_new(TcpConnection *conn,
                                          memory_order_relaxed);
     msg->src_node = tcp_local_node(conn->priv);
     msg->dst_node = dst_node;
-    msg->qp_id = UINT32_MAX;
+    msg->tag = 0;
     msg->reply = false;
     msg->len = (uint32_t)len;
     return msg;
@@ -1531,8 +1531,8 @@ static TcpQueuedMsg *tcp_queued_msg_new(TcpConnection *conn,
 
 /*
  * Queue a TCP_MSG_IONIC to dst_node on conn, for its send thread to write,
- * without waiting for the peer: hdr and body are copied.  qp_id is the local
- * QP the message is from, which tcp_sendq_cancel() names.  The first message
+ * without waiting for the peer: hdr and body are copied.  tag is the caller's
+ * name for a request, which tcp_sendq_cancel() matches.  The first message
  * queued starts the thread.
  *
  * Returns 0 once queued, or a negative errno:
@@ -1548,7 +1548,7 @@ static TcpQueuedMsg *tcp_queued_msg_new(TcpConnection *conn,
  */
 int tcp_conn_enqueue(TcpConnection *conn, const void *hdr, size_t hdr_len,
                      const void *body, size_t body_len, uint32_t dst_node,
-                     uint32_t qp_id, bool reply)
+                     uint64_t tag, bool reply)
 {
     size_t limit = reply ? TCP_SENDQ_REPLY_BYTES : TCP_SENDQ_REQUEST_BYTES;
     TcpQueuedMsg *msg;
@@ -1565,8 +1565,8 @@ int tcp_conn_enqueue(TcpConnection *conn, const void *hdr, size_t hdr_len,
     qemu_mutex_lock(&conn->sendq_lock);
     if (conn->sendq_closed) {
         ret = -EPIPE;
-    } else if (conn->sendq_bytes != 0 &&
-               (len > limit || conn->sendq_bytes > limit - len)) {
+    } else if (conn->sendq_bytes != 0 && conn->sendq_bytes > limit - len) {
+        /* limit - len can't wrap: each limit holds the largest message */
         ret = reply ? -ENOBUFS : -EAGAIN;
     } else {
         ret = tcp_sendq_start(conn);
@@ -1577,7 +1577,7 @@ int tcp_conn_enqueue(TcpConnection *conn, const void *hdr, size_t hdr_len,
     }
 
     msg = tcp_queued_msg_new(conn, TCP_MSG_IONIC, dst_node, len);
-    msg->qp_id = qp_id;
+    msg->tag = tag;
     msg->reply = reply;
     memcpy(msg->data, hdr, hdr_len);
     if (body_len > 0) {
@@ -1591,10 +1591,33 @@ int tcp_conn_enqueue(TcpConnection *conn, const void *hdr, size_t hdr_len,
 }
 
 /*
+ * Whether conn's send queue already holds a msg_type, a heartbeat or its
+ * answer.  They are pushed at the head and data at the tail, so they are all
+ * in the run at the head.  The caller holds sendq_lock.
+ */
+static bool tcp_sendq_has_heartbeat(TcpConnection *conn, TcpMsgType msg_type)
+{
+    for (GList *link = conn->sendq.head; link != NULL; link = link->next) {
+        const TcpQueuedMsg *msg = link->data;
+
+        if (msg->msg_type == TCP_MSG_IONIC) {
+            break;
+        }
+        if (msg->msg_type == msg_type) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
  * Queue msg_type, a heartbeat or its answer, to dst_node at the head of
  * conn's send queue, so the send thread writes it as soon as it is done with
- * the message it is writing, ahead of the data path's.  Returns 0, -EPIPE if
- * the queue is closed, or -ENOMEM if the send thread couldn't be started.
+ * the message it is writing, ahead of the data path's.  One of each type
+ * waiting is enough, and keeps a peer that sends heartbeats faster than it
+ * reads the answers from growing the queue without limit; another is
+ * dropped.  Returns 0, -EPIPE if the queue is closed, or -ENOMEM if the send
+ * thread couldn't be started.
  */
 static int tcp_sendq_push_heartbeat(TcpConnection *conn, TcpMsgType msg_type,
                                     uint32_t dst_node)
@@ -1603,7 +1626,7 @@ static int tcp_sendq_push_heartbeat(TcpConnection *conn, TcpMsgType msg_type,
 
     qemu_mutex_lock(&conn->sendq_lock);
     ret = conn->sendq_closed ? -EPIPE : tcp_sendq_start(conn);
-    if (ret == 0) {
+    if (ret == 0 && !tcp_sendq_has_heartbeat(conn, msg_type)) {
         g_queue_push_head(&conn->sendq,
                           tcp_queued_msg_new(conn, msg_type, dst_node, 0));
         qemu_cond_signal(&conn->sendq_cond);
@@ -1613,12 +1636,12 @@ static int tcp_sendq_push_heartbeat(TcpConnection *conn, TcpMsgType msg_type,
 }
 
 /*
- * Drop the requests from qp_id on conn's send queue, which no send thread
- * has started to write.  The one being written, if it is one, is off the
- * queue and goes out whole: a message the peer has started to read can't be
- * taken back.
+ * Drop the requests on conn's send queue whose tag matches tag in the bits
+ * mask selects, which no send thread has started to write.  The one being
+ * written, if it is one, is off the queue and goes out whole: a message the
+ * peer has started to read can't be taken back.
  */
-static void tcp_sendq_cancel(TcpConnection *conn, uint32_t qp_id)
+static void tcp_sendq_cancel(TcpConnection *conn, uint64_t tag, uint64_t mask)
 {
     qemu_mutex_lock(&conn->sendq_lock);
     for (GList *link = conn->sendq.head; link != NULL;) {
@@ -1626,7 +1649,7 @@ static void tcp_sendq_cancel(TcpConnection *conn, uint32_t qp_id)
         TcpQueuedMsg *msg = link->data;
 
         if (msg->msg_type == TCP_MSG_IONIC && !msg->reply &&
-            msg->qp_id == qp_id) {
+            (msg->tag & mask) == (tag & mask)) {
             conn->sendq_bytes -= msg->len;
             g_queue_delete_link(&conn->sendq, link);
             g_free(msg);
@@ -5172,20 +5195,23 @@ bool tcp_backend_ionic_has_room(RdmaBackendDev *backend_dev, uint32_t dst_node,
 }
 
 /*
- * Take back the requests from qp_id that are still queued on any connection,
- * so none of them reaches its peer: for a QP that is flushing or being
- * destroyed, whose work requests the data path completes now.  On a NIC, a
- * flushed work request isn't transmitted; one queued here hasn't been either.
+ * Take back the requests still queued on any connection whose tag, as given
+ * to tcp_backend_send_ionic_v(), matches tag in the bits mask selects, so
+ * none of them reaches its peer: those of a QP that is flushing or being
+ * destroyed, or one request that has timed out, whose work requests the data
+ * path completes now.  On a NIC, a flushed work request isn't transmitted;
+ * one queued here hasn't been either.
  *
  * Only what no send thread has started to write: the message being written,
  * and what is already in the socket or on its way, still arrive, as frames
  * already on the wire do.  Replies are left alone, and so are the queues of
  * connections that have left the table already, which are being retired
  * and whose sockets are shut down.  Called on the device's main thread, the
- * only one that queues the data path's messages, so nothing from qp_id is
+ * only one that queues the data path's messages, so nothing that matches is
  * queued meanwhile.
  */
-void tcp_backend_ionic_cancel(RdmaBackendDev *backend_dev, uint32_t qp_id)
+void tcp_backend_ionic_cancel(RdmaBackendDev *backend_dev, uint64_t tag,
+                              uint64_t mask)
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
     TcpConnection *manager;
@@ -5200,7 +5226,7 @@ void tcp_backend_ionic_cancel(RdmaBackendDev *backend_dev, uint32_t qp_id)
     if (manager)
         g_ptr_array_add(conns, manager);
     for (guint i = 0; i < conns->len; i++)
-        tcp_sendq_cancel(g_ptr_array_index(conns, i), qp_id);
+        tcp_sendq_cancel(g_ptr_array_index(conns, i), tag, mask);
     g_ptr_array_free(conns, TRUE);
 }
 
@@ -5211,8 +5237,8 @@ void tcp_backend_ionic_cancel(RdmaBackendDev *backend_dev, uint32_t qp_id)
  * (tcp_conn_enqueue()).  A peer that stops reading holds up only that
  * thread, until the send times out and shuts the connection down.
  *
- * qp_id is the local QP the message is from, which tcp_backend_ionic_cancel()
- * names.
+ * tag is the caller's name for a request, which tcp_backend_ionic_cancel()
+ * matches; a reply's is ignored, since a reply is never taken back.
  *
  * Returns 0 once queued, which doesn't mean the peer will get it: a message
  * still queued when the connection is shut down is lost, and the data path's
@@ -5223,7 +5249,7 @@ void tcp_backend_ionic_cancel(RdmaBackendDev *backend_dev, uint32_t qp_id)
  */
 int tcp_backend_send_ionic_v(RdmaBackendDev *backend_dev, uint32_t dst_node,
                              const void *hdr, size_t hdr_len, const void *body,
-                             size_t body_len, uint32_t qp_id, bool reply)
+                             size_t body_len, uint64_t tag, bool reply)
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
     TcpConnection *conn;
@@ -5249,7 +5275,7 @@ int tcp_backend_send_ionic_v(RdmaBackendDev *backend_dev, uint32_t dst_node,
         return -ENOTCONN;
     }
 
-    rc = tcp_conn_enqueue(conn, hdr, hdr_len, body, body_len, dst_node, qp_id,
+    rc = tcp_conn_enqueue(conn, hdr, hdr_len, body, body_len, dst_node, tag,
                           reply);
     tcp_connection_unref(conn);
 

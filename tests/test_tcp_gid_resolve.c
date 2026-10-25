@@ -665,7 +665,7 @@ static int64_t call_hook(RdmaBackendDev *dev, enum hook hook)
     case HOOK_HAS_ROOM:
         return tcp_backend_ionic_has_room(dev, MESH_PEER, sizeof(hdr));
     case HOOK_CANCEL:
-        tcp_backend_ionic_cancel(dev, 0);
+        tcp_backend_ionic_cancel(dev, 0, UINT64_MAX);
         return 0;
     default:
         abort(); /* every row names one of the cases above */

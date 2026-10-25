@@ -138,6 +138,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <linux/sockios.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -6478,9 +6479,10 @@ static const char *wl_cancel(RdmaBackendDev *dev, TcpConnection *old)
     bool cancelled;
 
     if (tcp_backend_send_ionic_v(dev, WL_OTHER, hdr, sizeof(hdr), NULL, 0,
-                                 WL_CANCEL_QP, false) != 0)
+                                 (uint64_t)WL_CANCEL_QP << 32, false) != 0)
         return "the request to cancel wasn't queued";
-    tcp_backend_ionic_cancel(dev, WL_CANCEL_QP);
+    tcp_backend_ionic_cancel(dev, (uint64_t)WL_CANCEL_QP << 32,
+                             UINT64_C(0xffffffff00000000));
     qemu_mutex_lock(&old->sendq_lock);
     /* The message being written is off the queue, but still counted */
     cancelled = old->sendq.length == 0 &&
@@ -6746,11 +6748,12 @@ static int run_wl_case(const struct wl_case *c)
  * thread, and the queue has a limit.  The rows run an mgr_fixture whose
  * nodes' ends of their connections never read, except ST_STEADY's.
  *
- * What the queue holds can be taken back: a QP that is flushed or destroyed
- * has its requests dropped (tcp_backend_ionic_cancel()), so none reaches the
- * peer after its work request was completed.  And a heartbeat is never
- * skipped for want of the lock, which a send thread under steady traffic
- * almost always holds: it goes ahead of the data on the queue.
+ * What the queue holds can be taken back: a QP that is flushed or destroyed,
+ * or a request that times out, has its requests dropped
+ * (tcp_backend_ionic_cancel()), so none reaches the peer after its work
+ * request was completed.  And a heartbeat is never skipped for want of the
+ * lock, which a send thread under steady traffic almost always holds: it
+ * goes ahead of the data on the queue, which holds one of each kind at most.
  */
 
 enum st_scenario {
@@ -6761,6 +6764,7 @@ enum st_scenario {
     ST_CANCEL,     /* a QP's queued requests are taken back */
     ST_TOO_LONG,   /* lengths whose sum wraps */
     ST_STEADY,     /* a node that reads, under steady traffic */
+    ST_COALESCE,   /* heartbeats queue behind a busy connection */
 };
 
 struct st_case {
@@ -6796,10 +6800,11 @@ static const struct st_case st_cases[] = {
      "timeout, and the worker's connection stays up",
      ST_RELAY},
     {"positive",
-     "a QP's requests, another QP's, and a reply of the first QP's are queued "
-     "behind a message being written, and the first QP's are cancelled",
-     "the first QP's requests are dropped and their bytes uncounted; the "
-     "other QP's request, the reply, and the message being written stay",
+     "requests and a reply of one QP's and requests of another's are queued "
+     "behind a message being written, and the first QP's are cancelled, and "
+     "one request of the second's",
+     "those requests are dropped and their bytes uncounted; the reply, the "
+     "second QP's other requests, and the message being written stay",
      ST_CANCEL},
     {"boundary",
      "the data path sends a header and a body whose lengths add up past "
@@ -6812,6 +6817,11 @@ static const struct st_case st_cases[] = {
      "the manager's heartbeats get through ahead of the data, the node "
      "answers them, and it is never declared dead or its connection closed",
      ST_STEADY},
+    {"corner",
+     "while the send thread is blocked on a node, the health check sends it a "
+     "heartbeat and the node sends a hundred of its own",
+     "the queue holds one heartbeat and one answer, not one answer for each",
+     ST_COALESCE},
 };
 
 /* A worker's send timeout in these rows; the manager's is half */
@@ -6872,19 +6882,20 @@ static const char *st_timeout(struct mgr_fixture *fx)
     return wait_retired(conn) ? NULL : "the connection wasn't retired";
 }
 
-/* The data path's sends from qp_id, as the main thread makes them */
-static int st_send_qp(TcpBackendPrivate *priv, uint32_t len, uint32_t qp_id,
-                      bool reply)
+/* The data path's sends of what it calls tag, as the main thread makes them */
+static int st_send_tag(TcpBackendPrivate *priv, uint32_t len, uint64_t tag,
+                       bool reply)
 {
     static const uint8_t hdr[16];
     RdmaBackendDev dev;
-    uint8_t *body = g_malloc0(len);
+    /* No body at all for an empty one, as the data path sends it */
+    uint8_t *body = len > 0 ? g_malloc0(len) : NULL;
     int rc;
 
     memset(&dev, 0, sizeof(dev));
     dev.backend_type = RDMA_BACKEND_TYPE_TCP;
     dev.backend_private = priv;
-    rc = tcp_backend_send_ionic_v(&dev, 1, hdr, sizeof(hdr), body, len, qp_id,
+    rc = tcp_backend_send_ionic_v(&dev, 1, hdr, sizeof(hdr), body, len, tag,
                                   reply);
     g_free(body);
     return rc;
@@ -6892,7 +6903,7 @@ static int st_send_qp(TcpBackendPrivate *priv, uint32_t len, uint32_t qp_id,
 
 static int st_send(TcpBackendPrivate *priv, uint32_t len, bool reply)
 {
-    return st_send_qp(priv, len, 0, reply);
+    return st_send_tag(priv, len, 0, reply);
 }
 
 /* ST_DATAPATH */
@@ -6986,22 +6997,25 @@ static const char *st_relay(struct mgr_fixture *fx)
     return NULL;
 }
 
-/* ST_CANCEL: the QPs, and the payload of each message after the first */
-#define ST_QP      5u
-#define ST_OTHERQP 6u
+/*
+ * ST_CANCEL.  Tags as the data path makes them: a QP in the high half, a
+ * request id in the low.
+ */
+#define ST_QP_MASK      UINT64_C(0xffffffff00000000)
+#define ST_TAG(qp, req) ((uint64_t)(qp) << 32 | (req))
 
 static const char *st_cancel(struct mgr_fixture *fx)
 {
+    /* After the first: QP 5's requests go, and QP 6's second, alone */
     static const struct {
-        uint32_t qp_id;
+        uint64_t tag;
         bool reply;
         uint32_t len;
         bool kept;
     } queued[] = {
-        {ST_QP, false, 200, false},
-        {ST_OTHERQP, false, 300, true},
-        {ST_QP, true, 400, true},
-        {ST_QP, false, 500, false},
+        {ST_TAG(5, 2), false, 200, false}, {ST_TAG(6, 3), false, 300, true},
+        {ST_TAG(6, 4), false, 350, false}, {ST_TAG(5, 5), true, 400, true},
+        {ST_TAG(6, 6), false, 450, true},  {ST_TAG(5, 7), false, 500, false},
     };
     TcpConnection *conn = fx->old[0];
     RdmaBackendDev dev;
@@ -7013,19 +7027,20 @@ static const char *st_cancel(struct mgr_fixture *fx)
     dev.backend_type = RDMA_BACKEND_TYPE_TCP;
     dev.backend_private = fx->priv;
 
-    /* The first, from ST_QP too, is off the queue: the send thread is on it */
-    if (st_send_qp(fx->priv, 100, ST_QP, false) != 0)
+    /* The first, from QP 5 too, is off the queue: the send thread is on it */
+    if (st_send_tag(fx->priv, 100, ST_TAG(5, 1), false) != 0)
         return "the first message wasn't queued";
     if (!held_elsewhere(&conn->lock))
         return "the send thread never blocked on the node";
     for (size_t i = 0; i < sizeof(queued) / sizeof(queued[0]); i++) {
-        if (st_send_qp(fx->priv, queued[i].len, queued[i].qp_id,
-                       queued[i].reply) != 0)
+        if (st_send_tag(fx->priv, queued[i].len, queued[i].tag,
+                        queued[i].reply) != 0)
             return "a message wasn't queued";
         if (queued[i].kept)
             want += queued[i].len + 16u;
     }
-    tcp_backend_ionic_cancel(&dev, ST_QP);
+    tcp_backend_ionic_cancel(&dev, ST_TAG(5, 0), ST_QP_MASK);
+    tcp_backend_ionic_cancel(&dev, ST_TAG(6, 4), UINT64_MAX);
 
     qemu_mutex_lock(&conn->sendq_lock);
     link = conn->sendq.head;
@@ -7034,7 +7049,7 @@ static const char *st_cancel(struct mgr_fixture *fx)
 
         if (!queued[i].kept)
             continue;
-        if (!msg || msg->qp_id != queued[i].qp_id ||
+        if (!msg || msg->tag != queued[i].tag ||
             msg->reply != queued[i].reply || msg->len != queued[i].len + 16u)
             why = "the queue doesn't hold what wasn't cancelled, in order";
         link = link ? link->next : NULL;
@@ -7178,6 +7193,80 @@ static const char *st_steady(struct mgr_fixture *fx)
     return why;
 }
 
+/*
+ * ST_COALESCE.  How many of msg_type conn's send queue holds, and how many
+ * messages in all.
+ */
+#define ST_FLOOD 100
+
+static int st_queued(TcpConnection *conn, TcpMsgType msg_type, guint *all)
+{
+    int n = 0;
+
+    qemu_mutex_lock(&conn->sendq_lock);
+    for (GList *link = conn->sendq.head; link != NULL; link = link->next)
+        if (((const TcpQueuedMsg *)link->data)->msg_type == msg_type)
+            n++;
+    if (all)
+        *all = conn->sendq.length;
+    qemu_mutex_unlock(&conn->sendq_lock);
+    return n;
+}
+
+/* Wait up to 5 s for conn's send queue to hold a msg_type */
+static bool st_wait_queued(TcpConnection *conn, TcpMsgType msg_type)
+{
+    for (int i = 0; i < 500; i++) {
+        if (st_queued(conn, msg_type, NULL) > 0)
+            return true;
+        sleep_ms(10);
+    }
+    return false;
+}
+
+/* Wait up to 5 s for the manager to have read everything sent on fd */
+static bool st_drained(int fd)
+{
+    for (int i = 0; i < 500; i++) {
+        int unread = -1;
+
+        if (ioctl(fd, SIOCOUTQ, &unread) == 0 && unread == 0)
+            return true;
+        sleep_ms(10);
+    }
+    return false;
+}
+
+static const char *st_coalesce(struct mgr_fixture *fx)
+{
+    TcpConnection *conn = fx->old[0];
+    guint all;
+
+    /* Alive, so its heartbeats revive nothing and start no broadcast */
+    fx->node[0]->is_alive = true;
+    if (st_send(fx->priv, 0, false) != 0)
+        return "the data path's message wasn't queued";
+    if (!held_elsewhere(&conn->lock))
+        return "the send thread never blocked on the node";
+    mgr_start(fx, 0);
+    if (!st_wait_queued(conn, TCP_MSG_HEARTBEAT))
+        return "the health check's heartbeat wasn't queued";
+    for (int i = 0; i < ST_FLOOD; i++)
+        if (!send_heartbeat(fx->peer[0], 1))
+            return "the node couldn't send its heartbeats";
+    if (!st_drained(fx->peer[0]) ||
+        !st_wait_queued(conn, TCP_MSG_HEARTBEAT_RESP))
+        return "the node's heartbeats weren't answered";
+    /*
+     * The last heartbeat's answer can still be on its way, which without the
+     * coalescing would leave more answers than one, not fewer.
+     */
+    if (st_queued(conn, TCP_MSG_HEARTBEAT_RESP, &all) != 1 ||
+        st_queued(conn, TCP_MSG_HEARTBEAT, NULL) != 1 || all != 2)
+        return "the queue doesn't hold just one heartbeat and one answer";
+    return NULL;
+}
+
 static int run_st_case(const struct st_case *c)
 {
     struct mgr_fixture fx;
@@ -7218,8 +7307,11 @@ static int run_st_case(const struct st_case *c)
             why = st_too_long(&fx);
             break;
         case ST_STEADY:
-        default:
             why = st_steady(&fx);
+            break;
+        case ST_COALESCE:
+        default:
+            why = st_coalesce(&fx);
             break;
         }
     }

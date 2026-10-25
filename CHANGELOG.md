@@ -727,16 +727,18 @@
     the connection is first used this way, sends them. A connection queues
     up to 32 MiB of requests (64 MiB with replies); past that, the guest's
     send queue waits, as on a NIC out of transmit credits, rather than the
-    device. A QP that is flushed or destroyed has its requests still queued
-    taken back, so none reaches the peer after its work request completed.
+    device. A QP that is flushed or destroyed, or a request that times out,
+    has its requests still queued taken back, so none reaches the peer after
+    its work request completed.
   * Broadcasts to every node no longer hold the connection table's lock
     while they send, so a node that has stopped reading no longer holds up
     the data path's lookups on a manager.
   * Heartbeats, and the answers to them, never wait for another sender: on
-    a busy connection they go on its send queue ahead of the data. A node
-    that has stopped reading no longer stops the manager's heartbeats to
-    every node after it, or a receive thread's reading, and steady traffic
-    to a node doesn't keep its heartbeats out and have it declared dead.
+    a busy connection they go on its send queue ahead of the data, one of
+    each kind at most. A node that has stopped reading no longer stops the
+    manager's heartbeats to every node after it, or a receive thread's
+    reading, and steady traffic to a node doesn't keep its heartbeats out
+    and have it declared dead.
   * A remote request that can't be sent at all, because there is no
     connection to its node, now completes with retry-exceeded, as a request
     the peer never answers does, and counts in `req_rx_implied_nak_seq_err`,
