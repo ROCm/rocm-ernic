@@ -1552,8 +1552,9 @@ static void check_late_responses(void)
  * What the mesh is told about a QP's messages: what each request is called,
  * and which to take back.  A request the mesh still has queued must not
  * reach the peer once its work request has completed: when its QP is
- * flushed or destroyed, or when it times out.  The completions tell the
- * consumer it didn't run, so it is taken back before they are posted.
+ * flushed, or when it times out.  The completions tell the consumer it
+ * didn't run, so it is taken back before they are posted.  A destroyed QP's
+ * requests complete nothing, and still go out.
  */
 enum mc_scenario {
     MC_TAGGED,     /* a remote WRITE and its ACK */
@@ -1605,9 +1606,7 @@ static const char *mc_run(struct ionic_datapath *dp, enum mc_scenario scenario)
         return NULL;
     case MC_UNREGISTER:
         ionic_datapath_unregister_qp(dp, QP_A);
-        return mc_cancelled(tag, MC_QP_MASK)
-                   ? NULL
-                   : "QP_A's requests weren't taken back once";
+        return g_ncancel == 0 ? NULL : "QP_A's requests were taken back";
     case MC_DEADLINE:
         poll_at(dp, T0 + PENDING_MS);
         return g_ncancel == 0 && dp->cq[CQ_ID].prod == cqes
@@ -1640,8 +1639,10 @@ static void check_mesh_cancel(void)
          "the mesh takes back QP_A's requests once, before the flush "
          "completions are posted",
          MC_FLUSH},
-        {"positive", "QP_A destroyed while its WRITE is outstanding",
-         "the mesh takes back QP_A's requests once", MC_UNREGISTER},
+        {"corner", "QP_A destroyed while its WRITE is outstanding",
+         "nothing is taken back: the WRITE still goes out, as a consumer "
+         "that destroys a QP straight after an unsignaled WRITE counts on",
+         MC_UNREGISTER},
         {"boundary", "the WRITE still unanswered at PENDING_MS",
          "nothing is taken back or completed", MC_DEADLINE},
         {"positive", "the WRITE unanswered just past PENDING_MS",

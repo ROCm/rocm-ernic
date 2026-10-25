@@ -5220,19 +5220,18 @@ bool tcp_backend_ionic_has_room(RdmaBackendDev *backend_dev, uint32_t dst_node,
 /*
  * Take back the requests still queued on any connection whose tag, as given
  * to tcp_backend_send_ionic_v(), matches tag in the bits mask selects, so
- * none of them reaches its peer: those of a QP that is flushing or being
- * destroyed, or one request that has timed out, whose work requests the data
- * path completes now.  On a NIC, a flushed work request isn't transmitted;
- * one queued here hasn't been either.
+ * none of them reaches its peer: those of a QP that is flushing, or one
+ * request that has timed out, whose work requests the data path completes
+ * now.  On a NIC, a flushed work request isn't transmitted; one queued here
+ * hasn't been either.
  *
  * Only what no send thread has started to write: the message being written,
  * and what is already in the socket or on its way, still arrive, as frames
  * already on the wire do.  Replies are left alone.  A connection that has
  * left the table, or manager_conn, had its queue closed as it left
  * (tcp_conn_unpublished()), so nothing more goes out on it to miss.  Called
- * on the device's main thread, the
- * only one that queues the data path's messages, so nothing that matches is
- * queued meanwhile.
+ * on the device's main thread, the only one that queues the data path's
+ * messages, so nothing that matches is queued meanwhile.
  */
 void tcp_backend_ionic_cancel(RdmaBackendDev *backend_dev, uint64_t tag,
                               uint64_t mask)

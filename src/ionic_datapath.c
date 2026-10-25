@@ -806,8 +806,15 @@ void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id)
         return;
     if (dp->nvmeof_cm)
         nvmeof_cm_drop_qp(dp->nvmeof_cm, qp_id);
-    /* A destroyed QP's requests don't go out either; see the flush */
-    dp_mesh_cancel_qp(dp, qp_id);
+    /*
+     * The requests this QP still has queued in the mesh go out, unlike a
+     * flushed QP's: nothing has told the consumer they didn't run, and a
+     * NIC has usually transmitted what was rung on its doorbell long before
+     * a destroy reaches it.  Consumers count on that, posting an unsignaled
+     * WRITE and destroying the QP straight after (RDMA-Tutorial's write
+     * example does).  Each request carries its own copy of the payload, so
+     * sending it reads no guest memory.
+     */
     sq_stall_clear(dp, &dp->qp[qp_id]);
     ionic_dp_buf_release(&dp->qp[qp_id].sq_buf);
     ionic_dp_buf_release(&dp->qp[qp_id].rq_buf);

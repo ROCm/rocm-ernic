@@ -865,10 +865,13 @@ whose peer is on another node:
    that doesn't fit stays on the send queue, which stops there,
    and is tried again on a later pass, as a NIC out of transmit
    credits holds its queue. Replies have twice the room. When a
-   QP is flushed or destroyed, or a request times out (see
-   **Lost peer**, below), the requests still queued are taken
-   back, so none reaches the peer after its work request has
-   completed; one already being written still arrives.
+   QP is flushed, or a request times out (see **Lost peer**,
+   below), the requests still queued are taken back, so none
+   reaches the peer after its work request has completed; one
+   already being written still arrives. A destroyed QP's
+   requests still go out: nothing has completed them, and a
+   consumer may destroy a QP straight after an unsignaled WRITE,
+   counting on it to arrive.
 #. It records the request in a **pending table** and does not
    post a completion yet. The completion must wait for the
    peer, both so the reported latency includes the network and

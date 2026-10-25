@@ -31,6 +31,17 @@
   prefers DKMS's per-kernel copy, falls back to the shared build directory,
   and says when the log it found was written for a different kernel than
   the one that failed.
+* **Destroying a QP no longer drops the requests it has just posted to a
+  TCP mesh peer.** Since the device's main thread began queueing the data
+  path's messages (see Changed), destroying a QP took back whatever it
+  still had queued, so a WRITE posted just before the destroy could
+  silently never reach the peer. A consumer that posts an unsignaled WRITE
+  and destroys its QP straight after, as RDMA-Tutorial's write example
+  does, left its peer waiting for the last WRITE, and the system tests'
+  run of that example hung intermittently. A destroyed QP's queued
+  requests now go out, as they did before the queueing; a flushed QP's,
+  whose work requests the consumer is told were flushed, are still taken
+  back.
 * **A TCP mesh worker keeps the listening port it advertises.** It found a
   free port by binding a throwaway socket, reading the port, and closing
   it, then bound its real listen socket to that port; another process
@@ -745,9 +756,9 @@
     the connection is first used this way, sends them. A connection queues
     up to 32 MiB of requests (64 MiB with replies); past that, the guest's
     send queue waits, as on a NIC out of transmit credits, rather than the
-    device. A QP that is flushed or destroyed, or a request that times out,
-    has its requests still queued taken back, so none reaches the peer after
-    its work request completed.
+    device. A QP that is flushed, or a request that times out, has its
+    requests still queued taken back, so none reaches the peer after its
+    work request completed.
   * Broadcasts to every node no longer hold the connection table's lock
     while they send, so a node that has stopped reading no longer holds up
     the data path's lookups on a manager.
