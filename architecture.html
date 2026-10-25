@@ -933,7 +933,8 @@ handles them:</p>
 <tbody>
 <tr class="row-even"><td><p>50</p></td>
 <td><p>RDMA_RESET_LIF</p></td>
-<td><p>Forget all EQs and admin queues</p></td>
+<td><p>Forget all EQs and admin queues, and free every QP, CQ,
+MR, SRQ and address handle the driver made</p></td>
 </tr>
 <tr class="row-odd"><td><p>51</p></td>
 <td><p>RDMA_CREATE_EQ</p></td>
@@ -1011,11 +1012,16 @@ the destination GID; register it with the data path</p></td>
 </tr>
 <tr class="row-even"><td><p>MODIFY_QP</p></td>
 <td><p>Record the QP’s new state. At RTR, record the peer QP
-and which server it lives on; for UD, record the Q_Key</p></td>
+and which server it lives on; for UD, record the Q_Key.
+Nothing is recorded unless the backend makes the
+transition, so a MODIFY_QP that fails changes nothing.
+GSI’s transitions don’t go to the backend; they are
+only recorded</p></td>
 </tr>
 <tr class="row-odd"><td><p>QUERY_QP</p></td>
-<td><p>DMA the QP’s state, PSNs, and access flags into the
-buffers the driver supplied</p></td>
+<td><p>DMA the QP’s state, PSNs, peer QP (by the id the driver
+gave it), and access flags into the buffers the driver
+supplied</p></td>
 </tr>
 <tr class="row-even"><td><p>CREATE_SRQ</p></td>
 <td><p>Allocate an SRQ id (the device assigns it) and register
