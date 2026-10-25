@@ -1261,6 +1261,11 @@ steady traffic to a node doesn’t keep its heartbeats out. The
 queue holds one heartbeat and one answer at most.</p></li>
 <li><p>The protocol carries a magic number and a version, checked at
 registration and handshake.</p></li>
+<li><p>The mesh runs over IPv4 or IPv6. Every node listens on all
+addresses of both families (on IPv4 alone if the host has no
+IPv6), and a host name is tried at each address it resolves
+to. An IPv6 address in a config goes in brackets:
+<code class="docutils literal notranslate"><span class="pre">tcp:worker:[fe80::1%eth0]:5000</span></code>.</p></li>
 </ul>
 </section>
 <section id="which-server-owns-a-gid">

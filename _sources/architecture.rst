@@ -792,6 +792,11 @@ Topology
   queue holds one heartbeat and one answer at most.
 - The protocol carries a magic number and a version, checked at
   registration and handshake.
+- The mesh runs over IPv4 or IPv6. Every node listens on all
+  addresses of both families (on IPv4 alone if the host has no
+  IPv6), and a host name is tried at each address it resolves
+  to. An IPv6 address in a config goes in brackets:
+  ``tcp:worker:[fe80::1%eth0]:5000``.
 
 Which Server Owns a GID?
 ^^^^^^^^^^^^^^^^^^^^^^^^
