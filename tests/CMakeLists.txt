@@ -1083,6 +1083,14 @@ add_test(
 )
 set_tests_properties(find-rdma-device-tuple PROPERTIES TIMEOUT 30)
 
+# The VM tests look up each guest's IPv4-mapped GID index rather than
+# assuming one.
+add_test(
+    NAME find-ipv4-gid-index
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_find_ipv4_gid_index.sh
+)
+set_tests_properties(find-ipv4-gid-index PROPERTIES TIMEOUT 30)
+
 add_test(
     NAME ernic-device-tuple-unit
     COMMAND $<TARGET_FILE:test_ernic_device>

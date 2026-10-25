@@ -44,7 +44,8 @@ Guest driver                    upstream ``ionic`` + ``ionic_rdma``
                                 (DKMS, ``IONIC_KERNEL_REF``)
 rdma-core                       v62.0, upstream ``providers/ionic``
 MTU                             1024 bytes active (4096 max)
-GID index                       1 (IPv4-mapped, 192.168.200.x/24)
+GID                             IPv4-mapped, 192.168.200.x/24
+                                (index looked up in each guest)
 Connection type                 RC (Reliable Connected)
 ==============================  ==========================================
 

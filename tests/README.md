@@ -90,6 +90,13 @@ synthetic sysfs tree to verify the shared RDMA-device lookup accepts the
 emulated vendor/device/subsystem tuple and rejects devices that differ in
 any tuple field.
 
+### test_find_ipv4_gid_index.sh
+
+Shell test registered with CTest as `find-ipv4-gid-index`. It uses
+synthetic sysfs GID tables to verify `scripts/find-ipv4-gid-index.sh`
+finds an address's IPv4-mapped GID at any index, picks the lowest of two,
+lists the table when the GID is missing, and rejects malformed arguments.
+
 ### py/
 
 Python suites that drive a real server over its vfio-user socket, the

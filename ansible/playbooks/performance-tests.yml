@@ -216,6 +216,32 @@
       ansible.builtin.set_fact:
         rdma_dev: "{{ rdma_dev_detect.stdout | trim }}"
 
+    # The tests address the peer by its IPv4-mapped GID, whose index
+    # differs between guests; see scripts/find-ipv4-gid-index.sh.  Not
+    # vm1_run: run-on-guest.sh doesn't pass stdin on.
+    - name: Find the IPv4-mapped GID index on VM1
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: >-
+          {{ vm1_ssh }} 'sh -s -- {{ rdma_dev }} {{ vm1_ip }}'
+          < {{ ernic_project_root }}/scripts/find-ipv4-gid-index.sh
+      register: vm1_gid_lookup
+      changed_when: false
+
+    - name: Find the IPv4-mapped GID index on VM2
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: >-
+          {{ vm2_ssh }} 'sh -s -- {{ rdma_dev }} {{ vm2_ip }}'
+          < {{ ernic_project_root }}/scripts/find-ipv4-gid-index.sh
+      register: vm2_gid_lookup
+      changed_when: false
+
+    - name: Set the GID indices
+      ansible.builtin.set_fact:
+        vm1_gid_index: "{{ vm1_gid_lookup.stdout | trim }}"
+        vm2_gid_index: "{{ vm2_gid_lookup.stdout | trim }}"
+
     - name: Create results directory
       ansible.builtin.file:
         path: "{{ results_dir }}"
@@ -243,6 +269,7 @@
         msg:
           - "=== Performance Sweep Config ==="
           - "Device:          {{ rdma_dev }}"
+          - "GID index:       VM1 {{ vm1_gid_index }}, VM2 {{ vm2_gid_index }}"
           - "BW iterations:   {{ bw_iters }}"
           - "Lat iterations:  {{ lat_iters }}"
           - "Sizes:           {{ sweep_sizes | length }} (4 KB - 8 MB)"
@@ -263,6 +290,8 @@
           exec 2>&1
           TOOL="{{ item.0.tool }}"
           DEV="{{ rdma_dev }}"
+          GID1="{{ vm1_gid_index }}"
+          GID2="{{ vm2_gid_index }}"
           SZ="{{ item.1 }}"
           N="{{ bw_iters }}"
           SERVER_IP="{{ vm1_ip }}"
@@ -277,7 +306,7 @@
             sudo systemctl stop $UNIT 2>/dev/null;
             sudo systemctl reset-failed $UNIT 2>/dev/null;
             sudo systemd-run --quiet --unit=$UNIT \
-              bash -c '$TOOL -d $DEV -x 1 -s $SZ -n $N \
+              bash -c '$TOOL -d $DEV -x $GID1 -s $SZ -n $N \
                 --report_gbits \
                 >/tmp/${UNIT}.log 2>&1';
             sleep 1
@@ -287,7 +316,7 @@
 
           RAW=$({{ vm2_run }} "
             timeout {{ perftest_timeout }} \
-              $TOOL -d $DEV -x 1 -s $SZ -n $N \
+              $TOOL -d $DEV -x $GID2 -s $SZ -n $N \
               --report_gbits $SERVER_IP 2>&1
           ")
           RC=$?
@@ -361,6 +390,8 @@
           exec 2>&1
           TOOL="{{ item.0.tool }}"
           DEV="{{ rdma_dev }}"
+          GID1="{{ vm1_gid_index }}"
+          GID2="{{ vm2_gid_index }}"
           SZ="{{ item.1 }}"
           N="{{ lat_iters }}"
           SERVER_IP="{{ vm1_ip }}"
@@ -375,7 +406,7 @@
             sudo systemctl stop $UNIT 2>/dev/null;
             sudo systemctl reset-failed $UNIT 2>/dev/null;
             sudo systemd-run --quiet --unit=$UNIT \
-              bash -c '$TOOL -d $DEV -x 1 -s $SZ -n $N \
+              bash -c '$TOOL -d $DEV -x $GID1 -s $SZ -n $N \
                 >/tmp/${UNIT}.log 2>&1';
             sleep 1
           "
@@ -384,7 +415,7 @@
 
           RAW=$({{ vm2_run }} "
             timeout {{ perftest_timeout }} \
-              $TOOL -d $DEV -x 1 -s $SZ -n $N \
+              $TOOL -d $DEV -x $GID2 -s $SZ -n $N \
               $SERVER_IP 2>&1
           ")
           RC=$?
@@ -457,6 +488,8 @@
           exec 2>&1
           TOOL="{{ item.0.tool }}"
           DEV="{{ rdma_dev }}"
+          GID1="{{ vm1_gid_index }}"
+          GID2="{{ vm2_gid_index }}"
           SZ="{{ rel_size }}"
           N="{{ rel_iters }}"
           SERVER_IP="{{ vm1_ip }}"
@@ -472,7 +505,7 @@
             sudo systemctl stop $UNIT 2>/dev/null;
             sudo systemctl reset-failed $UNIT 2>/dev/null;
             sudo systemd-run --quiet --unit=$UNIT \
-              bash -c '$TOOL -d $DEV -x 1 -s $SZ -n $N \
+              bash -c '$TOOL -d $DEV -x $GID1 -s $SZ -n $N \
                 --report_gbits \
                 >/tmp/${UNIT}.log 2>&1';
             sleep 1
@@ -482,7 +515,7 @@
 
           RAW=$({{ vm2_run }} "
             timeout {{ perftest_timeout }} \
-              $TOOL -d $DEV -x 1 -s $SZ -n $N \
+              $TOOL -d $DEV -x $GID2 -s $SZ -n $N \
               --report_gbits $SERVER_IP 2>&1
           ")
           RC=$?
@@ -552,6 +585,8 @@
           set -o pipefail
           exec 2>&1
           DEV="{{ rdma_dev }}"
+          GID1="{{ vm1_gid_index }}"
+          GID2="{{ vm2_gid_index }}"
           N="{{ pp_iters }}"
           SZ="{{ pp_size }}"
           SERVER_IP="{{ vm1_ip }}"
@@ -566,7 +601,7 @@
             sudo systemctl stop $UNIT 2>/dev/null;
             sudo systemctl reset-failed $UNIT 2>/dev/null;
             sudo systemd-run --quiet --unit=$UNIT \
-              bash -c 'ibv_rc_pingpong -d $DEV -g 1 \
+              bash -c 'ibv_rc_pingpong -d $DEV -g $GID1 \
                 -n $N -s $SZ \
                 >/tmp/${UNIT}.log 2>&1';
             sleep 1
@@ -576,7 +611,7 @@
 
           RAW=$({{ vm2_run }} "
             timeout {{ perftest_timeout }} \
-              ibv_rc_pingpong -d $DEV -g 1 \
+              ibv_rc_pingpong -d $DEV -g $GID2 \
               -n $N -s $SZ $SERVER_IP 2>&1
           ")
           RC=$?
