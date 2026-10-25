@@ -326,6 +326,8 @@ add_executable(test_ionic_intr_pending
 )
 target_include_directories(test_ionic_intr_pending PRIVATE
     ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/shared
 )
 # Third-party headers are SYSTEM includes, matching the main target, so
 # their warnings stay quiet while the ionic sources under test are still
@@ -356,6 +358,8 @@ add_executable(test_ionic_port_info
 )
 target_include_directories(test_ionic_port_info PRIVATE
     ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/shared
 )
 # Third-party headers are SYSTEM includes, matching the main target, so
 # their warnings stay quiet while the ionic sources under test are still
@@ -416,6 +420,8 @@ add_executable(test_ionic_identity
 )
 target_include_directories(test_ionic_identity PRIVATE
     ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/shared
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 target_include_directories(test_ionic_identity SYSTEM PRIVATE
@@ -444,6 +450,8 @@ add_executable(test_ionic_stats_publish
 )
 target_include_directories(test_ionic_stats_publish PRIVATE
     ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/shared
 )
 target_include_directories(test_ionic_stats_publish SYSTEM PRIVATE
     ${VFIO_USER_INCLUDE_DIRS}
@@ -471,6 +479,8 @@ add_executable(test_ionic_queues
 )
 target_include_directories(test_ionic_queues PRIVATE
     ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/shared
 )
 target_include_directories(test_ionic_queues SYSTEM PRIVATE
     ${VFIO_USER_INCLUDE_DIRS}
@@ -641,6 +651,8 @@ add_executable(test_ionic_dp_errors
 )
 target_include_directories(test_ionic_dp_errors PRIVATE
     ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/shared
 )
 target_include_directories(test_ionic_dp_errors SYSTEM PRIVATE
     ${VFIO_USER_INCLUDE_DIRS}
@@ -660,6 +672,8 @@ add_executable(test_ionic_cq_arm
 )
 target_include_directories(test_ionic_cq_arm PRIVATE
     ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/shared
 )
 # Third-party headers are SYSTEM includes, matching the main target, so
 # their warnings stay quiet while the ionic sources under test are still
@@ -687,6 +701,8 @@ add_executable(test_ionic_rq_wrap
 )
 target_include_directories(test_ionic_rq_wrap PRIVATE
     ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/shared
 )
 # Third-party headers are SYSTEM includes, matching the main target, so
 # their warnings stay quiet while the ionic sources under test are still

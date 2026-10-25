@@ -48,6 +48,7 @@
 #include "rdma/rdma_backend_tcp_priv.h"
 #include "rdma_backend.h"
 #include "rdma_backend_defs.h"
+#include "rocm-ernic-warnings.h"
 
 /* ---- Stubs for the TU's external symbols -------------------------------
  * None of these are reachable from the resolution path; they exist only to
@@ -96,18 +97,24 @@ static TcpBackendPrivate *priv_new(void)
 {
     TcpBackendPrivate *priv = g_new0(TcpBackendPrivate, 1);
 
+    /* Nothing else can reach priv yet */
+    ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     priv->node_gids =
         g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
     priv->gid_owner = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
                                             tcp_gid_key_free, NULL);
+    ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     qemu_mutex_init(&priv->gid_table_lock);
     return priv;
 }
 
 static void priv_free(TcpBackendPrivate *priv)
 {
+    /* Nor once the test is done with it */
+    ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     g_hash_table_destroy(priv->node_gids);
     g_hash_table_destroy(priv->gid_owner);
+    ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     qemu_mutex_destroy(&priv->gid_table_lock);
     g_free(priv);
 }
@@ -508,13 +515,15 @@ static void test_returning_worker_reclaims_its_gids(void)
 
     printf("  a restarted worker's GIDs follow it to its new node id\n");
 
+    qemu_mutex_init(&priv->mesh_table_lock);
+    qemu_mutex_lock(&priv->mesh_table_lock);
     priv->mesh_nodes = g_hash_table_new_full(
         g_direct_hash, g_direct_equal, NULL, tcp_mesh_node_info_destroy_notify);
-    qemu_mutex_init(&priv->mesh_table_lock);
 
     /* The worker's first registration, and the GIDs it then advertised. */
     g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(1u),
                         tcp_mesh_node_info_new(1, "10.0.0.5", 6320));
+    qemu_mutex_unlock(&priv->mesh_table_lock);
 
     gid_v4(g[0], 70);
     tcp_gid_claims_set(priv, 1, (const uint8_t(*)[16])g, 1);
@@ -525,8 +534,10 @@ static void test_returning_worker_reclaims_its_gids(void)
      * node when any worker registers, and what the health check does when
      * it notices one has died. */
     tcp_gid_claims_set(priv, 1, NULL, 0);
+    qemu_mutex_lock(&priv->mesh_table_lock);
     g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(2u),
                         tcp_mesh_node_info_new(2, "10.0.0.5", 6320));
+    qemu_mutex_unlock(&priv->mesh_table_lock);
 
     /* It advertises the same GIDs again under the new id. */
     tcp_gid_claims_set(priv, 2, (const uint8_t(*)[16])g, 1);
@@ -539,9 +550,11 @@ static void test_returning_worker_reclaims_its_gids(void)
     CHECK(resolve(priv, g[0]) == UINT32_MAX,
           "a stale claim left alongside the new one still resolved");
 
+    qemu_mutex_lock(&priv->mesh_table_lock);
     g_hash_table_destroy(priv->mesh_nodes);
-    qemu_mutex_destroy(&priv->mesh_table_lock);
     priv->mesh_nodes = NULL;
+    qemu_mutex_unlock(&priv->mesh_table_lock);
+    qemu_mutex_destroy(&priv->mesh_table_lock);
     priv_free(priv);
 }
 
@@ -813,6 +826,7 @@ static void test_hooks_on_tcp(void)
     union ibv_gid gid;
     uint8_t raw[16];
     uint32_t node;
+    bool stored;
     int rc;
 
     printf("  mesh entry points work on the TCP backend\n");
@@ -823,7 +837,9 @@ static void test_hooks_on_tcp(void)
 
     qemu_mutex_init(&priv->lock);
     qemu_mutex_init(&priv->conn_table_lock);
+    qemu_mutex_lock(&priv->conn_table_lock);
     priv->connections = g_hash_table_new(g_direct_hash, g_direct_equal);
+    qemu_mutex_unlock(&priv->conn_table_lock);
     atomic_store(&priv->local_node_id, 1);
     gid_v4(raw, 11);
     tcp_gid_claims_set(priv, MESH_PEER, (const uint8_t(*)[16]) & raw, 1);
@@ -837,21 +853,27 @@ static void test_hooks_on_tcp(void)
           MESH_PEER);
 
     tcp_backend_set_ionic_recv_cb(&dev, recv_fn, &recv_opaque);
-    CHECK(priv->ionic_recv_fn == recv_fn &&
-              priv->ionic_recv_opaque == &recv_opaque,
-          "receive callback not stored");
+    qemu_mutex_lock(&priv->lock);
+    stored = priv->ionic_recv_fn == recv_fn &&
+             priv->ionic_recv_opaque == &recv_opaque;
+    qemu_mutex_unlock(&priv->lock);
+    CHECK(stored, "receive callback not stored");
 
     tcp_backend_set_ionic_recv_cb(&dev, NULL, NULL);
-    CHECK(!priv->ionic_recv_fn && !priv->ionic_recv_opaque,
-          "receive callback not cleared");
+    qemu_mutex_lock(&priv->lock);
+    stored = priv->ionic_recv_fn || priv->ionic_recv_opaque;
+    qemu_mutex_unlock(&priv->lock);
+    CHECK(!stored, "receive callback not cleared");
 
     rc = tcp_backend_send_ionic_v(&dev, MESH_PEER, hdr, sizeof(hdr), NULL, 0, 0,
                                   false);
     CHECK(rc == -ENOTCONN,
           "send to an unconnected node returned %d, expected -ENOTCONN", rc);
 
+    qemu_mutex_lock(&priv->conn_table_lock);
     g_hash_table_destroy(priv->connections);
     priv->connections = NULL;
+    qemu_mutex_unlock(&priv->conn_table_lock);
     qemu_mutex_destroy(&priv->conn_table_lock);
     qemu_mutex_destroy(&priv->lock);
     priv_free(priv);

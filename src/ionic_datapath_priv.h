@@ -14,13 +14,13 @@
 #ifndef IONIC_DATAPATH_PRIV_H
 #define IONIC_DATAPATH_PRIV_H
 
-#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 
 #include <vfio-user/libvfio-user.h>
 
 #include "ionic_datapath.h"
+#include "qemu/thread.h"
 #include "rocm_ernic_compat.h"
 
 /* -------------------------------------------------------------------------
@@ -191,13 +191,13 @@ struct ionic_ah {
  * send path and the mesh receive path run on different threads.
  */
 struct ionic_srq_ring {
-    bool valid;
-    struct dp_buf buf;
-    uint32_t depth;
-    uint8_t stride_log2;
-    uint32_t prod;
-    uint32_t cons;
-    pthread_mutex_t lock;
+    QemuMutex lock;
+    bool valid TSA_GUARDED_BY(lock);
+    struct dp_buf buf TSA_GUARDED_BY(lock);
+    uint32_t depth TSA_GUARDED_BY(lock);
+    uint8_t stride_log2 TSA_GUARDED_BY(lock);
+    uint32_t prod TSA_GUARDED_BY(lock);
+    uint32_t cons TSA_GUARDED_BY(lock);
 };
 
 struct ionic_cq_ring {
@@ -315,16 +315,16 @@ struct ionic_datapath {
     uint32_t next_mesh_id; /* the last QP registered's mesh_id */
     struct dp_pending pending[MAX_PENDING];
 
-    pthread_mutex_t rx_lock;
-    struct dp_inmsg *rx_head;
-    struct dp_inmsg *rx_tail;
+    QemuMutex rx_lock;
+    struct dp_inmsg *rx_head TSA_GUARDED_BY(rx_lock);
+    struct dp_inmsg *rx_tail TSA_GUARDED_BY(rx_lock);
     /*
      * Messages on @rx_head that have never been tried.  Only these justify
      * skipping the main loop's idle sleep: a message put back by the RNR
      * defer path will still be undeliverable on the next pass, so treating it
      * as work would spin the loop until the peer posts a receive.
      */
-    uint32_t rx_fresh;
+    uint32_t rx_fresh TSA_GUARDED_BY(rx_lock);
 
     /*
      * Why the last transfer stopped short.  A byte count on its own cannot

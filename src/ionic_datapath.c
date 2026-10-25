@@ -34,7 +34,6 @@
 #include <limits.h>
 #include <syslog.h>
 #include <endian.h>
-#include <pthread.h>
 
 #include <infiniband/verbs.h>
 #include <vfio-user/libvfio-user.h>
@@ -58,6 +57,8 @@
 #include "nvmeof.h"
 #include "nvmeof_cm.h"
 #include "nvmeof_target.h"
+#include "qemu/thread.h"
+#include "rocm-ernic-warnings.h"
 #include "rocm_ernic_compat.h"
 #include "s3_tcp.h"
 #include "s3_target.h"
@@ -405,12 +406,12 @@ struct ionic_datapath *ionic_datapath_create(vfu_ctx_t *vfu_ctx,
     dp->srq_count = MAX_SRQ;
     dp->ah_count = MAX_AH;
     dp->local_node = UINT32_MAX;
-    pthread_mutex_init(&dp->rx_lock, NULL);
+    qemu_mutex_init(&dp->rx_lock);
     /* One init per slot, here rather than per registration: a reader that
      * samples srq->valid outside the lock must still find a lock it can
      * take, whatever the control path has done to that slot since. */
     for (uint32_t i = 0; i < dp->srq_count; i++)
-        pthread_mutex_init(&dp->srq[i].lock, NULL);
+        qemu_mutex_init(&dp->srq[i].lock);
     return dp;
 }
 
@@ -502,7 +503,7 @@ void ionic_datapath_destroy(struct ionic_datapath *dp)
     s3_tcp_destroy(dp->s3_tcp);
     s3_target_destroy(dp->s3);
 
-    pthread_mutex_lock(&dp->rx_lock);
+    qemu_mutex_lock(&dp->rx_lock);
     for (struct dp_inmsg *m = dp->rx_head; m;) {
         struct dp_inmsg *next = m->next;
         dp_inmsg_free(m);
@@ -510,8 +511,8 @@ void ionic_datapath_destroy(struct ionic_datapath *dp)
     }
     dp->rx_head = dp->rx_tail = NULL;
     dp->rx_fresh = 0;
-    pthread_mutex_unlock(&dp->rx_lock);
-    pthread_mutex_destroy(&dp->rx_lock);
+    qemu_mutex_unlock(&dp->rx_lock);
+    qemu_mutex_destroy(&dp->rx_lock);
 
     for (uint32_t i = 0; i < dp->qp_count; i++) {
         ionic_dp_buf_release(&dp->qp[i].sq_buf);
@@ -527,10 +528,14 @@ void ionic_datapath_destroy(struct ionic_datapath *dp)
         /* Each live SRQ owns the page table ionic_dp_buf_init() built for it.
          * Destroying only the mutex leaked one allocation per SRQ on every
          * normal device shutdown. The mutex is destroyed for every slot,
-         * live or not, because every slot's was initialised at create. */
+         * live or not, because every slot's was initialised at create.
+         * Like the frees below, this relies on nothing else reaching dp
+         * now. */
+        ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
         if (dp->srq[i].valid)
             ionic_dp_buf_release(&dp->srq[i].buf);
-        pthread_mutex_destroy(&dp->srq[i].lock);
+        ROCM_ERNIC_WARN_THREAD_SAFETY_ON
+        qemu_mutex_destroy(&dp->srq[i].lock);
     }
     free(dp->srq);
     free(dp->ah);
@@ -812,7 +817,7 @@ int ionic_datapath_register_srq(struct ionic_datapath *dp, uint32_t srq_id,
      * path had destroyed in the meantime. Clearing valid under the lock
      * does not close that: the reader has already passed the check.
      */
-    pthread_mutex_lock(&sr->lock);
+    qemu_mutex_lock(&sr->lock);
 
     if (sr->valid) {
         /* Re-registering an id the guest reused: drop the old page table
@@ -824,7 +829,7 @@ int ionic_datapath_register_srq(struct ionic_datapath *dp, uint32_t srq_id,
     if (ionic_dp_buf_init(
             dp, &sr->buf, &rq->buf, 0,
             ionic_dp_ring_span_bytes(rq->depth_log2, rq->stride_log2)) < 0) {
-        pthread_mutex_unlock(&sr->lock);
+        qemu_mutex_unlock(&sr->lock);
         vfu_log(dp->vfu_ctx, LOG_ERR,
                 "ionic_datapath: SRQ %u page table read failed", srq_id);
         return -EIO;
@@ -833,7 +838,7 @@ int ionic_datapath_register_srq(struct ionic_datapath *dp, uint32_t srq_id,
     sr->stride_log2 = rq->stride_log2;
     sr->prod = sr->cons = 0;
     sr->valid = true;
-    pthread_mutex_unlock(&sr->lock);
+    qemu_mutex_unlock(&sr->lock);
 
     vfu_log(dp->vfu_ctx, LOG_INFO,
             "ionic_datapath: SRQ %u registered depth=%u stride=%u", srq_id,
@@ -851,7 +856,7 @@ void ionic_datapath_unregister_srq(struct ionic_datapath *dp, uint32_t srq_id)
      * table, and the lock itself survives -- see register_srq above. The
      * fields are reset by hand rather than memset, which would scribble over
      * the mutex this and every future registration share. */
-    pthread_mutex_lock(&sr->lock);
+    qemu_mutex_lock(&sr->lock);
     if (sr->valid) {
         sr->valid = false;
         ionic_dp_buf_release(&sr->buf);
@@ -859,7 +864,7 @@ void ionic_datapath_unregister_srq(struct ionic_datapath *dp, uint32_t srq_id)
         sr->stride_log2 = 0;
         sr->prod = sr->cons = 0;
     }
-    pthread_mutex_unlock(&sr->lock);
+    qemu_mutex_unlock(&sr->lock);
 }
 
 void ionic_datapath_bind_qp_srq(struct ionic_datapath *dp, uint32_t qp_id,
@@ -1910,6 +1915,50 @@ static void dp_src_mac(const struct ionic_datapath *dp, uint32_t src_qp_id,
 }
 
 /*
+ * Take the next posted receive off a receive ring, a QP's RQ or an SRQ: read
+ * its WQE into *wqe_id and *dst, and advance *cons past it.  Returns false,
+ * taking nothing, if the ring is empty or the WQE can't be read.  An SRQ's
+ * caller holds its lock.
+ */
+static bool dp_ring_take(struct ionic_datapath *dp, uint32_t *cons,
+                         uint32_t prod, uint32_t depth, uint8_t stride_log2,
+                         const struct dp_buf *ring_buf, uint64_t *wqe_id,
+                         struct dp_sge_list *dst)
+{
+    if (*cons == prod)
+        return false;
+
+    uint32_t stride = 1u << stride_log2;
+    uint32_t slot = *cons % depth;
+    uint64_t run;
+    uint64_t gpa = buf_gpa(ring_buf, (uint64_t)slot * stride, &run);
+
+    /* Big enough for the largest stride a QP's RQ or an SRQ can have, so
+     * the whole WQE is read. */
+    uint8_t rwqe[1u << IONIC_WQE_MAX_STRIDE_LOG2];
+    uint32_t read_sz = stride < sizeof(rwqe) ? stride : (uint32_t)sizeof(rwqe);
+    if (!run || run < read_sz ||
+        ernic_dma_read(dp->dma, dp->vfu_ctx, gpa, rwqe, read_sz) < 0)
+        return false;
+
+    memcpy(wqe_id, rwqe + 0, 8);
+
+    /*
+     * read_sz, not stride: parse_sges() derives how many SGEs it may walk
+     * from the size it is given, and only read_sz bytes were read. Passing
+     * a stride larger than the buffer would authorise walking up to
+     * MAX_SGE entries -- byte 543 -- because parse_sges() caps on MAX_SGE
+     * and avail/16 but has no idea how much of the WQE actually arrived.
+     * The ring geometry checks keep the two equal; read_sz is what keeps
+     * the walk inside rwqe if they ever aren't.
+     */
+    parse_sges(rwqe, read_sz, rwqe[9], dst);
+
+    (*cons)++;
+    return true;
+}
+
+/*
  * Deliver a SEND payload into the destination QP's next posted receive.
  * Returns the number of bytes delivered, or -1 if no receive was available.
  *
@@ -1923,78 +1972,37 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
                             const uint8_t *src_host, uint8_t recv_op,
                             uint32_t imm_be)
 {
+    uint64_t rq_wqe_id = 0;
+    struct dp_sge_list dst;
+    bool taken;
+
     /*
      * Which ring the receive comes out of. A QP bound to an SRQ has no RQ
      * of its own -- CREATE_QP left its rq_* fields zero -- so reading
      * dq->rq_* for one would consume from an empty ring forever. The SRQ
      * is shared, so the take runs under its lock: two QPs being delivered
      * to on two threads would otherwise read the same slot and both
-     * complete it.
+     * complete it. The take works on a copy of the WQE, so the SRQ is free
+     * for the next taker before the scatter -- which can be long.
      */
-    struct ionic_srq_ring *sr = NULL;
     if (dq->has_srq) {
         if (dq->srq_id >= dp->srq_count)
             return -1;
-        sr = &dp->srq[dq->srq_id];
-        pthread_mutex_lock(&sr->lock);
+        struct ionic_srq_ring *sr = &dp->srq[dq->srq_id];
+        qemu_mutex_lock(&sr->lock);
         /* valid is read only under the lock. The bounds check above is the
          * one thing safe to do outside it, because srq_count never changes
          * after create. */
-        if (!sr->valid) {
-            pthread_mutex_unlock(&sr->lock);
-            return -1;
-        }
+        taken = sr->valid &&
+                dp_ring_take(dp, &sr->cons, sr->prod, sr->depth,
+                             sr->stride_log2, &sr->buf, &rq_wqe_id, &dst);
+        qemu_mutex_unlock(&sr->lock);
+    } else {
+        taken = dp_ring_take(dp, &dq->rq_cons, dq->rq_prod, dq->rq_depth,
+                             dq->rq_stride_log2, &dq->rq_buf, &rq_wqe_id, &dst);
     }
-
-    uint32_t *ring_cons = sr ? &sr->cons : &dq->rq_cons;
-    uint32_t ring_prod = sr ? sr->prod : dq->rq_prod;
-    uint32_t ring_depth = sr ? sr->depth : dq->rq_depth;
-    uint8_t ring_stride_log2 = sr ? sr->stride_log2 : dq->rq_stride_log2;
-    struct dp_buf *ring_buf = sr ? &sr->buf : &dq->rq_buf;
-
-    if (*ring_cons == ring_prod) {
-        if (sr)
-            pthread_mutex_unlock(&sr->lock);
+    if (!taken)
         return -1;
-    }
-
-    uint32_t stride = 1u << ring_stride_log2;
-    uint32_t slot = *ring_cons % ring_depth;
-    uint64_t run;
-    uint64_t gpa = buf_gpa(ring_buf, (uint64_t)slot * stride, &run);
-
-    /* Big enough for the largest stride a QP's RQ or an SRQ can have, so
-     * the whole WQE is read. */
-    uint8_t rwqe[1u << IONIC_WQE_MAX_STRIDE_LOG2];
-    uint32_t read_sz = stride < sizeof(rwqe) ? stride : (uint32_t)sizeof(rwqe);
-    if (!run || run < read_sz ||
-        ernic_dma_read(dp->dma, dp->vfu_ctx, gpa, rwqe, read_sz) < 0) {
-        if (sr)
-            pthread_mutex_unlock(&sr->lock);
-        return -1;
-    }
-
-    uint64_t rq_wqe_id;
-    memcpy(&rq_wqe_id, rwqe + 0, 8);
-
-    struct dp_sge_list dst;
-    /*
-     * read_sz, not stride: parse_sges() derives how many SGEs it may walk
-     * from the size it is given, and only read_sz bytes were read. Passing
-     * a stride larger than the buffer would authorise walking up to
-     * MAX_SGE entries -- byte 543 -- because parse_sges() caps on MAX_SGE
-     * and avail/16 but has no idea how much of the WQE actually arrived.
-     * The ring geometry checks keep the two equal; read_sz is what keeps
-     * the walk inside rwqe if they ever aren't.
-     */
-    parse_sges(rwqe, read_sz, rwqe[9], &dst);
-
-    (*ring_cons)++;
-
-    /* Everything below works on the copy in rwqe, so the SRQ is free for
-     * the next taker before the scatter -- which can be long. */
-    if (sr)
-        pthread_mutex_unlock(&sr->lock);
 
     uint32_t copied = 0;
 
@@ -3629,14 +3637,14 @@ static void dp_mesh_recv(void *opaque, uint32_t src_node, void *buf, size_t len)
     m->rnr_counted = false;
     m->buf = buf;
 
-    pthread_mutex_lock(&dp->rx_lock);
+    qemu_mutex_lock(&dp->rx_lock);
     if (dp->rx_tail)
         dp->rx_tail->next = m;
     else
         dp->rx_head = m;
     dp->rx_tail = m;
     dp->rx_fresh++;
-    pthread_mutex_unlock(&dp->rx_lock);
+    qemu_mutex_unlock(&dp->rx_lock);
 }
 
 static void dp_wire_reply(struct ionic_datapath *dp, uint32_t dst_node,
@@ -3921,9 +3929,9 @@ bool ionic_datapath_has_work(struct ionic_datapath *dp)
     if (!dp)
         return false;
 
-    pthread_mutex_lock(&dp->rx_lock);
+    qemu_mutex_lock(&dp->rx_lock);
     work = dp->rx_fresh != 0;
-    pthread_mutex_unlock(&dp->rx_lock);
+    qemu_mutex_unlock(&dp->rx_lock);
 
     if (!work && dp->s3_tcp)
         work = s3_tcp_has_work(dp->s3_tcp);
@@ -3940,11 +3948,11 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
     if (dp->s3_tcp)
         s3_tcp_poll(dp->s3_tcp, dp_now_ms(dp));
 
-    pthread_mutex_lock(&dp->rx_lock);
+    qemu_mutex_lock(&dp->rx_lock);
     list = dp->rx_head;
     dp->rx_head = dp->rx_tail = NULL;
     dp->rx_fresh = 0;
-    pthread_mutex_unlock(&dp->rx_lock);
+    qemu_mutex_unlock(&dp->rx_lock);
 
     /*
      * Messages that cannot be delivered yet go on @defer and are put back for
@@ -3999,12 +4007,12 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
     }
 
     if (defer_head) {
-        pthread_mutex_lock(&dp->rx_lock);
+        qemu_mutex_lock(&dp->rx_lock);
         defer_tail->next = dp->rx_head;
         dp->rx_head = defer_head;
         if (!dp->rx_tail)
             dp->rx_tail = defer_tail;
-        pthread_mutex_unlock(&dp->rx_lock);
+        qemu_mutex_unlock(&dp->rx_lock);
     }
 
     /*
@@ -4127,10 +4135,10 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
              * what let this race unregister_srq. srq_by_qid() only does the
              * bounds arithmetic, which is stable for the datapath's life. */
             if (sr) {
-                pthread_mutex_lock(&sr->lock);
+                qemu_mutex_lock(&sr->lock);
                 if (sr->valid)
                     posted = rq_prod_advance(&sr->prod, sr->depth, p_index);
-                pthread_mutex_unlock(&sr->lock);
+                qemu_mutex_unlock(&sr->lock);
             }
             if (!posted)
                 vfu_log(dp->vfu_ctx, LOG_WARNING,

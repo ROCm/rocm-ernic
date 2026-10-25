@@ -1,0 +1,151 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Builds with clang 23 to check the thread-safety annotations
+# (src/qemu-compat/include/qemu/clang-tsa.h): which lock guards each field,
+# which a function needs held or not, and the order locks are taken in.
+# Earlier clangs check the functions' annotations, which the Build and Test
+# workflow's clang 18 does, but not the fields' or the order, which in C
+# only clang 23 gets right.
+#
+# Only the thread-safety warnings are errors here, so a warning that a newer
+# clang has and the image's compilers don't doesn't fail this job; the Build
+# and Test workflow checks the rest. Nothing is run: the analysis is all at
+# compile time.
+name: rocm-ernic - Thread safety
+
+on:
+  # The Build and Test workflow's paths, since anything it compiles can be
+  # annotated, plus the fuzz harnesses, which the tests compile, and this
+  # workflow's own file
+  pull_request:
+    branches: [ develop ]
+    paths: &paths
+      - 'src/**'
+      - 'tests/**'
+      - 'shared/**'
+      - 'nix/analysis/fuzz/**'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - '.github/workflows/thread-safety.yml'
+  push:
+    branches: [ develop ]
+    paths: *paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer commit on a pull request cancels the run for the older one.
+# Every other run (a push, a manual run) gets a group of its own: in a
+# shared group, a newer run replaces a pending one even without
+# cancel-in-progress, which would leave a commit untested.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  thread-safety:
+    name: Thread-safety analysis (clang 23)
+    runs-on: ubuntu-24.04
+
+    env:
+      LLVM_VERSION: 23
+      # The Ubuntu release of the runner, for apt.llvm.org
+      UBUNTU_CODENAME: noble
+      # The fingerprint of apt.llvm.org's signing key, which is public
+      LLVM_SIGNER_FINGERPRINT: 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # libjson-c-dev is here, not just in the libvfio-user step, because
+      # the configure step's -DERNIC_BUILD_P4=ON requires it, and that
+      # step only runs on a cache miss.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libibverbs-dev \
+            librdmacm-dev \
+            libglib2.0-dev \
+            libjson-c-dev
+
+      # As in the clang-tidy workflow: apt only trusts the key with the
+      # known fingerprint, and only for this repository. The unit tests
+      # always link with ASan and UBSan (see tests/CMakeLists.txt), whose
+      # runtimes are in libclang-rt, which --no-install-recommends leaves
+      # out.
+      - name: Install clang
+        run: |
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
+            -o /tmp/llvm.asc
+          GNUPGHOME=$(mktemp -d)
+          export GNUPGHOME
+          gpg --batch --import /tmp/llvm.asc
+          sudo install -d -m 0755 /etc/apt/keyrings
+          gpg --batch --export "${LLVM_SIGNER_FINGERPRINT}" \
+            | sudo tee /etc/apt/keyrings/llvm.gpg > /dev/null
+          if [[ ! -s /etc/apt/keyrings/llvm.gpg ]]; then
+            echo "::error::apt.llvm.org's key isn't ${LLVM_SIGNER_FINGERPRINT}"
+            exit 1
+          fi
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.gpg]" \
+            "https://apt.llvm.org/${UBUNTU_CODENAME}/" \
+            "llvm-toolchain-${UBUNTU_CODENAME}-${LLVM_VERSION} main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            "clang-${LLVM_VERSION}" \
+            "libclang-rt-${LLVM_VERSION}-dev"
+          "clang-${LLVM_VERSION}" --version
+
+      # The same key and paths as the Build and Test workflow, so the two
+      # share the cached build
+      - name: Cache libvfio-user build
+        id: cache-libvfio-user
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            /usr/lib/x86_64-linux-gnu/libvfio-user*
+            /usr/lib/x86_64-linux-gnu/pkgconfig/libvfio-user.pc
+            /usr/include/vfio-user
+          key: libvfio-user-5b9c722-ubuntu-24.04
+
+      # Keep the pinned commit in step with build-and-test.yml
+      - name: Clone and build libvfio-user
+        if: steps.cache-libvfio-user.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get install -y meson libcmocka-dev
+          git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user
+          cd /tmp/libvfio-user
+          git checkout 5b9c722
+          meson setup build --prefix=/usr -Dwarning_level=0
+          ninja -C build
+          sudo ninja -C build install
+          sudo ldconfig
+
+      - name: Reload ldconfig after cache restore
+        if: steps.cache-libvfio-user.outputs.cache-hit == 'true'
+        run: sudo ldconfig
+
+      # The build already enables the warnings (ErnicClangCompilerOptions.cmake);
+      # -Werror= makes these four groups, and only these, errors.
+      # -Wthread-safety-pointer and -Wthread-safety-beta aren't in
+      # -Wthread-safety. ERNIC_BUILD_P4 is on, as in the Build and Test
+      # workflow, so src/p4 is compiled.
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_C_COMPILER="clang-${LLVM_VERSION}" \
+            -DERNIC_BUILD_P4=ON \
+            -DCMAKE_C_FLAGS="-Werror=thread-safety -Werror=thread-safety-beta -Werror=thread-safety-negative -Werror=thread-safety-pointer"
+
+      # -k 0 keeps building after a file fails, so one run reports every
+      # finding, not just those in the first files to fail.
+      - name: Build
+        run: cmake --build build -j"$(nproc)" -- -k 0

@@ -161,4 +161,32 @@
 #define ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_ON
 #endif
 
+/* Suppress clang's thread-safety analysis
+ *
+ * The analysis (see src/qemu-compat/include/qemu/clang-tsa.h) can't tell
+ * that a field may be touched without its lock while no other thread can
+ * reach the object: while it is being set up, or once its threads have been
+ * joined. Nor can it follow a field that one thread alone writes, which that
+ * thread reads without the lock. Say which, next to the suppression.
+ *
+ * Passing a guarded field's address is reported under a flag of its own,
+ * which clang has had since 21.
+ */
+#if defined(__clang__) && __clang_major__ >= 21
+#define ROCM_ERNIC_WARN_THREAD_SAFETY_OFF         \
+    ROCM_ERNIC_WARN_OFF("thread-safety-analysis") \
+    ROCM_ERNIC_WARN_OFF("thread-safety-pointer")
+#define ROCM_ERNIC_WARN_THREAD_SAFETY_ON        \
+    ROCM_ERNIC_WARN_ON("thread-safety-pointer") \
+    ROCM_ERNIC_WARN_ON("thread-safety-analysis")
+#elif defined(__clang__)
+#define ROCM_ERNIC_WARN_THREAD_SAFETY_OFF \
+    ROCM_ERNIC_WARN_OFF("thread-safety-analysis")
+#define ROCM_ERNIC_WARN_THREAD_SAFETY_ON \
+    ROCM_ERNIC_WARN_ON("thread-safety-analysis")
+#else
+#define ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
+#define ROCM_ERNIC_WARN_THREAD_SAFETY_ON
+#endif
+
 #endif /* ROCM_ERNIC_WARNINGS_H */

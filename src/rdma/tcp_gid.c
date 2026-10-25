@@ -148,6 +148,7 @@ void tcp_gid_key_free(gpointer key)
  * Caller holds gid_table_lock.
  */
 static void tcp_gid_index_rebuild(TcpBackendPrivate *priv)
+    TSA_REQUIRES(priv->gid_table_lock)
 {
     GHashTableIter iter;
     gpointer key, value;
@@ -200,7 +201,7 @@ static void tcp_gid_index_rebuild(TcpBackendPrivate *priv)
  */
 static bool tcp_gid_claims_record(TcpBackendPrivate *priv, uint32_t node_id,
                                   const uint8_t (*gids)[16], uint32_t num_gids,
-                                  bool alive)
+                                  bool alive) TSA_EXCLUDES(priv->gid_table_lock)
 {
     bool changed;
 
@@ -240,7 +241,7 @@ static bool tcp_gid_claims_record(TcpBackendPrivate *priv, uint32_t node_id,
  */
 static void tcp_gid_claims_report(TcpBackendPrivate *priv, uint32_t node_id,
                                   const uint8_t (*gids)[16], uint32_t num_gids,
-                                  bool alive)
+                                  bool alive) TSA_EXCLUDES(priv->gid_table_lock)
 {
     char buf[TCP_GID_STR_LEN];
 
@@ -292,7 +293,7 @@ static void tcp_gid_claims_report(TcpBackendPrivate *priv, uint32_t node_id,
 bool tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
                         const uint8_t (*gids)[16], uint32_t num_gids)
 {
-    if (!priv || !priv->node_gids || num_gids > TCP_MAX_NODE_GIDS)
+    if (!priv || !tcp_has_gid_tables(priv) || num_gids > TCP_MAX_NODE_GIDS)
         return false;
 
     if (!tcp_gid_claims_record(priv, node_id, gids, num_gids, true))
@@ -332,7 +333,7 @@ static bool tcp_gid_claims_set_if_member(TcpBackendPrivate *priv,
     const MeshNodeInfo *node;
     bool member, alive = false, changed = false;
 
-    if (!priv || !priv->node_gids || num_gids > TCP_MAX_NODE_GIDS)
+    if (!priv || !tcp_has_gid_tables(priv) || num_gids > TCP_MAX_NODE_GIDS)
         return false;
 
     qemu_mutex_lock(&priv->mesh_table_lock);
@@ -388,7 +389,7 @@ void tcp_gid_claims_prune(TcpBackendPrivate *priv,
     gpointer key;
     guint dropped = 0;
 
-    if (!priv->node_gids)
+    if (!tcp_has_gid_tables(priv))
         return;
     if (num_nodes > G_N_ELEMENTS(topo->nodes))
         num_nodes = G_N_ELEMENTS(topo->nodes);
@@ -427,7 +428,7 @@ bool tcp_gid_claims_set_alive(TcpBackendPrivate *priv, uint32_t node_id,
 {
     bool changed = false;
 
-    if (!priv || !priv->node_gids)
+    if (!priv || !tcp_has_gid_tables(priv))
         return false;
 
     qemu_mutex_lock(&priv->gid_table_lock);
@@ -466,7 +467,7 @@ void tcp_gid_claims_report_alive(uint32_t node_id, bool alive)
 uint32_t tcp_resolve_node_from_gid(TcpBackendPrivate *priv,
                                    const union ibv_gid *dgid)
 {
-    if (!priv || !dgid || !priv->gid_owner)
+    if (!priv || !dgid || !tcp_has_gid_tables(priv))
         return UINT32_MAX;
 
     GBytes *key = g_bytes_new_static(dgid->raw, 16);

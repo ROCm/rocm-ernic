@@ -198,10 +198,8 @@ int tcp_worker_register_with_manager(TcpBackendPrivate *priv,
         g_free(addr);
         return -1;
     }
-    conn = tcp_connection_new(0, priv->manager_host, priv->manager_port);
-    conn->priv = priv;
-    conn->sockfd = fd;
-    atomic_store(&conn->is_connected, true);
+    conn =
+        tcp_connection_new(priv, 0, priv->manager_host, priv->manager_port, fd);
 
     /* Before the receive thread starts, so it can take the answer */
     qemu_mutex_lock(&priv->registration_mutex);
@@ -327,7 +325,7 @@ static void tcp_worker_set_peers(TcpBackendPrivate *priv,
  */
 static bool tcp_worker_peer_named(const TcpBackendPrivate *priv,
                                   uint32_t node_id, const char *host,
-                                  uint16_t port)
+                                  uint16_t port) TSA_REQUIRES(priv->peer_lock)
 {
     for (guint i = 0; i < priv->peer_targets->len; i++) {
         const TcpPeerTarget *latest =
@@ -479,11 +477,8 @@ static bool tcp_worker_connect_peer(TcpBackendPrivate *priv,
         return false;
     }
 
-    TcpConnection *peer_conn =
-        tcp_connection_new(target->node_id, target->host, target->port);
-    peer_conn->priv = priv;
-    peer_conn->sockfd = fd;
-    atomic_store(&peer_conn->is_connected, true);
+    TcpConnection *peer_conn = tcp_connection_new(
+        priv, target->node_id, target->host, target->port, fd);
 
     if (!tcp_worker_peer_current(priv, target)) {
         rdma_info_report("TCP: Peer node %u was dropped from the topology "
@@ -1072,10 +1067,7 @@ void tcp_worker_accept(TcpBackendPrivate *priv, int sockfd, const char *host,
     }
 
     /* Create connection object */
-    conn = tcp_connection_new(remote_node_id, host, port);
-    conn->sockfd = sockfd;
-    atomic_store(&conn->is_connected, true);
-    conn->priv = priv;
+    conn = tcp_connection_new(priv, remote_node_id, host, port, sockfd);
 
     /*
      * Start the receive thread before the connection is published, so a

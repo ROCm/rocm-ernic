@@ -20,6 +20,7 @@
 #include "rdma_utils.h"
 #include "ernic_time.h"
 #include "qemu/thread.h"
+#include "rocm-ernic-warnings.h"
 #include <errno.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -33,8 +34,27 @@
 #include <unistd.h>
 #include <poll.h>
 
-static void tcp_sendq_close(TcpConnection *conn);
-static void tcp_stop_send_thread(TcpConnection *conn);
+static void tcp_sendq_close(TcpConnection *conn) TSA_REQUIRES(conn->sendq_lock);
+static void tcp_stop_send_thread(TcpConnection *conn)
+    TSA_EXCLUDES(conn->sendq_lock);
+
+/*
+ * conn->sockfd, read without conn->lock, which only a thread that nothing can
+ * change it under may do.  Once conn is published, only tcp_retire_conn()
+ * changes it, and only one thread retires a connection (see TcpConnection),
+ * so that thread may, as may conn's receive thread, which retiring joins
+ * before the change, teardown once the threads that retire connections have
+ * stopped, and whoever drops the last reference.
+ */
+static int tcp_conn_sockfd_unlocked(const TcpConnection *conn)
+{
+    int fd;
+
+    ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
+    fd = conn->sockfd;
+    ROCM_ERNIC_WARN_THREAD_SAFETY_ON
+    return fd;
+}
 
 /*
  * Free conn.  Called only by the last tcp_connection_unref().
@@ -49,6 +69,7 @@ static void tcp_stop_send_thread(TcpConnection *conn);
 static void tcp_connection_free(TcpConnection *conn)
 {
     bool recv_running = atomic_exchange(&conn->recv_thread_running, false);
+    int fd = tcp_conn_sockfd_unlocked(conn);
     bool send_running;
 
     qemu_mutex_lock(&conn->sendq_lock);
@@ -59,8 +80,8 @@ static void tcp_connection_free(TcpConnection *conn)
         rdma_error_report("TCP: freeing the connection to node %u with its "
                           "threads running",
                           conn->node_id);
-        if (conn->sockfd >= 0) {
-            shutdown(conn->sockfd, SHUT_RDWR);
+        if (fd >= 0) {
+            shutdown(fd, SHUT_RDWR);
         }
         if (recv_running) {
             qemu_thread_join(&conn->recv_thread);
@@ -68,8 +89,8 @@ static void tcp_connection_free(TcpConnection *conn)
     }
     tcp_stop_send_thread(conn);
 
-    if (conn->sockfd >= 0) {
-        close(conn->sockfd);
+    if (fd >= 0) {
+        close(fd);
     }
 
     g_free(conn->remote_host);
@@ -103,24 +124,31 @@ void tcp_connection_destroy_notify(gpointer data)
     tcp_connection_unref(data);
 }
 
-/* A new connection, holding one reference, the caller's. */
-TcpConnection *tcp_connection_new(uint32_t node_id, const char *host,
-                                  uint16_t port)
+/*
+ * A new connection to node_id at host:port, on sockfd, which it takes over,
+ * holding one reference, the caller's.
+ */
+TcpConnection *tcp_connection_new(TcpBackendPrivate *priv, uint32_t node_id,
+                                  const char *host, uint16_t port, int sockfd)
 {
     TcpConnection *conn = g_new0(TcpConnection, 1);
+    conn->priv = priv;
     conn->node_id = node_id;
-    conn->sockfd = -1;
     conn->remote_host = g_strdup(host);
     conn->remote_port = port;
     atomic_init(&conn->refcount, 1);
-    atomic_init(&conn->is_connected, false);
+    atomic_init(&conn->is_connected, true);
     atomic_init(&conn->recv_thread_running, false);
     atomic_init(&conn->recv_thread_exited, false);
     atomic_init(&conn->last_rx_ms, ernic_monotonic_ms());
     qemu_mutex_init(&conn->lock);
     qemu_mutex_init(&conn->sendq_lock);
     qemu_cond_init(&conn->sendq_cond);
+    /* No other thread can reach conn yet */
+    ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
+    conn->sockfd = sockfd;
     g_queue_init(&conn->sendq);
+    ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     return conn;
 }
 
@@ -288,14 +316,16 @@ bool tcp_conn_table_take(TcpBackendPrivate *priv, uint32_t node_id,
  */
 void tcp_retire_conn(TcpConnection *conn)
 {
+    int fd = tcp_conn_sockfd_unlocked(conn);
+
     if (atomic_exchange(&conn->recv_thread_running, false)) {
-        if (conn->sockfd >= 0) {
-            shutdown(conn->sockfd, SHUT_RDWR);
+        if (fd >= 0) {
+            shutdown(fd, SHUT_RDWR);
         }
         qemu_thread_join(&conn->recv_thread);
-    } else if (conn->sockfd >= 0) {
+    } else if (fd >= 0) {
         /* For the send thread, which may be waiting on the peer */
-        shutdown(conn->sockfd, SHUT_RDWR);
+        shutdown(fd, SHUT_RDWR);
     }
     tcp_stop_send_thread(conn);
 
@@ -380,7 +410,7 @@ static void *tcp_send_thread(void *opaque)
  * couldn't be started.  The caller holds sendq_lock, and has checked the
  * queue isn't closed: a closed queue's thread may have been joined already.
  */
-static int tcp_sendq_start(TcpConnection *conn)
+static int tcp_sendq_start(TcpConnection *conn) TSA_REQUIRES(conn->sendq_lock)
 {
     if (conn->send_thread_started) {
         return 0;
@@ -483,6 +513,7 @@ int tcp_conn_enqueue(TcpConnection *conn, const void *hdr, size_t hdr_len,
  */
 static bool tcp_sendq_has_heartbeat(const TcpConnection *conn,
                                     TcpMsgType msg_type)
+    TSA_REQUIRES(conn->sendq_lock)
 {
     for (GList *link = conn->sendq.head; link != NULL; link = link->next) {
         const TcpQueuedMsg *msg = link->data;
@@ -508,6 +539,7 @@ static bool tcp_sendq_has_heartbeat(const TcpConnection *conn,
  */
 static int tcp_sendq_push_heartbeat(TcpConnection *conn, TcpMsgType msg_type,
                                     uint32_t dst_node)
+    TSA_EXCLUDES(conn->sendq_lock)
 {
     int ret;
 
@@ -740,7 +772,7 @@ void *tcp_recv_thread_per_conn(void *opaque)
 
     rdma_info_report("TCP: Receive thread started for node %u", conn->node_id);
 
-    pfd.fd = conn->sockfd;
+    pfd.fd = tcp_conn_sockfd_unlocked(conn);
     pfd.events = POLLIN;
 
     while (atomic_load(&conn->recv_thread_running)) {
@@ -758,7 +790,7 @@ void *tcp_recv_thread_per_conn(void *opaque)
         }
 
         if (pfd.revents & POLLIN) {
-            ret = tcp_recv_message(conn->sockfd, &msg.hdr, &msg.payload,
+            ret = tcp_recv_message(pfd.fd, &msg.hdr, &msg.payload,
                                    &conn->recv_thread_running, 0);
             if (ret == -EAGAIN) {
                 continue;
@@ -905,6 +937,7 @@ static void tcp_claim_conn_threads(GPtrArray *recv_batch, GPtrArray *send_batch,
                                    TcpConnection *conn)
 {
     bool recv_running = atomic_exchange(&conn->recv_thread_running, false);
+    int fd = tcp_conn_sockfd_unlocked(conn);
     bool send_running;
 
     qemu_mutex_lock(&conn->sendq_lock);
@@ -913,8 +946,8 @@ static void tcp_claim_conn_threads(GPtrArray *recv_batch, GPtrArray *send_batch,
     conn->send_thread_started = false;
     qemu_mutex_unlock(&conn->sendq_lock);
 
-    if ((recv_running || send_running) && conn->sockfd >= 0) {
-        shutdown(conn->sockfd, SHUT_RDWR);
+    if ((recv_running || send_running) && fd >= 0) {
+        shutdown(fd, SHUT_RDWR);
     }
     if (recv_running) {
         g_ptr_array_add(recv_batch, conn);
@@ -980,8 +1013,15 @@ void tcp_stop_recv_threads(TcpBackendPrivate *priv)
  */
 void tcp_free_pending_conns(TcpBackendPrivate *priv)
 {
-    for (guint i = 0; i < priv->pending_conns->len; i++) {
-        tcp_connection_unref(g_ptr_array_index(priv->pending_conns, i));
+    GPtrArray *pending;
+
+    /* Every thread that can reach the list has stopped */
+    ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
+    pending = priv->pending_conns;
+    ROCM_ERNIC_WARN_THREAD_SAFETY_ON
+
+    for (guint i = 0; i < pending->len; i++) {
+        tcp_connection_unref(g_ptr_array_index(pending, i));
     }
-    g_ptr_array_free(priv->pending_conns, TRUE);
+    g_ptr_array_free(pending, TRUE);
 }

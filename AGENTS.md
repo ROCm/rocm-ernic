@@ -147,7 +147,31 @@ threads (`qemu_thread_create()`).
   and the order when code takes more than one lock. The TCP backend gives
   its whole order in one table, `Locks` at the top of
   [`rdma_backend_tcp_priv.h`](src/rdma/rdma_backend_tcp_priv.h); put a new
-  lock there, not in the field's comment.
+  lock there, not in the field's comment, and among the declarations of
+  `TcpBackendPrivate`'s locks, which repeat the order.
+- **Annotate it for clang's thread-safety analysis**
+  ([`qemu/clang-tsa.h`](src/qemu-compat/include/qemu/clang-tsa.h)), which
+  checks it at compile time. Use `QemuMutex`, which the analysis knows is
+  a lock, not `pthread_mutex_t`. Mark a field its lock guards
+  `TSA_GUARDED_BY(lock)`, declaring the lock first; a function whose caller
+  holds a lock `TSA_REQUIRES`, and one that takes a lock, or joins a thread
+  that does, `TSA_EXCLUDES`; and a new lock's place in the order
+  `TSA_ACQUIRED_AFTER`. Every clang build checks the functions'
+  annotations, but in C only clang 23 checks the fields' and the order
+  ([thread-safety.yml](.github/workflows/thread-safety.yml)); see
+  [C](#c) to run it.
+- **The analysis can't follow everything.** It ties a field to a lock in
+  another struct only when the code reaches the lock through the same
+  object (`conn->priv->lock`, not a `priv` it can't tell is the same). It
+  doesn't follow a lock taken conditionally (`if (sr) lock`, later `if
+  (sr) unlock`); pair them, as `deliver_recv()` does. A GLib table's
+  contents are opaque to it, so the pointer to the table is what's
+  annotated. Where it can't follow correct code (setup before an object
+  is shared, teardown after its threads are joined, a read that the field's
+  comment explains is safe without the lock), wrap the smallest region in
+  `ROCM_ERNIC_WARN_THREAD_SAFETY_OFF`/`_ON`, with a comment saying which,
+  or put it in a helper such as `tcp_conn_sockfd_unlocked()`. A field it
+  can't express keeps only its comment, like `MeshNodeInfo`'s.
 - **Don't hold a lock across a blocking call** (socket I/O, sleep,
   `qemu_thread_join()`) or a call that may take the same lock.
 - **Every thread must be stoppable and joined**: an atomic stop flag
@@ -299,7 +323,9 @@ touches. The commands are in the sections below.
   - Shared state or threads: TSan (Clang Debug, `-g -Og`, under
     `setarch`), then the [loop](#thread-safety) for new or changed
     threaded tests. Races are this project's most common CI failure;
-    don't skip this one.
+    don't skip this one. If the change touches a lock, a guarded field or
+    a thread-safety annotation, also the clang 23 thread-safety build
+    (see [C](#c)).
   - Pointers, buffers, lengths, or input from outside the process: ASan
     (`ERNIC_USE_SANITIZERS`).
   - Wire data, or anything passed to `send()`/`write()`: valgrind on the
@@ -335,6 +361,19 @@ touches. The commands are in the sections below.
   see [what to run](#what-to-run-locally). Warning lists:
   [`ErnicGNUCompilerOptions.cmake`](cmake/ErnicGNUCompilerOptions.cmake),
   [`ErnicClangCompilerOptions.cmake`](cmake/ErnicClangCompilerOptions.cmake).
+- **Clang thread-safety analysis** (see [Thread safety](#thread-safety)):
+  every clang build warns about a broken function annotation, so CI's
+  clang 18 build fails on one. Only clang 23 checks fields and lock order;
+  [thread-safety.yml](.github/workflows/thread-safety.yml) builds with it,
+  failing only on these warnings. Locally, in its own build directory:
+
+  ```bash
+  cmake -B build-clang23 -G Ninja -DCMAKE_C_COMPILER=clang-23 \
+    -DERNIC_BUILD_P4=ON \
+    -DCMAKE_C_FLAGS="-Werror=thread-safety -Werror=thread-safety-beta -Werror=thread-safety-negative -Werror=thread-safety-pointer"
+  cmake --build build-clang23 -- -k 0
+  ```
+
 - **Suppress warnings only with the macros in
   [`shared/rocm-ernic-warnings.h`](shared/rocm-ernic-warnings.h)**, never
   raw `#pragma`s, `-Wno-…`, or warning-list edits, and only when nearly

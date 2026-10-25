@@ -14,7 +14,6 @@
 #ifndef IONIC_ETH_EMU_PRIV_H
 #define IONIC_ETH_EMU_PRIV_H
 
-#include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -25,6 +24,7 @@
 #include "ionic_eth_emu.h"
 #include "ionic_eth_net.h"
 #include "ionic_profile.h"
+#include "qemu/thread.h"
 #include "rocm_ernic_compat.h"
 #include "rocm_ernic_internal.h"
 
@@ -490,10 +490,10 @@ struct ionic_eth_emu {
      * mesh receive thread.  Producers append under @inbox_lock; the main
      * loop drains the queue from ionic_eth_emu_poll_rx().
      */
-    struct eth_inbox_frame *inbox_head;
-    struct eth_inbox_frame *inbox_tail;
-    unsigned inbox_count;
-    pthread_mutex_t inbox_lock;
+    QemuMutex inbox_lock;
+    struct eth_inbox_frame *inbox_head TSA_GUARDED_BY(inbox_lock);
+    struct eth_inbox_frame *inbox_tail TSA_GUARDED_BY(inbox_lock);
+    unsigned inbox_count TSA_GUARDED_BY(inbox_lock);
 };
 
 /* The width of the names in the stats file's "LIF Statistics" section: the

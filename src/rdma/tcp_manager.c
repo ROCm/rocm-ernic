@@ -19,6 +19,7 @@
 #include "rdma_utils.h"
 #include "ernic_time.h"
 #include "qemu/thread.h"
+#include "rocm-ernic-warnings.h"
 #include <errno.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -108,6 +109,7 @@ bool tcp_node_set_alive(TcpBackendPrivate *priv, MeshNodeInfo *node, bool alive,
  * connection does.  The caller holds mesh_table_lock and conn_table_lock.
  */
 static bool tcp_node_id_taken(const TcpBackendPrivate *priv, uint32_t node_id)
+    TSA_REQUIRES(priv->mesh_table_lock, priv->conn_table_lock)
 {
     return g_hash_table_contains(priv->mesh_nodes, GUINT_TO_POINTER(node_id)) ||
            g_hash_table_contains(priv->connections, GUINT_TO_POINTER(node_id));
@@ -145,6 +147,7 @@ static bool tcp_node_id_taken(const TcpBackendPrivate *priv, uint32_t node_id)
 static int tcp_register_again(TcpBackendPrivate *priv, uint32_t node_id,
                               const char *host, uint16_t port,
                               TcpConnection **old, const char **why)
+    TSA_REQUIRES(priv->mesh_table_lock, priv->conn_table_lock)
 {
     const MeshNodeInfo *node =
         g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(node_id));
@@ -210,6 +213,7 @@ static int tcp_register_again(TcpBackendPrivate *priv, uint32_t node_id,
  */
 static uint32_t tcp_evict_dead_node(TcpBackendPrivate *priv,
                                     TcpConnection **old)
+    TSA_REQUIRES(priv->mesh_table_lock, priv->conn_table_lock)
 {
     GHashTableIter iter;
     gpointer value;
@@ -276,6 +280,7 @@ static uint32_t tcp_evict_dead_node(TcpBackendPrivate *priv,
  */
 static uint32_t tcp_collect_dead_claimants(TcpBackendPrivate *priv,
                                            uint32_t out[TCP_MAX_MESH_NODES])
+    TSA_REQUIRES(priv->mesh_table_lock)
 {
     GHashTableIter iter;
     gpointer value;
@@ -448,6 +453,7 @@ static bool tcp_register_read(const TcpRecvMsg *msg, TcpRegistration *reg)
  */
 static bool tcp_register_new_node(TcpBackendPrivate *priv,
                                   const TcpRegistration *reg, TcpAdmission *adm)
+    TSA_REQUIRES(priv->mesh_table_lock, priv->conn_table_lock)
 {
     uint32_t assigned_id = priv->next_available_node_id;
     MeshNodeInfo *node;
@@ -882,10 +888,7 @@ void tcp_manager_accept(TcpBackendPrivate *priv, int sockfd, const char *host,
     /* Make room before counting what's waiting */
     tcp_reap_pending_conns(priv);
 
-    conn = tcp_connection_new(UINT32_MAX, host, port);
-    conn->sockfd = sockfd;
-    atomic_store(&conn->is_connected, true);
-    conn->priv = priv;
+    conn = tcp_connection_new(priv, UINT32_MAX, host, port, sockfd);
     conn->accepted_ms = ernic_monotonic_ms();
 
     /*
@@ -1011,6 +1014,7 @@ static void tcp_send_mesh_topology(TcpBackendPrivate *priv)
  */
 static void tcp_snapshot_node_gids(const TcpBackendPrivate *priv,
                                    uint32_t node_id, TcpNodeGidsPayload *out)
+    TSA_REQUIRES(priv->mesh_table_lock, priv->gid_table_lock)
 {
     const TcpNodeGids *claims = NULL;
 
@@ -1046,7 +1050,7 @@ static void tcp_snapshot_node_gids(const TcpBackendPrivate *priv,
 static void tcp_send_gid_updates(TcpBackendPrivate *priv, const GArray *tables,
                                  const GArray *nodes)
 {
-    if (!priv->node_gids || !priv->mesh_nodes)
+    if (!tcp_has_gid_tables(priv) || !tcp_has_mesh_table(priv))
         return;
 
     /*
@@ -1121,18 +1125,24 @@ void tcp_broadcaster_init(TcpBackendPrivate *priv)
     atomic_init(&priv->broadcast_running, false);
     qemu_mutex_init(&priv->broadcast_lock);
     qemu_cond_init(&priv->broadcast_cond);
+    /* No other thread can reach priv yet */
+    ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     priv->broadcast_topology = false;
     priv->broadcast_gids = g_hash_table_new(g_direct_hash, g_direct_equal);
     priv->broadcast_tables = g_hash_table_new(g_direct_hash, g_direct_equal);
     priv->broadcasts_asked = 0;
     priv->broadcasts_sent = 0;
+    ROCM_ERNIC_WARN_THREAD_SAFETY_ON
 }
 
 /* Free what tcp_broadcaster_init() set up; the thread must be stopped */
 void tcp_broadcaster_destroy(TcpBackendPrivate *priv)
 {
+    /* Nor can any other thread reach priv now */
+    ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     g_hash_table_destroy(priv->broadcast_tables);
     g_hash_table_destroy(priv->broadcast_gids);
+    ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     qemu_cond_destroy(&priv->broadcast_cond);
     qemu_mutex_destroy(&priv->broadcast_lock);
 }
@@ -1146,6 +1156,7 @@ void tcp_broadcaster_destroy(TcpBackendPrivate *priv)
  */
 static void tcp_broadcast_ask(TcpBackendPrivate *priv, bool topology,
                               uint32_t gids_of, uint32_t table_to)
+    TSA_EXCLUDES(priv->broadcast_lock)
 {
     if (!priv->is_manager)
         return;
@@ -1297,6 +1308,7 @@ void tcp_stop_broadcast_thread(TcpBackendPrivate *priv)
  */
 static bool tcp_node_silent(const TcpBackendPrivate *priv,
                             const MeshNodeInfo *node, uint64_t now_ms)
+    TSA_REQUIRES(priv->mesh_table_lock)
 {
     return now_ms - node->last_heartbeat_ms >
            (uint64_t)priv->health_check_interval_sec * 3000u;
@@ -1375,6 +1387,7 @@ static void tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items,
  */
 static void tcp_health_check_unpublish(TcpBackendPrivate *priv,
                                        uint32_t node_id, TcpConnection *conn)
+    TSA_EXCLUDES(priv->mesh_table_lock, priv->conn_table_lock)
 {
     bool taken;
 

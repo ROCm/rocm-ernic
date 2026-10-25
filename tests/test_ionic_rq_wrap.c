@@ -28,7 +28,6 @@
  */
 
 #include <errno.h>
-#include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -44,6 +43,8 @@
 #include "ionic_eth_emu.h"
 #include "nvmeof_cm.h"
 #include "nvmeof_target.h"
+#include "qemu/thread.h"
+#include "rocm-ernic-warnings.h"
 #include "rocm_ernic_compat.h"
 #include "s3_tcp.h"
 #include "s3_target.h"
@@ -358,10 +359,13 @@ static struct ionic_datapath *dp_with_recv_rings(void)
     g_dp.qp[RQ_QP_ID].rq_depth = RQ_DEPTH;
     g_dp.qp[RQ_QP_ID].rq_stride_log2 = 5;
 
+    qemu_mutex_init(&g_dp.srq[SRQ_SLOT].lock);
+    /* Before anything can reach the datapath */
+    ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     g_dp.srq[SRQ_SLOT].valid = true;
     g_dp.srq[SRQ_SLOT].depth = RQ_DEPTH;
     g_dp.srq[SRQ_SLOT].stride_log2 = 5;
-    pthread_mutex_init(&g_dp.srq[SRQ_SLOT].lock, NULL);
+    ROCM_ERNIC_WARN_THREAD_SAFETY_ON
 
     return &g_dp;
 }
@@ -378,9 +382,36 @@ static uint32_t qp_outstanding(const struct ionic_datapath *dp)
     return dp->qp[RQ_QP_ID].rq_prod - dp->qp[RQ_QP_ID].rq_cons;
 }
 
-static uint32_t srq_outstanding(const struct ionic_datapath *dp)
+static uint32_t srq_outstanding(struct ionic_datapath *dp)
 {
-    return dp->srq[SRQ_SLOT].prod - dp->srq[SRQ_SLOT].cons;
+    struct ionic_srq_ring *sr = &dp->srq[SRQ_SLOT];
+    uint32_t n;
+
+    qemu_mutex_lock(&sr->lock);
+    n = sr->prod - sr->cons;
+    qemu_mutex_unlock(&sr->lock);
+    return n;
+}
+
+/* Consume everything posted to the SRQ, as delivering to it would. */
+static void srq_drain(struct ionic_datapath *dp)
+{
+    struct ionic_srq_ring *sr = &dp->srq[SRQ_SLOT];
+
+    qemu_mutex_lock(&sr->lock);
+    sr->cons = sr->prod;
+    qemu_mutex_unlock(&sr->lock);
+}
+
+static bool srq_valid(struct ionic_datapath *dp)
+{
+    struct ionic_srq_ring *sr = &dp->srq[SRQ_SLOT];
+    bool valid;
+
+    qemu_mutex_lock(&sr->lock);
+    valid = sr->valid;
+    qemu_mutex_unlock(&sr->lock);
+    return valid;
 }
 
 /* ---- Tests ------------------------------------------------------------- */
@@ -418,7 +449,7 @@ static void test_rq_survives_the_wrap(void)
         rq_doorbell(dp, SRQ_QID, i);
     }
     dp->qp[RQ_QP_ID].rq_cons = dp->qp[RQ_QP_ID].rq_prod;
-    dp->srq[SRQ_SLOT].cons = dp->srq[SRQ_SLOT].prod;
+    srq_drain(dp);
 
     /* (7 + 1) & 7 == 0, then (0 + 1) & 7 == 1. */
     rq_doorbell(dp, RQ_QP_ID, 0);
@@ -446,7 +477,7 @@ static void test_rq_survives_many_wraps(void)
             if (qp_outstanding(dp) != 1 || srq_outstanding(dp) != 1)
                 break;
             dp->qp[RQ_QP_ID].rq_cons = dp->qp[RQ_QP_ID].rq_prod;
-            dp->srq[SRQ_SLOT].cons = dp->srq[SRQ_SLOT].prod;
+            srq_drain(dp);
         }
     }
     check(posted == 5 * RQ_DEPTH,
@@ -630,7 +661,7 @@ static void test_registration_accepts_an_ordinary_ring(void)
 
     check(ionic_datapath_register_srq(dp, SRQ_QID, &ring) == 0,
           "an SRQ with an ordinary ring registers");
-    check(dp->srq[SRQ_SLOT].valid, "and is left valid");
+    check(srq_valid(dp), "and is left valid");
 }
 
 /*
