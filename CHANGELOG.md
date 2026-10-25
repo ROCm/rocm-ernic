@@ -622,9 +622,12 @@
   whose connection is gone; the workers are told that node owns nothing (a
   worker that wasn't connected to the manager then drops the node's GIDs
   when the manager's next topology update leaves it out), and its id isn't
-  given out again. A worker evicted while it was only paused or cut off is
-  refused when it comes back, logging the refusal on each retry, and has to
-  be restarted to rejoin.
+  given out again. When no node can be evicted (they are all alive, or the
+  dead ones are still connected), the manager refuses the new node rather
+  than take a 65th, and the worker fails to start, logging `Registration
+  failed: No space left on device`. A worker evicted while it was only
+  paused or cut off is refused when it comes back, logging the refusal on
+  each retry, and has to be restarted to rejoin.
 * **TCP mesh: a worker whose manager's host name ends in `manager`.** Any
   `--backend tcp:` config containing `manager:` was taken for a manager's,
   so `--backend tcp:worker:mesh-manager:5000` failed to start, saying a
@@ -771,10 +774,3 @@
   DNS server can make SIGTERM wait for the resolver to give up, which its
   configured timeouts and retries bound. A hostname that resolves from
   `/etc/hosts`, or a numeric address, doesn't wait.
-* A TCP mesh manager still takes a 65th node when none of its 64 can be
-  evicted to make room (see Fixed): when they are all alive, or the dead
-  ones are still connected. Its topology and GID broadcasts carry 64 nodes,
-  so the rest, live ones included, drop out of the mesh: their peer
-  connections are torn down and their GIDs no longer resolve. The manager
-  logs an error, with the number of nodes left out, on every broadcast that
-  drops any.

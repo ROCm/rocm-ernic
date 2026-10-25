@@ -59,8 +59,9 @@
  * A manager never dropped a node from its table, so once more nodes had
  * registered than its broadcasts carry, it left nodes out of them.  The
  * eviction rows fill the table and check that a new node evicts the node
- * dead longest that can't be heard from again, and nothing else, and that
- * a health-check pass reads nothing of a node evicted under it.
+ * dead longest that can't be heard from again, and nothing else, that a new
+ * node is refused when there is no such node, and that a health-check pass
+ * reads nothing of a node evicted under it.
  *
  * A worker must not hold the connection table's lock while it connects to
  * the peers in a topology update, since the data path takes it.  The
@@ -3292,6 +3293,7 @@ static int run_tp_case(const struct tp_case *c)
 enum wr_scenario {
     WR_ASSIGNED,       /* the manager assigns WR_ID */
     WR_REFUSED,        /* the manager refuses the registration */
+    WR_RESULT_MIN,     /* it refuses with INT32_MIN, which no errno is */
     WR_OLD_VERSION,    /* an answer with no version, as a pre-v4 manager's */
     WR_SHORT,          /* an answer too short to hold an id */
     WR_ID_ZERO,        /* the manager assigns 0 */
@@ -3319,6 +3321,8 @@ static const struct wr_case wr_cases[] = {
      WR_ASSIGNED},
     {"negative", "the manager refuses the registration",
      "tcp_init() fails at once, not at the registration timeout", WR_REFUSED},
+    {"boundary", "the manager refuses with INT32_MIN, which can't be negated",
+     "refused: tcp_init() fails at once", WR_RESULT_MIN},
     {"negative", "an answer with no version, as a pre-v4 manager sends",
      "tcp_init() fails at once", WR_OLD_VERSION},
     {"boundary", "an answer one byte too short to hold a pre-v4 manager's",
@@ -3370,6 +3374,7 @@ static int wr_creates_left(enum wr_scenario scenario)
         return 2;
     case WR_ASSIGNED:
     case WR_REFUSED:
+    case WR_RESULT_MIN:
     case WR_OLD_VERSION:
     case WR_SHORT:
     case WR_ID_ZERO:
@@ -3727,6 +3732,11 @@ static const char *wr_run(const struct wr_case *c, struct wr_init *in, int lfd,
         return why;
     case WR_REFUSED:
         if (!send_register_resp(*mgr, 0, -EPROTO,
+                                (uint32_t)sizeof(TcpRegisterRespPayload)))
+            return "could not answer the registration";
+        break;
+    case WR_RESULT_MIN:
+        if (!send_register_resp(*mgr, 0, INT32_MIN,
                                 (uint32_t)sizeof(TcpRegisterRespPayload)))
             return "could not answer the registration";
         break;
@@ -5384,7 +5394,8 @@ static int run_ra_case(const struct ra_case *c)
  * dropped out of the mesh.  Now a node registering for the first time in a
  * full table evicts the node that has been dead longest, of those with no
  * connection in the table, or one that has ended.  Its id isn't given out
- * again, its claims go, and the workers are told it owns nothing.  A
+ * again, its claims go, and the workers are told it owns nothing.  If no
+ * node can be evicted, the new one is refused with -ENOSPC.  A
  * connection leaves the table before its receive thread is joined, so the
  * thread can still be handling the node's messages once it is evicted; an
  * advertisement handled then must not put the claims back.
@@ -5433,6 +5444,7 @@ enum ev_scenario {
     EV_ROOM,        /* the table has room for one more */
     EV_AGAIN,       /* worker 1, dead longest, registers again under its id */
     EV_NONE,        /* every node is alive, with a connection */
+    EV_CONNECTED,   /* every node is dead, but its connection is still up */
     EV_HEALTH,      /* a health-check pass straddles two evictions */
     EV_UNPUBLISHED, /* EV_OLDEST's connection is out of the table, but its
                        thread hasn't been joined, and it advertises */
@@ -5467,7 +5479,15 @@ static const struct ev_case ev_cases[] = {
      "the worker dead longest registers again under its id in a full table",
      "nothing is evicted", EV_AGAIN},
     {"negative", "a new node registers in a full table of live nodes",
-     "nothing is evicted, and no connection is closed", EV_NONE},
+     "refused with -ENOSPC: nothing is evicted, no connection is closed, and "
+     "the table stays full",
+     EV_NONE},
+    {"negative",
+     "a new node registers in a full table of dead nodes whose connections "
+     "are still up, then again once the oldest one's has ended",
+     "refused with -ENOSPC, then given the id it would have had, the oldest "
+     "node evicted",
+     EV_CONNECTED},
     {"corner",
      "a health-check pass decides about two dead nodes, and two "
      "registrations evict them before it acts",
@@ -5553,10 +5573,11 @@ static const char *ev_setup(struct ev_fixture *fx, enum ev_scenario scenario)
         uint64_t dead_s = id == EV_OLDEST ? 5000u
                           : id == EV_NEXT ? 4000u
                                           : 1000u + id;
+        bool connected = scenario == EV_NONE || scenario == EV_CONNECTED;
 
         if (!ev_plant(priv, id, scenario == EV_NONE, dead_s))
             return "could not make a node";
-        if (scenario == EV_NONE && !ev_connect(fx, id, false))
+        if (connected && !ev_connect(fx, id, false))
             return "could not connect a node";
     }
     if ((scenario == EV_ENDED || scenario == EV_HEALTH) &&
@@ -5760,7 +5781,7 @@ static const char *ev_live_conn(struct ev_fixture *fx)
                                          : "the oldest node lost its GID";
 }
 
-/* EV_ROOM, EV_AGAIN and EV_NONE: nothing is evicted */
+/* EV_ROOM and EV_AGAIN: nothing is evicted */
 static const char *ev_none(struct ev_fixture *fx, enum ev_scenario scenario)
 {
     TcpBackendPrivate *priv = fx->priv;
@@ -5793,20 +5814,66 @@ static const char *ev_none(struct ev_fixture *fx, enum ev_scenario scenario)
             why = "the oldest node's claims were dropped";
         return why;
     }
-    if (scenario == EV_AGAIN) {
-        if (result != 0 || id != 1)
-            return "worker 1 wasn't given its id back";
-        why = ev_kept(priv, fx->last, UINT32_MAX);
-        if (!why && mesh_node_count(priv) != TCP_MAX_MESH_NODES)
-            why = "the table isn't full";
-        return why;
-    }
-    /* EV_NONE */
+    /* EV_AGAIN */
+    if (result != 0 || id != 1)
+        return "worker 1 wasn't given its id back";
     why = ev_kept(priv, fx->last, UINT32_MAX);
-    for (uint32_t i = 2; !why && i <= fx->last; i++)
-        if (table_get(priv, i) != fx->conn[i] || conn_retired(fx->conn[i]))
-            why = "a live node's connection was closed";
+    if (!why && mesh_node_count(priv) != TCP_MAX_MESH_NODES)
+        why = "the table isn't full";
     return why;
+}
+
+/*
+ * EV_NONE and EV_CONNECTED: no node can be evicted, so a new node is refused,
+ * and the table left as it was.  In EV_CONNECTED, the oldest node's
+ * connection then ends, and the new node, asking again, takes its place.
+ */
+static const char *ev_full(struct ev_fixture *fx, enum ev_scenario scenario)
+{
+    TcpBackendPrivate *priv = fx->priv;
+    uint32_t id = UINT32_MAX;
+    int32_t result = 1;
+    const char *why;
+
+    why = ev_register(priv, &fx->fresh[0], UINT32_MAX, &id, &result);
+    if (why)
+        return why;
+    if (result != -ENOSPC || id != 0)
+        return "refused with the wrong answer, or given an id";
+    why = ev_kept(priv, fx->last, UINT32_MAX);
+    if (why)
+        return why;
+    if (mesh_node_count(priv) != TCP_MAX_MESH_NODES)
+        return "the table isn't full";
+    for (uint32_t i = 2; i <= fx->last; i++)
+        if (table_get(priv, i) != fx->conn[i] || conn_retired(fx->conn[i]))
+            return "a node's connection was closed";
+    if (!ev_has_claims(priv, EV_OLDEST))
+        return "the oldest node's claims were dropped";
+    if (pending_count(priv) != 1)
+        return "the refused connection isn't waiting to be reaped";
+    if (scenario == EV_NONE)
+        return NULL;
+
+    /* EV_CONNECTED: the oldest node can be evicted once its connection ends */
+    close(fx->peer[EV_OLDEST]);
+    fx->peer[EV_OLDEST] = -1;
+    if (!wait_dead(fx->conn[EV_OLDEST]))
+        return "the oldest node's connection didn't end";
+    why = ev_register(priv, &fx->fresh[1], UINT32_MAX, &id, &result);
+    if (why)
+        return why;
+    /* The refusal gave the id to nothing, so it is still the next one */
+    if (result != 0 || id != fx->last + 1)
+        return "the new node wasn't given the next id";
+    why = ev_kept(priv, id, EV_OLDEST);
+    if (why)
+        return why;
+    if (mesh_node_count(priv) != TCP_MAX_MESH_NODES)
+        return "the table isn't full";
+    return wait_retired(fx->conn[EV_OLDEST])
+               ? NULL
+               : "the evicted node's connection wasn't closed";
 }
 
 /*
@@ -5909,9 +5976,11 @@ static const char *ev_run(struct ev_fixture *fx, enum ev_scenario scenario)
         return ev_health(fx);
     case EV_UNPUBLISHED:
         return ev_unpublished(fx);
+    case EV_NONE:
+    case EV_CONNECTED:
+        return ev_full(fx, scenario);
     case EV_ROOM:
     case EV_AGAIN:
-    case EV_NONE:
     default:
         return ev_none(fx, scenario);
     }
@@ -6049,9 +6118,9 @@ static const struct lt_case lt_cases[] = {
      "a new node registers in a full table while teardown stops the receive "
      "threads, the connection of the node dead longest, which has ended, "
      "among them",
-     "nothing is evicted: that connection, which the stop has claimed, stays "
-     "in the table rather than being freed under it, and each thread is "
-     "joined once",
+     "nothing is evicted, so the new node is refused: that connection, "
+     "which the stop has claimed, stays in the table rather than being freed "
+     "under it, and each thread is joined once",
      LT_EVICT_VS_STOP},
 };
 
@@ -6290,13 +6359,20 @@ static const char *lt_register_vs_stop(enum lt_scenario scenario)
     qemu_mutex_unlock(&priv->mesh_table_lock);
     pthread_join(stopper, NULL);
 
+    /*
+     * The stop shut the socket down, so the refusal never reaches the
+     * worker; the connection left pending, and the table, say it was refused.
+     */
     if (evict) {
         if (!why && table_get(priv, EV_OLDEST) != ended)
             why = "the claimed connection was taken out of the table";
         else if (!why && !ev_in_table(priv, EV_OLDEST))
             why = "a node was evicted during teardown";
-        else if (!why && table_get(priv, TCP_MAX_MESH_NODES) != conn)
-            why = "the new node's connection isn't in the connections table";
+        else if (!why && (table_get(priv, TCP_MAX_MESH_NODES) ||
+                          mesh_node_count(priv) != TCP_MAX_MESH_NODES))
+            why = "the new node was added to a full table";
+        else if (!why && pending_count(priv) != 1)
+            why = "the refused connection isn't on the pending list";
         else if (!why && atomic_load(&g_joins) - joins != 3)
             why = "a receive thread wasn't joined exactly once";
         goto out;

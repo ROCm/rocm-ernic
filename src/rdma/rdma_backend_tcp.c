@@ -978,7 +978,8 @@ static int tcp_register_again(TcpBackendPrivate *priv, uint32_t node_id,
  * Make room in a full mesh_nodes for a node registering for the first time,
  * by evicting the node that has been dead longest.  The broadcasts carry at
  * most TCP_MAX_MESH_NODES nodes, and a table past that leaves nodes out of
- * them, live ones as likely as dead (tcp_report_mesh_overflow()).
+ * them, live ones as likely as dead (tcp_report_mesh_overflow()), so if no
+ * node can be evicted, the caller refuses the new one.
  *
  * Only a dead node with no connection in connections, or one whose
  * connection has ended, is evicted.  A node declared dead whose connection
@@ -2830,7 +2831,6 @@ void *tcp_recv_thread_per_conn(void *opaque)
                     while (tcp_node_id_taken(priv, assigned_id)) {
                         assigned_id++;
                     }
-                    priv->next_available_node_id = assigned_id + 1;
 
                     MeshNodeInfo *node = tcp_mesh_node_info_new(
                         assigned_id, worker_host, worker_port);
@@ -2846,8 +2846,24 @@ void *tcp_recv_thread_per_conn(void *opaque)
                     }
                     /* After the id is chosen, so it can't be the evicted one */
                     evicted = tcp_evict_dead_node(priv, &evicted_conn);
-                    g_hash_table_insert(priv->mesh_nodes,
-                                        GUINT_TO_POINTER(assigned_id), node);
+                    /*
+                     * The broadcasts carry no more nodes than the cap, so a
+                     * node past it would leave others out of the mesh.  The
+                     * id isn't used up, since nothing was given it.
+                     */
+                    if (evicted == UINT32_MAX &&
+                        g_hash_table_size(priv->mesh_nodes) >=
+                            TCP_MAX_MESH_NODES) {
+                        tcp_mesh_node_info_free(node);
+                        why = "the mesh is full, and has no dead node that "
+                              "can be evicted";
+                        refused = -ENOSPC;
+                    } else {
+                        priv->next_available_node_id = assigned_id + 1;
+                        g_hash_table_insert(priv->mesh_nodes,
+                                            GUINT_TO_POINTER(assigned_id),
+                                            node);
+                    }
                 }
 
                 if (refused != 0) {
@@ -2855,10 +2871,16 @@ void *tcp_recv_thread_per_conn(void *opaque)
                     g_ptr_array_add(priv->pending_conns, conn);
                     qemu_mutex_unlock(&priv->conn_table_lock);
                     qemu_mutex_unlock(&priv->mesh_table_lock);
-                    rdma_error_report("TCP: refusing a registration from "
-                                      "%s:%u as node %u: %s",
-                                      worker_host, worker_port, requested_id,
-                                      why);
+                    if (again) {
+                        rdma_error_report("TCP: refusing a registration from "
+                                          "%s:%u as node %u: %s",
+                                          worker_host, worker_port,
+                                          requested_id, why);
+                    } else {
+                        rdma_error_report("TCP: refusing a registration from "
+                                          "%s:%u as a new node: %s",
+                                          worker_host, worker_port, why);
+                    }
                     tcp_refuse_registration(priv, conn, hdr.src_node_id,
                                             refused);
                     hang_up = true;
@@ -3046,8 +3068,13 @@ void *tcp_recv_thread_per_conn(void *opaque)
                             "every destination GID to one default node",
                             mgr_version, TCP_PROTOCOL_VERSION,
                             TCP_PROTOCOL_VERSION);
+                    } else if (result < 0 && result != INT32_MIN) {
+                        /* A negative errno; INT32_MIN has no negation */
+                        rdma_error_report("TCP: Registration failed: %s",
+                                          strerror(-result));
                     } else if (result != 0) {
-                        rdma_error_report("TCP: Registration failed: %d",
+                        rdma_error_report("TCP: Registration failed: "
+                                          "result %" PRId32,
                                           result);
                     } else if (resp_id == 0 || resp_id == UINT32_MAX) {
                         /*
@@ -3736,11 +3763,12 @@ void *tcp_accept_thread(void *opaque)
  */
 
 /*
- * A broadcast carries at most TCP_MAX_MESH_NODES nodes.  If mesh_nodes holds
- * more, the ones past the cap -- live nodes as likely as dead ones, in
- * hash-table order -- drop out of the topology and the GID table, which
- * breaks the mesh with no other sign, so say so.  @table_size is the size of
- * mesh_nodes the broadcast found.
+ * A broadcast carries at most TCP_MAX_MESH_NODES nodes.  Registration keeps
+ * mesh_nodes within that, evicting a dead node or refusing the new one, so a
+ * table past it is a bug.  The nodes past the cap -- live nodes as likely as
+ * dead ones, in hash-table order -- drop out of the topology and the GID
+ * table, which breaks the mesh with no other sign, so say so.  @table_size is
+ * the size of mesh_nodes the broadcast found.
  */
 static void tcp_report_mesh_overflow(const char *broadcast, guint table_size)
 {
