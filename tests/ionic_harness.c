@@ -28,6 +28,7 @@
 #include "ionic_rdma_devcmd.h"
 #include "nvmeof_target.h"
 #include "rocm_ernic_compat.h"
+#include "s3_target.h"
 
 /* Guest memory: 32 regions of 1 MiB */
 #define IH_REGION_SIZE (1u << 20)
@@ -142,6 +143,19 @@ static bool attach_nvmeof(struct ih *h, const char *backend)
     return ok || fail("nvmeof backend: %s", err);
 }
 
+static bool attach_s3(struct ih *h, const char *backend)
+{
+    struct s3_target_cfg cfg;
+    char err[256] = "";
+    const char *opts = strchr(backend, ':');
+
+    s3_target_cfg_defaults(&cfg);
+    bool ok =
+        s3_target_cfg_parse(&cfg, opts ? opts + 1 : NULL, err, sizeof(err)) &&
+        ionic_datapath_attach_s3(h->dev->ionic_dp, &cfg, err, sizeof(err));
+    return ok || fail("s3 backend: %s", err);
+}
+
 bool ih_create(struct ih *h, const char *backend)
 {
     memset(h, 0, sizeof(*h));
@@ -184,6 +198,10 @@ bool ih_create(struct ih *h, const char *backend)
     ionic_rdma_devcmd_set_eth_emu(dev->ionic_rdma, dev->ionic_emu);
 
     if (!strcmp(dev->backend_name, "nvmeof") && !attach_nvmeof(h, backend)) {
+        ih_destroy(h);
+        return false;
+    }
+    if (!strcmp(dev->backend_name, "s3") && !attach_s3(h, backend)) {
         ih_destroy(h);
         return false;
     }

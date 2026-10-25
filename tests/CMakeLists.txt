@@ -1467,8 +1467,9 @@ set_tests_properties(pvrdma-stats-unit PROPERTIES TIMEOUT 30)
 # driver drives it, one CTest test per group so a failure names its area.
 # Bring-up and devcmds, RDMA_RESET_LIF, refused admin commands, RC
 # transfers, atomics and fast registration, CQ events, UD, SRQ, Ethernet
-# Tx/Rx, and the NVMe-oF CM handshake and Connect over the GSI QP, and the
-# flush a QP entering the Error state owes its outstanding work requests.
+# Tx/Rx, the NVMe-oF CM handshake and Connect over the GSI QP, the S3
+# store's RDMA GET and PUT, key 0 refused by both targets, and the flush a
+# QP entering the Error state owes its outstanding work requests.
 # Also which --backend strings name which backend, a QP's life on the none
 # backend, the loopback backend pairing QPs that name no destination, and
 # RDMA_RESET_LIF freeing everything the driver made. The *-dma groups refuse
@@ -1477,7 +1478,7 @@ set_tests_properties(pvrdma-stats-unit PROPERTIES TIMEOUT 30)
 set(ERNIC_HARNESS_GROUPS
     devcmds bringup rdma-reset rdma-reset-frees admin admin-dma rc atomic
     dp-dma tables cq-events qp-flush qp-flush-srq ud srq eth eth-dma nvmeof
-    teardown backend-names none loopback-pair)
+    s3 teardown backend-names none loopback-pair)
 if(ERNIC_BUILD_P4)
     list(APPEND ERNIC_HARNESS_GROUPS p4-port fp8-map p4-rdma p4-cvt p4-cvt-map
                                       p4-drop-map p4-devcmd)
