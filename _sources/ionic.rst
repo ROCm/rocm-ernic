@@ -662,11 +662,13 @@ Working:
   for three health-check intervals, and the manager gives
   the id back if the worker asks from the address it
   registered and can't still be answering on the connection
-  it had. The manager closes the connection of a node that
-  stops answering, rather than connecting to it. While a
-  worker has no connection to the manager it hears nothing
-  of the mesh, and reaches only the nodes it has a
-  connection of its own to
+  it had. A worker whose id the manager no longer has (it
+  evicted the node, or it has restarted) stops asking, and
+  has to be restarted to rejoin. The manager closes the
+  connection of a node that stops answering, rather than
+  connecting to it. While a worker has no connection to the
+  manager it hears nothing of the mesh, and reaches only the
+  nodes it has a connection of its own to
 
 Not yet working:
 
