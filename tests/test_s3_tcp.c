@@ -126,6 +126,12 @@ struct t_icmp {
     uint16_t seq;
 } __attribute__((packed));
 
+_Static_assert(sizeof(struct t_eth) == 14, "Ethernet header is 14 bytes");
+_Static_assert(sizeof(struct t_arp) == 28, "ARP for IPv4 is 28 bytes");
+_Static_assert(sizeof(struct t_ip) == 20, "IPv4 header is 20 bytes");
+_Static_assert(sizeof(struct t_tcp) == 20, "TCP header is 20 bytes");
+_Static_assert(sizeof(struct t_icmp) == 8, "ICMP echo header is 8 bytes");
+
 #define ETH_LEN ((size_t)sizeof(struct t_eth))
 #define IP_LEN  ((size_t)sizeof(struct t_ip))
 #define TCP_LEN ((size_t)sizeof(struct t_tcp))
