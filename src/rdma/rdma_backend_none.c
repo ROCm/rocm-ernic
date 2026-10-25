@@ -33,23 +33,6 @@ static void none_fini(RdmaBackendDev *backend_dev)
 }
 
 /* Query operations - return defaults */
-static int none_query_port(RdmaBackendDev *backend_dev,
-                           struct ibv_port_attr *attr)
-{
-    memset(attr, 0, sizeof(*attr));
-    attr->state = IBV_PORT_ACTIVE;
-    attr->max_mtu = IBV_MTU_4096;
-    attr->active_mtu = IBV_MTU_1024;
-    attr->gid_tbl_len = 1;
-    attr->port_cap_flags = IBV_PORT_CM_SUP;
-    attr->max_msg_sz = 0x80000000;
-    attr->pkey_tbl_len = 1;
-    attr->active_width = 1;
-    attr->active_speed = 1;
-    attr->phys_state = 5; /* LinkUp */
-    return 0;
-}
-
 static int none_query_device(RdmaBackendDev *backend_dev,
                              struct ibv_device_attr *attr)
 {
@@ -70,11 +53,6 @@ static int none_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
     return 0;
 }
 
-static void none_destroy_pd(RdmaBackendPD *pd)
-{
-    /* Nothing to free */
-}
-
 /* MR operations - stub implementations */
 static int none_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, void *addr,
                           size_t length, uint64_t guest_start, int access)
@@ -91,11 +69,6 @@ static void none_destroy_mr(RdmaBackendMR *mr)
 static uint32_t none_mr_lkey(const RdmaBackendMR *mr)
 {
     return 0; /* Fake lkey */
-}
-
-static uint32_t none_mr_rkey(const RdmaBackendMR *mr)
-{
-    return 0; /* Fake rkey */
 }
 
 /* CQ operations - stub implementations */
@@ -170,18 +143,6 @@ static int none_query_qp(RdmaBackendQP *qp, struct ibv_qp_attr *attr,
 }
 
 /* GID management - stub implementations */
-static int none_add_gid(RdmaBackendDev *backend_dev, const char *ifname,
-                        union ibv_gid *gid)
-{
-    return 0; /* Pretend success */
-}
-
-static int none_del_gid(RdmaBackendDev *backend_dev, const char *ifname,
-                        int gid_idx)
-{
-    return 0; /* Pretend success */
-}
-
 static int none_get_backend_gid_index(RdmaBackendDev *backend_dev, int sgid_idx)
 {
     return sgid_idx; /* Identity mapping */
@@ -200,16 +161,13 @@ const RdmaBackendOps rdma_backend_ops_none = {
     .init = none_init,
     .fini = none_fini,
 
-    .query_port = none_query_port,
     .query_device = none_query_device,
 
     .create_pd = none_create_pd,
-    .destroy_pd = none_destroy_pd,
 
     .create_mr = none_create_mr,
     .destroy_mr = none_destroy_mr,
     .mr_lkey = none_mr_lkey,
-    .mr_rkey = none_mr_rkey,
 
     .create_cq = none_create_cq,
     .destroy_cq = none_destroy_cq,
@@ -223,8 +181,6 @@ const RdmaBackendOps rdma_backend_ops_none = {
     .qp_state_rts = none_qp_state_rts,
     .query_qp = none_query_qp,
 
-    .add_gid = none_add_gid,
-    .del_gid = none_del_gid,
     .get_backend_gid_index = none_get_backend_gid_index,
 
     /* SRQ operations not supported */

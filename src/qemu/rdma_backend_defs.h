@@ -19,8 +19,6 @@
 #ifndef RDMA_BACKEND_DEFS_H
 #define RDMA_BACKEND_DEFS_H
 
-#include <stdbool.h>
-#include <stdint.h>
 #include <infiniband/verbs.h>
 
 /* Forward declare backend ops (defined in rdma_backend_ops.h) */
@@ -47,10 +45,6 @@ typedef struct RdmaBackendDev {
     RdmaBackendType backend_type;
     const RdmaBackendOps *backend_ops;
     void *backend_private; /* Backend-specific data */
-
-    /* Mesh metadata (used by TCP mesh backend) */
-    bool mesh_enabled;
-    uint8_t mesh_node_id;
 } RdmaBackendDev;
 
 typedef struct RdmaBackendPD {

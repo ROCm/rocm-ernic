@@ -17,7 +17,6 @@
 #include <rdma_backend.h> /* declares rdma_backend_{init,fini}_with_ops */
 #include "rdma_utils.h"
 #include <errno.h>
-#include <stdbool.h>
 #include <string.h>
 
 /**
@@ -151,8 +150,6 @@ int rdma_backend_init_with_ops(RdmaBackendDev *backend_dev,
     backend_dev->backend_type = type;
     backend_dev->backend_ops = ops;
     backend_dev->backend_private = NULL;
-    backend_dev->mesh_enabled = false;
-    backend_dev->mesh_node_id = 0;
 
     if (ops->init) {
         ret = ops->init(backend_dev, config);
