@@ -139,6 +139,28 @@ static int set_signal_handler(int signo, void (*handler)(int))
 }
 
 /**
+ * Unblock SIGINT and SIGTERM in the calling thread.  Returns 0, or -1 with
+ * errno set, like set_signal_handler().
+ */
+static int unblock_shutdown_signals(void)
+{
+    sigset_t set;
+    int ret;
+
+    sigemptyset(&set);
+    sigaddset(&set, SIGINT);
+    sigaddset(&set, SIGTERM);
+
+    /* pthread_sigmask() returns an error number rather than setting errno */
+    ret = pthread_sigmask(SIG_UNBLOCK, &set, NULL);
+    if (ret != 0) {
+        errno = ret;
+        return -1;
+    }
+    return 0;
+}
+
+/**
  * Log callback for libvfio-user
  */
 static void vfu_log_cb(vfu_ctx_t *vfu_ctx, int level, const char *msg)
@@ -1804,9 +1826,14 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    /* Setup signal handlers */
+    /* Setup signal handlers.  Worker threads block every signal
+     * (qemu_thread_create()), so this thread takes SIGINT and SIGTERM, and
+     * must not block them itself: a mask is inherited across exec, so a
+     * launcher could have left them blocked.  One already pending is taken
+     * by the handler once unblocked. */
     if (set_signal_handler(SIGINT, signal_handler) == -1 ||
-        set_signal_handler(SIGTERM, signal_handler) == -1) {
+        set_signal_handler(SIGTERM, signal_handler) == -1 ||
+        unblock_shutdown_signals() == -1) {
         err(EXIT_FAILURE, "Failed to setup signal handlers");
     }
 

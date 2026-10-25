@@ -5,7 +5,7 @@
  * Each row starts the real server binary, mostly on the loopback backend,
  * does something to it (nothing, a client that hangs up, a client that sends
  * a bad header, a client that never speaks), signals it, and checks the exit
- * status and the log.  Six things are pinned here:
+ * status and the log.  Seven things are pinned here:
  *
  *   - only the socket's owner, and the group --socket-group names, can
  *     connect to it, whatever the umask or a default ACL on its directory;
@@ -19,6 +19,8 @@
  *   - on the TCP backend, SIGTERM stops the backend's threads promptly
  *     rather than waiting out a blocking accept() or the health-check
  *     interval;
+ *   - SIGTERM still shuts the server down if it was started with SIGINT and
+ *     SIGTERM blocked, as a mask is inherited across exec;
  *   - a startup failure after the backend has started its threads stops
  *     and joins them before the server exits.
  *
@@ -458,6 +460,7 @@ struct lifecycle_case {
     mode_t umask;      /* the umask for set_umask */
     bool fd_limit;     /* run the server with stdin closed and RLIMIT_NOFILE 1,
                           so the one file it can open is fd 0 */
+    bool block_sigs;   /* start the server with SIGINT and SIGTERM blocked */
     enum dir_acl acl;  /* put the socket in a directory with this ACL */
     enum sock_pre pre; /* what's at the socket's path beforehand */
     enum sock_group group;
@@ -527,6 +530,24 @@ static const struct lifecycle_case cases[] = {
      .backend = "tcp:manager:listen:@PORT@",
      .env_name = "ERNIC_TCP_HEALTH_INTERVAL",
      .env_value = "60",
+     .want_socket = true,
+     .settle = true,
+     .action = IDLE,
+     .clients = 0,
+     .sig = SIGTERM,
+     .sigs = 1,
+     .want_exit = 0,
+     .want_dropped = 0,
+     .want_shutdown = 1},
+    /* A mask is inherited across exec.  If the server didn't unblock the
+     * signals it takes, SIGTERM would stay pending and the row would time
+     * out. */
+    {.category = "positive",
+     .description = "TCP mesh manager started with SIGINT and SIGTERM "
+                    "blocked, then SIGTERM",
+     .expected = "unblocks them, so exits 0 after one 'Shutdown complete'",
+     .backend = "tcp:manager:listen:@PORT@",
+     .block_sigs = true,
      .want_socket = true,
      .settle = true,
      .action = IDLE,
@@ -1272,6 +1293,15 @@ static pid_t start_server(const struct lifecycle_case *c, const char *backend,
                 _exit(126);
             lim.rlim_cur = 1;
             if (setrlimit(RLIMIT_NOFILE, &lim) < 0)
+                _exit(126);
+        }
+        if (c->block_sigs) {
+            sigset_t set;
+
+            sigemptyset(&set);
+            sigaddset(&set, SIGINT);
+            sigaddset(&set, SIGTERM);
+            if (pthread_sigmask(SIG_BLOCK, &set, NULL) != 0)
                 _exit(126);
         }
         /* The options a row may add, packed to the front, since execl()

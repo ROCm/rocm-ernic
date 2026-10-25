@@ -1,6 +1,6 @@
 /*
  *
- * Unit tests for the bitmap stubs in qemu_stubs.c.
+ * Unit tests for the bitmap and thread stubs in qemu_stubs.c.
  *
  * The bitmap's storage word is unsigned long, which is 32 or 64 bits
  * depending on the platform, so the cases use sizes around that width
@@ -13,6 +13,10 @@
  * since its uint32_t result could not index it. That case runs in a child
  * process, which is expected to die by SIGABRT.
  *
+ * qemu_thread_create() must start each thread with every signal blocked
+ * except those a fault raises, so the process's signals go to the main
+ * thread, and must leave its caller's own mask as it was.
+ *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -23,6 +27,7 @@
 #include <inttypes.h>
 #include <limits.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -31,6 +36,7 @@
 #include <glib.h>
 
 #include "qemu/bitmap.h"
+#include "qemu/thread.h"
 
 static int failures;
 
@@ -133,10 +139,71 @@ static void test_oversize_aborts(void)
     }
 }
 
+/* ---- Threads --------------------------------------------------------- */
+
+/* The signal mask the thread found itself started with. */
+static void *record_mask(void *arg)
+{
+    pthread_sigmask(SIG_BLOCK, NULL, (sigset_t *)arg);
+    return NULL;
+}
+
+static void check_blocked(const sigset_t *mask, int signo, bool want,
+                          const char *whose)
+{
+    if ((sigismember(mask, signo) == 1) != want) {
+        printf("FAIL %s: signal %d is %sblocked\n", whose, signo,
+               want ? "not " : "");
+        failures++;
+    }
+}
+
+static void test_thread_signal_mask(void)
+{
+    /* Blocked in the thread.  SIGUSR2 is also blocked in the caller, below,
+     * so it has to stay that way there. */
+    static const int blocked[] = {SIGINT,  SIGTERM, SIGHUP,  SIGQUIT, SIGPIPE,
+                                  SIGUSR1, SIGUSR2, SIGALRM, SIGCHLD};
+    /* Raised by a fault, so left unblocked. */
+    static const int faults[] = {SIGSEGV, SIGBUS, SIGFPE, SIGILL};
+    sigset_t caller;
+    sigset_t before;
+    sigset_t after;
+    sigset_t in_thread;
+    QemuThread thread;
+
+    sigemptyset(&caller);
+    sigaddset(&caller, SIGUSR2);
+    pthread_sigmask(SIG_SETMASK, &caller, &before);
+
+    sigemptyset(&in_thread);
+    if (qemu_thread_create(&thread, record_mask, &in_thread) != 0) {
+        printf("FAIL qemu_thread_create\n");
+        failures++;
+        pthread_sigmask(SIG_SETMASK, &before, NULL);
+        return;
+    }
+    qemu_thread_join(&thread);
+    pthread_sigmask(SIG_SETMASK, &before, &after);
+
+    for (size_t i = 0; i < sizeof(blocked) / sizeof(blocked[0]); i++) {
+        check_blocked(&in_thread, blocked[i], true, "new thread");
+    }
+    for (size_t i = 0; i < sizeof(faults) / sizeof(faults[0]); i++) {
+        check_blocked(&in_thread, faults[i], false, "new thread");
+    }
+
+    /* The caller's mask is the one it had before. */
+    check_blocked(&after, SIGUSR2, true, "caller");
+    check_blocked(&after, SIGINT, false, "caller");
+    check_blocked(&after, SIGTERM, false, "caller");
+}
+
 int main(void)
 {
     test_bitmap_sizes();
     test_oversize_aborts();
+    test_thread_signal_mask();
 
     if (failures) {
         printf("qemu_stubs: %d check(s) FAILED\n", failures);
