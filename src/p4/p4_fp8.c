@@ -114,7 +114,8 @@ float p4_fp8_to_float(uint8_t v)
             ((man << (F32_EXP_SHIFT - msb)) & F32_MAN_MASK));
     }
 
-    return bits_float(sign | ((exp - FP8_BIAS + F32_BIAS) << F32_EXP_SHIFT) |
+    /* The larger bias first: exp is unsigned, and may be below FP8_BIAS. */
+    return bits_float(sign | ((exp + F32_BIAS - FP8_BIAS) << F32_EXP_SHIFT) |
                       (man << FP8_NORMAL_SHIFT));
 }
 

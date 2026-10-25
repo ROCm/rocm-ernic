@@ -1489,12 +1489,13 @@ set_tests_properties(pvrdma-stats-unit PROPERTIES TIMEOUT 30)
 # Also which --backend strings name which backend, a QP's life on the none
 # backend, the loopback backend pairing QPs that name no destination, and
 # RDMA_RESET_LIF freeing everything the driver made. The *-dma groups refuse
-# one DMA at a time in the admin queue, the data path and Ethernet, and
-# tables fills the EQ, admin queue and MR tables.
+# one DMA at a time in the admin queue, the data path and Ethernet,
+# tables fills the EQ, admin queue and MR tables, and wrap sends lengths
+# and registers regions whose sums or ends carry past 2^32 or 2^64.
 set(ERNIC_HARNESS_GROUPS
     devcmds bringup rdma-reset rdma-reset-frees admin admin-dma rc atomic
-    dp-dma tables cq-events qp-flush qp-flush-srq ud srq eth eth-dma nvmeof
-    s3 teardown backend-names none loopback-pair)
+    wrap dp-dma tables cq-events qp-flush qp-flush-srq ud srq eth eth-dma
+    nvmeof s3 teardown backend-names none loopback-pair)
 if(ERNIC_BUILD_P4)
     list(APPEND ERNIC_HARNESS_GROUPS p4-port fp8-map p4-rdma p4-cvt p4-cvt-map
                                       p4-drop-map p4-devcmd)

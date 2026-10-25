@@ -288,12 +288,37 @@ static void check_unreadable_tail(void)
         failures++;
 }
 
+/*
+ * Boundary and negative: the deepest admin queue is 2^16 entries, the most
+ * a completion's 16-bit cmd_idx can name, and one twice that is refused
+ * rather than reported on with slot numbers cut down to 16 bits.
+ */
+static void check_depth_limit(void)
+{
+    ctx_reset();
+    bool deepest = ionic_adminq_register_queue(&g_ctx, 0, AQ_GPA,
+                                               IONIC_ADMINQ_MAX_DEPTH_LOG2,
+                                               ACQ_GPA, AQ_DEPTH_LOG2, 0, 0);
+    ctx_reset();
+    bool deeper = ionic_adminq_register_queue(&g_ctx, 0, AQ_GPA,
+                                              IONIC_ADMINQ_MAX_DEPTH_LOG2 + 1,
+                                              ACQ_GPA, AQ_DEPTH_LOG2, 0, 0);
+    bool ok = deepest && !deeper && !g_ctx.aq[0].valid;
+
+    printf("%s boundary: admin queues 2^16 and 2^17 deep; expected: the first "
+           "registered, the second refused\n",
+           ok ? "ok  " : "FAIL");
+    if (!ok)
+        failures++;
+}
+
 int main(void)
 {
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
         run_case(&cases[i]);
     check_refused_then_next();
     check_unreadable_tail();
+    check_depth_limit();
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);

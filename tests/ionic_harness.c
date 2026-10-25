@@ -1048,7 +1048,7 @@ uint64_t ih_post_send(struct ih *h, struct ih_qp *qp, const struct ih_send *s)
         s->op != IH_OP_REG_MR) {
         if (s->flags & IH_WQE_INLINE) {
             memcpy(wqe + WQE_PLD_OFF, s->inline_data, s->inline_len);
-            ernic_put_be32(wqe + 28, s->inline_len);
+            ernic_put_be32(wqe + 28, s->length ? s->length : s->inline_len);
         } else {
             put_sges(wqe, s->sge, s->nsge);
         }

@@ -677,7 +677,9 @@ WQE:
      - Unbind a key
 
 Inline sends (payload carried in the WQE itself) are handled by
-treating the WQE's own payload area as the source buffer.
+treating the WQE's own payload area as the source buffer. One
+claiming more than that area holds fails with a length error,
+as does a send whose SGE lengths add up to more than 4 GiB.
 
 Copies between two guest buffers go through a 4 KiB bounce
 buffer on the server's stack, one contiguous run at a time.

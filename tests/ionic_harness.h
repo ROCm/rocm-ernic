@@ -271,7 +271,9 @@ struct ih_send {
     /* RDMA and atomics */
     uint64_t remote_va;
     uint32_t rkey;
-    uint32_t length; /* RDMA length; filled in from the SGEs if 0 */
+    /* RDMA length, filled in from the SGEs if 0; or, with IH_WQE_INLINE,
+     * the length the WQE claims, @inline_len if 0 */
+    uint32_t length;
     uint64_t swap_add;
     uint64_t compare;
 

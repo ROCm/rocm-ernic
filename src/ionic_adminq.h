@@ -33,6 +33,13 @@ void ionic_adminq_destroy(struct ionic_adminq_ctx *ctx);
 void ionic_adminq_release_all(struct ionic_adminq_ctx *ctx);
 
 /*
+ * The deepest admin queue, as log2 of its entries. Its doorbell's producer
+ * index and its completions' cmd_idx are 16 bits, so an entry past 2^16 is
+ * one the driver can't name and the device can't report.
+ */
+#define IONIC_ADMINQ_MAX_DEPTH_LOG2 16u
+
+/*
  * Register a new admin queue ring pair.
  *
  * @aq_idx:         index of this AQ (0..IONIC_AQ_COUNT-1)
@@ -41,8 +48,9 @@ void ionic_adminq_release_all(struct ionic_adminq_ctx *ctx);
  * @cq_dma:         guest PA of the admin CQ ring
  * @cq_depth_log2:  log2 of CQ ring depth
  *
- * Returns false, registering nothing, if aq_idx is out of range or either
- * depth is above IONIC_RING_MAX_DEPTH_LOG2.
+ * Returns false, registering nothing, if aq_idx is out of range, the AQ's
+ * depth is above IONIC_ADMINQ_MAX_DEPTH_LOG2, or the CQ's is above
+ * IONIC_RING_MAX_DEPTH_LOG2.
  */
 bool ionic_adminq_register_queue(struct ionic_adminq_ctx *ctx, int aq_idx,
                                  uint64_t aq_dma, uint8_t aq_depth_log2,

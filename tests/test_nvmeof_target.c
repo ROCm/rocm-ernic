@@ -959,6 +959,29 @@ static void test_io(void)
     check("io-inline-short", rsp_sc(rsp) == NVME_SC_SGL_INVALID_DATA,
           "a capsule shorter than its in-capsule SGL was accepted");
 
+    /*
+     * An offset that wraps to 0 once the 64-byte SQE is added to it, which
+     * wrote the command itself to the namespace as the first of its data.
+     */
+    cap_init(&c, NVME_CMD_WRITE, 39);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le64(c.b + NVME_SQE_CDW10_OFF, 64);
+    cap_inline_sgl(&c, scratch, sizeof(scratch));
+    ernic_put_le64(c.b + NVME_SQE_DPTR_OFF, UINT64_MAX - (NVME_SQE_SIZE - 1));
+    nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
+    check("io-inline-wrap", rsp_sc(rsp) == NVME_SC_SGL_INVALID_DATA,
+          "an in-capsule SGL offset that wraps was accepted");
+
+    memset(back, 0, 512);
+    cap_init(&c, NVME_CMD_READ, 40);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le64(c.b + NVME_SQE_CDW10_OFF, 64);
+    cap_keyed_sgl(&c, back_addr, 512, HOST_RKEY);
+    nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
+    check("io-inline-wrap", memcmp(back, scratch, 512) == 0,
+          "a Write through an in-capsule SGL offset that wraps changed the "
+          "namespace");
+
     /* Statistics should reflect the traffic we just generated. */
     const struct nvmeof_target_stats *st = nvmeof_target_stats(t);
     check("stats", st->connects == 2, "connect count is wrong");
@@ -2101,6 +2124,15 @@ static void test_image_size(void)
         check("image-partial", fd_size(fd) == def + 100,
               "a refused image was resized");
     }
+
+    /* A size= past what an off_t holds is refused as such, rather than
+     * handed to ftruncate() as a negative length. 8388608T is 2^63. */
+    snprintf(opts, sizeof(opts), "size=8388608T,file=%s", path);
+    t = try_target(opts, err, sizeof(err));
+    check("image-too-large", t == NULL, "a size= of 2^63 bytes was taken");
+    check("image-too-large", strstr(err, "too large for a file") != NULL,
+          "refusing a size= of 2^63 bytes did not say why");
+    nvmeof_target_destroy(t);
 
     /* Something that isn't a regular file can't be sized or mapped as one. */
     t = try_target("file=/dev/null", err, sizeof(err));

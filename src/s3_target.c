@@ -549,7 +549,10 @@ static struct s3_object *obj_store(struct s3_target *t, const char *key,
     struct s3_object *o = obj_find(t, key);
     uint64_t freed = (o != NULL) ? o->len : 0;
 
-    if (t->used - freed + len > t->cfg.capacity) {
+    /* Against what is left rather than adding len, which could wrap. The
+     * object being replaced is part of used, so the first subtraction
+     * can't. */
+    if (len > t->cfg.capacity - (t->used - freed)) {
         return NULL;
     }
     if (o == NULL) {
@@ -1127,7 +1130,7 @@ static void handle_put(struct s3_target *t, const struct s3_http_request *req,
         }
         unsigned nparts_before = u->nparts;
         struct s3_part *p = part_slot(u, number);
-        if (p == NULL || t->used - p->len + len > t->cfg.capacity) {
+        if (p == NULL || len > t->cfg.capacity - (t->used - p->len)) {
             /* part_slot() has already committed the slot, and a part
              * the store cannot take must not count towards the ETag. */
             u->nparts = nparts_before;

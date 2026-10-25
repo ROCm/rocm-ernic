@@ -314,9 +314,13 @@ static inline bool ernic_parse_hexstr(const char *s, uint8_t *out,
     if (digits == 0) {
         return false;
     }
-    /* Compare against the capacity rather than forming 2 * out_cap, which
-     * would wrap for a large capacity. */
-    if (digits > out_cap * 2) {
+    /* An odd digit count means the first digit is the low half of the top
+     * byte, so pair from the right. */
+    size_t nbytes = digits / 2 + digits % 2;
+
+    /* Compare the bytes against the capacity rather than forming
+     * 2 * out_cap, which would wrap for a large capacity. */
+    if (nbytes > out_cap) {
         return false;
     }
     for (size_t i = 0; i < digits; i++) {
@@ -324,10 +328,6 @@ static inline bool ernic_parse_hexstr(const char *s, uint8_t *out,
             return false;
         }
     }
-
-    /* An odd digit count means the first digit is the low half of the top
-     * byte, so pair from the right. */
-    size_t nbytes = (digits + 1) / 2;
 
     memset(out, 0, out_cap);
     for (size_t i = 0; i < digits; i++) {

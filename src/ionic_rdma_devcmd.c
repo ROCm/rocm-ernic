@@ -36,6 +36,7 @@
 #include "ionic_eth_emu.h"
 #include "ionic_adminq.h"
 #include "ionic_datapath.h"
+#include "rocm_ernic_internal.h"
 
 /* -------------------------------------------------------------------------
  * ionic_if.h constants (devcmd opcodes and structs)
@@ -241,6 +242,17 @@ static void handle_create_eq(struct ionic_rdma_devcmd_state *s,
         return;
     }
 
+    /* The interrupt the EQ raises. Past the MSI-X table it could never be
+     * raised, and past INT_MAX it has no int to be passed as. */
+    if (cid >= IONIC_MSIX_MAX_VECTORS) {
+        vfu_log(s->vfu_ctx, LOG_ERR,
+                "ionic_rdma_devcmd: CREATE_EQ qid=%u: refusing interrupt %u "
+                "(max %u)",
+                qid, cid, IONIC_MSIX_MAX_VECTORS - 1u);
+        comp[0] = 1;
+        return;
+    }
+
     int idx = s->eq_count++;
 
     s->eq[idx].valid = true;
@@ -321,11 +333,11 @@ static void handle_create_adminq(struct ionic_rdma_devcmd_state *s,
 
     /* A guest exponent, which the admin queue sizes the AQ by shifting by.
      * The stride isn't used: admin WQEs have a fixed size. */
-    if (cmd[RDMA_QUEUE_DEPTH_OFF] > IONIC_RING_MAX_DEPTH_LOG2) {
+    if (cmd[RDMA_QUEUE_DEPTH_OFF] > IONIC_ADMINQ_MAX_DEPTH_LOG2) {
         vfu_log(s->vfu_ctx, LOG_ERR,
                 "ionic_rdma_devcmd: CREATE_ADMINQ qid=%u: refusing "
                 "depth_log2=%u (max %u)",
-                qid, cmd[RDMA_QUEUE_DEPTH_OFF], IONIC_RING_MAX_DEPTH_LOG2);
+                qid, cmd[RDMA_QUEUE_DEPTH_OFF], IONIC_ADMINQ_MAX_DEPTH_LOG2);
         comp[0] = 1;
         return;
     }
@@ -483,6 +495,7 @@ int ionic_rdma_devcmd_post_cq_event(struct ionic_rdma_devcmd_state *s,
 
     if (!s->eth_emu)
         return 0;
+    /* CREATE_EQ held it below IONIC_MSIX_MAX_VECTORS, so it fits */
     return ionic_eth_emu_trigger_irq(s->eth_emu, (int)eq->intr_index);
 }
 

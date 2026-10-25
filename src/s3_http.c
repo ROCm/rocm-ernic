@@ -12,6 +12,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -341,10 +342,19 @@ void s3_http_response_write(struct s3_http_response *resp, const void *data,
     if (resp->oom || len == 0)
         return;
 
-    if (resp->body_len + len > resp->body_cap) {
+    /* A body past SIZE_MAX is out of memory too; summed, it would wrap to a
+     * size the buffer already has room for. */
+    if (len > SIZE_MAX - resp->body_len) {
+        resp->oom = true;
+        return;
+    }
+    size_t need = resp->body_len + len;
+
+    if (need > resp->body_cap) {
         size_t cap = resp->body_cap ? resp->body_cap : 256;
-        while (cap < resp->body_len + len)
-            cap *= 2;
+        /* Doubling past SIZE_MAX / 2 would wrap, and then never stop. */
+        while (cap < need)
+            cap = cap > SIZE_MAX / 2 ? need : cap * 2;
         uint8_t *nb = realloc(resp->body, cap);
         if (nb == NULL) {
             resp->oom = true;

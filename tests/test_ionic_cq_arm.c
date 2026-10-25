@@ -60,10 +60,16 @@ void vfu_log(vfu_ctx_t *vfu_ctx, int level, const char *fmt, ...)
     (void)fmt;
 }
 
+/* Interrupts raised through the Ethernet emulator, which is how a data path
+ * with no CQ event callback raises a CQ's event. */
+static unsigned g_irqs;
+static int g_irq_vec;
+
 int ionic_eth_emu_trigger_irq(struct ionic_eth_emu *emu, int vec)
 {
     (void)emu;
-    (void)vec;
+    g_irqs++;
+    g_irq_vec = vec;
     return 0;
 }
 
@@ -466,6 +472,30 @@ static void test_no_event_without_arm(void)
 }
 
 /*
+ * With no CQ event callback, the event is the EQ's interrupt, raised through
+ * the Ethernet emulator. The EQ id is the guest's u32, and one past INT_MAX
+ * has no int to pass: converted, it raised a negative vector.
+ */
+static void test_event_by_interrupt(void)
+{
+    struct ionic_datapath *dp = dp_with_cq(1, 0, false);
+
+    /* Nothing of the emulator is read; it only has to be there */
+    dp->eth_emu = (struct ionic_eth_emu *)(void *)&g_dp;
+    dp->cq_event_fn = NULL;
+    g_irqs = 0;
+
+    dp->cq[CQ_ID].eq_id = 3;
+    doorbell(dp, CQ_ID, RING_ARM_ANY, 0);
+    check(g_irqs == 1 && g_irq_vec == 3,
+          "an armed CQ with no callback raises its EQ's interrupt");
+
+    dp->cq[CQ_ID].eq_id = 0x80000000u;
+    doorbell(dp, CQ_ID, RING_ARM_ANY, 0);
+    check(g_irqs == 1, "an EQ id past INT_MAX raises no interrupt");
+}
+
+/*
  * ionic_dp_rdma_bytes() feeds both counters: the stats file once per message,
  * the guest's LIF block once per direction.
  */
@@ -522,6 +552,7 @@ int main(void)
     test_arm_does_not_move_cons();
     test_cons_wraps();
     test_no_event_without_arm();
+    test_event_by_interrupt();
     test_rdma_bytes_directions();
 
     if (g_failures) {

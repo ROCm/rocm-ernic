@@ -237,21 +237,34 @@ static ssize_t bar0_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
     if (dev->pvrdma_handle)
         pvrdma_bar0_mmio_count(dev->pvrdma_handle, is_write);
 
-    if ((size_t)offset + count <= IONIC_BAR0_REGS_SIZE)
-        return ionic_eth_emu_bar0_access(dev->ionic_emu, buf, count, offset,
-                                         is_write);
-
-    if ((size_t)offset < IONIC_BAR0_REGS_SIZE ||
-        (size_t)offset + count > IONIC_BAR0_TOTAL_SIZE) {
+    /* The client chooses both, and offset is signed, so neither the
+     * conversion nor the sum may be formed before they are known to fit. */
+    if (offset < 0 || (uint64_t)offset > IONIC_BAR0_TOTAL_SIZE ||
+        count > IONIC_BAR0_TOTAL_SIZE - (size_t)offset) {
         vfu_log(vfu_ctx, LOG_ERR,
-                "ionic BAR0 access out of bounds or straddling the "
-                "register/MSI-X split: offset=%#" PRIx64 " count=%zu",
+                "ionic BAR0 access out of bounds: offset=%#" PRIx64
+                " count=%zu",
                 (uint64_t)offset, count);
         errno = EINVAL;
         return -1;
     }
 
-    size_t msix_off = (size_t)offset - IONIC_BAR0_REGS_SIZE;
+    size_t off = (size_t)offset;
+
+    if (count <= IONIC_BAR0_REGS_SIZE && off <= IONIC_BAR0_REGS_SIZE - count)
+        return ionic_eth_emu_bar0_access(dev->ionic_emu, buf, count, offset,
+                                         is_write);
+
+    if (off < IONIC_BAR0_REGS_SIZE) {
+        vfu_log(vfu_ctx, LOG_ERR,
+                "ionic BAR0 access straddling the register/MSI-X split: "
+                "offset=%#zx count=%zu",
+                off, count);
+        errno = EINVAL;
+        return -1;
+    }
+
+    size_t msix_off = off - IONIC_BAR0_REGS_SIZE;
     if (is_write)
         memcpy((char *)dev->bar0_mem + msix_off, buf, count);
     else

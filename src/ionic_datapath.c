@@ -39,6 +39,7 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "byteorder.h"
+#include "dma_range.h"
 #include "ernic_dma.h"
 #include "ernic_ib.h"
 #include "ernic_time.h"
@@ -299,7 +300,11 @@ int ionic_dp_buf_init(const struct ionic_datapath *dp, struct dp_buf *b,
     b->page_size_log2 = desc->page_size_log2 ? desc->page_size_log2 : 12;
 
     uint64_t page_size = 1ull << b->page_size_log2;
-    uint64_t max_pages = ((span + page_size - 1) >> b->page_size_log2) + 1;
+    /* The pages @span covers, rounded up, and one more, as above. Rounding
+     * up by adding page_size - 1 first wrapped for a span within a page of
+     * 2^64, and allowed one page however many the region needed. */
+    uint64_t max_pages = (span >> b->page_size_log2) +
+                         ((span & (page_size - 1)) != 0 ? 1u : 0u) + 1;
 
     if (span == 0 || (uint64_t)desc->map_count > max_pages) {
         vfu_log(dp->vfu_ctx, LOG_ERR,
@@ -340,9 +345,22 @@ int ionic_dp_buf_init(const struct ionic_datapath *dp, struct dp_buf *b,
  */
 static uint64_t buf_gpa(const struct dp_buf *b, uint64_t off, uint64_t *run)
 {
+    /*
+     * An offset that would carry past 2^64 names nothing. Wrapped, it would
+     * name an address near zero or, through a page table, an early page:
+     * memory the offset was never meant to reach.
+     */
     if (b->npages <= 1 || !b->pages) {
+        if (off > UINT64_MAX - b->base) {
+            *run = 0;
+            return 0;
+        }
         *run = UINT64_MAX;
         return b->base + off;
+    }
+    if (off > UINT64_MAX - b->first_off) {
+        *run = 0;
+        return 0;
     }
 
     uint64_t abs = off + b->first_off;
@@ -987,6 +1005,21 @@ void ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
     if (!dp)
         return;
 
+    /*
+     * A region past the top of the address space is no region: the bounds
+     * checks against it in mr_covers() and sge_gpa() assume va + length
+     * fits. Refused like a registration that fails below, with any earlier
+     * binding of the key dropped rather than left in place.
+     */
+    if (length > UINT64_MAX - va) {
+        vfu_log(dp->vfu_ctx, LOG_ERR,
+                "ionic_datapath: MR %#x of %" PRIu64 " bytes at %#" PRIx64
+                " runs past the end of the address space",
+                lkey, length, va);
+        ionic_datapath_unregister_mr(dp, lkey);
+        return;
+    }
+
     struct dp_mr *m = mr_find(dp, lkey);
     if (!m) {
         for (int i = 0; i < MAX_MR; i++) {
@@ -1006,6 +1039,13 @@ void ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
     if (ionic_dp_buf_init(dp, &m->buf, buf, va, length) < 0) {
         vfu_log(dp->vfu_ctx, LOG_ERR,
                 "ionic_datapath: MR %#x page table read failed", lkey);
+        /*
+         * ionic_dp_buf_init() has already released the page table of an MR
+         * this key was bound to, and left a zero base in its place. Still
+         * valid, the old binding would resolve every address in it to guest
+         * physical address 0 onwards.
+         */
+        m->valid = false;
         return;
     }
     m->lkey = lkey;
@@ -1091,8 +1131,10 @@ static uint32_t dp_fault_status(const struct ionic_datapath *dp,
 static bool mr_covers(struct ionic_datapath *dp, uint32_t key, uint64_t va,
                       uint64_t len)
 {
+    /* No region to hold a bus address to, but the range must still fit the
+     * address space rather than wrap back round to its start. */
     if (key == 0)
-        return true;
+        return ernic_dma_range_ok(va, len);
 
     struct dp_mr *m = mr_find(dp, key);
 
@@ -1113,8 +1155,10 @@ static uint64_t sge_gpa(struct ionic_datapath *dp, uint32_t lkey, uint64_t va,
         return va;
     }
 
+    /* Against the offset rather than m->va + m->length, which is written
+     * so that it cannot wrap. */
     struct dp_mr *m = mr_find(dp, lkey);
-    if (!m || va < m->va || va >= m->va + m->length) {
+    if (!m || va < m->va || va - m->va >= m->length) {
         dp_fault_set(dp, IONIC_STS_LOCAL_PROT_ERR);
         *run = 0;
         return 0;
@@ -1129,7 +1173,7 @@ static uint64_t sge_gpa(struct ionic_datapath *dp, uint32_t lkey, uint64_t va,
      * pages.  A single-page region reports an unbounded run, so this is the
      * only bound such a region ever gets.
      */
-    uint64_t left = m->va + m->length - va;
+    uint64_t left = m->length - (va - m->va);
     if (*run > left)
         *run = left;
     return gpa;
@@ -1395,9 +1439,11 @@ static void cq_fire_event(const struct ionic_datapath *dp,
     if (!c->armed)
         return;
     c->armed = false;
+    /* eq_id is the guest's u32: one past INT_MAX has no int to convert to,
+     * and ionic_eth_emu_trigger_irq() refuses it whatever it became. */
     if (dp->cq_event_fn)
         dp->cq_event_fn(dp->cq_event_opaque, c->eq_id, cq_id);
-    else if (dp->eth_emu)
+    else if (dp->eth_emu && c->eq_id <= INT_MAX)
         ionic_eth_emu_trigger_irq(dp->eth_emu, (int)c->eq_id);
 }
 
@@ -1797,27 +1843,39 @@ static void cq_post_send_npg(struct ionic_datapath *dp, uint32_t cq_id,
  * -------------------------------------------------------------------------
  */
 
-static void parse_sges(const uint8_t *wqe, uint32_t stride, uint8_t num_sge,
+/*
+ * Read a WQE's SGE list into @out.
+ *
+ * Each length is the guest's own u32, and MAX_SGE of them can add up to far
+ * more than a u32 holds. Summed in one, the total wrapped: a SEND of SGEs of
+ * 0xfffffff0 and 0x20 bytes went out as a 16-byte message. Returns false when
+ * the lengths add up to more than UINT32_MAX, with @out->total held at
+ * UINT32_MAX: no message is that long, so a send must be refused, but as
+ * the capacity of a receive it is still a bound no message exceeds.
+ */
+static bool parse_sges(const uint8_t *wqe, uint32_t stride, uint8_t num_sge,
                        struct dp_sge_list *out)
 {
     uint32_t avail = stride > WQE_PLD_OFF ? stride - WQE_PLD_OFF : 0;
     uint32_t max_sge = avail / 16;
+    uint64_t total = 0; /* MAX_SGE u32s, so it cannot wrap */
 
     out->count = 0;
-    out->total = 0;
     if (max_sge > MAX_SGE)
         max_sge = MAX_SGE;
     if (num_sge < max_sge)
         max_sge = num_sge;
 
     for (uint32_t i = 0; i < max_sge; i++) {
-        const uint8_t *p = wqe + WQE_PLD_OFF + i * 16;
+        const uint8_t *p = wqe + WQE_PLD_OFF + (size_t)i * 16;
         out->va[i] = ernic_get_be64(p + 0);
         out->len[i] = ernic_get_be32(p + 8);
         out->lkey[i] = ernic_get_be32(p + 12);
-        out->total += out->len[i];
+        total += out->len[i];
         out->count++;
     }
+    out->total = total > UINT32_MAX ? UINT32_MAX : (uint32_t)total;
+    return total <= UINT32_MAX;
 }
 
 /*
@@ -1951,8 +2009,11 @@ static bool dp_ring_take(struct ionic_datapath *dp, uint32_t *cons,
      * and avail/16 but has no idea how much of the WQE actually arrived.
      * The ring geometry checks keep the two equal; read_sz is what keeps
      * the walk inside rwqe if they ever aren't.
+     *
+     * A receive whose lengths add up past UINT32_MAX can take any message,
+     * which is what the total parse_sges() leaves for it says.
      */
-    parse_sges(rwqe, read_sz, rwqe[9], dst);
+    (void)parse_sges(rwqe, read_sz, rwqe[9], dst);
 
     (*cons)++;
     return true;
@@ -3182,23 +3243,45 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         return true;
     }
 
+    bool remote = !qp_is_datagram(q);
+    uint32_t status = IONIC_STS_OK;
+
     struct dp_sge_list src;
     if (flags & IONIC_V1_FLAG_INL) {
         /* Inline data lives in the payload area itself; describe it as a
          * single lkey-0 SGE pointing at the WQE's own guest pages. */
         uint32_t inl_len = ernic_get_be32(wqe + WQE_SEND_LEN_OFF);
+
+        /*
+         * No longer than the payload area: that is all of the WQE that was
+         * read, and all that @run says is contiguous. The length is the
+         * guest's, and lkey 0 has no region to bound it, so a longer one
+         * read on into whatever guest memory follows the slot, which for a
+         * user QP needn't be the poster's.
+         */
+        if (inl_len > read_sz - WQE_PLD_OFF) {
+            vfu_log(dp->vfu_ctx, LOG_WARNING,
+                    "ionic_datapath: QP %u op %u inline length %u is more "
+                    "than the %u bytes its WQE holds",
+                    qp_id, op, inl_len, read_sz - WQE_PLD_OFF);
+            dp_complete_send(dp, q, qp_id, wqe_id, remote,
+                             IONIC_STS_LOCAL_LEN_ERR);
+            return true; /* completed, in error: the WQE is done with */
+        }
         src.count = 1;
         src.va[0] = gpa + WQE_PLD_OFF;
         src.len[0] = inl_len;
         src.lkey[0] = 0;
         src.total = inl_len;
-    } else {
+    } else if (!parse_sges(wqe, read_sz, wqe[9], &src)) {
         /* read_sz, not stride, for the reason given in deliver_recv(). */
-        parse_sges(wqe, read_sz, wqe[9], &src);
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: QP %u op %u gathers more than %" PRIu32
+                " bytes",
+                qp_id, op, UINT32_MAX);
+        dp_complete_send(dp, q, qp_id, wqe_id, remote, IONIC_STS_LOCAL_LEN_ERR);
+        return true; /* completed, in error: the WQE is done with */
     }
-
-    bool remote = !qp_is_datagram(q);
-    uint32_t status = IONIC_STS_OK;
 
     /*
      * Every SGE above names this guest's own memory, so a key it never

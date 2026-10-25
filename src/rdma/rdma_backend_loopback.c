@@ -24,7 +24,6 @@
 #include <stdbool.h>
 #include <string.h>
 #include <glib.h>
-#include <stdlib.h>
 #include <infiniband/verbs.h>
 
 /*
@@ -409,7 +408,7 @@ static void loopback_auto_pair_qp(LoopbackBackendPrivate *priv, LoopbackQP *lqp)
     /* First pass: look for QPs with similar QPNs (within 10) */
     LoopbackQP *best_match = NULL;
     uint32_t best_qpn = 0;
-    int32_t best_distance = INT32_MAX;
+    uint32_t best_distance = UINT32_MAX;
 
     g_hash_table_iter_init(&iter, priv->qps);
     while (g_hash_table_iter_next(&iter, &key, &value)) {
@@ -424,8 +423,11 @@ static void loopback_auto_pair_qp(LoopbackBackendPrivate *priv, LoopbackQP *lqp)
         /* Match: same type, in RTS, no remote_qpn set */
         if (other_qp->qp_type == lqp->qp_type &&
             other_qp->state == IBV_QPS_RTS && other_qp->remote_qpn == 0) {
-            /* Prefer QPs with similar QPNs (created close together) */
-            int32_t distance = abs((int32_t)other_qpn - (int32_t)lqp->qpn);
+            /* Prefer QPs with similar QPNs (created close together).
+             * Unsigned throughout: as int32_t, two QPNs far enough apart
+             * overflow the subtraction, and abs() can't negate INT32_MIN. */
+            uint32_t distance = other_qpn > lqp->qpn ? other_qpn - lqp->qpn
+                                                     : lqp->qpn - other_qpn;
             if (distance < best_distance) {
                 best_match = other_qp;
                 best_qpn = other_qpn;
@@ -444,7 +446,7 @@ static void loopback_auto_pair_qp(LoopbackBackendPrivate *priv, LoopbackQP *lqp)
         other_qp->remote_qpn = lqp->qpn;
 
         rdma_info_report("Loopback: Auto-paired QP %u <-> QP %u (simulating "
-                         "rdma_cm, distance=%d)",
+                         "rdma_cm, distance=%u)",
                          lqp->qpn, other_qpn, best_distance);
         qemu_mutex_unlock(&priv->lock);
         return;

@@ -358,10 +358,22 @@ static void unmask_irq(struct ionic_eth_emu *emu, int vec)
  * shadow buffer and process commands when the doorbell DWORD is written.
  * -------------------------------------------------------------------------
  */
+/*
+ * Does [@offset, @offset + @count) lie inside a region of @size bytes?  The
+ * client chooses both, and @offset is signed: converted and added, a
+ * negative offset, or a count that carries the sum past SIZE_MAX, wraps to a
+ * small total that passes.
+ */
+static bool region_access_ok(loff_t offset, size_t count, size_t size)
+{
+    return offset >= 0 && (uint64_t)offset <= size &&
+           count <= size - (size_t)offset;
+}
+
 ssize_t ionic_eth_emu_bar0_access(struct ionic_eth_emu *emu, char *buf,
                                   size_t count, loff_t offset, bool is_write)
 {
-    if ((size_t)offset + count > BAR0_BUF_SIZE) {
+    if (!region_access_ok(offset, count, BAR0_BUF_SIZE)) {
         errno = EINVAL;
         return -1;
     }
@@ -430,7 +442,7 @@ ssize_t ionic_eth_emu_bar0_access(struct ionic_eth_emu *emu, char *buf,
 ssize_t ionic_eth_emu_bar2_access(struct ionic_eth_emu *emu, char *buf,
                                   size_t count, loff_t offset, bool is_write)
 {
-    if ((size_t)offset + count > emu->bar2_size) {
+    if (!region_access_ok(offset, count, emu->bar2_size)) {
         errno = EINVAL;
         return -1;
     }
