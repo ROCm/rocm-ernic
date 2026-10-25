@@ -1004,6 +1004,10 @@
   self-hosted CI from the Actions tab's *Run workflow* button, or with
   `gh workflow run self-hosted-ci.yml -f pr=N`; `ci/README.md` describes the
   inputs.
+* The packet parse helpers and the TCP and UDP checksum helpers in
+  `src/net/net_headers.h`, which nothing in the server called. Their unit
+  test, `net-checksum-unit`, and fuzz harness, `fuzz_net_headers` (and
+  `fuzz-replay-net_headers`), went with them.
 * The PVRDMA DMA-mapping layer in `rocm_ernic_compat.c`, which nothing
   called, and the QEMU compatibility stubs and headers that only removed
   PVRDMA code used. With it went the `ERNIC_DEBUG_DMA_MAP` environment

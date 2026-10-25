@@ -133,10 +133,10 @@ cat result/crashes/*/repro.txt
 ```
 
 Harnesses (`-fsanitize=fuzzer,address,undefined`) target the parsers of
-untrusted input, such as the `net_headers.h` parse/checksum helpers and the
-ionic stats admin commands. See `nix/analysis/fuzz/README.md` for the full
-list and for the DMA-path targets deferred to a future device-fixture
-harness.
+untrusted input, such as the ionic stats admin commands and the
+`--nic-profile` and `--inject` parsers. See `nix/analysis/fuzz/README.md`
+for the full list and for the DMA-path targets deferred to a future
+device-fixture harness.
 
 ## Cross-compilation & other architectures
 

@@ -3,8 +3,8 @@
  *
  * The harnesses are normally built and driven by libFuzzer via
  * nix/analysis/fuzz.nix, which runs only in the opt-in fuzz workflow. That
- * left them able to stop compiling -- a changed parser signature under
- * src/net/ would not be noticed until someone asked for a fuzz run.
+ * left them able to stop compiling -- a changed parser signature would
+ * not be noticed until someone asked for a fuzz run.
  * Linking each harness against this main() instead lets the ordinary
  * CMake build compile them on every PR, so the drift becomes a build
  * failure where it is introduced.
@@ -17,7 +17,7 @@
  * and-run smoke test ctest registers). With arguments, replays those files
  * instead, which reproduces a crash input saved by a real fuzz run:
  *
- *     ./fuzz_replay_net_headers crash-da39a3ee5e6b4b0d
+ *     ./fuzz_replay_fault_parse crash-da39a3ee5e6b4b0d
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
