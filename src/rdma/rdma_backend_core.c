@@ -63,39 +63,33 @@ const RdmaBackendOps *rdma_backend_get_ops(RdmaBackendType type)
 
 /**
  * rdma_backend_get_type_from_string - Parse backend type from string
- * @backend_str: String like "none", "loopback", "verbs:mlx5_0"
+ * @backend_str: String like "none", "loopback", "verbs:mlx5_0", or NULL,
+ *               which means "none"
  *
- * Returns: Backend type enum
+ * The name is everything before the first ':', and must be one of the
+ * names rdma_backend_type_to_string() returns, exactly: "s3junk" is not
+ * "s3".  The server reaches it through pvrdma_backend_name(), so the server
+ * and the device can't disagree about which backend a string names.
+ *
+ * Returns: Backend type enum, or RDMA_BACKEND_TYPE_MAX if the name is
+ * unknown
  */
 RdmaBackendType rdma_backend_get_type_from_string(const char *backend_str)
 {
-    if (!backend_str || !strcmp(backend_str, "none")) {
+    if (!backend_str) {
         return RDMA_BACKEND_TYPE_NONE;
     }
 
-    if (!strncmp(backend_str, "loopback", 8)) {
-        /* Match "loopback" or "loopback:..." */
-        return RDMA_BACKEND_TYPE_LOOPBACK;
-    }
+    size_t len = strcspn(backend_str, ":");
 
-    if (!strncmp(backend_str, "verbs:", 6) || !strcmp(backend_str, "verbs")) {
-        return RDMA_BACKEND_TYPE_VERBS;
-    }
+    for (RdmaBackendType type = 0; type < RDMA_BACKEND_TYPE_MAX; type++) {
+        const char *name = rdma_backend_type_to_string(type);
 
-    if (!strncmp(backend_str, "tcp:", 4) || !strcmp(backend_str, "tcp")) {
-        return RDMA_BACKEND_TYPE_TCP;
+        if (strlen(name) == len && !strncmp(backend_str, name, len)) {
+            return type;
+        }
     }
-
-    if (!strncmp(backend_str, "nvmeof:", 7) || !strcmp(backend_str, "nvmeof")) {
-        return RDMA_BACKEND_TYPE_NVMEOF;
-    }
-
-    if (!strncmp(backend_str, "s3:", 3) || !strcmp(backend_str, "s3")) {
-        return RDMA_BACKEND_TYPE_S3;
-    }
-
-    rdma_warn_report("Unknown backend '%s', using 'none'", backend_str);
-    return RDMA_BACKEND_TYPE_NONE;
+    return RDMA_BACKEND_TYPE_MAX;
 }
 
 /**

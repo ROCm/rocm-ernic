@@ -156,6 +156,8 @@ bool ih_create(struct ih *h, const char *backend)
     rocm_ernic_dev_t *dev = h->dev;
     dev->vfu_ctx = h->vfu;
     dev->backend_type_str = strdup(backend);
+    /* NULL for an unknown backend, which pvrdma_device_create() refuses */
+    dev->backend_name = pvrdma_backend_name(backend);
     dev->backend_port_num = 1;
 
     dev->pvrdma_handle = pvrdma_device_create(dev, backend, NULL, NULL, 1);
@@ -182,7 +184,7 @@ bool ih_create(struct ih *h, const char *backend)
         dev->ionic_emu, ionic_rdma_devcmd_dispatch, dev->ionic_rdma);
     ionic_rdma_devcmd_set_eth_emu(dev->ionic_rdma, dev->ionic_emu);
 
-    if (!strncmp(backend, "nvmeof", 6) && !attach_nvmeof(h, backend)) {
+    if (!strcmp(dev->backend_name, "nvmeof") && !attach_nvmeof(h, backend)) {
         ih_destroy(h);
         return false;
     }

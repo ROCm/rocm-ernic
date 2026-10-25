@@ -1320,9 +1320,10 @@ set_tests_properties(pvrdma-stats-unit PROPERTIES TIMEOUT 30)
 # transfers, atomics and fast registration, CQ events, UD, SRQ, Ethernet
 # Tx/Rx, and the NVMe-oF CM handshake and Connect over the GSI QP, and the
 # flush a QP entering the Error state owes its outstanding work requests.
+# Also which --backend strings name which backend.
 set(ERNIC_HARNESS_GROUPS
     devcmds bringup rdma-reset admin rc atomic cq-events qp-flush
-    qp-flush-srq ud srq eth nvmeof teardown)
+    qp-flush-srq ud srq eth nvmeof teardown backend-names)
 if(ERNIC_BUILD_P4)
     list(APPEND ERNIC_HARNESS_GROUPS p4-port fp8-map p4-rdma p4-cvt p4-cvt-map
                                       p4-drop-map p4-devcmd)

@@ -30,6 +30,7 @@ union ibv_gid;
 
 /* Multi-backend abstraction functions */
 const RdmaBackendOps *rdma_backend_get_ops(RdmaBackendType type);
+/* RDMA_BACKEND_TYPE_MAX for an unknown name; see rdma_backend_core.c */
 RdmaBackendType rdma_backend_get_type_from_string(const char *backend_str);
 const char *rdma_backend_type_to_string(RdmaBackendType type);
 int rdma_backend_init_with_ops(RdmaBackendDev *backend_dev,

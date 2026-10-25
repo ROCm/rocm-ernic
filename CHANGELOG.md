@@ -307,6 +307,13 @@
     `ERNIC_TCP_LISTEN_BACKLOG`, `ERNIC_TCP_HEALTH_INTERVAL` or
     `ERNIC_TCP_SOCKBUF` makes the value ignored, as other malformed values
     already were.
+* **Breaking:** **An unknown `--backend` name stops the server.** The name,
+  everything before the first `:`, must be exactly `none`, `loopback`,
+  `verbs`, `tcp`, `nvmeof` or `s3`. Before, any other name ran the server
+  with no backend, after a warning, and one that only started with a
+  backend's name was partly taken for it: `loopbackjunk` ran as
+  `loopback`, and `s3junk` and `nvmeofjunk` started the S3 or NVMe-oF
+  target with no backend under it.
 * **The default log level is `warn`**, so the per-operation `INFO:` lines
   are gone in steady state; `--log-level info` restores them. `-v` /
   `--verbose` is `--log-level debug`.

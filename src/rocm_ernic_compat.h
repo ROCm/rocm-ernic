@@ -40,13 +40,27 @@ typedef struct PVRDMADev *pvrdma_handle_t;
  */
 
 /**
+ * pvrdma_backend_name - Name the backend a --backend string selects
+ * @backend_type_str: e.g. "loopback" or "verbs:device=mlx5_0" (may be NULL,
+ *                    meaning "none")
+ *
+ * The name is everything before the first ':', and must match exactly.
+ *
+ * Returns: "none", "loopback", "verbs", "tcp", "nvmeof" or "s3", or NULL if
+ * the name is none of them
+ */
+const char *pvrdma_backend_name(const char *backend_type_str);
+
+/**
  * pvrdma_device_create - Create and initialize RDMA device
  * @dev: Parent rocm_ernic device structure
+ * @backend_type_str: Backend and its config, as pvrdma_backend_name() takes
  * @ib_dev_name: InfiniBand device name (e.g., "mlx5_0")
  * @eth_dev_name: Ethernet device name (e.g., "eth0")
  * @port_num: IB port number (typically 1)
  *
- * Returns: Opaque handle to RDMA device, or NULL on failure
+ * Returns: Opaque handle to RDMA device, or NULL on failure, including an
+ * unknown backend
  */
 pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
                                      const char *backend_type_str,
