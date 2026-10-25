@@ -7,7 +7,9 @@
  * parse error naming the bad token, or round-trip the canonical form.  A
  * few checks that need their own set-up (the empty set, a duplicate site,
  * a truncated format buffer) are rows too, so every case prints the same
- * "ok/FAIL <category>: <description>; expected: <expected>" line.
+ * "ok/FAIL <category>: <description>; expected: <expected>" line.  The
+ * checks that don't start from a spec (format buffer sizes, faults built
+ * by hand, NULL arguments) have their own functions but print it too.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -106,6 +108,10 @@ static bool only_last(uint64_t k)
 #define SITE        "stats_vals: "
 #define ETH_RX_SITE IONIC_FAULT_SITE_ETH_RX
 #define ETH_TX_SITE IONIC_FAULT_SITE_ETH_TX
+
+/* 64 characters: the most of a token an error message quotes. */
+#define A16 "aaaaaaaaaaaaaaaa"
+#define A64 A16 A16 A16 A16
 
 static const struct fault_case cases[] = {
     /* positive: patterns */
@@ -322,6 +328,50 @@ static const struct fault_case cases[] = {
      " \t ", .want_err = "empty fault"},
     {"negative", "NULL spec", "rejected: empty fault", CHECK_ERROR, NULL,
      .want_err = "empty fault"},
+    {"negative", "'every' at the end of the spec",
+     "rejected: every needs a number", CHECK_ERROR, SITE "every",
+     .want_err = "every needs a number"},
+    {"negative", "'after 3' at the end of the spec",
+     "rejected: effect required", CHECK_ERROR, SITE "after 3",
+     .want_err = "effect required"},
+    {"negative", "'burst 0 every 5'", "rejected: burst must be >= 1",
+     CHECK_ERROR, SITE "burst 0 every 5 effect fail",
+     .want_err = "burst must be >= 1"},
+    {"negative", "'burst 5' at the end of the spec",
+     "rejected: needs 'every M'", CHECK_ERROR, SITE "burst 5",
+     .want_err = "burst N needs 'every M'"},
+    {"negative", "'burst 2 every 0'", "rejected: burst every must be >= 1",
+     CHECK_ERROR, SITE "burst 2 every 0 effect fail",
+     .want_err = "burst every must be >= 1"},
+    {"negative", "'burst 2 every' at the end of the spec",
+     "rejected: burst every needs a number", CHECK_ERROR, SITE "burst 2 every",
+     .want_err = "burst every needs a number"},
+    {"negative", "'sequence' at the end of the spec",
+     "rejected: sequence needs a pattern", CHECK_ERROR, SITE "sequence",
+     .want_err = "sequence needs a pattern"},
+    {"negative", "a lone quote as the sequence",
+     "rejected: sequence has an unclosed quote", CHECK_ERROR,
+     SITE "sequence \" effect fail",
+     .want_err = "sequence has an unclosed quote"},
+    {"negative", "sequence item '1x' with no count",
+     "rejected, naming the item", CHECK_ERROR, SITE "sequence 1x effect fail",
+     .want_err = "bad sequence item '1x'"},
+    {"negative", "sequence item '0y3'", "rejected: a count follows 'x'",
+     CHECK_ERROR, SITE "sequence 0y3 effect fail",
+     .want_err = "bad sequence item '0y3'"},
+    {"negative", "sequence item '1x3z'", "rejected: the count is a number",
+     CHECK_ERROR, SITE "sequence 1x3z effect fail",
+     .want_err = "bad sequence item '1x3z'"},
+    {"negative", "a token where 'effect' belongs ('every 5 junk')",
+     "rejected, naming junk", CHECK_ERROR, SITE "every 5 junk effect fail",
+     .want_err = "unexpected token 'junk'"},
+    {"negative", "a gate before the effect ('window 3')",
+     "rejected: gate window not supported in this build", CHECK_ERROR,
+     SITE "every 5 window 3 effect fail",
+     .want_err = "gate window not supported in this build"},
+    {"negative", "a 70-character unknown site",
+     "rejected, quoting only its first 64 characters", CHECK_ERROR,
+     A64 "bcdef: every 1 effect fail", .want_err = "unknown site '" A64 "'"},
 
     /* boundary */
     {"boundary", "'every 1'", "fires on every event", CHECK_FIRES,
@@ -391,6 +441,10 @@ static const struct fault_case cases[] = {
      "parsed as single spaces", CHECK_FIELDS,
      "  stats_vals:\tevery   3\t effect  fail  status\tebusy ",
      .kind = IONIC_FAULT_PAT_EVERY, .n = 3, .status = IONIC_RC_EBUSY},
+    {"corner", "newline, CR, VT and FF between tokens",
+     "each is whitespace, like a space", CHECK_FIELDS,
+     "stats_vals:\nevery\r2\veffect\ffail\n", .kind = IONIC_FAULT_PAT_EVERY,
+     .n = 2, .status = IONIC_RC_EIO},
     {"corner", "leading zeros 'every 007'", "every 7", CHECK_FIELDS,
      SITE "every 007 effect fail", .kind = IONIC_FAULT_PAT_EVERY, .n = 7,
      .status = IONIC_RC_EIO},
@@ -801,9 +855,161 @@ static void check_format_boundaries(void)
     ionic_fault_clear(&fault);
 }
 
+static void report(bool ok, const char *category, const char *description,
+                   const char *expected)
+{
+    printf("%s %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", category,
+           description, expected);
+    if (!ok)
+        failures++;
+}
+
+/*
+ * Faults the parser never makes, built by hand: a pattern or effect that
+ * no enumerator names, a status with no name, the zero counts the parser
+ * refuses, and a saturated fired count.  Formatting them and running
+ * events on them must still be safe, so the switches' default branches
+ * and the zero checks are covered here.
+ */
+static void check_hand_built(void)
+{
+    /* Deliberately out of range: struct ionic_fault is a plain struct any
+     * caller can fill in. */
+    /* NOLINTBEGIN(clang-analyzer-optin.core.EnumCastOutOfRange) */
+    const enum ionic_fault_pattern_kind bad_kind =
+        (enum ionic_fault_pattern_kind)99;
+    const enum ionic_fault_effect bad_effect = (enum ionic_fault_effect)99;
+    /* NOLINTEND(clang-analyzer-optin.core.EnumCastOutOfRange) */
+    const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        enum ionic_fault_pattern_kind kind;
+        enum ionic_fault_effect effect;
+        uint64_t n, m;
+        uint8_t status;
+        uint64_t fired;      /* before the events */
+        const char *text;    /* ionic_fault_format() */
+        const char *fires;   /* one '1'/'0' per event */
+        uint64_t want_fired; /* after the events */
+    } rows[] = {
+        {"corner", "a pattern no enumerator names",
+         "formatted as 'unknown'; never fires", bad_kind,
+         IONIC_FAULT_EFFECT_FAIL, 1, 1, IONIC_RC_EIO, 0,
+         SITE "unknown effect fail status eio", "0000", 0},
+        {"corner", "an effect no enumerator names",
+         "formatted as 'effect unknown'; the pattern still runs",
+         IONIC_FAULT_PAT_EVERY, bad_effect, 1, 0, 0, 0,
+         SITE "every 1 effect unknown", "1111", 4},
+        {"corner", "a fail status no name covers (20)",
+         "formatted as the number", IONIC_FAULT_PAT_EVERY,
+         IONIC_FAULT_EFFECT_FAIL, 1, 0, 20, 0,
+         SITE "every 1 effect fail status 20", "1111", 4},
+        {"corner", "'every 0', which the parser refuses",
+         "never fires; no division by zero", IONIC_FAULT_PAT_EVERY,
+         IONIC_FAULT_EFFECT_FAIL, 0, 0, IONIC_RC_EIO, 0,
+         SITE "every 0 effect fail status eio", "0000", 0},
+        {"corner", "'burst 1 every 0', which the parser refuses",
+         "never fires; no division by zero", IONIC_FAULT_PAT_BURST,
+         IONIC_FAULT_EFFECT_FAIL, 1, 0, IONIC_RC_EIO, 0,
+         SITE "burst 1 every 0 effect fail status eio", "0000", 0},
+        {"corner", "an empty sequence, which the parser refuses",
+         "never fires; no division by zero", IONIC_FAULT_PAT_SEQUENCE,
+         IONIC_FAULT_EFFECT_FAIL, 0, 0, IONIC_RC_EIO, 0,
+         SITE "sequence \"\" effect fail status eio", "0000", 0},
+        {"corner", "the fired count already at UINT64_MAX",
+         "still fires; the count stays at UINT64_MAX", IONIC_FAULT_PAT_EVERY,
+         IONIC_FAULT_EFFECT_FAIL, 1, 0, IONIC_RC_EIO, UINT64_MAX,
+         SITE "every 1 effect fail status eio", "1111", UINT64_MAX},
+    };
+
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        struct ionic_fault f;
+        char text[128];
+        bool ok;
+
+        memset(&f, 0, sizeof(f));
+        f.site = IONIC_FAULT_SITE_STATS_VALS;
+        f.kind = rows[i].kind;
+        f.effect = rows[i].effect;
+        f.n = rows[i].n;
+        f.m = rows[i].m;
+        f.status = rows[i].status;
+        f.fired = rows[i].fired;
+        ok = ionic_fault_format(&f, text, sizeof(text)) ==
+                 (int)strlen(rows[i].text) &&
+             strcmp(text, rows[i].text) == 0;
+        for (size_t k = 0; rows[i].fires[k]; k++)
+            if (ionic_fault_event(&f) != (rows[i].fires[k] == '1'))
+                ok = false;
+        ok = ok && f.fired == rows[i].want_fired;
+        report(ok, rows[i].category, rows[i].description, rows[i].expected);
+        if (!ok)
+            printf("     got: '%s', fired %" PRIu64 "\n", text, f.fired);
+    }
+}
+
+/* NULL and out-of-range arguments are refused, not dereferenced. */
+static void check_bad_args(void)
+{
+    struct ionic_fault_set *set = ionic_fault_set_new();
+    struct ionic_fault f;
+    char err[128] = "";
+    char buf[8];
+    bool ok;
+
+    ok = ionic_fault_parse(SITE "every 1 effect fail", NULL, err,
+                           sizeof(err)) == -1 &&
+         strstr(err, "no fault to parse into") != NULL;
+    report(ok, "negative", "parse into a NULL fault",
+           "rejected: no fault to parse into");
+
+    err[0] = '\0';
+    ok = ionic_fault_set_add(NULL, SITE "every 1 effect fail", err,
+                             sizeof(err)) == -1 &&
+         strstr(err, "no fault set") != NULL;
+    report(ok, "negative", "add to a NULL set", "rejected: no fault set");
+
+    err[0] = '\0';
+    ok = set != NULL &&
+         ionic_fault_set_add(set, SITE "every 0 effect fail", err,
+                             sizeof(err)) == -1 &&
+         strstr(err, "every must be >= 1") != NULL &&
+         ionic_fault_set_get(set, IONIC_FAULT_SITE_STATS_VALS) == NULL;
+    report(ok, "negative", "add a spec that does not parse",
+           "rejected with the parse error; the site stays empty");
+    ionic_fault_set_free(set);
+
+    memset(buf, 'Z', sizeof(buf));
+    ok = ionic_fault_format(NULL, buf, sizeof(buf)) == 0 && buf[0] == '\0' &&
+         buf[1] == 'Z';
+    report(ok, "negative", "format a NULL fault",
+           "returns 0; an empty string and nothing more");
+
+    if (ionic_fault_parse(SITE "every 1 effect fail", &f, err, sizeof(err)) ==
+        0) {
+        memset(buf, 'Z', sizeof(buf));
+        ok = ionic_fault_format(&f, buf, 0) > 0 && buf[0] == 'Z';
+        ionic_fault_clear(&f);
+    } else {
+        ok = false;
+    }
+    report(ok, "boundary", "format into a buffer with a length of 0",
+           "returns the full length; the buffer untouched");
+
+    report(!ionic_fault_event(NULL), "negative", "an event on a NULL fault",
+           "never fires");
+
+    report(strcmp(ionic_fault_site_name(IONIC_FAULT_SITE_COUNT), "unknown") ==
+               0,
+           "negative", "the name of IONIC_FAULT_SITE_COUNT", "'unknown'");
+}
+
 int main(void)
 {
     check_format_boundaries();
+    check_hand_built();
+    check_bad_args();
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
         run_case(&cases[i]);
 

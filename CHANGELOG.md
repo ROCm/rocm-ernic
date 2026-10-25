@@ -704,6 +704,18 @@
     Without `size=` the image keeps its size; a smaller `size=`, an image
     that isn't a whole number of blocks, or a file that isn't a regular file
     is refused. The server logs the size it settled on.
+  * An IPv6 `nvme connect` was accepted whatever address it named. The
+    target answers only on its IPv4 `ip=` address, so, as from a Linux
+    target listening on IPv4, one is now refused (a CM REJ, invalid service
+    ID), even one naming the `ip=` address as `::ffff:a.b.c.d`.
+  * A DREQ whose connection ID matched nothing was looked up by the guest's
+    QP number instead of the controller's, which it carries, so it was
+    answered but released nothing; the controller queue stayed open until
+    the guest destroyed the QP. It now releases the connection it names, if
+    the guest's connection ID matches too.
+  * Controller QP numbers start again from the bottom of their range after
+    65,535 connections, and could be handed to a new connection while an
+    older one still held them. They now skip any a connection holds.
 * **S3 backend.** A `Content-Length` of `-1` or beyond 64 bits on a token
   request was taken as the largest length; anything but digits is now a
   `400`. A signed `Range` such as `bytes=--64` returned the whole object and

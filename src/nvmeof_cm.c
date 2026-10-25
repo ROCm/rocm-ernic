@@ -246,6 +246,42 @@ static struct nvmeof_cm_conn *conn_by_guest_qpn(struct nvmeof_cm *cm,
     return NULL;
 }
 
+static struct nvmeof_cm_conn *conn_by_local_qpn(struct nvmeof_cm *cm,
+                                                uint32_t local_qpn)
+{
+    for (unsigned i = 0; i < NVMEOF_CM_MAX_CONN; i++) {
+        if (cm->conn[i].in_use && cm->conn[i].local_qpn == local_qpn) {
+            return &cm->conn[i];
+        }
+    }
+    return NULL;
+}
+
+/*
+ * Controller QPNs run from NVMEOF_CM_QPN_BASE + 1 to the top of the range
+ * nvmeof_cm_is_target_qpn() accepts, then start again from the bottom.
+ * After that wrap, one a live connection still holds is skipped, so no two
+ * connections share one.  The connection being set up has a local_qpn of
+ * 0, outside the range, so it never clashes with itself.
+ */
+_Static_assert(NVMEOF_CM_MAX_CONN < (0x00ffffffu & ~NVMEOF_CM_QPN_MASK),
+               "the connection table could hold every controller QPN");
+
+static uint32_t next_local_qpn(struct nvmeof_cm *cm)
+{
+    /* Ends within NVMEOF_CM_MAX_CONN + 1 tries: there are fewer live
+     * connections than QPNs (the assertion above). */
+    for (;;) {
+        uint32_t qpn = cm->next_qpn++;
+
+        if (!nvmeof_cm_is_target_qpn(qpn)) {
+            cm->next_qpn = NVMEOF_CM_QPN_BASE + 1;
+        } else if (conn_by_local_qpn(cm, qpn) == NULL) {
+            return qpn;
+        }
+    }
+}
+
 static struct nvmeof_cm_conn *conn_alloc(struct nvmeof_cm *cm)
 {
     for (unsigned i = 0; i < NVMEOF_CM_MAX_CONN; i++) {
@@ -340,16 +376,19 @@ static size_t handle_req(struct nvmeof_cm *cm, const uint8_t *req, uint8_t *rsp,
      * private data. Checking the destination catches a connect aimed at
      * an address this target does not answer for, which otherwise looks
      * to the guest like a silent hang.
+     *
+     * The target listens on one IPv4 address, so, like a Linux rdma_cm
+     * listener bound to one (cma_match_private_data()), it answers only an
+     * IPv4 cma_hdr naming that address. An IPv6 one is for a listener this
+     * target doesn't have, even when it names ::ffff:<traddr>.
      */
     if (priv[CMA_HDR_VERSION_OFF] != 0) {
         return build_rej(rsp, req, 0, IB_CM_REJ_UNSUPPORTED, 0);
     }
     uint8_t ip_version = priv[CMA_HDR_IP_VERSION_OFF] >> 4;
-    if (ip_version == 4) {
-        uint32_t dst = ernic_get_be32(priv + CMA_HDR_DST_ADDR_OFF + 12);
-        if (dst != cm->traddr) {
-            return build_rej(rsp, req, 0, IB_CM_REJ_INVALID_SERVICE_ID, 0);
-        }
+    uint32_t dst = ernic_get_be32(priv + CMA_HDR_DST_ADDR_OFF + 12);
+    if (ip_version != 4 || dst != cm->traddr) {
+        return build_rej(rsp, req, 0, IB_CM_REJ_INVALID_SERVICE_ID, 0);
     }
 
     const uint8_t *nvme = priv + CMA_HDR_SIZE;
@@ -403,11 +442,7 @@ static size_t handle_req(struct nvmeof_cm *cm, const uint8_t *req, uint8_t *rsp,
     c->remote_comm_id = remote_comm_id;
     c->local_comm_id = cm->next_comm_id++;
     c->guest_qpn = guest_qpn;
-    c->local_qpn = cm->next_qpn++;
-    if (!nvmeof_cm_is_target_qpn(c->local_qpn)) {
-        cm->next_qpn = NVMEOF_CM_QPN_BASE + 1;
-        c->local_qpn = cm->next_qpn++;
-    }
+    c->local_qpn = next_local_qpn(cm);
     c->start_psn = (c->local_comm_id ^ 0x5a5a5au) & 0xffffffu;
     c->nvme_qid = qid;
 
@@ -484,8 +519,18 @@ bool nvmeof_cm_handle_mad(struct nvmeof_cm *cm, const void *mad, size_t len,
     case CM_ATTR_DREQ:
         c = conn_by_local_id(cm, ernic_get_be32(m + CM_DREQ_REMOTE_COMM_ID));
         if (c == NULL) {
-            c = conn_by_guest_qpn(cm,
+            /*
+             * The remote QPN is the recipient's: ours, not the guest's.  A
+             * controller QPN is reused after the wrap, so the guest's comm
+             * ID has to match too, or a stale DREQ for a closed connection
+             * would close the newer one that now has its QPN.
+             */
+            c = conn_by_local_qpn(cm,
                                   ernic_get_be32(m + CM_DREQ_REMOTE_QPN) >> 8);
+            if (c != NULL && c->remote_comm_id !=
+                                 ernic_get_be32(m + CM_DREQ_LOCAL_COMM_ID)) {
+                c = NULL;
+            }
         }
         mad_reply_hdr(rsp, m, CM_ATTR_DREP);
         ernic_put_be32(rsp + CM_DREP_LOCAL_COMM_ID,

@@ -15,6 +15,11 @@
  * The racing cases are run many times. Built with ThreadSanitizer, a data
  * race on the level fails the child, and so the test.
  *
+ * Before the children, this process checks what doesn't depend on the
+ * first call: which strings parse to a level, each level's name, and that
+ * each reporter prints at its own level and above and nothing below,
+ * with its output captured from stdout and stderr.
+ *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -355,6 +360,193 @@ static bool run_round(size_t index, int round)
     return ok;
 }
 
+/* ---- In this process ------------------------------------------------- */
+
+/* Returns 1 if a check failed, else 0. */
+static int check_parse_level(void)
+{
+    static const struct {
+        const char *in;
+        bool want_ok;
+        ErnicLogLevel want;
+    } rows[] = {
+        {"none", true, ERNIC_LOG_NONE},   {"0", true, ERNIC_LOG_NONE},
+        {"error", true, ERNIC_LOG_ERROR}, {"1", true, ERNIC_LOG_ERROR},
+        {"warn", true, ERNIC_LOG_WARN},   {"warning", true, ERNIC_LOG_WARN},
+        {"2", true, ERNIC_LOG_WARN},      {"info", true, ERNIC_LOG_INFO},
+        {"3", true, ERNIC_LOG_INFO},      {"debug", true, ERNIC_LOG_DEBUG},
+        {"4", true, ERNIC_LOG_DEBUG},     {"WARNING", true, ERNIC_LOG_WARN},
+        {"InFo", true, ERNIC_LOG_INFO},   {NULL, false, ERNIC_LOG_NONE},
+        {"", false, ERNIC_LOG_NONE},      {"5", false, ERNIC_LOG_NONE},
+        {"-1", false, ERNIC_LOG_NONE},    {"01", false, ERNIC_LOG_NONE},
+        {" info", false, ERNIC_LOG_NONE}, {"info ", false, ERNIC_LOG_NONE},
+        {"inf", false, ERNIC_LOG_NONE},   {"debugging", false, ERNIC_LOG_NONE},
+    };
+    int failed = 0;
+
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        /* A refused name must leave the output alone. */
+        ErnicLogLevel got = ERNIC_LOG_INFO;
+        bool ok = ernic_log_parse_level(rows[i].in, &got);
+        ErnicLogLevel want = rows[i].want_ok ? rows[i].want : ERNIC_LOG_INFO;
+
+        if (ok != rows[i].want_ok || got != want) {
+            printf("FAIL parse '%s': %s, level %s; want %s, level %s\n",
+                   rows[i].in ? rows[i].in : "(NULL)",
+                   ok ? "accepted" : "refused", ernic_log_level_name(got),
+                   rows[i].want_ok ? "accepted" : "refused",
+                   ernic_log_level_name(want));
+            failed++;
+        }
+    }
+    if (!failed) {
+        printf("PASS each level name and number parses, and nothing else\n");
+    }
+    return failed ? 1 : 0;
+}
+
+/* Returns 1 if a check failed, else 0. */
+static int check_level_names(void)
+{
+    /* Deliberately out of range: the level a caller passes is any int.
+     * NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) */
+    const ErnicLogLevel bad = (ErnicLogLevel)(ERNIC_LOG_DEBUG + 1);
+    const struct {
+        ErnicLogLevel level;
+        const char *want;
+    } rows[] = {
+        {ERNIC_LOG_NONE, "none"},   {ERNIC_LOG_ERROR, "error"},
+        {ERNIC_LOG_WARN, "warn"},   {ERNIC_LOG_INFO, "info"},
+        {ERNIC_LOG_DEBUG, "debug"}, {bad, "unknown"},
+    };
+    int failed = 0;
+
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        const char *got = ernic_log_level_name(rows[i].level);
+
+        if (strcmp(got, rows[i].want) != 0) {
+            printf("FAIL name of level %d: '%s', want '%s'\n",
+                   (int)rows[i].level, got, rows[i].want);
+            failed++;
+        }
+    }
+    if (!failed) {
+        printf("PASS each level has its name, and any other is 'unknown'\n");
+    }
+    return failed ? 1 : 0;
+}
+
+static void report_error(void)
+{
+    error_report("%s", "the message");
+}
+
+static void report_warn(void)
+{
+    warn_report("%s", "the message");
+}
+
+static void report_info(void)
+{
+    info_report("%s", "the message");
+}
+
+static void report_startup(void)
+{
+    ernic_startup_report("%s", "the message");
+}
+
+/*
+ * Runs report() with stdout and stderr both sent to a scratch file, and
+ * puts what they got in buf. Returns false if the redirection failed.
+ */
+static bool capture(void (*report)(void), char *buf, size_t len)
+{
+    FILE *tmp = tmpfile();
+    int saved_out = -1, saved_err = -1;
+    bool ok = false;
+    size_t n;
+
+    buf[0] = '\0';
+    if (!tmp) {
+        return false;
+    }
+    fflush(stdout);
+    fflush(stderr);
+    saved_out = fcntl(STDOUT_FILENO, F_DUPFD_CLOEXEC, 0);
+    saved_err = fcntl(STDERR_FILENO, F_DUPFD_CLOEXEC, 0);
+    if (saved_out >= 0 && saved_err >= 0 &&
+        dup2(fileno(tmp), STDOUT_FILENO) >= 0 &&
+        dup2(fileno(tmp), STDERR_FILENO) >= 0) {
+        report();
+        fflush(stdout);
+        fflush(stderr);
+        ok = true;
+    }
+    if (saved_out >= 0) {
+        ok = dup2(saved_out, STDOUT_FILENO) >= 0 && ok;
+        close(saved_out);
+    }
+    if (saved_err >= 0) {
+        ok = dup2(saved_err, STDERR_FILENO) >= 0 && ok;
+        close(saved_err);
+    }
+    if (fseek(tmp, 0, SEEK_SET) == 0) {
+        n = fread(buf, 1, len - 1, tmp);
+        buf[n] = '\0';
+    } else {
+        ok = false;
+    }
+    fclose(tmp);
+    return ok;
+}
+
+/*
+ * Each reporter prints at its own level and above, and nothing below it.
+ * Returns 1 if a check failed, else 0.
+ */
+static int check_reporters(void)
+{
+    static const struct {
+        const char *name;
+        void (*report)(void);
+        ErnicLogLevel level; /* the lowest level that prints it */
+        const char *text;
+    } reporters[] = {
+        {"error_report", report_error, ERNIC_LOG_ERROR, "ERROR: the message\n"},
+        {"warn_report", report_warn, ERNIC_LOG_WARN, "WARN: the message\n"},
+        {"info_report", report_info, ERNIC_LOG_INFO, "INFO: the message\n"},
+        {"ernic_startup_report", report_startup, ERNIC_LOG_WARN,
+         "the message\n"},
+    };
+    int failed = 0;
+
+    for (int lvl = ERNIC_LOG_NONE; lvl <= ERNIC_LOG_DEBUG; lvl++) {
+        ernic_log_set_level((ErnicLogLevel)lvl);
+        for (size_t i = 0; i < sizeof(reporters) / sizeof(reporters[0]); i++) {
+            const char *want =
+                lvl >= (int)reporters[i].level ? reporters[i].text : "";
+            char got[256];
+
+            if (!capture(reporters[i].report, got, sizeof(got))) {
+                printf("FAIL %s at %s: can't capture its output\n",
+                       reporters[i].name,
+                       ernic_log_level_name((ErnicLogLevel)lvl));
+                failed++;
+            } else if (strcmp(got, want) != 0) {
+                printf("FAIL %s at %s: printed '%s', want '%s'\n",
+                       reporters[i].name,
+                       ernic_log_level_name((ErnicLogLevel)lvl), got, want);
+                failed++;
+            }
+        }
+    }
+    if (!failed) {
+        printf("PASS each reporter prints at its level and above only\n");
+    }
+    return failed ? 1 : 0;
+}
+
 int main(int argc, char **argv)
 {
     int failures = 0;
@@ -381,6 +573,12 @@ int main(int argc, char **argv)
         return 1;
     }
     g_self[self_len] = '\0';
+
+    /* These set this process's level, which the children, started afresh,
+     * don't inherit. */
+    failures += check_parse_level();
+    failures += check_level_names();
+    failures += check_reporters();
 
     for (size_t i = 0; i < NCASES; i++) {
         int round;
