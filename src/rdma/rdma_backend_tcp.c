@@ -3560,9 +3560,8 @@ void *tcp_accept_thread(void *opaque)
                             "TCP: Expected handshake, got message type %u",
                             hdr.msg_type);
                         close(sockfd);
-                        if (payload) {
-                            free(payload);
-                        }
+                        free(payload);
+                        payload = NULL;
                         goto next_connection;
                     }
                 } else if (recv_ret == -EAGAIN) {
@@ -3596,9 +3595,8 @@ void *tcp_accept_thread(void *opaque)
                     rdma_error_report("TCP: Error receiving handshake from "
                                       "incoming connection");
                     close(sockfd);
-                    if (payload) {
-                        free(payload);
-                    }
+                    free(payload);
+                    payload = NULL;
                     goto next_connection;
                 }
             }
@@ -3669,7 +3667,9 @@ void *tcp_accept_thread(void *opaque)
             if (!tcp_start_recv_thread(conn, thread_name)) {
                 qemu_mutex_unlock(&priv->conn_table_lock);
                 tcp_connection_unref(conn);
-                        free(payload);
+                free(payload);
+                payload = NULL;
+                continue;
             }
 
             /*
@@ -3703,7 +3703,9 @@ void *tcp_accept_thread(void *opaque)
         }
 
     next_connection:
-                    free(payload);
+        continue;
+    }
+
     rdma_info_report("TCP: Accept thread exiting");
     return NULL;
 }
