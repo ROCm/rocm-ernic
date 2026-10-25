@@ -266,10 +266,21 @@
 * **Nix outputs for a NixOS guest.** `nixosModules.ernic-guest` (enable
   with `virtualisation.ernic.enable`) sets up a `qemu-vm.nix` guest for the
   emulated NIC, and `packages.<system>.ernic-run` starts the server around a
-  VM launcher, exporting `ERNIC_SOCKET`. On x86_64, `nix run .#ionic-vm`
-  boots such a guest to a root shell and `nix run .#run-ionic-guest-test`
-  checks its RDMA port reaches `PORT_ACTIVE`. Documented in
-  `nix/README.md`.
+  VM launcher, exporting `ERNIC_SOCKET`. `ernic-run` passes `--backend`,
+  `--mac`, `--tap`, `--nic-profile`, `--inject`, `--stats-interval-ms`,
+  `--eth-queues`, `--stats-file` and `--log-file` to the server as given
+  (`--nic-profile` and `--inject` may repeat, in order); a server that
+  rejects one exits before the command runs. The Nix Check workflow tests
+  the launchers. Documented in `nix/README.md`. On x86_64, and without
+  root, a TAP or RDMA hardware:
+  * `nix run .#ionic-vm` boots such a guest to a root shell, and
+    `nix run .#run-ionic-guest-test` checks its RDMA port reaches
+    `PORT_ACTIVE`.
+  * `nix run .#ionic-vm-pair` boots two guests joined by the TCP backend,
+    so RDMA between them goes through the two servers.
+    `ernic-pair-pingpong` in a guest runs `ibv_rc_pingpong` against the
+    other, and `--ssh-port N` forwards ssh to both, on N and N+1.
+    `nix run .#run-ionic-pair-test` checks RC ping-pong both ways.
 
 ### Changed
 

@@ -323,6 +323,41 @@ guest's sshd to `127.0.0.1:PORT` only and hands the host user's
 root login is key-only. Like `run-ionic-guest-test`, it needs no root,
 `/dev/vfio` or RDMA hardware, and uses KVM when it is usable.
 
+## Two guests with RDMA between them
+
+```
+nix run github:ROCm/rocm-ernic#ionic-vm-pair
+nix run .#ionic-vm-pair -- --ssh-port 2222  # node 1 on 2222, node 2 on 2223
+nix run .#run-ionic-pair-test               # automated: RC ping-pong both ways
+```
+
+`ionic-vm-pair` boots two NixOS guests (`ernic-node1`, `ernic-node2`), each
+with its own emulated NIC. Node 1's server is the TCP backend's manager
+(`tcp:manager:listen:PORT`) and node 2's a worker connecting to it on
+127.0.0.1, so RDMA between the guests goes through the two servers. Node 1's
+console is on the terminal; node 2's goes to `serial-2.log` in the run
+directory. `ernic-pair-pingpong [ITERS]` runs `ibv_rc_pingpong` with the
+peer as server (over ssh) and this node as client, and `ssh ernic-node2`
+gives a root shell on the other guest. Quitting node 1 stops both.
+
+How the pieces fit, without root, a TAP or RDMA hardware:
+
+- The servers use distinct MACs (`72:6f:63:6d:00:01`/`:02`), and each
+  advertises its guest's default RoCE GID, the link-local address derived
+  from that MAC, in `ERNIC_TCP_GUEST_GIDS`. The backend maps a destination
+  GID to a mesh node with it.
+- The emulated NIC has no Ethernet path without a host TAP. verbs tools
+  exchange QPN and GID over TCP, so each guest gets a second virtio NIC
+  (`pair0`, 10.77.0.1/2) on an unprivileged `-netdev dgram` unix-socket pair.
+- For a RoCE v2 GID, the guest kernel resolves the destination MAC through
+  the neighbour table on the ionic netdev, even for a link-local GID, so
+  `ernic-pair-neigh` pins the peer's GID to its known MAC.
+- The guests reach each other with a per-run ssh key; `--ssh-port` adds
+  the host user's `~/.ssh/*.pub` and forwards both guests to 127.0.0.1.
+
+`ernic-run` gained `--mac` for this, and stops a server that ignores
+SIGTERM for 10s with SIGKILL.
+
 ## Module map
 
 | Path | Purpose |
@@ -337,6 +372,7 @@ root login is key-only. Like `run-ionic-guest-test`, it needs no root,
 | `nix/ernic-run.nix` | `ernic-run`: start the server around a command, export `ERNIC_SOCKET` |
 | `nix/ionic-guest-test.nix` | `run-ionic-guest-test`: guest reaches PORT_ACTIVE on the in-tree drivers |
 | `nix/ionic-vm.nix` | `ionic-vm`: interactive guest with the emulated NIC, root shell, optional ssh forward |
+| `nix/ionic-pair.nix` | `ionic-vm-pair` and `run-ionic-pair-test`: two guests joined by the TCP backend, RDMA between them |
 | `nix/oci.nix` | OCI image (minimal/debug variants) via dockerTools.streamLayeredImage |
 | `nix/microvms/` | per-arch run layer: TCG microvm + loopback self-test + lifecycle driver (VM arches), qemu-user smoke (armv7l/ppc64le) |
 | `nix/devshell.nix`, `nix/shell-functions/` | dev shell + helpers |
@@ -356,3 +392,17 @@ The launcher preserves command exit codes, stops a waiting command when
 its server dies, and gives owned process groups ten seconds to stop before
 using KILL. Caller-owned paths are preserved on rejected startup; temporary
 socket directories created by the launcher are removed when empty.
+
+`nix build .#checks.x86_64-linux.pair-launchers --no-link -L` checks the
+paired-guest supervisor with controlled VM processes. Its tables cover
+positive, negative, boundary and corner cases, with descriptions and
+expected outcomes: decimal ports (including leading zeros), guest failure,
+console input, and bounded cleanup of both guests after TERM or peer exit.
+`--ssh-port` accepts decimal values from 1 through 65534; its second port
+is always the normalized value plus one. Both guest process groups have
+bounded cleanup, and the test launcher fails promptly if either guest fails.
+
+The launcher check also verifies exact server-option argv, repeated profile
+and fault ordering, literal whitespace/globs/quotes, empty values, command
+arguments after `--`, missing values, and server rejection before command
+startup. Expected return codes and descriptions are recorded in each row.
