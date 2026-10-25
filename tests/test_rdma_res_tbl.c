@@ -1,7 +1,7 @@
 /*
  *
- * Unit tests for the resource manager in rdma_rm.c, mostly its table
- * allocator.
+ * Unit tests for the resource manager in rdma_rm.c: its table allocator,
+ * and the paths, error paths included, of the calls built on it.
  *
  * Regression coverage for an off-by-one. find_first_zero_bit() returns the
  * size it was given when no zero bit exists, so a full table yields tbl_sz
@@ -47,8 +47,7 @@
  * The allocator is static inline in rdma_rm.c, so it is reached through
  * the resource manager's public API instead: rdma_rm_init() sizes the CQ
  * table as max_cq, and rdma_rm_alloc_cq() and rdma_rm_dealloc_cq() given no
- * backend are thin wrappers over the allocator. The resource manager's
- * backend externs are stubbed, as no path under test reaches them.
+ * backend are thin wrappers over the allocator.
  *
  * The dealloc-locks case checks that freeing a handle changes the bitmap
  * and the count under the table's lock, as allocating one does. A no-op
@@ -71,6 +70,17 @@
  * before it is narrowed to the uint8_t qp_state_rtr() takes, so 200 is
  * passed on, and 256 and an error are refused.
  *
+ * The backend-succeeds and *-fails cases take a QP to RTS on a backend that
+ * fails the one operation a case names. A failed create must free its slot
+ * and leave nothing to destroy, and a failed state transition or query must
+ * fail the call. qp-no-backend covers a QP whose PD has no backend, which
+ * the resource manager numbers and keeps the state of itself, and QP0 and
+ * QP1, which can't be modified. bad-handles passes free and out-of-range
+ * handles to every call that takes one, tables-full allocates from full
+ * tables, and alloc-refused allocates before rdma_rm_init() and with
+ * nowhere to put the handle. The srq-* cases cover an SRQ's life, through
+ * stubs of the backend's SRQ entry points.
+ *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -91,6 +101,7 @@
 #include <glib.h>
 #include <infiniband/verbs.h>
 
+#include "ernic_ib.h"
 #include "qemu/bitmap.h"
 #include "qemu/thread.h"
 #include "rdma_backend.h"
@@ -99,9 +110,23 @@
 #include "rdma_rm.h"
 #include "rdma_rm_defs.h"
 
-/* ---- Stubs for the backend entry points rdma_rm.c calls. None of them are
- * reachable from the table allocator; they exist only to satisfy the link.
+/* ---- Stubs for the SRQ entry points rdma_rm.c calls, which go to the
+ * backend directly rather than through its ops. They return srq_rc and
+ * count their calls, for the srq-* cases.
  */
+static int srq_rc;
+static uint32_t srq_create_calls;
+static uint32_t srq_modify_calls;
+static uint32_t srq_destroy_calls;
+
+static void srq_stubs_reset(int rc)
+{
+    srq_rc = rc;
+    srq_create_calls = 0;
+    srq_modify_calls = 0;
+    srq_destroy_calls = 0;
+}
+
 int rdma_backend_create_srq(RdmaBackendSRQ *srq, RdmaBackendPD *pd,
                             uint32_t max_wr, uint32_t max_sge,
                             uint32_t srq_limit)
@@ -111,13 +136,14 @@ int rdma_backend_create_srq(RdmaBackendSRQ *srq, RdmaBackendPD *pd,
     (void)max_wr;
     (void)max_sge;
     (void)srq_limit;
-    return -1;
+    srq_create_calls++;
+    return srq_rc;
 }
 int rdma_backend_query_srq(RdmaBackendSRQ *srq, struct ibv_srq_attr *srq_attr)
 {
     (void)srq;
     (void)srq_attr;
-    return -1;
+    return srq_rc;
 }
 int rdma_backend_modify_srq(RdmaBackendSRQ *srq, struct ibv_srq_attr *srq_attr,
                             int srq_attr_mask)
@@ -125,11 +151,13 @@ int rdma_backend_modify_srq(RdmaBackendSRQ *srq, struct ibv_srq_attr *srq_attr,
     (void)srq;
     (void)srq_attr;
     (void)srq_attr_mask;
-    return -1;
+    srq_modify_calls++;
+    return srq_rc;
 }
 void rdma_backend_destroy_srq(RdmaBackendSRQ *srq)
 {
     (void)srq;
+    srq_destroy_calls++;
 }
 
 /* ---- Allocation failure injection -------------------------------------
@@ -1071,6 +1099,677 @@ static bool test_gid_index(const char *name, int backend_idx)
     return ok;
 }
 
+/* ---- Backend failure cases ---------------------------------------------
+ *
+ * A backend whose operations all succeed but the one a case names, which
+ * fails with BACKEND_ERR. Each operation records that it ran, so a case can
+ * tell which one the resource manager stopped at.
+ */
+typedef enum {
+    OP_NONE,
+    OP_CREATE_PD,
+    OP_CREATE_CQ,
+    OP_CREATE_QP,
+    OP_QP_INIT,
+    OP_QP_RTR,
+    OP_QP_RTS,
+    OP_QUERY_QP,
+} BackendOp;
+
+#define BACKEND_ERR (-ENODEV)
+
+static BackendOp fail_op;    /* the operation that fails */
+static BackendOp last_op;    /* the last one that ran */
+static uint32_t cq_destroys; /* destroy_cq calls */
+static uint32_t qp_destroys; /* destroy_qp calls */
+
+static int op_ran(BackendOp op)
+{
+    last_op = op;
+    return op == fail_op ? BACKEND_ERR : 0;
+}
+
+static int fop_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
+{
+    (void)backend_dev;
+    (void)pd;
+    return op_ran(OP_CREATE_PD);
+}
+
+static int fop_create_cq(RdmaBackendDev *backend_dev, RdmaBackendCQ *cq,
+                         uint32_t cqe)
+{
+    (void)backend_dev;
+    (void)cq;
+    (void)cqe;
+    return op_ran(OP_CREATE_CQ);
+}
+
+static void fop_destroy_cq(RdmaBackendCQ *cq)
+{
+    (void)cq;
+    cq_destroys++;
+}
+
+static int fop_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
+                         RdmaBackendCQ *scq, RdmaBackendCQ *rcq,
+                         RdmaBackendSRQ *srq, uint32_t max_send_wr,
+                         uint32_t max_recv_wr, uint32_t max_send_sge,
+                         uint32_t max_recv_sge)
+{
+    (void)qp;
+    (void)qp_type;
+    (void)pd;
+    (void)scq;
+    (void)rcq;
+    (void)srq;
+    (void)max_send_wr;
+    (void)max_recv_wr;
+    (void)max_send_sge;
+    (void)max_recv_sge;
+    return op_ran(OP_CREATE_QP);
+}
+
+static void fop_destroy_qp(RdmaBackendQP *qp, RdmaDeviceResources *res)
+{
+    (void)qp;
+    (void)res;
+    qp_destroys++;
+}
+
+static int fop_qp_state_init(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
+                             uint8_t qp_type, uint32_t qkey)
+{
+    (void)backend_dev;
+    (void)qp;
+    (void)qp_type;
+    (void)qkey;
+    return op_ran(OP_QP_INIT);
+}
+
+static int fop_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
+                            uint8_t qp_type, uint8_t sgid_idx,
+                            union ibv_gid *dgid, uint32_t dqpn, uint32_t rq_psn,
+                            uint32_t qkey, bool qkey_set)
+{
+    (void)backend_dev;
+    (void)qp;
+    (void)qp_type;
+    (void)sgid_idx;
+    (void)dgid;
+    (void)dqpn;
+    (void)rq_psn;
+    (void)qkey;
+    (void)qkey_set;
+    return op_ran(OP_QP_RTR);
+}
+
+static int fop_qp_state_rts(RdmaBackendQP *qp, uint8_t qp_type, uint32_t sq_psn,
+                            uint32_t qkey, bool qkey_set)
+{
+    (void)qp;
+    (void)qp_type;
+    (void)sq_psn;
+    (void)qkey;
+    (void)qkey_set;
+    return op_ran(OP_QP_RTS);
+}
+
+static int fop_query_qp(RdmaBackendQP *qp, struct ibv_qp_attr *attr,
+                        int attr_mask, struct ibv_qp_init_attr *init_attr)
+{
+    (void)qp;
+    (void)attr_mask;
+    memset(attr, 0, sizeof(*attr));
+    if (init_attr) {
+        memset(init_attr, 0, sizeof(*init_attr));
+    }
+    return op_ran(OP_QUERY_QP);
+}
+
+/*
+ * No qpn, so the resource manager numbers QPs by their handles, and no
+ * get_backend_gid_index, so RTR passes the guest's GID index on as it is.
+ */
+static const RdmaBackendOps failing_ops = {
+    .name = "failing",
+    .create_pd = fop_create_pd,
+    .create_cq = fop_create_cq,
+    .destroy_cq = fop_destroy_cq,
+    .create_qp = fop_create_qp,
+    .destroy_qp = fop_destroy_qp,
+    .qp_state_init = fop_qp_state_init,
+    .qp_state_rtr = fop_qp_state_rtr,
+    .qp_state_rts = fop_qp_state_rts,
+    .query_qp = fop_query_qp,
+};
+
+/*
+ * Make a PD, a CQ and an RC QP on the failing backend, take the QP through
+ * INIT and RTR to RTS, and query it, with @op failing. Everything before
+ * @op must succeed and nothing after it run. A failed create is -EIO and
+ * leaves its table as it was, with nothing for the backend to destroy; a
+ * failed state transition is -EIO; and a failed query is passed on as the
+ * backend's error. What was made is then destroyed once each.
+ */
+static bool test_backend_fails(const char *name, BackendOp op)
+{
+    static const enum ibv_qp_state states[] = {IBV_QPS_INIT, IBV_QPS_RTR,
+                                               IBV_QPS_RTS};
+    bool ok = true;
+    RdmaBackendDev backend_dev;
+    struct ibv_device_attr a = one_each;
+    struct ibv_qp_attr attr;
+    struct ibv_qp_init_attr init_attr;
+    union ibv_gid dgid;
+    uint32_t pd_handle = UINT32_MAX, cq_handle = UINT32_MAX, qpn = UINT32_MAX;
+    const int expected_rc = op == OP_NONE       ? 0
+                            : op == OP_QUERY_QP ? BACKEND_ERR
+                                                : -EIO;
+    const BackendOp expected_last = op == OP_NONE ? OP_QUERY_QP : op;
+    const bool have_cq = op == OP_NONE || op > OP_CREATE_CQ;
+    const bool have_qp = op == OP_NONE || op > OP_CREATE_QP;
+
+    memset(&backend_dev, 0, sizeof(backend_dev));
+    backend_dev.backend_ops = &failing_ops;
+    memset(&dgid, 0, sizeof(dgid));
+    memset(&dev_res, 0, sizeof(dev_res));
+    alloc_injectors_reset();
+    fail_op = op;
+    last_op = OP_NONE;
+    cq_destroys = 0;
+    qp_destroys = 0;
+    if (rdma_rm_init(&dev_res, &a) != 0) {
+        abort();
+    }
+
+    int rc = rdma_rm_alloc_pd(&dev_res, &backend_dev, &pd_handle);
+    if (rc == 0) {
+        rc = rdma_rm_alloc_cq(&dev_res, &backend_dev, 1, &cq_handle);
+    }
+    if (rc == 0) {
+        rc = rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, 1, 1, cq_handle,
+                              1, 1, cq_handle, &qpn, 0, 0, NULL);
+    }
+    for (size_t i = 0; rc == 0 && i < sizeof(states) / sizeof(states[0]); i++) {
+        rc = rdma_rm_modify_qp(&dev_res, &backend_dev, qpn, IBV_QP_STATE, 0,
+                               &dgid, 0, states[i], 0, 0, 0);
+    }
+    if (rc == 0) {
+        rc = rdma_rm_query_qp(&dev_res, qpn, &attr, IBV_QP_STATE, &init_attr);
+    }
+
+    if (rc != expected_rc || last_op != expected_last) {
+        printf("FAIL %-18s: returned %d after backend operation %d, expected "
+               "%d after %d\n",
+               name, rc, (int)last_op, expected_rc, (int)expected_last);
+        ok = false;
+    }
+    if (dev_res.pd_tbl.used != (op == OP_CREATE_PD ? 0U : 1U) ||
+        dev_res.cq_tbl.used != (have_cq ? 1U : 0U) ||
+        dev_res.qp_tbl.used != (have_qp ? 1U : 0U) ||
+        g_hash_table_size(dev_res.qp_hash) != (have_qp ? 1U : 0U)) {
+        printf("FAIL %-18s: %u PD(s), %u CQ(s), %u QP(s) and %u QPN(s) "
+               "allocated\n",
+               name, dev_res.pd_tbl.used, dev_res.cq_tbl.used,
+               dev_res.qp_tbl.used, g_hash_table_size(dev_res.qp_hash));
+        ok = false;
+    }
+    if (cq_destroys != 0 || qp_destroys != 0) {
+        printf("FAIL %-18s: %u CQ(s) and %u QP(s) destroyed before being "
+               "freed\n",
+               name, cq_destroys, qp_destroys);
+        ok = false;
+    }
+
+    if (have_qp) {
+        rdma_rm_dealloc_qp(&dev_res, qpn);
+    }
+    if (have_cq) {
+        rdma_rm_dealloc_cq(&dev_res, cq_handle);
+    }
+    if (cq_destroys != (have_cq ? 1U : 0U) ||
+        qp_destroys != (have_qp ? 1U : 0U)) {
+        printf("FAIL %-18s: freeing destroyed %u CQ(s) and %u QP(s)\n", name,
+               cq_destroys, qp_destroys);
+        ok = false;
+    }
+
+    rdma_rm_fini(&dev_res);
+
+    if (ok) {
+        printf("ok   %-18s\n", name);
+    }
+    return ok;
+}
+
+/* ---- QPs with no backend -----------------------------------------------
+ *
+ * A PD made with no backend gives its QPs none. The resource manager then
+ * numbers a QP by its handle, keeps its state and PSNs itself, and answers
+ * a query from them.
+ */
+static bool test_qp_no_backend(void)
+{
+    const char *name = "qp-no-backend";
+    bool ok = true;
+    struct ibv_device_attr a = one_each;
+    struct ibv_qp_attr attr;
+    struct ibv_qp_init_attr init_attr;
+    union ibv_gid dgid;
+    uint32_t pd_handle, cq_handle, qpn;
+
+    a.max_qp = 3;
+    memset(&dgid, 0, sizeof(dgid));
+    memset(&dev_res, 0, sizeof(dev_res));
+    alloc_injectors_reset();
+    if (rdma_rm_init(&dev_res, &a) != 0 ||
+        rdma_rm_alloc_pd(&dev_res, NULL, &pd_handle) != 0 ||
+        rdma_rm_alloc_cq(&dev_res, NULL, 1, &cq_handle) != 0 ||
+        rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, 1, 1, cq_handle, 1, 1,
+                         cq_handle, &qpn, 0, 0, NULL) != 0) {
+        abort();
+    }
+
+    RdmaRmQP *qp = rdma_rm_get_qp(&dev_res, qpn);
+    if (!qp || qp->qpn != qpn) {
+        printf("FAIL %-18s: QPN %u doesn't name the QP with that handle\n",
+               name, qpn);
+        ok = false;
+    }
+
+    /* PSNs are 24 bits; the bits above are dropped. */
+    int rc = rdma_rm_modify_qp(
+        &dev_res, NULL, qpn, IBV_QP_STATE | IBV_QP_RQ_PSN | IBV_QP_SQ_PSN, 0,
+        &dgid, 0, IBV_QPS_RTR, 0, UINT32_C(0x12345678), UINT32_C(0x9abcdef0));
+    if (rc != 0) {
+        printf("FAIL %-18s: RTR returned %d\n", name, rc);
+        ok = false;
+    }
+
+    memset(&attr, 0xff, sizeof(attr));
+    memset(&init_attr, 0xff, sizeof(init_attr));
+    rc = rdma_rm_query_qp(&dev_res, qpn, &attr, IBV_QP_STATE, &init_attr);
+    if (rc != 0 || attr.qp_state != IBV_QPS_RTR ||
+        attr.cur_qp_state != IBV_QPS_RTR || attr.rq_psn != 0x345678U ||
+        attr.sq_psn != 0xbcdef0U || init_attr.qp_type != IBV_QPT_RC) {
+        printf("FAIL %-18s: query returned %d with state %d/%d, PSNs %#x/%#x "
+               "and type %d, expected 0 with %d/%d, 0x345678/0xbcdef0 and "
+               "%d\n",
+               name, rc, (int)attr.qp_state, (int)attr.cur_qp_state,
+               attr.rq_psn, attr.sq_psn, (int)init_attr.qp_type,
+               (int)IBV_QPS_RTR, (int)IBV_QPS_RTR, (int)IBV_QPT_RC);
+        ok = false;
+    }
+
+    /* The init attributes are optional. */
+    rc = rdma_rm_query_qp(&dev_res, qpn, &attr, IBV_QP_STATE, NULL);
+    if (rc != 0 || attr.qp_state != IBV_QPS_RTR) {
+        printf("FAIL %-18s: query with no init attributes returned %d with "
+               "state %d\n",
+               name, rc, (int)attr.qp_state);
+        ok = false;
+    }
+
+    /* QP0 can't be modified, and QP1's modifications change nothing. */
+    uint32_t smi, gsi;
+    if (rdma_rm_alloc_qp(&dev_res, pd_handle, ERNIC_IB_QPT_SMI, 1, 1, cq_handle,
+                         1, 1, cq_handle, &smi, 0, 0, NULL) != 0 ||
+        rdma_rm_alloc_qp(&dev_res, pd_handle, ERNIC_IB_QPT_GSI, 1, 1, cq_handle,
+                         1, 1, cq_handle, &gsi, 0, 0, NULL) != 0) {
+        abort();
+    }
+    rc = rdma_rm_modify_qp(&dev_res, NULL, smi, IBV_QP_STATE, 0, &dgid, 0,
+                           IBV_QPS_RTS, 0, 0, 0);
+    if (rc != -EPERM) {
+        printf("FAIL %-18s: modifying QP0 returned %d, expected %d\n", name, rc,
+               -EPERM);
+        ok = false;
+    }
+    rc = rdma_rm_modify_qp(&dev_res, NULL, gsi, IBV_QP_STATE | IBV_QP_SQ_PSN, 0,
+                           &dgid, 0, IBV_QPS_RTS, 0, 0, 5);
+    if (rc != 0 ||
+        rdma_rm_query_qp(&dev_res, gsi, &attr, IBV_QP_STATE, NULL) != 0 ||
+        attr.qp_state != IBV_QPS_RESET || attr.sq_psn != 0) {
+        printf("FAIL %-18s: modifying QP1 returned %d and left state %d and "
+               "SQ PSN %u, expected 0 and RESET, 0\n",
+               name, rc, (int)attr.qp_state, attr.sq_psn);
+        ok = false;
+    }
+
+    /* Freed twice, the second finds nothing. */
+    rdma_rm_dealloc_qp(&dev_res, qpn);
+    rdma_rm_dealloc_qp(&dev_res, qpn);
+    rdma_rm_dealloc_qp(&dev_res, smi);
+    rdma_rm_dealloc_qp(&dev_res, gsi);
+    if (dev_res.qp_tbl.used != 0 || g_hash_table_size(dev_res.qp_hash) != 0) {
+        printf("FAIL %-18s: %u QP(s) and %u QPN(s) left after freeing every "
+               "QP\n",
+               name, dev_res.qp_tbl.used, g_hash_table_size(dev_res.qp_hash));
+        ok = false;
+    }
+
+    rdma_rm_fini(&dev_res);
+
+    if (ok) {
+        printf("ok   %-18s\n", name);
+    }
+    return ok;
+}
+
+/* ---- Bad handles and full tables ---------------------------------------
+ *
+ * Handles come from the guest. One that names nothing, whether in range but
+ * free or past the end of its table, must be refused by every call that
+ * takes it, and ignored by every free.
+ */
+static bool test_bad_handles(void)
+{
+    const char *name = "bad-handles";
+    static const uint32_t bad[] = {1, 2, UINT32_MAX};
+    bool ok = true;
+    struct ibv_device_attr a = {
+        .max_qp = 2,
+        .max_cq = 2,
+        .max_mr = 2,
+        .max_pd = 2,
+        .max_srq = 2,
+    };
+    struct ibv_qp_attr attr;
+    struct ibv_srq_attr srq_attr;
+    union ibv_gid dgid;
+    uint32_t pd_handle, cq_handle, handle, lkey, rkey;
+
+    memset(&dgid, 0, sizeof(dgid));
+    memset(&srq_attr, 0, sizeof(srq_attr));
+    srq_attr.max_wr = 1;
+    srq_attr.srq_limit = 1;
+    memset(&dev_res, 0, sizeof(dev_res));
+    alloc_injectors_reset();
+    srq_stubs_reset(0);
+    /* Handle 0 of the PD and CQ tables is taken, so 1 is free and in range,
+     * and 2 is past the end. */
+    if (rdma_rm_init(&dev_res, &a) != 0 ||
+        rdma_rm_alloc_pd(&dev_res, NULL, &pd_handle) != 0 ||
+        rdma_rm_alloc_cq(&dev_res, NULL, 1, &cq_handle) != 0 ||
+        pd_handle != 0 || cq_handle != 0) {
+        abort();
+    }
+
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        const uint32_t h = bad[i];
+        int rcs[] = {
+            rdma_rm_alloc_mr(&dev_res, h, MR_ACCESS, &handle, &lkey, &rkey),
+            rdma_rm_alloc_qp(&dev_res, h, IBV_QPT_RC, 1, 1, cq_handle, 1, 1,
+                             cq_handle, &handle, 0, 0, NULL),
+            rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, 1, 1, h, 1, 1,
+                             cq_handle, &handle, 0, 0, NULL),
+            rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, 1, 1, cq_handle,
+                             1, 1, h, &handle, 0, 0, NULL),
+            rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, 1, 1, cq_handle,
+                             1, 1, cq_handle, &handle, 1, h, NULL),
+            rdma_rm_modify_qp(&dev_res, NULL, h, IBV_QP_STATE, 0, &dgid, 0,
+                              IBV_QPS_INIT, 0, 0, 0),
+            rdma_rm_query_qp(&dev_res, h, &attr, IBV_QP_STATE, NULL),
+            rdma_rm_alloc_srq(&dev_res, h, 1, 1, 1, &handle),
+            rdma_rm_query_srq(&dev_res, h, &srq_attr),
+            rdma_rm_modify_srq(&dev_res, h, &srq_attr, IBV_SRQ_LIMIT),
+        };
+
+        for (size_t j = 0; j < sizeof(rcs) / sizeof(rcs[0]); j++) {
+            if (rcs[j] != -EINVAL) {
+                printf("FAIL %-18s: call %zu with handle %u returned %d, "
+                       "expected %d\n",
+                       name, j, h, rcs[j], -EINVAL);
+                ok = false;
+            }
+        }
+        if (rdma_rm_get_qp(&dev_res, h)) {
+            printf("FAIL %-18s: QPN %u names a QP\n", name, h);
+            ok = false;
+        }
+
+        rdma_rm_dealloc_mr(&dev_res, h);
+        rdma_rm_dealloc_cq(&dev_res, h);
+        rdma_rm_dealloc_qp(&dev_res, h);
+        rdma_rm_dealloc_srq(&dev_res, h);
+    }
+
+    if (dev_res.pd_tbl.used != 1 || dev_res.cq_tbl.used != 1 ||
+        dev_res.mr_tbl.used != 0 || dev_res.qp_tbl.used != 0 ||
+        dev_res.srq_tbl.used != 0 || g_hash_table_size(dev_res.qp_hash) != 0) {
+        printf("FAIL %-18s: %u PD(s), %u CQ(s), %u MR(s), %u QP(s), %u "
+               "SRQ(s) and %u QPN(s) allocated, expected 1, 1 and none\n",
+               name, dev_res.pd_tbl.used, dev_res.cq_tbl.used,
+               dev_res.mr_tbl.used, dev_res.qp_tbl.used, dev_res.srq_tbl.used,
+               g_hash_table_size(dev_res.qp_hash));
+        ok = false;
+    }
+    if (srq_create_calls != 0 || srq_modify_calls != 0 ||
+        srq_destroy_calls != 0) {
+        printf("FAIL %-18s: the backend was asked about an SRQ\n", name);
+        ok = false;
+    }
+
+    rdma_rm_fini(&dev_res);
+
+    if (ok) {
+        printf("ok   %-18s\n", name);
+    }
+    return ok;
+}
+
+/* With one entry in every table, the second PD, MR, QP and SRQ must be
+ * refused. (The CQ table is filled by the full-* cases.) */
+static bool test_tables_full(void)
+{
+    const char *name = "tables-full";
+    bool ok = true;
+    struct ibv_device_attr a = one_each;
+    uint32_t pd_handle, cq_handle, srq_handle, handle, lkey, rkey;
+
+    memset(&dev_res, 0, sizeof(dev_res));
+    alloc_injectors_reset();
+    srq_stubs_reset(0);
+    if (rdma_rm_init(&dev_res, &a) != 0 ||
+        rdma_rm_alloc_pd(&dev_res, NULL, &pd_handle) != 0 ||
+        rdma_rm_alloc_cq(&dev_res, NULL, 1, &cq_handle) != 0 ||
+        rdma_rm_alloc_mr(&dev_res, pd_handle, MR_ACCESS, &handle, &lkey,
+                         &rkey) != 0 ||
+        rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, 1, 1, cq_handle, 1, 1,
+                         cq_handle, &handle, 0, 0, NULL) != 0 ||
+        rdma_rm_alloc_srq(&dev_res, pd_handle, 1, 1, 1, &srq_handle) != 0) {
+        abort();
+    }
+
+    int rcs[] = {
+        rdma_rm_alloc_pd(&dev_res, NULL, &handle),
+        rdma_rm_alloc_mr(&dev_res, pd_handle, MR_ACCESS, &handle, &lkey, &rkey),
+        rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, 1, 1, cq_handle, 1, 1,
+                         cq_handle, &handle, 0, 0, NULL),
+        rdma_rm_alloc_srq(&dev_res, pd_handle, 1, 1, 1, &handle),
+    };
+    for (size_t i = 0; i < sizeof(rcs) / sizeof(rcs[0]); i++) {
+        if (rcs[i] != -ENOMEM) {
+            printf("FAIL %-18s: allocation %zu from a full table returned %d, "
+                   "expected %d\n",
+                   name, i, rcs[i], -ENOMEM);
+            ok = false;
+        }
+    }
+    if (srq_create_calls != 1) {
+        printf("FAIL %-18s: the backend was asked for %u SRQs, expected 1\n",
+               name, srq_create_calls);
+        ok = false;
+    }
+
+    rdma_rm_dealloc_srq(&dev_res, srq_handle);
+    rdma_rm_fini(&dev_res);
+
+    if (ok) {
+        printf("ok   %-18s\n", name);
+    }
+    return ok;
+}
+
+/* A table rdma_rm_init() hasn't built, or nowhere to put the handle, is
+ * refused rather than dereferenced. */
+static bool test_alloc_refused(void)
+{
+    const char *name = "alloc-refused";
+    bool ok = true;
+    struct ibv_device_attr a = one_each;
+    uint32_t handle;
+
+    memset(&dev_res, 0, sizeof(dev_res));
+    alloc_injectors_reset();
+    int rc_no_table = rdma_rm_alloc_pd(&dev_res, NULL, &handle);
+
+    if (rdma_rm_init(&dev_res, &a) != 0) {
+        abort();
+    }
+    int rc_no_handle = rdma_rm_alloc_cq(&dev_res, NULL, 1, NULL);
+
+    if (rc_no_table != -ENOMEM || rc_no_handle != -ENOMEM) {
+        printf("FAIL %-18s: allocating before init returned %d, and with no "
+               "handle %d, expected %d\n",
+               name, rc_no_table, rc_no_handle, -ENOMEM);
+        ok = false;
+    }
+    if (dev_res.cq_tbl.used != 0) {
+        printf("FAIL %-18s: allocating with no handle took a CQ\n", name);
+        ok = false;
+    }
+
+    rdma_rm_fini(&dev_res);
+
+    if (ok) {
+        printf("ok   %-18s\n", name);
+    }
+    return ok;
+}
+
+/* ---- SRQ cases ---------------------------------------------------------
+ *
+ * The resource manager refuses a modification asking for a zero limit or
+ * depth before the backend sees it, binds a QP only to an SRQ that exists,
+ * and destroys the backend's SRQ once, however often it is freed.
+ */
+static bool test_srq_lifecycle(void)
+{
+    const char *name = "srq-lifecycle";
+    bool ok = true;
+    struct ibv_device_attr a = one_each;
+    struct ibv_srq_attr srq_attr;
+    uint32_t pd_handle, cq_handle, srq_handle, qpn;
+
+    memset(&dev_res, 0, sizeof(dev_res));
+    alloc_injectors_reset();
+    srq_stubs_reset(0);
+    if (rdma_rm_init(&dev_res, &a) != 0 ||
+        rdma_rm_alloc_pd(&dev_res, NULL, &pd_handle) != 0 ||
+        rdma_rm_alloc_cq(&dev_res, NULL, 1, &cq_handle) != 0) {
+        abort();
+    }
+
+    int rc = rdma_rm_alloc_srq(&dev_res, pd_handle, 4, 1, 2, &srq_handle);
+    if (rc != 0 || srq_create_calls != 1) {
+        printf("FAIL %-18s: allocating returned %d with %u backend call(s)\n",
+               name, rc, srq_create_calls);
+        ok = false;
+    }
+
+    memset(&srq_attr, 0, sizeof(srq_attr));
+    rc = rdma_rm_query_srq(&dev_res, srq_handle, &srq_attr);
+    if (rc != 0) {
+        printf("FAIL %-18s: query returned %d\n", name, rc);
+        ok = false;
+    }
+
+    /* srq_attr is all zero: a zero limit and a zero depth. */
+    int rc_limit =
+        rdma_rm_modify_srq(&dev_res, srq_handle, &srq_attr, IBV_SRQ_LIMIT);
+    int rc_max_wr =
+        rdma_rm_modify_srq(&dev_res, srq_handle, &srq_attr, IBV_SRQ_MAX_WR);
+    if (rc_limit != -EINVAL || rc_max_wr != -EINVAL || srq_modify_calls != 0) {
+        printf("FAIL %-18s: a zero limit returned %d and a zero depth %d, "
+               "with %u backend call(s), expected %d, %d and none\n",
+               name, rc_limit, rc_max_wr, srq_modify_calls, -EINVAL, -EINVAL);
+        ok = false;
+    }
+    srq_attr.srq_limit = 3;
+    rc = rdma_rm_modify_srq(&dev_res, srq_handle, &srq_attr, IBV_SRQ_LIMIT);
+    if (rc != 0 || srq_modify_calls != 1) {
+        printf("FAIL %-18s: a limit of 3 returned %d with %u backend "
+               "call(s)\n",
+               name, rc, srq_modify_calls);
+        ok = false;
+    }
+
+    rc = rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, 1, 1, cq_handle, 1,
+                          1, cq_handle, &qpn, 1, srq_handle, NULL);
+    if (rc != 0) {
+        printf("FAIL %-18s: a QP on the SRQ returned %d\n", name, rc);
+        ok = false;
+    } else {
+        rdma_rm_dealloc_qp(&dev_res, qpn);
+    }
+
+    rdma_rm_dealloc_srq(&dev_res, srq_handle);
+    rdma_rm_dealloc_srq(&dev_res, srq_handle);
+    if (srq_destroy_calls != 1 || dev_res.srq_tbl.used != 0) {
+        printf("FAIL %-18s: freeing twice destroyed %u SRQ(s) and left %u\n",
+               name, srq_destroy_calls, dev_res.srq_tbl.used);
+        ok = false;
+    }
+
+    rdma_rm_fini(&dev_res);
+
+    if (ok) {
+        printf("ok   %-18s\n", name);
+    }
+    return ok;
+}
+
+/* A backend that can't create the SRQ must leave the slot free and have
+ * nothing to destroy. */
+static bool test_srq_backend_fails(void)
+{
+    const char *name = "srq-backend-fails";
+    bool ok = true;
+    struct ibv_device_attr a = one_each;
+    uint32_t pd_handle, srq_handle = UINT32_MAX;
+
+    memset(&dev_res, 0, sizeof(dev_res));
+    alloc_injectors_reset();
+    srq_stubs_reset(BACKEND_ERR);
+    if (rdma_rm_init(&dev_res, &a) != 0 ||
+        rdma_rm_alloc_pd(&dev_res, NULL, &pd_handle) != 0) {
+        abort();
+    }
+
+    int rc = rdma_rm_alloc_srq(&dev_res, pd_handle, 4, 1, 2, &srq_handle);
+    if (rc != -EIO || dev_res.srq_tbl.used != 0 ||
+        rdma_rm_get_srq(&dev_res, srq_handle)) {
+        printf("FAIL %-18s: returned %d and left %u SRQ(s), expected %d and "
+               "none\n",
+               name, rc, dev_res.srq_tbl.used, -EIO);
+        ok = false;
+    }
+    if (srq_destroy_calls != 0) {
+        printf("FAIL %-18s: destroy_srq called for an SRQ never created\n",
+               name);
+        ok = false;
+    }
+
+    rdma_rm_fini(&dev_res);
+
+    if (ok) {
+        printf("ok   %-18s\n", name);
+    }
+    return ok;
+}
+
 int main(void)
 {
     int failures = 0;
@@ -1128,6 +1827,41 @@ int main(void)
         failures++;
     }
     if (!test_gid_index("gid-index-error", -EINVAL)) {
+        failures++;
+    }
+
+    static const struct {
+        const char *name;
+        BackendOp op;
+    } backend_cases[] = {
+        {"backend-succeeds", OP_NONE},     {"create-pd-fails", OP_CREATE_PD},
+        {"create-cq-fails", OP_CREATE_CQ}, {"create-qp-fails", OP_CREATE_QP},
+        {"qp-init-fails", OP_QP_INIT},     {"qp-rtr-fails", OP_QP_RTR},
+        {"qp-rts-fails", OP_QP_RTS},       {"query-qp-fails", OP_QUERY_QP},
+    };
+    for (size_t i = 0; i < sizeof(backend_cases) / sizeof(backend_cases[0]);
+         i++) {
+        if (!test_backend_fails(backend_cases[i].name, backend_cases[i].op)) {
+            failures++;
+        }
+    }
+
+    if (!test_qp_no_backend()) {
+        failures++;
+    }
+    if (!test_bad_handles()) {
+        failures++;
+    }
+    if (!test_tables_full()) {
+        failures++;
+    }
+    if (!test_alloc_refused()) {
+        failures++;
+    }
+    if (!test_srq_lifecycle()) {
+        failures++;
+    }
+    if (!test_srq_backend_fails()) {
         failures++;
     }
 
