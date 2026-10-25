@@ -1520,6 +1520,8 @@ static void test_atomic_and_reg_mr(void)
 #define WRAP_KEY_A 0x05000005u
 #define WRAP_KEY_B 0x06000006u
 #define WRAP_FR_ID 0x00000007u
+#define WRAP_CQ    7
+#define WRAP_QP    14
 #define WRAP_VA    UINT64_C(0x00007f4000000000)
 
 /* CREATE_MR of @len bytes at @va, through @map_count page table entries
@@ -1563,17 +1565,23 @@ static void write_to(const char *T, struct rc *r, const char *what,
     expect_send(T, what, r, status);
 }
 
-/* A REG_MR or LOCAL_INV, which completes by its SQ index. */
-static void post_local_op(const char *T, struct rc *r, const struct ih_send *s,
-                          const char *what)
+/* A REG_MR or LOCAL_INV on @qp, which completes on @cq by its SQ index,
+ * with @status. */
+static void post_local_op(const char *T, struct ih *h, struct ih_qp *qp,
+                          struct ih_cq *cq, const struct ih_send *s,
+                          const char *what, uint32_t status)
 {
     struct ih_cqe e;
-    uint64_t id = ih_post_send(&r->h, &r->a, s);
+    uint64_t id = ih_post_send(h, qp, s);
 
-    check(T,
-          ih_cq_poll(&r->h, &r->cqa, &e) && e.type == IH_CQE_TYPE_SEND_NPG &&
-              e.wqe_id == id,
-          "%s did not complete by its SQ index", what);
+    if (!check(T,
+               ih_cq_poll(h, cq, &e) && e.type == IH_CQE_TYPE_SEND_NPG &&
+                   e.wqe_id == id,
+               "%s did not complete by its SQ index", what))
+        return;
+    check(T, e.error == (status != 0) && (!e.error || e.status_len == status),
+          "%s: status %u (error %d), expected %u", what, e.status_len, e.error,
+          status);
 }
 
 /* Sends whose length is more than they hold, or than a u32 holds. */
@@ -1722,7 +1730,8 @@ static void wrap_mrs(const char *T, struct rc *r)
     struct ih_mr past = fr;
     past.va = UINT64_MAX - (IH_PAGE_SIZE - 1);
     struct ih_send reg = {.op = IH_OP_REG_MR, .key = fr_key, .mr = &past};
-    post_local_op(T, r, &reg, "REG_MR of a region past 2^64");
+    post_local_op(T, h, &r->a, &r->cqa, &reg, "REG_MR of a region past 2^64",
+                  IH_STS_MEM_MGMT_ERR);
     write_to(T, r, "RDMA_WRITE through a REG_MR of a region past 2^64", fr_key,
              past.va, sizeof(want), IH_STS_REMOTE_ACC_ERR);
 
@@ -1732,15 +1741,31 @@ static void wrap_mrs(const char *T, struct rc *r)
      * through the key went to guest physical address 0 onwards.
      */
     reg.mr = &fr;
-    post_local_op(T, r, &reg, "REG_MR");
+    post_local_op(T, h, &r->a, &r->cqa, &reg, "REG_MR", 0);
     write_to(T, r, "RDMA_WRITE through a fast-registered MR", fr_key, fr.va + 8,
              sizeof(want), 0);
     struct ih_mr too_many = fr;
     too_many.npages = 1000; /* for a region of two pages */
     reg.mr = &too_many;
-    post_local_op(T, r, &reg, "REG_MR with too many pages");
+    post_local_op(T, h, &r->a, &r->cqa, &reg, "REG_MR with too many pages",
+                  IH_STS_MEM_MGMT_ERR);
     write_to(T, r, "RDMA_WRITE through a key whose REG_MR failed", fr_key,
              fr.va + 8, sizeof(want), IH_STS_REMOTE_ACC_ERR);
+
+    /* A REG_MR in a 32-byte WQE, which can't hold the region it binds */
+    struct ih_cq cqs;
+    struct ih_qp small;
+    if (check(T,
+              ih_cq_create(h, &cqs, WRAP_CQ, 6) &&
+                  ih_qp_create_stride(h, &small, WRAP_QP, IH_QPT_RC, &cqs, &cqs,
+                                      NULL, 5),
+              "short-WQE QP setup failed")) {
+        reg.mr = &fr;
+        post_local_op(T, h, &small, &cqs, &reg, "REG_MR in a 32-byte WQE",
+                      IH_STS_MEM_MGMT_ERR);
+        check(T, ih_qp_destroy(h, &small) == 0 && ih_cq_destroy(h, &cqs) == 0,
+              "short-WQE QP teardown failed");
+    }
 
     ih_mr_free(&fr);
     check(T, destroy_mr_id(h, 0x07000000u | WRAP_FR_ID) == 0,

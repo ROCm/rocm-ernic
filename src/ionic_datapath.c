@@ -192,13 +192,15 @@ _Static_assert((1u << IONIC_CQ_MIN_STRIDE_LOG2) == CQE_SIZE,
  * enum ionic_status from the guest driver's ionic_fw.h, which runs these
  * through ionic_to_ib_status() to reach an ib_wc_status.  LOCAL_LEN_ERR is a
  * receive buffer too small for the inbound message; LOCAL_PROT_ERR is an SGE
- * that does not lie inside the MR its own key names.
+ * that does not lie inside the MR its own key names; MEM_MGMT_OPER_ERR is a
+ * fast registration that bound nothing.
  */
 #define IONIC_STS_OK                 0
 #define IONIC_STS_LOCAL_LEN_ERR      1
 #define IONIC_STS_LOCAL_QP_OPER_ERR  2
 #define IONIC_STS_LOCAL_PROT_ERR     3
 #define IONIC_STS_WQE_FLUSHED_ERR    4
+#define IONIC_STS_MEM_MGMT_OPER_ERR  5
 #define IONIC_STS_LOCAL_ACC_ERR      7
 #define IONIC_STS_REMOTE_ACC_ERR     9
 #define IONIC_STS_RETRY_EXCEEDED     11
@@ -998,12 +1000,12 @@ static struct dp_mr *mr_find(struct ionic_datapath *dp, uint32_t lkey)
     return NULL;
 }
 
-void ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
-                                uint64_t va, uint64_t length,
-                                const struct ionic_dp_buf_desc *buf)
+int ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
+                               uint64_t va, uint64_t length,
+                               const struct ionic_dp_buf_desc *buf)
 {
     if (!dp)
-        return;
+        return -EINVAL;
 
     /*
      * A region past the top of the address space is no region: the bounds
@@ -1017,7 +1019,7 @@ void ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
                 " runs past the end of the address space",
                 lkey, length, va);
         ionic_datapath_unregister_mr(dp, lkey);
-        return;
+        return -EINVAL;
     }
 
     struct dp_mr *m = mr_find(dp, lkey);
@@ -1031,12 +1033,13 @@ void ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
     }
     if (!m) {
         vfu_log(dp->vfu_ctx, LOG_WARNING, "ionic_datapath: MR table full");
-        return;
+        return -ENOSPC;
     }
 
     /* A memory region's span is its length; the guest said so in
      * CREATE_MR and the rkey checks already hold it to that. */
-    if (ionic_dp_buf_init(dp, &m->buf, buf, va, length) < 0) {
+    int rc = ionic_dp_buf_init(dp, &m->buf, buf, va, length);
+    if (rc < 0) {
         vfu_log(dp->vfu_ctx, LOG_ERR,
                 "ionic_datapath: MR %#x page table read failed", lkey);
         /*
@@ -1046,7 +1049,7 @@ void ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
          * physical address 0 onwards.
          */
         m->valid = false;
-        return;
+        return rc;
     }
     m->lkey = lkey;
     m->va = va;
@@ -1059,6 +1062,7 @@ void ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
             "ionic_datapath: MR lkey=%#x va=%#" PRIx64 " len=%" PRIu64
             " pages=%u pgsz=2^%u",
             lkey, va, length, m->buf.npages, m->buf.page_size_log2);
+    return 0;
 }
 
 void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey)
@@ -1080,8 +1084,8 @@ void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey)
  * ib_update_fast_reg_key() rotates only the top byte, so the previous key for
  * the same MR id has to be dropped or the table fills one rotation at a time.
  */
-static void dp_reg_mr(struct ionic_datapath *dp, const uint8_t *wqe,
-                      uint32_t key)
+static int dp_reg_mr(struct ionic_datapath *dp, const uint8_t *wqe,
+                     uint32_t key)
 {
     for (int i = 0; i < MAX_MR; i++) {
         if (dp->mr[i].valid && dp->mr[i].lkey != key &&
@@ -1095,9 +1099,9 @@ static void dp_reg_mr(struct ionic_datapath *dp, const uint8_t *wqe,
         .page_size_log2 = wqe[WQE_REG_MR_PAGE_SZ_L2_OFF],
     };
 
-    ionic_datapath_register_mr(dp, key, ernic_get_be64(wqe + WQE_REG_MR_VA_OFF),
-                               ernic_get_be64(wqe + WQE_REG_MR_LENGTH_OFF),
-                               &buf);
+    return ionic_datapath_register_mr(
+        dp, key, ernic_get_be64(wqe + WQE_REG_MR_VA_OFF),
+        ernic_get_be64(wqe + WQE_REG_MR_LENGTH_OFF), &buf);
 }
 
 /* -------------------------------------------------------------------------
@@ -3239,15 +3243,26 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
      * must also come before parse_sges().
      */
     if (op == IONIC_V1_OP_REG_MR || op == IONIC_V1_OP_LOCAL_INV) {
-        if (op != IONIC_V1_OP_REG_MR)
+        /*
+         * A REG_MR that binds nothing completes in error, with the status
+         * the driver turns into IB_WC_MW_BIND_ERR, the memory management
+         * operation error IB gives a fast registration. Completed as
+         * success, it told the guest that a key no transfer could use was
+         * registered.
+         */
+        uint32_t reg_status = IONIC_STS_OK;
+
+        if (op != IONIC_V1_OP_REG_MR) {
             ionic_datapath_unregister_mr(dp, ernic_get_be32(wqe + 12));
-        else if (read_sz >= WQE_REG_MR_MIN_SZ)
-            dp_reg_mr(dp, wqe, ernic_get_be32(wqe + 12));
-        else
+        } else if (read_sz < WQE_REG_MR_MIN_SZ) {
             vfu_log(dp->vfu_ctx, LOG_WARNING,
                     "ionic_datapath: QP %u REG_MR WQE truncated (%u bytes)",
                     qp_id, read_sz);
-        cq_post_send_npg(dp, q->sq_cq_id, qp_id, wqe_id, IONIC_STS_OK);
+            reg_status = IONIC_STS_MEM_MGMT_OPER_ERR;
+        } else if (dp_reg_mr(dp, wqe, ernic_get_be32(wqe + 12)) < 0) {
+            reg_status = IONIC_STS_MEM_MGMT_OPER_ERR;
+        }
+        cq_post_send_npg(dp, q->sq_cq_id, qp_id, wqe_id, reg_status);
         return true;
     }
 

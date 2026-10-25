@@ -224,10 +224,15 @@ uint32_t ionic_dp_node_from_gid(const struct ionic_datapath *dp,
  * MR registration.  @lkey is the driver's full mrid (index | key << 24), which
  * is exactly what userspace puts in an SGE.  @va/@length describe the region in
  * the client's address space; @buf resolves it to guest physical pages.
+ *
+ * Returns 0, or a negative errno with nothing registered under @lkey, any
+ * earlier binding of it included: -EINVAL for a region past the end of the
+ * address space or a page table the device can't honour, -ENOSPC when the
+ * MR table is full, -ENOMEM, or -EIO when the page table can't be read.
  */
-void ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
-                                uint64_t va, uint64_t length,
-                                const struct ionic_dp_buf_desc *buf);
+int ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
+                               uint64_t va, uint64_t length,
+                               const struct ionic_dp_buf_desc *buf);
 void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey);
 
 /*

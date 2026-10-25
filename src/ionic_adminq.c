@@ -1551,7 +1551,13 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
                                           .map_count =
                                               ernic_get_le32(body + 28),
                                           .page_size_log2 = body[44]};
-        ionic_datapath_register_mr(ctx->dp, mrid, mr_va, mr_len, &mrbuf);
+        /*
+         * Not yet the command's failure. An MR that a REG_MR work request
+         * binds later arrives with no region and is refused here, as it
+         * should be; failing the command for the other reasons would need
+         * the resource manager's MR above unwound first.
+         */
+        (void)ionic_datapath_register_mr(ctx->dp, mrid, mr_va, mr_len, &mrbuf);
 
         vfu_log(ctx->vfu_ctx, LOG_INFO,
                 "ionic_adminq CREATE_MR mr_id=%u handle=%u access=%#x pd=%u "

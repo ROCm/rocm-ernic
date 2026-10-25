@@ -594,10 +594,12 @@
     successfully.
   * `CREATE_MR`, or a fast registration, of a region that runs past the end
     of the address space is refused, and a region that ends exactly there,
-    which was refused, is accepted. A failed fast registration now drops
-    its key's previous binding, which it left pointing at guest physical
-    address 0. An address inside a one-page region that wraps past 2^64 is
-    refused rather than wrapped to the bottom of guest memory.
+    which was refused, is accepted. A failed fast registration now
+    completes with `IBV_WC_MW_BIND_ERR` rather than success, including one
+    in a work request too short to hold it, and drops its key's previous
+    binding, which it left pointing at guest physical address 0. An
+    address inside a one-page region that wraps past 2^64 is refused
+    rather than wrapped to the bottom of guest memory.
   * The NVMe-oF target refuses an in-capsule SGL offset that wraps, as an
     invalid SGL; it read the command itself as the data. `size=` of 2^63
     bytes or more with `file=` is refused with an error saying so.
