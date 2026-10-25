@@ -545,6 +545,63 @@ static void tcp_gid_claims_forget(TcpBackendPrivate *priv, uint32_t node_id)
     qemu_mutex_unlock(&priv->gid_table_lock);
 }
 
+/*
+ * Worker: drop the claims of every node but this one that the first
+ * @num_nodes entries of a MESH_TOPOLOGY update from the manager leave out.
+ *
+ * A node evicted from the mesh (tcp_evict_dead_node()) is advertised as
+ * owning nothing once, when it is evicted, and never again: the GID tables
+ * that follow carry only the nodes still in the mesh.  A worker that wasn't
+ * connected to the manager just then, and registers again later, would keep
+ * the node's claims for good, contesting those of its guest under a new id.
+ * The topology says who is in the mesh, so claims outside it are dropped.
+ *
+ * An update the manager took before a node registered can arrive after the
+ * node's claims, and drop them, but they come again.  The registration
+ * sends an update of its own, which waits for an older one to be sent
+ * (topology_broadcast_lock), and then a whole GID table.  If the node's
+ * advertisement was recorded by then, the table carries its claims;
+ * otherwise the manager's fan-out of the advertisement, which comes later
+ * still, does.
+ */
+static void tcp_gid_claims_prune(TcpBackendPrivate *priv,
+                                 const TcpMeshTopologyPayload *topo,
+                                 uint32_t num_nodes)
+{
+    uint32_t local = tcp_local_node(priv);
+    GHashTableIter iter;
+    gpointer key;
+    guint dropped = 0;
+
+    if (!priv->node_gids)
+        return;
+    if (num_nodes > G_N_ELEMENTS(topo->nodes))
+        num_nodes = G_N_ELEMENTS(topo->nodes);
+
+    qemu_mutex_lock(&priv->gid_table_lock);
+    g_hash_table_iter_init(&iter, priv->node_gids);
+    while (g_hash_table_iter_next(&iter, &key, NULL)) {
+        uint32_t node_id = GPOINTER_TO_UINT(key);
+        bool listed = node_id == local;
+
+        for (uint32_t i = 0; !listed && i < num_nodes; i++)
+            listed = ntohl(topo->nodes[i].node_id) == node_id;
+        if (!listed) {
+            g_hash_table_iter_remove(&iter);
+            dropped++;
+        }
+    }
+    if (dropped)
+        tcp_gid_index_rebuild(priv);
+    qemu_mutex_unlock(&priv->gid_table_lock);
+
+    /* Logged outside the lock: rdma_info_report() can block on stderr. */
+    if (dropped)
+        rdma_info_report("TCP: dropped the GIDs of %u node(s) no longer in "
+                         "the mesh",
+                         dropped);
+}
+
 void tcp_gid_claims_set_alive(TcpBackendPrivate *priv, uint32_t node_id,
                               bool alive)
 {
@@ -3061,6 +3118,7 @@ void *tcp_recv_thread_per_conn(void *opaque)
                 rdma_info_report("TCP: Received mesh topology with %u nodes",
                                  num_nodes);
 
+                tcp_gid_claims_prune(priv, topo, num_nodes);
                 tcp_worker_set_peers(priv, topo, num_nodes);
                 break;
             }

@@ -612,10 +612,12 @@
   likely as dead: their peer connections were torn down and their GIDs
   stopped resolving. Now a node registering for the first time in a full
   table takes the place of the node that has been dead longest, of those
-  whose connection is gone; the workers are told that node owns nothing,
-  and its id isn't given out again. A worker evicted while it was only
-  paused or cut off is refused when it comes back, logging the refusal on
-  each retry, and has to be restarted to rejoin.
+  whose connection is gone; the workers are told that node owns nothing (a
+  worker that wasn't connected to the manager then drops the node's GIDs
+  when the manager's next topology update leaves it out), and its id isn't
+  given out again. A worker evicted while it was only paused or cut off is
+  refused when it comes back, logging the refusal on each retry, and has to
+  be restarted to rejoin.
 * **NVMe-oF backend.**
   * A shutdown requested with `CC.EN` still set, as the specification has
     it, now completes. Hosts polled until their timeout (SPDK waited ten

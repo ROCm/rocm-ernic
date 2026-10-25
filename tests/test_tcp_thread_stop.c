@@ -114,7 +114,9 @@
  * A worker whose connection to the manager dropped was cut off from the
  * mesh.  The manager link rows have the manager close the connection, fall
  * silent, refuse the worker, or go away, and check that the worker connects
- * and registers again under its own id, and only when it should.
+ * and registers again under its own id, and only when it should.  One has
+ * the manager evict a node meanwhile, and checks that the worker drops the
+ * node's GIDs.
  *
  * A send to a peer that stayed connected but stopped reading waited for as
  * long as the peer took, holding up the device's main thread among others.
@@ -6827,6 +6829,11 @@ static int run_dc_case(const struct dc_case *c)
  * on the connection's lock, which a send to a manager that has stopped
  * reading holds.
  *
+ * A worker cut off while the manager evicts a node misses the one message
+ * saying the node owns nothing, and the GID tables after it don't mention
+ * the node.  The worker drops the claims of nodes a topology update leaves
+ * out, which the evicted row checks.
+ *
  * Each row runs tcp_init() for a worker, node WL_ID, on a 1 s interval,
  * against a manager the test plays over loopback, as the dead connection rows
  * do.
@@ -6837,6 +6844,11 @@ static int run_dc_case(const struct dc_case *c)
 #define WL_HIGHER 6
 /* A node whose GIDs the manager tells the worker */
 #define WL_OTHER 9
+/*
+ * A node WL_EVICTED evicts.  Lower than WL_ID, so the worker waits for it to
+ * connect rather than connecting to it.
+ */
+#define WL_GONE_ID 2
 /* Peers with higher ids that don't answer, for WL_BUSY */
 #define WL_SLOW       3
 #define WL_SLOW_FIRST 10
@@ -6855,6 +6867,7 @@ enum wl_scenario {
     WL_OTHER_ID, /* it registers the worker again as another node */
     WL_GONE,     /* nothing listens on its port for a while */
     WL_STOP,     /* the worker is stopped while it waits for the answer */
+    WL_EVICTED,  /* a node is evicted while the worker is cut off */
 };
 
 struct wl_case {
@@ -6907,11 +6920,23 @@ static const struct wl_case wl_cases[] = {
      "returns at once, without waiting out the registration timeout; the "
      "worker has no connection to the manager meanwhile",
      WL_STOP},
+    {"negative",
+     "the manager evicts a node while the worker is cut off, and the worker "
+     "registers again",
+     "the worker drops the evicted node's GIDs, which no GID table mentions "
+     "again, once a topology update leaves the node out, and keeps the "
+     "others'",
+     WL_EVICTED},
 };
 
-/* The one GID WL_OTHER owns: ::ffff:192.168.251.11 */
+/* The one GID WL_OTHER owns, and WL_GONE_ID in WL_EVICTED:
+ * ::ffff:192.168.251.11 */
 static const uint8_t wl_gid[16] = {0, 0, 0,    0,    0,   0,   0,   0,
                                    0, 0, 0xff, 0xff, 192, 168, 251, 11};
+
+/* The one GID the manager, node 0, owns in WL_EVICTED: ::ffff:192.168.251.12 */
+static const uint8_t wl_mgr_gid[16] = {0, 0, 0,    0,    0,   0,   0,   0,
+                                       0, 0, 0xff, 0xff, 192, 168, 251, 12};
 
 /* The descriptors a row opens on the manager's side, closed at its end */
 #define WL_MAX_FDS 4
@@ -7015,6 +7040,63 @@ static const char *wl_accepted(struct dc_worker *w, int mgr, int high)
         return "the worker ignored a topology update on the new connection";
     close(peer);
     return NULL;
+}
+
+/* The node the worker resolves gid to, which is 16 bytes */
+static uint32_t wl_resolve(struct dc_worker *w, const uint8_t *gid)
+{
+    union ibv_gid raw;
+
+    memcpy(raw.raw, gid, 16);
+    return tcp_resolve_node_from_gid(dc_priv(w), &raw);
+}
+
+/*
+ * WL_EVICTED.  The worker learns that WL_GONE_ID owns wl_gid, and the
+ * manager wl_mgr_gid, then loses its connection to the manager.  Meanwhile
+ * the manager declares WL_GONE_ID dead and evicts it, telling only the
+ * workers it is connected to.  The worker registers again, and the manager
+ * sends what follows a registration: a topology update, then a GID table,
+ * neither of which has WL_GONE_ID.
+ */
+static const char *wl_evicted(struct dc_worker *w, int lfd, struct wl_fds *k)
+{
+    TcpMeshTopologyPayload topo;
+    const char *why;
+    int mgr;
+
+    memset(&topo, 0, sizeof(topo));
+    tp_entry(&topo, 0, 1, true);
+    tp_entry(&topo, WL_ID, w->port, true);
+    tp_entry(&topo, WL_GONE_ID, 1, true);
+    if (!send_topology(w->mgr, &topo) ||
+        !send_gids(w->mgr, WL_GONE_ID, &wl_gid) ||
+        !send_gids(w->mgr, 0, &wl_mgr_gid) || !wr_settled(w->mgr, NULL))
+        return "the worker stopped answering";
+    if (wl_resolve(w, wl_gid) != WL_GONE_ID || wl_resolve(w, wl_mgr_gid) != 0)
+        return "the worker ignored the GID table";
+
+    close(w->mgr);
+    w->mgr = -1;
+    why = wl_registers(w, lfd, k, &mgr);
+    if (why)
+        return why;
+    if (!wr_assign(mgr, WL_ID))
+        return "could not answer the registration";
+    if (wr_node_in(mgr, TCP_MSG_NODE_GIDS, NULL) != WL_ID)
+        return "the worker didn't advertise its GIDs as WL_ID";
+
+    memset(&topo, 0, sizeof(topo));
+    tp_entry(&topo, 0, 1, true);
+    tp_entry(&topo, WL_ID, w->port, true);
+    if (!send_topology(mgr, &topo) || !send_gids(mgr, 0, &wl_mgr_gid) ||
+        !wr_settled(mgr, NULL))
+        return "the worker stopped answering";
+    if (wl_resolve(w, wl_gid) != UINT32_MAX)
+        return "the worker kept the evicted node's GID";
+    return wl_resolve(w, wl_mgr_gid) == 0
+               ? NULL
+               : "the worker dropped the GID of a node still in the mesh";
 }
 
 /* WL_HANGS_UP and WL_SILENT; old is the worker's connection before */
@@ -7307,6 +7389,9 @@ static const char *wl_run(enum wl_scenario scenario, struct dc_worker *w,
         break;
     case WL_STOP:
         why = wl_stop(w, *lfd, k);
+        break;
+    case WL_EVICTED:
+        why = wl_evicted(w, *lfd, k);
         break;
     default:
         why = "unknown scenario";

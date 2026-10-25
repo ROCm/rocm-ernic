@@ -646,7 +646,11 @@ connection's place in the table, so the manager records a worker's
 advertisement only while its node is in `mesh_nodes`, checked under that
 lock (`tcp_gid_claims_set_if_member()`); otherwise a late one would put
 an evicted node's claims back. Nothing is evicted once teardown has
-begun (`priv->stopping`), as with `tcp_register_again()`.
+begun (`priv->stopping`), as with `tcp_register_again()`. A worker cut
+off from the manager misses the eviction's empty advertisement, and later
+GID tables don't mention the node, so a worker drops the claims of every
+node a topology update from the manager leaves out
+(`tcp_gid_claims_prune()`).
 
 Don't make the index read `is_alive` from `mesh_nodes`: that takes
 `mesh_table_lock` under `gid_table_lock`, the reverse of the lock order.
