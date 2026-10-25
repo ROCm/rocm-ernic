@@ -1154,7 +1154,9 @@ previous key for that MR</p></td>
 </table>
 </div>
 <p>Inline sends (payload carried in the WQE itself) are handled by
-treating the WQE’s own payload area as the source buffer.</p>
+treating the WQE’s own payload area as the source buffer. One
+claiming more than that area holds fails with a length error,
+as does a send whose SGE lengths add up to more than 4 GiB.</p>
 <p>Copies between two guest buffers go through a 4 KiB bounce
 buffer on the server’s stack, one contiguous run at a time.</p>
 <p>Each WQE then gets a send completion on the SQ’s CQ. RC and UC

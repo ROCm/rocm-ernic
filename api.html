@@ -545,6 +545,7 @@
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#admin-queue">Admin Queue</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#c.IONIC_ADMINQ_MAX_DEPTH_LOG2"><code class="docutils literal notranslate"><span class="pre">IONIC_ADMINQ_MAX_DEPTH_LOG2</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv426ionic_adminq_cq_event_fn_t"><code class="docutils literal notranslate"><span class="pre">ionic_adminq_cq_event_fn_t</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv419ionic_adminq_createP9vfu_ctx_t"><code class="docutils literal notranslate"><span class="pre">ionic_adminq_create()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv420ionic_adminq_destroyP16ionic_adminq_ctx"><code class="docutils literal notranslate"><span class="pre">ionic_adminq_destroy()</span></code></a></li>
@@ -1520,6 +1521,14 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <section id="admin-queue">
 <h3>Admin Queue<a class="headerlink" href="#admin-queue" title="Link to this heading">#</a></h3>
 <div class="breathe-sectiondef docutils container">
+<p class="breathe-sectiondef-title rubric" id="breathe-section-title-defines">Defines</p>
+<dl class="cpp macro">
+<dt class="sig sig-object cpp" id="c.IONIC_ADMINQ_MAX_DEPTH_LOG2">
+<span class="target" id="ionic__adminq_8h_1a8517e01bbcf51264cd06f61dbcd0ebd7"></span><span class="sig-name descname"><span class="n"><span class="pre">IONIC_ADMINQ_MAX_DEPTH_LOG2</span></span></span><a class="headerlink" href="#c.IONIC_ADMINQ_MAX_DEPTH_LOG2" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+</div>
+<div class="breathe-sectiondef docutils container">
 <p class="breathe-sectiondef-title rubric" id="breathe-section-title-typedefs">Typedefs</p>
 <dl class="cpp type">
 <dt class="sig sig-object cpp" id="_CPPv426ionic_adminq_cq_event_fn_t">
@@ -1877,7 +1886,7 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv426ionic_datapath_register_mrP14ionic_datapath8uint32_t8uint64_t8uint64_tPK17ionic_dp_buf_desc">
-<span id="_CPPv326ionic_datapath_register_mrP14ionic_datapath8uint32_t8uint64_t8uint64_tPK17ionic_dp_buf_desc"></span><span id="_CPPv226ionic_datapath_register_mrP14ionic_datapath8uint32_t8uint64_t8uint64_tPK17ionic_dp_buf_desc"></span><span id="ionic_datapath_register_mr__ionic_datapathP.uint32_t.uint64_t.uint64_t.ionic_dp_buf_descCP"></span><span class="target" id="ionic__datapath_8h_1a61d688c7bc0db1d7b7c6bd6bb5b06af8"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ionic_datapath_register_mr</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ionic_datapath</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">dp</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">lkey</span></span>, <span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">va</span></span>, <span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">length</span></span>, <span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><a class="reference internal" href="#_CPPv417ionic_dp_buf_desc" title="ionic_dp_buf_desc"><span class="n"><span class="pre">ionic_dp_buf_desc</span></span></a><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">buf</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv426ionic_datapath_register_mrP14ionic_datapath8uint32_t8uint64_t8uint64_tPK17ionic_dp_buf_desc" title="Link to this definition">#</a><br /></dt>
+<span id="_CPPv326ionic_datapath_register_mrP14ionic_datapath8uint32_t8uint64_t8uint64_tPK17ionic_dp_buf_desc"></span><span id="_CPPv226ionic_datapath_register_mrP14ionic_datapath8uint32_t8uint64_t8uint64_tPK17ionic_dp_buf_desc"></span><span id="ionic_datapath_register_mr__ionic_datapathP.uint32_t.uint64_t.uint64_t.ionic_dp_buf_descCP"></span><span class="target" id="ionic__datapath_8h_1ace9d3905a98bbdf05ce34b5e72141402"></span><span class="kt"><span class="pre">int</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ionic_datapath_register_mr</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ionic_datapath</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">dp</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">lkey</span></span>, <span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">va</span></span>, <span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">length</span></span>, <span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><a class="reference internal" href="#_CPPv417ionic_dp_buf_desc" title="ionic_dp_buf_desc"><span class="n"><span class="pre">ionic_dp_buf_desc</span></span></a><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">buf</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv426ionic_datapath_register_mrP14ionic_datapath8uint32_t8uint64_t8uint64_tPK17ionic_dp_buf_desc" title="Link to this definition">#</a><br /></dt>
 <dd></dd></dl>
 
 <dl class="cpp function">
@@ -2230,6 +2239,7 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#admin-queue">Admin Queue</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#c.IONIC_ADMINQ_MAX_DEPTH_LOG2"><code class="docutils literal notranslate"><span class="pre">IONIC_ADMINQ_MAX_DEPTH_LOG2</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv426ionic_adminq_cq_event_fn_t"><code class="docutils literal notranslate"><span class="pre">ionic_adminq_cq_event_fn_t</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv419ionic_adminq_createP9vfu_ctx_t"><code class="docutils literal notranslate"><span class="pre">ionic_adminq_create()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv420ionic_adminq_destroyP16ionic_adminq_ctx"><code class="docutils literal notranslate"><span class="pre">ionic_adminq_destroy()</span></code></a></li>

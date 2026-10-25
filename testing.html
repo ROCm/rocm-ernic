@@ -523,6 +523,9 @@ refuse</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-rc</span></code>, <code class="docutils literal notranslate"><span class="pre">-atomic</span></code>, <code class="docutils literal notranslate"><span class="pre">-cq-events</span></code>: sends,
 RDMA reads and writes, atomics and fast registration
 between two RC QPs on the loopback backend, and CQ arming</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-wrap</span></code>: send lengths and memory regions
+whose sums or ends carry past 2^32 or 2^64, which the
+device must refuse rather than wrap</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-ud</span></code>, <code class="docutils literal notranslate"><span class="pre">-srq</span></code>: datagrams, address handles
 and shared receive queues</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-eth</span></code>: Ethernet transmit and receive</p></li>
