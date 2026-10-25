@@ -307,6 +307,13 @@
     `ERNIC_TCP_LISTEN_BACKLOG`, `ERNIC_TCP_HEALTH_INTERVAL` or
     `ERNIC_TCP_SOCKBUF` makes the value ignored, as other malformed values
     already were.
+* **Breaking:** **An unknown `--backend` name stops the server.** The name,
+  everything before the first `:`, must be exactly `none`, `loopback`,
+  `verbs`, `tcp`, `nvmeof` or `s3`. Before, any other name ran the server
+  with no backend, after a warning, and one that only started with a
+  backend's name was partly taken for it: `loopbackjunk` ran as
+  `loopback`, and `s3junk` and `nvmeofjunk` started the S3 or NVMe-oF
+  target with no backend under it.
 * **The default log level is `warn`**, so the per-operation `INFO:` lines
   are gone in steady state; `--log-level info` restores them. `-v` /
   `--verbose` is `--log-level debug`.
@@ -618,6 +625,11 @@
   given out again. A worker evicted while it was only paused or cut off is
   refused when it comes back, logging the refusal on each retry, and has to
   be restarted to rejoin.
+* **TCP mesh: a worker whose manager's host name ends in `manager`.** Any
+  `--backend tcp:` config containing `manager:` was taken for a manager's,
+  so `--backend tcp:worker:mesh-manager:5000` failed to start, saying a
+  manager config must start with `manager:`. The role is now read only from
+  the start of the config.
 * **NVMe-oF backend.**
   * A shutdown requested with `CC.EN` still set, as the specification has
     it, now completes. Hosts polled until their timeout (SPDK waited ten
@@ -735,6 +747,10 @@
     `analysis-semgrep` never parsed and now run; the target tests its rules
     against fixtures in `nix/analysis/semgrep-tests/` and fails if one
     doesn't parse or pass.
+  * RDMA-Tutorial's write example, in the two-VM lane, waits for both ends
+    of a message before clearing it. Taking it as arrived on either end let
+    the rest of a WRITE land after the clear and count as the next message,
+    which could leave the server waiting until `timeout` killed it.
 
 ### Limitations
 

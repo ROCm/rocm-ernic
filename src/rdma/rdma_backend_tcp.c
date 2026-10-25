@@ -1135,27 +1135,56 @@ bool tcp_withdraw_if_still_unreachable(TcpBackendPrivate *priv,
     return withdrawn;
 }
 
-/* Parse manager config: "manager:<ip>:<port>" or "manager:listen:<port>" */
-static int parse_tcp_config_manager(const char *config, char **manager_host,
+/* @s past @prefix, or NULL if @s doesn't start with it */
+static const char *tcp_skip_prefix(const char *s, const char *prefix)
+{
+    size_t len = strlen(prefix);
+
+    return strncmp(s, prefix, len) == 0 ? s + len : NULL;
+}
+
+/*
+ * The role a TCP backend config names: "manager:" or "worker:" at its
+ * start, after an optional "tcp:" (the server passes what follows
+ * "--backend tcp:", the tests the whole string).  Returns what follows the
+ * role, setting *mode, or NULL, leaving *mode alone, if the config names
+ * neither.  Only the prefix counts: "worker:mesh-manager:5000" is a worker
+ * whose manager is mesh-manager.
+ */
+const char *tcp_config_role(const char *config, TcpMode *mode)
+{
+    const char *body = tcp_skip_prefix(config, "tcp:");
+    const char *args;
+
+    if (!body) {
+        body = config;
+    }
+
+    args = tcp_skip_prefix(body, "manager:");
+    if (args) {
+        *mode = TCP_MODE_MANAGER;
+        return args;
+    }
+    args = tcp_skip_prefix(body, "worker:");
+    if (args) {
+        *mode = TCP_MODE_WORKER;
+    }
+    return args;
+}
+
+/*
+ * Parse a manager config, after its "manager:" (see tcp_config_role()):
+ * "<ip>:<port>" or "listen:<port>"
+ */
+static int parse_tcp_config_manager(const char *args, char **manager_host,
                                     uint16_t *manager_port, bool *listen_mode)
 {
     char *config_copy, *saveptr, *token;
-    const char *parse_start = config;
     char *host_str = NULL;
     uint16_t port_val = 0;
     bool listen = false;
 
-    if (!strncmp(config, "tcp:", 4)) {
-        parse_start = config + 4;
-    }
-
-    if (strncmp(parse_start, "manager:", 8) != 0) {
-        rdma_error_report("TCP manager config must start with 'manager:'");
-        return -EINVAL;
-    }
-
-    parse_start += 8; /* Skip "manager:" */
-    config_copy = g_strdup(parse_start);
+    config_copy = g_strdup(args);
     token = strtok_r(config_copy, ":", &saveptr);
 
     if (!token) {
@@ -1204,26 +1233,18 @@ static int parse_tcp_config_manager(const char *config, char **manager_host,
     return 0;
 }
 
-/* Parse worker config: "worker:<manager_ip>:<manager_port>" */
-static int parse_tcp_config_worker(const char *config, char **manager_host,
+/*
+ * Parse a worker config, after its "worker:" (see tcp_config_role()):
+ * "<manager_ip>:<manager_port>"
+ */
+static int parse_tcp_config_worker(const char *args, char **manager_host,
                                    uint16_t *manager_port)
 {
     char *config_copy, *saveptr, *token;
-    const char *parse_start = config;
     char *host_str = NULL;
     uint16_t port_val = 0;
 
-    if (!strncmp(config, "tcp:", 4)) {
-        parse_start = config + 4;
-    }
-
-    if (strncmp(parse_start, "worker:", 7) != 0) {
-        rdma_error_report("TCP worker config must start with 'worker:'");
-        return -EINVAL;
-    }
-
-    parse_start += 7; /* Skip "worker:" */
-    config_copy = g_strdup(parse_start);
+    config_copy = g_strdup(args);
     token = strtok_r(config_copy, ":", &saveptr);
 
     if (!token) {
@@ -4629,11 +4650,20 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
                            uint32_t health_interval_s)
 {
     TcpBackendPrivate *priv;
+    TcpMode mode;
+    const char *args;
     int ret;
 
     /* NULL for a bare "--backend tcp", which names no role */
     if (!config) {
         rdma_error_report("TCP backend: No config. Must be "
+                          "tcp:manager:... or tcp:worker:...");
+        return -EINVAL;
+    }
+
+    args = tcp_config_role(config, &mode);
+    if (!args) {
+        rdma_error_report("TCP backend: Invalid config. Must be "
                           "tcp:manager:... or tcp:worker:...");
         return -EINVAL;
     }
@@ -4706,8 +4736,7 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
     qemu_cond_init(&priv->registration_cond);
     qemu_mutex_init(&priv->registration_mutex);
 
-    /* Determine mode from config string */
-    if (strstr(config, "manager:")) {
+    if (mode == TCP_MODE_MANAGER) {
         /* Manager mode: tcp:manager:<ip>:<port> or tcp:manager:listen:<port> */
         char *manager_host = NULL;
         uint16_t manager_port = 0;
@@ -4722,7 +4751,7 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
         tcp_gid_claims_set(priv, 0, tcp_const_gids(priv->local_gids),
                            priv->num_local_gids);
 
-        ret = parse_tcp_config_manager(config, &manager_host, &manager_port,
+        ret = parse_tcp_config_manager(args, &manager_host, &manager_port,
                                        &listen_mode);
         if (ret < 0) {
             goto error;
@@ -4789,7 +4818,7 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
         g_free(manager_host);
         rdma_info_report("TCP backend: Manager initialized");
 
-    } else if (strstr(config, "worker:")) {
+    } else {
         /* Worker mode: tcp:worker:<manager_ip>:<manager_port> */
         char *manager_host = NULL;
         uint16_t manager_port = 0;
@@ -4797,7 +4826,7 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
         priv->mode = TCP_MODE_WORKER;
         priv->is_manager = false;
 
-        ret = parse_tcp_config_worker(config, &manager_host, &manager_port);
+        ret = parse_tcp_config_worker(args, &manager_host, &manager_port);
         if (ret < 0) {
             goto error;
         }
@@ -4848,11 +4877,6 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
 
         rdma_info_report("TCP backend: Worker initialized, registered with "
                          "manager");
-
-    } else {
-        rdma_error_report("TCP backend: Invalid config. Must be "
-                          "tcp:manager:... or tcp:worker:...");
-        goto error;
     }
 
     backend_dev->backend_private = priv;

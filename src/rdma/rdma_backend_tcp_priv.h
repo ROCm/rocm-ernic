@@ -749,6 +749,7 @@ int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
                      uint64_t deadline_ms);
 
 /* Setup */
+const char *tcp_config_role(const char *config, TcpMode *mode);
 int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
                            uint32_t health_interval_s);
 

@@ -3505,6 +3505,79 @@ static void test_teardown(void)
     teardown(T, &h);
 }
 
+/*
+ * The name is everything before the first ':', matched exactly, for every
+ * backend: once the server took "s3junk" for s3 while the core took it for
+ * an unknown name.
+ */
+static void test_backend_names(void)
+{
+    static const char T[] = "backend-names";
+    static const struct {
+        const char *str;
+        const char *name; /* NULL: unknown */
+    } cases[] = {
+        {"none", "none"},
+        {"none:", "none"},
+        {"loopback", "loopback"},
+        {"loopback:x", "loopback"},
+        {"verbs", "verbs"},
+        {"verbs:device=mlx5_0,port=1", "verbs"},
+        {"tcp", "tcp"},
+        {"tcp:manager:listen:9000", "tcp"},
+        {"nvmeof", "nvmeof"},
+        {"nvmeof:size=1M", "nvmeof"},
+        {"s3", "s3"},
+        {"s3:bucket=b", "s3"},
+        {"", NULL},
+        {":", NULL},
+        {":s3", NULL},
+        {"nonex", NULL},
+        {"loopbackjunk", NULL},
+        {"loopbackjunk:x", NULL},
+        {"verbsx", NULL},
+        {"tcpx:manager:listen:9000", NULL},
+        {"nvmeofx", NULL},
+        {"s3junk", NULL},
+        {"s3junk:bucket=b", NULL},
+        {"s", NULL},
+        {"loop", NULL},
+        {"S3", NULL},
+        {" s3", NULL},
+        {"s3 ", NULL},
+        {"unknown", NULL},
+    };
+
+    const char *name = pvrdma_backend_name(NULL);
+    check(T, name && !strcmp(name, "none"), "NULL is '%s', not 'none'",
+          name ? name : "(unknown)");
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        name = pvrdma_backend_name(cases[i].str);
+        if (cases[i].name)
+            check(T, name && !strcmp(name, cases[i].name),
+                  "'%s' is '%s', not '%s'", cases[i].str,
+                  name ? name : "(unknown)", cases[i].name);
+        else
+            check(T, !name, "'%s' is '%s', not unknown", cases[i].str, name);
+    }
+
+    /* The device refuses an unknown name, rather than choosing a backend */
+    rocm_ernic_dev_t *dev = calloc(1, sizeof(*dev));
+
+    if (!check(T, dev != NULL, "out of memory"))
+        return;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        if (cases[i].name)
+            continue;
+        pvrdma_handle_t handle =
+            pvrdma_device_create(dev, cases[i].str, NULL, NULL, 1);
+        if (!check(T, !handle, "a device was created for '%s'", cases[i].str))
+            pvrdma_device_destroy(handle);
+    }
+    free(dev);
+}
+
 /* ---- Driver ------------------------------------------------------------ */
 
 
@@ -3535,6 +3608,7 @@ static const struct {
 #endif
     {"nvmeof", test_nvmeof},
     {"teardown", test_teardown},
+    {"backend-names", test_backend_names},
 };
 
 int main(int argc, char **argv)

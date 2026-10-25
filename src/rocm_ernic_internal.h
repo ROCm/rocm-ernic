@@ -146,6 +146,9 @@ struct rocm_ernic_dev {
     char *backend_device_name; /* IB device (e.g., "mlx5_0") */
     char *backend_eth_device;  /* Eth device (e.g., "eth0") */
     uint8_t backend_port_num;  /* IB port number */
+    /* The backend backend_type_str names, from pvrdma_backend_name(): "none",
+     * "loopback", "verbs", ...  Set by the server's option validation */
+    const char *backend_name;
 
     /* Device state flags */
     bool device_initialized; /* Device structure created */

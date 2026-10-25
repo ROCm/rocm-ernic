@@ -45,6 +45,13 @@ pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
         return NULL;
     }
 
+    /* Parse backend type and extract config */
+    backend_type = rdma_backend_get_type_from_string(backend_type_str);
+    if (backend_type == RDMA_BACKEND_TYPE_MAX) {
+        rdma_error_report("Unknown backend '%s'", backend_type_str);
+        return NULL;
+    }
+
     /* Allocate QEMU PVRDMA device structure */
     pvrdma = calloc(1, sizeof(PVRDMADev));
     if (!pvrdma) {
@@ -54,8 +61,6 @@ pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
 
     pvrdma->parent_obj.vfu_ctx = dev->vfu_ctx;
 
-    /* Parse backend type and extract config */
-    backend_type = rdma_backend_get_type_from_string(backend_type_str);
     rdma_info_report("Selected RDMA backend: %s",
                      rdma_backend_type_to_string(backend_type));
 
@@ -148,6 +153,14 @@ pvrdma_handle_t pvrdma_device_create(rocm_ernic_dev_t *dev,
     rdma_info_report("PVRDMA device created (handle=%p)", (void *)pvrdma);
 
     return pvrdma;
+}
+
+const char *pvrdma_backend_name(const char *backend_type_str)
+{
+    RdmaBackendType type = rdma_backend_get_type_from_string(backend_type_str);
+
+    return type == RDMA_BACKEND_TYPE_MAX ? NULL
+                                         : rdma_backend_type_to_string(type);
 }
 
 void pvrdma_device_destroy(pvrdma_handle_t handle)
