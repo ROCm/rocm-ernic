@@ -1,8 +1,9 @@
 /*
- * Network Header Parsing Utilities
+ * Network Header Layouts
  *
- * Lightweight TCP/IP header parsing for Ethernet frame processing.
- * Used by DHCP server and rdma_cm protocol handlers.
+ * Ethernet, ARP, IPv4, ICMP and TCP headers, for the S3 target's TCP/IP
+ * endpoint, and the IPv4 header checksum, which the ionic datapath also
+ * uses to build a RoCEv2 GRH.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -12,9 +13,8 @@
 #define NET_HEADERS_H
 
 #include <arpa/inet.h>
+#include <stddef.h>
 #include <stdint.h>
-#include <stdbool.h>
-#include <string.h>
 
 /* Ethernet header (14 bytes) */
 struct eth_header {
@@ -23,9 +23,8 @@ struct eth_header {
     uint16_t ethertype; /* Network byte order */
 } __attribute__((packed));
 
-#define ETH_ETHERTYPE_IP   0x0800
-#define ETH_ETHERTYPE_ARP  0x0806
-#define ETH_ETHERTYPE_IPV6 0x86DD
+#define ETH_ETHERTYPE_IP  0x0800
+#define ETH_ETHERTYPE_ARP 0x0806
 
 /* ARP header (28 bytes for Ethernet/IPv4) */
 struct arp_header {
@@ -95,99 +94,6 @@ struct tcp_header {
 #define TCP_FLAG_RST 0x04
 #define TCP_FLAG_PSH 0x08
 #define TCP_FLAG_ACK 0x10
-#define TCP_FLAG_URG 0x20
-
-#define TCP_PORT_RDMA_CM 18515
-
-/* UDP header (8 bytes) */
-struct udp_header {
-    uint16_t src_port; /* Network byte order */
-    uint16_t dst_port; /* Network byte order */
-    uint16_t len;      /* Network byte order */
-    uint16_t checksum; /* Network byte order */
-} __attribute__((packed));
-
-#define UDP_PORT_DHCP_SERVER 67
-#define UDP_PORT_DHCP_CLIENT 68
-
-/* Helper functions */
-
-/* Parse Ethernet header from frame */
-static inline bool parse_eth_header(void *frame, size_t len,
-                                    struct eth_header **eth_hdr)
-{
-    if (len < sizeof(struct eth_header)) {
-        return false;
-    }
-    *eth_hdr = (struct eth_header *)frame;
-    return true;
-}
-
-/* Parse IP header from frame (after Ethernet header) */
-static inline bool parse_ip_header(void *frame, size_t len,
-                                   struct eth_header *eth_hdr,
-                                   struct ip_header **ip_hdr)
-{
-    if (ntohs(eth_hdr->ethertype) != ETH_ETHERTYPE_IP) {
-        return false;
-    }
-    size_t ip_offset = sizeof(struct eth_header);
-    if (len < ip_offset + sizeof(struct ip_header)) {
-        return false;
-    }
-    *ip_hdr = (struct ip_header *)((uint8_t *)frame + ip_offset);
-    return true;
-}
-
-/* Parse TCP header from frame (after IP header) */
-static inline bool parse_tcp_header(void *frame, size_t len,
-                                    struct ip_header *ip_hdr,
-                                    struct tcp_header **tcp_hdr,
-                                    size_t *tcp_offset)
-{
-    if (ip_hdr->protocol != IP_PROTOCOL_TCP) {
-        return false;
-    }
-    size_t ip_hdr_len = (ip_hdr->version_ihl & 0x0Fu) * 4u;
-    *tcp_offset = sizeof(struct eth_header) + ip_hdr_len;
-    if (len < *tcp_offset + sizeof(struct tcp_header)) {
-        return false;
-    }
-    *tcp_hdr = (struct tcp_header *)((uint8_t *)frame + *tcp_offset);
-    return true;
-}
-
-/* Parse UDP header from frame (after IP header) */
-static inline bool parse_udp_header(void *frame, size_t len,
-                                    struct ip_header *ip_hdr,
-                                    struct udp_header **udp_hdr,
-                                    size_t *udp_offset)
-{
-    if (ip_hdr->protocol != IP_PROTOCOL_UDP) {
-        return false;
-    }
-    size_t ip_hdr_len = (ip_hdr->version_ihl & 0x0Fu) * 4u;
-    *udp_offset = sizeof(struct eth_header) + ip_hdr_len;
-    if (len < *udp_offset + sizeof(struct udp_header)) {
-        return false;
-    }
-    *udp_hdr = (struct udp_header *)((uint8_t *)frame + *udp_offset);
-    return true;
-}
-
-/* Get TCP payload offset */
-static inline size_t get_tcp_payload_offset(struct tcp_header *tcp_hdr,
-                                            size_t tcp_offset)
-{
-    uint8_t data_off = (tcp_hdr->data_off >> 4) & 0x0F;
-    return tcp_offset + (data_off * 4u);
-}
-
-/* Get UDP payload offset */
-static inline size_t get_udp_payload_offset(size_t udp_offset)
-{
-    return udp_offset + sizeof(struct udp_header);
-}
 
 /* Calculate IP header checksum */
 static inline uint16_t ip_checksum(const void *data, size_t len)
@@ -209,114 +115,6 @@ static inline uint16_t ip_checksum(const void *data, size_t len)
     /* One's complement */
     uint16_t checksum = ~sum & 0xFFFFu;
     return htons(checksum);
-}
-
-/* Calculate UDP checksum (includes pseudo-header) */
-static inline uint16_t udp_checksum(const struct ip_header *ip_hdr,
-                                    const struct udp_header *udp_hdr,
-                                    const void *payload, size_t payload_len)
-{
-    uint32_t sum = 0;
-    uint16_t udp_len = ntohs(udp_hdr->len);
-
-    /* A NULL payload means "no payload"; treat it as zero-length so the
-     * pseudo-header length and the summation stay consistent. */
-    if (payload == NULL) {
-        payload_len = 0;
-    }
-
-    /* Pseudo-header: src IP, dst IP, protocol, UDP length */
-    sum += (ntohl(ip_hdr->src_ip) >> 16) & 0xFFFF;
-    sum += ntohl(ip_hdr->src_ip) & 0xFFFF;
-    sum += (ntohl(ip_hdr->dst_ip) >> 16) & 0xFFFF;
-    sum += ntohl(ip_hdr->dst_ip) & 0xFFFF;
-    sum += ip_hdr->protocol;
-    sum += udp_len;
-
-    /* UDP header (with checksum field set to 0) */
-    sum += ntohs(udp_hdr->src_port);
-    sum += ntohs(udp_hdr->dst_port);
-    sum += udp_len;
-    /* Skip checksum field (set to 0) */
-
-    /* UDP payload */
-    const uint16_t *payload_words = (const uint16_t *)payload;
-    size_t i;
-    for (i = 0; i < payload_len / 2; i++) {
-        sum += ntohs(payload_words[i]);
-    }
-
-    /* Add odd byte if present */
-    if (payload_len % 2) {
-        sum += (uint32_t)((const uint8_t *)payload)[payload_len - 1] << 8;
-    }
-
-    /* Add carry bits */
-    while (sum >> 16) {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-
-    /* One's complement */
-    uint16_t checksum = ~sum & 0xFFFFu;
-    return htons(checksum == 0 ? 0xFFFF : checksum);
-}
-
-/* Calculate TCP checksum (includes pseudo-header) */
-static inline uint16_t tcp_checksum(const struct ip_header *ip_hdr,
-                                    const struct tcp_header *tcp_hdr,
-                                    const void *payload, size_t payload_len)
-{
-    uint32_t sum = 0;
-
-    /* A NULL payload means "no payload"; treat it as zero-length so the
-     * pseudo-header length and the summation stay consistent. */
-    if (payload == NULL) {
-        payload_len = 0;
-    }
-
-    /* The pseudo-header carries the TCP length as a 16-bit field. */
-    uint16_t tcp_len = (uint16_t)((tcp_hdr->data_off >> 4) * 4u + payload_len);
-
-    /* Pseudo-header: src IP, dst IP, protocol, TCP length */
-    sum += (ntohl(ip_hdr->src_ip) >> 16) & 0xFFFF;
-    sum += ntohl(ip_hdr->src_ip) & 0xFFFF;
-    sum += (ntohl(ip_hdr->dst_ip) >> 16) & 0xFFFF;
-    sum += ntohl(ip_hdr->dst_ip) & 0xFFFF;
-    sum += ip_hdr->protocol;
-    sum += tcp_len;
-
-    /* TCP header (with checksum field set to 0) */
-    sum += ntohs(tcp_hdr->src_port);
-    sum += ntohs(tcp_hdr->dst_port);
-    sum += (ntohl(tcp_hdr->seq) >> 16) & 0xFFFF;
-    sum += ntohl(tcp_hdr->seq) & 0xFFFF;
-    sum += (ntohl(tcp_hdr->ack) >> 16) & 0xFFFF;
-    sum += ntohl(tcp_hdr->ack) & 0xFFFF;
-    sum += ((uint32_t)(tcp_hdr->data_off & 0xF0) << 8) | tcp_hdr->flags;
-    sum += ntohs(tcp_hdr->window);
-    /* Skip checksum field (set to 0) */
-    sum += ntohs(tcp_hdr->urg_ptr);
-
-    /* TCP payload */
-    const uint16_t *payload_words = (const uint16_t *)payload;
-    size_t i;
-    for (i = 0; i < payload_len / 2; i++) {
-        sum += ntohs(payload_words[i]);
-    }
-
-    /* Add odd byte if present */
-    if (payload_len % 2) {
-        sum += (uint32_t)((const uint8_t *)payload)[payload_len - 1] << 8;
-    }
-
-    /* Add carry bits */
-    while (sum >> 16) {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-
-    /* One's complement */
-    uint16_t checksum = ~sum & 0xFFFFu;
-    return htons(checksum == 0 ? 0xFFFF : checksum);
 }
 
 #endif /* NET_HEADERS_H */

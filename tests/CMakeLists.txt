@@ -126,12 +126,6 @@ target_include_directories(test_ernic_device PRIVATE
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 
-# net_headers.h checksum helpers are header-only and self-contained.
-add_executable(test_net_checksum test_net_checksum.c)
-target_include_directories(test_net_checksum PRIVATE
-    ${PROJECT_SOURCE_DIR}/src
-)
-
 # The bounds check every guest DMA address and length passes before it
 # reaches vfu_addr_to_sgl(). Header-only, so it links nothing.
 add_executable(test_dma_range test_dma_range.c)
@@ -931,7 +925,6 @@ set(ERNIC_TEST_TARGETS
     test_ud_mesh
     test_ernic_device
     test_write_imm
-    test_net_checksum
     test_dma_range
     test_parse_int
     ernic-test-byteorder
@@ -1019,13 +1012,6 @@ set_tests_properties(ernic-device-tuple-unit PROPERTIES
 # (test_data_transfer is the loopback config step's TEST_BIN) and are run for
 # real inside the VM by the loopback job in system-tests.yml, where a device
 # is guaranteed and exit 77 is treated as a failure.
-
-# TCP/UDP checksum helper unit test (table-driven)
-add_test(
-    NAME net-checksum-unit
-    COMMAND $<TARGET_FILE:test_net_checksum>
-)
-set_tests_properties(net-checksum-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
 # Guest DMA range check unit test (table-driven)
 add_test(

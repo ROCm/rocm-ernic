@@ -8,7 +8,6 @@
 #              crashes are the deliverable, not a build failure)
 #
 # Harnesses:
-#   fuzz_net_headers     parse_eth/ip/tcp/udp + checksums (net_headers.h)
 #   fuzz_ionic_stats     the ionic STATS_HDRS/VALS admin commands, through
 #                        ionic_adminq_dispatch_wqe() over the fake device
 #                        shared with tests/test_ionic_stats.c
@@ -31,7 +30,6 @@ let
 
   includeFlags = lib.concatStringsSep " " [
     "-Isrc"
-    "-Isrc/net"
     "-Isrc/qemu-compat/include"
     "-Isrc/qemu"
   ];
@@ -47,8 +45,6 @@ let
   # harness against a plain main() during the ordinary CMake build to keep
   # them from going stale. Add a harness in both places.
   harnesses = [
-    { name = "net_headers";
-      extra = [ ]; }
     { name = "ionic_stats";
       extra = [ "src/ionic_adminq.c" "src/ionic_fault.c" ];
       cflags = "-Itests -I${libvfioUser}/include";

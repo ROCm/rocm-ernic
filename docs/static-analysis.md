@@ -7,14 +7,16 @@
 > S4 by #67. S3 remains open as #68. Re-run `nix build .#analysis-deep` for
 > the current state rather than relying on the statuses below.
 >
-> **D1, D2, D3, D4 and S3 no longer have any code to regress.** The mesh
-> never sent a DHCP request, so `src/net/dhcp_server.c` was unreachable and
-> has been removed along with its fuzz harness; the same change removed
-> `src/net/eth_rx_inject.c`, named under **Paths** below. The loopback
-> SGE-copy helpers of S3 went with the rest of the loopback backend's
-> PVRDMA data path. D1's `src/net/rdma_cm_proto.c` lost its only caller
-> with the legacy PVRDMA device and has been removed, with its unit test
-> and fuzz harness.
+> **D1, D2, D3, D4, S1 and S3 no longer have any code to regress.** The
+> mesh never sent a DHCP request, so `src/net/dhcp_server.c` was
+> unreachable and has been removed along with its fuzz harness; the same
+> change removed `src/net/eth_rx_inject.c`, named under **Paths** below.
+> The loopback SGE-copy helpers of S3 went with the rest of the loopback
+> backend's PVRDMA data path. D1's `src/net/rdma_cm_proto.c` lost its only
+> caller with the legacy PVRDMA device and has been removed, with its unit
+> test and fuzz harness. S1's `tcp_checksum()` and `udp_checksum()` in
+> `net_headers.h` had no callers outside their own tests and fuzz harness,
+> and have been removed with them.
 >
 > **Two of the compiler diagnostics at the end of Appendix A are gone.**
 > The `-Wgnu-zero-variadic-macro-arguments` warnings came from the

@@ -6,8 +6,8 @@
 #
 # The harnesses are built for real by nix/analysis/fuzz.nix, which runs only
 # behind the `run-fuzz` label or a manual dispatch. Nothing on an ordinary
-# PR compiled them, so a changed parser signature under src/net/ could
-# break them silently and stay broken until the next opt-in fuzz run.
+# PR compiled them, so a changed parser signature could break them silently
+# and stay broken until the next opt-in fuzz run.
 #
 # Here each harness is linked against tests/nix/fuzz_replay_main.c -- a
 # plain main() rather than libFuzzer, so this builds under gcc as well as
@@ -36,12 +36,10 @@ function(ernic_add_fuzz_replay harness)
 
     # The harness sources, and the ported .c files passed in ARGN, are ours
     # and are warning-clean, so they are built under the project flags --
-    # keeping them there is the point of building them here. The harnesses
-    # include the src/net headers by bare name.
+    # keeping them there is the point of building them here.
     target_include_directories(${target} PRIVATE
         ${ERNIC_FUZZ_DIR}
         ${PROJECT_SOURCE_DIR}/src
-        ${PROJECT_SOURCE_DIR}/src/net
         ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
         ${PROJECT_SOURCE_DIR}/src/qemu
     )
@@ -64,9 +62,6 @@ function(ernic_add_fuzz_replay harness)
     )
     set_tests_properties(fuzz-replay-${harness} PROPERTIES TIMEOUT 30)
 endfunction()
-
-# net_headers.h is header-only, so this harness links no extra sources.
-ernic_add_fuzz_replay(net_headers)
 
 # The stats harness links the admin queue and includes the shared fake device
 # from tests/, like tests/test_ionic_stats.c does, and defines
