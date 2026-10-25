@@ -26,13 +26,15 @@
  * the stop shuts the socket down.
  *
  * That shutdown comes too late for a send that blocks while holding a lock
- * the stop needs first.  A broadcast sends under conn_table_lock, which
- * tcp_stop_recv_threads() takes before it shuts anything down, and the
- * health-check thread, joined before any socket is shut down, can be
- * blocked in a heartbeat or waiting for a connection's lock.
- * tcp_stop_threads() therefore sets priv->stopping before any join, and a
- * send that would have to wait gives up instead.  Later rows run
- * tcp_init() and tcp_fini() on a manager with a worker that stops reading.
+ * the stop needs first.  A broadcast used to send under conn_table_lock,
+ * which tcp_stop_recv_threads() takes before it shuts anything down, and the
+ * health-check thread, joined before any socket is shut down, could be
+ * blocked in a heartbeat.  tcp_stop_threads() therefore sets priv->stopping
+ * before any join, and a send that would have to wait gives up instead.
+ * Broadcasts now send with conn_table_lock dropped, and the health check
+ * skips a node it would have to wait for.  Later rows run tcp_init() and
+ * tcp_fini() on a manager with a worker that stops reading, and check that
+ * lookups and the heartbeats to another worker go on meanwhile.
  *
  * Every stop joins its thread only if the thread's flag is set, so a thread
  * that couldn't be created must leave its flag clear; a join of a thread
@@ -89,7 +91,7 @@
  * get a bare pointer, and the health check's reconnect freed the old
  * connection while the thread could still be using it.  The lifetime rows
  * have a node register again, which replaces its connection, while the test
- * holds a reference to the old one, and while another thread is blocked
+ * holds a reference to the old one, and while its send thread is blocked
  * sending on it, and have a pending connection register while teardown
  * stops its receive thread.
  *
@@ -107,6 +109,14 @@
  * mesh.  The manager link rows have the manager close the connection, fall
  * silent, refuse the worker, or go away, and check that the worker connects
  * and registers again under its own id, and only when it should.
+ *
+ * A send to a peer that stayed connected but stopped reading waited for as
+ * long as the peer took, holding up the device's main thread among others.
+ * The stuck peer rows check that a send gives up after the send timeout and
+ * shuts the connection down, that a sender waiting for the connection's lock
+ * then fails at once, that the data path only queues its messages, up to a
+ * limit, and that a manager relaying to such a peer gives up on it before
+ * the worker it relays for would give up on the manager.
  *
  * Each row starts (or deliberately does not start) the real threads, stops
  * them, and checks that the stop returned promptly, that the threads really
@@ -128,6 +138,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <linux/sockios.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -347,6 +358,19 @@ _Noreturn static void watchdog(int sig)
 
 /* ---- Fixture ----------------------------------------------------------- */
 
+/*
+ * A zeroed TcpBackendPrivate, for the rows that set up only what they use,
+ * with the send timeout tcp_init() would give it: zero would have every send
+ * that has to wait for room give up at once.
+ */
+static TcpBackendPrivate *priv_alloc(void)
+{
+    TcpBackendPrivate *priv = g_new0(TcpBackendPrivate, 1);
+
+    atomic_init(&priv->send_timeout_ms, TCP_DEFAULT_SEND_TIMEOUT_MS);
+    return priv;
+}
+
 /* A blocking listen socket on an ephemeral loopback port. */
 static int listen_loopback(void)
 {
@@ -504,7 +528,7 @@ static const struct stop_case cases[] = {
 
 static int run_case(const struct stop_case *c)
 {
-    TcpBackendPrivate *priv = g_new0(TcpBackendPrivate, 1);
+    TcpBackendPrivate *priv = priv_alloc();
     int fd = -1;
     double start, took;
     bool ok;
@@ -639,7 +663,7 @@ static bool heartbeats_spaced(int fd)
 
 static int run_health_case(const struct health_case *c)
 {
-    TcpBackendPrivate *priv = g_new0(TcpBackendPrivate, 1);
+    TcpBackendPrivate *priv = priv_alloc();
     TcpConnection *conn = NULL;
     int sv[2] = {-1, -1};
     double start, took;
@@ -858,7 +882,7 @@ static bool wait_for_exits(int n)
 
 static int run_recv_case(const struct recv_case *c)
 {
-    TcpBackendPrivate *priv = g_new0(TcpBackendPrivate, 1);
+    TcpBackendPrivate *priv = priv_alloc();
     TcpConnection *all[MAX_RECV_CONNS];
     int peers[MAX_RECV_CONNS], n = 0, started = 0;
     /* The registered ones first, then a manager connection, then pending. */
@@ -978,7 +1002,7 @@ static int run_recv_case(const struct recv_case *c)
  * reads.  The backend handles either the same way.
  */
 
-/* Where the manager is left blocked when tcp_fini() is called. */
+/* Where the manager could be left blocked when tcp_fini() is called. */
 enum mgr_block {
     BLOCK_NONE,      /* nowhere: the workers' sockets have room */
     BLOCK_HEARTBEAT, /* the health check, on worker 1's connection */
@@ -997,11 +1021,12 @@ static const struct fini_case fini_cases[] = {
     {"positive", "a manager with two registered workers",
      "tcp_fini() returns and every thread exits", BLOCK_NONE, LONG_INTERVAL_S},
     {"negative", "a worker that stops reading the manager's heartbeats",
-     "the blocked heartbeat gives up, so the health-check join returns",
+     "the health check skips it rather than wait, goes on sending heartbeats "
+     "to the other worker, and tcp_fini() returns",
      BLOCK_HEARTBEAT, 1},
     {"negative", "a worker that stops reading while another registers",
-     "the broadcast blocked under conn_table_lock gives up, so the receive "
-     "threads can be stopped",
+     "the broadcast blocks on it without holding conn_table_lock, so lookups "
+     "on other threads go on, and tcp_fini() returns",
      BLOCK_BROADCAST, LONG_INTERVAL_S},
 };
 
@@ -1143,6 +1168,30 @@ static bool fill_conn(TcpBackendPrivate *priv, uint32_t node_id)
 }
 
 /*
+ * Whether n heartbeats arrive on fd, a blocking socket, among the other
+ * messages that do, within timeout_ms.
+ */
+static bool heartbeats_within(int fd, int n, int timeout_ms)
+{
+    double end = now_s() + timeout_ms / 1000.0;
+
+    while (n > 0) {
+        struct pollfd pfd = {.fd = fd, .events = POLLIN};
+        double left_ms = (end - now_s()) * 1000.0;
+        TcpMsgHeader hdr;
+        void *payload = NULL;
+
+        if (left_ms <= 0.0 || poll(&pfd, 1, (int)left_ms) != 1 ||
+            tcp_recv_message(fd, &hdr, &payload, NULL, NULL, 0) < 0)
+            return false;
+        g_free(payload);
+        if (hdr.msg_type == TCP_MSG_HEARTBEAT)
+            n--;
+    }
+    return true;
+}
+
+/*
  * Wait up to 5 s for another thread to hold lock for 100 ms straight, which
  * a send that has room never does.
  */
@@ -1166,6 +1215,7 @@ static int run_fini_case(const struct fini_case *c)
 {
     RdmaBackendDev dev;
     TcpBackendPrivate *priv;
+    TcpConnection *conn1 = NULL;
     char config[64];
     const char *why = NULL;
     int w1 = -1, w2 = -1;
@@ -1207,31 +1257,52 @@ static int run_fini_case(const struct fini_case *c)
         why = "could not fill worker 1's socket";
         goto stop;
     }
-    if (c->block == BLOCK_HEARTBEAT) {
-        TcpConnection *conn = tcp_connection_lookup(priv, 1);
-
-        if (!conn)
-            why = "worker 1's connection is gone";
-        else if (!held_elsewhere(&conn->lock))
-            why = "the health check never blocked on worker 1";
-        tcp_connection_unref(conn);
+    conn1 = tcp_connection_lookup(priv, 1);
+    if (!conn1) {
+        why = "worker 1's connection is gone";
         goto stop;
     }
 
+    /* Its registration's broadcast blocks on worker 1, if that is full */
     w2 = worker_register(priv);
     if (w2 < 0) {
         why = "could not attach worker 2";
         goto stop;
     }
     if (c->block == BLOCK_BROADCAST) {
-        /* Not wait_for_registered(): the blocked broadcast holds its lock */
-        if (!held_elsewhere(&priv->conn_table_lock))
+        double start_lookup;
+        TcpConnection *found;
+
+        if (!held_elsewhere(&conn1->lock)) {
             why = "worker 2's broadcast never blocked on worker 1";
-    } else if (!wait_for_registered(priv, 2)) {
-        why = "worker 2 did not register";
+            goto stop;
+        }
+        /* While the broadcast waits, until its send times out */
+        start_lookup = now_s();
+        found = tcp_connection_lookup(priv, 1);
+        tcp_connection_unref(found);
+        if (!found || now_s() - start_lookup > 0.1) {
+            why = "a lookup waited for the blocked broadcast";
+            goto stop;
+        }
     }
+    /* The registration publishes worker 2 before it broadcasts */
+    if (!wait_for_registered(priv, 2)) {
+        why = "worker 2 did not register";
+        goto stop;
+    }
+    /*
+     * One a second, so two within about two seconds.  Neither worker
+     * answers, so the manager declares worker 1 dead three intervals after
+     * it registered, and the broadcast that tells the mesh waits behind
+     * worker 2's, which waits on worker 1, holding up the health check until
+     * the send times out; the heartbeats have to come before that.
+     */
+    if (c->block == BLOCK_HEARTBEAT && !heartbeats_within(w2, 2, 2500))
+        why = "the health check stopped sending worker 2 heartbeats";
 
 stop:
+    tcp_connection_unref(conn1);
     start = now_s();
     rdma_backend_ops_tcp.fini(&dev);
     took = now_s() - start;
@@ -1655,7 +1726,7 @@ static const char *hs_second_peer(TcpBackendPrivate *priv, uint16_t port,
 
 static int run_hs_case(const struct hs_case *c)
 {
-    TcpBackendPrivate *priv = g_new0(TcpBackendPrivate, 1);
+    TcpBackendPrivate *priv = priv_alloc();
     struct sockaddr_in addr;
     socklen_t len = sizeof(addr);
     const char *why = NULL;
@@ -1751,7 +1822,7 @@ static int run_hs_case(const struct hs_case *c)
  * rows.
  */
 
-#define MGR_MAX_NODES 1
+#define MGR_MAX_NODES 2
 
 /*
  * A manager whose nodes 1 to nodes each have a connection.  For node i + 1:
@@ -1773,7 +1844,7 @@ struct mgr_fixture {
 static const char *mgr_setup(struct mgr_fixture *fx, uint32_t nodes,
                              uint32_t interval)
 {
-    TcpBackendPrivate *priv = g_new0(TcpBackendPrivate, 1);
+    TcpBackendPrivate *priv = priv_alloc();
 
     memset(fx, 0, sizeof(*fx));
     fx->priv = priv;
@@ -2479,7 +2550,7 @@ static bool tp_start_peers(struct tp_fixture *fx)
 static const char *tp_setup(struct tp_fixture *fx, uint32_t interval,
                             bool peers)
 {
-    TcpBackendPrivate *priv = g_new0(TcpBackendPrivate, 1);
+    TcpBackendPrivate *priv = priv_alloc();
 
     fx->priv = priv;
     fx->mgr = -1;
@@ -5316,7 +5387,7 @@ static int run_ra_case(const struct ra_case *c)
 
 enum lt_scenario {
     LT_HELD,   /* the test holds the old connection across the replacement */
-    LT_SENDER, /* another thread is blocked sending on it */
+    LT_SENDER, /* its send thread is blocked sending on it */
     LT_REGISTER_VS_STOP, /* a registration lands while the stop runs */
     LT_AGAIN_VS_STOP,    /* a node registering again does */
     LT_GIDS_BACK, /* the node went silent; registering again gets it back */
@@ -5336,10 +5407,11 @@ static const struct lt_case lt_cases[] = {
      "until the reference is dropped",
      LT_HELD},
     {"negative",
-     "a registration replaces a connection another thread is blocked sending "
-     "on",
-     "the send fails with -EIO, nothing hangs, and the new connection is in "
-     "the table",
+     "a registration replaces a connection whose send thread is blocked "
+     "sending to it",
+     "the data path's send is queued at once, the registration stops and "
+     "joins both of the old connection's threads, nothing hangs, and the new "
+     "connection is in the table",
      LT_SENDER},
     {"corner",
      "a pending connection registers while teardown stops its receive thread",
@@ -5372,23 +5444,6 @@ static uint32_t lt_resolve(TcpBackendPrivate *priv)
     return tcp_resolve_node_from_gid(priv, &gid);
 }
 
-/* What the blocked sender of LT_SENDER sends with, and gets back */
-struct lt_sender {
-    RdmaBackendDev dev;
-    pthread_t tid;
-    atomic_int rc;
-};
-
-static void *lt_send(void *opaque)
-{
-    static const uint8_t hdr[16];
-    struct lt_sender *sender = opaque;
-
-    atomic_store(&sender->rc, tcp_backend_send_ionic_v(&sender->dev, 1, hdr,
-                                                       sizeof(hdr), NULL, 0));
-    return NULL;
-}
-
 /*
  * Register node 1 of fx again, on a new connection, and check the node has
  * it, rather than old, in the table.  *fd gets the worker's end of it, for
@@ -5419,15 +5474,13 @@ static const char *lt_register_again(struct mgr_fixture *fx, TcpConnection *old,
  */
 static const char *lt_replace_run(enum lt_scenario scenario)
 {
+    static const uint8_t hdr[16];
     struct mgr_fixture fx;
-    struct lt_sender sender;
+    RdmaBackendDev dev;
     TcpConnection *held = NULL;
     const char *why;
     int fd = -1;
-    bool sending = false;
 
-    memset(&sender, 0, sizeof(sender));
-    atomic_init(&sender.rc, 1);
     why = mgr_setup(&fx, 1, LONG_INTERVAL_S);
 
     if (!why) {
@@ -5452,28 +5505,24 @@ static const char *lt_replace_run(enum lt_scenario scenario)
             why = "a node declared dead still owned its GID";
     }
     if (!why && scenario == LT_SENDER) {
-        sender.dev.backend_type = RDMA_BACKEND_TYPE_TCP;
-        sender.dev.backend_private = fx.priv;
+        memset(&dev, 0, sizeof(dev));
+        dev.backend_type = RDMA_BACKEND_TYPE_TCP;
+        dev.backend_private = fx.priv;
         /*
-         * Node 1 has stopped reading, so the send waits for room, holding
-         * the connection's lock, and nothing else ever has it.
+         * Node 1 has stopped reading, so the send thread waits for room,
+         * holding the connection's lock, and nothing else ever has it.  The
+         * data path only queued the message, and has it back at once.
          */
         if (!fill_conn(fx.priv, 1))
             why = "could not fill node 1's socket";
-        else if (pthread_create(&sender.tid, NULL, lt_send, &sender) != 0)
-            why = "could not start the sender";
-        else
-            sending = true;
-        if (sending && !held_elsewhere(&held->lock))
-            why = "the sender never blocked on node 1";
+        else if (tcp_backend_send_ionic_v(&dev, 1, hdr, sizeof(hdr), NULL, 0, 0,
+                                          false) != 0)
+            why = "the data path's send wasn't queued";
+        else if (!held_elsewhere(&held->lock))
+            why = "the send thread never blocked on node 1";
     }
     if (!why)
         why = lt_register_again(&fx, held, &fd);
-    if (sending) {
-        pthread_join(sender.tid, NULL);
-        if (!why && atomic_load(&sender.rc) != -EIO)
-            why = "the blocked send didn't fail with -EIO";
-    }
     if (!why && scenario == LT_GIDS_BACK && lt_resolve(fx.priv) != 1)
         why = "the node registered again did not get its GID back";
     /*
@@ -5491,8 +5540,9 @@ static const char *lt_replace_run(enum lt_scenario scenario)
     }
     if (!why && !conn_retired(held))
         why = "the old connection wasn't retired";
-    if (!why && atomic_load(&g_joins) != 1)
-        why = "the old receive thread wasn't joined exactly once";
+    /* LT_SENDER's connection has a send thread as well */
+    if (!why && atomic_load(&g_joins) != (scenario == LT_SENDER ? 2 : 1))
+        why = "the old connection's threads weren't each joined once";
 
     tcp_connection_unref(held);
     mgr_teardown(&fx);
@@ -6133,6 +6183,8 @@ static int run_dc_case(const struct dc_case *c)
 #define WL_SLOW_FIRST 10
 /* What WL_STUCK sends: more than a socket and its peer's hold */
 #define WL_STUCK_LEN (TCP_MAX_PAYLOAD_LEN - 16u)
+/* And the QP of a request it queues behind that, then cancels */
+#define WL_CANCEL_QP 7u
 
 enum wl_scenario {
     WL_HANGS_UP, /* the manager closes the connection */
@@ -6172,11 +6224,12 @@ static const struct wl_case wl_cases[] = {
      "intervals, and keeps its connection",
      WL_BUSY},
     {"negative",
-     "the manager stops reading and sending, while the data path is blocked "
-     "sending to it",
-     "the worker doesn't wait for the connection's lock: three intervals on, "
-     "it closes the connection, which fails the send with -EIO, and registers "
-     "again",
+     "the manager stops reading and sending, while the send thread is "
+     "blocked sending the data path's message to it",
+     "the data path's send is queued at once, and a QP's request queued "
+     "behind it can be cancelled; the worker doesn't wait for the "
+     "connection's lock: three intervals on, it closes the connection, which "
+     "stops the send thread, and registers again",
      WL_STUCK},
     {"negative", "the manager refuses the worker's registration once",
      "the worker keeps its id, and registers again on its next pass",
@@ -6414,63 +6467,67 @@ static const char *wl_answered(struct dc_worker *w, int lfd, bool busy)
     return why;
 }
 
-/* WL_STUCK's sender, on the worker's data path, and what it got back */
-struct wl_sender {
-    RdmaBackendDev dev;
-    uint8_t *body;
-    atomic_int rc;
-};
-
-static void *wl_send(void *opaque)
+/*
+ * Queue a request from WL_CANCEL_QP behind the message the send thread is
+ * blocked on, through dev, and cancel it.  The connection to the manager,
+ * old, which the request goes on, isn't in the connection table, so this is
+ * the cancel's look at manager_conn.
+ */
+static const char *wl_cancel(RdmaBackendDev *dev, TcpConnection *old)
 {
     static const uint8_t hdr[16];
-    struct wl_sender *sender = opaque;
+    bool cancelled;
 
-    /* No direct connection to WL_OTHER, so the manager would relay it */
-    atomic_store(&sender->rc, tcp_backend_send_ionic_v(
-                                  &sender->dev, WL_OTHER, hdr, sizeof(hdr),
-                                  sender->body, WL_STUCK_LEN));
-    return NULL;
+    if (tcp_backend_send_ionic_v(dev, WL_OTHER, hdr, sizeof(hdr), NULL, 0,
+                                 (uint64_t)WL_CANCEL_QP << 32, false) != 0)
+        return "the request to cancel wasn't queued";
+    tcp_backend_ionic_cancel(dev, (uint64_t)WL_CANCEL_QP << 32,
+                             UINT64_C(0xffffffff00000000));
+    qemu_mutex_lock(&old->sendq_lock);
+    /* The message being written is off the queue, but still counted */
+    cancelled = old->sendq.length == 0 &&
+                old->sendq_bytes == WL_STUCK_LEN + sizeof(hdr);
+    qemu_mutex_unlock(&old->sendq_lock);
+    return cancelled ? NULL : "the request wasn't cancelled";
 }
 
 /*
  * WL_STUCK: the manager reads nothing, so a send to it larger than its
  * socket and the worker's together can hold waits for room, holding the
- * connection's lock.  The manager sends nothing either, and the worker has
- * to give up on it without waiting for that lock.  old is the worker's
- * connection to the manager.
+ * connection's lock.  The data path only queues it, and the connection's
+ * send thread is what waits.  The manager sends nothing either, and the
+ * worker has to give up on it without waiting for that lock.  old is the
+ * worker's connection to the manager.
  */
 static const char *wl_stuck(struct dc_worker *w, int lfd, int high,
                             struct wl_fds *k, TcpConnection *old)
 {
-    struct wl_sender sender;
+    static const uint8_t hdr[16];
     struct pollfd pfd = {.fd = lfd, .events = POLLIN};
-    pthread_t tid;
+    RdmaBackendDev dev;
+    uint8_t *body = g_malloc0(WL_STUCK_LEN);
     const char *why = NULL;
     int mgr = -1;
 
-    memset(&sender, 0, sizeof(sender));
-    sender.dev.backend_type = RDMA_BACKEND_TYPE_TCP;
-    sender.dev.backend_private = dc_priv(w);
-    sender.body = g_malloc0(WL_STUCK_LEN);
-    atomic_init(&sender.rc, 1);
-    if (pthread_create(&tid, NULL, wl_send, &sender) != 0) {
-        g_free(sender.body);
-        return "could not start the sender";
-    }
-    if (!held_elsewhere(&old->lock))
-        why = "the send never blocked on the manager's connection";
-    /* Three intervals after the manager last said anything, and then some */
-    else if (poll(&pfd, 1, 8000) != 1)
-        why = "the worker didn't connect to the manager again";
+    memset(&dev, 0, sizeof(dev));
+    dev.backend_type = RDMA_BACKEND_TYPE_TCP;
+    dev.backend_private = dc_priv(w);
+    /* No direct connection to WL_OTHER, so the manager would relay it */
+    if (tcp_backend_send_ionic_v(&dev, WL_OTHER, hdr, sizeof(hdr), body,
+                                 WL_STUCK_LEN, 0, false) != 0)
+        why = "the data path's send wasn't queued";
+    else if (!held_elsewhere(&old->lock))
+        why = "the send thread never blocked on the manager's connection";
     else
+        why = wl_cancel(&dev, old);
+    /* Three intervals after the manager last said anything, and then some */
+    if (!why && poll(&pfd, 1, 8000) != 1)
+        why = "the worker didn't connect to the manager again";
+    else if (!why)
         why = wl_registers(w, lfd, k, &mgr);
     if (!why && !wait_retired(old))
         why = "the old connection wasn't closed";
-    pthread_join(tid, NULL);
-    g_free(sender.body);
-    if (!why && atomic_load(&sender.rc) != -EIO)
-        why = "the blocked send didn't fail with -EIO";
+    g_free(body);
     return why ? why : wl_accepted(w, mgr, high);
 }
 
@@ -6675,6 +6732,606 @@ static int run_wl_case(const struct wl_case *c)
     return ok ? 0 : 1;
 }
 
+/* ---- A peer that stops reading --------------------------------------- */
+
+/*
+ * A send to a peer that stayed connected but stopped reading used to wait
+ * for room for as long as the peer took, holding the connection's lock, and
+ * every thread that wanted the lock waited behind it: the device's main
+ * thread sending the data path's messages, broadcasts, heartbeats, and a
+ * manager relaying for another worker on that worker's receive thread.
+ *
+ * A send now gives up once nothing has gone out for the send timeout (a
+ * manager's is half a worker's), and shuts the connection down, so senders
+ * waiting for the lock fail at once and the connection is retired.  The data
+ * path's messages are queued for a send thread instead of sent from the main
+ * thread, and the queue has a limit.  The rows run an mgr_fixture whose
+ * nodes' ends of their connections never read, except ST_STEADY's.
+ *
+ * What the queue holds can be taken back: a QP that is flushed or destroyed,
+ * or a request that times out, has its requests dropped
+ * (tcp_backend_ionic_cancel()), so none reaches the peer after its work
+ * request was completed.  And a heartbeat is never skipped for want of the
+ * lock, which a send thread under steady traffic almost always holds: it
+ * goes ahead of the data on the queue, which holds one of each kind at most.
+ */
+
+enum st_scenario {
+    ST_TIMEOUT,    /* a broadcast, with a second waiting for the lock */
+    ST_DATAPATH,   /* the data path's message, through the send thread */
+    ST_QUEUE_FULL, /* the data path fills the send queue */
+    ST_RELAY,      /* the manager relays to a node that stopped reading */
+    ST_CANCEL,     /* a QP's queued requests are taken back */
+    ST_TOO_LONG,   /* lengths whose sum wraps */
+    ST_STEADY,     /* a node that reads, under steady traffic */
+    ST_COALESCE,   /* heartbeats queue behind a busy connection */
+};
+
+struct st_case {
+    const char *category;
+    const char *description;
+    const char *expected;
+    enum st_scenario scenario;
+};
+
+static const struct st_case st_cases[] = {
+    {"negative",
+     "a broadcast to a node that stops reading, with a second broadcast "
+     "waiting for the connection's lock",
+     "the first gives up after the manager's send timeout and shuts the "
+     "connection down, the second then fails at once, and the health check "
+     "retires the connection",
+     ST_TIMEOUT},
+    {"negative", "the data path sends to a node that stops reading",
+     "the message is queued at once; the send thread gives up after the "
+     "timeout and shuts the connection down, and the next send fails",
+     ST_DATAPATH},
+    {"boundary",
+     "the data path queues messages for a node that stops reading until the "
+     "queue is full",
+     "a request past the limit is refused with -EAGAIN, which "
+     "tcp_backend_ionic_has_room() foresees; a reply is queued up to its own "
+     "limit, then refused with -ENOBUFS",
+     ST_QUEUE_FULL},
+    {"negative",
+     "the manager relays a worker's message to a node that stops reading",
+     "the relay gives up in the manager's timeout, so the heartbeat the "
+     "worker sent after the message is answered within the worker's own "
+     "timeout, and the worker's connection stays up",
+     ST_RELAY},
+    {"positive",
+     "requests and a reply of one QP's and requests of another's are queued "
+     "behind a message being written, and the first QP's are cancelled, and "
+     "one request of the second's",
+     "those requests are dropped and their bytes uncounted; the reply, the "
+     "second QP's other requests, and the message being written stay",
+     ST_CANCEL},
+    {"boundary",
+     "the data path sends a header and a body whose lengths add up past "
+     "SIZE_MAX, or one byte past TCP_MAX_PAYLOAD_LEN",
+     "refused with -EINVAL before either buffer is read, and nothing queued",
+     ST_TOO_LONG},
+    {"negative",
+     "the data path keeps a node's queue full for four 1 s health-check "
+     "intervals while the node reads slowly",
+     "the manager's heartbeats get through ahead of the data, the node "
+     "answers them, and it is never declared dead or its connection closed",
+     ST_STEADY},
+    {"corner",
+     "while the send thread is blocked on a node, the health check sends it a "
+     "heartbeat and the node sends a hundred of its own",
+     "the queue holds one heartbeat and one answer, not one answer for each",
+     ST_COALESCE},
+};
+
+/* A worker's send timeout in these rows; the manager's is half */
+#define ST_TIMEOUT_MS 2000u
+
+/* A broadcast on a thread of its own, and when it returned */
+struct st_broadcast {
+    TcpBackendPrivate *priv;
+    bool gids; /* tcp_broadcast_gid_table(), not the topology */
+    pthread_t tid;
+    _Atomic uint64_t done_ms;
+};
+
+static void *st_broadcast_run(void *opaque)
+{
+    struct st_broadcast *b = opaque;
+
+    if (b->gids)
+        tcp_broadcast_gid_table(b->priv);
+    else
+        tcp_broadcast_mesh_topology(b->priv);
+    atomic_store(&b->done_ms, ernic_monotonic_ms());
+    return NULL;
+}
+
+/* ST_TIMEOUT */
+static const char *st_timeout(struct mgr_fixture *fx)
+{
+    struct st_broadcast first = {fx->priv, false, 0, 0};
+    struct st_broadcast second = {fx->priv, true, 0, 0};
+    TcpConnection *conn = fx->old[0];
+    const char *why = NULL;
+    uint64_t start_ms = ernic_monotonic_ms();
+
+    if (pthread_create(&first.tid, NULL, st_broadcast_run, &first) != 0)
+        return "could not start the first broadcast";
+    if (!held_elsewhere(&conn->lock))
+        why = "the first broadcast never blocked on node 1";
+    else if (pthread_create(&second.tid, NULL, st_broadcast_run, &second) != 0)
+        why = "could not start the second broadcast";
+    else
+        pthread_join(second.tid, NULL);
+    pthread_join(first.tid, NULL);
+    if (why)
+        return why;
+
+    uint64_t first_ms = atomic_load(&first.done_ms) - start_ms;
+    uint64_t second_ms = atomic_load(&second.done_ms);
+
+    if (first_ms < ST_TIMEOUT_MS / 2 - 100u || first_ms > 3u * ST_TIMEOUT_MS)
+        return "the first broadcast didn't give up after the manager's "
+               "timeout";
+    if (second_ms > atomic_load(&first.done_ms) + 250u)
+        return "the second broadcast waited a timeout of its own";
+    if (!wait_dead(conn))
+        return "the connection wasn't shut down";
+    mgr_start(fx, 0);
+    return wait_retired(conn) ? NULL : "the connection wasn't retired";
+}
+
+/* The data path's sends of what it calls tag, as the main thread makes them */
+static int st_send_tag(TcpBackendPrivate *priv, uint32_t len, uint64_t tag,
+                       bool reply)
+{
+    static const uint8_t hdr[16];
+    RdmaBackendDev dev;
+    /* No body at all for an empty one, as the data path sends it */
+    uint8_t *body = len > 0 ? g_malloc0(len) : NULL;
+    int rc;
+
+    memset(&dev, 0, sizeof(dev));
+    dev.backend_type = RDMA_BACKEND_TYPE_TCP;
+    dev.backend_private = priv;
+    rc = tcp_backend_send_ionic_v(&dev, 1, hdr, sizeof(hdr), body, len, tag,
+                                  reply);
+    g_free(body);
+    return rc;
+}
+
+static int st_send(TcpBackendPrivate *priv, uint32_t len, bool reply)
+{
+    return st_send_tag(priv, len, 0, reply);
+}
+
+/* ST_DATAPATH */
+static const char *st_datapath(struct mgr_fixture *fx)
+{
+    TcpConnection *conn = fx->old[0];
+    uint64_t start_ms = ernic_monotonic_ms();
+    uint64_t took_ms;
+    bool closed = false;
+    int rc;
+
+    if (st_send(fx->priv, 0, false) != 0)
+        return "the message wasn't queued";
+    if (ernic_monotonic_ms() - start_ms > 100u)
+        return "queueing the message waited for the peer";
+    if (!wait_dead(conn))
+        return "the send thread never gave up on the peer";
+    took_ms = ernic_monotonic_ms() - start_ms;
+    if (took_ms < ST_TIMEOUT_MS / 2 - 100u)
+        return "the send thread gave up before the timeout";
+    /* The send thread shuts the socket down first, then closes the queue */
+    for (int i = 0; i < 500; i++) {
+        qemu_mutex_lock(&conn->sendq_lock);
+        closed = conn->sendq_closed;
+        qemu_mutex_unlock(&conn->sendq_lock);
+        if (closed)
+            break;
+        sleep_ms(10);
+    }
+    if (!closed)
+        return "the send queue is still open";
+    /* The connection is dead, so there is none to the node to send on */
+    rc = st_send(fx->priv, 0, false);
+    return rc == -ENOTCONN || rc == -EPIPE ? NULL : "the next send didn't fail";
+}
+
+/* ST_QUEUE_FULL */
+static const char *st_queue_full(struct mgr_fixture *fx)
+{
+    /* With the 16-byte header, each is the largest message there is */
+    const uint32_t len = TCP_MAX_PAYLOAD_LEN - 16u;
+    RdmaBackendDev dev;
+
+    memset(&dev, 0, sizeof(dev));
+    dev.backend_type = RDMA_BACKEND_TYPE_TCP;
+    dev.backend_private = fx->priv;
+    if (!tcp_backend_ionic_has_room(&dev, 1, TCP_MAX_PAYLOAD_LEN))
+        return "an empty queue had no room";
+    /* Requests up to their limit, the first of them being written */
+    for (uint32_t i = 0; i < TCP_SENDQ_REQUEST_BYTES / TCP_MAX_PAYLOAD_LEN; i++)
+        if (st_send(fx->priv, len, false) != 0)
+            return "a request within the limit wasn't queued";
+    if (tcp_backend_ionic_has_room(&dev, 1, 16))
+        return "tcp_backend_ionic_has_room() saw room in a full queue";
+    if (st_send(fx->priv, 0, false) != -EAGAIN)
+        return "a request past the limit wasn't refused with -EAGAIN";
+    /* Replies up to theirs */
+    for (uint32_t i = TCP_SENDQ_REQUEST_BYTES / TCP_MAX_PAYLOAD_LEN;
+         i < TCP_SENDQ_REPLY_BYTES / TCP_MAX_PAYLOAD_LEN; i++)
+        if (st_send(fx->priv, len, true) != 0)
+            return "a reply within its limit wasn't queued";
+    if (st_send(fx->priv, 0, true) != -ENOBUFS)
+        return "a reply past its limit wasn't refused with -ENOBUFS";
+    return NULL;
+}
+
+/* ST_RELAY */
+static const char *st_relay(struct mgr_fixture *fx)
+{
+    int w1 = fx->peer[0];
+    uint64_t start_ms = ernic_monotonic_ms();
+    uint64_t took_ms;
+    bool alive;
+
+    if (!send_ionic(w1, 1, 2) || !send_heartbeat(w1, 1))
+        return "worker 1 couldn't send";
+    if (!wait_for_type(w1, TCP_MSG_HEARTBEAT_RESP, 3 * ST_TIMEOUT_MS))
+        return "worker 1's heartbeat wasn't answered";
+    took_ms = ernic_monotonic_ms() - start_ms;
+    if (took_ms < ST_TIMEOUT_MS / 2 - 100u)
+        return "the relay didn't wait for node 2";
+    if (took_ms >= ST_TIMEOUT_MS)
+        return "the heartbeat wasn't answered within worker 1's timeout";
+    if (!wait_dead(fx->old[1]))
+        return "node 2's connection wasn't shut down";
+    qemu_mutex_lock(&fx->priv->mesh_table_lock);
+    alive = fx->node[0]->is_alive;
+    qemu_mutex_unlock(&fx->priv->mesh_table_lock);
+    if (!alive || tcp_conn_dead(fx->old[0]))
+        return "worker 1 lost its connection, or was declared dead";
+    return NULL;
+}
+
+/*
+ * ST_CANCEL.  Tags as the data path makes them: a QP in the high half, a
+ * request id in the low.
+ */
+#define ST_QP_MASK      UINT64_C(0xffffffff00000000)
+#define ST_TAG(qp, req) ((uint64_t)(qp) << 32 | (req))
+
+static const char *st_cancel(struct mgr_fixture *fx)
+{
+    /* After the first: QP 5's requests go, and QP 6's second, alone */
+    static const struct {
+        uint64_t tag;
+        bool reply;
+        uint32_t len;
+        bool kept;
+    } queued[] = {
+        {ST_TAG(5, 2), false, 200, false}, {ST_TAG(6, 3), false, 300, true},
+        {ST_TAG(6, 4), false, 350, false}, {ST_TAG(5, 5), true, 400, true},
+        {ST_TAG(6, 6), false, 450, true},  {ST_TAG(5, 7), false, 500, false},
+    };
+    TcpConnection *conn = fx->old[0];
+    RdmaBackendDev dev;
+    size_t want = 100 + 16; /* the message being written, with its header */
+    const char *why = NULL;
+    GList *link;
+
+    memset(&dev, 0, sizeof(dev));
+    dev.backend_type = RDMA_BACKEND_TYPE_TCP;
+    dev.backend_private = fx->priv;
+
+    /* The first, from QP 5 too, is off the queue: the send thread is on it */
+    if (st_send_tag(fx->priv, 100, ST_TAG(5, 1), false) != 0)
+        return "the first message wasn't queued";
+    if (!held_elsewhere(&conn->lock))
+        return "the send thread never blocked on the node";
+    for (size_t i = 0; i < sizeof(queued) / sizeof(queued[0]); i++) {
+        if (st_send_tag(fx->priv, queued[i].len, queued[i].tag,
+                        queued[i].reply) != 0)
+            return "a message wasn't queued";
+        if (queued[i].kept)
+            want += queued[i].len + 16u;
+    }
+    tcp_backend_ionic_cancel(&dev, ST_TAG(5, 0), ST_QP_MASK);
+    tcp_backend_ionic_cancel(&dev, ST_TAG(6, 4), UINT64_MAX);
+
+    qemu_mutex_lock(&conn->sendq_lock);
+    link = conn->sendq.head;
+    for (size_t i = 0; !why && i < sizeof(queued) / sizeof(queued[0]); i++) {
+        const TcpQueuedMsg *msg = link ? link->data : NULL;
+
+        if (!queued[i].kept)
+            continue;
+        if (!msg || msg->tag != queued[i].tag ||
+            msg->reply != queued[i].reply || msg->len != queued[i].len + 16u)
+            why = "the queue doesn't hold what wasn't cancelled, in order";
+        link = link ? link->next : NULL;
+    }
+    if (!why && link)
+        why = "a cancelled request is still queued";
+    if (!why && conn->sendq_bytes != want)
+        why = "the queue's byte count is wrong";
+    qemu_mutex_unlock(&conn->sendq_lock);
+    return why;
+}
+
+/* ST_TOO_LONG */
+static const char *st_too_long(struct mgr_fixture *fx)
+{
+    /* Never read: each length is refused before either buffer is */
+    static const uint8_t hdr[16], body[16];
+    static const struct {
+        size_t hdr_len, body_len;
+    } rows[] = {
+        {64, SIZE_MAX - 31}, /* adds up to 32 */
+        {SIZE_MAX, 1},       /* adds up to 0 */
+        {16, TCP_MAX_PAYLOAD_LEN - 15},
+        {(size_t)TCP_MAX_PAYLOAD_LEN + 1u, 0},
+    };
+    TcpConnection *conn = fx->old[0];
+    RdmaBackendDev dev;
+    size_t bytes;
+    bool queued;
+
+    memset(&dev, 0, sizeof(dev));
+    dev.backend_type = RDMA_BACKEND_TYPE_TCP;
+    dev.backend_private = fx->priv;
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        if (tcp_backend_send_ionic_v(&dev, 1, hdr, rows[i].hdr_len, body,
+                                     rows[i].body_len, 0, false) != -EINVAL)
+            return "tcp_backend_send_ionic_v() didn't refuse the lengths";
+        if (tcp_conn_enqueue(conn, hdr, rows[i].hdr_len, body, rows[i].body_len,
+                             1, 0, false) != -EINVAL)
+            return "tcp_conn_enqueue() didn't refuse the lengths";
+    }
+    qemu_mutex_lock(&conn->sendq_lock);
+    bytes = conn->sendq_bytes;
+    queued = conn->send_thread_started || conn->sendq.length != 0;
+    qemu_mutex_unlock(&conn->sendq_lock);
+    return bytes == 0 && !queued ? NULL : "something was queued";
+}
+
+/*
+ * ST_STEADY: node 1 reads, but slower than the manager writes, so its socket
+ * stays full and the send thread holds the connection's lock nearly all the
+ * time.  It answers each heartbeat, as a worker does.
+ */
+#define ST_STEADY_LEN (256u << 10) /* larger than the socket's buffer */
+
+struct st_reader {
+    int fd;
+    atomic_bool running;
+    atomic_int heartbeats;
+    atomic_bool failed;
+    pthread_t tid;
+};
+
+static void *st_reader_run(void *opaque)
+{
+    struct st_reader *r = opaque;
+
+    while (atomic_load(&r->running)) {
+        struct pollfd pfd = {.fd = r->fd, .events = POLLIN};
+        TcpMsgHeader hdr;
+        void *payload = NULL;
+
+        if (poll(&pfd, 1, 50) != 1)
+            continue;
+        if (tcp_recv_message(r->fd, &hdr, &payload, NULL, NULL, 0) < 0) {
+            atomic_store(&r->failed, true);
+            break;
+        }
+        g_free(payload);
+        if (hdr.msg_type == TCP_MSG_HEARTBEAT) {
+            atomic_fetch_add(&r->heartbeats, 1);
+            if (!send_heartbeat(r->fd, 1)) {
+                atomic_store(&r->failed, true);
+                break;
+            }
+        }
+        sleep_ms(2);
+    }
+    return NULL;
+}
+
+static const char *st_steady(struct mgr_fixture *fx)
+{
+    struct st_reader reader;
+    const char *why = NULL;
+    uint32_t sent = 0, full = 0;
+    double end;
+    bool alive;
+
+    reader.fd = fx->peer[0];
+    atomic_init(&reader.running, true);
+    atomic_init(&reader.heartbeats, 0);
+    atomic_init(&reader.failed, false);
+    if (pthread_create(&reader.tid, NULL, st_reader_run, &reader) != 0)
+        return "could not start the reader";
+
+    /* Alive and just heard from; nothing is running yet to race this */
+    fx->node[0]->is_alive = true;
+    mgr_start(fx, 0);
+    end = now_s() + 4.5;
+    while (now_s() < end && !atomic_load(&reader.failed)) {
+        int rc = st_send(fx->priv, ST_STEADY_LEN, false);
+
+        if (rc == 0) {
+            sent++;
+        } else if (rc == -EAGAIN) {
+            full++;
+            sleep_ms(1);
+        } else {
+            break;
+        }
+    }
+
+    qemu_mutex_lock(&fx->priv->mesh_table_lock);
+    alive = fx->node[0]->is_alive;
+    qemu_mutex_unlock(&fx->priv->mesh_table_lock);
+    /* Declared dead, the node has its connection closed, and its end fails */
+    if (!alive)
+        why = "node 1 was declared dead";
+    else if (tcp_conn_dead(fx->old[0]) || table_get(fx->priv, 1) != fx->old[0])
+        why = "node 1's connection was closed";
+    else if (atomic_load(&reader.failed))
+        why = "node 1's end of the connection failed";
+    else if (atomic_load(&reader.heartbeats) < 3)
+        why = "node 1 got fewer than three heartbeats";
+    else if (full == 0 || sent <= TCP_SENDQ_REQUEST_BYTES / ST_STEADY_LEN)
+        why = "the queue was never full, or never drained";
+
+    atomic_store(&reader.running, false);
+    pthread_join(reader.tid, NULL);
+    return why;
+}
+
+/*
+ * ST_COALESCE.  How many of msg_type conn's send queue holds, and how many
+ * messages in all.
+ */
+#define ST_FLOOD 100
+
+static int st_queued(TcpConnection *conn, TcpMsgType msg_type, guint *all)
+{
+    int n = 0;
+
+    qemu_mutex_lock(&conn->sendq_lock);
+    for (GList *link = conn->sendq.head; link != NULL; link = link->next)
+        if (((const TcpQueuedMsg *)link->data)->msg_type == msg_type)
+            n++;
+    if (all)
+        *all = conn->sendq.length;
+    qemu_mutex_unlock(&conn->sendq_lock);
+    return n;
+}
+
+/* Wait up to 5 s for conn's send queue to hold a msg_type */
+static bool st_wait_queued(TcpConnection *conn, TcpMsgType msg_type)
+{
+    for (int i = 0; i < 500; i++) {
+        if (st_queued(conn, msg_type, NULL) > 0)
+            return true;
+        sleep_ms(10);
+    }
+    return false;
+}
+
+/* Wait up to 5 s for the manager to have read everything sent on fd */
+static bool st_drained(int fd)
+{
+    for (int i = 0; i < 500; i++) {
+        int unread = -1;
+
+        if (ioctl(fd, SIOCOUTQ, &unread) == 0 && unread == 0)
+            return true;
+        sleep_ms(10);
+    }
+    return false;
+}
+
+static const char *st_coalesce(struct mgr_fixture *fx)
+{
+    TcpConnection *conn = fx->old[0];
+    guint all;
+
+    /* Alive, so its heartbeats revive nothing and start no broadcast */
+    fx->node[0]->is_alive = true;
+    if (st_send(fx->priv, 0, false) != 0)
+        return "the data path's message wasn't queued";
+    if (!held_elsewhere(&conn->lock))
+        return "the send thread never blocked on the node";
+    mgr_start(fx, 0);
+    if (!st_wait_queued(conn, TCP_MSG_HEARTBEAT))
+        return "the health check's heartbeat wasn't queued";
+    for (int i = 0; i < ST_FLOOD; i++)
+        if (!send_heartbeat(fx->peer[0], 1))
+            return "the node couldn't send its heartbeats";
+    if (!st_drained(fx->peer[0]) ||
+        !st_wait_queued(conn, TCP_MSG_HEARTBEAT_RESP))
+        return "the node's heartbeats weren't answered";
+    /*
+     * The last heartbeat's answer can still be on its way, which without the
+     * coalescing would leave more answers than one, not fewer.
+     */
+    if (st_queued(conn, TCP_MSG_HEARTBEAT_RESP, &all) != 1 ||
+        st_queued(conn, TCP_MSG_HEARTBEAT, NULL) != 1 || all != 2)
+        return "the queue doesn't hold just one heartbeat and one answer";
+    return NULL;
+}
+
+static int run_st_case(const struct st_case *c)
+{
+    struct mgr_fixture fx;
+    uint32_t nodes = c->scenario == ST_RELAY ? 2 : 1;
+    uint32_t stuck = nodes; /* the node that stops reading */
+    const char *why;
+    bool ok;
+
+    atomic_store(&g_creates, 0);
+    atomic_store(&g_joins, 0);
+    atomic_store(&g_exits, 0);
+    g_current_row = c->description;
+    alarm(ROW_TIMEOUT_S);
+    why = mgr_setup(&fx, nodes, c->scenario == ST_STEADY ? 1 : LONG_INTERVAL_S);
+    /* ST_QUEUE_FULL keeps the default, so the queue isn't closed under it */
+    if (!why && c->scenario != ST_QUEUE_FULL)
+        atomic_store(&fx.priv->send_timeout_ms, ST_TIMEOUT_MS);
+    if (!why && c->scenario != ST_STEADY && !fill_conn(fx.priv, stuck))
+        why = "could not fill the node's socket";
+    if (!why) {
+        switch (c->scenario) {
+        case ST_TIMEOUT:
+            why = st_timeout(&fx);
+            break;
+        case ST_DATAPATH:
+            why = st_datapath(&fx);
+            break;
+        case ST_QUEUE_FULL:
+            why = st_queue_full(&fx);
+            break;
+        case ST_RELAY:
+            why = st_relay(&fx);
+            break;
+        case ST_CANCEL:
+            why = st_cancel(&fx);
+            break;
+        case ST_TOO_LONG:
+            why = st_too_long(&fx);
+            break;
+        case ST_STEADY:
+            why = st_steady(&fx);
+            break;
+        case ST_COALESCE:
+        default:
+            why = st_coalesce(&fx);
+            break;
+        }
+    }
+    mgr_teardown(&fx);
+    alarm(0);
+    if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
+                 atomic_load(&g_exits) != atomic_load(&g_creates)))
+        why = "a thread wasn't joined exactly once";
+
+    ok = !why;
+    printf("%s stuck peer %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
+           c->category, c->description, c->expected);
+    if (!ok)
+        printf("     %s; %d thread(s) created, %d joined, %d exited\n", why,
+               atomic_load(&g_creates), atomic_load(&g_joins),
+               atomic_load(&g_exits));
+    fflush(stdout);
+    return ok ? 0 : 1;
+}
+
 int main(void)
 {
     int failures = 0;
@@ -6719,6 +7376,8 @@ int main(void)
         failures += run_dc_case(&dc_cases[i]);
     for (size_t i = 0; i < sizeof(wl_cases) / sizeof(wl_cases[0]); i++)
         failures += run_wl_case(&wl_cases[i]);
+    for (size_t i = 0; i < sizeof(st_cases) / sizeof(st_cases[0]); i++)
+        failures += run_st_case(&st_cases[i]);
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);

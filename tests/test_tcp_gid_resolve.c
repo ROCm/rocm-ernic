@@ -589,10 +589,13 @@ enum hook {
     HOOK_SET_CB,
     HOOK_CLEAR_CB,
     HOOK_SEND,
+    HOOK_HAS_ROOM,
+    HOOK_CANCEL,
 };
 
 /* refused is what a hook returns when it leaves the block alone. The
- * callback rows return nothing, so only the poison check catches them. */
+ * callback and cancel rows return nothing, so only the poison check catches
+ * them. */
 struct hook_case {
     enum hook hook;
     const char *name;
@@ -605,6 +608,8 @@ static const struct hook_case hook_cases[] = {
     {HOOK_SET_CB, "tcp_backend_set_ionic_recv_cb(fn)", 0},
     {HOOK_CLEAR_CB, "tcp_backend_set_ionic_recv_cb(NULL)", 0},
     {HOOK_SEND, "tcp_backend_send_ionic_v()", -EINVAL},
+    {HOOK_HAS_ROOM, "tcp_backend_ionic_has_room()", true},
+    {HOOK_CANCEL, "tcp_backend_ionic_cancel()", 0},
 };
 
 struct backend_case {
@@ -635,7 +640,8 @@ static void recv_fn(void *opaque, uint32_t src_node, const void *buf,
 /* The TCP backend keeps this pointer, so it has to outlive the call. */
 static int recv_opaque;
 
-/* Call @hook on @dev and return its result, or 0 for the callback rows. */
+/* Call @hook on @dev and return its result, or 0 for the rows that return
+ * nothing. */
 static int64_t call_hook(RdmaBackendDev *dev, enum hook hook)
 {
     static const uint8_t hdr[8] = {1};
@@ -655,7 +661,12 @@ static int64_t call_hook(RdmaBackendDev *dev, enum hook hook)
         return 0;
     case HOOK_SEND:
         return tcp_backend_send_ionic_v(dev, MESH_PEER, hdr, sizeof(hdr), NULL,
-                                        0);
+                                        0, 0, false);
+    case HOOK_HAS_ROOM:
+        return tcp_backend_ionic_has_room(dev, MESH_PEER, sizeof(hdr));
+    case HOOK_CANCEL:
+        tcp_backend_ionic_cancel(dev, 0, UINT64_MAX);
+        return 0;
     default:
         abort(); /* every row names one of the cases above */
     }
@@ -782,7 +793,8 @@ static void test_hooks_on_tcp(void)
     CHECK(!priv->ionic_recv_fn && !priv->ionic_recv_opaque,
           "receive callback not cleared");
 
-    rc = tcp_backend_send_ionic_v(&dev, MESH_PEER, hdr, sizeof(hdr), NULL, 0);
+    rc = tcp_backend_send_ionic_v(&dev, MESH_PEER, hdr, sizeof(hdr), NULL, 0, 0,
+                                  false);
     CHECK(rc == -ENOTCONN,
           "send to an unconnected node returned %d, expected -ENOTCONN", rc);
 

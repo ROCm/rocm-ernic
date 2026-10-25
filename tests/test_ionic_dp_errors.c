@@ -25,10 +25,10 @@
  */
 
 #include <endian.h>
+#include <errno.h>
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/uio.h>
@@ -156,18 +156,33 @@ void vfu_log(vfu_ctx_t *vfu_ctx, int level, const char *fmt, ...)
 
 static uint8_t g_wire[WIRE_MAX][WIRE_BYTES];
 static size_t g_wire_len[WIRE_MAX];
+static uint64_t g_wire_tag[WIRE_MAX]; /* what each message is called */
+static bool g_wire_reply[WIRE_MAX];
 static size_t g_nwire;
 
+/*
+ * What the mesh says: whether ionic_mesh_has_room() finds room to queue a
+ * request, and, unless it is 0, what ionic_mesh_sendv() returns instead of
+ * taking the message.
+ */
+static bool g_room;
+static int g_send_rc;
+
 int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
-                     size_t hdr_len, const void *body, size_t body_len)
+                     size_t hdr_len, const void *body, size_t body_len,
+                     uint64_t tag, bool reply)
 {
     (void)handle;
     (void)dst_node;
+    if (g_send_rc != 0)
+        return g_send_rc;
     if (g_nwire >= WIRE_MAX || hdr_len + body_len > WIRE_BYTES)
         return -1;
     memcpy(g_wire[g_nwire], hdr, hdr_len);
     if (body_len)
         memcpy(g_wire[g_nwire] + hdr_len, body, body_len);
+    g_wire_tag[g_nwire] = tag;
+    g_wire_reply[g_nwire] = reply;
     g_wire_len[g_nwire++] = hdr_len + body_len;
     return 0;
 }
@@ -211,6 +226,13 @@ uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle, const uint8_t *gid)
     (void)handle;
     (void)gid;
     return UINT32_MAX;
+}
+bool ionic_mesh_has_room(pvrdma_handle_t handle, uint32_t dst_node, size_t len)
+{
+    (void)handle;
+    (void)dst_node;
+    (void)len;
+    return g_room;
 }
 void ionic_mesh_set_recv_cb(pvrdma_handle_t handle, ionic_mesh_recv_fn fn,
                             void *opaque)
@@ -437,6 +459,25 @@ static const char *const counter_name[IONIC_DP_RDMA_COUNT] = {
 #define T0         1000000u
 #define OP_UNKNOWN 0x0fu
 
+/*
+ * The data path under test, and what it asked the mesh to cancel: how many
+ * times, the last tag and mask, and how many completions CQ_ID had then.
+ */
+static struct ionic_datapath *g_dp;
+static uint32_t g_ncancel;
+static uint64_t g_cancel_tag;
+static uint64_t g_cancel_mask;
+static uint32_t g_cancel_cqes;
+
+void ionic_mesh_cancel(pvrdma_handle_t handle, uint64_t tag, uint64_t mask)
+{
+    (void)handle;
+    g_ncancel++;
+    g_cancel_tag = tag;
+    g_cancel_mask = mask;
+    g_cancel_cqes = g_dp ? g_dp->cq[CQ_ID].prod : 0;
+}
+
 static uint32_t g_sq_slot[QP_C + 1];
 
 static void register_qp_as(struct ionic_datapath *dp, uint32_t qp_id,
@@ -480,6 +521,13 @@ static struct ionic_datapath *setup(void)
     for (size_t i = 0; i < MR_LEN; i++)
         g_mem[SRC_GPA + i] = (uint8_t)i;
     g_nwire = 0;
+    g_room = true;
+    g_send_rc = 0;
+    g_dp = NULL;
+    g_ncancel = 0;
+    g_cancel_tag = 0;
+    g_cancel_mask = 0;
+    g_cancel_cqes = 0;
     g_now_ms = T0;
     g_local_node = UINT32_MAX;
     g_recv_fn = NULL;
@@ -851,6 +899,66 @@ static void run_pending_past_deadline(struct ionic_datapath *dp)
     run_pending_at(dp, T0 + PENDING_MS + 1);
 }
 
+/* The mesh can't send the request at all: it has no connection to node 1 */
+static void run_remote_send_failed(struct ionic_datapath *dp)
+{
+    remote(dp, QP_B);
+    g_send_rc = -ENOTCONN;
+    post_send(dp, QP_A, &WRITE_OK);
+    poll_at(dp, T0 + 1);
+}
+
+/* The mesh's queue to node 1 is full: the WRITE waits, and isn't gathered */
+static void run_remote_busy(struct ionic_datapath *dp)
+{
+    remote(dp, QP_B);
+    g_room = false;
+    post_send(dp, QP_A, &WRITE_OK);
+    poll_at(dp, T0 + 1);
+    poll_at(dp, T0 + PENDING_MS + 1);
+    if (g_nwire != 0) {
+        printf("FAIL: a WRITE was sent with no room to queue it\n");
+        failures++;
+    }
+}
+
+/* Then the queue drains, and the next pass sends it */
+static void run_remote_busy_then_room(struct ionic_datapath *dp)
+{
+    run_remote_busy(dp);
+    g_room = true;
+    poll_at(dp, g_now_ms + 1);
+    pump(dp);
+}
+
+/*
+ * The mesh refuses with -EAGAIN after all, as it does when the route to the
+ * node changed after it found room, and then takes it.
+ */
+static void run_remote_send_busy(struct ionic_datapath *dp)
+{
+    remote(dp, QP_B);
+    g_send_rc = -EAGAIN;
+    post_send(dp, QP_A, &WRITE_OK);
+    poll_at(dp, T0 + 1);
+    g_send_rc = 0;
+    poll_at(dp, T0 + 2);
+    pump(dp);
+}
+
+/* QP_A moves to ERR while its WRITE waits for room, and room comes after */
+static void run_remote_busy_flush(struct ionic_datapath *dp)
+{
+    run_remote_busy(dp);
+    ionic_datapath_flush_qp(dp, QP_A);
+    g_room = true;
+    poll_at(dp, g_now_ms + 1);
+    if (g_nwire != 0) {
+        printf("FAIL: a flushed WRITE was sent once there was room\n");
+        failures++;
+    }
+}
+
 static void run_reregister(struct ionic_datapath *dp)
 {
     run_unsupported_op(dp);
@@ -982,6 +1090,24 @@ static const struct dp_case cases[] = {
      "an error completion on a CQ that was never registered",
      "no counter moves: the guest never saw the error",
      run_unknown_cq,
+     {{0}},
+     {{0}},
+     {{0}}},
+    {"negative",
+     "remote RDMA WRITE the mesh can't send, having no connection to the "
+     "node",
+     "completes with retry-exceeded, as a request the peer never answers "
+     "does: an implied NAK sequence error and a CQE error, not a remote "
+     "access error",
+     run_remote_send_failed,
+     {W(REQ_RX_IMPLIED_NAK_SEQ_ERR, 1), W(REQ_RX_CQE_ERR, 1)},
+     {{0}},
+     {{0}}},
+    {"negative",
+     "remote RDMA WRITE while the mesh has no room to queue it, past "
+     "PENDING_MS",
+     "no counter moves: the WRITE waits, and nothing times out",
+     run_remote_busy,
      {{0}},
      {{0}},
      {{0}}},
@@ -1301,6 +1427,19 @@ static const struct sq_case sq_cases[] = {
     {"corner", "QP re-registered while its send queue waits",
      "the wait is forgotten: nothing completes at RNR_RETRY_MS",
      run_local_rnr_reregister, 0, false, 0, 0},
+    {"negative", "remote RDMA WRITE while the mesh has no room to queue it",
+     "nothing is sent or completed, and the send queue waits at the WRITE, "
+     "past PENDING_MS",
+     run_remote_busy, 0, false, 1, 0},
+    {"positive", "the mesh then has room",
+     "the next pass sends the WRITE, which completes, and the queue moves on",
+     run_remote_busy_then_room, 1, false, 0, 1},
+    {"corner", "the mesh refuses the WRITE with -EAGAIN, then takes it",
+     "it waits for a pass, then is sent and completes", run_remote_send_busy, 1,
+     false, 0, 1},
+    {"corner", "QP flushed while its WRITE waits for room, then room comes",
+     "only the two flush completions: the WRITE is never sent",
+     run_remote_busy_flush, 2, false, 0, 1},
 };
 
 static bool recv_delivered(void)
@@ -1409,9 +1548,128 @@ static void check_late_responses(void)
     }
 }
 
+/*
+ * What the mesh is told about a QP's messages: what each request is called,
+ * and which to take back.  A request the mesh still has queued must not
+ * reach the peer once its work request has completed: when its QP is
+ * flushed or destroyed, or when it times out.  The completions tell the
+ * consumer it didn't run, so it is taken back before they are posted.
+ */
+enum mc_scenario {
+    MC_TAGGED,     /* a remote WRITE and its ACK */
+    MC_FLUSH,      /* QP_A flushed with its WRITE outstanding */
+    MC_UNREGISTER, /* QP_A destroyed with its WRITE outstanding */
+    MC_DEADLINE,   /* the WRITE unanswered at PENDING_MS */
+    MC_EXPIRED,    /* and just past it */
+};
+
+#define MC_QP_MASK UINT64_C(0xffffffff00000000)
+
+/* Whether the last cancel took back what is called tag, with exactly mask */
+static bool mc_cancelled(uint64_t tag, uint64_t mask)
+{
+    return g_ncancel == 1 && g_cancel_mask == mask &&
+           (g_cancel_tag & mask) == (tag & mask);
+}
+
+static const char *mc_run(struct ionic_datapath *dp, enum mc_scenario scenario)
+{
+    struct ionic_wire_hdr h;
+    uint64_t tag;
+    uint32_t cqes;
+
+    remote(dp, QP_B);
+    post_send(dp, QP_A, &WRITE_OK);
+    if (g_nwire != 1 || g_wire_reply[0])
+        return "the WRITE wasn't sent as a request";
+    memcpy(&h, g_wire[0], sizeof(h));
+    tag = (uint64_t)QP_A << 32 | le32toh(h.req_id);
+    if (g_wire_tag[0] != tag)
+        return "the WRITE isn't called by QP_A and its request id";
+
+    cqes = dp->cq[CQ_ID].prod;
+    g_dp = dp;
+    switch (scenario) {
+    case MC_TAGGED:
+        wire_feed(dp);
+        poll_at(dp, g_now_ms);
+        if (g_nwire != 1 || !g_wire_reply[0])
+            return "the ACK wasn't sent as a reply";
+        return g_ncancel == 0 ? NULL : "a request was taken back";
+    case MC_FLUSH:
+        ionic_datapath_flush_qp(dp, QP_A);
+        if (!mc_cancelled(tag, MC_QP_MASK))
+            return "QP_A's requests weren't taken back once";
+        if (g_cancel_cqes != cqes || dp->cq[CQ_ID].prod != cqes + 2)
+            return "they weren't taken back before the flush completions";
+        return NULL;
+    case MC_UNREGISTER:
+        ionic_datapath_unregister_qp(dp, QP_A);
+        return mc_cancelled(tag, MC_QP_MASK)
+                   ? NULL
+                   : "QP_A's requests weren't taken back once";
+    case MC_DEADLINE:
+        poll_at(dp, T0 + PENDING_MS);
+        return g_ncancel == 0 && dp->cq[CQ_ID].prod == cqes
+                   ? NULL
+                   : "the WRITE was given up on at its deadline";
+    case MC_EXPIRED:
+    default:
+        poll_at(dp, T0 + PENDING_MS + 1);
+        if (!mc_cancelled(tag, UINT64_MAX))
+            return "the WRITE wasn't taken back once, alone";
+        if (g_cancel_cqes != cqes || dp->cq[CQ_ID].prod != cqes + 1)
+            return "it wasn't taken back before its error completion";
+        return NULL;
+    }
+}
+
+static void check_mesh_cancel(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        enum mc_scenario scenario;
+    } rows[] = {
+        {"positive", "a remote WRITE, and the ACK QP_B sends for it",
+         "the WRITE goes to the mesh as a request called by QP_A and its "
+         "request id, the ACK as a reply, and nothing is taken back",
+         MC_TAGGED},
+        {"positive", "QP_A flushed while its WRITE is outstanding",
+         "the mesh takes back QP_A's requests once, before the flush "
+         "completions are posted",
+         MC_FLUSH},
+        {"positive", "QP_A destroyed while its WRITE is outstanding",
+         "the mesh takes back QP_A's requests once", MC_UNREGISTER},
+        {"boundary", "the WRITE still unanswered at PENDING_MS",
+         "nothing is taken back or completed", MC_DEADLINE},
+        {"positive", "the WRITE unanswered just past PENDING_MS",
+         "the mesh takes back that request alone, once, before its "
+         "retry-exceeded completion is posted",
+         MC_EXPIRED},
+    };
+
+    for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
+        struct ionic_datapath *dp = setup();
+        const char *why = dp ? mc_run(dp, rows[row].scenario)
+                             : "could not create a data path";
+
+        g_dp = NULL;
+        ionic_datapath_destroy(dp);
+        printf("%s %s: %s; expected: %s\n", why ? "FAIL" : "ok  ",
+               rows[row].category, rows[row].description, rows[row].expected);
+        if (why) {
+            printf("     %s\n", why);
+            failures++;
+        }
+    }
+}
+
 int main(void)
 {
     check_late_responses();
+    check_mesh_cancel();
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
         run_case(&cases[i]);
     for (size_t i = 0; i < sizeof(getter_cases) / sizeof(getter_cases[0]); i++)

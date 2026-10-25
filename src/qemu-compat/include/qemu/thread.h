@@ -93,6 +93,15 @@ static inline void qemu_cond_signal(QemuCond *cond)
 }
 
 /*
+ * Wait until signalled.  Like pthread_cond_wait(), it can also return without
+ * a signal, so callers recheck their condition in a loop.
+ */
+static inline void qemu_cond_wait(QemuCond *cond, QemuMutex *mutex)
+{
+    pthread_cond_wait(&cond->cond, &mutex->lock);
+}
+
+/*
  * Wait until signalled or until deadline, a CLOCK_MONOTONIC time.  Returns
  * false once the deadline has passed.  Like pthread_cond_wait(), it can also
  * return without a signal, so callers recheck their condition in a loop.

@@ -16,6 +16,10 @@ Three kinds of pressure, all of them reachable from a hosted runner:
   * Lost links. On a second mesh, a worker and then the manager are
     paused past the health check, and the workers have to register
     again under their own ids.
+  * A peer that stops reading. On a third, a peer that has registered
+    stops reading while the node sends it more than it can hold, and
+    the node has to go on serving its guest, give up on the peer, and
+    fail the requests it couldn't send.
 
 Every node is then held to a shutdown deadline, because the TCP backend
 is known to hang there, and to exiting with status 0, which is how a
@@ -50,6 +54,17 @@ MR_VA = 0x0000_7F00_0000_0000
 MR_LEN = 2 * ionic.PAGE_SIZE
 
 MESH_SIZE = 3
+
+# What the peer that stops reading claims, and what is sent to it: as
+# many 4 MiB WRITEs as a send queue holds, more than the node's socket,
+# the peer's, and the 32 MiB the node queues for a connection, together.
+STUCK_GID = "10.0.99.9"
+STUCK_WRITE = 4 << 20
+STUCK_WRITES = (1 << ionic.QP_DEPTH_LOG2) - 1
+# The manager gives up on a peer in half of this
+STUCK_SEND_TIMEOUT_MS = 2000
+# enum ionic_status's retry-exceeded, which ernic.ionic doesn't name
+STS_RETRY_EXCEEDED = 11
 
 
 def bring_up(node, peers):
@@ -556,6 +571,127 @@ def test_manager_paused(suite, mesh_):
     suite.check_eq(mesh_.registrations(), registrations, "the mesh has no new node")
 
 
+def wait_retry_exceeded(driver, cq, timeout):
+    """Wait for a send completion with retry-exceeded. True if one came.
+
+    Earlier WRITEs, queued before the peer stopped reading, can complete
+    first, or not until their own pending timeout; either is fine here.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        cqe = driver.poll_cq(cq)
+        if cqe is None:
+            time.sleep(0.05)
+        elif cqe.error and cqe.status == STS_RETRY_EXCEEDED:
+            return True
+    return False
+
+
+# pylint: disable-next=too-many-locals
+def test_peer_stops_reading(suite, mesh_):
+    """A peer that stops reading holds up nothing but its own connection.
+
+    The node's main thread runs the guest's device, so it must never wait
+    for a peer: it queues what it sends, and a full queue holds the
+    guest's send queue instead, as a NIC out of credits does. The peer
+    registers and claims a GID, so the node's data path has somewhere to
+    send, and then reads nothing while the node sends it more than can be
+    held anywhere. The device must go on answering the guest's admin
+    commands and moving its local traffic, give up on the peer after the
+    send timeout, and complete the WRITEs it never sent with
+    retry-exceeded, which is what a peer that never answers gets.
+    """
+    manager = mesh_.nodes[0].server
+    driver = mesh_.nodes[0].attach(mem_size=96 << 20)
+    cq = driver.create_cq(CQ_ID)
+    local_cq = driver.create_cq(CQ_ID + 1)
+    mr = driver.create_mr(MR_KEY, MR_VA, STUCK_WRITE)
+
+    peer = mesh.MeshPeer(port=mesh_.port).connect()
+    try:
+        _node_id, _num, result, _version = peer.register(hostname=b"stuck")
+        suite.check_eq(result, 0, "the peer registered")
+        peer.advertise_gids([STUCK_GID])
+        suite.check(
+            manager.wait_for_log(f"owns GID {mesh.gid_log_form(STUCK_GID)}", 15),
+            "the node knows the peer's GID",
+        )
+
+        # From here on, nothing reads the peer's socket.
+        qp = driver.create_qp(QP_BASE, ionic.QPT_RC, cq, cq)
+        to_peer = ionic.roce_hdr_v4(
+            ionic.ipv4(mesh_.guest_ip(0)), ionic.ipv4(STUCK_GID)
+        )
+        connect_side(driver, qp, QP_BASE, to_peer)
+        for _ in range(STUCK_WRITES):
+            driver.post_send(
+                qp,
+                ionic.OP_RDMA_WRITE,
+                flags=ionic.WQE_SIGNALLED,
+                remote_va=MR_VA,
+                rkey=MR_KEY,
+                sge=[ionic.Sge(MR_VA, STUCK_WRITE, mr.lkey)],
+            )
+
+        # Admin commands and a SEND between two of the node's own QPs
+        to_self = ionic.roce_hdr_v4(
+            ionic.ipv4(mesh_.guest_ip(0)), ionic.ipv4(mesh_.guest_ip(0))
+        )
+        qp_a = driver.create_qp(QP_BASE + 1, ionic.QPT_RC, local_cq, local_cq)
+        qp_b = driver.create_qp(QP_BASE + 2, ionic.QPT_RC, local_cq, local_cq)
+        connect_side(driver, qp_a, QP_BASE + 2, to_self)
+        connect_side(driver, qp_b, QP_BASE + 1, to_self)
+        driver.post_recv(qp_b, [ionic.Sge(MR_VA, 64, mr.lkey)])
+        driver.post_send(
+            qp_a,
+            ionic.OP_SEND,
+            flags=ionic.WQE_SIGNALLED,
+            sge=[ionic.Sge(MR_VA, 64, mr.lkey)],
+        )
+        recv = driver.wait_cq(local_cq, timeout=20)
+        send = driver.wait_cq(local_cq, timeout=20)
+        suite.check(
+            not recv.error and not send.error,
+            "the device went on serving the guest, its local traffic included",
+        )
+
+        suite.check(
+            manager.wait_for_log("has read nothing for", 30),
+            "the node gave up on the peer that stopped reading",
+        )
+        suite.check(
+            wait_retry_exceeded(driver, cq, 30),
+            "a WRITE the node couldn't send completed with retry-exceeded",
+        )
+        suite.check(manager.is_running(), "the node is still running")
+    finally:
+        peer.close()
+
+
+def run_stuck_peer_test(suite, binary, run_dir):
+    """The peer that stops reading, against a manager of its own.
+
+    Its send timeout is short, so the test waits seconds for it, not the
+    default ten.
+    """
+    mesh_ = mesh.Mesh(
+        binary,
+        os.path.join(run_dir, "stuck"),
+        size=1,
+        send_timeout_ms=STUCK_SEND_TIMEOUT_MS,
+    )
+    try:
+        mesh_.start(timeout=60)
+        suite.run("a peer that stops reading", test_peer_stops_reading, mesh_)
+    finally:
+        problems = mesh_.stop()
+        suite.check(
+            not problems,
+            "the third mesh's node exited cleanly and within its deadline"
+            + ("" if not problems else f": {'; '.join(problems)}"),
+        )
+
+
 def run_link_tests(suite, binary, run_dir):
     """Cut workers off from the manager, on a mesh of their own.
 
@@ -636,6 +772,7 @@ def main():
                 + ("" if not problems else f": {'; '.join(problems)}"),
             )
         run_link_tests(suite, args.server, run_dir)
+        run_stuck_peer_test(suite, args.server, run_dir)
     suite.finish()
 
 

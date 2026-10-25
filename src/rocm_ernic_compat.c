@@ -842,14 +842,33 @@ int ionic_mesh_claim_gid(pvrdma_handle_t handle, const uint8_t *gid_16bytes,
 }
 
 int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
-                     size_t hdr_len, const void *body, size_t body_len)
+                     size_t hdr_len, const void *body, size_t body_len,
+                     uint64_t tag, bool reply)
 {
     PVRDMADev *pvrdma = handle;
 
     if (!pvrdma)
         return -EINVAL;
     return tcp_backend_send_ionic_v(&pvrdma->backend_dev, dst_node, hdr,
-                                    hdr_len, body, body_len);
+                                    hdr_len, body, body_len, tag, reply);
+}
+
+bool ionic_mesh_has_room(pvrdma_handle_t handle, uint32_t dst_node, size_t len)
+{
+    PVRDMADev *pvrdma = handle;
+
+    if (!pvrdma)
+        return true;
+    return tcp_backend_ionic_has_room(&pvrdma->backend_dev, dst_node, len);
+}
+
+void ionic_mesh_cancel(pvrdma_handle_t handle, uint64_t tag, uint64_t mask)
+{
+    PVRDMADev *pvrdma = handle;
+
+    if (!pvrdma)
+        return;
+    tcp_backend_ionic_cancel(&pvrdma->backend_dev, tag, mask);
 }
 
 void ionic_mesh_set_recv_cb(pvrdma_handle_t handle, ionic_mesh_recv_fn fn,
