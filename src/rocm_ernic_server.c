@@ -57,8 +57,6 @@
 #include "parse_int.h"
 #include "rocm-ernic-warnings.h"
 
-static const char *get_backend_type_base(const char *backend_str);
-
 /* PCI identity presented over vfio-user.
  *
  * We emulate an ionic-protocol NIC, so we claim the Pensando Systems
@@ -556,7 +554,7 @@ static int ionic_device_init(rocm_ernic_dev_t *dev)
         return -1;
     }
 
-    if (!strcmp(get_backend_type_base(dev->backend_type_str), "nvmeof")) {
+    if (!strcmp(dev->backend_name, "nvmeof")) {
         struct nvmeof_target_cfg cfg;
         char err[256] = "";
         const char *opts = strchr(dev->backend_type_str, ':');
@@ -576,7 +574,7 @@ static int ionic_device_init(rocm_ernic_dev_t *dev)
         }
     }
 
-    if (!strcmp(get_backend_type_base(dev->backend_type_str), "s3")) {
+    if (!strcmp(dev->backend_name, "s3")) {
         struct s3_target_cfg cfg;
         char err[256] = "";
         const char *opts = strchr(dev->backend_type_str, ':');
@@ -972,34 +970,6 @@ static void usage(const char *progname)
 }
 
 /**
- * Determine backend type from backend string
- * @backend_str: Backend string (e.g., "none", "loopback", "verbs:mlx5_0")
- * @return: Backend type string for comparison
- */
-static const char *get_backend_type_base(const char *backend_str)
-{
-    if (!backend_str) {
-        return "none";
-    }
-    if (!strncmp(backend_str, "loopback", 8)) {
-        return "loopback";
-    }
-    if (!strncmp(backend_str, "verbs", 5)) {
-        return "verbs";
-    }
-    if (!strncmp(backend_str, "tcp", 3)) {
-        return "tcp";
-    }
-    if (!strncmp(backend_str, "nvmeof", 6)) {
-        return "nvmeof";
-    }
-    if (!strncmp(backend_str, "s3", 2)) {
-        return "s3";
-    }
-    return "none";
-}
-
-/**
  * Parse comma-separated verbs backend options with key=value syntax
  * Format: verbs:device=NAME[,ethdev=NAME][,port=NUM]
  * @backend_str: Backend string (e.g., "verbs:device=mlx5_0" or
@@ -1096,13 +1066,23 @@ fail:
 }
 
 /**
- * Validate backend-specific options
+ * Validate backend-specific options, and set dev->backend_name
  * @dev: Device structure with parsed options
  * @return: 0 on success, -1 on error
  */
 static int validate_backend_options(rocm_ernic_dev_t *dev)
 {
-    const char *backend_type = get_backend_type_base(dev->backend_type_str);
+    const char *backend_type = pvrdma_backend_name(dev->backend_type_str);
+
+    if (!backend_type) {
+        fprintf(stderr, "Error: Unknown backend '%s'\n", dev->backend_type_str);
+        fprintf(stderr, "  Expected one of: none, loopback, verbs, tcp, "
+                        "nvmeof, s3, optionally followed by ':' and its "
+                        "options\n");
+        return -1;
+    }
+    dev->backend_name = backend_type;
+
     bool is_verbs = !strcmp(backend_type, "verbs");
 
     /* For verbs backend, parse options from backend string */
@@ -1868,7 +1848,7 @@ int main(int argc, char *argv[])
     }
 
     /* Show backend-specific options only for verbs backend */
-    if (!strcmp(get_backend_type_base(dev->backend_type_str), "verbs")) {
+    if (!strcmp(dev->backend_name, "verbs")) {
         if (dev->backend_device_name) {
             ernic_startup_report("  IB Device: %s", dev->backend_device_name);
         }
