@@ -1532,11 +1532,6 @@ handling is the loopback backend’s.</p></td>
 <td><p>Stub resource operations; meant for PCI enumeration and
 driver bring-up.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">verbs</span></code></p></td>
-<td><p>Accepted on the command line and documented as
-forwarding to a real HCA, but <strong>not implemented</strong>: the
-registry entry is empty, so the server fails to start.</p></td>
-</tr>
 </tbody>
 </table>
 </div>
@@ -1667,8 +1662,6 @@ QUERY_QP reports.</p></li>
 <li><p><strong>Ethernet offloads</strong> (checksum, TSO, scatter-gather) are not
 offered.</p></li>
 <li><p><strong>Statistics admin commands</strong> succeed but return nothing.</p></li>
-<li><p><strong>The verbs backend</strong> has no implementation (see
-<a class="reference internal" href="#backends">Backends</a>).</p></li>
 <li><p><strong>Performance</strong> is that of a software device: every doorbell
 is a socket message, every byte is copied by the server’s CPU,
 and the main loop polls.</p></li>

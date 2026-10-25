@@ -577,7 +577,7 @@ thing for the hardware path.</p>
 </section>
 <section id="how-it-works">
 <h2>How It Works<a class="headerlink" href="#how-it-works" title="Link to this heading">#</a></h2>
-<p>Unlike <code class="docutils literal notranslate"><span class="pre">loopback</span></code>, <code class="docutils literal notranslate"><span class="pre">tcp</span></code> and <code class="docutils literal notranslate"><span class="pre">verbs</span></code>, this is not a
+<p>Unlike <code class="docutils literal notranslate"><span class="pre">loopback</span></code> and <code class="docutils literal notranslate"><span class="pre">tcp</span></code>, this is not a
 transport for guest RDMA traffic – it is a <em>peer</em> that
 speaks NVMe-oF back at the guest. It therefore hooks into
 <code class="file docutils literal notranslate"><span class="pre">src/ionic_datapath.c</span></code>, the data path that actually

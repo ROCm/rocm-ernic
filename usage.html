@@ -405,12 +405,6 @@
 <span class="w">  </span>--socket<span class="w"> </span>/tmp/vfio-user-rocm-ernic.sock<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--backend<span class="w"> </span>loopback
 
-<span class="c1"># RDMA verbs backend (requires RDMA hardware)</span>
-./build/rocm-ernic<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--socket<span class="w"> </span>/tmp/vfio-user-rocm-ernic.sock<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--backend<span class="w"> </span>verbs:device<span class="o">=</span>mlx5_0,ethdev<span class="o">=</span>eth0,port<span class="o">=</span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--log-level<span class="w"> </span>info
-
 <span class="c1"># In-process NVMe-oF controller the guest can connect to</span>
 ./build/rocm-ernic<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--socket<span class="w"> </span>/tmp/vfio-user-rocm-ernic.sock<span class="w"> </span><span class="se">\</span>

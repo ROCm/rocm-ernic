@@ -20,7 +20,7 @@ Key Features
   (see :doc:`ionic`)
 - Memory-mapped BARs (MSI-X, registers, doorbells)
 - MSI-X interrupt support
-- Multiple RDMA backends (loopback, TCP/IP, native verbs)
+- Multiple RDMA backends (loopback, TCP/IP)
 - An in-process NVMe-oF target, so one VM and one server
   are a complete fabric (see :doc:`nvmeof`)
 - An in-process S3-over-RDMA object store, with its own
