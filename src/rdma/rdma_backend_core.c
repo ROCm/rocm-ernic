@@ -25,7 +25,7 @@
  * All available backends are registered here. Backends can be selected
  * at runtime via command-line or configuration.
  */
-static const RdmaBackendOps *backend_registry[RDMA_BACKEND_TYPE_MAX] = {
+static const RdmaBackendOps *const backend_registry[RDMA_BACKEND_TYPE_MAX] = {
     [RDMA_BACKEND_TYPE_NONE] = &rdma_backend_ops_none,
     [RDMA_BACKEND_TYPE_LOOPBACK] = &rdma_backend_ops_loopback,
     [RDMA_BACKEND_TYPE_TCP] = &rdma_backend_ops_tcp,

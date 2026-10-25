@@ -71,24 +71,24 @@ void pvrdma_write_stats_impl(PVRDMADev *dev)
     char *tmp_path;
     int fd;
     int write_err;
-    const char *opcode_names[] = {"RDMA_WRITE",
-                                  "RDMA_WRITE_WITH_IMM",
-                                  "SEND",
-                                  "SEND_WITH_IMM",
-                                  "RDMA_READ",
-                                  "ATOMIC_CMP_AND_SWP",
-                                  "ATOMIC_FETCH_AND_ADD",
-                                  "LSO",
-                                  "SEND_WITH_INV",
-                                  "RDMA_READ_WITH_INV",
-                                  "LOCAL_INV",
-                                  "FAST_REG_MR",
-                                  "MASKED_ATOMIC_CMP_SWP",
-                                  "MASKED_ATOMIC_FETCH",
-                                  "BIND_MW",
-                                  "REG_SIG_MR",
-                                  "ERROR",
-                                  "SEND_DC"};
+    static const char *const opcode_names[] = {"RDMA_WRITE",
+                                               "RDMA_WRITE_WITH_IMM",
+                                               "SEND",
+                                               "SEND_WITH_IMM",
+                                               "RDMA_READ",
+                                               "ATOMIC_CMP_AND_SWP",
+                                               "ATOMIC_FETCH_AND_ADD",
+                                               "LSO",
+                                               "SEND_WITH_INV",
+                                               "RDMA_READ_WITH_INV",
+                                               "LOCAL_INV",
+                                               "FAST_REG_MR",
+                                               "MASKED_ATOMIC_CMP_SWP",
+                                               "MASKED_ATOMIC_FETCH",
+                                               "BIND_MW",
+                                               "REG_SIG_MR",
+                                               "ERROR",
+                                               "SEND_DC"};
 
     /* The per-QP loop below indexes both arrays with one bound. */
     _Static_assert(G_N_ELEMENTS(opcode_names) ==

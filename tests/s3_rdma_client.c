@@ -967,7 +967,7 @@ static void test_errors(struct client *c)
     }
 
     /* A token the server cannot decode must be refused before any DMA. */
-    const char *bad[] = {"x-amz-rdma-token: not-a-token"};
+    const char *const bad[] = {"x-amz-rdma-token: not-a-token"};
     snprintf(path, sizeof(path), "/%s/%s", c->bucket, "bad.bin");
     if (http_do(c, "PUT", path, bad, 1, NULL, 0, &r)) {
         snprintf(detail, sizeof(detail), "status %d", r.status);

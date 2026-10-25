@@ -1153,7 +1153,7 @@ static bool admin_setup(struct admin_fixture *f, const char *name)
  * Connect status codes are command-specific and permanent, so compare the
  * whole status word: SC alone would pass a generic error, or one without DNR.
  */
-static void check_connect_reject(const char *name, struct nvmeof_queue *q,
+static void check_connect_reject(const char *name, const struct nvmeof_queue *q,
                                  const uint8_t *rsp, uint8_t sc,
                                  const char *detail)
 {

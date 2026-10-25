@@ -183,7 +183,7 @@ void p4_devcmd_destroy(struct p4_devcmd *pd)
  * -------------------------------------------------------------------------
  */
 
-static uint8_t handle_ident(struct p4_devcmd *pd, const uint8_t *cmd)
+static uint8_t handle_ident(const struct p4_devcmd *pd, const uint8_t *cmd)
 {
     struct p4_devcmd_ident_cmd c;
     struct p4_devcmd_ident id;
@@ -222,7 +222,7 @@ static uint8_t handle_ident(struct p4_devcmd *pd, const uint8_t *cmd)
  * -------------------------------------------------------------------------
  */
 
-static uint8_t handle_query(struct p4_devcmd *pd, const uint8_t *cmd)
+static uint8_t handle_query(const struct p4_devcmd *pd, const uint8_t *cmd)
 {
     struct p4_devcmd_query_cmd c;
     uint8_t buf[sizeof(struct p4_devcmd_query_data) +
@@ -345,7 +345,7 @@ static uint8_t p4_status_of(int rc)
     }
 }
 
-static uint8_t rpc_load_begin(struct p4_devcmd *pd, const uint8_t *req,
+static uint8_t rpc_load_begin(const struct p4_devcmd *pd, const uint8_t *req,
                               uint32_t req_len)
 {
     struct p4_rpc_load_begin b;
@@ -357,7 +357,7 @@ static uint8_t rpc_load_begin(struct p4_devcmd *pd, const uint8_t *req,
     return p4_status_of(p4_engine_load_begin(pd->eng, le32toh(b.total_len)));
 }
 
-static uint8_t rpc_load_chunk(struct p4_devcmd *pd, const uint8_t *req,
+static uint8_t rpc_load_chunk(const struct p4_devcmd *pd, const uint8_t *req,
                               uint32_t req_len)
 {
     struct p4_rpc_load_chunk h;
@@ -381,7 +381,7 @@ static uint8_t rpc_load_chunk(struct p4_devcmd *pd, const uint8_t *req,
         p4_engine_load_chunk(pd->eng, le64toh(h.offset), req + sizeof(h), len));
 }
 
-static uint8_t rpc_entry_update(struct p4_devcmd *pd, const uint8_t *req,
+static uint8_t rpc_entry_update(const struct p4_devcmd *pd, const uint8_t *req,
                                 uint32_t req_len)
 {
     struct p4_rpc_entry_update u;
@@ -465,7 +465,7 @@ static uint8_t rpc_entry_update(struct p4_devcmd *pd, const uint8_t *req,
     return p4_status_of(rc);
 }
 
-static uint8_t rpc_stats_read(struct p4_devcmd *pd, uint8_t *resp,
+static uint8_t rpc_stats_read(const struct p4_devcmd *pd, uint8_t *resp,
                               uint32_t resp_len, uint32_t *out_len)
 {
     struct p4_stats es;
@@ -495,7 +495,7 @@ static uint8_t rpc_stats_read(struct p4_devcmd *pd, uint8_t *resp,
  * -------------------------------------------------------------------------
  */
 
-static uint8_t handle_rpc(struct p4_devcmd *pd, const uint8_t *cmd,
+static uint8_t handle_rpc(const struct p4_devcmd *pd, const uint8_t *cmd,
                           uint32_t *resp_written)
 {
     struct p4_devcmd_rpc_cmd c;

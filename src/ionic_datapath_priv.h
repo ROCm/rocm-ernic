@@ -373,7 +373,7 @@ uint64_t ionic_dp_ring_span_bytes(uint8_t depth_log2, uint8_t stride_log2);
  * from @va, reading its page table out of guest memory. Returns 0, or
  * -EINVAL for a geometry the device can't honour, -ENOMEM, or -EIO.
  */
-int ionic_dp_buf_init(struct ionic_datapath *dp, struct dp_buf *b,
+int ionic_dp_buf_init(const struct ionic_datapath *dp, struct dp_buf *b,
                       const struct ionic_dp_buf_desc *desc, uint64_t va,
                       uint64_t span);
 
@@ -395,7 +395,7 @@ const char *ionic_dp_ud_delivery_refused(const struct ionic_qp_ring *sq,
  * @qp_id) and once per direction in @dirs for the guest's struct
  * ionic_lif_stats (tx/rx_rdma_ucast_*).
  */
-void ionic_dp_rdma_bytes(struct ionic_datapath *dp, uint32_t qp_id,
+void ionic_dp_rdma_bytes(const struct ionic_datapath *dp, uint32_t qp_id,
                          uint64_t bytes, enum pvrdma_stat_op op,
                          unsigned int dirs);
 

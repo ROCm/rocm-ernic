@@ -62,7 +62,7 @@ void p4_engine_destroy(struct p4_engine *eng)
     free(eng);
 }
 
-int p4_engine_process_rdma(struct p4_engine *eng,
+int p4_engine_process_rdma(const struct p4_engine *eng,
                            const struct p4_extern_ops *ops,
                            const struct p4_rdma_meta *meta, bool *suppress)
 {

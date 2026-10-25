@@ -317,7 +317,7 @@ int main(int argc, char **argv)
     test_results_t results = {0};
     int ret = 1;
 
-    static struct option long_options[] = {
+    static const struct option long_options[] = {
         {"socket", required_argument, NULL, 's'},
         {"help", no_argument, NULL, 'h'},
         {NULL, 0, NULL, 0}};

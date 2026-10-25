@@ -25,7 +25,7 @@
 #include "rdma_rm_defs.h"
 
 int rdma_rm_init(RdmaDeviceResources *dev_res,
-                 struct ibv_device_attr *dev_attr);
+                 const struct ibv_device_attr *dev_attr);
 void rdma_rm_fini(RdmaDeviceResources *dev_res);
 
 int rdma_rm_alloc_pd(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,

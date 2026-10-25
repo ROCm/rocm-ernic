@@ -200,7 +200,7 @@ static void test_parse_errors(void)
     const char *name = "parse-errors";
     struct s3_http_request req;
 
-    static const char *bad[] = {
+    static const char *const bad[] = {
         "GET\r\n\r\n",                        /* no version */
         "GET /x\r\n\r\n",                     /* no version */
         "GET /x HTTP/1.1\r\nnocolon\r\n\r\n", /* header without a colon */
@@ -251,7 +251,7 @@ static void test_parse_bad_escapes(void)
     const char *name = "parse-bad-escapes";
     struct s3_http_request req;
 
-    static const char *bad[] = {
+    static const char *const bad[] = {
         "GET /ernic/a% HTTP/1.1\r\n\r\n",     /* no digits */
         "GET /ernic/a%4 HTTP/1.1\r\n\r\n",    /* one digit */
         "GET /ernic/a%zz HTTP/1.1\r\n\r\n",   /* not hex */
@@ -294,7 +294,7 @@ static void test_parse_http10(void)
     const char *name = "parse-http10";
     struct s3_http_request req;
 
-    static const char *closing[] = {
+    static const char *const closing[] = {
         "GET /ernic HTTP/1.0\r\n\r\n",
         "GET /ernic HTTP/1.0\r\nConnection: keep-alive\r\n\r\n",
         "GET /ernic HTTP/1.1\r\nConnection: Close\r\n\r\n",
@@ -353,7 +353,7 @@ static void test_parse_field_limits(void)
         goto out;
     }
 
-    static const char *empty[] = {"\r\n\r\n", "\n\n"};
+    static const char *const empty[] = {"\r\n\r\n", "\n\n"};
     for (size_t i = 0; i < sizeof(empty) / sizeof(empty[0]); i++) {
         ssize_t n = s3_http_parse(empty[i], strlen(empty[i]), &req);
         if (n != -EINVAL)

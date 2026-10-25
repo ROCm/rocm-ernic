@@ -210,6 +210,9 @@ function(get_ernic_clang_warning_flags outvar compiler_version)
         -Wvariadic-macros
         -Wvector-conversion
         -Wvla
+        # Give string literals the type const char[], so that writing
+        # through one, or passing one as a char *, is diagnosed
+        -Wwrite-strings
 
         # QEMU-ported code has many unused parameters
         -Wno-unused-parameter

@@ -647,7 +647,7 @@ int tcp_claim_gid(TcpBackendPrivate *priv, const union ibv_gid *gid, bool add)
  * advertisement, which the manager records and fans out to the rest; on a
  * worker, the manager's word for what a node owns.
  */
-void tcp_recv_node_gids(TcpConnection *conn, const TcpRecvMsg *msg)
+void tcp_recv_node_gids(const TcpConnection *conn, const TcpRecvMsg *msg)
 {
     TcpBackendPrivate *priv = conn->priv;
     const TcpNodeGidsPayload *adv = msg->payload;

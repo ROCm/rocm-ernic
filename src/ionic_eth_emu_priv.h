@@ -510,7 +510,7 @@ struct ionic_eth_emu {
  * dev_cmd data window. process_devcmd() in ionic_eth_emu.c calls them when
  * the driver rings the dev_cmd doorbell.
  */
-void ionic_eth_emu_handle_identify(struct ionic_eth_emu *emu,
+void ionic_eth_emu_handle_identify(const struct ionic_eth_emu *emu,
                                    const uint8_t *cmd, uint8_t *comp,
                                    uint8_t *data);
 void ionic_eth_emu_handle_port_init(struct ionic_eth_emu *emu,
@@ -520,7 +520,7 @@ void ionic_eth_emu_handle_lif_identify(struct ionic_eth_emu *emu,
                                        uint8_t *data);
 void ionic_eth_emu_handle_lif_init(struct ionic_eth_emu *emu,
                                    const uint8_t *cmd, uint8_t *comp);
-void ionic_eth_emu_handle_q_identify(struct ionic_eth_emu *emu,
+void ionic_eth_emu_handle_q_identify(const struct ionic_eth_emu *emu,
                                      const uint8_t *cmd, uint8_t *comp,
                                      uint8_t *data);
 void ionic_eth_emu_handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,

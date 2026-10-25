@@ -238,8 +238,8 @@ int ionic_eth_emu_queue_rx_frame(struct ionic_eth_emu *emu, const void *frame,
     return 0;
 }
 
-int ionic_eth_emu_send_to_net(struct ionic_eth_emu *emu, const void *frame,
-                              size_t len)
+int ionic_eth_emu_send_to_net(const struct ionic_eth_emu *emu,
+                              const void *frame, size_t len)
 {
     if (!emu || !frame || len == 0 || len > IONIC_ETH_NET_MTU_MAX)
         return -EINVAL;
@@ -286,7 +286,7 @@ void ionic_eth_emu_register_tx_filter(struct ionic_eth_emu *emu,
     emu->tx_filter_ctx = ctx;
 }
 
-void ionic_eth_emu_get_tx_filter(struct ionic_eth_emu *emu,
+void ionic_eth_emu_get_tx_filter(const struct ionic_eth_emu *emu,
                                  ionic_eth_tx_filter_fn *fn, void **ctx)
 {
     if (fn)
@@ -585,8 +585,8 @@ static void refresh_rdma_lif_stats(struct ionic_eth_emu *emu)
  * run past UINT64_MAX is refused rather than written to a wrapped address;
  * the log then names @base, which is the value the guest gave us.
  */
-static void publish_block(struct ionic_eth_emu *emu, const char *what,
-                          uint64_t base, uint64_t off, uint8_t *block,
+static void publish_block(const struct ionic_eth_emu *emu, const char *what,
+                          uint64_t base, uint64_t off, const uint8_t *block,
                           size_t len, bool *failed)
 {
     bool address_valid = base <= UINT64_MAX - off - (uint64_t)(len - 1);
@@ -828,7 +828,7 @@ static void process_devcmd(struct ionic_eth_emu *emu)
 #define DEVID_EQ_COUNT_OFF       0x1cu
 /* capabilities is at 0x30; left zero. */
 
-void ionic_eth_emu_handle_identify(struct ionic_eth_emu *emu,
+void ionic_eth_emu_handle_identify(const struct ionic_eth_emu *emu,
                                    const uint8_t *cmd, uint8_t *comp,
                                    uint8_t *data)
 {
@@ -1266,7 +1266,7 @@ static void handle_lif_getattr(struct ionic_eth_emu *emu, const uint8_t *cmd,
  * The driver uses this to learn WQE stride ranges and speculative SGE counts.
  * -------------------------------------------------------------------------
  */
-void ionic_eth_emu_handle_q_identify(struct ionic_eth_emu *emu,
+void ionic_eth_emu_handle_q_identify(const struct ionic_eth_emu *emu,
                                      const uint8_t *cmd, uint8_t *comp,
                                      uint8_t *data)
 {
@@ -1709,7 +1709,7 @@ static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
  * -------------------------------------------------------------------------
  */
 
-static int eth_rx_deliver(struct ionic_eth_emu *emu, struct eth_queue *q,
+static int eth_rx_deliver(const struct ionic_eth_emu *emu, struct eth_queue *q,
                           uint8_t *frame, size_t len)
 {
     if (q->head == q->prod)

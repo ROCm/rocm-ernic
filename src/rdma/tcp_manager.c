@@ -107,7 +107,7 @@ bool tcp_node_set_alive(TcpBackendPrivate *priv, MeshNodeInfo *node, bool alive,
  * Whether a registration can't be given node_id: a node has it, or a
  * connection does.  The caller holds mesh_table_lock and conn_table_lock.
  */
-static bool tcp_node_id_taken(TcpBackendPrivate *priv, uint32_t node_id)
+static bool tcp_node_id_taken(const TcpBackendPrivate *priv, uint32_t node_id)
 {
     return g_hash_table_contains(priv->mesh_nodes, GUINT_TO_POINTER(node_id)) ||
            g_hash_table_contains(priv->connections, GUINT_TO_POINTER(node_id));
@@ -1009,8 +1009,8 @@ static void tcp_send_mesh_topology(TcpBackendPrivate *priv)
  * those of the same guest returning under a new node id.  The caller holds
  * mesh_table_lock and gid_table_lock.
  */
-static void tcp_snapshot_node_gids(TcpBackendPrivate *priv, uint32_t node_id,
-                                   TcpNodeGidsPayload *out)
+static void tcp_snapshot_node_gids(const TcpBackendPrivate *priv,
+                                   uint32_t node_id, TcpNodeGidsPayload *out)
 {
     const TcpNodeGids *claims = NULL;
 
@@ -1430,7 +1430,7 @@ static bool tcp_node_still_silent(TcpBackendPrivate *priv, uint32_t node_id)
  * node's side, if the node is still there to see it, and the node connects
  * to the manager again; the manager never connects to a node itself.
  */
-void tcp_health_check_retire(TcpBackendPrivate *priv, GArray *items)
+void tcp_health_check_retire(TcpBackendPrivate *priv, const GArray *items)
 {
     for (guint i = 0; i < items->len; i++) {
         TcpHealthCheckItem *item = &g_array_index(items, TcpHealthCheckItem, i);

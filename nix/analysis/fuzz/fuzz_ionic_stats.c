@@ -421,6 +421,8 @@ static bool emit_seed(size_t i, const uint8_t *buf, size_t len)
     return ok;
 }
 
+/* libFuzzer gives this its signature */
+/* NOLINTNEXTLINE(readability-non-const-parameter) */
 int LLVMFuzzerInitialize(int *argc, char ***argv)
 {
     const char *emit = getenv("FUZZ_EMIT_SEEDS");

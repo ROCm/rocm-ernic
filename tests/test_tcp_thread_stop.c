@@ -468,7 +468,7 @@ static TcpConnection *wait_live(TcpBackendPrivate *priv, uint32_t id,
 }
 
 /* Wait up to 5 s for conn's receive thread to return. */
-static bool wait_dead(TcpConnection *conn)
+static bool wait_dead(const TcpConnection *conn)
 {
     for (int i = 0; i < 500 && !tcp_conn_dead(conn); i++)
         sleep_ms(10);
@@ -2840,7 +2840,7 @@ static TcpConnection *tp_lookup(struct tp_fixture *fx, uint32_t id)
     return conn;
 }
 
-static guint tp_count(struct tp_fixture *fx)
+static guint tp_count(const struct tp_fixture *fx)
 {
     guint n;
 
@@ -2851,7 +2851,7 @@ static guint tp_count(struct tp_fixture *fx)
 }
 
 /* Wait up to 5 s for the thread to have made n connect attempts. */
-static bool tp_attempts(struct tp_fixture *fx, uint64_t n)
+static bool tp_attempts(const struct tp_fixture *fx, uint64_t n)
 {
     for (int i = 0; i < 500; i++) {
         if (atomic_load(&fx->priv->tcp_stats.peer_connect_attempts) >= n)
@@ -3575,7 +3575,7 @@ static const char *wr_registered(int lfd, int *mgr, uint16_t *port)
 }
 
 /* The worker's id, once tcp_init() has succeeded */
-static uint32_t wr_local(struct wr_init *in)
+static uint32_t wr_local(const struct wr_init *in)
 {
     return tcp_local_node(in->dev.backend_private);
 }
@@ -3597,7 +3597,7 @@ static int wr_peer(uint16_t port)
 }
 
 /* After the answer that registers the worker as WR_ID */
-static const char *wr_after_assign(struct wr_init *in, int mgr)
+static const char *wr_after_assign(const struct wr_init *in, int mgr)
 {
     if (in->ret != 0)
         return "tcp_init() failed";
@@ -3609,7 +3609,7 @@ static const char *wr_after_assign(struct wr_init *in, int mgr)
 }
 
 /* WR_TWICE, once the worker has registered */
-static const char *wr_twice(struct wr_init *in, int mgr)
+static const char *wr_twice(const struct wr_init *in, int mgr)
 {
     int gids = 0;
 
@@ -3621,8 +3621,8 @@ static const char *wr_twice(struct wr_init *in, int mgr)
 }
 
 /* WR_FROM_PEER, once the worker has registered */
-static const char *wr_from_peer(struct wr_init *in, int mgr, uint16_t port,
-                                int *peer)
+static const char *wr_from_peer(const struct wr_init *in, int mgr,
+                                uint16_t port, int *peer)
 {
     uint32_t src = UINT32_MAX;
     int peer_gids = 0, mgr_gids = 0;
@@ -4025,7 +4025,7 @@ static bool sp_matches(const TcpMsgHeader *hdr, const void *payload,
  * writer.  Returns why the row failed, or NULL.
  */
 static const char *sp_read(const struct sp_case *c, int fd,
-                           atomic_bool *running, int *ret)
+                           const atomic_bool *running, int *ret)
 {
     static const struct {
         TcpMsgType type;
@@ -4248,7 +4248,7 @@ static int open_fds(void)
 }
 
 /* Wait up to 5 s for n threads to have been created, or joined, in all. */
-static bool wait_for_count(atomic_int *count, int n)
+static bool wait_for_count(const atomic_int *count, int n)
 {
     for (int i = 0; i < 5000 && atomic_load(count) < n; i++)
         sleep_ms(1);
@@ -5391,8 +5391,8 @@ static const char *ra_declare_dead(TcpBackendPrivate *priv)
  */
 static const char *ra_check(TcpBackendPrivate *priv, enum ra_scenario scenario,
                             int w1, int w2, TcpConnection *old,
-                            TcpConnection *fresh, guint nodes, uint32_t id,
-                            int32_t result)
+                            const TcpConnection *fresh, guint nodes,
+                            uint32_t id, int32_t result)
 {
     bool alive = false;
     uint64_t last;
@@ -6594,7 +6594,7 @@ static const char *lt_replace_run(enum lt_scenario scenario)
 }
 
 /* Wait up to 5 s for the manager to have read everything sent on conn. */
-static bool lt_consumed(TcpConnection *conn)
+static bool lt_consumed(const TcpConnection *conn)
 {
     for (int i = 0; i < 500; i++) {
         int unread = -1;

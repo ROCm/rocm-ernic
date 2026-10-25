@@ -196,7 +196,7 @@ static void adminq_unmap_srq(struct ionic_adminq_ctx *ctx, uint32_t srq_id)
     }
 }
 
-static bool adminq_lookup_cq(struct ionic_adminq_ctx *ctx, uint32_t cq_id,
+static bool adminq_lookup_cq(const struct ionic_adminq_ctx *ctx, uint32_t cq_id,
                              uint32_t *handle)
 {
     for (int i = 0; i < MAX_CQ_MAP; i++) {
@@ -240,8 +240,8 @@ static bool adminq_lookup_qp(struct ionic_adminq_ctx *ctx, uint32_t qp_id,
 }
 
 /* The reverse: the qpid of the QP the backend numbers @qpn. */
-static bool adminq_lookup_qp_id(struct ionic_adminq_ctx *ctx, uint32_t qpn,
-                                uint32_t *qp_id)
+static bool adminq_lookup_qp_id(const struct ionic_adminq_ctx *ctx,
+                                uint32_t qpn, uint32_t *qp_id)
 {
     for (int i = 0; i < MAX_QP_MAP; i++) {
         if (ctx->qp_map[i].valid && ctx->qp_map[i].qpn == qpn) {
@@ -270,7 +270,7 @@ static struct ionic_mr_map_entry *adminq_mr_free_entry(
     return NULL;
 }
 
-static bool adminq_lookup_mr(struct ionic_adminq_ctx *ctx, uint32_t mr_id,
+static bool adminq_lookup_mr(const struct ionic_adminq_ctx *ctx, uint32_t mr_id,
                              uint32_t *handle)
 {
     for (int i = 0; i < MAX_MR_MAP; i++) {
@@ -461,8 +461,8 @@ void ionic_adminq_update_prod(struct ionic_adminq_ctx *ctx, int aq_idx,
  *
  * Returns 1 on success, 0 if the template could not be parsed.
  */
-static int adminq_parse_roce_hdr(struct ionic_adminq_ctx *ctx, uint64_t gpa,
-                                 uint32_t len, uint8_t dgid[16],
+static int adminq_parse_roce_hdr(const struct ionic_adminq_ctx *ctx,
+                                 uint64_t gpa, uint32_t len, uint8_t dgid[16],
                                  uint8_t sgid[16], uint8_t dmac[6])
 {
     uint8_t hdr[128];
@@ -517,7 +517,7 @@ static int adminq_parse_roce_hdr(struct ionic_adminq_ctx *ctx, uint64_t gpa,
  * -------------------------------------------------------------------------
  */
 
-void ionic_adminq_post_cqe(struct ionic_adminq_ctx *ctx,
+void ionic_adminq_post_cqe(const struct ionic_adminq_ctx *ctx,
                            struct ionic_aq_ring *r, uint16_t cmd_idx,
                            uint8_t cmd_op, uint8_t status, uint32_t resp_len)
 {
@@ -1226,8 +1226,8 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
  * @length holds.  The driver's buffer is zeroed, so a cut-off terminator
  * still reads as one.
  */
-static uint8_t stats_write_hdrs(struct ionic_adminq_ctx *ctx, uint64_t dma,
-                                uint32_t length,
+static uint8_t stats_write_hdrs(const struct ionic_adminq_ctx *ctx,
+                                uint64_t dma, uint32_t length,
                                 const struct adminq_stat *stats, size_t count)
 {
     uint8_t buf[(STATS_MAX_COUNT + 1) * STAT_HDR_SIZE];
@@ -1258,8 +1258,8 @@ static uint8_t stats_write_hdrs(struct ionic_adminq_ctx *ctx, uint64_t dma,
 }
 
 /* Write the values the matching headers describe, clamped to @length. */
-static uint8_t stats_write_vals(struct ionic_adminq_ctx *ctx, uint64_t dma,
-                                uint32_t length,
+static uint8_t stats_write_vals(const struct ionic_adminq_ctx *ctx,
+                                uint64_t dma, uint32_t length,
                                 const struct adminq_stat *stats, size_t count,
                                 const void *counters)
 {
@@ -1383,7 +1383,7 @@ static uint8_t handle_stats_op(struct ionic_adminq_ctx *ctx, uint8_t op,
  * resolve a datagram's destination node without re-reading guest memory on
  * every send.
  */
-static uint8_t handle_create_ah_op(struct ionic_adminq_ctx *ctx,
+static uint8_t handle_create_ah_op(const struct ionic_adminq_ctx *ctx,
                                    const uint8_t *body, uint16_t len)
 {
     if (len < IONIC_ADMIN_CREATE_AH_IN_V1_LEN) {
@@ -1423,7 +1423,7 @@ static uint8_t handle_create_ah_op(struct ionic_adminq_ctx *ctx,
     return 0;
 }
 
-static uint8_t handle_destroy_ah_op(struct ionic_adminq_ctx *ctx,
+static uint8_t handle_destroy_ah_op(const struct ionic_adminq_ctx *ctx,
                                     const uint8_t *body, uint16_t len)
 {
     if (len < IONIC_ADMIN_DESTROY_AH_IN_V1_LEN) {

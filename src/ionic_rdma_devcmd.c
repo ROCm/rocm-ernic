@@ -143,7 +143,7 @@ static void rdma_cq_event_cb(void *opaque, uint32_t eq_id, uint32_t cq_id);
  * -------------------------------------------------------------------------
  */
 
-static void publish_adminq_ctx(struct ionic_rdma_devcmd_state *s)
+static void publish_adminq_ctx(const struct ionic_rdma_devcmd_state *s)
 {
     if (s->eth_emu)
         ionic_eth_emu_register_adminq(s->eth_emu, s->adminq_ctx);

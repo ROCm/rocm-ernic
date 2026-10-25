@@ -96,7 +96,8 @@ void ionic_eth_net_close(struct ionic_eth_net *net)
     free(net);
 }
 
-int ionic_eth_net_send(struct ionic_eth_net *net, const void *frame, size_t len)
+int ionic_eth_net_send(const struct ionic_eth_net *net, const void *frame,
+                       size_t len)
 {
     if (!net || net->fd < 0)
         return -EBADF;
@@ -113,7 +114,8 @@ int ionic_eth_net_send(struct ionic_eth_net *net, const void *frame, size_t len)
     }
 }
 
-ssize_t ionic_eth_net_recv(struct ionic_eth_net *net, void *buf, size_t cap)
+ssize_t ionic_eth_net_recv(const struct ionic_eth_net *net, void *buf,
+                           size_t cap)
 {
     if (!net || net->fd < 0)
         return -EBADF;

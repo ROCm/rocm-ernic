@@ -36,13 +36,14 @@ struct ionic_eth_net *ionic_eth_net_open_tap(const char *ifname,
 void ionic_eth_net_close(struct ionic_eth_net *net);
 
 /* Transmit one Ethernet frame.  Returns 0 on success, negative errno else. */
-int ionic_eth_net_send(struct ionic_eth_net *net, const void *frame,
+int ionic_eth_net_send(const struct ionic_eth_net *net, const void *frame,
                        size_t len);
 
 /*
  * Receive one Ethernet frame without blocking.  Returns the frame length,
  * 0 when nothing is pending, or a negative errno.
  */
-ssize_t ionic_eth_net_recv(struct ionic_eth_net *net, void *buf, size_t cap);
+ssize_t ionic_eth_net_recv(const struct ionic_eth_net *net, void *buf,
+                           size_t cap);
 
 #endif /* IONIC_ETH_NET_H */

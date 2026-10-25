@@ -243,6 +243,9 @@ void ionic_mesh_set_recv_cb(pvrdma_handle_t handle, ionic_mesh_recv_fn fn,
     g_recv_opaque = opaque;
 }
 
+/* The fake keeps the real function's signature, though it never
+ * writes the outputs */
+/* NOLINTBEGIN(readability-non-const-parameter) */
 struct nvmeof_target *nvmeof_target_create(const struct nvmeof_target_cfg *cfg,
                                            char *err, size_t errlen)
 {
@@ -251,6 +254,7 @@ struct nvmeof_target *nvmeof_target_create(const struct nvmeof_target_cfg *cfg,
     (void)errlen;
     return NULL;
 }
+/* NOLINTEND(readability-non-const-parameter) */
 void nvmeof_target_destroy(struct nvmeof_target *t)
 {
     (void)t;
@@ -308,6 +312,9 @@ bool nvmeof_cm_handle_mad(struct nvmeof_cm *cm, const void *mad, size_t len,
     return false;
 }
 
+/* The fake keeps the real function's signature, though it never
+ * writes the outputs */
+/* NOLINTBEGIN(readability-non-const-parameter) */
 struct s3_target *s3_target_create(const struct s3_target_cfg *cfg, char *err,
                                    size_t errlen)
 {
@@ -316,6 +323,7 @@ struct s3_target *s3_target_create(const struct s3_target_cfg *cfg, char *err,
     (void)errlen;
     return NULL;
 }
+/* NOLINTEND(readability-non-const-parameter) */
 void s3_target_destroy(struct s3_target *t)
 {
     (void)t;
@@ -326,6 +334,9 @@ void s3_tcp_cfg_from_target(struct s3_tcp_cfg *cfg,
     (void)cfg;
     (void)target;
 }
+/* The fake keeps the real function's signature, though it never
+ * writes the outputs */
+/* NOLINTBEGIN(readability-non-const-parameter) */
 struct s3_tcp *s3_tcp_create(const struct s3_tcp_cfg *cfg,
                              struct s3_target *target,
                              const struct s3_dma_ops *dma, void *dma_ctx,
@@ -342,6 +353,7 @@ struct s3_tcp *s3_tcp_create(const struct s3_tcp_cfg *cfg,
     (void)errlen;
     return NULL;
 }
+/* NOLINTEND(readability-non-const-parameter) */
 void s3_tcp_destroy(struct s3_tcp *s)
 {
     (void)s;

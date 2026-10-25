@@ -195,6 +195,9 @@ void ionic_adminq_update_prod(struct ionic_adminq_ctx *ctx, int aq_idx,
     (void)p_index;
 }
 
+/* The fake keeps the real function's signature, though it never
+ * writes the outputs */
+/* NOLINTBEGIN(readability-non-const-parameter) */
 struct ionic_eth_net *ionic_eth_net_open_tap(const char *ifname,
                                              char *out_ifname,
                                              size_t out_ifname_len)
@@ -204,13 +207,15 @@ struct ionic_eth_net *ionic_eth_net_open_tap(const char *ifname,
     (void)out_ifname_len;
     return NULL;
 }
+/* NOLINTEND(readability-non-const-parameter) */
 
 void ionic_eth_net_close(struct ionic_eth_net *net)
 {
     (void)net;
 }
 
-int ionic_eth_net_send(struct ionic_eth_net *net, const void *frame, size_t len)
+int ionic_eth_net_send(const struct ionic_eth_net *net, const void *frame,
+                       size_t len)
 {
     (void)net;
     (void)frame;
@@ -219,7 +224,8 @@ int ionic_eth_net_send(struct ionic_eth_net *net, const void *frame, size_t len)
     return g_net_send_rc;
 }
 
-ssize_t ionic_eth_net_recv(struct ionic_eth_net *net, void *buf, size_t cap)
+ssize_t ionic_eth_net_recv(const struct ionic_eth_net *net, void *buf,
+                           size_t cap)
 {
     size_t len = g_net_rx_len;
 
