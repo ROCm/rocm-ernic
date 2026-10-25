@@ -387,8 +387,10 @@
   use the same interval. The manager gives a worker its id back if it
   registers from the same address and can't still be answering on its old
   connection, and otherwise refuses it; the worker asks again an interval
-  later. The protocol version is unchanged, so **upgrade a mesh's manager
-  and workers together**.
+  later. A manager that has no node with the worker's id (it evicted the
+  node, or it has restarted) never will, so that worker stops asking, and
+  has to be restarted to rejoin. The protocol version is unchanged, so
+  **upgrade a mesh's manager and workers together**.
 * **TCP mesh: a node that stops reading no longer stalls the others.** A
   send to such a node used to block, and on the device's main thread that
   froze the whole device, request timeouts included.
@@ -678,8 +680,9 @@
   dead ones are still connected), the manager refuses the new node rather
   than take a 65th, and the worker fails to start, logging `Registration
   failed: No space left on device`. A worker evicted while it was only
-  paused or cut off is refused when it comes back, logging the refusal on
-  each retry, and has to be restarted to rejoin.
+  paused or cut off is refused when it comes back, stops trying, logging
+  once that the manager has no node with its id, and has to be restarted
+  to rejoin.
 * **TCP mesh: a worker whose manager's host name ends in `manager`.** Any
   `--backend tcp:` config containing `manager:` was taken for a manager's,
   so `--backend tcp:worker:mesh-manager:5000` failed to start, saying a
