@@ -44,7 +44,6 @@
  * they don't.
  *
  *   gid_advertise_lock       this node's advertisement of its own GIDs
- *   broadcast_lock           the manager's broadcasts to the mesh
  *   registration_mutex       a worker's registration with the manager
  *   peer_lock                the peers a worker is to connect to
  *   mesh_table_lock          mesh_nodes, on the manager only
@@ -58,13 +57,16 @@
  *   TcpConnection.lock       a connection's socket
  *   TcpConnection.sendq_lock a connection's send queue
  *   health_check_lock        stopping the health check
+ *   broadcast_lock           what the manager's broadcaster has to send
  *   TcpSRQ.lock              an SRQ's limit (rdma_backend_tcp.c)
  *
  * A connection's lock is held for the whole of a message, which can mean
  * waiting for a peer that has stopped reading, for up to
- * tcp_send_timeout_ms() without progress.  gid_advertise_lock and
- * broadcast_lock are held across those sends, to keep a snapshot and its
- * sends together, so such a peer holds them up as well.
+ * tcp_send_timeout_ms() without progress.  gid_advertise_lock is held across
+ * those sends, to keep a snapshot and its sends together, so such a peer
+ * holds it up as well.  The manager's broadcasts hold no lock across their
+ * sends; one thread sends them all (see broadcast_thread), so such a peer
+ * holds up only that thread.
  */
 
 /*
@@ -514,12 +516,12 @@ struct TcpBackendPrivate {
 
     /*
      * Serialises a whole advertisement of this node's own claims -- snapshot
-     * and send together -- for the same reason broadcast_lock serialises a
-     * broadcast.  The snapshot is taken under lock, which has to be dropped
-     * before sending, so without this an advertisement from the main thread
-     * (a guest adding or removing an address) and one from a receive thread
-     * (registration completing) could land out of order, leaving the manager
-     * holding a claim set this node has already replaced.
+     * and record or send together.  The snapshot is taken under lock, which
+     * has to be dropped before sending, so without this an advertisement
+     * from the main thread (a guest adding or removing an address) and one
+     * from a receive thread (registration completing) could land out of
+     * order, leaving the manager holding a claim set this node has already
+     * replaced.
      */
     QemuMutex gid_advertise_lock;
 
@@ -559,26 +561,42 @@ struct TcpBackendPrivate {
     GHashTable *mesh_nodes;
     QemuMutex mesh_table_lock; /* Protects mesh_nodes */
     /*
-     * Serialises the manager's broadcasts, the topology and the GID table,
-     * each snapshot and its fan-out together (tcp_broadcast_mesh(),
-     * tcp_broadcast_gid_table()).  The snapshot's own locks can't do it:
-     * the sends take connection locks, which a sender holds while it waits
-     * for a peer to read, so they are dropped before sending.  A
-     * registration, a node coming back to life, the health check, and a
-     * node's advertisement each broadcast from their own thread, and without
-     * this an older snapshot could be sent after a newer one: a node's death
+     * The manager's broadcaster thread, which tells the workers what has
+     * changed: the topology, and a node's GID set, to every connection, and
+     * the whole GID table to the connection of a node that has just
+     * registered (tcp_broadcast_pass()).  A registration, a node's
+     * advertisement, a node coming back to life, and the health check only
+     * ask for these (tcp_broadcast_topology() and the rest), which never
+     * waits for a peer, and broadcast_cond wakes the thread.
+     *
+     * A pass takes everything asked so far, then snapshots the tables, so
+     * whatever is asked while it sends is sent by the next pass, and what is
+     * asked twice before a pass is sent once.  Being one thread, it sends
+     * its snapshots in the order it took them.  Sent from the threads that
+     * ask, an older snapshot could be sent after a newer one: a node's death
      * after its revival, say, leaving the workers believing it dead, or a
-     * topology that leaves out a node after a GID table with the node's
-     * claims, which has the workers drop them (tcp_gid_claims_prune()).
-     * One lock for both kinds, so neither can overtake the other.
+     * topology that leaves out a node after a GID set the node claimed while
+     * in it, which has the workers drop the claims (tcp_gid_claims_prune()).
+     *
+     * broadcast_running is cleared under broadcast_lock, with broadcast_cond
+     * signalled, to stop the thread; see tcp_stop_broadcast_thread().  What
+     * follows it is protected by broadcast_lock: broadcast_topology is set
+     * when the topology has changed, broadcast_gids holds the ids of the
+     * nodes whose GID sets have, and broadcast_tables those of the nodes
+     * whose connections need the whole table.  broadcasts_asked counts the
+     * asks, and broadcasts_sent how many of them the passes that have
+     * finished took, so the thread has work while they differ, and the tests
+     * can wait for them to agree.
      */
+    QemuThread broadcast_thread;
+    atomic_bool broadcast_running;
     QemuMutex broadcast_lock;
-    /*
-     * How many broadcasts are waiting to take broadcast_lock (see
-     * tcp_broadcast_lock()).  Only the tests read it, to know that a
-     * broadcast is held up behind another; nothing else depends on it.
-     */
-    _Atomic uint32_t broadcasts_waiting;
+    QemuCond broadcast_cond;
+    bool broadcast_topology;
+    GHashTable *broadcast_gids;   /* a set of node ids */
+    GHashTable *broadcast_tables; /* a set of node ids */
+    uint64_t broadcasts_asked;
+    uint64_t broadcasts_sent;
     QemuThread health_check_thread;
     /*
      * Cleared under health_check_lock, with health_check_cond signalled, to
@@ -733,7 +751,7 @@ void tcp_gid_key_free(gpointer key);
 bool tcp_gid_claims_set_alive(TcpBackendPrivate *priv, uint32_t node_id,
                               bool alive);
 
-void tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
+bool tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
                         const uint8_t (*gids)[16], uint32_t num_gids);
 void tcp_fill_node_gids(TcpNodeGidsPayload *out, uint32_t node_id,
                         const uint8_t (*gids)[16], uint32_t num_gids);
@@ -765,9 +783,15 @@ void tcp_mesh_node_info_destroy_notify(gpointer data);
 bool tcp_node_set_alive(TcpBackendPrivate *priv, MeshNodeInfo *node, bool alive,
                         bool *gids_changed);
 
-/* The manager's broadcasts; see broadcast_lock */
-void tcp_broadcast_mesh(TcpBackendPrivate *priv, uint32_t evicted);
-void tcp_broadcast_gid_table(TcpBackendPrivate *priv);
+/* The manager's broadcasts; see broadcast_thread */
+void tcp_broadcaster_init(TcpBackendPrivate *priv);
+void tcp_broadcaster_destroy(TcpBackendPrivate *priv);
+void tcp_broadcast_topology(TcpBackendPrivate *priv);
+void tcp_broadcast_node_gids(TcpBackendPrivate *priv, uint32_t node_id);
+void tcp_broadcast_node(TcpBackendPrivate *priv, uint32_t node_id);
+void tcp_broadcast_gid_table_to(TcpBackendPrivate *priv, uint32_t node_id);
+void tcp_broadcast_pass(TcpBackendPrivate *priv);
+void *tcp_broadcast_thread(void *opaque);
 
 /* Sockets and messages */
 uint32_t tcp_send_timeout_ms(TcpBackendPrivate *priv);
@@ -813,6 +837,7 @@ void tcp_worker_manager_pass(TcpBackendPrivate *priv);
 /* Teardown */
 void tcp_stop_accept_thread(TcpBackendPrivate *priv);
 void tcp_stop_health_check_thread(TcpBackendPrivate *priv);
+void tcp_stop_broadcast_thread(TcpBackendPrivate *priv);
 void tcp_stop_peer_thread(TcpBackendPrivate *priv);
 void tcp_stop_recv_threads(TcpBackendPrivate *priv);
 void tcp_free_pending_conns(TcpBackendPrivate *priv);

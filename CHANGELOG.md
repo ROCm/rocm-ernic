@@ -415,6 +415,15 @@
   node allocated at startup are gone. A node that runs out of memory for a
   message closes that connection, which is then reconnected; before, the
   server aborted.
+* **TCP mesh: the manager's GID updates no longer grow with the square of
+  the mesh.** On every registration, advertisement, death and revival, the
+  manager sent every worker the GID set of every node, N × N messages in an
+  N-node mesh, and sent them from the thread that handled the change, which
+  stopped reading its own node meanwhile. It now sends the changed node's
+  set to every worker, and the whole table only to a worker that has just
+  registered, from a thread of its own that merges the changes made while
+  it sends. A worker logs a node's GIDs only when they change. The protocol
+  is unchanged.
 * **libvfio-user 5b9c722 or later is required** (CI, the release build and
   the Nix flake now use it). Before it, a 64-bit BAR smaller than 4 GiB,
   as BAR0 and BAR2 are, couldn't be placed above 4 GiB and sized wrongly;

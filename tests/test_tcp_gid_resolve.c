@@ -247,6 +247,54 @@ static void test_multiple_and_replacement(void)
     priv_free(priv);
 }
 
+/*
+ * The manager sends a worker a node's set whenever it may have changed, and
+ * the whole table when the worker registers again, so most of what a worker
+ * records is what it has already.  That is recorded as no change, which
+ * leaves the index alone and logs nothing; anything else is a change.
+ */
+static void test_unchanged_set_changes_nothing(void)
+{
+    TcpBackendPrivate *priv = priv_new();
+    uint8_t pair[2][16], swapped[2][16];
+
+    printf("  the same set again changes nothing\n");
+
+    gid_v4(pair[0], 11);
+    gid_ll(pair[1], 0x11);
+    memcpy(swapped[0], pair[1], 16);
+    memcpy(swapped[1], pair[0], 16);
+
+    CHECK(tcp_gid_claims_set(priv, 4, (const uint8_t(*)[16])pair, 2),
+          "a first set was no change");
+    CHECK(!tcp_gid_claims_set(priv, 4, (const uint8_t(*)[16])pair, 2),
+          "the same set again was a change");
+    CHECK(tcp_gid_claims_set(priv, 4, (const uint8_t(*)[16])pair, 1),
+          "a set with a GID fewer was no change");
+    CHECK(resolve(priv, pair[1]) == UINT32_MAX,
+          "the GID dropped still resolves to node 4");
+    CHECK(tcp_gid_claims_set(priv, 4, (const uint8_t(*)[16])swapped, 2),
+          "a set with a GID more was no change");
+    CHECK(resolve(priv, pair[1]) == 4, "the GID added did not resolve");
+
+    /* Dead, then the same set: alive again, which is a change */
+    CHECK(tcp_gid_claims_set_alive(priv, 4, false), "the claims didn't die");
+    CHECK(tcp_gid_claims_set(priv, 4, (const uint8_t(*)[16])swapped, 2),
+          "the same set from a dead node was no change");
+    CHECK(resolve(priv, pair[0]) == 4,
+          "the node's GID did not resolve once it was live again");
+
+    CHECK(!tcp_gid_claims_set(priv, 5, NULL, 0),
+          "withdrawing from a node with no claims was a change");
+    CHECK(tcp_gid_claims_set(priv, 4, NULL, 0), "withdrawing was no change");
+    CHECK(!tcp_gid_claims_set(priv, 4, NULL, 0),
+          "withdrawing again was a change");
+    CHECK(resolve(priv, pair[0]) == UINT32_MAX,
+          "a withdrawn GID still resolves to node 4");
+
+    priv_free(priv);
+}
+
 /* ERNIC_TCP_GUEST_GIDS parsing, including the IPv4 -> ::ffff:a.b.c.d
  * mapping that has to match what arrives on the wire. */
 static void test_env_parsing(void)
@@ -817,6 +865,7 @@ int main(void)
     test_link_local_resolves();
     test_unknown_gid_does_not_resolve();
     test_multiple_and_replacement();
+    test_unchanged_set_changes_nothing();
     test_env_parsing();
     test_advertisement_tail_is_zeroed();
     test_gid_formatting();
