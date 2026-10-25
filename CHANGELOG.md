@@ -612,6 +612,11 @@
   connection now stops owning its GIDs (when the health check declares it
   dead, and when any worker registers), and owns them again if it answers;
   two live claimants still contest a GID.
+* **TCP mesh: a worker whose manager's host name ends in `manager`.** Any
+  `--backend tcp:` config containing `manager:` was taken for a manager's,
+  so `--backend tcp:worker:mesh-manager:5000` failed to start, saying a
+  manager config must start with `manager:`. The role is now read only from
+  the start of the config.
 * **NVMe-oF backend.**
   * A shutdown requested with `CC.EN` still set, as the specification has
     it, now completes. Hosts polled until their timeout (SPDK waited ten

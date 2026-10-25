@@ -691,6 +691,33 @@ target_link_directories(test_tcp_gid_resolve PRIVATE
 target_link_libraries(test_tcp_gid_resolve PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
+# TCP config test. Like the GID resolution test it links the TCP backend,
+# reaches its helpers through rdma_backend_tcp_priv.h, and stubs the
+# backend's externals; choosing a role needs no socket or thread.
+add_executable(ernic-test-tcp-config
+    test_tcp_config.c
+    ${PROJECT_SOURCE_DIR}/src/rdma/rdma_backend_tcp.c
+)
+target_include_directories(ernic-test-tcp-config PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ${PROJECT_SOURCE_DIR}/shared
+    ${PROJECT_SOURCE_DIR}/src/qemu
+)
+# Headers from outside the project are SYSTEM includes, matching the main
+# target, so the backend and the test are still warning-checked.
+target_include_directories(ernic-test-tcp-config SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(ernic-test-tcp-config PRIVATE
+    _GNU_SOURCE)
+target_link_directories(ernic-test-tcp-config PRIVATE
+    ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
+target_link_libraries(ernic-test-tcp-config PRIVATE
+    ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
+
 # TCP thread stop test. It links the TCP backend and runs the real accept,
 # health-check and receive threads on loopback sockets and socketpairs, with
 # the thread entry points backed by pthreads, so a stop that never returns
@@ -954,6 +981,7 @@ set(ERNIC_TEST_TARGETS
     test_ionic_rq_wrap
     test_tcp_mesh_topology
     test_tcp_gid_resolve
+    ernic-test-tcp-config
     ernic-test-tcp-thread-stop
     test_rdma_res_tbl
     test_qemu_stubs
@@ -1269,6 +1297,15 @@ add_test(
     COMMAND $<TARGET_FILE:test_tcp_gid_resolve>
 )
 set_tests_properties(tcp-gid-resolve-unit PROPERTIES TIMEOUT 30)
+
+# TCP config unit test: asserts the manager or worker role is read from the
+# config's prefix, so a worker whose manager's host name contains
+# "manager:" stays a worker, and that a config naming no role is refused.
+add_test(
+    NAME tcp-config-unit
+    COMMAND $<TARGET_FILE:ernic-test-tcp-config>
+)
+set_tests_properties(tcp-config-unit PROPERTIES TIMEOUT 30)
 
 # TCP thread stop unit test: asserts stopping the accept thread returns while
 # it is blocked in accept(), stopping the health-check thread returns without
