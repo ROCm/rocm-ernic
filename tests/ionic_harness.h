@@ -153,6 +153,7 @@
 #define IH_STS_LOCAL_LEN_ERR  1
 #define IH_STS_LOCAL_QP_OPER  2
 #define IH_STS_LOCAL_PROT_ERR 3
+#define IH_STS_LOCAL_ACC_ERR  7
 #define IH_STS_REMOTE_ACC_ERR 9
 
 /* MSI-X vectors the harness gives its queues */
