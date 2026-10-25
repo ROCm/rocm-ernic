@@ -709,7 +709,11 @@
   `400`. A signed `Range` such as `bytes=--64` returned the whole object and
   is now a `416`, and `partNumber` is decimal (`0x10` was part 16). A
   multipart `uploadId` no longer leaks part of a heap address: it is a
-  counter offset by a random value chosen at startup.
+  counter offset by a random value chosen at startup. A `503` (too many
+  multipart uploads in flight) said `503 Unknown` in its status line, and
+  now says `503 Service Unavailable`. A bucket name of 64 characters or more
+  was cut to 63, so one that began with the configured bucket's name was
+  served as that bucket; it is now a `404` `NoSuchBucket`.
 * **Server startup and shutdown.**
   * `--socket-group` changed the socket's mode through its path, so a
     symlink swapped in could make a root server give another file mode

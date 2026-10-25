@@ -733,8 +733,11 @@ static void rdma_reply(struct s3_target *t, struct s3_http_response *resp,
  * for "/" and @key is empty for "/bucket" -- the caller distinguishes a
  * service request from a bucket request from an object request on that
  * basis alone, which is exactly how the S3 API is specified.
+ *
+ * False when the bucket name does not fit @bucket.  Cut short instead, a
+ * name that only begins with the configured bucket's would match it.
  */
-static void split_path(const char *path, char *bucket, size_t bucketlen,
+static bool split_path(const char *path, char *bucket, size_t bucketlen,
                        const char **key)
 {
     const char *p = path;
@@ -745,11 +748,12 @@ static void split_path(const char *path, char *bucket, size_t bucketlen,
     const char *slash = strchr(p, '/');
     size_t blen = slash ? (size_t)(slash - p) : strlen(p);
     if (blen >= bucketlen) {
-        blen = bucketlen - 1;
+        return false;
     }
     memcpy(bucket, p, blen);
     bucket[blen] = '\0';
     *key = slash ? slash + 1 : "";
+    return true;
 }
 
 /* "bytes=<first>-<last>", the only Range form S3 answers. */
@@ -1309,7 +1313,13 @@ void s3_target_exec(struct s3_target *t, const struct s3_http_request *req,
     s3_http_response_header(resp, "x-amz-request-id", "%016" PRIx64,
                             (uint64_t)++t->stats.requests);
 
-    split_path(req->path, bucket, sizeof(bucket), &key);
+    /* No bucket has a name too long for the buffer: bucket_name_ok()
+     * refuses one at configuration. */
+    if (!split_path(req->path, bucket, sizeof(bucket), &key)) {
+        s3_error(t, resp, 404, "NoSuchBucket",
+                 "The specified bucket does not exist.", req->path);
+        return;
+    }
 
     if (strlen(key) >= S3_KEY_MAX) {
         s3_error(t, resp, 400, "KeyTooLongError", "The key is too long.",

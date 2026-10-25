@@ -10,9 +10,11 @@
  * The cases are the ones a guest actually produces: ARP for the target,
  * ping it, open a connection, send a request in several segments because
  * the guest's stack chose to, read the answer back, reuse the connection,
- * and close it. Plus the paths a guest produces when something is wrong
- * -- a segment for a connection that does not exist, more connections
- * than there are slots, an idle connection that has to be reaped.
+ * and close it, with the MSS and window it advertises. Plus the paths a
+ * guest produces when something is wrong -- a segment for a connection
+ * that does not exist, more connections than there are slots, an idle
+ * connection that has to be reaped, a reset, segments that are lost and
+ * have to be retransmitted, and frames malformed at every layer.
  *
  * Failures print "FAIL <case>: <detail>" and main() returns the count, so
  * a regression names itself rather than just tripping an assert.
@@ -28,10 +30,12 @@
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "s3_alloc_fail.h"
 #include "s3_http.h"
 #include "s3_target.h"
 #include "s3_tcp.h"
@@ -261,11 +265,16 @@ static size_t build_ping(uint8_t *out, const uint8_t *dst_mac, uint16_t id,
     return ETH_LEN + IP_LEN + icmp_len;
 }
 
-static size_t build_tcp(uint8_t *out, const uint8_t *dst_mac, uint16_t sport,
-                        uint32_t seq, uint32_t ack, uint8_t flags,
-                        const void *payload, size_t payload_len)
+/* A segment with an advertised @window and @optlen bytes of TCP options,
+ * which must be a multiple of four. */
+static size_t build_tcp_ex(uint8_t *out, const uint8_t *dst_mac, uint16_t sport,
+                           uint32_t seq, uint32_t ack, uint8_t flags,
+                           uint16_t window, const uint8_t *opt, size_t optlen,
+                           const void *payload, size_t payload_len)
 {
-    build_ip(out, dst_mac, 6, TCP_LEN + payload_len);
+    size_t hdrlen = TCP_LEN + optlen;
+
+    build_ip(out, dst_mac, 6, hdrlen + payload_len);
     struct t_tcp *tcp = (struct t_tcp *)(out + ETH_LEN + IP_LEN);
 
     memset(tcp, 0, sizeof(*tcp));
@@ -273,17 +282,27 @@ static size_t build_tcp(uint8_t *out, const uint8_t *dst_mac, uint16_t sport,
     tcp->dst_port = htons(TARGET_PORT);
     tcp->seq = htonl(seq);
     tcp->ack = htonl(ack);
-    tcp->data_off = 5 << 4;
+    tcp->data_off = (uint8_t)((hdrlen / 4) << 4);
     tcp->flags = flags;
-    tcp->window = htons(32768);
+    tcp->window = htons(window);
+    if (optlen)
+        memcpy((uint8_t *)tcp + TCP_LEN, opt, optlen);
     if (payload_len)
-        memcpy((uint8_t *)tcp + TCP_LEN, payload, payload_len);
+        memcpy((uint8_t *)tcp + hdrlen, payload, payload_len);
 
     uint32_t seed =
-        pseudo_seed(GUEST_IP, TARGET_IP, 6, (uint16_t)(TCP_LEN + payload_len));
-    tcp->checksum = htons(ones_sum(tcp, TCP_LEN + payload_len, seed));
+        pseudo_seed(GUEST_IP, TARGET_IP, 6, (uint16_t)(hdrlen + payload_len));
+    tcp->checksum = htons(ones_sum(tcp, hdrlen + payload_len, seed));
 
-    return ETH_LEN + IP_LEN + TCP_LEN + payload_len;
+    return ETH_LEN + IP_LEN + hdrlen + payload_len;
+}
+
+static size_t build_tcp(uint8_t *out, const uint8_t *dst_mac, uint16_t sport,
+                        uint32_t seq, uint32_t ack, uint8_t flags,
+                        const void *payload, size_t payload_len)
+{
+    return build_tcp_ex(out, dst_mac, sport, seq, ack, flags, 32768, NULL, 0,
+                        payload, payload_len);
 }
 
 /* ---- Frame dissection --------------------------------------------------- */
@@ -502,16 +521,36 @@ static void fixture_down(struct fixture *fx)
 }
 
 /*
+ * Offer @len bytes of the fixture's frame in a buffer of exactly that
+ * size, so a sanitizer sees any read past the end of what arrived.
+ */
+static bool offer_exact(struct fixture *fx, const char *name, size_t len,
+                        uint64_t now)
+{
+    uint8_t *f = malloc(len);
+
+    if (f == NULL) {
+        fail(name, "out of memory");
+        return false;
+    }
+    memcpy(f, fx->frame, len);
+    bool consumed = s3_tcp_rx_frame(fx->tcp, f, len, now);
+    free(f);
+    return consumed;
+}
+
+/*
  * Three-way handshake.  Returns the target's initial sequence number
  * plus one, i.e. the sequence its first data byte will carry.
  */
-static bool handshake(struct fixture *fx, const char *name, uint16_t sport,
-                      uint32_t client_iss, uint32_t *srv_seq, uint64_t now)
+static bool handshake_opt(struct fixture *fx, const char *name, uint16_t sport,
+                          uint32_t client_iss, const uint8_t *opt,
+                          size_t optlen, uint32_t *srv_seq, uint64_t now)
 {
     cap_reset(&fx->cap);
-    size_t n =
-        build_tcp(fx->frame, fx->mac, sport, client_iss, 0, FLAG_SYN, NULL, 0);
-    if (!s3_tcp_rx_frame(fx->tcp, fx->frame, n, now)) {
+    size_t n = build_tcp_ex(fx->frame, fx->mac, sport, client_iss, 0, FLAG_SYN,
+                            32768, opt, optlen, NULL, 0);
+    if (!offer_exact(fx, name, n, now)) {
         fail(name, "the SYN was not accepted as ours");
         return false;
     }
@@ -550,6 +589,12 @@ static bool handshake(struct fixture *fx, const char *name, uint16_t sport,
     return true;
 }
 
+static bool handshake(struct fixture *fx, const char *name, uint16_t sport,
+                      uint32_t client_iss, uint32_t *srv_seq, uint64_t now)
+{
+    return handshake_opt(fx, name, sport, client_iss, NULL, 0, srv_seq, now);
+}
+
 /* Gather the payload of every captured data segment, in order. */
 static size_t collect(struct capture *cap, char *out, size_t outlen)
 {
@@ -566,6 +611,68 @@ static size_t collect(struct capture *cap, char *out, size_t outlen)
     }
     out[at] = '\0';
     return at;
+}
+
+/* Byte @i of every object seed_object() stores. */
+static char seed_byte(size_t i)
+{
+    return (char)('a' + i % 26);
+}
+
+/*
+ * Store a @len byte object at /ernic/@key straight through the target, so
+ * a test can GET a response larger than one segment without first
+ * sending a request larger than one frame.
+ */
+static bool seed_object(struct fixture *fx, const char *name, const char *key,
+                        size_t len)
+{
+    char head[128];
+    int hl = snprintf(head, sizeof(head),
+                      "PUT /ernic/%s HTTP/1.1\r\nContent-Length: %zu\r\n\r\n",
+                      key, len);
+    if (hl < 0 || (size_t)hl >= sizeof(head)) {
+        fail(name, "seed request for %s does not fit", key);
+        return false;
+    }
+
+    char *text = malloc((size_t)hl + len);
+    if (text == NULL) {
+        fail(name, "out of memory");
+        return false;
+    }
+    memcpy(text, head, (size_t)hl);
+    for (size_t i = 0; i < len; i++)
+        text[(size_t)hl + i] = seed_byte(i);
+
+    struct s3_http_request req;
+    struct s3_http_response resp;
+    bool stored = false;
+    if (s3_http_parse(text, (size_t)hl + len, &req) > 0) {
+        s3_target_exec(fx->target, &req, NULL, NULL, &resp);
+        stored = resp.status == 200;
+        s3_http_response_free(&resp);
+    }
+    free(text);
+    if (!stored)
+        fail(name, "could not seed %s", key);
+    return stored;
+}
+
+/* True when @resp is a 200 whose body is the @len byte seeded object. */
+static bool is_seeded_object(const char *resp, size_t resp_len, size_t len)
+{
+    const char *body = strstr(resp, "\r\n\r\n");
+
+    if (strncmp(resp, "HTTP/1.1 200 OK\r\n", 17) != 0 || body == NULL)
+        return false;
+    body += 4;
+    if ((size_t)(resp + resp_len - body) != len)
+        return false;
+    for (size_t i = 0; i < len; i++)
+        if (body[i] != seed_byte(i))
+            return false;
+    return true;
 }
 
 /* ---- Tests -------------------------------------------------------------- */
@@ -1451,6 +1558,1011 @@ out:
     fixture_down(&fx);
 }
 
+/* Find the one captured frame carrying TCP data, or NULL if there is not
+ * exactly one. */
+static const uint8_t *only_data_frame(const struct capture *cap, size_t *plen)
+{
+    const uint8_t *found = NULL;
+
+    for (unsigned i = 0; i < cap->n; i++) {
+        size_t len = 0;
+        if (as_tcp(cap->f[i].buf, cap->f[i].len, &len) == NULL || len == 0)
+            continue;
+        if (found != NULL)
+            return NULL;
+        found = cap->f[i].buf;
+        *plen = len;
+    }
+    return found;
+}
+
+static const struct t_tcp *frame_tcp(const uint8_t *f)
+{
+    return (const struct t_tcp *)(f + ETH_LEN + IP_LEN);
+}
+
+/*
+ * An unacknowledged response goes out again when its timer expires,
+ * from the first byte the peer has not acknowledged and with the timer
+ * doubled, and an ACK of everything disarms it.
+ */
+static void test_retransmit_data(void)
+{
+    const char *name = "retransmit-data";
+    struct fixture fx;
+    uint32_t srv = 0;
+    uint8_t first[1514];
+    size_t first_len = 0;
+
+    if (!fixture_up(&fx, name, 0))
+        return;
+    if (!handshake(&fx, name, GUEST_PORT, 1000, &srv, 10))
+        goto out;
+
+    static const char req[] = "GET / HTTP/1.1\r\n\r\n";
+    cap_reset(&fx.cap);
+    size_t n = build_tcp(fx.frame, fx.mac, GUEST_PORT, 1001, srv,
+                         FLAG_ACK | FLAG_PSH, req, strlen(req));
+    s3_tcp_rx_frame(fx.tcp, fx.frame, n, 20);
+
+    const uint8_t *f = only_data_frame(&fx.cap, &first_len);
+    if (f == NULL || ntohl(frame_tcp(f)->seq) != srv) {
+        fail(name, "the response was not one segment at seq %u", srv);
+        goto out;
+    }
+    memcpy(first, tcp_payload(f), first_len);
+    if (!s3_tcp_has_work(fx.tcp))
+        fail(name, "unacknowledged data leaves no work for the timer");
+
+    /* The timer runs 200 ms from the send, then 400 ms from the resend. */
+    static const uint64_t fire[] = {220, 620};
+    for (unsigned i = 0; i < 2; i++) {
+        cap_reset(&fx.cap);
+        if (s3_tcp_poll(fx.tcp, fire[i] - 1) || fx.cap.n != 0)
+            fail(name, "resend %u came before its timer at %" PRIu64, i + 1,
+                 fire[i]);
+
+        cap_reset(&fx.cap);
+        if (!s3_tcp_poll(fx.tcp, fire[i]))
+            fail(name, "the poll at %" PRIu64 " reported nothing done",
+                 fire[i]);
+        check_all_checksums(name, &fx.cap);
+        size_t plen = 0;
+        f = only_data_frame(&fx.cap, &plen);
+        if (f == NULL) {
+            fail(name, "resend %u was %u frames, want one segment", i + 1,
+                 fx.cap.n);
+            goto out;
+        }
+        if (ntohl(frame_tcp(f)->seq) != srv)
+            fail(name, "resend %u at seq %u, want %u", i + 1,
+                 ntohl(frame_tcp(f)->seq), srv);
+        if (plen != first_len || memcmp(tcp_payload(f), first, plen) != 0)
+            fail(name, "resend %u is not the bytes first sent", i + 1);
+    }
+    if (s3_tcp_statistics(fx.tcp)->retransmits != 2)
+        fail(name, "retransmits counter %" PRIu64 ", want 2",
+             s3_tcp_statistics(fx.tcp)->retransmits);
+
+    cap_reset(&fx.cap);
+    n = build_tcp(fx.frame, fx.mac, GUEST_PORT, (uint32_t)(1001 + strlen(req)),
+                  srv + (uint32_t)first_len, FLAG_ACK, NULL, 0);
+    s3_tcp_rx_frame(fx.tcp, fx.frame, n, 630);
+    if (s3_tcp_has_work(fx.tcp))
+        fail(name, "an ACK of everything left the timer armed");
+    if (s3_tcp_poll(fx.tcp, 5000) || fx.cap.n != 0)
+        fail(name, "acknowledged data was sent again");
+
+    ok(name);
+out:
+    fixture_down(&fx);
+}
+
+/* A FIN is retransmitted like data, at the same sequence number, until
+ * the peer acknowledges it. */
+static void test_retransmit_fin(void)
+{
+    const char *name = "retransmit-fin";
+    struct fixture fx;
+    uint32_t srv = 0;
+
+    if (!fixture_up(&fx, name, 0))
+        return;
+    if (!handshake(&fx, name, GUEST_PORT, 1000, &srv, 10))
+        goto out;
+
+    /* The peer closes first, with nothing sent either way. */
+    cap_reset(&fx.cap);
+    size_t n = build_tcp(fx.frame, fx.mac, GUEST_PORT, 1001, srv,
+                         FLAG_ACK | FLAG_FIN, NULL, 0);
+    s3_tcp_rx_frame(fx.tcp, fx.frame, n, 20);
+    const struct t_tcp *tcp =
+        fx.cap.n == 1 ? as_tcp(fx.cap.f[0].buf, fx.cap.f[0].len, NULL) : NULL;
+    if (tcp == NULL || !(tcp->flags & FLAG_FIN) || ntohl(tcp->seq) != srv) {
+        fail(name, "the peer's FIN was not answered with a FIN at seq %u", srv);
+        goto out;
+    }
+
+    cap_reset(&fx.cap);
+    if (s3_tcp_poll(fx.tcp, 219) || fx.cap.n != 0)
+        fail(name, "the FIN was resent before its timer");
+    cap_reset(&fx.cap);
+    s3_tcp_poll(fx.tcp, 220);
+    check_all_checksums(name, &fx.cap);
+    tcp = fx.cap.n == 1 ? as_tcp(fx.cap.f[0].buf, fx.cap.f[0].len, NULL) : NULL;
+    if (tcp == NULL || tcp->flags != (FLAG_FIN | FLAG_ACK))
+        fail(name, "the timer did not resend the FIN");
+    else if (ntohl(tcp->seq) != srv || ntohl(tcp->ack) != 1002)
+        fail(name, "the FIN was resent as seq %u ack %u, want %u and 1002",
+             ntohl(tcp->seq), ntohl(tcp->ack), srv);
+    if (s3_tcp_statistics(fx.tcp)->retransmits != 1)
+        fail(name, "retransmits counter %" PRIu64 ", want 1",
+             s3_tcp_statistics(fx.tcp)->retransmits);
+
+    cap_reset(&fx.cap);
+    n = build_tcp(fx.frame, fx.mac, GUEST_PORT, 1002, srv + 1, FLAG_ACK, NULL,
+                  0);
+    s3_tcp_rx_frame(fx.tcp, fx.frame, n, 230);
+    if (s3_tcp_conn_count(fx.tcp) != 0)
+        fail(name, "the ACK of the resent FIN did not retire the connection");
+    if (s3_tcp_has_work(fx.tcp))
+        fail(name, "a retired connection still claims work");
+
+    ok(name);
+out:
+    fixture_down(&fx);
+}
+
+/*
+ * A peer whose SYN|ACKs are all lost retransmits its SYN, which keeps the
+ * connection clear of the idle reaper, so it is the retransmit limit that
+ * gives up on it: eight resends on a doubling timer, then a reset.
+ */
+static void test_retransmit_syn_ack(void)
+{
+    const char *name = "retransmit-syn-ack";
+    struct fixture fx;
+    uint32_t srv_iss = 0;
+    uint64_t sent_at[16];
+    unsigned sent = 0;
+    uint64_t reset_at = 0;
+
+    /* 200 ms after the SYN, then each wait twice the one before. */
+    static const uint64_t want_at[] = {200,  600,   1400,  3000,
+                                       6200, 12600, 25400, 51000};
+    const unsigned want = sizeof(want_at) / sizeof(want_at[0]);
+    const uint64_t want_reset = 102200;
+
+    if (!fixture_up(&fx, name, 0))
+        return;
+
+    size_t n =
+        build_tcp(fx.frame, fx.mac, GUEST_PORT, 500, 0, FLAG_SYN, NULL, 0);
+    s3_tcp_rx_frame(fx.tcp, fx.frame, n, 0);
+    const struct t_tcp *tcp =
+        fx.cap.n == 1 ? as_tcp(fx.cap.f[0].buf, fx.cap.f[0].len, NULL) : NULL;
+    if (tcp == NULL || tcp->flags != (FLAG_SYN | FLAG_ACK)) {
+        fail(name, "the SYN was not answered with a SYN|ACK");
+        goto out;
+    }
+    srv_iss = ntohl(tcp->seq);
+
+    for (uint64_t now = 100; now <= 2 * want_reset && reset_at == 0;
+         now += 100) {
+        cap_reset(&fx.cap);
+        if (now % 10000 == 0) {
+            s3_tcp_rx_frame(fx.tcp, fx.frame, n, now);
+            if (fx.cap.n != 0)
+                fail(name, "a repeated SYN at %" PRIu64 " drew a frame", now);
+        }
+        s3_tcp_poll(fx.tcp, now);
+        check_all_checksums(name, &fx.cap);
+
+        for (unsigned i = 0; i < fx.cap.n; i++) {
+            tcp = as_tcp(fx.cap.f[i].buf, fx.cap.f[i].len, NULL);
+            if (tcp == NULL)
+                continue;
+            if (tcp->flags & FLAG_RST) {
+                reset_at = now;
+            } else if (tcp->flags == (FLAG_SYN | FLAG_ACK)) {
+                if (ntohl(tcp->seq) != srv_iss || ntohl(tcp->ack) != 501)
+                    fail(name, "SYN|ACK resent as seq %u ack %u",
+                         ntohl(tcp->seq), ntohl(tcp->ack));
+                if ((tcp->data_off >> 4) != 6)
+                    fail(name, "SYN|ACK resent without its MSS option");
+                if (sent < sizeof(sent_at) / sizeof(sent_at[0]))
+                    sent_at[sent] = now;
+                sent++;
+            } else {
+                fail(name, "unexpected flags 0x%02x at %" PRIu64,
+                     (unsigned)tcp->flags, now);
+            }
+        }
+    }
+
+    if (sent != want) {
+        fail(name, "SYN|ACK resent %u times, want %u", sent, want);
+    } else {
+        for (unsigned i = 0; i < want; i++)
+            if (sent_at[i] != want_at[i])
+                fail(name, "resend %u at %" PRIu64 " ms, want %" PRIu64, i + 1,
+                     sent_at[i], want_at[i]);
+    }
+    if (reset_at != want_reset)
+        fail(name, "reset at %" PRIu64 " ms, want %" PRIu64, reset_at,
+             want_reset);
+    if (s3_tcp_conn_count(fx.tcp) != 0)
+        fail(name, "the connection outlived its retransmit limit");
+
+    const struct s3_tcp_stats *st = s3_tcp_statistics(fx.tcp);
+    if (st->retransmits != want || st->resets != 1)
+        fail(name,
+             "%" PRIu64 " retransmits and %" PRIu64 " resets, want %u and 1",
+             st->retransmits, st->resets, want);
+
+    ok(name);
+out:
+    fixture_down(&fx);
+}
+
+/*
+ * The MSS option on a SYN sets the largest segment the endpoint sends,
+ * found by walking the option list.  A value below the 536-byte floor
+ * every IPv4 host must accept, or above the endpoint's own 1460, is not
+ * used, and a list that is malformed is read no further.  The handshake
+ * offers the SYN in a buffer of its exact size, so a walk that strays
+ * past the end of the list is a sanitizer report rather than a read of
+ * whatever the fixture's frame buffer held.
+ */
+static void test_mss_option(void)
+{
+    const char *name = "mss-option";
+    const size_t obj_len = 4000;
+    char resp[8192];
+
+    static const struct {
+        const char *what;
+        uint8_t opt[8];
+        size_t optlen;
+        uint32_t want;
+    } cases[] = {
+        {"no options", {0}, 0, 1460},
+        {"MSS 536", {2, 4, 0x02, 0x18}, 4, 536},
+        {"NOPs then MSS", {1, 1, 2, 4, 0x03, 0x00, 0, 0}, 8, 768},
+        {"window scale then MSS", {3, 3, 7, 2, 4, 0x04, 0x00, 0}, 8, 1024},
+        {"MSS below the floor", {2, 4, 0x02, 0x17}, 4, 1460},
+        {"MSS above our own", {2, 4, 0x05, 0xb5}, 4, 1460},
+        {"MSS past the end of the list",
+         {0, 0, 0, 0, 2, 4, 0x02, 0x18},
+         8,
+         1460},
+        {"MSS of the wrong length", {2, 6, 0x02, 0x18, 0, 0, 0, 0}, 8, 1460},
+        {"length below two", {1, 8, 1, 2, 4, 0x02, 0x18, 0}, 8, 1460},
+        {"length past the list", {8, 10, 0, 0}, 4, 1460},
+        {"kind with no length", {1, 1, 1, 2}, 4, 1460},
+        {"MSS cut off by the end", {1, 1, 1, 1, 1, 1, 2, 4}, 8, 1460},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        struct fixture fx;
+        uint32_t srv = 0;
+
+        if (!fixture_up(&fx, name, 0))
+            return;
+        if (!seed_object(&fx, name, "obj", obj_len) ||
+            !handshake_opt(&fx, name, GUEST_PORT, 1000, cases[i].opt,
+                           cases[i].optlen, &srv, 10)) {
+            fixture_down(&fx);
+            continue;
+        }
+
+        static const char req[] = "GET /ernic/obj HTTP/1.1\r\n\r\n";
+        cap_reset(&fx.cap);
+        size_t n = build_tcp(fx.frame, fx.mac, GUEST_PORT, 1001, srv,
+                             FLAG_ACK | FLAG_PSH, req, strlen(req));
+        s3_tcp_rx_frame(fx.tcp, fx.frame, n, 20);
+        check_all_checksums(name, &fx.cap);
+
+        size_t largest = 0;
+        for (unsigned j = 0; j < fx.cap.n; j++) {
+            size_t plen = 0;
+            if (as_tcp(fx.cap.f[j].buf, fx.cap.f[j].len, &plen) != NULL &&
+                plen > largest)
+                largest = plen;
+        }
+        size_t got = collect(&fx.cap, resp, sizeof(resp));
+
+        if (largest != cases[i].want)
+            fail(name, "%s: largest segment %zu bytes, want %" PRIu32,
+                 cases[i].what, largest, cases[i].want);
+        else if (!is_seeded_object(resp, got, obj_len))
+            fail(name, "%s: the response did not carry the object",
+                 cases[i].what);
+        fixture_down(&fx);
+    }
+
+    ok(name);
+}
+
+/*
+ * A zero window is read as a window of one byte, so the endpoint keeps
+ * probing with single bytes rather than waiting for a window update that
+ * might never come, and it sends the rest once the window opens.
+ */
+static void test_zero_window(void)
+{
+    const char *name = "zero-window";
+    struct fixture fx;
+    uint32_t srv = 0;
+    const size_t obj_len = 3000;
+    char resp[8192];
+    size_t got = 0;
+
+    if (!fixture_up(&fx, name, 0))
+        return;
+    if (!seed_object(&fx, name, "obj", obj_len) ||
+        !handshake(&fx, name, GUEST_PORT, 1000, &srv, 10))
+        goto out;
+
+    static const char req[] = "GET /ernic/obj HTTP/1.1\r\n\r\n";
+    const uint32_t cseq = 1001 + (uint32_t)strlen(req);
+
+    /* The request closes the window; then each one-byte probe is
+     * acknowledged with the window still closed. */
+    for (unsigned i = 0; i < 2; i++) {
+        size_t n;
+        if (i == 0)
+            n = build_tcp_ex(fx.frame, fx.mac, GUEST_PORT, 1001, srv,
+                             FLAG_ACK | FLAG_PSH, 0, NULL, 0, req, strlen(req));
+        else
+            n = build_tcp_ex(fx.frame, fx.mac, GUEST_PORT, cseq, srv + i,
+                             FLAG_ACK, 0, NULL, 0, NULL, 0);
+        cap_reset(&fx.cap);
+        s3_tcp_rx_frame(fx.tcp, fx.frame, n, 20 + i * 10);
+
+        size_t plen = 0;
+        const uint8_t *f = only_data_frame(&fx.cap, &plen);
+        if (f == NULL || plen != 1 || ntohl(frame_tcp(f)->seq) != srv + i) {
+            fail(name, "into a zero window, segment %u was not 1 byte at %u", i,
+                 srv + i);
+            goto out;
+        }
+        got += collect(&fx.cap, resp + got, sizeof(resp) - got);
+
+        /* With that byte in flight the window is full. */
+        cap_reset(&fx.cap);
+        s3_tcp_poll(fx.tcp, 21 + i * 10);
+        if (fx.cap.n != 0)
+            fail(name, "sent past a full window");
+    }
+
+    /* A window update with nothing new acknowledged opens the window. */
+    cap_reset(&fx.cap);
+    size_t n = build_tcp_ex(fx.frame, fx.mac, GUEST_PORT, cseq, srv + 2,
+                            FLAG_ACK, 8192, NULL, 0, NULL, 0);
+    s3_tcp_rx_frame(fx.tcp, fx.frame, n, 40);
+    check_all_checksums(name, &fx.cap);
+    got += collect(&fx.cap, resp + got, sizeof(resp) - got);
+    if (!is_seeded_object(resp, got, obj_len)) {
+        fail(name, "the response did not arrive whole once the window opened");
+        goto out;
+    }
+
+    /* Acknowledging part of it leaves the rest under the timer. */
+    n = build_tcp(fx.frame, fx.mac, GUEST_PORT, cseq, srv + 1000, FLAG_ACK,
+                  NULL, 0);
+    s3_tcp_rx_frame(fx.tcp, fx.frame, n, 50);
+    if (!s3_tcp_has_work(fx.tcp))
+        fail(name, "a partial ACK disarmed the timer");
+    n = build_tcp(fx.frame, fx.mac, GUEST_PORT, cseq, srv + (uint32_t)got,
+                  FLAG_ACK, NULL, 0);
+    s3_tcp_rx_frame(fx.tcp, fx.frame, n, 60);
+    if (s3_tcp_has_work(fx.tcp))
+        fail(name, "an ACK of everything left the timer armed");
+
+    ok(name);
+out:
+    fixture_down(&fx);
+}
+
+/*
+ * An RST tears the connection down silently: answering a reset with a
+ * reset is how two stacks loop.  One for no connection is dropped the
+ * same way.  A SYN|ACK for no connection is not, and is reset from the
+ * sequence number it acknowledged.
+ */
+static void test_reset_segments(void)
+{
+    const char *name = "reset-segments";
+    struct fixture fx;
+    uint32_t srv = 0;
+
+    if (!fixture_up(&fx, name, 0))
+        return;
+    if (!handshake(&fx, name, GUEST_PORT, 1000, &srv, 10))
+        goto out;
+
+    cap_reset(&fx.cap);
+    size_t n =
+        build_tcp(fx.frame, fx.mac, GUEST_PORT, 1001, 0, FLAG_RST, NULL, 0);
+    if (!s3_tcp_rx_frame(fx.tcp, fx.frame, n, 20))
+        fail(name, "an RST for a connection was not consumed");
+    if (fx.cap.n != 0)
+        fail(name, "an RST drew %u frames, want none", fx.cap.n);
+    if (s3_tcp_conn_count(fx.tcp) != 0)
+        fail(name, "an RST left the connection open");
+    if (s3_tcp_has_work(fx.tcp))
+        fail(name, "a reset connection still claims work");
+
+    n = build_tcp(fx.frame, fx.mac, GUEST_PORT + 1, 1, 0, FLAG_RST, NULL, 0);
+    if (!s3_tcp_rx_frame(fx.tcp, fx.frame, n, 30))
+        fail(name, "an RST for no connection was not consumed");
+    if (fx.cap.n != 0)
+        fail(name, "an RST for no connection drew %u frames", fx.cap.n);
+    if (s3_tcp_statistics(fx.tcp)->resets != 0)
+        fail(name, "resets counter %" PRIu64 " after two RSTs in, want 0",
+             s3_tcp_statistics(fx.tcp)->resets);
+
+    /* The connection is gone, so its next segment is a stray. */
+    cap_reset(&fx.cap);
+    n = build_tcp(fx.frame, fx.mac, GUEST_PORT, 1001, srv, FLAG_ACK, "x", 1);
+    s3_tcp_rx_frame(fx.tcp, fx.frame, n, 40);
+    const struct t_tcp *tcp =
+        fx.cap.n == 1 ? as_tcp(fx.cap.f[0].buf, fx.cap.f[0].len, NULL) : NULL;
+    if (tcp == NULL || !(tcp->flags & FLAG_RST))
+        fail(name, "data on a reset connection was not reset");
+
+    cap_reset(&fx.cap);
+    n = build_tcp(fx.frame, fx.mac, GUEST_PORT + 2, 7000, 0x12345678u,
+                  FLAG_SYN | FLAG_ACK, NULL, 0);
+    s3_tcp_rx_frame(fx.tcp, fx.frame, n, 50);
+    check_all_checksums(name, &fx.cap);
+    tcp = fx.cap.n == 1 ? as_tcp(fx.cap.f[0].buf, fx.cap.f[0].len, NULL) : NULL;
+    if (tcp == NULL || tcp->flags != FLAG_RST)
+        fail(name, "a stray SYN|ACK was not answered with a bare RST");
+    else if (ntohl(tcp->seq) != 0x12345678u)
+        fail(name, "the RST has seq 0x%08x, want the SYN|ACK's ack",
+             ntohl(tcp->seq));
+    if (s3_tcp_conn_count(fx.tcp) != 0)
+        fail(name, "a stray SYN|ACK opened a connection");
+
+    ok(name);
+out:
+    fixture_down(&fx);
+}
+
+/* ---- Malformed frames ---------------------------------------------------- */
+
+#define ARP_LEN       ((size_t)sizeof(struct t_arp))
+#define ICMP_LEN      ((size_t)sizeof(struct t_icmp))
+#define PING_DATA     "ping"
+#define PING_DATA_LEN (sizeof(PING_DATA) - 1)
+
+#define ETH_FIELD(f)  offsetof(struct t_eth, f)
+#define IP_FIELD(f)   (ETH_LEN + offsetof(struct t_ip, f))
+#define TCP_FIELD(f)  (ETH_LEN + IP_LEN + offsetof(struct t_tcp, f))
+#define ARP_FIELD(f)  (ETH_LEN + offsetof(struct t_arp, f))
+#define ICMP_FIELD(f) (ETH_LEN + IP_LEN + offsetof(struct t_icmp, f))
+#define NO_FIELD      SIZE_MAX
+
+enum frame_base { BASE_SYN, BASE_PING, BASE_ARP };
+
+static size_t build_base(struct fixture *fx, enum frame_base base)
+{
+    switch (base) {
+    case BASE_SYN:
+        return build_tcp(fx->frame, fx->mac, 40100, 1, 0, FLAG_SYN, NULL, 0);
+    case BASE_PING:
+        return build_ping(fx->frame, fx->mac, 1, 1, PING_DATA);
+    case BASE_ARP:
+        return build_arp_request(fx->frame, TARGET_IP);
+    default:
+        return 0;
+    }
+}
+
+/* Store @value big-endian in @width bytes at @at. */
+static void put_be(uint8_t *at, unsigned width, uint32_t value)
+{
+    for (unsigned i = 0; i < width; i++)
+        at[i] = (uint8_t)(value >> (8 * (width - 1 - i)));
+}
+
+/*
+ * Every length and field the endpoint checks before it trusts a frame,
+ * broken one at a time.  Each is a frame the guest can put on the wire,
+ * and none may be consumed or answered.  Some checks repeat an earlier
+ * one for a frame that reaches them, so a case may be refused by either.
+ * The same frames unbroken are then offered last, so no case passes
+ * because its base frame was refused already.
+ */
+static void test_malformed_frames(void)
+{
+    const char *name = "malformed-frames";
+    struct fixture fx;
+
+    static const struct {
+        const char *what;
+        enum frame_base base;
+        size_t field; /* byte offset of the field to break, or NO_FIELD */
+        unsigned width;
+        uint32_t value;
+        size_t len; /* bytes to offer, or 0 for the whole frame */
+    } cases[] = {
+        {"runt Ethernet frame", BASE_SYN, NO_FIELD, 0, 0, ETH_LEN - 1},
+        {"IPv6 ethertype", BASE_SYN, ETH_FIELD(type), 2, 0x86dd, 0},
+        {"IP header cut short", BASE_SYN, NO_FIELD, 0, 0, ETH_LEN + IP_LEN - 1},
+        {"IP version 6", BASE_SYN, IP_FIELD(version_ihl), 1, 0x65, 0},
+        {"IP header under 20 bytes", BASE_SYN, IP_FIELD(version_ihl), 1, 0x44,
+         0},
+        {"IP total length under the header", BASE_SYN, IP_FIELD(total_len), 2,
+         IP_LEN - 1, 0},
+        {"IP options cut short", BASE_SYN, IP_FIELD(version_ihl), 1, 0x46,
+         ETH_LEN + 24 - 1}, /* a 24-byte header */
+        {"IP to another address", BASE_SYN, IP_FIELD(dst), 4, TARGET_IP + 1, 0},
+        {"IP more fragments", BASE_SYN, IP_FIELD(frag_off), 2, 0x2000, 0},
+        {"IP fragment offset", BASE_SYN, IP_FIELD(frag_off), 2, 0x0001, 0},
+        {"UDP", BASE_SYN, IP_FIELD(protocol), 1, 17, 0},
+        {"TCP header cut short", BASE_SYN, IP_FIELD(total_len), 2,
+         IP_LEN + TCP_LEN - 1, 0},
+        {"TCP total length past the frame", BASE_SYN, IP_FIELD(total_len), 2,
+         IP_LEN + TCP_LEN + 1, 0},
+        {"TCP data offset under 20 bytes", BASE_SYN, TCP_FIELD(data_off), 1,
+         4 << 4, 0},
+        {"TCP data offset past the segment", BASE_SYN, TCP_FIELD(data_off), 1,
+         6 << 4, 0},
+        {"ARP cut short", BASE_ARP, NO_FIELD, 0, 0, ETH_LEN + ARP_LEN - 1},
+        {"ARP hardware type", BASE_ARP, ARP_FIELD(hw_type), 2, 6, 0},
+        {"ARP protocol type", BASE_ARP, ARP_FIELD(proto_type), 2, 0x86dd, 0},
+        {"ARP hardware length", BASE_ARP, ARP_FIELD(hw_len), 1, 8, 0},
+        {"ARP protocol length", BASE_ARP, ARP_FIELD(proto_len), 1, 16, 0},
+        {"ARP reply", BASE_ARP, ARP_FIELD(op), 2, 2, 0},
+        {"ICMP header cut short", BASE_PING, IP_FIELD(total_len), 2,
+         IP_LEN + ICMP_LEN - 1, 0},
+        {"ICMP total length past the frame", BASE_PING, IP_FIELD(total_len), 2,
+         IP_LEN + ICMP_LEN + PING_DATA_LEN + 1, 0},
+        {"ICMP echo reply", BASE_PING, ICMP_FIELD(type), 1, 0, 0},
+    };
+
+    if (!fixture_up(&fx, name, 0))
+        return;
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        size_t len = build_base(&fx, cases[i].base);
+        if (cases[i].field != NO_FIELD)
+            put_be(fx.frame + cases[i].field, cases[i].width, cases[i].value);
+        if (cases[i].len != 0)
+            len = cases[i].len;
+
+        cap_reset(&fx.cap);
+        if (offer_exact(&fx, name, len, 10))
+            fail(name, "%s: consumed", cases[i].what);
+        if (fx.cap.n != 0)
+            fail(name, "%s: answered with %u frames", cases[i].what, fx.cap.n);
+    }
+    if (s3_tcp_conn_count(fx.tcp) != 0)
+        fail(name, "a malformed SYN opened a connection");
+
+    static const enum frame_base bases[] = {BASE_SYN, BASE_PING, BASE_ARP};
+    for (size_t i = 0; i < sizeof(bases) / sizeof(bases[0]); i++) {
+        size_t len = build_base(&fx, bases[i]);
+        cap_reset(&fx.cap);
+        if (!offer_exact(&fx, name, len, 10) || fx.cap.n != 1)
+            fail(name, "unbroken frame %zu was not answered", i);
+    }
+
+    ok(name);
+    fixture_down(&fx);
+}
+
+/*
+ * An echo reply carries the request's whole ICMP message back in one
+ * frame, so the largest request that fits a 1514-byte frame is answered
+ * and one byte more is not: it could only be answered by overrunning the
+ * endpoint's frame buffer.
+ */
+static void test_ping_too_big(void)
+{
+    const char *name = "ping-too-big";
+    struct fixture fx;
+    const size_t fits = 1514 - ETH_LEN - IP_LEN - ICMP_LEN;
+    char data[1514];
+
+    if (!fixture_up(&fx, name, 0))
+        return;
+
+    memset(data, 'p', fits + 1);
+    data[fits] = '\0';
+    size_t n = build_ping(fx.frame, fx.mac, 1, 1, data);
+    if (!offer_exact(&fx, name, n, 10) || fx.cap.n != 1)
+        fail(name, "a %zu byte echo was not answered", fits);
+    else if (fx.cap.f[0].len != 1514)
+        fail(name, "the reply is %zu bytes, want 1514", fx.cap.f[0].len);
+    else
+        checksums_ok(name, fx.cap.f[0].buf, fx.cap.f[0].len);
+
+    data[fits] = 'p';
+    data[fits + 1] = '\0';
+    n = build_ping(fx.frame, fx.mac, 1, 2, data);
+    cap_reset(&fx.cap);
+    if (offer_exact(&fx, name, n, 10))
+        fail(name, "a %zu byte echo was consumed", fits + 1);
+    if (fx.cap.n != 0)
+        fail(name, "a %zu byte echo was answered", fits + 1);
+
+    ok(name);
+    fixture_down(&fx);
+}
+
+/*
+ * s3_tcp_create() needs a target and a transmit hook, and a max_conns of
+ * zero selects S3_TCP_MAX_CONNS: that many connections open, and one more
+ * is refused.
+ */
+static void test_create(void)
+{
+    const char *name = "create";
+    struct s3_target_cfg tcfg;
+    struct s3_tcp_cfg ncfg;
+    struct capture *cap = calloc(1, sizeof(*cap));
+    char err[128] = "";
+    struct fixture fx;
+
+    if (cap == NULL) {
+        fail(name, "out of memory");
+        return;
+    }
+    s3_target_cfg_defaults(&tcfg);
+    struct s3_target *target = s3_target_create(&tcfg, err, sizeof(err));
+    if (target == NULL) {
+        fail(name, "target create: %s", err);
+        free(cap);
+        return;
+    }
+    s3_tcp_cfg_from_target(&ncfg, target);
+
+    struct s3_tcp *s =
+        s3_tcp_create(&ncfg, NULL, NULL, NULL, cap_tx, cap, err, sizeof(err));
+    if (s != NULL || err[0] == '\0')
+        fail(name, "created with no target, or failed without saying why");
+    s3_tcp_destroy(s);
+
+    err[0] = '\0';
+    s = s3_tcp_create(&ncfg, target, NULL, NULL, NULL, NULL, err, sizeof(err));
+    if (s != NULL || err[0] == '\0')
+        fail(name, "created with no transmit hook, or failed without saying "
+                   "why");
+    s3_tcp_destroy(s);
+
+    s3_tcp_destroy(NULL); /* like free(), a no-op */
+    s3_target_destroy(target);
+    free(cap);
+
+    /* fixture_up() leaves max_conns at what s3_tcp_cfg_from_target() set;
+     * zero it to ask for the default. */
+    memset(&fx, 0, sizeof(fx));
+    s3_target_cfg_defaults(&tcfg);
+    fx.target = s3_target_create(&tcfg, err, sizeof(err));
+    if (fx.target == NULL) {
+        fail(name, "target create: %s", err);
+        return;
+    }
+    s3_tcp_cfg_from_target(&ncfg, fx.target);
+    ncfg.max_conns = 0;
+    memcpy(fx.mac, ncfg.mac, 6);
+    fx.tcp = s3_tcp_create(&ncfg, fx.target, NULL, NULL, cap_tx, &fx.cap, err,
+                           sizeof(err));
+    if (fx.tcp == NULL) {
+        fail(name, "create with max_conns 0: %s", err);
+        s3_target_destroy(fx.target);
+        return;
+    }
+
+    for (unsigned i = 0; i < S3_TCP_MAX_CONNS; i++) {
+        uint32_t srv = 0;
+        if (!handshake(&fx, name, (uint16_t)(50000 + i), 100, &srv, 10))
+            goto out;
+    }
+    cap_reset(&fx.cap);
+    size_t n = build_tcp(fx.frame, fx.mac, 50999, 100, 0, FLAG_SYN, NULL, 0);
+    s3_tcp_rx_frame(fx.tcp, fx.frame, n, 10);
+    const struct t_tcp *tcp =
+        fx.cap.n == 1 ? as_tcp(fx.cap.f[0].buf, fx.cap.f[0].len, NULL) : NULL;
+    if (tcp == NULL || !(tcp->flags & FLAG_RST))
+        fail(name, "connection %d was not refused", S3_TCP_MAX_CONNS + 1);
+    if (s3_tcp_conn_count(fx.tcp) != S3_TCP_MAX_CONNS)
+        fail(name, "%u connections open, want %d", s3_tcp_conn_count(fx.tcp),
+             S3_TCP_MAX_CONNS);
+
+    ok(name);
+out:
+    fixture_down(&fx);
+}
+
+/* Hand out @len bytes of a fixed pattern as if read from a client buffer,
+ * so the store can hold an object larger than any test buffer. */
+static uint32_t pattern_from_host(void *ctx, uint32_t key, uint64_t addr,
+                                  void *dst, uint32_t len)
+{
+    (void)ctx;
+    (void)key;
+    (void)addr;
+    memset(dst, 'z', len);
+    return len;
+}
+
+static const struct s3_dma_ops pattern_dma = {
+    .from_host = pattern_from_host,
+    .to_host = NULL,
+};
+
+/*
+ * A response the endpoint cannot queue -- here an object fetched in the
+ * HTTP body that is larger than the 16 MiB a connection may have queued
+ * -- resets the connection rather than sending part of it.
+ */
+static void test_response_too_large(void)
+{
+    const char *name = "response-too-large";
+    struct fixture fx;
+    uint32_t srv = 0;
+    char hex[S3_TOKEN_HEX_LEN + 1];
+    char text[512];
+    const size_t len = (16u << 20) + 1;
+
+    if (!fixture_up(&fx, name, 0))
+        return;
+
+    /* Store the object over the data plane, straight through the target. */
+    mint(hex, 0, len);
+    int w = snprintf(text, sizeof(text),
+                     "PUT /ernic/huge HTTP/1.1\r\nx-amz-rdma-token: %s\r\n"
+                     "Content-Length: %zu\r\n\r\n",
+                     hex, len);
+    struct s3_http_request req;
+    struct s3_http_response resp;
+    if (w < 0 || (size_t)w >= sizeof(text) ||
+        s3_http_parse(text, (size_t)w, &req) != w) {
+        fail(name, "the seed PUT did not parse");
+        goto out;
+    }
+    s3_target_exec(fx.target, &req, &pattern_dma, NULL, &resp);
+    int status = resp.status;
+    s3_http_response_free(&resp);
+    if (status != 200) {
+        fail(name, "the seed PUT gave status %d", status);
+        goto out;
+    }
+
+    if (!handshake(&fx, name, GUEST_PORT, 1000, &srv, 10))
+        goto out;
+    static const char get[] = "GET /ernic/huge HTTP/1.1\r\n\r\n";
+    cap_reset(&fx.cap);
+    size_t n = build_tcp(fx.frame, fx.mac, GUEST_PORT, 1001, srv,
+                         FLAG_ACK | FLAG_PSH, get, strlen(get));
+    s3_tcp_rx_frame(fx.tcp, fx.frame, n, 20);
+    check_all_checksums(name, &fx.cap);
+
+    const struct t_tcp *tcp =
+        fx.cap.n == 1 ? as_tcp(fx.cap.f[0].buf, fx.cap.f[0].len, NULL) : NULL;
+    if (tcp == NULL || !(tcp->flags & FLAG_RST))
+        fail(name, "an unqueueable response drew %u frames, not one RST",
+             fx.cap.n);
+    if (s3_tcp_conn_count(fx.tcp) != 0)
+        fail(name, "the connection survived an unqueueable response");
+    if (s3_tcp_statistics(fx.tcp)->requests != 1)
+        fail(name, "requests counter %" PRIu64 ", want 1",
+             s3_tcp_statistics(fx.tcp)->requests);
+
+    ok(name);
+out:
+    fixture_down(&fx);
+}
+
+/* Each allocation s3_tcp_create() makes, failed in turn, is reported and
+ * leaves nothing behind. */
+static void test_create_alloc_failures(void)
+{
+    const char *name = "create-alloc-failures";
+    struct s3_target_cfg tcfg;
+    struct s3_tcp_cfg ncfg;
+    struct capture cap;
+    char err[128] = "";
+    unsigned nth;
+
+    s3_target_cfg_defaults(&tcfg);
+    struct s3_target *target = s3_target_create(&tcfg, err, sizeof(err));
+    if (target == NULL) {
+        fail(name, "target create: %s", err);
+        return;
+    }
+    s3_tcp_cfg_from_target(&ncfg, target);
+
+    for (nth = 0; nth < 16; nth++) {
+        err[0] = '\0';
+        s3_alloc_fail_arm(nth);
+        struct s3_tcp *s = s3_tcp_create(&ncfg, target, NULL, NULL, cap_tx,
+                                         &cap, err, sizeof(err));
+        bool fired = s3_alloc_fail_disarm();
+        if (!fired) {
+            if (s == NULL)
+                fail(name, "create failed with nothing failed: %s", err);
+            s3_tcp_destroy(s);
+            break;
+        }
+        if (s != NULL || strstr(err, "out of memory") == NULL)
+            fail(name, "create with allocation %u failed: %p, \"%s\"", nth,
+                 (void *)s, err);
+        s3_tcp_destroy(s);
+    }
+    if (nth < 2)
+        fail(name, "only %u allocations could be failed, want 2", nth);
+
+    s3_target_destroy(target);
+    ok(name);
+}
+
+/* What a connection sent in answer to one request. */
+struct answer {
+    bool reset;     /* an RST went out */
+    bool fin;       /* a FIN went out */
+    char first[16]; /* the start of the first data, or "" */
+};
+
+static void read_answer(const struct capture *cap, struct answer *a)
+{
+    memset(a, 0, sizeof(*a));
+    for (unsigned i = 0; i < cap->n; i++) {
+        size_t plen = 0;
+        const struct t_tcp *tcp = as_tcp(cap->f[i].buf, cap->f[i].len, &plen);
+        if (tcp == NULL)
+            continue;
+        if (tcp->flags & FLAG_RST)
+            a->reset = true;
+        if (tcp->flags & FLAG_FIN)
+            a->fin = true;
+        if (plen > 0 && a->first[0] == '\0') {
+            size_t n =
+                plen < sizeof(a->first) - 1 ? plen : sizeof(a->first) - 1;
+            memcpy(a->first, tcp_payload(cap->f[i].buf), n);
+            a->first[n] = '\0';
+        }
+    }
+}
+
+/*
+ * A request served with each allocation along the way failed in turn:
+ * the receive buffer, the response body, the serialised response and the
+ * send buffer.  The connection either answers -- with the response, or
+ * with a 413 when there was no room to hold the request -- or is reset;
+ * it never sends part of a response, and the endpoint serves the next
+ * connection as before.
+ */
+static void test_request_alloc_failures(void)
+{
+    const char *name = "request-alloc-failures";
+    static const char req[] = "GET /ernic/obj HTTP/1.1\r\n\r\n";
+    unsigned nth;
+
+    for (nth = 0; nth < 64; nth++) {
+        struct fixture fx;
+        struct answer a;
+        uint32_t srv = 0;
+
+        if (!fixture_up(&fx, name, 0))
+            return;
+        if (!seed_object(&fx, name, "obj", 3000) ||
+            !handshake(&fx, name, GUEST_PORT, 1000, &srv, 10)) {
+            fixture_down(&fx);
+            return;
+        }
+
+        cap_reset(&fx.cap);
+        size_t n = build_tcp(fx.frame, fx.mac, GUEST_PORT, 1001, srv,
+                             FLAG_ACK | FLAG_PSH, req, strlen(req));
+        s3_alloc_fail_arm(nth);
+        s3_tcp_rx_frame(fx.tcp, fx.frame, n, 20);
+        bool fired = s3_alloc_fail_disarm();
+        check_all_checksums(name, &fx.cap);
+        read_answer(&fx.cap, &a);
+
+        if (!fired) {
+            if (strncmp(a.first, "HTTP/1.1 200", 12) != 0)
+                fail(name, "with nothing failed, answered \"%s\"", a.first);
+            fixture_down(&fx);
+            break;
+        }
+        if (a.reset) {
+            if (a.first[0] != '\0')
+                fail(name, "allocation %u: data before the reset", nth);
+            if (s3_tcp_conn_count(fx.tcp) != 0)
+                fail(name, "allocation %u: reset but kept the slot", nth);
+        } else if (strncmp(a.first, "HTTP/1.1 413", 12) != 0) {
+            fail(name, "allocation %u: answered \"%s\", not a 413 or reset",
+                 nth, a.first);
+        }
+
+        /* Whatever happened, a new connection is served. */
+        char body[8192];
+        static const char next[] = "GET /ernic/obj HTTP/1.1\r\n"
+                                   "Connection: close\r\n\r\n";
+        size_t got =
+            transact(&fx, name, GUEST_PORT + 1, next, body, sizeof(body), 100);
+        if (!is_seeded_object(body, got, 3000))
+            fail(name, "allocation %u: the next connection was not served",
+                 nth);
+        fixture_down(&fx);
+    }
+    /* The receive buffer, body, serialised response and send buffer. */
+    if (nth < 4)
+        fail(name, "only %u allocations could be failed, want 4", nth);
+    else
+        ok(name);
+}
+
+/*
+ * The 413 for an oversized request with each of its allocations failed:
+ * with no 413 to send, the endpoint still closes the connection, by FIN
+ * alone.
+ */
+static void test_refusal_alloc_failures(void)
+{
+    const char *name = "refusal-alloc-failures";
+    uint8_t junk[1460];
+    unsigned nth;
+
+    memset(junk, 'A', sizeof(junk));
+
+    for (nth = 0; nth < 64; nth++) {
+        struct fixture fx;
+        struct answer a;
+        uint32_t srv = 0;
+        uint32_t seq = 2;
+
+        if (!fixture_up(&fx, name, 0))
+            return;
+        if (!handshake(&fx, name, GUEST_PORT, 1, &srv, 10)) {
+            fixture_down(&fx);
+            return;
+        }
+
+        /* Fill the buffer to within a segment of the limit. */
+        const unsigned whole = S3_HTTP_REQUEST_MAX / (unsigned)sizeof(junk);
+        for (unsigned i = 0; i < whole; i++) {
+            size_t n = build_tcp(fx.frame, fx.mac, GUEST_PORT, seq, srv,
+                                 FLAG_ACK, junk, sizeof(junk));
+            s3_tcp_rx_frame(fx.tcp, fx.frame, n, 20);
+            seq += (uint32_t)sizeof(junk);
+        }
+
+        cap_reset(&fx.cap);
+        size_t n = build_tcp(fx.frame, fx.mac, GUEST_PORT, seq, srv, FLAG_ACK,
+                             junk, sizeof(junk));
+        s3_alloc_fail_arm(nth);
+        s3_tcp_rx_frame(fx.tcp, fx.frame, n, 30);
+        bool fired = s3_alloc_fail_disarm();
+        check_all_checksums(name, &fx.cap);
+        read_answer(&fx.cap, &a);
+
+        if (!fired) {
+            if (strncmp(a.first, "HTTP/1.1 413", 12) != 0)
+                fail(name, "with nothing failed, answered \"%s\"", a.first);
+            fixture_down(&fx);
+            break;
+        }
+        if (a.first[0] != '\0')
+            fail(name, "allocation %u: sent \"%s\" anyway", nth, a.first);
+        else if (!a.fin)
+            fail(name, "allocation %u: the connection was not closed", nth);
+        fixture_down(&fx);
+    }
+    /* The body, the serialised response and the send buffer. */
+    if (nth < 3)
+        fail(name, "only %u allocations could be failed, want 3", nth);
+    else
+        ok(name);
+}
+
 int main(void)
 {
     test_arp();
@@ -1466,6 +2578,19 @@ int main(void)
     test_oversized_stream();
     test_oversized_exact_fit();
     test_probe_close();
+    test_retransmit_data();
+    test_retransmit_fin();
+    test_retransmit_syn_ack();
+    test_mss_option();
+    test_zero_window();
+    test_reset_segments();
+    test_malformed_frames();
+    test_ping_too_big();
+    test_create();
+    test_response_too_large();
+    test_create_alloc_failures();
+    test_request_alloc_failures();
+    test_refusal_alloc_failures();
 
     if (failures)
         printf("\n%d failure(s)\n", failures);

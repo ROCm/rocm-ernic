@@ -299,6 +299,17 @@ add_executable(test_s3_tcp
 target_include_directories(test_s3_tcp PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(test_s3_tcp PRIVATE _GNU_SOURCE)
 
+# The S3 tests fail allocations on demand (s3_alloc_fail.h). The linker
+# routes the calls in their own objects through wrappers, which pass every
+# call they don't fail to the real function; libc's own calls are untouched.
+foreach(s3_test test_s3_http test_s3_target test_s3_tcp)
+    target_sources(${s3_test} PRIVATE s3_alloc_fail.c)
+    target_include_directories(${s3_test} PRIVATE ${PROJECT_SOURCE_DIR}/shared)
+    target_link_options(${s3_test} PRIVATE
+        "LINKER:--wrap=malloc,--wrap=calloc,--wrap=realloc"
+        "LINKER:--wrap=strdup,--wrap=getentropy")
+endforeach()
+
 # ionic MSI-X mask/pending test. It links the ionic emulator, reaches the
 # per-vector interrupt state through ionic_eth_emu_priv.h, and stubs
 # vfu_irq_trigger() with a per-vector counter, so no vfio-user link or live

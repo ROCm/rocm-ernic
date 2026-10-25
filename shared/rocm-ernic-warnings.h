@@ -148,7 +148,8 @@
 /* Suppress warnings about reserved identifiers
  *
  * Sanitizer runtimes look up hooks such as __asan_default_options() by
- * name, so defining one requires a reserved identifier.
+ * name, and the linker's --wrap=SYM names the wrapper __wrap_SYM and the
+ * original __real_SYM, so defining either requires a reserved identifier.
  */
 #if defined(__clang__)
 #define ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_OFF \
