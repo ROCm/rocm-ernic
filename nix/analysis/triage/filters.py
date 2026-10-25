@@ -3,7 +3,7 @@
 Adapted for rocm-ernic's C codebase. Path patterns reflect this repo's
 layout:
   - src/rocm_ernic_*.{c,h}         our own userspace code
-  - src/net/                       wire-protocol parsers (rdma-cm)
+  - src/net/                       wire-protocol parsers (net_headers.h)
                                    — untrusted input
   - src/rdma/                      RDMA backends (loopback, TCP mesh)
   - src/qemu/                      QEMU-derived PVRDMA device model

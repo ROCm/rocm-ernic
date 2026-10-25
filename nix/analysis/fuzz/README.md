@@ -43,14 +43,13 @@ The driver also replays a saved crash input, which reproduces a finding
 from a real fuzz run under ASan without rebuilding via Nix:
 
 ```
-./fuzz_replay_rdma_cm_proto crash-da39a3ee5e6b4b0d
+./fuzz_replay_net_headers crash-da39a3ee5e6b4b0d
 ```
 
 ## Harnesses
 
 | Harness | Target | Notes |
 |---|---|---|
-| `fuzz_rdma_cm_proto` | `rdma_cm_process_message()` | Pure TCP-payload parser — no device state |
 | `fuzz_net_headers` | `parse_eth/ip/tcp/udp_header` + checksums | Header-only helpers from `net_headers.h` |
 | `fuzz_ionic_stats` | ionic `STATS_HDRS` / `STATS_VALS` / `QP_STATS_HDRS` / `QP_STATS_VALS` via `ionic_adminq_dispatch_wqe()` | Fake device from `tests/ionic_adminq_fakes.h`, shared with `tests/test_ionic_stats.c`; checks every result against the handler's promises, with and without an injected `stats_vals` fault |
 | `fuzz_profile_parse` | `ionic_profile_apply_text()`, the `--nic-profile` ini loader | Pure text parser; checks a rejected layer changes nothing and an accepted one is in range and round-trips through `--print-profile` output |
@@ -120,6 +119,5 @@ device faked than the stats commands do. Extending
 
 ## Extending a corpus
 
-Drop representative inputs (an rdma_cm SA message, a real
-Ethernet/IP/UDP frame) into `corpus/<harness>/` to speed
-up coverage. The build seeds each corpus with a single trivial input.
+Drop representative inputs (a real Ethernet/IP/UDP frame) into
+`corpus/<harness>/` to speed up coverage. The build seeds each corpus with a single trivial input.

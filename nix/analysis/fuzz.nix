@@ -8,7 +8,6 @@
 #              crashes are the deliverable, not a build failure)
 #
 # Harnesses:
-#   fuzz_rdma_cm_proto   rdma_cm_process_message() — pure TCP-payload parser
 #   fuzz_net_headers     parse_eth/ip/tcp/udp + checksums (net_headers.h)
 #   fuzz_ionic_stats     the ionic STATS_HDRS/VALS admin commands, through
 #                        ionic_adminq_dispatch_wqe() over the fake device
@@ -48,11 +47,6 @@ let
   # harness against a plain main() during the ordinary CMake build to keep
   # them from going stale. Add a harness in both places.
   harnesses = [
-    { name = "rdma_cm_proto";
-      extra = [
-        "src/net/rdma_cm_proto.c"
-        "src/qemu-compat/error-report.c"
-      ]; }
     { name = "net_headers";
       extra = [ ]; }
     { name = "ionic_stats";

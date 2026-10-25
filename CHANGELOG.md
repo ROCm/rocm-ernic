@@ -973,6 +973,11 @@
   PVRDMA code used. With it went the `ERNIC_DEBUG_DMA_MAP` environment
   variable, and the `ernic_debug_dma_map` Ansible setting that wrote it. Only
   that layer read it, so it already had no effect.
+* The loopback rdma_cm responder, `src/net/rdma_cm_proto.c`, which lost its
+  only caller when the PVRDMA device was removed. The ionic device's
+  rdma_cm works without it. Its unit test, `rdma-cm-proto-unit`, and its
+  fuzz harness, `fuzz_rdma_cm_proto` (and `fuzz-replay-rdma_cm_proto`), went
+  with it.
 
 ### Fixed
 

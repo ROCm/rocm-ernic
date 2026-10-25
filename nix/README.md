@@ -132,10 +132,11 @@ cat result/summary.txt
 cat result/crashes/*/repro.txt
 ```
 
-Harnesses (`-fsanitize=fuzzer,address,undefined`) target the wire parsers:
-`rdma_cm_process_message` and the `net_headers.h` parse/checksum
-helpers. See `nix/analysis/fuzz/README.md` for details and
-for the DMA-path targets deferred to a future device-fixture harness.
+Harnesses (`-fsanitize=fuzzer,address,undefined`) target the parsers of
+untrusted input, such as the `net_headers.h` parse/checksum helpers and the
+ionic stats admin commands. See `nix/analysis/fuzz/README.md` for the full
+list and for the DMA-path targets deferred to a future device-fixture
+harness.
 
 ## Cross-compilation & other architectures
 

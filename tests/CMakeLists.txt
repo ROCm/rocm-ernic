@@ -140,25 +140,6 @@ target_include_directories(test_dma_range PRIVATE
 )
 
 # -- Parser unit tests -------------------------------------------
-# These link the wire parsers in src/net directly.
-add_executable(test_rdma_cm_proto
-    test_rdma_cm_proto.c
-    ${PROJECT_SOURCE_DIR}/src/net/rdma_cm_proto.c
-    ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
-)
-target_include_directories(test_rdma_cm_proto PRIVATE
-    ${PROJECT_SOURCE_DIR}/src
-    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
-    ${PROJECT_SOURCE_DIR}/src/qemu
-)
-# Headers from outside the project are SYSTEM includes.
-target_include_directories(test_rdma_cm_proto SYSTEM PRIVATE
-    ${GLIB2_INCLUDE_DIRS}
-)
-target_compile_definitions(test_rdma_cm_proto PRIVATE _GNU_SOURCE)
-target_link_directories(test_rdma_cm_proto PRIVATE ${GLIB2_LIBRARY_DIRS})
-target_link_libraries(test_rdma_cm_proto PRIVATE ${GLIB2_LIBRARIES})
-
 # Strict integer parser (parse_int.h) unit test (header-only).
 add_executable(test_parse_int test_parse_int.c)
 target_include_directories(test_parse_int PRIVATE
@@ -847,7 +828,6 @@ set(ERNIC_HARNESS_DEVICE_SOURCES
     ${NVMEOF_SOURCES}
     ${S3_SOURCES}
     ${RDMA_BACKEND_SOURCES}
-    ${NET_SOURCES}
     ${QEMU_COMPAT_SOURCES}
     ${QEMU_SOURCES}
 )
@@ -953,7 +933,6 @@ set(ERNIC_TEST_TARGETS
     test_write_imm
     test_net_checksum
     test_dma_range
-    test_rdma_cm_proto
     test_parse_int
     ernic-test-byteorder
     test_nvmeof_target
@@ -1054,13 +1033,6 @@ add_test(
     COMMAND $<TARGET_FILE:test_dma_range>
 )
 set_tests_properties(dma-range-unit PROPERTIES TIMEOUT 30)
-
-# rdma_cm protocol parser unit test (table-driven)
-add_test(
-    NAME rdma-cm-proto-unit
-    COMMAND $<TARGET_FILE:test_rdma_cm_proto>
-)
-set_tests_properties(rdma-cm-proto-unit PROPERTIES TIMEOUT 30)
 
 # Strict integer parser unit test (table-driven)
 add_test(
