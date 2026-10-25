@@ -27,6 +27,7 @@
 #include <sys/types.h>
 
 #include "byteorder.h"
+#include "ionic_datapath.h"
 #include "ionic_emu_stats.h"
 #include "ionic_eth_emu.h"
 #include "ionic_eth_emu_fakes.h"
@@ -105,6 +106,7 @@ static struct ionic_eth_emu *new_emu(uint32_t interval_ms)
     g_net_sends = 0;
     g_net_rx_frame = NULL;
     g_net_rx_len = 0;
+    memset(g_dp_rdma, 0, sizeof(g_dp_rdma));
     ionic_profile_defaults(&p);
     p.stats.interval_ms = interval_ms;
     ionic_eth_emu_set_profile(emu, &p);
@@ -453,6 +455,128 @@ static void reserved_zero(char *got, size_t len)
     ionic_eth_emu_destroy(emu);
 }
 
+/* ---- RDMA error counters, which the datapath keeps ---------------------- */
+
+/* The datapath's names for its RDMA counters, in counter order. */
+#define DP_RDMA_NAME(id, name) name,
+static const char *const dp_rdma_names[IONIC_DP_RDMA_COUNT] = {
+    IONIC_DP_RDMA_COUNTERS(DP_RDMA_NAME)};
+#undef DP_RDMA_NAME
+
+/*
+ * The ionic_if.h name of each datapath counter's LIF slot is the
+ * datapath's name with an rdma_ prefix, except for these.
+ */
+static const struct {
+    const char *dp;
+    const char *lif;
+} dp_rdma_renamed[] = {
+    {"resp_rx_out_of_atomic_res", "rdma_resp_rx_out_of_atomic_resource"},
+    {"tx_cnp_pkts", "tx_rdma_cnp_packets"},
+    {"rx_cnp_pkts", "rx_rdma_cnp_packets"},
+    {"rx_ecn_pkts", "rx_rdma_ecn_packets"},
+};
+
+/*
+ * The LIF slot datapath counter @i belongs in, or IONIC_LIF_STATS_QWORDS if
+ * none is named for it.  Found by name, not through the emulator's own
+ * table, so a counter copied into the wrong slot shows.
+ */
+static unsigned int lif_slot_of_dp(unsigned int i)
+{
+    char prefixed[64];
+    const char *want = NULL;
+
+    for (size_t r = 0; r < sizeof(dp_rdma_renamed) / sizeof(dp_rdma_renamed[0]);
+         r++)
+        if (strcmp(dp_rdma_names[i], dp_rdma_renamed[r].dp) == 0)
+            want = dp_rdma_renamed[r].lif;
+    if (!want) {
+        int n =
+            snprintf(prefixed, sizeof(prefixed), "rdma_%s", dp_rdma_names[i]);
+
+        if (n < 0 || (size_t)n >= sizeof(prefixed))
+            return IONIC_LIF_STATS_QWORDS;
+        want = prefixed;
+    }
+    for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++) {
+        const char *name = ionic_emu_lif_stat_name(q);
+
+        if (name && strcmp(name, want) == 0)
+            return q;
+    }
+    return IONIC_LIF_STATS_QWORDS;
+}
+
+/* A value for datapath counter @i that no other counter has. */
+static uint64_t dp_rdma_value(unsigned int i)
+{
+    return UINT64_C(0x1000) + i;
+}
+
+/* The emulator only reads the datapath's counters when it has one; nothing
+ * dereferences this stand-in. */
+static void attach_fake_dp(struct ionic_eth_emu *emu)
+{
+    static int fake_dp;
+
+    ionic_eth_emu_register_datapath(emu, (struct ionic_datapath *)&fake_dp);
+}
+
+static void rdma_counters_published(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(1000);
+    const struct ionic_emu_stats *st;
+    unsigned int no_slot = 0, in_stats = 0, in_guest = 0;
+
+    attach_fake_dp(emu);
+    lif_init(emu, LIF_PA);
+    for (unsigned int i = 0; i < IONIC_DP_RDMA_COUNT; i++)
+        g_dp_rdma[i] = dp_rdma_value(i);
+    ionic_eth_emu_publish_stats(emu, 5000);
+    st = ionic_eth_emu_get_stats(emu);
+    if (!st)
+        abort(); /* only a NULL emu has no stats */
+    for (unsigned int i = 0; i < IONIC_DP_RDMA_COUNT; i++) {
+        unsigned int q = lif_slot_of_dp(i);
+
+        if (q >= IONIC_LIF_STATS_QWORDS) {
+            no_slot++;
+            continue;
+        }
+        in_stats += st->lif[q] == dp_rdma_value(i);
+        in_guest += guest_qword(LIF_PA, q) == dp_rdma_value(i);
+    }
+    snprintf(got, len, "counters %u, no slot %u, in stats %u, in guest %u",
+             (unsigned int)IONIC_DP_RDMA_COUNT, no_slot, in_stats, in_guest);
+    ionic_eth_emu_destroy(emu);
+}
+
+static void rdma_counters_device_reset(char *got, size_t len)
+{
+    struct ionic_eth_emu *emu = new_emu(10);
+    uint64_t before, cqe, cnp;
+
+    attach_fake_dp(emu);
+    lif_init(emu, LIF_PA);
+    g_dp_rdma[IONIC_DP_REQ_RX_CQE_ERR] = 7;
+    g_dp_rdma[IONIC_DP_TX_CNP_PKTS] = 9;
+    before = counter(emu, IONIC_LIF_RDMA_REQ_RX_CQE_ERR);
+    devcmd(emu, IONIC_CMD_RESET, 0);
+    /* Read, and so refreshed from the datapath, after the reset. */
+    cqe = counter(emu, IONIC_LIF_RDMA_REQ_RX_CQE_ERR);
+    cnp = counter(emu, IONIC_LIF_TX_RDMA_CNP_PACKETS);
+    lif_init(emu, LIF_PA);
+    ionic_eth_emu_publish_stats(emu, 1000);
+    snprintf(got, len,
+             "before %" PRIu64 ", after %" PRIu64 "/%" PRIu64
+             ", guest after re-init %" PRIu64 "/%" PRIu64,
+             before, cqe, cnp,
+             guest_qword(LIF_PA, IONIC_LIF_RDMA_REQ_RX_CQE_ERR),
+             guest_qword(LIF_PA, IONIC_LIF_TX_RDMA_CNP_PACKETS));
+    ionic_eth_emu_destroy(emu);
+}
+
 static void address_boundaries(void)
 {
     static const struct {
@@ -756,6 +880,12 @@ static const struct publish_case publish_cases[] = {
      write_fails},
     {"corner", "junk in reserved slots of the counter block",
      "nonzero reserved qwords 0", reserved_zero},
+    {"positive", "distinct datapath RDMA counters, then publish",
+     "counters 30, no slot 0, in stats 30, in guest 30",
+     rdma_counters_published},
+    {"negative", "datapath RDMA counters, device reset, then read",
+     "before 7, after 0/0, guest after re-init 0/0",
+     rdma_counters_device_reset},
 };
 
 /* ---- Datapath rows ------------------------------------------------------ */

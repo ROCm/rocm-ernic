@@ -319,6 +319,7 @@ static void test_map(void)
           "an empty map is accepted and does nothing");
 }
 
+
 int main(void)
 {
     test_known_encodings();

@@ -332,6 +332,41 @@ int ionic_datapath_fp8_map(struct ionic_datapath *dp, uint8_t op,
                            uint64_t b_va, uint32_t len, uint32_t c_rkey,
                            uint64_t c_va);
 
+/*
+ * Convert a region of floating point from one format to another,
+ * elementwise, in either direction.
+ *
+ * @src_fmt and @dst_fmt are enum p4_fmt values.  @in_len bytes at
+ * (@a_lkey, @a_va) hold however many elements of @src_fmt that is; the
+ * result is the same number of @dst_fmt elements at (@c_rkey, @c_va),
+ * which is longer, shorter or the same length depending on the pair.
+ *
+ * This is the only operation whose destination length is not its source
+ * length, so each region is checked against its own, in full, before a
+ * byte moves.  Returns 0, or a negative errno.
+ *
+ * The destination may not overlap the source, and nothing here checks
+ * that it does not.  The conversion streams a chunk at a time -- read,
+ * convert, write -- so a destination that overlaps the part of the
+ * source still to be read is overwritten before it is used, and the
+ * operation then completes successfully with wrong results from that
+ * point on.  Widening makes it easy to reach: fp16 to fp32 into the same
+ * address writes two bytes for every one it has read, so the second
+ * chunk's input is gone before the first chunk is finished.
+ *
+ * Not checked because checking it properly is not a range comparison.
+ * Two different keys may be registered over the same guest pages, so
+ * overlap has to be decided on what the keys resolve to rather than on
+ * the keys themselves, and the honest fix is to stage the whole source
+ * before writing any of it.  Until then this is the guest corrupting its
+ * own memory with its own keys -- it can reach nothing it has not
+ * registered, and every region is still checked for that -- so it is
+ * recorded here rather than guessed at.
+ */
+int ionic_datapath_fmt_convert(struct ionic_datapath *dp, uint8_t src_fmt,
+                               uint8_t dst_fmt, uint32_t a_lkey, uint64_t a_va,
+                               uint32_t in_len, uint32_t c_rkey, uint64_t c_va);
+
 struct p4_engine;
 
 /*
@@ -416,5 +451,12 @@ enum ionic_dp_rdma_counter {
 void ionic_datapath_rdma_counters(const struct ionic_datapath *dp,
                                   uint32_t qp_id,
                                   uint64_t out[IONIC_DP_RDMA_COUNT]);
+
+/*
+ * Zero the RDMA counters, the device totals and every QP's, as firmware
+ * does on a device reset.  @dp may be NULL.  Same thread as
+ * ionic_datapath_rdma_counters().
+ */
+void ionic_datapath_reset_rdma_counters(struct ionic_datapath *dp);
 
 #endif /* IONIC_DATAPATH_H */

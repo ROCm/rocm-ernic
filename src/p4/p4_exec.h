@@ -67,6 +67,12 @@ struct p4_extern_ops {
 /* What running the pipeline decided. */
 struct p4_exec_result {
     bool dropped;
+    /*
+     * True when the program assigned egress_spec.  False means it ran to
+     * completion without choosing a port, which the frame path treats as
+     * "no opinion" rather than as a request for port 0.
+     */
+    bool egress_assigned;
     uint32_t egress_spec;
     size_t len; /* bytes written to the output buffer */
 };
@@ -107,8 +113,14 @@ int p4_exec_run(const struct p4_program *prog, const struct p4_entries *ent,
  * frame path does: an extern's operands come from a work request, and a
  * frame has none.
  *
- * Returns 0, -EINVAL on a bad argument, or -ENOENT when the program
- * declares no rdma_metadata and so was never meant for this path.
+ * Returns 0, -EINVAL on a bad argument, -ENOENT when the program declares
+ * no rdma_metadata and so was never meant for this path, or the negative
+ * errno with which the pipeline stopped -- an extern's own, for one.
+ *
+ * When the pipeline stops, @res->dropped still says whether the program
+ * had marked the operation dropped before it did.  That drop was decided
+ * and stands; a caller that tolerates the error must not let the
+ * operation through over it.  Every other field is zero.
  */
 int p4_exec_run_meta(const struct p4_program *prog,
                      const struct p4_entries *ent,

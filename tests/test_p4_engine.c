@@ -989,6 +989,54 @@ static void test_execute(void)
               "\"action_data\":[]}}],"                                \
               "\"action_profiles\":[],\"conditionals\":[]}]}"
 
+/*
+ * A program that runs without assigning egress_spec has not chosen a
+ * port, and the frame goes to the other port -- what the device does with
+ * no program at all.
+ *
+ * fp8_policy.p4 is exactly such a program: it governs the RDMA path and
+ * its ingress never touches egress_spec.  The field's initial zero used
+ * to be read as P4_PORT_HOST, so a guest that loaded it had every frame
+ * it transmitted injected back into its own receive ring -- a silent
+ * loopback, counted as forwarded rather than dropped.
+ */
+static void test_execute_no_egress_assignment(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    uint8_t in[64], out[128];
+    struct p4_result res;
+    struct p4_stats st;
+
+    for (size_t i = 0; i < sizeof(in); i++)
+        in[i] = (uint8_t)i;
+
+    check(load_fixture(eng, "fp8_policy.json") == 0, "fp8_policy.json loads");
+
+    /* Host ingress must leave by the uplink, not come back to the host. */
+    check(p4_engine_process(eng, P4_PORT_HOST, in, sizeof(in), out, sizeof(out),
+                            &res) == 0,
+          "a frame runs through the RDMA-only program");
+    check(res.verdict == P4_VERDICT_FORWARD,
+          "a frame under a program that assigns no egress_spec is forwarded");
+    check(res.egress_port == P4_PORT_UPLINK,
+          "an unassigned egress_spec is not read as port 0");
+
+    /* And the other direction, for the same reason. */
+    check(p4_engine_process(eng, P4_PORT_UPLINK, in, sizeof(in), out,
+                            sizeof(out), &res) == 0,
+          "an uplink frame runs through it too");
+    check(res.verdict == P4_VERDICT_FORWARD && res.egress_port == P4_PORT_HOST,
+          "an uplink frame goes to the host");
+
+    p4_engine_get_stats(eng, &st);
+    check(st.frames_dropped == 0, "neither frame was dropped");
+    check(st.frames_out[P4_PORT_UPLINK] == 1 &&
+              st.frames_out[P4_PORT_HOST] == 1,
+          "each frame was counted against the port it left by");
+
+    p4_engine_destroy(eng);
+}
+
 static void test_execute_egress(void)
 {
     struct p4_engine *eng = p4_engine_create();
@@ -1480,9 +1528,12 @@ static void test_extern_call(void)
     log.calls = 0;
     log.fail_with = -EFAULT;
     meta.opcode = 4;
+    suppress = true;
     check(p4_engine_process_rdma(eng, &ops, &meta, &suppress) == -EFAULT,
           "a failing extern fails the operation");
     check(log.calls == 1, "it was still called");
+    /* The action drops after the call, so the drop was never reached. */
+    check(!suppress, "a drop the pipeline never reached was reported");
     log.fail_with = 0;
 
     /*
@@ -1495,6 +1546,65 @@ static void test_extern_call(void)
     p4_engine_destroy(eng);
 }
 
+/*
+ * A drop made before an extern call that then fails is still reported.
+ *
+ * The datapath treats one failure -- the extern declining a request that is
+ * not its shape -- as "no decision" and lets the operation through, so the
+ * engine has to say whether the program had already dropped it.  Losing
+ * that let a write the program denied be dispatched anyway.
+ */
+static void test_extern_after_drop(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    struct extern_log log;
+    struct p4_extern_ops ops;
+    struct p4_rdma_meta meta;
+    struct p4_update up;
+    bool suppress = false;
+    char err[160];
+
+    memset(&log, 0, sizeof(log));
+    ops.call = extern_record;
+    ops.ctx = &log;
+
+    memset(&meta, 0, sizeof(meta));
+    meta.opcode = 4;
+
+    check(load_fixture(eng, "fp8_drop_then_map.json") == 0,
+          "the compiled drop-then-map program loads");
+
+    memset(&up, 0, sizeof(up));
+    up.type = P4_UPDATE_INSERT;
+    (void)snprintf(up.table, sizeof(up.table), "Ing.policy");
+    (void)snprintf(up.action, sizeof(up.action), "Ing.drop_then_reduce");
+    up.nmatch = 1;
+    up.match[0].len = 1;
+    up.match[0].value[P4_MATCH_BYTES - 1] = 4;
+    up.nparams = 1;
+    up.params[0].len = 1;
+    up.params[0].value[P4_MATCH_BYTES - 1] = P4_FP8_OP_ADD;
+    checkf(p4_engine_update(eng, &up, err, sizeof(err)) == 0,
+           "the entry is not installed: %s", err);
+
+    log.fail_with = -ENOEXEC;
+    check(p4_engine_process_rdma(eng, &ops, &meta, &suppress) == -ENOEXEC,
+          "the extern's error is returned");
+    check(log.calls == 1, "the extern was called");
+    check(suppress, "the drop made before the call was lost");
+
+    /* An opcode with no entry runs no action, error or not. */
+    log.calls = 0;
+    meta.opcode = 7;
+    suppress = true;
+    check(p4_engine_process_rdma(eng, &ops, &meta, &suppress) == 0,
+          "an operation with no entry runs");
+    check(log.calls == 0 && !suppress,
+          "an operation with no entry was touched");
+
+    p4_engine_destroy(eng);
+}
+
 int main(void)
 {
     test_lifecycle();
@@ -1502,12 +1612,14 @@ int main(void)
     test_load_real_artifacts();
     test_execute();
     test_execute_egress();
+    test_execute_no_egress_assignment();
     test_execute_wide_field();
     test_table_entries();
     test_table_entry_errors();
     test_rdma_metadata();
     test_rdma_execute();
     test_extern_call();
+    test_extern_after_drop();
     test_load_rejects_bad_input();
     test_load_chunk_bounds();
     test_load_sequence();

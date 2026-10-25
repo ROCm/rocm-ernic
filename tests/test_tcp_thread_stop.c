@@ -242,10 +242,91 @@ void qemu_thread_join(QemuThread *thread)
 
 /* ---- Watchdog ---------------------------------------------------------- */
 
+/*
+ * Whether the test runs under valgrind.  Two rows care.
+ *
+ * REAP_NO_FDS cannot run at all: valgrind doesn't pass a change to
+ * RLIMIT_NOFILE to the kernel but enforces the limit itself, and not as the
+ * kernel does -- an accept() already waiting when the limit is lowered gets
+ * a descriptor over it, and one that starts afterwards fails with EMFILE but
+ * takes the connection off the queue, so the retry finds nothing.
+ *
+ * The rest need longer; see row_timeout_s().
+ */
+static bool under_valgrind(void)
+{
+#ifdef ERNIC_HAVE_VALGRIND_H
+    return RUNNING_ON_VALGRIND != 0;
+#else
+    return false;
+#endif
+}
+
+/*
+ * How long a row may take before the watchdog calls it hung.
+ *
+ * This is a hang detector, not a performance assertion: every wait a row
+ * makes is bounded, so a row that is merely slow still finishes and a row
+ * that is stuck never does.  The budget has to cover the slowest legitimate
+ * row, which is REAP_CAP -- 64 peers connected one at a time, each with a
+ * receive thread, and then a 65th.
+ *
+ * Valgrind runs all of those threads on one core and costs tens of times
+ * native speed, so the row takes well under a second natively and ran into
+ * ten seconds on a loaded four-CPU CI runner with 63 of the 64 peers
+ * connected: nothing was stuck, the budget was just a native-speed one.
+ * Under valgrind it is six times larger, which is still far below the
+ * minutes a genuinely stuck row would take, and the counters the watchdog
+ * prints say which case it was.
+ */
 #define ROW_TIMEOUT_S 10
+
+static unsigned row_timeout_s(void)
+{
+    return under_valgrind() ? ROW_TIMEOUT_S * 6u : ROW_TIMEOUT_S;
+}
 
 static const char *volatile g_current_row = "";
 
+/*
+ * Write "label<n>" with write(), which is async-signal-safe; printf() is
+ * not.  n is one of the thread counters, so it needs no sign and no more
+ * than ten digits.
+ */
+static void watchdog_count(const char *label, size_t label_len, int n)
+{
+    char buf[16];
+    size_t i = sizeof(buf);
+
+    if (n < 0) {
+        n = 0;
+    }
+    do {
+        buf[--i] = (char)('0' + n % 10);
+        n /= 10;
+    } while (n > 0 && i > 0);
+
+    if (write(STDOUT_FILENO, label, label_len) < 0 ||
+        write(STDOUT_FILENO, buf + i, sizeof(buf) - i) < 0) {
+        _exit(1);
+    }
+}
+
+#define WATCHDOG_COUNT(label, n) watchdog_count(label, sizeof(label) - 1, n)
+
+/*
+ * The row took longer than row_timeout_s(), so something it was waiting for
+ * never happened and the process has to be killed for ctest to see it.
+ *
+ * The counters go out with the row name because killing the process leaves
+ * every thread still running, and valgrind then reports each one's thread-
+ * local storage as possibly lost: a run that ends here is reported as a
+ * memory leak whose stacks point at whatever created the threads, which
+ * says nothing about what hung.  Created against joined against exited does
+ * say: threads that exited but were not joined mean a join never ran, and
+ * threads that never exited mean one is stuck in the loop it was told to
+ * leave.
+ */
 _Noreturn static void watchdog(int sig)
 {
     static const char msg[] = "FAIL hung stopping a thread: ";
@@ -253,9 +334,14 @@ _Noreturn static void watchdog(int sig)
     (void)sig;
     /* write() is async-signal-safe; the row text is a string literal. */
     if (write(STDOUT_FILENO, msg, sizeof(msg) - 1) < 0 ||
-        write(STDOUT_FILENO, g_current_row, strlen(g_current_row)) < 0 ||
-        write(STDOUT_FILENO, "\n", 1) < 0)
+        write(STDOUT_FILENO, g_current_row, strlen(g_current_row)) < 0)
         _exit(1);
+    WATCHDOG_COUNT("; threads created ", atomic_load(&g_creates));
+    WATCHDOG_COUNT(", joined ", atomic_load(&g_joins));
+    WATCHDOG_COUNT(", exited ", atomic_load(&g_exits));
+    if (write(STDOUT_FILENO, "\n", 1) < 0) {
+        _exit(1);
+    }
     _exit(1);
 }
 
@@ -447,7 +533,7 @@ static int run_case(const struct stop_case *c)
     }
 
     g_current_row = c->description;
-    alarm(ROW_TIMEOUT_S);
+    alarm(row_timeout_s());
     start = now_s();
     for (int i = 0; i < c->stops; i++)
         tcp_stop_accept_thread(priv);
@@ -594,7 +680,7 @@ static int run_health_case(const struct health_case *c)
     }
 
     g_current_row = c->description;
-    alarm(ROW_TIMEOUT_S);
+    alarm(row_timeout_s());
     if (c->setup != NOT_STARTED) {
         atomic_store(&priv->health_check_running, true);
         qemu_thread_create(&priv->health_check_thread,
@@ -839,7 +925,7 @@ static int run_recv_case(const struct recv_case *c)
 
     if (ok) {
         g_current_row = c->description;
-        alarm(ROW_TIMEOUT_S);
+        alarm(row_timeout_s());
         start = now_s();
         for (int i = 0; i < c->stops; i++)
             tcp_stop_recv_threads(priv);
@@ -1094,7 +1180,7 @@ static int run_fini_case(const struct fini_case *c)
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
 
     g_current_row = c->description;
-    alarm(ROW_TIMEOUT_S);
+    alarm(row_timeout_s());
     if (port == 0 || tcp_init_with_interval(&dev, config, c->interval) != 0) {
         printf("FAIL fini %s: %s; could not start a manager\n", c->category,
                c->description);
@@ -1251,7 +1337,7 @@ static int run_create_case(const struct create_case *c)
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
 
     g_current_row = c->description;
-    alarm(ROW_TIMEOUT_S);
+    alarm(row_timeout_s());
     if (port == 0) {
         why = "no free TCP port";
         goto out;
@@ -1594,7 +1680,7 @@ static int run_hs_case(const struct hs_case *c)
     memset(&addr, 0, sizeof(addr));
 
     g_current_row = c->description;
-    alarm(ROW_TIMEOUT_S);
+    alarm(row_timeout_s());
     if (priv->listen_fd < 0 ||
         getsockname(priv->listen_fd, (struct sockaddr *)&addr, &len) < 0) {
         why = "could not open a listening socket";
@@ -1885,7 +1971,7 @@ static int run_silent_case(const struct sl_case *c)
     atomic_store(&g_joins, 0);
     atomic_store(&g_exits, 0);
     g_current_row = c->description;
-    alarm(ROW_TIMEOUT_S);
+    alarm(row_timeout_s());
     why = mgr_setup(&fx, 1, 1);
     if (!why)
         why = c->scenario == SL_SILENT ? sl_silent(&fx, &lfd) : sl_answers(&fx);
@@ -2040,7 +2126,7 @@ static int run_connect_case(const struct connect_case *c)
     }
 
     g_current_row = c->description;
-    alarm(ROW_TIMEOUT_S);
+    alarm(row_timeout_s());
     if (port[0] != 0 && (addrs == 1 || port[1] != 0)) {
         start = now_s();
         if (c->timeout_s != 0)
@@ -2188,7 +2274,7 @@ static int run_reg_case(const struct reg_case *c)
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
 
     g_current_row = c->description;
-    alarm(ROW_TIMEOUT_S);
+    alarm(row_timeout_s());
     if (port == 0 ||
         tcp_init_with_interval(&dev, config, LONG_INTERVAL_S) != 0) {
         printf("FAIL registration %s: %s; could not start a manager\n",
@@ -3058,7 +3144,7 @@ static int run_tp_case(const struct tp_case *c)
     atomic_store(&g_exits, 0);
     atomic_store(&g_create_failures, 0);
     g_current_row = c->description;
-    alarm(ROW_TIMEOUT_S);
+    alarm(row_timeout_s());
 
     /* TP_SKIPS starts the peer-connect thread itself */
     why = tp_setup(&fx, c->interval, c->scenario != TP_SKIPS);
@@ -3635,7 +3721,7 @@ static int run_wr_case(const struct wr_case *c)
     in.ret = -1;
 
     g_current_row = c->description;
-    alarm(ROW_TIMEOUT_S);
+    alarm(row_timeout_s());
     lfd = listen_loopback();
     if (lfd < 0 || getsockname(lfd, (struct sockaddr *)&addr, &len) < 0) {
         why = "could not open the manager's listener";
@@ -3896,7 +3982,7 @@ static int run_sp_case(const struct sp_case *c)
     atomic_init(&running, true);
 
     g_current_row = c->description;
-    alarm(ROW_TIMEOUT_S);
+    alarm(row_timeout_s());
     if (c->first + c->later > SP_ALL) {
         why = "the row sends more than the stream";
     } else if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
@@ -4492,23 +4578,6 @@ static const char *reap_run(TcpBackendPrivate *priv, uint16_t port,
     }
 }
 
-/*
- * Whether the test runs under valgrind.  Valgrind doesn't pass a change to
- * RLIMIT_NOFILE to the kernel but enforces the limit itself, and not as the
- * kernel does: an accept() already waiting when the limit is lowered gets a
- * descriptor over it, and one that starts afterwards fails with EMFILE but
- * takes the connection off the queue, so the retry finds nothing.  The
- * REAP_NO_FDS row can't run under it.
- */
-static bool under_valgrind(void)
-{
-#ifdef ERNIC_HAVE_VALGRIND_H
-    return RUNNING_ON_VALGRIND != 0;
-#else
-    return false;
-#endif
-}
-
 static int run_reap_case(const struct reap_case *c)
 {
     RdmaBackendDev dev;
@@ -4537,7 +4606,7 @@ static int run_reap_case(const struct reap_case *c)
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
 
     g_current_row = c->description;
-    alarm(ROW_TIMEOUT_S);
+    alarm(row_timeout_s());
     if (port == 0 || tcp_init_with_interval(&dev, config, c->interval) != 0) {
         printf("FAIL reap %s: %s; could not start a manager\n", c->category,
                c->description);
@@ -4869,7 +4938,7 @@ static int run_sender_case(const struct sender_case *c)
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
 
     g_current_row = c->description;
-    alarm(ROW_TIMEOUT_S);
+    alarm(row_timeout_s());
     if (port == 0 ||
         tcp_init_with_interval(&dev, config, LONG_INTERVAL_S) != 0) {
         printf("FAIL sender %s: %s; could not start a manager\n", c->category,
@@ -5190,7 +5259,7 @@ static int run_ra_case(const struct ra_case *c)
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
 
     g_current_row = c->description;
-    alarm(ROW_TIMEOUT_S);
+    alarm(row_timeout_s());
     if (port == 0 ||
         tcp_init_with_interval(&dev, config, LONG_INTERVAL_S) != 0) {
         printf("FAIL register again %s: %s; could not start a manager\n",
@@ -5555,7 +5624,7 @@ static int run_lt_case(const struct lt_case *c)
     atomic_store(&g_joins, 0);
     atomic_store(&g_exits, 0);
     g_current_row = c->description;
-    alarm(ROW_TIMEOUT_S);
+    alarm(row_timeout_s());
     if (c->scenario == LT_REGISTER_VS_STOP || c->scenario == LT_AGAIN_VS_STOP)
         why = lt_register_vs_stop(c->scenario == LT_AGAIN_VS_STOP);
     else
@@ -5691,7 +5760,7 @@ static int run_pp_case(const struct pp_case *c)
     atomic_store(&g_joins, 0);
     atomic_store(&g_exits, 0);
     g_current_row = c->description;
-    alarm(ROW_TIMEOUT_S);
+    alarm(row_timeout_s());
 
     why = tp_setup(&fx, LONG_INTERVAL_S, false);
     /* For a port to name, and the peer's ends to close */
@@ -5996,7 +6065,7 @@ static int run_dc_case(const struct dc_case *c)
     dc_init(&b, c->interval);
 
     g_current_row = c->description;
-    alarm(ROW_TIMEOUT_S);
+    alarm(row_timeout_s());
     lfd = listen_loopback();
     if (lfd < 0 || getsockname(lfd, (struct sockaddr *)&addr, &len) < 0)
         why = "could not open the manager's listener";
@@ -6569,7 +6638,7 @@ static int run_wl_case(const struct wl_case *c)
     dc_init(&w, 1);
 
     g_current_row = c->description;
-    alarm(ROW_TIMEOUT_S);
+    alarm(row_timeout_s());
     lfd = listen_loopback();
     high = listen_loopback();
     if (lfd < 0 || high < 0 ||

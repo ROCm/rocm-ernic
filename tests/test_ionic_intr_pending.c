@@ -85,6 +85,24 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
     (void)qtype;
     (void)doorbell_val;
 }
+
+/* The emulator copies these into the LIF statistics block; this test
+ * drives no datapath, so they read as zero. */
+void ionic_datapath_rdma_counters(const struct ionic_datapath *dp,
+                                  uint32_t qp_id,
+                                  uint64_t out[IONIC_DP_RDMA_COUNT])
+{
+    (void)dp;
+    (void)qp_id;
+    memset(out, 0, sizeof(*out) * IONIC_DP_RDMA_COUNT);
+}
+
+/* A device reset zeroes them; there are none here to zero. */
+void ionic_datapath_reset_rdma_counters(struct ionic_datapath *dp)
+{
+    (void)dp;
+}
+
 void ionic_adminq_update_prod(struct ionic_adminq_ctx *ctx, int aq_idx,
                               uint16_t p_index)
 {

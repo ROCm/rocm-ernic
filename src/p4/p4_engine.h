@@ -134,6 +134,11 @@ struct p4_extern_ops;
  * negative errno when the pipeline could not be run.  A caller that gets
  * an error must fail the operation rather than carry on: the pipeline is
  * the policy, and proceeding past a failed one bypasses it.
+ *
+ * *@suppress is set on an error too, to whether the program had marked
+ * the operation dropped before the pipeline stopped.  A caller that
+ * treats some error as "no decision" (an extern declining a request that
+ * is not its kind) must still honour a drop made ahead of it.
  */
 int p4_engine_process_rdma(struct p4_engine *eng,
                            const struct p4_extern_ops *ops,

@@ -1491,16 +1491,21 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
             return 1;
         }
 
+        uint64_t mr_va = ernic_get_le64(body + 0);
+        uint64_t mr_len = ernic_get_le64(body + 8);
         struct ionic_dp_buf_desc mrbuf = {.dma_addr = ernic_get_le64(body + 32),
                                           .map_count =
                                               ernic_get_le32(body + 28),
                                           .page_size_log2 = body[44]};
-        ionic_datapath_register_mr(ctx->dp, mrid, ernic_get_le64(body + 0),
-                                   ernic_get_le64(body + 8), &mrbuf);
+        ionic_datapath_register_mr(ctx->dp, mrid, mr_va, mr_len, &mrbuf);
 
         vfu_log(ctx->vfu_ctx, LOG_INFO,
-                "ionic_adminq CREATE_MR mr_id=%u handle=%u access=%#x pd=%u",
-                mr_id, mr_handle, access, pd_handle);
+                "ionic_adminq CREATE_MR mr_id=%u handle=%u access=%#x pd=%u "
+                "va=%#" PRIx64 " len=%" PRIu64 " pt=%#" PRIx64 " maps=%" PRIu32
+                " pgsz_log2=%u",
+                mr_id, mr_handle, access, pd_handle, mr_va, mr_len,
+                mrbuf.dma_addr, mrbuf.map_count,
+                (unsigned)mrbuf.page_size_log2);
         return 0;
     }
 
