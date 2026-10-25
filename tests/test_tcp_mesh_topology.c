@@ -1,7 +1,7 @@
 /*
  *
  * Unit tests for the manager's broadcasts, the passes of its broadcaster,
- * tcp_broadcast_pass(), in rdma_backend_tcp.c.
+ * tcp_broadcast_pass(), in tcp_manager.c.
  *
  * Regression coverage for a stack-memory disclosure: the manager sends the
  * full fixed-size TcpMeshTopologyPayload (~17 KB, TOPO_MAXNODE node slots) on
@@ -14,7 +14,7 @@
  * socketpair and asserts every byte past num_nodes is zero. Without the
  * zero-fill the poison shows up on the wire and the test fails.
  *
- * The test links rdma_backend_tcp.c and reaches the broadcasts through
+ * The test links the TCP backend and reaches the broadcasts through
  * rdma_backend_tcp_priv.h; they only need the mesh, connection, and GID hash
  * tables, so the rest of the backend's externals are stubbed out.
  *

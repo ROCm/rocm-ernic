@@ -684,12 +684,18 @@ target_link_directories(test_ionic_rq_wrap PRIVATE
 target_link_libraries(test_ionic_rq_wrap PRIVATE
     ${VFIO_USER_LINK_LIBRARIES} ${GLIB2_LIBRARIES} pthread)
 
+# The TCP backend's sources, for the unit tests below that link it. The list
+# comes from the top-level CMakeLists.txt, so they keep linking what the
+# server links.
+set(ERNIC_TCP_TEST_SOURCES ${TCP_BACKEND_SOURCES})
+list(TRANSFORM ERNIC_TCP_TEST_SOURCES PREPEND "${PROJECT_SOURCE_DIR}/")
+
 # TCP mesh broadcast test. It links the TCP backend, reaches its helpers
 # through rdma_backend_tcp_priv.h, and stubs the backend's externals, so no
 # RDMA subsystem link is needed; the broadcasts go over a socketpair.
 add_executable(test_tcp_mesh_topology
     test_tcp_mesh_topology.c
-    ${PROJECT_SOURCE_DIR}/src/rdma/rdma_backend_tcp.c
+    ${ERNIC_TCP_TEST_SOURCES}
 )
 target_include_directories(test_tcp_mesh_topology PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -720,7 +726,7 @@ target_link_libraries(test_tcp_mesh_topology PRIVATE
 # or thread is involved.
 add_executable(test_tcp_gid_resolve
     test_tcp_gid_resolve.c
-    ${PROJECT_SOURCE_DIR}/src/rdma/rdma_backend_tcp.c
+    ${ERNIC_TCP_TEST_SOURCES}
 )
 target_include_directories(test_tcp_gid_resolve PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -747,7 +753,7 @@ target_link_libraries(test_tcp_gid_resolve PRIVATE
 # backend's externals; choosing a role needs no socket or thread.
 add_executable(ernic-test-tcp-config
     test_tcp_config.c
-    ${PROJECT_SOURCE_DIR}/src/rdma/rdma_backend_tcp.c
+    ${ERNIC_TCP_TEST_SOURCES}
 )
 target_include_directories(ernic-test-tcp-config PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -775,7 +781,7 @@ target_link_libraries(ernic-test-tcp-config PRIVATE
 # fails the test.
 add_executable(ernic-test-tcp-thread-stop
     test_tcp_thread_stop.c
-    ${PROJECT_SOURCE_DIR}/src/rdma/rdma_backend_tcp.c
+    ${ERNIC_TCP_TEST_SOURCES}
 )
 target_include_directories(ernic-test-tcp-thread-stop PRIVATE
     ${PROJECT_SOURCE_DIR}/src

@@ -85,11 +85,6 @@ Checks:
   # It wants C11's Annex K functions, such as memcpy_s(), which glibc
   # doesn't have
   - -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling  # TODO(1198)
-  # Both are false positives from tcp_health_check_unpublish() in
-  # rdma_backend_tcp.c, which drops the connections table's reference
-  # while its caller holds its own. The analyzer can't know there's a
-  # second reference, so it assumes the first drop frees the connection
-  - -clang-analyzer-unix.Malloc  # TODO(2)
   - -clang-analyzer-unix.Stream  # TODO(1)
   # A compiler warning, new in Clang 23, which clang-tidy reports too
   - -clang-diagnostic-unused-but-set-global  # TODO(4)

@@ -1,6 +1,6 @@
 /*
  *
- * Unit tests for GID -> node resolution in rdma_backend_tcp.c.
+ * Unit tests for GID -> node resolution in tcp_gid.c.
  *
  * Regression coverage for silent misrouting above two nodes: the resolver
  * used to derive a node id from one octet of the destination GID, and its
@@ -17,7 +17,7 @@
  * the device whatever its backend, so the last cases check that all of them
  * refuse a backend that isn't TCP.
  *
- * The test links rdma_backend_tcp.c and reaches its helpers through
+ * The test links the TCP backend and reaches its helpers through
  * rdma_backend_tcp_priv.h; resolution needs only the GID table, so the rest
  * of the backend's externals are stubbed out.
  *

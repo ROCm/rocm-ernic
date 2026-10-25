@@ -22,7 +22,7 @@
  * connections, and reports an IPv4 peer's address as a.b.c.d, not as the
  * ::ffff:a.b.c.d an IPv6 socket sees.
  *
- * The test links rdma_backend_tcp.c and reaches its helpers through
+ * The test links the TCP backend and reaches its helpers through
  * rdma_backend_tcp_priv.h; none of this needs a thread, so the rest of the
  * backend's externals are stubbed out.
  *

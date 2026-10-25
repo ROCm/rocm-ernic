@@ -747,9 +747,9 @@ More Than One VM: the TCP Mesh
 ------------------------------
 
 Each server serves one VM. For QPs in different VMs to talk,
-the ``tcp`` backend (``src/rdma/rdma_backend_tcp.c``) connects
-the servers into a mesh, and the data path sends requests
-across it.
+the ``tcp`` backend (``src/rdma/rdma_backend_tcp.c`` and the
+``tcp_*.c`` files beside it) connects the servers into a mesh,
+and the data path sends requests across it.
 
 Topology
 ^^^^^^^^
