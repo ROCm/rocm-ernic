@@ -83,6 +83,14 @@ unsigned long fake_vfu_map_count(vfu_ctx_t *ctx);
  */
 void fake_vfu_fail_nth_map(vfu_ctx_t *ctx, unsigned long n);
 
+/*
+ * Make the @n'th call to vfu_sgl_get() from now fail with EFAULT, getting
+ * nothing, as the real library does for a DMA region the client didn't
+ * share a file descriptor for; 1 is the next call. Only that one call
+ * fails. 0 cancels a pending failure.
+ */
+void fake_vfu_fail_nth_get(vfu_ctx_t *ctx, unsigned long n);
+
 /* Scatter/gather entries currently got and not yet put back. */
 size_t fake_vfu_mapped(vfu_ctx_t *ctx);
 

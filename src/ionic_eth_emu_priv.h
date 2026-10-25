@@ -384,6 +384,8 @@ _Static_assert(IONIC_PROFILE_INTR_VECTORS_MAX <= IONIC_MSIX_MAX_VECTORS,
 /* Frames queued by ionic_eth_emu_queue_rx_frame(); private to the .c. */
 struct eth_inbox_frame;
 
+struct ernic_dma;
+
 /* State captured from Q_INIT for an Ethernet logical queue. */
 struct eth_queue {
     bool valid;
@@ -401,6 +403,7 @@ struct eth_queue {
 
 struct ionic_eth_emu {
     vfu_ctx_t *vfu_ctx;
+    struct ernic_dma *dma; /* main loop thread only, like every DMA */
 
     /* Shadow copy of BAR0 contents.  Reads are served from here;
      * writes update it and, when the doorbell byte is written, trigger

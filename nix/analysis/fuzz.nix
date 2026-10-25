@@ -46,7 +46,7 @@ let
   # them from going stale. Add a harness in both places.
   harnesses = [
     { name = "ionic_stats";
-      extra = [ "src/ionic_adminq.c" "src/ionic_fault.c" ];
+      extra = [ "src/ernic_dma.c" "src/ionic_adminq.c" "src/ionic_fault.c" ];
       cflags = "-Itests -I${libvfioUser}/include";
       seeds = true; }
     { name = "profile_parse";

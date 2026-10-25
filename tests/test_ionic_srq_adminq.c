@@ -41,6 +41,7 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "byteorder.h"
+#include "ernic_dma.h"
 #include "ionic_adminq_priv.h"
 #include "ionic_datapath.h"
 #include "rocm_ernic_compat.h"
@@ -491,6 +492,8 @@ struct PVRDMADev {
 static struct PVRDMADev g_fake_pvrdma;
 
 static struct ionic_adminq_ctx g_ctx;
+/* Made in main(); outlives every ctx_reset(). */
+static struct ernic_dma *g_dma;
 
 #define RESP_GPA       256u
 #define SRQ_DEPTH_LOG2 6
@@ -499,6 +502,7 @@ static struct ionic_adminq_ctx g_ctx;
 static void ctx_reset(void)
 {
     memset(&g_ctx, 0, sizeof(g_ctx));
+    g_ctx.dma = g_dma;
     g_ctx.pvrdma_handle = &g_fake_pvrdma;
 
     memset(g_mem, 0, sizeof(g_mem));
@@ -1073,6 +1077,12 @@ static void test_create_fails_when_the_id_cannot_be_returned(void)
 
 int main(void)
 {
+    g_dma = ernic_dma_create();
+    if (!g_dma) {
+        fprintf(stderr, "ernic_dma_create failed\n");
+        return 1;
+    }
+
     test_create_reports_id_and_length();
     test_create_rejects_short_body();
     test_modify_and_query_resolve_the_id();
@@ -1088,6 +1098,7 @@ int main(void)
     test_create_qp_body_must_reach_type_state();
     test_create_fails_when_the_id_cannot_be_returned();
 
+    ernic_dma_destroy(g_dma);
     if (failures) {
         printf("\n%d check(s) failed\n", failures);
         return 1;

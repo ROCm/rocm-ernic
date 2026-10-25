@@ -34,8 +34,8 @@
  * than adding, so the check cannot wrap itself.
  *
  * Call this before every vfu_addr_to_sgl(), on the values as they arrived.
- * A zero length passes, which is what the callers want: they either return
- * early or ask libvfio-user for nothing.
+ * ernic_dma.c, which makes every such call, does. A zero length passes,
+ * which is what it wants: it returns early without asking libvfio-user.
  */
 static inline bool ernic_dma_range_ok(uint64_t gpa, uint64_t len)
 {

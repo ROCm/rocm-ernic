@@ -47,6 +47,10 @@ struct vfu_ctx {
     /* vfu_addr_to_sgl() call that fails, counted like map_calls; 0 = none */
     unsigned long fail_map_at;
 
+    unsigned long get_calls;
+    /* vfu_sgl_get() call that fails, counted like get_calls; 0 = none */
+    unsigned long fail_get_at;
+
     /* Entries got with vfu_sgl_get() and not yet put back */
     size_t mapped;
 
@@ -213,6 +217,12 @@ void fake_vfu_fail_nth_map(vfu_ctx_t *ctx, unsigned long n)
         ctx->fail_map_at = n ? ctx->map_calls + n : 0;
 }
 
+void fake_vfu_fail_nth_get(vfu_ctx_t *ctx, unsigned long n)
+{
+    if (ctx)
+        ctx->fail_get_at = n ? ctx->get_calls + n : 0;
+}
+
 size_t fake_vfu_mapped(vfu_ctx_t *ctx)
 {
     return ctx ? ctx->mapped : 0;
@@ -275,6 +285,13 @@ int vfu_addr_to_sgl(vfu_ctx_t *vfu_ctx, vfu_dma_addr_t dma_addr, size_t len,
 int vfu_sgl_get(vfu_ctx_t *vfu_ctx, dma_sg_t *sgl, struct iovec *iov,
                 size_t cnt, int flags)
 {
+    vfu_ctx->get_calls++;
+    if (vfu_ctx->fail_get_at && vfu_ctx->get_calls == vfu_ctx->fail_get_at) {
+        vfu_ctx->fail_get_at = 0;
+        errno = EFAULT;
+        return -1;
+    }
+
     if (flags != 0 || cnt == 0) {
         errno = EINVAL;
         return -1;

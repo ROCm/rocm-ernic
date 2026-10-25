@@ -249,6 +249,7 @@ struct dp_pending {
 /* A mesh message parked by the receive thread; private to the .c. */
 struct dp_inmsg;
 
+struct ernic_dma;
 struct ionic_eth_emu;
 struct nvmeof_cm;
 struct nvmeof_target;
@@ -260,6 +261,11 @@ struct p4_engine;
 
 struct ionic_datapath {
     vfu_ctx_t *vfu_ctx;
+    /* Scratch for every guest transfer, so used only on the vfu thread,
+     * which does all DMA; no lock. A test that builds the context itself,
+     * rather than with ionic_datapath_create(), sets this too if the paths
+     * it runs touch guest memory. */
+    struct ernic_dma *dma;
     struct ionic_eth_emu *eth_emu;
     pvrdma_handle_t pvrdma_handle;
 

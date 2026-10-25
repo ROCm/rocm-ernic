@@ -27,13 +27,11 @@
 #include <stdio.h>
 #include <errno.h>
 #include <syslog.h>
-#include <sys/mman.h>
-#include <sys/uio.h>
 
 #include <vfio-user/libvfio-user.h>
 
 #include "byteorder.h"
-#include "dma_range.h"
+#include "ernic_dma.h"
 #include "ionic_rdma_devcmd.h"
 #include "ionic_eth_emu.h"
 #include "ionic_adminq.h"
@@ -107,6 +105,7 @@ struct ionic_rdma_aq {
 
 struct ionic_rdma_devcmd_state {
     vfu_ctx_t *vfu_ctx;
+    struct ernic_dma *dma; /* for the EQEs */
 
     /* Used to raise the MSI-X vector behind an EQ. */
     struct ionic_eth_emu *eth_emu;
@@ -132,39 +131,6 @@ struct ionic_rdma_devcmd_state {
 };
 
 static void rdma_cq_event_cb(void *opaque, uint32_t eq_id, uint32_t cq_id);
-
-static int rdma_dma_write(vfu_ctx_t *vfu_ctx, uint64_t gpa, const void *buf,
-                          size_t len)
-{
-    dma_sg_t *sg = malloc(dma_sg_size());
-    struct iovec iov;
-    int ret;
-
-    if (!sg)
-        return -ENOMEM;
-
-    if (!ernic_dma_range_ok(gpa, len)) {
-        free(sg);
-        return -EINVAL;
-    }
-
-    ret = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)gpa, len, sg, 1,
-                          PROT_WRITE);
-    if (ret < 0)
-        goto out;
-
-    ret = vfu_sgl_get(vfu_ctx, sg, &iov, 1, 0);
-    if (ret < 0)
-        goto out;
-
-    memcpy(iov.iov_base, buf, len);
-    vfu_sgl_mark_dirty(vfu_ctx, sg, 1);
-    vfu_sgl_put(vfu_ctx, sg, &iov, 1);
-    ret = 0;
-out:
-    free(sg);
-    return ret;
-}
 
 /* -------------------------------------------------------------------------
  * The admin queue context
@@ -202,6 +168,11 @@ struct ionic_rdma_devcmd_state *ionic_rdma_devcmd_create(vfu_ctx_t *vfu_ctx)
     struct ionic_rdma_devcmd_state *s = calloc(1, sizeof(*s));
     if (!s)
         return NULL;
+    s->dma = ernic_dma_create();
+    if (!s->dma) {
+        free(s);
+        return NULL;
+    }
     s->vfu_ctx = vfu_ctx;
     return s;
 }
@@ -211,6 +182,7 @@ void ionic_rdma_devcmd_destroy(struct ionic_rdma_devcmd_state *s)
     if (!s)
         return;
     drop_adminq_ctx(s);
+    ernic_dma_destroy(s->dma);
     free(s);
 }
 
@@ -496,7 +468,7 @@ int ionic_rdma_devcmd_post_cq_event(struct ionic_rdma_devcmd_state *s,
             "ionic_rdma_devcmd: EQE eq=%u cq=%u prod=%u color=%u gpa=%#" PRIx64,
             eq_id, cq_id, eq->prod, eq->color, gpa);
 
-    if (rdma_dma_write(s->vfu_ctx, gpa, eqe, sizeof(eqe)) < 0) {
+    if (ernic_dma_write(s->dma, s->vfu_ctx, gpa, eqe, sizeof(eqe)) < 0) {
         vfu_log(s->vfu_ctx, LOG_ERR,
                 "ionic_rdma_devcmd: EQE write to %#" PRIx64 " failed", gpa);
         return -EIO;

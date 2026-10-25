@@ -133,6 +133,23 @@ target_include_directories(test_dma_range PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
 
+# The one path between host buffers and guest memory (ernic_dma.c), against
+# fake_vfu.c's guest memory: transfers across region boundaries, ones that
+# need more scatter/gather entries than one list holds, and every failure
+# libvfio-user can return.
+add_executable(ernic-test-dma
+    test_ernic_dma.c
+    fake_vfu.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
+)
+target_include_directories(ernic-test-dma PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_include_directories(ernic-test-dma SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+)
+target_compile_definitions(ernic-test-dma PRIVATE _GNU_SOURCE)
+
 # -- Parser unit tests -------------------------------------------
 # Strict integer parser (parse_int.h) unit test (header-only).
 add_executable(test_parse_int test_parse_int.c)
@@ -277,6 +294,7 @@ target_compile_definitions(test_s3_tcp PRIVATE _GNU_SOURCE)
 # context is needed.
 add_executable(test_ionic_intr_pending
     test_ionic_intr_pending.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
     ${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.c
     ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
     ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
@@ -306,6 +324,7 @@ target_link_libraries(test_ionic_intr_pending PRIVATE ${GLIB2_LIBRARIES})
 # can be inspected directly -- no guest, no VM and no vfio-user socket.
 add_executable(test_ionic_port_info
     test_ionic_port_info.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
     ${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.c
     ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
     ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
@@ -365,6 +384,7 @@ target_link_libraries(test_ionic_emu_stats PRIVATE pthread)
 # identity and link key lands.
 add_executable(test_ionic_identity
     test_ionic_identity.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
     ${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.c
     ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
     ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
@@ -392,6 +412,7 @@ target_link_libraries(test_ionic_identity PRIVATE ${GLIB2_LIBRARIES})
 # when.
 add_executable(test_ionic_stats_publish
     test_ionic_stats_publish.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
     ${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.c
     ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
     ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
@@ -418,6 +439,7 @@ target_link_libraries(test_ionic_stats_publish PRIVATE ${GLIB2_LIBRARIES})
 # refused.
 add_executable(test_ionic_queues
     test_ionic_queues.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
     ${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.c
     ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
     ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
@@ -473,6 +495,7 @@ add_dependencies(test_server_lifecycle rocm-ernic)
 # answer out of can be inspected directly.
 add_executable(test_ionic_query_qp
     test_ionic_query_qp.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
     ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
     ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
 )
@@ -493,6 +516,7 @@ target_compile_definitions(test_ionic_query_qp PRIVATE
 # hw_counters from can be checked.
 add_executable(ernic-test-ionic-stats
     test_ionic_stats.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
     ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
     ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
 )
@@ -512,6 +536,7 @@ target_compile_definitions(ernic-test-ionic-stats PRIVATE
 # what ionic_adminq_poll() reads off the ring for each one can be checked.
 add_executable(ernic-test-ionic-adminq-poll
     test_ionic_adminq_poll.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
     ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
     ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
 )
@@ -533,6 +558,7 @@ target_compile_definitions(ernic-test-ionic-adminq-poll PRIVATE
 # read. Also pins the id-map capacity against the advertised max_srq.
 add_executable(test_ionic_srq_adminq
     test_ionic_srq_adminq.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
     ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
     ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
 )
@@ -567,6 +593,7 @@ set_tests_properties(ionic-counter-snapshot-unit PROPERTIES TIMEOUT 30)
 # RNR and pending-timeout rows sit exactly on their boundaries.
 add_executable(test_ionic_dp_errors
     test_ionic_dp_errors.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
     ${PROJECT_SOURCE_DIR}/src/ionic_datapath.c
 )
 target_include_directories(test_ionic_dp_errors PRIVATE
@@ -585,6 +612,7 @@ target_link_libraries(test_ionic_dp_errors PRIVATE pthread)
 # in-process, so no guest memory is needed.
 add_executable(test_ionic_cq_arm
     test_ionic_cq_arm.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
     ${PROJECT_SOURCE_DIR}/src/ionic_datapath.c
 )
 target_include_directories(test_ionic_cq_arm PRIVATE
@@ -611,6 +639,7 @@ target_link_libraries(test_ionic_cq_arm PRIVATE
 # datapath and reaches its rings through ionic_datapath_priv.h.
 add_executable(test_ionic_rq_wrap
     test_ionic_rq_wrap.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
     ${PROJECT_SOURCE_DIR}/src/ionic_datapath.c
 )
 target_include_directories(test_ionic_rq_wrap PRIVATE
@@ -954,6 +983,7 @@ set(ERNIC_TEST_TARGETS
     test_ernic_device
     test_write_imm
     test_dma_range
+    ernic-test-dma
     test_parse_int
     ernic-test-byteorder
     test_nvmeof_target
@@ -1048,6 +1078,12 @@ add_test(
     COMMAND $<TARGET_FILE:test_dma_range>
 )
 set_tests_properties(dma-range-unit PROPERTIES TIMEOUT 30)
+
+add_test(
+    NAME ernic-dma-unit
+    COMMAND $<TARGET_FILE:ernic-test-dma>
+)
+set_tests_properties(ernic-dma-unit PROPERTIES TIMEOUT 30)
 
 # Strict integer parser unit test (table-driven)
 add_test(

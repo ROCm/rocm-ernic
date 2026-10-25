@@ -36,14 +36,12 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <syslog.h>
-#include <sys/mman.h>
-#include <sys/uio.h>
 #include <pthread.h>
 
 #include <vfio-user/libvfio-user.h>
 
 #include "byteorder.h"
-#include "dma_range.h"
+#include "ernic_dma.h"
 #include "ionic_eth_emu.h"
 #include "ionic_eth_emu_priv.h"
 #include "ionic_emu_stats.h"
@@ -99,8 +97,6 @@ static void handle_p4_cmd(struct ionic_eth_emu *emu, const uint8_t *cmd,
 static void eth_adminq_service(struct ionic_eth_emu *emu, uint16_t p_index);
 static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
                             uint16_t p_index);
-static int eth_dma_rw(vfu_ctx_t *vfu_ctx, uint64_t gpa, void *buf, size_t len,
-                      bool write);
 
 /* -------------------------------------------------------------------------
  * Construction / destruction
@@ -146,7 +142,10 @@ struct ionic_eth_emu *ionic_eth_emu_create(vfu_ctx_t *vfu_ctx, size_t bar2_size)
     emu->bar2_size = bar2_size;
     memcpy(emu->mac, (const uint8_t[]){0x02, 0xa0, 0xd1, 0x00, 0x00, 0x01}, 6);
     emu->bar2 = calloc(1, bar2_size);
-    if (!emu->bar2) {
+    emu->dma = ernic_dma_create();
+    if (!emu->bar2 || !emu->dma) {
+        ernic_dma_destroy(emu->dma);
+        free(emu->bar2);
         free(emu);
         return NULL;
     }
@@ -192,6 +191,7 @@ void ionic_eth_emu_destroy(struct ionic_eth_emu *emu)
     }
     emu->inbox_tail = NULL;
     pthread_mutex_destroy(&emu->inbox_lock);
+    ernic_dma_destroy(emu->dma);
     free(emu->bar2);
     free(emu);
 }
@@ -592,7 +592,8 @@ static void publish_block(struct ionic_eth_emu *emu, const char *what,
     bool address_valid = base <= UINT64_MAX - off - (uint64_t)(len - 1);
     uint64_t pa = address_valid ? base + off : base;
 
-    if (!address_valid || eth_dma_rw(emu->vfu_ctx, pa, block, len, true) < 0) {
+    if (!address_valid ||
+        ernic_dma_write(emu->dma, emu->vfu_ctx, pa, block, len) < 0) {
         if (!*failed)
             vfu_log(emu->vfu_ctx, LOG_WARNING,
                     "ionic_eth_emu: %s stats write to %#" PRIx64
@@ -1158,7 +1159,8 @@ void ionic_eth_emu_handle_port_init(struct ionic_eth_emu *emu,
         ernic_put_le16(info + IONIC_PORT_INFO_XCVR_PID_OFF,
                        xcvr_pid(prof->link.xcvr, prof->link.speed_mbps));
 
-        if (eth_dma_rw(emu->vfu_ctx, info_pa, info, sizeof(info), true) < 0)
+        if (ernic_dma_write(emu->dma, emu->vfu_ctx, info_pa, info,
+                            sizeof(info)) < 0)
             vfu_log(emu->vfu_ctx, LOG_ERR,
                     "ionic_eth_emu: PORT_INIT: port info write to %#" PRIx64
                     " failed",
@@ -1199,8 +1201,9 @@ void ionic_eth_emu_handle_lif_init(struct ionic_eth_emu *emu,
         ernic_put_le32(status + 12, emu->profile.link.speed_mbps); /* Mbps */
         if (info_pa >
                 UINT64_MAX - IONIC_LIF_INFO_STATUS_OFF - (sizeof(status) - 1) ||
-            eth_dma_rw(emu->vfu_ctx, info_pa + IONIC_LIF_INFO_STATUS_OFF,
-                       status, sizeof(status), true) < 0)
+            ernic_dma_write(emu->dma, emu->vfu_ctx,
+                            info_pa + IONIC_LIF_INFO_STATUS_OFF, status,
+                            sizeof(status)) < 0)
             vfu_log(emu->vfu_ctx, LOG_ERR,
                     "ionic_eth_emu: LIF_INIT: link status write for info base "
                     "%#" PRIx64 " failed",
@@ -1448,43 +1451,6 @@ static void handle_q_control(struct ionic_eth_emu *emu, const uint8_t *cmd,
  * -------------------------------------------------------------------------
  */
 
-static int eth_dma_rw(vfu_ctx_t *vfu_ctx, uint64_t gpa, void *buf, size_t len,
-                      bool is_write)
-{
-    dma_sg_t *sg = malloc(dma_sg_size());
-    struct iovec iov;
-    int ret;
-
-    if (!sg)
-        return -ENOMEM;
-
-    if (!ernic_dma_range_ok(gpa, len)) {
-        free(sg);
-        return -EINVAL;
-    }
-
-    ret = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)gpa, len, sg, 1,
-                          is_write ? PROT_WRITE : PROT_READ);
-    if (ret < 0)
-        goto out;
-
-    ret = vfu_sgl_get(vfu_ctx, sg, &iov, 1, 0);
-    if (ret < 0)
-        goto out;
-
-    if (is_write) {
-        memcpy(iov.iov_base, buf, len);
-        vfu_sgl_mark_dirty(vfu_ctx, sg, 1);
-    } else {
-        memcpy(buf, iov.iov_base, len);
-    }
-    vfu_sgl_put(vfu_ctx, sg, &iov, 1);
-    ret = 0;
-out:
-    free(sg);
-    return ret;
-}
-
 void ionic_eth_emu_process_adminq_cmd(struct ionic_eth_emu *emu,
                                       const uint8_t *cmd, uint8_t *comp)
 {
@@ -1549,9 +1515,9 @@ static void eth_adminq_service(struct ionic_eth_emu *emu, uint16_t p_index)
         uint8_t cmd[ADMIN_CMD_SIZE] = {0};
         uint8_t comp[ADMIN_COMP_SIZE] = {0};
 
-        if (eth_dma_rw(emu->vfu_ctx,
-                       q->ring_base + (uint64_t)q->head * ADMIN_CMD_SIZE, cmd,
-                       sizeof(cmd), false) < 0) {
+        if (ernic_dma_read(emu->dma, emu->vfu_ctx,
+                           q->ring_base + (uint64_t)q->head * ADMIN_CMD_SIZE,
+                           cmd, sizeof(cmd)) < 0) {
             vfu_log(emu->vfu_ctx, LOG_ERR,
                     "ionic_eth_emu: adminq desc DMA read failed at %u",
                     q->head);
@@ -1564,9 +1530,10 @@ static void eth_adminq_service(struct ionic_eth_emu *emu, uint16_t p_index)
         comp[ADMIN_COMP_SIZE - 1] =
             q->cq_color ? (uint8_t)ADMIN_COMP_COLOR_MASK : 0;
 
-        eth_dma_rw(emu->vfu_ctx,
-                   q->cq_ring_base + (uint64_t)q->cq_index * ADMIN_COMP_SIZE,
-                   comp, sizeof(comp), true);
+        ernic_dma_write(emu->dma, emu->vfu_ctx,
+                        q->cq_ring_base +
+                            (uint64_t)q->cq_index * ADMIN_COMP_SIZE,
+                        comp, sizeof(comp));
 
         q->head = (uint16_t)((q->head + 1) % q->depth);
         if (++q->cq_index == q->depth) {
@@ -1595,8 +1562,9 @@ static size_t eth_tx_gather(struct ionic_eth_emu *emu, struct eth_queue *q,
     uint8_t desc[ETH_DESC_SIZE];
 
     *why = IONIC_EMU_DROP_DESC_FETCH;
-    if (eth_dma_rw(emu->vfu_ctx, q->ring_base + (uint64_t)index * ETH_DESC_SIZE,
-                   desc, sizeof(desc), false) < 0)
+    if (ernic_dma_read(emu->dma, emu->vfu_ctx,
+                       q->ring_base + (uint64_t)index * ETH_DESC_SIZE, desc,
+                       sizeof(desc)) < 0)
         return 0;
 
     uint64_t cmd = ernic_get_le64(desc);
@@ -1615,7 +1583,7 @@ static size_t eth_tx_gather(struct ionic_eth_emu *emu, struct eth_queue *q,
 
     if (!nsge) {
         *why = IONIC_EMU_DROP_DMA;
-        if (eth_dma_rw(emu->vfu_ctx, addr, emu->frame, len, false) < 0)
+        if (ernic_dma_read(emu->dma, emu->vfu_ctx, addr, emu->frame, len) < 0)
             return 0;
         return len;
     }
@@ -1626,10 +1594,10 @@ static size_t eth_tx_gather(struct ionic_eth_emu *emu, struct eth_queue *q,
     *why = IONIC_EMU_DROP_DESC_FETCH;
 
     uint8_t sg[TXQ_SG_MAX_ELEMS * TXQ_SG_ELEM_SIZE];
-    if (eth_dma_rw(emu->vfu_ctx,
-                   q->sg_ring_base +
-                       (uint64_t)index * TXQ_SG_MAX_ELEMS * TXQ_SG_ELEM_SIZE,
-                   sg, (size_t)nsge * TXQ_SG_ELEM_SIZE, false) < 0)
+    uint64_t sg_gpa =
+        q->sg_ring_base + (uint64_t)index * TXQ_SG_MAX_ELEMS * TXQ_SG_ELEM_SIZE;
+    if (ernic_dma_read(emu->dma, emu->vfu_ctx, sg_gpa, sg,
+                       (size_t)nsge * TXQ_SG_ELEM_SIZE) < 0)
         return 0;
 
     /* The head descriptor's own fragment length is len minus everything the
@@ -1643,7 +1611,7 @@ static size_t eth_tx_gather(struct ionic_eth_emu *emu, struct eth_queue *q,
 
     *why = IONIC_EMU_DROP_DMA;
     size_t head_len = len - sg_total;
-    if (eth_dma_rw(emu->vfu_ctx, addr, emu->frame, head_len, false) < 0)
+    if (ernic_dma_read(emu->dma, emu->vfu_ctx, addr, emu->frame, head_len) < 0)
         return 0;
 
     size_t off = head_len;
@@ -1653,7 +1621,8 @@ static size_t eth_tx_gather(struct ionic_eth_emu *emu, struct eth_queue *q,
         uint16_t elen = ernic_get_le16(e + 8);
         if (!elen)
             continue;
-        if (eth_dma_rw(emu->vfu_ctx, eaddr, emu->frame + off, elen, false) < 0)
+        if (ernic_dma_read(emu->dma, emu->vfu_ctx, eaddr, emu->frame + off,
+                           elen) < 0)
             return 0;
         off += elen;
     }
@@ -1715,9 +1684,10 @@ static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
         comp[ETH_COMP_SIZE - 1] =
             q->cq_color ? (uint8_t)ADMIN_COMP_COLOR_MASK : 0;
 
-        if (eth_dma_rw(emu->vfu_ctx,
-                       q->cq_ring_base + (uint64_t)q->cq_index * ETH_COMP_SIZE,
-                       comp, sizeof(comp), true) < 0)
+        if (ernic_dma_write(emu->dma, emu->vfu_ctx,
+                            q->cq_ring_base +
+                                (uint64_t)q->cq_index * ETH_COMP_SIZE,
+                            comp, sizeof(comp)) < 0)
             ionic_emu_stats_drop(&emu->stats, NULL, 0, true,
                                  IONIC_EMU_DROP_DMA);
 
@@ -1746,9 +1716,9 @@ static int eth_rx_deliver(struct ionic_eth_emu *emu, struct eth_queue *q,
         return -ENOBUFS; /* guest has posted no buffers */
 
     uint8_t desc[ETH_DESC_SIZE];
-    if (eth_dma_rw(emu->vfu_ctx,
-                   q->ring_base + (uint64_t)q->head * ETH_DESC_SIZE, desc,
-                   sizeof(desc), false) < 0)
+    if (ernic_dma_read(emu->dma, emu->vfu_ctx,
+                       q->ring_base + (uint64_t)q->head * ETH_DESC_SIZE, desc,
+                       sizeof(desc)) < 0)
         return -EFAULT;
 
     /* struct ionic_rxq_desc: opcode@0, rsvd[5], len le16 @6, addr le64 @8. */
@@ -1758,7 +1728,7 @@ static int eth_rx_deliver(struct ionic_eth_emu *emu, struct eth_queue *q,
     if (len > cap)
         return -EMSGSIZE;
 
-    if (eth_dma_rw(emu->vfu_ctx, addr, frame, len, true) < 0)
+    if (ernic_dma_write(emu->dma, emu->vfu_ctx, addr, frame, len) < 0)
         return -EIO;
 
     /* struct ionic_rxq_comp: status@0, num_sg_elems@1, comp_index le16 @2,
@@ -1771,9 +1741,9 @@ static int eth_rx_deliver(struct ionic_eth_emu *emu, struct eth_queue *q,
     ernic_put_le16(comp + 12, (uint16_t)len);
     comp[ETH_COMP_SIZE - 1] = q->cq_color ? (uint8_t)ADMIN_COMP_COLOR_MASK : 0;
 
-    if (eth_dma_rw(emu->vfu_ctx,
-                   q->cq_ring_base + (uint64_t)q->cq_index * ETH_COMP_SIZE,
-                   comp, sizeof(comp), true) < 0)
+    if (ernic_dma_write(emu->dma, emu->vfu_ctx,
+                        q->cq_ring_base + (uint64_t)q->cq_index * ETH_COMP_SIZE,
+                        comp, sizeof(comp)) < 0)
         return -EIO;
 
     q->head = (uint16_t)((q->head + 1) % q->depth);

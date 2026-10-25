@@ -20,16 +20,13 @@
 #include <stddef.h>
 #include <string.h>
 #include <stdlib.h>
-#include <errno.h>
 #include <syslog.h>
-#include <sys/mman.h> /* PROT_READ, PROT_WRITE */
-#include <sys/uio.h>
 
 #include <infiniband/verbs.h>
 #include <vfio-user/libvfio-user.h>
 
 #include "byteorder.h"
-#include "dma_range.h"
+#include "ernic_dma.h"
 #include "ernic_ib.h"
 #include "ionic_adminq.h"
 #include "ionic_adminq_priv.h"
@@ -299,12 +296,20 @@ struct ionic_adminq_ctx *ionic_adminq_create(vfu_ctx_t *vfu_ctx)
     struct ionic_adminq_ctx *ctx = calloc(1, sizeof(*ctx));
     if (!ctx)
         return NULL;
+    ctx->dma = ernic_dma_create();
+    if (!ctx->dma) {
+        free(ctx);
+        return NULL;
+    }
     ctx->vfu_ctx = vfu_ctx;
     return ctx;
 }
 
 void ionic_adminq_destroy(struct ionic_adminq_ctx *ctx)
 {
+    if (!ctx)
+        return;
+    ernic_dma_destroy(ctx->dma);
     free(ctx);
 }
 
@@ -378,79 +383,6 @@ void ionic_adminq_update_prod(struct ionic_adminq_ctx *ctx, int aq_idx,
 }
 
 /* -------------------------------------------------------------------------
- * DMA helpers
- * -------------------------------------------------------------------------
- */
-
-static int dma_read(vfu_ctx_t *vfu_ctx, uint64_t gpa, void *buf, size_t len)
-{
-    dma_sg_t *sg = malloc(dma_sg_size());
-    struct iovec iov;
-    int ret;
-
-    if (!sg)
-        return -ENOMEM;
-
-    if (!ernic_dma_range_ok(gpa, len)) {
-        free(sg);
-        return -EINVAL;
-    }
-
-    ret = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)gpa, len, sg, 1,
-                          PROT_READ);
-    if (ret < 0) {
-        free(sg);
-        return ret;
-    }
-
-    ret = vfu_sgl_get(vfu_ctx, sg, &iov, 1, 0);
-    if (ret < 0) {
-        free(sg);
-        return ret;
-    }
-
-    memcpy(buf, iov.iov_base, len);
-    vfu_sgl_put(vfu_ctx, sg, &iov, 1);
-    free(sg);
-    return 0;
-}
-
-static int dma_write(vfu_ctx_t *vfu_ctx, uint64_t gpa, const void *buf,
-                     size_t len)
-{
-    dma_sg_t *sg = malloc(dma_sg_size());
-    struct iovec iov;
-    int ret;
-
-    if (!sg)
-        return -ENOMEM;
-
-    if (!ernic_dma_range_ok(gpa, len)) {
-        free(sg);
-        return -EINVAL;
-    }
-
-    ret = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)gpa, len, sg, 1,
-                          PROT_WRITE);
-    if (ret < 0) {
-        free(sg);
-        return ret;
-    }
-
-    ret = vfu_sgl_get(vfu_ctx, sg, &iov, 1, 0);
-    if (ret < 0) {
-        free(sg);
-        return ret;
-    }
-
-    memcpy(iov.iov_base, buf, len);
-    vfu_sgl_mark_dirty(vfu_ctx, sg, 1);
-    vfu_sgl_put(vfu_ctx, sg, &iov, 1);
-    free(sg);
-    return 0;
-}
-
-/* -------------------------------------------------------------------------
  * RoCE header template
  * -------------------------------------------------------------------------
  */
@@ -482,7 +414,7 @@ static int adminq_parse_roce_hdr(struct ionic_adminq_ctx *ctx, uint64_t gpa,
 
     if (len < 14 || len > sizeof(hdr))
         return 0;
-    if (dma_read(ctx->vfu_ctx, gpa, hdr, len) < 0)
+    if (ernic_dma_read(ctx->dma, ctx->vfu_ctx, gpa, hdr, len) < 0)
         return 0;
 
     memcpy(dmac, hdr, 6);
@@ -572,7 +504,7 @@ void ionic_adminq_post_cqe(struct ionic_adminq_ctx *ctx,
     /* Write CQE to guest memory */
     uint64_t cqe_gpa =
         r->cq_dma + (uint64_t)(r->cq_prod % r->cq_depth) * CQE_SIZE;
-    if (dma_write(ctx->vfu_ctx, cqe_gpa, cqe, CQE_SIZE) < 0) {
+    if (ernic_dma_write(ctx->dma, ctx->vfu_ctx, cqe_gpa, cqe, CQE_SIZE) < 0) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
                 "ionic_adminq: failed to write CQE to %#" PRIx64, cqe_gpa);
         return;
@@ -891,7 +823,8 @@ static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
         uint8_t resp[IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN] = {0};
         ernic_put_le32(resp, srq_id);
         resp[4] = 0; /* udma_idx: single udma in this emulation */
-        if (dma_write(ctx->vfu_ctx, resp_dma_addr, resp, sizeof(resp)) < 0) {
+        if (ernic_dma_write(ctx->dma, ctx->vfu_ctx, resp_dma_addr, resp,
+                            sizeof(resp)) < 0) {
             vfu_log(ctx->vfu_ctx, LOG_ERR,
                     "ionic_adminq CREATE_SRQ %u: response DMA failed", srq_id);
             adminq_srq_unwind(ctx, srq_id, srq_handle);
@@ -1225,7 +1158,8 @@ static uint8_t stats_write_hdrs(struct ionic_adminq_ctx *ctx, uint64_t dma,
         memcpy(buf + i * STAT_HDR_SIZE + 4, stats[i].name, name_len);
     }
 
-    return dma_write(ctx->vfu_ctx, dma, buf, entries * STAT_HDR_SIZE) < 0
+    return ernic_dma_write(ctx->dma, ctx->vfu_ctx, dma, buf,
+                           entries * STAT_HDR_SIZE) < 0
                ? IONIC_RC_EIO
                : IONIC_RC_SUCCESS;
 }
@@ -1252,7 +1186,8 @@ static uint8_t stats_write_vals(struct ionic_adminq_ctx *ctx, uint64_t dma,
         ernic_put_le64(buf + i * STAT_VAL_SIZE, v);
     }
 
-    return dma_write(ctx->vfu_ctx, dma, buf, n * STAT_VAL_SIZE) < 0
+    return ernic_dma_write(ctx->dma, ctx->vfu_ctx, dma, buf,
+                           n * STAT_VAL_SIZE) < 0
                ? IONIC_RC_EIO
                : IONIC_RC_SUCCESS;
 }
@@ -1784,9 +1719,11 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         ernic_put_be32(rqbuf + 4, sq_psn & 0xffffffu);
         ernic_put_be16(rqbuf + 8, flags);
 
-        if (sq_dma && dma_write(ctx->vfu_ctx, sq_dma, sqbuf, sizeof(sqbuf)) < 0)
+        if (sq_dma && ernic_dma_write(ctx->dma, ctx->vfu_ctx, sq_dma, sqbuf,
+                                      sizeof(sqbuf)) < 0)
             return 1;
-        if (rq_dma && dma_write(ctx->vfu_ctx, rq_dma, rqbuf, sizeof(rqbuf)) < 0)
+        if (rq_dma && ernic_dma_write(ctx->dma, ctx->vfu_ctx, rq_dma, rqbuf,
+                                      sizeof(rqbuf)) < 0)
             return 1;
 
         vfu_log(ctx->vfu_ctx, LOG_INFO,
@@ -1837,10 +1774,11 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
  * @buf, after the first; none when @strides is 1. They are the next ring
  * entries, so a WQE that reaches the end of the ring continues at slot 0;
  * reading on past the end would take guest memory that isn't the ring.
- * Returns 0 or the failed dma_read()'s error.
+ * Returns 0 or the failed ernic_dma_read()'s error.
  */
-static int read_wqe_tail(vfu_ctx_t *vfu_ctx, const struct ionic_aq_ring *r,
-                         uint32_t slot, uint32_t strides, uint8_t *buf)
+static int read_wqe_tail(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx,
+                         const struct ionic_aq_ring *r, uint32_t slot,
+                         uint32_t strides, uint8_t *buf)
 {
     uint32_t next = (slot + 1u) % r->aq_depth;
     uint32_t left = strides - 1u;
@@ -1851,7 +1789,8 @@ static int read_wqe_tail(vfu_ctx_t *vfu_ctx, const struct ionic_aq_ring *r,
         if (run > left)
             run = left;
         uint64_t gpa = r->aq_dma + (uint64_t)next * ADMIN_WQE_STRIDE;
-        int ret = dma_read(vfu_ctx, gpa, dst, (size_t)run * ADMIN_WQE_STRIDE);
+        int ret = ernic_dma_read(dma, vfu_ctx, gpa, dst,
+                                 (size_t)run * ADMIN_WQE_STRIDE);
         if (ret < 0)
             return ret;
         dst += (size_t)run * ADMIN_WQE_STRIDE;
@@ -1895,7 +1834,8 @@ void ionic_adminq_poll(struct ionic_adminq_ctx *ctx, vfu_ctx_t *vfu_ctx)
              * what keeps a handler from seeing bytes that weren't read, but
              * if that ever breaks, it sees zeros rather than host stack. */
             uint8_t wqe_buf[ADMIN_WQE_MAX_STRIDES * ADMIN_WQE_STRIDE] = {0};
-            if (dma_read(vfu_ctx, wqe_gpa, wqe_buf, ADMIN_WQE_STRIDE) < 0)
+            if (ernic_dma_read(ctx->dma, vfu_ctx, wqe_gpa, wqe_buf,
+                               ADMIN_WQE_STRIDE) < 0)
                 break;
 
             uint8_t op = wqe_buf[0];
@@ -1927,7 +1867,8 @@ void ionic_adminq_poll(struct ionic_adminq_ctx *ctx, vfu_ctx_t *vfu_ctx)
                 if (strides > avail)
                     strides = avail;
             } else {
-                if (read_wqe_tail(vfu_ctx, r, slot, strides, wqe_buf) < 0)
+                if (read_wqe_tail(ctx->dma, vfu_ctx, r, slot, strides,
+                                  wqe_buf) < 0)
                     break;
                 status = ionic_adminq_dispatch_wqe(
                     ctx, op, wqe_buf + ADMIN_WQE_HDR_LEN, len);
