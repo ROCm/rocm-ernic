@@ -33,7 +33,6 @@
 #include <arpa/inet.h>
 #include <inttypes.h>
 #include <netinet/in.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,6 +41,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "ernic_err.h"
 #include "parse_int.h"
 #include "s3_http.h"
 #include "s3_target.h"
@@ -299,20 +299,6 @@ static bool parse_ipv4(const char *s, uint32_t *out)
     return true;
 }
 
-static void set_err(char *err, size_t errlen, const char *fmt, ...)
-    __attribute__((format(printf, 3, 4)));
-
-static void set_err(char *err, size_t errlen, const char *fmt, ...)
-{
-    if (err == NULL || errlen == 0) {
-        return;
-    }
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(err, errlen, fmt, ap);
-    va_end(ap);
-}
-
 /* Bucket names are DNS labels: lowercase, digits, dot and dash. */
 static bool bucket_name_ok(const char *s)
 {
@@ -340,7 +326,7 @@ bool s3_target_cfg_parse(struct s3_target_cfg *cfg, const char *opts, char *err,
 
     char *dup = strdup(opts);
     if (dup == NULL) {
-        set_err(err, errlen, "out of memory");
+        ernic_set_err(err, errlen, "out of memory");
         return false;
     }
 
@@ -350,7 +336,7 @@ bool s3_target_cfg_parse(struct s3_target_cfg *cfg, const char *opts, char *err,
          tok = strtok_r(NULL, ",", &save)) {
         char *eq = strchr(tok, '=');
         if (eq == NULL) {
-            set_err(err, errlen, "option '%s' is not key=value", tok);
+            ernic_set_err(err, errlen, "option '%s' is not key=value", tok);
             ok = false;
             break;
         }
@@ -360,37 +346,38 @@ bool s3_target_cfg_parse(struct s3_target_cfg *cfg, const char *opts, char *err,
 
         if (strcmp(key, "bucket") == 0) {
             if (!bucket_name_ok(val)) {
-                set_err(err, errlen,
-                        "bucket '%s' must be 3..%d characters of [a-z0-9.-] "
-                        "not starting or ending in '.' or '-'",
-                        val, S3_BUCKET_MAX - 1);
+                ernic_set_err(
+                    err, errlen,
+                    "bucket '%s' must be 3..%d characters of [a-z0-9.-] "
+                    "not starting or ending in '.' or '-'",
+                    val, S3_BUCKET_MAX - 1);
                 ok = false;
             } else {
                 snprintf(cfg->bucket, sizeof(cfg->bucket), "%s", val);
             }
         } else if (strcmp(key, "size") == 0) {
             if (!ernic_parse_size(val, &cfg->capacity) || cfg->capacity == 0) {
-                set_err(err, errlen, "bad size '%s'", val);
+                ernic_set_err(err, errlen, "bad size '%s'", val);
                 ok = false;
             }
         } else if (strcmp(key, "objects") == 0) {
             uint32_t v;
             if (!ernic_parse_u32(val, &v) || v == 0 || v > 65536) {
-                set_err(err, errlen, "objects must be 1..65536 (got '%s')",
-                        val);
+                ernic_set_err(err, errlen,
+                              "objects must be 1..65536 (got '%s')", val);
                 ok = false;
             } else {
                 cfg->max_objects = v;
             }
         } else if (strcmp(key, "ip") == 0) {
             if (!parse_ipv4(val, &cfg->traddr)) {
-                set_err(err, errlen, "bad IPv4 address '%s'", val);
+                ernic_set_err(err, errlen, "bad IPv4 address '%s'", val);
                 ok = false;
             }
         } else if (strcmp(key, "port") == 0) {
             uint32_t v;
             if (!ernic_parse_u32(val, &v) || v == 0 || v > 65535) {
-                set_err(err, errlen, "bad port '%s'", val);
+                ernic_set_err(err, errlen, "bad port '%s'", val);
                 ok = false;
             } else {
                 cfg->trsvcid = (uint16_t)v;
@@ -398,13 +385,13 @@ bool s3_target_cfg_parse(struct s3_target_cfg *cfg, const char *opts, char *err,
         } else if (strcmp(key, "maxpart") == 0) {
             uint64_t v;
             if (!ernic_parse_size(val, &v) || v == 0 || v > UINT32_MAX) {
-                set_err(err, errlen, "bad maxpart '%s'", val);
+                ernic_set_err(err, errlen, "bad maxpart '%s'", val);
                 ok = false;
             } else {
                 cfg->max_part = (uint32_t)v;
             }
         } else {
-            set_err(err, errlen, "unknown s3 option '%s'", key);
+            ernic_set_err(err, errlen, "unknown s3 option '%s'", key);
             ok = false;
         }
     }
@@ -422,7 +409,7 @@ struct s3_target *s3_target_create(const struct s3_target_cfg *cfg, char *err,
 {
     struct s3_target *t = calloc(1, sizeof(*t));
     if (t == NULL) {
-        set_err(err, errlen, "out of memory");
+        ernic_set_err(err, errlen, "out of memory");
         return NULL;
     }
 
@@ -437,7 +424,7 @@ struct s3_target *s3_target_create(const struct s3_target_cfg *cfg, char *err,
     t->obj_cap = t->cfg.max_objects;
     t->objs = calloc(t->obj_cap, sizeof(*t->objs));
     if (t->objs == NULL) {
-        set_err(err, errlen, "out of memory");
+        ernic_set_err(err, errlen, "out of memory");
         free(t);
         return NULL;
     }

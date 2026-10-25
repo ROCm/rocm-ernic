@@ -41,24 +41,6 @@ static bool ieq(const char *a, const char *b)
 }
 
 /*
- * Unsigned throughout: on plain signed char the subtractions below are
- * signed int arithmetic, and -Wstrict-overflow=4 refuses to let gcc
- * fold the range tests without saying so.
- */
-static int hex_nibble(char c)
-{
-    unsigned u = (unsigned char)c;
-
-    if (u >= '0' && u <= '9')
-        return (int)(u - '0');
-    if (u >= 'a' && u <= 'f')
-        return (int)(u - 'a' + 10u);
-    if (u >= 'A' && u <= 'F')
-        return (int)(u - 'A' + 10u);
-    return -1;
-}
-
-/*
  * Percent-decode @src into @dst.  '+' is left alone: it is a legal
  * literal in an object key and only means space in a form body, which
  * this control plane never carries.
@@ -72,8 +54,8 @@ static bool percent_decode(const char *src, size_t srclen, char *dst,
         if (c == '%') {
             if (i + 2 >= srclen)
                 return false;
-            int hi = hex_nibble(src[i + 1]);
-            int lo = hex_nibble(src[i + 2]);
+            int hi = ernic_hex_digit(src[i + 1]);
+            int lo = ernic_hex_digit(src[i + 2]);
             if (hi < 0 || lo < 0)
                 return false;
             c = (char)((hi << 4) | lo);

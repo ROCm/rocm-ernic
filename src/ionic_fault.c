@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "ernic_err.h"
 #include "ionic_fault.h"
 #include "ionic_status.h"
 
@@ -111,19 +112,6 @@ struct tok {
     size_t len;
 };
 
-__attribute__((format(printf, 3, 4))) static void set_err(char *err,
-                                                          size_t err_len,
-                                                          const char *fmt, ...)
-{
-    va_list ap;
-
-    if (!err || err_len == 0)
-        return;
-    va_start(ap, fmt);
-    (void)vsnprintf(err, err_len, fmt, ap);
-    va_end(ap);
-}
-
 /* The length to quote @t with in a "%.*s" error. */
 static int tok_prn(const struct tok *t)
 {
@@ -202,18 +190,18 @@ static int need_u64(const char **p, const char *what, uint64_t *out, char *err,
     int rc;
 
     if (!next_tok(p, &t)) {
-        set_err(err, err_len, "%s needs a number", what);
+        ernic_set_err(err, err_len, "%s needs a number", what);
         return -1;
     }
     rc = parse_u64(t.p, t.len, out);
     if (rc == -2) {
-        set_err(err, err_len, "number '%.*s' out of range for %s", tok_prn(&t),
-                t.p, what);
+        ernic_set_err(err, err_len, "number '%.*s' out of range for %s",
+                      tok_prn(&t), t.p, what);
         return -1;
     }
     if (rc != 0) {
-        set_err(err, err_len, "bad number '%.*s' for %s", tok_prn(&t), t.p,
-                what);
+        ernic_set_err(err, err_len, "bad number '%.*s' for %s", tok_prn(&t),
+                      t.p, what);
         return -1;
     }
     return 0;
@@ -226,7 +214,7 @@ static int need_count(const char **p, const char *what, uint64_t *out,
     if (need_u64(p, what, out, err, err_len) != 0)
         return -1;
     if (*out == 0) {
-        set_err(err, err_len, "%s must be >= 1", what);
+        ernic_set_err(err, err_len, "%s must be >= 1", what);
         return -1;
     }
     return 0;
@@ -244,18 +232,19 @@ static int parse_sequence(const struct tok *t, struct ionic_fault *f, char *err,
 
     if (len > 0 && s[0] == '"') {
         if (len < 2 || s[len - 1] != '"') {
-            set_err(err, err_len, "sequence has an unclosed quote");
+            ernic_set_err(err, err_len, "sequence has an unclosed quote");
             return -1;
         }
         s++;
         len -= 2;
     }
     if (len > 0 && s[0] == '@') {
-        set_err(err, err_len, "sequence @file not supported in this build");
+        ernic_set_err(err, err_len,
+                      "sequence @file not supported in this build");
         return -1;
     }
     if (len == 0) {
-        set_err(err, err_len, "sequence is empty");
+        ernic_set_err(err, err_len, "sequence is empty");
         return -1;
     }
 
@@ -273,7 +262,7 @@ static int parse_sequence(const struct tok *t, struct ionic_fault *f, char *err,
             item.p = s + i;
             item.len = j - i;
             if (item.len == 0) {
-                set_err(err, err_len, "empty item in sequence");
+                ernic_set_err(err, err_len, "empty item in sequence");
                 return -1;
             }
             if ((item.p[0] != '0' && item.p[0] != '1') ||
@@ -281,13 +270,13 @@ static int parse_sequence(const struct tok *t, struct ionic_fault *f, char *err,
                  (item.p[1] != 'x' ||
                   parse_u64(item.p + 2, item.len - 2, &rep) != 0 ||
                   rep == 0))) {
-                set_err(err, err_len, "bad sequence item '%.*s'",
-                        tok_prn(&item), item.p);
+                ernic_set_err(err, err_len, "bad sequence item '%.*s'",
+                              tok_prn(&item), item.p);
                 return -1;
             }
             if (rep > IONIC_FAULT_SEQ_MAX - total) {
-                set_err(err, err_len, "sequence longer than %u events",
-                        IONIC_FAULT_SEQ_MAX);
+                ernic_set_err(err, err_len, "sequence longer than %u events",
+                              IONIC_FAULT_SEQ_MAX);
                 return -1;
             }
             if (pass == 1)
@@ -301,7 +290,7 @@ static int parse_sequence(const struct tok *t, struct ionic_fault *f, char *err,
         if (pass == 0) {
             f->seq = malloc((size_t)total);
             if (!f->seq) {
-                set_err(err, err_len, "out of memory for sequence");
+                ernic_set_err(err, err_len, "out of memory for sequence");
                 return -1;
             }
             f->seq_len = (uint32_t)total;
@@ -316,7 +305,7 @@ static int parse_pattern(const char **p, struct ionic_fault *f, char *err,
     struct tok t;
 
     if (!next_tok(p, &t) || tok_is(&t, "effect")) {
-        set_err(err, err_len, "pattern required");
+        ernic_set_err(err, err_len, "pattern required");
         return -1;
     }
 
@@ -344,14 +333,15 @@ static int parse_pattern(const char **p, struct ionic_fault *f, char *err,
         if (need_count(p, "burst", &f->n, err, err_len) != 0)
             return -1;
         if (!next_tok(p, &t) || !tok_is(&t, "every")) {
-            set_err(err, err_len, "burst N needs 'every M'");
+            ernic_set_err(err, err_len, "burst N needs 'every M'");
             return -1;
         }
         if (need_count(p, "burst every", &f->m, err, err_len) != 0)
             return -1;
         if (f->n > f->m) {
-            set_err(err, err_len, "burst %" PRIu64 " must be <= every %" PRIu64,
-                    f->n, f->m);
+            ernic_set_err(err, err_len,
+                          "burst %" PRIu64 " must be <= every %" PRIu64, f->n,
+                          f->m);
             return -1;
         }
         return 0;
@@ -360,17 +350,17 @@ static int parse_pattern(const char **p, struct ionic_fault *f, char *err,
     if (tok_is(&t, "sequence")) {
         f->kind = IONIC_FAULT_PAT_SEQUENCE;
         if (!next_tok(p, &t)) {
-            set_err(err, err_len, "sequence needs a pattern");
+            ernic_set_err(err, err_len, "sequence needs a pattern");
             return -1;
         }
         return parse_sequence(&t, f, err, err_len);
     }
 
     if (tok_in(&t, later_patterns, ARRAY_LEN(later_patterns)))
-        set_err(err, err_len, "pattern %.*s not supported in this build",
-                tok_prn(&t), t.p);
+        ernic_set_err(err, err_len, "pattern %.*s not supported in this build",
+                      tok_prn(&t), t.p);
     else
-        set_err(err, err_len, "unknown pattern '%.*s'", tok_prn(&t), t.p);
+        ernic_set_err(err, err_len, "unknown pattern '%.*s'", tok_prn(&t), t.p);
     return -1;
 }
 
@@ -378,10 +368,11 @@ static int parse_pattern(const char **p, struct ionic_fault *f, char *err,
 static void bad_tok(const struct tok *t, char *err, size_t err_len)
 {
     if (tok_in(t, later_gates, ARRAY_LEN(later_gates)))
-        set_err(err, err_len, "gate %.*s not supported in this build",
-                tok_prn(t), t->p);
+        ernic_set_err(err, err_len, "gate %.*s not supported in this build",
+                      tok_prn(t), t->p);
     else
-        set_err(err, err_len, "unexpected token '%.*s'", tok_prn(t), t->p);
+        ernic_set_err(err, err_len, "unexpected token '%.*s'", tok_prn(t),
+                      t->p);
 }
 
 static int parse_effect(const char **p, struct ionic_fault *f, char *err,
@@ -392,7 +383,7 @@ static int parse_effect(const char **p, struct ionic_fault *f, char *err,
     size_t e;
 
     if (!next_tok(p, &t)) {
-        set_err(err, err_len, "effect required");
+        ernic_set_err(err, err_len, "effect required");
         return -1;
     }
     if (!tok_is(&t, "effect")) {
@@ -400,7 +391,7 @@ static int parse_effect(const char **p, struct ionic_fault *f, char *err,
         return -1;
     }
     if (!next_tok(p, &t)) {
-        set_err(err, err_len, "effect needs a name");
+        ernic_set_err(err, err_len, "effect needs a name");
         return -1;
     }
 
@@ -408,17 +399,17 @@ static int parse_effect(const char **p, struct ionic_fault *f, char *err,
         if (tok_is(&t, effects[e].name))
             break;
     if (e == ARRAY_LEN(effects)) {
-        set_err(err, err_len, "unknown effect '%.*s'", tok_prn(&t), t.p);
+        ernic_set_err(err, err_len, "unknown effect '%.*s'", tok_prn(&t), t.p);
         return -1;
     }
     if (!(effects[e].sites & SITE_BIT(f->site))) {
-        set_err(err, err_len, "effect %.*s not valid for site %s", tok_prn(&t),
-                t.p, site);
+        ernic_set_err(err, err_len, "effect %.*s not valid for site %s",
+                      tok_prn(&t), t.p, site);
         return -1;
     }
     if (!effects[e].built) {
-        set_err(err, err_len, "effect %.*s not supported in this build",
-                tok_prn(&t), t.p);
+        ernic_set_err(err, err_len, "effect %.*s not supported in this build",
+                      tok_prn(&t), t.p);
         return -1;
     }
     f->effect = effects[e].effect;
@@ -441,14 +432,15 @@ static int parse_effect(const char **p, struct ionic_fault *f, char *err,
             return -1;
         }
         if (!next_tok(p, &t)) {
-            set_err(err, err_len, "status needs a name");
+            ernic_set_err(err, err_len, "status needs a name");
             return -1;
         }
         for (i = 0; i < ARRAY_LEN(status_names); i++)
             if (tok_is(&t, status_names[i].name))
                 break;
         if (i == ARRAY_LEN(status_names)) {
-            set_err(err, err_len, "unknown status '%.*s'", tok_prn(&t), t.p);
+            ernic_set_err(err, err_len, "unknown status '%.*s'", tok_prn(&t),
+                          t.p);
             return -1;
         }
         f->status = (uint8_t)status_names[i].code;
@@ -465,18 +457,19 @@ int ionic_fault_parse(const char *spec, struct ionic_fault *out, char *err,
     size_t s;
 
     if (!out) {
-        set_err(err, err_len, "no fault to parse into");
+        ernic_set_err(err, err_len, "no fault to parse into");
         return -1;
     }
     memset(out, 0, sizeof(*out));
     memset(&f, 0, sizeof(f));
     if (!spec || !next_tok(&p, &t)) {
-        set_err(err, err_len, "empty fault");
+        ernic_set_err(err, err_len, "empty fault");
         return -1;
     }
 
     if (t.len < 2 || t.p[t.len - 1] != ':') {
-        set_err(err, err_len, "expected '<site>:' at '%.*s'", tok_prn(&t), t.p);
+        ernic_set_err(err, err_len, "expected '<site>:' at '%.*s'", tok_prn(&t),
+                      t.p);
         return -1;
     }
     t.len--;
@@ -485,10 +478,11 @@ int ionic_fault_parse(const char *spec, struct ionic_fault *out, char *err,
             break;
     if (s == IONIC_FAULT_SITE_COUNT) {
         if (tok_in(&t, later_sites, ARRAY_LEN(later_sites)))
-            set_err(err, err_len, "site %.*s not supported in this build",
-                    tok_prn(&t), t.p);
+            ernic_set_err(err, err_len, "site %.*s not supported in this build",
+                          tok_prn(&t), t.p);
         else
-            set_err(err, err_len, "unknown site '%.*s'", tok_prn(&t), t.p);
+            ernic_set_err(err, err_len, "unknown site '%.*s'", tok_prn(&t),
+                          t.p);
         return -1;
     }
     f.site = (enum ionic_fault_site)s;
@@ -663,20 +657,20 @@ int ionic_fault_set_add(struct ionic_fault_set *set, const char *spec,
     struct ionic_fault *slot;
 
     if (!set) {
-        set_err(err, err_len, "no fault set");
+        ernic_set_err(err, err_len, "no fault set");
         return -1;
     }
     if (ionic_fault_parse(spec, &f, err, err_len) != 0)
         return -1;
     if (set->site[f.site]) {
-        set_err(err, err_len, "duplicate fault for site %s",
-                site_names[f.site]);
+        ernic_set_err(err, err_len, "duplicate fault for site %s",
+                      site_names[f.site]);
         ionic_fault_clear(&f);
         return -1;
     }
     slot = malloc(sizeof(*slot));
     if (!slot) {
-        set_err(err, err_len, "out of memory for fault");
+        ernic_set_err(err, err_len, "out of memory for fault");
         ionic_fault_clear(&f);
         return -1;
     }

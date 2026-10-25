@@ -9,27 +9,10 @@
 #include <string.h>
 
 #include "byteorder.h"
+#include "parse_int.h"
 #include "s3_token.h"
 
 static const char HEX[] = "0123456789abcdef";
-
-/*
- * Unsigned throughout: on plain signed char the subtractions below are
- * signed int arithmetic, and -Wstrict-overflow=4 refuses to let gcc
- * fold the range tests without saying so.
- */
-static int hex_nibble(char c)
-{
-    unsigned u = (unsigned char)c;
-
-    if (u >= '0' && u <= '9')
-        return (int)(u - '0');
-    if (u >= 'a' && u <= 'f')
-        return (int)(u - 'a' + 10u);
-    if (u >= 'A' && u <= 'F')
-        return (int)(u - 'A' + 10u);
-    return -1;
-}
 
 void s3_token_encode(const struct s3_token *tok, char *out)
 {
@@ -58,8 +41,8 @@ bool s3_token_decode(const char *hex, struct s3_token *out)
 
     uint8_t buf[S3_TOKEN_BIN_LEN];
     for (size_t i = 0; i < sizeof(buf); i++) {
-        int hi = hex_nibble(hex[i * 2]);
-        int lo = hex_nibble(hex[i * 2 + 1]);
+        int hi = ernic_hex_digit(hex[i * 2]);
+        int lo = ernic_hex_digit(hex[i * 2 + 1]);
         if (hi < 0 || lo < 0)
             return false;
         buf[i] = (uint8_t)((hi << 4) | lo);
@@ -85,7 +68,7 @@ static bool parse_hex_u64(const char *p, size_t len, uint64_t *out)
 
     uint64_t v = 0;
     for (size_t i = 0; i < len; i++) {
-        int n = hex_nibble(p[i]);
+        int n = ernic_hex_digit(p[i]);
         if (n < 0)
             return false;
         v = (v << 4) | (uint64_t)n;
