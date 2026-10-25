@@ -21,6 +21,14 @@
   prefers DKMS's per-kernel copy, falls back to the shared build directory,
   and says when the log it found was written for a different kernel than
   the one that failed.
+* **A TCP mesh worker keeps the listening port it advertises.** It found a
+  free port by binding a throwaway socket, reading the port, and closing
+  it, then bound its real listen socket to that port; another process
+  could take the port in between, and the worker failed to start. If the
+  throwaway socket failed, the worker listened on a port the kernel chose
+  but registered port 0, so the workers with lower ids, which are the
+  ones that connect to it, couldn't. It now binds its
+  listen socket to any free port and registers the port that socket has.
 * **`tcp-thread-stop-unit` no longer trips its watchdog under valgrind.**
   The per-row watchdog is a hang detector, but its ten seconds were a
   native-speed budget, and the slowest legitimate row -- 64 peers connected
