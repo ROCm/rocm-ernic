@@ -1426,6 +1426,12 @@ static void test_atomic_and_reg_mr(void)
     atomic(T, &r, IH_OP_ATOMIC_FA, 5, 0, MR_B, 0, 0, 100, 105);
     atomic(T, &r, IH_OP_ATOMIC_CS, 7, 105, MR_B, 0, 0, 105, 7);
     atomic(T, &r, IH_OP_ATOMIC_CS, 9, 999, MR_B, 0, 0, 7, 7);
+    /* Operands of all ones, which the generic SGE parser once read as an
+     * SGE running past 2^64, failing a valid compare-and-swap */
+    v = UINT64_MAX;
+    ih_mr_write(h, &r.mrb, VA_B + 0x800, &v, 8);
+    atomic(T, &r, IH_OP_ATOMIC_CS, UINT64_MAX, UINT64_MAX, MR_B, 0, 0,
+           UINT64_MAX, UINT64_MAX);
     atomic(T, &r, IH_OP_ATOMIC_FA, 1, 0, 0x7e000099u, 0, IH_STS_REMOTE_ACC_ERR,
            0, 0);
     atomic(T, &r, IH_OP_ATOMIC_FA, 1, 0, MR_B, VA_B + MR_LEN - 4,
@@ -1752,7 +1758,10 @@ static void wrap_mrs(const char *T, struct rc *r)
     write_to(T, r, "RDMA_WRITE through a key whose REG_MR failed", fr_key,
              fr.va + 8, sizeof(want), IH_STS_REMOTE_ACC_ERR);
 
-    /* A REG_MR in a 32-byte WQE, which can't hold the region it binds */
+    /*
+     * WQEs of 32 bytes, too short for the fields a REG_MR or an atomic
+     * carries. Neither may run on the bytes past the end of one.
+     */
     struct ih_cq cqs;
     struct ih_qp small;
     if (check(T,
@@ -1760,9 +1769,41 @@ static void wrap_mrs(const char *T, struct rc *r)
                   ih_qp_create_stride(h, &small, WRAP_QP, IH_QPT_RC, &cqs, &cqs,
                                       NULL, 5),
               "short-WQE QP setup failed")) {
+        /* A short REG_MR fails like any other, and takes away the binding
+         * the MR had, under an earlier rotation of the key too */
         reg.mr = &fr;
-        post_local_op(T, h, &small, &cqs, &reg, "REG_MR in a 32-byte WQE",
+        post_local_op(T, h, &r->a, &r->cqa, &reg, "REG_MR", 0);
+        write_to(T, r, "RDMA_WRITE through a fast-registered MR", fr_key,
+                 fr.va + 8, sizeof(want), 0);
+        struct ih_send rotated = reg;
+        rotated.key = 0x09000000u | WRAP_FR_ID;
+        post_local_op(T, h, &small, &cqs, &rotated, "REG_MR in a 32-byte WQE",
                       IH_STS_MEM_MGMT_ERR);
+        write_to(T, r, "RDMA_WRITE through a key a short REG_MR replaced",
+                 fr_key, fr.va + 8, sizeof(want), IH_STS_REMOTE_ACC_ERR);
+
+        /* A short atomic fails, and leaves its target alone. The result
+         * SGE is past the end of the WQE, so none is written. */
+        uint64_t v = 41, after = 0;
+        struct ih_send fa = {.op = IH_OP_ATOMIC_FA,
+                             .flags = IH_WQE_SIGNALLED,
+                             .remote_va = VA_B + 0x800,
+                             .rkey = MR_B,
+                             .swap_add = 1};
+        struct ih_cqe e;
+        ih_mr_write(h, &r->mrb, VA_B + 0x800, &v, 8);
+        ih_post_send(h, &small, &fa);
+        if (check(T, ih_cq_poll(h, &cqs, &e),
+                  "a short atomic did not complete"))
+            check(T,
+                  e.type == IH_CQE_TYPE_SEND_MSN && e.error &&
+                      e.status_len == IH_STS_LOCAL_QP_OPER,
+                  "a short atomic: type %u status %u (error %d), expected %d",
+                  e.type, e.status_len, e.error, IH_STS_LOCAL_QP_OPER);
+        ih_mr_read(h, &r->mrb, VA_B + 0x800, &after, 8);
+        check(T, after == v, "a short atomic changed its target to %" PRIu64,
+              after);
+
         check(T, ih_qp_destroy(h, &small) == 0 && ih_cq_destroy(h, &cqs) == 0,
               "short-WQE QP teardown failed");
     }

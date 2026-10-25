@@ -168,6 +168,7 @@ _Static_assert(IONIC_SRQ_MAX_STRIDE_LOG2 <= IONIC_WQE_MAX_STRIDE_LOG2,
 #define WQE_ATOMIC_SWAP_ADD_OFF 28
 #define WQE_ATOMIC_COMPARE_OFF  36
 #define WQE_ATOMIC_SGE_OFF      48
+#define WQE_ATOMIC_MIN_SZ       64 /* through the result SGE */
 
 /* struct ionic_v1_cqe (32 bytes) */
 #define CQE_SIZE          32
@@ -1084,14 +1085,25 @@ void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey)
  * ib_update_fast_reg_key() rotates only the top byte, so the previous key for
  * the same MR id has to be dropped or the table fills one rotation at a time.
  */
-static int dp_reg_mr(struct ionic_datapath *dp, const uint8_t *wqe,
-                     uint32_t key)
+/*
+ * Drop every binding of @key's MR id (its low 24 bits) except @key itself,
+ * or every one if @keep_key is false: the earlier rotations of the key that
+ * a REG_MR replaces.
+ */
+static void dp_mr_drop_id(struct ionic_datapath *dp, uint32_t key,
+                          bool keep_key)
 {
     for (int i = 0; i < MAX_MR; i++) {
-        if (dp->mr[i].valid && dp->mr[i].lkey != key &&
+        if (dp->mr[i].valid && (!keep_key || dp->mr[i].lkey != key) &&
             (dp->mr[i].lkey & 0x00ffffffu) == (key & 0x00ffffffu))
             ionic_datapath_unregister_mr(dp, dp->mr[i].lkey);
     }
+}
+
+static int dp_reg_mr(struct ionic_datapath *dp, const uint8_t *wqe,
+                     uint32_t key)
+{
+    dp_mr_drop_id(dp, key, true);
 
     struct ionic_dp_buf_desc buf = {
         .dma_addr = ernic_get_be64(wqe + WQE_REG_MR_DMA_ADDR_OFF),
@@ -3255,9 +3267,12 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         if (op != IONIC_V1_OP_REG_MR) {
             ionic_datapath_unregister_mr(dp, ernic_get_be32(wqe + 12));
         } else if (read_sz < WQE_REG_MR_MIN_SZ) {
+            /* Like any other REG_MR that fails, it leaves the MR with no
+             * binding, under this key or an earlier rotation of it. */
             vfu_log(dp->vfu_ctx, LOG_WARNING,
                     "ionic_datapath: QP %u REG_MR WQE truncated (%u bytes)",
                     qp_id, read_sz);
+            dp_mr_drop_id(dp, ernic_get_be32(wqe + 12), false);
             reg_status = IONIC_STS_MEM_MGMT_OPER_ERR;
         } else if (dp_reg_mr(dp, wqe, ernic_get_be32(wqe + 12)) < 0) {
             reg_status = IONIC_STS_MEM_MGMT_OPER_ERR;
@@ -3270,7 +3285,32 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
     uint32_t status = IONIC_STS_OK;
 
     struct dp_sge_list src;
-    if (flags & IONIC_V1_FLAG_INL) {
+    if (op == IONIC_V1_OP_ATOMIC_CS || op == IONIC_V1_OP_ATOMIC_FA) {
+        /*
+         * An atomic has no SGE list. Its operands lie where one would
+         * start, and parse_sges() read them as one: operands of all ones
+         * made an SGE running past 2^64, and a compare-and-swap that
+         * should run failed as a protection error. Its one local buffer is
+         * the 8-byte result SGE at WQE_ATOMIC_SGE_OFF, which is what
+         * do_atomic() and remote_post() use, so that is what is checked.
+         *
+         * A WQE too short to hold that SGE ran on stack bytes the guest
+         * never wrote.
+         */
+        if (read_sz < WQE_ATOMIC_MIN_SZ) {
+            vfu_log(dp->vfu_ctx, LOG_WARNING,
+                    "ionic_datapath: QP %u atomic WQE truncated (%u bytes)",
+                    qp_id, read_sz);
+            dp_complete_send(dp, q, qp_id, wqe_id, remote,
+                             IONIC_STS_LOCAL_QP_OPER_ERR);
+            return true; /* completed, in error: the WQE is done with */
+        }
+        src.count = 1;
+        src.va[0] = ernic_get_be64(wqe + WQE_ATOMIC_SGE_OFF);
+        src.len[0] = 8;
+        src.lkey[0] = ernic_get_be32(wqe + WQE_ATOMIC_SGE_OFF + 12);
+        src.total = 8;
+    } else if (flags & IONIC_V1_FLAG_INL) {
         /* Inline data lives in the payload area itself; describe it as a
          * single lkey-0 SGE pointing at the WQE's own guest pages. */
         uint32_t inl_len = ernic_get_be32(wqe + WQE_SEND_LEN_OFF);

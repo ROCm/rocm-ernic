@@ -600,6 +600,9 @@
     binding, which it left pointing at guest physical address 0. An
     address inside a one-page region that wraps past 2^64 is refused
     rather than wrapped to the bottom of guest memory.
+  * An atomic in a work request too short to hold its operands and result
+    SGE, which ran on whatever bytes the device had last read there, now
+    completes with `IBV_WC_LOC_QP_OP_ERR` and changes nothing.
   * The NVMe-oF target refuses an in-capsule SGL offset that wraps, as an
     invalid SGL; it read the command itself as the data. `size=` of 2^63
     bytes or more with `file=` is refused with an error saying so.
