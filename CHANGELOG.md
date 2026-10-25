@@ -586,6 +586,12 @@
     lengths add up to more than 4 GiB, which went out as a short message.
   * An SGE using the reserved DMA key (lkey 0) that runs past the end of
     the address space completes with a local protection error.
+  * A UD or GSI send the device refuses, for any of these reasons or for
+    naming memory it hasn't registered, now completes in error, with the
+    status an RC send gets. Its completion, by send queue index, carried no
+    status, so the refused send looked like it had gone. A datagram the
+    destination refuses, or one cut short at 8 KiB, still completes
+    successfully.
   * `CREATE_MR`, or a fast registration, of a region that runs past the end
     of the address space is refused, and a region that ends exactly there,
     which was refused, is accepted. A failed fast registration now drops

@@ -1826,8 +1826,15 @@ static void cq_post_send_msn(struct ionic_datapath *dp, uint32_t cq_id,
             status != IONIC_STS_OK);
 }
 
+/*
+ * A send completion by SQ index, in error unless @status is IONIC_STS_OK.
+ * The NPG form carries a status as the MSN form does: the driver's
+ * ionic_comp_npg() reads status_length from an error CQE and reports it for
+ * the work request at @sq_wqe_id. Posting it as success whatever @status
+ * said told a datagram consumer that a refused send had gone.
+ */
 static void cq_post_send_npg(struct ionic_datapath *dp, uint32_t cq_id,
-                             uint32_t qid, uint64_t sq_wqe_id)
+                             uint32_t qid, uint64_t sq_wqe_id, uint32_t status)
 {
     uint8_t body[CQE_SIZE - 8];
     memset(body, 0, sizeof(body));
@@ -1835,7 +1842,8 @@ static void cq_post_send_npg(struct ionic_datapath *dp, uint32_t cq_id,
     /* send.npg_wqe_id is a native u64 masked with sq.mask by the driver. */
     memcpy(body + 16, &sq_wqe_id, 8);
 
-    cq_post(dp, cq_id, body, 0, CQE_TYPE_SEND_NPG, qid, false);
+    cq_post(dp, cq_id, body, status, CQE_TYPE_SEND_NPG, qid,
+            status != IONIC_STS_OK);
 }
 
 /* -------------------------------------------------------------------------
@@ -2332,7 +2340,7 @@ static void pending_complete(struct ionic_datapath *dp, struct dp_pending *p,
         if (p->use_msn)
             cq_post_send_msn(dp, q->sq_cq_id, p->qp_id, p->msn, status);
         else if (p->signalled)
-            cq_post_send_npg(dp, q->sq_cq_id, p->qp_id, p->wqe_id);
+            cq_post_send_npg(dp, q->sq_cq_id, p->qp_id, p->wqe_id, status);
     }
     p->valid = false;
 }
@@ -2892,7 +2900,7 @@ static void dp_complete_send(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         q->msn++;
         cq_post_send_msn(dp, q->sq_cq_id, qp_id, q->msn, status);
     } else {
-        cq_post_send_npg(dp, q->sq_cq_id, qp_id, wqe_id);
+        cq_post_send_npg(dp, q->sq_cq_id, qp_id, wqe_id, status);
     }
 }
 
@@ -3239,7 +3247,7 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
             vfu_log(dp->vfu_ctx, LOG_WARNING,
                     "ionic_datapath: QP %u REG_MR WQE truncated (%u bytes)",
                     qp_id, read_sz);
-        cq_post_send_npg(dp, q->sq_cq_id, qp_id, wqe_id);
+        cq_post_send_npg(dp, q->sq_cq_id, qp_id, wqe_id, IONIC_STS_OK);
         return true;
     }
 
@@ -3356,7 +3364,7 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
             q->msn++;
             cq_post_send_msn(dp, q->sq_cq_id, qp_id, q->msn, status);
         } else if (flags & IONIC_V1_FLAG_SIG) {
-            cq_post_send_npg(dp, q->sq_cq_id, qp_id, wqe_id);
+            cq_post_send_npg(dp, q->sq_cq_id, qp_id, wqe_id, status);
         }
         return true;
     }

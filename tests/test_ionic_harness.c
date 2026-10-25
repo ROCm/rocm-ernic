@@ -2298,6 +2298,56 @@ static void test_ud(void)
     check(T, ih_cq_poll(&h, &cqd, &e) && !e.error,
           "a datagram with an unknown AH was not delivered");
 
+    /*
+     * A datagram the device refuses completes by its SQ index in error,
+     * carrying the status, as an RC send's does by MSN. The NPG completion
+     * used to be posted as success whatever the status, so a UD consumer
+     * was told a refused send had gone.
+     */
+    struct ih_sge big[2] = {{.va = src_va, .len = 0xfffffff0u, .lkey = 0},
+                            {.va = src_va, .len = 0x20, .lkey = 0}};
+    struct ih_sge unreg = {.va = src_va, .len = 8, .lkey = 0x7e000099u};
+    static const struct {
+        const char *what;
+        uint32_t status;
+    } refused[] = {
+        {"UD inline SEND longer than its WQE", IH_STS_LOCAL_LEN_ERR},
+        {"UD SEND of more than 2^32 bytes", IH_STS_LOCAL_LEN_ERR},
+        {"UD SEND naming an unregistered key", IH_STS_LOCAL_PROT_ERR},
+    };
+    s = (struct ih_send){.op = IH_OP_SEND,
+                         .flags = IH_WQE_SIGNALLED,
+                         .ah_id = UD_AH,
+                         .dest_qpn = 21,
+                         .qkey = UD_QKEY};
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        struct ih_send r = s;
+
+        if (i == 0) {
+            r.flags |= IH_WQE_INLINE;
+            r.inline_data = want;
+            r.inline_len = 16;
+            r.length = (1u << c.sq.stride_log2) - 32u + 1u;
+        } else if (i == 1) {
+            r.sge = big;
+            r.nsge = 2;
+        } else {
+            r.sge = &unreg;
+            r.nsge = 1;
+        }
+        send_id = ih_post_send(&h, &c, &r);
+        if (check(T, ih_cq_poll(&h, &cqc, &e), "%s did not complete",
+                  refused[i].what))
+            check(T,
+                  e.type == IH_CQE_TYPE_SEND_NPG && e.wqe_id == send_id &&
+                      e.error && e.status_len == refused[i].status,
+                  "%s: type %u wqe_id %" PRIu64 " status %u (error %d), "
+                  "expected %u by SQ index",
+                  refused[i].what, e.type, e.wqe_id, e.status_len, e.error,
+                  refused[i].status);
+    }
+    check(T, cq_empty(&h, &cqd), "a refused datagram was delivered");
+
     /* A RoCE header carrying IPv6, behind a VLAN tag */
     uint8_t hdr[80] = {0};
     hdr[12] = 0x81;
