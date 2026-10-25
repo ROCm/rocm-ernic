@@ -20,10 +20,10 @@
  */
 
 #include <errno.h>
+#include <inttypes.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -188,39 +188,85 @@ static void stage_connect_data(struct host_mem *h, uint64_t addr,
     snprintf((char *)p + NVMEOF_CONNECT_HOSTNQN_OFF, 256, "%s", hostnqn);
 }
 
+/*
+ * Build a Connect for queue qid with its payload staged at the start of host
+ * memory, so a caller can change a field before running it.
+ */
+static void connect_capsule(struct capsule *c, struct host_mem *h, uint16_t qid,
+                            uint16_t sqsize, const char *subnqn,
+                            const char *hostnqn)
+{
+    uint64_t addr = HOST_BASE;
+
+    /* The CID is an opaque 16-bit tag, so wrapping it is harmless. */
+    cap_init(c, NVME_ADMIN_FABRICS, (uint16_t)(0x10u + qid));
+    c->b[NVMEOF_SQE_FCTYPE_OFF] = NVMEOF_FCTYPE_CONNECT;
+    ernic_put_le16(c->b + NVMEOF_CONNECT_QID_OFF, qid);
+    ernic_put_le16(c->b + NVMEOF_CONNECT_SQSIZE_OFF, sqsize);
+    cap_keyed_sgl(c, addr, NVMEOF_CONNECT_DATA_SIZE, HOST_RKEY);
+    stage_connect_data(h, addr, subnqn, hostnqn);
+}
+
 static int do_connect(struct nvmeof_queue *q, struct host_mem *h, uint16_t qid,
                       uint16_t sqsize, const char *subnqn, const char *hostnqn,
                       uint8_t *rsp)
 {
     struct capsule c;
-    uint64_t addr = HOST_BASE;
 
-    /* The CID is an opaque 16-bit tag, so wrapping it is harmless. */
-    cap_init(&c, NVME_ADMIN_FABRICS, (uint16_t)(0x10u + qid));
-    c.b[NVMEOF_SQE_FCTYPE_OFF] = NVMEOF_FCTYPE_CONNECT;
-    ernic_put_le16(c.b + NVMEOF_CONNECT_QID_OFF, qid);
-    ernic_put_le16(c.b + NVMEOF_CONNECT_SQSIZE_OFF, sqsize);
-    cap_keyed_sgl(&c, addr, NVMEOF_CONNECT_DATA_SIZE, HOST_RKEY);
-    stage_connect_data(h, addr, subnqn, hostnqn);
-
+    connect_capsule(&c, h, qid, sqsize, subnqn, hostnqn);
     return nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
 }
 
-static uint16_t set_cc(struct nvmeof_queue *q, struct host_mem *h, uint16_t cid,
-                       uint32_t cc)
+/*
+ * Property Set of off to val.  Returns the status, or UINT16_MAX if the
+ * target produced no response.
+ */
+static uint16_t prop_set(struct nvmeof_queue *q, struct host_mem *h,
+                         uint16_t cid, uint32_t off, uint64_t val)
 {
     struct capsule c;
     uint8_t rsp[NVME_CQE_SIZE];
 
     cap_init(&c, NVME_ADMIN_FABRICS, cid);
     c.b[NVMEOF_SQE_FCTYPE_OFF] = NVMEOF_FCTYPE_PROPERTY_SET;
-    ernic_put_le32(c.b + NVMEOF_PROP_OFFSET_OFF, NVMEOF_PROP_CC);
-    ernic_put_le64(c.b + NVMEOF_PROP_VALUE_OFF, cc);
+    ernic_put_le32(c.b + NVMEOF_PROP_OFFSET_OFF, off);
+    ernic_put_le64(c.b + NVMEOF_PROP_VALUE_OFF, val);
     if (nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp) !=
         NVMEOF_EXEC_DONE) {
         return UINT16_MAX;
     }
     return rsp_status(rsp);
+}
+
+/*
+ * Property Get of off, a 4-byte access unless attrib is 1, into *val.
+ * Returns the status, or UINT16_MAX if the target produced no response;
+ * *val is only meaningful on 0.
+ */
+static uint16_t prop_get(struct nvmeof_queue *q, struct host_mem *h,
+                         uint16_t cid, uint32_t off, uint8_t attrib,
+                         uint64_t *val)
+{
+    struct capsule c;
+    uint8_t rsp[NVME_CQE_SIZE];
+
+    *val = 0;
+    cap_init(&c, NVME_ADMIN_FABRICS, cid);
+    c.b[NVMEOF_SQE_FCTYPE_OFF] = NVMEOF_FCTYPE_PROPERTY_GET;
+    c.b[NVMEOF_PROP_ATTRIB_OFF] = attrib;
+    ernic_put_le32(c.b + NVMEOF_PROP_OFFSET_OFF, off);
+    if (nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp) !=
+        NVMEOF_EXEC_DONE) {
+        return UINT16_MAX;
+    }
+    *val = ernic_get_le64(rsp + NVME_CQE_RESULT_OFF);
+    return rsp_status(rsp);
+}
+
+static uint16_t set_cc(struct nvmeof_queue *q, struct host_mem *h, uint16_t cid,
+                       uint32_t cc)
+{
+    return prop_set(q, h, cid, NVMEOF_PROP_CC, cc);
 }
 
 /*
@@ -244,6 +290,42 @@ static uint16_t get_csts(struct nvmeof_queue *q, struct host_mem *h,
     }
     *csts = ernic_get_le32(rsp + NVME_CQE_RESULT_OFF);
     return rsp_status(rsp);
+}
+
+/*
+ * Get Log Page lid: numd + 1 dwords from byte offset off, into an SGL of
+ * len bytes at the start of host memory.  Returns the status, or UINT16_MAX
+ * if the target produced no response.
+ */
+static uint16_t get_log(struct nvmeof_queue *q, struct host_mem *h,
+                        uint16_t cid, uint8_t lid, uint32_t numd, uint64_t off,
+                        uint32_t len)
+{
+    struct capsule c;
+    uint8_t rsp[NVME_CQE_SIZE];
+
+    cap_init(&c, NVME_ADMIN_GET_LOG_PAGE, cid);
+    /* NUMDL is cdw10[31:16], NUMDU cdw11[15:0]. */
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, lid | ((numd & 0xffffu) << 16));
+    ernic_put_le32(c.b + NVME_SQE_CDW11_OFF, numd >> 16);
+    ernic_put_le64(c.b + NVME_SQE_CDW12_OFF, off);
+    cap_keyed_sgl(&c, HOST_BASE, len, HOST_RKEY);
+    if (nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp) !=
+        NVMEOF_EXEC_DONE) {
+        return UINT16_MAX;
+    }
+    return rsp_status(rsp);
+}
+
+/* True if the first len bytes of host memory are all val. */
+static bool host_bytes_are(const struct host_mem *h, size_t len, uint8_t val)
+{
+    for (size_t i = 0; i < len; i++) {
+        if (h->buf[i] != val) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -946,6 +1028,24 @@ static void test_discovery(void)
           h->buf[NVMEOF_DISC_E_TRTYPE_OFF] == NVMEOF_TRTYPE_RDMA,
           "offset read did not start at the first record");
 
+    /*
+     * Reading past the end yields zeros, not an error, however far past.
+     * The header is not zero, so an offset that wraps or is truncated back
+     * into the page shows: 1 << 32 is 0 in 32 bits, and 1 << 63 is
+     * negative if signed.
+     */
+    const uint64_t past[] = {want, 2 * want, UINT64_C(1) << 32,
+                             UINT64_C(1) << 63, UINT64_MAX - 3};
+    for (size_t i = 0; i < sizeof(past) / sizeof(past[0]); i++) {
+        memset(h->buf, 0xa5, 64);
+        uint16_t st = get_log(aq, h, 43, NVME_LOG_DISCOVERY, 15, past[i], 64);
+        if (st != 0 || !host_bytes_are(h, 64, 0)) {
+            fail("discovery-past-end",
+                 "offset %#" PRIx64 ": status %#06" PRIx16 ", or not zeros",
+                 past[i], st);
+        }
+    }
+
     /* An unknown log page is rejected rather than silently zero-filled. */
     cap_init(&c, NVME_ADMIN_GET_LOG_PAGE, 42);
     ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, 0x7e);
@@ -956,6 +1056,512 @@ static void test_discovery(void)
 
     free(h);
     nvmeof_target_destroy(t);
+}
+
+/* ------------------------------------------------------------------ */
+/* Connect, properties, features, log pages and Abort                 */
+/* ------------------------------------------------------------------ */
+
+#define FIXTURE_HOSTNQN "nqn.2014-08.org.nvmexpress:uuid:fixture"
+#define FIXTURE_KATO    15000u /* ms; not the host's 5 s default */
+
+/* A target on "size=1M,queues=4" and its admin queue, on handle 1. */
+struct admin_fixture {
+    struct host_mem *h;
+    struct nvmeof_target *t;
+    struct nvmeof_queue *aq;
+};
+
+static void admin_teardown(struct admin_fixture *f)
+{
+    free(f->h);
+    nvmeof_target_destroy(f->t);
+    memset(f, 0, sizeof(*f));
+}
+
+/* Returns false, having failed name and freed everything, on any error. */
+static bool admin_setup(struct admin_fixture *f, const char *name)
+{
+    struct capsule c;
+    uint8_t rsp[NVME_CQE_SIZE];
+
+    memset(f, 0, sizeof(*f));
+    f->h = calloc(1, sizeof(*f->h));
+    f->t = make_target("size=1M,queues=4");
+    if (f->h == NULL || f->t == NULL) {
+        fail(name, "setup failed");
+        admin_teardown(f);
+        return false;
+    }
+    f->h->rkey = HOST_RKEY;
+
+    f->aq = nvmeof_target_open_queue(f->t, 1);
+    if (f->aq == NULL) {
+        fail(name, "admin queue not opened");
+        admin_teardown(f);
+        return false;
+    }
+    connect_capsule(&c, f->h, 0, 31, "nvmet-test", FIXTURE_HOSTNQN);
+    ernic_put_le32(c.b + NVMEOF_CONNECT_KATO_OFF, FIXTURE_KATO);
+    if (nvmeof_queue_exec(f->aq, c.b, c.len, &host_ops, f->h, rsp) !=
+            NVMEOF_EXEC_DONE ||
+        rsp_status(rsp) != 0) {
+        fail(name, "admin Connect failed");
+        admin_teardown(f);
+        return false;
+    }
+    return true;
+}
+
+/*
+ * Connect status codes are command-specific and permanent, so compare the
+ * whole status word: SC alone would pass a generic error, or one without DNR.
+ */
+static void check_connect_reject(const char *name, struct nvmeof_queue *q,
+                                 const uint8_t *rsp, uint8_t sc,
+                                 const char *detail)
+{
+    uint16_t want = nvme_status(NVME_SCT_CMD_SPECIFIC, sc, 1);
+
+    if (rsp_status(rsp) != want) {
+        fail(name, "%s: status %#06" PRIx16 ", want %#06" PRIx16, detail,
+             rsp_status(rsp), want);
+    }
+    if (nvmeof_queue_connected(q)) {
+        fail(name, "%s: the queue was left connected", detail);
+    }
+}
+
+static void test_connect_reject(void)
+{
+    struct host_mem *h = calloc(1, sizeof(*h));
+    struct nvmeof_target *t = make_target("size=1M,queues=4");
+    uint8_t rsp[NVME_CQE_SIZE];
+    struct capsule c;
+    const char *hostnqn = "nqn.2014-08.org.nvmexpress:uuid:reject";
+
+    if (t == NULL || h == NULL) {
+        fail("connect-reject", "setup failed");
+        free(h);
+        nvmeof_target_destroy(t);
+        return;
+    }
+    h->rkey = HOST_RKEY;
+
+    struct nvmeof_queue *aq = nvmeof_target_open_queue(t, 1);
+    if (aq == NULL) {
+        fail("connect-reject", "admin queue not opened");
+        goto out;
+    }
+
+    /* Only record format 0 exists. */
+    const uint16_t recfmts[] = {1, 0xffff};
+    for (size_t i = 0; i < sizeof(recfmts) / sizeof(recfmts[0]); i++) {
+        connect_capsule(&c, h, 0, 31, "nvmet-test", hostnqn);
+        ernic_put_le16(c.b + NVMEOF_CONNECT_RECFMT_OFF, recfmts[i]);
+        nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
+        check_connect_reject("connect-recfmt", aq, rsp,
+                             NVMEOF_SC_CONNECT_FORMAT,
+                             "a nonzero record format");
+    }
+
+    /*
+     * SQSIZE is 0-based, and a 1-entry queue is invalid, so 0 is refused;
+     * so is anything past CAP.MQES, queue_depth - 1.
+     */
+    const uint16_t sqsizes[] = {0, 128, 0xffff};
+    for (size_t i = 0; i < sizeof(sqsizes) / sizeof(sqsizes[0]); i++) {
+        do_connect(aq, h, 0, sqsizes[i], "nvmet-test", hostnqn, rsp);
+        check_connect_reject("connect-sqsize", aq, rsp,
+                             NVMEOF_SC_CONNECT_INVALID_PARAM,
+                             "an out-of-range SQSIZE");
+    }
+
+    /* An I/O queue needs an association to join. */
+    struct nvmeof_queue *q = nvmeof_target_open_queue(t, 2);
+    if (q == NULL) {
+        fail("connect-qid", "queue not opened");
+        goto out;
+    }
+    do_connect(q, h, 1, 31, "nvmet-test", hostnqn, rsp);
+    check_connect_reject("connect-qid", q, rsp, NVMEOF_SC_CONNECT_INVALID_PARAM,
+                         "an I/O queue before the admin queue");
+
+    check("connect-reject", nvmeof_target_stats(t)->connects == 0,
+          "a rejected Connect was counted as a connection");
+
+    /* None of that left state behind: the largest SQSIZE is accepted. */
+    do_connect(aq, h, 0, 127, "nvmet-test", hostnqn, rsp);
+    check("connect-sqsize-max", rsp_status(rsp) == 0,
+          "an admin Connect with SQSIZE = MQES was refused");
+
+    /* The admin Connect reset the queue table, so open the I/O queue again. */
+    q = nvmeof_target_open_queue(t, 2);
+    if (q == NULL) {
+        fail("connect-qid", "queue not opened");
+        goto out;
+    }
+
+    /* QID is 1-based for I/O queues, up to the configured count. */
+    const uint16_t qids[] = {5, 0xffff};
+    for (size_t i = 0; i < sizeof(qids) / sizeof(qids[0]); i++) {
+        do_connect(q, h, qids[i], 31, "nvmet-test", hostnqn, rsp);
+        check_connect_reject("connect-qid", q, rsp,
+                             NVMEOF_SC_CONNECT_INVALID_PARAM,
+                             "a QID past the configured queue count");
+    }
+    do_connect(q, h, 1, 0, "nvmet-test", hostnqn, rsp);
+    check_connect_reject("connect-sqsize", q, rsp,
+                         NVMEOF_SC_CONNECT_INVALID_PARAM,
+                         "an I/O queue with SQSIZE 0");
+
+    /* The rejected queue can still connect, as the last queue. */
+    do_connect(q, h, 4, 31, "nvmet-test", hostnqn, rsp);
+    check("connect-qid-max", rsp_status(rsp) == 0,
+          "a Connect for the last I/O queue was refused");
+    check("connect-qid-max", nvmeof_queue_id(q) == 4, "queue id is not 4");
+    check("connect-reject", nvmeof_target_stats(t)->connects == 2,
+          "connect count is wrong");
+
+out:
+    free(h);
+    nvmeof_target_destroy(t);
+}
+
+static void test_properties(void)
+{
+    struct admin_fixture f;
+    if (!admin_setup(&f, "prop")) {
+        return;
+    }
+    const uint16_t bad_field =
+        nvme_status(NVME_SCT_GENERIC, NVME_SC_INVALID_FIELD, 1);
+    const uint16_t bad_opcode =
+        nvme_status(NVME_SCT_GENERIC, NVME_SC_INVALID_OPCODE, 1);
+    const uint32_t cc_en = NVME_CC_ENABLE | (6u << 16) | (4u << 20);
+    uint64_t v;
+
+    /* A new association starts with the controller disabled. */
+    check("prop-cc-initial",
+          prop_get(f.aq, f.h, 1, NVMEOF_PROP_CC, 0, &v) == 0 && v == 0,
+          "CC is not zero after Connect");
+
+    /* CC reads back what was written, all of it, not just CC.EN. */
+    check("prop-cc-roundtrip", set_cc(f.aq, f.h, 2, cc_en) == 0,
+          "Property Set CC failed");
+    check("prop-cc-roundtrip",
+          prop_get(f.aq, f.h, 3, NVMEOF_PROP_CC, 0, &v) == 0 && v == cc_en,
+          "Property Get CC did not return the value written");
+    check("prop-cc-roundtrip",
+          set_cc(f.aq, f.h, 4, cc_en | NVME_CC_SHN_NORMAL) == 0 &&
+              prop_get(f.aq, f.h, 5, NVMEOF_PROP_CC, 0, &v) == 0 &&
+              v == (cc_en | NVME_CC_SHN_NORMAL),
+          "Property Get CC did not return CC.SHN");
+    check("prop-cc-roundtrip", set_cc(f.aq, f.h, 6, cc_en) == 0,
+          "Property Set CC failed");
+
+    /* CC is 4 bytes; the upper half of the value field is not part of it. */
+    check("prop-cc-width",
+          prop_set(f.aq, f.h, 7, NVMEOF_PROP_CC,
+                   (UINT64_C(0xdeadbeef) << 32) | cc_en) == 0 &&
+              prop_get(f.aq, f.h, 8, NVMEOF_PROP_CC, 0, &v) == 0 && v == cc_en,
+          "Property Set CC kept bits past its 4 bytes");
+
+    /* CC is the only writable property, and a refused write changes none. */
+    const uint32_t ro[] = {NVMEOF_PROP_CAP, NVMEOF_PROP_VS, NVMEOF_PROP_CSTS,
+                           NVMEOF_PROP_NSSR, 0x18};
+    for (size_t i = 0; i < sizeof(ro) / sizeof(ro[0]); i++) {
+        uint16_t st = prop_set(f.aq, f.h, 9, ro[i], 0);
+        if (st != bad_field) {
+            fail("prop-set-ro",
+                 "Property Set of %#" PRIx32 ": status %#06" PRIx16
+                 ", want %#06" PRIx16,
+                 ro[i], st, bad_field);
+        }
+    }
+    check("prop-set-ro",
+          prop_get(f.aq, f.h, 10, NVMEOF_PROP_CC, 0, &v) == 0 && v == cc_en,
+          "a refused Property Set changed CC");
+
+    /* Offsets that aren't a property the controller implements. */
+    const uint32_t unknown[] = {NVMEOF_PROP_NSSR, 0x04, 0x18, 0xffffffffu};
+    for (size_t i = 0; i < sizeof(unknown) / sizeof(unknown[0]); i++) {
+        uint16_t st = prop_get(f.aq, f.h, 11, unknown[i], 0, &v);
+        if (st != bad_field) {
+            fail("prop-get-unknown",
+                 "Property Get of %#" PRIx32 ": status %#06" PRIx16
+                 ", want %#06" PRIx16,
+                 unknown[i], st, bad_field);
+        }
+    }
+
+    /* A queue that hasn't connected gets no property access. */
+    struct nvmeof_queue *q = nvmeof_target_open_queue(f.t, 2);
+    if (q == NULL) {
+        fail("prop-pre-connect", "queue not opened");
+    } else {
+        check("prop-pre-connect",
+              prop_get(q, f.h, 12, NVMEOF_PROP_CC, 0, &v) == bad_opcode,
+              "Property Get on an unconnected queue was accepted");
+        check("prop-pre-connect",
+              prop_set(q, f.h, 13, NVMEOF_PROP_CC, 0) == bad_opcode,
+              "Property Set on an unconnected queue was accepted");
+        check("prop-pre-connect",
+              prop_get(f.aq, f.h, 14, NVMEOF_PROP_CC, 0, &v) == 0 && v == cc_en,
+              "Property Set on an unconnected queue changed CC");
+    }
+
+    /* A Fabrics command type the controller doesn't implement. */
+    struct capsule c;
+    uint8_t rsp[NVME_CQE_SIZE];
+    cap_init(&c, NVME_ADMIN_FABRICS, 15);
+    c.b[NVMEOF_SQE_FCTYPE_OFF] = NVMEOF_FCTYPE_AUTH_SEND;
+    nvmeof_queue_exec(f.aq, c.b, c.len, &host_ops, f.h, rsp);
+    check("prop-bad-fctype", rsp_status(rsp) == bad_opcode,
+          "an unknown Fabrics command type was accepted");
+
+    admin_teardown(&f);
+}
+
+/*
+ * Get or Set Features fid with cdw11; the result dword goes to *result.
+ * Returns the status, or UINT16_MAX if the target produced no response.
+ */
+static uint16_t features(struct nvmeof_queue *q, struct host_mem *h,
+                         uint8_t opcode, uint16_t cid, uint8_t fid,
+                         uint32_t cdw11, uint32_t *result)
+{
+    struct capsule c;
+    uint8_t rsp[NVME_CQE_SIZE];
+
+    *result = 0;
+    cap_init(&c, opcode, cid);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, fid);
+    ernic_put_le32(c.b + NVME_SQE_CDW11_OFF, cdw11);
+    if (nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp) !=
+        NVMEOF_EXEC_DONE) {
+        return UINT16_MAX;
+    }
+    *result = ernic_get_le32(rsp + NVME_CQE_RESULT_OFF);
+    return rsp_status(rsp);
+}
+
+static void test_features(void)
+{
+    struct admin_fixture f;
+    if (!admin_setup(&f, "features")) {
+        return;
+    }
+    const uint16_t bad_field =
+        nvme_status(NVME_SCT_GENERIC, NVME_SC_INVALID_FIELD, 1);
+    uint32_t r;
+
+    /*
+     * Number of Queues: both counts are 0-based.  Before the host sets it,
+     * it is every configured queue.
+     */
+    check("get-num-queues",
+          features(f.aq, f.h, NVME_ADMIN_GET_FEATURES, 1, NVME_FEAT_NUM_QUEUES,
+                   0, &r) == 0 &&
+              r == (3u | (3u << 16)),
+          "Number of Queues before Set Features is not the configured 4");
+
+    /* A request within the limit is granted as asked, each count its own. */
+    check("set-num-queues-fit",
+          features(f.aq, f.h, NVME_ADMIN_SET_FEATURES, 2, NVME_FEAT_NUM_QUEUES,
+                   1u | (2u << 16), &r) == 0 &&
+              r == (1u | (2u << 16)),
+          "a Number of Queues within the limit was not granted as asked");
+
+    /* Without separate SQs and CQs, the smaller count is what's usable. */
+    check("get-num-queues",
+          features(f.aq, f.h, NVME_ADMIN_GET_FEATURES, 3, NVME_FEAT_NUM_QUEUES,
+                   0, &r) == 0 &&
+              r == (1u | (1u << 16)),
+          "Get Features did not report the smaller of the granted counts");
+
+    /* The most a host may ask for is clamped.  That's 0xfffe, 65535
+     * queues: 0xffff is reserved. */
+    check("set-num-queues-clamp",
+          features(f.aq, f.h, NVME_ADMIN_SET_FEATURES, 4, NVME_FEAT_NUM_QUEUES,
+                   0xfffefffeu, &r) == 0 &&
+              r == (3u | (3u << 16)),
+          "Number of Queues was not clamped to the configured 4");
+    check("set-num-queues-clamp",
+          features(f.aq, f.h, NVME_ADMIN_GET_FEATURES, 5, NVME_FEAT_NUM_QUEUES,
+                   0, &r) == 0 &&
+              r == (3u | (3u << 16)),
+          "Get Features did not report the clamped count");
+
+    /* Keep Alive Timer: Connect's KATO, until Set Features changes it. */
+    check("get-kato",
+          features(f.aq, f.h, NVME_ADMIN_GET_FEATURES, 6, NVME_FEAT_KATO, 0,
+                   &r) == 0 &&
+              r == FIXTURE_KATO,
+          "Get Features KATO did not report Connect's KATO");
+    check("set-kato",
+          features(f.aq, f.h, NVME_ADMIN_SET_FEATURES, 7, NVME_FEAT_KATO, 30000,
+                   &r) == 0 &&
+              r == 30000,
+          "Set Features KATO failed");
+    check("set-kato",
+          features(f.aq, f.h, NVME_ADMIN_GET_FEATURES, 8, NVME_FEAT_KATO, 0,
+                   &r) == 0 &&
+              r == 30000,
+          "Get Features KATO did not report the value set");
+
+    /* Asynchronous Event Configuration is accepted; no event is sent. */
+    check("set-async-event",
+          features(f.aq, f.h, NVME_ADMIN_SET_FEATURES, 9, NVME_FEAT_ASYNC_EVENT,
+                   0x100, &r) == 0 &&
+              r == 0x100,
+          "Set Features Asynchronous Event Configuration failed");
+    check("get-async-event",
+          features(f.aq, f.h, NVME_ADMIN_GET_FEATURES, 10,
+                   NVME_FEAT_ASYNC_EVENT, 0, &r) == 0,
+          "Get Features Asynchronous Event Configuration failed");
+
+    /* Arbitration, Power Management, and a vendor-specific feature. */
+    const uint8_t unknown[] = {0x01, 0x02, 0xc0};
+    for (size_t i = 0; i < sizeof(unknown); i++) {
+        uint16_t st =
+            features(f.aq, f.h, NVME_ADMIN_SET_FEATURES, 11, unknown[i], 0, &r);
+        if (st != bad_field) {
+            fail("set-features-unknown",
+                 "FID %#" PRIx8 ": status %#06" PRIx16 ", want %#06" PRIx16,
+                 unknown[i], st, bad_field);
+        }
+        st =
+            features(f.aq, f.h, NVME_ADMIN_GET_FEATURES, 12, unknown[i], 0, &r);
+        if (st != bad_field) {
+            fail("get-features-unknown",
+                 "FID %#" PRIx8 ": status %#06" PRIx16 ", want %#06" PRIx16,
+                 unknown[i], st, bad_field);
+        }
+    }
+
+    /* An unsupported Set changed nothing. */
+    check("set-features-unknown",
+          features(f.aq, f.h, NVME_ADMIN_GET_FEATURES, 13, NVME_FEAT_KATO, 0,
+                   &r) == 0 &&
+              r == 30000,
+          "an unsupported Set Features changed KATO");
+
+    admin_teardown(&f);
+}
+
+static void test_log_page(void)
+{
+    struct admin_fixture f;
+    if (!admin_setup(&f, "log-page")) {
+        return;
+    }
+    const uint16_t bad_field =
+        nvme_status(NVME_SCT_GENERIC, NVME_SC_INVALID_FIELD, 1);
+
+    /*
+     * The error log, which the host reads at startup, is empty.  Only what
+     * was asked for is written.
+     */
+    memset(f.h->buf, 0xa5, 128);
+    check("log-error", get_log(f.aq, f.h, 1, NVME_LOG_ERROR, 15, 0, 64) == 0,
+          "Get Log Page for the error log failed");
+    check("log-error", host_bytes_are(f.h, 64, 0),
+          "the error log is not empty");
+    check("log-error", f.h->buf[64] == 0xa5,
+          "Get Log Page wrote past the length asked for");
+
+    /* Every page the controller keeps is a whole, empty 4 KiB. */
+    const uint8_t lids[] = {NVME_LOG_ERROR, NVME_LOG_SMART, NVME_LOG_FW_SLOT,
+                            NVME_LOG_CHANGED_NS, NVME_LOG_CMD_EFFECTS};
+    for (size_t i = 0; i < sizeof(lids); i++) {
+        memset(f.h->buf, 0xa5, 4096);
+        uint16_t st = get_log(f.aq, f.h, 2, lids[i], 1023, 0, 4096);
+        if (st != 0 || !host_bytes_are(f.h, 4096, 0)) {
+            fail("log-pages",
+                 "log %#" PRIx8 ": status %#06" PRIx16
+                 ", or not 4 KiB of zeros",
+                 lids[i], st);
+        }
+    }
+
+    /* A read that starts inside the page and runs off its end. */
+    memset(f.h->buf, 0xa5, 64);
+    check("log-offset-tail",
+          get_log(f.aq, f.h, 4, NVME_LOG_ERROR, 15, 4096 - 16, 64) == 0 &&
+              host_bytes_are(f.h, 16, 0),
+          "a read running off the end of the log failed");
+
+    /*
+     * The transfer is the smaller of NUMD and the SGL, and is capped at
+     * 1 MiB.  NUMD can ask for 16 GiB and a keyed SGL can name 16 MiB, so
+     * the cap only applies when both are past it.
+     */
+    const uint32_t mib_numd = (1u << 20) / 4 - 1;
+    check("log-size-cap",
+          get_log(f.aq, f.h, 5, NVME_LOG_ERROR, UINT32_MAX, 0, 4096) == 0,
+          "a NUMD larger than the SGL was not cut to the SGL");
+    check("log-size-cap",
+          get_log(f.aq, f.h, 6, NVME_LOG_ERROR, mib_numd, 0, 1u << 20) == 0,
+          "a 1 MiB Get Log Page was refused");
+    check("log-size-cap",
+          get_log(f.aq, f.h, 7, NVME_LOG_ERROR, UINT32_MAX, 0, 1u << 20) == 0,
+          "a NUMD past 1 MiB was not cut to a 1 MiB SGL");
+    check("log-size-cap",
+          get_log(f.aq, f.h, 8, NVME_LOG_ERROR, mib_numd + 1, 0,
+                  (1u << 20) + 4) == bad_field,
+          "a Get Log Page of 1 MiB + 4 was accepted");
+    check("log-size-cap",
+          get_log(f.aq, f.h, 9, NVME_LOG_ERROR, UINT32_MAX, 0, 0xfffffcu) ==
+              bad_field,
+          "a Get Log Page of 16 MiB was accepted");
+
+    admin_teardown(&f);
+}
+
+/* Abort never finds a command to abort, and says so. */
+static void test_abort(void)
+{
+    struct admin_fixture f;
+    if (!admin_setup(&f, "abort")) {
+        return;
+    }
+    struct capsule c;
+    uint8_t rsp[NVME_CQE_SIZE];
+
+    /* The one command a controller holds is an Async Event Request. */
+    cap_init(&c, NVME_ADMIN_ASYNC_EVENT, 0x1234);
+    check("abort",
+          nvmeof_queue_exec(f.aq, c.b, c.len, &host_ops, f.h, rsp) ==
+              NVMEOF_EXEC_HELD,
+          "Async Event Request was not held");
+
+    /* cdw10: SQID 0 in bits 15:0, the CID in bits 31:16. */
+    const uint16_t cids[] = {0x1234, 0x4321};
+    for (size_t i = 0; i < sizeof(cids) / sizeof(cids[0]); i++) {
+        cap_init(&c, NVME_ADMIN_ABORT, (uint16_t)(1 + i));
+        ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, (uint32_t)cids[i] << 16);
+        memset(rsp, 0xa5, sizeof(rsp));
+        int rc = nvmeof_queue_exec(f.aq, c.b, c.len, &host_ops, f.h, rsp);
+        if (rc != NVMEOF_EXEC_DONE || rsp_status(rsp) != 0) {
+            fail("abort",
+                 "Abort of CID %#" PRIx16 ": rc %d, status %#06" PRIx16,
+                 cids[i], rc, rsp_status(rsp));
+        }
+        /* Dword 0 bit 0 set: the command was not aborted. */
+        if (ernic_get_le32(rsp + NVME_CQE_RESULT_OFF) != 1) {
+            fail("abort",
+                 "Abort of CID %#" PRIx16 ": result %#" PRIx32 ", want 1",
+                 cids[i], ernic_get_le32(rsp + NVME_CQE_RESULT_OFF));
+        }
+        if (ernic_get_le16(rsp + NVME_CQE_CID_OFF) != (uint16_t)(1 + i)) {
+            fail("abort",
+                 "Abort of CID %#" PRIx16 ": response is not for the Abort",
+                 cids[i]);
+        }
+    }
+
+    admin_teardown(&f);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1541,6 +2147,11 @@ int main(void)
     test_handshake();
     test_io();
     test_discovery();
+    test_connect_reject();
+    test_properties();
+    test_features();
+    test_log_page();
+    test_abort();
     test_file_backing();
     test_sync();
     test_image_size();
