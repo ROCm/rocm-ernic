@@ -19,9 +19,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "p4_program.h"
-#include "p4_value.h"
-
 /* Total storage for extracted headers and metadata, in bytes. */
 #define P4_PHV_BYTES 1024
 
@@ -44,6 +41,8 @@ struct p4_rdma_meta {
     uint32_t imm_data;
     uint32_t rkey;
 };
+
+struct p4_value;
 
 /*
  * How the pipeline calls out to an extern.
@@ -87,6 +86,7 @@ struct p4_exec_result {
  * wanted, or the result did not fit @out_cap.
  */
 struct p4_entries;
+struct p4_program;
 
 int p4_exec_run(const struct p4_program *prog, const struct p4_entries *ent,
                 uint32_t ingress_port, const void *frame, size_t len, void *out,

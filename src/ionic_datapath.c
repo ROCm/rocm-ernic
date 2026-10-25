@@ -49,6 +49,8 @@
 #include "p4_exec.h"
 #include "p4_fp8.h"
 #include "p4_fmt.h"
+#include "p4_program.h"
+#include "p4_value.h"
 #endif
 #include "ionic_datapath_priv.h"
 #include "ionic_eth_emu.h"

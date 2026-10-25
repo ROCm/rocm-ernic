@@ -16,8 +16,9 @@
 
 #include <json-c/json_object.h>
 /* json_object_object_foreach expands to the link-hash walkers. */
-#include <json-c/linkhash.h>
+#include <json-c/linkhash.h> // IWYU pragma: keep
 #include <json-c/json_tokener.h>
+#include <json-c/json_types.h>
 
 #include "p4_engine.h"
 #include "p4_json.h"

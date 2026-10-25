@@ -48,7 +48,6 @@
 #define P4_DEVCMD_H
 
 #include <stdbool.h>
-#include <stddef.h>
 #include <stdint.h>
 
 /*
@@ -60,6 +59,7 @@
  * a typedef to be repeated, which is what rocm_ernic_compat.h and
  * rocm_ernic_internal.h already rely on for rocm_ernic_dev_t.
  */
+// IWYU pragma: no_include <vfio-user/libvfio-user.h>
 typedef struct vfu_ctx vfu_ctx_t;
 
 struct p4_engine;

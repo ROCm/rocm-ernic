@@ -24,6 +24,7 @@
 #include "p4_devcmd.h"
 #include "p4_engine.h"
 #include "p4_json.h"
+#include "p4_program.h"
 #include "p4_table.h"
 
 /*

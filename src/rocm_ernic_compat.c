@@ -15,7 +15,11 @@
 #include <glib.h>
 #include <infiniband/verbs.h>
 #include "rocm_ernic_compat.h"
-#include "rocm_ernic_internal.h"
+/*
+ * struct rocm_ernic_dev.  IWYU credits uses of it to the repeated
+ * rocm_ernic_dev_t typedef in rocm_ernic_compat.h, so it would drop this.
+ */
+#include "rocm_ernic_internal.h" // IWYU pragma: keep
 
 /* QEMU-derived headers, from src/qemu/ */
 #include "pvrdma.h"
