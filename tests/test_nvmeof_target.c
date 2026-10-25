@@ -292,6 +292,42 @@ static uint16_t get_csts(struct nvmeof_queue *q, struct host_mem *h,
     return rsp_status(rsp);
 }
 
+/*
+ * Get Log Page lid: numd + 1 dwords from byte offset off, into an SGL of
+ * len bytes at the start of host memory.  Returns the status, or UINT16_MAX
+ * if the target produced no response.
+ */
+static uint16_t get_log(struct nvmeof_queue *q, struct host_mem *h,
+                        uint16_t cid, uint8_t lid, uint32_t numd, uint64_t off,
+                        uint32_t len)
+{
+    struct capsule c;
+    uint8_t rsp[NVME_CQE_SIZE];
+
+    cap_init(&c, NVME_ADMIN_GET_LOG_PAGE, cid);
+    /* NUMDL is cdw10[31:16], NUMDU cdw11[15:0]. */
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, lid | ((numd & 0xffffu) << 16));
+    ernic_put_le32(c.b + NVME_SQE_CDW11_OFF, numd >> 16);
+    ernic_put_le64(c.b + NVME_SQE_CDW12_OFF, off);
+    cap_keyed_sgl(&c, HOST_BASE, len, HOST_RKEY);
+    if (nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp) !=
+        NVMEOF_EXEC_DONE) {
+        return UINT16_MAX;
+    }
+    return rsp_status(rsp);
+}
+
+/* True if the first len bytes of host memory are all val. */
+static bool host_bytes_are(const struct host_mem *h, size_t len, uint8_t val)
+{
+    for (size_t i = 0; i < len; i++) {
+        if (h->buf[i] != val) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /* ------------------------------------------------------------------ */
 /* Configuration parsing                                              */
 /* ------------------------------------------------------------------ */
@@ -992,6 +1028,24 @@ static void test_discovery(void)
           h->buf[NVMEOF_DISC_E_TRTYPE_OFF] == NVMEOF_TRTYPE_RDMA,
           "offset read did not start at the first record");
 
+    /*
+     * Reading past the end yields zeros, not an error, however far past.
+     * The header is not zero, so an offset that wraps or is truncated back
+     * into the page shows: 1 << 32 is 0 in 32 bits, and 1 << 63 is
+     * negative if signed.
+     */
+    const uint64_t past[] = {want, 2 * want, UINT64_C(1) << 32,
+                             UINT64_C(1) << 63, UINT64_MAX - 3};
+    for (size_t i = 0; i < sizeof(past) / sizeof(past[0]); i++) {
+        memset(h->buf, 0xa5, 64);
+        uint16_t st = get_log(aq, h, 43, NVME_LOG_DISCOVERY, 15, past[i], 64);
+        if (st != 0 || !host_bytes_are(h, 64, 0)) {
+            fail("discovery-past-end",
+                 "offset %#" PRIx64 ": status %#06" PRIx16 ", or not zeros",
+                 past[i], st);
+        }
+    }
+
     /* An unknown log page is rejected rather than silently zero-filled. */
     cap_init(&c, NVME_ADMIN_GET_LOG_PAGE, 42);
     ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, 0x7e);
@@ -1326,10 +1380,11 @@ static void test_features(void)
               r == (1u | (1u << 16)),
           "Get Features did not report the smaller of the granted counts");
 
-    /* 0xffff in either half asks for 65536 queues, and is clamped. */
+    /* The most a host may ask for is clamped.  That's 0xfffe, 65535
+     * queues: 0xffff is reserved. */
     check("set-num-queues-clamp",
           features(f.aq, f.h, NVME_ADMIN_SET_FEATURES, 4, NVME_FEAT_NUM_QUEUES,
-                   0xffffffffu, &r) == 0 &&
+                   0xfffefffeu, &r) == 0 &&
               r == (3u | (3u << 16)),
           "Number of Queues was not clamped to the configured 4");
     check("set-num-queues-clamp",
@@ -1395,42 +1450,6 @@ static void test_features(void)
     admin_teardown(&f);
 }
 
-/*
- * Get Log Page lid: numd + 1 dwords from byte offset off, into an SGL of
- * len bytes at the start of host memory.  Returns the status, or UINT16_MAX
- * if the target produced no response.
- */
-static uint16_t get_log(struct nvmeof_queue *q, struct host_mem *h,
-                        uint16_t cid, uint8_t lid, uint32_t numd, uint64_t off,
-                        uint32_t len)
-{
-    struct capsule c;
-    uint8_t rsp[NVME_CQE_SIZE];
-
-    cap_init(&c, NVME_ADMIN_GET_LOG_PAGE, cid);
-    /* NUMDL is cdw10[31:16], NUMDU cdw11[15:0]. */
-    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, lid | ((numd & 0xffffu) << 16));
-    ernic_put_le32(c.b + NVME_SQE_CDW11_OFF, numd >> 16);
-    ernic_put_le64(c.b + NVME_SQE_CDW12_OFF, off);
-    cap_keyed_sgl(&c, HOST_BASE, len, HOST_RKEY);
-    if (nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp) !=
-        NVMEOF_EXEC_DONE) {
-        return UINT16_MAX;
-    }
-    return rsp_status(rsp);
-}
-
-/* True if the first len bytes of host memory are all val. */
-static bool host_bytes_are(const struct host_mem *h, size_t len, uint8_t val)
-{
-    for (size_t i = 0; i < len; i++) {
-        if (h->buf[i] != val) {
-            return false;
-        }
-    }
-    return true;
-}
-
 static void test_log_page(void)
 {
     struct admin_fixture f;
@@ -1463,21 +1482,6 @@ static void test_log_page(void)
                  "log %#" PRIx8 ": status %#06" PRIx16
                  ", or not 4 KiB of zeros",
                  lids[i], st);
-        }
-    }
-
-    /*
-     * Reading past the end yields zeros, not an error, however far past;
-     * the offset mustn't wrap round into the page or past its buffer.
-     */
-    const uint64_t past[] = {4096, 8192, UINT64_C(1) << 32, UINT64_MAX - 3};
-    for (size_t i = 0; i < sizeof(past) / sizeof(past[0]); i++) {
-        memset(f.h->buf, 0xa5, 64);
-        uint16_t st = get_log(f.aq, f.h, 3, NVME_LOG_ERROR, 15, past[i], 64);
-        if (st != 0 || !host_bytes_are(f.h, 64, 0)) {
-            fail("log-offset-past-end",
-                 "offset %#" PRIx64 ": status %#06" PRIx16 ", or not zeros",
-                 past[i], st);
         }
     }
 
