@@ -1218,9 +1218,9 @@ QP.</p>
 <section id="more-than-one-vm-the-tcp-mesh">
 <h2><a class="toc-backref" href="#id9" role="doc-backlink">More Than One VM: the TCP Mesh</a><a class="headerlink" href="#more-than-one-vm-the-tcp-mesh" title="Link to this heading">#</a></h2>
 <p>Each server serves one VM. For QPs in different VMs to talk,
-the <code class="docutils literal notranslate"><span class="pre">tcp</span></code> backend (<code class="docutils literal notranslate"><span class="pre">src/rdma/rdma_backend_tcp.c</span></code>) connects
-the servers into a mesh, and the data path sends requests
-across it.</p>
+the <code class="docutils literal notranslate"><span class="pre">tcp</span></code> backend (<code class="docutils literal notranslate"><span class="pre">src/rdma/rdma_backend_tcp.c</span></code> and the
+<code class="docutils literal notranslate"><span class="pre">tcp_*.c</span></code> files beside it) connects the servers into a mesh,
+and the data path sends requests across it.</p>
 <section id="topology">
 <h3>Topology<a class="headerlink" href="#topology" title="Link to this heading">#</a></h3>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>      ┌────────────────────┐
