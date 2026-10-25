@@ -169,11 +169,6 @@ set(RDMA_BACKEND_SOURCES
     src/rdma/pvrdma_stats.c
 )
 
-# RDMA CM protocol handling for the emulated network
-set(NET_SOURCES
-    src/net/rdma_cm_proto.c
-)
-
 # Compatibility bridge layer
 set(BRIDGE_SOURCES
     src/rocm_ernic_compat.c
@@ -244,7 +239,6 @@ set(ALL_SOURCES
     ${NVMEOF_SOURCES}
     ${S3_SOURCES}
     ${RDMA_BACKEND_SOURCES}
-    ${NET_SOURCES}
     ${QEMU_COMPAT_SOURCES}
     ${QEMU_SOURCES}
 )

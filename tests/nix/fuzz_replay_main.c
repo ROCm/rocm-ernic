@@ -17,7 +17,7 @@
  * and-run smoke test ctest registers). With arguments, replays those files
  * instead, which reproduces a crash input saved by a real fuzz run:
  *
- *     ./fuzz_replay_rdma_cm_proto crash-da39a3ee5e6b4b0d
+ *     ./fuzz_replay_net_headers crash-da39a3ee5e6b4b0d
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later

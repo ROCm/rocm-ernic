@@ -65,11 +65,6 @@ function(ernic_add_fuzz_replay harness)
     set_tests_properties(fuzz-replay-${harness} PROPERTIES TIMEOUT 30)
 endfunction()
 
-ernic_add_fuzz_replay(rdma_cm_proto
-    ${PROJECT_SOURCE_DIR}/src/net/rdma_cm_proto.c
-    ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
-)
-
 # net_headers.h is header-only, so this harness links no extra sources.
 ernic_add_fuzz_replay(net_headers)
 
