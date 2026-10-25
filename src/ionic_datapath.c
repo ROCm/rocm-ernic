@@ -428,6 +428,10 @@ struct ionic_datapath *ionic_datapath_create(vfu_ctx_t *vfu_ctx,
     dp->ah_count = MAX_AH;
     dp->local_node = UINT32_MAX;
     qemu_mutex_init(&dp->rx_lock);
+    /* dp_now_ms(), as now_ms is NULL; no other thread can reach dp yet */
+    ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
+    dp->rx_polled_ms = ernic_monotonic_ms();
+    ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     /* One init per slot, here rather than per registration: a reader that
      * samples srq->valid outside the lock must still find a lock it can
      * take, whatever the control path has done to that slot since. */
@@ -436,7 +440,7 @@ struct ionic_datapath *ionic_datapath_create(vfu_ctx_t *vfu_ctx,
     return dp;
 }
 
-static void dp_mesh_recv(void *opaque, uint32_t src_node, void *buf,
+static bool dp_mesh_recv(void *opaque, uint32_t src_node, void *buf,
                          size_t len);
 
 bool ionic_datapath_attach_nvmeof(struct ionic_datapath *dp,
@@ -3757,23 +3761,41 @@ static void sq_service(struct ionic_datapath *dp, struct ionic_qp_ring *q,
  */
 
 /*
- * Takes buf (see ionic_mesh_recv_fn): frees it at once if the message is
- * refused, or queues it, to be freed once the message is applied.
+ * Whether a queue holding @msgs messages of @bytes bytes in all has room for
+ * one more of @len bytes.  An empty one takes any message.
  */
-static void dp_mesh_recv(void *opaque, uint32_t src_node, void *buf, size_t len)
+static bool dp_rx_room(uint32_t msgs, size_t bytes, size_t len)
+{
+    return msgs == 0 || (msgs < DP_RX_MAX_MSGS && len <= DP_RX_MAX_BYTES &&
+                         bytes <= DP_RX_MAX_BYTES - len);
+}
+
+/*
+ * Takes buf (see ionic_mesh_recv_fn), freeing it at once if the message is
+ * malformed, or queueing it, to be freed once the message is applied; or
+ * returns false, leaving it with the mesh, if the queue has no room for it.
+ *
+ * The main thread empties the queue on every pass but for the SENDs waiting
+ * for a receive, and gives up on those once they have kept a message out
+ * for DP_RX_CROWDED_MS, so a message refused here is taken soon.  If the
+ * main thread isn't polling, nothing would take it, and it is dropped
+ * instead.
+ */
+static bool dp_mesh_recv(void *opaque, uint32_t src_node, void *buf, size_t len)
 {
     struct ionic_datapath *dp = opaque;
+    bool room, stuck = false;
 
     if (len < sizeof(struct ionic_wire_hdr) ||
         len > sizeof(struct ionic_wire_hdr) + IONIC_WIRE_MAX_PAYLOAD) {
         free(buf);
-        return;
+        return true;
     }
 
     struct dp_inmsg *m = malloc(sizeof(*m));
     if (!m) {
         free(buf);
-        return;
+        return true;
     }
 
     m->next = NULL;
@@ -3784,13 +3806,36 @@ static void dp_mesh_recv(void *opaque, uint32_t src_node, void *buf, size_t len)
     m->buf = buf;
 
     qemu_mutex_lock(&dp->rx_lock);
-    if (dp->rx_tail)
-        dp->rx_tail->next = m;
-    else
-        dp->rx_head = m;
-    dp->rx_tail = m;
-    dp->rx_fresh++;
+    room = dp_rx_room(dp->rx_msgs, dp->rx_bytes, len);
+    if (room) {
+        if (dp->rx_tail)
+            dp->rx_tail->next = m;
+        else
+            dp->rx_head = m;
+        dp->rx_tail = m;
+        dp->rx_fresh++;
+        dp->rx_msgs++;
+        dp->rx_bytes += len;
+    } else {
+        /* A pass reads the clock before setting rx_polled_ms, so that is
+         * later than now only if a unit test's clock went back */
+        uint64_t now = dp_now_ms(dp);
+
+        stuck =
+            now > dp->rx_polled_ms && now - dp->rx_polled_ms > DP_RX_STUCK_MS;
+        if (stuck)
+            dp->rx_dropped++;
+        else if (len > dp->rx_waiting)
+            dp->rx_waiting = len;
+    }
     qemu_mutex_unlock(&dp->rx_lock);
+
+    if (room)
+        return true;
+    if (stuck)
+        free(buf);
+    free(m);
+    return stuck;
 }
 
 static void dp_wire_reply(struct ionic_datapath *dp, uint32_t dst_node,
@@ -3931,9 +3976,9 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
                 return false;
 
             vfu_log(dp->vfu_ctx, LOG_WARNING,
-                    "ionic_datapath: QP %u posted no receive within %u ms, "
+                    "ionic_datapath: QP %u posted no receive in time, "
                     "dropping %u bytes from node %u",
-                    dst_qp_id, RNR_RETRY_MS, src.total, src_node);
+                    dst_qp_id, src.total, src_node);
             status = IONIC_STS_RNR_RETRY_EXCEEDED;
         }
         dp_wire_reply(dp, src_node, IONIC_WIRE_ACK, h, status, NULL, 0);
@@ -4084,9 +4129,50 @@ bool ionic_datapath_has_work(struct ionic_datapath *dp)
     return work;
 }
 
+/*
+ * Log the messages a full queue has dropped since this was last called,
+ * which it did because nothing polled it (see dp_mesh_recv()).  On the main
+ * thread, since a receive thread has no vfio-user context to log to.
+ */
+static void dp_rx_log_dropped(struct ionic_datapath *dp, uint64_t dropped)
+{
+    if (dropped == dp->rx_dropped_logged)
+        return;
+    vfu_log(dp->vfu_ctx, LOG_WARNING,
+            "ionic_datapath: dropped %" PRIu64 " mesh message(s) that came "
+            "while the queue was full and the device wasn't polling it",
+            dropped - dp->rx_dropped_logged);
+    dp->rx_dropped_logged = dropped;
+}
+
+/*
+ * At the end of a pass that leaves @kept messages of @kept_bytes waiting for
+ * a receive: whether they leave room for the largest message the queue has
+ * refused.  If they do, the receive thread's next try takes it.  If not,
+ * they are what keeps it out, and the passes give up on them once they have
+ * done so for DP_RX_CROWDED_MS.
+ */
+static void dp_rx_note_crowding(struct ionic_datapath *dp, uint32_t kept,
+                                size_t kept_bytes, uint64_t now)
+    TSA_REQUIRES(dp->rx_lock)
+{
+    if (dp->rx_waiting != 0 && dp_rx_room(kept, kept_bytes, dp->rx_waiting))
+        dp->rx_waiting = 0;
+
+    if (dp->rx_waiting == 0) {
+        dp->rx_crowded = false;
+    } else if (!dp->rx_crowded) {
+        dp->rx_crowded = true;
+        dp->rx_crowded_ms = now;
+    }
+}
+
 void ionic_datapath_poll(struct ionic_datapath *dp)
 {
     struct dp_inmsg *list;
+    uint64_t dropped, now;
+    uint32_t queued;
+    size_t queued_bytes;
 
     if (!dp)
         return;
@@ -4094,20 +4180,42 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
     if (dp->s3_tcp)
         s3_tcp_poll(dp->s3_tcp, dp_now_ms(dp));
 
+    now = dp_now_ms(dp);
     qemu_mutex_lock(&dp->rx_lock);
     list = dp->rx_head;
     dp->rx_head = dp->rx_tail = NULL;
     dp->rx_fresh = 0;
+    dp->rx_polled_ms = now;
+    dropped = dp->rx_dropped;
+    queued = dp->rx_msgs;
+    queued_bytes = dp->rx_bytes;
     qemu_mutex_unlock(&dp->rx_lock);
+
+    dp_rx_log_dropped(dp, dropped);
 
     /*
      * Messages that cannot be delivered yet go on @defer and are put back for
      * the next poll.  Any further request for the same QP has to be deferred
      * with it, or a later SEND would overtake an earlier one; traffic for
      * other QPs, and every response, keeps flowing.
+     *
+     * What is put back stays in the queue's count, and a receive thread
+     * waits for room in it.  Once what the passes leave has kept a message
+     * out for DP_RX_CROWDED_MS, this pass gives up on every SEND still
+     * waiting, so the queue empties.
      */
     struct dp_inmsg *defer_head = NULL, *defer_tail = NULL;
-    uint64_t now = dp_now_ms(dp);
+    bool give_up =
+        dp->rx_crowded && now - dp->rx_crowded_ms >= DP_RX_CROWDED_MS;
+    size_t done_bytes = 0, kept_bytes = 0;
+    uint32_t done = 0, kept = 0;
+
+    if (give_up)
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: SENDs waiting for a receive have filled the "
+                "mesh's inbound queue (%" PRIu32 " messages, %zu bytes) for "
+                "%" PRIu64 " ms; those still without one fail now",
+                queued, queued_bytes, now - dp->rx_crowded_ms);
 
     while (list) {
         struct dp_inmsg *m = list;
@@ -4129,7 +4237,10 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
                 m->first_try_ms = now;
 
             if (dp_handle_wire(dp, m->src_node, m->buf, m->len,
-                               now - m->first_try_ms < RNR_RETRY_MS)) {
+                               !give_up &&
+                                   now - m->first_try_ms < RNR_RETRY_MS)) {
+                done++;
+                done_bytes += m->len;
                 dp_inmsg_free(m);
                 continue;
             }
@@ -4150,16 +4261,23 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
         else
             defer_head = m;
         defer_tail = m;
+        kept++;
+        kept_bytes += m->len;
     }
 
+    qemu_mutex_lock(&dp->rx_lock);
     if (defer_head) {
-        qemu_mutex_lock(&dp->rx_lock);
         defer_tail->next = dp->rx_head;
         dp->rx_head = defer_head;
         if (!dp->rx_tail)
             dp->rx_tail = defer_tail;
-        qemu_mutex_unlock(&dp->rx_lock);
     }
+    dp->rx_msgs -= done;
+    dp->rx_bytes -= done_bytes;
+    dp_rx_note_crowding(dp, kept, kept_bytes, now);
+    /* The pass can have been long */
+    dp->rx_polled_ms = dp_now_ms(dp);
+    qemu_mutex_unlock(&dp->rx_lock);
 
     /*
      * Retry the send queues that are waiting for a local peer's receive, or

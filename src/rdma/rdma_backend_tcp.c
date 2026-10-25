@@ -26,6 +26,7 @@
 #include "rdma_rm_defs.h"
 #include "rdma_utils.h"
 #include "rocm_ernic_compat.h"
+#include "ernic_time.h"
 #include "parse_int.h"
 #include "qemu/thread.h"
 #include "rocm-ernic-warnings.h"
@@ -41,6 +42,9 @@
 
 /* Tunable default -- overridable via ERNIC_TCP_HEALTH_INTERVAL */
 #define TCP_DEFAULT_HEALTH_INTERVAL_S 5
+
+/* How often a receive thread offers the data path a message it refused */
+#define TCP_IONIC_RETRY_US 1000u
 
 /*
  * The value of the environment variable @name, if it is a positive integer,
@@ -1009,6 +1013,15 @@ void tcp_backend_set_ionic_recv_cb(RdmaBackendDev *backend_dev,
  * TCP_MSG_IONIC: hand a message addressed to this node to the ionic data
  * path, which takes the payload with it.  On the manager, a message
  * addressed to another node is relayed to it (tcp_manager_relay_ionic()).
+ *
+ * The data path refuses a message while its queue is full, and this thread
+ * offers it again every TCP_IONIC_RETRY_US, reading nothing more from the
+ * peer meanwhile.  That is the mesh's flow control: the socket fills, then
+ * the peer's, and the peer's send queue stops taking the guest's requests.
+ * The data path empties its queue on every pass, so the wait is short; see
+ * dp_mesh_recv().  A stopped thread gives the message up.  The callback is
+ * looked up afresh each time, so one the data path has unregistered meanwhile
+ * isn't called.
  */
 void tcp_recv_ionic(const TcpConnection *conn, TcpRecvMsg *msg)
 {
@@ -1026,19 +1039,29 @@ void tcp_recv_ionic(const TcpConnection *conn, TcpRecvMsg *msg)
         return;
     }
 
-    qemu_mutex_lock(&priv->lock);
-    fn = priv->ionic_recv_fn;
-    fn_opaque = priv->ionic_recv_opaque;
-    qemu_mutex_unlock(&priv->lock);
+    for (;;) {
+        qemu_mutex_lock(&priv->lock);
+        fn = priv->ionic_recv_fn;
+        fn_opaque = priv->ionic_recv_opaque;
+        qemu_mutex_unlock(&priv->lock);
 
-    if (fn) {
-        /* fn owns the payload now, and frees it */
-        fn(fn_opaque, msg->hdr.src_node_id, msg->payload, msg->hdr.msg_len);
-        msg->payload = NULL;
-    } else {
-        rdma_error_report("TCP: ionic message from node %u with no data path "
-                          "registered",
-                          msg->hdr.src_node_id);
+        if (!fn) {
+            rdma_error_report("TCP: ionic message from node %u with no data "
+                              "path registered",
+                              msg->hdr.src_node_id);
+            return;
+        }
+        if (fn(fn_opaque, msg->hdr.src_node_id, msg->payload,
+               msg->hdr.msg_len)) {
+            /* fn owns the payload now, and frees it */
+            msg->payload = NULL;
+            return;
+        }
+        /* The receive thread frees the payload */
+        if (!atomic_load(&conn->recv_thread_running) ||
+            atomic_load(&priv->stopping))
+            return;
+        ernic_sleep_us(TCP_IONIC_RETRY_US);
     }
 }
 

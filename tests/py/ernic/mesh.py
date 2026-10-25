@@ -2,8 +2,9 @@
 
 Two things live here. The first is the protocol a mesh node speaks to its
 peers, so a test can stand in for one: register as a worker, advertise
-GIDs, or send a frame no real node would send and check that the node on
-the other end refuses it rather than trusting it.
+GIDs, send the data path's messages, or send a frame no real node would
+send and check that the node on the other end refuses it rather than
+trusting it.
 
 The second is a fixture that starts a manager and some workers as real
 processes, each with its own vfio-user socket and its own guest GIDs, so
@@ -58,6 +59,18 @@ MSG_NODE_GIDS = 25
 
 HEADER_FMT = "!IIIIIIII"
 HEADER_SIZE = 32
+
+# struct ionic_wire_hdr, the data path's header at the start of a
+# TCP_MSG_IONIC payload: little-endian, unlike the mesh header around it.
+# Magic, op, compare-swap flag, reserved, source and destination QP,
+# request id, rkey, length, immediate, status, remote address, swap/add
+# operand, compare operand.
+IONIC_WIRE_FMT = "<IBBHIIIIIIIQQQ"
+IONIC_WIRE_SIZE = struct.calcsize(IONIC_WIRE_FMT)
+IONIC_WIRE_MAGIC = 0x434E4F49  # "IONC"
+# enum ionic_wire_op, the two used here
+IONIC_WIRE_SEND = 1
+IONIC_WIRE_ACK = 10
 
 # Sizes of a pre-v4 registration, which has no version field.
 REGISTER_NODE_LEN_V3 = 262
@@ -138,6 +151,25 @@ def gids_payload(node_id, gids):
             raise ValueError("a GID is 16 bytes")
         body += gid
     return body + b"\0" * 16 * (MAX_NODE_GIDS - len(gids))
+
+
+def ionic_send_payload(dst_qp, length, req_id):
+    """A TCP_MSG_IONIC payload: a SEND of @length zero bytes to @dst_qp."""
+    hdr = bytearray(IONIC_WIRE_SIZE)
+    struct.pack_into("<IB", hdr, 0, IONIC_WIRE_MAGIC, IONIC_WIRE_SEND)
+    struct.pack_into("<II", hdr, 12, dst_qp, req_id)
+    struct.pack_into("<I", hdr, 24, length)
+    return bytes(hdr) + bytes(length)
+
+
+def ionic_ack_status(payload):
+    """The status of the ACK a TCP_MSG_IONIC payload carries, or None."""
+    if len(payload) < IONIC_WIRE_SIZE:
+        return None
+    fields = struct.unpack(IONIC_WIRE_FMT, payload[:IONIC_WIRE_SIZE])
+    if fields[0] != IONIC_WIRE_MAGIC or fields[1] != IONIC_WIRE_ACK:
+        return None
+    return fields[10]
 
 
 def gid_bytes(text):

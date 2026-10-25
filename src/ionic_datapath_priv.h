@@ -15,6 +15,7 @@
 #define IONIC_DATAPATH_PRIV_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include <vfio-user/libvfio-user.h>
@@ -53,6 +54,41 @@
  * message simply stays queued and is retried on later polls.
  */
 #define RNR_RETRY_MS 5000u
+
+/*
+ * How much the queue of messages from other nodes holds, in bytes and in
+ * messages.  When it is full, the mesh's receive thread waits for room before
+ * reading on, so a peer that sends faster than the main thread applies is
+ * slowed down by TCP, not buffered without limit.  An empty queue takes any
+ * one message.  Four of the largest, so a few can come in while a pass
+ * applies a few more.
+ */
+#define DP_RX_MAX_BYTES ((size_t)4 * IONIC_MESH_MAX_MSG)
+#define DP_RX_MAX_MSGS  4096u
+_Static_assert(DP_RX_MAX_BYTES >= IONIC_MESH_MAX_MSG,
+               "the inbound queue must hold the largest message");
+
+/*
+ * A pass leaves SENDs waiting for a receive on the queue, and what is behind
+ * them for the same QP.  Once they have left no room for a message a
+ * receive thread is waiting to queue for this long, the next pass gives up
+ * on them as if RNR_RETRY_MS had passed: waiting out RNR_RETRY_MS would
+ * leave the peer's connection unread for as long.  Well under the 5 s a
+ * manager's send waits for a peer that has stopped reading
+ * (TCP_DEFAULT_SEND_TIMEOUT_MS, halved), past which the peer gives up on
+ * this node's connection.
+ */
+#define DP_RX_CROWDED_MS 500u
+
+/*
+ * How long the main thread may go without a pass before a full queue stops
+ * holding up the receive threads and drops what they bring instead.  The
+ * main thread polls only while a client is attached, and a receive thread
+ * that waited for a pass that isn't coming would leave its peer's connection
+ * unread until the peer gave up on it.  Under the 5 s that takes, as for
+ * DP_RX_CROWDED_MS.
+ */
+#define DP_RX_STUCK_MS 2000u
 
 /* -------------------------------------------------------------------------
  * Cross-instance wire protocol
@@ -325,6 +361,38 @@ struct ionic_datapath {
      * as work would spin the loop until the peer posts a receive.
      */
     uint32_t rx_fresh TSA_GUARDED_BY(rx_lock);
+    /*
+     * What the queue holds, against DP_RX_MAX_BYTES and DP_RX_MAX_MSGS:
+     * every message on @rx_head, and those a pass has taken off it and not
+     * yet freed, which are still in memory.
+     */
+    size_t rx_bytes TSA_GUARDED_BY(rx_lock);
+    uint32_t rx_msgs TSA_GUARDED_BY(rx_lock);
+    /*
+     * The largest message the queue has refused for want of room, until a
+     * pass leaves room for it, or 0.  Kept from pass to pass, since a
+     * receive thread tries again less often than the main thread passes.
+     * It can outlast the thread that was refused, which, if the SENDs left
+     * waiting have no room for it, only has their wait end early.
+     */
+    size_t rx_waiting TSA_GUARDED_BY(rx_lock);
+    /*
+     * When a pass last started or ended, on @now_ms's clock, for a receive
+     * thread to tell a main thread that has stopped polling (DP_RX_STUCK_MS)
+     */
+    uint64_t rx_polled_ms TSA_GUARDED_BY(rx_lock);
+    /* Messages dropped because the queue was full and nothing polled it */
+    uint64_t rx_dropped TSA_GUARDED_BY(rx_lock);
+
+    /*
+     * The rest is the main thread's alone.  @rx_crowded is set while the
+     * messages each pass leaves waiting for a receive leave no room for
+     * @rx_waiting, since @rx_crowded_ms on @now_ms's clock.
+     * @rx_dropped_logged is how much of @rx_dropped has been logged.
+     */
+    bool rx_crowded;
+    uint64_t rx_crowded_ms;
+    uint64_t rx_dropped_logged;
 
     /*
      * Why the last transfer stopped short.  A byte count on its own cannot
@@ -346,10 +414,13 @@ struct ionic_datapath {
     uint64_t rdma[IONIC_DP_RDMA_COUNT];
 
     /*
-     * The clock, in milliseconds, that the RNR wait and the deadlines on
-     * @pending run on.  NULL, as ionic_datapath_create() leaves it, is
-     * CLOCK_MONOTONIC; a unit test sets its own, to land exactly on those
-     * deadlines.  Read on the vfu thread only.
+     * The clock, in milliseconds, that the RNR wait, the deadlines on
+     * @pending and the inbound queue's limits run on.  NULL, as
+     * ionic_datapath_create() leaves it, is CLOCK_MONOTONIC; a unit test sets
+     * its own, before anything uses @dp, to land exactly on those deadlines.
+     * Read on the vfu thread, and by the mesh's receive threads in
+     * dp_mesh_recv(), which can do so without a lock because it never
+     * changes once they run.
      */
     uint64_t (*now_ms)(void);
 };

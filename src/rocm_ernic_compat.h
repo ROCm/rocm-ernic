@@ -426,11 +426,14 @@ int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
  * when the instance has no mesh backend (loopback or none), which the caller
  * reads as "every peer is local".
  *
- * An ionic_mesh_recv_fn owns buf, which is from malloc(), and must free() it
- * on every path, rejections included.  It must match tcp_ionic_recv_fn, which
- * ionic_mesh_set_recv_cb() casts it to.
+ * An ionic_mesh_recv_fn that returns true has taken buf, which is from
+ * malloc(), and must free() it on every path, rejections included.  One that
+ * returns false has no room for the message yet, and leaves buf with the
+ * mesh, which offers it again shortly and reads nothing more from that peer
+ * meanwhile.  It must match tcp_ionic_recv_fn, which ionic_mesh_set_recv_cb()
+ * casts it to.
  */
-typedef void (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node, void *buf,
+typedef bool (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node, void *buf,
                                    size_t len);
 
 /*

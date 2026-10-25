@@ -42,6 +42,7 @@
 #include "ionic_eth_emu.h"
 #include "nvmeof_cm.h"
 #include "nvmeof_target.h"
+#include "qemu/thread.h"
 #include "rocm_ernic_compat.h"
 #include "s3_tcp.h"
 #include "s3_target.h"
@@ -546,6 +547,10 @@ static struct ionic_datapath *setup(void)
     g_recv_fn = NULL;
     g_recv_opaque = NULL;
     dp->now_ms = fake_now_ms;
+    /* Set on the real clock when the data path was created */
+    qemu_mutex_lock(&dp->rx_lock);
+    dp->rx_polled_ms = T0;
+    qemu_mutex_unlock(&dp->rx_lock);
 
     ionic_datapath_register_cq(dp, CQ_ID, 0, &cq);
     register_qp(dp, QP_A, CQ_ID);
@@ -567,7 +572,8 @@ static void remote(struct ionic_datapath *dp, uint32_t dest_qp)
 
 /*
  * Deliver @len bytes from the peer node, as the mesh's receive thread does: in
- * a buffer from malloc(), which the data path takes.
+ * a buffer from malloc(), which the data path takes.  These rows never fill
+ * its queue, so it always has room.
  */
 static void mesh_recv(const void *buf, size_t len)
 {
@@ -585,7 +591,12 @@ static void mesh_recv(const void *buf, size_t len)
         return;
     }
     memcpy(copy, buf, len);
-    g_recv_fn(g_recv_opaque, PEER_NODE, copy, len);
+    if (!g_recv_fn(g_recv_opaque, PEER_NODE, copy, len)) {
+        printf("FAIL: the data path had no room for a %zu-byte mesh message\n",
+               len);
+        failures++;
+        free(copy);
+    }
 }
 
 struct wqe {
@@ -1833,7 +1844,10 @@ static const char *mr_run(struct ionic_datapath *dp, size_t len,
     buf = calloc(1, len);
     if (!buf)
         return "no memory for the message";
-    g_recv_fn(g_recv_opaque, PEER_NODE, buf, len);
+    if (!g_recv_fn(g_recv_opaque, PEER_NODE, buf, len)) {
+        free(buf);
+        return "the data path had no room for the message";
+    }
 
     if (ionic_datapath_has_work(dp) != (end != MR_REFUSED))
         return end == MR_REFUSED ? "the message was queued"
@@ -1885,12 +1899,283 @@ static void check_mesh_recv_sizes(void)
     }
 }
 
+/*
+ * The queue of messages from other nodes holds DP_RX_MAX_MSGS messages and
+ * DP_RX_MAX_BYTES bytes.  Past that, the data path refuses a message and
+ * leaves it with the mesh, whose receive thread offers it again and reads
+ * nothing more from that peer meanwhile.  A pass empties the queue but for
+ * the SENDs waiting for a receive, and what is behind them for the same QP;
+ * once those have kept a refused message out for DP_RX_CROWDED_MS, a pass
+ * gives up on them, as at RNR_RETRY_MS.  A full queue that nothing has
+ * polled for over DP_RX_STUCK_MS drops what comes instead, since a receive
+ * thread would otherwise wait for it for good.
+ *
+ * Junk (a zero magic) fills the queue where a row needs what a pass
+ * consumes; SENDs to QP_B, which has no receive posted, where it needs what
+ * a pass leaves.
+ */
+#define IONIC_STS_RNR_RETRY_EXCEEDED 12
+
+enum rq_scenario {
+    RQ_MSGS,         /* DP_RX_MAX_MSGS queued, then one more */
+    RQ_BYTES,        /* DP_RX_MAX_BYTES queued, then one more */
+    RQ_STUCK_EDGE,   /* full, with no pass for DP_RX_STUCK_MS */
+    RQ_STUCK,        /* and for 1 ms more */
+    RQ_CROWDED_EDGE, /* full of SENDs that keep one out, DP_RX_CROWDED_MS - 1 */
+    RQ_CROWDED,      /* and for DP_RX_CROWDED_MS */
+    RQ_ROOM_LEFT,    /* a SEND waits while junk fills the queue */
+};
+
+/*
+ * Offer the data path a message of @len bytes, as the mesh's receive thread
+ * does: junk, or a SEND from QP_A to QP_B.  1 if it took the message, 0 if it
+ * refused it, which leaves the buffer here, or -1 if there was no memory.
+ */
+static int rq_offer(size_t len, bool send)
+{
+    uint8_t *buf = calloc(1, len);
+
+    if (!buf)
+        return -1;
+    if (send) {
+        struct ionic_wire_hdr h;
+
+        memset(&h, 0, sizeof(h));
+        h.magic = htole32(IONIC_WIRE_MAGIC);
+        h.op = IONIC_WIRE_SEND;
+        h.src_qp_id = htole32(QP_A);
+        h.dst_qp_id = htole32(QP_B);
+        h.length = htole32((uint32_t)(len - sizeof(h)));
+        memcpy(buf, &h, sizeof(h));
+    }
+    if (g_recv_fn(g_recv_opaque, PEER_NODE, buf, len))
+        return 1;
+    free(buf);
+    return 0;
+}
+
+/* Whether the data path takes each of @n messages of @len bytes */
+static bool rq_fill(uint32_t n, size_t len, bool send)
+{
+    for (uint32_t i = 0; i < n; i++)
+        if (rq_offer(len, send) != 1)
+            return false;
+    return true;
+}
+
+/* What the queue holds, and how many messages it has dropped */
+static void rq_counts(struct ionic_datapath *dp, uint32_t *msgs, size_t *bytes,
+                      uint64_t *dropped)
+{
+    qemu_mutex_lock(&dp->rx_lock);
+    *msgs = dp->rx_msgs;
+    *bytes = dp->rx_bytes;
+    *dropped = dp->rx_dropped;
+    qemu_mutex_unlock(&dp->rx_lock);
+}
+
+/* Whether the queue is counted as empty */
+static bool rq_empty(struct ionic_datapath *dp)
+{
+    uint32_t msgs;
+    size_t bytes;
+    uint64_t dropped;
+
+    rq_counts(dp, &msgs, &bytes, &dropped);
+    return msgs == 0 && bytes == 0;
+}
+
+/* Whether each message sent is an ACK of RNR-retry-exceeded, and there are n */
+static bool rq_rnr_acks(size_t n)
+{
+    if (g_nwire != n)
+        return false;
+    for (size_t i = 0; i < n; i++) {
+        struct ionic_wire_hdr h;
+
+        memcpy(&h, g_wire[i], sizeof(h));
+        if (h.op != IONIC_WIRE_ACK ||
+            le32toh(h.status) != IONIC_STS_RNR_RETRY_EXCEEDED)
+            return false;
+    }
+    return true;
+}
+
+static const char *rq_stuck(struct ionic_datapath *dp, bool past)
+{
+    const size_t hdr = sizeof(struct ionic_wire_hdr);
+    uint32_t msgs;
+    size_t bytes;
+    uint64_t dropped;
+
+    if (!rq_fill(DP_RX_MAX_MSGS, hdr, false))
+        return "the queue didn't take DP_RX_MAX_MSGS messages";
+    /* setup() put the last pass at T0 */
+    g_now_ms = T0 + DP_RX_STUCK_MS + (past ? 1 : 0);
+    if (rq_offer(hdr, false) != (past ? 1 : 0))
+        return past ? "the message was refused, not dropped"
+                    : "the message was taken";
+    rq_counts(dp, &msgs, &bytes, &dropped);
+    if (msgs != DP_RX_MAX_MSGS || dropped != (past ? 1 : 0))
+        return past ? "the message wasn't dropped, once"
+                    : "the message was dropped";
+    if (!past)
+        return NULL;
+
+    poll_at(dp, g_now_ms);
+    if (dp->rx_dropped_logged != 1)
+        return "the pass didn't log the drop, once";
+    if (!rq_fill(DP_RX_MAX_MSGS, hdr, false))
+        return "the queue didn't take DP_RX_MAX_MSGS messages after the pass";
+    return rq_offer(hdr, false) == 0
+               ? NULL
+               : "once polled again, a full queue didn't refuse the message";
+}
+
+static const char *rq_crowded(struct ionic_datapath *dp, bool past)
+{
+    const size_t hdr = sizeof(struct ionic_wire_hdr);
+
+    /* Four of the largest SENDs: the first waits, the rest behind it */
+    if (!rq_fill(DP_RX_MAX_BYTES / IONIC_MESH_MAX_MSG, IONIC_MESH_MAX_MSG,
+                 true))
+        return "the queue didn't take DP_RX_MAX_BYTES of SENDs";
+    poll_at(dp, T0);
+    if (rq_offer(hdr, false) != 0)
+        return "the queue took a message past DP_RX_MAX_BYTES";
+    /* The first pass to find the SENDs keeping it out */
+    poll_at(dp, T0 + 1);
+    poll_at(dp, T0 + DP_RX_CROWDED_MS);
+    if (g_nwire != 0)
+        return "a SEND was answered before DP_RX_CROWDED_MS";
+    if (!past)
+        return rq_offer(hdr, false) == 0 ? NULL : "the message was taken";
+
+    poll_at(dp, T0 + 1 + DP_RX_CROWDED_MS);
+    if (!rq_rnr_acks(DP_RX_MAX_BYTES / IONIC_MESH_MAX_MSG))
+        return "the SENDs weren't each answered with RNR-retry-exceeded";
+    if (!rq_empty(dp))
+        return "the queue wasn't left empty";
+    return rq_offer(hdr, false) == 1 ? NULL : "the message wasn't taken";
+}
+
+static const char *rq_run(struct ionic_datapath *dp, enum rq_scenario scenario)
+{
+    const size_t hdr = sizeof(struct ionic_wire_hdr);
+
+    remote(dp, QP_B);
+    if (!g_recv_fn)
+        return "the data path registered no mesh receive callback";
+
+    switch (scenario) {
+    case RQ_MSGS:
+        if (!rq_fill(DP_RX_MAX_MSGS, hdr, false))
+            return "the queue didn't take DP_RX_MAX_MSGS messages";
+        if (rq_offer(hdr, false) != 0)
+            return "the queue took a message past DP_RX_MAX_MSGS";
+        poll_at(dp, g_now_ms + 1);
+        if (!rq_empty(dp))
+            return "the pass left the queue counted as holding something";
+        return rq_offer(hdr, false) == 1 ? NULL : "a pass didn't make room";
+    case RQ_BYTES:
+        /* Three of the largest, and two that come to the fourth exactly */
+        if (!rq_fill(3, IONIC_MESH_MAX_MSG, false) ||
+            rq_offer(IONIC_MESH_MAX_MSG - hdr, false) != 1 ||
+            rq_offer(hdr, false) != 1)
+            return "the queue didn't take DP_RX_MAX_BYTES";
+        if (rq_offer(hdr, false) != 0)
+            return "the queue took a message past DP_RX_MAX_BYTES";
+        poll_at(dp, g_now_ms + 1);
+        if (!rq_empty(dp))
+            return "the pass left the queue counted as holding something";
+        return rq_offer(hdr, false) == 1 ? NULL : "a pass didn't make room";
+    case RQ_STUCK_EDGE:
+        return rq_stuck(dp, false);
+    case RQ_STUCK:
+        return rq_stuck(dp, true);
+    case RQ_CROWDED_EDGE:
+        return rq_crowded(dp, false);
+    case RQ_CROWDED:
+        return rq_crowded(dp, true);
+    case RQ_ROOM_LEFT:
+    default:
+        if (rq_offer(hdr, true) != 1)
+            return "the queue didn't take the SEND";
+        poll_at(dp, T0);
+        if (!rq_fill(DP_RX_MAX_MSGS - 1, hdr, false))
+            return "the queue didn't take the rest of DP_RX_MAX_MSGS";
+        if (rq_offer(hdr, false) != 0)
+            return "the queue took a message past DP_RX_MAX_MSGS";
+        poll_at(dp, T0 + 1);
+        poll_at(dp, T0 + 1 + DP_RX_CROWDED_MS);
+        if (g_nwire != 0)
+            return "the SEND was answered";
+        return rq_offer(hdr, false) == 1 ? NULL : "the message wasn't taken";
+    }
+}
+
+static void check_mesh_recv_room(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        enum rq_scenario scenario;
+    } rows[] = {
+        {"positive", "DP_RX_MAX_MSGS messages, then one more",
+         "the queue takes them all, refuses the next, leaving it with the "
+         "mesh, and takes it after a pass",
+         RQ_MSGS},
+        {"boundary",
+         "messages that come to DP_RX_MAX_BYTES exactly, then one more",
+         "the queue takes them all, refuses the next, and takes it after a "
+         "pass",
+         RQ_BYTES},
+        {"boundary", "a full queue, with no pass for DP_RX_STUCK_MS",
+         "the message is refused, not dropped", RQ_STUCK_EDGE},
+        {"negative", "a full queue, with no pass for just over DP_RX_STUCK_MS",
+         "the message is dropped and the next pass logs it; once polled, a "
+         "full queue refuses again",
+         RQ_STUCK},
+        {"boundary",
+         "SENDs waiting for a receive fill the queue, and keep a message out "
+         "for DP_RX_CROWDED_MS - 1",
+         "none is answered, and the message is still refused", RQ_CROWDED_EDGE},
+        {"positive",
+         "SENDs waiting for a receive fill the queue, and keep a message out "
+         "for DP_RX_CROWDED_MS",
+         "each fails with RNR-retry-exceeded, the queue empties, and the "
+         "message is taken",
+         RQ_CROWDED},
+        {"corner",
+         "a SEND waits for a receive while other messages fill the queue",
+         "it keeps waiting past DP_RX_CROWDED_MS: a pass leaves room for the "
+         "message refused",
+         RQ_ROOM_LEFT},
+    };
+
+    for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
+        struct ionic_datapath *dp = setup();
+        const char *why = dp ? rq_run(dp, rows[row].scenario)
+                             : "could not create a data path";
+
+        ionic_datapath_destroy(dp);
+        printf("%s %s: %s; expected: %s\n", why ? "FAIL" : "ok  ",
+               rows[row].category, rows[row].description, rows[row].expected);
+        if (why) {
+            printf("     %s\n", why);
+            failures++;
+        }
+    }
+}
+
 int main(void)
 {
     check_late_responses();
     check_mesh_cancel();
     check_destroyed_qp_replies();
     check_mesh_recv_sizes();
+    check_mesh_recv_room();
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
         run_case(&cases[i]);
     for (size_t i = 0; i < sizeof(getter_cases) / sizeof(getter_cases[0]); i++)

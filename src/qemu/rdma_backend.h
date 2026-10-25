@@ -44,10 +44,14 @@ void rdma_backend_fini_with_ops(RdmaBackendDev *backend_dev);
  * only the ionic data path can resolve, so the mesh carries ionic's own
  * protocol as an opaque payload rather than RDMA operations of its own.
  *
- * The callback owns buf, which is from malloc(), and must free() it on every
- * path, rejections included.  len is never 0.
+ * The callback returns true having taken buf, which is from malloc(), and
+ * must then free() it on every path, rejections included.  It returns false,
+ * leaving buf with the caller, when it has no room for the message yet: the
+ * receive thread offers it again shortly, and reads nothing more from the
+ * peer meanwhile, which is how a node that falls behind slows its peers
+ * down.  len is never 0.
  */
-typedef void (*tcp_ionic_recv_fn)(void *opaque, uint32_t src_node, void *buf,
+typedef bool (*tcp_ionic_recv_fn)(void *opaque, uint32_t src_node, void *buf,
                                   size_t len);
 
 /*

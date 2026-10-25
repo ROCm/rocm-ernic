@@ -906,7 +906,8 @@ whose peer is on another node:
    own requests.
 #. On the peer, a receive thread gets the message. It may not
    touch guest memory, so it only queues the message, in the
-   buffer it was received into. The peer's main loop applies it
+   buffer it was received into, if the queue has room (see
+   `When a Node Falls Behind`_). The peer's main loop applies it
    to its guest and sends the reply.
 #. Back on the requester, the reply is likewise queued and
    applied by the main loop. For READ and atomics, the returned
@@ -927,7 +928,10 @@ its own. Two parts of RoCE's error handling are imitated:
   posted a receive, the message stays queued and is retried on
   later passes for up to 5 seconds, then fails with an
   RNR-retry-exceeded status. Later messages for the same QP wait
-  behind it, so SENDs aren't reordered.
+  behind it, so SENDs aren't reordered. If the SENDs waiting,
+  and what waits behind them, fill the queue and keep another
+  message out, they get half a second, not 5 (see
+  `When a Node Falls Behind`_).
 - **Lost peer.** A request whose reply never arrives completes
   with a retry-exceeded error after 30 seconds, so a peer that
   dies after accepting a request doesn't wedge the guest's send
@@ -940,6 +944,46 @@ its own. Two parts of RoCE's error handling are imitated:
   The WQEs waiting for room in the queue then go to the
   manager to relay, on a worker, or fail at once, if there is
   no route left.
+
+When a Node Falls Behind
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+A node's receive threads can read faster than its main loop
+applies what they read, especially with several peers sending
+to it at once, and a peer that doesn't run this code needn't
+wait for answers at all. So the queue they fill is bounded, at
+64 MiB or 4096 messages, whichever comes first (an empty queue
+takes any one message). A receive thread with a message the
+queue has no room for keeps it, and reads nothing more from that
+peer until the main loop has made room. TCP passes that back:
+the connection's socket buffers fill, then the sending node's
+send queue for the connection, and then that node's guest's send
+queues stop, as when a NIC runs out of transmit credits. While
+the main loop runs, nothing is dropped, and a node's memory for
+its peers' messages is bounded by the queue, plus the one
+message each receive thread holds.
+
+This can't deadlock. Neither node's main loop ever waits for the
+other (it only queues what it sends), and every pass empties the
+queue, so a receive thread waits only for the main loop to apply
+what is ahead of it, unless:
+
+- **SENDs are waiting for a receive.** They stay queued, and the
+  messages behind them for the same QP with them (see **Receiver
+  not ready**, above). If they leave no room for a message a
+  receive thread is waiting to queue for half a second, the main
+  loop stops waiting for the guest's receives: those still
+  without one fail with RNR-retry-exceeded at once, as they would
+  have after 5 seconds, and the queue empties. Otherwise a guest
+  that falls behind on its receives would keep the connection
+  unread past its peer's send timeout, costing it the
+  connection, and the heartbeats and other QPs' traffic on it.
+- **The main loop isn't running**, as between one QEMU
+  disconnecting and the next connecting. Once it hasn't polled
+  for 2 seconds, a full queue drops what comes instead of holding
+  up the receive threads, and the next pass logs how many it
+  dropped. The requests among them complete in error after their
+  30-second timeout.
 
 The Ethernet Side
 -----------------

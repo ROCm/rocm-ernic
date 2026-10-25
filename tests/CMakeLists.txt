@@ -1723,6 +1723,20 @@ set_tests_properties(ernic-mesh-stress PROPERTIES
     RUN_SERIAL TRUE
 )
 
+# A three-node mesh pushed past what a node queues from its peers: two
+# nodes writing to each other flat out, and a peer that floods a node.
+# Serial: it moves over a gigabyte between the nodes.
+add_test(
+    NAME ernic-mesh-flow
+    COMMAND ${ERNIC_PY_RUN}
+        ${CMAKE_CURRENT_SOURCE_DIR}/py/test_mesh_flow.py
+        --server $<TARGET_FILE:rocm-ernic>
+)
+set_tests_properties(ernic-mesh-flow PROPERTIES
+    TIMEOUT 600
+    RUN_SERIAL TRUE
+)
+
 # ---------------------------------------------------------------
 # Compile checks for the Nix fuzz harnesses
 # ---------------------------------------------------------------
