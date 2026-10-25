@@ -1205,9 +1205,15 @@ int tcp_connect_to_remote(const char *host, uint16_t port,
     return sockfd;
 }
 
-static int tcp_listen_on_port(uint16_t port)
+/*
+ * Listen on *port, on every address.  If *port is 0, the kernel picks a free
+ * port, which is stored in *port.  Asking for it on the socket that keeps it
+ * is the only way to be sure no other process has taken it.
+ */
+static int tcp_listen_on_port(uint16_t *port)
 {
     struct sockaddr_in server_addr;
+    socklen_t addr_len = sizeof(server_addr);
     int sockfd;
     int ret;
     int opt = 1;
@@ -1230,11 +1236,19 @@ static int tcp_listen_on_port(uint16_t port)
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(port);
+    server_addr.sin_port = htons(*port);
 
     ret = bind(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr));
     if (ret < 0) {
-        rdma_error_report("TCP: Failed to bind to port %u: %s", port,
+        rdma_error_report("TCP: Failed to bind to port %u: %s", *port,
+                          strerror(errno));
+        close(sockfd);
+        return -1;
+    }
+
+    ret = getsockname(sockfd, (struct sockaddr *)&server_addr, &addr_len);
+    if (ret < 0) {
+        rdma_error_report("TCP: Failed to read the listen socket's port: %s",
                           strerror(errno));
         close(sockfd);
         return -1;
@@ -1243,13 +1257,14 @@ static int tcp_listen_on_port(uint16_t port)
     ret = listen(sockfd, tcp_env_int("ERNIC_TCP_LISTEN_BACKLOG",
                                      TCP_DEFAULT_LISTEN_BACKLOG));
     if (ret < 0) {
-        rdma_error_report("TCP: Failed to listen on port %u: %s", port,
-                          strerror(errno));
+        rdma_error_report("TCP: Failed to listen on port %u: %s",
+                          ntohs(server_addr.sin_port), strerror(errno));
         close(sockfd);
         return -1;
     }
 
-    rdma_info_report("TCP: Listening on port %u", port);
+    *port = ntohs(server_addr.sin_port);
+    rdma_info_report("TCP: Listening on port %u", *port);
     return sockfd;
 }
 
@@ -4431,7 +4446,7 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
 
         /* Start listening */
         priv->listen_port = manager_port;
-        priv->listen_fd = tcp_listen_on_port(manager_port);
+        priv->listen_fd = tcp_listen_on_port(&priv->listen_port);
         if (priv->listen_fd < 0) {
             g_free(manager_host);
             goto error;
@@ -4468,27 +4483,12 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
         priv->manager_host = manager_host;
         priv->manager_port = manager_port;
 
-        /* Find an available port for this worker */
-        priv->listen_port =
-            0; /* Will be assigned by manager or use ephemeral */
-        struct sockaddr_in addr;
-        socklen_t len = sizeof(addr);
-        int test_fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-        if (test_fd >= 0) {
-            memset(&addr, 0, sizeof(addr));
-            addr.sin_family = AF_INET;
-            addr.sin_addr.s_addr = INADDR_ANY;
-            addr.sin_port = 0; /* Let OS assign */
-            if (bind(test_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
-                if (getsockname(test_fd, (struct sockaddr *)&addr, &len) == 0) {
-                    priv->listen_port = ntohs(addr.sin_port);
-                }
-            }
-            close(test_fd);
-        }
-
-        /* Start listening on ephemeral port */
-        priv->listen_fd = tcp_listen_on_port(priv->listen_port);
+        /*
+         * Listen on a port the kernel picks; registering tells the manager
+         * which one, and the manager tells the other workers.
+         */
+        priv->listen_port = 0;
+        priv->listen_fd = tcp_listen_on_port(&priv->listen_port);
         if (priv->listen_fd < 0) {
             /* manager_host already assigned to priv->manager_host, will be
              * freed in error path */
