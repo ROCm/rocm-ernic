@@ -813,7 +813,14 @@ static uint32_t tcp_register_resp_id(const TcpRecvMsg *msg, int32_t *result)
                           TCP_PROTOCOL_VERSION);
         return 0;
     }
-    *result = (int32_t)ntohl(resp->result);
+    /*
+     * An int32_t sent as its two's complement bits.  Converting those back
+     * with a cast is implementation-defined for every negative value, so
+     * the negative ones are rebuilt from their distance below 2^32.
+     */
+    uint32_t raw = ntohl(resp->result);
+    *result =
+        raw <= INT32_MAX ? (int32_t)raw : -(int32_t)(UINT32_MAX - raw) - 1;
     if (*result < 0 && *result != INT32_MIN) {
         /* A negative errno; INT32_MIN has no negation */
         rdma_error_report("TCP: Registration failed: %s", strerror(-*result));

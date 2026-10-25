@@ -282,15 +282,16 @@ void ionic_datapath_flush_qp(struct ionic_datapath *dp, uint32_t qp_id)
     (void)dp;
     (void)qp_id;
 }
-void ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
-                                uint64_t va, uint64_t length,
-                                const struct ionic_dp_buf_desc *buf)
+int ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
+                               uint64_t va, uint64_t length,
+                               const struct ionic_dp_buf_desc *buf)
 {
     (void)dp;
     (void)lkey;
     (void)va;
     (void)length;
     (void)buf;
+    return 0;
 }
 void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey)
 {

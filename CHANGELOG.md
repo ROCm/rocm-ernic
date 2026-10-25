@@ -578,6 +578,37 @@
   * write part of an RDMA READ or WRITE that runs past the end of its
     region before refusing it (within the region, so no other memory was
     reached); it is now refused before anything moves.
+* **Guest lengths and addresses that wrap past 2^32 or 2^64.**
+  * An inline SEND claiming more data than its work request holds read on
+    past the request into whatever guest memory followed it, with no memory
+    region to bound it, which on a user QP needn't be the poster's memory.
+    It now completes with `IBV_WC_LOC_LEN_ERR`, as does a send whose SGE
+    lengths add up to more than 4 GiB, which went out as a short message.
+  * An SGE using the reserved DMA key (lkey 0) that runs past the end of
+    the address space completes with a local protection error.
+  * A UD or GSI send the device refuses, for any of these reasons or for
+    naming memory it hasn't registered, now completes in error, with the
+    status an RC send gets. Its completion, by send queue index, carried no
+    status, so the refused send looked like it had gone. A datagram the
+    destination refuses, or one cut short at 8 KiB, still completes
+    successfully.
+  * `CREATE_MR`, or a fast registration, of a region that runs past the end
+    of the address space is refused, and a region that ends exactly there,
+    which was refused, is accepted. A failed fast registration now
+    completes with `IBV_WC_MW_BIND_ERR` rather than success, including one
+    in a work request too short to hold it, and drops its key's previous
+    binding, which it left pointing at guest physical address 0. An
+    address inside a one-page region that wraps past 2^64 is refused
+    rather than wrapped to the bottom of guest memory.
+  * An atomic in a work request too short to hold its operands and result
+    SGE, which ran on whatever bytes the device had last read there, now
+    completes with `IBV_WC_LOC_QP_OP_ERR` and changes nothing.
+  * The NVMe-oF target refuses an in-capsule SGL offset that wraps, as an
+    invalid SGL; it read the command itself as the data. `size=` of 2^63
+    bytes or more with `file=` is refused with an error saying so.
+  * `CREATE_EQ` on an interrupt past the MSI-X table, and an RDMA admin
+    queue deeper than 2^16 entries, the most its 16-bit indices count, are
+    refused.
 * **The server no longer touches guest memory after its client goes.**
   libvfio-user unmaps guest memory when a client hangs up, but the server
   went on with that pass's DMA; with a libvfio-user before 5d64ebf this

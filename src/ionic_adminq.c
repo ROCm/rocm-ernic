@@ -48,6 +48,10 @@
  * CREATE_QP's, takes two. */
 #define ADMIN_WQE_MAX_STRIDES 4u
 
+/* A completion names its WQE's slot in a 16-bit cmd_idx. */
+_Static_assert(IONIC_ADMINQ_MAX_DEPTH_LOG2 <= 16,
+               "an admin queue slot must fit a completion's cmd_idx");
+
 /*
  * ionic_v1_admin_wqe header (4 bytes):
  *   u8  op
@@ -377,13 +381,13 @@ bool ionic_adminq_register_queue(struct ionic_adminq_ctx *ctx, int aq_idx,
         return false;
     /* Guest exponents, shifted below. The strides aren't used: admin WQEs
      * and CQEs have fixed sizes. */
-    if (aq_depth_log2 > IONIC_RING_MAX_DEPTH_LOG2 ||
+    if (aq_depth_log2 > IONIC_ADMINQ_MAX_DEPTH_LOG2 ||
         cq_depth_log2 > IONIC_RING_MAX_DEPTH_LOG2) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
                 "ionic_adminq: refusing AQ[%d] depth=2^%u cq_depth=2^%u "
-                "(max 2^%u)",
+                "(max 2^%u and 2^%u)",
                 aq_idx, aq_depth_log2, cq_depth_log2,
-                IONIC_RING_MAX_DEPTH_LOG2);
+                IONIC_ADMINQ_MAX_DEPTH_LOG2, IONIC_RING_MAX_DEPTH_LOG2);
         return false;
     }
 
@@ -1490,14 +1494,26 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         uint32_t mr_id = mrid & 0x00ffffffu;
 
         uint32_t access = ernic_get_le16(body + 40) & IONIC_MRF_ACCESS_MASK;
+        uint64_t mr_va = ernic_get_le64(body + 0);
+        uint64_t mr_len = ernic_get_le64(body + 8);
 
         /*
-         * Refused before anything is allocated: an id already in use, which
-         * mapped over would lose the MR that had it, and a full map, which
-         * would leave the new one unmapped. Either MR could then never be
-         * found again by DESTROY_MR, and would leak. The driver surfaces
-         * this as the -ENOMEM its ib_alloc_mr() already knows how to unwind.
+         * Refused before anything is allocated: a region that runs past the
+         * end of the address space, which the data path would otherwise
+         * decline to register under a command that had succeeded; an id
+         * already in use, which mapped over would lose the MR that had it;
+         * and a full map, which would leave the new one unmapped. Either MR
+         * could then never be found again by DESTROY_MR, and would leak.
+         * The driver surfaces this as the -ENOMEM its ib_alloc_mr() already
+         * knows how to unwind.
          */
+        if (mr_len > UINT64_MAX - mr_va) {
+            vfu_log(ctx->vfu_ctx, LOG_ERR,
+                    "ionic_adminq CREATE_MR %u: %" PRIu64 " bytes at %#" PRIx64
+                    " run past the end of the address space",
+                    mr_id, mr_len, mr_va);
+            return 1;
+        }
         uint32_t mr_handle;
         if (adminq_lookup_mr(ctx, mr_id, &mr_handle)) {
             vfu_log(ctx->vfu_ctx, LOG_ERR,
@@ -1531,13 +1547,17 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         *entry = (struct ionic_mr_map_entry){
             .valid = true, .mr_id = mr_id, .handle = mr_handle};
 
-        uint64_t mr_va = ernic_get_le64(body + 0);
-        uint64_t mr_len = ernic_get_le64(body + 8);
         struct ionic_dp_buf_desc mrbuf = {.dma_addr = ernic_get_le64(body + 32),
                                           .map_count =
                                               ernic_get_le32(body + 28),
                                           .page_size_log2 = body[44]};
-        ionic_datapath_register_mr(ctx->dp, mrid, mr_va, mr_len, &mrbuf);
+        /*
+         * Not yet the command's failure. An MR that a REG_MR work request
+         * binds later arrives with no region and is refused here, as it
+         * should be; failing the command for the other reasons would need
+         * the resource manager's MR above unwound first.
+         */
+        (void)ionic_datapath_register_mr(ctx->dp, mrid, mr_va, mr_len, &mrbuf);
 
         vfu_log(ctx->vfu_ctx, LOG_INFO,
                 "ionic_adminq CREATE_MR mr_id=%u handle=%u access=%#x pd=%u "
@@ -2013,6 +2033,8 @@ void ionic_adminq_poll(struct ionic_adminq_ctx *ctx, vfu_ctx_t *vfu_ctx)
                     ctx, op, wqe_buf + ADMIN_WQE_HDR_LEN, len);
             }
 
+            /* No information lost: the ring is at most
+             * 2^IONIC_ADMINQ_MAX_DEPTH_LOG2 deep. */
             uint16_t cmd_idx = (uint16_t)slot;
             ionic_adminq_post_cqe(ctx, r, cmd_idx, op, status, ctx->resp_len);
             pvrdma_adminq_count(ctx->pvrdma_handle);

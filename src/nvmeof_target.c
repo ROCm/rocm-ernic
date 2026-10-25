@@ -299,6 +299,17 @@ static bool size_image(struct nvmeof_target *t, char *err, size_t errlen)
         return false;
     }
 
+    /* ftruncate() takes the size as an off_t, which a size= past its range
+     * would become negative in. */
+    _Static_assert(sizeof(off_t) == sizeof(int64_t), "off_t is not 64 bits");
+    if (t->cfg.size > (uint64_t)INT64_MAX) {
+        ernic_set_err(err, errlen,
+                      "size=%" PRIu64 " is too large for a file; the most is "
+                      "%" PRId64,
+                      t->cfg.size, INT64_MAX);
+        return false;
+    }
+
     t->ns_len = (size_t)t->cfg.size;
     if (have < t->cfg.size && ftruncate(t->ns_fd, (off_t)t->ns_len) != 0) {
         ernic_set_err(err, errlen, "cannot size %s to %zu bytes: %s",
@@ -564,12 +575,17 @@ static uint16_t sgl_read(const struct nvmeof_sgl *sgl, const uint8_t *capsule,
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_SGL_INVALID_DATA, 1);
     }
     if (sgl->in_capsule) {
-        /* addr is an offset past the 64-byte SQE. */
-        uint64_t off = (uint64_t)NVME_SQE_SIZE + sgl->addr;
-        if (off > capsule_len || capsule_len - off < len) {
+        /*
+         * addr is an offset past the 64-byte SQE, and the host's to choose:
+         * added to the SQE's size first, one near 2^64 wrapped to a small
+         * offset and read the command itself as its data.  The caller has
+         * checked that the capsule holds an SQE.
+         */
+        size_t data_len = capsule_len - NVME_SQE_SIZE;
+        if (sgl->addr > data_len || data_len - sgl->addr < len) {
             return nvme_status(NVME_SCT_GENERIC, NVME_SC_SGL_INVALID_DATA, 1);
         }
-        memcpy(dst, capsule + off, len);
+        memcpy(dst, capsule + NVME_SQE_SIZE + sgl->addr, len);
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
     }
     if (!sgl->keyed) {

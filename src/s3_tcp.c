@@ -143,14 +143,22 @@ static uint32_t csum_pseudo(uint32_t src, uint32_t dst, uint8_t proto,
 /* Sequence arithmetic                                                */
 /* ------------------------------------------------------------------ */
 
-static bool seq_le(uint32_t a, uint32_t b)
-{
-    return (int32_t)(a - b) <= 0;
-}
+/*
+ * Serial-number order: a is before b when a - b, modulo 2^32, is negative as
+ * a 32-bit two's complement number.  The sign bit is tested directly rather
+ * than by converting the difference to int32_t, which is
+ * implementation-defined for every value it would make negative.
+ */
+#define SEQ_SIGN 0x80000000u
 
 static bool seq_lt(uint32_t a, uint32_t b)
 {
-    return (int32_t)(a - b) < 0;
+    return ((a - b) & SEQ_SIGN) != 0;
+}
+
+static bool seq_le(uint32_t a, uint32_t b)
+{
+    return a == b || seq_lt(a, b);
 }
 
 /* ------------------------------------------------------------------ */
@@ -685,7 +693,8 @@ static bool handle_tcp(struct s3_tcp *s, const uint8_t *frame, size_t len,
 
     if (tcp->flags & TCP_FLAG_ACK) {
         uint32_t acked = ack - c->snd_una;
-        if ((int32_t)acked > 0) {
+        /* Positive as a 32-bit signed difference: ack is past snd_una */
+        if (acked != 0 && (acked & SEQ_SIGN) == 0) {
             if (acked > c->txout) {
                 acked = (uint32_t)c->txout; /* never ACK what we never sent */
             }

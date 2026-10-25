@@ -266,6 +266,16 @@ static void test_devcmds(void)
           ionic_eth_emu_bar0_access(h.dev->ionic_emu, b, 8, 0x8000 - 4, false) <
               0,
           "BAR0 read past the register window succeeded");
+    /* So do ones that only fit once the offset is converted to a size_t
+     * and the count added to it, which wraps */
+    check(T, ionic_eth_emu_bar0_access(h.dev->ionic_emu, b, 8, -8, false) < 0,
+          "BAR0 read at a negative offset succeeded");
+    check(T,
+          ionic_eth_emu_bar0_access(h.dev->ionic_emu, b, SIZE_MAX - 7, 8,
+                                    false) < 0,
+          "BAR0 read of a count that wraps the window succeeded");
+    check(T, ionic_eth_emu_bar2_access(h.dev->ionic_emu, b, 8, -8, true) < 0,
+          "BAR2 write at a negative offset succeeded");
     check(T,
           ionic_eth_emu_bar2_access(h.dev->ionic_emu, b, 8, IONIC_BAR2_DB_SIZE,
                                     true) < 0,
@@ -606,27 +616,36 @@ struct bad_queue {
     const char *what;
     uint8_t op;
     uint8_t depth_log2, stride_log2;
+    /* CREATE_EQ's interrupt, or an admin CREATE_CQ's EQ: 0 unless given */
+    uint32_t cid;
 };
 
 static const struct bad_queue bad_queues[] = {
-    {"CREATE_EQ 2^32 deep", IH_CMD_RDMA_EQ, 32, 2},
-    {"CREATE_EQ deeper than 2^24", IH_CMD_RDMA_EQ, 25, 2},
-    {"CREATE_EQ with a stride below an EQE", IH_CMD_RDMA_EQ, 4, 1},
-    {"CREATE_EQ with a stride above 2^16", IH_CMD_RDMA_EQ, 4, 17},
-    {"admin CREATE_CQ 2^32 deep", IH_CMD_RDMA_CQ, 32, 5},
+    {"CREATE_EQ 2^32 deep", IH_CMD_RDMA_EQ, 32, 2, 0},
+    {"CREATE_EQ deeper than 2^24", IH_CMD_RDMA_EQ, 25, 2, 0},
+    {"CREATE_EQ with a stride below an EQE", IH_CMD_RDMA_EQ, 4, 1, 0},
+    {"CREATE_EQ with a stride above 2^16", IH_CMD_RDMA_EQ, 4, 17, 0},
+    /* An interrupt past the MSI-X table, which past INT_MAX was also
+     * converted to a negative int when the EQ was raised */
+    {"CREATE_EQ on the interrupt after the last", IH_CMD_RDMA_EQ, 4, 2,
+     IONIC_MSIX_MAX_VECTORS},
+    {"CREATE_EQ on interrupt 2^31", IH_CMD_RDMA_EQ, 4, 2, 0x80000000u},
+    {"admin CREATE_CQ 2^32 deep", IH_CMD_RDMA_CQ, 32, 5, 0},
     /* Sent after a good admin CREATE_CQ, so only its depth is wrong */
-    {"CREATE_ADMINQ 2^32 deep", IH_CMD_RDMA_ADMINQ, 32, 6},
+    {"CREATE_ADMINQ 2^32 deep", IH_CMD_RDMA_ADMINQ, 32, 6, 0},
+    /* Deeper than its 16-bit producer index and cmd_idx can count */
+    {"CREATE_ADMINQ 2^17 deep", IH_CMD_RDMA_ADMINQ, 17, 6, 0},
 };
 
 /* Queue id 5 is clear of the harness's own EQ and admin queues. */
 static int rdma_queue_cmd(struct ih *h, uint8_t op, uint8_t depth_log2,
-                          uint8_t stride_log2)
+                          uint8_t stride_log2, uint32_t cid)
 {
     uint8_t cmd[64] = {0}, comp[16];
 
     cmd[0] = op;
     ernic_put_le32(cmd + 4, 5u | 1u << 24);
-    ernic_put_le32(cmd + 8, IH_EQ_ID);
+    ernic_put_le32(cmd + 8, cid);
     cmd[14] = depth_log2;
     cmd[15] = stride_log2;
     return ih_eth_admin(h, cmd, comp);
@@ -638,17 +657,23 @@ static void test_queue_geometry_errors(const char *T, struct ih *h)
         const struct bad_queue *c = &bad_queues[i];
 
         if (c->op == IH_CMD_RDMA_ADMINQ)
-            check(T, rdma_queue_cmd(h, IH_CMD_RDMA_CQ, 6, 5) == 0,
+            check(T, rdma_queue_cmd(h, IH_CMD_RDMA_CQ, 6, 5, IH_EQ_ID) == 0,
                   "admin CREATE_CQ failed");
-        int rc = rdma_queue_cmd(h, c->op, c->depth_log2, c->stride_log2);
+        int rc =
+            rdma_queue_cmd(h, c->op, c->depth_log2, c->stride_log2, c->cid);
         check(T, rc == 1, "%s: status %d, expected 1", c->what, rc);
     }
 
     /* A refused CREATE_EQ takes none of the device's 32 EQ slots */
     for (int i = 0; i < 40; i++)
-        (void)rdma_queue_cmd(h, IH_CMD_RDMA_EQ, 32, 2);
-    check(T, rdma_queue_cmd(h, IH_CMD_RDMA_EQ, 4, 2) == 0,
+        (void)rdma_queue_cmd(h, IH_CMD_RDMA_EQ, 32, 2, 0);
+    check(T, rdma_queue_cmd(h, IH_CMD_RDMA_EQ, 4, 2, 0) == 0,
           "CREATE_EQ failed after refused ones");
+    /* The last interrupt in the table is one an EQ may raise */
+    check(T,
+          rdma_queue_cmd(h, IH_CMD_RDMA_EQ, 4, 2,
+                         IONIC_MSIX_MAX_VECTORS - 1u) == 0,
+          "CREATE_EQ on the last interrupt failed");
 }
 
 static void test_admin_errors(void)
@@ -1401,6 +1426,12 @@ static void test_atomic_and_reg_mr(void)
     atomic(T, &r, IH_OP_ATOMIC_FA, 5, 0, MR_B, 0, 0, 100, 105);
     atomic(T, &r, IH_OP_ATOMIC_CS, 7, 105, MR_B, 0, 0, 105, 7);
     atomic(T, &r, IH_OP_ATOMIC_CS, 9, 999, MR_B, 0, 0, 7, 7);
+    /* Operands of all ones, which the generic SGE parser once read as an
+     * SGE running past 2^64, failing a valid compare-and-swap */
+    v = UINT64_MAX;
+    ih_mr_write(h, &r.mrb, VA_B + 0x800, &v, 8);
+    atomic(T, &r, IH_OP_ATOMIC_CS, UINT64_MAX, UINT64_MAX, MR_B, 0, 0,
+           UINT64_MAX, UINT64_MAX);
     atomic(T, &r, IH_OP_ATOMIC_FA, 1, 0, 0x7e000099u, 0, IH_STS_REMOTE_ACC_ERR,
            0, 0);
     atomic(T, &r, IH_OP_ATOMIC_FA, 1, 0, MR_B, VA_B + MR_LEN - 4,
@@ -1480,6 +1511,318 @@ static void test_atomic_and_reg_mr(void)
     check(T, ih_admin(h, IH_ADMIN_DESTROY_MR, body, 4, NULL) == 0,
           "DESTROY_MR of the fast-registered MR failed");
 
+    rc_teardown(T, &r);
+}
+
+/* ---- Lengths and addresses that wrap ----------------------------------- */
+
+/*
+ * Every length and address here is the guest's, and each case is one whose
+ * sum or offset carries past the top of its type. Wrapped, each used to name
+ * something small and plausible instead: a short message, a region ending
+ * near address 0, guest physical address 0 itself.
+ */
+
+#define WRAP_KEY_A 0x05000005u
+#define WRAP_KEY_B 0x06000006u
+#define WRAP_FR_ID 0x00000007u
+#define WRAP_CQ    7
+#define WRAP_QP    14
+#define WRAP_VA    UINT64_C(0x00007f4000000000)
+
+/* CREATE_MR of @len bytes at @va, through @map_count page table entries
+ * at @dma_addr, whether or not they describe it. */
+static int create_mr_as(struct ih *h, uint32_t lkey, uint64_t va, uint64_t len,
+                        uint32_t map_count, uint64_t dma_addr)
+{
+    uint8_t body[45] = {0};
+
+    ernic_put_le64(body + 0, va);
+    ernic_put_le64(body + 8, len);
+    ernic_put_le32(body + 20, lkey);
+    ernic_put_le32(body + 28, map_count);
+    ernic_put_le64(body + 32, dma_addr);
+    ernic_put_le16(body + 40, IH_ACCESS_ALL);
+    body[44] = 12;
+    return ih_admin(h, IH_ADMIN_CREATE_MR, body, sizeof(body), NULL);
+}
+
+static int destroy_mr_id(struct ih *h, uint32_t lkey)
+{
+    uint8_t body[4];
+
+    ernic_put_le32(body, lkey);
+    return ih_admin(h, IH_ADMIN_DESTROY_MR, body, sizeof(body), NULL);
+}
+
+/* An RDMA_WRITE of the first @len bytes of A's MR to @va under @rkey. */
+static void write_to(const char *T, struct rc *r, const char *what,
+                     uint32_t rkey, uint64_t va, uint32_t len, uint32_t status)
+{
+    struct ih_sge sge = {.va = VA_A, .len = len, .lkey = MR_A};
+    struct ih_send w = {.op = IH_OP_RDMA_WRITE,
+                        .flags = IH_WQE_SIGNALLED,
+                        .remote_va = va,
+                        .rkey = rkey,
+                        .sge = &sge,
+                        .nsge = 1};
+
+    ih_post_send(&r->h, &r->a, &w);
+    expect_send(T, what, r, status);
+}
+
+/* A REG_MR or LOCAL_INV on @qp, which completes on @cq by its SQ index,
+ * with @status. */
+static void post_local_op(const char *T, struct ih *h, struct ih_qp *qp,
+                          struct ih_cq *cq, const struct ih_send *s,
+                          const char *what, uint32_t status)
+{
+    struct ih_cqe e;
+    uint64_t id = ih_post_send(h, qp, s);
+
+    if (!check(T,
+               ih_cq_poll(h, cq, &e) && e.type == IH_CQE_TYPE_SEND_NPG &&
+                   e.wqe_id == id,
+               "%s did not complete by its SQ index", what))
+        return;
+    check(T, e.error == (status != 0) && (!e.error || e.status_len == status),
+          "%s: status %u (error %d), expected %u", what, e.status_len, e.error,
+          status);
+}
+
+/* Sends whose length is more than they hold, or than a u32 holds. */
+static void wrap_sends(const char *T, struct rc *r)
+{
+    struct ih *h = &r->h;
+    const uint32_t holds = (1u << r->a.sq.stride_log2) - 32u;
+    uint8_t want[1u << IH_WQE_MAX_STRIDE_LOG2], got[sizeof(want)];
+    struct ih_cqe e;
+
+    /* B's one receive, which none of the refused SENDs may take */
+    uint64_t rbuf = fake_vfu_alloc(h->vfu, sizeof(got), 8);
+    uint64_t sbuf = fake_vfu_alloc(h->vfu, sizeof(want), 8);
+    if (!check(T, rbuf && sbuf, "out of guest memory"))
+        return;
+    struct ih_sge into = {.va = rbuf, .len = sizeof(got), .lkey = 0};
+    ih_post_recv(h, &r->b, &into, 1);
+    fill(want, sizeof(want), 0x31);
+    fake_vfu_write(h->vfu, sbuf, want, sizeof(want));
+
+    /* Inline data longer than the WQE's payload area, which would be read
+     * on from whatever follows the WQE */
+    struct ih_send s = {.op = IH_OP_SEND,
+                        .flags = IH_WQE_SIGNALLED | IH_WQE_INLINE,
+                        .inline_data = want,
+                        .inline_len = 16,
+                        .length = holds + 1};
+    ih_post_send(h, &r->a, &s);
+    expect_send(T, "inline SEND longer than its WQE", r, IH_STS_LOCAL_LEN_ERR);
+
+    /* SGE lengths that add up past 2^32: summed in 32 bits, a 16-byte
+     * message */
+    struct ih_sge big[2] = {{.va = sbuf, .len = 0xfffffff0u, .lkey = 0},
+                            {.va = sbuf, .len = 0x20, .lkey = 0}};
+    s = (struct ih_send){
+        .op = IH_OP_SEND, .flags = IH_WQE_SIGNALLED, .sge = big, .nsge = 2};
+    ih_post_send(h, &r->a, &s);
+    expect_send(T, "SEND of more than 2^32 bytes", r, IH_STS_LOCAL_LEN_ERR);
+
+    /* A bus address has no MR to bound it, but it still can't run off the
+     * top of the address space and round to its bottom */
+    struct ih_sge top = {.va = UINT64_MAX - 15, .len = 32, .lkey = 0};
+    s = (struct ih_send){
+        .op = IH_OP_SEND, .flags = IH_WQE_SIGNALLED, .sge = &top, .nsge = 1};
+    ih_post_send(h, &r->a, &s);
+    expect_send(T, "SEND past the top of the address space", r,
+                IH_STS_LOCAL_PROT_ERR);
+
+    check(T, cq_empty(h, &r->cqb), "a refused SEND took B's receive");
+
+    /* Inline data that fills the payload area is still sent, into it */
+    s = (struct ih_send){.op = IH_OP_SEND,
+                         .flags = IH_WQE_SIGNALLED | IH_WQE_INLINE,
+                         .inline_data = want,
+                         .inline_len = holds};
+    ih_post_send(h, &r->a, &s);
+    expect_send(T, "inline SEND filling its WQE", r, 0);
+    if (check(T, ih_cq_poll(h, &r->cqb, &e), "no receive for the inline SEND"))
+        check(T, !e.error && e.status_len == holds,
+              "inline SEND received status %u (error %d), expected %u bytes",
+              e.status_len, e.error, holds);
+    memset(got, 0, sizeof(got));
+    fake_vfu_read(h->vfu, rbuf, got, holds);
+    check(T, memcmp(got, want, holds) == 0, "inline SEND did not arrive");
+}
+
+/* Memory regions whose ends, and offsets into them, are at the top of the
+ * address space. */
+static void wrap_mrs(const char *T, struct rc *r)
+{
+    struct ih *h = &r->h;
+    uint8_t want[64], got[64], zero[64] = {0};
+
+    fill(want, sizeof(want), 0x52);
+    ih_mr_write(h, &r->mra, VA_A, want, sizeof(want));
+
+    /* A region past 2^64 is refused before anything is allocated for it, so
+     * its id is still free */
+    check(T,
+          create_mr_as(h, WRAP_KEY_A, UINT64_MAX - 0xfff, 0x2000, 1,
+                       h->scratch) == 1,
+          "CREATE_MR of a region past 2^64 succeeded");
+
+    /*
+     * One that ends at the top of the address space is a region, and two
+     * pages are fewer than it could have, which is allowed. Counting its
+     * pages rounded its length up past 2^64, and found it needed one, so
+     * it was refused.
+     */
+    struct ih_mr pages;
+    if (!check(T,
+               ih_mr_alloc(h, &pages, WRAP_KEY_A, 0x100,
+                           2 * IH_PAGE_SIZE - 0x100, false),
+               "MR pages not allocated"))
+        return;
+    check(T,
+          create_mr_as(h, WRAP_KEY_A, 0x100, UINT64_MAX - 0x100, 2,
+                       pages.pt_gpa) == 0,
+          "CREATE_MR of a region ending at 2^64 failed");
+    write_to(T, r, "RDMA_WRITE into a region ending at 2^64", WRAP_KEY_A, 0x108,
+             sizeof(want), 0);
+    memset(got, 0, sizeof(got));
+    fake_vfu_read(h->vfu, pages.pages[0] + 0x108, got, sizeof(got));
+    check(T, memcmp(got, want, sizeof(got)) == 0,
+          "RDMA_WRITE into a region ending at 2^64 did not land");
+    ih_mr_free(&pages);
+    check(T, destroy_mr_id(h, WRAP_KEY_A) == 0, "DESTROY_MR failed");
+
+    /*
+     * A one-page region based on the top page: an offset past that page
+     * wrapped back to the bottom of guest memory, here to @victim.
+     */
+    uint64_t victim = fake_vfu_alloc(h->vfu, IH_PAGE_SIZE, IH_PAGE_SIZE);
+    if (!check(T, victim, "out of guest memory"))
+        return;
+    const uint64_t off = IH_PAGE_SIZE + victim;
+    fake_vfu_write(h->vfu, victim, zero, sizeof(zero));
+    check(T,
+          create_mr_as(h, WRAP_KEY_B, WRAP_VA, off + IH_PAGE_SIZE, 1,
+                       UINT64_MAX - (IH_PAGE_SIZE - 1)) == 0,
+          "CREATE_MR of a region based on the top page failed");
+    write_to(T, r, "RDMA_WRITE wrapping its region's base", WRAP_KEY_B,
+             WRAP_VA + off, sizeof(want), IH_STS_LOCAL_PROT_ERR);
+    fake_vfu_read(h->vfu, victim, got, sizeof(got));
+    check(T, memcmp(got, zero, sizeof(got)) == 0,
+          "a write wrapping its region's base landed at the bottom of guest "
+          "memory");
+    check(T, destroy_mr_id(h, WRAP_KEY_B) == 0, "DESTROY_MR failed");
+
+    /*
+     * Fast registration of a region past 2^64 binds nothing. It used to be
+     * bound, and resolved nowhere: its end wrapped to below its start.
+     */
+    const uint32_t fr_key = 0x08000000u | WRAP_FR_ID;
+    uint8_t body[45] = {0};
+    struct ih_mr fr;
+    ernic_put_le32(body + 20, 0x07000000u | WRAP_FR_ID);
+    ernic_put_le16(body + 40, IH_ACCESS_ALL);
+    if (!check(T,
+               ih_admin(h, IH_ADMIN_CREATE_MR, body, sizeof(body), NULL) == 0,
+               "CREATE_MR of an unbound MR failed") ||
+        !check(T, ih_mr_alloc(h, &fr, fr_key, WRAP_VA, 2 * IH_PAGE_SIZE, false),
+               "MR pages not allocated"))
+        return;
+
+    struct ih_mr past = fr;
+    past.va = UINT64_MAX - (IH_PAGE_SIZE - 1);
+    struct ih_send reg = {.op = IH_OP_REG_MR, .key = fr_key, .mr = &past};
+    post_local_op(T, h, &r->a, &r->cqa, &reg, "REG_MR of a region past 2^64",
+                  IH_STS_MEM_MGMT_ERR);
+    write_to(T, r, "RDMA_WRITE through a REG_MR of a region past 2^64", fr_key,
+             past.va, sizeof(want), IH_STS_REMOTE_ACC_ERR);
+
+    /*
+     * A REG_MR that fails takes away the binding its key had. It used to
+     * leave it with its page table freed and a base of 0, so a write
+     * through the key went to guest physical address 0 onwards.
+     */
+    reg.mr = &fr;
+    post_local_op(T, h, &r->a, &r->cqa, &reg, "REG_MR", 0);
+    write_to(T, r, "RDMA_WRITE through a fast-registered MR", fr_key, fr.va + 8,
+             sizeof(want), 0);
+    struct ih_mr too_many = fr;
+    too_many.npages = 1000; /* for a region of two pages */
+    reg.mr = &too_many;
+    post_local_op(T, h, &r->a, &r->cqa, &reg, "REG_MR with too many pages",
+                  IH_STS_MEM_MGMT_ERR);
+    write_to(T, r, "RDMA_WRITE through a key whose REG_MR failed", fr_key,
+             fr.va + 8, sizeof(want), IH_STS_REMOTE_ACC_ERR);
+
+    /*
+     * WQEs of 32 bytes, too short for the fields a REG_MR or an atomic
+     * carries. Neither may run on the bytes past the end of one.
+     */
+    struct ih_cq cqs;
+    struct ih_qp small;
+    if (check(T,
+              ih_cq_create(h, &cqs, WRAP_CQ, 6) &&
+                  ih_qp_create_stride(h, &small, WRAP_QP, IH_QPT_RC, &cqs, &cqs,
+                                      NULL, 5),
+              "short-WQE QP setup failed")) {
+        /* A short REG_MR fails like any other, and takes away the binding
+         * the MR had, under an earlier rotation of the key too */
+        reg.mr = &fr;
+        post_local_op(T, h, &r->a, &r->cqa, &reg, "REG_MR", 0);
+        write_to(T, r, "RDMA_WRITE through a fast-registered MR", fr_key,
+                 fr.va + 8, sizeof(want), 0);
+        struct ih_send rotated = reg;
+        rotated.key = 0x09000000u | WRAP_FR_ID;
+        post_local_op(T, h, &small, &cqs, &rotated, "REG_MR in a 32-byte WQE",
+                      IH_STS_MEM_MGMT_ERR);
+        write_to(T, r, "RDMA_WRITE through a key a short REG_MR replaced",
+                 fr_key, fr.va + 8, sizeof(want), IH_STS_REMOTE_ACC_ERR);
+
+        /* A short atomic fails, and leaves its target alone. The result
+         * SGE is past the end of the WQE, so none is written. */
+        uint64_t v = 41, after = 0;
+        struct ih_send fa = {.op = IH_OP_ATOMIC_FA,
+                             .flags = IH_WQE_SIGNALLED,
+                             .remote_va = VA_B + 0x800,
+                             .rkey = MR_B,
+                             .swap_add = 1};
+        struct ih_cqe e;
+        ih_mr_write(h, &r->mrb, VA_B + 0x800, &v, 8);
+        ih_post_send(h, &small, &fa);
+        if (check(T, ih_cq_poll(h, &cqs, &e),
+                  "a short atomic did not complete"))
+            check(T,
+                  e.type == IH_CQE_TYPE_SEND_MSN && e.error &&
+                      e.status_len == IH_STS_LOCAL_QP_OPER,
+                  "a short atomic: type %u status %u (error %d), expected %d",
+                  e.type, e.status_len, e.error, IH_STS_LOCAL_QP_OPER);
+        ih_mr_read(h, &r->mrb, VA_B + 0x800, &after, 8);
+        check(T, after == v, "a short atomic changed its target to %" PRIu64,
+              after);
+
+        check(T, ih_qp_destroy(h, &small) == 0 && ih_cq_destroy(h, &cqs) == 0,
+              "short-WQE QP teardown failed");
+    }
+
+    ih_mr_free(&fr);
+    check(T, destroy_mr_id(h, 0x07000000u | WRAP_FR_ID) == 0,
+          "DESTROY_MR of the fast-registered MR failed");
+}
+
+static void test_wrap(void)
+{
+    const char *T = "wrap";
+    struct rc r;
+
+    if (!rc_setup(T, &r))
+        return;
+    wrap_sends(T, &r);
+    wrap_mrs(T, &r);
+    check(T, fake_vfu_mapped(r.h.vfu) == 0, "guest memory left mapped");
     rc_teardown(T, &r);
 }
 
@@ -1635,12 +1978,12 @@ static void test_full_tables(void)
     /* The device has room for 32 EQs and 4 admin queues, one of each the
      * harness's */
     unsigned n = 1;
-    while (n < 64 && (rc = rdma_queue_cmd(h, IH_CMD_RDMA_EQ, 4, 2)) == 0)
+    while (n < 64 && (rc = rdma_queue_cmd(h, IH_CMD_RDMA_EQ, 4, 2, 0)) == 0)
         n++;
     check(T, n == 32 && rc == 1, "%u EQs, then status %d", n, rc);
     n = 1;
-    while (n < 8 && rdma_queue_cmd(h, IH_CMD_RDMA_CQ, 6, 5) == 0 &&
-           (rc = rdma_queue_cmd(h, IH_CMD_RDMA_ADMINQ, 6, 6)) == 0)
+    while (n < 8 && rdma_queue_cmd(h, IH_CMD_RDMA_CQ, 6, 5, IH_EQ_ID) == 0 &&
+           (rc = rdma_queue_cmd(h, IH_CMD_RDMA_ADMINQ, 6, 6, 0)) == 0)
         n++;
     check(T, n == 4 && rc == 1, "%u admin queues, then status %d", n, rc);
 
@@ -2020,6 +2363,56 @@ static void test_ud(void)
     check(T, ih_cq_poll(&h, &cqc, &e), "unsignalled UD send did not complete");
     check(T, ih_cq_poll(&h, &cqd, &e) && !e.error,
           "a datagram with an unknown AH was not delivered");
+
+    /*
+     * A datagram the device refuses completes by its SQ index in error,
+     * carrying the status, as an RC send's does by MSN. The NPG completion
+     * used to be posted as success whatever the status, so a UD consumer
+     * was told a refused send had gone.
+     */
+    struct ih_sge big[2] = {{.va = src_va, .len = 0xfffffff0u, .lkey = 0},
+                            {.va = src_va, .len = 0x20, .lkey = 0}};
+    struct ih_sge unreg = {.va = src_va, .len = 8, .lkey = 0x7e000099u};
+    static const struct {
+        const char *what;
+        uint32_t status;
+    } refused[] = {
+        {"UD inline SEND longer than its WQE", IH_STS_LOCAL_LEN_ERR},
+        {"UD SEND of more than 2^32 bytes", IH_STS_LOCAL_LEN_ERR},
+        {"UD SEND naming an unregistered key", IH_STS_LOCAL_PROT_ERR},
+    };
+    s = (struct ih_send){.op = IH_OP_SEND,
+                         .flags = IH_WQE_SIGNALLED,
+                         .ah_id = UD_AH,
+                         .dest_qpn = 21,
+                         .qkey = UD_QKEY};
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        struct ih_send r = s;
+
+        if (i == 0) {
+            r.flags |= IH_WQE_INLINE;
+            r.inline_data = want;
+            r.inline_len = 16;
+            r.length = (1u << c.sq.stride_log2) - 32u + 1u;
+        } else if (i == 1) {
+            r.sge = big;
+            r.nsge = 2;
+        } else {
+            r.sge = &unreg;
+            r.nsge = 1;
+        }
+        send_id = ih_post_send(&h, &c, &r);
+        if (check(T, ih_cq_poll(&h, &cqc, &e), "%s did not complete",
+                  refused[i].what))
+            check(T,
+                  e.type == IH_CQE_TYPE_SEND_NPG && e.wqe_id == send_id &&
+                      e.error && e.status_len == refused[i].status,
+                  "%s: type %u wqe_id %" PRIu64 " status %u (error %d), "
+                  "expected %u by SQ index",
+                  refused[i].what, e.type, e.wqe_id, e.status_len, e.error,
+                  refused[i].status);
+    }
+    check(T, cq_empty(&h, &cqd), "a refused datagram was delivered");
 
     /* A RoCE header carrying IPv6, behind a VLAN tag */
     uint8_t hdr[80] = {0};
@@ -4656,6 +5049,7 @@ static const struct {
     {"admin-dma", test_admin_dma_faults},
     {"rc", test_rc},
     {"atomic", test_atomic_and_reg_mr},
+    {"wrap", test_wrap},
     {"dp-dma", test_dp_dma_faults},
     {"tables", test_full_tables},
     {"cq-events", test_cq_events},

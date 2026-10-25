@@ -827,6 +827,28 @@ static void test_response_body_growth(void)
     ok(name);
 }
 
+/*
+ * A write whose length would carry the body past SIZE_MAX is out of memory,
+ * not a write: summed, the length wrapped to one the buffer already had
+ * room for, and the copy ran off its end.  Nothing is read from @data, so a
+ * short buffer stands in for the impossible one.
+ */
+static void test_response_body_wrap(void)
+{
+    const char *name = "response-body-wrap";
+    struct s3_http_response resp;
+    const char data[] = "x";
+
+    s3_http_response_init(&resp, 200);
+    s3_http_response_write(&resp, "abc", 3);
+    s3_http_response_write(&resp, data, SIZE_MAX - 1);
+    if (!resp.oom || resp.body_len != 3)
+        fail(name, "a write past SIZE_MAX left oom %d and body_len %zu",
+             resp.oom, resp.body_len);
+    s3_http_response_free(&resp);
+    ok(name);
+}
+
 static void test_reason(void)
 {
     const char *name = "reason";
@@ -882,6 +904,7 @@ int main(void)
     test_response();
     test_response_header_replace();
     test_response_body_growth();
+    test_response_body_wrap();
     test_response_printf_large();
     test_reason();
 
