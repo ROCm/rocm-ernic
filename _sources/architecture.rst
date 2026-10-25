@@ -865,14 +865,25 @@ whose peer is on another node:
    that doesn't fit stays on the send queue, which stops there,
    and is tried again on a later pass, as a NIC out of transmit
    credits holds its queue. Replies have twice the room. When a
-   QP is flushed or destroyed, or a request times out (see
-   **Lost peer**, below), the requests still queued are taken
-   back, so none reaches the peer after its work request has
-   completed; one already being written still arrives.
+   QP is flushed, or a request times out (see **Lost peer**,
+   below), the requests still queued are taken back, so none
+   reaches the peer after its work request has completed; one
+   already being written still arrives. A destroyed QP's
+   requests still go out: nothing has completed them, and a
+   consumer may destroy a QP straight after an unsignaled WRITE,
+   counting on it to arrive.
 #. It records the request in a **pending table** and does not
    post a completion yet. The completion must wait for the
    peer, both so the reported latency includes the network and
-   because READ and atomic results haven't arrived.
+   because READ and atomic results haven't arrived. When the QP
+   is destroyed, or another is created with its id, its entries
+   are dropped without completions, so a reply that comes back
+   later is ignored: a READ's or atomic's result doesn't land in
+   memory the consumer has had back, and a QP that took the id
+   isn't sent the old one's completions. The mesh names each
+   request by the QP it came from, numbered afresh at every
+   creation, so a later QP with the same id takes back only its
+   own requests.
 #. On the peer, a receive thread gets the message. It may not
    touch guest memory, so it only queues a copy. The peer's main
    loop applies it to its guest and sends the reply.
