@@ -33,6 +33,7 @@
 #include <strings.h>
 
 #include "parse_int.h"
+#include "s3_alloc_fail.h"
 #include "s3_http.h"
 #include "s3_target.h"
 #include "s3_token.h"
@@ -234,6 +235,15 @@ static void mint(char *out, uint64_t off, uint64_t len)
     s3_token_encode(&t, out);
 }
 
+/*
+ * When inject is set, exec_req() fails allocation inject_nth made by
+ * s3_target_exec() itself -- not the test's own -- and records in
+ * inject_fired whether there was one to fail.
+ */
+static bool inject;
+static unsigned inject_nth;
+static bool inject_fired;
+
 /* Exec a request and hand the caller the response plus its body as text. */
 struct reply {
     struct s3_http_response resp;
@@ -253,7 +263,11 @@ static bool exec_req(struct s3_target *t, struct reply *r,
                body, body_len))
         return false;
 
+    if (inject)
+        s3_alloc_fail_arm(inject_nth);
     s3_target_exec(t, &req, dma, dma_ctx, &r->resp);
+    if (inject)
+        inject_fired = s3_alloc_fail_disarm();
 
     r->text = malloc(r->resp.body_len + 1);
     if (r->text == NULL)
@@ -347,6 +361,13 @@ static void test_cfg_parse(void)
         "port=99999",   "port=0x1f90",
         "size=12Q",     "size=0x400000",
         "objects=-1",   "nosuchoption=1",
+        "bucket=ab",    "bucket=-abc",
+        "bucket=abc-",  "bucket=.abc",
+        "bucket=abc.",  "maxpart=0",
+        "maxpart=4G",   "maxpart=junk",
+        "objects=0",    "objects=65537",
+        "size=0",       "novalue",
+        "size=4M,port", /* a bad option after a good one */
     };
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         s3_target_cfg_defaults(&cfg);
@@ -357,6 +378,56 @@ static void test_cfg_parse(void)
             fail(name, "\"%s\" failed without saying why", bad[i]);
     }
 
+    /* The largest maxpart is the largest 32-bit transfer. */
+    s3_target_cfg_defaults(&cfg);
+    if (!s3_target_cfg_parse(&cfg, "maxpart=4294967295", err, sizeof(err)))
+        fail(name, "rejected maxpart=4294967295: %s", err);
+    else if (cfg.max_part != UINT32_MAX)
+        fail(name, "maxpart=4294967295 gave %" PRIu32, cfg.max_part);
+
+    /* No options, as NULL or as "", leave every default alone. */
+    static const char *none[] = {NULL, ""};
+    for (size_t i = 0; i < sizeof(none) / sizeof(none[0]); i++) {
+        struct s3_target_cfg want;
+        s3_target_cfg_defaults(&want);
+        s3_target_cfg_defaults(&cfg);
+        if (!s3_target_cfg_parse(&cfg, none[i], err, sizeof(err)))
+            fail(name, "rejected %s options: %s", none[i] ? "empty" : "NULL",
+                 err);
+        else if (memcmp(&cfg, &want, sizeof(cfg)) != 0)
+            fail(name, "%s options changed the defaults",
+                 none[i] ? "empty" : "NULL");
+    }
+
+    ok(name);
+}
+
+/* A configuration that leaves the object and part limits at zero, as a
+ * caller that never called s3_target_cfg_defaults() would, gets the
+ * defaults rather than a store that refuses everything. */
+static void test_create_defaults(void)
+{
+    const char *name = "create-defaults";
+    struct s3_target_cfg cfg;
+    char err[128] = "";
+
+    s3_target_cfg_defaults(&cfg);
+    cfg.max_objects = 0;
+    cfg.max_part = 0;
+
+    struct s3_target *t = s3_target_create(&cfg, err, sizeof(err));
+    if (t == NULL) {
+        fail(name, "create: %s", err);
+        return;
+    }
+    const struct s3_target_cfg *got = s3_target_config(t);
+    if (got->max_objects != 256)
+        fail(name, "max_objects %" PRIu32 ", want 256", got->max_objects);
+    if (got->max_part != 256u << 20)
+        fail(name, "max_part %" PRIu32 ", want 256 MiB", got->max_part);
+    s3_target_destroy(t);
+
+    s3_target_destroy(NULL); /* like free(), a no-op */
     ok(name);
 }
 
@@ -734,6 +805,82 @@ out:
 }
 
 /*
+ * Ranges on the body path, with no token: a satisfiable one is a 206
+ * carrying just those bytes and a Content-Range saying which, and one
+ * that is not is a 416 error document with no Content-Range and no RDMA
+ * reply, since nothing asked for one.
+ */
+static void test_body_ranged_get(void)
+{
+    const char *name = "body-ranged-get";
+    struct s3_target *t = make_target(NULL);
+    struct reply r;
+    char payload[100];
+
+    if (t == NULL)
+        return;
+
+    for (size_t i = 0; i < sizeof(payload); i++)
+        payload[i] = (char)('A' + i % 26);
+
+    if (!exec_req(t, &r, NULL, NULL, "PUT", "/ernic/ranged", NULL, NULL,
+                  payload, sizeof(payload))) {
+        fail(name, "PUT could not be built");
+        goto out;
+    }
+    if (r.resp.status != 200) {
+        fail(name, "PUT status %d, want 200", r.resp.status);
+        reply_free(&r);
+        goto out;
+    }
+    reply_free(&r);
+
+    if (!exec_req(t, &r, NULL, NULL, "GET", "/ernic/ranged", NULL,
+                  "Range: bytes=10-19", NULL, 0)) {
+        fail(name, "ranged GET could not be built");
+        goto out;
+    }
+    const char *cr = hdr(&r, "Content-Range");
+    if (r.resp.status != 206)
+        fail(name, "bytes=10-19: status %d, want 206", r.resp.status);
+    else if (r.resp.body_len != 10 || memcmp(r.text, payload + 10, 10) != 0)
+        fail(name, "bytes=10-19: body is not bytes 10..19: \"%s\"", r.text);
+    else if (cr == NULL || strcmp(cr, "bytes 10-19/100") != 0)
+        fail(name, "bytes=10-19: Content-Range \"%s\"", cr ? cr : "(absent)");
+    reply_free(&r);
+
+    static const char *bad[] = {
+        "bytes=5",     /* no dash */
+        "bytes=-0",    /* a suffix of no bytes */
+        "bytes=100-",  /* starts at the end */
+        "bytes=50-10", /* inverted */
+        "items=0-1",   /* unsupported unit */
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        char hdrline[64];
+        snprintf(hdrline, sizeof(hdrline), "Range: %s", bad[i]);
+        if (!exec_req(t, &r, NULL, NULL, "GET", "/ernic/ranged", NULL, hdrline,
+                      NULL, 0)) {
+            fail(name, "\"%s\": could not be built", bad[i]);
+            continue;
+        }
+        if (r.resp.status != 416)
+            fail(name, "\"%s\": status %d, want 416", bad[i], r.resp.status);
+        else if (strstr(r.text, "<Code>InvalidRange</Code>") == NULL)
+            fail(name, "\"%s\": not an InvalidRange error: %s", bad[i], r.text);
+        else if (hdr(&r, "Content-Range") != NULL)
+            fail(name, "\"%s\": a 416 carries a Content-Range", bad[i]);
+        else if (hdr(&r, "x-amz-rdma-reply") != NULL)
+            fail(name, "\"%s\": a tokenless 416 carries an RDMA reply", bad[i]);
+        reply_free(&r);
+    }
+
+    ok(name);
+out:
+    s3_target_destroy(t);
+}
+
+/*
  * A suffix range names the last N bytes, and an empty object has no
  * last byte: the answer is 416, not a 206 of nothing.  The clamp to the
  * object size takes the count to zero, which is what has to be caught.
@@ -960,6 +1107,12 @@ static void test_routing(void)
                  r.resp.status);
         reply_free(&r);
     }
+    if (exec_req(t, &r, NULL, NULL, "HEAD", "/", NULL, NULL, NULL, 0)) {
+        if (r.resp.status != 200 || r.resp.body_len != 0)
+            fail(name, "HEAD on the service: status %d, %zu body bytes",
+                 r.resp.status, r.resp.body_len);
+        reply_free(&r);
+    }
     if (exec_req(t, &r, NULL, NULL, "HEAD", "/ernic", NULL, NULL, NULL, 0)) {
         if (r.resp.status != 200 || r.resp.body_len != 0)
             fail(name, "HEAD on the bucket: status %d, %zu body bytes",
@@ -1029,6 +1182,19 @@ static void test_list_objects(void)
         reply_free(&r);
     }
 
+    /* The keys before b/three do not match, so listing it means passing
+     * over them, not stopping at the first non-match. */
+    if (exec_req(t, &r, NULL, NULL, "GET", "/ernic?list-type=2&prefix=b%2F",
+                 NULL, NULL, NULL, 0)) {
+        if (strstr(r.text, "<KeyCount>1</KeyCount>") == NULL ||
+            strstr(r.text, "<Key>b/three</Key>") == NULL)
+            fail(name, "prefix b/ list: %s", r.text);
+        else if (strstr(r.text, "<Key>a/one</Key>") != NULL ||
+                 strstr(r.text, "<Key>top</Key>") != NULL)
+            fail(name, "prefix b/ list leaked a non-matching key");
+        reply_free(&r);
+    }
+
     if (exec_req(t, &r, NULL, NULL, "GET", "/ernic?list-type=2&max-keys=2",
                  NULL, NULL, NULL, 0)) {
         if (strstr(r.text, "<KeyCount>2</KeyCount>") == NULL)
@@ -1039,12 +1205,12 @@ static void test_list_objects(void)
     }
 
     /* A key with XML metacharacters must not break the document. */
-    if (exec_req(t, &r, NULL, NULL, "PUT", "/ernic/a%26b%3Cc", NULL, NULL, "x",
-                 1))
+    if (exec_req(t, &r, NULL, NULL, "PUT", "/ernic/a%26b%3Cc%3Ed%22e", NULL,
+                 NULL, "x", 1))
         reply_free(&r);
     if (exec_req(t, &r, NULL, NULL, "GET", "/ernic?list-type=2", NULL, NULL,
                  NULL, 0)) {
-        if (strstr(r.text, "<Key>a&amp;b&lt;c</Key>") == NULL)
+        if (strstr(r.text, "<Key>a&amp;b&lt;c&gt;d&quot;e</Key>") == NULL)
             fail(name, "key metacharacters not escaped: %s", r.text);
         reply_free(&r);
     }
@@ -1631,6 +1797,824 @@ out:
     s3_target_destroy(t);
 }
 
+/*
+ * Check an RDMA request that failed: the HTTP status, the S3 error code,
+ * and an x-amz-rdma-reply carrying the same status and the @bytes that
+ * moved, which is all a client blocked on its token ever reads.
+ */
+static void expect_rdma_failure(const char *name, const char *what,
+                                const struct reply *r, int status,
+                                const char *code, uint64_t bytes)
+{
+    char want[64];
+    struct s3_token peer;
+    int reply_code = 0;
+    uint64_t bytes_val;
+
+    snprintf(want, sizeof(want), "<Code>%s</Code>", code);
+    if (r->resp.status != status) {
+        fail(name, "%s: status %d, want %d: %s", what, r->resp.status, status,
+             r->text);
+        return;
+    }
+    if (strstr(r->text, want) == NULL)
+        fail(name, "%s: not a %s error: %s", what, code, r->text);
+
+    const char *reply = hdr(r, "x-amz-rdma-reply");
+    if (reply == NULL)
+        fail(name, "%s: no x-amz-rdma-reply", what);
+    else if (!s3_reply_parse_peer(reply, strlen(reply), &peer, &reply_code))
+        fail(name, "%s: reply \"%s\" does not parse", what, reply);
+    else if (reply_code != status)
+        fail(name, "%s: reply code %d, want %d", what, reply_code, status);
+
+    const char *moved = hdr(r, "x-amz-rdma-bytes");
+    if (!ernic_parse_u64(moved, &bytes_val) || bytes_val != bytes)
+        fail(name, "%s: x-amz-rdma-bytes \"%s\", want %" PRIu64, what,
+             moved ? moved : "(absent)", bytes);
+}
+
+/*
+ * Once an RDMA PUT's token has parsed, every failure has to reach the
+ * reply header, because a client blocked on its token learns of it from
+ * nowhere else.  That includes the failures that have nothing to do with
+ * RDMA: a bad part number, an unknown upload, a full store.
+ */
+static void test_rdma_put_failures(void)
+{
+    const char *name = "rdma-put-failures";
+    struct s3_target *t = make_target("size=4K");
+    struct host_mem *h = calloc(1, sizeof(*h));
+    char token[S3_TOKEN_HEX_LEN + 1];
+    char upload_id[64] = "";
+    char target[128];
+    struct reply r;
+
+    if (t == NULL || h == NULL) {
+        fail(name, "setup failed");
+        goto out;
+    }
+
+    /* A data plane that can write to the client but not read from it. */
+    static const struct s3_dma_ops write_only = {
+        .from_host = NULL,
+        .to_host = host_to,
+    };
+    mint(token, 0, 1024);
+    if (exec_req(t, &r, &write_only, h, "PUT", "/ernic/k", token, NULL, NULL,
+                 0)) {
+        expect_rdma_failure(name, "no from_host", &r, 501, "NotImplemented", 0);
+        reply_free(&r);
+    }
+
+    /* Content-Length names more than the token's buffer holds. */
+    if (exec_req(t, &r, &host_ops, h, "PUT", "/ernic/k", token,
+                 "Content-Length: 1025", NULL, 0)) {
+        expect_rdma_failure(name, "length past the token", &r, 400,
+                            "EntityTooLarge", 0);
+        reply_free(&r);
+    }
+
+    if (!initiate(t, "mp", upload_id, sizeof(upload_id), name))
+        goto out;
+
+    snprintf(target, sizeof(target), "/ernic/mp?partNumber=0&uploadId=%s",
+             upload_id);
+    if (exec_req(t, &r, &host_ops, h, "PUT", target, token, NULL, NULL, 0)) {
+        expect_rdma_failure(name, "partNumber=0", &r, 400, "InvalidPart", 0);
+        reply_free(&r);
+    }
+
+    if (exec_req(t, &r, &host_ops, h, "PUT",
+                 "/ernic/mp?partNumber=1&uploadId=no", token, NULL, NULL, 0)) {
+        expect_rdma_failure(name, "unknown upload", &r, 404, "NoSuchUpload", 0);
+        reply_free(&r);
+    }
+
+    /* 5000 bytes do not fit a 4K store, as a part or as an object. */
+    mint(token, 0, 5000);
+    snprintf(target, sizeof(target), "/ernic/mp?partNumber=1&uploadId=%s",
+             upload_id);
+    if (exec_req(t, &r, &host_ops, h, "PUT", target, token, NULL, NULL, 0)) {
+        expect_rdma_failure(name, "part past capacity", &r, 507,
+                            "EntityTooLarge", 0);
+        reply_free(&r);
+    }
+    if (exec_req(t, &r, &host_ops, h, "PUT", "/ernic/big", token, NULL, NULL,
+                 0)) {
+        expect_rdma_failure(name, "object past capacity", &r, 507,
+                            "EntityTooLarge", 0);
+        reply_free(&r);
+    }
+
+    if (s3_target_object_count(t) != 0 || s3_target_bytes_used(t) != 0)
+        fail(name, "failed PUTs left %u objects and %" PRIu64 " bytes",
+             s3_target_object_count(t), s3_target_bytes_used(t));
+
+    ok(name);
+out:
+    free(h);
+    s3_target_destroy(t);
+}
+
+/* The x-amz-rdma-bytes of @r, or UINT64_MAX if it has none that parses. */
+static uint64_t rdma_bytes(const struct reply *r)
+{
+    uint64_t v;
+
+    if (!ernic_parse_u64(hdr(r, "x-amz-rdma-bytes"), &v))
+        return UINT64_MAX;
+    return v;
+}
+
+/*
+ * The RDMA GET paths other than a whole object into a big enough buffer.
+ * A buffer smaller than the object is a short read, not an error, and
+ * must not be written past its end; every failure after the token has
+ * parsed reaches the reply header, saying how many bytes did move.
+ */
+static void test_rdma_get_paths(void)
+{
+    const char *name = "rdma-get-paths";
+    struct s3_target *t = make_target("maxpart=4K");
+    struct host_mem *h = calloc(1, sizeof(*h));
+    char token[S3_TOKEN_HEX_LEN + 1];
+    char big[8192];
+    char small[100];
+    struct reply r;
+
+    if (t == NULL || h == NULL) {
+        fail(name, "setup failed");
+        goto out;
+    }
+
+    memset(big, 'B', sizeof(big));
+    for (size_t i = 0; i < sizeof(small); i++)
+        small[i] = (char)('a' + i % 26);
+    const struct {
+        const char *target;
+        const char *data;
+        size_t len;
+    } seed[] = {
+        {"/ernic/big", big, sizeof(big)},
+        {"/ernic/small", small, sizeof(small)},
+        {"/ernic/empty", NULL, 0},
+    };
+    for (size_t i = 0; i < sizeof(seed) / sizeof(seed[0]); i++) {
+        if (!exec_req(t, &r, NULL, NULL, "PUT", seed[i].target, NULL, NULL,
+                      seed[i].data, seed[i].len)) {
+            fail(name, "PUT %s could not be built", seed[i].target);
+            goto out;
+        }
+        if (r.resp.status != 200)
+            fail(name, "PUT %s status %d", seed[i].target, r.resp.status);
+        reply_free(&r);
+    }
+
+    /* A token that does not parse has no buffer to reply about. */
+    if (exec_req(t, &r, &host_ops, h, "GET", "/ernic/small", "not-a-token",
+                 NULL, NULL, 0)) {
+        if (r.resp.status != 400 ||
+            strstr(r.text, "<Code>InvalidArgument</Code>") == NULL)
+            fail(name, "malformed token: status %d: %s", r.resp.status, r.text);
+        else if (hdr(&r, "x-amz-rdma-reply") != NULL)
+            fail(name, "malformed token: a reply about no buffer");
+        reply_free(&r);
+    }
+
+    /* A data plane that can read from the client but not write to it. */
+    static const struct s3_dma_ops read_only = {
+        .from_host = host_from,
+        .to_host = NULL,
+    };
+    mint(token, 0, sizeof(small));
+    if (exec_req(t, &r, &read_only, h, "GET", "/ernic/small", token, NULL, NULL,
+                 0)) {
+        expect_rdma_failure(name, "no to_host", &r, 501, "NotImplemented", 0);
+        reply_free(&r);
+    }
+
+    mint(token, 0, sizeof(big));
+    if (exec_req(t, &r, &host_ops, h, "GET", "/ernic/big", token, NULL, NULL,
+                 0)) {
+        expect_rdma_failure(name, "past maxpart", &r, 400, "EntityTooLarge", 0);
+        reply_free(&r);
+    }
+
+    h->short_by = 16;
+    mint(token, 0, sizeof(small));
+    if (exec_req(t, &r, &host_ops, h, "GET", "/ernic/small", token, NULL, NULL,
+                 0)) {
+        expect_rdma_failure(name, "short write", &r, 500, "InternalError",
+                            sizeof(small) - 16);
+        reply_free(&r);
+    }
+    h->short_by = 0;
+
+    /* A 40-byte buffer gets the first 40 bytes and nothing past them. */
+    memset(h->buf, 0xee, 64);
+    mint(token, 0, 40);
+    if (exec_req(t, &r, &host_ops, h, "GET", "/ernic/small", token, NULL, NULL,
+                 0)) {
+        if (r.resp.status != 200)
+            fail(name, "small buffer: status %d: %s", r.resp.status, r.text);
+        else if (rdma_bytes(&r) != 40)
+            fail(name, "small buffer: x-amz-rdma-bytes %" PRIu64 ", want 40",
+                 rdma_bytes(&r));
+        else if (memcmp(h->buf, small, 40) != 0)
+            fail(name, "small buffer: not the object's first 40 bytes");
+        else if (h->buf[40] != 0xee)
+            fail(name, "small buffer: written past its end");
+        reply_free(&r);
+    }
+
+    /* A token of length zero names no buffer size, so the whole object
+     * is sent. */
+    memset(h->buf, 0xee, 128);
+    mint(token, 0, 0);
+    if (exec_req(t, &r, &host_ops, h, "GET", "/ernic/small", token, NULL, NULL,
+                 0)) {
+        if (r.resp.status != 200 || rdma_bytes(&r) != sizeof(small))
+            fail(name, "lengthless token: status %d, %" PRIu64 " bytes",
+                 r.resp.status, rdma_bytes(&r));
+        else if (memcmp(h->buf, small, sizeof(small)) != 0)
+            fail(name, "lengthless token: not the object");
+        reply_free(&r);
+    }
+
+    /* An empty object moves nothing and is still a success. */
+    memset(h->buf, 0xee, 64);
+    mint(token, 0, 64);
+    if (exec_req(t, &r, &host_ops, h, "GET", "/ernic/empty", token, NULL, NULL,
+                 0)) {
+        if (r.resp.status != 200 || rdma_bytes(&r) != 0)
+            fail(name, "empty object: status %d, %" PRIu64 " bytes",
+                 r.resp.status, rdma_bytes(&r));
+        else if (h->buf[0] != 0xee)
+            fail(name, "empty object: the client buffer was written");
+        reply_free(&r);
+    }
+
+    ok(name);
+out:
+    free(h);
+    s3_target_destroy(t);
+}
+
+/*
+ * The upload table has 16 slots (S3_MAX_UPLOADS).  An initiate with none
+ * free is a 503 SlowDown, whose status line has to name the status, and
+ * aborting an upload frees its slot.
+ */
+static void test_upload_table_full(void)
+{
+    const char *name = "upload-table-full";
+    struct s3_target *t = make_target(NULL);
+    char id[64] = "";
+    char target[128];
+    struct reply r;
+
+    if (t == NULL)
+        return;
+
+    for (unsigned i = 0; i < 16; i++) {
+        char key[16];
+        snprintf(key, sizeof(key), "k%u", i);
+        if (!initiate(t, key, id, sizeof(id), name))
+            goto out;
+    }
+
+    if (!exec_req(t, &r, NULL, NULL, "POST", "/ernic/extra?uploads", NULL, NULL,
+                  NULL, 0)) {
+        fail(name, "the 17th initiate could not be built");
+        goto out;
+    }
+    if (r.resp.status != 503 || strstr(r.text, "<Code>SlowDown</Code>") == NULL)
+        fail(name, "the 17th initiate: status %d: %s", r.resp.status, r.text);
+
+    size_t len = 0;
+    uint8_t *wire = s3_http_response_serialize(&r.resp, &len);
+    static const char line[] = "HTTP/1.1 503 Service Unavailable\r\n";
+    if (wire == NULL)
+        fail(name, "the 503 did not serialise");
+    else if (len < strlen(line) || memcmp(wire, line, strlen(line)) != 0)
+        fail(name, "the 503's status line is \"%.40s\"", (const char *)wire);
+    free(wire);
+    reply_free(&r);
+
+    /* Abort the last upload; its slot takes the next initiate. */
+    snprintf(target, sizeof(target), "/ernic/k15?uploadId=%s", id);
+    if (exec_req(t, &r, NULL, NULL, "DELETE", target, NULL, NULL, NULL, 0)) {
+        if (r.resp.status != 204)
+            fail(name, "abort gave status %d, want 204", r.resp.status);
+        reply_free(&r);
+    }
+    if (!initiate(t, "extra", id, sizeof(id), name))
+        goto out;
+
+    ok(name);
+out:
+    s3_target_destroy(t);
+}
+
+/*
+ * Completing an upload with no object slot free is a 507 that leaves the
+ * upload as it was: its parts still count against capacity, and it can
+ * be completed once a slot is.
+ */
+static void test_complete_no_slot(void)
+{
+    const char *name = "complete-no-slot";
+    struct s3_target *t = make_target("objects=1");
+    char id[64] = "";
+    char target[128];
+    struct reply r;
+
+    if (t == NULL)
+        return;
+
+    if (exec_req(t, &r, NULL, NULL, "PUT", "/ernic/x", NULL, NULL, "x", 1))
+        reply_free(&r);
+    if (!initiate(t, "y", id, sizeof(id), name))
+        goto out;
+    snprintf(target, sizeof(target), "/ernic/y?partNumber=1&uploadId=%s", id);
+    if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, "hello", 5)) {
+        if (r.resp.status != 200)
+            fail(name, "part status %d, want 200", r.resp.status);
+        reply_free(&r);
+    }
+
+    snprintf(target, sizeof(target), "/ernic/y?uploadId=%s", id);
+    if (exec_req(t, &r, NULL, NULL, "POST", target, NULL, NULL, NULL, 0)) {
+        if (r.resp.status != 507 ||
+            strstr(r.text, "<Code>EntityTooLarge</Code>") == NULL)
+            fail(name, "complete with no slot: status %d: %s", r.resp.status,
+                 r.text);
+        reply_free(&r);
+    }
+    if (s3_target_bytes_used(t) != 6)
+        fail(name, "a failed complete left used at %" PRIu64 ", want 6",
+             s3_target_bytes_used(t));
+
+    if (exec_req(t, &r, NULL, NULL, "DELETE", "/ernic/x", NULL, NULL, NULL, 0))
+        reply_free(&r);
+    if (exec_req(t, &r, NULL, NULL, "POST", target, NULL, NULL, NULL, 0)) {
+        if (r.resp.status != 200)
+            fail(name, "complete once a slot is free: status %d: %s",
+                 r.resp.status, r.text);
+        reply_free(&r);
+    }
+    if (exec_req(t, &r, NULL, NULL, "GET", "/ernic/y", NULL, NULL, NULL, 0)) {
+        if (r.resp.body_len != 5 || memcmp(r.text, "hello", 5) != 0)
+            fail(name, "the completed object is \"%s\"", r.text);
+        reply_free(&r);
+    }
+    if (s3_target_bytes_used(t) != 5)
+        fail(name, "used %" PRIu64 " after complete, want 5",
+             s3_target_bytes_used(t));
+
+    ok(name);
+out:
+    s3_target_destroy(t);
+}
+
+/*
+ * A bucket name too long to be configured names no bucket.  One that only
+ * began with the configured name used to be cut down to it and served.
+ */
+static void test_bucket_too_long(void)
+{
+    const char *name = "bucket-too-long";
+    char bucket[S3_BUCKET_MAX];
+    char opts[S3_BUCKET_MAX + 16];
+    char target[S3_BUCKET_MAX + 32];
+    struct reply r;
+
+    memset(bucket, 'b', S3_BUCKET_MAX - 1);
+    bucket[S3_BUCKET_MAX - 1] = '\0';
+    snprintf(opts, sizeof(opts), "bucket=%s", bucket);
+
+    struct s3_target *t = make_target(opts);
+    if (t == NULL)
+        return;
+
+    /* One character more, as an object and as a bucket request. */
+    snprintf(target, sizeof(target), "/%sX/key", bucket);
+    if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, "x", 1)) {
+        if (r.resp.status != 404 ||
+            strstr(r.text, "<Code>NoSuchBucket</Code>") == NULL)
+            fail(name, "PUT into a longer bucket: status %d: %s", r.resp.status,
+                 r.text);
+        reply_free(&r);
+    }
+    snprintf(target, sizeof(target), "/%sX", bucket);
+    if (exec_req(t, &r, NULL, NULL, "GET", target, NULL, NULL, NULL, 0)) {
+        if (r.resp.status != 404)
+            fail(name, "listing a longer bucket: status %d, want 404",
+                 r.resp.status);
+        reply_free(&r);
+    }
+    if (exec_req(t, &r, NULL, NULL, "HEAD", target, NULL, NULL, NULL, 0)) {
+        if (r.resp.status != 404 || r.resp.body_len != 0)
+            fail(name, "HEAD of a longer bucket: status %d, %zu body bytes",
+                 r.resp.status, r.resp.body_len);
+        reply_free(&r);
+    }
+    if (s3_target_object_count(t) != 0)
+        fail(name, "a PUT into a longer bucket was stored");
+
+    /* The configured name itself, at the longest a name can be, works. */
+    snprintf(target, sizeof(target), "/%s/key", bucket);
+    if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, "x", 1)) {
+        if (r.resp.status != 200)
+            fail(name, "PUT into the bucket: status %d, want 200",
+                 r.resp.status);
+        reply_free(&r);
+    }
+    if (s3_target_object_count(t) != 1)
+        fail(name, "a PUT into the bucket was not stored");
+
+    s3_target_destroy(t);
+    ok(name);
+}
+
+/*
+ * A HEAD that fails answers with the status a GET would, but with no
+ * body: a HEAD response never has one, not even an error document.  A
+ * client reads none, so on a kept-alive connection the bytes of one
+ * would be taken for the next response.  The paths that refuse a request
+ * before it reaches the object handlers are the ones most easily missed.
+ */
+static void test_head_errors(void)
+{
+    const char *name = "head-errors";
+    struct s3_target *t = make_target(NULL);
+    char long_key[S3_KEY_MAX + 16];
+    char long_bucket[S3_BUCKET_MAX + 16];
+    struct reply r;
+
+    if (t == NULL)
+        return;
+
+    memcpy(long_key, "/ernic/", 7);
+    memset(long_key + 7, 'k', S3_KEY_MAX);
+    long_key[7 + S3_KEY_MAX] = '\0';
+    long_bucket[0] = '/';
+    memset(long_bucket + 1, 'b', S3_BUCKET_MAX);
+    long_bucket[1 + S3_BUCKET_MAX] = '\0';
+
+    const struct {
+        const char *what;
+        const char *target;
+        int status;
+    } cases[] = {
+        {"missing key", "/ernic/absent", 404},
+        {"missing bucket", "/nosuch/key", 404},
+        {"over-long bucket", long_bucket, 404},
+        {"over-long key", long_key, 400},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        if (!exec_req(t, &r, NULL, NULL, "HEAD", cases[i].target, NULL, NULL,
+                      NULL, 0)) {
+            fail(name, "%s: HEAD could not be built", cases[i].what);
+            continue;
+        }
+        if (r.resp.status != cases[i].status)
+            fail(name, "%s: status %d, want %d", cases[i].what, r.resp.status,
+                 cases[i].status);
+        else if (r.resp.body_len != 0)
+            fail(name, "%s: a HEAD carried a %zu byte body", cases[i].what,
+                 r.resp.body_len);
+        reply_free(&r);
+    }
+
+    /* Nor is a missing key given an object's metadata. */
+    if (exec_req(t, &r, NULL, NULL, "HEAD", "/ernic/absent", NULL, NULL, NULL,
+                 0)) {
+        if (hdr(&r, "ETag") != NULL || hdr(&r, "x-amz-content-length") != NULL)
+            fail(name, "a missing key was given object metadata");
+        reply_free(&r);
+    }
+    if (s3_target_statistics(t)->errors != 5)
+        fail(name, "errors counter %" PRIu64 ", want 5",
+             s3_target_statistics(t)->errors);
+
+    s3_target_destroy(t);
+    ok(name);
+}
+
+/* A key must fit the store's key buffer with its NUL: the longest one
+ * that does is stored, and one byte more is refused, not cut short. */
+static void test_key_too_long(void)
+{
+    const char *name = "key-too-long";
+    struct s3_target *t = make_target(NULL);
+    struct reply r;
+    char target[S3_KEY_MAX + 16];
+
+    if (t == NULL)
+        return;
+
+    memcpy(target, "/ernic/", 7);
+    memset(target + 7, 'k', S3_KEY_MAX);
+    target[7 + S3_KEY_MAX] = '\0';
+
+    if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, "x", 1)) {
+        if (r.resp.status != 400)
+            fail(name, "a %d byte key gave status %d, want 400", S3_KEY_MAX,
+                 r.resp.status);
+        else if (strstr(r.text, "<Code>KeyTooLongError</Code>") == NULL)
+            fail(name, "not a KeyTooLongError: %s", r.text);
+        reply_free(&r);
+    } else {
+        fail(name, "PUT of a long key could not be built");
+    }
+    if (s3_target_object_count(t) != 0)
+        fail(name, "a key that is too long was stored");
+
+    target[7 + S3_KEY_MAX - 1] = '\0';
+    if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, "x", 1)) {
+        if (r.resp.status != 200)
+            fail(name, "a %d byte key gave status %d, want 200", S3_KEY_MAX - 1,
+                 r.resp.status);
+        reply_free(&r);
+    } else {
+        fail(name, "PUT of the longest key could not be built");
+    }
+    if (s3_target_object_count(t) != 1)
+        fail(name, "the longest key was not stored");
+
+    s3_target_destroy(t);
+    ok(name);
+}
+
+/* Each level of the path takes only its own methods, and a refused one
+ * must not act: a DELETE of the bucket deletes nothing. */
+static void test_method_not_allowed(void)
+{
+    const char *name = "method-not-allowed";
+    struct s3_target *t = make_target(NULL);
+    struct reply r;
+
+    if (t == NULL)
+        return;
+
+    if (exec_req(t, &r, NULL, NULL, "PUT", "/ernic/keep", NULL, NULL, "x", 1))
+        reply_free(&r);
+
+    static const struct {
+        const char *method;
+        const char *target;
+    } cases[] = {
+        {"PUT", "/"},
+        {"POST", "/"},
+        {"PUT", "/ernic"},
+        {"DELETE", "/ernic"},
+        {"POST", "/ernic"},
+        {"PATCH", "/ernic"},
+        {"OPTIONS", "/ernic/keep"},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        if (!exec_req(t, &r, NULL, NULL, cases[i].method, cases[i].target, NULL,
+                      NULL, NULL, 0)) {
+            fail(name, "%s %s could not be built", cases[i].method,
+                 cases[i].target);
+            continue;
+        }
+        if (r.resp.status != 405)
+            fail(name, "%s %s: status %d, want 405", cases[i].method,
+                 cases[i].target, r.resp.status);
+        else if (strstr(r.text, "<Code>MethodNotAllowed</Code>") == NULL)
+            fail(name, "%s %s: not a MethodNotAllowed error: %s",
+                 cases[i].method, cases[i].target, r.text);
+        reply_free(&r);
+    }
+
+    if (s3_target_object_count(t) != 1)
+        fail(name, "a refused method changed the store: %u objects",
+             s3_target_object_count(t));
+
+    s3_target_destroy(t);
+    ok(name);
+}
+
+/*
+ * Setting up a store with an allocation failing: the copy of the option
+ * string, then each allocation s3_target_create() makes in turn.  Each is
+ * reported, and leaves nothing behind.  Without entropy for the upload
+ * ids the store still starts, numbering its uploads from 1.
+ */
+static void test_setup_alloc_failures(void)
+{
+    const char *name = "setup-alloc-failures";
+    struct s3_target_cfg cfg;
+    char err[128] = "";
+    unsigned nth;
+
+    s3_target_cfg_defaults(&cfg);
+    s3_alloc_fail_arm(0);
+    bool parsed = s3_target_cfg_parse(&cfg, "size=4M", err, sizeof(err));
+    if (!s3_alloc_fail_disarm())
+        fail(name, "cfg parse made no allocation to fail");
+    else if (parsed || strstr(err, "out of memory") == NULL)
+        fail(name, "cfg parse with no memory: parsed %d, \"%s\"", parsed, err);
+
+    s3_target_cfg_defaults(&cfg);
+    for (nth = 0; nth < 16; nth++) {
+        err[0] = '\0';
+        s3_alloc_fail_arm(nth);
+        struct s3_target *t = s3_target_create(&cfg, err, sizeof(err));
+        bool fired = s3_alloc_fail_disarm();
+        if (!fired) {
+            if (t == NULL)
+                fail(name, "create failed with nothing failed: %s", err);
+            s3_target_destroy(t);
+            break;
+        }
+        if (t != NULL || strstr(err, "out of memory") == NULL)
+            fail(name, "create with allocation %u failed: %p, \"%s\"", nth,
+                 (void *)t, err);
+        s3_target_destroy(t);
+    }
+    if (nth < 2)
+        fail(name, "only %u create allocations could be failed, want 2", nth);
+
+    char id[64] = "";
+    s3_alloc_fail_entropy(true);
+    struct s3_target *t = make_target(NULL);
+    s3_alloc_fail_entropy(false);
+    if (t == NULL)
+        return;
+    if (initiate(t, "k", id, sizeof(id), name) &&
+        strcmp(id, "0000000000000001") != 0)
+        fail(name,
+             "with no entropy the first upload is %s, want "
+             "0000000000000001",
+             id);
+    s3_target_destroy(t);
+
+    ok(name);
+}
+
+enum inject_kind {
+    INJECT_STORES,    /* a PUT: stored only if it reports success */
+    INJECT_COMPLETES, /* a complete: the upload survives a failure */
+    INJECT_READS,     /* changes nothing; only the response can fail */
+};
+
+/*
+ * Each request, run with each allocation it makes failed in turn, on a
+ * fresh store holding one 3000-byte object.  A failure is either reported
+ * as a 500 with the store unchanged, or -- when it is the response that
+ * could not be built -- leaves resp.oom set for the endpoint to act on.
+ * What the store holds always agrees with the status.
+ */
+static void test_request_alloc_failures(void)
+{
+    const char *name = "request-alloc-failures";
+    struct host_mem *h = calloc(1, sizeof(*h));
+    char seed[3000];
+    char token[S3_TOKEN_HEX_LEN + 1];
+
+    static const struct {
+        const char *what;
+        enum inject_kind kind;
+        const char *method;
+        const char *target; /* NULL: complete the upload set up for it */
+        bool rdma;
+        size_t body_len;
+    } cases[] = {
+        {"body PUT", INJECT_STORES, "PUT", "/ernic/k", false, 100},
+        {"RDMA PUT", INJECT_STORES, "PUT", "/ernic/k", true, 0},
+        {"complete", INJECT_COMPLETES, "POST", NULL, false, 0},
+        {"body GET", INJECT_READS, "GET", "/ernic/seed", false, 0},
+        {"list", INJECT_READS, "GET", "/ernic?list-type=2", false, 0},
+        {"missing key", INJECT_READS, "GET", "/ernic/absent", false, 0},
+    };
+
+    if (h == NULL) {
+        fail(name, "out of memory");
+        return;
+    }
+    memset(seed, 's', sizeof(seed));
+    mint(token, 0, 4096);
+
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        unsigned nth;
+        /* Fail allocation 0, then 1, and so on, until a run fails none:
+         * that run is the request with every allocation it makes met. */
+        for (nth = 0; nth < 64; nth++) {
+            struct s3_target *t = make_target(NULL);
+            char id[64] = "";
+            char target[128];
+            struct reply r;
+
+            if (t == NULL)
+                goto out;
+            /* Set up with nothing armed: only the request under test may
+             * have an allocation fail. */
+            if (exec_req(t, &r, NULL, NULL, "PUT", "/ernic/seed", NULL, NULL,
+                         seed, sizeof(seed)))
+                reply_free(&r);
+            snprintf(target, sizeof(target), "%s",
+                     cases[c].target ? cases[c].target : "");
+            if (cases[c].kind == INJECT_COMPLETES) {
+                /* An upload of one 5-byte part, for the complete. */
+                if (!initiate(t, "mp", id, sizeof(id), name)) {
+                    s3_target_destroy(t);
+                    goto out;
+                }
+                snprintf(target, sizeof(target),
+                         "/ernic/mp?partNumber=1&uploadId=%s", id);
+                if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL,
+                             "hello", 5))
+                    reply_free(&r);
+                snprintf(target, sizeof(target), "/ernic/mp?uploadId=%s", id);
+            }
+
+            /* exec_req() arms the failure around s3_target_exec() alone, so
+             * its own allocation of the reply text is never the one. */
+            inject = true;
+            inject_nth = nth;
+            bool built = exec_req(
+                t, &r, cases[c].rdma ? &host_ops : NULL, h, cases[c].method,
+                target, cases[c].rdma ? token : NULL, NULL,
+                cases[c].body_len ? seed : NULL, cases[c].body_len);
+            inject = false;
+            if (!built) {
+                fail(name, "%s: could not be built", cases[c].what);
+                s3_target_destroy(t);
+                goto out;
+            }
+
+            /* Read what the checks need, then free the reply: a check
+             * below may issue another request with r. */
+            int status = r.resp.status;
+            bool oom = r.resp.oom;
+            bool fired = inject_fired;
+            reply_free(&r);
+
+            switch (cases[c].kind) {
+            case INJECT_STORES: {
+                /* The seed object, and the PUT's if it was stored. */
+                bool stored = s3_target_object_count(t) == 2;
+                if (status == 200 && (!stored || (fired && !oom)))
+                    fail(name, "%s, allocation %u: 200 with stored %d, oom %d",
+                         cases[c].what, nth, stored, oom);
+                if (status != 200 && (status != 500 || stored ||
+                                      s3_target_bytes_used(t) != 3000))
+                    fail(name, "%s, allocation %u: status %d, stored %d",
+                         cases[c].what, nth, status, stored);
+                break;
+            }
+            case INJECT_COMPLETES: {
+                /* The seed object, and the assembled one if completed. */
+                bool stored = s3_target_object_count(t) == 2;
+                if (status == 200 && (!stored || (fired && !oom)))
+                    fail(name, "%s, allocation %u: 200 with stored %d, oom %d",
+                         cases[c].what, nth, stored, oom);
+                if (status != 200) {
+                    /* The seed's 3000 bytes and the part's 5, still held. */
+                    if (status != 500 || stored ||
+                        s3_target_bytes_used(t) != 3005)
+                        fail(name, "%s, allocation %u: status %d, stored %d",
+                             cases[c].what, nth, status, stored);
+                    /* The upload is intact, so completing again works. */
+                    if (exec_req(t, &r, NULL, NULL, "POST", target, NULL, NULL,
+                                 NULL, 0)) {
+                        if (r.resp.status != 200)
+                            fail(name, "%s, allocation %u: retry gave %d",
+                                 cases[c].what, nth, r.resp.status);
+                        reply_free(&r);
+                    }
+                }
+                break;
+            }
+            case INJECT_READS:
+                if (fired && !oom)
+                    fail(name, "%s, allocation %u failed unnoticed",
+                         cases[c].what, nth);
+                if (s3_target_object_count(t) != 1)
+                    fail(name, "%s changed the store", cases[c].what);
+                break;
+            default:
+                break;
+            }
+            s3_target_destroy(t);
+            if (!fired)
+                break;
+        }
+        if (nth == 0)
+            fail(name, "%s: no allocation could be failed", cases[c].what);
+    }
+
+    ok(name);
+out:
+    free(h);
+}
+
 static void test_peer_token(void)
 {
     const char *name = "peer-token";
@@ -1664,14 +2648,24 @@ static void test_peer_token(void)
 int main(void)
 {
     test_cfg_parse();
+    test_create_defaults();
     test_body_put_get();
     test_rdma_put_get();
     test_rdma_put_with_content_length();
     test_rdma_ranged_get();
     test_rdma_put_body_get();
+    test_body_ranged_get();
     test_range_on_empty_object();
     test_rdma_short_transfer();
     test_rdma_errors();
+    test_rdma_put_failures();
+    test_rdma_get_paths();
+    test_upload_table_full();
+    test_complete_no_slot();
+    test_bucket_too_long();
+    test_head_errors();
+    test_key_too_long();
+    test_method_not_allowed();
     test_routing();
     test_list_objects();
     test_multipart();
@@ -1682,6 +2676,8 @@ int main(void)
     test_capacity();
     test_multipart_capacity();
     test_peer_token();
+    test_setup_alloc_failures();
+    test_request_alloc_failures();
 
     if (failures)
         printf("\n%d failure(s)\n", failures);

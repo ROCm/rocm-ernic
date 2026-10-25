@@ -733,8 +733,11 @@ static void rdma_reply(struct s3_target *t, struct s3_http_response *resp,
  * for "/" and @key is empty for "/bucket" -- the caller distinguishes a
  * service request from a bucket request from an object request on that
  * basis alone, which is exactly how the S3 API is specified.
+ *
+ * False when the bucket name does not fit @bucket.  Cut short instead, a
+ * name that only begins with the configured bucket's would match it.
  */
-static void split_path(const char *path, char *bucket, size_t bucketlen,
+static bool split_path(const char *path, char *bucket, size_t bucketlen,
                        const char **key)
 {
     const char *p = path;
@@ -745,11 +748,12 @@ static void split_path(const char *path, char *bucket, size_t bucketlen,
     const char *slash = strchr(p, '/');
     size_t blen = slash ? (size_t)(slash - p) : strlen(p);
     if (blen >= bucketlen) {
-        blen = bucketlen - 1;
+        return false;
     }
     memcpy(bucket, p, blen);
     bucket[blen] = '\0';
     *key = slash ? slash + 1 : "";
+    return true;
 }
 
 /* "bytes=<first>-<last>", the only Range form S3 answers. */
@@ -912,8 +916,7 @@ static void handle_head(struct s3_target *t, const char *key,
     if (o == NULL) {
         s3_error(t, resp, 404, "NoSuchKey", "The specified key does not exist.",
                  key);
-        resp->body_len = 0; /* a HEAD carries no body, not even an error one */
-        return;
+        return; /* s3_target_exec() drops the body, as for every HEAD */
     }
     char when[32];
     iso8601(o->mtime, when, sizeof(when));
@@ -1296,20 +1299,21 @@ static void handle_complete(struct s3_target *t, const char *key,
                             (int)strlen(o->etag) - 2, o->etag + 1);
 }
 
-void s3_target_exec(struct s3_target *t, const struct s3_http_request *req,
-                    const struct s3_dma_ops *dma, void *dma_ctx,
-                    struct s3_http_response *resp)
+/* Route @req to its handler, which fills in @resp. */
+static void route(struct s3_target *t, const struct s3_http_request *req,
+                  const struct s3_dma_ops *dma, void *dma_ctx,
+                  struct s3_http_response *resp)
 {
     char bucket[S3_BUCKET_MAX];
     const char *key;
 
-    s3_http_response_init(resp, 200);
-    resp->keep_alive = req->keep_alive;
-    s3_http_response_header(resp, "Server", "rocm-ernic/s3");
-    s3_http_response_header(resp, "x-amz-request-id", "%016" PRIx64,
-                            (uint64_t)++t->stats.requests);
-
-    split_path(req->path, bucket, sizeof(bucket), &key);
+    /* No bucket has a name too long for the buffer: bucket_name_ok()
+     * refuses one at configuration. */
+    if (!split_path(req->path, bucket, sizeof(bucket), &key)) {
+        s3_error(t, resp, 404, "NoSuchBucket",
+                 "The specified bucket does not exist.", req->path);
+        return;
+    }
 
     if (strlen(key) >= S3_KEY_MAX) {
         s3_error(t, resp, 400, "KeyTooLongError", "The key is too long.",
@@ -1323,9 +1327,6 @@ void s3_target_exec(struct s3_target *t, const struct s3_http_request *req,
     if (bucket[0] == '\0') {
         if (is_get || is_head) {
             handle_list_buckets(t, resp);
-            if (is_head) {
-                resp->body_len = 0;
-            }
         } else {
             s3_error(t, resp, 405, "MethodNotAllowed",
                      "That method is not allowed on the service endpoint.",
@@ -1374,5 +1375,27 @@ void s3_target_exec(struct s3_target *t, const struct s3_http_request *req,
     } else {
         s3_error(t, resp, 405, "MethodNotAllowed",
                  "That method is not allowed on an object.", key);
+    }
+}
+
+void s3_target_exec(struct s3_target *t, const struct s3_http_request *req,
+                    const struct s3_dma_ops *dma, void *dma_ctx,
+                    struct s3_http_response *resp)
+{
+    s3_http_response_init(resp, 200);
+    resp->keep_alive = req->keep_alive;
+    s3_http_response_header(resp, "Server", "rocm-ernic/s3");
+    s3_http_response_header(resp, "x-amz-request-id", "%016" PRIx64,
+                            (uint64_t)++t->stats.requests);
+
+    route(t, req, dma, dma_ctx, resp);
+
+    /*
+     * A HEAD response has no body, not even an error document, whatever
+     * path answered it.  The client reads none, so on a kept-alive
+     * connection a body's bytes would be taken for the next response.
+     */
+    if (strcmp(req->method, "HEAD") == 0) {
+        resp->body_len = 0;
     }
 }
