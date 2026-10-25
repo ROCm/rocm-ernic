@@ -220,6 +220,14 @@
     finding; a new workflow runs it with clang-tidy 23, Debug and Release.
   * `-DERNIC_USE_IWYU=ON` prints include-what-you-use suggestions, which
     don't fail the build; a new workflow lists them.
+  * Clang's thread-safety analysis checks the locking at compile time. The
+    TCP backend, the loopback backend and the ionic data path and Ethernet
+    emulator annotate which lock guards each field, which locks a function
+    needs held or not, and the order the TCP backend's locks are taken in
+    (`src/qemu-compat/include/qemu/clang-tsa.h`). Every Clang build checks
+    the functions' annotations; a new Thread safety workflow builds with
+    Clang 23, the first to check the fields' and the order in C, and fails
+    on any finding.
   * `ERNIC_SANITIZER_SHARED_RUNTIME` selects the shared or static sanitizer
     runtime. It defaults to the compiler's own choice: `ON` with GCC, `OFF`
     with Clang, where `ON` adds an RPATH to the runtime's directory.

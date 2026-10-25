@@ -18,6 +18,7 @@
 #include "rdma_rm_defs.h"
 #include "rdma_utils.h"
 #include "qemu/thread.h"
+#include "rocm-ernic-warnings.h"
 #include <errno.h>
 #include <inttypes.h>
 #include <stdbool.h>
@@ -56,15 +57,15 @@ typedef struct {
 #define LOOPBACK_FIRST_QPN 100u
 
 typedef struct {
+    QemuMutex lock;
+
     /* Resource tracking */
-    GHashTable *qps; /* qpn -> LoopbackQP, the live QPs */
+    GHashTable *qps TSA_GUARDED_BY(lock); /* qpn -> LoopbackQP, the live QPs */
 
     /* Handle generators */
-    uint32_t next_pd_handle;
-    uint32_t next_cq_handle;
-    uint32_t next_qpn;
-
-    QemuMutex lock;
+    uint32_t next_pd_handle TSA_GUARDED_BY(lock);
+    uint32_t next_cq_handle TSA_GUARDED_BY(lock);
+    uint32_t next_qpn TSA_GUARDED_BY(lock);
 } LoopbackBackendPrivate;
 
 /*
@@ -92,14 +93,17 @@ static int loopback_init(RdmaBackendDev *backend_dev, const char *config)
 
     priv = g_new0(LoopbackBackendPrivate, 1);
 
+    qemu_mutex_init(&priv->lock);
+
+    /* Nothing else can reach priv until it is published below */
+    ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     priv->qps =
         g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
 
     priv->next_pd_handle = 1;
     priv->next_cq_handle = 1;
     priv->next_qpn = LOOPBACK_FIRST_QPN;
-
-    qemu_mutex_init(&priv->lock);
+    ROCM_ERNIC_WARN_THREAD_SAFETY_ON
 
     backend_dev->backend_private = priv;
 
@@ -117,7 +121,10 @@ static void loopback_fini(RdmaBackendDev *backend_dev)
 
     rdma_info_report("Loopback backend: Cleaning up");
 
+    /* The device is done with the backend, which has no threads */
+    ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     g_hash_table_destroy(priv->qps);
+    ROCM_ERNIC_WARN_THREAD_SAFETY_ON
 
     qemu_mutex_destroy(&priv->lock);
 

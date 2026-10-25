@@ -36,7 +36,6 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <syslog.h>
-#include <pthread.h>
 
 #include <vfio-user/libvfio-user.h>
 
@@ -52,6 +51,8 @@
 #include "ionic_adminq.h"
 #include "ionic_status.h"
 #include "ionic_fault.h"
+#include "qemu/thread.h"
+#include "rocm-ernic-warnings.h"
 #include "rocm_ernic_compat.h"
 #include "rocm_ernic_internal.h"
 
@@ -149,7 +150,7 @@ struct ionic_eth_emu *ionic_eth_emu_create(vfu_ctx_t *vfu_ctx, size_t bar2_size)
         free(emu);
         return NULL;
     }
-    pthread_mutex_init(&emu->inbox_lock, NULL);
+    qemu_mutex_init(&emu->inbox_lock);
 
     ionic_profile_defaults(&emu->profile);
     write_dev_info(emu);
@@ -184,13 +185,16 @@ void ionic_eth_emu_destroy(struct ionic_eth_emu *emu)
     if (!emu)
         return;
     ionic_eth_net_close(emu->net);
+    /* Like the frees below, this relies on nothing else reaching emu now */
+    ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     while (emu->inbox_head) {
         struct eth_inbox_frame *f = emu->inbox_head;
         emu->inbox_head = f->next;
         free(f);
     }
     emu->inbox_tail = NULL;
-    pthread_mutex_destroy(&emu->inbox_lock);
+    ROCM_ERNIC_WARN_THREAD_SAFETY_ON
+    qemu_mutex_destroy(&emu->inbox_lock);
     ernic_dma_destroy(emu->dma);
     free(emu->bar2);
     free(emu);
@@ -219,9 +223,9 @@ int ionic_eth_emu_queue_rx_frame(struct ionic_eth_emu *emu, const void *frame,
     f->port_counted = false;
     memcpy(f->data, frame, len);
 
-    pthread_mutex_lock(&emu->inbox_lock);
+    qemu_mutex_lock(&emu->inbox_lock);
     if (emu->inbox_count >= ETH_INBOX_MAX_FRAMES) {
-        pthread_mutex_unlock(&emu->inbox_lock);
+        qemu_mutex_unlock(&emu->inbox_lock);
         free(f);
         ionic_emu_stats_rx_inbox_full(&emu->stats, frame, len,
                                       port_max_frame(emu));
@@ -233,7 +237,7 @@ int ionic_eth_emu_queue_rx_frame(struct ionic_eth_emu *emu, const void *frame,
         emu->inbox_head = f;
     emu->inbox_tail = f;
     emu->inbox_count++;
-    pthread_mutex_unlock(&emu->inbox_lock);
+    qemu_mutex_unlock(&emu->inbox_lock);
 
     return 0;
 }
@@ -1875,7 +1879,7 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
      * that can never be delivered (too big, or a DMA failure) is dropped
      * and counted, so it cannot block the queue behind it. */
     for (unsigned n = 0; n < 64; n++) {
-        pthread_mutex_lock(&emu->inbox_lock);
+        qemu_mutex_lock(&emu->inbox_lock);
         struct eth_inbox_frame *f = emu->inbox_head;
         if (f) {
             emu->inbox_head = f->next;
@@ -1883,7 +1887,7 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
                 emu->inbox_tail = NULL;
             emu->inbox_count--;
         }
-        pthread_mutex_unlock(&emu->inbox_lock);
+        qemu_mutex_unlock(&emu->inbox_lock);
         if (!f)
             break;
         if (!f->fault_seen && eth_rx_fault(emu, f->data, f->len)) {
@@ -1917,13 +1921,13 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
             ionic_emu_port_rx_dropped(&emu->stats);
             free(f);
         } else {
-            pthread_mutex_lock(&emu->inbox_lock);
+            qemu_mutex_lock(&emu->inbox_lock);
             f->next = emu->inbox_head;
             emu->inbox_head = f;
             if (!emu->inbox_tail)
                 emu->inbox_tail = f;
             emu->inbox_count++;
-            pthread_mutex_unlock(&emu->inbox_lock);
+            qemu_mutex_unlock(&emu->inbox_lock);
             break;
         }
     }

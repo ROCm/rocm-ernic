@@ -28,6 +28,7 @@
 #include "rocm_ernic_compat.h"
 #include "parse_int.h"
 #include "qemu/thread.h"
+#include "rocm-ernic-warnings.h"
 #include <errno.h>
 #include <infiniband/verbs.h>
 #include <stdatomic.h>
@@ -71,10 +72,10 @@ int tcp_env_int(const char *name, int fallback)
  * path. The queue that used to live here had no producer and no consumer.
  */
 typedef struct {
+    QemuMutex lock; /* a leaf (see Locks in rdma_backend_tcp_priv.h) */
     uint32_t max_wr;
     uint32_t max_sge;
-    uint32_t srq_limit;
-    QemuMutex lock;
+    uint32_t srq_limit TSA_GUARDED_BY(lock);
 } TcpSRQ;
 
 static TcpBackendPrivate *get_private(RdmaBackendDev *backend_dev)
@@ -264,6 +265,49 @@ void tcp_stop_threads(TcpBackendPrivate *priv)
 }
 
 /*
+ * Stop every thread of the backend's, and free priv and everything in it:
+ * nothing may be freed while a backend thread can still use it.  For a
+ * backend tcp_init_with_interval() set up, or failed to.
+ */
+static void tcp_priv_free(TcpBackendPrivate *priv)
+{
+    tcp_stop_threads(priv);
+    if (priv->listen_fd >= 0) {
+        close(priv->listen_fd);
+    }
+    qemu_cond_destroy(&priv->health_check_cond);
+    qemu_mutex_destroy(&priv->health_check_lock);
+    qemu_cond_destroy(&priv->peer_cond);
+    qemu_mutex_destroy(&priv->peer_lock);
+    tcp_free_pending_conns(priv);
+
+    /* With the threads stopped, nothing else can reach priv */
+    ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
+    g_array_free(priv->peer_targets, TRUE);
+    if (priv->mesh_nodes) {
+        g_hash_table_destroy(priv->mesh_nodes);
+    }
+    g_hash_table_destroy(priv->connections);
+    g_hash_table_destroy(priv->node_gids);
+    g_hash_table_destroy(priv->gid_owner);
+    ROCM_ERNIC_WARN_THREAD_SAFETY_ON
+
+    if (priv->mesh_table_lock.initialized) {
+        qemu_mutex_destroy(&priv->mesh_table_lock);
+    }
+    tcp_connection_unref(atomic_load(&priv->manager_conn));
+    qemu_cond_destroy(&priv->registration_cond);
+    qemu_mutex_destroy(&priv->registration_mutex);
+    g_free(priv->manager_host);
+    qemu_mutex_destroy(&priv->lock);
+    qemu_mutex_destroy(&priv->conn_table_lock);
+    qemu_mutex_destroy(&priv->gid_table_lock);
+    qemu_mutex_destroy(&priv->gid_advertise_lock);
+    tcp_broadcaster_destroy(priv);
+    g_free(priv);
+}
+
+/*
  * tcp_init() with the health-check interval, in seconds, given rather than
  * read from ERNIC_TCP_HEALTH_INTERVAL, so the tests can set it without
  * calling setenv(), which isn't thread safe.  health_interval_s must be
@@ -295,6 +339,11 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
 
     priv = g_new0(TcpBackendPrivate, 1);
 
+    /*
+     * No other thread can reach priv until the first is started, below, so
+     * the fields the backend's locks guard are set up without them.
+     */
+    ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     priv->connections = g_hash_table_new_full(
         g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
     priv->pending_conns = g_ptr_array_new();
@@ -354,6 +403,7 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
     priv->registers_again = true;
     qemu_cond_init(&priv->registration_cond);
     qemu_mutex_init(&priv->registration_mutex);
+    ROCM_ERNIC_WARN_THREAD_SAFETY_ON
 
     if (mode == TCP_MODE_MANAGER) {
         /* Manager mode: tcp:manager:<host>:<port> or ...:listen:<port> */
@@ -365,9 +415,11 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
         atomic_store(&priv->local_node_id, 0); /* Manager is always node 0 */
 
         /* The manager's id is fixed, so it can claim its GIDs immediately;
-         * a worker has to wait for REGISTER_RESP. */
+         * a worker has to wait for REGISTER_RESP.  Still before any thread. */
+        ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
         tcp_gid_claims_set(priv, 0, tcp_const_gids(priv->local_gids),
                            priv->num_local_gids);
+        ROCM_ERNIC_WARN_THREAD_SAFETY_ON
 
         ret = parse_tcp_config_manager(args, &manager_host, &manager_port,
                                        &listen_mode);
@@ -375,21 +427,23 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
             goto error;
         }
 
-        /* Initialize mesh nodes table */
-        priv->mesh_nodes =
+        /*
+         * The mesh nodes table, with the manager itself in it, under the
+         * configured host, or "localhost" in listen mode, which names none
+         */
+        GHashTable *mesh_nodes =
             g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
                                   tcp_mesh_node_info_destroy_notify);
-        if (!priv->mesh_nodes) {
+        if (!mesh_nodes) {
             rdma_error_report("TCP: Failed to create mesh nodes table");
             g_free(manager_host);
             goto error;
         }
         qemu_mutex_init(&priv->mesh_table_lock);
+        ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
+        priv->mesh_nodes = mesh_nodes;
+        ROCM_ERNIC_WARN_THREAD_SAFETY_ON
 
-        /*
-         * Add the manager itself to the mesh table, under the configured
-         * host, or "localhost" in listen mode, which names none
-         */
         MeshNodeInfo *manager_node = tcp_mesh_node_info_new(
             0, listen_mode ? "localhost" : manager_host, manager_port);
         if (!manager_node) {
@@ -397,8 +451,7 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
             g_free(manager_host);
             goto error;
         }
-        g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(0),
-                            manager_node);
+        g_hash_table_insert(mesh_nodes, GUINT_TO_POINTER(0), manager_node);
 
         rdma_info_report("TCP backend: Manager mode on port %u", manager_port);
 
@@ -493,37 +546,8 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
 error:
     /* A worker that fails to register has already started the receive thread
      * for its manager connection, and one that fails to start its accept or
-     * peer-connect thread has started others; they must be gone before priv
-     * is freed under them. */
-    tcp_stop_threads(priv);
-    if (priv->listen_fd >= 0) {
-        close(priv->listen_fd);
-    }
-    qemu_cond_destroy(&priv->health_check_cond);
-    qemu_mutex_destroy(&priv->health_check_lock);
-    qemu_cond_destroy(&priv->peer_cond);
-    qemu_mutex_destroy(&priv->peer_lock);
-    g_array_free(priv->peer_targets, TRUE);
-    tcp_free_pending_conns(priv);
-    if (priv->mesh_nodes) {
-        g_hash_table_destroy(priv->mesh_nodes);
-    }
-    if (priv->mesh_table_lock.initialized) {
-        qemu_mutex_destroy(&priv->mesh_table_lock);
-    }
-    tcp_connection_unref(atomic_load(&priv->manager_conn));
-    qemu_cond_destroy(&priv->registration_cond);
-    qemu_mutex_destroy(&priv->registration_mutex);
-    g_free(priv->manager_host);
-    g_hash_table_destroy(priv->connections);
-    g_hash_table_destroy(priv->node_gids);
-    g_hash_table_destroy(priv->gid_owner);
-    qemu_mutex_destroy(&priv->lock);
-    qemu_mutex_destroy(&priv->conn_table_lock);
-    qemu_mutex_destroy(&priv->gid_table_lock);
-    qemu_mutex_destroy(&priv->gid_advertise_lock);
-    tcp_broadcaster_destroy(priv);
-    g_free(priv);
+     * peer-connect thread has started others; tcp_priv_free() stops them. */
+    tcp_priv_free(priv);
     return -1;
 }
 
@@ -545,46 +569,7 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
     }
 
     rdma_info_report("TCP backend: Cleaning up");
-
-    /* Nothing below may be freed while a backend thread can still use it */
-    tcp_stop_threads(priv);
-    qemu_cond_destroy(&priv->health_check_cond);
-    qemu_mutex_destroy(&priv->health_check_lock);
-    qemu_cond_destroy(&priv->peer_cond);
-    qemu_mutex_destroy(&priv->peer_lock);
-    g_array_free(priv->peer_targets, TRUE);
-
-    /* Close listen socket */
-    if (priv->listen_fd >= 0) {
-        close(priv->listen_fd);
-        priv->listen_fd = -1;
-    }
-
-    tcp_free_pending_conns(priv);
-
-    /* Clean up manager/worker specific resources */
-    if (priv->mesh_nodes) {
-        g_hash_table_destroy(priv->mesh_nodes);
-    }
-    if (priv->mesh_table_lock.initialized) {
-        qemu_mutex_destroy(&priv->mesh_table_lock);
-    }
-    tcp_connection_unref(atomic_load(&priv->manager_conn));
-    qemu_cond_destroy(&priv->registration_cond);
-    qemu_mutex_destroy(&priv->registration_mutex);
-    g_free(priv->manager_host);
-
-    g_hash_table_destroy(priv->connections);
-    g_hash_table_destroy(priv->node_gids);
-    g_hash_table_destroy(priv->gid_owner);
-
-    qemu_mutex_destroy(&priv->lock);
-    qemu_mutex_destroy(&priv->conn_table_lock);
-    qemu_mutex_destroy(&priv->gid_table_lock);
-    qemu_mutex_destroy(&priv->gid_advertise_lock);
-    tcp_broadcaster_destroy(priv);
-
-    g_free(priv);
+    tcp_priv_free(priv);
     backend_dev->backend_private = NULL;
 }
 
@@ -858,8 +843,11 @@ static int tcp_create_srq(RdmaBackendSRQ *srq, RdmaBackendPD *pd,
 
     tsrq->max_wr = max_wr;
     tsrq->max_sge = max_sge;
-    tsrq->srq_limit = srq_limit;
     qemu_mutex_init(&tsrq->lock);
+    /* No other thread can reach tsrq yet */
+    ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
+    tsrq->srq_limit = srq_limit;
+    ROCM_ERNIC_WARN_THREAD_SAFETY_ON
 
     srq->ibsrq = (struct ibv_srq *)(uintptr_t)tsrq;
     rdma_info_report("TCP: Created SRQ max_wr=%u", max_wr);
@@ -890,7 +878,9 @@ static int tcp_query_srq(RdmaBackendSRQ *srq, struct ibv_srq_attr *attr)
     memset(attr, 0, sizeof(*attr));
     attr->max_wr = tsrq->max_wr;
     attr->max_sge = tsrq->max_sge;
+    qemu_mutex_lock(&tsrq->lock);
     attr->srq_limit = tsrq->srq_limit;
+    qemu_mutex_unlock(&tsrq->lock);
     return 0;
 }
 

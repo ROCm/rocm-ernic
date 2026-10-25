@@ -32,6 +32,7 @@
 #include "rdma_backend_defs.h"
 #include "rdma_backend.h"
 #include "rocm_ernic_compat.h"
+#include "rocm-ernic-warnings.h"
 
 /*
  * Locks
@@ -39,10 +40,13 @@
  * The order the backend's mutexes are taken in: a thread holding one takes
  * only those below it.  This is the one place the order is given; each
  * field's comment says what its lock protects.  Two locks needn't ever be
- * held together; the order says which comes first if they are.  CI's TSan
- * builds check it on the paths the tests run, since ThreadSanitizer reports
- * a lock-order inversion as a possible deadlock.  Nothing checks the paths
- * they don't.
+ * held together; the order says which comes first if they are.  The locks'
+ * declarations in TcpBackendPrivate and TcpConnection repeat it, for clang's
+ * thread-safety analysis (see qemu/clang-tsa.h), which checks it on every
+ * path at compile time, though only where it can see both locks held: not
+ * across a callback, say.  CI's TSan builds also check it on the paths the
+ * tests run, since ThreadSanitizer reports a lock-order inversion as a
+ * possible deadlock.
  *
  *   gid_advertise_lock       this node's advertisement of its own GIDs
  *   registration_mutex       a worker's registration with the manager
@@ -303,6 +307,284 @@ typedef struct {
 } TcpNodeGids;
 
 typedef struct TcpBackendPrivate TcpBackendPrivate;
+typedef struct TcpConnection TcpConnection;
+
+/* Multi-node configuration modes */
+typedef enum {
+    TCP_MODE_MANAGER,
+    TCP_MODE_WORKER,
+} TcpMode;
+
+/*
+ * Mesh node information (for manager).  A node stays in mesh_nodes from
+ * registration until teardown, or until a registration evicts it, dead, to
+ * make room (tcp_evict_dead_node()), which frees it.  So a thread that found
+ * it under mesh_table_lock must not keep the pointer after dropping the
+ * lock; it keeps node_id, and looks the node up again.  node_id, hostname
+ * and port are set before the node is published and never change; is_alive
+ * and last_heartbeat_ms are protected by mesh_table_lock.  Once the node is
+ * published, is_alive is written only by tcp_node_set_alive(), which keeps
+ * the node's GID claims in step with it.  The node's connection is its entry
+ * in connections.
+ */
+typedef struct {
+    uint32_t node_id;
+    char *hostname;
+    uint16_t port;
+    bool is_alive;
+    /*
+     * When the node last answered, on ernic_monotonic_ms()'s clock.  Read
+     * the clock under the lock to compare with it, so no heartbeat recorded
+     * meanwhile can be newer than the time it's compared with.
+     */
+    uint64_t last_heartbeat_ms;
+} MeshNodeInfo;
+
+struct TcpBackendPrivate {
+    /*
+     * The locks, declared in the order they are taken (see Locks above),
+     * and before the fields they guard, which the thread-safety analysis
+     * needs (see qemu/clang-tsa.h).  The leaves follow gid_table_lock.
+     *
+     * gid_advertise_lock serialises a whole advertisement of this node's own
+     * claims -- snapshot and record or send together.  The snapshot is taken
+     * under lock, which has to be dropped before sending, so without this an
+     * advertisement from the main thread (a guest adding or removing an
+     * address) and one from a receive thread (registration completing) could
+     * land out of order, leaving the manager holding a claim set this node has
+     * already replaced.
+     *
+     * mesh_table_lock is only initialised on the manager.
+     */
+    QemuMutex gid_advertise_lock;
+    QemuMutex registration_mutex TSA_ACQUIRED_AFTER(gid_advertise_lock);
+    QemuMutex peer_lock TSA_ACQUIRED_AFTER(registration_mutex);
+    QemuMutex mesh_table_lock TSA_ACQUIRED_AFTER(peer_lock);
+    QemuMutex conn_table_lock TSA_ACQUIRED_AFTER(mesh_table_lock);
+    QemuMutex gid_table_lock TSA_ACQUIRED_AFTER(conn_table_lock);
+    QemuMutex lock TSA_ACQUIRED_AFTER(gid_table_lock);
+    QemuMutex health_check_lock TSA_ACQUIRED_AFTER(gid_table_lock);
+    QemuMutex broadcast_lock TSA_ACQUIRED_AFTER(gid_table_lock);
+
+    /* Node identity */
+    /*
+     * This node's ID.  The manager's is 0 from the start.  A worker's is 0,
+     * which no worker is given, until the manager answers its first
+     * registration: the receive thread for the registering connection stores
+     * it, once, before tcp_init() starts the threads that introduce this node
+     * to its peers.  A worker that registers again keeps it.  Atomic as a
+     * precaution: no thread reads it while it can still change, but that
+     * rests on the order tcp_init() starts threads in.
+     */
+    _Atomic uint32_t local_node_id;
+
+    /*
+     * Multi-connection support: node_id -> TcpConnection*, each entry
+     * holding a reference (see TcpConnection for how entries are removed).
+     */
+    GHashTable *connections TSA_GUARDED_BY(conn_table_lock);
+    /*
+     * Connections the manager has accepted that haven't registered, or were
+     * refused, at most TCP_MAX_PENDING_CONNS of them, each holding a
+     * reference.  Registration moves a connection, and its reference, from
+     * here to connections, and only a connection still here can register.
+     * tcp_reap_pending_conns() releases the ones that are done with, and
+     * teardown stops the receive threads of the rest and releases them.
+     */
+    GPtrArray *pending_conns TSA_GUARDED_BY(conn_table_lock);
+
+    /*
+     * What each node says it owns: node_id -> TcpNodeGids.  This is the
+     * authoritative record, kept per node rather than per GID so that a
+     * claim is never lost by another node making the same one.
+     */
+    GHashTable *node_gids TSA_GUARDED_BY(gid_table_lock);
+
+    /*
+     * Derived from node_gids, rebuilt on every change: the full 16 bytes of
+     * a GID -> the single node that claims it, or UINT32_MAX when none or
+     * more than one does.  Lookups are on the RTR and UD send paths, so
+     * they index rather than scan.
+     *
+     * A destination GID absent here, or contested, names no node this mesh
+     * can route to, and the caller must fail rather than pick one.  Used in
+     * both modes, so the lock is its own -- mesh_table_lock is only
+     * initialised on the manager.
+     */
+    GHashTable *gid_owner TSA_GUARDED_BY(gid_table_lock);
+
+    /*
+     * This node's own GIDs, seeded from ERNIC_TCP_GUEST_GIDS and then changed
+     * by the guest through tcp_claim_gid().  Both are protected by lock.
+     */
+    uint8_t local_gids[TCP_MAX_NODE_GIDS][16] TSA_GUARDED_BY(lock);
+    uint32_t num_local_gids TSA_GUARDED_BY(lock);
+
+    /* Listen socket (for accepting connections) */
+    int listen_fd;
+    uint16_t listen_port;
+    QemuThread accept_thread;
+    atomic_bool accept_thread_running;
+
+    /*
+     * Set at the start of teardown and never cleared.  From then on a send
+     * that would have to wait for the peer fails instead (see
+     * tcp_send_message2()), so a thread blocked sending to a peer that has
+     * stopped reading lets go of the locks it holds, and teardown's joins
+     * don't wait on that peer.
+     */
+    atomic_bool stopping;
+
+    /*
+     * How long a send may go without progress, from ERNIC_TCP_SEND_TIMEOUT_MS
+     * or TCP_DEFAULT_SEND_TIMEOUT_MS; see tcp_send_timeout_ms().  Atomic
+     * only so the tests can shorten it on a running backend; it guards no
+     * other data, so relaxed accesses are enough.
+     */
+    _Atomic uint32_t send_timeout_ms;
+
+    /* Manager-specific fields */
+    bool is_manager;
+    /* node_id -> MeshNodeInfo*; at most TCP_MAX_MESH_NODES of them */
+    GHashTable *mesh_nodes TSA_GUARDED_BY(mesh_table_lock);
+    /*
+     * The manager's broadcaster thread, which tells the workers what has
+     * changed: the topology, and a node's GID set, to every connection, and
+     * the whole GID table to the connection of a node that has just
+     * registered (tcp_broadcast_pass()).  A registration, a node's
+     * advertisement, a node coming back to life, and the health check only
+     * ask for these (tcp_broadcast_topology() and the rest), which never
+     * waits for a peer, and broadcast_cond wakes the thread.
+     *
+     * A pass takes everything asked so far, then snapshots the tables, so
+     * whatever is asked while it sends is sent by the next pass, and what is
+     * asked twice before a pass is sent once.  Being one thread, it sends
+     * its snapshots in the order it took them.  Sent from the threads that
+     * ask, an older snapshot could be sent after a newer one: a node's death
+     * after its revival, say, leaving the workers believing it dead, or a
+     * topology that leaves out a node after a GID set the node claimed while
+     * in it, which has the workers drop the claims (tcp_gid_claims_prune()).
+     *
+     * broadcast_running is cleared under broadcast_lock, with broadcast_cond
+     * signalled, to stop the thread; see tcp_stop_broadcast_thread().  What
+     * follows it is protected by broadcast_lock: broadcast_topology is set
+     * when the topology has changed, broadcast_gids holds the ids of the
+     * nodes whose GID sets have, and broadcast_tables those of the nodes
+     * whose connections need the whole table.  broadcasts_asked counts the
+     * asks, and broadcasts_sent how many of them the passes that have
+     * finished took, so the thread has work while they differ, and the tests
+     * can wait for them to agree.
+     */
+    QemuThread broadcast_thread;
+    atomic_bool broadcast_running;
+    QemuCond broadcast_cond;
+    bool broadcast_topology TSA_GUARDED_BY(broadcast_lock);
+    /* a set of node ids */
+    GHashTable *broadcast_gids TSA_GUARDED_BY(broadcast_lock);
+    /* a set of node ids */
+    GHashTable *broadcast_tables TSA_GUARDED_BY(broadcast_lock);
+    uint64_t broadcasts_asked TSA_GUARDED_BY(broadcast_lock);
+    uint64_t broadcasts_sent TSA_GUARDED_BY(broadcast_lock);
+    QemuThread health_check_thread;
+    /*
+     * Cleared under health_check_lock, with health_check_cond signalled, to
+     * stop the thread; see tcp_stop_health_check_thread().  The thread also
+     * reads it without the lock at the top of each pass.
+     */
+    atomic_bool health_check_running;
+    QemuCond health_check_cond;
+    /*
+     * Also a worker's: how often its peer-connect thread runs, and so how
+     * soon it notices that the manager has gone silent.
+     */
+    uint32_t health_check_interval_sec; /* Default: 5 seconds */
+    /* For auto-assigning node IDs */
+    uint32_t next_available_node_id TSA_GUARDED_BY(mesh_table_lock);
+
+    /* Worker-specific fields */
+    char *manager_host;
+    uint16_t manager_port;
+    /*
+     * The worker's connection to the manager, holding a reference, or NULL
+     * while there is none.  The answer to a registration publishes the
+     * connection it came on here (see tcp_worker_registration_done());
+     * the peer-connect thread clears it when it gives up on the connection,
+     * before it registers again; teardown releases it.  Changed only under
+     * conn_table_lock.
+     *
+     * Read under conn_table_lock to take a reference to it, since a load
+     * followed by a ref could race the last unref of a connection being
+     * replaced.  A receive thread only compares its own connection with it,
+     * which needs no lock: the load is atomic, and its own connection is
+     * alive, so it can't be mistaken for a freed one at the same address.
+     */
+    TcpConnection *_Atomic manager_conn;
+    /*
+     * The registration under way, all protected by registration_mutex:
+     * registering is the connection whose REGISTER_RESP is awaited, with no
+     * reference of its own (the thread registering holds one), or NULL;
+     * registration_complete is set once that answer has come, and
+     * registration_accepted if it registered this node.  registration_cond
+     * is signalled when the answer comes, and when the peer-connect thread
+     * is stopped.  The answer publishes manager_conn under conn_table_lock
+     * while holding it.
+     *
+     * registers_again, also under registration_mutex, is cleared for good
+     * when the manager answers this worker's registering again with another
+     * id, or refuses it with -ENOENT.  Only a manager that predates
+     * registering again does the first: it gives a worker that asks for a
+     * taken id a new one, so each time the worker asked, the mesh would gain
+     * a node.  The second means the manager has no node with this worker's
+     * id, which it never gives out again, so every later try would be
+     * refused too.
+     */
+    TcpConnection *registering TSA_GUARDED_BY(registration_mutex);
+    bool registration_complete TSA_GUARDED_BY(registration_mutex);
+    bool registration_accepted TSA_GUARDED_BY(registration_mutex);
+    bool registers_again TSA_GUARDED_BY(registration_mutex);
+    QemuCond registration_cond;
+
+    /*
+     * The peers this worker is to connect to, as TcpPeerTarget, from the
+     * latest topology update.  A receive thread replaces them and sets
+     * peer_targets_changed; the peer-connect thread connects to them.  Both
+     * are protected by peer_lock.  The peer-connect thread holds it with
+     * conn_table_lock to compare the connections table with the targets and
+     * change it.
+     */
+    GArray *peer_targets TSA_GUARDED_BY(peer_lock);
+    bool peer_targets_changed TSA_GUARDED_BY(peer_lock);
+    QemuCond peer_cond; /* signalled on an update, and to stop the thread */
+    QemuThread peer_thread;
+    /*
+     * Cleared under peer_lock, with peer_cond signalled, to stop the thread;
+     * see tcp_stop_peer_thread().  The thread also reads it without the lock
+     * between connects.
+     */
+    atomic_bool peer_thread_running;
+
+    /* Handle generators, protected by lock */
+    uint32_t next_pd_handle TSA_GUARDED_BY(lock);
+    uint32_t next_cq_handle TSA_GUARDED_BY(lock);
+    uint32_t next_qpn TSA_GUARDED_BY(lock);
+
+    /* Sequence number for protocol */
+    _Atomic uint32_t next_seq;
+
+    /* Sink for TCP_MSG_IONIC, registered by the ionic data path.  Called on
+     * a receive thread, so the callee must hand off to its own thread; it
+     * takes the payload with it, so a large one isn't copied.  Both are
+     * protected by lock. */
+    tcp_ionic_recv_fn ionic_recv_fn TSA_GUARDED_BY(lock);
+    void *ionic_recv_opaque TSA_GUARDED_BY(lock);
+
+    /* TCP-layer counters */
+    struct {
+        _Atomic uint64_t peer_connect_attempts; /* a worker's, to its peers */
+        /* A worker's, registering again with the manager */
+        _Atomic uint64_t manager_reconnects;
+    } tcp_stats;
+};
 
 /*
  * A message waiting on a connection's send queue: a TCP_MSG_IONIC, or a
@@ -342,11 +624,19 @@ typedef struct {
  * drop the reference without retiring the connection; only teardown destroys
  * the table, once every receive thread has been joined.
  */
-typedef struct TcpConnection TcpConnection;
-
 struct TcpConnection {
+    TcpBackendPrivate *priv;
+    /*
+     * Serialises writes to sockfd, and protects sockfd itself.  A writer
+     * holds it for a whole message, which can mean waiting for the peer to
+     * read, for up to tcp_send_timeout_ms() without progress.  It and
+     * sendq_lock are leaves (see Locks).
+     */
+    QemuMutex lock TSA_ACQUIRED_AFTER(priv->gid_table_lock);
+    QemuMutex sendq_lock TSA_ACQUIRED_AFTER(priv->gid_table_lock);
+
     uint32_t node_id;
-    int sockfd;
+    int sockfd TSA_GUARDED_BY(lock);
     char *remote_host;
     uint16_t remote_port;
     QemuThread recv_thread;
@@ -401,13 +691,6 @@ struct TcpConnection {
      * manager has gone silent (see tcp_worker_manager_pass()).
      */
     _Atomic uint64_t last_rx_ms;
-    /*
-     * Serialises writes to sockfd, and protects sockfd itself.  A writer
-     * holds it for a whole message, which can mean waiting for the peer to
-     * read, for up to tcp_send_timeout_ms() without progress.
-     */
-    QemuMutex lock;
-    TcpBackendPrivate *priv;
 
     /*
      * The data path's messages, queued for send_thread, so the device's main
@@ -422,285 +705,14 @@ struct TcpConnection {
      * table or manager_conn (tcp_conn_unpublished()), when it is retired, or
      * when a send on it fails; nothing is queued after that, and what was
      * queued is dropped.  send_thread is started by the first message queued,
-     * and
-     * send_thread_started is set while there is a thread to join.
+     * and send_thread_started is set while there is a thread to join.
      */
-    QemuMutex sendq_lock;
     QemuCond sendq_cond;
-    GQueue sendq; /* of TcpQueuedMsg */
-    size_t sendq_bytes;
-    bool sendq_closed;
-    bool send_thread_started;
+    GQueue sendq TSA_GUARDED_BY(sendq_lock); /* of TcpQueuedMsg */
+    size_t sendq_bytes TSA_GUARDED_BY(sendq_lock);
+    bool sendq_closed TSA_GUARDED_BY(sendq_lock);
+    bool send_thread_started TSA_GUARDED_BY(sendq_lock);
     QemuThread send_thread;
-};
-
-/* Multi-node configuration modes */
-typedef enum {
-    TCP_MODE_MANAGER,
-    TCP_MODE_WORKER,
-} TcpMode;
-
-/*
- * Mesh node information (for manager).  A node stays in mesh_nodes from
- * registration until teardown, or until a registration evicts it, dead, to
- * make room (tcp_evict_dead_node()), which frees it.  So a thread that found
- * it under mesh_table_lock must not keep the pointer after dropping the
- * lock; it keeps node_id, and looks the node up again.  node_id, hostname
- * and port are set before the node is published and never change; is_alive
- * and last_heartbeat_ms are protected by mesh_table_lock.  Once the node is
- * published, is_alive is written only by tcp_node_set_alive(), which keeps
- * the node's GID claims in step with it.  The node's connection is its entry
- * in connections.
- */
-typedef struct {
-    uint32_t node_id;
-    char *hostname;
-    uint16_t port;
-    bool is_alive;
-    /*
-     * When the node last answered, on ernic_monotonic_ms()'s clock.  Read
-     * the clock under the lock to compare with it, so no heartbeat recorded
-     * meanwhile can be newer than the time it's compared with.
-     */
-    uint64_t last_heartbeat_ms;
-} MeshNodeInfo;
-
-struct TcpBackendPrivate {
-    /* Node identity */
-    /*
-     * This node's ID.  The manager's is 0 from the start.  A worker's is 0,
-     * which no worker is given, until the manager answers its first
-     * registration: the receive thread for the registering connection stores
-     * it, once, before tcp_init() starts the threads that introduce this node
-     * to its peers.  A worker that registers again keeps it.  Atomic as a
-     * precaution: no thread reads it while it can still change, but that
-     * rests on the order tcp_init() starts threads in.
-     */
-    _Atomic uint32_t local_node_id;
-
-    /*
-     * Multi-connection support: node_id -> TcpConnection*, each entry
-     * holding a reference (see TcpConnection for how entries are removed).
-     */
-    GHashTable *connections;
-    /*
-     * Connections the manager has accepted that haven't registered, or were
-     * refused, at most TCP_MAX_PENDING_CONNS of them, each holding a
-     * reference.  Registration moves a connection, and its reference, from
-     * here to connections, and only a connection still here can register.
-     * tcp_reap_pending_conns() releases the ones that are done with, and
-     * teardown stops the receive threads of the rest and releases them.
-     */
-    GPtrArray *pending_conns;
-    QemuMutex conn_table_lock; /* Protects connections and pending_conns */
-
-    /*
-     * What each node says it owns: node_id -> TcpNodeGids.  This is the
-     * authoritative record, kept per node rather than per GID so that a
-     * claim is never lost by another node making the same one.
-     */
-    GHashTable *node_gids;
-
-    /*
-     * Derived from node_gids, rebuilt on every change: the full 16 bytes of
-     * a GID -> the single node that claims it, or UINT32_MAX when none or
-     * more than one does.  Lookups are on the RTR and UD send paths, so
-     * they index rather than scan.
-     *
-     * A destination GID absent here, or contested, names no node this mesh
-     * can route to, and the caller must fail rather than pick one.  Used in
-     * both modes, so the lock is its own -- mesh_table_lock is only
-     * initialised on the manager.
-     */
-    GHashTable *gid_owner;
-    QemuMutex gid_table_lock;
-
-    /*
-     * Serialises a whole advertisement of this node's own claims -- snapshot
-     * and record or send together.  The snapshot is taken under lock, which
-     * has to be dropped before sending, so without this an advertisement
-     * from the main thread (a guest adding or removing an address) and one
-     * from a receive thread (registration completing) could land out of
-     * order, leaving the manager holding a claim set this node has already
-     * replaced.
-     */
-    QemuMutex gid_advertise_lock;
-
-    /*
-     * This node's own GIDs, seeded from ERNIC_TCP_GUEST_GIDS and then changed
-     * by the guest through tcp_claim_gid().  Both are protected by lock.
-     */
-    uint8_t local_gids[TCP_MAX_NODE_GIDS][16];
-    uint32_t num_local_gids;
-
-    /* Listen socket (for accepting connections) */
-    int listen_fd;
-    uint16_t listen_port;
-    QemuThread accept_thread;
-    atomic_bool accept_thread_running;
-
-    /*
-     * Set at the start of teardown and never cleared.  From then on a send
-     * that would have to wait for the peer fails instead (see
-     * tcp_send_message2()), so a thread blocked sending to a peer that has
-     * stopped reading lets go of the locks it holds, and teardown's joins
-     * don't wait on that peer.
-     */
-    atomic_bool stopping;
-
-    /*
-     * How long a send may go without progress, from ERNIC_TCP_SEND_TIMEOUT_MS
-     * or TCP_DEFAULT_SEND_TIMEOUT_MS; see tcp_send_timeout_ms().  Atomic
-     * only so the tests can shorten it on a running backend; it guards no
-     * other data, so relaxed accesses are enough.
-     */
-    _Atomic uint32_t send_timeout_ms;
-
-    /* Manager-specific fields */
-    bool is_manager;
-    /* node_id -> MeshNodeInfo*; at most TCP_MAX_MESH_NODES of them */
-    GHashTable *mesh_nodes;
-    QemuMutex mesh_table_lock; /* Protects mesh_nodes */
-    /*
-     * The manager's broadcaster thread, which tells the workers what has
-     * changed: the topology, and a node's GID set, to every connection, and
-     * the whole GID table to the connection of a node that has just
-     * registered (tcp_broadcast_pass()).  A registration, a node's
-     * advertisement, a node coming back to life, and the health check only
-     * ask for these (tcp_broadcast_topology() and the rest), which never
-     * waits for a peer, and broadcast_cond wakes the thread.
-     *
-     * A pass takes everything asked so far, then snapshots the tables, so
-     * whatever is asked while it sends is sent by the next pass, and what is
-     * asked twice before a pass is sent once.  Being one thread, it sends
-     * its snapshots in the order it took them.  Sent from the threads that
-     * ask, an older snapshot could be sent after a newer one: a node's death
-     * after its revival, say, leaving the workers believing it dead, or a
-     * topology that leaves out a node after a GID set the node claimed while
-     * in it, which has the workers drop the claims (tcp_gid_claims_prune()).
-     *
-     * broadcast_running is cleared under broadcast_lock, with broadcast_cond
-     * signalled, to stop the thread; see tcp_stop_broadcast_thread().  What
-     * follows it is protected by broadcast_lock: broadcast_topology is set
-     * when the topology has changed, broadcast_gids holds the ids of the
-     * nodes whose GID sets have, and broadcast_tables those of the nodes
-     * whose connections need the whole table.  broadcasts_asked counts the
-     * asks, and broadcasts_sent how many of them the passes that have
-     * finished took, so the thread has work while they differ, and the tests
-     * can wait for them to agree.
-     */
-    QemuThread broadcast_thread;
-    atomic_bool broadcast_running;
-    QemuMutex broadcast_lock;
-    QemuCond broadcast_cond;
-    bool broadcast_topology;
-    GHashTable *broadcast_gids;   /* a set of node ids */
-    GHashTable *broadcast_tables; /* a set of node ids */
-    uint64_t broadcasts_asked;
-    uint64_t broadcasts_sent;
-    QemuThread health_check_thread;
-    /*
-     * Cleared under health_check_lock, with health_check_cond signalled, to
-     * stop the thread; see tcp_stop_health_check_thread().  The thread also
-     * reads it without the lock at the top of each pass.
-     */
-    atomic_bool health_check_running;
-    QemuMutex health_check_lock;
-    QemuCond health_check_cond;
-    /*
-     * Also a worker's: how often its peer-connect thread runs, and so how
-     * soon it notices that the manager has gone silent.
-     */
-    uint32_t health_check_interval_sec; /* Default: 5 seconds */
-    uint32_t next_available_node_id;    /* For auto-assigning node IDs */
-
-    /* Worker-specific fields */
-    char *manager_host;
-    uint16_t manager_port;
-    /*
-     * The worker's connection to the manager, holding a reference, or NULL
-     * while there is none.  The answer to a registration publishes the
-     * connection it came on here (see tcp_worker_registration_done());
-     * the peer-connect thread clears it when it gives up on the connection,
-     * before it registers again; teardown releases it.  Changed only under
-     * conn_table_lock.
-     *
-     * Read under conn_table_lock to take a reference to it, since a load
-     * followed by a ref could race the last unref of a connection being
-     * replaced.  A receive thread only compares its own connection with it,
-     * which needs no lock: the load is atomic, and its own connection is
-     * alive, so it can't be mistaken for a freed one at the same address.
-     */
-    TcpConnection *_Atomic manager_conn;
-    /*
-     * The registration under way, all protected by registration_mutex:
-     * registering is the connection whose REGISTER_RESP is awaited, with no
-     * reference of its own (the thread registering holds one), or NULL;
-     * registration_complete is set once that answer has come, and
-     * registration_accepted if it registered this node.  registration_cond
-     * is signalled when the answer comes, and when the peer-connect thread
-     * is stopped.  The answer publishes manager_conn under conn_table_lock
-     * while holding it.
-     *
-     * registers_again, also under registration_mutex, is cleared for good
-     * when the manager answers this worker's registering again with another
-     * id, or refuses it with -ENOENT.  Only a manager that predates
-     * registering again does the first: it gives a worker that asks for a
-     * taken id a new one, so each time the worker asked, the mesh would gain
-     * a node.  The second means the manager has no node with this worker's
-     * id, which it never gives out again, so every later try would be
-     * refused too.
-     */
-    TcpConnection *registering;
-    bool registration_complete;
-    bool registration_accepted;
-    bool registers_again;
-    QemuCond registration_cond;
-    QemuMutex registration_mutex;
-
-    /*
-     * The peers this worker is to connect to, as TcpPeerTarget, from the
-     * latest topology update.  A receive thread replaces them and sets
-     * peer_targets_changed; the peer-connect thread connects to them.  Both
-     * are protected by peer_lock.  The peer-connect thread holds it with
-     * conn_table_lock to compare the connections table with the targets and
-     * change it.
-     */
-    GArray *peer_targets;
-    bool peer_targets_changed;
-    QemuMutex peer_lock;
-    QemuCond peer_cond; /* signalled on an update, and to stop the thread */
-    QemuThread peer_thread;
-    /*
-     * Cleared under peer_lock, with peer_cond signalled, to stop the thread;
-     * see tcp_stop_peer_thread().  The thread also reads it without the lock
-     * between connects.
-     */
-    atomic_bool peer_thread_running;
-
-    /* Handle generators, protected by lock */
-    uint32_t next_pd_handle;
-    uint32_t next_cq_handle;
-    uint32_t next_qpn;
-
-    /* Sequence number for protocol */
-    _Atomic uint32_t next_seq;
-
-    /* Sink for TCP_MSG_IONIC, registered by the ionic data path.  Called on
-     * a receive thread, so the callee must hand off to its own thread; it
-     * takes the payload with it, so a large one isn't copied.  Both are
-     * protected by lock. */
-    tcp_ionic_recv_fn ionic_recv_fn;
-    void *ionic_recv_opaque;
-
-    /* TCP-layer counters */
-    struct {
-        _Atomic uint64_t peer_connect_attempts; /* a worker's, to its peers */
-        /* A worker's, registering again with the manager */
-        _Atomic uint64_t manager_reconnects;
-    } tcp_stats;
-
-    QemuMutex lock;
 };
 
 /* This node's ID; see local_node_id for why it is atomic. */
@@ -716,6 +728,33 @@ static inline uint32_t tcp_local_node(const TcpBackendPrivate *priv)
 static inline bool tcp_worker_registered(const TcpBackendPrivate *priv)
 {
     return tcp_local_node(priv) != 0;
+}
+
+/*
+ * Whether priv has the GID tables, node_gids and gid_owner, or the mesh
+ * table, which only a manager has.  tcp_init() makes them before any other
+ * thread can reach priv, and they stay until teardown, so whether they exist
+ * is read without the lock that guards what is in them.  A unit test's priv
+ * may lack them, and then the lock too.
+ */
+static inline bool tcp_has_gid_tables(const TcpBackendPrivate *priv)
+{
+    bool has;
+
+    ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
+    has = priv->node_gids && priv->gid_owner;
+    ROCM_ERNIC_WARN_THREAD_SAFETY_ON
+    return has;
+}
+
+static inline bool tcp_has_mesh_table(const TcpBackendPrivate *priv)
+{
+    bool has;
+
+    ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
+    has = priv->mesh_nodes != NULL;
+    ROCM_ERNIC_WARN_THREAD_SAFETY_ON
+    return has;
 }
 
 /*
@@ -801,11 +840,13 @@ int tcp_send_message2(const TcpBackendPrivate *priv, TcpConnection *conn,
                       TcpMsgType msg_type, const void *payload,
                       size_t payload_len, const void *payload2,
                       size_t payload2_len, uint32_t seq, uint32_t src_node,
-                      uint32_t dst_node, uint32_t src_qpn, uint32_t dst_qpn);
+                      uint32_t dst_node, uint32_t src_qpn, uint32_t dst_qpn)
+    TSA_REQUIRES(conn->lock);
 int tcp_send_message(const TcpBackendPrivate *priv, TcpConnection *conn,
                      TcpMsgType msg_type, const void *payload,
                      size_t payload_len, uint32_t seq, uint32_t src_node,
-                     uint32_t dst_node, uint32_t src_qpn, uint32_t dst_qpn);
+                     uint32_t dst_node, uint32_t src_qpn, uint32_t dst_qpn)
+    TSA_REQUIRES(conn->lock);
 int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
                      const atomic_bool *running, uint64_t deadline_ms);
 
@@ -813,33 +854,43 @@ int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
  * tcp_conn.c: connections, their send queues and threads, and the accept
  * thread; see TcpConnection for the reference counting rules
  */
-TcpConnection *tcp_connection_new(uint32_t node_id, const char *host,
-                                  uint16_t port);
+TcpConnection *tcp_connection_new(TcpBackendPrivate *priv, uint32_t node_id,
+                                  const char *host, uint16_t port, int sockfd);
 TcpConnection *tcp_connection_ref(TcpConnection *conn);
 void tcp_connection_unref(TcpConnection *conn);
 void tcp_connection_destroy_notify(gpointer data);
 bool tcp_conn_dead(const TcpConnection *conn);
-TcpConnection *tcp_connection_lookup(TcpBackendPrivate *priv, uint32_t node_id);
-GPtrArray *tcp_conns_snapshot(TcpBackendPrivate *priv);
-bool tcp_has_live_connection(TcpBackendPrivate *priv, uint32_t node_id);
-TcpConnection *tcp_route_to_node(TcpBackendPrivate *priv, uint32_t node_id);
+TcpConnection *tcp_connection_lookup(TcpBackendPrivate *priv, uint32_t node_id)
+    TSA_EXCLUDES(priv->conn_table_lock);
+GPtrArray *tcp_conns_snapshot(TcpBackendPrivate *priv)
+    TSA_EXCLUDES(priv->conn_table_lock);
+bool tcp_has_live_connection(TcpBackendPrivate *priv, uint32_t node_id)
+    TSA_EXCLUDES(priv->conn_table_lock);
+TcpConnection *tcp_route_to_node(TcpBackendPrivate *priv, uint32_t node_id)
+    TSA_EXCLUDES(priv->conn_table_lock);
 bool tcp_conn_table_add(TcpBackendPrivate *priv, uint32_t node_id,
-                        TcpConnection *conn);
-void tcp_conn_unpublished(TcpConnection *conn);
+                        TcpConnection *conn)
+    TSA_REQUIRES(priv->conn_table_lock);
+void tcp_conn_unpublished(TcpConnection *conn) TSA_EXCLUDES(conn->sendq_lock);
 bool tcp_conn_table_take(TcpBackendPrivate *priv, uint32_t node_id,
-                         TcpConnection *conn);
-void tcp_retire_conn(TcpConnection *conn);
+                         TcpConnection *conn)
+    TSA_REQUIRES(priv->conn_table_lock);
+void tcp_retire_conn(TcpConnection *conn)
+    TSA_EXCLUDES(conn->lock, conn->sendq_lock);
 int tcp_conn_enqueue(TcpConnection *conn, const void *hdr, size_t hdr_len,
                      const void *body, size_t body_len, uint32_t dst_node,
-                     uint64_t tag, bool reply);
-void tcp_sendq_cancel(TcpConnection *conn, uint64_t tag, uint64_t mask);
+                     uint64_t tag, bool reply) TSA_EXCLUDES(conn->sendq_lock);
+void tcp_sendq_cancel(TcpConnection *conn, uint64_t tag, uint64_t mask)
+    TSA_EXCLUDES(conn->sendq_lock);
 bool tcp_send_heartbeat(TcpBackendPrivate *priv, TcpConnection *conn,
-                        TcpMsgType msg_type, uint32_t dst_node);
+                        TcpMsgType msg_type, uint32_t dst_node)
+    TSA_EXCLUDES(conn->lock, conn->sendq_lock);
 bool tcp_start_recv_thread(TcpConnection *conn, const char *name);
 void *tcp_recv_thread_per_conn(void *opaque);
 void *tcp_accept_thread(void *opaque);
 void tcp_stop_accept_thread(TcpBackendPrivate *priv);
-void tcp_stop_recv_threads(TcpBackendPrivate *priv);
+void tcp_stop_recv_threads(TcpBackendPrivate *priv)
+    TSA_EXCLUDES(priv->conn_table_lock);
 void tcp_free_pending_conns(TcpBackendPrivate *priv);
 
 /*
@@ -851,11 +902,14 @@ uint32_t tcp_parse_guest_gids(const char *val,
                               uint8_t out[TCP_MAX_NODE_GIDS][16]);
 void tcp_gid_key_free(gpointer key);
 bool tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
-                        const uint8_t (*gids)[16], uint32_t num_gids);
-void tcp_gid_claims_forget(TcpBackendPrivate *priv, uint32_t node_id);
+                        const uint8_t (*gids)[16], uint32_t num_gids)
+    TSA_EXCLUDES(priv->gid_table_lock);
+void tcp_gid_claims_forget(TcpBackendPrivate *priv, uint32_t node_id)
+    TSA_EXCLUDES(priv->gid_table_lock);
 void tcp_gid_claims_prune(TcpBackendPrivate *priv,
                           const TcpMeshTopologyPayload *topo,
-                          uint32_t num_nodes);
+                          uint32_t num_nodes)
+    TSA_EXCLUDES(priv->gid_table_lock);
 /*
  * Mark @node_id's claims live or dead. A node the manager has declared
  * dead keeps its claims but resolves to nothing; see TcpNodeGids.alive.
@@ -864,16 +918,20 @@ void tcp_gid_claims_prune(TcpBackendPrivate *priv,
  * is_alive in step.
  */
 bool tcp_gid_claims_set_alive(TcpBackendPrivate *priv, uint32_t node_id,
-                              bool alive);
+                              bool alive) TSA_EXCLUDES(priv->gid_table_lock);
 void tcp_gid_claims_report_alive(uint32_t node_id, bool alive);
 uint32_t tcp_resolve_node_from_gid(TcpBackendPrivate *priv,
-                                   const union ibv_gid *dgid);
+                                   const union ibv_gid *dgid)
+    TSA_EXCLUDES(priv->gid_table_lock);
 void tcp_fill_node_gids(TcpNodeGidsPayload *out, uint32_t node_id,
                         const uint8_t (*gids)[16], uint32_t num_gids);
 void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
-                        const TcpNodeGidsPayload *payload);
-void tcp_advertise_local_gids(TcpBackendPrivate *priv);
-int tcp_claim_gid(TcpBackendPrivate *priv, const union ibv_gid *gid, bool add);
+                        const TcpNodeGidsPayload *payload)
+    TSA_EXCLUDES(conn->lock);
+void tcp_advertise_local_gids(TcpBackendPrivate *priv)
+    TSA_EXCLUDES(priv->gid_advertise_lock, priv->lock);
+int tcp_claim_gid(TcpBackendPrivate *priv, const union ibv_gid *gid, bool add)
+    TSA_EXCLUDES(priv->gid_advertise_lock, priv->lock);
 void tcp_recv_node_gids(const TcpConnection *conn, const TcpRecvMsg *msg);
 
 /*
@@ -885,45 +943,60 @@ MeshNodeInfo *tcp_mesh_node_info_new(uint32_t node_id, const char *hostname,
 void tcp_mesh_node_info_free(MeshNodeInfo *node);
 void tcp_mesh_node_info_destroy_notify(gpointer data);
 bool tcp_node_set_alive(TcpBackendPrivate *priv, MeshNodeInfo *node, bool alive,
-                        bool *gids_changed);
+                        bool *gids_changed) TSA_REQUIRES(priv->mesh_table_lock);
 /*
  * Declare a node dead, which withdraws its GID claims, only if it is still
  * unreachable; false when it has a live connection again, which a stale
  * list cannot be trusted for, or was dead already.
  */
-bool tcp_declare_dead_if_unreachable(TcpBackendPrivate *priv, uint32_t node_id);
+bool tcp_declare_dead_if_unreachable(TcpBackendPrivate *priv, uint32_t node_id)
+    TSA_EXCLUDES(priv->mesh_table_lock);
 bool tcp_manager_recv_register(TcpConnection *conn, const TcpRecvMsg *msg);
 void tcp_manager_recv_heartbeat(TcpConnection *conn);
 void tcp_manager_relay_ionic(TcpBackendPrivate *priv, const TcpRecvMsg *msg);
-void tcp_reap_pending_conns(TcpBackendPrivate *priv);
+void tcp_reap_pending_conns(TcpBackendPrivate *priv)
+    TSA_EXCLUDES(priv->conn_table_lock);
 void tcp_manager_accept(TcpBackendPrivate *priv, int sockfd, const char *host,
-                        uint16_t port);
+                        uint16_t port) TSA_EXCLUDES(priv->conn_table_lock);
 void tcp_broadcaster_init(TcpBackendPrivate *priv);
 void tcp_broadcaster_destroy(TcpBackendPrivate *priv);
-void tcp_broadcast_topology(TcpBackendPrivate *priv);
-void tcp_broadcast_node_gids(TcpBackendPrivate *priv, uint32_t node_id);
-void tcp_broadcast_node(TcpBackendPrivate *priv, uint32_t node_id);
-void tcp_broadcast_gid_table_to(TcpBackendPrivate *priv, uint32_t node_id);
-void tcp_broadcast_pass(TcpBackendPrivate *priv);
+void tcp_broadcast_topology(TcpBackendPrivate *priv)
+    TSA_EXCLUDES(priv->broadcast_lock);
+void tcp_broadcast_node_gids(TcpBackendPrivate *priv, uint32_t node_id)
+    TSA_EXCLUDES(priv->broadcast_lock);
+void tcp_broadcast_node(TcpBackendPrivate *priv, uint32_t node_id)
+    TSA_EXCLUDES(priv->broadcast_lock);
+void tcp_broadcast_gid_table_to(TcpBackendPrivate *priv, uint32_t node_id)
+    TSA_EXCLUDES(priv->broadcast_lock);
+void tcp_broadcast_pass(TcpBackendPrivate *priv)
+    TSA_EXCLUDES(priv->broadcast_lock);
 void *tcp_broadcast_thread(void *opaque);
-void tcp_stop_broadcast_thread(TcpBackendPrivate *priv);
-void tcp_health_check_retire(TcpBackendPrivate *priv, GArray *items);
+void tcp_stop_broadcast_thread(TcpBackendPrivate *priv)
+    TSA_EXCLUDES(priv->broadcast_lock);
+void tcp_health_check_retire(TcpBackendPrivate *priv, GArray *items)
+    TSA_EXCLUDES(priv->mesh_table_lock, priv->conn_table_lock);
 void *tcp_manager_health_check_thread(void *opaque);
-void tcp_stop_health_check_thread(TcpBackendPrivate *priv);
+void tcp_stop_health_check_thread(TcpBackendPrivate *priv)
+    TSA_EXCLUDES(priv->health_check_lock);
 
 /*
  * tcp_worker.c: registration with the manager, the peer-connect thread, and
  * the peers that connect to the worker
  */
-TcpConnection *tcp_worker_manager_conn(TcpBackendPrivate *priv);
+TcpConnection *tcp_worker_manager_conn(TcpBackendPrivate *priv)
+    TSA_EXCLUDES(priv->conn_table_lock);
 int tcp_worker_register_with_manager(TcpBackendPrivate *priv,
                                      const atomic_bool *running,
-                                     uint64_t deadline_ms);
+                                     uint64_t deadline_ms)
+    TSA_EXCLUDES(priv->registration_mutex);
 bool tcp_worker_publish_peer(TcpBackendPrivate *priv,
-                             const TcpPeerTarget *target, TcpConnection *conn);
-void tcp_worker_manager_pass(TcpBackendPrivate *priv);
+                             const TcpPeerTarget *target, TcpConnection *conn)
+    TSA_EXCLUDES(priv->peer_lock, priv->conn_table_lock);
+void tcp_worker_manager_pass(TcpBackendPrivate *priv)
+    TSA_EXCLUDES(priv->conn_table_lock, priv->registration_mutex);
 void *tcp_worker_peer_thread(void *opaque);
-void tcp_stop_peer_thread(TcpBackendPrivate *priv);
+void tcp_stop_peer_thread(TcpBackendPrivate *priv)
+    TSA_EXCLUDES(priv->peer_lock, priv->registration_mutex);
 void tcp_worker_recv_register_resp(TcpConnection *conn, const TcpRecvMsg *msg);
 void tcp_worker_recv_topology(const TcpConnection *conn, const TcpRecvMsg *msg);
 void tcp_worker_accept(TcpBackendPrivate *priv, int sockfd, const char *host,

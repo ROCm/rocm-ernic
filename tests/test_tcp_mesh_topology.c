@@ -59,6 +59,7 @@
 #include "qemu/error-report.h"
 #include "qemu/thread.h"
 #include "rdma/rdma_backend_tcp_priv.h"
+#include "rocm-ernic-warnings.h"
 
 /* ---- Stubs for the TU's external symbols -------------------------------
  * Apart from error_report(), which counts calls so a case can check whether
@@ -255,6 +256,8 @@ static int fixture_init(struct fixture *f, uint32_t num_nodes)
     memset(&f->priv, 0, sizeof(f->priv));
     f->priv.is_manager = true;
     atomic_store(&f->priv.local_node_id, 1);
+    /* The fixture runs no threads, and sets up before anything runs */
+    ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     f->priv.mesh_nodes = g_hash_table_new(g_direct_hash, g_direct_equal);
     f->priv.connections = g_hash_table_new(g_direct_hash, g_direct_equal);
     /* No node has claims, so the GID broadcast sends each an empty set */
@@ -262,6 +265,7 @@ static int fixture_init(struct fixture *f, uint32_t num_nodes)
         g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
     f->priv.gid_owner = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
                                               tcp_gid_key_free, NULL);
+    ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     qemu_mutex_init(&f->priv.mesh_table_lock);
     qemu_mutex_init(&f->priv.conn_table_lock);
     qemu_mutex_init(&f->priv.gid_table_lock);
@@ -269,15 +273,16 @@ static int fixture_init(struct fixture *f, uint32_t num_nodes)
 
     memset(&f->conn, 0, sizeof(f->conn));
     f->conn.node_id = 42;
-    f->conn.sockfd = f->sv[0];
     /* The fixture's own reference: a lookup's ref and unref can't free it */
     atomic_init(&f->conn.refcount, 1);
     atomic_store(&f->conn.is_connected, true);
     f->conn.priv = &f->priv;
     qemu_mutex_init(&f->conn.lock);
+    ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
+    f->conn.sockfd = f->sv[0];
     g_hash_table_insert(f->priv.connections, GUINT_TO_POINTER(42u), &f->conn);
-
     fill_mesh(f->priv.mesh_nodes, num_nodes);
+    ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     error_reports = 0;
     return 0;
 }
@@ -291,11 +296,13 @@ static void fixture_fini(struct fixture *f)
     qemu_mutex_destroy(&f->priv.gid_table_lock);
     qemu_mutex_destroy(&f->priv.conn_table_lock);
     qemu_mutex_destroy(&f->priv.mesh_table_lock);
+    ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     g_hash_table_destroy(f->priv.gid_owner);
     g_hash_table_destroy(f->priv.node_gids);
     g_hash_table_destroy(f->priv.connections);
     empty_mesh(f->priv.mesh_nodes);
     g_hash_table_destroy(f->priv.mesh_nodes);
+    ROCM_ERNIC_WARN_THREAD_SAFETY_ON
 }
 
 /*

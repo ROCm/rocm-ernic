@@ -16,8 +16,13 @@
 #include <stdbool.h>
 #include <time.h>
 
-/* QemuMutex - wrapper around pthread_mutex */
-typedef struct QemuMutex {
+#include "qemu/clang-tsa.h" // IWYU pragma: export
+
+/*
+ * QemuMutex - wrapper around pthread_mutex, and a capability for clang's
+ * thread-safety analysis (see qemu/clang-tsa.h)
+ */
+typedef struct TSA_CAPABILITY("mutex") QemuMutex {
     pthread_mutex_t lock;
     bool initialized;
 } QemuMutex;
@@ -48,16 +53,20 @@ static inline void qemu_mutex_destroy(QemuMutex *mutex)
 }
 
 static inline void qemu_mutex_lock(QemuMutex *mutex)
+    TSA_ACQUIRE(mutex) TSA_NO_TSA
 {
     pthread_mutex_lock(&mutex->lock);
 }
 
+/* Returns 0 once it holds mutex, or an errno if another thread holds it */
 static inline int qemu_mutex_trylock(QemuMutex *mutex)
+    TSA_TRY_ACQUIRE(0, mutex) TSA_NO_TSA
 {
     return pthread_mutex_trylock(&mutex->lock);
 }
 
 static inline void qemu_mutex_unlock(QemuMutex *mutex)
+    TSA_RELEASE(mutex) TSA_NO_TSA
 {
     pthread_mutex_unlock(&mutex->lock);
 }
@@ -97,6 +106,7 @@ static inline void qemu_cond_signal(QemuCond *cond)
  * a signal, so callers recheck their condition in a loop.
  */
 static inline void qemu_cond_wait(QemuCond *cond, QemuMutex *mutex)
+    TSA_REQUIRES(mutex)
 {
     pthread_cond_wait(&cond->cond, &mutex->lock);
 }
@@ -108,6 +118,7 @@ static inline void qemu_cond_wait(QemuCond *cond, QemuMutex *mutex)
  */
 static inline bool qemu_cond_timedwait_until(QemuCond *cond, QemuMutex *mutex,
                                              const struct timespec *deadline)
+    TSA_REQUIRES(mutex)
 {
     return pthread_cond_timedwait(&cond->cond, &mutex->lock, deadline) !=
            ETIMEDOUT;

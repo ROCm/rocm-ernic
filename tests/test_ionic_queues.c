@@ -44,6 +44,7 @@
 #include "ionic_eth_steer.h"
 #include "ionic_fault.h"
 #include "ionic_profile.h"
+#include "qemu/thread.h"
 #include "ionic_status.h"
 #include "rocm_ernic_internal.h"
 
@@ -990,6 +991,17 @@ static void tap_frame(struct ionic_eth_emu *emu, const uint8_t *f, size_t len)
     emu->net = NULL;
 }
 
+/* How many frames are waiting in emu's inbox, read under its lock */
+static unsigned inbox_count(struct ionic_eth_emu *emu)
+{
+    unsigned n;
+
+    qemu_mutex_lock(&emu->inbox_lock);
+    n = emu->inbox_count;
+    qemu_mutex_unlock(&emu->inbox_lock);
+    return n;
+}
+
 static void check_delivery(void)
 {
     struct ionic_eth_emu *emu = rx_emu(4, 1);
@@ -1017,7 +1029,7 @@ static void check_delivery(void)
     ionic_eth_emu_queue_rx_frame(emu, f1, l1);
     ionic_eth_emu_poll_rx(emu);
     report(cq_posted(2) && !cq_posted(0) && emu->intr_pending[RXQ_VEC(2)] &&
-               emu->inbox_count == 0,
+               inbox_count(emu) == 0,
            "positive", "an inbox (TCP mesh) frame for queue 2",
            "delivered to queue 2, not queue 0");
     ionic_eth_emu_destroy(emu);
@@ -1187,18 +1199,18 @@ static void check_held_frame_transition(void)
         fault = ionic_fault_set_get(set, IONIC_FAULT_SITE_ETH_RX);
         ionic_eth_emu_queue_rx_frame(emu, frame, len);
         ionic_eth_emu_poll_rx(emu);
-        ok = ok && emu->inbox_count == 1 && g_nwrites == 0;
+        ok = ok && inbox_count(emu) == 1 && g_nwrites == 0;
         for (uint32_t q = 0; q < 4; q++)
             q_control(emu, IONIC_QTYPE_RXQ, q, IONIC_Q_DISABLE);
         if (cases[row].pause_all) {
             ionic_eth_emu_poll_rx(emu);
-            ok = ok && emu->inbox_count == 1 && g_nwrites == 0;
+            ok = ok && inbox_count(emu) == 1 && g_nwrites == 0;
         }
         q_control(emu, IONIC_QTYPE_RXQ, cases[row].target, IONIC_Q_ENABLE);
         emu->eth_q[IONIC_QTYPE_RXQ][cases[row].target].prod = 1;
         ionic_eth_emu_poll_rx(emu);
         ionic_eth_emu_poll_rx(emu);
-        ok = ok && emu->inbox_count == 0 && g_nwrites == 2 &&
+        ok = ok && inbox_count(emu) == 0 && g_nwrites == 2 &&
              memcmp(g_mem + RXQ_BUF(cases[row].target), frame, len) == 0 &&
              ionic_eth_emu_get_stats(emu)->lif[IONIC_LIF_RX_QUEUE_EMPTY] == 0;
         for (uint32_t q = 0; q < 4; q++)
@@ -1207,7 +1219,7 @@ static void check_held_frame_transition(void)
         ionic_eth_emu_queue_rx_frame(emu, frame, len);
         ionic_eth_emu_poll_rx(emu);
         ok = ok && fault && fault->eligible == 2 && fault->fired == 1 &&
-             emu->inbox_count == 0 && g_nwrites == 2;
+             inbox_count(emu) == 0 && g_nwrites == 2;
         report(ok, cases[row].category, cases[row].description,
                cases[row].expected);
         ionic_eth_emu_destroy(emu);
@@ -1248,10 +1260,10 @@ static void check_fault_poll_budget(void)
             ok = ionic_eth_emu_queue_rx_frame(emu, frame, len) == 0 && ok;
         ionic_eth_emu_poll_rx(emu);
         ok = ok && rx && rx->eligible == first && rx->fired == first &&
-             emu->inbox_count == rows[row].frames - first && g_nwrites == 0;
+             inbox_count(emu) == rows[row].frames - first && g_nwrites == 0;
         ionic_eth_emu_poll_rx(emu);
         ok = ok && rx && rx->eligible == rows[row].frames &&
-             rx->fired == rows[row].frames && emu->inbox_count == 0 &&
+             rx->fired == rows[row].frames && inbox_count(emu) == 0 &&
              g_nwrites == 0;
         report(ok, rows[row].category, rows[row].description,
                rows[row].expected);
