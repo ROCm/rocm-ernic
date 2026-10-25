@@ -27,7 +27,6 @@
 
 #define PAGE_SIZE 4096
 
-#define MAX_PORT_GIDS       255
 #define MAX_MR_SIZE         (1UL << 32)
 #define MAX_QP              1024
 #define MAX_SGE             32

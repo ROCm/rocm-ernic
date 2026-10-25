@@ -15,6 +15,8 @@
 #ifndef RDMA_BACKEND_OPS_H
 #define RDMA_BACKEND_OPS_H
 
+#include <stdbool.h>
+#include <stdint.h>
 #include "rdma_backend_defs.h"
 #include "rdma_rm_defs.h"
 
@@ -40,20 +42,17 @@ struct RdmaBackendOps {
     void (*fini)(RdmaBackendDev *backend_dev);
 
     /* Query operations */
-    int (*query_port)(RdmaBackendDev *backend_dev, struct ibv_port_attr *attr);
     int (*query_device)(RdmaBackendDev *backend_dev,
                         struct ibv_device_attr *attr);
 
     /* Protection Domain operations */
     int (*create_pd)(RdmaBackendDev *backend_dev, RdmaBackendPD *pd);
-    void (*destroy_pd)(RdmaBackendPD *pd);
 
     /* Memory Region operations */
     int (*create_mr)(RdmaBackendMR *mr, RdmaBackendPD *pd, void *addr,
                      size_t length, uint64_t guest_start, int access);
     void (*destroy_mr)(RdmaBackendMR *mr);
     uint32_t (*mr_lkey)(const RdmaBackendMR *mr);
-    uint32_t (*mr_rkey)(const RdmaBackendMR *mr);
 
     /* Completion Queue operations */
     int (*create_cq)(RdmaBackendDev *backend_dev, RdmaBackendCQ *cq,
@@ -82,10 +81,6 @@ struct RdmaBackendOps {
                     struct ibv_qp_init_attr *init_attr);
 
     /* GID management */
-    int (*add_gid)(RdmaBackendDev *backend_dev, const char *ifname,
-                   union ibv_gid *gid);
-    int (*del_gid)(RdmaBackendDev *backend_dev, const char *ifname,
-                   int gid_idx);
     int (*get_backend_gid_index)(RdmaBackendDev *backend_dev, int sgid_idx);
 
     /* SRQ operations (optional - can be NULL) */

@@ -4003,10 +4003,6 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
     qemu_cond_init(&priv->registration_cond);
     qemu_mutex_init(&priv->registration_mutex);
 
-    /* Default mesh metadata */
-    backend_dev->mesh_enabled = false;
-    backend_dev->mesh_node_id = 0;
-
     /* Determine mode from config string */
     if (strstr(config, "manager:")) {
         /* Manager mode: tcp:manager:<ip>:<port> or tcp:manager:listen:<port> */
@@ -4064,9 +4060,6 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
         }
         g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(0),
                             manager_node);
-
-        backend_dev->mesh_enabled = true;
-        backend_dev->mesh_node_id = 0;
 
         rdma_info_report("TCP backend: Manager mode on port %u", manager_port);
 
@@ -4283,24 +4276,6 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
  * Query Operations
  */
 
-static int tcp_query_port(RdmaBackendDev *backend_dev,
-                          struct ibv_port_attr *attr)
-{
-    memset(attr, 0, sizeof(*attr));
-    attr->state = IBV_PORT_ACTIVE;
-    attr->max_mtu = IBV_MTU_4096;
-    attr->active_mtu = IBV_MTU_4096;
-    /* Allow multiple GIDs so the driver can expose per-node mesh GIDs */
-    attr->gid_tbl_len = MAX_PORT_GIDS;
-    attr->port_cap_flags = IBV_PORT_CM_SUP;
-    attr->max_msg_sz = 0x80000000;
-    attr->pkey_tbl_len = 1;
-    attr->active_width = 4; /* 4X */
-    attr->active_speed = 4; /* 10 Gbps */
-    attr->phys_state = 5;   /* LinkUp */
-    return 0;
-}
-
 static int tcp_query_device(RdmaBackendDev *backend_dev,
                             struct ibv_device_attr *attr)
 {
@@ -4371,11 +4346,6 @@ static int tcp_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
     return 0;
 }
 
-static void tcp_destroy_pd(RdmaBackendPD *pd)
-{
-    rdma_info_report("TCP: Destroyed PD");
-}
-
 /*
  * Memory Region Operations
  */
@@ -4400,12 +4370,6 @@ static uint32_t tcp_mr_lkey(const RdmaBackendMR *mr)
 {
     (void)mr;
     /* 0 has rdma_rm_alloc_mr() use the resource table handle as the lkey */
-    return 0;
-}
-
-static uint32_t tcp_mr_rkey(const RdmaBackendMR *mr)
-{
-    (void)mr;
     return 0;
 }
 
@@ -4613,11 +4577,12 @@ static int tcp_query_qp(RdmaBackendQP *qp, struct ibv_qp_attr *attr,
 /*
  * Claim @gid for this node, or withdraw it, and re-advertise.
  *
- * This used to overwrite the caller's GID with a synthetic one holding only
- * the local node id, which claimed nothing: tcp_gid_claims_set() was never
- * called and the mesh's only GID source was ERNIC_TCP_GUEST_GIDS, read once
- * at startup.  A guest address that appeared later resolved nowhere, so a
- * peer-addressed datagram could not find its node.
+ * The backend's add-GID op used to overwrite the caller's GID with a
+ * synthetic one holding only the local node id, which claimed nothing:
+ * tcp_gid_claims_set() was never called and the mesh's only GID source was
+ * ERNIC_TCP_GUEST_GIDS, read once at startup.  A guest address that appeared
+ * later resolved nowhere, so a peer-addressed datagram could not find its
+ * node.
  */
 static int tcp_claim_gid(TcpBackendPrivate *priv, const union ibv_gid *gid,
                          bool add)
@@ -4661,37 +4626,6 @@ static int tcp_claim_gid(TcpBackendPrivate *priv, const union ibv_gid *gid,
     if (changed)
         tcp_advertise_local_gids(priv);
 
-    return 0;
-}
-
-static int tcp_add_gid(RdmaBackendDev *backend_dev, const char *ifname,
-                       union ibv_gid *gid)
-{
-    TcpBackendPrivate *priv = get_private(backend_dev);
-
-    if (!priv) {
-        rdma_info_report("TCP: Added GID (no priv)");
-        return 0;
-    }
-
-    return tcp_claim_gid(priv, gid, true);
-}
-
-/*
- * The ops signature gives an index into the device's GID table, not the GID
- * itself, and this backend keeps no index-to-GID map -- the table belongs to
- * the guest kernel.  Withdrawal therefore goes through
- * tcp_backend_claim_gid(), which takes the GID itself.
- *
- * Nothing dispatches to these ops today, here or in any other backend, and
- * tcp_backend_claim_gid() has no caller outside the tests: a guest's
- * addresses reach the mesh through ERNIC_TCP_GUEST_GIDS at startup.  Wiring
- * a guest GID-table update to the claim is what would make these live.
- */
-static int tcp_del_gid(RdmaBackendDev *backend_dev, const char *ifname,
-                       int gid_idx)
-{
-    rdma_info_report("TCP: Deleted GID index %d", gid_idx);
     return 0;
 }
 
@@ -4774,16 +4708,13 @@ const RdmaBackendOps rdma_backend_ops_tcp = {
     .init = tcp_init,
     .fini = tcp_fini,
 
-    .query_port = tcp_query_port,
     .query_device = tcp_query_device,
 
     .create_pd = tcp_create_pd,
-    .destroy_pd = tcp_destroy_pd,
 
     .create_mr = tcp_create_mr,
     .destroy_mr = tcp_destroy_mr,
     .mr_lkey = tcp_mr_lkey,
-    .mr_rkey = tcp_mr_rkey,
 
     .create_cq = tcp_create_cq,
     .destroy_cq = tcp_destroy_cq,
@@ -4797,8 +4728,6 @@ const RdmaBackendOps rdma_backend_ops_tcp = {
     .qp_state_rts = tcp_qp_state_rts,
     .query_qp = tcp_query_qp,
 
-    .add_gid = tcp_add_gid,
-    .del_gid = tcp_del_gid,
     .get_backend_gid_index = tcp_get_backend_gid_index,
 
     .create_srq = tcp_create_srq,

@@ -125,23 +125,6 @@ static void loopback_fini(RdmaBackendDev *backend_dev)
  * Query Operations
  */
 
-static int loopback_query_port(RdmaBackendDev *backend_dev,
-                               struct ibv_port_attr *attr)
-{
-    memset(attr, 0, sizeof(*attr));
-    attr->state = IBV_PORT_ACTIVE;
-    attr->max_mtu = IBV_MTU_4096;
-    attr->active_mtu = IBV_MTU_1024;
-    attr->gid_tbl_len = 1;
-    attr->port_cap_flags = IBV_PORT_CM_SUP;
-    attr->max_msg_sz = 0x80000000;
-    attr->pkey_tbl_len = 1;
-    attr->active_width = 4; /* 4X */
-    attr->active_speed = 4; /* 10 Gbps */
-    attr->phys_state = 5;   /* LinkUp */
-    return 0;
-}
-
 static int loopback_query_device(RdmaBackendDev *backend_dev,
                                  struct ibv_device_attr *attr)
 {
@@ -187,11 +170,6 @@ static int loopback_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
     return 0;
 }
 
-static void loopback_destroy_pd(RdmaBackendPD *pd)
-{
-    rdma_info_report("Loopback: Destroyed PD");
-}
-
 /*
  * Memory Region Operations
  */
@@ -224,12 +202,6 @@ static uint32_t loopback_mr_lkey(const RdmaBackendMR *mr)
     rdma_info_report(">>> loopback_mr_lkey: mr=%p, ibmr=%p, handle=%u",
                      (const void *)mr, (void *)mr->ibmr, handle);
     return handle; /* lkey = handle */
-}
-
-static uint32_t loopback_mr_rkey(const RdmaBackendMR *mr)
-{
-    uint32_t handle = (uint32_t)(uintptr_t)mr->ibmr;
-    return handle + 0x10000; /* rkey = handle + offset */
 }
 
 /*
@@ -573,34 +545,6 @@ static int loopback_modify_srq(RdmaBackendSRQ *srq, struct ibv_srq_attr *attr,
  * GID Management
  */
 
-static int loopback_add_gid(RdmaBackendDev *backend_dev, const char *ifname,
-                            union ibv_gid *gid)
-{
-    /* Always use deterministic GID format for loopback backend.
-     * This ensures consistent GIDs regardless of network interface state. */
-    memset(gid, 0, sizeof(*gid));
-    gid->raw[0] = 0xfe;
-    gid->raw[1] = 0x80;
-    gid->raw[8] = 0x02;
-    gid->raw[11] = 0xff;
-    gid->raw[12] = 0xfe;
-    /* Use mesh node ID if mesh is enabled, otherwise 0 */
-    gid->raw[15] = backend_dev->mesh_enabled ? backend_dev->mesh_node_id : 0;
-
-    rdma_info_report(
-        "Loopback: Set GID to %02x%02x::%02x%02x (mesh=%d node_id=%u)",
-        gid->raw[0], gid->raw[1], gid->raw[14], gid->raw[15],
-        backend_dev->mesh_enabled, backend_dev->mesh_node_id);
-    return 0;
-}
-
-static int loopback_del_gid(RdmaBackendDev *backend_dev, const char *ifname,
-                            int gid_idx)
-{
-    rdma_info_report("Loopback: Deleted GID index %d", gid_idx);
-    return 0;
-}
-
 static int loopback_get_backend_gid_index(RdmaBackendDev *backend_dev,
                                           int sgid_idx)
 {
@@ -617,16 +561,13 @@ const RdmaBackendOps rdma_backend_ops_loopback = {
     .init = loopback_init,
     .fini = loopback_fini,
 
-    .query_port = loopback_query_port,
     .query_device = loopback_query_device,
 
     .create_pd = loopback_create_pd,
-    .destroy_pd = loopback_destroy_pd,
 
     .create_mr = loopback_create_mr,
     .destroy_mr = loopback_destroy_mr,
     .mr_lkey = loopback_mr_lkey,
-    .mr_rkey = loopback_mr_rkey,
 
     .create_cq = loopback_create_cq,
     .destroy_cq = loopback_destroy_cq,
@@ -640,8 +581,6 @@ const RdmaBackendOps rdma_backend_ops_loopback = {
     .qp_state_rts = loopback_qp_state_rts,
     .query_qp = loopback_query_qp,
 
-    .add_gid = loopback_add_gid,
-    .del_gid = loopback_del_gid,
     .get_backend_gid_index = loopback_get_backend_gid_index,
 
     .create_srq = loopback_create_srq,
