@@ -266,8 +266,8 @@ ernic_env() {
     # The mesh routes a destination GID only to the instance that
     # advertised it.  By default the launcher advertises just the
     # link-local GID derived from the MAC, but the RDMA tests address
-    # the peer by its IPv4-mapped GID (perftest -x 1, ibv_rc_pingpong
-    # -g 1, the RDMA-Tutorial examples), so list both:
+    # the peer by its IPv4-mapped GID (perftest, ibv_rc_pingpong, the
+    # RDMA-Tutorial examples), so list both:
     # ERNIC_GUEST_GIDS_<n> replaces the default rather than adding to
     # it.  The MAC is pinned so the link-local can be named here; an
     # ERNIC_MAC_<n> or ERNIC_GUEST_GIDS_<n> already set is kept.

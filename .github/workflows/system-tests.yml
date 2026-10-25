@@ -1911,8 +1911,8 @@ jobs:
         # Each instance declares the guest RoCE addresses it owns, so
         # peers can map a destination GID back to a node id.  Both forms
         # are listed because the two consumers differ: sanity-tests.yml
-        # runs ib_send_bw with -x 1, the IPv4-mapped GID, while a guest
-        # also autoconfigures the link-local derived from --mac below.
+        # runs ib_send_bw with the IPv4-mapped GID, while a guest also
+        # autoconfigures the link-local derived from --mac below.
         # The IPv4 values track ernic_nic_subnet and the .10/.20 scheme
         # in ansible/roles/ernic_guest_setup/defaults/main.yml; change
         # them together.

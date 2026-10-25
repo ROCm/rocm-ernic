@@ -206,6 +206,45 @@
       when: not (tcp_pass | bool)
 
     # ─────────────────────────────────────────────────
+    # GID indices for the RC tests
+    # ─────────────────────────────────────────────────
+    #
+    # ib_send_bw and ibv_rc_pingpong address the peer by its IPv4-mapped
+    # GID, whose index differs between guests (see the script).  With a
+    # fixed index, one guest can pick its link-local GID while the other
+    # picks its IPv4-mapped one, and neither test connects.  Not finding
+    # the GID fails the play here, with the guest's GID table, rather
+    # than as a QP that won't connect.
+    - name: "RDMA tests: find the IPv4-mapped GID index on VM1"
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: >-
+          {{ vm1_ssh }} 'sh -s -- {{ rdma_dev }} {{ vm1_ip }}'
+          < {{ ernic_project_root }}/scripts/find-ipv4-gid-index.sh
+      register: vm1_gid_lookup
+      changed_when: false
+
+    - name: "RDMA tests: find the IPv4-mapped GID index on VM2"
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: >-
+          {{ vm2_ssh }} 'sh -s -- {{ rdma_dev }} {{ vm2_ip }}'
+          < {{ ernic_project_root }}/scripts/find-ipv4-gid-index.sh
+      register: vm2_gid_lookup
+      changed_when: false
+
+    - name: "RDMA tests: set the GID indices"
+      ansible.builtin.set_fact:
+        vm1_gid_index: "{{ vm1_gid_lookup.stdout | trim }}"
+        vm2_gid_index: "{{ vm2_gid_lookup.stdout | trim }}"
+
+    - name: "RDMA tests: display the GID indices"
+      ansible.builtin.debug:
+        msg: >-
+          IPv4-mapped GID index: VM1 {{ vm1_gid_index }},
+          VM2 {{ vm2_gid_index }}
+
+    # ─────────────────────────────────────────────────
     # RDMA bandwidth test (ib_send_bw)
     # ─────────────────────────────────────────────────
     - name: "RDMA BW test: start ib_send_bw server on VM1"
@@ -215,8 +254,8 @@
           'sudo systemctl stop ib-send-bw-server 2>/dev/null;
           sudo systemctl reset-failed ib-send-bw-server 2>/dev/null;
           sudo systemd-run --unit=ib-send-bw-server
-          bash -c "ib_send_bw -d {{ rdma_dev }} -x 1 -n 10
-          --report_gbits
+          bash -c "ib_send_bw -d {{ rdma_dev }} -x {{ vm1_gid_index }}
+          -n 10 --report_gbits
           >/tmp/ib_send_bw_server.log 2>&1";
           sleep 1'
       changed_when: true
@@ -229,7 +268,7 @@
       ansible.builtin.shell:
         cmd: >-
           {{ vm2_ssh }} 'timeout 30 ib_send_bw
-          -d {{ rdma_dev }} -x 1 -n 10 --report_gbits
+          -d {{ rdma_dev }} -x {{ vm2_gid_index }} -n 10 --report_gbits
           {{ vm1_ip }} 2>&1'
       register: ib_send_bw_result
       changed_when: false
@@ -276,8 +315,8 @@
           'sudo systemctl stop ibv-rc-pingpong-server 2>/dev/null;
           sudo systemctl reset-failed ibv-rc-pingpong-server 2>/dev/null;
           sudo systemd-run --unit=ibv-rc-pingpong-server
-          bash -c "ibv_rc_pingpong -d {{ rdma_dev }} -g 1 -n 100
-          >/tmp/ibv_rc_pingpong_server.log 2>&1";
+          bash -c "ibv_rc_pingpong -d {{ rdma_dev }} -g {{ vm1_gid_index }}
+          -n 100 >/tmp/ibv_rc_pingpong_server.log 2>&1";
           sleep 1'
       changed_when: true
 
@@ -289,7 +328,7 @@
       ansible.builtin.shell:
         cmd: >-
           {{ vm2_ssh }} 'timeout 30 ibv_rc_pingpong
-          -d {{ rdma_dev }} -g 1 -n 100
+          -d {{ rdma_dev }} -g {{ vm2_gid_index }} -n 100
           {{ vm1_ip }} 2>&1'
       register: ibv_rc_pingpong_result
       changed_when: false

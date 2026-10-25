@@ -841,6 +841,14 @@
     `unattended-upgrades` removed. In the old one it could start as a lane
     began provisioning and hold the dpkg lock past the role's 300-second
     wait, failing the lane.
+  * The two-VM sanity and performance plays, and the self-hosted
+    `vm-functional` job, look up each guest's IPv4-mapped GID index with the
+    new `scripts/find-ipv4-gid-index.sh` instead of passing index 1 to
+    perftest and `ibv_rc_pingpong`. The index differs between guests: one
+    had its link-local GID at 1, so the two ends used different address
+    families and the QP never reached RTR. A guest without the GID now fails
+    the play with its GID table. The examples in `docs/testing.rst` look the
+    index up too.
 
 ### Limitations
 

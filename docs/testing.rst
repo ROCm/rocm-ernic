@@ -47,6 +47,13 @@ A shell test registered with CTest. It uses a synthetic sysfs tree to verify
 RDMA discovery requires the emulated vendor/device/subsystem tuple and rejects
 near matches.
 
+find-ipv4-gid-index
+^^^^^^^^^^^^^^^^^^^
+
+A shell test registered with CTest. It uses synthetic sysfs GID tables to
+verify ``scripts/find-ipv4-gid-index.sh`` finds an address's IPv4-mapped
+GID at any index and rejects malformed arguments.
+
 test_rdma_cm
 ^^^^^^^^^^^^
 
@@ -320,9 +327,9 @@ valgrind would only check the script for:
 
 .. code-block:: bash
 
-   skip='pci-config-test|find-rdma-device-tuple|server-lifecycle'
-   skip+='|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci'
-   skip+='|ionic-stats-interval-cli|ionic-eth-queues-cli'
+   skip='pci-config-test|find-rdma-device-tuple|find-ipv4-gid-index'
+   skip+='|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci'
+   skip+='|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli'
    skip+='|cmake-subproject|ernic-package-deb'
    opts='--leak-check=full --track-origins=yes --num-callers=40'
    opts+=' --error-exitcode=1'
@@ -390,6 +397,18 @@ Prerequisites:
    (see ``ernicctl driver-push``).
 4. Configure IP addresses on the rocm-ernic NICs
    (``enp1s0``) in both VMs.
+5. In each VM, find the index of the IPv4-mapped GID
+   (``::ffff:a.b.c.d``) for its address, which the examples
+   below pass as ``$GID``. It is often 1, but it isn't
+   fixed, and the two VMs can differ.
+   ``scripts/find-ipv4-gid-index.sh`` looks it up; run it in
+   each guest with the device and that guest's own address,
+   for example from the host:
+
+   .. code-block:: bash
+
+      GID=$(ssh vm1 'sh -s -- rocep1s0 192.168.100.10' \
+        < scripts/find-ipv4-gid-index.sh)
 
 ibv_rc_pingpong
 ^^^^^^^^^^^^^^^
@@ -400,11 +419,11 @@ Latency test using RC (Reliable Connection) QPs:
 
    # VM 1 (server):
    LD_LIBRARY_PATH=/opt/rdma-core-ernic/lib \
-     ibv_rc_pingpong -d rocep1s0 -g 1 -n 100
+     ibv_rc_pingpong -d rocep1s0 -g "$GID" -n 100
 
    # VM 2 (client, use multicast NIC for OOB):
    LD_LIBRARY_PATH=/opt/rdma-core-ernic/lib \
-     ibv_rc_pingpong -d rocep1s0 -g 1 -n 100 \
+     ibv_rc_pingpong -d rocep1s0 -g "$GID" -n 100 \
      192.168.100.10
 
 Expected output (TCP mesh backend):
@@ -423,12 +442,12 @@ Bandwidth test using the perftest suite:
 
    # VM 1 (server):
    LD_LIBRARY_PATH=/opt/rdma-core-ernic/lib \
-     ib_send_bw -d rocep1s0 -x 1 -n 10 \
+     ib_send_bw -d rocep1s0 -x "$GID" -n 10 \
      --report_gbits
 
    # VM 2 (client):
    LD_LIBRARY_PATH=/opt/rdma-core-ernic/lib \
-     ib_send_bw -d rocep1s0 -x 1 -n 10 \
+     ib_send_bw -d rocep1s0 -x "$GID" -n 10 \
      --report_gbits 192.168.100.10
 
 Expected output:
@@ -625,7 +644,7 @@ last run's connection is still in ``TIME_WAIT``. The
 controller clones the tutorial and applies the patches, and
 copies the result into the guests, which build it, so they
 need neither network access nor git.
-Like perftest's ``-x 1``, the IPv4-mapped GID reaches a peer
+As with perftest, the IPv4-mapped GID reaches a peer
 only if its instance advertises the guest's IPv4 address
 (``ERNIC_GUEST_GIDS_<n>``, or ``ernic_guest_gids`` in the
 host-setup role), as both CI lanes do.

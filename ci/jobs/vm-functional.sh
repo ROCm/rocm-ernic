@@ -135,21 +135,41 @@ guest_rdma_ip() {
          | awk '{print \$3}' | cut -d/ -f1" | tr -d '\r'
 }
 
+# $1 guest, $2 RDMA device, $3 its IPv4 address.  The index of the
+# IPv4-mapped GID differs between guests; see
+# scripts/find-ipv4-gid-index.sh, which lists the GID table on stderr
+# when the GID is missing.
+guest_gid_index() {
+    vm_ssh "$1" "sh -s -- $2 $3" \
+        < "${PROJECT_ROOT}/scripts/find-ipv4-gid-index.sh" \
+        | tr -d '\r'
+}
+
 # End-to-end RC data transfer between the two guests.
 # This is the check that actually proves the emulated
 # NIC carries RDMA traffic.
 probe_pingpong() {
-    local dev1 dev2 ip1
+    local dev1 dev2 ip1 ip2 gid1 gid2
     # `|| true` because the lookup now exits non-zero when there is no
     # device, and errexit would take that before the empty-check below
-    # could name which of the three came back blank.
+    # could name which of the four came back blank.
     dev1="$(guest_rdma_dev 1)" || true
     dev2="$(guest_rdma_dev 2)" || true
     ip1="$(guest_rdma_ip 1)" || true
+    ip2="$(guest_rdma_ip 2)" || true
 
-    if [ -z "${dev1}" ] || [ -z "${dev2}" ] || [ -z "${ip1}" ]; then
+    if [ -z "${dev1}" ] || [ -z "${dev2}" ] || [ -z "${ip1}" ] ||
+        [ -z "${ip2}" ]; then
         log_error "could not discover RDMA device/address" \
-                  "(dev1=${dev1} dev2=${dev2} ip1=${ip1})"
+                  "(dev1=${dev1} dev2=${dev2} ip1=${ip1} ip2=${ip2})"
+        return 1
+    fi
+
+    gid1="$(guest_gid_index 1 "${dev1}" "${ip1}")" || true
+    gid2="$(guest_gid_index 2 "${dev2}" "${ip2}")" || true
+    if [ -z "${gid1}" ] || [ -z "${gid2}" ]; then
+        log_error "could not find the IPv4-mapped GID index" \
+                  "(gid1=${gid1} gid2=${gid2})"
         return 1
     fi
 
@@ -162,11 +182,11 @@ probe_pingpong() {
         systemd-run --user --collect --unit=ci-pingpong \
             -p StandardOutput=file:/tmp/ci-pingpong.log \
             -p StandardError=append:/tmp/ci-pingpong.log \
-            ibv_rc_pingpong -d ${dev1} -g 1 -n 50" >/dev/null
+            ibv_rc_pingpong -d ${dev1} -g ${gid1} -n 50" >/dev/null
     sleep 3
 
     local out
-    out="$(vm_ssh 2 "ibv_rc_pingpong -d ${dev2} -g 1 -n 50 ${ip1}" 2>&1)"
+    out="$(vm_ssh 2 "ibv_rc_pingpong -d ${dev2} -g ${gid2} -n 50 ${ip1}" 2>&1)"
     echo "${out}"
     # Both the byte count and the iteration line must be
     # present; a connected-but-idle QP prints neither.
