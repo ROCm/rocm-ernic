@@ -612,6 +612,19 @@
   connection now stops owning its GIDs (when the health check declares it
   dead, and when any worker registers), and owns them again if it answers;
   two live claimants still contest a GID.
+* **TCP mesh: more than 64 registrations.** A manager never dropped a node
+  from its node table, and a restarted worker registers as a new node, so
+  once a mesh had had more than 64 registrations in total, its topology and
+  GID broadcasts, which carry 64 nodes, left the rest out, live ones as
+  likely as dead: their peer connections were torn down and their GIDs
+  stopped resolving. Now a node registering for the first time in a full
+  table takes the place of the node that has been dead longest, of those
+  whose connection is gone; the workers are told that node owns nothing (a
+  worker that wasn't connected to the manager then drops the node's GIDs
+  when the manager's next topology update leaves it out), and its id isn't
+  given out again. A worker evicted while it was only paused or cut off is
+  refused when it comes back, logging the refusal on each retry, and has to
+  be restarted to rejoin.
 * **TCP mesh: a worker whose manager's host name ends in `manager`.** Any
   `--backend tcp:` config containing `manager:` was taken for a manager's,
   so `--backend tcp:worker:mesh-manager:5000` failed to start, saying a
@@ -758,10 +771,10 @@
   DNS server can make SIGTERM wait for the resolver to give up, which its
   configured timeouts and retries bound. A hostname that resolves from
   `/etc/hosts`, or a numeric address, doesn't wait.
-* A TCP mesh manager never drops a node from its node table, and a restarted
-  worker registers as a new node, so a mesh that has had more than 64
-  registrations in total, restarts included, holds more nodes than its
-  topology and GID broadcasts carry (64). The nodes past 64, live ones
-  included, drop out of the mesh: their peer connections are torn down and
-  their GIDs no longer resolve. The manager now logs an error, with the
-  number of nodes left out, on every broadcast that drops any.
+* A TCP mesh manager still takes a 65th node when none of its 64 can be
+  evicted to make room (see Fixed): when they are all alive, or the dead
+  ones are still connected. Its topology and GID broadcasts carry 64 nodes,
+  so the rest, live ones included, drop out of the mesh: their peer
+  connections are torn down and their GIDs no longer resolve. The manager
+  logs an error, with the number of nodes left out, on every broadcast that
+  drops any.

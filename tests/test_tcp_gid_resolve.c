@@ -522,11 +522,11 @@ static void test_empty_advertisement_withdraws(void)
  * them, and takes them up again when it answers.
  *
  * This is what makes a restart survivable. A restarted node registers
- * under a new id -- ids are allocated monotonically and a dead node is
- * never evicted -- so without this its guest's GID is claimed by the id
- * it had and the id it now has, the duplicate rule resolves it to
- * neither, and the address stays unreachable for the rest of the mesh's
- * life.
+ * under a new id -- ids are allocated monotonically and a dead node stays
+ * until a full mesh needs its slot -- so without this its guest's GID is
+ * claimed by the id it had and the id it now has, the duplicate rule
+ * resolves it to neither, and the address stays unreachable for the rest
+ * of the mesh's life, or until a full mesh evicts the old id.
  */
 static void test_dead_node_stops_owning_its_gids(void)
 {

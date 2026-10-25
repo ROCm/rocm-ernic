@@ -449,11 +449,12 @@ def test_traffic_after_churn(suite, mesh_):
     """Every node still talks, the one that restarted included.
 
     A restarted node registers under a new id -- the manager allocates
-    ids monotonically and never evicts a dead one -- so for a moment its
-    guest GID is claimed by both the id it had and the id it now has, and
-    the duplicate-claim rule resolves it to neither. The manager's health
-    check then notices the old id is gone and withdraws its claims, which
-    leaves the new id the sole claimant and the address reachable again.
+    ids monotonically and keeps a dead one until a full mesh needs its
+    slot -- so for a moment its guest GID is claimed by both the id it
+    had and the id it now has, and the duplicate-claim rule resolves it
+    to neither. The manager's health check then notices the old id is
+    gone and withdraws its claims, which leaves the new id the sole
+    claimant and the address reachable again.
 
     Convergence is what is asserted: the mesh gets a bounded time to get
     there, and traffic has to flow to the restarted node afterwards. The

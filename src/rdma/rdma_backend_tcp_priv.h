@@ -407,11 +407,13 @@ typedef enum {
 
 /*
  * Mesh node information (for manager).  A node stays in mesh_nodes from
- * registration until teardown, so a thread that found it under
- * mesh_table_lock can keep using the pointer after dropping the lock.
- * node_id, hostname and port are set before the node is published and never
- * change; is_alive and last_heartbeat_ms are protected by mesh_table_lock.
- * The node's connection is its entry in connections.
+ * registration until teardown, or until a registration evicts it, dead, to
+ * make room (tcp_evict_dead_node()), which frees it.  So a thread that found
+ * it under mesh_table_lock must not keep the pointer after dropping the
+ * lock; it keeps node_id, and looks the node up again.  node_id, hostname
+ * and port are set before the node is published and never change; is_alive
+ * and last_heartbeat_ms are protected by mesh_table_lock.  The node's
+ * connection is its entry in connections.
  */
 typedef struct {
     uint32_t node_id;
@@ -668,13 +670,14 @@ typedef struct {
 
 /*
  * One node's part in a health-check pass.  Decided under mesh_table_lock by
- * tcp_health_check_scan() and carried out without it, which is safe because
- * node outlives the pass (see MeshNodeInfo), and conn, the node's connection
- * when the pass began, holds a reference that tcp_health_check_release()
- * drops at the end of the pass.
+ * tcp_health_check_scan() and carried out without it.  That is why it names
+ * the node by id: the node can be evicted, and freed, before the pass is
+ * done with it (see MeshNodeInfo).  conn, the node's connection when the
+ * pass began, holds a reference that tcp_health_check_release() drops at the
+ * end of the pass.
  */
 typedef struct {
-    MeshNodeInfo *node;
+    uint32_t node_id;
     TcpConnection *conn;
     bool disconnected; /* conn's receive thread has exited: retire conn */
     bool silent;       /* the node stopped answering: retire conn */
