@@ -3669,9 +3669,7 @@ void *tcp_accept_thread(void *opaque)
             if (!tcp_start_recv_thread(conn, thread_name)) {
                 qemu_mutex_unlock(&priv->conn_table_lock);
                 tcp_connection_unref(conn);
-                free(payload);
-                payload = NULL;
-                continue;
+                        free(payload);
             }
 
             /*
@@ -3705,9 +3703,7 @@ void *tcp_accept_thread(void *opaque)
         }
 
     next_connection:
-        continue;
-    }
-
+                    free(payload);
     rdma_info_report("TCP: Accept thread exiting");
     return NULL;
 }
