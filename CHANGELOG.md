@@ -713,7 +713,10 @@
   multipart uploads in flight) said `503 Unknown` in its status line, and
   now says `503 Service Unavailable`. A bucket name of 64 characters or more
   was cut to 63, so one that began with the configured bucket's name was
-  served as that bucket; it is now a `404` `NoSuchBucket`.
+  served as that bucket; it is now a `404` `NoSuchBucket`. A `HEAD` of a
+  bucket that doesn't exist, or with a key too long, answered with an XML
+  error body, which a client reusing the connection read as the start of
+  the next response; no `HEAD` response has a body now.
 * **Server startup and shutdown.**
   * `--socket-group` changed the socket's mode through its path, so a
     symlink swapped in could make a root server give another file mode

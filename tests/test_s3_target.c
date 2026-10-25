@@ -2214,6 +2214,12 @@ static void test_bucket_too_long(void)
                  r.resp.status);
         reply_free(&r);
     }
+    if (exec_req(t, &r, NULL, NULL, "HEAD", target, NULL, NULL, NULL, 0)) {
+        if (r.resp.status != 404 || r.resp.body_len != 0)
+            fail(name, "HEAD of a longer bucket: status %d, %zu body bytes",
+                 r.resp.status, r.resp.body_len);
+        reply_free(&r);
+    }
     if (s3_target_object_count(t) != 0)
         fail(name, "a PUT into a longer bucket was stored");
 
@@ -2232,36 +2238,70 @@ static void test_bucket_too_long(void)
     ok(name);
 }
 
-/* A HEAD of a missing key is a 404, as for a GET, but with no body: a
- * HEAD response never has one, not even an error document. */
-static void test_head_missing(void)
+/*
+ * A HEAD that fails answers with the status a GET would, but with no
+ * body: a HEAD response never has one, not even an error document.  A
+ * client reads none, so on a kept-alive connection the bytes of one
+ * would be taken for the next response.  The paths that refuse a request
+ * before it reaches the object handlers are the ones most easily missed.
+ */
+static void test_head_errors(void)
 {
-    const char *name = "head-missing";
+    const char *name = "head-errors";
     struct s3_target *t = make_target(NULL);
+    char long_key[S3_KEY_MAX + 16];
+    char long_bucket[S3_BUCKET_MAX + 16];
     struct reply r;
 
     if (t == NULL)
         return;
 
-    if (!exec_req(t, &r, NULL, NULL, "HEAD", "/ernic/absent", NULL, NULL, NULL,
-                  0)) {
-        fail(name, "HEAD could not be built");
-        goto out;
+    memcpy(long_key, "/ernic/", 7);
+    memset(long_key + 7, 'k', S3_KEY_MAX);
+    long_key[7 + S3_KEY_MAX] = '\0';
+    long_bucket[0] = '/';
+    memset(long_bucket + 1, 'b', S3_BUCKET_MAX);
+    long_bucket[1 + S3_BUCKET_MAX] = '\0';
+
+    const struct {
+        const char *what;
+        const char *target;
+        int status;
+    } cases[] = {
+        {"missing key", "/ernic/absent", 404},
+        {"missing bucket", "/nosuch/key", 404},
+        {"over-long bucket", long_bucket, 404},
+        {"over-long key", long_key, 400},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        if (!exec_req(t, &r, NULL, NULL, "HEAD", cases[i].target, NULL, NULL,
+                      NULL, 0)) {
+            fail(name, "%s: HEAD could not be built", cases[i].what);
+            continue;
+        }
+        if (r.resp.status != cases[i].status)
+            fail(name, "%s: status %d, want %d", cases[i].what, r.resp.status,
+                 cases[i].status);
+        else if (r.resp.body_len != 0)
+            fail(name, "%s: a HEAD carried a %zu byte body", cases[i].what,
+                 r.resp.body_len);
+        reply_free(&r);
     }
-    if (r.resp.status != 404)
-        fail(name, "status %d, want 404", r.resp.status);
-    else if (r.resp.body_len != 0)
-        fail(name, "a HEAD carried a %zu byte body", r.resp.body_len);
-    else if (hdr(&r, "ETag") != NULL || hdr(&r, "x-amz-content-length") != NULL)
-        fail(name, "a missing key was given object metadata");
-    else if (s3_target_statistics(t)->errors != 1)
-        fail(name, "errors counter %" PRIu64 ", want 1",
+
+    /* Nor is a missing key given an object's metadata. */
+    if (exec_req(t, &r, NULL, NULL, "HEAD", "/ernic/absent", NULL, NULL, NULL,
+                 0)) {
+        if (hdr(&r, "ETag") != NULL || hdr(&r, "x-amz-content-length") != NULL)
+            fail(name, "a missing key was given object metadata");
+        reply_free(&r);
+    }
+    if (s3_target_statistics(t)->errors != 5)
+        fail(name, "errors counter %" PRIu64 ", want 5",
              s3_target_statistics(t)->errors);
-    else
-        ok(name);
-    reply_free(&r);
-out:
+
     s3_target_destroy(t);
+    ok(name);
 }
 
 /* A key must fit the store's key buffer with its NUL: the longest one
@@ -2463,6 +2503,8 @@ static void test_request_alloc_failures(void)
 
     for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
         unsigned nth;
+        /* Fail allocation 0, then 1, and so on, until a run fails none:
+         * that run is the request with every allocation it makes met. */
         for (nth = 0; nth < 64; nth++) {
             struct s3_target *t = make_target(NULL);
             char id[64] = "";
@@ -2471,12 +2513,15 @@ static void test_request_alloc_failures(void)
 
             if (t == NULL)
                 goto out;
+            /* Set up with nothing armed: only the request under test may
+             * have an allocation fail. */
             if (exec_req(t, &r, NULL, NULL, "PUT", "/ernic/seed", NULL, NULL,
                          seed, sizeof(seed)))
                 reply_free(&r);
             snprintf(target, sizeof(target), "%s",
                      cases[c].target ? cases[c].target : "");
             if (cases[c].kind == INJECT_COMPLETES) {
+                /* An upload of one 5-byte part, for the complete. */
                 if (!initiate(t, "mp", id, sizeof(id), name)) {
                     s3_target_destroy(t);
                     goto out;
@@ -2489,6 +2534,8 @@ static void test_request_alloc_failures(void)
                 snprintf(target, sizeof(target), "/ernic/mp?uploadId=%s", id);
             }
 
+            /* exec_req() arms the failure around s3_target_exec() alone, so
+             * its own allocation of the reply text is never the one. */
             inject = true;
             inject_nth = nth;
             bool built = exec_req(
@@ -2502,6 +2549,8 @@ static void test_request_alloc_failures(void)
                 goto out;
             }
 
+            /* Read what the checks need, then free the reply: a check
+             * below may issue another request with r. */
             int status = r.resp.status;
             bool oom = r.resp.oom;
             bool fired = inject_fired;
@@ -2509,6 +2558,7 @@ static void test_request_alloc_failures(void)
 
             switch (cases[c].kind) {
             case INJECT_STORES: {
+                /* The seed object, and the PUT's if it was stored. */
                 bool stored = s3_target_object_count(t) == 2;
                 if (status == 200 && (!stored || (fired && !oom)))
                     fail(name, "%s, allocation %u: 200 with stored %d, oom %d",
@@ -2520,11 +2570,13 @@ static void test_request_alloc_failures(void)
                 break;
             }
             case INJECT_COMPLETES: {
+                /* The seed object, and the assembled one if completed. */
                 bool stored = s3_target_object_count(t) == 2;
                 if (status == 200 && (!stored || (fired && !oom)))
                     fail(name, "%s, allocation %u: 200 with stored %d, oom %d",
                          cases[c].what, nth, stored, oom);
                 if (status != 200) {
+                    /* The seed's 3000 bytes and the part's 5, still held. */
                     if (status != 500 || stored ||
                         s3_target_bytes_used(t) != 3005)
                         fail(name, "%s, allocation %u: status %d, stored %d",
@@ -2611,7 +2663,7 @@ int main(void)
     test_upload_table_full();
     test_complete_no_slot();
     test_bucket_too_long();
-    test_head_missing();
+    test_head_errors();
     test_key_too_long();
     test_method_not_allowed();
     test_routing();

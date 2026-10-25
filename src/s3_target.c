@@ -916,8 +916,7 @@ static void handle_head(struct s3_target *t, const char *key,
     if (o == NULL) {
         s3_error(t, resp, 404, "NoSuchKey", "The specified key does not exist.",
                  key);
-        resp->body_len = 0; /* a HEAD carries no body, not even an error one */
-        return;
+        return; /* s3_target_exec() drops the body, as for every HEAD */
     }
     char when[32];
     iso8601(o->mtime, when, sizeof(when));
@@ -1300,18 +1299,13 @@ static void handle_complete(struct s3_target *t, const char *key,
                             (int)strlen(o->etag) - 2, o->etag + 1);
 }
 
-void s3_target_exec(struct s3_target *t, const struct s3_http_request *req,
-                    const struct s3_dma_ops *dma, void *dma_ctx,
-                    struct s3_http_response *resp)
+/* Route @req to its handler, which fills in @resp. */
+static void route(struct s3_target *t, const struct s3_http_request *req,
+                  const struct s3_dma_ops *dma, void *dma_ctx,
+                  struct s3_http_response *resp)
 {
     char bucket[S3_BUCKET_MAX];
     const char *key;
-
-    s3_http_response_init(resp, 200);
-    resp->keep_alive = req->keep_alive;
-    s3_http_response_header(resp, "Server", "rocm-ernic/s3");
-    s3_http_response_header(resp, "x-amz-request-id", "%016" PRIx64,
-                            (uint64_t)++t->stats.requests);
 
     /* No bucket has a name too long for the buffer: bucket_name_ok()
      * refuses one at configuration. */
@@ -1333,9 +1327,6 @@ void s3_target_exec(struct s3_target *t, const struct s3_http_request *req,
     if (bucket[0] == '\0') {
         if (is_get || is_head) {
             handle_list_buckets(t, resp);
-            if (is_head) {
-                resp->body_len = 0;
-            }
         } else {
             s3_error(t, resp, 405, "MethodNotAllowed",
                      "That method is not allowed on the service endpoint.",
@@ -1384,5 +1375,27 @@ void s3_target_exec(struct s3_target *t, const struct s3_http_request *req,
     } else {
         s3_error(t, resp, 405, "MethodNotAllowed",
                  "That method is not allowed on an object.", key);
+    }
+}
+
+void s3_target_exec(struct s3_target *t, const struct s3_http_request *req,
+                    const struct s3_dma_ops *dma, void *dma_ctx,
+                    struct s3_http_response *resp)
+{
+    s3_http_response_init(resp, 200);
+    resp->keep_alive = req->keep_alive;
+    s3_http_response_header(resp, "Server", "rocm-ernic/s3");
+    s3_http_response_header(resp, "x-amz-request-id", "%016" PRIx64,
+                            (uint64_t)++t->stats.requests);
+
+    route(t, req, dma, dma_ctx, resp);
+
+    /*
+     * A HEAD response has no body, not even an error document, whatever
+     * path answered it.  The client reads none, so on a kept-alive
+     * connection a body's bytes would be taken for the next response.
+     */
+    if (strcmp(req->method, "HEAD") == 0) {
+        resp->body_len = 0;
     }
 }
