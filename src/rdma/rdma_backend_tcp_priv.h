@@ -440,7 +440,6 @@ struct TcpBackendPrivate {
      * rests on the order tcp_init() starts threads in.
      */
     _Atomic uint32_t local_node_id;
-    TcpMode mode; /* Operation mode */
 
     /*
      * Multi-connection support: node_id -> TcpConnection*, each entry
@@ -513,7 +512,6 @@ struct TcpBackendPrivate {
     /* Listen socket (for accepting connections) */
     int listen_fd;
     uint16_t listen_port;
-    bool is_listening;
     QemuThread accept_thread;
     atomic_bool accept_thread_running;
 

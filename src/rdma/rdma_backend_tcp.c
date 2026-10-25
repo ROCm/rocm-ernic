@@ -4718,7 +4718,6 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
     atomic_init(&priv->tcp_stats.manager_reconnects, 0);
 
     priv->listen_fd = -1;
-    priv->is_listening = false;
     atomic_init(&priv->accept_thread_running, false);
     atomic_init(&priv->stopping, false);
     /* tcp_env_int() only returns positive values */
@@ -4770,7 +4769,6 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
         uint16_t manager_port = 0;
         bool listen_mode = false;
 
-        priv->mode = TCP_MODE_MANAGER;
         priv->is_manager = true;
         atomic_store(&priv->local_node_id, 0); /* Manager is always node 0 */
 
@@ -4830,7 +4828,6 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
             g_free(manager_host);
             goto error;
         }
-        priv->is_listening = true;
 
         /* Start the accept and health check threads */
         if (!tcp_start_thread(&priv->accept_thread, "tcp-accept",
@@ -4851,7 +4848,6 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
         char *manager_host = NULL;
         uint16_t manager_port = 0;
 
-        priv->mode = TCP_MODE_WORKER;
         priv->is_manager = false;
 
         ret = parse_tcp_config_worker(args, &manager_host, &manager_port);
@@ -4873,7 +4869,6 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
              * freed in error path */
             goto error;
         }
-        priv->is_listening = true;
 
         /*
          * Register with manager.  This connect, unlike the peer-connect
