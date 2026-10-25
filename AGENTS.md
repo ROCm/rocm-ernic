@@ -641,7 +641,12 @@ been dead longest and has no live connection (`tcp_evict_dead_node()`),
 drops its claims, and advertises it as owning nothing. An evicted id is
 never given out again. **Never keep a `MeshNodeInfo *` after dropping
 `mesh_table_lock`**: eviction frees it. Keep the node id and look it up
-again, as `TcpHealthCheckItem` does.
+again, as `TcpHealthCheckItem` does. A receive thread can outlive its
+connection's place in the table, so the manager records a worker's
+advertisement only while its node is in `mesh_nodes`, checked under that
+lock (`tcp_gid_claims_set_if_member()`); otherwise a late one would put
+an evicted node's claims back. Nothing is evicted once teardown has
+begun (`priv->stopping`), as with `tcp_register_again()`.
 
 Don't make the index read `is_alive` from `mesh_nodes`: that takes
 `mesh_table_lock` under `gid_table_lock`, the reverse of the lock order.

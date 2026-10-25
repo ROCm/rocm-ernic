@@ -5380,10 +5380,12 @@ static int run_ra_case(const struct ra_case *c)
  * most TCP_MAX_MESH_NODES nodes, so once more nodes than that had registered,
  * restarts included, the ones past the cap, live ones as likely as dead,
  * dropped out of the mesh.  Now a node registering for the first time in a
- * full table evicts the node that has been dead longest, of those that can't
- * be heard from again: with no connection, or one that has ended.  Its id
- * isn't given out again, its claims go, and the workers are told it owns
- * nothing.
+ * full table evicts the node that has been dead longest, of those with no
+ * connection in the table, or one that has ended.  Its id isn't given out
+ * again, its claims go, and the workers are told it owns nothing.  A
+ * connection leaves the table before its receive thread is joined, so the
+ * thread can still be handling the node's messages once it is evicted; an
+ * advertisement handled then must not put the claims back.
  *
  * The health check kept a pointer to each node it was acting on after
  * dropping the lock, which was safe only while nodes were never freed.  It
@@ -5400,17 +5402,38 @@ static int run_ra_case(const struct ra_case *c)
  * ev_gid.  Then a new worker registers.
  */
 
+/*
+ * Advertise on fd that node id owns *gid: to a worker, as the manager does,
+ * or to the manager, as node id does for itself
+ */
+static bool send_gids(int fd, uint32_t id, const uint8_t (*gid)[16])
+{
+    struct {
+        TcpMsgHeader hdr;
+        TcpNodeGidsPayload gids;
+    } msg;
+
+    memset(&msg, 0, sizeof(msg));
+    msg.hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
+    msg.hdr.msg_type = htonl(TCP_MSG_NODE_GIDS);
+    msg.hdr.msg_len = htonl((uint32_t)sizeof(msg.gids));
+    tcp_fill_node_gids(&msg.gids, id, gid, 1);
+    return send(fd, &msg, sizeof(msg), MSG_NOSIGNAL) == (ssize_t)sizeof(msg);
+}
+
 #define EV_OLDEST 7
 #define EV_NEXT   8
 
 enum ev_scenario {
-    EV_DEAD,      /* the table is full of dead nodes with no connection */
-    EV_ENDED,     /* EV_OLDEST's connection has ended, but is in the table */
-    EV_LIVE_CONN, /* EV_OLDEST is dead, but its connection is still up */
-    EV_ROOM,      /* the table has room for one more */
-    EV_AGAIN,     /* worker 1, dead longest, registers again under its id */
-    EV_NONE,      /* every node is alive, with a connection */
-    EV_HEALTH,    /* a health-check pass straddles two evictions */
+    EV_DEAD,        /* the table is full of dead nodes with no connection */
+    EV_ENDED,       /* EV_OLDEST's connection has ended, but is in the table */
+    EV_LIVE_CONN,   /* EV_OLDEST is dead, but its connection is still up */
+    EV_ROOM,        /* the table has room for one more */
+    EV_AGAIN,       /* worker 1, dead longest, registers again under its id */
+    EV_NONE,        /* every node is alive, with a connection */
+    EV_HEALTH,      /* a health-check pass straddles two evictions */
+    EV_UNPUBLISHED, /* EV_OLDEST's connection is out of the table, but its
+                       thread hasn't been joined, and it advertises */
 };
 
 struct ev_case {
@@ -5449,6 +5472,11 @@ static const struct ev_case ev_cases[] = {
      "the pass reads nothing of the freed nodes, and leaves their "
      "connections to the registrations, which close them",
      EV_HEALTH},
+    {"corner",
+     "the node dead longest advertises its GID after its eviction, on a "
+     "connection out of the table whose thread hasn't been joined",
+     "it is evicted, and the advertisement is ignored: its claims stay gone",
+     EV_UNPUBLISHED},
 };
 
 /* The one GID of EV_OLDEST: ::ffff:192.168.251.11 */
@@ -5536,6 +5564,13 @@ static const char *ev_setup(struct ev_fixture *fx, enum ev_scenario scenario)
         return "could not end a node's connection";
     if (scenario == EV_LIVE_CONN && !ev_connect(fx, EV_OLDEST, false))
         return "could not connect a node";
+    /* As tcp_health_check_unpublish() leaves it until it has retired it */
+    if (scenario == EV_UNPUBLISHED) {
+        fx->conn[EV_OLDEST] =
+            recv_conn_new(priv, EV_OLDEST, true, &fx->peer[EV_OLDEST]);
+        if (!fx->conn[EV_OLDEST])
+            return "could not connect a node";
+    }
 
     qemu_mutex_lock(&priv->mesh_table_lock);
     priv->next_available_node_id = fx->last + 1;
@@ -5824,6 +5859,35 @@ static const char *ev_health(struct ev_fixture *fx)
     return why;
 }
 
+/*
+ * EV_UNPUBLISHED: the node's connection is out of the table, as a health
+ * check leaves it between taking it out and joining its thread.  The test
+ * retires it, as the health check would, once it is done.
+ */
+static const char *ev_unpublished(struct ev_fixture *fx)
+{
+    TcpBackendPrivate *priv = fx->priv;
+    TcpConnection *conn = fx->conn[EV_OLDEST];
+    uint32_t id = UINT32_MAX;
+    int32_t result = 1;
+    const char *why;
+
+    why = ev_register(priv, &fx->fresh[0], UINT32_MAX, &id, &result);
+    if (!why && (result != 0 || ev_in_table(priv, EV_OLDEST)))
+        why = "the oldest node wasn't evicted";
+    /* Its thread answers the heartbeat once it has handled the GIDs */
+    if (!why && (!send_gids(fx->peer[EV_OLDEST], EV_OLDEST,
+                            (const uint8_t(*)[16]) & ev_gid) ||
+                 !worker_settled(fx->peer[EV_OLDEST], EV_OLDEST)))
+        why = "the evicted node's advertisement wasn't handled";
+    if (!why && ev_has_claims(priv, EV_OLDEST))
+        why = "the advertisement put the evicted node's claims back";
+    if (!why && ev_resolve(priv) != UINT32_MAX)
+        why = "the evicted node owns its GID again";
+    tcp_retire_conn(conn);
+    return why;
+}
+
 static const char *ev_run(struct ev_fixture *fx, enum ev_scenario scenario)
 {
     const char *why;
@@ -5841,6 +5905,8 @@ static const char *ev_run(struct ev_fixture *fx, enum ev_scenario scenario)
         return ev_live_conn(fx);
     case EV_HEALTH:
         return ev_health(fx);
+    case EV_UNPUBLISHED:
+        return ev_unpublished(fx);
     case EV_ROOM:
     case EV_AGAIN:
     case EV_NONE:
@@ -5937,7 +6003,8 @@ enum lt_scenario {
     LT_SENDER, /* its send thread is blocked sending on it */
     LT_REGISTER_VS_STOP, /* a registration lands while the stop runs */
     LT_AGAIN_VS_STOP,    /* a node registering again does */
-    LT_GIDS_BACK, /* the node went silent; registering again gets it back */
+    LT_GIDS_BACK,     /* the node went silent; registering again gets it back */
+    LT_EVICT_VS_STOP, /* a new node registers in a full table meanwhile */
 };
 
 struct lt_case {
@@ -5976,6 +6043,14 @@ static const struct lt_case lt_cases[] = {
      "the node owns its GIDs again at once, and a withdrawal decided before "
      "doesn't take them away",
      LT_GIDS_BACK},
+    {"corner",
+     "a new node registers in a full table while teardown stops the receive "
+     "threads, the connection of the node dead longest, which has ended, "
+     "among them",
+     "nothing is evicted: that connection, which the stop has claimed, stays "
+     "in the table rather than being freed under it, and each thread is "
+     "joined once",
+     LT_EVICT_VS_STOP},
 };
 
 /* The one GID of LT_GIDS_BACK: ::ffff:192.168.251.9, the form
@@ -6131,9 +6206,19 @@ static void *lt_stop(void *opaque)
  * the registration asks for its id.  The stop claims worker 1's connection
  * too, keeping only a pointer to it to join its thread with; a registration
  * that took it out of the table then would free it under the stop.
+ *
+ * For LT_EVICT_VS_STOP, worker 1 has registered, and the table is filled up
+ * as for the eviction rows' EV_ENDED: node EV_OLDEST, dead longest, has a
+ * connection that has ended, whose only reference is the table's.  The stop
+ * claims it too, and an eviction that took it out of the table and retired
+ * it would free it under the stop.
  */
-static const char *lt_register_vs_stop(bool again)
+static const char *lt_register_vs_stop(enum lt_scenario scenario)
 {
+    bool again = scenario == LT_AGAIN_VS_STOP;
+    bool evict = scenario == LT_EVICT_VS_STOP;
+    const TcpConnection *ended = NULL;
+    struct ev_fixture fx;
     RdmaBackendDev dev;
     TcpBackendPrivate *priv;
     TcpConnection *conn = NULL, *in_table;
@@ -6153,14 +6238,28 @@ static const char *lt_register_vs_stop(bool again)
     tcp_stop_health_check_thread(priv);
     tcp_stop_accept_thread(priv);
 
-    if (again) {
+    if (again || evict) {
         w1 = worker_register(priv);
         if (w1 < 0 || !wait_for_registered(priv, 1) || !worker_settled(w1, 1)) {
             why = "worker 1 did not register";
             goto out;
         }
+    }
+    if (again) {
         old = table_get(priv, 1);
         node_set(priv, 1, false, ernic_monotonic_ms() - UINT64_C(1000000));
+    }
+    if (evict) {
+        memset(&fx, 0, sizeof(fx));
+        fx.priv = priv;
+        for (uint32_t i = 0; i < TCP_MAX_MESH_NODES; i++)
+            fx.peer[i] = -1;
+        why = ev_setup(&fx, EV_ENDED);
+        /* Leaves the table's reference the only one */
+        ended = fx.conn[EV_OLDEST];
+        tcp_connection_unref(fx.conn[EV_OLDEST]);
+        if (why)
+            goto out;
     }
     fd = worker_attach(priv, &conn);
     if (fd < 0) {
@@ -6188,6 +6287,18 @@ static const char *lt_register_vs_stop(bool again)
         why = "the stop never claimed the receive thread";
     qemu_mutex_unlock(&priv->mesh_table_lock);
     pthread_join(stopper, NULL);
+
+    if (evict) {
+        if (!why && table_get(priv, EV_OLDEST) != ended)
+            why = "the claimed connection was taken out of the table";
+        else if (!why && !ev_in_table(priv, EV_OLDEST))
+            why = "a node was evicted during teardown";
+        else if (!why && table_get(priv, TCP_MAX_MESH_NODES) != conn)
+            why = "the new node's connection isn't in the connections table";
+        else if (!why && atomic_load(&g_joins) - joins != 3)
+            why = "a receive thread wasn't joined exactly once";
+        goto out;
+    }
 
     qemu_mutex_lock(&priv->conn_table_lock);
     in_table = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(1));
@@ -6222,8 +6333,9 @@ static int run_lt_case(const struct lt_case *c)
     atomic_store(&g_exits, 0);
     g_current_row = c->description;
     alarm(row_timeout_s());
-    if (c->scenario == LT_REGISTER_VS_STOP || c->scenario == LT_AGAIN_VS_STOP)
-        why = lt_register_vs_stop(c->scenario == LT_AGAIN_VS_STOP);
+    if (c->scenario == LT_REGISTER_VS_STOP || c->scenario == LT_AGAIN_VS_STOP ||
+        c->scenario == LT_EVICT_VS_STOP)
+        why = lt_register_vs_stop(c->scenario);
     else
         why = lt_replace_run(c->scenario);
     alarm(0);
@@ -6826,22 +6938,6 @@ static bool send_header(int fd, TcpMsgType type, uint32_t src)
     hdr.msg_type = htonl(type);
     hdr.src_node_id = htonl(src);
     return send(fd, &hdr, sizeof(hdr), MSG_NOSIGNAL) == (ssize_t)sizeof(hdr);
-}
-
-/* Tell the worker on fd, as the manager, that node id owns *gid */
-static bool send_gids(int fd, uint32_t id, const uint8_t (*gid)[16])
-{
-    struct {
-        TcpMsgHeader hdr;
-        TcpNodeGidsPayload gids;
-    } msg;
-
-    memset(&msg, 0, sizeof(msg));
-    msg.hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
-    msg.hdr.msg_type = htonl(TCP_MSG_NODE_GIDS);
-    msg.hdr.msg_len = htonl((uint32_t)sizeof(msg.gids));
-    tcp_fill_node_gids(&msg.gids, id, gid, 1);
-    return send(fd, &msg, sizeof(msg), MSG_NOSIGNAL) == (ssize_t)sizeof(msg);
 }
 
 /* How many times the worker has set out to register again */

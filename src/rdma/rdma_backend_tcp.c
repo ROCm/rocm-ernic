@@ -421,16 +421,10 @@ static void tcp_gid_index_rebuild(TcpBackendPrivate *priv)
     }
 }
 
-/*
- * Record @node_id's advertised set, replacing whatever it claimed before.
- * An empty set withdraws its claims, which is how the manager revokes.
- */
-void tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
-                        const uint8_t (*gids)[16], uint32_t num_gids)
+/* The table half of tcp_gid_claims_set(), which has checked its arguments */
+static void tcp_gid_claims_record(TcpBackendPrivate *priv, uint32_t node_id,
+                                  const uint8_t (*gids)[16], uint32_t num_gids)
 {
-    if (!priv || !priv->node_gids || num_gids > TCP_MAX_NODE_GIDS)
-        return;
-
     qemu_mutex_lock(&priv->gid_table_lock);
 
     if (num_gids == 0) {
@@ -448,8 +442,15 @@ void tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
     tcp_gid_index_rebuild(priv);
 
     qemu_mutex_unlock(&priv->gid_table_lock);
+}
 
-    /* Logged outside the lock: rdma_info_report() can block on stderr. */
+/*
+ * The logging half of tcp_gid_claims_set(): what @node_id now owns.  Called
+ * with no lock held, since rdma_info_report() can block on stderr.
+ */
+static void tcp_gid_claims_report(TcpBackendPrivate *priv, uint32_t node_id,
+                                  const uint8_t (*gids)[16], uint32_t num_gids)
+{
     char buf[TCP_GID_STR_LEN];
 
     if (num_gids == 0) {
@@ -479,6 +480,56 @@ void tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
                               tcp_gid_str(gids[i], buf), node_id);
         }
     }
+}
+
+/*
+ * Record @node_id's advertised set, replacing whatever it claimed before.
+ * An empty set withdraws its claims, which is how the manager revokes.
+ */
+void tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
+                        const uint8_t (*gids)[16], uint32_t num_gids)
+{
+    if (!priv || !priv->node_gids || num_gids > TCP_MAX_NODE_GIDS)
+        return;
+
+    tcp_gid_claims_record(priv, node_id, gids, num_gids);
+    tcp_gid_claims_report(priv, node_id, gids, num_gids);
+}
+
+/*
+ * tcp_gid_claims_set() for a worker's own advertisement on the manager, but
+ * only if the worker's node is still in mesh_nodes; returns whether it was.
+ *
+ * A registration can evict a node whose receive thread is still handling a
+ * message: a connection leaves the table before its thread is joined
+ * (tcp_health_check_unpublish()).  Recorded then, the claims of a node no
+ * broadcast carries would stay, alive, until teardown, contesting those of
+ * the same guest under its new id.  Checking and recording under
+ * mesh_table_lock, which the eviction holds while it drops the node's
+ * claims (tcp_gid_claims_forget()), puts each advertisement either before
+ * the eviction, whose drop then covers it, or after, when it is refused.
+ *
+ * Lock order: gid_table_lock under mesh_table_lock, as documented.
+ */
+static bool tcp_gid_claims_set_if_member(TcpBackendPrivate *priv,
+                                         uint32_t node_id,
+                                         const uint8_t (*gids)[16],
+                                         uint32_t num_gids)
+{
+    bool member;
+
+    if (!priv || !priv->node_gids || num_gids > TCP_MAX_NODE_GIDS)
+        return false;
+
+    qemu_mutex_lock(&priv->mesh_table_lock);
+    member = g_hash_table_contains(priv->mesh_nodes, GUINT_TO_POINTER(node_id));
+    if (member)
+        tcp_gid_claims_record(priv, node_id, gids, num_gids);
+    qemu_mutex_unlock(&priv->mesh_table_lock);
+
+    if (member)
+        tcp_gid_claims_report(priv, node_id, gids, num_gids);
+    return member;
 }
 
 /*
@@ -872,20 +923,31 @@ static int tcp_register_again(TcpBackendPrivate *priv, uint32_t node_id,
  * most TCP_MAX_MESH_NODES nodes, and a table past that leaves nodes out of
  * them, live ones as likely as dead (tcp_report_mesh_overflow()).
  *
- * Only a dead node that can't be heard from again is evicted: one with no
- * connection, or one whose connection has ended.  A node declared dead whose
- * connection is still up, which the health check is about to retire, could
- * still be handled a message on it, and an advertisement would put back the
- * claims its eviction dropped.  The manager is never evicted.  The id isn't
- * given out again, since next_available_node_id only goes up, so a late
- * message naming it can't be taken for a new node's.
+ * Only a dead node with no connection in connections, or one whose
+ * connection has ended, is evicted.  A node declared dead whose connection
+ * is still up may yet answer (tcp_node_still_silent()), and if it doesn't,
+ * the health check takes the connection out first.  The connection can
+ * leave the table before its receive thread is joined, so a message from
+ * the node can still be handled after its eviction; the manager takes a
+ * node's advertisement only while the node is in mesh_nodes
+ * (tcp_gid_claims_set_if_member()), so one can't put back the claims its
+ * eviction dropped.  The manager is never evicted.  The id isn't given out
+ * again, since next_available_node_id only goes up, so a late message
+ * naming it can't be taken for a new node's.
  *
- * Returns the evicted node's id, or UINT32_MAX if mesh_nodes has room or
- * there is no node to evict.  An ended connection the node still has in
- * connections is taken out into *old, for the caller to retire once it has
- * dropped the locks.  The node's claims are the caller's to forget, under
- * mesh_table_lock (tcp_gid_claims_forget()).  The caller holds
- * mesh_table_lock and conn_table_lock.
+ * Nothing is evicted once teardown has begun, as tcp_register_again() takes
+ * nothing then, and for the same reason: tcp_stop_recv_threads() may have
+ * claimed the node's connection's thread, keeping only a pointer to join it
+ * through, and retiring the connection here would drop the table's
+ * reference and free it under the join.  stopping is set before that claim
+ * and read here under conn_table_lock, which the claim is made under.
+ *
+ * Returns the evicted node's id, or UINT32_MAX if mesh_nodes has room,
+ * there is no node to evict, or teardown has begun.  An ended connection
+ * the node still has in connections is taken out into *old, for the caller
+ * to retire once it has dropped the locks.  The node's claims are the
+ * caller's to forget, under mesh_table_lock (tcp_gid_claims_forget()).  The
+ * caller holds mesh_table_lock and conn_table_lock.
  */
 static uint32_t tcp_evict_dead_node(TcpBackendPrivate *priv,
                                     TcpConnection **old)
@@ -899,7 +961,8 @@ static uint32_t tcp_evict_dead_node(TcpBackendPrivate *priv,
     TcpConnection *conn;
 
     *old = NULL;
-    if (g_hash_table_size(priv->mesh_nodes) < TCP_MAX_MESH_NODES)
+    if (atomic_load(&priv->stopping) ||
+        g_hash_table_size(priv->mesh_nodes) < TCP_MAX_MESH_NODES)
         return UINT32_MAX;
 
     g_hash_table_iter_init(&iter, priv->mesh_nodes);
@@ -3060,11 +3123,21 @@ void *tcp_recv_thread_per_conn(void *opaque)
                     break;
                 }
 
-                tcp_gid_claims_set(priv, node_id, adv->gids, num_gids);
+                if (!priv->is_manager) {
+                    tcp_gid_claims_set(priv, node_id, adv->gids, num_gids);
+                    break;
+                }
+
+                if (!tcp_gid_claims_set_if_member(priv, node_id, adv->gids,
+                                                  num_gids)) {
+                    rdma_info_report("TCP: ignoring the GIDs of node %u, "
+                                     "which has been evicted from the mesh",
+                                     node_id);
+                    break;
+                }
 
                 /* Manager fans a worker's advertisement out to the rest. */
-                if (priv->is_manager)
-                    tcp_broadcast_gid_table(priv);
+                tcp_broadcast_gid_table(priv);
                 break;
             }
 
@@ -4032,9 +4105,8 @@ static void tcp_health_check_unpublish(TcpBackendPrivate *priv,
  * Whether node_id is still silent.  The scan's verdict can be out of date by
  * the time it's acted on: a node can answer a heartbeat late, on the
  * connection that would be retired.  Or a registration can have evicted the
- * node (tcp_evict_dead_node()), which it does only once nothing more can
- * come on the node's connection, taking the connection out of the table if
- * it was still there; there is then nothing left to do.
+ * node (tcp_evict_dead_node()), taking the connection out of the table for
+ * itself to retire if it was still there; there is then nothing left to do.
  */
 static bool tcp_node_still_silent(TcpBackendPrivate *priv, uint32_t node_id)
 {
