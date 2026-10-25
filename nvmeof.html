@@ -481,8 +481,9 @@ to be a whole number of blocks. See
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ip=</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">192.168.200.1</span></code></p></td>
-<td><p>Address the controller answers on. It has to be
-routable from the guest’s <code class="docutils literal notranslate"><span class="pre">rocm-ernic0</span></code> interface.</p></td>
+<td><p>IPv4 address the controller answers on. It has to
+be routable from the guest’s <code class="docutils literal notranslate"><span class="pre">rocm-ernic0</span></code>
+interface.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">port=</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">4420</span></code></p></td>
@@ -595,11 +596,18 @@ recognises sends on the guest’s GSI queue pair and hands the
 controller-side queue, and reply with <strong>REP</strong> carrying an
 <code class="docutils literal notranslate"><span class="pre">nvme_rdma_cm_rep</span></code>. An unsupported <code class="docutils literal notranslate"><span class="pre">qid</span></code> gets a
 <strong>REJ</strong> with the right NVMe-oF status rather than a
-timeout. The subsystem NQN is not in the rdma_cm private
-data at all, so a wrong one is caught later, by the
-Fabrics Connect capsule.</p></li>
+timeout. The target listens only on its IPv4 <code class="docutils literal notranslate"><span class="pre">ip=</span></code>
+address, so, as from a Linux target listening on IPv4,
+a connect to any other address, or to any IPv6 address
+(<code class="docutils literal notranslate"><span class="pre">::ffff:</span></code> mapped ones included), gets a <strong>REJ</strong>
+(invalid service ID). The subsystem NQN is not in the
+rdma_cm private data at all, so a wrong one is caught
+later, by the Fabrics Connect capsule.</p></li>
 <li><p><strong>RTU</strong> – mark the queue established.</p></li>
-<li><p><strong>DREQ</strong> – tear the queue down and answer <strong>DREP</strong>.</p></li>
+<li><p><strong>DREQ</strong> – tear the queue down and answer <strong>DREP</strong>. A
+DREQ is matched by its connection ID, or failing that,
+by the controller QPN it names together with the guest’s
+connection ID.</p></li>
 </ul>
 <p>Replies are delivered back into the guest’s GSI receive
 queue as UD completions, with a synthesised 40-byte GRH and
@@ -610,7 +618,9 @@ controller never has to be told its own address twice.</p>
 <p>Controller queue pairs are numbered from <code class="docutils literal notranslate"><span class="pre">0x00c00000</span></code>.
 The data path spots a send whose destination QPN falls in
 that range and routes the capsule to the controller instead
-of looking for a fabric peer.</p>
+of looking for a fabric peer. The numbers start again from
+the bottom of the range once they reach the top, skipping
+any a connection still holds.</p>
 </section>
 <section id="capsules-and-data-transfer">
 <h3>Capsules and data transfer<a class="headerlink" href="#capsules-and-data-transfer" title="Link to this heading">#</a></h3>
