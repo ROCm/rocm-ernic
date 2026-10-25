@@ -1339,13 +1339,34 @@ static int tcp_wait_connected(int sockfd, const atomic_bool *running,
  * the one deadline (see tcp_wait_connected()).  Returns the socket,
  * non-blocking, or -1 with errno set by the last attempt.  Gives up on the
  * remaining addresses once the deadline passes or *running is cleared.
+ *
+ * With a deadline, an address gets only its share of the time left, so one
+ * that doesn't answer leaves time for those after it.  Otherwise a name
+ * whose first address drops connection requests, such as an IPv6 address
+ * on a network that doesn't route IPv6, would use up every attempt's
+ * deadline, and its other addresses would never be tried.
  */
 int tcp_connect_any(const struct addrinfo *addrs, const atomic_bool *running,
                     uint64_t deadline_ms)
 {
     int err = ENOENT;
+    uint32_t left = 0;
 
     for (const struct addrinfo *rp = addrs; rp; rp = rp->ai_next) {
+        left++;
+    }
+
+    for (const struct addrinfo *rp = addrs; rp; rp = rp->ai_next, left--) {
+        uint64_t attempt_ms = deadline_ms;
+        uint64_t now_ms;
+
+        if (deadline_ms != 0 && left > 1) {
+            now_ms = ernic_monotonic_ms();
+            if (now_ms < deadline_ms) {
+                attempt_ms = now_ms + (deadline_ms - now_ms) / left;
+            }
+        }
+
         int sockfd = socket(rp->ai_family,
                             rp->ai_socktype | SOCK_CLOEXEC | SOCK_NONBLOCK,
                             rp->ai_protocol);
@@ -1356,14 +1377,15 @@ int tcp_connect_any(const struct addrinfo *addrs, const atomic_bool *running,
 
         if (connect(sockfd, rp->ai_addr, rp->ai_addrlen) == 0 ||
             (errno == EINPROGRESS &&
-             tcp_wait_connected(sockfd, running, deadline_ms) == 0))
+             tcp_wait_connected(sockfd, running, attempt_ms) == 0))
             return sockfd;
 
         err = errno;
         close(sockfd);
         /*
          * Any other failure, including the kernel giving up on this address
-         * with ETIMEDOUT, moves on to the next address.
+         * with ETIMEDOUT or its share of the time running out, moves on to
+         * the next address.
          */
         if (err == ECANCELED ||
             (deadline_ms != 0 && ernic_monotonic_ms() >= deadline_ms))

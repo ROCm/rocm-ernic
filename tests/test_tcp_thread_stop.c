@@ -2116,11 +2116,12 @@ static int listen_unanswering(uint16_t *port, int *filler)
 
 /* What the connect rows connect to. */
 enum connect_target {
-    CT_LISTENING,       /* a listening port */
-    CT_CLOSED,          /* a port nothing listens on */
-    CT_UNANSWERING,     /* a listener that doesn't answer */
-    CT_TWO_UNANSWERING, /* two addresses, neither of which answers */
-    CT_REFUSED_FIRST,   /* two addresses, the first refused, then listening */
+    CT_LISTENING,         /* a listening port */
+    CT_CLOSED,            /* a port nothing listens on */
+    CT_UNANSWERING,       /* a listener that doesn't answer */
+    CT_TWO_UNANSWERING,   /* two addresses, neither of which answers */
+    CT_REFUSED_FIRST,     /* two addresses, the first refused, then listening */
+    CT_UNANSWERING_FIRST, /* two addresses, the first not answering */
 };
 
 struct connect_case {
@@ -2149,6 +2150,10 @@ static const struct connect_case connect_cases[] = {
      "connect to two addresses, the first refused, with a 1 s timeout",
      "a failure before the deadline moves on: connected to the second",
      CT_REFUSED_FIRST, 1, true, 0.0, 1.0},
+    {"boundary",
+     "connect to two addresses, the first not answering, with a 2 s timeout",
+     "the first gives up after its half: connected to the second after 1 s",
+     CT_UNANSWERING_FIRST, 2, true, 1.0, 1.8},
 };
 
 static int run_connect_case(const struct connect_case *c)
@@ -2158,9 +2163,11 @@ static int run_connect_case(const struct connect_case *c)
     socklen_t len = sizeof(addr[0]);
     int lfd[2] = {-1, -1}, filler[2] = {-1, -1}, fd = -1;
     uint16_t port[2] = {0, 0};
-    uint32_t addrs =
-        c->target == CT_TWO_UNANSWERING || c->target == CT_REFUSED_FIRST ? 2
-                                                                         : 1;
+    uint32_t addrs = c->target == CT_TWO_UNANSWERING ||
+                             c->target == CT_REFUSED_FIRST ||
+                             c->target == CT_UNANSWERING_FIRST
+                         ? 2
+                         : 1;
     uint64_t deadline_ms = 0;
     double start, took = 0.0;
     bool ok = false;
@@ -2186,6 +2193,13 @@ static int run_connect_case(const struct connect_case *c)
     case CT_TWO_UNANSWERING:
         for (uint32_t i = 0; i < addrs; i++)
             lfd[i] = listen_unanswering(&port[i], &filler[i]);
+        break;
+    case CT_UNANSWERING_FIRST:
+        lfd[0] = listen_unanswering(&port[0], &filler[0]);
+        lfd[1] = listen_loopback();
+        if (lfd[1] >= 0 &&
+            getsockname(lfd[1], (struct sockaddr *)&addr[1], &len) == 0)
+            port[1] = ntohs(addr[1].sin_port);
         break;
     default:
         break;
