@@ -2,7 +2,7 @@
  * RDMA Backend Operations Interface
  *
  * Multi-backend abstraction layer for RDMA operations.
- * Allows supporting multiple backend types: none, loopback, verbs, etc.
+ * Allows supporting multiple backend types: none, loopback, tcp, etc.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  *

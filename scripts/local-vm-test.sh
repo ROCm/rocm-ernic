@@ -99,20 +99,7 @@ cd "$PROJECT_ROOT"
 ninja -C build
 log_info "✓ Build complete"
 
-# Check for InfiniBand device (optional for loopback)
-log_info "Checking for InfiniBand devices..."
-# Get device list, skip header lines (they contain "device" and "----")
-IB_DEVICE=$(ibv_devices 2>/dev/null | tail -n +3 | grep -v "^$" | head -1 | awk '{print $1}')
-
-if [ -n "$IB_DEVICE" ] && [ "$IB_DEVICE" != "device" ] && [ "$IB_DEVICE" != "------" ]; then
-    log_info "✓ Found IB device: $IB_DEVICE"
-    log_warn "Verbs backend not fully implemented yet, using loopback"
-    BACKEND_ARGS=(--backend loopback)
-    # Future: BACKEND_ARGS=(--backend "verbs:${IB_DEVICE}")
-else
-    log_info "No IB devices found, using loopback backend"
-    BACKEND_ARGS=(--backend loopback)
-fi
+BACKEND_ARGS=(--backend loopback)
 
 # Start rocm-ernic server
 log_info "Starting rocm-ernic server..."

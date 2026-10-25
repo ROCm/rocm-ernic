@@ -158,9 +158,8 @@ bool ih_create(struct ih *h, const char *backend)
     dev->backend_type_str = strdup(backend);
     /* NULL for an unknown backend, which pvrdma_device_create() refuses */
     dev->backend_name = pvrdma_backend_name(backend);
-    dev->backend_port_num = 1;
 
-    dev->pvrdma_handle = pvrdma_device_create(dev, backend, NULL, NULL, 1);
+    dev->pvrdma_handle = pvrdma_device_create(dev, backend);
     if (!dev->pvrdma_handle) {
         ih_destroy(h);
         return fail("pvrdma_device_create(%s) failed", backend);

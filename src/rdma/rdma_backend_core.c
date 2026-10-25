@@ -2,7 +2,7 @@
  * RDMA Backend Core - Multi-backend abstraction layer
  *
  * This file implements the core backend abstraction that allows
- * multiple RDMA backends (none, loopback, verbs, etc.) to coexist.
+ * multiple RDMA backends (none, loopback, tcp, etc.) to coexist.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  *
@@ -28,7 +28,6 @@
 static const RdmaBackendOps *backend_registry[RDMA_BACKEND_TYPE_MAX] = {
     [RDMA_BACKEND_TYPE_NONE] = &rdma_backend_ops_none,
     [RDMA_BACKEND_TYPE_LOOPBACK] = &rdma_backend_ops_loopback,
-    [RDMA_BACKEND_TYPE_VERBS] = NULL, /* TODO: &rdma_backend_ops_verbs */
     [RDMA_BACKEND_TYPE_TCP] = &rdma_backend_ops_tcp,
     /*
      * The NVMe-oF controller is not a transport: it terminates the guest's
@@ -63,7 +62,7 @@ const RdmaBackendOps *rdma_backend_get_ops(RdmaBackendType type)
 
 /**
  * rdma_backend_get_type_from_string - Parse backend type from string
- * @backend_str: String like "none", "loopback", "verbs:mlx5_0", or NULL,
+ * @backend_str: String like "none", "loopback", "nvmeof:size=1G", or NULL,
  *               which means "none"
  *
  * The name is everything before the first ':', and must be one of the
@@ -105,8 +104,6 @@ const char *rdma_backend_type_to_string(RdmaBackendType type)
         return "none";
     case RDMA_BACKEND_TYPE_LOOPBACK:
         return "loopback";
-    case RDMA_BACKEND_TYPE_VERBS:
-        return "verbs";
     case RDMA_BACKEND_TYPE_TCP:
         return "tcp";
     case RDMA_BACKEND_TYPE_NVMEOF:

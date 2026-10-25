@@ -3521,8 +3521,6 @@ static void test_backend_names(void)
         {"none:", "none"},
         {"loopback", "loopback"},
         {"loopback:x", "loopback"},
-        {"verbs", "verbs"},
-        {"verbs:device=mlx5_0,port=1", "verbs"},
         {"tcp", "tcp"},
         {"tcp:manager:listen:9000", "tcp"},
         {"nvmeof", "nvmeof"},
@@ -3535,7 +3533,9 @@ static void test_backend_names(void)
         {"nonex", NULL},
         {"loopbackjunk", NULL},
         {"loopbackjunk:x", NULL},
-        {"verbsx", NULL},
+        /* The verbs backend was never implemented, and is gone */
+        {"verbs", NULL},
+        {"verbs:device=mlx5_0,port=1", NULL},
         {"tcpx:manager:listen:9000", NULL},
         {"nvmeofx", NULL},
         {"s3junk", NULL},
@@ -3570,8 +3570,7 @@ static void test_backend_names(void)
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         if (cases[i].name)
             continue;
-        pvrdma_handle_t handle =
-            pvrdma_device_create(dev, cases[i].str, NULL, NULL, 1);
+        pvrdma_handle_t handle = pvrdma_device_create(dev, cases[i].str);
         if (!check(T, !handle, "a device was created for '%s'", cases[i].str))
             pvrdma_device_destroy(handle);
     }

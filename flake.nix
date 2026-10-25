@@ -122,8 +122,8 @@
         # dockerTools.streamLayeredImage. A minimal (distroless) and a debug
         # (adds a shell) variant, for amd64 (the native host) and — from an
         # x86_64 host — cross arm64/riscv64 images reusing crossResults.
-        # loopback/tcp backends containerize cleanly; verbs needs host RDMA
-        # devices. Load: nix build .#oci-image && ./result | docker load
+        # loopback/tcp backends containerize cleanly.
+        # Load: nix build .#oci-image && ./result | docker load
         mkOci = args: import ./nix/oci.nix ({ inherit pkgs lib rocm-ernic; } // args);
         # Cross arches we ship container images for (subset of crossArches;
         # armv7l/ppc64le are build-only here, no image).

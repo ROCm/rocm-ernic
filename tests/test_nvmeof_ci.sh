@@ -205,7 +205,7 @@ test_usage() {
 
     local out
     out=$("${SERVER_WRAPPER[@]}" "$SERVER_BIN" --help 2>&1 || true)
-    if ! grep -q "none|loopback|verbs|tcp|nvmeof" <<<"$out"; then
+    if ! grep -q "none|loopback|tcp|nvmeof" <<<"$out"; then
         echo -e "${RED}✗ nvmeof missing from the backend list${NC}"
         FAILED+=("usage text")
         return 1

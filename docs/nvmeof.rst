@@ -181,7 +181,7 @@ thing for the hardware path.
 How It Works
 ------------
 
-Unlike ``loopback``, ``tcp`` and ``verbs``, this is not a
+Unlike ``loopback`` and ``tcp``, this is not a
 transport for guest RDMA traffic -- it is a *peer* that
 speaks NVMe-oF back at the guest. It therefore hooks into
 :file:`src/ionic_datapath.c`, the data path that actually

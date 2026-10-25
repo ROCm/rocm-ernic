@@ -254,9 +254,7 @@ whoever attaches to it — bind-mount the socket directory. The socket is mode
 `0600`, so only root and the server's user can connect; to let a host QEMU
 that runs as another user in, pass `--socket-group` the numeric gid of a group
 it's in (group names in the image aren't the host's). The `loopback` and
-`tcp` backends containerize cleanly; the `verbs` backend needs host RDMA
-devices (`/dev/infiniband`) and elevated privileges, so it is not a clean
-container target.
+`tcp` backends containerize cleanly.
 
 **Tested & verified** (built + `docker load`ed from an x86_64-linux host):
 the amd64 **minimal** image runs the server (`docker run … --help` → exit 0,
