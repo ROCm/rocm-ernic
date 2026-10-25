@@ -52,79 +52,80 @@ Checks:
   # abseil, boost, fuchsia, objc, openmp, and zircon have no checks that
   # run on C.
 
+  # Not wanted: checks that contradict rocm-ernic's conventions or
+  # tooling
+
+  # IWYU checks the includes (iwyu.yml), as in hipObject
+  - -misc-include-cleaner
+
   # TODO: These checks report problems in the current code. Fix the code
-  # and delete the check's line here, or move it to a "Not wanted"
-  # section with a reason. The count is the number of places clang-tidy
-  # 23 reports in the Debug and Release builds together.
-  - -bugprone-assignment-in-if-condition  # TODO(8)
+  # and delete the check's line here, or move it to "Not wanted" with a
+  # reason. The count is the number of places clang-tidy 23 reports in
+  # the Debug and Release builds together.
+  - -bugprone-assignment-in-if-condition  # TODO(10)
   - -bugprone-branch-clone  # TODO(1)
-  - -bugprone-easily-swappable-parameters  # TODO(252)
-  - -bugprone-implicit-widening-of-multiplication-result  # TODO(73)
+  - -bugprone-easily-swappable-parameters  # TODO(326)
+  - -bugprone-implicit-widening-of-multiplication-result  # TODO(90)
   - -bugprone-invalid-enum-default-initialization  # TODO(3)
-  - -bugprone-multi-level-implicit-pointer-conversion  # TODO(2)
+  - -bugprone-multi-level-implicit-pointer-conversion  # TODO(5)
   - -bugprone-not-null-terminated-result  # TODO(1)
-  - -bugprone-reserved-identifier  # TODO(4)
+  - -bugprone-reserved-identifier  # TODO(2)
   - -cert-dcl37-c  # TODO: the same check
-  - -cert-dcl51-cpp  # TODO: the same check
-  - -bugprone-signed-bitwise  # TODO(602)
-  - -bugprone-suspicious-memory-comparison  # TODO(2)
+  # The same check, but it also reports the __real_ and __wrap_ functions
+  # that the linker's --wrap option needs (10 of its 12)
+  - -cert-dcl51-cpp  # TODO(12)
+  - -bugprone-signed-bitwise  # TODO(779)
+  - -bugprone-suspicious-memory-comparison  # TODO(6)
   - -cert-exp42-c  # TODO: the same check
   - -cert-flp37-c  # TODO: the same check
-  - -cert-err33-c  # TODO(426): unchecked return values
-  - -clang-analyzer-core.CallAndMessage  # TODO(7)
+  - -cert-err33-c  # TODO(673): unchecked return values
+  - -clang-analyzer-core.CallAndMessage  # TODO(9)
   - -clang-analyzer-core.NonNullParamChecker  # TODO(2)
   - -clang-analyzer-core.NullDereference  # TODO(1)
-  - -clang-analyzer-core.StackAddressEscape  # TODO(1)
-  - -clang-analyzer-optin.performance.Padding  # TODO(6)
-  - -clang-analyzer-optin.taint.GenericTaint  # TODO(1)
+  - -clang-analyzer-optin.performance.Padding  # TODO(18)
   # Only reported in Release, and only with the other checks here off.
   # The analyzer follows paths through the code, so which problems it
   # finds can change with the set of checks
   - -clang-analyzer-optin.taint.TaintedAlloc  # TODO(1)
-  - -clang-analyzer-security.ArrayBound  # TODO(3)
+  - -clang-analyzer-security.ArrayBound  # TODO(2)
   # It wants C11's Annex K functions, such as memcpy_s(), which glibc
   # doesn't have
-  - -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling  # TODO(1198)
+  - -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling  # TODO(1454)
   - -clang-analyzer-unix.Stream  # TODO(1)
-  # A compiler warning, new in Clang 23, which clang-tidy reports too
-  - -clang-diagnostic-unused-but-set-global  # TODO(4)
-  - -cppcoreguidelines-avoid-non-const-global-variables  # TODO(116)
-  - -cppcoreguidelines-init-variables  # TODO(545)
+  - -cppcoreguidelines-avoid-non-const-global-variables  # TODO(210)
+  - -cppcoreguidelines-init-variables  # TODO(843)
   - -cppcoreguidelines-interfaces-global-init  # TODO(1)
-  # hipObject turns this off, since IWYU checks the includes
-  - -misc-include-cleaner  # TODO(686)
-  - -misc-no-recursion  # TODO(6)
+  - -misc-no-recursion  # TODO(4)
   - -misc-predictable-rand  # TODO(2)
   - -cert-msc30-c  # TODO: the same check
   - -cert-msc50-cpp  # TODO: the same check
   - -misc-redundant-expression  # TODO(2)
-  - -misc-unused-parameters  # TODO(96)
-  - -misc-use-internal-linkage  # TODO(2)
-  - -modernize-avoid-c-style-cast  # TODO(6)
-  - -modernize-macro-to-enum  # TODO(912)
+  - -misc-unused-parameters  # TODO(86)
+  - -misc-use-internal-linkage  # TODO(5)
+  - -modernize-avoid-c-style-cast  # TODO(19)
+  - -modernize-macro-to-enum  # TODO(1191)
   - -cppcoreguidelines-macro-to-enum  # TODO: the same check
-  - -performance-no-int-to-ptr  # TODO(47)
-  - -readability-avoid-nested-conditional-operator  # TODO(7)
-  - -readability-braces-around-statements  # TODO(1490)
-  - -readability-else-after-return  # TODO(3)
-  - -readability-function-cognitive-complexity  # TODO(59)
+  - -performance-no-int-to-ptr  # TODO(16)
+  - -readability-avoid-nested-conditional-operator  # TODO(16)
+  - -readability-braces-around-statements  # TODO(2820)
+  - -readability-else-after-return  # TODO(4)
+  - -readability-function-cognitive-complexity  # TODO(72)
   # hipObject turns this off
-  - -readability-identifier-length  # TODO(1849)
-  - -readability-implicit-bool-conversion  # TODO(160)
-  - -readability-inconsistent-declaration-parameter-name  # TODO(3)
-  - -readability-inconsistent-ifelse-braces  # TODO(2)
-  - -readability-isolate-declaration  # TODO(158)
-  - -readability-magic-numbers  # TODO(2849)
+  - -readability-identifier-length  # TODO(3103)
+  - -readability-implicit-bool-conversion  # TODO(466)
+  - -readability-inconsistent-declaration-parameter-name  # TODO(2)
+  - -readability-inconsistent-ifelse-braces  # TODO(5)
+  - -readability-isolate-declaration  # TODO(225)
+  - -readability-magic-numbers  # TODO(4073)
   - -cppcoreguidelines-avoid-magic-numbers  # TODO: the same check
-  - -readability-math-missing-parentheses  # TODO(100)
-  - -readability-non-const-parameter  # TODO(17)
-  - -readability-redundant-casting  # TODO(5)
-  - -readability-redundant-nested-if  # TODO(4)
-  - -readability-redundant-parentheses  # TODO(2)
-  - -readability-suspicious-call-argument  # TODO(2)
-  - -readability-trailing-comma  # TODO(167)
-  - -readability-uppercase-literal-suffix  # TODO(344)
-  - -readability-use-concise-preprocessor-directives  # TODO(3)
+  - -readability-math-missing-parentheses  # TODO(187)
+  - -readability-non-const-parameter  # TODO(27)
+  - -readability-redundant-casting  # TODO(24)
+  - -readability-redundant-nested-if  # TODO(3)
+  - -readability-redundant-parentheses  # TODO(3)
+  - -readability-trailing-comma  # TODO(1068)
+  - -readability-uppercase-literal-suffix  # TODO(499)
+  - -readability-use-concise-preprocessor-directives  # TODO(2)
 WarningsAsErrors: '*'
 
 CheckOptions:
