@@ -38,28 +38,37 @@ A program the engine will not run stops the server starting,
 and says which feature it used. A bad program is a startup
 failure, never a silently inert pipeline.
 
-The RDMA backend is unrelated to any of this. The engine is
-on the Ethernet path, and the RDMA backends never touch it,
-so ``--backend`` makes no difference to what the pipeline
-sees.
+The RDMA backend is unrelated to any of this. The backends
+never touch the engine, so ``--backend`` makes no difference
+to what the pipeline sees. The device's RDMA data path does
+run a loaded program, but only one written for it; see below.
 
 Status
 ------
 
-The engine loads a compiled P4 program and runs it. bmv2's
-own ``loopback.json`` forwards a frame unchanged;
+The engine loads a compiled P4 program and runs it, on two
+paths.
+
+On the Ethernet path it runs over every frame. bmv2's own
+``loopback.json`` forwards a frame unchanged;
 ``simple_router.json`` does not load (see below). Table
 entries can be installed, changed and removed, so the same
 program and the same frame can be made to take a different
 path.
 
-The pipeline is on the Ethernet path only. RDMA traffic does
-not reach it, so the elementwise fp8 operation in the RDMA
-data path (``ionic_datapath_fp8_map()``) calls the arithmetic
-directly rather than through a program -- which operation
-happens is fixed by the caller, not chosen by a table. Wiring
-the pipeline into the RDMA path and making that arithmetic an
-extern a program calls is what will make it P4-governed.
+On the RDMA path it runs over every send work request, but
+only for a program that declares a metadata header called
+``rdma_metadata``. Any other program is an Ethernet program,
+and the RDMA path behaves as if none were loaded. The
+header's fields are the operation's ``opcode``
+(``bit<8>``), ``qp_num`` (``bit<24>``), ``length``,
+``imm_data`` and ``rkey`` (``bit<32>`` each). Each is
+optional, but one declared at another width is refused at
+load, and so is a program whose deparser emits the header: it
+is architecture state, not something to put on a wire.
+Nothing is parsed or deparsed on this path. The program
+decides only whether to drop the operation and whether to
+apply fp8 arithmetic to it, through an extern.
 
 An extern is how a target gives a program something the
 language cannot express. P4 has no floating-point type -- its
@@ -375,7 +384,7 @@ target-specific extern; without it p4c refuses one it does
 not know.
 
 
-A program will be supplied as a **bmv2 JSON file**: the
+A program is supplied as a **bmv2 JSON file**: the
 target-independent artifact that
 
 .. code-block:: bash
@@ -386,9 +395,8 @@ target-independent artifact that
 emits for any P4 program. Nothing in rocm-ernic links
 `bmv2 <https://github.com/p4lang/behavioral-model>`_ itself; the
 JSON is the interface. bmv2 is still useful as a behavioural
-oracle, and the conformance tests run the same program and the
-same frames through stock bmv2 to generate what the engine is
-expected to produce.
+oracle: running the same program and the same frames through
+stock bmv2 shows what the engine is expected to produce.
 
 Loading a program
 -----------------
@@ -464,10 +472,7 @@ harmless default; it is refused. And ``max_size`` is the only
 number in the document that names a large allocation without
 the document's own size bounding it, so the entries all
 tables ask for between them are budgeted against a single
-ceiling. A program that gets that far is well formed,
-uses nothing unsupported, and has a consistent header layout,
-and is then refused with ``ENOSYS`` because the rest of the
-walk does not exist yet.
+ceiling.
 
 Unknown keys are ignored, not rejected. That is deliberate:
 ``p4c`` emits ``program``, ``source_info``, ``action_ids`` and
@@ -532,9 +537,10 @@ The control path
    `pds_fwctl <https://docs.kernel.org/userspace-api/fwctl/pds_fwctl.html>`_
    with an *(endpoint id, operation id, buffers)* RPC whose scope
    the driver checks. rocm-ernic emulates only ``ionic``, so the
-   host-facing API will first appear as ionic device commands
-   shaped like those RPCs. A faithful emulation eventually means
-   a ``pds_core``-like control device.
+   host-facing API is ionic device commands shaped like those
+   RPCs (see `The guest's control surface`_). A faithful
+   emulation eventually means a ``pds_core``-like control
+   device.
 
 The architecture
    The DPU's P4 architecture is not v1model, and the real
@@ -562,9 +568,8 @@ Stateful connection tracking
 Arithmetic width
    bmv2 evaluates expressions at infinite precision and truncates
    on assignment to a field. A fixed-width C engine will not
-   always agree. The supported width is documented with the
-   loader, and the conformance tests pin the behaviour for the
-   programs the engine claims to run.
+   always agree. Here every value is carried at the widest
+   field the loader accepts, 512 bits (``P4_MAX_FIELD_BITS``).
 
 Security
 --------
@@ -628,7 +633,7 @@ pre-created, user-owned persistent TAP does not need privilege, and
 is the pattern ``tests/test_ionic_ci.sh`` already uses for its
 optional checks.
 
-The other gap is the round trip. Sending a frame back to the port
-it arrived on needs a table entry that sets ``egress_spec``, which
-needs a loaded program, so until then a guest frame can only be
-observed leaving towards the uplink.
+The round trip needs no TAP: with ``loopback.json`` loaded, a
+frame the guest transmits is sent back to the port it arrived
+on and lands in the guest's receive ring, which
+``ernic-p4-driver`` checks.

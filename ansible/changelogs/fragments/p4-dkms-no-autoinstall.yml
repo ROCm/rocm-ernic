@@ -1,0 +1,19 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+bugfixes:
+  - >-
+    ``drivers/ernic_p4/dkms.conf`` registers ``ernic-p4`` with
+    ``AUTOINSTALL="no"``, as ``setup-ionic-dkms.sh`` already does for the
+    ionic package it depends on.  Autoinstall rebuilt it for every kernel
+    with headers installed, against ionic sources that only build for a
+    kernel close to the ref they came from, and for kernels the patched
+    ionic was not installed for, where even a successful build produced a
+    module that would not insert.
+breaking_changes:
+  - >-
+    DKMS no longer rebuilds ``ernic-p4`` by itself after a kernel upgrade.
+    Boot the new kernel, re-run ``ernic_guest_setup`` with ``patches/p4``
+    in ``ernic_guest_ionic_extra_patches``, then re-run ``ernic_p4_dkms``.

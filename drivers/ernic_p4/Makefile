@@ -27,6 +27,14 @@ IONIC_SRC ?=
 # running ionic is the kernel's.
 IONIC_SYMVERS ?=
 
+# Kernel to look IONIC_SYMVERS up for, with find-ionic-symvers.sh, when
+# it is not given. dkms.conf sets this rather than running the lookup
+# itself: dkms sources that file whenever it reads the package's
+# configuration (dkms status, add, remove, and every autoinstall pass,
+# including the ones that only learn AUTOINSTALL is off), and the lookup
+# can rebuild ionic. Here it runs only for a build.
+IONIC_SYMVERS_KVER ?=
+
 # Where the ionic driver lives inside a kernel tree.  Kept as a variable
 # rather than spelled out at each use: it appears four times, and the
 # whole path written out is a 40-character run of [A-Za-z0-9/], which is
@@ -39,9 +47,11 @@ obj-m += ernic_p4.o
 ccflags-y += -I$(IONIC_INC)
 ccflags-y += -I$(src)
 
-KBUILD_EXTRA_SYMBOLS := $(IONIC_SYMVERS)
-export KBUILD_EXTRA_SYMBOLS
-
+# The symbols are passed to kbuild on its command line, so modpost sees
+# them too. The lookup's own make of ionic gets none of this make's flags
+# or variables. A failed lookup falls back to the kernel's symbols, as an
+# empty IONIC_SYMVERS does, but says so: the module it builds will not
+# insert beside a patched ionic.
 all:
 	@test -n "$(IONIC_SRC)" || \
 	  { echo "ERROR: IONIC_SRC must name a patched ionic source tree" >&2; \
@@ -54,7 +64,15 @@ all:
 	@test -z "$(IONIC_SYMVERS)" || test -f "$(IONIC_SYMVERS)" || \
 	  { echo "ERROR: IONIC_SYMVERS=$(IONIC_SYMVERS) does not exist" >&2; \
 	    exit 1; }
-	$(MAKE) -C $(KDIR) M=$(CURDIR) modules
+	@symvers="$(IONIC_SYMVERS)"; \
+	if [ -z "$$symvers" ] && [ -n "$(IONIC_SYMVERS_KVER)" ]; then \
+	  symvers="$$(env -u MAKEFLAGS -u MFLAGS -u MAKELEVEL \
+	    "$(CURDIR)/find-ionic-symvers.sh" "$(IONIC_SYMVERS_KVER)")" || \
+	    { echo "WARNING: no ionic symbols for $(IONIC_SYMVERS_KVER);" \
+	        "building against the kernel's own" >&2; symvers=; }; \
+	fi; \
+	echo "KBUILD_EXTRA_SYMBOLS=$$symvers"; \
+	$(MAKE) -C $(KDIR) M=$(CURDIR) KBUILD_EXTRA_SYMBOLS="$$symvers" modules
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(CURDIR) clean

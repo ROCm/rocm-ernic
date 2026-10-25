@@ -118,10 +118,10 @@
       bind. Check that ernic_p4_dkms_patches_dirs names patches/p4 as well
       as patches.
 
-# Recorded before the build, because dkms autoinstall on a later kernel
-# upgrade runs from a context with none of this role's variables and
-# reads the path from here.
-- name: Record where the ionic sources are, for dkms autoinstall
+# Recorded before the build, because a later dkms build (for another
+# kernel, run by hand) has none of this role's variables and reads the
+# path from here.
+- name: Record where the ionic sources are, for later dkms builds
   become: true
   ansible.builtin.copy:
     content: "{{ ernic_p4_dkms_source_dir }}\n"
@@ -132,7 +132,7 @@
 
 # The ionic the guest runs is DKMS-built, so its exported symbols are
 # not in the kernel's Module.symvers. Finding the right ones is the same
-# problem dkms autoinstall has on a later kernel upgrade, so it is solved
+# problem a dkms build without this role's variables has, so it is solved
 # once, in the script both call, rather than twice.
 - name: Find the ionic symbols to build against
   become: true
@@ -229,11 +229,11 @@
 # /lib/modules.
 #
 # The module has to be rebuilt on a kernel upgrade -- it is pinned to the
-# CRCs of an out-of-tree ionic that is itself DKMS-built and will be
-# rebuilt too -- and a hand-copied .ko is not, so after the first upgrade
-# the guest had a module that would no longer insert and nothing that
-# would notice. dkms.conf carried AUTOINSTALL="yes" the whole time; the
-# package was simply never registered for it to apply to.
+# CRCs of an out-of-tree ionic that is itself DKMS-built -- and dkms keeps
+# each kernel's build apart and removes them cleanly, which a hand-copied
+# .ko in updates/ did not. Neither package autoinstalls (see dkms.conf),
+# so an upgrade means re-running ernic_guest_setup, with patches/p4, and
+# then this role.
 - name: Stage the module sources where dkms expects them
   become: true
   ansible.builtin.copy:

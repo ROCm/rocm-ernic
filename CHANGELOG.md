@@ -325,11 +325,15 @@
   shipped beside them, so a consumer of `sbates130272.rocm_ernic` needs no
   second checkout to build SRQ-capable modules, and can no longer get
   patches that don't match its roles (whose symptom was `max_srq = 0`).
-* **Breaking:** **The ionic DKMS package is built only for the kernel it
-  was asked for**, not for every kernel with headers installed, where a
-  build that could never succeed failed the whole run. **After a kernel
-  upgrade, run `setup-ionic-dkms.sh` again** (or `ernic_guest_setup`, or
-  `ernic_srq_dkms`); DKMS no longer rebuilds the module by itself.
+* **Breaking:** **The ionic and `ernic-p4` DKMS packages are built only
+  for the kernel they were asked for**, not for every kernel with headers
+  installed, where a build that could never succeed failed the whole run
+  (and an `ernic-p4` built for a kernel without the patched ionic
+  wouldn't insert). DKMS no longer rebuilds either by itself. **After a
+  kernel upgrade, run `setup-ionic-dkms.sh` again** (or
+  `ernic_guest_setup`, or `ernic_srq_dkms`); for P4, re-run
+  `ernic_guest_setup` with `patches/p4` in
+  `ernic_guest_ionic_extra_patches`, then `ernic_p4_dkms`.
 * **`fetch-ionic-sources.sh --patches-dir` can be given more than once**,
   applying the series in order. Giving it at all still replaces the
   default. A directory that doesn't exist is an error, and dropping a
@@ -670,7 +674,9 @@
     copying it into `/lib/modules`, removes a copy an earlier run left in
     `updates/`, and resolves the ionic symbols for the kernel being built
     for (`drivers/ernic_p4/find-ionic-symvers.sh`). A module built against
-    another kernel's `Module.symvers` would not insert.
+    another kernel's `Module.symvers` would not insert. The lookup, which
+    may rebuild ionic, runs only when the module is built, not whenever
+    DKMS reads its `dkms.conf` (`dkms status`, every autoinstall pass).
   * The self-hosted CI's instances advertise each guest's IPv4-mapped GID
     as well as its link-local one, so tests addressing a peer by IPv4 can
     bring their QPs to RTR. Each instance's MAC is pinned to

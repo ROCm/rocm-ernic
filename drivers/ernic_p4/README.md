@@ -63,19 +63,29 @@ than a build that stops.
 The `ernic_p4_dkms` Ansible role registers the module with DKMS rather
 than copying a built `.ko` into `/lib/modules`, because it has to be
 rebuilt whenever the kernel changes: it is pinned to the genksyms CRCs
-of an out-of-tree ionic that is itself DKMS-built and rebuilt on the
-same upgrade. A module left behind by a hand-installed build survives
-the upgrade and then will not insert.
+of an out-of-tree ionic that is itself DKMS-built. A module left behind
+by a hand-installed build survives the upgrade and then will not insert.
 
-[`dkms.conf`](dkms.conf) therefore has to find both inputs again from a
-context that has none of the role's variables. It reads the source tree
-from `/etc/ernic-p4-ionic-src`, which the role writes, and resolves the
-ionic symbols through
+**DKMS does not rebuild it on a kernel upgrade.** Like the ionic
+package (`setup-ionic-dkms.sh`), it is registered with
+`AUTOINSTALL="no"`: the ionic sources build only against a kernel close
+to the ref they came from, and on a kernel without the patched ionic the
+module could not insert anyway. After an upgrade, boot the new kernel and
+re-run `ernic_guest_setup` with `patches/p4` in
+`ernic_guest_ionic_extra_patches`, as the P4 lane does, then
+`ernic_p4_dkms`.
+
+[`dkms.conf`](dkms.conf) can still be built from a context that has none
+of the role's variables, such as `dkms build` run by hand. It reads the
+source tree from `/etc/ernic-p4-ionic-src`, which the role writes, and
+the `Makefile` resolves the ionic symbols through
 [`find-ionic-symvers.sh`](find-ionic-symvers.sh) **for the kernel being
 built for** -- not for whatever is on disk, which after an upgrade
-belongs to the previous one. Either can be overridden by setting
-`IONIC_SRC` or `IONIC_SYMVERS` in the environment, which is what the
-role does for the build it drives itself.
+belongs to the previous one. That lookup may rebuild ionic, so it runs
+only for a build, never when dkms merely reads `dkms.conf` (as `dkms
+status` and every autoinstall pass do). Either can be overridden by
+setting `IONIC_SRC` or `IONIC_SYMVERS` in the environment, which is what
+the role does for the build it drives itself.
 
 ## When the device appears
 
