@@ -598,12 +598,11 @@
   * A shutdown requested with `CC.EN` still set, as the specification has
     it, now completes. Hosts polled until their timeout (SPDK waited ten
     seconds per controller). Enabling the controller clears `CSTS.SHST`.
-  * A file-backed namespace is durable when the guest asks: it reports a
-    volatile write cache, and Flush, Force Unit Access writes and a
-    controller shutdown complete only once the data is on the image's
-    storage, failing if writeback fails (a failed shutdown writeback is
-    logged). The server's main loop waits meanwhile. A RAM namespace is
-    unchanged.
+  * A file-backed namespace reports a volatile write cache. Flush and Force
+    Unit Access writes complete only after writeback and fail if it fails.
+    A controller shutdown also waits for writeback, but logs a failure and
+    reports shutdown complete anyway. The server's main loop waits during
+    writeback. A RAM namespace is unchanged.
   * `file=` no longer truncates an existing image to the 64 MiB default.
     Without `size=` the image keeps its size; a smaller `size=`, an image
     that isn't a whole number of blocks, or a file that isn't a regular file
