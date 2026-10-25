@@ -810,10 +810,11 @@ target_link_directories(ernic-test-tcp-thread-stop PRIVATE
 target_link_libraries(ernic-test-tcp-thread-stop PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
-# RDMA resource-table allocator test. rdma_rm.c keeps its allocator
-# static inline, so the test drives it through the resource
-# manager's CQ table. It stubs the backend entry points rdma_rm.c
-# calls, so no RDMA subsystem link is needed.
+# RDMA resource manager test: the table allocator, which rdma_rm.c keeps
+# static inline, so the test drives it through the resource manager's CQ
+# table, and the other calls' paths, with backends whose operations fail on
+# demand. It stubs the backend entry points rdma_rm.c calls, so no RDMA
+# subsystem link is needed.
 add_executable(test_rdma_res_tbl test_rdma_res_tbl.c
     ${PROJECT_SOURCE_DIR}/src/qemu/rdma_rm.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
@@ -1429,10 +1430,11 @@ set_tests_properties(pvrdma-stats-unit PROPERTIES TIMEOUT 30)
 # transfers, atomics and fast registration, CQ events, UD, SRQ, Ethernet
 # Tx/Rx, and the NVMe-oF CM handshake and Connect over the GSI QP, and the
 # flush a QP entering the Error state owes its outstanding work requests.
-# Also which --backend strings name which backend.
+# Also which --backend strings name which backend, a QP's life on the none
+# backend, and the loopback backend pairing QPs that name no destination.
 set(ERNIC_HARNESS_GROUPS
     devcmds bringup rdma-reset admin rc atomic cq-events qp-flush
-    qp-flush-srq ud srq eth nvmeof teardown backend-names)
+    qp-flush-srq ud srq eth nvmeof teardown backend-names none loopback-pair)
 if(ERNIC_BUILD_P4)
     list(APPEND ERNIC_HARNESS_GROUPS p4-port fp8-map p4-rdma p4-cvt p4-cvt-map
                                       p4-drop-map p4-devcmd)

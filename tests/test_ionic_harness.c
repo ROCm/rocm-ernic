@@ -4,8 +4,8 @@
  * Every other ionic test reaches into one translation unit and stubs the
  * rest. These link the whole device -- the Ethernet emulator, the RDMA
  * devcmds, the admin queue, the data path, the compat bridge, the resource
- * manager and the loopback and TCP backends -- and drive it the way ionic.ko
- * and ionic_rdma.ko do, through the model in ionic_harness.c. Only
+ * manager and the none, loopback and TCP backends -- and drive it the way
+ * ionic.ko and ionic_rdma.ko do, through the model in ionic_harness.c. Only
  * libvfio-user is replaced, by fake_vfu.c, so nothing needs a VM or RDMA
  * hardware, only the TCP backend opens a socket, on loopback, and the whole
  * stack runs under every sanitizer CI builds.
@@ -3577,6 +3577,211 @@ static void test_backend_names(void)
     free(dev);
 }
 
+/* ---- The none backend -------------------------------------------------- */
+
+/*
+ * The none backend keeps nothing and answers with stubs, but a CQ, a QP and
+ * an MR still live out their lives on it as the driver drives them, and the
+ * PSNs MODIFY_QP set come back from QUERY_QP.
+ */
+static void test_none(void)
+{
+    static const char T[] = "none";
+    struct ih h;
+    struct ih_cq cq;
+    struct ih_qp qp;
+    struct ih_mr mr;
+    uint8_t hdr[64];
+    size_t hdr_len = ih_roce_hdr_v4(hdr, sizeof(hdr), 0xc0a80001u, 0xc0a80001u);
+
+    memset(&mr, 0, sizeof(mr));
+    if (!setup(T, &h, "none"))
+        return;
+
+    PVRDMADev *pvrdma = h.dev->pvrdma_handle;
+    RdmaDeviceResources *res = &pvrdma->rdma_dev_res;
+    const uint32_t cqs = res->cq_tbl.used, qps = res->qp_tbl.used,
+                   mrs = res->mr_tbl.used;
+
+    bool made =
+        check(T, ih_cq_create(&h, &cq, 1, 6), "CREATE_CQ failed") &&
+        check(T, ih_qp_create(&h, &qp, 10, IH_QPT_RC, &cq, &cq, NULL),
+              "CREATE_QP failed") &&
+        check(T,
+              ih_mr_create(&h, &mr, MR_A, VA_A, MR_LEN, IH_ACCESS_ALL, false),
+              "CREATE_MR failed");
+    if (!made) {
+        ih_mr_free(&mr);
+        teardown(T, &h);
+        return;
+    }
+
+    /* Connected to itself, as there is only the one */
+    check(T, ih_qp_modify(&h, qp.id, IH_QP_STATE, IH_QPS_INIT, 0, NULL, 0) == 0,
+          "INIT failed");
+    check(T,
+          ih_qp_modify(&h, qp.id,
+                       IH_QP_STATE | IH_QP_AV | IH_QP_DEST_QPN | IH_QP_RQ_PSN,
+                       IH_QPS_RTR, qp.id, hdr, (uint32_t)hdr_len) == 0,
+          "RTR failed");
+    check(T,
+          ih_qp_modify(&h, qp.id, IH_QP_STATE | IH_QP_SQ_PSN, IH_QPS_RTS, 0,
+                       NULL, 0) == 0,
+          "RTS failed");
+
+    uint8_t body[34] = {0};
+    const uint64_t sq_buf = h.scratch + 1024, rq_buf = h.scratch + 1088;
+    uint8_t sqb[20], rqb[12];
+    ernic_put_le64(body + 8, sq_buf);
+    ernic_put_le64(body + 16, rq_buf);
+    ernic_put_le32(body + 28, qp.id);
+    if (check(T, ih_admin(&h, IH_ADMIN_QUERY_QP, body, sizeof(body), NULL) == 0,
+              "QUERY_QP failed")) {
+        fake_vfu_read(h.vfu, sq_buf, sqb, sizeof(sqb));
+        fake_vfu_read(h.vfu, rq_buf, rqb, sizeof(rqb));
+        check(T, rqb[0] >> 4 == IH_QPS_RTS, "QUERY_QP state %u, not RTS",
+              (unsigned)(rqb[0] >> 4));
+        /* ih_qp_modify() sets an RQ PSN of 0x100 and an SQ PSN of 0x200 */
+        check(T,
+              ernic_get_be32(sqb + 16) == 0x100 &&
+                  ernic_get_be32(rqb + 4) == 0x200,
+              "QUERY_QP PSNs RQ %#x and SQ %#x, not 0x100 and 0x200",
+              ernic_get_be32(sqb + 16), ernic_get_be32(rqb + 4));
+    }
+
+    check(T, ih_qp_destroy(&h, &qp) == 0, "DESTROY_QP failed");
+    check(T, ih_mr_destroy(&h, &mr) == 0, "DESTROY_MR failed");
+    check(T, ih_cq_destroy(&h, &cq) == 0, "DESTROY_CQ failed");
+    check(T,
+          res->cq_tbl.used == cqs && res->qp_tbl.used == qps &&
+              res->mr_tbl.used == mrs,
+          "%u CQ(s), %u QP(s) and %u MR(s) left in the resource manager, "
+          "expected %u, %u and %u",
+          res->cq_tbl.used, res->qp_tbl.used, res->mr_tbl.used, cqs, qps, mrs);
+    teardown(T, &h);
+}
+
+/* ---- Loopback pairing -------------------------------------------------- */
+
+/*
+ * The loopback backend stands in for rdma_cm: an RC or UC QP that reaches
+ * RTS with no destination, or naming itself, is paired with one of its
+ * type waiting the same way, and each then names the other. Only the
+ * backend's answer to a query shows it -- the data path goes where
+ * MODIFY_QP told it -- so this drives the resource manager through the
+ * compat layer, where the backend's QPNs are visible.
+ */
+
+/* Create a QP of @type, returning its QPN, or 0. */
+static uint32_t lp_create(const char *T, PVRDMADev *pvrdma, uint32_t pd,
+                          uint32_t cq, uint8_t type)
+{
+    uint32_t qpn = 0;
+
+    if (!check(T,
+               ionic_rm_alloc_qp(pvrdma, pd, type, 16, 16, cq, cq, &qpn) == 0,
+               "creating a QP of type %u failed", type))
+        return 0;
+    return qpn;
+}
+
+/* Take QP @qpn through INIT and RTR, naming @dest, to RTS. */
+static void lp_rts(const char *T, PVRDMADev *pvrdma, uint32_t qpn,
+                   uint32_t dest)
+{
+    static const uint8_t states[] = {IH_QPS_INIT, IH_QPS_RTR, IH_QPS_RTS};
+
+    for (size_t i = 0; i < sizeof(states) / sizeof(states[0]); i++) {
+        int rc = ionic_rm_modify_qp(pvrdma, qpn, IBV_QP_STATE, states[i], 0, 0,
+                                    dest, NULL);
+        if (!check(T, rc == 0, "QP %u to state %u: %d", qpn, states[i], rc))
+            return;
+    }
+}
+
+/* Check that QP @qpn is in RTS and names @dest. */
+static void lp_expect(const char *T, PVRDMADev *pvrdma, uint32_t qpn,
+                      uint32_t dest)
+{
+    uint8_t state = 0;
+    uint32_t got = UINT32_MAX;
+    int rc =
+        ionic_rm_query_qp(pvrdma, qpn, &state, NULL, &got, NULL, NULL, NULL);
+
+    check(T, rc == 0 && state == IH_QPS_RTS && got == dest,
+          "QP %u: query returned %d with state %u and destination %u, "
+          "expected 0 with RTS and %u",
+          qpn, rc, state, got, dest);
+}
+
+static void test_loopback_pair(void)
+{
+    static const char T[] = "loopback-pair";
+    struct ih h;
+    uint32_t pd = 0, cq = 0;
+
+    if (!check(T, ih_create(&h, "loopback"), "device not created"))
+        return;
+
+    PVRDMADev *pvrdma = h.dev->pvrdma_handle;
+    if (!check(T, ionic_rm_alloc_pd(pvrdma, &pd) == 0, "no PD") ||
+        !check(T, ionic_rm_alloc_cq(pvrdma, 16, &cq) == 0, "no CQ")) {
+        teardown(T, &h);
+        return;
+    }
+
+    /* An RC QP with no destination waits for a partner */
+    uint32_t rc1 = lp_create(T, pvrdma, pd, cq, IBV_QPT_RC);
+    lp_rts(T, pvrdma, rc1, 0);
+    lp_expect(T, pvrdma, rc1, 0);
+
+    /* UD and DC QPs aren't connected, so two of each don't pair */
+    static const uint8_t unconnected[] = {IBV_QPT_UD, IBV_QPT_UD,
+                                          IBV_QPT_DRIVER, IBV_QPT_DRIVER};
+    uint32_t qpns[sizeof(unconnected)];
+    for (size_t i = 0; i < sizeof(unconnected); i++) {
+        qpns[i] = lp_create(T, pvrdma, pd, cq, unconnected[i]);
+        lp_rts(T, pvrdma, qpns[i], 0);
+    }
+    for (size_t i = 0; i < sizeof(unconnected); i++)
+        lp_expect(T, pvrdma, qpns[i], 0);
+
+    /* A UC QP doesn't pair with an RC one */
+    uint32_t uc1 = lp_create(T, pvrdma, pd, cq, IBV_QPT_UC);
+    lp_rts(T, pvrdma, uc1, 0);
+    lp_expect(T, pvrdma, uc1, 0);
+    lp_expect(T, pvrdma, rc1, 0);
+
+    /* The next RC QP with no destination does */
+    uint32_t rc2 = lp_create(T, pvrdma, pd, cq, IBV_QPT_RC);
+    lp_rts(T, pvrdma, rc2, 0);
+    lp_expect(T, pvrdma, rc1, rc2);
+    lp_expect(T, pvrdma, rc2, rc1);
+
+    /* A QP that names another keeps it, and its partner isn't taken */
+    uint32_t rc3 = lp_create(T, pvrdma, pd, cq, IBV_QPT_RC);
+    lp_rts(T, pvrdma, rc3, rc1);
+    lp_expect(T, pvrdma, rc3, rc1);
+    lp_expect(T, pvrdma, rc1, rc2);
+
+    /* One that names itself names nothing, and waits for the next */
+    uint32_t rc4 = lp_create(T, pvrdma, pd, cq, IBV_QPT_RC);
+    lp_rts(T, pvrdma, rc4, rc4);
+    lp_expect(T, pvrdma, rc4, 0);
+    uint32_t rc5 = lp_create(T, pvrdma, pd, cq, IBV_QPT_RC);
+    lp_rts(T, pvrdma, rc5, 0);
+    lp_expect(T, pvrdma, rc4, rc5);
+    lp_expect(T, pvrdma, rc5, rc4);
+
+    /* And the UC QP gets the next UC one */
+    uint32_t uc2 = lp_create(T, pvrdma, pd, cq, IBV_QPT_UC);
+    lp_rts(T, pvrdma, uc2, 0);
+    lp_expect(T, pvrdma, uc1, uc2);
+    lp_expect(T, pvrdma, uc2, uc1);
+
+    teardown(T, &h);
+}
+
 /* ---- Driver ------------------------------------------------------------ */
 
 
@@ -3608,6 +3813,8 @@ static const struct {
     {"nvmeof", test_nvmeof},
     {"teardown", test_teardown},
     {"backend-names", test_backend_names},
+    {"none", test_none},
+    {"loopback-pair", test_loopback_pair},
 };
 
 int main(int argc, char **argv)
