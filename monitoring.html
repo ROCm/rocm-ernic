@@ -1213,19 +1213,15 @@ Ethernet, drop, ring and RDMA traffic counters are,
 and <code class="docutils literal notranslate"><span class="pre">tests/py/test_ionic_hw_stats.py</span></code> drives
 traffic that moves them.  The <code class="docutils literal notranslate"><span class="pre">rdma_req_*</span></code> and
 <code class="docutils literal notranslate"><span class="pre">rdma_resp_*</span></code> error counters at qwords 96 to 125
-are named and published, but nothing increments
-them here, so they read zero whatever happens: a
-zero there means “not counted”, not “did not
+are copied in from the data path, which also serves
+them to the guest through the admin queue (see
+<a class="reference internal" href="#guest-hw-counters-and-real-silicon">Guest hw_counters and real silicon</a> below), so
+<code class="docutils literal notranslate"><span class="pre">ernic_lif_counter_total</span></code> and the guest’s
+<code class="docutils literal notranslate"><span class="pre">hw_counters</span></code> agree.  Those with no emulator event
+behind them yet – packet sequence, duplicates,
+flushes, CNP and ECN – read zero whatever happens:
+a zero there means “not counted”, not “did not
 happen”.</p>
-<p>The device does count those errors, and serves them
-to the guest through the admin queue; see <a class="reference internal" href="#guest-hw-counters-and-real-silicon">Guest
-hw_counters and real silicon</a> below.  What is
-missing is the path from the data path’s counters
-into this block, so <code class="docutils literal notranslate"><span class="pre">ernic_lif_counter_total</span></code> –
-the exporter’s view – still shows zeros where the
-guest’s <code class="docutils literal notranslate"><span class="pre">hw_counters</span></code> shows real numbers.  Reading
-a zero in Grafana is not evidence that the fabric is
-clean.</p>
 </div>
 </section>
 <section id="guest-hw-counters-and-real-silicon">
@@ -1253,11 +1249,13 @@ names.  What a guest reads as <code class="docutils literal notranslate"><span c
 per QP as <code class="docutils literal notranslate"><span class="pre">wqes_processed</span></code> is
 <code class="docutils literal notranslate"><span class="pre">ernic_qp_wqes_processed_total</span></code>.  The RDMA error
 counters are the exception: the data path keeps them
-per device and per QP, and only this view reports
-them, so the exporter has no metric that carries them
-yet.  The tables are defined in <code class="docutils literal notranslate"><span class="pre">dev_stats</span></code> and
-<code class="docutils literal notranslate"><span class="pre">qp_stats</span></code> in <code class="docutils literal notranslate"><span class="pre">src/ionic_adminq_priv.h</span></code>, the first
-entries written out and the rest generated from
+per device and per QP, and the exporter carries only
+the device totals, as <code class="docutils literal notranslate"><span class="pre">ernic_lif_counter_total</span></code> under
+their <code class="docutils literal notranslate"><span class="pre">ionic_if.h</span></code> names; per-QP, only this view
+reports them.  A device reset zeroes both.  The
+tables are defined in <code class="docutils literal notranslate"><span class="pre">dev_stats</span></code> and <code class="docutils literal notranslate"><span class="pre">qp_stats</span></code>
+in <code class="docutils literal notranslate"><span class="pre">src/ionic_adminq_priv.h</span></code>, the first entries
+written out and the rest generated from
 <code class="docutils literal notranslate"><span class="pre">IONIC_DP_RDMA_COUNTERS</span></code> in <code class="docutils literal notranslate"><span class="pre">src/ionic_datapath.h</span></code>:</p>
 <p>The device table, 35 counters:</p>
 <div class="pst-scrollable-table-container"><table class="table">

@@ -828,8 +828,16 @@ in a <code class="docutils literal notranslate"><span class="pre">LIF</span> <sp
 test can check what the guest reports against what the
 emulator counted. They agree to within one interval.</p>
 <p>Not counted yet: <code class="docutils literal notranslate"><span class="pre">rx_queue_disabled</span></code> (the receive path
-skips queues that are not initialized) and the RDMA error
-counters at qwords 96 to 125, which stay zero.</p>
+skips queues that are not initialized).</p>
+<p>The RDMA error counters at qwords 96 to 125, and
+<code class="docutils literal notranslate"><span class="pre">{tx,rx}_rdma_cnp_packets</span></code> and <code class="docutils literal notranslate"><span class="pre">rx_rdma_ecn_packets</span></code>,
+belong to the data path, which serves the same counters
+to the guest’s <code class="docutils literal notranslate"><span class="pre">hw_counters</span></code>; they are copied into this
+block whenever it is written or read, so the two agree.
+Those with no emulator event behind them yet (packet
+sequence, duplicates, flushes, CNP and ECN) read zero. A
+device reset zeroes them in the data path, so
+<code class="docutils literal notranslate"><span class="pre">hw_counters</span></code> restarts from zero along with this block.</p>
 <p><code class="docutils literal notranslate"><span class="pre">ernic-exporter</span></code> reads that section and publishes every
 counter as <code class="docutils literal notranslate"><span class="pre">ernic_lif_counter_total</span></code>, labelled with the
 <code class="docutils literal notranslate"><span class="pre">ionic_if.h</span></code> name; the Grafana dashboard graphs them.

@@ -374,7 +374,10 @@
             </div>
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#status">Status</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#status">Status</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#converting-between-formats">Converting between formats</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-guest-s-control-surface">The guest’s control surface</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#shaped-like-pds-fwctl-not-pds-fwctl">Shaped like pds_fwctl, not pds_fwctl</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-capability-bit">The capability bit</a></li>
@@ -486,14 +489,139 @@ extern must also <code class="docutils literal notranslate"><span class="pre">ma
 the destination itself and the ordinary transfer would land
 on top of the result; an operation whose program does not is
 failed rather than allowed to do that.</p>
+<p><strong>All three regions are local.</strong> The destination the work
+request names is checked against this device’s own memory
+region table and written with a local DMA, exactly as the two
+operands are, so a reduction never crosses the mesh. An rkey
+belonging to a peer node is refused with a local QP operation
+error, which is deliberate: a reduction that could write a
+remote key would make the compute path an addressing
+authority over another guest’s memory. What a collective gets
+here is therefore “reduce locally, then ship the result”,
+which costs a second RDMA operation – not an in-network
+reduction.</p>
+<p><strong>A table keyed on the opcode also matches ordinary writes.</strong>
+The opcode cannot tell a reduction from a plain RDMA write, so
+the action fires for both. A request that is not the
+two-equal-operand shape has not asked for arithmetic: the
+extern declines it, the pipeline stops at the call, and the
+operation dispatches as it would with no program at all. That
+is why a one-SGE RDMA write still works on a device whose
+guest installed a reduce entry. A decision the program made
+before the call still stands: if it had already called
+<code class="docutils literal notranslate"><span class="pre">mark_to_drop()</span></code> – earlier in the action, or in an earlier
+table – the operation is dropped, not dispatched. A request that <em>is</em> the
+compute shape but is otherwise bad – an unregistered key, an
+operand over the ceiling – is still failed.</p>
 <p><code class="docutils literal notranslate"><span class="pre">tests/data/p4/fp8_policy.p4</span></code> is the worked example. A
 table keyed on the opcode turns an ordinary RDMA write into
 an elementwise fp8 add across three memory regions, and
 changing the one table entry changes the arithmetic with no
 change to the device.</p>
+<section id="converting-between-formats">
+<h3>Converting between formats<a class="headerlink" href="#converting-between-formats" title="Link to this heading">#</a></h3>
+<p>The extern’s other method, <code class="docutils literal notranslate"><span class="pre">cvt(src_fmt,</span> <span class="pre">dst_fmt)</span></code>, reads
+<strong>one</strong> region and writes the same number of elements in
+another format – longer, shorter or the same length. The
+table entry names both formats, so one program narrows or
+widens depending only on what the control plane put in it.</p>
+<p>The formats, as the numbers a table entry carries
+(<code class="docutils literal notranslate"><span class="pre">enum</span> <span class="pre">p4_fmt</span></code>, <code class="docutils literal notranslate"><span class="pre">src/p4/p4_fmt.h</span></code>):</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 8.0%" />
+<col style="width: 24.0%" />
+<col style="width: 68.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>#</p></th>
+<th class="head"><p>Format</p></th>
+<th class="head"><p>Layout</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>0</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">fp32</span></code></p></td>
+<td><p>IEEE 754 binary32, 1-8-23</p></td>
+</tr>
+<tr class="row-odd"><td><p>1</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">fp16</span></code></p></td>
+<td><p>IEEE 754 binary16, 1-5-10</p></td>
+</tr>
+<tr class="row-even"><td><p>2</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">bf16</span></code></p></td>
+<td><p>bfloat16, 1-8-7</p></td>
+</tr>
+<tr class="row-odd"><td><p>3</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">fp8_e4m3</span></code></p></td>
+<td><p>OCP FP8 E4M3, 1-4-3; no infinity</p></td>
+</tr>
+<tr class="row-even"><td><p>4</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">fp8_e5m2</span></code></p></td>
+<td><p>OCP FP8 E5M2, 1-5-2</p></td>
+</tr>
+<tr class="row-odd"><td><p>5</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">fp4_e2m1</span></code></p></td>
+<td><p>OCP MXFP4 E2M1, 1-2-1; no infinity or NaN</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">fp4_e2m1</span></code> is the only one narrower than a byte, so its
+elements are packed two to a byte, element <em>i</em> in byte
+<em>i / 2</em> and in the low nibble when <em>i</em> is even. An odd
+element count is therefore half a byte at one end and is
+refused rather than rounded.</p>
+<p>The operand convention follows from reading one region: an
+RDMA write whose gather list has exactly <strong>one</strong> entry is the
+source, and the work request’s rkey and address are the
+destination. One entry rather than two is what tells a
+conversion from a reduction, and it is the shape a driver
+already produces for an ordinary one-buffer write.</p>
+<p>This is the only operation whose destination is not the same
+length as its source. Each region is checked against its own
+length, and nothing beyond the result is written.</p>
+<p><strong>The destination may not overlap the source</strong>, and the
+device does not check that it does not. A conversion is
+streamed a chunk at a time – read, convert, write – so a
+destination overlapping the part of the source still to be
+read destroys it before it is used, and the operation then
+completes successfully with wrong results from that point
+on. Widening reaches it easily: fp16 to fp32 into the same
+address writes two bytes for every one it has read, so the
+second chunk’s input is gone before the first is finished.</p>
+<p>It is unchecked because checking it is not a range
+comparison. Two keys may be registered over the same guest
+pages, so overlap has to be decided on what the keys resolve
+to rather than on the keys themselves, and the answer that
+also covers that case is to stage the whole source before
+writing any of it. Until then a guest that overlaps the two
+regions corrupts its own memory with its own keys: it
+reaches nothing it has not registered, and every region is
+still checked for that.</p>
+<p>Two conventions, and both follow from what a format can
+represent rather than from taste. A magnitude too large for
+the destination becomes an infinity if the format has one and
+<strong>saturates</strong> to the largest finite magnitude if it does not
+– which is what AMD’s conversion instructions do, and what a
+reduction needs, since one overflowed term becoming an
+infinity would poison a whole sum. And a NaN stays a NaN
+wherever there is an encoding for one; <code class="docutils literal notranslate"><span class="pre">fp4_e2m1</span></code> has none,
+so a NaN saturates there too, sign preserved. That is lossy
+and cannot be otherwise.</p>
+<p>Rounding is to nearest with ties to even throughout. The
+generic codec is held to <code class="docutils literal notranslate"><span class="pre">p4_fp8.c</span></code> for E4M3 – all 256
+decodings and a four-million-float encode sweep must agree
+exactly – which is how it inherits that file’s own
+validation against <code class="docutils literal notranslate"><span class="pre">ml_dtypes</span></code>; fp16 is checked against
+numpy for all 65536 encodings in both directions, and every
+encoding of every format must survive a decode and re-encode
+unchanged unless it is a NaN.</p>
+<p><code class="docutils literal notranslate"><span class="pre">tests/data/p4/fp8_convert.p4</span></code> is the worked example.</p>
 <p>What is not built yet: checksums and calculations; negative
 literals in actions; and counters, meters, registers and
 action profiles. Each is refused by name rather than ignored.</p>
+</section>
 </section>
 <section id="the-guest-s-control-surface">
 <h2>The guest’s control surface<a class="headerlink" href="#the-guest-s-control-surface" title="Link to this heading">#</a></h2>
@@ -583,6 +711,18 @@ and a frame sent to it is dropped.</p>
 </dl>
 <p>A P4 program’s <code class="docutils literal notranslate"><span class="pre">ingress_port</span></code> and <code class="docutils literal notranslate"><span class="pre">egress_spec</span></code> metadata
 carry these values.</p>
+<p>A program that runs to completion <strong>without assigning</strong>
+<code class="docutils literal notranslate"><span class="pre">egress_spec</span></code> has not chosen a port, and the frame is
+forwarded to the other port – what the device does with no
+program loaded. The field’s initial zero is not read as a
+request for <code class="docutils literal notranslate"><span class="pre">P4_PORT_HOST</span></code>: doing that sent every frame a
+guest transmitted straight back into its own receive ring,
+turning the guest’s network into a silent loopback that was
+counted as forwarded rather than dropped. Every program
+written for the RDMA path does this, <code class="docutils literal notranslate"><span class="pre">fp8_policy.p4</span></code>
+included, so loading the worked example used to cost the
+guest its Ethernet. A program that does mean port 0 assigns
+it, and is unaffected.</p>
 <p>The engine attaches to the emulated NIC through the two frame
 filters the Ethernet emulator already provides, so no frame path
 is duplicated. It takes the transmit filter slot and chains to
@@ -888,7 +1028,10 @@ observed leaving towards the uplink.</p>
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#status">Status</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#status">Status</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#converting-between-formats">Converting between formats</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-guest-s-control-surface">The guest’s control surface</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#shaped-like-pds-fwctl-not-pds-fwctl">Shaped like pds_fwctl, not pds_fwctl</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-capability-bit">The capability bit</a></li>
