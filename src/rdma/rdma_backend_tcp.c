@@ -94,64 +94,6 @@ typedef struct {
     QemuMutex lock;
 } TcpSRQ;
 
-/* Receive buffer pool; see TcpBufPool */
-
-void tcp_bufpool_init(TcpBufPool *pool)
-{
-    memset(pool, 0, sizeof(*pool));
-    qemu_mutex_init(&pool->lock);
-    for (int i = 0; i < TCP_BUFPOOL_SLOTS; i++) {
-        pool->bufs[i] = g_malloc(TCP_BUFPOOL_BUFSZ);
-        pool->count++;
-    }
-}
-
-void tcp_bufpool_destroy(TcpBufPool *pool)
-{
-    for (int i = 0; i < TCP_BUFPOOL_SLOTS; i++) {
-        g_free(pool->bufs[i]);
-        pool->bufs[i] = NULL;
-    }
-    pool->count = 0;
-    qemu_mutex_destroy(&pool->lock);
-}
-
-static void *tcp_bufpool_get(TcpBufPool *pool, size_t len)
-{
-    if (len > TCP_BUFPOOL_BUFSZ) {
-        return g_malloc(len);
-    }
-    qemu_mutex_lock(&pool->lock);
-    if (pool->count > 0) {
-        pool->count--;
-        void *buf = pool->bufs[pool->head];
-        pool->bufs[pool->head] = NULL;
-        pool->head = (pool->head + 1) % TCP_BUFPOOL_SLOTS;
-        qemu_mutex_unlock(&pool->lock);
-        return buf;
-    }
-    qemu_mutex_unlock(&pool->lock);
-    return g_malloc(len);
-}
-
-static void tcp_bufpool_put(TcpBufPool *pool, void *buf, size_t len)
-{
-    if (len > TCP_BUFPOOL_BUFSZ || !buf) {
-        g_free(buf);
-        return;
-    }
-    qemu_mutex_lock(&pool->lock);
-    if (pool->count < TCP_BUFPOOL_SLOTS) {
-        int slot = (pool->head + pool->count) % TCP_BUFPOOL_SLOTS;
-        pool->bufs[slot] = buf;
-        pool->count++;
-        qemu_mutex_unlock(&pool->lock);
-        return;
-    }
-    qemu_mutex_unlock(&pool->lock);
-    g_free(buf);
-}
-
 /*
  * Helper Functions
  */
@@ -2042,17 +1984,23 @@ static int tcp_recv_rest(int sockfd, void *buf, size_t len, size_t got,
  *
  * *payload is set on every return, to NULL unless a payload was received, so
  * a caller that frees it after a failure never frees a buffer from an earlier
- * message.
+ * message.  It is from malloc(), not g_malloc(), so that it can be handed to
+ * the ionic data path, which frees it with free().
  */
 int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
-                     TcpBufPool *pool, atomic_bool *running,
-                     uint64_t deadline_ms)
+                     atomic_bool *running, uint64_t deadline_ms)
 {
     ssize_t ret;
 
     *payload = NULL;
 
-    /* Receive header */
+    /*
+     * Receive header.  The analyzer counts a failed trylock as taking the
+     * lock, so after tcp_send_heartbeat() fails to take conn->lock it puts
+     * this call inside a critical section that the receive thread never
+     * entered.
+     */
+    /* NOLINTNEXTLINE(clang-analyzer-unix.BlockInCriticalSection) */
     ret = recv(sockfd, hdr, sizeof(*hdr), 0);
     if (ret < 0) {
         if (errno == EAGAIN) {
@@ -2092,11 +2040,21 @@ int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
         return -1;
     }
     if (hdr->msg_len > 0) {
-        *payload =
-            pool ? tcp_bufpool_get(pool, hdr->msg_len) : g_malloc(hdr->msg_len);
+        /*
+         * The peer chooses the length, so running out of memory here mustn't
+         * abort the server, as g_malloc() would.  The payload is still in the
+         * socket, so the stream can't go on without it: the caller closes the
+         * connection, and the peer connects again.
+         */
+        *payload = malloc(hdr->msg_len);
+        if (!*payload) {
+            rdma_error_report("TCP: no memory for a %u-byte payload",
+                              hdr->msg_len);
+            return -1;
+        }
         if (tcp_recv_rest(sockfd, *payload, hdr->msg_len, 0, running,
                           deadline_ms, "payload") < 0) {
-            g_free(*payload);
+            free(*payload);
             *payload = NULL;
             return -1;
         }
@@ -2673,7 +2631,6 @@ void *tcp_recv_thread_per_conn(void *opaque)
 
         if (pfd.revents & POLLIN) {
             ret = tcp_recv_message(conn->sockfd, &hdr, &payload,
-                                   conn->priv ? &conn->priv->recv_pool : NULL,
                                    &conn->recv_thread_running, 0);
             if (ret == -EAGAIN) {
                 continue;
@@ -3333,12 +3290,15 @@ void *tcp_recv_thread_per_conn(void *opaque)
                     fn_opaque = priv->ionic_recv_opaque;
                     qemu_mutex_unlock(&priv->lock);
 
-                    if (fn)
+                    if (fn) {
+                        /* fn owns the payload now, and frees it */
                         fn(fn_opaque, hdr.src_node_id, payload, hdr.msg_len);
-                    else
+                        payload = NULL;
+                    } else {
                         rdma_error_report("TCP: ionic message from node %u "
                                           "with no data path registered",
                                           hdr.src_node_id);
+                    }
                 } else if (priv->is_manager) {
                     /* Worker-to-worker: relay to the addressed node. */
                     TcpConnection *fwd =
@@ -3379,14 +3339,8 @@ void *tcp_recv_thread_per_conn(void *opaque)
             }
 
         message_done:
-            if (payload) {
-                if (conn->priv)
-                    tcp_bufpool_put(&conn->priv->recv_pool, payload,
-                                    hdr.msg_len);
-                else
-                    g_free(payload);
-                payload = NULL;
-            }
+            free(payload);
+            payload = NULL;
 
             if (hang_up)
                 break;
@@ -3594,7 +3548,7 @@ void *tcp_accept_thread(void *opaque)
 
             for (;;) {
                 recv_ret =
-                    tcp_recv_message(sockfd, &hdr, &payload, NULL,
+                    tcp_recv_message(sockfd, &hdr, &payload,
                                      &priv->accept_thread_running, deadline_ms);
                 if (recv_ret == 0) {
                     /* Message received successfully */
@@ -3607,7 +3561,7 @@ void *tcp_accept_thread(void *opaque)
                             hdr.msg_type);
                         close(sockfd);
                         if (payload) {
-                            g_free(payload);
+                            free(payload);
                         }
                         goto next_connection;
                     }
@@ -3643,7 +3597,7 @@ void *tcp_accept_thread(void *opaque)
                                       "incoming connection");
                     close(sockfd);
                     if (payload) {
-                        g_free(payload);
+                        free(payload);
                     }
                     goto next_connection;
                 }
@@ -3655,7 +3609,7 @@ void *tcp_accept_thread(void *opaque)
                                   "need %zu",
                                   hdr.msg_len, sizeof(TcpHandshakePayload));
                 close(sockfd);
-                g_free(payload);
+                free(payload);
                 payload = NULL;
                 continue;
             }
@@ -3672,7 +3626,7 @@ void *tcp_accept_thread(void *opaque)
                     "TCP: Protocol version mismatch: local=%u remote=%u",
                     TCP_PROTOCOL_VERSION, remote_version);
                 close(sockfd);
-                g_free(payload);
+                free(payload);
                 payload = NULL;
                 continue;
             }
@@ -3694,7 +3648,7 @@ void *tcp_accept_thread(void *opaque)
                     "duplicate",
                     remote_node_id);
                 close(sockfd);
-                g_free(payload);
+                free(payload);
                 payload = NULL;
                 continue;
             }
@@ -3715,7 +3669,7 @@ void *tcp_accept_thread(void *opaque)
             if (!tcp_start_recv_thread(conn, thread_name)) {
                 qemu_mutex_unlock(&priv->conn_table_lock);
                 tcp_connection_unref(conn);
-                g_free(payload);
+                free(payload);
                 payload = NULL;
                 continue;
             }
@@ -3746,7 +3700,7 @@ void *tcp_accept_thread(void *opaque)
                                TCP_MSG_HANDSHAKE_RESP);
             tcp_connection_unref(conn);
 
-            g_free(payload);
+            free(payload);
             payload = NULL;
         }
 
@@ -4708,8 +4662,6 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
     priv->gid_owner = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
                                             tcp_gid_key_free, NULL);
 
-    tcp_bufpool_init(&priv->recv_pool);
-
     priv->next_pd_handle = 1;
     priv->next_cq_handle = 1;
     priv->next_qpn = 100;
@@ -4938,7 +4890,6 @@ error:
     g_hash_table_destroy(priv->connections);
     g_hash_table_destroy(priv->node_gids);
     g_hash_table_destroy(priv->gid_owner);
-    tcp_bufpool_destroy(&priv->recv_pool);
     qemu_mutex_destroy(&priv->lock);
     qemu_mutex_destroy(&priv->conn_table_lock);
     qemu_mutex_destroy(&priv->gid_table_lock);
@@ -5000,7 +4951,6 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
     g_hash_table_destroy(priv->node_gids);
     g_hash_table_destroy(priv->gid_owner);
 
-    tcp_bufpool_destroy(&priv->recv_pool);
     qemu_mutex_destroy(&priv->lock);
     qemu_mutex_destroy(&priv->conn_table_lock);
     qemu_mutex_destroy(&priv->gid_table_lock);

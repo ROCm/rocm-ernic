@@ -628,13 +628,13 @@ static const struct backend_case other_backends[] = {
 #define MESH_PEER   2u   /* the node the hooks address and the GID's owner */
 #define POISON_BYTE 0xA5 /* fills another backend's private block */
 
-static void recv_fn(void *opaque, uint32_t src_node, const void *buf,
-                    size_t len)
+/* Never called: no row sends it a message.  It owns buf if it is. */
+static void recv_fn(void *opaque, uint32_t src_node, void *buf, size_t len)
 {
     (void)opaque;
     (void)src_node;
-    (void)buf;
     (void)len;
+    free(buf);
 }
 
 /* The TCP backend keeps this pointer, so it has to outlive the call. */

@@ -638,9 +638,9 @@ static bool recv_type(int fd, TcpMsgType type, int timeout_ms)
 
     if (poll(&pfd, 1, timeout_ms) != 1)
         return false;
-    if (tcp_recv_message(fd, &hdr, &payload, NULL, NULL, 0) < 0)
+    if (tcp_recv_message(fd, &hdr, &payload, NULL, 0) < 0)
         return false;
-    g_free(payload);
+    free(payload);
     return hdr.msg_type == type;
 }
 
@@ -906,7 +906,6 @@ static int run_recv_case(const struct recv_case *c)
         g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
     priv->pending_conns = g_ptr_array_new();
     qemu_mutex_init(&priv->conn_table_lock);
-    tcp_bufpool_init(&priv->recv_pool);
     /* So a registration gets the manager's refusal */
     priv->is_manager = true;
     atomic_init(&priv->next_seq, 1);
@@ -989,7 +988,6 @@ static int run_recv_case(const struct recv_case *c)
     for (int i = 0; i < n; i++)
         if (peers[i] >= 0)
             close(peers[i]);
-    tcp_bufpool_destroy(&priv->recv_pool);
     qemu_mutex_destroy(&priv->conn_table_lock);
     g_free(priv);
     return ok ? 0 : 1;
@@ -1191,9 +1189,9 @@ static bool heartbeats_within(int fd, int n, int timeout_ms)
         void *payload = NULL;
 
         if (left_ms <= 0.0 || poll(&pfd, 1, (int)left_ms) != 1 ||
-            tcp_recv_message(fd, &hdr, &payload, NULL, NULL, 0) < 0)
+            tcp_recv_message(fd, &hdr, &payload, NULL, 0) < 0)
             return false;
-        g_free(payload);
+        free(payload);
         if (hdr.msg_type == TCP_MSG_HEARTBEAT)
             n--;
     }
@@ -1755,7 +1753,6 @@ static int run_hs_case(const struct hs_case *c)
         g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
     priv->pending_conns = g_ptr_array_new();
     qemu_mutex_init(&priv->conn_table_lock);
-    tcp_bufpool_init(&priv->recv_pool);
     priv->listen_fd = listen_loopback();
     memset(&addr, 0, sizeof(addr));
 
@@ -1806,7 +1803,6 @@ static int run_hs_case(const struct hs_case *c)
         close(good);
     if (priv->listen_fd >= 0)
         close(priv->listen_fd);
-    tcp_bufpool_destroy(&priv->recv_pool);
     qemu_mutex_destroy(&priv->conn_table_lock);
     g_free(priv);
     return ok ? 0 : 1;
@@ -1882,7 +1878,6 @@ static const char *mgr_setup(struct mgr_fixture *fx, uint32_t nodes,
                                             tcp_gid_key_free, NULL);
     qemu_mutex_init(&priv->gid_table_lock);
     qemu_mutex_init(&priv->gid_broadcast_lock);
-    tcp_bufpool_init(&priv->recv_pool);
 
     for (uint32_t i = 0; i < nodes && i < MGR_MAX_NODES; i++) {
         uint32_t id = i + 1;
@@ -1934,7 +1929,6 @@ static void mgr_teardown(struct mgr_fixture *fx)
         if (fx->peer[i] >= 0)
             close(fx->peer[i]);
     }
-    tcp_bufpool_destroy(&priv->recv_pool);
     g_hash_table_destroy(priv->gid_owner);
     g_hash_table_destroy(priv->node_gids);
     qemu_mutex_destroy(&priv->gid_broadcast_lock);
@@ -2318,9 +2312,9 @@ static int count_type(int fd, TcpMsgType type)
         TcpMsgHeader hdr;
         void *payload = NULL;
 
-        if (tcp_recv_message(fd, &hdr, &payload, NULL, NULL, 0) < 0)
+        if (tcp_recv_message(fd, &hdr, &payload, NULL, 0) < 0)
             break;
-        g_free(payload);
+        free(payload);
         if (hdr.msg_type == type)
             n++;
     }
@@ -2574,7 +2568,6 @@ static const char *tp_setup(struct tp_fixture *fx, uint32_t interval,
         g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
     priv->pending_conns = g_ptr_array_new();
     qemu_mutex_init(&priv->conn_table_lock);
-    tcp_bufpool_init(&priv->recv_pool);
     priv->peer_targets = g_array_new(FALSE, FALSE, sizeof(TcpPeerTarget));
     qemu_mutex_init(&priv->peer_lock);
     qemu_cond_init(&priv->peer_cond);
@@ -2613,7 +2606,6 @@ static double tp_teardown(struct tp_fixture *fx)
     tcp_connection_unref(atomic_load(&priv->manager_conn));
     if (fx->mgr >= 0)
         close(fx->mgr);
-    tcp_bufpool_destroy(&priv->recv_pool);
     qemu_mutex_destroy(&priv->conn_table_lock);
     qemu_cond_destroy(&priv->peer_cond);
     qemu_mutex_destroy(&priv->peer_lock);
@@ -3425,7 +3417,7 @@ static bool wr_recv(int fd, TcpMsgHeader *hdr, void **payload, int timeout_ms)
 
     *payload = NULL;
     return poll(&pfd, 1, timeout_ms) == 1 &&
-           tcp_recv_message(fd, hdr, payload, NULL, NULL, 0) == 0;
+           tcp_recv_message(fd, hdr, payload, NULL, 0) == 0;
 }
 
 /*
@@ -3447,7 +3439,7 @@ static bool wr_until(int fd, TcpMsgType type, int timeout_ms, TcpMsgHeader *hdr,
             return true;
         if (gids && hdr->msg_type == TCP_MSG_NODE_GIDS)
             (*gids)++;
-        g_free(*payload);
+        free(*payload);
     }
     *payload = NULL;
     return false;
@@ -3473,7 +3465,7 @@ static uint32_t wr_node_in(int fd, TcpMsgType type, uint32_t *src)
     }
     if (src)
         *src = hdr.src_node_id;
-    g_free(payload);
+    free(payload);
     return id;
 }
 
@@ -3489,7 +3481,7 @@ static bool wr_settled(int fd, int *gids)
     if (!send_heartbeat(fd, 0) ||
         !wr_until(fd, TCP_MSG_HEARTBEAT, 2000, &hdr, &payload, gids))
         return false;
-    g_free(payload);
+    free(payload);
     return true;
 }
 
@@ -3545,7 +3537,7 @@ static const char *wr_registered(int lfd, int *mgr, uint16_t *port)
         why = "the worker's first message wasn't a registration";
     else
         *port = ntohs(((const TcpRegisterNodePayload *)payload)->port);
-    g_free(payload);
+    free(payload);
     return why;
 }
 
@@ -4016,7 +4008,7 @@ static const char *sp_read(const struct sp_case *c, int fd,
         void *payload = NULL;
         const char *why = NULL;
 
-        *ret = tcp_recv_message(fd, &hdr, &payload, NULL, running, deadline_ms);
+        *ret = tcp_recv_message(fd, &hdr, &payload, running, deadline_ms);
         if (i == c->want_msgs)
             why = payload ? "the last call returned a payload" : NULL;
         else if (*ret != 0)
@@ -4024,7 +4016,7 @@ static const char *sp_read(const struct sp_case *c, int fd,
         else if (!sp_matches(&hdr, payload, want[i].type, want[i].seq,
                              want[i].len, want[i].fill))
             why = "a message read isn't the one sent";
-        g_free(payload);
+        free(payload);
         if (why)
             return why;
     }
@@ -4567,7 +4559,7 @@ static bool reported(int fd, uint32_t id, bool alive, int timeout_ms)
 
         if (poll(&pfd, 1, left > 0 ? left : 1) != 1)
             continue;
-        if (tcp_recv_message(fd, &hdr, &payload, NULL, NULL, 0) < 0)
+        if (tcp_recv_message(fd, &hdr, &payload, NULL, 0) < 0)
             return false;
         if (hdr.msg_type == TCP_MSG_MESH_TOPOLOGY && payload &&
             hdr.msg_len >= sizeof(TcpMeshTopologyPayload)) {
@@ -4579,7 +4571,7 @@ static bool reported(int fd, uint32_t id, bool alive, int timeout_ms)
                     (topo->nodes[i].is_alive != 0) == alive)
                     found = true;
         }
-        g_free(payload);
+        free(payload);
         if (found)
             return true;
     }
@@ -4748,6 +4740,10 @@ static int run_reap_case(const struct reap_case *c)
  * peer could use to grow the node's memory without bound.  A retired message
  * now gets no answer and nothing of it is kept.
  *
+ * The ionic data path's messages are handed to its callback with the buffer
+ * they were received into, which the callback then owns, so a large message
+ * isn't copied.  With no callback, the manager frees the buffer itself.
+ *
  * Each row starts a manager with tcp_init(), stops its health-check thread,
  * and registers two workers over socketpairs, as in the fini rows: nodes 1
  * and 2.  The health check's first pass comes as soon as the thread runs,
@@ -4760,6 +4756,8 @@ enum sender_scenario {
     SENDER_HEARTBEAT, /* worker 1's heartbeat names node 2, which is dead */
     SENDER_REVIVES,   /* node 2, declared dead, answers a heartbeat */
     SENDER_RETIRED,   /* worker 1 sends the retired data-path messages */
+    SENDER_IONIC,     /* worker 1 sends the manager's data path a message */
+    SENDER_NO_DP,     /* and the manager has no data path */
 };
 
 struct sender_case {
@@ -4780,9 +4778,16 @@ static const struct sender_case sender_cases[] = {
      "ignored: nothing is sent to either worker, and worker 1 is still "
      "answered",
      SENDER_RETIRED},
+    {"positive", "worker 1 sends an ionic message to the manager's data path",
+     "the data path's callback is handed the payload, from node 1, once, and "
+     "keeps it after the call",
+     SENDER_IONIC},
+    {"negative",
+     "worker 1 sends an ionic message to a manager with no data path",
+     "dropped, and worker 1 is still answered", SENDER_NO_DP},
 };
 
-/* The payload each retired message carries */
+/* The payload each retired or ionic message carries */
 #define SENDER_LEN  8u
 #define SENDER_BYTE 0xab
 
@@ -4924,9 +4929,9 @@ static int others_before(int fd, TcpMsgType type, int timeout_ms)
 
         if (poll(&pfd, 1, left > 0 ? left : 1) != 1)
             continue;
-        if (tcp_recv_message(fd, &hdr, &payload, NULL, NULL, 0) < 0)
+        if (tcp_recv_message(fd, &hdr, &payload, NULL, 0) < 0)
             return -1;
-        g_free(payload);
+        free(payload);
         if (hdr.msg_type == type)
             return others;
         others++;
@@ -4975,6 +4980,88 @@ static const char *sender_retired(int w1, int w2)
 }
 
 /*
+ * What sender_ionic_recv() was handed.  It runs on the manager's receive
+ * thread and the row reads these on its own, so they are atomic; buf is
+ * stored last, so a row that finds it also finds len and src.
+ */
+static atomic_int g_ionic_calls;
+static atomic_size_t g_ionic_len;
+static atomic_uint g_ionic_src;
+static _Atomic(void *) g_ionic_buf;
+
+/*
+ * The data path's callback, keeping the first payload, as the data path
+ * queues it, for the row to read after the call has returned and then free.
+ */
+static void sender_ionic_recv(void *opaque, uint32_t src_node, void *buf,
+                              size_t len)
+{
+    void *none = NULL;
+
+    (void)opaque;
+    atomic_store(&g_ionic_len, len);
+    atomic_store(&g_ionic_src, src_node);
+    if (atomic_compare_exchange_strong(&g_ionic_buf, &none, buf))
+        buf = NULL;
+    atomic_fetch_add(&g_ionic_calls, 1);
+    free(buf);
+}
+
+/* Whether sender_ionic_recv() was handed worker 1's payload, once */
+static const char *sender_ionic_check(const uint8_t *buf)
+{
+    if (atomic_load(&g_ionic_calls) != 1 || !buf)
+        return "the callback wasn't called once";
+    if (atomic_load(&g_ionic_src) != 1)
+        return "the callback wasn't told the message is from node 1";
+    if (atomic_load(&g_ionic_len) != SENDER_LEN)
+        return "the callback wasn't given the payload's length";
+    for (size_t i = 0; i < SENDER_LEN; i++)
+        if (buf[i] != SENDER_BYTE)
+            return "the callback wasn't given the payload";
+    return NULL;
+}
+
+/*
+ * SENDER_IONIC and SENDER_NO_DP: as in SENDER_RETIRED, once the
+ * heartbeat sent after the message is answered, the message has been
+ * handled.  The callback owns the payload: if the manager freed it as well,
+ * reading it here is a use after free, and freeing it a double free.  With
+ * no callback, the manager frees it, or leaks it.  Only the sanitizers and
+ * valgrind see either.
+ */
+static const char *sender_ionic(RdmaBackendDev *dev, int w1, bool registered)
+{
+    uint8_t *buf;
+    const char *why = NULL;
+
+    if (!worker_settled(w1, 1))
+        return "worker 1's registration wasn't finished";
+    count_type(w1, TCP_MSG_HEARTBEAT_RESP);
+
+    atomic_store(&g_ionic_calls, 0);
+    atomic_store(&g_ionic_buf, NULL);
+    /* tcp_init() leaves this to rdma_backend_init_with_ops(), which the row
+     * doesn't use, and the callback is only set on a TCP backend */
+    dev->backend_type = RDMA_BACKEND_TYPE_TCP;
+    if (registered)
+        tcp_backend_set_ionic_recv_cb(dev, sender_ionic_recv, NULL);
+    if (!send_payload(w1, TCP_MSG_IONIC, 1))
+        why = "could not send the ionic message";
+    else if (!worker_settled(w1, 1))
+        why = "the heartbeat after the ionic message wasn't answered";
+    tcp_backend_set_ionic_recv_cb(dev, NULL, NULL);
+
+    buf = atomic_load(&g_ionic_buf);
+    if (!why && registered)
+        why = sender_ionic_check(buf);
+    else if (!why && atomic_load(&g_ionic_calls) != 0)
+        why = "a callback was called";
+    free(buf);
+    return why;
+}
+
+/*
  * Take node id's connection out of the table and retire it, as the health
  * check does with one that has hung up.
  */
@@ -4995,9 +5082,11 @@ static bool retire_node_conn(TcpBackendPrivate *priv, uint32_t id)
     return taken;
 }
 
-static const char *sender_run(TcpBackendPrivate *priv, int w1, int w2,
+static const char *sender_run(RdmaBackendDev *dev, int w1, int w2,
                               enum sender_scenario scenario)
 {
+    TcpBackendPrivate *priv = dev->backend_private;
+
     switch (scenario) {
     case SENDER_HEARTBEAT:
         return sender_heartbeat(priv, w1);
@@ -5005,6 +5094,10 @@ static const char *sender_run(TcpBackendPrivate *priv, int w1, int w2,
         return sender_revives(priv, w1, w2);
     case SENDER_RETIRED:
         return sender_retired(w1, w2);
+    case SENDER_IONIC:
+        return sender_ionic(dev, w1, true);
+    case SENDER_NO_DP:
+        return sender_ionic(dev, w1, false);
     default:
         return "unknown scenario";
     }
@@ -5044,7 +5137,7 @@ static int run_sender_case(const struct sender_case *c)
     else if ((w2 = worker_register(priv)) < 0 || !wait_for_registered(priv, 2))
         why = "worker 2 did not register";
     else
-        why = sender_run(priv, w1, w2, c->scenario);
+        why = sender_run(&dev, w1, w2, c->scenario);
 
     rdma_backend_ops_tcp.fini(&dev);
     alarm(0);
@@ -5157,7 +5250,7 @@ static bool register_answer(int fd, uint32_t *id, int32_t *result)
         *id = ntohl(resp->assigned_node_id);
         *result = (int32_t)ntohl(resp->result);
     }
-    g_free(payload);
+    free(payload);
     return ok;
 }
 
@@ -5196,7 +5289,7 @@ static int gids_for(int fd, uint32_t id)
         if (payload && hdr.msg_len >= sizeof(TcpNodeGidsPayload) &&
             ntohl(((const TcpNodeGidsPayload *)payload)->node_id) == id)
             n = (int)ntohl(((const TcpNodeGidsPayload *)payload)->num_gids);
-        g_free(payload);
+        free(payload);
         if (n >= 0)
             return n;
     }
@@ -5673,7 +5766,7 @@ static const char *ev_broadcasts(int fd, uint32_t fresh, uint32_t evicted)
     if (!wr_until(fd, TCP_MSG_MESH_TOPOLOGY, 2000, &hdr, &payload, NULL))
         return "no topology update came";
     if (!payload || hdr.msg_len < sizeof(*topo)) {
-        g_free(payload);
+        free(payload);
         return "the topology update is short";
     }
     topo = payload;
@@ -5689,7 +5782,7 @@ static const char *ev_broadcasts(int fd, uint32_t fresh, uint32_t evicted)
         else
             seen[id] = true;
     }
-    g_free(payload);
+    free(payload);
     if (why)
         return why;
 
@@ -5701,13 +5794,13 @@ static const char *ev_broadcasts(int fd, uint32_t fresh, uint32_t evicted)
         if (!wr_until(fd, TCP_MSG_NODE_GIDS, 2000, &hdr, &payload, NULL))
             return "the evicted node wasn't advertised";
         if (!payload || hdr.msg_len < sizeof(*adv)) {
-            g_free(payload);
+            free(payload);
             return "an advertisement is short";
         }
         adv = payload;
         id = ntohl(adv->node_id);
         num = ntohl(adv->num_gids);
-        g_free(payload);
+        free(payload);
         if (id == evicted)
             return num != 0 ? "the evicted node still owns GIDs"
                    : n != TCP_MAX_MESH_NODES ? "a node in the table wasn't "
@@ -7074,7 +7167,7 @@ static const char *wl_registers(struct dc_worker *w, int lfd, struct wl_fds *k,
         why = "the worker didn't ask for its own id";
     else if (ntohs(reg->port) != w->port)
         why = "the worker registered another port";
-    g_free(payload);
+    free(payload);
     return why;
 }
 
@@ -7936,11 +8029,11 @@ static void *st_reader_run(void *opaque)
 
         if (poll(&pfd, 1, 50) != 1)
             continue;
-        if (tcp_recv_message(r->fd, &hdr, &payload, NULL, NULL, 0) < 0) {
+        if (tcp_recv_message(r->fd, &hdr, &payload, NULL, 0) < 0) {
             atomic_store(&r->failed, true);
             break;
         }
-        g_free(payload);
+        free(payload);
         if (hdr.msg_type == TCP_MSG_HEARTBEAT) {
             atomic_fetch_add(&r->heartbeats, 1);
             if (!send_heartbeat(r->fd, 1)) {

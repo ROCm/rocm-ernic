@@ -43,9 +43,12 @@ void rdma_backend_fini_with_ops(RdmaBackendDev *backend_dev);
  * ionic MRs are guest-physical page tables reached over vfio-user DMA, which
  * only the ionic data path can resolve, so the mesh carries ionic's own
  * protocol as an opaque payload rather than RDMA operations of its own.
+ *
+ * The callback owns buf, which is from malloc(), and must free() it on every
+ * path, rejections included.  len is never 0.
  */
-typedef void (*tcp_ionic_recv_fn)(void *opaque, uint32_t src_node,
-                                  const void *buf, size_t len);
+typedef void (*tcp_ionic_recv_fn)(void *opaque, uint32_t src_node, void *buf,
+                                  size_t len);
 
 /*
  * Header and body stay separate until they are queued.  Never waits for the
