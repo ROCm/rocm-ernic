@@ -569,6 +569,13 @@
   registration timeout use the monotonic clock, so an NTP step can't declare
   every node dead. `tcp-mesh-ci` fails a node that exits non-zero or isn't
   gone 30 seconds after SIGTERM.
+* **SIGINT and SIGTERM go to the server's main thread.** The server's own
+  threads (the TCP backend's) block every signal but those a fault raises,
+  so a shutdown signal can no longer land on one of them and interrupt its
+  system call. The main thread unblocks SIGINT and SIGTERM at startup, so a
+  server started with them blocked (a signal mask survives `exec`) still
+  shuts down on them; they used to stay pending, so only SIGKILL stopped
+  it.
 * **TCP mesh: connections recover.**
   * A message header split across TCP segments no longer drops the
     connection, which could happen under load on a real network.

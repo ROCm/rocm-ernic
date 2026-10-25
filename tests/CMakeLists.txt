@@ -754,8 +754,9 @@ target_link_directories(test_rdma_res_tbl PRIVATE
 target_link_libraries(test_rdma_res_tbl PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
-# QEMU utility stubs test: bitmap word boundaries and the oversize-map
-# abort. It links the stubs translation unit directly.
+# QEMU utility stubs test: bitmap word boundaries, the oversize-map
+# abort, and the signal mask of a new thread. It links the stubs
+# translation unit directly.
 add_executable(test_qemu_stubs test_qemu_stubs.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
 )
@@ -1292,7 +1293,7 @@ add_test(
 )
 set_tests_properties(rdma-res-tbl-unit PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
-# QEMU utility stubs unit test (bitmap)
+# QEMU utility stubs unit test (bitmap, thread signal mask)
 add_test(
     NAME qemu-stubs-unit
     COMMAND $<TARGET_FILE:test_qemu_stubs>

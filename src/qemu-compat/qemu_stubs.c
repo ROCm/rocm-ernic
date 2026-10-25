@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <pthread.h>
+#include <signal.h>
 #include <glib.h>
 
 /*
@@ -31,10 +32,41 @@
  * Thread Operations
  */
 
+/*
+ * A new thread starts with its creator's signal mask, so the mask is set to
+ * block every signal around pthread_create() and then put back, as QEMU's own
+ * qemu_thread_create() does.  The process's signals, such as SIGINT and
+ * SIGTERM, then go to the main thread rather than a worker, and never
+ * interrupt a worker's system call with EINTR.
+ *
+ * The signals a fault raises in the thread that caused it stay unblocked:
+ * POSIX leaves undefined what happens when SIGSEGV, SIGBUS, SIGFPE, or SIGILL
+ * is raised while blocked, and Linux then kills the process without running a
+ * handler, such as AddressSanitizer's.  sigfillset() also takes in SIGKILL
+ * and SIGSTOP, which pthread_sigmask() ignores, as it does glibc's internal
+ * signals.
+ *
+ * pthread_sigmask() fails only for an invalid first argument, so its result
+ * is not checked.
+ */
 int qemu_thread_create(QemuThread *thread, void *(*start_routine)(void *),
                        void *arg)
 {
-    return pthread_create(&thread->thread, NULL, start_routine, arg);
+    sigset_t set;
+    sigset_t oldset;
+    int ret;
+
+    sigfillset(&set);
+    sigdelset(&set, SIGSEGV);
+    sigdelset(&set, SIGBUS);
+    sigdelset(&set, SIGFPE);
+    sigdelset(&set, SIGILL);
+
+    pthread_sigmask(SIG_SETMASK, &set, &oldset);
+    ret = pthread_create(&thread->thread, NULL, start_routine, arg);
+    pthread_sigmask(SIG_SETMASK, &oldset, NULL);
+
+    return ret;
 }
 
 void qemu_thread_join(QemuThread *thread)
