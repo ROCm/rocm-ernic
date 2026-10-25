@@ -36,6 +36,7 @@
 
 #include "byteorder.h"
 #include "fake_vfu.h"
+#include "ionic_datapath.h"
 #include "ionic_eth_emu.h"
 /* For the emulator's admin queue pointer, which rdma-reset checks */
 #include "ionic_eth_emu_priv.h"
@@ -45,7 +46,6 @@
 #include "nvmeof.h"
 #include "nvmeof_cm.h"
 #ifdef ERNIC_HAVE_P4
-#include "ionic_datapath.h"
 #include "p4_devcmd.h"
 #include "p4_engine.h"
 #include "p4_fp8.h"
@@ -54,6 +54,7 @@
 #include "p4_table.h"
 #endif
 #include "pvrdma.h"
+#include "rdma_backend_defs.h"
 #include "rdma_rm.h"
 #include "rocm_ernic_compat.h"
 #include "rocm_ernic_internal.h"
@@ -707,6 +708,127 @@ static void test_admin_errors(void)
     teardown(T, &h);
 }
 
+/* ---- Guest memory the device can't reach -------------------------------- */
+
+/*
+ * fake_vfu_fail_nth_map(n) refuses the nth mapping from then on, as
+ * libvfio-user refuses an address the client has unmapped. Each DMA here
+ * maps once, so the rows below name the DMA they refuse by where it falls in
+ * the operation: for an admin command, the WQE is the first and its
+ * completion the last.
+ */
+static void test_admin_dma_faults(void)
+{
+    const char *T = "admin-dma";
+    struct ih h;
+    struct ih_cq cq;
+    struct ih_qp qp;
+    struct ih_srq srq;
+
+    if (!setup(T, &h, "loopback"))
+        return;
+    if (!check(T,
+               ih_cq_create(&h, &cq, 1, 4) &&
+                   ih_qp_create(&h, &qp, 3, IH_QPT_UD, &cq, &cq, NULL),
+               "CQ and QP setup failed")) {
+        teardown(T, &h);
+        return;
+    }
+
+    /* A completion the device can't write is lost, and the next command's
+     * takes its place */
+    int slot = ih_admin_post(&h, IH_ADMIN_NOOP, NULL, 0);
+    fake_vfu_fail_nth_map(h.vfu, 2);
+    ih_poll(&h);
+    check(T,
+          ih_admin_complete(&h, IH_ADMIN_NOOP, slot, NULL) == IH_ADMIN_PENDING,
+          "a completion the device could not write arrived");
+    check(T, ih_admin(&h, IH_ADMIN_NOOP, NULL, 0, NULL) == 0,
+          "NOOP after a lost completion failed");
+
+    /* The second stride of a WQE, like the first, is read again next poll */
+    uint8_t body[100] = {0};
+    slot = ih_admin_post(&h, IH_ADMIN_NOOP, body, sizeof(body));
+    fake_vfu_fail_nth_map(h.vfu, 2);
+    ih_poll(&h);
+    check(T,
+          ih_admin_complete(&h, IH_ADMIN_NOOP, slot, NULL) == IH_ADMIN_PENDING,
+          "a WQE whose second stride could not be read completed");
+    ih_poll(&h);
+    check(T, ih_admin_complete(&h, IH_ADMIN_NOOP, slot, NULL) == 0,
+          "a two-stride WQE was not retried");
+
+    /* QUERY_QP refuses when either answer can't be written */
+    for (unsigned fail = 2; fail <= 3; fail++) {
+        memset(body, 0, sizeof(body));
+        ernic_put_le64(body + 8, h.scratch + 1024);
+        ernic_put_le64(body + 16, h.scratch + 1088);
+        ernic_put_le32(body + 28, qp.id);
+        fake_vfu_fail_nth_map(h.vfu, fail);
+        check(T, ih_admin(&h, IH_ADMIN_QUERY_QP, body, 34, NULL) == 1,
+              "QUERY_QP with DMA %u refused succeeded", fail);
+    }
+
+    /* A RoCE header the device can't read leaves an AH with no address */
+    fake_vfu_fail_nth_map(h.vfu, 2);
+    check(T, ih_ah_create(&h, 5, 0xc0a80001u, 0xc0a80002u) == 0,
+          "CREATE_AH with an unreadable header failed");
+
+    /* CREATE_SRQ fails when its response can't be written... */
+    fake_vfu_fail_nth_map(h.vfu, 2);
+    check(T, ih_srq_create(&h, &srq, 4) == 1,
+          "CREATE_SRQ with an unwritable response succeeded");
+
+    /* ...or when its page table can't be read. Two 4 KiB pages hold
+     * 2^6 128-byte WQEs. */
+    memset(body, 0, sizeof(body));
+    ernic_put_le64(body + 0, h.scratch);
+    ernic_put_le32(body + 8, 2);
+    body[26] = 6;
+    body[27] = 7;
+    body[28] = 12;
+    ernic_put_le32(body + 30, 5);
+    ernic_put_le64(body + 34, h.scratch + 512);
+    fake_vfu_fail_nth_map(h.vfu, 2);
+    check(T, ih_admin(&h, IH_ADMIN_CREATE_SRQ, body, 42, NULL) == 1,
+          "CREATE_SRQ with an unreadable page table succeeded");
+    if (check(T, ih_srq_create(&h, &srq, 4) == 0,
+              "CREATE_SRQ after refused ones failed"))
+        check(T, ih_srq_destroy(&h, &srq) == 0, "DESTROY_SRQ failed");
+
+    /* A CQ or QP whose page table can't be read still completes the
+     * command: the data path has no way to report it. Each can be
+     * destroyed. CREATE_QP's page table is its third DMA, after both of the
+     * WQE's strides. */
+    memset(body, 0, sizeof(body));
+    build_cq(body, 8, 5);
+    ernic_put_le32(body + 20, 2);
+    ernic_put_le64(body + 24, h.scratch);
+    fake_vfu_fail_nth_map(h.vfu, 2);
+    check(T, ih_admin(&h, IH_ADMIN_CREATE_CQ, body, 34, NULL) >= 0,
+          "CREATE_CQ with an unreadable page table drew no completion");
+    ernic_put_le32(body, 2);
+    check(T, ih_admin(&h, IH_ADMIN_DESTROY_CQ, body, 4, NULL) == 0,
+          "DESTROY_CQ of that CQ failed");
+
+    memset(body, 0, sizeof(body));
+    build_qp(body, 6, 7, 4, 7);
+    ernic_put_le32(body + 20, 2);
+    ernic_put_le64(body + 24, h.scratch);
+    ernic_put_le32(body + 56, 4);
+    fake_vfu_fail_nth_map(h.vfu, 3);
+    check(T, ih_admin(&h, IH_ADMIN_CREATE_QP, body, 64, NULL) >= 0,
+          "CREATE_QP with an unreadable page table drew no completion");
+    ernic_put_le32(body, 4);
+    check(T, ih_admin(&h, IH_ADMIN_DESTROY_QP, body, 4, NULL) == 0,
+          "DESTROY_QP of that QP failed");
+
+    check(T, fake_vfu_mapped(h.vfu) == 0, "guest memory left mapped");
+    check(T, ih_qp_destroy(&h, &qp) == 0, "DESTROY_QP failed");
+    check(T, ih_cq_destroy(&h, &cq) == 0, "DESTROY_CQ failed");
+    teardown(T, &h);
+}
+
 /* ---- Connected QPs on the loopback backend ----------------------------- */
 
 #define RC_CQ_A 1
@@ -1281,6 +1403,21 @@ static void test_atomic_and_reg_mr(void)
     atomic(T, &r, IH_OP_ATOMIC_FA, 1, 0, MR_B, VA_B + MR_LEN - 4,
            IH_STS_REMOTE_ACC_ERR, 0, 0);
 
+    /* Operands split over two of A's pages, which aren't adjacent in guest
+     * memory, can't be read or written as one u64 */
+    const uint64_t split = VA_A + IH_PAGE_SIZE - VA_A % IH_PAGE_SIZE - 4;
+    atomic(T, &r, IH_OP_ATOMIC_FA, 1, 0, MR_A, split, IH_STS_REMOTE_ACC_ERR, 0,
+           0);
+    struct ih_sge split_sge = {.va = split, .len = 8, .lkey = MR_A};
+    struct ih_send fa = {.op = IH_OP_ATOMIC_FA,
+                         .remote_va = VA_B + 0x800,
+                         .rkey = MR_B,
+                         .swap_add = 1,
+                         .sge = &split_sge,
+                         .nsge = 1};
+    ih_post_send(h, &r.a, &fa);
+    expect_send(T, "ATOMIC_FA into a split result", &r, IH_STS_LOCAL_PROT_ERR);
+
     /*
      * Fast registration, as nvme-rdma does ahead of every command:
      * CREATE_MR leaves the MR unbound, a REG_MR work request binds it under
@@ -1339,6 +1476,204 @@ static void test_atomic_and_reg_mr(void)
     ernic_put_le32(body, 0x03000000u | fr_id);
     check(T, ih_admin(h, IH_ADMIN_DESTROY_MR, body, 4, NULL) == 0,
           "DESTROY_MR of the fast-registered MR failed");
+
+    rc_teardown(T, &r);
+}
+
+/* ---- The data path when guest memory can't be reached ------------------ */
+
+#define NO_CQE UINT32_MAX
+#define MR_C   0x03000003u
+#define VA_C   UINT64_C(0x00007f2000000000)
+
+/* An 8-byte RDMA_WRITE or ATOMIC_FA from A to B, with the DMA @fail refused,
+ * counted from the doorbell: the WQE, the transfer, then the completion. */
+struct dp_dma_fault {
+    const char *what;
+    uint8_t op;
+    unsigned fail;
+    uint32_t status; /* of the send completion, or NO_CQE */
+};
+
+static const struct dp_dma_fault dp_dma_faults[] = {
+    {"RDMA_WRITE's source", IH_OP_RDMA_WRITE, 2, IH_STS_LOCAL_ACC_ERR},
+    {"RDMA_WRITE's destination", IH_OP_RDMA_WRITE, 3, IH_STS_LOCAL_ACC_ERR},
+    {"ATOMIC_FA's read", IH_OP_ATOMIC_FA, 2, IH_STS_REMOTE_ACC_ERR},
+    {"ATOMIC_FA's write", IH_OP_ATOMIC_FA, 3, IH_STS_REMOTE_ACC_ERR},
+    {"ATOMIC_FA's result", IH_OP_ATOMIC_FA, 4, IH_STS_LOCAL_ACC_ERR},
+    {"RDMA_WRITE's completion", IH_OP_RDMA_WRITE, 4, NO_CQE},
+    {"RDMA_WRITE's WQE", IH_OP_RDMA_WRITE, 1, NO_CQE},
+};
+
+static void test_dp_dma_faults(void)
+{
+    const char *T = "dp-dma";
+    struct rc r;
+    struct ih *h = &r.h;
+    struct ih_sge sge = {.va = VA_A + 0x900, .len = 8, .lkey = MR_A};
+    struct ih_send s = {.flags = IH_WQE_SIGNALLED,
+                        .remote_va = VA_B + 0x800,
+                        .rkey = MR_B,
+                        .swap_add = 1,
+                        .sge = &sge,
+                        .nsge = 1};
+
+    if (!rc_setup(T, &r))
+        return;
+
+    for (size_t i = 0; i < sizeof(dp_dma_faults) / sizeof(dp_dma_faults[0]);
+         i++) {
+        const struct dp_dma_fault *c = &dp_dma_faults[i];
+
+        s.op = c->op;
+        fake_vfu_fail_nth_map(h->vfu, c->fail);
+        ih_post_send(h, &r.a, &s);
+        fake_vfu_fail_nth_map(h->vfu, 0);
+        if (c->status != NO_CQE) {
+            expect_send(T, c->what, &r, c->status);
+        } else {
+            check(T, cq_empty(h, &r.cqa), "%s refused: a completion arrived",
+                  c->what);
+            /* A WQE that ran took an MSN, though its completion was lost */
+            if (c->fail > 1)
+                r.msn_a++;
+        }
+        check(T, fake_vfu_mapped(h->vfu) == 0,
+              "%s refused: guest memory left mapped", c->what);
+    }
+
+    /* An event the device can't write is lost, but its completion isn't */
+    ih_cq_arm(h, &r.cqa);
+    s.op = IH_OP_RDMA_WRITE;
+    fake_vfu_fail_nth_map(h->vfu, 6);
+    ih_post_send(h, &r.a, &s);
+    check(T, eq_count(h, RC_CQ_A) == 0, "an unwritable event arrived");
+    expect_send(T, "RDMA_WRITE with its event refused", &r, 0);
+
+    /* An MR whose page table can't be read takes no RDMA */
+    struct ih_mr mrc;
+    fake_vfu_fail_nth_map(h->vfu, 2);
+    if (check(T,
+              ih_mr_create(h, &mrc, MR_C, VA_C, 2 * IH_PAGE_SIZE, IH_ACCESS_ALL,
+                           false),
+              "CREATE_MR with an unreadable page table failed")) {
+        s.remote_va = VA_C;
+        s.rkey = MR_C;
+        ih_post_send(h, &r.a, &s);
+        expect_send(T, "RDMA_WRITE to an MR with no page table", &r,
+                    IH_STS_REMOTE_ACC_ERR);
+        check(T, ih_mr_destroy(h, &mrc) == 0, "DESTROY_MR C failed");
+    }
+
+    /*
+     * Ring geometry the admin queue refuses before the data path sees it,
+     * passed to the data path directly: an SRQ is refused, a QP keeps the
+     * rings it had, and a CQ is turned off rather than written past.
+     */
+    struct ionic_datapath *dp = h->dev->ionic_dp;
+    const struct ionic_dp_ring_desc good = {
+        .buf = {.dma_addr = h->scratch, .map_count = 1},
+        .depth_log2 = 4,
+        .stride_log2 = 7};
+    static const uint8_t bad_geometry[][2] = {
+        {IONIC_RING_MAX_DEPTH_LOG2 + 1, 7}, {4, 4}, {4, 10}};
+    for (size_t i = 0; i < sizeof(bad_geometry) / sizeof(bad_geometry[0]);
+         i++) {
+        struct ionic_dp_ring_desc bad = good;
+        bad.depth_log2 = bad_geometry[i][0];
+        bad.stride_log2 = bad_geometry[i][1];
+        check(T,
+              ionic_datapath_register_srq(dp, IONIC_SRQ_QID_BASE, &bad) ==
+                  -EINVAL,
+              "the data path took an SRQ of 2^%u by 2^%u", bad.depth_log2,
+              bad.stride_log2);
+        ionic_datapath_register_qp(dp, RC_QP_A, IBV_QPT_RC, RC_CQ_A, &bad,
+                                   RC_CQ_A, &good);
+        /* An RQ has no stride floor here: an SRQ-bound QP's is zero */
+        if (bad.stride_log2 >= IONIC_WQE_MIN_STRIDE_LOG2)
+            ionic_datapath_register_qp(dp, RC_QP_A, IBV_QPT_RC, RC_CQ_A, &good,
+                                       RC_CQ_A, &bad);
+    }
+    s.remote_va = VA_B + 0x800;
+    s.rkey = MR_B;
+    ih_post_send(h, &r.a, &s);
+    expect_send(T, "RDMA_WRITE after refused QP rings", &r, 0);
+
+    struct ionic_dp_ring_desc bad_cq = good;
+    bad_cq.stride_log2 = 4;
+    ionic_datapath_register_cq(dp, RC_CQ_A, IH_EQ_ID, &bad_cq);
+    ih_post_send(h, &r.a, &s);
+    check(T, cq_empty(h, &r.cqa), "a CQ with a refused stride took a CQE");
+
+    rc_teardown(T, &r);
+}
+
+/* ---- Full tables -------------------------------------------------------- */
+
+static void test_full_tables(void)
+{
+    const char *T = "tables";
+    struct rc r;
+    struct ih *h = &r.h;
+    int rc = 0;
+
+    if (!rc_setup(T, &r))
+        return;
+
+    /* The device has room for 32 EQs and 4 admin queues, one of each the
+     * harness's */
+    unsigned n = 1;
+    while (n < 64 && (rc = rdma_queue_cmd(h, IH_CMD_RDMA_EQ, 4, 2)) == 0)
+        n++;
+    check(T, n == 32 && rc == 1, "%u EQs, then status %d", n, rc);
+    n = 1;
+    while (n < 8 && rdma_queue_cmd(h, IH_CMD_RDMA_CQ, 6, 5) == 0 &&
+           (rc = rdma_queue_cmd(h, IH_CMD_RDMA_ADMINQ, 6, 6)) == 0)
+        n++;
+    check(T, n == 4 && rc == 1, "%u admin queues, then status %d", n, rc);
+
+    /* Only RDMA devcmds reach the dispatcher, but it refuses others */
+    uint8_t cmd[64] = {IH_CMD_RDMA_ADMINQ + 1}, comp[16];
+    ionic_rdma_devcmd_dispatch(h->dev->ionic_rdma, cmd, comp);
+    check(T, comp[0] == 1, "an unknown RDMA devcmd returned %u", comp[0]);
+    check(T,
+          ionic_rdma_devcmd_post_cq_event(h->dev->ionic_rdma, 9, RC_CQ_A) ==
+              -ENOENT,
+          "an event was posted to an EQ that doesn't exist");
+
+    /* CREATE_MR fills the MR table, every one of them on the same page */
+    uint8_t body[45] = {0};
+    ernic_put_le64(body + 0, VA_C);
+    ernic_put_le64(body + 8, IH_PAGE_SIZE);
+    ernic_put_le32(body + 28, 1);
+    ernic_put_le64(body + 32,
+                   fake_vfu_alloc(h->vfu, IH_PAGE_SIZE, IH_PAGE_SIZE));
+    ernic_put_le16(body + 40, IH_ACCESS_ALL);
+    body[44] = 12;
+    for (n = 2; n <= IONIC_MAX_MR; n++) {
+        ernic_put_le32(body + 20, 0x100u + n);
+        if ((rc = ih_admin(h, IH_ADMIN_CREATE_MR, body, sizeof(body), NULL)))
+            break;
+    }
+    check(T, n == IONIC_MAX_MR && rc == 1, "%u MRs, then status %d", n, rc);
+
+    /* So REG_MR of an id no CREATE_MR made finds no room, and its key names
+     * nothing */
+    const uint32_t key = 0x00fff000u;
+    struct ih_send reg = {.op = IH_OP_REG_MR, .key = key, .mr = &r.mrb};
+    struct ih_cqe e;
+    ih_post_send(h, &r.a, &reg);
+    check(T, ih_cq_poll(h, &r.cqa, &e) && e.type == IH_CQE_TYPE_SEND_NPG,
+          "REG_MR into a full table did not complete");
+    struct ih_sge sge = {.va = VA_A, .len = 8, .lkey = MR_A};
+    struct ih_send w = {.op = IH_OP_RDMA_WRITE,
+                        .remote_va = r.mrb.va,
+                        .rkey = key,
+                        .sge = &sge,
+                        .nsge = 1};
+    ih_post_send(h, &r.a, &w);
+    expect_send(T, "RDMA_WRITE through a key with no room", &r,
+                IH_STS_REMOTE_ACC_ERR);
 
     rc_teardown(T, &r);
 }
@@ -1979,6 +2314,138 @@ static void test_eth(void)
     ih_doorbell(&h, IH_QTYPE_ETH_TXQ, 3, 0, 1);
     ih_doorbell(&h, IH_QTYPE_ETH_TXQ, 99, 0, 1);
 
+    teardown(T, &h);
+}
+
+/*
+ * One Tx descriptor: a frame of @len bytes at the start of the buffers, its
+ * last bytes in @nsge SG elements, the first two @sg_len bytes each. @fail is
+ * the DMA refused, counted from the doorbell (the descriptor, the SG list,
+ * the head, the elements, then the completion), or 0 for none.
+ */
+struct eth_tx_case {
+    const char *what;
+    uint16_t len;
+    uint8_t nsge;
+    uint16_t sg_len[2];
+    unsigned fail;
+    bool sent;
+    bool completed;
+};
+
+static const struct eth_tx_case eth_tx_cases[] = {
+    {"an unreadable frame", 120, 0, {0, 0}, 2, false, true},
+    {"an unreadable SG list", 200, 2, {100, 50}, 2, false, true},
+    {"an unreadable head", 200, 2, {100, 50}, 3, false, true},
+    {"an unreadable SG element", 200, 2, {100, 50}, 4, false, true},
+    {"an unwritable completion", 120, 0, {0, 0}, 3, true, false},
+    {"SG elements as long as the frame", 150, 2, {100, 50}, 0, false, true},
+    {"an empty SG element", 150, 2, {100, 0}, 0, true, true},
+    {"too long an SG list", 200, TXQ_SG_MAX_ELEMS + 1, {0, 0}, 0, false, true},
+};
+
+static void test_eth_dma_faults(void)
+{
+    const char *T = "eth-dma";
+    struct ih h;
+    struct tx_seen seen;
+    uint8_t cmd[64] = {0}, comp[16], desc[16], buf[64];
+
+    if (!setup(T, &h, "loopback"))
+        return;
+
+    /* PORT_INIT succeeds even when the port information can't be written */
+    const uint64_t info = fake_vfu_alloc(h.vfu, IH_PAGE_SIZE, IH_PAGE_SIZE);
+    cmd[0] = IH_CMD_PORT_INIT;
+    ernic_put_le64(cmd + 8, info);
+    fake_vfu_fail_nth_map(h.vfu, 1);
+    check(T, ih_devcmd(&h, cmd, comp, NULL, 0) == 0,
+          "PORT_INIT with unwritable port information failed");
+    fake_vfu_read(h.vfu, info, buf, sizeof(buf));
+    check(T, all_zero(buf, sizeof(buf)), "unwritable port information changed");
+
+    /* An admin command the device can't read is read on the next doorbell.
+     * ih_eth_admin() reports the first try's missing completion. */
+    memset(cmd, 0, sizeof(cmd));
+    fake_vfu_fail_nth_map(h.vfu, 1);
+    check(T, ih_eth_admin(&h, cmd, comp) < 0,
+          "an unreadable admin command completed");
+    const uint32_t depth = 1u << h.eth_aq.depth_log2;
+    ih_doorbell(&h, IH_QTYPE_ETH_ADMINQ, 0, 0,
+                (uint16_t)(h.eth_aq.prod % depth));
+    fake_vfu_read(h.vfu, h.eth_acq.gpa + (h.eth_acq.cons % depth) * 16u, comp,
+                  sizeof(comp));
+    check(T, (comp[15] & 0x80u) && comp[0] == 0,
+          "the admin command did not complete on the next doorbell");
+    h.eth_acq.cons++;
+    check(T, ih_eth_admin(&h, cmd, comp) == 0, "the next admin command failed");
+
+    const uint64_t txr = fake_vfu_alloc(h.vfu, 8 * 16, 64);
+    const uint64_t txc = fake_vfu_alloc(h.vfu, 8 * 16, 64);
+    const uint64_t txsg = fake_vfu_alloc(h.vfu, 8 * 8 * 16, 64);
+    const uint64_t rxr = fake_vfu_alloc(h.vfu, 8 * 16, 64);
+    const uint64_t rxc = fake_vfu_alloc(h.vfu, 8 * 16, 64);
+    const uint64_t bufs = fake_vfu_alloc(h.vfu, 2048, 4096);
+    bool ok = q_init(&h, IH_QTYPE_ETH_TXQ, TX_INTR, 3, txr, txc, txsg) &&
+              q_init(&h, IH_QTYPE_ETH_RXQ, RX_INTR, 3, rxr, rxc, 0) &&
+              q_enable(&h, IH_QTYPE_ETH_TXQ, 0) &&
+              q_enable(&h, IH_QTYPE_ETH_RXQ, 0);
+    if (!check(T, ok, "Tx and Rx queue setup failed")) {
+        teardown(T, &h);
+        return;
+    }
+    ih_intr_mask(&h, RX_INTR, false);
+    memset(&seen, 0, sizeof(seen));
+    ionic_eth_emu_register_tx_filter(h.dev->ionic_emu, tx_filter, &seen);
+
+    for (size_t i = 0; i < sizeof(eth_tx_cases) / sizeof(eth_tx_cases[0]);
+         i++) {
+        const struct eth_tx_case *c = &eth_tx_cases[i];
+        uint8_t sg[2 * 16] = {0};
+        unsigned frames = seen.frames;
+
+        memset(desc, 0, sizeof(desc));
+        ernic_put_le64(desc, bufs << 12 | (uint64_t)c->nsge << 8);
+        ernic_put_le16(desc + 8, c->len);
+        fake_vfu_write(h.vfu, txr + 16u * i, desc, sizeof(desc));
+        for (unsigned j = 0; j < 2; j++) {
+            ernic_put_le64(sg + 16 * j, bufs + 50 + 100 * j);
+            ernic_put_le16(sg + 16 * j + 8, c->sg_len[j]);
+        }
+        fake_vfu_write(h.vfu, txsg + 8u * 16u * i, sg, sizeof(sg));
+
+        fake_vfu_fail_nth_map(h.vfu, c->fail);
+        ih_doorbell(&h, IH_QTYPE_ETH_TXQ, 0, 0, (uint16_t)(i + 1));
+        fake_vfu_fail_nth_map(h.vfu, 0);
+        check(T, (seen.frames != frames) == c->sent, "%s: the frame was %s",
+              c->what, c->sent ? "dropped" : "sent");
+        fake_vfu_read(h.vfu, txc + 16u * i, comp, sizeof(comp));
+        check(T, ((comp[15] & 0x80u) && comp[2] == i) == c->completed,
+              "%s: the descriptor %s", c->what,
+              c->completed ? "did not complete" : "completed");
+    }
+
+    /* A received frame is dropped, and its buffer kept for the next, when
+     * the descriptor can't be read, the frame or its completion written */
+    static const uint8_t frame[64] = {0x5a};
+    memset(desc, 0, sizeof(desc));
+    ernic_put_le16(desc + 6, 2048);
+    ernic_put_le64(desc + 8, bufs);
+    fake_vfu_write(h.vfu, rxr, desc, sizeof(desc));
+    ih_doorbell(&h, IH_QTYPE_ETH_RXQ, 0, 0, 1);
+    for (unsigned fail = 1; fail <= 4; fail++) {
+        unsigned irqs = fake_vfu_irq_count(h.vfu, RX_INTR);
+
+        ionic_eth_emu_queue_rx_frame(h.dev->ionic_emu, frame, sizeof(frame));
+        fake_vfu_fail_nth_map(h.vfu, fail < 4 ? fail : 0);
+        ih_poll(&h);
+        fake_vfu_fail_nth_map(h.vfu, 0);
+        check(T, (fake_vfu_irq_count(h.vfu, RX_INTR) != irqs) == (fail == 4),
+              "Rx with DMA %u refused: %s", fail,
+              fail < 4 ? "delivered" : "not delivered after refused ones");
+    }
+
+    check(T, fake_vfu_mapped(h.vfu) == 0, "guest memory left mapped");
     teardown(T, &h);
 }
 
@@ -3975,14 +4442,18 @@ static const struct {
     {"rdma-reset", test_rdma_reset},
     {"rdma-reset-frees", test_rdma_reset_frees},
     {"admin", test_admin_errors},
+    {"admin-dma", test_admin_dma_faults},
     {"rc", test_rc},
     {"atomic", test_atomic_and_reg_mr},
+    {"dp-dma", test_dp_dma_faults},
+    {"tables", test_full_tables},
     {"cq-events", test_cq_events},
     {"qp-flush", test_qp_flush},
     {"qp-flush-srq", test_qp_flush_srq},
     {"ud", test_ud},
     {"srq", test_srq},
     {"eth", test_eth},
+    {"eth-dma", test_eth_dma_faults},
 #ifdef ERNIC_HAVE_P4
     {"p4-port", test_p4_port},
     {"fp8-map", test_fp8_map},

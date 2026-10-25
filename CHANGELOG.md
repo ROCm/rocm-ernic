@@ -226,6 +226,9 @@
     drivers do: bring-up, the RDMA admin queue, RC and UD transfers,
     atomics, fast registration, SRQs, CQ events, QP flush, Ethernet, and
     the NVMe-oF connect. It raised coverage of `src/` from about 51% to 67%.
+    Its `admin-dma`, `dp-dma` and `eth-dma` groups refuse guest memory
+    accesses one at a time, as libvfio-user does for an address the client
+    has unmapped, and `tables` fills the EQ, admin queue and MR tables.
   * `tests/py/` drives real server processes over the vfio-user socket from
     Python, the way a VMM does, with guest memory in a shared `memfd` and
     nothing outside the standard library: `ernic-vfu-client` (the protocol,
