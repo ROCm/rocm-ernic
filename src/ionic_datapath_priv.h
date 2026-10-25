@@ -151,6 +151,14 @@ struct ionic_qp_ring {
     uint32_t dest_qp_id;
     uint32_t dest_node_id; /* UINT32_MAX = local / no mesh */
 
+    /*
+     * This QP's name in the mesh's request tags, new at each registration
+     * (ionic_datapath.next_mesh_id).  qp_ids are reused, and a flush takes
+     * back only this QP's requests, not those a destroyed QP with the same
+     * id left queued, which still go out.
+     */
+    uint32_t mesh_id;
+
     /* Bound to a shared receive queue, in which case rq_buf/rq_prod/rq_cons
      * above are unused and every receive is taken from dp->srq[srq_id]. */
     bool has_srq;
@@ -235,6 +243,7 @@ struct dp_pending {
     uint32_t length; /* expected READ/ATOMIC response size */
     struct dp_sge_list local; /* scatter target for the response */
     uint64_t deadline_ms;
+    uint64_t tag; /* what the mesh calls the request (dp_mesh_tag()) */
 };
 
 /* A mesh message parked by the receive thread; private to the .c. */
@@ -295,6 +304,7 @@ struct ionic_datapath {
      * state is only worth logging when it actually changes. */
     bool mesh_reported;
     uint32_t next_req_id;
+    uint32_t next_mesh_id; /* the last QP registered's mesh_id */
     struct dp_pending pending[MAX_PENDING];
 
     pthread_mutex_t rx_lock;

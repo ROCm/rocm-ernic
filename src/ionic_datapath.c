@@ -706,6 +706,9 @@ static void sq_busy_set(struct ionic_datapath *dp, struct ionic_qp_ring *q)
     q->sq_busy = true;
 }
 
+/* Defined with the other pending_* helpers, below the transmit path. */
+static uint32_t pending_cancel_qp(struct ionic_datapath *dp, uint32_t qp_id);
+
 void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
                                 uint8_t ib_qp_type, uint32_t sq_cq_id,
                                 const struct ionic_dp_ring_desc *sq,
@@ -759,6 +762,14 @@ void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
     q->sq_cons = q->sq_prod = 0;
     q->rq_prod = q->rq_cons = 0;
     q->msn = 0;
+    /*
+     * A new QP, even on a qp_id still in use: what an earlier one left in
+     * the pending table isn't this one's to complete (see
+     * ionic_datapath_unregister_qp()), and the requests it still has queued
+     * in the mesh aren't this one's to take back.
+     */
+    pending_cancel_qp(dp, qp_id);
+    q->mesh_id = ++dp->next_mesh_id;
     q->dest_valid = false;
     q->dest_node_id = UINT32_MAX;
     /* Cleared, not left alone: qp_ids are reused, and inheriting a previous
@@ -777,18 +788,20 @@ void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
 }
 
 /*
- * What the mesh calls a request: its QP in the high half, so a QP's requests
- * can be taken back together, and its pending entry's req_id in the low.
+ * What the mesh calls a request: its QP's mesh_id in the high half, so a
+ * QP's requests can be taken back together, and its pending entry's req_id
+ * in the low.
  */
-static uint64_t dp_mesh_tag(uint32_t qp_id, uint32_t req_id)
+static uint64_t dp_mesh_tag(uint32_t mesh_id, uint32_t req_id)
 {
-    return (uint64_t)qp_id << 32 | req_id;
+    return (uint64_t)mesh_id << 32 | req_id;
 }
 
-/* Take back every request qp_id has queued in the mesh */
-static void dp_mesh_cancel_qp(struct ionic_datapath *dp, uint32_t qp_id)
+/* Take back every request q has queued in the mesh */
+static void dp_mesh_cancel_qp(struct ionic_datapath *dp,
+                              const struct ionic_qp_ring *q)
 {
-    ionic_mesh_cancel(dp->pvrdma_handle, dp_mesh_tag(qp_id, 0),
+    ionic_mesh_cancel(dp->pvrdma_handle, dp_mesh_tag(q->mesh_id, 0),
                       UINT64_C(0xffffffff00000000));
 }
 
@@ -796,8 +809,7 @@ static void dp_mesh_cancel_qp(struct ionic_datapath *dp, uint32_t qp_id)
 static void dp_mesh_cancel_request(struct ionic_datapath *dp,
                                    const struct dp_pending *p)
 {
-    ionic_mesh_cancel(dp->pvrdma_handle, dp_mesh_tag(p->qp_id, p->req_id),
-                      UINT64_MAX);
+    ionic_mesh_cancel(dp->pvrdma_handle, p->tag, UINT64_MAX);
 }
 
 void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id)
@@ -806,8 +818,22 @@ void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id)
         return;
     if (dp->nvmeof_cm)
         nvmeof_cm_drop_qp(dp->nvmeof_cm, qp_id);
-    /* A destroyed QP's requests don't go out either; see the flush */
-    dp_mesh_cancel_qp(dp, qp_id);
+    /*
+     * The requests this QP still has queued in the mesh go out, unlike a
+     * flushed QP's: nothing has told the consumer they didn't run, and a
+     * NIC has usually transmitted what was rung on its doorbell long before
+     * a destroy reaches it.  Consumers count on that, posting an unsignaled
+     * WRITE and destroying the QP straight after (RDMA-Tutorial's write
+     * example does).  Each request carries its own copy of the payload, so
+     * sending it reads no guest memory.
+     *
+     * But nothing comes back to this QP: its pending entries are dropped,
+     * without completions, which have no QP to go to.  A reply that arrives
+     * later finds no entry, so a READ's or atomic's result doesn't land in
+     * memory the consumer has had back since, and a QP that takes this
+     * qp_id next isn't sent this one's completions.
+     */
+    pending_cancel_qp(dp, qp_id);
     sq_stall_clear(dp, &dp->qp[qp_id]);
     ionic_dp_buf_release(&dp->qp[qp_id].sq_buf);
     ionic_dp_buf_release(&dp->qp[qp_id].rq_buf);
@@ -1737,9 +1763,6 @@ static void cq_post_flush(struct ionic_datapath *dp, uint32_t cq_id,
     cq_post(dp, cq_id, body, IONIC_STS_WQE_FLUSHED_ERR, type, qid, true);
 }
 
-/* Defined with the other pending_* helpers, below the transmit path. */
-static uint32_t pending_cancel_qp(struct ionic_datapath *dp, uint32_t qp_id);
-
 /*
  * A QP has entered the Error state: start the flush on both its queues.
  *
@@ -1788,7 +1811,7 @@ void ionic_datapath_flush_qp(struct ionic_datapath *dp, uint32_t qp_id)
      * consumer was told it hadn't run.  A NIC doesn't transmit a work request
      * it has flushed.
      */
-    dp_mesh_cancel_qp(dp, qp_id);
+    dp_mesh_cancel_qp(dp, q);
 
     /*
      * The flush completes every send outstanding, the one held for a
@@ -2277,13 +2300,15 @@ static struct dp_pending *pending_find(struct ionic_datapath *dp,
 }
 
 /*
- * Drop every deferred request of a QP that is flushing, and say how many.
+ * Drop every deferred request of a QP that is flushing or going away, and
+ * say how many.
  *
  * Dropped silently: the flush CQE the caller is about to post already tells
  * the driver to complete everything it still has outstanding on this queue,
- * so a completion here would be a second one for the same work request. What
- * matters is that the entry stops being findable, since its SGE list names
- * memory the consumer is free to reuse the moment the flush lands.
+ * so a completion here would be a second one for the same work request, and
+ * a QP that is gone has nowhere for one to go. What matters is that the entry
+ * stops being findable, since its SGE list names memory the consumer is free
+ * to reuse the moment the flush lands or the QP is destroyed.
  */
 static uint32_t pending_cancel_qp(struct ionic_datapath *dp, uint32_t qp_id)
 {
@@ -2495,8 +2520,9 @@ static enum dp_post remote_post(struct ionic_datapath *dp,
         }
     }
 
-    int rc = dp_mesh_tx(dp, dest_node_id, dp_mesh_tag(qp_id, p->req_id), &hdr,
-                        payload, payload_len, false);
+    p->tag = dp_mesh_tag(q->mesh_id, p->req_id);
+    int rc =
+        dp_mesh_tx(dp, dest_node_id, p->tag, &hdr, payload, payload_len, false);
     if (rc == 0) {
         result = DP_POST_SENT;
         /* Claim the MSN only once the request is really on the wire, so a
