@@ -689,6 +689,12 @@ declares a node dead and sets when it answers or registers again, and
 `tcp_gid_index_rebuild()` skips non-alive claimants: the returning guest
 owns its addresses under its new id, and a late node regains them
 without re-advertising. Two *live* claimants still resolve to nothing.
+On the manager the flag is a copy of `is_alive`: **change either only
+through `tcp_node_set_alive()`**, which writes both under
+`mesh_table_lock`, and new claims take the node's `is_alive`
+(`tcp_gid_claims_set_if_member()`). A registration declares dead every
+node with no live connection (`tcp_declare_dead_if_unreachable()`), as
+the health check would on its next pass.
 Workers keep no liveness of their own; the manager advertises a dead node
 as owning nothing (`tcp_broadcast_gid_table()`), which is what gives an
 empty advertisement meaning.
@@ -715,7 +721,7 @@ a topology update from the manager leaves out
 Don't make the index read `is_alive` from `mesh_nodes`: that takes
 `mesh_table_lock` under `gid_table_lock`, the reverse of the lock order.
 Covered by `test_dead_node_stops_owning_its_gids()` in
-`tests/test_tcp_gid_resolve.c`, the eviction rows in
+`tests/test_tcp_gid_resolve.c`, the eviction and liveness rows in
 `tests/test_tcp_thread_stop.c`, and the churn rounds in
 `tests/py/test_mesh_stress.py`.
 

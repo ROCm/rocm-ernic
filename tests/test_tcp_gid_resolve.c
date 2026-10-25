@@ -539,13 +539,17 @@ static void test_dead_node_stops_owning_its_gids(void)
     tcp_gid_claims_set(priv, 5, (const uint8_t(*)[16])g, 1);
     CHECK(resolve(priv, g[0]) == 5, "claim did not take effect");
 
-    tcp_gid_claims_set_alive(priv, 5, false);
+    CHECK(tcp_gid_claims_set_alive(priv, 5, false),
+          "declaring the claims dead didn't say they changed");
     CHECK(resolve(priv, g[0]) == UINT32_MAX,
           "a dead node still owns its GID (node %u)", resolve(priv, g[0]));
+    CHECK(!tcp_gid_claims_set_alive(priv, 5, false),
+          "declaring dead claims dead again said they changed");
 
     /* The claims are kept, so answering again is enough to get them back:
      * a node that is merely late never re-advertises. */
-    tcp_gid_claims_set_alive(priv, 5, true);
+    CHECK(tcp_gid_claims_set_alive(priv, 5, true),
+          "reviving the claims didn't say they changed");
     CHECK(resolve(priv, g[0]) == 5,
           "a revived node did not get its GID back (got %u)",
           resolve(priv, g[0]));
@@ -565,8 +569,9 @@ static void test_dead_node_stops_owning_its_gids(void)
           "two live claimants resolved to node %u", resolve(priv, g[0]));
 
     /* Marking a node with no claims live or dead does nothing. */
-    tcp_gid_claims_set_alive(priv, 99, false);
-    tcp_gid_claims_set_alive(priv, 99, true);
+    CHECK(!tcp_gid_claims_set_alive(priv, 99, false) &&
+              !tcp_gid_claims_set_alive(priv, 99, true),
+          "a node with no claims said its claims changed");
     CHECK(resolve(priv, g[0]) == UINT32_MAX,
           "a node with no claims changed the table");
 

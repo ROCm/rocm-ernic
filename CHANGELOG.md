@@ -634,9 +634,11 @@
   node registers under a new id while the dead one still claims its guest's
   GIDs, and a GID two nodes claim resolves to neither, so the guest stayed
   unreachable until the whole mesh was rebuilt. A node with no live
-  connection now stops owning its GIDs (when the health check declares it
-  dead, and when any worker registers), and owns them again if it answers;
-  two live claimants still contest a GID.
+  connection is now declared dead, and stops owning its GIDs (when the
+  health check notices, or when any worker registers, which also tells the
+  other workers it is dead), and owns them again if it answers; GIDs a
+  dead node advertises are its own only once it answers. Two live
+  claimants still contest a GID.
 * **TCP mesh: more than 64 registrations.** A manager never dropped a node
   from its node table, and a restarted worker registers as a new node, so
   once a mesh had had more than 64 registrations in total, its topology and

@@ -257,7 +257,9 @@ typedef struct {
      * gid_table_lock, like the rest of this structure, and deliberately
      * not read from mesh_nodes: that would mean taking mesh_table_lock
      * under gid_table_lock, the reverse of the order everything else
-     * takes them in.
+     * takes them in. On the manager it is a copy of the node's is_alive,
+     * written with it by tcp_node_set_alive(); on a worker it is always
+     * true, since the manager advertises a dead node as owning nothing.
      */
     bool alive;
 } TcpNodeGids;
@@ -422,8 +424,10 @@ typedef enum {
  * it under mesh_table_lock must not keep the pointer after dropping the
  * lock; it keeps node_id, and looks the node up again.  node_id, hostname
  * and port are set before the node is published and never change; is_alive
- * and last_heartbeat_ms are protected by mesh_table_lock.  The node's
- * connection is its entry in connections.
+ * and last_heartbeat_ms are protected by mesh_table_lock.  Once the node is
+ * published, is_alive is written only by tcp_node_set_alive(), which keeps
+ * the node's GID claims in step with it.  The node's connection is its entry
+ * in connections.
  */
 typedef struct {
     uint32_t node_id;
@@ -546,7 +550,10 @@ struct TcpBackendPrivate {
     bool is_manager;
     /* node_id -> MeshNodeInfo*; at most TCP_MAX_MESH_NODES of them */
     GHashTable *mesh_nodes;
-    /* Protects mesh_nodes; taken before conn_table_lock when both are held */
+    /*
+     * Protects mesh_nodes; taken before conn_table_lock or gid_table_lock
+     * when it and either of them are held
+     */
     QemuMutex mesh_table_lock;
     /*
      * Serialises a whole topology broadcast, snapshot and fan-out together,
@@ -710,9 +717,11 @@ void tcp_gid_key_free(gpointer key);
 /*
  * Mark @node_id's claims live or dead. A node the manager has declared
  * dead keeps its claims but resolves to nothing; see TcpNodeGids.alive.
- * Does nothing if the node has no claims.
+ * Returns whether they changed, which they don't if the node has none. On
+ * the manager, call tcp_node_set_alive() instead, which keeps the node's
+ * is_alive in step.
  */
-void tcp_gid_claims_set_alive(TcpBackendPrivate *priv, uint32_t node_id,
+bool tcp_gid_claims_set_alive(TcpBackendPrivate *priv, uint32_t node_id,
                               bool alive);
 
 void tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
@@ -745,6 +754,8 @@ MeshNodeInfo *tcp_mesh_node_info_new(uint32_t node_id, const char *hostname,
                                      uint16_t port);
 void tcp_mesh_node_info_free(MeshNodeInfo *node);
 void tcp_mesh_node_info_destroy_notify(gpointer data);
+bool tcp_node_set_alive(TcpBackendPrivate *priv, MeshNodeInfo *node, bool alive,
+                        bool *gids_changed);
 void tcp_broadcast_mesh_topology(TcpBackendPrivate *priv);
 
 /* Sockets and messages */
@@ -777,11 +788,11 @@ bool tcp_worker_publish_peer(TcpBackendPrivate *priv,
                              const TcpPeerTarget *target, TcpConnection *conn);
 void *tcp_manager_health_check_thread(void *opaque);
 /*
- * Withdraw a node's GID claims only if it is still unreachable; false when
- * it has a live connection again, which a stale list cannot be trusted for.
+ * Declare a node dead, which withdraws its GID claims, only if it is still
+ * unreachable; false when it has a live connection again, which a stale
+ * list cannot be trusted for, or was dead already.
  */
-bool tcp_withdraw_if_still_unreachable(TcpBackendPrivate *priv,
-                                       uint32_t node_id);
+bool tcp_declare_dead_if_unreachable(TcpBackendPrivate *priv, uint32_t node_id);
 void tcp_health_check_retire(TcpBackendPrivate *priv, GArray *items);
 TcpConnection *tcp_worker_manager_conn(TcpBackendPrivate *priv);
 int tcp_worker_register_with_manager(TcpBackendPrivate *priv,
