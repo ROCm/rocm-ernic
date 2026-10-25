@@ -644,9 +644,12 @@ struct TcpBackendPrivate {
      *
      * registers_again, also under registration_mutex, is cleared for good
      * when the manager answers this worker's registering again with another
-     * id.  Only a manager that predates registering again does that: it
-     * gives a worker that asks for a taken id a new one, so each time the
-     * worker asked, the mesh would gain a node.
+     * id, or refuses it with -ENOENT.  Only a manager that predates
+     * registering again does the first: it gives a worker that asks for a
+     * taken id a new one, so each time the worker asked, the mesh would gain
+     * a node.  The second means the manager has no node with this worker's
+     * id, which it never gives out again, so every later try would be
+     * refused too.
      */
     TcpConnection *registering;
     bool registration_complete;

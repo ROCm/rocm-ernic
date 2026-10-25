@@ -121,7 +121,8 @@ static bool tcp_node_id_taken(TcpBackendPrivate *priv, uint32_t node_id)
  * had: the connection is gone or has ended, or the health check has declared
  * the node dead.  The manager may not have noticed yet that the connection
  * has ended, so a worker that is refused for that asks again on its next
- * pass.
+ * pass.  One refused with -ENOENT, its node evicted (tcp_evict_dead_node()),
+ * doesn't, since the id is never given out again.
  *
  * If it can, takes the node's old connection, if it has one, out of
  * connections, for the caller to retire once it has dropped the locks, and

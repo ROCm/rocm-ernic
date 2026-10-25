@@ -52,14 +52,18 @@ TcpConnection *tcp_worker_manager_conn(TcpBackendPrivate *priv)
 /*
  * Take the manager's answer, on conn, to this worker's registration, and wake
  * tcp_worker_register_with_manager(): *assigned_id is the node id the manager
- * gave, or 0 if it refused the registration or its answer can't be used.
- * Only an answer on the connection registering, and only the first, counts.
- * Returns false, taking nothing, otherwise.
+ * gave, or 0 if it refused the registration or its answer can't be used, and
+ * result is the manager's result code (see tcp_register_resp_id()).  Only an
+ * answer on the connection registering, and only the first, counts.  Returns
+ * false, taking nothing, otherwise.
  *
  * A first registration gives this node its id.  A later one, on a new
  * connection after the last one was given up on, must give it the id it
  * already has, or it is refused here, and *assigned_id set to 0, and the
- * worker doesn't register again (see registers_again).
+ * worker doesn't register again (see registers_again).  Nor does it once the
+ * manager refuses it with -ENOENT, having no node with its id: the manager
+ * evicted the node while it was cut off, or has restarted.  The manager
+ * never gives out an id again, so it would refuse every later try.
  *
  * An accepted answer publishes conn as manager_conn, before the waiter wakes
  * and before this thread reads the next message on conn: the manager follows
@@ -69,20 +73,23 @@ TcpConnection *tcp_worker_manager_conn(TcpBackendPrivate *priv)
  */
 static bool tcp_worker_registration_done(TcpBackendPrivate *priv,
                                          TcpConnection *conn,
-                                         uint32_t *assigned_id)
+                                         uint32_t *assigned_id, int32_t result)
 {
     uint32_t local = tcp_local_node(priv);
     uint32_t offered = *assigned_id;
+    bool other_id = false;
+    bool unknown = local != 0 && result == -ENOENT;
     bool taken;
 
     if (local != 0 && offered != local) {
+        other_id = offered != 0;
         *assigned_id = 0;
     }
 
     qemu_mutex_lock(&priv->registration_mutex);
     taken = conn == priv->registering && !priv->registration_complete;
     if (taken) {
-        if (offered != 0 && *assigned_id == 0) {
+        if (other_id || unknown) {
             priv->registers_again = false;
         }
         if (*assigned_id != 0) {
@@ -97,13 +104,19 @@ static bool tcp_worker_registration_done(TcpBackendPrivate *priv,
     }
     qemu_mutex_unlock(&priv->registration_mutex);
 
-    if (taken && offered != 0 && *assigned_id == 0) {
+    if (taken && other_id) {
         rdma_error_report("TCP: the manager registered this node again as "
                           "node %u, but it is node %u; refusing.  It predates "
                           "workers registering again, so this node won't try "
                           "again, and hears nothing from the mesh until it "
                           "restarts",
                           offered, local);
+    } else if (taken && unknown) {
+        rdma_error_report("TCP: the manager has no node %u: it evicted this "
+                          "node while it was cut off, or it has restarted.  "
+                          "This node won't try again, and hears nothing from "
+                          "the mesh until it restarts",
+                          local);
     }
     return taken;
 }
@@ -614,7 +627,8 @@ static void tcp_worker_peer_pass(TcpBackendPrivate *priv, const GArray *targets)
  * it hears nothing of the mesh, and can reach only the nodes it has a
  * connection of its own to.  A registration the manager refuses, as it does
  * while it still has the node's last connection, is tried again on the next
- * pass.
+ * pass, unless the manager has no node with this one's id, which no later try
+ * can change (see tcp_worker_registration_done()).
  *
  * Only this thread clears manager_conn, and nothing sets it while it is set,
  * so the connection given up on is the one taken out.  The thread is stopped
@@ -766,21 +780,22 @@ void tcp_stop_peer_thread(TcpBackendPrivate *priv)
 
 /*
  * The node id a REGISTER_RESP gives this node, or 0, having logged why, if it
- * refuses the node or its answer can't be used.
+ * refuses the node or its answer can't be used.  *result gets the manager's
+ * result code, a negative errno if it refused the node, or 0 if its answer
+ * can't be used.
  */
-static uint32_t tcp_register_resp_id(const TcpRecvMsg *msg)
+static uint32_t tcp_register_resp_id(const TcpRecvMsg *msg, int32_t *result)
 {
     const TcpRegisterRespPayload *resp = msg->payload;
     uint32_t resp_id;
-    int32_t result;
 
+    *result = 0;
     if (!resp || msg->hdr.msg_len < TCP_REGISTER_RESP_LEN_V3) {
         rdma_error_report("TCP: Invalid REGISTER_RESP payload");
         return 0;
     }
 
     resp_id = ntohl(resp->assigned_node_id);
-    result = (int32_t)ntohl(resp->result);
 
     /*
      * The other half of the check the manager makes: a pre-v4 manager sends
@@ -802,13 +817,14 @@ static uint32_t tcp_register_resp_id(const TcpRecvMsg *msg)
                           TCP_PROTOCOL_VERSION);
         return 0;
     }
-    if (result < 0 && result != INT32_MIN) {
+    *result = (int32_t)ntohl(resp->result);
+    if (*result < 0 && *result != INT32_MIN) {
         /* A negative errno; INT32_MIN has no negation */
-        rdma_error_report("TCP: Registration failed: %s", strerror(-result));
+        rdma_error_report("TCP: Registration failed: %s", strerror(-*result));
         return 0;
     }
-    if (result != 0) {
-        rdma_error_report("TCP: Registration failed: result %" PRId32, result);
+    if (*result != 0) {
+        rdma_error_report("TCP: Registration failed: result %" PRId32, *result);
         return 0;
     }
     if (resp_id == 0 || resp_id == UINT32_MAX) {
@@ -840,6 +856,7 @@ void tcp_worker_recv_register_resp(TcpConnection *conn, const TcpRecvMsg *msg)
 {
     TcpBackendPrivate *priv = conn->priv;
     uint32_t assigned_id;
+    int32_t result;
     bool first;
 
     if (!priv || priv->is_manager) {
@@ -849,13 +866,13 @@ void tcp_worker_recv_register_resp(TcpConnection *conn, const TcpRecvMsg *msg)
 
     first = !tcp_worker_registered(priv);
     /* The id to record: 0 if the answer refuses this node */
-    assigned_id = tcp_register_resp_id(msg);
+    assigned_id = tcp_register_resp_id(msg, &result);
 
     /*
      * A refusal ends the wait too, so tcp_init() fails at once rather than
      * at the registration timeout.
      */
-    if (!tcp_worker_registration_done(priv, conn, &assigned_id)) {
+    if (!tcp_worker_registration_done(priv, conn, &assigned_id, result)) {
         rdma_error_report("TCP: ignoring a REGISTER_RESP that answers no "
                           "registration under way");
         return;

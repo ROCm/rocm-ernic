@@ -7315,6 +7315,7 @@ enum wl_scenario {
     WL_STUCK,    /* it stops reading, with a send to it under way */
     WL_REFUSED,  /* it refuses the worker's first registration again */
     WL_OTHER_ID, /* it registers the worker again as another node */
+    WL_UNKNOWN,  /* it refuses the worker, having no node with its id */
     WL_GONE,     /* nothing listens on its port for a while */
     WL_STOP,     /* the worker is stopped while it waits for the answer */
     WL_EVICTED,  /* a node is evicted while the worker is cut off */
@@ -7361,6 +7362,12 @@ static const struct wl_case wl_cases[] = {
      "try again, since only a manager that predates registering again does "
      "that",
      WL_OTHER_ID},
+    {"negative",
+     "the manager refuses the worker's registering again with -ENOENT, "
+     "having evicted the node or restarted",
+     "the worker keeps its id, closes the connection, and doesn't try again, "
+     "since the manager never gives the id out again",
+     WL_UNKNOWN},
     {"boundary", "nothing listens on the manager's port for a while",
      "the worker tries every pass, and registers once the manager is back",
      WL_GONE},
@@ -7707,16 +7714,18 @@ static const char *wl_stuck(struct dc_worker *w, int lfd, int high,
 }
 
 /*
- * WL_REFUSED and WL_OTHER_ID.  A manager that answers with another id gives
- * each worker that asks for its id a new one, so a worker that went on
- * asking would add a node to the mesh every interval.
+ * WL_REFUSED, WL_OTHER_ID and WL_UNKNOWN.  A manager that answers with
+ * another id gives each worker that asks for its id a new one, so a worker
+ * that went on asking would add a node to the mesh every interval.  One that
+ * has no node with the worker's id would refuse it every interval, forever.
  */
 static const char *wl_refused(struct dc_worker *w, int lfd, int high,
-                              struct wl_fds *k, bool other_id)
+                              struct wl_fds *k, enum wl_scenario scenario)
 {
     struct pollfd pfd = {.fd = lfd, .events = POLLIN};
     TcpConnection *now;
     const char *why;
+    bool answered;
     int mgr;
 
     close(w->mgr);
@@ -7724,10 +7733,13 @@ static const char *wl_refused(struct dc_worker *w, int lfd, int high,
     why = wl_registers(w, lfd, k, &mgr);
     if (why)
         return why;
-    if (other_id
-            ? !wr_assign(mgr, WL_ID + 1)
-            : !send_register_resp(mgr, 0, -EBUSY,
-                                  (uint32_t)sizeof(TcpRegisterRespPayload)))
+    if (scenario == WL_OTHER_ID)
+        answered = wr_assign(mgr, WL_ID + 1);
+    else
+        answered = send_register_resp(mgr, 0,
+                                      scenario == WL_UNKNOWN ? -ENOENT : -EBUSY,
+                                      (uint32_t)sizeof(TcpRegisterRespPayload));
+    if (!answered)
         return "could not answer the registration";
     if (!ends(mgr))
         return "the worker kept the refused connection";
@@ -7737,7 +7749,7 @@ static const char *wl_refused(struct dc_worker *w, int lfd, int high,
     tcp_connection_unref(now);
     if (now)
         return "the worker took the refused connection for the manager's";
-    if (other_id) {
+    if (scenario != WL_REFUSED) {
         /* Its next pass comes within the 1 s interval */
         if (poll(&pfd, 1, 2500) != 0 || wl_attempts(w) != 1)
             return "the worker registered again";
@@ -7832,7 +7844,8 @@ static const char *wl_run(enum wl_scenario scenario, struct dc_worker *w,
         break;
     case WL_REFUSED:
     case WL_OTHER_ID:
-        why = wl_refused(w, *lfd, high, k, scenario == WL_OTHER_ID);
+    case WL_UNKNOWN:
+        why = wl_refused(w, *lfd, high, k, scenario);
         break;
     case WL_GONE:
         why = wl_gone(w, lfd, port, high, k);
