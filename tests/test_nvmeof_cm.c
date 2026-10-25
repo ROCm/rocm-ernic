@@ -640,9 +640,26 @@ static void test_ip_versions(void)
 }
 
 /*
+ * Send a DREQ whose remote comm ID matches nothing, so the responder has
+ * to go by the controller QPN @qpn and the guest's comm ID.
+ */
+static void dreq_by_qpn(struct nvmeof_cm *cm, uint32_t guest_comm_id,
+                        uint32_t qpn, struct nvmeof_cm_result *res)
+{
+    uint8_t dreq[IB_MAD_SIZE], rsp[IB_MAD_SIZE];
+
+    mad_hdr(dreq, ATTR_DREQ, 0x53);
+    ernic_put_be32(dreq + DREQ_LOCAL_COMM_ID, guest_comm_id);
+    ernic_put_be32(dreq + DREQ_REMOTE_COMM_ID, 0x0badf00d);
+    ernic_put_be32(dreq + DREQ_REMOTE_QPN, qpn << 8);
+    nvmeof_cm_handle_mad(cm, dreq, sizeof(dreq), rsp, res);
+}
+
+/*
  * A DREQ whose remote comm ID matches nothing is matched by its remote
  * QPN instead. That is the QPN of the DREQ's recipient: the controller's,
- * from our REP, not the guest's own.
+ * from our REP, not the guest's own. The guest's comm ID has to match
+ * too, since a controller QPN is reused once the QPNs wrap.
  */
 static void test_dreq_by_qpn(void)
 {
@@ -677,6 +694,15 @@ static void test_dreq_by_qpn(void)
           "a DREQ naming the guest's QPN unbound it");
     check("dreq-qpn", nvmeof_cm_conn_count(cm) == 1,
           "a DREQ naming the guest's QPN released the connection");
+
+    /* The controller's QPN with another connection's guest comm ID. */
+    dreq_by_qpn(cm, p.comm_id + 1, local_qpn, &res);
+    check("dreq-qpn", res.rsp_len == IB_MAD_SIZE,
+          "a DREQ with another guest comm id was left unanswered");
+    check("dreq-qpn", res.action == NVMEOF_CM_ACT_NONE,
+          "a DREQ with another guest comm id unbound the QP");
+    check("dreq-qpn", nvmeof_cm_conn_count(cm) == 1,
+          "a DREQ with another guest comm id released the connection");
 
     /* The controller's QPN does. */
     mad_hdr(dreq, ATTR_DREQ, 0x52);
@@ -885,6 +911,93 @@ static void test_qpn_wrap(void)
     nvmeof_cm_destroy(cm);
 }
 
+/*
+ * After the QPNs wrap, a QPN a live connection still holds is skipped:
+ * connection A stays up while guest QP B reconnects all the way round, and
+ * B is never given A's QPN, so a DREQ for B can't close A. Once A is closed
+ * and B has been given A's old QPN, a stale DREQ for A, replayed, doesn't
+ * close B.
+ */
+static void test_qpn_wrap_live(void)
+{
+    struct nvmeof_cm *cm = nvmeof_cm_create(NULL, TEST_TRADDR, TEST_PORT);
+    uint8_t dreq[IB_MAD_SIZE], rsp[IB_MAD_SIZE];
+    struct nvmeof_cm_result res;
+    struct req_params a, b;
+    bool wrapped = false, reused = false;
+
+    if (cm == NULL) {
+        fail("setup", "nvmeof_cm_create failed");
+        return;
+    }
+
+    req_defaults(&a);
+    a.comm_id = 0xa0000000;
+    a.qpn = 0x10;
+    uint32_t a_comm_id = connect_req(cm, &a, &res);
+    uint32_t a_qpn = res.local_qpn;
+    check("qpn-wrap-live", a_comm_id != 0, "A's REQ was not accepted");
+
+    /* B reconnects until its QPN wraps round past A's. */
+    req_defaults(&b);
+    b.comm_id = 0xb0000000;
+    b.qpn = 0x20;
+    uint32_t prev = a_qpn;
+    for (unsigned i = 0; i < 0x20000 && !wrapped; i++) {
+        b.comm_id++;
+        if (connect_req(cm, &b, &res) == 0) {
+            fail("qpn-wrap-live", "B's REQ %u was refused", i);
+            break;
+        }
+        if (res.local_qpn == a_qpn) {
+            fail("qpn-wrap-live", "B was given A's QPN 0x%06x", a_qpn);
+            break;
+        }
+        wrapped = res.local_qpn < prev;
+        prev = res.local_qpn;
+    }
+    check("qpn-wrap-live", wrapped, "B's QPNs never wrapped");
+    check("qpn-wrap-live", res.local_qpn == a_qpn + 1,
+          "after the wrap, B was not given the QPN after A's");
+
+    /* A DREQ for B by QPN closes B, not A. */
+    dreq_by_qpn(cm, b.comm_id, res.local_qpn, &res);
+    check("qpn-wrap-live",
+          res.action == NVMEOF_CM_ACT_UNBIND && res.guest_qpn == b.qpn,
+          "a DREQ for B by its QPN did not close B");
+    check("qpn-wrap-live", nvmeof_cm_conn_count(cm) == 1,
+          "a DREQ for B by its QPN left the wrong connections");
+
+    /* Close A, then reconnect B until it is given A's old QPN. */
+    mad_hdr(dreq, ATTR_DREQ, 0x54);
+    ernic_put_be32(dreq + DREQ_LOCAL_COMM_ID, a.comm_id);
+    ernic_put_be32(dreq + DREQ_REMOTE_COMM_ID, a_comm_id);
+    nvmeof_cm_handle_mad(cm, dreq, sizeof(dreq), rsp, &res);
+    check("qpn-wrap-live",
+          res.action == NVMEOF_CM_ACT_UNBIND && res.guest_qpn == a.qpn,
+          "A's DREQ did not close A");
+    for (unsigned i = 0; i < 0x20000 && !reused; i++) {
+        b.comm_id++;
+        if (connect_req(cm, &b, &res) == 0) {
+            fail("qpn-wrap-live", "B's REQ %u was refused", i);
+            break;
+        }
+        reused = res.local_qpn == a_qpn;
+    }
+    check("qpn-wrap-live", reused, "B was never given A's old QPN");
+
+    /* A's DREQ again, missing on the comm id: B's isn't A's guest comm id. */
+    dreq_by_qpn(cm, a.comm_id, a_qpn, &res);
+    check("qpn-wrap-live", res.rsp_len == IB_MAD_SIZE,
+          "a replayed DREQ for A was left unanswered");
+    check("qpn-wrap-live", res.action == NVMEOF_CM_ACT_NONE,
+          "a replayed DREQ for A closed B, which has A's old QPN");
+    check("qpn-wrap-live", nvmeof_cm_conn_count(cm) == 1,
+          "a replayed DREQ for A released a connection");
+
+    nvmeof_cm_destroy(cm);
+}
+
 int main(void)
 {
     test_full_handshake();
@@ -896,6 +1009,7 @@ int main(void)
     test_reconnect();
     test_table_full();
     test_qpn_wrap();
+    test_qpn_wrap_live();
 
     if (failures == 0) {
         printf("PASS nvmeof-cm\n");

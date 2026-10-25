@@ -711,7 +711,11 @@
   * A DREQ whose connection ID matched nothing was looked up by the guest's
     QP number instead of the controller's, which it carries, so it was
     answered but released nothing; the controller queue stayed open until
-    the guest destroyed the QP. It now releases the connection it names.
+    the guest destroyed the QP. It now releases the connection it names, if
+    the guest's connection ID matches too.
+  * Controller QP numbers start again from the bottom of their range after
+    65,535 connections, and could be handed to a new connection while an
+    older one still held them. They now skip any a connection holds.
 * **S3 backend.** A `Content-Length` of `-1` or beyond 64 bits on a token
   request was taken as the largest length; anything but digits is now a
   `400`. A signed `Range` such as `bytes=--64` returned the whole object and

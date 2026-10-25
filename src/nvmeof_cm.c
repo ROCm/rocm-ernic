@@ -257,6 +257,31 @@ static struct nvmeof_cm_conn *conn_by_local_qpn(struct nvmeof_cm *cm,
     return NULL;
 }
 
+/*
+ * Controller QPNs run from NVMEOF_CM_QPN_BASE + 1 to the top of the range
+ * nvmeof_cm_is_target_qpn() accepts, then start again from the bottom.
+ * After that wrap, one a live connection still holds is skipped, so no two
+ * connections share one.  The connection being set up has a local_qpn of
+ * 0, outside the range, so it never clashes with itself.
+ */
+_Static_assert(NVMEOF_CM_MAX_CONN < (0x00ffffffu & ~NVMEOF_CM_QPN_MASK),
+               "the connection table could hold every controller QPN");
+
+static uint32_t next_local_qpn(struct nvmeof_cm *cm)
+{
+    /* Ends within NVMEOF_CM_MAX_CONN + 1 tries: there are fewer live
+     * connections than QPNs (the assertion above). */
+    for (;;) {
+        uint32_t qpn = cm->next_qpn++;
+
+        if (!nvmeof_cm_is_target_qpn(qpn)) {
+            cm->next_qpn = NVMEOF_CM_QPN_BASE + 1;
+        } else if (conn_by_local_qpn(cm, qpn) == NULL) {
+            return qpn;
+        }
+    }
+}
+
 static struct nvmeof_cm_conn *conn_alloc(struct nvmeof_cm *cm)
 {
     for (unsigned i = 0; i < NVMEOF_CM_MAX_CONN; i++) {
@@ -417,11 +442,7 @@ static size_t handle_req(struct nvmeof_cm *cm, const uint8_t *req, uint8_t *rsp,
     c->remote_comm_id = remote_comm_id;
     c->local_comm_id = cm->next_comm_id++;
     c->guest_qpn = guest_qpn;
-    c->local_qpn = cm->next_qpn++;
-    if (!nvmeof_cm_is_target_qpn(c->local_qpn)) {
-        cm->next_qpn = NVMEOF_CM_QPN_BASE + 1;
-        c->local_qpn = cm->next_qpn++;
-    }
+    c->local_qpn = next_local_qpn(cm);
     c->start_psn = (c->local_comm_id ^ 0x5a5a5au) & 0xffffffu;
     c->nvme_qid = qid;
 
@@ -498,9 +519,18 @@ bool nvmeof_cm_handle_mad(struct nvmeof_cm *cm, const void *mad, size_t len,
     case CM_ATTR_DREQ:
         c = conn_by_local_id(cm, ernic_get_be32(m + CM_DREQ_REMOTE_COMM_ID));
         if (c == NULL) {
-            /* The remote QPN is the recipient's: ours, not the guest's. */
+            /*
+             * The remote QPN is the recipient's: ours, not the guest's.  A
+             * controller QPN is reused after the wrap, so the guest's comm
+             * ID has to match too, or a stale DREQ for a closed connection
+             * would close the newer one that now has its QPN.
+             */
             c = conn_by_local_qpn(cm,
                                   ernic_get_be32(m + CM_DREQ_REMOTE_QPN) >> 8);
+            if (c != NULL && c->remote_comm_id !=
+                                 ernic_get_be32(m + CM_DREQ_LOCAL_COMM_ID)) {
+                c = NULL;
+            }
         }
         mad_reply_hdr(rsp, m, CM_ATTR_DREP);
         ernic_put_be32(rsp + CM_DREP_LOCAL_COMM_ID,

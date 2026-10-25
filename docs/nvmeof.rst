@@ -212,7 +212,8 @@ recognises sends on the guest's GSI queue pair and hands the
 - **RTU** -- mark the queue established.
 - **DREQ** -- tear the queue down and answer **DREP**. A
   DREQ is matched by its connection ID, or failing that,
-  by the controller QPN it names.
+  by the controller QPN it names together with the guest's
+  connection ID.
 
 Replies are delivered back into the guest's GSI receive
 queue as UD completions, with a synthesised 40-byte GRH and
@@ -224,7 +225,9 @@ controller never has to be told its own address twice.
 Controller queue pairs are numbered from ``0x00c00000``.
 The data path spots a send whose destination QPN falls in
 that range and routes the capsule to the controller instead
-of looking for a fabric peer.
+of looking for a fabric peer. The numbers start again from
+the bottom of the range once they reach the top, skipping
+any a connection still holds.
 
 Capsules and data transfer
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
