@@ -32,7 +32,6 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>

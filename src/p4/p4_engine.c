@@ -19,7 +19,6 @@
 #include "p4_engine.h"
 #include "p4_exec.h"
 #include "p4_json.h"
-#include "p4_program.h"
 #include "p4_table.h"
 
 struct p4_engine {

@@ -182,8 +182,6 @@ int ionic_eth_emu_queue_rx_frame(struct ionic_eth_emu *emu, const void *frame,
  */
 void ionic_eth_emu_publish_stats(struct ionic_eth_emu *emu, uint64_t now_ms);
 
-struct ionic_emu_stats;
-
 /*
  * The counters behind the published block, with the off-thread ones folded
  * in, for the --stats-file writer.  Main loop thread only.

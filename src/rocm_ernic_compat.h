@@ -14,7 +14,6 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include <stddef.h>
 #include <stdio.h> /* FILE, for pvrdma_set_stats_section() */
 
 /* Forward declarations */

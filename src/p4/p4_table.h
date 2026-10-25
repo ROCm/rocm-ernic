@@ -21,8 +21,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "p4_json.h"
 #include "p4_program.h"
-#include "p4_value.h"
 
 /*
  * Widest key field or action argument an entry may carry, in bytes.  128
@@ -75,6 +75,7 @@ struct p4_update {
 };
 
 struct p4_entries;
+struct p4_value;
 
 /*
  * An entry, once installed.  Returned by a lookup so the executor can run

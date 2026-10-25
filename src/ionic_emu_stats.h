@@ -34,7 +34,6 @@
 #ifndef IONIC_EMU_STATS_H
 #define IONIC_EMU_STATS_H
 
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>

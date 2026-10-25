@@ -3,6 +3,8 @@
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include "guest/ernic_counter_snapshot.h"
 
