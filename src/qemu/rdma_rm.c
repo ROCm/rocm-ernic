@@ -527,11 +527,13 @@ int rdma_rm_modify_qp(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
     if (qp->qp_type == ERNIC_IB_QPT_SMI) {
         rdma_error_report("Got QP0 request");
         return -EPERM;
-    } else if (qp->qp_type == ERNIC_IB_QPT_GSI) {
-        return 0;
     }
 
-    if (attr_mask & IBV_QP_STATE) {
+    /*
+     * GSI's transitions aren't passed to the backend, so they can't fail;
+     * they are only recorded, for rdma_rm_query_qp() to report.
+     */
+    if ((attr_mask & IBV_QP_STATE) && qp->qp_type != ERNIC_IB_QPT_GSI) {
         /* Call backend state transitions using vtable dispatch */
         if (qp->backend_qp.backend_ops) {
             if (qp_state == IBV_QPS_INIT &&

@@ -551,7 +551,9 @@ guest put the object's memory.
      - Record the QP's new state. At RTR, record the peer QP
        and which server it lives on; for UD, record the Q_Key.
        Nothing is recorded unless the backend makes the
-       transition, so a MODIFY_QP that fails changes nothing
+       transition, so a MODIFY_QP that fails changes nothing.
+       GSI's transitions don't go to the backend; they are
+       only recorded
    * - QUERY_QP
      - DMA the QP's state, PSNs, peer QP (by the id the driver
        gave it), and access flags into the buffers the driver

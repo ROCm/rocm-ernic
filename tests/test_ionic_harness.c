@@ -3726,14 +3726,15 @@ static void test_backend_names(void)
  * an MR still live out their lives on it as the driver drives them. Two
  * QPs are told apart -- the backend once gave every QP the same number, so
  * the second replaced the first -- and QUERY_QP reports each one's own
- * state, PSNs and peer, from RESET to Error.
+ * state, PSNs and peer, from RESET to Error. It reports GSI's state too,
+ * though the backend never sees GSI's transitions.
  */
 static void test_none(void)
 {
     static const char T[] = "none";
     struct ih h;
     struct ih_cq cq;
-    struct ih_qp a, b;
+    struct ih_qp a, b, gsi;
     struct ih_mr mr;
     struct qp_answer qa;
 
@@ -3752,6 +3753,9 @@ static void test_none(void)
               "CREATE_QP A failed") &&
         check(T, ih_qp_create(&h, &b, RC_QP_B, IH_QPT_RC, &cq, &cq, NULL),
               "CREATE_QP B failed") &&
+        /* The driver creates QP 1 as UD, and that id is what makes it GSI */
+        check(T, ih_qp_create(&h, &gsi, 1, IH_QPT_UD, &cq, &cq, NULL),
+              "CREATE_QP 1 failed") &&
         check(T,
               ih_mr_create(&h, &mr, MR_A, VA_A, MR_LEN, IH_ACCESS_ALL, false),
               "CREATE_MR failed");
@@ -3792,8 +3796,21 @@ static void test_none(void)
     if (query_qp(T, &h, b.id, &qa))
         check(T, qa.state == IH_QPS_RTS, "QP B in state %u, not RTS", qa.state);
 
+    /* GSI's transitions are recorded without the backend */
+    bool gsi_rts =
+        ih_qp_modify(&h, gsi.id, IH_QP_STATE, IH_QPS_INIT, 0, NULL, 0) == 0 &&
+        ih_qp_modify(&h, gsi.id, IH_QP_STATE, IH_QPS_RTR, 0, NULL, 0) == 0 &&
+        ih_qp_modify(&h, gsi.id, IH_QP_STATE | IH_QP_SQ_PSN, IH_QPS_RTS, 0,
+                     NULL, 0) == 0;
+    if (check(T, gsi_rts, "taking QP 1 to RTS failed") &&
+        query_qp(T, &h, gsi.id, &qa))
+        check(T, qa.state == IH_QPS_RTS && qa.sq_psn == 0x200,
+              "QP 1: state %u, SQ PSN %#x, expected RTS, 0x200", qa.state,
+              qa.sq_psn);
+
     check(T, ih_qp_destroy(&h, &a) == 0, "DESTROY_QP A failed");
     check(T, ih_qp_destroy(&h, &b) == 0, "DESTROY_QP B failed");
+    check(T, ih_qp_destroy(&h, &gsi) == 0, "DESTROY_QP 1 failed");
     check(T, ih_mr_destroy(&h, &mr) == 0, "DESTROY_MR failed");
     check(T, ih_cq_destroy(&h, &cq) == 0, "DESTROY_CQ failed");
     check(T,

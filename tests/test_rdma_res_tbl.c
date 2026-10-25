@@ -76,13 +76,15 @@
  * call and change neither the state nor the PSNs, which a query reports
  * from the resource manager's record rather than the backend's; and a
  * failed query must pass on the backend's error. qpn-in-use refuses a QP
- * the backend numbers as another live one. qp-no-backend covers a QP whose
- * PD has no backend, which the resource manager numbers and keeps the state
- * of itself, and QP0 and QP1, which can't be modified. bad-handles passes
- * free and out-of-range handles to every call that takes one, tables-full
- * allocates from full tables, and alloc-refused allocates before
- * rdma_rm_init() and with nowhere to put the handle. The srq-* cases cover
- * an SRQ's life, through stubs of the backend's SRQ entry points.
+ * the backend numbers as another live one. gsi-skips-backend takes a GSI
+ * QP to RTS on a backend set to fail each transition, which mustn't be
+ * called, and checks that a query reports it. qp-no-backend covers a QP
+ * whose PD has no backend, which the resource manager numbers and keeps the
+ * state of itself, QP0, which can't be modified, and QP1. bad-handles
+ * passes free and out-of-range handles to every call that takes one,
+ * tables-full allocates from full tables, and alloc-refused allocates
+ * before rdma_rm_init() and with nowhere to put the handle. The srq-* cases
+ * cover an SRQ's life, through stubs of the backend's SRQ entry points.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -1461,6 +1463,81 @@ static bool test_qpn_in_use(void)
     return ok;
 }
 
+/*
+ * GSI's transitions aren't passed to the backend, so a GSI QP reaches RTS
+ * on the failing backend even with each transition's backend operation set
+ * to fail, and a query reports the state and PSNs its modifications set.
+ */
+static bool test_gsi_skips_backend(void)
+{
+    static const struct {
+        enum ibv_qp_state state;
+        BackendOp op; /* the backend operation set to fail */
+    } steps[] = {
+        {IBV_QPS_INIT, OP_QP_INIT},
+        {IBV_QPS_RTR, OP_QP_RTR},
+        {IBV_QPS_RTS, OP_QP_RTS},
+    };
+    const char *name = "gsi-skips-backend";
+    bool ok = true;
+    RdmaBackendDev backend_dev;
+    struct ibv_device_attr a = one_each;
+    struct ibv_qp_attr attr;
+    union ibv_gid dgid;
+    uint32_t pd_handle, cq_handle, gsi;
+
+    memset(&backend_dev, 0, sizeof(backend_dev));
+    backend_dev.backend_ops = &failing_ops;
+    memset(&dgid, 0, sizeof(dgid));
+    memset(&dev_res, 0, sizeof(dev_res));
+    alloc_injectors_reset();
+    fail_op = OP_NONE;
+    if (rdma_rm_init(&dev_res, &a) != 0 ||
+        rdma_rm_alloc_pd(&dev_res, &backend_dev, &pd_handle) != 0 ||
+        rdma_rm_alloc_cq(&dev_res, &backend_dev, 1, &cq_handle) != 0 ||
+        rdma_rm_alloc_qp(&dev_res, pd_handle, ERNIC_IB_QPT_GSI, 1, 1, cq_handle,
+                         1, 1, cq_handle, &gsi, 0, 0, NULL) != 0) {
+        abort();
+    }
+
+    /* Each step sets new PSNs, so the query shows the last step's */
+    for (size_t i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
+        fail_op = steps[i].op;
+        last_op = OP_NONE;
+        int rc = rdma_rm_modify_qp(&dev_res, &backend_dev, gsi,
+                                   IBV_QP_STATE | IBV_QP_RQ_PSN | IBV_QP_SQ_PSN,
+                                   0, &dgid, 0, steps[i].state, 0,
+                                   (uint32_t)i + 0x10U, (uint32_t)i + 0x20U);
+        if (rc != 0 || last_op != OP_NONE) {
+            printf("FAIL %-18s: transition %zu returned %d after backend "
+                   "operation %d, expected 0 after none\n",
+                   name, i, rc, (int)last_op);
+            ok = false;
+        }
+    }
+
+    fail_op = OP_NONE;
+    int rc = rdma_rm_query_qp(&dev_res, gsi, &attr, IBV_QP_STATE, NULL);
+    if (rc != 0 || attr.qp_state != IBV_QPS_RTS ||
+        attr.cur_qp_state != IBV_QPS_RTS || attr.rq_psn != 0x12U ||
+        attr.sq_psn != 0x22U) {
+        printf("FAIL %-18s: query returned %d with state %d and PSNs "
+               "%#x/%#x, expected 0 with %d and 0x12/0x22\n",
+               name, rc, (int)attr.qp_state, attr.rq_psn, attr.sq_psn,
+               (int)IBV_QPS_RTS);
+        ok = false;
+    }
+
+    rdma_rm_dealloc_qp(&dev_res, gsi);
+    rdma_rm_dealloc_cq(&dev_res, cq_handle);
+    rdma_rm_fini(&dev_res);
+
+    if (ok) {
+        printf("ok   %-18s\n", name);
+    }
+    return ok;
+}
+
 /* ---- QPs with no backend -----------------------------------------------
  *
  * A PD made with no backend gives its QPs none. The resource manager then
@@ -1529,7 +1606,7 @@ static bool test_qp_no_backend(void)
         ok = false;
     }
 
-    /* QP0 can't be modified, and QP1's modifications change nothing. */
+    /* QP0 can't be modified, and QP1's modifications are recorded. */
     uint32_t smi, gsi;
     if (rdma_rm_alloc_qp(&dev_res, pd_handle, ERNIC_IB_QPT_SMI, 1, 1, cq_handle,
                          1, 1, cq_handle, &smi, 0, 0, NULL) != 0 ||
@@ -1548,9 +1625,9 @@ static bool test_qp_no_backend(void)
                            &dgid, 0, IBV_QPS_RTS, 0, 0, 5);
     if (rc != 0 ||
         rdma_rm_query_qp(&dev_res, gsi, &attr, IBV_QP_STATE, NULL) != 0 ||
-        attr.qp_state != IBV_QPS_RESET || attr.sq_psn != 0) {
+        attr.qp_state != IBV_QPS_RTS || attr.sq_psn != 5) {
         printf("FAIL %-18s: modifying QP1 returned %d and left state %d and "
-               "SQ PSN %u, expected 0 and RESET, 0\n",
+               "SQ PSN %u, expected 0 and RTS, 5\n",
                name, rc, (int)attr.qp_state, attr.sq_psn);
         ok = false;
     }
@@ -1965,6 +2042,9 @@ int main(void)
     }
 
     if (!test_qpn_in_use()) {
+        failures++;
+    }
+    if (!test_gsi_skips_backend()) {
         failures++;
     }
     if (!test_qp_no_backend()) {
