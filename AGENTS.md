@@ -619,12 +619,12 @@ nodes and the `-T` TAP plus bridge setup. Covered by
 
 ### Dead and restarted mesh nodes
 
-Nodes are never evicted from `mesh_nodes`; a dead one is marked
-`is_alive = false`. A node that went quiet returns under its id (a
-worker that loses its connection to the manager registers again asking
-for it, `tcp_register_again()`), but a restarted one registers again and
-gets a new id (ids are monotonic, so not stable across runs). Both ids
-then claim the same GIDs.
+A dead node stays in `mesh_nodes`, marked `is_alive = false`. A node
+that went quiet returns under its id (a worker that loses its connection
+to the manager registers again asking for it, `tcp_register_again()`),
+but a restarted one registers again and gets a new id (ids are
+monotonic, so not stable across runs). Both ids then claim the same
+GIDs.
 
 So `TcpNodeGids` has an `alive` flag, which the manager clears when it
 declares a node dead and sets when it answers or registers again, and
@@ -635,10 +635,19 @@ Workers keep no liveness of their own; the manager advertises a dead node
 as owning nothing (`tcp_broadcast_gid_table()`), which is what gives an
 empty advertisement meaning.
 
+The broadcasts carry at most `TCP_MAX_MESH_NODES` (64) nodes, so when a
+new node registers in a full table, the manager evicts the node that has
+been dead longest and has no live connection (`tcp_evict_dead_node()`),
+drops its claims, and advertises it as owning nothing. An evicted id is
+never given out again. **Never keep a `MeshNodeInfo *` after dropping
+`mesh_table_lock`**: eviction frees it. Keep the node id and look it up
+again, as `TcpHealthCheckItem` does.
+
 Don't make the index read `is_alive` from `mesh_nodes`: that takes
 `mesh_table_lock` under `gid_table_lock`, the reverse of the lock order.
 Covered by `test_dead_node_stops_owning_its_gids()` in
-`tests/test_tcp_gid_resolve.c` and the churn rounds in
+`tests/test_tcp_gid_resolve.c`, the eviction rows in
+`tests/test_tcp_thread_stop.c`, and the churn rounds in
 `tests/py/test_mesh_stress.py`.
 
 ### Connection lifetime

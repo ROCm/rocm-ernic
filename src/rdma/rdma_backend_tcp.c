@@ -248,6 +248,7 @@ static void tcp_stop_send_thread(TcpConnection *conn);
 static void tcp_advertise_local_gids(TcpBackendPrivate *priv);
 static void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
                                const TcpNodeGidsPayload *payload);
+static void tcp_broadcast_gids(TcpBackendPrivate *priv, uint32_t evicted);
 static int tcp_send_handshake(TcpConnection *conn, uint32_t local_node_id,
                               TcpMsgType msg_type);
 
@@ -395,9 +396,9 @@ static void tcp_gid_index_rebuild(TcpBackendPrivate *priv)
          * no part in resolution, so its addresses are unreachable rather
          * than wrong. It also stops contesting them, which is what lets a
          * node that is restarted -- and so registers under a new id, since
-         * ids are allocated monotonically and a dead node is never evicted
-         * -- own its guest's GID instead of deadlocking against the id it
-         * used to have.
+         * ids are allocated monotonically, while the dead one stays until
+         * a full mesh needs its slot -- own its guest's GID instead of
+         * deadlocking against the id it used to have.
          */
         if (!claims->alive)
             continue;
@@ -478,6 +479,19 @@ void tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
                               tcp_gid_str(gids[i], buf), node_id);
         }
     }
+}
+
+/*
+ * Discard what @node_id claimed, once it has been evicted from mesh_nodes
+ * (tcp_evict_dead_node()).  Unlike an empty advertisement, it logs nothing:
+ * the node didn't withdraw anything, and the caller says why it is gone.
+ */
+static void tcp_gid_claims_forget(TcpBackendPrivate *priv, uint32_t node_id)
+{
+    qemu_mutex_lock(&priv->gid_table_lock);
+    if (g_hash_table_remove(priv->node_gids, GUINT_TO_POINTER(node_id)))
+        tcp_gid_index_rebuild(priv);
+    qemu_mutex_unlock(&priv->gid_table_lock);
 }
 
 void tcp_gid_claims_set_alive(TcpBackendPrivate *priv, uint32_t node_id,
@@ -850,6 +864,73 @@ static int tcp_register_again(TcpBackendPrivate *priv, uint32_t node_id,
         *old = conn;
     }
     return 0;
+}
+
+/*
+ * Make room in a full mesh_nodes for a node registering for the first time,
+ * by evicting the node that has been dead longest.  The broadcasts carry at
+ * most TCP_MAX_MESH_NODES nodes, and a table past that leaves nodes out of
+ * them, live ones as likely as dead (tcp_report_mesh_overflow()).
+ *
+ * Only a dead node that can't be heard from again is evicted: one with no
+ * connection, or one whose connection has ended.  A node declared dead whose
+ * connection is still up, which the health check is about to retire, could
+ * still be handled a message on it, and an advertisement would put back the
+ * claims its eviction dropped.  The manager is never evicted.  The id isn't
+ * given out again, since next_available_node_id only goes up, so a late
+ * message naming it can't be taken for a new node's.
+ *
+ * Returns the evicted node's id, or UINT32_MAX if mesh_nodes has room or
+ * there is no node to evict.  An ended connection the node still has in
+ * connections is taken out into *old, for the caller to retire once it has
+ * dropped the locks.  The node's claims are the caller's to forget, under
+ * mesh_table_lock (tcp_gid_claims_forget()).  The caller holds
+ * mesh_table_lock and conn_table_lock.
+ */
+static uint32_t tcp_evict_dead_node(TcpBackendPrivate *priv,
+                                    TcpConnection **old)
+{
+    GHashTableIter iter;
+    gpointer value;
+    uint32_t victim = UINT32_MAX;
+    uint64_t victim_age = 0;
+    /* Read under the lock, so no heartbeat is newer */
+    uint64_t now_ms = ernic_monotonic_ms();
+    TcpConnection *conn;
+
+    *old = NULL;
+    if (g_hash_table_size(priv->mesh_nodes) < TCP_MAX_MESH_NODES)
+        return UINT32_MAX;
+
+    g_hash_table_iter_init(&iter, priv->mesh_nodes);
+    while (g_hash_table_iter_next(&iter, NULL, &value)) {
+        const MeshNodeInfo *node = value;
+        /* Unsigned, so it's right even if the clock was near zero */
+        uint64_t age = now_ms - node->last_heartbeat_ms;
+
+        if (node->is_alive || node->node_id == tcp_local_node(priv))
+            continue;
+        conn = g_hash_table_lookup(priv->connections,
+                                   GUINT_TO_POINTER(node->node_id));
+        if (conn && !tcp_conn_dead(conn))
+            continue;
+        /* The lower id, which registered first, breaks a tie */
+        if (victim == UINT32_MAX || age > victim_age ||
+            (age == victim_age && node->node_id < victim)) {
+            victim = node->node_id;
+            victim_age = age;
+        }
+    }
+    if (victim == UINT32_MAX)
+        return UINT32_MAX;
+
+    conn = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(victim));
+    if (conn) {
+        tcp_conn_table_take(priv, victim, conn);
+        *old = conn;
+    }
+    g_hash_table_remove(priv->mesh_nodes, GUINT_TO_POINTER(victim));
+    return victim;
 }
 
 /*
@@ -2593,6 +2674,9 @@ void *tcp_recv_thread_per_conn(void *opaque)
                 uint32_t assigned_id = requested_id;
                 bool again = requested_id != 0xFFFFFFFF;
                 TcpConnection *replaced = NULL;
+                /* A dead node evicted to make room, and its connection */
+                uint32_t evicted = UINT32_MAX;
+                TcpConnection *evicted_conn = NULL;
                 const char *why = NULL;
                 int refused = 0;
 
@@ -2619,6 +2703,8 @@ void *tcp_recv_thread_per_conn(void *opaque)
                         qemu_mutex_unlock(&priv->mesh_table_lock);
                         break;
                     }
+                    /* After the id is chosen, so it can't be the evicted one */
+                    evicted = tcp_evict_dead_node(priv, &evicted_conn);
                     g_hash_table_insert(priv->mesh_nodes,
                                         GUINT_TO_POINTER(assigned_id), node);
                 }
@@ -2666,6 +2752,12 @@ void *tcp_recv_thread_per_conn(void *opaque)
                      */
                     tcp_gid_claims_set_alive(priv, assigned_id, true);
                 }
+                /*
+                 * Under mesh_table_lock, so the node's claims go with its
+                 * entry, as far as anything that takes the lock can tell.
+                 */
+                if (evicted != UINT32_MAX)
+                    tcp_gid_claims_forget(priv, evicted);
                 /* For the answer, read under the lock that guards the table */
                 uint32_t num_nodes = g_hash_table_size(priv->mesh_nodes);
                 qemu_mutex_unlock(&priv->mesh_table_lock);
@@ -2674,6 +2766,15 @@ void *tcp_recv_thread_per_conn(void *opaque)
                     tcp_retire_conn(replaced);
                     tcp_connection_unref(replaced);
                 }
+                if (evicted_conn) {
+                    tcp_retire_conn(evicted_conn);
+                    tcp_connection_unref(evicted_conn);
+                }
+                if (evicted != UINT32_MAX)
+                    rdma_info_report("TCP: the mesh is full; evicted node %u, "
+                                     "the node dead longest, to make room for "
+                                     "node %u",
+                                     evicted, assigned_id);
                 if (again) {
                     rdma_info_report("TCP: Node %u registered again from "
                                      "%s:%u",
@@ -2697,7 +2798,8 @@ void *tcp_recv_thread_per_conn(void *opaque)
                 for (uint32_t i = 0; i < num_stale; i++) {
                     uint32_t id = stale[i];
 
-                    if (id == assigned_id)
+                    /* An evicted node's claims are gone already */
+                    if (id == assigned_id || id == evicted)
                         continue;
                     if (tcp_withdraw_if_still_unreachable(priv, id))
                         rdma_info_report("TCP: node %u is gone; withdrawing "
@@ -2741,8 +2843,13 @@ void *tcp_recv_thread_per_conn(void *opaque)
                  * The joining worker missed every advertisement sent before
                  * it registered, so replay the whole table to everyone.  Its
                  * own GIDs follow once it sends them.
+                 *
+                 * An evicted node is no longer in the table, so it gets an
+                 * empty set of its own.  The workers were told it owned
+                 * nothing when it was declared dead, unless it was evicted
+                 * before that broadcast took its snapshot.
                  */
-                tcp_broadcast_gid_table(priv);
+                tcp_broadcast_gids(priv, evicted);
                 break;
             }
 
@@ -3688,6 +3795,18 @@ static void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
  */
 void tcp_broadcast_gid_table(TcpBackendPrivate *priv)
 {
+    tcp_broadcast_gids(priv, UINT32_MAX);
+}
+
+/*
+ * tcp_broadcast_gid_table(), followed, unless @evicted is UINT32_MAX, by an
+ * empty set for @evicted, a node just evicted from mesh_nodes, which the
+ * table no longer has (tcp_evict_dead_node()).  It comes last, under
+ * gid_broadcast_lock, so no broadcast whose snapshot still had the node can
+ * follow it.
+ */
+static void tcp_broadcast_gids(TcpBackendPrivate *priv, uint32_t evicted)
+{
     if (!priv->is_manager || !priv->node_gids || !priv->mesh_nodes)
         return;
 
@@ -3754,6 +3873,13 @@ void tcp_broadcast_gid_table(TcpBackendPrivate *priv)
                            tcp_const_gids(per_node[i].gids),
                            per_node[i].num_gids);
 
+        for (guint c = 0; c < conns->len; c++)
+            tcp_send_node_gids(priv, g_ptr_array_index(conns, c), &payload);
+    }
+    if (evicted != UINT32_MAX) {
+        TcpNodeGidsPayload payload;
+
+        tcp_fill_node_gids(&payload, evicted, NULL, 0);
         for (guint c = 0; c < conns->len; c++)
             tcp_send_node_gids(priv, g_ptr_array_index(conns, c), &payload);
     }
@@ -3835,7 +3961,7 @@ static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items)
     g_hash_table_iter_init(&iter, priv->mesh_nodes);
     while (g_hash_table_iter_next(&iter, NULL, &value)) {
         MeshNodeInfo *node = (MeshNodeInfo *)value;
-        TcpHealthCheckItem item = {node, NULL, false, false};
+        TcpHealthCheckItem item = {node->node_id, NULL, false, false};
 
         if (node->node_id == tcp_local_node(priv))
             continue;
@@ -3903,20 +4029,30 @@ static void tcp_health_check_unpublish(TcpBackendPrivate *priv,
 }
 
 /*
- * Whether node is still silent.  The scan's verdict can be out of date by
+ * Whether node_id is still silent.  The scan's verdict can be out of date by
  * the time it's acted on: a node can answer a heartbeat late, on the
- * connection that would be retired.
+ * connection that would be retired.  Or a registration can have evicted the
+ * node (tcp_evict_dead_node()), which it does only once nothing more can
+ * come on the node's connection, taking the connection out of the table if
+ * it was still there; there is then nothing left to do.
  */
-static bool tcp_node_still_silent(TcpBackendPrivate *priv, MeshNodeInfo *node)
+static bool tcp_node_still_silent(TcpBackendPrivate *priv, uint32_t node_id)
 {
-    bool silent;
+    const MeshNodeInfo *node;
+    bool evicted, silent = false;
 
     qemu_mutex_lock(&priv->mesh_table_lock);
-    silent = tcp_node_silent(priv, node, ernic_monotonic_ms());
+    node = g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(node_id));
+    evicted = !node;
+    if (node)
+        silent = tcp_node_silent(priv, node, ernic_monotonic_ms());
     qemu_mutex_unlock(&priv->mesh_table_lock);
-    if (!silent)
+    if (evicted)
+        rdma_info_report("TCP: Node %u has been evicted from the mesh",
+                         node_id);
+    else if (!silent)
         rdma_info_report("TCP: Node %u has answered; keeping its connection",
-                         node->node_id);
+                         node_id);
     return silent;
 }
 
@@ -3940,13 +4076,13 @@ void tcp_health_check_retire(TcpBackendPrivate *priv, GArray *items)
         TcpHealthCheckItem *item = &g_array_index(items, TcpHealthCheckItem, i);
 
         if (!item->disconnected &&
-            !(item->silent && tcp_node_still_silent(priv, item->node)))
+            !(item->silent && tcp_node_still_silent(priv, item->node_id)))
             continue;
         if (!item->disconnected)
             rdma_info_report("TCP: Closing the connection to node %u, which "
                              "has stopped answering",
-                             item->node->node_id);
-        tcp_health_check_unpublish(priv, item->node->node_id, item->conn);
+                             item->node_id);
+        tcp_health_check_unpublish(priv, item->node_id, item->conn);
         tcp_connection_unref(item->conn);
         item->conn = NULL;
     }
@@ -3996,7 +4132,7 @@ void *tcp_manager_health_check_thread(void *opaque)
 
             if (conn)
                 tcp_send_heartbeat(priv, conn, TCP_MSG_HEARTBEAT,
-                                   item->node->node_id);
+                                   item->node_id);
         }
         tcp_health_check_release(items);
 
