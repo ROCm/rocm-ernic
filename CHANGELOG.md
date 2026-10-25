@@ -735,3 +735,10 @@
   DNS server can make SIGTERM wait for the resolver to give up, which its
   configured timeouts and retries bound. A hostname that resolves from
   `/etc/hosts`, or a numeric address, doesn't wait.
+* A TCP mesh manager never drops a node from its node table, and a restarted
+  worker registers as a new node, so a mesh that has had more than 64
+  registrations in total, restarts included, holds more nodes than its
+  topology and GID broadcasts carry (64). The nodes past 64, live ones
+  included, drop out of the mesh: their peer connections are torn down and
+  their GIDs no longer resolve. The manager now logs an error, with the
+  number of nodes left out, on every broadcast that drops any.
