@@ -78,9 +78,11 @@ cmake --build build
   a skipped test means something is wrong. Multi-VM and hardware testing
   ([docs/testing.rst](docs/testing.rst)) runs in the `system-tests`,
   `nvmeof-lane`, `s3-lane`, and `self-hosted-ci` workflows.
-- A plain build sanitizes nothing, unit tests included; also build with
-  `ERNIC_USE_SANITIZERS` and `ERNIC_USE_THREAD_SANITIZER`. Pass new tests
-  to `ernic_set_compiler_flags()`; don't give them `-fsanitize` flags.
+- A plain build sanitizes nothing, unit tests included; CI also builds
+  with `ERNIC_USE_SANITIZERS` and `ERNIC_USE_THREAD_SANITIZER` (for when
+  to run them locally, see
+  [What to run locally](#what-to-run-locally)). Pass new tests to
+  `ernic_set_compiler_flags()`; don't give them `-fsanitize` flags.
 - **Run TSan tests under `setarch "$(uname -m)" -R`**, as CI does.
   Without it, most tests abort with `FATAL: ThreadSanitizer: unexpected
   memory mapping` (ASLR colliding with shadow memory, not a test failure).
@@ -90,7 +92,8 @@ cmake --build build
   or a timeout without sanitizers, is.
 - **Coverage of `src/` must not fall below `MIN_LINE_COVERAGE`** in
   [build-and-test.yml](.github/workflows/build-and-test.yml). Add tests
-  for new or changed code, error paths included. To measure: Clang,
+  for new or changed code, error paths included. CI's coverage leg
+  measures it on every PR. To measure locally: Clang,
   `-DERNIC_USE_CODE_COVERAGE=ON`, `ctest`, then build `ernic-coverage`,
   which writes `coverage/report.txt` and `coverage/lines.txt`. Profiles
   accumulate; delete `coverage/profraw` to start over.
@@ -144,10 +147,11 @@ health-check, and per-connection receive threads
   polled with a bounded timeout, and a stop that wakes it if it blocks
   (`tcp_stop_accept_thread()` shuts down its socket;
   `tcp_stop_health_check_thread()` signals its condition variable).
-- **TSan in Debug and Release**: `-DERNIC_USE_THREAD_SANITIZER=ON` (not
-  combinable with `ERNIC_USE_SANITIZERS`); for Debug also
+- **TSan**: `-DERNIC_USE_THREAD_SANITIZER=ON` (not combinable with
+  `ERNIC_USE_SANITIZERS`); for Debug also
   `-DCMAKE_C_FLAGS_DEBUG="-g -Og"`, as CI does, since `-O0` hides races.
-  Run under `setarch` (see [Tests](#tests)).
+  Run under `setarch` (see [Tests](#tests)). CI runs Debug and Release;
+  locally, Debug is enough.
 - **A passing test doesn't prove TSan was quiet**: not every script fails
   on a server-side report. Grep `Testing/Temporary/LastTest.log` for
   `WARNING: ThreadSanitizer`.
@@ -252,14 +256,60 @@ scanned too). Add new general patterns here when a scanner reports one.
 ## Linters, warnings, and sanitizers (mandatory)
 
 **Every change must pass every check below for the files it touches; a
-change with an outstanding finding isn't finished.** Some CI workflows
-are path-filtered (Build and Test doesn't run for `shared/`-only
-changes) and some checks aren't in CI, so green CI isn't proof. Run them
-yourself, from the repository root.
+change with an outstanding finding isn't finished.** That doesn't mean
+running all of them locally: CI runs most of them on every PR. Run
+[what to run locally](#what-to-run-locally) before pushing, from the
+repository root, and let CI do the rest.
 
 Fix the code rather than suppressing a finding. Suppress only the
 unavoidable (vendored code, framework quirks), as narrowly as possible,
 with a comment saying why.
+
+### What to run locally
+
+CI builds GCC and Clang × Debug and Release × no sanitizer, ASan, and
+TSan, plus coverage and valgrind legs (see [Configure and
+build](#configure-and-build)), and runs clang-tidy and IWYU in their own
+workflows. Repeating that locally takes hours and rarely finds what CI
+won't. Locally, catch what's likely to fail, scoped to what the change
+touches. The commands are in the sections below.
+
+- **Keep your build directories.** Name them `build-<config>` in the
+  repository root (git ignores them) and reuse them: an incremental
+  build recompiles, and re-runs clang-tidy or IWYU on, only what
+  changed. A fresh directory for each check rebuilds everything.
+- **Always**, for a C change:
+  - clang-format on the files you touched.
+  - A GCC Debug build with `-DERNIC_WERROR=ON` and all its tests:
+    `ctest --test-dir build-<config> -j"$(nproc)" --output-on-failure`.
+  - A GCC Release build and a Clang build, both with
+    `-DERNIC_WERROR=ON`; building is enough. Prefer CI's compilers
+    (Ubuntu 24.04's GCC 13 and Clang 18) if installed: they warn about
+    different things than newer ones.
+  - clang-tidy, in a Debug build directory.
+- **When the change calls for it**, one compiler each, running only the
+  tests that exercise the change (`ctest --test-dir build-<config> -R`):
+  - Shared state or threads: TSan (Clang Debug, `-g -Og`, under
+    `setarch`), then the [loop](#thread-safety) for new or changed
+    threaded tests. Races are this project's most common CI failure;
+    don't skip this one.
+  - Pointers, buffers, lengths, or input from outside the process: ASan
+    (`ERNIC_USE_SANITIZERS`).
+  - Wire data, or anything passed to `send()`/`write()`: valgrind on the
+    affected tests, in the plain GCC build.
+  - New error paths or a lot of new code: coverage, if `src/` is near the
+    floor.
+  - Changed `#include`s: IWYU.
+  - A new test: the revert check in
+    [Review your change](#review-your-change-before-you-finish).
+- **Leave to CI** the other compiler and build type for each sanitizer,
+  clang-tidy in Release, valgrind on every test and every server test,
+  and coverage otherwise. When CI fails one, reproduce that
+  configuration locally.
+- **Run what CI doesn't**: vermin, and any check whose workflow's
+  `paths:` filter misses your change. The shell, CMake, Python,
+  spelling, docs, and Ansible checks are quick; run each for any file of
+  its kind you touch.
 
 ### C
 
@@ -274,7 +324,8 @@ with a comment saying why.
   Use exactly clang-format 18.1.3, CI's version.
 
 - **No warnings with GCC or Clang, Debug or Release**, each in its own
-  build directory with `-DERNIC_WERROR=ON`. Warning lists:
+  build directory with `-DERNIC_WERROR=ON`; CI builds all four, locally
+  see [what to run](#what-to-run-locally). Warning lists:
   [`ErnicGNUCompilerOptions.cmake`](cmake/ErnicGNUCompilerOptions.cmake),
   [`ErnicClangCompilerOptions.cmake`](cmake/ErnicClangCompilerOptions.cmake).
 - **Suppress warnings only with the macros in
@@ -287,10 +338,11 @@ with a comment saying why.
 - **Sanitizer-clean**, with GCC and with Clang, in one build directory
   with `-DERNIC_USE_SANITIZERS=ON` (ASan, LSan, UBSan, and compatible
   checks; see [`ErnicSanitizers.cmake`](cmake/ErnicSanitizers.cmake)) and
-  another with `-DERNIC_USE_THREAD_SANITIZER=ON`. Run `ctest` with
-  `export ASAN_OPTIONS=detect_leaks=1`. Every report is fatal. Default
-  run-time options (including TSan's `halt_on_error=1`) are in
-  [`sanitizer-default-options.c`](cmake/sanitizer-default-options.c);
+  another with `-DERNIC_USE_THREAD_SANITIZER=ON`. CI runs both with both
+  compilers, Debug and Release; locally one compiler is enough. Run
+  `ctest` with `export ASAN_OPTIONS=detect_leaks=1`. Every report is
+  fatal. Default run-time options (including TSan's `halt_on_error=1`) are
+  in [`sanitizer-default-options.c`](cmake/sanitizer-default-options.c);
   `*SAN_OPTIONS` override them. Sanitizer flags go only in
   `ErnicSanitizers.cmake`.
 - **Valgrind-clean** (memcheck finds uninitialized reads, including
@@ -299,8 +351,9 @@ with a comment saying why.
   `-ftrivial-auto-var-init=pattern` hides those reads, and not a
   sanitizer build. Install valgrind before configuring so
   `<valgrind/valgrind.h>` is found (`tcp-thread-stop-unit` uses it to
-  skip a `RLIMIT_NOFILE` row valgrind breaks). As CI's GCC Debug leg
-  does:
+  skip a `RLIMIT_NOFILE` row valgrind breaks). CI's GCC Debug leg runs
+  every test this way; locally, replace the `-E` with an `-R` naming the
+  affected unit tests:
 
   ```bash
   ctest --test-dir build -T memcheck --output-on-failure \
@@ -313,8 +366,9 @@ with a comment saying why.
   go to `build/Testing/Temporary/MemoryChecker.*.log`, not ctest's
   output.
 
-  CI then runs the server itself under valgrind. Test scripts run the
-  server under `ERNIC_TEST_SERVER_WRAPPER` (split on whitespace); new
+  CI then runs the server itself under valgrind; locally, limit the `-R`
+  below to the server tests that exercise the change. Test scripts run
+  the server under `ERNIC_TEST_SERVER_WRAPPER` (split on whitespace); new
   scripts that start the server must too. `test_server_lifecycle` can't
   read a command from the environment (see the scanner patterns), so it
   runs under valgrind with `--trace-children=yes`. Not every script
@@ -335,9 +389,11 @@ with a comment saying why.
   the `memset` rule in [Security](#security).
 - **clang-tidy clean** with [`.clang-tidy`](.clang-tidy): every finding
   is an error. Needs clang-tidy 19+ and the same-version Clang (GCC's
-  options are rejected), in its own build directory, Debug and Release
-  (`NDEBUG` and `_FORTIFY_SOURCE` change the analysis). `-k 0` reports
-  every failing file. CI
+  options are rejected), in its own build directory. CI checks Debug and
+  Release (`NDEBUG` and `_FORTIFY_SOURCE` change the analysis); locally,
+  Debug is enough. It runs as part of the build, so rebuilding an
+  existing directory checks only what changed. `-k 0` reports every
+  failing file. CI
   ([clang-tidy.yml](.github/workflows/clang-tidy.yml)) uses clang-tidy
   23:
 
@@ -355,9 +411,11 @@ with a comment saying why.
 - **include-what-you-use** (`apt install iwyu`), with the clang IWYU is
   built on (`include-what-you-use --version`), in its own build
   directory; IWYU rejects options it doesn't know, such as GCC 15's
-  `-fzero-init-padding-bits`. To check as CI
-  ([iwyu.yml](.github/workflows/iwyu.yml)) does, starting from an empty
-  build directory and `iwyu-runs` (IWYU skips up-to-date files):
+  `-fzero-init-padding-bits`. Run it locally when you change
+  `#include`s; IWYU skips up-to-date files, so rebuilding an existing
+  directory checks only what changed. To check every file as CI
+  ([iwyu.yml](.github/workflows/iwyu.yml)) does, start from an empty
+  build directory and `iwyu-runs`:
 
   ```bash
   cmake -B build-iwyu -G Ninja -DCMAKE_C_COMPILER=clang-19 \
@@ -552,7 +610,7 @@ The Ansible collection has its own changelog: add a fragment to
 new files as a reviewer would**, not just the lines you meant to change.
 Every PR gets a Copilot review; these are what it has asked for most.
 Fix what you find, then rerun the
-[checks](#linters-warnings-and-sanitizers-mandatory).
+[local checks](#what-to-run-locally).
 
 - **Is there a changelog entry?** Its most common request. File
   permissions, test program arguments, and flaky-test fixes count.
