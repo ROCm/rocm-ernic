@@ -118,14 +118,13 @@ Checks:
   - -readability-isolate-declaration  # TODO(225)
   - -readability-magic-numbers  # TODO(4073)
   - -cppcoreguidelines-avoid-magic-numbers  # TODO: the same check
-  - -readability-math-missing-parentheses  # TODO(100)
-  - -readability-redundant-casting  # TODO(5)
-  - -readability-redundant-nested-if  # TODO(4)
-  - -readability-redundant-parentheses  # TODO(2)
-  - -readability-suspicious-call-argument  # TODO(2)
-  - -readability-trailing-comma  # TODO(167)
-  - -readability-uppercase-literal-suffix  # TODO(344)
-  - -readability-use-concise-preprocessor-directives  # TODO(3)
+  - -readability-math-missing-parentheses  # TODO(187)
+  - -readability-redundant-casting  # TODO(24)
+  - -readability-redundant-nested-if  # TODO(3)
+  - -readability-redundant-parentheses  # TODO(3)
+  - -readability-trailing-comma  # TODO(1068)
+  - -readability-uppercase-literal-suffix  # TODO(499)
+  - -readability-use-concise-preprocessor-directives  # TODO(2)
 WarningsAsErrors: '*'
 
 CheckOptions:

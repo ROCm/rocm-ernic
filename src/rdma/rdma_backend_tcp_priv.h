@@ -907,7 +907,7 @@ void tcp_broadcast_gid_table_to(TcpBackendPrivate *priv, uint32_t node_id);
 void tcp_broadcast_pass(TcpBackendPrivate *priv);
 void *tcp_broadcast_thread(void *opaque);
 void tcp_stop_broadcast_thread(TcpBackendPrivate *priv);
-void tcp_health_check_retire(TcpBackendPrivate *priv, const GArray *items);
+void tcp_health_check_retire(TcpBackendPrivate *priv, GArray *items);
 void *tcp_manager_health_check_thread(void *opaque);
 void tcp_stop_health_check_thread(TcpBackendPrivate *priv);
 

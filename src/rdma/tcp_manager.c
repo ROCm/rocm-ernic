@@ -1430,7 +1430,7 @@ static bool tcp_node_still_silent(TcpBackendPrivate *priv, uint32_t node_id)
  * node's side, if the node is still there to see it, and the node connects
  * to the manager again; the manager never connects to a node itself.
  */
-void tcp_health_check_retire(TcpBackendPrivate *priv, const GArray *items)
+void tcp_health_check_retire(TcpBackendPrivate *priv, GArray *items)
 {
     for (guint i = 0; i < items->len; i++) {
         TcpHealthCheckItem *item = &g_array_index(items, TcpHealthCheckItem, i);
