@@ -633,9 +633,9 @@ target_link_directories(test_ionic_rq_wrap PRIVATE
 target_link_libraries(test_ionic_rq_wrap PRIVATE
     ${VFIO_USER_LINK_LIBRARIES} ${GLIB2_LIBRARIES} pthread)
 
-# TCP mesh-topology broadcast test. It links the TCP backend, reaches its
-# helpers through rdma_backend_tcp_priv.h, and stubs the backend's externals,
-# so no RDMA subsystem link is needed; the broadcast goes over a socketpair.
+# TCP mesh broadcast test. It links the TCP backend, reaches its helpers
+# through rdma_backend_tcp_priv.h, and stubs the backend's externals, so no
+# RDMA subsystem link is needed; the broadcasts go over a socketpair.
 add_executable(test_tcp_mesh_topology
     test_tcp_mesh_topology.c
     ${PROJECT_SOURCE_DIR}/src/rdma/rdma_backend_tcp.c
@@ -1252,7 +1252,8 @@ add_test(
 set_tests_properties(ionic-rq-wrap-unit PROPERTIES TIMEOUT 30)
 
 # TCP mesh-topology broadcast unit test: asserts the unused node slots in the
-# fixed-size payload are zeroed rather than carrying stack contents.
+# fixed-size payload are zeroed rather than carrying stack contents, and that
+# the topology and GID broadcasts report a mesh table past their node cap.
 add_test(
     NAME tcp-mesh-topology-unit
     COMMAND $<TARGET_FILE:test_tcp_mesh_topology>

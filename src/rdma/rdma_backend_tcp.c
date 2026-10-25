@@ -3477,6 +3477,21 @@ void *tcp_accept_thread(void *opaque)
  */
 
 /*
+ * A broadcast carries at most TCP_MAX_MESH_NODES nodes.  If mesh_nodes holds
+ * more, the ones past the cap -- live nodes as likely as dead ones, in
+ * hash-table order -- drop out of the topology and the GID table, which
+ * breaks the mesh with no other sign, so say so.  @table_size is the size of
+ * mesh_nodes the broadcast found.
+ */
+static void tcp_report_mesh_overflow(const char *broadcast, guint table_size)
+{
+    rdma_error_report("TCP: the mesh table holds %u nodes, but the %s carries "
+                      "at most %u; %u nodes were left out",
+                      table_size, broadcast, TCP_MAX_MESH_NODES,
+                      table_size - TCP_MAX_MESH_NODES);
+}
+
+/*
  * Broadcast mesh topology to all connected workers (manager only).  The
  * caller holds no lock; see topology_broadcast_lock.
  */
@@ -3493,6 +3508,7 @@ void tcp_broadcast_mesh_topology(TcpBackendPrivate *priv)
     TcpMeshTopologyPayload topo;
     memset(&topo, 0, sizeof(topo));
     uint32_t num_nodes = 0;
+    guint overflow = 0; /* the size of mesh_nodes, if past the cap */
 
     qemu_mutex_lock(&priv->topology_broadcast_lock);
     qemu_mutex_lock(&priv->mesh_table_lock);
@@ -3502,7 +3518,12 @@ void tcp_broadcast_mesh_topology(TcpBackendPrivate *priv)
     gpointer key, value;
     g_hash_table_iter_init(&iter, priv->mesh_nodes);
 
-    while (g_hash_table_iter_next(&iter, &key, &value) && num_nodes < 64) {
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        if (num_nodes == TCP_MAX_MESH_NODES) {
+            overflow = g_hash_table_size(priv->mesh_nodes);
+            break;
+        }
+
         MeshNodeInfo *node = (MeshNodeInfo *)value;
         topo.nodes[num_nodes].node_id = htonl(node->node_id);
         strncpy(topo.nodes[num_nodes].hostname, node->hostname, 255);
@@ -3518,6 +3539,10 @@ void tcp_broadcast_mesh_topology(TcpBackendPrivate *priv)
     topo.num_nodes = htonl(num_nodes);
 
     qemu_mutex_unlock(&priv->mesh_table_lock);
+
+    if (overflow) {
+        tcp_report_mesh_overflow("topology broadcast", overflow);
+    }
 
     /* Broadcast to all connected workers */
     GPtrArray *conns = tcp_conns_snapshot(priv);
@@ -3673,8 +3698,9 @@ void tcp_broadcast_gid_table(TcpBackendPrivate *priv)
         uint32_t node_id;
         uint8_t gids[TCP_MAX_NODE_GIDS][16];
         uint32_t num_gids;
-    } per_node[64];
+    } per_node[TCP_MAX_MESH_NODES];
     uint32_t nodes = 0;
+    guint overflow = 0; /* the size of mesh_nodes, if past the cap */
 
     /*
      * Snapshot under the mesh and claim locks; the sends are not, because
@@ -3688,8 +3714,12 @@ void tcp_broadcast_gid_table(TcpBackendPrivate *priv)
     gpointer key, value;
 
     g_hash_table_iter_init(&iter, priv->mesh_nodes);
-    while (g_hash_table_iter_next(&iter, &key, &value) &&
-           nodes < G_N_ELEMENTS(per_node)) {
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+        if (nodes == G_N_ELEMENTS(per_node)) {
+            overflow = g_hash_table_size(priv->mesh_nodes);
+            break;
+        }
+
         uint32_t nid = GPOINTER_TO_UINT(key);
         const TcpNodeGids *claims =
             g_hash_table_lookup(priv->node_gids, GUINT_TO_POINTER(nid));
@@ -3711,6 +3741,9 @@ void tcp_broadcast_gid_table(TcpBackendPrivate *priv)
 
     qemu_mutex_unlock(&priv->gid_table_lock);
     qemu_mutex_unlock(&priv->mesh_table_lock);
+
+    if (overflow)
+        tcp_report_mesh_overflow("GID broadcast", overflow);
 
     GPtrArray *conns = tcp_conns_snapshot(priv);
 
