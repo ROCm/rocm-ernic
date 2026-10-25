@@ -128,7 +128,7 @@ dcc9ac9f 0.035783 0.619257 1.89117
 151379b0 0.112564 0.932681 3.35846
 95cb7235 0.060744 0.736472 2.02672
 b901e7e6 0.094514 1.10373  3.33257
-c9bef647 --       --       --
+c9bef647 0.037943 0.457612 1.91172
 ======== ======== ======== =======
 
 S3-over-RDMA GET bandwidth over time
@@ -157,4 +157,31 @@ dcc9ac9f 0.00545  0.093053 1.2696
 b901e7e6 0.007785 0.107186 1.8163
 c9bef647 0.008456 0.119994 1.95431
 ======== ======== ======== ========
+
+P4 fp16-to-fp8 conversion bandwidth over time
+---------------------------------------------
+
+Median ``bw_avg_GBs`` for ``p4cvt`` (higher is better).
+
+Measured on GitHub-hosted runners:
+
+.. raw:: html
+   :file: perf-history/chart-p4_convert-github-hosted.html
+
+Last 10 runs, in GB/s:
+
+======== ======== ========
+Run      4 KiB    64 KiB
+======== ======== ========
+7b08b273 --       --
+2f1cbb8b --       --
+8f8876d9 --       --
+fdbdf7e3 --       --
+4479fc5d --       --
+dcc9ac9f --       --
+151379b0 --       --
+95cb7235 --       --
+b901e7e6 --       --
+c9bef647 0.013483 0.026705
+======== ======== ========
 
