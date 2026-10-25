@@ -58,6 +58,10 @@ jobs:
       # preinstalled on the hosted image. Ninja keeps each command's output
       # together, so IWYU's output for one file isn't interleaved with
       # another's in the build log.
+      #
+      # libjson-c-dev is here, not just in the libvfio-user step, because
+      # the configure step's -DERNIC_BUILD_P4=ON requires it, and that
+      # step only runs on a cache miss.
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -65,7 +69,8 @@ jobs:
             iwyu \
             libibverbs-dev \
             librdmacm-dev \
-            libglib2.0-dev
+            libglib2.0-dev \
+            libjson-c-dev
 
       # The same key and paths as the Build and Test workflow, so the two
       # share the cached build
@@ -83,7 +88,7 @@ jobs:
       - name: Clone and build libvfio-user
         if: steps.cache-libvfio-user.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get install -y meson libjson-c-dev libcmocka-dev
+          sudo apt-get install -y meson libcmocka-dev
           git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user
           cd /tmp/libvfio-user
           git checkout 5b9c722
@@ -119,10 +124,14 @@ jobs:
       #
       # ERNIC_WERROR is off: the Build and Test workflow checks for
       # warnings, and this job is only about IWYU.
+      #
+      # ERNIC_BUILD_P4 is on, as in the Build and Test workflow: off, the
+      # build compiles nothing in src/p4, so IWYU never sees it.
       - name: Configure
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_C_COMPILER="${IWYU_CC}" \
+            -DERNIC_BUILD_P4=ON \
             -DERNIC_USE_IWYU=ON \
             -DERNIC_IWYU_EXE="$PWD/ci/iwyu/iwyu-wrapper.sh"
 

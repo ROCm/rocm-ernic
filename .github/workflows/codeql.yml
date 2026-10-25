@@ -59,8 +59,9 @@ jobs:
           persist-credentials: false
 
       # build-essential, cmake, ninja-build and pkg-config are preinstalled
-      # on the hosted image. meson, libjson-c-dev and libcmocka-dev are only
-      # needed to build libvfio-user.
+      # on the hosted image. meson and libcmocka-dev are only needed to
+      # build libvfio-user; libjson-c-dev is also needed for
+      # -DERNIC_BUILD_P4=ON.
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -97,12 +98,14 @@ jobs:
 
       # Plain build: we only want CodeQL to observe the compiler. Debug
       # keeps optimizations off so the extracted database is closer to the
-      # source.
+      # source. CodeQL analyzes only what's compiled, so ERNIC_BUILD_P4 is
+      # on, as in the Build and Test workflow, to include src/p4.
       - name: Configure and build rocm-ernic
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_C_COMPILER=gcc
+            -DCMAKE_C_COMPILER=gcc \
+            -DERNIC_BUILD_P4=ON
           cmake --build build
 
       - name: Perform CodeQL Analysis

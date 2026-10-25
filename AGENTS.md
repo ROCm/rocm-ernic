@@ -55,12 +55,15 @@ commit in [build-and-test.yml](.github/workflows/build-and-test.yml)).
 Pass a non-standard prefix with `-DCMAKE_PREFIX_PATH`. Match CI:
 
 ```bash
-cmake -B build -G Ninja -DERNIC_WERROR=ON
+cmake -B build -G Ninja -DERNIC_WERROR=ON -DERNIC_BUILD_P4=ON
 cmake --build build
 ```
 
 - The default build type is Debug. Without `ERNIC_WERROR`, warnings don't
   fail the build.
+- `ERNIC_BUILD_P4` (off by default; needs json-c) builds `src/p4/` and
+  its tests. CI's builds for the tests, clang-tidy, IWYU, and CodeQL turn
+  it on, so a local build for any of them needs it too.
 - CI builds GCC and Clang × Debug and Release × no sanitizer, ASan, and
   TSan, plus a Clang coverage build; the GCC Debug build also runs the
   tests under [valgrind](#c). **Build Release too**: it's the only
@@ -363,12 +366,12 @@ touches. The commands are in the sections below.
   ctest --test-dir build -T memcheck --output-on-failure \
     --overwrite "MemoryCheckCommand=$(command -v valgrind)" \
     --overwrite "MemoryCheckCommandOptions=--leak-check=full --track-origins=yes --num-callers=40 --error-exitcode=1" \
-    -E '^(pci-config-test|find-rdma-device-tuple|find-ipv4-gid-index|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli|cmake-subproject|ernic-package-deb)$'
+    -E '^(pci-config-test|find-rdma-device-tuple|find-ipv4-gid-index|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli|cmake-subproject|ernic-package-deb|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver|ernic-ionic-hw-stats|ernic-mesh-stress)$'
   ```
 
-  The excluded tests run scripts, CMake, or a server launcher. Reports
-  go to `build/Testing/Temporary/MemoryChecker.*.log`, not ctest's
-  output.
+  The excluded tests run scripts, CMake, Python, or a server launcher.
+  Reports go to `build/Testing/Temporary/MemoryChecker.*.log`, not
+  ctest's output.
 
   CI then runs the server itself under valgrind; locally, limit the `-R`
   below to the server tests that exercise the change. Test scripts run
@@ -384,7 +387,7 @@ touches. The commands are in the sections below.
   opts="--log-file=$PWD/build/valgrind-server/%p.log --leak-check=full --track-origins=yes --num-callers=40 --error-exitcode=1"
   ERNIC_TEST_SERVER_WRAPPER="valgrind $opts" \
     ctest --test-dir build --output-on-failure \
-    -R '^(pci-config-test|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli)$'
+    -R '^(pci-config-test|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver|ernic-ionic-hw-stats|ionic-stats-interval-cli|ionic-eth-queues-cli)$'
   valgrind --trace-children=yes $opts build/tests/test_server_lifecycle
   grep -L 'ERROR SUMMARY: 0 errors' build/valgrind-server/*.log
   ```
@@ -403,7 +406,8 @@ touches. The commands are in the sections below.
 
   ```bash
   cmake -B build-tidy -G Ninja -DCMAKE_C_COMPILER=clang-23 \
-    -DERNIC_USE_CLANG_TIDY=ON -DERNIC_CLANG_TIDY_EXE=/usr/bin/clang-tidy-23
+    -DERNIC_BUILD_P4=ON -DERNIC_USE_CLANG_TIDY=ON \
+    -DERNIC_CLANG_TIDY_EXE=/usr/bin/clang-tidy-23
   cmake --build build-tidy -- -k 0
   ```
 
@@ -423,7 +427,8 @@ touches. The commands are in the sections below.
 
   ```bash
   cmake -B build-iwyu -G Ninja -DCMAKE_C_COMPILER=clang-19 \
-    -DERNIC_USE_IWYU=ON -DERNIC_IWYU_EXE="$PWD/ci/iwyu/iwyu-wrapper.sh"
+    -DERNIC_BUILD_P4=ON -DERNIC_USE_IWYU=ON \
+    -DERNIC_IWYU_EXE="$PWD/ci/iwyu/iwyu-wrapper.sh"
   mkdir build-iwyu/iwyu-runs
   ERNIC_IWYU_LOG_DIR="$PWD/build-iwyu/iwyu-runs" cmake --build build-iwyu
   ci/iwyu/check-iwyu.sh build-iwyu/iwyu-runs
