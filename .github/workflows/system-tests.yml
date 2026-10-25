@@ -36,14 +36,14 @@ on:
       - 'ci/**'
       - '.github/workflows/system-tests.yml'
       - '.github/workflows/nvmeof-lane.yml'   # the nvmeof job's body
-      - '.github/workflows/s3-lane.yml'
-      - '.github/workflows/p4-lane.yml'
+      - '.github/workflows/s3-lane.yml'       # the s3 job's body
+      - '.github/workflows/p4-lane.yml'       # the p4 job's body
       # The P4 lane is the only thing that exercises these end to end,
       # and each is useless without the others: the engine, the patch
       # that creates the device, and the module that binds to it.
       - 'src/p4/**'
       - 'ansible/files/patches/p4/**'
-      - 'drivers/ernic_p4/**'       # the s3 job's body
+      - 'drivers/ernic_p4/**'
       - '.github/actions/fetch-guest-vm/**'
   schedule:
     # 04:23 UTC.  Off the hour on purpose -- the top of the hour is

@@ -4,9 +4,8 @@
 name: rocm-ernic - P4 Lane
 
 # The guest-driven P4 system-test lane, built on the same shape as the
-# S3 and NVMe-oF lanes.
-# the way the NVMe-oF one is, because it is long enough to be worth
-# reading on its own.
+# S3 and NVMe-oF lanes, and kept out of system-tests.yml the way they
+# are, because it is long enough to be worth reading on its own.
 #
 # Caller:
 #   .github/workflows/system-tests.yml
@@ -262,10 +261,13 @@ jobs:
         echo "✓ Server built successfully"
 
     # Before a guest is anywhere near it, so a failure here is the
-    # engine's and not the lane's.
+    # engine's and not the lane's. --no-tests=error, so the step fails
+    # rather than passes if renamed tests leave the pattern matching
+    # nothing.
     - name: P4 unit tests
       run: |
-        ctest --test-dir build --output-on-failure -R '^(p4-|ionic-harness-p4|ionic-harness-fp8)'
+        ctest --test-dir build --output-on-failure --no-tests=error \
+          -R '^(p4-|ionic-harness-p4|ionic-harness-fp8)'
 
     - name: Start rocm-ernic server
       shell: bash

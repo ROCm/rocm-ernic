@@ -33,6 +33,10 @@ cmake_args=(
 # ERNIC_WERROR is off by default upstream; CI should be
 # strict about new warnings.
 cmake_args+=(-DERNIC_WERROR=ON)
+# The P4 engine is off by default too; without it, ctest
+# below registers none of its tests.  ci/doctor.sh checks
+# for the json-c it needs.
+cmake_args+=(-DERNIC_BUILD_P4=ON)
 
 run_check build "cmake-configure" cmake "${cmake_args[@]}"
 group_end

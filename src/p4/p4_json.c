@@ -925,6 +925,7 @@ static int p4_walk_parser(struct p4_walk *w, struct json_object *root)
     if (ns == 0)
         return p4_fail(w, -EINVAL, "the parser has no states");
 
+    /* Pass one: each state's name, operations, select key and arms. */
     for (size_t i = 0; i < ns; i++) {
         struct json_object *st = json_object_array_get_idx(states, i);
         struct p4_parse_state *dst = &w->prog->parse_states[i];
@@ -996,6 +997,7 @@ static int p4_walk_parser(struct p4_walk *w, struct json_object *root)
         }
     }
 
+    /* The parser starts in a state the program declares, like any arm. */
     w->prog->init_state = P4_IDX_NONE;
     for (uint16_t j = 0; j < w->prog->nparse_states; j++) {
         if (strcmp(w->prog->parse_states[j].name, init) == 0) {

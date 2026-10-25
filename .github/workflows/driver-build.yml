@@ -45,14 +45,15 @@ jobs:
   # and loading them is the VM lane's job, in the SRQ steps of
   # .github/workflows/system-tests.yml.
   #
-  # Two series are checked, because there are two.  The patch at the top of
-  # ansible/files/patches is what the shipping driver is built from, pinned to
-  # the cmake ref; its srq/ subdirectory is the SRQ-enabling series, pinned to
-  # its own (newer) ref because the SRQ commits apply to no older tag.  They
+  # Three series are checked, because there are three.  The patch at the top
+  # of ansible/files/patches is what the shipping driver is built from, pinned
+  # to the cmake ref; its srq/ subdirectory is the SRQ-enabling series, pinned
+  # to its own (newer) ref because the SRQ commits apply to no older tag.  They
   # rot independently and for different reasons -- ours when upstream ionic
   # moves, the SRQ series when its prerequisites land upstream and the carried
   # copies start applying twice -- so a single job covering only the base
-  # series left the SRQ series untested until a guest failed.
+  # series left the SRQ series untested until a guest failed.  The optional
+  # p4/ series goes on top of the base series, at the same ref.
   ionic-patches:
     name: Apply ionic Driver Patches (${{ matrix.series }})
     runs-on: ubuntu-24.04
@@ -65,7 +66,11 @@ jobs:
             patches: ansible/files/patches
           - series: srq
             patches: ansible/files/patches/srq
+          # Applied on top of the base series, as a guest applies it
+          # (ernic_p4_dkms_patches_dirs), so it's checked against the tree
+          # it's built from
           - series: p4
+            base_patches: ansible/files/patches
             patches: ansible/files/patches/p4
 
     steps:
@@ -113,9 +118,19 @@ jobs:
         # Read from files a PR can change, so pass it through the environment
         # rather than expanding it into the script.
         KERNEL_REF: ${{ steps.ref.outputs.ref }}
+        BASE_PATCHES: ${{ matrix.base_patches }}
+        PATCHES: ${{ matrix.patches }}
       run: |
         git config --global user.email "ci@rocm-ernic.invalid"
         git config --global user.name "rocm-ernic CI"
+
+        # The series a matrix entry builds on goes first; the script applies
+        # them in the order given.
+        patches_dirs=()
+        if [ -n "$BASE_PATCHES" ]; then
+          patches_dirs+=(--patches-dir "$PWD/$BASE_PATCHES")
+        fi
+        patches_dirs+=(--patches-dir "$PWD/$PATCHES")
 
         # Call the script the humans and the ernic_srq_dkms role call, rather
         # than reimplementing the fetch here.  The inline copy this replaces
@@ -126,7 +141,7 @@ jobs:
         ./ansible/files/scripts/fetch-ionic-sources.sh \
           --source-dir "$PWD/ionic-kernel-src" \
           --kernel-ref "$KERNEL_REF" \
-          --patches-dir "$PWD/${{ matrix.patches }}"
+          "${patches_dirs[@]}"
 
     - name: Verify the patched tree
       run: |
@@ -138,8 +153,9 @@ jobs:
           fi
         done
 
-        # Every patch must appear as a commit on top of the ref, with its own
-        # subject.  Comparing subjects rather than counting commits is what
+        # Every patch must appear as one of the top commits, with its own
+        # subject.  For p4, the base series is below them, and the base entry
+        # checks it.  Comparing subjects rather than counting commits is what
         # catches a patch that applied as an empty commit, or a series whose
         # order was changed by a renumbering.
         PATCHES="${{ matrix.patches }}"

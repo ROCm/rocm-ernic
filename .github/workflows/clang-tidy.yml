@@ -72,13 +72,18 @@ jobs:
       # preinstalled on the hosted image. Ninja keeps each command's output
       # together, so clang-tidy's output for one file isn't interleaved
       # with another's in the build log.
+      #
+      # libjson-c-dev is here, not just in the libvfio-user step, because
+      # the configure step's -DERNIC_BUILD_P4=ON requires it, and that
+      # step only runs on a cache miss.
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libibverbs-dev \
             librdmacm-dev \
-            libglib2.0-dev
+            libglib2.0-dev \
+            libjson-c-dev
 
       # apt only trusts the key with the known fingerprint, and only for
       # this repository. Exporting the key by its fingerprint from a
@@ -129,7 +134,7 @@ jobs:
       - name: Clone and build libvfio-user
         if: steps.cache-libvfio-user.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get install -y meson libjson-c-dev libcmocka-dev
+          sudo apt-get install -y meson libcmocka-dev
           git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user
           cd /tmp/libvfio-user
           git checkout 5b9c722
@@ -148,6 +153,9 @@ jobs:
       # ERNIC_WERROR is off: the Build and Test workflow checks for
       # warnings with the image's compilers, and this job is only about
       # clang-tidy.
+      #
+      # ERNIC_BUILD_P4 is on, as in the Build and Test workflow: off, the
+      # build compiles nothing in src/p4, so clang-tidy never sees it.
       - name: Configure
         env:
           BUILD_TYPE: ${{ matrix.build_type }}
@@ -155,6 +163,7 @@ jobs:
           cmake -B build -G Ninja \
             -DCMAKE_C_COMPILER="clang-${LLVM_VERSION}" \
             -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
+            -DERNIC_BUILD_P4=ON \
             -DERNIC_USE_CLANG_TIDY=ON \
             -DERNIC_CLANG_TIDY_EXE="/usr/bin/clang-tidy-${LLVM_VERSION}"
 

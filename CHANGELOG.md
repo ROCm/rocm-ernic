@@ -151,8 +151,12 @@
     for each series; the `ernic_p4_dkms` role registers it with DKMS.
   * **Tested** by `p4-engine-unit`, `p4-fp8-unit` (every E4M3 encoding),
     `ernic-p4-driver` (frames and the control surface over a real vfio-user
-    socket), a `p4` leg in `driver-build.yml` that checks the patch series
-    creates the auxiliary device, and the "P4 Guest-Driven fp8" VM lane
+    socket, with its servers under valgrind in the valgrind leg), a `p4`
+    leg in `driver-build.yml` that applies the patch series on top of the
+    base series and checks it creates the auxiliary device, the clang-tidy,
+    include-what-you-use and CodeQL workflows and the self-hosted CI's
+    build job, which all build with `-DERNIC_BUILD_P4=ON`, and the
+    "P4 Guest-Driven fp8" VM lane
     (`p4-lane.yml`), which loads a program from inside a guest through
     `/dev/ernic-p4` and checks the result of an ordinary libibverbs write.
     The lane publishes a `p4cvt` fp16-to-fp8 conversion trend at 4 KiB and
