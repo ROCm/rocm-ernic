@@ -1,6 +1,7 @@
 /*
  *
- * Unit tests for tcp_broadcast_mesh_topology() in rdma_backend_tcp.c.
+ * Unit tests for the manager's broadcasts, tcp_broadcast_mesh() and
+ * tcp_broadcast_gid_table(), in rdma_backend_tcp.c.
  *
  * Regression coverage for a stack-memory disclosure: the manager sends the
  * full fixed-size TcpMeshTopologyPayload (~17 KB, TOPO_MAXNODE node slots) on
@@ -20,10 +21,14 @@
  * Table-driven: empty mesh (every slot unused), single node, a few nodes, a
  * full mesh (no tail at all), and a mesh table past the cap.
  *
- * Both mesh broadcasts, the topology and the GID table, snapshot the mesh
- * table into TCP_MAX_MESH_NODES slots. The same cases check that each fills
- * every slot it can and, given a table past the cap, stops at the cap and
- * logs an error instead of leaving nodes out silently.
+ * Both parts of a mesh broadcast, the topology and the GID table, snapshot
+ * the mesh table into TCP_MAX_MESH_NODES slots. The same cases check that
+ * each fills every slot it can and, given a table past the cap, stops at the
+ * cap and logs an error instead of leaving nodes out silently.
+ *
+ * A last case checks that the broadcasts are serialised: a GID broadcast
+ * that starts while a mesh broadcast is still sending waits for it, so the
+ * topology comes first and the GID table is no older than it.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -108,10 +113,10 @@ static uint32_t carried_nodes(uint32_t num_nodes)
     return num_nodes < TCP_MAX_MESH_NODES ? num_nodes : TCP_MAX_MESH_NODES;
 }
 
-/* A broadcast reports one error when it has to leave nodes out */
-static int expected_errors(uint32_t num_nodes)
+/* Each part of a broadcast reports one error when it has to leave nodes out */
+static int expected_errors(uint32_t num_nodes, int parts)
 {
-    return num_nodes > TCP_MAX_MESH_NODES ? 1 : 0;
+    return num_nodes > TCP_MAX_MESH_NODES ? parts : 0;
 }
 
 /* Read exactly len bytes, or return -1. */
@@ -130,8 +135,8 @@ static int read_exact(int fd, void *buf, size_t len)
 }
 
 /*
- * Run tcp_broadcast_mesh_topology() on a thread whose stack we allocate and
- * pre-fill with a poison pattern.
+ * Run tcp_broadcast_mesh() on a thread whose stack we allocate and pre-fill
+ * with a poison pattern.
  *
  * Poisoning the caller's own frame and hoping the payload lands on it is not
  * reliable -- the compiler is free to place the ~17 KB struct anywhere, and
@@ -160,7 +165,7 @@ static void *broadcast_thread(void *opaque)
     int frame_marker;
 
     broadcast_frame = (uintptr_t)&frame_marker;
-    tcp_broadcast_mesh_topology((TcpBackendPrivate *)opaque);
+    tcp_broadcast_mesh((TcpBackendPrivate *)opaque, UINT32_MAX);
     return NULL;
 }
 
@@ -250,11 +255,12 @@ static int fixture_init(struct fixture *f, uint32_t num_nodes)
     /* No node has claims, so the GID broadcast sends each an empty set */
     f->priv.node_gids =
         g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+    f->priv.gid_owner = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
+                                              tcp_gid_key_free, NULL);
     qemu_mutex_init(&f->priv.mesh_table_lock);
     qemu_mutex_init(&f->priv.conn_table_lock);
     qemu_mutex_init(&f->priv.gid_table_lock);
-    qemu_mutex_init(&f->priv.topology_broadcast_lock);
-    qemu_mutex_init(&f->priv.gid_broadcast_lock);
+    qemu_mutex_init(&f->priv.broadcast_lock);
 
     memset(&f->conn, 0, sizeof(f->conn));
     f->conn.node_id = 42;
@@ -276,11 +282,11 @@ static void fixture_fini(struct fixture *f)
     close(f->sv[0]);
     close(f->sv[1]);
     qemu_mutex_destroy(&f->conn.lock);
-    qemu_mutex_destroy(&f->priv.gid_broadcast_lock);
-    qemu_mutex_destroy(&f->priv.topology_broadcast_lock);
+    qemu_mutex_destroy(&f->priv.broadcast_lock);
     qemu_mutex_destroy(&f->priv.gid_table_lock);
     qemu_mutex_destroy(&f->priv.conn_table_lock);
     qemu_mutex_destroy(&f->priv.mesh_table_lock);
+    g_hash_table_destroy(f->priv.gid_owner);
     g_hash_table_destroy(f->priv.node_gids);
     g_hash_table_destroy(f->priv.connections);
     empty_mesh(f->priv.mesh_nodes);
@@ -308,18 +314,79 @@ static int check_node_id(const struct testcase *tc, const char *what,
     return 0;
 }
 
-/* A table past the cap must be reported, and a table within it must not */
-static int check_errors(const struct testcase *tc, const char *what)
+/*
+ * A table past the cap must be reported, once by each of the broadcast's
+ * @parts, and a table within it must not
+ */
+static int check_errors(const struct testcase *tc, const char *what, int parts)
 {
-    if (error_reports != expected_errors(tc->num_nodes)) {
+    int expected = expected_errors(tc->num_nodes, parts);
+
+    if (error_reports != expected) {
         printf("FAIL %-16s: %s reported %d error(s), expected %d\n", tc->name,
-               what, error_reports, expected_errors(tc->num_nodes));
+               what, error_reports, expected);
         return 1;
     }
     return 0;
 }
 
-static int run_topology_case(const struct testcase *tc)
+/* The end of the stream: the sender has shut down its side */
+static int check_eof(const struct testcase *tc, int fd, const char *what)
+{
+    char extra;
+
+    if (recv(fd, &extra, 1, 0) != 0) {
+        printf("FAIL %-16s: %s sent more than expected\n", tc->name, what);
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * Read the @carried messages of one GID broadcast, in which no node has
+ * claims, from @fd. Each must name a node in the mesh table, once, and send
+ * every GID slot zeroed.
+ */
+static int read_empty_gid_table(const struct testcase *tc, int fd,
+                                uint32_t carried)
+{
+    static const uint8_t zero[TCP_MAX_NODE_GIDS][16];
+    bool seen[MAX_CASE_NODES] = {false};
+    TcpMsgHeader hdr;
+    TcpNodeGidsPayload wire;
+    int fail = 0;
+
+    for (uint32_t i = 0; i < carried; i++) {
+        if (read_exact(fd, &hdr, sizeof(hdr)) != 0 ||
+            read_exact(fd, &wire, sizeof(wire)) != 0) {
+            printf("FAIL %-16s: GID broadcast ended after %u of %u "
+                   "message(s)\n",
+                   tc->name, i, carried);
+            return 1;
+        }
+        if (ntohl(hdr.msg_type) != TCP_MSG_NODE_GIDS ||
+            ntohl(hdr.msg_len) != sizeof(wire)) {
+            printf("FAIL %-16s: unexpected header type=%u len=%u\n", tc->name,
+                   ntohl(hdr.msg_type), ntohl(hdr.msg_len));
+            fail = 1;
+        }
+        fail |= check_node_id(tc, "GID", i, ntohl(wire.node_id), seen);
+        if (ntohl(wire.num_gids) != 0) {
+            printf("FAIL %-16s: GID slot %u has %u GID(s), expected none\n",
+                   tc->name, i, ntohl(wire.num_gids));
+            fail = 1;
+        }
+        if (memcmp(wire.gids, zero, sizeof(zero)) != 0) {
+            printf("FAIL %-16s: GID slot %u has unused GIDs that aren't zero "
+                   "(stack contents leaked on the wire)\n",
+                   tc->name, i);
+            fail = 1;
+        }
+    }
+    return fail;
+}
+
+static int run_mesh_case(const struct testcase *tc)
 {
     struct fixture f;
     TcpMsgHeader hdr;
@@ -341,6 +408,8 @@ static int run_topology_case(const struct testcase *tc)
         fail = 1;
         goto out;
     }
+    /* So reading past the last message sees end-of-file, not a hang */
+    shutdown(f.sv[0], SHUT_WR);
 
     if (read_exact(f.sv[1], &hdr, sizeof(hdr)) != 0 ||
         read_exact(f.sv[1], &wire, sizeof(wire)) != 0) {
@@ -398,11 +467,14 @@ static int run_topology_case(const struct testcase *tc)
         }
     }
 
-    fail |= check_errors(tc, "topology broadcast");
+    /* The GID table follows the topology, on the same poisoned stack */
+    fail |= read_empty_gid_table(tc, f.sv[1], carried);
+    fail |= check_eof(tc, f.sv[1], "mesh broadcast");
+    fail |= check_errors(tc, "mesh broadcast", 2);
 
     if (!fail) {
-        printf("PASS %-16s: topology carried %u of %u node(s), %zu-byte tail "
-               "all zero\n",
+        printf("PASS %-16s: topology and GID table carried %u of %u "
+               "node(s), %zu-byte tail all zero\n",
                tc->name, carried, tc->num_nodes, tail_len);
     }
 
@@ -418,11 +490,7 @@ out:
 static int run_gid_case(const struct testcase *tc)
 {
     struct fixture f;
-    TcpMsgHeader hdr;
-    TcpNodeGidsPayload wire;
-    bool seen[MAX_CASE_NODES] = {false};
     uint32_t carried = carried_nodes(tc->num_nodes);
-    char extra;
     int fail = 0;
 
     if (fixture_init(&f, tc->num_nodes) != 0) {
@@ -434,40 +502,158 @@ static int run_gid_case(const struct testcase *tc)
     /* So reading past the last message sees end-of-file, not a hang */
     shutdown(f.sv[0], SHUT_WR);
 
-    for (uint32_t i = 0; i < carried; i++) {
-        if (read_exact(f.sv[1], &hdr, sizeof(hdr)) != 0 ||
-            read_exact(f.sv[1], &wire, sizeof(wire)) != 0) {
-            printf("FAIL %-16s: GID broadcast ended after %u of %u "
-                   "message(s)\n",
-                   tc->name, i, carried);
-            fail = 1;
-            goto out;
-        }
-        if (ntohl(hdr.msg_type) != TCP_MSG_NODE_GIDS ||
-            ntohl(hdr.msg_len) != sizeof(wire)) {
-            printf("FAIL %-16s: unexpected header type=%u len=%u\n", tc->name,
-                   ntohl(hdr.msg_type), ntohl(hdr.msg_len));
-            fail = 1;
-        }
-        fail |= check_node_id(tc, "GID", i, ntohl(wire.node_id), seen);
-        if (ntohl(wire.num_gids) != 0) {
-            printf("FAIL %-16s: GID slot %u has %u GID(s), expected none\n",
-                   tc->name, i, ntohl(wire.num_gids));
-            fail = 1;
-        }
-    }
-
-    if (recv(f.sv[1], &extra, 1, 0) != 0) {
-        printf("FAIL %-16s: GID broadcast sent more than %u message(s)\n",
-               tc->name, carried);
-        fail = 1;
-    }
-
-    fail |= check_errors(tc, "GID broadcast");
+    fail |= read_empty_gid_table(tc, f.sv[1], carried);
+    fail |= check_eof(tc, f.sv[1], "GID broadcast");
+    fail |= check_errors(tc, "GID broadcast", 1);
 
     if (!fail) {
         printf("PASS %-16s: GID table carried %u of %u node(s)\n", tc->name,
                carried, tc->num_nodes);
+    }
+
+    fixture_fini(&f);
+    return fail;
+}
+
+/* A thread, and whether it was started, so it is joined only if it was */
+struct case_thread {
+    pthread_t tid;
+    bool started;
+};
+
+static void case_thread_start(struct case_thread *t, void *(*fn)(void *),
+                              void *arg)
+{
+    t->started = pthread_create(&t->tid, NULL, fn, arg) == 0;
+}
+
+static void case_thread_join(struct case_thread *t)
+{
+    if (t->started)
+        pthread_join(t->tid, NULL);
+}
+
+static void *mesh_thread(void *opaque)
+{
+    tcp_broadcast_mesh((TcpBackendPrivate *)opaque, UINT32_MAX);
+    return NULL;
+}
+
+static void *gid_table_thread(void *opaque)
+{
+    tcp_broadcast_gid_table((TcpBackendPrivate *)opaque);
+    return NULL;
+}
+
+/*
+ * Whether, within a few seconds, another thread holds broadcast_lock while
+ * @n broadcasts wait for it
+ */
+static bool broadcasts_held_up(TcpBackendPrivate *priv, uint32_t n)
+{
+    for (int i = 0; i < 5000; i++) {
+        if (qemu_mutex_trylock(&priv->broadcast_lock) == 0)
+            qemu_mutex_unlock(&priv->broadcast_lock);
+        else if (atomic_load(&priv->broadcasts_waiting) == n)
+            return true;
+        g_usleep(1000);
+    }
+    return false;
+}
+
+/*
+ * A GID broadcast that starts while a mesh broadcast is still sending waits
+ * for it to finish before it takes its snapshot. So a claim made meanwhile
+ * is in both GID tables the worker gets, and the topology comes first.
+ */
+static int run_order_case(void)
+{
+    static const struct testcase tc = {"order", 2};
+    static const uint8_t gid[1][16] = {{0xfe, 0x80, [15] = 1}};
+    const uint32_t claimant = 100;
+    struct fixture f;
+    struct case_thread mesh = {.started = false}, gids = {.started = false};
+    TcpMsgHeader hdr;
+    TcpMeshTopologyPayload topo;
+    TcpNodeGidsPayload wire;
+    int fail = 0;
+
+    if (fixture_init(&f, tc.num_nodes) != 0) {
+        printf("FAIL %-16s: socketpair failed\n", tc.name);
+        return 1;
+    }
+
+    /*
+     * Hold the connections table, so the mesh broadcast stops between its
+     * topology snapshot and its sends, holding broadcast_lock. A GID
+     * broadcast that didn't wait for it would take its snapshot, then stop
+     * there too.
+     */
+    qemu_mutex_lock(&f.priv.conn_table_lock);
+    case_thread_start(&mesh, mesh_thread, &f.priv);
+    if (!mesh.started || !broadcasts_held_up(&f.priv, 0)) {
+        printf("FAIL %-16s: the mesh broadcast didn't start\n", tc.name);
+        fail = 1;
+    } else {
+        case_thread_start(&gids, gid_table_thread, &f.priv);
+        if (!gids.started) {
+            printf("FAIL %-16s: the GID broadcast didn't start\n", tc.name);
+            fail = 1;
+        } else if (!broadcasts_held_up(&f.priv, 1)) {
+            printf("FAIL %-16s: the GID broadcast didn't wait for the mesh "
+                   "broadcast\n",
+                   tc.name);
+            fail = 1;
+        } else {
+            /* Made while the GID broadcast waits, before its snapshot */
+            tcp_gid_claims_set(&f.priv, claimant, gid, 1);
+        }
+    }
+    qemu_mutex_unlock(&f.priv.conn_table_lock);
+    case_thread_join(&gids);
+    case_thread_join(&mesh);
+    if (fail)
+        goto out;
+    shutdown(f.sv[0], SHUT_WR);
+
+    if (read_exact(f.sv[1], &hdr, sizeof(hdr)) != 0 ||
+        ntohl(hdr.msg_type) != TCP_MSG_MESH_TOPOLOGY ||
+        read_exact(f.sv[1], &topo, sizeof(topo)) != 0) {
+        printf("FAIL %-16s: the topology didn't come first\n", tc.name);
+        fail = 1;
+        goto out;
+    }
+
+    /* One GID table from each broadcast */
+    for (uint32_t i = 0; i < 2 * tc.num_nodes; i++) {
+        uint32_t node_id, want;
+
+        if (read_exact(f.sv[1], &hdr, sizeof(hdr)) != 0 ||
+            ntohl(hdr.msg_type) != TCP_MSG_NODE_GIDS ||
+            read_exact(f.sv[1], &wire, sizeof(wire)) != 0) {
+            printf("FAIL %-16s: message %u after the topology isn't a GID "
+                   "set\n",
+                   tc.name, i);
+            fail = 1;
+            goto out;
+        }
+        node_id = ntohl(wire.node_id);
+        want = node_id == claimant ? 1 : 0;
+        if (ntohl(wire.num_gids) != want ||
+            (want && memcmp(wire.gids[0], gid[0], 16) != 0)) {
+            printf("FAIL %-16s: message %u has %u GID(s) for node %u, "
+                   "expected %u: a GID table was taken before the mesh "
+                   "broadcast was sent\n",
+                   tc.name, i, ntohl(wire.num_gids), node_id, want);
+            fail = 1;
+        }
+    }
+    fail |= check_eof(&tc, f.sv[1], "the two broadcasts");
+
+    if (!fail) {
+        printf("PASS %-16s: the GID broadcast waited for the mesh "
+               "broadcast\n",
+               tc.name);
     }
 
 out:
@@ -484,18 +670,19 @@ int main(void)
         {"full-mesh", (uint32_t)TOPO_MAXNODE}, /* no tail at all */
         {"over-cap", MAX_CASE_NODES},          /* one node left out */
     };
+    const size_t ncases = sizeof(cases) / sizeof(cases[0]);
     int failures = 0;
 
-    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-        failures += run_topology_case(&cases[i]);
+    for (size_t i = 0; i < ncases; i++) {
+        failures += run_mesh_case(&cases[i]);
         failures += run_gid_case(&cases[i]);
     }
+    failures += run_order_case();
 
     if (failures) {
         printf("\n%d test case(s) FAILED\n", failures);
         return 1;
     }
-    printf("\nAll %zu test cases passed\n",
-           2 * (sizeof(cases) / sizeof(cases[0])));
+    printf("\nAll %zu test cases passed\n", 2 * ncases + 1);
     return 0;
 }

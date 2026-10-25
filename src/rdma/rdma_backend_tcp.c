@@ -190,7 +190,6 @@ static void tcp_stop_send_thread(TcpConnection *conn);
 static void tcp_advertise_local_gids(TcpBackendPrivate *priv);
 static void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
                                const TcpNodeGidsPayload *payload);
-static void tcp_broadcast_gids(TcpBackendPrivate *priv, uint32_t evicted);
 static int tcp_send_handshake(TcpConnection *conn, uint32_t local_node_id,
                               TcpMsgType msg_type);
 
@@ -474,7 +473,8 @@ void tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
  * still have a message handled, on a connection not yet retired, and it
  * owns what it advertised then only once it answers a heartbeat.
  *
- * Lock order: gid_table_lock under mesh_table_lock, as documented.
+ * Lock order: gid_table_lock under mesh_table_lock (see Locks in
+ * rdma_backend_tcp_priv.h).
  */
 static bool tcp_gid_claims_set_if_member(TcpBackendPrivate *priv,
                                          uint32_t node_id,
@@ -525,13 +525,11 @@ static void tcp_gid_claims_forget(TcpBackendPrivate *priv, uint32_t node_id)
  * the node's claims for good, contesting those of its guest under a new id.
  * The topology says who is in the mesh, so claims outside it are dropped.
  *
- * An update the manager took before a node registered can arrive after the
- * node's claims, and drop them, but they come again.  The registration
- * sends an update of its own, which waits for an older one to be sent
- * (topology_broadcast_lock), and then a whole GID table.  If the node's
- * advertisement was recorded by then, the table carries its claims;
- * otherwise the manager's fan-out of the advertisement, which comes later
- * still, does.
+ * Only the claims of a node that has left the mesh are dropped: the manager
+ * sends its topology updates and GID tables one at a time, each taken just
+ * before it is sent (broadcast_lock).  A GID table with a node's claims was
+ * taken while the node was in mesh_nodes, so an update without the node,
+ * sent after it, was taken after the node left.
  */
 static void tcp_gid_claims_prune(TcpBackendPrivate *priv,
                                  const TcpMeshTopologyPayload *topo,
@@ -1127,8 +1125,8 @@ static uint32_t tcp_collect_dead_claimants(TcpBackendPrivate *priv,
  * registration publishes beneath, which makes the two atomic with respect
  * to each other.
  *
- * Lock order: conn_table_lock and gid_table_lock under mesh_table_lock,
- * both as documented; see tcp_health_check_scan(), which does the same.
+ * Lock order: conn_table_lock and gid_table_lock under mesh_table_lock (see
+ * Locks in rdma_backend_tcp_priv.h), as in tcp_health_check_scan().
  */
 bool tcp_declare_dead_if_unreachable(TcpBackendPrivate *priv, uint32_t node_id)
 {
@@ -3097,20 +3095,17 @@ void *tcp_recv_thread_per_conn(void *opaque)
                                  tcp_local_node(priv), assigned_id, 0, 0);
                 qemu_mutex_unlock(&conn->lock);
 
-                /* Broadcast updated topology to all nodes */
-                tcp_broadcast_mesh_topology(priv);
-
                 /*
-                 * The joining worker missed every advertisement sent before
-                 * it registered, so replay the whole table to everyone.  Its
-                 * own GIDs follow once it sends them.
+                 * The updated topology, and the whole GID table: the joining
+                 * worker missed every advertisement sent before it
+                 * registered.  Its own GIDs follow once it sends them.
                  *
                  * An evicted node is no longer in the table, so it gets an
                  * empty set of its own.  The workers were told it owned
                  * nothing when it was declared dead, unless it was evicted
                  * before that broadcast took its snapshot.
                  */
-                tcp_broadcast_gids(priv, evicted);
+                tcp_broadcast_mesh(priv, evicted);
                 break;
             }
 
@@ -3394,8 +3389,7 @@ void *tcp_recv_thread_per_conn(void *opaque)
                                          conn->node_id);
                         if (gids_back)
                             tcp_gid_claims_report_alive(conn->node_id, true);
-                        tcp_broadcast_mesh_topology(priv);
-                        tcp_broadcast_gid_table(priv);
+                        tcp_broadcast_mesh(priv, UINT32_MAX);
                     }
                 } else {
                     /* Worker received heartbeat probe from manager —
@@ -3917,15 +3911,11 @@ static void tcp_report_mesh_overflow(const char *broadcast, guint table_size)
 }
 
 /*
- * Broadcast mesh topology to all connected workers (manager only).  The
- * caller holds no lock; see topology_broadcast_lock.
+ * Manager: send the mesh topology to every connection.  The caller holds
+ * broadcast_lock.
  */
-void tcp_broadcast_mesh_topology(TcpBackendPrivate *priv)
+static void tcp_send_mesh_topology(TcpBackendPrivate *priv)
 {
-    if (!priv->is_manager) {
-        return;
-    }
-
     /* The whole payload goes on the wire, including the node slots past
      * num_nodes, so the struct MUST be zeroed to avoid sending stack
      * contents when there are unused nodes.
@@ -3935,7 +3925,6 @@ void tcp_broadcast_mesh_topology(TcpBackendPrivate *priv)
     uint32_t num_nodes = 0;
     guint overflow = 0; /* the size of mesh_nodes, if past the cap */
 
-    qemu_mutex_lock(&priv->topology_broadcast_lock);
     qemu_mutex_lock(&priv->mesh_table_lock);
 
     /* Build topology payload */
@@ -3987,7 +3976,6 @@ void tcp_broadcast_mesh_topology(TcpBackendPrivate *priv)
         qemu_mutex_unlock(&conn->lock);
     }
     g_ptr_array_free(conns, TRUE);
-    qemu_mutex_unlock(&priv->topology_broadcast_lock);
 
     rdma_info_report("TCP: Broadcast mesh topology to %u nodes", num_nodes);
 }
@@ -3995,7 +3983,7 @@ void tcp_broadcast_mesh_topology(TcpBackendPrivate *priv)
 /*
  * Build the advertisement for @node_id's GIDs.  The whole fixed-size struct
  * goes on the wire including the unused slots, so it is zeroed first -- the
- * same stack-disclosure trap tcp_broadcast_mesh_topology() guards against.
+ * same stack-disclosure trap tcp_send_mesh_topology() guards against.
  */
 void tcp_fill_node_gids(TcpNodeGidsPayload *out, uint32_t node_id,
                         const uint8_t (*gids)[16], uint32_t num_gids)
@@ -4099,8 +4087,8 @@ static void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
 }
 
 /*
- * Manager: push the authoritative GID set of every known node to every
- * connection, one message per node.
+ * Manager: send the authoritative GID set of every known node to every
+ * connection, one message per node.  The caller holds broadcast_lock.
  *
  * Every node, not every node with claims: a node whose claims were all
  * withdrawn or all lost to a conflict needs an empty set sent for it, or
@@ -4108,28 +4096,18 @@ static void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
  * including the node the message is about: that is how a claimant learns
  * its own advertisement was rejected, which it cannot work out alone.
  *
- * Called whenever claims change and when a worker joins, so a late arrival
- * learns about the nodes that registered before it.
+ * Sent whenever claims change, and with the topology when a worker joins,
+ * so a late arrival learns about the nodes that registered before it.
+ *
+ * Unless @evicted is UINT32_MAX, it is followed by an empty set for
+ * @evicted, a node just evicted from mesh_nodes, which the table no longer
+ * has (tcp_evict_dead_node()).  It comes last, under broadcast_lock, so no
+ * broadcast whose snapshot still had the node can follow it.
  */
-void tcp_broadcast_gid_table(TcpBackendPrivate *priv)
+static void tcp_send_gid_table(TcpBackendPrivate *priv, uint32_t evicted)
 {
-    tcp_broadcast_gids(priv, UINT32_MAX);
-}
-
-/*
- * tcp_broadcast_gid_table(), followed, unless @evicted is UINT32_MAX, by an
- * empty set for @evicted, a node just evicted from mesh_nodes, which the
- * table no longer has (tcp_evict_dead_node()).  It comes last, under
- * gid_broadcast_lock, so no broadcast whose snapshot still had the node can
- * follow it.
- */
-static void tcp_broadcast_gids(TcpBackendPrivate *priv, uint32_t evicted)
-{
-    if (!priv->is_manager || !priv->node_gids || !priv->mesh_nodes)
+    if (!priv->node_gids || !priv->mesh_nodes)
         return;
-
-    /* Held across both the snapshot and the sends; see the field's comment. */
-    qemu_mutex_lock(&priv->gid_broadcast_lock);
 
     struct {
         uint32_t node_id;
@@ -4202,8 +4180,42 @@ static void tcp_broadcast_gids(TcpBackendPrivate *priv, uint32_t evicted)
             tcp_send_node_gids(priv, g_ptr_array_index(conns, c), &payload);
     }
     g_ptr_array_free(conns, TRUE);
+}
 
-    qemu_mutex_unlock(&priv->gid_broadcast_lock);
+/* Take broadcast_lock, counted in broadcasts_waiting until it is held */
+static void tcp_broadcast_lock(TcpBackendPrivate *priv)
+{
+    atomic_fetch_add(&priv->broadcasts_waiting, 1);
+    qemu_mutex_lock(&priv->broadcast_lock);
+    atomic_fetch_sub(&priv->broadcasts_waiting, 1);
+}
+
+/*
+ * Manager: tell every connection who is in the mesh, then what each node in
+ * it owns, as one broadcast, so that no other comes between the two (see
+ * broadcast_lock).  @evicted is as for tcp_send_gid_table().  The caller
+ * holds no lock.
+ */
+void tcp_broadcast_mesh(TcpBackendPrivate *priv, uint32_t evicted)
+{
+    if (!priv->is_manager)
+        return;
+
+    tcp_broadcast_lock(priv);
+    tcp_send_mesh_topology(priv);
+    tcp_send_gid_table(priv, evicted);
+    qemu_mutex_unlock(&priv->broadcast_lock);
+}
+
+/* Manager: the GID table alone, when only claims have changed */
+void tcp_broadcast_gid_table(TcpBackendPrivate *priv)
+{
+    if (!priv->is_manager)
+        return;
+
+    tcp_broadcast_lock(priv);
+    tcp_send_gid_table(priv, UINT32_MAX);
+    qemu_mutex_unlock(&priv->broadcast_lock);
 }
 
 /*
@@ -4463,10 +4475,8 @@ void *tcp_manager_health_check_thread(void *opaque)
          * as owning nothing until its own advertisement came.  The broadcast
          * tells the workers, who keep no liveness of their own.
          */
-        if (newly_dead) {
-            tcp_broadcast_mesh_topology(priv);
-            tcp_broadcast_gid_table(priv);
-        }
+        if (newly_dead)
+            tcp_broadcast_mesh(priv, UINT32_MAX);
 
         /*
          * Wait out the interval, or until tcp_stop_health_check_thread()
@@ -4867,9 +4877,8 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
     qemu_mutex_init(&priv->lock);
     qemu_mutex_init(&priv->conn_table_lock);
     qemu_mutex_init(&priv->gid_table_lock);
-    qemu_mutex_init(&priv->gid_broadcast_lock);
     qemu_mutex_init(&priv->gid_advertise_lock);
-    qemu_mutex_init(&priv->topology_broadcast_lock);
+    qemu_mutex_init(&priv->broadcast_lock);
 
     priv->num_local_gids =
         tcp_parse_guest_gids(getenv("ERNIC_TCP_GUEST_GIDS"), priv->local_gids);
@@ -5065,9 +5074,8 @@ error:
     qemu_mutex_destroy(&priv->lock);
     qemu_mutex_destroy(&priv->conn_table_lock);
     qemu_mutex_destroy(&priv->gid_table_lock);
-    qemu_mutex_destroy(&priv->gid_broadcast_lock);
     qemu_mutex_destroy(&priv->gid_advertise_lock);
-    qemu_mutex_destroy(&priv->topology_broadcast_lock);
+    qemu_mutex_destroy(&priv->broadcast_lock);
     g_free(priv);
     return -1;
 }
@@ -5126,9 +5134,8 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
     qemu_mutex_destroy(&priv->lock);
     qemu_mutex_destroy(&priv->conn_table_lock);
     qemu_mutex_destroy(&priv->gid_table_lock);
-    qemu_mutex_destroy(&priv->gid_broadcast_lock);
     qemu_mutex_destroy(&priv->gid_advertise_lock);
-    qemu_mutex_destroy(&priv->topology_broadcast_lock);
+    qemu_mutex_destroy(&priv->broadcast_lock);
 
     g_free(priv);
     backend_dev->backend_private = NULL;

@@ -33,6 +33,41 @@
 #include "rocm_ernic_compat.h"
 
 /*
+ * Locks
+ *
+ * The order the backend's mutexes are taken in: a thread holding one takes
+ * only those below it.  This is the one place the order is given; each
+ * field's comment says what its lock protects.  Two locks needn't ever be
+ * held together; the order says which comes first if they are.  CI's TSan
+ * builds check it on the paths the tests run, since ThreadSanitizer reports
+ * a lock-order inversion as a possible deadlock.  Nothing checks the paths
+ * they don't.
+ *
+ *   gid_advertise_lock       this node's advertisement of its own GIDs
+ *   broadcast_lock           the manager's broadcasts to the mesh
+ *   registration_mutex       a worker's registration with the manager
+ *   peer_lock                the peers a worker is to connect to
+ *   mesh_table_lock          mesh_nodes, on the manager only
+ *   conn_table_lock          connections, pending_conns and manager_conn
+ *   gid_table_lock           node_gids and gid_owner
+ *
+ * Below those are the leaves, held one at a time, with nothing taken under
+ * them:
+ *
+ *   lock                     handles, local GIDs, the ionic receive callback
+ *   TcpConnection.lock       a connection's socket
+ *   TcpConnection.sendq_lock a connection's send queue
+ *   health_check_lock        stopping the health check
+ *   TcpSRQ.lock              an SRQ's limit (rdma_backend_tcp.c)
+ *
+ * A connection's lock is held for the whole of a message, which can mean
+ * waiting for a peer that has stopped reading, for up to
+ * tcp_send_timeout_ms() without progress.  gid_advertise_lock and
+ * broadcast_lock are held across those sends, to keep a snapshot and its
+ * sends together, so such a peer holds them up as well.
+ */
+
+/*
  * TCP Backend Protocol (Multi-Node Extension)
  *
  * Messages are sent over TCP with a fixed header:
@@ -256,8 +291,8 @@ typedef struct {
      * without it having to advertise them again. Protected by
      * gid_table_lock, like the rest of this structure, and deliberately
      * not read from mesh_nodes: that would mean taking mesh_table_lock
-     * under gid_table_lock, the reverse of the order everything else
-     * takes them in. On the manager it is a copy of the node's is_alive,
+     * under gid_table_lock, the reverse of the lock order (see Locks
+     * above). On the manager it is a copy of the node's is_alive,
      * written with it by tcp_node_set_alive(); on a worker it is always
      * true, since the manager advertises a dead node as owning nothing.
      */
@@ -375,10 +410,9 @@ struct TcpConnection {
      * The data path's messages, queued for send_thread, so the device's main
      * thread never waits for the peer (see tcp_backend_send_ionic_v()), and
      * heartbeats that couldn't be sent at once, at the head of the queue (see
-     * tcp_send_heartbeat()).  Everything below is protected by sendq_lock,
-     * which is taken with no other lock held, or under conn_table_lock, and
-     * nothing is taken under it.  sendq_cond is signalled when a message is
-     * queued and when the queue is closed.
+     * tcp_send_heartbeat()).  Everything below is protected by sendq_lock.
+     * sendq_cond is signalled when a message is queued and when the queue
+     * is closed.
      *
      * sendq_bytes counts each message's payload until it has been written.
      * sendq_closed is set, never cleared, when the connection leaves its
@@ -479,26 +513,13 @@ struct TcpBackendPrivate {
     QemuMutex gid_table_lock;
 
     /*
-     * Serialises a whole broadcast -- snapshot and fan-out together.
-     * gid_table_lock cannot do it: the sends take connection locks, which
-     * a sender holds while it waits for a peer to read, so it has to be
-     * dropped before sending.  Two manager receive threads would then
-     * interleave, and an older snapshot could land after a newer one, leaving
-     * workers with claims the manager has already replaced.
-     */
-    QemuMutex gid_broadcast_lock;
-
-    /*
      * Serialises a whole advertisement of this node's own claims -- snapshot
-     * and send together -- for the same reason gid_broadcast_lock serialises
-     * a broadcast.  The snapshot is taken under lock, which has to be dropped
+     * and send together -- for the same reason broadcast_lock serialises a
+     * broadcast.  The snapshot is taken under lock, which has to be dropped
      * before sending, so without this an advertisement from the main thread
      * (a guest adding or removing an address) and one from a receive thread
      * (registration completing) could land out of order, leaving the manager
      * holding a claim set this node has already replaced.
-     *
-     * Taken before lock, before gid_broadcast_lock, and before a connection
-     * lock; nothing takes it while holding any of them.
      */
     QemuMutex gid_advertise_lock;
 
@@ -536,20 +557,28 @@ struct TcpBackendPrivate {
     bool is_manager;
     /* node_id -> MeshNodeInfo*; at most TCP_MAX_MESH_NODES of them */
     GHashTable *mesh_nodes;
+    QemuMutex mesh_table_lock; /* Protects mesh_nodes */
     /*
-     * Protects mesh_nodes; taken before conn_table_lock or gid_table_lock
-     * when it and either of them are held
+     * Serialises the manager's broadcasts, the topology and the GID table,
+     * each snapshot and its fan-out together (tcp_broadcast_mesh(),
+     * tcp_broadcast_gid_table()).  The snapshot's own locks can't do it:
+     * the sends take connection locks, which a sender holds while it waits
+     * for a peer to read, so they are dropped before sending.  A
+     * registration, a node coming back to life, the health check, and a
+     * node's advertisement each broadcast from their own thread, and without
+     * this an older snapshot could be sent after a newer one: a node's death
+     * after its revival, say, leaving the workers believing it dead, or a
+     * topology that leaves out a node after a GID table with the node's
+     * claims, which has the workers drop them (tcp_gid_claims_prune()).
+     * One lock for both kinds, so neither can overtake the other.
      */
-    QemuMutex mesh_table_lock;
+    QemuMutex broadcast_lock;
     /*
-     * Serialises a whole topology broadcast, snapshot and fan-out together,
-     * as gid_broadcast_lock does for the GID table.  The health check, a
-     * registration, and a node coming back to life each broadcast from their
-     * own thread, and without it an older snapshot could be sent after a
-     * newer one: a node's death after its revival, say, leaving the workers
-     * believing it dead.  Taken with no other lock held.
+     * How many broadcasts are waiting to take broadcast_lock (see
+     * tcp_broadcast_lock()).  Only the tests read it, to know that a
+     * broadcast is held up behind another; nothing else depends on it.
      */
-    QemuMutex topology_broadcast_lock;
+    _Atomic uint32_t broadcasts_waiting;
     QemuThread health_check_thread;
     /*
      * Cleared under health_check_lock, with health_check_cond signalled, to
@@ -591,8 +620,8 @@ struct TcpBackendPrivate {
      * registration_complete is set once that answer has come, and
      * registration_accepted if it registered this node.  registration_cond
      * is signalled when the answer comes, and when the peer-connect thread
-     * is stopped.  Taken before conn_table_lock, which the answer publishes
-     * manager_conn under.
+     * is stopped.  The answer publishes manager_conn under conn_table_lock
+     * while holding it.
      *
      * registers_again, also under registration_mutex, is cleared for good
      * when the manager answers this worker's registering again with another
@@ -611,9 +640,9 @@ struct TcpBackendPrivate {
      * The peers this worker is to connect to, as TcpPeerTarget, from the
      * latest topology update.  A receive thread replaces them and sets
      * peer_targets_changed; the peer-connect thread connects to them.  Both
-     * are protected by peer_lock, which is taken before conn_table_lock when
-     * both are held: the peer-connect thread holds both to compare the
-     * connections table with the targets and change it.
+     * are protected by peer_lock.  The peer-connect thread holds it with
+     * conn_table_lock to compare the connections table with the targets and
+     * change it.
      */
     GArray *peer_targets;
     bool peer_targets_changed;
@@ -727,7 +756,6 @@ void tcp_retire_conn(TcpConnection *conn);
 int tcp_conn_enqueue(TcpConnection *conn, const void *hdr, size_t hdr_len,
                      const void *body, size_t body_len, uint32_t dst_node,
                      uint64_t tag, bool reply);
-void tcp_broadcast_gid_table(TcpBackendPrivate *priv);
 
 /* The manager's table of mesh nodes */
 MeshNodeInfo *tcp_mesh_node_info_new(uint32_t node_id, const char *hostname,
@@ -736,7 +764,10 @@ void tcp_mesh_node_info_free(MeshNodeInfo *node);
 void tcp_mesh_node_info_destroy_notify(gpointer data);
 bool tcp_node_set_alive(TcpBackendPrivate *priv, MeshNodeInfo *node, bool alive,
                         bool *gids_changed);
-void tcp_broadcast_mesh_topology(TcpBackendPrivate *priv);
+
+/* The manager's broadcasts; see broadcast_lock */
+void tcp_broadcast_mesh(TcpBackendPrivate *priv, uint32_t evicted);
+void tcp_broadcast_gid_table(TcpBackendPrivate *priv);
 
 /* Sockets and messages */
 uint32_t tcp_send_timeout_ms(TcpBackendPrivate *priv);

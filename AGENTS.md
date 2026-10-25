@@ -140,7 +140,10 @@ health-check, and per-connection receive threads
 - **Comment any memory order weaker than the default** (seq_cst), saying
   why it suffices, like `recv_thread_running` in `rdma_backend_tcp.c`.
 - **Document which lock protects each shared field**, next to the field,
-  and the order when code takes more than one lock.
+  and the order when code takes more than one lock. The TCP backend gives
+  its whole order in one table, `Locks` at the top of
+  [`rdma_backend_tcp_priv.h`](src/rdma/rdma_backend_tcp_priv.h); put a new
+  lock there, not in the field's comment.
 - **Don't hold a lock across a blocking call** (socket I/O, sleep,
   `qemu_thread_join()`) or a call that may take the same lock.
 - **Every thread must be stoppable and joined**: an atomic stop flag
