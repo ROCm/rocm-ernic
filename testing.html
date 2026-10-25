@@ -378,6 +378,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-pci-client">test_pci_client</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-data-transfer">test_data_transfer</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#find-rdma-device-tuple">find-rdma-device-tuple</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#find-ipv4-gid-index">find-ipv4-gid-index</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-rdma-cm">test_rdma_cm</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-ionic-ci-sh">test_ionic_ci.sh</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#in-process-ionic-device-harness">In-process ionic device harness</a></li>
@@ -465,6 +466,12 @@ or real hardware). Skipped if no device is found.</p>
 <p>A shell test registered with CTest. It uses a synthetic sysfs tree to verify
 RDMA discovery requires the emulated vendor/device/subsystem tuple and rejects
 near matches.</p>
+</section>
+<section id="find-ipv4-gid-index">
+<h3>find-ipv4-gid-index<a class="headerlink" href="#find-ipv4-gid-index" title="Link to this heading">#</a></h3>
+<p>A shell test registered with CTest. It uses synthetic sysfs GID tables to
+verify <code class="docutils literal notranslate"><span class="pre">scripts/find-ipv4-gid-index.sh</span></code> finds an address’s IPv4-mapped
+GID at any index and rejects malformed arguments.</p>
 </section>
 <section id="test-rdma-cm">
 <h3>test_rdma_cm<a class="headerlink" href="#test-rdma-cm" title="Link to this heading">#</a></h3>
@@ -704,9 +711,9 @@ Test workflow’s GCC Debug leg does, use a GCC build without the
 sanitizers and with valgrind installed before configuring. Leave
 out the tests that start the server or run a script, which
 valgrind would only check the script for:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">skip</span><span class="o">=</span><span class="s1">'pci-config-test|find-rdma-device-tuple|server-lifecycle'</span>
-<span class="nv">skip</span><span class="o">+=</span><span class="s1">'|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci'</span>
-<span class="nv">skip</span><span class="o">+=</span><span class="s1">'|ionic-stats-interval-cli|ionic-eth-queues-cli'</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">skip</span><span class="o">=</span><span class="s1">'pci-config-test|find-rdma-device-tuple|find-ipv4-gid-index'</span>
+<span class="nv">skip</span><span class="o">+=</span><span class="s1">'|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci'</span>
+<span class="nv">skip</span><span class="o">+=</span><span class="s1">'|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli'</span>
 <span class="nv">skip</span><span class="o">+=</span><span class="s1">'|cmake-subproject|ernic-package-deb'</span>
 <span class="nv">opts</span><span class="o">=</span><span class="s1">'--leak-check=full --track-origins=yes --num-callers=40'</span>
 <span class="nv">opts</span><span class="o">+=</span><span class="s1">' --error-exitcode=1'</span>
@@ -770,17 +777,29 @@ sudo<span class="w"> </span>ip<span class="w"> </span>link<span class="w"> </spa
 (see <code class="docutils literal notranslate"><span class="pre">ernicctl</span> <span class="pre">driver-push</span></code>).</p></li>
 <li><p>Configure IP addresses on the rocm-ernic NICs
 (<code class="docutils literal notranslate"><span class="pre">enp1s0</span></code>) in both VMs.</p></li>
+<li><p>In each VM, find the index of the IPv4-mapped GID
+(<code class="docutils literal notranslate"><span class="pre">::ffff:a.b.c.d</span></code>) for its address, which the examples
+below pass as <code class="docutils literal notranslate"><span class="pre">$GID</span></code>. It is often 1, but it isn’t
+fixed, and the two VMs can differ.
+<code class="docutils literal notranslate"><span class="pre">scripts/find-ipv4-gid-index.sh</span></code> looks it up; run it in
+each guest with the device and that guest’s own address,
+for example from the host:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">GID</span><span class="o">=</span><span class="k">$(</span>ssh<span class="w"> </span>vm1<span class="w"> </span><span class="s1">'sh -s -- rocep1s0 192.168.100.10'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>&lt;<span class="w"> </span>scripts/find-ipv4-gid-index.sh<span class="k">)</span>
+</pre></div>
+</div>
+</li>
 </ol>
 <section id="ibv-rc-pingpong">
 <h3>ibv_rc_pingpong<a class="headerlink" href="#ibv-rc-pingpong" title="Link to this heading">#</a></h3>
 <p>Latency test using RC (Reliable Connection) QPs:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># VM 1 (server):</span>
 <span class="nv">LD_LIBRARY_PATH</span><span class="o">=</span>/opt/rdma-core-ernic/lib<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>ibv_rc_pingpong<span class="w"> </span>-d<span class="w"> </span>rocep1s0<span class="w"> </span>-g<span class="w"> </span><span class="m">1</span><span class="w"> </span>-n<span class="w"> </span><span class="m">100</span>
+<span class="w">  </span>ibv_rc_pingpong<span class="w"> </span>-d<span class="w"> </span>rocep1s0<span class="w"> </span>-g<span class="w"> </span><span class="s2">"</span><span class="nv">$GID</span><span class="s2">"</span><span class="w"> </span>-n<span class="w"> </span><span class="m">100</span>
 
 <span class="c1"># VM 2 (client, use multicast NIC for OOB):</span>
 <span class="nv">LD_LIBRARY_PATH</span><span class="o">=</span>/opt/rdma-core-ernic/lib<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>ibv_rc_pingpong<span class="w"> </span>-d<span class="w"> </span>rocep1s0<span class="w"> </span>-g<span class="w"> </span><span class="m">1</span><span class="w"> </span>-n<span class="w"> </span><span class="m">100</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>ibv_rc_pingpong<span class="w"> </span>-d<span class="w"> </span>rocep1s0<span class="w"> </span>-g<span class="w"> </span><span class="s2">"</span><span class="nv">$GID</span><span class="s2">"</span><span class="w"> </span>-n<span class="w"> </span><span class="m">100</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span><span class="m">192</span>.168.100.10
 </pre></div>
 </div>
@@ -795,12 +814,12 @@ sudo<span class="w"> </span>ip<span class="w"> </span>link<span class="w"> </spa
 <p>Bandwidth test using the perftest suite:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># VM 1 (server):</span>
 <span class="nv">LD_LIBRARY_PATH</span><span class="o">=</span>/opt/rdma-core-ernic/lib<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>ib_send_bw<span class="w"> </span>-d<span class="w"> </span>rocep1s0<span class="w"> </span>-x<span class="w"> </span><span class="m">1</span><span class="w"> </span>-n<span class="w"> </span><span class="m">10</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>ib_send_bw<span class="w"> </span>-d<span class="w"> </span>rocep1s0<span class="w"> </span>-x<span class="w"> </span><span class="s2">"</span><span class="nv">$GID</span><span class="s2">"</span><span class="w"> </span>-n<span class="w"> </span><span class="m">10</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--report_gbits
 
 <span class="c1"># VM 2 (client):</span>
 <span class="nv">LD_LIBRARY_PATH</span><span class="o">=</span>/opt/rdma-core-ernic/lib<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>ib_send_bw<span class="w"> </span>-d<span class="w"> </span>rocep1s0<span class="w"> </span>-x<span class="w"> </span><span class="m">1</span><span class="w"> </span>-n<span class="w"> </span><span class="m">10</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>ib_send_bw<span class="w"> </span>-d<span class="w"> </span>rocep1s0<span class="w"> </span>-x<span class="w"> </span><span class="s2">"</span><span class="nv">$GID</span><span class="s2">"</span><span class="w"> </span>-n<span class="w"> </span><span class="m">10</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--report_gbits<span class="w"> </span><span class="m">192</span>.168.100.10
 </pre></div>
 </div>
@@ -978,7 +997,7 @@ last run’s connection is still in <code class="docutils literal notranslate"><
 controller clones the tutorial and applies the patches, and
 copies the result into the guests, which build it, so they
 need neither network access nor git.
-Like perftest’s <code class="docutils literal notranslate"><span class="pre">-x</span> <span class="pre">1</span></code>, the IPv4-mapped GID reaches a peer
+As with perftest, the IPv4-mapped GID reaches a peer
 only if its instance advertises the guest’s IPv4 address
 (<code class="docutils literal notranslate"><span class="pre">ERNIC_GUEST_GIDS_&lt;n&gt;</span></code>, or <code class="docutils literal notranslate"><span class="pre">ernic_guest_gids</span></code> in the
 host-setup role), as both CI lanes do.</p>
@@ -1260,6 +1279,7 @@ this is a public repository.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-pci-client">test_pci_client</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-data-transfer">test_data_transfer</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#find-rdma-device-tuple">find-rdma-device-tuple</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#find-ipv4-gid-index">find-ipv4-gid-index</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-rdma-cm">test_rdma_cm</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#test-ionic-ci-sh">test_ionic_ci.sh</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#in-process-ionic-device-harness">In-process ionic device harness</a></li>
