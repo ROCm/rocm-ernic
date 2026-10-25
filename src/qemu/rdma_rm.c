@@ -218,6 +218,20 @@ RdmaRmPD *rdma_rm_get_pd(RdmaDeviceResources *dev_res, uint32_t pd_handle)
     return rdma_res_tbl_get(&dev_res->pd_tbl, pd_handle);
 }
 
+/*
+ * Free a PD. Nothing checks that its QPs, MRs and SRQs are gone, so the
+ * caller frees them first. No backend keeps anything for a PD, so there is
+ * no backend operation to undo.
+ */
+void rdma_rm_dealloc_pd(RdmaDeviceResources *dev_res, uint32_t pd_handle)
+{
+    if (rdma_rm_get_pd(dev_res, pd_handle)) {
+        rdma_res_tbl_dealloc(&dev_res->pd_tbl, pd_handle);
+        rdma_info_report("rdma_rm_dealloc_pd: Deallocated PD handle %u",
+                         pd_handle);
+    }
+}
+
 int rdma_rm_alloc_mr(RdmaDeviceResources *dev_res, uint32_t pd_handle,
                      int access_flags, uint32_t *mr_handle, uint32_t *lkey,
                      uint32_t *rkey)
@@ -398,6 +412,7 @@ int rdma_rm_alloc_qp(RdmaDeviceResources *dev_res, uint32_t pd_handle,
     RdmaRmPD *pd;
     RdmaRmSRQ *srq = NULL;
     uint32_t rm_qpn;
+    GBytes *key;
 
     pd = rdma_rm_get_pd(dev_res, pd_handle);
     if (!pd) {
@@ -463,7 +478,25 @@ int rdma_rm_alloc_qp(RdmaDeviceResources *dev_res, uint32_t pd_handle,
         *qpn = rm_qpn; /* Use local QPN */
     }
 
-    g_hash_table_insert(dev_res->qp_hash, g_bytes_new(qpn, sizeof(*qpn)), qp);
+    /*
+     * Every lookup goes through the QPN, so two live QPs can't share one:
+     * inserting the second would replace the first, which could then be
+     * neither found nor freed. A handle is unique among live QPs; a
+     * backend's number has to be checked.
+     */
+    key = g_bytes_new(qpn, sizeof(*qpn));
+    if (g_hash_table_contains(dev_res->qp_hash, key)) {
+        rdma_error_report("rdma_rm_alloc_qp: QPN %" PRIu32 " is already in use",
+                          *qpn);
+        g_bytes_unref(key);
+        if (qp->backend_qp.backend_ops &&
+            qp->backend_qp.backend_ops->destroy_qp) {
+            qp->backend_qp.backend_ops->destroy_qp(&qp->backend_qp, dev_res);
+        }
+        rc = -EIO;
+        goto out_dealloc_qp;
+    }
+    g_hash_table_insert(dev_res->qp_hash, key, qp);
 
     if (out_qp) {
         *out_qp = qp;
@@ -494,23 +527,16 @@ int rdma_rm_modify_qp(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
     if (qp->qp_type == ERNIC_IB_QPT_SMI) {
         rdma_error_report("Got QP0 request");
         return -EPERM;
-    } else if (qp->qp_type == ERNIC_IB_QPT_GSI) {
-        return 0;
     }
 
-    if (attr_mask & IBV_QP_RQ_PSN) {
-        qp->rq_psn = rq_psn & 0xffffffu;
-    }
-    if (attr_mask & IBV_QP_SQ_PSN) {
-        qp->sq_psn = sq_psn & 0xffffffu;
-    }
-
-    if (attr_mask & IBV_QP_STATE) {
-        qp->qp_state = qp_state;
-
+    /*
+     * GSI's transitions aren't passed to the backend, so they can't fail;
+     * they are only recorded, for rdma_rm_query_qp() to report.
+     */
+    if ((attr_mask & IBV_QP_STATE) && qp->qp_type != ERNIC_IB_QPT_GSI) {
         /* Call backend state transitions using vtable dispatch */
         if (qp->backend_qp.backend_ops) {
-            if (qp->qp_state == IBV_QPS_INIT &&
+            if (qp_state == IBV_QPS_INIT &&
                 qp->backend_qp.backend_ops->qp_state_init) {
                 ret = qp->backend_qp.backend_ops->qp_state_init(
                     backend_dev, &qp->backend_qp, qp->qp_type, qkey);
@@ -523,7 +549,7 @@ int rdma_rm_modify_qp(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
                     qp_handle, qp->backend_qp.backend_ops->name);
             }
 
-            if (qp->qp_state == IBV_QPS_RTR &&
+            if (qp_state == IBV_QPS_RTR &&
                 qp->backend_qp.backend_ops->qp_state_rtr) {
                 /* Get backend gid index if backend supports it */
                 if (backend_dev &&
@@ -557,7 +583,7 @@ int rdma_rm_modify_qp(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
                     qp_handle, qp->backend_qp.backend_ops->name);
             }
 
-            if (qp->qp_state == IBV_QPS_RTS &&
+            if (qp_state == IBV_QPS_RTS &&
                 qp->backend_qp.backend_ops->qp_state_rts) {
                 ret = qp->backend_qp.backend_ops->qp_state_rts(
                     &qp->backend_qp, qp->qp_type, sq_psn, qkey,
@@ -576,6 +602,21 @@ int rdma_rm_modify_qp(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
                 "rdma_rm_modify_qp: No backend, QP %u state transition to %d",
                 qp_handle, (int)qp_state);
         }
+    }
+
+    /*
+     * Recorded only once the backend has made the transition: a modification
+     * that fails changes nothing, as in verbs, and the state recorded here is
+     * the one rdma_rm_query_qp() reports.
+     */
+    if (attr_mask & IBV_QP_RQ_PSN) {
+        qp->rq_psn = rq_psn & 0xffffffu;
+    }
+    if (attr_mask & IBV_QP_SQ_PSN) {
+        qp->sq_psn = sq_psn & 0xffffffu;
+    }
+    if (attr_mask & IBV_QP_STATE) {
+        qp->qp_state = qp_state;
     }
 
     return 0;
@@ -597,16 +638,24 @@ int rdma_rm_query_qp(RdmaDeviceResources *dev_res, uint32_t qp_handle,
         int ret = qp->backend_qp.backend_ops->query_qp(&qp->backend_qp, attr,
                                                        attr_mask, init_attr);
         if (!ret) {
-            /* The backends clear attr and fill only what they model, so the
-             * PSNs have to be laid back over the top of their answer. */
+            /*
+             * The backends clear attr and fill only what they model, so the
+             * PSNs have to be laid back over the top of their answer. So
+             * does the state: a backend sees only the transitions to INIT,
+             * RTR and RTS, so its idea of the state is stale once the QP
+             * goes anywhere else, such as Error.
+             */
+            attr->qp_state = qp->qp_state;
+            attr->cur_qp_state = qp->qp_state;
             attr->rq_psn = qp->rq_psn;
             attr->sq_psn = qp->sq_psn;
         }
         return ret;
     } else {
-        /* No backend - return basic QP attributes */
+        /* The backend keeps no QP state, or there is no backend */
         rdma_info_report(
-            "rdma_rm_query_qp: No backend, returning local state for QP %u",
+            "rdma_rm_query_qp: No backend query, returning local state for "
+            "QP %u",
             qp_handle);
         memset(attr, 0, sizeof(*attr));
         attr->qp_state = qp->qp_state;

@@ -459,4 +459,11 @@ void ionic_datapath_rdma_counters(const struct ionic_datapath *dp,
  */
 void ionic_datapath_reset_rdma_counters(struct ionic_datapath *dp);
 
+/*
+ * Forget every QP, SRQ, CQ, AH and MR the guest registered, each as its
+ * unregister function does, as RDMA_RESET_LIF requires.  @dp may be NULL.
+ * Same thread as the register functions.
+ */
+void ionic_datapath_reset_rdma(struct ionic_datapath *dp);
+
 #endif /* IONIC_DATAPATH_H */

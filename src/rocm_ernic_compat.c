@@ -697,6 +697,14 @@ int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle)
                             pd_handle);
 }
 
+void ionic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle)
+{
+    PVRDMADev *pvrdma = handle;
+    if (!pvrdma)
+        return;
+    rdma_rm_dealloc_pd(&pvrdma->rdma_dev_res, pd_handle);
+}
+
 int ionic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
                       uint8_t qp_type, uint32_t max_send_wr,
                       uint32_t max_recv_wr, uint32_t send_cq_handle,

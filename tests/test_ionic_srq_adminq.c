@@ -177,6 +177,11 @@ int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle)
     *pd_handle = 1;
     return 0;
 }
+void ionic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle)
+{
+    (void)handle;
+    (void)pd_handle;
+}
 int ionic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe, uint32_t *cq_handle)
 {
     (void)handle;
@@ -243,6 +248,10 @@ void ionic_datapath_unregister_cq(struct ionic_datapath *dp, uint32_t cq_id)
 {
     (void)dp;
     (void)cq_id;
+}
+void ionic_datapath_reset_rdma(struct ionic_datapath *dp)
+{
+    (void)dp;
 }
 /* This test drives the SRQ opcodes; the counters a VALS would read are all
  * zero, which is what a QP that has seen no error reports anyway. */

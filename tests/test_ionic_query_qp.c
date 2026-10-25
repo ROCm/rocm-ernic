@@ -11,7 +11,10 @@
  * These tests drive ionic_adminq_dispatch_wqe() directly against a fake
  * guest memory, so they pin the encoding of the two buffers: the state and
  * MTU nibbles the driver unpacks from state_pmtu, and the access flags it
- * ORs across both. The test links ionic_adminq.c, reaches its context
+ * ORs across both. They also check that the destination is reported by the
+ * driver's qpid, as MODIFY_QP gave it, never by a backend QPN, and that a
+ * MODIFY_QP the resource manager fails changes nothing. The test links
+ * ionic_adminq.c, reaches its context
  * through ionic_adminq_priv.h, and stubs its external symbols.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
@@ -148,6 +151,10 @@ int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
     return 0;
 }
 
+/* What the resource manager's MODIFY_QP returns, and was given. */
+static int g_modify_rc;
+static uint32_t g_modified_qkey_dest_qpn;
+
 int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
                        uint8_t type_state, uint32_t sq_psn, uint32_t rq_psn,
                        uint32_t qkey_dest_qpn, const uint8_t *dest_gid_16bytes)
@@ -158,9 +165,9 @@ int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
     (void)type_state;
     (void)sq_psn;
     (void)rq_psn;
-    (void)qkey_dest_qpn;
     (void)dest_gid_16bytes;
-    return 0;
+    g_modified_qkey_dest_qpn = qkey_dest_qpn;
+    return g_modify_rc;
 }
 
 int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle)
@@ -168,6 +175,11 @@ int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle)
     (void)handle;
     *pd_handle = 1;
     return 0;
+}
+void ionic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle)
+{
+    (void)handle;
+    (void)pd_handle;
 }
 int ionic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe, uint32_t *cq_handle)
 {
@@ -268,6 +280,10 @@ void ionic_datapath_unregister_cq(struct ionic_datapath *dp, uint32_t cq_id)
     (void)dp;
     (void)cq_id;
 }
+void ionic_datapath_reset_rdma(struct ionic_datapath *dp)
+{
+    (void)dp;
+}
 void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
                                 uint8_t ib_qp_type, uint32_t sq_cq_id,
                                 const struct ionic_dp_ring_desc *sq,
@@ -346,12 +362,18 @@ void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey)
     (void)dp;
     (void)lkey;
 }
+/* Calls to the datapath's MODIFY_QP setters. */
+static uint32_t g_set_qkey_calls;
+static uint32_t g_set_dest_calls;
+static uint32_t g_set_dest_qp_id;
+
 void ionic_datapath_set_qkey(struct ionic_datapath *dp, uint32_t qp_id,
                              uint32_t qkey)
 {
     (void)dp;
     (void)qp_id;
     (void)qkey;
+    g_set_qkey_calls++;
 }
 
 void ionic_datapath_flush_qp(struct ionic_datapath *dp, uint32_t qp_id)
@@ -365,8 +387,9 @@ void ionic_datapath_set_dest(struct ionic_datapath *dp, uint32_t qp_id,
 {
     (void)dp;
     (void)qp_id;
-    (void)dest_qp_id;
     (void)dest_node_id;
+    g_set_dest_calls++;
+    g_set_dest_qp_id = dest_qp_id;
 }
 /* UINT32_MAX = no mesh backend attached, which is the loopback case. */
 static uint32_t g_local_node = UINT32_MAX;
@@ -461,6 +484,11 @@ static void ctx_reset(void)
     g_queried_qpn = 0;
     g_local_node = UINT32_MAX;
     g_node_from_gid = 0;
+    g_modify_rc = 0;
+    g_modified_qkey_dest_qpn = 0;
+    g_set_qkey_calls = 0;
+    g_set_dest_calls = 0;
+    g_set_dest_qp_id = 0;
 }
 
 /* The 34-byte ionic_admin_query_qp body the driver posts. */
@@ -549,18 +577,121 @@ static void test_access_flags_are_translated(void)
     check("atomic-flag-translated", rq_flags() == 0x4);
 }
 
-/* dest_qp_num rides in the sq buffer's qkey_dest_qpn, big-endian. */
-static void test_dest_qpn_is_reported(void)
+/* A second QP of the device, which a destination can name */
+#define PEER_ID  9u
+#define PEER_QPN 0xd00001u
+
+static void map_peer(uint32_t qpn)
+{
+    g_ctx.qp_map[1].valid = true;
+    g_ctx.qp_map[1].qp_id = PEER_ID;
+    g_ctx.qp_map[1].qpn = qpn;
+}
+
+/* The destination QUERY_QP reports, from the sq buffer's qkey_dest_qpn */
+static uint32_t queried_dest(void)
 {
     uint8_t body[34];
 
-    ctx_reset();
     build_body(body, QP_ID, SQ_GPA, RQ_GPA);
-    (void)ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body,
-                                    sizeof(body));
+    if (ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body,
+                                  sizeof(body)) != 0)
+        return UINT32_MAX;
+    return ernic_get_be32(g_mem + SQ_GPA + 8);
+}
 
-    check("dest-qpn-reported",
-          ernic_get_be32(g_mem + SQ_GPA + 8) == g_dest_qpn);
+/* The MODIFY_QP body moving QP_ID to RTR with @attr_mask, naming @dest */
+static void build_rtr_body(uint8_t *body, uint32_t attr_mask, uint32_t dest)
+{
+    memset(body, 0, 60);
+    ernic_put_be32(body + 0, attr_mask);
+    ernic_put_le32(body + 16, dest);
+    body[39] = 2; /* RTR */
+    ernic_put_le32(body + 56, QP_ID | (1u << 24));
+}
+
+/*
+ * dest_qp_num is reported as the driver named it, by its qpid: the
+ * backend's QPNs are its own and mean nothing to the guest, which once saw
+ * them here. The backend's answer counts only for a QP MODIFY_QP gave no
+ * destination, and only when it names a QP of this device.
+ */
+static void test_dest_is_the_drivers(void)
+{
+    uint8_t body[60];
+
+    /* A backend QPN that names no QP of the device isn't passed on */
+    ctx_reset();
+    check("backend-dest-unknown-not-reported", queried_dest() == 0);
+
+    /* One that names a QP of the device is reported as its qpid */
+    ctx_reset();
+    map_peer(PEER_QPN);
+    check("backend-dest-reported-as-qpid", queried_dest() == PEER_ID);
+
+    /* 0 is "no destination", even with a QP numbered 0 */
+    ctx_reset();
+    map_peer(0);
+    g_dest_qpn = 0;
+    check("backend-dest-0-is-none", queried_dest() == 0);
+
+    /* MODIFY_QP's destination goes to the backend translated, and comes
+     * back as the driver gave it, whatever the backend says */
+    ctx_reset();
+    map_peer(PEER_QPN);
+    build_rtr_body(body, (1u << 0) | (1u << 20), PEER_ID);
+    check("modify-dest-accepted",
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_QP, body,
+                                    sizeof(body)) == 0);
+    check("modify-dest-translated", g_modified_qkey_dest_qpn == PEER_QPN);
+    check("modify-dest-to-datapath",
+          g_set_dest_calls == 1 && g_set_dest_qp_id == PEER_ID);
+    g_dest_qpn = 0xbeef;
+    check("modify-dest-reported", queried_dest() == PEER_ID);
+
+    /* So does one naming a QP on another node, untranslated */
+    ctx_reset();
+    build_rtr_body(body, (1u << 0) | (1u << 20), 0x123);
+    check("remote-dest-accepted",
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_QP, body,
+                                    sizeof(body)) == 0);
+    check("remote-dest-reported", queried_dest() == 0x123);
+}
+
+/*
+ * A MODIFY_QP the resource manager fails changes nothing: not the
+ * datapath's destination or Q_Key, nor the destination QUERY_QP reports.
+ */
+static void test_failed_modify_changes_nothing(void)
+{
+    uint8_t body[60];
+
+    ctx_reset();
+    map_peer(PEER_QPN);
+    g_modify_rc = -5;
+    build_rtr_body(body, (1u << 0) | (1u << 20), PEER_ID);
+    check("failed-modify-fails",
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_QP, body,
+                                    sizeof(body)) != 0);
+    check("failed-modify-no-datapath-dest", g_set_dest_calls == 0);
+    g_dest_qpn = 0; /* so only a recorded destination could be reported */
+    check("failed-modify-dest-not-recorded", queried_dest() == 0);
+
+    ctx_reset();
+    g_modify_rc = -5;
+    build_rtr_body(body, (1u << 0) | (1u << 6), 0x11111111u);
+    check("failed-qkey-modify-fails",
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_QP, body,
+                                    sizeof(body)) != 0);
+    check("failed-modify-no-datapath-qkey", g_set_qkey_calls == 0);
+
+    /* And one that succeeds sets the Q_Key */
+    ctx_reset();
+    build_rtr_body(body, (1u << 0) | (1u << 6), 0x11111111u);
+    check("qkey-modify-accepted",
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_QP, body,
+                                    sizeof(body)) == 0);
+    check("qkey-modify-to-datapath", g_set_qkey_calls == 1);
 }
 
 /*
@@ -699,7 +830,8 @@ int main(void)
     test_modify_qp_unresolved_gid_only_fails_on_a_mesh();
     test_every_state_round_trips();
     test_access_flags_are_translated();
-    test_dest_qpn_is_reported();
+    test_dest_is_the_drivers();
+    test_failed_modify_changes_nothing();
     test_psns_are_reported();
     test_unknown_qp_fails();
     test_query_failure_fails_the_command();

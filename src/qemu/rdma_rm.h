@@ -31,6 +31,7 @@ void rdma_rm_fini(RdmaDeviceResources *dev_res);
 int rdma_rm_alloc_pd(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
                      uint32_t *pd_handle);
 RdmaRmPD *rdma_rm_get_pd(RdmaDeviceResources *dev_res, uint32_t pd_handle);
+void rdma_rm_dealloc_pd(RdmaDeviceResources *dev_res, uint32_t pd_handle);
 
 int rdma_rm_alloc_mr(RdmaDeviceResources *dev_res, uint32_t pd_handle,
                      int access_flags, uint32_t *mr_handle, uint32_t *lkey,

@@ -24,6 +24,15 @@ struct ionic_adminq_ctx *ionic_adminq_create(vfu_ctx_t *vfu_ctx);
 void ionic_adminq_destroy(struct ionic_adminq_ctx *ctx);
 
 /*
+ * Free every CQ, QP, MR and SRQ the admin queue created, and the PD they
+ * share, from the datapath and the resource manager, as RDMA_RESET_LIF
+ * requires.  Not part of ionic_adminq_destroy(): at shutdown the datapath
+ * goes first, and the resource manager frees everything itself.  @ctx may be
+ * NULL.
+ */
+void ionic_adminq_release_all(struct ionic_adminq_ctx *ctx);
+
+/*
  * Register a new admin queue ring pair.
  *
  * @aq_idx:         index of this AQ (0..IONIC_AQ_COUNT-1)

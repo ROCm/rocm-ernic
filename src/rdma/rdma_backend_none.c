@@ -101,11 +101,6 @@ static void none_destroy_qp(RdmaBackendQP *qp, RdmaDeviceResources *dev_res)
     /* Nothing to free */
 }
 
-static uint32_t none_qpn(const RdmaBackendQP *qp)
-{
-    return 1; /* Fake QPN */
-}
-
 /* QP state transitions - stub implementations */
 static int none_qp_state_init(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                               uint8_t qp_type, uint32_t qkey)
@@ -127,21 +122,6 @@ static int none_qp_state_rts(RdmaBackendQP *qp, uint8_t qp_type,
     return 0;
 }
 
-static int none_query_qp(RdmaBackendQP *qp, struct ibv_qp_attr *attr,
-                         int attr_mask, struct ibv_qp_init_attr *init_attr)
-{
-    memset(attr, 0, sizeof(*attr));
-    attr->qp_state = IBV_QPS_RTS;
-    attr->cur_qp_state = IBV_QPS_RTS;
-    attr->path_mtu = IBV_MTU_1024;
-    attr->qp_access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
-
-    if (init_attr) {
-        memset(init_attr, 0, sizeof(*init_attr));
-    }
-    return 0;
-}
-
 /* GID management - stub implementations */
 static int none_get_backend_gid_index(RdmaBackendDev *backend_dev, int sgid_idx)
 {
@@ -153,6 +133,12 @@ static int none_get_backend_gid_index(RdmaBackendDev *backend_dev, int sgid_idx)
 
 /**
  * Backend operations structure for "none" backend
+ *
+ * No qpn or query_qp: the backend keeps no QPs, so it has no numbers to give
+ * them and no state to report. The resource manager numbers each QP by its
+ * handle, which no other live QP has, and answers a query from what it
+ * recorded. (A fixed QPN here once gave every QP the same number, so a
+ * second QP replaced the first in the resource manager's QPN table.)
  */
 const RdmaBackendOps rdma_backend_ops_none = {
     .name = "none",
@@ -174,12 +160,10 @@ const RdmaBackendOps rdma_backend_ops_none = {
 
     .create_qp = none_create_qp,
     .destroy_qp = none_destroy_qp,
-    .qpn = none_qpn,
 
     .qp_state_init = none_qp_state_init,
     .qp_state_rtr = none_qp_state_rtr,
     .qp_state_rts = none_qp_state_rts,
-    .query_qp = none_query_qp,
 
     .get_backend_gid_index = none_get_backend_gid_index,
 

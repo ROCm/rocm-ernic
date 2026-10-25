@@ -108,18 +108,19 @@ static int adminq_get_pd(struct ionic_adminq_ctx *ctx, uint32_t *pd_handle)
     return 0;
 }
 
-static void adminq_map_cq(struct ionic_adminq_ctx *ctx, uint32_t cq_id,
-                          uint32_t handle)
+/*
+ * A free entry in the CQ map, or NULL if it is full. CREATE_CQ takes it
+ * before allocating anything, so a CQ the map can't hold is refused with
+ * nothing to give back: a CQ that isn't mapped can't be found again by
+ * DESTROY_CQ, so it would leak. The same goes for the QP and MR maps.
+ */
+static struct ionic_cq_map_entry *adminq_cq_free_entry(
+    struct ionic_adminq_ctx *ctx)
 {
-    for (int i = 0; i < MAX_CQ_MAP; i++) {
-        if (!ctx->cq_map[i].valid || ctx->cq_map[i].cq_id == cq_id) {
-            ctx->cq_map[i] = (struct ionic_cq_map_entry){
-                .valid = true, .cq_id = cq_id, .handle = handle};
-            return;
-        }
-    }
-    vfu_log(ctx->vfu_ctx, LOG_WARNING, "ionic_adminq: CQ map full, cq_id=%u",
-            cq_id);
+    for (int i = 0; i < MAX_CQ_MAP; i++)
+        if (!ctx->cq_map[i].valid)
+            return &ctx->cq_map[i];
+    return NULL;
 }
 
 /*
@@ -207,26 +208,44 @@ static bool adminq_lookup_cq(struct ionic_adminq_ctx *ctx, uint32_t cq_id,
     return false;
 }
 
-static void adminq_map_qp(struct ionic_adminq_ctx *ctx, uint32_t qp_id,
-                          uint32_t qpn)
+/* A free entry in the QP map, or NULL if it is full; see
+ * adminq_cq_free_entry(). */
+static struct ionic_qp_map_entry *adminq_qp_free_entry(
+    struct ionic_adminq_ctx *ctx)
 {
-    for (int i = 0; i < MAX_QP_MAP; i++) {
-        if (!ctx->qp_map[i].valid || ctx->qp_map[i].qp_id == qp_id) {
-            ctx->qp_map[i] = (struct ionic_qp_map_entry){
-                .valid = true, .qp_id = qp_id, .qpn = qpn};
-            return;
-        }
-    }
-    vfu_log(ctx->vfu_ctx, LOG_WARNING, "ionic_adminq: QP map full, qp_id=%u",
-            qp_id);
+    for (int i = 0; i < MAX_QP_MAP; i++)
+        if (!ctx->qp_map[i].valid)
+            return &ctx->qp_map[i];
+    return NULL;
+}
+
+static struct ionic_qp_map_entry *adminq_qp_entry(struct ionic_adminq_ctx *ctx,
+                                                  uint32_t qp_id)
+{
+    for (int i = 0; i < MAX_QP_MAP; i++)
+        if (ctx->qp_map[i].valid && ctx->qp_map[i].qp_id == qp_id)
+            return &ctx->qp_map[i];
+    return NULL;
 }
 
 static bool adminq_lookup_qp(struct ionic_adminq_ctx *ctx, uint32_t qp_id,
                              uint32_t *qpn)
 {
+    const struct ionic_qp_map_entry *e = adminq_qp_entry(ctx, qp_id);
+
+    if (!e)
+        return false;
+    *qpn = e->qpn;
+    return true;
+}
+
+/* The reverse: the qpid of the QP the backend numbers @qpn. */
+static bool adminq_lookup_qp_id(struct ionic_adminq_ctx *ctx, uint32_t qpn,
+                                uint32_t *qp_id)
+{
     for (int i = 0; i < MAX_QP_MAP; i++) {
-        if (ctx->qp_map[i].valid && ctx->qp_map[i].qp_id == qp_id) {
-            *qpn = ctx->qp_map[i].qpn;
+        if (ctx->qp_map[i].valid && ctx->qp_map[i].qpn == qpn) {
+            *qp_id = ctx->qp_map[i].qp_id;
             return true;
         }
     }
@@ -240,24 +259,15 @@ static void adminq_unmap_qp(struct ionic_adminq_ctx *ctx, uint32_t qp_id)
             ctx->qp_map[i].valid = false;
 }
 
-/*
- * Returns false when there is no room.  The caller must then fail the command
- * and release the resource it just allocated: an unmapped MR cannot be found
- * again by DESTROY_MR, so keeping it would leak it permanently.
- */
-static bool adminq_map_mr(struct ionic_adminq_ctx *ctx, uint32_t mr_id,
-                          uint32_t handle)
+/* A free entry in the MR map, or NULL if it is full; see
+ * adminq_cq_free_entry(). */
+static struct ionic_mr_map_entry *adminq_mr_free_entry(
+    struct ionic_adminq_ctx *ctx)
 {
-    for (int i = 0; i < MAX_MR_MAP; i++) {
-        if (!ctx->mr_map[i].valid || ctx->mr_map[i].mr_id == mr_id) {
-            ctx->mr_map[i] = (struct ionic_mr_map_entry){
-                .valid = true, .mr_id = mr_id, .handle = handle};
-            return true;
-        }
-    }
-    vfu_log(ctx->vfu_ctx, LOG_WARNING, "ionic_adminq: MR map full, mr_id=%u",
-            mr_id);
-    return false;
+    for (int i = 0; i < MAX_MR_MAP; i++)
+        if (!ctx->mr_map[i].valid)
+            return &ctx->mr_map[i];
+    return NULL;
 }
 
 static bool adminq_lookup_mr(struct ionic_adminq_ctx *ctx, uint32_t mr_id,
@@ -311,6 +321,51 @@ void ionic_adminq_destroy(struct ionic_adminq_ctx *ctx)
         return;
     ernic_dma_destroy(ctx->dma);
     free(ctx);
+}
+
+/*
+ * Everything the maps hold goes, each the way its DESTROY command frees it,
+ * datapath first. The maps are the only record of the resource manager's
+ * handles, so without this every reset leaked what the guest had created.
+ */
+void ionic_adminq_release_all(struct ionic_adminq_ctx *ctx)
+{
+    if (!ctx)
+        return;
+    ionic_datapath_reset_rdma(ctx->dp);
+
+    for (int i = 0; i < MAX_QP_MAP; i++) {
+        struct ionic_qp_map_entry *e = &ctx->qp_map[i];
+
+        if (!e->valid)
+            continue;
+        pvrdma_qp_stats_forget(ctx->pvrdma_handle, e->qp_id);
+        ionic_rm_dealloc_qp(ctx->pvrdma_handle, e->qpn);
+        e->valid = false;
+    }
+    for (uint32_t i = 0; i < MAX_SRQ_MAP; i++) {
+        if (ctx->srq_map[i].valid) {
+            ionic_rm_dealloc_srq(ctx->pvrdma_handle, ctx->srq_map[i].handle);
+            ctx->srq_map[i].valid = false;
+        }
+    }
+    for (int i = 0; i < MAX_MR_MAP; i++) {
+        if (ctx->mr_map[i].valid) {
+            ionic_rm_dealloc_mr(ctx->pvrdma_handle, ctx->mr_map[i].handle);
+            ctx->mr_map[i].valid = false;
+        }
+    }
+    for (int i = 0; i < MAX_CQ_MAP; i++) {
+        if (ctx->cq_map[i].valid) {
+            ionic_rm_dealloc_cq(ctx->pvrdma_handle, ctx->cq_map[i].handle);
+            ctx->cq_map[i].valid = false;
+        }
+    }
+    /* Last: the QPs, MRs and SRQs above were made in it */
+    if (ctx->pd_valid) {
+        ionic_rm_dealloc_pd(ctx->pvrdma_handle, ctx->pd_handle);
+        ctx->pd_valid = false;
+    }
 }
 
 bool ionic_adminq_register_queue(struct ionic_adminq_ctx *ctx, int aq_idx,
@@ -593,7 +648,24 @@ static uint8_t handle_create_cq_op(struct ionic_adminq_ctx *ctx,
         return 1;
     }
 
+    /*
+     * An id already in use is refused rather than mapped over: the CQ that
+     * had it could no longer be found, and would leak.
+     */
     uint32_t cq_handle;
+    if (adminq_lookup_cq(ctx, cq_id, &cq_handle)) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_CQ %u: cq_id already in use", cq_id);
+        return 1;
+    }
+    struct ionic_cq_map_entry *entry = adminq_cq_free_entry(ctx);
+    if (!entry) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_CQ %u: CQ map full (%d CQs)", cq_id,
+                MAX_CQ_MAP);
+        return 1;
+    }
+
     int ret = ionic_rm_alloc_cq(ctx->pvrdma_handle, 1u << ring.depth_log2,
                                 &cq_handle);
     if (ret) {
@@ -603,7 +675,8 @@ static uint8_t handle_create_cq_op(struct ionic_adminq_ctx *ctx,
         return 1;
     }
 
-    adminq_map_cq(ctx, cq_id, cq_handle);
+    *entry = (struct ionic_cq_map_entry){
+        .valid = true, .cq_id = cq_id, .handle = cq_handle};
 
     ionic_datapath_register_cq(ctx->dp, cq_id, eq_id, &ring);
 
@@ -986,6 +1059,25 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
     uint8_t type_state = body[62];
     uint8_t ib_qp_type = ionic_qpt_to_ib(type_state & 0x0fu, qp_id);
 
+    /*
+     * Refused before anything is allocated, like the checks below: an id
+     * already in use, which mapped over would lose the QP that had it, and
+     * a full map, which would leave the new one unmapped. Either QP could
+     * then never be found again by DESTROY_QP, and would leak.
+     */
+    if (adminq_qp_entry(ctx, qp_id)) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_QP %u: qp_id already in use", qp_id);
+        return 1;
+    }
+    struct ionic_qp_map_entry *entry = adminq_qp_free_entry(ctx);
+    if (!entry) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_QP %u: QP map full (%d QPs)", qp_id,
+                MAX_QP_MAP);
+        return 1;
+    }
+
     uint32_t send_cq, recv_cq;
     if (!adminq_lookup_cq(ctx, sq_cq_id, &send_cq) ||
         !adminq_lookup_cq(ctx, rq_cq_id, &recv_cq)) {
@@ -1004,7 +1096,7 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
      * accepts receives and completes none of them.
      *
      * Checked here, before anything is allocated, rather than at the bind
-     * below. Refusing after ionic_rm_alloc_qp(), adminq_map_qp() and
+     * below. Refusing after ionic_rm_alloc_qp(), the QP map entry and
      * ionic_datapath_register_qp() have run would leak a backend QP and
      * leave qp_id mapped on every rejected command, so a guest could
      * exhaust the table with commands the device is busy refusing.
@@ -1078,7 +1170,8 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
         return 1;
     }
 
-    adminq_map_qp(ctx, qp_id, qpn);
+    *entry =
+        (struct ionic_qp_map_entry){.valid = true, .qp_id = qp_id, .qpn = qpn};
 
     ionic_datapath_register_qp(ctx->dp, qp_id, ib_qp_type, sq_cq_id, &sq,
                                rq_cq_id, &rq);
@@ -1398,6 +1491,27 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
 
         uint32_t access = ernic_get_le16(body + 40) & IONIC_MRF_ACCESS_MASK;
 
+        /*
+         * Refused before anything is allocated: an id already in use, which
+         * mapped over would lose the MR that had it, and a full map, which
+         * would leave the new one unmapped. Either MR could then never be
+         * found again by DESTROY_MR, and would leak. The driver surfaces
+         * this as the -ENOMEM its ib_alloc_mr() already knows how to unwind.
+         */
+        uint32_t mr_handle;
+        if (adminq_lookup_mr(ctx, mr_id, &mr_handle)) {
+            vfu_log(ctx->vfu_ctx, LOG_ERR,
+                    "ionic_adminq CREATE_MR %u: mr_id already in use", mr_id);
+            return 1;
+        }
+        struct ionic_mr_map_entry *entry = adminq_mr_free_entry(ctx);
+        if (!entry) {
+            vfu_log(ctx->vfu_ctx, LOG_ERR,
+                    "ionic_adminq CREATE_MR %u: MR map full (%d MRs)", mr_id,
+                    MAX_MR_MAP);
+            return 1;
+        }
+
         uint32_t pd_handle;
         int ret = adminq_get_pd(ctx, &pd_handle);
         if (ret) {
@@ -1407,7 +1521,6 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
             return 1;
         }
 
-        uint32_t mr_handle;
         ret = ionic_rm_alloc_mr(ctx->pvrdma_handle, pd_handle, access,
                                 &mr_handle);
         if (ret) {
@@ -1415,16 +1528,8 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
                     "ionic_adminq CREATE_MR %u: failed (%d)", mr_id, ret);
             return 1;
         }
-
-        /* Give the resource straight back rather than reporting a success the
-         * guest can never undo.  The driver surfaces this as the -ENOMEM its
-         * ib_alloc_mr() already knows how to unwind. */
-        if (!adminq_map_mr(ctx, mr_id, mr_handle)) {
-            vfu_log(ctx->vfu_ctx, LOG_ERR,
-                    "ionic_adminq CREATE_MR %u: MR map full, rejecting", mr_id);
-            ionic_rm_dealloc_mr(ctx->pvrdma_handle, mr_handle);
-            return 1;
-        }
+        *entry = (struct ionic_mr_map_entry){
+            .valid = true, .mr_id = mr_id, .handle = mr_handle};
 
         uint64_t mr_va = ernic_get_le64(body + 0);
         uint64_t mr_len = ernic_get_le64(body + 8);
@@ -1574,20 +1679,15 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
                     dgid[8], dgid[9], dgid[10], dgid[11], dgid[12], dgid[13],
                     dgid[14], dgid[15]);
 
-        /*
-         * IBV_QP_QKEY: the same field, read the other way. The datapath needs
-         * it because a datagram is only delivered into a QP that presents
-         * that QP's Q_Key -- without it the destination QPN alone selected
-         * any queue in the device, including other processes' and GSI.
-         */
-        if (attr_mask & IBV_QP_QKEY)
-            ionic_datapath_set_qkey(ctx->dp, qp_id, qkey_dest_qpn);
+        /* The field as the driver wrote it, before any translation */
+        const uint32_t guest_qkey_dest_qpn = qkey_dest_qpn;
 
         /* IBV_QP_DEST_QPN: the driver names the peer by its own qpid, but the
          * backend routes on its QPNs.  For UD this field is the qkey instead,
          * so only translate when the mask says it is a destination QPN. */
+        uint32_t dest_node = UINT32_MAX;
         if (attr_mask & IBV_QP_DEST_QPN) {
-            uint32_t dest_node =
+            dest_node =
                 ionic_dp_node_from_gid(ctx->dp, dgid_valid ? dgid : NULL);
 
             /*
@@ -1614,7 +1714,6 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
                 return 1;
             }
 
-            ionic_datapath_set_dest(ctx->dp, qp_id, qkey_dest_qpn, dest_node);
             uint32_t dest_qpn;
             if (adminq_lookup_qp(ctx, qkey_dest_qpn, &dest_qpn))
                 qkey_dest_qpn = dest_qpn;
@@ -1627,6 +1726,30 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
             vfu_log(ctx->vfu_ctx, LOG_ERR,
                     "ionic_adminq MODIFY_QP %u: failed (%d)", qp_id, ret);
             return 1;
+        }
+
+        /*
+         * The rest is applied only now that the modification has succeeded,
+         * since one that fails must change nothing.
+         *
+         * IBV_QP_QKEY: the same field, read the other way. The datapath needs
+         * it because a datagram is only delivered into a QP that presents
+         * that QP's Q_Key -- without it the destination QPN alone selected
+         * any queue in the device, including other processes' and GSI.
+         */
+        if (attr_mask & IBV_QP_QKEY)
+            ionic_datapath_set_qkey(ctx->dp, qp_id, guest_qkey_dest_qpn);
+
+        /* The datapath routes on the driver's qpid, and QUERY_QP reports it */
+        if (attr_mask & IBV_QP_DEST_QPN) {
+            struct ionic_qp_map_entry *e = adminq_qp_entry(ctx, qp_id);
+
+            ionic_datapath_set_dest(ctx->dp, qp_id, guest_qkey_dest_qpn,
+                                    dest_node);
+            if (e) {
+                e->dest_set = true;
+                e->dest_qp_id = guest_qkey_dest_qpn;
+            }
         }
         vfu_log(ctx->vfu_ctx, LOG_INFO,
                 "ionic_adminq MODIFY_QP qp_id=%u qpn=%u type_state=%#x "
@@ -1674,12 +1797,13 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         id_ver = ernic_get_le32(body + 28);
 
         uint32_t qp_id = id_ver & 0x00ffffffu;
-        uint32_t qpn;
-        if (!adminq_lookup_qp(ctx, qp_id, &qpn)) {
+        const struct ionic_qp_map_entry *qp_entry = adminq_qp_entry(ctx, qp_id);
+        if (!qp_entry) {
             vfu_log(ctx->vfu_ctx, LOG_ERR,
                     "ionic_adminq QUERY_QP: unknown qp_id=%u", qp_id);
             return 1;
         }
+        uint32_t qpn = qp_entry->qpn;
 
         uint8_t state = 0, path_mtu = IBV_MTU_1024;
         uint32_t dest_qpn = 0, access = 0, rq_psn = 0, sq_psn = 0;
@@ -1689,6 +1813,20 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
                     qp_id);
             return 1;
         }
+
+        /*
+         * The destination as the driver named it, by its qpid. The backend
+         * answers in its own QPNs, which mean nothing to the guest, so its
+         * answer is used only for a QP MODIFY_QP gave no destination -- the
+         * loopback backend pairs those itself -- and only if it names a QP
+         * of this device. 0 is the backends' "no destination".
+         */
+        uint32_t guest_dest = 0;
+        if (qp_entry->dest_set)
+            guest_dest = qp_entry->dest_qp_id;
+        else if (dest_qpn == 0 ||
+                 !adminq_lookup_qp_id(ctx, dest_qpn, &guest_dest))
+            guest_dest = 0;
 
         /* ionic numbers its QP states as IB does, so the state needs no
          * translation; the MTU does, because the driver subtracts 7 from the
@@ -1704,7 +1842,7 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         /* struct ionic_v1_admin_query_qp_sq, all big-endian (20 bytes). */
         uint8_t sqbuf[20] = {0};
         ernic_put_be16(sqbuf + 2, flags);
-        ernic_put_be32(sqbuf + 8, dest_qpn);
+        ernic_put_be32(sqbuf + 8, guest_dest);
         ernic_put_be32(sqbuf + 16, rq_psn & 0xffffffu);
 
         /* struct ionic_v1_admin_query_qp_rq (12 bytes).  rrq/rsq depth are
@@ -1727,8 +1865,9 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
             return 1;
 
         vfu_log(ctx->vfu_ctx, LOG_INFO,
-                "ionic_adminq QUERY_QP qp_id=%u qpn=%u state=%u dest_qpn=%u",
-                qp_id, qpn, state, dest_qpn);
+                "ionic_adminq QUERY_QP qp_id=%u qpn=%u state=%u dest=%u "
+                "(backend dest_qpn=%u)",
+                qp_id, qpn, state, guest_dest, dest_qpn);
         return 0;
     }
 
