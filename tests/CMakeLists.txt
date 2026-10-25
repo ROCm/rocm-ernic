@@ -1365,7 +1365,7 @@ set(ERNIC_HARNESS_GROUPS
     qp-flush-srq ud srq eth nvmeof teardown)
 if(ERNIC_BUILD_P4)
     list(APPEND ERNIC_HARNESS_GROUPS p4-port fp8-map p4-rdma p4-cvt p4-cvt-map
-                                      p4-devcmd)
+                                      p4-drop-map p4-devcmd)
 endif()
 foreach(ernic_harness_group IN LISTS ERNIC_HARNESS_GROUPS)
     add_test(

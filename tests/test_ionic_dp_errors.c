@@ -1209,6 +1209,52 @@ static void run_getter_case(const struct getter_case *c)
         failures++;
 }
 
+/* Sum of every RDMA counter @qp_id has, so "all zero" is one comparison. */
+static uint64_t rdma_sum(const struct ionic_datapath *dp, uint32_t qp_id)
+{
+    uint64_t v[IONIC_DP_RDMA_COUNT];
+    uint64_t sum = 0;
+
+    ionic_datapath_rdma_counters(dp, qp_id, v);
+    for (int i = 0; i < IONIC_DP_RDMA_COUNT; i++)
+        sum += v[i];
+    return sum;
+}
+
+/*
+ * A device reset zeroes the counters where they are kept, the device's and
+ * each live QP's, so neither the LIF block nor hw_counters gets old values
+ * back on its next read.
+ */
+static void check_reset_counters(void)
+{
+    struct ionic_datapath *dp = setup();
+    uint64_t dev_before = 0, qp_before = 0, dev_after = 1, qp_after = 1;
+    bool ok = dp != NULL;
+
+    /* A NULL data path is no data path, and is not an error. */
+    ionic_datapath_reset_rdma_counters(NULL);
+    if (dp) {
+        run_unsupported_op(dp);
+        dev_before = rdma_sum(dp, IONIC_DP_DEVICE);
+        qp_before = rdma_sum(dp, QP_A);
+        ionic_datapath_reset_rdma_counters(dp);
+        dev_after = rdma_sum(dp, IONIC_DP_DEVICE);
+        qp_after = rdma_sum(dp, QP_A);
+        ionic_datapath_destroy(dp);
+    }
+    ok = ok && dev_before && qp_before && !dev_after && !qp_after;
+    printf("%s %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", "positive",
+           "an error counted, then the counters reset",
+           "device and QP counters both nonzero, then both zero");
+    if (!ok) {
+        printf("     got device %" PRIu64 " -> %" PRIu64 ", QP %" PRIu64
+               " -> %" PRIu64 "\n",
+               dev_before, dev_after, qp_before, qp_after);
+        failures++;
+    }
+}
+
 /*
  * What an RNR does to the queues rather than the counters: an RC send queue
  * waits for the receive instead of dropping the message.
@@ -1370,6 +1416,7 @@ int main(void)
         run_case(&cases[i]);
     for (size_t i = 0; i < sizeof(getter_cases) / sizeof(getter_cases[0]); i++)
         run_getter_case(&getter_cases[i]);
+    check_reset_counters();
     for (size_t i = 0; i < sizeof(sq_cases) / sizeof(sq_cases[0]); i++)
         run_sq_case(&sq_cases[i]);
 

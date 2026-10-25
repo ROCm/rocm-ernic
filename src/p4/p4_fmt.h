@@ -51,8 +51,12 @@ enum p4_fmt {
     P4_FMT_FP8_E4M3 = 3, /* OCP FP8 E4M3:       1-4-3, no infinity */
     P4_FMT_FP8_E5M2 = 4, /* OCP FP8 E5M2:       1-5-2   */
     P4_FMT_FP4_E2M1 = 5, /* OCP MXFP4 E2M1:     1-2-1, no infinity or NaN */
-    P4_FMT_COUNT
+    P4_FMT_COUNT = 6
 };
+
+/* Numbered by hand like the formats, so it must move when one is added. */
+_Static_assert(P4_FMT_COUNT == P4_FMT_FP4_E2M1 + 1,
+               "P4_FMT_COUNT is not one past the last format");
 
 /*
  * True when @f is a format this target has.

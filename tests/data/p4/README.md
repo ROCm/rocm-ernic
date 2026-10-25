@@ -202,3 +202,15 @@ It exists to be rejected. The extern writes the destination region itself,
 so an operation that then also transfers would overwrite the result with
 the raw payload; `ionic_datapath.c` refuses such an operation rather than
 letting that happen quietly, and this is the program that makes it do so.
+
+## fp8_drop_then_map.json
+
+**Compiled, not hand written**, from `src/fp8_drop_then_map.p4` with the
+same command. Its action calls `mark_to_drop()` and then `fp8.map()` --
+the reverse of `fp8_policy.p4`'s order.
+
+It exists to show that a drop made before the extern declines still
+stands. A one-SGE RDMA write is not a reduction's shape, so `map()`
+declines it and the pipeline stops at the call; the drop was already
+made, so `ionic_datapath.c` completes the write without transferring
+rather than dispatching what the program denied.

@@ -385,14 +385,17 @@ static void bench(struct ctx *c, FILE *csv, enum p4_fmt src, enum p4_fmt dst,
 {
     size_t n = p4_fmt_elems(src, in_len);
 
+    /* Every way out of here without a measurement goes through bad(): a
+     * size the sweep asked for and did not measure is a partial sweep,
+     * and main() must not publish one as a good run. */
     if (n == 0 || p4_fmt_bytes(dst, n) > REGION_LEN) {
-        fprintf(stderr, "bench: %zu bytes of %s does not fit\n", in_len,
-                p4_fmt_name(src));
+        bad("bench: %zu bytes of %s does not fit", in_len, p4_fmt_name(src));
         return;
     }
     if (select_conversion(P4_WIRE_UPDATE_MODIFY, (uint8_t)src, (uint8_t)dst) !=
         0) {
-        fprintf(stderr, "bench: the entry was not modified\n");
+        bad("bench: the %s->%s entry was not modified", p4_fmt_name(src),
+            p4_fmt_name(dst));
         return;
     }
     fill_pattern(c->src, in_len, 1);

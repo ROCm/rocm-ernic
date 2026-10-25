@@ -513,12 +513,6 @@ ssize_t ionic_eth_emu_bar2_access(struct ionic_eth_emu *emu, char *buf,
  */
 
 /*
- * Write one statistics block at @base + @off, logging a failure once until a
- * write works.  The guest supplies @base, so a block whose last byte would
- * run past UINT64_MAX is refused rather than written to a wrapped address;
- * the log then names @base, which is the value the guest gave us.
- */
-/*
  * Copy the datapath's RDMA error counters into the LIF statistics block.
  *
  * The datapath owns the events that move these -- it is where a completion
@@ -534,7 +528,7 @@ ssize_t ionic_eth_emu_bar2_access(struct ionic_eth_emu *emu, char *buf,
  * which is worse than one that is absent.
  *
  * Most names match, so the mapping is spelled out rather than derived --
- * three do not, and a silent mismatch here would put a counter in the
+ * four do not, and a silent mismatch here would put a counter in the
  * wrong slot.  Main loop thread only, as ionic_datapath_rdma_counters()
  * requires.
  */
@@ -585,6 +579,12 @@ static void refresh_rdma_lif_stats(struct ionic_eth_emu *emu)
 #undef IONIC_LIF_RDMA_STAT_COPY
 }
 
+/*
+ * Write one statistics block at @base + @off, logging a failure once until a
+ * write works.  The guest supplies @base, so a block whose last byte would
+ * run past UINT64_MAX is refused rather than written to a wrapped address;
+ * the log then names @base, which is the value the guest gave us.
+ */
 static void publish_block(struct ionic_eth_emu *emu, const char *what,
                           uint64_t base, uint64_t off, uint8_t *block,
                           size_t len, bool *failed)
@@ -704,10 +704,15 @@ static void process_devcmd(struct ionic_eth_emu *emu)
 
     case IONIC_CMD_RESET:
         /* Firmware zeroes its counters on reset, and the guest may free the
-         * LIF info block once the device is reset. */
+         * LIF info block once the device is reset.  The RDMA error
+         * counters are the datapath's, and are copied into the LIF block
+         * every time it is read, so they are zeroed where they live: the
+         * LIF block alone would get its old values back on the next read,
+         * and hw_counters would disagree with it. */
         emu->lif_info_pa = 0;
         emu->port_info_pa = 0;
         ionic_emu_stats_reset(&emu->stats);
+        ionic_datapath_reset_rdma_counters(emu->dp);
         comp[0] = IONIC_RC_SUCCESS;
         break;
 

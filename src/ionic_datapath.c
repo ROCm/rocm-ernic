@@ -3026,9 +3026,9 @@ static uint32_t dp_p4_policy(struct ionic_datapath *dp, uint32_t qp_id,
      * The program selected an arithmetic for a request that is not a
      * compute request -- an ordinary RDMA WRITE, most of the time, because
      * a table keyed on the opcode cannot tell the two apart.  The extern
-     * wrote nothing and the pipeline stopped at the call, so nothing has
-     * been decided about this operation and nothing was suppressed: let it
-     * dispatch as it would with no program at all.
+     * wrote nothing and the pipeline stopped at the call, so the call
+     * decided nothing about this operation: let it dispatch as it would
+     * with no program at all.
      *
      * Failing here instead is what made a guest that installed a reduce
      * entry unable to do an ordinary RDMA WRITE on any QP of the device.
@@ -3040,9 +3040,19 @@ static uint32_t dp_p4_policy(struct ionic_datapath *dp, uint32_t qp_id,
      * that is already there, and report success, which is the very thing
      * the ctx.ran check below exists to prevent.  An operation that got
      * that far is failed instead.
+     *
+     * And what the program decided BEFORE the call still stands.  A
+     * mark_to_drop() ahead of it -- earlier in the action, or in an
+     * earlier table, such as an access list in front of the compute
+     * table -- is a drop, and the engine still reports it.  Dispatching
+     * the write anyway would let a request the extern declines bypass
+     * the program's explicit denial.
      */
-    if (rc == DP_P4_NOT_COMPUTE && !ctx.ran)
+    if (rc == DP_P4_NOT_COMPUTE && !ctx.ran) {
+        if (suppress)
+            *done = true;
         return IONIC_STS_OK;
+    }
     if (rc < 0) {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: QP %u op %u P4 pipeline failed (%d)", qp_id,
@@ -4090,4 +4100,13 @@ void ionic_datapath_rdma_counters(const struct ionic_datapath *dp,
         src = dp->qp[qp_id].rdma;
     if (src)
         memcpy(out, src, IONIC_DP_RDMA_COUNT * sizeof(out[0]));
+}
+
+void ionic_datapath_reset_rdma_counters(struct ionic_datapath *dp)
+{
+    if (!dp)
+        return;
+    memset(dp->rdma, 0, sizeof(dp->rdma));
+    for (uint32_t i = 0; i < dp->qp_count; i++)
+        memset(dp->qp[i].rdma, 0, sizeof(dp->qp[i].rdma));
 }

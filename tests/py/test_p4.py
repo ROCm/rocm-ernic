@@ -513,11 +513,18 @@ def test_cvt_plain_write_untouched(suite, server_factory):
         fix = CvtFixture(server)
         try:
             p4.load_program(fix.driver, convert_program())
-            p4.entry(
-                fix.driver,
-                (p4.P4_UPDATE_INSERT, "Ing.policy", "Ing.convert"),
-                matches=[bytes([ionic.OP_RDMA_WRITE])],
-                params=[bytes([p4.P4_FMT_FP16]), bytes([p4.P4_FMT_FP8_E4M3])],
+            # Without the entry the table's default passes everything
+            # through, and the checks below would pass without the
+            # extern ever being asked to decline.
+            suite.check_eq(
+                p4.entry(
+                    fix.driver,
+                    (p4.P4_UPDATE_INSERT, "Ing.policy", "Ing.convert"),
+                    matches=[bytes([ionic.OP_RDMA_WRITE])],
+                    params=[bytes([p4.P4_FMT_FP16]), bytes([p4.P4_FMT_FP8_E4M3])],
+                ),
+                0,
+                "the conversion entry was installed",
             )
             fix.driver.mr_write(fix.mr_src, CVT_VA_SRC, half + half)
             fix.driver.post_send(

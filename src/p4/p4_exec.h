@@ -113,8 +113,14 @@ int p4_exec_run(const struct p4_program *prog, const struct p4_entries *ent,
  * frame path does: an extern's operands come from a work request, and a
  * frame has none.
  *
- * Returns 0, -EINVAL on a bad argument, or -ENOENT when the program
- * declares no rdma_metadata and so was never meant for this path.
+ * Returns 0, -EINVAL on a bad argument, -ENOENT when the program declares
+ * no rdma_metadata and so was never meant for this path, or the negative
+ * errno with which the pipeline stopped -- an extern's own, for one.
+ *
+ * When the pipeline stops, @res->dropped still says whether the program
+ * had marked the operation dropped before it did.  That drop was decided
+ * and stands; a caller that tolerates the error must not let the
+ * operation through over it.  Every other field is zero.
  */
 int p4_exec_run_meta(const struct p4_program *prog,
                      const struct p4_entries *ent,

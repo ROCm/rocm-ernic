@@ -561,10 +561,9 @@ int p4_exec_run_meta(const struct p4_program *prog,
 
     if (!prog || !meta || !res)
         return -EINVAL;
+    memset(res, 0, sizeof(*res));
     if (!prog->has_rdma_metadata)
         return -ENOENT;
-
-    memset(res, 0, sizeof(*res));
 
     rc = phv_init(prog, &phv);
     if (rc)
@@ -588,8 +587,12 @@ int p4_exec_run_meta(const struct p4_program *prog,
     for (uint16_t p = 0; p < prog->npipelines; p++) {
         rc = run_pipeline(prog, &phv, ent, ops, (p4_idx_t)p,
                           &prog->pipelines[p], &dropped);
-        if (rc)
+        if (rc) {
+            /* A drop marked before the pipeline stopped still stands;
+             * see the header. */
+            res->dropped = dropped;
             return rc;
+        }
     }
 
     /* egress_spec is deliberately not read; see the header. */

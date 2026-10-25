@@ -1528,9 +1528,12 @@ static void test_extern_call(void)
     log.calls = 0;
     log.fail_with = -EFAULT;
     meta.opcode = 4;
+    suppress = true;
     check(p4_engine_process_rdma(eng, &ops, &meta, &suppress) == -EFAULT,
           "a failing extern fails the operation");
     check(log.calls == 1, "it was still called");
+    /* The action drops after the call, so the drop was never reached. */
+    check(!suppress, "a drop the pipeline never reached was reported");
     log.fail_with = 0;
 
     /*
@@ -1539,6 +1542,65 @@ static void test_extern_call(void)
      */
     check(p4_engine_process_rdma(eng, NULL, &meta, &suppress) == -EPERM,
           "a call with no operand context is refused");
+
+    p4_engine_destroy(eng);
+}
+
+/*
+ * A drop made before an extern call that then fails is still reported.
+ *
+ * The datapath treats one failure -- the extern declining a request that is
+ * not its shape -- as "no decision" and lets the operation through, so the
+ * engine has to say whether the program had already dropped it.  Losing
+ * that let a write the program denied be dispatched anyway.
+ */
+static void test_extern_after_drop(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    struct extern_log log;
+    struct p4_extern_ops ops;
+    struct p4_rdma_meta meta;
+    struct p4_update up;
+    bool suppress = false;
+    char err[160];
+
+    memset(&log, 0, sizeof(log));
+    ops.call = extern_record;
+    ops.ctx = &log;
+
+    memset(&meta, 0, sizeof(meta));
+    meta.opcode = 4;
+
+    check(load_fixture(eng, "fp8_drop_then_map.json") == 0,
+          "the compiled drop-then-map program loads");
+
+    memset(&up, 0, sizeof(up));
+    up.type = P4_UPDATE_INSERT;
+    (void)snprintf(up.table, sizeof(up.table), "Ing.policy");
+    (void)snprintf(up.action, sizeof(up.action), "Ing.drop_then_reduce");
+    up.nmatch = 1;
+    up.match[0].len = 1;
+    up.match[0].value[P4_MATCH_BYTES - 1] = 4;
+    up.nparams = 1;
+    up.params[0].len = 1;
+    up.params[0].value[P4_MATCH_BYTES - 1] = P4_FP8_OP_ADD;
+    checkf(p4_engine_update(eng, &up, err, sizeof(err)) == 0,
+           "the entry is not installed: %s", err);
+
+    log.fail_with = -ENOEXEC;
+    check(p4_engine_process_rdma(eng, &ops, &meta, &suppress) == -ENOEXEC,
+          "the extern's error is returned");
+    check(log.calls == 1, "the extern was called");
+    check(suppress, "the drop made before the call was lost");
+
+    /* An opcode with no entry runs no action, error or not. */
+    log.calls = 0;
+    meta.opcode = 7;
+    suppress = true;
+    check(p4_engine_process_rdma(eng, &ops, &meta, &suppress) == 0,
+          "an operation with no entry runs");
+    check(log.calls == 0 && !suppress,
+          "an operation with no entry was touched");
 
     p4_engine_destroy(eng);
 }
@@ -1557,6 +1619,7 @@ int main(void)
     test_rdma_metadata();
     test_rdma_execute();
     test_extern_call();
+    test_extern_after_drop();
     test_load_rejects_bad_input();
     test_load_chunk_bounds();
     test_load_sequence();

@@ -452,4 +452,11 @@ void ionic_datapath_rdma_counters(const struct ionic_datapath *dp,
                                   uint32_t qp_id,
                                   uint64_t out[IONIC_DP_RDMA_COUNT]);
 
+/*
+ * Zero the RDMA counters, the device totals and every QP's, as firmware
+ * does on a device reset.  @dp may be NULL.  Same thread as
+ * ionic_datapath_rdma_counters().
+ */
+void ionic_datapath_reset_rdma_counters(struct ionic_datapath *dp);
+
 #endif /* IONIC_DATAPATH_H */

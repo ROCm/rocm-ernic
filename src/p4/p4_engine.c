@@ -77,11 +77,10 @@ int p4_engine_process_rdma(struct p4_engine *eng,
         return -ENOENT;
 
     rc = p4_exec_run_meta(eng->prog, eng->entries, ops, meta, &er);
-    if (rc)
-        return rc;
-
+    /* On an error as well: a drop made before the pipeline stopped is
+     * still the program's decision.  See the header. */
     *suppress = er.dropped;
-    return 0;
+    return rc;
 }
 
 int p4_engine_update(struct p4_engine *eng, const struct p4_update *up,

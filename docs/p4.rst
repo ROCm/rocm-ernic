@@ -117,7 +117,10 @@ two-equal-operand shape has not asked for arithmetic: the
 extern declines it, the pipeline stops at the call, and the
 operation dispatches as it would with no program at all. That
 is why a one-SGE RDMA write still works on a device whose
-guest installed a reduce entry. A request that *is* the
+guest installed a reduce entry. A decision the program made
+before the call still stands: if it had already called
+``mark_to_drop()`` -- earlier in the action, or in an earlier
+table -- the operation is dropped, not dispatched. A request that *is* the
 compute shape but is otherwise bad -- an unregistered key, an
 operand over the ceiling -- is still failed.
 

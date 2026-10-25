@@ -392,8 +392,17 @@ test can check what the guest reports against what the
 emulator counted. They agree to within one interval.
 
 Not counted yet: ``rx_queue_disabled`` (the receive path
-skips queues that are not initialized) and the RDMA error
-counters at qwords 96 to 125, which stay zero.
+skips queues that are not initialized).
+
+The RDMA error counters at qwords 96 to 125, and
+``{tx,rx}_rdma_cnp_packets`` and ``rx_rdma_ecn_packets``,
+belong to the data path, which serves the same counters
+to the guest's ``hw_counters``; they are copied into this
+block whenever it is written or read, so the two agree.
+Those with no emulator event behind them yet (packet
+sequence, duplicates, flushes, CNP and ECN) read zero. A
+device reset zeroes them in the data path, so
+``hw_counters`` restarts from zero along with this block.
 
 ``ernic-exporter`` reads that section and publishes every
 counter as ``ernic_lif_counter_total``, labelled with the

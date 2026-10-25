@@ -49,6 +49,14 @@
   fall-through is now taken only when nothing ran;
   `tests/data/p4/fp8_cvt_then_map.p4` is the program that makes it
   happen, and the device refuses it.
+* **A declining extern no longer overrides a drop the program already
+  made.** When the extern declines a request that is not its shape, the
+  pipeline stops at the call, and the drop verdict was lost with it: a
+  program that called `mark_to_drop()` first -- earlier in the action, or
+  in an access-list table ahead of the compute table -- had the RDMA WRITE
+  it denied dispatched anyway. The drop now stands, and the operation
+  completes without transferring, as any dropped operation does.
+  `tests/data/p4/fp8_drop_then_map.p4` covers it.
 * **An out-of-range `enum p4_fmt` is refused rather than indexing the
   format table.** `p4_fmt_valid()` took a `uint8_t`, so a wider bad value
   was narrowed before it was checked -- `(enum p4_fmt)256` validated as
@@ -83,7 +91,10 @@
   block DMAed to the guest, but nothing ever incremented them: they read
   zero for ever while a guest reading `hw_counters` saw the real figures.
   The datapath's RDMA error counters are now copied into the LIF block
-  before either consumer reads it.
+  before either consumer reads it. A device reset zeroes them where the
+  datapath keeps them, so the guest's `hw_counters`, device and per-QP,
+  now restart from zero on a device reset too, as the rest of the LIF
+  block always has.
 
 ### Added
 

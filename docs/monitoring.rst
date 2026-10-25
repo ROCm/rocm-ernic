@@ -385,20 +385,15 @@ block on every flush.
    and ``tests/py/test_ionic_hw_stats.py`` drives
    traffic that moves them.  The ``rdma_req_*`` and
    ``rdma_resp_*`` error counters at qwords 96 to 125
-   are named and published, but nothing increments
-   them here, so they read zero whatever happens: a
-   zero there means "not counted", not "did not
+   are copied in from the data path, which also serves
+   them to the guest through the admin queue (see
+   `Guest hw_counters and real silicon`_ below), so
+   ``ernic_lif_counter_total`` and the guest's
+   ``hw_counters`` agree.  Those with no emulator event
+   behind them yet -- packet sequence, duplicates,
+   flushes, CNP and ECN -- read zero whatever happens:
+   a zero there means "not counted", not "did not
    happen".
-
-   The device does count those errors, and serves them
-   to the guest through the admin queue; see `Guest
-   hw_counters and real silicon`_ below.  What is
-   missing is the path from the data path's counters
-   into this block, so ``ernic_lif_counter_total`` --
-   the exporter's view -- still shows zeros where the
-   guest's ``hw_counters`` shows real numbers.  Reading
-   a zero in Grafana is not evidence that the fabric is
-   clean.
 
 Guest hw_counters and real silicon
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -429,11 +424,13 @@ names.  What a guest reads as ``total_bytes_sent`` is
 per QP as ``wqes_processed`` is
 ``ernic_qp_wqes_processed_total``.  The RDMA error
 counters are the exception: the data path keeps them
-per device and per QP, and only this view reports
-them, so the exporter has no metric that carries them
-yet.  The tables are defined in ``dev_stats`` and
-``qp_stats`` in ``src/ionic_adminq_priv.h``, the first
-entries written out and the rest generated from
+per device and per QP, and the exporter carries only
+the device totals, as ``ernic_lif_counter_total`` under
+their ``ionic_if.h`` names; per-QP, only this view
+reports them.  A device reset zeroes both.  The
+tables are defined in ``dev_stats`` and ``qp_stats``
+in ``src/ionic_adminq_priv.h``, the first entries
+written out and the rest generated from
 ``IONIC_DP_RDMA_COUNTERS`` in ``src/ionic_datapath.h``:
 
 .. include:: generated/hw-counter-tables.rst

@@ -3236,6 +3236,111 @@ static void test_p4_cvt_then_map(void)
     teardown(T, &h);
 }
 
+/*
+ * An action that drops and then asks for an arithmetic the request cannot
+ * be: the extern declines, but the drop was made first and must stand.
+ *
+ * The decline is what lets an ordinary write through a table keyed on the
+ * opcode, and it once let this one through too -- the pipeline stopped at
+ * the call before the drop reached the datapath, so a write the program
+ * had denied was dispatched and completed successfully.
+ */
+static void test_p4_drop_then_map(void)
+{
+    const char *T = "p4-drop-map";
+    struct ih h;
+    struct ih_cq cq;
+    struct ih_qp a, b;
+    struct ih_mr mra = {0}, mrc = {0};
+    struct ih_cqe e;
+    struct p4_update up;
+    char err[160];
+    static uint8_t src[P4R_N], got[P4R_N], poison[P4R_N];
+
+    if (!setup(T, &h, "loopback"))
+        return;
+
+    bool ok = ih_cq_create(&h, &cq, P4R_CQ, 6) &&
+              ih_qp_create(&h, &a, P4R_QP_A, IH_QPT_RC, &cq, &cq, NULL) &&
+              ih_qp_create(&h, &b, P4R_QP_B, IH_QPT_RC, &cq, &cq, NULL) &&
+              ih_qp_connect(&h, &a, &b) &&
+              ih_mr_create(&h, &mra, FP8R_MR_A, FP8R_VA_A, P4R_MR_LEN,
+                           IH_ACCESS_ALL, false) &&
+              ih_mr_create(&h, &mrc, FP8R_MR_C, FP8R_VA_C, P4R_MR_LEN,
+                           IH_ACCESS_ALL, true);
+    if (!check(T, ok, "setup failed")) {
+        ih_mr_free(&mra);
+        ih_mr_free(&mrc);
+        teardown(T, &h);
+        return;
+    }
+
+    struct p4_engine *eng = p4_engine_create();
+    if (!check(T, eng != NULL, "p4_engine_create failed")) {
+        ih_mr_free(&mra);
+        ih_mr_free(&mrc);
+        teardown(T, &h);
+        return;
+    }
+    check(T, p4r_load(eng, "fp8_drop_then_map.json") == 0,
+          "the drop-then-map program did not load");
+    ionic_datapath_set_p4_engine(h.dev->ionic_dp, eng);
+
+    memset(&up, 0, sizeof(up));
+    up.type = P4_UPDATE_INSERT;
+    (void)snprintf(up.table, sizeof(up.table), "Ing.policy");
+    (void)snprintf(up.action, sizeof(up.action), "Ing.drop_then_reduce");
+    up.nmatch = 1;
+    up.match[0].len = 1;
+    up.match[0].value[P4_MATCH_BYTES - 1] = IH_OP_RDMA_WRITE;
+    up.nparams = 1;
+    up.params[0].len = 1;
+    up.params[0].value[P4_MATCH_BYTES - 1] = P4_FP8_OP_ADD;
+    check(T, p4_engine_update(eng, &up, err, sizeof(err)) == 0,
+          "the entry was not installed: %s", err);
+
+    memset(src, 0x38, sizeof(src));
+    check(T, ih_mr_write(&h, &mra, FP8R_VA_A, src, sizeof(src)),
+          "write the source");
+    memset(poison, 0xA5, sizeof(poison));
+    check(T, ih_mr_write(&h, &mrc, FP8R_VA_C, poison, sizeof(poison)),
+          "poison C");
+
+    /* One gather entry: not a reduction's shape, so map() declines. */
+    struct ih_sge sge = {.va = FP8R_VA_A, .len = P4R_N, .lkey = mra.lkey};
+    struct ih_send w = {
+        .op = IH_OP_RDMA_WRITE,
+        .flags = IH_WQE_SIGNALLED,
+        .remote_va = FP8R_VA_C,
+        .rkey = mrc.lkey,
+        .sge = &sge,
+        .nsge = 1,
+    };
+
+    /* A dropped operation completes without transferring, as it does when
+     * nothing declines. */
+    ih_post_send(&h, &a, &w);
+    check(T, ih_cq_poll(&h, &cq, &e) && !e.error,
+          "the dropped write did not complete successfully");
+    check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, sizeof(got)), "read back C");
+    check(T, memcmp(got, poison, sizeof(got)) == 0,
+          "a write the program dropped before the extern declined was "
+          "dispatched anyway");
+
+    ionic_datapath_set_p4_engine(h.dev->ionic_dp, NULL);
+    p4_engine_destroy(eng);
+
+    check(T, ih_qp_destroy(&h, &a) == 0, "DESTROY_QP A failed");
+    check(T, ih_qp_destroy(&h, &b) == 0, "DESTROY_QP B failed");
+    check(T, ih_mr_destroy(&h, &mra) == 0, "DESTROY_MR A failed");
+    check(T, ih_mr_destroy(&h, &mrc) == 0, "DESTROY_MR C failed");
+    ih_mr_free(&mra);
+    ih_mr_free(&mrc);
+    check(T, ih_cq_destroy(&h, &cq) == 0, "DESTROY_CQ failed");
+
+    teardown(T, &h);
+}
+
 #endif /* ERNIC_HAVE_P4 */
 
 static void test_nvmeof(void)
@@ -3425,6 +3530,7 @@ static const struct {
     {"p4-rdma", test_p4_rdma},
     {"p4-cvt", test_p4_cvt},
     {"p4-cvt-map", test_p4_cvt_then_map},
+    {"p4-drop-map", test_p4_drop_then_map},
     {"p4-devcmd", test_p4_devcmd},
 #endif
     {"nvmeof", test_nvmeof},
