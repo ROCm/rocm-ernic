@@ -158,11 +158,15 @@ typedef struct {
     uint32_t src_qpn;
     uint32_t dst_qpn;
 } __attribute__((packed)) TcpMsgHeader;
+_Static_assert(sizeof(TcpMsgHeader) == 32,
+               "TcpMsgHeader is on the wire and has changed size");
 
 typedef struct {
     uint32_t node_id;
     uint32_t version;
 } __attribute__((packed)) TcpHandshakePayload;
+_Static_assert(sizeof(TcpHandshakePayload) == 8,
+               "TcpHandshakePayload is on the wire and has changed size");
 
 /*
  * Manager/Worker mesh discovery payloads.
@@ -208,6 +212,8 @@ typedef struct {
     uint8_t is_alive;
     uint8_t reserved[3];
 } __attribute__((packed)) TcpMeshNodeInfo;
+_Static_assert(sizeof(TcpMeshNodeInfo) == 266,
+               "TcpMeshNodeInfo is on the wire and has changed size");
 
 /* As many nodes as a topology broadcast can carry, and so as many as the
  * mesh can hold. */
@@ -217,6 +223,9 @@ typedef struct {
     uint32_t num_nodes;
     TcpMeshNodeInfo nodes[TCP_MAX_MESH_NODES];
 } __attribute__((packed)) TcpMeshTopologyPayload;
+_Static_assert(sizeof(TcpMeshTopologyPayload) ==
+                   4 + TCP_MAX_MESH_NODES * sizeof(TcpMeshNodeInfo),
+               "TcpMeshTopologyPayload is on the wire and has changed size");
 
 /*
  * A node's own guest RoCE GIDs, advertised so peers can map a destination

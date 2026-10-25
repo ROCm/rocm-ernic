@@ -22,6 +22,8 @@ struct eth_header {
     uint8_t src_mac[6];
     uint16_t ethertype; /* Network byte order */
 } __attribute__((packed));
+_Static_assert(sizeof(struct eth_header) == 14,
+               "struct eth_header has changed size");
 
 #define ETH_ETHERTYPE_IP  0x0800
 #define ETH_ETHERTYPE_ARP 0x0806
@@ -41,6 +43,8 @@ struct arp_header {
     uint32_t
         target_proto_addr; /* Target protocol address - Network byte order */
 } __attribute__((packed));
+_Static_assert(sizeof(struct arp_header) == 28,
+               "struct arp_header has changed size");
 
 #define ARP_OP_REQUEST 1
 #define ARP_OP_REPLY   2
@@ -58,6 +62,8 @@ struct ip_header {
     uint32_t src_ip;   /* Network byte order */
     uint32_t dst_ip;   /* Network byte order */
 } __attribute__((packed));
+_Static_assert(sizeof(struct ip_header) == 20,
+               "struct ip_header has changed size");
 
 #define IP_PROTOCOL_TCP  6
 #define IP_PROTOCOL_UDP  17
@@ -72,6 +78,8 @@ struct icmp_header {
     uint16_t sequence;   /* Network byte order */
     /* Data follows */
 } __attribute__((packed));
+_Static_assert(sizeof(struct icmp_header) == 8,
+               "struct icmp_header has changed size");
 
 #define ICMP_TYPE_ECHO_REPLY   0
 #define ICMP_TYPE_ECHO_REQUEST 8
@@ -88,6 +96,8 @@ struct tcp_header {
     uint16_t checksum; /* Network byte order */
     uint16_t urg_ptr;  /* Network byte order */
 } __attribute__((packed));
+_Static_assert(sizeof(struct tcp_header) == 20,
+               "struct tcp_header has changed size");
 
 #define TCP_FLAG_FIN 0x01
 #define TCP_FLAG_SYN 0x02

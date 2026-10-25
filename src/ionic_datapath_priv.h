@@ -102,6 +102,8 @@ struct ionic_wire_hdr {
     uint64_t swap_add;
     uint64_t compare;
 } __attribute__((packed));
+_Static_assert(sizeof(struct ionic_wire_hdr) == 60,
+               "struct ionic_wire_hdr is on the wire and has changed size");
 
 /* A guest buffer: either directly addressed or described by a page table. */
 struct dp_buf {
