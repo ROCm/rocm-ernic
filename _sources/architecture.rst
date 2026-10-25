@@ -890,8 +890,9 @@ whose peer is on another node:
    creation, so a later QP with the same id takes back only its
    own requests.
 #. On the peer, a receive thread gets the message. It may not
-   touch guest memory, so it only queues a copy. The peer's main
-   loop applies it to its guest and sends the reply.
+   touch guest memory, so it only queues the message, in the
+   buffer it was received into. The peer's main loop applies it
+   to its guest and sends the reply.
 #. Back on the requester, the reply is likewise queued and
    applied by the main loop. For READ and atomics, the returned
    data is scattered into the local SGEs. Then the send
