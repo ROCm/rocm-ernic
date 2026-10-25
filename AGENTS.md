@@ -128,9 +128,9 @@ correctness requirement for any change to shared state.
 
 The main thread runs the vfio-user context and poll loop, and only it may
 DMA into guest memory. The TCP backend
-([`rdma_backend_tcp.c`](src/rdma/rdma_backend_tcp.c)) adds accept,
-health-check, and per-connection receive threads
-(`qemu_thread_create()`).
+([`rdma_backend_tcp.c`](src/rdma/rdma_backend_tcp.c) and the `tcp_*.c`
+files beside it) adds accept, health-check, and per-connection receive
+threads (`qemu_thread_create()`).
 
 - **Anything written by one thread and read by another needs a lock
   (`QemuMutex`) or an atomic.** Otherwise it's a data race (UB): the
@@ -138,7 +138,8 @@ health-check, and per-connection receive threads
 - **`volatile` is not synchronization**, except `volatile sig_atomic_t`
   for a signal handler's flag.
 - **Comment any memory order weaker than the default** (seq_cst), saying
-  why it suffices, like `recv_thread_running` in `rdma_backend_tcp.c`.
+  why it suffices, like `recv_thread_running` in
+  `rdma_backend_tcp_priv.h`.
 - **Document which lock protects each shared field**, next to the field,
   and the order when code takes more than one lock. The TCP backend gives
   its whole order in one table, `Locks` at the top of
@@ -663,11 +664,10 @@ its node id it advertises them as `TCP_MSG_NODE_GIDS`; the manager fans
 these out, and peers keep a `GID -> node id` table keyed on all 16
 bytes.
 
-`tcp_resolve_node_from_gid()` in
-[`rdma_backend_tcp.c`](src/rdma/rdma_backend_tcp.c) is only an exact
-lookup. A miss returns `UINT32_MAX`; `tcp_qp_state_rtr()` returns
-`-EINVAL`, `rdma_rm_modify_qp()` turns it into `-EIO`, and the adminq
-MODIFY_QP path fails the command, logging the full GID. **Never
+`tcp_resolve_node_from_gid()` in [`tcp_gid.c`](src/rdma/tcp_gid.c) is
+only an exact lookup. A miss returns `UINT32_MAX`; `tcp_qp_state_rtr()`
+returns `-EINVAL`, `rdma_rm_modify_qp()` turns it into `-EIO`, and the
+adminq MODIFY_QP path fails the command, logging the full GID. **Never
 reintroduce a default peer**: a wrong node is a silent write into another
 guest's memory.
 

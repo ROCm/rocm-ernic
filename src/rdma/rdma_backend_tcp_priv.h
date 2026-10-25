@@ -1,8 +1,9 @@
 /*
- * rdma_backend_tcp_priv.h - TCP backend internals, for its unit tests
+ * rdma_backend_tcp_priv.h - TCP backend internals, for its files and tests
  *
  * The mesh wire protocol, the backend's private state, and the functions its
- * unit tests drive directly. Only rdma_backend_tcp.c and its unit tests
+ * files share and its unit tests drive directly. Only the backend's files,
+ * rdma_backend_tcp.c and the tcp_*.c files beside it, and its unit tests
  * include this; the rest of the device reaches the backend through
  * rdma_backend_ops_tcp and the tcp_backend_*() functions in rdma_backend.h.
  *
@@ -705,6 +706,38 @@ static inline uint32_t tcp_local_node(TcpBackendPrivate *priv)
     return atomic_load(&priv->local_node_id);
 }
 
+/*
+ * Whether a worker has its node id.  Until it does, its id reads as 0, the
+ * manager's, which it must not present as its own.
+ */
+static inline bool tcp_worker_registered(TcpBackendPrivate *priv)
+{
+    return tcp_local_node(priv) != 0;
+}
+
+/*
+ * View a GID array as const, for the functions that only read one.  Before
+ * C23, ISO C does not convert uint8_t (*)[16] to const uint8_t (*)[16]
+ * implicitly, because the const qualifies the array's elements rather than
+ * the array.  Taking the array through a typed parameter keeps its [16]
+ * shape checked, which a bare cast at each call site would not.
+ */
+static inline const uint8_t (*tcp_const_gids(uint8_t (*gids)[16]))[16]
+{
+    return (const uint8_t(*)[16])gids;
+}
+
+/*
+ * A message a receive thread has read, as its handler gets it: the header,
+ * in host byte order, and the payload, msg_len bytes from malloc(), or NULL
+ * if there is none.  A handler may take the payload, setting it to NULL; the
+ * receive thread frees what is left.
+ */
+typedef struct {
+    TcpMsgHeader hdr;
+    void *payload;
+} TcpRecvMsg;
+
 /* 8 groups of 4 hex digits, 7 separators, NUL. */
 #define TCP_GID_STR_LEN 40
 
@@ -731,16 +764,95 @@ typedef struct {
 } TcpHealthCheckItem;
 
 /*
- * The functions below are documented at their definitions in
- * rdma_backend_tcp.c. tcp_init(), tcp_fini() and the other entry points the
- * device uses are reached through rdma_backend_ops_tcp instead.
+ * The functions the backend's files share, and those its unit tests drive
+ * directly, by the file that defines them, where each is documented.
+ * tcp_init(), tcp_fini() and the other entry points the device uses are
+ * reached through rdma_backend_ops_tcp instead.
  */
 
-/* GIDs and the GID -> node table */
+/* rdma_backend_tcp.c: setup, teardown, and the data path's messages */
+int tcp_env_int(const char *name, int fallback);
+const char *tcp_config_role(const char *config, TcpMode *mode);
+int tcp_parse_host_port(const char *s, const char *who, char **host,
+                        uint16_t *port);
+int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
+                           uint32_t health_interval_s);
+bool tcp_start_thread(QemuThread *thread, const char *name, void *(*fn)(void *),
+                      void *arg, atomic_bool *running);
+void tcp_stop_threads(TcpBackendPrivate *priv);
+void tcp_recv_ionic(TcpConnection *conn, TcpRecvMsg *msg);
+
+/* tcp_wire.c: sockets, and messages on them */
+void tcp_tune_sockbuf(int sockfd);
+char *tcp_addr_str(const char *host, uint16_t port);
+int tcp_connect_any(const struct addrinfo *addrs, const atomic_bool *running,
+                    uint64_t deadline_ms);
+int tcp_connect_to_remote(const char *host, uint16_t port,
+                          const atomic_bool *running, uint64_t deadline_ms);
+int tcp_listen_socket(int family, uint16_t *port);
+int tcp_listen_on_port(uint16_t *port);
+bool tcp_format_peer_addr(const struct sockaddr_storage *ss, char *host,
+                          size_t len, uint16_t *port);
+uint32_t tcp_send_timeout_ms(TcpBackendPrivate *priv);
+int tcp_send_message2(TcpBackendPrivate *priv, TcpConnection *conn,
+                      TcpMsgType msg_type, const void *payload,
+                      size_t payload_len, const void *payload2,
+                      size_t payload2_len, uint32_t seq, uint32_t src_node,
+                      uint32_t dst_node, uint32_t src_qpn, uint32_t dst_qpn);
+int tcp_send_message(TcpBackendPrivate *priv, TcpConnection *conn,
+                     TcpMsgType msg_type, const void *payload,
+                     size_t payload_len, uint32_t seq, uint32_t src_node,
+                     uint32_t dst_node, uint32_t src_qpn, uint32_t dst_qpn);
+int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
+                     atomic_bool *running, uint64_t deadline_ms);
+
+/*
+ * tcp_conn.c: connections, their send queues and threads, and the accept
+ * thread; see TcpConnection for the reference counting rules
+ */
+TcpConnection *tcp_connection_new(uint32_t node_id, const char *host,
+                                  uint16_t port);
+TcpConnection *tcp_connection_ref(TcpConnection *conn);
+void tcp_connection_unref(TcpConnection *conn);
+void tcp_connection_destroy_notify(gpointer data);
+bool tcp_conn_dead(TcpConnection *conn);
+TcpConnection *tcp_connection_lookup(TcpBackendPrivate *priv, uint32_t node_id);
+GPtrArray *tcp_conns_snapshot(TcpBackendPrivate *priv);
+bool tcp_has_live_connection(TcpBackendPrivate *priv, uint32_t node_id);
+TcpConnection *tcp_route_to_node(TcpBackendPrivate *priv, uint32_t node_id);
+bool tcp_conn_table_add(TcpBackendPrivate *priv, uint32_t node_id,
+                        TcpConnection *conn);
+void tcp_conn_unpublished(TcpConnection *conn);
+bool tcp_conn_table_take(TcpBackendPrivate *priv, uint32_t node_id,
+                         TcpConnection *conn);
+void tcp_retire_conn(TcpConnection *conn);
+int tcp_conn_enqueue(TcpConnection *conn, const void *hdr, size_t hdr_len,
+                     const void *body, size_t body_len, uint32_t dst_node,
+                     uint64_t tag, bool reply);
+void tcp_sendq_cancel(TcpConnection *conn, uint64_t tag, uint64_t mask);
+bool tcp_send_heartbeat(TcpBackendPrivate *priv, TcpConnection *conn,
+                        TcpMsgType msg_type, uint32_t dst_node);
+bool tcp_start_recv_thread(TcpConnection *conn, const char *name);
+void *tcp_recv_thread_per_conn(void *opaque);
+void *tcp_accept_thread(void *opaque);
+void tcp_stop_accept_thread(TcpBackendPrivate *priv);
+void tcp_stop_recv_threads(TcpBackendPrivate *priv);
+void tcp_free_pending_conns(TcpBackendPrivate *priv);
+
+/*
+ * tcp_gid.c: GIDs, the GID -> node table, and the messages that advertise a
+ * node's GIDs
+ */
 char *tcp_gid_str(const uint8_t gid[16], char buf[TCP_GID_STR_LEN]);
 uint32_t tcp_parse_guest_gids(const char *val,
                               uint8_t out[TCP_MAX_NODE_GIDS][16]);
 void tcp_gid_key_free(gpointer key);
+bool tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
+                        const uint8_t (*gids)[16], uint32_t num_gids);
+void tcp_gid_claims_forget(TcpBackendPrivate *priv, uint32_t node_id);
+void tcp_gid_claims_prune(TcpBackendPrivate *priv,
+                          const TcpMeshTopologyPayload *topo,
+                          uint32_t num_nodes);
 /*
  * Mark @node_id's claims live or dead. A node the manager has declared
  * dead keeps its claims but resolves to nothing; see TcpNodeGids.alive.
@@ -750,40 +862,39 @@ void tcp_gid_key_free(gpointer key);
  */
 bool tcp_gid_claims_set_alive(TcpBackendPrivate *priv, uint32_t node_id,
                               bool alive);
-
-bool tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
-                        const uint8_t (*gids)[16], uint32_t num_gids);
-void tcp_fill_node_gids(TcpNodeGidsPayload *out, uint32_t node_id,
-                        const uint8_t (*gids)[16], uint32_t num_gids);
+void tcp_gid_claims_report_alive(uint32_t node_id, bool alive);
 uint32_t tcp_resolve_node_from_gid(TcpBackendPrivate *priv,
                                    const union ibv_gid *dgid);
+void tcp_fill_node_gids(TcpNodeGidsPayload *out, uint32_t node_id,
+                        const uint8_t (*gids)[16], uint32_t num_gids);
+void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
+                        const TcpNodeGidsPayload *payload);
+void tcp_advertise_local_gids(TcpBackendPrivate *priv);
+int tcp_claim_gid(TcpBackendPrivate *priv, const union ibv_gid *gid, bool add);
+void tcp_recv_node_gids(TcpConnection *conn, const TcpRecvMsg *msg);
 
-/* Connections; see TcpConnection for the reference counting rules */
-TcpConnection *tcp_connection_new(uint32_t node_id, const char *host,
-                                  uint16_t port);
-TcpConnection *tcp_connection_ref(TcpConnection *conn);
-void tcp_connection_unref(TcpConnection *conn);
-void tcp_connection_destroy_notify(gpointer data);
-bool tcp_conn_dead(TcpConnection *conn);
-TcpConnection *tcp_connection_lookup(TcpBackendPrivate *priv, uint32_t node_id);
-bool tcp_has_live_connection(TcpBackendPrivate *priv, uint32_t node_id);
-TcpConnection *tcp_route_to_node(TcpBackendPrivate *priv, uint32_t node_id);
-bool tcp_conn_table_take(TcpBackendPrivate *priv, uint32_t node_id,
-                         TcpConnection *conn);
-void tcp_retire_conn(TcpConnection *conn);
-int tcp_conn_enqueue(TcpConnection *conn, const void *hdr, size_t hdr_len,
-                     const void *body, size_t body_len, uint32_t dst_node,
-                     uint64_t tag, bool reply);
-
-/* The manager's table of mesh nodes */
+/*
+ * tcp_manager.c: the table of mesh nodes, registration, the broadcasts (see
+ * broadcast_thread), the health check, and the relay
+ */
 MeshNodeInfo *tcp_mesh_node_info_new(uint32_t node_id, const char *hostname,
                                      uint16_t port);
 void tcp_mesh_node_info_free(MeshNodeInfo *node);
 void tcp_mesh_node_info_destroy_notify(gpointer data);
 bool tcp_node_set_alive(TcpBackendPrivate *priv, MeshNodeInfo *node, bool alive,
                         bool *gids_changed);
-
-/* The manager's broadcasts; see broadcast_thread */
+/*
+ * Declare a node dead, which withdraws its GID claims, only if it is still
+ * unreachable; false when it has a live connection again, which a stale
+ * list cannot be trusted for, or was dead already.
+ */
+bool tcp_declare_dead_if_unreachable(TcpBackendPrivate *priv, uint32_t node_id);
+bool tcp_manager_recv_register(TcpConnection *conn, const TcpRecvMsg *msg);
+void tcp_manager_recv_heartbeat(TcpConnection *conn);
+void tcp_manager_relay_ionic(TcpBackendPrivate *priv, const TcpRecvMsg *msg);
+void tcp_reap_pending_conns(TcpBackendPrivate *priv);
+void tcp_manager_accept(TcpBackendPrivate *priv, int sockfd, const char *host,
+                        uint16_t port);
 void tcp_broadcaster_init(TcpBackendPrivate *priv);
 void tcp_broadcaster_destroy(TcpBackendPrivate *priv);
 void tcp_broadcast_topology(TcpBackendPrivate *priv);
@@ -792,55 +903,27 @@ void tcp_broadcast_node(TcpBackendPrivate *priv, uint32_t node_id);
 void tcp_broadcast_gid_table_to(TcpBackendPrivate *priv, uint32_t node_id);
 void tcp_broadcast_pass(TcpBackendPrivate *priv);
 void *tcp_broadcast_thread(void *opaque);
-
-/* Sockets and messages */
-uint32_t tcp_send_timeout_ms(TcpBackendPrivate *priv);
-int tcp_connect_any(const struct addrinfo *addrs, const atomic_bool *running,
-                    uint64_t deadline_ms);
-int tcp_connect_to_remote(const char *host, uint16_t port,
-                          const atomic_bool *running, uint64_t deadline_ms);
-int tcp_listen_socket(int family, uint16_t *port);
-bool tcp_format_peer_addr(const struct sockaddr_storage *ss, char *host,
-                          size_t len, uint16_t *port);
-int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
-                     atomic_bool *running, uint64_t deadline_ms);
-
-/* Setup */
-const char *tcp_config_role(const char *config, TcpMode *mode);
-int tcp_parse_host_port(const char *s, const char *who, char **host,
-                        uint16_t *port);
-int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
-                           uint32_t health_interval_s);
-
-/* Threads, and what they do */
-bool tcp_start_thread(QemuThread *thread, const char *name, void *(*fn)(void *),
-                      void *arg, atomic_bool *running);
-void *tcp_accept_thread(void *opaque);
-void *tcp_recv_thread_per_conn(void *opaque);
-void *tcp_worker_peer_thread(void *opaque);
-bool tcp_worker_publish_peer(TcpBackendPrivate *priv,
-                             const TcpPeerTarget *target, TcpConnection *conn);
-void *tcp_manager_health_check_thread(void *opaque);
-/*
- * Declare a node dead, which withdraws its GID claims, only if it is still
- * unreachable; false when it has a live connection again, which a stale
- * list cannot be trusted for, or was dead already.
- */
-bool tcp_declare_dead_if_unreachable(TcpBackendPrivate *priv, uint32_t node_id);
+void tcp_stop_broadcast_thread(TcpBackendPrivate *priv);
 void tcp_health_check_retire(TcpBackendPrivate *priv, GArray *items);
+void *tcp_manager_health_check_thread(void *opaque);
+void tcp_stop_health_check_thread(TcpBackendPrivate *priv);
+
+/*
+ * tcp_worker.c: registration with the manager, the peer-connect thread, and
+ * the peers that connect to the worker
+ */
 TcpConnection *tcp_worker_manager_conn(TcpBackendPrivate *priv);
 int tcp_worker_register_with_manager(TcpBackendPrivate *priv,
                                      const atomic_bool *running,
                                      uint64_t deadline_ms);
+bool tcp_worker_publish_peer(TcpBackendPrivate *priv,
+                             const TcpPeerTarget *target, TcpConnection *conn);
 void tcp_worker_manager_pass(TcpBackendPrivate *priv);
-
-/* Teardown */
-void tcp_stop_accept_thread(TcpBackendPrivate *priv);
-void tcp_stop_health_check_thread(TcpBackendPrivate *priv);
-void tcp_stop_broadcast_thread(TcpBackendPrivate *priv);
+void *tcp_worker_peer_thread(void *opaque);
 void tcp_stop_peer_thread(TcpBackendPrivate *priv);
-void tcp_stop_recv_threads(TcpBackendPrivate *priv);
-void tcp_free_pending_conns(TcpBackendPrivate *priv);
-void tcp_stop_threads(TcpBackendPrivate *priv);
+void tcp_worker_recv_register_resp(TcpConnection *conn, const TcpRecvMsg *msg);
+void tcp_worker_recv_topology(TcpConnection *conn, const TcpRecvMsg *msg);
+void tcp_worker_accept(TcpBackendPrivate *priv, int sockfd, const char *host,
+                       uint16_t port);
 
 #endif /* RDMA_BACKEND_TCP_PRIV_H */

@@ -132,7 +132,7 @@
  * exited, and how many joins it took.  The health-check rows also check
  * that the thread still runs once per interval when nobody stops it.  A
  * per-row alarm() turns a hang into a named failure rather than a ctest
- * timeout.  The test links rdma_backend_tcp.c, reaches its internals
+ * timeout.  The test links the TCP backend, reaches its internals
  * through rdma_backend_tcp_priv.h, and stubs its externals; the thread
  * entry points are backed by real pthreads.
  *

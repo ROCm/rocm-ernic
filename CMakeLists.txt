@@ -160,12 +160,22 @@ set(QEMU_COMPAT_SOURCES
     src/qemu-compat/qemu_stubs.c
 )
 
+# The TCP mesh backend, which its unit tests in tests/ link too
+set(TCP_BACKEND_SOURCES
+    src/rdma/rdma_backend_tcp.c
+    src/rdma/tcp_conn.c
+    src/rdma/tcp_gid.c
+    src/rdma/tcp_manager.c
+    src/rdma/tcp_wire.c
+    src/rdma/tcp_worker.c
+)
+
 # RDMA backends (none, loopback, TCP mesh) behind the PVRDMA device model
 set(RDMA_BACKEND_SOURCES
     src/rdma/rdma_backend_core.c
     src/rdma/rdma_backend_none.c
     src/rdma/rdma_backend_loopback.c
-    src/rdma/rdma_backend_tcp.c
+    ${TCP_BACKEND_SOURCES}
     src/rdma/pvrdma_stats.c
 )
 

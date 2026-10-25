@@ -431,8 +431,8 @@ typedef void (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node, void *buf,
 
 /*
  * Largest single message ionic_mesh_sendv() accepts, header included.  Mirrors
- * TCP_MAX_PAYLOAD_LEN in rdma_backend_tcp.c, which static-asserts the two
- * agree.
+ * TCP_MAX_PAYLOAD_LEN in rdma_backend_tcp_priv.h, which static-asserts the
+ * two agree.
  */
 #define IONIC_MESH_MAX_MSG (16u << 20)
 
