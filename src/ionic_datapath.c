@@ -4191,3 +4191,34 @@ void ionic_datapath_reset_rdma_counters(struct ionic_datapath *dp)
     for (uint32_t i = 0; i < dp->qp_count; i++)
         memset(dp->qp[i].rdma, 0, sizeof(dp->qp[i].rdma));
 }
+
+/*
+ * A driver that resets RDMA -- reloaded, or in a guest that rebooted -- has
+ * already freed the memory behind everything it registered, without
+ * destroying any of it.  A queue left registered would read and write pages
+ * the guest now uses for something else, and an MR would let a peer's RDMA
+ * WRITE do the same.  QPs go first, as the driver destroys them, so nothing
+ * still names an SRQ or CQ when it goes.
+ */
+void ionic_datapath_reset_rdma(struct ionic_datapath *dp)
+{
+    if (!dp)
+        return;
+    for (uint32_t i = 0; i < dp->qp_count; i++)
+        if (dp->qp[i].valid)
+            ionic_datapath_unregister_qp(dp, i);
+    /* Checks valid under the SRQ's lock itself */
+    for (uint32_t i = 0; i < dp->srq_count; i++)
+        ionic_datapath_unregister_srq(dp, IONIC_SRQ_QID_BASE + i);
+    for (uint32_t i = 0; i < dp->cq_count; i++)
+        if (dp->cq[i].valid)
+            ionic_datapath_unregister_cq(dp, i);
+    for (uint32_t i = 0; i < dp->ah_count; i++)
+        ionic_datapath_unregister_ah(dp, i);
+    for (int i = 0; i < MAX_MR; i++) {
+        if (dp->mr[i].valid) {
+            ionic_dp_buf_release(&dp->mr[i].buf);
+            dp->mr[i].valid = false;
+        }
+    }
+}

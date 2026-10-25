@@ -343,6 +343,11 @@ int ionic_rm_query_srq(pvrdma_handle_t handle, uint32_t srq_handle,
 int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle);
 
 /**
+ * ionic_rm_dealloc_pd - Free a protection domain, once nothing uses it
+ */
+void ionic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle);
+
+/**
  * ionic_rm_alloc_qp - Allocate a queue pair
  * @handle:        pvrdma device handle
  * @pd_handle:     protection domain handle

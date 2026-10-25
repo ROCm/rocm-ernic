@@ -584,6 +584,33 @@
     so the guest logs `error 3`, not `error 50331648`.
   * The `rdma_*` counters in the LIF block, in `--stats-file` and DMAed to
     the guest, carry real values; they always read zero.
+  * `ibv_query_qp()` reports the QP's real state on every backend. The
+    `none` and `tcp` backends reported every QP as RTS, and `loopback` one
+    in Error as RTS. It reports the destination QP by the number the guest
+    gave it; it used to report the server's internal QPN.
+  * A `MODIFY_QP` that fails changes nothing: the QP's state, PSNs, Q_Key
+    and destination stay as they were. They used to take the new values
+    even though the command failed.
+  * The `none` backend gave every QP the same number, so with two QPs,
+    commands for one acted on the other and the first could never be
+    freed. Each QP now has its own, and the server refuses to create a QP
+    whose number another QP still has.
+  * The `loopback` backend kept a record of every QP ever created until
+    shutdown, so a guest creating and destroying QPs grew the server's
+    memory without bound, and a destroyed QP could be paired with a new
+    one. A QP's record is now freed when it is destroyed.
+  * `CREATE_CQ` and `CREATE_QP` fail when the device has no room left to
+    record the new CQ or QP, as `CREATE_MR` already did, and `CREATE_CQ`,
+    `CREATE_QP` and `CREATE_MR` fail when they name an id already in use.
+    Each used to succeed and leave a CQ, QP or MR that could never be
+    destroyed, so a guest could use up the server's resources.
+  * `RDMA_RESET_LIF`, which the guest driver sends whenever it loads,
+    frees every QP, CQ, MR, SRQ and address handle the driver had made.
+    A driver that reloaded, crashed or rebooted with them still in place
+    leaked them all until the server restarted, and they stayed live: a
+    doorbell could make an old QP read and write its rings, and a peer
+    could RDMA WRITE through an old MR, in guest memory that had since been
+    reused.
 * **TCP mesh: data sent after its work request completed in error.** A
   flushed QP's queued requests, and a timed-out request, are taken back,
   including from a connection leaving the connection table, so a WRITE or

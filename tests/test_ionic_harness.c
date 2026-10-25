@@ -21,6 +21,7 @@
 
 #include <endian.h>
 #include <errno.h>
+#include <glib.h>
 #include <infiniband/verbs.h>
 #include <inttypes.h>
 #include <netinet/in.h>
@@ -712,6 +713,7 @@ static void test_admin_errors(void)
 #define RC_CQ_B 2
 #define RC_QP_A 10
 #define RC_QP_B 11
+#define RC_QP_C 12
 #define MR_A    0x01000001u
 #define MR_B    0x02000002u
 #define VA_A    UINT64_C(0x00007f0000000100)
@@ -986,27 +988,54 @@ static void widest_wqe_send(const char *T, struct rc *r)
     check(T, ih_cq_destroy(h, &cqd) == 0, "DESTROY_CQ D failed");
 }
 
+/* What QUERY_QP reports about a QP, from the side buffers the driver reads */
+struct qp_answer {
+    uint8_t state;
+    uint32_t dest;
+    uint32_t rq_psn;
+    uint32_t sq_psn;
+};
+
+static bool query_qp(const char *test, struct ih *h, uint32_t qp_id,
+                     struct qp_answer *a)
+{
+    uint8_t body[34] = {0};
+    uint8_t sqb[20], rqb[12];
+    const uint64_t sq_buf = h->scratch + 1024, rq_buf = h->scratch + 1088;
+
+    ernic_put_le64(body + 8, sq_buf);
+    ernic_put_le64(body + 16, rq_buf);
+    ernic_put_le32(body + 28, qp_id);
+    if (!check(test,
+               ih_admin(h, IH_ADMIN_QUERY_QP, body, sizeof(body), NULL) == 0,
+               "QUERY_QP %u failed", qp_id))
+        return false;
+    fake_vfu_read(h->vfu, sq_buf, sqb, sizeof(sqb));
+    fake_vfu_read(h->vfu, rq_buf, rqb, sizeof(rqb));
+    a->state = rqb[0] >> 4;
+    a->dest = ernic_get_be32(sqb + 8);
+    a->rq_psn = ernic_get_be32(sqb + 16);
+    a->sq_psn = ernic_get_be32(rqb + 4);
+    return true;
+}
+
 static void test_rc(void)
 {
     const char *T = "rc";
     struct rc r;
     struct ih *h = &r.h;
+    struct qp_answer qa;
 
     if (!rc_setup(T, &r))
         return;
 
-    /* QUERY_QP writes the state into the side buffers the driver reads */
-    uint8_t body[34] = {0};
-    const uint64_t sq_buf = h->scratch + 1024, rq_buf = h->scratch + 1088;
-    ernic_put_le64(body + 8, sq_buf);
-    ernic_put_le64(body + 16, rq_buf);
-    ernic_put_le32(body + 28, RC_QP_A);
-    check(T, ih_admin(h, IH_ADMIN_QUERY_QP, body, sizeof(body), NULL) == 0,
-          "QUERY_QP failed");
-    uint8_t rqb[12];
-    fake_vfu_read(h->vfu, rq_buf, rqb, sizeof(rqb));
-    check(T, rqb[0] >> 4 == IH_QPS_RTS, "QUERY_QP state %u, not RTS",
-          (unsigned)(rqb[0] >> 4));
+    /* QUERY_QP reports the state, and the peer by the driver's own qpid */
+    if (query_qp(T, h, RC_QP_A, &qa)) {
+        check(T, qa.state == IH_QPS_RTS, "QUERY_QP state %u, not RTS",
+              qa.state);
+        check(T, qa.dest == RC_QP_B, "QUERY_QP destination %u, not QP %u",
+              qa.dest, (unsigned)RC_QP_B);
+    }
 
     for (size_t i = 0; i < sizeof(rc_cases) / sizeof(rc_cases[0]); i++)
         run_rc_case(T, &r, &rc_cases[i], (uint8_t)(i * 17 + 3));
@@ -1084,6 +1113,119 @@ static void test_rc(void)
 
     widest_wqe_send(T, &r);
     rc_teardown(T, &r);
+}
+
+/* ---- What RDMA_RESET_LIF frees ---------------------------------------- */
+
+/*
+ * A driver that reloads, or a guest that reboots, resets RDMA without
+ * destroying what it made, and RDMA_RESET_LIF has to free all of it: the
+ * resource manager's QPs, CQs, MRs, SRQs and PD, which every reset used to
+ * leak, and the data path's registrations, which would otherwise still reach
+ * memory the guest has taken back. Here that is an RDMA WRITE naming an MR
+ * registered before the reset.
+ */
+static void test_rdma_reset_frees(void)
+{
+    const char *T = "rdma-reset-frees";
+    struct rc r;
+    struct ih *h = &r.h;
+    struct ih_srq srq;
+    struct ih_qp c;
+
+    if (!rc_setup(T, &r))
+        return;
+
+    PVRDMADev *pvrdma = h->dev->pvrdma_handle;
+    RdmaDeviceResources *res = &pvrdma->rdma_dev_res;
+
+    /* A third QP, connected to B, that the reloaded driver won't make
+     * again */
+    check(T,
+          ih_qp_create(h, &c, RC_QP_C, IH_QPT_RC, &r.cqa, &r.cqa, NULL) &&
+              ih_qp_connect(h, &c, &r.b),
+          "making QP C failed");
+    check(T, ih_srq_create(h, &srq, 4) == 0, "CREATE_SRQ failed");
+    check(T, ih_ah_create(h, 5, 0xc0a80001u, 0xc0a80002u) == 0,
+          "CREATE_AH failed");
+    check(T,
+          res->pd_tbl.used == 1 && res->cq_tbl.used == 2 &&
+              res->qp_tbl.used == 3 && res->mr_tbl.used == 2 &&
+              res->srq_tbl.used == 1,
+          "%u PD(s), %u CQ(s), %u QP(s), %u MR(s) and %u SRQ(s) before the "
+          "reset, expected 1, 2, 3, 2 and 1",
+          res->pd_tbl.used, res->cq_tbl.used, res->qp_tbl.used,
+          res->mr_tbl.used, res->srq_tbl.used);
+
+    /* The driver reloads: RDMA_RESET_LIF, then its queues again */
+    if (!check(T, ih_bringup(h), "bring-up after the reset failed")) {
+        ih_mr_free(&r.mra);
+        ih_mr_free(&r.mrb);
+        teardown(T, h);
+        return;
+    }
+    check(T,
+          res->pd_tbl.used == 0 && res->cq_tbl.used == 0 &&
+              res->qp_tbl.used == 0 && res->mr_tbl.used == 0 &&
+              res->srq_tbl.used == 0 && g_hash_table_size(res->qp_hash) == 0,
+          "%u PD(s), %u CQ(s), %u QP(s), %u QPN(s), %u MR(s) and %u SRQ(s) "
+          "left after RDMA_RESET_LIF",
+          res->pd_tbl.used, res->cq_tbl.used, res->qp_tbl.used,
+          g_hash_table_size(res->qp_hash), res->mr_tbl.used, res->srq_tbl.used);
+
+    /* It makes the same QPs again, but only A's MR, so B's key names
+     * nothing */
+    ih_mr_free(&r.mra);
+    bool made =
+        ih_cq_create(h, &r.cqa, RC_CQ_A, 6) &&
+        ih_cq_create(h, &r.cqb, RC_CQ_B, 6) &&
+        ih_qp_create(h, &r.a, RC_QP_A, IH_QPT_RC, &r.cqa, &r.cqa, NULL) &&
+        ih_qp_create(h, &r.b, RC_QP_B, IH_QPT_RC, &r.cqb, &r.cqb, NULL) &&
+        ih_qp_connect(h, &r.a, &r.b) &&
+        ih_mr_create(h, &r.mra, MR_A, VA_A, MR_LEN, IH_ACCESS_ALL, true);
+    if (check(T, made, "making the QPs again failed")) {
+        uint8_t byte = 0x5a, got = 0;
+        struct ih_sge sge = {.va = VA_A, .len = 1, .lkey = MR_A};
+        struct ih_send w = {.op = IH_OP_RDMA_WRITE,
+                            .remote_va = VA_B,
+                            .rkey = MR_B,
+                            .sge = &sge,
+                            .nsge = 1};
+
+        ih_mr_write(h, &r.mra, VA_A, &byte, 1);
+        r.msn_a = 1;
+        ih_post_send(h, &r.a, &w);
+        expect_send(T, "RDMA_WRITE to an MR from before the reset", &r,
+                    IH_STS_REMOTE_ACC_ERR);
+        ih_mr_read(h, &r.mrb, VA_B, &got, 1);
+        check(T, got != byte,
+              "an RDMA_WRITE reached an MR from before the reset");
+
+        /*
+         * A doorbell on C, whose rings are memory the guest has taken back,
+         * runs nothing: here a WRITE into A's new MR, which B would accept
+         */
+        const uint64_t target = VA_A + 64;
+        struct ih_send stale = w;
+        stale.remote_va = target;
+        stale.rkey = MR_A;
+        ih_post_send(h, &c, &stale);
+        ih_poll(h);
+        got = 0;
+        ih_mr_read(h, &r.mra, target, &got, 1);
+        check(T, got != byte, "a QP from before the reset ran a WRITE");
+        check(T, cq_empty(h, &r.cqa),
+              "a QP from before the reset completed a WRITE");
+
+        check(T, ih_qp_destroy(h, &r.a) == 0, "DESTROY_QP A failed");
+        check(T, ih_qp_destroy(h, &r.b) == 0, "DESTROY_QP B failed");
+        check(T, ih_mr_destroy(h, &r.mra) == 0, "DESTROY_MR A failed");
+        check(T, ih_cq_destroy(h, &r.cqa) == 0, "DESTROY_CQ A failed");
+        check(T, ih_cq_destroy(h, &r.cqb) == 0, "DESTROY_CQ B failed");
+    }
+    ih_mr_free(&r.mra);
+    ih_mr_free(&r.mrb);
+    teardown(T, h);
 }
 
 /* ---- Atomics and fast registration ------------------------------------- */
@@ -3580,19 +3722,20 @@ static void test_backend_names(void)
 /* ---- The none backend -------------------------------------------------- */
 
 /*
- * The none backend keeps nothing and answers with stubs, but a CQ, a QP and
- * an MR still live out their lives on it as the driver drives them, and the
- * PSNs MODIFY_QP set come back from QUERY_QP.
+ * The none backend keeps nothing and answers with stubs, but CQs, QPs and
+ * an MR still live out their lives on it as the driver drives them. Two
+ * QPs are told apart -- the backend once gave every QP the same number, so
+ * the second replaced the first -- and QUERY_QP reports each one's own
+ * state, PSNs and peer, from RESET to Error.
  */
 static void test_none(void)
 {
     static const char T[] = "none";
     struct ih h;
     struct ih_cq cq;
-    struct ih_qp qp;
+    struct ih_qp a, b;
     struct ih_mr mr;
-    uint8_t hdr[64];
-    size_t hdr_len = ih_roce_hdr_v4(hdr, sizeof(hdr), 0xc0a80001u, 0xc0a80001u);
+    struct qp_answer qa;
 
     memset(&mr, 0, sizeof(mr));
     if (!setup(T, &h, "none"))
@@ -3605,8 +3748,10 @@ static void test_none(void)
 
     bool made =
         check(T, ih_cq_create(&h, &cq, 1, 6), "CREATE_CQ failed") &&
-        check(T, ih_qp_create(&h, &qp, 10, IH_QPT_RC, &cq, &cq, NULL),
-              "CREATE_QP failed") &&
+        check(T, ih_qp_create(&h, &a, RC_QP_A, IH_QPT_RC, &cq, &cq, NULL),
+              "CREATE_QP A failed") &&
+        check(T, ih_qp_create(&h, &b, RC_QP_B, IH_QPT_RC, &cq, &cq, NULL),
+              "CREATE_QP B failed") &&
         check(T,
               ih_mr_create(&h, &mr, MR_A, VA_A, MR_LEN, IH_ACCESS_ALL, false),
               "CREATE_MR failed");
@@ -3616,48 +3761,48 @@ static void test_none(void)
         return;
     }
 
-    /* Connected to itself, as there is only the one */
-    check(T, ih_qp_modify(&h, qp.id, IH_QP_STATE, IH_QPS_INIT, 0, NULL, 0) == 0,
-          "INIT failed");
-    check(T,
-          ih_qp_modify(&h, qp.id,
-                       IH_QP_STATE | IH_QP_AV | IH_QP_DEST_QPN | IH_QP_RQ_PSN,
-                       IH_QPS_RTR, qp.id, hdr, (uint32_t)hdr_len) == 0,
-          "RTR failed");
-    check(T,
-          ih_qp_modify(&h, qp.id, IH_QP_STATE | IH_QP_SQ_PSN, IH_QPS_RTS, 0,
-                       NULL, 0) == 0,
-          "RTS failed");
+    /* Until it is modified, a QP is in RESET */
+    if (query_qp(T, &h, a.id, &qa))
+        check(T, qa.state == IH_QPS_RESET, "new QP A in state %u, not RESET",
+              qa.state);
 
-    uint8_t body[34] = {0};
-    const uint64_t sq_buf = h.scratch + 1024, rq_buf = h.scratch + 1088;
-    uint8_t sqb[20], rqb[12];
-    ernic_put_le64(body + 8, sq_buf);
-    ernic_put_le64(body + 16, rq_buf);
-    ernic_put_le32(body + 28, qp.id);
-    if (check(T, ih_admin(&h, IH_ADMIN_QUERY_QP, body, sizeof(body), NULL) == 0,
-              "QUERY_QP failed")) {
-        fake_vfu_read(h.vfu, sq_buf, sqb, sizeof(sqb));
-        fake_vfu_read(h.vfu, rq_buf, rqb, sizeof(rqb));
-        check(T, rqb[0] >> 4 == IH_QPS_RTS, "QUERY_QP state %u, not RTS",
-              (unsigned)(rqb[0] >> 4));
-        /* ih_qp_modify() sets an RQ PSN of 0x100 and an SQ PSN of 0x200 */
+    check(T, ih_qp_connect(&h, &a, &b), "connecting A and B failed");
+
+    /* ih_qp_modify() sets an RQ PSN of 0x100 and an SQ PSN of 0x200 */
+    const struct ih_qp *qps_ab[2][2] = {{&a, &b}, {&b, &a}};
+    for (size_t i = 0; i < 2; i++) {
+        uint32_t self = qps_ab[i][0]->id, peer = qps_ab[i][1]->id;
+
+        if (!query_qp(T, &h, self, &qa))
+            continue;
         check(T,
-              ernic_get_be32(sqb + 16) == 0x100 &&
-                  ernic_get_be32(rqb + 4) == 0x200,
-              "QUERY_QP PSNs RQ %#x and SQ %#x, not 0x100 and 0x200",
-              ernic_get_be32(sqb + 16), ernic_get_be32(rqb + 4));
+              qa.state == IH_QPS_RTS && qa.dest == peer && qa.rq_psn == 0x100 &&
+                  qa.sq_psn == 0x200,
+              "QP %u: state %u, peer %u, PSNs %#x/%#x, expected RTS, %u, "
+              "0x100/0x200",
+              self, qa.state, qa.dest, qa.rq_psn, qa.sq_psn, peer);
     }
 
-    check(T, ih_qp_destroy(&h, &qp) == 0, "DESTROY_QP failed");
+    /* Moving A to Error leaves B where it was */
+    check(T, ih_qp_modify(&h, a.id, IH_QP_STATE, IH_QPS_ERR, 0, NULL, 0) == 0,
+          "A to Error failed");
+    if (query_qp(T, &h, a.id, &qa))
+        check(T, qa.state == IH_QPS_ERR, "QP A in state %u, not Error",
+              qa.state);
+    if (query_qp(T, &h, b.id, &qa))
+        check(T, qa.state == IH_QPS_RTS, "QP B in state %u, not RTS", qa.state);
+
+    check(T, ih_qp_destroy(&h, &a) == 0, "DESTROY_QP A failed");
+    check(T, ih_qp_destroy(&h, &b) == 0, "DESTROY_QP B failed");
     check(T, ih_mr_destroy(&h, &mr) == 0, "DESTROY_MR failed");
     check(T, ih_cq_destroy(&h, &cq) == 0, "DESTROY_CQ failed");
     check(T,
           res->cq_tbl.used == cqs && res->qp_tbl.used == qps &&
-              res->mr_tbl.used == mrs,
-          "%u CQ(s), %u QP(s) and %u MR(s) left in the resource manager, "
-          "expected %u, %u and %u",
-          res->cq_tbl.used, res->qp_tbl.used, res->mr_tbl.used, cqs, qps, mrs);
+              res->mr_tbl.used == mrs && g_hash_table_size(res->qp_hash) == qps,
+          "%u CQ(s), %u QP(s), %u QPN(s) and %u MR(s) left in the resource "
+          "manager, expected %u, %u, %u and %u",
+          res->cq_tbl.used, res->qp_tbl.used, g_hash_table_size(res->qp_hash),
+          res->mr_tbl.used, cqs, qps, qps, mrs);
     teardown(T, &h);
 }
 
@@ -3779,6 +3924,25 @@ static void test_loopback_pair(void)
     lp_expect(T, pvrdma, uc1, uc2);
     lp_expect(T, pvrdma, uc2, uc1);
 
+    /* A QP destroyed while waiting is gone, and can't be paired */
+    uint32_t gone = lp_create(T, pvrdma, pd, cq, IBV_QPT_RC);
+    lp_rts(T, pvrdma, gone, 0);
+    ionic_rm_dealloc_qp(pvrdma, gone);
+    uint32_t rc6 = lp_create(T, pvrdma, pd, cq, IBV_QPT_RC);
+    lp_rts(T, pvrdma, rc6, 0);
+    lp_expect(T, pvrdma, rc6, 0);
+
+    /* The backend only sees INIT, RTR and RTS, but a query reports Error */
+    uint8_t state = 0;
+    int rc = ionic_rm_modify_qp(pvrdma, rc6, IBV_QP_STATE, IH_QPS_ERR, 0, 0, 0,
+                                NULL);
+    check(T,
+          rc == 0 &&
+              ionic_rm_query_qp(pvrdma, rc6, &state, NULL, NULL, NULL, NULL,
+                                NULL) == 0 &&
+              state == IH_QPS_ERR,
+          "QP %u to Error returned %d and reports state %u", rc6, rc, state);
+
     teardown(T, &h);
 }
 
@@ -3792,6 +3956,7 @@ static const struct {
     {"devcmds", test_devcmds},
     {"bringup", test_bringup},
     {"rdma-reset", test_rdma_reset},
+    {"rdma-reset-frees", test_rdma_reset_frees},
     {"admin", test_admin_errors},
     {"rc", test_rc},
     {"atomic", test_atomic_and_reg_mr},

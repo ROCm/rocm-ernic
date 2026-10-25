@@ -72,14 +72,17 @@
  *
  * The backend-succeeds and *-fails cases take a QP to RTS on a backend that
  * fails the one operation a case names. A failed create must free its slot
- * and leave nothing to destroy, and a failed state transition or query must
- * fail the call. qp-no-backend covers a QP whose PD has no backend, which
- * the resource manager numbers and keeps the state of itself, and QP0 and
- * QP1, which can't be modified. bad-handles passes free and out-of-range
- * handles to every call that takes one, tables-full allocates from full
- * tables, and alloc-refused allocates before rdma_rm_init() and with
- * nowhere to put the handle. The srq-* cases cover an SRQ's life, through
- * stubs of the backend's SRQ entry points.
+ * and leave nothing to destroy; a failed state transition must fail the
+ * call and change neither the state nor the PSNs, which a query reports
+ * from the resource manager's record rather than the backend's; and a
+ * failed query must pass on the backend's error. qpn-in-use refuses a QP
+ * the backend numbers as another live one. qp-no-backend covers a QP whose
+ * PD has no backend, which the resource manager numbers and keeps the state
+ * of itself, and QP0 and QP1, which can't be modified. bad-handles passes
+ * free and out-of-range handles to every call that takes one, tables-full
+ * allocates from full tables, and alloc-refused allocates before
+ * rdma_rm_init() and with nowhere to put the handle. The srq-* cases cover
+ * an SRQ's life, through stubs of the backend's SRQ entry points.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -1254,8 +1257,17 @@ static const RdmaBackendOps failing_ops = {
  */
 static bool test_backend_fails(const char *name, BackendOp op)
 {
-    static const enum ibv_qp_state states[] = {IBV_QPS_INIT, IBV_QPS_RTR,
-                                               IBV_QPS_RTS};
+    /* Each transition, with the PSN it sets */
+    static const struct {
+        enum ibv_qp_state state;
+        uint32_t mask;
+        uint32_t rq_psn;
+        uint32_t sq_psn;
+    } steps[] = {
+        {IBV_QPS_INIT, IBV_QP_STATE, 0, 0},
+        {IBV_QPS_RTR, IBV_QP_STATE | IBV_QP_RQ_PSN, 0x11, 0},
+        {IBV_QPS_RTS, IBV_QP_STATE | IBV_QP_SQ_PSN, 0, 0x22},
+    };
     bool ok = true;
     RdmaBackendDev backend_dev;
     struct ibv_device_attr a = one_each;
@@ -1291,9 +1303,10 @@ static bool test_backend_fails(const char *name, BackendOp op)
         rc = rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, 1, 1, cq_handle,
                               1, 1, cq_handle, &qpn, 0, 0, NULL);
     }
-    for (size_t i = 0; rc == 0 && i < sizeof(states) / sizeof(states[0]); i++) {
-        rc = rdma_rm_modify_qp(&dev_res, &backend_dev, qpn, IBV_QP_STATE, 0,
-                               &dgid, 0, states[i], 0, 0, 0);
+    for (size_t i = 0; rc == 0 && i < sizeof(steps) / sizeof(steps[0]); i++) {
+        rc = rdma_rm_modify_qp(&dev_res, &backend_dev, qpn, steps[i].mask, 0,
+                               &dgid, 0, steps[i].state, 0, steps[i].rq_psn,
+                               steps[i].sq_psn);
     }
     if (rc == 0) {
         rc = rdma_rm_query_qp(&dev_res, qpn, &attr, IBV_QP_STATE, &init_attr);
@@ -1322,6 +1335,35 @@ static bool test_backend_fails(const char *name, BackendOp op)
         ok = false;
     }
 
+    /*
+     * A failed transition changes neither the state nor the PSNs, and the
+     * query reports the state the resource manager recorded, not the
+     * backend's: this one's query answers RESET whatever it is asked.
+     */
+    if (have_qp) {
+        const bool rtr = op == OP_NONE || op > OP_QP_RTR;
+        const bool rts = op == OP_NONE || op > OP_QP_RTS;
+        const enum ibv_qp_state expected_state = rts   ? IBV_QPS_RTS
+                                                 : rtr ? IBV_QPS_RTR
+                                                 : op > OP_QP_INIT
+                                                     ? IBV_QPS_INIT
+                                                     : IBV_QPS_RESET;
+        const uint32_t expected_rq_psn = rtr ? 0x11U : 0U;
+        const uint32_t expected_sq_psn = rts ? 0x22U : 0U;
+
+        fail_op = OP_NONE;
+        rc = rdma_rm_query_qp(&dev_res, qpn, &attr, IBV_QP_STATE, &init_attr);
+        if (rc != 0 || attr.qp_state != expected_state ||
+            attr.cur_qp_state != expected_state ||
+            attr.rq_psn != expected_rq_psn || attr.sq_psn != expected_sq_psn) {
+            printf("FAIL %-18s: query returned %d with state %d and PSNs "
+                   "%#x/%#x, expected 0 with %d and %#x/%#x\n",
+                   name, rc, (int)attr.qp_state, attr.rq_psn, attr.sq_psn,
+                   (int)expected_state, expected_rq_psn, expected_sq_psn);
+            ok = false;
+        }
+    }
+
     if (have_qp) {
         rdma_rm_dealloc_qp(&dev_res, qpn);
     }
@@ -1332,6 +1374,82 @@ static bool test_backend_fails(const char *name, BackendOp op)
         qp_destroys != (have_qp ? 1U : 0U)) {
         printf("FAIL %-18s: freeing destroyed %u CQ(s) and %u QP(s)\n", name,
                cq_destroys, qp_destroys);
+        ok = false;
+    }
+
+    rdma_rm_fini(&dev_res);
+
+    if (ok) {
+        printf("ok   %-18s\n", name);
+    }
+    return ok;
+}
+
+/*
+ * A backend that gives every QP the same number, as the none backend once
+ * did. The second QP must be refused, and its backend QP destroyed, rather
+ * than replace the first in the QPN table, where the first could then be
+ * neither found nor freed.
+ */
+static uint32_t fop_same_qpn(const RdmaBackendQP *qp)
+{
+    (void)qp;
+    return 7;
+}
+
+static const RdmaBackendOps same_qpn_ops = {
+    .name = "same-qpn",
+    .create_pd = fop_create_pd,
+    .create_cq = fop_create_cq,
+    .destroy_cq = fop_destroy_cq,
+    .create_qp = fop_create_qp,
+    .destroy_qp = fop_destroy_qp,
+    .qpn = fop_same_qpn,
+};
+
+static bool test_qpn_in_use(void)
+{
+    const char *name = "qpn-in-use";
+    bool ok = true;
+    RdmaBackendDev backend_dev;
+    struct ibv_device_attr a = one_each;
+    uint32_t pd_handle, cq_handle, first, second = UINT32_MAX;
+
+    a.max_qp = 2;
+    memset(&backend_dev, 0, sizeof(backend_dev));
+    backend_dev.backend_ops = &same_qpn_ops;
+    memset(&dev_res, 0, sizeof(dev_res));
+    alloc_injectors_reset();
+    fail_op = OP_NONE;
+    qp_destroys = 0;
+    if (rdma_rm_init(&dev_res, &a) != 0 ||
+        rdma_rm_alloc_pd(&dev_res, &backend_dev, &pd_handle) != 0 ||
+        rdma_rm_alloc_cq(&dev_res, &backend_dev, 1, &cq_handle) != 0 ||
+        rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, 1, 1, cq_handle, 1, 1,
+                         cq_handle, &first, 0, 0, NULL) != 0) {
+        abort();
+    }
+    RdmaRmQP *qp = rdma_rm_get_qp(&dev_res, first);
+
+    int rc = rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, 1, 1, cq_handle,
+                              1, 1, cq_handle, &second, 0, 0, NULL);
+    if (rc != -EIO || qp_destroys != 1 || dev_res.qp_tbl.used != 1) {
+        printf("FAIL %-18s: a second QPN %u returned %d, destroyed %u "
+               "backend QP(s) and left %u QP(s), expected %d, 1 and 1\n",
+               name, second, rc, qp_destroys, dev_res.qp_tbl.used, -EIO);
+        ok = false;
+    }
+    if (!qp || rdma_rm_get_qp(&dev_res, first) != qp) {
+        printf("FAIL %-18s: QPN %u no longer names the first QP\n", name,
+               first);
+        ok = false;
+    }
+
+    rdma_rm_dealloc_qp(&dev_res, first);
+    if (qp_destroys != 2 || dev_res.qp_tbl.used != 0) {
+        printf("FAIL %-18s: freeing the first QP destroyed %u in all and "
+               "left %u\n",
+               name, qp_destroys, dev_res.qp_tbl.used);
         ok = false;
     }
 
@@ -1846,6 +1964,9 @@ int main(void)
         }
     }
 
+    if (!test_qpn_in_use()) {
+        failures++;
+    }
     if (!test_qp_no_backend()) {
         failures++;
     }

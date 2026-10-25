@@ -481,7 +481,8 @@ handles them:
      - Emulator state
    * - 50
      - RDMA_RESET_LIF
-     - Forget all EQs and admin queues
+     - Forget all EQs and admin queues, and free every QP, CQ,
+       MR, SRQ and address handle the driver made
    * - 51
      - RDMA_CREATE_EQ
      - Record an event queue ring and its MSI-X vector (at
@@ -548,10 +549,13 @@ guest put the object's memory.
        the destination GID; register it with the data path
    * - MODIFY_QP
      - Record the QP's new state. At RTR, record the peer QP
-       and which server it lives on; for UD, record the Q_Key
+       and which server it lives on; for UD, record the Q_Key.
+       Nothing is recorded unless the backend makes the
+       transition, so a MODIFY_QP that fails changes nothing
    * - QUERY_QP
-     - DMA the QP's state, PSNs, and access flags into the
-       buffers the driver supplied
+     - DMA the QP's state, PSNs, peer QP (by the id the driver
+       gave it), and access flags into the buffers the driver
+       supplied
    * - CREATE_SRQ
      - Allocate an SRQ id (the device assigns it) and register
        its ring

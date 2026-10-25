@@ -164,11 +164,17 @@ struct ionic_adminq_ctx {
         uint32_t handle;
     } cq_map[MAX_CQ_MAP];
 
-    /* Same translation for QPs: the driver's qpid vs the backend's QPN. */
+    /*
+     * Same translation for QPs: the driver's qpid vs the backend's QPN. The
+     * entry also keeps the destination the last successful MODIFY_QP with
+     * IBV_QP_DEST_QPN gave, as the driver named it, for QUERY_QP to report.
+     */
     struct ionic_qp_map_entry {
         bool valid;
         uint32_t qp_id;
         uint32_t qpn;
+        bool dest_set;
+        uint32_t dest_qp_id;
     } qp_map[MAX_QP_MAP];
 
     /* And for MRs: the driver's mrid vs the backend's handle. */

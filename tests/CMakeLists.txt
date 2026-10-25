@@ -573,6 +573,27 @@ target_include_directories(ernic-test-ionic-adminq-poll SYSTEM PRIVATE
 target_compile_definitions(ernic-test-ionic-adminq-poll PRIVATE
     _GNU_SOURCE)
 
+# ionic admin queue id map test. It links the admin queue and stubs the rest
+# with ionic_adminq_fakes.h, so the CQ, QP and MR maps can be filled
+# directly, and checks a CREATE_CQ, CREATE_QP or CREATE_MR whose map is full
+# or whose id is in use is refused before anything is allocated.
+add_executable(ernic-test-ionic-adminq-maps
+    test_ionic_adminq_maps.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
+    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+)
+target_include_directories(ernic-test-ionic-adminq-maps PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_include_directories(ernic-test-ionic-adminq-maps SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${ERNIC_IBVERBS_INCLUDE_DIRS}
+)
+target_compile_definitions(ernic-test-ionic-adminq-maps PRIVATE
+    _GNU_SOURCE)
+
 # ionic SRQ adminq unit test: drives CREATE/MODIFY/QUERY/DESTROY_SRQ through
 # ionic_adminq_dispatch_wqe() against the same fake guest memory, so the
 # response buffer AND the reported length can both be inspected -- the pair
@@ -1033,6 +1054,7 @@ set(ERNIC_TEST_TARGETS
     ernic-test-ionic-stats
     ernic-test-ionic-fault
     ernic-test-ionic-adminq-poll
+    ernic-test-ionic-adminq-maps
     test_server_lifecycle
     test_ionic_srq_adminq
     test_ionic_cq_arm
@@ -1317,6 +1339,15 @@ add_test(
 )
 set_tests_properties(ionic-adminq-poll-unit PROPERTIES TIMEOUT 30)
 
+# ionic admin queue id map unit test: a CREATE_CQ, CREATE_QP or CREATE_MR
+# whose map is full or whose id is in use is refused, and allocates nothing
+# that could never be freed.
+add_test(
+    NAME ionic-adminq-maps-unit
+    COMMAND $<TARGET_FILE:ernic-test-ionic-adminq-maps>
+)
+set_tests_properties(ionic-adminq-maps-unit PROPERTIES TIMEOUT 30)
+
 # ionic SRQ adminq unit test: the four SRQ handlers had no in-process
 # coverage, which is how CREATE_SRQ shipped writing its id into a response
 # the driver was told was zero bytes long.
@@ -1439,10 +1470,12 @@ set_tests_properties(pvrdma-stats-unit PROPERTIES TIMEOUT 30)
 # Tx/Rx, and the NVMe-oF CM handshake and Connect over the GSI QP, and the
 # flush a QP entering the Error state owes its outstanding work requests.
 # Also which --backend strings name which backend, a QP's life on the none
-# backend, and the loopback backend pairing QPs that name no destination.
+# backend, the loopback backend pairing QPs that name no destination, and
+# RDMA_RESET_LIF freeing everything the driver made.
 set(ERNIC_HARNESS_GROUPS
-    devcmds bringup rdma-reset admin rc atomic cq-events qp-flush
-    qp-flush-srq ud srq eth nvmeof teardown backend-names none loopback-pair)
+    devcmds bringup rdma-reset rdma-reset-frees admin rc atomic cq-events
+    qp-flush qp-flush-srq ud srq eth nvmeof teardown backend-names none
+    loopback-pair)
 if(ERNIC_BUILD_P4)
     list(APPEND ERNIC_HARNESS_GROUPS p4-port fp8-map p4-rdma p4-cvt p4-cvt-map
                                       p4-drop-map p4-devcmd)

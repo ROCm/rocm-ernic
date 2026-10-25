@@ -51,9 +51,13 @@ typedef struct {
     RdmaBackendDev *backend_dev;
 } LoopbackQP;
 
+/* The first QPN handed out, and the lowest after wrapping, to stay clear of
+ * the special QPs */
+#define LOOPBACK_FIRST_QPN 100u
+
 typedef struct {
     /* Resource tracking */
-    GHashTable *qps; /* qpn -> LoopbackQP */
+    GHashTable *qps; /* qpn -> LoopbackQP, the live QPs */
 
     /* Handle generators */
     uint32_t next_pd_handle;
@@ -93,7 +97,7 @@ static int loopback_init(RdmaBackendDev *backend_dev, const char *config)
 
     priv->next_pd_handle = 1;
     priv->next_cq_handle = 1;
-    priv->next_qpn = 100; /* Start at 100 to avoid special QPs */
+    priv->next_qpn = LOOPBACK_FIRST_QPN;
 
     qemu_mutex_init(&priv->lock);
 
@@ -254,16 +258,22 @@ static int loopback_create_qp(RdmaBackendQP *qp, uint8_t qp_type,
     }
 
     lqp = g_new0(LoopbackQP, 1);
-
-    qemu_mutex_lock(&priv->lock);
-    lqp->qpn = priv->next_qpn++;
-    qemu_mutex_unlock(&priv->lock);
-
     lqp->qp_type = qp_type;
     lqp->state = IBV_QPS_RESET;
     lqp->backend_dev = scq->backend_dev; /* Store for auto-pairing */
 
+    /*
+     * Skip any number still in use once the counter wraps: inserting over a
+     * live QP would free it while the resource manager still holds it.
+     * There are far fewer live QPs than numbers, so this ends.
+     */
+    qemu_mutex_lock(&priv->lock);
+    do {
+        lqp->qpn = priv->next_qpn++;
+    } while (lqp->qpn < LOOPBACK_FIRST_QPN ||
+             g_hash_table_contains(priv->qps, GUINT_TO_POINTER(lqp->qpn)));
     g_hash_table_insert(priv->qps, GUINT_TO_POINTER(lqp->qpn), lqp);
+    qemu_mutex_unlock(&priv->lock);
 
     /* Store the actual LoopbackQP pointer, not the QPN! */
     qp->ibqp = (struct ibv_qp *)lqp;
@@ -273,10 +283,30 @@ static int loopback_create_qp(RdmaBackendQP *qp, uint8_t qp_type,
     return 0;
 }
 
+/*
+ * Forget the QP, so its memory doesn't outlive it and it can't be paired
+ * after it's gone. A partner paired with it keeps naming it, as a connected
+ * QP whose peer was destroyed does.
+ */
 static void loopback_destroy_qp(RdmaBackendQP *qp, RdmaDeviceResources *dev_res)
 {
     LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
-    uint32_t qpn = lqp ? lqp->qpn : 0;
+    LoopbackBackendPrivate *priv;
+    uint32_t qpn;
+
+    (void)dev_res;
+    if (!lqp) {
+        return;
+    }
+    qpn = lqp->qpn;
+    priv = get_private(lqp->backend_dev);
+    qp->ibqp = NULL;
+    if (priv) {
+        /* The table's value destructor frees lqp. */
+        qemu_mutex_lock(&priv->lock);
+        g_hash_table_remove(priv->qps, GUINT_TO_POINTER(qpn));
+        qemu_mutex_unlock(&priv->lock);
+    }
     rdma_info_report("Loopback: Destroyed QP %u", qpn);
 }
 

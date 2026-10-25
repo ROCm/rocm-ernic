@@ -204,6 +204,8 @@ static void handle_rdma_reset(struct ionic_rdma_devcmd_state *s,
     s->aq_count = 0;
     s->pending_cq_valid = false;
 
+    /* Everything the driver made is gone with it, as on hardware. */
+    ionic_adminq_release_all(s->adminq_ctx);
     drop_adminq_ctx(s);
 
     comp[0] = 0; /* status OK */

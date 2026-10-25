@@ -838,22 +838,6 @@ static int tcp_qp_state_rts(RdmaBackendQP *qp, uint8_t qp_type, uint32_t sq_psn,
     return 0;
 }
 
-static int tcp_query_qp(RdmaBackendQP *qp, struct ibv_qp_attr *attr,
-                        int attr_mask, struct ibv_qp_init_attr *init_attr)
-{
-    (void)qp;
-    (void)attr_mask;
-
-    memset(attr, 0, sizeof(*attr));
-    memset(init_attr, 0, sizeof(*init_attr));
-
-    /* Simplified implementation */
-    attr->qp_state = IBV_QPS_RTS;
-    attr->cur_qp_state = IBV_QPS_RTS;
-
-    return 0;
-}
-
 /*
  * GID Management
  */
@@ -954,7 +938,11 @@ const RdmaBackendOps rdma_backend_ops_tcp = {
     .qp_state_init = tcp_qp_state_init,
     .qp_state_rtr = tcp_qp_state_rtr,
     .qp_state_rts = tcp_qp_state_rts,
-    .query_qp = tcp_query_qp,
+    /*
+     * No query_qp: the backend keeps no QP state, so the resource manager
+     * answers from what it recorded. (A stub here once reported every QP as
+     * RTS.)
+     */
 
     .get_backend_gid_index = tcp_get_backend_gid_index,
 

@@ -10,8 +10,8 @@
  * Shared by tests/test_ionic_stats.c and the fuzz harness
  * nix/analysis/fuzz/fuzz_ionic_stats.c, so the table and the fuzzer run
  * the handler against the same fake device, and by
- * tests/test_ionic_adminq_poll.c.  It defines functions, so include it once,
- * in one translation unit.
+ * tests/test_ionic_adminq_poll.c and tests/test_ionic_adminq_maps.c.  It
+ * defines functions, so include it once, in one translation unit.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -173,10 +173,20 @@ int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle)
     *pd_handle = 1;
     return 0;
 }
+void ionic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle)
+{
+    (void)handle;
+    (void)pd_handle;
+}
+/* How many CQs and MRs were allocated. */
+static unsigned g_alloc_cq_calls;
+static unsigned g_alloc_mr_calls;
+
 int ionic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe, uint32_t *cq_handle)
 {
     (void)handle;
     (void)cqe;
+    g_alloc_cq_calls++;
     *cq_handle = 1;
     return 0;
 }
@@ -216,6 +226,7 @@ int ionic_rm_alloc_mr(pvrdma_handle_t handle, uint32_t pd_handle,
     (void)handle;
     (void)pd_handle;
     (void)access_flags;
+    g_alloc_mr_calls++;
     *mr_handle = 1;
     return 0;
 }
@@ -238,6 +249,10 @@ void ionic_datapath_unregister_cq(struct ionic_datapath *dp, uint32_t cq_id)
 {
     (void)dp;
     (void)cq_id;
+}
+void ionic_datapath_reset_rdma(struct ionic_datapath *dp)
+{
+    (void)dp;
 }
 void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
                                 uint8_t ib_qp_type, uint32_t sq_cq_id,
@@ -527,6 +542,8 @@ static void ctx_reset(void)
     g_nwrites = 0;
     g_alloc_qp_calls = 0;
     g_alloc_qp_type = 0;
+    g_alloc_cq_calls = 0;
+    g_alloc_mr_calls = 0;
 }
 
 #endif /* IONIC_ADMINQ_FAKES_H */
