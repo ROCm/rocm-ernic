@@ -436,25 +436,33 @@ cmake<span class="w"> </span>--build<span class="w"> </span>build
 <p>A program the engine will not run stops the server starting,
 and says which feature it used. A bad program is a startup
 failure, never a silently inert pipeline.</p>
-<p>The RDMA backend is unrelated to any of this. The engine is
-on the Ethernet path, and the RDMA backends never touch it,
-so <code class="docutils literal notranslate"><span class="pre">--backend</span></code> makes no difference to what the pipeline
-sees.</p>
+<p>The RDMA backend is unrelated to any of this. The backends
+never touch the engine, so <code class="docutils literal notranslate"><span class="pre">--backend</span></code> makes no difference
+to what the pipeline sees. The device’s RDMA data path does
+run a loaded program, but only one written for it; see below.</p>
 <section id="status">
 <h2>Status<a class="headerlink" href="#status" title="Link to this heading">#</a></h2>
-<p>The engine loads a compiled P4 program and runs it. bmv2’s
-own <code class="docutils literal notranslate"><span class="pre">loopback.json</span></code> forwards a frame unchanged;
+<p>The engine loads a compiled P4 program and runs it, on two
+paths.</p>
+<p>On the Ethernet path it runs over every frame. bmv2’s own
+<code class="docutils literal notranslate"><span class="pre">loopback.json</span></code> forwards a frame unchanged;
 <code class="docutils literal notranslate"><span class="pre">simple_router.json</span></code> does not load (see below). Table
 entries can be installed, changed and removed, so the same
 program and the same frame can be made to take a different
 path.</p>
-<p>The pipeline is on the Ethernet path only. RDMA traffic does
-not reach it, so the elementwise fp8 operation in the RDMA
-data path (<code class="docutils literal notranslate"><span class="pre">ionic_datapath_fp8_map()</span></code>) calls the arithmetic
-directly rather than through a program – which operation
-happens is fixed by the caller, not chosen by a table. Wiring
-the pipeline into the RDMA path and making that arithmetic an
-extern a program calls is what will make it P4-governed.</p>
+<p>On the RDMA path it runs over every send work request, but
+only for a program that declares a metadata header called
+<code class="docutils literal notranslate"><span class="pre">rdma_metadata</span></code>. Any other program is an Ethernet program,
+and the RDMA path behaves as if none were loaded. The
+header’s fields are the operation’s <code class="docutils literal notranslate"><span class="pre">opcode</span></code>
+(<code class="docutils literal notranslate"><span class="pre">bit&lt;8&gt;</span></code>), <code class="docutils literal notranslate"><span class="pre">qp_num</span></code> (<code class="docutils literal notranslate"><span class="pre">bit&lt;24&gt;</span></code>), <code class="docutils literal notranslate"><span class="pre">length</span></code>,
+<code class="docutils literal notranslate"><span class="pre">imm_data</span></code> and <code class="docutils literal notranslate"><span class="pre">rkey</span></code> (<code class="docutils literal notranslate"><span class="pre">bit&lt;32&gt;</span></code> each). Each is
+optional, but one declared at another width is refused at
+load, and so is a program whose deparser emits the header: it
+is architecture state, not something to put on a wire.
+Nothing is parsed or deparsed on this path. The program
+decides only whether to drop the operation and whether to
+apply fp8 arithmetic to it, through an extern.</p>
 <p>An extern is how a target gives a program something the
 language cannot express. P4 has no floating-point type – its
 base types are bit-vectors – so fp8 arithmetic is provided
@@ -748,7 +756,7 @@ build-p4c/bin/p4c-bm2-ss<span class="w"> </span>--std<span class="w"> </span>p4-
 <p>Add <code class="docutils literal notranslate"><span class="pre">--emit-externs</span></code> for a program that calls a
 target-specific extern; without it p4c refuses one it does
 not know.</p>
-<p>A program will be supplied as a <strong>bmv2 JSON file</strong>: the
+<p>A program is supplied as a <strong>bmv2 JSON file</strong>: the
 target-independent artifact that</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>p4c<span class="w"> </span>--target<span class="w"> </span>bmv2<span class="w"> </span>--arch<span class="w"> </span>v1model<span class="w"> </span>--std<span class="w"> </span>p4-16<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-o<span class="w"> </span>program.json<span class="w"> </span>program.p4
@@ -757,9 +765,8 @@ target-independent artifact that</p>
 <p>emits for any P4 program. Nothing in rocm-ernic links
 <a class="reference external" href="https://github.com/p4lang/behavioral-model">bmv2</a> itself; the
 JSON is the interface. bmv2 is still useful as a behavioural
-oracle, and the conformance tests run the same program and the
-same frames through stock bmv2 to generate what the engine is
-expected to produce.</p>
+oracle: running the same program and the same frames through
+stock bmv2 shows what the engine is expected to produce.</p>
 </section>
 <section id="loading-a-program">
 <h2>Loading a program<a class="headerlink" href="#loading-a-program" title="Link to this heading">#</a></h2>
@@ -825,10 +832,7 @@ harmless default; it is refused. And <code class="docutils literal notranslate">
 number in the document that names a large allocation without
 the document’s own size bounding it, so the entries all
 tables ask for between them are budgeted against a single
-ceiling. A program that gets that far is well formed,
-uses nothing unsupported, and has a consistent header layout,
-and is then refused with <code class="docutils literal notranslate"><span class="pre">ENOSYS</span></code> because the rest of the
-walk does not exist yet.</p>
+ceiling.</p>
 <p>Unknown keys are ignored, not rejected. That is deliberate:
 <code class="docutils literal notranslate"><span class="pre">p4c</span></code> emits <code class="docutils literal notranslate"><span class="pre">program</span></code>, <code class="docutils literal notranslate"><span class="pre">source_info</span></code>, <code class="docutils literal notranslate"><span class="pre">action_ids</span></code> and
 <code class="docutils literal notranslate"><span class="pre">force_arith</span></code>, none of which appear in bmv2’s own
@@ -888,9 +892,10 @@ bus, reached from the host through
 <a class="reference external" href="https://docs.kernel.org/userspace-api/fwctl/pds_fwctl.html">pds_fwctl</a>
 with an <em>(endpoint id, operation id, buffers)</em> RPC whose scope
 the driver checks. rocm-ernic emulates only <code class="docutils literal notranslate"><span class="pre">ionic</span></code>, so the
-host-facing API will first appear as ionic device commands
-shaped like those RPCs. A faithful emulation eventually means
-a <code class="docutils literal notranslate"><span class="pre">pds_core</span></code>-like control device.</p>
+host-facing API is ionic device commands shaped like those
+RPCs (see <a class="reference internal" href="#the-guest-s-control-surface">The guest’s control surface</a>). A faithful
+emulation eventually means a <code class="docutils literal notranslate"><span class="pre">pds_core</span></code>-like control
+device.</p>
 </dd>
 <dt>The architecture</dt><dd><p>The DPU’s P4 architecture is not v1model, and the real
 architecture file is proprietary. v1model is used here because
@@ -914,9 +919,8 @@ processing DASH wants. This engine has the same gap.</p>
 </dd>
 <dt>Arithmetic width</dt><dd><p>bmv2 evaluates expressions at infinite precision and truncates
 on assignment to a field. A fixed-width C engine will not
-always agree. The supported width is documented with the
-loader, and the conformance tests pin the behaviour for the
-programs the engine claims to run.</p>
+always agree. Here every value is carried at the widest
+field the loader accepts, 512 bits (<code class="docutils literal notranslate"><span class="pre">P4_MAX_FIELD_BITS</span></code>).</p>
 </dd>
 </dl>
 </section>
@@ -973,10 +977,10 @@ applied only to frames read from the host backend. Attaching to a
 pre-created, user-owned persistent TAP does not need privilege, and
 is the pattern <code class="docutils literal notranslate"><span class="pre">tests/test_ionic_ci.sh</span></code> already uses for its
 optional checks.</p>
-<p>The other gap is the round trip. Sending a frame back to the port
-it arrived on needs a table entry that sets <code class="docutils literal notranslate"><span class="pre">egress_spec</span></code>, which
-needs a loaded program, so until then a guest frame can only be
-observed leaving towards the uplink.</p>
+<p>The round trip needs no TAP: with <code class="docutils literal notranslate"><span class="pre">loopback.json</span></code> loaded, a
+frame the guest transmits is sent back to the port it arrived
+on and lands in the guest’s receive ring, which
+<code class="docutils literal notranslate"><span class="pre">ernic-p4-driver</span></code> checks.</p>
 </section>
 </section>
 </section>
