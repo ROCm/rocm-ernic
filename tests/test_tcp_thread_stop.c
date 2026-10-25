@@ -1866,7 +1866,7 @@ static const char *mgr_setup(struct mgr_fixture *fx, uint32_t nodes,
     priv->mesh_nodes = g_hash_table_new_full(
         g_direct_hash, g_direct_equal, NULL, tcp_mesh_node_info_destroy_notify);
     qemu_mutex_init(&priv->mesh_table_lock);
-    qemu_mutex_init(&priv->topology_broadcast_lock);
+    qemu_mutex_init(&priv->broadcast_lock);
     priv->connections = g_hash_table_new_full(
         g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
     priv->pending_conns = g_ptr_array_new();
@@ -1877,7 +1877,6 @@ static const char *mgr_setup(struct mgr_fixture *fx, uint32_t nodes,
     priv->gid_owner = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
                                             tcp_gid_key_free, NULL);
     qemu_mutex_init(&priv->gid_table_lock);
-    qemu_mutex_init(&priv->gid_broadcast_lock);
 
     for (uint32_t i = 0; i < nodes && i < MGR_MAX_NODES; i++) {
         uint32_t id = i + 1;
@@ -1931,10 +1930,9 @@ static void mgr_teardown(struct mgr_fixture *fx)
     }
     g_hash_table_destroy(priv->gid_owner);
     g_hash_table_destroy(priv->node_gids);
-    qemu_mutex_destroy(&priv->gid_broadcast_lock);
     qemu_mutex_destroy(&priv->gid_table_lock);
     qemu_mutex_destroy(&priv->conn_table_lock);
-    qemu_mutex_destroy(&priv->topology_broadcast_lock);
+    qemu_mutex_destroy(&priv->broadcast_lock);
     qemu_mutex_destroy(&priv->mesh_table_lock);
     qemu_cond_destroy(&priv->health_check_cond);
     qemu_mutex_destroy(&priv->health_check_lock);
@@ -7855,7 +7853,7 @@ static int run_wl_case(const struct wl_case *c)
  */
 
 enum st_scenario {
-    ST_TIMEOUT,    /* a broadcast, with a second waiting for the lock */
+    ST_TIMEOUT,    /* a broadcast, with a second waiting behind it */
     ST_DATAPATH,   /* the data path's message, through the send thread */
     ST_QUEUE_FULL, /* the data path fills the send queue */
     ST_RELAY,      /* the manager relays to a node that stopped reading */
@@ -7876,7 +7874,7 @@ struct st_case {
 static const struct st_case st_cases[] = {
     {"negative",
      "a broadcast to a node that stops reading, with a second broadcast "
-     "waiting for the connection's lock",
+     "waiting behind it",
      "the first gives up after the manager's send timeout and shuts the "
      "connection down, the second then fails at once, and the health check "
      "retires the connection",
@@ -7936,7 +7934,7 @@ static const struct st_case st_cases[] = {
 /* A broadcast on a thread of its own, and when it returned */
 struct st_broadcast {
     TcpBackendPrivate *priv;
-    bool gids; /* tcp_broadcast_gid_table(), not the topology */
+    bool gids; /* tcp_broadcast_gid_table(), not tcp_broadcast_mesh() */
     pthread_t tid;
     _Atomic uint64_t done_ms;
 };
@@ -7948,7 +7946,7 @@ static void *st_broadcast_run(void *opaque)
     if (b->gids)
         tcp_broadcast_gid_table(b->priv);
     else
-        tcp_broadcast_mesh_topology(b->priv);
+        tcp_broadcast_mesh(b->priv, UINT32_MAX);
     atomic_store(&b->done_ms, ernic_monotonic_ms());
     return NULL;
 }

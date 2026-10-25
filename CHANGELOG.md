@@ -639,7 +639,10 @@
     what to do, so registrations and heartbeats no longer wait on it (they
     could deadlock). A node that hangs up is reported dead within one
     interval rather than three, one that answers again is reported alive at
-    once, and topology updates arrive in order.
+    once, and topology updates arrive in order, with the GID tables as well
+    as with each other. A topology update taken before a node registered
+    could arrive after a GID table with the node's claims, and the workers
+    dropped them until the next table.
   * A worker listens on the port it advertises. Choosing a free port with a
     throwaway socket raced with other processes, and a failure there had it
     advertise port 0.
