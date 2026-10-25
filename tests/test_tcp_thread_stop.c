@@ -4800,7 +4800,10 @@ static const struct sender_case sender_cases[] = {
 #define SENDER_LEN  8u
 #define SENDER_BYTE 0xab
 
-/* Set node id's liveness and the time of its last heartbeat. */
+/*
+ * Set node id's liveness, as the manager declares it, with its claims, and
+ * the time of its last heartbeat.
+ */
 static void node_set(TcpBackendPrivate *priv, uint32_t id, bool alive,
                      uint64_t last_ms)
 {
@@ -4809,7 +4812,7 @@ static void node_set(TcpBackendPrivate *priv, uint32_t id, bool alive,
     qemu_mutex_lock(&priv->mesh_table_lock);
     node = g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(id));
     if (node) {
-        node->is_alive = alive;
+        tcp_node_set_alive(priv, node, alive, NULL);
         node->last_heartbeat_ms = last_ms;
     }
     qemu_mutex_unlock(&priv->mesh_table_lock);
@@ -5228,7 +5231,6 @@ static const char *ra_declare_dead(TcpBackendPrivate *priv)
     if (ra_resolve(priv) != 1)
         return "worker 1's claim did not take effect";
     node_set(priv, 1, false, ernic_monotonic_ms() - UINT64_C(1000000));
-    tcp_gid_claims_set_alive(priv, 1, false);
     return ra_resolve(priv) == UINT32_MAX
                ? NULL
                : "a node declared dead still owned its GID";
@@ -6065,6 +6067,191 @@ static int run_ev_case(const struct ev_case *c)
     return ok ? 0 : 1;
 }
 
+/* ---- A node's liveness ------------------------------------------------- */
+
+/*
+ * The manager keeps a node's liveness twice: in the topology (is_alive),
+ * and in whether its GID claims take part in resolution.  They could
+ * disagree.  A node declared dead that advertised before it answered again
+ * owned its GIDs while the topology said it was dead, and a registration
+ * that found a node with no live connection took its claims out of
+ * resolution but left the topology saying it was alive.  Both are now
+ * written together, by tcp_node_set_alive().
+ *
+ * Each row starts a manager with tcp_init(), stops its health-check thread,
+ * as the sender rows do, so that only the row declares a node dead, and
+ * registers two workers over socketpairs: nodes 1 and 2.
+ */
+
+enum lv_scenario {
+    LV_DEAD_ADVERTISES, /* node 2, declared dead, advertises a GID */
+    LV_GONE,            /* node 2 hangs up, and a third worker registers */
+};
+
+struct lv_case {
+    const char *category;
+    const char *description;
+    const char *expected;
+    enum lv_scenario scenario;
+};
+
+static const struct lv_case lv_cases[] = {
+    {"negative", "node 2, declared dead, advertises a GID before it answers",
+     "the GID resolves to nothing, and worker 1 is told node 2 owns nothing; "
+     "once node 2 answers a heartbeat, it owns the GID, and worker 1 is told "
+     "so",
+     LV_DEAD_ADVERTISES},
+    {"positive",
+     "node 2 hangs up, and a worker registers before the health check has "
+     "noticed",
+     "node 2 is declared dead, its GID resolves to nothing, and worker 1 is "
+     "told both",
+     LV_GONE},
+};
+
+/* The one GID of these rows: ::ffff:192.168.251.11 */
+static const uint8_t lv_gid[16] = {0, 0, 0,    0,    0,   0,   0,   0,
+                                   0, 0, 0xff, 0xff, 192, 168, 251, 11};
+
+static uint32_t lv_resolve(TcpBackendPrivate *priv)
+{
+    union ibv_gid gid;
+
+    memcpy(gid.raw, lv_gid, 16);
+    return tcp_resolve_node_from_gid(priv, &gid);
+}
+
+/*
+ * LV_DEAD_ADVERTISES.  The manager answers each advertisement by sending
+ * every worker the whole GID table, and a heartbeat that revives a node by
+ * sending it again, so what worker 1 is told comes after the change it
+ * reports.
+ */
+static const char *lv_dead_advertises(TcpBackendPrivate *priv, int w1, int w2)
+{
+    /* Finish the registrations, and discard what they sent */
+    if (!worker_settled(w1, 1) || !worker_settled(w2, 2))
+        return "a registration wasn't finished";
+    count_type(w1, TCP_MSG_NODE_GIDS);
+
+    node_set(priv, 2, false, ernic_monotonic_ms() - UINT64_C(1000000));
+    if (!send_gids(w2, 2, (const uint8_t(*)[16]) & lv_gid))
+        return "could not send the advertisement";
+    if (gids_for(w1, 2) != 0)
+        return "worker 1 was told a dead node owns the GID it advertised";
+    if (lv_resolve(priv) != UINT32_MAX)
+        return "a dead node owns the GID it advertised";
+
+    if (!send_heartbeat(w2, 2))
+        return "could not send the heartbeat";
+    if (gids_for(w1, 2) != 1)
+        return "worker 1 wasn't told node 2 owns its GID once it answered";
+    return lv_resolve(priv) == 2 ? NULL
+                                 : "node 2 didn't own its GID once it answered";
+}
+
+/*
+ * LV_GONE.  Node 2 is alive when its connection ends, and nothing else
+ * declares it dead: the health-check thread is stopped.  The registration
+ * sends every worker the topology, then the whole GID table.
+ */
+static const char *lv_gone(TcpBackendPrivate *priv, int w1, int w2, int *w3)
+{
+    TcpConnection *conn = tcp_connection_lookup(priv, 2);
+    const char *why = NULL;
+    uint64_t last;
+    bool alive = true;
+
+    if (!conn)
+        return "worker 2 isn't node 2";
+    /* Answered once the advertisement is handled */
+    if (!worker_settled(w1, 1) ||
+        !send_gids(w2, 2, (const uint8_t(*)[16]) & lv_gid) ||
+        !worker_settled(w2, 2))
+        why = "a registration or the advertisement wasn't finished";
+    else if (lv_resolve(priv) != 2)
+        why = "node 2's claim didn't take";
+    count_type(w1, TCP_MSG_MESH_TOPOLOGY);
+
+    if (!why && (shutdown(w2, SHUT_RDWR) < 0 || !wait_dead(conn)))
+        why = "node 2's connection didn't end";
+    if (!why && (!node_get(priv, 2, &alive, &last) || !alive))
+        why = "node 2 was declared dead before the registration";
+    if (!why && (*w3 = worker_register(priv)) < 0)
+        why = "could not register worker 3";
+    if (!why && !reported(w1, 2, false, 2000))
+        why = "worker 1 wasn't told node 2 is dead";
+    if (!why && gids_for(w1, 2) != 0)
+        why = "worker 1 wasn't told node 2 owns nothing";
+    if (!why && (!node_get(priv, 2, &alive, &last) || alive))
+        why = "node 2 wasn't declared dead";
+    if (!why && lv_resolve(priv) != UINT32_MAX)
+        why = "node 2 still owns its GID";
+
+    tcp_connection_unref(conn);
+    return why;
+}
+
+static int run_lv_case(const struct lv_case *c)
+{
+    RdmaBackendDev dev;
+    TcpBackendPrivate *priv;
+    char config[64];
+    const char *why;
+    uint16_t port = free_port();
+    int w1 = -1, w2 = -1, w3 = -1;
+    bool ok;
+
+    atomic_store(&g_creates, 0);
+    atomic_store(&g_joins, 0);
+    atomic_store(&g_exits, 0);
+    memset(&dev, 0, sizeof(dev));
+    snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
+
+    g_current_row = c->description;
+    alarm(row_timeout_s());
+    if (port == 0 ||
+        tcp_init_with_interval(&dev, config, LONG_INTERVAL_S) != 0) {
+        printf("FAIL liveness %s: %s; could not start a manager\n", c->category,
+               c->description);
+        alarm(0);
+        return 1;
+    }
+    priv = dev.backend_private;
+    tcp_stop_health_check_thread(priv);
+
+    w1 = worker_register(priv);
+    if (w1 < 0 || !wait_for_registered(priv, 1))
+        why = "worker 1 did not register";
+    else if ((w2 = worker_register(priv)) < 0 || !wait_for_registered(priv, 2))
+        why = "worker 2 did not register";
+    else if (c->scenario == LV_DEAD_ADVERTISES)
+        why = lv_dead_advertises(priv, w1, w2);
+    else
+        why = lv_gone(priv, w1, w2, &w3);
+
+    rdma_backend_ops_tcp.fini(&dev);
+    alarm(0);
+    if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
+                 atomic_load(&g_exits) != atomic_load(&g_creates)))
+        why = "a thread wasn't joined exactly once";
+
+    ok = !why;
+    printf("%s liveness %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
+           c->category, c->description, c->expected);
+    if (!ok)
+        printf("     %s\n", why);
+    fflush(stdout);
+
+    if (w1 >= 0)
+        close(w1);
+    if (w2 >= 0)
+        close(w2);
+    if (w3 >= 0)
+        close(w3);
+    return ok ? 0 : 1;
+}
+
 /* ---- Connection lifetime ---------------------------------------------- */
 
 /*
@@ -6125,8 +6312,8 @@ static const struct lt_case lt_cases[] = {
      LT_AGAIN_VS_STOP},
     {"positive",
      "a node the manager had declared dead registers again under its id",
-     "the node owns its GIDs again at once, and a withdrawal decided before "
-     "doesn't take them away",
+     "the node owns its GIDs again at once, and declaring it dead on a "
+     "finding from before doesn't take them away",
      LT_GIDS_BACK},
     {"corner",
      "a new node registers in a full table while teardown stops the receive "
@@ -6199,15 +6386,16 @@ static const char *lt_replace_run(enum lt_scenario scenario)
     }
     if (!why && scenario == LT_GIDS_BACK) {
         /*
-         * Node 1 claimed an address, then went quiet for three intervals and
-         * the manager declared it dead, which takes its claims out of
-         * resolution.  It did not restart, so it registers again under its
-         * id, and nothing makes it advertise again until then.
+         * Node 1 claimed an address while alive, then went quiet for three
+         * intervals and the manager declared it dead, which takes its claims
+         * out of resolution.  It did not restart, so it registers again under
+         * its id, and nothing makes it advertise again until then.
          */
+        node_set(fx.priv, 1, true, ernic_monotonic_ms());
         tcp_gid_claims_set(fx.priv, 1, (const uint8_t(*)[16]) & lt_gid, 1);
         if (lt_resolve(fx.priv) != 1)
             why = "the claim did not take effect";
-        tcp_gid_claims_set_alive(fx.priv, 1, false);
+        node_set(fx.priv, 1, false, ernic_monotonic_ms() - UINT64_C(1000000));
         if (!why && lt_resolve(fx.priv) != UINT32_MAX)
             why = "a node declared dead still owned its GID";
     }
@@ -6234,16 +6422,15 @@ static const char *lt_replace_run(enum lt_scenario scenario)
         why = "the node registered again did not get its GID back";
     /*
      * A registration that collected this node as unreachable before it
-     * registered again must not act on that list now: withdrawing here would
-     * undo the revival and leave the node alive with claims that are not,
-     * which nothing recovers from -- the heartbeat handler only restores them
-     * on the transition out of dead, and the node never makes it again.
+     * registered again must not act on that list now: declaring it dead here
+     * would undo the revival, and the mesh would be told it is dead and owns
+     * nothing until it next answered a heartbeat.
      */
     if (!why && scenario == LT_GIDS_BACK) {
-        if (tcp_withdraw_if_still_unreachable(fx.priv, 1))
-            why = "a stale withdrawal fired against a node registered again";
+        if (tcp_declare_dead_if_unreachable(fx.priv, 1))
+            why = "a stale declaration fired against a node registered again";
         else if (lt_resolve(fx.priv) != 1)
-            why = "a stale withdrawal undid the registration's revival";
+            why = "a stale declaration undid the registration's revival";
     }
     if (!why && !conn_retired(held))
         why = "the old connection wasn't retired";
@@ -8239,6 +8426,8 @@ int main(void)
         failures += run_ra_case(&ra_cases[i]);
     for (size_t i = 0; i < sizeof(ev_cases) / sizeof(ev_cases[0]); i++)
         failures += run_ev_case(&ev_cases[i]);
+    for (size_t i = 0; i < sizeof(lv_cases) / sizeof(lv_cases[0]); i++)
+        failures += run_lv_case(&lv_cases[i]);
     for (size_t i = 0; i < sizeof(lt_cases) / sizeof(lt_cases[0]); i++)
         failures += run_lt_case(&lt_cases[i]);
     for (size_t i = 0; i < sizeof(pp_cases) / sizeof(pp_cases[0]); i++)

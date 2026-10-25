@@ -421,9 +421,13 @@ static void tcp_gid_index_rebuild(TcpBackendPrivate *priv)
     }
 }
 
-/* The table half of tcp_gid_claims_set(), which has checked its arguments */
+/*
+ * The table half of tcp_gid_claims_set(), which has checked its arguments.
+ * @alive is whether the claims take part in resolution; see TcpNodeGids.
+ */
 static void tcp_gid_claims_record(TcpBackendPrivate *priv, uint32_t node_id,
-                                  const uint8_t (*gids)[16], uint32_t num_gids)
+                                  const uint8_t (*gids)[16], uint32_t num_gids,
+                                  bool alive)
 {
     qemu_mutex_lock(&priv->gid_table_lock);
 
@@ -433,7 +437,7 @@ static void tcp_gid_claims_record(TcpBackendPrivate *priv, uint32_t node_id,
         TcpNodeGids *claims = g_new0(TcpNodeGids, 1);
 
         claims->num_gids = num_gids;
-        claims->alive = true; /* it just advertised, so it is answering */
+        claims->alive = alive;
         for (uint32_t i = 0; i < num_gids; i++)
             memcpy(claims->gids[i], gids[i], 16);
         g_hash_table_insert(priv->node_gids, GUINT_TO_POINTER(node_id), claims);
@@ -445,16 +449,24 @@ static void tcp_gid_claims_record(TcpBackendPrivate *priv, uint32_t node_id,
 }
 
 /*
- * The logging half of tcp_gid_claims_set(): what @node_id now owns.  Called
- * with no lock held, since rdma_info_report() can block on stderr.
+ * The logging half of tcp_gid_claims_set(): what @node_id now owns, given
+ * whether its claims were recorded @alive.  Called with no lock held, since
+ * rdma_info_report() can block on stderr.
  */
 static void tcp_gid_claims_report(TcpBackendPrivate *priv, uint32_t node_id,
-                                  const uint8_t (*gids)[16], uint32_t num_gids)
+                                  const uint8_t (*gids)[16], uint32_t num_gids,
+                                  bool alive)
 {
     char buf[TCP_GID_STR_LEN];
 
     if (num_gids == 0) {
         rdma_info_report("TCP: node %u withdrew its GIDs", node_id);
+        return;
+    }
+    if (!alive) {
+        rdma_info_report("TCP: node %u, which is dead, claimed %u GID(s); "
+                         "they don't resolve to it until it answers",
+                         node_id, num_gids);
         return;
     }
 
@@ -485,6 +497,11 @@ static void tcp_gid_claims_report(TcpBackendPrivate *priv, uint32_t node_id,
 /*
  * Record @node_id's advertised set, replacing whatever it claimed before.
  * An empty set withdraws its claims, which is how the manager revokes.
+ *
+ * The claims are recorded live.  A worker records what the manager relays,
+ * and the manager advertises a dead node as owning nothing.  The manager
+ * records only its own claims here, and a worker's through
+ * tcp_gid_claims_set_if_member(), which takes the node's liveness.
  */
 void tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
                         const uint8_t (*gids)[16], uint32_t num_gids)
@@ -492,8 +509,8 @@ void tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
     if (!priv || !priv->node_gids || num_gids > TCP_MAX_NODE_GIDS)
         return;
 
-    tcp_gid_claims_record(priv, node_id, gids, num_gids);
-    tcp_gid_claims_report(priv, node_id, gids, num_gids);
+    tcp_gid_claims_record(priv, node_id, gids, num_gids, true);
+    tcp_gid_claims_report(priv, node_id, gids, num_gids, true);
 }
 
 /*
@@ -509,6 +526,12 @@ void tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
  * claims (tcp_gid_claims_forget()), puts each advertisement either before
  * the eviction, whose drop then covers it, or after, when it is refused.
  *
+ * The claims are recorded live only if the node is, so that they take part
+ * in resolution exactly when the topology says the node is alive (see
+ * tcp_node_set_alive()).  A node the health check has declared dead can
+ * still have a message handled, on a connection not yet retired, and it
+ * owns what it advertised then only once it answers a heartbeat.
+ *
  * Lock order: gid_table_lock under mesh_table_lock, as documented.
  */
 static bool tcp_gid_claims_set_if_member(TcpBackendPrivate *priv,
@@ -516,19 +539,23 @@ static bool tcp_gid_claims_set_if_member(TcpBackendPrivate *priv,
                                          const uint8_t (*gids)[16],
                                          uint32_t num_gids)
 {
-    bool member;
+    const MeshNodeInfo *node;
+    bool member, alive = false;
 
     if (!priv || !priv->node_gids || num_gids > TCP_MAX_NODE_GIDS)
         return false;
 
     qemu_mutex_lock(&priv->mesh_table_lock);
-    member = g_hash_table_contains(priv->mesh_nodes, GUINT_TO_POINTER(node_id));
-    if (member)
-        tcp_gid_claims_record(priv, node_id, gids, num_gids);
+    node = g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(node_id));
+    member = node != NULL;
+    if (member) {
+        alive = node->is_alive;
+        tcp_gid_claims_record(priv, node_id, gids, num_gids, alive);
+    }
     qemu_mutex_unlock(&priv->mesh_table_lock);
 
     if (member)
-        tcp_gid_claims_report(priv, node_id, gids, num_gids);
+        tcp_gid_claims_report(priv, node_id, gids, num_gids, alive);
     return member;
 }
 
@@ -602,13 +629,18 @@ static void tcp_gid_claims_prune(TcpBackendPrivate *priv,
                          dropped);
 }
 
-void tcp_gid_claims_set_alive(TcpBackendPrivate *priv, uint32_t node_id,
+/*
+ * Returns whether the claims changed.  Logs nothing: on the manager it runs
+ * under mesh_table_lock, called by tcp_node_set_alive(), and the caller
+ * logs (tcp_gid_claims_report_alive()), outside the lock where it can.
+ */
+bool tcp_gid_claims_set_alive(TcpBackendPrivate *priv, uint32_t node_id,
                               bool alive)
 {
     bool changed = false;
 
     if (!priv || !priv->node_gids)
-        return;
+        return false;
 
     qemu_mutex_lock(&priv->gid_table_lock);
 
@@ -621,11 +653,43 @@ void tcp_gid_claims_set_alive(TcpBackendPrivate *priv, uint32_t node_id,
     }
 
     qemu_mutex_unlock(&priv->gid_table_lock);
+    return changed;
+}
 
-    /* Logged outside the lock: rdma_info_report() can block on stderr. */
-    if (changed)
-        rdma_info_report("TCP: node %u's GIDs are %s", node_id,
-                         alive ? "live again" : "unreachable while it is away");
+/* Say that @node_id's claims have become live or dead. */
+static void tcp_gid_claims_report_alive(uint32_t node_id, bool alive)
+{
+    rdma_info_report("TCP: node %u's GIDs are %s", node_id,
+                     alive ? "live again" : "unreachable while it is away");
+}
+
+/*
+ * Declare @node alive or dead, to the mesh and to GID resolution at once:
+ * its is_alive, and whether its claims take part in resolution.  Once the
+ * node is in mesh_nodes, this is the only writer of is_alive, and the only
+ * thing that changes the liveness of claims already recorded; claims
+ * recorded later get is_alive (tcp_gid_claims_set_if_member()).  All of it
+ * is under mesh_table_lock, so whoever holds that lock sees the two agree.
+ *
+ * Returns whether is_alive changed, and in *gids_changed, if it isn't NULL,
+ * whether the claims did, which they don't if the node has none.  Logs
+ * nothing; the caller says why, and tcp_gid_claims_report_alive() what
+ * became of the claims.
+ *
+ * Caller holds mesh_table_lock; gid_table_lock is taken under it, the
+ * documented order.
+ */
+bool tcp_node_set_alive(TcpBackendPrivate *priv, MeshNodeInfo *node, bool alive,
+                        bool *gids_changed)
+{
+    bool changed = node->is_alive != alive;
+    bool gids;
+
+    node->is_alive = alive;
+    gids = tcp_gid_claims_set_alive(priv, node->node_id, alive);
+    if (gids_changed)
+        *gids_changed = gids;
+    return changed;
 }
 
 /*
@@ -1055,8 +1119,9 @@ static uint32_t tcp_evict_dead_node(TcpBackendPrivate *priv,
 }
 
 /*
- * Collect the nodes whose connection has gone, so the caller can withdraw
- * what they claimed once it has dropped mesh_table_lock.
+ * Collect the nodes whose connection has gone, so the caller can declare
+ * them dead, withdrawing what they claimed, once it has dropped
+ * mesh_table_lock (tcp_declare_dead_if_unreachable()).
  *
  * A worker that restarts registers again as a brand new node -- it asks for
  * an id of 0xFFFFFFFF, as on any first registration, and the address it
@@ -1099,41 +1164,48 @@ static uint32_t tcp_collect_dead_claimants(TcpBackendPrivate *priv,
 }
 
 /*
- * Take @node_id out of resolution if it is still unreachable, and say
- * whether it was.  Returns false when the node has a live connection again,
- * leaving its claims alone.
+ * Declare @node_id dead if it is still unreachable, which takes its claims
+ * out of resolution, and say whether it was alive until now.  Returns false
+ * when the node has a live connection again, leaving it alone, when it was
+ * dead already, or when it has been evicted meanwhile.
+ *
+ * This is what the health check would decide on its next pass: a node with
+ * no live connection can't be answering.  Deciding it here, as a node
+ * registers, lets that node's claims take the GIDs at once if it is the
+ * same guest come back under a new id.
  *
  * The re-check is the point.  tcp_collect_dead_claimants() runs under
  * mesh_table_lock and the caller then drops it, and in that window one of
  * the nodes it collected can register again under its own id: that
- * publishes a connection and restores the node's claims
- * (tcp_register_again()).  Withdrawing on the strength of the stale list
- * would undo the revival and leave the node is_alive with claims that are
- * not, which nothing recovers from -- the heartbeat handler only restores
- * claims on the transition out of dead, and the node never makes it again.
- * So the connection is looked at again here, under the lock a registration
- * publishes beneath, which makes the two atomic with respect to each other.
+ * publishes a connection and declares the node alive (the REGISTER_NODE
+ * handler, once tcp_register_again() has let it).  Declaring it dead on the
+ * strength of the stale list would undo the revival, and the mesh would be
+ * told the node is dead and owns nothing until it next answered a
+ * heartbeat.  So the connection is looked at again here, under the lock a
+ * registration publishes beneath, which makes the two atomic with respect
+ * to each other.
  *
  * Lock order: conn_table_lock and gid_table_lock under mesh_table_lock,
  * both as documented; see tcp_health_check_scan(), which does the same.
  */
-bool tcp_withdraw_if_still_unreachable(TcpBackendPrivate *priv,
-                                       uint32_t node_id)
+bool tcp_declare_dead_if_unreachable(TcpBackendPrivate *priv, uint32_t node_id)
 {
+    MeshNodeInfo *node;
     TcpConnection *conn;
-    bool withdrawn = false;
+    bool declared = false, gids = false;
 
     qemu_mutex_lock(&priv->mesh_table_lock);
+    node = g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(node_id));
     conn = tcp_connection_lookup(priv, node_id);
-    if (!conn || tcp_conn_dead(conn)) {
-        tcp_gid_claims_set_alive(priv, node_id, false);
-        withdrawn = true;
-    }
+    if (node && (!conn || tcp_conn_dead(conn)))
+        declared = tcp_node_set_alive(priv, node, false, &gids);
     if (conn)
         tcp_connection_unref(conn);
     qemu_mutex_unlock(&priv->mesh_table_lock);
 
-    return withdrawn;
+    if (gids)
+        tcp_gid_claims_report_alive(node_id, false);
+    return declared;
 }
 
 /* @s past @prefix, or NULL if @s doesn't start with it */
@@ -2840,10 +2912,11 @@ void *tcp_recv_thread_per_conn(void *opaque)
                 qemu_mutex_lock(&priv->mesh_table_lock);
 
                 /*
-                 * Nodes that can no longer be reached, whose GIDs are
-                 * withdrawn once the tables are unlocked. A worker that
-                 * restarted is among them, under the id it had before, and
-                 * it is about to claim those GIDs again under its new one.
+                 * Nodes that can no longer be reached, declared dead, which
+                 * withdraws their GIDs, once the tables are unlocked. A
+                 * worker that restarted is among them, under the id it had
+                 * before, and it is about to claim those GIDs again under
+                 * its new one.
                  *
                  * Before conn_table_lock, not under it: the lookups inside
                  * take that lock themselves.
@@ -2885,6 +2958,8 @@ void *tcp_recv_thread_per_conn(void *opaque)
                 TcpConnection *evicted_conn = NULL;
                 const char *why = NULL;
                 int refused = 0;
+                /* Whether a node registering again got its claims back */
+                bool gids_back = false;
 
                 if (again) {
                     refused =
@@ -2965,7 +3040,6 @@ void *tcp_recv_thread_per_conn(void *opaque)
                     MeshNodeInfo *node = g_hash_table_lookup(
                         priv->mesh_nodes, GUINT_TO_POINTER(assigned_id));
 
-                    node->is_alive = true;
                     node->last_heartbeat_ms = ernic_monotonic_ms();
                     /*
                      * The node's addresses are its own again, without its
@@ -2974,10 +3048,10 @@ void *tcp_recv_thread_per_conn(void *opaque)
                      * broadcast below would otherwise tell the workers it
                      * owns nothing until its advertisement came.  Under
                      * mesh_table_lock, with the connection published, so
-                     * tcp_withdraw_if_still_unreachable() can't act on a
+                     * tcp_declare_dead_if_unreachable() can't act on a
                      * stale finding of it dead in between.
                      */
-                    tcp_gid_claims_set_alive(priv, assigned_id, true);
+                    tcp_node_set_alive(priv, node, true, &gids_back);
                 }
                 /*
                  * Under mesh_table_lock, so the node's claims go with its
@@ -3006,21 +3080,24 @@ void *tcp_recv_thread_per_conn(void *opaque)
                     rdma_info_report("TCP: Node %u registered again from "
                                      "%s:%u",
                                      assigned_id, worker_host, worker_port);
+                    if (gids_back)
+                        tcp_gid_claims_report_alive(assigned_id, true);
                 } else {
                     rdma_info_report("TCP: Registered node %u at %s:%u",
                                      assigned_id, worker_host, worker_port);
                 }
 
                 /*
-                 * Marked not-alive rather than discarded: that is enough to
-                 * take the node out of resolution, so it stops contesting
-                 * the GIDs the registering node is about to claim, and it
-                 * leaves the claims to restore if the node answers a
-                 * heartbeat again, or registers again under its own id,
-                 * rather than having restarted.
+                 * Declared dead, keeping their claims, rather than
+                 * discarded: that is enough to take a node out of
+                 * resolution, so it stops contesting the GIDs the
+                 * registering node is about to claim, and it leaves the
+                 * claims to restore if the node answers a heartbeat again,
+                 * or registers again under its own id, rather than having
+                 * restarted.
                  *
-                 * The whole table is broadcast below, so the withdrawal
-                 * reaches the other workers with the rest of it.
+                 * The topology and the whole GID table are broadcast below,
+                 * so the other workers hear of it with the rest.
                  */
                 for (uint32_t i = 0; i < num_stale; i++) {
                     uint32_t id = stale[i];
@@ -3028,9 +3105,9 @@ void *tcp_recv_thread_per_conn(void *opaque)
                     /* An evicted node's claims are gone already */
                     if (id == assigned_id || id == evicted)
                         continue;
-                    if (tcp_withdraw_if_still_unreachable(priv, id))
-                        rdma_info_report("TCP: node %u is gone; withdrawing "
-                                         "its GIDs as node %u registers",
+                    if (tcp_declare_dead_if_unreachable(priv, id))
+                        rdma_info_report("TCP: node %u is gone; declared it "
+                                         "dead as node %u registers",
                                          id, assigned_id);
                 }
 
@@ -3330,15 +3407,15 @@ void *tcp_recv_thread_per_conn(void *opaque)
                      * from the manager for an interval, comes here too: the
                      * answer is what tells it the manager is still there.
                      */
-                    bool revived = false;
+                    bool revived = false, gids_back = false;
 
                     qemu_mutex_lock(&priv->mesh_table_lock);
                     MeshNodeInfo *node = g_hash_table_lookup(
                         priv->mesh_nodes, GUINT_TO_POINTER(conn->node_id));
                     if (node) {
                         node->last_heartbeat_ms = ernic_monotonic_ms();
-                        revived = !node->is_alive;
-                        node->is_alive = true;
+                        revived =
+                            tcp_node_set_alive(priv, node, true, &gids_back);
                     }
                     qemu_mutex_unlock(&priv->mesh_table_lock);
 
@@ -3358,7 +3435,8 @@ void *tcp_recv_thread_per_conn(void *opaque)
                     if (revived) {
                         rdma_info_report("TCP: Node %u is answering again",
                                          conn->node_id);
-                        tcp_gid_claims_set_alive(priv, conn->node_id, true);
+                        if (gids_back)
+                            tcp_gid_claims_report_alive(conn->node_id, true);
                         tcp_broadcast_mesh_topology(priv);
                         tcp_broadcast_gid_table(priv);
                     }
@@ -4250,6 +4328,7 @@ static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items)
     while (g_hash_table_iter_next(&iter, NULL, &value)) {
         MeshNodeInfo *node = (MeshNodeInfo *)value;
         TcpHealthCheckItem item = {node->node_id, NULL, false, false};
+        bool gids_gone = false;
 
         if (node->node_id == tcp_local_node(priv))
             continue;
@@ -4265,8 +4344,7 @@ static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items)
         if (item.conn && tcp_conn_dead(item.conn)) {
             if (node->is_alive) {
                 rdma_warn_report("TCP: Node %u disconnected", node->node_id);
-                node->is_alive = false;
-                tcp_gid_claims_set_alive(priv, node->node_id, false);
+                tcp_node_set_alive(priv, node, false, &gids_gone);
                 newly_dead = true;
             }
             item.disconnected = true;
@@ -4278,12 +4356,13 @@ static bool tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items)
                                  "heartbeat: %" PRIu64 " seconds ago)",
                                  node->node_id,
                                  (now_ms - node->last_heartbeat_ms) / 1000u);
-                node->is_alive = false;
-                tcp_gid_claims_set_alive(priv, node->node_id, false);
+                tcp_node_set_alive(priv, node, false, &gids_gone);
                 newly_dead = true;
             }
             item.silent = true;
         }
+        if (gids_gone)
+            tcp_gid_claims_report_alive(node->node_id, false);
 
         /* Every reference taken above lands in items, to be released */
         if (item.conn)
