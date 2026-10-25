@@ -729,6 +729,10 @@
     `analysis-semgrep` never parsed and now run; the target tests its rules
     against fixtures in `nix/analysis/semgrep-tests/` and fails if one
     doesn't parse or pass.
+  * RDMA-Tutorial's write example, in the two-VM lane, waits for both ends
+    of a message before clearing it. Taking it as arrived on either end let
+    the rest of a WRITE land after the clear and count as the next message,
+    which could leave the server waiting until `timeout` killed it.
 
 ### Limitations
 
