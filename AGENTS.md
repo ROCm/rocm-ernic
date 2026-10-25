@@ -699,8 +699,19 @@ through `tcp_node_set_alive()`**, which writes both under
 node with no live connection (`tcp_declare_dead_if_unreachable()`), as
 the health check would on its next pass.
 Workers keep no liveness of their own; the manager advertises a dead node
-as owning nothing (`tcp_broadcast_gid_table()`), which is what gives an
+as owning nothing (`tcp_snapshot_node_gids()`), which is what gives an
 empty advertisement meaning.
+
+The manager's broadcasts all come from one thread
+(`tcp_broadcast_thread()`). Handlers only ask for them
+(`tcp_broadcast_topology()`, `tcp_broadcast_node()`,
+`tcp_broadcast_node_gids()`, `tcp_broadcast_gid_table_to()`), and a pass
+sends a changed node's set to every worker, and the whole GID table only
+to a node that has just registered. **Don't send a topology or a GID set
+from anywhere else**: pruning against the topology
+(`tcp_gid_claims_prune()`) is safe only because one thread sends the
+snapshots in the order it took them. Ask only once the answer to a
+registration has gone, since a worker ignores what comes before it.
 
 The broadcasts carry at most `TCP_MAX_MESH_NODES` (64) nodes, so when a
 new node registers in a full table, the manager evicts the node that has

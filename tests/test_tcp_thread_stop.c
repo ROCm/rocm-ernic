@@ -993,6 +993,32 @@ static int run_recv_case(const struct recv_case *c)
     return ok ? 0 : 1;
 }
 
+/* Send a heartbeat as node src, which is how a worker answers the manager. */
+static bool send_heartbeat(int fd, uint32_t src)
+{
+    TcpMsgHeader hdr;
+
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
+    hdr.msg_type = htonl(TCP_MSG_HEARTBEAT);
+    hdr.src_node_id = htonl(src);
+    return send(fd, &hdr, sizeof(hdr), 0) == (ssize_t)sizeof(hdr);
+}
+
+/* Read messages from fd until one of type arrives, for up to timeout_ms. */
+static bool wait_for_type(int fd, TcpMsgType type, int timeout_ms)
+{
+    double end = now_s() + timeout_ms / 1000.0;
+
+    while (now_s() < end) {
+        int left = (int)((end - now_s()) * 1000.0);
+
+        if (recv_type(fd, type, left > 0 ? left : 1))
+            return true;
+    }
+    return false;
+}
+
 /* ---- The whole backend ------------------------------------------------- */
 
 /*
@@ -1000,6 +1026,9 @@ static int run_recv_case(const struct recv_case *c)
  * process, then tcp_fini().  A worker that stops reading leaves a manager
  * thread blocked sending to it, holding that connection's lock and, in a
  * broadcast, conn_table_lock as well.  tcp_fini() has to return anyway.
+ * Broadcasts used to be sent on the thread that handled the change, so a
+ * worker's registration held up its own receive thread too; they are now
+ * sent by a thread of their own.
  *
  * The workers are attached over socketpairs rather than accepted over TCP.
  * A TCP socket whose peer has stopped reading doesn't refuse every send:
@@ -1032,8 +1061,9 @@ static const struct fini_case fini_cases[] = {
      "to the other worker, and tcp_fini() returns",
      BLOCK_HEARTBEAT, 1},
     {"negative", "a worker that stops reading while another registers",
-     "the broadcast blocks on it without holding conn_table_lock, so lookups "
-     "on other threads go on, and tcp_fini() returns",
+     "the broadcast blocks on it, on the broadcaster thread, without holding "
+     "conn_table_lock, so lookups on other threads go on, the worker that "
+     "registered is still answered, and tcp_fini() returns",
      BLOCK_BROADCAST, LONG_INTERVAL_S},
 };
 
@@ -1299,11 +1329,23 @@ static int run_fini_case(const struct fini_case *c)
         goto stop;
     }
     /*
+     * Within the 5 s the blocked send can take: worker 2's receive thread
+     * only asked for the broadcast, so it isn't the one waiting.
+     */
+    if (c->block == BLOCK_BROADCAST &&
+        (!send_heartbeat(w2, 2) ||
+         !wait_for_type(w2, TCP_MSG_HEARTBEAT_RESP, 1000))) {
+        why = "worker 2's heartbeat wasn't answered while the broadcast "
+              "waited";
+        goto stop;
+    }
+    /*
      * One a second, so two within about two seconds.  Neither worker
      * answers, so the manager declares worker 1 dead three intervals after
      * it registered, and the broadcast that tells the mesh waits behind
-     * worker 2's, which waits on worker 1, holding up the health check until
-     * the send times out; the heartbeats have to come before that.
+     * worker 2's, which waits on worker 1 until the send times out.  Both
+     * wait on the broadcaster thread, so the health check goes on sending
+     * heartbeats meanwhile.
      */
     if (c->block == BLOCK_HEARTBEAT && !heartbeats_within(w2, 2, 2500))
         why = "the health check stopped sending worker 2 heartbeats";
@@ -1360,6 +1402,9 @@ static const struct create_case create_cases[] = {
     {"negative", "the manager's health-check thread can't be created",
      "tcp_init() fails and joins only the accept thread", FAIL_IN_INIT, 1,
      false},
+    {"negative", "the manager's broadcaster thread can't be created",
+     "tcp_init() fails and joins only the accept and health-check threads",
+     FAIL_IN_INIT, 2, false},
     {"negative", "an accepted connection's receive thread can't be created",
      "the connection is closed, not left pending, and tcp_fini() joins only "
      "the threads that exist",
@@ -1866,7 +1911,8 @@ static const char *mgr_setup(struct mgr_fixture *fx, uint32_t nodes,
     priv->mesh_nodes = g_hash_table_new_full(
         g_direct_hash, g_direct_equal, NULL, tcp_mesh_node_info_destroy_notify);
     qemu_mutex_init(&priv->mesh_table_lock);
-    qemu_mutex_init(&priv->broadcast_lock);
+    /* Its thread isn't started; a row that wants one starts it */
+    tcp_broadcaster_init(priv);
     priv->connections = g_hash_table_new_full(
         g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
     priv->pending_conns = g_ptr_array_new();
@@ -1919,6 +1965,7 @@ static void mgr_teardown(struct mgr_fixture *fx)
     TcpBackendPrivate *priv = fx->priv;
 
     tcp_stop_health_check_thread(priv);
+    tcp_stop_broadcast_thread(priv);
     tcp_stop_recv_threads(priv);
     g_hash_table_destroy(priv->mesh_nodes);
     g_hash_table_destroy(priv->connections);
@@ -1932,7 +1979,7 @@ static void mgr_teardown(struct mgr_fixture *fx)
     g_hash_table_destroy(priv->node_gids);
     qemu_mutex_destroy(&priv->gid_table_lock);
     qemu_mutex_destroy(&priv->conn_table_lock);
-    qemu_mutex_destroy(&priv->broadcast_lock);
+    tcp_broadcaster_destroy(priv);
     qemu_mutex_destroy(&priv->mesh_table_lock);
     qemu_cond_destroy(&priv->health_check_cond);
     qemu_mutex_destroy(&priv->health_check_lock);
@@ -2250,32 +2297,6 @@ static int accept_within(int lfd)
     struct pollfd pfd = {.fd = lfd, .events = POLLIN};
 
     return poll(&pfd, 1, 5000) == 1 ? accept(lfd, NULL, NULL) : -1;
-}
-
-/* Send a heartbeat as node src, which is how a worker answers the manager. */
-static bool send_heartbeat(int fd, uint32_t src)
-{
-    TcpMsgHeader hdr;
-
-    memset(&hdr, 0, sizeof(hdr));
-    hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
-    hdr.msg_type = htonl(TCP_MSG_HEARTBEAT);
-    hdr.src_node_id = htonl(src);
-    return send(fd, &hdr, sizeof(hdr), 0) == (ssize_t)sizeof(hdr);
-}
-
-/* Read messages from fd until one of type arrives, for up to timeout_ms. */
-static bool wait_for_type(int fd, TcpMsgType type, int timeout_ms)
-{
-    double end = now_s() + timeout_ms / 1000.0;
-
-    while (now_s() < end) {
-        int left = (int)((end - now_s()) * 1000.0);
-
-        if (recv_type(fd, type, left > 0 ? left : 1))
-            return true;
-    }
-    return false;
 }
 
 /* ---- Registering twice ------------------------------------------------- */
@@ -4871,16 +4892,52 @@ static const char *sender_heartbeat(TcpBackendPrivate *priv, int w1)
 }
 
 /*
+ * Wait up to timeout_ms for the manager's broadcast passes to have taken n
+ * asks, and sent what they took.
+ */
+static bool broadcasts_sent_reach(TcpBackendPrivate *priv, uint64_t n,
+                                  int timeout_ms)
+{
+    for (int i = 0; i <= timeout_ms / 10; i++) {
+        uint64_t sent;
+
+        qemu_mutex_lock(&priv->broadcast_lock);
+        sent = priv->broadcasts_sent;
+        qemu_mutex_unlock(&priv->broadcast_lock);
+        if (sent >= n)
+            return true;
+        sleep_ms(10);
+    }
+    return false;
+}
+
+/*
+ * Wait up to 5 s for the manager's broadcaster to have sent everything it
+ * has been asked for so far.
+ */
+static bool broadcasts_settled(TcpBackendPrivate *priv)
+{
+    uint64_t asked;
+
+    qemu_mutex_lock(&priv->broadcast_lock);
+    asked = priv->broadcasts_asked;
+    qemu_mutex_unlock(&priv->broadcast_lock);
+    return broadcasts_sent_reach(priv, asked, 5000);
+}
+
+/*
  * Wait for the manager to finish with everything the worker on fd has sent
  * it so far, its registration included.  The worker's receive thread
  * handles one message at a time, so once it has answered a heartbeat sent
- * now, the handlers before it have returned, broadcasts and all, and what
- * they sent is waiting in the workers' sockets.
+ * now, the handlers before it have returned, and asked the broadcaster for
+ * what they had to tell the mesh.  Once the broadcaster has sent that too,
+ * it is waiting in the workers' sockets.
  */
-static bool worker_settled(int fd, uint32_t id)
+static bool worker_settled(TcpBackendPrivate *priv, int fd, uint32_t id)
 {
     return send_heartbeat(fd, id) &&
-           wait_for_type(fd, TCP_MSG_HEARTBEAT_RESP, 2000);
+           wait_for_type(fd, TCP_MSG_HEARTBEAT_RESP, 2000) &&
+           broadcasts_settled(priv);
 }
 
 /*
@@ -4895,7 +4952,7 @@ static const char *sender_revives(TcpBackendPrivate *priv, int w1, int w2)
     uint64_t last;
     bool alive;
 
-    if (!worker_settled(w1, 1) || !worker_settled(w2, 2))
+    if (!worker_settled(priv, w1, 1) || !worker_settled(priv, w2, 2))
         return "a registration wasn't finished";
     count_type(w1, TCP_MSG_MESH_TOPOLOGY);
     node_set(priv, 2, false, ernic_monotonic_ms() - UINT64_C(1000000));
@@ -4960,7 +5017,7 @@ static int others_before(int fd, TcpMsgType type, int timeout_ms)
  * retired messages, anything it sent for them, to either worker, is already
  * waiting.
  */
-static const char *sender_retired(int w1, int w2)
+static const char *sender_retired(TcpBackendPrivate *priv, int w1, int w2)
 {
     static const TcpMsgType retired[] = {
         TCP_MSG_RESERVED_3,  TCP_MSG_RESERVED_4,  TCP_MSG_RESERVED_5,
@@ -4971,7 +5028,7 @@ static const char *sender_retired(int w1, int w2)
     struct pollfd pfd = {.fd = w2, .events = POLLIN};
 
     /* Finish the registrations, and discard what they sent */
-    if (!worker_settled(w1, 1) || !worker_settled(w2, 2))
+    if (!worker_settled(priv, w1, 1) || !worker_settled(priv, w2, 2))
         return "a registration wasn't finished";
     count_type(w1, TCP_MSG_HEARTBEAT_RESP);
     count_type(w2, TCP_MSG_HEARTBEAT_RESP);
@@ -5050,7 +5107,7 @@ static const char *sender_ionic(RdmaBackendDev *dev, int w1, bool registered)
     uint8_t *buf;
     const char *why = NULL;
 
-    if (!worker_settled(w1, 1))
+    if (!worker_settled(dev->backend_private, w1, 1))
         return "worker 1's registration wasn't finished";
     count_type(w1, TCP_MSG_HEARTBEAT_RESP);
 
@@ -5063,7 +5120,7 @@ static const char *sender_ionic(RdmaBackendDev *dev, int w1, bool registered)
         tcp_backend_set_ionic_recv_cb(dev, sender_ionic_recv, NULL);
     if (!send_payload(w1, TCP_MSG_IONIC, 1))
         why = "could not send the ionic message";
-    else if (!worker_settled(w1, 1))
+    else if (!worker_settled(dev->backend_private, w1, 1))
         why = "the heartbeat after the ionic message wasn't answered";
     tcp_backend_set_ionic_recv_cb(dev, NULL, NULL);
 
@@ -5108,7 +5165,7 @@ static const char *sender_run(RdmaBackendDev *dev, int w1, int w2,
     case SENDER_REVIVES:
         return sender_revives(priv, w1, w2);
     case SENDER_RETIRED:
-        return sender_retired(w1, w2);
+        return sender_retired(priv, w1, w2);
     case SENDER_IONIC:
         return sender_ionic(dev, w1, true);
     case SENDER_NO_DP:
@@ -5397,7 +5454,7 @@ static const char *ra_run(TcpBackendPrivate *priv, int w1,
 
     if (!old)
         return "worker 1 isn't node 1";
-    if (!worker_settled(w1, 1))
+    if (!worker_settled(priv, w1, 1))
         why = "worker 1's registration wasn't finished";
     nodes = mesh_node_count(priv);
 
@@ -6008,8 +6065,8 @@ static const char *ev_health(struct ev_fixture *fx)
     if (!why && (result != 0 || ev_in_table(priv, EV_OLDEST)))
         why = "the first registration didn't evict the oldest node";
     /* Read what it sent, so the next registration's broadcasts fit */
-    if (!why &&
-        (!worker_settled(fx->fresh[0], id) || !worker_settled(fx->w1, 1)))
+    if (!why && (!worker_settled(priv, fx->fresh[0], id) ||
+                 !worker_settled(priv, fx->w1, 1)))
         why = "the first registration wasn't finished";
     if (!why)
         why = ev_register(priv, &fx->fresh[1], UINT32_MAX, &id, &result);
@@ -6054,7 +6111,7 @@ static const char *ev_unpublished(struct ev_fixture *fx)
     /* Its thread answers the heartbeat once it has handled the GIDs */
     if (!why && (!send_gids(fx->peer[EV_OLDEST], EV_OLDEST,
                             (const uint8_t(*)[16]) & ev_gid) ||
-                 !worker_settled(fx->peer[EV_OLDEST], EV_OLDEST)))
+                 !worker_settled(priv, fx->peer[EV_OLDEST], EV_OLDEST)))
         why = "the evicted node's advertisement wasn't handled";
     if (!why && ev_has_claims(priv, EV_OLDEST))
         why = "the advertisement put the evicted node's claims back";
@@ -6068,7 +6125,7 @@ static const char *ev_run(struct ev_fixture *fx, enum ev_scenario scenario)
 {
     const char *why;
 
-    if (!worker_settled(fx->w1, 1))
+    if (!worker_settled(fx->priv, fx->w1, 1))
         return "worker 1's registration wasn't finished";
     why = ev_setup(fx, scenario);
     if (why)
@@ -6214,14 +6271,14 @@ static uint32_t lv_resolve(TcpBackendPrivate *priv)
 
 /*
  * LV_DEAD_ADVERTISES.  The manager answers each advertisement by sending
- * every worker the whole GID table, and a heartbeat that revives a node by
- * sending it again, so what worker 1 is told comes after the change it
- * reports.
+ * every worker the node's GID set, and a heartbeat that revives a node by
+ * sending the topology and the set again, each snapshotted once the change
+ * is made, so what worker 1 is told comes after the change it reports.
  */
 static const char *lv_dead_advertises(TcpBackendPrivate *priv, int w1, int w2)
 {
     /* Finish the registrations, and discard what they sent */
-    if (!worker_settled(w1, 1) || !worker_settled(w2, 2))
+    if (!worker_settled(priv, w1, 1) || !worker_settled(priv, w2, 2))
         return "a registration wasn't finished";
     count_type(w1, TCP_MSG_NODE_GIDS);
 
@@ -6244,7 +6301,7 @@ static const char *lv_dead_advertises(TcpBackendPrivate *priv, int w1, int w2)
 /*
  * LV_GONE.  Node 2 is alive when its connection ends, and nothing else
  * declares it dead: the health-check thread is stopped.  The registration
- * sends every worker the topology, then the whole GID table.
+ * sends every worker the topology, then node 2's GID set.
  */
 static const char *lv_gone(TcpBackendPrivate *priv, int w1, int w2, int *w3)
 {
@@ -6256,9 +6313,9 @@ static const char *lv_gone(TcpBackendPrivate *priv, int w1, int w2, int *w3)
     if (!conn)
         return "worker 2 isn't node 2";
     /* Answered once the advertisement is handled */
-    if (!worker_settled(w1, 1) ||
+    if (!worker_settled(priv, w1, 1) ||
         !send_gids(w2, 2, (const uint8_t(*)[16]) & lv_gid) ||
-        !worker_settled(w2, 2))
+        !worker_settled(priv, w2, 2))
         why = "a registration or the advertisement wasn't finished";
     else if (lv_resolve(priv) != 2)
         why = "node 2's claim didn't take";
@@ -6549,6 +6606,25 @@ static bool lt_consumed(TcpConnection *conn)
     return false;
 }
 
+/*
+ * Whether node id's connection has a send thread, which a stop joins.  The
+ * manager answers a heartbeat on it when another thread, such as the
+ * broadcaster, is sending on the connection.
+ */
+static bool has_send_thread(TcpBackendPrivate *priv, uint32_t id)
+{
+    TcpConnection *conn = tcp_connection_lookup(priv, id);
+    bool started = false;
+
+    if (conn) {
+        qemu_mutex_lock(&conn->sendq_lock);
+        started = conn->send_thread_started;
+        qemu_mutex_unlock(&conn->sendq_lock);
+        tcp_connection_unref(conn);
+    }
+    return started;
+}
+
 static void *lt_stop(void *opaque)
 {
     tcp_stop_recv_threads(opaque);
@@ -6603,7 +6679,8 @@ static const char *lt_register_vs_stop(enum lt_scenario scenario)
 
     if (again || evict) {
         w1 = worker_register(priv);
-        if (w1 < 0 || !wait_for_registered(priv, 1) || !worker_settled(w1, 1)) {
+        if (w1 < 0 || !wait_for_registered(priv, 1) ||
+            !worker_settled(priv, w1, 1)) {
             why = "worker 1 did not register";
             goto out;
         }
@@ -6629,7 +6706,12 @@ static const char *lt_register_vs_stop(enum lt_scenario scenario)
         why = "could not attach the worker";
         goto out;
     }
-    joins = atomic_load(&g_joins);
+    /*
+     * Only the stop's joins of receive threads are counted: worker 1's
+     * heartbeat may have been answered on a send thread, which it joins too
+     */
+    joins = atomic_load(&g_joins) +
+            ((again || evict) && has_send_thread(priv, 1) ? 1 : 0);
     atomic_store(&priv->stopping, true);
     qemu_mutex_lock(&priv->mesh_table_lock);
     if (!send_register(fd, "127.0.0.1", again ? 1 : UINT32_MAX) ||
@@ -7853,7 +7935,7 @@ static int run_wl_case(const struct wl_case *c)
  */
 
 enum st_scenario {
-    ST_TIMEOUT,    /* a broadcast, with a second waiting behind it */
+    ST_TIMEOUT,    /* a broadcast, with a second asked for meanwhile */
     ST_DATAPATH,   /* the data path's message, through the send thread */
     ST_QUEUE_FULL, /* the data path fills the send queue */
     ST_RELAY,      /* the manager relays to a node that stopped reading */
@@ -7874,7 +7956,7 @@ struct st_case {
 static const struct st_case st_cases[] = {
     {"negative",
      "a broadcast to a node that stops reading, with a second broadcast "
-     "waiting behind it",
+     "asked for while the first is sent",
      "the first gives up after the manager's send timeout and shuts the "
      "connection down, the second then fails at once, and the health check "
      "retires the connection",
@@ -7931,54 +8013,36 @@ static const struct st_case st_cases[] = {
 /* A worker's send timeout in these rows; the manager's is half */
 #define ST_TIMEOUT_MS 2000u
 
-/* A broadcast on a thread of its own, and when it returned */
-struct st_broadcast {
-    TcpBackendPrivate *priv;
-    bool gids; /* tcp_broadcast_gid_table(), not tcp_broadcast_mesh() */
-    pthread_t tid;
-    _Atomic uint64_t done_ms;
-};
-
-static void *st_broadcast_run(void *opaque)
-{
-    struct st_broadcast *b = opaque;
-
-    if (b->gids)
-        tcp_broadcast_gid_table(b->priv);
-    else
-        tcp_broadcast_mesh(b->priv, UINT32_MAX);
-    atomic_store(&b->done_ms, ernic_monotonic_ms());
-    return NULL;
-}
-
-/* ST_TIMEOUT */
+/*
+ * ST_TIMEOUT: the broadcaster's first pass sends the topology, and blocks on
+ * node 1.  The second is asked for meanwhile, so it is the next pass's, and
+ * it goes to node 1 too.
+ */
 static const char *st_timeout(struct mgr_fixture *fx)
 {
-    struct st_broadcast first = {fx->priv, false, 0, 0};
-    struct st_broadcast second = {fx->priv, true, 0, 0};
+    TcpBackendPrivate *priv = fx->priv;
     TcpConnection *conn = fx->old[0];
-    const char *why = NULL;
-    uint64_t start_ms = ernic_monotonic_ms();
+    uint64_t start_ms = ernic_monotonic_ms(), first_ms, second_ms;
 
-    if (pthread_create(&first.tid, NULL, st_broadcast_run, &first) != 0)
-        return "could not start the first broadcast";
+    if (!tcp_start_thread(&priv->broadcast_thread, "tcp-broadcast",
+                          tcp_broadcast_thread, priv, &priv->broadcast_running))
+        return "could not start the broadcaster";
+    tcp_broadcast_topology(priv);
     if (!held_elsewhere(&conn->lock))
-        why = "the first broadcast never blocked on node 1";
-    else if (pthread_create(&second.tid, NULL, st_broadcast_run, &second) != 0)
-        why = "could not start the second broadcast";
-    else
-        pthread_join(second.tid, NULL);
-    pthread_join(first.tid, NULL);
-    if (why)
-        return why;
+        return "the first broadcast never blocked on node 1";
+    tcp_broadcast_node_gids(priv, 1);
 
-    uint64_t first_ms = atomic_load(&first.done_ms) - start_ms;
-    uint64_t second_ms = atomic_load(&second.done_ms);
+    if (!broadcasts_sent_reach(priv, 1, 3 * ST_TIMEOUT_MS))
+        return "the first broadcast never gave up";
+    first_ms = ernic_monotonic_ms();
+    if (!broadcasts_sent_reach(priv, 2, 3 * ST_TIMEOUT_MS))
+        return "the second broadcast never finished";
+    second_ms = ernic_monotonic_ms();
 
-    if (first_ms < ST_TIMEOUT_MS / 2 - 100u || first_ms > 3u * ST_TIMEOUT_MS)
+    if (first_ms - start_ms < ST_TIMEOUT_MS / 2 - 100u)
         return "the first broadcast didn't give up after the manager's "
                "timeout";
-    if (second_ms > atomic_load(&first.done_ms) + 250u)
+    if (second_ms - first_ms > 250u)
         return "the second broadcast waited a timeout of its own";
     if (!wait_dead(conn))
         return "the connection wasn't shut down";

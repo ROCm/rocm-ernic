@@ -809,6 +809,13 @@ GID. Instead, each server is **told** its guest's GIDs in
 advertises its GIDs, the manager fans the advertisements out,
 and every node keeps an exact ``GID → node id`` table.
 
+The manager sends these updates, and the topology, from a
+thread of its own. A change to one node's GIDs, or to whether
+it is alive, sends that node's set to every worker; only a
+worker that has just registered is sent the whole table.
+Changes made while the thread is sending go out together in
+its next round.
+
 The admin queue consults that table when a QP reaches RTR and
 when an AH is created. The two differ when no node owns the
 destination GID:
