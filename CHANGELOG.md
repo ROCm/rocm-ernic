@@ -702,6 +702,9 @@
   * A server that fails to start after creating its socket (such as with a
     `--tap` it can't attach) tears the device down, stopping its threads and
     removing the socket.
+  * A `--tap` name longer than 15 characters, the most Linux allows, is
+    refused at startup. It used to be cut short, which could attach the
+    guest to a different interface.
   * A client that disconnects, or sends something else, during vfio-user
     negotiation no longer takes the server down.
   * A `--log-file` that can't be made stdout or stderr is an error, rather

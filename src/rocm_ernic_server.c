@@ -44,6 +44,7 @@
 #include "ionic_adminq.h"
 #include "ionic_datapath.h"
 #include "ionic_eth_emu.h"
+#include "ionic_eth_net.h"
 #include "ionic_fault.h"
 #include "ionic_rdma_devcmd.h"
 #include "ionic_profile.h"
@@ -2041,6 +2042,13 @@ int main(int argc, char *argv[])
         char assigned[64] = {0};
         ret = ionic_eth_emu_attach_tap(dev->ionic_emu, tap_ifname, assigned,
                                        sizeof(assigned));
+        if (ret == -ENAMETOOLONG) {
+            fprintf(stderr,
+                    "rocm-ernic: TAP name '%s' is too long (at most %d "
+                    "characters)\n",
+                    tap_ifname, IONIC_ETH_NET_IFNAME_MAX);
+            goto fail;
+        }
         if (ret < 0) {
             fprintf(stderr, "rocm-ernic: failed to attach TAP '%s': %s\n",
                     tap_ifname, strerror(-ret));
