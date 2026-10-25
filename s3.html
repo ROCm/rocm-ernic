@@ -656,8 +656,14 @@ target DMAs against it directly, with the same guest-memory
 DMA the rest of the ionic data path uses.
 The client still creates a real RC queue pair and puts its
 QPN in the token, because that is what it would have to do on
-hardware and the field is checked – but nothing on this path
-depends on the connection existing.</p>
+hardware, but the store doesn’t check it: nothing on this
+path depends on the connection existing.</p>
+<p>An <code class="docutils literal notranslate"><span class="pre">rkey</span></code> of 0 is refused. To the ionic data path, key 0 is
+the driver’s reserved DMA key, which names a raw guest bus
+address rather than a registration, and any process in the
+guest can put it in a token. A request naming it moves
+nothing and gets a <code class="docutils literal notranslate"><span class="pre">500</span></code>, as one naming an unknown key
+does.</p>
 </section>
 <section id="what-the-store-supports">
 <h3>What the store supports<a class="headerlink" href="#what-the-store-supports" title="Link to this heading">#</a></h3>

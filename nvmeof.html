@@ -653,6 +653,13 @@ work requests <code class="docutils literal notranslate"><span class="pre">IONIC
 against the same MR table <code class="docutils literal notranslate"><span class="pre">CREATE_MR</span></code> fills. Without them
 the controller’s RDMA READ and WRITE would resolve keys that
 name nothing.</p>
+<p>A keyed SGL naming key 0 fails with a data transfer error,
+and a data block descriptor that is neither keyed nor in
+capsule fails with an invalid SGL descriptor type. Key 0 is
+the driver’s reserved DMA key, which names a raw guest bus
+address rather than a registration, and any guest process
+that can connect a queue pair to the controller chooses the
+key, so honoring it would expose all of guest memory.</p>
 </section>
 </section>
 <section id="testing">
