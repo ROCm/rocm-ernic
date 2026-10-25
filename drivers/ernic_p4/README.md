@@ -77,14 +77,15 @@ re-run `ernic_guest_setup` with `patches/p4` in
 
 [`dkms.conf`](dkms.conf) can still be built from a context that has none
 of the role's variables, such as `dkms build` run by hand. It reads the
-source tree
-from `/etc/ernic-p4-ionic-src`, which the role writes, and resolves the
-ionic symbols through
+source tree from `/etc/ernic-p4-ionic-src`, which the role writes, and
+the `Makefile` resolves the ionic symbols through
 [`find-ionic-symvers.sh`](find-ionic-symvers.sh) **for the kernel being
 built for** -- not for whatever is on disk, which after an upgrade
-belongs to the previous one. Either can be overridden by setting
-`IONIC_SRC` or `IONIC_SYMVERS` in the environment, which is what the
-role does for the build it drives itself.
+belongs to the previous one. That lookup may rebuild ionic, so it runs
+only for a build, never when dkms merely reads `dkms.conf` (as `dkms
+status` and every autoinstall pass do). Either can be overridden by
+setting `IONIC_SRC` or `IONIC_SYMVERS` in the environment, which is what
+the role does for the build it drives itself.
 
 ## When the device appears
 

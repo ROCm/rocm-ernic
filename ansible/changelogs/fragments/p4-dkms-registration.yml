@@ -19,7 +19,7 @@ bugfixes:
     provisioned by both the stale module would keep being loaded and the
     DKMS build would have no effect.
   - >-
-    ``ernic_p4_dkms`` and ``dkms.conf`` resolve the ionic
+    ``ernic_p4_dkms`` and the module's DKMS build resolve the ionic
     ``Module.symvers`` for the kernel being built for, through the new
     ``drivers/ernic_p4/find-ionic-symvers.sh``, rather than taking the
     first one found anywhere under ``/var/lib/dkms``.  On an upgrade
@@ -27,4 +27,6 @@ bugfixes:
     which produces the same non-insertable module as using no symbols at
     all.  The script also skips source trees with no ``dkms.conf``, so
     the full kernel checkout the role leaves in ``/usr/src`` is no
-    longer a candidate to run ``make M=`` against.
+    longer a candidate to run ``make M=`` against.  It may rebuild
+    ionic, so it runs only for a build, not whenever DKMS reads
+    ``dkms.conf`` (``dkms status``, every autoinstall pass).

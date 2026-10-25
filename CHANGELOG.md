@@ -674,7 +674,9 @@
     copying it into `/lib/modules`, removes a copy an earlier run left in
     `updates/`, and resolves the ionic symbols for the kernel being built
     for (`drivers/ernic_p4/find-ionic-symvers.sh`). A module built against
-    another kernel's `Module.symvers` would not insert.
+    another kernel's `Module.symvers` would not insert. The lookup, which
+    may rebuild ionic, runs only when the module is built, not whenever
+    DKMS reads its `dkms.conf` (`dkms status`, every autoinstall pass).
   * The self-hosted CI's instances advertise each guest's IPv4-mapped GID
     as well as its link-local one, so tests addressing a peer by IPv4 can
     bring their QPs to RTR. Each instance's MAC is pinned to
