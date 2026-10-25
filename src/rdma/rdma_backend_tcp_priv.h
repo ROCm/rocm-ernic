@@ -262,11 +262,17 @@ typedef struct {
 
 typedef struct TcpBackendPrivate TcpBackendPrivate;
 
-/* A TCP_MSG_IONIC waiting on a connection's send queue */
+/*
+ * A message waiting on a connection's send queue: a TCP_MSG_IONIC, or a
+ * heartbeat or its answer, which has no payload (see tcp_send_heartbeat()).
+ */
 typedef struct {
+    uint32_t msg_type; /* a TcpMsgType */
     uint32_t seq;
     uint32_t src_node;
     uint32_t dst_node;
+    uint32_t qp_id; /* a TCP_MSG_IONIC's local QP, for tcp_sendq_cancel() */
+    bool reply;     /* a TCP_MSG_IONIC that answers the peer's request */
     uint32_t len;
     uint8_t data[]; /* the data path's header and body, together */
 } TcpQueuedMsg;
@@ -363,11 +369,12 @@ struct TcpConnection {
 
     /*
      * The data path's messages, queued for send_thread, so the device's main
-     * thread never waits for the peer (see tcp_backend_send_ionic_v()).
-     * Everything below is protected by sendq_lock, which is taken with no
-     * other lock held, or under conn_table_lock, and nothing is taken under
-     * it.  sendq_cond is signalled when a message is queued and when the
-     * queue is closed.
+     * thread never waits for the peer (see tcp_backend_send_ionic_v()), and
+     * heartbeats that couldn't be sent at once, at the head of the queue (see
+     * tcp_send_heartbeat()).  Everything below is protected by sendq_lock,
+     * which is taken with no other lock held, or under conn_table_lock, and
+     * nothing is taken under it.  sendq_cond is signalled when a message is
+     * queued and when the queue is closed.
      *
      * sendq_bytes counts each message's payload until it has been written.
      * sendq_closed is set, never cleared, when the connection is retired or
@@ -710,7 +717,7 @@ bool tcp_conn_table_take(TcpBackendPrivate *priv, uint32_t node_id,
 void tcp_retire_conn(TcpConnection *conn);
 int tcp_conn_enqueue(TcpConnection *conn, const void *hdr, size_t hdr_len,
                      const void *body, size_t body_len, uint32_t dst_node,
-                     bool reply);
+                     uint32_t qp_id, bool reply);
 void tcp_broadcast_gid_table(TcpBackendPrivate *priv);
 
 /* The manager's table of mesh nodes */

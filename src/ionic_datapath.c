@@ -782,6 +782,8 @@ void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id)
         return;
     if (dp->nvmeof_cm)
         nvmeof_cm_drop_qp(dp->nvmeof_cm, qp_id);
+    /* A destroyed QP's requests don't go out either; see the flush */
+    ionic_mesh_cancel(dp->pvrdma_handle, qp_id);
     sq_stall_clear(dp, &dp->qp[qp_id]);
     ionic_dp_buf_release(&dp->qp[qp_id].sq_buf);
     ionic_dp_buf_release(&dp->qp[qp_id].rq_buf);
@@ -1757,6 +1759,14 @@ void ionic_datapath_flush_qp(struct ionic_datapath *dp, uint32_t qp_id)
     uint32_t cancelled = pending_cancel_qp(dp, qp_id);
 
     /*
+     * Nor may a request the mesh still has queued for the peer go out after
+     * the flush has completed it: a WRITE or atomic would land after the
+     * consumer was told it hadn't run.  A NIC doesn't transmit a work request
+     * it has flushed.
+     */
+    ionic_mesh_cancel(dp->pvrdma_handle, qp_id);
+
+    /*
      * The flush completes every send outstanding, the one held for a
      * receive included, so none of them may run afterwards: a SEND the
      * stalled-queue retry delivered once the peer posted a receive would
@@ -2279,12 +2289,13 @@ static void pending_complete(struct ionic_datapath *dp, struct dp_pending *p,
     p->valid = false;
 }
 
+/* qp_id is the local QP the message is from (see ionic_mesh_cancel()) */
 static int dp_mesh_tx(struct ionic_datapath *dp, uint32_t dst_node,
-                      const struct ionic_wire_hdr *hdr, const uint8_t *payload,
-                      uint32_t payload_len, bool reply)
+                      uint32_t qp_id, const struct ionic_wire_hdr *hdr,
+                      const uint8_t *payload, uint32_t payload_len, bool reply)
 {
     return ionic_mesh_sendv(dp->pvrdma_handle, dst_node, hdr, sizeof(*hdr),
-                            payload, payload_len, reply);
+                            payload, payload_len, qp_id, reply);
 }
 
 static void wire_hdr_init(struct ionic_wire_hdr *h, uint8_t op,
@@ -2457,7 +2468,8 @@ static enum dp_post remote_post(struct ionic_datapath *dp,
         }
     }
 
-    int rc = dp_mesh_tx(dp, dest_node_id, &hdr, payload, payload_len, false);
+    int rc =
+        dp_mesh_tx(dp, dest_node_id, qp_id, &hdr, payload, payload_len, false);
     if (rc == 0) {
         result = DP_POST_SENT;
         /* Claim the MSN only once the request is really on the wire, so a
@@ -3656,7 +3668,8 @@ static void dp_wire_reply(struct ionic_datapath *dp, uint32_t dst_node,
      * A reply the mesh can't queue is lost, and the requester's own timeout
      * for it completes the request; the mesh has logged why.
      */
-    dp_mesh_tx(dp, dst_node, &r, payload, payload_len, true);
+    dp_mesh_tx(dp, dst_node, le32toh(req->dst_qp_id), &r, payload, payload_len,
+               true);
 
     if (status == IONIC_STS_REMOTE_ACC_ERR)
         dp_count(dp, le32toh(req->dst_qp_id),

@@ -1440,7 +1440,8 @@ static void tcp_sendq_close(TcpConnection *conn)
 
 /*
  * A connection's send thread: writes the messages tcp_conn_enqueue() queues,
- * in order, each under conn->lock like every other write to the socket.  A
+ * in order, after any heartbeat tcp_send_heartbeat() has put ahead of them,
+ * each under conn->lock like every other write to the socket.  A
  * write that fails, including one that times out on a peer that has stopped
  * reading, shuts the connection down (see tcp_send_message2()); the queue is
  * then closed, and the thread returns.  It also returns when
@@ -1468,7 +1469,7 @@ static void *tcp_send_thread(void *opaque)
 
         qemu_mutex_lock(&conn->lock);
         if (conn->sockfd >= 0) {
-            ret = tcp_send_message2(conn->priv, conn, TCP_MSG_IONIC, msg->data,
+            ret = tcp_send_message2(conn->priv, conn, msg->msg_type, msg->data,
                                     msg->len, NULL, 0, msg->seq, msg->src_node,
                                     msg->dst_node, 0, 0);
         }
@@ -1489,12 +1490,53 @@ static void *tcp_send_thread(void *opaque)
 }
 
 /*
+ * Start conn's send thread unless it is running.  Returns 0, or -ENOMEM if it
+ * couldn't be started.  The caller holds sendq_lock, and has checked the
+ * queue isn't closed: a closed queue's thread may have been joined already.
+ */
+static int tcp_sendq_start(TcpConnection *conn)
+{
+    if (conn->send_thread_started) {
+        return 0;
+    }
+    if (qemu_thread_create(&conn->send_thread, tcp_send_thread, conn) != 0) {
+        rdma_error_report("TCP: Failed to start the send thread for node %u",
+                          conn->node_id);
+        return -ENOMEM;
+    }
+    conn->send_thread_started = true;
+    return 0;
+}
+
+/*
+ * A message to queue on conn, with len bytes of payload left for the caller
+ * to fill in.
+ */
+static TcpQueuedMsg *tcp_queued_msg_new(TcpConnection *conn,
+                                        TcpMsgType msg_type, uint32_t dst_node,
+                                        size_t len)
+{
+    TcpQueuedMsg *msg = g_malloc(sizeof(*msg) + len);
+
+    msg->msg_type = msg_type;
+    msg->seq = atomic_fetch_add_explicit(&conn->priv->next_seq, 1,
+                                         memory_order_relaxed);
+    msg->src_node = tcp_local_node(conn->priv);
+    msg->dst_node = dst_node;
+    msg->qp_id = UINT32_MAX;
+    msg->reply = false;
+    msg->len = (uint32_t)len;
+    return msg;
+}
+
+/*
  * Queue a TCP_MSG_IONIC to dst_node on conn, for its send thread to write,
- * without waiting for the peer: hdr and body, which hdr_len and body_len say
- * together fit TCP_MAX_PAYLOAD_LEN, are copied.  The first message queued
- * starts the thread.
+ * without waiting for the peer: hdr and body are copied.  qp_id is the local
+ * QP the message is from, which tcp_sendq_cancel() names.  The first message
+ * queued starts the thread.
  *
  * Returns 0 once queued, or a negative errno:
+ *   -EINVAL   hdr and body together don't fit TCP_MAX_PAYLOAD_LEN
  *   -EAGAIN   a request (!reply) that would take the queue past
  *             TCP_SENDQ_REQUEST_BYTES, for the caller to try again later
  *   -ENOBUFS  a reply that would take it past TCP_SENDQ_REPLY_BYTES
@@ -1506,13 +1548,19 @@ static void *tcp_send_thread(void *opaque)
  */
 int tcp_conn_enqueue(TcpConnection *conn, const void *hdr, size_t hdr_len,
                      const void *body, size_t body_len, uint32_t dst_node,
-                     bool reply)
+                     uint32_t qp_id, bool reply)
 {
-    TcpBackendPrivate *priv = conn->priv;
-    size_t len = hdr_len + body_len;
     size_t limit = reply ? TCP_SENDQ_REPLY_BYTES : TCP_SENDQ_REQUEST_BYTES;
     TcpQueuedMsg *msg;
+    size_t len;
     int ret = 0;
+
+    /* Each checked on its own before the sum, which could wrap */
+    if (hdr_len > TCP_MAX_PAYLOAD_LEN ||
+        body_len > TCP_MAX_PAYLOAD_LEN - hdr_len) {
+        return -EINVAL;
+    }
+    len = hdr_len + body_len;
 
     qemu_mutex_lock(&conn->sendq_lock);
     if (conn->sendq_closed) {
@@ -1520,28 +1568,17 @@ int tcp_conn_enqueue(TcpConnection *conn, const void *hdr, size_t hdr_len,
     } else if (conn->sendq_bytes != 0 &&
                (len > limit || conn->sendq_bytes > limit - len)) {
         ret = reply ? -ENOBUFS : -EAGAIN;
-    } else if (!conn->send_thread_started) {
-        if (qemu_thread_create(&conn->send_thread, tcp_send_thread, conn) !=
-            0) {
-            rdma_error_report("TCP: Failed to start the send thread for "
-                              "node %u",
-                              conn->node_id);
-            ret = -ENOMEM;
-        } else {
-            conn->send_thread_started = true;
-        }
+    } else {
+        ret = tcp_sendq_start(conn);
     }
     if (ret != 0) {
         qemu_mutex_unlock(&conn->sendq_lock);
         return ret;
     }
 
-    msg = g_malloc(sizeof(*msg) + len);
-    msg->seq =
-        atomic_fetch_add_explicit(&priv->next_seq, 1, memory_order_relaxed);
-    msg->src_node = tcp_local_node(priv);
-    msg->dst_node = dst_node;
-    msg->len = (uint32_t)len;
+    msg = tcp_queued_msg_new(conn, TCP_MSG_IONIC, dst_node, len);
+    msg->qp_id = qp_id;
+    msg->reply = reply;
     memcpy(msg->data, hdr, hdr_len);
     if (body_len > 0) {
         memcpy(msg->data + hdr_len, body, body_len);
@@ -1551,6 +1588,102 @@ int tcp_conn_enqueue(TcpConnection *conn, const void *hdr, size_t hdr_len,
     qemu_cond_signal(&conn->sendq_cond);
     qemu_mutex_unlock(&conn->sendq_lock);
     return 0;
+}
+
+/*
+ * Queue msg_type, a heartbeat or its answer, to dst_node at the head of
+ * conn's send queue, so the send thread writes it as soon as it is done with
+ * the message it is writing, ahead of the data path's.  Returns 0, -EPIPE if
+ * the queue is closed, or -ENOMEM if the send thread couldn't be started.
+ */
+static int tcp_sendq_push_heartbeat(TcpConnection *conn, TcpMsgType msg_type,
+                                    uint32_t dst_node)
+{
+    int ret;
+
+    qemu_mutex_lock(&conn->sendq_lock);
+    ret = conn->sendq_closed ? -EPIPE : tcp_sendq_start(conn);
+    if (ret == 0) {
+        g_queue_push_head(&conn->sendq,
+                          tcp_queued_msg_new(conn, msg_type, dst_node, 0));
+        qemu_cond_signal(&conn->sendq_cond);
+    }
+    qemu_mutex_unlock(&conn->sendq_lock);
+    return ret;
+}
+
+/*
+ * Drop the requests from qp_id on conn's send queue, which no send thread
+ * has started to write.  The one being written, if it is one, is off the
+ * queue and goes out whole: a message the peer has started to read can't be
+ * taken back.
+ */
+static void tcp_sendq_cancel(TcpConnection *conn, uint32_t qp_id)
+{
+    qemu_mutex_lock(&conn->sendq_lock);
+    for (GList *link = conn->sendq.head; link != NULL;) {
+        GList *next = link->next;
+        TcpQueuedMsg *msg = link->data;
+
+        if (msg->msg_type == TCP_MSG_IONIC && !msg->reply &&
+            msg->qp_id == qp_id) {
+            conn->sendq_bytes -= msg->len;
+            g_queue_delete_link(&conn->sendq, link);
+            g_free(msg);
+        }
+        link = next;
+    }
+    qemu_mutex_unlock(&conn->sendq_lock);
+}
+
+/*
+ * Send dst_node msg_type, a heartbeat or the answer to one, on conn without
+ * waiting for anything: not for conn->lock, which another thread holds for
+ * the whole of each message it sends, and not for room in the socket.
+ * Either could be a wait for a peer that has stopped reading, which would
+ * hold up the health check's heartbeats to every node after it, a worker's
+ * check on its manager, or a receive thread, which would stop reading.
+ *
+ * When the lock is free and the socket has room, the heartbeat is written at
+ * once.  Otherwise it goes at the head of the send queue
+ * (tcp_sendq_push_heartbeat()), for the send thread to write as soon as the
+ * message it is writing is done.  Skipping it instead wouldn't do: under
+ * steady traffic the lock is seldom free and the socket seldom has room, and
+ * a manager hears that a worker is alive only from its heartbeats.  A peer
+ * that has stopped reading never gets it; the send that times out on it
+ * shuts the connection down.
+ *
+ * A socket with room for any of the header has room for all of it: poll()
+ * reports a TCP socket writable only once a good part of its buffer is free.
+ *
+ * Returns false if the connection can't be used any more: it is retired, or
+ * the send failed, which shuts it down.
+ */
+static bool tcp_send_heartbeat(TcpBackendPrivate *priv, TcpConnection *conn,
+                               TcpMsgType msg_type, uint32_t dst_node)
+{
+    if (qemu_mutex_trylock(&conn->lock) == 0) {
+        int ret = 1; /* not sent: no room */
+
+        if (conn->sockfd < 0) {
+            ret = -1;
+        } else {
+            struct pollfd pfd = {.fd = conn->sockfd, .events = POLLOUT};
+
+            if (poll(&pfd, 1, 0) == 1 && (pfd.revents & POLLOUT)) {
+                ret = tcp_send_message(
+                    priv, conn, msg_type, NULL, 0,
+                    atomic_fetch_add_explicit(&priv->next_seq, 1,
+                                              memory_order_relaxed),
+                    tcp_local_node(priv), dst_node, 0, 0);
+            }
+        }
+        qemu_mutex_unlock(&conn->lock);
+        if (ret <= 0) {
+            return ret == 0;
+        }
+    }
+    return tcp_sendq_push_heartbeat(conn, msg_type, dst_node) == 0;
 }
 
 /*
@@ -2063,52 +2196,13 @@ static void tcp_worker_peer_pass(TcpBackendPrivate *priv, const GArray *targets)
 }
 
 /*
- * Send the manager a heartbeat on conn without waiting for anything: not for
- * conn->lock, which a thread sending to a manager that has stopped reading
- * holds until the send times out, and not for room in the socket, which is
- * non-blocking.  Either would hold up the thread that has
- * to notice the manager is gone.  A busy lock or a full socket sends
- * nothing, and the next check tries again.
- *
- * Returns false if the connection can't be used any more: the send failed,
- * or sent only part of the heartbeat, which would leave the manager reading
- * the rest as the start of the next message.
- */
-static bool tcp_worker_probe_manager(TcpBackendPrivate *priv,
-                                     TcpConnection *conn)
-{
-    TcpMsgHeader hdr;
-    bool usable = true;
-
-    if (qemu_mutex_trylock(&conn->lock) != 0) {
-        return true;
-    }
-    if (conn->sockfd >= 0) {
-        ssize_t ret;
-
-        /* As tcp_send_message2() fills it in, with no payload */
-        memset(&hdr, 0, sizeof(hdr));
-        hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
-        hdr.msg_type = htonl(TCP_MSG_HEARTBEAT);
-        hdr.seq = htonl(atomic_fetch_add_explicit(&priv->next_seq, 1,
-                                                  memory_order_relaxed));
-        hdr.src_node_id = htonl(tcp_local_node(priv));
-        ret = send(conn->sockfd, &hdr, sizeof(hdr), MSG_NOSIGNAL);
-        usable = ret == (ssize_t)sizeof(hdr) ||
-                 (ret < 0 && (errno == EAGAIN || errno == EINTR));
-    }
-    qemu_mutex_unlock(&conn->lock);
-    return usable;
-}
-
-/*
  * The manager's part of a pass of the peer-connect thread.  A worker owns its
  * link to the manager; the manager never connects to a worker.  So when the
  * connection has ended, or nothing has come on it for three intervals, the
  * worker gives up on it, and connects and registers again, under the id it
  * has, giving up on the connect after an interval.  A check that finds
  * nothing has come for an interval first sends the manager a heartbeat
- * (tcp_worker_probe_manager()), which the manager answers, so a manager
+ * (tcp_send_heartbeat()), which the manager answers, so a manager
  * whose own interval is longer than this worker's isn't taken for silent.
  * For that, checks have to come less than two intervals apart, so a pass
  * makes one before each connect to a peer, which can take an interval.
@@ -2139,8 +2233,9 @@ void tcp_worker_manager_pass(TcpBackendPrivate *priv)
         bool broken = false;
 
         if (!dead && quiet_ms <= 3 * interval_ms) {
+            /* The manager is node 0 */
             if (quiet_ms < interval_ms ||
-                tcp_worker_probe_manager(priv, conn)) {
+                tcp_send_heartbeat(priv, conn, TCP_MSG_HEARTBEAT, 0)) {
                 tcp_connection_unref(conn);
                 return;
             }
@@ -2836,15 +2931,14 @@ void *tcp_recv_thread_per_conn(void *opaque)
                     }
                     qemu_mutex_unlock(&priv->mesh_table_lock);
 
-                    /* Serialised against the data path; see the
-                     * REGISTER_RESP send above. */
-                    qemu_mutex_lock(&conn->lock);
-                    tcp_send_message(
-                        priv, conn, TCP_MSG_HEARTBEAT_RESP, NULL, 0,
-                        atomic_fetch_add_explicit(&priv->next_seq, 1,
-                                                  memory_order_relaxed),
-                        tcp_local_node(priv), conn->node_id, 0, 0);
-                    qemu_mutex_unlock(&conn->lock);
+                    /*
+                     * Without waiting for the connection's lock: this thread
+                     * waiting for another to write to the node would stop
+                     * reading from it, and a node doing the same would leave
+                     * both sockets full, until a send timed out.
+                     */
+                    tcp_send_heartbeat(priv, conn, TCP_MSG_HEARTBEAT_RESP,
+                                       conn->node_id);
 
                     /*
                      * The rest of the mesh was told the node is dead, and
@@ -2860,14 +2954,10 @@ void *tcp_recv_thread_per_conn(void *opaque)
                 } else {
                     /* Worker received heartbeat probe from manager —
                      * echo it back so the manager refreshes our
-                     * liveness timestamp. */
-                    qemu_mutex_lock(&conn->lock);
-                    tcp_send_message(
-                        priv, conn, TCP_MSG_HEARTBEAT, NULL, 0,
-                        atomic_fetch_add_explicit(&priv->next_seq, 1,
-                                                  memory_order_relaxed),
-                        tcp_local_node(priv), hdr.src_node_id, 0, 0);
-                    qemu_mutex_unlock(&conn->lock);
+                     * liveness timestamp.  Without waiting for the lock,
+                     * as the manager answers. */
+                    tcp_send_heartbeat(priv, conn, TCP_MSG_HEARTBEAT,
+                                       hdr.src_node_id);
                 }
                 break;
             }
@@ -3768,37 +3858,6 @@ void tcp_health_check_retire(TcpBackendPrivate *priv, GArray *items)
     }
 }
 
-/*
- * Send node_id a heartbeat on conn, from the health check, unless that would
- * mean waiting: for conn->lock, which another thread holds while it sends,
- * or for room in the socket.  Either could be a wait for a node that has
- * stopped reading, which would hold up the heartbeats to every node after it
- * in the pass.  A node skipped this way is sent nothing until the next pass;
- * if it has stopped reading, its connection is shut down by the send that
- * times out on it, or retired once it falls silent.
- *
- * A socket with room for any of the header has room for all of it: poll()
- * reports a TCP socket writable only once a good part of its buffer is free.
- */
-static void tcp_send_heartbeat(TcpBackendPrivate *priv, TcpConnection *conn,
-                               uint32_t node_id)
-{
-    if (qemu_mutex_trylock(&conn->lock) != 0) {
-        return;
-    }
-    if (atomic_load(&conn->is_connected) && conn->sockfd >= 0) {
-        struct pollfd pfd = {.fd = conn->sockfd, .events = POLLOUT};
-
-        if (poll(&pfd, 1, 0) == 1 && (pfd.revents & POLLOUT)) {
-            tcp_send_message(priv, conn, TCP_MSG_HEARTBEAT, NULL, 0,
-                             atomic_fetch_add_explicit(&priv->next_seq, 1,
-                                                       memory_order_relaxed),
-                             tcp_local_node(priv), node_id, 0, 0);
-        }
-    }
-    qemu_mutex_unlock(&conn->lock);
-}
-
 /* Drop the references the scan took, at the end of a pass. */
 static void tcp_health_check_release(GArray *items)
 {
@@ -3842,7 +3901,8 @@ void *tcp_manager_health_check_thread(void *opaque)
             TcpConnection *conn = item->conn;
 
             if (conn)
-                tcp_send_heartbeat(priv, conn, item->node->node_id);
+                tcp_send_heartbeat(priv, conn, TCP_MSG_HEARTBEAT,
+                                   item->node->node_id);
         }
         tcp_health_check_release(items);
 
@@ -5112,11 +5172,47 @@ bool tcp_backend_ionic_has_room(RdmaBackendDev *backend_dev, uint32_t dst_node,
 }
 
 /*
+ * Take back the requests from qp_id that are still queued on any connection,
+ * so none of them reaches its peer: for a QP that is flushing or being
+ * destroyed, whose work requests the data path completes now.  On a NIC, a
+ * flushed work request isn't transmitted; one queued here hasn't been either.
+ *
+ * Only what no send thread has started to write: the message being written,
+ * and what is already in the socket or on its way, still arrive, as frames
+ * already on the wire do.  Replies are left alone, and so are the queues of
+ * connections that have left the table already, which are being retired
+ * and whose sockets are shut down.  Called on the device's main thread, the
+ * only one that queues the data path's messages, so nothing from qp_id is
+ * queued meanwhile.
+ */
+void tcp_backend_ionic_cancel(RdmaBackendDev *backend_dev, uint32_t qp_id)
+{
+    TcpBackendPrivate *priv = get_private(backend_dev);
+    TcpConnection *manager;
+    GPtrArray *conns;
+
+    if (!priv || backend_dev->backend_type != RDMA_BACKEND_TYPE_TCP)
+        return;
+
+    /* A worker's connection to the manager, which relays, isn't in the table */
+    conns = tcp_conns_snapshot(priv);
+    manager = tcp_worker_manager_conn(priv);
+    if (manager)
+        g_ptr_array_add(conns, manager);
+    for (guint i = 0; i < conns->len; i++)
+        tcp_sendq_cancel(g_ptr_array_index(conns, i), qp_id);
+    g_ptr_array_free(conns, TRUE);
+}
+
+/*
  * Unicast an opaque ionic message to @dst_node.  Called on the device's main
  * thread, which runs vfio-user, so it never waits for the peer: the message
  * is copied onto the connection's send queue, for its send thread to write
  * (tcp_conn_enqueue()).  A peer that stops reading holds up only that
  * thread, until the send times out and shuts the connection down.
+ *
+ * qp_id is the local QP the message is from, which tcp_backend_ionic_cancel()
+ * names.
  *
  * Returns 0 once queued, which doesn't mean the peer will get it: a message
  * still queued when the connection is shut down is lost, and the data path's
@@ -5127,16 +5223,17 @@ bool tcp_backend_ionic_has_room(RdmaBackendDev *backend_dev, uint32_t dst_node,
  */
 int tcp_backend_send_ionic_v(RdmaBackendDev *backend_dev, uint32_t dst_node,
                              const void *hdr, size_t hdr_len, const void *body,
-                             size_t body_len, bool reply)
+                             size_t body_len, uint32_t qp_id, bool reply)
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
     TcpConnection *conn;
-    size_t len = hdr_len + body_len;
     uint32_t local;
     int rc;
 
+    /* Each length checked on its own before the sum, which could wrap */
     if (!priv || backend_dev->backend_type != RDMA_BACKEND_TYPE_TCP || !hdr ||
-        hdr_len == 0 || len > TCP_MAX_PAYLOAD_LEN)
+        hdr_len == 0 || hdr_len > TCP_MAX_PAYLOAD_LEN ||
+        body_len > TCP_MAX_PAYLOAD_LEN - hdr_len)
         return -EINVAL;
 
     local = tcp_local_node(priv);
@@ -5152,7 +5249,8 @@ int tcp_backend_send_ionic_v(RdmaBackendDev *backend_dev, uint32_t dst_node,
         return -ENOTCONN;
     }
 
-    rc = tcp_conn_enqueue(conn, hdr, hdr_len, body, body_len, dst_node, reply);
+    rc = tcp_conn_enqueue(conn, hdr, hdr_len, body, body_len, dst_node, qp_id,
+                          reply);
     tcp_connection_unref(conn);
 
     /* -EAGAIN is the caller's to handle, and comes often under load */

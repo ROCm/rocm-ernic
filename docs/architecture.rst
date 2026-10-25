@@ -785,8 +785,10 @@ Topology
   hung up. The manager gives up in half the time, so that when
   it relays to a node that has stopped reading, it gives up on
   that node before the worker whose message it is relaying
-  gives up on the manager. The health check's heartbeat skips
-  a node it would have to wait for.
+  gives up on the manager. A heartbeat, or the answer to one,
+  never waits for another sender: when the connection is busy
+  it goes on the connection's send queue, ahead of the data, so
+  steady traffic to a node doesn't keep its heartbeats out.
 - The protocol carries a magic number and a version, checked at
   registration and handshake.
 
@@ -861,7 +863,10 @@ whose peer is on another node:
    queued. A connection takes up to 32 MiB of requests; a WQE
    that doesn't fit stays on the send queue, which stops there,
    and is tried again on a later pass, as a NIC out of transmit
-   credits holds its queue. Replies have twice the room.
+   credits holds its queue. Replies have twice the room. When a
+   QP is flushed or destroyed, its requests still queued are
+   taken back, so none reaches the peer after its work request
+   has completed; one already being written still arrives.
 #. It records the request in a **pending table** and does not
    post a completion yet. The completion must wait for the
    peer, both so the reported latency includes the network and
@@ -1051,9 +1056,11 @@ Threads
      - ``tcp``
      - Reads mesh messages and queues them for the main thread
    * - send (one per connection)
-     - ``tcp``, once the data path sends on it
+     - ``tcp``, once the data path sends on it, or a heartbeat
+       finds it busy
      - Writes the messages the main thread queues for the
-       connection's peer, so the main thread never waits for one
+       connection's peer, so the main thread never waits for one,
+       and heartbeats that couldn't be written at once
    * - health check
      - ``tcp`` manager
      - Heartbeats, dead-node detection, closing dead nodes'
@@ -1130,9 +1137,13 @@ What Is Not Emulated
   reached" are never raised. The limit can be set, but nobody is
   told when it is reached.
 - **QP state isn't enforced.** The data path doesn't consult it:
-  a QP executes the WQEs posted to it in any state, and moving a
-  QP to ERROR doesn't flush its outstanding work requests with
-  flush-error completions.
+  a QP executes the WQEs posted to it in any state, including
+  ones posted after it has moved to ERROR. Moving to ERROR is the
+  one transition it acts on: the work requests outstanding then
+  are flushed, with one flush-error completion for each queue (a
+  QP on a shared receive queue flushes only its send queue), and
+  the requests it still has queued for other nodes are taken
+  back (see `A Remote Request, Step by Step`_).
 - **One outstanding RDMA READ or atomic per QP** is what
   QUERY_QP reports.
 - **Ethernet offloads** (checksum, TSO, scatter-gather) are not
