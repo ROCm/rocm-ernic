@@ -1599,11 +1599,20 @@ static void test_dp_dma_faults(void)
     ih_post_send(h, &r.a, &s);
     expect_send(T, "RDMA_WRITE after refused QP rings", &r, 0);
 
+    /* The refused CQ's ring is a page of its own, since a CQ that took it
+     * would complete there and not in the ring cq_empty() polls */
     struct ionic_dp_ring_desc bad_cq = good;
+    uint8_t cq_was[IH_PAGE_SIZE], cq_now[IH_PAGE_SIZE];
+    bad_cq.buf.dma_addr = fake_vfu_alloc(h->vfu, IH_PAGE_SIZE, IH_PAGE_SIZE);
+    fill(cq_was, sizeof(cq_was), 0x5a);
+    fake_vfu_write(h->vfu, bad_cq.buf.dma_addr, cq_was, sizeof(cq_was));
     bad_cq.stride_log2 = 4;
     ionic_datapath_register_cq(dp, RC_CQ_A, IH_EQ_ID, &bad_cq);
     ih_post_send(h, &r.a, &s);
     check(T, cq_empty(h, &r.cqa), "a CQ with a refused stride took a CQE");
+    fake_vfu_read(h->vfu, bad_cq.buf.dma_addr, cq_now, sizeof(cq_now));
+    check(T, memcmp(cq_now, cq_was, sizeof(cq_now)) == 0,
+          "a CQ with a refused stride wrote to its ring");
 
     rc_teardown(T, &r);
 }
