@@ -176,6 +176,7 @@ set(BRIDGE_SOURCES
 
 # ionic emulation layer -- the device the guest actually sees
 set(IONIC_EMU_SOURCES
+    src/ernic_dma.c
     src/ionic_eth_emu.c
     src/ionic_eth_net.c
     src/ionic_profile.c

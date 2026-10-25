@@ -31,6 +31,7 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "byteorder.h"
+#include "ernic_dma.h"
 #include "ionic_adminq_priv.h"
 #include "ionic_datapath.h"
 #include "rocm_ernic_compat.h"
@@ -433,6 +434,8 @@ struct PVRDMADev {
 static struct PVRDMADev g_fake_pvrdma;
 
 static struct ionic_adminq_ctx g_ctx;
+/* Made in main(); outlives every ctx_reset(). */
+static struct ernic_dma *g_dma;
 
 /*
  * A context holding one qp_id -> qpn mapping, the fake guest memory wiped,
@@ -442,6 +445,7 @@ static struct ionic_adminq_ctx g_ctx;
 static void ctx_reset(void)
 {
     memset(&g_ctx, 0, sizeof(g_ctx));
+    g_ctx.dma = g_dma;
     g_ctx.pvrdma_handle = &g_fake_pvrdma;
     g_ctx.qp_map[0].valid = true;
     g_ctx.qp_map[0].qp_id = QP_ID;
@@ -686,6 +690,12 @@ static void test_modify_qp_unresolved_gid_only_fails_on_a_mesh(void)
 
 int main(void)
 {
+    g_dma = ernic_dma_create();
+    if (!g_dma) {
+        fprintf(stderr, "ernic_dma_create failed\n");
+        return 1;
+    }
+
     test_state_reaches_the_side_buffer();
     test_modify_qp_unresolved_gid_only_fails_on_a_mesh();
     test_every_state_round_trips();
@@ -696,6 +706,7 @@ int main(void)
     test_query_failure_fails_the_command();
     test_short_body_writes_nothing();
 
+    ernic_dma_destroy(g_dma);
     if (failures) {
         printf("\n%d check(s) failed\n", failures);
         return 1;

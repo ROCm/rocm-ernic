@@ -24,6 +24,8 @@
 #include "ionic_datapath.h"
 #include "rocm_ernic_compat.h"
 
+struct ernic_dma;
+
 /* Admin opcodes (enum ionic_v1_admin_op) */
 enum ionic_v1_admin_op {
     IONIC_V1_ADMIN_NOOP = 0,
@@ -136,6 +138,9 @@ struct ionic_aq_ring {
 
 struct ionic_adminq_ctx {
     vfu_ctx_t *vfu_ctx;
+    /* Scratch for every guest transfer. A test that builds the context
+     * itself, rather than with ionic_adminq_create(), sets this too. */
+    struct ernic_dma *dma;
     struct ionic_aq_ring aq[MAX_AQ];
     int aq_count;
 

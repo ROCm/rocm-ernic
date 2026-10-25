@@ -32,6 +32,7 @@
 
 #include <vfio-user/libvfio-user.h>
 
+#include "ernic_dma.h"
 #include "ionic_adminq_priv.h"
 #include "ionic_datapath.h"
 #include "rocm_ernic_compat.h"
@@ -495,11 +496,20 @@ struct PVRDMADev {
 static struct PVRDMADev g_fake_pvrdma;
 
 static struct ionic_adminq_ctx g_ctx;
+/* Made by the first ctx_reset() and kept for the whole run: the fuzz
+ * harness that shares this file has no main() of its own to make it. */
+static struct ernic_dma *g_dma;
 
 /* Two mapped QPs, a poisoned guest memory, and counters that succeed. */
 static void ctx_reset(void)
 {
+    if (!g_dma) {
+        g_dma = ernic_dma_create();
+        if (!g_dma)
+            abort();
+    }
     memset(&g_ctx, 0, sizeof(g_ctx));
+    g_ctx.dma = g_dma;
     g_ctx.pvrdma_handle = &g_fake_pvrdma;
     g_ctx.qp_map[0].valid = true;
     g_ctx.qp_map[0].qp_id = QP_ID;

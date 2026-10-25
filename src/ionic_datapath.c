@@ -35,14 +35,12 @@
 #include <syslog.h>
 #include <endian.h>
 #include <pthread.h>
-#include <sys/mman.h>
-#include <sys/uio.h>
 
 #include <infiniband/verbs.h>
 #include <vfio-user/libvfio-user.h>
 
 #include "byteorder.h"
-#include "dma_range.h"
+#include "ernic_dma.h"
 #include "ernic_ib.h"
 #include "ernic_time.h"
 #include "ionic_datapath.h"
@@ -237,94 +235,6 @@ void ionic_dp_rdma_bytes(struct ionic_datapath *dp, uint32_t qp_id,
 }
 
 /* -------------------------------------------------------------------------
- * DMA helpers
- * -------------------------------------------------------------------------
- */
-
-/*
- * How many host mappings one transfer may span.  A single guest run is usually
- * one mapping, but the guest's view is contiguous where the host's need not be,
- * so ask for room and split the transfer if even that is not enough.
- */
-#define DP_DMA_SGL_MAX 128
-
-static int dp_dma_rw(vfu_ctx_t *vfu_ctx, uint64_t gpa, void *buf, size_t len,
-                     bool write)
-{
-    dma_sg_t *sg;
-    struct iovec iov[DP_DMA_SGL_MAX];
-    size_t done = 0;
-    int cnt;
-
-    if (!len)
-        return 0;
-
-    if (!ernic_dma_range_ok(gpa, len))
-        return -EINVAL;
-
-    sg = malloc(dma_sg_size() * DP_DMA_SGL_MAX);
-    if (!sg)
-        return -ENOMEM;
-
-    cnt = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)gpa, len, sg,
-                          DP_DMA_SGL_MAX, write ? PROT_WRITE : PROT_READ);
-    if (cnt < 0) {
-        free(sg);
-        /*
-         * Too fragmented to describe in one list.  Halving is enough to make
-         * progress; the caller's loop is driven by what we report, not by a
-         * fixed step.
-         */
-        if (errno == ENOSPC && len > 4096) {
-            size_t half = len / 2;
-            int rc = dp_dma_rw(vfu_ctx, gpa, buf, half, write);
-            if (rc < 0)
-                return rc;
-            return dp_dma_rw(vfu_ctx, gpa + half, (char *)buf + half,
-                             len - half, write);
-        }
-        return -EIO;
-    }
-
-    size_t nsg = (size_t)cnt;
-
-    if (vfu_sgl_get(vfu_ctx, sg, iov, nsg, 0) < 0) {
-        free(sg);
-        return -EIO;
-    }
-
-    for (size_t i = 0; i < nsg && done < len; i++) {
-        size_t n = iov[i].iov_len;
-
-        if (n > len - done)
-            n = len - done;
-        if (write)
-            memcpy(iov[i].iov_base, (const char *)buf + done, n);
-        else
-            memcpy((char *)buf + done, iov[i].iov_base, n);
-        done += n;
-    }
-
-    if (write)
-        vfu_sgl_mark_dirty(vfu_ctx, sg, nsg);
-    vfu_sgl_put(vfu_ctx, sg, iov, nsg);
-    free(sg);
-    return done == len ? 0 : -EIO;
-}
-
-static int dp_dma_read(vfu_ctx_t *vfu_ctx, uint64_t gpa, void *buf, size_t len)
-{
-    return dp_dma_rw(vfu_ctx, gpa, buf, len, false);
-}
-
-static int dp_dma_write(vfu_ctx_t *vfu_ctx, uint64_t gpa, const void *buf,
-                        size_t len)
-{
-    /* dp_dma_rw does not modify buf on the write path. */
-    return dp_dma_rw(vfu_ctx, gpa, (void *)(uintptr_t)buf, len, true);
-}
-
-/* -------------------------------------------------------------------------
  * Page-table backed buffers
  * -------------------------------------------------------------------------
  */
@@ -399,8 +309,8 @@ int ionic_dp_buf_init(struct ionic_datapath *dp, struct dp_buf *b,
         b->npages = 0;
         return -ENOMEM;
     }
-    if (dp_dma_read(dp->vfu_ctx, desc->dma_addr, b->pages,
-                    (size_t)desc->map_count * 8) < 0) {
+    if (ernic_dma_read(dp->dma, dp->vfu_ctx, desc->dma_addr, b->pages,
+                       (size_t)desc->map_count * 8) < 0) {
         ionic_dp_buf_release(b);
         return -EIO;
     }
@@ -468,11 +378,13 @@ struct ionic_datapath *ionic_datapath_create(vfu_ctx_t *vfu_ctx,
     dp->cq = calloc(MAX_CQ, sizeof(*dp->cq));
     dp->srq = calloc(MAX_SRQ, sizeof(*dp->srq));
     dp->ah = calloc(MAX_AH, sizeof(*dp->ah));
-    if (!dp->qp || !dp->cq || !dp->srq || !dp->ah) {
+    dp->dma = ernic_dma_create();
+    if (!dp->qp || !dp->cq || !dp->srq || !dp->ah || !dp->dma) {
         free(dp->qp);
         free(dp->cq);
         free(dp->srq);
         free(dp->ah);
+        ernic_dma_destroy(dp->dma);
         free(dp);
         return NULL;
     }
@@ -610,6 +522,7 @@ void ionic_datapath_destroy(struct ionic_datapath *dp)
     }
     free(dp->srq);
     free(dp->ah);
+    ernic_dma_destroy(dp->dma);
     free(dp);
 }
 
@@ -1229,9 +1142,10 @@ static uint32_t dp_copy_sge(struct ionic_datapath *dp, uint32_t dst_lkey,
             chunk = dst_run;
         if (chunk > sizeof(bounce))
             chunk = sizeof(bounce);
+        size_t n = (size_t)chunk;
 
-        if (dp_dma_read(dp->vfu_ctx, src, bounce, (size_t)chunk) < 0 ||
-            dp_dma_write(dp->vfu_ctx, dst, bounce, (size_t)chunk) < 0) {
+        if (ernic_dma_read(dp->dma, dp->vfu_ctx, src, bounce, n) < 0 ||
+            ernic_dma_write(dp->dma, dp->vfu_ctx, dst, bounce, n) < 0) {
             dp_fault_set(dp, IONIC_STS_LOCAL_ACC_ERR);
             break;
         }
@@ -1259,7 +1173,8 @@ static uint32_t dp_sge_to_host(struct ionic_datapath *dp, uint32_t lkey,
         uint64_t chunk = len - done;
         if (chunk > run)
             chunk = run;
-        if (dp_dma_read(dp->vfu_ctx, gpa, dst + done, (size_t)chunk) < 0) {
+        if (ernic_dma_read(dp->dma, dp->vfu_ctx, gpa, dst + done,
+                           (size_t)chunk) < 0) {
             dp_fault_set(dp, IONIC_STS_LOCAL_ACC_ERR);
             break;
         }
@@ -1282,7 +1197,8 @@ static uint32_t dp_host_to_sge(struct ionic_datapath *dp, uint32_t lkey,
         uint64_t chunk = len - done;
         if (chunk > run)
             chunk = run;
-        if (dp_dma_write(dp->vfu_ctx, gpa, src + done, (size_t)chunk) < 0) {
+        if (ernic_dma_write(dp->dma, dp->vfu_ctx, gpa, src + done,
+                            (size_t)chunk) < 0) {
             dp_fault_set(dp, IONIC_STS_LOCAL_ACC_ERR);
             break;
         }
@@ -1481,7 +1397,7 @@ static int cq_write(struct ionic_datapath *dp, struct ionic_cq_ring *c,
         size_t chunk = len - done;
         if (run < chunk)
             chunk = (size_t)run;
-        if (dp_dma_write(dp->vfu_ctx, gpa, src + done, chunk) < 0)
+        if (ernic_dma_write(dp->dma, dp->vfu_ctx, gpa, src + done, chunk) < 0)
             return -1;
         done += chunk;
     }
@@ -2038,7 +1954,7 @@ static int64_t deliver_recv(struct ionic_datapath *dp, struct ionic_qp_ring *dq,
     uint8_t rwqe[1u << IONIC_WQE_MAX_STRIDE_LOG2];
     uint32_t read_sz = stride < sizeof(rwqe) ? stride : (uint32_t)sizeof(rwqe);
     if (!run || run < read_sz ||
-        dp_dma_read(dp->vfu_ctx, gpa, rwqe, read_sz) < 0) {
+        ernic_dma_read(dp->dma, dp->vfu_ctx, gpa, rwqe, read_sz) < 0) {
         if (sr)
             pthread_mutex_unlock(&sr->lock);
         return -1;
@@ -2238,7 +2154,7 @@ static bool do_atomic(struct ionic_datapath *dp, const uint8_t *wqe,
     }
 
     uint64_t old;
-    if (dp_dma_read(dp->vfu_ctx, rgpa, &old, 8) < 0) {
+    if (ernic_dma_read(dp->dma, dp->vfu_ctx, rgpa, &old, 8) < 0) {
         dp_fault_set(dp, IONIC_STS_REMOTE_ACC_ERR);
         return false;
     }
@@ -2246,11 +2162,11 @@ static bool do_atomic(struct ionic_datapath *dp, const uint8_t *wqe,
     uint64_t new =
         compare_swap ? (old == compare ? swap_add : old) : old + swap_add;
 
-    if (dp_dma_write(dp->vfu_ctx, rgpa, &new, 8) < 0) {
+    if (ernic_dma_write(dp->dma, dp->vfu_ctx, rgpa, &new, 8) < 0) {
         dp_fault_set(dp, IONIC_STS_REMOTE_ACC_ERR);
         return false;
     }
-    if (dp_dma_write(dp->vfu_ctx, lgpa, &old, 8) < 0) {
+    if (ernic_dma_write(dp->dma, dp->vfu_ctx, lgpa, &old, 8) < 0) {
         dp_fault_set(dp, IONIC_STS_LOCAL_ACC_ERR);
         return false;
     }
@@ -3211,7 +3127,7 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
     uint8_t wqe[1u << IONIC_WQE_MAX_STRIDE_LOG2];
     uint32_t read_sz = stride < sizeof(wqe) ? stride : (uint32_t)sizeof(wqe);
     if (!run || run < read_sz ||
-        dp_dma_read(dp->vfu_ctx, gpa, wqe, read_sz) < 0)
+        ernic_dma_read(dp->dma, dp->vfu_ctx, gpa, wqe, read_sz) < 0)
         return true;
 
     uint64_t wqe_id;
@@ -3737,7 +3653,7 @@ static bool dp_remote_atomic(struct ionic_datapath *dp, uint32_t rkey,
     uint64_t gpa = sge_gpa(dp, rkey, va, &run);
     uint64_t old, new_val;
 
-    if (run < 8 || dp_dma_read(dp->vfu_ctx, gpa, &old, 8) < 0)
+    if (run < 8 || ernic_dma_read(dp->dma, dp->vfu_ctx, gpa, &old, 8) < 0)
         return false;
 
     if (compare_swap)
@@ -3745,7 +3661,7 @@ static bool dp_remote_atomic(struct ionic_datapath *dp, uint32_t rkey,
     else
         new_val = old + swap_add;
 
-    if (dp_dma_write(dp->vfu_ctx, gpa, &new_val, 8) < 0)
+    if (ernic_dma_write(dp->dma, dp->vfu_ctx, gpa, &new_val, 8) < 0)
         return false;
 
     *old_out = old;

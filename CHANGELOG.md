@@ -511,6 +511,13 @@
   went on with that pass's DMA; with a libvfio-user before 5d64ebf this
   wrote into freed memory and could crash. The session now ends as soon as
   the context resets, including after a failed reply.
+* **Guest buffers that cross from one host memory mapping to the next.**
+  QEMU can share a guest's RAM with the server in several pieces, so a
+  buffer the guest sees as contiguous may span two of them. The admin
+  queues, device commands, Ethernet rings and P4 commands failed such a
+  transfer; they now copy it piece by piece, as the RDMA data path already
+  did. A transfer spread over more than 128 pieces, which every path
+  failed, the data path included, is now split until each part fits.
 * **RDMA semantics.**
   * A QP entering Error flushes its queues, so outstanding work requests
     complete with `IBV_WC_WR_FLUSH_ERR` and the CQ event wakes a blocked

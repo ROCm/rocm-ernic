@@ -67,6 +67,7 @@ endfunction()
 # from tests/, like tests/test_ionic_stats.c does, and defines
 # LLVMFuzzerInitialize() to check its seed table before replaying.
 ernic_add_fuzz_replay(ionic_stats
+    ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
     ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
     ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
 )

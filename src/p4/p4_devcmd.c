@@ -16,13 +16,11 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
-#include <sys/uio.h>
 #include <syslog.h>
 
 #include <vfio-user/libvfio-user.h>
 
-#include "dma_range.h"
+#include "ernic_dma.h"
 #include "p4_devcmd.h"
 #include "p4_engine.h"
 #include "p4_json.h"
@@ -57,6 +55,7 @@ _Static_assert((int)P4_WIRE_UPDATE_INSERT == (int)P4_UPDATE_INSERT &&
 
 struct p4_devcmd {
     vfu_ctx_t *vfu_ctx;
+    struct ernic_dma *dma;
     struct p4_engine *eng;
     enum p4_scope scope; /* the operator's grant; never widened */
 };
@@ -84,81 +83,6 @@ static const struct p4_op_def p4_ops[] = {
 
 static const uint32_t p4_endpoints[] = {P4_EP_PROGRAM, P4_EP_TABLE,
                                         P4_EP_STATS};
-
-/* -------------------------------------------------------------------------
- * Guest memory
- * -------------------------------------------------------------------------
- */
-
-/*
- * Read @len bytes of guest memory at @gpa into @buf.
- *
- * ernic_dma_range_ok() first: vfu_addr_to_sgl() would reject an address
- * outside a mapped region anyway, but a length that wrapped would be
- * turned into a short one before it got there.
- */
-static int p4_dma_read(vfu_ctx_t *vfu_ctx, uint64_t gpa, void *buf, size_t len)
-{
-    dma_sg_t *sg;
-    struct iovec iov;
-    int ret;
-
-    if (!len || !ernic_dma_range_ok(gpa, len))
-        return -EINVAL;
-
-    sg = malloc(dma_sg_size());
-    if (!sg)
-        return -ENOMEM;
-
-    ret = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)gpa, len, sg, 1,
-                          PROT_READ);
-    if (ret < 0)
-        goto out;
-
-    ret = vfu_sgl_get(vfu_ctx, sg, &iov, 1, 0);
-    if (ret < 0)
-        goto out;
-
-    memcpy(buf, iov.iov_base, len);
-    vfu_sgl_put(vfu_ctx, sg, &iov, 1);
-    ret = 0;
-out:
-    free(sg);
-    return ret;
-}
-
-/* Write @len bytes of @buf into guest memory at @gpa. */
-static int p4_dma_write(vfu_ctx_t *vfu_ctx, uint64_t gpa, const void *buf,
-                        size_t len)
-{
-    dma_sg_t *sg;
-    struct iovec iov;
-    int ret;
-
-    if (!len || !ernic_dma_range_ok(gpa, len))
-        return -EINVAL;
-
-    sg = malloc(dma_sg_size());
-    if (!sg)
-        return -ENOMEM;
-
-    ret = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)gpa, len, sg, 1,
-                          PROT_WRITE);
-    if (ret < 0)
-        goto out;
-
-    ret = vfu_sgl_get(vfu_ctx, sg, &iov, 1, 0);
-    if (ret < 0)
-        goto out;
-
-    memcpy(iov.iov_base, buf, len);
-    vfu_sgl_mark_dirty(vfu_ctx, sg, 1);
-    vfu_sgl_put(vfu_ctx, sg, &iov, 1);
-    ret = 0;
-out:
-    free(sg);
-    return ret;
-}
 
 /* -------------------------------------------------------------------------
  * Scope
@@ -233,6 +157,11 @@ struct p4_devcmd *p4_devcmd_create(vfu_ctx_t *vfu_ctx, struct p4_engine *eng,
     pd = calloc(1, sizeof(*pd));
     if (!pd)
         return NULL;
+    pd->dma = ernic_dma_create();
+    if (!pd->dma) {
+        free(pd);
+        return NULL;
+    }
 
     pd->vfu_ctx = vfu_ctx;
     pd->eng = eng;
@@ -242,6 +171,9 @@ struct p4_devcmd *p4_devcmd_create(vfu_ctx_t *vfu_ctx, struct p4_engine *eng,
 
 void p4_devcmd_destroy(struct p4_devcmd *pd)
 {
+    if (!pd)
+        return;
+    ernic_dma_destroy(pd->dma);
     free(pd);
 }
 
@@ -255,9 +187,11 @@ static uint8_t handle_ident(struct p4_devcmd *pd, const uint8_t *cmd)
     struct p4_devcmd_ident_cmd c;
     struct p4_devcmd_ident id;
     uint32_t len;
+    uint64_t pa;
 
     memcpy(&c, cmd, sizeof(c));
     len = le32toh(c.len);
+    pa = le64toh(c.ident_pa);
 
     /* A driver that asks for less than the whole structure gets what it
      * asked for rather than an error: a newer device answering an older
@@ -276,7 +210,7 @@ static uint8_t handle_ident(struct p4_devcmd *pd, const uint8_t *cmd)
     id.endpoints =
         htole32((uint32_t)(sizeof(p4_endpoints) / sizeof(p4_endpoints[0])));
 
-    if (p4_dma_write(pd->vfu_ctx, le64toh(c.ident_pa), &id, len) < 0)
+    if (ernic_dma_write(pd->dma, pd->vfu_ctx, pa, &id, len) < 0)
         return P4_STS_EFAULT;
 
     return P4_STS_OK;
@@ -375,7 +309,7 @@ static uint8_t handle_query(struct p4_devcmd *pd, const uint8_t *cmd)
     memcpy(buf, &hdr, sizeof(hdr));
 
     want = (uint32_t)(sizeof(hdr) + used);
-    if (p4_dma_write(pd->vfu_ctx, le64toh(c.buf_pa), buf, want) < 0)
+    if (ernic_dma_write(pd->dma, pd->vfu_ctx, le64toh(c.buf_pa), buf, want) < 0)
         return P4_STS_EFAULT;
 
     return P4_STS_OK;
@@ -597,7 +531,8 @@ static uint8_t handle_rpc(struct p4_devcmd *pd, const uint8_t *cmd,
         req = malloc(req_len);
         if (!req)
             return P4_STS_EDEVICE;
-        if (p4_dma_read(pd->vfu_ctx, le64toh(c.req_pa), req, req_len) < 0) {
+        if (ernic_dma_read(pd->dma, pd->vfu_ctx, le64toh(c.req_pa), req,
+                           req_len) < 0) {
             free(req);
             return P4_STS_EFAULT;
         }
@@ -655,8 +590,8 @@ static uint8_t handle_rpc(struct p4_devcmd *pd, const uint8_t *cmd,
     }
 
     if (status == P4_STS_OK && *resp_written) {
-        if (p4_dma_write(pd->vfu_ctx, le64toh(c.resp_pa), resp, *resp_written) <
-            0)
+        if (ernic_dma_write(pd->dma, pd->vfu_ctx, le64toh(c.resp_pa), resp,
+                            *resp_written) < 0)
             status = P4_STS_EFAULT;
     }
 
