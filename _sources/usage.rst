@@ -98,7 +98,9 @@ names that subsystem ``ROCm Emulated RDMA NIC`` after
 There is nothing to select.
 
 ``--tap IFNAME`` (short ``-T``) attaches the emulated
-Ethernet interface to an existing host TAP. Create the TAP up
+Ethernet interface to an existing host TAP. ``IFNAME`` has at
+most 15 characters, the Linux limit; the server refuses a
+longer one rather than shortening it. Create the TAP up
 front, owned by the user running the server:
 
 .. code-block:: bash

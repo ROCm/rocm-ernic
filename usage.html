@@ -483,7 +483,9 @@ names that subsystem <code class="docutils literal notranslate"><span class="pre
 <code class="docutils literal notranslate"><span class="pre">update-pciids</span></code>; until then it displays <code class="docutils literal notranslate"><span class="pre">Device</span> <span class="pre">[1dd8:5400]</span></code>.
 There is nothing to select.</p>
 <p><code class="docutils literal notranslate"><span class="pre">--tap</span> <span class="pre">IFNAME</span></code> (short <code class="docutils literal notranslate"><span class="pre">-T</span></code>) attaches the emulated
-Ethernet interface to an existing host TAP. Create the TAP up
+Ethernet interface to an existing host TAP. <code class="docutils literal notranslate"><span class="pre">IFNAME</span></code> has at
+most 15 characters, the Linux limit; the server refuses a
+longer one rather than shortening it. Create the TAP up
 front, owned by the user running the server:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>ip<span class="w"> </span>tuntap<span class="w"> </span>add<span class="w"> </span>dev<span class="w"> </span>ernic0<span class="w"> </span>mode<span class="w"> </span>tap<span class="w"> </span>user<span class="w"> </span><span class="s2">"</span><span class="nv">$USER</span><span class="s2">"</span>
 </pre></div>
