@@ -75,6 +75,9 @@ static void print_profile(const char *label, const struct ionic_profile *p)
 
 #define MAX_LAYERS 3
 
+/* A 63-character name, the longest a section or key can have. */
+#define NAME63 "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234567_-."
+
 /*
  * Up to three ini layers applied in turn onto compat, as "layer1".."layer3".
  * The first layer that fails stops the row; its error must contain
@@ -250,6 +253,67 @@ static const struct text_case text_cases[] = {
      {"[]\n"},
      "layer1:1: a section header is '[name]'",
      {COMPAT_VALUES}},
+    {"negative",
+     "a section header with no closing bracket",
+     "error naming the line",
+     {"[link\nspeed_mbps = 1000\n"},
+     "layer1:1: a section header is '[name]'",
+     {COMPAT_VALUES}},
+    {"negative",
+     "a section name with a space in it",
+     "error naming the line",
+     {"[li nk]\n"},
+     "layer1:1: a section header is '[name]'",
+     {COMPAT_VALUES}},
+    {"negative",
+     "a section name of capitals, digits, '-' and '.'",
+     "a valid name, rejected as an unknown section",
+     {"[Link-2.x]\n"},
+     "layer1:1: unknown section [Link-2.x]",
+     {COMPAT_VALUES}},
+    {"negative",
+     "a line that starts with '='",
+     "error naming the line: no key",
+     {"[link]\n= 1000\n"},
+     "layer1:2: expected '[section]', 'key = value' or a '#' comment",
+     {COMPAT_VALUES}},
+    {"negative",
+     "a value missing ('mtu_max =')",
+     "integer expected, quoting the empty value",
+     {"[link]\nmtu_max =\n"},
+     "layer1:2: link.mtu_max: integer expected, got ''",
+     {COMPAT_VALUES}},
+    {"negative",
+     "asic_rev = x",
+     "integer expected",
+     {"[identity]\nasic_rev = x\n"},
+     "layer1:2: identity.asic_rev: integer expected, got 'x'",
+     {COMPAT_VALUES}},
+    {"negative",
+     "a fw_version with a tab inside",
+     "rejected: not printable",
+     {"[identity]\nfw_version = a\tb\n"},
+     "identity.fw_version: must be 1 to 31 printable ASCII characters",
+     {COMPAT_VALUES}},
+    {"negative",
+     "a fw_version with a DEL inside",
+     "rejected: not printable",
+     {"[identity]\nfw_version = a\x7f"
+      "b\n"},
+     "identity.fw_version: must be 1 to 31 printable ASCII characters",
+     {COMPAT_VALUES}},
+    {"negative",
+     "a value that is not UTF-8",
+     "error naming the line and key: GKeyFile can't read it as a string",
+     {"[identity]\nfw_version = \xff\n"},
+     "layer1:2: identity.fw_version: value could not be read",
+     {COMPAT_VALUES}},
+    {"negative",
+     "two CRs at the end of a section header",
+     "GKeyFile's error: it strips one CR, the line scanner every one",
+     {"[link]\r\r\nspeed_mbps = 1000\n"},
+     "layer1: Key file contains line",
+     {COMPAT_VALUES}},
 
     /* boundary */
     {"boundary",
@@ -319,6 +383,30 @@ static const struct text_case text_cases[] = {
      "identity.fw_version: must be 1 to 31",
      {COMPAT_VALUES}},
     {"boundary",
+     "asic_rev one past UINT64_MAX",
+     "out of range 0..255, no wrap",
+     {"[identity]\nasic_rev = 18446744073709551616\n"},
+     "identity.asic_rev: '18446744073709551616' out of range 0..255",
+     {COMPAT_VALUES}},
+    {"boundary",
+     "speed one past UINT64_MAX",
+     "not a supported speed, no wrap",
+     {"[link]\nspeed_mbps = 18446744073709551616\n"},
+     "'18446744073709551616' is not a supported speed",
+     {COMPAT_VALUES}},
+    {"boundary",
+     "a key name of 63 characters, the longest",
+     "read as a name, and rejected as an unknown key",
+     {"[link]\n" NAME63 " = 1\n"},
+     "layer1:2: unknown key 'link." NAME63 "'",
+     {COMPAT_VALUES}},
+    {"boundary",
+     "a key name of 64 characters",
+     "too long to be a name: error naming the line",
+     {"[link]\n" NAME63 "x = 1\n"},
+     "layer1:2: expected '[section]', 'key = value' or a '#' comment",
+     {COMPAT_VALUES}},
+    {"boundary",
      "an empty layer",
      "no key changes",
      {""},
@@ -347,6 +435,12 @@ static const struct text_case text_cases[] = {
      "out of range 10..60000 ms",
      {"[stats]\ninterval_ms = 60001\n"},
      "'60001' out of range 10..60000 ms",
+     {COMPAT_VALUES}},
+    {"boundary",
+     "stats.interval_ms one past UINT64_MAX",
+     "out of range 10..60000 ms, no wrap",
+     {"[stats]\ninterval_ms = 18446744073709551616\n"},
+     "'18446744073709551616' out of range 10..60000 ms",
      {COMPAT_VALUES}},
     {"negative",
      "stats.interval_ms = 0",
@@ -659,6 +753,9 @@ static const struct spec_case spec_cases[] = {
      "compat", 100000},
     {"boundary", "an empty name", "rejected", "", NULL,
      "empty NIC profile name", "compat", 100000},
+    {"boundary", "a name shorter than '.ini'",
+     "looked up as a built-in, and not found", "x", NULL,
+     "unknown NIC profile 'x'", "compat", 100000},
     {"corner", "a bare name ending in .ini", "read as a file, not a built-in",
      "compat.ini", NULL, "cannot open NIC profile 'compat.ini'", "compat",
      100000},
@@ -979,6 +1076,86 @@ static void check_nul_byte(void)
            "error naming the line; nothing changes");
 }
 
+/* NULL arguments, and a profile whose chain is empty. */
+static void check_bad_args(void)
+{
+    static const char bad[] = "[link]\nspeed = 1\n";
+    static const char good[] = "[link]\nspeed_mbps = 1000\n";
+    const struct want compat = {COMPAT_VALUES};
+    struct ionic_profile p;
+    char err[256] = "";
+    bool ok;
+
+    ionic_profile_defaults(&p);
+    ok = ionic_profile_apply_text(&p, NULL, bad, strlen(bad), err,
+                                  sizeof(err)) != 0 &&
+         strstr(err, "profile:2: unknown key 'link.speed'") &&
+         profile_is(&p, &compat);
+    report(ok, "negative", "text with no source name",
+           "errors name the source 'profile'");
+    if (!ok)
+        printf("     error '%s'\n", err);
+
+    err[0] = '\0';
+    ok = ionic_profile_apply_text(&p, "layer1", NULL, 5, err, sizeof(err)) !=
+             0 &&
+         strstr(err, "layer1: no text") && profile_is(&p, &compat);
+    report(ok, "negative", "NULL text with a length of 5",
+           "rejected: no text; nothing changes");
+
+    ok = ionic_profile_apply_text(&p, "layer1", NULL, 0, err, sizeof(err)) ==
+             0 &&
+         profile_is(&p, &compat);
+    report(ok, "boundary", "NULL text with a length of 0",
+           "accepted as an empty layer; nothing changes");
+
+    err[0] = '\0';
+    ok = ionic_profile_apply(&p, NULL, err, sizeof(err)) != 0 &&
+         strstr(err, "empty NIC profile name") &&
+         strcmp(p.chain, "compat") == 0;
+    report(ok, "negative", "a NULL profile name",
+           "rejected: empty NIC profile name");
+
+    /* A chain is only empty if the caller emptied it, but then the first
+     * layer is the whole chain, with no " + " in front. */
+    p.chain[0] = '\0';
+    ok = ionic_profile_apply_text(&p, "layer1", good, strlen(good), err,
+                                  sizeof(err)) == 0 &&
+         ionic_profile_apply(&p, "small-vm", err, sizeof(err)) == 0 &&
+         strcmp(p.chain, "small-vm") == 0;
+    report(ok, "corner", "a layer onto an empty chain",
+           "the chain is just its name");
+}
+
+/*
+ * --print-profile output for a profile no text can make: values with no
+ * name, and a chain holding control characters, as a file name may.
+ */
+static void check_format_fallbacks(void)
+{
+    struct ionic_profile p;
+    char text[2048];
+    int n;
+    bool ok;
+
+    ionic_profile_defaults(&p);
+    p.identity.asic_type = 99;
+    p.link.xcvr = 99;
+    snprintf(p.chain, sizeof(p.chain),
+             "compat + a\nb\x7f"
+             "c\td.ini");
+    n = ionic_profile_format(&p, text, sizeof(text));
+    ok = n > 0 && (size_t)n < sizeof(text) &&
+         strncmp(text, "# NIC profile: compat + a?b?c?d.ini\n", 36) == 0 &&
+         strstr(text, "\nasic_type = ?\n") && strstr(text, "\nxcvr = ?\n");
+    report(ok, "corner",
+           "print a profile with an unnamed ASIC type and transceiver, and "
+           "control characters in its chain",
+           "'?' for each, so the output stays one comment line and parseable");
+    if (!ok)
+        printf("     got %d:\n%s", n, n > 0 ? text : "");
+}
+
 /* Exact file boundaries and a FIFO with no writer exercise the real loader. */
 static void check_file_boundaries(void)
 {
@@ -1074,6 +1251,8 @@ int main(void)
     check_hash();
     check_chain_limit();
     check_nul_byte();
+    check_bad_args();
+    check_format_fallbacks();
     check_file_boundaries();
 
     {

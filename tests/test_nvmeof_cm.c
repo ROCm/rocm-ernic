@@ -61,6 +61,7 @@ static void check(const char *name, bool cond, const char *detail)
 #define MAD_TID     8
 
 #define ATTR_REQ  0x0010
+#define ATTR_MRA  0x0011
 #define ATTR_REJ  0x0012
 #define ATTR_REP  0x0013
 #define ATTR_RTU  0x0014
@@ -84,6 +85,10 @@ static void check(const char *name, bool cond, const char *detail)
 
 #define RTU_LOCAL_COMM_ID  24
 #define RTU_REMOTE_COMM_ID 28
+
+#define MRA_REMOTE_COMM_ID  28
+#define DREP_LOCAL_COMM_ID  24
+#define DREP_REMOTE_COMM_ID 28
 
 #define DREQ_LOCAL_COMM_ID  24
 #define DREQ_REMOTE_COMM_ID 28
@@ -113,7 +118,8 @@ struct req_params {
     uint32_t comm_id;
     uint32_t qpn;
     uint64_t service_id;
-    uint32_t dst_ip;
+    uint32_t dst_ip;     /* with ip_version 4 */
+    uint8_t dst_ip6[16]; /* with ip_version 6 */
     uint8_t cma_version;
     uint8_t ip_version;
     uint16_t recfmt;
@@ -156,7 +162,11 @@ static void build_req(uint8_t *m, const struct req_params *p)
     priv[1] = (uint8_t)(p->ip_version << 4);
     ernic_put_be16(priv + 2, TEST_PORT);
     ernic_put_be32(priv + 4 + 12, 0xc0a8c814u); /* src 192.168.200.20 */
-    ernic_put_be32(priv + 20 + 12, p->dst_ip);
+    if (p->ip_version == 6) {
+        memcpy(priv + 20, p->dst_ip6, 16);
+    } else {
+        ernic_put_be32(priv + 20 + 12, p->dst_ip);
+    }
 
     uint8_t *nvme = priv + 36;
     ernic_put_le16(nvme + 0, p->recfmt);
@@ -453,6 +463,238 @@ static void test_foreign_mads(void)
     check("foreign", !nvmeof_cm_handle_mad(cm, m, 64, rsp, &res),
           "a 64-byte datagram was treated as a MAD");
 
+    /* A base version other than 1. */
+    mad_hdr(m, ATTR_REQ, 1);
+    m[0] = 2;
+    check("foreign", !nvmeof_cm_handle_mad(cm, m, sizeof(m), rsp, &res),
+          "a base version 2 MAD was claimed");
+
+    /* Missing arguments are refused, and the result still cleared. */
+    mad_hdr(m, ATTR_REQ, 1);
+    memset(&res, 0xa5, sizeof(res));
+    check("bad-args", !nvmeof_cm_handle_mad(NULL, m, sizeof(m), rsp, &res),
+          "a NULL responder was used");
+    check("bad-args", res.action == NVMEOF_CM_ACT_NONE && res.rsp_len == 0,
+          "a refused MAD left a stale result");
+    check("bad-args", !nvmeof_cm_handle_mad(cm, NULL, IB_MAD_SIZE, rsp, &res),
+          "a NULL MAD was read");
+    check("bad-args", !nvmeof_cm_handle_mad(cm, m, sizeof(m), NULL, &res),
+          "a MAD was answered into a NULL buffer");
+    check("bad-args", nvmeof_cm_conn_count(cm) == 0,
+          "a refused MAD left a connection behind");
+
+    nvmeof_cm_destroy(cm);
+    nvmeof_target_destroy(t);
+}
+
+/* ------------------------------------------------------------------ */
+/* The other CM messages                                              */
+/* ------------------------------------------------------------------ */
+
+/* Send a REQ for @p and return the local comm ID from the REP, or 0. */
+static uint32_t connect_req(struct nvmeof_cm *cm, const struct req_params *p,
+                            struct nvmeof_cm_result *res)
+{
+    uint8_t req[IB_MAD_SIZE], rsp[IB_MAD_SIZE];
+
+    build_req(req, p);
+    if (!nvmeof_cm_handle_mad(cm, req, sizeof(req), rsp, res) ||
+        ernic_get_be16(rsp + MAD_ATTR_ID) != ATTR_REP) {
+        return 0;
+    }
+    return ernic_get_be32(rsp + REP_LOCAL_COMM_ID);
+}
+
+static void test_other_messages(void)
+{
+    struct nvmeof_target *t = make_target();
+    struct nvmeof_cm *cm = nvmeof_cm_create(t, TEST_TRADDR, TEST_PORT);
+    uint8_t m[IB_MAD_SIZE], rsp[IB_MAD_SIZE];
+    struct nvmeof_cm_result res;
+    struct req_params p;
+
+    if (t == NULL || cm == NULL) {
+        nvmeof_cm_destroy(cm);
+        nvmeof_target_destroy(t);
+        return;
+    }
+
+    req_defaults(&p);
+    uint32_t local_comm_id = connect_req(cm, &p, &res);
+    check("other-setup", local_comm_id != 0, "the REQ was not accepted");
+
+    /* MRA and DREP are claimed, change nothing, and draw no reply. */
+    mad_hdr(m, ATTR_MRA, 2);
+    ernic_put_be32(m + MRA_REMOTE_COMM_ID, local_comm_id);
+    check("mra", nvmeof_cm_handle_mad(cm, m, sizeof(m), rsp, &res),
+          "an MRA was not claimed");
+    check("mra", res.action == NVMEOF_CM_ACT_NONE && res.rsp_len == 0,
+          "an MRA was acted on or answered");
+
+    mad_hdr(m, ATTR_DREP, 3);
+    ernic_put_be32(m + DREP_REMOTE_COMM_ID, local_comm_id);
+    check("drep", nvmeof_cm_handle_mad(cm, m, sizeof(m), rsp, &res),
+          "a DREP was not claimed");
+    check("drep", res.action == NVMEOF_CM_ACT_NONE && res.rsp_len == 0,
+          "a DREP was acted on or answered");
+    check("drep", nvmeof_cm_conn_count(cm) == 1,
+          "a DREP released the connection");
+
+    /* A REP is for an active side, which the target never is: REJ it,
+     * naming the REP (message_rejected 1) and reason 5, unsupported. */
+    mad_hdr(m, ATTR_REP, 0x0123456789abcdefull);
+    ernic_put_be32(m + REP_LOCAL_COMM_ID, 0x77665544);
+    check("rep", nvmeof_cm_handle_mad(cm, m, sizeof(m), rsp, &res),
+          "a REP was not claimed");
+    check("rep", res.rsp_len == IB_MAD_SIZE, "a REP drew no reply");
+    check("rep", ernic_get_be16(rsp + MAD_ATTR_ID) == ATTR_REJ,
+          "the reply to a REP is not a REJ");
+    check("rep", memcmp(rsp + MAD_TID, m + MAD_TID, 8) == 0,
+          "the REJ does not echo the REP's transaction id");
+    check("rep", (rsp[REJ_MSG_REJECTED] >> 6) == 1,
+          "the REJ does not name the REP as the rejected message");
+    check("rep", ernic_get_be16(rsp + REJ_REASON) == 5,
+          "the REJ does not give reason 5, unsupported");
+    check("rep", ernic_get_be32(rsp + REJ_REMOTE_COMM_ID) == 0x77665544,
+          "the REJ does not echo the sender's comm id");
+    check("rep", res.action == NVMEOF_CM_ACT_NONE, "a REP was acted on");
+
+    /* A REJ for a connection we do not know is claimed and ignored. */
+    mad_hdr(m, ATTR_REJ, 4);
+    ernic_put_be32(m + REJ_REMOTE_COMM_ID, 0x0badf00d);
+    check("stale-rej", nvmeof_cm_handle_mad(cm, m, sizeof(m), rsp, &res),
+          "a stale REJ was not claimed");
+    check("stale-rej", res.action == NVMEOF_CM_ACT_NONE && res.rsp_len == 0,
+          "a stale REJ was acted on or answered");
+    check("stale-rej", nvmeof_cm_conn_count(cm) == 1,
+          "a stale REJ released a connection");
+
+    /* The guest refusing our REP tears the connection down. */
+    mad_hdr(m, ATTR_REJ, 5);
+    ernic_put_be32(m + REJ_REMOTE_COMM_ID, local_comm_id);
+    check("rej", nvmeof_cm_handle_mad(cm, m, sizeof(m), rsp, &res),
+          "a REJ was not claimed");
+    check("rej", res.action == NVMEOF_CM_ACT_UNBIND, "a REJ did not unbind");
+    check("rej", res.guest_qpn == p.qpn, "a REJ unbound the wrong QP");
+    check("rej", res.rsp_len == 0, "a REJ was answered");
+    check("rej", nvmeof_cm_conn_count(cm) == 0,
+          "a REJ left the connection behind");
+    check("rej", nvmeof_target_find_queue(t, p.qpn) == NULL,
+          "a REJ left the controller queue behind");
+
+    nvmeof_cm_destroy(cm);
+    nvmeof_target_destroy(t);
+}
+
+/*
+ * The target listens on one IPv4 address, so a REQ whose cma_hdr is
+ * anything but IPv4 naming that address is for a listener it doesn't have,
+ * and is refused with reason 8, invalid service ID, as rdma_cm refuses
+ * one. Once the target can have an IPv6 address, an IPv6 REQ naming it
+ * will be answered, but these still won't be: none names it.
+ */
+static void test_ip_versions(void)
+{
+    static const uint8_t ula[16] = {0xfd, 0, 0, 0, 0, 0, 0, 0,
+                                    0,    0, 0, 0, 0, 0, 0, 1};
+    /* ::ffff:192.168.200.1, the target's address mapped into IPv6. */
+    static const uint8_t mapped[16] = {0, 0, 0,    0,    0,    0,    0,    0,
+                                       0, 0, 0xff, 0xff, 0xc0, 0xa8, 0xc8, 1};
+    /* The target's address laid out as an IPv4 cma_hdr has it. */
+    static const uint8_t padded[16] = {0, 0, 0, 0, 0,    0,    0,    0,
+                                       0, 0, 0, 0, 0xc0, 0xa8, 0xc8, 1};
+    static const struct {
+        const char *what;
+        uint8_t ip_version;
+        const uint8_t *dst6;
+    } rows[] = {
+        {"IPv6 to another address", 6, ula},
+        {"IPv6 to the target's IPv4-mapped address", 6, mapped},
+        {"IPv6 with the target's address in IPv4 layout", 6, padded},
+        {"IP version 0", 0, NULL},
+        {"IP version 5", 5, NULL},
+    };
+    struct nvmeof_target *t = make_target();
+    struct nvmeof_cm *cm = nvmeof_cm_create(t, TEST_TRADDR, TEST_PORT);
+    struct req_params p;
+
+    if (t == NULL || cm == NULL) {
+        nvmeof_cm_destroy(cm);
+        nvmeof_target_destroy(t);
+        return;
+    }
+
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        req_defaults(&p);
+        p.ip_version = rows[i].ip_version;
+        if (rows[i].dst6 != NULL) {
+            memcpy(p.dst_ip6, rows[i].dst6, sizeof(p.dst_ip6));
+        }
+        run_rej(cm, t, &p, rows[i].what, 8, 0);
+    }
+    check("ip-version", nvmeof_cm_conn_count(cm) == 0,
+          "a refused REQ left a connection behind");
+
+    nvmeof_cm_destroy(cm);
+    nvmeof_target_destroy(t);
+}
+
+/*
+ * A DREQ whose remote comm ID matches nothing is matched by its remote
+ * QPN instead. That is the QPN of the DREQ's recipient: the controller's,
+ * from our REP, not the guest's own.
+ */
+static void test_dreq_by_qpn(void)
+{
+    struct nvmeof_target *t = make_target();
+    struct nvmeof_cm *cm = nvmeof_cm_create(t, TEST_TRADDR, TEST_PORT);
+    uint8_t dreq[IB_MAD_SIZE], rsp[IB_MAD_SIZE];
+    struct nvmeof_cm_result res;
+    struct req_params p;
+
+    if (t == NULL || cm == NULL) {
+        nvmeof_cm_destroy(cm);
+        nvmeof_target_destroy(t);
+        return;
+    }
+
+    req_defaults(&p);
+    uint32_t local_comm_id = connect_req(cm, &p, &res);
+    uint32_t local_qpn = res.local_qpn;
+    check("dreq-qpn", local_comm_id != 0, "the REQ was not accepted");
+    check("dreq-qpn", local_qpn != p.qpn,
+          "the controller QPN equals the guest's, so the test proves nothing");
+
+    /* The guest's own QPN names no controller QP. */
+    mad_hdr(dreq, ATTR_DREQ, 0x51);
+    ernic_put_be32(dreq + DREQ_LOCAL_COMM_ID, p.comm_id);
+    ernic_put_be32(dreq + DREQ_REMOTE_COMM_ID, 0x0badf00d);
+    ernic_put_be32(dreq + DREQ_REMOTE_QPN, p.qpn << 8);
+    nvmeof_cm_handle_mad(cm, dreq, sizeof(dreq), rsp, &res);
+    check("dreq-qpn", res.rsp_len == IB_MAD_SIZE,
+          "a DREQ naming the guest's QPN was left unanswered");
+    check("dreq-qpn", res.action == NVMEOF_CM_ACT_NONE,
+          "a DREQ naming the guest's QPN unbound it");
+    check("dreq-qpn", nvmeof_cm_conn_count(cm) == 1,
+          "a DREQ naming the guest's QPN released the connection");
+
+    /* The controller's QPN does. */
+    mad_hdr(dreq, ATTR_DREQ, 0x52);
+    ernic_put_be32(dreq + DREQ_LOCAL_COMM_ID, p.comm_id);
+    ernic_put_be32(dreq + DREQ_REMOTE_COMM_ID, 0x0badf00d);
+    ernic_put_be32(dreq + DREQ_REMOTE_QPN, local_qpn << 8);
+    nvmeof_cm_handle_mad(cm, dreq, sizeof(dreq), rsp, &res);
+    check("dreq-qpn", res.action == NVMEOF_CM_ACT_UNBIND,
+          "a DREQ naming the controller's QPN did not unbind");
+    check("dreq-qpn", res.guest_qpn == p.qpn && res.local_qpn == local_qpn,
+          "a DREQ naming the controller's QPN unbound the wrong QP");
+    check("dreq-qpn", ernic_get_be32(rsp + DREP_LOCAL_COMM_ID) == local_comm_id,
+          "the DREP does not carry the connection's comm id");
+    check("dreq-qpn", nvmeof_cm_conn_count(cm) == 0,
+          "the connection was not released");
+    check("dreq-qpn", nvmeof_target_find_queue(t, p.qpn) == NULL,
+          "the controller queue outlived its connection");
+
     nvmeof_cm_destroy(cm);
     nvmeof_target_destroy(t);
 }
@@ -526,12 +768,134 @@ static void test_reconnect(void)
     nvmeof_target_destroy(t);
 }
 
+/*
+ * A responder with no target has no queue limit of its own, so the only
+ * limit is its connection table: once that is full, a REQ is refused with
+ * reason 3, no resources, rather than overrunning it.
+ */
+static void test_table_full(void)
+{
+    struct nvmeof_cm *cm = nvmeof_cm_create(NULL, TEST_TRADDR, TEST_PORT);
+    uint8_t req[IB_MAD_SIZE], rsp[IB_MAD_SIZE];
+    struct nvmeof_cm_result res;
+    struct req_params p;
+    unsigned accepted = 0;
+    uint16_t reason = 0;
+    uint32_t first_comm_id = 0;
+
+    if (cm == NULL) {
+        fail("setup", "nvmeof_cm_create failed");
+        return;
+    }
+
+    for (unsigned i = 0; i < 1000; i++) {
+        req_defaults(&p);
+        p.comm_id = 0x2000 + i;
+        p.qpn = 0x200 + i;
+        build_req(req, &p);
+        nvmeof_cm_handle_mad(cm, req, sizeof(req), rsp, &res);
+        if (ernic_get_be16(rsp + MAD_ATTR_ID) != ATTR_REP) {
+            reason = ernic_get_be16(rsp + REJ_REASON);
+            break;
+        }
+        if (accepted++ == 0) {
+            first_comm_id = ernic_get_be32(rsp + REP_LOCAL_COMM_ID);
+        }
+    }
+    check("table-full", accepted > 0 && accepted < 1000,
+          "the connection table never filled");
+    check("table-full", reason == 3,
+          "a REQ beyond the table was not refused for want of resources");
+    check("table-full", res.action == NVMEOF_CM_ACT_NONE,
+          "a refused REQ still bound a queue");
+    check("table-full", nvmeof_cm_conn_count(cm) == accepted,
+          "connection count does not match the accepted REQs");
+
+    /* A DREQ frees a slot, with no target queue to close... */
+    uint8_t dreq[IB_MAD_SIZE];
+    mad_hdr(dreq, ATTR_DREQ, 7);
+    ernic_put_be32(dreq + DREQ_LOCAL_COMM_ID, 0x2000);
+    ernic_put_be32(dreq + DREQ_REMOTE_COMM_ID, first_comm_id);
+    nvmeof_cm_handle_mad(cm, dreq, sizeof(dreq), rsp, &res);
+    check("table-full", res.action == NVMEOF_CM_ACT_UNBIND,
+          "a DREQ did not unbind");
+    check("table-full", res.guest_qpn == 0x200, "a DREQ unbound the wrong QP");
+    check("table-full", nvmeof_cm_conn_count(cm) == accepted - 1,
+          "a DREQ did not free a slot");
+
+    /* ...which the refused REQ can now have. */
+    build_req(req, &p);
+    nvmeof_cm_handle_mad(cm, req, sizeof(req), rsp, &res);
+    check("table-full", ernic_get_be16(rsp + MAD_ATTR_ID) == ATTR_REP,
+          "a REQ was refused after a slot was freed");
+
+    nvmeof_cm_destroy(cm);
+}
+
+/*
+ * The responder's QPNs come from NVMEOF_CM_QPN_BASE + 1 up to the top of
+ * the range nvmeof_cm_is_target_qpn() accepts, then start again from the
+ * bottom rather than handing out a QPN the data path would not route to
+ * the target. A repeat REQ for one guest QP replaces its connection, so
+ * the table never fills on the way round.
+ */
+static void test_qpn_wrap(void)
+{
+    struct nvmeof_cm *cm = nvmeof_cm_create(NULL, TEST_TRADDR, TEST_PORT);
+    /* A QPN is 24 bits; the bits below the mask are free. */
+    const uint32_t last =
+        NVMEOF_CM_QPN_BASE | (~NVMEOF_CM_QPN_MASK & 0x00ffffffu);
+    uint8_t req[IB_MAD_SIZE], rsp[IB_MAD_SIZE];
+    struct nvmeof_cm_result res;
+    struct req_params p;
+    uint32_t want = NVMEOF_CM_QPN_BASE + 1;
+
+    if (cm == NULL) {
+        fail("setup", "nvmeof_cm_create failed");
+        return;
+    }
+
+    req_defaults(&p);
+    for (;;) {
+        p.comm_id++;
+        build_req(req, &p);
+        nvmeof_cm_handle_mad(cm, req, sizeof(req), rsp, &res);
+        if (res.action != NVMEOF_CM_ACT_BIND || res.local_qpn != want) {
+            fail("qpn-wrap", "QPN 0x%06x, expected 0x%06x", res.local_qpn,
+                 want);
+            break;
+        }
+        if (want == last) {
+            break;
+        }
+        want++;
+    }
+
+    /* One more: past the top of the range, back to the bottom. */
+    p.comm_id++;
+    build_req(req, &p);
+    nvmeof_cm_handle_mad(cm, req, sizeof(req), rsp, &res);
+    check("qpn-wrap", res.local_qpn == NVMEOF_CM_QPN_BASE + 1,
+          "the QPN after the top of the range is not the first again");
+    check("qpn-wrap", nvmeof_cm_is_target_qpn(res.local_qpn),
+          "the QPN after the top of the range is not a target QPN");
+    check("qpn-wrap", nvmeof_cm_conn_count(cm) == 1,
+          "repeat REQs for one QP left more than one connection");
+
+    nvmeof_cm_destroy(cm);
+}
+
 int main(void)
 {
     test_full_handshake();
     test_rejections();
     test_foreign_mads();
+    test_other_messages();
+    test_ip_versions();
+    test_dreq_by_qpn();
     test_reconnect();
+    test_table_full();
+    test_qpn_wrap();
 
     if (failures == 0) {
         printf("PASS nvmeof-cm\n");

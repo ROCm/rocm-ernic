@@ -80,8 +80,9 @@ The backend string is ``nvmeof`` optionally followed by
      - Subsystem NQN the guest connects to.
    * - ``ip=``
      - ``192.168.200.1``
-     - Address the controller answers on. It has to be
-       routable from the guest's ``rocm-ernic0`` interface.
+     - IPv4 address the controller answers on. It has to
+       be routable from the guest's ``rocm-ernic0``
+       interface.
    * - ``port=``
      - ``4420``
      - Transport service ID.
@@ -201,11 +202,17 @@ recognises sends on the guest's GSI queue pair and hands the
   controller-side queue, and reply with **REP** carrying an
   ``nvme_rdma_cm_rep``. An unsupported ``qid`` gets a
   **REJ** with the right NVMe-oF status rather than a
-  timeout. The subsystem NQN is not in the rdma_cm private
-  data at all, so a wrong one is caught later, by the
-  Fabrics Connect capsule.
+  timeout. The target listens only on its IPv4 ``ip=``
+  address, so, as from a Linux target listening on IPv4,
+  a connect to any other address, or to any IPv6 address
+  (``::ffff:`` mapped ones included), gets a **REJ**
+  (invalid service ID). The subsystem NQN is not in the
+  rdma_cm private data at all, so a wrong one is caught
+  later, by the Fabrics Connect capsule.
 - **RTU** -- mark the queue established.
-- **DREQ** -- tear the queue down and answer **DREP**.
+- **DREQ** -- tear the queue down and answer **DREP**. A
+  DREQ is matched by its connection ID, or failing that,
+  by the controller QPN it names.
 
 Replies are delivered back into the guest's GSI receive
 queue as UD completions, with a synthesised 40-byte GRH and

@@ -246,6 +246,17 @@ static struct nvmeof_cm_conn *conn_by_guest_qpn(struct nvmeof_cm *cm,
     return NULL;
 }
 
+static struct nvmeof_cm_conn *conn_by_local_qpn(struct nvmeof_cm *cm,
+                                                uint32_t local_qpn)
+{
+    for (unsigned i = 0; i < NVMEOF_CM_MAX_CONN; i++) {
+        if (cm->conn[i].in_use && cm->conn[i].local_qpn == local_qpn) {
+            return &cm->conn[i];
+        }
+    }
+    return NULL;
+}
+
 static struct nvmeof_cm_conn *conn_alloc(struct nvmeof_cm *cm)
 {
     for (unsigned i = 0; i < NVMEOF_CM_MAX_CONN; i++) {
@@ -340,16 +351,19 @@ static size_t handle_req(struct nvmeof_cm *cm, const uint8_t *req, uint8_t *rsp,
      * private data. Checking the destination catches a connect aimed at
      * an address this target does not answer for, which otherwise looks
      * to the guest like a silent hang.
+     *
+     * The target listens on one IPv4 address, so, like a Linux rdma_cm
+     * listener bound to one (cma_match_private_data()), it answers only an
+     * IPv4 cma_hdr naming that address. An IPv6 one is for a listener this
+     * target doesn't have, even when it names ::ffff:<traddr>.
      */
     if (priv[CMA_HDR_VERSION_OFF] != 0) {
         return build_rej(rsp, req, 0, IB_CM_REJ_UNSUPPORTED, 0);
     }
     uint8_t ip_version = priv[CMA_HDR_IP_VERSION_OFF] >> 4;
-    if (ip_version == 4) {
-        uint32_t dst = ernic_get_be32(priv + CMA_HDR_DST_ADDR_OFF + 12);
-        if (dst != cm->traddr) {
-            return build_rej(rsp, req, 0, IB_CM_REJ_INVALID_SERVICE_ID, 0);
-        }
+    uint32_t dst = ernic_get_be32(priv + CMA_HDR_DST_ADDR_OFF + 12);
+    if (ip_version != 4 || dst != cm->traddr) {
+        return build_rej(rsp, req, 0, IB_CM_REJ_INVALID_SERVICE_ID, 0);
     }
 
     const uint8_t *nvme = priv + CMA_HDR_SIZE;
@@ -484,7 +498,8 @@ bool nvmeof_cm_handle_mad(struct nvmeof_cm *cm, const void *mad, size_t len,
     case CM_ATTR_DREQ:
         c = conn_by_local_id(cm, ernic_get_be32(m + CM_DREQ_REMOTE_COMM_ID));
         if (c == NULL) {
-            c = conn_by_guest_qpn(cm,
+            /* The remote QPN is the recipient's: ours, not the guest's. */
+            c = conn_by_local_qpn(cm,
                                   ernic_get_be32(m + CM_DREQ_REMOTE_QPN) >> 8);
         }
         mad_reply_hdr(rsp, m, CM_ATTR_DREP);
