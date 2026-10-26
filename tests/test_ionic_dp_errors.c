@@ -24,7 +24,6 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include <endian.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <stdbool.h>
@@ -1528,6 +1527,185 @@ static void run_sq_case(const struct sq_case *c)
     }
 }
 
+/*
+ * The wire header byte for byte, as every node in a mesh sends and expects
+ * it, whatever version it runs (and as tests/py/ernic/mesh.py's
+ * IONIC_WIRE_FMT has it).  Each field holds a different value, so a field
+ * at the wrong offset or in the wrong byte order shows.
+ */
+static void check_wire_hdr_layout(void)
+{
+    static const uint8_t want[IONIC_WIRE_HDR_LEN] = {
+        0x49,
+        0x4f,
+        0x4e,
+        0x43, /* magic, "IONC" */
+        IONIC_WIRE_ATOMIC_REQ,
+        1,
+        0,
+        0, /* op, cs, reserved */
+        0x04,
+        0x03,
+        0x02,
+        0x01, /* src_qp_id */
+        0x08,
+        0x07,
+        0x06,
+        0x05, /* dst_qp_id */
+        0x0c,
+        0x0b,
+        0x0a,
+        0x09, /* req_id */
+        0x10,
+        0x0f,
+        0x0e,
+        0x0d, /* rkey */
+        0x14,
+        0x13,
+        0x12,
+        0x11, /* length */
+        0xa1,
+        0xa2,
+        0xa3,
+        0xa4, /* immediate */
+        0x18,
+        0x17,
+        0x16,
+        0x15, /* status */
+        0x28,
+        0x27,
+        0x26,
+        0x25,
+        0x24,
+        0x23,
+        0x22,
+        0x21, /* remote_va */
+        0x38,
+        0x37,
+        0x36,
+        0x35,
+        0x34,
+        0x33,
+        0x32,
+        0x31, /* swap_add */
+        0x48,
+        0x47,
+        0x46,
+        0x45,
+        0x44,
+        0x43,
+        0x42,
+        0x41, /* compare */
+    };
+    static const uint8_t imm[4] = {0xa1, 0xa2, 0xa3, 0xa4};
+    struct ionic_wire_hdr h, back;
+    uint8_t got[IONIC_WIRE_HDR_LEN];
+    bool put_ok, get_ok;
+
+    memset(&h, 0, sizeof(h));
+    h.magic = IONIC_WIRE_MAGIC;
+    h.op = IONIC_WIRE_ATOMIC_REQ;
+    h.atomic_cs = 1;
+    h.src_qp_id = 0x01020304u;
+    h.dst_qp_id = 0x05060708u;
+    h.req_id = 0x090a0b0cu;
+    h.rkey = 0x0d0e0f10u;
+    h.length = 0x11121314u;
+    memcpy(&h.imm_be, imm, sizeof(imm));
+    h.status = 0x15161718u;
+    h.remote_va = UINT64_C(0x2122232425262728);
+    h.swap_add = UINT64_C(0x3132333435363738);
+    h.compare = UINT64_C(0x4142434445464748);
+
+    /* The reserved bytes start out non-zero, to show the put clears them */
+    memset(got, 0xee, sizeof(got));
+    ionic_dp_wire_hdr_put(got, &h);
+    put_ok = memcmp(got, want, sizeof(want)) == 0;
+
+    ionic_dp_wire_hdr_get(&back, want);
+    get_ok = back.magic == h.magic && back.op == h.op &&
+             back.atomic_cs == h.atomic_cs && back.src_qp_id == h.src_qp_id &&
+             back.dst_qp_id == h.dst_qp_id && back.req_id == h.req_id &&
+             back.rkey == h.rkey && back.length == h.length &&
+             back.imm_be == h.imm_be && back.status == h.status &&
+             back.remote_va == h.remote_va && back.swap_add == h.swap_add &&
+             back.compare == h.compare;
+
+    printf("%s positive: the wire header written; expected: the documented "
+           "bytes\n",
+           put_ok ? "ok  " : "FAIL");
+    printf("%s positive: the wire header read; expected: every field back\n",
+           get_ok ? "ok  " : "FAIL");
+    failures += !put_ok + !get_ok;
+}
+
+/*
+ * An atomic works on the u64 a little-endian guest keeps in memory, whatever
+ * the host's byte order: the target's bytes change as that u64 does, and
+ * the original value comes back, to the requester's SGE and, from another
+ * node, in the ATOMIC_RESP, in the same order.  The add carries out of the
+ * low byte, which shows a value read in the wrong order.
+ */
+static void check_atomic_byte_order(void)
+{
+    static const uint8_t before[8] = {0xff, 0, 0, 0, 0, 0, 0, 0x80};
+    static const uint8_t after[8] = {0x00, 0x01, 0, 0, 0, 0, 0, 0x80};
+    static const struct {
+        const char *description;
+        bool remote;
+    } rows[] = {
+        {"a fetch-and-add on this node's memory", false},
+        {"a fetch-and-add on another node's memory", true},
+    };
+
+    for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
+        struct ionic_datapath *dp = setup();
+        const char *why = NULL;
+
+        if (!dp) {
+            why = "no data path";
+        } else {
+            if (rows[row].remote)
+                remote(dp, QP_B);
+            memcpy(g_mem + MR_GPA, before, sizeof(before));
+            post_send(dp, QP_A, &FADD_OK);
+            poll_at(dp, g_now_ms);
+            if (rows[row].remote) {
+                struct ionic_wire_hdr h;
+
+                /* The request, to the peer, which is this node */
+                wire_feed(dp);
+                poll_at(dp, g_now_ms);
+                memset(&h, 0, sizeof(h));
+                if (g_nwire == 1)
+                    ionic_dp_wire_hdr_get(&h, g_wire[0]);
+                if (g_nwire != 1 || h.op != IONIC_WIRE_ATOMIC_RESP ||
+                    g_wire_len[0] != IONIC_WIRE_HDR_LEN + sizeof(before))
+                    why = "the peer didn't answer with an 8-byte ATOMIC_RESP";
+                else if (memcmp(g_wire[0] + IONIC_WIRE_HDR_LEN, before,
+                                sizeof(before)) != 0)
+                    why = "the ATOMIC_RESP's value isn't little-endian";
+                /* The answer, back to the requester */
+                wire_feed(dp);
+                poll_at(dp, g_now_ms);
+            }
+            if (!why && dp->cq[CQ_ID].prod != 1)
+                why = "the atomic didn't complete";
+            if (!why && memcmp(g_mem + MR_GPA, after, sizeof(after)) != 0)
+                why = "the target wasn't added to as a little-endian u64";
+            if (!why && memcmp(g_mem + RESULT_GPA, before, sizeof(before)) != 0)
+                why = "the original value didn't land little-endian";
+            ionic_datapath_destroy(dp);
+        }
+        printf("%s positive: %s; expected: the u64 in guest byte order\n",
+               why ? "FAIL" : "ok  ", rows[row].description);
+        if (why) {
+            printf("     got %s\n", why);
+            failures++;
+        }
+    }
+}
+
 static void check_late_responses(void)
 {
     static const struct {
@@ -1553,6 +1731,7 @@ static void check_late_responses(void)
     for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
         struct ionic_datapath *dp = setup();
         struct ionic_wire_hdr request, reply = {0};
+        uint8_t reply_wire[IONIC_WIRE_HDR_LEN];
         uint64_t before[4][IONIC_DP_RDMA_COUNT], after[IONIC_DP_RDMA_COUNT];
         bool ok = dp != NULL;
 
@@ -1561,25 +1740,26 @@ static void check_late_responses(void)
             post_send(dp, QP_A, &SEND64);
             ok = g_nwire == 1;
             if (ok) {
-                memcpy(&request, g_wire[0], sizeof(request));
+                ionic_dp_wire_hdr_get(&request, g_wire[0]);
                 reply.magic = request.magic;
                 reply.op = IONIC_WIRE_ACK;
                 reply.src_qp_id = request.dst_qp_id;
                 reply.dst_qp_id = request.src_qp_id;
                 reply.req_id = request.req_id;
-                reply.status = htole32(rows[row].status);
+                reply.status = rows[row].status;
+                ionic_dp_wire_hdr_put(reply_wire, &reply);
                 g_nwire = 0;
                 if (rows[row].expire)
                     poll_at(dp, T0 + PENDING_MS + 1);
                 else {
-                    mesh_recv(&reply, sizeof(reply));
+                    mesh_recv(reply_wire, sizeof(reply_wire));
                     poll_at(dp, T0 + 1);
                 }
                 ok = dp->cq[CQ_ID].prod == 1;
                 for (size_t v = 0; v < 4; v++)
                     ionic_datapath_rdma_counters(dp, views[v], before[v]);
                 for (unsigned int repeat = 0; repeat < 2; repeat++) {
-                    mesh_recv(&reply, sizeof(reply));
+                    mesh_recv(reply_wire, sizeof(reply_wire));
                     poll_at(dp, g_now_ms + 1);
                 }
                 ok = ok && dp->cq[CQ_ID].prod == 1;
@@ -1635,8 +1815,8 @@ static const char *mc_run(struct ionic_datapath *dp, enum mc_scenario scenario)
     post_send(dp, QP_A, &WRITE_OK);
     if (g_nwire != 1 || g_wire_reply[0])
         return "the WRITE wasn't sent as a request";
-    memcpy(&h, g_wire[0], sizeof(h));
-    tag = (uint64_t)dp->qp[QP_A].mesh_id << 32 | le32toh(h.req_id);
+    ionic_dp_wire_hdr_get(&h, g_wire[0]);
+    tag = (uint64_t)dp->qp[QP_A].mesh_id << 32 | h.req_id;
     if (g_wire_tag[0] != tag)
         return "the WRITE isn't called by QP_A's mesh_id and its request id";
 
@@ -1883,9 +2063,9 @@ static void check_mesh_recv_sizes(void)
         enum mr_end end;
     } rows[] = {
         {"negative", "a message one byte shorter than the wire header",
-         "refused, not queued", sizeof(struct ionic_wire_hdr) - 1, MR_REFUSED},
+         "refused, not queued", IONIC_WIRE_HDR_LEN - 1, MR_REFUSED},
         {"boundary", "a message that is just the wire header",
-         "queued, then dropped by the next poll", sizeof(struct ionic_wire_hdr),
+         "queued, then dropped by the next poll", IONIC_WIRE_HDR_LEN,
          MR_POLLED},
         {"boundary", "a message of IONIC_MESH_MAX_MSG bytes",
          "queued, then dropped by the next poll", IONIC_MESH_MAX_MSG,
@@ -1893,8 +2073,7 @@ static void check_mesh_recv_sizes(void)
         {"negative", "a message one byte over IONIC_MESH_MAX_MSG",
          "refused, not queued", (size_t)IONIC_MESH_MAX_MSG + 1, MR_REFUSED},
         {"corner", "a message still queued when the data path is destroyed",
-         "freed with the data path", sizeof(struct ionic_wire_hdr),
-         MR_DESTROYED},
+         "freed with the data path", IONIC_WIRE_HDR_LEN, MR_DESTROYED},
     };
 
     for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
@@ -1956,12 +2135,12 @@ static int rq_offer(size_t len, bool send)
         struct ionic_wire_hdr h;
 
         memset(&h, 0, sizeof(h));
-        h.magic = htole32(IONIC_WIRE_MAGIC);
+        h.magic = IONIC_WIRE_MAGIC;
         h.op = IONIC_WIRE_SEND;
-        h.src_qp_id = htole32(QP_A);
-        h.dst_qp_id = htole32(QP_B);
-        h.length = htole32((uint32_t)(len - sizeof(h)));
-        memcpy(buf, &h, sizeof(h));
+        h.src_qp_id = QP_A;
+        h.dst_qp_id = QP_B;
+        h.length = (uint32_t)(len - IONIC_WIRE_HDR_LEN);
+        ionic_dp_wire_hdr_put(buf, &h);
     }
     if (g_recv_fn(g_recv_opaque, PEER_NODE, buf, len))
         return 1;
@@ -2008,9 +2187,8 @@ static bool rq_rnr_acks(size_t n)
     for (size_t i = 0; i < n; i++) {
         struct ionic_wire_hdr h;
 
-        memcpy(&h, g_wire[i], sizeof(h));
-        if (h.op != IONIC_WIRE_ACK ||
-            le32toh(h.status) != IONIC_STS_RNR_RETRY_EXCEEDED)
+        ionic_dp_wire_hdr_get(&h, g_wire[i]);
+        if (h.op != IONIC_WIRE_ACK || h.status != IONIC_STS_RNR_RETRY_EXCEEDED)
             return false;
     }
     return true;
@@ -2018,7 +2196,7 @@ static bool rq_rnr_acks(size_t n)
 
 static const char *rq_stuck(struct ionic_datapath *dp, bool past)
 {
-    const size_t hdr = sizeof(struct ionic_wire_hdr);
+    const size_t hdr = IONIC_WIRE_HDR_LEN;
     uint32_t msgs;
     size_t bytes;
     uint64_t dropped;
@@ -2054,7 +2232,7 @@ static int g_mid_pass_offer;
 static void rq_mid_pass(void)
 {
     g_now_ms += DP_RX_STUCK_MS + 1;
-    g_mid_pass_offer = rq_offer(sizeof(struct ionic_wire_hdr), false);
+    g_mid_pass_offer = rq_offer(IONIC_WIRE_HDR_LEN, false);
 }
 
 /*
@@ -2063,7 +2241,7 @@ static void rq_mid_pass(void)
  */
 static const char *rq_long_pass(struct ionic_datapath *dp)
 {
-    const size_t hdr = sizeof(struct ionic_wire_hdr);
+    const size_t hdr = IONIC_WIRE_HDR_LEN;
     uint8_t request[WIRE_BYTES];
     size_t len;
     uint32_t msgs;
@@ -2095,7 +2273,7 @@ static const char *rq_long_pass(struct ionic_datapath *dp)
 
 static const char *rq_crowded(struct ionic_datapath *dp, bool past)
 {
-    const size_t hdr = sizeof(struct ionic_wire_hdr);
+    const size_t hdr = IONIC_WIRE_HDR_LEN;
 
     /* Four of the largest SENDs: the first waits, the rest behind it */
     if (!rq_fill(DP_RX_MAX_BYTES / IONIC_MESH_MAX_MSG, IONIC_MESH_MAX_MSG,
@@ -2122,7 +2300,7 @@ static const char *rq_crowded(struct ionic_datapath *dp, bool past)
 
 static const char *rq_run(struct ionic_datapath *dp, enum rq_scenario scenario)
 {
-    const size_t hdr = sizeof(struct ionic_wire_hdr);
+    const size_t hdr = IONIC_WIRE_HDR_LEN;
 
     remote(dp, QP_B);
     if (!g_recv_fn)
@@ -2250,7 +2428,7 @@ static void check_mesh_recv_room(void)
  * come to the budget exactly.  Nothing answers unless a row does, and the
  * READs are never gathered, so they needn't fit guest memory.
  */
-#define WIRE_HDR   ((uint32_t)sizeof(struct ionic_wire_hdr))
+#define WIRE_HDR   ((uint32_t)IONIC_WIRE_HDR_LEN)
 #define BIG_READ   (IONIC_MESH_MAX_MSG - WIRE_HDR)
 #define OTHER_NODE 2u
 
@@ -2293,16 +2471,18 @@ static void rb_other_qp(struct ionic_datapath *dp, uint32_t node)
 static void rb_answer(struct ionic_datapath *dp, size_t i)
 {
     struct ionic_wire_hdr request, reply;
+    uint8_t reply_wire[IONIC_WIRE_HDR_LEN];
 
-    memcpy(&request, g_wire[i], sizeof(request));
+    ionic_dp_wire_hdr_get(&request, g_wire[i]);
     memset(&reply, 0, sizeof(reply));
     reply.magic = request.magic;
     reply.op = IONIC_WIRE_READ_RESP;
     reply.src_qp_id = request.dst_qp_id;
     reply.dst_qp_id = request.src_qp_id;
     reply.req_id = request.req_id;
-    reply.status = htole32(IONIC_STS_REMOTE_ACC_ERR);
-    mesh_recv(&reply, sizeof(reply));
+    reply.status = IONIC_STS_REMOTE_ACC_ERR;
+    ionic_dp_wire_hdr_put(reply_wire, &reply);
+    mesh_recv(reply_wire, sizeof(reply_wire));
     poll_at(dp, g_now_ms + 1);
 }
 
@@ -2313,7 +2493,7 @@ static bool rb_write_sent(size_t before)
 
     if (g_nwire != before + 1)
         return false;
-    memcpy(&h, g_wire[before], sizeof(h));
+    ionic_dp_wire_hdr_get(&h, g_wire[before]);
     return h.op == IONIC_WIRE_WRITE;
 }
 
@@ -2459,6 +2639,8 @@ static void check_reply_budget(void)
 
 int main(void)
 {
+    check_wire_hdr_layout();
+    check_atomic_byte_order();
     check_late_responses();
     check_mesh_cancel();
     check_destroyed_qp_replies();

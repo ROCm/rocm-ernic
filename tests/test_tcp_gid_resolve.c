@@ -30,7 +30,6 @@
 
 #include <errno.h>
 #include <inttypes.h>
-#include <netinet/in.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -328,28 +327,34 @@ static void test_env_parsing(void)
     CHECK(memcmp(out[1], expect, 16) == 0, "IPv6 entry was not stored raw");
 }
 
-/* The advertisement goes on the wire whole, so the slots past num_gids must
- * be zero rather than whatever the stack held -- the same disclosure trap
- * test_tcp_mesh_topology.c guards for the topology payload. */
-static void test_advertisement_tail_is_zeroed(void)
+/*
+ * The advertisement as every node in a mesh sends and expects it: node_id
+ * and num_gids big-endian, then the GIDs as they are.  It goes on the wire
+ * whole, so the slots past num_gids must be zero rather than whatever the
+ * stack held -- the same disclosure trap test_tcp_mesh_topology.c guards
+ * for the topology payload.
+ */
+static void test_advertisement_bytes(void)
 {
-    TcpNodeGidsPayload payload;
+    static const uint8_t head[8] = {0x01, 0x02, 0x03, 0x04, 0, 0, 0, 1};
+    TcpNodeGidsWire payload;
     uint8_t gids[1][16];
 
-    printf("  advertisement zero-fills unused GID slots\n");
+    printf("  advertisement is laid out as on the wire, zero past its GIDs\n");
 
-    memset(&payload, 0xA5, sizeof(payload));
+    memset(payload.bytes, 0xA5, sizeof(payload.bytes));
     gid_v4(gids[0], 11);
-    tcp_fill_node_gids(&payload, 3, (const uint8_t(*)[16])gids, 1);
+    tcp_fill_node_gids(&payload, 0x01020304u, (const uint8_t(*)[16])gids, 1);
 
-    CHECK(ntohl(payload.node_id) == 3, "node_id not set");
-    CHECK(ntohl(payload.num_gids) == 1, "num_gids not set");
+    CHECK(sizeof(payload.bytes) == 8 + 8 * 16, "payload is %zu bytes",
+          sizeof(payload.bytes));
+    CHECK(memcmp(payload.bytes, head, sizeof(head)) == 0,
+          "node_id and num_gids aren't big-endian at 0 and 4");
+    CHECK(memcmp(payload.bytes + 8, gids[0], 16) == 0,
+          "the GID isn't at 8, as it is");
 
-    for (size_t i = 1; i < TCP_MAX_NODE_GIDS; i++) {
-        for (size_t j = 0; j < 16; j++) {
-            CHECK(payload.gids[i][j] == 0,
-                  "poison survived at unused slot %zu byte %zu", i, j);
-        }
+    for (size_t i = 8 + 16; i < sizeof(payload.bytes); i++) {
+        CHECK(payload.bytes[i] == 0, "poison survived at byte %zu", i);
     }
 }
 
@@ -890,7 +895,7 @@ int main(void)
     test_multiple_and_replacement();
     test_unchanged_set_changes_nothing();
     test_env_parsing();
-    test_advertisement_tail_is_zeroed();
+    test_advertisement_bytes();
     test_gid_formatting();
     test_ud_rtr_needs_no_destination();
     test_contested_gid_stays_contested();

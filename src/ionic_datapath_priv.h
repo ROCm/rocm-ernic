@@ -122,13 +122,59 @@ enum ionic_wire_op {
     IONIC_WIRE_ACK,
 };
 
-/* Little-endian on the wire, except @imm_be which is passed through in the
- * big-endian form the WQE and CQE both use. */
+/*
+ * The header at the front of every message, IONIC_WIRE_HDR_LEN bytes:
+ *
+ *   [0:3]   le32 magic (IONIC_WIRE_MAGIC)
+ *   [4]     op (enum ionic_wire_op)
+ *   [5]     ATOMIC_REQ: 1 = compare-swap, 0 = fetch-add
+ *   [6:7]   reserved, zero
+ *   [8:11]  le32 src_qp_id
+ *   [12:15] le32 dst_qp_id
+ *   [16:19] le32 req_id
+ *   [20:23] le32 rkey
+ *   [24:27] le32 length
+ *   [28:31] be32 immediate data
+ *   [32:35] le32 status
+ *   [36:43] le64 remote_va
+ *   [44:51] le64 swap_add
+ *   [52:59] le64 compare
+ *
+ * The payload follows it.  For a SEND, a WRITE and a READ_RESP it is the
+ * guest's data, bytes with no byte order of their own; for an ATOMIC_RESP
+ * it is the original value, le64.
+ *
+ * This header carries its fields little-endian, inside a mesh message whose
+ * own header (TcpMsgHeader) is big-endian.  The two are separate layers, and
+ * neither can change without breaking an unupgraded peer.
+ */
+#define IONIC_WIRE_HDR_LEN       60
+#define IONIC_WIRE_MAGIC_OFF     0
+#define IONIC_WIRE_OP_OFF        4
+#define IONIC_WIRE_ATOMIC_CS_OFF 5
+#define IONIC_WIRE_SRC_QP_OFF    8
+#define IONIC_WIRE_DST_QP_OFF    12
+#define IONIC_WIRE_REQ_ID_OFF    16
+#define IONIC_WIRE_RKEY_OFF      20
+#define IONIC_WIRE_LENGTH_OFF    24
+#define IONIC_WIRE_IMM_OFF       28
+#define IONIC_WIRE_STATUS_OFF    32
+#define IONIC_WIRE_REMOTE_VA_OFF 36
+#define IONIC_WIRE_SWAP_ADD_OFF  44
+#define IONIC_WIRE_COMPARE_OFF   52
+_Static_assert(IONIC_WIRE_COMPARE_OFF + 8 == IONIC_WIRE_HDR_LEN,
+               "the ionic wire header is on the wire and has changed size");
+
+/*
+ * The header as the code uses it, in host byte order but for @imm_be, which
+ * holds the immediate data's four bytes as the WQE and CQE do: big-endian.
+ * ionic_dp_wire_hdr_put() and ionic_dp_wire_hdr_get() convert it to and
+ * from the wire.
+ */
 struct ionic_wire_hdr {
     uint32_t magic;
     uint8_t op;
-    uint8_t atomic_cs; /* ATOMIC_REQ: 1 = compare-swap, 0 = fetch-add */
-    uint16_t rsvd;
+    uint8_t atomic_cs;
     uint32_t src_qp_id;
     uint32_t dst_qp_id;
     uint32_t req_id;
@@ -139,9 +185,7 @@ struct ionic_wire_hdr {
     uint64_t remote_va;
     uint64_t swap_add;
     uint64_t compare;
-} __attribute__((packed));
-_Static_assert(sizeof(struct ionic_wire_hdr) == 60,
-               "struct ionic_wire_hdr is on the wire and has changed size");
+};
 
 /* A guest buffer: either directly addressed or described by a page table. */
 struct dp_buf {
@@ -442,6 +486,12 @@ struct ionic_datapath {
 #define DP_QTYPE_SQ 6
 #define DP_QTYPE_RQ 7
 #define DP_QTYPE_CQ 8
+
+/* Write @h to the IONIC_WIRE_HDR_LEN bytes at @wire. */
+void ionic_dp_wire_hdr_put(uint8_t *wire, const struct ionic_wire_hdr *h);
+
+/* Read the IONIC_WIRE_HDR_LEN bytes at @wire into @h. */
+void ionic_dp_wire_hdr_get(struct ionic_wire_hdr *h, const uint8_t *wire);
 
 /* Free @b's page table and zero it, so it can be initialised again. */
 void ionic_dp_buf_release(struct dp_buf *b);

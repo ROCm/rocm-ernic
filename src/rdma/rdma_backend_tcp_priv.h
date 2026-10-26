@@ -77,16 +77,13 @@
 /*
  * TCP Backend Protocol (Multi-Node Extension)
  *
- * Messages are sent over TCP with a fixed header:
- *   uint32_t magic;        // Protocol magic (0x52444D41 = "RDMA")
- *   uint32_t msg_type;     // Message type
- *   uint32_t msg_len;      // Payload length
- *   uint32_t seq;          // Sequence number
- *   uint32_t src_node_id;  // Source node ID (NEW)
- *   uint32_t dst_node_id;  // Destination node ID (NEW)
- *   uint32_t src_qpn;      // Source QP number (NEW)
- *   uint32_t dst_qpn;      // Destination QP number (NEW)
- *   uint8_t  payload[];    // Variable length payload
+ * Each message is a TCP_MSG_HDR_LEN-byte header followed by msg_len bytes of
+ * payload; the header and the payloads are laid out below, after TcpMsgType.
+ * Every multi-byte field in them is big-endian.  The layouts are offsets
+ * rather than packed structs: a message arrives in a byte buffer, so the
+ * accessors in byteorder.h are the only sanctioned way to read and write
+ * its fields.  TCP_MSG_IONIC's payload is the ionic data path's own, laid
+ * out, little-endian, in ionic_datapath_priv.h.
  */
 
 #define TCP_PROTOCOL_MAGIC 0x52444D41 /* "RDMA" */
@@ -202,6 +199,34 @@ _Static_assert(TCP_MSG_REGISTER_NODE == 12 && TCP_MSG_IONIC == 24 &&
                    TCP_MSG_NODE_GIDS == 25,
                "a TcpMsgType ordinal moved");
 
+/*
+ * The message header, TCP_MSG_HDR_LEN bytes:
+ *
+ *   [0:3]   be32 magic (TCP_PROTOCOL_MAGIC)
+ *   [4:7]   be32 msg_type (TcpMsgType)
+ *   [8:11]  be32 msg_len, the payload's length
+ *   [12:15] be32 seq
+ *   [16:19] be32 src_node_id
+ *   [20:23] be32 dst_node_id
+ *   [24:27] be32 src_qpn
+ *   [28:31] be32 dst_qpn
+ */
+#define TCP_MSG_HDR_LEN          32
+#define TCP_MSG_HDR_MAGIC_OFF    0
+#define TCP_MSG_HDR_TYPE_OFF     4
+#define TCP_MSG_HDR_MSG_LEN_OFF  8
+#define TCP_MSG_HDR_SEQ_OFF      12
+#define TCP_MSG_HDR_SRC_NODE_OFF 16
+#define TCP_MSG_HDR_DST_NODE_OFF 20
+#define TCP_MSG_HDR_SRC_QPN_OFF  24
+#define TCP_MSG_HDR_DST_QPN_OFF  28
+_Static_assert(TCP_MSG_HDR_DST_QPN_OFF + 4 == TCP_MSG_HDR_LEN,
+               "the message header is on the wire and has changed size");
+
+/*
+ * The header as the code uses it, in host byte order; tcp_msg_hdr_put() and
+ * tcp_msg_hdr_get() convert it to and from the wire.
+ */
 typedef struct {
     uint32_t magic;
     uint32_t msg_type;
@@ -211,16 +236,20 @@ typedef struct {
     uint32_t dst_node_id;
     uint32_t src_qpn;
     uint32_t dst_qpn;
-} __attribute__((packed)) TcpMsgHeader;
-_Static_assert(sizeof(TcpMsgHeader) == 32,
-               "TcpMsgHeader is on the wire and has changed size");
+} TcpMsgHeader;
 
-typedef struct {
-    uint32_t node_id;
-    uint32_t version;
-} __attribute__((packed)) TcpHandshakePayload;
-_Static_assert(sizeof(TcpHandshakePayload) == 8,
-               "TcpHandshakePayload is on the wire and has changed size");
+/* The size of a payload's hostname field, which needn't be terminated */
+#define TCP_HOSTNAME_LEN 256
+
+/*
+ * TCP_MSG_HANDSHAKE and TCP_MSG_HANDSHAKE_RESP, TCP_HANDSHAKE_LEN bytes:
+ *
+ *   [0:3]   be32 node_id
+ *   [4:7]   be32 version
+ */
+#define TCP_HANDSHAKE_LEN         8
+#define TCP_HANDSHAKE_NODE_ID_OFF 0
+#define TCP_HANDSHAKE_VERSION_OFF 4
 
 /*
  * Manager/Worker mesh discovery payloads.
@@ -235,51 +264,80 @@ _Static_assert(sizeof(TcpHandshakePayload) == 8,
  * The field is appended rather than inserted so a pre-v4 payload is an
  * exact prefix, which is what lets the lengths below tell "older peer"
  * from "corrupt message" and report the former precisely.
+ *
+ * TCP_MSG_REGISTER_NODE, TCP_REGISTER_NODE_LEN bytes:
+ *
+ *   [0:255]   hostname, not necessarily terminated
+ *   [256:257] be16 port the worker listens on
+ *   [258:261] be32 requested_node_id, 0xFFFFFFFF for a new one
+ *   [262:265] be32 version (appended in v4)
  */
-typedef struct {
-    char hostname[256];
-    uint16_t port;
-    uint32_t requested_node_id; /* 0xFFFFFFFF for auto-assign */
-    uint32_t version;           /* appended in v4 */
-} __attribute__((packed)) TcpRegisterNodePayload;
+#define TCP_REGISTER_NODE_LEN           266
+#define TCP_REGISTER_NODE_HOSTNAME_OFF  0
+#define TCP_REGISTER_NODE_PORT_OFF      256
+#define TCP_REGISTER_NODE_REQUESTED_OFF 258
+#define TCP_REGISTER_NODE_VERSION_OFF   262
 
-typedef struct {
-    uint32_t assigned_node_id;
-    uint32_t num_nodes;
-    uint32_t result;  /* int32_t on the wire: 0 = success, negative = error */
-    uint32_t version; /* appended in v4 */
-} __attribute__((packed)) TcpRegisterRespPayload;
+/*
+ * TCP_MSG_REGISTER_RESP, TCP_REGISTER_RESP_LEN bytes:
+ *
+ *   [0:3]   be32 assigned_node_id
+ *   [4:7]   be32 num_nodes
+ *   [8:11]  be32 result, an int32_t: 0 = success, negative = error
+ *   [12:15] be32 version (appended in v4)
+ */
+#define TCP_REGISTER_RESP_LEN           16
+#define TCP_REGISTER_RESP_NODE_ID_OFF   0
+#define TCP_REGISTER_RESP_NUM_NODES_OFF 4
+#define TCP_REGISTER_RESP_RESULT_OFF    8
+#define TCP_REGISTER_RESP_VERSION_OFF   12
 
 /* Sizes before the version field, i.e. what a pre-v4 peer sends. */
 #define TCP_REGISTER_NODE_LEN_V3 262u
 #define TCP_REGISTER_RESP_LEN_V3 12u
 
-_Static_assert(sizeof(TcpRegisterNodePayload) == TCP_REGISTER_NODE_LEN_V3 + 4,
+_Static_assert(TCP_REGISTER_NODE_VERSION_OFF == TCP_REGISTER_NODE_LEN_V3 &&
+                   TCP_REGISTER_NODE_LEN == TCP_REGISTER_NODE_LEN_V3 + 4,
                "the version field must be appended, not inserted");
-_Static_assert(sizeof(TcpRegisterRespPayload) == TCP_REGISTER_RESP_LEN_V3 + 4,
+_Static_assert(TCP_REGISTER_RESP_VERSION_OFF == TCP_REGISTER_RESP_LEN_V3 &&
+                   TCP_REGISTER_RESP_LEN == TCP_REGISTER_RESP_LEN_V3 + 4,
                "the version field must be appended, not inserted");
-
-typedef struct {
-    uint32_t node_id;
-    char hostname[256];
-    uint16_t port;
-    uint8_t is_alive;
-    uint8_t reserved[3];
-} __attribute__((packed)) TcpMeshNodeInfo;
-_Static_assert(sizeof(TcpMeshNodeInfo) == 266,
-               "TcpMeshNodeInfo is on the wire and has changed size");
+_Static_assert(TCP_REGISTER_NODE_PORT_OFF == TCP_HOSTNAME_LEN,
+               "the port follows the hostname");
 
 /* As many nodes as a topology broadcast can carry, and so as many as the
  * mesh can hold. */
 #define TCP_MAX_MESH_NODES 64u
 
-typedef struct {
-    uint32_t num_nodes;
-    TcpMeshNodeInfo nodes[TCP_MAX_MESH_NODES];
-} __attribute__((packed)) TcpMeshTopologyPayload;
-_Static_assert(sizeof(TcpMeshTopologyPayload) ==
-                   4 + TCP_MAX_MESH_NODES * sizeof(TcpMeshNodeInfo),
-               "TcpMeshTopologyPayload is on the wire and has changed size");
+/*
+ * TCP_MSG_MESH_TOPOLOGY, TCP_TOPOLOGY_LEN bytes, whatever num_nodes is:
+ *
+ *   [0:3]   be32 num_nodes
+ *   [4:]    TCP_MAX_MESH_NODES node entries, the first num_nodes in use and
+ *           the rest zero
+ *
+ * Node entry @i is at TCP_TOPOLOGY_NODE_OFF(@i), TCP_MESH_NODE_LEN bytes:
+ *
+ *   [0:3]     be32 node_id
+ *   [4:259]   hostname, not necessarily terminated
+ *   [260:261] be16 port
+ *   [262]     is_alive, 1 or 0
+ *   [263:265] reserved, zero
+ */
+#define TCP_MESH_NODE_LEN          266
+#define TCP_MESH_NODE_ID_OFF       0
+#define TCP_MESH_NODE_HOSTNAME_OFF 4
+#define TCP_MESH_NODE_PORT_OFF     260
+#define TCP_MESH_NODE_ALIVE_OFF    262
+_Static_assert(TCP_MESH_NODE_PORT_OFF ==
+                   TCP_MESH_NODE_HOSTNAME_OFF + TCP_HOSTNAME_LEN,
+               "the port follows the hostname");
+
+#define TCP_TOPOLOGY_NUM_NODES_OFF 0
+#define TCP_TOPOLOGY_NODE_OFF(i)   (4 + (size_t)(i) * TCP_MESH_NODE_LEN)
+#define TCP_TOPOLOGY_LEN           TCP_TOPOLOGY_NODE_OFF(TCP_MAX_MESH_NODES)
+_Static_assert(TCP_TOPOLOGY_LEN == 17028,
+               "the topology payload is on the wire and has changed size");
 
 /*
  * A node's own guest RoCE GIDs, advertised so peers can map a destination
@@ -289,14 +347,23 @@ _Static_assert(sizeof(TcpMeshTopologyPayload) ==
  */
 #define TCP_MAX_NODE_GIDS 8
 
-typedef struct {
-    uint32_t node_id;
-    uint32_t num_gids;
-    uint8_t gids[TCP_MAX_NODE_GIDS][16];
-} __attribute__((packed)) TcpNodeGidsPayload;
+/*
+ * TCP_MSG_NODE_GIDS, TCP_NODE_GIDS_LEN bytes, whatever num_gids is:
+ *
+ *   [0:3]   be32 node_id
+ *   [4:7]   be32 num_gids
+ *   [8:]    TCP_MAX_NODE_GIDS 16-byte GIDs, the first num_gids in use and
+ *           the rest zero
+ */
+#define TCP_NODE_GIDS_LEN         (8 + TCP_MAX_NODE_GIDS * 16)
+#define TCP_NODE_GIDS_NODE_ID_OFF 0
+#define TCP_NODE_GIDS_NUM_OFF     4
+#define TCP_NODE_GIDS_GIDS_OFF    8
 
-_Static_assert(sizeof(TcpNodeGidsPayload) == 8 + TCP_MAX_NODE_GIDS * 16,
-               "TcpNodeGidsPayload must be packed with no padding");
+/* A NODE_GIDS payload, ready to send: its bytes, as they go on the wire. */
+typedef struct {
+    uint8_t bytes[TCP_NODE_GIDS_LEN];
+} TcpNodeGidsWire;
 
 /* A node's advertised set, as held in memory rather than on the wire. */
 typedef struct {
@@ -849,6 +916,8 @@ int tcp_listen_on_port(uint16_t *port);
 bool tcp_format_peer_addr(const struct sockaddr_storage *ss, char *host,
                           size_t len, uint16_t *port);
 uint32_t tcp_send_timeout_ms(const TcpBackendPrivate *priv);
+void tcp_msg_hdr_put(uint8_t *wire, const TcpMsgHeader *hdr);
+void tcp_msg_hdr_get(TcpMsgHeader *hdr, const uint8_t *wire);
 int tcp_send_message2(const TcpBackendPrivate *priv, TcpConnection *conn,
                       TcpMsgType msg_type, const void *payload,
                       size_t payload_len, const void *payload2,
@@ -919,8 +988,7 @@ bool tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
     TSA_EXCLUDES(priv->gid_table_lock);
 void tcp_gid_claims_forget(TcpBackendPrivate *priv, uint32_t node_id)
     TSA_EXCLUDES(priv->gid_table_lock);
-void tcp_gid_claims_prune(TcpBackendPrivate *priv,
-                          const TcpMeshTopologyPayload *topo,
+void tcp_gid_claims_prune(TcpBackendPrivate *priv, const uint8_t *topo,
                           uint32_t num_nodes)
     TSA_EXCLUDES(priv->gid_table_lock);
 /*
@@ -936,10 +1004,10 @@ void tcp_gid_claims_report_alive(uint32_t node_id, bool alive);
 uint32_t tcp_resolve_node_from_gid(TcpBackendPrivate *priv,
                                    const union ibv_gid *dgid)
     TSA_EXCLUDES(priv->gid_table_lock);
-void tcp_fill_node_gids(TcpNodeGidsPayload *out, uint32_t node_id,
+void tcp_fill_node_gids(TcpNodeGidsWire *out, uint32_t node_id,
                         const uint8_t (*gids)[16], uint32_t num_gids);
 void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
-                        const TcpNodeGidsPayload *payload)
+                        const TcpNodeGidsWire *payload)
     TSA_EXCLUDES(conn->lock);
 void tcp_advertise_local_gids(TcpBackendPrivate *priv)
     TSA_EXCLUDES(priv->gid_advertise_lock, priv->lock);
