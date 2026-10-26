@@ -81,12 +81,14 @@ _Static_assert(DP_RX_MAX_BYTES >= IONIC_MESH_MAX_MSG,
 #define DP_RX_CROWDED_MS 500u
 
 /*
- * How long the main thread may go without a pass before a full queue stops
- * holding up the receive threads and drops what they bring instead.  The
- * main thread polls only while a client is attached, and a receive thread
- * that waited for a pass that isn't coming would leave its peer's connection
- * unread until the peer gave up on it.  Under the 5 s that takes, as for
- * DP_RX_CROWDED_MS.
+ * How long the main thread may go from the end of one pass without starting
+ * another before a full queue stops holding up the receive threads and
+ * drops what they bring instead.  The main thread polls only while a client
+ * is attached, and a receive thread that waited for a pass that isn't coming
+ * would leave its peer's connection unread until the peer gave up on it.
+ * Under the 5 s that takes, as for DP_RX_CROWDED_MS.  A pass that runs
+ * longer is still applying what is queued, and holds the receive threads up
+ * however long it takes.
  */
 #define DP_RX_STUCK_MS 2000u
 
@@ -377,9 +379,11 @@ struct ionic_datapath {
      */
     size_t rx_waiting TSA_GUARDED_BY(rx_lock);
     /*
-     * When a pass last started or ended, on @now_ms's clock, for a receive
-     * thread to tell a main thread that has stopped polling (DP_RX_STUCK_MS)
+     * For a receive thread to tell a main thread that has stopped polling
+     * (DP_RX_STUCK_MS) from one in a long pass: whether a pass is under
+     * way, and when the last one ended, on @now_ms's clock.
      */
+    bool rx_in_pass TSA_GUARDED_BY(rx_lock);
     uint64_t rx_polled_ms TSA_GUARDED_BY(rx_lock);
     /* Messages dropped because the queue was full and nothing polled it */
     uint64_t rx_dropped TSA_GUARDED_BY(rx_lock);

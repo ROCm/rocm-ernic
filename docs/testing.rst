@@ -187,7 +187,9 @@ Five suites are registered with CTest:
   have to register again under their own ids
 - ``ernic-mesh-flow``: a three-node mesh pushed past what a
   node queues from its peers. Two nodes write to each other
-  flat out, and neither may stall or give up on the other;
+  flat out, each with its queue plugged by the other's SENDs
+  to a QP with no receive posted, so both hold the other back
+  at once, and neither may stall or give up on the other;
   then a peer floods a node with SENDs that find no receive,
   and must be slowed rather than cut off, while the node
   holds no more than its limit and another node's SEND gets

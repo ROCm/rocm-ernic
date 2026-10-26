@@ -3778,8 +3778,10 @@ static bool dp_rx_room(uint32_t msgs, size_t bytes, size_t len)
  * The main thread empties the queue on every pass but for the SENDs waiting
  * for a receive, and gives up on those once they have kept a message out
  * for DP_RX_CROWDED_MS, so a message refused here is taken soon.  If the
- * main thread isn't polling, nothing would take it, and it is dropped
- * instead.
+ * main thread has stopped polling, nothing would take it, and it is dropped
+ * instead.  That is DP_RX_STUCK_MS since a pass ended, with none under way:
+ * a long pass is the main thread applying what is queued, and a message
+ * dropped for it would cost its sender the 30-second request timeout.
  */
 static bool dp_mesh_recv(void *opaque, uint32_t src_node, void *buf, size_t len)
 {
@@ -3821,8 +3823,8 @@ static bool dp_mesh_recv(void *opaque, uint32_t src_node, void *buf, size_t len)
          * later than now only if a unit test's clock went back */
         uint64_t now = dp_now_ms(dp);
 
-        stuck =
-            now > dp->rx_polled_ms && now - dp->rx_polled_ms > DP_RX_STUCK_MS;
+        stuck = !dp->rx_in_pass && now > dp->rx_polled_ms &&
+                now - dp->rx_polled_ms > DP_RX_STUCK_MS;
         if (stuck)
             dp->rx_dropped++;
         else if (len > dp->rx_waiting)
@@ -4185,7 +4187,7 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
     list = dp->rx_head;
     dp->rx_head = dp->rx_tail = NULL;
     dp->rx_fresh = 0;
-    dp->rx_polled_ms = now;
+    dp->rx_in_pass = true;
     dropped = dp->rx_dropped;
     queued = dp->rx_msgs;
     queued_bytes = dp->rx_bytes;
@@ -4275,6 +4277,7 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
     dp->rx_msgs -= done;
     dp->rx_bytes -= done_bytes;
     dp_rx_note_crowding(dp, kept, kept_bytes, now);
+    dp->rx_in_pass = false;
     /* The pass can have been long */
     dp->rx_polled_ms = dp_now_ms(dp);
     qemu_mutex_unlock(&dp->rx_lock);

@@ -979,11 +979,13 @@ what is ahead of it, unless:
   unread past its peer's send timeout, costing it the
   connection, and the heartbeats and other QPs' traffic on it.
 - **The main loop isn't running**, as between one QEMU
-  disconnecting and the next connecting. Once it hasn't polled
-  for 2 seconds, a full queue drops what comes instead of holding
-  up the receive threads, and the next pass logs how many it
-  dropped. The requests among them complete in error after their
-  30-second timeout.
+  disconnecting and the next connecting. Once 2 seconds have
+  passed since its last pass ended, with no other started, a full
+  queue drops what comes instead of holding up the receive
+  threads, and the next pass logs how many it dropped. The
+  requests among them complete in error after their 30-second
+  timeout. A pass that takes longer is still applying what is
+  queued, so the receive threads go on waiting for it.
 
 The Ethernet Side
 -----------------

@@ -7,8 +7,10 @@ the limit, a receive thread stops reading its peer until there is room,
 and TCP passes that back to the peer, so a node that falls behind slows
 its peers down rather than holding whatever they send:
 
-  * Two nodes write to each other flat out, round after round, and
-    neither stalls for good or gives up on its connection to the other.
+  * Two nodes write to each other flat out, round after round, each with
+    its inbound queue plugged by the other's SENDs to a QP with no
+    receive posted, so both hold the other back at once. Neither may
+    stall for good or give up on its connection to the other.
   * A peer floods a node with SENDs to a QP that never posts a receive,
     which the node would otherwise keep. The peer is slowed, not cut
     off, the node holds no more than its limit, and another node's
@@ -66,6 +68,18 @@ TWO_WAY_VA = 0x0000_7F10_0000_0000
 TWO_WAY_WRITE = 4 << 20
 TWO_WAY_DEPTH = (1 << ionic.QP_DEPTH_LOG2) - 1
 TWO_WAY_ROUNDS = 8
+# WRITEs alone needn't fill a node's inbound queue: its main thread can
+# keep up. So first each node plugs the other's, with a send queue's worth
+# of SENDs to a QP there with no receive posted, which wait there: 75 MiB,
+# past what the queue holds. Node a's plug QP for node b is PLUG_QP + b,
+# on CQs of its own.
+PLUG_QP = QP_BASE + 8
+PLUG_SEND = 5 << 20
+PLUG_SEND_CQ = CQ_ID + 1
+PLUG_RECV_CQ = CQ_ID + 2
+# What a node logs when SENDs waiting for a receive have kept another
+# message out of its queue for long enough that it gives up on them
+GAVE_UP = "filled the mesh's inbound queue"
 
 # The SENDs a peer floods node 0 with, to a QP that never posts a
 # receive: twice what the node's inbound queue holds.
@@ -97,11 +111,17 @@ def bring_up(mesh_):
             )
     for pair in PAIRS:
         for src, dst in (pair, pair[::-1]):
-            hdr = ionic.roce_hdr_v4(
-                ionic.ipv4(mesh_.guest_ip(src)), ionic.ipv4(mesh_.guest_ip(dst))
+            drivers[src].connect_qp(
+                qps[src][dst], QP_BASE + src, roce_hdr(mesh_, src, dst)
             )
-            drivers[src].connect_qp(qps[src][dst], QP_BASE + src, hdr)
     return drivers, cqs, mrs, qps
+
+
+def roce_hdr(mesh_, src, dst):
+    """The RoCE header template for node @src's guest to reach node @dst's."""
+    return ionic.roce_hdr_v4(
+        ionic.ipv4(mesh_.guest_ip(src)), ionic.ipv4(mesh_.guest_ip(dst))
+    )
 
 
 def receive_threads_ended(mesh_, nodes):
@@ -111,24 +131,55 @@ def receive_threads_ended(mesh_, nodes):
     ]
 
 
-def test_two_way_writes(suite, mesh_, state):
-    """Two nodes that write to each other flat out keep going.
+def plug(mesh_, drivers, pair):
+    """Have each node of @pair plug the other's inbound queue.
 
-    Nodes 1 and 2 each post as many 4 MiB WRITEs to the other as a send
-    queue holds, at once, round after round. Each node's send queue to
-    the other fills and waits, and each node's receive thread waits
-    whenever its main thread falls behind, so both directions are held
-    back at once. Neither may stall for good, and neither may give up on
-    its connection to the other.
+    Returns, by node, its plug QP and the CQ its SENDs complete on.
     """
-    drivers, cqs, qps = state[0], state[1], state[3]
-    pair = PAIRS[1]
-    ended = receive_threads_ended(mesh_, pair)
-    mrs = {}
-    for node in pair:
-        mrs[node] = drivers[node].create_mr(TWO_WAY_KEY, TWO_WAY_VA, 2 * TWO_WAY_WRITE)
-        drivers[node].mr_write(mrs[node], TWO_WAY_VA, bytes([node]) * TWO_WAY_WRITE)
+    plugs = {}
+    for src, dst in (pair, pair[::-1]):
+        send_cq = drivers[src].create_cq(PLUG_SEND_CQ)
+        recv_cq = drivers[src].create_cq(PLUG_RECV_CQ)
+        qp = drivers[src].create_qp(PLUG_QP + dst, ionic.QPT_RC, send_cq, recv_cq)
+        plugs[src] = (qp, send_cq)
+    for src, dst in (pair, pair[::-1]):
+        drivers[src].connect_qp(plugs[src][0], PLUG_QP + src, roce_hdr(mesh_, src, dst))
+    for src in pair:
+        for _ in range(TWO_WAY_DEPTH):
+            drivers[src].post_send(
+                plugs[src][0],
+                ionic.OP_SEND,
+                flags=ionic.WQE_SIGNALLED,
+                sge=[ionic.Sge(TWO_WAY_VA, PLUG_SEND, TWO_WAY_KEY)],
+            )
+    return plugs
 
+
+def unplug(drivers, plugs):
+    """Post the receives the plug's SENDs were waiting for, and collect them.
+
+    Returns the statuses the plug's SENDs completed with, by node. Those
+    a node gave up on fail with RNR-retry-exceeded; the rest are
+    delivered.
+    """
+    statuses = {}
+    for node, (qp, _send_cq) in plugs.items():
+        for _ in range(TWO_WAY_DEPTH):
+            drivers[node].post_recv(qp, [ionic.Sge(TWO_WAY_VA, PLUG_SEND, TWO_WAY_KEY)])
+    for node, (_qp, send_cq) in plugs.items():
+        statuses[node] = collections.Counter(
+            drivers[node].wait_cq(send_cq, timeout=60).status
+            for _ in range(TWO_WAY_DEPTH)
+        )
+    return statuses
+
+
+def write_rounds(drivers, cqs, qps, pair):
+    """Have the nodes of @pair WRITE to each other, TWO_WAY_ROUNDS times.
+
+    Each round, each node posts a send queue's worth at once, and waits
+    for them all. Returns how many completed in error.
+    """
     errors = 0
     for _round in range(TWO_WAY_ROUNDS):
         for src, dst in (pair, pair[::-1]):
@@ -146,13 +197,36 @@ def test_two_way_writes(suite, mesh_, state):
             for node in pair
             for _ in range(TWO_WAY_DEPTH)
         )
+    return errors
+
+
+def test_two_way_writes(suite, mesh_, state):
+    """Two nodes that write to each other flat out, each holding the other back.
+
+    Nodes 1 and 2 each plug the other's inbound queue, then post as many
+    4 MiB WRITEs to the other as a send queue holds, at once, round after
+    round. With its queue full, each node stops reading the other, so
+    both directions are held back at once, until each gives up on the
+    SENDs plugging it. Neither may stall for good, and neither may give
+    up on its connection to the other.
+    """
+    drivers = state[0]
+    pair = PAIRS[1]
+    ended = receive_threads_ended(mesh_, pair)
+    gave_up = [mesh_.nodes[n].server.log_text().count(GAVE_UP) for n in pair]
+    mrs = {}
+    for node in pair:
+        mrs[node] = drivers[node].create_mr(TWO_WAY_KEY, TWO_WAY_VA, 2 * TWO_WAY_WRITE)
+        drivers[node].mr_write(mrs[node], TWO_WAY_VA, bytes([node]) * TWO_WAY_WRITE)
+    plugs = plug(mesh_, drivers, pair)
 
     suite.check_eq(
-        errors,
+        write_rounds(drivers, state[1], state[3], pair),
         0,
         "every WRITE of %d MiB each way completed without error",
         TWO_WAY_ROUNDS * TWO_WAY_DEPTH * (TWO_WAY_WRITE >> 20),
     )
+    # Before the plug's SENDs land, on the first MiB of the same half
     for src, dst in (pair, pair[::-1]):
         landed = drivers[dst].mr_read(mrs[dst], TWO_WAY_VA + TWO_WAY_WRITE, 4096)
         suite.check(
@@ -161,6 +235,19 @@ def test_two_way_writes(suite, mesh_, state):
             src,
             dst,
         )
+    for node, mark in zip(pair, gave_up):
+        suite.check(
+            mesh_.nodes[node].server.wait_for_count(GAVE_UP, mark + 1, 30),
+            "node %d's queue filled, held the other node back, and gave up on "
+            "the SENDs filling it",
+            node,
+        )
+    statuses = unplug(drivers, plugs)
+    suite.check(
+        all(set(s) <= {0, STS_RNR_RETRY_EXCEEDED} for s in statuses.values()),
+        f"every SEND of the plug was delivered or failed with "
+        f"RNR-retry-exceeded, once receives were posted ({statuses})",
+    )
     suite.check_eq(
         receive_threads_ended(mesh_, pair),
         ended,

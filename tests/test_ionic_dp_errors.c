@@ -170,12 +170,24 @@ static size_t g_nwire;
 static bool g_room;
 static int g_send_rc;
 
+/*
+ * Called by the next ionic_mesh_sendv(), once, if set: how a row acts in the
+ * middle of a pass, as a mesh receive thread can.
+ */
+static void (*g_sendv_hook)(void);
+
 int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
                      size_t hdr_len, const void *body, size_t body_len,
                      uint64_t tag, bool reply)
 {
     (void)handle;
     (void)dst_node;
+    if (g_sendv_hook) {
+        void (*hook)(void) = g_sendv_hook;
+
+        g_sendv_hook = NULL;
+        hook();
+    }
     if (g_send_rc != 0)
         return g_send_rc;
     if (g_nwire >= WIRE_MAX || hdr_len + body_len > WIRE_BYTES)
@@ -537,6 +549,7 @@ static struct ionic_datapath *setup(void)
     g_nwire = 0;
     g_room = true;
     g_send_rc = 0;
+    g_sendv_hook = NULL;
     g_dp = NULL;
     g_ncancel = 0;
     g_cancel_tag = 0;
@@ -1906,9 +1919,10 @@ static void check_mesh_recv_sizes(void)
  * nothing more from that peer meanwhile.  A pass empties the queue but for
  * the SENDs waiting for a receive, and what is behind them for the same QP;
  * once those have kept a refused message out for DP_RX_CROWDED_MS, a pass
- * gives up on them, as at RNR_RETRY_MS.  A full queue that nothing has
- * polled for over DP_RX_STUCK_MS drops what comes instead, since a receive
- * thread would otherwise wait for it for good.
+ * gives up on them, as at RNR_RETRY_MS.  A full queue that no pass has
+ * ended for over DP_RX_STUCK_MS, with none under way, drops what comes
+ * instead, since a receive thread would otherwise wait for it for good; a
+ * long pass is still applying what is queued, and doesn't count.
  *
  * Junk (a zero magic) fills the queue where a row needs what a pass
  * consumes; SENDs to QP_B, which has no receive posted, where it needs what
@@ -1921,6 +1935,7 @@ enum rq_scenario {
     RQ_BYTES,        /* DP_RX_MAX_BYTES queued, then one more */
     RQ_STUCK_EDGE,   /* full, with no pass for DP_RX_STUCK_MS */
     RQ_STUCK,        /* and for 1 ms more */
+    RQ_LONG_PASS,    /* full, during a pass longer than DP_RX_STUCK_MS */
     RQ_CROWDED_EDGE, /* full of SENDs that keep one out, DP_RX_CROWDED_MS - 1 */
     RQ_CROWDED,      /* and for DP_RX_CROWDED_MS */
     RQ_ROOM_LEFT,    /* a SEND waits while junk fills the queue */
@@ -2032,6 +2047,52 @@ static const char *rq_stuck(struct ionic_datapath *dp, bool past)
                : "once polled again, a full queue didn't refuse the message";
 }
 
+/* What rq_offer() returned for the offer rq_mid_pass() made, or -2 if none */
+static int g_mid_pass_offer;
+
+/* Past DP_RX_STUCK_MS into the pass, offer a message, as a receive thread */
+static void rq_mid_pass(void)
+{
+    g_now_ms += DP_RX_STUCK_MS + 1;
+    g_mid_pass_offer = rq_offer(sizeof(struct ionic_wire_hdr), false);
+}
+
+/*
+ * A pass that runs past DP_RX_STUCK_MS.  The peer's WRITE comes first, so
+ * the ACK for it is sent, and the offer made, as the pass begins.
+ */
+static const char *rq_long_pass(struct ionic_datapath *dp)
+{
+    const size_t hdr = sizeof(struct ionic_wire_hdr);
+    uint8_t request[WIRE_BYTES];
+    size_t len;
+    uint32_t msgs;
+    size_t bytes;
+    uint64_t dropped;
+
+    post_send(dp, QP_A, &WRITE_OK);
+    if (g_nwire != 1)
+        return "the WRITE wasn't sent";
+    len = g_wire_len[0];
+    memcpy(request, g_wire[0], len);
+    g_nwire = 0;
+    mesh_recv(request, len);
+    if (!rq_fill(DP_RX_MAX_MSGS - 1, hdr, false))
+        return "the queue didn't take DP_RX_MAX_MSGS messages";
+
+    g_mid_pass_offer = -2;
+    g_sendv_hook = rq_mid_pass;
+    poll_at(dp, T0 + 1);
+    rq_counts(dp, &msgs, &bytes, &dropped);
+    if (g_mid_pass_offer == -2)
+        return "the WRITE wasn't acknowledged";
+    if (g_mid_pass_offer != 0 || dropped != 0)
+        return "the message was taken during the pass";
+    return rq_offer(hdr, false) == 1
+               ? NULL
+               : "the message wasn't taken after the pass";
+}
+
 static const char *rq_crowded(struct ionic_datapath *dp, bool past)
 {
     const size_t hdr = sizeof(struct ionic_wire_hdr);
@@ -2093,6 +2154,8 @@ static const char *rq_run(struct ionic_datapath *dp, enum rq_scenario scenario)
         return rq_stuck(dp, false);
     case RQ_STUCK:
         return rq_stuck(dp, true);
+    case RQ_LONG_PASS:
+        return rq_long_pass(dp);
     case RQ_CROWDED_EDGE:
         return rq_crowded(dp, false);
     case RQ_CROWDED:
@@ -2137,6 +2200,11 @@ static void check_mesh_recv_room(void)
          "the message is dropped and the next pass logs it; once polled, a "
          "full queue refuses again",
          RQ_STUCK},
+        {"corner",
+         "a full queue, while a pass runs for longer than DP_RX_STUCK_MS",
+         "the message is refused, not dropped: the pass is applying what is "
+         "queued, and the queue takes it once the pass is done",
+         RQ_LONG_PASS},
         {"boundary",
          "SENDs waiting for a receive fill the queue, and keep a message out "
          "for DP_RX_CROWDED_MS - 1",
