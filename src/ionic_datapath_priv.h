@@ -283,8 +283,17 @@ struct dp_pending {
     uint32_t length; /* expected READ/ATOMIC response size */
     struct dp_sge_list local; /* scatter target for the response */
     uint64_t deadline_ms;
-    uint64_t tag; /* what the mesh calls the request (dp_mesh_tag()) */
+    uint64_t tag;         /* what the mesh calls the request (dp_mesh_tag()) */
+    uint32_t dest_node;   /* the node the request went to */
+    uint32_t reply_bytes; /* the most its reply can be, header included */
 };
+
+/*
+ * A request whose reply is the largest a message can be still fits a budget
+ * of its own, so the budget never holds up a send queue for good.
+ */
+_Static_assert(IONIC_MESH_REPLY_BUDGET >= IONIC_MESH_MAX_MSG,
+               "IONIC_MESH_REPLY_BUDGET must hold the largest reply");
 
 /* A mesh message parked by the receive thread; private to the .c. */
 struct dp_inmsg;

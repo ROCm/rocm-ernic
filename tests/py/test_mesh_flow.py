@@ -11,6 +11,10 @@ its peers down rather than holding whatever they send:
     its inbound queue plugged by the other's SENDs to a QP with no
     receive posted, so both hold the other back at once. Neither may
     stall for good or give up on its connection to the other.
+  * A node READs more from a peer than the peer can queue replies for,
+    while the peer plugs the node's inbound queue. The node may ask for
+    no more replies at once than the peer is sure to have room for, or
+    the peer drops some and their READs fail.
   * A peer floods a node with SENDs to a QP that never posts a receive,
     which the node would otherwise keep. The peer is slowed, not cut
     off, the node holds no more than its limit, and another node's
@@ -80,6 +84,23 @@ PLUG_RECV_CQ = CQ_ID + 2
 # What a node logs when SENDs waiting for a receive have kept another
 # message out of its queue for long enough that it gives up on them
 GAVE_UP = "filled the mesh's inbound queue"
+
+# In the READ test, node 2 posts a send queue's worth of READs from node
+# 1 at once: 120 MiB of replies, past the 64 MiB node 1 queues for a
+# connection. Node 1 plugs node 2's queue first, as in the two-way test,
+# so the replies wait on node 1. Each node's MR is what the READs read
+# and land in, and what the plug sends from. Its id mustn't be MR_KEY's
+# or TWO_WAY_KEY's. The QPs and CQs are the READ test's own.
+READ_KEY = 0x0100_0003
+READ_VA = 0x0000_7F20_0000_0000
+READ_SIZE = 8 << 20
+READ_QP = QP_BASE + 16
+READ_CQ = CQ_ID + 3
+READ_PLUG_QP = QP_BASE + 24
+READ_PLUG_SEND_CQ = CQ_ID + 4
+READ_PLUG_RECV_CQ = CQ_ID + 5
+# What a node logs when it drops a reply it has no room to queue
+REPLY_DROPPED = "no room to queue a reply"
 
 # The SENDs a peer floods node 0 with, to a QP that never posts a
 # receive: twice what the node's inbound queue holds.
@@ -247,6 +268,150 @@ def test_two_way_writes(suite, mesh_, state):
         all(set(s) <= {0, STS_RNR_RETRY_EXCEEDED} for s in statuses.values()),
         f"every SEND of the plug was delivered or failed with "
         f"RNR-retry-exceeded, once receives were posted ({statuses})",
+    )
+    suite.check_eq(
+        receive_threads_ended(mesh_, pair),
+        ended,
+        "no receive thread on either node ended: neither gave up on a connection",
+    )
+
+
+def read_qps(mesh_, drivers, pair):
+    """Connect a QP on each node of @pair to the other, for the READ test.
+
+    Returns, by node, its QP and the CQ that QP completes on.
+    """
+    ends = {}
+    for src, dst in (pair, pair[::-1]):
+        cq = drivers[src].create_cq(READ_CQ)
+        ends[src] = (
+            drivers[src].create_qp(READ_QP + dst, ionic.QPT_RC, cq, cq),
+            cq,
+        )
+    for src, dst in (pair, pair[::-1]):
+        drivers[src].connect_qp(ends[src][0], READ_QP + src, roce_hdr(mesh_, src, dst))
+    return ends
+
+
+def plug_one_way(mesh_, drivers, sender, plugged):
+    """Have node @sender plug node @plugged's inbound queue, as plug() does.
+
+    Returns @sender's plug QP's send CQ, and @plugged's plug QP, which
+    posts no receive until unplug_one_way().
+    """
+    send_cq = drivers[sender].create_cq(READ_PLUG_SEND_CQ)
+    recv_cq = drivers[sender].create_cq(READ_PLUG_RECV_CQ)
+    sender_qp = drivers[sender].create_qp(
+        READ_PLUG_QP + plugged, ionic.QPT_RC, send_cq, recv_cq
+    )
+    plugged_cq = drivers[plugged].create_cq(READ_PLUG_RECV_CQ)
+    plugged_qp = drivers[plugged].create_qp(
+        READ_PLUG_QP + sender, ionic.QPT_RC, plugged_cq, plugged_cq
+    )
+    drivers[sender].connect_qp(
+        sender_qp, READ_PLUG_QP + sender, roce_hdr(mesh_, sender, plugged)
+    )
+    drivers[plugged].connect_qp(
+        plugged_qp, READ_PLUG_QP + plugged, roce_hdr(mesh_, plugged, sender)
+    )
+    for _ in range(TWO_WAY_DEPTH):
+        drivers[sender].post_send(
+            sender_qp,
+            ionic.OP_SEND,
+            flags=ionic.WQE_SIGNALLED,
+            sge=[ionic.Sge(READ_VA, PLUG_SEND, READ_KEY)],
+        )
+    return send_cq, plugged_qp
+
+
+def unplug_one_way(drivers, sender, plugged, send_cq, plugged_qp):
+    """Post the receives @plugged's plug QP lacked, and collect the SENDs.
+
+    Returns the statuses @sender's SENDs completed with: RNR-retry-exceeded
+    for those @plugged gave up on, and success for the rest.
+    """
+    for _ in range(TWO_WAY_DEPTH):
+        drivers[plugged].post_recv(
+            plugged_qp, [ionic.Sge(READ_VA, PLUG_SEND, READ_KEY)]
+        )
+    return collections.Counter(
+        drivers[sender].wait_cq(send_cq, timeout=60).status
+        for _ in range(TWO_WAY_DEPTH)
+    )
+
+
+def read_all(driver, qp, cq):
+    """Post a send queue's worth of READs of the peer's MR at once.
+
+    Each lands in the same READ_SIZE bytes of the MR. Returns the statuses
+    they completed with.
+    """
+    for _ in range(TWO_WAY_DEPTH):
+        driver.post_send(
+            qp,
+            ionic.OP_RDMA_READ,
+            flags=ionic.WQE_SIGNALLED,
+            remote_va=READ_VA,
+            rkey=READ_KEY,
+            sge=[ionic.Sge(READ_VA, READ_SIZE, READ_KEY)],
+        )
+    return collections.Counter(
+        driver.wait_cq(cq, timeout=60).status for _ in range(TWO_WAY_DEPTH)
+    )
+
+
+def test_reads_held_back(suite, mesh_, state):
+    """A node that READs more than its peer can queue loses no reply.
+
+    Node 1 plugs node 2's inbound queue, then node 2 posts as many 8 MiB
+    READs from node 1 as a send queue holds, at once. Node 2 reads
+    nothing from node 1 until it gives up on the plug, so node 1's
+    replies wait in its queue for the connection, which holds 64 MiB;
+    one it has no room for, it drops, and the READ fails after 30 s. So
+    node 2 has to ask for no more at once than node 1 is sure to have
+    room for, and every READ has to complete.
+    """
+    drivers = state[0]
+    pair = PAIRS[1]
+    source, reader = pair
+    mrs = {node: drivers[node].create_mr(READ_KEY, READ_VA, READ_SIZE) for node in pair}
+    pattern = bytes(range(256)) * (READ_SIZE // 256)
+    drivers[source].mr_write(mrs[source], READ_VA, pattern)
+    ends = read_qps(mesh_, drivers, pair)
+    ended = receive_threads_ended(mesh_, pair)
+    gave_up = mesh_.nodes[reader].server.log_text().count(GAVE_UP)
+    dropped = mesh_.nodes[source].server.log_text().count(REPLY_DROPPED)
+
+    held = plug_one_way(mesh_, drivers, source, reader)
+    suite.check_eq(
+        dict(read_all(drivers[reader], *ends[reader])),
+        {ionic.STS_OK: TWO_WAY_DEPTH},
+        "every READ, %d MiB in all, completed without error",
+        TWO_WAY_DEPTH * (READ_SIZE >> 20),
+    )
+    suite.check(
+        drivers[reader].mr_read(mrs[reader], READ_VA, READ_SIZE) == pattern,
+        "node %d's memory landed on node %d",
+        source,
+        reader,
+    )
+    suite.check(
+        mesh_.nodes[reader].server.wait_for_count(GAVE_UP, gave_up + 1, 30),
+        "node %d's queue filled and held node %d back",
+        reader,
+        source,
+    )
+    suite.check_eq(
+        mesh_.nodes[source].server.log_text().count(REPLY_DROPPED),
+        dropped,
+        "node %d dropped no reply",
+        source,
+    )
+    statuses = unplug_one_way(drivers, source, reader, *held)
+    suite.check(
+        set(statuses) <= {0, STS_RNR_RETRY_EXCEEDED},
+        f"every SEND of the plug was delivered or failed with "
+        f"RNR-retry-exceeded, once receives were posted ({dict(statuses)})",
     )
     suite.check_eq(
         receive_threads_ended(mesh_, pair),
@@ -432,6 +597,12 @@ def main():
             suite.run(
                 "two nodes write to each other flat out",
                 test_two_way_writes,
+                mesh_,
+                state,
+            )
+            suite.run(
+                "a node that READs more than its peer can queue",
+                test_reads_held_back,
                 mesh_,
                 state,
             )

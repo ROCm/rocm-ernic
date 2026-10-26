@@ -132,6 +132,17 @@ _Static_assert(TCP_SENDQ_REPLY_BYTES >= TCP_MAX_PAYLOAD_LEN,
 /* ionic sizes its own wire payload against this; keep the two in step. */
 _Static_assert(IONIC_MESH_MAX_MSG == TCP_MAX_PAYLOAD_LEN,
                "IONIC_MESH_MAX_MSG must match TCP_MAX_PAYLOAD_LEN");
+/*
+ * The data path asks a peer for no more than IONIC_MESH_REPLY_BUDGET of
+ * replies at once.  The peer's requests on the connection come to at most
+ * TCP_SENDQ_REQUEST_BYTES, so the budget fits beside them under
+ * TCP_SENDQ_REPLY_BYTES, and the replies the data path is still waiting for
+ * fit the queue (see remote_post() in ionic_datapath.c for when they share
+ * it with others).
+ */
+_Static_assert(IONIC_MESH_REPLY_BUDGET <=
+                   TCP_SENDQ_REPLY_BYTES - TCP_SENDQ_REQUEST_BYTES,
+               "IONIC_MESH_REPLY_BUDGET must fit beside a full request queue");
 
 typedef enum {
     TCP_MSG_HANDSHAKE = 1,

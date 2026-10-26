@@ -2237,6 +2237,226 @@ static void check_mesh_recv_room(void)
     }
 }
 
+/*
+ * The replies a node asks one peer for at once come to no more than
+ * IONIC_MESH_REPLY_BUDGET, headers included, since the peer drops a reply it
+ * has no room to queue.  A request that would pass it waits, as one the mesh
+ * has no room for does, until enough replies have come back, or the requests
+ * have been given up on.  A READ's reply is as long as the READ, an atomic's
+ * 8 bytes, and the rest bare headers; a READ longer than any reply is
+ * answered with a bare header too.
+ *
+ * Each READ of BIG_READ bytes asks for a reply of IONIC_MESH_MAX_MSG, so two
+ * come to the budget exactly.  Nothing answers unless a row does, and the
+ * READs are never gathered, so they needn't fit guest memory.
+ */
+#define WIRE_HDR   ((uint32_t)sizeof(struct ionic_wire_hdr))
+#define BIG_READ   (IONIC_MESH_MAX_MSG - WIRE_HDR)
+#define OTHER_NODE 2u
+
+_Static_assert(2 * IONIC_MESH_MAX_MSG == IONIC_MESH_REPLY_BUDGET,
+               "two BIG_READs no longer fill the reply budget exactly");
+
+enum rb_scenario {
+    RB_FULL,       /* two READs whose replies fill the budget */
+    RB_OVER,       /* and a WRITE behind them */
+    RB_ANSWERED,   /* and one READ answered */
+    RB_DEADLINE,   /* and the READs unanswered at PENDING_MS */
+    RB_EXPIRED,    /* and just past it */
+    RB_FLUSHED,    /* the READs' QP flushed, another QP's WRITE waiting */
+    RB_DESTROYED,  /* the READs' QP destroyed, another QP's WRITE waiting */
+    RB_OTHER_NODE, /* another QP's WRITE to another node */
+    RB_ATOMIC,     /* READs and an atomic that fill it, then a WRITE */
+    RB_OVERLONG,   /* a READ longer than any reply among them */
+    RB_HUGE,       /* a READ of UINT32_MAX bytes, alone */
+};
+
+/* QP_A, whose peer is on node 1, posts a READ of @len bytes */
+static void rb_read(struct ionic_datapath *dp, uint32_t len)
+{
+    struct wqe w = READ_OK;
+
+    w.len = len;
+    post_send(dp, QP_A, &w);
+}
+
+/* QP_A's two READs fill node 1's budget, then QP_B posts a WRITE to @node */
+static void rb_other_qp(struct ionic_datapath *dp, uint32_t node)
+{
+    ionic_datapath_set_dest(dp, QP_B, QP_A, node);
+    rb_read(dp, BIG_READ);
+    rb_read(dp, BIG_READ);
+    post_send(dp, QP_B, &WRITE_OK);
+}
+
+/* Node 1 answers the request at g_wire[@i], a READ, with a bare error */
+static void rb_answer(struct ionic_datapath *dp, size_t i)
+{
+    struct ionic_wire_hdr request, reply;
+
+    memcpy(&request, g_wire[i], sizeof(request));
+    memset(&reply, 0, sizeof(reply));
+    reply.magic = request.magic;
+    reply.op = IONIC_WIRE_READ_RESP;
+    reply.src_qp_id = request.dst_qp_id;
+    reply.dst_qp_id = request.src_qp_id;
+    reply.req_id = request.req_id;
+    reply.status = htole32(IONIC_STS_REMOTE_ACC_ERR);
+    mesh_recv(&reply, sizeof(reply));
+    poll_at(dp, g_now_ms + 1);
+}
+
+/* Whether one message has been sent since there were @before, a WRITE */
+static bool rb_write_sent(size_t before)
+{
+    struct ionic_wire_hdr h;
+
+    if (g_nwire != before + 1)
+        return false;
+    memcpy(&h, g_wire[before], sizeof(h));
+    return h.op == IONIC_WIRE_WRITE;
+}
+
+static const char *rb_run(struct ionic_datapath *dp, enum rb_scenario scenario)
+{
+    remote(dp, QP_B);
+    switch (scenario) {
+    case RB_FULL:
+        rb_read(dp, BIG_READ);
+        rb_read(dp, BIG_READ);
+        return g_nwire == 2 && !dp->qp[QP_A].sq_busy
+                   ? NULL
+                   : "the READs weren't both sent";
+    case RB_OVER:
+    case RB_ANSWERED:
+    case RB_DEADLINE:
+    case RB_EXPIRED:
+        rb_read(dp, BIG_READ);
+        rb_read(dp, BIG_READ);
+        post_send(dp, QP_A, &WRITE_OK);
+        poll_at(dp, T0 + 1);
+        if (g_nwire != 2 || !dp->qp[QP_A].sq_busy)
+            return "the WRITE didn't wait";
+        break;
+    case RB_FLUSHED:
+    case RB_DESTROYED:
+        rb_other_qp(dp, PEER_NODE);
+        if (g_nwire != 2 || !dp->qp[QP_B].sq_busy)
+            return "QP_B's WRITE didn't wait behind QP_A's READs";
+        if (scenario == RB_FLUSHED)
+            ionic_datapath_flush_qp(dp, QP_A);
+        else
+            ionic_datapath_unregister_qp(dp, QP_A);
+        poll_at(dp, T0 + 1);
+        return rb_write_sent(2) ? NULL : "QP_B's WRITE wasn't sent";
+    case RB_OTHER_NODE:
+        rb_other_qp(dp, OTHER_NODE);
+        return rb_write_sent(2) && !dp->qp[QP_B].sq_busy
+                   ? NULL
+                   : "QP_B's WRITE to node 2 waited for node 1's READs";
+    case RB_ATOMIC:
+        rb_read(dp, BIG_READ);
+        rb_read(dp, BIG_READ - 8 - WIRE_HDR);
+        post_send(dp, QP_A, &FADD_OK);
+        if (g_nwire != 3)
+            return "the READs and the atomic weren't all sent";
+        post_send(dp, QP_A, &WRITE_OK);
+        return g_nwire == 3 && dp->qp[QP_A].sq_busy ? NULL
+                                                    : "the WRITE didn't wait";
+    case RB_OVERLONG:
+        rb_read(dp, BIG_READ);
+        rb_read(dp, BIG_READ + 1);
+        if (g_nwire != 2)
+            return "the READs weren't both sent";
+        rb_read(dp, BIG_READ);
+        return g_nwire == 2 && dp->qp[QP_A].sq_busy
+                   ? NULL
+                   : "the third READ didn't wait";
+    case RB_HUGE:
+    default:
+        rb_read(dp, UINT32_MAX);
+        return g_nwire == 1 ? NULL : "the READ wasn't sent";
+    }
+
+    /* The WRITE is waiting behind the READs */
+    if (scenario == RB_ANSWERED) {
+        rb_answer(dp, 0);
+        return rb_write_sent(2) ? NULL
+                                : "the WRITE wasn't sent in the pass that "
+                                  "applied the READ's answer";
+    }
+    if (scenario == RB_DEADLINE) {
+        poll_at(dp, T0 + PENDING_MS);
+        poll_at(dp, T0 + PENDING_MS);
+        return g_nwire == 2 ? NULL : "the WRITE was sent";
+    }
+    if (scenario == RB_EXPIRED) {
+        poll_at(dp, T0 + PENDING_MS + 1);
+        poll_at(dp, T0 + PENDING_MS + 1);
+        return rb_write_sent(2) ? NULL : "the WRITE wasn't sent";
+    }
+    poll_at(dp, T0 + 2);
+    return g_nwire == 2 ? NULL : "the WRITE was sent on a later pass";
+}
+
+static void check_reply_budget(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        enum rb_scenario scenario;
+    } rows[] = {
+        {"boundary",
+         "two READs whose replies come to IONIC_MESH_REPLY_BUDGET exactly",
+         "both are sent", RB_FULL},
+        {"positive", "a WRITE behind them, whose reply is a bare ACK",
+         "it waits, on every pass, and isn't sent", RB_OVER},
+        {"positive", "one READ answered",
+         "the WRITE is sent in the pass that applies the answer", RB_ANSWERED},
+        {"boundary", "the READs still unanswered at PENDING_MS",
+         "the WRITE still waits", RB_DEADLINE},
+        {"positive", "the READs given up on just past PENDING_MS",
+         "the WRITE is sent", RB_EXPIRED},
+        {"positive",
+         "the READs' QP flushed, with another QP's WRITE to the same node "
+         "waiting",
+         "the WRITE is sent", RB_FLUSHED},
+        {"positive",
+         "the READs' QP destroyed, with another QP's WRITE to the same node "
+         "waiting",
+         "the WRITE is sent", RB_DESTROYED},
+        {"corner", "another QP's WRITE to another node",
+         "it is sent at once: the budget is per node", RB_OTHER_NODE},
+        {"boundary",
+         "READs and a fetch-and-add whose replies, the atomic's 8 bytes "
+         "included, come to the budget exactly, then a WRITE",
+         "all but the WRITE are sent", RB_ATOMIC},
+        {"corner",
+         "a READ of BIG_READ, one a byte longer than any reply, then another "
+         "of BIG_READ",
+         "the first two are sent, the longer counted as a bare header, and "
+         "the third waits",
+         RB_OVERLONG},
+        {"corner", "a READ of UINT32_MAX bytes, with nothing else pending",
+         "it is sent: a READ alone never waits for good", RB_HUGE},
+    };
+
+    for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
+        struct ionic_datapath *dp = setup();
+        const char *why = dp ? rb_run(dp, rows[row].scenario)
+                             : "could not create a data path";
+
+        ionic_datapath_destroy(dp);
+        printf("%s %s: %s; expected: %s\n", why ? "FAIL" : "ok  ",
+               rows[row].category, rows[row].description, rows[row].expected);
+        if (why) {
+            printf("     %s\n", why);
+            failures++;
+        }
+    }
+}
+
 int main(void)
 {
     check_late_responses();
@@ -2244,6 +2464,7 @@ int main(void)
     check_destroyed_qp_replies();
     check_mesh_recv_sizes();
     check_mesh_recv_room();
+    check_reply_budget();
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
         run_case(&cases[i]);
     for (size_t i = 0; i < sizeof(getter_cases) / sizeof(getter_cases[0]); i++)

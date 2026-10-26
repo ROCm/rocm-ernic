@@ -444,6 +444,17 @@ typedef bool (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node, void *buf,
 #define IONIC_MESH_MAX_MSG (16u << 20)
 
 /*
+ * Most reply bytes, headers included, that a node may have asked one peer
+ * for at once.  The peer queues its replies to the node, and drops one it has
+ * no room to queue, so a node that asked for more could lose them whenever it
+ * falls behind reading the peer.  This is the room the peer's queue is sure
+ * to have for replies, beside the most it queues of its own requests:
+ * TCP_SENDQ_REPLY_BYTES - TCP_SENDQ_REQUEST_BYTES.  rdma_backend_tcp_priv.h
+ * static-asserts that it fits.
+ */
+#define IONIC_MESH_REPLY_BUDGET (32u << 20)
+
+/*
  * SRQ sizing, shared because three places have to agree and nothing else
  * makes them: ionic_eth_emu.c puts the count in the LIF identity (it
  * becomes the guest's max_srq verbatim), rdma_backend_tcp.c sizes

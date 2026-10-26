@@ -2327,6 +2327,21 @@ static struct dp_pending *pending_find(struct ionic_datapath *dp,
 }
 
 /*
+ * The reply bytes, headers included, that the requests still pending to
+ * @node can bring back, which IONIC_MESH_REPLY_BUDGET bounds.
+ */
+static uint64_t pending_reply_bytes(const struct ionic_datapath *dp,
+                                    uint32_t node)
+{
+    uint64_t bytes = 0;
+
+    for (int i = 0; i < MAX_PENDING; i++)
+        if (dp->pending[i].valid && dp->pending[i].dest_node == node)
+            bytes += dp->pending[i].reply_bytes;
+    return bytes;
+}
+
+/*
  * Drop every deferred request of a QP that is flushing or going away, and
  * say how many.
  *
@@ -2392,7 +2407,7 @@ static void wire_hdr_init(struct ionic_wire_hdr *h, uint8_t op,
 /* What remote_post() did with a work request */
 enum dp_post {
     DP_POST_SENT,        /* queued for the peer; its answer completes it */
-    DP_POST_BUSY,        /* the mesh has no room for it yet: try it again */
+    DP_POST_BUSY,        /* no room for it, or its reply, yet: try it again */
     DP_POST_SEND_FAILED, /* the mesh refused it: no connection to the peer */
     DP_POST_FAILED,      /* refused here, before the mesh saw it */
 };
@@ -2405,9 +2420,11 @@ enum dp_post {
  *
  * The mesh never waits for the peer: a request it has no room to queue comes
  * back busy, which stops the send queue the way a NIC out of transmit
- * credits does, until the peer has read what is queued.  A peer that has
- * stopped reading has its connection shut down by the send that times out
- * on it, and the request then fails.
+ * credits does, until the peer has read what is queued.  So does one whose
+ * reply the peer might have no room to queue, until earlier replies have
+ * come back (IONIC_MESH_REPLY_BUDGET).  A peer that has stopped reading has
+ * its connection shut down by the send that times out on it, and the request
+ * then fails.
  */
 /*
  * @dest_qp_id and @dest_node_id are passed rather than read from @q because
@@ -2429,6 +2446,7 @@ static enum dp_post remote_post(struct ionic_datapath *dp,
     struct ionic_wire_hdr hdr;
     uint8_t *payload = NULL;
     uint32_t payload_len = 0;
+    uint32_t reply_bytes;
     uint8_t wire_op;
     enum dp_post result = DP_POST_FAILED;
 
@@ -2524,9 +2542,31 @@ static enum dp_post remote_post(struct ionic_datapath *dp,
     }
 
     /*
-     * Asked before the gather, which a busy WQE would otherwise repeat on
-     * every pass until there is room, for up to 16 MiB each time.
+     * The peer drops a reply it has no room to queue, and the request then
+     * waits out PENDING_MS, so ask it for no more replies at once than it is
+     * sure to have room for.  That is mostly READ data, which the request's
+     * own size says nothing about.  The peer refuses a READ longer than any
+     * reply can be with a bare header.  p->length is 0 for the requests whose
+     * reply is an ACK, and p itself counts nothing yet.
+     *
+     * The peer queues per connection and this counts per node, which agree
+     * unless the peer is a worker with no connection of its own to this node:
+     * its replies then go through the manager, on its one connection to it,
+     * which every node it reaches that way shares.  A request a flush or
+     * timeout has given up on stops counting, though its reply may still be
+     * queued.
+     *
+     * Asked, like the mesh's room, before the gather, which a busy WQE would
+     * otherwise repeat on every pass until there is room, for up to 16 MiB
+     * each time.
      */
+    reply_bytes = (uint32_t)sizeof(hdr) +
+                  (p->length <= IONIC_WIRE_MAX_PAYLOAD ? p->length : 0);
+    if (pending_reply_bytes(dp, dest_node_id) >
+        IONIC_MESH_REPLY_BUDGET - reply_bytes) {
+        result = DP_POST_BUSY;
+        goto out;
+    }
     if (!ionic_mesh_has_room(dp->pvrdma_handle, dest_node_id,
                              sizeof(hdr) + payload_len)) {
         result = DP_POST_BUSY;
@@ -2552,6 +2592,8 @@ static enum dp_post remote_post(struct ionic_datapath *dp,
         dp_mesh_tx(dp, dest_node_id, p->tag, &hdr, payload, payload_len, false);
     if (rc == 0) {
         result = DP_POST_SENT;
+        p->dest_node = dest_node_id;
+        p->reply_bytes = reply_bytes;
         /* Claim the MSN only once the request is really on the wire, so a
          * failed send does not leave a hole the driver would wait on. */
         if (use_msn)
