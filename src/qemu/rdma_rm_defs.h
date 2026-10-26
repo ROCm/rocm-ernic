@@ -60,8 +60,9 @@ typedef struct RdmaRmResTbl {
     char name[MAX_RM_TBL_NAME];
     /*
      * Held to change bitmap and used. rdma_res_tbl_get() reads bitmap
-     * without it, which is safe only while every caller is on the main
-     * thread, as it is today.
+     * without it. It protects nothing today, since only the main thread uses
+     * the tables (see RdmaDeviceResources), and locking the lookup wouldn't
+     * make them safe for a second thread.
      */
     QemuMutex lock;
     unsigned long *bitmap;
@@ -88,6 +89,12 @@ typedef struct RdmaRmMR {
     RdmaBackendMR backend_mr;
 } RdmaRmMR;
 
+/*
+ * A QP records none of the PD, CQs and SRQ it was created with, and no
+ * backend keeps a pointer to them, which is why freeing one of them while
+ * the QP lives leaves nothing dangling (see rdma_rm_dealloc_cq()). Adding
+ * such a reference means adding reference counts to go with it.
+ */
 typedef struct RdmaRmQP {
     RdmaBackendQP backend_qp;
     uint8_t qp_type; /* as rdma_rm_alloc_qp() and the backends take it */
@@ -103,6 +110,19 @@ typedef struct RdmaRmSRQ {
     RdmaBackendSRQ backend_srq;
 } RdmaRmSRQ;
 
+/*
+ * Only the main thread may use the resource manager. Every call comes from
+ * the adminq (ionic_adminq_poll(), and ionic_adminq_release_all() at an RDMA
+ * reset, both from the server's poll loop) or from device setup and
+ * teardown. The TCP backend's threads and the data path never touch it.
+ *
+ * Nothing here relies on a lock: qp_hash has none, nor do the slots'
+ * contents, and a pointer from rdma_rm_get_*() stays valid only until the
+ * next free, on the same thread. Each table's lock covers only its bitmap
+ * and count, inside alloc and free. Calling in from another thread would
+ * need one lock over the tables, qp_hash and the slots, held for as long as
+ * the caller uses the pointer it got, or reference counts on the slots.
+ */
 struct RdmaDeviceResources {
     RdmaRmResTbl pd_tbl;
     RdmaRmResTbl mr_tbl;
