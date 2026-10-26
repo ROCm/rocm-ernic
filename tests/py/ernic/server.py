@@ -21,7 +21,10 @@ SPDX-License-Identifier: GPL-2.0-or-later
 import os
 import shlex
 import signal
-import subprocess
+
+# Bandit flags the import itself. The one call below is marked with the
+# reason it is safe.
+import subprocess  # nosec B404
 import tempfile
 import time
 
@@ -101,12 +104,13 @@ def server_wrapper():
     return shlex.split(os.environ.get("ERNIC_TEST_SERVER_WRAPPER", ""))
 
 
+# The knobs are the interface, and a mesh test sets most of them.
+# pylint: disable-next=too-many-instance-attributes
 class Server:
     """One rocm-ernic process."""
 
-    # The knobs are the interface, and a mesh test sets most of them.
-    # pylint: disable=too-many-instance-attributes,too-many-arguments
-    # pylint: disable=too-many-positional-arguments
+    # One argument per knob.
+    # pylint: disable-next=too-many-arguments,too-many-positional-arguments
     def __init__(
         self,
         binary,
@@ -152,8 +156,11 @@ class Server:
             stdout = self._log_fh
         else:
             stdout = subprocess.DEVNULL
+        # No shell. The server binary comes from the test's caller, and the
+        # wrapper is ERNIC_TEST_SERVER_WRAPPER, which exists so CI can run the
+        # server under valgrind.
         # pylint: disable-next=consider-using-with  # the process outlives this call
-        self.proc = subprocess.Popen(
+        self.proc = subprocess.Popen(  # nosec B603
             argv, stdout=stdout, stderr=subprocess.STDOUT, env=self.env
         )
         if wait and not self.wait_ready(timeout):

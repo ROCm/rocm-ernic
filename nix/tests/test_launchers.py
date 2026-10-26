@@ -8,7 +8,10 @@ import json
 import os
 from pathlib import Path
 import signal
-import subprocess
+
+# Bandit flags the import and every call. Each call runs, without a shell,
+# a program that nix/launcher-tests.nix built and named in ERNIC_TEST_*.
+import subprocess  # nosec B404
 import sys
 import tempfile
 import time
@@ -35,7 +38,7 @@ class LauncherTests(unittest.TestCase):
             ):
                 with tempfile.TemporaryDirectory() as scratch:
                     root = Path(scratch)
-                    result = subprocess.run(
+                    result = subprocess.run(  # nosec B603
                         self.argv(),
                         input="guest console input\n",
                         env=self.env(root, server, command),
@@ -93,7 +96,7 @@ class LauncherTests(unittest.TestCase):
             with self.subTest(description=options, expected=expected):
                 with tempfile.TemporaryDirectory() as scratch:
                     root = Path(scratch)
-                    result = subprocess.run(
+                    result = subprocess.run(  # nosec B603
                         [os.environ["ERNIC_TEST_RUNNER"], *options],
                         env=self.env(root),
                         capture_output=True,
@@ -108,7 +111,7 @@ class LauncherTests(unittest.TestCase):
             occupied.write_text("caller owned")
             argv = self.argv()
             argv[1:1] = ["--socket", str(occupied)]
-            result = subprocess.run(
+            result = subprocess.run(  # nosec B603
                 argv, env=self.env(root), capture_output=True, timeout=5, check=False
             )
             self.assertEqual(result.returncode, 1)
@@ -121,7 +124,7 @@ class LauncherTests(unittest.TestCase):
             with self.subTest(description=str(sig), expected=expected):
                 with tempfile.TemporaryDirectory() as scratch:
                     root = Path(scratch)
-                    with subprocess.Popen(
+                    with subprocess.Popen(  # nosec B603
                         self.argv(),
                         env=self.env(root, "hang", "hang"),
                         stdout=subprocess.PIPE,
@@ -212,7 +215,7 @@ class LauncherTests(unittest.TestCase):
                     socket = str(root / "socket path")
                     argv = self.argv()
                     argv[1:1] = ["--socket", socket, *options]
-                    result = subprocess.run(
+                    result = subprocess.run(  # nosec B603
                         [*argv, *command_args],
                         env=self.env(root, server),
                         capture_output=True,
@@ -252,7 +255,7 @@ class LauncherTests(unittest.TestCase):
             with self.subTest(description=option, expected=2):
                 with tempfile.TemporaryDirectory() as scratch:
                     root = Path(scratch)
-                    result = subprocess.run(
+                    result = subprocess.run(  # nosec B603
                         [os.environ["ERNIC_TEST_RUNNER"], option],
                         env=self.env(root),
                         capture_output=True,
@@ -267,11 +270,11 @@ class LauncherTests(unittest.TestCase):
         options = json.loads(
             Path(os.environ["ERNIC_TEST_QEMU_OPTIONS"]).read_text(encoding="utf-8")
         )
-        for path in ["/tmp/ernic.sock", '/tmp/quote" and space\\socket']:
+        for path in ["/run/ernic.sock", '/run/quote" and space\\socket']:
             with self.subTest(description=path, expected="exact JSON path"):
                 # The shell expression comes from the evaluated guest module.
                 command = "set -- " + options[-1] + '; printf "%s\\n" "$2"'
-                result = subprocess.run(
+                result = subprocess.run(  # nosec B603
                     [os.environ["ERNIC_TEST_BASH"], "-euc", command],
                     env=dict(os.environ, ERNIC_SOCKET=path),
                     text=True,

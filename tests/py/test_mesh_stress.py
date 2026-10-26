@@ -39,10 +39,14 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Imported once tests/py is on sys.path: ctest runs this under python3 -I,
+# which leaves the script's directory off it.
 # pylint: disable=wrong-import-position
 from ernic import ionic, mesh
 from ernic.check import Suite
 from ernic.server import Server
+
+# pylint: enable=wrong-import-position
 
 # QP and CQ numbering. Ids 0 and 1 belong to the device, so start above
 # them; each node's QP for talking to node j is QP_BASE + j, which keeps

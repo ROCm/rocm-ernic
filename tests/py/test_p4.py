@@ -24,12 +24,16 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Imported once tests/py is on sys.path: ctest runs this under python3 -I,
+# which leaves the script's directory off it.
 # pylint: disable=wrong-import-position
 from ernic import eth, ionic, p4
 from ernic.check import Suite
 from ernic.errors import DeviceError
 from ernic.fixture import BaseFixture
 from ernic.server import Server, ServerFailed, stop_and_check
+
+# pylint: enable=wrong-import-position
 
 STATS_RE = re.compile(r"P4 stats: (.*)$", re.MULTILINE)
 
@@ -61,10 +65,11 @@ def p4_stats(server):
     return out
 
 
+# The pieces a test reaches for; bundling them is the point.
+# pylint: disable-next=too-few-public-methods
 class Fixture(BaseFixture):
     """A brought-up driver with an Ethernet Tx queue."""
 
-    # pylint: disable=too-few-public-methods
     def __init__(self, server, sg=False):
         super().__init__(server)
         self.driver.eth_q_init(eth.QTYPE_ETH_TXQ, depth_log2=3, sg=sg)
@@ -410,10 +415,11 @@ def fp16_buffer(n_elems):
     return bytes(out)
 
 
+# The pieces a test reaches for; bundling them is the point.
+# pylint: disable-next=too-few-public-methods
 class CvtFixture(BaseFixture):
     """Two connected RC queue pairs and a source and destination region."""
 
-    # pylint: disable=too-few-public-methods
     def __init__(self, server):
         super().__init__(server)
         self.cq_a = self.driver.create_cq(CVT_CQ_A)

@@ -9,9 +9,9 @@
 
 project = "rocm-ernic"
 author = "Advanced Micro Devices, Inc."
-# pylint: disable=redefined-builtin
+# Sphinx's setting is called copyright
+# pylint: disable-next=redefined-builtin
 copyright = "2025-2026 Advanced Micro Devices, Inc. All rights reserved."
-# pylint: enable=redefined-builtin
 
 version = "0.2.0"
 release = version

@@ -114,11 +114,11 @@ class VfioUserError(Exception):
         super().__init__(f"vfio-user command {cmd} failed: {name}")
 
 
+# A plain record; the attributes are the interface.
+# pylint: disable-next=too-few-public-methods
 class Region:
     """One region of the device, as DEVICE_GET_REGION_INFO described it."""
 
-    # A plain record; the attributes are the interface.
-    # pylint: disable=too-few-public-methods
     def __init__(self, index, flags, size, offset):
         self.index = index
         self.flags = flags
@@ -237,16 +237,15 @@ def wait_for_socket(path, timeout=10.0, proc=None):
     return False
 
 
+# The protocol's surface is wide, and splitting it would only scatter one
+# connection's state.
+# pylint: disable-next=too-many-instance-attributes,too-many-public-methods
 class VfioUserClient:
     """A vfio-user client attached to one server's socket.
 
     One object per connection, holding the state a VMM holds: what the
     server said it can do, the regions it has, and what is mapped to it.
     """
-
-    # The protocol's surface is wide, and splitting it would only scatter
-    # one connection's state.
-    # pylint: disable=too-many-instance-attributes,too-many-public-methods
 
     def __init__(self, sock_path, max_data_xfer_size=DEFAULT_MAX_DATA_XFER_SIZE):
         self.sock_path = sock_path

@@ -32,6 +32,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Imported once tests/py is on sys.path: ctest runs this under python3 -I,
+# which leaves the script's directory off it.
 # pylint: disable=wrong-import-position
 from ernic import ionic
 from ernic.check import Suite
@@ -51,6 +53,8 @@ from test_ionic_driver import (
     rdma_a_to_b,
     send_a_to_b,
 )
+
+# pylint: enable=wrong-import-position
 
 # struct ionic_v1_stat: a big-endian type_off, then a NUL-terminated name.
 STAT_HDR_SIZE = 32

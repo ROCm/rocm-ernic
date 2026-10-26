@@ -23,11 +23,11 @@ GUEST_MEM_SIZE = 32 << 20
 CONNECT_TIMEOUT = 30
 
 
+# The pieces a test reaches for; bundling them is the point.
+# pylint: disable-next=too-few-public-methods
 class BaseFixture:
     """A connected client and a brought-up driver."""
 
-    # The pieces a test reaches for; bundling them is the point.
-    # pylint: disable=too-few-public-methods
     def __init__(self, server):
         self.client = vfu.VfioUserClient(server.socket_path).connect(
             timeout=CONNECT_TIMEOUT

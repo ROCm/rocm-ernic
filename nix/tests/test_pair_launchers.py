@@ -7,7 +7,10 @@ SPDX-License-Identifier: MIT
 import os
 from pathlib import Path
 import signal
-import subprocess
+
+# Bandit flags the import and every call. Each call runs, without a shell,
+# a program that nix/pair-launcher-tests.nix built and named in ERNIC_TEST_*.
+import subprocess  # nosec B404
 import tempfile
 import time
 import unittest
@@ -42,7 +45,7 @@ class PairTests(unittest.TestCase):
     @staticmethod
     def run_launcher(argv, env=None, stdin=None):
         """Run one row's launcher with a deadline; the caller checks status."""
-        return subprocess.run(
+        return subprocess.run(  # nosec B603
             argv,
             capture_output=True,
             check=False,
@@ -109,7 +112,7 @@ class PairTests(unittest.TestCase):
             root = Path(scratch)
             # Explicit finally bounds cleanup even if readiness assertions fail.
             # pylint: disable-next=consider-using-with
-            process = subprocess.Popen(
+            process = subprocess.Popen(  # nosec B603
                 [os.environ["ERNIC_TEST_BOTH"]],
                 env=self.environment(root, "hang", "hang"),
                 stdout=subprocess.PIPE,
