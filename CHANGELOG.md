@@ -218,7 +218,7 @@
     (CTest `cmake-subproject`).
   * `-DERNIC_USE_CODE_COVERAGE=ON` (Clang only) builds with source-based
     coverage, and the `ernic-coverage` target reports the line coverage of
-    `src/` after `ctest`. A CI coverage leg fails below a floor (now 60%)
+    `src/` after `ctest`. A CI coverage leg fails below a floor (now 90%)
     and publishes the README's Coverage badge from `develop`.
   * `-DERNIC_USE_CLANG_TIDY=ON` runs clang-tidy 19 or later (with Clang as
     the compiler) using the new `.clang-tidy`, failing the build on any
