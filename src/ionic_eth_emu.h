@@ -164,11 +164,15 @@ void ionic_eth_emu_register_rx_filter(struct ionic_eth_emu *emu,
                                       ionic_eth_rx_filter_fn fn, void *ctx);
 
 /*
- * Hand a received frame to the emulated LIF from a thread that may not DMA
- * (the TCP mesh receive thread).  The frame is copied onto an internal queue
- * and delivered to the guest by the next ionic_eth_emu_poll_rx().
+ * Hand a frame for the guest to the emulated LIF from an in-process
+ * endpoint: the S3 control plane's replies, and what the P4 pipeline sends
+ * to the host port.  The frame is copied onto an internal queue and
+ * delivered by the next ionic_eth_emu_poll_rx(), which holds it there until
+ * the Rx queue it steers to has a buffer.  Today's callers are all on the
+ * main loop thread, but the queue is locked, so any thread may call this.
  *
- * Returns 0 on success, -ENOSPC when the queue is full, or -EINVAL.
+ * Returns 0 on success, -ENOSPC when the queue is full, -ENOMEM, or
+ * -EINVAL.
  */
 int ionic_eth_emu_queue_rx_frame(struct ionic_eth_emu *emu, const void *frame,
                                  size_t len);

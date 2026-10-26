@@ -246,7 +246,7 @@ _Static_assert(
 /*
  * The port qwords one frame moves, and by how much: what
  * ionic_emu_port_frame() adds, computed apart from where it is added so the
- * mesh inbox can add the same thing atomically.  Returns false for a received
+ * Rx inbox can add the same thing atomically.  Returns false for a received
  * frame over @max_frame.
  */
 static bool port_deltas(const uint8_t *frame, size_t len, bool is_tx,

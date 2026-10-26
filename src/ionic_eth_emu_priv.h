@@ -376,9 +376,9 @@ _Static_assert(IONIC_BAR0_INTR_STATUS_OFFSET + IONIC_MSIX_MAX_VECTORS / 8u <=
 _Static_assert(IONIC_PROFILE_INTR_VECTORS_MAX <= IONIC_MSIX_MAX_VECTORS,
                "a profile may not ask for more vectors than the device has");
 
-/* Bounds the inbox so a fast mesh peer cannot grow it without limit; the
- * blocking producer stalls above this, which back-pressures the mesh TCP
- * connection the same way the old PVRDMA Rx ring did. */
+/* Bounds the inbox, so frames for a guest that posts no Rx buffers cannot
+ * grow it without limit: past this, ionic_eth_emu_queue_rx_frame() drops the
+ * frame, counts it, and returns -ENOSPC. */
 #define ETH_INBOX_MAX_FRAMES 256
 
 /* Frames queued by ionic_eth_emu_queue_rx_frame(); private to the .c. */
@@ -486,9 +486,10 @@ struct ionic_eth_emu {
     uint8_t frame[IONIC_ETH_NET_MTU_MAX];
 
     /*
-     * Frames handed over by threads that may not DMA -- today only the TCP
-     * mesh receive thread.  Producers append under @inbox_lock; the main
-     * loop drains the queue from ionic_eth_emu_poll_rx().
+     * Frames for the guest from in-process endpoints (the S3 control plane
+     * and the P4 pipeline, both on the main loop thread today).  Producers
+     * append under @inbox_lock; the main loop drains the queue from
+     * ionic_eth_emu_poll_rx().
      */
     QemuMutex inbox_lock;
     struct eth_inbox_frame *inbox_head TSA_GUARDED_BY(inbox_lock);

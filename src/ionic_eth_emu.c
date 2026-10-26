@@ -1885,9 +1885,10 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
         }
     }
 
-    /* Frames queued by off-thread producers (TCP mesh).  A frame that the
-     * guest has no buffer for is put back at the head so ordering holds and
-     * the producer keeps seeing back-pressure; that is not a drop.  A frame
+    /* Frames queued by in-process endpoints (the S3 control plane, the P4
+     * pipeline).  A frame that the guest has no buffer for is put back at
+     * the head so ordering holds and the producer keeps seeing
+     * back-pressure; that is not a drop.  A frame
      * that can never be delivered (too big, or a DMA failure) is dropped
      * and counted, so it cannot block the queue behind it. */
     for (unsigned n = 0; n < 64; n++) {

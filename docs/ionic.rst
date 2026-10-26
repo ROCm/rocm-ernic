@@ -319,9 +319,10 @@ hash modulo the number of enabled queues, in index order. The
 guest's RSS key and indirection table are accepted and
 ignored. A frame from the TAP whose queue has no buffer
 posted is dropped and counted in ``rx_queue_empty``; it does
-not fall back to another queue. A frame from the TCP mesh is
-held until the queue it steers to has a buffer, and the mesh
-frames behind it wait too.
+not fall back to another queue. A frame an in-process
+endpoint (the S3 store's control plane, or the P4 engine)
+queues for the guest is held until the queue it steers to
+has a buffer, and the queued frames behind it wait too.
 
 .. note::
 
@@ -361,7 +362,8 @@ is unicast. What moves:
    * - frame sent or received
      - ``{tx,rx}_{ucast,mcast,bcast}_{bytes,packets}``; the
        driver sums them into ``ip -s link`` packets and bytes
-   * - receive with no buffer posted, or the mesh inbox full
+   * - receive with no buffer posted, or the queue of frames
+       for the guest full
      - ``rx_*_drop_*`` and ``rx_queue_empty``
        (``rx_dropped`` and ``rx_over_errors``)
    * - frame larger than the posted buffer
@@ -446,7 +448,8 @@ the TAP is therefore a 64-byte frame. What moves:
        (``link.mtu_max`` + 18)
      - ``frames_rx_too_long``, ``_oversized``, ``_bad_all``;
        the MAC drops it and the LIF never sees it
-   * - received with no buffer posted, or the mesh inbox full
+   * - received with no buffer posted, or the queue of frames
+       for the guest full
      - ``frames_rx_dropped``, on top of the counters for a
        received frame: the MAC took it in, the LIF dropped it
 

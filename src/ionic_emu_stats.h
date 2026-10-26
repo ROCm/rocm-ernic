@@ -21,8 +21,9 @@
  * they stay zero as the driver expects.
  *
  * Everything here runs on the main loop thread except
- * ionic_emu_stats_rx_inbox_full(), which the mesh receive thread calls.  It
- * counts into atomics that the main thread folds into the block.
+ * ionic_emu_stats_rx_inbox_full(), which may be called from any thread, as
+ * ionic_eth_emu_queue_rx_frame() may.  It counts into atomics that the main
+ * thread folds into the block.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -286,7 +287,8 @@ struct ionic_emu_stats {
     /* Host-order copy of struct ionic_port_stats, by ionic_port_stat. */
     uint64_t port[IONIC_PORT_STATS_QWORDS];
 
-    /* Mesh inbox overflow, counted off the main thread; see fold(). */
+    /* Rx inbox overflow, which may be counted off the main thread; see
+     * fold(). */
     _Atomic uint64_t inbox_drop_bytes[IONIC_EMU_MAC_CLASSES];
     _Atomic uint64_t inbox_drop_packets[IONIC_EMU_MAC_CLASSES];
     /* What the MAC counted for those frames, by ionic_port_stat. */
@@ -315,7 +317,8 @@ void ionic_emu_stats_drop(struct ionic_emu_stats *st, const uint8_t *frame,
                           size_t len, bool is_tx, enum ionic_emu_drop why);
 
 /*
- * The mesh inbox was full, so the frame is gone.  The MAC took it in, as
+ * The Rx inbox (ionic_eth_emu_queue_rx_frame()) was full, so the frame is
+ * gone.  The MAC took it in, as
  * ionic_emu_port_frame() counts it with @max_frame, and the LIF had nowhere
  * to put it, unless the MAC refused it first for being too long.  Safe to
  * call from any thread.
@@ -330,11 +333,12 @@ void ionic_emu_stats_rdma(struct ionic_emu_stats *st, uint64_t bytes,
 
 /*
  * A frame crossing the port: sent (@is_tx), or received from the wire, which
- * here is the TAP or mesh boundary.  Counts the MAC's view -- frame and octet
- * totals with FCS, size bucket, destination class, VLAN tag and priority.  A
- * received frame longer than @max_frame (FCS excluded) is a MAC error: it is
- * counted as too long and the function returns false, and the caller drops
- * it.  @max_frame is ignored for tx.  Returns true otherwise.
+ * here is the TAP or an in-process endpoint's queue.  Counts the MAC's view
+ * -- frame and octet totals with FCS, size bucket, destination class, VLAN
+ * tag and priority.  A received frame longer than @max_frame (FCS excluded)
+ * is a MAC error: it is counted as too long and the function returns false,
+ * and the caller drops it.  @max_frame is ignored for tx.  Returns true
+ * otherwise.
  */
 bool ionic_emu_port_frame(struct ionic_emu_stats *st, const uint8_t *frame,
                           size_t len, bool is_tx, size_t max_frame);

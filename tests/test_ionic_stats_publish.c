@@ -1105,7 +1105,7 @@ static void rx_tap_no_buffer_port(char *got, size_t len)
     ionic_eth_emu_destroy(emu);
 }
 
-/* A mesh frame waits through two polls for a buffer, then is delivered. */
+/* A queued frame waits through two polls for a buffer, then is delivered. */
 static void inbox_wait_port(char *got, size_t len)
 {
     struct ionic_eth_emu *emu = new_emu(1000);
@@ -1187,13 +1187,14 @@ static const struct publish_case port_datapath_cases[] = {
      "frames_rx_ok 1, frames_rx_dropped 1 (the MAC took it, the LIF dropped "
      "it)",
      rx_tap_no_buffer_port},
-    {"corner", "a mesh frame waits two polls for a buffer, then one is posted",
+    {"corner",
+     "a queued frame waits two polls for a buffer, then one is posted",
      "frames_rx_all waiting 1, after 1, frames_rx_dropped 0, rx_ucast 1 "
      "(counted once at the MAC)",
      inbox_wait_port},
-    {"corner", "a mesh frame over the maximum, then one that fits",
+    {"corner", "a queued frame over the maximum, then one that fits",
      "frames_rx_too_long 1, rx_ucast 1, still queued 0", inbox_too_long_port},
-    {"positive", "the mesh inbox overflows by one broadcast",
+    {"positive", "the Rx inbox overflows by one broadcast",
      "frames_rx_all 1, frames_rx_broadcast 1, frames_rx_65b_127b 1, "
      "frames_rx_dropped 1 (the MAC took it in; the queued ones are counted "
      "when polled)",
@@ -1219,15 +1220,15 @@ static const struct publish_case datapath_cases[] = {
      "tx_desc_data_error 1, head 1 (completed anyway)", tx_len_zero},
     {"negative", "Tx descriptor pointing outside guest memory",
      "tx_dma_error 1, tx_ucast 0", tx_bad_addr},
-    {"corner", "a mesh frame with no buffer posted",
+    {"corner", "a queued frame with no buffer posted",
      "rx_ucast_drop 0, rx_queue_empty 0, still queued 1 (back-pressure, not "
      "a drop)",
      inbox_no_buffer},
-    {"corner", "a mesh frame too big for the buffer, then one that fits",
+    {"corner", "a queued frame too big for the buffer, then one that fits",
      "rx_ucast 1, rx_ucast_drop 1, rx_desc_data_error 1, still queued 0 (no "
      "head-of-line block)",
      inbox_too_big_then_ok},
-    {"boundary", "one mesh frame past the inbox limit",
+    {"boundary", "one queued frame past the inbox limit",
      "last rc -28, rx_bcast_drop 1/64", inbox_full},
 };
 
@@ -1546,10 +1547,10 @@ static const struct publish_case fault_cases[] = {
      fault_tx_len_zero},
     {"boundary", "eth_rx after 2 count 1 over 3 TAP frames, 2 buffers",
      "rx_ucast 2, eligible 3, fired 1", fault_rx_after_2},
-    {"corner", "a mesh frame held back for a buffer over 3 polls",
+    {"corner", "a queued frame held back for a buffer over 3 polls",
      "eligible 1, fired 0, still queued 1 (one event per frame)",
      fault_inbox_held},
-    {"corner", "a mesh frame under eth_rx every 1 nobuf",
+    {"corner", "a queued frame under eth_rx every 1 nobuf",
      "rx_ucast_drop 1, rx_queue_empty 1, still queued 0", fault_inbox_nobuf},
     {"corner", "a set holding only a stats_vals fault",
      "tx_ucast 1, rx_ucast 1, stats_vals eligible 0 (the datapath is "
@@ -1687,7 +1688,7 @@ static void file_inbox_folded(char *got, size_t len)
     char *text, *again;
     size_t n;
 
-    /* The mesh thread's counter, folded by the writer. */
+    /* The inbox overflow counter, folded by the writer. */
     ionic_emu_stats_rx_inbox_full(&emu->stats, make_frame(mac_ucast, 64), 64,
                                   0);
     text = stats_text(emu, &n);
@@ -1794,7 +1795,7 @@ static const struct publish_case stats_file_cases[] = {
      "rx_bcast_bytes 18446744073709551615", file_max_value},
     {"boundary", "the name column fits the longest ionic_if.h name",
      "longest 35, width 35", file_longest_name},
-    {"corner", "mesh inbox full off-thread, then the stats file twice",
+    {"corner", "Rx inbox full, then the stats file twice",
      "rx_ucast_drop_packets 1, rx_ucast_drop_bytes 64, second write 1 (fold "
      "is not double-counted)",
      file_inbox_folded},

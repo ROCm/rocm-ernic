@@ -206,7 +206,7 @@ static const struct count_case count_cases[] = {
      {OP_DROP, NULL, 0, true, IONIC_EMU_DROP_DISABLED, 1},
      {{IONIC_LIF_TX_QUEUE_DISABLED, 1}, {END_VALUES}}},
     {"positive",
-     "mesh inbox full, after fold",
+     "Rx inbox full, after fold",
      "rx_ucast_drop_* +1; no queue counter (the guest never saw it)",
      {OP_INBOX_FULL, mac_ucast, 128, false, 0, 1},
      {{IONIC_LIF_RX_UCAST_DROP_PACKETS, 1},
@@ -857,7 +857,7 @@ static void test_port_buckets(void)
 }
 
 /*
- * A frame the mesh inbox had no room for: the MAC took it in, so the port
+ * A frame the Rx inbox had no room for: the MAC took it in, so the port
  * counts it as it would any received frame, and the LIF dropped it.
  */
 struct inbox_port_case {
@@ -1070,12 +1070,12 @@ static void test_port_misc(void)
     check_u64("positive", "rx frame the LIF could not deliver",
               "frames_rx_dropped 1", 1, st.port[IONIC_PORT_FRAMES_RX_DROPPED]);
 
-    /* positive: a mesh inbox overflow is a port rx drop too, once */
+    /* positive: an Rx inbox overflow is a port rx drop too, once */
     ionic_emu_stats_reset(&st);
     ionic_emu_stats_rx_inbox_full(&st, frame_to(mac_ucast, 64), 64, 0);
     ionic_emu_port_fill(&st, out);
     ionic_emu_port_fill(&st, out);
-    check_u64("positive", "mesh inbox full, then fill() twice",
+    check_u64("positive", "Rx inbox full, then fill() twice",
               "frames_rx_dropped 1 in the block", 1,
               qword_at(out, IONIC_PORT_FRAMES_RX_DROPPED));
 
