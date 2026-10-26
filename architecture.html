@@ -417,6 +417,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#s3-over-rdma">S3 over RDMA</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-p4-engine">The P4 Engine</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#backends">Backends</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#threads">Threads</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#trust-boundaries">Trust Boundaries</a></li>
@@ -457,11 +458,12 @@ brief</a> covers the vocabulary used in the rest of the page.</p>
 <li><p><a class="reference internal" href="#more-than-one-vm-the-tcp-mesh" id="id9">More Than One VM: the TCP Mesh</a></p></li>
 <li><p><a class="reference internal" href="#the-ethernet-side" id="id10">The Ethernet Side</a></p></li>
 <li><p><a class="reference internal" href="#in-process-targets-nvme-of-and-s3" id="id11">In-Process Targets: NVMe-oF and S3</a></p></li>
-<li><p><a class="reference internal" href="#backends" id="id12">Backends</a></p></li>
-<li><p><a class="reference internal" href="#threads" id="id13">Threads</a></p></li>
-<li><p><a class="reference internal" href="#trust-boundaries" id="id14">Trust Boundaries</a></p></li>
-<li><p><a class="reference internal" href="#what-is-not-emulated" id="id15">What Is Not Emulated</a></p></li>
-<li><p><a class="reference internal" href="#where-to-look-in-the-source" id="id16">Where to Look in the Source</a></p></li>
+<li><p><a class="reference internal" href="#the-p4-engine" id="id12">The P4 Engine</a></p></li>
+<li><p><a class="reference internal" href="#backends" id="id13">Backends</a></p></li>
+<li><p><a class="reference internal" href="#threads" id="id14">Threads</a></p></li>
+<li><p><a class="reference internal" href="#trust-boundaries" id="id15">Trust Boundaries</a></p></li>
+<li><p><a class="reference internal" href="#what-is-not-emulated" id="id16">What Is Not Emulated</a></p></li>
+<li><p><a class="reference internal" href="#where-to-look-in-the-source" id="id17">Where to Look in the Source</a></p></li>
 </ul>
 </nav>
 <section id="the-short-version">
@@ -502,6 +504,7 @@ request to each other over ordinary TCP.</p>
 │  ionic device front end (registers, queues, data path)   │
 │  resource bookkeeping + backend (none/loopback/tcp/...)  │
 │  optional in-process NVMe-oF controller or S3 store      │
+│  optional P4 match-action engine                         │
 └─────────────────────────┬────────────────────────────────┘
                           │ TCP (tcp backend only)
                           ▼
@@ -664,13 +667,21 @@ context.</strong> That rule shapes how the multi-VM code is built (see
 <td><p><code class="docutils literal notranslate"><span class="pre">02:00:00</span></code>, Ethernet controller</p></td>
 </tr>
 <tr class="row-odd"><td><p>Interrupts</p></td>
-<td><p>32 MSI-X vectors, plus INTx</p></td>
+<td><p>The NIC profile’s MSI-X vectors (32 under <code class="docutils literal notranslate"><span class="pre">compat</span></code>, at
+most 128), plus INTx</p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p>The upstream <code class="docutils literal notranslate"><span class="pre">ionic.ko</span></code> binds to that ID. The device has two
-BARs:</p>
+<p>The upstream <code class="docutils literal notranslate"><span class="pre">ionic.ko</span></code> binds to that ID.</p>
+<p>Some of what the device reports is set by its <strong>NIC profile</strong>:
+its interrupt, Ethernet queue and RDMA event queue counts, link
+speed and transceiver, largest MTU, firmware version, and how
+often it rewrites its statistics. <code class="docutils literal notranslate"><span class="pre">--nic-profile</span></code> layers
+built-in profiles and ini files over the default, <code class="docutils literal notranslate"><span class="pre">compat</span></code>,
+whose values this page gives. See <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a> for the keys and
+the built-in profiles.</p>
+<p>The device has two BARs:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <colgroup>
 <col style="width: 10.0%" />
@@ -764,9 +775,9 @@ type with ids above the QP id range.</p></li>
        │ ionic_rm_*, ionic_mesh_*  │ attach
        ▼                           ▼
 rocm_ernic_compat.c          nvmeof_*.c, s3_*.c
-(bridge; only file that      in-process targets
- sees QEMU types)
-       │
+(bridge; only file that      in-process targets;
+ sees QEMU types)            src/p4/, the optional
+       │                     P4 engine
        ▼
 src/qemu/                  resource manager (rdma_rm)
 src/rdma/                  backend vtable: none,
@@ -781,6 +792,25 @@ src/qemu-compat/           the QEMU APIs the QEMU-derived
 talks to. They own the register file, decode doorbells, and
 read and write every ring and buffer in guest memory. Each file
 is described in a later section.</p>
+<p>Two more pieces shape what the front end does without being
+part of any one path:</p>
+<ul class="simple">
+<li><p><strong>The NIC profile</strong> (<code class="docutils literal notranslate"><span class="pre">src/ionic_profile.c</span></code>; the built-in
+profiles are in <code class="docutils literal notranslate"><span class="pre">src/ionic_profiles.c</span></code>, with copies in
+<code class="docutils literal notranslate"><span class="pre">profiles/</span></code>) is read once at startup. The front end
+consults it wherever it describes itself to the driver: the
+MSI-X table size, IDENTIFY, LIF_IDENTIFY, PORT_INIT, and
+LIF_INIT.</p></li>
+<li><p><strong>Fault injection</strong> (<code class="docutils literal notranslate"><span class="pre">--inject</span></code>, <code class="docutils literal notranslate"><span class="pre">src/ionic_fault.c</span></code>)
+makes chosen events fail, so a test can check how the guest
+copes: a STATS_VALS admin command completes with an error
+status, a received frame is lost or dropped as if no buffer
+were posted, or a transmitted frame is completed but never
+sent. A fault fires on a pattern of events (every Nth, a run
+starting at the Nth, a burst out of every M, or an explicit
+sequence), never on a timer, so the same workload gives the
+same failures.</p></li>
+</ul>
 </section>
 <section id="the-device-core">
 <h3>The Device Core<a class="headerlink" href="#the-device-core" title="Link to this heading">#</a></h3>
@@ -810,15 +840,20 @@ world are:</p>
 <li><p>Recording each QP’s state and passing the INIT, RTR, and RTS
 transitions to the backend. The core doesn’t check that a
 transition is legal: it records whatever state the guest
-asks for. The one check that matters is the TCP backend’s at
-RTR, which fails the transition when no node owns a connected
-QP’s destination GID (see <a class="reference internal" href="#more-than-one-vm-the-tcp-mesh">More Than One VM: the TCP
-Mesh</a>).</p></li>
+asks for. The one check that matters is on a connected QP’s
+destination GID when the mesh is attached: if no node owns
+it, the admin queue refuses the MODIFY_QP before the core
+sees it, and the TCP backend would fail the RTR transition
+anyway (see <a class="reference internal" href="#more-than-one-vm-the-tcp-mesh">More Than One VM: the TCP Mesh</a>).</p></li>
 <li><p>Carrying the TCP mesh, through the <code class="docutils literal notranslate"><span class="pre">ionic_mesh_*()</span></code>
 wrappers.</p></li>
-<li><p>Statistics: counters, and the stats file written about once
-a second (<code class="docutils literal notranslate"><span class="pre">--stats-file</span></code>, consumed by <code class="docutils literal notranslate"><span class="pre">ernic-exporter</span></code>;
-see <a class="reference internal" href="monitoring.html"><span class="doc">Prometheus Monitoring and Grafana Dashboard</span></a>).</p></li>
+<li><p>Statistics: the device and per-QP counters the guest reads
+as <code class="docutils literal notranslate"><span class="pre">hw_counters</span></code> (through the admin queue’s statistics
+commands, together with the data path’s error counters),
+and the stats file written about once a second
+(<code class="docutils literal notranslate"><span class="pre">--stats-file</span></code>, consumed by <code class="docutils literal notranslate"><span class="pre">ernic-exporter</span></code>; see
+<a class="reference internal" href="monitoring.html"><span class="doc">Prometheus Monitoring and Grafana Dashboard</span></a>), which also carries the Ethernet side’s
+LIF and port counters.</p></li>
 </ol>
 <p>The core does <strong>not</strong> move data for the ionic device, or post
 its completions. All data movement happens in
@@ -829,17 +864,22 @@ its completions. All data movement happens in
 <p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_server.c</span></code> builds the device, then waits for
 QEMU to connect. Once QEMU has connected, it loops:</p>
 <ol class="arabic simple">
+<li><p>Write the stats file, if there is one, about once a second.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">vfu_run_ctx()</span></code>: handle pending vfio-user messages. BAR
 accesses arrive here as callbacks, and <strong>BAR 2 doorbells for
 send queues are executed inside the callback</strong> (see
 <a class="reference internal" href="#the-data-path">The Data Path</a>).</p></li>
 <li><p>Run any GLib idle callbacks.</p></li>
-<li><p>Move received Ethernet frames from the TAP, or from frames
-other threads queued, into the guest’s receive ring.</p></li>
+<li><p>Move received Ethernet frames from the TAP, and frames an
+in-process endpoint queued for the guest, into the guest’s
+receive rings. Rewrite the Ethernet statistics in guest
+memory if the profile’s interval has passed.</p></li>
 <li><p>Process new entries on the RDMA admin queues.</p></li>
-<li><p>Apply messages that arrived from other servers over the mesh,
-and time out requests that never got an answer.</p></li>
-<li><p>If none of that found work, sleep 100 µs.</p></li>
+<li><p>Run the S3 store’s TCP timers, apply messages that arrived
+from other servers over the mesh, and time out requests that
+never got an answer.</p></li>
+<li><p>If no vfio-user message or idle callback ran, and nothing is
+waiting from the mesh or the S3 store, sleep 100 µs.</p></li>
 </ol>
 <p>The server is a polling design. Latency is bounded by the loop
 period, and an idle server still wakes up as often as 10,000
@@ -874,32 +914,64 @@ the data window, and sets <code class="docutils literal notranslate"><span class
 </thead>
 <tbody>
 <tr class="row-even"><td><p>IDENTIFY</p></td>
-<td><p>Reports one port, one LIF, 32 interrupts, 32 EQs</p></td>
+<td><p>Reports one port, one LIF, and the profile’s interrupt
+and RDMA EQ counts (32 and 32 under <code class="docutils literal notranslate"><span class="pre">compat</span></code>)</p></td>
 </tr>
 <tr class="row-odd"><td><p>LIF_IDENTIFY</p></td>
-<td><p>Reports Ethernet and RDMA capability, queue counts, the
-MAC, and the RDMA section: queue type numbers; QP, CQ,
-and SRQ counts; MR and AH limits; and the page table
-size, which sets the guest’s maximum MR size (4 TiB)</p></td>
+<td><p>Reports Ethernet and RDMA capability (and P4, when the
+guest has been given the engine’s control surface; see
+<a class="reference internal" href="p4.html"><span class="doc">P4 Match-Action Engine</span></a>), the profile’s Ethernet queue count and
+maximum frame size, the MAC, and the RDMA section: queue
+type numbers; QP, CQ, and SRQ counts; MR and AH limits;
+and the page table size, which sets the guest’s maximum
+MR size (4 TiB)</p></td>
 </tr>
 <tr class="row-even"><td><p>PORT_INIT</p></td>
-<td><p>Writes a port-info block saying “100 Gb/s copper QSFP,
-link up”, so <code class="docutils literal notranslate"><span class="pre">ethtool</span></code> reports a speed</p></td>
+<td><p>Writes a port-info block giving the profile’s link speed
+and transceiver (“100 Gb/s copper QSFP, link up” under
+<code class="docutils literal notranslate"><span class="pre">compat</span></code>), so <code class="docutils literal notranslate"><span class="pre">ethtool</span></code> reports a speed. The device
+keeps the port statistics in that block from then on</p></td>
 </tr>
 <tr class="row-odd"><td><p>LIF_INIT</p></td>
-<td><p>Writes “link up” into the LIF status block, so the netdev
-gets a carrier and the RDMA port goes active</p></td>
+<td><p>Writes “link up” and the speed into the LIF status block,
+so the netdev gets a carrier and the RDMA port goes
+active. The device keeps the LIF statistics in that block
+from then on (see <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>)</p></td>
 </tr>
-<tr class="row-even"><td><p>Q_INIT</p></td>
+<tr class="row-even"><td><p>LIF_RESET, PORT_RESET, RESET</p></td>
+<td><p>Stop writing into the blocks, which the driver may free.
+RESET also zeroes every counter, and PORT_RESET the port
+counters</p></td>
+</tr>
+<tr class="row-odd"><td><p>Q_INIT</p></td>
 <td><p>Records where an Ethernet queue’s descriptor and
 completion rings are in guest memory, and its interrupt
 vector</p></td>
 </tr>
+<tr class="row-even"><td><p>Q_CONTROL</p></td>
+<td><p>Enables or disables a queue; received frames are steered
+only to enabled receive queues</p></td>
+</tr>
 <tr class="row-odd"><td><p>Q_IDENTIFY</p></td>
 <td><p>Reports descriptor sizes; advertises no offloads</p></td>
 </tr>
-<tr class="row-even"><td><p>others</p></td>
+<tr class="row-even"><td><p>LIF_GETATTR, LIF_SETATTR</p></td>
+<td><p>Read or set the MAC; other attributes succeed without
+effect</p></td>
+</tr>
+<tr class="row-odd"><td><p>50 to 53</p></td>
+<td><p>The RDMA bootstrap commands (see <a class="reference internal" href="#rdma-bootstrap">RDMA Bootstrap</a>)</p></td>
+</tr>
+<tr class="row-even"><td><p>70 to 72</p></td>
+<td><p>The P4 engine’s control surface; unknown opcodes when the
+guest hasn’t been given it (see <a class="reference internal" href="p4.html"><span class="doc">P4 Match-Action Engine</span></a>)</p></td>
+</tr>
+<tr class="row-odd"><td><p>INIT, GETATTR, SETATTR, PORT_IDENTIFY, PORT_GETATTR,
+PORT_SETATTR, NOP</p></td>
 <td><p>Succeed with a zeroed completion</p></td>
+</tr>
+<tr class="row-even"><td><p>others</p></td>
+<td><p>Fail as unknown opcodes</p></td>
 </tr>
 </tbody>
 </table>
@@ -913,6 +985,12 @@ memory, rings a doorbell, and waits for an interrupt. The
 emulator reads each descriptor by DMA, runs it, DMAs a 16-byte
 completion with the expected <em>color</em> bit (see <a class="reference internal" href="#rings-and-the-color-bit">Rings and the
 Color Bit</a>), and raises the queue’s MSI-X vector.</p>
+<p>The commands that matter here are Q_INIT, Q_CONTROL, the MAC
+attribute of LIF_GETATTR and LIF_SETATTR, and the RDMA and P4
+commands, which the emulator runs as it does from BAR 0.
+Everything else the driver posts during bring-up (receive
+modes, receive filters, …) has no state in the emulator and
+succeeds.</p>
 </section>
 <section id="rdma-bootstrap">
 <h3>RDMA Bootstrap<a class="headerlink" href="#rdma-bootstrap" title="Link to this heading">#</a></h3>
@@ -1034,7 +1112,12 @@ its ring</p></td>
 <tr class="row-even"><td><p>DESTROY_*</p></td>
 <td><p>Undo the above</p></td>
 </tr>
-<tr class="row-odd"><td><p>statistics, DCQCN, debug, QUERY_AH</p></td>
+<tr class="row-odd"><td><p>STATS_HDRS, STATS_VALS, QP_STATS_HDRS, QP_STATS_VALS</p></td>
+<td><p>DMA the names, or the values, of the device’s or one
+QP’s counters into the driver’s buffer; this is what the
+guest reads as <code class="docutils literal notranslate"><span class="pre">hw_counters</span></code> (see <a class="reference internal" href="monitoring.html"><span class="doc">Prometheus Monitoring and Grafana Dashboard</span></a>)</p></td>
+</tr>
+<tr class="row-even"><td><p>MODIFY_DCQCN, DEBUG, QUERY_AH</p></td>
 <td><p>Succeed without doing anything</p></td>
 </tr>
 </tbody>
@@ -1256,6 +1339,12 @@ nothing for three health-check intervals, connects again
 and registers under the id it has. A worker that has heard
 nothing for an interval sends the manager a heartbeat of
 its own, so the two needn’t share an interval.</p></li>
+<li><p>A dead node stays in the manager’s table. A node that went
+quiet and comes back keeps its id; a restarted one registers
+again and gets a new id. The table holds at most 64 nodes:
+when a new node registers in a full table, the manager evicts
+the node that has been dead longest, or refuses the new node
+if none can be evicted. An id is never given out twice.</p></li>
 <li><p>A send to a node that stays connected but stops reading
 gives up once nothing has gone out for the send timeout,
 <code class="docutils literal notranslate"><span class="pre">ERNIC_TCP_SEND_TIMEOUT_MS</span></code> (10000 by default), and shuts
@@ -1496,14 +1585,25 @@ memory and writes it to the host <strong>TAP</strong> interface named by
 <code class="docutils literal notranslate"><span class="pre">--tap</span></code> (<code class="docutils literal notranslate"><span class="pre">src/ionic_eth_net.c</span></code>). Without a TAP, frames
 are completed and discarded.</p></li>
 <li><p>Receive: the main loop reads frames from the TAP and DMAs each
-into the next buffer the guest posted on receive queue 0, then
-raises the queue’s interrupt.</p></li>
+into the next buffer the guest posted on one of its enabled
+receive queues, then raises that queue’s interrupt. A fixed
+hash of the flow picks the queue, so one flow always lands on
+one queue (<code class="docutils literal notranslate"><span class="pre">src/ionic_eth_steer.c</span></code>). A TAP frame whose queue
+has no buffer posted is dropped, as on a real NIC.</p></li>
 <li><p>No checksum, TSO, or scatter-gather offloads are advertised,
 so the guest always sends simple linear frames.</p></li>
 <li><p>Before a transmitted frame goes to the TAP, an in-process
-endpoint can claim it (the S3 target uses this; see below).
-Threads that may not do DMA can queue frames for the main loop
-to deliver.</p></li>
+endpoint can claim it, and one can likewise claim a frame
+received from the TAP (the S3 target and the P4 engine use
+these; see below and <a class="reference internal" href="p4.html"><span class="doc">P4 Match-Action Engine</span></a>). An endpoint sends frames to
+the guest by queueing them for the main loop, which delivers
+them after the TAP’s. Unlike a TAP frame, a queued frame with
+no buffer to go to waits for one, and so do the frames behind
+it.</p></li>
+<li><p>The emulator counts every frame and keeps the LIF and port
+statistics blocks the driver reads (<code class="docutils literal notranslate"><span class="pre">ip</span> <span class="pre">-s</span> <span class="pre">link</span></code>,
+<code class="docutils literal notranslate"><span class="pre">ethtool</span> <span class="pre">-S</span></code>) up to date in guest memory
+(<code class="docutils literal notranslate"><span class="pre">src/ionic_emu_stats.c</span></code>; see <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>).</p></li>
 </ul>
 <p>To give several guests a shared segment, each server gets its
 own TAP and the TAPs are joined in a host bridge (see
@@ -1519,8 +1619,10 @@ and neither touches guest memory or the network directly. In
 the server, the data path supplies callbacks that resolve the
 rkey in the guest’s MR table, which is the emulator’s
 equivalent of the target posting RDMA READ and WRITE against
-the initiator’s keys. The same code runs in unit tests with a
-byte array standing in for guest memory.</p>
+the initiator’s keys. They move nothing for key 0, which would
+otherwise reach all of guest memory (see <a class="reference internal" href="#trust-boundaries">Trust Boundaries</a>).
+The same code runs in unit tests with a byte array standing in
+for guest memory.</p>
 <section id="nvme-over-fabrics">
 <h3>NVMe over Fabrics<a class="headerlink" href="#nvme-over-fabrics" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">--backend</span> <span class="pre">nvmeof</span></code> runs an NVMe-oF controller in the server.</p>
@@ -1571,8 +1673,35 @@ payload in the HTTP body.</p></li>
 <p>See <a class="reference internal" href="s3.html"><span class="doc">S3 over RDMA Object Store</span></a>.</p>
 </section>
 </section>
+<section id="the-p4-engine">
+<h2><a class="toc-backref" href="#id12" role="doc-backlink">The P4 Engine</a><a class="headerlink" href="#the-p4-engine" title="Link to this heading">#</a></h2>
+<p>The silicon ionic models is P4-programmable, and
+<code class="docutils literal notranslate"><span class="pre">src/p4/</span></code> is the emulator’s equivalent: an engine that runs a
+compiled P4 program (bmv2 JSON) loaded with <code class="docutils literal notranslate"><span class="pre">--p4-program</span></code>.
+It is built only with the <code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_P4</span></code> CMake option, and
+runs only when <code class="docutils literal notranslate"><span class="pre">--p4</span></code>, <code class="docutils literal notranslate"><span class="pre">--p4-program</span></code> or
+<code class="docutils literal notranslate"><span class="pre">--p4-guest-scope</span></code> (even <code class="docutils literal notranslate"><span class="pre">none</span></code>) is given. It sits on two
+paths:</p>
+<ul class="simple">
+<li><p><strong>Ethernet.</strong> It takes the transmit and receive frame
+filters described in <a class="reference internal" href="#the-ethernet-side">The Ethernet Side</a>, so every frame
+between the guest and the TAP goes through the program, which
+decides where it goes and what it looks like. A frame the S3
+store claims never reaches it.</p></li>
+<li><p><strong>RDMA.</strong> For a program written for it, the data path runs
+the pipeline on every send WQE, after the WQE’s own memory
+has been checked. The program can drop the operation, or
+turn an RDMA WRITE into fp8 arithmetic or a format conversion
+through an extern. Every region involved is local and named
+by the WQE, never by the program; an rkey belonging to
+another node is refused.</p></li>
+</ul>
+<p>A guest can reach the engine through device commands 70 to 72,
+but only as far as <code class="docutils literal notranslate"><span class="pre">--p4-guest-scope</span></code> allows; by default it
+can’t. Everything runs on the main thread. See <a class="reference internal" href="p4.html"><span class="doc">P4 Match-Action Engine</span></a>.</p>
+</section>
 <section id="backends">
-<h2><a class="toc-backref" href="#id12" role="doc-backlink">Backends</a><a class="headerlink" href="#backends" title="Link to this heading">#</a></h2>
+<h2><a class="toc-backref" href="#id13" role="doc-backlink">Backends</a><a class="headerlink" href="#backends" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">--backend</span></code> picks one entry in the backend registry
 (<code class="docutils literal notranslate"><span class="pre">src/rdma/rdma_backend_core.c</span></code>). With the ionic front end
 doing all data movement, the choice mostly decides whether the
@@ -1613,7 +1742,7 @@ driver bring-up.</p></td>
 </div>
 </section>
 <section id="threads">
-<h2><a class="toc-backref" href="#id13" role="doc-backlink">Threads</a><a class="headerlink" href="#threads" title="Link to this heading">#</a></h2>
+<h2><a class="toc-backref" href="#id14" role="doc-backlink">Threads</a><a class="headerlink" href="#threads" title="Link to this heading">#</a></h2>
 <div class="pst-scrollable-table-container"><table class="table">
 <colgroup>
 <col style="width: 25.0%" />
@@ -1650,9 +1779,14 @@ and heartbeats that couldn’t be written at once</p></td>
 <tr class="row-even"><td><p>health check</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">tcp</span></code> manager</p></td>
 <td><p>Heartbeats, dead-node detection, closing dead nodes’
-connections</p></td>
+connections, and those of nodes that never registered</p></td>
 </tr>
-<tr class="row-odd"><td><p>peer connect</p></td>
+<tr class="row-odd"><td><p>broadcast</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tcp</span></code> manager</p></td>
+<td><p>Sends the topology and GID ownership to the workers (see
+<a class="reference internal" href="#which-server-owns-a-gid">Which Server Owns a GID?</a>)</p></td>
+</tr>
+<tr class="row-even"><td><p>peer connect</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">tcp</span></code> worker</p></td>
 <td><p>Connects to peers as the topology changes, and closes dead
 connections; connects to the manager again when its
@@ -1662,16 +1796,17 @@ connection is lost</p></td>
 </table>
 </div>
 <p>The rule is that <strong>only the main thread touches guest memory</strong>.
-Every other thread hands work to it through a locked queue: the
-data path’s inbound message queue, or the Ethernet emulator’s
-frame inbox. The completion thread the QEMU code had upstream
-is gone.</p>
+The mesh’s receive threads hand what they read to it through a
+locked queue, the data path’s inbound message queue. The
+in-process targets and the P4 engine run on the main thread
+itself, so they start no threads. The completion thread the
+QEMU code had upstream is gone.</p>
 <p>Shared state between threads uses mutexes or C11 atomics. The
 thread-safety section of <code class="docutils literal notranslate"><span class="pre">AGENTS.md</span></code>, in the repository root,
 has the rules.</p>
 </section>
 <section id="trust-boundaries">
-<h2><a class="toc-backref" href="#id14" role="doc-backlink">Trust Boundaries</a><a class="headerlink" href="#trust-boundaries" title="Link to this heading">#</a></h2>
+<h2><a class="toc-backref" href="#id15" role="doc-backlink">Trust Boundaries</a><a class="headerlink" href="#trust-boundaries" title="Link to this heading">#</a></h2>
 <p>The server is the boundary between a guest and the host, so
 everything that comes from a guest (register writes, doorbells,
 admin commands, ring contents, keys, addresses, lengths) or from
@@ -1687,17 +1822,26 @@ vfio-user’s: it can reach only guest RAM that QEMU shared with
 the server.</p></li>
 <li><p>A peer server may name memory only by rkey. Key 0, which
 locally means “the address is already a bus address”, is
-refused when a peer sends it with a non-zero length.</p></li>
+refused when a peer sends it with a non-zero length. So is a
+key 0 in a request to the NVMe-oF controller or the S3 store,
+or as an operand of the P4 engine’s externs, since any guest
+process can make those requests.</p></li>
+<li><p>Guest addresses and lengths are checked for wrap-around before
+they are used: a memory region or a keyed range that runs past
+the end of the address space is refused, and a send whose SGE
+lengths add up to more than 4 GiB fails instead of being
+truncated.</p></li>
 <li><p>A page table is checked against the length of the region it
 describes, so it can’t have more entries than that region
 needs. This is a geometry check, not a memory limit: the
 region’s length also comes from the guest and nothing caps it,
 so a large enough CREATE_MR or fast registration still makes
-the server allocate a large page table. The ring
-geometry of SRQs and of the data path’s CQ rings is bounded
-before it is used in shifts. Not every command checks its ring
-geometry yet, so this is not a guarantee for all queue
-creation.</p></li>
+the server allocate a large page table.</p></li>
+<li><p>Every ring’s depth and stride is bounded before it is used in
+a shift. An RDMA command (creating an admin queue, EQ, CQ, QP,
+or SRQ) that exceeds the bounds is refused; a Q_INIT that
+exceeds them succeeds but leaves its Ethernet queue
+uninitialized.</p></li>
 <li><p>Datagram delivery within one VM checks that the destination
 is a UD or GSI QP, so a datagram can’t land in an RC or UC
 QP, and that the Q_Key in the WQE matches the destination’s.
@@ -1715,7 +1859,7 @@ such a destination is still created, and treated as local.</p></li>
 </ul>
 </section>
 <section id="what-is-not-emulated">
-<h2><a class="toc-backref" href="#id15" role="doc-backlink">What Is Not Emulated</a><a class="headerlink" href="#what-is-not-emulated" title="Link to this heading">#</a></h2>
+<h2><a class="toc-backref" href="#id16" role="doc-backlink">What Is Not Emulated</a><a class="headerlink" href="#what-is-not-emulated" title="Link to this heading">#</a></h2>
 <ul class="simple">
 <li><p><strong>No RoCE packets.</strong> Nothing builds or parses RoCE frames, and
 there is no packet sequence number, ACK/NAK, retransmission,
@@ -1736,15 +1880,18 @@ back (see <a class="reference internal" href="#a-remote-request-step-by-step">A 
 <li><p><strong>One outstanding RDMA READ or atomic per QP</strong> is what
 QUERY_QP reports.</p></li>
 <li><p><strong>Ethernet offloads</strong> (checksum, TSO, scatter-gather) are not
-offered.</p></li>
-<li><p><strong>Statistics admin commands</strong> succeed but return nothing.</p></li>
+offered, and the guest’s RSS key and indirection table are
+accepted but ignored.</p></li>
+<li><p><strong>Counters with no emulator event behind them</strong>, such as
+packet sequence errors, duplicates, CNPs, and ECN marks, read
+zero (see <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>).</p></li>
 <li><p><strong>Performance</strong> is that of a software device: every doorbell
 is a socket message, every byte is copied by the server’s CPU,
 and the main loop polls.</p></li>
 </ul>
 </section>
 <section id="where-to-look-in-the-source">
-<h2><a class="toc-backref" href="#id16" role="doc-backlink">Where to Look in the Source</a><a class="headerlink" href="#where-to-look-in-the-source" title="Link to this heading">#</a></h2>
+<h2><a class="toc-backref" href="#id17" role="doc-backlink">Where to Look in the Source</a><a class="headerlink" href="#where-to-look-in-the-source" title="Link to this heading">#</a></h2>
 <div class="pst-scrollable-table-container"><table class="table">
 <colgroup>
 <col style="width: 40.0%" />
@@ -1769,6 +1916,20 @@ interrupt controller, doorbell decode</p></td>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic_eth_net.c</span></code></p></td>
 <td><p>Host TAP interface</p></td>
 </tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic_eth_steer.c</span></code></p></td>
+<td><p>Choosing the receive queue for a frame</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic_emu_stats.c</span></code></p></td>
+<td><p>Ethernet LIF and port counters, and the statistics blocks
+written into guest memory</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic_profile.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/ionic_profiles.c</span></code></p></td>
+<td><p>NIC profiles: loading and layering them, and the built-in
+ones</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic_fault.c</span></code></p></td>
+<td><p>Fault injection (<code class="docutils literal notranslate"><span class="pre">--inject</span></code>)</p></td>
+</tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic_rdma_devcmd.c</span></code></p></td>
 <td><p>RDMA bootstrap (EQs, admin queues), EQE posting</p></td>
 </tr>
@@ -1782,8 +1943,8 @@ interrupt controller, doorbell decode</p></td>
 <td><p>Copying to and from guest memory, for all of the above</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_compat.c</span></code>, <code class="docutils literal notranslate"><span class="pre">.h</span></code></p></td>
-<td><p>Bridge to the QEMU-derived core; guest-memory mapping for
-it; mesh wrappers; shared limits</p></td>
+<td><p>Bridge to the QEMU-derived core; mesh wrappers; shared
+limits</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/qemu/</span></code></p></td>
 <td><p>Resource manager and backend dispatch, forked from QEMU</p></td>
@@ -1791,18 +1952,27 @@ it; mesh wrappers; shared limits</p></td>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/rdma_backend_*.c</span></code></p></td>
 <td><p>Backend registry; none, loopback, and TCP mesh backends</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/pvrdma_stats.c</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/tcp_*.c</span></code></p></td>
+<td><p>The TCP mesh: connections, the wire format, GID
+ownership, and the manager’s and workers’ halves</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/pvrdma_stats.c</span></code></p></td>
 <td><p>Statistics file</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/qemu-compat/</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/qemu-compat/</span></code></p></td>
 <td><p>Stand-ins for the QEMU APIs the QEMU-derived code calls</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/nvmeof_cm.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/nvmeof_target.c</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/nvmeof_cm.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/nvmeof_target.c</span></code></p></td>
 <td><p>In-process NVMe-oF CM responder and controller</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/s3_tcp.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/s3_http.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/s3_token.c</span></code>,
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/s3_tcp.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/s3_http.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/s3_token.c</span></code>,
 <code class="docutils literal notranslate"><span class="pre">src/s3_target.c</span></code></p></td>
 <td><p>In-process S3 store</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/p4/</span></code></p></td>
+<td><p>P4 engine: program loader, tables, the pipeline, its
+Ethernet port and device commands, and the fp8 and format
+conversion externs</p></td>
 </tr>
 </tbody>
 </table>
@@ -1900,6 +2070,7 @@ it; mesh wrappers; shared limits</p></td>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#s3-over-rdma">S3 over RDMA</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-p4-engine">The P4 Engine</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#backends">Backends</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#threads">Threads</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#trust-boundaries">Trust Boundaries</a></li>

@@ -640,7 +640,8 @@ queue, as the RDMA commands do. Through them a driver can
 push a compiled program down in chunks, install, modify and
 delete table entries, and read the engine’s counters.</p>
 <p>What the guest may do is the operator’s decision, not the
-guest’s. <code class="docutils literal notranslate"><span class="pre">--p4-guest-scope</span></code> takes one of:</p>
+guest’s. <code class="docutils literal notranslate"><span class="pre">--p4-guest-scope</span></code> implies <code class="docutils literal notranslate"><span class="pre">--p4</span></code>, even with
+<code class="docutils literal notranslate"><span class="pre">none</span></code>, and takes one of:</p>
 <dl class="simple">
 <dt><code class="docutils literal notranslate"><span class="pre">none</span></code></dt><dd><p>The default. The surface answers nothing, not even
 identify, and the P4 capability bit is not advertised.</p>

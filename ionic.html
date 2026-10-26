@@ -746,9 +746,10 @@ hash modulo the number of enabled queues, in index order. The
 guest’s RSS key and indirection table are accepted and
 ignored. A frame from the TAP whose queue has no buffer
 posted is dropped and counted in <code class="docutils literal notranslate"><span class="pre">rx_queue_empty</span></code>; it does
-not fall back to another queue. A frame from the TCP mesh is
-held until the queue it steers to has a buffer, and the mesh
-frames behind it wait too.</p>
+not fall back to another queue. A frame an in-process
+endpoint (the S3 store’s control plane, or the P4 engine)
+queues for the guest is held until the queue it steers to
+has a buffer, and the queued frames behind it wait too.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p>The emulated LIF advertises no checksum, TSO, or
@@ -790,7 +791,8 @@ is unicast. What moves:</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">{tx,rx}_{ucast,mcast,bcast}_{bytes,packets}</span></code>; the
 driver sums them into <code class="docutils literal notranslate"><span class="pre">ip</span> <span class="pre">-s</span> <span class="pre">link</span></code> packets and bytes</p></td>
 </tr>
-<tr class="row-odd"><td><p>receive with no buffer posted, or the mesh inbox full</p></td>
+<tr class="row-odd"><td><p>receive with no buffer posted, or the queue of frames
+for the guest full</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">rx_*_drop_*</span></code> and <code class="docutils literal notranslate"><span class="pre">rx_queue_empty</span></code>
 (<code class="docutils literal notranslate"><span class="pre">rx_dropped</span></code> and <code class="docutils literal notranslate"><span class="pre">rx_over_errors</span></code>)</p></td>
 </tr>
@@ -885,7 +887,8 @@ frames count as <code class="docutils literal notranslate"><span class="pre">_pr
 <td><p><code class="docutils literal notranslate"><span class="pre">frames_rx_too_long</span></code>, <code class="docutils literal notranslate"><span class="pre">_oversized</span></code>, <code class="docutils literal notranslate"><span class="pre">_bad_all</span></code>;
 the MAC drops it and the LIF never sees it</p></td>
 </tr>
-<tr class="row-even"><td><p>received with no buffer posted, or the mesh inbox full</p></td>
+<tr class="row-even"><td><p>received with no buffer posted, or the queue of frames
+for the guest full</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">frames_rx_dropped</span></code>, on top of the counters for a
 received frame: the MAC took it in, the LIF dropped it</p></td>
 </tr>
