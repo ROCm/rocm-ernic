@@ -501,8 +501,15 @@ gets as far as the walker does.
 Every document is untrusted, so there is no clamping and no
 truncation anywhere in the loader: an oversized array, a name
 with a newline in it, a width given as a floating-point
-number, a duplicate name or id, and a reference to something
-that does not exist are each a rejection.
+number, a duplicate name or id, a literal wider than the field
+it is assigned to, and a reference to something that does not
+exist are each a rejection.
+
+A parser ``select`` on several fields gives each field whole
+bytes of the key, right-aligned in them, as bmv2 builds it and
+as ``p4c`` writes the values it is compared with: selecting on a
+12-bit VLAN ID and an EtherType, VLAN 10 over IPv4 is
+``0x000a0800``.
 
 Alignment with AMD Pensando silicon
 -----------------------------------
@@ -590,7 +597,12 @@ Three tiers, none of which needs a VM, RDMA hardware or root.
 ``p4-engine-unit`` (``tests/test_p4_engine.c``)
    The engine as a function: the port model, the input validation,
    the frame bounds and the statistics. Links the engine's
-   translation unit and nothing else.
+   translation unit and nothing else. The loader is held to
+   ``tests/data/p4/reject_cases.json``, each case of which must be
+   refused with the errno and the reason it names, and
+   ``tests/data/p4/features.json`` runs frames through a parser
+   ``select`` with masks, LPM and ternary tables, every arithmetic
+   primitive and every comparison.
 
 ``ionic-harness-p4-port`` (``tests/test_ionic_harness.c``)
    The engine attached to the whole in-process device, with
@@ -598,6 +610,9 @@ Three tiers, none of which needs a VM, RDMA hardware or root.
    chain: a frame claimed by the endpoint that already held the
    slot must not reach the pipeline, one it declines must, and
    detaching must hand the slot back rather than leave it empty.
+   ``ionic-harness-p4-devcmd`` and ``ionic-harness-p4-devcmd-errors``
+   drive the guest's control surface through the BAR0 devcmd window,
+   including every way it refuses a command.
 
 ``ernic-p4-driver`` (``tests/py/test_p4.py``)
    The engine on a **real server process**, reached over a real

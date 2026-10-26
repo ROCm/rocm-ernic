@@ -24,8 +24,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <json-c/json_object.h>
+#include <json-c/json_tokener.h>
+#include <json-c/json_types.h>
+
 #include "p4_engine.h"
 #include "p4_exec.h"
+#include "p4_json.h"
 #include "p4_program.h"
 #include "p4_fp8.h"
 #include "p4_table.h"
@@ -302,6 +307,14 @@ static void test_load_chunk_bounds(void)
     p4_engine_destroy(eng);
 }
 
+/* Why the last load was refused, for a failure message. */
+static const char *load_why(const struct p4_engine *eng)
+{
+    const char *why = p4_engine_load_error(eng);
+
+    return why ? why : "(no reason given)";
+}
+
 static void test_load_sequence(void)
 {
     struct p4_engine *eng = p4_engine_create();
@@ -319,6 +332,8 @@ static void test_load_sequence(void)
     check(p4_engine_load_commit(eng) == -EINVAL,
           "an incomplete program is not committed");
     check(!p4_engine_has_program(eng), "no program after a failed commit");
+    check(strstr(load_why(eng), "32 of 96 bytes") != NULL,
+          "the refusal does not say how much of the program arrived");
 
     check(p4_engine_load_begin(eng, sizeof(data)) == 0, "begin accepted");
     check(p4_engine_load_chunk(eng, 0, data, 32) == 0, "chunk 1 accepted");
@@ -1299,23 +1314,24 @@ static void test_table_entry_errors(void)
     "\"deparsers\":[{\"name\":\"d\",\"id\":0,\"order\":[]}],"
 
 /* One table keyed on the operation's opcode, whose action drops. */
-#define P4_RDMA_PROG                                                  \
-    P4_RDMA_HDRS "\"actions\":[{\"name\":\"nope\",\"id\":0,"          \
-                 "\"runtime_data\":[],"                               \
-                 "\"primitives\":[{\"op\":\"drop\","                  \
-                 "\"parameters\":[]}]}],"                             \
-                 "\"pipelines\":[{\"name\":\"ingress\",\"id\":0,"     \
-                 "\"init_table\":\"t\",\"tables\":["                  \
-                 "{\"name\":\"t\",\"id\":0,\"match_type\":\"exact\"," \
-                 "\"type\":\"simple\",\"max_size\":16,"               \
-                 "\"with_counters\":false,\"direct_meters\":null,"    \
-                 "\"support_timeout\":false,"                         \
-                 "\"key\":[{\"match_type\":\"exact\","                \
-                 "\"target\":[\"rdma_metadata\",\"opcode\"],"         \
-                 "\"mask\":null}],"                                   \
-                 "\"actions\":[\"nope\"],"                            \
-                 "\"next_tables\":{\"nope\":null}}],"                 \
-                 "\"action_profiles\":[],\"conditionals\":[]}]}"
+#define P4_RDMA_PROG P4_RDMA_HDRS P4_RDMA_TAIL
+#define P4_RDMA_TAIL                                     \
+    "\"actions\":[{\"name\":\"nope\",\"id\":0,"          \
+    "\"runtime_data\":[],"                               \
+    "\"primitives\":[{\"op\":\"drop\","                  \
+    "\"parameters\":[]}]}],"                             \
+    "\"pipelines\":[{\"name\":\"ingress\",\"id\":0,"     \
+    "\"init_table\":\"t\",\"tables\":["                  \
+    "{\"name\":\"t\",\"id\":0,\"match_type\":\"exact\"," \
+    "\"type\":\"simple\",\"max_size\":16,"               \
+    "\"with_counters\":false,\"direct_meters\":null,"    \
+    "\"support_timeout\":false,"                         \
+    "\"key\":[{\"match_type\":\"exact\","                \
+    "\"target\":[\"rdma_metadata\",\"opcode\"],"         \
+    "\"mask\":null}],"                                   \
+    "\"actions\":[\"nope\"],"                            \
+    "\"next_tables\":{\"nope\":null}}],"                 \
+    "\"action_profiles\":[],\"conditionals\":[]}]}"
 
 static void test_rdma_metadata(void)
 {
@@ -1368,6 +1384,56 @@ static void test_rdma_metadata(void)
           "a real compiled policy program loads");
 
     (void)err;
+    p4_engine_destroy(eng);
+}
+
+/*
+ * A program may declare only the parts of the architecture it reads: here
+ * no ingress_port and, of rdma_metadata, only the opcode.  The pipeline
+ * fills in what was declared and skips what was not.
+ */
+#define P4_RDMA_FEW_HDRS                                                \
+    "{\"__meta__\":{\"version\":[2,24]},"                               \
+    "\"header_types\":[{\"name\":\"std_t\",\"id\":0,"                   \
+    "\"fields\":[[\"egress_spec\",9]]},"                                \
+    "{\"name\":\"rdma_t\",\"id\":1,\"fields\":[[\"opcode\",8]]}],"      \
+    "\"headers\":[{\"name\":\"standard_metadata\",\"id\":0,"            \
+    "\"header_type\":\"std_t\",\"metadata\":true},"                     \
+    "{\"name\":\"rdma_metadata\",\"id\":1,"                             \
+    "\"header_type\":\"rdma_t\",\"metadata\":true}],"                   \
+    "\"parsers\":[{\"name\":\"p\",\"id\":0,\"init_state\":\"start\","   \
+    "\"parse_states\":[{\"name\":\"start\",\"id\":0,\"parser_ops\":[]," \
+    "\"transition_key\":[],\"transitions\":[{\"value\":\"default\","    \
+    "\"mask\":null,\"next_state\":null}]}]}],"                          \
+    "\"deparsers\":[{\"name\":\"d\",\"id\":0,\"order\":[]}],"
+
+static void test_rdma_few_fields(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    struct p4_rdma_meta meta;
+    struct p4_update up;
+    bool suppress = false;
+    char err[160];
+
+    checkf(load_text(eng, P4_RDMA_FEW_HDRS P4_RDMA_TAIL) == 0,
+           "a program declaring only an opcode is refused: %s", load_why(eng));
+    memset(&up, 0, sizeof(up));
+    up.type = P4_UPDATE_INSERT;
+    (void)snprintf(up.table, sizeof(up.table), "t");
+    (void)snprintf(up.action, sizeof(up.action), "nope");
+    up.nmatch = 1;
+    up.match[0].len = 1;
+    up.match[0].value[P4_MATCH_BYTES - 1] = 4;
+    checkf(p4_engine_update(eng, &up, err, sizeof(err)) == 0,
+           "the entry is not installed: %s", err);
+
+    memset(&meta, 0, sizeof(meta));
+    meta.opcode = 4;
+    meta.qp_num = 7;
+    meta.length = 4096;
+    check(p4_engine_process_rdma(eng, NULL, &meta, &suppress) == 0 && suppress,
+          "the opcode the program declared was not matched");
+
     p4_engine_destroy(eng);
 }
 
@@ -1543,6 +1609,26 @@ static void test_extern_call(void)
     check(p4_engine_process_rdma(eng, NULL, &meta, &suppress) == -EPERM,
           "a call with no operand context is refused");
 
+    /*
+     * A frame has no operands either.  rdma_metadata is not valid on the
+     * frame path, so its opcode reads as 0, and an entry for opcode 0
+     * reaches the call: the frame is dropped rather than half run.
+     */
+    up.match[0].value[P4_MATCH_BYTES - 1] = 0;
+    checkf(p4_engine_update(eng, &up, err, sizeof(err)) == 0,
+           "the entry for opcode 0 is not installed: %s", err);
+    {
+        uint8_t in[64], out[64];
+        struct p4_result res;
+
+        fill_frame(in, sizeof(in));
+        check(p4_engine_process(eng, P4_PORT_HOST, in, sizeof(in), out,
+                                sizeof(out), &res) == 0,
+              "a frame runs into the extern call");
+        check(res.verdict == P4_VERDICT_DROP,
+              "a frame whose action calls an extern was not dropped");
+    }
+
     p4_engine_destroy(eng);
 }
 
@@ -1605,6 +1691,824 @@ static void test_extern_after_drop(void)
     p4_engine_destroy(eng);
 }
 
+/* ---- The reject corpus -------------------------------------------------- */
+
+/*
+ * A case marked "encoding": "latin1" carries bytes no JSON string can: each
+ * code point of its "json" is one byte of the document, so U+00FF is the
+ * byte 0xFF rather than its UTF-8 encoding.  json-c hands the string back
+ * as UTF-8, where a code point from U+0080 to U+00FF is two bytes: 0xC2 or
+ * 0xC3, then a continuation byte.
+ */
+static bool latin1_decode(const char *s, size_t n, uint8_t *out,
+                          size_t *out_len)
+{
+    size_t i = 0, o = 0;
+
+    while (i < n) {
+        uint8_t c = (uint8_t)s[i];
+        uint8_t next;
+
+        if (c < 0x80u) {
+            out[o++] = c;
+            i++;
+            continue;
+        }
+        if ((c != 0xC2u && c != 0xC3u) || i + 1 >= n)
+            return false;
+        next = (uint8_t)s[i + 1];
+        if ((next & 0xC0u) != 0x80u)
+            return false;
+        out[o++] = (uint8_t)(((c & 0x03u) << 6) | (next & 0x3Fu));
+        i += 2;
+    }
+    *out_len = o;
+    return true;
+}
+
+/* A string member of a case, or NULL, with its length, NULs and all. */
+static const char *case_str(const struct json_object *c, const char *key,
+                            size_t *len)
+{
+    struct json_object *v;
+
+    if (!json_object_object_get_ex(c, key, &v) ||
+        !json_object_is_type(v, json_type_string))
+        return NULL;
+    if (len)
+        *len = (size_t)json_object_get_string_len(v);
+    return json_object_get_string(v);
+}
+
+/* One case of the corpus: load it and check the refusal it names. */
+static void reject_case(const struct json_object *c, size_t i)
+{
+    const char *name = case_str(c, "name", NULL);
+    const char *enc = case_str(c, "encoding", NULL);
+    const char *want_errno = case_str(c, "errno", NULL);
+    const char *want = case_str(c, "error", NULL);
+    size_t jlen = 0, dlen = 0;
+    const char *json = case_str(c, "json", &jlen);
+    struct p4_program *prog = NULL;
+    char err[256];
+    uint8_t *doc;
+    int want_rc, rc;
+
+    if (!name || !json || !want_errno || !want) {
+        checkf(false, "reject case %zu is missing a member", i);
+        return;
+    }
+    if (strcmp(want_errno, "EINVAL") == 0) {
+        want_rc = -EINVAL;
+    } else if (strcmp(want_errno, "ENOSYS") == 0) {
+        want_rc = -ENOSYS;
+    } else {
+        checkf(false, "%s: unknown errno '%s'", name, want_errno);
+        return;
+    }
+
+    /* A byte more than the text, so the empty case still has a buffer. */
+    doc = malloc(jlen + 1);
+    if (!doc) {
+        checkf(false, "%s: out of memory", name);
+        return;
+    }
+    if (enc) {
+        if (strcmp(enc, "latin1") != 0 ||
+            !latin1_decode(json, jlen, doc, &dlen)) {
+            checkf(false, "%s: cannot decode it as '%s'", name, enc);
+            free(doc);
+            return;
+        }
+    } else {
+        memcpy(doc, json, jlen);
+        dlen = jlen;
+    }
+
+    rc = p4_json_parse(doc, dlen, &prog, err, sizeof(err));
+    checkf(rc == want_rc, "%s: returned %d, want %d (%s)", name, rc, want_rc,
+           err);
+    checkf(strstr(err, want) != NULL, "%s: refused with \"%s\", want \"%s\"",
+           name, err, want);
+    if (rc == 0)
+        p4_json_free(prog);
+    free(doc);
+}
+
+/*
+ * reject_cases.json: hand-written documents, each skeleton.json with one
+ * defect, and the refusal the loader must give -- its errno and a piece of
+ * its reason.  The reason is the point: a case refused for an earlier
+ * defect never reaches the check it was written for.  39 of these once
+ * passed that way, refused only because the skeleton had no
+ * standard_metadata, which the loader came to require after the corpus was
+ * written.
+ */
+static void test_reject_corpus(void)
+{
+    struct json_tokener *tok;
+    struct json_object *root;
+    struct p4_program *prog = NULL;
+    char err[256];
+    size_t n = 0, ncases;
+    char *buf;
+
+    /* The skeleton itself loads, so the defect is the only thing that can
+     * refuse a case built on it. */
+    buf = read_fixture("skeleton.json", &n);
+    if (!buf) {
+        check(false, "skeleton.json could not be read");
+        return;
+    }
+    checkf(p4_json_parse(buf, n, &prog, err, sizeof(err)) == 0,
+           "skeleton.json is refused: %s", err);
+    p4_json_free(prog);
+    free(buf);
+
+    buf = read_fixture("reject_cases.json", &n);
+    if (!buf) {
+        check(false, "reject_cases.json could not be read");
+        return;
+    }
+    tok = json_tokener_new();
+    if (!tok) {
+        check(false, "json_tokener_new failed");
+        free(buf);
+        return;
+    }
+    root = json_tokener_parse_ex(tok, buf, (int)n);
+    if (!root || !json_object_is_type(root, json_type_array)) {
+        check(false, "reject_cases.json is not a JSON array");
+    } else {
+        ncases = json_object_array_length(root);
+        check(ncases > 0, "reject_cases.json has no cases");
+        for (size_t i = 0; i < ncases; i++)
+            reject_case(json_object_array_get_idx(root, i), i);
+    }
+    json_object_put(root);
+    json_tokener_free(tok);
+    free(buf);
+}
+
+/*
+ * A parse state that loops is accepted.  A P4 parser may revisit a state --
+ * a stack of VLAN tags is parsed that way -- so the loader leaves a cycle
+ * in the parser alone, unlike one in the pipeline.  What stops it spinning
+ * is the executor's bound on parser steps, and a frame that reaches the
+ * bound is dropped.  This parser loops without consuming anything, so
+ * every frame does.
+ */
+#define P4_LOOP_PROG                                                        \
+    P4_HDRS "\"parsers\":[{\"name\":\"p\",\"id\":0,"                        \
+            "\"init_state\":\"start\",\"parse_states\":["                   \
+            "{\"name\":\"start\",\"id\":0,\"parser_ops\":[],"               \
+            "\"transition_key\":[],"                                        \
+            "\"transitions\":[{\"value\":\"default\",\"mask\":null,"        \
+            "\"next_state\":\"start\"}]}]}],"                               \
+            "\"deparsers\":[{\"name\":\"d\",\"id\":0,\"order\":[]}],"       \
+            "\"actions\":[],\"pipelines\":[{\"name\":\"ingress\",\"id\":0," \
+            "\"init_table\":null,\"tables\":[],\"action_profiles\":[],"     \
+            "\"conditionals\":[]}]}"
+
+static void test_parser_loop(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    uint8_t in[64], out[64];
+    struct p4_result res;
+    struct p4_stats st;
+
+    fill_frame(in, sizeof(in));
+    checkf(load_text(eng, P4_LOOP_PROG) == 0,
+           "a parse state that loops to itself is refused: %s", load_why(eng));
+    check(p4_engine_process(eng, P4_PORT_HOST, in, sizeof(in), out, sizeof(out),
+                            &res) == 0,
+          "a frame runs into the looping parser");
+    check(res.verdict == P4_VERDICT_DROP,
+          "a frame that never leaves the parser is dropped");
+    p4_engine_get_stats(eng, &st);
+    check(st.frames_dropped == 1 && st.parse_errors == 0,
+          "the bound is a drop, not a malformed frame");
+
+    p4_engine_destroy(eng);
+}
+
+/*
+ * Two members with one name: json-c keeps the last, and the loader takes
+ * what json-c gives it, so the second __meta__ is the one checked.  p4c
+ * never writes a duplicate; this pins down what happens when something
+ * else does, so that changing it is a decision rather than an accident.
+ */
+static void test_duplicate_keys(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    /* A whole program, less its opening brace, to put a member before. */
+    const char *rest = &P4_TO_PORT("0x1")[1];
+    char doc[4096];
+
+    (void)snprintf(doc, sizeof(doc), "{\"__meta__\":{\"version\":[9,9]},%s",
+                   rest);
+    checkf(load_text(eng, doc) == 0,
+           "a document whose last __meta__ is good is refused: %s",
+           load_why(eng));
+
+    /* The other way round, the version 9 one is checked: had the first
+     * been, this would get past it and be refused for having nothing
+     * else. */
+    check(load_text(eng, "{\"__meta__\":{\"version\":[2,24]},"
+                         "\"__meta__\":{\"version\":[9,9]}}") == -ENOSYS,
+          "a document whose last __meta__ is version 9 was not refused");
+
+    p4_engine_destroy(eng);
+}
+
+/*
+ * A deparser may emit a metadata header, which adds bytes the frame did
+ * not have.  Bytes the output buffer cannot hold are refused, whether it
+ * is a header or the payload after one that does not fit.
+ */
+#define P4_DEPARSE(order)                                                 \
+    P4_PARSER "\"deparsers\":[{\"name\":\"d\",\"id\":0,\"order\":[" order \
+              "]}],\"actions\":[],\"pipelines\":[{\"name\":\"ingress\","  \
+              "\"id\":0,\"init_table\":null,\"tables\":[],"               \
+              "\"action_profiles\":[],\"conditionals\":[]}]}"
+
+static void test_deparse_overflow(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    uint8_t in[64], out[64];
+    struct p4_result res;
+    struct p4_stats st;
+
+    fill_frame(in, sizeof(in));
+
+    /* Ethernet and the 3 bytes of standard_metadata fit; the payload,
+     * now 3 bytes further on, does not. */
+    checkf(load_text(eng, P4_DEPARSE("\"eth\",\"standard_metadata\"")) == 0,
+           "a deparser emitting metadata is refused: %s", load_why(eng));
+    check(p4_engine_process(eng, P4_PORT_HOST, in, sizeof(in), out, sizeof(in),
+                            &res) == 0,
+          "the frame runs");
+    check(res.verdict == P4_VERDICT_DROP,
+          "a payload pushed past the output buffer is dropped");
+
+    /* The metadata first, so it is Ethernet that does not fit. */
+    checkf(load_text(eng, P4_DEPARSE("\"standard_metadata\",\"eth\"")) == 0,
+           "a deparser emitting metadata first is refused: %s", load_why(eng));
+    check(p4_engine_process(eng, P4_PORT_HOST, in, 14, out, 14, &res) == 0,
+          "the frame runs");
+    check(res.verdict == P4_VERDICT_DROP,
+          "a header pushed past the output buffer is dropped");
+
+    /* With room for both, the metadata really is on the front. */
+    check(p4_engine_process(eng, P4_PORT_HOST, in, 14, out, sizeof(out),
+                            &res) == 0,
+          "the frame runs");
+    check(res.verdict == P4_VERDICT_FORWARD && res.len == 17 &&
+              memcmp(out + 3, in, 14) == 0,
+          "the deparser did not put 3 bytes of metadata before Ethernet");
+
+    p4_engine_get_stats(eng, &st);
+    check(st.frames_dropped == 2, "both overflows were counted as drops");
+
+    p4_engine_destroy(eng);
+}
+
+/* ---- features.json: what no compiled fixture uses ----------------------- */
+
+/* A frame under construction, in network byte order. */
+struct frame {
+    uint8_t b[256];
+    size_t len;
+};
+
+static void put_be(struct frame *f, uint64_t v, unsigned bytes)
+{
+    for (unsigned i = 0; i < bytes; i++)
+        f->b[f->len++] = (uint8_t)(v >> (8u * (bytes - 1u - i)));
+}
+
+static void frame_eth(struct frame *f, uint16_t type)
+{
+    f->len = 0;
+    put_be(f, UINT64_C(0x020000000001), 6);
+    put_be(f, UINT64_C(0x020000000002), 6);
+    put_be(f, type, 2);
+}
+
+/* A tag with priority and DEI zero, which the program does not read. */
+static void frame_vlan(struct frame *f, uint16_t vid, uint16_t type)
+{
+    put_be(f, vid & 0x0FFFu, 2);
+    put_be(f, type, 2);
+}
+
+/* Where frame_ipv4() puts the fields dec_ttl changes, from the header. */
+#define IP4_DIFFSERV 1u
+#define IP4_ID       4u
+#define IP4_TTL      8u
+#define IP4_CSUM     10u
+
+/* An IPv4 header, then 16 bytes of payload. */
+static void frame_ipv4(struct frame *f, uint32_t src, uint32_t dst, uint8_t ttl,
+                       uint8_t proto)
+{
+    put_be(f, 0x45u, 1); /* version 4, IHL 5 */
+    put_be(f, 0x10u, 1); /* diffserv */
+    put_be(f, 36u, 2);   /* total length */
+    put_be(f, 0x1234u, 2);
+    put_be(f, 0u, 2); /* flags, fragment offset */
+    put_be(f, ttl, 1);
+    put_be(f, proto, 1);
+    put_be(f, 0u, 2); /* checksum */
+    put_be(f, src, 4);
+    put_be(f, dst, 4);
+    for (unsigned i = 0; i < 16; i++)
+        put_be(f, 0xA0u + i, 1);
+}
+
+#define IP4(a, b, c, d)                                                     \
+    (((uint32_t)(a) << 24) | ((uint32_t)(b) << 16) | ((uint32_t)(c) << 8) | \
+     (uint32_t)(d))
+
+#define PROTO_TCP 6u
+#define PROTO_UDP 17u
+
+/* Run @f in from the host port. */
+static int run_frame(struct p4_engine *eng, const struct frame *f, uint8_t *out,
+                     size_t out_cap, struct p4_result *res)
+{
+    memset(res, 0, sizeof(*res));
+    return p4_engine_process(eng, P4_PORT_HOST, f->b, f->len, out, out_cap,
+                             res);
+}
+
+/* Whether @f is forwarded, and to @port. */
+static bool forwards_to(struct p4_engine *eng, const struct frame *f,
+                        uint32_t port)
+{
+    uint8_t out[256];
+    struct p4_result res;
+
+    return run_frame(eng, f, out, sizeof(out), &res) == 0 &&
+           res.verdict == P4_VERDICT_FORWARD && res.egress_port == port;
+}
+
+static bool drops(struct p4_engine *eng, const struct frame *f)
+{
+    uint8_t out[256];
+    struct p4_result res;
+
+    return run_frame(eng, f, out, sizeof(out), &res) == 0 &&
+           res.verdict == P4_VERDICT_DROP;
+}
+
+/* An IPv4 frame, untagged, from @src to @dst. */
+static void ip_frame(struct frame *f, uint32_t src, uint32_t dst, uint8_t ttl,
+                     uint8_t proto)
+{
+    frame_eth(f, 0x0800u);
+    frame_ipv4(f, src, dst, ttl, proto);
+}
+
+/* @v, right-aligned in the @len significant bytes of a match value. */
+static void put_spec(uint8_t *dst, uint64_t v, uint16_t len)
+{
+    for (uint16_t i = 0; i < len; i++)
+        dst[P4_MATCH_BYTES - 1u - i] = (uint8_t)(v >> (8u * i));
+}
+
+/* An entry in the LPM table "route": @prefix/@plen to @port. */
+static void route_entry(struct p4_update *up, uint8_t type, uint32_t prefix,
+                        uint16_t plen, uint16_t port)
+{
+    memset(up, 0, sizeof(*up));
+    up->type = type;
+    (void)snprintf(up->table, sizeof(up->table), "route");
+    (void)snprintf(up->action, sizeof(up->action), "fwd");
+    up->nmatch = 1;
+    up->match[0].len = 4;
+    up->match[0].prefix_bits = plen;
+    put_spec(up->match[0].value, prefix, 4);
+    up->nparams = 1;
+    up->params[0].len = 2;
+    put_spec(up->params[0].value, port, 2);
+}
+
+/* An entry in the ternary table "acl", setting the class to @cls. */
+static void acl_entry(struct p4_update *up, uint8_t type, uint32_t src,
+                      uint32_t src_mask, uint8_t proto, uint8_t proto_mask,
+                      uint32_t priority, uint8_t cls)
+{
+    memset(up, 0, sizeof(*up));
+    up->type = type;
+    (void)snprintf(up->table, sizeof(up->table), "acl");
+    (void)snprintf(up->action, sizeof(up->action), "set_class");
+    up->priority = priority;
+    up->nmatch = 2;
+    up->match[0].len = 4;
+    put_spec(up->match[0].value, src, 4);
+    put_spec(up->match[0].mask, src_mask, 4);
+    up->match[1].len = 1;
+    put_spec(up->match[1].value, proto, 1);
+    put_spec(up->match[1].mask, proto_mask, 1);
+    up->nparams = 1;
+    up->params[0].len = 1;
+    put_spec(up->params[0].value, cls, 1);
+}
+
+static int update(struct p4_engine *eng, const struct p4_update *up)
+{
+    char err[160];
+
+    return p4_engine_update(eng, up, err, sizeof(err));
+}
+
+/*
+ * The parser: a select on a field under a mask, a default arm, a state
+ * that selects on two fields with no default, and a state that loops.
+ *
+ * parse_vlan selects on (vid, etherType): 12 bits and 16.  bmv2 gives each
+ * field of a select key whole bytes of its own, and p4c writes the arms to
+ * match, so VLAN 10 over IPv4 is 0x000a0800.  Packed bit to bit, the key
+ * would be 0x00a08000, and no tagged frame would ever match.
+ */
+static void test_features_parser(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    struct p4_update up;
+    struct p4_stats st;
+    struct frame f;
+    uint8_t out[256];
+    struct p4_result res;
+
+    checkf(load_fixture(eng, "features.json") == 0,
+           "features.json is refused: %s", load_why(eng));
+    route_entry(&up, P4_UPDATE_INSERT, IP4(10, 0, 0, 0), 8, P4_PORT_UPLINK);
+    check(update(eng, &up) == 0, "a route is not installed");
+
+    /* Neither IPv4 nor tagged: the default arm, and the frame goes on
+     * unchanged, to the other port, since nothing chose one. */
+    frame_eth(&f, 0x88B5u);
+    for (unsigned i = 0; i < 50; i++)
+        put_be(&f, i, 1);
+    check(run_frame(eng, &f, out, sizeof(out), &res) == 0 &&
+              res.verdict == P4_VERDICT_FORWARD &&
+              res.egress_port == P4_PORT_UPLINK && res.len == f.len &&
+              memcmp(out, f.b, f.len) == 0,
+          "an untagged non-IP frame was not passed through unchanged");
+
+    /* Tagged, and not IPv4: the masked arm accepts it, and the pipeline
+     * drops it, because valid(vlan). */
+    frame_eth(&f, 0x8100u);
+    frame_vlan(&f, 10, 0x88B5u);
+    put_be(&f, 0, 8);
+    check(drops(eng, &f), "a tagged non-IP frame was not dropped");
+
+    /* VLAN 10 over IPv4: the two-field arm. */
+    frame_eth(&f, 0x8100u);
+    frame_vlan(&f, 10, 0x0800u);
+    frame_ipv4(&f, IP4(192, 0, 2, 1), IP4(10, 1, 2, 3), 64, PROTO_TCP);
+    check(forwards_to(eng, &f, P4_PORT_UPLINK),
+          "VLAN 10 over IPv4 did not match its two-field arm");
+
+    /* 0x9100 is 0x8100 under the mask 0xefff, and the second tag loops
+     * back into parse_vlan. */
+    frame_eth(&f, 0x9100u);
+    frame_vlan(&f, 99, 0x8100u);
+    frame_vlan(&f, 10, 0x0800u);
+    frame_ipv4(&f, IP4(192, 0, 2, 1), IP4(10, 1, 2, 3), 64, PROTO_TCP);
+    check(forwards_to(eng, &f, P4_PORT_UPLINK),
+          "a 0x9100 tag over an 0x8100 one was not parsed through");
+
+    /* VLAN 11 over IPv4 matches no arm, and parse_vlan has no default:
+     * the parser rejects it. */
+    p4_engine_get_stats(eng, &st);
+    frame_eth(&f, 0x8100u);
+    frame_vlan(&f, 11, 0x0800u);
+    frame_ipv4(&f, IP4(192, 0, 2, 1), IP4(10, 1, 2, 3), 64, PROTO_TCP);
+    check(drops(eng, &f), "a frame no arm matched was not dropped");
+    {
+        uint64_t before = st.parse_errors;
+
+        p4_engine_get_stats(eng, &st);
+        check(st.parse_errors == before + 1,
+              "a frame no arm matched was not a parse error");
+    }
+
+    /* Forty tags: parse_vlan loops on every one, and the parser stops at
+     * its bound long before the frame runs out. */
+    frame_eth(&f, 0x8100u);
+    for (unsigned i = 0; i < 40; i++)
+        frame_vlan(&f, 1, 0x8100u);
+    check(drops(eng, &f), "a frame looping in the parser was not dropped");
+
+    p4_engine_destroy(eng);
+}
+
+/*
+ * The actions on the way out: subtract_from_field, a three-operand add of
+ * a runtime argument the table's default entry supplies, add_to_field, and
+ * a three-operand subtract that wraps.  And the condition in front of them,
+ * an or of two ==, which drops a frame whose TTL has run out.
+ */
+static void test_features_actions(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    struct p4_update up;
+    struct frame f;
+    uint8_t out[256], want[256];
+    struct p4_result res;
+    const size_t ip = 14; /* where the IPv4 header starts */
+
+    checkf(load_fixture(eng, "features.json") == 0,
+           "features.json is refused: %s", load_why(eng));
+    route_entry(&up, P4_UPDATE_INSERT, IP4(10, 0, 0, 0), 8, P4_PORT_UPLINK);
+    check(update(eng, &up) == 0, "a route is not installed");
+
+    ip_frame(&f, IP4(192, 0, 2, 1), IP4(10, 1, 2, 3), 64, PROTO_TCP);
+    memcpy(want, f.b, f.len);
+    want[ip + IP4_TTL] = 63;
+    want[ip + IP4_ID] = 0x13; /* 0x1234 + the default entry's 0x0100 */
+    want[ip + IP4_DIFFSERV] = 0x14;
+    want[ip + IP4_CSUM] = 0xFF; /* 0 - 1, wrapped to 16 bits */
+    want[ip + IP4_CSUM + 1] = 0xFF;
+    check(run_frame(eng, &f, out, sizeof(out), &res) == 0 &&
+              res.verdict == P4_VERDICT_FORWARD,
+          "a routed frame was not forwarded");
+    check(res.len == f.len && memcmp(out, want, f.len) == 0,
+          "dec_ttl did not change the header as written");
+
+    ip_frame(&f, IP4(192, 0, 2, 1), IP4(10, 1, 2, 3), 1, PROTO_TCP);
+    check(drops(eng, &f), "a frame with a TTL of 1 was not dropped");
+    ip_frame(&f, IP4(192, 0, 2, 1), IP4(10, 1, 2, 3), 0, PROTO_TCP);
+    check(drops(eng, &f), "a frame with a TTL of 0 was not dropped");
+    ip_frame(&f, IP4(192, 0, 2, 1), IP4(10, 1, 2, 3), 2, PROTO_TCP);
+    check(forwards_to(eng, &f, P4_PORT_UPLINK),
+          "a frame with a TTL of 2 was not forwarded");
+
+    p4_engine_destroy(eng);
+}
+
+/*
+ * The LPM table: the longest prefix wins whatever order the routes went
+ * in, a /0 is a default route that loses to everything, and a row is
+ * identified by what it matches rather than by its bytes.
+ */
+static void test_features_lpm(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    struct p4_update up;
+    struct frame to_10_1, to_10_2, to_192;
+
+    checkf(load_fixture(eng, "features.json") == 0,
+           "features.json is refused: %s", load_why(eng));
+    ip_frame(&to_10_1, IP4(192, 0, 2, 1), IP4(10, 1, 2, 3), 64, PROTO_TCP);
+    ip_frame(&to_10_2, IP4(192, 0, 2, 1), IP4(10, 2, 0, 1), 64, PROTO_TCP);
+    ip_frame(&to_192, IP4(10, 0, 0, 5), IP4(192, 168, 0, 1), 64, PROTO_TCP);
+
+    check(drops(eng, &to_10_1), "with no routes the default action drops");
+
+    /* The shorter prefix first, so first-match would pick it. */
+    route_entry(&up, P4_UPDATE_INSERT, IP4(10, 0, 0, 0), 8, P4_PORT_HOST);
+    check(update(eng, &up) == 0, "10/8 is not installed");
+    route_entry(&up, P4_UPDATE_INSERT, IP4(10, 1, 0, 0), 16, P4_PORT_UPLINK);
+    check(update(eng, &up) == 0, "10.1/16 is not installed");
+
+    check(forwards_to(eng, &to_10_1, P4_PORT_UPLINK),
+          "10.1.2.3 did not take the /16 over the /8");
+    check(forwards_to(eng, &to_10_2, P4_PORT_HOST), "10.2.0.1 did not take /8");
+    check(drops(eng, &to_192), "a destination with no route was not dropped");
+
+    route_entry(&up, P4_UPDATE_INSERT, 0, 0, P4_PORT_UPLINK);
+    check(update(eng, &up) == 0, "a default route is not installed");
+    check(forwards_to(eng, &to_192, P4_PORT_UPLINK),
+          "the default route did not catch 192.168.0.1");
+    check(forwards_to(eng, &to_10_2, P4_PORT_HOST),
+          "the default route beat a /8");
+
+    /* The same row, however it is written: a host bit under the prefix,
+     * or a byte past the 4 that are significant. */
+    route_entry(&up, P4_UPDATE_INSERT, IP4(10, 0, 0, 1), 8, P4_PORT_UPLINK);
+    check(update(eng, &up) == -EEXIST,
+          "10.0.0.1/8 was installed beside 10.0.0.0/8");
+    route_entry(&up, P4_UPDATE_INSERT, IP4(10, 0, 0, 0), 8, P4_PORT_UPLINK);
+    up.match[0].value[0] = 0xAAu;
+    check(update(eng, &up) == -EEXIST,
+          "a byte the lookup never reads made a second 10/8");
+
+    /* What does not fit is refused, not truncated. */
+    route_entry(&up, P4_UPDATE_INSERT, IP4(172, 16, 0, 0), 33, P4_PORT_UPLINK);
+    check(update(eng, &up) == -EINVAL, "a 33-bit IPv4 prefix was accepted");
+    route_entry(&up, P4_UPDATE_INSERT, IP4(172, 16, 0, 0), 12, 0x3FFu);
+    check(update(eng, &up) == -EINVAL,
+          "a 10-bit port for a 9-bit parameter was accepted");
+
+    /* Modify and delete find the row the same way. */
+    route_entry(&up, P4_UPDATE_DELETE, IP4(10, 1, 0, 0), 16, 0);
+    check(update(eng, &up) == 0, "10.1/16 is not deleted");
+    check(forwards_to(eng, &to_10_1, P4_PORT_HOST),
+          "10.1.2.3 did not fall back to the /8");
+    route_entry(&up, P4_UPDATE_MODIFY, IP4(10, 0, 0, 0), 8, P4_PORT_UPLINK);
+    check(update(eng, &up) == 0, "10/8 is not modified");
+    check(forwards_to(eng, &to_10_1, P4_PORT_UPLINK),
+          "the modified /8 did not send 10.1.2.3 to the uplink");
+    route_entry(&up, P4_UPDATE_MODIFY, IP4(10, 1, 0, 0), 16, P4_PORT_UPLINK);
+    check(update(eng, &up) == -ENOENT, "a route that is gone was modified");
+
+    p4_engine_destroy(eng);
+}
+
+/*
+ * The ternary table: the highest priority wins whatever order the rows
+ * went in, two rows may share a key at different priorities, and the
+ * condition after it -- every comparison there is, and a bool -- reads
+ * the class the winner set.  Classes 5 to 7 and 11 to 31 but not 12 are
+ * dropped; everything else goes on.
+ */
+static void test_features_ternary(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    struct p4_update up;
+    struct frame f;
+
+    checkf(load_fixture(eng, "features.json") == 0,
+           "features.json is refused: %s", load_why(eng));
+    route_entry(&up, P4_UPDATE_INSERT, 0, 0, P4_PORT_UPLINK);
+    check(update(eng, &up) == 0, "a default route is not installed");
+
+    /* A miss runs nop and takes __MISS__, straight to the TTL check. */
+    ip_frame(&f, IP4(192, 168, 1, 5), IP4(10, 1, 2, 3), 64, PROTO_TCP);
+    check(forwards_to(eng, &f, P4_PORT_UPLINK),
+          "a frame the ACL missed was not forwarded");
+
+    /* A: 192.168/16, any protocol, class 6, priority 10. B: 192.168.1/24,
+     * class 12, priority 20. C: 192.168.2/24, class 12, priority 5. D: any
+     * address, UDP, class 17, priority 1. */
+    acl_entry(&up, P4_UPDATE_INSERT, IP4(192, 168, 0, 0), 0xFFFF0000u, 0, 0, 10,
+              6);
+    check(update(eng, &up) == 0, "ACL row A is not installed");
+    acl_entry(&up, P4_UPDATE_INSERT, IP4(192, 168, 1, 0), 0xFFFFFF00u, 0, 0, 20,
+              12);
+    check(update(eng, &up) == 0, "ACL row B is not installed");
+    acl_entry(&up, P4_UPDATE_INSERT, IP4(192, 168, 2, 0), 0xFFFFFF00u, 0, 0, 5,
+              12);
+    check(update(eng, &up) == 0, "ACL row C is not installed");
+    acl_entry(&up, P4_UPDATE_INSERT, 0, 0, PROTO_UDP, 0xFFu, 1, 17);
+    check(update(eng, &up) == 0, "ACL row D is not installed");
+
+    ip_frame(&f, IP4(192, 168, 1, 5), IP4(10, 1, 2, 3), 64, PROTO_TCP);
+    check(forwards_to(eng, &f, P4_PORT_UPLINK),
+          "B, inserted after A, did not win on its higher priority");
+    ip_frame(&f, IP4(192, 168, 2, 5), IP4(10, 1, 2, 3), 64, PROTO_TCP);
+    check(drops(eng, &f), "C, inserted after A, won on a lower priority");
+    ip_frame(&f, IP4(192, 168, 3, 5), IP4(10, 1, 2, 3), 64, PROTO_TCP);
+    check(drops(eng, &f), "A alone did not set class 6");
+    ip_frame(&f, IP4(10, 9, 9, 9), IP4(10, 1, 2, 3), 64, PROTO_UDP);
+    check(drops(eng, &f), "D alone did not set class 17");
+    ip_frame(&f, IP4(192, 168, 1, 5), IP4(10, 1, 2, 3), 64, PROTO_UDP);
+    check(forwards_to(eng, &f, P4_PORT_UPLINK),
+          "D, the lowest priority, beat B");
+
+    /* The table holds 4. */
+    acl_entry(&up, P4_UPDATE_INSERT, IP4(172, 16, 0, 0), 0xFFF00000u, 0, 0, 1,
+              1);
+    check(update(eng, &up) == -ENOSPC, "a fifth row went into a 4-row table");
+
+    /* A bit outside the mask is not part of the key: this is A again. */
+    acl_entry(&up, P4_UPDATE_INSERT, IP4(192, 168, 7, 7), 0xFFFF0000u, 0, 0, 10,
+              6);
+    check(update(eng, &up) == -EEXIST,
+          "a bit outside the mask made a second row A");
+
+    /* A's key at a higher priority is a row of its own. */
+    acl_entry(&up, P4_UPDATE_DELETE, IP4(192, 168, 2, 0), 0xFFFFFF00u, 0, 0, 5,
+              0);
+    check(update(eng, &up) == 0, "ACL row C is not deleted");
+    acl_entry(&up, P4_UPDATE_INSERT, IP4(192, 168, 0, 0), 0xFFFF0000u, 0, 0, 30,
+              3);
+    check(update(eng, &up) == 0,
+          "A's key at another priority is not a row of its own");
+    ip_frame(&f, IP4(192, 168, 3, 5), IP4(10, 1, 2, 3), 64, PROTO_TCP);
+    check(forwards_to(eng, &f, P4_PORT_UPLINK),
+          "A's key at priority 30 did not beat it at 10");
+
+    /* A different mask is a different key, so there is nothing to delete. */
+    acl_entry(&up, P4_UPDATE_DELETE, IP4(192, 168, 0, 0), 0xFFFFFF00u, 0, 0, 10,
+              0);
+    check(update(eng, &up) == -ENOENT,
+          "a delete under a different mask found a row");
+
+    p4_engine_destroy(eng);
+}
+
+/* The entry store and the executor, called the wrong way. */
+static void test_entries_api(void)
+{
+    struct p4_program *prog = NULL;
+    struct p4_entries *ent;
+    struct p4_exec_result er;
+    struct p4_rdma_meta meta;
+    struct p4_update up;
+    struct p4_value keys[P4_MAX_TABLE_KEY];
+    char err[160];
+    uint8_t buf[64];
+    size_t n = 0;
+    char *text = read_fixture("features.json", &n);
+
+    if (!text) {
+        check(false, "features.json could not be read");
+        return;
+    }
+    checkf(p4_json_parse(text, n, &prog, err, sizeof(err)) == 0,
+           "features.json is refused: %s", err);
+    free(text);
+    if (!prog)
+        return;
+
+    check(p4_entries_create(NULL) == NULL, "a store was made for no program");
+    ent = p4_entries_create(prog);
+    if (!ent) {
+        check(false, "p4_entries_create failed");
+        p4_json_free(prog);
+        return;
+    }
+
+    route_entry(&up, P4_UPDATE_INSERT, IP4(10, 0, 0, 0), 8, 1);
+    check(p4_entries_update(NULL, prog, &up, err, sizeof(err)) == -EINVAL,
+          "an update with no store was accepted");
+    up.type = 7;
+    check(p4_entries_update(ent, prog, &up, err, sizeof(err)) == -EINVAL &&
+              strstr(err, "unknown update type") != NULL,
+          "an unknown update type was accepted");
+    route_entry(&up, P4_UPDATE_INSERT, IP4(10, 0, 0, 0), 8, 1);
+    up.nmatch = P4_MAX_TABLE_KEY + 1;
+    check(p4_entries_update(ent, prog, &up, err, sizeof(err)) == -EINVAL &&
+              strstr(err, "too large") != NULL,
+          "an entry with too many key fields was accepted");
+
+    /* route is table 0 of pipeline 0. */
+    check(p4_entries_count(ent, 0, 0) == 0, "a fresh table is not empty");
+    route_entry(&up, P4_UPDATE_INSERT, IP4(10, 0, 0, 0), 8, 1);
+    check(p4_entries_update(ent, prog, &up, err, sizeof(err)) == 0,
+          "a route is not installed");
+    check(p4_entries_count(ent, 0, 0) == 1, "the route was not counted");
+    check(p4_entries_count(NULL, 0, 0) == 0 &&
+              p4_entries_count(ent, P4_MAX_PIPELINES, 0) == 0 &&
+              p4_entries_count(ent, 0, P4_MAX_TABLES) == 0,
+          "a count of nothing was not zero");
+
+    memset(keys, 0, sizeof(keys));
+    check(p4_entries_lookup(NULL, prog, 0, 0, keys) == NULL &&
+              p4_entries_lookup(ent, NULL, 0, 0, keys) == NULL &&
+              p4_entries_lookup(ent, prog, prog->npipelines, 0, keys) == NULL,
+          "a lookup in nothing found something");
+
+    memset(buf, 0, sizeof(buf));
+    memset(&meta, 0, sizeof(meta));
+    check(p4_exec_run(NULL, ent, 0, buf, sizeof(buf), buf, sizeof(buf), &er) ==
+                  -EINVAL &&
+              p4_exec_run(prog, ent, 0, buf, 0, buf, sizeof(buf), &er) ==
+                  -EINVAL,
+          "the executor ran with nothing to run");
+    check(p4_exec_run_meta(NULL, ent, NULL, &meta, &er) == -EINVAL &&
+              p4_exec_run_meta(prog, ent, NULL, NULL, &er) == -EINVAL,
+          "the executor ran an operation with nothing to run");
+
+    p4_entries_destroy(ent);
+    p4_json_free(prog);
+}
+
+/* The engine's own entry points, called with nothing behind them. */
+static void test_engine_edges(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    struct p4_rdma_meta meta;
+    struct p4_update up;
+    bool suppress = true;
+    char err[4];
+
+    memset(&meta, 0, sizeof(meta));
+    check(p4_engine_process_rdma(eng, NULL, &meta, &suppress) == -ENOENT &&
+              !suppress,
+          "an operation ran with no program loaded");
+
+    memset(&up, 0, sizeof(up));
+    check(p4_engine_update(NULL, &up, err, sizeof(err)) == -EINVAL,
+          "an update with no engine was accepted");
+    /* The reason does not fit, and is cut short rather than overrunning. */
+    memset(err, 'x', sizeof(err));
+    check(p4_engine_update(eng, &up, err, sizeof(err)) == -ENOENT &&
+              memcmp(err, "no ", 4) == 0,
+          "a short error buffer was not filled and terminated");
+
+    check(p4_engine_load_chunk(NULL, 0, err, 1) == -EINVAL,
+          "a chunk with no engine was accepted");
+    check(p4_engine_load_commit(NULL) == -EINVAL,
+          "a commit with no engine was accepted");
+
+    p4_engine_destroy(eng);
+}
+
 int main(void)
 {
     test_lifecycle();
@@ -1618,8 +2522,19 @@ int main(void)
     test_table_entry_errors();
     test_rdma_metadata();
     test_rdma_execute();
+    test_rdma_few_fields();
     test_extern_call();
     test_extern_after_drop();
+    test_reject_corpus();
+    test_parser_loop();
+    test_duplicate_keys();
+    test_deparse_overflow();
+    test_features_parser();
+    test_features_actions();
+    test_features_lpm();
+    test_features_ternary();
+    test_entries_api();
+    test_engine_edges();
     test_load_rejects_bad_input();
     test_load_chunk_bounds();
     test_load_sequence();

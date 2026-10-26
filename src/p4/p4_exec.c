@@ -131,7 +131,7 @@ static int run_parser(const struct p4_program *prog, struct p4_phv *phv,
     while (state != P4_IDX_NONE) {
         const struct p4_parse_state *st = &prog->parse_states[state];
         uint8_t key[P4_MAX_KEY_BYTES];
-        uint32_t key_bits = 0;
+        uint32_t key_bytes = 0;
         p4_idx_t next = P4_IDX_NONE;
         bool matched = false;
 
@@ -158,16 +158,17 @@ static int run_parser(const struct p4_program *prog, struct p4_phv *phv,
             continue;
         }
 
-        /* Build the select key by concatenating its fields. Any width
-         * works: a value is the same shape whatever the field. */
+        /* Build the select key by concatenating its fields, each
+         * right-aligned in whole bytes of its own: the layout the loader
+         * sized it for and the arms' values are written in. */
         memset(key, 0, sizeof(key));
         for (uint16_t i = 0; i < st->nkey; i++) {
             const struct p4_field *f = field_of(prog, st->key[i]);
             struct p4_value v;
 
+            key_bytes += (f->bits + 7u) / 8u;
             phv_get(prog, phv, st->key[i], &v);
-            bits_set(key, key_bits, f->bits, &v);
-            key_bits += f->bits;
+            bits_set(key, key_bytes * 8u - f->bits, f->bits, &v);
         }
 
         for (uint16_t i = 0; i < st->ntransitions && !matched; i++) {

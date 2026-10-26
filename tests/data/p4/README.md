@@ -214,3 +214,54 @@ stands. A one-SGE RDMA write is not a reduction's shape, so `map()`
 declines it and the pipeline stops at the call; the drop was already
 made, so `ionic_datapath.c` completes the write without transferring
 rather than dispatching what the program denied.
+
+## skeleton.json
+
+Hand written: the smallest complete program the loader accepts, with one
+exact table, a `_drop` and a `set_etype` action, and p4c's
+`standard_metadata`. Every case in `reject_cases.json` is this file with
+one defect, and `p4-engine-unit` checks that it loads, so the defect is the
+only thing that can refuse a case.
+
+## reject_cases.json
+
+Hand written: documents the loader must refuse, one defect each. A case is
+an object with:
+
+* `name`, `group`, and `why`, the defect and what it would do if loaded;
+* `errno`, `EINVAL` or `ENOSYS`, and `error`, a piece of the reason the
+  loader must give. The reason is what makes a case worth having: a case
+  refused for some earlier defect never reaches the check it was written
+  for. 39 once passed that way, refused only because the skeleton predated
+  the loader's requirement of `standard_metadata`;
+* `json`, the document. A case whose document must hold bytes no JSON
+  string can (invalid UTF-8, a raw NUL) has `"encoding": "latin1"`: each
+  code point of `json` is then one byte of the document.
+
+Two kinds of document are deliberately not here. A parse state that loops
+is accepted, as P4 allows, and bounded at run time instead; and of two
+members with one name, json-c keeps the last. `p4-engine-unit` tests both
+directly.
+
+## features.json
+
+Hand written, for what no compiled fixture uses: a parser that selects on
+a field under a mask, on two fields at once (a 12-bit VLAN ID and an
+EtherType, so each field's whole-byte slot in the key matters), with and
+without a default arm, and through a state that loops; an LPM table and a
+ternary table with priorities; `__HIT__`/`__MISS__` next tables; a default
+entry with an argument; every arithmetic primitive in both of its forms;
+and conditions using `valid`, `not`, `and`, `or`, a `bool`, and every
+comparison.
+
+The ingress pipeline:
+
+* `c_ip`: an IPv4 frame goes to `route`; anything else to `c_l2`, which
+  drops a tagged frame and lets an untagged one through unchanged.
+* `route` (LPM on `ipv4.dstAddr`): `fwd(port)`, or `drop` on a miss.
+* `acl` (ternary on `ipv4.srcAddr` and `ipv4.protocol`, 4 entries):
+  `set_class(c)`, or `nop` on a miss, which goes straight to `c_ttl`.
+* `c_class`: classes 5 to 7, and 11 to 31 but not 12, are dropped.
+* `c_ttl`: a TTL of 0 or 1 is dropped; otherwise `t_dec` decrements it and
+  changes `identification`, `diffserv` and `hdrChecksum` in ways a test can
+  see.

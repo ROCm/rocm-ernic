@@ -136,5 +136,25 @@ static inline void value_set_u32(struct p4_value *v, uint32_t x)
         v->b[P4_VALUE_BYTES - 1u - i] = (uint8_t)(x >> (8u * i));
 }
 
+/*
+ * Bits the big-endian number in @b[0..@n) needs, or 0 for zero.
+ *
+ * A value bound for a field is checked against the field's width with
+ * this, not with its byte count: two bytes hold 0x3ff, and a 9-bit field
+ * does not.
+ */
+static inline uint32_t be_bit_length(const uint8_t *b, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        uint32_t bits = 8;
+
+        if (!b[i])
+            continue;
+        while (!(b[i] & (1u << (bits - 1u))))
+            bits--;
+        return (uint32_t)(n - 1u - i) * 8u + bits;
+    }
+    return 0;
+}
 
 #endif /* P4_VALUE_H */

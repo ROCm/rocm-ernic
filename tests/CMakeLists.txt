@@ -1089,7 +1089,8 @@ set(ERNIC_TEST_TARGETS
 )
 
 if(ERNIC_BUILD_P4)
-    list(APPEND ERNIC_TEST_TARGETS ernic-test-p4-engine ernic-test-p4-fp8)
+    list(APPEND ERNIC_TEST_TARGETS
+        ernic-test-p4-engine ernic-test-p4-fp8 ernic-test-p4-fmt)
 endif()
 
 foreach(ernic_test_target IN LISTS ERNIC_TEST_TARGETS)
@@ -1498,7 +1499,7 @@ set(ERNIC_HARNESS_GROUPS
     nvmeof s3 teardown backend-names none loopback-pair)
 if(ERNIC_BUILD_P4)
     list(APPEND ERNIC_HARNESS_GROUPS p4-port fp8-map p4-rdma p4-cvt p4-cvt-map
-                                      p4-drop-map p4-devcmd)
+                                      p4-drop-map p4-devcmd p4-devcmd-errors)
 endif()
 foreach(ernic_harness_group IN LISTS ERNIC_HARNESS_GROUPS)
     add_test(

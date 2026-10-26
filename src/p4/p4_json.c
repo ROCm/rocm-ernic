@@ -23,6 +23,7 @@
 #include "p4_engine.h"
 #include "p4_json.h"
 #include "p4_program.h"
+#include "p4_value.h"
 #include "parse_int.h"
 
 /*
@@ -363,8 +364,10 @@ static int p4_walk_header_types(struct p4_walk *w,
 
             fbits = json_object_array_get_idx(tuple, 1);
             /* A width of "*" is a variable-length field. Naming it is
-             * worth more than "not an integer". */
-            if (fbits && json_object_is_type(fbits, json_type_string))
+             * worth more than "not an integer". Any other string is just
+             * a bad width, not a feature. */
+            if (fbits && json_object_is_type(fbits, json_type_string) &&
+                strcmp(json_object_get_string(fbits), "*") == 0)
                 return p4_fail(w, -ENOSYS,
                                "'%s.%s' is variable length, which is not "
                                "supported",
@@ -512,6 +515,15 @@ static bool p4_resolve_field(const struct p4_program *prog, const char *hname,
         }
     }
     return false;
+}
+
+/* The width of a field a reference resolved to. */
+static uint16_t p4_field_bits(const struct p4_program *prog,
+                              struct p4_field_ref ref)
+{
+    return prog->header_types[prog->headers[ref.header].header_type]
+        .fields[ref.field]
+        .bits;
 }
 
 /*
@@ -739,14 +751,21 @@ static int p4_walk_parser_ops(struct p4_walk *w, const struct json_object *st,
     return 0;
 }
 
-/* The select key: a list of field references whose widths give its width. */
+/*
+ * The select key: a list of field references whose widths give its width.
+ *
+ * Each field takes whole bytes of the key, right-aligned in them, as bmv2
+ * builds it (each field's bytes appended in turn) and as p4c writes the
+ * arms' values to match.  Packing the fields bit to bit instead matches
+ * no arm p4c writes for a field that is not a whole number of bytes.
+ */
 static int p4_walk_transition_key(struct p4_walk *w,
                                   const struct json_object *st,
                                   struct p4_parse_state *dst)
 {
     struct json_object *keys;
     size_t n;
-    uint32_t bits = 0;
+    uint32_t bytes = 0;
 
     if (!p4_get_array(st, "transition_key", &keys, P4_MAX_TRANSITION_KEY, &n))
         return p4_fail(w, -EINVAL,
@@ -759,7 +778,6 @@ static int p4_walk_transition_key(struct p4_walk *w,
         struct json_object *val;
         char ktype[P4_MAX_NAME + 1];
         char hname[P4_MAX_NAME + 1], fname[P4_MAX_NAME + 1];
-        const struct p4_header_type *ht;
 
         if (!k || !json_object_is_type(k, json_type_object) ||
             !p4_get_str(k, "type", ktype, sizeof(ktype)))
@@ -781,19 +799,17 @@ static int p4_walk_transition_key(struct p4_walk *w,
                            "exist",
                            dst->name, hname, fname);
 
-        ht = &w->prog->header_types[w->prog->headers[dst->key[i].header]
-                                        .header_type];
-        bits += ht->fields[dst->key[i].field].bits;
+        bytes += (p4_field_bits(w->prog, dst->key[i]) + 7u) / 8u;
     }
 
     /* The arms are compared against this many bytes, so a key wider than
      * the buffer they are stored in cannot be represented. */
-    if (bits > (uint32_t)P4_MAX_KEY_BYTES * 8)
-        return p4_fail(w, -EINVAL, "state '%s' selects on %u bits, at most %d",
-                       dst->name, bits, P4_MAX_KEY_BYTES * 8);
+    if (bytes > P4_MAX_KEY_BYTES)
+        return p4_fail(w, -EINVAL, "state '%s' selects on %u bytes, at most %d",
+                       dst->name, bytes, P4_MAX_KEY_BYTES);
 
     dst->nkey = (uint16_t)n;
-    dst->key_bytes = (uint16_t)((bits + 7) / 8);
+    dst->key_bytes = (uint16_t)bytes;
     return 0;
 }
 
@@ -1360,6 +1376,7 @@ static int p4_walk_actions(struct p4_walk *w, const struct json_object *root)
             char where[2 * P4_MAX_NAME + 64];
             size_t nparams;
             size_t which;
+            uint16_t fbits;
             bool known = false;
 
             if (!pr || !json_object_is_type(pr, json_type_object))
@@ -1439,6 +1456,23 @@ static int p4_walk_actions(struct p4_walk *w, const struct json_object *root)
                                    "%s writes to something that is not a "
                                    "field",
                                    where);
+                /* A literal wider than the field it ends up in would be
+                 * truncated on every packet, which is a different program
+                 * from the one written. */
+                fbits = p4_field_bits(w->prog, pd->params[0].field);
+                for (size_t q = 1; q < nparams; q++) {
+                    const struct p4_operand *o = &pd->params[q];
+                    uint32_t lbits;
+
+                    if (o->kind != P4_OPD_HEXSTR)
+                        continue;
+                    lbits = be_bit_length(o->imm, sizeof(o->imm));
+                    if (lbits > fbits)
+                        return p4_fail(w, -EINVAL,
+                                       "%s has a %u-bit literal for a %u-bit "
+                                       "field",
+                                       where, lbits, fbits);
+                }
             }
             pd->nparams = (uint8_t)nparams;
         }
@@ -1878,6 +1912,7 @@ static int p4_walk_table(struct p4_walk *w, const struct json_object *t,
         for (size_t i = 0; i < ndata; i++) {
             struct json_object *e = json_object_array_get_idx(data, i);
             size_t blen = 0;
+            uint16_t pbits;
             bool neg = false;
             const char *vs;
 
@@ -1894,6 +1929,14 @@ static int p4_walk_table(struct p4_walk *w, const struct json_object *t,
                 return p4_fail(w, -EINVAL,
                                "table '%s' default argument %zu is malformed",
                                dst->name, i);
+            /* As for a table entry's arguments: one wider than its
+             * parameter would be truncated on use. */
+            pbits = w->prog->actions[dst->default_action].runtime_bits[i];
+            if (be_bit_length(dst->default_data[i], P4_MAX_IMM_BYTES) > pbits)
+                return p4_fail(w, -EINVAL,
+                               "table '%s' default argument %zu is wider "
+                               "than its %u-bit parameter",
+                               dst->name, i, pbits);
             dst->default_data_len[i] = (uint16_t)blen;
         }
         dst->ndefault_data = (uint16_t)ndata;
@@ -1988,8 +2031,11 @@ static int p4_walk_next_tables(struct p4_walk *w, const struct json_object *t,
                            where, key2);
     }
 
-    if (json_object_object_get_ex(t, "base_default_next", &v))
+    if (json_object_object_get_ex(t, "base_default_next", &v)) {
+        (void)snprintf(where, sizeof(where), "table '%s' base_default_next",
+                       dst->name);
         return p4_resolve_next(w, pl, v, &dst->base_default_next, where);
+    }
     return 0;
 }
 
@@ -2246,12 +2292,16 @@ int p4_json_parse(const void *buf, size_t len, struct p4_program **out,
     if (err && err_len)
         err[0] = '\0';
 
-    if (!buf || !out || len == 0 || len > P4_PROGRAM_MAX)
+    if (!buf || !out)
         return -EINVAL;
 
     memset(&w, 0, sizeof(w));
     w.err = err;
     w.err_len = err_len;
+
+    if (len == 0 || len > P4_PROGRAM_MAX)
+        return p4_fail(&w, -EINVAL, "the program is %zu bytes; want 1 to %u",
+                       len, P4_PROGRAM_MAX);
 
     tok = json_tokener_new_ex(P4_JSON_MAX_DEPTH);
     if (!tok)
@@ -2261,6 +2311,12 @@ int p4_json_parse(const void *buf, size_t len, struct p4_program **out,
 
     root = json_tokener_parse_ex(tok, (const char *)buf, (int)len);
 
+    /* The whole document is handed over at once, so a tokener still
+     * waiting for more has been given a document that stops part way. */
+    if (!root && json_tokener_get_error(tok) == json_tokener_continue) {
+        rc = p4_fail(&w, -EINVAL, "not valid JSON: it ends part way through");
+        goto out;
+    }
     if (!root || json_tokener_get_error(tok) != json_tokener_success) {
         rc = p4_fail(&w, -EINVAL, "not valid JSON: %s",
                      json_tokener_error_desc(json_tokener_get_error(tok)));

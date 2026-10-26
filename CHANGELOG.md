@@ -149,9 +149,14 @@
     It builds against an ionic source tree with both patch series applied,
     which `fetch-ionic-sources.sh` produces when given `--patches-dir` once
     for each series; the `ernic_p4_dkms` role registers it with DKMS.
-  * **Tested** by `p4-engine-unit`, `p4-fp8-unit` (every E4M3 encoding),
-    `ernic-p4-driver` (frames and the control surface over a real vfio-user
-    socket, with its servers under valgrind in the valgrind leg), a `p4`
+  * **Tested** by `p4-engine-unit` (including `tests/data/p4/`'s
+    `reject_cases.json`, each refused for the reason it names, and
+    `features.json`: parser `select` with masks, LPM and ternary tables,
+    every arithmetic primitive and comparison), `p4-fp8-unit` (every E4M3
+    encoding), the `ionic-harness-p4-*` groups (the control surface's every
+    refusal among them), `ernic-p4-driver` (frames and the control surface
+    over a real vfio-user socket, with its servers under valgrind in the
+    valgrind leg), a `p4`
     leg in `driver-build.yml` that applies the patch series on top of the
     base series and checks it creates the auxiliary device, the clang-tidy,
     include-what-you-use and CodeQL workflows and the self-hosted CI's
@@ -929,7 +934,26 @@
   * An out-of-range `enum p4_fmt` was narrowed before it was checked
     (not reachable from a guest).
   * `scripts/fetch-p4c.sh` accepts a relative `--prefix`.
+  * A parser `select` on a field that isn't a whole number of bytes, such
+    as a VLAN ID, matched none of the values p4c writes: the key now gives
+    each field whole bytes of its own, as bmv2 does.
+  * A literal wider than the field it's assigned to, and a table's default
+    argument wider than its parameter, are refused at load rather than
+    truncated on every packet. A table entry's arguments and key fields are
+    checked against their width in bits, not bytes, so `0x3ff` no longer
+    fits a 9-bit port.
+  * Two table entries that match the same packets, differing only in a bit
+    under an LPM prefix or outside a ternary mask, or in a byte past the
+    value's length, are the same entry: the second is refused as a
+    duplicate rather than installed where no lookup reaches it.
+  * Load errors say what's wrong: an empty or truncated program says so, a
+    field width given as a string other than `"*"` is a bad width rather
+    than variable-length, a bad `base_default_next` is named as such, and
+    committing an incomplete load says how much arrived instead of
+    repeating an earlier load's reason.
 * **Test and analysis tooling.**
+  * `p4-fmt-unit` was built without the project's warnings, sanitizers and
+    coverage instrumentation.
   * `tcp-thread-stop-unit`'s watchdog allows six times longer under
     valgrind, where it failed the valgrind leg intermittently, and on a
     timeout prints the threads created, joined and exited.

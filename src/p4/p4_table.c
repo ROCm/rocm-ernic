@@ -75,6 +75,17 @@ static bool find_table(const struct p4_program *prog, const char *name,
     return false;
 }
 
+/*
+ * Bits the significant bytes of a spec's value or mask need: the last @len
+ * of P4_MATCH_BYTES, which is all the match units read.
+ */
+static uint32_t sig_bits(const uint8_t *v, uint16_t len)
+{
+    uint16_t n = (len > P4_MATCH_BYTES) ? P4_MATCH_BYTES : len;
+
+    return be_bit_length(v + (P4_MATCH_BYTES - n), n);
+}
+
 /* A spec as a value: right-aligned, so it compares against a field. */
 static void spec_value(const struct p4_match_spec *s, struct p4_value *out)
 {
@@ -115,6 +126,16 @@ static void value_and(const struct p4_value *a, const struct p4_value *b,
         out->b[i] = (uint8_t)(a->b[i] & b->b[i]);
 }
 
+/* The width of the field key @i of @tb matches on. */
+static uint16_t key_width(const struct p4_program *prog,
+                          const struct p4_table *tb, uint16_t i)
+{
+    const struct p4_header_type *ht =
+        &prog->header_types[prog->headers[tb->key[i].field.header].header_type];
+
+    return ht->fields[tb->key[i].field.field].bits;
+}
+
 /* Does @entry's key field @i match the packet's @key? */
 static bool field_matches(const struct p4_table *tb,
                           const struct p4_program *prog,
@@ -122,9 +143,7 @@ static bool field_matches(const struct p4_table *tb,
                           const struct p4_value *key)
 {
     const struct p4_match_spec *s = &entry->match[i];
-    const struct p4_header_type *ht;
     struct p4_value sv, m, a, b;
-    uint16_t width;
 
     spec_value(s, &sv);
 
@@ -133,10 +152,7 @@ static bool field_matches(const struct p4_table *tb,
         return value_cmp(key, &sv) == 0;
 
     case P4_MATCH_LPM:
-        ht = &prog->header_types[prog->headers[tb->key[i].field.header]
-                                     .header_type];
-        width = ht->fields[tb->key[i].field.field].bits;
-        prefix_mask(width, s->prefix_bits, &m);
+        prefix_mask(key_width(prog, tb, i), s->prefix_bits, &m);
         value_and(key, &m, &a);
         value_and(&sv, &m, &b);
         return value_cmp(&a, &b) == 0;
@@ -152,21 +168,42 @@ static bool field_matches(const struct p4_table *tb,
     }
 }
 
-/* Two entries address the same row when every key field is identical. */
-static bool same_key(const struct p4_table *tb, const struct p4_entry *e,
-                     const struct p4_update *up)
+/*
+ * Two entries address the same row when every key field matches the same
+ * packets.  Compared as the match units read them -- the significant
+ * bytes only, under the prefix or mask -- rather than byte for byte:
+ * otherwise a byte past @len, or a bit outside the mask, that the lookup
+ * never reads would make a second, unreachable copy of a row.
+ */
+static bool same_key(const struct p4_program *prog, const struct p4_table *tb,
+                     const struct p4_entry *e, const struct p4_update *up)
 {
     for (uint16_t i = 0; i < tb->nkey; i++) {
         const struct p4_match_spec *a = &e->match[i];
         const struct p4_match_spec *b = &up->match[i];
+        struct p4_value va, vb, m, mb;
 
-        if (memcmp(a->value, b->value, P4_MATCH_BYTES) != 0)
-            return false;
-        if (tb->key[i].match_type == P4_MATCH_LPM &&
-            a->prefix_bits != b->prefix_bits)
-            return false;
-        if (tb->key[i].match_type == P4_MATCH_TERNARY &&
-            memcmp(a->mask, b->mask, P4_MATCH_BYTES) != 0)
+        switch (tb->key[i].match_type) {
+        case P4_MATCH_LPM:
+            if (a->prefix_bits != b->prefix_bits)
+                return false;
+            prefix_mask(key_width(prog, tb, i), a->prefix_bits, &m);
+            break;
+        case P4_MATCH_TERNARY:
+            spec_mask(a, &m);
+            spec_mask(b, &mb);
+            if (value_cmp(&m, &mb) != 0)
+                return false;
+            break;
+        default:
+            memset(m.b, 0xFF, sizeof(m.b));
+            break;
+        }
+        spec_value(a, &va);
+        spec_value(b, &vb);
+        value_and(&va, &m, &va);
+        value_and(&vb, &m, &vb);
+        if (value_cmp(&va, &vb) != 0)
             return false;
     }
     /* Two ternary rows with the same key but different priorities are
@@ -222,26 +259,28 @@ static int resolve(const struct p4_program *prog, const struct p4_update *up,
     for (uint16_t i = 0; i < up->nparams; i++) {
         uint16_t max_bytes = (uint16_t)((act->runtime_bits[i] + 7u) / 8u);
 
-        if (up->params[i].len > max_bytes)
+        if (up->params[i].len > max_bytes ||
+            sig_bits(up->params[i].value, up->params[i].len) >
+                act->runtime_bits[i])
             return fail(err, err_len, -EINVAL,
-                        "argument %u of '%s' is %u bytes, the parameter is "
-                        "%u bits",
-                        i, act->name, up->params[i].len, act->runtime_bits[i]);
+                        "argument %u of '%s' is wider than its %u-bit "
+                        "parameter",
+                        i, act->name, act->runtime_bits[i]);
     }
 
-    /* Likewise a key field wider than the field it matches, and an LPM
-     * prefix longer than the field has bits. */
+    /* Likewise a key field, or a mask, wider than the field it matches,
+     * and an LPM prefix longer than the field has bits. */
     for (uint16_t i = 0; i < tb->nkey; i++) {
-        const struct p4_header_type *ht =
-            &prog->header_types[prog->headers[tb->key[i].field.header]
-                                    .header_type];
-        uint16_t width = ht->fields[tb->key[i].field.field].bits;
+        const struct p4_match_spec *m = &up->match[i];
+        uint16_t width = key_width(prog, tb, i);
 
-        if (up->match[i].len > (uint16_t)((width + 7u) / 8u))
+        if (m->len > (uint16_t)((width + 7u) / 8u) ||
+            sig_bits(m->value, m->len) > width ||
+            (tb->key[i].match_type == P4_MATCH_TERNARY &&
+             sig_bits(m->mask, m->len) > width))
             return fail(err, err_len, -EINVAL,
-                        "key field %u of '%s' is %u bytes, the field is %u "
-                        "bits",
-                        i, tb->name, up->match[i].len, width);
+                        "key field %u of '%s' is wider than the %u-bit field",
+                        i, tb->name, width);
         if (tb->key[i].match_type == P4_MATCH_LPM &&
             up->match[i].prefix_bits > width)
             return fail(err, err_len, -EINVAL,
@@ -281,7 +320,7 @@ int p4_entries_update(struct p4_entries *ent, const struct p4_program *prog,
     tbl_e = &ent->t[pipe][table];
 
     for (uint32_t i = 0; i < tbl_e->cap; i++) {
-        if (tbl_e->e[i].used && same_key(tb, &tbl_e->e[i], up)) {
+        if (tbl_e->e[i].used && same_key(prog, tb, &tbl_e->e[i], up)) {
             found = &tbl_e->e[i];
             break;
         }
