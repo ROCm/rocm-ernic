@@ -774,7 +774,7 @@ type with ids above the QP id range.</p></li>
 └──────┬───────────────────────────┬──────────────────┘
        │ ionic_rm_*, ionic_mesh_*  │ attach
        ▼                           ▼
-rocm_ernic_compat.c          nvmeof_*.c, s3_*.c
+rocm_ernic_compat.c          src/nvmeof/, src/s3/
 (bridge; only file that      in-process targets;
  sees QEMU types)            src/p4/, the optional
        │                     P4 engine
@@ -788,28 +788,28 @@ src/qemu-compat/           the QEMU APIs the QEMU-derived
 </div>
 <section id="the-ionic-front-end">
 <h3>The ionic Front End<a class="headerlink" href="#the-ionic-front-end" title="Link to this heading">#</a></h3>
-<p>The <code class="docutils literal notranslate"><span class="pre">src/ionic_*.c</span></code> files are the device the guest actually
+<p>The files in <code class="docutils literal notranslate"><span class="pre">src/ionic/</span></code> are the device the guest actually
 talks to. They own the register file, decode doorbells, and
 read and write every ring and buffer in guest memory. Each file
 is described in a later section.</p>
 <p>Two more pieces shape what the front end does without being
 part of any one path:</p>
 <ul class="simple">
-<li><p><strong>The NIC profile</strong> (<code class="docutils literal notranslate"><span class="pre">src/ionic_profile.c</span></code>; the built-in
-profiles are in <code class="docutils literal notranslate"><span class="pre">src/ionic_profiles.c</span></code>, with copies in
-<code class="docutils literal notranslate"><span class="pre">profiles/</span></code>) is read once at startup. The front end
-consults it wherever it describes itself to the driver: the
-MSI-X table size, IDENTIFY, LIF_IDENTIFY, PORT_INIT, and
-LIF_INIT.</p></li>
-<li><p><strong>Fault injection</strong> (<code class="docutils literal notranslate"><span class="pre">--inject</span></code>, <code class="docutils literal notranslate"><span class="pre">src/ionic_fault.c</span></code>)
-makes chosen events fail, so a test can check how the guest
-copes: a STATS_VALS admin command completes with an error
-status, a received frame is lost or dropped as if no buffer
-were posted, or a transmitted frame is completed but never
-sent. A fault fires on a pattern of events (every Nth, a run
-starting at the Nth, a burst out of every M, or an explicit
-sequence), never on a timer, so the same workload gives the
-same failures.</p></li>
+<li><p><strong>The NIC profile</strong> (<code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_profile.c</span></code>; the
+built-in profiles are in <code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_profiles.c</span></code>,
+with copies in <code class="docutils literal notranslate"><span class="pre">profiles/</span></code>) is read once at startup. The
+front end consults it wherever it describes itself to the
+driver: the MSI-X table size, IDENTIFY, LIF_IDENTIFY,
+PORT_INIT, and LIF_INIT.</p></li>
+<li><p><strong>Fault injection</strong> (<code class="docutils literal notranslate"><span class="pre">--inject</span></code>,
+<code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_fault.c</span></code>) makes chosen events fail, so a
+test can check how the guest copes: a STATS_VALS admin
+command completes with an error status, a received frame is
+lost or dropped as if no buffer were posted, or a
+transmitted frame is completed but never sent. A fault fires
+on a pattern of events (every Nth, a run starting at the Nth,
+a burst out of every M, or an explicit sequence), never on a
+timer, so the same workload gives the same failures.</p></li>
 </ul>
 </section>
 <section id="the-device-core">
@@ -1052,7 +1052,7 @@ or by returning “credits” with the unmask bit set.</p>
 path (<code class="docutils literal notranslate"><span class="pre">ibv_create_cq</span></code>, <code class="docutils literal notranslate"><span class="pre">ibv_create_qp</span></code>, <code class="docutils literal notranslate"><span class="pre">ibv_reg_mr</span></code>,
 <code class="docutils literal notranslate"><span class="pre">ibv_modify_qp</span></code>, …) becomes a system call into
 <code class="docutils literal notranslate"><span class="pre">ionic_rdma.ko</span></code>, which posts a command on an RDMA admin
-queue. <code class="docutils literal notranslate"><span class="pre">src/ionic_adminq.c</span></code> services those queues.</p>
+queue. <code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_adminq.c</span></code> services those queues.</p>
 <p>The AQ doorbell only records the new producer index. The main
 loop later reads each new WQE (64 bytes, or several 64-byte
 strides for long commands), runs it, writes a 32-byte admin
@@ -1147,8 +1147,8 @@ recognized by its reserved id 1.</p></li>
 </section>
 <section id="the-data-path">
 <h2><a class="toc-backref" href="#id8" role="doc-backlink">The Data Path</a><a class="headerlink" href="#the-data-path" title="Link to this heading">#</a></h2>
-<p><code class="docutils literal notranslate"><span class="pre">src/ionic_datapath.c</span></code> is the heart of the emulator: it does
-what a NIC’s hardware data path would do.</p>
+<p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_datapath.c</span></code> is the heart of the emulator:
+it does what a NIC’s hardware data path would do.</p>
 <section id="guest-memory-three-levels-down">
 <h3>Guest Memory, Three Levels Down<a class="headerlink" href="#guest-memory-three-levels-down" title="Link to this heading">#</a></h3>
 <p>A WQE names memory as <code class="docutils literal notranslate"><span class="pre">(lkey,</span> <span class="pre">virtual</span> <span class="pre">address,</span> <span class="pre">length)</span></code> in
@@ -1582,14 +1582,15 @@ it goes through the data path described above.</p>
 <li><p>Transmit: on a TX doorbell, the emulator gathers each frame
 (head descriptor plus scatter/gather elements) out of guest
 memory and writes it to the host <strong>TAP</strong> interface named by
-<code class="docutils literal notranslate"><span class="pre">--tap</span></code> (<code class="docutils literal notranslate"><span class="pre">src/ionic_eth_net.c</span></code>). Without a TAP, frames
-are completed and discarded.</p></li>
+<code class="docutils literal notranslate"><span class="pre">--tap</span></code> (<code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_eth_net.c</span></code>). Without a TAP,
+frames are completed and discarded.</p></li>
 <li><p>Receive: the main loop reads frames from the TAP and DMAs each
 into the next buffer the guest posted on one of its enabled
 receive queues, then raises that queue’s interrupt. A fixed
 hash of the flow picks the queue, so one flow always lands on
-one queue (<code class="docutils literal notranslate"><span class="pre">src/ionic_eth_steer.c</span></code>). A TAP frame whose queue
-has no buffer posted is dropped, as on a real NIC.</p></li>
+one queue (<code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_eth_steer.c</span></code>). A TAP frame
+whose queue has no buffer posted is dropped, as on a real
+NIC.</p></li>
 <li><p>No checksum, TSO, or scatter-gather offloads are advertised,
 so the guest always sends simple linear frames.</p></li>
 <li><p>Before a transmitted frame goes to the TAP, an in-process
@@ -1603,7 +1604,7 @@ it.</p></li>
 <li><p>The emulator counts every frame and keeps the LIF and port
 statistics blocks the driver reads (<code class="docutils literal notranslate"><span class="pre">ip</span> <span class="pre">-s</span> <span class="pre">link</span></code>,
 <code class="docutils literal notranslate"><span class="pre">ethtool</span> <span class="pre">-S</span></code>) up to date in guest memory
-(<code class="docutils literal notranslate"><span class="pre">src/ionic_emu_stats.c</span></code>; see <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>).</p></li>
+(<code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_emu_stats.c</span></code>; see <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>).</p></li>
 </ul>
 <p>To give several guests a shared segment, each server gets its
 own TAP and the TAPs are joined in a host bridge (see
@@ -1630,19 +1631,19 @@ for guest memory.</p>
 <li><p><strong>Connection setup.</strong> <code class="docutils literal notranslate"><span class="pre">nvme</span> <span class="pre">connect</span> <span class="pre">-t</span> <span class="pre">rdma</span></code> uses
 <code class="docutils literal notranslate"><span class="pre">rdma_cm</span></code>, which sends IB CM MADs on the guest’s GSI QP.
 When the GSI QP sends, the data path offers the MAD to
-<code class="docutils literal notranslate"><span class="pre">src/nvmeof_cm.c</span></code>, which answers REQ with REP, accepts RTU,
-handles DREQ, and binds the guest’s QP to a controller queue.
-The controller’s side of each connection gets a QP number in
-a reserved range (<code class="docutils literal notranslate"><span class="pre">0xc0xxxx</span></code>) that can’t collide with the
-guest’s QPs. Replies go back into the guest’s GSI receive
-queue with a GRH, as from a real peer.</p></li>
+<code class="docutils literal notranslate"><span class="pre">src/nvmeof/nvmeof_cm.c</span></code>, which answers REQ with REP,
+accepts RTU, handles DREQ, and binds the guest’s QP to a
+controller queue. The controller’s side of each connection
+gets a QP number in a reserved range (<code class="docutils literal notranslate"><span class="pre">0xc0xxxx</span></code>) that
+can’t collide with the guest’s QPs. Replies go back into the
+guest’s GSI receive queue with a GRH, as from a real peer.</p></li>
 <li><p><strong>I/O.</strong> A SEND on a bound QP is an NVMe command capsule. The
-data path hands it to <code class="docutils literal notranslate"><span class="pre">src/nvmeof_target.c</span></code>, which executes
-it synchronously against a RAM- or file-backed namespace. It
-moves data through the keyed SGL in the command (the guest’s
-rkey, usually from a fast registration just before), and the
-response capsule is delivered into the guest’s next posted
-receive.</p></li>
+data path hands it to <code class="docutils literal notranslate"><span class="pre">src/nvmeof/nvmeof_target.c</span></code>, which
+executes it synchronously against a RAM- or file-backed
+namespace. It moves data through the keyed SGL in the
+command (the guest’s rkey, usually from a fast registration
+just before), and the response capsule is delivered into the
+guest’s next posted receive.</p></li>
 </ul>
 <p>The guest needs a static neighbor entry for the target address,
 because nothing answers ARP for it. See <a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>.</p>
@@ -1653,20 +1654,20 @@ because nothing answers ARP for it. See <a class="reference internal" href="nvme
 HTTP and whose data plane is RDMA, compatible with the protocol
 hipObject and NVIDIA cuObject speak.</p>
 <ul class="simple">
-<li><p><strong>Control plane on the emulated wire.</strong> <code class="docutils literal notranslate"><span class="pre">src/s3_tcp.c</span></code> is a
-minimal ARP, ICMP echo, and TCP implementation (handshake,
-in-order data, cumulative ACKs, one retransmit timer, FIN; no
-congestion control or reassembly, since the link is
-lossless). It claims the guest’s transmitted frames addressed
-to the store’s IP and injects its replies into the guest’s
-receive ring. To the guest, the store is just a host on its
-segment; no TAP is needed. <code class="docutils literal notranslate"><span class="pre">src/s3_http.c</span></code> parses the HTTP
-requests.</p></li>
+<li><p><strong>Control plane on the emulated wire.</strong> <code class="docutils literal notranslate"><span class="pre">src/s3/s3_tcp.c</span></code>
+is a minimal ARP, ICMP echo, and TCP implementation
+(handshake, in-order data, cumulative ACKs, one retransmit
+timer, FIN; no congestion control or reassembly, since the
+link is lossless). It claims the guest’s transmitted frames
+addressed to the store’s IP and injects its replies into the
+guest’s receive ring. To the guest, the store is just a host
+on its segment; no TAP is needed. <code class="docutils literal notranslate"><span class="pre">src/s3/s3_http.c</span></code>
+parses the HTTP requests.</p></li>
 <li><p><strong>Data plane by rkey.</strong> A request carries an
-<code class="docutils literal notranslate"><span class="pre">x-amz-rdma-token</span></code> header (<code class="docutils literal notranslate"><span class="pre">src/s3_token.c</span></code>) naming a
+<code class="docutils literal notranslate"><span class="pre">x-amz-rdma-token</span></code> header (<code class="docutils literal notranslate"><span class="pre">src/s3/s3_token.c</span></code>) naming a
 registered guest buffer: rkey, address, and length.
-<code class="docutils literal notranslate"><span class="pre">src/s3_target.c</span></code> moves the object directly into or out of
-that buffer through the DMA callbacks, and answers with
+<code class="docutils literal notranslate"><span class="pre">src/s3/s3_target.c</span></code> moves the object directly into or out
+of that buffer through the DMA callbacks, and answers with
 <code class="docutils literal notranslate"><span class="pre">x-amz-rdma-reply</span></code>. Requests without a token carry the
 payload in the HTTP body.</p></li>
 </ul>
@@ -1909,34 +1910,35 @@ and the main loop polls.</p></li>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_internal.h</span></code></p></td>
 <td><p>BAR layout constants and the top-level device struct</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic_eth_emu.c</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_eth_emu.c</span></code></p></td>
 <td><p>Registers, device commands, LIF, Ethernet queues,
 interrupt controller, doorbell decode</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic_eth_net.c</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_eth_net.c</span></code></p></td>
 <td><p>Host TAP interface</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic_eth_steer.c</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_eth_steer.c</span></code></p></td>
 <td><p>Choosing the receive queue for a frame</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic_emu_stats.c</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_emu_stats.c</span></code></p></td>
 <td><p>Ethernet LIF and port counters, and the statistics blocks
 written into guest memory</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic_profile.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/ionic_profiles.c</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_profile.c</span></code>,
+<code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_profiles.c</span></code></p></td>
 <td><p>NIC profiles: loading and layering them, and the built-in
 ones</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic_fault.c</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_fault.c</span></code></p></td>
 <td><p>Fault injection (<code class="docutils literal notranslate"><span class="pre">--inject</span></code>)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic_rdma_devcmd.c</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_rdma_devcmd.c</span></code></p></td>
 <td><p>RDMA bootstrap (EQs, admin queues), EQE posting</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic_adminq.c</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_adminq.c</span></code></p></td>
 <td><p>RDMA control path</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic_datapath.c</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_datapath.c</span></code></p></td>
 <td><p>RDMA data path and inter-server wire protocol</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ernic_dma.c</span></code></p></td>
@@ -1962,11 +1964,12 @@ ownership, and the manager’s and workers’ halves</p></td>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/qemu-compat/</span></code></p></td>
 <td><p>Stand-ins for the QEMU APIs the QEMU-derived code calls</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/nvmeof_cm.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/nvmeof_target.c</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/nvmeof/nvmeof_cm.c</span></code>,
+<code class="docutils literal notranslate"><span class="pre">src/nvmeof/nvmeof_target.c</span></code></p></td>
 <td><p>In-process NVMe-oF CM responder and controller</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/s3_tcp.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/s3_http.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/s3_token.c</span></code>,
-<code class="docutils literal notranslate"><span class="pre">src/s3_target.c</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/s3/s3_tcp.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/s3/s3_http.c</span></code>,
+<code class="docutils literal notranslate"><span class="pre">src/s3/s3_token.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/s3/s3_target.c</span></code></p></td>
 <td><p>In-process S3 store</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/p4/</span></code></p></td>

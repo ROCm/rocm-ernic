@@ -416,8 +416,9 @@ against a real SSD: the namespace is host memory or a host file,
 and every command capsule and RDMA transfer is emulated in
 userspace. What the sweep measures is the <em>emulator</em> – the
 capsule round trip, the fast-registration path, and the RDMA
-READ/WRITE engine in <code class="file docutils literal notranslate"><span class="pre">src/ionic_datapath.c</span></code>. Treat a
-regression here as a regression in that code, not in any disk.</p>
+READ/WRITE engine in <code class="file docutils literal notranslate"><span class="pre">src/ionic/ionic_datapath.c</span></code>.
+Treat a regression here as a regression in that code, not in
+any disk.</p>
 <nav class="contents local" id="sections">
 <p class="topic-title">Sections</p>
 <ul class="simple">
@@ -725,11 +726,12 @@ and allocates a pool of <strong>128 memory regions per queue</strong> at
 connect time – admin queue included – rather than per I/O. An
 N-queue controller therefore needs <code class="docutils literal notranslate"><span class="pre">(N</span> <span class="pre">+</span> <span class="pre">1)</span> <span class="pre">*</span> <span class="pre">128</span></code> regions
 before the first capsule moves, and the emulator’s table is a
-fixed <code class="docutils literal notranslate"><span class="pre">IONIC_MAX_MR</span></code> = 2048 (<code class="file docutils literal notranslate"><span class="pre">src/ionic_datapath.h</span></code>,
-which also sizes <code class="docutils literal notranslate"><span class="pre">MAX_MR</span></code> in
-<code class="file docutils literal notranslate"><span class="pre">src/qemu/rdma_rm_defs.h</span></code> and in
-<code class="file docutils literal notranslate"><span class="pre">src/ionic_datapath.c</span></code>). That puts the ceiling at 15 I/O
-queues, which <code class="docutils literal notranslate"><span class="pre">nvmeof_parse_backend()</span></code> enforces at startup:</p>
+fixed <code class="docutils literal notranslate"><span class="pre">IONIC_MAX_MR</span></code> = 2048
+(<code class="file docutils literal notranslate"><span class="pre">src/ionic/ionic_datapath.h</span></code>, which also sizes
+<code class="docutils literal notranslate"><span class="pre">MAX_MR</span></code> in <code class="file docutils literal notranslate"><span class="pre">src/qemu/rdma_rm_defs.h</span></code> and in
+<code class="file docutils literal notranslate"><span class="pre">src/ionic/ionic_datapath.c</span></code>). That puts the ceiling at
+15 I/O queues, which <code class="docutils literal notranslate"><span class="pre">nvmeof_parse_backend()</span></code> enforces at
+startup:</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Error: nvmeof backend: queues must be 1..15, one per 128
 memory regions in a table of 2048 (got '16')
 </pre></div>

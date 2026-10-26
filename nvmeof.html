@@ -581,15 +581,16 @@ thing for the hardware path.</p>
 <p>Unlike <code class="docutils literal notranslate"><span class="pre">loopback</span></code> and <code class="docutils literal notranslate"><span class="pre">tcp</span></code>, this is not a
 transport for guest RDMA traffic – it is a <em>peer</em> that
 speaks NVMe-oF back at the guest. It therefore hooks into
-<code class="file docutils literal notranslate"><span class="pre">src/ionic_datapath.c</span></code>, the data path that actually
-serves the guest <code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code> driver, rather than into the
-QEMU-derived backend vtable.</p>
+<code class="file docutils literal notranslate"><span class="pre">src/ionic/ionic_datapath.c</span></code>, the data path that
+actually serves the guest <code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code> driver, rather than
+into the QEMU-derived backend vtable.</p>
 <section id="connection-establishment">
 <h3>Connection establishment<a class="headerlink" href="#connection-establishment" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">nvme</span> <span class="pre">connect</span> <span class="pre">-t</span> <span class="pre">rdma</span></code> goes through <code class="docutils literal notranslate"><span class="pre">rdma_cm</span></code>, which
 means an IB CM exchange over GSI (QP1). The data path
 recognises sends on the guest’s GSI queue pair and hands the
-256-byte MAD to <code class="file docutils literal notranslate"><span class="pre">src/nvmeof_cm.c</span></code>, which answers it:</p>
+256-byte MAD to <code class="file docutils literal notranslate"><span class="pre">src/nvmeof/nvmeof_cm.c</span></code>, which answers
+it:</p>
 <ul class="simple">
 <li><p><strong>REQ</strong> – validate the <code class="docutils literal notranslate"><span class="pre">cma_hdr</span></code> and the
 <code class="docutils literal notranslate"><span class="pre">nvme_rdma_cm_req</span></code> private data behind it, allocate a
@@ -625,9 +626,9 @@ any a connection still holds.</p>
 <section id="capsules-and-data-transfer">
 <h3>Capsules and data transfer<a class="headerlink" href="#capsules-and-data-transfer" title="Link to this heading">#</a></h3>
 <p>Each guest SEND on an established queue carries a 64-byte
-NVMe command capsule, which <code class="file docutils literal notranslate"><span class="pre">src/nvmeof_target.c</span></code>
-executes and answers with a 16-byte response capsule
-delivered into a posted receive.</p>
+NVMe command capsule, which
+<code class="file docutils literal notranslate"><span class="pre">src/nvmeof/nvmeof_target.c</span></code> executes and answers with
+a 16-byte response capsule delivered into a posted receive.</p>
 <p>Admin commands cover what <code class="docutils literal notranslate"><span class="pre">nvme</span> <span class="pre">connect</span></code>, <code class="docutils literal notranslate"><span class="pre">nvme</span> <span class="pre">discover</span></code> and
 <code class="docutils literal notranslate"><span class="pre">nvme</span> <span class="pre">list</span></code> need: the fabrics Connect and Property
 Get/Set, Identify (controller, namespace, active namespace

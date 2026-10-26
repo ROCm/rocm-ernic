@@ -534,19 +534,20 @@ client, and is described under <a class="reference internal" href="#testing">Tes
 <h2>How It Works<a class="headerlink" href="#how-it-works" title="Link to this heading">#</a></h2>
 <p>Like <code class="docutils literal notranslate"><span class="pre">nvmeof</span></code>, this is not a transport for guest RDMA
 traffic – it is a <em>peer</em> that speaks S3 back at the guest.
-It hooks into <code class="file docutils literal notranslate"><span class="pre">src/ionic_datapath.c</span></code>, the data path
-that serves the guest <code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code> driver, rather than into
-the QEMU-derived backend vtable.</p>
+It hooks into <code class="file docutils literal notranslate"><span class="pre">src/ionic/ionic_datapath.c</span></code>, the data
+path that serves the guest <code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code> driver, rather than
+into the QEMU-derived backend vtable.</p>
 <section id="the-control-plane-in-band">
 <h3>The control plane, in band<a class="headerlink" href="#the-control-plane-in-band" title="Link to this heading">#</a></h3>
 <p>S3 needs TCP, and the guest’s TCP goes out of the emulated
 ionic NIC. Rather than open a host socket and ask the guest
 to route out to it – which would make the backend depend on
-<code class="docutils literal notranslate"><span class="pre">--tap</span></code> and on the host’s network – <code class="file docutils literal notranslate"><span class="pre">src/s3_tcp.c</span></code>
-terminates TCP <em>on the emulated wire</em>. Guest TX frames are
-offered to a filter registered with
-<code class="file docutils literal notranslate"><span class="pre">src/ionic_eth_emu.c</span></code> before they go anywhere else, and
-replies are injected back into the guest’s RX queue.</p>
+<code class="docutils literal notranslate"><span class="pre">--tap</span></code> and on the host’s network –
+<code class="file docutils literal notranslate"><span class="pre">src/s3/s3_tcp.c</span></code> terminates TCP <em>on the emulated
+wire</em>. Guest TX frames are offered to a filter registered
+with <code class="file docutils literal notranslate"><span class="pre">src/ionic/ionic_eth_emu.c</span></code> before they go
+anywhere else, and replies are injected back into the
+guest’s RX queue.</p>
 <p>What is implemented is the smallest TCP a well-behaved local
 peer on a lossless link needs: ARP, ICMP echo, the three-way
 handshake, in-order data with cumulative ACKs, MSS-sized
@@ -563,7 +564,7 @@ between these two endpoints.</p>
 administered and stable across restarts, and because the
 stack answers ARP the guest never needs to be told it.</p>
 <p>Frames in, frames out through a callback: nothing in
-<code class="file docutils literal notranslate"><span class="pre">src/s3_tcp.c</span></code> knows about vfio-user or queues, which
+<code class="file docutils literal notranslate"><span class="pre">src/s3/s3_tcp.c</span></code> knows about vfio-user or queues, which
 is why the whole stack runs under CTest against a loopback
 that hands frames straight back.</p>
 </section>
@@ -574,7 +575,7 @@ that hands frames straight back.</p>
 </pre></div>
 </div>
 <p>which decodes to a 44-byte little-endian structure
-(<code class="file docutils literal notranslate"><span class="pre">src/s3_token.h</span></code>):</p>
+(<code class="file docutils literal notranslate"><span class="pre">src/s3/s3_token.h</span></code>):</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <colgroup>
 <col style="width: 14.0%" />
