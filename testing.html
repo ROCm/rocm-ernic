@@ -562,7 +562,7 @@ and a fixture that starts a manager and some workers</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">check.py</span></code> – the small test runner the suites report
 through</p></li>
 </ul>
-<p>Four suites are registered with CTest:</p>
+<p>Five suites are registered with CTest:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">ernic-vfu-client</span></code>: version negotiation, device and
 region info, PCI configuration space, BAR access, DMA
@@ -596,6 +596,15 @@ descriptors are counted; then, on a second mesh with a 1 s
 health-check interval, a worker and then the manager
 paused past the health check, after which the workers
 have to register again under their own ids</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ernic-mesh-flow</span></code>: a three-node mesh pushed past what a
+node queues from its peers. Two nodes write to each other
+flat out, each with its queue plugged by the other’s SENDs
+to a QP with no receive posted, so both hold the other back
+at once, and neither may stall or give up on the other;
+then a peer floods a node with SENDs that find no receive,
+and must be slowed rather than cut off, while the node
+holds no more than its limit and another node’s SEND gets
+through</p></li>
 </ul>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>-R<span class="w"> </span><span class="s1">'^ernic-(vfu|ionic|mesh)'</span>
 </pre></div>
