@@ -877,14 +877,15 @@ target_link_libraries(test_rdma_res_tbl PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
 # QEMU utility stubs test: bitmap word boundaries, the oversize-map
-# abort, and the signal mask of a new thread. It links the stubs
-# translation unit directly.
+# abort, the signal mask of a new thread, and the mutex wrappers'
+# aborts. It links the stubs translation unit directly.
 add_executable(test_qemu_stubs test_qemu_stubs.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
 )
 target_include_directories(test_qemu_stubs PRIVATE
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
     ${PROJECT_SOURCE_DIR}/src/qemu
+    ${PROJECT_SOURCE_DIR}/shared
 )
 target_include_directories(test_qemu_stubs SYSTEM PRIVATE
     ${GLIB2_INCLUDE_DIRS}
@@ -892,6 +893,12 @@ target_include_directories(test_qemu_stubs SYSTEM PRIVATE
 )
 target_compile_definitions(test_qemu_stubs PRIVATE
     _GNU_SOURCE)
+# TSan reports a misused mutex itself and halts, so the test skips the
+# cases that misuse one.
+if(ERNIC_USE_THREAD_SANITIZER)
+    target_compile_definitions(test_qemu_stubs PRIVATE
+        ERNIC_THREAD_SANITIZED)
+endif()
 target_link_directories(test_qemu_stubs PRIVATE
     ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
 target_link_libraries(test_qemu_stubs PRIVATE

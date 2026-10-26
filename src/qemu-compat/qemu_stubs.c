@@ -46,8 +46,8 @@
  * and SIGSTOP, which pthread_sigmask() ignores, as it does glibc's internal
  * signals.
  *
- * pthread_sigmask() fails only for an invalid first argument, so its result
- * is not checked.
+ * pthread_sigmask() fails only for an invalid first argument, so a failure
+ * there is a bug, and aborts.
  */
 int qemu_thread_create(QemuThread *thread, void *(*start_routine)(void *),
                        void *arg)
@@ -62,16 +62,18 @@ int qemu_thread_create(QemuThread *thread, void *(*start_routine)(void *),
     sigdelset(&set, SIGFPE);
     sigdelset(&set, SIGILL);
 
-    pthread_sigmask(SIG_SETMASK, &set, &oldset);
+    qemu_thread_check(pthread_sigmask(SIG_SETMASK, &set, &oldset),
+                      "pthread_sigmask");
     ret = pthread_create(&thread->thread, NULL, start_routine, arg);
-    pthread_sigmask(SIG_SETMASK, &oldset, NULL);
+    qemu_thread_check(pthread_sigmask(SIG_SETMASK, &oldset, NULL),
+                      "pthread_sigmask");
 
     return ret;
 }
 
 void qemu_thread_join(QemuThread *thread)
 {
-    pthread_join(thread->thread, NULL);
+    qemu_thread_check(pthread_join(thread->thread, NULL), "pthread_join");
 }
 
 /*
