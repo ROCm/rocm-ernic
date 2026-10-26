@@ -1703,22 +1703,24 @@ static void test_extern_after_drop(void)
 static bool latin1_decode(const char *s, size_t n, uint8_t *out,
                           size_t *out_len)
 {
-    size_t o = 0;
+    size_t i = 0, o = 0;
 
-    for (size_t i = 0; i < n; i++) {
+    while (i < n) {
         uint8_t c = (uint8_t)s[i];
         uint8_t next;
 
         if (c < 0x80u) {
             out[o++] = c;
+            i++;
             continue;
         }
         if ((c != 0xC2u && c != 0xC3u) || i + 1 >= n)
             return false;
-        next = (uint8_t)s[++i];
+        next = (uint8_t)s[i + 1];
         if ((next & 0xC0u) != 0x80u)
             return false;
         out[o++] = (uint8_t)(((c & 0x03u) << 6) | (next & 0x3Fu));
+        i += 2;
     }
     *out_len = o;
     return true;

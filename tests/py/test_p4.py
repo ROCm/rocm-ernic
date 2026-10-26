@@ -29,9 +29,17 @@ from ernic import eth, ionic, p4
 from ernic.check import Suite
 from ernic.errors import DeviceError
 from ernic.fixture import BaseFixture
-from ernic.server import Server, stop_and_check
+from ernic.server import Server, ServerFailed, stop_and_check
 
 STATS_RE = re.compile(r"P4 stats: (.*)$", re.MULTILINE)
+
+# What the server exits with when it refuses its arguments: EXIT_FAILURE.
+REFUSED_STATUS = 1
+
+# The first line of a sanitizer report, which goes to the server's log.
+SANITIZER_RE = re.compile(
+    r"ERROR: \w+Sanitizer|WARNING: ThreadSanitizer|runtime error:"
+)
 
 # P4_PROGRAM_MAX in src/p4/p4_engine.h: the largest program the engine takes.
 P4_PROGRAM_MAX = 4 * 1024 * 1024
@@ -162,16 +170,38 @@ def test_program_loaded(suite, server_factory):
     suite.check_eq(stats["egress_errors"], 0, "no frame needed an absent backend")
 
 
-def refused_to_start(server_factory, extra_args):
-    """Start a server with @extra_args; return whether it refused, and its log."""
+def start_refused(server_factory, extra_args):
+    """Start a server with @extra_args; return its exit status and its log.
+
+    A refusal is the server exiting before its socket appears, which
+    start() raises as ServerFailed. Anything else -- a server that hung
+    on its way out, or a fault in the test -- is not a refusal, and
+    propagates. A server that does come up is stopped and checked, and
+    its status, 0 if it shut down cleanly, is returned like any other.
+    """
     ctx = server_factory(extra_args)
     try:
         with ctx:
             pass
-        started = True
-    except Exception:  # pylint: disable=broad-except
-        started = False
-    return not started, ctx.server.log_text()
+    except ServerFailed:
+        pass
+    return ctx.server.proc.returncode, ctx.server.log_text()
+
+
+def check_refused(suite, server_factory, extra_args, what):
+    """Check that a server given @extra_args refuses to start; return its log.
+
+    The status alone doesn't show it: ASan, LSan and UBSan exit with the
+    same status as a refusal, so a server that refused and then crashed
+    on its way out is told apart only by the report in its log.
+    """
+    status, log = start_refused(server_factory, extra_args)
+    suite.check_eq(status, REFUSED_STATUS, f"{what} stopped the server starting")
+    suite.check(
+        SANITIZER_RE.search(log) is None,
+        f"the server refused {what} without a sanitizer report",
+    )
+    return log
 
 
 def test_bad_program_refused(suite, server_factory):
@@ -183,8 +213,9 @@ def test_bad_program_refused(suite, server_factory):
         "p4",
         "simple_router.json",
     )
-    refused, log = refused_to_start(server_factory, ["--p4-program", prog])
-    suite.check(refused, "the server refused to start")
+    log = check_refused(
+        suite, server_factory, ["--p4-program", prog], "an unsupported program"
+    )
     suite.check("checksums" in log, "it said which feature the program used")
 
 
@@ -215,15 +246,15 @@ def test_program_file_refused(suite, server_factory):
             ),
         )
         for what, path, want in rows:
-            refused, log = refused_to_start(server_factory, ["--p4-program", path])
-            suite.check(refused, f"{what} stopped the server starting")
+            log = check_refused(suite, server_factory, ["--p4-program", path], what)
             suite.check(want in log, f"it said why it refused {what}")
 
 
 def test_bad_guest_scope(suite, server_factory):
     """A --p4-guest-scope that is not a scope stops the server starting."""
-    refused, log = refused_to_start(server_factory, ["--p4-guest-scope", "all"])
-    suite.check(refused, "an unknown scope stopped the server starting")
+    log = check_refused(
+        suite, server_factory, ["--p4-guest-scope", "all"], "an unknown scope"
+    )
     suite.check(
         "--p4-guest-scope must be one of" in log,
         "it said why it refused the scope",
