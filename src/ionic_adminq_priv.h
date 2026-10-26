@@ -90,6 +90,12 @@ enum ionic_qp_state {
 #define IONIC_ADMIN_DESTROY_AH_IN_V1_LEN  4u
 #define IONIC_ADMIN_CREATE_SRQ_IN_V1_LEN  42u
 #define IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN 5u
+#define IONIC_ADMIN_CREATE_MR_IN_V1_LEN   45u
+#define IONIC_ADMIN_DESTROY_MR_IN_V1_LEN  4u
+#define IONIC_ADMIN_DESTROY_CQ_IN_V1_LEN  4u
+#define IONIC_ADMIN_DESTROY_QP_IN_V1_LEN  4u
+#define IONIC_ADMIN_MODIFY_QP_IN_V1_LEN   60u
+#define IONIC_ADMIN_QUERY_QP_IN_V1_LEN    34u
 /* type_state is the last field, at [62], so the body runs to 63 -- see the
  * layout above handle_create_qp_op() in ionic_adminq.c. The guard there read
  * 60, which covers id_ver at [56:59] and nothing after it, so a 60-byte body
@@ -307,9 +313,10 @@ _Static_assert(QP_STATS_COUNT <= STATS_MAX_COUNT, "qp_stats too long");
 
 /*
  * Run one admin WQE: @op from its header and the @len-byte command @body
- * that follows it. Returns the completion status, 0 for success and
- * nonzero for an error, and leaves in ctx->resp_len the number of bytes
- * written to the command's response buffer.
+ * that follows it. Returns the completion status, an enum ionic_status_code
+ * (IONIC_RC_SUCCESS, or the error the guest driver logs), and leaves in
+ * ctx->resp_len the number of bytes written to the command's response
+ * buffer.
  */
 uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
                                   const uint8_t *body, uint16_t len);

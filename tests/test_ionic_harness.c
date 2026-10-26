@@ -553,52 +553,63 @@ static void build_srq_no_resp(uint8_t *body)
 }
 
 static const struct bad_admin bad_admins[] = {
-    {"unknown opcode", 77, 0, build_none, 1},
-    {"short CREATE_CQ", IH_ADMIN_CREATE_CQ, 10, build_none, 1},
-    {"short CREATE_QP", IH_ADMIN_CREATE_QP, 60, build_none, 1},
+    {"unknown opcode", 77, 0, build_none, IONIC_RC_EOPCODE},
+    {"short CREATE_CQ", IH_ADMIN_CREATE_CQ, 10, build_none, IONIC_RC_EINVAL},
+    {"short CREATE_QP", IH_ADMIN_CREATE_QP, 60, build_none, IONIC_RC_EINVAL},
     {"CREATE_QP on unknown CQs", IH_ADMIN_CREATE_QP, 64, build_qp_unknown_cq,
-     1},
+     IONIC_RC_ENOENT},
     {"CREATE_QP on an unknown SRQ", IH_ADMIN_CREATE_QP, 64,
-     build_qp_unknown_srq, 1},
-    {"CREATE_CQ 2^32 deep", IH_ADMIN_CREATE_CQ, 34, build_cq_depth_32, 1},
+     build_qp_unknown_srq, IONIC_RC_ENOENT},
+    {"CREATE_CQ 2^32 deep", IH_ADMIN_CREATE_CQ, 34, build_cq_depth_32,
+     IONIC_RC_ERANGE},
     {"CREATE_CQ deeper than 2^24", IH_ADMIN_CREATE_CQ, 34, build_cq_depth_25,
-     1},
+     IONIC_RC_ERANGE},
     {"CREATE_CQ with a stride below a CQE", IH_ADMIN_CREATE_CQ, 34,
-     build_cq_stride_4, 1},
+     build_cq_stride_4, IONIC_RC_ERANGE},
     {"CREATE_CQ with a stride above 2^16", IH_ADMIN_CREATE_CQ, 34,
-     build_cq_stride_17, 1},
+     build_cq_stride_17, IONIC_RC_ERANGE},
     {"CREATE_QP with an SQ 2^32 deep", IH_ADMIN_CREATE_QP, 64,
-     build_qp_sq_depth_32, 1},
+     build_qp_sq_depth_32, IONIC_RC_ERANGE},
     {"CREATE_QP with an SQ stride of 2^32", IH_ADMIN_CREATE_QP, 64,
-     build_qp_sq_stride_32, 1},
+     build_qp_sq_stride_32, IONIC_RC_ERANGE},
     {"CREATE_QP with an SQ stride below a WQE header", IH_ADMIN_CREATE_QP, 64,
-     build_qp_sq_stride_4, 1},
+     build_qp_sq_stride_4, IONIC_RC_ERANGE},
     {"CREATE_QP with an SQ stride above the advertised 2^9", IH_ADMIN_CREATE_QP,
-     64, build_qp_sq_stride_10, 1},
+     64, build_qp_sq_stride_10, IONIC_RC_ERANGE},
     {"CREATE_QP with an RQ stride above the advertised 2^9", IH_ADMIN_CREATE_QP,
-     64, build_qp_rq_stride_10, 1},
+     64, build_qp_rq_stride_10, IONIC_RC_ERANGE},
     {"CREATE_QP with an RQ 2^32 deep", IH_ADMIN_CREATE_QP, 64,
-     build_qp_rq_depth_32, 1},
+     build_qp_rq_depth_32, IONIC_RC_ERANGE},
     {"CREATE_QP with an RQ stride below a WQE header", IH_ADMIN_CREATE_QP, 64,
-     build_qp_rq_stride_4, 1},
+     build_qp_rq_stride_4, IONIC_RC_ERANGE},
     {"DESTROY_MR of an unknown MR", IH_ADMIN_DESTROY_MR, 4, build_unknown_id,
-     1},
-    {"MODIFY_QP of an unknown QP", IH_ADMIN_MODIFY_QP, 60, build_unknown_id, 1},
-    {"QUERY_QP of an unknown QP", IH_ADMIN_QUERY_QP, 34, build_unknown_id, 1},
-    {"short CREATE_AH", IH_ADMIN_CREATE_AH, 8, build_none, 1},
-    {"short DESTROY_AH", IH_ADMIN_DESTROY_AH, 2, build_none, 1},
-    {"short CREATE_SRQ", IH_ADMIN_CREATE_SRQ, 20, build_none, 1},
+     IONIC_RC_ENOENT},
+    {"MODIFY_QP of an unknown QP", IH_ADMIN_MODIFY_QP, 60, build_unknown_id,
+     IONIC_RC_ENOENT},
+    {"QUERY_QP of an unknown QP", IH_ADMIN_QUERY_QP, 34, build_unknown_id,
+     IONIC_RC_ENOENT},
+    {"short CREATE_AH", IH_ADMIN_CREATE_AH, 8, build_none, IONIC_RC_EINVAL},
+    {"short DESTROY_AH", IH_ADMIN_DESTROY_AH, 2, build_none, IONIC_RC_EINVAL},
+    {"short CREATE_SRQ", IH_ADMIN_CREATE_SRQ, 20, build_none, IONIC_RC_EINVAL},
     {"CREATE_SRQ deeper than advertised", IH_ADMIN_CREATE_SRQ, 42,
-     build_srq_too_deep, 1},
+     build_srq_too_deep, IONIC_RC_ERANGE},
     {"CREATE_SRQ with no response buffer", IH_ADMIN_CREATE_SRQ, 42,
-     build_srq_no_resp, 1},
-    {"short MODIFY_SRQ", IH_ADMIN_MODIFY_SRQ, 4, build_none, 1},
+     build_srq_no_resp, IONIC_RC_EINVAL},
+    {"short MODIFY_SRQ", IH_ADMIN_MODIFY_SRQ, 4, build_none, IONIC_RC_EINVAL},
     {"MODIFY_SRQ of an unknown SRQ", IH_ADMIN_MODIFY_SRQ, 6, build_unknown_id,
-     1},
-    {"short QUERY_SRQ", IH_ADMIN_QUERY_SRQ, 2, build_none, 1},
-    {"QUERY_SRQ of an unknown SRQ", IH_ADMIN_QUERY_SRQ, 4, build_unknown_id, 1},
-    {"short DESTROY_SRQ", IH_ADMIN_DESTROY_SRQ, 2, build_none, 1},
+     IONIC_RC_ENOENT},
+    {"short QUERY_SRQ", IH_ADMIN_QUERY_SRQ, 2, build_none, IONIC_RC_EINVAL},
+    {"QUERY_SRQ of an unknown SRQ", IH_ADMIN_QUERY_SRQ, 4, build_unknown_id,
+     IONIC_RC_ENOENT},
+    {"short DESTROY_SRQ", IH_ADMIN_DESTROY_SRQ, 2, build_none, IONIC_RC_EINVAL},
     {"short STATS_HDRS", IH_ADMIN_STATS_HDRS, 0, build_none, IONIC_RC_EINVAL},
+    /* One byte short of each body; these used to succeed doing nothing */
+    {"short CREATE_MR", IH_ADMIN_CREATE_MR, 44, build_none, IONIC_RC_EINVAL},
+    {"short DESTROY_MR", IH_ADMIN_DESTROY_MR, 3, build_none, IONIC_RC_EINVAL},
+    {"short DESTROY_CQ", IH_ADMIN_DESTROY_CQ, 3, build_none, IONIC_RC_EINVAL},
+    {"short DESTROY_QP", IH_ADMIN_DESTROY_QP, 3, build_none, IONIC_RC_EINVAL},
+    {"short MODIFY_QP", IH_ADMIN_MODIFY_QP, 59, build_none, IONIC_RC_EINVAL},
+    {"short QUERY_QP", IH_ADMIN_QUERY_QP, 33, build_none, IONIC_RC_EINVAL},
     /* Harmless, so not refused */
     {"DESTROY_SRQ of an unknown SRQ", IH_ADMIN_DESTROY_SRQ, 4, build_unknown_id,
      0},
@@ -793,7 +804,8 @@ static void test_admin_dma_faults(void)
         ernic_put_le64(body + 16, h.scratch + 1088);
         ernic_put_le32(body + 28, qp.id);
         fake_vfu_fail_nth_map(h.vfu, fail);
-        check(T, ih_admin(&h, IH_ADMIN_QUERY_QP, body, 34, NULL) == 1,
+        check(T,
+              ih_admin(&h, IH_ADMIN_QUERY_QP, body, 34, NULL) == IONIC_RC_EIO,
               "QUERY_QP with DMA %u refused succeeded", fail);
     }
 
@@ -804,7 +816,7 @@ static void test_admin_dma_faults(void)
 
     /* CREATE_SRQ fails when its response can't be written... */
     fake_vfu_fail_nth_map(h.vfu, 2);
-    check(T, ih_srq_create(&h, &srq, 4) == 1,
+    check(T, ih_srq_create(&h, &srq, 4) == IONIC_RC_EIO,
           "CREATE_SRQ with an unwritable response succeeded");
 
     /* ...or when its page table can't be read. Two 4 KiB pages hold
@@ -818,7 +830,7 @@ static void test_admin_dma_faults(void)
     ernic_put_le32(body + 30, 5);
     ernic_put_le64(body + 34, h.scratch + 512);
     fake_vfu_fail_nth_map(h.vfu, 2);
-    check(T, ih_admin(&h, IH_ADMIN_CREATE_SRQ, body, 42, NULL) == 1,
+    check(T, ih_admin(&h, IH_ADMIN_CREATE_SRQ, body, 42, NULL) == IONIC_RC_EIO,
           "CREATE_SRQ with an unreadable page table succeeded");
     if (check(T, ih_srq_create(&h, &srq, 4) == 0,
               "CREATE_SRQ after refused ones failed"))
@@ -1668,7 +1680,7 @@ static void wrap_mrs(const char *T, struct rc *r)
      * its id is still free */
     check(T,
           create_mr_as(h, WRAP_KEY_A, UINT64_MAX - 0xfff, 0x2000, 1,
-                       h->scratch) == 1,
+                       h->scratch) == IONIC_RC_ERANGE,
           "CREATE_MR of a region past 2^64 succeeded");
 
     /*
@@ -2010,7 +2022,8 @@ static void test_full_tables(void)
         if ((rc = ih_admin(h, IH_ADMIN_CREATE_MR, body, sizeof(body), NULL)))
             break;
     }
-    check(T, n == IONIC_MAX_MR && rc == 1, "%u MRs, then status %d", n, rc);
+    check(T, n == IONIC_MAX_MR && rc == IONIC_RC_ENOSPC,
+          "%u MRs, then status %d", n, rc);
 
     /* So REG_MR of an id no CREATE_MR made finds no room, and its key names
      * nothing */

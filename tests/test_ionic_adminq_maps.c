@@ -28,8 +28,8 @@
 #include <string.h>
 
 #include "byteorder.h"
-#include "ionic_adminq.h"
 #include "ionic_adminq_priv.h"
+#include "ionic_status.h"
 
 #include "ionic_adminq_fakes.h"
 
@@ -141,13 +141,13 @@ static uint32_t mr_entries(uint32_t id)
 
 /* ---- CQs ---------------------------------------------------------------- */
 
-static bool create_cq(void)
+static uint8_t create_cq(void)
 {
     uint8_t body[34];
 
     build_cq_body(body, NEW_ID);
     return ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_CQ, body,
-                                     sizeof(body)) == 0;
+                                     sizeof(body));
 }
 
 static void test_cq_map(void)
@@ -155,14 +155,14 @@ static void test_cq_map(void)
     /* A full map refuses the CQ before allocating it */
     ctx_reset();
     fill_cq_map(0);
-    check("cq-full-refused", !create_cq());
+    check("cq-full-refused", create_cq() == IONIC_RC_ENOSPC);
     check("cq-full-allocated-nothing", g_alloc_cq_calls == 0);
 
     /* So does an id in use, which keeps its entry */
     ctx_reset();
     g_ctx.cq_map[5] = (struct ionic_cq_map_entry){
         .valid = true, .cq_id = NEW_ID, .handle = HELD_HANDLE};
-    check("cq-in-use-refused", !create_cq());
+    check("cq-in-use-refused", create_cq() == IONIC_RC_EEXIST);
     check("cq-in-use-allocated-nothing", g_alloc_cq_calls == 0);
     check("cq-in-use-entry-kept", g_ctx.cq_map[5].valid &&
                                       g_ctx.cq_map[5].cq_id == NEW_ID &&
@@ -172,7 +172,7 @@ static void test_cq_map(void)
     /* The last free entry takes it */
     ctx_reset();
     fill_cq_map(1);
-    check("cq-last-entry-accepted", create_cq());
+    check("cq-last-entry-accepted", create_cq() == IONIC_RC_SUCCESS);
     check("cq-last-entry-allocated-once", g_alloc_cq_calls == 1);
     check("cq-last-entry-mapped",
           g_ctx.cq_map[MAX_CQ_MAP - 1].valid &&
@@ -181,13 +181,13 @@ static void test_cq_map(void)
 
 /* ---- QPs ---------------------------------------------------------------- */
 
-static bool create_qp(void)
+static uint8_t create_qp(void)
 {
     uint8_t body[64];
 
     build_qp_body(body, NEW_ID, CQ_ID);
     return ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_QP, body,
-                                     sizeof(body)) == 0;
+                                     sizeof(body));
 }
 
 /* The fakes' context, with the CQ the QP names */
@@ -202,13 +202,13 @@ static void test_qp_map(void)
 {
     qp_ctx_reset();
     fill_qp_map(0);
-    check("qp-full-refused", !create_qp());
+    check("qp-full-refused", create_qp() == IONIC_RC_ENOSPC);
     check("qp-full-allocated-nothing", g_alloc_qp_calls == 0);
 
     qp_ctx_reset();
     g_ctx.qp_map[5] = (struct ionic_qp_map_entry){
         .valid = true, .qp_id = NEW_ID, .qpn = HELD_HANDLE};
-    check("qp-in-use-refused", !create_qp());
+    check("qp-in-use-refused", create_qp() == IONIC_RC_EEXIST);
     check("qp-in-use-allocated-nothing", g_alloc_qp_calls == 0);
     check("qp-in-use-entry-kept", g_ctx.qp_map[5].valid &&
                                       g_ctx.qp_map[5].qp_id == NEW_ID &&
@@ -217,7 +217,7 @@ static void test_qp_map(void)
 
     qp_ctx_reset();
     fill_qp_map(1);
-    check("qp-last-entry-accepted", create_qp());
+    check("qp-last-entry-accepted", create_qp() == IONIC_RC_SUCCESS);
     check("qp-last-entry-allocated-once", g_alloc_qp_calls == 1);
     check("qp-last-entry-mapped",
           g_ctx.qp_map[MAX_QP_MAP - 1].valid &&
@@ -227,26 +227,26 @@ static void test_qp_map(void)
 
 /* ---- MRs ---------------------------------------------------------------- */
 
-static bool create_mr(void)
+static uint8_t create_mr(void)
 {
     uint8_t body[45];
 
     build_mr_body(body, NEW_ID);
     return ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_MR, body,
-                                     sizeof(body)) == 0;
+                                     sizeof(body));
 }
 
 static void test_mr_map(void)
 {
     ctx_reset();
     fill_mr_map(0);
-    check("mr-full-refused", !create_mr());
+    check("mr-full-refused", create_mr() == IONIC_RC_ENOSPC);
     check("mr-full-allocated-nothing", g_alloc_mr_calls == 0);
 
     ctx_reset();
     g_ctx.mr_map[5] = (struct ionic_mr_map_entry){
         .valid = true, .mr_id = NEW_ID, .handle = HELD_HANDLE};
-    check("mr-in-use-refused", !create_mr());
+    check("mr-in-use-refused", create_mr() == IONIC_RC_EEXIST);
     check("mr-in-use-allocated-nothing", g_alloc_mr_calls == 0);
     check("mr-in-use-entry-kept", g_ctx.mr_map[5].valid &&
                                       g_ctx.mr_map[5].mr_id == NEW_ID &&
@@ -255,7 +255,7 @@ static void test_mr_map(void)
 
     ctx_reset();
     fill_mr_map(1);
-    check("mr-last-entry-accepted", create_mr());
+    check("mr-last-entry-accepted", create_mr() == IONIC_RC_SUCCESS);
     check("mr-last-entry-allocated-once", g_alloc_mr_calls == 1);
     check("mr-last-entry-mapped",
           g_ctx.mr_map[MAX_MR_MAP - 1].valid &&

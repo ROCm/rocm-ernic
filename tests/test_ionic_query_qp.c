@@ -36,6 +36,7 @@
 #include "ernic_dma.h"
 #include "ionic_adminq_priv.h"
 #include "ionic_datapath.h"
+#include "ionic_status.h"
 #include "rocm_ernic_compat.h"
 
 /* ---- Fake guest memory ------------------------------------------------- */
@@ -743,7 +744,7 @@ static void test_unknown_qp_fails(void)
     build_body(body, QP_ID + 1, SQ_GPA, RQ_GPA);
     check("unknown-qp-rejected",
           ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body,
-                                    sizeof(body)) != 0);
+                                    sizeof(body)) == IONIC_RC_ENOENT);
     check("unknown-qp-wrote-nothing", g_mem[RQ_GPA] == 0);
 }
 
@@ -757,17 +758,20 @@ static void test_query_failure_fails_the_command(void)
     build_body(body, QP_ID, SQ_GPA, RQ_GPA);
     check("query-failure-rejected",
           ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body,
-                                    sizeof(body)) != 0);
+                                    sizeof(body)) == IONIC_RC_ERDMA);
 }
 
-/* A short body has no addresses in it to trust. */
+/* A short body has no addresses in it to trust, and is refused: it used to
+ * succeed, leaving the driver to read the zeroed buffers as a QP in RESET. */
 static void test_short_body_writes_nothing(void)
 {
     uint8_t body[34];
 
     ctx_reset();
     build_body(body, QP_ID, SQ_GPA, RQ_GPA);
-    (void)ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body, 33);
+    check("short-body-rejected",
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body,
+                                    33) == IONIC_RC_EINVAL);
     check("short-body-wrote-nothing", g_mem[RQ_GPA] == 0 && g_mem[SQ_GPA] == 0);
 }
 
@@ -808,7 +812,7 @@ static void test_modify_qp_unresolved_gid_only_fails_on_a_mesh(void)
     g_node_from_gid = UINT32_MAX;
     check("mesh-modify-unresolved-rejected",
           ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_QP, body,
-                                    sizeof(body)) != 0);
+                                    sizeof(body)) == IONIC_RC_ENOENT);
 
     /* Mesh attached and the GID resolves: must proceed. */
     ctx_reset();
