@@ -638,12 +638,14 @@ def main():
 
     server = HTTPServer(("", port), MetricsHandler)
 
+    # Python runs signal handlers on the main thread, which is the one in
+    # serve_forever(), so the handler can't call server.shutdown(): that
+    # waits for serve_forever() to return, which it can't until the
+    # handler does. Raising unwinds serve_forever() instead, even out of a
+    # read from a client that never sends its request, and exits 0 so
+    # systemd sees a clean stop.
     def shutdown_handler(_signum, _frame):
-        print(
-            "\n[ernic-exporter] Shutting down...",
-            file=sys.stderr,
-        )
-        server.shutdown()
+        raise SystemExit(0)
 
     signal.signal(signal.SIGTERM, shutdown_handler)
     signal.signal(signal.SIGINT, shutdown_handler)
@@ -659,9 +661,11 @@ def main():
 
     try:
         server.serve_forever()
-    except KeyboardInterrupt:
-        pass
     finally:
+        print(
+            "\n[ernic-exporter] Shutting down...",
+            file=sys.stderr,
+        )
         server.server_close()
 
 

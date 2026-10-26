@@ -893,6 +893,12 @@
   `ATOMIC_FETCH_AND_ADD` keep the `" : "` separator, so `ernic-exporter`
   no longer drops them, and the exporter no longer gives a device-level key
   after the per-QP block to the last QP.
+* **`ernic-exporter` hung on SIGTERM and SIGINT**, so `systemctl stop
+  ernic-exporter` waited out `TimeoutStopSec` (90 s by default) and then
+  killed it, and Ctrl-C in a terminal did nothing. It now exits at once,
+  with status 0, even while a client holds a connection open without
+  sending a request. The nightly package check now stops it with SIGTERM
+  and fails if it doesn't exit cleanly.
 * **Guest driver tooling.**
   * The driver pack recorded a hardcoded `v7.2.4` as the ionic baseline,
     whatever `IONIC_KERNEL_REF` was; the pin is now installed as

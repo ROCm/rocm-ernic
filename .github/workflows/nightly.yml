@@ -313,11 +313,22 @@ jobs:
             fi
             sleep 1
           done
-          # SIGKILL: the exporter doesn't exit on SIGTERM. Its handler
-          # calls server.shutdown() on the thread serve_forever() runs
-          # on, which waits for serve_forever() to return.
-          kill -KILL "${exporter}"
-          wait "${exporter}" || true
+          # Stop it as systemctl stop does, with SIGTERM: it must exit,
+          # with status 0, well within systemd's stop timeout
+          kill -TERM "${exporter}"
+          deadline=$((SECONDS + 10))
+          while kill -0 "${exporter}" 2> /dev/null; do
+            if ((SECONDS >= deadline)); then
+              echo "::error::the exporter didn't exit on SIGTERM"
+              kill -KILL "${exporter}"
+              exit 1
+            fi
+            sleep 1
+          done
+          if ! wait "${exporter}"; then
+            echo "::error::the exporter failed on SIGTERM"
+            exit 1
+          fi
 
   # Only a run on develop publishes, and a pull request's run never does
   publish:
