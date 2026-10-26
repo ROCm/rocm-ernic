@@ -858,8 +858,14 @@ gets as far as the walker does.</p>
 <p>Every document is untrusted, so there is no clamping and no
 truncation anywhere in the loader: an oversized array, a name
 with a newline in it, a width given as a floating-point
-number, a duplicate name or id, and a reference to something
-that does not exist are each a rejection.</p>
+number, a duplicate name or id, a literal wider than the field
+it is assigned to, and a reference to something that does not
+exist are each a rejection.</p>
+<p>A parser <code class="docutils literal notranslate"><span class="pre">select</span></code> on several fields gives each field whole
+bytes of the key, right-aligned in them, as bmv2 builds it and
+as <code class="docutils literal notranslate"><span class="pre">p4c</span></code> writes the values it is compared with: selecting on a
+12-bit VLAN ID and an EtherType, VLAN 10 over IPv4 is
+<code class="docutils literal notranslate"><span class="pre">0x000a0800</span></code>.</p>
 </section>
 <section id="alignment-with-amd-pensando-silicon">
 <h2>Alignment with AMD Pensando silicon<a class="headerlink" href="#alignment-with-amd-pensando-silicon" title="Link to this heading">#</a></h2>
@@ -940,13 +946,21 @@ the rules this code is held to.</p>
 <dl class="simple">
 <dt><code class="docutils literal notranslate"><span class="pre">p4-engine-unit</span></code> (<code class="docutils literal notranslate"><span class="pre">tests/test_p4_engine.c</span></code>)</dt><dd><p>The engine as a function: the port model, the input validation,
 the frame bounds and the statistics. Links the engine’s
-translation unit and nothing else.</p>
+translation unit and nothing else. The loader is held to
+<code class="docutils literal notranslate"><span class="pre">tests/data/p4/reject_cases.json</span></code>, each case of which must be
+refused with the errno and the reason it names, and
+<code class="docutils literal notranslate"><span class="pre">tests/data/p4/features.json</span></code> runs frames through a parser
+<code class="docutils literal notranslate"><span class="pre">select</span></code> with masks, LPM and ternary tables, every arithmetic
+primitive and every comparison.</p>
 </dd>
 <dt><code class="docutils literal notranslate"><span class="pre">ionic-harness-p4-port</span></code> (<code class="docutils literal notranslate"><span class="pre">tests/test_ionic_harness.c</span></code>)</dt><dd><p>The engine attached to the whole in-process device, with
 libvfio-user replaced by a fake. Covers the transmit filter
 chain: a frame claimed by the endpoint that already held the
 slot must not reach the pipeline, one it declines must, and
-detaching must hand the slot back rather than leave it empty.</p>
+detaching must hand the slot back rather than leave it empty.
+<code class="docutils literal notranslate"><span class="pre">ionic-harness-p4-devcmd</span></code> and <code class="docutils literal notranslate"><span class="pre">ionic-harness-p4-devcmd-errors</span></code>
+drive the guest’s control surface through the BAR0 devcmd window,
+including every way it refuses a command.</p>
 </dd>
 <dt><code class="docutils literal notranslate"><span class="pre">ernic-p4-driver</span></code> (<code class="docutils literal notranslate"><span class="pre">tests/py/test_p4.py</span></code>)</dt><dd><p>The engine on a <strong>real server process</strong>, reached over a real
 vfio-user socket with real DMA. <code class="docutils literal notranslate"><span class="pre">ernic.eth</span></code> drives the
