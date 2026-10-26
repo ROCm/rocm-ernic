@@ -664,6 +664,18 @@
     used to wedge Ethernet receive permanently.
   * A failed admin command carries its status in the whole `status_length`,
     so the guest logs `error 3`, not `error 50331648`.
+  * A failed RDMA admin command reports why, as an ionic status code the
+    guest driver logs with it (`opcode 1 error 13` for an id already in
+    use): `EINVAL` for a malformed command, `ERANGE` for a queue geometry
+    or region the device can't honor, `ENOENT` for an id it doesn't know,
+    `EEXIST`, `ENOSPC` when a table is full, `EIO` when guest memory
+    can't be read or written, `ERDMA` when the backend refuses, and
+    `EOPCODE` for an unknown opcode. Every one used to be `error 1`
+    (`EVERSION`).
+  * `CREATE_MR`, `DESTROY_MR`, `DESTROY_CQ`, `DESTROY_QP`, `MODIFY_QP` and
+    `QUERY_QP` with a body too short to hold the command fail with
+    `EINVAL`, as the other admin commands already did. They used to succeed
+    without doing anything.
   * The `rdma_*` counters in the LIF block, in `--stats-file` and DMAed to
     the guest, carry real values; they always read zero.
   * `ibv_query_qp()` reports the QP's real state on every backend. The

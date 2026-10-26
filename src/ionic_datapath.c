@@ -3598,7 +3598,7 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
              */
             uint64_t now = dp_now_ms(dp);
 
-            if (q->ib_qp_type != 2 /* RC */) {
+            if (q->ib_qp_type != IBV_QPT_RC) {
                 vfu_log(dp->vfu_ctx, LOG_WARNING,
                         "ionic_datapath: QP %u has no posted receive, "
                         "dropping %u bytes from QP %u",

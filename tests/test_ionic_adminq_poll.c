@@ -36,6 +36,7 @@
 #include "byteorder.h"
 #include "ionic_adminq.h"
 #include "ionic_adminq_priv.h"
+#include "ionic_status.h"
 
 #include "ionic_adminq_fakes.h"
 
@@ -202,16 +203,17 @@ static const struct poll_case cases[] = {
 
     /* negative */
     {"negative", "CREATE_QP claiming two strides with one produced",
-     "refused without running, one stride", 0, CREATE_QP, QP_BODY_LEN, 2, 1, 1,
-     1, false},
+     "refused without running, one stride", 0, CREATE_QP, QP_BODY_LEN, 2, 1,
+     IONIC_RC_EINVAL, 1, false},
     {"negative", "the same at the last slot",
      "refused without running, one stride", AQ_DEPTH - 1, CREATE_QP,
-     QP_BODY_LEN, 2, 1, 1, 1, false},
+     QP_BODY_LEN, 2, 1, IONIC_RC_EINVAL, 1, false},
     {"negative", "NOOP of 253 bytes, five strides",
      "refused, the five strides it claims", 0, NOOP, 4 * STRIDE - HDR_LEN + 1,
-     5, 5, 1, 5, false},
+     5, 5, IONIC_RC_EINVAL, 5, false},
     {"negative", "NOOP of 65535 bytes with three strides produced",
-     "refused, the three produced", 0, NOOP, UINT16_MAX, 3, 3, 1, 3, false},
+     "refused, the three produced", 0, NOOP, UINT16_MAX, 3, 3, IONIC_RC_EINVAL,
+     3, false},
 };
 
 static void run_case(const struct poll_case *c)
@@ -256,8 +258,9 @@ static void check_refused_then_next(void)
     ring_doorbell(AQ_DEPTH, 0, big + 1);
     ionic_adminq_poll(&g_ctx, NULL);
 
-    ok = ok && cqe_is(0, 0, NOOP, 1) && cqe_is(1, next, NOOP, 0) &&
-         cq_untouched_from(2) && g_ctx.aq[0].aq_cons == big + 1;
+    ok = ok && cqe_is(0, 0, NOOP, IONIC_RC_EINVAL) &&
+         cqe_is(1, next, NOOP, 0) && cq_untouched_from(2) &&
+         g_ctx.aq[0].aq_cons == big + 1;
     printf("%s negative: a five-stride NOOP and a NOOP after it; expected: the "
            "first refused, the second run from slot %u\n",
            ok ? "ok  " : "FAIL", next);
