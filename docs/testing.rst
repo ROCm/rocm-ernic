@@ -190,6 +190,9 @@ Five suites are registered with CTest:
   flat out, each with its queue plugged by the other's SENDs
   to a QP with no receive posted, so both hold the other back
   at once, and neither may stall or give up on the other;
+  then a node READs 120 MiB from a peer at once while the
+  peer plugs its queue, and every READ must complete, with
+  none of the peer's replies dropped;
   then a peer floods a node with SENDs that find no receive,
   and must be slowed rather than cut off, while the node
   holds no more than its limit and another node's SEND gets

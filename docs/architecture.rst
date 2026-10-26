@@ -884,7 +884,9 @@ whose peer is on another node:
    queued. A connection takes up to 32 MiB of requests; a WQE
    that doesn't fit stays on the send queue, which stops there,
    and is tried again on a later pass, as a NIC out of transmit
-   credits holds its queue. Replies have twice the room. When a
+   credits holds its queue. Replies have twice the room, and a
+   WQE also waits if its reply might not fit the peer's (see
+   `When a Node Falls Behind`_). When a
    QP is flushed, or a request times out (see **Lost peer**,
    below), the requests still queued are taken back, so none
    reaches the peer after its work request has completed; one
@@ -962,6 +964,21 @@ queues stop, as when a NIC runs out of transmit credits. While
 the main loop runs, nothing is dropped, and a node's memory for
 its peers' messages is bounded by the queue, plus the one
 message each receive thread holds.
+
+The node being held back has its replies to queue too. Its send
+queue for a connection takes up to 64 MiB, its own requests
+included, and drops a reply it has no room for, since it can't
+wait for the requester to read on. A READ's reply is as large as
+the READ, which the request doesn't show, so a node asks a peer
+for no more than 32 MiB of replies at once: the room the peer's
+queue is sure to have beside the most it queues of its own
+requests, 32 MiB. A WQE that would ask for more waits on its
+send queue, as one with no room to be sent does, until earlier
+replies come back. A peer can still drop a reply to a request
+the requester has given up on, after a flush or a timeout, or
+one it sends by way of the manager: a worker with no connection
+to the requester sends its replies on its one connection to the
+manager, which every node it reaches that way shares.
 
 This can't deadlock. Neither node's main loop ever waits for the
 other (it only queues what it sends), and every pass empties the

@@ -463,6 +463,12 @@
     has gone 2 seconds without polling, a full queue drops what arrives, and
     the next pass logs how many it dropped. Requests among them complete in
     error after their 30-second timeout.
+  * A node asks a peer for at most 32 MiB of replies at once, headers
+    included. They are mostly READ data, which the peer queues for the
+    node, and drops past its 64 MiB limit. A WQE that would ask for more
+    waits on its send queue until earlier replies are back. Otherwise, while
+    a node held a peer back, the peer dropped READ data, and those READs
+    failed with retry-exceeded after 30 seconds.
 * **libvfio-user 5b9c722 or later is required** (CI, the release build and
   the Nix flake now use it). Before it, a 64-bit BAR smaller than 4 GiB,
   as BAR0 and BAR2 are, couldn't be placed above 4 GiB and sized wrongly;
