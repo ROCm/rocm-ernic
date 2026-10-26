@@ -652,6 +652,7 @@ int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
                      const atomic_bool *running, uint64_t deadline_ms)
 {
     uint8_t wire[TCP_MSG_HDR_LEN];
+    uint32_t len;
     ssize_t ret;
 
     *payload = NULL;
@@ -681,26 +682,31 @@ int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
         return -1;
     }
 
-    /* Allocate and receive payload */
-    if (hdr->msg_len > TCP_MAX_PAYLOAD_LEN) {
-        rdma_error_report("TCP: payload too large: %u", hdr->msg_len);
+    /*
+     * Allocate and receive payload.  The length is bounded, and used, in a
+     * local: CodeQL's uncontrolled-allocation-size query takes a bounds check
+     * only on a variable, not on a field reached through a pointer.
+     */
+    len = hdr->msg_len;
+    if (len > TCP_MAX_PAYLOAD_LEN) {
+        rdma_error_report("TCP: payload too large: %" PRIu32, len);
         return -1;
     }
-    if (hdr->msg_len > 0) {
+    if (len > 0) {
         /*
          * The peer chooses the length, so running out of memory here mustn't
          * abort the server, as g_malloc() would.  The payload is still in the
          * socket, so the stream can't go on without it: the caller closes the
          * connection, and the peer connects again.
          */
-        *payload = malloc(hdr->msg_len);
+        *payload = malloc(len);
         if (!*payload) {
-            rdma_error_report("TCP: no memory for a %u-byte payload",
-                              hdr->msg_len);
+            rdma_error_report("TCP: no memory for a %" PRIu32 "-byte payload",
+                              len);
             return -1;
         }
-        if (tcp_recv_rest(sockfd, *payload, hdr->msg_len, 0, running,
-                          deadline_ms, "payload") < 0) {
+        if (tcp_recv_rest(sockfd, *payload, len, 0, running, deadline_ms,
+                          "payload") < 0) {
             free(*payload);
             *payload = NULL;
             return -1;

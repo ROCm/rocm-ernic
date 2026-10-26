@@ -304,6 +304,11 @@ scanned too). Add new general patterns here when a scanner reports one.
   (`cpp/stack-address-escape`), even if never used after return. Allocate
   the target instead, as `test_server_lifecycle.c` does for the server's
   `environ`.
+- **An allocation sized by a peer, bounded only through a pointer**
+  (`cpp/uncontrolled-allocation-size`). The query takes an upper-bound
+  check only on a plain variable, so `if (hdr->len > MAX)` before
+  `malloc(hdr->len)` still reports. Copy the length to a local, check
+  that, and allocate with it, as `tcp_recv_message()` does.
 - **Including a `.c` file** (`cpp/include-non-header`, clang-tidy
   `bugprone-suspicious-include`). A unit test needing private symbols
   includes the module's `_priv.h` (e.g. `src/ionic_adminq_priv.h`) and
