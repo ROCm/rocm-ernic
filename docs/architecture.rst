@@ -1201,8 +1201,9 @@ The silicon ionic models is P4-programmable, and
 ``src/p4/`` is the emulator's equivalent: an engine that runs a
 compiled P4 program (bmv2 JSON) loaded with ``--p4-program``.
 It is built only with the ``ERNIC_BUILD_P4`` CMake option, and
-runs only when ``--p4`` or ``--p4-program`` is given. It sits on
-two paths:
+runs only when ``--p4``, ``--p4-program`` or
+``--p4-guest-scope`` (even ``none``) is given. It sits on two
+paths:
 
 - **Ethernet.** It takes the transmit and receive frame
   filters described in `The Ethernet Side`_, so every frame

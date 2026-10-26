@@ -251,7 +251,8 @@ push a compiled program down in chunks, install, modify and
 delete table entries, and read the engine's counters.
 
 What the guest may do is the operator's decision, not the
-guest's. ``--p4-guest-scope`` takes one of:
+guest's. ``--p4-guest-scope`` implies ``--p4``, even with
+``none``, and takes one of:
 
 ``none``
    The default. The surface answers nothing, not even
