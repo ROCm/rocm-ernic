@@ -15,6 +15,7 @@
  */
 
 #include "rdma_backend_tcp_priv.h"
+#include "byteorder.h"
 #include "rdma_utils.h"
 #include "qemu/thread.h"
 #include <errno.h>
@@ -380,8 +381,7 @@ void tcp_gid_claims_forget(TcpBackendPrivate *priv, uint32_t node_id)
  * set with a node's claims was taken while the node was in mesh_nodes, so an
  * update without the node, sent after it, was taken after the node left.
  */
-void tcp_gid_claims_prune(TcpBackendPrivate *priv,
-                          const TcpMeshTopologyPayload *topo,
+void tcp_gid_claims_prune(TcpBackendPrivate *priv, const uint8_t *topo,
                           uint32_t num_nodes)
 {
     uint32_t local = tcp_local_node(priv);
@@ -391,8 +391,8 @@ void tcp_gid_claims_prune(TcpBackendPrivate *priv,
 
     if (!tcp_has_gid_tables(priv))
         return;
-    if (num_nodes > G_N_ELEMENTS(topo->nodes))
-        num_nodes = G_N_ELEMENTS(topo->nodes);
+    if (num_nodes > TCP_MAX_MESH_NODES)
+        num_nodes = TCP_MAX_MESH_NODES;
 
     qemu_mutex_lock(&priv->gid_table_lock);
     g_hash_table_iter_init(&iter, priv->node_gids);
@@ -401,7 +401,8 @@ void tcp_gid_claims_prune(TcpBackendPrivate *priv,
         bool listed = node_id == local;
 
         for (uint32_t i = 0; !listed && i < num_nodes; i++)
-            listed = ntohl(topo->nodes[i].node_id) == node_id;
+            listed = ernic_get_be32(topo + TCP_TOPOLOGY_NODE_OFF(i) +
+                                    TCP_MESH_NODE_ID_OFF) == node_id;
         if (!listed) {
             g_hash_table_iter_remove(&iter);
             dropped++;
@@ -485,25 +486,26 @@ uint32_t tcp_resolve_node_from_gid(TcpBackendPrivate *priv,
 }
 
 /*
- * Build the advertisement for @node_id's GIDs.  The whole fixed-size struct
+ * Build the advertisement for @node_id's GIDs.  The whole fixed-size payload
  * goes on the wire including the unused slots, so it is zeroed first -- the
  * same stack-disclosure trap tcp_send_mesh_topology() guards against.
  */
-void tcp_fill_node_gids(TcpNodeGidsPayload *out, uint32_t node_id,
+void tcp_fill_node_gids(TcpNodeGidsWire *out, uint32_t node_id,
                         const uint8_t (*gids)[16], uint32_t num_gids)
 {
-    memset(out, 0, sizeof(*out));
+    memset(out->bytes, 0, sizeof(out->bytes));
     if (num_gids > TCP_MAX_NODE_GIDS)
         num_gids = TCP_MAX_NODE_GIDS;
-    out->node_id = htonl(node_id);
-    out->num_gids = htonl(num_gids);
+    ernic_put_be32(out->bytes + TCP_NODE_GIDS_NODE_ID_OFF, node_id);
+    ernic_put_be32(out->bytes + TCP_NODE_GIDS_NUM_OFF, num_gids);
     for (uint32_t i = 0; i < num_gids; i++)
-        memcpy(out->gids[i], gids[i], 16);
+        memcpy(out->bytes + TCP_NODE_GIDS_GIDS_OFF + (size_t)i * 16, gids[i],
+               16);
 }
 
 /* Send one advertisement on an already-locked-free connection. */
 void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
-                        const TcpNodeGidsPayload *payload)
+                        const TcpNodeGidsWire *payload)
 {
     if (!conn)
         return;
@@ -512,7 +514,8 @@ void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
     qemu_mutex_lock(&conn->lock);
     if (atomic_load(&conn->is_connected) && conn->sockfd >= 0) {
         tcp_send_message(
-            priv, conn, TCP_MSG_NODE_GIDS, payload, sizeof(*payload),
+            priv, conn, TCP_MSG_NODE_GIDS, payload->bytes,
+            sizeof(payload->bytes),
             atomic_fetch_add_explicit(&priv->next_seq, 1, memory_order_relaxed),
             tcp_local_node(priv), conn->node_id, 0, 0);
     }
@@ -579,7 +582,7 @@ void tcp_advertise_local_gids(TcpBackendPrivate *priv)
      * With no connection to the manager, nothing is sent: the answer to the
      * next registration advertises the set again.
      */
-    TcpNodeGidsPayload mine;
+    TcpNodeGidsWire mine;
     TcpConnection *mgr = tcp_worker_manager_conn(priv);
 
     tcp_fill_node_gids(&mine, node, tcp_const_gids(gids), num_gids);
@@ -651,16 +654,17 @@ int tcp_claim_gid(TcpBackendPrivate *priv, const union ibv_gid *gid, bool add)
 void tcp_recv_node_gids(const TcpConnection *conn, const TcpRecvMsg *msg)
 {
     TcpBackendPrivate *priv = conn->priv;
-    const TcpNodeGidsPayload *adv = msg->payload;
+    const uint8_t *adv = msg->payload;
+    uint8_t gids[TCP_MAX_NODE_GIDS][16];
     uint32_t node_id, num_gids;
 
-    if (!priv || !adv || msg->hdr.msg_len < sizeof(TcpNodeGidsPayload)) {
+    if (!priv || !adv || msg->hdr.msg_len < TCP_NODE_GIDS_LEN) {
         rdma_error_report("TCP: Invalid NODE_GIDS payload");
         return;
     }
 
-    node_id = ntohl(adv->node_id);
-    num_gids = ntohl(adv->num_gids);
+    node_id = ernic_get_be32(adv + TCP_NODE_GIDS_NODE_ID_OFF);
+    num_gids = ernic_get_be32(adv + TCP_NODE_GIDS_NUM_OFF);
 
     if (num_gids > TCP_MAX_NODE_GIDS) {
         rdma_error_report("TCP: NODE_GIDS from node %u claims %u GIDs, max "
@@ -668,6 +672,7 @@ void tcp_recv_node_gids(const TcpConnection *conn, const TcpRecvMsg *msg)
                           msg->hdr.src_node_id, num_gids, TCP_MAX_NODE_GIDS);
         return;
     }
+    memcpy(gids, adv + TCP_NODE_GIDS_GIDS_OFF, sizeof(gids));
 
     /*
      * Authorise on the connection, not on the message.  Both
@@ -701,11 +706,12 @@ void tcp_recv_node_gids(const TcpConnection *conn, const TcpRecvMsg *msg)
     }
 
     if (!priv->is_manager) {
-        tcp_gid_claims_set(priv, node_id, adv->gids, num_gids);
+        tcp_gid_claims_set(priv, node_id, tcp_const_gids(gids), num_gids);
         return;
     }
 
-    if (!tcp_gid_claims_set_if_member(priv, node_id, adv->gids, num_gids)) {
+    if (!tcp_gid_claims_set_if_member(priv, node_id, tcp_const_gids(gids),
+                                      num_gids)) {
         rdma_info_report("TCP: ignoring the GIDs of node %u, which has been "
                          "evicted from the mesh",
                          node_id);

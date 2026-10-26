@@ -60,11 +60,12 @@ MSG_NODE_GIDS = 25
 HEADER_FMT = "!IIIIIIII"
 HEADER_SIZE = 32
 
-# struct ionic_wire_hdr, the data path's header at the start of a
-# TCP_MSG_IONIC payload: little-endian, unlike the mesh header around it.
-# Magic, op, compare-swap flag, reserved, source and destination QP,
-# request id, rkey, length, immediate, status, remote address, swap/add
-# operand, compare operand.
+# The data path's header at the start of a TCP_MSG_IONIC payload (the
+# IONIC_WIRE_* offsets in src/ionic_datapath_priv.h): little-endian,
+# unlike the mesh header around it, but for the immediate, which is
+# big-endian and left as it is here. Magic, op, compare-swap flag,
+# reserved, source and destination QP, request id, rkey, length,
+# immediate, status, remote address, swap/add operand, compare operand.
 IONIC_WIRE_FMT = "<IBBHIIIIIIIQQQ"
 IONIC_WIRE_SIZE = struct.calcsize(IONIC_WIRE_FMT)
 IONIC_WIRE_MAGIC = 0x434E4F49  # "IONC"

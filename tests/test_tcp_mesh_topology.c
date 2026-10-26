@@ -4,7 +4,7 @@
  * tcp_broadcast_pass(), in tcp_manager.c.
  *
  * Regression coverage for a stack-memory disclosure: the manager sends the
- * full fixed-size TcpMeshTopologyPayload (~17 KB, TOPO_MAXNODE node slots) on
+ * full fixed-size topology payload (~17 KB, TOPO_MAXNODE node slots) on
  * every broadcast, but only filled in nodes[0..num_nodes). The struct was an
  * uninitialised stack local, so the unused tail slots put whatever the
  * thread's stack happened to hold -- including live pointers -- on the wire.
@@ -42,7 +42,6 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include <arpa/inet.h>
 #include <inttypes.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -56,6 +55,7 @@
 
 #include <glib.h>
 
+#include "byteorder.h"
 #include "qemu/error-report.h"
 #include "qemu/thread.h"
 #include "rdma/rdma_backend_tcp_priv.h"
@@ -99,11 +99,12 @@ void qemu_thread_join(QemuThread *thread)
 /* ---- Test helpers ------------------------------------------------------ */
 
 /*
- * Derived from the payload rather than hardcoded: if nodes[] is ever resized,
- * a literal here would silently check a short tail instead of failing
+ * Derived from the payload rather than hardcoded: if the node slots are ever
+ * resized, a literal here would silently check a short tail instead of
+ * failing
  */
 #define TOPO_MAXNODE \
-    (sizeof(((TcpMeshTopologyPayload *)0)->nodes) / sizeof(TcpMeshNodeInfo))
+    ((TCP_TOPOLOGY_LEN - TCP_TOPOLOGY_NODE_OFF(0)) / TCP_MESH_NODE_LEN)
 
 struct testcase {
     const char *name;
@@ -138,6 +139,34 @@ static int read_exact(int fd, void *buf, size_t len)
         got += (size_t)ret;
     }
     return 0;
+}
+
+/* Read a message header into @hdr, in host byte order, or return -1. */
+static int read_hdr(int fd, TcpMsgHeader *hdr)
+{
+    uint8_t wire[TCP_MSG_HDR_LEN];
+
+    if (read_exact(fd, wire, sizeof(wire)) != 0) {
+        return -1;
+    }
+    tcp_msg_hdr_get(hdr, wire);
+    return 0;
+}
+
+/* A GID set's node id, its number of GIDs, and its GID slot @i */
+static uint32_t gids_node(const TcpNodeGidsWire *wire)
+{
+    return ernic_get_be32(wire->bytes + TCP_NODE_GIDS_NODE_ID_OFF);
+}
+
+static uint32_t gids_num(const TcpNodeGidsWire *wire)
+{
+    return ernic_get_be32(wire->bytes + TCP_NODE_GIDS_NUM_OFF);
+}
+
+static const uint8_t *gids_slot(const TcpNodeGidsWire *wire, uint32_t i)
+{
+    return wire->bytes + TCP_NODE_GIDS_GIDS_OFF + (size_t)i * 16;
 }
 
 /*
@@ -365,29 +394,29 @@ static int read_empty_gid_table(const struct testcase *tc, int fd,
     static const uint8_t zero[TCP_MAX_NODE_GIDS][16];
     bool seen[MAX_CASE_NODES] = {false};
     TcpMsgHeader hdr;
-    TcpNodeGidsPayload wire;
+    TcpNodeGidsWire wire;
     int fail = 0;
 
     for (uint32_t i = 0; i < carried; i++) {
-        if (read_exact(fd, &hdr, sizeof(hdr)) != 0 ||
-            read_exact(fd, &wire, sizeof(wire)) != 0) {
+        if (read_hdr(fd, &hdr) != 0 ||
+            read_exact(fd, wire.bytes, sizeof(wire.bytes)) != 0) {
             printf("FAIL %-16s: GID table ended after %u of %u message(s)\n",
                    tc->name, i, carried);
             return 1;
         }
-        if (ntohl(hdr.msg_type) != TCP_MSG_NODE_GIDS ||
-            ntohl(hdr.msg_len) != sizeof(wire)) {
+        if (hdr.msg_type != TCP_MSG_NODE_GIDS ||
+            hdr.msg_len != sizeof(wire.bytes)) {
             printf("FAIL %-16s: unexpected header type=%u len=%u\n", tc->name,
-                   ntohl(hdr.msg_type), ntohl(hdr.msg_len));
+                   hdr.msg_type, hdr.msg_len);
             fail = 1;
         }
-        fail |= check_node_id(tc, "GID", i, ntohl(wire.node_id), seen);
-        if (ntohl(wire.num_gids) != 0) {
+        fail |= check_node_id(tc, "GID", i, gids_node(&wire), seen);
+        if (gids_num(&wire) != 0) {
             printf("FAIL %-16s: GID slot %u has %u GID(s), expected none\n",
-                   tc->name, i, ntohl(wire.num_gids));
+                   tc->name, i, gids_num(&wire));
             fail = 1;
         }
-        if (memcmp(wire.gids, zero, sizeof(zero)) != 0) {
+        if (memcmp(gids_slot(&wire, 0), zero, sizeof(zero)) != 0) {
             printf("FAIL %-16s: GID slot %u has unused GIDs that aren't zero "
                    "(stack contents leaked on the wire)\n",
                    tc->name, i);
@@ -405,7 +434,7 @@ static int run_mesh_case(const struct testcase *tc)
 {
     struct fixture f;
     TcpMsgHeader hdr;
-    TcpMeshTopologyPayload wire;
+    uint8_t wire[TCP_TOPOLOGY_LEN];
     bool seen[MAX_CASE_NODES] = {false};
     uint32_t carried = carried_nodes(tc->num_nodes);
     int fail = 0;
@@ -428,29 +457,30 @@ static int run_mesh_case(const struct testcase *tc)
     /* So reading past the last message sees end-of-file, not a hang */
     shutdown(f.sv[0], SHUT_WR);
 
-    if (read_exact(f.sv[1], &hdr, sizeof(hdr)) != 0 ||
-        read_exact(f.sv[1], &wire, sizeof(wire)) != 0) {
+    if (read_hdr(f.sv[1], &hdr) != 0 ||
+        read_exact(f.sv[1], wire, sizeof(wire)) != 0) {
         printf("FAIL %-16s: short read from socketpair\n", tc->name);
         fail = 1;
         goto out;
     }
 
-    if (ntohl(hdr.msg_type) != TCP_MSG_MESH_TOPOLOGY ||
-        ntohl(hdr.msg_len) != sizeof(wire)) {
+    if (hdr.msg_type != TCP_MSG_MESH_TOPOLOGY || hdr.msg_len != sizeof(wire)) {
         printf("FAIL %-16s: unexpected header type=%u len=%u\n", tc->name,
-               ntohl(hdr.msg_type), ntohl(hdr.msg_len));
+               hdr.msg_type, hdr.msg_len);
         fail = 1;
     }
 
-    if (ntohl(wire.num_nodes) != carried) {
+    if (ernic_get_be32(wire + TCP_TOPOLOGY_NUM_NODES_OFF) != carried) {
         printf("FAIL %-16s: num_nodes %u, expected %u\n", tc->name,
-               ntohl(wire.num_nodes), carried);
+               ernic_get_be32(wire + TCP_TOPOLOGY_NUM_NODES_OFF), carried);
         fail = 1;
     }
 
     /* Live entries: hash-table order is unspecified, so match by node_id */
     for (uint32_t i = 0; i < carried; i++) {
-        uint32_t id = ntohl(wire.nodes[i].node_id);
+        const uint8_t *entry = wire + TCP_TOPOLOGY_NODE_OFF(i);
+        const char *host = (const char *)entry + TCP_MESH_NODE_HOSTNAME_OFF;
+        uint32_t id = ernic_get_be32(entry + TCP_MESH_NODE_ID_OFF);
         char expect_host[64];
 
         if (check_node_id(tc, "topology", i, id, seen) != 0) {
@@ -458,22 +488,23 @@ static int run_mesh_case(const struct testcase *tc)
             continue;
         }
         snprintf(expect_host, sizeof(expect_host), "node-%u.example", id - 100);
-        if (strcmp(wire.nodes[i].hostname, expect_host) != 0) {
-            printf("FAIL %-16s: slot %u hostname '%s', expected '%s'\n",
-                   tc->name, i, wire.nodes[i].hostname, expect_host);
+        /* The terminator too, which the field needn't have */
+        if (memcmp(host, expect_host, strlen(expect_host) + 1) != 0) {
+            printf("FAIL %-16s: slot %u hostname '%.*s', expected '%s'\n",
+                   tc->name, i, TCP_HOSTNAME_LEN, host, expect_host);
             fail = 1;
         }
-        if (ntohs(wire.nodes[i].port) != 9000 + (id - 100)) {
+        if (ernic_get_be16(entry + TCP_MESH_NODE_PORT_OFF) !=
+            9000 + (id - 100)) {
             printf("FAIL %-16s: slot %u port %u\n", tc->name, i,
-                   ntohs(wire.nodes[i].port));
+                   ernic_get_be16(entry + TCP_MESH_NODE_PORT_OFF));
             fail = 1;
         }
     }
 
     /* The point of the test: every byte past the live entries is zero */
-    const uint8_t *tail = (const uint8_t *)&wire.nodes[carried];
-    size_t tail_len =
-        (size_t)(TOPO_MAXNODE - carried) * sizeof(TcpMeshNodeInfo);
+    const uint8_t *tail = wire + TCP_TOPOLOGY_NODE_OFF(carried);
+    size_t tail_len = (size_t)(TOPO_MAXNODE - carried) * TCP_MESH_NODE_LEN;
     for (size_t i = 0; i < tail_len; i++) {
         if (tail[i] != 0) {
             printf("FAIL %-16s: unused slot byte %zu of %zu is 0x%02x, "
@@ -540,14 +571,13 @@ static const uint8_t claimed[1][16] = {{0xfe, 0x80, [15] = 1}};
  * Read one GID set from @fd into @wire; false, saying why, if it isn't one.
  * @what names the case.
  */
-static bool read_gid_set(const char *what, int fd, TcpNodeGidsPayload *wire)
+static bool read_gid_set(const char *what, int fd, TcpNodeGidsWire *wire)
 {
     TcpMsgHeader hdr;
 
-    if (read_exact(fd, &hdr, sizeof(hdr)) != 0 ||
-        ntohl(hdr.msg_type) != TCP_MSG_NODE_GIDS ||
-        ntohl(hdr.msg_len) != sizeof(*wire) ||
-        read_exact(fd, wire, sizeof(*wire)) != 0) {
+    if (read_hdr(fd, &hdr) != 0 || hdr.msg_type != TCP_MSG_NODE_GIDS ||
+        hdr.msg_len != sizeof(wire->bytes) ||
+        read_exact(fd, wire->bytes, sizeof(wire->bytes)) != 0) {
         printf("FAIL %-16s: a GID set didn't come\n", what);
         return false;
     }
@@ -558,17 +588,17 @@ static bool read_gid_set(const char *what, int fd, TcpNodeGidsPayload *wire)
  * Whether @wire, a set for node @id, carries @want GIDs, claimed if any,
  * and nothing in the slots past them
  */
-static int check_gid_set(const char *what, const TcpNodeGidsPayload *wire,
+static int check_gid_set(const char *what, const TcpNodeGidsWire *wire,
                          uint32_t id, uint32_t want)
 {
     static const uint8_t zero[TCP_MAX_NODE_GIDS][16];
 
-    if (ntohl(wire->num_gids) != want ||
-        (want && memcmp(wire->gids[0], claimed[0], 16) != 0) ||
-        memcmp(wire->gids[want], zero[0], sizeof(zero) - want * 16) != 0) {
+    if (gids_num(wire) != want ||
+        (want && memcmp(gids_slot(wire, 0), claimed[0], 16) != 0) ||
+        memcmp(gids_slot(wire, want), zero[0], sizeof(zero) - want * 16) != 0) {
         printf("FAIL %-16s: node %u's set has %u GID(s), expected %u, or "
                "isn't zero past them\n",
-               what, id, ntohl(wire->num_gids), want);
+               what, id, gids_num(wire), want);
         return 1;
     }
     return 0;
@@ -585,7 +615,7 @@ static int run_update_case(void)
 {
     static const char what[] = "update";
     struct fixture f;
-    TcpNodeGidsPayload wire;
+    TcpNodeGidsWire wire;
     bool seen[3] = {false, false, false};
     MeshNodeInfo *node;
     int fail = 0;
@@ -617,7 +647,7 @@ static int run_update_case(void)
             fail = 1;
             break;
         }
-        id = ntohl(wire.node_id);
+        id = gids_node(&wire);
         if (id == 100 && !seen[0]) {
             fail |= check_gid_set(what, &wire, id, 1);
             seen[0] = true;
@@ -702,8 +732,8 @@ static int run_order_case(void)
     struct fixture f;
     struct case_thread first = {.started = false};
     TcpMsgHeader hdr;
-    TcpMeshTopologyPayload topo;
-    TcpNodeGidsPayload wire;
+    uint8_t topo[TCP_TOPOLOGY_LEN];
+    TcpNodeGidsWire wire;
     int fail = 0;
 
     if (fixture_init(&f, tc.num_nodes) != 0) {
@@ -744,9 +774,9 @@ static int run_order_case(void)
     shutdown(f.sv[0], SHUT_WR);
 
     for (int i = 0; i < 2; i++) {
-        if (read_exact(f.sv[1], &hdr, sizeof(hdr)) != 0 ||
-            ntohl(hdr.msg_type) != TCP_MSG_MESH_TOPOLOGY ||
-            read_exact(f.sv[1], &topo, sizeof(topo)) != 0) {
+        if (read_hdr(f.sv[1], &hdr) != 0 ||
+            hdr.msg_type != TCP_MSG_MESH_TOPOLOGY ||
+            read_exact(f.sv[1], topo, sizeof(topo)) != 0) {
             printf("FAIL %-16s: topology %d didn't come, or not before the "
                    "GID set\n",
                    tc.name, i + 1);
@@ -758,9 +788,9 @@ static int run_order_case(void)
         fail = 1;
         goto out;
     }
-    if (ntohl(wire.node_id) != claimant) {
+    if (gids_node(&wire) != claimant) {
         printf("FAIL %-16s: a set for node %u, which wasn't asked for\n",
-               tc.name, ntohl(wire.node_id));
+               tc.name, gids_node(&wire));
         fail = 1;
     }
     fail |= check_gid_set(tc.name, &wire, claimant, 1);

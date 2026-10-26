@@ -3,7 +3,7 @@
  *
  * The endpoint terminates TCP on the emulated wire, so the only way to
  * reach it is with Ethernet frames. This test builds them by hand and
- * dissects what comes back, with its own packed headers and its own
+ * dissects what comes back, with its own header layouts and its own
  * checksum routine, so a header layout or checksum bug in s3_tcp.c
  * cannot hide behind the same bug in the test.
  *
@@ -26,7 +26,6 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include <arpa/inet.h>
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -79,66 +78,83 @@ static void ok(const char *name)
 
 /* ---- Wire formats, independently declared ------------------------------- */
 
-struct t_eth {
-    uint8_t dst[6];
-    uint8_t src[6];
-    uint16_t type;
-} __attribute__((packed));
+/* Each header's length and its fields' byte offsets.  Multi-byte fields are
+ * big-endian; get_be() and put_be() read and write them. */
 
-struct t_arp {
-    uint16_t hw_type;
-    uint16_t proto_type;
-    uint8_t hw_len;
-    uint8_t proto_len;
-    uint16_t op;
-    uint8_t sender_mac[6];
-    uint32_t sender_ip;
-    uint8_t target_mac[6];
-    uint32_t target_ip;
-} __attribute__((packed));
+#define ETH_LEN    ((size_t)14)
+#define T_ETH_DST  0
+#define T_ETH_SRC  6
+#define T_ETH_TYPE 12
 
-struct t_ip {
-    uint8_t version_ihl;
-    uint8_t tos;
-    uint16_t total_len;
-    uint16_t id;
-    uint16_t frag_off;
-    uint8_t ttl;
-    uint8_t protocol;
-    uint16_t checksum;
-    uint32_t src;
-    uint32_t dst;
-} __attribute__((packed));
+#define ARP_LEN          ((size_t)28)
+#define T_ARP_HW_TYPE    0
+#define T_ARP_PROTO_TYPE 2
+#define T_ARP_HW_LEN     4
+#define T_ARP_PROTO_LEN  5
+#define T_ARP_OP         6
+#define T_ARP_SENDER_MAC 8
+#define T_ARP_SENDER_IP  14
+#define T_ARP_TARGET_MAC 18
+#define T_ARP_TARGET_IP  24
 
-struct t_tcp {
-    uint16_t src_port;
-    uint16_t dst_port;
-    uint32_t seq;
-    uint32_t ack;
-    uint8_t data_off;
-    uint8_t flags;
-    uint16_t window;
-    uint16_t checksum;
-    uint16_t urgent;
-} __attribute__((packed));
+#define IP_LEN           ((size_t)20)
+#define T_IP_VERSION_IHL 0
+#define T_IP_TOTAL_LEN   2
+#define T_IP_ID          4
+#define T_IP_FRAG        6
+#define T_IP_TTL         8
+#define T_IP_PROTOCOL    9
+#define T_IP_CHECKSUM    10
+#define T_IP_SRC         12
+#define T_IP_DST         16
 
-struct t_icmp {
-    uint8_t type;
-    uint8_t code;
-    uint16_t checksum;
-    uint16_t id;
-    uint16_t seq;
-} __attribute__((packed));
+#define TCP_LEN        ((size_t)20)
+#define T_TCP_SRC_PORT 0
+#define T_TCP_DST_PORT 2
+#define T_TCP_SEQ      4
+#define T_TCP_ACK      8
+#define T_TCP_DATA_OFF 12
+#define T_TCP_FLAGS    13
+#define T_TCP_WINDOW   14
+#define T_TCP_CHECKSUM 16
 
-_Static_assert(sizeof(struct t_eth) == 14, "Ethernet header is 14 bytes");
-_Static_assert(sizeof(struct t_arp) == 28, "ARP for IPv4 is 28 bytes");
-_Static_assert(sizeof(struct t_ip) == 20, "IPv4 header is 20 bytes");
-_Static_assert(sizeof(struct t_tcp) == 20, "TCP header is 20 bytes");
-_Static_assert(sizeof(struct t_icmp) == 8, "ICMP echo header is 8 bytes");
+#define ICMP_LEN        ((size_t)8)
+#define T_ICMP_TYPE     0
+#define T_ICMP_CHECKSUM 2
+#define T_ICMP_ID       4
+#define T_ICMP_SEQ      6
 
-#define ETH_LEN ((size_t)sizeof(struct t_eth))
-#define IP_LEN  ((size_t)sizeof(struct t_ip))
-#define TCP_LEN ((size_t)sizeof(struct t_tcp))
+/* Store @value big-endian in @width bytes at @at. */
+static void put_be(uint8_t *at, unsigned width, uint32_t value)
+{
+    for (unsigned i = 0; i < width; i++)
+        at[i] = (uint8_t)(value >> (8 * (width - 1 - i)));
+}
+
+/* The big-endian value in @width bytes at @at. */
+static uint32_t get_be(const uint8_t *at, unsigned width)
+{
+    uint32_t value = 0;
+
+    for (unsigned i = 0; i < width; i++)
+        value = (value << 8) | at[i];
+    return value;
+}
+
+static uint8_t tcp_flags(const uint8_t *tcp)
+{
+    return tcp[T_TCP_FLAGS];
+}
+
+static uint32_t tcp_seq(const uint8_t *tcp)
+{
+    return get_be(tcp + T_TCP_SEQ, 4);
+}
+
+static uint32_t tcp_ack(const uint8_t *tcp)
+{
+    return get_be(tcp + T_TCP_ACK, 4);
+}
 
 /* One's-complement sum, written out rather than shared with the code
  * under test: a checksum bug has to be visible from one side or the
@@ -203,64 +219,60 @@ static void cap_reset(struct capture *c)
 
 static size_t build_arp_request(uint8_t *out, uint32_t target_ip)
 {
-    struct t_eth *eth = (struct t_eth *)out;
-    struct t_arp *arp = (struct t_arp *)(out + ETH_LEN);
+    uint8_t *arp = out + ETH_LEN;
 
-    memcpy(eth->dst, BCAST_MAC, 6);
-    memcpy(eth->src, GUEST_MAC, 6);
-    eth->type = htons(0x0806);
+    memcpy(out + T_ETH_DST, BCAST_MAC, 6);
+    memcpy(out + T_ETH_SRC, GUEST_MAC, 6);
+    put_be(out + T_ETH_TYPE, 2, 0x0806);
 
-    memset(arp, 0, sizeof(*arp));
-    arp->hw_type = htons(1);
-    arp->proto_type = htons(0x0800);
-    arp->hw_len = 6;
-    arp->proto_len = 4;
-    arp->op = htons(1);
-    memcpy(arp->sender_mac, GUEST_MAC, 6);
-    arp->sender_ip = htonl(GUEST_IP);
-    arp->target_ip = htonl(target_ip);
+    memset(arp, 0, ARP_LEN);
+    put_be(arp + T_ARP_HW_TYPE, 2, 1);
+    put_be(arp + T_ARP_PROTO_TYPE, 2, 0x0800);
+    arp[T_ARP_HW_LEN] = 6;
+    arp[T_ARP_PROTO_LEN] = 4;
+    put_be(arp + T_ARP_OP, 2, 1);
+    memcpy(arp + T_ARP_SENDER_MAC, GUEST_MAC, 6);
+    put_be(arp + T_ARP_SENDER_IP, 4, GUEST_IP);
+    put_be(arp + T_ARP_TARGET_IP, 4, target_ip);
 
-    return ETH_LEN + sizeof(*arp);
+    return ETH_LEN + ARP_LEN;
 }
 
-static struct t_ip *build_ip(uint8_t *out, const uint8_t *dst_mac,
-                             uint8_t proto, size_t payload_len)
+static void build_ip(uint8_t *out, const uint8_t *dst_mac, uint8_t proto,
+                     size_t payload_len)
 {
-    struct t_eth *eth = (struct t_eth *)out;
-    struct t_ip *ip = (struct t_ip *)(out + ETH_LEN);
+    uint8_t *ip = out + ETH_LEN;
 
-    memcpy(eth->dst, dst_mac, 6);
-    memcpy(eth->src, GUEST_MAC, 6);
-    eth->type = htons(0x0800);
+    memcpy(out + T_ETH_DST, dst_mac, 6);
+    memcpy(out + T_ETH_SRC, GUEST_MAC, 6);
+    put_be(out + T_ETH_TYPE, 2, 0x0800);
 
-    memset(ip, 0, sizeof(*ip));
-    ip->version_ihl = 0x45;
-    ip->total_len = htons((uint16_t)(IP_LEN + payload_len));
-    ip->id = htons(0x1234);
-    ip->frag_off = htons(0x4000);
-    ip->ttl = 64;
-    ip->protocol = proto;
-    ip->src = htonl(GUEST_IP);
-    ip->dst = htonl(TARGET_IP);
-    ip->checksum = htons(ones_sum(ip, IP_LEN, 0));
-
-    return ip;
+    memset(ip, 0, IP_LEN);
+    ip[T_IP_VERSION_IHL] = 0x45;
+    put_be(ip + T_IP_TOTAL_LEN, 2, (uint32_t)(IP_LEN + payload_len));
+    put_be(ip + T_IP_ID, 2, 0x1234);
+    put_be(ip + T_IP_FRAG, 2, 0x4000);
+    ip[T_IP_TTL] = 64;
+    ip[T_IP_PROTOCOL] = proto;
+    put_be(ip + T_IP_SRC, 4, GUEST_IP);
+    put_be(ip + T_IP_DST, 4, TARGET_IP);
+    put_be(ip + T_IP_CHECKSUM, 2, ones_sum(ip, IP_LEN, 0));
 }
 
 static size_t build_ping(uint8_t *out, const uint8_t *dst_mac, uint16_t id,
                          uint16_t seq, const char *data)
 {
     size_t dlen = strlen(data);
-    size_t icmp_len = sizeof(struct t_icmp) + dlen;
+    size_t icmp_len = ICMP_LEN + dlen;
+    uint8_t *icmp = out + ETH_LEN + IP_LEN;
 
     build_ip(out, dst_mac, 1, icmp_len);
-    struct t_icmp *icmp = (struct t_icmp *)(out + ETH_LEN + IP_LEN);
-    memset(icmp, 0, sizeof(*icmp));
-    icmp->type = 8; /* echo request */
-    icmp->id = htons(id);
-    icmp->seq = htons(seq);
-    memcpy((uint8_t *)icmp + sizeof(*icmp), data, dlen);
-    icmp->checksum = htons(ones_sum(icmp, icmp_len, 0));
+    memset(icmp, 0, ICMP_LEN);
+    icmp[T_ICMP_TYPE] = 8; /* echo request */
+    put_be(icmp + T_ICMP_ID, 2, id);
+    put_be(icmp + T_ICMP_SEQ, 2, seq);
+    memcpy(icmp + ICMP_LEN, data, dlen);
+    put_be(icmp + T_ICMP_CHECKSUM, 2, ones_sum(icmp, icmp_len, 0));
 
     return ETH_LEN + IP_LEN + icmp_len;
 }
@@ -273,26 +285,25 @@ static size_t build_tcp_ex(uint8_t *out, const uint8_t *dst_mac, uint16_t sport,
                            const void *payload, size_t payload_len)
 {
     size_t hdrlen = TCP_LEN + optlen;
+    uint8_t *tcp = out + ETH_LEN + IP_LEN;
 
     build_ip(out, dst_mac, 6, hdrlen + payload_len);
-    struct t_tcp *tcp = (struct t_tcp *)(out + ETH_LEN + IP_LEN);
-
-    memset(tcp, 0, sizeof(*tcp));
-    tcp->src_port = htons(sport);
-    tcp->dst_port = htons(TARGET_PORT);
-    tcp->seq = htonl(seq);
-    tcp->ack = htonl(ack);
-    tcp->data_off = (uint8_t)((hdrlen / 4) << 4);
-    tcp->flags = flags;
-    tcp->window = htons(window);
+    memset(tcp, 0, TCP_LEN);
+    put_be(tcp + T_TCP_SRC_PORT, 2, sport);
+    put_be(tcp + T_TCP_DST_PORT, 2, TARGET_PORT);
+    put_be(tcp + T_TCP_SEQ, 4, seq);
+    put_be(tcp + T_TCP_ACK, 4, ack);
+    tcp[T_TCP_DATA_OFF] = (uint8_t)((hdrlen / 4) << 4);
+    tcp[T_TCP_FLAGS] = flags;
+    put_be(tcp + T_TCP_WINDOW, 2, window);
     if (optlen)
-        memcpy((uint8_t *)tcp + TCP_LEN, opt, optlen);
+        memcpy(tcp + TCP_LEN, opt, optlen);
     if (payload_len)
-        memcpy((uint8_t *)tcp + hdrlen, payload, payload_len);
+        memcpy(tcp + hdrlen, payload, payload_len);
 
     uint32_t seed =
         pseudo_seed(GUEST_IP, TARGET_IP, 6, (uint16_t)(hdrlen + payload_len));
-    tcp->checksum = htons(ones_sum(tcp, hdrlen + payload_len, seed));
+    put_be(tcp + T_TCP_CHECKSUM, 2, ones_sum(tcp, hdrlen + payload_len, seed));
 
     return ETH_LEN + IP_LEN + hdrlen + payload_len;
 }
@@ -307,20 +318,18 @@ static size_t build_tcp(uint8_t *out, const uint8_t *dst_mac, uint16_t sport,
 
 /* ---- Frame dissection --------------------------------------------------- */
 
-static const struct t_tcp *as_tcp(const uint8_t *f, size_t len,
-                                  size_t *payload_len)
+/* The TCP header in frame @f, or NULL if @f is not a TCP segment. */
+static const uint8_t *as_tcp(const uint8_t *f, size_t len, size_t *payload_len)
 {
-    const struct t_eth *eth = (const struct t_eth *)f;
-
-    if (len < ETH_LEN + IP_LEN + TCP_LEN || ntohs(eth->type) != 0x0800)
+    if (len < ETH_LEN + IP_LEN + TCP_LEN || get_be(f + T_ETH_TYPE, 2) != 0x0800)
         return NULL;
-    const struct t_ip *ip = (const struct t_ip *)(f + ETH_LEN);
-    if (ip->protocol != 6)
+    const uint8_t *ip = f + ETH_LEN;
+    if (ip[T_IP_PROTOCOL] != 6)
         return NULL;
 
-    size_t total = ntohs(ip->total_len);
-    const struct t_tcp *tcp = (const struct t_tcp *)(f + ETH_LEN + IP_LEN);
-    size_t hdrlen = (size_t)((tcp->data_off >> 4) & 0xf) * 4;
+    size_t total = get_be(ip + T_IP_TOTAL_LEN, 2);
+    const uint8_t *tcp = ip + IP_LEN;
+    size_t hdrlen = (size_t)((tcp[T_TCP_DATA_OFF] >> 4) & 0xf) * 4;
     if (payload_len != NULL)
         *payload_len = total - IP_LEN - hdrlen;
     return tcp;
@@ -328,42 +337,41 @@ static const struct t_tcp *as_tcp(const uint8_t *f, size_t len,
 
 static const uint8_t *tcp_payload(const uint8_t *f)
 {
-    const struct t_tcp *tcp = (const struct t_tcp *)(f + ETH_LEN + IP_LEN);
-    size_t hdrlen = (size_t)((tcp->data_off >> 4) & 0xf) * 4;
+    const uint8_t *tcp = f + ETH_LEN + IP_LEN;
+    size_t hdrlen = (size_t)((tcp[T_TCP_DATA_OFF] >> 4) & 0xf) * 4;
 
-    return f + ETH_LEN + IP_LEN + hdrlen;
+    return tcp + hdrlen;
 }
 
 /* Recompute both checksums the way a receiving NIC would. */
 static bool checksums_ok(const char *name, const uint8_t *f, size_t len)
 {
-    const struct t_eth *eth = (const struct t_eth *)f;
-
-    if (len < ETH_LEN || ntohs(eth->type) != 0x0800)
+    if (len < ETH_LEN || get_be(f + T_ETH_TYPE, 2) != 0x0800)
         return true; /* ARP carries no checksum */
 
-    const struct t_ip *ip = (const struct t_ip *)(f + ETH_LEN);
+    const uint8_t *ip = f + ETH_LEN;
     if (ones_sum(ip, IP_LEN, 0) != 0) {
         fail(name, "IP checksum is wrong");
         return false;
     }
 
-    size_t total = ntohs(ip->total_len);
+    size_t total = get_be(ip + T_IP_TOTAL_LEN, 2);
     if (ETH_LEN + total > len) {
         fail(name, "IP total_len %zu overruns the %zu byte frame", total, len);
         return false;
     }
     size_t l4len = total - IP_LEN;
-    const uint8_t *l4 = f + ETH_LEN + IP_LEN;
+    const uint8_t *l4 = ip + IP_LEN;
 
-    if (ip->protocol == 6) {
+    if (ip[T_IP_PROTOCOL] == 6) {
         uint32_t seed =
-            pseudo_seed(ntohl(ip->src), ntohl(ip->dst), 6, (uint16_t)l4len);
+            pseudo_seed(get_be(ip + T_IP_SRC, 4), get_be(ip + T_IP_DST, 4), 6,
+                        (uint16_t)l4len);
         if (ones_sum(l4, l4len, seed) != 0) {
             fail(name, "TCP checksum is wrong");
             return false;
         }
-    } else if (ip->protocol == 1) {
+    } else if (ip[T_IP_PROTOCOL] == 1) {
         if (ones_sum(l4, l4len, 0) != 0) {
             fail(name, "ICMP checksum is wrong");
             return false;
@@ -561,22 +569,23 @@ static bool handshake_opt(struct fixture *fx, const char *name, uint16_t sport,
     if (!checksums_ok(name, fx->cap.f[0].buf, fx->cap.f[0].len))
         return false;
 
-    const struct t_tcp *tcp = as_tcp(fx->cap.f[0].buf, fx->cap.f[0].len, NULL);
+    const uint8_t *tcp = as_tcp(fx->cap.f[0].buf, fx->cap.f[0].len, NULL);
     if (tcp == NULL ||
-        (tcp->flags & (FLAG_SYN | FLAG_ACK)) != (FLAG_SYN | FLAG_ACK)) {
+        (tcp_flags(tcp) & (FLAG_SYN | FLAG_ACK)) != (FLAG_SYN | FLAG_ACK)) {
         fail(name, "the answer to a SYN was not a SYN|ACK (flags 0x%02x)",
-             tcp ? (unsigned)tcp->flags : 0u);
+             tcp ? (unsigned)tcp_flags(tcp) : 0u);
         return false;
     }
-    if (ntohl(tcp->ack) != client_iss + 1) {
-        fail(name, "SYN|ACK acks %u, want %u", ntohl(tcp->ack), client_iss + 1);
+    if (tcp_ack(tcp) != client_iss + 1) {
+        fail(name, "SYN|ACK acks %u, want %u", tcp_ack(tcp), client_iss + 1);
         return false;
     }
-    if (ntohs(tcp->src_port) != TARGET_PORT) {
-        fail(name, "SYN|ACK came from port %u", ntohs(tcp->src_port));
+    if (get_be(tcp + T_TCP_SRC_PORT, 2) != TARGET_PORT) {
+        fail(name, "SYN|ACK came from port %u",
+             get_be(tcp + T_TCP_SRC_PORT, 2));
         return false;
     }
-    *srv_seq = ntohl(tcp->seq) + 1;
+    *srv_seq = tcp_seq(tcp) + 1;
 
     cap_reset(&fx->cap);
     n = build_tcp(fx->frame, fx->mac, sport, client_iss + 1, *srv_seq, FLAG_ACK,
@@ -696,23 +705,24 @@ static void test_arp(void)
     }
 
     const uint8_t *f = fx.cap.f[0].buf;
-    const struct t_eth *eth = (const struct t_eth *)f;
-    const struct t_arp *arp = (const struct t_arp *)(f + ETH_LEN);
+    const uint8_t *arp = f + ETH_LEN;
 
-    if (ntohs(eth->type) != 0x0806)
-        fail(name, "reply ethertype 0x%04x", ntohs(eth->type));
-    if (memcmp(eth->dst, GUEST_MAC, 6) != 0)
+    if (get_be(f + T_ETH_TYPE, 2) != 0x0806)
+        fail(name, "reply ethertype 0x%04x", get_be(f + T_ETH_TYPE, 2));
+    if (memcmp(f + T_ETH_DST, GUEST_MAC, 6) != 0)
         fail(name, "reply was not unicast back to the requester");
-    if (memcmp(eth->src, fx.mac, 6) != 0)
+    if (memcmp(f + T_ETH_SRC, fx.mac, 6) != 0)
         fail(name, "reply source MAC is not the endpoint's");
-    if (ntohs(arp->op) != 2)
-        fail(name, "ARP op %u, want 2 (reply)", ntohs(arp->op));
-    if (ntohl(arp->sender_ip) != TARGET_IP)
-        fail(name, "reply sender IP 0x%08x", ntohl(arp->sender_ip));
-    if (memcmp(arp->sender_mac, fx.mac, 6) != 0)
+    if (get_be(arp + T_ARP_OP, 2) != 2)
+        fail(name, "ARP op %u, want 2 (reply)", get_be(arp + T_ARP_OP, 2));
+    if (get_be(arp + T_ARP_SENDER_IP, 4) != TARGET_IP)
+        fail(name, "reply sender IP 0x%08x", get_be(arp + T_ARP_SENDER_IP, 4));
+    if (memcmp(arp + T_ARP_SENDER_MAC, fx.mac, 6) != 0)
         fail(name, "reply advertises the wrong MAC for our address");
-    if (ntohl(arp->target_ip) != GUEST_IP)
-        fail(name, "reply target IP 0x%08x", ntohl(arp->target_ip));
+    if (memcmp(arp + T_ARP_TARGET_MAC, GUEST_MAC, 6) != 0)
+        fail(name, "reply is not addressed to the requester's MAC");
+    if (get_be(arp + T_ARP_TARGET_IP, 4) != GUEST_IP)
+        fail(name, "reply target IP 0x%08x", get_be(arp + T_ARP_TARGET_IP, 4));
     if (fx.cap.f[0].len < 60)
         fail(name, "reply is %zu bytes, short of the Ethernet minimum",
              fx.cap.f[0].len);
@@ -752,20 +762,20 @@ static void test_ping(void)
         goto out;
 
     const uint8_t *f = fx.cap.f[0].buf;
-    const struct t_ip *ip = (const struct t_ip *)(f + ETH_LEN);
-    const struct t_icmp *icmp = (const struct t_icmp *)(f + ETH_LEN + IP_LEN);
+    const uint8_t *ip = f + ETH_LEN;
+    const uint8_t *icmp = ip + IP_LEN;
 
-    if (ip->protocol != 1)
-        fail(name, "reply protocol %u, want ICMP", ip->protocol);
-    if (ntohl(ip->dst) != GUEST_IP)
-        fail(name, "reply addressed to 0x%08x", ntohl(ip->dst));
-    if (icmp->type != 0)
-        fail(name, "ICMP type %u, want 0 (echo reply)", icmp->type);
-    if (ntohs(icmp->id) != 0x4242 || ntohs(icmp->seq) != 7)
+    if (ip[T_IP_PROTOCOL] != 1)
+        fail(name, "reply protocol %u, want ICMP", ip[T_IP_PROTOCOL]);
+    if (get_be(ip + T_IP_DST, 4) != GUEST_IP)
+        fail(name, "reply addressed to 0x%08x", get_be(ip + T_IP_DST, 4));
+    if (icmp[T_ICMP_TYPE] != 0)
+        fail(name, "ICMP type %u, want 0 (echo reply)", icmp[T_ICMP_TYPE]);
+    if (get_be(icmp + T_ICMP_ID, 2) != 0x4242 ||
+        get_be(icmp + T_ICMP_SEQ, 2) != 7)
         fail(name, "reply id/seq %u/%u do not match the request",
-             ntohs(icmp->id), ntohs(icmp->seq));
-    if (memcmp(f + ETH_LEN + IP_LEN + sizeof(*icmp), payload,
-               strlen(payload)) != 0)
+             get_be(icmp + T_ICMP_ID, 2), get_be(icmp + T_ICMP_SEQ, 2));
+    if (memcmp(icmp + ICMP_LEN, payload, strlen(payload)) != 0)
         fail(name, "the echo payload did not come back intact");
 
     ok(name);
@@ -813,12 +823,11 @@ static void test_request_response(void)
     uint32_t expect = srv;
     for (unsigned i = 0; i < fx.cap.n; i++) {
         size_t plen = 0;
-        const struct t_tcp *tcp =
-            as_tcp(fx.cap.f[i].buf, fx.cap.f[i].len, &plen);
+        const uint8_t *tcp = as_tcp(fx.cap.f[i].buf, fx.cap.f[i].len, &plen);
         if (tcp == NULL || plen == 0)
             continue;
-        if (ntohl(tcp->seq) != expect) {
-            fail(name, "segment %u has seq %u, want %u", i, ntohl(tcp->seq),
+        if (tcp_seq(tcp) != expect) {
+            fail(name, "segment %u has seq %u, want %u", i, tcp_seq(tcp),
                  expect);
             break;
         }
@@ -827,9 +836,8 @@ static void test_request_response(void)
 
     /* No FIN while a keep-alive response is still outstanding. */
     for (unsigned i = 0; i < fx.cap.n; i++) {
-        const struct t_tcp *tcp =
-            as_tcp(fx.cap.f[i].buf, fx.cap.f[i].len, NULL);
-        if (tcp != NULL && (tcp->flags & FLAG_FIN))
+        const uint8_t *tcp = as_tcp(fx.cap.f[i].buf, fx.cap.f[i].len, NULL);
+        if (tcp != NULL && (tcp_flags(tcp) & FLAG_FIN))
             fail(name, "the endpoint closed a keep-alive connection");
     }
 
@@ -872,9 +880,8 @@ static void test_request_response(void)
 
     bool fin = false;
     for (unsigned i = 0; i < fx.cap.n; i++) {
-        const struct t_tcp *tcp =
-            as_tcp(fx.cap.f[i].buf, fx.cap.f[i].len, NULL);
-        if (tcp != NULL && (tcp->flags & FLAG_FIN))
+        const uint8_t *tcp = as_tcp(fx.cap.f[i].buf, fx.cap.f[i].len, NULL);
+        if (tcp != NULL && (tcp_flags(tcp) & FLAG_FIN))
             fin = true;
     }
     if (!fin)
@@ -927,9 +934,8 @@ static size_t transact(struct fixture *fx, const char *name, uint16_t sport,
 
     bool fin = false;
     for (unsigned i = 0; i < fx->cap.n; i++) {
-        const struct t_tcp *tcp =
-            as_tcp(fx->cap.f[i].buf, fx->cap.f[i].len, NULL);
-        if (tcp != NULL && (tcp->flags & FLAG_FIN))
+        const uint8_t *tcp = as_tcp(fx->cap.f[i].buf, fx->cap.f[i].len, NULL);
+        if (tcp != NULL && (tcp_flags(tcp) & FLAG_FIN))
             fin = true;
     }
     if (!fin) {
@@ -1157,17 +1163,16 @@ static void test_stray_segment(void)
         fail(name, "a stray segment produced %u frames, want 1", fx.cap.n);
         goto out;
     }
-    const struct t_tcp *tcp = as_tcp(fx.cap.f[0].buf, fx.cap.f[0].len, NULL);
-    if (tcp == NULL || !(tcp->flags & FLAG_RST))
+    const uint8_t *tcp = as_tcp(fx.cap.f[0].buf, fx.cap.f[0].len, NULL);
+    if (tcp == NULL || !(tcp_flags(tcp) & FLAG_RST))
         fail(name, "a stray segment was not reset (flags 0x%02x)",
-             tcp ? (unsigned)tcp->flags : 0u);
+             tcp ? (unsigned)tcp_flags(tcp) : 0u);
     checksums_ok(name, fx.cap.f[0].buf, fx.cap.f[0].len);
 
     /* Another port on the same wire is not ours. */
     cap_reset(&fx.cap);
     n = build_tcp(fx.frame, fx.mac, 40001, 1, 0, FLAG_SYN, NULL, 0);
-    struct t_tcp *t = (struct t_tcp *)(fx.frame + ETH_LEN + IP_LEN);
-    t->dst_port = htons(TARGET_PORT + 1);
+    put_be(fx.frame + ETH_LEN + IP_LEN + T_TCP_DST_PORT, 2, TARGET_PORT + 1);
     if (s3_tcp_rx_frame(fx.tcp, fx.frame, n, 0))
         fail(name, "consumed a segment for somebody else's port");
     if (fx.cap.n != 0)
@@ -1176,8 +1181,7 @@ static void test_stray_segment(void)
     /* And neither is a frame addressed to another MAC. */
     cap_reset(&fx.cap);
     n = build_tcp(fx.frame, fx.mac, 40002, 1, 0, FLAG_SYN, NULL, 0);
-    struct t_eth *eth = (struct t_eth *)fx.frame;
-    eth->dst[5] ^= 0xff;
+    fx.frame[T_ETH_DST + 5] ^= 0xff;
     if (s3_tcp_rx_frame(fx.tcp, fx.frame, n, 0))
         fail(name, "consumed a frame addressed to another station");
 
@@ -1214,8 +1218,8 @@ static void test_conn_limit(void)
         fail(name, "the refused SYN produced %u frames, want 1", fx.cap.n);
         goto out;
     }
-    const struct t_tcp *tcp = as_tcp(fx.cap.f[0].buf, fx.cap.f[0].len, NULL);
-    if (tcp == NULL || !(tcp->flags & FLAG_RST))
+    const uint8_t *tcp = as_tcp(fx.cap.f[0].buf, fx.cap.f[0].len, NULL);
+    if (tcp == NULL || !(tcp_flags(tcp) & FLAG_RST))
         fail(name, "a SYN with no slot free was not reset");
     if (s3_tcp_conn_count(fx.tcp) != slots)
         fail(name, "the refused SYN still consumed a slot");
@@ -1366,7 +1370,7 @@ static void test_oversized_stream(void)
 
         for (unsigned j = 0; j < fx.cap.n; j++) {
             size_t plen = 0;
-            const struct t_tcp *tcp =
+            const uint8_t *tcp =
                 as_tcp(fx.cap.f[j].buf, fx.cap.f[j].len, &plen);
             if (tcp == NULL)
                 continue;
@@ -1379,9 +1383,9 @@ static void test_oversized_stream(void)
                     memcmp(tcp_payload(fx.cap.f[j].buf), "HTTP/1.1", 8) == 0)
                     responses++;
             }
-            if (tcp->flags & FLAG_FIN) {
+            if (tcp_flags(tcp) & FLAG_FIN) {
                 fin_seen = true;
-                fin_seq = ntohl(tcp->seq);
+                fin_seq = tcp_seq(tcp);
             }
         }
     }
@@ -1528,9 +1532,8 @@ static void test_probe_close(void)
 
     bool fin = false;
     for (unsigned i = 0; i < fx.cap.n; i++) {
-        const struct t_tcp *tcp =
-            as_tcp(fx.cap.f[i].buf, fx.cap.f[i].len, NULL);
-        if (tcp != NULL && (tcp->flags & FLAG_FIN))
+        const uint8_t *tcp = as_tcp(fx.cap.f[i].buf, fx.cap.f[i].len, NULL);
+        if (tcp != NULL && (tcp_flags(tcp) & FLAG_FIN))
             fin = true;
     }
     if (!fin) {
@@ -1543,9 +1546,8 @@ static void test_probe_close(void)
                   0);
     s3_tcp_rx_frame(fx.tcp, fx.frame, n, 21);
     for (unsigned i = 0; i < fx.cap.n; i++) {
-        const struct t_tcp *tcp =
-            as_tcp(fx.cap.f[i].buf, fx.cap.f[i].len, NULL);
-        if (tcp != NULL && (tcp->flags & FLAG_RST))
+        const uint8_t *tcp = as_tcp(fx.cap.f[i].buf, fx.cap.f[i].len, NULL);
+        if (tcp != NULL && (tcp_flags(tcp) & FLAG_RST))
             fail(name, "the ACK of our FIN drew a reset");
     }
     if (s3_tcp_conn_count(fx.tcp) != 0)
@@ -1576,9 +1578,9 @@ static const uint8_t *only_data_frame(const struct capture *cap, size_t *plen)
     return found;
 }
 
-static const struct t_tcp *frame_tcp(const uint8_t *f)
+static const uint8_t *frame_tcp(const uint8_t *f)
 {
-    return (const struct t_tcp *)(f + ETH_LEN + IP_LEN);
+    return f + ETH_LEN + IP_LEN;
 }
 
 /*
@@ -1606,7 +1608,7 @@ static void test_retransmit_data(void)
     s3_tcp_rx_frame(fx.tcp, fx.frame, n, 20);
 
     const uint8_t *f = only_data_frame(&fx.cap, &first_len);
-    if (f == NULL || ntohl(frame_tcp(f)->seq) != srv) {
+    if (f == NULL || tcp_seq(frame_tcp(f)) != srv) {
         fail(name, "the response was not one segment at seq %u", srv);
         goto out;
     }
@@ -1634,9 +1636,9 @@ static void test_retransmit_data(void)
                  fx.cap.n);
             goto out;
         }
-        if (ntohl(frame_tcp(f)->seq) != srv)
+        if (tcp_seq(frame_tcp(f)) != srv)
             fail(name, "resend %u at seq %u, want %u", i + 1,
-                 ntohl(frame_tcp(f)->seq), srv);
+                 tcp_seq(frame_tcp(f)), srv);
         if (plen != first_len || memcmp(tcp_payload(f), first, plen) != 0)
             fail(name, "resend %u is not the bytes first sent", i + 1);
     }
@@ -1676,9 +1678,9 @@ static void test_retransmit_fin(void)
     size_t n = build_tcp(fx.frame, fx.mac, GUEST_PORT, 1001, srv,
                          FLAG_ACK | FLAG_FIN, NULL, 0);
     s3_tcp_rx_frame(fx.tcp, fx.frame, n, 20);
-    const struct t_tcp *tcp =
+    const uint8_t *tcp =
         fx.cap.n == 1 ? as_tcp(fx.cap.f[0].buf, fx.cap.f[0].len, NULL) : NULL;
-    if (tcp == NULL || !(tcp->flags & FLAG_FIN) || ntohl(tcp->seq) != srv) {
+    if (tcp == NULL || !(tcp_flags(tcp) & FLAG_FIN) || tcp_seq(tcp) != srv) {
         fail(name, "the peer's FIN was not answered with a FIN at seq %u", srv);
         goto out;
     }
@@ -1690,11 +1692,11 @@ static void test_retransmit_fin(void)
     s3_tcp_poll(fx.tcp, 220);
     check_all_checksums(name, &fx.cap);
     tcp = fx.cap.n == 1 ? as_tcp(fx.cap.f[0].buf, fx.cap.f[0].len, NULL) : NULL;
-    if (tcp == NULL || tcp->flags != (FLAG_FIN | FLAG_ACK))
+    if (tcp == NULL || tcp_flags(tcp) != (FLAG_FIN | FLAG_ACK))
         fail(name, "the timer did not resend the FIN");
-    else if (ntohl(tcp->seq) != srv || ntohl(tcp->ack) != 1002)
+    else if (tcp_seq(tcp) != srv || tcp_ack(tcp) != 1002)
         fail(name, "the FIN was resent as seq %u ack %u, want %u and 1002",
-             ntohl(tcp->seq), ntohl(tcp->ack), srv);
+             tcp_seq(tcp), tcp_ack(tcp), srv);
     if (s3_tcp_statistics(fx.tcp)->retransmits != 1)
         fail(name, "retransmits counter %" PRIu64 ", want 1",
              s3_tcp_statistics(fx.tcp)->retransmits);
@@ -1739,13 +1741,13 @@ static void test_retransmit_syn_ack(void)
     size_t n =
         build_tcp(fx.frame, fx.mac, GUEST_PORT, 500, 0, FLAG_SYN, NULL, 0);
     s3_tcp_rx_frame(fx.tcp, fx.frame, n, 0);
-    const struct t_tcp *tcp =
+    const uint8_t *tcp =
         fx.cap.n == 1 ? as_tcp(fx.cap.f[0].buf, fx.cap.f[0].len, NULL) : NULL;
-    if (tcp == NULL || tcp->flags != (FLAG_SYN | FLAG_ACK)) {
+    if (tcp == NULL || tcp_flags(tcp) != (FLAG_SYN | FLAG_ACK)) {
         fail(name, "the SYN was not answered with a SYN|ACK");
         goto out;
     }
-    srv_iss = ntohl(tcp->seq);
+    srv_iss = tcp_seq(tcp);
 
     for (uint64_t now = 100; now <= 2 * want_reset && reset_at == 0;
          now += 100) {
@@ -1762,20 +1764,20 @@ static void test_retransmit_syn_ack(void)
             tcp = as_tcp(fx.cap.f[i].buf, fx.cap.f[i].len, NULL);
             if (tcp == NULL)
                 continue;
-            if (tcp->flags & FLAG_RST) {
+            if (tcp_flags(tcp) & FLAG_RST) {
                 reset_at = now;
-            } else if (tcp->flags == (FLAG_SYN | FLAG_ACK)) {
-                if (ntohl(tcp->seq) != srv_iss || ntohl(tcp->ack) != 501)
-                    fail(name, "SYN|ACK resent as seq %u ack %u",
-                         ntohl(tcp->seq), ntohl(tcp->ack));
-                if ((tcp->data_off >> 4) != 6)
+            } else if (tcp_flags(tcp) == (FLAG_SYN | FLAG_ACK)) {
+                if (tcp_seq(tcp) != srv_iss || tcp_ack(tcp) != 501)
+                    fail(name, "SYN|ACK resent as seq %u ack %u", tcp_seq(tcp),
+                         tcp_ack(tcp));
+                if ((tcp[T_TCP_DATA_OFF] >> 4) != 6)
                     fail(name, "SYN|ACK resent without its MSS option");
                 if (sent < sizeof(sent_at) / sizeof(sent_at[0]))
                     sent_at[sent] = now;
                 sent++;
             } else {
                 fail(name, "unexpected flags 0x%02x at %" PRIu64,
-                     (unsigned)tcp->flags, now);
+                     (unsigned)tcp_flags(tcp), now);
             }
         }
     }
@@ -1922,7 +1924,7 @@ static void test_zero_window(void)
 
         size_t plen = 0;
         const uint8_t *f = only_data_frame(&fx.cap, &plen);
-        if (f == NULL || plen != 1 || ntohl(frame_tcp(f)->seq) != srv + i) {
+        if (f == NULL || plen != 1 || tcp_seq(frame_tcp(f)) != srv + i) {
             fail(name, "into a zero window, segment %u was not 1 byte at %u", i,
                  srv + i);
             goto out;
@@ -2007,9 +2009,9 @@ static void test_reset_segments(void)
     cap_reset(&fx.cap);
     n = build_tcp(fx.frame, fx.mac, GUEST_PORT, 1001, srv, FLAG_ACK, "x", 1);
     s3_tcp_rx_frame(fx.tcp, fx.frame, n, 40);
-    const struct t_tcp *tcp =
+    const uint8_t *tcp =
         fx.cap.n == 1 ? as_tcp(fx.cap.f[0].buf, fx.cap.f[0].len, NULL) : NULL;
-    if (tcp == NULL || !(tcp->flags & FLAG_RST))
+    if (tcp == NULL || !(tcp_flags(tcp) & FLAG_RST))
         fail(name, "data on a reset connection was not reset");
 
     cap_reset(&fx.cap);
@@ -2018,11 +2020,11 @@ static void test_reset_segments(void)
     s3_tcp_rx_frame(fx.tcp, fx.frame, n, 50);
     check_all_checksums(name, &fx.cap);
     tcp = fx.cap.n == 1 ? as_tcp(fx.cap.f[0].buf, fx.cap.f[0].len, NULL) : NULL;
-    if (tcp == NULL || tcp->flags != FLAG_RST)
+    if (tcp == NULL || tcp_flags(tcp) != FLAG_RST)
         fail(name, "a stray SYN|ACK was not answered with a bare RST");
-    else if (ntohl(tcp->seq) != 0x12345678u)
+    else if (tcp_seq(tcp) != 0x12345678u)
         fail(name, "the RST has seq 0x%08x, want the SYN|ACK's ack",
-             ntohl(tcp->seq));
+             tcp_seq(tcp));
     if (s3_tcp_conn_count(fx.tcp) != 0)
         fail(name, "a stray SYN|ACK opened a connection");
 
@@ -2033,16 +2035,14 @@ out:
 
 /* ---- Malformed frames ---------------------------------------------------- */
 
-#define ARP_LEN       ((size_t)sizeof(struct t_arp))
-#define ICMP_LEN      ((size_t)sizeof(struct t_icmp))
 #define PING_DATA     "ping"
 #define PING_DATA_LEN (sizeof(PING_DATA) - 1)
 
-#define ETH_FIELD(f)  offsetof(struct t_eth, f)
-#define IP_FIELD(f)   (ETH_LEN + offsetof(struct t_ip, f))
-#define TCP_FIELD(f)  (ETH_LEN + IP_LEN + offsetof(struct t_tcp, f))
-#define ARP_FIELD(f)  (ETH_LEN + offsetof(struct t_arp, f))
-#define ICMP_FIELD(f) (ETH_LEN + IP_LEN + offsetof(struct t_icmp, f))
+#define ETH_FIELD(f)  ((size_t)T_ETH_##f)
+#define IP_FIELD(f)   (ETH_LEN + T_IP_##f)
+#define TCP_FIELD(f)  (ETH_LEN + IP_LEN + T_TCP_##f)
+#define ARP_FIELD(f)  (ETH_LEN + T_ARP_##f)
+#define ICMP_FIELD(f) (ETH_LEN + IP_LEN + T_ICMP_##f)
 #define NO_FIELD      SIZE_MAX
 
 enum frame_base { BASE_SYN, BASE_PING, BASE_ARP };
@@ -2059,13 +2059,6 @@ static size_t build_base(struct fixture *fx, enum frame_base base)
     default:
         return 0;
     }
-}
-
-/* Store @value big-endian in @width bytes at @at. */
-static void put_be(uint8_t *at, unsigned width, uint32_t value)
-{
-    for (unsigned i = 0; i < width; i++)
-        at[i] = (uint8_t)(value >> (8 * (width - 1 - i)));
 }
 
 /*
@@ -2090,38 +2083,38 @@ static void test_malformed_frames(void)
         size_t len; /* bytes to offer, or 0 for the whole frame */
     } cases[] = {
         {"runt Ethernet frame", BASE_SYN, NO_FIELD, 0, 0, ETH_LEN - 1},
-        {"IPv6 ethertype", BASE_SYN, ETH_FIELD(type), 2, 0x86dd, 0},
+        {"IPv6 ethertype", BASE_SYN, ETH_FIELD(TYPE), 2, 0x86dd, 0},
         {"IP header cut short", BASE_SYN, NO_FIELD, 0, 0, ETH_LEN + IP_LEN - 1},
-        {"IP version 6", BASE_SYN, IP_FIELD(version_ihl), 1, 0x65, 0},
-        {"IP header under 20 bytes", BASE_SYN, IP_FIELD(version_ihl), 1, 0x44,
+        {"IP version 6", BASE_SYN, IP_FIELD(VERSION_IHL), 1, 0x65, 0},
+        {"IP header under 20 bytes", BASE_SYN, IP_FIELD(VERSION_IHL), 1, 0x44,
          0},
-        {"IP total length under the header", BASE_SYN, IP_FIELD(total_len), 2,
+        {"IP total length under the header", BASE_SYN, IP_FIELD(TOTAL_LEN), 2,
          IP_LEN - 1, 0},
-        {"IP options cut short", BASE_SYN, IP_FIELD(version_ihl), 1, 0x46,
+        {"IP options cut short", BASE_SYN, IP_FIELD(VERSION_IHL), 1, 0x46,
          ETH_LEN + 24 - 1}, /* a 24-byte header */
-        {"IP to another address", BASE_SYN, IP_FIELD(dst), 4, TARGET_IP + 1, 0},
-        {"IP more fragments", BASE_SYN, IP_FIELD(frag_off), 2, 0x2000, 0},
-        {"IP fragment offset", BASE_SYN, IP_FIELD(frag_off), 2, 0x0001, 0},
-        {"UDP", BASE_SYN, IP_FIELD(protocol), 1, 17, 0},
-        {"TCP header cut short", BASE_SYN, IP_FIELD(total_len), 2,
+        {"IP to another address", BASE_SYN, IP_FIELD(DST), 4, TARGET_IP + 1, 0},
+        {"IP more fragments", BASE_SYN, IP_FIELD(FRAG), 2, 0x2000, 0},
+        {"IP fragment offset", BASE_SYN, IP_FIELD(FRAG), 2, 0x0001, 0},
+        {"UDP", BASE_SYN, IP_FIELD(PROTOCOL), 1, 17, 0},
+        {"TCP header cut short", BASE_SYN, IP_FIELD(TOTAL_LEN), 2,
          IP_LEN + TCP_LEN - 1, 0},
-        {"TCP total length past the frame", BASE_SYN, IP_FIELD(total_len), 2,
+        {"TCP total length past the frame", BASE_SYN, IP_FIELD(TOTAL_LEN), 2,
          IP_LEN + TCP_LEN + 1, 0},
-        {"TCP data offset under 20 bytes", BASE_SYN, TCP_FIELD(data_off), 1,
+        {"TCP data offset under 20 bytes", BASE_SYN, TCP_FIELD(DATA_OFF), 1,
          4 << 4, 0},
-        {"TCP data offset past the segment", BASE_SYN, TCP_FIELD(data_off), 1,
+        {"TCP data offset past the segment", BASE_SYN, TCP_FIELD(DATA_OFF), 1,
          6 << 4, 0},
         {"ARP cut short", BASE_ARP, NO_FIELD, 0, 0, ETH_LEN + ARP_LEN - 1},
-        {"ARP hardware type", BASE_ARP, ARP_FIELD(hw_type), 2, 6, 0},
-        {"ARP protocol type", BASE_ARP, ARP_FIELD(proto_type), 2, 0x86dd, 0},
-        {"ARP hardware length", BASE_ARP, ARP_FIELD(hw_len), 1, 8, 0},
-        {"ARP protocol length", BASE_ARP, ARP_FIELD(proto_len), 1, 16, 0},
-        {"ARP reply", BASE_ARP, ARP_FIELD(op), 2, 2, 0},
-        {"ICMP header cut short", BASE_PING, IP_FIELD(total_len), 2,
+        {"ARP hardware type", BASE_ARP, ARP_FIELD(HW_TYPE), 2, 6, 0},
+        {"ARP protocol type", BASE_ARP, ARP_FIELD(PROTO_TYPE), 2, 0x86dd, 0},
+        {"ARP hardware length", BASE_ARP, ARP_FIELD(HW_LEN), 1, 8, 0},
+        {"ARP protocol length", BASE_ARP, ARP_FIELD(PROTO_LEN), 1, 16, 0},
+        {"ARP reply", BASE_ARP, ARP_FIELD(OP), 2, 2, 0},
+        {"ICMP header cut short", BASE_PING, IP_FIELD(TOTAL_LEN), 2,
          IP_LEN + ICMP_LEN - 1, 0},
-        {"ICMP total length past the frame", BASE_PING, IP_FIELD(total_len), 2,
+        {"ICMP total length past the frame", BASE_PING, IP_FIELD(TOTAL_LEN), 2,
          IP_LEN + ICMP_LEN + PING_DATA_LEN + 1, 0},
-        {"ICMP echo reply", BASE_PING, ICMP_FIELD(type), 1, 0, 0},
+        {"ICMP echo reply", BASE_PING, ICMP_FIELD(TYPE), 1, 0, 0},
     };
 
     if (!fixture_up(&fx, name, 0))
@@ -2266,9 +2259,9 @@ static void test_create(void)
     cap_reset(&fx.cap);
     size_t n = build_tcp(fx.frame, fx.mac, 50999, 100, 0, FLAG_SYN, NULL, 0);
     s3_tcp_rx_frame(fx.tcp, fx.frame, n, 10);
-    const struct t_tcp *tcp =
+    const uint8_t *tcp =
         fx.cap.n == 1 ? as_tcp(fx.cap.f[0].buf, fx.cap.f[0].len, NULL) : NULL;
-    if (tcp == NULL || !(tcp->flags & FLAG_RST))
+    if (tcp == NULL || !(tcp_flags(tcp) & FLAG_RST))
         fail(name, "connection %d was not refused", S3_TCP_MAX_CONNS + 1);
     if (s3_tcp_conn_count(fx.tcp) != S3_TCP_MAX_CONNS)
         fail(name, "%u connections open, want %d", s3_tcp_conn_count(fx.tcp),
@@ -2343,9 +2336,9 @@ static void test_response_too_large(void)
     s3_tcp_rx_frame(fx.tcp, fx.frame, n, 20);
     check_all_checksums(name, &fx.cap);
 
-    const struct t_tcp *tcp =
+    const uint8_t *tcp =
         fx.cap.n == 1 ? as_tcp(fx.cap.f[0].buf, fx.cap.f[0].len, NULL) : NULL;
-    if (tcp == NULL || !(tcp->flags & FLAG_RST))
+    if (tcp == NULL || !(tcp_flags(tcp) & FLAG_RST))
         fail(name, "an unqueueable response drew %u frames, not one RST",
              fx.cap.n);
     if (s3_tcp_conn_count(fx.tcp) != 0)
@@ -2414,12 +2407,12 @@ static void read_answer(const struct capture *cap, struct answer *a)
     memset(a, 0, sizeof(*a));
     for (unsigned i = 0; i < cap->n; i++) {
         size_t plen = 0;
-        const struct t_tcp *tcp = as_tcp(cap->f[i].buf, cap->f[i].len, &plen);
+        const uint8_t *tcp = as_tcp(cap->f[i].buf, cap->f[i].len, &plen);
         if (tcp == NULL)
             continue;
-        if (tcp->flags & FLAG_RST)
+        if (tcp_flags(tcp) & FLAG_RST)
             a->reset = true;
-        if (tcp->flags & FLAG_FIN)
+        if (tcp_flags(tcp) & FLAG_FIN)
             a->fin = true;
         if (plen > 0 && a->first[0] == '\0') {
             size_t n =

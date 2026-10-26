@@ -9,12 +9,12 @@
 #define _GNU_SOURCE
 #endif
 
-#include <arpa/inet.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
 
+#include "byteorder.h"
 #include "ernic_err.h"
 #include "net/net_headers.h"
 #include "s3_http.h"
@@ -97,34 +97,7 @@ struct s3_tcp {
 /* Checksums                                                          */
 /* ------------------------------------------------------------------ */
 
-/*
- * A computed zero is sent as-is.  Substituting 0xffff for it is the UDP
- * rule; in TCP a zero checksum is a legal value, and substituting for it
- * makes roughly one segment in 65536 arrive corrupt.
- */
-static uint32_t csum_add(uint32_t sum, const void *data, size_t len)
-{
-    const uint8_t *p = data;
-
-    while (len > 1) {
-        sum += ((uint32_t)p[0] << 8) | p[1];
-        p += 2;
-        len -= 2;
-    }
-    if (len > 0) {
-        sum += (uint32_t)p[0] << 8;
-    }
-    return sum;
-}
-
-static uint16_t csum_fold(uint32_t sum)
-{
-    while (sum >> 16) {
-        sum = (sum & 0xffff) + (sum >> 16);
-    }
-    return htons((uint16_t)~sum);
-}
-
+/* The sum of the TCP pseudo-header, for net_csum_add() to start from. */
 static uint32_t csum_pseudo(uint32_t src, uint32_t dst, uint8_t proto,
                             uint16_t len)
 {
@@ -211,25 +184,26 @@ static void send_frame(struct s3_tcp *s, size_t len)
 static uint8_t *build_ip(struct s3_tcp *s, const uint8_t dst_mac[6],
                          uint32_t dst_ip, uint8_t proto, size_t payload_len)
 {
-    struct eth_header *eth = (struct eth_header *)s->frame;
-    struct ip_header *ip = (struct ip_header *)(s->frame + sizeof(*eth));
+    uint8_t *eth = s->frame;
+    uint8_t *ip = s->frame + ETH_HDR_LEN;
 
-    memcpy(eth->dst_mac, dst_mac, 6);
-    memcpy(eth->src_mac, s->cfg.mac, 6);
-    eth->ethertype = htons(ETH_ETHERTYPE_IP);
+    memcpy(eth + ETH_DST_OFF, dst_mac, 6);
+    memcpy(eth + ETH_SRC_OFF, s->cfg.mac, 6);
+    ernic_put_be16(eth + ETH_TYPE_OFF, ETH_ETHERTYPE_IP);
 
-    memset(ip, 0, sizeof(*ip));
-    ip->version_ihl = 0x45;
-    ip->total_len = htons((uint16_t)(sizeof(*ip) + payload_len));
-    ip->id = htons(s->ip_id++);
-    ip->frag_off = htons(0x4000); /* don't fragment */
-    ip->ttl = 64;
-    ip->protocol = proto;
-    ip->src_ip = htonl(s->cfg.ip);
-    ip->dst_ip = htonl(dst_ip);
-    ip->checksum = csum_fold(csum_add(0, ip, sizeof(*ip)));
+    memset(ip, 0, IP_HDR_LEN);
+    ip[IP_VERSION_IHL_OFF] = 0x45;
+    ernic_put_be16(ip + IP_TOTAL_LEN_OFF, (uint16_t)(IP_HDR_LEN + payload_len));
+    ernic_put_be16(ip + IP_ID_OFF, s->ip_id++);
+    ernic_put_be16(ip + IP_FRAGMENT_OFF, 0x4000); /* don't fragment */
+    ip[IP_TTL_OFF] = 64;
+    ip[IP_PROTOCOL_OFF] = proto;
+    ernic_put_be32(ip + IP_SRC_OFF, s->cfg.ip);
+    ernic_put_be32(ip + IP_DST_OFF, dst_ip);
+    ernic_put_be16(ip + IP_CHECKSUM_OFF,
+                   net_csum_fold(net_csum_add(0, ip, IP_HDR_LEN)));
 
-    return s->frame + sizeof(*eth) + sizeof(*ip);
+    return ip + IP_HDR_LEN;
 }
 
 static void send_tcp(struct s3_tcp *s, const struct s3_conn *c, uint32_t seq,
@@ -237,38 +211,36 @@ static void send_tcp(struct s3_tcp *s, const struct s3_conn *c, uint32_t seq,
                      bool with_mss)
 {
     size_t optlen = with_mss ? 4 : 0;
-    size_t hdrlen = sizeof(struct tcp_header) + optlen;
+    size_t hdrlen = TCP_HDR_LEN + optlen;
 
-    uint8_t *p = build_ip(s, c->peer_mac, c->peer_ip, IP_PROTOCOL_TCP,
-                          hdrlen + payload_len);
-    struct tcp_header *tcp = (struct tcp_header *)p;
+    uint8_t *tcp = build_ip(s, c->peer_mac, c->peer_ip, IP_PROTOCOL_TCP,
+                            hdrlen + payload_len);
 
-    memset(tcp, 0, sizeof(*tcp));
-    tcp->src_port = htons(s->cfg.port);
-    tcp->dst_port = htons(c->peer_port);
-    tcp->seq = htonl(seq);
-    tcp->ack = htonl(c->rcv_nxt);
-    tcp->data_off = (uint8_t)((hdrlen / 4) << 4);
-    tcp->flags = flags;
-    tcp->window = htons(S3_TCP_WINDOW);
+    memset(tcp, 0, TCP_HDR_LEN);
+    ernic_put_be16(tcp + TCP_SRC_PORT_OFF, s->cfg.port);
+    ernic_put_be16(tcp + TCP_DST_PORT_OFF, c->peer_port);
+    ernic_put_be32(tcp + TCP_SEQ_OFF, seq);
+    ernic_put_be32(tcp + TCP_ACK_OFF, c->rcv_nxt);
+    tcp[TCP_DATA_OFFSET_OFF] = (uint8_t)((hdrlen / 4) << 4);
+    tcp[TCP_FLAGS_OFF] = flags;
+    ernic_put_be16(tcp + TCP_WINDOW_OFF, S3_TCP_WINDOW);
 
     if (with_mss) {
-        uint8_t *opt = p + sizeof(*tcp);
+        uint8_t *opt = tcp + TCP_HDR_LEN;
         opt[0] = 2; /* MSS */
         opt[1] = 4;
-        opt[2] = (uint8_t)(S3_TCP_MSS_DEFAULT >> 8);
-        opt[3] = (uint8_t)S3_TCP_MSS_DEFAULT;
+        ernic_put_be16(opt + 2, S3_TCP_MSS_DEFAULT);
     }
     if (payload_len > 0) {
-        memcpy(p + hdrlen, payload, payload_len);
+        memcpy(tcp + hdrlen, payload, payload_len);
     }
 
     uint32_t sum = csum_pseudo(s->cfg.ip, c->peer_ip, IP_PROTOCOL_TCP,
                                (uint16_t)(hdrlen + payload_len));
-    tcp->checksum = csum_fold(csum_add(sum, p, hdrlen + payload_len));
+    ernic_put_be16(tcp + TCP_CHECKSUM_OFF,
+                   net_csum_fold(net_csum_add(sum, tcp, hdrlen + payload_len)));
 
-    send_frame(s, sizeof(struct eth_header) + sizeof(struct ip_header) +
-                      hdrlen + payload_len);
+    send_frame(s, ETH_HDR_LEN + IP_HDR_LEN + hdrlen + payload_len);
 }
 
 /*
@@ -297,79 +269,76 @@ static void send_reset(struct s3_tcp *s, const uint8_t peer_mac[6],
 
 static bool handle_arp(struct s3_tcp *s, const uint8_t *frame, size_t len)
 {
-    const struct eth_header *eth = (const struct eth_header *)frame;
-    const struct arp_header *arp;
+    const uint8_t *arp;
 
-    if (len < sizeof(*eth) + sizeof(*arp)) {
+    if (len < ETH_HDR_LEN + ARP_LEN) {
         return false;
     }
-    arp = (const struct arp_header *)(frame + sizeof(*eth));
+    arp = frame + ETH_HDR_LEN;
 
-    if (ntohs(arp->hw_type) != 1 ||
-        ntohs(arp->proto_type) != ETH_ETHERTYPE_IP || arp->hw_addr_len != 6 ||
-        arp->proto_addr_len != 4 || ntohs(arp->op) != ARP_OP_REQUEST) {
+    if (ernic_get_be16(arp + ARP_HW_TYPE_OFF) != ARP_HW_TYPE_ETHERNET ||
+        ernic_get_be16(arp + ARP_PROTO_TYPE_OFF) != ETH_ETHERTYPE_IP ||
+        arp[ARP_HW_LEN_OFF] != 6 || arp[ARP_PROTO_LEN_OFF] != 4 ||
+        ernic_get_be16(arp + ARP_OP_OFF) != ARP_OP_REQUEST) {
         return false;
     }
-    if (ntohl(arp->target_proto_addr) != s->cfg.ip) {
+    if (ernic_get_be32(arp + ARP_TARGET_IP_OFF) != s->cfg.ip) {
         return false;
     }
 
-    struct eth_header *reth = (struct eth_header *)s->frame;
-    struct arp_header *rarp = (struct arp_header *)(s->frame + sizeof(*reth));
+    uint8_t *reth = s->frame;
+    uint8_t *rarp = s->frame + ETH_HDR_LEN;
 
-    memcpy(reth->dst_mac, arp->sender_hw_addr, 6);
-    memcpy(reth->src_mac, s->cfg.mac, 6);
-    reth->ethertype = htons(ETH_ETHERTYPE_ARP);
+    memcpy(reth + ETH_DST_OFF, arp + ARP_SENDER_MAC_OFF, 6);
+    memcpy(reth + ETH_SRC_OFF, s->cfg.mac, 6);
+    ernic_put_be16(reth + ETH_TYPE_OFF, ETH_ETHERTYPE_ARP);
 
-    rarp->hw_type = htons(1);
-    rarp->proto_type = htons(ETH_ETHERTYPE_IP);
-    rarp->hw_addr_len = 6;
-    rarp->proto_addr_len = 4;
-    rarp->op = htons(ARP_OP_REPLY);
-    memcpy(rarp->sender_hw_addr, s->cfg.mac, 6);
-    rarp->sender_proto_addr = htonl(s->cfg.ip);
-    memcpy(rarp->target_hw_addr, arp->sender_hw_addr, 6);
-    rarp->target_proto_addr = arp->sender_proto_addr;
+    ernic_put_be16(rarp + ARP_HW_TYPE_OFF, ARP_HW_TYPE_ETHERNET);
+    ernic_put_be16(rarp + ARP_PROTO_TYPE_OFF, ETH_ETHERTYPE_IP);
+    rarp[ARP_HW_LEN_OFF] = 6;
+    rarp[ARP_PROTO_LEN_OFF] = 4;
+    ernic_put_be16(rarp + ARP_OP_OFF, ARP_OP_REPLY);
+    memcpy(rarp + ARP_SENDER_MAC_OFF, s->cfg.mac, 6);
+    ernic_put_be32(rarp + ARP_SENDER_IP_OFF, s->cfg.ip);
+    memcpy(rarp + ARP_TARGET_MAC_OFF, arp + ARP_SENDER_MAC_OFF, 6);
+    memcpy(rarp + ARP_TARGET_IP_OFF, arp + ARP_SENDER_IP_OFF, 4);
 
     s->stats.arp_replies++;
-    send_frame(s, sizeof(*reth) + sizeof(*rarp));
+    send_frame(s, ETH_HDR_LEN + ARP_LEN);
     return true;
 }
 
 static bool handle_icmp(struct s3_tcp *s, const uint8_t *frame, size_t len,
-                        const struct ip_header *ip, size_t ip_hdr_len)
+                        const uint8_t *ip, size_t ip_hdr_len)
 {
-    size_t off = sizeof(struct eth_header) + ip_hdr_len;
-    size_t total = ntohs(ip->total_len);
+    size_t off = ETH_HDR_LEN + ip_hdr_len;
+    size_t total = ernic_get_be16(ip + IP_TOTAL_LEN_OFF);
 
-    if (total < ip_hdr_len + sizeof(struct icmp_header) ||
-        len < sizeof(struct eth_header) + total) {
+    if (total < ip_hdr_len + ICMP_HDR_LEN || len < ETH_HDR_LEN + total) {
         return false;
     }
-    const struct icmp_header *icmp = (const struct icmp_header *)(frame + off);
-    if (icmp->type != ICMP_TYPE_ECHO_REQUEST) {
+    const uint8_t *icmp = frame + off;
+    if (icmp[ICMP_TYPE_OFF] != ICMP_TYPE_ECHO_REQUEST) {
         return false;
     }
 
     size_t icmp_len = total - ip_hdr_len;
-    if (sizeof(struct eth_header) + sizeof(struct ip_header) + icmp_len >
-        FRAME_MAX) {
+    if (ETH_HDR_LEN + IP_HDR_LEN + icmp_len > FRAME_MAX) {
         return false;
     }
 
-    const struct eth_header *eth = (const struct eth_header *)frame;
-    uint8_t *p = build_ip(s, eth->src_mac, ntohl(ip->src_ip), IP_PROTOCOL_ICMP,
-                          icmp_len);
-    memcpy(p, icmp, icmp_len);
+    uint8_t *reply =
+        build_ip(s, frame + ETH_SRC_OFF, ernic_get_be32(ip + IP_SRC_OFF),
+                 IP_PROTOCOL_ICMP, icmp_len);
+    memcpy(reply, icmp, icmp_len);
 
-    struct icmp_header *reply = (struct icmp_header *)p;
-    reply->type = ICMP_TYPE_ECHO_REPLY;
-    reply->checksum = 0;
-    reply->checksum = csum_fold(csum_add(0, p, icmp_len));
+    reply[ICMP_TYPE_OFF] = ICMP_TYPE_ECHO_REPLY;
+    ernic_put_be16(reply + ICMP_CHECKSUM_OFF, 0);
+    ernic_put_be16(reply + ICMP_CHECKSUM_OFF,
+                   net_csum_fold(net_csum_add(0, reply, icmp_len)));
 
     s->stats.pings++;
-    send_frame(s,
-               sizeof(struct eth_header) + sizeof(struct ip_header) + icmp_len);
+    send_frame(s, ETH_HDR_LEN + IP_HDR_LEN + icmp_len);
     return true;
 }
 
@@ -595,39 +564,39 @@ static void conn_reset(struct s3_tcp *s, struct s3_conn *c)
 }
 
 static bool handle_tcp(struct s3_tcp *s, const uint8_t *frame, size_t len,
-                       const struct ip_header *ip, size_t ip_hdr_len,
-                       uint64_t now_ms)
+                       const uint8_t *ip, size_t ip_hdr_len, uint64_t now_ms)
 {
-    const struct eth_header *eth = (const struct eth_header *)frame;
-    size_t total = ntohs(ip->total_len);
-    size_t off = sizeof(*eth) + ip_hdr_len;
+    const uint8_t *peer_mac = frame + ETH_SRC_OFF;
+    size_t total = ernic_get_be16(ip + IP_TOTAL_LEN_OFF);
+    size_t off = ETH_HDR_LEN + ip_hdr_len;
 
-    if (total < ip_hdr_len + sizeof(struct tcp_header) ||
-        len < sizeof(*eth) + total) {
+    if (total < ip_hdr_len + TCP_HDR_LEN || len < ETH_HDR_LEN + total) {
         return false;
     }
 
-    const struct tcp_header *tcp = (const struct tcp_header *)(frame + off);
-    size_t tcp_hdr_len = (size_t)((tcp->data_off >> 4) & 0xf) * 4;
-    if (tcp_hdr_len < sizeof(*tcp) || ip_hdr_len + tcp_hdr_len > total) {
+    const uint8_t *tcp = frame + off;
+    size_t tcp_hdr_len = (size_t)((tcp[TCP_DATA_OFFSET_OFF] >> 4) & 0xf) * 4;
+    if (tcp_hdr_len < TCP_HDR_LEN || ip_hdr_len + tcp_hdr_len > total) {
         return false;
     }
-    if (ntohs(tcp->dst_port) != s->cfg.port) {
+    if (ernic_get_be16(tcp + TCP_DST_PORT_OFF) != s->cfg.port) {
         return false;
     }
 
     /* Only now is the segment definitely ours, so only now do frames
      * count as consumed rather than passed on. */
-    uint32_t peer_ip = ntohl(ip->src_ip);
-    uint16_t peer_port = ntohs(tcp->src_port);
-    uint32_t seq = ntohl(tcp->seq);
-    uint32_t ack = ntohl(tcp->ack);
+    uint32_t peer_ip = ernic_get_be32(ip + IP_SRC_OFF);
+    uint16_t peer_port = ernic_get_be16(tcp + TCP_SRC_PORT_OFF);
+    uint32_t seq = ernic_get_be32(tcp + TCP_SEQ_OFF);
+    uint32_t ack = ernic_get_be32(tcp + TCP_ACK_OFF);
+    uint16_t window = ernic_get_be16(tcp + TCP_WINDOW_OFF);
+    uint8_t flags = tcp[TCP_FLAGS_OFF];
     const uint8_t *payload = frame + off + tcp_hdr_len;
     size_t payload_len = total - ip_hdr_len - tcp_hdr_len;
 
     struct s3_conn *c = conn_find(s, peer_ip, peer_port);
 
-    if (tcp->flags & TCP_FLAG_RST) {
+    if (flags & TCP_FLAG_RST) {
         if (c != NULL) {
             conn_free(c);
         }
@@ -635,32 +604,31 @@ static bool handle_tcp(struct s3_tcp *s, const uint8_t *frame, size_t len,
     }
 
     if (c == NULL) {
-        if (!(tcp->flags & TCP_FLAG_SYN) || (tcp->flags & TCP_FLAG_ACK)) {
-            send_reset(s, eth->src_mac, peer_ip, peer_port, ack,
+        if (!(flags & TCP_FLAG_SYN) || (flags & TCP_FLAG_ACK)) {
+            send_reset(s, peer_mac, peer_ip, peer_port, ack,
                        seq + (uint32_t)payload_len, TCP_FLAG_RST);
             return true;
         }
         c = conn_alloc(s);
         if (c == NULL) {
             s->stats.refused++;
-            send_reset(s, eth->src_mac, peer_ip, peer_port, 0, seq + 1,
+            send_reset(s, peer_mac, peer_ip, peer_port, 0, seq + 1,
                        TCP_FLAG_RST | TCP_FLAG_ACK);
             return true;
         }
 
         memset(c, 0, sizeof(*c));
         c->state = S3_CONN_SYN_RCVD;
-        memcpy(c->peer_mac, eth->src_mac, 6);
+        memcpy(c->peer_mac, peer_mac, 6);
         c->peer_ip = peer_ip;
         c->peer_port = peer_port;
         c->rcv_nxt = seq + 1;
         c->snd_una = s->iss;
         s->iss += 0x01000000u;
-        c->peer_win = ntohs(tcp->window);
+        c->peer_win = window;
         c->mss = S3_TCP_MSS_DEFAULT;
 
-        uint32_t pm =
-            parse_mss(frame + off + sizeof(*tcp), tcp_hdr_len - sizeof(*tcp));
+        uint32_t pm = parse_mss(tcp + TCP_HDR_LEN, tcp_hdr_len - TCP_HDR_LEN);
         if (pm >= S3_TCP_MSS_FLOOR && pm < c->mss) {
             c->mss = pm;
         }
@@ -673,14 +641,14 @@ static bool handle_tcp(struct s3_tcp *s, const uint8_t *frame, size_t len,
     }
 
     c->last_rx_ms = now_ms;
-    memcpy(c->peer_mac, eth->src_mac, 6);
-    c->peer_win = ntohs(tcp->window);
+    memcpy(c->peer_mac, peer_mac, 6);
+    c->peer_win = window;
     if (c->peer_win == 0) {
         c->peer_win = 1; /* keep the pump probing rather than wedging */
     }
 
     if (c->state == S3_CONN_SYN_RCVD) {
-        if (!(tcp->flags & TCP_FLAG_ACK)) {
+        if (!(flags & TCP_FLAG_ACK)) {
             return true;
         }
         /* Our SYN consumed one sequence number; the ACK for it moves
@@ -691,7 +659,7 @@ static bool handle_tcp(struct s3_tcp *s, const uint8_t *frame, size_t len,
         c->rto_at = 0;
     }
 
-    if (tcp->flags & TCP_FLAG_ACK) {
+    if (flags & TCP_FLAG_ACK) {
         uint32_t acked = ack - c->snd_una;
         /* Positive as a 32-bit signed difference: ack is past snd_una */
         if (acked != 0 && (acked & SEQ_SIGN) == 0) {
@@ -757,8 +725,7 @@ static bool handle_tcp(struct s3_tcp *s, const uint8_t *frame, size_t len,
         need_ack = true;
     }
 
-    if ((tcp->flags & TCP_FLAG_FIN) && seq_le(seq, c->rcv_nxt) &&
-        !c->peer_fin) {
+    if ((flags & TCP_FLAG_FIN) && seq_le(seq, c->rcv_nxt) && !c->peer_fin) {
         c->peer_fin = true;
         c->rcv_nxt++;
         c->fin_queued = true;
@@ -869,52 +836,52 @@ bool s3_tcp_rx_frame(struct s3_tcp *s, const void *frame, size_t len,
 {
     const uint8_t *f = frame;
 
-    if (len < sizeof(struct eth_header)) {
+    if (len < ETH_HDR_LEN) {
         return false;
     }
-    const struct eth_header *eth = (const struct eth_header *)f;
 
     /* Unicast to us or broadcast; anything else is not ours to answer. */
     static const uint8_t bcast[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
-    if (memcmp(eth->dst_mac, s->cfg.mac, 6) != 0 &&
-        memcmp(eth->dst_mac, bcast, 6) != 0) {
+    if (memcmp(f + ETH_DST_OFF, s->cfg.mac, 6) != 0 &&
+        memcmp(f + ETH_DST_OFF, bcast, 6) != 0) {
         return false;
     }
 
     s->stats.frames_rx++;
 
-    uint16_t ethertype = ntohs(eth->ethertype);
+    uint16_t ethertype = ernic_get_be16(f + ETH_TYPE_OFF);
     if (ethertype == ETH_ETHERTYPE_ARP) {
         return handle_arp(s, f, len);
     }
     if (ethertype != ETH_ETHERTYPE_IP) {
         return false;
     }
-    if (len < sizeof(*eth) + sizeof(struct ip_header)) {
+    if (len < ETH_HDR_LEN + IP_HDR_LEN) {
         return false;
     }
 
-    const struct ip_header *ip = (const struct ip_header *)(f + sizeof(*eth));
-    if ((ip->version_ihl >> 4) != 4) {
+    const uint8_t *ip = f + ETH_HDR_LEN;
+    if ((ip[IP_VERSION_IHL_OFF] >> 4) != 4) {
         return false;
     }
-    size_t ip_hdr_len = (size_t)(ip->version_ihl & 0x0f) * 4;
-    if (ip_hdr_len < sizeof(*ip) || ntohs(ip->total_len) < ip_hdr_len ||
-        len < sizeof(*eth) + ip_hdr_len) {
+    size_t ip_hdr_len = (size_t)(ip[IP_VERSION_IHL_OFF] & 0x0f) * 4;
+    if (ip_hdr_len < IP_HDR_LEN ||
+        ernic_get_be16(ip + IP_TOTAL_LEN_OFF) < ip_hdr_len ||
+        len < ETH_HDR_LEN + ip_hdr_len) {
         return false;
     }
-    if (ntohl(ip->dst_ip) != s->cfg.ip) {
+    if (ernic_get_be32(ip + IP_DST_OFF) != s->cfg.ip) {
         return false;
     }
     /* A fragmented control-plane request would be a bug somewhere else. */
-    if ((ntohs(ip->frag_off) & 0x3fff) != 0) {
+    if ((ernic_get_be16(ip + IP_FRAGMENT_OFF) & 0x3fff) != 0) {
         return false;
     }
 
-    if (ip->protocol == IP_PROTOCOL_ICMP) {
+    if (ip[IP_PROTOCOL_OFF] == IP_PROTOCOL_ICMP) {
         return handle_icmp(s, f, len, ip, ip_hdr_len);
     }
-    if (ip->protocol == IP_PROTOCOL_TCP) {
+    if (ip[IP_PROTOCOL_OFF] == IP_PROTOCOL_TCP) {
         return handle_tcp(s, f, len, ip, ip_hdr_len, now_ms);
     }
     return false;

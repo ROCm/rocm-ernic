@@ -15,6 +15,7 @@
  */
 
 #include "rdma_backend_tcp_priv.h"
+#include "byteorder.h"
 #include "rdma_utils.h"
 #include "ernic_time.h"
 #include "qemu/thread.h"
@@ -25,7 +26,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <glib.h>
-#include <arpa/inet.h>
 #include <unistd.h>
 #include <poll.h>
 #include <time.h>
@@ -177,7 +177,7 @@ int tcp_worker_register_with_manager(TcpBackendPrivate *priv,
                                      const atomic_bool *running,
                                      uint64_t deadline_ms)
 {
-    TcpRegisterNodePayload reg;
+    uint8_t reg[TCP_REGISTER_NODE_LEN];
     TcpConnection *conn;
     char hostname[256];
     uint32_t local = tcp_local_node(priv);
@@ -217,18 +217,21 @@ int tcp_worker_register_with_manager(TcpBackendPrivate *priv,
     }
 
     /* Prepare registration payload */
-    memset(&reg, 0, sizeof(reg));
-    g_strlcpy(reg.hostname, hostname, sizeof(reg.hostname));
-    reg.port = htons(priv->listen_port);
-    reg.requested_node_id = htonl(local != 0 ? local : 0xFFFFFFFF);
-    reg.version = htonl(TCP_PROTOCOL_VERSION);
+    memset(reg, 0, sizeof(reg));
+    /* Terminated within the field, by the zeroing above */
+    memcpy(reg + TCP_REGISTER_NODE_HOSTNAME_OFF, hostname,
+           strnlen(hostname, TCP_HOSTNAME_LEN - 1));
+    ernic_put_be16(reg + TCP_REGISTER_NODE_PORT_OFF, priv->listen_port);
+    ernic_put_be32(reg + TCP_REGISTER_NODE_REQUESTED_OFF,
+                   local != 0 ? local : 0xFFFFFFFF);
+    ernic_put_be32(reg + TCP_REGISTER_NODE_VERSION_OFF, TCP_PROTOCOL_VERSION);
 
     /* Send registration request, under conn->lock like every write to a
      * connection's socket: its receive thread is already running and
      * writes to the socket too. */
     qemu_mutex_lock(&conn->lock);
     ret = tcp_send_message(
-        priv, conn, TCP_MSG_REGISTER_NODE, &reg, sizeof(reg),
+        priv, conn, TCP_MSG_REGISTER_NODE, reg, sizeof(reg),
         atomic_fetch_add_explicit(&priv->next_seq, 1, memory_order_relaxed),
         local, 0, 0, 0);
     qemu_mutex_unlock(&conn->lock);
@@ -258,14 +261,14 @@ int tcp_worker_register_with_manager(TcpBackendPrivate *priv,
  * at once; the manager, node 0, is already connected through manager_conn.
  */
 static void tcp_topology_targets(const TcpBackendPrivate *priv,
-                                 const TcpMeshTopologyPayload *topo,
-                                 uint32_t num_nodes, GArray *targets)
+                                 const uint8_t *topo, uint32_t num_nodes,
+                                 GArray *targets)
 {
     uint32_t local = tcp_local_node(priv);
 
-    for (uint32_t i = 0; i < num_nodes && i < G_N_ELEMENTS(topo->nodes); i++) {
-        const TcpMeshNodeInfo *entry = &topo->nodes[i];
-        uint32_t peer_id = ntohl(entry->node_id);
+    for (uint32_t i = 0; i < num_nodes && i < TCP_MAX_MESH_NODES; i++) {
+        const uint8_t *entry = topo + TCP_TOPOLOGY_NODE_OFF(i);
+        uint32_t peer_id = ernic_get_be32(entry + TCP_MESH_NODE_ID_OFF);
         TcpPeerTarget target;
 
         if (peer_id == local) {
@@ -280,7 +283,7 @@ static void tcp_topology_targets(const TcpBackendPrivate *priv,
         }
 
         /* A connect to a node the manager can't reach would only wait */
-        if (!entry->is_alive) {
+        if (!entry[TCP_MESH_NODE_ALIVE_OFF]) {
             rdma_info_report("TCP: Skipping connection to peer %u, which the "
                              "manager reports dead",
                              peer_id);
@@ -289,9 +292,10 @@ static void tcp_topology_targets(const TcpBackendPrivate *priv,
 
         target.node_id = peer_id;
         /* Not g_strlcpy(): the peer's hostname may not be terminated */
-        strncpy(target.host, entry->hostname, sizeof(target.host) - 1);
+        strncpy(target.host, (const char *)entry + TCP_MESH_NODE_HOSTNAME_OFF,
+                sizeof(target.host) - 1);
         target.host[sizeof(target.host) - 1] = '\0';
-        target.port = ntohs(entry->port);
+        target.port = ernic_get_be16(entry + TCP_MESH_NODE_PORT_OFF);
         g_array_append_val(targets, target);
     }
 }
@@ -302,8 +306,7 @@ static void tcp_topology_targets(const TcpBackendPrivate *priv,
  * update came on, which must not wait on a connect: it also answers the
  * manager's heartbeats.
  */
-static void tcp_worker_set_peers(TcpBackendPrivate *priv,
-                                 const TcpMeshTopologyPayload *topo,
+static void tcp_worker_set_peers(TcpBackendPrivate *priv, const uint8_t *topo,
                                  uint32_t num_nodes)
 {
     GArray *targets = g_array_new(FALSE, FALSE, sizeof(TcpPeerTarget));
@@ -422,9 +425,10 @@ bool tcp_worker_publish_peer(TcpBackendPrivate *priv,
 static int tcp_send_handshake(TcpConnection *conn, uint32_t local_node_id,
                               TcpMsgType msg_type)
 {
-    TcpHandshakePayload payload;
-    payload.node_id = htonl(local_node_id);
-    payload.version = htonl(TCP_PROTOCOL_VERSION);
+    uint8_t payload[TCP_HANDSHAKE_LEN];
+
+    ernic_put_be32(payload + TCP_HANDSHAKE_NODE_ID_OFF, local_node_id);
+    ernic_put_be32(payload + TCP_HANDSHAKE_VERSION_OFF, TCP_PROTOCOL_VERSION);
 
     /*
      * The connection is published in priv->conn_table before
@@ -435,7 +439,7 @@ static int tcp_send_handshake(TcpConnection *conn, uint32_t local_node_id,
      */
     qemu_mutex_lock(&conn->lock);
     int ret =
-        tcp_send_message(conn->priv, conn, msg_type, &payload, sizeof(payload),
+        tcp_send_message(conn->priv, conn, msg_type, payload, sizeof(payload),
                          1, local_node_id, conn->node_id, 0, 0);
     qemu_mutex_unlock(&conn->lock);
     return ret;
@@ -782,7 +786,7 @@ void tcp_stop_peer_thread(TcpBackendPrivate *priv)
  */
 static uint32_t tcp_register_resp_id(const TcpRecvMsg *msg, int32_t *result)
 {
-    const TcpRegisterRespPayload *resp = msg->payload;
+    const uint8_t *resp = msg->payload;
     uint32_t resp_id;
 
     *result = 0;
@@ -791,7 +795,7 @@ static uint32_t tcp_register_resp_id(const TcpRecvMsg *msg, int32_t *result)
         return 0;
     }
 
-    resp_id = ntohl(resp->assigned_node_id);
+    resp_id = ernic_get_be32(resp + TCP_REGISTER_RESP_NODE_ID_OFF);
 
     /*
      * The other half of the check the manager makes: a pre-v4 manager sends
@@ -801,8 +805,8 @@ static uint32_t tcp_register_resp_id(const TcpRecvMsg *msg, int32_t *result)
      */
     uint32_t mgr_version = 0;
 
-    if (msg->hdr.msg_len >= sizeof(TcpRegisterRespPayload)) {
-        mgr_version = ntohl(resp->version);
+    if (msg->hdr.msg_len >= TCP_REGISTER_RESP_LEN) {
+        mgr_version = ernic_get_be32(resp + TCP_REGISTER_RESP_VERSION_OFF);
     }
 
     if (mgr_version != TCP_PROTOCOL_VERSION) {
@@ -818,7 +822,7 @@ static uint32_t tcp_register_resp_id(const TcpRecvMsg *msg, int32_t *result)
      * with a cast is implementation-defined for every negative value, so
      * the negative ones are rebuilt from their distance below 2^32.
      */
-    uint32_t raw = ntohl(resp->result);
+    uint32_t raw = ernic_get_be32(resp + TCP_REGISTER_RESP_RESULT_OFF);
     *result =
         raw <= INT32_MAX ? (int32_t)raw : -(int32_t)(UINT32_MAX - raw) - 1;
     if (*result < 0 && *result != INT32_MIN) {
@@ -909,7 +913,7 @@ void tcp_worker_recv_register_resp(TcpConnection *conn, const TcpRecvMsg *msg)
 void tcp_worker_recv_topology(const TcpConnection *conn, const TcpRecvMsg *msg)
 {
     TcpBackendPrivate *priv = conn->priv;
-    const TcpMeshTopologyPayload *topo = msg->payload;
+    const uint8_t *topo = msg->payload;
     uint32_t num_nodes;
 
     if (!priv || priv->is_manager) {
@@ -917,7 +921,7 @@ void tcp_worker_recv_topology(const TcpConnection *conn, const TcpRecvMsg *msg)
         return;
     }
 
-    if (!topo || msg->hdr.msg_len < sizeof(TcpMeshTopologyPayload)) {
+    if (!topo || msg->hdr.msg_len < TCP_TOPOLOGY_LEN) {
         rdma_error_report("TCP: Invalid MESH_TOPOLOGY payload");
         return;
     }
@@ -942,7 +946,7 @@ void tcp_worker_recv_topology(const TcpConnection *conn, const TcpRecvMsg *msg)
         return;
     }
 
-    num_nodes = ntohl(topo->num_nodes);
+    num_nodes = ernic_get_be32(topo + TCP_TOPOLOGY_NUM_NODES_OFF);
 
     rdma_info_report("TCP: Received mesh topology with %u nodes", num_nodes);
 
@@ -964,7 +968,7 @@ static bool tcp_worker_recv_handshake(const TcpBackendPrivate *priv, int sockfd,
                                       uint32_t *node_id, uint32_t *version)
 {
     uint64_t deadline_ms = ernic_monotonic_ms() + TCP_HANDSHAKE_TIMEOUT_MS;
-    const TcpHandshakePayload *hs;
+    const uint8_t *hs;
     TcpMsgHeader hdr;
     void *payload;
     int ret;
@@ -1011,16 +1015,16 @@ static bool tcp_worker_recv_handshake(const TcpBackendPrivate *priv, int sockfd,
     }
 
     /* The length is the peer's to choose, down to no payload at all */
-    if (!payload || hdr.msg_len < sizeof(TcpHandshakePayload)) {
-        rdma_error_report("TCP: Handshake payload is %u bytes, need %zu",
-                          hdr.msg_len, sizeof(TcpHandshakePayload));
+    if (!payload || hdr.msg_len < TCP_HANDSHAKE_LEN) {
+        rdma_error_report("TCP: Handshake payload is %u bytes, need %d",
+                          hdr.msg_len, TCP_HANDSHAKE_LEN);
         free(payload);
         return false;
     }
 
     hs = payload;
-    *node_id = ntohl(hs->node_id);
-    *version = ntohl(hs->version);
+    *node_id = ernic_get_be32(hs + TCP_HANDSHAKE_NODE_ID_OFF);
+    *version = ernic_get_be32(hs + TCP_HANDSHAKE_VERSION_OFF);
     free(payload);
     return true;
 }

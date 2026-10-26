@@ -171,6 +171,7 @@
 #include <glib.h>
 #include <infiniband/verbs.h>
 
+#include "byteorder.h"
 #include "ernic_time.h"
 #include "qemu/error-report.h"
 #include "qemu/thread.h"
@@ -630,6 +631,22 @@ static const struct health_case health_cases[] = {
      BLOCKED, LONG_INTERVAL_S, false, 2, 1, true},
 };
 
+/*
+ * Put a message header on the wire at buf, as a peer does: a message of type
+ * from node src, announcing len bytes of payload, with its other fields 0.
+ */
+static void put_hdr(uint8_t *buf, TcpMsgType type, uint32_t len, uint32_t src)
+{
+    TcpMsgHeader hdr;
+
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.magic = TCP_PROTOCOL_MAGIC;
+    hdr.msg_type = type;
+    hdr.msg_len = len;
+    hdr.src_node_id = src;
+    tcp_msg_hdr_put(buf, &hdr);
+}
+
 /* Wait up to timeout_ms for one message on fd, and check its type. */
 static bool recv_type(int fd, TcpMsgType type, int timeout_ms)
 {
@@ -844,19 +861,14 @@ static TcpConnection *recv_conn_new(TcpBackendPrivate *priv, uint32_t id,
  */
 static bool send_message(int fd, TcpMsgType type, uint32_t len, uint32_t sent)
 {
-    struct {
-        TcpMsgHeader hdr;
-        uint8_t payload[TCP_REGISTER_NODE_LEN_V3];
-    } msg;
-    size_t size = sizeof(msg.hdr) + sent;
+    uint8_t msg[TCP_MSG_HDR_LEN + TCP_REGISTER_NODE_LEN_V3];
+    size_t size = TCP_MSG_HDR_LEN + (size_t)sent;
 
-    if (sent > sizeof(msg.payload))
+    if (size > sizeof(msg))
         return false;
-    memset(&msg, 0, sizeof(msg));
-    msg.hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
-    msg.hdr.msg_type = htonl(type);
-    msg.hdr.msg_len = htonl(len);
-    return send(fd, &msg, size, 0) == (ssize_t)size;
+    memset(msg, 0, sizeof(msg));
+    put_hdr(msg, type, len, 0);
+    return send(fd, msg, size, 0) == (ssize_t)size;
 }
 
 /*
@@ -1011,13 +1023,10 @@ static int run_recv_case(const struct recv_case *c)
 /* Send a heartbeat as node src, which is how a worker answers the manager. */
 static bool send_heartbeat(int fd, uint32_t src)
 {
-    TcpMsgHeader hdr;
+    uint8_t hdr[TCP_MSG_HDR_LEN];
 
-    memset(&hdr, 0, sizeof(hdr));
-    hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
-    hdr.msg_type = htonl(TCP_MSG_HEARTBEAT);
-    hdr.src_node_id = htonl(src);
-    return send(fd, &hdr, sizeof(hdr), 0) == (ssize_t)sizeof(hdr);
+    put_hdr(hdr, TCP_MSG_HEARTBEAT, 0, src);
+    return send(fd, hdr, sizeof(hdr), 0) == (ssize_t)sizeof(hdr);
 }
 
 /* Read messages from fd until one of type arrives, for up to timeout_ms. */
@@ -1138,21 +1147,16 @@ static int worker_attach(TcpBackendPrivate *priv, TcpConnection **connp)
 static bool send_register_from(int fd, const char *hostname, uint16_t port,
                                uint32_t requested)
 {
-    TcpMsgHeader hdr;
-    TcpRegisterNodePayload reg;
-    uint8_t buf[sizeof(hdr) + sizeof(reg)];
+    uint8_t buf[TCP_MSG_HDR_LEN + TCP_REGISTER_NODE_LEN];
+    uint8_t *reg = buf + TCP_MSG_HDR_LEN;
 
-    memset(&hdr, 0, sizeof(hdr));
-    hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
-    hdr.msg_type = htonl(TCP_MSG_REGISTER_NODE);
-    hdr.msg_len = htonl((uint32_t)sizeof(reg));
-    memset(&reg, 0, sizeof(reg));
-    snprintf(reg.hostname, sizeof(reg.hostname), "%s", hostname);
-    reg.port = htons(port);
-    reg.requested_node_id = htonl(requested);
-    reg.version = htonl(TCP_PROTOCOL_VERSION);
-    memcpy(buf, &hdr, sizeof(hdr));
-    memcpy(buf + sizeof(hdr), &reg, sizeof(reg));
+    memset(buf, 0, sizeof(buf));
+    put_hdr(buf, TCP_MSG_REGISTER_NODE, TCP_REGISTER_NODE_LEN, 0);
+    snprintf((char *)reg + TCP_REGISTER_NODE_HOSTNAME_OFF, TCP_HOSTNAME_LEN,
+             "%s", hostname);
+    ernic_put_be16(reg + TCP_REGISTER_NODE_PORT_OFF, port);
+    ernic_put_be32(reg + TCP_REGISTER_NODE_REQUESTED_OFF, requested);
+    ernic_put_be32(reg + TCP_REGISTER_NODE_VERSION_OFF, TCP_PROTOCOL_VERSION);
     return send(fd, buf, sizeof(buf), 0) == (ssize_t)sizeof(buf);
 }
 
@@ -1608,28 +1612,22 @@ static const struct hs_case hs_cases[] = {
 static bool send_hs_split(int fd, TcpMsgType type, uint32_t len, size_t split,
                           bool rest)
 {
-    struct {
-        TcpMsgHeader hdr;
-        TcpHandshakePayload hs;
-    } msg;
-    size_t size = sizeof(msg.hdr) + len;
+    uint8_t msg[TCP_MSG_HDR_LEN + TCP_HANDSHAKE_LEN];
+    uint8_t *hs = msg + TCP_MSG_HDR_LEN;
+    size_t size = TCP_MSG_HDR_LEN + (size_t)len;
 
-    if (len > sizeof(msg.hs) || split >= sizeof(msg.hdr))
+    if (len > TCP_HANDSHAKE_LEN || split >= TCP_MSG_HDR_LEN)
         return false;
-    memset(&msg, 0, sizeof(msg));
-    msg.hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
-    msg.hdr.msg_type = htonl(type);
-    msg.hdr.msg_len = htonl(len);
-    msg.hdr.src_node_id = htonl(HS_NODE);
-    msg.hs.node_id = htonl(HS_NODE);
-    msg.hs.version = htonl(TCP_PROTOCOL_VERSION);
+    put_hdr(msg, type, len, HS_NODE);
+    ernic_put_be32(hs + TCP_HANDSHAKE_NODE_ID_OFF, HS_NODE);
+    ernic_put_be32(hs + TCP_HANDSHAKE_VERSION_OFF, TCP_PROTOCOL_VERSION);
     if (split == 0)
-        return send(fd, &msg, size, 0) == (ssize_t)size;
-    if (send(fd, &msg, split, 0) != (ssize_t)split)
+        return send(fd, msg, size, 0) == (ssize_t)size;
+    if (send(fd, msg, split, 0) != (ssize_t)split)
         return false;
     sleep_ms(HS_SPLIT_MS);
-    return !rest || send(fd, (char *)&msg + split, size - split, 0) ==
-                        (ssize_t)(size - split);
+    return !rest ||
+           send(fd, msg + split, size - split, 0) == (ssize_t)(size - split);
 }
 
 static bool send_hs(int fd, TcpMsgType type, uint32_t len)
@@ -1679,9 +1677,8 @@ static const char *hs_bad_peer(enum hs_peer peer, uint16_t port, int *fd)
         sleep_ms(200); /* let the thread start waiting for the handshake */
         return NULL;
     case HS_PARTIAL:
-        if (!send_hs_split(*fd, TCP_MSG_HANDSHAKE,
-                           (uint32_t)sizeof(TcpHandshakePayload), HS_SPLIT_AT,
-                           false))
+        if (!send_hs_split(*fd, TCP_MSG_HANDSHAKE, TCP_HANDSHAKE_LEN,
+                           HS_SPLIT_AT, false))
             return "could not send part of the handshake";
         sleep_ms(150); /* the thread is waiting for the rest by now */
         return NULL;
@@ -1690,13 +1687,11 @@ static const char *hs_bad_peer(enum hs_peer peer, uint16_t port, int *fd)
             return "could not send the handshake";
         break;
     case HS_SHORT:
-        if (!send_hs(*fd, TCP_MSG_HANDSHAKE,
-                     (uint32_t)sizeof(TcpHandshakePayload) - 1))
+        if (!send_hs(*fd, TCP_MSG_HANDSHAKE, TCP_HANDSHAKE_LEN - 1))
             return "could not send the handshake";
         break;
     case HS_OTHER_HANGUP:
-        if (!send_hs(*fd, TCP_MSG_HEARTBEAT,
-                     (uint32_t)sizeof(TcpHandshakePayload)))
+        if (!send_hs(*fd, TCP_MSG_HEARTBEAT, TCP_HANDSHAKE_LEN))
             return "could not send the message";
         if (!closed_by_peer(*fd))
             return "the message wasn't refused";
@@ -1724,8 +1719,7 @@ static const char *hs_good_peer(TcpBackendPrivate *priv, uint16_t port,
     *fd = connect_loopback(port);
     if (*fd < 0)
         return "could not connect the good peer";
-    if (!send_hs_split(*fd, TCP_MSG_HANDSHAKE,
-                       (uint32_t)sizeof(TcpHandshakePayload),
+    if (!send_hs_split(*fd, TCP_MSG_HANDSHAKE, TCP_HANDSHAKE_LEN,
                        split ? HS_SPLIT_AT : 0, true))
         return "could not send the good handshake";
     /* The thread answers after it has published the connection */
@@ -1765,8 +1759,8 @@ static const char *hs_second_peer(TcpBackendPrivate *priv, uint16_t port,
     }
     if (!why) {
         *second = connect_loopback(port);
-        if (*second < 0 || !send_hs(*second, TCP_MSG_HANDSHAKE,
-                                    (uint32_t)sizeof(TcpHandshakePayload)))
+        if (*second < 0 ||
+            !send_hs(*second, TCP_MSG_HANDSHAKE, TCP_HANDSHAKE_LEN))
             why = "could not connect the second peer";
     }
 
@@ -2793,38 +2787,38 @@ static const char *tp_listen(struct tp_net *net, enum tp_scenario scenario)
     return ok ? NULL : "could not open the peers' listeners";
 }
 
+/* A topology update's payload, as the manager sends it; zero it to empty it */
+struct tp_topology {
+    uint8_t bytes[TCP_TOPOLOGY_LEN];
+};
+
 /* Add a topology entry for node id at port on loopback. */
-static void tp_entry(TcpMeshTopologyPayload *topo, uint32_t id, uint16_t port,
+static void tp_entry(struct tp_topology *topo, uint32_t id, uint16_t port,
                      bool alive)
 {
-    uint32_t n = ntohl(topo->num_nodes);
-    TcpMeshNodeInfo *entry = &topo->nodes[n];
+    uint32_t n = ernic_get_be32(topo->bytes + TCP_TOPOLOGY_NUM_NODES_OFF);
+    uint8_t *entry = topo->bytes + TCP_TOPOLOGY_NODE_OFF(n);
 
-    entry->node_id = htonl(id);
-    snprintf(entry->hostname, sizeof(entry->hostname), "127.0.0.1");
-    entry->port = htons(port);
-    entry->is_alive = alive ? 1 : 0;
-    topo->num_nodes = htonl(n + 1);
+    ernic_put_be32(entry + TCP_MESH_NODE_ID_OFF, id);
+    snprintf((char *)entry + TCP_MESH_NODE_HOSTNAME_OFF, TCP_HOSTNAME_LEN,
+             "127.0.0.1");
+    ernic_put_be16(entry + TCP_MESH_NODE_PORT_OFF, port);
+    entry[TCP_MESH_NODE_ALIVE_OFF] = alive ? 1 : 0;
+    ernic_put_be32(topo->bytes + TCP_TOPOLOGY_NUM_NODES_OFF, n + 1);
 }
 
 /* Send topo on fd, as the manager does. */
-static bool send_topology(int fd, const TcpMeshTopologyPayload *topo)
+static bool send_topology(int fd, const struct tp_topology *topo)
 {
-    struct {
-        TcpMsgHeader hdr;
-        TcpMeshTopologyPayload topo;
-    } msg;
+    uint8_t msg[TCP_MSG_HDR_LEN + TCP_TOPOLOGY_LEN];
 
-    memset(&msg, 0, sizeof(msg));
-    msg.hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
-    msg.hdr.msg_type = htonl(TCP_MSG_MESH_TOPOLOGY);
-    msg.hdr.msg_len = htonl((uint32_t)sizeof(msg.topo));
-    memcpy(&msg.topo, topo, sizeof(msg.topo));
-    return send(fd, &msg, sizeof(msg), 0) == (ssize_t)sizeof(msg);
+    put_hdr(msg, TCP_MSG_MESH_TOPOLOGY, (uint32_t)TCP_TOPOLOGY_LEN, 0);
+    memcpy(msg + TCP_MSG_HDR_LEN, topo->bytes, sizeof(topo->bytes));
+    return send(fd, msg, sizeof(msg), 0) == (ssize_t)sizeof(msg);
 }
 
 /* Send topo as the manager. */
-static bool tp_send(struct tp_fixture *fx, const TcpMeshTopologyPayload *topo)
+static bool tp_send(struct tp_fixture *fx, const struct tp_topology *topo)
 {
     return send_topology(fx->mgr, topo);
 }
@@ -2988,7 +2982,7 @@ static const char *tp_stop(struct tp_fixture *fx)
  * heartbeats are answered meanwhile.
  */
 static const char *tp_starves(struct tp_fixture *fx, struct tp_net *net,
-                              const TcpMeshTopologyPayload *topo, double sent)
+                              const struct tp_topology *topo, double sent)
 {
     const char *why;
     double took;
@@ -3080,7 +3074,7 @@ static const char *tp_no_threads(struct tp_fixture *fx, struct tp_net *net)
  */
 static const char *tp_dropped(struct tp_fixture *fx, struct tp_net *net)
 {
-    TcpMeshTopologyPayload topo;
+    struct tp_topology topo;
     struct pollfd pfd = {.fd = net->lfd[1], .events = POLLIN};
     const char *why;
     int fd;
@@ -3116,7 +3110,7 @@ static const char *tp_dropped(struct tp_fixture *fx, struct tp_net *net)
  */
 static const char *tp_dies(struct tp_fixture *fx, struct tp_net *net)
 {
-    TcpMeshTopologyPayload topo;
+    struct tp_topology topo;
     int fd;
 
     if (!tp_attempts(fx, 1))
@@ -3144,7 +3138,7 @@ static const char *tp_dies(struct tp_fixture *fx, struct tp_net *net)
  * manager is then acted on.
  */
 static const char *tp_from_peer(struct tp_fixture *fx, struct tp_net *net,
-                                const TcpMeshTopologyPayload *topo)
+                                const struct tp_topology *topo)
 {
     guint targets;
     int peer = -1, fd;
@@ -3190,7 +3184,7 @@ static const char *tp_skips_setup(struct tp_fixture *fx, struct tp_net *net)
 /* Build the row's update; returns NULL, or what failed. */
 static const char *tp_topology(struct tp_fixture *fx, struct tp_net *net,
                                enum tp_scenario scenario,
-                               TcpMeshTopologyPayload *topo)
+                               struct tp_topology *topo)
 {
     memset(topo, 0, sizeof(*topo));
     switch (scenario) {
@@ -3225,7 +3219,7 @@ static const char *tp_topology(struct tp_fixture *fx, struct tp_net *net,
 static const char *tp_run(struct tp_fixture *fx, struct tp_net *net,
                           enum tp_scenario scenario)
 {
-    TcpMeshTopologyPayload topo;
+    struct tp_topology topo;
     const char *why = tp_topology(fx, net, scenario, &topo);
     double sent = now_s();
     int fd;
@@ -3525,11 +3519,9 @@ static uint32_t wr_node_in(int fd, TcpMsgType type, uint32_t *src)
 
     if (!wr_until(fd, type, 5000, &hdr, &payload, NULL))
         return UINT32_MAX;
-    /* Both payloads start with the node id, in network order */
-    if (payload && hdr.msg_len >= sizeof(uint32_t)) {
-        memcpy(&id, payload, sizeof(id));
-        id = ntohl(id);
-    }
+    /* Both payloads start with the node id, big-endian */
+    if (payload && hdr.msg_len >= sizeof(uint32_t))
+        id = ernic_get_be32(payload);
     if (src)
         *src = hdr.src_node_id;
     free(payload);
@@ -3559,29 +3551,23 @@ static bool wr_settled(int fd, int *gids)
 static bool send_register_resp(int fd, uint32_t id, int32_t result,
                                uint32_t len)
 {
-    struct {
-        TcpMsgHeader hdr;
-        TcpRegisterRespPayload resp;
-    } msg;
-    size_t size = sizeof(msg.hdr) + len;
+    uint8_t msg[TCP_MSG_HDR_LEN + TCP_REGISTER_RESP_LEN];
+    uint8_t *resp = msg + TCP_MSG_HDR_LEN;
+    size_t size = TCP_MSG_HDR_LEN + (size_t)len;
 
-    if (len > sizeof(msg.resp))
+    if (len > TCP_REGISTER_RESP_LEN)
         return false;
-    memset(&msg, 0, sizeof(msg));
-    msg.hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
-    msg.hdr.msg_type = htonl(TCP_MSG_REGISTER_RESP);
-    msg.hdr.msg_len = htonl(len);
-    msg.resp.assigned_node_id = htonl(id);
-    msg.resp.num_nodes = htonl(2);
-    msg.resp.result = htonl((uint32_t)result);
-    msg.resp.version = htonl(TCP_PROTOCOL_VERSION);
-    return send(fd, &msg, size, 0) == (ssize_t)size;
+    put_hdr(msg, TCP_MSG_REGISTER_RESP, len, 0);
+    ernic_put_be32(resp + TCP_REGISTER_RESP_NODE_ID_OFF, id);
+    ernic_put_be32(resp + TCP_REGISTER_RESP_NUM_NODES_OFF, 2);
+    ernic_put_be32(resp + TCP_REGISTER_RESP_RESULT_OFF, (uint32_t)result);
+    ernic_put_be32(resp + TCP_REGISTER_RESP_VERSION_OFF, TCP_PROTOCOL_VERSION);
+    return send(fd, msg, size, 0) == (ssize_t)size;
 }
 
 static bool wr_assign(int mgr, uint32_t id)
 {
-    return send_register_resp(mgr, id, 0,
-                              (uint32_t)sizeof(TcpRegisterRespPayload));
+    return send_register_resp(mgr, id, 0, TCP_REGISTER_RESP_LEN);
 }
 
 /*
@@ -3600,10 +3586,11 @@ static const char *wr_registered(int lfd, int *mgr, uint16_t *port)
     if (!wr_recv(*mgr, &hdr, &payload, 5000))
         return "the worker sent no registration";
     if (hdr.msg_type != TCP_MSG_REGISTER_NODE || !payload ||
-        hdr.msg_len < sizeof(TcpRegisterNodePayload))
+        hdr.msg_len < TCP_REGISTER_NODE_LEN)
         why = "the worker's first message wasn't a registration";
     else
-        *port = ntohs(((const TcpRegisterNodePayload *)payload)->port);
+        *port = ernic_get_be16((const uint8_t *)payload +
+                               TCP_REGISTER_NODE_PORT_OFF);
     free(payload);
     return why;
 }
@@ -3622,8 +3609,7 @@ static int wr_peer(uint16_t port)
 {
     int fd = connect_loopback(port);
 
-    if (fd >= 0 && !send_hs(fd, TCP_MSG_HANDSHAKE,
-                            (uint32_t)sizeof(TcpHandshakePayload))) {
+    if (fd >= 0 && !send_hs(fd, TCP_MSG_HANDSHAKE, TCP_HANDSHAKE_LEN)) {
         close(fd);
         return -1;
     }
@@ -3667,8 +3653,7 @@ static const char *wr_from_peer(const struct wr_init *in, int mgr,
     if (wr_node_in(*peer, TCP_MSG_HANDSHAKE_RESP, &src) != WR_ID ||
         src != WR_ID)
         return "the peer's handshake wasn't answered as WR_ID";
-    if (!send_register_resp(*peer, WR_OTHER_ID, 0,
-                            (uint32_t)sizeof(TcpRegisterRespPayload)) ||
+    if (!send_register_resp(*peer, WR_OTHER_ID, 0, TCP_REGISTER_RESP_LEN) ||
         !wr_settled(*peer, &peer_gids) || !wr_settled(mgr, &mgr_gids))
         return "the worker stopped answering";
     if (wr_local(in) != WR_ID)
@@ -3714,7 +3699,7 @@ static const char *wr_early_peer(struct wr_init *in, int mgr, uint16_t port,
 static const char *wr_early_topology(struct wr_init *in, int mgr, int low,
                                      int high, int *peer)
 {
-    TcpMeshTopologyPayload topo;
+    struct tp_topology topo;
     struct sockaddr_in addr;
     socklen_t len = sizeof(addr);
     struct pollfd pfd = {.fd = low, .events = POLLIN};
@@ -3790,13 +3775,11 @@ static const char *wr_run(const struct wr_case *c, struct wr_init *in, int lfd,
             why = wr_from_peer(in, *mgr, port, peer);
         return why;
     case WR_REFUSED:
-        if (!send_register_resp(*mgr, 0, -EPROTO,
-                                (uint32_t)sizeof(TcpRegisterRespPayload)))
+        if (!send_register_resp(*mgr, 0, -EPROTO, TCP_REGISTER_RESP_LEN))
             return "could not answer the registration";
         break;
     case WR_RESULT_MIN:
-        if (!send_register_resp(*mgr, 0, INT32_MIN,
-                                (uint32_t)sizeof(TcpRegisterRespPayload)))
+        if (!send_register_resp(*mgr, 0, INT32_MIN, TCP_REGISTER_RESP_LEN))
             return "could not answer the registration";
         break;
     case WR_OLD_VERSION:
@@ -3888,8 +3871,7 @@ static int run_wr_case(const struct wr_case *c)
 
     /* A row that failed before the answer: refuse, so tcp_init() returns */
     if (in.running && mgr >= 0)
-        send_register_resp(mgr, 0, -EPROTO,
-                           (uint32_t)sizeof(TcpRegisterRespPayload));
+        send_register_resp(mgr, 0, -EPROTO, TCP_REGISTER_RESP_LEN);
     wr_init_join(&in);
     atomic_store(&g_creates_left, -1);
     if (in.ret == 0)
@@ -3940,7 +3922,7 @@ static int run_wr_case(const struct wr_case *c)
  * up while a call waits for the rest, and that call must fail promptly.
  */
 
-#define SP_HDR      ((uint32_t)sizeof(TcpMsgHeader))
+#define SP_HDR      ((uint32_t)TCP_MSG_HDR_LEN)
 #define SP_A_LEN    24u                 /* the first message's payload */
 #define SP_B_LEN    16u                 /* the second's */
 #define SP_A        (SP_HDR + SP_A_LEN) /* the first message, on the wire */
@@ -4019,23 +4001,20 @@ static void *sp_write(void *opaque)
     return NULL;
 }
 
-/* Put a message on the wire at buf: header, then len bytes of fill. */
+/*
+ * Put a message on the wire at buf: header, then len bytes of fill.  The
+ * header is written out here, field by field, rather than by
+ * tcp_msg_hdr_put(), so a layout that tcp_msg_hdr_get() got wrong shows.
+ */
 static void sp_put(uint8_t *buf, TcpMsgType type, uint32_t seq, uint32_t len,
                    uint8_t fill)
 {
-    TcpMsgHeader hdr;
+    const uint32_t field[8] = {
+        TCP_PROTOCOL_MAGIC, type, len, seq, seq + 1, seq + 2, seq + 3, seq + 4};
 
-    memset(&hdr, 0, sizeof(hdr));
-    hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
-    hdr.msg_type = htonl(type);
-    hdr.msg_len = htonl(len);
-    hdr.seq = htonl(seq);
-    hdr.src_node_id = htonl(seq + 1);
-    hdr.dst_node_id = htonl(seq + 2);
-    hdr.src_qpn = htonl(seq + 3);
-    hdr.dst_qpn = htonl(seq + 4);
-    memcpy(buf, &hdr, sizeof(hdr));
-    memset(buf + sizeof(hdr), fill, len);
+    for (size_t i = 0; i < 8; i++)
+        ernic_put_be32(buf + 4 * i, field[i]);
+    memset(buf + SP_HDR, fill, len);
 }
 
 /* Check a message read against what sp_put() wrote. */
@@ -4170,6 +4149,44 @@ static int run_sp_case(const struct sp_case *c)
         close(sv[0]);
     if (sv[1] >= 0)
         close(sv[1]);
+    return ok ? 0 : 1;
+}
+
+/*
+ * The header tcp_msg_hdr_put() writes is the one every node in a mesh
+ * reads, whatever version it runs: eight big-endian words, in order.  Each
+ * field holds a different value, so one at the wrong offset shows.
+ */
+static int run_hdr_layout(void)
+{
+    static const uint8_t want[TCP_MSG_HDR_LEN] = {
+        0x52, 0x44, 0x4d, 0x41, /* magic, "RDMA" */
+        0,    0,    0,    0x18, /* msg_type, TCP_MSG_IONIC */
+        0x01, 0x02, 0x03, 0x04, /* msg_len */
+        0x05, 0x06, 0x07, 0x08, /* seq */
+        0x09, 0x0a, 0x0b, 0x0c, /* src_node_id */
+        0x0d, 0x0e, 0x0f, 0x10, /* dst_node_id */
+        0x11, 0x12, 0x13, 0x14, /* src_qpn */
+        0x15, 0x16, 0x17, 0x18, /* dst_qpn */
+    };
+    TcpMsgHeader hdr = {
+        .magic = TCP_PROTOCOL_MAGIC,
+        .msg_type = TCP_MSG_IONIC,
+        .msg_len = 0x01020304u,
+        .seq = 0x05060708u,
+        .src_node_id = 0x090a0b0cu,
+        .dst_node_id = 0x0d0e0f10u,
+        .src_qpn = 0x11121314u,
+        .dst_qpn = 0x15161718u,
+    };
+    uint8_t got[TCP_MSG_HDR_LEN];
+    bool ok;
+
+    tcp_msg_hdr_put(got, &hdr);
+    ok = memcmp(got, want, sizeof(want)) == 0;
+    printf("%s header positive: a header written; expected: the bytes every "
+           "node reads\n",
+           ok ? "ok  " : "FAIL");
     return ok ? 0 : 1;
 }
 
@@ -4370,18 +4387,18 @@ static const char *reap_refused(TcpBackendPrivate *priv, uint16_t port,
 /* Send an ionic message from node src to node dst, with an 8-byte payload. */
 static bool send_ionic(int fd, uint32_t src, uint32_t dst)
 {
-    struct {
-        TcpMsgHeader hdr;
-        uint8_t payload[8];
-    } msg;
+    uint8_t msg[TCP_MSG_HDR_LEN + 8];
+    TcpMsgHeader hdr;
 
-    memset(&msg, 0, sizeof(msg));
-    msg.hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
-    msg.hdr.msg_type = htonl(TCP_MSG_IONIC);
-    msg.hdr.msg_len = htonl((uint32_t)sizeof(msg.payload));
-    msg.hdr.src_node_id = htonl(src);
-    msg.hdr.dst_node_id = htonl(dst);
-    return send(fd, &msg, sizeof(msg), 0) == (ssize_t)sizeof(msg);
+    memset(msg, 0, sizeof(msg));
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.magic = TCP_PROTOCOL_MAGIC;
+    hdr.msg_type = TCP_MSG_IONIC;
+    hdr.msg_len = 8;
+    hdr.src_node_id = src;
+    hdr.dst_node_id = dst;
+    tcp_msg_hdr_put(msg, &hdr);
+    return send(fd, msg, sizeof(msg), 0) == (ssize_t)sizeof(msg);
 }
 
 /*
@@ -4629,14 +4646,17 @@ static bool reported(int fd, uint32_t id, bool alive, int timeout_ms)
         if (tcp_recv_message(fd, &hdr, &payload, NULL, 0) < 0)
             return false;
         if (hdr.msg_type == TCP_MSG_MESH_TOPOLOGY && payload &&
-            hdr.msg_len >= sizeof(TcpMeshTopologyPayload)) {
-            const TcpMeshTopologyPayload *topo = payload;
-            uint32_t n = ntohl(topo->num_nodes);
+            hdr.msg_len >= TCP_TOPOLOGY_LEN) {
+            const uint8_t *topo = payload;
+            uint32_t n = ernic_get_be32(topo + TCP_TOPOLOGY_NUM_NODES_OFF);
 
-            for (uint32_t i = 0; i < n && i < G_N_ELEMENTS(topo->nodes); i++)
-                if (ntohl(topo->nodes[i].node_id) == id &&
-                    (topo->nodes[i].is_alive != 0) == alive)
+            for (uint32_t i = 0; i < n && i < TCP_MAX_MESH_NODES; i++) {
+                const uint8_t *entry = topo + TCP_TOPOLOGY_NODE_OFF(i);
+
+                if (ernic_get_be32(entry + TCP_MESH_NODE_ID_OFF) == id &&
+                    (entry[TCP_MESH_NODE_ALIVE_OFF] != 0) == alive)
                     found = true;
+            }
         }
         free(payload);
         if (found)
@@ -5020,18 +5040,18 @@ static const char *sender_revives(TcpBackendPrivate *priv, int w1, int w2)
 static bool send_payload(int fd, TcpMsgType type, uint32_t src)
 {
     TcpMsgHeader hdr;
-    uint8_t buf[sizeof(hdr) + SENDER_LEN];
+    uint8_t buf[TCP_MSG_HDR_LEN + SENDER_LEN];
 
     memset(&hdr, 0, sizeof(hdr));
-    hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
-    hdr.msg_type = htonl(type);
-    hdr.msg_len = htonl(SENDER_LEN);
-    hdr.seq = htonl(1);
-    hdr.src_node_id = htonl(src);
-    hdr.src_qpn = htonl(11);
-    hdr.dst_qpn = htonl(12);
+    hdr.magic = TCP_PROTOCOL_MAGIC;
+    hdr.msg_type = type;
+    hdr.msg_len = SENDER_LEN;
+    hdr.seq = 1;
+    hdr.src_node_id = src;
+    hdr.src_qpn = 11;
+    hdr.dst_qpn = 12;
     memset(buf, SENDER_BYTE, sizeof(buf));
-    memcpy(buf, &hdr, sizeof(hdr));
+    tcp_msg_hdr_put(buf, &hdr);
     return send(fd, buf, sizeof(buf), 0) == (ssize_t)sizeof(buf);
 }
 
@@ -5452,12 +5472,12 @@ static bool register_answer(int fd, uint32_t *id, int32_t *result)
 
     if (!wr_until(fd, TCP_MSG_REGISTER_RESP, 5000, &hdr, &payload, NULL))
         return false;
-    ok = payload && hdr.msg_len >= sizeof(TcpRegisterRespPayload);
+    ok = payload && hdr.msg_len >= TCP_REGISTER_RESP_LEN;
     if (ok) {
-        const TcpRegisterRespPayload *resp = payload;
+        const uint8_t *resp = payload;
 
-        *id = ntohl(resp->assigned_node_id);
-        *result = (int32_t)ntohl(resp->result);
+        *id = ernic_get_be32(resp + TCP_REGISTER_RESP_NODE_ID_OFF);
+        *result = (int32_t)ernic_get_be32(resp + TCP_REGISTER_RESP_RESULT_OFF);
     }
     free(payload);
     return ok;
@@ -5495,9 +5515,11 @@ static int gids_for(int fd, uint32_t id)
         if (!wr_until(fd, TCP_MSG_NODE_GIDS, left > 0 ? left : 1, &hdr,
                       &payload, NULL))
             return -1;
-        if (payload && hdr.msg_len >= sizeof(TcpNodeGidsPayload) &&
-            ntohl(((const TcpNodeGidsPayload *)payload)->node_id) == id)
-            n = (int)ntohl(((const TcpNodeGidsPayload *)payload)->num_gids);
+        if (payload && hdr.msg_len >= TCP_NODE_GIDS_LEN &&
+            ernic_get_be32((const uint8_t *)payload +
+                           TCP_NODE_GIDS_NODE_ID_OFF) == id)
+            n = (int)ernic_get_be32((const uint8_t *)payload +
+                                    TCP_NODE_GIDS_NUM_OFF);
         free(payload);
         if (n >= 0)
             return n;
@@ -5722,17 +5744,13 @@ static int run_ra_case(const struct ra_case *c)
  */
 static bool send_gids(int fd, uint32_t id, const uint8_t (*gid)[16])
 {
-    struct {
-        TcpMsgHeader hdr;
-        TcpNodeGidsPayload gids;
-    } msg;
+    uint8_t msg[TCP_MSG_HDR_LEN + TCP_NODE_GIDS_LEN];
+    TcpNodeGidsWire gids;
 
-    memset(&msg, 0, sizeof(msg));
-    msg.hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
-    msg.hdr.msg_type = htonl(TCP_MSG_NODE_GIDS);
-    msg.hdr.msg_len = htonl((uint32_t)sizeof(msg.gids));
-    tcp_fill_node_gids(&msg.gids, id, gid, 1);
-    return send(fd, &msg, sizeof(msg), MSG_NOSIGNAL) == (ssize_t)sizeof(msg);
+    put_hdr(msg, TCP_MSG_NODE_GIDS, TCP_NODE_GIDS_LEN, 0);
+    tcp_fill_node_gids(&gids, id, gid, 1);
+    memcpy(msg + TCP_MSG_HDR_LEN, gids.bytes, sizeof(gids.bytes));
+    return send(fd, msg, sizeof(msg), MSG_NOSIGNAL) == (ssize_t)sizeof(msg);
 }
 
 #define EV_OLDEST 7
@@ -5963,7 +5981,7 @@ static bool ev_has_claims(TcpBackendPrivate *priv, uint32_t id)
 static const char *ev_broadcasts(int fd, uint32_t fresh, uint32_t evicted)
 {
     bool seen[TCP_MAX_MESH_NODES + 1] = {false};
-    const TcpMeshTopologyPayload *topo;
+    const uint8_t *topo;
     TcpMsgHeader hdr;
     void *payload;
     const char *why = NULL;
@@ -5973,17 +5991,18 @@ static const char *ev_broadcasts(int fd, uint32_t fresh, uint32_t evicted)
         return "the new node's id is out of range";
     if (!wr_until(fd, TCP_MSG_MESH_TOPOLOGY, 2000, &hdr, &payload, NULL))
         return "no topology update came";
-    if (!payload || hdr.msg_len < sizeof(*topo)) {
+    if (!payload || hdr.msg_len < TCP_TOPOLOGY_LEN) {
         free(payload);
         return "the topology update is short";
     }
     topo = payload;
-    n = ntohl(topo->num_nodes);
+    n = ernic_get_be32(topo + TCP_TOPOLOGY_NUM_NODES_OFF);
     /* n distinct ids of 0 to fresh, but evicted, are all of them */
     if (n != TCP_MAX_MESH_NODES)
         why = "the topology update doesn't carry a full table";
     for (uint32_t i = 0; !why && i < n; i++) {
-        uint32_t id = ntohl(topo->nodes[i].node_id);
+        uint32_t id = ernic_get_be32(topo + TCP_TOPOLOGY_NODE_OFF(i) +
+                                     TCP_MESH_NODE_ID_OFF);
 
         if (id > fresh || id == evicted || seen[id])
             why = "the topology update names a node that isn't in the table";
@@ -5996,18 +6015,18 @@ static const char *ev_broadcasts(int fd, uint32_t fresh, uint32_t evicted)
 
     memset(seen, 0, sizeof(seen));
     for (n = 0;;) {
-        const TcpNodeGidsPayload *adv;
+        const uint8_t *adv;
         uint32_t id, num;
 
         if (!wr_until(fd, TCP_MSG_NODE_GIDS, 2000, &hdr, &payload, NULL))
             return "the evicted node wasn't advertised";
-        if (!payload || hdr.msg_len < sizeof(*adv)) {
+        if (!payload || hdr.msg_len < TCP_NODE_GIDS_LEN) {
             free(payload);
             return "an advertisement is short";
         }
         adv = payload;
-        id = ntohl(adv->node_id);
-        num = ntohl(adv->num_gids);
+        id = ernic_get_be32(adv + TCP_NODE_GIDS_NODE_ID_OFF);
+        num = ernic_get_be32(adv + TCP_NODE_GIDS_NUM_OFF);
         free(payload);
         if (id == evicted)
             return num != 0 ? "the evicted node still owns GIDs"
@@ -7193,8 +7212,7 @@ static void dc_stop(struct dc_worker *w)
 {
     /* Failed before the answer: refuse, so tcp_init() returns */
     if (w->in.running && w->mgr >= 0)
-        send_register_resp(w->mgr, 0, -EPROTO,
-                           (uint32_t)sizeof(TcpRegisterRespPayload));
+        send_register_resp(w->mgr, 0, -EPROTO, TCP_REGISTER_RESP_LEN);
     wr_init_join(&w->in);
     if (w->in.ret == 0)
         rdma_backend_ops_tcp.fini(&w->in.dev);
@@ -7210,7 +7228,7 @@ static TcpBackendPrivate *dc_priv(struct dc_worker *w)
 /* Tell a, as the manager, that b is node DC_B, alive or dead. */
 static bool dc_report(struct dc_worker *a, struct dc_worker *b, bool alive)
 {
-    TcpMeshTopologyPayload topo;
+    struct tp_topology topo;
 
     memset(&topo, 0, sizeof(topo));
     tp_entry(&topo, DC_B, b->port, alive);
@@ -7553,13 +7571,10 @@ static int wl_keep(struct wl_fds *k, int fd)
 /* A header-only message of type from node src */
 static bool send_header(int fd, TcpMsgType type, uint32_t src)
 {
-    TcpMsgHeader hdr;
+    uint8_t hdr[TCP_MSG_HDR_LEN];
 
-    memset(&hdr, 0, sizeof(hdr));
-    hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
-    hdr.msg_type = htonl(type);
-    hdr.src_node_id = htonl(src);
-    return send(fd, &hdr, sizeof(hdr), MSG_NOSIGNAL) == (ssize_t)sizeof(hdr);
+    put_hdr(hdr, type, 0, src);
+    return send(fd, hdr, sizeof(hdr), MSG_NOSIGNAL) == (ssize_t)sizeof(hdr);
 }
 
 /* How many times the worker has set out to register again */
@@ -7577,7 +7592,7 @@ static uint64_t wl_attempts(struct dc_worker *w)
 static const char *wl_registers(struct dc_worker *w, int lfd, struct wl_fds *k,
                                 int *mgr)
 {
-    const TcpRegisterNodePayload *reg;
+    const uint8_t *reg;
     TcpMsgHeader hdr;
     void *payload;
     const char *why = NULL;
@@ -7589,11 +7604,11 @@ static const char *wl_registers(struct dc_worker *w, int lfd, struct wl_fds *k,
         return "the worker sent no registration";
     reg = payload;
     if (hdr.msg_type != TCP_MSG_REGISTER_NODE || !reg ||
-        hdr.msg_len < sizeof(*reg))
+        hdr.msg_len < TCP_REGISTER_NODE_LEN)
         why = "the worker's first message wasn't a registration";
-    else if (ntohl(reg->requested_node_id) != WL_ID)
+    else if (ernic_get_be32(reg + TCP_REGISTER_NODE_REQUESTED_OFF) != WL_ID)
         why = "the worker didn't ask for its own id";
-    else if (ntohs(reg->port) != w->port)
+    else if (ernic_get_be16(reg + TCP_REGISTER_NODE_PORT_OFF) != w->port)
         why = "the worker registered another port";
     free(payload);
     return why;
@@ -7607,7 +7622,7 @@ static const char *wl_registers(struct dc_worker *w, int lfd, struct wl_fds *k,
 static const char *wl_accepted(struct dc_worker *w, int mgr, int high)
 {
     TcpBackendPrivate *priv = dc_priv(w);
-    TcpMeshTopologyPayload topo;
+    struct tp_topology topo;
     struct sockaddr_in addr;
     socklen_t len = sizeof(addr);
     union ibv_gid gid;
@@ -7658,7 +7673,7 @@ static uint32_t wl_resolve(struct dc_worker *w, const uint8_t *gid)
  */
 static const char *wl_evicted(struct dc_worker *w, int lfd, struct wl_fds *k)
 {
-    TcpMeshTopologyPayload topo;
+    struct tp_topology topo;
     const char *why;
     int mgr;
 
@@ -7732,7 +7747,7 @@ static const char *wl_again(struct dc_worker *w, int lfd, int high,
  */
 static const char *wl_slow_peers(struct dc_worker *w, int *slow)
 {
-    TcpMeshTopologyPayload topo;
+    struct tp_topology topo;
 
     memset(&topo, 0, sizeof(topo));
     for (uint32_t i = 0; i < WL_SLOW; i++) {
@@ -7878,7 +7893,7 @@ static const char *wl_refused(struct dc_worker *w, int lfd, int high,
     else
         answered = send_register_resp(mgr, 0,
                                       scenario == WL_UNKNOWN ? -ENOENT : -EBUSY,
-                                      (uint32_t)sizeof(TcpRegisterRespPayload));
+                                      TCP_REGISTER_RESP_LEN);
     if (!answered)
         return "could not answer the registration";
     if (!ends(mgr))
@@ -8826,6 +8841,7 @@ int main(void)
         failures += run_wr_case(&wr_cases[i]);
     for (size_t i = 0; i < sizeof(sp_cases) / sizeof(sp_cases[0]); i++)
         failures += run_sp_case(&sp_cases[i]);
+    failures += run_hdr_layout();
     for (size_t i = 0; i < sizeof(reap_cases) / sizeof(reap_cases[0]); i++)
         failures += run_reap_case(&reap_cases[i]);
     for (size_t i = 0; i < sizeof(sender_cases) / sizeof(sender_cases[0]); i++)

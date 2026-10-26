@@ -33,7 +33,6 @@
 #include <errno.h>
 #include <limits.h>
 #include <syslog.h>
-#include <endian.h>
 
 #include <infiniband/verbs.h>
 #include <vfio-user/libvfio-user.h>
@@ -213,7 +212,7 @@ _Static_assert((1u << IONIC_CQ_MIN_STRIDE_LOG2) == CQE_SIZE,
  * below that turns into FAIL rows rather than slow ones.
  */
 #define IONIC_WIRE_MAX_PAYLOAD \
-    ((uint32_t)(IONIC_MESH_MAX_MSG - sizeof(struct ionic_wire_hdr)))
+    ((uint32_t)(IONIC_MESH_MAX_MSG - IONIC_WIRE_HDR_LEN))
 
 /*
  * A mesh message parked by the receive thread for the vfu thread to apply.
@@ -335,8 +334,9 @@ int ionic_dp_buf_init(const struct ionic_datapath *dp, struct dp_buf *b,
         ionic_dp_buf_release(b);
         return -EIO;
     }
+    /* Each entry as the guest wrote it, le64, made a value in place */
     for (uint32_t i = 0; i < desc->map_count; i++)
-        b->pages[i] = le64toh(b->pages[i]);
+        b->pages[i] = ernic_get_le64((const uint8_t *)&b->pages[i]);
 
     b->first_off = (uint32_t)(va & ((1ull << b->page_size_log2) - 1));
     return 0;
@@ -1645,19 +1645,17 @@ static void dp_grh_ipv6(uint8_t grh[IB_GRH_SIZE], uint32_t paylen,
 static void dp_grh_ipv4(uint8_t grh[IB_GRH_SIZE], uint32_t paylen,
                         const uint8_t *sgid, const uint8_t *dgid)
 {
-    struct ip_header ip;
+    uint8_t *ip = grh + IB_GRH_SIZE - IP_HDR_LEN;
 
     memset(grh, 0, IB_GRH_SIZE);
-    memset(&ip, 0, sizeof(ip));
-    ip.version_ihl = 0x45; /* IPv4, a 5-word header with no options */
-    ip.total_len = htobe16((uint16_t)(sizeof(ip) + paylen));
-    ip.ttl = 64;
-    ip.protocol = IP_PROTOCOL_UDP; /* RoCEv2 rides UDP port 4791 */
-    memcpy(&ip.src_ip, sgid + 12, 4);
-    memcpy(&ip.dst_ip, dgid + 12, 4);
-    ip.checksum = ip_checksum(&ip, sizeof(ip));
-
-    memcpy(grh + IB_GRH_SIZE - sizeof(ip), &ip, sizeof(ip));
+    ip[IP_VERSION_IHL_OFF] = 0x45; /* IPv4, a 5-word header with no options */
+    ernic_put_be16(ip + IP_TOTAL_LEN_OFF, (uint16_t)(IP_HDR_LEN + paylen));
+    ip[IP_TTL_OFF] = 64;
+    ip[IP_PROTOCOL_OFF] = IP_PROTOCOL_UDP; /* RoCEv2 rides UDP port 4791 */
+    memcpy(ip + IP_SRC_OFF, sgid + 12, 4);
+    memcpy(ip + IP_DST_OFF, dgid + 12, 4);
+    ernic_put_be16(ip + IP_CHECKSUM_OFF,
+                   net_csum_fold(net_csum_add(0, ip, IP_HDR_LEN)));
 }
 
 /*
@@ -2225,11 +2223,37 @@ static uint32_t rdma_xfer(struct ionic_datapath *dp,
 }
 
 /*
- * Compare-and-swap or fetch-and-add on 8 bytes of remote memory, with the
- * original value returned to the local SGE.  Both operands and remote memory
- * are treated as host-order u64: the driver converts the caller's values to
- * big endian for the wire, so undoing that yields exactly what the
- * application passed, and the same guest owns both sides of the copy.
+ * Compare-and-swap or fetch-and-add on the 8 bytes of guest memory at @gpa,
+ * setting *@old to what they held.  They hold a u64 in the guest's byte
+ * order, which for the x86-64 guests the device runs under is little-endian,
+ * and are read and written as one explicitly, so the result doesn't depend on
+ * the host's byte order.  The operands are values: the driver converts the
+ * caller's to big endian for the WQE, and undoing that yields exactly what
+ * the application passed.  Returns false if either access fails.
+ */
+static bool dp_atomic_apply(struct ionic_datapath *dp, uint64_t gpa,
+                            bool compare_swap, uint64_t swap_add,
+                            uint64_t compare, uint64_t *old)
+{
+    uint8_t mem[8];
+    uint64_t new_val;
+
+    if (ernic_dma_read(dp->dma, dp->vfu_ctx, gpa, mem, sizeof(mem)) < 0)
+        return false;
+    *old = ernic_get_le64(mem);
+
+    if (compare_swap)
+        new_val = *old == compare ? swap_add : *old;
+    else
+        new_val = *old + swap_add;
+
+    ernic_put_le64(mem, new_val);
+    return ernic_dma_write(dp->dma, dp->vfu_ctx, gpa, mem, sizeof(mem)) >= 0;
+}
+
+/*
+ * An atomic on 8 bytes of this guest's memory (dp_atomic_apply()), with the
+ * original value returned to the local SGE, little-endian like the operand.
  */
 static bool do_atomic(struct ionic_datapath *dp, const uint8_t *wqe,
                       bool compare_swap)
@@ -2265,19 +2289,15 @@ static bool do_atomic(struct ionic_datapath *dp, const uint8_t *wqe,
     }
 
     uint64_t old;
-    if (ernic_dma_read(dp->dma, dp->vfu_ctx, rgpa, &old, 8) < 0) {
+    if (!dp_atomic_apply(dp, rgpa, compare_swap, swap_add, compare, &old)) {
         dp_fault_set(dp, IONIC_STS_REMOTE_ACC_ERR);
         return false;
     }
 
-    uint64_t new =
-        compare_swap ? (old == compare ? swap_add : old) : old + swap_add;
-
-    if (ernic_dma_write(dp->dma, dp->vfu_ctx, rgpa, &new, 8) < 0) {
-        dp_fault_set(dp, IONIC_STS_REMOTE_ACC_ERR);
-        return false;
-    }
-    if (ernic_dma_write(dp->dma, dp->vfu_ctx, lgpa, &old, 8) < 0) {
+    uint8_t old_le[8];
+    ernic_put_le64(old_le, old);
+    if (ernic_dma_write(dp->dma, dp->vfu_ctx, lgpa, old_le, sizeof(old_le)) <
+        0) {
         dp_fault_set(dp, IONIC_STS_LOCAL_ACC_ERR);
         return false;
     }
@@ -2388,8 +2408,47 @@ static int dp_mesh_tx(const struct ionic_datapath *dp, uint32_t dst_node,
                       uint64_t tag, const struct ionic_wire_hdr *hdr,
                       const uint8_t *payload, uint32_t payload_len, bool reply)
 {
-    return ionic_mesh_sendv(dp->pvrdma_handle, dst_node, hdr, sizeof(*hdr),
+    uint8_t wire[IONIC_WIRE_HDR_LEN];
+
+    ionic_dp_wire_hdr_put(wire, hdr);
+    return ionic_mesh_sendv(dp->pvrdma_handle, dst_node, wire, sizeof(wire),
                             payload, payload_len, tag, reply);
+}
+
+void ionic_dp_wire_hdr_put(uint8_t *wire, const struct ionic_wire_hdr *h)
+{
+    memset(wire, 0, IONIC_WIRE_HDR_LEN);
+    ernic_put_le32(wire + IONIC_WIRE_MAGIC_OFF, h->magic);
+    wire[IONIC_WIRE_OP_OFF] = h->op;
+    wire[IONIC_WIRE_ATOMIC_CS_OFF] = h->atomic_cs;
+    ernic_put_le32(wire + IONIC_WIRE_SRC_QP_OFF, h->src_qp_id);
+    ernic_put_le32(wire + IONIC_WIRE_DST_QP_OFF, h->dst_qp_id);
+    ernic_put_le32(wire + IONIC_WIRE_REQ_ID_OFF, h->req_id);
+    ernic_put_le32(wire + IONIC_WIRE_RKEY_OFF, h->rkey);
+    ernic_put_le32(wire + IONIC_WIRE_LENGTH_OFF, h->length);
+    memcpy(wire + IONIC_WIRE_IMM_OFF, &h->imm_be, 4);
+    ernic_put_le32(wire + IONIC_WIRE_STATUS_OFF, h->status);
+    ernic_put_le64(wire + IONIC_WIRE_REMOTE_VA_OFF, h->remote_va);
+    ernic_put_le64(wire + IONIC_WIRE_SWAP_ADD_OFF, h->swap_add);
+    ernic_put_le64(wire + IONIC_WIRE_COMPARE_OFF, h->compare);
+}
+
+void ionic_dp_wire_hdr_get(struct ionic_wire_hdr *h, const uint8_t *wire)
+{
+    memset(h, 0, sizeof(*h));
+    h->magic = ernic_get_le32(wire + IONIC_WIRE_MAGIC_OFF);
+    h->op = wire[IONIC_WIRE_OP_OFF];
+    h->atomic_cs = wire[IONIC_WIRE_ATOMIC_CS_OFF];
+    h->src_qp_id = ernic_get_le32(wire + IONIC_WIRE_SRC_QP_OFF);
+    h->dst_qp_id = ernic_get_le32(wire + IONIC_WIRE_DST_QP_OFF);
+    h->req_id = ernic_get_le32(wire + IONIC_WIRE_REQ_ID_OFF);
+    h->rkey = ernic_get_le32(wire + IONIC_WIRE_RKEY_OFF);
+    h->length = ernic_get_le32(wire + IONIC_WIRE_LENGTH_OFF);
+    memcpy(&h->imm_be, wire + IONIC_WIRE_IMM_OFF, 4);
+    h->status = ernic_get_le32(wire + IONIC_WIRE_STATUS_OFF);
+    h->remote_va = ernic_get_le64(wire + IONIC_WIRE_REMOTE_VA_OFF);
+    h->swap_add = ernic_get_le64(wire + IONIC_WIRE_SWAP_ADD_OFF);
+    h->compare = ernic_get_le64(wire + IONIC_WIRE_COMPARE_OFF);
 }
 
 static void wire_hdr_init(struct ionic_wire_hdr *h, uint8_t op,
@@ -2397,11 +2456,11 @@ static void wire_hdr_init(struct ionic_wire_hdr *h, uint8_t op,
                           uint32_t req_id)
 {
     memset(h, 0, sizeof(*h));
-    h->magic = htole32(IONIC_WIRE_MAGIC);
+    h->magic = IONIC_WIRE_MAGIC;
     h->op = op;
-    h->src_qp_id = htole32(src_qp_id);
-    h->dst_qp_id = htole32(dst_qp_id);
-    h->req_id = htole32(req_id);
+    h->src_qp_id = src_qp_id;
+    h->dst_qp_id = dst_qp_id;
+    h->req_id = req_id;
 }
 
 /* What remote_post() did with a work request */
@@ -2497,7 +2556,7 @@ static enum dp_post remote_post(struct ionic_datapath *dp,
         uint32_t imm_be;
         memcpy(&imm_be, wqe + 12, 4);
         hdr.imm_be = imm_be;
-        hdr.length = htole32(src->total);
+        hdr.length = src->total;
         payload_len = src->total;
     } else if (wire_op == IONIC_WIRE_WRITE || wire_op == IONIC_WIRE_WRITE_IMM ||
                wire_op == IONIC_WIRE_READ_REQ) {
@@ -2505,9 +2564,9 @@ static enum dp_post remote_post(struct ionic_datapath *dp,
         uint32_t imm_be;
         memcpy(&imm_be, wqe + 12, 4);
 
-        hdr.remote_va = htole64(ernic_get_be64(wqe + WQE_RDMA_VA_OFF));
-        hdr.rkey = htole32(ernic_get_be32(wqe + WQE_RDMA_RKEY_OFF));
-        hdr.length = htole32(length);
+        hdr.remote_va = ernic_get_be64(wqe + WQE_RDMA_VA_OFF);
+        hdr.rkey = ernic_get_be32(wqe + WQE_RDMA_RKEY_OFF);
+        hdr.length = length;
         hdr.imm_be = imm_be;
 
         if (wire_op == IONIC_WIRE_READ_REQ) {
@@ -2519,11 +2578,11 @@ static enum dp_post remote_post(struct ionic_datapath *dp,
         }
     } else { /* ATOMIC_REQ */
         hdr.atomic_cs = op == IONIC_V1_OP_ATOMIC_CS;
-        hdr.rkey = htole32(ernic_get_be32(wqe + WQE_RDMA_RKEY_OFF));
-        hdr.remote_va = htole64(ernic_get_be64(wqe + WQE_RDMA_VA_OFF));
-        hdr.swap_add = htole64(ernic_get_be64(wqe + WQE_ATOMIC_SWAP_ADD_OFF));
-        hdr.compare = htole64(ernic_get_be64(wqe + WQE_ATOMIC_COMPARE_OFF));
-        hdr.length = htole32(8);
+        hdr.rkey = ernic_get_be32(wqe + WQE_RDMA_RKEY_OFF);
+        hdr.remote_va = ernic_get_be64(wqe + WQE_RDMA_VA_OFF);
+        hdr.swap_add = ernic_get_be64(wqe + WQE_ATOMIC_SWAP_ADD_OFF);
+        hdr.compare = ernic_get_be64(wqe + WQE_ATOMIC_COMPARE_OFF);
+        hdr.length = 8;
 
         /* The original value comes back into the WQE's single local SGE. */
         p->local.count = 1;
@@ -2560,7 +2619,7 @@ static enum dp_post remote_post(struct ionic_datapath *dp,
      * otherwise repeat on every pass until there is room, for up to 16 MiB
      * each time.
      */
-    reply_bytes = (uint32_t)sizeof(hdr) +
+    reply_bytes = IONIC_WIRE_HDR_LEN +
                   (p->length <= IONIC_WIRE_MAX_PAYLOAD ? p->length : 0);
     if (pending_reply_bytes(dp, dest_node_id) >
         IONIC_MESH_REPLY_BUDGET - reply_bytes) {
@@ -2568,7 +2627,7 @@ static enum dp_post remote_post(struct ionic_datapath *dp,
         goto out;
     }
     if (!ionic_mesh_has_room(dp->pvrdma_handle, dest_node_id,
-                             sizeof(hdr) + payload_len)) {
+                             IONIC_WIRE_HDR_LEN + payload_len)) {
         result = DP_POST_BUSY;
         goto out;
     }
@@ -3180,7 +3239,7 @@ static uint32_t dp_p4_policy(struct ionic_datapath *dp, uint32_t qp_id,
     meta.opcode = op;
     meta.qp_num = qp_id;
     meta.length = src->total;
-    meta.imm_data = be32toh(imm_be);
+    meta.imm_data = ernic_get_be32((const uint8_t *)&imm_be);
     if ((op == IONIC_V1_OP_RDMA_WRITE || op == IONIC_V1_OP_RDMA_WRITE_IMM ||
          op == IONIC_V1_OP_RDMA_READ) &&
         read_sz >= WQE_RDMA_RKEY_OFF + 4u) {
@@ -3830,8 +3889,8 @@ static bool dp_mesh_recv(void *opaque, uint32_t src_node, void *buf, size_t len)
     struct ionic_datapath *dp = opaque;
     bool room, stuck = false;
 
-    if (len < sizeof(struct ionic_wire_hdr) ||
-        len > sizeof(struct ionic_wire_hdr) + IONIC_WIRE_MAX_PAYLOAD) {
+    if (len < IONIC_WIRE_HDR_LEN ||
+        len > IONIC_WIRE_HDR_LEN + IONIC_WIRE_MAX_PAYLOAD) {
         free(buf);
         return true;
     }
@@ -3889,10 +3948,9 @@ static void dp_wire_reply(struct ionic_datapath *dp, uint32_t dst_node,
 {
     struct ionic_wire_hdr r;
 
-    wire_hdr_init(&r, op, le32toh(req->dst_qp_id), le32toh(req->src_qp_id),
-                  le32toh(req->req_id));
-    r.status = htole32(status);
-    r.length = htole32(payload_len);
+    wire_hdr_init(&r, op, req->dst_qp_id, req->src_qp_id, req->req_id);
+    r.status = status;
+    r.length = payload_len;
     /*
      * A reply the mesh can't queue is lost, and the requester's own timeout
      * for it completes the request; the mesh has logged why.
@@ -3900,32 +3958,19 @@ static void dp_wire_reply(struct ionic_datapath *dp, uint32_t dst_node,
     dp_mesh_tx(dp, dst_node, 0, &r, payload, payload_len, true);
 
     if (status == IONIC_STS_REMOTE_ACC_ERR)
-        dp_count(dp, le32toh(req->dst_qp_id),
-                 IONIC_DP_RESP_TX_REMOTE_ACCESS_ERR);
+        dp_count(dp, req->dst_qp_id, IONIC_DP_RESP_TX_REMOTE_ACCESS_ERR);
 }
 
 /* Apply a peer's atomic to a local MR, returning the pre-operation value. */
 static bool dp_remote_atomic(struct ionic_datapath *dp, uint32_t rkey,
                              uint64_t va, bool compare_swap, uint64_t swap_add,
-                             uint64_t compare, uint64_t *old_out)
+                             uint64_t compare, uint64_t *old)
 {
     uint64_t run;
     uint64_t gpa = sge_gpa(dp, rkey, va, &run);
-    uint64_t old, new_val;
 
-    if (run < 8 || ernic_dma_read(dp->dma, dp->vfu_ctx, gpa, &old, 8) < 0)
-        return false;
-
-    if (compare_swap)
-        new_val = old == compare ? swap_add : old;
-    else
-        new_val = old + swap_add;
-
-    if (ernic_dma_write(dp->dma, dp->vfu_ctx, gpa, &new_val, 8) < 0)
-        return false;
-
-    *old_out = old;
-    return true;
+    return run >= 8 &&
+           dp_atomic_apply(dp, gpa, compare_swap, swap_add, compare, old);
 }
 
 /*
@@ -3937,21 +3982,22 @@ static bool dp_remote_atomic(struct ionic_datapath *dp, uint32_t rkey,
 static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
                            const uint8_t *msg, size_t len, bool allow_retry)
 {
-    const struct ionic_wire_hdr *h = (const struct ionic_wire_hdr *)msg;
-    const uint8_t *payload = msg + sizeof(*h);
-    uint32_t payload_len = (uint32_t)(len - sizeof(*h));
+    struct ionic_wire_hdr h;
+    const uint8_t *payload = msg + IONIC_WIRE_HDR_LEN;
+    uint32_t payload_len = (uint32_t)(len - IONIC_WIRE_HDR_LEN);
 
-    if (le32toh(h->magic) != IONIC_WIRE_MAGIC) {
+    ionic_dp_wire_hdr_get(&h, msg);
+    if (h.magic != IONIC_WIRE_MAGIC) {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: dropping mesh message with bad magic");
         return true;
     }
 
-    uint32_t dst_qp_id = le32toh(h->dst_qp_id);
-    uint32_t src_qp_id = le32toh(h->src_qp_id);
-    uint32_t length = le32toh(h->length);
-    uint32_t rkey = le32toh(h->rkey);
-    uint64_t remote_va = le64toh(h->remote_va);
+    uint32_t dst_qp_id = h.dst_qp_id;
+    uint32_t src_qp_id = h.src_qp_id;
+    uint32_t length = h.length;
+    uint32_t rkey = h.rkey;
+    uint64_t remote_va = h.remote_va;
     uint32_t status = IONIC_STS_OK;
 
     struct ionic_qp_ring *dq =
@@ -3982,26 +4028,26 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
      * they still require a key.
      */
     if (!rkey && length &&
-        (h->op == IONIC_WIRE_WRITE || h->op == IONIC_WIRE_WRITE_IMM ||
-         h->op == IONIC_WIRE_READ_REQ || h->op == IONIC_WIRE_ATOMIC_REQ)) {
+        (h.op == IONIC_WIRE_WRITE || h.op == IONIC_WIRE_WRITE_IMM ||
+         h.op == IONIC_WIRE_READ_REQ || h.op == IONIC_WIRE_ATOMIC_REQ)) {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: node %u sent op %u with rkey 0, rejecting",
-                src_node, h->op);
+                src_node, h.op);
         dp_wire_reply(dp, src_node,
-                      h->op == IONIC_WIRE_READ_REQ     ? IONIC_WIRE_READ_RESP
-                      : h->op == IONIC_WIRE_ATOMIC_REQ ? IONIC_WIRE_ATOMIC_RESP
-                                                       : IONIC_WIRE_ACK,
-                      h, IONIC_STS_REMOTE_ACC_ERR, NULL, 0);
+                      h.op == IONIC_WIRE_READ_REQ     ? IONIC_WIRE_READ_RESP
+                      : h.op == IONIC_WIRE_ATOMIC_REQ ? IONIC_WIRE_ATOMIC_RESP
+                                                      : IONIC_WIRE_ACK,
+                      &h, IONIC_STS_REMOTE_ACC_ERR, NULL, 0);
         return true;
     }
 
-    switch (h->op) {
+    switch (h.op) {
     case IONIC_WIRE_SEND:
     case IONIC_WIRE_SEND_IMM:
     case IONIC_WIRE_SEND_INV: {
-        uint8_t recv_op = h->op == IONIC_WIRE_SEND_IMM   ? CQE_RECV_OP_SEND_IMM
-                          : h->op == IONIC_WIRE_SEND_INV ? CQE_RECV_OP_SEND_INV
-                                                         : CQE_RECV_OP_SEND;
+        uint8_t recv_op = h.op == IONIC_WIRE_SEND_IMM   ? CQE_RECV_OP_SEND_IMM
+                          : h.op == IONIC_WIRE_SEND_INV ? CQE_RECV_OP_SEND_INV
+                                                        : CQE_RECV_OP_SEND;
         struct dp_sge_list src = {.count = 0, .total = length};
 
         if (length > payload_len)
@@ -4013,7 +4059,7 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
                     src_node, dst_qp_id);
             status = IONIC_STS_REMOTE_ACC_ERR;
         } else if (deliver_recv(dp, dq, dst_qp_id, src_qp_id, &src, payload,
-                                recv_op, h->imm_be) < 0) {
+                                recv_op, h.imm_be) < 0) {
             /* RNR: nothing has been consumed, so the message can simply wait
              * for the guest to post a receive. */
             if (allow_retry)
@@ -4025,7 +4071,7 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
                     dst_qp_id, src.total, src_node);
             status = IONIC_STS_RNR_RETRY_EXCEEDED;
         }
-        dp_wire_reply(dp, src_node, IONIC_WIRE_ACK, h, status, NULL, 0);
+        dp_wire_reply(dp, src_node, IONIC_WIRE_ACK, &h, status, NULL, 0);
         break;
     }
 
@@ -4045,13 +4091,13 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
             ionic_dp_rdma_bytes(dp, stat_qp, n, PVRDMA_STAT_RDMA_WRITE,
                                 DP_RDMA_RX);
 
-            if (h->op == IONIC_WIRE_WRITE_IMM && dq) {
+            if (h.op == IONIC_WIRE_WRITE_IMM && dq) {
                 struct dp_sge_list written = {.count = 0, .total = n};
                 deliver_recv(dp, dq, dst_qp_id, src_qp_id, &written, NULL,
-                             CQE_RECV_OP_RDMA_IMM, h->imm_be);
+                             CQE_RECV_OP_RDMA_IMM, h.imm_be);
             }
         }
-        dp_wire_reply(dp, src_node, IONIC_WIRE_ACK, h, status, NULL, 0);
+        dp_wire_reply(dp, src_node, IONIC_WIRE_ACK, &h, status, NULL, 0);
         break;
     }
 
@@ -4073,7 +4119,7 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
                                 DP_RDMA_TX);
         }
 
-        dp_wire_reply(dp, src_node, IONIC_WIRE_READ_RESP, h, status,
+        dp_wire_reply(dp, src_node, IONIC_WIRE_READ_RESP, &h, status,
                       status == IONIC_STS_OK ? data : NULL,
                       status == IONIC_STS_OK ? length : 0);
         free(data);
@@ -4082,41 +4128,44 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
 
     case IONIC_WIRE_ATOMIC_REQ: {
         uint64_t old = 0;
+        uint8_t old_le[8];
 
-        if (!dp_remote_atomic(dp, rkey, remote_va, h->atomic_cs,
-                              le64toh(h->swap_add), le64toh(h->compare),
-                              &old)) {
+        if (!dp_remote_atomic(dp, rkey, remote_va, h.atomic_cs, h.swap_add,
+                              h.compare, &old)) {
             vfu_log(dp->vfu_ctx, LOG_WARNING,
                     "ionic_datapath: remote atomic rkey=%#x va=%#" PRIx64
                     " failed",
                     rkey, remote_va);
             status = IONIC_STS_REMOTE_ACC_ERR;
         }
-        dp_wire_reply(dp, src_node, IONIC_WIRE_ATOMIC_RESP, h, status,
-                      (const uint8_t *)&old, status == IONIC_STS_OK ? 8 : 0);
+        ernic_put_le64(old_le, old);
+        dp_wire_reply(dp, src_node, IONIC_WIRE_ATOMIC_RESP, &h, status, old_le,
+                      status == IONIC_STS_OK ? sizeof(old_le) : 0);
         break;
     }
 
     case IONIC_WIRE_ACK:
     case IONIC_WIRE_READ_RESP:
     case IONIC_WIRE_ATOMIC_RESP: {
-        struct dp_pending *p = pending_find(dp, le32toh(h->req_id));
+        struct dp_pending *p = pending_find(dp, h.req_id);
         if (!p)
             break;
 
-        status = le32toh(h->status);
-        if (status == IONIC_STS_OK && h->op != IONIC_WIRE_ACK) {
+        status = h.status;
+        if (status == IONIC_STS_OK && h.op != IONIC_WIRE_ACK) {
             uint32_t want = p->length < payload_len ? p->length : payload_len;
 
             /* The peer answered; anything that goes wrong from here is this
-             * guest's own memory refusing the landing. */
+             * guest's own memory refusing the landing.  An ATOMIC_RESP's
+             * le64 is a u64 as this guest's memory holds one, so it lands
+             * as-is, like READ data (see dp_atomic_apply()). */
             dp_fault_clear(dp);
             uint32_t got = dp_scatter(dp, &p->local, payload, want);
             if (got != want)
                 status = dp_fault_status(dp, IONIC_STS_LOCAL_PROT_ERR);
 
             /* The requester's READ bytes only exist once they have landed. */
-            if (h->op == IONIC_WIRE_READ_RESP)
+            if (h.op == IONIC_WIRE_READ_RESP)
                 ionic_dp_rdma_bytes(dp, p->qp_id, got, PVRDMA_STAT_RDMA_READ,
                                     DP_RDMA_RX);
         }
@@ -4126,7 +4175,7 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
 
     default:
         vfu_log(dp->vfu_ctx, LOG_WARNING,
-                "ionic_datapath: unknown mesh op %u from node %u", h->op,
+                "ionic_datapath: unknown mesh op %u from node %u", h.op,
                 src_node);
         break;
     }
@@ -4137,9 +4186,7 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
 /* Destination QP of a queued message, used to keep per-QP ordering. */
 static uint32_t inmsg_dst_qp(const struct dp_inmsg *m)
 {
-    const struct ionic_wire_hdr *h = (const struct ionic_wire_hdr *)m->buf;
-
-    return le32toh(h->dst_qp_id);
+    return ernic_get_le32(m->buf + IONIC_WIRE_DST_QP_OFF);
 }
 
 /*
@@ -4151,10 +4198,10 @@ static uint32_t inmsg_dst_qp(const struct dp_inmsg *m)
  */
 static bool inmsg_is_response(const struct dp_inmsg *m)
 {
-    const struct ionic_wire_hdr *h = (const struct ionic_wire_hdr *)m->buf;
+    uint8_t op = m->buf[IONIC_WIRE_OP_OFF];
 
-    return h->op == IONIC_WIRE_ACK || h->op == IONIC_WIRE_READ_RESP ||
-           h->op == IONIC_WIRE_ATOMIC_RESP;
+    return op == IONIC_WIRE_ACK || op == IONIC_WIRE_READ_RESP ||
+           op == IONIC_WIRE_ATOMIC_RESP;
 }
 
 bool ionic_datapath_has_work(struct ionic_datapath *dp)

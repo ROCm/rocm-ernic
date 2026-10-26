@@ -123,6 +123,22 @@ cmake --build build
   `sscanf()`, which miss errors or trailing text. Add helpers for new
   types there, with tests in `tests/test_parse_int.c`. Guest-side test
   programs include it too, so a VM building one needs a copy.
+- **Lay out wire formats as offsets, not structs.** Anything on the wire
+  or in guest memory is a byte buffer: give each field an `_OFF` macro
+  and the whole a `_LEN`, with a comment drawing the layout and each
+  field's byte order (see `nvmeof.h`, `net/net_headers.h`), and read and
+  write the fields only with [`src/byteorder.h`](src/byteorder.h)'s
+  `ernic_get_*()`/`ernic_put_*()`. Never cast a struct pointer over the
+  buffer, use `__attribute__((packed))` (a GNU extension), byte-swap a
+  struct's fields in place with `htonl()` and friends, or use
+  `<endian.h>`'s `htole32()` family. Code that works on a decoded header
+  converts it with a `_put()`/`_get()` pair, the only code that touches
+  its bytes (`tcp_msg_hdr_put()`, `ionic_dp_wire_hdr_put()`), and a test
+  checks the bytes it writes against a literal. `htons()` and `htonl()`
+  remain right for `struct sockaddr_in`'s fields, which the socket API
+  defines that way. `src/p4/p4_devcmd.c` predates this: its commands are
+  naturally aligned structs, `memcpy()`'d in and out and converted with
+  `<endian.h>`; don't copy it.
 - **Allocate the way the layer does.**
   - `src/qemu/`, `src/qemu-compat/`, and `src/rdma/` are built on GLib's
     containers, which abort when out of memory, so they allocate with
@@ -288,6 +304,11 @@ scanned too). Add new general patterns here when a scanner reports one.
   (`cpp/stack-address-escape`), even if never used after return. Allocate
   the target instead, as `test_server_lifecycle.c` does for the server's
   `environ`.
+- **An allocation sized by a peer, bounded only through a pointer**
+  (`cpp/uncontrolled-allocation-size`). The query takes an upper-bound
+  check only on a plain variable, so `if (hdr->len > MAX)` before
+  `malloc(hdr->len)` still reports. Copy the length to a local, check
+  that, and allocate with it, as `tcp_recv_message()` does.
 - **Including a `.c` file** (`cpp/include-non-header`, clang-tidy
   `bugprone-suspicious-include`). A unit test needing private symbols
   includes the module's `_priv.h` (e.g. `src/ionic_adminq_priv.h`) and

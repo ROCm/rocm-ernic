@@ -2,9 +2,9 @@
  * RDMA Backend: TCP mesh - sockets, and messages on them
  *
  * Connecting, listening and accepting, and writing and reading one mesh
- * message: the fixed header (TcpMsgHeader) in network byte order, and its
- * payload.  Nothing here knows what a message means; see tcp_conn.c for the
- * threads that send and receive them, and the handlers they go to.
+ * message: the fixed header (TcpMsgHeader), big-endian, and its payload.
+ * Nothing here knows what a message means; see tcp_conn.c for the threads that
+ * send and receive them, and the handlers they go to.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  *
@@ -15,6 +15,7 @@
  */
 
 #include "rdma_backend_tcp_priv.h"
+#include "byteorder.h"
 #include "rdma_utils.h"
 #include "ernic_time.h"
 #include "parse_int.h"
@@ -409,6 +410,32 @@ uint32_t tcp_send_timeout_ms(const TcpBackendPrivate *priv)
     return priv->is_manager ? ms / 2 + ms % 2 : ms;
 }
 
+/* Write @hdr to the TCP_MSG_HDR_LEN bytes at @wire. */
+void tcp_msg_hdr_put(uint8_t *wire, const TcpMsgHeader *hdr)
+{
+    ernic_put_be32(wire + TCP_MSG_HDR_MAGIC_OFF, hdr->magic);
+    ernic_put_be32(wire + TCP_MSG_HDR_TYPE_OFF, hdr->msg_type);
+    ernic_put_be32(wire + TCP_MSG_HDR_MSG_LEN_OFF, hdr->msg_len);
+    ernic_put_be32(wire + TCP_MSG_HDR_SEQ_OFF, hdr->seq);
+    ernic_put_be32(wire + TCP_MSG_HDR_SRC_NODE_OFF, hdr->src_node_id);
+    ernic_put_be32(wire + TCP_MSG_HDR_DST_NODE_OFF, hdr->dst_node_id);
+    ernic_put_be32(wire + TCP_MSG_HDR_SRC_QPN_OFF, hdr->src_qpn);
+    ernic_put_be32(wire + TCP_MSG_HDR_DST_QPN_OFF, hdr->dst_qpn);
+}
+
+/* Read the TCP_MSG_HDR_LEN bytes at @wire into @hdr. */
+void tcp_msg_hdr_get(TcpMsgHeader *hdr, const uint8_t *wire)
+{
+    hdr->magic = ernic_get_be32(wire + TCP_MSG_HDR_MAGIC_OFF);
+    hdr->msg_type = ernic_get_be32(wire + TCP_MSG_HDR_TYPE_OFF);
+    hdr->msg_len = ernic_get_be32(wire + TCP_MSG_HDR_MSG_LEN_OFF);
+    hdr->seq = ernic_get_be32(wire + TCP_MSG_HDR_SEQ_OFF);
+    hdr->src_node_id = ernic_get_be32(wire + TCP_MSG_HDR_SRC_NODE_OFF);
+    hdr->dst_node_id = ernic_get_be32(wire + TCP_MSG_HDR_DST_NODE_OFF);
+    hdr->src_qpn = ernic_get_be32(wire + TCP_MSG_HDR_SRC_QPN_OFF);
+    hdr->dst_qpn = ernic_get_be32(wire + TCP_MSG_HDR_DST_QPN_OFF);
+}
+
 /*
  * Send a message on conn.  The caller holds conn->lock, which serialises
  * writes to the socket, and has checked conn->sockfd under it.
@@ -442,6 +469,7 @@ int tcp_send_message2(const TcpBackendPrivate *priv, TcpConnection *conn,
     uint32_t timeout_ms = tcp_send_timeout_ms(priv);
     uint64_t progress_ms;
     TcpMsgHeader hdr;
+    uint8_t wire[TCP_MSG_HDR_LEN];
     ssize_t ret;
 
     /* The receiver drops the connection on anything larger. */
@@ -455,21 +483,22 @@ int tcp_send_message2(const TcpBackendPrivate *priv, TcpConnection *conn,
         return -1;
     }
 
-    hdr.magic = htonl(TCP_PROTOCOL_MAGIC);
-    hdr.msg_type = htonl(msg_type);
-    hdr.msg_len = htonl((uint32_t)(payload_len + payload2_len));
-    hdr.seq = htonl(seq);
-    hdr.src_node_id = htonl(src_node);
-    hdr.dst_node_id = htonl(dst_node);
-    hdr.src_qpn = htonl(src_qpn);
-    hdr.dst_qpn = htonl(dst_qpn);
+    hdr.magic = TCP_PROTOCOL_MAGIC;
+    hdr.msg_type = msg_type;
+    hdr.msg_len = (uint32_t)(payload_len + payload2_len);
+    hdr.seq = seq;
+    hdr.src_node_id = src_node;
+    hdr.dst_node_id = dst_node;
+    hdr.src_qpn = src_qpn;
+    hdr.dst_qpn = dst_qpn;
+    tcp_msg_hdr_put(wire, &hdr);
 
     struct iovec iov[3];
     int iovcnt = 1;
-    size_t total = sizeof(hdr);
+    size_t total = sizeof(wire);
 
-    iov[0].iov_base = &hdr;
-    iov[0].iov_len = sizeof(hdr);
+    iov[0].iov_base = wire;
+    iov[0].iov_len = sizeof(wire);
 
     /* struct iovec serves readv() as well as sendmsg(), so iov_base is not
      * const even though sendmsg() only reads through it. */
@@ -622,12 +651,14 @@ static int tcp_recv_rest(int sockfd, void *buf, size_t len, size_t got,
 int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
                      const atomic_bool *running, uint64_t deadline_ms)
 {
+    uint8_t wire[TCP_MSG_HDR_LEN];
+    uint32_t len;
     ssize_t ret;
 
     *payload = NULL;
 
     /* Receive header */
-    ret = recv(sockfd, hdr, sizeof(*hdr), 0);
+    ret = recv(sockfd, wire, sizeof(wire), 0);
     if (ret < 0) {
         if (errno == EAGAIN) {
             return -EAGAIN;
@@ -639,20 +670,11 @@ int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
         rdma_info_report("TCP: Connection closed by peer");
         return -1;
     }
-    if (tcp_recv_rest(sockfd, hdr, sizeof(*hdr), (size_t)ret, running,
+    if (tcp_recv_rest(sockfd, wire, sizeof(wire), (size_t)ret, running,
                       deadline_ms, "header") < 0) {
         return -1;
     }
-
-    /* Convert from network byte order */
-    hdr->magic = ntohl(hdr->magic);
-    hdr->msg_type = ntohl(hdr->msg_type);
-    hdr->msg_len = ntohl(hdr->msg_len);
-    hdr->seq = ntohl(hdr->seq);
-    hdr->src_node_id = ntohl(hdr->src_node_id);
-    hdr->dst_node_id = ntohl(hdr->dst_node_id);
-    hdr->src_qpn = ntohl(hdr->src_qpn);
-    hdr->dst_qpn = ntohl(hdr->dst_qpn);
+    tcp_msg_hdr_get(hdr, wire);
 
     /* Validate magic */
     if (hdr->magic != TCP_PROTOCOL_MAGIC) {
@@ -660,26 +682,31 @@ int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
         return -1;
     }
 
-    /* Allocate and receive payload */
-    if (hdr->msg_len > TCP_MAX_PAYLOAD_LEN) {
-        rdma_error_report("TCP: payload too large: %u", hdr->msg_len);
+    /*
+     * Allocate and receive payload.  The length is bounded, and used, in a
+     * local: CodeQL's uncontrolled-allocation-size query takes a bounds check
+     * only on a variable, not on a field reached through a pointer.
+     */
+    len = hdr->msg_len;
+    if (len > TCP_MAX_PAYLOAD_LEN) {
+        rdma_error_report("TCP: payload too large: %" PRIu32, len);
         return -1;
     }
-    if (hdr->msg_len > 0) {
+    if (len > 0) {
         /*
          * The peer chooses the length, so running out of memory here mustn't
          * abort the server, as g_malloc() would.  The payload is still in the
          * socket, so the stream can't go on without it: the caller closes the
          * connection, and the peer connects again.
          */
-        *payload = malloc(hdr->msg_len);
+        *payload = malloc(len);
         if (!*payload) {
-            rdma_error_report("TCP: no memory for a %u-byte payload",
-                              hdr->msg_len);
+            rdma_error_report("TCP: no memory for a %" PRIu32 "-byte payload",
+                              len);
             return -1;
         }
-        if (tcp_recv_rest(sockfd, *payload, hdr->msg_len, 0, running,
-                          deadline_ms, "payload") < 0) {
+        if (tcp_recv_rest(sockfd, *payload, len, 0, running, deadline_ms,
+                          "payload") < 0) {
             free(*payload);
             *payload = NULL;
             return -1;

@@ -16,6 +16,7 @@
  */
 
 #include "rdma_backend_tcp_priv.h"
+#include "byteorder.h"
 #include "rdma_utils.h"
 #include "ernic_time.h"
 #include "qemu/thread.h"
@@ -26,7 +27,6 @@
 #include <stdint.h>
 #include <string.h>
 #include <glib.h>
-#include <arpa/inet.h>
 #include <time.h>
 #include <inttypes.h>
 
@@ -353,15 +353,15 @@ static void tcp_refuse_registration(TcpBackendPrivate *priv,
                                     TcpConnection *conn, uint32_t dst,
                                     int32_t result)
 {
-    TcpRegisterRespPayload nak;
+    uint8_t nak[TCP_REGISTER_RESP_LEN];
 
-    memset(&nak, 0, sizeof(nak));
-    nak.result = htonl((uint32_t)result);
-    nak.version = htonl(TCP_PROTOCOL_VERSION);
+    memset(nak, 0, sizeof(nak));
+    ernic_put_be32(nak + TCP_REGISTER_RESP_RESULT_OFF, (uint32_t)result);
+    ernic_put_be32(nak + TCP_REGISTER_RESP_VERSION_OFF, TCP_PROTOCOL_VERSION);
 
     qemu_mutex_lock(&conn->lock);
     tcp_send_message(
-        priv, conn, TCP_MSG_REGISTER_RESP, &nak, sizeof(nak),
+        priv, conn, TCP_MSG_REGISTER_RESP, nak, sizeof(nak),
         atomic_fetch_add_explicit(&priv->next_seq, 1, memory_order_relaxed),
         tcp_local_node(priv), dst, 0, 0);
     qemu_mutex_unlock(&conn->lock);
@@ -406,12 +406,13 @@ typedef struct {
  */
 static bool tcp_register_read(const TcpRecvMsg *msg, TcpRegistration *reg)
 {
-    const TcpRegisterNodePayload *payload = msg->payload;
+    const uint8_t *payload = msg->payload;
+    const char *hostname;
     uint32_t peer_version = 0;
     size_t host_len;
 
-    if (msg->hdr.msg_len >= sizeof(TcpRegisterNodePayload)) {
-        peer_version = ntohl(payload->version);
+    if (msg->hdr.msg_len >= TCP_REGISTER_NODE_LEN) {
+        peer_version = ernic_get_be32(payload + TCP_REGISTER_NODE_VERSION_OFF);
     }
 
     if (peer_version != TCP_PROTOCOL_VERSION) {
@@ -423,12 +424,14 @@ static bool tcp_register_read(const TcpRecvMsg *msg, TcpRegistration *reg)
         return false;
     }
 
-    reg->requested_id = ntohl(payload->requested_node_id);
-    reg->port = ntohs(payload->port);
+    reg->requested_id =
+        ernic_get_be32(payload + TCP_REGISTER_NODE_REQUESTED_OFF);
+    reg->port = ernic_get_be16(payload + TCP_REGISTER_NODE_PORT_OFF);
     /* The hostname comes off the wire and need not be terminated, so bound
      * the read to the field. */
-    host_len = strnlen(payload->hostname, sizeof(reg->host) - 1);
-    memcpy(reg->host, payload->hostname, host_len);
+    hostname = (const char *)payload + TCP_REGISTER_NODE_HOSTNAME_OFF;
+    host_len = strnlen(hostname, sizeof(reg->host) - 1);
+    memcpy(reg->host, hostname, host_len);
     reg->host[host_len] = '\0';
     return true;
 }
@@ -589,15 +592,15 @@ static bool tcp_register_admit(TcpBackendPrivate *priv, TcpConnection *conn,
 static void tcp_register_answer(TcpBackendPrivate *priv, TcpConnection *conn,
                                 const TcpAdmission *adm)
 {
-    /* Zeroed first: the whole struct goes on the wire, so any field not
+    /* Zeroed first: the whole payload goes on the wire, so any field not
      * assigned below would put stack contents there. */
-    TcpRegisterRespPayload resp;
+    uint8_t resp[TCP_REGISTER_RESP_LEN];
 
-    memset(&resp, 0, sizeof(resp));
-    resp.assigned_node_id = htonl(adm->node_id);
-    resp.num_nodes = htonl(adm->num_nodes);
-    resp.result = htonl(0); /* Success */
-    resp.version = htonl(TCP_PROTOCOL_VERSION);
+    memset(resp, 0, sizeof(resp));
+    ernic_put_be32(resp + TCP_REGISTER_RESP_NODE_ID_OFF, adm->node_id);
+    ernic_put_be32(resp + TCP_REGISTER_RESP_NUM_NODES_OFF, adm->num_nodes);
+    ernic_put_be32(resp + TCP_REGISTER_RESP_RESULT_OFF, 0); /* Success */
+    ernic_put_be32(resp + TCP_REGISTER_RESP_VERSION_OFF, TCP_PROTOCOL_VERSION);
 
     /*
      * conn->lock serialises writes to this socket.  The send thread holds it
@@ -607,7 +610,7 @@ static void tcp_register_answer(TcpBackendPrivate *priv, TcpConnection *conn,
      */
     qemu_mutex_lock(&conn->lock);
     tcp_send_message(
-        priv, conn, TCP_MSG_REGISTER_RESP, &resp, sizeof(resp),
+        priv, conn, TCP_MSG_REGISTER_RESP, resp, sizeof(resp),
         atomic_fetch_add_explicit(&priv->next_seq, 1, memory_order_relaxed),
         tcp_local_node(priv), adm->node_id, 0, 0);
     qemu_mutex_unlock(&conn->lock);
@@ -930,11 +933,11 @@ static void tcp_report_mesh_overflow(const char *broadcast, guint table_size)
 static void tcp_send_mesh_topology(TcpBackendPrivate *priv)
 {
     /* The whole payload goes on the wire, including the node slots past
-     * num_nodes, so the struct MUST be zeroed to avoid sending stack
-     * contents when there are unused nodes.
+     * num_nodes, so it MUST be zeroed to avoid sending stack contents when
+     * there are unused nodes.
      */
-    TcpMeshTopologyPayload topo;
-    memset(&topo, 0, sizeof(topo));
+    uint8_t topo[TCP_TOPOLOGY_LEN];
+    memset(topo, 0, sizeof(topo));
     uint32_t num_nodes = 0;
     guint overflow = 0; /* the size of mesh_nodes, if past the cap */
 
@@ -951,19 +954,19 @@ static void tcp_send_mesh_topology(TcpBackendPrivate *priv)
             break;
         }
 
-        MeshNodeInfo *node = (MeshNodeInfo *)value;
-        topo.nodes[num_nodes].node_id = htonl(node->node_id);
-        strncpy(topo.nodes[num_nodes].hostname, node->hostname, 255);
-        topo.nodes[num_nodes].hostname[255] = '\0';
-        topo.nodes[num_nodes].port = htons(node->port);
-        topo.nodes[num_nodes].is_alive = node->is_alive ? 1 : 0;
-        topo.nodes[num_nodes].reserved[0] = 0;
-        topo.nodes[num_nodes].reserved[1] = 0;
-        topo.nodes[num_nodes].reserved[2] = 0;
+        const MeshNodeInfo *node = value;
+        uint8_t *entry = topo + TCP_TOPOLOGY_NODE_OFF(num_nodes);
+
+        ernic_put_be32(entry + TCP_MESH_NODE_ID_OFF, node->node_id);
+        /* Terminated within the field, by the zeroing above */
+        memcpy(entry + TCP_MESH_NODE_HOSTNAME_OFF, node->hostname,
+               strnlen(node->hostname, TCP_HOSTNAME_LEN - 1));
+        ernic_put_be16(entry + TCP_MESH_NODE_PORT_OFF, node->port);
+        entry[TCP_MESH_NODE_ALIVE_OFF] = node->is_alive ? 1 : 0;
         num_nodes++;
     }
 
-    topo.num_nodes = htonl(num_nodes);
+    ernic_put_be32(topo + TCP_TOPOLOGY_NUM_NODES_OFF, num_nodes);
 
     qemu_mutex_unlock(&priv->mesh_table_lock);
 
@@ -980,8 +983,8 @@ static void tcp_send_mesh_topology(TcpBackendPrivate *priv)
         /* Checked under the lock tcp_retire_conn() changes them under */
         qemu_mutex_lock(&conn->lock);
         if (atomic_load(&conn->is_connected) && conn->sockfd >= 0) {
-            tcp_send_message(priv, conn, TCP_MSG_MESH_TOPOLOGY, &topo,
-                             sizeof(TcpMeshTopologyPayload),
+            tcp_send_message(priv, conn, TCP_MSG_MESH_TOPOLOGY, topo,
+                             sizeof(topo),
                              atomic_fetch_add_explicit(&priv->next_seq, 1,
                                                        memory_order_relaxed),
                              tcp_local_node(priv), conn->node_id, 0, 0);
@@ -1003,7 +1006,7 @@ static void tcp_send_mesh_topology(TcpBackendPrivate *priv)
  * mesh_table_lock and gid_table_lock.
  */
 static void tcp_snapshot_node_gids(const TcpBackendPrivate *priv,
-                                   uint32_t node_id, TcpNodeGidsPayload *out)
+                                   uint32_t node_id, TcpNodeGidsWire *out)
     TSA_REQUIRES(priv->mesh_table_lock, priv->gid_table_lock)
 {
     const TcpNodeGids *claims = NULL;
@@ -1048,10 +1051,10 @@ static void tcp_send_gid_updates(TcpBackendPrivate *priv, const GArray *tables,
      * tcp_fill_node_gids() didn't zero would show up in the tests as stack
      * contents on the wire.
      */
-    TcpNodeGidsPayload table[TCP_MAX_MESH_NODES];
+    TcpNodeGidsWire table[TCP_MAX_MESH_NODES];
     uint32_t num_table = 0;
     guint overflow = 0; /* the size of mesh_nodes, if past the cap */
-    TcpNodeGidsPayload *changed = g_new(TcpNodeGidsPayload, nodes->len);
+    TcpNodeGidsWire *changed = g_new(TcpNodeGidsWire, nodes->len);
 
     /*
      * Snapshot under the mesh and claim locks; the sends are not, because
