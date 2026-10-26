@@ -3,13 +3,10 @@
 #
 # SPDX-License-Identifier: MIT
 
-# The hyphenated script name is not a valid module name
+# The hyphenated script name is not a valid module name. Enabling it again
+# at once still covers the module's name, but no name inside it.
 # pylint: disable=invalid-name
-
-# The data readers are mirrored from ernicctl, which has to stay a
-# single stdlib-only file and so cannot import them from a shared
-# module.
-# pylint: disable=duplicate-code
+# pylint: enable=invalid-name
 
 """Prometheus metrics exporter for the rocm-ernic systemd service.
 
@@ -50,6 +47,10 @@ DEFAULTS = {
 }
 
 
+# Mirrored from ernicctl, which has to stay a single stdlib-only file
+# and so cannot import it from a shared module. So are the data readers
+# and read_all_stats_with_qps() below.
+# pylint: disable=duplicate-code
 def load_env():
     """Return the config: defaults, then the env file, then the environment."""
     cfg = dict(DEFAULTS)
@@ -69,6 +70,9 @@ def load_env():
     return cfg
 
 
+# pylint: enable=duplicate-code
+
+
 CFG = load_env()
 RUN_DIR = CFG["ERNIC_RUN_DIR"]
 EXPORTER_PORT = int(CFG["ERNIC_EXPORTER_PORT"])
@@ -78,6 +82,7 @@ MANIFEST = os.path.join(RUN_DIR, "instances.json")
 # ── Data readers (mirrored from ernicctl) ─────────
 
 
+# pylint: disable=duplicate-code
 def read_manifest():
     """Return the instances manifest, or an empty one if it is unreadable."""
     if not os.path.isfile(MANIFEST):
@@ -138,6 +143,9 @@ def parse_stats_file(path):
     except OSError:
         pass
     return result
+
+
+# pylint: enable=duplicate-code
 
 
 # The header the server writes above the LIF counter
@@ -226,6 +234,7 @@ def parse_stats_file_with_qps(path):
     return device, lif, qps
 
 
+# pylint: disable=duplicate-code
 def read_all_stats_with_qps():
     """Read stats + QP data for every *.stats file.
 
@@ -240,6 +249,9 @@ def read_all_stats_with_qps():
             continue
         result[inst_id] = parse_stats_file_with_qps(sf)
     return result
+
+
+# pylint: enable=duplicate-code
 
 
 # ── Prometheus metrics ────────────────────────────

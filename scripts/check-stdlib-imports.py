@@ -3,8 +3,10 @@
 #
 # SPDX-License-Identifier: MIT
 
-# The hyphenated script name is not a valid module name
+# The hyphenated script name is not a valid module name. Enabling it again
+# at once still covers the module's name, but no name inside it.
 # pylint: disable=invalid-name
+# pylint: enable=invalid-name
 
 """Verify that a Python script imports only from the standard library.
 

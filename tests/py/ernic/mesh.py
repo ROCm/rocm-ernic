@@ -324,15 +324,14 @@ class MeshPeer:
         )
 
 
+# The answer it gives is configured field by field, which is the point.
+# pylint: disable-next=too-many-instance-attributes
 class FakeManager:
     """A manager that answers registrations however a test needs.
 
     Used to put a real worker opposite a manager it should refuse, or one
     that answers slowly or not at all.
     """
-
-    # The answer it gives is configured field by field, which is the point.
-    # pylint: disable=too-many-instance-attributes
 
     def __init__(self, port=None, version=PROTOCOL_VERSION, result=0, reply=True):
         self.port = port or free_port()
@@ -403,8 +402,6 @@ class FakeManager:
 class MeshNode:
     """One node of a mesh: a server process and the guest behind it."""
 
-    # The node is a bundle of the pieces a test reaches for.
-    # pylint: disable=too-many-instance-attributes
     def __init__(self, index, server, guest_ip, log_path):
         self.index = index
         self.server = server

@@ -3,8 +3,10 @@
 #
 # SPDX-License-Identifier: MIT
 
-# The hyphenated script name is not a valid module name
+# The hyphenated script name is not a valid module name. Enabling it again
+# at once still covers the module's name, but no name inside it.
 # pylint: disable=invalid-name
+# pylint: enable=invalid-name
 
 """Run ShellCheck on shell that lives inside other files.
 

@@ -182,8 +182,6 @@ DEFAULT_TIMEOUT = 10.0
 class Ring:
     """A ring in guest memory, and where the driver is in it."""
 
-    # A record with two derived values; the attributes are the interface.
-    # pylint: disable=too-few-public-methods
     def __init__(self, gpa, depth_log2, stride_log2):
         self.gpa = gpa
         self.depth_log2 = depth_log2
@@ -205,29 +203,29 @@ class Ring:
         return (self.cons // self.depth) % 2 == 0
 
 
+# pylint: disable-next=too-few-public-methods  # a record of its attributes
 class Cq:
     """A completion queue."""
 
-    # pylint: disable=too-few-public-methods
     def __init__(self, cq_id, ring):
         self.id = cq_id
         self.ring = ring
 
 
+# pylint: disable-next=too-few-public-methods  # a record of its attributes
 class Srq:
     """A shared receive queue."""
 
-    # pylint: disable=too-few-public-methods
     def __init__(self, srq_id, ring):
         self.id = srq_id
         self.ring = ring
         self.next_wqe_id = 1
 
 
+# pylint: disable-next=too-few-public-methods  # a record of its attributes
 class Qp:
     """A queue pair and its rings."""
 
-    # pylint: disable=too-few-public-methods
     def __init__(self, qp_id, qp_type, sq, rq):
         self.id = qp_id
         self.type = qp_type
@@ -236,10 +234,10 @@ class Qp:
         self.next_wqe_id = 1
 
 
+# pylint: disable-next=too-few-public-methods  # a record of its attributes
 class Mr:
     """A memory region: a virtual range backed by guest pages."""
 
-    # pylint: disable=too-few-public-methods
     def __init__(self, lkey, va, length, pages, pt_gpa):
         self.lkey = lkey
         self.va = va
@@ -258,21 +256,21 @@ class Mr:
         return self.pt_gpa
 
 
+# pylint: disable-next=too-few-public-methods  # a record of its attributes
 class Sge:
     """One scatter/gather entry."""
 
-    # pylint: disable=too-few-public-methods
     def __init__(self, va, length, lkey):
         self.va = va
         self.len = length
         self.lkey = lkey
 
 
+# A decoded wire structure; every field is part of the interface.
+# pylint: disable-next=too-few-public-methods,too-many-instance-attributes
 class Cqe:
     """A completion, decoded."""
 
-    # A decoded wire structure; every field is part of the interface.
-    # pylint: disable=too-few-public-methods,too-many-instance-attributes
     def __init__(self, raw):
         self.raw = raw
         qtf = struct.unpack_from(">I", raw, 28)[0]
@@ -351,16 +349,15 @@ def gid_v4(text):
     return f"::ffff:{text}"
 
 
+# The driver owns every queue the device has; splitting it up would only
+# move the state somewhere less obvious.
+# pylint: disable-next=too-many-instance-attributes,too-many-public-methods
 class IonicDriver(EthQueueMixin):
     """The guest driver for one device.
 
     Construct with a connected VfioUserClient and the GuestMemory that
     has been DMA-mapped to it, then call bringup().
     """
-
-    # The driver owns every queue the device has; splitting it up would
-    # only move the state somewhere less obvious.
-    # pylint: disable=too-many-instance-attributes,too-many-public-methods
 
     def __init__(self, client, mem, timeout=DEFAULT_TIMEOUT):
         self.client = client
@@ -867,10 +864,10 @@ class IonicDriver(EthQueueMixin):
         self.doorbell(QTYPE_SQ, qp.id, 0, qp.sq.prod % qp.sq.depth)
         return struct.unpack_from("<Q", wqe, 0)[0]
 
+    # One WQE layout with a branch per opcode class; splitting it up would
+    # scatter struct ionic_v1_wqe across several functions.
+    # pylint: disable-next=too-many-branches,too-many-statements
     def _build_send_wqe(self, qp, op, args):
-        # One WQE layout with a branch per opcode class; splitting it up
-        # would scatter struct ionic_v1_wqe across several functions.
-        # pylint: disable=too-many-branches,too-many-statements
         stride = 1 << WQE_STRIDE_LOG2
         sges = args.get("sge") or []
         inline_data = args.get("inline_data")

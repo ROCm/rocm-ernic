@@ -37,6 +37,8 @@ ETH_MAX_DEPTH_LOG2 = 15  # the emulator rejects ring_size >= 16
 ETH_MTU_MAX = 9600  # IONIC_ETH_NET_MTU_MAX
 
 
+# A record plus its ring bookkeeping; the attributes are the interface.
+# pylint: disable-next=too-many-instance-attributes
 class EthQueue:
     """An emulated Ethernet Tx or Rx queue and its completion ring.
 
@@ -47,11 +49,9 @@ class EthQueue:
     than deriving it from a lap count.
     """
 
-    # A record plus its ring bookkeeping; the attributes are the interface,
-    # and the three ring addresses are what Q_INIT was given, so there is no
+    # The three ring addresses are what Q_INIT was given, so there is no
     # smaller set to construct one from.
-    # pylint: disable=too-few-public-methods,too-many-instance-attributes
-    # pylint: disable=too-many-arguments,too-many-positional-arguments
+    # pylint: disable-next=too-many-arguments,too-many-positional-arguments
     def __init__(self, qtype, index, depth_log2, ring, cq_ring, sg_ring=0):
         self.qtype = qtype
         self.index = index

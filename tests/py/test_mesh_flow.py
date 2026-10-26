@@ -41,9 +41,13 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Imported once tests/py is on sys.path: ctest runs this under python3 -I,
+# which leaves the script's directory off it.
 # pylint: disable=wrong-import-position
 from ernic import ionic, mesh
 from ernic.check import Suite
+
+# pylint: enable=wrong-import-position
 
 # QP and CQ numbering, as in test_mesh_stress.py: each node's QP for
 # talking to node j is QP_BASE + j.

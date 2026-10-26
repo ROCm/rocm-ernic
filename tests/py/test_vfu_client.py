@@ -24,10 +24,14 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Imported once tests/py is on sys.path: ctest runs this under python3 -I,
+# which leaves the script's directory off it.
 # pylint: disable=wrong-import-position
 from ernic import ionic, vfu
 from ernic.check import Suite
 from ernic.server import Server, stop_and_check
+
+# pylint: enable=wrong-import-position
 
 # The emulated device's PCI identity, which find_rdma_device() matches in
 # full rather than on a shared vendor or device id.

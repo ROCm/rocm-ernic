@@ -19,11 +19,15 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Imported once tests/py is on sys.path: ctest runs this under python3 -I,
+# which leaves the script's directory off it.
 # pylint: disable=wrong-import-position
 from ernic import ionic
 from ernic.check import Suite
 from ernic.fixture import BaseFixture
 from ernic.server import run_vfu_suite
+
+# pylint: enable=wrong-import-position
 
 # QP ids 0 and 1 are the device's own: a QP created as id 1 comes up as
 # GSI, whose sends are routed by the destination in the WQE rather than
@@ -85,11 +89,11 @@ def no_completion(driver, cq, settle=1.0):
     return True
 
 
+# The pieces a test reaches for; bundling them is the point.
+# pylint: disable-next=too-few-public-methods
 class Fixture(BaseFixture):
     """Two connected RC queue pairs in one instance, over the loopback backend."""
 
-    # The pieces a test reaches for; bundling them is the point.
-    # pylint: disable=too-many-instance-attributes,too-few-public-methods
     def __init__(self, server):
         super().__init__(server)
         self.cq_a = self.driver.create_cq(CQ_A)
