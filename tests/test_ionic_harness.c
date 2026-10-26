@@ -36,15 +36,15 @@
 
 #include "byteorder.h"
 #include "fake_vfu.h"
-#include "ionic_datapath.h"
-#include "ionic_eth_emu.h"
+#include "ionic/ionic_datapath.h"
+#include "ionic/ionic_eth_emu.h"
 /* For the emulator's admin queue pointer, which rdma-reset checks */
-#include "ionic_eth_emu_priv.h"
+#include "ionic/ionic_eth_emu_priv.h"
 #include "ionic_harness.h"
-#include "ionic_rdma_devcmd.h"
-#include "ionic_status.h"
-#include "nvmeof.h"
-#include "nvmeof_cm.h"
+#include "ionic/ionic_rdma_devcmd.h"
+#include "ionic/ionic_status.h"
+#include "nvmeof/nvmeof.h"
+#include "nvmeof/nvmeof_cm.h"
 #ifdef ERNIC_HAVE_P4
 #include "p4_devcmd.h"
 #include "p4_engine.h"
@@ -58,7 +58,7 @@
 #include "rdma_rm.h"
 #include "rocm_ernic_compat.h"
 #include "rocm_ernic_internal.h"
-#include "s3_token.h"
+#include "s3/s3_token.h"
 
 static int failures;
 

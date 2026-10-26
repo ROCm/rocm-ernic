@@ -64,8 +64,8 @@ The fork took 11 of the 23 files in upstream's `hw/rdma/` and three
 VMware headers from QEMU's `include/standard-headers/`. It left out the
 device front end (`vmw/pvrdma_main.c`, `vmw/pvrdma_cmd.c`, and
 `vmw/pvrdma_dev_ring.c` and `.h`), `rdma.c`, and the tracing and build
-files. rocm-ernic's own front end in `src/`, the emulated ionic device,
-does that job. Nine of the 14 files are left: `rdma_utils.c`,
+files. rocm-ernic's own front end in `src/ionic/`, the emulated ionic
+device, does that job. Nine of the 14 files are left: `rdma_utils.c`,
 `vmw/pvrdma_qp_ops.c` and `.h`, and two of the VMware headers were
 deleted once nothing used them.
 

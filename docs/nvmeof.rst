@@ -185,9 +185,9 @@ How It Works
 Unlike ``loopback`` and ``tcp``, this is not a
 transport for guest RDMA traffic -- it is a *peer* that
 speaks NVMe-oF back at the guest. It therefore hooks into
-:file:`src/ionic_datapath.c`, the data path that actually
-serves the guest ``ionic_rdma`` driver, rather than into the
-QEMU-derived backend vtable.
+:file:`src/ionic/ionic_datapath.c`, the data path that
+actually serves the guest ``ionic_rdma`` driver, rather than
+into the QEMU-derived backend vtable.
 
 Connection establishment
 ^^^^^^^^^^^^^^^^^^^^^^^^
@@ -195,7 +195,8 @@ Connection establishment
 ``nvme connect -t rdma`` goes through ``rdma_cm``, which
 means an IB CM exchange over GSI (QP1). The data path
 recognises sends on the guest's GSI queue pair and hands the
-256-byte MAD to :file:`src/nvmeof_cm.c`, which answers it:
+256-byte MAD to :file:`src/nvmeof/nvmeof_cm.c`, which answers
+it:
 
 - **REQ** -- validate the ``cma_hdr`` and the
   ``nvme_rdma_cm_req`` private data behind it, allocate a
@@ -233,9 +234,9 @@ Capsules and data transfer
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Each guest SEND on an established queue carries a 64-byte
-NVMe command capsule, which :file:`src/nvmeof_target.c`
-executes and answers with a 16-byte response capsule
-delivered into a posted receive.
+NVMe command capsule, which
+:file:`src/nvmeof/nvmeof_target.c` executes and answers with
+a 16-byte response capsule delivered into a posted receive.
 
 Admin commands cover what ``nvme connect``, ``nvme discover`` and
 ``nvme list`` need: the fabrics Connect and Property

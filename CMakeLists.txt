@@ -187,22 +187,22 @@ set(BRIDGE_SOURCES
 # ionic emulation layer -- the device the guest actually sees
 set(IONIC_EMU_SOURCES
     src/ernic_dma.c
-    src/ionic_eth_emu.c
-    src/ionic_eth_net.c
-    src/ionic_profile.c
-    src/ionic_profiles.c
-    src/ionic_emu_stats.c
-    src/ionic_eth_steer.c
-    src/ionic_rdma_devcmd.c
-    src/ionic_adminq.c
-    src/ionic_fault.c
-    src/ionic_datapath.c
+    src/ionic/ionic_eth_emu.c
+    src/ionic/ionic_eth_net.c
+    src/ionic/ionic_profile.c
+    src/ionic/ionic_profiles.c
+    src/ionic/ionic_emu_stats.c
+    src/ionic/ionic_eth_steer.c
+    src/ionic/ionic_rdma_devcmd.c
+    src/ionic/ionic_adminq.c
+    src/ionic/ionic_fault.c
+    src/ionic/ionic_datapath.c
 )
 
 # In-process NVMe-oF controller reached over the emulated fabric
 set(NVMEOF_SOURCES
-    src/nvmeof_target.c
-    src/nvmeof_cm.c
+    src/nvmeof/nvmeof_target.c
+    src/nvmeof/nvmeof_cm.c
 )
 
 # P4-programmable match-action stage between the guest and the host network.
@@ -232,10 +232,10 @@ endif()
 
 # In-process S3-over-RDMA object store, reached in-band over the emulated NIC
 set(S3_SOURCES
-    src/s3_token.c
-    src/s3_http.c
-    src/s3_target.c
-    src/s3_tcp.c
+    src/s3/s3_token.c
+    src/s3/s3_http.c
+    src/s3/s3_target.c
+    src/s3/s3_tcp.c
 )
 
 # Main server implementation

@@ -39,9 +39,9 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "ionic_emu_stats.h"
-#include "ionic_eth_steer.h"
-#include "ionic_profile.h"
+#include "ionic/ionic_emu_stats.h"
+#include "ionic/ionic_eth_steer.h"
+#include "ionic/ionic_profile.h"
 
 #include "fuzz_harness.h"
 

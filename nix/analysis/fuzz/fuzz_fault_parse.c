@@ -1,5 +1,6 @@
 /*
- * libFuzzer harness for the fault-injection spec parser (src/ionic_fault.c).
+ * libFuzzer harness for the fault-injection spec parser
+ * (src/ionic/ionic_fault.c).
  *
  * A spec reaches ionic_fault_parse() from --inject on the command line, and
  * later from profile files, so the parser has to hold for any byte string.
@@ -42,7 +43,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "ionic_fault.h"
+#include "ionic/ionic_fault.h"
 
 #include "fuzz_harness.h"
 

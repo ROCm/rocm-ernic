@@ -1,5 +1,5 @@
 /*
- * libFuzzer harness for the NIC profile loader (src/ionic_profile.c).
+ * libFuzzer harness for the NIC profile loader (src/ionic/ionic_profile.c).
  *
  * A profile reaches ionic_profile_apply_text() from a --nic-profile file,
  * so the loader has to hold for any byte string.  The harness layers the
@@ -41,7 +41,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "ionic_profile.h"
+#include "ionic/ionic_profile.h"
 
 #include "fuzz_harness.h"
 

@@ -62,17 +62,17 @@ length.
 ## The ionic stats harness
 
 `fuzz_ionic_stats` is the first harness that reaches a device handler. It
-links `src/ionic_adminq.c` and posts one of the four stats opcodes through
-`ionic_adminq_dispatch_wqe()`, with guest memory and the counter snapshots
-supplied by `tests/ionic_adminq_fakes.h` -- the same fake device the unit
-test uses, so the table and the fuzzer can't drift apart. Beyond ASan, it
-aborts when a result breaks one of the handler's promises: one DMA write at
-the buffer the body named, never past its length, in whole entries, with
-the NONE terminator when it fits, the right counters in header order, no
-QP values for an unmapped QP, and nothing written on failure or outside
-the write. The status must also be the code its cause names (`EINVAL` for
-a short body, `BAD_ADDR` for a zero `dma_addr`, `ENOENT` for an unmapped
-QP), and an input can switch on an injected `stats_vals` fault, under which
+links `src/ionic/ionic_adminq.c` and posts one of the four stats opcodes
+through `ionic_adminq_dispatch_wqe()`, with guest memory and the counter
+snapshots supplied by `tests/ionic_adminq_fakes.h` -- the same fake device
+the unit test uses, so the table and the fuzzer can't drift apart. Beyond
+ASan, it aborts when a result breaks one of the handler's promises: one DMA
+write at the buffer the body named, never past its length, in whole entries,
+with the NONE terminator when it fits, the right counters in header order,
+no QP values for an unmapped QP, and nothing written on failure or outside
+the write. The status must also be the code its cause names (`EINVAL` for a
+short body, `BAD_ADDR` for a zero `dma_addr`, `ENOENT` for an unmapped QP),
+and an input can switch on an injected `stats_vals` fault, under which
 device values must fail with `EIO` and every other command is unaffected.
 
 `LLVMFuzzerInitialize()` first runs a table of seed inputs (positive,
@@ -110,10 +110,10 @@ in `LLVMFuzzerInitialize()` and writes it out with `FUZZ_EMIT_SEEDS=1`.
 ## Not yet fuzzed (device-fixture required)
 
 The rest of the ionic devcmd and datapath handlers in
-`src/ionic_adminq.c`, `src/ionic_rdma_devcmd.c` and `src/ionic_datapath.c`
-are **not** fuzzed yet. They create and modify resources in the RDMA
-resource manager and walk the guest's rings, so they need more of the
-device faked than the stats commands do. Extending
+`src/ionic/ionic_adminq.c`, `src/ionic/ionic_rdma_devcmd.c` and
+`src/ionic/ionic_datapath.c` are **not** fuzzed yet. They create and modify
+resources in the RDMA resource manager and walk the guest's rings, so they
+need more of the device faked than the stats commands do. Extending
 `tests/ionic_adminq_fakes.h` towards them is the natural next step.
 
 ## Extending a corpus

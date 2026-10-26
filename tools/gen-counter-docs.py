@@ -6,11 +6,11 @@
 """Render the device's statistics counters into the documentation.
 
 The counter sets are defined in C and nowhere else: the LIF statistics
-block names its counters in ``src/ionic_emu_stats.c``, and the two
-tables a guest reads through ``hw_counters`` are ``dev_stats`` and
-``qp_stats`` in ``src/ionic_adminq_priv.h``.  Prose that restates them
-goes stale the first time one is added, and the published site is the
-last place that shows up.
+block names its counters in ``src/ionic/ionic_emu_stats.c``, and the
+two tables a guest reads through ``hw_counters`` are ``dev_stats`` and
+``qp_stats`` in ``src/ionic/ionic_adminq_priv.h``.  Prose that restates
+them goes stale the first time one is added, and the published site is
+the last place that shows up.
 
 So the lists under ``docs/generated/`` are built from those files
 rather than written, and ``docs/monitoring.rst`` includes them.  The
@@ -33,9 +33,9 @@ import re
 import sys
 
 # Where each counter set is defined, relative to the repository root.
-LIF_ENUM_SRC = "src/ionic_emu_stats.h"
-LIF_NAMES_SRC = "src/ionic_emu_stats.c"
-HW_TABLES_SRC = "src/ionic_adminq_priv.h"
+LIF_ENUM_SRC = "src/ionic/ionic_emu_stats.h"
+LIF_NAMES_SRC = "src/ionic/ionic_emu_stats.c"
+HW_TABLES_SRC = "src/ionic/ionic_adminq_priv.h"
 
 OUT_DIR = "docs/generated"
 
@@ -159,7 +159,7 @@ MACRO_ENTRY = re.compile(r"\b([A-Z][A-Z0-9_]{2,})\s*\(")
 
 # List macro -> the header that defines it. Each is an X-macro whose rows
 # are X(SYMBOL, "name"), in the order the counters appear in the table.
-LIST_MACRO_SRC = {"IONIC_DP_RDMA_COUNTERS": "src/ionic_datapath.h"}
+LIST_MACRO_SRC = {"IONIC_DP_RDMA_COUNTERS": "src/ionic/ionic_datapath.h"}
 
 
 def parse_list_macro(root, macro):

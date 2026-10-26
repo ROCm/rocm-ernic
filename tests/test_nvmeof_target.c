@@ -1,7 +1,7 @@
 /*
  * test_nvmeof_target.c — unit tests for the in-process NVMe-oF controller
  *
- * The controller in src/nvmeof_target.c is deliberately transport- and
+ * The controller in src/nvmeof/nvmeof_target.c is deliberately transport- and
  * DMA-agnostic: it is handed command capsules and a pair of callbacks and
  * hands back response capsules. That is what makes this test possible at
  * all -- it stands a plain byte array in for guest memory and drives the
@@ -33,9 +33,9 @@
 #include <unistd.h>
 
 #include "byteorder.h"
-#include "nvmeof.h"
-#include "nvmeof_target.h"
-#include "nvmeof_target_priv.h"
+#include "nvmeof/nvmeof.h"
+#include "nvmeof/nvmeof_target.h"
+#include "nvmeof/nvmeof_target_priv.h"
 
 #define HOST_BUF_SIZE (256 * 1024)
 #define HOST_BASE     0x40000000ull

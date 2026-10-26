@@ -55,9 +55,9 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "ionic_adminq_priv.h"
-#include "ionic_fault.h"
-#include "ionic_status.h"
+#include "ionic/ionic_adminq_priv.h"
+#include "ionic/ionic_fault.h"
+#include "ionic/ionic_status.h"
 
 #include "ionic_adminq_fakes.h"
 

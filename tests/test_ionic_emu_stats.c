@@ -24,7 +24,7 @@
 #include <sched.h>
 
 #include "byteorder.h"
-#include "ionic_emu_stats.h"
+#include "ionic/ionic_emu_stats.h"
 
 static int failures;
 

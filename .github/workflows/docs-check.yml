@@ -17,7 +17,7 @@ on:
       # The counter lists under docs/generated/ are built from these,
       # so a counter added in either one changes the documentation.
       # src/**/*.h above already covers ionic_adminq_priv.h.
-      - 'src/ionic_emu_stats.c'
+      - 'src/ionic/ionic_emu_stats.c'
       - 'tools/gen-counter-docs.py'
       - 'cmake/ErnicDocumentation.cmake'
       - '.github/workflows/docs-check.yml'

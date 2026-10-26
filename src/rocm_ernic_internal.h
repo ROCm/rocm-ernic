@@ -16,10 +16,10 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "rocm_ernic_compat.h"
-#include "ionic_eth_emu.h"
-#include "ionic_rdma_devcmd.h"
-#include "ionic_datapath.h"
-#include "ionic_profile.h"
+#include "ionic/ionic_eth_emu.h"
+#include "ionic/ionic_rdma_devcmd.h"
+#include "ionic/ionic_datapath.h"
+#include "ionic/ionic_profile.h"
 
 /* Forward declarations */
 typedef struct rocm_ernic_dev rocm_ernic_dev_t;

@@ -1,7 +1,7 @@
 /*
  * test_s3_target.c — unit tests for the in-process S3-over-RDMA object store
  *
- * The target in src/s3_target.c is deliberately transport- and
+ * The target in src/s3/s3_target.c is deliberately transport- and
  * DMA-agnostic: it is handed a parsed HTTP request and a pair of
  * callbacks and hands back an HTTP response. That is what makes this
  * test possible at all -- it stands a plain byte array in for the guest
@@ -34,9 +34,9 @@
 
 #include "parse_int.h"
 #include "s3_alloc_fail.h"
-#include "s3_http.h"
-#include "s3_target.h"
-#include "s3_token.h"
+#include "s3/s3_http.h"
+#include "s3/s3_target.h"
+#include "s3/s3_token.h"
 
 #define HOST_BUF_SIZE (1u << 20)
 #define HOST_BASE     0x40000000ull

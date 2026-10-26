@@ -46,7 +46,7 @@
 
 #include "byteorder.h"
 #include "ernic_err.h"
-#include "ionic_datapath.h" /* IONIC_MAX_MR_QUEUES -- the queue-count ceiling */
+#include "ionic/ionic_datapath.h" /* IONIC_MAX_MR_QUEUES, the queue ceiling */
 #include "nvmeof_target.h"
 #include "nvmeof_target_priv.h"
 #include "parse_int.h"

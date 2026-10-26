@@ -27,13 +27,13 @@
 #include <sys/types.h>
 
 #include "byteorder.h"
-#include "ionic_datapath.h"
-#include "ionic_emu_stats.h"
-#include "ionic_eth_emu.h"
+#include "ionic/ionic_datapath.h"
+#include "ionic/ionic_emu_stats.h"
+#include "ionic/ionic_eth_emu.h"
 #include "ionic_eth_emu_fakes.h"
-#include "ionic_eth_emu_priv.h"
-#include "ionic_fault.h"
-#include "ionic_profile.h"
+#include "ionic/ionic_eth_emu_priv.h"
+#include "ionic/ionic_fault.h"
+#include "ionic/ionic_profile.h"
 #include "qemu/thread.h"
 #include "parse_int.h"
 

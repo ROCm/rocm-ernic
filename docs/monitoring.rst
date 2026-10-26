@@ -429,9 +429,9 @@ the device totals, as ``ernic_lif_counter_total`` under
 their ``ionic_if.h`` names; per-QP, only this view
 reports them.  A device reset zeroes both.  The
 tables are defined in ``dev_stats`` and ``qp_stats``
-in ``src/ionic_adminq_priv.h``, the first entries
+in ``src/ionic/ionic_adminq_priv.h``, the first entries
 written out and the rest generated from
-``IONIC_DP_RDMA_COUNTERS`` in ``src/ionic_datapath.h``:
+``IONIC_DP_RDMA_COUNTERS`` in ``src/ionic/ionic_datapath.h``:
 
 .. include:: generated/hw-counter-tables.rst
 

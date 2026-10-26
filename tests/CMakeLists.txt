@@ -154,7 +154,7 @@ target_compile_definitions(ernic-test-dma PRIVATE _GNU_SOURCE)
 # the kernel rather than cutting it short. Needs no TAP device or privileges.
 add_executable(ernic-test-ionic-eth-net
     test_ionic_eth_net.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_eth_net.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_eth_net.c
 )
 target_include_directories(ernic-test-ionic-eth-net PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -227,7 +227,7 @@ endif()
 # byte array in for guest memory -- no VM, no RDMA device, no server.
 add_executable(test_nvmeof_target
     test_nvmeof_target.c
-    ${PROJECT_SOURCE_DIR}/src/nvmeof_target.c
+    ${PROJECT_SOURCE_DIR}/src/nvmeof/nvmeof_target.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
 )
 target_include_directories(test_nvmeof_target PRIVATE
@@ -243,8 +243,8 @@ target_compile_definitions(test_nvmeof_target PRIVATE _GNU_SOURCE)
 # emits and dissects the replies; no MAD ever reaches a wire.
 add_executable(test_nvmeof_cm
     test_nvmeof_cm.c
-    ${PROJECT_SOURCE_DIR}/src/nvmeof_cm.c
-    ${PROJECT_SOURCE_DIR}/src/nvmeof_target.c
+    ${PROJECT_SOURCE_DIR}/src/nvmeof/nvmeof_cm.c
+    ${PROJECT_SOURCE_DIR}/src/nvmeof/nvmeof_target.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
 )
 target_include_directories(test_nvmeof_cm PRIVATE
@@ -260,7 +260,7 @@ target_compile_definitions(test_nvmeof_cm PRIVATE _GNU_SOURCE)
 # with hipObject, so this links nothing but the codec itself.
 add_executable(test_s3_token
     test_s3_token.c
-    ${PROJECT_SOURCE_DIR}/src/s3_token.c
+    ${PROJECT_SOURCE_DIR}/src/s3/s3_token.c
 )
 target_include_directories(test_s3_token PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(test_s3_token PRIVATE _GNU_SOURCE)
@@ -268,7 +268,7 @@ target_compile_definitions(test_s3_token PRIVATE _GNU_SOURCE)
 # S3 control-plane HTTP subset test: buffers in, buffers out, no socket.
 add_executable(test_s3_http
     test_s3_http.c
-    ${PROJECT_SOURCE_DIR}/src/s3_http.c
+    ${PROJECT_SOURCE_DIR}/src/s3/s3_http.c
 )
 target_include_directories(test_s3_http PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(test_s3_http PRIVATE _GNU_SOURCE)
@@ -278,9 +278,9 @@ target_compile_definitions(test_s3_http PRIVATE _GNU_SOURCE)
 # no VM, RDMA device or server process is involved.
 add_executable(test_s3_target
     test_s3_target.c
-    ${PROJECT_SOURCE_DIR}/src/s3_target.c
-    ${PROJECT_SOURCE_DIR}/src/s3_http.c
-    ${PROJECT_SOURCE_DIR}/src/s3_token.c
+    ${PROJECT_SOURCE_DIR}/src/s3/s3_target.c
+    ${PROJECT_SOURCE_DIR}/src/s3/s3_http.c
+    ${PROJECT_SOURCE_DIR}/src/s3/s3_token.c
 )
 target_include_directories(test_s3_target PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(test_s3_target PRIVATE _GNU_SOURCE)
@@ -291,10 +291,10 @@ target_compile_definitions(test_s3_target PRIVATE _GNU_SOURCE)
 # an independent implementation in the test.
 add_executable(test_s3_tcp
     test_s3_tcp.c
-    ${PROJECT_SOURCE_DIR}/src/s3_tcp.c
-    ${PROJECT_SOURCE_DIR}/src/s3_target.c
-    ${PROJECT_SOURCE_DIR}/src/s3_http.c
-    ${PROJECT_SOURCE_DIR}/src/s3_token.c
+    ${PROJECT_SOURCE_DIR}/src/s3/s3_tcp.c
+    ${PROJECT_SOURCE_DIR}/src/s3/s3_target.c
+    ${PROJECT_SOURCE_DIR}/src/s3/s3_http.c
+    ${PROJECT_SOURCE_DIR}/src/s3/s3_token.c
 )
 target_include_directories(test_s3_tcp PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(test_s3_tcp PRIVATE _GNU_SOURCE)
@@ -317,12 +317,12 @@ endforeach()
 add_executable(test_ionic_intr_pending
     test_ionic_intr_pending.c
     ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_emu_stats.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_eth_steer.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_eth_emu.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_profile.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_profiles.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_emu_stats.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_eth_steer.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_fault.c
 )
 target_include_directories(test_ionic_intr_pending PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -349,12 +349,12 @@ target_link_libraries(test_ionic_intr_pending PRIVATE ${GLIB2_LIBRARIES})
 add_executable(test_ionic_port_info
     test_ionic_port_info.c
     ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_emu_stats.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_eth_steer.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_eth_emu.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_profile.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_profiles.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_emu_stats.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_eth_steer.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_fault.c
 )
 target_include_directories(test_ionic_port_info PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -377,8 +377,8 @@ target_link_libraries(test_ionic_port_info PRIVATE ${GLIB2_LIBRARIES})
 # NIC profile loader test: ini layering, strict validation and atomic
 # layers, built-in profiles by name and files by path. Pure: no ionic TU.
 add_executable(test_ionic_profile test_ionic_profile.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_profile.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_profiles.c
 )
 target_include_directories(test_ionic_profile PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -396,7 +396,7 @@ target_link_libraries(test_ionic_profile PRIVATE ${GLIB2_LIBRARIES})
 # little-endian rendering and each index against the kernel's struct
 # ionic_lif_stats. Pure: no ionic TU.
 add_executable(test_ionic_emu_stats test_ionic_emu_stats.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_emu_stats.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_emu_stats.c
 )
 target_include_directories(test_ionic_emu_stats PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -411,12 +411,12 @@ target_link_libraries(test_ionic_emu_stats PRIVATE pthread)
 add_executable(test_ionic_identity
     test_ionic_identity.c
     ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_emu_stats.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_eth_steer.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_eth_emu.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_profile.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_profiles.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_emu_stats.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_eth_steer.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_fault.c
 )
 target_include_directories(test_ionic_identity PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -441,12 +441,12 @@ target_link_libraries(test_ionic_identity PRIVATE ${GLIB2_LIBRARIES})
 add_executable(test_ionic_stats_publish
     test_ionic_stats_publish.c
     ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_emu_stats.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_eth_steer.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_eth_emu.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_profile.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_profiles.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_emu_stats.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_eth_steer.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_fault.c
 )
 target_include_directories(test_ionic_stats_publish PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -470,12 +470,12 @@ target_link_libraries(test_ionic_stats_publish PRIVATE ${GLIB2_LIBRARIES})
 add_executable(test_ionic_queues
     test_ionic_queues.c
     ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_emu_stats.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_eth_steer.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_eth_emu.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_profile.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_profiles.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_emu_stats.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_eth_steer.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_fault.c
 )
 target_include_directories(test_ionic_queues PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -528,8 +528,8 @@ add_dependencies(test_server_lifecycle rocm-ernic)
 add_executable(test_ionic_query_qp
     test_ionic_query_qp.c
     ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_adminq.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_fault.c
 )
 target_include_directories(test_ionic_query_qp PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -549,8 +549,8 @@ target_compile_definitions(test_ionic_query_qp PRIVATE
 add_executable(ernic-test-ionic-stats
     test_ionic_stats.c
     ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_adminq.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_fault.c
 )
 target_include_directories(ernic-test-ionic-stats PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -569,8 +569,8 @@ target_compile_definitions(ernic-test-ionic-stats PRIVATE
 add_executable(ernic-test-ionic-adminq-poll
     test_ionic_adminq_poll.c
     ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_adminq.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_fault.c
 )
 target_include_directories(ernic-test-ionic-adminq-poll PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -590,8 +590,8 @@ target_compile_definitions(ernic-test-ionic-adminq-poll PRIVATE
 add_executable(ernic-test-ionic-adminq-maps
     test_ionic_adminq_maps.c
     ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_adminq.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_fault.c
 )
 target_include_directories(ernic-test-ionic-adminq-maps PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -612,8 +612,8 @@ target_compile_definitions(ernic-test-ionic-adminq-maps PRIVATE
 add_executable(test_ionic_srq_adminq
     test_ionic_srq_adminq.c
     ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_adminq.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_fault.c
 )
 target_include_directories(test_ionic_srq_adminq PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -631,7 +631,7 @@ target_compile_definitions(test_ionic_srq_adminq PRIVATE
 # it has no external dependencies to stub.
 add_executable(ernic-test-ionic-fault
     test_ionic_fault.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_fault.c
 )
 target_include_directories(ernic-test-ionic-fault PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -647,7 +647,7 @@ set_tests_properties(ionic-counter-snapshot-unit PROPERTIES TIMEOUT 30)
 add_executable(test_ionic_dp_errors
     test_ionic_dp_errors.c
     ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_datapath.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_datapath.c
 )
 target_include_directories(test_ionic_dp_errors PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -668,7 +668,7 @@ target_link_libraries(test_ionic_dp_errors PRIVATE pthread)
 add_executable(test_ionic_cq_arm
     test_ionic_cq_arm.c
     ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_datapath.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_datapath.c
 )
 target_include_directories(test_ionic_cq_arm PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -697,7 +697,7 @@ target_link_libraries(test_ionic_cq_arm PRIVATE
 add_executable(test_ionic_rq_wrap
     test_ionic_rq_wrap.c
     ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_datapath.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_datapath.c
 )
 target_include_directories(test_ionic_rq_wrap PRIVATE
     ${PROJECT_SOURCE_DIR}/src

@@ -1,5 +1,5 @@
 /*
- * Unit tests for the fault-injection core (src/ionic_fault.c): the
+ * Unit tests for the fault-injection core (src/ionic/ionic_fault.c): the
  * --inject parser, the deterministic patterns and the per-site fault set.
  *
  * One table.  Each row names a check: run a parsed fault over a stretch of
@@ -25,8 +25,8 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "ionic_fault.h"
-#include "ionic_status.h"
+#include "ionic/ionic_fault.h"
+#include "ionic/ionic_status.h"
 
 static int failures;
 

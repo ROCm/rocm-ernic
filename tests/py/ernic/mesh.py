@@ -61,7 +61,7 @@ HEADER_FMT = "!IIIIIIII"
 HEADER_SIZE = 32
 
 # The data path's header at the start of a TCP_MSG_IONIC payload (the
-# IONIC_WIRE_* offsets in src/ionic_datapath_priv.h): little-endian,
+# IONIC_WIRE_* offsets in src/ionic/ionic_datapath_priv.h): little-endian,
 # unlike the mesh header around it, but for the immediate, which is
 # big-endian and left as it is here. Magic, op, compare-swap flag,
 # reserved, source and destination QP, request id, rkey, length,

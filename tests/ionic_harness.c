@@ -22,13 +22,13 @@
 
 #include "byteorder.h"
 #include "fake_vfu.h"
-#include "ionic_adminq.h"
-#include "ionic_datapath.h"
-#include "ionic_eth_emu.h"
-#include "ionic_rdma_devcmd.h"
-#include "nvmeof_target.h"
+#include "ionic/ionic_adminq.h"
+#include "ionic/ionic_datapath.h"
+#include "ionic/ionic_eth_emu.h"
+#include "ionic/ionic_rdma_devcmd.h"
+#include "nvmeof/nvmeof_target.h"
 #include "rocm_ernic_compat.h"
-#include "s3_target.h"
+#include "s3/s3_target.h"
 
 /* Guest memory: 32 regions of 1 MiB */
 #define IH_REGION_SIZE (1u << 20)

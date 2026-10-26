@@ -361,8 +361,8 @@
     # Name the namespace explicitly.  nvme-cli's flush leaves
     # --namespace-id at the broadcast value when it is not given, and
     # the controller's exec_io() rejects any NSID that is not the one
-    # it was configured with (src/nvmeof_target.c:1163) before the
-    # opcode is even looked at -- so the un-flagged form tests
+    # it was configured with (src/nvmeof/nvmeof_target.c:1163) before
+    # the opcode is even looked at -- so the un-flagged form tests
     # nothing but the NSID check.
     - name: Flush the namespace
       ansible.builtin.command:

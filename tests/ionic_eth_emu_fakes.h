@@ -27,9 +27,9 @@
 
 #include <vfio-user/libvfio-user.h>
 
-#include "ionic_adminq.h"
-#include "ionic_datapath.h"
-#include "ionic_eth_net.h"
+#include "ionic/ionic_adminq.h"
+#include "ionic/ionic_datapath.h"
+#include "ionic/ionic_eth_net.h"
 #include "rocm_ernic_compat.h"
 
 /* ---- Fake guest memory ------------------------------------------------- */

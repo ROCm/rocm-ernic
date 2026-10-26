@@ -46,17 +46,18 @@ let
   # them from going stale. Add a harness in both places.
   harnesses = [
     { name = "ionic_stats";
-      extra = [ "src/ernic_dma.c" "src/ionic_adminq.c" "src/ionic_fault.c" ];
+      extra = [ "src/ernic_dma.c" "src/ionic/ionic_adminq.c"
+                "src/ionic/ionic_fault.c" ];
       cflags = "-Itests -I${libvfioUser}/include";
       seeds = true; }
     { name = "profile_parse";
-      extra = [ "src/ionic_profile.c" "src/ionic_profiles.c" ];
+      extra = [ "src/ionic/ionic_profile.c" "src/ionic/ionic_profiles.c" ];
       seeds = true; }
     { name = "eth_classify";
-      extra = [ "src/ionic_emu_stats.c" "src/ionic_eth_steer.c" ];
+      extra = [ "src/ionic/ionic_emu_stats.c" "src/ionic/ionic_eth_steer.c" ];
       seeds = true; }
     { name = "fault_parse";
-      extra = [ "src/ionic_fault.c" ];
+      extra = [ "src/ionic/ionic_fault.c" ];
       seeds = true; }
   ];
 

@@ -17,7 +17,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "ionic_eth_net.h"
+#include "ionic/ionic_eth_net.h"
 
 static int failures;
 

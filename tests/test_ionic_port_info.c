@@ -34,12 +34,12 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "byteorder.h"
-#include "ionic_adminq.h"
-#include "ionic_datapath.h"
-#include "ionic_eth_emu.h"
-#include "ionic_eth_emu_priv.h"
-#include "ionic_eth_net.h"
-#include "ionic_profile.h"
+#include "ionic/ionic_adminq.h"
+#include "ionic/ionic_datapath.h"
+#include "ionic/ionic_eth_emu.h"
+#include "ionic/ionic_eth_emu_priv.h"
+#include "ionic/ionic_eth_net.h"
+#include "ionic/ionic_profile.h"
 #include "rocm_ernic_compat.h"
 
 /* ---- Fake guest memory ------------------------------------------------- */

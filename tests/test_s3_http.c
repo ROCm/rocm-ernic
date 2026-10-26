@@ -29,7 +29,7 @@
 #include <strings.h>
 
 #include "s3_alloc_fail.h"
-#include "s3_http.h"
+#include "s3/s3_http.h"
 
 static int failures;
 

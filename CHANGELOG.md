@@ -79,8 +79,8 @@
   described by the `x-amz-rdma-token` header cuObject v1.2.0 introduced and
   hipObject sends; the reply carries `x-amz-rdma-reply` and
   `x-amz-rdma-bytes`. The control plane is terminated in band on the
-  emulated wire (ARP, ICMP and a minimal TCP, in `src/s3_tcp.c`), so the
-  endpoint is a host on the guest's segment and needs no `--tap`. S3
+  emulated wire (ARP, ICMP and a minimal TCP, in `src/s3/s3_tcp.c`), so
+  the endpoint is a host on the guest's segment and needs no `--tap`. S3
   semantics follow versitygw; nothing is vendored from it. A request with
   no token carries its payload in the HTTP body, so `curl` is a usable
   client. Documented in `docs/s3.rst`.
@@ -545,6 +545,12 @@
   thread failing to start, which is still returned to the caller) aborts
   likewise, as does destroying a locked mutex. Release builds keep the
   default, unchecked mutex.
+* **For contributors:** the ionic device emulation, the NVMe-oF target
+  and the S3 target moved from the top of `src/` into `src/ionic/`,
+  `src/nvmeof/` and `src/s3/`. File names are unchanged. Code outside a
+  module's directory includes its headers by path from `src/` (e.g.
+  `#include "ionic/ionic_datapath.h"`); files within the directory
+  include each other by bare name.
 
 ### Removed
 

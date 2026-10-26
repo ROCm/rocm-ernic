@@ -35,10 +35,10 @@
 #include <string.h>
 
 #include "s3_alloc_fail.h"
-#include "s3_http.h"
-#include "s3_target.h"
-#include "s3_tcp.h"
-#include "s3_token.h"
+#include "s3/s3_http.h"
+#include "s3/s3_target.h"
+#include "s3/s3_tcp.h"
+#include "s3/s3_token.h"
 
 #define TARGET_IP   0xc0a8c801u /* 192.168.200.1 */
 #define TARGET_PORT 9000
