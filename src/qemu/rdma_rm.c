@@ -94,6 +94,11 @@ static inline void res_tbl_free(RdmaRmResTbl *tbl)
     tbl->bitmap = NULL;
 }
 
+/*
+ * Reads the bitmap without the table's lock, and returns a pointer that
+ * outlives any lock it could take. Both are safe only because just the main
+ * thread uses the tables; see RdmaDeviceResources.
+ */
 static inline void *rdma_res_tbl_get(RdmaRmResTbl *tbl, uint32_t handle)
 {
     if ((handle < tbl->tbl_sz) && (test_bit(handle, tbl->bitmap))) {
@@ -159,6 +164,17 @@ static inline void *rdma_res_tbl_alloc(RdmaRmResTbl *tbl, uint32_t *handle)
     return tbl->tbl + (size_t)*handle * tbl->res_sz;
 }
 
+/*
+ * @handle must be allocated: this doesn't check its bit, so freeing a free
+ * handle would make used wrap. Every caller makes sure first: the
+ * rdma_rm_dealloc_*() calls look the handle up, and the alloc calls' error
+ * paths free only the slot they have just allocated. Keep it that way
+ * rather than adding the check here, where no test could reach it through
+ * the public calls.
+ *
+ * The slot keeps its contents; rdma_res_tbl_get() refuses it once its bit
+ * is clear, and rdma_res_tbl_alloc() zeroes it before reuse.
+ */
 static inline void rdma_res_tbl_dealloc(RdmaRmResTbl *tbl, uint32_t handle)
 {
     qemu_mutex_lock(&tbl->lock);
@@ -222,6 +238,10 @@ RdmaRmPD *rdma_rm_get_pd(RdmaDeviceResources *dev_res, uint32_t pd_handle)
  * Free a PD. Nothing checks that its QPs, MRs and SRQs are gone, so the
  * caller frees them first. No backend keeps anything for a PD, so there is
  * no backend operation to undo.
+ *
+ * The guest can't free a PD early: the adminq makes one PD for everything
+ * (adminq_get_pd()) and frees it last, at reset
+ * (ionic_adminq_release_all()).
  */
 void rdma_rm_dealloc_pd(RdmaDeviceResources *dev_res, uint32_t pd_handle)
 {
@@ -366,6 +386,14 @@ out_dealloc_cq:
     return rc;
 }
 
+/*
+ * Nothing checks that no QP uses the CQ, and the guest can destroy one that
+ * a QP still does. That leaves nothing dangling: a QP keeps no reference to
+ * its CQs (see RdmaRmQP), and the ionic data path names a CQ by id and
+ * checks it is still registered before posting to it, so the QP's
+ * completions are dropped. Keep it that way; a QP that held its CQ would
+ * need a reference count here.
+ */
 void rdma_rm_dealloc_cq(RdmaDeviceResources *dev_res, uint32_t cq_handle)
 {
     RdmaRmCQ *cq;
@@ -769,6 +797,12 @@ int rdma_rm_modify_srq(RdmaDeviceResources *dev_res, uint32_t srq_handle,
     return rdma_backend_modify_srq(&srq->backend_srq, srq_attr, srq_attr_mask);
 }
 
+/*
+ * As with a CQ, nothing checks that no QP uses the SRQ, and nothing needs
+ * to: a QP keeps no reference to it, and the ionic data path checks the
+ * SRQ is still registered, under its lock, before taking a receive from
+ * it. See rdma_rm_dealloc_cq().
+ */
 void rdma_rm_dealloc_srq(RdmaDeviceResources *dev_res, uint32_t srq_handle)
 {
     RdmaRmSRQ *srq;
