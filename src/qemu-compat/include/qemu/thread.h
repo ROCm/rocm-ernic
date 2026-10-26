@@ -14,6 +14,9 @@
 #include <errno.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 #include "qemu/clang-tsa.h" // IWYU pragma: export
@@ -37,17 +40,66 @@ typedef struct QemuThread {
     pthread_t thread;
 } QemuThread;
 
-/* Mutex operations */
+/*
+ * Reports that the pthread function what failed with err, then aborts.  The
+ * wrappers here call it whenever a pthread call fails, other than for the
+ * results they document as normal: a failure means a bug, such as unlocking
+ * a mutex the thread doesn't hold, or corrupted memory, so carrying on isn't
+ * safe.
+ *
+ * It's defined here, with the wrappers, so that a program using them needs
+ * nothing more than this header.  It writes to stderr itself rather than
+ * through error_report(), which a quieter log level would silence.
+ */
+static inline _Noreturn void qemu_thread_fatal(int err, const char *what)
+{
+    fprintf(stderr, "%s failed: %s\n", what, strerror(err));
+    abort();
+}
+
+/* Aborts through qemu_thread_fatal() unless err, what's result, is 0 */
+static inline void qemu_thread_check(int err, const char *what)
+{
+    if (err != 0) {
+        qemu_thread_fatal(err, what);
+    }
+}
+
+/*
+ * Mutex operations
+ *
+ * Without NDEBUG, the macro that also turns off assert(), a mutex is
+ * error-checking (PTHREAD_MUTEX_ERRORCHECK): a thread locking a mutex it
+ * already holds, or unlocking one it doesn't hold, gets an error, so the
+ * wrappers abort rather than deadlock or carry on.  A release build, which
+ * runs the per-packet path, keeps the default mutex, which checks neither.
+ */
 static inline void qemu_mutex_init(QemuMutex *mutex)
 {
-    pthread_mutex_init(&mutex->lock, NULL);
+#ifdef NDEBUG
+    qemu_thread_check(pthread_mutex_init(&mutex->lock, NULL),
+                      "pthread_mutex_init");
+#else
+    pthread_mutexattr_t attr;
+
+    qemu_thread_check(pthread_mutexattr_init(&attr), "pthread_mutexattr_init");
+    qemu_thread_check(
+        pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_ERRORCHECK),
+        "pthread_mutexattr_settype");
+    qemu_thread_check(pthread_mutex_init(&mutex->lock, &attr),
+                      "pthread_mutex_init");
+    qemu_thread_check(pthread_mutexattr_destroy(&attr),
+                      "pthread_mutexattr_destroy");
+#endif
     mutex->initialized = true;
 }
 
+/* Destroying a locked mutex fails, and so aborts, in every build */
 static inline void qemu_mutex_destroy(QemuMutex *mutex)
 {
     if (mutex->initialized) {
-        pthread_mutex_destroy(&mutex->lock);
+        qemu_thread_check(pthread_mutex_destroy(&mutex->lock),
+                          "pthread_mutex_destroy");
         mutex->initialized = false;
     }
 }
@@ -55,23 +107,36 @@ static inline void qemu_mutex_destroy(QemuMutex *mutex)
 static inline void qemu_mutex_lock(QemuMutex *mutex)
     TSA_ACQUIRE(mutex) TSA_NO_TSA
 {
-    pthread_mutex_lock(&mutex->lock);
+    qemu_thread_check(pthread_mutex_lock(&mutex->lock), "pthread_mutex_lock");
 }
 
-/* Returns 0 once it holds mutex, or an errno if another thread holds it */
+/*
+ * Returns 0 once it holds mutex, or EBUSY if mutex is locked, whether by
+ * another thread or by this one
+ */
 static inline int qemu_mutex_trylock(QemuMutex *mutex)
     TSA_TRY_ACQUIRE(0, mutex) TSA_NO_TSA
 {
-    return pthread_mutex_trylock(&mutex->lock);
+    int err = pthread_mutex_trylock(&mutex->lock);
+
+    if (err != EBUSY) {
+        qemu_thread_check(err, "pthread_mutex_trylock");
+    }
+    return err;
 }
 
 static inline void qemu_mutex_unlock(QemuMutex *mutex)
     TSA_RELEASE(mutex) TSA_NO_TSA
 {
-    pthread_mutex_unlock(&mutex->lock);
+    qemu_thread_check(pthread_mutex_unlock(&mutex->lock),
+                      "pthread_mutex_unlock");
 }
 
-/* Thread creation and management */
+/*
+ * Thread creation and management.  qemu_thread_create() returns
+ * pthread_create()'s result, since a thread can fail to start for want of
+ * resources (EAGAIN); qemu_thread_join() aborts if pthread_join() fails.
+ */
 int qemu_thread_create(QemuThread *thread, void *(*start_routine)(void *),
                        void *arg);
 void qemu_thread_join(QemuThread *thread);
@@ -79,26 +144,32 @@ void qemu_thread_join(QemuThread *thread);
 /*
  * Condition variable operations.  As in QEMU, timed waits are measured
  * against CLOCK_MONOTONIC, so a change to the wall clock neither cuts a wait
- * short nor stretches it.
+ * short nor stretches it.  If the clock can't be set, the wrapper aborts
+ * rather than measure CLOCK_MONOTONIC deadlines against the wall clock.
+ * Any other failure aborts too, such as waiting without holding mutex.
  */
 static inline void qemu_cond_init(QemuCond *cond)
 {
     pthread_condattr_t attr;
 
-    pthread_condattr_init(&attr);
-    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
-    pthread_cond_init(&cond->cond, &attr);
-    pthread_condattr_destroy(&attr);
+    qemu_thread_check(pthread_condattr_init(&attr), "pthread_condattr_init");
+    qemu_thread_check(pthread_condattr_setclock(&attr, CLOCK_MONOTONIC),
+                      "pthread_condattr_setclock");
+    qemu_thread_check(pthread_cond_init(&cond->cond, &attr),
+                      "pthread_cond_init");
+    qemu_thread_check(pthread_condattr_destroy(&attr),
+                      "pthread_condattr_destroy");
 }
 
 static inline void qemu_cond_destroy(QemuCond *cond)
 {
-    pthread_cond_destroy(&cond->cond);
+    qemu_thread_check(pthread_cond_destroy(&cond->cond),
+                      "pthread_cond_destroy");
 }
 
 static inline void qemu_cond_signal(QemuCond *cond)
 {
-    pthread_cond_signal(&cond->cond);
+    qemu_thread_check(pthread_cond_signal(&cond->cond), "pthread_cond_signal");
 }
 
 /*
@@ -108,7 +179,8 @@ static inline void qemu_cond_signal(QemuCond *cond)
 static inline void qemu_cond_wait(QemuCond *cond, QemuMutex *mutex)
     TSA_REQUIRES(mutex)
 {
-    pthread_cond_wait(&cond->cond, &mutex->lock);
+    qemu_thread_check(pthread_cond_wait(&cond->cond, &mutex->lock),
+                      "pthread_cond_wait");
 }
 
 /*
@@ -120,8 +192,13 @@ static inline bool qemu_cond_timedwait_until(QemuCond *cond, QemuMutex *mutex,
                                              const struct timespec *deadline)
     TSA_REQUIRES(mutex)
 {
-    return pthread_cond_timedwait(&cond->cond, &mutex->lock, deadline) !=
-           ETIMEDOUT;
+    int err = pthread_cond_timedwait(&cond->cond, &mutex->lock, deadline);
+
+    if (err == ETIMEDOUT) {
+        return false;
+    }
+    qemu_thread_check(err, "pthread_cond_timedwait");
+    return true;
 }
 
 #endif /* QEMU_THREAD_H */

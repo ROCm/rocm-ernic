@@ -17,6 +17,15 @@
  * except those a fault raises, so the process's signals go to the main
  * thread, and must leave its caller's own mask as it was.
  *
+ * The mutex wrappers in qemu/thread.h must abort when a lock is misused,
+ * each case in a child process like the oversize map: destroying a locked
+ * mutex in every build, and, without NDEBUG, where mutexes are
+ * error-checking, unlocking an unlocked mutex or locking one the thread
+ * already holds. Under TSan these are skipped, since TSan reports the
+ * misuse first. The results the wrappers treat as normal must not abort:
+ * trylock on a mutex another thread holds, and a timed wait whose deadline
+ * has passed.
+ *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -24,6 +33,7 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <errno.h>
 #include <inttypes.h>
 #include <limits.h>
 #include <signal.h>
@@ -31,12 +41,14 @@
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <glib.h>
 
 #include "qemu/bitmap.h"
 #include "qemu/thread.h"
+#include "rocm-ernic-warnings.h"
 
 static int failures;
 
@@ -111,16 +123,21 @@ static void test_bitmap_sizes(void)
     }
 }
 
-static void test_oversize_aborts(void)
+/*
+ * Runs misuse in a child process, which must die by SIGABRT. An alarm ends
+ * a child that hangs instead, such as one deadlocked on a mutex that doesn't
+ * check its owner, which then fails the check.
+ */
+static void expect_abort(void (*misuse)(void), const char *what)
 {
-    unsigned long word = 0;
     int status;
     pid_t pid;
 
     fflush(stdout);
     pid = fork();
     if (pid < 0) {
-        fail("fork failed", 0, 0);
+        printf("FAIL %s: fork failed\n", what);
+        failures++;
         return;
     }
     if (pid == 0) {
@@ -128,15 +145,25 @@ static void test_oversize_aborts(void)
         if (!freopen("/dev/null", "w", stderr)) {
             _exit(2);
         }
-        (void)find_first_zero_bit(&word, (uint64_t)UINT32_MAX + 1);
+        alarm(30);
+        misuse();
         _exit(0);
     }
 
     if (waitpid(pid, &status, 0) != pid) {
-        fail("waitpid failed", 0, 0);
+        printf("FAIL %s: waitpid failed\n", what);
+        failures++;
     } else if (!WIFSIGNALED(status) || WTERMSIG(status) != SIGABRT) {
-        fail("oversize map did not abort", 0, 0);
+        printf("FAIL %s did not abort\n", what);
+        failures++;
     }
+}
+
+static void oversize_map(void)
+{
+    unsigned long word = 0;
+
+    (void)find_first_zero_bit(&word, (uint64_t)UINT32_MAX + 1);
 }
 
 /* ---- Threads --------------------------------------------------------- */
@@ -199,11 +226,137 @@ static void test_thread_signal_mask(void)
     check_blocked(&after, SIGTERM, false, "caller");
 }
 
+/* ---- Mutexes --------------------------------------------------------- */
+
+/*
+ * Each of these misuses a lock on purpose, for expect_abort(), so the
+ * thread-safety analysis is off for them. TSan would report the misuse and
+ * halt before the wrapper could abort, so they aren't built under it.
+ */
+#ifndef ERNIC_THREAD_SANITIZED
+ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
+/* pthread_mutex_destroy() refuses a locked mutex of any type. */
+static void destroy_locked(void)
+{
+    QemuMutex mutex;
+
+    qemu_mutex_init(&mutex);
+    qemu_mutex_lock(&mutex);
+    qemu_mutex_destroy(&mutex);
+}
+
+/* Only an error-checking mutex, made without NDEBUG, refuses these. */
+#ifndef NDEBUG
+static void unlock_unlocked(void)
+{
+    QemuMutex mutex;
+
+    qemu_mutex_init(&mutex);
+    qemu_mutex_unlock(&mutex);
+}
+
+static void relock_held(void)
+{
+    QemuMutex mutex;
+
+    qemu_mutex_init(&mutex);
+    qemu_mutex_lock(&mutex);
+    qemu_mutex_lock(&mutex);
+}
+#endif
+ROCM_ERNIC_WARN_THREAD_SAFETY_ON
+#endif
+
+static void test_mutex_misuse_aborts(void)
+{
+#ifdef ERNIC_THREAD_SANITIZED
+    printf("skip mutex misuse: TSan reports it before the wrappers can\n");
+#else
+    expect_abort(destroy_locked, "destroying a locked mutex");
+#ifdef NDEBUG
+    printf("skip unlocking an unlocked mutex, and relocking a held one: "
+           "NDEBUG mutexes don't check their owner\n");
+#else
+    expect_abort(unlock_unlocked, "unlocking an unlocked mutex");
+    expect_abort(relock_held, "relocking a held mutex");
+#endif
+#endif
+}
+
+typedef struct {
+    QemuMutex *mutex;
+    int ret;
+} TrylockArg;
+
+static void *trylock_once(void *opaque)
+{
+    TrylockArg *t = opaque;
+    int ret = qemu_mutex_trylock(t->mutex);
+
+    if (ret == 0) {
+        qemu_mutex_unlock(t->mutex);
+    }
+    t->ret = ret;
+    return NULL;
+}
+
+/* EBUSY is trylock's normal answer for a held mutex, not a failure. */
+static void test_trylock_busy(void)
+{
+    QemuMutex mutex;
+    QemuThread thread;
+    TrylockArg t = {.mutex = &mutex, .ret = -1};
+
+    qemu_mutex_init(&mutex);
+    qemu_mutex_lock(&mutex);
+    if (qemu_thread_create(&thread, trylock_once, &t) != 0) {
+        printf("FAIL qemu_thread_create\n");
+        failures++;
+    } else {
+        qemu_thread_join(&thread);
+        if (t.ret != EBUSY) {
+            printf("FAIL trylock of a held mutex returned %d, not EBUSY\n",
+                   t.ret);
+            failures++;
+        }
+    }
+    qemu_mutex_unlock(&mutex);
+    qemu_mutex_destroy(&mutex);
+}
+
+/* ETIMEDOUT is a timed wait's normal answer, not a failure. */
+static void test_timedwait_deadline_passed(void)
+{
+    QemuMutex mutex;
+    QemuCond cond;
+    struct timespec now;
+
+    qemu_mutex_init(&mutex);
+    qemu_cond_init(&cond);
+    clock_gettime(CLOCK_MONOTONIC, &now);
+
+    qemu_mutex_lock(&mutex);
+    if (qemu_cond_timedwait_until(&cond, &mutex, &now)) {
+        printf("FAIL timed wait past its deadline reported a wakeup\n");
+        failures++;
+    }
+    qemu_mutex_unlock(&mutex);
+
+    qemu_cond_destroy(&cond);
+    qemu_mutex_destroy(&mutex);
+}
+
 int main(void)
 {
+    /* The children that abort run before any thread has: glibc keeps a
+     * joined thread's stack for reuse, and a child that aborts can't free
+     * its copy, which valgrind then reports as possibly lost. */
     test_bitmap_sizes();
-    test_oversize_aborts();
+    expect_abort(oversize_map, "oversize map");
+    test_mutex_misuse_aborts();
     test_thread_signal_mask();
+    test_trylock_busy();
+    test_timedwait_deadline_passed();
 
     if (failures) {
         printf("qemu_stubs: %d check(s) FAILED\n", failures);

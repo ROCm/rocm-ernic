@@ -258,7 +258,7 @@ int qemu_thread_create(QemuThread *thread, void *(*start_routine)(void *),
 void qemu_thread_join(QemuThread *thread)
 {
     atomic_fetch_add(&g_joins, 1);
-    pthread_join(thread->thread, NULL);
+    qemu_thread_check(pthread_join(thread->thread, NULL), "pthread_join");
 }
 
 /* ---- Watchdog ---------------------------------------------------------- */

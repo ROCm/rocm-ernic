@@ -536,6 +536,15 @@
   guest, keeps its own. `ernic_parse_hexstr()` in `src/parse_int.h` parses
   a bmv2 hexstr, reporting how many bytes the value needed so a caller can
   refuse one wider than its field.
+* **Lock misuse aborts the server in Debug builds.** Without `NDEBUG`,
+  mutexes are error-checking, so a thread that locks a mutex it already
+  holds, or unlocks one it doesn't hold, aborts with a message naming the
+  pthread call instead of deadlocking or carrying on. In every build, a
+  pthread call in the thread wrappers that fails other than in the way it
+  expects (trylock finding the mutex held, a timed wait timing out, or a
+  thread failing to start, which is still returned to the caller) aborts
+  likewise, as does destroying a locked mutex. Release builds keep the
+  default, unchecked mutex.
 
 ### Removed
 
