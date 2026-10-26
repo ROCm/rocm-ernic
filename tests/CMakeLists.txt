@@ -842,6 +842,11 @@ if(ERNIC_HAVE_VALGRIND_H)
     target_compile_definitions(ernic-test-tcp-thread-stop PRIVATE
         ERNIC_HAVE_VALGRIND_H)
 endif()
+# The test fails the backend's malloc() calls on demand. The linker routes
+# the calls in its own objects through a wrapper in the test; libc's and
+# GLib's own calls are untouched.
+target_link_options(ernic-test-tcp-thread-stop PRIVATE
+    "LINKER:--wrap=malloc")
 target_link_directories(ernic-test-tcp-thread-stop PRIVATE
     ${GLIB2_LIBRARY_DIRS} ${IBVERBS_LIBRARY_DIRS})
 target_link_libraries(ernic-test-tcp-thread-stop PRIVATE

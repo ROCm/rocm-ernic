@@ -46,11 +46,10 @@ PVRDMAQPStats *pvrdma_get_qp_stats(PVRDMADev *dev, uint32_t qp_handle)
 
 static char *stats_nic_profile;
 
-int pvrdma_stats_set_nic_profile(const char *profile)
+void pvrdma_stats_set_nic_profile(const char *profile)
 {
-    free(stats_nic_profile);
-    stats_nic_profile = profile ? strdup(profile) : NULL;
-    return profile && !stats_nic_profile ? -1 : 0;
+    g_free(stats_nic_profile);
+    stats_nic_profile = g_strdup(profile);
 }
 
 static pvrdma_stats_section_fn stats_section_fn;

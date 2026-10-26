@@ -46,6 +46,7 @@ void tcp_mesh_node_info_destroy_notify(gpointer data)
     tcp_mesh_node_info_free(data);
 }
 
+/* A new node, or NULL if hostname is NULL or empty */
 MeshNodeInfo *tcp_mesh_node_info_new(uint32_t node_id, const char *hostname,
                                      uint16_t port)
 {
@@ -55,20 +56,9 @@ MeshNodeInfo *tcp_mesh_node_info_new(uint32_t node_id, const char *hostname,
     }
 
     MeshNodeInfo *node = g_new0(MeshNodeInfo, 1);
-    if (!node) {
-        rdma_error_report("TCP: Failed to allocate mesh node info for node %u",
-                          node_id);
-        return NULL;
-    }
 
     node->node_id = node_id;
     node->hostname = g_strdup(hostname);
-    if (!node->hostname) {
-        rdma_error_report("TCP: Failed to duplicate hostname '%s' for node %u",
-                          hostname, node_id);
-        g_free(node);
-        return NULL;
-    }
     node->port = port;
     node->is_alive = true;
     node->last_heartbeat_ms = ernic_monotonic_ms();

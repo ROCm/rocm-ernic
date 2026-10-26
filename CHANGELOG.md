@@ -439,6 +439,8 @@
   node allocated at startup are gone. A node that runs out of memory for a
   message closes that connection, which is then reconnected; before, the
   server aborted.
+* **TCP mesh: running out of memory for an RDMA message the guest sends
+  fails that work request.** Before, the server aborted.
 * **TCP mesh: the manager's GID updates no longer grow with the square of
   the mesh.** On every registration, advertisement, death and revival, the
   manager sent every worker the GID set of every node, N × N messages in an

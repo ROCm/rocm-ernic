@@ -848,9 +848,6 @@ int rdma_rm_init(RdmaDeviceResources *dev_res,
 
     dev_res->qp_hash = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
                                              destroy_qp_hash_key, NULL);
-    if (!dev_res->qp_hash) {
-        return -ENOMEM;
-    }
 
     ret = res_tbl_init("PD", &dev_res->pd_tbl, (uint32_t)dev_attr->max_pd,
                        sizeof(RdmaRmPD));

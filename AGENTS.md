@@ -123,6 +123,26 @@ cmake --build build
   `sscanf()`, which miss errors or trailing text. Add helpers for new
   types there, with tests in `tests/test_parse_int.c`. Guest-side test
   programs include it too, so a VM building one needs a copy.
+- **Allocate the way the layer does.**
+  - `src/qemu/`, `src/qemu-compat/`, and `src/rdma/` are built on GLib's
+    containers, which abort when out of memory, so they allocate with
+    GLib too (`g_new0()`, `g_strdup()`, `g_malloc()`) and don't check
+    the result: a `NULL` check there is dead code.
+  - The exception is a buffer whose size the guest or a peer chooses.
+    Allocate it with `malloc()` and check the result, so that a large
+    request fails on its own instead of aborting the server; a test can
+    fail `malloc()` with `--wrap`, but not GLib's allocators. See
+    `tcp_recv_message()` and `tcp_queued_msg_new()`, and for the tests,
+    `ST_NO_MEMORY` in `tests/test_tcp_thread_stop.c` and
+    `tests/s3_alloc_fail.c`.
+  - Everywhere else, use `malloc()`, `calloc()`, `realloc()`, and
+    `strdup()`, and check every result. Don't use GLib's allocators
+    there.
+  - Free with the allocator's partner: `free()` for C's, `g_free()` for
+    GLib's, including what a GLib function returns (e.g.
+    `g_key_file_get_string()`). Where a buffer passes between the two
+    kinds of code, comment which allocator it's from, as `TcpQueuedMsg`
+    and `tcp_recv_message()` do.
 
 ## Thread safety
 

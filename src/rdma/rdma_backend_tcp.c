@@ -438,11 +438,6 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
         GHashTable *mesh_nodes =
             g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
                                   tcp_mesh_node_info_destroy_notify);
-        if (!mesh_nodes) {
-            rdma_error_report("TCP: Failed to create mesh nodes table");
-            g_free(manager_host);
-            goto error;
-        }
         qemu_mutex_init(&priv->mesh_table_lock);
         ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
         priv->mesh_nodes = mesh_nodes;
@@ -451,7 +446,6 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
         MeshNodeInfo *manager_node = tcp_mesh_node_info_new(
             0, listen_mode ? "localhost" : manager_host, manager_port);
         if (!manager_node) {
-            rdma_error_report("TCP: Failed to allocate manager node info");
             g_free(manager_host);
             goto error;
         }
