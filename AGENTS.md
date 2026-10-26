@@ -311,10 +311,10 @@ scanned too). Add new general patterns here when a scanner reports one.
   that, and allocate with it, as `tcp_recv_message()` does.
 - **Including a `.c` file** (`cpp/include-non-header`, clang-tidy
   `bugprone-suspicious-include`). A unit test needing private symbols
-  includes the module's `_priv.h` (e.g. `src/ionic_adminq_priv.h`) and
-  lists the module's `.c` in `tests/CMakeLists.txt`. Only the module and
-  its tests include that header; prefix its functions with the module
-  name.
+  includes the module's `_priv.h` (e.g.
+  `src/ionic/ionic_adminq_priv.h`) and lists the module's `.c` in
+  `tests/CMakeLists.txt`. Only the module and its tests include that
+  header; prefix its functions with the module name.
 - **`${{ }}` in a workflow `run:` block** (zizmor `template-injection`)
   for any value not fixed in the workflow, even one read from a repo
   file: it's pasted in before the shell parses it. Map it to `env:` and
@@ -744,9 +744,9 @@ node 0 or 1), silently sending traffic for nodes 2+ to the wrong node.
 Node identity is now configured, not inferred. Each instance gets its
 guest RoCE addresses in `ERNIC_TCP_GUEST_GIDS` (comma-separated,
 `inet_pton` notation; IPv4 is stored as `::ffff:a.b.c.d`, the form
-`adminq_parse_roce_hdr()` in `src/ionic_adminq.c` builds). Once it knows
-its node id it advertises them as `TCP_MSG_NODE_GIDS`; the manager fans
-these out, and peers keep a `GID -> node id` table keyed on all 16
+`adminq_parse_roce_hdr()` in `src/ionic/ionic_adminq.c` builds). Once it
+knows its node id it advertises them as `TCP_MSG_NODE_GIDS`; the manager
+fans these out, and peers keep a `GID -> node id` table keyed on all 16
 bytes.
 
 `tcp_resolve_node_from_gid()` in [`tcp_gid.c`](src/rdma/tcp_gid.c) is
@@ -845,7 +845,7 @@ Covered by `test_dead_node_stops_owning_its_gids()` in
 ### Trap: the mesh has no Ethernet or DHCP path
 
 Guest TCP/IP uses the host TAP/bridge
-([`ionic_eth_net.c`](src/ionic_eth_net.c)). The mesh carries only
+([`ionic_eth_net.c`](src/ionic/ionic_eth_net.c)). The mesh carries only
 `TCP_MSG_IONIC` and control traffic. The old never-used Ethernet and
 DHCP relay paths are gone, but their ordinals remain as
 `TCP_MSG_RESERVED_18..20`. Renumbering the message types would change

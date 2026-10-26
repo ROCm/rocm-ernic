@@ -13,8 +13,9 @@ against a real SSD: the namespace is host memory or a host file,
 and every command capsule and RDMA transfer is emulated in
 userspace. What the sweep measures is the *emulator* -- the
 capsule round trip, the fast-registration path, and the RDMA
-READ/WRITE engine in :file:`src/ionic_datapath.c`. Treat a
-regression here as a regression in that code, not in any disk.
+READ/WRITE engine in :file:`src/ionic/ionic_datapath.c`.
+Treat a regression here as a regression in that code, not in
+any disk.
 
 .. contents:: Sections
    :local:
@@ -190,11 +191,12 @@ and allocates a pool of **128 memory regions per queue** at
 connect time -- admin queue included -- rather than per I/O. An
 N-queue controller therefore needs ``(N + 1) * 128`` regions
 before the first capsule moves, and the emulator's table is a
-fixed ``IONIC_MAX_MR`` = 2048 (:file:`src/ionic_datapath.h`,
-which also sizes ``MAX_MR`` in
-:file:`src/qemu/rdma_rm_defs.h` and in
-:file:`src/ionic_datapath.c`). That puts the ceiling at 15 I/O
-queues, which ``nvmeof_parse_backend()`` enforces at startup:
+fixed ``IONIC_MAX_MR`` = 2048
+(:file:`src/ionic/ionic_datapath.h`, which also sizes
+``MAX_MR`` in :file:`src/qemu/rdma_rm_defs.h` and in
+:file:`src/ionic/ionic_datapath.c`). That puts the ceiling at
+15 I/O queues, which ``nvmeof_parse_backend()`` enforces at
+startup:
 
 .. code-block:: text
 

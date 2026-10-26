@@ -38,16 +38,16 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "ernic_ib.h"
-#include "ionic_datapath.h"
-#include "ionic_datapath_priv.h"
-#include "ionic_eth_emu.h"
-#include "nvmeof_cm.h"
-#include "nvmeof_target.h"
+#include "ionic/ionic_datapath.h"
+#include "ionic/ionic_datapath_priv.h"
+#include "ionic/ionic_eth_emu.h"
+#include "nvmeof/nvmeof_cm.h"
+#include "nvmeof/nvmeof_target.h"
 #include "qemu/thread.h"
 #include "rocm-ernic-warnings.h"
 #include "rocm_ernic_compat.h"
-#include "s3_tcp.h"
-#include "s3_target.h"
+#include "s3/s3_tcp.h"
+#include "s3/s3_target.h"
 
 /* ---- Stubs for the TU's external symbols -------------------------------
  *

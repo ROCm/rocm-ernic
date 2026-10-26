@@ -37,15 +37,15 @@
 #include <sys/types.h>
 
 #include "byteorder.h"
-#include "ionic_emu_stats.h"
-#include "ionic_eth_emu.h"
+#include "ionic/ionic_emu_stats.h"
+#include "ionic/ionic_eth_emu.h"
 #include "ionic_eth_emu_fakes.h"
-#include "ionic_eth_emu_priv.h"
-#include "ionic_eth_steer.h"
-#include "ionic_fault.h"
-#include "ionic_profile.h"
+#include "ionic/ionic_eth_emu_priv.h"
+#include "ionic/ionic_eth_steer.h"
+#include "ionic/ionic_fault.h"
+#include "ionic/ionic_profile.h"
 #include "qemu/thread.h"
-#include "ionic_status.h"
+#include "ionic/ionic_status.h"
 #include "rocm_ernic_internal.h"
 
 /* Offsets in union ionic_dev_identity and union ionic_lif_identity

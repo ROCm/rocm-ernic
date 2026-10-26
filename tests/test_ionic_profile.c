@@ -1,5 +1,5 @@
 /*
- * Unit tests for the NIC profile loader (src/ionic_profile.c).
+ * Unit tests for the NIC profile loader (src/ionic/ionic_profile.c).
  *
  * A profile is ini text layered onto the compat profile key by key.  The
  * loader has to be strict -- an unknown section or key, a bad type or a
@@ -24,7 +24,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "ionic_profile.h"
+#include "ionic/ionic_profile.h"
 
 static int failures;
 

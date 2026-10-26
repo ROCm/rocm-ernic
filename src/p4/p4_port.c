@@ -11,8 +11,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "ionic_eth_emu.h"
-#include "ionic_eth_net.h"
+#include "ionic/ionic_eth_emu.h"
+#include "ionic/ionic_eth_net.h"
 #include "p4_engine.h"
 #include "p4_port.h"
 

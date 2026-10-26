@@ -8,7 +8,7 @@
  * guest fail: it makes "nvme connect" hang until it times out, which is
  * why the REP is dissected rather than just checked for success.
  *
- * The offsets are written out independently of src/nvmeof_cm.c so that a
+ * The offsets are written out independently of src/nvmeof/nvmeof_cm.c so that a
  * typo in one does not cancel out against a matching typo in the other.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
@@ -25,8 +25,8 @@
 #include <string.h>
 
 #include "byteorder.h"
-#include "nvmeof_cm.h"
-#include "nvmeof_target.h"
+#include "nvmeof/nvmeof_cm.h"
+#include "nvmeof/nvmeof_target.h"
 
 static int failures;
 

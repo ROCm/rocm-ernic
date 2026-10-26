@@ -29,7 +29,7 @@ on:
       # Without them a counter added to the device would change the
       # site and never be published. src/**/*.h above already covers
       # ionic_adminq_priv.h.
-      - 'src/ionic_emu_stats.c'
+      - 'src/ionic/ionic_emu_stats.c'
       - 'tools/gen-counter-docs.py'
       - 'cmake/ErnicDocumentation.cmake'
       - '.github/workflows/docs-deploy.yml'

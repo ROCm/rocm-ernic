@@ -68,8 +68,8 @@ endfunction()
 # LLVMFuzzerInitialize() to check its seed table before replaying.
 ernic_add_fuzz_replay(ionic_stats
     ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_adminq.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_adminq.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_fault.c
 )
 target_include_directories(fuzz_replay_ionic_stats PRIVATE
     ${PROJECT_SOURCE_DIR}/tests
@@ -85,8 +85,8 @@ target_compile_definitions(fuzz_replay_ionic_stats PRIVATE
 # needs no device, and it checks a seed table in LLVMFuzzerInitialize()
 # before replaying.
 ernic_add_fuzz_replay(profile_parse
-    ${PROJECT_SOURCE_DIR}/src/ionic_profile.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_profiles.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_profile.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_profiles.c
 )
 target_compile_definitions(fuzz_replay_profile_parse PRIVATE
     FUZZ_HARNESS_HAS_INITIALIZE
@@ -103,8 +103,8 @@ set_tests_properties(fuzz-seed-files-profile_parse PROPERTIES TIMEOUT 30)
 # The per-frame MAC class and Rx steering hash: pure functions of the frame
 # bytes, with their own seed table.
 ernic_add_fuzz_replay(eth_classify
-    ${PROJECT_SOURCE_DIR}/src/ionic_emu_stats.c
-    ${PROJECT_SOURCE_DIR}/src/ionic_eth_steer.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_emu_stats.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_eth_steer.c
 )
 target_compile_definitions(fuzz_replay_eth_classify PRIVATE
     FUZZ_HARNESS_HAS_INITIALIZE
@@ -121,7 +121,7 @@ set_tests_properties(fuzz-seed-files-eth_classify PROPERTIES TIMEOUT 30)
 # The fault spec parser is pure string handling; like the stats harness it
 # checks a seed table in LLVMFuzzerInitialize() before replaying.
 ernic_add_fuzz_replay(fault_parse
-    ${PROJECT_SOURCE_DIR}/src/ionic_fault.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_fault.c
 )
 target_compile_definitions(fuzz_replay_fault_parse PRIVATE
     FUZZ_HARNESS_HAS_INITIALIZE

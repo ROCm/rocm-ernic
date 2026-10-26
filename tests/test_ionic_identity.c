@@ -31,10 +31,10 @@
 
 #include "byteorder.h"
 #include "golden/ionic_compat_identity.h"
-#include "ionic_eth_emu.h"
+#include "ionic/ionic_eth_emu.h"
 #include "ionic_eth_emu_fakes.h"
-#include "ionic_eth_emu_priv.h"
-#include "ionic_profile.h"
+#include "ionic/ionic_eth_emu_priv.h"
+#include "ionic/ionic_profile.h"
 
 static int failures;
 

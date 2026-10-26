@@ -52,7 +52,7 @@
 #include "p4_fmt.h"
 #include "parse_int.h"
 
-/* The device opcode an RDMA WRITE arrives as; see src/ionic_datapath.c. */
+/* The device opcode an RDMA WRITE arrives as (src/ionic/ionic_datapath.c). */
 #define IONIC_V1_OP_RDMA_WRITE 4
 
 #define P4_NODE "/dev/ernic-p4"

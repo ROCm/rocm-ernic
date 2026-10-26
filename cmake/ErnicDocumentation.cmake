@@ -64,10 +64,10 @@ if(ERNIC_BUILD_DOCS)
     set(ERNIC_DOXYFILE_INPUT
       "${PROJECT_SOURCE_DIR}/src/rocm_ernic_internal.h"
       "${PROJECT_SOURCE_DIR}/src/rocm_ernic_compat.h"
-      "${PROJECT_SOURCE_DIR}/src/ionic_eth_emu.h"
-      "${PROJECT_SOURCE_DIR}/src/ionic_rdma_devcmd.h"
-      "${PROJECT_SOURCE_DIR}/src/ionic_adminq.h"
-      "${PROJECT_SOURCE_DIR}/src/ionic_datapath.h"
+      "${PROJECT_SOURCE_DIR}/src/ionic/ionic_eth_emu.h"
+      "${PROJECT_SOURCE_DIR}/src/ionic/ionic_rdma_devcmd.h"
+      "${PROJECT_SOURCE_DIR}/src/ionic/ionic_adminq.h"
+      "${PROJECT_SOURCE_DIR}/src/ionic/ionic_datapath.h"
     )
     # Doxygen's INPUT is space-separated, not a CMake list
     list(JOIN ERNIC_DOXYFILE_INPUT " " ERNIC_DOXYFILE_INPUT)

@@ -25,7 +25,7 @@ CMD_Q_CONTROL = 41
 Q_DISABLE = 0
 Q_ENABLE = 1
 
-# Emulated Ethernet queue geometry (src/ionic_eth_emu_priv.h).
+# Emulated Ethernet queue geometry (src/ionic/ionic_eth_emu_priv.h).
 ETH_DESC_SIZE = 16
 ETH_COMP_SIZE = 16
 ETH_COMP_COLOR = 0x80  # bit set in the last byte of a new completion

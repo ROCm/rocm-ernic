@@ -41,8 +41,8 @@
 
 #include "byteorder.h"
 #include "ernic_dma.h"
-#include "ionic_adminq_priv.h"
-#include "ionic_datapath.h"
+#include "ionic/ionic_adminq_priv.h"
+#include "ionic/ionic_datapath.h"
 #include "rocm_ernic_compat.h"
 
 /* ---- Fake guest memory ------------------------------------------------- */

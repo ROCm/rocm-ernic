@@ -25,7 +25,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "s3_token.h"
+#include "s3/s3_token.h"
 
 static int failures;
 

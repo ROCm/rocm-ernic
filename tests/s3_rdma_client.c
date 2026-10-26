@@ -21,7 +21,7 @@
  * on the include path.
  *
  * The token encoding is duplicated here rather than shared with
- * src/s3_token.c: this file is scp'd into a guest, with parse_int.h, and
+ * src/s3/s3_token.c: this file is scp'd into a guest, with parse_int.h, and
  * built there.  tests/test_s3_token.c pins the same layout against a
  * hand-assembled reference image, so the two cannot drift silently.
  *

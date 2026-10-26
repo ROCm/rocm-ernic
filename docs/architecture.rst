@@ -333,7 +333,7 @@ Inside the Server
        └──────┬───────────────────────────┬──────────────────┘
               │ ionic_rm_*, ionic_mesh_*  │ attach
               ▼                           ▼
-       rocm_ernic_compat.c          nvmeof_*.c, s3_*.c
+       rocm_ernic_compat.c          src/nvmeof/, src/s3/
        (bridge; only file that      in-process targets;
         sees QEMU types)            src/p4/, the optional
               │                     P4 engine
@@ -347,7 +347,7 @@ Inside the Server
 The ionic Front End
 ^^^^^^^^^^^^^^^^^^^
 
-The ``src/ionic_*.c`` files are the device the guest actually
+The files in ``src/ionic/`` are the device the guest actually
 talks to. They own the register file, decode doorbells, and
 read and write every ring and buffer in guest memory. Each file
 is described in a later section.
@@ -355,21 +355,21 @@ is described in a later section.
 Two more pieces shape what the front end does without being
 part of any one path:
 
-- **The NIC profile** (``src/ionic_profile.c``; the built-in
-  profiles are in ``src/ionic_profiles.c``, with copies in
-  ``profiles/``) is read once at startup. The front end
-  consults it wherever it describes itself to the driver: the
-  MSI-X table size, IDENTIFY, LIF_IDENTIFY, PORT_INIT, and
-  LIF_INIT.
-- **Fault injection** (``--inject``, ``src/ionic_fault.c``)
-  makes chosen events fail, so a test can check how the guest
-  copes: a STATS_VALS admin command completes with an error
-  status, a received frame is lost or dropped as if no buffer
-  were posted, or a transmitted frame is completed but never
-  sent. A fault fires on a pattern of events (every Nth, a run
-  starting at the Nth, a burst out of every M, or an explicit
-  sequence), never on a timer, so the same workload gives the
-  same failures.
+- **The NIC profile** (``src/ionic/ionic_profile.c``; the
+  built-in profiles are in ``src/ionic/ionic_profiles.c``,
+  with copies in ``profiles/``) is read once at startup. The
+  front end consults it wherever it describes itself to the
+  driver: the MSI-X table size, IDENTIFY, LIF_IDENTIFY,
+  PORT_INIT, and LIF_INIT.
+- **Fault injection** (``--inject``,
+  ``src/ionic/ionic_fault.c``) makes chosen events fail, so a
+  test can check how the guest copes: a STATS_VALS admin
+  command completes with an error status, a received frame is
+  lost or dropped as if no buffer were posted, or a
+  transmitted frame is completed but never sent. A fault fires
+  on a pattern of events (every Nth, a run starting at the Nth,
+  a burst out of every M, or an explicit sequence), never on a
+  timer, so the same workload gives the same failures.
 
 The Device Core
 ^^^^^^^^^^^^^^^
@@ -589,7 +589,7 @@ Everything a verbs application does that is not on the fast
 path (``ibv_create_cq``, ``ibv_create_qp``, ``ibv_reg_mr``,
 ``ibv_modify_qp``, ...) becomes a system call into
 ``ionic_rdma.ko``, which posts a command on an RDMA admin
-queue. ``src/ionic_adminq.c`` services those queues.
+queue. ``src/ionic/ionic_adminq.c`` services those queues.
 
 The AQ doorbell only records the new producer index. The main
 loop later reads each new WQE (64 bytes, or several 64-byte
@@ -669,8 +669,8 @@ A few details worth knowing:
 The Data Path
 -------------
 
-``src/ionic_datapath.c`` is the heart of the emulator: it does
-what a NIC's hardware data path would do.
+``src/ionic/ionic_datapath.c`` is the heart of the emulator:
+it does what a NIC's hardware data path would do.
 
 Guest Memory, Three Levels Down
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -1100,14 +1100,15 @@ it goes through the data path described above.
 - Transmit: on a TX doorbell, the emulator gathers each frame
   (head descriptor plus scatter/gather elements) out of guest
   memory and writes it to the host **TAP** interface named by
-  ``--tap`` (``src/ionic_eth_net.c``). Without a TAP, frames
-  are completed and discarded.
+  ``--tap`` (``src/ionic/ionic_eth_net.c``). Without a TAP,
+  frames are completed and discarded.
 - Receive: the main loop reads frames from the TAP and DMAs each
   into the next buffer the guest posted on one of its enabled
   receive queues, then raises that queue's interrupt. A fixed
   hash of the flow picks the queue, so one flow always lands on
-  one queue (``src/ionic_eth_steer.c``). A TAP frame whose queue
-  has no buffer posted is dropped, as on a real NIC.
+  one queue (``src/ionic/ionic_eth_steer.c``). A TAP frame
+  whose queue has no buffer posted is dropped, as on a real
+  NIC.
 - No checksum, TSO, or scatter-gather offloads are advertised,
   so the guest always sends simple linear frames.
 - Before a transmitted frame goes to the TAP, an in-process
@@ -1121,7 +1122,7 @@ it goes through the data path described above.
 - The emulator counts every frame and keeps the LIF and port
   statistics blocks the driver reads (``ip -s link``,
   ``ethtool -S``) up to date in guest memory
-  (``src/ionic_emu_stats.c``; see :doc:`ionic`).
+  (``src/ionic/ionic_emu_stats.c``; see :doc:`ionic`).
 
 To give several guests a shared segment, each server gets its
 own TAP and the TAPs are joined in a host bridge (see
@@ -1151,19 +1152,19 @@ NVMe over Fabrics
 - **Connection setup.** ``nvme connect -t rdma`` uses
   ``rdma_cm``, which sends IB CM MADs on the guest's GSI QP.
   When the GSI QP sends, the data path offers the MAD to
-  ``src/nvmeof_cm.c``, which answers REQ with REP, accepts RTU,
-  handles DREQ, and binds the guest's QP to a controller queue.
-  The controller's side of each connection gets a QP number in
-  a reserved range (``0xc0xxxx``) that can't collide with the
-  guest's QPs. Replies go back into the guest's GSI receive
-  queue with a GRH, as from a real peer.
+  ``src/nvmeof/nvmeof_cm.c``, which answers REQ with REP,
+  accepts RTU, handles DREQ, and binds the guest's QP to a
+  controller queue. The controller's side of each connection
+  gets a QP number in a reserved range (``0xc0xxxx``) that
+  can't collide with the guest's QPs. Replies go back into the
+  guest's GSI receive queue with a GRH, as from a real peer.
 - **I/O.** A SEND on a bound QP is an NVMe command capsule. The
-  data path hands it to ``src/nvmeof_target.c``, which executes
-  it synchronously against a RAM- or file-backed namespace. It
-  moves data through the keyed SGL in the command (the guest's
-  rkey, usually from a fast registration just before), and the
-  response capsule is delivered into the guest's next posted
-  receive.
+  data path hands it to ``src/nvmeof/nvmeof_target.c``, which
+  executes it synchronously against a RAM- or file-backed
+  namespace. It moves data through the keyed SGL in the
+  command (the guest's rkey, usually from a fast registration
+  just before), and the response capsule is delivered into the
+  guest's next posted receive.
 
 The guest needs a static neighbor entry for the target address,
 because nothing answers ARP for it. See :doc:`nvmeof`.
@@ -1175,20 +1176,20 @@ S3 over RDMA
 HTTP and whose data plane is RDMA, compatible with the protocol
 hipObject and NVIDIA cuObject speak.
 
-- **Control plane on the emulated wire.** ``src/s3_tcp.c`` is a
-  minimal ARP, ICMP echo, and TCP implementation (handshake,
-  in-order data, cumulative ACKs, one retransmit timer, FIN; no
-  congestion control or reassembly, since the link is
-  lossless). It claims the guest's transmitted frames addressed
-  to the store's IP and injects its replies into the guest's
-  receive ring. To the guest, the store is just a host on its
-  segment; no TAP is needed. ``src/s3_http.c`` parses the HTTP
-  requests.
+- **Control plane on the emulated wire.** ``src/s3/s3_tcp.c``
+  is a minimal ARP, ICMP echo, and TCP implementation
+  (handshake, in-order data, cumulative ACKs, one retransmit
+  timer, FIN; no congestion control or reassembly, since the
+  link is lossless). It claims the guest's transmitted frames
+  addressed to the store's IP and injects its replies into the
+  guest's receive ring. To the guest, the store is just a host
+  on its segment; no TAP is needed. ``src/s3/s3_http.c``
+  parses the HTTP requests.
 - **Data plane by rkey.** A request carries an
-  ``x-amz-rdma-token`` header (``src/s3_token.c``) naming a
+  ``x-amz-rdma-token`` header (``src/s3/s3_token.c``) naming a
   registered guest buffer: rkey, address, and length.
-  ``src/s3_target.c`` moves the object directly into or out of
-  that buffer through the DMA callbacks, and answers with
+  ``src/s3/s3_target.c`` moves the object directly into or out
+  of that buffer through the DMA callbacks, and answers with
   ``x-amz-rdma-reply``. Requests without a token carry the
   payload in the HTTP body.
 
@@ -1400,26 +1401,27 @@ Where to Look in the Source
      - Startup, PCI identity, BARs, MSI-X, main loop
    * - ``src/rocm_ernic_internal.h``
      - BAR layout constants and the top-level device struct
-   * - ``src/ionic_eth_emu.c``
+   * - ``src/ionic/ionic_eth_emu.c``
      - Registers, device commands, LIF, Ethernet queues,
        interrupt controller, doorbell decode
-   * - ``src/ionic_eth_net.c``
+   * - ``src/ionic/ionic_eth_net.c``
      - Host TAP interface
-   * - ``src/ionic_eth_steer.c``
+   * - ``src/ionic/ionic_eth_steer.c``
      - Choosing the receive queue for a frame
-   * - ``src/ionic_emu_stats.c``
+   * - ``src/ionic/ionic_emu_stats.c``
      - Ethernet LIF and port counters, and the statistics blocks
        written into guest memory
-   * - ``src/ionic_profile.c``, ``src/ionic_profiles.c``
+   * - ``src/ionic/ionic_profile.c``,
+       ``src/ionic/ionic_profiles.c``
      - NIC profiles: loading and layering them, and the built-in
        ones
-   * - ``src/ionic_fault.c``
+   * - ``src/ionic/ionic_fault.c``
      - Fault injection (``--inject``)
-   * - ``src/ionic_rdma_devcmd.c``
+   * - ``src/ionic/ionic_rdma_devcmd.c``
      - RDMA bootstrap (EQs, admin queues), EQE posting
-   * - ``src/ionic_adminq.c``
+   * - ``src/ionic/ionic_adminq.c``
      - RDMA control path
-   * - ``src/ionic_datapath.c``
+   * - ``src/ionic/ionic_datapath.c``
      - RDMA data path and inter-server wire protocol
    * - ``src/ernic_dma.c``
      - Copying to and from guest memory, for all of the above
@@ -1437,10 +1439,11 @@ Where to Look in the Source
      - Statistics file
    * - ``src/qemu-compat/``
      - Stand-ins for the QEMU APIs the QEMU-derived code calls
-   * - ``src/nvmeof_cm.c``, ``src/nvmeof_target.c``
+   * - ``src/nvmeof/nvmeof_cm.c``,
+       ``src/nvmeof/nvmeof_target.c``
      - In-process NVMe-oF CM responder and controller
-   * - ``src/s3_tcp.c``, ``src/s3_http.c``, ``src/s3_token.c``,
-       ``src/s3_target.c``
+   * - ``src/s3/s3_tcp.c``, ``src/s3/s3_http.c``,
+       ``src/s3/s3_token.c``, ``src/s3/s3_target.c``
      - In-process S3 store
    * - ``src/p4/``
      - P4 engine: program loader, tables, the pipeline, its

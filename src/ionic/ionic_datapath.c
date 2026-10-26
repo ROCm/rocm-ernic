@@ -54,14 +54,14 @@
 #include "ionic_datapath_priv.h"
 #include "ionic_eth_emu.h"
 #include "net/net_headers.h"
-#include "nvmeof.h"
-#include "nvmeof_cm.h"
-#include "nvmeof_target.h"
+#include "nvmeof/nvmeof.h"
+#include "nvmeof/nvmeof_cm.h"
+#include "nvmeof/nvmeof_target.h"
 #include "qemu/thread.h"
 #include "rocm-ernic-warnings.h"
 #include "rocm_ernic_compat.h"
-#include "s3_tcp.h"
-#include "s3_target.h"
+#include "s3/s3_tcp.h"
+#include "s3/s3_target.h"
 
 /* -------------------------------------------------------------------------
  * ionic_fw.h wire format constants (keep in sync with pinned kernel ref)

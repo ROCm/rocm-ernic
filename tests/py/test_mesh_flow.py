@@ -2,10 +2,10 @@
 """Flow control on the TCP mesh, with real server processes and no VM.
 
 A node's receive threads queue what its peers send for the main thread to
-apply, up to a limit (DP_RX_MAX_BYTES in src/ionic_datapath_priv.h). At
-the limit, a receive thread stops reading its peer until there is room,
-and TCP passes that back to the peer, so a node that falls behind slows
-its peers down rather than holding whatever they send:
+apply, up to a limit (DP_RX_MAX_BYTES in src/ionic/ionic_datapath_priv.h).
+At the limit, a receive thread stops reading its peer until there is room,
+and TCP passes that back to the peer, so a node that falls behind slows its
+peers down rather than holding whatever they send:
 
   * Two nodes write to each other flat out, round after round, each with
     its inbound queue plugged by the other's SENDs to a QP with no
