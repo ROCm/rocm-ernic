@@ -33,6 +33,9 @@ from ernic.server import Server, stop_and_check
 
 STATS_RE = re.compile(r"P4 stats: (.*)$", re.MULTILINE)
 
+# P4_PROGRAM_MAX in src/p4/p4_engine.h: the largest program the engine takes.
+P4_PROGRAM_MAX = 4 * 1024 * 1024
+
 
 def p4_stats(server):
     """Parse the server's shutdown statistics line into a dict.
@@ -159,6 +162,18 @@ def test_program_loaded(suite, server_factory):
     suite.check_eq(stats["egress_errors"], 0, "no frame needed an absent backend")
 
 
+def refused_to_start(server_factory, extra_args):
+    """Start a server with @extra_args; return whether it refused, and its log."""
+    ctx = server_factory(extra_args)
+    try:
+        with ctx:
+            pass
+        started = True
+    except Exception:  # pylint: disable=broad-except
+        started = False
+    return not started, ctx.server.log_text()
+
+
 def test_bad_program_refused(suite, server_factory):
     """A program using a feature the engine lacks stops the server starting."""
     prog = os.path.join(
@@ -168,17 +183,50 @@ def test_bad_program_refused(suite, server_factory):
         "p4",
         "simple_router.json",
     )
-    ctx = server_factory(["--p4-program", prog])
-    try:
-        with ctx:
+    refused, log = refused_to_start(server_factory, ["--p4-program", prog])
+    suite.check(refused, "the server refused to start")
+    suite.check("checksums" in log, "it said which feature the program used")
+
+
+def test_program_file_refused(suite, server_factory):
+    """A --p4-program file that cannot be a program stops the server starting.
+
+    Each is refused before the engine sees a byte of it: one that is not
+    there, one that is empty, and one a byte over the engine's limit.
+    """
+    with tempfile.TemporaryDirectory(prefix="ernic-p4-file-") as tmp:
+        empty = os.path.join(tmp, "empty.json")
+        big = os.path.join(tmp, "big.json")
+        with open(empty, "wb"):
             pass
-        started = True
-    except Exception:  # pylint: disable=broad-except
-        started = False
-    suite.check(not started, "the server refused to start")
+        with open(big, "wb") as f:
+            f.truncate(P4_PROGRAM_MAX + 1)
+        rows = (
+            (
+                "a missing file",
+                os.path.join(tmp, "missing.json"),
+                "cannot open P4 program",
+            ),
+            ("an empty file", empty, "is 0 bytes; the limit is"),
+            (
+                "a file over the limit",
+                big,
+                f"is {P4_PROGRAM_MAX + 1} bytes; the limit is",
+            ),
+        )
+        for what, path, want in rows:
+            refused, log = refused_to_start(server_factory, ["--p4-program", path])
+            suite.check(refused, f"{what} stopped the server starting")
+            suite.check(want in log, f"it said why it refused {what}")
+
+
+def test_bad_guest_scope(suite, server_factory):
+    """A --p4-guest-scope that is not a scope stops the server starting."""
+    refused, log = refused_to_start(server_factory, ["--p4-guest-scope", "all"])
+    suite.check(refused, "an unknown scope stopped the server starting")
     suite.check(
-        "checksums" in ctx.server.log_text(),
-        "it said which feature the program used",
+        "--p4-guest-scope must be one of" in log,
+        "it said why it refused the scope",
     )
 
 
@@ -563,6 +611,8 @@ TESTS = (
     ("a frame makes the round trip through the pipeline", test_round_trip),
     ("a compiled program decides where frames go", test_program_loaded),
     ("a program using an absent feature is refused", test_bad_program_refused),
+    ("a file that cannot be a program is refused", test_program_file_refused),
+    ("a scope that is not one is refused", test_bad_guest_scope),
     ("a guest loads the conversion program", test_cvt_guest_loads_program),
     ("fp16 narrows to fp8 on the RDMA path", test_cvt_narrowing),
     ("fp4 widens to fp16 on the RDMA path", test_cvt_widening),

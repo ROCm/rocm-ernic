@@ -13,6 +13,7 @@
  */
 
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -181,6 +182,11 @@ int p4_engine_load_commit(struct p4_engine *eng)
     if (!eng)
         return -EINVAL;
     if (!eng->load_buf || eng->load_got != eng->load_total) {
+        /* The parser never saw this, so its reason from some earlier load
+         * is not the reason now. */
+        (void)snprintf(eng->load_err, sizeof(eng->load_err),
+                       "the program is incomplete: %zu of %zu bytes",
+                       eng->load_got, eng->load_total);
         p4_engine_load_abort(eng);
         return -EINVAL;
     }

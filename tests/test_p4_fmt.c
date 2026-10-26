@@ -64,9 +64,26 @@ static uint32_t bits_of(float v)
     return b;
 }
 
+static float float_of(uint32_t b)
+{
+    float v;
+
+    memcpy(&v, &b, sizeof(v));
+    return v;
+}
+
+/*
+ * Infinity and a quiet NaN by their bits rather than as 1/0 and 0/0, which
+ * the undefined-behaviour sanitizer reports as division by zero.
+ */
+#define F32_INF float_of(0x7F800000u)
+#define F32_NAN float_of(0x7FC00000u)
+
+/* By its bits, as p4_fmt.c works: v != v is the same test, but a compiler
+ * warning about comparing floats for equality cannot tell. */
 static bool is_nan(float v)
 {
-    return v != v;
+    return (bits_of(v) & 0x7FFFFFFFu) > 0x7F800000u;
 }
 
 /* The formats narrower than 32 bits, which are the ones worth sweeping
@@ -300,9 +317,32 @@ static void test_both_directions(void)
         check(p4_fmt_convert(P4_FMT_BF16, P4_FMT_FP8_E5M2, big, 1, small),
               "bf16 to E5M2 was refused");
         got = p4_fmt_decode(P4_FMT_FP8_E5M2, small, 0);
-        check(got > 0.0f && !(got < 1.0f / 0.0f) && !is_nan(got),
+        check(got > 0.0f && !(got < F32_INF) && !is_nan(got),
               "an overflow into E5M2, which has infinities, did not become "
               "one");
+    }
+}
+
+/*
+ * fp32 is the identity both ways: its bits are stored and loaded as they
+ * are, four bytes to an element, little-endian as a host array is.
+ */
+static void test_fp32_identity(void)
+{
+    static const float vals[3] = {1.5f, -0.0f, 3.0e38f};
+    uint8_t buf[12];
+
+    memset(buf, 0, sizeof(buf));
+    for (unsigned i = 0; i < 3; i++)
+        p4_fmt_encode(P4_FMT_FP32, vals[i], buf, i);
+    checkf(buf[4] == 0x00 && buf[7] == 0x80,
+           "fp32 -0.0 was stored as %02x..%02x", buf[4], buf[7]);
+    for (unsigned i = 0; i < 3; i++) {
+        float got = p4_fmt_decode(P4_FMT_FP32, buf, i);
+
+        checkf(bits_of(got) == bits_of(vals[i]),
+               "fp32 element %u came back as %g, not %g", i, (double)got,
+               (double)vals[i]);
     }
 }
 
@@ -313,6 +353,8 @@ static void test_bad_arguments(void)
 
     check(!p4_fmt_convert((enum p4_fmt)P4_FMT_COUNT, P4_FMT_FP32, in, 4, out),
           "an unknown source format was accepted");
+    /* Deliberately out of range: a table entry can carry any value here.
+     * NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) */
     check(!p4_fmt_convert(P4_FMT_FP32, (enum p4_fmt)0x55u, in, 4, out),
           "an unknown destination format was accepted");
     check(!p4_fmt_convert(P4_FMT_FP32, P4_FMT_FP4_E2M1, NULL, 4, out),
@@ -324,6 +366,30 @@ static void test_bad_arguments(void)
           "an odd fp4 element count was accepted");
     check(p4_fmt_convert(P4_FMT_FP32, P4_FMT_FP4_E2M1, in, 0, out),
           "an empty conversion was refused");
+
+    /* fp32 to fp4 with an odd count: the source is whole bytes, the
+     * destination would end half way through one. */
+    check(!p4_fmt_convert(P4_FMT_FP32, P4_FMT_FP4_E2M1, in, 1, out),
+          "an odd fp4 result count was accepted");
+
+    /* A format there is none of has no size and no name, decodes as zero
+     * and encodes nothing. */
+    checkf(p4_fmt_bits(P4_FMT_COUNT) == 0 &&
+               p4_fmt_bytes(P4_FMT_COUNT, 4) == 0 &&
+               p4_fmt_elems(P4_FMT_COUNT, 4) == 0,
+           "an unknown format has a size");
+    checkf(strcmp(p4_fmt_name(P4_FMT_COUNT), "?") == 0 &&
+               strcmp(p4_fmt_name(P4_FMT_FP8_E5M2), "fp8_e5m2") == 0,
+           "a format has the wrong name");
+    memset(in, 0x3C, sizeof(in));
+    check(bits_of(p4_fmt_decode(P4_FMT_COUNT, in, 0)) == 0 &&
+              bits_of(p4_fmt_decode(P4_FMT_FP16, NULL, 0)) == 0,
+          "decoding nothing gave something other than +0");
+    memset(out, 0xEE, sizeof(out));
+    p4_fmt_encode(P4_FMT_COUNT, 1.0f, out, 0);
+    p4_fmt_encode(P4_FMT_FP16, 1.0f, NULL, 0);
+    check(out[0] == 0xEE && out[1] == 0xEE,
+          "encoding into an unknown format wrote something");
 
     check(!p4_fmt_valid(P4_FMT_COUNT), "P4_FMT_COUNT is not a format");
     check(p4_fmt_valid(P4_FMT_FP4_E2M1), "fp4 should be a valid format");
@@ -356,13 +422,13 @@ static void test_overflow_conventions(void)
            P4_FP8_MAX);
 
     /* An infinity narrowing into E4M3 saturates for the same reason. */
-    p4_fmt_encode(P4_FMT_FP8_E4M3, 1.0f / 0.0f, out, 0);
+    p4_fmt_encode(P4_FMT_FP8_E4M3, F32_INF, out, 0);
     checkf(out[0] == P4_FP8_MAX, "+infinity to E4M3 gave %#x, want %#x", out[0],
            P4_FP8_MAX);
 
     /* A NaN keeps being one where the format can say so. */
     {
-        float nan_v = 0.0f / 0.0f;
+        float nan_v = F32_NAN;
 
         p4_fmt_encode(P4_FMT_FP8_E4M3, nan_v, out, 0);
         check(is_nan(p4_fmt_decode(P4_FMT_FP8_E4M3, out, 0)),
@@ -380,6 +446,7 @@ int main(void)
     test_fp4_value_set();
     test_fp4_packing();
     test_both_directions();
+    test_fp32_identity();
     test_bad_arguments();
     test_overflow_conventions();
 

@@ -28,6 +28,97 @@
      false
     ]
    ]
+  },
+  {
+   "name": "standard_metadata",
+   "id": 1,
+   "fields": [
+    [
+     "ingress_port",
+     9,
+     false
+    ],
+    [
+     "egress_spec",
+     9,
+     false
+    ],
+    [
+     "egress_port",
+     9,
+     false
+    ],
+    [
+     "instance_type",
+     32,
+     false
+    ],
+    [
+     "packet_length",
+     32,
+     false
+    ],
+    [
+     "enq_timestamp",
+     32,
+     false
+    ],
+    [
+     "enq_qdepth",
+     19,
+     false
+    ],
+    [
+     "deq_timedelta",
+     32,
+     false
+    ],
+    [
+     "deq_qdepth",
+     19,
+     false
+    ],
+    [
+     "ingress_global_timestamp",
+     48,
+     false
+    ],
+    [
+     "egress_global_timestamp",
+     48,
+     false
+    ],
+    [
+     "mcast_grp",
+     16,
+     false
+    ],
+    [
+     "egress_rid",
+     16,
+     false
+    ],
+    [
+     "checksum_error",
+     1,
+     false
+    ],
+    [
+     "parser_error",
+     32,
+     false
+    ],
+    [
+     "priority",
+     3,
+     false
+    ],
+    [
+     "_padding",
+     3,
+     false
+    ]
+   ]
   }
  ],
  "headers": [
@@ -36,6 +127,13 @@
    "id": 0,
    "header_type": "ethernet_t",
    "metadata": false,
+   "pi_omit": true
+  },
+  {
+   "name": "standard_metadata",
+   "id": 1,
+   "header_type": "standard_metadata",
+   "metadata": true,
    "pi_omit": true
   }
  ],

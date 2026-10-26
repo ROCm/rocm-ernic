@@ -3097,6 +3097,20 @@ static void test_p4_port(void)
         teardown(T, &h);
         return;
     }
+
+    /* A port onto nothing is refused, and nothing is safe to let go of
+     * or read. */
+    check(T,
+          p4_port_attach(NULL, eng, &chain) == NULL &&
+              p4_port_attach(h.dev->ionic_emu, NULL, &chain) == NULL,
+          "a port was attached to nothing");
+    p4_port_detach(NULL);
+    memset(&pstats, 0xAA, sizeof(pstats));
+    p4_port_get_stats(NULL, &pstats);
+    check(T, pstats.to_guest == 0 && pstats.egress_errors == 0,
+          "a port that is not there reported counters");
+    p4_port_get_stats(NULL, NULL);
+
     struct p4_port *port = p4_port_attach(h.dev->ionic_emu, eng, &chain);
     if (!check(T, port != NULL, "p4_port_attach failed")) {
         p4_engine_destroy(eng);
@@ -3324,6 +3338,66 @@ static void test_fp8_map(void)
                                  FP8R_VA_C) == -EINVAL,
           "an unknown operation was accepted");
 
+    /* Registered memory the device then cannot reach: each operand's read
+     * is one mapping, and the result's write is the third. */
+    for (unsigned long fail = 1; fail <= 3; fail++) {
+        fake_vfu_fail_nth_map(h.vfu, fail);
+        check(T,
+              ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
+                                     FP8R_VA_A, mrb.lkey, FP8R_VA_B, 64,
+                                     mrc.lkey, FP8R_VA_C) == -EFAULT,
+              "a map whose DMA %lu failed did not fault", fail);
+    }
+
+    /*
+     * The conversion's own checks, called as the extern calls it: fp16 in
+     * A, fp8 out to C.  Each format is checked, and each length is checked
+     * against its own region and its own element size.
+     */
+    check(T,
+          ionic_datapath_fmt_convert(h.dev->ionic_dp, P4_FMT_FP16,
+                                     P4_FMT_FP8_E4M3, mra.lkey, FP8R_VA_A, 0,
+                                     mrc.lkey, FP8R_VA_C) == -EINVAL,
+          "a conversion of nothing was accepted");
+    check(T,
+          ionic_datapath_fmt_convert(h.dev->ionic_dp, P4_FMT_COUNT,
+                                     P4_FMT_FP8_E4M3, mra.lkey, FP8R_VA_A, 64,
+                                     mrc.lkey, FP8R_VA_C) == -EINVAL &&
+              ionic_datapath_fmt_convert(h.dev->ionic_dp, P4_FMT_FP16, 0xFF,
+                                         mra.lkey, FP8R_VA_A, 64, mrc.lkey,
+                                         FP8R_VA_C) == -EINVAL,
+          "a format there is none of was accepted");
+    check(T,
+          ionic_datapath_fmt_convert(h.dev->ionic_dp, P4_FMT_FP16,
+                                     P4_FMT_FP8_E4M3, mra.lkey, FP8R_VA_A, 63,
+                                     mrc.lkey, FP8R_VA_C) == -EINVAL,
+          "63 bytes of fp16 were accepted");
+    check(T,
+          ionic_datapath_fmt_convert(h.dev->ionic_dp, P4_FMT_FP4_E2M1,
+                                     P4_FMT_FP8_E4M3, mra.lkey, FP8R_VA_A,
+                                     IONIC_FP8_MAP_MAX / 2u + 1u, mrc.lkey,
+                                     FP8R_VA_C) == -EINVAL,
+          "more elements than the cap were accepted");
+    check(T,
+          ionic_datapath_fmt_convert(h.dev->ionic_dp, P4_FMT_FP8_E4M3,
+                                     P4_FMT_FP4_E2M1, mra.lkey, FP8R_VA_A, 63,
+                                     mrc.lkey, FP8R_VA_C) == -EINVAL,
+          "63 fp4 results, half a byte at the end, were accepted");
+    check(T,
+          ionic_datapath_fmt_convert(h.dev->ionic_dp, P4_FMT_FP16,
+                                     P4_FMT_FP8_E4M3, 0, FP8R_VA_A, 64,
+                                     mrc.lkey, FP8R_VA_C) == -EACCES,
+          "key 0 was accepted as a conversion's source");
+    for (unsigned long fail = 1; fail <= 2; fail++) {
+        fake_vfu_fail_nth_map(h.vfu, fail);
+        check(T,
+              ionic_datapath_fmt_convert(h.dev->ionic_dp, P4_FMT_FP16,
+                                         P4_FMT_FP8_E4M3, mra.lkey, FP8R_VA_A,
+                                         64, mrc.lkey, FP8R_VA_C) == -EFAULT,
+              "a conversion whose DMA %lu failed did not fault", fail);
+    }
+    check(T, fake_vfu_mapped(h.vfu) == 0, "guest memory left mapped");
+
     check(T, ih_mr_destroy(&h, &mra) == 0, "DESTROY_MR A failed");
     check(T, ih_mr_destroy(&h, &mrb) == 0, "DESTROY_MR B failed");
     check(T, ih_mr_destroy(&h, &mrc) == 0, "DESTROY_MR C failed");
@@ -3388,6 +3462,53 @@ static int p4r_load(struct p4_engine *eng, const char *name)
     if (rc == 0)
         rc = p4_engine_load_commit(eng);
     free(buf);
+    return rc;
+}
+
+/* p4r_load(), with the one occurrence of @from in the fixture made @to. */
+static int p4r_load_patched(struct p4_engine *eng, const char *name,
+                            const char *from, const char *to)
+{
+    size_t n = 0, flen = strlen(from), tlen = strlen(to), at;
+    char *buf = p4d_read_file(name, &n);
+    char *out, *hit;
+    int rc;
+
+    if (!buf)
+        return -ENOENT;
+    /* The fixture is not NUL-terminated, so search a copy that is. */
+    out = malloc(n + 1);
+    if (!out) {
+        free(buf);
+        return -ENOMEM;
+    }
+    memcpy(out, buf, n);
+    out[n] = '\0';
+    hit = strstr(out, from);
+    if (!hit || strstr(hit + 1, from)) {
+        free(out);
+        free(buf);
+        return -EINVAL;
+    }
+    at = (size_t)(hit - out);
+    free(out);
+    out = malloc(n - flen + tlen);
+    if (!out) {
+        free(buf);
+        return -ENOMEM;
+    }
+    memcpy(out, buf, at);
+    memcpy(out + at, to, tlen);
+    memcpy(out + at + tlen, buf + at + flen, n - at - flen);
+    n = n - flen + tlen;
+    free(buf);
+
+    rc = p4_engine_load_begin(eng, n);
+    if (rc == 0)
+        rc = p4_engine_load_chunk(eng, 0, out, n);
+    if (rc == 0)
+        rc = p4_engine_load_commit(eng);
+    free(out);
     return rc;
 }
 
@@ -3567,6 +3688,91 @@ static void test_p4_rdma(void)
           "read back the one-SGE write");
     check(T, memcmp(got, opa, sizeof(got)) == 0,
           "the one-SGE write did not land as an ordinary transfer");
+
+    /*
+     * Two equal operands, but a WQE length that is not their sum: no
+     * driver writes that, and it is refused before anything is reduced.
+     */
+    {
+        struct ih_send bad = w;
+
+        bad.length = 2u * P4R_N - 2u;
+        memset(got, 0xA5, sizeof(got));
+        check(T, ih_mr_write(&h, &mrc, FP8R_VA_C, got, sizeof(got)),
+              "poison C before the mislabelled write");
+        ih_post_send(&h, &a, &bad);
+        check(T, ih_cq_poll(&h, &cq, &e) && e.error,
+              "a reduction whose length is not its operands' completed");
+        check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, 16),
+              "read back C after the mislabelled write");
+        check(T, got[0] == 0xA5u && got[15] == 0xA5u,
+              "a refused reduction wrote to the destination");
+    }
+
+    /*
+     * Only a write can be a reduction.  An RDMA READ the table also sends
+     * to reduce_with is declined by the extern and done as the read it
+     * is: C's bytes arrive in A.
+     */
+    {
+        struct p4_update rd = up;
+        struct ih_send r = one;
+
+        rd.type = P4_UPDATE_INSERT;
+        rd.match[0].value[P4_MATCH_BYTES - 1] = IH_OP_RDMA_READ;
+        check(T, p4_engine_update(eng, &rd, err, sizeof(err)) == 0,
+              "the READ entry was not installed: %s", err);
+        memset(got, 0x5A, sizeof(got));
+        check(T, ih_mr_write(&h, &mrc, FP8R_VA_C, got, sizeof(got)),
+              "fill C before the read");
+        r.op = IH_OP_RDMA_READ;
+        ih_post_send(&h, &a, &r);
+        check(T, ih_cq_poll(&h, &cq, &e) && !e.error,
+              "a READ under a reduce entry did not complete");
+        check(T, ih_mr_read(&h, &mra, FP8R_VA_A, got, sizeof(got)),
+              "read back A");
+        check(T, got[0] == 0x5Au && got[P4R_N - 1] == 0x5Au,
+              "the READ under a reduce entry was not an ordinary read");
+        check(T, ih_mr_write(&h, &mra, FP8R_VA_A, opa, sizeof(opa)),
+              "restore A");
+    }
+
+    /*
+     * A selector wider than the byte an operation fits in: the program
+     * declared reduce_with's argument 16 bits wide, and an entry put
+     * something in the upper byte.  That names no operation there is, so
+     * the extern refuses it rather than reading the low byte alone.
+     */
+    {
+        struct p4_engine *wide = p4_engine_create();
+
+        if (check(T, wide != NULL, "p4_engine_create failed")) {
+            check(T,
+                  p4r_load_patched(wide, "fp8_policy.json", "\"bitwidth\" : 8",
+                                   "\"bitwidth\" : 16") == 0,
+                  "fp8_policy.json with a 16-bit selector did not load");
+            up.type = P4_UPDATE_INSERT;
+            up.params[0].len = 2;
+            up.params[0].value[P4_MATCH_BYTES - 2] = 1;
+            check(T, p4_engine_update(wide, &up, err, sizeof(err)) == 0,
+                  "the wide entry was not installed: %s", err);
+            up.params[0].len = 1;
+            up.params[0].value[P4_MATCH_BYTES - 2] = 0;
+            ionic_datapath_set_p4_engine(h.dev->ionic_dp, wide);
+            memset(got, 0xA5, sizeof(got));
+            check(T, ih_mr_write(&h, &mrc, FP8R_VA_C, got, sizeof(got)),
+                  "poison C before the wide selector");
+            ih_post_send(&h, &a, &w);
+            check(T, ih_cq_poll(&h, &cq, &e) && e.error,
+                  "a selector with its upper byte set was not refused");
+            check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, 16),
+                  "read back C after the wide selector");
+            check(T, got[0] == 0xA5u && got[15] == 0xA5u,
+                  "a refused selector wrote to the destination");
+            ionic_datapath_set_p4_engine(h.dev->ionic_dp, eng);
+            p4_engine_destroy(wide);
+        }
+    }
 
     /*
      * A program whose action calls the extern but does not drop would have
@@ -3955,6 +4161,401 @@ out:
     teardown(T, &h);
 }
 
+/* ---- What the guest's way in refuses ------------------------------------ */
+
+static int p4d_ident(struct ih *h, uint32_t len, uint64_t pa, uint8_t comp[16])
+{
+    uint8_t cmd[64] = {0};
+
+    cmd[0] = IONIC_CMD_P4_IDENT;
+    ernic_put_le32(cmd + 4, len);
+    ernic_put_le64(cmd + 8, pa);
+    return ih_devcmd(h, cmd, comp, NULL, 0);
+}
+
+static int p4d_query(struct ih *h, uint8_t entity, uint32_t buf_len,
+                     uint64_t pa, uint32_t ep, uint8_t comp[16])
+{
+    uint8_t cmd[64] = {0};
+
+    cmd[0] = IONIC_CMD_P4_QUERY;
+    cmd[1] = entity;
+    ernic_put_le32(cmd + 4, buf_len);
+    ernic_put_le64(cmd + 8, pa);
+    ernic_put_le32(cmd + 16, ep);
+    return ih_devcmd(h, cmd, comp, NULL, 0);
+}
+
+/* LOAD_BEGIN for @total bytes, with the request at @req. */
+static int p4d_begin(struct ih *h, uint64_t req, uint32_t total,
+                     uint8_t comp[16])
+{
+    uint8_t body[8] = {0};
+
+    ernic_put_le32(body, total);
+    fake_vfu_write(h->vfu, req, body, sizeof(body));
+    return p4d_rpc(h, P4_SCOPE_LOAD, P4_EP_PROGRAM, P4_OP_LOAD_BEGIN, req,
+                   (uint32_t)sizeof(body), 0, 0, comp);
+}
+
+/* LOAD_CHUNK of @n bytes at @off, saying it carries @claim of them. */
+static int p4d_chunk(struct ih *h, uint64_t req, uint64_t off, const void *data,
+                     uint32_t n, uint32_t claim, uint8_t comp[16])
+{
+    uint8_t hdr[16] = {0};
+
+    ernic_put_le64(hdr, off);
+    ernic_put_le32(hdr + 8, claim);
+    fake_vfu_write(h->vfu, req, hdr, sizeof(hdr));
+    fake_vfu_write(h->vfu, req + sizeof(hdr), data, n);
+    return p4d_rpc(h, P4_SCOPE_LOAD, P4_EP_PROGRAM, P4_OP_LOAD_CHUNK, req,
+                   (uint32_t)sizeof(hdr) + n, 0, 0, comp);
+}
+
+static int p4d_commit(struct ih *h, uint8_t comp[16])
+{
+    return p4d_rpc(h, P4_SCOPE_LOAD, P4_EP_PROGRAM, P4_OP_LOAD_COMMIT, 0, 0, 0,
+                   0, comp);
+}
+
+/* A fixture, pushed down in one chunk and committed: COMMIT's status. */
+static int p4d_load(struct ih *h, uint64_t req, const char *name,
+                    uint8_t comp[16])
+{
+    size_t n = 0;
+    char *prog = p4d_read_file(name, &n);
+    int rc;
+
+    if (!prog || n > 65536 - 16) {
+        free(prog);
+        return -1;
+    }
+    rc = p4d_begin(h, req, (uint32_t)n, comp);
+    if (rc == P4_STS_OK)
+        rc = p4d_chunk(h, req, 0, prog, (uint32_t)n, (uint32_t)n, comp);
+    if (rc == P4_STS_OK)
+        rc = p4d_commit(h, comp);
+    free(prog);
+    return rc;
+}
+
+/*
+ * One ENTRY_UPDATE of the record @u followed by @nm key fields and @np
+ * arguments, sent as @req_len bytes.  0 sends exactly what was built.
+ */
+static int p4d_entry(struct ih *h, uint64_t req,
+                     const struct p4_rpc_entry_update *u,
+                     const struct p4_rpc_entry_match *m, size_t nm,
+                     const struct p4_rpc_entry_param *p, size_t np,
+                     uint32_t req_len, uint8_t comp[16])
+{
+    uint8_t body[sizeof(*u) + 2 * sizeof(*m) + 2 * sizeof(*p)];
+    size_t len = sizeof(*u);
+
+    if (nm > 2 || np > 2)
+        return -1;
+    memset(body, 0, sizeof(body));
+    memcpy(body, u, sizeof(*u));
+    for (size_t i = 0; i < nm; i++, len += sizeof(*m))
+        memcpy(body + len, &m[i], sizeof(*m));
+    for (size_t i = 0; i < np; i++, len += sizeof(*p))
+        memcpy(body + len, &p[i], sizeof(*p));
+    fake_vfu_write(h->vfu, req, body, len);
+    return p4d_rpc(h, P4_SCOPE_WRITE, P4_EP_TABLE, P4_OP_ENTRY_UPDATE, req,
+                   req_len ? req_len : (uint32_t)len, 0, 0, comp);
+}
+
+/* An insert into features.json's ternary table "acl", setting class @cls
+ * for the source address @src exactly. */
+static void p4d_acl(struct p4_rpc_entry_update *u,
+                    struct p4_rpc_entry_match m[2],
+                    struct p4_rpc_entry_param *p, uint32_t src, uint8_t cls)
+{
+    memset(u, 0, sizeof(*u));
+    memset(m, 0, 2 * sizeof(*m));
+    memset(p, 0, sizeof(*p));
+    u->type = P4_WIRE_UPDATE_INSERT;
+    u->nmatch = htole16(2);
+    u->nparams = htole16(1);
+    (void)snprintf(u->table, sizeof(u->table), "acl");
+    (void)snprintf(u->action, sizeof(u->action), "set_class");
+    m[0].len = htole16(4);
+    ernic_put_be32(m[0].value + P4_DEVCMD_VALUE_MAX - 4, src);
+    memset(m[0].mask + P4_DEVCMD_VALUE_MAX - 4, 0xFF, 4);
+    m[1].len = htole16(1);
+    p->len = htole16(1);
+    p->value[P4_DEVCMD_VALUE_MAX - 1] = cls;
+}
+
+/*
+ * Every way a guest's command can be refused, and each refusal's status:
+ * malformed commands and payloads, lengths past what the device allows,
+ * an operation above the scope asked for or granted, guest memory the
+ * device cannot reach, and the engine's own refusals mapped onto the
+ * closed set of statuses a guest sees.
+ */
+static void test_p4_devcmd_errors(void)
+{
+    const char *T = "p4-devcmd-errors";
+    struct ih h;
+    uint8_t comp[16];
+    struct p4_rpc_entry_update u;
+    struct p4_rpc_entry_match m[2];
+    struct p4_rpc_entry_param pa;
+    enum p4_scope scope;
+
+    /* The scope names an operator gives, and those a log prints. */
+    check(T,
+          p4_scope_parse("write", &scope) && scope == P4_SCOPE_WRITE &&
+              p4_scope_parse("none", &scope) && scope == P4_SCOPE_NONE,
+          "a scope name was not parsed");
+    check(T,
+          !p4_scope_parse("all", &scope) && !p4_scope_parse(NULL, &scope) &&
+              !p4_scope_parse("read", NULL),
+          "a scope that is not one was parsed");
+    check(T,
+          strcmp(p4_scope_name(P4_SCOPE_NONE), "none") == 0 &&
+              strcmp(p4_scope_name(P4_SCOPE_READ), "read") == 0 &&
+              strcmp(p4_scope_name(P4_SCOPE_WRITE), "write") == 0 &&
+              strcmp(p4_scope_name(P4_SCOPE_LOAD), "load") == 0,
+          "a scope was given the wrong name");
+    /* Deliberately out of range: the default branch that names one has to
+     * be covered.
+     * NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) */
+    check(T, strcmp(p4_scope_name((enum p4_scope)9), "?") == 0,
+          "a scope there is none of was not named '?'");
+
+    if (!setup(T, &h, "loopback"))
+        return;
+
+    struct p4_engine *eng = p4_engine_create();
+    if (!check(T, eng != NULL, "p4_engine_create failed")) {
+        teardown(T, &h);
+        return;
+    }
+    check(T,
+          p4_devcmd_create(NULL, eng, P4_SCOPE_LOAD) == NULL &&
+              p4_devcmd_create(h.vfu, NULL, P4_SCOPE_LOAD) == NULL,
+          "a command surface was made onto nothing");
+
+    /* Granted nothing, the surface answers nothing, IDENT included. */
+    struct p4_devcmd *pd = p4_devcmd_create(h.vfu, eng, P4_SCOPE_NONE);
+    if (!check(T, pd != NULL, "p4_devcmd_create failed")) {
+        p4_engine_destroy(eng);
+        teardown(T, &h);
+        return;
+    }
+    ionic_eth_emu_register_p4_handler(h.dev->ionic_emu, p4_devcmd_dispatch, pd);
+    const uint64_t buf = fake_vfu_alloc(h.vfu, 4096, 4096);
+    const uint64_t req = fake_vfu_alloc(h.vfu, 65536, 4096);
+    check(T, p4d_ident(&h, 32, buf, comp) == P4_STS_EPERM,
+          "a surface granted nothing answered IDENT");
+    p4_devcmd_destroy(pd);
+
+    pd = p4_devcmd_create(h.vfu, eng, P4_SCOPE_LOAD);
+    if (!check(T, pd != NULL, "p4_devcmd_create failed")) {
+        ionic_eth_emu_register_p4_handler(h.dev->ionic_emu, NULL, NULL);
+        p4_engine_destroy(eng);
+        teardown(T, &h);
+        return;
+    }
+    ionic_eth_emu_register_p4_handler(h.dev->ionic_emu, p4_devcmd_dispatch, pd);
+
+    /* The handler without its context, and an opcode it was never sent:
+     * the device routes only 70-72 here, so both come in directly. */
+    {
+        uint8_t cmd[64] = {0};
+
+        cmd[0] = IONIC_CMD_P4_IDENT;
+        memset(comp, 0xEE, sizeof(comp));
+        p4_devcmd_dispatch(NULL, cmd, comp);
+        check(T, comp[0] == P4_STS_EDEVICE && comp[15] == 0,
+              "a command with no surface behind it drew status %u", comp[0]);
+        cmd[0] = 73;
+        p4_devcmd_dispatch(pd, cmd, comp);
+        check(T, comp[0] == P4_STS_EOPCODE,
+              "an unknown P4 opcode drew status %u", comp[0]);
+    }
+
+    /* IDENT: a length of nothing or of more than there is, a shorter one
+     * that gets what it asked for and no more, and memory that is gone. */
+    check(T, p4d_ident(&h, 0, buf, comp) == P4_STS_EINVAL,
+          "IDENT of no bytes was accepted");
+    check(T,
+          p4d_ident(&h, (uint32_t)sizeof(struct p4_devcmd_ident) + 1, buf,
+                    comp) == P4_STS_EINVAL,
+          "IDENT longer than the identity was accepted");
+    {
+        uint8_t got[32];
+
+        memset(got, 0xEE, sizeof(got));
+        fake_vfu_write(h.vfu, buf, got, sizeof(got));
+        check(T, p4d_ident(&h, 16, buf, comp) == P4_STS_OK,
+              "a 16-byte IDENT failed");
+        fake_vfu_read(h.vfu, buf, got, sizeof(got));
+        check(T, ernic_get_le32(got) == 1 && got[16] == 0xEE && got[31] == 0xEE,
+              "a 16-byte IDENT did not write exactly 16 bytes");
+    }
+    fake_vfu_fail_nth_map(h.vfu, 1);
+    check(T, p4d_ident(&h, 32, buf, comp) == P4_STS_EFAULT,
+          "IDENT into memory the device cannot reach did not fault");
+
+    /* QUERY: a buffer too small for its header or over the limit, an
+     * entity there is none of, one endpoint's operations picked out from
+     * among the others, and memory that is gone. */
+    check(T, p4d_query(&h, P4_QUERY_ROOT, 15, buf, 0, comp) == P4_STS_EINVAL,
+          "a QUERY buffer smaller than its header was accepted");
+    check(T, p4d_query(&h, P4_QUERY_ROOT, 4097, buf, 0, comp) == P4_STS_EINVAL,
+          "a QUERY buffer over the limit was accepted");
+    check(T, p4d_query(&h, 2, 4096, buf, 0, comp) == P4_STS_EINVAL,
+          "a QUERY of an unknown entity was accepted");
+    {
+        struct p4_devcmd_query_data qd;
+        struct p4_query_operation op;
+
+        check(T,
+              p4d_query(&h, P4_QUERY_ENDPOINT, 4096, buf, P4_EP_TABLE, comp) ==
+                  P4_STS_OK,
+              "QUERY(TABLE) failed");
+        fake_vfu_read(h.vfu, buf, &qd, sizeof(qd));
+        fake_vfu_read(h.vfu, buf + sizeof(qd), &op, sizeof(op));
+        check(T,
+              le32toh(qd.num_entries) == 1 &&
+                  le32toh(op.id) == P4_OP_ENTRY_UPDATE &&
+                  op.scope == P4_SCOPE_WRITE,
+              "QUERY(TABLE) did not list exactly ENTRY_UPDATE, at write");
+    }
+    fake_vfu_fail_nth_map(h.vfu, 1);
+    check(T, p4d_query(&h, P4_QUERY_ROOT, 4096, buf, 0, comp) == P4_STS_EFAULT,
+          "QUERY into memory the device cannot reach did not fault");
+
+    /* RPC: operations there are none of, a caller asking for less than an
+     * operation needs, buffers over the limits, and a request that cannot
+     * be read. */
+    check(T,
+          p4d_rpc(&h, P4_SCOPE_LOAD, P4_EP_PROGRAM, 9, 0, 0, 0, 0, comp) ==
+              P4_STS_EOPCODE,
+          "an unknown program operation was accepted");
+    check(T,
+          p4d_rpc(&h, P4_SCOPE_LOAD, 9, 1, 0, 0, 0, 0, comp) == P4_STS_EOPCODE,
+          "an unknown endpoint was accepted");
+    check(T,
+          p4d_rpc(&h, P4_SCOPE_READ, P4_EP_PROGRAM, P4_OP_LOAD_BEGIN, req, 8, 0,
+                  0, comp) == P4_STS_EPERM,
+          "a caller asking for read was let begin a load");
+    check(T,
+          p4d_rpc(&h, P4_SCOPE_LOAD, P4_EP_PROGRAM, P4_OP_LOAD_CHUNK, req,
+                  65537, 0, 0, comp) == P4_STS_ERANGE,
+          "a request over 64 KiB was accepted");
+    check(T,
+          p4d_rpc(&h, P4_SCOPE_READ, P4_EP_STATS, P4_OP_STATS_READ, 0, 0, buf,
+                  4097, comp) == P4_STS_ERANGE,
+          "a response over 4 KiB was accepted");
+    fake_vfu_fail_nth_map(h.vfu, 1);
+    check(T, p4d_begin(&h, req, 64, comp) == P4_STS_EFAULT,
+          "a request the device cannot read did not fault");
+
+    /* The program endpoint's payloads. */
+    check(T,
+          p4d_rpc(&h, P4_SCOPE_LOAD, P4_EP_PROGRAM, P4_OP_LOAD_BEGIN, req, 4, 0,
+                  0, comp) == P4_STS_EINVAL,
+          "a LOAD_BEGIN shorter than its payload was accepted");
+    check(T, p4d_begin(&h, req, 0, comp) == P4_STS_EINVAL,
+          "an empty program was begun");
+    check(T,
+          p4d_rpc(&h, P4_SCOPE_LOAD, P4_EP_PROGRAM, P4_OP_LOAD_CHUNK, req, 8, 0,
+                  0, comp) == P4_STS_EINVAL,
+          "a LOAD_CHUNK shorter than its header was accepted");
+    check(T, p4d_begin(&h, req, 64, comp) == P4_STS_OK, "LOAD_BEGIN failed");
+    check(T, p4d_chunk(&h, req, 0, "{}", 2, 0, comp) == P4_STS_EINVAL,
+          "a LOAD_CHUNK of no bytes was accepted");
+    check(T, p4d_begin(&h, req, 64, comp) == P4_STS_OK, "LOAD_BEGIN failed");
+    check(T, p4d_chunk(&h, req, 0, "{}", 2, 3, comp) == P4_STS_EINVAL,
+          "a LOAD_CHUNK claiming more bytes than it carried was accepted");
+
+    /* ABORT drops a load part way, so there is nothing to commit. */
+    check(T, p4d_begin(&h, req, 64, comp) == P4_STS_OK, "LOAD_BEGIN failed");
+    check(T, p4d_chunk(&h, req, 0, "{}", 2, 2, comp) == P4_STS_OK,
+          "LOAD_CHUNK failed");
+    check(T,
+          p4d_rpc(&h, P4_SCOPE_LOAD, P4_EP_PROGRAM, P4_OP_LOAD_ABORT, 0, 0, 0,
+                  0, comp) == P4_STS_OK,
+          "LOAD_ABORT failed");
+    check(T, p4d_commit(&h, comp) == P4_STS_EINVAL,
+          "a load that was aborted was committed");
+
+    /* A program the engine refuses: one using checksums, which the
+     * engine names as unsupported, which the guest sees as EDEVICE. */
+    check(T, p4d_load(&h, req, "simple_router.json", comp) == P4_STS_EDEVICE,
+          "a program using checksums was not refused as EDEVICE");
+    check(T, !p4_engine_has_program(eng), "a refused program was installed");
+
+    /* The table endpoint, with no program loaded: the engine has no
+     * tables, which the guest sees as ENOENT. */
+    p4d_acl(&u, m, &pa, 0xC0A80001u, 1);
+    check(T, p4d_entry(&h, req, &u, m, 2, &pa, 1, 0, comp) == P4_STS_ENOENT,
+          "an entry with no program loaded was not ENOENT");
+
+    check(T, p4d_load(&h, req, "features.json", comp) == P4_STS_OK,
+          "the guest could not load features.json");
+
+    check(T,
+          p4d_entry(&h, req, &u, m, 2, &pa, 1, (uint32_t)sizeof(u) - 1, comp) ==
+              P4_STS_EINVAL,
+          "an ENTRY_UPDATE shorter than its record was accepted");
+    check(T,
+          p4d_entry(&h, req, &u, m, 2, &pa, 1, (uint32_t)sizeof(u), comp) ==
+              P4_STS_EINVAL,
+          "an ENTRY_UPDATE missing its key fields was accepted");
+    u.nmatch = htole16(P4_MAX_TABLE_KEY + 1);
+    check(T, p4d_entry(&h, req, &u, m, 2, &pa, 1, 0, comp) == P4_STS_EINVAL,
+          "an ENTRY_UPDATE with too many key fields was accepted");
+    p4d_acl(&u, m, &pa, 0xC0A80001u, 1);
+    m[1].len = htole16(P4_DEVCMD_VALUE_MAX + 1);
+    check(T, p4d_entry(&h, req, &u, m, 2, &pa, 1, 0, comp) == P4_STS_EINVAL,
+          "a key field longer than a value was accepted");
+    p4d_acl(&u, m, &pa, 0xC0A80001u, 1);
+    pa.len = htole16(P4_DEVCMD_VALUE_MAX + 1);
+    check(T, p4d_entry(&h, req, &u, m, 2, &pa, 1, 0, comp) == P4_STS_EINVAL,
+          "an argument longer than a value was accepted");
+    p4d_acl(&u, m, &pa, 0xC0A80001u, 1);
+    (void)snprintf(u.table, sizeof(u.table), "ghost");
+    check(T, p4d_entry(&h, req, &u, m, 2, &pa, 1, 0, comp) == P4_STS_EINVAL,
+          "an entry for a table there is none of was not EINVAL");
+
+    /* acl holds 4: the fifth is ENOSPC. */
+    for (uint32_t i = 0; i < 4; i++) {
+        p4d_acl(&u, m, &pa, 0xC0A80001u + i, 1);
+        check(T, p4d_entry(&h, req, &u, m, 2, &pa, 1, 0, comp) == P4_STS_OK,
+              "ACL row %u was not installed", i);
+    }
+    p4d_acl(&u, m, &pa, 0xC0A80005u, 1);
+    check(T, p4d_entry(&h, req, &u, m, 2, &pa, 1, 0, comp) == P4_STS_ENOSPC,
+          "a fifth row in a 4-row table was not ENOSPC");
+
+    /* The stats endpoint: a response too small for the counters, and one
+     * the device cannot write. */
+    check(T,
+          p4d_rpc(&h, P4_SCOPE_READ, P4_EP_STATS, P4_OP_STATS_READ, 0, 0, buf,
+                  (uint32_t)sizeof(struct p4_rpc_stats) - 1,
+                  comp) == P4_STS_ERANGE,
+          "a stats response too small for the counters was accepted");
+    fake_vfu_fail_nth_map(h.vfu, 1);
+    check(T,
+          p4d_rpc(&h, P4_SCOPE_READ, P4_EP_STATS, P4_OP_STATS_READ, 0, 0, buf,
+                  (uint32_t)sizeof(struct p4_rpc_stats), comp) == P4_STS_EFAULT,
+          "a stats response the device cannot write did not fault");
+    check(T, ernic_get_le32(comp + 4) == 0,
+          "a failed command reported %u response bytes",
+          ernic_get_le32(comp + 4));
+
+    check(T, fake_vfu_mapped(h.vfu) == 0, "guest memory left mapped");
+    ionic_eth_emu_register_p4_handler(h.dev->ionic_emu, NULL, NULL);
+    p4_devcmd_destroy(pd);
+    p4_engine_destroy(eng);
+    teardown(T, &h);
+}
+
 /* ---- Narrowing: fp16 in one region, fp8 in a shorter one ------------- */
 
 /*
@@ -4131,6 +4732,27 @@ static void test_p4_cvt(void)
               "read back the two-entry write");
         check(T, memcmp(got, src, 128) == 0,
               "the two-entry write was not an ordinary gathered transfer");
+    }
+
+    /*
+     * A WQE whose length is not its gather list's is malformed -- a driver
+     * always sums the list into it -- and is refused before anything is
+     * converted.
+     */
+    {
+        struct ih_send bad = w;
+
+        bad.length = P4C_N_IN - 2;
+        memset(got, 0xA5, sizeof(got));
+        check(T, ih_mr_write(&h, &mrc, FP8R_VA_C, got, sizeof(got)),
+              "poison C before the mislabelled write");
+        ih_post_send(&h, &a, &bad);
+        check(T, ih_cq_poll(&h, &cq, &e) && e.error,
+              "a conversion whose length is not its source's completed");
+        check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, 16),
+              "read back C after the mislabelled write");
+        check(T, got[0] == 0xA5u && got[15] == 0xA5u,
+              "a refused conversion wrote to the destination");
     }
 
     ionic_datapath_set_p4_engine(h.dev->ionic_dp, NULL);
@@ -5067,6 +5689,7 @@ static const struct {
     {"p4-cvt-map", test_p4_cvt_then_map},
     {"p4-drop-map", test_p4_drop_then_map},
     {"p4-devcmd", test_p4_devcmd},
+    {"p4-devcmd-errors", test_p4_devcmd_errors},
 #endif
     {"nvmeof", test_nvmeof},
     {"s3", test_s3},
