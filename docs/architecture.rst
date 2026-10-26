@@ -59,6 +59,7 @@ request to each other over ordinary TCP.
     │  ionic device front end (registers, queues, data path)   │
     │  resource bookkeeping + backend (none/loopback/tcp/...)  │
     │  optional in-process NVMe-oF controller or S3 store      │
+    │  optional P4 match-action engine                         │
     └─────────────────────────┬────────────────────────────────┘
                               │ TCP (tcp backend only)
                               ▼
@@ -228,10 +229,20 @@ The server presents one PCIe function:
    * - Class
      - ``02:00:00``, Ethernet controller
    * - Interrupts
-     - 32 MSI-X vectors, plus INTx
+     - The NIC profile's MSI-X vectors (32 under ``compat``, at
+       most 128), plus INTx
 
-The upstream ``ionic.ko`` binds to that ID. The device has two
-BARs:
+The upstream ``ionic.ko`` binds to that ID.
+
+Some of what the device reports is set by its **NIC profile**:
+its interrupt, Ethernet queue and RDMA event queue counts, link
+speed and transceiver, largest MTU, firmware version, and how
+often it rewrites its statistics. ``--nic-profile`` layers
+built-in profiles and ini files over the default, ``compat``,
+whose values this page gives. See :doc:`ionic` for the keys and
+the built-in profiles.
+
+The device has two BARs:
 
 .. list-table::
    :header-rows: 1
@@ -323,9 +334,9 @@ Inside the Server
               │ ionic_rm_*, ionic_mesh_*  │ attach
               ▼                           ▼
        rocm_ernic_compat.c          nvmeof_*.c, s3_*.c
-       (bridge; only file that      in-process targets
-        sees QEMU types)
-              │
+       (bridge; only file that      in-process targets;
+        sees QEMU types)            src/p4/, the optional
+              │                     P4 engine
               ▼
        src/qemu/                  resource manager (rdma_rm)
        src/rdma/                  backend vtable: none,
@@ -340,6 +351,25 @@ The ``src/ionic_*.c`` files are the device the guest actually
 talks to. They own the register file, decode doorbells, and
 read and write every ring and buffer in guest memory. Each file
 is described in a later section.
+
+Two more pieces shape what the front end does without being
+part of any one path:
+
+- **The NIC profile** (``src/ionic_profile.c``; the built-in
+  profiles are in ``src/ionic_profiles.c``, with copies in
+  ``profiles/``) is read once at startup. The front end
+  consults it wherever it describes itself to the driver: the
+  MSI-X table size, IDENTIFY, LIF_IDENTIFY, PORT_INIT, and
+  LIF_INIT.
+- **Fault injection** (``--inject``, ``src/ionic_fault.c``)
+  makes chosen events fail, so a test can check how the guest
+  copes: a STATS_VALS admin command completes with an error
+  status, a received frame is lost or dropped as if no buffer
+  were posted, or a transmitted frame is completed but never
+  sent. A fault fires on a pattern of events (every Nth, a run
+  starting at the Nth, a burst out of every M, or an explicit
+  sequence), never on a timer, so the same workload gives the
+  same failures.
 
 The Device Core
 ^^^^^^^^^^^^^^^
@@ -371,15 +401,20 @@ world are:
 #. Recording each QP's state and passing the INIT, RTR, and RTS
    transitions to the backend. The core doesn't check that a
    transition is legal: it records whatever state the guest
-   asks for. The one check that matters is the TCP backend's at
-   RTR, which fails the transition when no node owns a connected
-   QP's destination GID (see `More Than One VM: the TCP
-   Mesh`_).
+   asks for. The one check that matters is on a connected QP's
+   destination GID when the mesh is attached: if no node owns
+   it, the admin queue refuses the MODIFY_QP before the core
+   sees it, and the TCP backend would fail the RTR transition
+   anyway (see `More Than One VM: the TCP Mesh`_).
 #. Carrying the TCP mesh, through the ``ionic_mesh_*()``
    wrappers.
-#. Statistics: counters, and the stats file written about once
-   a second (``--stats-file``, consumed by ``ernic-exporter``;
-   see :doc:`monitoring`).
+#. Statistics: the device and per-QP counters the guest reads
+   as ``hw_counters`` (through the admin queue's statistics
+   commands, together with the data path's error counters),
+   and the stats file written about once a second
+   (``--stats-file``, consumed by ``ernic-exporter``; see
+   :doc:`monitoring`), which also carries the Ethernet side's
+   LIF and port counters.
 
 The core does **not** move data for the ionic device, or post
 its completions. All data movement happens in
@@ -391,17 +426,22 @@ The Main Loop
 ``src/rocm_ernic_server.c`` builds the device, then waits for
 QEMU to connect. Once QEMU has connected, it loops:
 
+#. Write the stats file, if there is one, about once a second.
 #. ``vfu_run_ctx()``: handle pending vfio-user messages. BAR
    accesses arrive here as callbacks, and **BAR 2 doorbells for
    send queues are executed inside the callback** (see
    `The Data Path`_).
 #. Run any GLib idle callbacks.
-#. Move received Ethernet frames from the TAP, or from frames
-   other threads queued, into the guest's receive ring.
+#. Move received Ethernet frames from the TAP, and frames an
+   in-process endpoint queued for the guest, into the guest's
+   receive rings. Rewrite the Ethernet statistics in guest
+   memory if the profile's interval has passed.
 #. Process new entries on the RDMA admin queues.
-#. Apply messages that arrived from other servers over the mesh,
-   and time out requests that never got an answer.
-#. If none of that found work, sleep 100 µs.
+#. Run the S3 store's TCP timers, apply messages that arrived
+   from other servers over the mesh, and time out requests that
+   never got an answer.
+#. If no vfio-user message or idle callback ran, and nothing is
+   waiting from the mesh or the S3 store, sleep 100 µs.
 
 The server is a polling design. Latency is bounded by the loop
 period, and an idle server still wakes up as often as 10,000
@@ -434,26 +474,52 @@ the data window, and sets ``done``.
    * - Command
      - What the emulator does
    * - IDENTIFY
-     - Reports one port, one LIF, 32 interrupts, 32 EQs
+     - Reports one port, one LIF, and the profile's interrupt
+       and RDMA EQ counts (32 and 32 under ``compat``)
    * - LIF_IDENTIFY
-     - Reports Ethernet and RDMA capability, queue counts, the
-       MAC, and the RDMA section: queue type numbers; QP, CQ,
-       and SRQ counts; MR and AH limits; and the page table
-       size, which sets the guest's maximum MR size (4 TiB)
+     - Reports Ethernet and RDMA capability (and P4, when the
+       guest has been given the engine's control surface; see
+       :doc:`p4`), the profile's Ethernet queue count and
+       maximum frame size, the MAC, and the RDMA section: queue
+       type numbers; QP, CQ, and SRQ counts; MR and AH limits;
+       and the page table size, which sets the guest's maximum
+       MR size (4 TiB)
    * - PORT_INIT
-     - Writes a port-info block saying "100 Gb/s copper QSFP,
-       link up", so ``ethtool`` reports a speed
+     - Writes a port-info block giving the profile's link speed
+       and transceiver ("100 Gb/s copper QSFP, link up" under
+       ``compat``), so ``ethtool`` reports a speed. The device
+       keeps the port statistics in that block from then on
    * - LIF_INIT
-     - Writes "link up" into the LIF status block, so the netdev
-       gets a carrier and the RDMA port goes active
+     - Writes "link up" and the speed into the LIF status block,
+       so the netdev gets a carrier and the RDMA port goes
+       active. The device keeps the LIF statistics in that block
+       from then on (see :doc:`ionic`)
+   * - LIF_RESET, PORT_RESET, RESET
+     - Stop writing into the blocks, which the driver may free.
+       RESET also zeroes every counter, and PORT_RESET the port
+       counters
    * - Q_INIT
      - Records where an Ethernet queue's descriptor and
        completion rings are in guest memory, and its interrupt
        vector
+   * - Q_CONTROL
+     - Enables or disables a queue; received frames are steered
+       only to enabled receive queues
    * - Q_IDENTIFY
      - Reports descriptor sizes; advertises no offloads
-   * - others
+   * - LIF_GETATTR, LIF_SETATTR
+     - Read or set the MAC; other attributes succeed without
+       effect
+   * - 50 to 53
+     - The RDMA bootstrap commands (see `RDMA Bootstrap`_)
+   * - 70 to 72
+     - The P4 engine's control surface; unknown opcodes when the
+       guest hasn't been given it (see :doc:`p4`)
+   * - INIT, GETATTR, SETATTR, PORT_IDENTIFY, PORT_GETATTR,
+       PORT_SETATTR, NOP
      - Succeed with a zeroed completion
+   * - others
+     - Fail as unknown opcodes
 
 The Ethernet Admin Queue
 ^^^^^^^^^^^^^^^^^^^^^^^^
@@ -464,6 +530,13 @@ memory, rings a doorbell, and waits for an interrupt. The
 emulator reads each descriptor by DMA, runs it, DMAs a 16-byte
 completion with the expected *color* bit (see `Rings and the
 Color Bit`_), and raises the queue's MSI-X vector.
+
+The commands that matter here are Q_INIT, Q_CONTROL, the MAC
+attribute of LIF_GETATTR and LIF_SETATTR, and the RDMA and P4
+commands, which the emulator runs as it does from BAR 0.
+Everything else the driver posts during bring-up (receive
+modes, receive filters, ...) has no state in the emulator and
+succeeds.
 
 RDMA Bootstrap
 ^^^^^^^^^^^^^^
@@ -565,7 +638,11 @@ guest put the object's memory.
      - Set or read the low-watermark limit
    * - DESTROY_*
      - Undo the above
-   * - statistics, DCQCN, debug, QUERY_AH
+   * - STATS_HDRS, STATS_VALS, QP_STATS_HDRS, QP_STATS_VALS
+     - DMA the names, or the values, of the device's or one
+       QP's counters into the driver's buffer; this is what the
+       guest reads as ``hw_counters`` (see :doc:`monitoring`)
+   * - MODIFY_DCQCN, DEBUG, QUERY_AH
      - Succeed without doing anything
 
 A few details worth knowing:
@@ -786,6 +863,12 @@ Topology
   and registers under the id it has. A worker that has heard
   nothing for an interval sends the manager a heartbeat of
   its own, so the two needn't share an interval.
+- A dead node stays in the manager's table. A node that went
+  quiet and comes back keeps its id; a restarted one registers
+  again and gets a new id. The table holds at most 64 nodes:
+  when a new node registers in a full table, the manager evicts
+  the node that has been dead longest, or refuses the new node
+  if none can be evicted. An id is never given out twice.
 - A send to a node that stays connected but stops reading
   gives up once nothing has gone out for the send timeout,
   ``ERNIC_TCP_SEND_TIMEOUT_MS`` (10000 by default), and shuts
@@ -1020,14 +1103,25 @@ it goes through the data path described above.
   ``--tap`` (``src/ionic_eth_net.c``). Without a TAP, frames
   are completed and discarded.
 - Receive: the main loop reads frames from the TAP and DMAs each
-  into the next buffer the guest posted on receive queue 0, then
-  raises the queue's interrupt.
+  into the next buffer the guest posted on one of its enabled
+  receive queues, then raises that queue's interrupt. A fixed
+  hash of the flow picks the queue, so one flow always lands on
+  one queue (``src/ionic_eth_steer.c``). A TAP frame whose queue
+  has no buffer posted is dropped, as on a real NIC.
 - No checksum, TSO, or scatter-gather offloads are advertised,
   so the guest always sends simple linear frames.
 - Before a transmitted frame goes to the TAP, an in-process
-  endpoint can claim it (the S3 target uses this; see below).
-  Threads that may not do DMA can queue frames for the main loop
-  to deliver.
+  endpoint can claim it, and one can likewise claim a frame
+  received from the TAP (the S3 target and the P4 engine use
+  these; see below and :doc:`p4`). An endpoint sends frames to
+  the guest by queueing them for the main loop, which delivers
+  them after the TAP's. Unlike a TAP frame, a queued frame with
+  no buffer to go to waits for one, and so do the frames behind
+  it.
+- The emulator counts every frame and keeps the LIF and port
+  statistics blocks the driver reads (``ip -s link``,
+  ``ethtool -S``) up to date in guest memory
+  (``src/ionic_emu_stats.c``; see :doc:`ionic`).
 
 To give several guests a shared segment, each server gets its
 own TAP and the TAPs are joined in a host bridge (see
@@ -1044,8 +1138,10 @@ and neither touches guest memory or the network directly. In
 the server, the data path supplies callbacks that resolve the
 rkey in the guest's MR table, which is the emulator's
 equivalent of the target posting RDMA READ and WRITE against
-the initiator's keys. The same code runs in unit tests with a
-byte array standing in for guest memory.
+the initiator's keys. They move nothing for key 0, which would
+otherwise reach all of guest memory (see `Trust Boundaries`_).
+The same code runs in unit tests with a byte array standing in
+for guest memory.
 
 NVMe over Fabrics
 ^^^^^^^^^^^^^^^^^
@@ -1097,6 +1193,33 @@ hipObject and NVIDIA cuObject speak.
   payload in the HTTP body.
 
 See :doc:`s3`.
+
+The P4 Engine
+-------------
+
+The silicon ionic models is P4-programmable, and
+``src/p4/`` is the emulator's equivalent: an engine that runs a
+compiled P4 program (bmv2 JSON) loaded with ``--p4-program``.
+It is built only with the ``ERNIC_BUILD_P4`` CMake option, and
+runs only when ``--p4`` or ``--p4-program`` is given. It sits on
+two paths:
+
+- **Ethernet.** It takes the transmit and receive frame
+  filters described in `The Ethernet Side`_, so every frame
+  between the guest and the TAP goes through the program, which
+  decides where it goes and what it looks like. A frame the S3
+  store claims never reaches it.
+- **RDMA.** For a program written for it, the data path runs
+  the pipeline on every send WQE, after the WQE's own memory
+  has been checked. The program can drop the operation, or
+  turn an RDMA WRITE into fp8 arithmetic or a format conversion
+  through an extern. Every region involved is local and named
+  by the WQE, never by the program; an rkey belonging to
+  another node is refused.
+
+A guest can reach the engine through device commands 70 to 72,
+but only as far as ``--p4-guest-scope`` allows; by default it
+can't. Everything runs on the main thread. See :doc:`p4`.
 
 Backends
 --------
@@ -1157,7 +1280,11 @@ Threads
    * - health check
      - ``tcp`` manager
      - Heartbeats, dead-node detection, closing dead nodes'
-       connections
+       connections, and those of nodes that never registered
+   * - broadcast
+     - ``tcp`` manager
+     - Sends the topology and GID ownership to the workers (see
+       `Which Server Owns a GID?`_)
    * - peer connect
      - ``tcp`` worker
      - Connects to peers as the topology changes, and closes dead
@@ -1165,10 +1292,11 @@ Threads
        connection is lost
 
 The rule is that **only the main thread touches guest memory**.
-Every other thread hands work to it through a locked queue: the
-data path's inbound message queue, or the Ethernet emulator's
-frame inbox. The completion thread the QEMU code had upstream
-is gone.
+The mesh's receive threads hand what they read to it through a
+locked queue, the data path's inbound message queue. The
+in-process targets and the P4 engine run on the main thread
+itself, so they start no threads. The completion thread the
+QEMU code had upstream is gone.
 
 Shared state between threads uses mutexes or C11 atomics. The
 thread-safety section of ``AGENTS.md``, in the repository root,
@@ -1192,17 +1320,26 @@ model:
   the server.
 - A peer server may name memory only by rkey. Key 0, which
   locally means "the address is already a bus address", is
-  refused when a peer sends it with a non-zero length.
+  refused when a peer sends it with a non-zero length. So is a
+  key 0 in a request to the NVMe-oF controller or the S3 store,
+  or as an operand of the P4 engine's externs, since any guest
+  process can make those requests.
+- Guest addresses and lengths are checked for wrap-around before
+  they are used: a memory region or a keyed range that runs past
+  the end of the address space is refused, and a send whose SGE
+  lengths add up to more than 4 GiB fails instead of being
+  truncated.
 - A page table is checked against the length of the region it
   describes, so it can't have more entries than that region
   needs. This is a geometry check, not a memory limit: the
   region's length also comes from the guest and nothing caps it,
   so a large enough CREATE_MR or fast registration still makes
-  the server allocate a large page table. The ring
-  geometry of SRQs and of the data path's CQ rings is bounded
-  before it is used in shifts. Not every command checks its ring
-  geometry yet, so this is not a guarantee for all queue
-  creation.
+  the server allocate a large page table.
+- Every ring's depth and stride is bounded before it is used in
+  a shift. An RDMA command (creating an admin queue, EQ, CQ, QP,
+  or SRQ) that exceeds the bounds is refused; a Q_INIT that
+  exceeds them succeeds but leaves its Ethernet queue
+  uninitialized.
 - Datagram delivery within one VM checks that the destination
   is a UD or GSI QP, so a datagram can't land in an RC or UC
   QP, and that the Q_Key in the WQE matches the destination's.
@@ -1240,8 +1377,11 @@ What Is Not Emulated
 - **One outstanding RDMA READ or atomic per QP** is what
   QUERY_QP reports.
 - **Ethernet offloads** (checksum, TSO, scatter-gather) are not
-  offered.
-- **Statistics admin commands** succeed but return nothing.
+  offered, and the guest's RSS key and indirection table are
+  accepted but ignored.
+- **Counters with no emulator event behind them**, such as
+  packet sequence errors, duplicates, CNPs, and ECN marks, read
+  zero (see :doc:`ionic`).
 - **Performance** is that of a software device: every doorbell
   is a socket message, every byte is copied by the server's CPU,
   and the main loop polls.
@@ -1264,6 +1404,16 @@ Where to Look in the Source
        interrupt controller, doorbell decode
    * - ``src/ionic_eth_net.c``
      - Host TAP interface
+   * - ``src/ionic_eth_steer.c``
+     - Choosing the receive queue for a frame
+   * - ``src/ionic_emu_stats.c``
+     - Ethernet LIF and port counters, and the statistics blocks
+       written into guest memory
+   * - ``src/ionic_profile.c``, ``src/ionic_profiles.c``
+     - NIC profiles: loading and layering them, and the built-in
+       ones
+   * - ``src/ionic_fault.c``
+     - Fault injection (``--inject``)
    * - ``src/ionic_rdma_devcmd.c``
      - RDMA bootstrap (EQs, admin queues), EQE posting
    * - ``src/ionic_adminq.c``
@@ -1273,12 +1423,15 @@ Where to Look in the Source
    * - ``src/ernic_dma.c``
      - Copying to and from guest memory, for all of the above
    * - ``src/rocm_ernic_compat.c``, ``.h``
-     - Bridge to the QEMU-derived core; guest-memory mapping for
-       it; mesh wrappers; shared limits
+     - Bridge to the QEMU-derived core; mesh wrappers; shared
+       limits
    * - ``src/qemu/``
      - Resource manager and backend dispatch, forked from QEMU
    * - ``src/rdma/rdma_backend_*.c``
      - Backend registry; none, loopback, and TCP mesh backends
+   * - ``src/rdma/tcp_*.c``
+     - The TCP mesh: connections, the wire format, GID
+       ownership, and the manager's and workers' halves
    * - ``src/rdma/pvrdma_stats.c``
      - Statistics file
    * - ``src/qemu-compat/``
@@ -1288,3 +1441,7 @@ Where to Look in the Source
    * - ``src/s3_tcp.c``, ``src/s3_http.c``, ``src/s3_token.c``,
        ``src/s3_target.c``
      - In-process S3 store
+   * - ``src/p4/``
+     - P4 engine: program loader, tables, the pipeline, its
+       Ethernet port and device commands, and the fp8 and format
+       conversion externs

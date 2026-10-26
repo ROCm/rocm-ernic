@@ -848,6 +848,8 @@ Guest TCP/IP uses the host TAP/bridge
 ([`ionic_eth_net.c`](src/ionic_eth_net.c)). The mesh carries only
 `TCP_MSG_IONIC` and control traffic. The old never-used Ethernet and
 DHCP relay paths are gone, but their ordinals remain as
-`TCP_MSG_RESERVED_18..20`: the protocol has no versioning beyond a magic
-number, so renumbering would misparse against an unupgraded peer. Don't
-rebuild guest networking inside the mesh.
+`TCP_MSG_RESERVED_18..20`. Renumbering the message types would change
+the wire format, which means bumping `TCP_PROTOCOL_VERSION` (checked at
+registration and at the worker-to-worker handshake) and cutting off every
+unupgraded peer, all to reclaim three numbers. Don't rebuild guest
+networking inside the mesh.

@@ -25,9 +25,9 @@
  *   eth_tx      drop   the frame is completed to the guest but never sent:
  *                      tx_*_drop_* count it
  *
- * An eth_rx event is a frame off the TAP or the mesh, counted once even if
- * the mesh holds it back for want of a buffer; an eth_tx event is a frame
- * gathered from a Tx descriptor.
+ * An eth_rx event is a frame off the TAP or from an in-process endpoint's
+ * queue, counted once even if the queue holds it back for want of a buffer;
+ * an eth_tx event is a frame gathered from a Tx descriptor.
  *
  * This build has the deterministic patterns only, so a test can assert
  * exact counts.  Patterns advance only on eligible events, never on a
