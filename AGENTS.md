@@ -405,7 +405,7 @@ touches. The commands are in the sections below.
   ctest --test-dir build -T memcheck --output-on-failure \
     --overwrite "MemoryCheckCommand=$(command -v valgrind)" \
     --overwrite "MemoryCheckCommandOptions=--leak-check=full --track-origins=yes --num-callers=40 --error-exitcode=1" \
-    -E '^(pci-config-test|find-rdma-device-tuple|find-ipv4-gid-index|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli|cmake-subproject|ernic-package-deb|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver|ernic-ionic-hw-stats|ernic-mesh-stress)$'
+    -E '^(pci-config-test|find-rdma-device-tuple|find-ipv4-gid-index|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli|cmake-subproject|ernic-package-deb|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver|ernic-ionic-hw-stats|ernic-mesh-stress|ernic-mesh-flow)$'
   ```
 
   The excluded tests run scripts, CMake, Python, or a server launcher.
@@ -426,7 +426,7 @@ touches. The commands are in the sections below.
   opts="--log-file=$PWD/build/valgrind-server/%p.log --leak-check=full --track-origins=yes --num-callers=40 --error-exitcode=1"
   ERNIC_TEST_SERVER_WRAPPER="valgrind $opts" \
     ctest --test-dir build --output-on-failure \
-    -R '^(pci-config-test|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver|ernic-ionic-hw-stats|ionic-stats-interval-cli|ionic-eth-queues-cli)$'
+    -R '^(pci-config-test|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver|ernic-ionic-hw-stats|ernic-mesh-flow|ionic-stats-interval-cli|ionic-eth-queues-cli)$'
   valgrind --trace-children=yes $opts build/tests/test_server_lifecycle
   grep -L 'ERROR SUMMARY: 0 errors' build/valgrind-server/*.log
   ```

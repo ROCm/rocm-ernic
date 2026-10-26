@@ -4809,7 +4809,11 @@ static int run_reap_case(const struct reap_case *c)
  *
  * The ionic data path's messages are handed to its callback with the buffer
  * they were received into, which the callback then owns, so a large message
- * isn't copied.  With no callback, the manager frees the buffer itself.
+ * isn't copied.  With no callback, the manager frees the buffer itself.  A
+ * callback with no room for the message refuses it, leaving the buffer with
+ * the receive thread, which offers it again, and reads nothing more from the
+ * peer, until it is taken or the thread is stopped.  The peer is slowed down
+ * by TCP, rather than the node buffering what it can't keep up with.
  *
  * Each row starts a manager with tcp_init(), stops its health-check thread,
  * and registers two workers over socketpairs, as in the fini rows: nodes 1
@@ -4825,6 +4829,8 @@ enum sender_scenario {
     SENDER_RETIRED,   /* worker 1 sends the retired data-path messages */
     SENDER_IONIC,     /* worker 1 sends the manager's data path a message */
     SENDER_NO_DP,     /* and the manager has no data path */
+    SENDER_FULL,      /* and the data path has no room for it, for a while */
+    SENDER_FULL_STOP, /* and never has, and the manager is torn down */
 };
 
 struct sender_case {
@@ -4852,6 +4858,17 @@ static const struct sender_case sender_cases[] = {
     {"negative",
      "worker 1 sends an ionic message to a manager with no data path",
      "dropped, and worker 1 is still answered", SENDER_NO_DP},
+    {"positive",
+     "worker 1 sends an ionic message the manager's data path has no room "
+     "for, then a heartbeat, and then the data path makes room",
+     "the message is offered until it is taken, once, whole; the heartbeat "
+     "isn't read until then, and is answered after",
+     SENDER_FULL},
+    {"corner",
+     "worker 1 sends an ionic message the manager's data path never has room "
+     "for, and the manager is torn down",
+     "the receive thread stops offering it, gives it up, and is joined",
+     SENDER_FULL_STOP},
 };
 
 /* The payload each retired or ionic message carries */
@@ -5099,7 +5116,7 @@ static _Atomic(void *) g_ionic_buf;
  * The data path's callback, keeping the first payload, as the data path
  * queues it, for the row to read after the call has returned and then free.
  */
-static void sender_ionic_recv(void *opaque, uint32_t src_node, void *buf,
+static bool sender_ionic_recv(void *opaque, uint32_t src_node, void *buf,
                               size_t len)
 {
     void *none = NULL;
@@ -5111,6 +5128,7 @@ static void sender_ionic_recv(void *opaque, uint32_t src_node, void *buf,
         buf = NULL;
     atomic_fetch_add(&g_ionic_calls, 1);
     free(buf);
+    return true;
 }
 
 /* Whether sender_ionic_recv() was handed worker 1's payload, once */
@@ -5168,6 +5186,87 @@ static const char *sender_ionic(RdmaBackendDev *dev, int w1, bool registered)
 }
 
 /*
+ * Whether full_ionic_recv() refuses what it is offered, as the data path does
+ * while its queue is full, and how many times it has.  The row sets the
+ * first, and the callback, on the manager's receive thread, counts the
+ * second.
+ */
+static atomic_bool g_ionic_full;
+static atomic_int g_ionic_refusals;
+
+/* The data path's callback, with no room until g_ionic_full is cleared */
+static bool full_ionic_recv(void *opaque, uint32_t src_node, void *buf,
+                            size_t len)
+{
+    if (atomic_load(&g_ionic_full)) {
+        atomic_fetch_add(&g_ionic_refusals, 1);
+        return false;
+    }
+    return sender_ionic_recv(opaque, src_node, buf, len);
+}
+
+/* Wait up to 5 s for full_ionic_recv() to have refused n offers */
+static bool refusals_reach(int n)
+{
+    for (int i = 0; i < 500; i++) {
+        if (atomic_load(&g_ionic_refusals) >= n)
+            return true;
+        sleep_ms(10);
+    }
+    return false;
+}
+
+/*
+ * SENDER_FULL and SENDER_FULL_STOP.  The receive thread handles one message
+ * at a time, so while it is still offering the ionic message after the
+ * heartbeat was sent, it hasn't read the heartbeat.  In SENDER_FULL_STOP the
+ * callback stays registered, refusing, for the row's teardown, which has to
+ * stop the thread; the payload it gave up is freed, or leaked, which only
+ * the sanitizers and valgrind see.
+ */
+static const char *sender_full(RdmaBackendDev *dev, int w1, bool stop)
+{
+    const char *why = NULL;
+    uint8_t *buf;
+
+    if (!worker_settled(dev->backend_private, w1, 1))
+        return "worker 1's registration wasn't finished";
+    count_type(w1, TCP_MSG_HEARTBEAT_RESP);
+
+    atomic_store(&g_ionic_calls, 0);
+    atomic_store(&g_ionic_buf, NULL);
+    atomic_store(&g_ionic_refusals, 0);
+    atomic_store(&g_ionic_full, true);
+    /* As in sender_ionic() */
+    dev->backend_type = RDMA_BACKEND_TYPE_TCP;
+    tcp_backend_set_ionic_recv_cb(dev, full_ionic_recv, NULL);
+    if (!send_payload(w1, TCP_MSG_IONIC, 1)) {
+        why = "could not send the ionic message";
+    } else if (!refusals_reach(2)) {
+        why = "the refused message wasn't offered again";
+    } else if (stop) {
+        return NULL;
+    } else if (!send_heartbeat(w1, 1)) {
+        why = "could not send the heartbeat";
+    } else if (!refusals_reach(atomic_load(&g_ionic_refusals) + 2)) {
+        why = "the message wasn't offered again after the heartbeat";
+    } else if (count_type(w1, TCP_MSG_HEARTBEAT_RESP) != 0) {
+        why = "the heartbeat behind the refused message was answered";
+    }
+
+    atomic_store(&g_ionic_full, false);
+    if (!why && !wait_for_type(w1, TCP_MSG_HEARTBEAT_RESP, 2000))
+        why = "the heartbeat wasn't answered once the message was taken";
+    tcp_backend_set_ionic_recv_cb(dev, NULL, NULL);
+
+    buf = atomic_load(&g_ionic_buf);
+    if (!why)
+        why = sender_ionic_check(buf);
+    free(buf);
+    return why;
+}
+
+/*
  * Take node id's connection out of the table and retire it, as the health
  * check does with one that has hung up.
  */
@@ -5204,6 +5303,10 @@ static const char *sender_run(RdmaBackendDev *dev, int w1, int w2,
         return sender_ionic(dev, w1, true);
     case SENDER_NO_DP:
         return sender_ionic(dev, w1, false);
+    case SENDER_FULL:
+        return sender_full(dev, w1, false);
+    case SENDER_FULL_STOP:
+        return sender_full(dev, w1, true);
     default:
         return "unknown scenario";
     }

@@ -573,8 +573,9 @@ struct TcpBackendPrivate {
 
     /* Sink for TCP_MSG_IONIC, registered by the ionic data path.  Called on
      * a receive thread, so the callee must hand off to its own thread; it
-     * takes the payload with it, so a large one isn't copied.  Both are
-     * protected by lock. */
+     * takes the payload with it, so a large one isn't copied, or refuses it
+     * until it has room (see tcp_recv_ionic()).  Both are protected by
+     * lock. */
     tcp_ionic_recv_fn ionic_recv_fn TSA_GUARDED_BY(lock);
     void *ionic_recv_opaque TSA_GUARDED_BY(lock);
 

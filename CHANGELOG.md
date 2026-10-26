@@ -250,8 +250,9 @@
     statistics commands and the counts they report), `ernic-p4-driver`, and
     `ernic-mesh-stress` (a three-node mesh under traffic, hostile peers, the
     version gate, killed and restarted nodes, paused nodes and a peer that
-    stops reading; `--size N` varies the mesh). Documented in
-    `docs/testing.rst`.
+    stops reading; `--size N` varies the mesh), and `ernic-mesh-flow` (two
+    nodes writing to each other flat out, and a peer that floods a node).
+    Documented in `docs/testing.rst`.
   * `ernic-test-gsi-mesh` (`gsi-mesh`) joins two whole devices in one
     process over the real TCP mesh and checks GID resolution from both
     sides, including across a worker restart. `ERNIC_TEST_MESH_PORT` moves
@@ -442,6 +443,21 @@
   registered, from a thread of its own that merges the changes made while
   it sends. A worker logs a node's GIDs only when they change. The protocol
   is unchanged.
+* **TCP mesh: a node that falls behind slows its peers down.** A node queues
+  up to 64 MiB, or 4096 messages, of what its peers send for its main loop
+  to apply (see Fixed). When the queue is full, the node stops reading from
+  a peer until it has room, so TCP holds the peer back: the peer's send
+  queue for the connection fills, and then its guest's send queues wait, as
+  on a NIC out of credits. The protocol is unchanged.
+  * SENDs waiting for the guest to post a receive stay queued for up to 5
+    seconds. Once they fill the queue and keep another message out for half
+    a second, those still without a receive fail with RNR-retry-exceeded at
+    once, and the node logs how much they held, rather than leave the
+    peer's connection unread long enough for the peer to give up on it.
+  * With no QEMU connected, nothing empties the queue, so once the main loop
+    has gone 2 seconds without polling, a full queue drops what arrives, and
+    the next pass logs how many it dropped. Requests among them complete in
+    error after their 30-second timeout.
 * **libvfio-user 5b9c722 or later is required** (CI, the release build and
   the Nix flake now use it). Before it, a 64-bit BAR smaller than 4 GiB,
   as BAR0 and BAR2 are, couldn't be placed above 4 GiB and sized wrongly;
@@ -672,6 +688,12 @@
     doorbell could make an old QP read and write its rings, and a peer
     could RDMA WRITE through an old MR, in guest memory that had since been
     reused.
+* **TCP mesh: a peer could grow a node's memory without bound.** A node's
+  receive threads queued every message its peers sent for the main loop to
+  apply, however far behind it was, so a peer that sent faster than that, or
+  sent SENDs to a QP with no receive posted, which wait there, could grow
+  the node's memory until it ran out. The queue is now bounded (see
+  Changed).
 * **TCP mesh: data sent after its work request completed in error.** A
   flushed QP's queued requests, and a timed-out request, are taken back,
   including from a connection leaving the connection table, so a WRITE or
