@@ -348,7 +348,7 @@ static void tcp_sendq_close(TcpConnection *conn)
 
     conn->sendq_closed = true;
     while ((msg = g_queue_pop_head(&conn->sendq)) != NULL) {
-        g_free(msg);
+        free(msg);
     }
     conn->sendq_bytes = 0;
     qemu_cond_signal(&conn->sendq_cond);
@@ -396,7 +396,7 @@ static void *tcp_send_thread(void *opaque)
         if (!conn->sendq_closed) {
             conn->sendq_bytes -= msg->len;
         }
-        g_free(msg);
+        free(msg);
         if (ret < 0) {
             tcp_sendq_close(conn);
         }
@@ -426,14 +426,22 @@ static int tcp_sendq_start(TcpConnection *conn) TSA_REQUIRES(conn->sendq_lock)
 
 /*
  * A message to queue on conn, with len bytes of payload left for the caller
- * to fill in.
+ * to fill in, or NULL if out of memory.  len is at most TCP_MAX_PAYLOAD_LEN,
+ * so the size can't wrap.
+ *
+ * The guest chooses len, so running out of memory here mustn't abort the
+ * server, as g_malloc() would.  The message is from malloc() rather than
+ * g_try_malloc() so that a test can fail the allocation.
  */
 static TcpQueuedMsg *tcp_queued_msg_new(const TcpConnection *conn,
                                         TcpMsgType msg_type, uint32_t dst_node,
                                         size_t len)
 {
-    TcpQueuedMsg *msg = g_malloc(sizeof(*msg) + len);
+    TcpQueuedMsg *msg = malloc(sizeof(*msg) + len);
 
+    if (!msg) {
+        return NULL;
+    }
     msg->msg_type = msg_type;
     msg->seq = atomic_fetch_add_explicit(&conn->priv->next_seq, 1,
                                          memory_order_relaxed);
@@ -457,7 +465,8 @@ static TcpQueuedMsg *tcp_queued_msg_new(const TcpConnection *conn,
  *             TCP_SENDQ_REQUEST_BYTES, for the caller to try again later
  *   -ENOBUFS  a reply that would take it past TCP_SENDQ_REPLY_BYTES
  *   -EPIPE    the connection is retired, or a send on it has failed
- *   -ENOMEM   the send thread couldn't be started
+ *   -ENOMEM   the send thread couldn't be started, or there was no memory
+ *             for the message
  * An empty queue takes any one message.  A reply has more room than a
  * request: it answers a request the peer has already sent, and the peer
  * can't move on without it.
@@ -493,6 +502,10 @@ int tcp_conn_enqueue(TcpConnection *conn, const void *hdr, size_t hdr_len,
     }
 
     msg = tcp_queued_msg_new(conn, TCP_MSG_IONIC, dst_node, len);
+    if (!msg) {
+        qemu_mutex_unlock(&conn->sendq_lock);
+        return -ENOMEM;
+    }
     msg->tag = tag;
     msg->reply = reply;
     memcpy(msg->data, hdr, hdr_len);
@@ -535,7 +548,7 @@ static bool tcp_sendq_has_heartbeat(const TcpConnection *conn,
  * waiting is enough, and keeps a peer that sends heartbeats faster than it
  * reads the answers from growing the queue without limit; another is
  * dropped.  Returns 0, -EPIPE if the queue is closed, or -ENOMEM if the send
- * thread couldn't be started.
+ * thread couldn't be started or there was no memory for the message.
  */
 static int tcp_sendq_push_heartbeat(TcpConnection *conn, TcpMsgType msg_type,
                                     uint32_t dst_node)
@@ -546,9 +559,14 @@ static int tcp_sendq_push_heartbeat(TcpConnection *conn, TcpMsgType msg_type,
     qemu_mutex_lock(&conn->sendq_lock);
     ret = conn->sendq_closed ? -EPIPE : tcp_sendq_start(conn);
     if (ret == 0 && !tcp_sendq_has_heartbeat(conn, msg_type)) {
-        g_queue_push_head(&conn->sendq,
-                          tcp_queued_msg_new(conn, msg_type, dst_node, 0));
-        qemu_cond_signal(&conn->sendq_cond);
+        TcpQueuedMsg *msg = tcp_queued_msg_new(conn, msg_type, dst_node, 0);
+
+        if (msg) {
+            g_queue_push_head(&conn->sendq, msg);
+            qemu_cond_signal(&conn->sendq_cond);
+        } else {
+            ret = -ENOMEM;
+        }
     }
     qemu_mutex_unlock(&conn->sendq_lock);
     return ret;
@@ -571,7 +589,7 @@ void tcp_sendq_cancel(TcpConnection *conn, uint64_t tag, uint64_t mask)
             (msg->tag & mask) == (tag & mask)) {
             conn->sendq_bytes -= msg->len;
             g_queue_delete_link(&conn->sendq, link);
-            g_free(msg);
+            free(msg);
         }
         link = next;
     }
@@ -599,7 +617,8 @@ void tcp_sendq_cancel(TcpConnection *conn, uint64_t tag, uint64_t mask)
  * reports a TCP socket writable only once a good part of its buffer is free.
  *
  * Returns false if the connection can't be used any more: it is retired, or
- * the send failed, which shuts it down.
+ * the send failed, which shuts it down.  It also returns false if the
+ * heartbeat couldn't be queued for want of a send thread or memory.
  */
 bool tcp_send_heartbeat(TcpBackendPrivate *priv, TcpConnection *conn,
                         TcpMsgType msg_type, uint32_t dst_node)

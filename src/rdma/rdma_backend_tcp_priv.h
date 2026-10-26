@@ -601,6 +601,7 @@ struct TcpBackendPrivate {
 /*
  * A message waiting on a connection's send queue: a TCP_MSG_IONIC, or a
  * heartbeat or its answer, which has no payload (see tcp_send_heartbeat()).
+ * It is from malloc(), not g_malloc(): see tcp_queued_msg_new().
  */
 typedef struct {
     uint32_t msg_type; /* a TcpMsgType */

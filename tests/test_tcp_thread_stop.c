@@ -8085,7 +8085,37 @@ static int run_wl_case(const struct wl_case *c)
  * request was completed.  And a heartbeat is never skipped for want of the
  * lock, which a send thread under steady traffic almost always holds: it
  * goes ahead of the data on the queue, which holds one of each kind at most.
+ *
+ * The guest chooses how long a message is, so one there is no memory for
+ * fails on its own rather than aborting the server, and so does a heartbeat.
  */
+
+/*
+ * The test is linked with --wrap=malloc (tests/CMakeLists.txt), so the
+ * malloc() calls in its own objects, the backend's included, come here;
+ * those inside libc and GLib don't.  While g_fail_malloc is set on a thread,
+ * that thread's next call fails and clears it.  It's per thread so that the
+ * backend's other threads never take the failure.
+ */
+static _Thread_local bool g_fail_malloc;
+
+/* The names are --wrap's, so they are reserved identifiers by necessity. */
+ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_OFF
+/* NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c) */
+void *__real_malloc(size_t size);
+void *__wrap_malloc(size_t size);
+
+void *__wrap_malloc(size_t size)
+{
+    if (g_fail_malloc) {
+        g_fail_malloc = false;
+        errno = ENOMEM;
+        return NULL;
+    }
+    return __real_malloc(size);
+}
+/* NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c) */
+ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_ON
 
 enum st_scenario {
     ST_TIMEOUT,    /* a broadcast, with a second asked for meanwhile */
@@ -8097,6 +8127,7 @@ enum st_scenario {
     ST_STEADY,     /* a node that reads, under steady traffic */
     ST_COALESCE,   /* heartbeats queue behind a busy connection */
     ST_UNPUBLISH,  /* a connection with a queue leaves the table */
+    ST_NO_MEMORY,  /* no memory for a message or a heartbeat */
 };
 
 struct st_case {
@@ -8161,6 +8192,12 @@ static const struct st_case st_cases[] = {
      "connection is retired, so a cancel that no longer finds the connection "
      "misses nothing; the next send to the node fails",
      ST_UNPUBLISH},
+    {"negative",
+     "while the send thread is blocked on a node, there is no memory to queue "
+     "the data path's message, then a heartbeat",
+     "the message is refused with -ENOMEM and the heartbeat reported unsent, "
+     "neither is queued, and the next heartbeat is",
+     ST_NO_MEMORY},
 };
 
 /* A worker's send timeout in these rows; the manager's is half */
@@ -8628,6 +8665,63 @@ static const char *st_unpublish(struct mgr_fixture *fx)
     return why;
 }
 
+/*
+ * ST_NO_MEMORY.  The send thread is started, and blocked, first: starting it
+ * allocates on this thread (qemu_thread_create() above), which would take
+ * the failure meant for the message.
+ */
+static const char *st_no_memory(struct mgr_fixture *fx)
+{
+    TcpConnection *conn = fx->old[0];
+    guint queued_before, queued;
+    size_t bytes_before, bytes;
+    bool sent, consumed;
+    int rc;
+
+    if (st_send(fx->priv, 0, false) != 0)
+        return "the first message wasn't queued";
+    if (!held_elsewhere(&conn->lock))
+        return "the send thread never blocked on the node";
+
+    qemu_mutex_lock(&conn->sendq_lock);
+    queued_before = conn->sendq.length;
+    bytes_before = conn->sendq_bytes;
+    qemu_mutex_unlock(&conn->sendq_lock);
+
+    g_fail_malloc = true;
+    rc = st_send(fx->priv, 100, false);
+    consumed = !g_fail_malloc;
+    g_fail_malloc = false;
+    if (!consumed)
+        return "the message wasn't allocated with malloc()";
+    if (rc != -ENOMEM)
+        return "the message there was no memory for wasn't refused with "
+               "-ENOMEM";
+
+    qemu_mutex_lock(&conn->sendq_lock);
+    queued = conn->sendq.length;
+    bytes = conn->sendq_bytes;
+    qemu_mutex_unlock(&conn->sendq_lock);
+    if (queued != queued_before || bytes != bytes_before)
+        return "the refused message was queued or counted";
+
+    /* The send thread holds the lock, so the heartbeat goes on the queue */
+    g_fail_malloc = true;
+    sent = tcp_send_heartbeat(fx->priv, conn, TCP_MSG_HEARTBEAT, 1);
+    consumed = !g_fail_malloc;
+    g_fail_malloc = false;
+    if (!consumed)
+        return "the heartbeat wasn't allocated with malloc()";
+    if (sent || st_queued(conn, TCP_MSG_HEARTBEAT, NULL) != 0)
+        return "the heartbeat there was no memory for was reported sent, or "
+               "queued";
+
+    if (!tcp_send_heartbeat(fx->priv, conn, TCP_MSG_HEARTBEAT, 1) ||
+        st_queued(conn, TCP_MSG_HEARTBEAT, NULL) != 1)
+        return "the next heartbeat wasn't queued";
+    return tcp_conn_dead(conn) ? "the connection was shut down" : NULL;
+}
+
 static int run_st_case(const struct st_case *c)
 {
     struct mgr_fixture fx;
@@ -8642,8 +8736,11 @@ static int run_st_case(const struct st_case *c)
     g_current_row = c->description;
     alarm(ROW_TIMEOUT_S);
     why = mgr_setup(&fx, nodes, c->scenario == ST_STEADY ? 1 : LONG_INTERVAL_S);
-    /* ST_QUEUE_FULL keeps the default, so the queue isn't closed under it */
-    if (!why && c->scenario != ST_QUEUE_FULL)
+    /*
+     * ST_QUEUE_FULL and ST_NO_MEMORY keep the default, so the queue isn't
+     * closed under them
+     */
+    if (!why && c->scenario != ST_QUEUE_FULL && c->scenario != ST_NO_MEMORY)
         atomic_store(&fx.priv->send_timeout_ms, ST_TIMEOUT_MS);
     if (!why && c->scenario != ST_STEADY && !fill_conn(fx.priv, stuck))
         why = "could not fill the node's socket";
@@ -8674,8 +8771,11 @@ static int run_st_case(const struct st_case *c)
             why = st_coalesce(&fx);
             break;
         case ST_UNPUBLISH:
-        default:
             why = st_unpublish(&fx);
+            break;
+        case ST_NO_MEMORY:
+        default:
+            why = st_no_memory(&fx);
             break;
         }
     }
