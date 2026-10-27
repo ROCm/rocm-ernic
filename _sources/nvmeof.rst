@@ -185,9 +185,9 @@ How It Works
 Unlike ``loopback`` and ``tcp``, this is not a
 transport for guest RDMA traffic -- it is a *peer* that
 speaks NVMe-oF back at the guest. It therefore hooks into
-:file:`src/ionic/ionic_datapath.c`, the data path that
-actually serves the guest ``ionic_rdma`` driver, rather than
-into the QEMU-derived backend vtable.
+the data path that actually serves the guest ``ionic_rdma``
+driver (:file:`src/ionic/ionic_datapath_nvmeof.c`), rather
+than into the QEMU-derived backend vtable.
 
 Connection establishment
 ^^^^^^^^^^^^^^^^^^^^^^^^

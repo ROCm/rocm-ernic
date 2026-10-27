@@ -534,9 +534,9 @@ client, and is described under <a class="reference internal" href="#testing">Tes
 <h2>How It Works<a class="headerlink" href="#how-it-works" title="Link to this heading">#</a></h2>
 <p>Like <code class="docutils literal notranslate"><span class="pre">nvmeof</span></code>, this is not a transport for guest RDMA
 traffic – it is a <em>peer</em> that speaks S3 back at the guest.
-It hooks into <code class="file docutils literal notranslate"><span class="pre">src/ionic/ionic_datapath.c</span></code>, the data
-path that serves the guest <code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code> driver, rather than
-into the QEMU-derived backend vtable.</p>
+It hooks into the data path that serves the guest
+<code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code> driver (<code class="file docutils literal notranslate"><span class="pre">src/ionic/ionic_datapath_s3.c</span></code>),
+rather than into the QEMU-derived backend vtable.</p>
 <section id="the-control-plane-in-band">
 <h3>The control plane, in band<a class="headerlink" href="#the-control-plane-in-band" title="Link to this heading">#</a></h3>
 <p>S3 needs TCP, and the guest’s TCP goes out of the emulated
