@@ -23,6 +23,8 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "ernic_limits.h"
+#include "ernic_mesh.h"
+#include "ernic_stats.h"
 #include "ionic_datapath.h"
 #include "net/net_headers.h"
 #include "qemu/thread.h"
@@ -58,9 +60,9 @@
  * one message.  Four of the largest, so a few can come in while a pass
  * applies a few more.
  */
-#define DP_RX_MAX_BYTES ((size_t)4 * IONIC_MESH_MAX_MSG)
+#define DP_RX_MAX_BYTES ((size_t)4 * ERNIC_MESH_MAX_MSG)
 #define DP_RX_MAX_MSGS  4096u
-_Static_assert(DP_RX_MAX_BYTES >= IONIC_MESH_MAX_MSG,
+_Static_assert(DP_RX_MAX_BYTES >= ERNIC_MESH_MAX_MSG,
                "the inbound queue must hold the largest message");
 
 /*
@@ -331,8 +333,8 @@ struct dp_pending {
  * A request whose reply is the largest a message can be still fits a budget
  * of its own, so the budget never holds up a send queue for good.
  */
-_Static_assert(IONIC_MESH_REPLY_BUDGET >= IONIC_MESH_MAX_MSG,
-               "IONIC_MESH_REPLY_BUDGET must hold the largest reply");
+_Static_assert(ERNIC_MESH_REPLY_BUDGET >= ERNIC_MESH_MAX_MSG,
+               "ERNIC_MESH_REPLY_BUDGET must hold the largest reply");
 
 /* A mesh message parked by the receive thread; private to the .c. */
 struct dp_inmsg;

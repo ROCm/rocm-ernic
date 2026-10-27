@@ -44,9 +44,9 @@
 #include <time.h>
 
 #include "byteorder.h"
+#include "ernic_mesh.h"
 #include "ionic_harness.h"
 #include "parse_int.h"
-#include "rocm_ernic_compat.h"
 
 /* The mesh listens on loopback. Overridable so a CI runner that already has
  * something here can move it rather than fail. */
@@ -161,7 +161,7 @@ static uint32_t gm_wait_resolve(struct ih *a, struct ih *b, struct ih *h,
                                 const uint8_t gid[16])
 {
     for (unsigned i = 0; i < 250; i++) {
-        uint32_t node = ionic_mesh_node_from_gid(h->dev->pvrdma_handle, gid);
+        uint32_t node = ernic_mesh_node_from_gid(h->dev->pvrdma_handle, gid);
 
         if (node != UINT32_MAX)
             return node;
@@ -210,8 +210,8 @@ int main(void)
     uint32_t node_a = UINT32_MAX, node_b = UINT32_MAX;
 
     for (unsigned i = 0; i < 250; i++) {
-        node_a = ionic_mesh_local_node(a.dev->pvrdma_handle);
-        node_b = ionic_mesh_local_node(b.dev->pvrdma_handle);
+        node_a = ernic_mesh_local_node(a.dev->pvrdma_handle);
+        node_b = ernic_mesh_local_node(b.dev->pvrdma_handle);
         if (node_a != UINT32_MAX && node_b != UINT32_MAX && node_b != 0)
             break;
         gm_pump(&a, &b, 1);
@@ -228,9 +228,9 @@ int main(void)
 
     gm_gid_for_ip(gid_a, GM_IP_A);
     gm_gid_for_ip(gid_b, GM_IP_B);
-    gm_check(ionic_mesh_claim_gid(a.dev->pvrdma_handle, gid_a, true) == 0,
+    gm_check(ernic_mesh_claim_gid(a.dev->pvrdma_handle, gid_a, true) == 0,
              "the manager could not claim its GID");
-    gm_check(ionic_mesh_claim_gid(b.dev->pvrdma_handle, gid_b, true) == 0,
+    gm_check(ernic_mesh_claim_gid(b.dev->pvrdma_handle, gid_b, true) == 0,
              "the worker could not claim its GID");
 
     /* 3. Each resolves the other's GID, and to the other's node. */
@@ -244,7 +244,7 @@ int main(void)
              "the worker resolved the manager's GID to node %u, want %u",
              seen_a, node_a);
     /* A node must not claim its peer's address as its own. */
-    gm_check(ionic_mesh_node_from_gid(a.dev->pvrdma_handle, gid_a) == node_a,
+    gm_check(ernic_mesh_node_from_gid(a.dev->pvrdma_handle, gid_a) == node_a,
              "the manager does not own the GID it claimed");
 
     /*
@@ -387,7 +387,7 @@ int main(void)
     uint32_t node_b2 = UINT32_MAX;
 
     for (unsigned i = 0; i < 400; i++) {
-        node_b2 = ionic_mesh_local_node(b2.dev->pvrdma_handle);
+        node_b2 = ernic_mesh_local_node(b2.dev->pvrdma_handle);
         if (node_b2 != UINT32_MAX && node_b2 != 0)
             break;
         gm_pump(&a, &b2, 1);
@@ -398,7 +398,7 @@ int main(void)
              "the restarted worker reused node %u, so this proves nothing",
              node_b2);
 
-    gm_check(ionic_mesh_claim_gid(b2.dev->pvrdma_handle, gid_b, true) == 0,
+    gm_check(ernic_mesh_claim_gid(b2.dev->pvrdma_handle, gid_b, true) == 0,
              "the restarted worker could not claim its GID");
 
     uint32_t seen_b2 = gm_wait_resolve(&a, &b2, &a, gid_b);

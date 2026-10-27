@@ -2,12 +2,16 @@
  * Compatibility Bridge Implementation
  *
  * This file implements the wrapper functions that isolate QEMU code from
- * our libvfio-user server. Only this file includes QEMU headers.
+ * our libvfio-user server: rocm_ernic_compat.h, ernic_rm.h, ernic_mesh.h and
+ * ernic_stats.h. Only this file includes QEMU headers.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -15,6 +19,9 @@
 #include <glib.h>
 #include <infiniband/verbs.h>
 #include "ernic_limits.h"
+#include "ernic_mesh.h"
+#include "ernic_rm.h"
+#include "ernic_stats.h"
 #include "rocm_ernic_compat.h"
 /*
  * struct rocm_ernic_dev.  IWYU credits uses of it to the repeated
@@ -34,7 +41,7 @@
 #include "vmw_pvrdma-abi.h"
 
 /*
- * Device Management
+ * Device Management (rocm_ernic_compat.h)
  */
 
 pvrdma_handle_t pvrdma_device_create(const rocm_ernic_dev_t *dev,
@@ -259,6 +266,10 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
 
     return 0;
 }
+
+/*
+ * Counters (ernic_stats.h)
+ */
 
 void pvrdma_bar0_mmio_count(pvrdma_handle_t handle, bool is_write)
 {
@@ -489,11 +500,7 @@ int pvrdma_get_qp_counters(pvrdma_handle_t handle, uint32_t qp_id,
 }
 
 /*
- * Command Execution - pvrdma_exec_cmd is implemented in pvrdma_cmd.c
- */
-
-/*
- * Statistics
+ * The stats file (ernic_stats.h)
  */
 
 void pvrdma_set_stats_file(pvrdma_handle_t handle, const char *stats_file)
@@ -603,11 +610,11 @@ void pvrdma_write_stats(pvrdma_handle_t handle)
 }
 
 /* -------------------------------------------------------------------------
- * Thin wrappers for ionic_adminq.c (cannot include rdma_rm.h directly).
+ * The resource manager, for the admin queue (ernic_rm.h)
  * -------------------------------------------------------------------------
  */
 
-int ionic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe, uint32_t *cq_handle)
+int ernic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe, uint32_t *cq_handle)
 {
     PVRDMADev *pvrdma = handle;
     if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
@@ -616,7 +623,7 @@ int ionic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe, uint32_t *cq_handle)
                             cq_handle);
 }
 
-void ionic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
+void ernic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
 {
     PVRDMADev *pvrdma = handle;
     if (!pvrdma)
@@ -624,7 +631,7 @@ void ionic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
     rdma_rm_dealloc_cq(&pvrdma->rdma_dev_res, cq_handle);
 }
 
-int ionic_rm_alloc_srq(pvrdma_handle_t handle, uint32_t pd_handle,
+int ernic_rm_alloc_srq(pvrdma_handle_t handle, uint32_t pd_handle,
                        uint32_t max_wr, uint32_t max_sge, uint32_t srq_limit,
                        uint32_t *srq_handle)
 {
@@ -635,7 +642,7 @@ int ionic_rm_alloc_srq(pvrdma_handle_t handle, uint32_t pd_handle,
                              srq_limit, srq_handle);
 }
 
-void ionic_rm_dealloc_srq(pvrdma_handle_t handle, uint32_t srq_handle)
+void ernic_rm_dealloc_srq(pvrdma_handle_t handle, uint32_t srq_handle)
 {
     PVRDMADev *pvrdma = handle;
     if (!pvrdma)
@@ -643,7 +650,7 @@ void ionic_rm_dealloc_srq(pvrdma_handle_t handle, uint32_t srq_handle)
     rdma_rm_dealloc_srq(&pvrdma->rdma_dev_res, srq_handle);
 }
 
-int ionic_rm_modify_srq(pvrdma_handle_t handle, uint32_t srq_handle,
+int ernic_rm_modify_srq(pvrdma_handle_t handle, uint32_t srq_handle,
                         uint32_t srq_limit)
 {
     PVRDMADev *pvrdma = handle;
@@ -668,7 +675,7 @@ int ionic_rm_modify_srq(pvrdma_handle_t handle, uint32_t srq_handle,
                               IBV_SRQ_LIMIT);
 }
 
-int ionic_rm_query_srq(pvrdma_handle_t handle, uint32_t srq_handle,
+int ernic_rm_query_srq(pvrdma_handle_t handle, uint32_t srq_handle,
                        uint32_t *max_wr, uint32_t *max_sge, uint32_t *srq_limit)
 {
     PVRDMADev *pvrdma = handle;
@@ -691,7 +698,7 @@ int ionic_rm_query_srq(pvrdma_handle_t handle, uint32_t srq_handle,
     return 0;
 }
 
-int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle)
+int ernic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle)
 {
     PVRDMADev *pvrdma = handle;
     if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
@@ -700,7 +707,7 @@ int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle)
                             pd_handle);
 }
 
-void ionic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle)
+void ernic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle)
 {
     PVRDMADev *pvrdma = handle;
     if (!pvrdma)
@@ -708,7 +715,7 @@ void ionic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle)
     rdma_rm_dealloc_pd(&pvrdma->rdma_dev_res, pd_handle);
 }
 
-int ionic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
+int ernic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
                       uint8_t qp_type, uint32_t max_send_wr,
                       uint32_t max_recv_wr, uint32_t send_cq_handle,
                       uint32_t recv_cq_handle, uint32_t *qpn)
@@ -722,7 +729,7 @@ int ionic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
                             recv_cq_handle, qpn, 0, 0, &out_qp);
 }
 
-void ionic_rm_dealloc_qp(pvrdma_handle_t handle, uint32_t qpn)
+void ernic_rm_dealloc_qp(pvrdma_handle_t handle, uint32_t qpn)
 {
     PVRDMADev *pvrdma = handle;
     if (!pvrdma)
@@ -730,7 +737,7 @@ void ionic_rm_dealloc_qp(pvrdma_handle_t handle, uint32_t qpn)
     rdma_rm_dealloc_qp(&pvrdma->rdma_dev_res, qpn);
 }
 
-int ionic_rm_alloc_mr(pvrdma_handle_t handle, uint32_t pd_handle,
+int ernic_rm_alloc_mr(pvrdma_handle_t handle, uint32_t pd_handle,
                       uint32_t access_flags, uint32_t *mr_handle)
 {
     PVRDMADev *pvrdma = handle;
@@ -741,7 +748,7 @@ int ionic_rm_alloc_mr(pvrdma_handle_t handle, uint32_t pd_handle,
                             mr_handle, &lkey, &rkey);
 }
 
-void ionic_rm_dealloc_mr(pvrdma_handle_t handle, uint32_t mr_handle)
+void ernic_rm_dealloc_mr(pvrdma_handle_t handle, uint32_t mr_handle)
 {
     PVRDMADev *pvrdma = handle;
     if (!pvrdma)
@@ -749,7 +756,7 @@ void ionic_rm_dealloc_mr(pvrdma_handle_t handle, uint32_t mr_handle)
     rdma_rm_dealloc_mr(&pvrdma->rdma_dev_res, mr_handle);
 }
 
-int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
+int ernic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
                        uint8_t type_state, uint32_t sq_psn, uint32_t rq_psn,
                        uint32_t qkey_dest_qpn, const uint8_t *dest_gid_16bytes)
 {
@@ -779,7 +786,7 @@ int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
                              &dgid, dqpn, to_state, qkey, rq_psn, sq_psn);
 }
 
-int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
+int ernic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
                       uint8_t *path_mtu, uint32_t *dest_qpn,
                       uint32_t *access_flags, uint32_t *rq_psn,
                       uint32_t *sq_psn)
@@ -815,7 +822,12 @@ int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
     return 0;
 }
 
-uint32_t ionic_mesh_local_node(pvrdma_handle_t handle)
+/* -------------------------------------------------------------------------
+ * The TCP mesh, for the data path (ernic_mesh.h)
+ * -------------------------------------------------------------------------
+ */
+
+uint32_t ernic_mesh_local_node(pvrdma_handle_t handle)
 {
     PVRDMADev *pvrdma = handle;
 
@@ -824,7 +836,7 @@ uint32_t ionic_mesh_local_node(pvrdma_handle_t handle)
     return tcp_backend_local_node_id(&pvrdma->backend_dev);
 }
 
-uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle,
+uint32_t ernic_mesh_node_from_gid(pvrdma_handle_t handle,
                                   const uint8_t *dest_gid_16bytes)
 {
     PVRDMADev *pvrdma = handle;
@@ -840,7 +852,7 @@ uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle,
     return tcp_backend_node_from_gid(&pvrdma->backend_dev, &dgid);
 }
 
-int ionic_mesh_claim_gid(pvrdma_handle_t handle, const uint8_t *gid_16bytes,
+int ernic_mesh_claim_gid(pvrdma_handle_t handle, const uint8_t *gid_16bytes,
                          bool add)
 {
     PVRDMADev *pvrdma = handle;
@@ -853,7 +865,7 @@ int ionic_mesh_claim_gid(pvrdma_handle_t handle, const uint8_t *gid_16bytes,
     return tcp_backend_claim_gid(&pvrdma->backend_dev, &gid, add);
 }
 
-int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
+int ernic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
                      size_t hdr_len, const void *body, size_t body_len,
                      uint64_t tag, bool reply)
 {
@@ -865,7 +877,7 @@ int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
                                     hdr_len, body, body_len, tag, reply);
 }
 
-bool ionic_mesh_has_room(pvrdma_handle_t handle, uint32_t dst_node, size_t len)
+bool ernic_mesh_has_room(pvrdma_handle_t handle, uint32_t dst_node, size_t len)
 {
     PVRDMADev *pvrdma = handle;
 
@@ -874,7 +886,7 @@ bool ionic_mesh_has_room(pvrdma_handle_t handle, uint32_t dst_node, size_t len)
     return tcp_backend_ionic_has_room(&pvrdma->backend_dev, dst_node, len);
 }
 
-void ionic_mesh_cancel(pvrdma_handle_t handle, uint64_t tag, uint64_t mask)
+void ernic_mesh_cancel(pvrdma_handle_t handle, uint64_t tag, uint64_t mask)
 {
     PVRDMADev *pvrdma = handle;
 
@@ -883,7 +895,7 @@ void ionic_mesh_cancel(pvrdma_handle_t handle, uint64_t tag, uint64_t mask)
     tcp_backend_ionic_cancel(&pvrdma->backend_dev, tag, mask);
 }
 
-void ionic_mesh_set_recv_cb(pvrdma_handle_t handle, ionic_mesh_recv_fn fn,
+void ernic_mesh_set_recv_cb(pvrdma_handle_t handle, ernic_mesh_recv_fn fn,
                             void *opaque)
 {
     PVRDMADev *pvrdma = handle;

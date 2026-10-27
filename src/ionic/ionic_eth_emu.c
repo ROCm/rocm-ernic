@@ -42,6 +42,7 @@
 #include "byteorder.h"
 #include "ernic_dma.h"
 #include "ernic_limits.h"
+#include "ernic_stats.h"
 #include "ionic_eth_emu.h"
 #include "ionic_bar.h"
 #include "ionic_eth_emu_priv.h"
@@ -55,7 +56,6 @@
 #include "ionic_fault.h"
 #include "qemu/thread.h"
 #include "rocm-ernic-warnings.h"
-#include "rocm_ernic_compat.h"
 
 /* The data path refuses a WQE stride above the max_stride advertised here,
  * and sizes its WQE buffers for it. */

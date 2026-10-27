@@ -33,6 +33,8 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "ernic_dma.h"
+#include "ernic_rm.h"
+#include "ernic_stats.h"
 #include "ionic/ionic_adminq_priv.h"
 #include "ionic/ionic_datapath.h"
 #include "rocm_ernic_compat.h"
@@ -139,7 +141,7 @@ static int g_query_rc;
 /* The fake keeps the real function's signature, though it never
  * writes the outputs */
 /* NOLINTBEGIN(readability-non-const-parameter) */
-int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
+int ernic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
                       uint8_t *path_mtu, uint32_t *dest_qpn,
                       uint32_t *access_flags, uint32_t *rq_psn,
                       uint32_t *sq_psn)
@@ -156,7 +158,7 @@ int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
 }
 /* NOLINTEND(readability-non-const-parameter) */
 
-int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
+int ernic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
                        uint8_t type_state, uint32_t sq_psn, uint32_t rq_psn,
                        uint32_t qkey_dest_qpn, const uint8_t *dest_gid_16bytes)
 {
@@ -171,13 +173,13 @@ int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
     return 0;
 }
 
-int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle)
+int ernic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle)
 {
     (void)handle;
     *pd_handle = 1;
     return 0;
 }
-void ionic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle)
+void ernic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle)
 {
     (void)handle;
     (void)pd_handle;
@@ -186,7 +188,7 @@ void ionic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle)
 static unsigned g_alloc_cq_calls;
 static unsigned g_alloc_mr_calls;
 
-int ionic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe, uint32_t *cq_handle)
+int ernic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe, uint32_t *cq_handle)
 {
     (void)handle;
     (void)cqe;
@@ -194,7 +196,7 @@ int ionic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe, uint32_t *cq_handle)
     *cq_handle = 1;
     return 0;
 }
-void ionic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
+void ernic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
 {
     (void)handle;
     (void)cq_handle;
@@ -203,7 +205,7 @@ void ionic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
 static unsigned g_alloc_qp_calls;
 static uint8_t g_alloc_qp_type;
 
-int ionic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
+int ernic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
                       uint8_t qp_type, uint32_t max_send_wr,
                       uint32_t max_recv_wr, uint32_t send_cq_handle,
                       uint32_t recv_cq_handle, uint32_t *qpn)
@@ -219,12 +221,12 @@ int ionic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
     *qpn = QP_QPN;
     return 0;
 }
-void ionic_rm_dealloc_qp(pvrdma_handle_t handle, uint32_t qpn)
+void ernic_rm_dealloc_qp(pvrdma_handle_t handle, uint32_t qpn)
 {
     (void)handle;
     (void)qpn;
 }
-int ionic_rm_alloc_mr(pvrdma_handle_t handle, uint32_t pd_handle,
+int ernic_rm_alloc_mr(pvrdma_handle_t handle, uint32_t pd_handle,
                       uint32_t access_flags, uint32_t *mr_handle)
 {
     (void)handle;
@@ -234,7 +236,7 @@ int ionic_rm_alloc_mr(pvrdma_handle_t handle, uint32_t pd_handle,
     *mr_handle = 1;
     return 0;
 }
-void ionic_rm_dealloc_mr(pvrdma_handle_t handle, uint32_t mr_handle)
+void ernic_rm_dealloc_mr(pvrdma_handle_t handle, uint32_t mr_handle)
 {
     (void)handle;
     (void)mr_handle;
@@ -338,7 +340,7 @@ void pvrdma_qp_stats_forget(pvrdma_handle_t handle, uint32_t qp_id)
 /* The fake keeps the real function's signature, though it never
  * writes the outputs */
 /* NOLINTBEGIN(readability-non-const-parameter) */
-int ionic_rm_alloc_srq(pvrdma_handle_t handle, uint32_t pd_handle,
+int ernic_rm_alloc_srq(pvrdma_handle_t handle, uint32_t pd_handle,
                        uint32_t max_wr, uint32_t max_sge, uint32_t srq_limit,
                        uint32_t *srq_handle)
 {
@@ -351,12 +353,12 @@ int ionic_rm_alloc_srq(pvrdma_handle_t handle, uint32_t pd_handle,
     return -1;
 }
 /* NOLINTEND(readability-non-const-parameter) */
-void ionic_rm_dealloc_srq(pvrdma_handle_t handle, uint32_t srq_handle)
+void ernic_rm_dealloc_srq(pvrdma_handle_t handle, uint32_t srq_handle)
 {
     (void)handle;
     (void)srq_handle;
 }
-int ionic_rm_modify_srq(pvrdma_handle_t handle, uint32_t srq_handle,
+int ernic_rm_modify_srq(pvrdma_handle_t handle, uint32_t srq_handle,
                         uint32_t srq_limit)
 {
     (void)handle;
@@ -367,7 +369,7 @@ int ionic_rm_modify_srq(pvrdma_handle_t handle, uint32_t srq_handle,
 /* The fake keeps the real function's signature, though it never
  * writes the outputs */
 /* NOLINTBEGIN(readability-non-const-parameter) */
-int ionic_rm_query_srq(pvrdma_handle_t handle, uint32_t srq_handle,
+int ernic_rm_query_srq(pvrdma_handle_t handle, uint32_t srq_handle,
                        uint32_t *max_wr, uint32_t *max_sge, uint32_t *srq_limit)
 {
     (void)handle;

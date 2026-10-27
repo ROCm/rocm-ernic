@@ -21,6 +21,7 @@
 #include <sys/types.h>
 
 #include "byteorder.h"
+#include "ernic_stats.h"
 #include "fake_vfu.h"
 #include "ionic/ionic_device.h"
 #include "ionic/ionic_eth_emu.h"

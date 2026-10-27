@@ -17,6 +17,21 @@ Compatibility Bridge
 
 .. doxygenfile:: rocm_ernic_compat.h
 
+Resource Manager
+^^^^^^^^^^^^^^^^
+
+.. doxygenfile:: ernic_rm.h
+
+Mesh
+^^^^
+
+.. doxygenfile:: ernic_mesh.h
+
+Statistics
+^^^^^^^^^^
+
+.. doxygenfile:: ernic_stats.h
+
 ionic Emulation
 ---------------
 

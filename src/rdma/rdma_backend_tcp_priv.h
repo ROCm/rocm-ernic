@@ -28,10 +28,10 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 
+#include "ernic_mesh.h"
 #include "qemu/thread.h"
 #include "rdma_backend_defs.h"
 #include "rdma_backend.h"
-#include "rocm_ernic_compat.h"
 #include "rocm-ernic-warnings.h"
 
 /*
@@ -128,19 +128,19 @@ _Static_assert(TCP_SENDQ_REPLY_BYTES >= TCP_MAX_PAYLOAD_LEN,
                "a reply's queue limit must hold the largest message");
 
 /* ionic sizes its own wire payload against this; keep the two in step. */
-_Static_assert(IONIC_MESH_MAX_MSG == TCP_MAX_PAYLOAD_LEN,
-               "IONIC_MESH_MAX_MSG must match TCP_MAX_PAYLOAD_LEN");
+_Static_assert(ERNIC_MESH_MAX_MSG == TCP_MAX_PAYLOAD_LEN,
+               "ERNIC_MESH_MAX_MSG must match TCP_MAX_PAYLOAD_LEN");
 /*
- * The data path asks a peer for no more than IONIC_MESH_REPLY_BUDGET of
+ * The data path asks a peer for no more than ERNIC_MESH_REPLY_BUDGET of
  * replies at once.  The peer's requests on the connection come to at most
  * TCP_SENDQ_REQUEST_BYTES, so the budget fits beside them under
  * TCP_SENDQ_REPLY_BYTES, and the replies the data path is still waiting for
  * fit the queue (see remote_post() in ionic_datapath.c for when they share
  * it with others).
  */
-_Static_assert(IONIC_MESH_REPLY_BUDGET <=
+_Static_assert(ERNIC_MESH_REPLY_BUDGET <=
                    TCP_SENDQ_REPLY_BYTES - TCP_SENDQ_REQUEST_BYTES,
-               "IONIC_MESH_REPLY_BUDGET must fit beside a full request queue");
+               "ERNIC_MESH_REPLY_BUDGET must fit beside a full request queue");
 
 typedef enum {
     TCP_MSG_HANDSHAKE = 1,

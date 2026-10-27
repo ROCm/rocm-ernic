@@ -47,6 +47,8 @@
 #include "ernic_dma.h"
 #include "ernic_ib.h"
 #include "ernic_limits.h"
+#include "ernic_mesh.h"
+#include "ernic_stats.h"
 #include "ernic_time.h"
 #include "ionic_datapath.h"
 #include "ionic_datapath_fw.h"
@@ -55,7 +57,6 @@
 #include "net/net_headers.h"
 #include "qemu/thread.h"
 #include "rocm-ernic-warnings.h"
-#include "rocm_ernic_compat.h"
 
 /*
  * The per-QP wqes_by_opcode histogram is indexed by PVRDMA_WR_*, whose
@@ -103,12 +104,12 @@ _Static_assert((1u << IONIC_CQ_MIN_STRIDE_LOG2) == CQE_SIZE,
  * below that turns into FAIL rows rather than slow ones.
  */
 #define IONIC_WIRE_MAX_PAYLOAD \
-    ((uint32_t)(IONIC_MESH_MAX_MSG - IONIC_WIRE_HDR_LEN))
+    ((uint32_t)(ERNIC_MESH_MAX_MSG - IONIC_WIRE_HDR_LEN))
 
 /*
  * A mesh message parked by the receive thread for the vfu thread to apply.
  * buf is the mesh's own buffer, taken over rather than copied: a message can
- * be up to IONIC_MESH_MAX_MSG bytes.  Free with dp_inmsg_free().
+ * be up to ERNIC_MESH_MAX_MSG bytes.  Free with dp_inmsg_free().
  */
 struct dp_inmsg {
     struct dp_inmsg *next;
@@ -357,14 +358,14 @@ void ionic_datapath_set_pvrdma(struct ionic_datapath *dp,
     /* Fixed once the backend is realized: a manager is node 0 from the
      * start, and a worker's realize waits for its id, which registering
      * again never changes. */
-    dp->local_node = ionic_mesh_local_node(dp->pvrdma_handle);
+    dp->local_node = ernic_mesh_local_node(dp->pvrdma_handle);
     if (dp->local_node == UINT32_MAX) {
         vfu_log(dp->vfu_ctx, LOG_INFO,
                 "ionic_datapath: no mesh backend, remote QPs unreachable");
         return;
     }
 
-    ionic_mesh_set_recv_cb(dp->pvrdma_handle, dp_mesh_recv, dp);
+    ernic_mesh_set_recv_cb(dp->pvrdma_handle, dp_mesh_recv, dp);
     vfu_log(dp->vfu_ctx, LOG_INFO, "ionic_datapath: mesh node %u",
             dp->local_node);
 }
@@ -386,7 +387,7 @@ void ionic_datapath_destroy(struct ionic_datapath *dp)
     /* Waits out a receive thread already in dp_mesh_recv(), so nothing can
      * reach dp once it has returned. */
     if (dp->pvrdma_handle)
-        ionic_mesh_set_recv_cb(dp->pvrdma_handle, NULL, NULL);
+        ernic_mesh_set_recv_cb(dp->pvrdma_handle, NULL, NULL);
 
     ionic_dp_nvmeof_detach(dp);
     ionic_dp_s3_detach(dp);
@@ -619,7 +620,7 @@ static uint64_t dp_mesh_tag(uint32_t mesh_id, uint32_t req_id)
 static void dp_mesh_cancel_qp(const struct ionic_datapath *dp,
                               const struct ionic_qp_ring *q)
 {
-    ionic_mesh_cancel(dp->pvrdma_handle, dp_mesh_tag(q->mesh_id, 0),
+    ernic_mesh_cancel(dp->pvrdma_handle, dp_mesh_tag(q->mesh_id, 0),
                       UINT64_C(0xffffffff00000000));
 }
 
@@ -627,7 +628,7 @@ static void dp_mesh_cancel_qp(const struct ionic_datapath *dp,
 static void dp_mesh_cancel_request(const struct ionic_datapath *dp,
                                    const struct dp_pending *p)
 {
-    ionic_mesh_cancel(dp->pvrdma_handle, p->tag, UINT64_MAX);
+    ernic_mesh_cancel(dp->pvrdma_handle, p->tag, UINT64_MAX);
 }
 
 void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id)
@@ -849,7 +850,7 @@ uint32_t ionic_dp_local_node(const struct ionic_datapath *dp)
 {
     if (!dp || !dp->pvrdma_handle)
         return UINT32_MAX;
-    return ionic_mesh_local_node(dp->pvrdma_handle);
+    return ernic_mesh_local_node(dp->pvrdma_handle);
 }
 
 uint32_t ionic_dp_node_from_gid(const struct ionic_datapath *dp,
@@ -857,7 +858,7 @@ uint32_t ionic_dp_node_from_gid(const struct ionic_datapath *dp,
 {
     if (!dp || !dp->pvrdma_handle)
         return UINT32_MAX;
-    return ionic_mesh_node_from_gid(dp->pvrdma_handle, dgid);
+    return ernic_mesh_node_from_gid(dp->pvrdma_handle, dgid);
 }
 
 static struct dp_mr *mr_find(struct ionic_datapath *dp, uint32_t lkey)
@@ -2065,7 +2066,7 @@ static struct dp_pending *pending_find(struct ionic_datapath *dp,
 
 /*
  * The reply bytes, headers included, that the requests still pending to
- * @node can bring back, which IONIC_MESH_REPLY_BUDGET bounds.
+ * @node can bring back, which ERNIC_MESH_REPLY_BUDGET bounds.
  */
 static uint64_t pending_reply_bytes(const struct ionic_datapath *dp,
                                     uint32_t node)
@@ -2128,7 +2129,7 @@ static int dp_mesh_tx(const struct ionic_datapath *dp, uint32_t dst_node,
     uint8_t wire[IONIC_WIRE_HDR_LEN];
 
     ionic_dp_wire_hdr_put(wire, hdr);
-    return ionic_mesh_sendv(dp->pvrdma_handle, dst_node, wire, sizeof(wire),
+    return ernic_mesh_sendv(dp->pvrdma_handle, dst_node, wire, sizeof(wire),
                             payload, payload_len, tag, reply);
 }
 
@@ -2198,7 +2199,7 @@ enum dp_post {
  * back busy, which stops the send queue the way a NIC out of transmit
  * credits does, until the peer has read what is queued.  So does one whose
  * reply the peer might have no room to queue, until earlier replies have
- * come back (IONIC_MESH_REPLY_BUDGET).  A peer that has stopped reading has
+ * come back (ERNIC_MESH_REPLY_BUDGET).  A peer that has stopped reading has
  * its connection shut down by the send that times out on it, and the request
  * then fails.
  */
@@ -2339,11 +2340,11 @@ static enum dp_post remote_post(struct ionic_datapath *dp,
     reply_bytes = IONIC_WIRE_HDR_LEN +
                   (p->length <= IONIC_WIRE_MAX_PAYLOAD ? p->length : 0);
     if (pending_reply_bytes(dp, dest_node_id) >
-        IONIC_MESH_REPLY_BUDGET - reply_bytes) {
+        ERNIC_MESH_REPLY_BUDGET - reply_bytes) {
         result = DP_POST_BUSY;
         goto out;
     }
-    if (!ionic_mesh_has_room(dp->pvrdma_handle, dest_node_id,
+    if (!ernic_mesh_has_room(dp->pvrdma_handle, dest_node_id,
                              IONIC_WIRE_HDR_LEN + payload_len)) {
         result = DP_POST_BUSY;
         goto out;
@@ -3111,7 +3112,7 @@ static bool dp_rx_room(uint32_t msgs, size_t bytes, size_t len)
 }
 
 /*
- * Takes buf (see ionic_mesh_recv_fn), freeing it at once if the message is
+ * Takes buf (see ernic_mesh_recv_fn), freeing it at once if the message is
  * malformed, or queueing it, to be freed once the message is applied; or
  * returns false, leaving it with the mesh, if the queue has no room for it.
  *

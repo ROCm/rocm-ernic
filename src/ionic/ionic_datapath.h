@@ -66,7 +66,7 @@ struct ionic_dp_ring_desc {
  * is checked against these before anything shifts by it, and a command
  * asking for more is refused rather than clamped: a ring of a size the
  * driver didn't ask for is one neither side agrees about. SRQs have tighter
- * bounds of their own (IONIC_SRQ_* in rocm_ernic_compat.h).
+ * bounds of their own (IONIC_SRQ_*, below).
  *
  * DEPTH: 2^24 entries. The Linux driver's admin and event queues are 2^6
  * and 2^9 (IONIC_AQ_DEPTH and IONIC_EQ_DEPTH, rounded up to a power of
@@ -105,6 +105,53 @@ static inline uint8_t ionic_dp_cq_stride_log2(
 {
     return ring->stride_log2 ? ring->stride_log2 : IONIC_CQ_MIN_STRIDE_LOG2;
 }
+
+/*
+ * SRQ ids start above the QP id space, and they have to.
+ *
+ * There is no separate SRQ doorbell qtype: ionic_post_recv_common() rings
+ * lif_cfg.rq_qtype for an SRQ exactly as it does for a QP's own RQ, so a
+ * qtype-7 doorbell carries either a QP id or an SRQ id and the device has to
+ * tell them apart by the number alone. The two come from different
+ * allocators -- the driver allocates QP ids itself, while SRQ ids are
+ * firmware-assigned (IONIC_LIF_RDMA_ALLOC_QID_SRQ; there is no equivalent
+ * bit for QPs) -- so without a disjoint range they would collide, and an SRQ
+ * doorbell would be credited to whichever QP shared its number.
+ *
+ * The guest's QP ids are bounded by the qp_count in the LIF identity, so
+ * starting SRQ ids at that bound keeps the two apart with no table to
+ * consult. The last one still has to fit the 24 bits a doorbell, and an
+ * admin command's id_ver, carry a qid in.
+ */
+#define IONIC_SRQ_QID_BASE ERNIC_MAX_QP
+_Static_assert(IONIC_SRQ_QID_BASE >= ERNIC_MAX_QP,
+               "SRQ ids would overlap the guest's QP ids");
+_Static_assert(IONIC_SRQ_QID_BASE + ERNIC_MAX_SRQ <= (1u << 24),
+               "SRQ ids would not fit a 24-bit qid");
+
+/*
+ * Bounds on the ring geometry a guest may ask for in CREATE_SRQ, tighter
+ * than the general ones above and checked the same way.
+ *
+ * DEPTH: 2^16 entries matches the max_srq_wr the device advertises (0xffff),
+ * so no legitimate driver asks for more.
+ *
+ * STRIDE: 2^8. The driver's SRQ WQE is 64 bytes, so this is two doublings
+ * of headroom above anything real, and it fits the WQE buffer the receive
+ * path reads into (rwqe in ionic_dp_deliver_recv(), which ionic_datapath.c
+ * static-asserts).
+ *
+ * The stride needs a floor as well as a ceiling, and for a different
+ * reason. ionic_dp_deliver_recv() reads min(stride, sizeof rwqe) bytes and
+ * then takes the work request id from offset 0 and the SGE count from
+ * offset 9. A stride below the payload offset leaves those bytes unwritten,
+ * so the receive is driven by whatever was on the stack. 2^5 is that offset
+ * -- ionic_datapath.c static-asserts the two agree -- and the driver asks
+ * for 2^6, so this rejects only geometries no real driver requests.
+ */
+#define IONIC_SRQ_MAX_DEPTH_LOG2  16u
+#define IONIC_SRQ_MAX_STRIDE_LOG2 8u
+#define IONIC_SRQ_MIN_STRIDE_LOG2 5u
 
 /* Raised once completions have been written to a CQ. */
 typedef void (*ionic_dp_cq_event_fn_t)(void *opaque, uint32_t eq_id,
