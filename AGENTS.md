@@ -664,6 +664,29 @@ rewritten. Upstream deleted it, so **it's ours to modify**, built and
 checked like the rest of `src/`. Keep each file's original copyright
 lines. History: [src/qemu/README.md](src/qemu/README.md).
 
+## The P4 engine in `src/p4/`
+
+The engine emulates real P4, so **do what the real P4 tools do**, not
+what seems reasonable: p4c for what a program may contain, P4Runtime for
+what a table entry may be (the update record is P4Runtime-shaped), and
+bmv2 for run-time behaviour. Check their source or spec before deciding:
+p4c's `backends/bmv2/common/control.h` (at the version
+`scripts/fetch-p4c.sh` pins), the P4Runtime spec's "Match Format"
+section, and bmv2's `docs/JSON_format.md`. Where they disagree, p4c and
+P4Runtime win over bmv2's looser spec (e.g. bmv2 allows a `ternary` table
+with no ternary key; p4c never emits one, and the loader refuses it).
+
+- **Refuse what they refuse, with `-EINVAL`, rather than accepting it
+  leniently**: a value with bits past its LPM prefix or outside its
+  mask, a priority where P4Runtime forbids one, a second LPM key. Check a
+  delete like an insert.
+- **Depart only where our representation differs**, and document it
+  (`docs/p4.rst`). The record always carries every key field, so a
+  "don't care" field is a zero prefix or mask, where P4Runtime omits it.
+- **A program's facts are computed at load**, not assumed at lookup
+  (e.g. `p4_table.lpm_key`, not key 0). Add a case to
+  `tests/data/p4/reject_cases.json` for each new load refusal.
+
 ## Copyright lines
 
 AMD copyright lines carry no year. Don't add one to a new file or
