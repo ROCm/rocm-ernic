@@ -1400,7 +1400,9 @@ Where to Look in the Source
    * - ``src/rocm_ernic_server.c``
      - Startup, PCI identity, BARs, MSI-X, main loop
    * - ``src/rocm_ernic_internal.h``
-     - BAR layout constants and the top-level device struct
+     - The top-level device struct
+   * - ``src/ionic/ionic_bar.h``
+     - BAR layout constants
    * - ``src/ionic/ionic_eth_emu.c``
      - Registers, device commands, LIF, Ethernet queues,
        interrupt controller, doorbell decode

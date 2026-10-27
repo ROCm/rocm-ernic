@@ -1908,77 +1908,80 @@ and the main loop polls.</p></li>
 <td><p>Startup, PCI identity, BARs, MSI-X, main loop</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_internal.h</span></code></p></td>
-<td><p>BAR layout constants and the top-level device struct</p></td>
+<td><p>The top-level device struct</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_eth_emu.c</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_bar.h</span></code></p></td>
+<td><p>BAR layout constants</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_eth_emu.c</span></code></p></td>
 <td><p>Registers, device commands, LIF, Ethernet queues,
 interrupt controller, doorbell decode</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_eth_net.c</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_eth_net.c</span></code></p></td>
 <td><p>Host TAP interface</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_eth_steer.c</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_eth_steer.c</span></code></p></td>
 <td><p>Choosing the receive queue for a frame</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_emu_stats.c</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_emu_stats.c</span></code></p></td>
 <td><p>Ethernet LIF and port counters, and the statistics blocks
 written into guest memory</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_profile.c</span></code>,
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_profile.c</span></code>,
 <code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_profiles.c</span></code></p></td>
 <td><p>NIC profiles: loading and layering them, and the built-in
 ones</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_fault.c</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_fault.c</span></code></p></td>
 <td><p>Fault injection (<code class="docutils literal notranslate"><span class="pre">--inject</span></code>)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_rdma_devcmd.c</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_rdma_devcmd.c</span></code></p></td>
 <td><p>RDMA bootstrap (EQs, admin queues), EQE posting</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_adminq.c</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_adminq.c</span></code></p></td>
 <td><p>RDMA control path</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_datapath.c</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_datapath.c</span></code></p></td>
 <td><p>RDMA data path and inter-server wire protocol</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_datapath_nvmeof.c</span></code>,
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_datapath_nvmeof.c</span></code>,
 <code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_datapath_s3.c</span></code>,
 <code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_datapath_p4.c</span></code></p></td>
 <td><p>The data path’s side of the NVMe-oF and S3 targets and
 the P4 pipeline</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ernic_dma.c</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ernic_dma.c</span></code></p></td>
 <td><p>Copying to and from guest memory, for all of the above</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_compat.c</span></code>, <code class="docutils literal notranslate"><span class="pre">.h</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_compat.c</span></code>, <code class="docutils literal notranslate"><span class="pre">.h</span></code></p></td>
 <td><p>Bridge to the QEMU-derived core; mesh wrappers; shared
 limits</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/qemu/</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/qemu/</span></code></p></td>
 <td><p>Resource manager and backend dispatch, forked from QEMU</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/rdma_backend_*.c</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/rdma_backend_*.c</span></code></p></td>
 <td><p>Backend registry; none, loopback, and TCP mesh backends</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/tcp_*.c</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/tcp_*.c</span></code></p></td>
 <td><p>The TCP mesh: connections, the wire format, GID
 ownership, and the manager’s and workers’ halves</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/pvrdma_stats.c</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/pvrdma_stats.c</span></code></p></td>
 <td><p>Statistics file</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/qemu-compat/</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/qemu-compat/</span></code></p></td>
 <td><p>Stand-ins for the QEMU APIs the QEMU-derived code calls</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/nvmeof/nvmeof_cm.c</span></code>,
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/nvmeof/nvmeof_cm.c</span></code>,
 <code class="docutils literal notranslate"><span class="pre">src/nvmeof/nvmeof_target.c</span></code></p></td>
 <td><p>In-process NVMe-oF CM responder and controller</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/s3/s3_tcp.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/s3/s3_http.c</span></code>,
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/s3/s3_tcp.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/s3/s3_http.c</span></code>,
 <code class="docutils literal notranslate"><span class="pre">src/s3/s3_token.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/s3/s3_target.c</span></code></p></td>
 <td><p>In-process S3 store</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/p4/</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/p4/</span></code></p></td>
 <td><p>P4 engine: program loader, tables, the pipeline, its
 Ethernet port and device commands, and the fp8 and format
 conversion externs</p></td>
