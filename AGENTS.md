@@ -315,6 +315,14 @@ scanned too). Add new general patterns here when a scanner reports one.
   `src/ionic/ionic_adminq_priv.h`) and lists the module's `.c` in
   `tests/CMakeLists.txt`. Only the module and its tests include that
   header; prefix its functions with the module name.
+- **Ignoring the result of a function a test stubs out**
+  (`cpp/useless-expression`). CodeQL resolves a call to every definition
+  of its callee in any target the file is built into, so where a unit
+  test links a no-op stub (`ionic_eth_emu_queue_rx_frame()` in
+  `tests/test_ionic_cq_arm.c`), a bare call statement in `src/` has "no
+  effect". Check the result, or if dropping it is right, cast the call
+  to `(void)` with a comment saying why, as `dp_s3_tx_frame()` in
+  `ionic_datapath_s3.c` does.
 - **`${{ }}` in a workflow `run:` block** (zizmor `template-injection`)
   for any value not fixed in the workflow, even one read from a repo
   file: it's pasted in before the shell parses it. Map it to `env:` and

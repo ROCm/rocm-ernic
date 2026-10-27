@@ -30,12 +30,17 @@ static const struct s3_dma_ops dp_s3_dma_ops = {
     .to_host = ionic_dp_target_to_host,
 };
 
-/* The control plane's replies go back to the guest as received frames. */
+/*
+ * The control plane's replies go back to the guest as received frames.  One
+ * the emulator can't queue is lost as on a wire: s3/s3_tcp.c retransmits
+ * what the guest doesn't acknowledge, and a full queue is counted in the
+ * port's statistics.
+ */
 static void dp_s3_tx_frame(void *ctx, const void *frame, size_t len)
 {
     struct ionic_datapath *dp = ctx;
 
-    ionic_eth_emu_queue_rx_frame(dp->eth_emu, frame, len);
+    (void)ionic_eth_emu_queue_rx_frame(dp->eth_emu, frame, len);
 }
 
 static bool dp_s3_tx_filter(void *ctx, const void *frame, size_t len)
