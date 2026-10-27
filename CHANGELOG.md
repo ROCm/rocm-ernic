@@ -675,6 +675,13 @@
   * `CREATE_EQ` on an interrupt past the MSI-X table, and an RDMA admin
     queue deeper than 2^16 entries, the most its 16-bit indices count, are
     refused.
+* **A page table larger than the device holds.** `CREATE_MR` and fast
+  registration bounded a memory region's page table only by the region's
+  length, which the guest also chooses, so one registration could make the
+  server allocate up to 32 GiB. A page table of more than the 2^31 entries
+  the device advertises (`npts_per_lif`) is now refused, which caps one table
+  at 16 GiB. The device can still honour every region the guest driver
+  allows (`max_mr_size`, 4 TiB).
 * **The server no longer touches guest memory after its client goes.**
   libvfio-user unmaps guest memory when a client hangs up, but the server
   went on with that pass's DMA; with a libvfio-user before 5d64ebf this

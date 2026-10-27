@@ -181,12 +181,19 @@ uint64_t ionic_dp_ring_span_bytes(uint8_t depth_log2, uint8_t stride_log2)
  *
  * A page table never needs more entries than the region needs pages, plus
  * one for a region that does not start on a page boundary. Anything beyond
- * that is not a geometry the device could honour.
+ * that is not a geometry the device could honour. Nor is a table of more
+ * entries than the device's page tables hold between them: a memory region's
+ * span is its length, which the guest chooses too, so only that cap bounds
+ * the allocation by something the guest does not choose.
  */
 int ionic_dp_buf_init(const struct ionic_datapath *dp, struct dp_buf *b,
                       const struct ionic_dp_buf_desc *desc, uint64_t va,
                       uint64_t span)
 {
+    /* Checked and used as a local: CodeQL's cpp/uncontrolled-allocation-size
+     * does not see a bound checked through a pointer. */
+    uint32_t map_count = desc->map_count;
+
     ionic_dp_buf_release(b);
     if (desc->page_size_log2 > 30)
         return -EINVAL;
@@ -199,34 +206,37 @@ int ionic_dp_buf_init(const struct ionic_datapath *dp, struct dp_buf *b,
     uint64_t max_pages = (span >> b->page_size_log2) +
                          ((span & (page_size - 1)) != 0 ? 1u : 0u) + 1;
 
-    if (span == 0 || (uint64_t)desc->map_count > max_pages) {
+    if (max_pages > ERNIC_MAX_PAGE_TABLE_ENTRIES)
+        max_pages = ERNIC_MAX_PAGE_TABLE_ENTRIES;
+    if (span == 0 || map_count > max_pages) {
         vfu_log(dp->vfu_ctx, LOG_ERR,
-                "ionic_datapath: page table of %u entries for a %" PRIu64
+                "ionic_datapath: page table of %" PRIu32
+                " entries for a %" PRIu64
                 "-byte region at 2^%u pages (at most %" PRIu64 ")",
-                desc->map_count, span, b->page_size_log2, max_pages);
+                map_count, span, b->page_size_log2, max_pages);
         return -EINVAL;
     }
-    b->npages = desc->map_count;
+    b->npages = map_count;
 
-    if (desc->map_count <= 1) {
+    if (map_count <= 1) {
         /* ionic_pgtbl_dma() already folded the intra-page offset in. */
         b->base = desc->dma_addr;
         b->npages = 1;
         return 0;
     }
 
-    b->pages = calloc(desc->map_count, sizeof(*b->pages));
+    b->pages = calloc(map_count, sizeof(*b->pages));
     if (!b->pages) {
         b->npages = 0;
         return -ENOMEM;
     }
     if (ernic_dma_read(dp->dma, dp->vfu_ctx, desc->dma_addr, b->pages,
-                       (size_t)desc->map_count * 8) < 0) {
+                       (size_t)map_count * 8) < 0) {
         ionic_dp_buf_release(b);
         return -EIO;
     }
     /* Each entry as the guest wrote it, le64, made a value in place */
-    for (uint32_t i = 0; i < desc->map_count; i++)
+    for (uint32_t i = 0; i < map_count; i++)
         b->pages[i] = ernic_get_le64((const uint8_t *)&b->pages[i]);
 
     b->first_off = (uint32_t)(va & ((1ull << b->page_size_log2) - 1));

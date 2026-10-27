@@ -969,9 +969,9 @@ void ionic_eth_emu_handle_lif_identify(struct ionic_eth_emu *emu,
     rdma[2] = IONIC_RDMA_ADMIN_OPCODES; /* admin_opcodes  */
     rdma[3] = 0;                        /* minor_version  */
 
-    ernic_put_le32(rdma + 4, IONIC_NPTS_PER_LIF);     /* npts_per_lif */
-    ernic_put_le32(rdma + 8, IONIC_EMU_NMRS_PER_LIF); /* nmrs_per_lif */
-    ernic_put_le32(rdma + 12, ERNIC_MAX_AH);          /* nahs_per_lif */
+    ernic_put_le32(rdma + 4, ERNIC_MAX_PAGE_TABLE_ENTRIES); /* npts_per_lif */
+    ernic_put_le32(rdma + 8, IONIC_EMU_NMRS_PER_LIF);       /* nmrs_per_lif */
+    ernic_put_le32(rdma + 12, ERNIC_MAX_AH);                /* nahs_per_lif */
 
     rdma[16] = IONIC_MAX_STRIDE;     /* max_stride */
     rdma[17] = 6;                    /* cl_stride (log2 64B cache line) */
