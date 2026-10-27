@@ -37,10 +37,7 @@ Install dependencies:
 ansible-galaxy collection install -r requirements.yml
 ```
 
-That is one collection, `community.general`. Through 0.1.0 it was
-six and ~29M, because `sbates130272.batesste` came with
-`amazon.aws` and `community.libvirt`; the role that needed it
-built a golden image, which the published artifact replaced.
+That is one collection, `community.general`.
 
 `sbates130272.rocm_ernic` is *not* in `requirements.yml`:
 `ansible.cfg` sets `roles_path = ./roles:...`, so

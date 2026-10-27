@@ -16,9 +16,8 @@
 #
 #   rocm-ernic --backend nvmeof:size=256M,bs=4096 ...
 #
-# The guest steps mirror the nvme_of_setup role in
-# batesste-ansible: load nvme-rdma, discover, connect, use
-# the namespace, disconnect.
+# The guest steps: load nvme-rdma, discover, connect, use the
+# namespace, disconnect.
 
 ---
 - name: NVMe-oF tests against the in-process controller

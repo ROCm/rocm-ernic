@@ -177,9 +177,7 @@ The neighbour entry is the one unobvious step. The
 controller is not a host on the segment and has no MAC of
 its own, so the guest's address resolution has nothing to
 resolve to. Any link-layer address will do: the emulator
-routes the connection by queue pair, not by MAC. The
-``nvmeof_setup`` role in ``batesste-ansible`` does the same
-thing for the hardware path.
+routes the connection by queue pair, not by MAC.
 
 How It Works
 ------------
