@@ -4,13 +4,6 @@
 #
 # actionlint configuration (https://github.com/rhysd/actionlint).
 
-self-hosted-runner:
-  # The custom labels ci/runner/register-runner.sh gives the self-hosted
-  # runners, which actionlint would otherwise report as unknown.
-  labels:
-    - rocm-ernic
-    - kvm
-
 paths:
   .github/workflows/**/*.yml:
     ignore:

@@ -82,8 +82,9 @@ cmake --build build
   workflow for their environment.
 - **Every registered test runs without a VM, RDMA hardware, or root**, so
   a skipped test means something is wrong. Multi-VM and hardware testing
-  ([docs/testing.rst](docs/testing.rst)) runs in the `system-tests`,
-  `nvmeof-lane`, `s3-lane`, and `self-hosted-ci` workflows.
+  ([docs/testing.rst](docs/testing.rst)) runs in the `system-tests`
+  workflow and the `nvmeof-lane`, `s3-lane`, and `p4-lane` workflows it
+  calls.
 - A plain build sanitizes nothing, unit tests included; CI also builds
   with `ERNIC_USE_SANITIZERS` and `ERNIC_USE_THREAD_SANITIZER` (for when
   to run them locally, see
@@ -354,11 +355,13 @@ scanned too). Add new general patterns here when a scanner reports one.
   for any value not fixed in the workflow, even one read from a repo
   file: it's pasted in before the shell parses it. Map it to `env:` and
   use `"$NAME"`, as `driver-build.yml`'s fetch step does.
-- **Standard-library XML parsing** (Bandit B314: entity expansion). Use
-  expat and refuse a DOCTYPE, like `parse_xml()` in
-  `ci/report/gen-report.py`. Bandit also flags any `xml.etree` import
-  (B405) and `subprocess` import (B404): mark the import `# nosec` with
-  the one rule and a comment saying why it's safe.
+- **Standard-library XML parsing** (Bandit B314: entity expansion). Parse
+  with `xml.parsers.expat` and refuse a DOCTYPE from a
+  `StartDoctypeDeclHandler` that raises, so no declaration is read;
+  build a tree, if you need one, by feeding expat's callbacks to
+  `xml.etree.ElementTree.TreeBuilder`. Bandit also flags any `xml.etree`
+  import (B405) and `subprocess` import (B404): mark the import
+  `# nosec` with the one rule and a comment saying why it's safe.
 
 ## Linters, warnings, and sanitizers (mandatory)
 
@@ -609,8 +612,8 @@ touches. The commands are in the sections below.
 - **[actionlint](https://github.com/rhysd/actionlint)**
   (`pip install actionlint-py`; run `actionlint`) checks workflows and
   ShellChecks their `run:` blocks. Config in
-  [`.github/actionlint.yaml`](.github/actionlint.yaml): self-hosted
-  runner labels, and an ignore for the unsupported `$/` form of `uses:`.
+  [`.github/actionlint.yaml`](.github/actionlint.yaml): an ignore for
+  the unsupported `$/` form of `uses:`.
 - **[`tools/check-embedded-shell.py`](tools/check-embedded-shell.py)**
   (needs PyYAML and ShellCheck 0.11.0) checks shell the others miss,
   reporting at the original file and line (`--list` shows what it

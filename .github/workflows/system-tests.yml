@@ -27,12 +27,12 @@ on:
       - 'scripts/**'              # find-rdma-device, diagnostics
       - 'udev/**'                 # driver_common installs these
       # Everything under ci/ drives these lanes: guest-image.env is the
-      # guest image pin itself, lib/common.sh reads it, and jobs/ is what
-      # the self-hosted lanes run. Listing the directory rather than the
-      # files is deliberate -- this entry used to name ci/lib/common.sh
-      # alone, "carries a third copy of the guest tag", and when the pin
-      # moved to ci/guest-image.env that comment stopped being true and a
-      # repin matched no path, so bumping the guest image ran no VM lane.
+      # guest image pin itself, and report/ turns their results into the
+      # reports and published trends. Listing the directory rather than
+      # the files is deliberate -- this entry once named a single file
+      # that held a copy of the guest tag, and when the pin moved to
+      # ci/guest-image.env a repin matched no path, so bumping the guest
+      # image ran no VM lane.
       - 'ci/**'
       - '.github/workflows/system-tests.yml'
       - '.github/workflows/nvmeof-lane.yml'   # the nvmeof job's body
@@ -137,8 +137,8 @@ jobs:
         # Size the guests from the runner rather than pinning 2 vCPU / 1 GB.
         # The hosted runner is 4 vCPU / 16 GB, so the old numbers left most
         # of the machine idle while a DKMS kernel build ran single-file in
-        # the guest.  Derive it instead: a larger runner class or the
-        # self-hosted node then benefits without another edit here.
+        # the guest.  Derive it instead: a larger runner class then
+        # benefits without another edit here.
         #
         # One core and a quarter of RAM stay with the host -- the
         # vfio-user server, the harness and the runner agent share it --
@@ -619,8 +619,8 @@ jobs:
       run: |
         echo "=== Installing the Ansible collection dependencies ==="
         # The guest is provisioned by the sbates130272.rocm_ernic
-        # collection in this repo, so the same role the self-hosted CI
-        # and developers use is what these jobs exercise.
+        # collection in this repo, so the same role developers use is
+        # what these jobs exercise.
         #
         # The container's ansible-core comes from pipx and searches
         # ~/.ansible/collections, not the dist-packages tree the
@@ -697,7 +697,8 @@ jobs:
         mkdir -p "$ERNIC_RUN_DIR"
 
         # vm-register.yml turns this manifest into the ernic_vms
-        # inventory group; on the self-hosted path ernicctl writes it.
+        # inventory group; on a developer's host the launcher and
+        # ernicctl write it.
         cat > "$ERNIC_RUN_DIR/instances.json" << EOFJSON
         {
           "instances": [
@@ -1852,7 +1853,7 @@ jobs:
         echo "=== Installing the Ansible collection dependencies ==="
         # Both VMs are provisioned by the sbates130272.rocm_ernic
         # collection in this repo, so these jobs exercise the same role
-        # the self-hosted CI and developers use.
+        # developers use.
         #
         # The container's ansible-core comes from pipx and searches
         # ~/.ansible/collections, not the dist-packages tree the
@@ -1882,7 +1883,7 @@ jobs:
       shell: bash
       run: |
         echo "=== Creating ernicbr0 and the per-instance TAPs ==="
-        # ernic_host_setup owns this on the self-hosted path; run the
+        # ernic_host_setup owns this on a developer's host; run the
         # same role rather than open-coding `ip tuntap` here, which is
         # the drift this branch exists to remove.  Everything else the
         # role does -- build, systemd unit, GPU binding -- is off: the
@@ -2460,8 +2461,9 @@ jobs:
         mkdir -p "$ERNIC_RUN_DIR"
 
         # vm-register.yml turns this manifest into the ernic_vms
-        # inventory group; on the self-hosted path ernicctl writes it.
-        # Ansible then drives both guests in parallel by itself.
+        # inventory group; on a developer's host the launcher and
+        # ernicctl write it.  Ansible then drives both guests in
+        # parallel by itself.
         cat > "$ERNIC_RUN_DIR/instances.json" << EOFJSON
         {
           "instances": [
@@ -2562,12 +2564,11 @@ jobs:
         echo "=== Running the sanity play across both guests ==="
         VM_USER="${VM_INFO_USER}"
 
-        # The same play ci/jobs/vm-functional.sh runs on the self-hosted
-        # path: ping and a netcat echo over the emulated Ethernet, then
-        # ib_send_bw and ibv_rc_pingpong over RDMA -- all of it between
-        # VM 1 and VM 2, so every byte crosses the TCP mesh joining the
-        # two rocm-ernic servers.  That is the thing this job is named
-        # for and previously never exercised.
+        # ci-site.yml's sanity play: ping and a netcat echo over the
+        # emulated Ethernet, then ib_send_bw and ibv_rc_pingpong over
+        # RDMA -- all of it between VM 1 and VM 2, so every byte crosses
+        # the TCP mesh joining the two rocm-ernic servers.  That is the
+        # thing this job is named for and previously never exercised.
         export ANSIBLE_HOST_KEY_CHECKING=false
         export ANSIBLE_PRIVATE_KEY_FILE="$SSH_KEY_PRIVATE"
         export ANSIBLE_ROLES_PATH="$PWD/ansible/roles"
@@ -2587,10 +2588,10 @@ jobs:
         echo "=== Running the RDMA-Tutorial examples across both guests ==="
         VM_USER="${VM_INFO_USER}"
 
-        # The same play ci/jobs/vm-functional.sh runs on the self-hosted
-        # path: examples from github.com/jcxue/RDMA-Tutorial, patched for
-        # RoCE, with the server in VM 1 and the client in VM 2.  The
-        # controller fetches them, so the guests need no network access.
+        # ci-site.yml's tutorial play: examples from
+        # github.com/jcxue/RDMA-Tutorial, patched for RoCE, with the
+        # server in VM 1 and the client in VM 2.  The controller fetches
+        # them, so the guests need no network access.
         export ANSIBLE_HOST_KEY_CHECKING=false
         export ANSIBLE_PRIVATE_KEY_FILE="$SSH_KEY_PRIVATE"
         export ANSIBLE_ROLES_PATH="$PWD/ansible/roles"
@@ -2617,20 +2618,18 @@ jobs:
         echo "=== perf sweeps across the two guests ==="
         VM_USER="${VM_INFO_USER}"
 
-        # The same two plays ci/jobs/perf.sh drives on the self-hosted
-        # path -- tcp-performance-tests.yml (iperf3, one sustained rate
-        # under verb "tcp", size "stream") and performance-tests.yml
-        # (perftest, the send/write/read size sweep).  results_dir is
-        # what sends their CSVs to perf-csv/ rather than dirtying
-        # docs/perf-results in the checkout.
+        # ci-site.yml's two perf plays -- tcp-performance-tests.yml
+        # (iperf3, one sustained rate under verb "tcp", size "stream")
+        # and performance-tests.yml (perftest, the send/write/read size
+        # sweep).  results_dir is what sends their CSVs to perf-csv/
+        # rather than dirtying docs/perf-results in the checkout.
         mkdir -p "$PERF_CSV_DIR"
         export ANSIBLE_HOST_KEY_CHECKING=false
         export ANSIBLE_PRIVATE_KEY_FILE="$SSH_KEY_PRIVATE"
         export ANSIBLE_ROLES_PATH="$PWD/ansible/roles"
 
         cd ansible
-        # ernic_project_root, explicitly, for the same reason
-        # ci/jobs/perf.sh passes it: the group_vars default is
+        # ernic_project_root, explicitly: the group_vars default is
         # {{ playbook_dir }}/../.., which resolves against the entry
         # playbook.  With ci-site.yml that is ansible/, so the default
         # lands one directory above the checkout and

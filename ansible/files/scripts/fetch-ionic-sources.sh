@@ -92,7 +92,7 @@ done
 
 # The sentinel names the ref AND the series, because the ref alone does not
 # identify the tree this produces. SOURCE_DIR outlives a run on a
-# self-hosted runner, so with only the ref in the name, editing a patch and
+# persistent host, so with only the ref in the name, editing a patch and
 # rerunning against the same kernel reported "nothing to do" and tested the
 # previous series -- a change that silently did not take, which is the worst
 # shape a CI result can have. Names as well as contents, so deleting or

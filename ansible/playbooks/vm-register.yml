@@ -6,9 +6,9 @@
 # inventory group.
 #
 # The only input is the launcher's own instance manifest,
-# so this works for both entry points: ci/jobs/vm-up.sh
-# brings VMs up unprivileged for the self-hosted CI, and
-# the rocm-ernic service does it on the developer path.
+# so this works for both entry points: the system-tests
+# lanes write it for the VMs they launch, and the
+# rocm-ernic service does it on the developer path.
 # Everything downstream (guest-setup, sanity, performance)
 # depends on the group this builds.
 
@@ -30,13 +30,13 @@
       The VMs must be up and running before this point; neither
       site.yml nor ci-site.yml launches them.  On the developer
       path the service has to be installed before it can launch
-      anything, so the order is: "ansible-playbook site.yml --tags
-      host-setup", then "sudo ernicctl vm-launch <id>" once per
+      anything, so the order is: "ansible-playbook
+      playbooks/host-setup.yml", then "sudo ernicctl vm-launch <id>" once per
       instance, then "ansible-playbook site.yml -e
       ernic_restart_existing=false".  Without that last override
-      phase 1 stops the guests again before this play runs.  VMs
-      brought up by ci/jobs/vm-up.sh are the CI path: drive those
-      with ci-site.yml, which imports no host-setup play.
+      phase 1 stops the guests again before this play runs.  CI
+      launches its own VMs and drives them with ci-site.yml, which
+      imports no host-setup play.
 
   tasks:
 

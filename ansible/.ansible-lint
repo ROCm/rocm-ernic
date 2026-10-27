@@ -14,7 +14,7 @@ exclude_paths:
 # anyway. A rule that can't be met goes here, with the reason.
 skip_list:
   # The ernic_* prefix predates the split into roles and is used
-  # by the test playbooks and ci/jobs/*.sh, and some variables,
+  # by the test playbooks and workflows, and some variables,
   # such as ernic_source_dir, are shared by two roles on purpose;
   # keeping it beats renaming every consumer to
   # ernic_guest_setup_*.

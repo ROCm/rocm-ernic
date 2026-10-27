@@ -94,8 +94,8 @@ jobs:
         # Size the guests from the runner rather than pinning 2 vCPU / 1 GB.
         # The hosted runner is 4 vCPU / 16 GB, so the old numbers left most
         # of the machine idle while a DKMS kernel build ran single-file in
-        # the guest.  Derive it instead: a larger runner class or the
-        # self-hosted node then benefits without another edit here.
+        # the guest.  Derive it instead: a larger runner class then
+        # benefits without another edit here.
         #
         # One core and a quarter of RAM stay with the host -- the
         # vfio-user server, the harness and the runner agent share it --
@@ -568,8 +568,8 @@ jobs:
       run: |
         echo "=== Installing the Ansible collection dependencies ==="
         # The guest is provisioned by the sbates130272.rocm_ernic
-        # collection in this repo, so the same role the self-hosted CI
-        # and developers use is what these jobs exercise.
+        # collection in this repo, so the same role developers use is
+        # what these jobs exercise.
         #
         # The container's ansible-core comes from pipx and searches
         # ~/.ansible/collections, not the dist-packages tree the
@@ -651,7 +651,8 @@ jobs:
         mkdir -p "$ERNIC_RUN_DIR"
 
         # vm-register.yml turns this manifest into the ernic_vms
-        # inventory group; on the self-hosted path ernicctl writes it.
+        # inventory group; on a developer's host the launcher and
+        # ernicctl write it.
         cat > "$ERNIC_RUN_DIR/instances.json" << EOFJSON
         {
           "instances": [
@@ -765,10 +766,10 @@ jobs:
         export ANSIBLE_ROLES_PATH="$PWD/ansible/roles"
         PROJECT_ROOT="$PWD"
 
-        # The same play the self-hosted lane and developers run, so
-        # there is one definition of what "NVMe-oF works" means:
-        # discover, connect, verify a digest round trip through
-        # O_DIRECT, fio, disconnect, and assert the namespace went away.
+        # The same play developers run, so there is one definition of
+        # what "NVMe-oF works" means: discover, connect, verify a
+        # digest round trip through O_DIRECT, fio, disconnect, and
+        # assert the namespace went away.
         # The sweep is off unless this run is publishing: it is three
         # more fio runs and only the nightly has a use for the
         # numbers.  An empty value is what the play's own default is.
@@ -845,9 +846,8 @@ jobs:
     - name: Publish the NVMe-oF trend and shield
       # Only a green run on develop may move the published history: a
       # failed lane's numbers describe a broken controller, and a
-      # branch's describe the branch.  A hosted runner is also noisier
-      # than the self-hosted node, which is why this feeds its own
-      # "nvmeof" series rather than the perftest one.
+      # branch's describe the branch.  This feeds its own "nvmeof"
+      # series rather than the perftest one.
       if: >-
         inputs.publish &&
         success() &&

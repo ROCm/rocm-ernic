@@ -22,9 +22,7 @@
 # The guest side is tests/s3_rdma_client.c, compiled in the
 # guest: it mints an x-amz-rdma-token over a registered
 # buffer, PUTs and GETs through it, and compares the bytes
-# that actually landed.  ci/jobs/vm-s3.sh checks the same
-# things and is what the self-hosted lane runs; keep the two
-# in step.
+# that actually landed.
 
 ---
 - name: S3-over-RDMA tests against the in-process object store

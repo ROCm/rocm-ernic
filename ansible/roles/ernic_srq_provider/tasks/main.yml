@@ -73,7 +73,7 @@
   register: ernic_srq_provider_clone
 
 # Emptied, not just written into. The directory is a sibling of the source
-# tree and outlives a run on a self-hosted target, while "Apply the series"
+# tree and outlives a run on a persistent target, while "Apply the series"
 # below globs *.patch -- so a patch deleted or renamed in the repository
 # stayed behind and kept being applied, and the build no longer matched the
 # series in git. Recreating it makes what is applied exactly what was copied.

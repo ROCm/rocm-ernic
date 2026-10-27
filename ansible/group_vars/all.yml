@@ -35,13 +35,13 @@ ernic_instances: 2
 # ib_umem_get_va), and bakes the RDMA userspace, the DKMS
 # toolchain and perftest on a resolute userspace.
 #
-# scripts/fetch-guest-image.sh and ci/jobs/vm-up.sh pull it.
+# scripts/fetch-guest-image.sh pulls it.
 #
 # Repo, tag, disk and account are read from ci/guest-image.env rather than
 # written here.
 # That file is the only place the pin lives -- the GitHub lanes load it into
-# their environment and ci/lib/common.sh sources it -- so a bump is one edit
-# and cannot leave this role pointing at an older guest than CI tests.
+# their environment -- so a bump is one edit and cannot leave this role
+# pointing at an older guest than CI tests.
 ernic_vm_artifact_repo: >-
   {{ lookup('ansible.builtin.ini', 'GUEST_ARTIFACT_REPO type=properties
      file=' ~ ernic_project_root ~ '/ci/guest-image.env') }}

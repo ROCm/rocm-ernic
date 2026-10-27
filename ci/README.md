@@ -1,264 +1,45 @@
-# Self-hosted CI
+# CI support files
 
-This directory holds the harness that turns a lab node
-into a GitHub Actions runner for rocm-ernic, capable of
-booting real VMs over the emulated RDMA NIC and
-producing functional and performance reports.
+This directory holds what the GitHub-hosted workflows in
+`.github/workflows/` share:
 
-The GitHub-hosted workflows in `.github/workflows/` can
-only build and unit-test. Everything that needs KVM, a
-provisioned guest image or two guests talking RDMA to
-each other runs here instead.
+- `guest-image.env` -- the pin for the guest image every VM
+  lane boots.
+- `report/` -- `gen-report.py`, which turns a lane's results
+  into a report, and `publish-perf.py`, which records the
+  performance numbers and renders the trend page.
+- `iwyu/` -- the scripts that the IWYU workflow
+  (`.github/workflows/iwyu.yml`) runs.
 
-The exception is `iwyu/`, which holds the scripts that
-the GitHub-hosted IWYU workflow
-(`.github/workflows/iwyu.yml`) runs.
+The VM lanes themselves are `system-tests.yml` and the
+`nvmeof-lane.yml`, `s3-lane.yml` and `p4-lane.yml` workflows
+it calls. They provision their guests and run their tests
+through `ansible/ci-site.yml`, so the test logic lives in
+the same Ansible plays a developer runs.
 
-## Design
+## The guest image
 
-Everything runs **unprivileged**. There is no `sudo`, no
-`systemctl`, and nothing is written to `/run`,
-`/var/log` or `/usr/local`. This works because the
-rocm-ernic launcher and `ernicctl` are entirely
-environment-driven, so the whole control plane can be
-redirected under a workspace the CI user owns:
-
-| Normal path | CI path |
-|---|---|
-| `/run/rocm-ernic` | `$CI_WORK/run` |
-| `/var/log/rocm-ernic` | `$CI_WORK/log` |
-| `/usr/local/bin/rocm-ernic` | `$CI_WORK/build/rocm-ernic` |
-| `systemctl start rocm-ernic` | `service/rocm-ernic-launcher` |
-
-`$CI_WORK` defaults to `/var/tmp/ernic-ci-work`, which
-is on local disk. Home directories on the lab nodes are
-NFS, where qcow2 and build traffic is markedly slower.
-
-The CI runs the checked-out copies of
-`service/rocm-ernic-launcher` and `service/ernicctl`
-rather than whatever is installed system-wide, so a run
-always tests the tree it was handed.
-
-### Reusing the Ansible harness
-
-The test logic is not duplicated here. `ansible/` already
-implements guest provisioning, the sanity suite and the
-performance sweeps, and the CI drives those plays
-directly through `ansible/ci-site.yml`.
-
-`site.yml` is the developer entry point and needs root:
-it installs to `/usr/local`, drives systemd, and binds
-devices to `vfio-pci`. `ci-site.yml` skips all of that.
-It assumes `ci/jobs/vm-up.sh` has already brought VMs up
-unprivileged, and supplies only the inventory registration
-those plays need, via `ansible/playbooks/vm-register.yml`
--- the same play the developer path uses.
-
-The guest disk is **pulled from the registry**, not
-regenerated. `vm-up.sh` fetches the artifact named by
-`CI_GUEST_ARTIFACT_TAG` through
-`scripts/fetch-guest-image.sh` and unpacks it under
-`CI_VM_ARTIFACT_DIR`, skipping the download when that tag
-is already present. Needing no root is the point: baking a
-guest image locally needs `qemu-nbd` and root, and pinning
-the tag means CI tests the same image the hosted workflow
-does. The image itself is built elsewhere, by the `ionic`
-flavour of [batesste-ci-images][ref-ci-images].
-
-The fetch is also the gate. `fetch_guest_image` in
-`lib/common.sh` passes the login account, disk name, release
-and flavour the artifact is known to ship, and the script
-rejects an image whose `vm-info.json` disagrees, or whose
-kernel is below 6.18, skewed from `IONIC_KERNEL_REF`, or
-different from the badge on `README.md`. Those checks run
-after the kilobyte metadata pull and before the 1.6 GB disk
-pull, so a wrong image fails in seconds rather than forty
-minutes into a lane. The expectations come from
-`CI_GUEST_IMAGE_USER` and `CI_GUEST_IMAGE_DISK`, not from
-`CI_VM_SSH_USER` and `CI_VM_BACKING`, so overriding either of
-those knobs still fetches.
+The guest disk is **pulled from the registry**, not built
+here. The image is built elsewhere, by the `ionic` flavour of
+[batesste-ci-images][ref-ci-images].
 
 The tag, disk name and login account are pinned only in
-`ci/guest-image.env`, which `lib/common.sh`, the GitHub
-lanes and `ansible/group_vars/all.yml` all read; a bump is
-one edit there.
+`ci/guest-image.env`, which the GitHub lanes and
+`ansible/group_vars/all.yml` both read; a bump is one edit
+there. `tools/check-guest-image-tag.sh` fails the build if a
+literal tag appears anywhere else.
 
-The backing qcow2 is never written at runtime -- each VM
-gets its own overlay -- so unlike the VM names and SSH
-ports, the image is deliberately *not* made distinct per
-checkout.
-
-## Tiers
-
-| Tier | Job | Needs KVM |
-|---|---|---|
-| 1 | build, ctest, loopback backend | no |
-| 2 | two-VM RDMA functional, one-VM NVMe-oF | yes |
-| 3 | performance sweeps | yes |
-
-Tier 1 is fully self-contained and is the gate for
-everything else. Tiers 2 and 3 are scheduled onto
-runners carrying the `kvm` label, so a node that loses
-KVM access stops attracting those jobs rather than
-failing them.
-
-Performance jobs refuse to run under emulation.
-Software-emulated numbers are one to two orders of
-magnitude off and would poison the regression baseline,
-so `ci/jobs/perf.sh` exits rather than record them.
-
-## Setting up a node
-
-Check what the node can do:
-
-```bash
-ci/doctor.sh
-```
-
-It reports per-tier readiness and exits `0` for the full
-matrix, `1` if only tier 1 can run, and `2` if the node
-cannot run CI at all.
-
-Stage the runner (downloads and unpacks it, writes a
-systemd user unit, enables lingering so it survives
-reboot):
-
-```bash
-ci/runner/install-runner.sh
-```
-
-The runner is installed to `/local/$USER/`, not `$HOME`.
-Home is NFS on the lab node, and a long-lived runner
-daemon does not belong on a shared filer: every job would
-pay filer latency, an outage would take the runner down,
-and its `.credentials` would sit on shared storage.
-`/local` is the node's per-user local-disk area, on the
-same ext4 volume as the work directory. On a fresh node
-that directory has to be created once:
-
-```bash
-sudo install -d -o "$USER" -g "$(id -gn)" -m 0755 /local/"$USER"
-```
-
-Override with `--root` or `CI_RUNNER_ROOT` if your node
-lays out local storage differently.
-
-`install-runner.sh` also creates the TAP interfaces the
-emulated ionic device needs — `ernic-ci-br0` plus one
-`ernic-ci-tapN` per instance, owned by the runner user.
-That is the one step needing root, and it needs it once:
-jobs themselves never use `sudo`, and an unprivileged
-runner cannot create a TAP for itself. Without them the
-guests come up with no Ethernet and every guest-to-guest
-test fails one at a time without saying why, so
-`ci/doctor.sh` and `ci/jobs/vm-up.sh` check for them up
-front. Pass `--skip-taps` if the node already has them or
-you would rather run the `ip` commands by hand; without
-passwordless `sudo` the step warns and skips itself.
-
-This deliberately stops short of registering. Mint a
-registration token at
-`https://github.com/ROCm/rocm-ernic/settings/actions/runners/new`
-and then:
-
-```bash
-ci/runner/register-runner.sh --token <TOKEN>
-```
-
-Registration tokens expire after one hour. The script
-applies the `kvm` label only when `/dev/kvm` is actually
-usable; re-run it with `--replace` after fixing KVM to
-refresh the labels.
-
-Manage the runner with:
-
-```bash
-systemctl --user status rocm-ernic-runner
-journalctl --user -u rocm-ernic-runner -f
-```
-
-## Security
-
-`ROCm/rocm-ernic` is public, and this workflow runs on a
-lab machine rather than a throwaway GitHub runner. Nothing
-reaches the node unless someone asks for it:
-`.github/workflows/self-hosted-ci.yml` has **no
-`pull_request` trigger and no `push` trigger**. The only
-ways in are `workflow_dispatch` and the nightly schedule.
-
-That is a deliberate trade. Pull requests get no automatic
-lab-node coverage; a maintainer starts a run when they
-want it. The GitHub-hosted workflows still run on every
-pull request as usual, so contributors are not left
-without feedback.
-
-### Starting a run
-
-From the repository's Actions tab, pick *rocm-ernic -
-Self-Hosted CI* and press *Run workflow*. It asks for:
-
-| Input | Values |
-|---|---|
-| `tier` | `build` (build, ctest and loopback), `functional` (default; adds two-VM RDMA and NVMe-oF), `full` (adds performance sweeps) |
-| `accel` | `kvm` (default), or `tcg` to run the VMs under emulation, with no valid performance numbers |
-| `pr` | pull request number to test; leave empty to test the branch chosen in the dialog |
-
-Or from the command line:
-
-```bash
-gh workflow run self-hosted-ci.yml --ref develop -f pr=123
-```
-
-### Testing fork pull requests
-
-Fork pull requests **are** runnable: give their number as
-the `pr` input, and leave the branch at `develop`.
-
-What makes that acceptable is the split between the
-workflow and the code it tests. The run takes the workflow
-file from the branch chosen when it is started (`--ref`),
-and only a pull request number from the input. Each job
-then checks out
-`refs/pull/<pr>/head`, which resolves for forks. So a fork
-supplies code to compile and run, but cannot change what
-the workflow does with it, and cannot start a run at all:
-`workflow_dispatch` requires write access.
-
-### What this does not protect
-
-The node itself. Fork code runs as the runner's user, with
-whatever that user can do. **Treat the ability to dispatch
-a fork pull request as equivalent to shell access on the
-lab node.**
-
-On the current node the runner user also has passwordless
-`sudo`, so that is equivalent to root. Outstanding
-hardening, in rough priority order:
-
-1. Run the runner as a dedicated account with no `sudo`.
-2. Give that account its own `/local/<user>` workspace and
-   `/opt/qemu-images` group access, rather than reusing a
-   developer's.
-3. Consider an ephemeral runner, so each job starts from a
-   clean machine state.
-
-Until those land, only dispatch fork pull requests whose
-diff you have actually read.
-
-The workflow also takes a `concurrency` lock. Two
-simultaneous runs would collide on VM ssh ports, the
-instance manifest and the qcow2 overlays.
-
-## Reporting back
-
-When a run is started with a `pr` number, the report job
-comments the outcome on that pull request when it finishes:
-a per-stage table, the check and regression counts, and a
-link to the run. It posts under `always()`, so a failed or
-half-skipped run still reports rather than going quiet.
-
-Runs without a `pr` (the nightly) do not comment anywhere;
-their outcome is the run's own status and the job summary.
+The hosted lanes pull it through
+`.github/actions/fetch-guest-vm`. By hand,
+`scripts/fetch-guest-image.sh` lands the same bytes in the
+same layout, and checks the image before it pulls the disk:
+it rejects an image whose kernel is below 6.18, skewed from
+`IONIC_KERNEL_REF`, or different from the badge on
+`README.md`, and, given `--expect-user`, `--expect-disk`,
+`--expect-release` or `--expect-flavour`, one whose
+`vm-info.json` disagrees. Those checks run after the
+kilobyte metadata pull and before the 1.6 GB disk pull, so a
+wrong image fails in seconds.
 
 ## Publishing performance trends
 
@@ -323,24 +104,21 @@ git show origin/gh-pages:perf/history.jsonl \
 python3 ci/report/publish-perf.py --render-only --docs-dir docs
 ```
 
-### Only GitHub-hosted runs publish
+### Runner classes
 
 Every published number comes off a GitHub-hosted runner. The
-self-hosted lane still sweeps, reports and gates regressions, but
-its figures stay in the run's artifacts and never reach the docs
-site or the shields.
+history also holds a few older records from a self-hosted lab
+node, `hpe-rack-15`, which ran CI until it was retired.
 
-The reason is comparability. A GitHub runner has noisy neighbours
-and no fixed CPU; `hpe-rack-15` has neither. Interleaving the two
-in one series produces a chart whose every other point is a step
-change in the machine rather than in the code, which is exactly the
-signal the trend exists to show. Publishing from one class of
-machine keeps the line meaningful even though it is the noisier
-class.
+The two are never joined into one series. A GitHub runner has
+noisy neighbours and no fixed CPU; the lab node had neither.
+Interleaving the two in one series produces a chart whose every
+other point is a step change in the machine rather than in the
+code, which is exactly the signal the trend exists to show.
 
 `publish-perf.py --runner` records the class on each history entry
-(`github-hosted` or `self-hosted`), and the page charts each class
-on its own axes. Records written before that flag existed carry no
+(`github-hosted`, the default), and the page charts each class on
+its own axes. Records written before that flag existed carry no
 `runner` key and are read as `self-hosted`, which is where they
 came from. The shields read the `github-hosted` series only: a
 fallback across classes would put a lab-node number behind a label
@@ -364,15 +142,10 @@ reachable at
 `https://rocm.github.io/rocm-ernic/perf/badge-<name>.json` as soon
 as that push lands -- no doc build in between.
 
-README.md links all three. All three currently ship with a
-committed `"no data"` placeholder: the `github-hosted` series
-starts empty, and the RDMA and TCP numbers that were there before
-came off the lab node, so continuing to show them under these
-labels would be a wrong answer rather than a stale one. The
-placeholder matters -- without a file at that URL shields.io
-renders an *error*, which looks far worse than a grey "no data".
-Expect real numbers after the first green `system-tests` run on
-`develop`, whether scheduled or dispatched by hand.
+README.md links all three. Each is committed with a `"no data"`
+placeholder. The placeholder matters -- without a file at that URL
+shields.io renders an *error*, which looks far worse than a grey
+"no data".
 
 [shields-endpoint]: https://shields.io/badges/endpoint-badge
 
@@ -426,149 +199,18 @@ another uid and `actions/checkout`'s `safe.directory` entry is
 out of scope, so the publish block marks the workspace safe
 itself before touching git.
 
-## Running jobs by hand
-
-Each job is a standalone script and can be run outside
-Actions:
-
-```bash
-bash ci/jobs/build.sh          # configure, build, ctest
-bash ci/jobs/loopback.sh       # loopback backend suite
-bash ci/jobs/vm-up.sh          # boot the CI VMs
-bash ci/jobs/vm-functional.sh  # RDMA functional tests
-bash ci/jobs/vm-nvmeof.sh      # NVMe-oF functional tests
-bash ci/jobs/perf.sh           # performance sweeps
-bash ci/jobs/vm-down.sh        # tear down
-```
-
-`vm-nvmeof.sh` is the one lane that needs a different VM
-bring-up: the controller lives inside the instance, so a
-single guest talking to a single server is a complete
-fabric and the instances have to be started on the nvmeof
-backend.
-
-It aims the connect at the controller's queue ceiling -- `-i
-$NVMEOF_QUEUES -W $NVMEOF_QUEUES` -- and then asserts that
-`/sys/class/nvme/nvmeN/queue_count` agrees. Unpinned,
-`nvme-rdma` asks for one I/O queue per online CPU, so the lane
-would cover whatever the runner happened to have rather than
-what the controller advertises. Both flags are needed: each of
-`-i`, `-W` and `-P` is clamped to the CPU count separately and
-then summed, so `-i 8` on its own tops out at the vCPU count.
-
-`NVMEOF_QUEUES` defaults to the `queues=` key of
-`ERNIC_BACKEND` -- eight when the key is absent, which is the
-server's own default -- so the documented `queues=4`
-reproduction in `docs/nvmeof-performance.rst` asserts against
-five queues rather than nine. The expectation is computed as
-`min(2 * min(queues, nproc), queues) + 1`; a guest with fewer
-than half the ceiling in vCPUs cannot reach it, and that is
-logged rather than failed.
-
-Export both, rather than prefixing a single command: all
-three scripts read them, and `ERNIC_INSTANCES` defaults to 2.
-
-```bash
-export ERNIC_INSTANCES=1
-export ERNIC_BACKEND=nvmeof:size=256M,bs=4096
-bash ci/jobs/vm-up.sh
-bash ci/jobs/vm-nvmeof.sh
-bash ci/jobs/vm-down.sh
-```
-
-Useful overrides:
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `CI_WORK` | `/var/tmp/ernic-ci-work` | workspace root |
-| `CI_BUILD_TYPE` | `Release` | CMake build type |
-| `CI_VM_ACCEL` | `kvm` | set `tcg` to emulate |
-| `CI_TAP_PREFIX` | `ernic-ci-tap` | per-instance TAP name prefix |
-| `CI_TAP_BRIDGE` | `ernic-ci-br0` | bridge the TAPs are enslaved to |
-| `CI_NIC_SUBNET` | `192.168.200` | /24 the guest NICs are addressed on (guest *n* gets host 10*n*), advertised as each instance's GID |
-| `ERNIC_INSTANCES` | `2` | number of VMs |
-| `CI_VM_SSH_BASE_PORT` | `2350` | first guest ssh port |
-| `CI_KEEP_OVERLAYS` | `false` | keep qcow2 after teardown |
-| `CI_GUEST_ARTIFACT_REPO` | see `ci/lib/common.sh` | OCI repo holding the guest image |
-| `CI_GUEST_ARTIFACT_TAG` | see `ci/lib/common.sh` | image tag to pull |
-| `CI_VM_ARTIFACT_DIR` | `${CI_VM_IMAGE_DIR}/artifacts/${CI_GUEST_ARTIFACT_TAG}` | where it is unpacked |
-| `CI_VM_BACKING` | the artifact's qcow2 | backing disk for the overlays |
-| `CI_VM_SSH_USER` | the artifact's account (`ubuntu`) | guest login account |
-| `CI_VM_SSH_IDENTITY` | the artifact's `id_rsa` | key used for guest ssh |
-| `CI_VM_VCPUS` | `8` | guest vCPUs |
-| `NVMEOF_QUEUES` | `ERNIC_BACKEND`'s `queues=`, else `8` | queue ceiling the connect aims at |
-
-VM names and ports are deliberately distinct from the
-interactive defaults in `/etc/rocm-ernic/rocm-ernic.env`
-so a CI run can never disturb a developer's VMs on the
-same box. Teardown only ever matches VMs it launched.
-The guest image is the exception, for the reason given
-above: it is read-only at runtime, and sharing it is what
-makes CI and the developer path test the same thing.
-
 ## Reports
 
-`ci/report/gen-report.py` merges three sources into one
-report:
+`ci/report/gen-report.py` reduces a lane's sweeps,
+`<results>/perf-csv/*.csv` (perftest, iperf3, fio and the
+other plays' CSVs), to per-metric medians, means and ranges.
+It writes `report.md` and `summary.json`, and appends the
+report to the GitHub step summary. Failed measurements are
+shown as an incomplete sample count rather than dropped, so
+a run that silently stopped measuring is visible.
 
-- `$CI_WORK/results/*.jsonl` — shell-level check results
-- `$CI_WORK/results/junit/*.xml` — Ansible task results,
-  captured via the `junit` callback plugin
-- `$CI_WORK/results/perf-csv/*.csv` — perftest and
-  iperf3 sweeps
-
-It writes `report.md` and `summary.json`, and appends
-the report to the GitHub step summary. Failed
-measurements are shown as an incomplete sample count
-rather than dropped, so a run that silently stopped
-measuring is visible.
-
-Regression checking compares medians against a stored
-baseline:
-
-```bash
-python3 ci/report/gen-report.py \
-    --results "$CI_WORK/results" \
-    --out "$CI_WORK/report" \
-    --baseline "$CI_WORK/baseline/summary.json" \
-    --threshold 15
-```
-
-Latency metrics are inverted so that "worse" is always
-negative. The script exits non-zero on any functional
-failure or regression, which is what gates the workflow.
-
-Only a clean tier-3 run on `develop` updates the baseline,
-so a failing or partial run can never quietly lower the
-bar.
-
-### What is gated, and why not everything
-
-Only latency is gated by default. Two back-to-back clean
-sweeps on the same host and build differ far more by
-metric than you might expect:
-
-| Metric | median | worst |
-|---|---:|---:|
-| `lat_max_us` | 1.0% | 11.9% |
-| `lat_typical_us` | 1.0% | 28.6% |
-| `bw_peak_GBs` | 7.4% | 69.0% |
-| `bw_avg_GBs` | 7.0% | 153.6% |
-| `msg_rate_mpps` | 7.1% | 152.8% |
-
-Averaged bandwidth and message rate swing too wide on an
-emulated two-VM setup to gate on. At any threshold tight
-enough to catch a real regression they fire on noise, and
-a gate that cries wolf nightly gets ignored. They are
-still measured and reported, just not failed on. Add
-others with `--gate-metric` if a workload proves stable
-enough to warrant it.
-
-Build the baseline from the median of at least two clean
-sweeps rather than a single run; one run bakes in
-whichever way the noise happened to fall. The baseline
-lives under `$CI_WORK`, not in git, because it describes
-one host: numbers from this node are not meaningful on
-another. Rebuilding a node means recapturing it.
+The hosted lanes run it from `.github/actions/publish-perf`,
+and the `summary.json` it writes is what `publish-perf.py`
+records.
 
 [ref-ci-images]: https://github.com/sbates130272/batesste-ci-images

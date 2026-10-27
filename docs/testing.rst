@@ -263,9 +263,8 @@ what it reports, including that bad options are refused).
 
 The guest-side connect needs a VM. It lives in
 ``ansible/playbooks/nvmeof-tests.yml``, which the hosted
-``system-test-nvmeof`` job runs end to end and which
-``ci/jobs/vm-nvmeof.sh`` mirrors check-by-check for the
-self-hosted lane. See :doc:`nvmeof`.
+``system-test-nvmeof`` job runs end to end. See
+:doc:`nvmeof`.
 
 S3-over-RDMA tests
 ^^^^^^^^^^^^^^^^^^
@@ -286,9 +285,7 @@ The guest-side transfer needs a VM, because it needs a real
 ``ibv_reg_mr`` for the token to describe.
 ``tests/s3_rdma_client.c`` is built and run inside the guest
 by ``ansible/playbooks/s3-tests.yml``, which the hosted
-``system-test-s3`` job runs end to end and which
-``ci/jobs/vm-s3.sh`` mirrors check-by-check for the
-self-hosted lane. See :doc:`s3`.
+``system-test-s3`` job runs end to end. See :doc:`s3`.
 
 Running Tests
 -------------
@@ -546,8 +543,10 @@ Fetch the published guest image once with
 
    cd ansible
 
-   # 1. Build, install the service and ernicctl.
-   ansible-playbook site.yml --tags host-setup
+   # 1. Build, install the service and ernicctl.  Run the
+   #    play, not site.yml --tags host-setup: site.yml always
+   #    registers the VMs, and there are none yet.
+   ansible-playbook playbooks/host-setup.yml
 
    # 2. Attach a VM to each instance.
    sudo ernicctl vm-launch 1
@@ -563,10 +562,9 @@ what you want when you *do* mean to recycle the mesh --- it
 stops the VMs and restarts the service, after which step 2
 has to be repeated.
 
-VMs brought up by ``ci/jobs/vm-up.sh`` are the CI path and
-run unprivileged. Drive those with ``ci-site.yml``, which
-imports no host-setup play and so neither tears them down nor
-touches the systemd service.
+The CI lanes launch their own VMs and drive them with
+``ci-site.yml``, which imports no host-setup play and so
+neither tears them down nor touches the systemd service.
 
 ``site.yml`` runs six plays in order:
 
@@ -678,9 +676,8 @@ operations, which take tens of minutes over the emulated NIC;
 ``ernic_rdma_tutorial_timeout`` bounds each process and
 ``ernic_rdma_tutorial_port`` picks the ports they connect on.
 
-Both CI lanes that run the sanity play run this one after
-it: the two-VM job in ``system-tests.yml`` and
-``ci/jobs/vm-functional.sh``.
+The two-VM job in ``system-tests.yml`` runs it after the
+sanity play.
 
 .. _ansible-guest-image:
 
@@ -699,9 +696,9 @@ provider.
 ``scripts/fetch-guest-image.sh`` pulls the image and its
 ``vm-info.json`` metadata with ``oras``, decompresses the
 qcow2 and runs ``qemu-img check`` over it. The download is
-skipped when the tag is already unpacked. ``ci/jobs/vm-up.sh``
-calls the same script, so the lab host and CI land the same
-bytes in the same layout.
+skipped when the tag is already unpacked. It lands the same
+bytes in the same layout as ``.github/actions/fetch-guest-vm``,
+which the hosted jobs use.
 
 It also checks the image's ``vm-info.json`` against this
 checkout and refuses the image when they disagree. That
@@ -730,7 +727,7 @@ to be hardcoded -- shields.io cannot read the image -- so
 without a check a tag bump would leave the front page
 advertising a kernel nothing ships. Two independent
 implementations compare them: the fetch script, on the
-self-hosted and manual paths, and an inline copy in the
+manual path, and an inline copy in the
 ``Read VM info`` step of the loopback job in
 ``.github/workflows/system-tests.yml``, on every pull
 request. The hosted jobs pull through
@@ -740,18 +737,16 @@ neither copy is redundant.
 Four more properties are site expectations rather than
 repo-derivable facts, so the caller supplies them:
 ``--expect-user``, ``--expect-disk``, ``--expect-release``
-and ``--expect-flavour``. ``ci/lib/common.sh`` passes all
-four, which is what catches a ``gpu``-flavour image reaching
-a lane whose roles want the ionic userspace. These
-assertions used to live in ``playbooks/vm-fetch.yml``, which
-0.2.0 removed; in the script they cover every caller, not
-just the one that ran a play.
+and ``--expect-flavour``. ``--expect-flavour ionic`` is what
+catches a ``gpu``-flavour image reaching roles that want the
+ionic userspace. These assertions used to live in
+``playbooks/vm-fetch.yml``, which 0.2.0 removed; in the
+script they cover every caller, not just the one that ran a
+play.
 
-Keep ``ernic_vm_artifact_tag`` equal to
-``GUEST_ARTIFACT_TAG`` in
-``.github/workflows/system-tests.yml`` *and* to
-``CI_GUEST_ARTIFACT_TAG`` in ``ci/lib/common.sh``. Nothing
-compares those three to each other.
+``ernic_vm_artifact_tag`` defaults to ``GUEST_ARTIFACT_TAG``
+in ``ci/guest-image.env``, the pin the CI lanes read, so the
+VMs launched here are the VMs CI tests unless you override it.
 
 The pinned image is flavour ``ionic`` and carries no ROCm,
 so ``ernic_gpu_passthrough`` defaults off alongside it. A
@@ -828,63 +823,6 @@ build toolchain before handing over; the mainline kernel
 itself must already be in the guest image, and
 ``ernic_guest_setup`` asserts that it matches the pinned ref
 before it starts the DKMS build.
-
-Self-Hosted CI
---------------
-
-The GitHub-hosted workflows can only build and unit-test.
-Anything needing KVM, a provisioned guest image, or two
-guests exchanging RDMA traffic runs on a self-hosted runner
-instead, driven by the harness in ``ci/``.
-
-It runs in three tiers:
-
-============  ===============================  =========
-Tier          Scope                            Needs KVM
-============  ===============================  =========
-1             build, ctest, loopback backend   no
-2             two-VM RDMA functional           yes
-3             performance sweeps               yes
-============  ===============================  =========
-
-Tiers 2 and 3 are scheduled onto runners carrying the
-``kvm`` label, so a node without KVM access stops
-attracting those jobs rather than failing them.
-
-The harness runs entirely unprivileged. The launcher and
-``ernicctl`` are environment-driven, so the control plane
-is redirected under a workspace the CI user owns rather
-than ``/run``, ``/var/log`` and ``/usr/local``.
-
-Test logic is not duplicated: ``ansible/ci-site.yml``
-drives the same guest-setup, sanity, RDMA-Tutorial and
-performance plays
-described above, supplying only the inventory
-registration that ``site.yml`` would normally provide.
-
-Check whether a node is ready:
-
-.. code-block:: bash
-
-   ci/doctor.sh
-
-Run any tier by hand:
-
-.. code-block:: bash
-
-   bash ci/jobs/build.sh
-   bash ci/jobs/loopback.sh
-   bash ci/jobs/vm-up.sh
-   bash ci/jobs/vm-functional.sh
-   bash ci/jobs/perf.sh
-   bash ci/jobs/vm-down.sh
-
-Results are merged into a functional and performance
-report by ``ci/report/gen-report.py``, which also checks
-medians against a stored baseline and exits non-zero on
-regressions. See ``ci/README.md`` for node setup,
-registration and the security notes that apply because
-this is a public repository.
 
 Adding New Tests
 ----------------

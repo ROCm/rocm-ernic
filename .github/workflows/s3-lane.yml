@@ -478,8 +478,8 @@ jobs:
       run: |
         echo "=== Installing the Ansible collection dependencies ==="
         # The guest is provisioned by the sbates130272.rocm_ernic
-        # collection in this repo, so the same role the self-hosted CI
-        # and developers use is what this job exercises.
+        # collection in this repo, so the same role developers use is
+        # what this job exercises.
         ansible --version
         # Galaxy resets connections often enough to fail a lane on its
         # own, and only someone with write access can rerun the job.
@@ -543,7 +543,8 @@ jobs:
         mkdir -p "$ERNIC_RUN_DIR"
 
         # vm-register.yml turns this manifest into the ernic_vms
-        # inventory group; on the self-hosted path ernicctl writes it.
+        # inventory group; on a developer's host the launcher and
+        # ernicctl write it.
         cat > "$ERNIC_RUN_DIR/instances.json" << EOFJSON
         {
           "instances": [
@@ -655,12 +656,12 @@ jobs:
         export ANSIBLE_ROLES_PATH="$PWD/ansible/roles"
         PROJECT_ROOT="$PWD"
 
-        # The same play the self-hosted lane and developers run, so
-        # there is one definition of what "S3 over RDMA works" means:
-        # the endpoint answers, objects go out and come back through an
-        # x-amz-rdma-token, every payload compares equal, and the
-        # bucket is left empty.  The sweep is off unless this run is
-        # publishing; an empty value is the play's own default.
+        # The same play developers run, so there is one definition of
+        # what "S3 over RDMA works" means: the endpoint answers, objects
+        # go out and come back through an x-amz-rdma-token, every
+        # payload compares equal, and the bucket is left empty.  The
+        # sweep is off unless this run is publishing; an empty value is
+        # the play's own default.
         perf_csv=""
         if [ "$PUBLISH" = "true" ]; then
           mkdir -p "$(dirname "$S3_PERF_CSV")"
@@ -734,8 +735,7 @@ jobs:
     - name: Publish the S3 trend and shield
       # Only a green run on develop may move the published history: a
       # failed lane's numbers describe a broken store, and a branch's
-      # describe the branch.  A hosted runner is also noisier than the
-      # self-hosted node, which is why this feeds its own "s3" series.
+      # describe the branch.  This feeds its own "s3" series.
       if: >-
         inputs.publish &&
         success() &&

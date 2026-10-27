@@ -44,8 +44,8 @@ removed_features:
     ``gpu-tests.yml``, ``gpu-perftest.yml``, ``stress-tests.yml`` and
     ``monitoring-setup.yml`` have been removed, along with the stray
     ``run-*.sh`` scripts and ``templates/packages-ernic``.  VMs are brought
-    up by ``ernicctl vm-launch`` or ``ci/jobs/vm-up.sh`` and the image is
-    fetched by ``scripts/fetch-guest-image.sh``; neither needs a play.  The
+    up by ``ernicctl vm-launch`` and the image is fetched by
+    ``scripts/fetch-guest-image.sh``; neither needs a play.  The
     variables those plays owned are gone from ``group_vars/all.yml``:
     ``ernic_vm_artifact``, ``ernic_golden_image``, ``ernic_vm_release``,
     ``ernic_vm_packages``, ``ernic_vm_nvme``, ``ernic_vm_qemu_aio``,
@@ -67,8 +67,7 @@ removed_features:
     ``--expect-release`` and ``--expect-flavour`` flags carry the site
     expectations the play used to read from ``group_vars/all.yml``, and
     ``--no-verify`` opts out.  Checking in the script rather than the play
-    means every caller is covered, including ``ci/jobs/vm-up.sh``, which
-    never ran the play.
+    means every caller is covered, not just one that runs a play.
   - >-
     ``playbooks/ci-vm-register.yml`` is now ``playbooks/vm-register.yml``.
     It was never CI-specific --- its only input is the launcher's

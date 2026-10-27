@@ -8,7 +8,7 @@ run iperf3 / perftest / NVMe-oF tests against them.
 The guest disk is **not** built here. It is the published
 `ionic` flavour from
 [batesste-ci-images](https://github.com/sbates130272/batesste-ci-images),
-pulled by `scripts/fetch-guest-image.sh` or `ci/jobs/vm-up.sh`.
+pulled by `scripts/fetch-guest-image.sh`.
 That image pins mainline kernel 7.2.6 on Ubuntu 26.04 and bakes
 the RDMA userspace, the DKMS toolchain and `perftest`.
 
@@ -68,8 +68,10 @@ is host setup, launch, then everything else:
 ```bash
 cd ansible
 
-# 1. Build, install the service and ernicctl.
-ansible-playbook site.yml --tags host-setup
+# 1. Build, install the service and ernicctl.  Run the play,
+#    not site.yml --tags host-setup: site.yml always registers
+#    the VMs, and there are none yet.
+ansible-playbook playbooks/host-setup.yml
 
 # 2. Attach a VM to each instance.
 sudo ernicctl vm-launch 1
@@ -138,11 +140,9 @@ ansible-playbook site.yml \
   -e ernic_vm_backing=/path/to/backing.qcow2
 ```
 
-Keep `ernic_vm_artifact_tag` equal to `GUEST_ARTIFACT_TAG`
-in `.github/workflows/system-tests.yml` and to
-`CI_GUEST_ARTIFACT_TAG` in `ci/lib/common.sh`, so the VMs
-launched here are the VMs CI tests. Nothing compares those
-three to each other.
+`ernic_vm_artifact_tag` defaults to `GUEST_ARTIFACT_TAG` in
+`ci/guest-image.env`, the pin the CI lanes read, so the VMs
+launched here are the VMs CI tests unless you override it.
 
 `scripts/fetch-guest-image.sh` does check the image against
 this checkout before it caches it. The image's own
@@ -153,9 +153,9 @@ against -- sharing a `major.minor` with `IONIC_KERNEL_REF` in
 `CI guest kernel` badge on line 9 of `README.md`, so a tag
 bump cannot leave the front page advertising a kernel nothing
 ships. Callers can add `--expect-user`, `--expect-disk`,
-`--expect-release` and `--expect-flavour`; `ci/lib/common.sh`
-passes all four. These assertions used to live in
-`playbooks/vm-fetch.yml`, which 0.2.0 removed.
+`--expect-release` and `--expect-flavour`. These assertions
+used to live in `playbooks/vm-fetch.yml`, which 0.2.0
+removed.
 
 The hosted jobs do not run that script -- they pull through
 `.github/actions/fetch-guest-vm` and carry their own inline
@@ -187,7 +187,7 @@ ansible/                  # this directory is the collection
 ├── PLAYBOOKS.md          # this file
 ├── requirements.yml      # Galaxy collection deps
 ├── site.yml              # Master playbook
-├── ci-site.yml           # Self-hosted CI entry point
+├── ci-site.yml           # CI VM lanes' entry point
 ├── group_vars/
 │   └── all.yml           # Site configuration
 ├── inventory/
@@ -214,8 +214,8 @@ ansible/                  # this directory is the collection
 2. **vm-register** reads the launcher's `instances.json` and
    adds each running VM to the `ernic_vms` group with its ssh
    port, user and NIC address. It creates no VMs — `ernicctl
-   vm-launch` or `ci/jobs/vm-up.sh` does that — so it is the
-   one registration path for both the developer and CI entry
+   vm-launch` or the CI workflow does that — so it is the one
+   registration path for both the developer and CI entry
    points.
 
 3. **guest-setup** runs `ernic_guest_setup`: installs

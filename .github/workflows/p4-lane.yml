@@ -493,8 +493,8 @@ jobs:
       run: |
         echo "=== Installing the Ansible collection dependencies ==="
         # The guest is provisioned by the sbates130272.rocm_ernic
-        # collection in this repo, so the same role the self-hosted CI
-        # and developers use is what this job exercises.
+        # collection in this repo, so the same role developers use is
+        # what this job exercises.
         ansible --version
         # Galaxy resets connections often enough to fail a lane on its
         # own, and only someone with write access can rerun the job.
@@ -563,7 +563,8 @@ jobs:
         mkdir -p "$ERNIC_RUN_DIR"
 
         # vm-register.yml turns this manifest into the ernic_vms
-        # inventory group; on the self-hosted path ernicctl writes it.
+        # inventory group; on a developer's host the launcher and
+        # ernicctl write it.
         cat > "$ERNIC_RUN_DIR/instances.json" << EOFJSON
         {
           "instances": [
@@ -606,12 +607,11 @@ jobs:
 
     # The driver the guest needs to reach the engine at all.
     #
-    # The same play a developer and the self-hosted lane run, so there
-    # is one definition of "the guest can reach the P4 engine": the
-    # module builds against both patch series, loads, and /dev/ernic-p4
-    # is there. The role asserts that last part because this lane
-    # started the server with a scope, so an absent node is a failure
-    # and not a configuration.
+    # The same play a developer runs, so there is one definition of
+    # "the guest can reach the P4 engine": the module builds against
+    # both patch series, loads, and /dev/ernic-p4 is there. The role
+    # asserts that last part because this lane started the server with
+    # a scope, so an absent node is a failure and not a configuration.
     - name: Build and load ernic_p4 in the VM
       shell: bash
       env:
@@ -818,8 +818,7 @@ jobs:
     - name: Publish the P4 conversion trend
       # Only a green run on develop may move the published history: a
       # failed lane's numbers describe a broken engine, and a branch's
-      # describe the branch. A hosted runner is noisier than the
-      # self-hosted node, which is why this feeds its own series.
+      # describe the branch. This feeds its own series.
       if: >-
         inputs.publish &&
         success() &&

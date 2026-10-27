@@ -8,23 +8,18 @@
 # pylint: disable=invalid-name
 # pylint: enable=invalid-name
 
-"""Turn a CI run's raw results into the functional and performance reports.
+"""Turn a CI run's performance sweeps into a report.
 
-Inputs (all optional; whatever is present is used):
-  <results>/*.jsonl        shell-level check results
-  <results>/junit/*.xml    Ansible junit callback output
-  <results>/perf-csv/*.csv perftest / iperf3 sweeps
+Input:
+  <results>/perf-csv/*.csv perftest / iperf3 / fio sweeps
 
 Outputs:
   <out>/report.md          human-readable report
-  <out>/summary.json       machine-readable rollup
+  <out>/summary.json       machine-readable rollup, which
+                           publish-perf.py records
 
 Usage:
-  gen-report.py --results DIR --out DIR [--baseline FILE]
-
-Exit status is 1 if any functional check failed, or if a perf
-regression beyond --threshold is detected against --baseline.  That
-makes the script usable as the gating step of a workflow.
+  gen-report.py --results DIR --out DIR
 """
 
 import argparse
@@ -34,21 +29,13 @@ import json
 import os
 import statistics
 import sys
-import xml.parsers.expat
 from collections import defaultdict
 from datetime import datetime, timezone
-
-# Bandit flags any import from xml.etree. Nothing here parses with it:
-# parse_xml() parses with expat and refuses a DOCTYPE, as defusedxml does,
-# and TreeBuilder only builds the tree from expat's callbacks.
-from xml.etree.ElementTree import TreeBuilder  # nosec B405
 
 # ── CSV schema handling ───────────────────────────
 #
 # The perf plays emit several shapes.  Each entry maps
-# a header tuple to (kind, metric columns).  "lower is
-# better" metrics are listed in LOWER_IS_BETTER so
-# regression comparisons get the sign right.
+# a header tuple to the kind of measurement it holds.
 
 SCHEMAS = {
     ("verb", "size", "bw_peak_GBs", "bw_avg_GBs", "msg_rate_mpps"): "bandwidth",
@@ -63,15 +50,6 @@ SCHEMAS = {
     ("verb", "size", "lat_min_us", "lat_typical_us", "lat_max_us"): "latency",
     ("verb", "size", "lat_avg_us"): "latency",
     ("verb", "size", "elapsed_us", "iters", "bw_GBs"): "bandwidth",
-    ("section", "test", "detail", "result", "value"): "stress",
-}
-
-LOWER_IS_BETTER = {
-    "lat_min_us",
-    "lat_typical_us",
-    "lat_max_us",
-    "lat_avg_us",
-    "elapsed_us",
 }
 
 # Values the plays write into numeric columns when a
@@ -92,93 +70,6 @@ def to_float(value):
         return None
 
 
-# ── Functional results ────────────────────────────
-
-
-def load_jsonl(results_dir):
-    """Load every shell-level check result."""
-    checks = []
-    for path in sorted(glob.glob(os.path.join(results_dir, "*.jsonl"))):
-        with open(path, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    checks.append(json.loads(line))
-                except json.JSONDecodeError:
-                    # A job killed mid-write can leave a
-                    # torn final line; the rest is still
-                    # worth reporting.
-                    continue
-    return checks
-
-
-class XMLDoctypeError(ValueError):
-    """An XML file has a DOCTYPE, which parse_xml() refuses."""
-
-
-def parse_xml(path):
-    """Parse an XML file and return its root element, refusing any DOCTYPE.
-
-    xml.etree.ElementTree.parse() expands the entities a document
-    declares in its DOCTYPE, so a small file can expand to gigabytes
-    (the "billion laughs" attack). A junit report never has a DOCTYPE,
-    so refuse a file that does, before any declaration in it is read,
-    the way defusedxml does without the dependency.
-    """
-
-    def refuse_doctype(*_args):
-        raise XMLDoctypeError(f"{path}: has a DOCTYPE")
-
-    builder = TreeBuilder()
-    parser = xml.parsers.expat.ParserCreate()
-    parser.StartDoctypeDeclHandler = refuse_doctype
-    parser.StartElementHandler = builder.start
-    parser.EndElementHandler = builder.end
-    parser.CharacterDataHandler = builder.data
-    with open(path, "rb") as fh:
-        parser.ParseFile(fh)
-    return builder.close()
-
-
-def load_junit(results_dir):
-    """Load Ansible junit callback results as checks."""
-    checks = []
-    pattern = os.path.join(results_dir, "junit", "*.xml")
-    for path in sorted(glob.glob(pattern)):
-        try:
-            root = parse_xml(path)
-        except (xml.parsers.expat.ExpatError, XMLDoctypeError):
-            continue
-        suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
-        for suite in suites:
-            suite_name = suite.get("name") or "ansible"
-            for case in suite.findall("testcase"):
-                if case.find("skipped") is not None:
-                    status = "skip"
-                elif case.find("failure") is not None or case.find("error") is not None:
-                    status = "fail"
-                else:
-                    status = "pass"
-                detail = ""
-                for tag in ("failure", "error"):
-                    node = case.find(tag)
-                    if node is not None:
-                        detail = (node.get("message") or (node.text or ""))[:400]
-                        break
-                checks.append(
-                    {
-                        "suite": suite_name,
-                        "name": case.get("name") or "?",
-                        "status": status,
-                        "duration_s": float(case.get("time") or 0.0),
-                        "detail": detail,
-                    }
-                )
-    return checks
-
-
 # ── Performance results ───────────────────────────
 
 
@@ -187,7 +78,6 @@ def load_perf(results_dir):
     """Load perf CSVs grouped by kind and metric."""
     # samples[kind][(verb, size, metric)] = [values]
     samples = defaultdict(lambda: defaultdict(list))
-    stress = []
     files = 0
 
     pattern = os.path.join(results_dir, "perf-csv", "*.csv")
@@ -208,11 +98,6 @@ def load_perf(results_dir):
                 if len(row) != len(cols):
                     continue
                 rec = dict(zip(cols, row))
-
-                if kind == "stress":
-                    stress.append(rec)
-                    continue
-
                 verb = rec.get("verb", "?")
                 size = rec.get("size", "?")
                 for col in cols:
@@ -226,7 +111,7 @@ def load_perf(results_dir):
                         samples[kind][(verb, size, col)].append(None)
                     else:
                         samples[kind][(verb, size, col)].append(val)
-    return samples, stress, files
+    return samples, files
 
 
 def summarize(samples):
@@ -262,81 +147,6 @@ def _size_key(size):
         return 0
 
 
-# ── Regression comparison ─────────────────────────
-
-# Metrics stable enough to gate a build on.
-#
-# Measured over two back-to-back clean sweeps on the same
-# host and build, the run-to-run spread differs sharply by
-# metric:
-#
-#   lat_max_us      median 1.0%   max  11.9%
-#   lat_typical_us  median 1.0%   max  28.6%
-#   bw_peak_GBs     median 7.4%   max  69.0%
-#   bw_avg_GBs      median 7.0%   max 153.6%
-#   msg_rate_mpps   median 7.1%   max 152.8%
-#
-# Averaged bandwidth and message rate swing far too wide on
-# an emulated two-VM setup to gate on: at any threshold tight
-# enough to catch a real regression they fire on noise, and a
-# gate that cries wolf nightly gets ignored. They are still
-# reported, just not failed on. Override with --gate-metric.
-DEFAULT_GATE_METRICS = ("lat_typical_us", "lat_max_us")
-
-# The spreads above were measured across repeated sweeps. A
-# single sweep gives none of that: the median of one sample is
-# that sample, so an ordinary outlier reads as a regression.
-# Require a few successful samples on both sides before a
-# metric may fail the build -- otherwise the sweep is only
-# descriptive, and it is reported without gating.
-DEFAULT_MIN_SAMPLES = 3
-
-
-# pylint: disable-next=too-many-locals
-def compare(
-    current, baseline, threshold, gate_metrics=None, min_samples=DEFAULT_MIN_SAMPLES
-):
-    """Flag gated metrics that moved beyond threshold percent."""
-    gate = set(gate_metrics or DEFAULT_GATE_METRICS)
-    regressions = []
-    base_index = {}
-    for kind, rows in baseline.get("perf", {}).items():
-        for row in rows:
-            key = (kind, row["verb"], row["size"], row["metric"])
-            base_index[key] = (row.get("median"), row.get("n_ok", 0))
-
-    for kind, rows in current.items():
-        for row in rows:
-            key = (kind, row["verb"], row["size"], row["metric"])
-            base, base_n = base_index.get(key, (None, 0))
-            cur = row.get("median")
-            if base is None or cur is None or base == 0:
-                continue
-            metric = row["metric"]
-            if metric not in gate:
-                continue
-            # Too few samples on either side to distinguish a
-            # regression from noise.
-            if row.get("n_ok", 0) < min_samples or base_n < min_samples:
-                continue
-            delta_pct = (cur - base) / abs(base) * 100.0
-            # Normalise so negative always means "worse".
-            signed = -delta_pct if metric in LOWER_IS_BETTER else delta_pct
-            if signed < -threshold:
-                regressions.append(
-                    {
-                        "kind": kind,
-                        "verb": row["verb"],
-                        "size": row["size"],
-                        "metric": metric,
-                        "baseline": base,
-                        "current": cur,
-                        "change_pct": delta_pct,
-                    }
-                )
-    return regressions
-
-
 # ── Rendering ─────────────────────────────────────
 
 
@@ -347,14 +157,8 @@ def fmt(value, places=3):
     return f"{value:.{places}f}"
 
 
-# pylint: disable-next=too-many-locals,too-many-branches,too-many-statements
-def render(checks, perf, stress, regressions, meta):
+def render(perf, meta):
     """Render the Markdown report."""
-    total = len(checks)
-    passed = sum(1 for c in checks if c["status"] == "pass")
-    failed = sum(1 for c in checks if c["status"] == "fail")
-    skipped = sum(1 for c in checks if c["status"] == "skip")
-
     lines = []
     add = lines.append
 
@@ -363,52 +167,9 @@ def render(checks, perf, stress, regressions, meta):
     add(f"- **Run**: {meta['run_id']}")
     add(f"- **Commit**: `{meta['sha'][:12]}` ({meta['ref']})")
     add(f"- **Node**: {meta['node']}")
-    add(f"- **Accelerator**: {meta['accel']}")
     add(f"- **Generated**: {meta['generated']}")
     add("")
 
-    # ── Functional ────────────────────────────────
-    add("## Functional results")
-    add("")
-    if total == 0:
-        add("_No functional results recorded._")
-    else:
-        verdict = "PASS" if failed == 0 else "FAIL"
-        add(
-            f"**{verdict}** — {passed}/{total} passed, "
-            f"{failed} failed, {skipped} skipped"
-        )
-        add("")
-        by_suite = defaultdict(list)
-        for c in checks:
-            by_suite[c["suite"]].append(c)
-        for suite in sorted(by_suite):
-            items = by_suite[suite]
-            s_fail = sum(1 for c in items if c["status"] == "fail")
-            mark = "❌" if s_fail else "✅"
-            add(f"### {mark} {suite} ({len(items) - s_fail}/{len(items)})")
-            add("")
-            add("| Check | Status | Time (s) |")
-            add("|---|---|---|")
-            for c in items:
-                icon = {"pass": "✅", "fail": "❌", "skip": "⏭️"}.get(c["status"], "?")
-                add(
-                    f"| {c['name']} | {icon} "
-                    f"{c['status']} | "
-                    f"{c['duration_s']:.2f} |"
-                )
-            add("")
-            for c in items:
-                if c["status"] == "fail" and c.get("detail"):
-                    add(f"<details><summary>{c['name']} detail</summary>")
-                    add("")
-                    add("```")
-                    add(str(c["detail"])[:1500])
-                    add("```")
-                    add("</details>")
-                    add("")
-
-    # ── Performance ───────────────────────────────
     add("## Performance results")
     add("")
     if not perf:
@@ -432,112 +193,38 @@ def render(checks, perf, stress, regressions, meta):
             )
         add("")
 
-    if stress:
-        fails = [s for s in stress if s.get("result", "").upper() == "FAIL"]
-        add(f"### Stress ({len(stress)} records, {len(fails)} failing)")
-        add("")
-
-    # ── Regressions ───────────────────────────────
-    if regressions:
-        add(f"## ⚠️ Performance regressions ({len(regressions)})")
-        add("")
-        add("| Kind | Verb | Size | Metric | Baseline | Current | Change |")
-        add("|---|---|---:|---|---:|---:|---:|")
-        for r in regressions:
-            add(
-                f"| {r['kind']} | {r['verb']} | "
-                f"{r['size']} | {r['metric']} | "
-                f"{fmt(r['baseline'])} | "
-                f"{fmt(r['current'])} | "
-                f"{r['change_pct']:+.1f}% |"
-            )
-        add("")
-
     return "\n".join(lines) + "\n"
 
 
-# pylint: disable-next=too-many-locals
 def main():
     """Generate the reports; return the exit status."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--baseline", help="summary.json from a previous run")
-    ap.add_argument(
-        "--threshold", type=float, default=15.0, help="regression threshold in percent"
-    )
-    ap.add_argument(
-        "--gate-metric",
-        action="append",
-        dest="gate_metrics",
-        metavar="NAME",
-        help="metric to gate regressions on; repeatable. "
-        "Defaults to " + ", ".join(DEFAULT_GATE_METRICS),
-    )
-    ap.add_argument(
-        "--min-samples",
-        type=int,
-        default=DEFAULT_MIN_SAMPLES,
-        metavar="N",
-        help="minimum successful samples on both sides "
-        "before a metric may gate; below this the "
-        "median is too noisy to judge "
-        f"(default {DEFAULT_MIN_SAMPLES})",
-    )
-    ap.add_argument("--no-fail", action="store_true", help="always exit 0")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
 
-    checks = load_jsonl(args.results)
-    checks += load_junit(args.results)
-    samples, stress, csv_files = load_perf(args.results)
+    samples, csv_files = load_perf(args.results)
     perf = summarize(samples)
 
-    regressions = []
-    if args.baseline and os.path.isfile(args.baseline):
-        with open(args.baseline, encoding="utf-8") as fh:
-            baseline = json.load(fh)
-        regressions = compare(
-            perf, baseline, args.threshold, args.gate_metrics, args.min_samples
-        )
-
-    # GITHUB_SHA / GITHUB_REF_NAME describe what *triggered* the
-    # workflow, not what was checked out. A self-hosted run dispatched
-    # with a `pr` input still reports develop there while testing the
-    # PR head, so the workflow passes the resolved ref explicitly. Fall
-    # back to the trigger values for local runs.
     meta = {
         "run_id": os.environ.get("GITHUB_RUN_ID", "local"),
-        "sha": (
-            os.environ.get("CI_TESTED_SHA") or os.environ.get("GITHUB_SHA", "unknown")
-        ),
-        "ref": (
-            os.environ.get("CI_TESTED_REF")
-            or os.environ.get("GITHUB_REF_NAME", "unknown")
-        ),
+        "sha": os.environ.get("GITHUB_SHA", "unknown"),
+        "ref": os.environ.get("GITHUB_REF_NAME", "unknown"),
         "node": os.environ.get("RUNNER_NAME", os.uname().nodename),
-        "accel": os.environ.get("CI_VM_ACCEL", "n/a"),
         "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
     }
 
-    report = render(checks, perf, stress, regressions, meta)
+    report = render(perf, meta)
     report_path = os.path.join(args.out, "report.md")
     with open(report_path, "w", encoding="utf-8") as fh:
         fh.write(report)
 
-    failed = sum(1 for c in checks if c["status"] == "fail")
     summary = {
         "meta": meta,
-        "functional": {
-            "total": len(checks),
-            "passed": sum(1 for c in checks if c["status"] == "pass"),
-            "failed": failed,
-            "skipped": sum(1 for c in checks if c["status"] == "skip"),
-        },
         "perf": perf,
         "perf_csv_files": csv_files,
-        "regressions": regressions,
     }
     with open(os.path.join(args.out, "summary.json"), "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=2)
@@ -549,16 +236,8 @@ def main():
             fh.write(report)
 
     print(f"wrote {report_path}")
-    print(
-        f"functional: {summary['functional']['passed']}"
-        f"/{summary['functional']['total']} passed, "
-        f"{failed} failed"
-    )
-    print(f"perf: {csv_files} CSV file(s), {len(regressions)} regression(s)")
-
-    if args.no_fail:
-        return 0
-    return 1 if (failed or regressions) else 0
+    print(f"perf: {csv_files} CSV file(s)")
+    return 0
 
 
 if __name__ == "__main__":

@@ -7,9 +7,8 @@
 # fetch-guest-image.sh
 #
 # Pulls the prebuilt guest qcow2 and its metadata from the ORAS artifact
-# registry.  Used by ci/lib/common.sh and by hand, so both land the
-# same bytes in the same layout as .github/actions/fetch-guest-vm,
-# which does this for the hosted jobs.
+# registry, for use by hand.  It lands the same bytes in the same layout
+# as .github/actions/fetch-guest-vm, which does this for the hosted jobs.
 #
 # The image is the "ionic" flavour published by
 # https://github.com/sbates130272/batesste-ci-images.
@@ -47,8 +46,7 @@ PROJECT_ROOT="$(dirname -- "$SCRIPT_DIR")"
 # ansible/roles/ernic_guest_setup/defaults/main.yml, which assert the
 # same floor against the running guest.
 MIN_KERNEL="6.18"
-# Optional site expectations.  Empty means "do not check"; the values
-# the self-hosted CI cares about are passed by ci/lib/common.sh.
+# Optional site expectations.  Empty means "do not check".
 EXPECT_USER=""
 EXPECT_DISK=""
 EXPECT_RELEASE=""
@@ -240,9 +238,7 @@ verify_image() {
         "Leave docs/performance.rst alone: its Reference Measurements are a" \
         "historical record of a run on the old guest, not a claim about this one."
 
-    # 4. Site expectations, when the caller supplied them.  These are
-    #    what ci/lib/common.sh and ansible/group_vars/all.yml hardcode
-    #    alongside the tag, and so are what can drift away from it.
+    # 4. Site expectations, when the caller supplied them.
     [ -z "$EXPECT_USER" ] || [ "$username" = "$EXPECT_USER" ] || fail \
         "image login account is '${username}', expected '${EXPECT_USER}'"
     [ -z "$EXPECT_DISK" ] || [ "$disk" = "$EXPECT_DISK" ] || fail \
@@ -253,15 +249,14 @@ verify_image() {
         "image flavour is '${flavour}', expected '${EXPECT_FLAVOUR}'" \
         "An 'ionic' image ships no ROCm, so the GPU roles fail deep in rocm-smi."
 
-    # 5. The key has to be called id_rsa, because report(), this script's
-    #    header and CI_VM_SSH_IDENTITY in ci/lib/common.sh all say it is.
-    #    A rename upstream would otherwise be silent: vm_ssh's -i guard
-    #    drops the missing identity and every login fails on publickey
-    #    after the VM has already booted.
+    # 5. The key has to be called id_rsa, because report() and this
+    #    script's header both say it is.  A rename upstream would
+    #    otherwise be silent: every login fails on publickey after the
+    #    VM has already booted.
     key=$(basename -- "${key:-id_rsa}")
     [ "$key" = id_rsa ] || fail \
         "image declares its private key as '${key}', not id_rsa" \
-        "report(), the script header and CI_VM_SSH_IDENTITY all name id_rsa."
+        "report() and the script header both name id_rsa."
     # oras does not preserve modes and OpenSSH refuses a group-readable
     # key.  The pull path chmods what it pulled; this also covers a
     # directory somebody populated by hand.
