@@ -2345,11 +2345,27 @@ static void test_features_lpm(void)
     check(forwards_to(eng, &to_10_2, P4_PORT_HOST),
           "the default route beat a /8");
 
-    /* The same row, however it is written: a host bit under the prefix,
-     * or a byte past the 4 that are significant. */
+    /* A host bit past the prefix is malformed, as in P4Runtime, not
+     * another way of writing 10/8. */
     route_entry(&up, P4_UPDATE_INSERT, IP4(10, 0, 0, 1), 8, P4_PORT_UPLINK);
-    check(update(eng, &up) == -EEXIST,
-          "10.0.0.1/8 was installed beside 10.0.0.0/8");
+    check(update(eng, &up) == -EINVAL, "10.0.0.1/8 was not refused");
+    route_entry(&up, P4_UPDATE_INSERT, IP4(172, 16, 0, 1), 8, P4_PORT_UPLINK);
+    check(update(eng, &up) == -EINVAL, "172.16.0.1/8, a new row, was not "
+                                       "refused");
+    route_entry(&up, P4_UPDATE_DELETE, IP4(10, 0, 0, 1), 8, 0);
+    check(update(eng, &up) == -EINVAL, "a delete of 10.0.0.1/8 was not "
+                                       "refused");
+
+    /* LPM takes no priority. */
+    route_entry(&up, P4_UPDATE_INSERT, IP4(172, 16, 0, 0), 12, P4_PORT_UPLINK);
+    up.priority = 1;
+    check(update(eng, &up) == -EINVAL, "an LPM entry took a priority");
+    route_entry(&up, P4_UPDATE_DELETE, IP4(10, 0, 0, 0), 8, 0);
+    up.priority = 1;
+    check(update(eng, &up) == -EINVAL, "an LPM delete took a priority");
+
+    /* The same row, however it is written: a byte past the 4 that are
+     * significant. */
     route_entry(&up, P4_UPDATE_INSERT, IP4(10, 0, 0, 0), 8, P4_PORT_UPLINK);
     up.match[0].value[0] = 0xAAu;
     check(update(eng, &up) == -EEXIST,
@@ -2373,6 +2389,106 @@ static void test_features_lpm(void)
           "the modified /8 did not send 10.1.2.3 to the uplink");
     route_entry(&up, P4_UPDATE_MODIFY, IP4(10, 1, 0, 0), 16, P4_PORT_UPLINK);
     check(update(eng, &up) == -ENOENT, "a route that is gone was modified");
+
+    p4_engine_destroy(eng);
+}
+
+/*
+ * An LPM table whose LPM key is not its first, the usual {vrf: exact;
+ * dst: lpm} shape: here the EtherType stands in for the VRF.
+ */
+#define P4_VRF_PROG                                                     \
+    P4_FRONT "\"actions\":[{\"name\":\"fwd\",\"id\":0,"                 \
+             "\"runtime_data\":[{\"name\":\"port\",\"bitwidth\":9}],"   \
+             "\"primitives\":[{\"op\":\"assign\",\"parameters\":["      \
+             "{\"type\":\"field\",\"value\":[\"standard_metadata\","    \
+             "\"egress_spec\"]},"                                       \
+             "{\"type\":\"runtime_data\",\"value\":0}]}]}],"            \
+             "\"pipelines\":[{\"name\":\"ingress\",\"id\":0,"           \
+             "\"init_table\":\"vrf_route\",\"tables\":["                \
+             "{\"name\":\"vrf_route\",\"id\":0,\"match_type\":\"lpm\"," \
+             "\"type\":\"simple\",\"max_size\":16,"                     \
+             "\"with_counters\":false,\"direct_meters\":null,"          \
+             "\"support_timeout\":false,"                               \
+             "\"key\":[{\"match_type\":\"exact\","                      \
+             "\"target\":[\"eth\",\"ty\"],\"mask\":null},"              \
+             "{\"match_type\":\"lpm\","                                 \
+             "\"target\":[\"eth\",\"dst\"],\"mask\":null}],"            \
+             "\"actions\":[\"fwd\"],\"next_tables\":{\"fwd\":null}}],"  \
+             "\"action_profiles\":[],\"conditionals\":[]}]}"
+
+/* An entry in P4_VRF_PROG's table: EtherType @ty, @dst/@plen, to @port. */
+static void vrf_entry(struct p4_update *up, uint8_t type, uint16_t ty,
+                      uint64_t dst, uint16_t plen, uint16_t port)
+{
+    memset(up, 0, sizeof(*up));
+    up->type = type;
+    (void)snprintf(up->table, sizeof(up->table), "vrf_route");
+    (void)snprintf(up->action, sizeof(up->action), "fwd");
+    up->nmatch = 2;
+    up->match[0].len = 2;
+    put_spec(up->match[0].value, ty, 2);
+    up->match[1].len = 6;
+    up->match[1].prefix_bits = plen;
+    put_spec(up->match[1].value, dst, 6);
+    up->nparams = 1;
+    up->params[0].len = 2;
+    put_spec(up->params[0].value, port, 2);
+}
+
+/*
+ * The longest prefix wins by the LPM key's prefix, not by key 0's.  Ranked
+ * by key 0, an exact field, every entry here ties at 0 and the first
+ * inserted wins.  And a prefix on a field that is not LPM is refused, in
+ * every kind of update, rather than kept where nothing reads it.
+ */
+static void test_lpm_key_not_first(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    struct p4_update up;
+    struct frame f;
+    char err[160];
+
+    checkf(load_text(eng, P4_VRF_PROG) == 0,
+           "an LPM table with an exact key first is refused: %s",
+           load_why(eng));
+
+    /* To 02:00:00:00:00:01; padded past the minimum frame. */
+    frame_eth(&f, 0x0800u);
+    for (unsigned i = 0; i < 6; i++)
+        put_be(&f, 0, 8);
+
+    /* The shorter prefix first, so first-match would pick it. */
+    vrf_entry(&up, P4_UPDATE_INSERT, 0x0800u, 0, 0, P4_PORT_UPLINK);
+    check(update(eng, &up) == 0, "the /0 is not installed");
+    vrf_entry(&up, P4_UPDATE_INSERT, 0x0800u, UINT64_C(0x020000000000), 8,
+              P4_PORT_HOST);
+    check(update(eng, &up) == 0, "the /8 is not installed");
+    check(forwards_to(eng, &f, P4_PORT_HOST),
+          "the /0, inserted first, beat the /8");
+
+    /* A prefix on the exact field.  Each update would succeed without it:
+     * the insert is a new row, and the modify and delete find the /0. */
+    for (unsigned type = P4_UPDATE_INSERT; type <= P4_UPDATE_DELETE; type++) {
+        if (type == P4_UPDATE_INSERT)
+            vrf_entry(&up, (uint8_t)type, 0x0800u, UINT64_C(0x020100000000), 16,
+                      P4_PORT_UPLINK);
+        else
+            vrf_entry(&up, (uint8_t)type, 0x0800u, 0, 0, P4_PORT_UPLINK);
+        up.match[0].prefix_bits = 48;
+        checkf(p4_engine_update(eng, &up, err, sizeof(err)) == -EINVAL,
+               "update type %u took a prefix on an exact field", type);
+        checkf(strstr(err, "not an LPM field") != NULL,
+               "update type %u was refused with \"%s\"", type, err);
+    }
+    check(forwards_to(eng, &f, P4_PORT_HOST),
+          "a refused update changed the table");
+
+    /* A delete is held to the LPM field's width too, rather than finding
+     * no such row. */
+    vrf_entry(&up, P4_UPDATE_DELETE, 0x0800u, 0, 49, 0);
+    check(update(eng, &up) == -EINVAL, "a delete of a /49 in a 48-bit "
+                                       "field was not refused");
 
     p4_engine_destroy(eng);
 }
@@ -2433,11 +2549,33 @@ static void test_features_ternary(void)
               1);
     check(update(eng, &up) == -ENOSPC, "a fifth row went into a 4-row table");
 
-    /* A bit outside the mask is not part of the key: this is A again. */
+    /* A bit outside the mask is malformed, as in P4Runtime, not another
+     * way of writing A. */
     acl_entry(&up, P4_UPDATE_INSERT, IP4(192, 168, 7, 7), 0xFFFF0000u, 0, 0, 10,
               6);
-    check(update(eng, &up) == -EEXIST,
-          "a bit outside the mask made a second row A");
+    check(update(eng, &up) == -EINVAL, "a bit outside the mask was accepted");
+    acl_entry(&up, P4_UPDATE_DELETE, IP4(192, 168, 7, 7), 0xFFFF0000u, 0, 0, 10,
+              0);
+    check(update(eng, &up) == -EINVAL,
+          "a delete with a bit outside the mask was accepted");
+
+    /* An entry in a table with a ternary key needs a nonzero priority, as
+     * in P4Runtime. */
+    acl_entry(&up, P4_UPDATE_INSERT, IP4(172, 16, 0, 0), 0xFFF00000u, 0, 0, 0,
+              1);
+    check(update(eng, &up) == -EINVAL,
+          "a ternary insert with priority 0 was accepted");
+    acl_entry(&up, P4_UPDATE_DELETE, IP4(192, 168, 0, 0), 0xFFFF0000u, 0, 0, 0,
+              0);
+    check(update(eng, &up) == -EINVAL,
+          "a ternary delete with priority 0 was accepted");
+
+    /* A ternary field takes a mask, not a prefix. */
+    acl_entry(&up, P4_UPDATE_DELETE, IP4(192, 168, 0, 0), 0xFFFF0000u, 0, 0, 10,
+              0);
+    up.match[0].prefix_bits = 16;
+    check(update(eng, &up) == -EINVAL,
+          "a delete with a prefix on a ternary field was not refused");
 
     /* A's key at a higher priority is a row of its own. */
     acl_entry(&up, P4_UPDATE_DELETE, IP4(192, 168, 2, 0), 0xFFFFFF00u, 0, 0, 5,
@@ -2592,6 +2730,7 @@ int main(void)
     test_features_parser();
     test_features_actions();
     test_features_lpm();
+    test_lpm_key_not_first();
     test_features_ternary();
     test_entries_api();
     test_engine_edges();

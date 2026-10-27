@@ -1019,10 +1019,24 @@
     truncated on every packet. A table entry's arguments and key fields are
     checked against their width in bits, not bytes, so `0x3ff` no longer
     fits a 9-bit port.
-  * Two table entries that match the same packets, differing only in a bit
-    under an LPM prefix or outside a ternary mask, or in a byte past the
-    value's length, are the same entry: the second is refused as a
-    duplicate rather than installed where no lookup reaches it.
+  * Two table entries that differ only in a byte past the value's length
+    are the same entry: the second is refused as a duplicate rather than
+    installed where no lookup reaches it.
+  * An LPM table whose LPM key wasn't its first, such as `{vrf: exact; dst:
+    lpm}`, ranked its entries by the first key's `prefix_bits`, so the
+    longest prefix didn't win: every entry tied, or a /0 beat a /8 on a
+    value left in the exact field. It now ranks by the LPM key. As in p4c,
+    a table with more than one LPM key, or whose `match_type` isn't the
+    one its keys make it (an `exact` table with a ternary key would ignore
+    priority), is refused at load.
+  * Table entries are held to P4Runtime's rules, and one that breaks them
+    is refused with `EINVAL`: a value with a bit set past its LPM prefix
+    (`10.0.0.1/8`) or outside its ternary mask, which was taken as the
+    entry without it; a priority of 0 in a table with a ternary key, or
+    any other priority in a table without one, which was ignored. A
+    nonzero `prefix_bits` in a field that isn't LPM, which was ignored, is
+    refused too. A delete is checked like an insert, so a malformed one is
+    `EINVAL` rather than `ENOENT`.
   * Load errors say what's wrong: an empty or truncated program says so, a
     field width given as a string other than `"*"` is a bad width rather
     than variable-length, a bad `base_default_next` is named as such, and

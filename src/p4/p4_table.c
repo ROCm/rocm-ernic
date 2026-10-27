@@ -168,41 +168,48 @@ static bool field_matches(const struct p4_table *tb,
     }
 }
 
+/* Does @v have a bit set that @m does not? */
+static bool value_outside(const struct p4_value *v, const struct p4_value *m)
+{
+    for (size_t i = 0; i < P4_VALUE_BYTES; i++) {
+        if (v->b[i] & (uint8_t)~m->b[i])
+            return true;
+    }
+    return false;
+}
+
 /*
  * Two entries address the same row when every key field matches the same
- * packets.  Compared as the match units read them -- the significant
- * bytes only, under the prefix or mask -- rather than byte for byte:
- * otherwise a byte past @len, or a bit outside the mask, that the lookup
- * never reads would make a second, unreachable copy of a row.
+ * packets.  resolve() refuses a bit past an LPM prefix or outside a mask,
+ * so the values compare as they are.  They compare as the match units read
+ * them, the significant bytes only, rather than byte for byte: otherwise a
+ * byte past @len, which the lookup never reads, would make a second,
+ * unreachable copy of a row.
  */
-static bool same_key(const struct p4_program *prog, const struct p4_table *tb,
-                     const struct p4_entry *e, const struct p4_update *up)
+static bool same_key(const struct p4_table *tb, const struct p4_entry *e,
+                     const struct p4_update *up)
 {
     for (uint16_t i = 0; i < tb->nkey; i++) {
         const struct p4_match_spec *a = &e->match[i];
         const struct p4_match_spec *b = &up->match[i];
-        struct p4_value va, vb, m, mb;
+        struct p4_value va, vb;
 
         switch (tb->key[i].match_type) {
         case P4_MATCH_LPM:
             if (a->prefix_bits != b->prefix_bits)
                 return false;
-            prefix_mask(key_width(prog, tb, i), a->prefix_bits, &m);
             break;
         case P4_MATCH_TERNARY:
-            spec_mask(a, &m);
-            spec_mask(b, &mb);
-            if (value_cmp(&m, &mb) != 0)
+            spec_mask(a, &va);
+            spec_mask(b, &vb);
+            if (value_cmp(&va, &vb) != 0)
                 return false;
             break;
         default:
-            memset(m.b, 0xFF, sizeof(m.b));
             break;
         }
         spec_value(a, &va);
         spec_value(b, &vb);
-        value_and(&va, &m, &va);
-        value_and(&vb, &m, &vb);
         if (value_cmp(&va, &vb) != 0)
             return false;
     }
@@ -228,6 +235,69 @@ static int resolve(const struct p4_program *prog, const struct p4_update *up,
         return fail(err, err_len, -EINVAL,
                     "table '%s' has %u key fields, the entry gives %u",
                     tb->name, tb->nkey, up->nmatch);
+
+    /*
+     * A key field, or a mask, wider than the field it matches would be
+     * truncated on use, which is a silently different entry from the one
+     * asked for; so would an LPM prefix longer than the field has bits.  A
+     * prefix on a field that is not LPM is read by nothing, so the client
+     * meant a different table.  And as P4Runtime requires, a value has no
+     * bit set past its LPM prefix or outside its ternary mask, and only an
+     * entry in a table with a ternary key has a priority, which is never
+     * zero.  A delete names its row by the same key and priority, so it is
+     * held to the same rules.
+     */
+    for (uint16_t i = 0; i < tb->nkey; i++) {
+        const struct p4_match_spec *m = &up->match[i];
+        uint16_t width = key_width(prog, tb, i);
+        struct p4_value sv, sm;
+
+        if (m->len > (uint16_t)((width + 7u) / 8u) ||
+            sig_bits(m->value, m->len) > width ||
+            (tb->key[i].match_type == P4_MATCH_TERNARY &&
+             sig_bits(m->mask, m->len) > width))
+            return fail(err, err_len, -EINVAL,
+                        "key field %u of '%s' is wider than the %u-bit field",
+                        i, tb->name, width);
+        if (tb->key[i].match_type == P4_MATCH_LPM && m->prefix_bits > width)
+            return fail(err, err_len, -EINVAL,
+                        "key field %u of '%s' has a %u-bit prefix, the field "
+                        "is %u bits",
+                        i, tb->name, m->prefix_bits, width);
+        if (tb->key[i].match_type != P4_MATCH_LPM && m->prefix_bits != 0)
+            return fail(err, err_len, -EINVAL,
+                        "key field %u of '%s' has a %u-bit prefix, but is "
+                        "not an LPM field",
+                        i, tb->name, m->prefix_bits);
+
+        spec_value(m, &sv);
+        if (tb->key[i].match_type == P4_MATCH_LPM) {
+            prefix_mask(width, m->prefix_bits, &sm);
+            if (value_outside(&sv, &sm))
+                return fail(err, err_len, -EINVAL,
+                            "key field %u of '%s' has a bit set past its "
+                            "%u-bit prefix",
+                            i, tb->name, m->prefix_bits);
+        } else if (tb->key[i].match_type == P4_MATCH_TERNARY) {
+            spec_mask(m, &sm);
+            if (value_outside(&sv, &sm))
+                return fail(err, err_len, -EINVAL,
+                            "key field %u of '%s' has a bit set outside its "
+                            "mask",
+                            i, tb->name);
+        }
+    }
+
+    if (tb->match_type == P4_MATCH_TERNARY && up->priority == 0)
+        return fail(err, err_len, -EINVAL,
+                    "table '%s' has a ternary key, so an entry needs a "
+                    "nonzero priority",
+                    tb->name);
+    if (tb->match_type != P4_MATCH_TERNARY && up->priority != 0)
+        return fail(err, err_len, -EINVAL,
+                    "table '%s' has no ternary key, so an entry takes no "
+                    "priority, not %u",
+                    tb->name, up->priority);
 
     if (up->type == P4_UPDATE_DELETE) {
         *action = P4_IDX_NONE;
@@ -268,27 +338,6 @@ static int resolve(const struct p4_program *prog, const struct p4_update *up,
                         i, act->name, act->runtime_bits[i]);
     }
 
-    /* Likewise a key field, or a mask, wider than the field it matches,
-     * and an LPM prefix longer than the field has bits. */
-    for (uint16_t i = 0; i < tb->nkey; i++) {
-        const struct p4_match_spec *m = &up->match[i];
-        uint16_t width = key_width(prog, tb, i);
-
-        if (m->len > (uint16_t)((width + 7u) / 8u) ||
-            sig_bits(m->value, m->len) > width ||
-            (tb->key[i].match_type == P4_MATCH_TERNARY &&
-             sig_bits(m->mask, m->len) > width))
-            return fail(err, err_len, -EINVAL,
-                        "key field %u of '%s' is wider than the %u-bit field",
-                        i, tb->name, width);
-        if (tb->key[i].match_type == P4_MATCH_LPM &&
-            up->match[i].prefix_bits > width)
-            return fail(err, err_len, -EINVAL,
-                        "key field %u of '%s' has a %u-bit prefix, the field "
-                        "is %u bits",
-                        i, tb->name, up->match[i].prefix_bits, width);
-    }
-
     return 0;
 }
 
@@ -320,7 +369,7 @@ int p4_entries_update(struct p4_entries *ent, const struct p4_program *prog,
     tbl_e = &ent->t[pipe][table];
 
     for (uint32_t i = 0; i < tbl_e->cap; i++) {
-        if (tbl_e->e[i].used && same_key(prog, tb, &tbl_e->e[i], up)) {
+        if (tbl_e->e[i].used && same_key(tb, &tbl_e->e[i], up)) {
             found = &tbl_e->e[i];
             break;
         }
@@ -420,12 +469,15 @@ const struct p4_entry *p4_entries_lookup(const struct p4_entries *ent,
         /*
          * Exact keys cannot overlap, so the first match is the answer.
          * LPM is decided by prefix length and ternary by priority, and
-         * both are "largest wins", so one rank covers them.
+         * both are "largest wins", so one rank covers them.  The prefix is
+         * the LPM key's, wherever it is in the key: the loader refuses an
+         * LPM table without exactly one.
          */
         if (tb->match_type == P4_MATCH_EXACT)
             return e;
-        rank = (tb->match_type == P4_MATCH_LPM) ? e->match[0].prefix_bits
-                                                : e->priority;
+        rank = (tb->match_type == P4_MATCH_LPM)
+                   ? e->match[tb->lpm_key].prefix_bits
+                   : e->priority;
         if (!best || rank > best_rank) {
             best = e;
             best_rank = rank;

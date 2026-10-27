@@ -452,6 +452,28 @@ taken when its first entry arrives, not when the program
 loads, so a program declaring large tables and putting
 nothing in them costs nothing.
 
+The lookup goes by the table's ``match_type``, so the loader
+checks it is the one the table's keys make it, as p4c
+derives it: ternary if any key is, else LPM if one is, else
+exact. A table that disagrees, which would take the first
+hit in an "exact" table with a ternary key or rank by a
+prefix an "lpm" one doesn't have, is refused, as is a table
+with more than one LPM key, which p4c refuses too. The LPM
+key need not come first: ``{vrf: exact; dst: lpm}`` ranks by
+``dst``'s prefix.
+
+An entry is checked against its table's keys, deletes
+included, and held to P4Runtime's rules: a value or mask
+wider than its field, a prefix longer than the field, a value
+with a bit set past its prefix or outside its mask, and a
+prefix on a field that isn't LPM are refused, not truncated
+or ignored. An entry in a table with a ternary key needs a
+nonzero priority, and one in any other table must give none.
+
+P4Runtime has a client omit a "don't care" field from the
+entry, where this record, which always carries every key
+field, writes it as a zero prefix or mask.
+
 A table with no entry for a packet takes its default action,
 which is why ``minimal_forward.json`` drops a frame until an
 entry for its destination is installed, and forwards it
