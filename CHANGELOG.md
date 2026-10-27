@@ -518,6 +518,12 @@
   PyYAML) ShellChecks shell inside other files: Ansible `shell:` and `raw:`
   tasks, composite actions, heredocs fed to a shell, and workflow `run:`
   blocks GitHub runs under `sh`.
+* **CodeQL analyzes the Python code and the workflows on every pull
+  request**, as well as the C code, with the `security-and-quality`
+  queries. A pull request that touched no Python or workflow used to lack
+  analyses that develop had, so GitHub's CodeQL check reported
+  "configurations not found" instead of the alerts the pull request
+  introduced.
 * **Scripts run from the source tree find bash through `PATH`**
   (`#!/usr/bin/env bash`), so `ctest` and the scripts work on systems such
   as NixOS. Installed service and driver-pack scripts keep `/bin/bash`; the
