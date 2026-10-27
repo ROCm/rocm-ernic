@@ -2,8 +2,9 @@
  * Network Header Layouts
  *
  * Ethernet, ARP, IPv4, ICMP and TCP headers, for the S3 target's TCP/IP
- * endpoint, and the Internet checksum, which the ionic datapath also uses
- * to build a RoCEv2 GRH.  Every multi-byte field is big-endian.
+ * endpoint; the size of the RoCEv2 global route header; and the Internet
+ * checksum, which the ionic datapath also uses to build a GRH.  Every
+ * multi-byte field is big-endian.
  *
  * Offsets are spelled out as macros rather than packed structs: a frame is
  * a byte buffer, a header in it can start at any alignment, and a struct
@@ -152,6 +153,17 @@
 #define TCP_FLAG_RST 0x04
 #define TCP_FLAG_PSH 0x08
 #define TCP_FLAG_ACK 0x10
+
+/* -------------------------------------------------------------------------
+ * RoCEv2 global route header
+ *
+ * A received UD datagram is preceded by a 40-byte global route header: an
+ * IPv6 header, or for RoCEv2 over IPv4, 20 bytes of zeros and then the
+ * IPv4 header.
+ * -------------------------------------------------------------------------
+ */
+
+#define IB_GRH_SIZE 40
 
 /* -------------------------------------------------------------------------
  * The Internet checksum (RFC 1071)

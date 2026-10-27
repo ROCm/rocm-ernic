@@ -1,11 +1,13 @@
 /*
- * ionic_datapath_priv.h — ionic data path internals, for its unit tests
+ * ionic_datapath_priv.h — ionic data path internals
  *
  * The ring, memory-region and address-handle state that ionic_datapath.c
- * works with, and the helpers its unit tests call directly. Only
- * ionic_datapath.c and its unit tests include this; the rest of the device
- * sees struct ionic_datapath only through the opaque declaration in
- * ionic_datapath.h.
+ * works with, the helpers it shares with the files that hook the in-process
+ * targets and the P4 pipeline into it (ionic_datapath_nvmeof.c,
+ * ionic_datapath_s3.c, ionic_datapath_p4.c), and the helpers its unit tests
+ * call directly. Only those files and the data path's unit tests include
+ * this; the rest of the device sees struct ionic_datapath only through the
+ * opaque declaration in ionic_datapath.h.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -21,6 +23,7 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "ionic_datapath.h"
+#include "net/net_headers.h"
 #include "qemu/thread.h"
 #include "rocm_ernic_compat.h"
 
@@ -532,5 +535,118 @@ const char *ionic_dp_ud_delivery_refused(const struct ionic_qp_ring *sq,
 void ionic_dp_rdma_bytes(const struct ionic_datapath *dp, uint32_t qp_id,
                          uint64_t bytes, enum pvrdma_stat_op op,
                          unsigned int dirs);
+
+/* -------------------------------------------------------------------------
+ * Shared with the targets' and the P4 pipeline's files
+ *
+ * Defined in ionic_datapath.c.
+ * -------------------------------------------------------------------------
+ */
+
+/* Now, in milliseconds, on the data path's clock (@now_ms above). */
+uint64_t ionic_dp_now_ms(const struct ionic_datapath *dp);
+
+/*
+ * Does the MR named by @key cover [@va, @va + @len)?  Key 0 names a bus
+ * address, so the range is only checked not to wrap.
+ */
+bool ionic_dp_mr_covers(struct ionic_datapath *dp, uint32_t key, uint64_t va,
+                        uint64_t len);
+
+/*
+ * Copy up to @len bytes of the guest memory @l describes into @dst.  Returns
+ * how many were copied.
+ */
+uint32_t ionic_dp_gather(struct ionic_datapath *dp, const struct dp_sge_list *l,
+                         uint8_t *dst, uint32_t len);
+
+/*
+ * Move @len bytes from the guest region (@lkey, @va) to @dst, or from @src
+ * to it.  Returns how many moved; when that is short, @fault says why.
+ */
+uint32_t ionic_dp_sge_to_host(struct ionic_datapath *dp, uint32_t lkey,
+                              uint64_t va, uint8_t *dst, uint32_t len);
+uint32_t ionic_dp_host_to_sge(struct ionic_datapath *dp, uint32_t lkey,
+                              uint64_t va, const uint8_t *src, uint32_t len);
+
+/*
+ * An in-process target's DMA callbacks, for @ctx the struct ionic_datapath:
+ * ionic_dp_sge_to_host() and ionic_dp_host_to_sge(), but refusing key 0,
+ * which a guest process must not be able to name.
+ */
+uint32_t ionic_dp_target_from_host(void *ctx, uint32_t key, uint64_t addr,
+                                   void *dst, uint32_t len);
+uint32_t ionic_dp_target_to_host(void *ctx, uint32_t key, uint64_t addr,
+                                 const void *src, uint32_t len);
+
+/*
+ * Build the header in front of a UD receive of @paylen bytes, from @sgid to
+ * @dgid (either may be NULL): an IPv4 header if both are v4-mapped, a GRH
+ * otherwise.
+ */
+void ionic_dp_grh_build(uint8_t grh[IB_GRH_SIZE], uint32_t paylen,
+                        const uint8_t *sgid, const uint8_t *dgid);
+
+/*
+ * Deliver a SEND from @src_qp_id into the next receive posted to @dq
+ * (@dst_qp_id), completing it with @recv_op and @imm_be.  @src names the
+ * payload in guest memory, or, if @src_host is set, only its length, the
+ * bytes being at @src_host.  Returns the bytes delivered, or -1 if no
+ * receive was posted.
+ */
+int64_t ionic_dp_deliver_recv(struct ionic_datapath *dp,
+                              struct ionic_qp_ring *dq, uint32_t dst_qp_id,
+                              uint32_t src_qp_id, const struct dp_sge_list *src,
+                              const uint8_t *src_host, uint8_t recv_op,
+                              uint32_t imm_be);
+
+/* -------------------------------------------------------------------------
+ * The targets' and the P4 pipeline's hooks, which ionic_datapath.c calls
+ * -------------------------------------------------------------------------
+ */
+
+/* ionic_datapath_nvmeof.c: tear down the NVMe-oF controller, if any. */
+void ionic_dp_nvmeof_detach(struct ionic_datapath *dp);
+
+/* Forget the controller connection of @qp_id, which is being destroyed. */
+void ionic_dp_nvmeof_drop_qp(struct ionic_datapath *dp, uint32_t qp_id);
+
+/*
+ * A SEND @src on the GSI QP @q (@qp_id): if it is a CM MAD for the
+ * controller, answer it and return true, so the caller delivers it nowhere
+ * else.
+ */
+bool ionic_dp_nvmeof_gsi(struct ionic_datapath *dp, struct ionic_qp_ring *q,
+                         uint32_t qp_id, const struct dp_sge_list *src);
+
+/*
+ * A SEND @src on the connected QP @q (@qp_id): if its peer is a controller
+ * queue, execute the command capsule and return true.
+ */
+bool ionic_dp_nvmeof_rc_send(struct ionic_datapath *dp, struct ionic_qp_ring *q,
+                             uint32_t qp_id, const struct dp_sge_list *src);
+
+/* ionic_datapath_s3.c: tear down the S3 store, if any. */
+void ionic_dp_s3_detach(struct ionic_datapath *dp);
+
+/* Whether the S3 store's TCP stack has something to send right now. */
+bool ionic_dp_s3_has_work(struct ionic_datapath *dp);
+
+/* Push the S3 store's pending output: retransmissions and queued replies. */
+void ionic_dp_s3_poll(struct ionic_datapath *dp);
+
+#ifdef ERNIC_HAVE_P4
+/*
+ * ionic_datapath_p4.c: run the pipeline over the send WQE @wqe (@read_sz
+ * bytes of it) of opcode @op on @qp_id, which gathers @src.  Returns the
+ * completion status, and sets *@done when the ordinary dispatch must not
+ * run: either because the program suppressed the operation, or because the
+ * status is an error.
+ */
+uint32_t ionic_dp_p4_policy(struct ionic_datapath *dp, uint32_t qp_id,
+                            uint8_t op, const uint8_t *wqe, uint32_t read_sz,
+                            const struct dp_sge_list *src, uint32_t imm_be,
+                            bool *done);
+#endif
 
 #endif /* IONIC_DATAPATH_PRIV_H */

@@ -137,9 +137,9 @@ How It Works
 
 Like ``nvmeof``, this is not a transport for guest RDMA
 traffic -- it is a *peer* that speaks S3 back at the guest.
-It hooks into :file:`src/ionic/ionic_datapath.c`, the data
-path that serves the guest ``ionic_rdma`` driver, rather than
-into the QEMU-derived backend vtable.
+It hooks into the data path that serves the guest
+``ionic_rdma`` driver (:file:`src/ionic/ionic_datapath_s3.c`),
+rather than into the QEMU-derived backend vtable.
 
 The control plane, in band
 ^^^^^^^^^^^^^^^^^^^^^^^^^^

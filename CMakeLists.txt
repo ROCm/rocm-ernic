@@ -197,6 +197,8 @@ set(IONIC_EMU_SOURCES
     src/ionic/ionic_adminq.c
     src/ionic/ionic_fault.c
     src/ionic/ionic_datapath.c
+    src/ionic/ionic_datapath_nvmeof.c
+    src/ionic/ionic_datapath_s3.c
 )
 
 # In-process NVMe-oF controller reached over the emulated fabric
@@ -211,7 +213,9 @@ option(ERNIC_BUILD_P4
   "Build the P4 match-action engine"
   OFF)
 
+# ionic_datapath_p4.c is the data path's side of the engine
 set(P4_SOURCES
+    src/ionic/ionic_datapath_p4.c
     src/p4/p4_devcmd.c
     src/p4/p4_engine.c
     src/p4/p4_exec.c

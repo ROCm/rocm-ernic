@@ -648,6 +648,8 @@ add_executable(test_ionic_dp_errors
     test_ionic_dp_errors.c
     ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
     ${PROJECT_SOURCE_DIR}/src/ionic/ionic_datapath.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_datapath_nvmeof.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_datapath_s3.c
 )
 target_include_directories(test_ionic_dp_errors PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -669,6 +671,8 @@ add_executable(test_ionic_cq_arm
     test_ionic_cq_arm.c
     ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
     ${PROJECT_SOURCE_DIR}/src/ionic/ionic_datapath.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_datapath_nvmeof.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_datapath_s3.c
 )
 target_include_directories(test_ionic_cq_arm PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -698,6 +702,8 @@ add_executable(test_ionic_rq_wrap
     test_ionic_rq_wrap.c
     ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
     ${PROJECT_SOURCE_DIR}/src/ionic/ionic_datapath.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_datapath_nvmeof.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_datapath_s3.c
 )
 target_include_directories(test_ionic_rq_wrap PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -1505,10 +1511,11 @@ set_tests_properties(pvrdma-stats-unit PROPERTIES TIMEOUT 30)
 # one DMA at a time in the admin queue, the data path and Ethernet,
 # tables fills the EQ, admin queue and MR tables, and wrap sends lengths
 # and registers regions whose sums or ends carry past 2^32 or 2^64.
+# nvmeof-queues refuses more NVMe-oF queues than the MR table can serve.
 set(ERNIC_HARNESS_GROUPS
     devcmds bringup rdma-reset rdma-reset-frees admin admin-dma rc atomic
     wrap dp-dma tables cq-events qp-flush qp-flush-srq ud srq eth eth-dma
-    nvmeof s3 teardown backend-names none loopback-pair)
+    nvmeof nvmeof-queues s3 teardown backend-names none loopback-pair)
 if(ERNIC_BUILD_P4)
     list(APPEND ERNIC_HARNESS_GROUPS p4-port fp8-map p4-rdma p4-cvt p4-cvt-map
                                       p4-drop-map p4-devcmd p4-devcmd-errors)

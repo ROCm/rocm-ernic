@@ -200,8 +200,8 @@ threads (`qemu_thread_create()`).
   another struct only when the code reaches the lock through the same
   object (`conn->priv->lock`, not a `priv` it can't tell is the same). It
   doesn't follow a lock taken conditionally (`if (sr) lock`, later `if
-  (sr) unlock`); pair them, as `deliver_recv()` does. A GLib table's
-  contents are opaque to it, so the pointer to the table is what's
+  (sr) unlock`); pair them, as `ionic_dp_deliver_recv()` does. A GLib
+  table's contents are opaque to it, so the pointer to the table is what's
   annotated. Where it can't follow correct code (setup before an object
   is shared, teardown after its threads are joined, a read that the field's
   comment explains is safe without the lock), wrap the smallest region in

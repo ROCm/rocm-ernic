@@ -15,8 +15,8 @@
  *                    ansible/files/patches/rdma-core/0005 corrects the
  *                    provider to ring
  *   post_send     -> SQ ring + doorbell
- *   emulator        deliver_recv() must take the WQE from the SRQ's ring,
- *                   not from the QP's own (empty) RQ
+ *   emulator        ionic_dp_deliver_recv() must take the WQE from the
+ *                   SRQ's ring, not from the QP's own (empty) RQ
  *   poll_cq       -> one send and one recv completion, payload intact
  *
  * A device that ignores the SRQ doorbell hangs here rather than failing,

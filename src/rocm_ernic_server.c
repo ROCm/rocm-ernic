@@ -988,13 +988,14 @@ static int validate_backend_options(rocm_ernic_dev_t *dev)
         char err[256] = "";
         const char *opts = strchr(dev->backend_type_str, ':');
 
-        bool parsed;
+        bool ok;
 
         nvmeof_target_cfg_defaults(&cfg);
-        parsed = nvmeof_target_cfg_parse(&cfg, opts ? opts + 1 : NULL, err,
-                                         sizeof(err));
+        ok = nvmeof_target_cfg_parse(&cfg, opts ? opts + 1 : NULL, err,
+                                     sizeof(err)) &&
+             ionic_datapath_nvmeof_cfg_check(&cfg, err, sizeof(err));
         free(cfg.file); /* only checking the options here */
-        if (!parsed) {
+        if (!ok) {
             fprintf(stderr, "Error: nvmeof backend: %s\n", err);
             fprintf(stderr, "  Use: --backend nvmeof[:size=64M][,file=PATH]"
                             "[,bs=512][,nqn=NAME][,ip=ADDR][,port=4420]\n");

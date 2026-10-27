@@ -803,10 +803,10 @@ static void test_oversized_exponents_are_refused(void)
 
     /*
      * A stride too SMALL is the other half, and it is not a shift problem.
-     * deliver_recv() reads min(stride, sizeof rwqe) bytes and then takes the
-     * work request id from offset 0 and the SGE count from offset 9, so a
-     * stride below the payload offset leaves both reads coming off whatever
-     * happened to be on the stack.
+     * ionic_dp_deliver_recv() reads min(stride, sizeof rwqe) bytes and then
+     * takes the work request id from offset 0 and the SGE count from offset 9,
+     * so a stride below the payload offset leaves both reads coming off
+     * whatever happened to be on the stack.
      */
     ctx_reset();
     build_create(body, RESP_GPA, IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
