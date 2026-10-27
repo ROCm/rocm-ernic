@@ -38,6 +38,9 @@ MAX_PENDING_CONNS = 64
 # How long a peer has to finish its handshake, and to register.
 HANDSHAKE_TIMEOUT_MS = 5000
 REGISTER_TIMEOUT_MS = 5000
+# The server's default health-check interval, in seconds
+# (TCP_DEFAULT_HEALTH_INTERVAL_S).
+HEALTH_INTERVAL_S = 5
 
 # The topology message carries at most this many nodes.
 MAX_MESH_NODES = 64
@@ -479,6 +482,17 @@ class Mesh:
             self.tcp_env["ERNIC_TCP_SEND_TIMEOUT_MS"] = str(send_timeout_ms)
         self.nodes = []
         os.makedirs(run_dir, exist_ok=True)
+
+    def reap_timeout(self):
+        """How long the manager may take to close a peer that never registers.
+
+        It gives the peer REGISTER_TIMEOUT_MS, but only a health-check
+        pass, or the next peer to connect, reaps it. The passes are an
+        interval apart, so with nobody connecting the reap comes up to an
+        interval after the peer's time runs out.
+        """
+        interval = int(self.tcp_env.get("ERNIC_TCP_HEALTH_INTERVAL", HEALTH_INTERVAL_S))
+        return REGISTER_TIMEOUT_MS / 1000.0 + interval
 
     @staticmethod
     def guest_ip(index):
