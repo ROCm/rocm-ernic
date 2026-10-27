@@ -590,10 +590,11 @@ the install rules has to update its lists of files, in
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CMAKE_BUILD_TYPE</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">Debug</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">RelWithDebInfo</span></code></p></td>
 <td><p>Build type (Debug, Release, RelWithDebInfo, etc.).
 When rocm-ernic is a subproject, the parent project’s
-build type is used instead</p></td>
+build type is used instead. CI builds Debug and Release,
+so name one of them to match it</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">BUILD_TESTING</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">ON</span></code></p></td>
@@ -801,7 +802,7 @@ that the CTest scripts launch are counted too. The
 <code class="docutils literal notranslate"><span class="pre">ernic-coverage</span></code> target merges the profiles and reports the
 coverage of <code class="docutils literal notranslate"><span class="pre">src/</span></code>:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cmake<span class="w"> </span>-B<span class="w"> </span>build<span class="w"> </span>-G<span class="w"> </span>Ninja<span class="w"> </span>-DCMAKE_C_COMPILER<span class="o">=</span>clang<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-DERNIC_USE_CODE_COVERAGE<span class="o">=</span>ON
+<span class="w">  </span>-DCMAKE_BUILD_TYPE<span class="o">=</span>Debug<span class="w"> </span>-DERNIC_USE_CODE_COVERAGE<span class="o">=</span>ON
 cmake<span class="w"> </span>--build<span class="w"> </span>build
 ctest<span class="w"> </span>--test-dir<span class="w"> </span>build
 cmake<span class="w"> </span>--build<span class="w"> </span>build<span class="w"> </span>--target<span class="w"> </span>ernic-coverage
@@ -811,10 +812,11 @@ cmake<span class="w"> </span>--build<span class="w"> </span>build<span class="w"
 file) and <code class="docutils literal notranslate"><span class="pre">coverage/lines.txt</span></code> (the count for each line).
 The profiles accumulate across runs; delete
 <code class="docutils literal notranslate"><span class="pre">coverage/profraw</span></code> to start over.</p>
-<p>CI’s Build and Test workflow runs one coverage leg (Clang,
-Debug, no project-wide sanitizer). It puts the report on the
-run’s summary page and fails if line coverage drops below the
-floor set in the workflow. On <code class="docutils literal notranslate"><span class="pre">develop</span></code> it also publishes the
+<p>Build Debug, as above: optimized code’s counts don’t match its
+source lines as closely. CI’s Build and Test workflow runs one
+coverage leg (Clang, Debug, no project-wide sanitizer). It puts
+the report on the run’s summary page and fails if line coverage
+drops below the floor set in the workflow. On <code class="docutils literal notranslate"><span class="pre">develop</span></code> it also publishes the
 figure to the <code class="docutils literal notranslate"><span class="pre">badges</span></code> branch, which the README’s Coverage
 badge reads.</p>
 </section>
@@ -829,7 +831,7 @@ that it doesn’t know, so build with the clang that IWYU is
 built on. <code class="docutils literal notranslate"><span class="pre">include-what-you-use</span> <span class="pre">--version</span></code> prints its
 version:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cmake<span class="w"> </span>-B<span class="w"> </span>build-iwyu<span class="w"> </span>-G<span class="w"> </span>Ninja<span class="w"> </span>-DCMAKE_C_COMPILER<span class="o">=</span>clang-19<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-DERNIC_USE_IWYU<span class="o">=</span>ON
+<span class="w">  </span>-DCMAKE_BUILD_TYPE<span class="o">=</span>Debug<span class="w"> </span>-DERNIC_USE_IWYU<span class="o">=</span>ON
 cmake<span class="w"> </span>--build<span class="w"> </span>build-iwyu
 </pre></div>
 </div>
