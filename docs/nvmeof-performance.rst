@@ -48,22 +48,38 @@ than in-capsule data. ``maxcmd`` is 128.
 Reproducing
 -----------
 
-One server and one guest are a complete fabric. Set
-``ERNIC_INSTANCES=1`` and
-``ERNIC_BACKEND=nvmeof:size=8G,bs=4096,queues=4`` in
-:file:`/etc/rocm-ernic/rocm-ernic.env`, launch and provision
-the guest as in :doc:`testing`, then run the NVMe-oF play with
-the sweep turned on:
+One server and one guest are a complete fabric. Host setup
+writes :file:`/etc/rocm-ernic/rocm-ernic.env` from its template,
+which has no backend setting, so choose the backend after host
+setup rather than before it:
 
 .. code-block:: bash
 
    cd ansible
-   ansible-playbook playbooks/nvmeof-tests.yml \
+
+   # 1. Build and install the service with one instance.
+   ansible-playbook site.yml --tags host-setup -e ernic_instances=1
+
+   # 2. Put the instance on the NVMe-oF backend.
+   echo 'ERNIC_BACKEND=nvmeof:size=8G,bs=4096,queues=4' |
+     sudo tee -a /etc/rocm-ernic/rocm-ernic.env
+   sudo systemctl restart rocm-ernic
+
+   # 3. Attach the guest.
+   sudo ernicctl vm-launch 1
+
+   # 4. Provision the guest, then connect and sweep.
+   ansible-playbook ci-site.yml --tags guest-setup,nvmeof \
+     -e ernic_project_root="$PWD/.." \
      -e ernic_nvmeof_queues=4 \
      -e ernic_nvmeof_perf_csv=/tmp/nvmeof-sweep.csv
 
-The play connects and runs the short sweep that feeds the trend
-chart. The longer sweep below was driven by hand against the
+Step 4 uses ``ci-site.yml`` because it registers the running
+guest in the ``ernic_vms`` group first, which the NVMe-oF play
+needs (run alone, the play finds no hosts and does nothing), and
+because it imports no host-setup play, so it leaves the edited
+env file alone. The play connects and runs the short sweep that
+feeds the trend chart. The longer sweep below was driven by hand against the
 resulting
 ``/dev/nvme0n1``; each run is ``--direct=1 --time_based
 --runtime=15`` with ``libaio``.

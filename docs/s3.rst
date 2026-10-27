@@ -342,17 +342,19 @@ failed and exits 1.
 
 The Ansible play is the reusable definition, and needs a
 single guest already provisioned against an instance running
-the store:
+the store. Run it through ``ci-site.yml``, which first
+registers the running guest in the ``ernic_vms`` group; run
+alone, the play finds no hosts and does nothing:
 
 .. code-block:: bash
 
    cd ansible
-   ansible-playbook playbooks/s3-tests.yml
+   ansible-playbook ci-site.yml --tags s3 \
+     -e ernic_project_root="$PWD/.."
 
 It installs a toolchain and ``libibverbs-dev`` in the guest,
 copies the client in, builds it, runs it, and checks the
-store came back empty. ``ansible-playbook ci-site.yml --tags
-s3`` runs the same play as part of the CI site.
+store came back empty.
 
 The hosted lane runs the whole thing from scratch --
 build, unit tests, boot a guest, provision it, transfer --
@@ -409,16 +411,16 @@ bandwidth CSV there:
 .. code-block:: bash
 
    cd ansible
-   ansible-playbook playbooks/s3-tests.yml \
+   ansible-playbook ci-site.yml --tags s3 \
+     -e ernic_project_root="$PWD/.." \
      -e ernic_s3_perf_csv=/tmp/s3-bw.csv
 
 The object sizes are not free-form: they have to stay equal
 to ``TRACKED_SIZES`` in :file:`ci/report/publish-perf.py` or
-the chart quietly drops a series. The shell lane captures the
-same sweep in ``probe_perf_sweep``, and refuses to record it
-unless the guest ran under KVM -- numbers measured under TCG
-are one to two orders of magnitude off and would poison the
-history.
+the chart quietly drops a series. Sweep only a guest running
+under KVM: numbers measured under TCG are one to two orders of
+magnitude off, and neither the play nor the hosted lane checks
+the accelerator.
 
 Limitations
 -----------

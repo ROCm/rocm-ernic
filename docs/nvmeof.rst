@@ -305,12 +305,15 @@ the disconnect is the only thing that exercises the CM
 teardown path at all.
 
 The play needs a single guest already provisioned against an
-instance running the controller:
+instance running the controller. Run it through ``ci-site.yml``,
+which first registers the running guest in the ``ernic_vms``
+group; run alone, the play finds no hosts and does nothing:
 
 .. code-block:: bash
 
    cd ansible
-   ansible-playbook playbooks/nvmeof-tests.yml
+   ansible-playbook ci-site.yml --tags nvmeof \
+     -e ernic_project_root="$PWD/.."
 
 The hosted lane runs the whole thing from scratch --
 build, boot a guest, provision it, connect -- in
@@ -389,17 +392,17 @@ bandwidth CSV there:
 .. code-block:: bash
 
    cd ansible
-   ansible-playbook playbooks/nvmeof-tests.yml \
+   ansible-playbook ci-site.yml --tags nvmeof \
+     -e ernic_project_root="$PWD/.." \
      -e ernic_nvmeof_perf_csv=/tmp/nvmeof-bw.csv
 
 The block sizes are ``ernic_nvmeof_perf_sweep`` in
 :file:`ansible/group_vars/all.yml`. They are not free-form:
 they have to stay equal to ``TRACKED_SIZES`` in
 :file:`ci/report/publish-perf.py` or the chart quietly drops
-a series. The shell lane captures the same sweep in
-``probe_fio_sweep``, and refuses to record it unless the
-guest ran under KVM -- numbers measured under TCG are one to
-two orders of magnitude off and would poison the history.
+a series. Sweep only a guest running under KVM: numbers
+measured under TCG are one to two orders of magnitude off, and
+neither the play nor the hosted lane checks the accelerator.
 
 Limitations
 -----------
