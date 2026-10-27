@@ -16,12 +16,15 @@
 #define RDMA_BACKEND_OPS_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
+#include "ernic_mesh.h"
 #include "rdma_backend_defs.h"
 #include "rdma_rm_defs.h"
 
 /* Forward declarations */
 typedef struct RdmaBackendOps RdmaBackendOps;
+typedef struct RdmaMeshOps RdmaMeshOps;
 typedef struct RdmaDeviceResources RdmaDeviceResources;
 
 /* RdmaBackendType is defined in rdma_backend_defs.h */
@@ -90,6 +93,39 @@ struct RdmaBackendOps {
     int (*query_srq)(RdmaBackendSRQ *srq, struct ibv_srq_attr *srq_attr);
     int (*modify_srq)(RdmaBackendSRQ *srq, struct ibv_srq_attr *srq_attr,
                       int srq_attr_mask);
+
+    /* Node-to-node transport (optional - NULL for a backend with no peers) */
+    const RdmaMeshOps *mesh;
+};
+
+/**
+ * Mesh Operations
+ *
+ * The transport a backend with peers gives the ionic data path, which
+ * carries its own protocol over it as an opaque payload: ionic MRs are
+ * guest-physical page tables that only the data path can resolve, so the
+ * mesh has no RDMA operations of its own.  The ernic_mesh_*() functions in
+ * ernic_mesh.h call these through the device's backend, and answer for a
+ * backend whose mesh is NULL themselves; each is documented there.
+ *
+ * set_recv_cb must not return while a receive thread is still calling the
+ * callback it replaces: the data path clears its callback and then frees
+ * what the callback uses.
+ */
+struct RdmaMeshOps {
+    uint32_t (*local_node)(RdmaBackendDev *backend_dev);
+    uint32_t (*node_from_gid)(RdmaBackendDev *backend_dev,
+                              const union ibv_gid *dgid);
+    int (*claim_gid)(RdmaBackendDev *backend_dev, const union ibv_gid *gid,
+                     bool add);
+    int (*sendv)(RdmaBackendDev *backend_dev, uint32_t dst_node,
+                 const void *hdr, size_t hdr_len, const void *body,
+                 size_t body_len, uint64_t tag, bool reply);
+    bool (*has_room)(RdmaBackendDev *backend_dev, uint32_t dst_node,
+                     size_t len);
+    void (*cancel)(RdmaBackendDev *backend_dev, uint64_t tag, uint64_t mask);
+    void (*set_recv_cb)(RdmaBackendDev *backend_dev, ernic_mesh_recv_fn fn,
+                        void *opaque);
 };
 
 /* Backend implementations, registered in rdma_backend_core.c */

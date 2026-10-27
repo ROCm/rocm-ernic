@@ -837,7 +837,7 @@ static uint32_t tcp_register_resp_id(const TcpRecvMsg *msg, int32_t *result)
     if (resp_id == 0 || resp_id == UINT32_MAX) {
         /*
          * 0 is the manager's own id, and UINT32_MAX means no node at all, to
-         * the GID table and to the data path (tcp_backend_local_node_id()).
+         * the GID table and to the data path (tcp_mesh_local_node()).
          */
         rdma_error_report("TCP: manager assigned node id %u, which no worker "
                           "can have",

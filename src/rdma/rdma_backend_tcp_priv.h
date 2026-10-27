@@ -5,7 +5,7 @@
  * files share and its unit tests drive directly. Only the backend's files,
  * rdma_backend_tcp.c and the tcp_*.c files beside it, and its unit tests
  * include this; the rest of the device reaches the backend through
- * rdma_backend_ops_tcp and the tcp_backend_*() functions in rdma_backend.h.
+ * rdma_backend_ops_tcp, and the mesh through its RdmaMeshOps.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  *
@@ -31,7 +31,6 @@
 #include "ernic_mesh.h"
 #include "qemu/thread.h"
 #include "rdma_backend_defs.h"
-#include "rdma_backend.h"
 #include "rocm-ernic-warnings.h"
 
 /*
@@ -655,13 +654,13 @@ struct TcpBackendPrivate {
      * takes the payload with it, so a large one isn't copied, or refuses it
      * until it has room (see tcp_recv_ionic()).  Both are protected by
      * lock. */
-    tcp_ionic_recv_fn ionic_recv_fn TSA_GUARDED_BY(lock);
+    ernic_mesh_recv_fn ionic_recv_fn TSA_GUARDED_BY(lock);
     void *ionic_recv_opaque TSA_GUARDED_BY(lock);
     /* How many receive threads are calling ionic_recv_fn, which they do
      * without lock; ionic_recv_idle is signalled, with lock, when that falls
-     * to 0.  tcp_backend_set_ionic_recv_cb() waits on it, so that once it
-     * has returned nothing is still calling the callback it replaced, and
-     * the data path can free what that callback uses. */
+     * to 0.  tcp_mesh_set_recv_cb() waits on it, so that once it has
+     * returned nothing is still calling the callback it replaced, and the
+     * data path can free what that callback uses. */
     uint32_t ionic_recv_calls TSA_GUARDED_BY(lock);
     QemuCond ionic_recv_idle;
 
@@ -782,8 +781,8 @@ struct TcpConnection {
 
     /*
      * The data path's messages, queued for send_thread, so the device's main
-     * thread never waits for the peer (see tcp_backend_send_ionic_v()), and
-     * heartbeats that couldn't be sent at once, at the head of the queue (see
+     * thread never waits for the peer (see tcp_mesh_sendv()), and heartbeats
+     * that couldn't be sent at once, at the head of the queue (see
      * tcp_send_heartbeat()).  Everything below is protected by sendq_lock.
      * sendq_cond is signalled when a message is queued and when the queue
      * is closed.

@@ -261,12 +261,12 @@ bool tcp_conn_table_add(TcpBackendPrivate *priv, uint32_t node_id,
 
 /*
  * Close conn's send queue as it leaves connections or manager_conn, under
- * conn_table_lock, which guards both.  tcp_backend_ionic_cancel() finds a
- * connection only there, so a queue left open until the connection is
- * retired, after the lock is dropped, could start a request the cancel had
- * taken back everywhere else.  What was queued is dropped, as retiring the
- * connection would drop it; the message being written goes out, as it would
- * have anyway.
+ * conn_table_lock, which guards both.  tcp_mesh_cancel() finds a connection
+ * only there, so a queue left open until the connection is retired, after
+ * the lock is dropped, could start a request the cancel had taken back
+ * everywhere else.  What was queued is dropped, as retiring the connection
+ * would drop it; the message being written goes out, as it would have
+ * anyway.
  */
 void tcp_conn_unpublished(TcpConnection *conn)
 {

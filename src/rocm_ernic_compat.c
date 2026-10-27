@@ -455,42 +455,63 @@ int ernic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
  * -------------------------------------------------------------------------
  */
 
+/*
+ * The device's mesh, or NULL when its backend has none (loopback, none,
+ * nvmeof and s3) or isn't up: before realize, or after a failed init or
+ * fini, backend_ops is NULL.  Each wrapper answers for a NULL mesh itself.
+ */
+static const RdmaMeshOps *pvrdma_mesh(const PVRDMADev *pvrdma)
+{
+    const RdmaBackendOps *ops;
+
+    if (!pvrdma)
+        return NULL;
+    ops = pvrdma->backend_dev.backend_ops;
+    return ops ? ops->mesh : NULL;
+}
+
 uint32_t ernic_mesh_local_node(pvrdma_handle_t handle)
 {
     PVRDMADev *pvrdma = handle;
+    const RdmaMeshOps *mesh = pvrdma_mesh(pvrdma);
 
-    if (!pvrdma)
+    if (!mesh)
         return UINT32_MAX;
-    return tcp_backend_local_node_id(&pvrdma->backend_dev);
+    return mesh->local_node(&pvrdma->backend_dev);
 }
 
 uint32_t ernic_mesh_node_from_gid(pvrdma_handle_t handle,
                                   const uint8_t *dest_gid_16bytes)
 {
     PVRDMADev *pvrdma = handle;
+    const RdmaMeshOps *mesh = pvrdma_mesh(pvrdma);
     union ibv_gid dgid;
 
-    if (!pvrdma)
+    if (!mesh)
         return UINT32_MAX;
 
     if (!dest_gid_16bytes)
-        return tcp_backend_node_from_gid(&pvrdma->backend_dev, NULL);
+        return mesh->node_from_gid(&pvrdma->backend_dev, NULL);
 
     memcpy(&dgid, dest_gid_16bytes, sizeof(dgid));
-    return tcp_backend_node_from_gid(&pvrdma->backend_dev, &dgid);
+    return mesh->node_from_gid(&pvrdma->backend_dev, &dgid);
 }
 
 int ernic_mesh_claim_gid(pvrdma_handle_t handle, const uint8_t *gid_16bytes,
                          bool add)
 {
     PVRDMADev *pvrdma = handle;
+    const RdmaMeshOps *mesh = pvrdma_mesh(pvrdma);
     union ibv_gid gid;
 
     if (!pvrdma || !gid_16bytes)
         return -EINVAL;
+    /* No peers to tell */
+    if (!mesh)
+        return 0;
 
     memcpy(&gid, gid_16bytes, sizeof(gid));
-    return tcp_backend_claim_gid(&pvrdma->backend_dev, &gid, add);
+    return mesh->claim_gid(&pvrdma->backend_dev, &gid, add);
 }
 
 int ernic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
@@ -498,38 +519,42 @@ int ernic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
                      uint64_t tag, bool reply)
 {
     PVRDMADev *pvrdma = handle;
+    const RdmaMeshOps *mesh = pvrdma_mesh(pvrdma);
 
-    if (!pvrdma)
+    if (!mesh)
         return -EINVAL;
-    return tcp_backend_send_ionic_v(&pvrdma->backend_dev, dst_node, hdr,
-                                    hdr_len, body, body_len, tag, reply);
+    return mesh->sendv(&pvrdma->backend_dev, dst_node, hdr, hdr_len, body,
+                       body_len, tag, reply);
 }
 
 bool ernic_mesh_has_room(pvrdma_handle_t handle, uint32_t dst_node, size_t len)
 {
     PVRDMADev *pvrdma = handle;
+    const RdmaMeshOps *mesh = pvrdma_mesh(pvrdma);
 
-    if (!pvrdma)
+    if (!mesh)
         return true;
-    return tcp_backend_ionic_has_room(&pvrdma->backend_dev, dst_node, len);
+    return mesh->has_room(&pvrdma->backend_dev, dst_node, len);
 }
 
 void ernic_mesh_cancel(pvrdma_handle_t handle, uint64_t tag, uint64_t mask)
 {
     PVRDMADev *pvrdma = handle;
+    const RdmaMeshOps *mesh = pvrdma_mesh(pvrdma);
 
-    if (!pvrdma)
+    if (!mesh)
         return;
-    tcp_backend_ionic_cancel(&pvrdma->backend_dev, tag, mask);
+    mesh->cancel(&pvrdma->backend_dev, tag, mask);
 }
 
 void ernic_mesh_set_recv_cb(pvrdma_handle_t handle, ernic_mesh_recv_fn fn,
                             void *opaque)
 {
     PVRDMADev *pvrdma = handle;
+    const RdmaMeshOps *mesh = pvrdma_mesh(pvrdma);
 
-    if (!pvrdma)
+    /* With no mesh nothing calls it, so there is nothing to wait for */
+    if (!mesh)
         return;
-    tcp_backend_set_ionic_recv_cb(&pvrdma->backend_dev, (tcp_ionic_recv_fn)fn,
-                                  opaque);
+    mesh->set_recv_cb(&pvrdma->backend_dev, fn, opaque);
 }

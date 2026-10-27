@@ -177,7 +177,6 @@
 #include "qemu/thread.h"
 #include "rdma/rdma_backend_ops.h"
 #include "rdma/rdma_backend_tcp_priv.h"
-#include "rdma_backend.h"
 #include "rdma_backend_defs.h"
 #include "rocm-ernic-warnings.h"
 
@@ -5191,16 +5190,13 @@ static const char *sender_ionic(RdmaBackendDev *dev, int w1, bool registered)
 
     atomic_store(&g_ionic_calls, 0);
     atomic_store(&g_ionic_buf, NULL);
-    /* tcp_init() leaves this to rdma_backend_init_with_ops(), which the row
-     * doesn't use, and the callback is only set on a TCP backend */
-    dev->backend_type = RDMA_BACKEND_TYPE_TCP;
     if (registered)
-        tcp_backend_set_ionic_recv_cb(dev, sender_ionic_recv, NULL);
+        rdma_backend_ops_tcp.mesh->set_recv_cb(dev, sender_ionic_recv, NULL);
     if (!send_payload(w1, TCP_MSG_IONIC, 1))
         why = "could not send the ionic message";
     else if (!worker_settled(dev->backend_private, w1, 1))
         why = "the heartbeat after the ionic message wasn't answered";
-    tcp_backend_set_ionic_recv_cb(dev, NULL, NULL);
+    rdma_backend_ops_tcp.mesh->set_recv_cb(dev, NULL, NULL);
 
     buf = atomic_load(&g_ionic_buf);
     if (!why && registered)
@@ -5263,9 +5259,7 @@ static const char *sender_full(RdmaBackendDev *dev, int w1, bool stop)
     atomic_store(&g_ionic_buf, NULL);
     atomic_store(&g_ionic_refusals, 0);
     atomic_store(&g_ionic_full, true);
-    /* As in sender_ionic() */
-    dev->backend_type = RDMA_BACKEND_TYPE_TCP;
-    tcp_backend_set_ionic_recv_cb(dev, full_ionic_recv, NULL);
+    rdma_backend_ops_tcp.mesh->set_recv_cb(dev, full_ionic_recv, NULL);
     if (!send_payload(w1, TCP_MSG_IONIC, 1)) {
         why = "could not send the ionic message";
     } else if (!refusals_reach(2)) {
@@ -5283,7 +5277,7 @@ static const char *sender_full(RdmaBackendDev *dev, int w1, bool stop)
     atomic_store(&g_ionic_full, false);
     if (!why && !wait_for_type(w1, TCP_MSG_HEARTBEAT_RESP, 2000))
         why = "the heartbeat wasn't answered once the message was taken";
-    tcp_backend_set_ionic_recv_cb(dev, NULL, NULL);
+    rdma_backend_ops_tcp.mesh->set_recv_cb(dev, NULL, NULL);
 
     buf = atomic_load(&g_ionic_buf);
     if (!why)
@@ -5320,7 +5314,7 @@ static bool held_ionic_recv(void *opaque, uint32_t src_node, void *buf,
 /* Clear the callback, as ionic_datapath_destroy() does, on its own thread */
 static void *clear_ionic_recv(void *arg)
 {
-    tcp_backend_set_ionic_recv_cb(arg, NULL, NULL);
+    rdma_backend_ops_tcp.mesh->set_recv_cb(arg, NULL, NULL);
     atomic_store(&g_ionic_cleared, true);
     return NULL;
 }
@@ -5348,9 +5342,7 @@ static const char *sender_unregister(RdmaBackendDev *dev, int w1)
     atomic_store(&g_ionic_release, false);
     atomic_store(&g_ionic_cleared, false);
     atomic_store(&g_ionic_cleared_early, false);
-    /* As in sender_ionic() */
-    dev->backend_type = RDMA_BACKEND_TYPE_TCP;
-    tcp_backend_set_ionic_recv_cb(dev, held_ionic_recv, NULL);
+    rdma_backend_ops_tcp.mesh->set_recv_cb(dev, held_ionic_recv, NULL);
     if (!send_payload(w1, TCP_MSG_IONIC, 1)) {
         why = "could not send the ionic message";
     } else {
@@ -5363,7 +5355,7 @@ static const char *sender_unregister(RdmaBackendDev *dev, int w1)
         if (!why)
             why = "could not start the thread that clears the callback";
         atomic_store(&g_ionic_release, true);
-        tcp_backend_set_ionic_recv_cb(dev, NULL, NULL);
+        rdma_backend_ops_tcp.mesh->set_recv_cb(dev, NULL, NULL);
         free(atomic_load(&g_ionic_buf));
         return why;
     }
@@ -6806,7 +6798,6 @@ static const char *lt_replace_run(enum lt_scenario scenario)
     }
     if (!why && scenario == LT_SENDER) {
         memset(&dev, 0, sizeof(dev));
-        dev.backend_type = RDMA_BACKEND_TYPE_TCP;
         dev.backend_private = fx.priv;
         /*
          * Node 1 has stopped reading, so the send thread waits for room,
@@ -6815,8 +6806,8 @@ static const char *lt_replace_run(enum lt_scenario scenario)
          */
         if (!fill_conn(fx.priv, 1))
             why = "could not fill node 1's socket";
-        else if (tcp_backend_send_ionic_v(&dev, 1, hdr, sizeof(hdr), NULL, 0, 0,
-                                          false) != 0)
+        else if (rdma_backend_ops_tcp.mesh->sendv(&dev, 1, hdr, sizeof(hdr),
+                                                  NULL, 0, 0, false) != 0)
             why = "the data path's send wasn't queued";
         else if (!held_elsewhere(&held->lock))
             why = "the send thread never blocked on node 1";
@@ -7916,11 +7907,12 @@ static const char *wl_cancel(RdmaBackendDev *dev, TcpConnection *old)
     static const uint8_t hdr[16];
     bool cancelled;
 
-    if (tcp_backend_send_ionic_v(dev, WL_OTHER, hdr, sizeof(hdr), NULL, 0,
-                                 (uint64_t)WL_CANCEL_QP << 32, false) != 0)
+    if (rdma_backend_ops_tcp.mesh->sendv(dev, WL_OTHER, hdr, sizeof(hdr), NULL,
+                                         0, (uint64_t)WL_CANCEL_QP << 32,
+                                         false) != 0)
         return "the request to cancel wasn't queued";
-    tcp_backend_ionic_cancel(dev, (uint64_t)WL_CANCEL_QP << 32,
-                             UINT64_C(0xffffffff00000000));
+    rdma_backend_ops_tcp.mesh->cancel(dev, (uint64_t)WL_CANCEL_QP << 32,
+                                      UINT64_C(0xffffffff00000000));
     qemu_mutex_lock(&old->sendq_lock);
     /* The message being written is off the queue, but still counted */
     cancelled = old->sendq.length == 0 &&
@@ -7948,11 +7940,10 @@ static const char *wl_stuck(struct dc_worker *w, int lfd, int high,
     int mgr = -1;
 
     memset(&dev, 0, sizeof(dev));
-    dev.backend_type = RDMA_BACKEND_TYPE_TCP;
     dev.backend_private = dc_priv(w);
     /* No direct connection to WL_OTHER, so the manager would relay it */
-    if (tcp_backend_send_ionic_v(&dev, WL_OTHER, hdr, sizeof(hdr), body,
-                                 WL_STUCK_LEN, 0, false) != 0)
+    if (rdma_backend_ops_tcp.mesh->sendv(&dev, WL_OTHER, hdr, sizeof(hdr), body,
+                                         WL_STUCK_LEN, 0, false) != 0)
         why = "the data path's send wasn't queued";
     else if (!held_elsewhere(&old->lock))
         why = "the send thread never blocked on the manager's connection";
@@ -8196,11 +8187,11 @@ static int run_wl_case(const struct wl_case *c)
  * nodes' ends of their connections never read, except ST_STEADY's.
  *
  * What the queue holds can be taken back: a QP that is flushed or destroyed,
- * or a request that times out, has its requests dropped
- * (tcp_backend_ionic_cancel()), so none reaches the peer after its work
- * request was completed.  And a heartbeat is never skipped for want of the
- * lock, which a send thread under steady traffic almost always holds: it
- * goes ahead of the data on the queue, which holds one of each kind at most.
+ * or a request that times out, has its requests dropped (tcp_mesh_cancel()),
+ * so none reaches the peer after its work request was completed.  And a
+ * heartbeat is never skipped for want of the lock, which a send thread under
+ * steady traffic almost always holds: it goes ahead of the data on the
+ * queue, which holds one of each kind at most.
  *
  * The guest chooses how long a message is, so one there is no memory for
  * fails on its own rather than aborting the server, and so does a heartbeat.
@@ -8269,7 +8260,7 @@ static const struct st_case st_cases[] = {
      "the data path queues messages for a node that stops reading until the "
      "queue is full",
      "a request past the limit is refused with -EAGAIN, which "
-     "tcp_backend_ionic_has_room() foresees; a reply is queued up to its own "
+     "tcp_mesh_has_room() foresees; a reply is queued up to its own "
      "limit, then refused with -ENOBUFS",
      ST_QUEUE_FULL},
     {"negative",
@@ -8367,10 +8358,9 @@ static int st_send_tag(TcpBackendPrivate *priv, uint32_t len, uint64_t tag,
     int rc;
 
     memset(&dev, 0, sizeof(dev));
-    dev.backend_type = RDMA_BACKEND_TYPE_TCP;
     dev.backend_private = priv;
-    rc = tcp_backend_send_ionic_v(&dev, 1, hdr, sizeof(hdr), body, len, tag,
-                                  reply);
+    rc = rdma_backend_ops_tcp.mesh->sendv(&dev, 1, hdr, sizeof(hdr), body, len,
+                                          tag, reply);
     g_free(body);
     return rc;
 }
@@ -8422,16 +8412,15 @@ static const char *st_queue_full(struct mgr_fixture *fx)
     RdmaBackendDev dev;
 
     memset(&dev, 0, sizeof(dev));
-    dev.backend_type = RDMA_BACKEND_TYPE_TCP;
     dev.backend_private = fx->priv;
-    if (!tcp_backend_ionic_has_room(&dev, 1, TCP_MAX_PAYLOAD_LEN))
+    if (!rdma_backend_ops_tcp.mesh->has_room(&dev, 1, TCP_MAX_PAYLOAD_LEN))
         return "an empty queue had no room";
     /* Requests up to their limit, the first of them being written */
     for (uint32_t i = 0; i < TCP_SENDQ_REQUEST_BYTES / TCP_MAX_PAYLOAD_LEN; i++)
         if (st_send(fx->priv, len, false) != 0)
             return "a request within the limit wasn't queued";
-    if (tcp_backend_ionic_has_room(&dev, 1, 16))
-        return "tcp_backend_ionic_has_room() saw room in a full queue";
+    if (rdma_backend_ops_tcp.mesh->has_room(&dev, 1, 16))
+        return "has_room() saw room in a full queue";
     if (st_send(fx->priv, 0, false) != -EAGAIN)
         return "a request past the limit wasn't refused with -EAGAIN";
     /* Replies up to theirs */
@@ -8498,7 +8487,6 @@ static const char *st_cancel(struct mgr_fixture *fx)
     GList *link;
 
     memset(&dev, 0, sizeof(dev));
-    dev.backend_type = RDMA_BACKEND_TYPE_TCP;
     dev.backend_private = fx->priv;
 
     /* The first, from QP 5 too, is off the queue: the send thread is on it */
@@ -8513,8 +8501,8 @@ static const char *st_cancel(struct mgr_fixture *fx)
         if (queued[i].kept)
             want += queued[i].len + 16u;
     }
-    tcp_backend_ionic_cancel(&dev, ST_TAG(5, 0), ST_QP_MASK);
-    tcp_backend_ionic_cancel(&dev, ST_TAG(6, 4), UINT64_MAX);
+    rdma_backend_ops_tcp.mesh->cancel(&dev, ST_TAG(5, 0), ST_QP_MASK);
+    rdma_backend_ops_tcp.mesh->cancel(&dev, ST_TAG(6, 4), UINT64_MAX);
 
     qemu_mutex_lock(&conn->sendq_lock);
     link = conn->sendq.head;
@@ -8555,12 +8543,12 @@ static const char *st_too_long(struct mgr_fixture *fx)
     bool queued;
 
     memset(&dev, 0, sizeof(dev));
-    dev.backend_type = RDMA_BACKEND_TYPE_TCP;
     dev.backend_private = fx->priv;
     for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
-        if (tcp_backend_send_ionic_v(&dev, 1, hdr, rows[i].hdr_len, body,
-                                     rows[i].body_len, 0, false) != -EINVAL)
-            return "tcp_backend_send_ionic_v() didn't refuse the lengths";
+        if (rdma_backend_ops_tcp.mesh->sendv(&dev, 1, hdr, rows[i].hdr_len,
+                                             body, rows[i].body_len, 0,
+                                             false) != -EINVAL)
+            return "sendv() didn't refuse the lengths";
         if (tcp_conn_enqueue(conn, hdr, rows[i].hdr_len, body, rows[i].body_len,
                              1, 0, false) != -EINVAL)
             return "tcp_conn_enqueue() didn't refuse the lengths";

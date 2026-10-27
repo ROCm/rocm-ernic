@@ -22,9 +22,9 @@
 #include "rdma_backend_ops.h"
 #include "rdma_backend_tcp_priv.h"
 #include "rdma_backend_defs.h"
-#include "rdma_backend.h"
 #include "rdma_utils.h"
 #include "ernic_limits.h"
+#include "ernic_mesh.h"
 #include "ernic_time.h"
 #include "parse_int.h"
 #include "qemu/thread.h"
@@ -758,7 +758,7 @@ static int tcp_qp_state_init(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 /*
  * Refuse a connected QP whose destination GID no mesh node owns.  Nothing is
  * recorded: the ionic data path resolves the destination for itself, through
- * tcp_backend_node_from_gid().
+ * tcp_mesh_node_from_gid().
  */
 static int tcp_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                             uint8_t qp_type, uint8_t sgid_idx,
@@ -897,63 +897,21 @@ static int tcp_modify_srq(RdmaBackendSRQ *srq, struct ibv_srq_attr *attr,
     return 0;
 }
 
-/*
- * Backend Operations Structure
- */
-const RdmaBackendOps rdma_backend_ops_tcp = {
-    .name = "tcp",
-    .type = RDMA_BACKEND_TYPE_TCP,
-
-    .init = tcp_init,
-    .fini = tcp_fini,
-
-    .query_device = tcp_query_device,
-
-    .create_pd = tcp_create_pd,
-
-    .create_mr = tcp_create_mr,
-    .destroy_mr = tcp_destroy_mr,
-    .mr_lkey = tcp_mr_lkey,
-
-    .create_cq = tcp_create_cq,
-    .destroy_cq = tcp_destroy_cq,
-
-    .create_qp = tcp_create_qp,
-    .destroy_qp = tcp_destroy_qp,
-    .qpn = tcp_qpn,
-
-    .qp_state_init = tcp_qp_state_init,
-    .qp_state_rtr = tcp_qp_state_rtr,
-    .qp_state_rts = tcp_qp_state_rts,
-    /*
-     * No query_qp: the backend keeps no QP state, so the resource manager
-     * answers from what it recorded. (A stub here once reported every QP as
-     * RTS.)
-     */
-
-    .get_backend_gid_index = tcp_get_backend_gid_index,
-
-    .create_srq = tcp_create_srq,
-    .destroy_srq = tcp_destroy_srq,
-    .query_srq = tcp_query_srq,
-    .modify_srq = tcp_modify_srq,
-};
-
-uint32_t tcp_backend_local_node_id(RdmaBackendDev *backend_dev)
+static uint32_t tcp_mesh_local_node(RdmaBackendDev *backend_dev)
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
 
-    if (!priv || backend_dev->backend_type != RDMA_BACKEND_TYPE_TCP)
+    if (!priv)
         return UINT32_MAX;
     return tcp_local_node(priv);
 }
 
-uint32_t tcp_backend_node_from_gid(RdmaBackendDev *backend_dev,
-                                   const union ibv_gid *dgid)
+static uint32_t tcp_mesh_node_from_gid(RdmaBackendDev *backend_dev,
+                                       const union ibv_gid *dgid)
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
 
-    if (!priv || backend_dev->backend_type != RDMA_BACKEND_TYPE_TCP)
+    if (!priv)
         return UINT32_MAX;
 
     /* UINT32_MAX on a miss, with no default peer: see
@@ -970,15 +928,13 @@ uint32_t tcp_backend_node_from_gid(RdmaBackendDev *backend_dev,
  * through ERNIC_TCP_GUEST_GIDS, read once at startup.  What is missing is
  * the dispatch from a guest GID-table update to here; the mesh side of it
  * works and is covered by the gsi-mesh test, which is the only caller.
- *
- * Harmless on a non-mesh backend: loopback and none have no peers to tell.
  */
-int tcp_backend_claim_gid(RdmaBackendDev *backend_dev, const union ibv_gid *gid,
-                          bool add)
+static int tcp_mesh_claim_gid(RdmaBackendDev *backend_dev,
+                              const union ibv_gid *gid, bool add)
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
 
-    if (!priv || backend_dev->backend_type != RDMA_BACKEND_TYPE_TCP)
+    if (!priv)
         return 0;
 
     return tcp_claim_gid(priv, gid, add);
@@ -989,16 +945,12 @@ int tcp_backend_claim_gid(RdmaBackendDev *backend_dev, const union ibv_gid *gid,
  * replaces, so that a caller clearing it may free what it uses.  Never call
  * it from the callback, which would wait for itself.
  */
-void tcp_backend_set_ionic_recv_cb(RdmaBackendDev *backend_dev,
-                                   tcp_ionic_recv_fn fn, void *opaque)
+static void tcp_mesh_set_recv_cb(RdmaBackendDev *backend_dev,
+                                 ernic_mesh_recv_fn fn, void *opaque)
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
 
-    /* Every backend has a private block, but only this one's is a
-     * TcpBackendPrivate. The data path clears its callback at teardown
-     * whatever the backend, and on any other backend these fields would lie
-     * past the end of its private block. */
-    if (!priv || backend_dev->backend_type != RDMA_BACKEND_TYPE_TCP)
+    if (!priv)
         return;
 
     qemu_mutex_lock(&priv->lock);
@@ -1030,7 +982,7 @@ void tcp_backend_set_ionic_recv_cb(RdmaBackendDev *backend_dev,
 void tcp_recv_ionic(const TcpConnection *conn, TcpRecvMsg *msg)
 {
     TcpBackendPrivate *priv = conn->priv;
-    tcp_ionic_recv_fn fn;
+    ernic_mesh_recv_fn fn;
     void *fn_opaque;
 
     if (!priv || !msg->payload || msg->hdr.msg_len == 0)
@@ -1088,14 +1040,14 @@ void tcp_recv_ionic(const TcpConnection *conn, TcpRecvMsg *msg)
  * True when there is no connection to queue on: the send then fails, which
  * the caller has to hear about.
  */
-bool tcp_backend_ionic_has_room(RdmaBackendDev *backend_dev, uint32_t dst_node,
-                                size_t len)
+static bool tcp_mesh_has_room(RdmaBackendDev *backend_dev, uint32_t dst_node,
+                              size_t len)
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
     TcpConnection *conn;
     bool room;
 
-    if (!priv || backend_dev->backend_type != RDMA_BACKEND_TYPE_TCP)
+    if (!priv)
         return true;
     conn = tcp_route_to_node(priv, dst_node);
     if (!conn)
@@ -1111,11 +1063,11 @@ bool tcp_backend_ionic_has_room(RdmaBackendDev *backend_dev, uint32_t dst_node,
 
 /*
  * Take back the requests still queued on any connection whose tag, as given
- * to tcp_backend_send_ionic_v(), matches tag in the bits mask selects, so
- * none of them reaches its peer: those of a QP that is flushing, or one
- * request that has timed out, whose work requests the data path completes
- * now.  On a NIC, a flushed work request isn't transmitted; one queued here
- * hasn't been either.
+ * to tcp_mesh_sendv(), matches tag in the bits mask selects, so none of them
+ * reaches its peer: those of a QP that is flushing, or one request that has
+ * timed out, whose work requests the data path completes now.  On a NIC, a
+ * flushed work request isn't transmitted; one queued here hasn't been
+ * either.
  *
  * Only what no send thread has started to write: the message being written,
  * and what is already in the socket or on its way, still arrive, as frames
@@ -1125,14 +1077,14 @@ bool tcp_backend_ionic_has_room(RdmaBackendDev *backend_dev, uint32_t dst_node,
  * on the device's main thread, the only one that queues the data path's
  * messages, so nothing that matches is queued meanwhile.
  */
-void tcp_backend_ionic_cancel(RdmaBackendDev *backend_dev, uint64_t tag,
-                              uint64_t mask)
+static void tcp_mesh_cancel(RdmaBackendDev *backend_dev, uint64_t tag,
+                            uint64_t mask)
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
     TcpConnection *manager;
     GPtrArray *conns;
 
-    if (!priv || backend_dev->backend_type != RDMA_BACKEND_TYPE_TCP)
+    if (!priv)
         return;
 
     /* A worker's connection to the manager, which relays, isn't in the table */
@@ -1152,8 +1104,8 @@ void tcp_backend_ionic_cancel(RdmaBackendDev *backend_dev, uint64_t tag,
  * (tcp_conn_enqueue()).  A peer that stops reading holds up only that
  * thread, until the send times out and shuts the connection down.
  *
- * tag is the caller's name for a request, which tcp_backend_ionic_cancel()
- * matches; a reply's is ignored, since a reply is never taken back.
+ * tag is the caller's name for a request, which tcp_mesh_cancel() matches;
+ * a reply's is ignored, since a reply is never taken back.
  *
  * Returns 0 once queued, which doesn't mean the peer will get it: a message
  * still queued when the connection is shut down is lost, and the data path's
@@ -1162,9 +1114,9 @@ void tcp_backend_ionic_cancel(RdmaBackendDev *backend_dev, uint64_t tag,
  * caller tries again later; -ENOTCONN or -EPIPE when there is no connection
  * to send on; or what tcp_conn_enqueue() returns.
  */
-int tcp_backend_send_ionic_v(RdmaBackendDev *backend_dev, uint32_t dst_node,
-                             const void *hdr, size_t hdr_len, const void *body,
-                             size_t body_len, uint64_t tag, bool reply)
+static int tcp_mesh_sendv(RdmaBackendDev *backend_dev, uint32_t dst_node,
+                          const void *hdr, size_t hdr_len, const void *body,
+                          size_t body_len, uint64_t tag, bool reply)
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
     TcpConnection *conn;
@@ -1172,8 +1124,7 @@ int tcp_backend_send_ionic_v(RdmaBackendDev *backend_dev, uint32_t dst_node,
     int rc;
 
     /* Each length checked on its own before the sum, which could wrap */
-    if (!priv || backend_dev->backend_type != RDMA_BACKEND_TYPE_TCP || !hdr ||
-        hdr_len == 0 || hdr_len > TCP_MAX_PAYLOAD_LEN ||
+    if (!priv || !hdr || hdr_len == 0 || hdr_len > TCP_MAX_PAYLOAD_LEN ||
         body_len > TCP_MAX_PAYLOAD_LEN - hdr_len)
         return -EINVAL;
 
@@ -1206,3 +1157,57 @@ int tcp_backend_send_ionic_v(RdmaBackendDev *backend_dev, uint32_t dst_node,
     }
     return rc;
 }
+
+static const RdmaMeshOps tcp_mesh_ops = {
+    .local_node = tcp_mesh_local_node,
+    .node_from_gid = tcp_mesh_node_from_gid,
+    .claim_gid = tcp_mesh_claim_gid,
+    .sendv = tcp_mesh_sendv,
+    .has_room = tcp_mesh_has_room,
+    .cancel = tcp_mesh_cancel,
+    .set_recv_cb = tcp_mesh_set_recv_cb,
+};
+
+/*
+ * Backend Operations Structure
+ */
+const RdmaBackendOps rdma_backend_ops_tcp = {
+    .name = "tcp",
+    .type = RDMA_BACKEND_TYPE_TCP,
+
+    .init = tcp_init,
+    .fini = tcp_fini,
+
+    .query_device = tcp_query_device,
+
+    .create_pd = tcp_create_pd,
+
+    .create_mr = tcp_create_mr,
+    .destroy_mr = tcp_destroy_mr,
+    .mr_lkey = tcp_mr_lkey,
+
+    .create_cq = tcp_create_cq,
+    .destroy_cq = tcp_destroy_cq,
+
+    .create_qp = tcp_create_qp,
+    .destroy_qp = tcp_destroy_qp,
+    .qpn = tcp_qpn,
+
+    .qp_state_init = tcp_qp_state_init,
+    .qp_state_rtr = tcp_qp_state_rtr,
+    .qp_state_rts = tcp_qp_state_rts,
+    /*
+     * No query_qp: the backend keeps no QP state, so the resource manager
+     * answers from what it recorded. (A stub here once reported every QP as
+     * RTS.)
+     */
+
+    .get_backend_gid_index = tcp_get_backend_gid_index,
+
+    .create_srq = tcp_create_srq,
+    .destroy_srq = tcp_destroy_srq,
+    .query_srq = tcp_query_srq,
+    .modify_srq = tcp_modify_srq,
+
+    .mesh = &tcp_mesh_ops,
+};

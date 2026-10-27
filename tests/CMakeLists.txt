@@ -1524,12 +1524,15 @@ set_tests_properties(ernic-stats-unit PROPERTIES TIMEOUT 30)
 # backend's tables hold, and fills the CQ and QP ids to the last.
 # nvmeof-queues refuses more NVMe-oF queues than the MR table can serve.
 # rdma-reset-faults checks that the admin queue made again after
-# RDMA_RESET_LIF still injects the --inject faults.
+# RDMA_RESET_LIF still injects the --inject faults. mesh-none checks that
+# only the TCP backend has a mesh, and that the mesh calls on any other
+# backend answer without one.
 set(ERNIC_HARNESS_GROUPS
     devcmds bringup rdma-reset rdma-reset-faults rdma-reset-frees admin
     admin-dma rc atomic wrap dp-dma tables limits cq-events qp-flush
     qp-flush-srq ud srq eth eth-dma
-    nvmeof nvmeof-queues s3 teardown backend-names none loopback-pair)
+    nvmeof nvmeof-queues s3 mesh-none teardown backend-names none
+    loopback-pair)
 if(ERNIC_BUILD_P4)
     list(APPEND ERNIC_HARNESS_GROUPS p4-port p4-attach fp8-map p4-rdma p4-cvt
                                       p4-cvt-map p4-drop-map p4-devcmd
