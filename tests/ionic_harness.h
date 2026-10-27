@@ -2,12 +2,12 @@
  * ionic_harness.h — a userspace model of the ionic driver, driving the
  * real device code in-process
  *
- * The harness builds the device the way the server does -- the RDMA core
- * and backend, the Ethernet emulator, the RDMA devcmd handler and the data
- * path -- over the fake libvfio-user in fake_vfu.c, and then plays the
- * guest driver against it: register reads and writes on BAR0, doorbells on
- * BAR2, and rings, work requests and completions in guest memory. Each
- * ih_poll() is one pass of the server's main loop.
+ * The harness builds the device with the calls the server makes -- the RDMA
+ * core and backend, then ionic_device_create() -- over the fake libvfio-user
+ * in fake_vfu.c, and then plays the guest driver against it: register reads
+ * and writes on BAR0, doorbells on BAR2, and rings, work requests and
+ * completions in guest memory. Each ih_poll() is the device's share of one
+ * pass of the server's main loop, ionic_device_poll().
  *
  * Every layout below is written out from the driver's side (ionic_if.h and
  * ionic_fw.h) rather than shared with the device code, so a wrong offset
@@ -73,6 +73,7 @@
 #define IH_ADMIN_CREATE_QP   2
 #define IH_ADMIN_CREATE_MR   3
 #define IH_ADMIN_STATS_HDRS  4
+#define IH_ADMIN_STATS_VALS  5
 #define IH_ADMIN_DESTROY_MR  6
 #define IH_ADMIN_DESTROY_CQ  8
 #define IH_ADMIN_MODIFY_QP   9
@@ -185,6 +186,11 @@ struct ih_ring {
 struct ih {
     vfu_ctx_t *vfu;
     rocm_ernic_dev_t *dev;
+
+    /* The ionic device's parts, for tests that work on one directly */
+    struct ionic_eth_emu *emu;
+    struct ionic_rdma_devcmd_state *rdma;
+    struct ionic_datapath *dp;
 
     /* Ethernet admin queue and its completion queue */
     struct ih_ring eth_aq;
@@ -317,9 +323,17 @@ struct ih_cqe {
 
 /*
  * Build a device for @backend ("loopback", "nvmeof:...", and so on), as the
- * server's ionic_device_init() does. Nothing is brought up yet.
+ * server's device_init() does. Nothing is brought up yet.
  */
 bool ih_create(struct ih *h, const char *backend);
+
+/*
+ * ih_create(), injecting @faults (ionic_fault.h), as --inject does. The set
+ * stays the caller's, and must outlive the device.
+ */
+struct ionic_fault_set;
+bool ih_create_faults(struct ih *h, const char *backend,
+                      struct ionic_fault_set *faults);
 
 /* Tear it down as the server does at shutdown. False if the device code
  * left guest memory mapped. */

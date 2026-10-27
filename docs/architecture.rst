@@ -315,6 +315,9 @@ Inside the Server
        ┌───────────────────────┼─────────────────────────────┐
        │ ionic front end       │                             │
        │                       ▼                             │
+       │  ionic_device.c ──── builds, wires, polls and tears │
+       │    │                 down the four below            │
+       │    ▼                                                │
        │  ionic_eth_emu.c ─── BAR 0 registers, device        │
        │    │    │            commands, Ethernet queues,     │
        │    │    │            interrupt controller, BAR 2    │
@@ -423,8 +426,12 @@ its completions. All data movement happens in
 The Main Loop
 ^^^^^^^^^^^^^
 
-``src/rocm_ernic_server.c`` builds the device, then waits for
-QEMU to connect. Once QEMU has connected, it loops:
+``src/rocm_ernic_server.c`` builds the RDMA core and its
+backend, then the ionic device in front of them
+(``ionic_device_create()`` in ``src/ionic/ionic_device.c``,
+which creates the ionic objects and wires them together once),
+then waits for QEMU to connect. Once QEMU has connected, it
+loops:
 
 #. Write the stats file, if there is one, about once a second.
 #. ``vfu_run_ctx()``: handle pending vfio-user messages. BAR
@@ -432,6 +439,8 @@ QEMU to connect. Once QEMU has connected, it loops:
    send queues are executed inside the callback** (see
    `The Data Path`_).
 #. Run any GLib idle callbacks.
+#. ``ionic_device_poll()``, the device's share, which is the
+   next three steps.
 #. Move received Ethernet frames from the TAP, and frames an
    in-process endpoint queued for the guest, into the guest's
    receive rings. Rewrite the Ethernet statistics in guest
@@ -1399,10 +1408,15 @@ Where to Look in the Source
      - Role
    * - ``src/rocm_ernic_server.c``
      - Startup, PCI identity, BARs, MSI-X, main loop
+   * - ``src/ernic_socket.c``
+     - The vfio-user socket's permissions
    * - ``src/rocm_ernic_internal.h``
      - The top-level device struct
    * - ``src/ionic/ionic_bar.h``
      - BAR layout constants
+   * - ``src/ionic/ionic_device.c``
+     - The ionic device as one object: builds, wires, polls and
+       tears down the files below
    * - ``src/ionic/ionic_eth_emu.c``
      - Registers, device commands, LIF, Ethernet queues,
        interrupt controller, doorbell decode

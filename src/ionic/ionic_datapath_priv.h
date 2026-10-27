@@ -394,9 +394,6 @@ struct ionic_datapath {
     /* Mesh state.  local_node is UINT32_MAX until a mesh backend is
      * attached, which keeps every peer local for loopback runs. */
     uint32_t local_node;
-    /* The poll loop re-attaches the handle every iteration, so the mesh
-     * state is only worth logging when it actually changes. */
-    bool mesh_reported;
     uint32_t next_req_id;
     uint32_t next_mesh_id; /* the last QP registered's mesh_id */
     struct dp_pending pending[MAX_PENDING];

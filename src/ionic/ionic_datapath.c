@@ -347,9 +347,6 @@ static bool dp_mesh_recv(void *opaque, uint32_t src_node, void *buf,
 void ionic_datapath_set_pvrdma(struct ionic_datapath *dp,
                                pvrdma_handle_t handle)
 {
-    uint32_t node;
-    bool changed;
-
     if (!dp)
         return;
 
@@ -357,21 +354,19 @@ void ionic_datapath_set_pvrdma(struct ionic_datapath *dp,
     if (!handle)
         return;
 
-    node = ionic_mesh_local_node(dp->pvrdma_handle);
-    changed = !dp->mesh_reported || node != dp->local_node;
-    dp->local_node = node;
-    dp->mesh_reported = true;
-
-    if (node == UINT32_MAX) {
-        if (changed)
-            vfu_log(dp->vfu_ctx, LOG_INFO,
-                    "ionic_datapath: no mesh backend, remote QPs unreachable");
+    /* Fixed once the backend is realized: a manager is node 0 from the
+     * start, and a worker's realize waits for its id, which registering
+     * again never changes. */
+    dp->local_node = ionic_mesh_local_node(dp->pvrdma_handle);
+    if (dp->local_node == UINT32_MAX) {
+        vfu_log(dp->vfu_ctx, LOG_INFO,
+                "ionic_datapath: no mesh backend, remote QPs unreachable");
         return;
     }
 
     ionic_mesh_set_recv_cb(dp->pvrdma_handle, dp_mesh_recv, dp);
-    if (changed)
-        vfu_log(dp->vfu_ctx, LOG_INFO, "ionic_datapath: mesh node %u", node);
+    vfu_log(dp->vfu_ctx, LOG_INFO, "ionic_datapath: mesh node %u",
+            dp->local_node);
 }
 
 void ionic_datapath_set_cq_event_cb(struct ionic_datapath *dp,

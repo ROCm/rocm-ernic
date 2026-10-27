@@ -65,6 +65,7 @@ if(ERNIC_BUILD_DOCS)
       "${PROJECT_SOURCE_DIR}/src/rocm_ernic_internal.h"
       "${PROJECT_SOURCE_DIR}/src/rocm_ernic_compat.h"
       "${PROJECT_SOURCE_DIR}/src/ionic/ionic_bar.h"
+      "${PROJECT_SOURCE_DIR}/src/ionic/ionic_device.h"
       "${PROJECT_SOURCE_DIR}/src/ionic/ionic_eth_emu.h"
       "${PROJECT_SOURCE_DIR}/src/ionic/ionic_rdma_devcmd.h"
       "${PROJECT_SOURCE_DIR}/src/ionic/ionic_adminq.h"

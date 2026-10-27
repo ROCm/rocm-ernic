@@ -270,8 +270,10 @@ bool ionic_datapath_attach_s3(struct ionic_datapath *dp,
                               size_t errlen);
 
 /*
- * Set the pvrdma handle so the datapath can post sends via the backend.
- * Call this once after ionic_device_init() and pvrdma_device_realize().
+ * Set the pvrdma handle so the datapath can post sends via the backend, and
+ * register for what peers send over the mesh.  Call this once, after
+ * pvrdma_device_realize(), which is when this node's mesh id is known;
+ * ionic_device_create() does.
  * @handle: from pvrdma_device_create().
  */
 void ionic_datapath_set_pvrdma(struct ionic_datapath *dp,

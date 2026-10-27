@@ -25,6 +25,11 @@ BAR Layout
 
 .. doxygenfile:: ionic_bar.h
 
+Device
+^^^^^^
+
+.. doxygenfile:: ionic_device.h
+
 Ethernet Emulator
 ^^^^^^^^^^^^^^^^^
 

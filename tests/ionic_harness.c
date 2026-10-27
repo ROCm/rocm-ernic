@@ -22,14 +22,9 @@
 
 #include "byteorder.h"
 #include "fake_vfu.h"
-#include "ionic/ionic_adminq.h"
-#include "ionic/ionic_bar.h"
-#include "ionic/ionic_datapath.h"
+#include "ionic/ionic_device.h"
 #include "ionic/ionic_eth_emu.h"
-#include "ionic/ionic_rdma_devcmd.h"
-#include "nvmeof/nvmeof_target.h"
 #include "rocm_ernic_compat.h"
-#include "s3/s3_target.h"
 
 /* Guest memory: 32 regions of 1 MiB */
 #define IH_REGION_SIZE (1u << 20)
@@ -129,36 +124,17 @@ static bool ring_alloc(struct ih *h, struct ih_ring *r, uint8_t depth_log2,
 
 /* ---- Device lifecycle -------------------------------------------------- */
 
-static bool attach_nvmeof(struct ih *h, const char *backend)
-{
-    struct nvmeof_target_cfg cfg;
-    char err[256] = "";
-    const char *opts = strchr(backend, ':');
-
-    nvmeof_target_cfg_defaults(&cfg);
-    bool ok =
-        nvmeof_target_cfg_parse(&cfg, opts ? opts + 1 : NULL, err,
-                                sizeof(err)) &&
-        ionic_datapath_attach_nvmeof(h->dev->ionic_dp, &cfg, err, sizeof(err));
-    free(cfg.file);
-    return ok || fail("nvmeof backend: %s", err);
-}
-
-static bool attach_s3(struct ih *h, const char *backend)
-{
-    struct s3_target_cfg cfg;
-    char err[256] = "";
-    const char *opts = strchr(backend, ':');
-
-    s3_target_cfg_defaults(&cfg);
-    bool ok =
-        s3_target_cfg_parse(&cfg, opts ? opts + 1 : NULL, err, sizeof(err)) &&
-        ionic_datapath_attach_s3(h->dev->ionic_dp, &cfg, err, sizeof(err));
-    return ok || fail("s3 backend: %s", err);
-}
-
 bool ih_create(struct ih *h, const char *backend)
 {
+    return ih_create_faults(h, backend, NULL);
+}
+
+bool ih_create_faults(struct ih *h, const char *backend,
+                      struct ionic_fault_set *faults)
+{
+    struct ionic_device_cfg cfg;
+    char err[512] = "";
+
     memset(h, 0, sizeof(*h));
 
     h->vfu = fake_vfu_create(IH_REGION_SIZE, IH_NREGIONS);
@@ -171,8 +147,6 @@ bool ih_create(struct ih *h, const char *backend)
     rocm_ernic_dev_t *dev = h->dev;
     dev->vfu_ctx = h->vfu;
     dev->backend_type_str = strdup(backend);
-    /* NULL for an unknown backend, which pvrdma_device_create() refuses */
-    dev->backend_name = pvrdma_backend_name(backend);
 
     dev->pvrdma_handle = pvrdma_device_create(dev, backend);
     if (!dev->pvrdma_handle) {
@@ -184,29 +158,20 @@ bool ih_create(struct ih *h, const char *backend)
         return fail("pvrdma_device_realize(%s) failed", backend);
     }
 
-    /* The rest is the server's ionic_device_init(). */
-    dev->ionic_emu = ionic_eth_emu_create(h->vfu, IONIC_BAR2_DB_SIZE);
-    dev->ionic_rdma = ionic_rdma_devcmd_create(h->vfu);
-    if (dev->ionic_emu)
-        dev->ionic_dp = ionic_datapath_create(h->vfu, dev->ionic_emu);
-    if (!dev->ionic_emu || !dev->ionic_rdma || !dev->ionic_dp) {
+    /* The rest is the server's device_init(). */
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.vfu_ctx = h->vfu;
+    cfg.pvrdma = dev->pvrdma_handle;
+    cfg.backend = backend;
+    cfg.faults = faults;
+    dev->ionic = ionic_device_create(&cfg, err, sizeof(err));
+    if (!dev->ionic) {
         ih_destroy(h);
-        return fail("out of memory for the ionic layer");
+        return fail("%s", err);
     }
-    ionic_eth_emu_set_pvrdma(dev->ionic_emu, dev->pvrdma_handle);
-    ionic_eth_emu_register_rdma_handler(
-        dev->ionic_emu, ionic_rdma_devcmd_dispatch, dev->ionic_rdma);
-    ionic_rdma_devcmd_set_eth_emu(dev->ionic_rdma, dev->ionic_emu);
-
-    if (!strcmp(dev->backend_name, "nvmeof") && !attach_nvmeof(h, backend)) {
-        ih_destroy(h);
-        return false;
-    }
-    if (!strcmp(dev->backend_name, "s3") && !attach_s3(h, backend)) {
-        ih_destroy(h);
-        return false;
-    }
-    ionic_eth_emu_register_datapath(dev->ionic_emu, dev->ionic_dp);
+    h->emu = ionic_device_eth_emu(dev->ionic);
+    h->rdma = ionic_device_rdma_devcmd(dev->ionic);
+    h->dp = ionic_device_datapath(dev->ionic);
 
     h->port_info = fake_vfu_alloc(h->vfu, IH_PAGE_SIZE, IH_PAGE_SIZE);
     h->lif_info = fake_vfu_alloc(h->vfu, IH_PAGE_SIZE, IH_PAGE_SIZE);
@@ -220,13 +185,11 @@ bool ih_destroy(struct ih *h)
 
     if (dev) {
         /*
-         * The server's ionic_device_fini(), then its pvrdma teardown, both
+         * The server's teardown: the device, then the RDMA core, both
          * before the context goes, as in the server: the device's teardown
          * puts back any mappings through it.
          */
-        ionic_datapath_destroy(dev->ionic_dp);
-        ionic_rdma_devcmd_destroy(dev->ionic_rdma);
-        ionic_eth_emu_destroy(dev->ionic_emu);
+        ionic_device_destroy(dev->ionic);
         pvrdma_device_destroy(dev->pvrdma_handle);
         free(dev->backend_type_str);
         free(dev);
@@ -240,21 +203,9 @@ bool ih_destroy(struct ih *h)
 
 void ih_poll(struct ih *h)
 {
-    rocm_ernic_dev_t *dev = h->dev;
-
-    /* The body of the server's main loop, minus vfu_run_ctx(). */
-    ionic_eth_emu_poll_rx(dev->ionic_emu);
-
-    struct ionic_adminq_ctx *aqctx =
-        ionic_rdma_devcmd_get_adminq_ctx(dev->ionic_rdma);
-    if (aqctx) {
-        ionic_adminq_set_pvrdma(aqctx, dev->pvrdma_handle);
-        ionic_adminq_set_datapath(aqctx, dev->ionic_dp);
-        ionic_rdma_devcmd_set_datapath(dev->ionic_rdma, dev->ionic_dp);
-        ionic_adminq_poll(aqctx, h->vfu);
-    }
-    ionic_datapath_set_pvrdma(dev->ionic_dp, dev->pvrdma_handle);
-    ionic_datapath_poll(dev->ionic_dp);
+    /* The device's share of the server's main loop; vfu_run_ctx() is the
+     * test's own calls. */
+    ionic_device_poll(h->dev->ionic);
 }
 
 /* ---- Registers and doorbells ------------------------------------------- */
@@ -262,7 +213,7 @@ void ih_poll(struct ih *h)
 void ih_bar0_read(struct ih *h, uint32_t off, void *buf, size_t len)
 {
     pvrdma_bar0_mmio_count(h->dev->pvrdma_handle, false);
-    if (ionic_eth_emu_bar0_access(h->dev->ionic_emu, buf, len, off, false) !=
+    if (ionic_eth_emu_bar0_access(h->emu, buf, len, off, false) !=
         (ssize_t)len) {
         fail("BAR0 read of %zu bytes at %#x refused", len, off);
         memset(buf, 0xff, len);
@@ -279,8 +230,8 @@ void ih_bar0_write(struct ih *h, uint32_t off, const void *buf, size_t len)
     }
     memcpy(tmp, buf, len);
     pvrdma_bar0_mmio_count(h->dev->pvrdma_handle, true);
-    if (ionic_eth_emu_bar0_access(h->dev->ionic_emu, (char *)tmp, len, off,
-                                  true) != (ssize_t)len)
+    if (ionic_eth_emu_bar0_access(h->emu, (char *)tmp, len, off, true) !=
+        (ssize_t)len)
         fail("BAR0 write of %zu bytes at %#x refused", len, off);
 }
 
@@ -318,7 +269,7 @@ void ih_doorbell(struct ih *h, int qtype, uint32_t qid, uint8_t ring,
     ernic_put_le64(b, val);
     pvrdma_uar_mmio_count(h->dev->pvrdma_handle, true);
     /* The kernel's doorbell page is page 0, one u64 slot per qtype. */
-    if (ionic_eth_emu_bar2_access(h->dev->ionic_emu, (char *)b, sizeof(b),
+    if (ionic_eth_emu_bar2_access(h->emu, (char *)b, sizeof(b),
                                   (loff_t)qtype * 8, true) != sizeof(b))
         fail("doorbell write for qtype %d refused", qtype);
 }

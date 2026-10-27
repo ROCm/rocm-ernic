@@ -21,11 +21,9 @@
 #include <err.h>
 #include <signal.h>
 #include <stdbool.h>
-#include <grp.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/uio.h>
-#include <sys/xattr.h>
 #include <syslog.h>
 #include <getopt.h>
 #include <inttypes.h>
@@ -43,22 +41,18 @@
  */
 #include "rocm_ernic_internal.h" // IWYU pragma: keep
 #include "rocm_ernic_compat.h"
+#include "ernic_socket.h"
 #include "ernic_time.h"
 #include "ernic_log.h"
-#include "ionic/ionic_adminq.h"
 #include "ionic/ionic_bar.h"
-#include "ionic/ionic_datapath.h"
+#include "ionic/ionic_device.h"
 #include "ionic/ionic_eth_emu.h"
 #include "ionic/ionic_eth_net.h"
 #include "ionic/ionic_fault.h"
-#include "ionic/ionic_rdma_devcmd.h"
 #include "ionic/ionic_profile.h"
-#include "nvmeof/nvmeof_target.h"
-#include "s3/s3_target.h"
 #ifdef ERNIC_HAVE_P4
 #include "p4_devcmd.h"
 #include "p4_engine.h"
-#include "p4_port.h"
 #endif
 #include "parse_int.h"
 #include "rocm-ernic-warnings.h"
@@ -232,9 +226,10 @@ static ssize_t bar0_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
                            loff_t offset, bool is_write)
 {
     rocm_ernic_dev_t *dev = vfu_get_private(vfu_ctx);
+    struct ionic_eth_emu *emu = ionic_device_eth_emu(dev->ionic);
 
-    if (!dev->ionic_emu) {
-        vfu_log(vfu_ctx, LOG_ERR, "BAR0 access: ionic_emu is NULL!");
+    if (!emu) {
+        vfu_log(vfu_ctx, LOG_ERR, "BAR0 access: no ionic device");
         errno = EFAULT;
         return -1;
     }
@@ -257,8 +252,7 @@ static ssize_t bar0_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
     size_t off = (size_t)offset;
 
     if (count <= IONIC_BAR0_REGS_SIZE && off <= IONIC_BAR0_REGS_SIZE - count)
-        return ionic_eth_emu_bar0_access(dev->ionic_emu, buf, count, offset,
-                                         is_write);
+        return ionic_eth_emu_bar0_access(emu, buf, count, offset, is_write);
 
     if (off < IONIC_BAR0_REGS_SIZE) {
         vfu_log(vfu_ctx, LOG_ERR,
@@ -284,17 +278,17 @@ static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
                            loff_t offset, bool is_write)
 {
     rocm_ernic_dev_t *dev = vfu_get_private(vfu_ctx);
+    struct ionic_eth_emu *emu = ionic_device_eth_emu(dev->ionic);
 
-    if (!dev->ionic_emu) {
-        vfu_log(vfu_ctx, LOG_ERR, "BAR2 access: ionic_emu is NULL!");
+    if (!emu) {
+        vfu_log(vfu_ctx, LOG_ERR, "BAR2 access: no ionic device");
         errno = EFAULT;
         return -1;
     }
 
     if (dev->pvrdma_handle)
         pvrdma_uar_mmio_count(dev->pvrdma_handle, is_write);
-    return ionic_eth_emu_bar2_access(dev->ionic_emu, buf, count, offset,
-                                     is_write);
+    return ionic_eth_emu_bar2_access(emu, buf, count, offset, is_write);
 }
 
 
@@ -469,140 +463,31 @@ static int p4_load_program_file(struct p4_engine *eng, const char *path)
 #endif /* ERNIC_HAVE_P4 */
 
 /**
- * Tear down the ionic emulation layer built by ionic_device_init().
- *
- * The datapath goes first: it unregisters its mesh receive callback from
- * the pvrdma backend, and both it and the rdma devcmd hold pointers into
- * the eth emulator.  Safe to call on a partly built or already torn-down
- * device; every pointer is cleared.
+ * Build the device: the RDMA core and its backend, then the ionic device the
+ * guest sees in front of them.  The ionic device owns the registers and
+ * doorbells, but the resource manager and backend behind them come from the
+ * core.  Returns 0, or -1 after saying why.
  */
-static void ionic_device_fini(rocm_ernic_dev_t *dev)
+static int device_init(rocm_ernic_dev_t *dev)
 {
-#ifdef ERNIC_HAVE_P4
-    /*
-     * One machine-parseable line, so a black-box test can tell a frame the
-     * pipeline forwarded from one it dropped.  The counters live inside the
-     * process and have no other way out.
-     */
-    if (dev->p4_port || dev->p4_engine) {
-        struct p4_stats es;
-        struct p4_port_stats ps;
+    struct ionic_device_cfg cfg;
+    char err[512] = "";
 
-        p4_engine_get_stats(dev->p4_engine, &es);
-        p4_port_get_stats(dev->p4_port, &ps);
-        ernic_startup_report(
-            "rocm-ernic: P4 stats: host_in=%" PRIu64 " host_out=%" PRIu64
-            " uplink_in=%" PRIu64 " uplink_out=%" PRIu64 " dropped=%" PRIu64
-            " too_big=%" PRIu64 " parse_errors=%" PRIu64 " to_guest=%" PRIu64
-            " to_net=%" PRIu64 " to_upstream=%" PRIu64
-            " egress_errors=%" PRIu64,
-            es.frames_in[P4_PORT_HOST], es.frames_out[P4_PORT_HOST],
-            es.frames_in[P4_PORT_UPLINK], es.frames_out[P4_PORT_UPLINK],
-            es.frames_dropped, es.frames_too_big, es.parse_errors, ps.to_guest,
-            ps.to_net, ps.to_upstream, ps.egress_errors);
-    }
-
-    /* Before the datapath, which clears the Tx filter slot the P4 port is
-     * holding on the S3 endpoint's behalf. */
-    p4_port_detach(dev->p4_port);
-    dev->p4_port = NULL;
-    /* And before the engine, which both of these borrowed. */
-    ionic_datapath_set_p4_engine(dev->ionic_dp, NULL);
-    if (dev->ionic_emu)
-        ionic_eth_emu_register_p4_handler(dev->ionic_emu, NULL, NULL);
-    p4_devcmd_destroy(dev->p4_devcmd);
-    dev->p4_devcmd = NULL;
-    p4_engine_destroy(dev->p4_engine);
-    dev->p4_engine = NULL;
-#endif
-    ionic_datapath_destroy(dev->ionic_dp);
-    dev->ionic_dp = NULL;
-    ionic_rdma_devcmd_destroy(dev->ionic_rdma);
-    dev->ionic_rdma = NULL;
-    ionic_eth_emu_destroy(dev->ionic_emu);
-    dev->ionic_emu = NULL;
-}
-
-/**
- * Initialize ionic emulation layer.
- */
-static int ionic_device_init(rocm_ernic_dev_t *dev)
-{
-    /* The ionic front end owns the registers and doorbells, but the
-     * resource manager and backend behind them come from the shared core:
-     * without this the admin queue has no pvrdma_handle and every
-     * CREATE_CQ/CREATE_QP is a no-op stub. */
     if (pvrdma_device_init(dev) < 0)
         return -1;
 
-    dev->ionic_emu = ionic_eth_emu_create(dev->vfu_ctx, IONIC_BAR2_DB_SIZE);
-    if (!dev->ionic_emu) {
-        fprintf(stderr, "ionic_device_init: failed to create eth emulator\n");
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.vfu_ctx = dev->vfu_ctx;
+    cfg.pvrdma = dev->pvrdma_handle;
+    cfg.backend = dev->backend_type_str;
+    cfg.profile = &dev->profile;
+    cfg.mac = dev->mac_addr_set ? dev->mac_addr : NULL;
+    cfg.faults = dev->faults;
+    dev->ionic = ionic_device_create(&cfg, err, sizeof(err));
+    if (!dev->ionic) {
+        fprintf(stderr, "%s\n", err);
         return -1;
     }
-
-    ionic_eth_emu_set_pvrdma(dev->ionic_emu, dev->pvrdma_handle);
-
-    if (dev->mac_addr_set)
-        ionic_eth_emu_set_mac(dev->ionic_emu, dev->mac_addr);
-    ionic_eth_emu_set_profile(dev->ionic_emu, &dev->profile);
-    ionic_eth_emu_set_faults(dev->ionic_emu, dev->faults);
-
-    dev->ionic_rdma = ionic_rdma_devcmd_create(dev->vfu_ctx);
-    if (!dev->ionic_rdma) {
-        ionic_device_fini(dev);
-        fprintf(stderr, "ionic_device_init: failed to create rdma devcmd\n");
-        return -1;
-    }
-
-    ionic_eth_emu_register_rdma_handler(
-        dev->ionic_emu, ionic_rdma_devcmd_dispatch, dev->ionic_rdma);
-    ionic_rdma_devcmd_set_eth_emu(dev->ionic_rdma, dev->ionic_emu);
-
-    dev->ionic_dp = ionic_datapath_create(dev->vfu_ctx, dev->ionic_emu);
-    if (!dev->ionic_dp) {
-        ionic_device_fini(dev);
-        fprintf(stderr, "ionic_device_init: failed to create datapath\n");
-        return -1;
-    }
-
-    if (!strcmp(dev->backend_name, "nvmeof")) {
-        struct nvmeof_target_cfg cfg;
-        char err[256] = "";
-        const char *opts = strchr(dev->backend_type_str, ':');
-
-        bool attached;
-
-        nvmeof_target_cfg_defaults(&cfg);
-        attached =
-            nvmeof_target_cfg_parse(&cfg, opts ? opts + 1 : NULL, err,
-                                    sizeof(err)) &&
-            ionic_datapath_attach_nvmeof(dev->ionic_dp, &cfg, err, sizeof(err));
-        free(cfg.file); /* the target keeps its own copy */
-        if (!attached) {
-            fprintf(stderr, "nvmeof backend: %s\n", err);
-            ionic_device_fini(dev);
-            return -1;
-        }
-    }
-
-    if (!strcmp(dev->backend_name, "s3")) {
-        struct s3_target_cfg cfg;
-        char err[256] = "";
-        const char *opts = strchr(dev->backend_type_str, ':');
-
-        s3_target_cfg_defaults(&cfg);
-        if (!s3_target_cfg_parse(&cfg, opts ? opts + 1 : NULL, err,
-                                 sizeof(err)) ||
-            !ionic_datapath_attach_s3(dev->ionic_dp, &cfg, err, sizeof(err))) {
-            fprintf(stderr, "s3 backend: %s\n", err);
-            ionic_device_fini(dev);
-            return -1;
-        }
-    }
-
-    /* Wire the datapath into the eth emulator's BAR2 handler */
-    ionic_eth_emu_register_datapath(dev->ionic_emu, dev->ionic_dp);
 
     printf(
         "ionic emulation initialized (VID:DID %#x:%#x, SSVID:SDID %#x:%#x)\n",
@@ -963,322 +848,72 @@ static void usage(const char *progname)
 }
 
 /**
- * Validate backend-specific options, and set dev->backend_name
+ * Validate the backend and its options before anything is built, so that a
+ * malformed one fails now rather than after the guest has attached, when the
+ * failure would look like a device problem.
  * @dev: Device structure with parsed options
  * @return: 0 on success, -1 on error
  */
-static int validate_backend_options(rocm_ernic_dev_t *dev)
+static int validate_backend_options(const rocm_ernic_dev_t *dev)
 {
-    const char *backend_type = pvrdma_backend_name(dev->backend_type_str);
+    const char *name = pvrdma_backend_name(dev->backend_type_str);
+    char err[512] = "";
 
-    if (!backend_type) {
+    if (!name) {
         fprintf(stderr, "Error: Unknown backend '%s'\n", dev->backend_type_str);
         fprintf(stderr, "  Expected one of: none, loopback, tcp, nvmeof, s3, "
                         "optionally followed by ':' and its options\n");
         return -1;
     }
-    dev->backend_name = backend_type;
 
-    /* Reject a malformed namespace spec now rather than after the guest has
-     * already attached and the failure looks like a device problem. */
-    if (!strcmp(backend_type, "nvmeof")) {
-        struct nvmeof_target_cfg cfg;
-        char err[256] = "";
-        const char *opts = strchr(dev->backend_type_str, ':');
-
-        bool ok;
-
-        nvmeof_target_cfg_defaults(&cfg);
-        ok = nvmeof_target_cfg_parse(&cfg, opts ? opts + 1 : NULL, err,
-                                     sizeof(err)) &&
-             ionic_datapath_nvmeof_cfg_check(&cfg, err, sizeof(err));
-        free(cfg.file); /* only checking the options here */
-        if (!ok) {
-            fprintf(stderr, "Error: nvmeof backend: %s\n", err);
+    if (!ionic_device_target_check(dev->backend_type_str, err, sizeof(err))) {
+        fprintf(stderr, "Error: %s\n", err);
+        if (!strcmp(name, "nvmeof"))
             fprintf(stderr, "  Use: --backend nvmeof[:size=64M][,file=PATH]"
                             "[,bs=512][,nqn=NAME][,ip=ADDR][,port=4420]\n");
-            return -1;
-        }
-    }
-
-    if (!strcmp(backend_type, "s3")) {
-        struct s3_target_cfg cfg;
-        char err[256] = "";
-        const char *opts = strchr(dev->backend_type_str, ':');
-
-        s3_target_cfg_defaults(&cfg);
-        if (!s3_target_cfg_parse(&cfg, opts ? opts + 1 : NULL, err,
-                                 sizeof(err))) {
-            fprintf(stderr, "Error: s3 backend: %s\n", err);
+        else if (!strcmp(name, "s3"))
             fprintf(stderr, "  Use: --backend s3[:bucket=NAME][,size=256M]"
                             "[,objects=256][,ip=ADDR][,port=9000]\n");
-            return -1;
-        }
+        return -1;
     }
 
     return 0;
 }
 
-/* A numeric --socket-group is parsed as a uint32_t, which only fits a gid_t
- * of that width. */
-_Static_assert(sizeof(gid_t) == sizeof(uint32_t) && (gid_t)-1 > 0,
-               "gid_t must be an unsigned 32-bit type");
-
-/*
- * Resolve --socket-group: a group name or, failing that, a numeric gid, as
- * chgrp(1) does.  Any gid but (gid_t)-1 is valid, including those above
- * INT_MAX; that one tells lchown() to leave the group alone.  Returns false
- * if it's neither.
+/**
+ * Allocate the device structure, with the defaults the options override.
+ * Returns NULL after saying why.
  */
-static bool resolve_group(const char *spec, gid_t *gid)
+static rocm_ernic_dev_t *dev_new(void)
 {
-    long max = sysconf(_SC_GETGR_R_SIZE_MAX);
-    size_t len = max > 0 ? (size_t)max : 1024;
-    uint32_t n;
+    /* 72:6f:63:6d:2d:6e, the first 6 bytes of "rocm-nic" in ASCII */
+    static const uint8_t default_mac[6] = {0x72, 0x6f, 0x63, 0x6d, 0x2d, 0x6e};
+    rocm_ernic_dev_t *dev = calloc(1, sizeof(*dev));
 
-    /* The buffer getgrnam_r() needs has no fixed bound, so grow it until
-     * the entry fits, up to a limit no real group comes near. */
-    for (;;) {
-        struct group grp, *found = NULL;
-        char *buf = malloc(len);
-        int rc;
-
-        if (!buf)
-            return false;
-        rc = getgrnam_r(spec, &grp, buf, len, &found);
-        if (rc == 0 && found) {
-            *gid = found->gr_gid;
-            free(buf);
-            return true;
-        }
-        free(buf);
-        if (rc != ERANGE || len >= ((size_t)1 << 20))
-            break;
-        len *= 2;
+    if (!dev) {
+        warn("Failed to allocate device structure");
+        return NULL;
     }
-    if (ernic_parse_u32(spec, &n) && n != (uint32_t)(gid_t)-1) {
-        *gid = (gid_t)n;
-        return true;
+    dev->backend_type_str = strdup("loopback");
+    if (!dev->backend_type_str) {
+        fprintf(stderr, "Error: out of memory\n");
+        free(dev);
+        return NULL;
     }
-    return false;
-}
-
-/*
- * Check that @st, found at @path, is the socket @created: the one the first
- * socket_access_ok() found there.  Prints why and returns false if it isn't.
- */
-static bool socket_is_created(const char *path, const struct stat *st,
-                              const struct stat *created)
-{
-    if (S_ISSOCK(st->st_mode) && st->st_dev == created->st_dev &&
-        st->st_ino == created->st_ino)
-        return true;
-    fprintf(stderr,
-            "rocm-ernic: %s is no longer the socket the server created; "
-            "keep the socket out of directories others can write to\n",
-            path);
-    return false;
-}
-
-/*
- * Give the socket at @path the group @gid (@name, for messages), then mode
- * 0660 to let that group in.  @created is what the first socket_access_ok()
- * found at @path.  Prints why and returns false if it can't, or if @path no
- * longer leads to that socket.
- *
- * Both changes act on a descriptor for the socket that was checked, so
- * putting something else at @path, such as a symlink or a hard link to
- * another file, can't redirect them.  The descriptor comes from O_PATH: a
- * UNIX socket can't be opened for I/O, and fchmod() on the listening socket
- * would change the socket, not the file.  fchmod() refuses an O_PATH
- * descriptor, and fchmodat() takes AT_EMPTY_PATH only from Linux 6.6 and
- * glibc 2.39, so the mode is set through the descriptor's /proc/self/fd
- * link, as glibc's fchmodat() does for AT_SYMLINK_NOFOLLOW.  That link leads
- * to the file the descriptor holds, whatever is at @path now.
- */
-static bool socket_set_group(const char *path, const char *name, gid_t gid,
-                             const struct stat *created)
-{
-    char fd_path[32];
-    struct stat st;
-    bool ok = false;
-    int n;
-    int fd = open(path, O_PATH | O_NOFOLLOW | O_CLOEXEC);
-
-    if (fd < 0) {
-        fprintf(stderr, "rocm-ernic: cannot open socket %s: %s\n", path,
-                strerror(errno));
-        return false;
-    }
-    if (fstat(fd, &st) < 0) {
-        fprintf(stderr, "rocm-ernic: cannot stat socket %s: %s\n", path,
-                strerror(errno));
-        goto out;
-    }
-    if (!socket_is_created(path, &st, created))
-        goto out;
-    if (fchownat(fd, "", (uid_t)-1, gid, AT_EMPTY_PATH) < 0) {
-        int e = errno;
-
-        fprintf(stderr, "rocm-ernic: cannot give socket %s the group %s: %s\n",
-                path, name, strerror(e));
-        if (e == EPERM)
-            fprintf(stderr, "rocm-ernic: the server has to run as root or "
-                            "be a member of that group\n");
-        goto out;
-    }
-    n = snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
-    if (n < 0 || (size_t)n >= sizeof(fd_path)) {
-        fprintf(stderr, "rocm-ernic: cannot name descriptor %d\n", fd);
-        goto out;
-    }
-    if (chmod(fd_path, 0660) < 0) {
-        fprintf(stderr,
-                "rocm-ernic: cannot make socket %s mode 0660 through %s: %s\n",
-                path, fd_path, strerror(errno));
-        goto out;
-    }
-    ok = true;
-out:
-    close(fd);
-    return ok;
-}
-
-/*
- * Check that exactly the socket's owner, and root, can connect to it, plus
- * the group @want_gid if it isn't NULL: mode 0600, or 0660 with that group,
- * and no access ACL; and, if @created isn't NULL, that it's still the socket
- * an earlier call found.  Whatever is at @path is checked as it is, without
- * following a symlink.  Prints why and returns false if anyone else may be
- * able to connect, if the owner or group may not be able to, if it's another
- * file, or if it can't tell.  On success *st holds what was checked.
- *
- * The umask the socket was created under only lets the owner in, and the
- * kernel applies it to a UNIX socket itself, so the mode check is a
- * backstop: a default ACL on the directory can only take bits away.  The ACL
- * is the hole.  A default ACL is copied onto the socket, and a named entry
- * in it lets that user or group connect whatever the mode says.
- */
-static bool socket_access_ok(const char *path, const gid_t *want_gid,
-                             const struct stat *created, struct stat *st)
-{
-    mode_t want_mode = want_gid ? 0660 : 0600;
-
-    if (lstat(path, st) < 0) {
-        fprintf(stderr, "rocm-ernic: cannot stat socket %s: %s\n", path,
-                strerror(errno));
-        return false;
-    }
-    if (created && !socket_is_created(path, st, created))
-        return false;
-    if (!S_ISSOCK(st->st_mode)) {
-        fprintf(stderr, "rocm-ernic: %s is not a socket\n", path);
-        return false;
-    }
-    if ((st->st_mode & 07777) != want_mode) {
-        fprintf(stderr,
-                "rocm-ernic: socket %s is mode %04o, not %04o; a default ACL "
-                "on its directory can do that, so remove it (setfacl -k) or "
-                "use another directory\n",
-                path, (unsigned)(st->st_mode & 07777), (unsigned)want_mode);
-        return false;
-    }
-    if (want_gid && st->st_gid != *want_gid) {
-        fprintf(stderr, "rocm-ernic: socket %s has group %u, not %u\n", path,
-                (unsigned)st->st_gid, (unsigned)*want_gid);
-        return false;
-    }
-
-    /* A file whose ACL says no more than its mode has no ACL stored, and a
-     * file system without ACLs can't have one. */
-    if (lgetxattr(path, "system.posix_acl_access", NULL, 0) >= 0) {
-        fprintf(stderr,
-                "rocm-ernic: socket %s has an ACL, from a default ACL on its "
-                "directory, that may let other users connect; remove the "
-                "default ACL (setfacl -k) or use another directory, and let "
-                "QEMU in with --socket-group\n",
-                path);
-        return false;
-    }
-    if (errno != ENODATA && errno != ENOTSUP) {
-        fprintf(stderr, "rocm-ernic: cannot check the ACL of socket %s: %s\n",
-                path, strerror(errno));
-        return false;
-    }
-    return true;
-}
-
-/*
- * Remove a socket left at @path by a server that didn't exit cleanly, so
- * vfu_create_ctx() can bind there.  Anything else at @path, a symlink
- * included, is left alone.  Returns true if nothing is at @path now.  Prints
- * why and returns false if something other than a socket is there, or if it
- * can't tell or can't remove it.
- *
- * The check and the removal both name the entry relative to its directory,
- * opened once, so changing a component of @path in between can't point the
- * removal at another directory.  The entry itself can still be replaced in
- * between, but only by someone who can write to that directory, who could
- * remove it anyway.
- *
- * The directory is opened with O_PATH, which needs no permission on the
- * directory itself, as binding the socket doesn't: O_RDONLY would refuse one
- * the server can write and search but not read.  fstatat() and unlinkat()
- * still check search and write permission.
- */
-static bool remove_stale_socket(const char *path)
-{
-    const char *slash = strrchr(path, '/');
-    const char *name = slash ? slash + 1 : path;
-    /* The directory keeps its trailing slash, so "/x.sock" opens "/". */
-    char *dir = slash ? strndup(path, (size_t)(slash - path) + 1) : strdup(".");
-    struct stat st;
-    bool ok = false;
-    int dfd = -1;
-
-    if (!dir) {
-        fprintf(stderr, "rocm-ernic: out of memory\n");
-        return false;
-    }
-
-    if (*name == '\0') {
-        fprintf(stderr, "rocm-ernic: socket path \"%s\" has no file name\n",
-                path);
-    } else if ((dfd = open(dir, O_PATH | O_DIRECTORY | O_CLOEXEC)) < 0) {
-        fprintf(stderr, "rocm-ernic: cannot open socket directory %s: %s\n",
-                dir, strerror(errno));
-    } else if (fstatat(dfd, name, &st, AT_SYMLINK_NOFOLLOW) < 0) {
-        if (errno == ENOENT) {
-            ok = true;
-        } else {
-            fprintf(stderr, "rocm-ernic: cannot check %s: %s\n", path,
-                    strerror(errno));
-        }
-    } else if (!S_ISSOCK(st.st_mode)) {
-        fprintf(stderr,
-                "rocm-ernic: %s exists and isn't a socket; not removing it\n",
-                path);
-    } else if (unlinkat(dfd, name, 0) < 0 && errno != ENOENT) {
-        fprintf(stderr, "rocm-ernic: cannot remove stale socket %s: %s\n", path,
-                strerror(errno));
-    } else {
-        ernic_startup_report("Removed stale socket file: %s", path);
-        ok = true;
-    }
-
-    if (dfd >= 0) {
-        close(dfd);
-    }
-    free(dir);
-    return ok;
+    ionic_profile_defaults(&dev->profile);
+    memcpy(dev->mac_addr, default_mac, sizeof(dev->mac_addr));
+    return dev;
 }
 
 /**
- * Free the device structure and the strings it owns.  Safe on a structure
- * that was only partly filled in.
+ * Free the device structure and what it owns.  Safe on a structure that was
+ * only partly filled in.
  */
 static void dev_free(rocm_ernic_dev_t *dev)
 {
+#ifdef ERNIC_HAVE_P4
+    p4_engine_destroy(dev->p4_engine);
+#endif
     free(dev->stats_file_path);
     ionic_fault_set_free(dev->faults);
     free(dev->bar0_mem);
@@ -1287,45 +922,42 @@ static void dev_free(rocm_ernic_dev_t *dev)
 }
 
 /**
- * Tear down everything built on vfu_ctx, and free the device.
+ * Tear down everything built on dev->vfu_ctx, and free the device.
  *
  * This stops and joins the backend's threads, such as the TCP backend's, so
  * the process never exits with them still running: exit() isn't thread
  * safe.  Safe on a device that was only partly built.
  */
-static void server_teardown(rocm_ernic_dev_t *dev, vfu_ctx_t *vfu_ctx)
+static void server_teardown(rocm_ernic_dev_t *dev)
 {
-    /* The ionic layer first, while the ctx it was built on and the pvrdma
-     * backend it registered with are both still alive. */
-    ionic_device_fini(dev);
+    /* The ionic device first, while the ctx it was built on and the RDMA
+     * core it registered with are both still alive. */
+    ionic_device_destroy(dev->ionic);
+    dev->ionic = NULL;
 
-    /* Then the PVRDMA device, and the ctx last. */
+    /* Then the RDMA core, and the ctx last. */
     if (dev->pvrdma_handle) {
         pvrdma_device_destroy(dev->pvrdma_handle);
         dev->pvrdma_handle = NULL;
     }
 
-    vfu_destroy_ctx(vfu_ctx);
+    vfu_destroy_ctx(dev->vfu_ctx);
+    dev->vfu_ctx = NULL;
 
     dev_free(dev);
 }
 
-/**
- * Main entry point
- *
- * Until vfu_ctx exists, no other thread does either, so a failure ends the
- * process at once.  From then on, a failure goes to fail, which tears the
- * device down first, and with it the threads ionic_device_init() starts.
- */
-int main(int argc, char *argv[])
-{
-    vfu_ctx_t *vfu_ctx;
-    rocm_ernic_dev_t *dev;
-    const char *socket_path = DEFAULT_SOCKET_PATH;
-    const char *log_file_path = NULL;
-    const char *tap_ifname = NULL;
+/* The options that configure the server rather than the device */
+struct server_opts {
+    const char *socket_path;
+    const char *socket_group; /* NULL lets in only the owner and root */
+    gid_t socket_gid;         /* socket_group, resolved */
+    const char *log_file_path;
+    const char *tap_ifname;
+    ErnicLogLevel log_level;
+    bool log_level_set;
 #ifdef ERNIC_HAVE_P4
-    bool p4_enabled = false;
+    bool p4_enabled;
     /*
      * What the guest may do with the engine.  NONE by default: a guest
      * that can replace the P4 program decides where every frame goes and
@@ -1333,17 +965,48 @@ int main(int argc, char *argv[])
      * capability to hand out because the operator happened to turn the
      * engine on for their own use.
      */
-    enum p4_scope p4_guest_scope = P4_SCOPE_NONE;
-    const char *p4_program = NULL;
+    enum p4_scope p4_guest_scope;
+    const char *p4_program;
 #endif
-    const char *socket_group = NULL;
-    gid_t socket_gid = 0;
-    ErnicLogLevel log_level = ERNIC_LOG_WARN;
-    bool log_level_set = false;
-    bool print_profile = false;
+};
+
+/* What main() does after parse_options() */
+enum parse_result {
+    PARSE_RUN,          /* Start the server */
+    PARSE_EXIT_SUCCESS, /* --help or --print-profile has been answered */
+    PARSE_EXIT_FAILURE, /* The options were refused, saying why */
+};
+
+/**
+ * Print @profile as ini, for --print-profile.  Returns false after saying
+ * why if it can't.
+ */
+static bool print_nic_profile(const struct ionic_profile *profile)
+{
+    int need = ionic_profile_format(profile, NULL, 0);
+    char *text = need >= 0 ? malloc((size_t)need + 1) : NULL;
+
+    if (!text || ionic_profile_format(profile, text, (size_t)need + 1) < 0) {
+        fprintf(stderr, "Error: --print-profile: out of memory\n");
+        free(text);
+        return false;
+    }
+    fputs(text, stdout);
+    free(text);
+    return true;
+}
+
+/**
+ * Parse the command line into @dev and @opts, which hold the defaults.
+ */
+static enum parse_result parse_options(int argc, char *argv[],
+                                       rocm_ernic_dev_t *dev,
+                                       struct server_opts *opts)
+{
     const char *stats_interval_arg = NULL;
     const char *eth_queues_arg = NULL;
-    int ret, opt;
+    bool print_profile = false;
+    int opt;
 
     /* Long-only options take values past the single-character ones. */
     enum {
@@ -1379,36 +1042,8 @@ int main(int argc, char *argv[])
 #endif
         {NULL, 0, NULL, 0}};
 
-    /* Allocate device structure */
-    dev = calloc(1, sizeof(*dev));
-    if (!dev) {
-        err(EXIT_FAILURE, "Failed to allocate device structure");
-    }
-
-    /* Set defaults */
-    dev->backend_type_str =
-        strdup("loopback"); /* Default to "loopback" backend */
-    if (!dev->backend_type_str) {
-        fprintf(stderr, "Error: out of memory\n");
-        dev_free(dev);
-        return EXIT_FAILURE;
-    }
-    ionic_profile_defaults(&dev->profile);
-    dev->verbose = false;
-    dev->client_lost = false;
-    dev->mac_addr_set = false;
-    /* Default MAC: 72:6f:63:6d:2d:6e (first 6 bytes of "rocm-nic" in ASCII hex)
-     */
-    dev->mac_addr[0] = 0x72;
-    dev->mac_addr[1] = 0x6f;
-    dev->mac_addr[2] = 0x63;
-    dev->mac_addr[3] = 0x6d;
-    dev->mac_addr[4] = 0x2d;
-    dev->mac_addr[5] = 0x6e;
-
-    /* Parse command line options.  getopt_long() keeps its state in globals,
-     * such as optind, so it isn't thread safe, but no other thread has
-     * started yet */
+    /* getopt_long() keeps its state in globals, such as optind, so it isn't
+     * thread safe, but no other thread has started yet */
     /* NOLINTNEXTLINE(concurrency-mt-unsafe) */
     while ((opt = getopt_long(argc, argv,
 #ifdef ERNIC_HAVE_P4
@@ -1420,32 +1055,30 @@ int main(int argc, char *argv[])
         switch (opt) {
         /* Common options */
         case 's':
-            socket_path = optarg;
+            opts->socket_path = optarg;
             break;
         case 'G':
-            socket_group = optarg;
+            opts->socket_group = optarg;
             break;
         case 'b':
             free(dev->backend_type_str);
             dev->backend_type_str = strdup(optarg);
             if (!dev->backend_type_str) {
                 fprintf(stderr, "Error: --backend: out of memory\n");
-                dev_free(dev);
-                return EXIT_FAILURE;
+                return PARSE_EXIT_FAILURE;
             }
             break;
         case 'v':
             dev->verbose = true;
             break;
         case 'L':
-            if (!ernic_log_parse_level(optarg, &log_level)) {
+            if (!ernic_log_parse_level(optarg, &opts->log_level)) {
                 fprintf(stderr, "Error: Invalid log level: %s\n", optarg);
                 fprintf(stderr,
                         "  Expected one of: none, error, warn, info, debug\n");
-                dev_free(dev);
-                return EXIT_FAILURE;
+                return PARSE_EXIT_FAILURE;
             }
-            log_level_set = true;
+            opts->log_level_set = true;
             break;
         case 'S':
             /* Store stats file path - will be set after device init */
@@ -1453,12 +1086,11 @@ int main(int argc, char *argv[])
             dev->stats_file_path = strdup(optarg);
             if (!dev->stats_file_path) {
                 fprintf(stderr, "Error: --stats-file: out of memory\n");
-                dev_free(dev);
-                return EXIT_FAILURE;
+                return PARSE_EXIT_FAILURE;
             }
             break;
         case 'l':
-            log_file_path = optarg;
+            opts->log_file_path = optarg;
             break;
         case 'm':
             if (!ernic_parse_mac(optarg, dev->mac_addr)) {
@@ -1466,13 +1098,12 @@ int main(int argc, char *argv[])
                         optarg);
                 fprintf(stderr, "  Expected format: XX:XX:XX:XX:XX:XX\n");
                 fprintf(stderr, "  Example: --mac 02:00:00:00:00:01\n");
-                dev_free(dev);
-                return EXIT_FAILURE;
+                return PARSE_EXIT_FAILURE;
             }
             dev->mac_addr_set = true;
             break;
         case 'T':
-            tap_ifname = optarg;
+            opts->tap_ifname = optarg;
             break;
         case OPT_NIC_PROFILE: {
             char profile_err[512];
@@ -1480,8 +1111,7 @@ int main(int argc, char *argv[])
             if (ionic_profile_apply(&dev->profile, optarg, profile_err,
                                     sizeof(profile_err)) != 0) {
                 fprintf(stderr, "Error: --nic-profile: %s\n", profile_err);
-                dev_free(dev);
-                return EXIT_FAILURE;
+                return PARSE_EXIT_FAILURE;
             }
             break;
         }
@@ -1506,43 +1136,39 @@ int main(int argc, char *argv[])
                                     sizeof(fault_err)) != 0) {
                 fprintf(stderr, "Error: --inject '%s': %s\n", optarg,
                         dev->faults ? fault_err : "out of memory");
-                dev_free(dev);
-                return EXIT_FAILURE;
+                return PARSE_EXIT_FAILURE;
             }
             break;
         }
 #ifdef ERNIC_HAVE_P4
         case 'P':
-            p4_enabled = true;
+            opts->p4_enabled = true;
             break;
         case 'J':
-            p4_program = optarg;
+            opts->p4_program = optarg;
             /* A program is useless without the engine on the wire, and
              * asking for one plainly means wanting the other. */
-            p4_enabled = true;
+            opts->p4_enabled = true;
             break;
         case 'Y':
-            if (!p4_scope_parse(optarg, &p4_guest_scope)) {
+            if (!p4_scope_parse(optarg, &opts->p4_guest_scope)) {
                 fprintf(stderr,
                         "rocm-ernic: --p4-guest-scope must be one of "
                         "none, read, write, load (got '%s')\n",
                         optarg);
-                dev_free(dev);
-                return EXIT_FAILURE;
+                return PARSE_EXIT_FAILURE;
             }
             /* Granting the guest a scope without the engine would be a
              * surface onto nothing, and plainly means wanting both. */
-            p4_enabled = true;
+            opts->p4_enabled = true;
             break;
 #endif
         case 'h':
             usage(argv[0]);
-            dev_free(dev);
-            return EXIT_SUCCESS;
+            return PARSE_EXIT_SUCCESS;
         default:
             usage(argv[0]);
-            dev_free(dev);
-            return EXIT_FAILURE;
+            return PARSE_EXIT_FAILURE;
         }
     }
 
@@ -1554,8 +1180,7 @@ int main(int argc, char *argv[])
                 interval_err, sizeof(interval_err)) != 0) {
             fprintf(stderr, "Error: %s\n", interval_err);
             usage(argv[0]);
-            dev_free(dev);
-            return EXIT_FAILURE;
+            return PARSE_EXIT_FAILURE;
         }
     }
 
@@ -1567,95 +1192,61 @@ int main(int argc, char *argv[])
                                          sizeof(queues_err)) != 0) {
             fprintf(stderr, "Error: %s\n", queues_err);
             usage(argv[0]);
-            dev_free(dev);
-            return EXIT_FAILURE;
+            return PARSE_EXIT_FAILURE;
         }
     }
 
-    if (print_profile) {
-        int need = ionic_profile_format(&dev->profile, NULL, 0);
-        char *text = need >= 0 ? malloc((size_t)need + 1) : NULL;
+    if (print_profile)
+        return print_nic_profile(&dev->profile) ? PARSE_EXIT_SUCCESS
+                                                : PARSE_EXIT_FAILURE;
+    return PARSE_RUN;
+}
 
-        if (!text ||
-            ionic_profile_format(&dev->profile, text, (size_t)need + 1) < 0) {
-            fprintf(stderr, "Error: --print-profile: out of memory\n");
-            free(text);
-            dev_free(dev);
-            return EXIT_FAILURE;
-        }
-        fputs(text, stdout);
-        free(text);
-        dev_free(dev);
-        return EXIT_SUCCESS;
+/**
+ * Send stdout and stderr to the --log-file @path.  Returns 0, or -1 after
+ * saying why on the stderr the server was started with.
+ */
+static int redirect_output(const char *path)
+{
+    /* dup2() clears close-on-exec on the copies, so stdout and stderr are
+     * still inherited.  With _FORTIFY_SOURCE, glibc 2.40 and later give
+     * Clang an open(path, flags, mode) overload, and android-cloexec-open
+     * looks for O_CLOEXEC in its mode */
+    /* NOLINTBEGIN(android-cloexec-open) */
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    /* NOLINTEND(android-cloexec-open) */
+
+    if (fd < 0) {
+        warn("Failed to open log file: %s", path);
+        return -1;
     }
-
-    /* Log level precedence: --log-level, then --verbose, then the
-     * ERNIC_LOG_LEVEL environment variable (resolved lazily), then warn. */
-    if (log_level_set) {
-        ernic_log_set_level(log_level);
-    } else if (dev->verbose) {
-        ernic_log_set_level(ERNIC_LOG_DEBUG);
-    }
-
-    /* Validate backend-specific options */
-    if (validate_backend_options(dev) < 0) {
-        dev_free(dev);
-        return EXIT_FAILURE;
-    }
-
-    /* Redirect stdout and stderr to log file if requested */
-    if (log_file_path) {
-        /* dup2() clears close-on-exec on the copies, so stdout and stderr
-         * are still inherited.  With _FORTIFY_SOURCE, glibc 2.40 and later
-         * give Clang an open(path, flags, mode) overload, and
-         * android-cloexec-open looks for O_CLOEXEC in its mode */
-        /* NOLINTBEGIN(android-cloexec-open) */
-        int fd =
-            open(log_file_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
-        /* NOLINTEND(android-cloexec-open) */
-        if (fd < 0) {
-            err(EXIT_FAILURE, "Failed to open log file: %s", log_file_path);
-        }
-        /* stderr changes only if both succeed, so on failure the reason
-         * still goes to the inherited one */
-        if (dup2(fd, STDOUT_FILENO) < 0 || dup2(fd, STDERR_FILENO) < 0) {
-            warn("Failed to redirect output to log file: %s", log_file_path);
-            close(fd);
-            dev_free(dev);
-            return EXIT_FAILURE;
-        }
+    /* stderr changes only if both succeed, so on failure the reason still
+     * goes to the inherited one */
+    if (dup2(fd, STDOUT_FILENO) < 0 || dup2(fd, STDERR_FILENO) < 0) {
+        warn("Failed to redirect output to log file: %s", path);
         close(fd);
+        return -1;
     }
+    close(fd);
+    return 0;
+}
 
-    /* Resolved before the socket exists, so a group that can't be resolved
-     * fails here rather than leaving a socket QEMU can't reach; and after
-     * the log is open, so the reason is in it. */
-    if (socket_group && !resolve_group(socket_group, &socket_gid)) {
-        fprintf(stderr, "Error: --socket-group: no such group: %s\n",
-                socket_group);
-        dev_free(dev);
-        return EXIT_FAILURE;
-    }
-
-    /* Setup signal handlers.  Worker threads block every signal
-     * (qemu_thread_create()), so this thread takes SIGINT and SIGTERM, and
-     * must not block them itself: a mask is inherited across exec, so a
-     * launcher could have left them blocked.  One already pending is taken
-     * by the handler once unblocked. */
-    if (set_signal_handler(SIGINT, signal_handler) == -1 ||
-        set_signal_handler(SIGTERM, signal_handler) == -1 ||
-        unblock_shutdown_signals() == -1) {
-        err(EXIT_FAILURE, "Failed to setup signal handlers");
-    }
+/**
+ * Report the configuration the server starts with.
+ */
+static void report_startup(const rocm_ernic_dev_t *dev,
+                           const struct server_opts *opts)
+{
+    char warning[512];
 
     ernic_startup_report("rocm-ernic: Starting rocm-ernic device server "
                          "(Multi-Backend Support)");
-    ernic_startup_report("  Socket: %s", socket_path);
+    ernic_startup_report("  Socket: %s", opts->socket_path);
     ernic_startup_report("  Backend: %s", dev->backend_type_str);
     ernic_startup_report("  Log level: %s",
                          ernic_log_level_name(ernic_log_get_level()));
-    if (log_file_path) {
-        ernic_startup_report("  Log file: %s", log_file_path);
+    if (opts->log_file_path) {
+        ernic_startup_report("  Log file: %s", opts->log_file_path);
     }
     ernic_startup_report("  NIC profile: %s (hash 0x%016" PRIx64 ")",
                          dev->profile.chain, ionic_profile_hash(&dev->profile));
@@ -1663,12 +1254,8 @@ int main(int argc, char *argv[])
                          " RDMA EQs, %" PRIu32 " MSI-X vectors",
                          dev->profile.queues.eth, dev->profile.queues.rdma_eqs,
                          ionic_profile_intr_vectors(&dev->profile));
-    {
-        char warning[512];
-
-        if (ionic_profile_warning(&dev->profile, warning, sizeof(warning)))
-            ernic_startup_report("  NIC profile warning: %s", warning);
-    }
+    if (ionic_profile_warning(&dev->profile, warning, sizeof(warning)))
+        ernic_startup_report("  NIC profile warning: %s", warning);
     for (int site = 0; site < IONIC_FAULT_SITE_COUNT; site++) {
         const struct ionic_fault *f =
             ionic_fault_set_get(dev->faults, (enum ionic_fault_site)site);
@@ -1677,40 +1264,52 @@ int main(int argc, char *argv[])
         if (f && ionic_fault_format(f, spec, sizeof(spec)) >= 0)
             ernic_startup_report("  Fault: %s", spec);
     }
+}
 
 #ifdef ERNIC_HAVE_P4
-    /*
-     * Ahead of the socket, because a program that will be refused must not
-     * leave a listening socket behind while it is being read.  Whoever
-     * connects in that window gets a server that is about to exit, having
-     * seen nothing to say so; the socket appearing is the only readiness
-     * signal there is.  The program is read once, here, and the engine
-     * carries it to the attach below -- reading it again later would be a
-     * check-then-act on a path, which is its own problem.
-     */
-    if (p4_enabled) {
-        dev->p4_engine = p4_engine_create();
-        if (!dev->p4_engine) {
-            fprintf(stderr, "rocm-ernic: failed to create the P4 engine\n");
-            dev_free(dev);
-            return EXIT_FAILURE;
-        }
-        if (p4_program &&
-            p4_load_program_file(dev->p4_engine, p4_program) != 0) {
-            p4_engine_destroy(dev->p4_engine);
-            dev->p4_engine = NULL;
-            dev_free(dev);
-            return EXIT_FAILURE;
-        }
+/**
+ * Create the P4 engine and load @program into it, if it isn't NULL.
+ * Returns 0, or -1 after saying why; dev_free() frees the engine.
+ *
+ * Ahead of the socket, because a program that will be refused must not
+ * leave a listening socket behind while it is being read.  Whoever connects
+ * in that window gets a server that is about to exit, having seen nothing to
+ * say so; the socket appearing is the only readiness signal there is.  The
+ * program is read once, here, and the engine carries it to attach_p4() --
+ * reading it again later would be a check-then-act on a path, which is its
+ * own problem.
+ */
+static int load_p4_engine(rocm_ernic_dev_t *dev, const char *program)
+{
+    dev->p4_engine = p4_engine_create();
+    if (!dev->p4_engine) {
+        fprintf(stderr, "rocm-ernic: failed to create the P4 engine\n");
+        return -1;
     }
+    if (program && p4_load_program_file(dev->p4_engine, program) != 0)
+        return -1;
+    return 0;
+}
 #endif
+
+/**
+ * Create the vfio-user context, with @dev as its private data, and let only
+ * whom the options name connect to its socket.  Returns NULL after saying
+ * why.
+ */
+static vfu_ctx_t *create_socket(const struct server_opts *opts,
+                                rocm_ernic_dev_t *dev)
+{
+    const char *path = opts->socket_path;
+    struct stat created_st;
+    struct stat sock_st;
+    vfu_ctx_t *vfu_ctx;
+    mode_t old_umask;
 
     /* Binding fails if anything is at the path, so remove a socket that a
      * server that didn't exit cleanly left there. */
-    if (!remove_stale_socket(socket_path)) {
-        dev_free(dev);
-        return EXIT_FAILURE;
-    }
+    if (!ernic_socket_remove_stale(path))
+        return NULL;
 
     /* Create libvfio-user context with non-blocking attach.  It binds and
      * listens on the socket here, creating it with mode 0777 less the umask.
@@ -1722,13 +1321,13 @@ int main(int argc, char *argv[])
      * one asked for.  The umask is per process, so this must stay ahead of
      * the first thread, and it's restored so the log file gets the caller's.
      * (The stats file is always 0644; see pvrdma_write_stats_impl().) */
-    mode_t old_umask = umask(S_IXUSR | S_IRWXG | S_IRWXO);
-    vfu_ctx =
-        vfu_create_ctx(VFU_TRANS_SOCK, socket_path, LIBVFIO_USER_FLAG_ATTACH_NB,
-                       dev, VFU_DEV_TYPE_PCI);
+    old_umask = umask(S_IXUSR | S_IRWXG | S_IRWXO);
+    vfu_ctx = vfu_create_ctx(VFU_TRANS_SOCK, path, LIBVFIO_USER_FLAG_ATTACH_NB,
+                             dev, VFU_DEV_TYPE_PCI);
     umask(old_umask);
     if (!vfu_ctx) {
-        err(EXIT_FAILURE, "vfu_create_ctx() failed");
+        warn("vfu_create_ctx() failed");
+        return NULL;
     }
 
     /* Check the socket as created: a default ACL on the directory can still
@@ -1747,68 +1346,71 @@ int main(int argc, char *argv[])
      * name before the first check, which is why docs/usage.rst says to keep
      * the socket out of one.  The first check is the server's only anchor:
      * fstat() on the listening socket describes the socket, not the file.) */
-    struct stat created_st;
-    struct stat sock_st;
-
-    if (!socket_access_ok(socket_path, NULL, NULL, &created_st)) {
-        goto fail;
+    if (!ernic_socket_access_ok(path, NULL, NULL, &created_st)) {
+        vfu_destroy_ctx(vfu_ctx);
+        return NULL;
     }
     sock_st = created_st;
-    if (socket_group &&
-        (!socket_set_group(socket_path, socket_group, socket_gid,
-                           &created_st) ||
-         !socket_access_ok(socket_path, &socket_gid, &created_st, &sock_st))) {
-        goto fail;
+    if (opts->socket_group &&
+        (!ernic_socket_set_group(path, opts->socket_group, opts->socket_gid,
+                                 &created_st) ||
+         !ernic_socket_access_ok(path, &opts->socket_gid, &created_st,
+                                 &sock_st))) {
+        vfu_destroy_ctx(vfu_ctx);
+        return NULL;
     }
     ernic_startup_report("rocm-ernic: ✓ Socket permissions set to %04o, "
                          "group %u, for %s",
                          (unsigned)(sock_st.st_mode & 07777),
-                         (unsigned)sock_st.st_gid, socket_path);
-    dev->vfu_ctx = vfu_ctx;
+                         (unsigned)sock_st.st_gid, path);
+    return vfu_ctx;
+}
 
-    /* Setup logging */
-    ret = vfu_setup_log(vfu_ctx, vfu_log_cb,
-                        vfu_log_threshold(ernic_log_get_level()));
-    if (ret < 0) {
-        warn("vfu_setup_log() failed");
-        goto fail;
-    }
+/**
+ * Point the statistics file, if there is one, at this instance, and write it
+ * once.
+ */
+static void setup_stats_file(rocm_ernic_dev_t *dev, const char *socket_path)
+{
+    char profile_line[IONIC_PROFILE_CHAIN_MAX + 32];
 
-    if (ionic_device_init(dev) < 0) {
-        warn("ionic_device_init() failed");
-        goto fail;
-    }
+    if (!dev->stats_file_path || !dev->pvrdma_handle)
+        return;
 
-    /* Set stats file path if provided */
-    if (dev->stats_file_path && dev->pvrdma_handle) {
-        pvrdma_set_stats_file(dev->pvrdma_handle, dev->stats_file_path);
-        pvrdma_set_stats_instance_info(dev->pvrdma_handle, socket_path,
-                                       dev->backend_type_str);
-        pvrdma_set_stats_pci_ids(dev->pvrdma_handle, PCI_VENDOR_ID_PENSANDO,
-                                 PCI_DEVICE_ID_AMD_IONIC_ERNIC);
-        char profile_line[IONIC_PROFILE_CHAIN_MAX + 32];
-        snprintf(profile_line, sizeof(profile_line),
-                 "%s (hash 0x%016" PRIx64 ")", dev->profile.chain,
-                 ionic_profile_hash(&dev->profile));
-        pvrdma_set_stats_nic_profile(dev->pvrdma_handle, profile_line);
-        if (dev->ionic_emu)
-            pvrdma_set_stats_section(dev->pvrdma_handle,
-                                     ionic_eth_emu_write_stats, dev->ionic_emu);
-        ernic_startup_report("rocm-ernic: Statistics will be written to: %s "
-                             "(every ~1 second)",
-                             dev->stats_file_path);
-        pvrdma_write_stats(dev->pvrdma_handle);
-    }
+    pvrdma_set_stats_file(dev->pvrdma_handle, dev->stats_file_path);
+    pvrdma_set_stats_instance_info(dev->pvrdma_handle, socket_path,
+                                   dev->backend_type_str);
+    pvrdma_set_stats_pci_ids(dev->pvrdma_handle, PCI_VENDOR_ID_PENSANDO,
+                             PCI_DEVICE_ID_AMD_IONIC_ERNIC);
+    snprintf(profile_line, sizeof(profile_line), "%s (hash 0x%016" PRIx64 ")",
+             dev->profile.chain, ionic_profile_hash(&dev->profile));
+    pvrdma_set_stats_nic_profile(dev->pvrdma_handle, profile_line);
+    pvrdma_set_stats_section(dev->pvrdma_handle, ionic_eth_emu_write_stats,
+                             ionic_device_eth_emu(dev->ionic));
+    ernic_startup_report("rocm-ernic: Statistics will be written to: %s "
+                         "(every ~1 second)",
+                         dev->stats_file_path);
+    pvrdma_write_stats(dev->pvrdma_handle);
+}
+
+/**
+ * Present the device over vfio-user: its PCI identity, BARs and interrupts,
+ * and the DMA and reset callbacks; then realize the context.  Returns 0, or
+ * -1 after saying why.
+ */
+static int setup_vfu_device(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
+{
+    int ret;
 
     /* Setup PCI configuration and BARs, which say why they failed */
     if (setup_pci_config(vfu_ctx, dev) < 0 || setup_bars(vfu_ctx, dev) < 0) {
-        goto fail;
+        return -1;
     }
 
     /* Setup interrupts */
     if (setup_interrupts(vfu_ctx, dev) < 0) {
         warn("setup_interrupts() failed");
-        goto fail;
+        return -1;
     }
 
     /* Setup DMA callbacks */
@@ -1820,22 +1422,112 @@ int main(int argc, char *argv[])
 #endif
     if (ret < 0) {
         warn("vfu_setup_device_dma() failed");
-        goto fail;
+        return -1;
     }
 
     /* Setup reset callback */
     ret = vfu_setup_device_reset_cb(vfu_ctx, device_reset_cb);
     if (ret < 0) {
         warn("vfu_setup_device_reset_cb() failed");
-        goto fail;
+        return -1;
     }
 
     /* Realize the device */
     ret = vfu_realize_ctx(vfu_ctx);
     if (ret < 0) {
         warn("vfu_realize_ctx() failed");
-        goto fail;
+        return -1;
     }
+
+    return 0;
+}
+
+/**
+ * Attach the Ethernet to the host TAP @ifname.  Returns 0, or -1 after
+ * saying why.
+ */
+static int attach_tap(rocm_ernic_dev_t *dev, const char *ifname)
+{
+    char assigned[64] = {0};
+    int ret = ionic_eth_emu_attach_tap(ionic_device_eth_emu(dev->ionic), ifname,
+                                       assigned, sizeof(assigned));
+
+    if (ret == -ENAMETOOLONG) {
+        fprintf(stderr,
+                "rocm-ernic: TAP name '%s' is too long (at most %d "
+                "characters)\n",
+                ifname, IONIC_ETH_NET_IFNAME_MAX);
+        return -1;
+    }
+    if (ret < 0) {
+        fprintf(stderr, "rocm-ernic: failed to attach TAP '%s': %s\n", ifname,
+                strerror(-ret));
+        fprintf(stderr,
+                "rocm-ernic: pre-create it with: ip tuntap add dev "
+                "%s mode tap user $USER\n",
+                ifname);
+        return -1;
+    }
+    ernic_startup_report("rocm-ernic: Ethernet attached to TAP %s", assigned);
+    return 0;
+}
+
+#ifdef ERNIC_HAVE_P4
+/**
+ * Put the P4 engine load_p4_engine() made on the wire.  Returns 0, or -1
+ * after saying why.
+ *
+ * The attach waits until the TAP and the S3 endpoint are attached, so the
+ * engine sees a complete wire and can chain to whatever already holds the
+ * Tx filter.  The guest's command surface onto the engine DMAs into guest
+ * memory, so it needs the vfio-user context, which doesn't exist until the
+ * socket is created; the program is still read before the socket.
+ */
+static int attach_p4(rocm_ernic_dev_t *dev, const struct server_opts *opts)
+{
+    char err[256] = "";
+
+    if (!ionic_device_attach_p4(dev->ionic, dev->p4_engine,
+                                opts->p4_guest_scope, err, sizeof(err))) {
+        fprintf(stderr, "rocm-ernic: %s\n", err);
+        return -1;
+    }
+
+    if (opts->p4_program) {
+        ernic_startup_report("rocm-ernic: P4 engine attached, running '%s'",
+                             opts->p4_program);
+    } else {
+        ernic_startup_report("rocm-ernic: P4 engine attached (no program "
+                             "loaded; frames forwarded unchanged)");
+    }
+    ernic_startup_report("rocm-ernic: P4 guest scope: %s",
+                         p4_scope_name(opts->p4_guest_scope));
+    return 0;
+}
+#endif
+
+/**
+ * Build the device on dev->vfu_ctx and realize it, ready for a client.
+ * Returns 0, or -1 after saying why.
+ */
+static int setup_device(rocm_ernic_dev_t *dev, const struct server_opts *opts)
+{
+    vfu_ctx_t *vfu_ctx = dev->vfu_ctx;
+
+    /* Setup logging */
+    if (vfu_setup_log(vfu_ctx, vfu_log_cb,
+                      vfu_log_threshold(ernic_log_get_level())) < 0) {
+        warn("vfu_setup_log() failed");
+        return -1;
+    }
+
+    if (device_init(dev) < 0)
+        return -1;
+
+    setup_stats_file(dev, opts->socket_path);
+
+    if (setup_vfu_device(vfu_ctx, dev) < 0)
+        return -1;
 
     /* Log MAC address if set */
     if (dev->mac_addr_set) {
@@ -1848,103 +1540,116 @@ int main(int argc, char *argv[])
 
     /* Attach the host network backend before the first client shows up, so a
      * bad --tap is a startup failure rather than a silently dead link. */
-    if (tap_ifname) {
-        if (!dev->ionic_emu) {
-            fprintf(stderr,
-                    "rocm-ernic: Ethernet emulation is not initialized\n");
-            goto fail;
-        }
-        char assigned[64] = {0};
-        ret = ionic_eth_emu_attach_tap(dev->ionic_emu, tap_ifname, assigned,
-                                       sizeof(assigned));
-        if (ret == -ENAMETOOLONG) {
-            fprintf(stderr,
-                    "rocm-ernic: TAP name '%s' is too long (at most %d "
-                    "characters)\n",
-                    tap_ifname, IONIC_ETH_NET_IFNAME_MAX);
-            goto fail;
-        }
-        if (ret < 0) {
-            fprintf(stderr, "rocm-ernic: failed to attach TAP '%s': %s\n",
-                    tap_ifname, strerror(-ret));
-            fprintf(stderr,
-                    "rocm-ernic: pre-create it with: ip tuntap add dev "
-                    "%s mode tap user $USER\n",
-                    tap_ifname);
-            goto fail;
-        }
-        ernic_startup_report("rocm-ernic: Ethernet attached to TAP %s",
-                             assigned);
-    }
+    if (opts->tap_ifname && attach_tap(dev, opts->tap_ifname) < 0)
+        return -1;
 
 #ifdef ERNIC_HAVE_P4
-    /* The engine and its program were made above, before the socket.  The
-     * attach waits until here, after the TAP and the S3 endpoint, so the
-     * engine sees a complete wire and can chain to whatever already holds
-     * the Tx filter. */
-    if (p4_enabled) {
-        if (!dev->ionic_emu) {
-            fprintf(stderr,
-                    "rocm-ernic: Ethernet emulation is not initialized\n");
-            goto fail;
-        }
-
-        struct p4_port_upstream upstream;
-        memset(&upstream, 0, sizeof(upstream));
-        ionic_eth_emu_get_tx_filter(dev->ionic_emu, &upstream.fn,
-                                    &upstream.ctx);
-
-        dev->p4_port = p4_port_attach(dev->ionic_emu, dev->p4_engine,
-                                      upstream.fn ? &upstream : NULL);
-        if (!dev->p4_port) {
-            fprintf(stderr, "rocm-ernic: failed to attach the P4 engine\n");
-            goto fail;
-        }
-
-        /* The RDMA path shares the same engine, so one program governs
-         * both planes; it borrows the pointer and is given it back below. */
-        ionic_datapath_set_p4_engine(dev->ionic_dp, dev->p4_engine);
-
-        /*
-         * The guest's way in, when the operator granted one.  Here and
-         * not with the engine above, because it DMAs into guest memory
-         * and so needs the vfio-user context, which does not exist until
-         * the socket is created.  The program is still read before the
-         * socket; only the surface onto it waits.
-         */
-        if (p4_guest_scope != P4_SCOPE_NONE) {
-            dev->p4_devcmd =
-                p4_devcmd_create(dev->vfu_ctx, dev->p4_engine, p4_guest_scope);
-            if (!dev->p4_devcmd) {
-                fprintf(stderr, "rocm-ernic: failed to create the P4 command "
-                                "surface\n");
-                goto fail;
-            }
-            ionic_eth_emu_register_p4_handler(
-                dev->ionic_emu, p4_devcmd_dispatch, dev->p4_devcmd);
-        }
-
-        if (p4_program) {
-            ernic_startup_report("rocm-ernic: P4 engine attached, running "
-                                 "'%s'",
-                                 p4_program);
-        } else {
-            ernic_startup_report("rocm-ernic: P4 engine attached (no program "
-                                 "loaded; frames forwarded unchanged)");
-        }
-        ernic_startup_report("rocm-ernic: P4 guest scope: %s",
-                             p4_scope_name(p4_guest_scope));
-    }
+    if (opts->p4_enabled && attach_p4(dev, opts) < 0)
+        return -1;
 #endif
 
-    ernic_startup_report("rocm-ernic: Device realized, waiting for client "
-                         "connection...");
+    return 0;
+}
 
-    /* Main loop */
+/**
+ * Serve the client that has attached, until it goes, vfu_run_ctx() fails,
+ * or shutdown is requested.
+ */
+static void serve_client(rocm_ernic_dev_t *dev)
+{
+    vfu_ctx_t *vfu_ctx = dev->vfu_ctx;
+    uint64_t loop_count = 0;
+    uint64_t next_stats_write_ms = 0;
+    GMainContext *main_context = g_main_context_default();
+    int ret;
+
+    /* Acquire the main context so we can iterate it */
+    g_main_context_push_thread_default(main_context);
+    while (!g_shutdown_requested) {
+        /* Write stats periodically (every ~1 second) */
+        if (dev->stats_file_path && dev->pvrdma_handle) {
+            uint64_t now_ms = ernic_monotonic_ms();
+            if (now_ms >= next_stats_write_ms) {
+                pvrdma_write_stats(dev->pvrdma_handle);
+                next_stats_write_ms = now_ms + 1000u;
+            }
+        }
+
+        ret = vfu_run_ctx(vfu_ctx);
+        loop_count++;
+
+        /*
+         * Checked before anything else runs.  When the client goes,
+         * libvfio-user resets the context, unmapping all guest memory,
+         * before vfu_run_ctx() returns, so the device poll below would DMA
+         * to addresses that no longer map to anything.  The return value
+         * doesn't always say so: after a reset because a reply failed,
+         * vfu_run_ctx() returns success.  device_reset_cb() sees every
+         * reset.  The poll can also change errno, which says why
+         * vfu_run_ctx() failed.
+         */
+        if (dev->client_lost || (ret < 0 && errno == ENOTCONN)) {
+            ernic_startup_report(
+                "rocm-ernic: Client disconnected after %" PRIu64 " loops",
+                loop_count);
+            if (dev->pvrdma_handle) {
+                pvrdma_set_stats_connection_state(
+                    dev->pvrdma_handle, "disconnected (client closed)");
+                if (dev->stats_file_path) {
+                    pvrdma_write_stats(dev->pvrdma_handle);
+                }
+            }
+            break;
+        } else if (ret < 0 && errno == EINTR) {
+            /* Interrupted by signal */
+            vfu_log(vfu_ctx, LOG_INFO,
+                    "Interrupted by signal after %" PRIu64 " loops",
+                    loop_count);
+            break;
+        } else if (ret < 0) {
+            vfu_log(vfu_ctx, LOG_ERR,
+                    "vfu_run_ctx() failed after %" PRIu64 " loops: %s",
+                    loop_count, strerror(errno));
+            break;
+        }
+
+        /* Process GLib idle callbacks (for WQE continuation) */
+        /* Always iterate once (non-blocking) to process idle callbacks */
+        /* Idle sources may not show up in g_main_context_pending() */
+        gboolean had_events = g_main_context_iteration(main_context, FALSE);
+
+        /* The device's share: frames into the guest's Rx rings, RDMA admin
+         * commands, and what peers sent over the mesh.  This has to happen
+         * on this thread: only it may DMA. */
+        ionic_device_poll(dev->ionic);
+
+        /*
+         * Yield briefly when idle.  100 us keeps the
+         * completion-to-interrupt latency tight while
+         * still avoiding 100 % CPU in the idle case.
+         */
+        if (ret == 0 && !had_events && !ionic_device_has_work(dev->ionic)) {
+            ernic_sleep_us(100);
+        }
+    }
+    vfu_log(vfu_ctx, LOG_INFO,
+            ">>> Event loop exited after %" PRIu64 " iterations", loop_count);
+    /* Release the main context */
+    g_main_context_pop_thread_default(main_context);
+}
+
+/**
+ * Wait for a client and serve it, one after another, until shutdown is
+ * requested.  Returns 0 then, or -1 if attaching fails for a reason no
+ * client could have caused.
+ */
+static int run(rocm_ernic_dev_t *dev)
+{
+    vfu_ctx_t *vfu_ctx = dev->vfu_ctx;
+
     while (!g_shutdown_requested) {
         /* Attach to client (non-blocking) */
-        ret = vfu_attach_ctx(vfu_ctx);
-        if (ret < 0) {
+        if (vfu_attach_ctx(vfu_ctx) < 0) {
             if (errno == EAGAIN) {
                 /*
                  * No client yet: wait for one on the listening socket.  A
@@ -1970,7 +1675,7 @@ int main(int argc, char *argv[])
                     "vfu_attach_ctx() failed with errno=%d: %s", errno,
                     strerror(errno));
             warn("vfu_attach_ctx() failed");
-            goto fail;
+            return -1;
         }
 
         ernic_startup_report("rocm-ernic: Client connected!");
@@ -1979,116 +1684,16 @@ int main(int argc, char *argv[])
             pvrdma_set_stats_connection_state(dev->pvrdma_handle, "connected");
         }
 
-        /* Run device - process requests from client */
-        uint64_t loop_count = 0;
-        uint64_t next_stats_write_ms = 0;
-        GMainContext *main_context = g_main_context_default();
-        /* Acquire the main context so we can iterate it */
-        g_main_context_push_thread_default(main_context);
-        while (!g_shutdown_requested) {
-            /* Write stats periodically (every ~1 second) */
-            if (dev->stats_file_path && dev->pvrdma_handle) {
-                uint64_t now_ms = ernic_monotonic_ms();
-                if (now_ms >= next_stats_write_ms) {
-                    pvrdma_write_stats(dev->pvrdma_handle);
-                    next_stats_write_ms = now_ms + 1000u;
-                }
-            }
-
-            /* Debug logging disabled - too verbose */
-            ret = vfu_run_ctx(vfu_ctx);
-            loop_count++;
-
-            /*
-             * Checked before anything else runs.  When the client goes,
-             * libvfio-user resets the context, unmapping all guest memory,
-             * before vfu_run_ctx() returns, so the pollers below would DMA
-             * to addresses that no longer map to anything.  The return
-             * value doesn't always say so: after a reset because a reply
-             * failed, vfu_run_ctx() returns success.  device_reset_cb()
-             * sees every reset.  The pollers can also change errno, which
-             * says why vfu_run_ctx() failed.
-             */
-            if (dev->client_lost || (ret < 0 && errno == ENOTCONN)) {
-                ernic_startup_report(
-                    "rocm-ernic: Client disconnected after %" PRIu64 " loops",
-                    loop_count);
-                if (dev->pvrdma_handle) {
-                    pvrdma_set_stats_connection_state(
-                        dev->pvrdma_handle, "disconnected (client closed)");
-                    if (dev->stats_file_path) {
-                        pvrdma_write_stats(dev->pvrdma_handle);
-                    }
-                }
-                break;
-            } else if (ret < 0 && errno == EINTR) {
-                /* Interrupted by signal */
-                vfu_log(vfu_ctx, LOG_INFO,
-                        "Interrupted by signal after %" PRIu64 " loops",
-                        loop_count);
-                break;
-            } else if (ret < 0) {
-                vfu_log(vfu_ctx, LOG_ERR,
-                        "vfu_run_ctx() failed after %" PRIu64 " loops: %s",
-                        loop_count, strerror(errno));
-                break;
-            }
-
-            /* Process GLib idle callbacks (for WQE continuation) */
-            /* Always iterate once (non-blocking) to process idle callbacks */
-            /* Idle sources may not show up in g_main_context_pending() */
-            gboolean had_events = g_main_context_iteration(main_context, FALSE);
-
-            /* ionic: move frames from the host TAP into the guest Rx ring.
-             * This has to happen on this thread: only it may DMA. */
-            if (dev->ionic_emu) {
-                ionic_eth_emu_poll_rx(dev->ionic_emu);
-                ionic_eth_emu_publish_stats(dev->ionic_emu,
-                                            ernic_monotonic_ms());
-            }
-
-            /* ionic: poll admin queue rings for new WQEs */
-            if (dev->ionic_rdma) {
-                struct ionic_adminq_ctx *aqctx =
-                    ionic_rdma_devcmd_get_adminq_ctx(dev->ionic_rdma);
-                if (aqctx) {
-                    ionic_adminq_set_pvrdma(aqctx, dev->pvrdma_handle);
-                    ionic_adminq_set_faults(aqctx, dev->faults);
-                    /* CREATE_CQ/QP/MR describe the guest rings the data path
-                     * later needs, so it has to be reachable from here. */
-                    ionic_adminq_set_datapath(aqctx, dev->ionic_dp);
-                    ionic_rdma_devcmd_set_datapath(dev->ionic_rdma,
-                                                   dev->ionic_dp);
-                    ionic_adminq_poll(aqctx, vfu_ctx);
-                }
-                if (dev->ionic_dp) {
-                    ionic_datapath_set_pvrdma(dev->ionic_dp,
-                                              dev->pvrdma_handle);
-                    /* Apply anything peer instances sent us; like the Rx poll
-                     * above, this has to run on the DMA-capable thread. */
-                    ionic_datapath_poll(dev->ionic_dp);
-                }
-            }
-
-            /*
-             * Yield briefly when idle.  100 us keeps the
-             * completion-to-interrupt latency tight while
-             * still avoiding 100 % CPU in the idle case.
-             */
-            if (ret == 0 && !had_events &&
-                !ionic_datapath_has_work(dev->ionic_dp)) {
-                ernic_sleep_us(100);
-            }
-        }
-        vfu_log(vfu_ctx, LOG_INFO,
-                ">>> Event loop exited after %" PRIu64 " iterations",
-                loop_count);
-        /* Release the main context */
-        g_main_context_pop_thread_default(main_context);
+        serve_client(dev);
     }
+    return 0;
+}
 
-    ernic_startup_report("rocm-ernic: Shutting down");
-    /* What each fault saw, so a test can match the guest's counters. */
+/**
+ * What each fault saw, so a test can match the guest's counters.
+ */
+static void report_faults(const rocm_ernic_dev_t *dev)
+{
     for (int site = 0; site < IONIC_FAULT_SITE_COUNT; site++) {
         const struct ionic_fault *f =
             ionic_fault_set_get(dev->faults, (enum ionic_fault_site)site);
@@ -2098,6 +1703,109 @@ int main(int argc, char *argv[])
                 "  Fault %s: eligible %" PRIu64 ", fired %" PRIu64,
                 ionic_fault_site_name(f->site), f->eligible, f->fired);
     }
+}
+
+/**
+ * Main entry point
+ *
+ * Until the vfio-user context exists, no other thread does either, so a
+ * failure ends the process at once.  From then on, a failure goes to fail,
+ * which tears the device down first, and with it the backend's threads,
+ * which device_init() starts.
+ */
+int main(int argc, char *argv[])
+{
+    struct server_opts opts;
+    rocm_ernic_dev_t *dev;
+
+    memset(&opts, 0, sizeof(opts));
+    opts.socket_path = DEFAULT_SOCKET_PATH;
+    opts.log_level = ERNIC_LOG_WARN;
+#ifdef ERNIC_HAVE_P4
+    opts.p4_guest_scope = P4_SCOPE_NONE;
+#endif
+
+    dev = dev_new();
+    if (!dev) {
+        return EXIT_FAILURE;
+    }
+
+    switch (parse_options(argc, argv, dev, &opts)) {
+    case PARSE_RUN:
+        break;
+    case PARSE_EXIT_SUCCESS:
+        dev_free(dev);
+        return EXIT_SUCCESS;
+    case PARSE_EXIT_FAILURE:
+    default:
+        dev_free(dev);
+        return EXIT_FAILURE;
+    }
+
+    /* Log level precedence: --log-level, then --verbose, then the
+     * ERNIC_LOG_LEVEL environment variable (resolved lazily), then warn. */
+    if (opts.log_level_set) {
+        ernic_log_set_level(opts.log_level);
+    } else if (dev->verbose) {
+        ernic_log_set_level(ERNIC_LOG_DEBUG);
+    }
+
+    if (validate_backend_options(dev) < 0 ||
+        (opts.log_file_path && redirect_output(opts.log_file_path) < 0)) {
+        dev_free(dev);
+        return EXIT_FAILURE;
+    }
+
+    /* Resolved before the socket exists, so a group that can't be resolved
+     * fails here rather than leaving a socket QEMU can't reach; and after
+     * the log is open, so the reason is in it. */
+    if (opts.socket_group &&
+        !ernic_socket_resolve_group(opts.socket_group, &opts.socket_gid)) {
+        fprintf(stderr, "Error: --socket-group: no such group: %s\n",
+                opts.socket_group);
+        dev_free(dev);
+        return EXIT_FAILURE;
+    }
+
+    /* Setup signal handlers.  Worker threads block every signal
+     * (qemu_thread_create()), so this thread takes SIGINT and SIGTERM, and
+     * must not block them itself: a mask is inherited across exec, so a
+     * launcher could have left them blocked.  One already pending is taken
+     * by the handler once unblocked. */
+    if (set_signal_handler(SIGINT, signal_handler) == -1 ||
+        set_signal_handler(SIGTERM, signal_handler) == -1 ||
+        unblock_shutdown_signals() == -1) {
+        err(EXIT_FAILURE, "Failed to setup signal handlers");
+    }
+
+    report_startup(dev, &opts);
+
+#ifdef ERNIC_HAVE_P4
+    if (opts.p4_enabled && load_p4_engine(dev, opts.p4_program) < 0) {
+        dev_free(dev);
+        return EXIT_FAILURE;
+    }
+#endif
+
+    dev->vfu_ctx = create_socket(&opts, dev);
+    if (!dev->vfu_ctx) {
+        dev_free(dev);
+        return EXIT_FAILURE;
+    }
+
+    if (setup_device(dev, &opts) < 0) {
+        goto fail;
+    }
+
+    ernic_startup_report("rocm-ernic: Device realized, waiting for client "
+                         "connection...");
+
+    if (run(dev) < 0) {
+        goto fail;
+    }
+
+    ernic_startup_report("rocm-ernic: Shutting down");
+    report_faults(dev);
 
     /* Mark cleanup in progress to prevent signal handler re-entry */
     g_cleanup_in_progress = 1;
@@ -2113,7 +1821,7 @@ int main(int argc, char *argv[])
 
     /* Destroying vfu_ctx removes the socket.  Removing it by name again could
      * remove one that another server has since created there. */
-    server_teardown(dev, vfu_ctx);
+    server_teardown(dev);
 
     ernic_startup_report("rocm-ernic: Shutdown complete");
 
@@ -2122,6 +1830,6 @@ int main(int argc, char *argv[])
 fail:
     /* Destroying vfu_ctx also removes the socket.  Only a clean shutdown
      * says "Shutdown complete". */
-    server_teardown(dev, vfu_ctx);
+    server_teardown(dev);
     return EXIT_FAILURE;
 }
