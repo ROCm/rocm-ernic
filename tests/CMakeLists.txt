@@ -680,7 +680,14 @@ target_include_directories(test_ionic_dp_errors SYSTEM PRIVATE
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
-target_compile_definitions(test_ionic_dp_errors PRIVATE _GNU_SOURCE)
+# ERNIC_HAVE_P4 as the server has it, here and in the two tests below, so
+# they test the data path that ships; each stubs the one P4 hook it calls.
+# CodeQL also needs every build of ionic_datapath.c to agree: given two
+# versions of a function, it calls one of them unreachable.
+target_compile_definitions(test_ionic_dp_errors PRIVATE
+    _GNU_SOURCE
+    $<$<BOOL:${ERNIC_BUILD_P4}>:ERNIC_HAVE_P4>
+)
 target_link_libraries(test_ionic_dp_errors PRIVATE pthread)
 
 # ionic CQ arm-semantics test. It links the datapath, reaches the private CQ
@@ -706,7 +713,10 @@ target_include_directories(test_ionic_cq_arm SYSTEM PRIVATE
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
-target_compile_definitions(test_ionic_cq_arm PRIVATE _GNU_SOURCE)
+target_compile_definitions(test_ionic_cq_arm PRIVATE
+    _GNU_SOURCE
+    $<$<BOOL:${ERNIC_BUILD_P4}>:ERNIC_HAVE_P4>
+)
 # libvfio-user supplies vfu_log/vfu_sgl_*; the arm path never reaches them, so
 # the real library is cheaper than stubbing its ABI. Everything the datapath
 # needs from the rest of this project is stubbed in the test itself.
@@ -737,7 +747,10 @@ target_include_directories(test_ionic_rq_wrap SYSTEM PRIVATE
     ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
-target_compile_definitions(test_ionic_rq_wrap PRIVATE _GNU_SOURCE)
+target_compile_definitions(test_ionic_rq_wrap PRIVATE
+    _GNU_SOURCE
+    $<$<BOOL:${ERNIC_BUILD_P4}>:ERNIC_HAVE_P4>
+)
 # libvfio-user supplies vfu_log/vfu_sgl_*; the arm path never reaches them, so
 # the real library is cheaper than stubbing its ABI. Everything the datapath
 # needs from the rest of this project is stubbed in the test itself.

@@ -33,5 +33,6 @@ def parse(path: str) -> list:
                         message=m.group(6).strip(),
                     ))
     except FileNotFoundError:
+        # No report from this tool, so nothing to add
         pass
     return findings

@@ -141,6 +141,8 @@ def parse_stats_file(path):
                 except ValueError:
                     result[key] = val
     except OSError:
+        # Removed since the isfile() check (the instance stopped) or
+        # unreadable: the same as a missing file.
         pass
     return result
 
@@ -230,6 +232,7 @@ def parse_stats_file_with_qps(path):
                 else:
                     device[key] = int_val if int_val is not None else val
     except OSError:
+        # As in parse_stats_file(): what was read before the error stands
         pass
     return device, lif, qps
 

@@ -32,5 +32,6 @@ def parse(path: str, tool_name: str) -> list:
                         message=m.group(4),
                     ))
     except FileNotFoundError:
+        # No report from this tool, so nothing to add
         pass
     return findings

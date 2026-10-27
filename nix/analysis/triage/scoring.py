@@ -6,7 +6,6 @@ are specific to C static analysis tools.
 
 from collections import defaultdict
 
-from finding import Finding
 from filters import is_security_sensitive, is_test_code
 
 

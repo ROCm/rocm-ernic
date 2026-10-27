@@ -5,7 +5,6 @@ import os
 from collections import defaultdict
 from contextlib import redirect_stdout
 
-from finding import Finding
 from filters import is_test_code, is_security_sensitive
 from scoring import priority_score, find_cross_tool_hits, get_high_confidence
 

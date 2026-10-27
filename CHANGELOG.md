@@ -1025,6 +1025,11 @@
     `--patches-dir` and `--source-dir` now work.
   * A failed ionic DKMS build reports the right `make.log`, and says when
     the log it found was written for another kernel.
+  * `ernicctl driver-push --install` ran the installer on
+    `ERNIC_VM_SSH_HOST` (default `localhost`) rather than on the host the
+    tarball was copied to, gave up after 30 seconds, and printed `Done.`
+    whether or not it had worked, without showing its output. It now runs
+    the installer on the target, shows its output, and fails if it does.
   * The `ernic_p4_dkms` role registers `ernic-p4` with DKMS rather than
     copying it into `/lib/modules`, removes a copy an earlier run left in
     `updates/`, and resolves the ionic symbols for the kernel being built

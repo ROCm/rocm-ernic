@@ -1230,6 +1230,44 @@ static uint16_t io_range(const struct nvmeof_target *t, const uint8_t *sqe,
     return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
 }
 
+/* A Read or, if @write, a Write: the data moves between the namespace and
+ * the host buffers the capsule's SGL names. */
+static uint16_t exec_rw(struct nvmeof_target *t, const uint8_t *capsule,
+                        size_t capsule_len, const struct nvmeof_dma_ops *dma,
+                        void *ctx, bool write, bool fua)
+{
+    uint64_t off, len;
+    uint16_t st = io_range(t, capsule, &off, &len);
+    if (st != 0) {
+        return st;
+    }
+
+    struct nvmeof_sgl sgl;
+    if (!parse_sgl(capsule, &sgl)) {
+        return nvme_status(NVME_SCT_GENERIC, NVME_SC_SGL_INVALID_TYPE, 1);
+    }
+    if (len > UINT32_MAX) {
+        return nvme_status(NVME_SCT_GENERIC, NVME_SC_INVALID_FIELD, 1);
+    }
+
+    if (!write) {
+        st = sgl_write(&sgl, dma, ctx, t->ns_data + off, (uint32_t)len);
+        if (st == 0) {
+            t->stats.read_bytes += len;
+        }
+    } else {
+        st = sgl_read(&sgl, capsule, capsule_len, dma, ctx, t->ns_data + off,
+                      (uint32_t)len);
+        if (st == 0) {
+            t->stats.write_bytes += len;
+            if (fua) {
+                st = ns_sync(t, off, len);
+            }
+        }
+    }
+    return st;
+}
+
 static uint16_t exec_io(const struct nvmeof_queue *q, const uint8_t *capsule,
                         size_t capsule_len, const struct nvmeof_dma_ops *dma,
                         void *ctx)
@@ -1270,37 +1308,9 @@ static uint16_t exec_io(const struct nvmeof_queue *q, const uint8_t *capsule,
                    : nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
 
     case NVME_CMD_READ:
-    case NVME_CMD_WRITE: {
-        st = io_range(t, capsule, &off, &len);
-        if (st != 0) {
-            return st;
-        }
-
-        struct nvmeof_sgl sgl;
-        if (!parse_sgl(capsule, &sgl)) {
-            return nvme_status(NVME_SCT_GENERIC, NVME_SC_SGL_INVALID_TYPE, 1);
-        }
-        if (len > UINT32_MAX) {
-            return nvme_status(NVME_SCT_GENERIC, NVME_SC_INVALID_FIELD, 1);
-        }
-
-        if (opcode == NVME_CMD_READ) {
-            st = sgl_write(&sgl, dma, ctx, t->ns_data + off, (uint32_t)len);
-            if (st == 0) {
-                t->stats.read_bytes += len;
-            }
-        } else {
-            st = sgl_read(&sgl, capsule, capsule_len, dma, ctx,
-                          t->ns_data + off, (uint32_t)len);
-            if (st == 0) {
-                t->stats.write_bytes += len;
-                if (fua) {
-                    st = ns_sync(t, off, len);
-                }
-            }
-        }
-        return st;
-    }
+    case NVME_CMD_WRITE:
+        return exec_rw(t, capsule, capsule_len, dma, ctx,
+                       opcode == NVME_CMD_WRITE, fua);
 
     default:
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_INVALID_OPCODE, 1);

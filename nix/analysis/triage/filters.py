@@ -10,8 +10,6 @@ layout:
   - tests/                         test programs
 """
 
-from finding import Finding
-
 
 # Truly non-actionable third-party trees. rocm-ernic vendors none, so this
 # stays empty; the is_third_party() fallback still drops anything outside

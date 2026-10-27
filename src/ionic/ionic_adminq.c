@@ -1467,6 +1467,384 @@ static uint8_t handle_destroy_ah_op(const struct ionic_adminq_ctx *ctx,
     return IONIC_RC_SUCCESS;
 }
 
+static uint8_t handle_create_mr_op(struct ionic_adminq_ctx *ctx,
+                                   const uint8_t *body, uint16_t len)
+{
+    if (!ctx->pvrdma_handle)
+        return IONIC_RC_SUCCESS;
+    if (len < IONIC_ADMIN_CREATE_MR_IN_V1_LEN) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_MR: short body (%u)", len);
+        return IONIC_RC_EINVAL;
+    }
+    /* ionic_admin_create_mr body (45 bytes):
+     *   le64 va         [0:7]
+     *   le64 length     [8:15]
+     *   le32 pd_id      [16:19]
+     *   le32 id_ver     [20:23]  (mrid | ver<<24)
+     *   le32 tbl_index  [24:27]
+     *   le32 map_count  [28:31]
+     *   le64 dma_addr   [32:39]
+     *   le16 dbid_flags [40:41]   IONIC_MRF_* — low 12 bits are the
+     *                             IB access flags, same bit positions
+     *   u8   pt_type    [42]
+     *   u8   dir_size_log2  [43]
+     *   u8   page_size_log2 [44] */
+    /* The full mrid, key byte included, is what userspace puts in an SGE
+     * lkey; the low 24 bits alone are the id we track resources by. */
+    uint32_t mrid = ernic_get_le32(body + 20);
+    uint32_t mr_id = mrid & 0x00ffffffu;
+
+    uint32_t access = ernic_get_le16(body + 40) & IONIC_MRF_ACCESS_MASK;
+    uint64_t mr_va = ernic_get_le64(body + 0);
+    uint64_t mr_len = ernic_get_le64(body + 8);
+
+    /*
+     * Refused before anything is allocated: a region that runs past the
+     * end of the address space, which the data path would otherwise
+     * decline to register under a command that had succeeded; an id
+     * already in use, which mapped over would lose the MR that had it;
+     * and a full map, which would leave the new one unmapped. Either MR
+     * could then never be found again by DESTROY_MR, and would leak.
+     * The driver surfaces this as the -ENOMEM its ib_alloc_mr() already
+     * knows how to unwind.
+     */
+    if (mr_len > UINT64_MAX - mr_va) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_MR %u: %" PRIu64 " bytes at %#" PRIx64
+                " run past the end of the address space",
+                mr_id, mr_len, mr_va);
+        return IONIC_RC_ERANGE;
+    }
+    uint32_t mr_handle;
+    if (adminq_lookup_mr(ctx, mr_id, &mr_handle)) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_MR %u: mr_id already in use", mr_id);
+        return IONIC_RC_EEXIST;
+    }
+    struct ionic_mr_map_entry *entry = adminq_mr_free_entry(ctx);
+    if (!entry) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_MR %u: MR map full (%u MRs)", mr_id,
+                MAX_MR_MAP);
+        return IONIC_RC_ENOSPC;
+    }
+
+    uint32_t pd_handle;
+    int ret = adminq_get_pd(ctx, &pd_handle);
+    if (ret) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_MR %u: rdma_rm_alloc_pd failed (%d)",
+                mr_id, ret);
+        return IONIC_RC_ERDMA;
+    }
+
+    ret = ernic_rm_alloc_mr(ctx->pvrdma_handle, pd_handle, access, &mr_handle);
+    if (ret) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR, "ionic_adminq CREATE_MR %u: failed (%d)",
+                mr_id, ret);
+        return IONIC_RC_ERDMA;
+    }
+    *entry = (struct ionic_mr_map_entry){
+        .valid = true, .mr_id = mr_id, .handle = mr_handle};
+
+    struct ionic_dp_buf_desc mrbuf = {.dma_addr = ernic_get_le64(body + 32),
+                                      .map_count = ernic_get_le32(body + 28),
+                                      .page_size_log2 = body[44]};
+    /*
+     * Not yet the command's failure. An MR that a REG_MR work request
+     * binds later arrives with no region and is refused here, as it
+     * should be; failing the command for the other reasons would need
+     * the resource manager's MR above unwound first.
+     */
+    (void)ionic_datapath_register_mr(ctx->dp, mrid, mr_va, mr_len, &mrbuf);
+
+    vfu_log(ctx->vfu_ctx, LOG_INFO,
+            "ionic_adminq CREATE_MR mr_id=%u handle=%u access=%#x pd=%u "
+            "va=%#" PRIx64 " len=%" PRIu64 " pt=%#" PRIx64 " maps=%" PRIu32
+            " pgsz_log2=%u",
+            mr_id, mr_handle, access, pd_handle, mr_va, mr_len, mrbuf.dma_addr,
+            mrbuf.map_count, (unsigned)mrbuf.page_size_log2);
+    return IONIC_RC_SUCCESS;
+}
+
+static uint8_t handle_modify_qp_op(struct ionic_adminq_ctx *ctx,
+                                   const uint8_t *body, uint16_t len)
+{
+    /* ionic_admin_mod_qp body (60 bytes):
+     *   be32 attr_mask    [0:3]
+     *   u8   dcqcn        [4]
+     *   u8   tfp          [5]
+     *   be16 access_flags [6:7]
+     *   le32 rq_psn       [8:11]
+     *   le32 sq_psn       [12:15]
+     *   le32 qkey_dest_qpn[16:19]
+     *   le32 rate_limit   [20:23]
+     *   u8   pmtu         [24]
+     *   u8   retry        [25]
+     *   u8   rnr_timer    [26]
+     *   u8   retry_timeout[27]
+     *   u8   rsq_depth    [28]
+     *   u8   rrq_depth    [29]
+     *   le16 pkey_id      [30:31]
+     *   le32 ah_id_len    [32:35]
+     *   u8   en_pcp       [36]
+     *   u8   ip_dscp      [37]
+     *   u8   rsvd2        [38]
+     *   u8   type_state   [39]
+     *   le32 rrq_index    [40:43]
+     *   le32 rsq_index    [44:47]
+     *   le64 dma_addr     [48:55]  (AH DMA if ah_id_len != 0)
+     *   le32 id_ver       [56:59]  (qpn | ver<<24)
+     */
+    if (!ctx->pvrdma_handle)
+        return IONIC_RC_SUCCESS;
+    if (len < IONIC_ADMIN_MODIFY_QP_IN_V1_LEN) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq MODIFY_QP: short body (%u)", len);
+        return IONIC_RC_EINVAL;
+    }
+
+    /* The kernel's enum ib_qp_attr_mask, whose bits are those of
+     * userspace's enum ibv_qp_attr_mask. */
+    uint32_t attr_mask = ernic_get_be32(body + 0);
+
+    uint32_t rq_psn, sq_psn, qkey_dest_qpn, id_ver;
+    rq_psn = ernic_get_le32(body + 8);
+    sq_psn = ernic_get_le32(body + 12);
+    qkey_dest_qpn = ernic_get_le32(body + 16);
+    id_ver = ernic_get_le32(body + 56);
+
+    uint8_t type_state = body[39];
+    uint32_t qp_id = id_ver & 0x00ffffffu;
+
+    uint32_t qpn;
+    if (!adminq_lookup_qp(ctx, qp_id, &qpn)) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq MODIFY_QP: unknown qp_id=%u", qp_id);
+        return IONIC_RC_ENOENT;
+    }
+
+    /* The RoCE header template the driver DMAs for this transition is the
+     * only place the destination address appears; without it every peer
+     * resolves to the same default node. */
+    uint32_t ah_id_len;
+    bool dgid_valid = false;
+    uint64_t ah_dma;
+    uint8_t dgid[16] = {0};
+    uint8_t sgid[16] = {0}; /* parsed but unused here; see CREATE_AH */
+    uint8_t dmac[6] = {0};
+
+    ah_id_len = ernic_get_le32(body + 32);
+    ah_dma = ernic_get_le64(body + 48);
+
+    uint32_t hdr_len = ah_id_len >> 24;
+    if (hdr_len && ah_dma)
+        dgid_valid =
+            adminq_parse_roce_hdr(ctx, ah_dma, hdr_len, dgid, sgid, dmac);
+
+    if (dgid_valid)
+        vfu_log(ctx->vfu_ctx, LOG_DEBUG,
+                "ionic_adminq MODIFY_QP %u: peer %02x:%02x:%02x:%02x:%02x:"
+                "%02x gid %02x%02x:%02x%02x:%02x%02x:%02x%02x",
+                qp_id, dmac[0], dmac[1], dmac[2], dmac[3], dmac[4], dmac[5],
+                dgid[8], dgid[9], dgid[10], dgid[11], dgid[12], dgid[13],
+                dgid[14], dgid[15]);
+
+    /* The field as the driver wrote it, before any translation */
+    const uint32_t guest_qkey_dest_qpn = qkey_dest_qpn;
+
+    /* IBV_QP_DEST_QPN: the driver names the peer by its own qpid, but the
+     * backend routes on its QPNs.  For UD this field is the qkey instead,
+     * so only translate when the mask says it is a destination QPN. */
+    uint32_t dest_node = UINT32_MAX;
+    if (attr_mask & IBV_QP_DEST_QPN) {
+        dest_node = ionic_dp_node_from_gid(ctx->dp, dgid_valid ? dgid : NULL);
+
+        /*
+         * UINT32_MAX means two different things.  With no mesh backend
+         * attached -- loopback, nvmeof, s3 -- it is the sentinel for
+         * "every peer is local", which the datapath relies on
+         * (ionic_datapath.c, dp_is_remote()), and the destination node
+         * is never consulted.  With a mesh attached it means no node
+         * owns this GID, and that must fail: a wrong node there is a
+         * silent write into another guest's memory that nothing
+         * downstream catches.  Only the second is an error.
+         */
+        if (dest_node == UINT32_MAX &&
+            ionic_dp_local_node(ctx->dp) != UINT32_MAX) {
+            vfu_log(ctx->vfu_ctx, LOG_ERR,
+                    "ionic_adminq MODIFY_QP %u: no mesh node owns "
+                    "destination gid "
+                    "%02x%02x:%02x%02x:%02x%02x:%02x%02x:"
+                    "%02x%02x:%02x%02x:%02x%02x:%02x%02x%s",
+                    qp_id, dgid[0], dgid[1], dgid[2], dgid[3], dgid[4], dgid[5],
+                    dgid[6], dgid[7], dgid[8], dgid[9], dgid[10], dgid[11],
+                    dgid[12], dgid[13], dgid[14], dgid[15],
+                    dgid_valid ? "" : " (no address in the RoCE header)");
+            return IONIC_RC_ENOENT;
+        }
+
+        uint32_t dest_qpn;
+        if (adminq_lookup_qp(ctx, qkey_dest_qpn, &dest_qpn))
+            qkey_dest_qpn = dest_qpn;
+    }
+
+    int ret = ernic_rm_modify_qp(ctx->pvrdma_handle, qpn, attr_mask, type_state,
+                                 sq_psn, rq_psn, qkey_dest_qpn, dgid);
+    if (ret) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR, "ionic_adminq MODIFY_QP %u: failed (%d)",
+                qp_id, ret);
+        return IONIC_RC_ERDMA;
+    }
+
+    /*
+     * The rest is applied only now that the modification has succeeded,
+     * since one that fails must change nothing.
+     *
+     * IBV_QP_QKEY: the same field, read the other way. The datapath needs
+     * it because a datagram is only delivered into a QP that presents
+     * that QP's Q_Key -- without it the destination QPN alone selected
+     * any queue in the device, including other processes' and GSI.
+     */
+    if (attr_mask & IBV_QP_QKEY)
+        ionic_datapath_set_qkey(ctx->dp, qp_id, guest_qkey_dest_qpn);
+
+    /* The datapath routes on the driver's qpid, and QUERY_QP reports it */
+    if (attr_mask & IBV_QP_DEST_QPN) {
+        struct ionic_qp_map_entry *e = adminq_qp_entry(ctx, qp_id);
+
+        ionic_datapath_set_dest(ctx->dp, qp_id, guest_qkey_dest_qpn, dest_node);
+        if (e) {
+            e->dest_set = true;
+            e->dest_qp_id = guest_qkey_dest_qpn;
+        }
+    }
+    vfu_log(ctx->vfu_ctx, LOG_INFO,
+            "ionic_adminq MODIFY_QP qp_id=%u qpn=%u type_state=%#x "
+            "attr=%#x",
+            qp_id, qpn, type_state, attr_mask);
+
+    /*
+     * Entering Error is the point at which outstanding work requests
+     * stop being able to complete normally, so it is the point at which
+     * they have to be flushed. MODIFY_QP carries the state alone in this
+     * field -- unlike CREATE_QP, which packs the type into the low
+     * nibble -- so the whole byte is the state here.
+     *
+     * IBV_QP_STATE gates it for the same reason rdma_rm_modify_qp() only
+     * applies the state under that bit: without it the byte is whatever
+     * the driver left there, and a command changing some other attribute
+     * would flush a queue pair that never entered Error.
+     */
+    if ((attr_mask & IBV_QP_STATE) && type_state == IONIC_QPS_ERR)
+        ionic_datapath_flush_qp(ctx->dp, qp_id);
+    return IONIC_RC_SUCCESS;
+}
+
+static uint8_t handle_query_qp_op(struct ionic_adminq_ctx *ctx,
+                                  const uint8_t *body, uint16_t len)
+{
+    /* ionic_admin_query_qp body (34 bytes):
+     *   le64 hdr_dma_addr [0:7]   (AH header template, only when IB_QP_AV)
+     *   le64 sq_dma_addr  [8:15]
+     *   le64 rq_dma_addr  [16:23]
+     *   le32 ah_id        [24:27]
+     *   le32 id_ver       [28:31]  (qpid | ver<<24)
+     *   le16 dbid_flags   [32:33]
+     *
+     * The answer is not the completion: the driver reads it out of the
+     * two buffers it DMA-mapped, and both are zeroed before the command,
+     * so succeeding without writing them reports a QP in RESET.  That is
+     * what ibv_query_qp saw while this was a stub. */
+    if (!ctx->pvrdma_handle)
+        return IONIC_RC_SUCCESS;
+    if (len < IONIC_ADMIN_QUERY_QP_IN_V1_LEN) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR, "ionic_adminq QUERY_QP: short body (%u)",
+                len);
+        return IONIC_RC_EINVAL;
+    }
+
+    uint64_t sq_dma, rq_dma;
+    uint32_t id_ver;
+    sq_dma = ernic_get_le64(body + 8);
+    rq_dma = ernic_get_le64(body + 16);
+    id_ver = ernic_get_le32(body + 28);
+
+    uint32_t qp_id = id_ver & 0x00ffffffu;
+    const struct ionic_qp_map_entry *qp_entry = adminq_qp_entry(ctx, qp_id);
+    if (!qp_entry) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq QUERY_QP: unknown qp_id=%u", qp_id);
+        return IONIC_RC_ENOENT;
+    }
+    uint32_t qpn = qp_entry->qpn;
+
+    uint8_t state = 0, path_mtu = IBV_MTU_1024;
+    uint32_t dest_qpn = 0, access = 0, rq_psn = 0, sq_psn = 0;
+    if (ernic_rm_query_qp(ctx->pvrdma_handle, qpn, &state, &path_mtu, &dest_qpn,
+                          &access, &rq_psn, &sq_psn) != 0) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR, "ionic_adminq QUERY_QP %u: failed",
+                qp_id);
+        return IONIC_RC_ERDMA;
+    }
+
+    /*
+     * The destination as the driver named it, by its qpid. The backend
+     * answers in its own QPNs, which mean nothing to the guest, so its
+     * answer is used only for a QP MODIFY_QP gave no destination -- the
+     * loopback backend pairs those itself -- and only if it names a QP
+     * of this device. 0 is the backends' "no destination".
+     */
+    uint32_t guest_dest = 0;
+    if (qp_entry->dest_set)
+        guest_dest = qp_entry->dest_qp_id;
+    else if (dest_qpn == 0 || !adminq_lookup_qp_id(ctx, dest_qpn, &guest_dest))
+        guest_dest = 0;
+
+    /* ionic numbers its QP states as IB does, so the state needs no
+     * translation; the MTU does, because the driver subtracts 7 from the
+     * low nibble to recover the ibv_mtu enum. */
+    uint16_t flags = 0;
+    if (access & IBV_ACCESS_REMOTE_WRITE)
+        flags |= 1u << 0; /* IONIC_QPF_REMOTE_WRITE */
+    if (access & IBV_ACCESS_REMOTE_READ)
+        flags |= 1u << 1; /* IONIC_QPF_REMOTE_READ */
+    if (access & IBV_ACCESS_REMOTE_ATOMIC)
+        flags |= 1u << 2; /* IONIC_QPF_REMOTE_ATOMIC */
+
+    /* struct ionic_v1_admin_query_qp_sq, all big-endian (20 bytes). */
+    uint8_t sqbuf[20] = {0};
+    ernic_put_be16(sqbuf + 2, flags);
+    ernic_put_be32(sqbuf + 8, guest_dest);
+    ernic_put_be32(sqbuf + 16, rq_psn & 0xffffffu);
+
+    /* struct ionic_v1_admin_query_qp_rq (12 bytes).  rrq/rsq depth are
+     * log2 depths: the driver reports BIT(depth) - 1 as the rd_atomic
+     * limits, so 1 is the single outstanding operation ionic_datapath
+     * actually supports. */
+    uint8_t rqbuf[12] = {0};
+    rqbuf[0] = (uint8_t)((state & 0x0fu) << 4 | ((path_mtu + 7u) & 0x0fu));
+    rqbuf[1] = 0x77; /* retry_cnt 7, rnr_retry 7 */
+    rqbuf[2] = 1;
+    rqbuf[3] = 1;
+    ernic_put_be32(rqbuf + 4, sq_psn & 0xffffffu);
+    ernic_put_be16(rqbuf + 8, flags);
+
+    if (sq_dma && ernic_dma_write(ctx->dma, ctx->vfu_ctx, sq_dma, sqbuf,
+                                  sizeof(sqbuf)) < 0)
+        return IONIC_RC_EIO;
+    if (rq_dma && ernic_dma_write(ctx->dma, ctx->vfu_ctx, rq_dma, rqbuf,
+                                  sizeof(rqbuf)) < 0)
+        return IONIC_RC_EIO;
+
+    vfu_log(ctx->vfu_ctx, LOG_INFO,
+            "ionic_adminq QUERY_QP qp_id=%u qpn=%u state=%u dest=%u "
+            "(backend dest_qpn=%u)",
+            qp_id, qpn, state, guest_dest, dest_qpn);
+    return IONIC_RC_SUCCESS;
+}
+
 uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
                                   const uint8_t *body, uint16_t len)
 {
@@ -1496,107 +1874,8 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
     case IONIC_V1_ADMIN_DESTROY_SRQ:
         return handle_destroy_srq_op(ctx, body, len);
 
-    case IONIC_V1_ADMIN_CREATE_MR: {
-        if (!ctx->pvrdma_handle)
-            return IONIC_RC_SUCCESS;
-        if (len < IONIC_ADMIN_CREATE_MR_IN_V1_LEN) {
-            vfu_log(ctx->vfu_ctx, LOG_ERR,
-                    "ionic_adminq CREATE_MR: short body (%u)", len);
-            return IONIC_RC_EINVAL;
-        }
-        /* ionic_admin_create_mr body (45 bytes):
-         *   le64 va         [0:7]
-         *   le64 length     [8:15]
-         *   le32 pd_id      [16:19]
-         *   le32 id_ver     [20:23]  (mrid | ver<<24)
-         *   le32 tbl_index  [24:27]
-         *   le32 map_count  [28:31]
-         *   le64 dma_addr   [32:39]
-         *   le16 dbid_flags [40:41]   IONIC_MRF_* — low 12 bits are the
-         *                             IB access flags, same bit positions
-         *   u8   pt_type    [42]
-         *   u8   dir_size_log2  [43]
-         *   u8   page_size_log2 [44] */
-        /* The full mrid, key byte included, is what userspace puts in an SGE
-         * lkey; the low 24 bits alone are the id we track resources by. */
-        uint32_t mrid = ernic_get_le32(body + 20);
-        uint32_t mr_id = mrid & 0x00ffffffu;
-
-        uint32_t access = ernic_get_le16(body + 40) & IONIC_MRF_ACCESS_MASK;
-        uint64_t mr_va = ernic_get_le64(body + 0);
-        uint64_t mr_len = ernic_get_le64(body + 8);
-
-        /*
-         * Refused before anything is allocated: a region that runs past the
-         * end of the address space, which the data path would otherwise
-         * decline to register under a command that had succeeded; an id
-         * already in use, which mapped over would lose the MR that had it;
-         * and a full map, which would leave the new one unmapped. Either MR
-         * could then never be found again by DESTROY_MR, and would leak.
-         * The driver surfaces this as the -ENOMEM its ib_alloc_mr() already
-         * knows how to unwind.
-         */
-        if (mr_len > UINT64_MAX - mr_va) {
-            vfu_log(ctx->vfu_ctx, LOG_ERR,
-                    "ionic_adminq CREATE_MR %u: %" PRIu64 " bytes at %#" PRIx64
-                    " run past the end of the address space",
-                    mr_id, mr_len, mr_va);
-            return IONIC_RC_ERANGE;
-        }
-        uint32_t mr_handle;
-        if (adminq_lookup_mr(ctx, mr_id, &mr_handle)) {
-            vfu_log(ctx->vfu_ctx, LOG_ERR,
-                    "ionic_adminq CREATE_MR %u: mr_id already in use", mr_id);
-            return IONIC_RC_EEXIST;
-        }
-        struct ionic_mr_map_entry *entry = adminq_mr_free_entry(ctx);
-        if (!entry) {
-            vfu_log(ctx->vfu_ctx, LOG_ERR,
-                    "ionic_adminq CREATE_MR %u: MR map full (%u MRs)", mr_id,
-                    MAX_MR_MAP);
-            return IONIC_RC_ENOSPC;
-        }
-
-        uint32_t pd_handle;
-        int ret = adminq_get_pd(ctx, &pd_handle);
-        if (ret) {
-            vfu_log(ctx->vfu_ctx, LOG_ERR,
-                    "ionic_adminq CREATE_MR %u: rdma_rm_alloc_pd failed (%d)",
-                    mr_id, ret);
-            return IONIC_RC_ERDMA;
-        }
-
-        ret = ernic_rm_alloc_mr(ctx->pvrdma_handle, pd_handle, access,
-                                &mr_handle);
-        if (ret) {
-            vfu_log(ctx->vfu_ctx, LOG_ERR,
-                    "ionic_adminq CREATE_MR %u: failed (%d)", mr_id, ret);
-            return IONIC_RC_ERDMA;
-        }
-        *entry = (struct ionic_mr_map_entry){
-            .valid = true, .mr_id = mr_id, .handle = mr_handle};
-
-        struct ionic_dp_buf_desc mrbuf = {.dma_addr = ernic_get_le64(body + 32),
-                                          .map_count =
-                                              ernic_get_le32(body + 28),
-                                          .page_size_log2 = body[44]};
-        /*
-         * Not yet the command's failure. An MR that a REG_MR work request
-         * binds later arrives with no region and is refused here, as it
-         * should be; failing the command for the other reasons would need
-         * the resource manager's MR above unwound first.
-         */
-        (void)ionic_datapath_register_mr(ctx->dp, mrid, mr_va, mr_len, &mrbuf);
-
-        vfu_log(ctx->vfu_ctx, LOG_INFO,
-                "ionic_adminq CREATE_MR mr_id=%u handle=%u access=%#x pd=%u "
-                "va=%#" PRIx64 " len=%" PRIu64 " pt=%#" PRIx64 " maps=%" PRIu32
-                " pgsz_log2=%u",
-                mr_id, mr_handle, access, pd_handle, mr_va, mr_len,
-                mrbuf.dma_addr, mrbuf.map_count,
-                (unsigned)mrbuf.page_size_log2);
-        return IONIC_RC_SUCCESS;
-    }
+    case IONIC_V1_ADMIN_CREATE_MR:
+        return handle_create_mr_op(ctx, body, len);
 
     case IONIC_V1_ADMIN_DESTROY_MR: {
         if (!ctx->pvrdma_handle)
@@ -1664,282 +1943,11 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         return IONIC_RC_SUCCESS;
     }
 
-    case IONIC_V1_ADMIN_MODIFY_QP: {
-        /* ionic_admin_mod_qp body (60 bytes):
-         *   be32 attr_mask    [0:3]
-         *   u8   dcqcn        [4]
-         *   u8   tfp          [5]
-         *   be16 access_flags [6:7]
-         *   le32 rq_psn       [8:11]
-         *   le32 sq_psn       [12:15]
-         *   le32 qkey_dest_qpn[16:19]
-         *   le32 rate_limit   [20:23]
-         *   u8   pmtu         [24]
-         *   u8   retry        [25]
-         *   u8   rnr_timer    [26]
-         *   u8   retry_timeout[27]
-         *   u8   rsq_depth    [28]
-         *   u8   rrq_depth    [29]
-         *   le16 pkey_id      [30:31]
-         *   le32 ah_id_len    [32:35]
-         *   u8   en_pcp       [36]
-         *   u8   ip_dscp      [37]
-         *   u8   rsvd2        [38]
-         *   u8   type_state   [39]
-         *   le32 rrq_index    [40:43]
-         *   le32 rsq_index    [44:47]
-         *   le64 dma_addr     [48:55]  (AH DMA if ah_id_len != 0)
-         *   le32 id_ver       [56:59]  (qpn | ver<<24)
-         */
-        if (!ctx->pvrdma_handle)
-            return IONIC_RC_SUCCESS;
-        if (len < IONIC_ADMIN_MODIFY_QP_IN_V1_LEN) {
-            vfu_log(ctx->vfu_ctx, LOG_ERR,
-                    "ionic_adminq MODIFY_QP: short body (%u)", len);
-            return IONIC_RC_EINVAL;
-        }
+    case IONIC_V1_ADMIN_MODIFY_QP:
+        return handle_modify_qp_op(ctx, body, len);
 
-        /* The kernel's enum ib_qp_attr_mask, whose bits are those of
-         * userspace's enum ibv_qp_attr_mask. */
-        uint32_t attr_mask = ernic_get_be32(body + 0);
-
-        uint32_t rq_psn, sq_psn, qkey_dest_qpn, id_ver;
-        rq_psn = ernic_get_le32(body + 8);
-        sq_psn = ernic_get_le32(body + 12);
-        qkey_dest_qpn = ernic_get_le32(body + 16);
-        id_ver = ernic_get_le32(body + 56);
-
-        uint8_t type_state = body[39];
-        uint32_t qp_id = id_ver & 0x00ffffffu;
-
-        uint32_t qpn;
-        if (!adminq_lookup_qp(ctx, qp_id, &qpn)) {
-            vfu_log(ctx->vfu_ctx, LOG_ERR,
-                    "ionic_adminq MODIFY_QP: unknown qp_id=%u", qp_id);
-            return IONIC_RC_ENOENT;
-        }
-
-        /* The RoCE header template the driver DMAs for this transition is the
-         * only place the destination address appears; without it every peer
-         * resolves to the same default node. */
-        uint32_t ah_id_len;
-        bool dgid_valid = false;
-        uint64_t ah_dma;
-        uint8_t dgid[16] = {0};
-        uint8_t sgid[16] = {0}; /* parsed but unused here; see CREATE_AH */
-        uint8_t dmac[6] = {0};
-
-        ah_id_len = ernic_get_le32(body + 32);
-        ah_dma = ernic_get_le64(body + 48);
-
-        uint32_t hdr_len = ah_id_len >> 24;
-        if (hdr_len && ah_dma)
-            dgid_valid =
-                adminq_parse_roce_hdr(ctx, ah_dma, hdr_len, dgid, sgid, dmac);
-
-        if (dgid_valid)
-            vfu_log(ctx->vfu_ctx, LOG_DEBUG,
-                    "ionic_adminq MODIFY_QP %u: peer %02x:%02x:%02x:%02x:%02x:"
-                    "%02x gid %02x%02x:%02x%02x:%02x%02x:%02x%02x",
-                    qp_id, dmac[0], dmac[1], dmac[2], dmac[3], dmac[4], dmac[5],
-                    dgid[8], dgid[9], dgid[10], dgid[11], dgid[12], dgid[13],
-                    dgid[14], dgid[15]);
-
-        /* The field as the driver wrote it, before any translation */
-        const uint32_t guest_qkey_dest_qpn = qkey_dest_qpn;
-
-        /* IBV_QP_DEST_QPN: the driver names the peer by its own qpid, but the
-         * backend routes on its QPNs.  For UD this field is the qkey instead,
-         * so only translate when the mask says it is a destination QPN. */
-        uint32_t dest_node = UINT32_MAX;
-        if (attr_mask & IBV_QP_DEST_QPN) {
-            dest_node =
-                ionic_dp_node_from_gid(ctx->dp, dgid_valid ? dgid : NULL);
-
-            /*
-             * UINT32_MAX means two different things.  With no mesh backend
-             * attached -- loopback, nvmeof, s3 -- it is the sentinel for
-             * "every peer is local", which the datapath relies on
-             * (ionic_datapath.c, dp_is_remote()), and the destination node
-             * is never consulted.  With a mesh attached it means no node
-             * owns this GID, and that must fail: a wrong node there is a
-             * silent write into another guest's memory that nothing
-             * downstream catches.  Only the second is an error.
-             */
-            if (dest_node == UINT32_MAX &&
-                ionic_dp_local_node(ctx->dp) != UINT32_MAX) {
-                vfu_log(ctx->vfu_ctx, LOG_ERR,
-                        "ionic_adminq MODIFY_QP %u: no mesh node owns "
-                        "destination gid "
-                        "%02x%02x:%02x%02x:%02x%02x:%02x%02x:"
-                        "%02x%02x:%02x%02x:%02x%02x:%02x%02x%s",
-                        qp_id, dgid[0], dgid[1], dgid[2], dgid[3], dgid[4],
-                        dgid[5], dgid[6], dgid[7], dgid[8], dgid[9], dgid[10],
-                        dgid[11], dgid[12], dgid[13], dgid[14], dgid[15],
-                        dgid_valid ? "" : " (no address in the RoCE header)");
-                return IONIC_RC_ENOENT;
-            }
-
-            uint32_t dest_qpn;
-            if (adminq_lookup_qp(ctx, qkey_dest_qpn, &dest_qpn))
-                qkey_dest_qpn = dest_qpn;
-        }
-
-        int ret =
-            ernic_rm_modify_qp(ctx->pvrdma_handle, qpn, attr_mask, type_state,
-                               sq_psn, rq_psn, qkey_dest_qpn, dgid);
-        if (ret) {
-            vfu_log(ctx->vfu_ctx, LOG_ERR,
-                    "ionic_adminq MODIFY_QP %u: failed (%d)", qp_id, ret);
-            return IONIC_RC_ERDMA;
-        }
-
-        /*
-         * The rest is applied only now that the modification has succeeded,
-         * since one that fails must change nothing.
-         *
-         * IBV_QP_QKEY: the same field, read the other way. The datapath needs
-         * it because a datagram is only delivered into a QP that presents
-         * that QP's Q_Key -- without it the destination QPN alone selected
-         * any queue in the device, including other processes' and GSI.
-         */
-        if (attr_mask & IBV_QP_QKEY)
-            ionic_datapath_set_qkey(ctx->dp, qp_id, guest_qkey_dest_qpn);
-
-        /* The datapath routes on the driver's qpid, and QUERY_QP reports it */
-        if (attr_mask & IBV_QP_DEST_QPN) {
-            struct ionic_qp_map_entry *e = adminq_qp_entry(ctx, qp_id);
-
-            ionic_datapath_set_dest(ctx->dp, qp_id, guest_qkey_dest_qpn,
-                                    dest_node);
-            if (e) {
-                e->dest_set = true;
-                e->dest_qp_id = guest_qkey_dest_qpn;
-            }
-        }
-        vfu_log(ctx->vfu_ctx, LOG_INFO,
-                "ionic_adminq MODIFY_QP qp_id=%u qpn=%u type_state=%#x "
-                "attr=%#x",
-                qp_id, qpn, type_state, attr_mask);
-
-        /*
-         * Entering Error is the point at which outstanding work requests
-         * stop being able to complete normally, so it is the point at which
-         * they have to be flushed. MODIFY_QP carries the state alone in this
-         * field -- unlike CREATE_QP, which packs the type into the low
-         * nibble -- so the whole byte is the state here.
-         *
-         * IBV_QP_STATE gates it for the same reason rdma_rm_modify_qp() only
-         * applies the state under that bit: without it the byte is whatever
-         * the driver left there, and a command changing some other attribute
-         * would flush a queue pair that never entered Error.
-         */
-        if ((attr_mask & IBV_QP_STATE) && type_state == IONIC_QPS_ERR)
-            ionic_datapath_flush_qp(ctx->dp, qp_id);
-        return IONIC_RC_SUCCESS;
-    }
-
-    case IONIC_V1_ADMIN_QUERY_QP: {
-        /* ionic_admin_query_qp body (34 bytes):
-         *   le64 hdr_dma_addr [0:7]   (AH header template, only when IB_QP_AV)
-         *   le64 sq_dma_addr  [8:15]
-         *   le64 rq_dma_addr  [16:23]
-         *   le32 ah_id        [24:27]
-         *   le32 id_ver       [28:31]  (qpid | ver<<24)
-         *   le16 dbid_flags   [32:33]
-         *
-         * The answer is not the completion: the driver reads it out of the
-         * two buffers it DMA-mapped, and both are zeroed before the command,
-         * so succeeding without writing them reports a QP in RESET.  That is
-         * what ibv_query_qp saw while this was a stub. */
-        if (!ctx->pvrdma_handle)
-            return IONIC_RC_SUCCESS;
-        if (len < IONIC_ADMIN_QUERY_QP_IN_V1_LEN) {
-            vfu_log(ctx->vfu_ctx, LOG_ERR,
-                    "ionic_adminq QUERY_QP: short body (%u)", len);
-            return IONIC_RC_EINVAL;
-        }
-
-        uint64_t sq_dma, rq_dma;
-        uint32_t id_ver;
-        sq_dma = ernic_get_le64(body + 8);
-        rq_dma = ernic_get_le64(body + 16);
-        id_ver = ernic_get_le32(body + 28);
-
-        uint32_t qp_id = id_ver & 0x00ffffffu;
-        const struct ionic_qp_map_entry *qp_entry = adminq_qp_entry(ctx, qp_id);
-        if (!qp_entry) {
-            vfu_log(ctx->vfu_ctx, LOG_ERR,
-                    "ionic_adminq QUERY_QP: unknown qp_id=%u", qp_id);
-            return IONIC_RC_ENOENT;
-        }
-        uint32_t qpn = qp_entry->qpn;
-
-        uint8_t state = 0, path_mtu = IBV_MTU_1024;
-        uint32_t dest_qpn = 0, access = 0, rq_psn = 0, sq_psn = 0;
-        if (ernic_rm_query_qp(ctx->pvrdma_handle, qpn, &state, &path_mtu,
-                              &dest_qpn, &access, &rq_psn, &sq_psn) != 0) {
-            vfu_log(ctx->vfu_ctx, LOG_ERR, "ionic_adminq QUERY_QP %u: failed",
-                    qp_id);
-            return IONIC_RC_ERDMA;
-        }
-
-        /*
-         * The destination as the driver named it, by its qpid. The backend
-         * answers in its own QPNs, which mean nothing to the guest, so its
-         * answer is used only for a QP MODIFY_QP gave no destination -- the
-         * loopback backend pairs those itself -- and only if it names a QP
-         * of this device. 0 is the backends' "no destination".
-         */
-        uint32_t guest_dest = 0;
-        if (qp_entry->dest_set)
-            guest_dest = qp_entry->dest_qp_id;
-        else if (dest_qpn == 0 ||
-                 !adminq_lookup_qp_id(ctx, dest_qpn, &guest_dest))
-            guest_dest = 0;
-
-        /* ionic numbers its QP states as IB does, so the state needs no
-         * translation; the MTU does, because the driver subtracts 7 from the
-         * low nibble to recover the ibv_mtu enum. */
-        uint16_t flags = 0;
-        if (access & IBV_ACCESS_REMOTE_WRITE)
-            flags |= 1u << 0; /* IONIC_QPF_REMOTE_WRITE */
-        if (access & IBV_ACCESS_REMOTE_READ)
-            flags |= 1u << 1; /* IONIC_QPF_REMOTE_READ */
-        if (access & IBV_ACCESS_REMOTE_ATOMIC)
-            flags |= 1u << 2; /* IONIC_QPF_REMOTE_ATOMIC */
-
-        /* struct ionic_v1_admin_query_qp_sq, all big-endian (20 bytes). */
-        uint8_t sqbuf[20] = {0};
-        ernic_put_be16(sqbuf + 2, flags);
-        ernic_put_be32(sqbuf + 8, guest_dest);
-        ernic_put_be32(sqbuf + 16, rq_psn & 0xffffffu);
-
-        /* struct ionic_v1_admin_query_qp_rq (12 bytes).  rrq/rsq depth are
-         * log2 depths: the driver reports BIT(depth) - 1 as the rd_atomic
-         * limits, so 1 is the single outstanding operation ionic_datapath
-         * actually supports. */
-        uint8_t rqbuf[12] = {0};
-        rqbuf[0] = (uint8_t)((state & 0x0fu) << 4 | ((path_mtu + 7u) & 0x0fu));
-        rqbuf[1] = 0x77; /* retry_cnt 7, rnr_retry 7 */
-        rqbuf[2] = 1;
-        rqbuf[3] = 1;
-        ernic_put_be32(rqbuf + 4, sq_psn & 0xffffffu);
-        ernic_put_be16(rqbuf + 8, flags);
-
-        if (sq_dma && ernic_dma_write(ctx->dma, ctx->vfu_ctx, sq_dma, sqbuf,
-                                      sizeof(sqbuf)) < 0)
-            return IONIC_RC_EIO;
-        if (rq_dma && ernic_dma_write(ctx->dma, ctx->vfu_ctx, rq_dma, rqbuf,
-                                      sizeof(rqbuf)) < 0)
-            return IONIC_RC_EIO;
-
-        vfu_log(ctx->vfu_ctx, LOG_INFO,
-                "ionic_adminq QUERY_QP qp_id=%u qpn=%u state=%u dest=%u "
-                "(backend dest_qpn=%u)",
-                qp_id, qpn, state, guest_dest, dest_qpn);
-        return IONIC_RC_SUCCESS;
-    }
+    case IONIC_V1_ADMIN_QUERY_QP:
+        return handle_query_qp_op(ctx, body, len);
 
     case IONIC_V1_ADMIN_CREATE_AH:
         return handle_create_ah_op(ctx, body, len);

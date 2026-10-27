@@ -17,6 +17,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 """
 
 import argparse
+import contextlib
 import os
 import re
 import sys
@@ -188,10 +189,7 @@ def start_refused(server_factory, extra_args):
     its status, 0 if it shut down cleanly, is returned like any other.
     """
     ctx = server_factory(extra_args)
-    try:
-        with ctx:
-            pass
-    except ServerFailed:
+    with contextlib.suppress(ServerFailed), ctx:
         pass
     return ctx.server.proc.returncode, ctx.server.log_text()
 
