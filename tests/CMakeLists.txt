@@ -955,12 +955,12 @@ target_link_libraries(ernic-test-pvrdma-stats PRIVATE
     ${GLIB2_LIBRARIES} pthread)
 
 # In-process ionic device harness. It links every source the server is
-# built from except rocm_ernic_server.c, with fake_vfu.c standing in for
-# libvfio-user, and ionic_harness.c drives the device the way the guest
-# driver does: registers, doorbells, and rings in fake guest memory. No VM,
-# socket or RDMA device is involved, so it runs in every build leg. The
-# source lists come from the top-level CMakeLists.txt, so the harness keeps
-# linking what the server links.
+# built from except SERVER_SOURCES (main() and the socket's permissions),
+# with fake_vfu.c standing in for libvfio-user, and ionic_harness.c drives
+# the device the way the guest driver does: registers, doorbells, and rings
+# in fake guest memory. No VM, socket or RDMA device is involved, so it runs
+# in every build leg. The source lists come from the top-level
+# CMakeLists.txt, so the harness keeps linking what the server links.
 set(ERNIC_HARNESS_DEVICE_SOURCES
     ${COMMON_SOURCES}
     ${BRIDGE_SOURCES}
@@ -1519,14 +1519,17 @@ set_tests_properties(pvrdma-stats-unit PROPERTIES TIMEOUT 30)
 # limits checks that the counts the LIF identity promises are what every
 # backend's tables hold, and fills the CQ and QP ids to the last.
 # nvmeof-queues refuses more NVMe-oF queues than the MR table can serve.
+# rdma-reset-faults checks that the admin queue made again after
+# RDMA_RESET_LIF still injects the --inject faults.
 set(ERNIC_HARNESS_GROUPS
-    devcmds bringup rdma-reset rdma-reset-frees admin admin-dma rc atomic
-    wrap dp-dma tables limits cq-events qp-flush qp-flush-srq ud srq eth
-    eth-dma
+    devcmds bringup rdma-reset rdma-reset-faults rdma-reset-frees admin
+    admin-dma rc atomic wrap dp-dma tables limits cq-events qp-flush
+    qp-flush-srq ud srq eth eth-dma
     nvmeof nvmeof-queues s3 teardown backend-names none loopback-pair)
 if(ERNIC_BUILD_P4)
-    list(APPEND ERNIC_HARNESS_GROUPS p4-port fp8-map p4-rdma p4-cvt p4-cvt-map
-                                      p4-drop-map p4-devcmd p4-devcmd-errors)
+    list(APPEND ERNIC_HARNESS_GROUPS p4-port p4-attach fp8-map p4-rdma p4-cvt
+                                      p4-cvt-map p4-drop-map p4-devcmd
+                                      p4-devcmd-errors)
 endif()
 foreach(ernic_harness_group IN LISTS ERNIC_HARNESS_GROUPS)
     add_test(

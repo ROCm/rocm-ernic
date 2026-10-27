@@ -204,6 +204,7 @@ set(IONIC_EMU_SOURCES
     src/ionic/ionic_datapath.c
     src/ionic/ionic_datapath_nvmeof.c
     src/ionic/ionic_datapath_s3.c
+    src/ionic/ionic_device.c
 )
 
 # In-process NVMe-oF controller reached over the emulated fabric
@@ -250,6 +251,7 @@ set(S3_SOURCES
 # Main server implementation
 set(SERVER_SOURCES
     src/rocm_ernic_server.c
+    src/ernic_socket.c
 )
 
 set(ALL_SOURCES

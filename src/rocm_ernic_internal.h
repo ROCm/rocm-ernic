@@ -16,13 +16,11 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "rocm_ernic_compat.h"
-#include "ionic/ionic_eth_emu.h"
-#include "ionic/ionic_rdma_devcmd.h"
-#include "ionic/ionic_datapath.h"
 #include "ionic/ionic_profile.h"
 
 /* Forward declarations */
 typedef struct rocm_ernic_dev rocm_ernic_dev_t;
+struct ionic_device;
 struct ionic_fault_set;
 
 /**
@@ -40,18 +38,15 @@ struct rocm_ernic_dev {
     /* Opaque handle to the RDMA device core (resource manager + backend) */
     pvrdma_handle_t pvrdma_handle;
 
-    /* ionic emulation layer -- the device the guest actually sees */
-    struct ionic_eth_emu *ionic_emu;
-    struct ionic_rdma_devcmd_state *ionic_rdma;
-    struct ionic_datapath *ionic_dp;
+    /* The ionic device in front of it -- the device the guest actually
+     * sees (ionic/ionic_device.h) */
+    struct ionic_device *ionic;
 
 #ifdef ERNIC_HAVE_P4
-    /* P4 match-action stage between the guest and the host network */
+    /* P4 match-action stage between the guest and the host network, which
+     * the ionic device borrows.  Made before the socket, so a refused
+     * program never leaves one behind. */
     struct p4_engine *p4_engine;
-    /* The guest's command surface onto it, NULL unless the operator
-     * granted the guest a scope with --p4-guest-scope. */
-    struct p4_devcmd *p4_devcmd;
-    struct p4_port *p4_port;
 #endif
 
     /* BAR memory backing stores */
@@ -59,9 +54,6 @@ struct rocm_ernic_dev {
 
     /* Backend device configuration */
     char *backend_type_str; /* Backend and options: loopback, nvmeof:size=1G */
-    /* The backend backend_type_str names, from pvrdma_backend_name(): "none",
-     * "loopback", "tcp", ...  Set by the server's option validation */
-    const char *backend_name;
 
     /* Device state flags */
     bool verbose; /* Verbose logging enabled */

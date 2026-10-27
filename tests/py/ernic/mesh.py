@@ -497,7 +497,7 @@ class Mesh:
         A worker is not started until the manager is listening on its
         mesh port. The vfio-user socket is not that barrier: the server
         binds it in vfu_create_ctx() and only starts the backend, and so
-        the listen, in ionic_device_init() afterwards. A worker that
+        the listen, in device_init() afterwards. A worker that
         connects in between fails with ECONNREFUSED, and its first
         connection to the manager is not retried.
         """

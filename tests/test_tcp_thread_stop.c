@@ -4844,13 +4844,14 @@ static int run_reap_case(const struct reap_case *c)
  */
 
 enum sender_scenario {
-    SENDER_HEARTBEAT, /* worker 1's heartbeat names node 2, which is dead */
-    SENDER_REVIVES,   /* node 2, declared dead, answers a heartbeat */
-    SENDER_RETIRED,   /* worker 1 sends the retired data-path messages */
-    SENDER_IONIC,     /* worker 1 sends the manager's data path a message */
-    SENDER_NO_DP,     /* and the manager has no data path */
-    SENDER_FULL,      /* and the data path has no room for it, for a while */
-    SENDER_FULL_STOP, /* and never has, and the manager is torn down */
+    SENDER_HEARTBEAT,  /* worker 1's heartbeat names node 2, which is dead */
+    SENDER_REVIVES,    /* node 2, declared dead, answers a heartbeat */
+    SENDER_RETIRED,    /* worker 1 sends the retired data-path messages */
+    SENDER_IONIC,      /* worker 1 sends the manager's data path a message */
+    SENDER_NO_DP,      /* and the manager has no data path */
+    SENDER_FULL,       /* and the data path has no room for it, for a while */
+    SENDER_FULL_STOP,  /* and never has, and the manager is torn down */
+    SENDER_UNREGISTER, /* the callback is cleared while it is being called */
 };
 
 struct sender_case {
@@ -4889,6 +4890,11 @@ static const struct sender_case sender_cases[] = {
      "for, and the manager is torn down",
      "the receive thread stops offering it, gives it up, and is joined",
      SENDER_FULL_STOP},
+    {"corner",
+     "the manager's data path clears its callback while a receive thread is "
+     "in it, as it does just before it is freed",
+     "clearing it returns only once the call has, which took the payload",
+     SENDER_UNREGISTER},
 };
 
 /* The payload each retired or ionic message carries */
@@ -5287,6 +5293,99 @@ static const char *sender_full(RdmaBackendDev *dev, int w1, bool stop)
 }
 
 /*
+ * For SENDER_UNREGISTER: whether held_ionic_recv() has been called, whether
+ * the row has let it return, whether the call clearing the callback has
+ * returned, and whether it had already when the callback was let go.
+ */
+static atomic_bool g_ionic_entered;
+static atomic_bool g_ionic_release;
+static atomic_bool g_ionic_cleared;
+static atomic_bool g_ionic_cleared_early;
+
+/*
+ * The data path's callback, kept on the receive thread until the row lets
+ * it go, or for 10 s if the row fails first.
+ */
+static bool held_ionic_recv(void *opaque, uint32_t src_node, void *buf,
+                            size_t len)
+{
+    atomic_store(&g_ionic_entered, true);
+    for (int i = 0; i < 10000 && !atomic_load(&g_ionic_release); i++)
+        sleep_ms(1);
+    if (atomic_load(&g_ionic_cleared))
+        atomic_store(&g_ionic_cleared_early, true);
+    return sender_ionic_recv(opaque, src_node, buf, len);
+}
+
+/* Clear the callback, as ionic_datapath_destroy() does, on its own thread */
+static void *clear_ionic_recv(void *arg)
+{
+    tcp_backend_set_ionic_recv_cb(arg, NULL, NULL);
+    atomic_store(&g_ionic_cleared, true);
+    return NULL;
+}
+
+/*
+ * SENDER_UNREGISTER.  The data path clears its callback and then frees what
+ * the callback uses, so clearing it has to wait for a call already under
+ * way.  The row holds a call in the callback and clears it on another
+ * thread.  Clearing it can only be seen not to return by waiting, so the row
+ * gives it 200 ms, ample for a call that doesn't wait, before letting the
+ * callback go; the callback then sees whether it had returned.
+ */
+static const char *sender_unregister(RdmaBackendDev *dev, int w1)
+{
+    const char *why = NULL;
+    pthread_t clearer;
+    uint8_t *buf;
+
+    if (!worker_settled(dev->backend_private, w1, 1))
+        return "worker 1's registration wasn't finished";
+
+    atomic_store(&g_ionic_calls, 0);
+    atomic_store(&g_ionic_buf, NULL);
+    atomic_store(&g_ionic_entered, false);
+    atomic_store(&g_ionic_release, false);
+    atomic_store(&g_ionic_cleared, false);
+    atomic_store(&g_ionic_cleared_early, false);
+    /* As in sender_ionic() */
+    dev->backend_type = RDMA_BACKEND_TYPE_TCP;
+    tcp_backend_set_ionic_recv_cb(dev, held_ionic_recv, NULL);
+    if (!send_payload(w1, TCP_MSG_IONIC, 1)) {
+        why = "could not send the ionic message";
+    } else {
+        for (int i = 0; i < 500 && !atomic_load(&g_ionic_entered); i++)
+            sleep_ms(10);
+        if (!atomic_load(&g_ionic_entered))
+            why = "the callback wasn't called";
+    }
+    if (why || pthread_create(&clearer, NULL, clear_ionic_recv, dev) != 0) {
+        if (!why)
+            why = "could not start the thread that clears the callback";
+        atomic_store(&g_ionic_release, true);
+        tcp_backend_set_ionic_recv_cb(dev, NULL, NULL);
+        free(atomic_load(&g_ionic_buf));
+        return why;
+    }
+
+    for (int i = 0; i < 200 && !atomic_load(&g_ionic_cleared); i++)
+        sleep_ms(1);
+    atomic_store(&g_ionic_release, true);
+    pthread_join(clearer, NULL);
+    /* Done already, unless clearing it didn't wait for it */
+    for (int i = 0; i < 500 && atomic_load(&g_ionic_calls) == 0; i++)
+        sleep_ms(10);
+
+    buf = atomic_load(&g_ionic_buf);
+    if (atomic_load(&g_ionic_cleared_early))
+        why = "clearing the callback returned while it was being called";
+    else
+        why = sender_ionic_check(buf);
+    free(buf);
+    return why;
+}
+
+/*
  * Take node id's connection out of the table and retire it, as the health
  * check does with one that has hung up.
  */
@@ -5327,6 +5426,8 @@ static const char *sender_run(RdmaBackendDev *dev, int w1, int w2,
         return sender_full(dev, w1, false);
     case SENDER_FULL_STOP:
         return sender_full(dev, w1, true);
+    case SENDER_UNREGISTER:
+        return sender_unregister(dev, w1);
     default:
         return "unknown scenario";
     }

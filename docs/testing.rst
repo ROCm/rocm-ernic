@@ -90,7 +90,9 @@ In-process ionic device harness
 
 ``ernic-test-ionic-harness`` runs the whole emulated device
 inside the test process. It links every source the server is
-built from except ``rocm_ernic_server.c``, and replaces
+built from except ``rocm_ernic_server.c`` and
+``ernic_socket.c``, builds the device with
+``ionic_device_create()`` as the server does, and replaces
 libvfio-user with ``tests/fake_vfu.c``, which keeps guest
 memory in heap buffers and counts interrupts instead of
 delivering them. ``tests/ionic_harness.c`` then plays the

@@ -11,6 +11,8 @@
 #include <stdint.h>
 #include <vfio-user/libvfio-user.h>
 
+#include "rocm_ernic_compat.h"
+
 struct ionic_rdma_devcmd_state;
 struct ionic_eth_emu;
 
@@ -33,7 +35,23 @@ void ionic_rdma_devcmd_dispatch(void *opaque, const uint8_t *cmd,
 void ionic_rdma_devcmd_set_eth_emu(struct ionic_rdma_devcmd_state *s,
                                    struct ionic_eth_emu *eth_emu);
 
-/* Route data-path CQ notifications through the same EQ machinery. */
+/*
+ * What the admin queue context needs: the RDMA core (@handle, from
+ * pvrdma_device_create()), the faults to inject (ionic_fault.h, or NULL for
+ * none), and the datapath to register rings with.  The context is created
+ * at CREATE_ADMINQ and freed at RDMA_RESET_LIF, so @s keeps these and hands
+ * them to each new one, as well as to the one it has now.  Each must stay
+ * valid while the guest can reach @s; ionic_rdma_devcmd_destroy() uses none
+ * of them.
+ *
+ * ionic_rdma_devcmd_set_datapath() also routes the datapath's CQ
+ * notifications through the same EQ machinery.
+ */
+void ionic_rdma_devcmd_set_pvrdma(struct ionic_rdma_devcmd_state *s,
+                                  pvrdma_handle_t handle);
+struct ionic_fault_set;
+void ionic_rdma_devcmd_set_faults(struct ionic_rdma_devcmd_state *s,
+                                  struct ionic_fault_set *faults);
 struct ionic_datapath;
 void ionic_rdma_devcmd_set_datapath(struct ionic_rdma_devcmd_state *s,
                                     struct ionic_datapath *dp);

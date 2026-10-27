@@ -302,6 +302,7 @@ static void tcp_priv_free(TcpBackendPrivate *priv)
     qemu_cond_destroy(&priv->registration_cond);
     qemu_mutex_destroy(&priv->registration_mutex);
     g_free(priv->manager_host);
+    qemu_cond_destroy(&priv->ionic_recv_idle);
     qemu_mutex_destroy(&priv->lock);
     qemu_mutex_destroy(&priv->conn_table_lock);
     qemu_mutex_destroy(&priv->gid_table_lock);
@@ -371,6 +372,7 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
                                       (int)TCP_DEFAULT_SEND_TIMEOUT_MS));
 
     qemu_mutex_init(&priv->lock);
+    qemu_cond_init(&priv->ionic_recv_idle);
     qemu_mutex_init(&priv->conn_table_lock);
     qemu_mutex_init(&priv->gid_table_lock);
     qemu_mutex_init(&priv->gid_advertise_lock);
@@ -982,6 +984,11 @@ int tcp_backend_claim_gid(RdmaBackendDev *backend_dev, const union ibv_gid *gid,
     return tcp_claim_gid(priv, gid, add);
 }
 
+/*
+ * Returns once no receive thread is still calling the callback this
+ * replaces, so that a caller clearing it may free what it uses.  Never call
+ * it from the callback, which would wait for itself.
+ */
 void tcp_backend_set_ionic_recv_cb(RdmaBackendDev *backend_dev,
                                    tcp_ionic_recv_fn fn, void *opaque)
 {
@@ -997,6 +1004,11 @@ void tcp_backend_set_ionic_recv_cb(RdmaBackendDev *backend_dev,
     qemu_mutex_lock(&priv->lock);
     priv->ionic_recv_fn = fn;
     priv->ionic_recv_opaque = opaque;
+    /* A call that began before this has the old callback; one that begins
+     * now gets the new one.  The callback only queues the message or
+     * refuses it, so the wait is short. */
+    while (priv->ionic_recv_calls > 0)
+        qemu_cond_wait(&priv->ionic_recv_idle, &priv->lock);
     qemu_mutex_unlock(&priv->lock);
 }
 
@@ -1012,7 +1024,8 @@ void tcp_backend_set_ionic_recv_cb(RdmaBackendDev *backend_dev,
  * The data path empties its queue on every pass, so the wait is short; see
  * dp_mesh_recv().  A stopped thread gives the message up.  The callback is
  * looked up afresh each time, so one the data path has unregistered meanwhile
- * isn't called.
+ * isn't called, and each call is counted in ionic_recv_calls, so that the
+ * data path can't be freed while one is under way.
  */
 void tcp_recv_ionic(const TcpConnection *conn, TcpRecvMsg *msg)
 {
@@ -1031,9 +1044,13 @@ void tcp_recv_ionic(const TcpConnection *conn, TcpRecvMsg *msg)
     }
 
     for (;;) {
+        bool taken;
+
         qemu_mutex_lock(&priv->lock);
         fn = priv->ionic_recv_fn;
         fn_opaque = priv->ionic_recv_opaque;
+        if (fn)
+            priv->ionic_recv_calls++;
         qemu_mutex_unlock(&priv->lock);
 
         if (!fn) {
@@ -1042,8 +1059,15 @@ void tcp_recv_ionic(const TcpConnection *conn, TcpRecvMsg *msg)
                               msg->hdr.src_node_id);
             return;
         }
-        if (fn(fn_opaque, msg->hdr.src_node_id, msg->payload,
-               msg->hdr.msg_len)) {
+        taken =
+            fn(fn_opaque, msg->hdr.src_node_id, msg->payload, msg->hdr.msg_len);
+
+        qemu_mutex_lock(&priv->lock);
+        if (--priv->ionic_recv_calls == 0)
+            qemu_cond_broadcast(&priv->ionic_recv_idle);
+        qemu_mutex_unlock(&priv->lock);
+
+        if (taken) {
             /* fn owns the payload now, and frees it */
             msg->payload = NULL;
             return;

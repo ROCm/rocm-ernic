@@ -129,6 +129,12 @@ struct ionic_rdma_devcmd_state {
 
     /* Admin queue service context (ionic_adminq.c) */
     struct ionic_adminq_ctx *adminq_ctx;
+
+    /* What every admin queue context is given when it's created, since one
+     * is created at each CREATE_ADMINQ after an RDMA_RESET_LIF. */
+    pvrdma_handle_t pvrdma_handle;
+    struct ionic_fault_set *faults;
+    struct ionic_datapath *dp;
 };
 
 static void rdma_cq_event_cb(void *opaque, uint32_t eq_id, uint32_t cq_id);
@@ -148,6 +154,15 @@ static void publish_adminq_ctx(const struct ionic_rdma_devcmd_state *s)
 {
     if (s->eth_emu)
         ionic_eth_emu_register_adminq(s->eth_emu, s->adminq_ctx);
+}
+
+/* Give the context what this file was given; ionic_adminq ignores NULL. */
+static void wire_adminq_ctx(struct ionic_rdma_devcmd_state *s)
+{
+    ionic_adminq_set_cq_event_cb(s->adminq_ctx, rdma_cq_event_cb, s);
+    ionic_adminq_set_pvrdma(s->adminq_ctx, s->pvrdma_handle);
+    ionic_adminq_set_faults(s->adminq_ctx, s->faults);
+    ionic_adminq_set_datapath(s->adminq_ctx, s->dp);
 }
 
 static void drop_adminq_ctx(struct ionic_rdma_devcmd_state *s)
@@ -371,9 +386,9 @@ static void handle_create_adminq(struct ionic_rdma_devcmd_state *s,
             comp[0] = 1;
             return;
         }
+        wire_adminq_ctx(s);
         publish_adminq_ctx(s);
     }
-    ionic_adminq_set_cq_event_cb(s->adminq_ctx, rdma_cq_event_cb, s);
     if (!ionic_adminq_register_queue(s->adminq_ctx, idx, dma_addr,
                                      s->aq[idx].depth_log2, s->pending_cq_dma,
                                      s->pending_cq_depth_log2, s->aq[idx].cq_id,
@@ -435,12 +450,33 @@ void ionic_rdma_devcmd_set_eth_emu(struct ionic_rdma_devcmd_state *s,
     publish_adminq_ctx(s);
 }
 
+void ionic_rdma_devcmd_set_pvrdma(struct ionic_rdma_devcmd_state *s,
+                                  pvrdma_handle_t handle)
+{
+    if (!s)
+        return;
+    s->pvrdma_handle = handle;
+    ionic_adminq_set_pvrdma(s->adminq_ctx, handle);
+}
+
+void ionic_rdma_devcmd_set_faults(struct ionic_rdma_devcmd_state *s,
+                                  struct ionic_fault_set *faults)
+{
+    if (!s)
+        return;
+    s->faults = faults;
+    ionic_adminq_set_faults(s->adminq_ctx, faults);
+}
+
 void ionic_rdma_devcmd_set_datapath(struct ionic_rdma_devcmd_state *s,
                                     struct ionic_datapath *dp)
 {
+    if (!s)
+        return;
+    s->dp = dp;
+    ionic_adminq_set_datapath(s->adminq_ctx, dp);
     /* Data-path CQEs need the same EQE-then-MSI-X sequence as admin CQEs. */
-    if (s)
-        ionic_datapath_set_cq_event_cb(dp, rdma_cq_event_cb, s);
+    ionic_datapath_set_cq_event_cb(dp, rdma_cq_event_cb, s);
 }
 
 int ionic_rdma_devcmd_post_cq_event(struct ionic_rdma_devcmd_state *s,

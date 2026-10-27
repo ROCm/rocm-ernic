@@ -39,9 +39,11 @@
 #include "fake_vfu.h"
 #include "ionic/ionic_bar.h"
 #include "ionic/ionic_datapath.h"
+#include "ionic/ionic_device.h"
 #include "ionic/ionic_eth_emu.h"
 /* For the emulator's admin queue pointer, which rdma-reset checks */
 #include "ionic/ionic_eth_emu_priv.h"
+#include "ionic/ionic_fault.h"
 #include "ionic_harness.h"
 #include "ionic/ionic_rdma_devcmd.h"
 #include "ionic/ionic_status.h"
@@ -272,25 +274,20 @@ static void test_devcmds(void)
 
     /* Accesses past the register window fail rather than touch memory */
     char b[8];
-    check(T,
-          ionic_eth_emu_bar0_access(h.dev->ionic_emu, b, 8, 0x8000 - 4, false) <
-              0,
+    check(T, ionic_eth_emu_bar0_access(h.emu, b, 8, 0x8000 - 4, false) < 0,
           "BAR0 read past the register window succeeded");
     /* So do ones that only fit once the offset is converted to a size_t
      * and the count added to it, which wraps */
-    check(T, ionic_eth_emu_bar0_access(h.dev->ionic_emu, b, 8, -8, false) < 0,
+    check(T, ionic_eth_emu_bar0_access(h.emu, b, 8, -8, false) < 0,
           "BAR0 read at a negative offset succeeded");
-    check(T,
-          ionic_eth_emu_bar0_access(h.dev->ionic_emu, b, SIZE_MAX - 7, 8,
-                                    false) < 0,
+    check(T, ionic_eth_emu_bar0_access(h.emu, b, SIZE_MAX - 7, 8, false) < 0,
           "BAR0 read of a count that wraps the window succeeded");
-    check(T, ionic_eth_emu_bar2_access(h.dev->ionic_emu, b, 8, -8, true) < 0,
+    check(T, ionic_eth_emu_bar2_access(h.emu, b, 8, -8, true) < 0,
           "BAR2 write at a negative offset succeeded");
     check(T,
-          ionic_eth_emu_bar2_access(h.dev->ionic_emu, b, 8, IONIC_BAR2_DB_SIZE,
-                                    true) < 0,
+          ionic_eth_emu_bar2_access(h.emu, b, 8, IONIC_BAR2_DB_SIZE, true) < 0,
           "BAR2 write past the doorbell window succeeded");
-    check(T, ionic_eth_emu_bar2_access(h.dev->ionic_emu, b, 8, 0, false) == 8,
+    check(T, ionic_eth_emu_bar2_access(h.emu, b, 8, 0, false) == 8,
           "BAR2 read failed");
 
     teardown(T, &h);
@@ -386,8 +383,8 @@ static void test_rdma_reset(void)
     if (!setup(T, &h, "loopback"))
         return;
 
-    const struct ionic_eth_emu *emu = h.dev->ionic_emu;
-    struct ionic_rdma_devcmd_state *rdma = h.dev->ionic_rdma;
+    const struct ionic_eth_emu *emu = h.emu;
+    struct ionic_rdma_devcmd_state *rdma = h.rdma;
 
     check(T,
           emu->adminq != NULL &&
@@ -419,6 +416,70 @@ static void test_rdma_reset(void)
     }
 
     teardown(T, &h);
+}
+
+/* Run STATS_VALS into the scratch page; 0, or the completion's status */
+static int stats_vals(struct ih *h)
+{
+    uint8_t body[32];
+
+    /* le64 dma, le32 length, le32 id_ver */
+    memset(body, 0, sizeof(body));
+    ernic_put_le64(body, h->scratch);
+    ernic_put_le32(body + 8, IH_PAGE_SIZE);
+    return ih_admin(h, IH_ADMIN_STATS_VALS, body, sizeof(body), NULL);
+}
+
+/*
+ * The admin queue context RDMA_RESET_LIF frees is made again by the next
+ * CREATE_ADMINQ, and has to inject the faults the first one did, with
+ * nothing in the main loop to hand them over again.
+ */
+static void test_rdma_reset_faults(void)
+{
+    const char *T = "rdma-reset-faults";
+    struct ionic_fault_set *faults = ionic_fault_set_new();
+    char err[128] = "";
+    const struct ionic_fault *f;
+    uint8_t cmd[64], comp[16];
+    struct ih h;
+    int rc;
+
+    if (!check(T,
+               faults && ionic_fault_set_add(faults,
+                                             "stats_vals: every 1 effect fail",
+                                             err, sizeof(err)) == 0,
+               "fault not made: %s", err) ||
+        !check(T, ih_create_faults(&h, "loopback", faults),
+               "device not created")) {
+        ionic_fault_set_free(faults);
+        return;
+    }
+    if (!check(T, ih_bringup(&h), "bring-up failed"))
+        goto out;
+
+    rc = stats_vals(&h);
+    check(T, rc == IONIC_RC_EIO, "STATS_VALS returned %d, not the fault's %d",
+          rc, IONIC_RC_EIO);
+
+    memset(cmd, 0, sizeof(cmd));
+    cmd[0] = IH_CMD_RDMA_RESET;
+    if (!check(T, ih_eth_admin(&h, cmd, comp) == 0, "RDMA_RESET_LIF failed") ||
+        !check(T, ih_bringup(&h), "bring-up after RDMA_RESET_LIF failed"))
+        goto out;
+
+    rc = stats_vals(&h);
+    check(T, rc == IONIC_RC_EIO,
+          "STATS_VALS on the new admin queue returned %d, not the fault's %d",
+          rc, IONIC_RC_EIO);
+
+    f = ionic_fault_set_get(faults, IONIC_FAULT_SITE_STATS_VALS);
+    check(T, f && f->fired == 2, "the fault fired %" PRIu64 " times, not 2",
+          f ? f->fired : 0);
+
+out:
+    teardown(T, &h);
+    ionic_fault_set_free(faults);
 }
 
 /* ---- RDMA admin commands that must be refused -------------------------- */
@@ -1938,7 +1999,7 @@ static void test_dp_dma_faults(void)
      * passed to the data path directly: an SRQ is refused, a QP keeps the
      * rings it had, and a CQ is turned off rather than written past.
      */
-    struct ionic_datapath *dp = h->dev->ionic_dp;
+    struct ionic_datapath *dp = h->dp;
     const struct ionic_dp_ring_desc good = {
         .buf = {.dma_addr = h->scratch, .map_count = 1},
         .depth_log2 = 4,
@@ -2011,11 +2072,9 @@ static void test_full_tables(void)
 
     /* Only RDMA devcmds reach the dispatcher, but it refuses others */
     uint8_t cmd[64] = {IH_CMD_RDMA_ADMINQ + 1}, comp[16];
-    ionic_rdma_devcmd_dispatch(h->dev->ionic_rdma, cmd, comp);
+    ionic_rdma_devcmd_dispatch(h->rdma, cmd, comp);
     check(T, comp[0] == 1, "an unknown RDMA devcmd returned %u", comp[0]);
-    check(T,
-          ionic_rdma_devcmd_post_cq_event(h->dev->ionic_rdma, 9, RC_CQ_A) ==
-              -ENOENT,
+    check(T, ionic_rdma_devcmd_post_cq_event(h->rdma, 9, RC_CQ_A) == -ENOENT,
           "an event was posted to an EQ that doesn't exist");
 
     /* CREATE_MR fills the MR table, every one of them on the same page */
@@ -2803,7 +2862,7 @@ static void test_eth(void)
     ih_intr_mask(&h, RX_INTR, false);
 
     memset(&seen, 0, sizeof(seen));
-    ionic_eth_emu_register_tx_filter(h.dev->ionic_emu, tx_filter, &seen);
+    ionic_eth_emu_register_tx_filter(h.emu, tx_filter, &seen);
 
     /* One frame in the descriptor, one split over two SG elements */
     uint8_t frame[200];
@@ -2848,15 +2907,11 @@ static void test_eth(void)
     }
     ih_doorbell(&h, IH_QTYPE_ETH_RXQ, 0, 0, 2);
 
-    check(T,
-          ionic_eth_emu_queue_rx_frame(h.dev->ionic_emu, frame,
-                                       sizeof(frame)) == 0,
+    check(T, ionic_eth_emu_queue_rx_frame(h.emu, frame, sizeof(frame)) == 0,
           "queueing an Rx frame failed");
-    check(T,
-          ionic_eth_emu_queue_rx_frame(h.dev->ionic_emu, NULL, 10) == -EINVAL,
+    check(T, ionic_eth_emu_queue_rx_frame(h.emu, NULL, 10) == -EINVAL,
           "a NULL Rx frame was accepted");
-    check(T,
-          ionic_eth_emu_queue_rx_frame(h.dev->ionic_emu, frame, 0) == -EINVAL,
+    check(T, ionic_eth_emu_queue_rx_frame(h.emu, frame, 0) == -EINVAL,
           "an empty Rx frame was accepted");
     ih_poll(&h);
 
@@ -2875,9 +2930,7 @@ static void test_eth(void)
      * later pass reads the same descriptor and fails the same way, and no
      * frame behind it is ever delivered.
      */
-    check(T,
-          ionic_eth_emu_queue_rx_frame(h.dev->ionic_emu, frame,
-                                       sizeof(frame)) == 0,
+    check(T, ionic_eth_emu_queue_rx_frame(h.emu, frame, sizeof(frame)) == 0,
           "queueing an Rx frame failed");
     ih_poll(&h);
     check(T, fake_vfu_irq_count(h.vfu, RX_INTR) == 1,
@@ -2886,9 +2939,7 @@ static void test_eth(void)
     /* ...and the next frame that does fit still gets through. */
     uint8_t small[64];
     fill(small, sizeof(small), 0x77);
-    check(T,
-          ionic_eth_emu_queue_rx_frame(h.dev->ionic_emu, small,
-                                       sizeof(small)) == 0,
+    check(T, ionic_eth_emu_queue_rx_frame(h.emu, small, sizeof(small)) == 0,
           "queueing a second Rx frame failed");
     ih_poll(&h);
     check(T, fake_vfu_irq_count(h.vfu, RX_INTR) == 2,
@@ -2900,7 +2951,7 @@ static void test_eth(void)
 
     /* Tx without a filter is a sink, and a doorbell for a queue that was
      * never initialized is ignored */
-    ionic_eth_emu_register_tx_filter(h.dev->ionic_emu, NULL, NULL);
+    ionic_eth_emu_register_tx_filter(h.emu, NULL, NULL);
     ih_doorbell(&h, IH_QTYPE_ETH_TXQ, 0, 0, 3);
     check(T, seen.frames == 2, "Tx with no filter reached the filter");
     ih_doorbell(&h, IH_QTYPE_ETH_TXQ, 3, 0, 1);
@@ -2988,7 +3039,7 @@ static void test_eth_dma_faults(void)
     }
     ih_intr_mask(&h, RX_INTR, false);
     memset(&seen, 0, sizeof(seen));
-    ionic_eth_emu_register_tx_filter(h.dev->ionic_emu, tx_filter, &seen);
+    ionic_eth_emu_register_tx_filter(h.emu, tx_filter, &seen);
 
     for (size_t i = 0; i < sizeof(eth_tx_cases) / sizeof(eth_tx_cases[0]);
          i++) {
@@ -3028,7 +3079,7 @@ static void test_eth_dma_faults(void)
     for (unsigned fail = 1; fail <= 4; fail++) {
         unsigned irqs = fake_vfu_irq_count(h.vfu, RX_INTR);
 
-        ionic_eth_emu_queue_rx_frame(h.dev->ionic_emu, frame, sizeof(frame));
+        ionic_eth_emu_queue_rx_frame(h.emu, frame, sizeof(frame));
         fake_vfu_fail_nth_map(h.vfu, fail < 4 ? fail : 0);
         ih_poll(&h);
         fake_vfu_fail_nth_map(h.vfu, 0);
@@ -3272,10 +3323,10 @@ static void test_p4_port(void)
 
     /* Stand in for the S3 control plane, which really does hold this slot. */
     memset(&up, 0, sizeof(up));
-    ionic_eth_emu_register_tx_filter(h.dev->ionic_emu, p4_upstream_filter, &up);
+    ionic_eth_emu_register_tx_filter(h.emu, p4_upstream_filter, &up);
 
     memset(&chain, 0, sizeof(chain));
-    ionic_eth_emu_get_tx_filter(h.dev->ionic_emu, &chain.fn, &chain.ctx);
+    ionic_eth_emu_get_tx_filter(h.emu, &chain.fn, &chain.ctx);
     check(T, chain.fn == p4_upstream_filter && chain.ctx == &up,
           "the registered Tx filter did not read back");
 
@@ -3289,7 +3340,7 @@ static void test_p4_port(void)
      * or read. */
     check(T,
           p4_port_attach(NULL, eng, &chain) == NULL &&
-              p4_port_attach(h.dev->ionic_emu, NULL, &chain) == NULL,
+              p4_port_attach(h.emu, NULL, &chain) == NULL,
           "a port was attached to nothing");
     p4_port_detach(NULL);
     memset(&pstats, 0xAA, sizeof(pstats));
@@ -3298,7 +3349,7 @@ static void test_p4_port(void)
           "a port that is not there reported counters");
     p4_port_get_stats(NULL, NULL);
 
-    struct p4_port *port = p4_port_attach(h.dev->ionic_emu, eng, &chain);
+    struct p4_port *port = p4_port_attach(h.emu, eng, &chain);
     if (!check(T, port != NULL, "p4_port_attach failed")) {
         p4_engine_destroy(eng);
         teardown(T, &h);
@@ -3337,7 +3388,7 @@ static void test_p4_port(void)
 
     /* Detaching must hand the slot back, not leave it empty. */
     p4_port_detach(port);
-    ionic_eth_emu_get_tx_filter(h.dev->ionic_emu, &chain.fn, &chain.ctx);
+    ionic_eth_emu_get_tx_filter(h.emu, &chain.fn, &chain.ctx);
     check(T, chain.fn == p4_upstream_filter && chain.ctx == &up,
           "detach did not restore the previous Tx filter");
 
@@ -3348,9 +3399,67 @@ static void test_p4_port(void)
           "the pipeline ran after it was detached");
 
     p4_engine_destroy(eng);
-    ionic_eth_emu_register_tx_filter(h.dev->ionic_emu, NULL, NULL);
+    ionic_eth_emu_register_tx_filter(h.emu, NULL, NULL);
     teardown(T, &h);
 }
+
+/*
+ * ionic_device_attach_p4(), as the server calls it for --p4, with the guest
+ * given @scope: the port takes the Tx filter slot, chained to what held it,
+ * and the guest gets the command surface for any scope but none.  A second
+ * attach, or one with no engine, is refused.  The device's teardown takes
+ * it all off again before the engine, which is the caller's, goes.
+ */
+static void p4_attach_one(const char *T, enum p4_scope scope)
+{
+    struct p4_engine *eng = p4_engine_create();
+    struct p4_upstream up;
+    char err[128] = "";
+    struct ih h;
+
+    if (!check(T, eng != NULL, "p4_engine_create failed"))
+        return;
+    if (!setup(T, &h, "loopback")) {
+        p4_engine_destroy(eng);
+        return;
+    }
+
+    /* Stand in for the S3 control plane, as test_p4_port() does. */
+    memset(&up, 0, sizeof(up));
+    ionic_eth_emu_register_tx_filter(h.emu, p4_upstream_filter, &up);
+
+    check(T,
+          !ionic_device_attach_p4(h.dev->ionic, NULL, scope, err, sizeof(err)),
+          "the device attached no engine");
+    if (check(
+            T,
+            ionic_device_attach_p4(h.dev->ionic, eng, scope, err, sizeof(err)),
+            "attach with scope %s failed: %s", p4_scope_name(scope), err)) {
+        check(T, h.emu->tx_filter != p4_upstream_filter,
+              "the port didn't take the Tx filter slot");
+        if (scope == P4_SCOPE_NONE)
+            check(T, h.emu->p4_devcmd_fn == NULL,
+                  "scope none gave the guest the command surface");
+        else
+            check(T, h.emu->p4_devcmd_fn == p4_devcmd_dispatch,
+                  "scope %s didn't give the guest the command surface",
+                  p4_scope_name(scope));
+        check(
+            T,
+            !ionic_device_attach_p4(h.dev->ionic, eng, scope, err, sizeof(err)),
+            "the engine was attached twice");
+    }
+
+    teardown(T, &h);
+    p4_engine_destroy(eng);
+}
+
+static void test_p4_attach(void)
+{
+    p4_attach_one("p4-attach", P4_SCOPE_NONE);
+    p4_attach_one("p4-attach", P4_SCOPE_READ);
+}
+
 /* ---- In-network elementwise compute across three memory regions ------- */
 
 #define FP8R_MR_A   0x03000001u
@@ -3407,8 +3516,8 @@ static void test_fp8_map(void)
     check(T, ih_mr_write(&h, &mrb, FP8R_VA_B, b, sizeof(b)), "write to B");
 
     check(T,
-          ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
-                                 FP8R_VA_A, mrb.lkey, FP8R_VA_B, N, mrc.lkey,
+          ionic_datapath_fp8_map(h.dp, P4_FP8_OP_ADD, mra.lkey, FP8R_VA_A,
+                                 mrb.lkey, FP8R_VA_B, N, mrc.lkey,
                                  FP8R_VA_C) == 0,
           "the elementwise add failed");
     check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, sizeof(got)),
@@ -3439,8 +3548,8 @@ static void test_fp8_map(void)
     check(T, ih_mr_write(&h, &mra, FP8R_VA_A, a, sizeof(a)), "write to A");
     check(T, ih_mr_write(&h, &mrb, FP8R_VA_B, b, sizeof(b)), "write to B");
     check(T,
-          ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_MUL, mra.lkey,
-                                 FP8R_VA_A, mrb.lkey, FP8R_VA_B, 3001, mrc.lkey,
+          ionic_datapath_fp8_map(h.dp, P4_FP8_OP_MUL, mra.lkey, FP8R_VA_A,
+                                 mrb.lkey, FP8R_VA_B, 3001, mrc.lkey,
                                  FP8R_VA_C) == 0,
           "the elementwise multiply failed");
     check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, 3001), "read back from C");
@@ -3460,26 +3569,25 @@ static void test_fp8_map(void)
      * able to name it.
      */
     check(T,
-          ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_ADD, 0, FP8R_VA_A,
-                                 mrb.lkey, FP8R_VA_B, 64, mrc.lkey,
-                                 FP8R_VA_C) == -EACCES,
+          ionic_datapath_fp8_map(h.dp, P4_FP8_OP_ADD, 0, FP8R_VA_A, mrb.lkey,
+                                 FP8R_VA_B, 64, mrc.lkey, FP8R_VA_C) == -EACCES,
           "key 0 was accepted as an operand");
     check(T,
-          ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
-                                 FP8R_VA_A, mrb.lkey, FP8R_VA_B, 64, 0,
+          ionic_datapath_fp8_map(h.dp, P4_FP8_OP_ADD, mra.lkey, FP8R_VA_A,
+                                 mrb.lkey, FP8R_VA_B, 64, 0,
                                  FP8R_VA_C) == -EACCES,
           "key 0 was accepted as a destination");
 
     /* A key that was never registered must fault, not read host memory. */
     check(T,
-          ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_ADD, 0xDEADBEEFu,
-                                 FP8R_VA_A, mrb.lkey, FP8R_VA_B, 64, mrc.lkey,
+          ionic_datapath_fp8_map(h.dp, P4_FP8_OP_ADD, 0xDEADBEEFu, FP8R_VA_A,
+                                 mrb.lkey, FP8R_VA_B, 64, mrc.lkey,
                                  FP8R_VA_C) == -EACCES,
           "an unregistered operand key was accepted");
     check(T,
-          ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
-                                 FP8R_VA_A, mrb.lkey, FP8R_VA_B, 64,
-                                 0xDEADBEEFu, FP8R_VA_C) == -EACCES,
+          ionic_datapath_fp8_map(h.dp, P4_FP8_OP_ADD, mra.lkey, FP8R_VA_A,
+                                 mrb.lkey, FP8R_VA_B, 64, 0xDEADBEEFu,
+                                 FP8R_VA_C) == -EACCES,
           "an unregistered destination key was accepted");
 
     /*
@@ -3487,7 +3595,7 @@ static void test_fp8_map(void)
      * rather than part way through with a half-written destination.
      */
     check(T,
-          ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
+          ionic_datapath_fp8_map(h.dp, P4_FP8_OP_ADD, mra.lkey,
                                  FP8R_VA_A + FP8R_MR_LEN - 8, mrb.lkey,
                                  FP8R_VA_B, 64, mrc.lkey, FP8R_VA_C) == -EACCES,
           "a read past the end of a region was accepted");
@@ -3499,9 +3607,9 @@ static void test_fp8_map(void)
         memset(before, 0x5A, sizeof(before));
         check(T, ih_mr_write(&h, &mrc, FP8R_VA_C, before, sizeof(before)),
               "prime C");
-        (void)ionic_datapath_fp8_map(
-            h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey, FP8R_VA_A, mrb.lkey,
-            FP8R_VA_B + FP8R_MR_LEN - 8, 64, mrc.lkey, FP8R_VA_C);
+        (void)ionic_datapath_fp8_map(h.dp, P4_FP8_OP_ADD, mra.lkey, FP8R_VA_A,
+                                     mrb.lkey, FP8R_VA_B + FP8R_MR_LEN - 8, 64,
+                                     mrc.lkey, FP8R_VA_C);
         check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, probe, sizeof(probe)),
               "read C back");
         check(T, memcmp(probe, before, sizeof(probe)) == 0,
@@ -3510,19 +3618,18 @@ static void test_fp8_map(void)
 
     /* Bounds on the request itself. */
     check(T,
-          ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
-                                 FP8R_VA_A, mrb.lkey, FP8R_VA_B, 0, mrc.lkey,
+          ionic_datapath_fp8_map(h.dp, P4_FP8_OP_ADD, mra.lkey, FP8R_VA_A,
+                                 mrb.lkey, FP8R_VA_B, 0, mrc.lkey,
                                  FP8R_VA_C) == -EINVAL,
           "a zero length was accepted");
     check(T,
-          ionic_datapath_fp8_map(
-              h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey, FP8R_VA_A, mrb.lkey,
-              FP8R_VA_B, IONIC_FP8_MAP_MAX + 1, mrc.lkey, FP8R_VA_C) == -EINVAL,
+          ionic_datapath_fp8_map(h.dp, P4_FP8_OP_ADD, mra.lkey, FP8R_VA_A,
+                                 mrb.lkey, FP8R_VA_B, IONIC_FP8_MAP_MAX + 1,
+                                 mrc.lkey, FP8R_VA_C) == -EINVAL,
           "a length over the cap was accepted");
     check(T,
-          ionic_datapath_fp8_map(h.dev->ionic_dp, 99, mra.lkey, FP8R_VA_A,
-                                 mrb.lkey, FP8R_VA_B, 64, mrc.lkey,
-                                 FP8R_VA_C) == -EINVAL,
+          ionic_datapath_fp8_map(h.dp, 99, mra.lkey, FP8R_VA_A, mrb.lkey,
+                                 FP8R_VA_B, 64, mrc.lkey, FP8R_VA_C) == -EINVAL,
           "an unknown operation was accepted");
 
     /* Registered memory the device then cannot reach: each operand's read
@@ -3530,9 +3637,9 @@ static void test_fp8_map(void)
     for (unsigned long fail = 1; fail <= 3; fail++) {
         fake_vfu_fail_nth_map(h.vfu, fail);
         check(T,
-              ionic_datapath_fp8_map(h.dev->ionic_dp, P4_FP8_OP_ADD, mra.lkey,
-                                     FP8R_VA_A, mrb.lkey, FP8R_VA_B, 64,
-                                     mrc.lkey, FP8R_VA_C) == -EFAULT,
+              ionic_datapath_fp8_map(h.dp, P4_FP8_OP_ADD, mra.lkey, FP8R_VA_A,
+                                     mrb.lkey, FP8R_VA_B, 64, mrc.lkey,
+                                     FP8R_VA_C) == -EFAULT,
               "a map whose DMA %lu failed did not fault", fail);
     }
 
@@ -3542,45 +3649,44 @@ static void test_fp8_map(void)
      * against its own region and its own element size.
      */
     check(T,
-          ionic_datapath_fmt_convert(h.dev->ionic_dp, P4_FMT_FP16,
-                                     P4_FMT_FP8_E4M3, mra.lkey, FP8R_VA_A, 0,
-                                     mrc.lkey, FP8R_VA_C) == -EINVAL,
+          ionic_datapath_fmt_convert(h.dp, P4_FMT_FP16, P4_FMT_FP8_E4M3,
+                                     mra.lkey, FP8R_VA_A, 0, mrc.lkey,
+                                     FP8R_VA_C) == -EINVAL,
           "a conversion of nothing was accepted");
     check(T,
-          ionic_datapath_fmt_convert(h.dev->ionic_dp, P4_FMT_COUNT,
-                                     P4_FMT_FP8_E4M3, mra.lkey, FP8R_VA_A, 64,
-                                     mrc.lkey, FP8R_VA_C) == -EINVAL &&
-              ionic_datapath_fmt_convert(h.dev->ionic_dp, P4_FMT_FP16, 0xFF,
-                                         mra.lkey, FP8R_VA_A, 64, mrc.lkey,
+          ionic_datapath_fmt_convert(h.dp, P4_FMT_COUNT, P4_FMT_FP8_E4M3,
+                                     mra.lkey, FP8R_VA_A, 64, mrc.lkey,
+                                     FP8R_VA_C) == -EINVAL &&
+              ionic_datapath_fmt_convert(h.dp, P4_FMT_FP16, 0xFF, mra.lkey,
+                                         FP8R_VA_A, 64, mrc.lkey,
                                          FP8R_VA_C) == -EINVAL,
           "a format there is none of was accepted");
     check(T,
-          ionic_datapath_fmt_convert(h.dev->ionic_dp, P4_FMT_FP16,
-                                     P4_FMT_FP8_E4M3, mra.lkey, FP8R_VA_A, 63,
-                                     mrc.lkey, FP8R_VA_C) == -EINVAL,
+          ionic_datapath_fmt_convert(h.dp, P4_FMT_FP16, P4_FMT_FP8_E4M3,
+                                     mra.lkey, FP8R_VA_A, 63, mrc.lkey,
+                                     FP8R_VA_C) == -EINVAL,
           "63 bytes of fp16 were accepted");
     check(T,
-          ionic_datapath_fmt_convert(h.dev->ionic_dp, P4_FMT_FP4_E2M1,
-                                     P4_FMT_FP8_E4M3, mra.lkey, FP8R_VA_A,
-                                     IONIC_FP8_MAP_MAX / 2u + 1u, mrc.lkey,
-                                     FP8R_VA_C) == -EINVAL,
+          ionic_datapath_fmt_convert(
+              h.dp, P4_FMT_FP4_E2M1, P4_FMT_FP8_E4M3, mra.lkey, FP8R_VA_A,
+              IONIC_FP8_MAP_MAX / 2u + 1u, mrc.lkey, FP8R_VA_C) == -EINVAL,
           "more elements than the cap were accepted");
     check(T,
-          ionic_datapath_fmt_convert(h.dev->ionic_dp, P4_FMT_FP8_E4M3,
-                                     P4_FMT_FP4_E2M1, mra.lkey, FP8R_VA_A, 63,
-                                     mrc.lkey, FP8R_VA_C) == -EINVAL,
+          ionic_datapath_fmt_convert(h.dp, P4_FMT_FP8_E4M3, P4_FMT_FP4_E2M1,
+                                     mra.lkey, FP8R_VA_A, 63, mrc.lkey,
+                                     FP8R_VA_C) == -EINVAL,
           "63 fp4 results, half a byte at the end, were accepted");
     check(T,
-          ionic_datapath_fmt_convert(h.dev->ionic_dp, P4_FMT_FP16,
-                                     P4_FMT_FP8_E4M3, 0, FP8R_VA_A, 64,
-                                     mrc.lkey, FP8R_VA_C) == -EACCES,
+          ionic_datapath_fmt_convert(h.dp, P4_FMT_FP16, P4_FMT_FP8_E4M3, 0,
+                                     FP8R_VA_A, 64, mrc.lkey,
+                                     FP8R_VA_C) == -EACCES,
           "key 0 was accepted as a conversion's source");
     for (unsigned long fail = 1; fail <= 2; fail++) {
         fake_vfu_fail_nth_map(h.vfu, fail);
         check(T,
-              ionic_datapath_fmt_convert(h.dev->ionic_dp, P4_FMT_FP16,
-                                         P4_FMT_FP8_E4M3, mra.lkey, FP8R_VA_A,
-                                         64, mrc.lkey, FP8R_VA_C) == -EFAULT,
+              ionic_datapath_fmt_convert(h.dp, P4_FMT_FP16, P4_FMT_FP8_E4M3,
+                                         mra.lkey, FP8R_VA_A, 64, mrc.lkey,
+                                         FP8R_VA_C) == -EFAULT,
               "a conversion whose DMA %lu failed did not fault", fail);
     }
     check(T, fake_vfu_mapped(h.vfu) == 0, "guest memory left mapped");
@@ -3754,7 +3860,7 @@ static void test_p4_rdma(void)
     }
     check(T, p4r_load(eng, "fp8_policy.json") == 0,
           "the compiled policy program did not load");
-    ionic_datapath_set_p4_engine(h.dev->ionic_dp, eng);
+    ionic_datapath_set_p4_engine(h.dp, eng);
 
     /* 1.0 in A, 2.0 in B, with one element of A at 4.0 so a result that
      * ignored position could not pass. */
@@ -3945,7 +4051,7 @@ static void test_p4_rdma(void)
                   "the wide entry was not installed: %s", err);
             up.params[0].len = 1;
             up.params[0].value[P4_MATCH_BYTES - 2] = 0;
-            ionic_datapath_set_p4_engine(h.dev->ionic_dp, wide);
+            ionic_datapath_set_p4_engine(h.dp, wide);
             memset(got, 0xA5, sizeof(got));
             check(T, ih_mr_write(&h, &mrc, FP8R_VA_C, got, sizeof(got)),
                   "poison C before the wide selector");
@@ -3956,7 +4062,7 @@ static void test_p4_rdma(void)
                   "read back C after the wide selector");
             check(T, got[0] == 0xA5u && got[15] == 0xA5u,
                   "a refused selector wrote to the destination");
-            ionic_datapath_set_p4_engine(h.dev->ionic_dp, eng);
+            ionic_datapath_set_p4_engine(h.dp, eng);
             p4_engine_destroy(wide);
         }
     }
@@ -3975,18 +4081,18 @@ static void test_p4_rdma(void)
             up.type = P4_UPDATE_INSERT;
             check(T, p4_engine_update(nodrop, &up, err, sizeof(err)) == 0,
                   "the entry was not installed: %s", err);
-            ionic_datapath_set_p4_engine(h.dev->ionic_dp, nodrop);
+            ionic_datapath_set_p4_engine(h.dp, nodrop);
             ih_post_send(&h, &a, &w);
             check(T, ih_cq_poll(&h, &cq, &e) && e.error,
                   "an extern call without a drop was allowed to transfer "
                   "over its own result");
-            ionic_datapath_set_p4_engine(h.dev->ionic_dp, eng);
+            ionic_datapath_set_p4_engine(h.dp, eng);
             p4_engine_destroy(nodrop);
         }
     }
 
     /* Taking the engine away restores the device's own behaviour. */
-    ionic_datapath_set_p4_engine(h.dev->ionic_dp, NULL);
+    ionic_datapath_set_p4_engine(h.dp, NULL);
     memset(got, 0, sizeof(got));
     check(T, ih_mr_write(&h, &mrc, FP8R_VA_C, got, sizeof(got)), "clear C");
     ih_post_send(&h, &a, &w);
@@ -4073,8 +4179,8 @@ static void test_p4_devcmd(void)
         teardown(T, &h);
         return;
     }
-    ionic_eth_emu_register_p4_handler(h.dev->ionic_emu, p4_devcmd_dispatch, pd);
-    ionic_datapath_set_p4_engine(h.dev->ionic_dp, eng);
+    ionic_eth_emu_register_p4_handler(h.emu, p4_devcmd_dispatch, pd);
+    ionic_datapath_set_p4_engine(h.dp, eng);
 
     const uint64_t buf = fake_vfu_alloc(h.vfu, 4096, 4096);
 
@@ -4321,12 +4427,11 @@ out:
      * ones, and the refusal does not depend on what the caller claims:
      * the operator's grant is checked before the caller's own scope.
      */
-    ionic_datapath_set_p4_engine(h.dev->ionic_dp, NULL);
+    ionic_datapath_set_p4_engine(h.dp, NULL);
     p4_devcmd_destroy(pd);
     pd = p4_devcmd_create(h.vfu, eng, P4_SCOPE_READ);
     if (check(T, pd != NULL, "p4_devcmd_create failed")) {
-        ionic_eth_emu_register_p4_handler(h.dev->ionic_emu, p4_devcmd_dispatch,
-                                          pd);
+        ionic_eth_emu_register_p4_handler(h.emu, p4_devcmd_dispatch, pd);
         check(T,
               p4d_rpc(&h, P4_SCOPE_LOAD, P4_EP_PROGRAM, P4_OP_LOAD_BEGIN, 0, 8,
                       0, 0, comp) == P4_STS_EPERM,
@@ -4342,7 +4447,7 @@ out:
               "a read-only guest could not read the counters");
     }
 
-    ionic_eth_emu_register_p4_handler(h.dev->ionic_emu, NULL, NULL);
+    ionic_eth_emu_register_p4_handler(h.emu, NULL, NULL);
     p4_devcmd_destroy(pd);
     p4_engine_destroy(eng);
     teardown(T, &h);
@@ -4532,7 +4637,7 @@ static void test_p4_devcmd_errors(void)
         teardown(T, &h);
         return;
     }
-    ionic_eth_emu_register_p4_handler(h.dev->ionic_emu, p4_devcmd_dispatch, pd);
+    ionic_eth_emu_register_p4_handler(h.emu, p4_devcmd_dispatch, pd);
     const uint64_t buf = fake_vfu_alloc(h.vfu, 4096, 4096);
     const uint64_t req = fake_vfu_alloc(h.vfu, 65536, 4096);
     check(T, p4d_ident(&h, 32, buf, comp) == P4_STS_EPERM,
@@ -4541,12 +4646,12 @@ static void test_p4_devcmd_errors(void)
 
     pd = p4_devcmd_create(h.vfu, eng, P4_SCOPE_LOAD);
     if (!check(T, pd != NULL, "p4_devcmd_create failed")) {
-        ionic_eth_emu_register_p4_handler(h.dev->ionic_emu, NULL, NULL);
+        ionic_eth_emu_register_p4_handler(h.emu, NULL, NULL);
         p4_engine_destroy(eng);
         teardown(T, &h);
         return;
     }
-    ionic_eth_emu_register_p4_handler(h.dev->ionic_emu, p4_devcmd_dispatch, pd);
+    ionic_eth_emu_register_p4_handler(h.emu, p4_devcmd_dispatch, pd);
 
     /* The handler without its context, and an opcode it was never sent:
      * the device routes only 70-72 here, so both come in directly. */
@@ -4737,7 +4842,7 @@ static void test_p4_devcmd_errors(void)
           ernic_get_le32(comp + 4));
 
     check(T, fake_vfu_mapped(h.vfu) == 0, "guest memory left mapped");
-    ionic_eth_emu_register_p4_handler(h.dev->ionic_emu, NULL, NULL);
+    ionic_eth_emu_register_p4_handler(h.emu, NULL, NULL);
     p4_devcmd_destroy(pd);
     p4_engine_destroy(eng);
     teardown(T, &h);
@@ -4802,7 +4907,7 @@ static void test_p4_cvt(void)
     }
     check(T, p4r_load(eng, "fp8_convert.json") == 0,
           "the compiled conversion program did not load");
-    ionic_datapath_set_p4_engine(h.dev->ionic_dp, eng);
+    ionic_datapath_set_p4_engine(h.dp, eng);
 
     /*
      * A spread of fp16 encodings, little-endian as an array in guest
@@ -4942,7 +5047,7 @@ static void test_p4_cvt(void)
               "a refused conversion wrote to the destination");
     }
 
-    ionic_datapath_set_p4_engine(h.dev->ionic_dp, NULL);
+    ionic_datapath_set_p4_engine(h.dp, NULL);
     p4_engine_destroy(eng);
     ih_mr_free(&mra);
     ih_mr_free(&mrc);
@@ -4998,7 +5103,7 @@ static void test_p4_cvt_then_map(void)
     }
     check(T, p4r_load(eng, "fp8_cvt_then_map.json") == 0,
           "the two-extern program did not load");
-    ionic_datapath_set_p4_engine(h.dev->ionic_dp, eng);
+    ionic_datapath_set_p4_engine(h.dp, eng);
 
     memset(src, 0x3C, sizeof(src)); /* fp16 1.0, low byte first */
     for (uint32_t i = 1; i < P4C_N_IN; i += 2)
@@ -5052,7 +5157,7 @@ static void test_p4_cvt_then_map(void)
                  P4C_N_IN - P4C_N_ELEMS) != 0,
           "the ordinary transfer landed on top of the converted result");
 
-    ionic_datapath_set_p4_engine(h.dev->ionic_dp, NULL);
+    ionic_datapath_set_p4_engine(h.dp, NULL);
     p4_engine_destroy(eng);
     ih_mr_free(&mra);
     ih_mr_free(&mrc);
@@ -5107,7 +5212,7 @@ static void test_p4_drop_then_map(void)
     }
     check(T, p4r_load(eng, "fp8_drop_then_map.json") == 0,
           "the drop-then-map program did not load");
-    ionic_datapath_set_p4_engine(h.dev->ionic_dp, eng);
+    ionic_datapath_set_p4_engine(h.dp, eng);
 
     memset(&up, 0, sizeof(up));
     up.type = P4_UPDATE_INSERT;
@@ -5150,7 +5255,7 @@ static void test_p4_drop_then_map(void)
           "a write the program dropped before the extern declined was "
           "dispatched anyway");
 
-    ionic_datapath_set_p4_engine(h.dev->ionic_dp, NULL);
+    ionic_datapath_set_p4_engine(h.dp, NULL);
     p4_engine_destroy(eng);
 
     check(T, ih_qp_destroy(&h, &a) == 0, "DESTROY_QP A failed");
@@ -5324,16 +5429,13 @@ static void test_nvmeof_queue_limit(void)
     if (!check(T, ih_create(&h, "none"), "device not created"))
         return;
     err[0] = '\0';
-    check(
-        T,
-        !ionic_datapath_attach_nvmeof(h.dev->ionic_dp, &cfg, err, sizeof(err)),
-        "a controller with %d queues attached", IONIC_MAX_MR_QUEUES + 1);
+    check(T, !ionic_datapath_attach_nvmeof(h.dp, &cfg, err, sizeof(err)),
+          "a controller with %d queues attached", IONIC_MAX_MR_QUEUES + 1);
     check(T, strcmp(err, want) == 0, "attach refused with '%s', not '%s'", err,
           want);
 
     cfg.max_queues = IONIC_MAX_MR_QUEUES;
-    check(T,
-          ionic_datapath_attach_nvmeof(h.dev->ionic_dp, &cfg, err, sizeof(err)),
+    check(T, ionic_datapath_attach_nvmeof(h.dp, &cfg, err, sizeof(err)),
           "a controller with %d queues did not attach: %s", IONIC_MAX_MR_QUEUES,
           err);
     teardown(T, &h);
@@ -5456,7 +5558,7 @@ static void test_s3(void)
     if (!setup(T, &h, S3H_BACKEND))
         return;
 
-    ionic_eth_emu_get_tx_filter(h.dev->ionic_emu, &c.fn, &c.ctx);
+    ionic_eth_emu_get_tx_filter(h.emu, &c.fn, &c.ctx);
     uint64_t raw = fake_vfu_alloc(h.vfu, IH_PAGE_SIZE, IH_PAGE_SIZE);
     if (!check(T,
                c.fn != NULL && raw != 0 &&
@@ -5903,6 +6005,7 @@ static const struct {
     {"devcmds", test_devcmds},
     {"bringup", test_bringup},
     {"rdma-reset", test_rdma_reset},
+    {"rdma-reset-faults", test_rdma_reset_faults},
     {"rdma-reset-frees", test_rdma_reset_frees},
     {"admin", test_admin_errors},
     {"admin-dma", test_admin_dma_faults},
@@ -5921,6 +6024,7 @@ static const struct {
     {"eth-dma", test_eth_dma_faults},
 #ifdef ERNIC_HAVE_P4
     {"p4-port", test_p4_port},
+    {"p4-attach", test_p4_attach},
     {"fp8-map", test_fp8_map},
     {"p4-rdma", test_p4_rdma},
     {"p4-cvt", test_p4_cvt},

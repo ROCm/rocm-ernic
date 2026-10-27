@@ -286,14 +286,14 @@ scanned too). Add new general patterns here when a scanner reports one.
   `chmod()`/`open()`/`creat()` with e.g. `0666`). Grant owner, and group
   only if needed. For something that mustn't be reachable even briefly,
   create it under a restrictive `umask()`; narrowing afterwards lets a
-  client connect in between. See the vfio-user socket in
+  client connect in between. See `create_socket()` in
   `rocm_ernic_server.c`.
 - **Check-then-act on a path** (`cpp/toctou-race-condition`: `stat()`,
   `lstat()`, or `access()` then `chmod()`, `unlink()`, `open()`, etc.).
   Act on a descriptor, or just do the operation and check the result. For
   name-only calls like `unlink()`, open the directory with `O_PATH` (not
   `O_RDONLY`, which needs read permission) and use `fstatat()`/
-  `unlinkat()`, as `remove_stale_socket()` in `rocm_ernic_server.c` does.
+  `unlinkat()`, as `ernic_socket_remove_stale()` in `ernic_socket.c` does.
 - **Running a program named by `getenv()` or `argv`**
   (`cpp/uncontrolled-process-operation`, into `exec*()`, `system()`,
   `popen()`). Run a tool such as valgrind from outside

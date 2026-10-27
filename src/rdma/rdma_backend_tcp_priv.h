@@ -59,6 +59,7 @@
  * them:
  *
  *   lock                     handles, local GIDs, the ionic receive callback
+ *                            and the calls to it under way
  *   TcpConnection.lock       a connection's socket
  *   TcpConnection.sendq_lock a connection's send queue
  *   health_check_lock        stopping the health check
@@ -656,6 +657,13 @@ struct TcpBackendPrivate {
      * lock. */
     tcp_ionic_recv_fn ionic_recv_fn TSA_GUARDED_BY(lock);
     void *ionic_recv_opaque TSA_GUARDED_BY(lock);
+    /* How many receive threads are calling ionic_recv_fn, which they do
+     * without lock; ionic_recv_idle is signalled, with lock, when that falls
+     * to 0.  tcp_backend_set_ionic_recv_cb() waits on it, so that once it
+     * has returned nothing is still calling the callback it replaced, and
+     * the data path can free what that callback uses. */
+    uint32_t ionic_recv_calls TSA_GUARDED_BY(lock);
+    QemuCond ionic_recv_idle;
 
     /* TCP-layer counters */
     struct {
