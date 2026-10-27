@@ -202,7 +202,7 @@
   Every night that `develop` changes, the `nightly` prerelease is replaced
   with unsupported development packages for Ubuntu 24.04 and 26.04, after
   they are installed in a clean container and the server, `ernicctl` and
-  the exporter are checked; see `INSTALL.md`.
+  the exporter are checked; see Nightly Packages in `docs/building.rst`.
   * `-DERNIC_BUNDLE_VFIO_USER=ON` installs a private copy of the
     libvfio-user the server was linked with, in `<libdir>/rocm-ernic`,
     loaded only by the installed server through a `DT_RPATH` that
@@ -587,6 +587,12 @@
   `CREATE_QP` naming an id at or above the count is refused with
   `IONIC_RC_EQID` instead of reporting a queue that would never work. The
   limits are in `src/ernic_limits.h`.
+* **Build and install instructions live in one place**, the Building and
+  Installing page of the documentation
+  (<https://rocm.github.io/rocm-ernic/building.html>, source
+  `docs/building.rst`). `INSTALL.md` now only points there. The page now
+  also lists `libjson-c-dev`, which its package list left out, and
+  `ERNIC_BUILD_P4`.
 
 ### Removed
 

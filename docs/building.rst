@@ -1,26 +1,50 @@
 Building and Installing
 =======================
 
-Dependencies
+.. note::
+
+   rocm-ernic is early-access software that has been tested on
+   limited hardware. It may not work on your system yet.
+
+Requirements
 ------------
 
-Install the required packages on Ubuntu/Debian:
+rocm-ernic builds with GCC or Clang on Linux, and is tested on
+Ubuntu 24.04. It needs:
+
+- CMake 3.21 or later
+- pkg-config
+- libvfio-user, built from source (see below), which needs Meson
+  and Ninja to build
+- libibverbs and librdmacm development packages
+- GLib 2.0 development package
+- json-c development package. libvfio-user needs it, and with
+  ``ERNIC_BUILD_P4`` rocm-ernic links it too.
+
+Install them on Ubuntu/Debian:
 
 .. code-block:: bash
 
    sudo apt install cmake meson ninja-build pkg-config \
-     libibverbs-dev librdmacm-dev libglib2.0-dev
+     libibverbs-dev librdmacm-dev libglib2.0-dev libjson-c-dev
 
 Build and install ``libvfio-user`` if it is not already
 available on your system:
 
 .. code-block:: bash
 
-   cd /path/to/libvfio-user
+   git clone https://github.com/nutanix/libvfio-user.git
+   cd libvfio-user
    meson setup build --prefix=/usr
    ninja -C build
    sudo ninja -C build install
    sudo ldconfig
+
+If libvfio-user is installed somewhere other than ``/usr`` or
+``/usr/local``, add its ``pkgconfig`` directory to
+``PKG_CONFIG_PATH``, or point CMake at the prefix with
+``-DCMAKE_PREFIX_PATH``, e.g.
+``-DCMAKE_PREFIX_PATH="$HOME/.local"``.
 
 Compilation
 -----------
@@ -31,8 +55,20 @@ From the project root directory:
 
    cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
    cmake --build build
+   ctest --test-dir build
 
-The executable is produced at ``build/rocm-ernic``.
+The executable is produced at ``build/rocm-ernic``. To check it,
+start the server with the loopback backend:
+
+.. code-block:: bash
+
+   ./build/rocm-ernic \
+     --socket /tmp/vfio-user-rocm-ernic.sock \
+     --backend loopback --verbose
+
+That presents the emulated ionic device (``1dd8:1002``,
+subsystem ``1dd8:5400``) to any client that connects to the
+socket.
 
 Installation
 ------------
@@ -55,6 +91,32 @@ from ``CMAKE_INSTALL_PREFIX`` when the project is configured, so
 to install them somewhere else, configure with that prefix rather
 than passing ``--prefix`` to ``cmake --install``. To stage an
 install, use ``DESTDIR``.
+
+.. _nightly-packages:
+
+Nightly Packages
+----------------
+
+Every night that ``develop`` changes, DEB packages of it for
+Ubuntu 24.04 and 26.04 are published as the
+`nightly prerelease
+<https://github.com/ROCm/rocm-ernic/releases/tag/nightly>`_.
+They're development builds for testing, not supported releases.
+Download the packages for your Ubuntu release (the file names end
+with it) and install them:
+
+.. code-block:: bash
+
+   sudo apt install ./rocm-ernic_<version>_amd64.deb \
+     ./rocm-ernic-exporter_<version>_all.deb
+   sudo systemctl daemon-reload
+
+``rocm-ernic`` has the server, with its own copy of
+libvfio-user, the systemd service, ``ernicctl``, and the guest
+driver pack, installed under ``/usr``. Its configuration is in
+``/etc/rocm-ernic/rocm-ernic.env`` (see :doc:`service`).
+``rocm-ernic-exporter`` has the Prometheus exporter, which also
+needs ``prometheus_client`` (see :doc:`monitoring`).
 
 .. _packages:
 
@@ -179,6 +241,10 @@ Build Options
      - ``OFF``
      - Run clang-tidy while compiling; every finding is an
        error. Clang only (see :ref:`clang-tidy`)
+   * - ``ERNIC_BUILD_P4``
+     - ``OFF``
+     - Build the P4 match-action engine and its tests; needs
+       json-c (see :doc:`p4`)
    * - ``ERNIC_BUILD_DOCS``
      - ``OFF``
      - Build Sphinx + Breathe + Doxygen documentation

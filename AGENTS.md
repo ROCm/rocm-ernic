@@ -3,8 +3,8 @@
 Guidance for AI coding agents working in the rocm-ernic repository.
 rocm-ernic is a userspace emulated RDMA NIC for virtual machines, built on
 libvfio-user; see [README.md](README.md) for scope,
-[INSTALL.md](INSTALL.md) for dependencies and CMake options, and
-[docs/testing.rst](docs/testing.rst) for the test programs.
+[docs/building.rst](docs/building.rst) for dependencies and CMake options,
+and [docs/testing.rst](docs/testing.rst) for the test programs.
 
 ## Project direction
 
@@ -50,8 +50,9 @@ don't create one or edit the other project without asking.
 
 ## Configure and build
 
-libvfio-user is built from source ([INSTALL.md](INSTALL.md); CI pins its
-commit in [build-and-test.yml](.github/workflows/build-and-test.yml)).
+libvfio-user is built from source
+([docs/building.rst](docs/building.rst); CI pins its commit in
+[build-and-test.yml](.github/workflows/build-and-test.yml)).
 Pass a non-standard prefix with `-DCMAKE_PREFIX_PATH`. Match CI:
 
 ```bash
