@@ -117,9 +117,6 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
         # Give string literals the type const char[], so that writing
         # through one, or passing one as a char *, is diagnosed
         -Wwrite-strings
-
-        # QEMU-ported code has many unused parameters
-        -Wno-unused-parameter
     )
 
     if(compiler_version VERSION_GREATER_EQUAL 10)

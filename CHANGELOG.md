@@ -550,6 +550,13 @@
     into its scope, or a kernel-doc `@name:` or `@name` in a `/**`
     comment, is now a warning (an error with `ERNIC_WERROR`); declare the
     variable before the `goto`, and write `@param name` and `@p name`.
+  * GCC and Clang no longer turn off `-Wunused-parameter`, and clang-tidy
+    runs every `misc-` check but `misc-include-cleaner`, adding
+    `misc-unused-parameters`, `misc-no-recursion`,
+    `misc-redundant-expression`, `misc-predictable-rand` and
+    `misc-use-internal-linkage`. A parameter a function doesn't use is now
+    a warning (an error with `ERNIC_WERROR`): remove it, or, where an
+    interface requires it, write `(void)name;` in the function.
 * **Stricter linting in CI.** ansible-lint 26.10.1 runs with `--strict`.
   ShellCheck excludes no checks; suppress one only on its command, with a
   reason. actionlint 1.7.12 checks the workflows (runner labels in

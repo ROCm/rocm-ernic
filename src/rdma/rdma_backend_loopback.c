@@ -138,6 +138,8 @@ static void loopback_fini(RdmaBackendDev *backend_dev)
 static int loopback_query_device(RdmaBackendDev *backend_dev,
                                  struct ibv_device_attr *attr)
 {
+    (void)backend_dev;
+
     memset(attr, 0, sizeof(*attr));
     /* The counts size rdma_rm's tables, so they are the device's limits,
      * not literals: a table smaller than the LIF identity promises is the
@@ -167,6 +169,8 @@ static int loopback_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
     LoopbackBackendPrivate *priv = get_private(backend_dev);
     uint32_t handle;
 
+    (void)pd;
+
     if (!priv) {
         return -EINVAL;
     }
@@ -189,6 +193,7 @@ static int loopback_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, void *addr,
     static uint32_t mr_counter = 1;
     uint32_t handle = mr_counter++;
 
+    (void)pd;
     (void)addr;
     (void)guest_start;
     (void)access;
@@ -202,6 +207,8 @@ static int loopback_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, void *addr,
 
 static void loopback_destroy_mr(RdmaBackendMR *mr)
 {
+    (void)mr;
+
     rdma_info_report("Loopback: Destroyed MR");
 }
 
@@ -257,6 +264,14 @@ static int loopback_create_qp(RdmaBackendQP *qp, uint8_t qp_type,
 {
     LoopbackBackendPrivate *priv = get_private(scq->backend_dev);
     LoopbackQP *lqp;
+
+    (void)pd;
+    (void)rcq;
+    (void)srq;
+    (void)max_send_wr;
+    (void)max_recv_wr;
+    (void)max_send_sge;
+    (void)max_recv_sge;
 
     if (!priv) {
         return -EINVAL;
@@ -330,6 +345,8 @@ static int loopback_qp_state_init(RdmaBackendDev *backend_dev,
                                   uint32_t qkey)
 {
     (void)backend_dev;
+    (void)qp_type;
+    (void)qkey;
     LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
 
     if (lqp) {
@@ -346,6 +363,9 @@ static int loopback_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 {
     (void)backend_dev;
     (void)sgid_idx;
+    (void)dgid;
+    (void)qkey;
+    (void)qkey_set;
     LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
 
     /* DCT reaches RTR as its penultimate arming step; no remote QPN needed. */
@@ -497,6 +517,8 @@ static int loopback_query_qp(RdmaBackendQP *qp, struct ibv_qp_attr *attr,
 {
     LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
 
+    (void)attr_mask;
+
     memset(attr, 0, sizeof(*attr));
     if (lqp) {
         attr->qp_state = lqp->state;
@@ -530,6 +552,8 @@ static int loopback_create_srq(RdmaBackendSRQ *srq, RdmaBackendPD *pd,
                                uint32_t srq_limit)
 {
     LoopbackSRQ *lsrq = g_new0(LoopbackSRQ, 1);
+
+    (void)pd;
 
     lsrq->max_wr = max_wr;
     lsrq->max_sge = max_sge;
@@ -586,6 +610,8 @@ static int loopback_modify_srq(RdmaBackendSRQ *srq, struct ibv_srq_attr *attr,
 static int loopback_get_backend_gid_index(RdmaBackendDev *backend_dev,
                                           int sgid_idx)
 {
+    (void)backend_dev;
+
     return sgid_idx; /* Identity mapping */
 }
 

@@ -72,15 +72,6 @@ static int connect_to_server(const char *socket_path)
     return fd;
 }
 
-/* Simple vfio-user version negotiation */
-static int negotiate_version(int fd)
-{
-    /* For this simple test, we'll just verify the socket is responsive
-     * In a full implementation, this would do proper vfio-user protocol
-     * negotiation */
-    return 0;
-}
-
 /* Read PCI configuration space (simulated) */
 static int read_pci_config(int fd, uint32_t offset, void *buf, size_t count)
 {
@@ -354,12 +345,6 @@ int main(int argc, char **argv)
     }
     results.connected = true;
     printf("✓ Connected successfully\n\n");
-
-    /* Negotiate protocol version */
-    if (negotiate_version(fd) < 0) {
-        fprintf(stderr, "Failed to negotiate protocol version\n");
-        goto cleanup;
-    }
 
     /* Run PCI configuration tests */
     if (run_pci_tests(fd, &results) < 0) {

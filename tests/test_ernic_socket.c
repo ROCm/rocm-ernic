@@ -110,9 +110,13 @@ static size_t grp_erange_below;
 static unsigned grp_calls;
 static size_t grp_max_len;
 
-/* The names are --wrap's, so they are reserved identifiers by necessity. */
+/*
+ * The names are --wrap's, so they are reserved identifiers by necessity, and
+ * they can't be static, since the linker has to find them.
+ */
 ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_OFF
 /* NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c) */
+/* NOLINTBEGIN(misc-use-internal-linkage) */
 void *__real_malloc(size_t size);
 char *__real_strdup(const char *s);
 char *__real_strndup(const char *s, size_t n);
@@ -195,6 +199,7 @@ int __wrap_unlinkat(int dirfd, const char *path, int flags)
     return should_fail(FAIL_UNLINKAT) ? -1
                                       : __real_unlinkat(dirfd, path, flags);
 }
+/* NOLINTEND(misc-use-internal-linkage) */
 /* NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c) */
 ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_ON
 

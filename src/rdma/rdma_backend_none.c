@@ -24,12 +24,16 @@
 /* Init/Fini */
 static int none_init(RdmaBackendDev *backend_dev, const char *config)
 {
+    (void)backend_dev;
+    (void)config;
+
     rdma_info_report("None backend: No hardware required");
     return 0;
 }
 
 static void none_fini(RdmaBackendDev *backend_dev)
 {
+    (void)backend_dev;
     /* Nothing to cleanup */
 }
 
@@ -41,6 +45,8 @@ static void none_fini(RdmaBackendDev *backend_dev)
 static int none_query_device(RdmaBackendDev *backend_dev,
                              struct ibv_device_attr *attr)
 {
+    (void)backend_dev;
+
     memset(attr, 0, sizeof(*attr));
     attr->max_qp = ERNIC_MAX_QP;
     attr->max_qp_wr = 256;
@@ -55,6 +61,9 @@ static int none_query_device(RdmaBackendDev *backend_dev,
 /* PD operations - stub implementations */
 static int none_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
 {
+    (void)backend_dev;
+    (void)pd;
+
     return 0;
 }
 
@@ -62,17 +71,26 @@ static int none_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
 static int none_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, void *addr,
                           size_t length, uint64_t guest_start, int access)
 {
+    (void)pd;
+    (void)addr;
+    (void)length;
+    (void)guest_start;
+    (void)access;
+
     mr->ibmr = NULL;
     return 0;
 }
 
 static void none_destroy_mr(RdmaBackendMR *mr)
 {
+    (void)mr;
     /* Nothing to free */
 }
 
 static uint32_t none_mr_lkey(const RdmaBackendMR *mr)
 {
+    (void)mr;
+
     return 0; /* Fake lkey */
 }
 
@@ -80,6 +98,8 @@ static uint32_t none_mr_lkey(const RdmaBackendMR *mr)
 static int none_create_cq(RdmaBackendDev *backend_dev, RdmaBackendCQ *cq,
                           uint32_t cqe)
 {
+    (void)cqe;
+
     cq->backend_dev = backend_dev;
     cq->ibcq = NULL;
     return 0;
@@ -87,6 +107,7 @@ static int none_create_cq(RdmaBackendDev *backend_dev, RdmaBackendCQ *cq,
 
 static void none_destroy_cq(RdmaBackendCQ *cq)
 {
+    (void)cq;
     /* Nothing to free */
 }
 
@@ -97,12 +118,24 @@ static int none_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
                           uint32_t max_recv_wr, uint32_t max_send_sge,
                           uint32_t max_recv_sge)
 {
+    (void)qp_type;
+    (void)pd;
+    (void)scq;
+    (void)rcq;
+    (void)srq;
+    (void)max_send_wr;
+    (void)max_recv_wr;
+    (void)max_send_sge;
+    (void)max_recv_sge;
+
     qp->ibqp = NULL;
     return 0;
 }
 
 static void none_destroy_qp(RdmaBackendQP *qp, RdmaDeviceResources *dev_res)
 {
+    (void)qp;
+    (void)dev_res;
     /* Nothing to free */
 }
 
@@ -110,6 +143,11 @@ static void none_destroy_qp(RdmaBackendQP *qp, RdmaDeviceResources *dev_res)
 static int none_qp_state_init(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                               uint8_t qp_type, uint32_t qkey)
 {
+    (void)backend_dev;
+    (void)qp;
+    (void)qp_type;
+    (void)qkey;
+
     return 0;
 }
 
@@ -118,18 +156,36 @@ static int none_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                              union ibv_gid *dgid, uint32_t dqpn,
                              uint32_t rq_psn, uint32_t qkey, bool qkey_set)
 {
+    (void)backend_dev;
+    (void)qp;
+    (void)qp_type;
+    (void)sgid_idx;
+    (void)dgid;
+    (void)dqpn;
+    (void)rq_psn;
+    (void)qkey;
+    (void)qkey_set;
+
     return 0;
 }
 
 static int none_qp_state_rts(RdmaBackendQP *qp, uint8_t qp_type,
                              uint32_t sq_psn, uint32_t qkey, bool qkey_set)
 {
+    (void)qp;
+    (void)qp_type;
+    (void)sq_psn;
+    (void)qkey;
+    (void)qkey_set;
+
     return 0;
 }
 
 /* GID management - stub implementations */
 static int none_get_backend_gid_index(RdmaBackendDev *backend_dev, int sgid_idx)
 {
+    (void)backend_dev;
+
     return sgid_idx; /* Identity mapping */
 }
 

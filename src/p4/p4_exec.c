@@ -341,6 +341,8 @@ static bool eval_node(const struct p4_program *prog, const struct p4_phv *phv,
                       const struct p4_conditional *c, p4_idx_t idx,
                       unsigned depth);
 
+/* Recursion through eval_node() is bounded by P4_MAX_EXPR_DEPTH. */
+/* NOLINTNEXTLINE(misc-no-recursion) */
 static void eval_operand(const struct p4_program *prog,
                          const struct p4_phv *phv,
                          const struct p4_conditional *c,
@@ -371,6 +373,8 @@ static void eval_operand(const struct p4_program *prog,
     }
 }
 
+/* Recursion through eval_operand() is bounded by P4_MAX_EXPR_DEPTH. */
+/* NOLINTNEXTLINE(misc-no-recursion) */
 static bool eval_node(const struct p4_program *prog, const struct p4_phv *phv,
                       const struct p4_conditional *c, p4_idx_t idx,
                       unsigned depth)

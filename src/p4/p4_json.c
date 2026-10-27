@@ -1626,8 +1626,9 @@ static int p4_walk_expr(struct p4_walk *w, const struct json_object *tv,
 /*
  * One side of an operator. A nested expression is allocated a node of its
  * own, which always lands after this one, keeping a child's index greater
- * than its parent's.
+ * than its parent's. p4_walk_expr() bounds the recursion.
  */
+/* NOLINTNEXTLINE(misc-no-recursion) */
 static int p4_walk_expr_operand(struct p4_walk *w, const struct json_object *tv,
                                 struct p4_conditional *cond,
                                 struct p4_expr_operand *dst, unsigned depth,
@@ -1711,6 +1712,7 @@ static int p4_walk_expr_operand(struct p4_walk *w, const struct json_object *tv,
  * tokener's own depth limit bounds the document, but nothing bounds how
  * deep this walk recurses except this.
  */
+/* NOLINTNEXTLINE(misc-no-recursion) */
 static int p4_walk_expr(struct p4_walk *w, const struct json_object *tv,
                         struct p4_conditional *cond, p4_idx_t *slot,
                         unsigned depth, const char *where)
