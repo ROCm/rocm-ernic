@@ -183,8 +183,9 @@ static const uint8_t *gids_slot(const TcpNodeGidsWire *wire, uint32_t i)
 #define POISON_STACK_SZ (1024 * 1024)
 
 /*
- * Address of a local in the broadcast thread's frame, recorded so the caller
- * can prove the payload really landed on the stack we poisoned.
+ * One run of the pass on the poisoned stack. The thread checks that a local
+ * in its own frame lies within the stack we poisoned, proving the payload
+ * really landed on it.
  *
  * ASan's use-after-return detection relocates large frames off the real
  * stack into freshly-zeroed heap "fake stacks", which would hide the poison
@@ -192,15 +193,28 @@ static const uint8_t *gids_slot(const TcpNodeGidsWire *wire, uint32_t i)
  * zero no matter what the code under test does. tests/CMakeLists.txt builds
  * this binary without that instrumentation. Checking where the frame landed
  * keeps a build that has it anyway from passing silently.
+ *
+ * The thread does the check itself, so only its answer, never the address of
+ * one of its locals, outlives its frame.
  */
-static uintptr_t broadcast_frame;
+struct poisoned_run {
+    TcpBackendPrivate *priv;
+    uintptr_t base;         /* Start of the stack we poisoned */
+    bool on_poisoned_stack; /* Set by the thread, read after the join */
+};
 
 static void *broadcast_thread(void *opaque)
 {
+    struct poisoned_run *run = opaque;
     int frame_marker;
+    /* Compared as uintptr_t: relational operators on pointers into different
+     * objects are unspecified in C, and the frame is not part of the stack
+     * buffer as far as the language is concerned. */
+    uintptr_t frame = (uintptr_t)&frame_marker;
 
-    broadcast_frame = (uintptr_t)&frame_marker;
-    tcp_broadcast_pass((TcpBackendPrivate *)opaque);
+    run->on_poisoned_stack =
+        frame >= run->base && frame < run->base + POISON_STACK_SZ;
+    tcp_broadcast_pass(run->priv);
     return NULL;
 }
 
@@ -218,15 +232,16 @@ static int broadcast_on_poisoned_stack(TcpBackendPrivate *priv)
     }
     memset(stack, POISON_BYTE, POISON_STACK_SZ);
 
-    /* Cleared per run so a value left by an earlier case can never stand in
-     * for one this thread failed to record. pthread_join() below orders the
-     * thread's write against our read.
-     */
-    broadcast_frame = 0;
+    /* pthread_join() below orders the thread's write against our read */
+    struct poisoned_run run = {
+        .priv = priv,
+        .base = (uintptr_t)stack,
+        .on_poisoned_stack = false,
+    };
 
     pthread_attr_init(&attr);
     pthread_attr_setstack(&attr, stack, POISON_STACK_SZ);
-    ret = pthread_create(&tid, &attr, broadcast_thread, priv);
+    ret = pthread_create(&tid, &attr, broadcast_thread, &run);
     pthread_attr_destroy(&attr);
     if (ret != 0) {
         free(stack);
@@ -234,15 +249,8 @@ static int broadcast_on_poisoned_stack(TcpBackendPrivate *priv)
     }
     pthread_join(tid, NULL);
 
-    /* Compared as uintptr_t: relational operators on pointers into different
-     * objects are unspecified in C, and the frame is not part of `stack` as
-     * far as the language is concerned. */
-    uintptr_t base = (uintptr_t)stack;
-    bool on_poisoned_stack =
-        broadcast_frame >= base && broadcast_frame < base + POISON_STACK_SZ;
-
     free(stack);
-    return on_poisoned_stack ? 0 : -1;
+    return run.on_poisoned_stack ? 0 : -1;
 }
 
 /* Populate the mesh table with `n` nodes whose fields encode their index */
