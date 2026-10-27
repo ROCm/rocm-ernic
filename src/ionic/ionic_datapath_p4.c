@@ -3,9 +3,10 @@
  *
  * When a P4 program is loaded, every send work request runs through the
  * pipeline after its memory has been checked and before it is dispatched
- * (ionic_dp_p4_policy()).  A program can suppress the operation, and its
- * fp8 extern can run an arithmetic or a format conversion over registered
- * guest memory in place of the transfer.  Built only with ERNIC_BUILD_P4.
+ * (ionic_dp_p4_policy()).  A program can deny the operation, which fails
+ * it, and its fp8 extern can run an arithmetic or a format conversion over
+ * registered guest memory in place of the transfer.  Built only with
+ * ERNIC_BUILD_P4.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -359,11 +360,35 @@ static int dp_p4_extern_call(void *ctx, uint8_t type, uint8_t method,
 }
 
 /*
+ * The program dropped an operation that no extern ran for: it denied it.
+ *
+ * Nothing is transferred, and the work request fails with a local QP
+ * operation error.  The refusal is this NIC's own, made before anything
+ * reaches a wire, so the error is local, as a protection error found in
+ * the gather list is, and it is the same on every transport: a UD send
+ * the program dropped was never sent, not lost on the way.
+ *
+ * Completing it successfully would tell an RC sender that the peer had
+ * its data, and leave the peer waiting for a write that never comes, with
+ * nothing anywhere to say why.  The error completion ends the QP for the
+ * consumer, as any error does, and the log says whose decision it was,
+ * which the status alone cannot.
+ */
+static uint32_t dp_p4_denied(struct ionic_datapath *dp, uint32_t qp_id,
+                             uint8_t op, bool *done)
+{
+    vfu_log(dp->vfu_ctx, LOG_WARNING,
+            "ionic_datapath: QP %u op %u denied by the P4 program", qp_id, op);
+    *done = true;
+    return IONIC_STS_LOCAL_QP_OPER_ERR;
+}
+
+/*
  * Run the pipeline over one send WQE.
  *
  * Returns the completion status, and sets *@done when the ordinary
- * dispatch must not run: either because the program suppressed the
- * operation, or because the status is an error.
+ * dispatch must not run: because an extern did the operation in place of
+ * the transfer, or because the status is an error, a denial included.
  */
 uint32_t ionic_dp_p4_policy(struct ionic_datapath *dp, uint32_t qp_id,
                             uint8_t op, const uint8_t *wqe, uint32_t read_sz,
@@ -433,11 +458,12 @@ uint32_t ionic_dp_p4_policy(struct ionic_datapath *dp, uint32_t qp_id,
      * earlier table, such as an access list in front of the compute
      * table -- is a drop, and the engine still reports it.  Dispatching
      * the write anyway would let a request the extern declines bypass
-     * the program's explicit denial.
+     * the program's explicit denial.  It fails as a denial, exactly as it
+     * would with no extern call.
      */
     if (rc == DP_P4_NOT_COMPUTE && !ctx.ran) {
         if (suppress)
-            *done = true;
+            return dp_p4_denied(dp, qp_id, op, done);
         return IONIC_STS_OK;
     }
     if (rc < 0) {
@@ -470,7 +496,12 @@ uint32_t ionic_dp_p4_policy(struct ionic_datapath *dp, uint32_t qp_id,
         return IONIC_STS_LOCAL_QP_OPER_ERR;
     }
 
-    if (suppress)
+    /* An extern that ran and a drop: the extern did the operation. */
+    if (ctx.ran) {
         *done = true;
+        return IONIC_STS_OK;
+    }
+    if (suppress)
+        return dp_p4_denied(dp, qp_id, op, done);
     return IONIC_STS_OK;
 }

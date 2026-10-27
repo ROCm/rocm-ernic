@@ -5291,11 +5291,13 @@ static void test_p4_drop_then_map(void)
         .nsge = 1,
     };
 
-    /* A dropped operation completes without transferring, as it does when
+    /* A dropped operation fails without transferring, as it does when
      * nothing declines. */
     ih_post_send(&h, &a, &w);
-    check(T, ih_cq_poll(&h, &cq, &e) && !e.error,
-          "the dropped write did not complete successfully");
+    if (check(T, ih_cq_poll(&h, &cq, &e), "the dropped write did not complete"))
+        check(T, e.error && e.status_len == IH_STS_LOCAL_QP_OPER,
+              "the dropped write: status %u (error %d), expected %d",
+              e.status_len, e.error, IH_STS_LOCAL_QP_OPER);
     check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, sizeof(got)), "read back C");
     check(T, memcmp(got, poison, sizeof(got)) == 0,
           "a write the program dropped before the extern declined was "
@@ -5312,6 +5314,171 @@ static void test_p4_drop_then_map(void)
     ih_mr_free(&mrc);
     check(T, ih_cq_destroy(&h, &cq) == 0, "DESTROY_CQ failed");
 
+    teardown(T, &h);
+}
+
+#define P4D_CQ_D 8
+#define P4D_QP_C 42
+#define P4D_QP_D 43
+
+/*
+ * A program that denies an operation, with no extern anywhere: nothing is
+ * transferred, and the work request fails with a local QP operation error,
+ * on RC and UD alike, signalled or not.
+ *
+ * A successful completion would tell an RC sender its write had landed,
+ * and leave its peer waiting for data that never comes.
+ */
+static void test_p4_deny(void)
+{
+    const char *T = "p4-deny";
+    struct ih h;
+    struct ih_cq cq, cqd;
+    struct ih_qp a, b, c, d;
+    struct ih_mr mra = {0}, mrc = {0};
+    struct ih_cqe e;
+    struct p4_update up;
+    char err[160];
+    static uint8_t src[P4R_N], got[P4R_N], poison[P4R_N];
+
+    if (!setup(T, &h, "loopback"))
+        return;
+
+    bool ok = ih_cq_create(&h, &cq, P4R_CQ, 6) &&
+              ih_cq_create(&h, &cqd, P4D_CQ_D, 6) &&
+              ih_qp_create(&h, &a, P4R_QP_A, IH_QPT_RC, &cq, &cq, NULL) &&
+              ih_qp_create(&h, &b, P4R_QP_B, IH_QPT_RC, &cq, &cq, NULL) &&
+              ih_qp_connect(&h, &a, &b) &&
+              ih_qp_create(&h, &c, P4D_QP_C, IH_QPT_UD, &cq, &cq, NULL) &&
+              ih_qp_create(&h, &d, P4D_QP_D, IH_QPT_UD, &cqd, &cqd, NULL) &&
+              ih_mr_create(&h, &mra, FP8R_MR_A, FP8R_VA_A, P4R_MR_LEN,
+                           IH_ACCESS_ALL, false) &&
+              ih_mr_create(&h, &mrc, FP8R_MR_C, FP8R_VA_C, P4R_MR_LEN,
+                           IH_ACCESS_ALL, true);
+    for (uint32_t qp = P4D_QP_C; ok && qp <= P4D_QP_D; qp++)
+        ok = ih_qp_modify(&h, qp, IH_QP_STATE | IH_QP_QKEY, IH_QPS_INIT,
+                          UD_QKEY, NULL, 0) == 0 &&
+             ih_qp_modify(&h, qp, IH_QP_STATE, IH_QPS_RTR, 0, NULL, 0) == 0 &&
+             ih_qp_modify(&h, qp, IH_QP_STATE | IH_QP_SQ_PSN, IH_QPS_RTS, 0,
+                          NULL, 0) == 0;
+    ok = ok && ih_ah_create(&h, UD_AH, UD_SIP, UD_DIP) == 0;
+    if (!check(T, ok, "setup failed")) {
+        ih_mr_free(&mra);
+        ih_mr_free(&mrc);
+        teardown(T, &h);
+        return;
+    }
+
+    struct p4_engine *eng = p4_engine_create();
+    if (!check(T, eng != NULL, "p4_engine_create failed")) {
+        ih_mr_free(&mra);
+        ih_mr_free(&mrc);
+        teardown(T, &h);
+        return;
+    }
+    check(T, p4r_load(eng, "rdma_deny.json") == 0,
+          "the deny program did not load");
+    ionic_datapath_set_p4_engine(h.dp, eng);
+
+    memset(src, 0x38, sizeof(src));
+    check(T, ih_mr_write(&h, &mra, FP8R_VA_A, src, sizeof(src)),
+          "write the source");
+    memset(poison, 0xA5, sizeof(poison));
+    check(T, ih_mr_write(&h, &mrc, FP8R_VA_C, poison, sizeof(poison)),
+          "poison C");
+
+    struct ih_sge sge = {.va = FP8R_VA_A, .len = P4R_N, .lkey = mra.lkey};
+    struct ih_send w = {
+        .op = IH_OP_RDMA_WRITE,
+        .flags = IH_WQE_SIGNALLED,
+        .remote_va = FP8R_VA_C,
+        .rkey = mrc.lkey,
+        .sge = &sge,
+        .nsge = 1,
+    };
+
+    /* With the table empty, the default action lets the write through:
+     * the program runs, and denies nothing it has not been told to. */
+    ih_post_send(&h, &a, &w);
+    check(T, ih_cq_poll(&h, &cq, &e) && !e.error,
+          "the write did not complete with no entry");
+    check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, sizeof(got)), "read back C");
+    check(T, memcmp(got, src, sizeof(got)) == 0,
+          "with no entry the write did not land");
+
+    memset(&up, 0, sizeof(up));
+    up.type = P4_UPDATE_INSERT;
+    (void)snprintf(up.table, sizeof(up.table), "Ing.acl");
+    (void)snprintf(up.action, sizeof(up.action), "Ing.deny");
+    up.nmatch = 1;
+    up.match[0].len = 1;
+    up.match[0].value[P4_MATCH_BYTES - 1] = IH_OP_RDMA_WRITE;
+    check(T, p4_engine_update(eng, &up, err, sizeof(err)) == 0,
+          "the WRITE entry was not installed: %s", err);
+    up.match[0].value[P4_MATCH_BYTES - 1] = IH_OP_SEND;
+    check(T, p4_engine_update(eng, &up, err, sizeof(err)) == 0,
+          "the SEND entry was not installed: %s", err);
+
+    /*
+     * Denied, signalled and then not: the device posts a send completion
+     * for every work request, and a failed one must reach the guest
+     * whether or not it asked to be told of success.
+     */
+    for (int sig = 1; sig >= 0; sig--) {
+        const char *what = sig ? "a signalled write" : "an unsignalled write";
+
+        check(T, ih_mr_write(&h, &mrc, FP8R_VA_C, poison, sizeof(poison)),
+              "poison C");
+        w.flags = sig ? IH_WQE_SIGNALLED : 0;
+        ih_post_send(&h, &a, &w);
+        if (check(T, ih_cq_poll(&h, &cq, &e),
+                  "%s the program denied did "
+                  "not complete",
+                  what))
+            check(T,
+                  e.type == IH_CQE_TYPE_SEND_MSN && e.error &&
+                      e.status_len == IH_STS_LOCAL_QP_OPER,
+                  "%s the program denied: type %u status %u (error %d), "
+                  "expected %d",
+                  what, e.type, e.status_len, e.error, IH_STS_LOCAL_QP_OPER);
+        check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, sizeof(got)),
+              "read back C");
+        check(T, memcmp(got, poison, sizeof(got)) == 0,
+              "%s the program denied was transferred", what);
+    }
+
+    /*
+     * A denied datagram fails the same way, by its SQ index: it was never
+     * sent, which is not the same as being lost on the way. A receive is
+     * posted at D so that a datagram the device did deliver would show.
+     */
+    struct ih_sge dst = {
+        .va = FP8R_VA_C, .len = IH_GRH_SIZE + 64, .lkey = mrc.lkey};
+    struct ih_sge dgram = {.va = FP8R_VA_A, .len = 64, .lkey = mra.lkey};
+    struct ih_send s = {.op = IH_OP_SEND,
+                        .flags = IH_WQE_SIGNALLED,
+                        .ah_id = UD_AH,
+                        .dest_qpn = P4D_QP_D,
+                        .qkey = UD_QKEY,
+                        .sge = &dgram,
+                        .nsge = 1};
+
+    ih_post_recv(&h, &d, &dst, 1);
+    uint64_t send_id = ih_post_send(&h, &c, &s);
+    if (check(T, ih_cq_poll(&h, &cq, &e),
+              "a datagram the program denied did not complete"))
+        check(T,
+              e.type == IH_CQE_TYPE_SEND_NPG && e.wqe_id == send_id &&
+                  e.error && e.status_len == IH_STS_LOCAL_QP_OPER,
+              "a datagram the program denied: type %u wqe_id %" PRIu64
+              " status %u (error %d), expected %d by SQ index",
+              e.type, e.wqe_id, e.status_len, e.error, IH_STS_LOCAL_QP_OPER);
+    check(T, cq_empty(&h, &cqd), "a datagram the program denied was delivered");
+
+    ionic_datapath_set_p4_engine(h.dp, NULL);
+    p4_engine_destroy(eng);
+    ih_mr_free(&mra);
+    ih_mr_free(&mrc);
     teardown(T, &h);
 }
 
@@ -6153,6 +6320,7 @@ static const struct {
     {"p4-cvt", test_p4_cvt},
     {"p4-cvt-map", test_p4_cvt_then_map},
     {"p4-drop-map", test_p4_drop_then_map},
+    {"p4-deny", test_p4_deny},
     {"p4-devcmd", test_p4_devcmd},
     {"p4-devcmd-errors", test_p4_devcmd_errors},
 #endif
