@@ -38,6 +38,7 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "ernic_ib.h"
+#include "ernic_limits.h"
 #include "ionic/ionic_datapath.h"
 #include "ionic/ionic_datapath_priv.h"
 #include "ionic/ionic_eth_emu.h"
@@ -531,6 +532,15 @@ static void test_page_table_is_bounded_by_the_region(void)
     check(ionic_dp_buf_init(&g_dp, &b, &desc, 0, 4096) == -EINVAL,
           "a one-page region cannot have a million table entries");
     check(b.pages == NULL, "the oversized table was never allocated");
+
+    /* A region long enough to need every entry the guest claims, but more
+     * of them than the device's page tables hold: the guest chooses the
+     * length too, so it alone cannot bound the allocation. */
+    desc.map_count = ERNIC_MAX_PAGE_TABLE_ENTRIES + 1u;
+    check(ionic_dp_buf_init(&g_dp, &b, &desc, 0,
+                            (uint64_t)desc.map_count << 12) == -EINVAL,
+          "a table larger than the device's page tables is refused");
+    check(b.pages == NULL, "the over-cap table was never allocated");
 
     /* Only the rejecting direction is checked here. A map_count the bound
      * accepts goes on to read the table out of guest memory, which needs a

@@ -99,6 +99,53 @@ _Static_assert(ERNIC_MAX_CQ > ERNIC_MAX_AQ,
 #define ERNIC_MAX_MR 2048u
 
 /*
+ * Page table entries, the LIF identity's npts_per_lif: how many the device's
+ * page tables hold between them. No one table can need more, so the data
+ * path refuses a ring or memory region whose table claims more
+ * (ionic_dp_buf_init()), whatever length the guest gives the region; that
+ * length is the guest's own choice, and bounds nothing on its own.
+ *
+ * This is also the knob that sets the guest's maximum memory-region size,
+ * and that is not obvious from here, so: the driver does
+ *
+ *   attr->max_mr_size = dev->lif_cfg.npts_per_lif * PAGE_SIZE / 2;
+ *   (drivers/infiniband/hw/ionic/ionic_ibdev.c:37)
+ *
+ * -- an explicit halving, presumably for page-table headroom. At the previous
+ * (1u << 20) that reported 1048576 * 4096 / 2 = 0x80000000, i.e. 2 GiB, which
+ * reads like something truncating a 4 GiB constant and is not: it is this
+ * formula working as intended. 1u << 21 reports 4 GiB.
+ *
+ * Nothing is allocated from this value on either side -- the device builds
+ * each table as its region is created, at the size the guest asks for, and
+ * the driver uses it only for max_mr_size and max_fast_reg_page_list_len
+ * (ionic_ibdev.c:37,74) -- so raising it costs no memory up front. It does
+ * let one table grow larger: 8 bytes an entry, so 16 GiB at this value.
+ *
+ * It matters because LMCache registers its whole L1 arena as ONE memory
+ * region (nixl_impl.py:341), so max_mr_size is a hard ceiling on per-node L1.
+ *
+ * WHY SO LARGE. Real HCAs advertise max_mr_size as effectively unbounded
+ * (ConnectX-class parts report UINT64_MAX) and let pinnable host memory be
+ * the real limit. A small advertised cap is an emulation artifact that
+ * surfaces as a mystifying ENOMEM from ibv_reg_mr long before the host is
+ * anywhere near out of memory, so match the hardware convention and let
+ * memory do the limiting.
+ *
+ * 1u << 31 reports 2^31 * 4096 / 2 = 2^42 = 4 TiB. The arithmetic is safe:
+ * npts_per_lif is u32 and PAGE_SIZE is unsigned long, so the product is done
+ * in 64 bits, and max_fast_reg_page_list_len (npts/2 = 2^30) still fits the
+ * u32 it is assigned to. A literal 0xFFFFFFFF is avoided deliberately -- it
+ * would be ~8 TiB but reads like a sentinel.
+ *
+ * MAX_MR_SIZE in src/qemu/rdma_rm_defs.h (1UL << 32) does NOT constrain
+ * this: it is referenced only by rocm_ernic_compat.c's pvrdma dev_attr,
+ * which the ionic guest driver never reads, and no registration path
+ * validates against it.
+ */
+#define ERNIC_MAX_PAGE_TABLE_ENTRIES (1u << 31)
+
+/*
  * SGEs in one work request: the most the data path reads from a WQE. The
  * guest driver works out its own limit from the largest WQE stride the LIF
  * identity allows, and ionic_datapath.c checks that this many fill the
