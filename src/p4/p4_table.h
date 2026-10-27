@@ -109,10 +109,6 @@ void p4_entries_destroy(struct p4_entries *ent);
 int p4_entries_update(struct p4_entries *ent, const struct p4_program *prog,
                       const struct p4_update *up, char *err, size_t err_len);
 
-/* How many entries @table of @pipe currently holds. */
-uint32_t p4_entries_count(const struct p4_entries *ent, p4_idx_t pipe,
-                          p4_idx_t table);
-
 /*
  * Find the entry matching @keys, or NULL.  @keys holds one value per key
  * field of the table, in order.  Ties are broken as P4 requires: the

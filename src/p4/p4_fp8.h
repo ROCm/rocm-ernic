@@ -17,18 +17,15 @@
  * On overflow this SATURATES to +/-448.  That is a deliberate divergence
  * from the "FN" convention that numpy's ml_dtypes.float8_e4m3fn and JAX
  * follow, where a value too large to represent becomes NaN.  Saturating is
- * what AMD's conversion instructions do and what a reduction needs: one
- * overflowed term turning the entire result into NaN loses everything else
- * in the sum, which is the opposite of useful.  It is the only difference.
+ * what AMD's conversion instructions do and what a reduction needs: a sum
+ * that overflows to NaN loses every other term in it, which is the opposite
+ * of useful.  It is the only difference.
  * Decoding was checked against ml_dtypes for all 256 encodings, and
  * encoding for 40506 values covering every tie between adjacent
  * representable values, the subnormal range, and both boundaries; once the
  * overflow convention is accounted for, the two agree exactly.
  *
- * Reductions accumulate in float, not in fp8, and round once at the end.
- * That is what fp8 hardware does, and it is the only way a sum of more than
- * a couple of terms means anything: the gap between adjacent fp8 values near
- * 1.0 is 1/8, so rounding after every step loses the sum entirely.
+ * Arithmetic is done in float, not in fp8, and each result rounded once.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -42,17 +39,10 @@
 #include <stdint.h>
 
 /* The canonical NaN encoding, and the largest finite magnitude. */
-#define P4_FP8_NAN     0x7Fu
-#define P4_FP8_MAX     0x7Eu /* 448.0 */
-#define P4_FP8_MAX_VAL 448.0f
+#define P4_FP8_NAN 0x7Fu
+#define P4_FP8_MAX 0x7Eu /* 448.0 */
 
-/*
- * The operation applied to a pair of operands.  The same code names the
- * pointwise operation for p4_fp8_map() and the combining operation for
- * p4_fp8_reduce(), so a program selects an arithmetic rather than a
- * calling convention, and an operation that is neither -- a matrix
- * product, say -- can be added without disturbing either.
- */
+/* The operation p4_fp8_map() applies to each pair of operands. */
 enum p4_fp8_op {
     P4_FP8_OP_ADD = 0,
     P4_FP8_OP_MUL = 1,
@@ -75,9 +65,8 @@ uint8_t p4_fp8_from_float(float v);
 /*
  * Apply @op elementwise: out[i] = a[i] op b[i], over @n elements.
  *
- * This is the shape a collective wants -- two partial buffers combined
- * into a third of the same length -- as distinct from p4_fp8_reduce()
- * below, which collapses both to a single value.
+ * This is the shape a collective wants: two partial buffers combined
+ * into a third of the same length.
  *
  * Each element is rounded once, on the way out.  A NaN in either input
  * makes that element NaN and leaves the rest alone, which is what
@@ -88,26 +77,5 @@ uint8_t p4_fp8_from_float(float v);
  */
 bool p4_fp8_map(enum p4_fp8_op op, const uint8_t *a, const uint8_t *b, size_t n,
                 uint8_t *out);
-
-/*
- * Reduce two equal-length fp8 buffers to one fp8 value.
- *
- * @a and @b are @n bytes each, every byte one E4M3 value.  What the
- * result is depends on @op, and for MUL it is not a product of every
- * element but a dot product:
- *
- *     ADD   sum of a[i] + b[i]     every element of both buffers summed
- *     MUL   sum of a[i] * b[i]     the dot product of @a and @b
- *     MAX   max of a[i] and b[i]   the largest element of either
- *
- * Writes the result to @out, or P4_FP8_NAN if any input is NaN, which is
- * what makes a bad operand visible to the caller rather than silently
- * absorbed.  @n of 0 yields the sum's identity, zero, for ADD and MUL, and
- * the most negative finite value, -448, for MAX.
- *
- * Returns false and leaves @out untouched on a bad argument.
- */
-bool p4_fp8_reduce(enum p4_fp8_op op, const uint8_t *a, const uint8_t *b,
-                   size_t n, uint8_t *out);
 
 #endif /* P4_FP8_H */

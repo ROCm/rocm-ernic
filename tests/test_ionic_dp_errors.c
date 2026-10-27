@@ -444,7 +444,6 @@ void ernic_stats_rdma_bytes(struct ernic_stats *st, uint32_t qp_id,
     (void)op;
 }
 
-
 /* ---- Harness ----------------------------------------------------------- */
 
 static int failures;

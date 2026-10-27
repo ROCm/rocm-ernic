@@ -332,7 +332,6 @@ static uint64_t db(uint32_t qid, uint8_t ring, uint16_t p_index)
            ((uint64_t)((qid >> 8) & 0xffffu) << 32);
 }
 
-
 /* ---- Receive-ring fixtures --------------------------------------------- */
 
 #define RQ_QP_ID 6
@@ -631,7 +630,6 @@ static void test_ud_delivery_is_refused_to_the_wrong_queue(void)
     check(ionic_dp_ud_delivery_refused(&ud, &gsi, 0x11111111u) != NULL,
           "GSI refuses a datagram that does not present its Q_Key");
 }
-
 
 /* Storage for the registration tests, which need a CQ table too. */
 static struct ionic_cq_ring g_reg_cq[4];

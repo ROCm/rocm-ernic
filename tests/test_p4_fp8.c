@@ -164,88 +164,9 @@ static void test_saturation_and_rounding(void)
           "a subnormal rounding up becomes the smallest normal");
 }
 
-static void test_reduce(void)
-{
-    uint8_t out;
-    const uint8_t one = 0x38;  /* 1.0 */
-    const uint8_t two = 0x40;  /* 2.0 */
-    const uint8_t four = 0x48; /* 4.0 */
-
-    /* ADD reduces both buffers: sum of every a[i] + b[i]. */
-    {
-        const uint8_t a[] = {one, one, one, one};
-        const uint8_t b[] = {one, one, one, one};
-        check(p4_fp8_reduce(P4_FP8_OP_ADD, a, b, 4, &out), "ADD succeeds");
-        check(out == 0x50, "1+1 over four elements is 8.0");
-    }
-
-    /* MUL is a dot product. */
-    {
-        const uint8_t a[] = {one, two, four};
-        const uint8_t b[] = {two, two, one};
-        /* 1*2 + 2*2 + 4*1 = 10 */
-        check(p4_fp8_reduce(P4_FP8_OP_MUL, a, b, 3, &out), "MUL succeeds");
-        check(feq(p4_fp8_to_float(out), 10.0f), "the dot product is 10.0");
-    }
-
-    {
-        const uint8_t a[] = {one, four};
-        const uint8_t b[] = {two, one};
-        check(p4_fp8_reduce(P4_FP8_OP_MAX, a, b, 2, &out), "MAX succeeds");
-        check(feq(p4_fp8_to_float(out), 4.0f), "the maximum is 4.0");
-    }
-
-    /* Accumulating in float, not fp8, is what makes a long sum meaningful:
-     * 0.5 added 16 times is 8, but rounding to fp8 after each step would
-     * stall long before that. */
-    {
-        uint8_t a[16], b[16];
-        memset(a, 0x28, sizeof(a)); /* 0.25 */
-        memset(b, 0x28, sizeof(b));
-        check(p4_fp8_reduce(P4_FP8_OP_ADD, a, b, 16, &out), "ADD succeeds");
-        check(feq(p4_fp8_to_float(out), 8.0f),
-              "sixteen 0.25+0.25 pairs sum to 8.0");
-    }
-
-    /* A NaN operand must reach the caller, not vanish into the sum. */
-    {
-        const uint8_t a[] = {one, P4_FP8_NAN};
-        const uint8_t b[] = {one, one};
-        check(p4_fp8_reduce(P4_FP8_OP_ADD, a, b, 2, &out), "ADD succeeds");
-        check(out == P4_FP8_NAN, "a NaN operand makes the result NaN");
-    }
-
-    /* An overflowing sum saturates rather than wrapping. */
-    {
-        uint8_t a[8], b[8];
-        memset(a, 0x7E, sizeof(a)); /* 448 */
-        memset(b, 0x7E, sizeof(b));
-        check(p4_fp8_reduce(P4_FP8_OP_ADD, a, b, 8, &out), "ADD succeeds");
-        check(out == P4_FP8_MAX, "an overflowing sum saturates");
-    }
-
-    /* Identities for an empty reduction. */
-    check(p4_fp8_reduce(P4_FP8_OP_ADD, NULL, NULL, 0, &out) && out == 0x00,
-          "an empty ADD is zero");
-    check(p4_fp8_reduce(P4_FP8_OP_MUL, NULL, NULL, 0, &out) && out == 0x00,
-          "an empty MUL is zero");
-
-    /* Bad arguments are refused rather than read. */
-    check(!p4_fp8_reduce(P4_FP8_OP_ADD, NULL, NULL, 4, &out),
-          "a NULL operand with a non-zero length is refused");
-    check(!p4_fp8_reduce(P4_FP8_OP_ADD, &one, &one, 1, NULL),
-          "a NULL result is refused");
-    /* Deliberately out of range: a control message can carry any value in
-     * the field, so the default branch that rejects one has to be covered.
-     * NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) */
-    check(!p4_fp8_reduce((enum p4_fp8_op)99, &one, &one, 1, &out),
-          "an unknown operation is refused");
-}
-
 /*
  * Elementwise. This is the shape a collective wants: two partial buffers
- * combined into a third of the same length, rather than collapsed to one
- * value the way p4_fp8_reduce() does.
+ * combined into a third of the same length.
  */
 static void test_map(void)
 {
@@ -278,11 +199,7 @@ static void test_map(void)
         check(feq(p4_fp8_to_float(out[1]), 4.0f), "max(4,2) is 4");
     }
 
-    /*
-     * A NaN spoils its own element and no other. That is the difference
-     * from a reduction, where one NaN has to poison the result because
-     * there is only one.
-     */
+    /* A NaN spoils its own element and no other. */
     {
         const uint8_t a[] = {one, P4_FP8_NAN, one};
         const uint8_t b[] = {one, one, one};
@@ -319,14 +236,12 @@ static void test_map(void)
           "an empty map is accepted and does nothing");
 }
 
-
 int main(void)
 {
     test_known_encodings();
     test_nan();
     test_round_trip_exhaustive();
     test_saturation_and_rounding();
-    test_reduce();
     test_map();
 
     if (failures) {

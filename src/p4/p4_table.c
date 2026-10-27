@@ -429,14 +429,6 @@ int p4_entries_update(struct p4_entries *ent, const struct p4_program *prog,
     return 0;
 }
 
-uint32_t p4_entries_count(const struct p4_entries *ent, p4_idx_t pipe,
-                          p4_idx_t table)
-{
-    if (!ent || pipe >= P4_MAX_PIPELINES || table >= P4_MAX_TABLES)
-        return 0;
-    return ent->t[pipe][table].n;
-}
-
 const struct p4_entry *p4_entries_lookup(const struct p4_entries *ent,
                                          const struct p4_program *prog,
                                          p4_idx_t pipe, p4_idx_t table,

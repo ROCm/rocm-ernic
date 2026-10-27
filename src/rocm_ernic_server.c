@@ -290,7 +290,6 @@ static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
     return ionic_eth_emu_bar2_access(emu, buf, count, offset, is_write);
 }
 
-
 /**
  * Device reset callback
  *
@@ -356,7 +355,6 @@ static void dma_unregister_cb(vfu_ctx_t *vfu_ctx, vfu_dma_info_t *info)
     vfu_log(vfu_ctx, LOG_DEBUG, "DMA region unregistered: iova=%p len=%zu",
             info->iova.iov_base, info->iova.iov_len);
 }
-
 
 /**
  * Initialize the shared RDMA device core via wrapper API.

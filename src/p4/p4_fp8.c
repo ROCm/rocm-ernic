@@ -171,7 +171,7 @@ uint8_t p4_fp8_from_float(float v)
                      ((q - 8u) & FP8_MAN_MASK));
 }
 
-/* Combine one pair of operands. Shared so map and reduce cannot drift. */
+/* Combine one pair of operands. */
 static bool fp8_combine(enum p4_fp8_op op, float fa, float fb, float *out)
 {
     switch (op) {
@@ -214,62 +214,5 @@ bool p4_fp8_map(enum p4_fp8_op op, const uint8_t *a, const uint8_t *b, size_t n,
         (void)fp8_combine(op, p4_fp8_to_float(a[i]), p4_fp8_to_float(b[i]), &r);
         out[i] = p4_fp8_from_float(r);
     }
-    return true;
-}
-
-bool p4_fp8_reduce(enum p4_fp8_op op, const uint8_t *a, const uint8_t *b,
-                   size_t n, uint8_t *out)
-{
-    float acc;
-
-    if (!out)
-        return false;
-    if (n != 0 && (!a || !b))
-        return false;
-
-    switch (op) {
-    case P4_FP8_OP_ADD:
-    case P4_FP8_OP_MUL:
-        acc = 0.0f;
-        break;
-    case P4_FP8_OP_MAX:
-        acc = -P4_FP8_MAX_VAL;
-        break;
-    default:
-        return false;
-    }
-
-    for (size_t i = 0; i < n; i++) {
-        float fa, fb;
-
-        /* A NaN anywhere in either operand makes the whole result NaN, so
-         * it reaches the caller rather than being absorbed by the sum. */
-        if (p4_fp8_is_nan(a[i]) || p4_fp8_is_nan(b[i])) {
-            *out = P4_FP8_NAN;
-            return true;
-        }
-
-        fa = p4_fp8_to_float(a[i]);
-        fb = p4_fp8_to_float(b[i]);
-
-        switch (op) {
-        case P4_FP8_OP_ADD:
-            acc += fa + fb;
-            break;
-        case P4_FP8_OP_MUL:
-            acc += fa * fb;
-            break;
-        case P4_FP8_OP_MAX:
-            if (fa > acc)
-                acc = fa;
-            if (fb > acc)
-                acc = fb;
-            break;
-        default:
-            return false;
-        }
-    }
-
-    *out = p4_fp8_from_float(acc);
     return true;
 }
