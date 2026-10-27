@@ -463,6 +463,17 @@ is architecture state, not something to put on a wire.
 Nothing is parsed or deparsed on this path. The program
 decides only whether to drop the operation and whether to
 apply fp8 arithmetic to it, through an extern.</p>
+<p>A dropped operation is denied: nothing is transferred, and
+the work request completes with a local QP operation error
+(<code class="docutils literal notranslate"><span class="pre">IBV_WC_LOC_QP_OP_ERR</span></code>), whether or not it was signalled,
+and the server logs that the P4 program denied it. The
+refusal is the sending NIC’s own, made before anything
+reaches a wire, so a UD send fails the same way as an RC
+operation rather than looking like a lost datagram. As with
+any error completion, the guest’s provider then flushes the
+rest of the QP’s work. The exception is a drop that goes
+with an extern call that did the operation, below: that
+completes successfully.</p>
 <p>An extern is how a target gives a program something the
 language cannot express. P4 has no floating-point type – its
 base types are bit-vectors – so fp8 arithmetic is provided
