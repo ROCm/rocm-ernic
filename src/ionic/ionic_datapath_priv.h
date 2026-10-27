@@ -23,6 +23,7 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "ernic_limits.h"
+#include "ernic_log.h"
 #include "ernic_mesh.h"
 #include "ernic_stats.h"
 #include "ionic/ionic_datapath.h"
@@ -382,6 +383,15 @@ struct ionic_datapath {
      * must be cleared before the engine is destroyed.
      */
     struct p4_engine *p4_engine;
+    /*
+     * The limits on what ionic_dp_p4_policy() logs, which a guest can make
+     * it log once per work request: a denial, a failed pipeline, and an
+     * extern call without a drop.  Used only on the vfu thread, through
+     * ionic_dp_log_ok().
+     */
+    ErnicLogLimit p4_log_denied;
+    ErnicLogLimit p4_log_failed;
+    ErnicLogLimit p4_log_no_drop;
 #endif
 
     struct ionic_qp_ring *qp;   /* indexed by driver qp_id */
@@ -442,10 +452,13 @@ struct ionic_datapath {
      * messages each pass leaves waiting for a receive leave no room for
      * @rx_waiting, since @rx_crowded_ms on @now_ms's clock.
      * @rx_dropped_logged is how much of @rx_dropped has been logged.
+     * @log_cq_error limits cq_post()'s line for each error completion,
+     * which a guest can have it log once per work request.
      */
     bool rx_crowded;
     uint64_t rx_crowded_ms;
     uint64_t rx_dropped_logged;
+    ErnicLogLimit log_cq_error;
 
     /*
      * Why the last transfer stopped short.  A byte count on its own cannot
@@ -545,6 +558,14 @@ void ionic_dp_rdma_bytes(const struct ionic_datapath *dp, uint32_t qp_id,
 
 /* Now, in milliseconds, on the data path's clock (@now_ms above). */
 uint64_t ionic_dp_now_ms(const struct ionic_datapath *dp);
+
+/*
+ * Whether to log one more of the lines @lim, one of @dp's, limits
+ * (ernic_log.h), on the data path's clock.  If any were held back, it logs
+ * first how many @what there were.  On the vfu thread only.
+ */
+bool ionic_dp_log_ok(struct ionic_datapath *dp, ErnicLogLimit *lim,
+                     const char *what);
 
 /*
  * Does the MR named by @key cover [@va, @va + @len)?  Key 0 names a bus

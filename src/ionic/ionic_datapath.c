@@ -47,6 +47,7 @@
 #include "ernic_dma.h"
 #include "ernic_ib.h"
 #include "ernic_limits.h"
+#include "ernic_log.h"
 #include "ernic_mesh.h"
 #include "ernic_stats.h"
 #include "ernic_time.h"
@@ -1292,8 +1293,12 @@ static void cq_post(struct ionic_datapath *dp, uint32_t cq_id,
      * is no longer visible from outside. Saying it here is the difference
      * between a named fault and a consumer that reports only that its work
      * was flushed.
+     *
+     * A guest can have one of these logged per work request, though, so
+     * the lines are limited, and in a flood only the first few are named.
      */
-    if (error && status_len != IONIC_STS_WQE_FLUSHED_ERR)
+    if (error && status_len != IONIC_STS_WQE_FLUSHED_ERR &&
+        ionic_dp_log_ok(dp, &dp->log_cq_error, "error completion(s)"))
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: CQ %u completing QP %u in error: status %u, "
                 "cqe type %u",
@@ -2040,6 +2045,19 @@ uint64_t ionic_dp_now_ms(const struct ionic_datapath *dp)
     if (dp->now_ms)
         return dp->now_ms();
     return ernic_monotonic_ms();
+}
+
+bool ionic_dp_log_ok(struct ionic_datapath *dp, ErnicLogLimit *lim,
+                     const char *what)
+{
+    uint64_t held;
+
+    if (!ernic_log_limit(lim, ionic_dp_now_ms(dp), &held))
+        return false;
+    if (held)
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: %" PRIu64 " more %s not logged", held, what);
+    return true;
 }
 
 static bool dp_is_remote(const struct ionic_datapath *dp,

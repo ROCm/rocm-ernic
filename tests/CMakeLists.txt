@@ -666,6 +666,7 @@ set_tests_properties(ionic-counter-snapshot-unit PROPERTIES TIMEOUT 30)
 add_executable(test_ionic_dp_errors
     test_ionic_dp_errors.c
     ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_log.c
     ${PROJECT_SOURCE_DIR}/src/ionic/ionic_datapath.c
     ${PROJECT_SOURCE_DIR}/src/ionic/ionic_datapath_nvmeof.c
     ${PROJECT_SOURCE_DIR}/src/ionic/ionic_datapath_s3.c
@@ -696,6 +697,7 @@ target_link_libraries(test_ionic_dp_errors PRIVATE pthread)
 add_executable(test_ionic_cq_arm
     test_ionic_cq_arm.c
     ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_log.c
     ${PROJECT_SOURCE_DIR}/src/ionic/ionic_datapath.c
     ${PROJECT_SOURCE_DIR}/src/ionic/ionic_datapath_nvmeof.c
     ${PROJECT_SOURCE_DIR}/src/ionic/ionic_datapath_s3.c
@@ -730,6 +732,7 @@ target_link_libraries(test_ionic_cq_arm PRIVATE
 add_executable(test_ionic_rq_wrap
     test_ionic_rq_wrap.c
     ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_log.c
     ${PROJECT_SOURCE_DIR}/src/ionic/ionic_datapath.c
     ${PROJECT_SOURCE_DIR}/src/ionic/ionic_datapath_nvmeof.c
     ${PROJECT_SOURCE_DIR}/src/ionic/ionic_datapath_s3.c
@@ -942,8 +945,8 @@ target_link_libraries(test_qemu_stubs PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
 # Log level test: ERNIC_LOG_LEVEL parsing, threads racing the first lookup,
-# and what each reporter prints. It links ernic_log.c and error-report.c
-# directly.
+# what each reporter prints, and the log limit. It links ernic_log.c and
+# error-report.c directly.
 add_executable(ernic-test-log-level test_log_level.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
     ${PROJECT_SOURCE_DIR}/src/ernic_log.c
@@ -1568,7 +1571,7 @@ set(ERNIC_HARNESS_GROUPS
 if(ERNIC_BUILD_P4)
     list(APPEND ERNIC_HARNESS_GROUPS p4-port p4-attach fp8-map p4-rdma p4-cvt
                                       p4-cvt-map p4-drop-map p4-deny
-                                      p4-devcmd p4-devcmd-errors)
+                                      p4-log-limit p4-devcmd p4-devcmd-errors)
 endif()
 foreach(ernic_harness_group IN LISTS ERNIC_HARNESS_GROUPS)
     add_test(

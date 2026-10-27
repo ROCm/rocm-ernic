@@ -684,6 +684,15 @@
   * write part of an RDMA READ or WRITE that runs past the end of its
     region before refusing it (within the region, so no other memory was
     reached); it is now refused before anything moves.
+* **A guest could fill the host's disk with warnings.** Every RDMA
+  completion in error, other than a flush, logged a `completing QP ... in
+  error` line, and with the P4 engine, so did every operation the program
+  denied, whose pipeline failed, or that called an extern without a drop,
+  and every refused table update, refused program and unknown P4 command.
+  A guest looping on any of them grew the log without bound. Each of these
+  messages is now logged at most 10 times every 5 seconds per device, and
+  the first one logged after others were held back follows a line saying
+  how many, such as `ionic_datapath: 1234 more P4 denial(s) not logged`.
 * **Guest lengths and addresses that wrap past 2^32 or 2^64.**
   * An inline SEND claiming more data than its work request holds read on
     past the request into whatever guest memory followed it, with no memory

@@ -402,6 +402,14 @@ struct p4_devcmd *p4_devcmd_create(vfu_ctx_t *vfu_ctx, struct p4_engine *eng,
 void p4_devcmd_destroy(struct p4_devcmd *pd);
 
 /*
+ * The clock, in milliseconds, that the limits on what a guest can have
+ * logged run on.  NULL, as p4_devcmd_create() leaves it, is CLOCK_MONOTONIC;
+ * a test sets its own, before sending a command, to move from one interval
+ * to the next when it chooses.
+ */
+void p4_devcmd_set_clock(struct p4_devcmd *pd, uint64_t (*now_ms)(void));
+
+/*
  * Handle one command.  Matches ionic_rdma_devcmd_fn_t: @cmd is the
  * 64-byte command and @comp the 16-byte completion, which this clears
  * before filling.

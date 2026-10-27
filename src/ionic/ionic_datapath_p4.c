@@ -377,8 +377,10 @@ static int dp_p4_extern_call(void *ctx, uint8_t type, uint8_t method,
 static uint32_t dp_p4_denied(struct ionic_datapath *dp, uint32_t qp_id,
                              uint8_t op, bool *done)
 {
-    vfu_log(dp->vfu_ctx, LOG_WARNING,
-            "ionic_datapath: QP %u op %u denied by the P4 program", qp_id, op);
+    if (ionic_dp_log_ok(dp, &dp->p4_log_denied, "P4 denial(s)"))
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: QP %u op %u denied by the P4 program", qp_id,
+                op);
     *done = true;
     return IONIC_STS_LOCAL_QP_OPER_ERR;
 }
@@ -467,9 +469,10 @@ uint32_t ionic_dp_p4_policy(struct ionic_datapath *dp, uint32_t qp_id,
         return IONIC_STS_OK;
     }
     if (rc < 0) {
-        vfu_log(dp->vfu_ctx, LOG_WARNING,
-                "ionic_datapath: QP %u op %u P4 pipeline failed (%d)", qp_id,
-                op, rc);
+        if (ionic_dp_log_ok(dp, &dp->p4_log_failed, "P4 pipeline failure(s)"))
+            vfu_log(dp->vfu_ctx, LOG_WARNING,
+                    "ionic_datapath: QP %u op %u P4 pipeline failed (%d)",
+                    qp_id, op, rc);
         *done = true;
         return IONIC_STS_LOCAL_QP_OPER_ERR;
     }
@@ -487,11 +490,13 @@ uint32_t ionic_dp_p4_policy(struct ionic_datapath *dp, uint32_t qp_id,
      * of it, and what it tells the guest is not to trust the region.
      */
     if (ctx.ran && !suppress) {
-        vfu_log(dp->vfu_ctx, LOG_WARNING,
-                "ionic_datapath: QP %u op %u P4 program called an extern but "
-                "did not suppress the operation; the transfer would overwrite "
-                "the result",
-                qp_id, op);
+        if (ionic_dp_log_ok(dp, &dp->p4_log_no_drop,
+                            "P4 extern call(s) without a drop"))
+            vfu_log(dp->vfu_ctx, LOG_WARNING,
+                    "ionic_datapath: QP %u op %u P4 program called an extern "
+                    "but did not suppress the operation; the transfer would "
+                    "overwrite the result",
+                    qp_id, op);
         *done = true;
         return IONIC_STS_LOCAL_QP_OPER_ERR;
     }

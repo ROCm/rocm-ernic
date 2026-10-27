@@ -1,7 +1,7 @@
 /*
  *
- * Unit tests for the log level in ernic_log.c, and the reporters that
- * print through it.
+ * Unit tests for the log level in ernic_log.c, the reporters that print
+ * through it, and its limit on how often a message is logged.
  *
  * The level is looked up from ERNIC_LOG_LEVEL on first use, so each case
  * runs in a new process that starts with it unresolved: this program,
@@ -19,7 +19,8 @@
  * Before the children, this process checks what doesn't depend on the
  * first call: which strings parse to a level, each level's name, and that
  * each reporter, ours and QEMU's, prints at its own level and above and
- * nothing below, with its output captured from stdout and stderr.
+ * nothing below, with its output captured from stdout and stderr, and that
+ * a log limit lets lines through and holds them back when it should.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -29,6 +30,7 @@
  */
 
 #include <fcntl.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <pthread.h>
 #include <spawn.h>
@@ -584,6 +586,102 @@ static int check_reporters(void)
     return failed ? 1 : 0;
 }
 
+/*
+ * ernic_log_limit() at @now: whether it let the line through, and if so,
+ * that it reported @want_held lines held back; if not, that it reported 0.
+ * Returns 1 if not, else 0.
+ */
+static int limit_step(ErnicLogLimit *lim, uint64_t now, bool want_ok,
+                      uint64_t want_held, const char *what)
+{
+    uint64_t held = UINT64_MAX;
+    bool ok = ernic_log_limit(lim, now, &held);
+
+    if (!want_ok) {
+        want_held = 0;
+    }
+    if (ok != want_ok || held != want_held) {
+        printf("FAIL log limit, %s, at %" PRIu64 " ms: %s, %" PRIu64
+               " held; want %s, %" PRIu64 " held\n",
+               what, now, ok ? "logged" : "held back", held,
+               want_ok ? "logged" : "held back", want_held);
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * A limit lets ERNIC_LOG_LIMIT_BURST lines through in each
+ * ERNIC_LOG_LIMIT_MS, and the first line after an interval's burst reports
+ * how many were held back. Returns 1 if a check failed, else 0.
+ */
+static int check_log_limit(void)
+{
+    const uint64_t t0s[] = {0, UINT64_C(123456789)};
+    int failed = 0;
+
+    /* From a zeroed limit, on a clock starting at 0, as a test's does, and
+     * on one well past it, as CLOCK_MONOTONIC is. */
+    for (size_t i = 0; i < sizeof(t0s) / sizeof(t0s[0]); i++) {
+        const uint64_t t0 = t0s[i];
+        ErnicLogLimit lim = {0};
+
+        for (uint32_t n = 0; n < ERNIC_LOG_LIMIT_BURST; n++) {
+            failed += limit_step(&lim, t0, true, 0, "the burst");
+        }
+        for (uint32_t n = 0; n < 25; n++) {
+            failed += limit_step(&lim, t0, false, 0, "past the burst");
+        }
+        /* The last millisecond of the interval is still in it. */
+        failed += limit_step(&lim, t0 + ERNIC_LOG_LIMIT_MS - 1, false, 0,
+                             "the interval's last ms");
+        failed += limit_step(&lim, t0 + ERNIC_LOG_LIMIT_MS, true, 26,
+                             "the next interval's first line");
+        /* Reported once, so the count starts again. */
+        failed += limit_step(&lim, t0 + ERNIC_LOG_LIMIT_MS, true, 0,
+                             "the next interval's second line");
+    }
+
+    /* A quiet interval lets the next line through with nothing to say. */
+    {
+        ErnicLogLimit lim = {0};
+
+        failed += limit_step(&lim, 1000, true, 0, "a lone line");
+        failed += limit_step(&lim, 1000 + 3 * ERNIC_LOG_LIMIT_MS, true, 0,
+                             "a line after a quiet spell");
+    }
+
+    /* A clock set back starts a new interval rather than holding every line
+     * until it catches up. */
+    {
+        const uint64_t t0 = UINT64_C(1000000);
+        ErnicLogLimit lim = {0};
+
+        for (uint32_t n = 0; n <= ERNIC_LOG_LIMIT_BURST; n++) {
+            failed += limit_step(&lim, t0, n < ERNIC_LOG_LIMIT_BURST, 0,
+                                 "a burst before the clock goes back");
+        }
+        failed += limit_step(&lim, t0 - 1, true, 1, "a clock set back");
+    }
+
+    /* Each limit is its own: one held back doesn't hold back another. */
+    {
+        ErnicLogLimit a = {0}, b = {0};
+
+        for (uint32_t n = 0; n <= ERNIC_LOG_LIMIT_BURST; n++) {
+            failed += limit_step(&a, 0, n < ERNIC_LOG_LIMIT_BURST, 0,
+                                 "one limit's flood");
+        }
+        failed += limit_step(&b, 0, true, 0, "another limit");
+    }
+
+    if (!failed) {
+        printf("PASS a log limit lets a burst through per interval and "
+               "counts the rest\n");
+    }
+    return failed ? 1 : 0;
+}
+
 int main(int argc, char **argv)
 {
     int failures = 0;
@@ -616,6 +714,7 @@ int main(int argc, char **argv)
     failures += check_parse_level();
     failures += check_level_names();
     failures += check_reporters();
+    failures += check_log_limit();
 
     for (size_t i = 0; i < NCASES; i++) {
         int round;

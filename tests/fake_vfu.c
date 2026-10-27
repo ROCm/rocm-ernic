@@ -57,6 +57,13 @@ struct vfu_ctx {
     /* vfu_log() prints messages at this syslog level or more urgent; -1
      * prints nothing. From ERNIC_FAKE_VFU_LOG_LEVEL. */
     int log_level;
+
+    /* Messages vfu_log() was given at each syslog level, printed or not */
+    unsigned long log_count[FAKE_VFU_LOG_LEVELS];
+    /* The last FAKE_VFU_LOG_KEEP at each level, formatted; the newest is at
+     * log_next[level] - 1, wrapping */
+    char log_text[FAKE_VFU_LOG_LEVELS][FAKE_VFU_LOG_KEEP][FAKE_VFU_LOG_LEN];
+    size_t log_next[FAKE_VFU_LOG_LEVELS];
 };
 
 vfu_ctx_t *fake_vfu_create(size_t region_size, size_t nregions)
@@ -351,7 +358,23 @@ void vfu_log(vfu_ctx_t *vfu_ctx, int level, const char *fmt, ...)
 {
     va_list ap;
 
-    if (!vfu_ctx || level > vfu_ctx->log_level)
+    if (!vfu_ctx)
+        return;
+
+    if (level >= 0 && level < FAKE_VFU_LOG_LEVELS) {
+        size_t *next = &vfu_ctx->log_next[level];
+
+        vfu_ctx->log_count[level]++;
+        /* A message longer than the buffer is kept cut short, which is
+         * enough for a test to recognise it. */
+        va_start(ap, fmt);
+        (void)vsnprintf(vfu_ctx->log_text[level][*next], FAKE_VFU_LOG_LEN, fmt,
+                        ap);
+        va_end(ap);
+        *next = (*next + 1) % FAKE_VFU_LOG_KEEP;
+    }
+
+    if (level > vfu_ctx->log_level)
         return;
 
     va_start(ap, fmt);
@@ -359,4 +382,20 @@ void vfu_log(vfu_ctx_t *vfu_ctx, int level, const char *fmt, ...)
     vfprintf(stderr, fmt, ap);
     fputc('\n', stderr);
     va_end(ap);
+}
+
+unsigned long fake_vfu_log_count(const vfu_ctx_t *ctx, int level)
+{
+    if (level < 0 || level >= FAKE_VFU_LOG_LEVELS)
+        return 0;
+    return ctx->log_count[level];
+}
+
+const char *fake_vfu_log_text(const vfu_ctx_t *ctx, int level, size_t back)
+{
+    if (level < 0 || level >= FAKE_VFU_LOG_LEVELS || back >= FAKE_VFU_LOG_KEEP)
+        return "";
+    return ctx->log_text[level]
+                        [(ctx->log_next[level] + FAKE_VFU_LOG_KEEP - 1 - back) %
+                         FAKE_VFU_LOG_KEEP];
 }

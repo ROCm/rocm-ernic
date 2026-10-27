@@ -73,7 +73,10 @@ apply fp8 arithmetic to it, through an extern.
 A dropped operation is denied: nothing is transferred, and
 the work request completes with a local QP operation error
 (``IBV_WC_LOC_QP_OP_ERR``), whether or not it was signalled,
-and the server logs that the P4 program denied it. The
+and the server logs that the P4 program denied it (at most
+10 such lines every 5 seconds, so that a guest can't fill
+the log, and a line before the next one says how many
+weren't logged). The
 refusal is the sending NIC's own, made before anything
 reaches a wire, so a UD send fails the same way as an RC
 operation rather than looking like a lost datagram. As with
@@ -669,7 +672,10 @@ Three tiers, none of which needs a VM, RDMA hardware or root.
    detaching must hand the slot back rather than leave it empty.
    ``ionic-harness-p4-devcmd`` and ``ionic-harness-p4-devcmd-errors``
    drive the guest's control surface through the BAR0 devcmd window,
-   including every way it refuses a command.
+   including every way it refuses a command, and
+   ``ionic-harness-p4-log-limit`` checks that a guest looping on a
+   denied operation or a refused command gets only a burst of log
+   lines in each interval.
 
 ``ernic-p4-driver`` (``tests/py/test_p4.py``)
    The engine on a **real server process**, reached over a real

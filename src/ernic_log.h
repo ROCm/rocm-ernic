@@ -19,6 +19,7 @@
 
 #include <stdarg.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 /*
  * Runtime log level.  Set from the --log-level command line option or
@@ -51,5 +52,40 @@ void ernic_vlog(ErnicLogLevel lvl, const char *fmt, va_list ap)
 /* One-shot startup/shutdown lines: unprefixed, printed at WARN and above. */
 void ernic_startup_report(const char *fmt, ...)
     __attribute__((format(printf, 1, 2)));
+
+/*
+ * A limit on how often one message is logged, for a message that something
+ * outside the process (a guest, a mesh peer, a client) can make us log as
+ * often as it likes.  Unlimited, a guest looping on a refused command fills
+ * the disk.
+ *
+ * Each place that logs such a message keeps its own limit, zeroed to start,
+ * in the object the message is about (the device, not a static), and asks
+ * ernic_log_limit() before each line.  At most ERNIC_LOG_LIMIT_BURST lines
+ * get through in each ERNIC_LOG_LIMIT_MS, as with Linux's printk_ratelimit().
+ * The rest are counted, and the first line let through after them says how
+ * many there were, so the log still shows how big a flood was, though only
+ * once the message is logged again.
+ *
+ * A limit isn't thread safe: keep it where one thread uses it, or under the
+ * lock of the object that holds it.
+ */
+#define ERNIC_LOG_LIMIT_BURST 10u
+#define ERNIC_LOG_LIMIT_MS    UINT64_C(5000)
+
+typedef struct {
+    uint64_t start_ms; /* when the current interval began */
+    uint32_t logged;   /* lines let through in it */
+    uint64_t held;     /* lines held back since the last one let through */
+} ErnicLogLimit;
+
+/*
+ * Whether one more line may be logged now, at @now_ms on the caller's
+ * monotonic clock.  If so, sets *@held to how many lines were held back
+ * since the last one let through, for the caller to report before this one,
+ * and starts counting again from 0.  If not, counts this one and sets
+ * *@held to 0.
+ */
+bool ernic_log_limit(ErnicLogLimit *lim, uint64_t now_ms, uint64_t *held);
 
 #endif /* ERNIC_LOG_H */
