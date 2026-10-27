@@ -341,6 +341,10 @@ static bool host_bytes_are(const struct host_mem *h, size_t len, uint8_t val)
 /* Configuration parsing                                              */
 /* ------------------------------------------------------------------ */
 
+/* As long as the Identify Controller MN and SN fields */
+#define MODEL_40  "0123456789abcdefghijklmnopqrstuvwxyzABCD"
+#define SERIAL_20 "0123456789ABCDEFGHIJ"
+
 static const struct {
     const char *opts;
     bool ok;
@@ -358,6 +362,14 @@ static const struct {
     {"queues=4", true, "queue count"},
     {"queues=64", true, "queue count at NVMEOF_MAX_QUEUES"},
     {"model=widget,serial=SN1", true, "identify strings"},
+    {"model=" MODEL_40, true, "model at its 40 characters"},
+    {"serial=" SERIAL_20, true, "serial at its 20 characters"},
+    {"model=" MODEL_40 "x", false, "model one character too long"},
+    {"serial=" SERIAL_20 "x", false, "serial one character too long"},
+    {"model=", false, "empty model"},
+    {"serial=", false, "empty serial"},
+    {"model=ACME \xc2\xae", false, "model not ASCII"},
+    {"serial=SN\t1", false, "serial with a control character"},
     {"size=64M,bs=4096,nsid=1", true, "combination"},
     {"size", false, "missing ="},
     {"size=", false, "empty size"},
@@ -450,6 +462,18 @@ static void test_config(void)
     }
     check("config-size-set", cfg.size_set,
           "size= equal to the default does not count as set");
+
+    /* A model and serial that fill their fields are kept whole. */
+    nvmeof_target_cfg_defaults(&cfg);
+    if (!nvmeof_target_cfg_parse(&cfg, "model=" MODEL_40 ",serial=" SERIAL_20,
+                                 err, sizeof(err))) {
+        fail("config-ident", "full-length model and serial rejected: %s", err);
+    } else {
+        check("config-ident", strcmp(cfg.model, MODEL_40) == 0,
+              "a full-length model was not kept whole");
+        check("config-ident", strcmp(cfg.serial, SERIAL_20) == 0,
+              "a full-length serial was not kept whole");
+    }
 
     /* A later file= must replace an earlier one without leaking. */
     nvmeof_target_cfg_defaults(&cfg);
