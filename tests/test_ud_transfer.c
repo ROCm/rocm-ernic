@@ -270,9 +270,12 @@ int main(void)
     struct ibv_ah *ah = NULL;
     struct ud_ep a = {.cq = NULL}, b = {.cq = NULL};
     union ibv_gid gid;
+    struct ibv_ah_attr aa;
     unsigned char *src_two = NULL;
     struct ibv_mr *mr_two = NULL;
     enum ernic_device_result lookup;
+    const char *gidx_env, *iter_env;
+    int gidx, iters;
     int ndev = 0;
     int rc = 1;
 
@@ -312,8 +315,8 @@ int main(void)
     /* Which GID index to build the handle from. Index 0 is the link-local
      * fe80:: one; UCX picks the IPv4-mapped RoCEv2 GID instead, so make it
      * selectable rather than assuming they behave the same. */
-    const char *gidx_env = getenv("ERNIC_GID_INDEX");
-    int gidx = 0;
+    gidx_env = getenv("ERNIC_GID_INDEX");
+    gidx = 0;
     if (gidx_env && !ernic_parse_int(gidx_env, &gidx)) {
         fprintf(stderr, "FAIL: ERNIC_GID_INDEX=\"%s\" is not a number\n",
                 gidx_env);
@@ -325,7 +328,7 @@ int main(void)
     }
     printf("using GID index %d\n", gidx);
 
-    struct ibv_ah_attr aa = {
+    aa = (struct ibv_ah_attr){
         .is_global = 1,
         .port_num = 1,
         .grh = {.dgid = gid, .sgid_index = (uint8_t)gidx, .hop_limit = 1},
@@ -360,8 +363,8 @@ int main(void)
      * receives shows up -- as a stall after roughly one queue depth, long
      * after a two-message test has passed.
      */
-    const char *iter_env = getenv("ERNIC_UD_ITERS");
-    int iters = 0;
+    iter_env = getenv("ERNIC_UD_ITERS");
+    iters = 0;
     if (iter_env && (!ernic_parse_int(iter_env, &iters) || iters < 0)) {
         fprintf(stderr, "FAIL: ERNIC_UD_ITERS=\"%s\" is not a count\n",
                 iter_env);

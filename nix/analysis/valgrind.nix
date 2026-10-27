@@ -10,7 +10,9 @@
 #
 # valgrind complements the sanitizers: it needs no ptrace for leak
 # detection (works where LSan may not) and catches uninitialised-value and
-# invalid-access errors the sanitizer build might miss.
+# invalid-access errors the sanitizer build might miss. The build leaves
+# locals uninitialised (ERNIC_TRIVIAL_AUTO_VAR_INIT=OFF), since filling them
+# hides the reads of them memcheck reports.
 { ctx, src }:
 
 let
@@ -26,7 +28,7 @@ mkAnalysisDrv {
   buildPhase = ''
     runHook preBuild
     srcTop="$PWD"
-    ${configureCmake ""}
+    ${configureCmake "-DERNIC_TRIVIAL_AUTO_VAR_INIT=OFF"}
     cmake --build "$srcTop/build"
     runHook postBuild
   '';

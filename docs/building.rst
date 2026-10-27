@@ -217,6 +217,13 @@ Build Options
        Off by default so a build with an unfamiliar compiler
        is never broken by a new warning; CI turns it on
        (see :ref:`werror-policy`)
+   * - ``ERNIC_TRIVIAL_AUTO_VAR_INIT``
+     - ``ON``
+     - Fill every local variable the code doesn't initialize
+       with a pattern (``-ftrivial-auto-var-init=pattern``;
+       GCC 12 or later, or Clang). Turn it off for a build
+       run under valgrind, since it hides the reads of
+       uninitialized locals that memcheck reports
    * - ``ERNIC_USE_SANITIZERS``
      - ``OFF``
      - Build with ASan, LSan, UBSan, and the compiler's other

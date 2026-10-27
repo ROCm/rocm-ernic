@@ -2234,6 +2234,7 @@ static enum dp_post remote_post(struct ionic_datapath *dp,
     uint32_t reply_bytes;
     uint8_t wire_op;
     enum dp_post result = DP_POST_FAILED;
+    int rc;
 
     struct dp_pending *p = pending_alloc(dp);
     if (!p) {
@@ -2374,7 +2375,7 @@ static enum dp_post remote_post(struct ionic_datapath *dp,
     }
 
     p->tag = dp_mesh_tag(q->mesh_id, p->req_id);
-    int rc =
+    rc =
         dp_mesh_tx(dp, dest_node_id, p->tag, &hdr, payload, payload_len, false);
     if (rc == 0) {
         result = DP_POST_SENT;

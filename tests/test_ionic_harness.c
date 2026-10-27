@@ -4259,6 +4259,9 @@ static void test_p4_devcmd(void)
     static uint8_t opa[P4R_N], opb[P4R_N], got[P4R_N];
     size_t prog_len = 0;
     char *prog;
+    bool ok;
+    struct ih_sge sge[2];
+    struct ih_send w;
 
     if (!setup(T, &h, "loopback"))
         return;
@@ -4435,16 +4438,16 @@ static void test_p4_devcmd(void)
 
     /* And now the point of all of it: the guest's own RDMA write becomes
      * an elementwise fp8 add, because of an entry the guest installed. */
-    bool ok = ih_cq_create(&h, &cq, P4R_CQ, 6) &&
-              ih_qp_create(&h, &a, P4R_QP_A, IH_QPT_RC, &cq, &cq, NULL) &&
-              ih_qp_create(&h, &b, P4R_QP_B, IH_QPT_RC, &cq, &cq, NULL) &&
-              ih_qp_connect(&h, &a, &b) &&
-              ih_mr_create(&h, &mra, FP8R_MR_A, FP8R_VA_A, P4R_MR_LEN,
-                           IH_ACCESS_ALL, false) &&
-              ih_mr_create(&h, &mrb, FP8R_MR_B, FP8R_VA_B, P4R_MR_LEN,
-                           IH_ACCESS_ALL, false) &&
-              ih_mr_create(&h, &mrc, FP8R_MR_C, FP8R_VA_C, P4R_MR_LEN,
-                           IH_ACCESS_ALL, true);
+    ok = ih_cq_create(&h, &cq, P4R_CQ, 6) &&
+         ih_qp_create(&h, &a, P4R_QP_A, IH_QPT_RC, &cq, &cq, NULL) &&
+         ih_qp_create(&h, &b, P4R_QP_B, IH_QPT_RC, &cq, &cq, NULL) &&
+         ih_qp_connect(&h, &a, &b) &&
+         ih_mr_create(&h, &mra, FP8R_MR_A, FP8R_VA_A, P4R_MR_LEN, IH_ACCESS_ALL,
+                      false) &&
+         ih_mr_create(&h, &mrb, FP8R_MR_B, FP8R_VA_B, P4R_MR_LEN, IH_ACCESS_ALL,
+                      false) &&
+         ih_mr_create(&h, &mrc, FP8R_MR_C, FP8R_VA_C, P4R_MR_LEN, IH_ACCESS_ALL,
+                      true);
     if (!check(T, ok, "RDMA setup failed"))
         goto out_mr;
 
@@ -4454,11 +4457,9 @@ static void test_p4_devcmd(void)
     check(T, ih_mr_write(&h, &mra, FP8R_VA_A, opa, sizeof(opa)), "write A");
     check(T, ih_mr_write(&h, &mrb, FP8R_VA_B, opb, sizeof(opb)), "write B");
 
-    struct ih_sge sge[2] = {
-        {.va = FP8R_VA_A, .len = P4R_N, .lkey = mra.lkey},
-        {.va = FP8R_VA_B, .len = P4R_N, .lkey = mrb.lkey},
-    };
-    struct ih_send w = {
+    sge[0] = (struct ih_sge){.va = FP8R_VA_A, .len = P4R_N, .lkey = mra.lkey};
+    sge[1] = (struct ih_sge){.va = FP8R_VA_B, .len = P4R_N, .lkey = mrb.lkey};
+    w = (struct ih_send){
         .op = IH_OP_RDMA_WRITE,
         .flags = IH_WQE_SIGNALLED,
         .remote_va = FP8R_VA_C,

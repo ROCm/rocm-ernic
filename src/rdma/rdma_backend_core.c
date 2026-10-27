@@ -41,7 +41,7 @@ static const RdmaBackendOps *const backend_registry[RDMA_BACKEND_TYPE_MAX] = {
 
 /**
  * rdma_backend_get_ops - Get operations for a backend type
- * @type: Backend type
+ * @param type Backend type
  *
  * Returns: Backend operations structure, or NULL if not available
  */
@@ -62,8 +62,8 @@ const RdmaBackendOps *rdma_backend_get_ops(RdmaBackendType type)
 
 /**
  * rdma_backend_get_type_from_string - Parse backend type from string
- * @backend_str: String like "none", "loopback", "nvmeof:size=1G", or NULL,
- *               which means "none"
+ * @param backend_str String like "none", "loopback", "nvmeof:size=1G", or NULL,
+ *                    which means "none"
  *
  * The name is everything before the first ':', and must be one of the
  * names rdma_backend_type_to_string() returns, exactly: "s3junk" is not
@@ -93,7 +93,7 @@ RdmaBackendType rdma_backend_get_type_from_string(const char *backend_str)
 
 /**
  * rdma_backend_type_to_string - Convert backend type to string
- * @type: Backend type
+ * @param type Backend type
  *
  * Returns: Human-readable backend name
  */
@@ -118,9 +118,9 @@ const char *rdma_backend_type_to_string(RdmaBackendType type)
 
 /**
  * rdma_backend_init_with_ops - Initialize backend with specific ops
- * @backend_dev: Backend device structure
- * @type: Backend type to use
- * @config: Backend-specific configuration string (can be NULL)
+ * @param backend_dev Backend device structure
+ * @param type Backend type to use
+ * @param config Backend-specific configuration string (can be NULL)
  *
  * Returns: 0 on success, negative errno on failure
  */
@@ -157,7 +157,7 @@ int rdma_backend_init_with_ops(RdmaBackendDev *backend_dev,
 
 /**
  * rdma_backend_fini_with_ops - Cleanup backend
- * @backend_dev: Backend device structure
+ * @param backend_dev Backend device structure
  */
 void rdma_backend_fini_with_ops(RdmaBackendDev *backend_dev)
 {

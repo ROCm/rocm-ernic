@@ -42,7 +42,7 @@ struct ernic_stats *ernic_stats_create(void);
 
 /**
  * ernic_stats_destroy - Free the counters
- * @st: from ernic_stats_create(), or NULL
+ * @param st from ernic_stats_create(), or NULL
  */
 void ernic_stats_destroy(struct ernic_stats *st);
 
@@ -52,15 +52,15 @@ void ernic_stats_destroy(struct ernic_stats *st);
 
 /**
  * ernic_stats_bar0_access - Count one BAR0 (registers and MSI-X) access
- * @st: Statistics
- * @is_write: true for a write, false for a read
+ * @param st Statistics
+ * @param is_write true for a write, false for a read
  */
 void ernic_stats_bar0_access(struct ernic_stats *st, bool is_write);
 
 /**
  * ernic_stats_doorbell_access - Count one BAR2 (doorbell page) access
- * @st: Statistics
- * @is_write: true for a write, false for a read
+ * @param st Statistics
+ * @param is_write true for a write, false for a read
  *
  * The stats file calls these uar_reads and uar_writes, after the PVRDMA UAR
  * they used to count.
@@ -69,27 +69,27 @@ void ernic_stats_doorbell_access(struct ernic_stats *st, bool is_write);
 
 /**
  * ernic_stats_irq - Count one delivered MSI-X interrupt
- * @st: Statistics
+ * @param st Statistics
  */
 void ernic_stats_irq(struct ernic_stats *st);
 
 /**
  * ernic_stats_eth_bytes - Count guest Ethernet bytes moved
- * @st: Statistics
- * @bytes: Frame length
- * @is_tx: true for guest-to-host, false for host-to-guest
+ * @param st Statistics
+ * @param bytes Frame length
+ * @param is_tx true for guest-to-host, false for host-to-guest
  */
 void ernic_stats_eth_bytes(struct ernic_stats *st, uint64_t bytes, bool is_tx);
 
 /**
  * ernic_stats_command - Count one executed admin queue command
- * @st: Statistics
+ * @param st Statistics
  */
 void ernic_stats_command(struct ernic_stats *st);
 
 /**
  * ernic_stats_device_reset - Count one device reset or PCI FLR
- * @st: Statistics
+ * @param st Statistics
  */
 void ernic_stats_device_reset(struct ernic_stats *st);
 
@@ -114,20 +114,20 @@ enum ernic_stat_op {
 
 /**
  * ernic_stats_rdma_bytes - Count RDMA bytes against the device and a QP
- * @st: Statistics
- * @qp_id: QP to attribute the bytes to, or ERNIC_STAT_NO_QP for the totals
- *         only
- * @bytes: Number of bytes actually moved
- * @stat_op: Operation class
+ * @param st Statistics
+ * @param qp_id QP to attribute the bytes to, or ERNIC_STAT_NO_QP for the totals
+ *              only
+ * @param bytes Number of bytes actually moved
+ * @param stat_op Operation class
  */
 void ernic_stats_rdma_bytes(struct ernic_stats *st, uint32_t qp_id,
                             uint64_t bytes, enum ernic_stat_op stat_op);
 
 /**
  * ernic_stats_qp_doorbell - Count one doorbell ring against a QP
- * @st: Statistics
- * @qp_id: QP the doorbell targets
- * @is_send: true for the send queue, false for the receive queue
+ * @param st Statistics
+ * @param qp_id QP the doorbell targets
+ * @param is_send true for the send queue, false for the receive queue
  *
  * One per ring, however many WQEs the ring makes ready.
  */
@@ -163,25 +163,25 @@ enum ernic_stat_wr {
 
 /**
  * ernic_stats_qp_wqe - Count one processed send WQE against a QP
- * @st: Statistics
- * @qp_id: QP that owns the WQE
- * @wr: enum ernic_stat_wr, or ERNIC_STAT_WR_COUNT or more to count the WQE
- *      in the QP's total only
+ * @param st Statistics
+ * @param qp_id QP that owns the WQE
+ * @param wr enum ernic_stat_wr, or ERNIC_STAT_WR_COUNT or more to count the WQE
+ *           in the QP's total only
  */
 void ernic_stats_qp_wqe(struct ernic_stats *st, uint32_t qp_id,
                         unsigned int wr);
 
 /**
  * ernic_stats_qp_cqe - Count one completion posted for a QP
- * @st: Statistics
- * @qp_id: QP the completion belongs to
+ * @param st Statistics
+ * @param qp_id QP the completion belongs to
  */
 void ernic_stats_qp_cqe(struct ernic_stats *st, uint32_t qp_id);
 
 /**
  * ernic_stats_qp_forget - Drop a destroyed QP's counters
- * @st: Statistics
- * @qp_id: QP being destroyed
+ * @param st Statistics
+ * @param qp_id QP being destroyed
  *
  * The stats file then stops listing it, and a new QP with the same id
  * starts from zero.
@@ -215,23 +215,23 @@ struct ernic_qp_counters {
 
 /**
  * ernic_stats_dev_counters - Snapshot the device totals
- * @st: Statistics
- * @out: Filled on success, zeroed on failure
+ * @param st Statistics
+ * @param out Filled on success, zeroed on failure
  *
- * Returns: 0, or -EINVAL for a NULL @st or @out
+ * Returns: 0, or -EINVAL for a NULL @p st or @p out
  */
 int ernic_stats_dev_counters(const struct ernic_stats *st,
                              struct ernic_dev_counters *out);
 
 /**
  * ernic_stats_qp_counters - Snapshot one QP's counters
- * @st: Statistics
- * @qp_id: QP to read
- * @out: Filled on success, zeroed on failure
+ * @param st Statistics
+ * @param qp_id QP to read
+ * @param out Filled on success, zeroed on failure
  *
  * A QP with nothing counted yet reads as all zeros.
  *
- * Returns: 0, or -EINVAL for a NULL @st or @out
+ * Returns: 0, or -EINVAL for a NULL @p st or @p out
  */
 int ernic_stats_qp_counters(const struct ernic_stats *st, uint32_t qp_id,
                             struct ernic_qp_counters *out);
@@ -242,8 +242,8 @@ int ernic_stats_qp_counters(const struct ernic_stats *st, uint32_t qp_id,
 
 /**
  * ernic_stats_set_file - Set the path ernic_stats_write() writes to
- * @st: Statistics
- * @path: Path, copied, or NULL for no file
+ * @param st Statistics
+ * @param path Path, copied, or NULL for no file
  *
  * Returns: 0, or -ENOMEM, leaving no file set
  */
@@ -261,8 +261,8 @@ struct ernic_stats_instance {
 
 /**
  * ernic_stats_set_instance - Set the stats file's "Instance" block
- * @st: Statistics
- * @inst: What to show; its strings are copied
+ * @param st Statistics
+ * @param inst What to show; its strings are copied
  *
  * Returns: 0, or -ENOMEM, leaving the block as it was
  */
@@ -271,9 +271,9 @@ int ernic_stats_set_instance(struct ernic_stats *st,
 
 /**
  * ernic_stats_set_connection - Set the connection state the file shows
- * @st: Statistics
- * @state: e.g. "connected" or "disconnected (lost connection)", or NULL to
- *         show "(not set)".  Not copied: pass a string literal.
+ * @param st Statistics
+ * @param state e.g. "connected" or "disconnected (lost connection)", or NULL to
+ *              show "(not set)".  Not copied: pass a string literal.
  *
  * ernic-exporter reports any state starting "connected" as up.
  */
@@ -284,9 +284,10 @@ typedef void (*ernic_stats_section_fn)(FILE *fp, void *opaque);
 
 /**
  * ernic_stats_set_section - Add a section to the stats file
- * @st: Statistics
- * @write_fn: Writes the section, after "Device Statistics"; NULL removes it
- * @opaque: Passed to @write_fn
+ * @param st Statistics
+ * @param write_fn Writes the section, after "Device Statistics"; NULL
+ *                 removes it
+ * @param opaque Passed to @p write_fn
  *
  * There is one section, which the ionic device sets for its LIF and port
  * counters.
@@ -296,7 +297,7 @@ void ernic_stats_set_section(struct ernic_stats *st,
 
 /**
  * ernic_stats_write - Replace the stats file with the counters as they are
- * @st: Statistics
+ * @param st Statistics
  *
  * A reader sees the old file or the new one, whole, never part of one; a
  * write that fails leaves the old file, and logs why.

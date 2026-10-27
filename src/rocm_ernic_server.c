@@ -850,8 +850,8 @@ static void usage(const char *progname)
  * Validate the backend and its options before anything is built, so that a
  * malformed one fails now rather than after the guest has attached, when the
  * failure would look like a device problem.
- * @dev: Device structure with parsed options
- * @return: 0 on success, -1 on error
+ * @param dev Device structure with parsed options
+ * @return 0 on success, -1 on error
  */
 static int validate_backend_options(const rocm_ernic_dev_t *dev)
 {
@@ -981,7 +981,7 @@ enum parse_result {
 };
 
 /**
- * Print @profile as ini, for --print-profile.  Returns false after saying
+ * Print @p profile as ini, for --print-profile.  Returns false after saying
  * why if it can't.
  */
 static bool print_nic_profile(const struct ionic_profile *profile)
@@ -1000,7 +1000,7 @@ static bool print_nic_profile(const struct ionic_profile *profile)
 }
 
 /**
- * Parse the command line into @dev and @opts, which hold the defaults.
+ * Parse the command line into @p dev and @p opts, which hold the defaults.
  */
 static enum parse_result parse_options(int argc, char *argv[],
                                        rocm_ernic_dev_t *dev,
@@ -1206,7 +1206,7 @@ static enum parse_result parse_options(int argc, char *argv[],
 }
 
 /**
- * Send stdout and stderr to the --log-file @path.  Returns 0, or -1 after
+ * Send stdout and stderr to the --log-file @p path.  Returns 0, or -1 after
  * saying why on the stderr the server was started with.
  */
 static int redirect_output(const char *path)
@@ -1271,7 +1271,7 @@ static void report_startup(const rocm_ernic_dev_t *dev,
 
 #ifdef ERNIC_HAVE_P4
 /**
- * Create the P4 engine and load @program into it, if it isn't NULL.
+ * Create the P4 engine and load @p program into it, if it isn't NULL.
  * Returns 0, or -1 after saying why; dev_free() frees the engine.
  *
  * Ahead of the socket, because a program that will be refused must not
@@ -1296,7 +1296,7 @@ static int load_p4_engine(rocm_ernic_dev_t *dev, const char *program)
 #endif
 
 /**
- * Create the vfio-user context, with @dev as its private data, and let only
+ * Create the vfio-user context, with @p dev as its private data, and let only
  * whom the options name connect to its socket.  Returns NULL after saying
  * why.
  */
@@ -1452,7 +1452,7 @@ static int setup_vfu_device(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
 }
 
 /**
- * Attach the Ethernet to the host TAP @ifname.  Returns 0, or -1 after
+ * Attach the Ethernet to the host TAP @p ifname.  Returns 0, or -1 after
  * saying why.
  */
 static int attach_tap(rocm_ernic_dev_t *dev, const char *ifname)

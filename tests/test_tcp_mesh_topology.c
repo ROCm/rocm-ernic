@@ -445,6 +445,8 @@ static int run_mesh_case(const struct testcase *tc)
     uint8_t wire[TCP_TOPOLOGY_LEN];
     bool seen[MAX_CASE_NODES] = {false};
     uint32_t carried = carried_nodes(tc->num_nodes);
+    const uint8_t *tail;
+    size_t tail_len;
     int fail = 0;
 
     if (fixture_init(&f, tc->num_nodes) != 0) {
@@ -511,8 +513,8 @@ static int run_mesh_case(const struct testcase *tc)
     }
 
     /* The point of the test: every byte past the live entries is zero */
-    const uint8_t *tail = wire + TCP_TOPOLOGY_NODE_OFF(carried);
-    size_t tail_len = (size_t)(TOPO_MAXNODE - carried) * TCP_MESH_NODE_LEN;
+    tail = wire + TCP_TOPOLOGY_NODE_OFF(carried);
+    tail_len = (size_t)(TOPO_MAXNODE - carried) * TCP_MESH_NODE_LEN;
     for (size_t i = 0; i < tail_len; i++) {
         if (tail[i] != 0) {
             printf("FAIL %-16s: unused slot byte %zu of %zu is 0x%02x, "

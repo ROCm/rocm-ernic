@@ -107,6 +107,17 @@ cmake --build build
 - Standard C11; no GNU extensions without permission. Atomics
   (`<stdatomic.h>`) and threads (`qemu/thread.h` over pthreads) are
   available; see [Thread safety](#thread-safety).
+- **Don't `goto` past an initialized declaration into its scope**
+  (GCC's `-Wjump-misses-init`), as a `goto out` to the cleanup at the
+  end of a function does over everything declared after it. Declare
+  the variable before the first such `goto` and assign it where the
+  initializer was (a struct with a compound literal), or make a
+  constant table `static const`.
+- **Write `/**` comments in Doxygen's syntax**: `@param name` and
+  `@p name`, not kernel-doc's `@name:` and `@name`, which clang's
+  `-Wdocumentation-pedantic` reports as unknown commands. Clang checks
+  that each `@param` names a real parameter. A plain `/*` comment isn't
+  checked.
 - **Include a project header by its path from `src/`**
   (`"pvrdma/rdma_rm.h"`, `"p4/p4_engine.h"`, `"byteorder.h"`), even from
   a file in the same directory: IWYU spells a header one way, so a bare
@@ -387,7 +398,7 @@ touches. The commands are in the sections below.
   - Pointers, buffers, lengths, or input from outside the process: ASan
     (`ERNIC_USE_SANITIZERS`).
   - Wire data, or anything passed to `send()`/`write()`: valgrind on the
-    affected tests, in the plain GCC build.
+    affected tests, in a GCC build for valgrind (see [C](#c)).
   - New error paths or a lot of new code: coverage, if `src/` is near the
     floor.
   - Changed `#include`s: IWYU.
@@ -451,9 +462,11 @@ touches. The commands are in the sections below.
   `ErnicSanitizers.cmake`.
 - **Valgrind-clean** (memcheck finds uninitialized reads, including
   uninitialized bytes passed to `send()`/`write()`, that sanitizers
-  don't). Use a plain **GCC** build: not Clang, whose
-  `-ftrivial-auto-var-init=pattern` hides those reads, and not a
-  sanitizer build. Install valgrind before configuring so
+  don't). Use a **GCC** build without sanitizers, in its own build
+  directory, configured with `-DERNIC_TRIVIAL_AUTO_VAR_INIT=OFF`: by
+  default Clang and GCC 12+ fill uninitialized locals
+  (`-ftrivial-auto-var-init=pattern`), which hides those reads. Install
+  valgrind before configuring so
   `<valgrind/valgrind.h>` is found (`tcp-thread-stop-unit` uses it to
   skip a `RLIMIT_NOFILE` row valgrind breaks). CI's GCC Debug leg runs
   every test this way; locally, replace the `-E` with an `-R` naming the
