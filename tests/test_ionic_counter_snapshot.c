@@ -17,8 +17,13 @@ static void report(bool ok, const char *description, const char *expected)
         failures++;
 }
 
+/* Three tables, one per function in ernic_counter_snapshot.h. Every row
+ * prints an ok or FAIL line, and the exit status is 1 if any failed. */
 int main(void)
 {
+    /* parse_counter_value(): the text of a sysfs counter file. Only plain
+     * unsigned decimal, with at most one final newline, is a value;
+     * anything else is rejected without touching the output. */
     static const struct {
         const char *description;
         const char *text;
@@ -42,6 +47,9 @@ int main(void)
          0},
         {"corner: leading zeros", "00012\n", "12", true, 12},
     };
+    /* counter_sets_match(): the counter names listed before and after a
+     * run. Their order may change, but a missing, new, renamed or
+     * duplicated name, or no counters at all, fails the match. */
     static const struct {
         const char *description;
         const char *expected;
@@ -90,6 +98,8 @@ int main(void)
          {0, {{0}}, {0}},
          false},
     };
+    /* counter_delta(): a counter that went down was reset or wrapped, and
+     * is rejected rather than read as a huge increase. */
     static const struct {
         const char *description;
         const char *expected;
@@ -104,6 +114,8 @@ int main(void)
         {"corner: apparent wrap", "reject decrease", UINT64_MAX, 0, 0, false},
     };
 
+    /* Each output starts at 42, which no accepted row produces, so a
+     * rejected input that wrote the output anyway fails its row. */
     for (size_t i = 0; i < sizeof(parse) / sizeof(parse[0]); i++) {
         uint64_t value = 42;
         bool ok = parse_counter_value(parse[i].text, &value);
