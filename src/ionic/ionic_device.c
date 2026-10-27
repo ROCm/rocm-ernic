@@ -44,6 +44,8 @@ struct ionic_device {
     /* Owns the admin queue context */
     struct ionic_rdma_devcmd_state *rdma;
     struct ionic_datapath *dp;
+    /* ionic_device_cfg.now_ms, or ernic_monotonic_ms() */
+    uint64_t (*now_ms)(void);
 
 #ifdef ERNIC_HAVE_P4
     /* Borrowed from ionic_device_attach_p4()'s caller; set once the port
@@ -132,6 +134,7 @@ struct ionic_device *ionic_device_create(const struct ionic_device_cfg *cfg,
         return NULL;
     }
     dev->vfu_ctx = cfg->vfu_ctx;
+    dev->now_ms = cfg->now_ms ? cfg->now_ms : ernic_monotonic_ms;
 
     dev->emu = ionic_eth_emu_create(cfg->vfu_ctx, IONIC_BAR2_DB_SIZE);
     dev->rdma = ionic_rdma_devcmd_create(cfg->vfu_ctx);
@@ -276,7 +279,7 @@ void ionic_device_poll(struct ionic_device *dev)
         return;
 
     ionic_eth_emu_poll_rx(dev->emu);
-    ionic_eth_emu_publish_stats(dev->emu, ernic_monotonic_ms());
+    ionic_eth_emu_publish_stats(dev->emu, dev->now_ms());
     ionic_adminq_poll(ionic_rdma_devcmd_get_adminq_ctx(dev->rdma),
                       dev->vfu_ctx);
     ionic_datapath_poll(dev->dp);

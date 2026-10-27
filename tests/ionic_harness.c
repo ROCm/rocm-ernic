@@ -130,6 +130,20 @@ bool ih_create(struct ih *h, const char *backend)
     return ih_create_faults(h, backend, NULL);
 }
 
+/*
+ * The device's clock, which stands still.  On a running clock it rewrites
+ * the guest's statistics every stats.interval_ms, each a DMA write that
+ * maps guest memory, at points the test can't see.  fake_vfu_fail_nth_map()
+ * counts every map, so one landing between arming it and the map it means
+ * to fail takes the failure instead: the slower the run, as under valgrind,
+ * the likelier.  Stopped, the device writes them only when PORT_INIT or
+ * LIF_INIT asks it to.
+ */
+static uint64_t ih_now_ms(void)
+{
+    return 0;
+}
+
 bool ih_create_faults(struct ih *h, const char *backend,
                       struct ionic_fault_set *faults)
 {
@@ -171,6 +185,7 @@ bool ih_create_faults(struct ih *h, const char *backend,
     cfg.stats = dev->stats;
     cfg.backend = backend;
     cfg.faults = faults;
+    cfg.now_ms = ih_now_ms;
     dev->ionic = ionic_device_create(&cfg, err, sizeof(err));
     if (!dev->ionic) {
         ih_destroy(h);

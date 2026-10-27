@@ -53,6 +53,11 @@ struct ionic_device_cfg {
     /* The faults to inject (ionic_fault.h), or NULL for none.  It must
      * outlive the device. */
     struct ionic_fault_set *faults;
+    /* The clock, in milliseconds, that ionic_device_poll() times the
+     * guest's statistics by, or NULL for CLOCK_MONOTONIC.  A test sets its
+     * own to keep the periodic rewrite from landing in the middle of what
+     * it checks. */
+    uint64_t (*now_ms)(void);
 };
 
 /*

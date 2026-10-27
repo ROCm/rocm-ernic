@@ -1083,6 +1083,13 @@
     health-check interval. Its "a peer that never registers is reaped"
     check now waits for that peer's own log line, rather than passing on
     lines that earlier peers left in the log.
+  * The `ionic-harness-admin`, `-admin-dma` and `-dp-dma` tests could fail
+    intermittently, most often under valgrind: a check that the device
+    refuses a failed DMA instead saw the command succeed. The device
+    rewrote the guest's statistics once a second, and a rewrite that came
+    between the test arming a failure and the DMA it meant to fail took
+    the failure instead. The harness now gives the device a clock that
+    stands still, so it writes them only when PORT_INIT or LIF_INIT asks.
   * The Nix `analysis-sanitizers`, `analysis-tsan` and `analysis-valgrind`
     targets fail when the server didn't get through the exercise, rather
     than report a clean run; `summary.txt` starts with `exercise: clean` or
