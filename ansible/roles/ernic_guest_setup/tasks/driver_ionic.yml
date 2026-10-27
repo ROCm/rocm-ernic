@@ -34,10 +34,10 @@
 
 # The floor above is necessary but nowhere near sufficient.  The
 # ionic sources track IB-core helpers that move between minor
-# releases -- v7.2.4 sources on a 7.0 kernel fail on four implicit
+# releases -- v7.2.x sources on a 7.0 kernel fail on four implicit
 # declarations deep inside the DKMS build, which is a wall of
 # compiler output instead of a diagnosis.  A point-release gap
-# (v7.2.4 sources on 7.2.3) is fine, so only major.minor is
+# (v7.2.4 sources on 7.2.6) is fine, so only major.minor is
 # compared.
 - name: Assert the guest kernel matches the ionic sources
   ansible.builtin.assert:

@@ -13,16 +13,17 @@ only verbs transport. UD has no one-sided RDMA READ/WRITE, so NIXL (and with
 it LMCache P2P) silently falls back to TCP. A zero there is the difference
 between RDMA and not.
 
-## The base: v7.2.4
+## The base: v7.2.6
 
-The same ref `IONIC_KERNEL_REF` pins, and the kernel the CI guest and the
-qemu-minimal fleet VMs actually run (`7.2.4-070204-generic`). That is the
-point: a guest builds this with no kernel upgrade.
+The same ref `IONIC_KERNEL_REF` pins, and the kernel the CI guest runs
+(`7.2.6-070206-generic`). That is the point: a guest builds this with no
+kernel upgrade.
 
 It did not start there. The upstream commits target `rdma/for-next` and
 apply to **no** mainline tag on their own — three earlier for-next commits,
 carried here as 0001-0003, get the series onto `v7.3-rc6`. Rebasing from
-there down to `v7.2.4` took four context fixes, none of them semantic:
+there down to `v7.2.4`, the previous base, took four context fixes, none of
+them semantic:
 
 | # | What differed on 7.2.4 | Resolution |
 | --- | --- | --- |
@@ -53,6 +54,12 @@ No 7.3-only API is involved. Every IB-core helper the series calls
 
 Verified end to end: `git am` applies all nine to a fresh `v7.2.4`, and the
 result builds and installs as a DKMS package on `7.2.4-070204-generic`.
+
+Moving the base to `v7.2.6` needed no change to the series. Between the two
+tags the ionic drivers changed only `ionic_main.c` and `ionic_txrx.c`, which
+none of the nine touch, and `include/uapi/rdma` not at all, so the offsets
+above still hold. `git am` applies all nine to a fresh `v7.2.6`, and the
+result builds against the `7.2.6-070206-generic` headers.
 
 Building straight from an `rdma/for-next` SHA was rejected because that
 branch is rebased and force-pushed: a pin there tests something different

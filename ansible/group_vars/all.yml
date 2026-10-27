@@ -29,7 +29,7 @@ ernic_instances: 2
 # ── Guest image ──────────────────────────────────
 # The guest disk is a published OCI artifact from
 # batesste-ci-images, flavour `ionic`.  It is not built here:
-# that flavour pins mainline kernel 7.2.3 (nothing older can
+# that flavour pins mainline kernel 7.2.6 (nothing older can
 # carry drivers/infiniband/hw/ionic, merged for 6.18, and
 # nothing below 7.2 can build ionic-ernic, which calls
 # ib_umem_get_va), and bakes the RDMA userspace, the DKMS
@@ -37,7 +37,8 @@ ernic_instances: 2
 #
 # scripts/fetch-guest-image.sh and ci/jobs/vm-up.sh pull it.
 #
-# Repo and tag are read from ci/guest-image.env rather than written here.
+# Repo, tag, disk and account are read from ci/guest-image.env rather than
+# written here.
 # That file is the only place the pin lives -- the GitHub lanes load it into
 # their environment and ci/lib/common.sh sources it -- so a bump is one edit
 # and cannot leave this role pointing at an older guest than CI tests.
@@ -53,7 +54,9 @@ ernic_vm_artifact_info_type: >-
 # Tag-scoped, so bumping the tag cannot silently reuse the old disk.
 ernic_vm_artifact_dir: >-
   {{ ernic_vm_image_dir }}/artifacts/{{ ernic_vm_artifact_tag }}
-ernic_vm_artifact_disk: batesste-ci-vm.qcow2
+ernic_vm_artifact_disk: >-
+  {{ lookup('ansible.builtin.ini', 'GUEST_ARTIFACT_DISK type=properties
+     file=' ~ ernic_project_root ~ '/ci/guest-image.env') }}
 # Also an ernic_guest_setup role default, where driver_ionic.yml
 # gates the same check against the running guest.
 ernic_ionic_min_kernel: "6.18"
@@ -70,7 +73,9 @@ ernic_vm_name_base: rocm-ernic-ionic-vm
 ernic_vm_vcpus: 16
 ernic_vm_mem: 32768
 # The account the artifact bakes.
-ernic_vm_ssh_user: batesste
+ernic_vm_ssh_user: >-
+  {{ lookup('ansible.builtin.ini', 'GUEST_ARTIFACT_USER type=properties
+     file=' ~ ernic_project_root ~ '/ci/guest-image.env') }}
 ernic_vm_ssh_host: local-vm
 # Optional: ssh/scp -F path so sudo ernicctl resolves Host aliases
 # (e.g. /home/youruser/.ssh/config).  Root's /root/.ssh is not used by

@@ -618,6 +618,20 @@
   `docs/building.rst`). `INSTALL.md` now only points there. The page now
   also lists `libjson-c-dev`, which its package list left out, and
   `ERNIC_BUILD_P4`.
+* **Breaking:** **CI guests run Linux 7.2.6 and log in as `ubuntu`, and the
+  ionic guest drivers are built from v7.2.6.** The VM lanes boot a new guest
+  image (`ci/guest-image.env`) with kernel 7.2.6 rather than 7.2.3, whose
+  login account and disk are `ubuntu` and `ubuntu-ci-vm.qcow2` rather than
+  `batesste` and `batesste-ci-vm.qcow2`. `IONIC_KERNEL_REF` and the SRQ
+  series' base move from `v7.2.4` to `v7.2.6`, which adds upstream's read
+  barriers after the ionic Ethernet driver's completion color checks; the
+  patch series apply unchanged, and a guest still needs a 7.2.x kernel. A
+  build directory configured before this keeps its cached `v7.2.4`;
+  reconfigure it with `-DIONIC_KERNEL_REF=v7.2.6`. `ci/lib/common.sh` and
+  `ansible/group_vars/all.yml` read the disk name and account from
+  `ci/guest-image.env` (new `GUEST_ARTIFACT_USER`) instead of keeping their
+  own copies. A self-hosted CI node or inventory that sets `CI_VM_SSH_USER`
+  or `ernic_vm_ssh_user` to `batesste` must drop the setting.
 
 ### Removed
 

@@ -16,7 +16,7 @@
 #define IONIC_BAR_H
 
 /* ---------------------------------------------------------------------------
- * ionic BAR layout.  Checked against upstream v7.2.4:
+ * ionic BAR layout.  Checked against upstream v7.2.6:
  * drivers/net/ethernet/pensando/ionic/{ionic_if.h,ionic_dev.c,ionic_bus_pci.c}
  *
  * ionic_map_bars() walks PCI BARs 0..5, skips any without IORESOURCE_MEM,

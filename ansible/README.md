@@ -22,7 +22,7 @@ other over IP.
 It does not build a guest image. The base image is expected to carry a kernel
 new enough for the driver and the toolchain to build it — in this repo that is
 the published `ionic` flavour from
-[batesste-ci-images][ref-ci-images], which pins mainline 7.2.3 on Ubuntu 26.04
+[batesste-ci-images][ref-ci-images], which pins mainline 7.2.6 on Ubuntu 26.04
 (resolute) and bakes the RDMA userspace, DKMS toolchain and `perftest`.
 
 The kernel floor is not negotiable in either direction:

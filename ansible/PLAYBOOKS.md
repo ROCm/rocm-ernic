@@ -9,7 +9,7 @@ The guest disk is **not** built here. It is the published
 `ionic` flavour from
 [batesste-ci-images](https://github.com/sbates130272/batesste-ci-images),
 pulled by `scripts/fetch-guest-image.sh` or `ci/jobs/vm-up.sh`.
-That image pins mainline kernel 7.2.3 on Ubuntu 26.04 and bakes
+That image pins mainline kernel 7.2.6 on Ubuntu 26.04 and bakes
 the RDMA userspace, the DKMS toolchain and `perftest`.
 
 The reusable parts — everything needed to turn that image into a

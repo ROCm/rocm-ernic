@@ -1,0 +1,11 @@
+---
+minor_changes:
+  - >-
+    ``ernic_srq_dkms`` builds the SRQ series on ``v7.2.6`` rather than
+    ``v7.2.4`` by default (``ernic_srq_dkms_sources``), and
+    ``ernic_guest_setup`` builds the ionic drivers from ``v7.2.6``, the
+    ``IONIC_KERNEL_REF`` it reads from the rocm-ernic checkout.  That
+    matches the 7.2.6 kernel of the CI guest image and brings upstream's
+    read barriers after the ionic Ethernet driver's completion color
+    checks.  The patch series apply unchanged.  A guest must still run a
+    7.2.x kernel.

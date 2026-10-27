@@ -82,7 +82,7 @@ env:
   # --tap arguments below cannot drift from what the role created.
   ERNIC_TAP_BRIDGE: ernicbr0
   ERNIC_TAP_PREFIX: ernic-tap
-  # The guest qcow2 ships as an ORAS artifact -- 3.7 GB zstd rather than
+  # The guest qcow2 ships as an ORAS artifact -- 1.6 GB zstd rather than
   # the 5.75 GB raw the FROM-scratch payload image carried, and no skopeo.
   # Both jobs pull it through .github/actions/fetch-guest-vm.  The builder
   # image carries no guest at all: guest building moved out to its own
@@ -1212,11 +1212,11 @@ jobs:
     # leaving ernic_vms empty and the play reporting success having
     # built nothing.
     #
-    # These block.  The SRQ series is rebased onto v7.2.4 -- the ref
+    # These block.  The SRQ series applies to v7.2.6 -- the ref
     # IONIC_KERNEL_REF pins and the kernel the guest image runs -- so
     # there is no version mismatch to tolerate: the series applies with
-    # git am and builds as a DKMS package on 7.2.4-070204-generic,
-    # verified on a live guest.  A failure here is a real regression.
+    # git am and builds as a DKMS package on the guest's kernel.  A
+    # failure here is a real regression.
     - name: Build the SRQ-capable ionic driver in the VM
       id: srq_build
       shell: bash
@@ -1755,9 +1755,9 @@ jobs:
       run: |
         set -euo pipefail
         echo "=== Creating per-VM overlays ==="
-        # Overlays, not copies.  The fetched qcow2 is 5.75 GB, and both
+        # Overlays, not copies.  The fetched qcow2 is 3.2 GB, and both
         # guests boot the same backing image and diverge only in what they
-        # write, so cp spent a minute and 5.75 GB to reproduce something
+        # write, so cp spent time and disk to reproduce something
         # qemu-img create does instantly.
         #
         # Both VMs get one, including the first: with VM 1 writing to the

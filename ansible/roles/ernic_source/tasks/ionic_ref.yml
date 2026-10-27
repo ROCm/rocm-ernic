@@ -5,7 +5,7 @@
 # Resolve the upstream kernel tag the ionic driver sources come
 # from.  ernic_guest_setup builds the DKMS package from it, and
 # driver_ionic.yml asserts the guest kernel can carry it: the
-# image pins mainline 7.2.3 and this ref must stay within a point
+# image pins mainline 7.2.6 and this ref must stay within a point
 # release of that, since below 7.2 the build fails on
 # ib_umem_get_va.
 

@@ -31,7 +31,7 @@ option(ERNIC_BUILD_KMOD
 # Must be >= v6.18: drivers/infiniband/hw/ionic (ionic_rdma.ko) was only
 # merged for 6.18, so earlier refs cannot supply the RDMA half of the
 # stack and the DKMS build fails with a missing source directory.
-set(IONIC_KERNEL_REF "v7.2.4"
+set(IONIC_KERNEL_REF "v7.2.6"
     CACHE STRING
     "Linux kernel git tag or SHA to fetch ionic sources from")
 

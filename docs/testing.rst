@@ -691,7 +691,7 @@ Nothing in ``ansible/`` builds a guest image. The guests
 come from a published OCI artifact: the ``ionic`` flavour of
 `batesste-ci-images
 <https://github.com/sbates130272/batesste-ci-images>`_,
-which pins mainline kernel 7.2.3 on Ubuntu 26.04 (resolute)
+which pins mainline kernel 7.2.6 on Ubuntu 26.04 (resolute)
 and bakes the RDMA userspace, the DKMS toolchain,
 ``perftest`` and a distro rdma-core 61.0 carrying the ionic
 provider.
@@ -706,7 +706,7 @@ bytes in the same layout.
 It also checks the image's ``vm-info.json`` against this
 checkout and refuses the image when they disagree. That
 happens between the metadata pull and the disk pull, so a
-rejection costs kilobytes rather than the 3.7 GB it would
+rejection costs kilobytes rather than the 1.6 GB it would
 cost after -- and every assertion reads either the metadata
 or a file in this checkout, so pulling the disk first could
 not change the verdict anyway. Verification reruns on the
