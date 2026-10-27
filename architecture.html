@@ -1186,7 +1186,8 @@ host virtual address in the server   → memcpy
 <p>The page table a driver provides for an MR, CQ, or QP ring is
 either a single DMA address or the guest address of an array of
 page addresses; the data path reads and caches it when the
-object is registered. Runs of physically adjacent pages are
+object is registered, and the command creating the object fails
+if it can’t. Runs of physically adjacent pages are
 merged so a large transfer isn’t split at every 4 KiB. Key 0 is
 the driver’s reserved DMA key: the address is already a guest
 bus address. The kernel uses it for its own buffers.</p>
