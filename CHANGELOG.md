@@ -950,6 +950,10 @@
   * Controller QP numbers start again from the bottom of their range after
     65,535 connections, and could be handed to a new connection while an
     older one still held them. They now skip any a connection holds.
+  * A `model=` longer than 40 characters or a `serial=` longer than 20 was
+    cut short without a word. Either is now refused, as is one that is
+    empty or holds anything but printable ASCII, which is all the Identify
+    Controller fields may carry.
 * **S3 backend.** A `Content-Length` of `-1` or beyond 64 bits on a token
   request was taken as the largest length; anything but digits is now a
   `400`. A signed `Range` such as `bytes=--64` returned the whole object and

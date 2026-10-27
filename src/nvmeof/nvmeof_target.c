@@ -120,6 +120,27 @@ void nvmeof_target_cfg_defaults(struct nvmeof_target_cfg *cfg)
     cfg->queue_depth = NVMEOF_DEFAULT_DEPTH;
 }
 
+/*
+ * Whether @s fits an Identify Controller string field of @max bytes, which
+ * holds ASCII padded with spaces: 1 to @max printable characters. Copying a
+ * longer one would cut it short without saying so.
+ */
+static bool ident_string_ok(const char *s, size_t max)
+{
+    size_t n = strlen(s);
+
+    if (n == 0 || n > max) {
+        return false;
+    }
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c < 0x20 || c > 0x7e) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool parse_ipv4(const char *s, uint32_t *out)
 {
     struct in_addr a;
@@ -228,9 +249,25 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
                 cfg->max_queues = (uint16_t)v;
             }
         } else if (strcmp(key, "model") == 0) {
-            snprintf(cfg->model, sizeof(cfg->model), "%s", val);
+            if (!ident_string_ok(val, sizeof(cfg->model) - 1)) {
+                ernic_set_err(err, errlen,
+                              "model must be 1..%zu printable ASCII "
+                              "characters",
+                              sizeof(cfg->model) - 1);
+                ok = false;
+            } else {
+                snprintf(cfg->model, sizeof(cfg->model), "%s", val);
+            }
         } else if (strcmp(key, "serial") == 0) {
-            snprintf(cfg->serial, sizeof(cfg->serial), "%s", val);
+            if (!ident_string_ok(val, sizeof(cfg->serial) - 1)) {
+                ernic_set_err(err, errlen,
+                              "serial must be 1..%zu printable ASCII "
+                              "characters",
+                              sizeof(cfg->serial) - 1);
+                ok = false;
+            } else {
+                snprintf(cfg->serial, sizeof(cfg->serial), "%s", val);
+            }
         } else {
             ernic_set_err(err, errlen, "unknown nvmeof option '%s'", key);
             ok = false;

@@ -1520,6 +1520,10 @@ def cmd_driver_push(args):
 
     if args.install:
         print("Running installer on remote host...")
+        install = (
+            "cd /tmp && tar xzf rocm-ernic-driver.tar.gz"
+            " && cd rocm-ernic-driver && ./vm-driver-install.sh"
+        )
         # On the host the tarball went to. Not guest_ssh(), which reaches
         # only ERNIC_VM_SSH_HOST, gives up after 30 seconds, and hides the
         # installer's output.
@@ -1531,10 +1535,7 @@ def cmd_driver_push(args):
                 "-p",
                 port,
                 target,
-                "cd /tmp && tar xzf"
-                " rocm-ernic-driver.tar.gz"
-                " && cd rocm-ernic-driver"
-                " && ./vm-driver-install.sh",
+                install,
             ],
             check=True,
         )
