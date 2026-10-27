@@ -1183,6 +1183,10 @@
     than 9 bits; and, as bmv2 refuses them, two tables or conditionals with
     one name in any pipeline, which made the second unreachable, and two
     tables, two conditionals or two pipelines with one id.
+  * A program whose headers and metadata took more than the 1024-byte
+    packet header vector loaded, and then dropped every frame and, if it
+    declared `rdma_metadata`, failed every RDMA operation. It's now refused
+    at load with `EINVAL`, saying how many bytes its headers take.
   * A hex literal, mask, select value or default argument with a `\u0000`
     in it loaded as the part before the NUL (`"0x00ff\u0000zz"` as
     `0x00ff`), and an arm whose value was `"default\u0000zz"` loaded as a

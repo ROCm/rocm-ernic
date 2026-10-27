@@ -19,9 +19,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Total storage for extracted headers and metadata, in bytes. */
-#define P4_PHV_BYTES 1024
-
 /*
  * The ingress_port an RDMA operation arrives on.
  *

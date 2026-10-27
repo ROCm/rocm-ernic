@@ -52,6 +52,13 @@ static inline bool p4_name_printable(const char *s, size_t n)
 #define P4_MAX_FIELD_BITS   512
 
 /*
+ * The packet header vector: the storage the executor gives the headers and
+ * metadata, in bytes.  The caps above allow programs far larger than this,
+ * so the loader lays the headers out and refuses a program they overflow.
+ */
+#define P4_PHV_BYTES 1024
+
+/*
  * Index of a missing reference.  Every index field is this width, so a
  * comparison against it is never silently false through promotion -- an
  * index stored in a narrower type would compare against a truncated
@@ -82,6 +89,7 @@ struct p4_header {
     uint32_t id;
     p4_idx_t header_type; /* index into header_types */
     bool metadata;
+    uint16_t phv_offset; /* byte offset of its storage in the PHV */
 };
 
 #define P4_MAX_PARSE_STATES   64
@@ -392,6 +400,8 @@ struct p4_program {
     struct p4_action actions[P4_MAX_ACTIONS];
     uint16_t nheader_types;
     uint16_t nheaders;
+    /* Bytes of the PHV the headers take, at most P4_PHV_BYTES. */
+    uint16_t phv_bytes;
     uint16_t nparse_states;
     uint16_t ndeparse_order;
     p4_idx_t init_state;
