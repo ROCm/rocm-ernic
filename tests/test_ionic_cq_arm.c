@@ -315,6 +315,26 @@ void ernic_stats_rdma_bytes(struct ernic_stats *st, uint32_t qp_id,
     g_file_rdma_bytes += bytes;
 }
 
+#ifdef ERNIC_HAVE_P4
+/* No P4 engine is attached here, so the pipeline never runs. The status
+ * means nothing unless *done is set. */
+uint32_t ionic_dp_p4_policy(struct ionic_datapath *dp, uint32_t qp_id,
+                            uint8_t op, const uint8_t *wqe, uint32_t read_sz,
+                            const struct dp_sge_list *src, uint32_t imm_be,
+                            bool *done)
+{
+    (void)dp;
+    (void)qp_id;
+    (void)op;
+    (void)wqe;
+    (void)read_sz;
+    (void)src;
+    (void)imm_be;
+    *done = false;
+    return 0;
+}
+#endif
+
 /* ---- Harness ----------------------------------------------------------- */
 
 static unsigned g_events; /* CQ events delivered to the "driver" */

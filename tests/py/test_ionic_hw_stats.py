@@ -458,6 +458,7 @@ def read_stats_file(path):
                 except ValueError:
                     out[key.strip()] = val.strip()
     except OSError:
+        # Not written yet: no counters, and the caller polls until there are
         pass
     return out
 

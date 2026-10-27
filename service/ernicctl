@@ -128,7 +128,8 @@ def guest_gids_for(inst):
         f"       records them.",
         file=sys.stderr,
     )
-    sys.exit(1)
+    # What sys.exit() does, but a checker can see that it doesn't return
+    raise SystemExit(1)
 
 
 def socket_ready(sock_path):
@@ -289,6 +290,8 @@ def parse_stats_file(path):
                 except ValueError:
                     result[key] = val
     except OSError:
+        # Removed since the isfile() check (the instance stopped) or
+        # unreadable: the same as a missing file.
         pass
     return result
 
@@ -304,6 +307,7 @@ def count_qps(path):
                 if line.strip().startswith("QP ") and line.strip().endswith(":"):
                     count += 1
     except OSError:
+        # As in parse_stats_file(): a file that went away has no QPs
         pass
     return count
 
@@ -502,6 +506,7 @@ def _guest_load_from_qmp(qmp_socket, debug=False):
             try:
                 load1m = float(ret["load1m"])
             except (TypeError, ValueError):
+                # Not a number: left as None, reported as no load below
                 pass
     if load1m is None and guest_qmp_missing:
         hmp = json.dumps(
@@ -550,6 +555,7 @@ def _guest_load_from_qmp(qmp_socket, debug=False):
                     try:
                         load1m = float(ret["load1m"])
                     except (TypeError, ValueError):
+                        # As above: left as None, reported below
                         pass
     if load1m is None:
         if debug:
@@ -1514,17 +1520,23 @@ def cmd_driver_push(args):
 
     if args.install:
         print("Running installer on remote host...")
-        user, _, host = target.partition("@")
-        if not host:
-            host = user
-            user = CFG["ERNIC_VM_SSH_USER"]
-        guest_ssh(
-            user,
-            int(port),
-            "cd /tmp && tar xzf"
-            " rocm-ernic-driver.tar.gz"
-            " && cd rocm-ernic-driver"
-            " && ./vm-driver-install.sh",
+        # On the host the tarball went to. Not guest_ssh(), which reaches
+        # only ERNIC_VM_SSH_HOST, gives up after 30 seconds, and hides the
+        # installer's output.
+        subprocess.run(
+            [
+                "ssh",
+                *_ssh_config_prefix(),
+                *_ssh_vm_host_key_opts(),
+                "-p",
+                port,
+                target,
+                "cd /tmp && tar xzf"
+                " rocm-ernic-driver.tar.gz"
+                " && cd rocm-ernic-driver"
+                " && ./vm-driver-install.sh",
+            ],
+            check=True,
         )
     print("Done.")
 

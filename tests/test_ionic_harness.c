@@ -2884,10 +2884,17 @@ static void test_eth(void)
 {
     const char *T = "eth";
     struct ih h;
-    struct tx_seen seen;
+    /* Allocated, not on the stack: the device keeps a pointer to it */
+    struct tx_seen *seen = calloc(1, sizeof(*seen));
 
-    if (!setup(T, &h, "loopback"))
+    if (seen == NULL) {
+        check(T, false, "out of memory");
         return;
+    }
+    if (!setup(T, &h, "loopback")) {
+        free(seen);
+        return;
+    }
 
     const uint64_t txr = fake_vfu_alloc(h.vfu, 8 * 16, 64);
     const uint64_t txc = fake_vfu_alloc(h.vfu, 8 * 16, 64);
@@ -2908,8 +2915,7 @@ static void test_eth(void)
     ih_intr_mask(&h, TX_INTR, false);
     ih_intr_mask(&h, RX_INTR, false);
 
-    memset(&seen, 0, sizeof(seen));
-    ionic_eth_emu_register_tx_filter(h.emu, tx_filter, &seen);
+    ionic_eth_emu_register_tx_filter(h.emu, tx_filter, seen);
 
     /* One frame in the descriptor, one split over two SG elements */
     uint8_t frame[200];
@@ -2932,10 +2938,10 @@ static void test_eth(void)
     fake_vfu_write(h.vfu, txsg + 1 * 8 * 16, sg, sizeof(sg));
 
     ih_doorbell(&h, IH_QTYPE_ETH_TXQ, 0, 0, 2);
-    check(T, seen.frames == 2, "the Tx filter saw %u frames", seen.frames);
+    check(T, seen->frames == 2, "the Tx filter saw %u frames", seen->frames);
     check(T,
-          seen.len == sizeof(frame) &&
-              memcmp(seen.frame, frame, sizeof(frame)) == 0,
+          seen->len == sizeof(frame) &&
+              memcmp(seen->frame, frame, sizeof(frame)) == 0,
           "the scatter/gather frame was not reassembled");
     uint8_t comp[16];
     fake_vfu_read(h.vfu, txc + 16, comp, sizeof(comp));
@@ -3000,11 +3006,12 @@ static void test_eth(void)
      * never initialized is ignored */
     ionic_eth_emu_register_tx_filter(h.emu, NULL, NULL);
     ih_doorbell(&h, IH_QTYPE_ETH_TXQ, 0, 0, 3);
-    check(T, seen.frames == 2, "Tx with no filter reached the filter");
+    check(T, seen->frames == 2, "Tx with no filter reached the filter");
     ih_doorbell(&h, IH_QTYPE_ETH_TXQ, 3, 0, 1);
     ih_doorbell(&h, IH_QTYPE_ETH_TXQ, 99, 0, 1);
 
     teardown(T, &h);
+    free(seen);
 }
 
 /*
@@ -3038,11 +3045,18 @@ static void test_eth_dma_faults(void)
 {
     const char *T = "eth-dma";
     struct ih h;
-    struct tx_seen seen;
+    /* Allocated, not on the stack: the device keeps a pointer to it */
+    struct tx_seen *seen = calloc(1, sizeof(*seen));
     uint8_t cmd[64] = {0}, comp[16], desc[16], buf[64];
 
-    if (!setup(T, &h, "loopback"))
+    if (seen == NULL) {
+        check(T, false, "out of memory");
         return;
+    }
+    if (!setup(T, &h, "loopback")) {
+        free(seen);
+        return;
+    }
 
     /* PORT_INIT succeeds even when the port information can't be written */
     const uint64_t info = fake_vfu_alloc(h.vfu, IH_PAGE_SIZE, IH_PAGE_SIZE);
@@ -3082,17 +3096,17 @@ static void test_eth_dma_faults(void)
               q_enable(&h, IH_QTYPE_ETH_RXQ, 0);
     if (!check(T, ok, "Tx and Rx queue setup failed")) {
         teardown(T, &h);
+        free(seen);
         return;
     }
     ih_intr_mask(&h, RX_INTR, false);
-    memset(&seen, 0, sizeof(seen));
-    ionic_eth_emu_register_tx_filter(h.emu, tx_filter, &seen);
+    ionic_eth_emu_register_tx_filter(h.emu, tx_filter, seen);
 
     for (size_t i = 0; i < sizeof(eth_tx_cases) / sizeof(eth_tx_cases[0]);
          i++) {
         const struct eth_tx_case *c = &eth_tx_cases[i];
         uint8_t sg[2 * 16] = {0};
-        unsigned frames = seen.frames;
+        unsigned frames = seen->frames;
 
         memset(desc, 0, sizeof(desc));
         ernic_put_le64(desc, bufs << 12 | (uint64_t)c->nsge << 8);
@@ -3107,7 +3121,7 @@ static void test_eth_dma_faults(void)
         fake_vfu_fail_nth_map(h.vfu, c->fail);
         ih_doorbell(&h, IH_QTYPE_ETH_TXQ, 0, 0, (uint16_t)(i + 1));
         fake_vfu_fail_nth_map(h.vfu, 0);
-        check(T, (seen.frames != frames) == c->sent, "%s: the frame was %s",
+        check(T, (seen->frames != frames) == c->sent, "%s: the frame was %s",
               c->what, c->sent ? "dropped" : "sent");
         fake_vfu_read(h.vfu, txc + 16u * i, comp, sizeof(comp));
         check(T, ((comp[15] & 0x80u) && comp[2] == i) == c->completed,
@@ -3137,6 +3151,7 @@ static void test_eth_dma_faults(void)
 
     check(T, fake_vfu_mapped(h.vfu) == 0, "guest memory left mapped");
     teardown(T, &h);
+    free(seen);
 }
 
 /* ---- NVMe-oF over the GSI QP ------------------------------------------- */
@@ -3353,13 +3368,20 @@ static void test_p4_port(void)
 {
     const char *T = "p4-port";
     struct ih h;
-    struct p4_upstream up;
+    /* Allocated, not on the stack: the device keeps a pointer to it */
+    struct p4_upstream *up = calloc(1, sizeof(*up));
     struct ionic_eth_p4_upstream chain;
     struct p4_stats estats;
     struct ionic_eth_p4_stats pstats;
 
-    if (!setup(T, &h, "loopback"))
+    if (up == NULL) {
+        check(T, false, "out of memory");
         return;
+    }
+    if (!setup(T, &h, "loopback")) {
+        free(up);
+        return;
+    }
 
     const uint64_t txr = fake_vfu_alloc(h.vfu, 8 * 16, 64);
     const uint64_t txc = fake_vfu_alloc(h.vfu, 8 * 16, 64);
@@ -3369,17 +3391,17 @@ static void test_p4_port(void)
     ih_intr_mask(&h, TX_INTR, false);
 
     /* Stand in for the S3 control plane, which really does hold this slot. */
-    memset(&up, 0, sizeof(up));
-    ionic_eth_emu_register_tx_filter(h.emu, p4_upstream_filter, &up);
+    ionic_eth_emu_register_tx_filter(h.emu, p4_upstream_filter, up);
 
     memset(&chain, 0, sizeof(chain));
     ionic_eth_emu_get_tx_filter(h.emu, &chain.fn, &chain.ctx);
-    check(T, chain.fn == p4_upstream_filter && chain.ctx == &up,
+    check(T, chain.fn == p4_upstream_filter && chain.ctx == up,
           "the registered Tx filter did not read back");
 
     struct p4_engine *eng = p4_engine_create();
     if (!check(T, eng != NULL, "p4_engine_create failed")) {
         teardown(T, &h);
+        free(up);
         return;
     }
 
@@ -3400,6 +3422,7 @@ static void test_p4_port(void)
     if (!check(T, port != NULL, "ionic_eth_p4_attach failed")) {
         p4_engine_destroy(eng);
         teardown(T, &h);
+        free(up);
         return;
     }
 
@@ -3407,8 +3430,8 @@ static void test_p4_port(void)
     p4_tx_one(&h, txr, buf, P4_UPSTREAM_MAGIC, 0);
     p4_engine_get_stats(eng, &estats);
     ionic_eth_p4_get_stats(port, &pstats);
-    check(T, up.claimed == 1, "the chained filter claimed %u frames",
-          up.claimed);
+    check(T, up->claimed == 1, "the chained filter claimed %u frames",
+          up->claimed);
     check(T, estats.frames_in[P4_PORT_HOST] == 0,
           "a claimed frame reached the pipeline");
     check(T, pstats.to_upstream == 1, "the claimed frame was not counted");
@@ -3418,8 +3441,8 @@ static void test_p4_port(void)
     p4_tx_one(&h, txr, buf, 0xBBu, 1);
     p4_engine_get_stats(eng, &estats);
     ionic_eth_p4_get_stats(port, &pstats);
-    check(T, up.offered == 2, "the chained filter saw %u frames", up.offered);
-    check(T, up.claimed == 1,
+    check(T, up->offered == 2, "the chained filter saw %u frames", up->offered);
+    check(T, up->claimed == 1,
           "the chained filter claimed a frame it should "
           "have declined");
     check(T, estats.frames_in[P4_PORT_HOST] == 1,
@@ -3436,11 +3459,12 @@ static void test_p4_port(void)
     /* Detaching must hand the slot back, not leave it empty. */
     ionic_eth_p4_detach(port);
     ionic_eth_emu_get_tx_filter(h.emu, &chain.fn, &chain.ctx);
-    check(T, chain.fn == p4_upstream_filter && chain.ctx == &up,
+    check(T, chain.fn == p4_upstream_filter && chain.ctx == up,
           "detach did not restore the previous Tx filter");
 
     p4_tx_one(&h, txr, buf, P4_UPSTREAM_MAGIC, 2);
-    check(T, up.claimed == 2, "the restored filter did not claim after detach");
+    check(T, up->claimed == 2,
+          "the restored filter did not claim after detach");
     p4_engine_get_stats(eng, &estats);
     check(T, estats.frames_in[P4_PORT_HOST] == 1,
           "the pipeline ran after it was detached");
@@ -3448,6 +3472,7 @@ static void test_p4_port(void)
     p4_engine_destroy(eng);
     ionic_eth_emu_register_tx_filter(h.emu, NULL, NULL);
     teardown(T, &h);
+    free(up);
 }
 
 /*
@@ -3460,20 +3485,25 @@ static void test_p4_port(void)
 static void p4_attach_one(const char *T, enum p4_scope scope)
 {
     struct p4_engine *eng = p4_engine_create();
-    struct p4_upstream up;
+    /* Allocated, not on the stack: the device keeps a pointer to it */
+    struct p4_upstream *up = calloc(1, sizeof(*up));
     char err[128] = "";
     struct ih h;
 
-    if (!check(T, eng != NULL, "p4_engine_create failed"))
+    if (!check(T, eng != NULL, "p4_engine_create failed") ||
+        !check(T, up != NULL, "out of memory")) {
+        p4_engine_destroy(eng);
+        free(up);
         return;
+    }
     if (!setup(T, &h, "loopback")) {
         p4_engine_destroy(eng);
+        free(up);
         return;
     }
 
     /* Stand in for the S3 control plane, as test_p4_port() does. */
-    memset(&up, 0, sizeof(up));
-    ionic_eth_emu_register_tx_filter(h.emu, p4_upstream_filter, &up);
+    ionic_eth_emu_register_tx_filter(h.emu, p4_upstream_filter, up);
 
     check(T,
           !ionic_device_attach_p4(h.dev->ionic, NULL, scope, err, sizeof(err)),
@@ -3499,6 +3529,7 @@ static void p4_attach_one(const char *T, enum p4_scope scope)
 
     teardown(T, &h);
     p4_engine_destroy(eng);
+    free(up);
 }
 
 static void test_p4_attach(void)

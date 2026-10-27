@@ -135,6 +135,7 @@ class PairTests(unittest.TestCase):
                     try:
                         os.kill(int(record.read_text()), signal.SIGKILL)
                     except ProcessLookupError:
+                        # Already gone, which is what a passing test leaves
                         pass
 
 

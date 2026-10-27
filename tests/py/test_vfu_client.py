@@ -168,8 +168,7 @@ def test_bar_access(suite, client):
 
 def test_dma(suite, client):
     """Mapping guest memory, and taking it back."""
-    mem = vfu.GuestMemory(size=4 << 20)
-    try:
+    with vfu.GuestMemory(size=4 << 20) as mem:
         client.dma_map(mem)
         suite.check(True, "guest memory mapped")
         refused(
@@ -209,8 +208,6 @@ def test_dma(suite, client):
             "the device still answers after a wrapping map",
         )
         client.dma_unmap(mem.base, mem.size)
-    finally:
-        mem.close()
 
 
 def test_irqs(suite, client):
