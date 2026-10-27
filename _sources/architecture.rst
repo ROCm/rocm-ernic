@@ -385,7 +385,7 @@ device (PVRDMA), using the device model from QEMU's
 ``hw/rdma/``. That guest-facing personality has been removed
 and replaced by the ionic front end, but two pieces of the QEMU
 code are still underneath it, which is why many names
-(``pvrdma_handle``, ``PVRDMADev``, the ``pvrdma_*`` statistics)
+(``pvrdma_handle``, ``PVRDMADev``)
 still say "pvrdma":
 
 - **rdma_rm**, the resource manager: handle tables for PDs,
@@ -398,11 +398,11 @@ still say "pvrdma":
 The ionic admin queue reaches these through the ``ernic_rm_*()``
 wrappers in ``rocm_ernic_compat.c``, which is the only file that
 includes the QEMU headers. The front end sees the core only
-through four small headers, each included only where it's used:
-``rocm_ernic_compat.h`` creates and destroys it, and
-``ernic_rm.h``, ``ernic_mesh.h``, and ``ernic_stats.h`` declare
-the wrappers for the resource manager, the mesh, and the
-statistics. Today the core's jobs in the ionic world are:
+through three small headers, each included only where it's
+used: ``rocm_ernic_compat.h`` creates and destroys it, and
+``ernic_rm.h`` and ``ernic_mesh.h`` declare the wrappers for the
+resource manager and the mesh. Today the core's jobs in the
+ionic world are:
 
 #. Bookkeeping and limits for each object the guest creates.
 #. Recording each QP's state and passing the INIT, RTR, and RTS
@@ -415,23 +415,25 @@ statistics. Today the core's jobs in the ionic world are:
    anyway (see `More Than One VM: the TCP Mesh`_).
 #. Carrying the TCP mesh, through the ``ernic_mesh_*()``
    wrappers.
-#. Statistics: the device and per-QP counters the guest reads
-   as ``hw_counters`` (through the admin queue's statistics
-   commands, together with the data path's error counters),
-   and the stats file written about once a second
-   (``--stats-file``, consumed by ``ernic-exporter``; see
-   :doc:`monitoring`), which also carries the Ethernet side's
-   LIF and port counters.
 
 The core does **not** move data for the ionic device, or post
 its completions. All data movement happens in
-``ionic_datapath.c``.
+``ionic_datapath.c``. Nor does it keep the statistics: the
+server does (``src/ernic_stats.c``), and hands them to the ionic
+device, which counts into them. They are the device and per-QP
+counters the guest reads as ``hw_counters`` (through the admin
+queue's statistics commands, together with the data path's
+error counters), and what the stats file shows, written about
+once a second (``--stats-file``, consumed by
+``ernic-exporter``; see :doc:`monitoring`). The ionic device
+adds a section to the file for the Ethernet side's LIF and port
+counters.
 
 The Main Loop
 ^^^^^^^^^^^^^
 
-``src/rocm_ernic_server.c`` builds the RDMA core and its
-backend, then the ionic device in front of them
+``src/rocm_ernic_server.c`` builds the statistics, the RDMA core
+and its backend, then the ionic device in front of them
 (``ionic_device_create()`` in ``src/ionic/ionic_device.c``,
 which creates the ionic objects and wires them together once),
 then waits for QEMU to connect. Once QEMU has connected, it
@@ -1450,12 +1452,12 @@ Where to Look in the Source
        the P4 pipeline
    * - ``src/ernic_dma.c``
      - Copying to and from guest memory, for all of the above
+   * - ``src/ernic_stats.c``, ``.h``
+     - The device and per-QP counters, and the stats file
    * - ``src/rocm_ernic_compat.c``, ``.h``,
-       ``src/ernic_rm.h``, ``src/ernic_mesh.h``,
-       ``src/ernic_stats.h``
+       ``src/ernic_rm.h``, ``src/ernic_mesh.h``
      - Bridge to the QEMU-derived core: the device's lifecycle,
-       and wrappers for the resource manager, the mesh, and the
-       statistics
+       and wrappers for the resource manager and the mesh
    * - ``src/qemu/``
      - Resource manager and backend dispatch, forked from QEMU
    * - ``src/rdma/rdma_backend_*.c``
@@ -1463,8 +1465,6 @@ Where to Look in the Source
    * - ``src/rdma/tcp_*.c``
      - The TCP mesh: connections, the wire format, GID
        ownership, and the manager's and workers' halves
-   * - ``src/rdma/pvrdma_stats.c``
-     - Statistics file
    * - ``src/qemu-compat/``
      - Stand-ins for the QEMU APIs the QEMU-derived code calls
    * - ``src/nvmeof/nvmeof_cm.c``,

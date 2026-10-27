@@ -824,7 +824,7 @@ device (PVRDMA), using the device model from QEMU’s
 <code class="docutils literal notranslate"><span class="pre">hw/rdma/</span></code>. That guest-facing personality has been removed
 and replaced by the ionic front end, but two pieces of the QEMU
 code are still underneath it, which is why many names
-(<code class="docutils literal notranslate"><span class="pre">pvrdma_handle</span></code>, <code class="docutils literal notranslate"><span class="pre">PVRDMADev</span></code>, the <code class="docutils literal notranslate"><span class="pre">pvrdma_*</span></code> statistics)
+(<code class="docutils literal notranslate"><span class="pre">pvrdma_handle</span></code>, <code class="docutils literal notranslate"><span class="pre">PVRDMADev</span></code>)
 still say “pvrdma”:</p>
 <ul class="simple">
 <li><p><strong>rdma_rm</strong>, the resource manager: handle tables for PDs,
@@ -837,11 +837,11 @@ pluggable <strong>backend</strong> through the vtable in
 <p>The ionic admin queue reaches these through the <code class="docutils literal notranslate"><span class="pre">ernic_rm_*()</span></code>
 wrappers in <code class="docutils literal notranslate"><span class="pre">rocm_ernic_compat.c</span></code>, which is the only file that
 includes the QEMU headers. The front end sees the core only
-through four small headers, each included only where it’s used:
-<code class="docutils literal notranslate"><span class="pre">rocm_ernic_compat.h</span></code> creates and destroys it, and
-<code class="docutils literal notranslate"><span class="pre">ernic_rm.h</span></code>, <code class="docutils literal notranslate"><span class="pre">ernic_mesh.h</span></code>, and <code class="docutils literal notranslate"><span class="pre">ernic_stats.h</span></code> declare
-the wrappers for the resource manager, the mesh, and the
-statistics. Today the core’s jobs in the ionic world are:</p>
+through three small headers, each included only where it’s
+used: <code class="docutils literal notranslate"><span class="pre">rocm_ernic_compat.h</span></code> creates and destroys it, and
+<code class="docutils literal notranslate"><span class="pre">ernic_rm.h</span></code> and <code class="docutils literal notranslate"><span class="pre">ernic_mesh.h</span></code> declare the wrappers for the
+resource manager and the mesh. Today the core’s jobs in the
+ionic world are:</p>
 <ol class="arabic simple">
 <li><p>Bookkeeping and limits for each object the guest creates.</p></li>
 <li><p>Recording each QP’s state and passing the INIT, RTR, and RTS
@@ -854,22 +854,24 @@ sees it, and the TCP backend would fail the RTR transition
 anyway (see <a class="reference internal" href="#more-than-one-vm-the-tcp-mesh">More Than One VM: the TCP Mesh</a>).</p></li>
 <li><p>Carrying the TCP mesh, through the <code class="docutils literal notranslate"><span class="pre">ernic_mesh_*()</span></code>
 wrappers.</p></li>
-<li><p>Statistics: the device and per-QP counters the guest reads
-as <code class="docutils literal notranslate"><span class="pre">hw_counters</span></code> (through the admin queue’s statistics
-commands, together with the data path’s error counters),
-and the stats file written about once a second
-(<code class="docutils literal notranslate"><span class="pre">--stats-file</span></code>, consumed by <code class="docutils literal notranslate"><span class="pre">ernic-exporter</span></code>; see
-<a class="reference internal" href="monitoring.html"><span class="doc">Prometheus Monitoring and Grafana Dashboard</span></a>), which also carries the Ethernet side’s
-LIF and port counters.</p></li>
 </ol>
 <p>The core does <strong>not</strong> move data for the ionic device, or post
 its completions. All data movement happens in
-<code class="docutils literal notranslate"><span class="pre">ionic_datapath.c</span></code>.</p>
+<code class="docutils literal notranslate"><span class="pre">ionic_datapath.c</span></code>. Nor does it keep the statistics: the
+server does (<code class="docutils literal notranslate"><span class="pre">src/ernic_stats.c</span></code>), and hands them to the ionic
+device, which counts into them. They are the device and per-QP
+counters the guest reads as <code class="docutils literal notranslate"><span class="pre">hw_counters</span></code> (through the admin
+queue’s statistics commands, together with the data path’s
+error counters), and what the stats file shows, written about
+once a second (<code class="docutils literal notranslate"><span class="pre">--stats-file</span></code>, consumed by
+<code class="docutils literal notranslate"><span class="pre">ernic-exporter</span></code>; see <a class="reference internal" href="monitoring.html"><span class="doc">Prometheus Monitoring and Grafana Dashboard</span></a>). The ionic device
+adds a section to the file for the Ethernet side’s LIF and port
+counters.</p>
 </section>
 <section id="the-main-loop">
 <h3>The Main Loop<a class="headerlink" href="#the-main-loop" title="Link to this heading">#</a></h3>
-<p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_server.c</span></code> builds the RDMA core and its
-backend, then the ionic device in front of them
+<p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_server.c</span></code> builds the statistics, the RDMA core
+and its backend, then the ionic device in front of them
 (<code class="docutils literal notranslate"><span class="pre">ionic_device_create()</span></code> in <code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_device.c</span></code>,
 which creates the ionic objects and wires them together once),
 then waits for QEMU to connect. Once QEMU has connected, it
@@ -1973,25 +1975,23 @@ the P4 pipeline</p></td>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ernic_dma.c</span></code></p></td>
 <td><p>Copying to and from guest memory, for all of the above</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_compat.c</span></code>, <code class="docutils literal notranslate"><span class="pre">.h</span></code>,
-<code class="docutils literal notranslate"><span class="pre">src/ernic_rm.h</span></code>, <code class="docutils literal notranslate"><span class="pre">src/ernic_mesh.h</span></code>,
-<code class="docutils literal notranslate"><span class="pre">src/ernic_stats.h</span></code></p></td>
-<td><p>Bridge to the QEMU-derived core: the device’s lifecycle,
-and wrappers for the resource manager, the mesh, and the
-statistics</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ernic_stats.c</span></code>, <code class="docutils literal notranslate"><span class="pre">.h</span></code></p></td>
+<td><p>The device and per-QP counters, and the stats file</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/qemu/</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_compat.c</span></code>, <code class="docutils literal notranslate"><span class="pre">.h</span></code>,
+<code class="docutils literal notranslate"><span class="pre">src/ernic_rm.h</span></code>, <code class="docutils literal notranslate"><span class="pre">src/ernic_mesh.h</span></code></p></td>
+<td><p>Bridge to the QEMU-derived core: the device’s lifecycle,
+and wrappers for the resource manager and the mesh</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/qemu/</span></code></p></td>
 <td><p>Resource manager and backend dispatch, forked from QEMU</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/rdma_backend_*.c</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/rdma_backend_*.c</span></code></p></td>
 <td><p>Backend registry; none, loopback, and TCP mesh backends</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/tcp_*.c</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/tcp_*.c</span></code></p></td>
 <td><p>The TCP mesh: connections, the wire format, GID
 ownership, and the manager’s and workers’ halves</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/pvrdma_stats.c</span></code></p></td>
-<td><p>Statistics file</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/qemu-compat/</span></code></p></td>
 <td><p>Stand-ins for the QEMU APIs the QEMU-derived code calls</p></td>
