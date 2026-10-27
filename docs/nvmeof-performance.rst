@@ -48,17 +48,23 @@ than in-capsule data. ``maxcmd`` is 128.
 Reproducing
 -----------
 
+One server and one guest are a complete fabric. Set
+``ERNIC_INSTANCES=1`` and
+``ERNIC_BACKEND=nvmeof:size=8G,bs=4096,queues=4`` in
+:file:`/etc/rocm-ernic/rocm-ernic.env`, launch and provision
+the guest as in :doc:`testing`, then run the NVMe-oF play with
+the sweep turned on:
+
 .. code-block:: bash
 
-   # One server, one guest -- a complete fabric.
-   ERNIC_INSTANCES=1 \
-     ERNIC_BACKEND='nvmeof:size=8G,bs=4096,queues=4' \
-     bash ci/jobs/vm-up.sh
-   bash ci/jobs/vm-nvmeof.sh
+   cd ansible
+   ansible-playbook playbooks/nvmeof-tests.yml \
+     -e ernic_nvmeof_queues=4 \
+     -e ernic_nvmeof_perf_csv=/tmp/nvmeof-sweep.csv
 
-``ci/jobs/vm-nvmeof.sh`` provisions the guest, connects, and runs
-the short sweep that feeds the trend chart. The longer sweep
-below was driven by hand against the resulting
+The play connects and runs the short sweep that feeds the trend
+chart. The longer sweep below was driven by hand against the
+resulting
 ``/dev/nvme0n1``; each run is ``--direct=1 --time_based
 --runtime=15`` with ``libaio``.
 

@@ -73,7 +73,7 @@ target_link_libraries(test_rdma_cm PRIVATE
 #
 # Building them is still worth it. Until they were added here they were in
 # no target at all, so a syntax or type error in any of them surfaced only
-# when gcc ran inside the VM, well into a 60-minute self-hosted job. Now
+# when gcc ran inside the VM, well into a 60-minute VM job. Now
 # the hosted build legs catch it in seconds, under the same warning and
 # hardening flags as every other test target.
 set(ERNIC_GUEST_ONLY_TESTS
@@ -1190,8 +1190,7 @@ set_tests_properties(ernic-device-tuple-unit PROPERTIES
 # test_data_transfer, test_write_imm and test_rdma_cm -- and the guest-only
 # SRQ and UD tests built alongside them -- are deliberately not
 # registered with CTest. They need a real RDMA device, which no host running
-# ctest has -- hosted runners and the self-hosted pool both run ctest outside
-# the guest. Registered here they returned 77 and CTest reported the skip as
+# ctest has -- the runners run ctest outside the guest. Registered here they returned 77 and CTest reported the skip as
 # a pass, so they looked like coverage while testing nothing. They are built
 # (test_data_transfer is the loopback config step's TEST_BIN) and are run for
 # real inside the VM by the loopback job in system-tests.yml, where a device

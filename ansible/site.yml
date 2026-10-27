@@ -7,8 +7,8 @@
 # The guest image is not built here.  It is a published
 # artifact from batesste-ci-images -- flavour `ionic`, which
 # bakes the pinned mainline kernel, the RDMA userspace and the
-# build toolchain -- fetched by scripts/fetch-guest-image.sh or
-# by ci/jobs/vm-up.sh.  This playbook starts from that image.
+# build toolchain -- fetched by scripts/fetch-guest-image.sh.
+# This playbook starts from that image.
 #
 # Phases:
 #   1. Host setup   -- build, install, configure service, TAPs
@@ -30,8 +30,8 @@
 #   sudo ernicctl vm-launch 1     # once per instance
 #   ansible-playbook site.yml -e ernic_restart_existing=false
 #
-# VMs brought up by ci/jobs/vm-up.sh are the CI path; drive
-# those with ci-site.yml, which imports no host-setup play.
+# CI launches its own VMs and drives them with ci-site.yml,
+# which imports no host-setup play.
 #
 # Override variables with -e:
 #   ansible-playbook site.yml -e ernic_instances=4

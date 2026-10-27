@@ -7,7 +7,8 @@
 # that every documented option spelling starts a server with the namespace it
 # asked for, that a file-backed namespace really appears on disk at the right
 # size, and that a malformed option is refused before the guest ever attaches.
-# The end-to-end connect lives in the VM system tests (ci/jobs/vm-nvmeof.sh).
+# The end-to-end connect lives in the VM system tests
+# (.github/workflows/nvmeof-lane.yml).
 
 set -e
 

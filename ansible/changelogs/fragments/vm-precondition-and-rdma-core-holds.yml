@@ -30,5 +30,4 @@ minor_changes:
     guests down in phase 1 and then fails registration; and the
     launcher is installed by that same phase, so on a fresh host the
     documented order could not be followed at all.  They now give the
-    host-setup, launch, provision sequence, and point a mesh brought
-    up by ``ci/jobs/vm-up.sh`` at ``ci-site.yml``.
+    host-setup, launch, provision sequence.

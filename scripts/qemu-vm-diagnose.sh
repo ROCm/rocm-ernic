@@ -14,7 +14,7 @@
 # kernel that hung in early boot; see "boot hang" below.
 #
 # Usable outside CI: the same failure is worth dumping when reproducing a
-# stuck guest by hand on the self-hosted node.
+# stuck guest by hand.
 
 set -uo pipefail
 

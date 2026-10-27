@@ -60,8 +60,7 @@ runs:
 
         python3 ci/report/gen-report.py \
           --results "$RESULTS" \
-          --out "$RESULTS/report" \
-          --no-fail
+          --out "$RESULTS/report"
 
         # gen-report.py records only what it measured; stamp the run
         # identity on so the history entry can be traced back.

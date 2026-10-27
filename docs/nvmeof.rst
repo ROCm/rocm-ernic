@@ -294,8 +294,8 @@ Server-side coverage runs without a VM and is part of
   disk at the right size, and checks that malformed options
   are refused.
 
-The end-to-end connect needs a guest. It runs in three
-places, all doing the same thing: discover, connect, check
+The end-to-end connect needs a guest. One Ansible play does
+it, by hand or in CI: discover, connect, check
 the namespace appears, write 16 MiB of random data through
 ``O_DIRECT`` and compare digests on read-back, run a short
 fio job, disconnect, and check the namespace went away. The
@@ -304,32 +304,15 @@ transfers behind the capsules actually moved the bytes, and
 the disconnect is the only thing that exercises the CM
 teardown path at all.
 
-The Ansible play is the reusable definition, and needs a
-single guest already provisioned against an instance running
-the controller:
+The play needs a single guest already provisioned against an
+instance running the controller:
 
 .. code-block:: bash
 
    cd ansible
    ansible-playbook playbooks/nvmeof-tests.yml
 
-The self-hosted lane drives it from shell so each step lands
-in the CI results as its own check, and provisions the guest
-itself first:
-
-.. code-block:: bash
-
-   export ERNIC_INSTANCES=1
-   export ERNIC_BACKEND=nvmeof:size=256M,bs=4096
-   bash ci/jobs/vm-up.sh
-   bash ci/jobs/vm-nvmeof.sh
-   bash ci/jobs/vm-down.sh
-
-Export them rather than prefixing a single command: all
-three scripts read both, and ``ERNIC_INSTANCES`` defaults to
-2.
-
-And the hosted lane runs the whole thing from scratch --
+The hosted lane runs the whole thing from scratch --
 build, boot a guest, provision it, connect -- in
 :file:`.github/workflows/nvmeof-lane.yml`, which is the
 cheapest end-to-end RDMA test in the matrix precisely
@@ -339,9 +322,6 @@ workflow with a single ``publish`` input, called by
 request, true on a scheduled or dispatched run against
 ``develop``. The steps are the same either way, so a green pull
 request and a scheduled run mean the same thing.
-The ``vm-nvmeof`` job in
-:file:`.github/workflows/self-hosted-ci.yml` runs the
-self-hosted lane at the functional tier and above.
 
 The controller's address, port and NQN are Ansible
 variables (``ernic_nvmeof_traddr``, ``ernic_nvmeof_trsvcid``,
@@ -349,17 +329,15 @@ variables (``ernic_nvmeof_traddr``, ``ernic_nvmeof_trsvcid``,
 :file:`ansible/group_vars/all.yml`); they have to match the
 ``--backend`` options the instance was started with.
 
-Both lanes aim the connect at the controller's queue ceiling
+The play aims the connect at the controller's queue ceiling
 rather than leaving it to the initiator, which would otherwise
 ask for one queue per online CPU and make the lane's coverage a
 property of the runner rather than of the controller. The
 ceiling is the ``queues=`` key of the ``--backend`` string, or
-eight when the key is absent: ``ci/jobs/vm-nvmeof.sh`` reads it
-out of ``ERNIC_BACKEND`` (override with ``NVMEOF_QUEUES``),
-and the play takes it from ``ernic_nvmeof_queues``, which like
-the variables above has to be told what the instance was
-started with. Both then read
-:file:`/sys/class/nvme/nvmeN/queue_count` back and fail unless
+eight when the key is absent. The play takes it from
+``ernic_nvmeof_queues``, which like the variables above has to
+be told what the instance was started with. It then reads
+:file:`/sys/class/nvme/nvmeN/queue_count` back and fails unless
 it matches, because too few queues is not an error to
 ``nvme-cli``. A guest with fewer vCPUs than half the ceiling
 cannot reach it -- see :ref:`nvmeof-mr-budget` -- so the

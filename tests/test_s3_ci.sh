@@ -8,7 +8,7 @@
 # asked for, that the in-band endpoint announces the address and the derived
 # MAC the guest will have to ARP for, and that a malformed option is refused
 # before the guest ever attaches. The end-to-end PUT/GET over RDMA lives in
-# the VM system tests (ci/jobs/vm-s3.sh).
+# the VM system tests (.github/workflows/s3-lane.yml).
 
 set -e
 

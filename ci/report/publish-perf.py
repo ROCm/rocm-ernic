@@ -13,7 +13,7 @@
 Appends the run to the tracked history, then regenerates the Sphinx
 page that charts it.
 
-  publish-perf.py --summary  $CI_WORK/report/summary.json \\
+  publish-perf.py --summary  <results>/report/summary.json \\
                   --docs-dir docs
 
 History lives in docs/perf-history/history.jsonl, one JSON object per
@@ -40,23 +40,26 @@ import textwrap
 TRACKED_SIZES = ("4096", "65536", "1048576")
 SIZE_LABEL = {"4096": "4 KiB", "65536": "64 KiB", "1048576": "1 MiB"}
 
-# The class of machine a record was measured on.  A GitHub-hosted
-# runner has noisy neighbours and no fixed CPU; the lab node has
-# neither.  Numbers from the two are only comparable within their own
-# class, so they are charted and badged as separate series rather than
-# appended to one line.  Records written before this field existed all
-# came from the lab node, which is why DEFAULT_RUNNER is what it is.
+# The class of machine a record was measured on.  Only GitHub-hosted
+# runners publish now, but the history still holds records from the
+# retired self-hosted lab node.  A GitHub-hosted runner has noisy
+# neighbours and no fixed CPU; the lab node had neither.  Numbers from
+# the two are only comparable within their own class, so they are
+# charted and badged as separate series rather than appended to one
+# line.  Records written before this field existed all came from the
+# lab node, which is why LEGACY_RUNNER is what it is.
 RUNNERS = ("github-hosted", "self-hosted")
-DEFAULT_RUNNER = "self-hosted"
+DEFAULT_RUNNER = "github-hosted"
+LEGACY_RUNNER = "self-hosted"
 RUNNER_LABEL = {
     "github-hosted": "GitHub-hosted runners",
-    "self-hosted": "the self-hosted lab node",
+    "self-hosted": "the retired self-hosted lab node",
 }
 
 
 def runner_of(rec):
     """Return the runner class a history record was measured on."""
-    return rec.get("runner") or DEFAULT_RUNNER
+    return rec.get("runner") or LEGACY_RUNNER
 
 
 # "key" names the series in history.jsonl and the chart-<key>.html
@@ -444,7 +447,8 @@ def build_page(history, docs_dir):
         "Each runner class is charted on its own axes and never "
         "joined into one line. A GitHub-hosted runner has noisy "
         "neighbours and no fixed CPU, so its figures are comparable "
-        "with each other over time but not with the lab node's. The "
+        "with each other over time but not with the retired lab "
+        "node's. The "
         "README shields read the GitHub-hosted series.",
         72,
     )
@@ -712,8 +716,8 @@ def main():
         return 0
 
     history = load_history(hist_path)
-    # Per runner class: the other class publishes on its own cadence,
-    # so a global "is this the last record" check would miss a repeat.
+    # Per runner class: a record from another class must not hide a
+    # repeat from a global "is this the last record" check.
     mine = [h for h in history if runner_of(h) == args.runner]
     prior = next((h for h in reversed(mine) if h.get("run_id") == rec["run_id"]), None)
 

@@ -30,9 +30,7 @@
   vars:
     # udev/99-rocm-ernic.rules renames the emulated interface to
     # rocm-ernic%n by device ID, so the name is fixed for any
-    # guest ernic_guest_setup has provisioned -- which is why
-    # ci/jobs/vm-nvmeof.sh, vm-functional.sh and ci/lib/common.sh
-    # all just write the literal.
+    # guest ernic_guest_setup has provisioned.
     #
     # ernic_nic_name is an ernic_guest_setup role default, and a
     # role default is scoped to the role: guest-setup is a
@@ -429,8 +427,7 @@
 
     # A silently absent fio reads as "the I/O test passed" in a green
     # run, and the apt task above is supposed to have put it there,
-    # so treat the skip as the failure it is.  ci/jobs/vm-nvmeof.sh
-    # makes the same call in probe_fio.
+    # so treat the skip as the failure it is.
     - name: Fail when fio never ran
       ansible.builtin.fail:
         msg: >-

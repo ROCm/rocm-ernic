@@ -168,8 +168,8 @@
     valgrind leg), a `p4`
     leg in `driver-build.yml` that applies the patch series on top of the
     base series and checks it creates the auxiliary device, the clang-tidy,
-    include-what-you-use and CodeQL workflows and the self-hosted CI's
-    build job, which all build with `-DERNIC_BUILD_P4=ON`, and the
+    include-what-you-use and CodeQL workflows, which all build with
+    `-DERNIC_BUILD_P4=ON`, and the
     "P4 Guest-Driven fp8" VM lane
     (`p4-lane.yml`), which loads a program from inside a guest through
     `/dev/ernic-p4` and checks the result of an ordinary libibverbs write.
@@ -292,11 +292,10 @@
 * **System tests in guests.**
   * `ansible/playbooks/nvmeof-tests.yml` (discover, connect, an `O_DIRECT`
     digest round trip, fio, disconnect), run by the hosted
-    `system-test-nvmeof` job, the self-hosted `vm-nvmeof` job, and by hand
-    with `--tags nvmeof`.
+    `system-test-nvmeof` job and by hand with `--tags nvmeof`.
   * `ansible/playbooks/s3-tests.yml`, which builds the libibverbs client
-    `tests/s3_rdma_client.c` in the guest, run by `system-test-s3`, `vm-s3`
-    and `--tags s3`. The hosted lane publishes an *S3-over-RDMA GET
+    `tests/s3_rdma_client.c` in the guest, run by `system-test-s3` and
+    `--tags s3`. The hosted lane publishes an *S3-over-RDMA GET
     bandwidth* trend and the `S3 1M GET` shield.
   * `ansible/playbooks/tutorial-tests.yml` runs examples 1 (RC send/recv)
     and 2 (RC RDMA write) of
@@ -304,7 +303,7 @@
     guests, patched to address the peer by RoCE GID rather than LID and
     limited to `ernic_rdma_tutorial_ops` operations (default 10000). It is
     `--tags tutorial`, part of `functional` in `ci-site.yml`, and runs in
-    the two-VM job of `system-tests.yml` and in `ci/jobs/vm-functional.sh`.
+    the two-VM job of `system-tests.yml`.
   * The `ionic-patches` CI job checks that every driver patch still applies
     to the pinned `IONIC_KERNEL_REF`.
 * **Nix outputs for a NixOS guest.** `nixosModules.ernic-guest` (enable
@@ -334,8 +333,7 @@
   refresh `pci.ids` with `update-pciids` for the current `lspci` name.
 * **Guest Ethernet leaves through a host TAP**, so each instance needs its
   own TAP on a shared bridge for guest-to-guest IP. The `ernic_host_setup`
-  role creates them from `ERNIC_TAP_PREFIX` and `ERNIC_TAP_BRIDGE`, and
-  `ci/runner/install-runner.sh` does the same for the self-hosted CI node.
+  role creates them from `ERNIC_TAP_PREFIX` and `ERNIC_TAP_BRIDGE`.
 * **Breaking:** **The vfio-user socket is mode `0600`**, not `0666`, and
   `rocm-ernic-launcher` and `ernicctl hot-reload` no longer open it up.
   Whoever connects drives the device as the guest's QEMU, so any local user
@@ -634,11 +632,11 @@
   barriers after the ionic Ethernet driver's completion color checks; the
   patch series apply unchanged, and a guest still needs a 7.2.x kernel. A
   build directory configured before this keeps its cached `v7.2.4`;
-  reconfigure it with `-DIONIC_KERNEL_REF=v7.2.6`. `ci/lib/common.sh` and
-  `ansible/group_vars/all.yml` read the disk name and account from
-  `ci/guest-image.env` (new `GUEST_ARTIFACT_USER`) instead of keeping their
-  own copies. A self-hosted CI node or inventory that sets `CI_VM_SSH_USER`
-  or `ernic_vm_ssh_user` to `batesste` must drop the setting.
+  reconfigure it with `-DIONIC_KERNEL_REF=v7.2.6`.
+  `ansible/group_vars/all.yml` reads the disk name and account from
+  `ci/guest-image.env` (new `GUEST_ARTIFACT_USER`) instead of keeping its
+  own copy. An inventory that sets `ernic_vm_ssh_user` to `batesste` must
+  drop the setting.
 
 ### Removed
 
@@ -670,8 +668,19 @@
 * **The unused packet parse and checksum helpers** in
   `src/net/net_headers.h`, with `net-checksum-unit` and `fuzz_net_headers`.
 * **The `/run-ci` pull request comment command** and `ci-command.yml`.
-  Start the self-hosted CI from the Actions tab's *Run workflow* button, or
-  with `gh workflow run self-hosted-ci.yml -f pr=N`; see `ci/README.md`.
+* **The self-hosted CI**, whose lab runner was retired: the
+  `self-hosted-ci.yml` workflow and its harness, `ci/runner/`, `ci/jobs/`,
+  `ci/lib/common.sh` and `ci/doctor.sh`. The VM tests run in
+  `system-tests.yml` and the lanes it calls; to run one by hand, provision
+  the guests as in `docs/testing.rst` and run its Ansible play.
+  `ci/report/gen-report.py` now reports only the perf CSVs: it no longer
+  reads shell check results (`*.jsonl`), Ansible JUnit results, or
+  `CI_TESTED_SHA`, `CI_TESTED_REF` and `CI_VM_ACCEL`, and its
+  `--baseline`, `--threshold`, `--gate-metric`, `--min-samples` and
+  `--no-fail` options are gone, with the regression gate they drove. It
+  also no longer recognises the stress-test CSV, which nothing has
+  written since `stress-tests.yml` was removed.
+  `ci/report/publish-perf.py --runner` defaults to `github-hosted`.
 * **The `ERNIC_IONIC_KERNEL_REF` environment hook** (see Fixed: the driver
   pack's ionic baseline).
 * **Breaking:** **The `verbs` backend and the `--device`, `--ethdev` and
@@ -1102,11 +1111,6 @@
     another kernel's `Module.symvers` would not insert. The lookup, which
     may rebuild ionic, runs only when the module is built, not whenever
     DKMS reads its `dkms.conf` (`dkms status`, every autoinstall pass).
-  * The self-hosted CI's instances advertise each guest's IPv4-mapped GID
-    as well as its link-local one, so tests addressing a peer by IPv4 can
-    bring their QPs to RTR. Each instance's MAC is pinned to
-    `02:a0:d1:00:00:<n>`, and the guests' subnet is `CI_NIC_SUBNET`
-    (default `192.168.200`).
 * **P4 engine.**
   * With a program loaded, a frame the program didn't route was looped
     back into the guest's own receive ring, so loading a program cost the
@@ -1241,10 +1245,9 @@
     `unattended-upgrades` removed. In the old one it could start as a lane
     began provisioning and hold the dpkg lock past the role's 300-second
     wait, failing the lane.
-  * The two-VM sanity and performance plays, and the self-hosted
-    `vm-functional` job, look up each guest's IPv4-mapped GID index with the
-    new `scripts/find-ipv4-gid-index.sh` instead of passing index 1 to
-    perftest and `ibv_rc_pingpong`. The index differs between guests: one
+  * The two-VM sanity and performance plays look up each guest's
+    IPv4-mapped GID index with the new `scripts/find-ipv4-gid-index.sh`
+    instead of passing index 1 to perftest and `ibv_rc_pingpong`. The index differs between guests: one
     had its link-local GID at 1, so the two ends used different address
     families and the QP never reached RTR. A guest without the GID now fails
     the play with its GID table. The examples in `docs/testing.rst` look the
