@@ -814,6 +814,25 @@ LPM, the highest priority for ternary. A table’s memory is
 taken when its first entry arrives, not when the program
 loads, so a program declaring large tables and putting
 nothing in them costs nothing.</p>
+<p>The lookup goes by the table’s <code class="docutils literal notranslate"><span class="pre">match_type</span></code>, so the loader
+checks it is the one the table’s keys make it, as p4c
+derives it: ternary if any key is, else LPM if one is, else
+exact. A table that disagrees, which would take the first
+hit in an “exact” table with a ternary key or rank by a
+prefix an “lpm” one doesn’t have, is refused, as is a table
+with more than one LPM key, which p4c refuses too. The LPM
+key need not come first: <code class="docutils literal notranslate"><span class="pre">{vrf:</span> <span class="pre">exact;</span> <span class="pre">dst:</span> <span class="pre">lpm}</span></code> ranks by
+<code class="docutils literal notranslate"><span class="pre">dst</span></code>’s prefix.</p>
+<p>An entry is checked against its table’s keys, deletes
+included, and held to P4Runtime’s rules: a value or mask
+wider than its field, a prefix longer than the field, a value
+with a bit set past its prefix or outside its mask, and a
+prefix on a field that isn’t LPM are refused, not truncated
+or ignored. An entry in a table with a ternary key needs a
+nonzero priority, and one in any other table must give none.</p>
+<p>P4Runtime has a client omit a “don’t care” field from the
+entry, where this record, which always carries every key
+field, writes it as a zero prefix or mask.</p>
 <p>A table with no entry for a packet takes its default action,
 which is why <code class="docutils literal notranslate"><span class="pre">minimal_forward.json</span></code> drops a frame until an
 entry for its destination is installed, and forwards it
