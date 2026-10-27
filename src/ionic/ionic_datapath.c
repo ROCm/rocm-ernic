@@ -513,11 +513,13 @@ void ionic_datapath_unregister_cq(struct ionic_datapath *dp, uint32_t cq_id)
 }
 
 /*
- * Lets @q's send queue move past the WQE that was waiting, for a receive or
- * for room in the mesh's send queue.
+ * Lets @q's send queue move past the WQE that was waiting: for a receive, for
+ * room in the mesh's send queue, or, one it couldn't read, for the requests
+ * before it.
  */
 static void sq_stall_clear(struct ionic_datapath *dp, struct ionic_qp_ring *q)
 {
+    q->sq_fault = false;
     if (!q->sq_rnr && !q->sq_busy)
         return;
     q->sq_rnr = false;
@@ -2142,19 +2144,66 @@ static uint32_t pending_cancel_qp(struct ionic_datapath *dp, uint32_t qp_id)
     return n;
 }
 
+/*
+ * Whether @qp_id has a request pending whose completion is still to come. A
+ * datagram's isn't one: its completion was posted when it was sent.
+ */
+static bool pending_completes_qp(const struct ionic_datapath *dp,
+                                 uint32_t qp_id)
+{
+    for (int i = 0; i < MAX_PENDING; i++) {
+        const struct dp_pending *p = &dp->pending[i];
+
+        if (p->valid && p->qp_id == qp_id && (p->use_msn || p->signalled))
+            return true;
+    }
+    return false;
+}
+
+/*
+ * Completes in error the WQE at @q's sq_cons, which the device couldn't read,
+ * and flushes the QP, once nothing @q posted before it is still to complete.
+ * Until then it does nothing, and the pending request's completion calls it
+ * again.
+ *
+ * The drivers retire a send queue in order, so the error can't be reported
+ * until every earlier work request has completed. Posted while an earlier
+ * request is still waiting for its peer, the flush would have the driver
+ * flush both, and report the error as a plain flush. It would also take the
+ * earlier request back, so its answer would never come. A request waits at
+ * most PENDING_MS, so the WQE does too.
+ */
+static void sq_fault_finish(struct ionic_datapath *dp, struct ionic_qp_ring *q,
+                            uint32_t qp_id)
+{
+    if (!q->sq_fault || pending_completes_qp(dp, qp_id))
+        return;
+
+    cq_post_send_npg(dp, q->sq_cq_id, qp_id, q->sq_cons % q->sq_depth,
+                     IONIC_STS_LOCAL_QP_OPER_ERR);
+    ionic_datapath_flush_qp(dp, qp_id);
+}
+
 /* Retire a deferred work request now that its peer has answered. */
 static void pending_complete(struct ionic_datapath *dp, struct dp_pending *p,
                              uint32_t status)
 {
-    if (p->qp_id < dp->qp_count && dp->qp[p->qp_id].valid) {
-        struct ionic_qp_ring *q = &dp->qp[p->qp_id];
+    struct ionic_qp_ring *q = p->qp_id < dp->qp_count && dp->qp[p->qp_id].valid
+                                  ? &dp->qp[p->qp_id]
+                                  : NULL;
 
+    if (q) {
         if (p->use_msn)
             cq_post_send_msn(dp, q->sq_cq_id, p->qp_id, p->msn, status);
         else if (p->signalled)
             cq_post_send_npg(dp, q->sq_cq_id, p->qp_id, p->wqe_id, status);
     }
     p->valid = false;
+
+    /* That may have been the last request a WQE the device couldn't read
+     * was waiting for. */
+    if (q)
+        sq_fault_finish(dp, q, p->qp_id);
 }
 
 /*
@@ -2936,16 +2985,18 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
          * the ring isn't one.
          *
          * The error goes first: had the driver seen the flush before it, it
-         * could have flushed this work request and lost the cause. The flush
-         * empties the queue, so sq_service() has nothing left to run.
+         * could have flushed this work request and lost the cause. For the
+         * same reason both wait for the requests posted before this one to
+         * complete (sq_fault_finish()), and the queue stops here until then.
+         * The flush empties it, so sq_service() has nothing left to run.
          */
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: QP %u SQ WQE %u at %#" PRIx64
                 " can't be read; flushing the QP",
                 qp_id, slot, gpa);
-        cq_post_send_npg(dp, q->sq_cq_id, qp_id, slot,
-                         IONIC_STS_LOCAL_QP_OPER_ERR);
-        ionic_datapath_flush_qp(dp, qp_id);
+        sq_stall_clear(dp, q);
+        q->sq_fault = true;
+        sq_fault_finish(dp, q, qp_id);
         return false;
     }
 
@@ -3194,11 +3245,13 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
  * Runs @q's send queue from sq_cons up to the last doorbell, stopping at a
  * SEND that is waiting for a receive, at a WQE for another node that the
  * mesh has no room to queue yet, or at a WQE it can't read, which flushes
- * the QP.
+ * the QP once the requests before it have completed.
  */
 static void sq_service(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                        uint32_t qp_id)
 {
+    if (q->sq_fault)
+        return;
     for (uint32_t n = 0;
          q->sq_cons % q->sq_depth != q->sq_prod && n < q->sq_depth; n++) {
         if (!process_sq_wqe(dp, q, qp_id, q->sq_cons % q->sq_depth))
