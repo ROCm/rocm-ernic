@@ -1211,11 +1211,14 @@ set_tests_properties(byteorder-unit PROPERTIES TIMEOUT 30)
 
 # P4 engine unit test: port model, frame bounds, and the no-program path.
 if(ERNIC_BUILD_P4)
+    # Loads five programs padded to the parse budget, each of which has
+    # json-c build a tree of 36 to 52 MiB in small allocations. That takes
+    # about a second, but over 30 s under valgrind.
     add_test(
         NAME p4-engine-unit
         COMMAND $<TARGET_FILE:ernic-test-p4-engine>
     )
-    set_tests_properties(p4-engine-unit PROPERTIES TIMEOUT 30)
+    set_tests_properties(p4-engine-unit PROPERTIES TIMEOUT 120)
 
     add_test(
         NAME p4-fp8-unit
@@ -1472,10 +1475,11 @@ add_test(
     NAME tcp-thread-stop-unit
     COMMAND $<TARGET_FILE:ernic-test-tcp-thread-stop>
 )
-# The test spends most of its time waiting on purpose: about 50 s, and more
-# under valgrind. Each row's alarm() still turns a hang into a named failure
-# long before this.
-set_tests_properties(tcp-thread-stop-unit PROPERTIES TIMEOUT 120)
+# The test spends most of its time waiting on purpose: about 50 s, and 90 to
+# 120 s under valgrind in CI, which runs a program's threads one at a time
+# and shares the runner's CPUs with the other tests. Each row's alarm() still
+# turns a hang into a named failure long before this.
+set_tests_properties(tcp-thread-stop-unit PROPERTIES TIMEOUT 300)
 
 # RDMA resource-table allocator unit test: asserts a full table refuses the
 # next allocation rather than handing back a handle one past the end.

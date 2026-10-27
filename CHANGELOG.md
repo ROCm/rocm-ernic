@@ -1055,6 +1055,12 @@
   * `tcp-thread-stop-unit`'s watchdog allows six times longer under
     valgrind, where it failed the valgrind leg intermittently, and on a
     timeout prints the threads created, joined and exited.
+  * `p4-engine-unit` and `tcp-thread-stop-unit` timed out in the valgrind
+    leg: the first's parse-budget cases take over 30 s under valgrind, and
+    the second took 90 to 120 s of its 120. Their ctest timeouts are now 120
+    and 300 s. The leg's report says when a test or server was killed
+    before valgrind wrote a summary, rather than that valgrind reported
+    errors.
   * `ernic-device-tuple-unit` no longer fails in a build directory with a
     long path.
   * The Nix `analysis-sanitizers`, `analysis-tsan` and `analysis-valgrind`
