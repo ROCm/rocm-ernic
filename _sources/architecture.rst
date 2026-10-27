@@ -837,8 +837,9 @@ QP number within the same VM.
 When the destination is in the same VM, the emulator enforces
 the datagram rules before delivering: the destination must
 itself be a UD or GSI QP, and if it has a Q_Key, the sender's
-must match. A datagram that crosses the mesh is not checked
-(see `Trust Boundaries`_).
+must match, a controlled key in the WQE standing for the
+sending QP's own. A datagram that crosses the mesh is not
+checked (see `Trust Boundaries`_).
 
 The received message starts with a 40-byte GRH carrying the
 source and destination GIDs, as the verbs API requires, and the
@@ -1361,15 +1362,17 @@ model:
   uninitialized.
 - Datagram delivery within one VM checks that the destination
   is a UD or GSI QP, so a datagram can't land in an RC or UC
-  QP, and that the Q_Key in the WQE matches the destination's.
-  These checks catch a datagram sent to the wrong QP; they don't
-  authenticate the sender. The Q_Key comes from the WQE, which
-  the sending process writes, and the device doesn't restrict
-  privileged Q_Keys. QP1's key is the well-known ``0x80010000``,
-  so any process that writes it can deliver a MAD to QP1.
-  Datagrams between servers aren't checked at all: the wire
-  header carries neither the transport type nor the Q_Key, and
-  an inbound SEND is delivered to whichever QP it names.
+  QP, and that the sender's Q_Key matches the destination's. A
+  Q_Key in the WQE with the high-order bit set is a *controlled*
+  key: as the IB spec requires, the device sends the sending
+  QP's own Q_Key instead, and refuses the datagram if that QP
+  has none. Only a privileged consumer can give its QP a
+  controlled key (the guest kernel refuses one from user
+  space), so a process can't reach QP1 by writing its
+  well-known key, ``0x80010000``, into a WQE. Datagrams between
+  servers aren't checked at all: the wire header carries
+  neither the transport type nor the Q_Key, and an inbound SEND
+  is delivered to whichever QP it names.
 - A connected QP whose destination resolves to no known node
   fails MODIFY_QP instead of going to a default node. An AH with
   such a destination is still created, and treated as local.
