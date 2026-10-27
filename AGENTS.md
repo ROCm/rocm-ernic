@@ -56,18 +56,20 @@ libvfio-user is built from source
 Pass a non-standard prefix with `-DCMAKE_PREFIX_PATH`. Match CI:
 
 ```bash
-cmake -B build -G Ninja -DERNIC_WERROR=ON -DERNIC_BUILD_P4=ON
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DERNIC_WERROR=ON \
+  -DERNIC_BUILD_P4=ON
 cmake --build build
 ```
 
-- The default build type is Debug. Without `ERNIC_WERROR`, warnings don't
-  fail the build.
+- The default build type is RelWithDebInfo, which CI doesn't build, so
+  name the build type when matching CI. Without `ERNIC_WERROR`, warnings
+  don't fail the build.
 - `ERNIC_BUILD_P4` (off by default; needs json-c) builds `src/p4/` and
   its tests. CI's builds for the tests, clang-tidy, IWYU, and CodeQL turn
   it on, so a local build for any of them needs it too.
 - CI builds GCC and Clang × Debug and Release × no sanitizer, ASan, and
   TSan, plus a Clang coverage build; the GCC Debug build also runs the
-  tests under [valgrind](#c). **Build Release too**: it's the only
+  tests under [valgrind](#c). **Build Release too**: it's the only CI
   configuration with GCC's dataflow warnings, `_FORTIFY_SOURCE=3`, and
   `NDEBUG`.
 - Docs build without the C dependencies:
@@ -98,6 +100,7 @@ cmake --build build
   [build-and-test.yml](.github/workflows/build-and-test.yml). Add tests
   for new or changed code, error paths included. CI's coverage leg
   measures it on every PR. To measure locally: Clang,
+  `-DCMAKE_BUILD_TYPE=Debug` (as CI, so the lines match the source),
   `-DERNIC_USE_CODE_COVERAGE=ON`, `ctest`, then build `ernic-coverage`,
   which writes `coverage/report.txt` and `coverage/lines.txt`. Profiles
   accumulate; delete `coverage/profraw` to start over.
@@ -438,7 +441,7 @@ touches. The commands are in the sections below.
 
   ```bash
   cmake -B build-clang23 -G Ninja -DCMAKE_C_COMPILER=clang-23 \
-    -DERNIC_BUILD_P4=ON \
+    -DCMAKE_BUILD_TYPE=Debug -DERNIC_BUILD_P4=ON \
     -DCMAKE_C_FLAGS="-Werror=thread-safety -Werror=thread-safety-beta -Werror=thread-safety-negative -Werror=thread-safety-pointer"
   cmake --build build-clang23 -- -k 0
   ```
@@ -516,7 +519,7 @@ touches. The commands are in the sections below.
 
   ```bash
   cmake -B build-tidy -G Ninja -DCMAKE_C_COMPILER=clang-23 \
-    -DERNIC_BUILD_P4=ON -DERNIC_USE_CLANG_TIDY=ON \
+    -DCMAKE_BUILD_TYPE=Debug -DERNIC_BUILD_P4=ON -DERNIC_USE_CLANG_TIDY=ON \
     -DERNIC_CLANG_TIDY_EXE=/usr/bin/clang-tidy-23
   cmake --build build-tidy -- -k 0
   ```
@@ -537,7 +540,7 @@ touches. The commands are in the sections below.
 
   ```bash
   cmake -B build-iwyu -G Ninja -DCMAKE_C_COMPILER=clang-19 \
-    -DERNIC_BUILD_P4=ON -DERNIC_USE_IWYU=ON \
+    -DCMAKE_BUILD_TYPE=Debug -DERNIC_BUILD_P4=ON -DERNIC_USE_IWYU=ON \
     -DERNIC_IWYU_EXE="$PWD/ci/iwyu/iwyu-wrapper.sh"
   mkdir build-iwyu/iwyu-runs
   ERNIC_IWYU_LOG_DIR="$PWD/build-iwyu/iwyu-runs" cmake --build build-iwyu

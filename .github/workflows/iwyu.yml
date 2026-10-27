@@ -127,10 +127,14 @@ jobs:
       #
       # ERNIC_BUILD_P4 is on, as in the Build and Test workflow: off, the
       # build compiles nothing in src/p4, so IWYU never sees it.
+      #
+      # Debug, not the RelWithDebInfo default: NDEBUG and _FORTIFY_SOURCE
+      # change which macros and headers IWYU sees.
       - name: Configure
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_C_COMPILER="${IWYU_CC}" \
+            -DCMAKE_BUILD_TYPE=Debug \
             -DERNIC_BUILD_P4=ON \
             -DERNIC_USE_IWYU=ON \
             -DERNIC_IWYU_EXE="$PWD/ci/iwyu/iwyu-wrapper.sh"
