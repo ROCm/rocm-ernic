@@ -137,11 +137,14 @@ jobs:
       # -Werror= makes these four groups, and only these, errors.
       # -Wthread-safety-pointer and -Wthread-safety-beta aren't in
       # -Wthread-safety. ERNIC_BUILD_P4 is on, as in the Build and Test
-      # workflow, so src/p4 is compiled.
+      # workflow, so src/p4 is compiled. Debug, not the RelWithDebInfo
+      # default, so the analysis covers the code NDEBUG leaves out (e.g.
+      # qemu/thread.h's error-checking mutexes).
       - name: Configure
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_C_COMPILER="clang-${LLVM_VERSION}" \
+            -DCMAKE_BUILD_TYPE=Debug \
             -DERNIC_BUILD_P4=ON \
             -DCMAKE_C_FLAGS="-Werror=thread-safety -Werror=thread-safety-beta -Werror=thread-safety-negative -Werror=thread-safety-pointer"
 

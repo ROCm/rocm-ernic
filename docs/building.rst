@@ -204,10 +204,11 @@ Build Options
      - Default
      - Description
    * - ``CMAKE_BUILD_TYPE``
-     - ``Debug``
+     - ``RelWithDebInfo``
      - Build type (Debug, Release, RelWithDebInfo, etc.).
        When rocm-ernic is a subproject, the parent project's
-       build type is used instead
+       build type is used instead. CI builds Debug and Release,
+       so name one of them to match it
    * - ``BUILD_TESTING``
      - ``ON``
      - Build the tests and register them with CTest
@@ -407,7 +408,7 @@ coverage of ``src/``:
 .. code-block:: bash
 
    cmake -B build -G Ninja -DCMAKE_C_COMPILER=clang \
-     -DERNIC_USE_CODE_COVERAGE=ON
+     -DCMAKE_BUILD_TYPE=Debug -DERNIC_USE_CODE_COVERAGE=ON
    cmake --build build
    ctest --test-dir build
    cmake --build build --target ernic-coverage
@@ -417,10 +418,11 @@ file) and ``coverage/lines.txt`` (the count for each line).
 The profiles accumulate across runs; delete
 ``coverage/profraw`` to start over.
 
-CI's Build and Test workflow runs one coverage leg (Clang,
-Debug, no project-wide sanitizer). It puts the report on the
-run's summary page and fails if line coverage drops below the
-floor set in the workflow. On ``develop`` it also publishes the
+Build Debug, as above: optimized code's counts don't match its
+source lines as closely. CI's Build and Test workflow runs one
+coverage leg (Clang, Debug, no project-wide sanitizer). It puts
+the report on the run's summary page and fails if line coverage
+drops below the floor set in the workflow. On ``develop`` it also publishes the
 figure to the ``badges`` branch, which the README's Coverage
 badge reads.
 
@@ -443,7 +445,7 @@ version:
 .. code-block:: bash
 
    cmake -B build-iwyu -G Ninja -DCMAKE_C_COMPILER=clang-19 \
-     -DERNIC_USE_IWYU=ON
+     -DCMAKE_BUILD_TYPE=Debug -DERNIC_USE_IWYU=ON
    cmake --build build-iwyu
 
 The mapping files ``cmake/iwyu-*.imp`` correct IWYU where it

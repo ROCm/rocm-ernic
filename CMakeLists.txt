@@ -26,8 +26,11 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
-# Default to a Debug build. This has to come after project(), since
-# that's where CMake decides whether the generator is multi-config.
+# Default to a RelWithDebInfo build: optimized, with NDEBUG and
+# _FORTIFY_SOURCE like a build to deploy, but with debug info. CI names
+# its build types (Debug and Release) and doesn't rely on this. This has
+# to come after project(), since that's where CMake decides whether the
+# generator is multi-config.
 # Multi-config generators (Ninja Multi-Config, Xcode, etc.) pick the
 # configuration at build time and don't use CMAKE_BUILD_TYPE. For
 # single-config generators, project() creates an empty cache entry, so
@@ -37,7 +40,7 @@ get_property(ERNIC_IS_MULTI_CONFIG GLOBAL
   PROPERTY GENERATOR_IS_MULTI_CONFIG)
 if(PROJECT_IS_TOP_LEVEL AND NOT ERNIC_IS_MULTI_CONFIG)
     if(NOT CMAKE_BUILD_TYPE)
-        set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+        set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
     endif()
     # Set the list of build types for ccmake/CMake GUI
     set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS

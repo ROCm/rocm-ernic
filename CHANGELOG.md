@@ -508,6 +508,10 @@
   -DRDMA_CORE_BUILD=OFF`), with the `rdma-core/ionic-gda` patches applied
   to the guest's rdma-core, rather than the `rocm_ernic` GDA backend.
 * **Build changes.**
+  * The default build type is `RelWithDebInfo`, not `Debug`, so a build
+    configured without `CMAKE_BUILD_TYPE` is optimized, with `NDEBUG` and
+    `_FORTIFY_SOURCE`, and keeps its debug info. It has no `assert()`s or
+    error-checking mutexes; pass `-DCMAKE_BUILD_TYPE=Debug` for them.
   * The tests are built only when `BUILD_TESTING` is on (the default).
   * The git SHA cache variables are now `ERNIC_GIT_SHA_FULL` and
     `ERNIC_GIT_SHA_SHORT`.
