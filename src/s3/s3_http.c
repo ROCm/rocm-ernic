@@ -50,7 +50,8 @@ static bool percent_decode(const char *src, size_t srclen, char *dst,
                            size_t dstcap)
 {
     size_t o = 0;
-    for (size_t i = 0; i < srclen; i++) {
+    size_t i = 0;
+    while (i < srclen) {
         char c = src[i];
         if (c == '%') {
             if (i + 2 >= srclen)
@@ -60,7 +61,9 @@ static bool percent_decode(const char *src, size_t srclen, char *dst,
             if (hi < 0 || lo < 0)
                 return false;
             c = (char)((hi << 4) | lo);
-            i += 2;
+            i += 3; /* '%' and two hex digits */
+        } else {
+            i++;
         }
         if (c == '\0')
             return false; /* a NUL smuggled in through %00 */
