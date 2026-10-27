@@ -693,6 +693,13 @@
   messages is now logged at most 10 times every 5 seconds per device, and
   the first one logged after others were held back follows a line saying
   how many, such as `ionic_datapath: 1234 more P4 denial(s) not logged`.
+* **`Q_INIT` reported success for an Ethernet queue it didn't set up.** A
+  `Q_INIT` of an unknown queue type, of a queue index past the LIF's queue
+  count (`[queues]` `eth`), or of a ring of 2^16 entries or more left the
+  queue alone but completed with status 0, so a driver would go on to ring
+  the doorbell of a queue that didn't exist. It now fails with
+  `IONIC_RC_EQTYPE`, `IONIC_RC_EQID` or `IONIC_RC_ERANGE`. The Linux `ionic`
+  driver never asks for such a queue.
 * **Guest lengths and addresses that wrap past 2^32 or 2^64.**
   * An inline SEND claiming more data than its work request holds read on
     past the request into whatever guest memory followed it, with no memory

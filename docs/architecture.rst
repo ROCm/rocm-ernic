@@ -518,7 +518,8 @@ the data window, and sets ``done``.
    * - Q_INIT
      - Records where an Ethernet queue's descriptor and
        completion rings are in guest memory, and its interrupt
-       vector
+       vector. Fails for an unknown queue type, a queue index
+       past the LIF's queue count, or a ring deeper than 2^15
    * - Q_CONTROL
      - Enables or disables a queue; received frames are steered
        only to enabled receive queues
@@ -1356,10 +1357,9 @@ model:
   so a large enough CREATE_MR or fast registration still makes
   the server allocate a large page table.
 - Every ring's depth and stride is bounded before it is used in
-  a shift. An RDMA command (creating an admin queue, EQ, CQ, QP,
-  or SRQ) that exceeds the bounds is refused; a Q_INIT that
-  exceeds them succeeds but leaves its Ethernet queue
-  uninitialized.
+  a shift. A command creating a queue (an RDMA admin queue,
+  EQ, CQ, QP, or SRQ, or a Q_INIT of an Ethernet queue) that
+  exceeds the bounds is refused.
 - Datagram delivery within one VM checks that the destination
   is a UD or GSI QP, so a datagram can't land in an RC or UC
   QP, and that the sender's Q_Key matches the destination's. A

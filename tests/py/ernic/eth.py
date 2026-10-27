@@ -139,12 +139,10 @@ class EthQueueMixin:
     def eth_q_init(self, qtype, index=0, depth_log2=3, intr=0, sg=False):
         """Q_INIT an Ethernet Tx or Rx queue. struct ionic_q_init_cmd.
 
-        The emulator reports IONIC_RC_SUCCESS for a Q_INIT it rejected --
-        a bad qtype, an index at or above ETH_QCOUNT, or a depth_log2 of 16
-        or more all leave the queue uncreated with status 0 -- so a clean
-        completion proves nothing. The arguments are checked here instead,
-        because a queue that silently does not exist shows up much later as
-        a poll that never completes.
+        The emulator fails a Q_INIT of a bad qtype, an index at or above
+        ETH_QCOUNT, or a depth_log2 of 16 or more, which devcmd_ok() raises
+        as a DeviceError. The arguments are also checked here, so that a
+        test that gets them wrong says so before the device does.
         """
         if qtype not in (QTYPE_ETH_TXQ, QTYPE_ETH_RXQ):
             raise ValueError(f"not an Ethernet data queue: qtype {qtype}")

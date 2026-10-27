@@ -2857,19 +2857,30 @@ static bool tx_filter(void *ctx, const void *frame, size_t len)
     return true;
 }
 
-static bool q_init(struct ih *h, uint8_t qtype, uint16_t intr,
-                   uint8_t depth_log2, uint64_t ring, uint64_t cq, uint64_t sg)
+/* Q_INIT of queue @index; returns the completion's status, or -1 if the
+ * devcmd never completed. */
+static int q_init_at(struct ih *h, uint8_t qtype, uint32_t index, uint16_t intr,
+                     uint8_t depth_log2, uint64_t ring, uint64_t cq,
+                     uint64_t sg)
 {
     uint8_t cmd[64] = {0}, comp[16];
 
     cmd[0] = IH_CMD_Q_INIT;
     cmd[4] = qtype;
+    ernic_put_le32(cmd + 8, index);
     ernic_put_le16(cmd + 14, intr);
     cmd[19] = depth_log2;
     ernic_put_le64(cmd + 20, ring);
     ernic_put_le64(cmd + 28, cq);
     ernic_put_le64(cmd + 36, sg);
-    return ih_devcmd(h, cmd, comp, NULL, 0) == 0;
+    return ih_devcmd(h, cmd, comp, NULL, 0);
+}
+
+static bool q_init(struct ih *h, uint8_t qtype, uint16_t intr,
+                   uint8_t depth_log2, uint64_t ring, uint64_t cq, uint64_t sg)
+{
+    return q_init_at(h, qtype, 0, intr, depth_log2, ring, cq, sg) ==
+           IONIC_RC_SUCCESS;
 }
 
 /* Q_CONTROL ENABLE, which the driver sends once a queue is initialized. */
@@ -2906,10 +2917,17 @@ static void test_eth(void)
     const uint64_t rxr = fake_vfu_alloc(h.vfu, 8 * 16, 64);
     const uint64_t rxc = fake_vfu_alloc(h.vfu, 8 * 16, 64);
     const uint64_t bufs = fake_vfu_alloc(h.vfu, 8 * 2048, 4096);
-    /* A ring size the device can't shift by: UBSan reports a Q_INIT that
-     * does. The status isn't checked, since the device doesn't yet refuse
-     * a Q_INIT it can't set up. */
-    (void)q_init(&h, IH_QTYPE_ETH_TXQ, TX_INTR, 32, txr, txc, txsg);
+    /* Queues the device can't set up are refused, so the driver never rings
+     * them: a ring size it can't shift by (UBSan reports a Q_INIT that
+     * does), an unknown qtype, and an index past the LIF's queue count. */
+    int rc = q_init_at(&h, IH_QTYPE_ETH_TXQ, 0, TX_INTR, 32, txr, txc, txsg);
+    check(T, rc == IONIC_RC_ERANGE, "a 2^32-entry Tx ring got status %d", rc);
+    rc = q_init_at(&h, IONIC_QTYPE_ETH_MAX, 0, TX_INTR, 3, txr, txc, txsg);
+    check(T, rc == IONIC_RC_EQTYPE, "an unknown qtype got status %d", rc);
+    rc = q_init_at(&h, IH_QTYPE_ETH_TXQ, h.emu->profile.queues.eth, TX_INTR, 3,
+                   txr, txc, txsg);
+    check(T, rc == IONIC_RC_EQID, "a Tx queue past the count got status %d",
+          rc);
     check(T, q_init(&h, IH_QTYPE_ETH_TXQ, TX_INTR, 3, txr, txc, txsg),
           "Q_INIT of the Tx queue failed");
     check(T, q_init(&h, IH_QTYPE_ETH_RXQ, RX_INTR, 3, rxr, rxc, 0),
