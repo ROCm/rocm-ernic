@@ -13,7 +13,7 @@
 #include <stdint.h>
 
 #include "byteorder.h"
-#include "ionic_eth_steer.h"
+#include "ionic/ionic_eth_steer.h"
 
 #define FNV1A_PRIME 0x01000193u
 

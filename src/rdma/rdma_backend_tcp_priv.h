@@ -29,8 +29,8 @@
 #include <sys/types.h>
 
 #include "ernic_mesh.h"
+#include "pvrdma/rdma_backend_defs.h"
 #include "qemu/thread.h"
-#include "rdma_backend_defs.h"
 #include "rocm-ernic-warnings.h"
 
 /*

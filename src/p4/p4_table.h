@@ -21,7 +21,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "p4_program.h"
+#include "p4/p4_program.h"
 
 /*
  * Widest key field or action argument an entry may carry, in bytes.  128

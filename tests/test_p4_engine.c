@@ -30,13 +30,13 @@
 #include <json-c/json_tokener.h>
 #include <json-c/json_types.h>
 
-#include "p4_engine.h"
-#include "p4_exec.h"
-#include "p4_json.h"
-#include "p4_program.h"
-#include "p4_fp8.h"
-#include "p4_table.h"
-#include "p4_value.h"
+#include "p4/p4_engine.h"
+#include "p4/p4_exec.h"
+#include "p4/p4_fp8.h"
+#include "p4/p4_json.h"
+#include "p4/p4_program.h"
+#include "p4/p4_table.h"
+#include "p4/p4_value.h"
 
 static int failures;
 

@@ -21,9 +21,9 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <glib.h>        /* For GHashTable */
+#include <glib.h> /* For GHashTable */
+#include "pvrdma/rdma_backend_defs.h"
 #include "qemu/thread.h" /* For QemuMutex */
-#include "rdma_backend_defs.h"
 
 #define PAGE_SIZE 4096
 

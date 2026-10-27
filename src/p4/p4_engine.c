@@ -17,10 +17,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "p4_engine.h"
-#include "p4_exec.h"
-#include "p4_json.h"
-#include "p4_table.h"
+#include "p4/p4_engine.h"
+#include "p4/p4_exec.h"
+#include "p4/p4_json.h"
+#include "p4/p4_table.h"
 
 struct p4_engine {
     /*

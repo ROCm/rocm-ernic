@@ -43,9 +43,9 @@
 
 #include "ernic_err.h"
 #include "parse_int.h"
-#include "s3_http.h"
-#include "s3_target.h"
-#include "s3_token.h"
+#include "s3/s3_http.h"
+#include "s3/s3_target.h"
+#include "s3/s3_token.h"
 
 #define S3_DEFAULT_BUCKET   "ernic"
 #define S3_DEFAULT_CAPACITY (256ull << 20)

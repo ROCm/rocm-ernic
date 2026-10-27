@@ -2,7 +2,7 @@
  * Compatibility Bridge: RDMA Device ↔ libvfio-user
  *
  * The interface through which the device front end (the ionic emulation and
- * the server) reaches the RDMA core in src/qemu/, so that the front end
+ * the server) reaches the RDMA core in src/pvrdma/, so that the front end
  * doesn't include the core's headers. This header creates and destroys the
  * core and names it with an opaque handle. What the front end does with the
  * handle is in two narrower headers, each included only where it's used:

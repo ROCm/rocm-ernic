@@ -21,15 +21,15 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "byteorder.h"
-#include "ionic_datapath.h"
-#include "ionic_datapath_fw.h"
-#include "ionic_datapath_priv.h"
-#include "p4_engine.h"
-#include "p4_exec.h"
-#include "p4_fp8.h"
-#include "p4_fmt.h"
-#include "p4_program.h"
-#include "p4_value.h"
+#include "ionic/ionic_datapath.h"
+#include "ionic/ionic_datapath_fw.h"
+#include "ionic/ionic_datapath_priv.h"
+#include "p4/p4_engine.h"
+#include "p4/p4_exec.h"
+#include "p4/p4_fp8.h"
+#include "p4/p4_fmt.h"
+#include "p4/p4_program.h"
+#include "p4/p4_value.h"
 
 void ionic_datapath_set_p4_engine(struct ionic_datapath *dp,
                                   struct p4_engine *eng)

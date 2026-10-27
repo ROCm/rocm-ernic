@@ -15,10 +15,10 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include "rdma_backend_tcp_priv.h"
+#include "rdma/rdma_backend_tcp_priv.h"
 #include "byteorder.h"
-#include "rdma_utils.h"
 #include "ernic_time.h"
+#include "pvrdma/rdma_utils.h"
 #include "qemu/thread.h"
 #include "rocm-ernic-warnings.h"
 #include <errno.h>

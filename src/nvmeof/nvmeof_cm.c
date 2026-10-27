@@ -26,8 +26,8 @@
 #include <string.h>
 
 #include "byteorder.h"
-#include "nvmeof_cm.h"
-#include "nvmeof_target.h"
+#include "nvmeof/nvmeof_cm.h"
+#include "nvmeof/nvmeof_target.h"
 
 /* ------------------------------------------------------------------ */
 /* MAD header                                                         */

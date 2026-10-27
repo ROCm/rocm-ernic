@@ -22,7 +22,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "p4_program.h"
+#include "p4/p4_program.h"
 
 /* Wide enough for any field the loader accepts. */
 #define P4_VALUE_BYTES ((P4_MAX_FIELD_BITS + 7) / 8)

@@ -20,7 +20,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "p4_fp8.h"
+#include "p4/p4_fp8.h"
 
 static int failures;
 

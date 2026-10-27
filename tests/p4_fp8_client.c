@@ -48,8 +48,8 @@
 
 #include "ernic_device.h"
 #include "ernic_p4.h"
-#include "p4_devcmd.h"
-#include "p4_fp8.h"
+#include "p4/p4_devcmd.h"
+#include "p4/p4_fp8.h"
 
 /* The device opcode an RDMA WRITE arrives as (src/ionic/ionic_datapath.c). */
 #define IONIC_V1_OP_RDMA_WRITE 4

@@ -19,8 +19,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "ernic_mesh.h"
-#include "rdma_backend_defs.h"
-#include "rdma_rm_defs.h"
+#include "pvrdma/rdma_backend_defs.h"
+#include "pvrdma/rdma_rm_defs.h"
 
 /* Forward declarations */
 typedef struct RdmaBackendOps RdmaBackendOps;

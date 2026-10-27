@@ -25,7 +25,7 @@
 #include "ernic_limits.h"
 #include "ernic_mesh.h"
 #include "ernic_stats.h"
-#include "ionic_datapath.h"
+#include "ionic/ionic_datapath.h"
 #include "net/net_headers.h"
 #include "qemu/thread.h"
 #include "rocm_ernic_compat.h"

@@ -21,10 +21,10 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "ernic_dma.h"
-#include "p4_devcmd.h"
-#include "p4_engine.h"
-#include "p4_program.h"
-#include "p4_table.h"
+#include "p4/p4_devcmd.h"
+#include "p4/p4_engine.h"
+#include "p4/p4_program.h"
+#include "p4/p4_table.h"
 
 /*
  * The wire format repeats two of the engine's limits, because a guest

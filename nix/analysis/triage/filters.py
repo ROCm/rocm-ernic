@@ -5,7 +5,7 @@ layout:
   - src/rocm_ernic_*.{c,h}         our own userspace code
   - src/net/                       network header layouts (net_headers.h)
   - src/rdma/                      RDMA backends (loopback, TCP mesh)
-  - src/qemu/                      QEMU-derived PVRDMA device model
+  - src/pvrdma/                    QEMU-derived PVRDMA device model
                                    — handles guest input
   - tests/                         test programs
 """
@@ -58,7 +58,7 @@ SECURITY_PATHS = [
     'src/net/',
     'src/rdma/',
     'src/parse_int.h',
-    'src/qemu/',
+    'src/pvrdma/',
     'src/rocm_ernic',
 ]
 

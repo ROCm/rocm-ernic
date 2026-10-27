@@ -27,7 +27,7 @@
 #include <glib.h>
 
 #include "ernic_err.h"
-#include "ionic_profile.h"
+#include "ionic/ionic_profile.h"
 
 /* ---- Schema ------------------------------------------------------------ */
 

@@ -47,9 +47,9 @@
 #include "byteorder.h"
 #include "ernic_err.h"
 #include "ernic_log.h"
-#include "nvmeof.h"
-#include "nvmeof_target.h"
-#include "nvmeof_target_priv.h"
+#include "nvmeof/nvmeof.h"
+#include "nvmeof/nvmeof_target.h"
+#include "nvmeof/nvmeof_target_priv.h"
 #include "parse_int.h"
 
 #define NVMEOF_DEFAULT_NQN        "nvmet-test"

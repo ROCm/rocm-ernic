@@ -1,7 +1,7 @@
 /*
  * The RDMA core's resource manager, for the ionic admin queue
  *
- * Thin wrappers that call rdma_rm_* in src/qemu/ on the admin queue's
+ * Thin wrappers that call rdma_rm_* in src/pvrdma/ on the admin queue's
  * behalf, through the opaque handle from rocm_ernic_compat.h, so that the
  * admin queue never sees the core's types (PVRDMADev, RdmaDeviceResources,
  * RdmaBackendDev). rocm_ernic_compat.c implements them.

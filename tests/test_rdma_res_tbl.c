@@ -107,13 +107,13 @@
 #include <infiniband/verbs.h>
 
 #include "ernic_ib.h"
+#include "pvrdma/rdma_backend.h"
+#include "pvrdma/rdma_backend_defs.h"
+#include "pvrdma/rdma_rm.h"
+#include "pvrdma/rdma_rm_defs.h"
 #include "qemu/bitmap.h"
 #include "qemu/thread.h"
-#include "rdma_backend.h"
-#include "rdma_backend_defs.h"
-#include "rdma_backend_ops.h"
-#include "rdma_rm.h"
-#include "rdma_rm_defs.h"
+#include "rdma/rdma_backend_ops.h"
 
 /* ---- Stubs for the SRQ entry points rdma_rm.c calls, which go to the
  * backend directly rather than through its ops. They return srq_rc and

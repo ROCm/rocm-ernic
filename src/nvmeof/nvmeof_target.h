@@ -19,7 +19,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "nvmeof.h"
+#include "nvmeof/nvmeof.h"
 
 struct nvmeof_target;
 struct nvmeof_queue;

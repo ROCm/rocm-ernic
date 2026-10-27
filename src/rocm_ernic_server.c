@@ -52,8 +52,8 @@
 #include "ionic/ionic_fault.h"
 #include "ionic/ionic_profile.h"
 #ifdef ERNIC_HAVE_P4
-#include "p4_devcmd.h"
-#include "p4_engine.h"
+#include "p4/p4_devcmd.h"
+#include "p4/p4_engine.h"
 #endif
 #include "parse_int.h"
 #include "rocm-ernic-warnings.h"

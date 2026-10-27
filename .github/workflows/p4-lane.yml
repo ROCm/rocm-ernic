@@ -648,13 +648,17 @@ jobs:
       run: |
         echo "=== Guest-driven fp8 reduction ==="
         ssh -F "$SSH_CONFIG" -p "$SSH_PORT" \
-          "${VM_USER}@localhost" "mkdir -p /tmp/p4-fp8"
+          "${VM_USER}@localhost" "mkdir -p /tmp/p4-fp8/p4"
+        # The client includes the engine's headers by their path from
+        # src/, so they keep their p4/ directory.
         scp -F "$SSH_CONFIG" -P "$SSH_PORT" \
           tests/p4_fp8_client.c tests/ernic_device.h src/parse_int.h \
-          src/p4/p4_devcmd.h src/p4/p4_fp8.h \
           drivers/ernic_p4/uapi/ernic_p4.h \
           tests/data/p4/fp8_policy.json \
           "${VM_USER}@localhost:/tmp/p4-fp8/"
+        scp -F "$SSH_CONFIG" -P "$SSH_PORT" \
+          src/p4/p4_devcmd.h src/p4/p4_fp8.h \
+          "${VM_USER}@localhost:/tmp/p4-fp8/p4/"
 
         set +e
         ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
@@ -703,13 +707,18 @@ jobs:
       run: |
         echo "=== Guest-driven format conversion ==="
         ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
-          "mkdir -p /tmp/p4-cvt"
+          "mkdir -p /tmp/p4-cvt/p4"
+        # As for the fp8 client, the engine's files keep their p4/
+        # directory. p4_fmt.c includes its header by the same path, so
+        # the build adds -I. in place of src/.
         scp -F "$SSH_CONFIG" -P "$SSH_PORT" \
           tests/p4_convert_client.c tests/ernic_device.h src/parse_int.h \
-          src/p4/p4_devcmd.h src/p4/p4_fmt.h src/p4/p4_fmt.c \
           drivers/ernic_p4/uapi/ernic_p4.h \
           tests/data/p4/fp8_convert.json \
           "${VM_USER}@localhost:/tmp/p4-cvt/"
+        scp -F "$SSH_CONFIG" -P "$SSH_PORT" \
+          src/p4/p4_devcmd.h src/p4/p4_fmt.h src/p4/p4_fmt.c \
+          "${VM_USER}@localhost:/tmp/p4-cvt/p4/"
 
         set +e
         ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
@@ -718,7 +727,7 @@ jobs:
         cd /tmp/p4-cvt
         read -ra IBV_FLAGS <<< "$(pkg-config --cflags --libs libibverbs)"
         gcc -O2 -Wall -Wextra \
-          -o p4_convert_client p4_convert_client.c p4_fmt.c -I. \
+          -o p4_convert_client p4_convert_client.c p4/p4_fmt.c -I. \
           "${IBV_FLAGS[@]}"
         set +e
         # As root, for the same reason the fp8 client is: the node is

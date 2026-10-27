@@ -173,11 +173,11 @@
 
 #include "byteorder.h"
 #include "ernic_time.h"
+#include "pvrdma/rdma_backend_defs.h"
 #include "qemu/error-report.h"
 #include "qemu/thread.h"
 #include "rdma/rdma_backend_ops.h"
 #include "rdma/rdma_backend_tcp_priv.h"
-#include "rdma_backend_defs.h"
 #include "rocm-ernic-warnings.h"
 
 /* ---- Stubs ------------------------------------------------------------- */

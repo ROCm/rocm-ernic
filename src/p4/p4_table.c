@@ -11,8 +11,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "p4_table.h"
-#include "p4_value.h"
+#include "p4/p4_table.h"
+#include "p4/p4_value.h"
 
 struct p4_table_entries {
     uint32_t n;   /* entries in use */

@@ -12,7 +12,7 @@
 
 #include <stddef.h>
 
-#include "nvmeof_target.h"
+#include "nvmeof/nvmeof_target.h"
 
 /* Writes a range of a file-backed namespace back to its file; msync()'s
  * signature, and msync() unless a test replaces it. */

@@ -106,6 +106,14 @@ cmake --build build
 - Standard C11; no GNU extensions without permission. Atomics
   (`<stdatomic.h>`) and threads (`qemu/thread.h` over pthreads) are
   available; see [Thread safety](#thread-safety).
+- **Include a project header by its path from `src/`**
+  (`"pvrdma/rdma_rm.h"`, `"p4/p4_engine.h"`, `"byteorder.h"`), even from
+  a file in the same directory: IWYU spells a header one way, so a bare
+  `"rdma_rm.h"` beside `"pvrdma/rdma_rm.h"` looks like a missing include.
+  The only other include roots are `shared/` and
+  `src/qemu-compat/include/`, which stands in for QEMU's own headers
+  (`"qemu/thread.h"`). Don't add a subdirectory of `src/` to a target's
+  include path.
 - **Use explicitly sized types**: `uint32_t`, `uint64_t`, `size_t` for
   sizes, never `long` for a wire or 64-bit value. Write constants with
   `UINT64_C()`, not `L`/`UL`.
@@ -140,7 +148,7 @@ cmake --build build
   naturally aligned structs, `memcpy()`'d in and out and converted with
   `<endian.h>`; don't copy it.
 - **Allocate the way the layer does.**
-  - `src/qemu/`, `src/qemu-compat/`, and `src/rdma/` are built on GLib's
+  - `src/pvrdma/`, `src/qemu-compat/`, and `src/rdma/` are built on GLib's
     containers, which abort when out of memory, so they allocate with
     GLib too (`g_new0()`, `g_strdup()`, `g_malloc()`) and don't check
     the result: a `NULL` check there is dead code.
@@ -657,12 +665,12 @@ or `typing.Self`.
   [ansible-collection.yml](.github/workflows/ansible-collection.yml). Use
   that version; others report different problems.
 
-## The QEMU code in `src/qemu/`
+## The QEMU code in `src/pvrdma/`
 
-`src/qemu/` is the core of QEMU's PVRDMA device model, forked and heavily
-rewritten. Upstream deleted it, so **it's ours to modify**, built and
-checked like the rest of `src/`. Keep each file's original copyright
-lines. History: [src/qemu/README.md](src/qemu/README.md).
+`src/pvrdma/` is the core of QEMU's PVRDMA device model, forked and
+heavily rewritten. Upstream deleted it, so **it's ours to modify**, built
+and checked like the rest of `src/`. Keep each file's original copyright
+lines. History: [src/pvrdma/README.md](src/pvrdma/README.md).
 
 ## The P4 engine in `src/p4/`
 

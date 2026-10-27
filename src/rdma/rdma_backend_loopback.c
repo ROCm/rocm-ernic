@@ -13,10 +13,10 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include "rdma_backend_ops.h"
-#include "rdma_backend_defs.h"
-#include "rdma_utils.h"
+#include "rdma/rdma_backend_ops.h"
 #include "ernic_limits.h"
+#include "pvrdma/rdma_backend_defs.h"
+#include "pvrdma/rdma_utils.h"
 #include "qemu/thread.h"
 #include "rocm-ernic-warnings.h"
 #include <errno.h>

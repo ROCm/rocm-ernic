@@ -41,7 +41,6 @@ function(ernic_add_fuzz_replay harness)
         ${ERNIC_FUZZ_DIR}
         ${PROJECT_SOURCE_DIR}/src
         ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
-        ${PROJECT_SOURCE_DIR}/src/qemu
     )
     # Headers from outside the project are SYSTEM includes so their warnings
     # stay quiet.

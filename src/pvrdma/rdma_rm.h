@@ -21,8 +21,8 @@
 
 #include <stdint.h>
 #include <infiniband/verbs.h>
-#include "rdma_backend_defs.h"
-#include "rdma_rm_defs.h"
+#include "pvrdma/rdma_backend_defs.h"
+#include "pvrdma/rdma_rm_defs.h"
 
 int rdma_rm_init(RdmaDeviceResources *dev_res,
                  const struct ibv_device_attr *dev_attr);

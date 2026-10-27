@@ -23,8 +23,8 @@
 
 #include "hw/pci/pci_device.h"
 
-#include "rdma_backend_defs.h"
-#include "rdma_rm_defs.h"
+#include "pvrdma/rdma_backend_defs.h"
+#include "pvrdma/rdma_rm_defs.h"
 
 /* The device's statistics are the server's (ernic_stats.h). */
 struct PVRDMADev {
