@@ -16,8 +16,8 @@
  *
  * Nothing in this file knows about vfio-user, queues or guest memory: the
  * engine takes a frame and returns a verdict, so the whole thing runs under
- * CTest with no VM.  src/p4/p4_port.h is the part that knows about the
- * emulated NIC.
+ * CTest with no VM.  src/ionic/ionic_eth_p4.h and ionic_datapath_p4.h are
+ * the parts that know about the emulated NIC.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -45,13 +45,13 @@ struct p4_engine;
  * Largest frame the engine will accept or produce.
  *
  * This is the emulated NIC's frame buffer size, not a round jumbo number:
- * p4_port.c claims every frame unconditionally, so anything the engine
+ * ionic_eth_p4.c claims every frame unconditionally, so anything the engine
  * refuses here is a frame the guest sent and nobody forwards.  At 9216
  * that silently dropped every frame between 9217 bytes and the 9582-byte
  * MTU the guest is allowed to configure -- and only when --p4 was on, so
  * it read as the engine breaking jumbo frames rather than as a limit.
  *
- * p4_port.c asserts this covers IONIC_ETH_NET_MTU_MAX, which is where the
+ * ionic_eth_p4.c asserts this covers IONIC_ETH_NET_MTU_MAX, which is where the
  * two numbers would otherwise drift apart again.  The engine itself keeps
  * no dependency on the emulator's headers.
  */

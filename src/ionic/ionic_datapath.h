@@ -20,27 +20,6 @@ struct ionic_eth_emu;
 struct ionic_datapath;
 
 /*
- * Memory-region budget.
- *
- * A stock nvme-rdma initiator runs with register_always, so it pre-allocates
- * a pool of IONIC_MR_PER_QUEUE regions for every queue it creates -- admin
- * queue included -- at connect time rather than per I/O.  An N-queue
- * controller therefore needs (N + 1) * IONIC_MR_PER_QUEUE regions to be
- * reachable before the first capsule moves.
- *
- * The device holds ERNIC_MAX_MR (ernic_limits.h), which is not sized for
- * the maximum 64 queues: dp_reg_mr() walks the whole table on every fast
- * registration -- that is, on every NVMe command -- so the limit is also a
- * per-I/O cost, and it covers the default 8 queues with headroom without
- * doubling that walk again. ionic_datapath_nvmeof_cfg_check() rejects a
- * queue count that would not fit.
- */
-#define IONIC_MR_PER_QUEUE 128
-
-/* Largest max_queues that fits the budget, admin queue included. */
-#define IONIC_MAX_MR_QUEUES ((int)(ERNIC_MAX_MR / IONIC_MR_PER_QUEUE) - 1)
-
-/*
  * Description of a guest-resident ring or memory region as the driver hands
  * it to us: either a direct DMA address (map_count <= 1) or the address of a
  * page table of map_count le64 page addresses.
@@ -241,12 +220,6 @@ void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
 void ionic_datapath_unregister_ah(struct ionic_datapath *dp, uint32_t ah_id);
 
 /*
- * RC/UC peer, learned from MODIFY_QP's IB_QP_DEST_QPN and the destination
- * address in the RoCE header template.  @dest_node_id is a mesh node id;
- * when it names this instance the peer QP is local and never leaves the
- * emulator.  Pass UINT32_MAX when there is no mesh.
- */
-/*
  * The Q_Key a datagram must present to be delivered into this QP.
  * MODIFY_QP carries it in the field a connected QP uses for its
  * destination QPN, so it is set separately: for UD the two never both
@@ -254,13 +227,21 @@ void ionic_datapath_unregister_ah(struct ionic_datapath *dp, uint32_t ah_id);
  */
 void ionic_datapath_set_qkey(struct ionic_datapath *dp, uint32_t qp_id,
                              uint32_t qkey);
+
+/*
+ * RC/UC peer, learned from MODIFY_QP's IB_QP_DEST_QPN and the destination
+ * address in the RoCE header template.  @dest_node_id is a mesh node id;
+ * when it names this instance the peer QP is local and never leaves the
+ * emulator.  Pass UINT32_MAX when there is no mesh.
+ */
 void ionic_datapath_set_dest(struct ionic_datapath *dp, uint32_t qp_id,
                              uint32_t dest_qp_id, uint32_t dest_node_id);
 
 /*
- * Resolve a 16-byte destination GID to a mesh node id, or UINT32_MAX when
- * this instance has no mesh backend.  @dgid may be NULL, which asks for the
- * default peer.
+ * This node's mesh id, and the node that owns a 16-byte destination GID,
+ * or UINT32_MAX when this instance has no mesh backend.  On the TCP mesh
+ * a NULL @dgid, or one no live node owns alone, also gives UINT32_MAX:
+ * there is no default peer.
  */
 uint32_t ionic_dp_local_node(const struct ionic_datapath *dp);
 uint32_t ionic_dp_node_from_gid(const struct ionic_datapath *dp,
@@ -280,45 +261,6 @@ int ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
                                uint64_t va, uint64_t length,
                                const struct ionic_dp_buf_desc *buf);
 void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey);
-
-/*
- * Attach the in-process NVMe-oF controller.  Once attached the data path
- * answers IB CM MADs on the guest's GSI QP and serves NVMe command capsules
- * sent to the QP numbers that handshake hands out, so a guest running stock
- * `nvme connect -t rdma` reaches a target without a second node.
- *
- * Returns false and fills @err on failure, including for a configuration
- * ionic_datapath_nvmeof_cfg_check() refuses.  The data path owns the
- * controller from then on and tears it down in ionic_datapath_destroy().
- */
-struct nvmeof_target_cfg;
-bool ionic_datapath_attach_nvmeof(struct ionic_datapath *dp,
-                                  const struct nvmeof_target_cfg *cfg,
-                                  char *err, size_t errlen);
-
-/*
- * Whether this device can serve the NVMe-oF configuration @cfg: no more
- * queues than IONIC_MAX_MR_QUEUES, since a host registers
- * IONIC_MR_PER_QUEUE memory regions for each.  Returns false and fills @err
- * if not.  For checking the options at startup, before a guest attaches.
- */
-bool ionic_datapath_nvmeof_cfg_check(const struct nvmeof_target_cfg *cfg,
-                                     char *err, size_t errlen);
-
-/*
- * Attach the in-process S3 object store.  Once attached the emulated NIC
- * answers ARP, ping and HTTP at the configured address, and an object
- * request that carries an x-amz-rdma-token moves its payload straight
- * between the store and the guest buffer the token describes.
- *
- * Requires the Ethernet emulator, because the control plane lives on the
- * emulated wire rather than on a host socket.  Returns false and fills
- * @err on failure; the data path owns the store from then on.
- */
-struct s3_target_cfg;
-bool ionic_datapath_attach_s3(struct ionic_datapath *dp,
-                              const struct s3_target_cfg *cfg, char *err,
-                              size_t errlen);
 
 /*
  * Set the pvrdma handle so the datapath can post sends via the backend, and
@@ -357,108 +299,6 @@ void ionic_datapath_poll(struct ionic_datapath *dp);
 
 /* True when a peer message is queued, so the caller can skip its idle sleep. */
 bool ionic_datapath_has_work(struct ionic_datapath *dp);
-
-#ifdef ERNIC_HAVE_P4
-
-/*
- * Apply an fp8 operation elementwise across two registered memory regions
- * and write the result to a third.
- *
- * This is in-network compute: the NIC reads both operand regions, combines
- * them pointwise, and writes a result region of the same length, instead
- * of the host reading two buffers and writing a third.  Combining two
- * partial buffers is what a collective does, so this is the primitive an
- * allreduce is built from.
- *
- * The regions are streamed in blocks rather than staged whole, so the
- * length is bounded by what a guest may ask the poll loop to do in one go
- * rather than by how much will fit on the stack.
- *
- * Note what this is NOT, yet: it calls the arithmetic directly and no P4
- * program is involved, so which operation happens is fixed by the caller
- * rather than decided by a table.  Wiring the pipeline into this path and
- * making the arithmetic an extern a program calls is what turns it into
- * something P4 governs; this function is then the extern's implementation
- * rather than the whole story.
- *
- * @op is an enum p4_fp8_op.  @len is the length of each region in bytes,
- * one fp8 value per byte, and the destination region is the same length.
- *
- * Returns 0, or a negative errno: -EINVAL for an argument out of range,
- * -EACCES for a key the guest may not name here, -EFAULT when a region
- * could not be read or written in full.
- */
-
-/*
- * The most a single request may move.  The work happens on the thread
- * that also services the vfio-user poll loop, so this is a bound on how
- * long a guest may stall that loop, not a bound on memory -- the streaming
- * below would take any length.  A megabyte of elements is a visible pause;
- * this is the point at which that was judged acceptable, and it is one
- * constant to revisit when it is not.
- */
-#define IONIC_FP8_MAP_MAX 262144u
-
-int ionic_datapath_fp8_map(struct ionic_datapath *dp, uint8_t op,
-                           uint32_t a_lkey, uint64_t a_va, uint32_t b_lkey,
-                           uint64_t b_va, uint32_t len, uint32_t c_rkey,
-                           uint64_t c_va);
-
-/*
- * Convert a region of floating point from one format to another,
- * elementwise, in either direction.
- *
- * @src_fmt and @dst_fmt are enum p4_fmt values.  @in_len bytes at
- * (@a_lkey, @a_va) hold however many elements of @src_fmt that is; the
- * result is the same number of @dst_fmt elements at (@c_rkey, @c_va),
- * which is longer, shorter or the same length depending on the pair.
- *
- * This is the only operation whose destination length is not its source
- * length, so each region is checked against its own, in full, before a
- * byte moves.  Returns 0, or a negative errno.
- *
- * The destination may not overlap the source, and nothing here checks
- * that it does not.  The conversion streams a chunk at a time -- read,
- * convert, write -- so a destination that overlaps the part of the
- * source still to be read is overwritten before it is used, and the
- * operation then completes successfully with wrong results from that
- * point on.  Widening makes it easy to reach: fp16 to fp32 into the same
- * address writes two bytes for every one it has read, so the second
- * chunk's input is gone before the first chunk is finished.
- *
- * Not checked because checking it properly is not a range comparison.
- * Two different keys may be registered over the same guest pages, so
- * overlap has to be decided on what the keys resolve to rather than on
- * the keys themselves, and the honest fix is to stage the whole source
- * before writing any of it.  Until then this is the guest corrupting its
- * own memory with its own keys -- it can reach nothing it has not
- * registered, and every region is still checked for that -- so it is
- * recorded here rather than guessed at.
- */
-int ionic_datapath_fmt_convert(struct ionic_datapath *dp, uint8_t src_fmt,
-                               uint8_t dst_fmt, uint32_t a_lkey, uint64_t a_va,
-                               uint32_t in_len, uint32_t c_rkey, uint64_t c_va);
-
-struct p4_engine;
-
-/*
- * Give the data path the pipeline that governs RDMA operations, or NULL to
- * take it away.
- *
- * Borrowed, not owned: the engine outlives nothing here, and the caller
- * must clear it before destroying the engine.  Until one is set, and for a
- * program that declares no rdma_metadata, the data path behaves exactly as
- * it does without P4 built at all.
- *
- * What the pipeline may do to an operation is decide: it runs after the
- * operation's own memory has been checked, so a program never sees a
- * request that is already a protection error, and it cannot name memory --
- * an extern it calls is given the regions the work request itself named.
- */
-void ionic_datapath_set_p4_engine(struct ionic_datapath *dp,
-                                  struct p4_engine *eng);
-
-#endif /* ERNIC_HAVE_P4 */
 
 /*
  * RDMA error and congestion counters, served by the STATS and QP_STATS admin

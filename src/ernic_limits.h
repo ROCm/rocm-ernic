@@ -90,7 +90,7 @@ _Static_assert(ERNIC_MAX_CQ > ERNIC_MAX_AQ,
  * path searches its table on every fast registration -- every NVMe command
  * on the NVMe-oF path -- so this is also a per-I/O cost. 2048 covers the
  * regions an nvme-rdma initiator registers for its default 8 queues with
- * room to spare; see IONIC_MR_PER_QUEUE in ionic_datapath.h.
+ * room to spare; see IONIC_MR_PER_QUEUE in ionic_datapath_nvmeof.h.
  *
  * The driver never hands out MR index 0, the reserved lkey, so the LIF
  * identity advertises one more than this for the guest to be able to create

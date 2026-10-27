@@ -22,8 +22,8 @@
 
 #include "byteorder.h"
 #include "ernic_limits.h"
-#include "ionic/ionic_datapath.h"
 #include "ionic/ionic_datapath_fw.h"
+#include "ionic/ionic_datapath_nvmeof.h"
 #include "ionic/ionic_datapath_priv.h"
 #include "net/net_headers.h"
 #include "nvmeof/nvmeof.h"

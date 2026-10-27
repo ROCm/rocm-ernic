@@ -42,6 +42,7 @@
 #include "fake_vfu.h"
 #include "ionic/ionic_bar.h"
 #include "ionic/ionic_datapath.h"
+#include "ionic/ionic_datapath_nvmeof.h"
 #include "ionic/ionic_device.h"
 #include "ionic/ionic_eth_emu.h"
 /* For the emulator's admin queue pointer, which rdma-reset checks */
@@ -54,11 +55,12 @@
 #include "nvmeof/nvmeof_cm.h"
 #include "nvmeof/nvmeof_target.h"
 #ifdef ERNIC_HAVE_P4
+#include "ionic/ionic_datapath_p4.h"
+#include "ionic/ionic_eth_p4.h"
 #include "p4/p4_devcmd.h"
 #include "p4/p4_engine.h"
 #include "p4/p4_fp8.h"
 #include "p4/p4_fmt.h"
-#include "p4/p4_port.h"
 #include "p4/p4_program.h"
 #include "p4/p4_table.h"
 #endif
@@ -3352,9 +3354,9 @@ static void test_p4_port(void)
     const char *T = "p4-port";
     struct ih h;
     struct p4_upstream up;
-    struct p4_port_upstream chain;
+    struct ionic_eth_p4_upstream chain;
     struct p4_stats estats;
-    struct p4_port_stats pstats;
+    struct ionic_eth_p4_stats pstats;
 
     if (!setup(T, &h, "loopback"))
         return;
@@ -3384,18 +3386,18 @@ static void test_p4_port(void)
     /* A port onto nothing is refused, and nothing is safe to let go of
      * or read. */
     check(T,
-          p4_port_attach(NULL, eng, &chain) == NULL &&
-              p4_port_attach(h.emu, NULL, &chain) == NULL,
+          ionic_eth_p4_attach(NULL, eng, &chain) == NULL &&
+              ionic_eth_p4_attach(h.emu, NULL, &chain) == NULL,
           "a port was attached to nothing");
-    p4_port_detach(NULL);
+    ionic_eth_p4_detach(NULL);
     memset(&pstats, 0xAA, sizeof(pstats));
-    p4_port_get_stats(NULL, &pstats);
+    ionic_eth_p4_get_stats(NULL, &pstats);
     check(T, pstats.to_guest == 0 && pstats.egress_errors == 0,
           "a port that is not there reported counters");
-    p4_port_get_stats(NULL, NULL);
+    ionic_eth_p4_get_stats(NULL, NULL);
 
-    struct p4_port *port = p4_port_attach(h.emu, eng, &chain);
-    if (!check(T, port != NULL, "p4_port_attach failed")) {
+    struct ionic_eth_p4 *port = ionic_eth_p4_attach(h.emu, eng, &chain);
+    if (!check(T, port != NULL, "ionic_eth_p4_attach failed")) {
         p4_engine_destroy(eng);
         teardown(T, &h);
         return;
@@ -3404,7 +3406,7 @@ static void test_p4_port(void)
     /* A frame the previous holder claims must not reach the pipeline. */
     p4_tx_one(&h, txr, buf, P4_UPSTREAM_MAGIC, 0);
     p4_engine_get_stats(eng, &estats);
-    p4_port_get_stats(port, &pstats);
+    ionic_eth_p4_get_stats(port, &pstats);
     check(T, up.claimed == 1, "the chained filter claimed %u frames",
           up.claimed);
     check(T, estats.frames_in[P4_PORT_HOST] == 0,
@@ -3415,7 +3417,7 @@ static void test_p4_port(void)
      * uplink fails, which is the only observable the engine has today. */
     p4_tx_one(&h, txr, buf, 0xBBu, 1);
     p4_engine_get_stats(eng, &estats);
-    p4_port_get_stats(port, &pstats);
+    ionic_eth_p4_get_stats(port, &pstats);
     check(T, up.offered == 2, "the chained filter saw %u frames", up.offered);
     check(T, up.claimed == 1,
           "the chained filter claimed a frame it should "
@@ -3432,7 +3434,7 @@ static void test_p4_port(void)
           "attached");
 
     /* Detaching must hand the slot back, not leave it empty. */
-    p4_port_detach(port);
+    ionic_eth_p4_detach(port);
     ionic_eth_emu_get_tx_filter(h.emu, &chain.fn, &chain.ctx);
     check(T, chain.fn == p4_upstream_filter && chain.ctx == &up,
           "detach did not restore the previous Tx filter");

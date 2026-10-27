@@ -273,6 +273,12 @@
     and server tests for the NVMe-oF target (`nvmeof-target-unit`,
     `nvmeof-cm-unit`, `nvmeof-ci`) and the S3 store (`s3-token-unit`,
     `s3-http-unit`, `s3-target-unit`, `s3-tcp-unit`, `s3-ci`).
+  * `ernic-socket-unit` calls the vfio-user socket's permission checks
+    directly, including where the server can't be driven: the socket
+    replaced or a symlink put at its path between checks, a group entry
+    too big for the first buffer, and a failing `chown()`, `chmod()`,
+    `unlink()`, ACL lookup or allocation. Each refusal is checked for the
+    reason it gives.
 * **A valgrind leg.** The GCC Debug build without sanitizers also runs the
   tests under memcheck, which finds reads of uninitialized memory,
   including bytes passed to `send()`, that the sanitizers don't; any error,

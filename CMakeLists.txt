@@ -222,9 +222,11 @@ option(ERNIC_BUILD_P4
   "Build the P4 match-action engine"
   OFF)
 
-# ionic_datapath_p4.c is the data path's side of the engine
+# ionic_datapath_p4.c and ionic_eth_p4.c put the engine on the device's
+# RDMA and Ethernet paths; src/p4/ knows nothing about the device
 set(P4_SOURCES
     src/ionic/ionic_datapath_p4.c
+    src/ionic/ionic_eth_p4.c
     src/p4/p4_devcmd.c
     src/p4/p4_engine.c
     src/p4/p4_exec.c
@@ -232,7 +234,6 @@ set(P4_SOURCES
     src/p4/p4_fmt.c
     src/p4/p4_json.c
     src/p4/p4_table.c
-    src/p4/p4_port.c
 )
 
 # json-c, for the bmv2 program loader. Scoped to this option deliberately:

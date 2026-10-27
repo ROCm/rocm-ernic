@@ -521,6 +521,25 @@ if(ERNIC_HAVE_VALGRIND_H)
 endif()
 add_dependencies(test_server_lifecycle rocm-ernic)
 
+# The vfio-user socket's permission helpers (ernic_socket.c), called
+# directly on sockets in a scratch directory. The test fails the helpers'
+# allocations, group lookups, chown(), chmod(), ACL lookup and unlink() on
+# demand: the linker routes the calls in its own objects through wrappers,
+# which pass every call they don't fail to the real function.
+add_executable(ernic-test-socket test_ernic_socket.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_socket.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_log.c
+)
+target_include_directories(ernic-test-socket PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/shared
+)
+target_compile_definitions(ernic-test-socket PRIVATE _GNU_SOURCE)
+target_link_options(ernic-test-socket PRIVATE
+    "LINKER:--wrap=malloc,--wrap=strdup,--wrap=strndup"
+    "LINKER:--wrap=getgrnam_r,--wrap=fchownat,--wrap=chmod"
+    "LINKER:--wrap=lgetxattr,--wrap=unlinkat")
+
 # ionic QUERY_QP test. It links the admin queue, calls
 # ionic_adminq_dispatch_wqe() through ionic_adminq_priv.h, and backs the DMA
 # entry points with a plain buffer, so the side buffers the driver reads its
@@ -1084,6 +1103,7 @@ set(ERNIC_TEST_TARGETS
     ernic-test-ionic-adminq-poll
     ernic-test-ionic-adminq-maps
     test_server_lifecycle
+    ernic-test-socket
     test_ionic_srq_adminq
     test_ionic_cq_arm
     test_ionic_counter_snapshot
@@ -1301,6 +1321,14 @@ set_tests_properties(server-lifecycle PROPERTIES
     TIMEOUT 300
     SKIP_RETURN_CODE 77
 )
+
+# The socket's permission helpers, each refusal checked for its reason,
+# including the paths the server can't be driven down
+add_test(
+    NAME ernic-socket-unit
+    COMMAND $<TARGET_FILE:ernic-test-socket>
+)
+set_tests_properties(ernic-socket-unit PROPERTIES TIMEOUT 30)
 
 # NIC profile loader unit test: asserts strict validation (every error names
 # the source, line and key), atomic layers, and that the built-in profiles

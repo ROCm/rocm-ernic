@@ -21,8 +21,8 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "byteorder.h"
-#include "ionic/ionic_datapath.h"
 #include "ionic/ionic_datapath_fw.h"
+#include "ionic/ionic_datapath_p4.h"
 #include "ionic/ionic_datapath_priv.h"
 #include "p4/p4_engine.h"
 #include "p4/p4_exec.h"
