@@ -112,18 +112,15 @@ static bool p4_get_array(const struct json_object *parent, const char *key,
 }
 
 /*
- * Copy a JSON string that is a name: 1 to out_cap - 1 bytes, all of them
- * printable.  Copied rather than borrowed, since every pointer json-c hands
- * back dies with the tree.
+ * A JSON string as a C string, or NULL if @v is not a string or holds a NUL.
  *
- * Every string the loader keeps, looks a name up by, or prints comes
- * through here; one compared only against a literal ("default", "*") or
- * parsed as a number need not.  The printable check is not cosmetic: names
- * reach the log and the error messages above, and JSON's \u escapes decode
- * to control characters, so a newline or an ANSI escape in one is log
- * injection.
+ * Every string the loader reads goes through here, whatever it is for.
+ * json-c decodes \u0000 to a byte like any other, and the C string ends at
+ * it, so whatever follows is invisible to strcmp(), to
+ * ernic_parse_hexstr(), and to every check: "0x00ff\u0000zz" would parse
+ * as 0x00ff, and "default\u0000zz" would be a default arm.
  */
-static bool p4_str_val(struct json_object *v, char *out, size_t out_cap)
+static const char *p4_cstr(struct json_object *v)
 {
     const char *s;
     int n;
@@ -131,24 +128,42 @@ static bool p4_str_val(struct json_object *v, char *out, size_t out_cap)
     /* Before get_string_len: on a null it returns NULL, and on an array it
      * returns the serialisation with a length of zero. */
     if (!v || !json_object_is_type(v, json_type_string))
-        return false;
+        return NULL;
 
     n = json_object_get_string_len(v);
-    if (n <= 0 || (size_t)n >= out_cap)
-        return false;
-
     s = json_object_get_string(v);
+    if (!s || n < 0 || strlen(s) != (size_t)n)
+        return NULL;
+    return s;
+}
+
+/*
+ * Copy a JSON string that is a name: 1 to out_cap - 1 bytes, all of them
+ * printable.  Copied rather than borrowed, since every pointer json-c hands
+ * back dies with the tree.
+ *
+ * Every string the loader keeps, looks a name up by, or prints comes
+ * through here; one compared only against a literal ("default", "*") or
+ * parsed as a number comes through p4_cstr() alone.  The printable check is
+ * not cosmetic: names reach the log and the error messages above, and
+ * JSON's \u escapes decode to control characters, so a newline or an ANSI
+ * escape in one is log injection.
+ */
+static bool p4_str_val(struct json_object *v, char *out, size_t out_cap)
+{
+    const char *s = p4_cstr(v);
+    size_t n;
+
     if (!s)
         return false;
-    /* An embedded NUL would make the rest of the name invisible to every
-     * check below this one. */
-    if (strlen(s) != (size_t)n)
+    n = strlen(s);
+    if (n == 0 || n >= out_cap)
         return false;
 
-    if (!p4_name_printable(s, (size_t)n))
+    if (!p4_name_printable(s, n))
         return false;
 
-    memcpy(out, s, (size_t)n);
+    memcpy(out, s, n);
     out[n] = '\0';
     return true;
 }
@@ -364,8 +379,7 @@ static int p4_walk_header_types(struct p4_walk *w,
             /* A width of "*" is a variable-length field. Naming it is
              * worth more than "not an integer". Any other string is just
              * a bad width, not a feature. */
-            if (fbits && json_object_is_type(fbits, json_type_string) &&
-                strcmp(json_object_get_string(fbits), "*") == 0)
+            if (p4_cstr(fbits) && strcmp(p4_cstr(fbits), "*") == 0)
                 return p4_fail(w, -ENOSYS,
                                "'%s.%s' is variable length, which is not "
                                "supported",
@@ -859,8 +873,8 @@ static int p4_walk_transitions(struct p4_walk *w, const struct json_object *st,
 
         if (has_type && strcmp(type, "default") == 0) {
             td->is_default = true;
-        } else if (!has_type && json_object_is_type(val, json_type_string) &&
-                   strcmp(json_object_get_string(val), "default") == 0) {
+        } else if (!has_type && p4_cstr(val) &&
+                   strcmp(p4_cstr(val), "default") == 0) {
             td->is_default = true;
         } else if (has_type && strcmp(type, "hexstr") != 0) {
             return p4_fail(w, -ENOSYS,
@@ -877,7 +891,7 @@ static int p4_walk_transitions(struct p4_walk *w, const struct json_object *st,
                                "state '%s' transition %zu has a non-string "
                                "value",
                                dst->name, i);
-            vs = json_object_get_string(val);
+            vs = p4_cstr(val);
             if (!vs ||
                 !ernic_parse_hexstr(vs, td->value, sizeof(td->value), &vlen,
                                     &neg) ||
@@ -899,7 +913,7 @@ static int p4_walk_transitions(struct p4_walk *w, const struct json_object *st,
                     return p4_fail(w, -EINVAL,
                                    "state '%s' transition %zu has a bad mask",
                                    dst->name, i);
-                ms = json_object_get_string(mask);
+                ms = p4_cstr(mask);
                 if (!ms ||
                     !ernic_parse_hexstr(ms, td->mask, sizeof(td->mask), &vlen,
                                         &neg) ||
@@ -1156,7 +1170,7 @@ static int p4_walk_operand(struct p4_walk *w, const struct json_object *p,
 
         if (!json_object_is_type(val, json_type_string))
             return p4_fail(w, -EINVAL, "%s has a non-string literal", where);
-        vs = json_object_get_string(val);
+        vs = p4_cstr(val);
         if (!vs ||
             !ernic_parse_hexstr(vs, dst->imm, sizeof(dst->imm), &n, &neg))
             return p4_fail(w, -EINVAL, "%s has a malformed literal", where);
@@ -1669,7 +1683,7 @@ static int p4_walk_expr_operand(struct p4_walk *w, const struct json_object *tv,
 
         if (!json_object_is_type(val, json_type_string))
             return p4_fail(w, -EINVAL, "%s has a non-string literal", where);
-        vs = json_object_get_string(val);
+        vs = p4_cstr(val);
         if (!vs ||
             !ernic_parse_hexstr(vs, dst->imm, sizeof(dst->imm), &n, &neg) ||
             neg)
@@ -1887,7 +1901,7 @@ static int p4_walk_key_mask(struct p4_walk *w, const struct json_object *kf,
     if (!json_object_is_type(mask, json_type_string))
         return p4_fail(w, -EINVAL, "table '%s' key %zu has a bad mask",
                        dst->name, i);
-    ms = json_object_get_string(mask);
+    ms = p4_cstr(mask);
     if (!ms || !ernic_parse_hexstr(ms, k->mask, sizeof(k->mask), &mlen, &neg) ||
         neg)
         return p4_fail(w, -EINVAL, "table '%s' key %zu has a bad mask",
@@ -2144,7 +2158,7 @@ static int p4_walk_table(struct p4_walk *w, const struct json_object *t,
                                "table '%s' default argument %zu is not a "
                                "literal",
                                dst->name, i);
-            vs = json_object_get_string(e);
+            vs = p4_cstr(e);
             if (!vs ||
                 !ernic_parse_hexstr(vs, dst->default_data[i], P4_MAX_IMM_BYTES,
                                     &blen, &neg) ||

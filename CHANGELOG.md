@@ -1147,6 +1147,10 @@
     than 9 bits; and, as bmv2 refuses them, two tables or conditionals with
     one name in any pipeline, which made the second unreachable, and two
     tables, two conditionals or two pipelines with one id.
+  * A hex literal, mask, select value or default argument with a `\u0000`
+    in it loaded as the part before the NUL (`"0x00ff\u0000zz"` as
+    `0x00ff`), and an arm whose value was `"default\u0000zz"` loaded as a
+    default arm. Each is refused with `EINVAL`.
   * Load errors say what's wrong: an empty or truncated program says so, a
     field width given as a string other than `"*"` is a bad width rather
     than variable-length, a bad `base_default_next` is named as such, and
