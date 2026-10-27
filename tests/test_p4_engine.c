@@ -2237,6 +2237,144 @@ static void test_deparse_overflow(void)
     p4_engine_destroy(eng);
 }
 
+/*
+ * P4_TO_PORT(port) with a metadata header in front of the others, whose
+ * last field is @last_bits wide.  Its other fields fill 960 bytes, so with
+ * Ethernet's 14 and standard_metadata's 3 the headers take exactly
+ * P4_PHV_BYTES when @last_bits is 376, and 1025 bytes, rounding up, when it
+ * is 377.  Declared first, the pad puts the headers the frame uses at the
+ * end of the PHV.
+ */
+static int build_padded(char *buf, size_t cap, unsigned last_bits)
+{
+    /* P4_TO_PORT starts with P4_HDRS, which this replaces. */
+    const char *whole = P4_TO_PORT("0x0");
+    const char *rest = &whole[sizeof(P4_HDRS) - 1];
+    size_t pos;
+    int n;
+
+    if (strncmp(whole, P4_HDRS, sizeof(P4_HDRS) - 1) != 0)
+        return -1;
+    n = snprintf(buf, cap,
+                 "{\"__meta__\":{\"version\":[2,24]},"
+                 "\"header_types\":[{\"name\":\"eth_t\",\"id\":0,"
+                 "\"fields\":[[\"dst\",48],[\"src\",48],[\"ty\",16]]},"
+                 "{\"name\":\"std_t\",\"id\":1,"
+                 "\"fields\":[[\"ingress_port\",9],[\"egress_spec\",9]]},"
+                 "{\"name\":\"pad_t\",\"id\":2,\"fields\":[");
+    if (n < 0 || (size_t)n >= cap)
+        return -1;
+    pos = (size_t)n;
+    for (unsigned i = 0; i < 15; i++) {
+        n = snprintf(buf + pos, cap - pos, "[\"p%u\",512],", i);
+        if (n < 0 || (size_t)n >= cap - pos)
+            return -1;
+        pos += (size_t)n;
+    }
+    n = snprintf(buf + pos, cap - pos,
+                 "[\"last\",%u]]}],"
+                 "\"headers\":[{\"name\":\"pad\",\"id\":2,"
+                 "\"header_type\":\"pad_t\",\"metadata\":true},"
+                 "{\"name\":\"eth\",\"id\":0,"
+                 "\"header_type\":\"eth_t\",\"metadata\":false},"
+                 "{\"name\":\"standard_metadata\",\"id\":1,"
+                 "\"header_type\":\"std_t\",\"metadata\":true}],%s",
+                 last_bits, rest);
+    if (n < 0 || (size_t)n >= cap - pos)
+        return -1;
+    return 0;
+}
+
+/*
+ * The headers have to fit the PHV, which the loader checks once rather
+ * than every packet finding out: a program one byte over would load and
+ * then drop every frame.
+ */
+static void test_phv_size(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    uint8_t in[64], out[64];
+    struct p4_result res;
+    char doc[4096];
+
+    fill_frame(in, sizeof(in));
+
+    if (build_padded(doc, sizeof(doc), 376) != 0) {
+        check(false, "the 1024-byte program does not fit its buffer");
+        p4_engine_destroy(eng);
+        return;
+    }
+    checkf(load_text(eng, doc) == 0,
+           "a program that fills the PHV exactly is refused: %s",
+           load_why(eng));
+    /* Ethernet and standard_metadata are the PHV's last 17 bytes, so this
+     * is the end of it being parsed, assigned and deparsed. */
+    check(p4_engine_process(eng, P4_PORT_HOST, in, sizeof(in), out, sizeof(out),
+                            &res) == 0,
+          "the frame runs");
+    check(res.verdict == P4_VERDICT_FORWARD && res.egress_port == P4_PORT_HOST,
+          "the frame did not go to the port the program chose");
+    check(res.len == sizeof(in) && memcmp(in, out, sizeof(in)) == 0,
+          "the frame was changed on its way through");
+
+    if (build_padded(doc, sizeof(doc), 377) != 0) {
+        check(false, "the 1025-byte program does not fit its buffer");
+        p4_engine_destroy(eng);
+        return;
+    }
+    check(load_text(eng, doc) == -EINVAL,
+          "a program whose headers overflow the PHV by a byte loads");
+    checkf(strstr(load_why(eng), "the headers take 1025 bytes") != NULL,
+           "the refusal does not give the size: %s", load_why(eng));
+
+    p4_engine_destroy(eng);
+}
+
+/*
+ * The executor keeps its own check that the program fits the PHV, as a
+ * backstop.  The loader never makes a program that doesn't, so this one is
+ * made by hand.
+ */
+static void test_phv_backstop(void)
+{
+    struct p4_program *prog = NULL;
+    struct p4_entries *ent = NULL;
+    struct p4_exec_result er;
+    struct p4_rdma_meta meta;
+    uint8_t buf[64];
+    char err[160];
+    size_t n = 0;
+    char *text = read_fixture("rdma_deny.json", &n);
+
+    if (!text) {
+        check(false, "rdma_deny.json could not be read");
+        return;
+    }
+    checkf(p4_json_parse(text, n, &prog, err, sizeof(err)) == 0,
+           "rdma_deny.json is refused: %s", err);
+    free(text);
+    if (!prog)
+        return;
+    ent = p4_entries_create(prog);
+    if (!ent) {
+        check(false, "p4_entries_create failed");
+        p4_json_free(prog);
+        return;
+    }
+
+    prog->phv_bytes = P4_PHV_BYTES + 1;
+    fill_frame(buf, sizeof(buf));
+    memset(&meta, 0, sizeof(meta));
+    check(p4_exec_run(prog, ent, P4_PORT_HOST, buf, sizeof(buf), buf,
+                      sizeof(buf), &er) == -ENOSPC,
+          "a frame ran under a program too big for the PHV");
+    check(p4_exec_run_meta(prog, ent, NULL, &meta, &er) == -ENOSPC,
+          "an operation ran under a program too big for the PHV");
+
+    p4_entries_destroy(ent);
+    p4_json_free(prog);
+}
+
 /* ---- features.json: what no compiled fixture uses ----------------------- */
 
 /* A frame under construction, in network byte order. */
@@ -3066,6 +3204,8 @@ int main(void)
     test_parser_extract_twice();
     test_duplicate_keys();
     test_deparse_overflow();
+    test_phv_size();
+    test_phv_backstop();
     test_features_parser();
     test_features_actions();
     test_features_lpm();

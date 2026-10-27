@@ -15,14 +15,14 @@
 
 /*
  * The packet header vector: one contiguous byte range per header instance,
- * laid out in the order the headers were declared, plus a validity bit
- * each.  Fields are addressed by bit offset within their header, exactly
- * as they arrived on the wire, so extraction is a copy and deparsing is
- * the same copy back.
+ * at the offset the loader gave it (p4_header.phv_offset), plus a validity
+ * bit each.  Fields are addressed by bit offset within their header,
+ * exactly as they arrived on the wire, so extraction is a copy and
+ * deparsing is the same copy back.  Only the program's phv_bytes of @data
+ * are initialised, and nothing reads past them.
  */
 struct p4_phv {
     uint8_t data[P4_PHV_BYTES];
-    uint16_t offset[P4_MAX_HEADERS]; /* byte offset of each header */
     bool valid[P4_MAX_HEADERS];
     /*
      * Whether anything the program ran assigned standard_metadata's
@@ -43,24 +43,18 @@ static uint16_t hdr_bytes(const struct p4_program *prog, p4_idx_t h)
 }
 
 /*
- * Lay the headers out. Done per packet rather than once at load because
- * the layout belongs to the packet, not the program, and a program is
- * shared across the threads that may eventually run it.
+ * Start a packet: every header invalid and zero.  The loader laid the
+ * headers out and refused a program they don't fit, so only the bytes the
+ * program uses need clearing.
  */
 static int phv_init(const struct p4_program *prog, struct p4_phv *phv)
 {
-    uint32_t off = 0;
-
-    memset(phv, 0, sizeof(*phv));
-    for (uint16_t h = 0; h < prog->nheaders; h++) {
-        uint16_t n = hdr_bytes(prog, h);
-
-        /* Subtraction first: the sum must not be formed and then checked. */
-        if (n > (uint32_t)P4_PHV_BYTES - off)
-            return -ENOSPC;
-        phv->offset[h] = (uint16_t)off;
-        off += n;
-    }
+    /* A backstop: the loader never produces a program this is true of. */
+    if (prog->phv_bytes > P4_PHV_BYTES)
+        return -ENOSPC;
+    memset(phv->data, 0, prog->phv_bytes);
+    memset(phv->valid, 0, sizeof(phv->valid));
+    phv->egress_assigned = false;
     return 0;
 }
 
@@ -71,13 +65,19 @@ static const struct p4_field *field_of(const struct p4_program *prog,
                 .fields[ref.field];
 }
 
+/* Where field @f, which @ref names, starts in the PHV, in bits. */
+static uint32_t phv_bit(const struct p4_program *prog, struct p4_field_ref ref,
+                        const struct p4_field *f)
+{
+    return (uint32_t)prog->headers[ref.header].phv_offset * 8u + f->offset_bits;
+}
+
 static void phv_get(const struct p4_program *prog, const struct p4_phv *phv,
                     struct p4_field_ref ref, struct p4_value *out)
 {
     const struct p4_field *f = field_of(prog, ref);
 
-    bits_get(phv->data, (uint32_t)phv->offset[ref.header] * 8u + f->offset_bits,
-             f->bits, out);
+    bits_get(phv->data, phv_bit(prog, ref, f), f->bits, out);
 }
 
 static void phv_set(const struct p4_program *prog, struct p4_phv *phv,
@@ -91,8 +91,7 @@ static void phv_set(const struct p4_program *prog, struct p4_phv *phv,
         ref.field == prog->egress_spec.field)
         phv->egress_assigned = true;
 
-    bits_set(phv->data, (uint32_t)phv->offset[ref.header] * 8u + f->offset_bits,
-             f->bits, v);
+    bits_set(phv->data, phv_bit(prog, ref, f), f->bits, v);
 }
 
 /*
@@ -151,7 +150,7 @@ static int run_parser(const struct p4_program *prog, struct p4_phv *phv,
             /* The frame has to actually hold what the program extracts. */
             if (n > len - pos)
                 return -EMSGSIZE;
-            memcpy(phv->data + phv->offset[h], frame + pos, n);
+            memcpy(phv->data + prog->headers[h].phv_offset, frame + pos, n);
             phv->valid[h] = true;
             pos += n;
         }
@@ -516,7 +515,7 @@ static int run_deparser(const struct p4_program *prog, const struct p4_phv *phv,
         n = hdr_bytes(prog, h);
         if (n > out_cap - pos)
             return -EMSGSIZE;
-        memcpy(out + pos, phv->data + phv->offset[h], n);
+        memcpy(out + pos, phv->data + prog->headers[h].phv_offset, n);
         pos += n;
     }
 

@@ -514,6 +514,44 @@ static int p4_walk_headers(struct p4_walk *w, const struct json_object *root)
     return 0;
 }
 
+/* Bytes header instance @h takes, rounded up from its width in bits. */
+static uint32_t p4_header_bytes(const struct p4_program *prog, uint16_t h)
+{
+    return (prog->header_types[prog->headers[h].header_type].total_bits + 7u) /
+           8u;
+}
+
+/*
+ * Lay the headers out in the PHV, each in whole bytes and in the order they
+ * were declared, and refuse a program they don't fit.  The layout is the
+ * program's, not any packet's, so it is fixed here rather than on every
+ * packet; and a program that doesn't fit would load and then fail every
+ * frame and RDMA operation it was run over.
+ */
+static int p4_layout_phv(struct p4_walk *w)
+{
+    struct p4_program *prog = w->prog;
+    /* At most P4_MAX_HEADERS headers of 8192 bytes, so this cannot wrap. */
+    uint32_t total = 0;
+
+    /* The whole size first, so the refusal can say how far over it is. */
+    for (uint16_t h = 0; h < prog->nheaders; h++)
+        total += p4_header_bytes(prog, h);
+    if (total > P4_PHV_BYTES)
+        return p4_fail(w, -EINVAL,
+                       "the headers take %" PRIu32 " bytes, more than the %d "
+                       "the packet header vector holds",
+                       total, P4_PHV_BYTES);
+
+    total = 0;
+    for (uint16_t h = 0; h < prog->nheaders; h++) {
+        prog->headers[h].phv_offset = (uint16_t)total;
+        total += p4_header_bytes(prog, h);
+    }
+    prog->phv_bytes = (uint16_t)total;
+    return 0;
+}
+
 /* Resolve a header instance name to its index, or P4_IDX_NONE. */
 static p4_idx_t p4_find_header(const struct p4_program *prog, const char *name)
 {
@@ -2705,6 +2743,9 @@ int p4_json_parse(const void *buf, size_t len, struct p4_program **out,
     if (rc)
         goto out;
     rc = p4_walk_headers(&w, root);
+    if (rc)
+        goto out;
+    rc = p4_layout_phv(&w);
     if (rc)
         goto out;
     rc = p4_resolve_std_metadata(&w);
