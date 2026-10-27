@@ -21,6 +21,7 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "ernic_limits.h"
+#include "ernic_stats.h"
 #include "ionic_adminq.h"
 #include "ionic_datapath.h"
 #include "rocm_ernic_compat.h"
@@ -147,7 +148,7 @@ struct ionic_adminq_ctx {
     struct ionic_aq_ring aq[MAX_AQ];
     int aq_count;
 
-    /* pvrdma handle for calling ionic_rm_* compat wrappers. */
+    /* pvrdma handle, for the resource manager and the counters. */
     pvrdma_handle_t pvrdma_handle;
 
     /* Bytes a handler DMA'd into the command's response buffer, for the

@@ -34,6 +34,7 @@
 
 #include <vfio-user/libvfio-user.h>
 
+#include "ernic_stats.h"
 #include "ionic/ionic_adminq.h"
 #include "ionic/ionic_bar.h"
 #include "ionic/ionic_datapath.h"

@@ -29,12 +29,13 @@
 #include "ernic_dma.h"
 #include "ernic_ib.h"
 #include "ernic_limits.h"
+#include "ernic_rm.h"
+#include "ernic_stats.h"
 #include "ionic_adminq.h"
 #include "ionic_adminq_priv.h"
 #include "ionic_datapath.h"
 #include "ionic_fault.h"
 #include "ionic_status.h"
-#include "rocm_ernic_compat.h"
 
 /* -------------------------------------------------------------------------
  * ionic_fw.h constants (keep in sync with pinned kernel ref)
@@ -102,7 +103,7 @@ void ionic_adminq_set_faults(struct ionic_adminq_ctx *ctx,
 static int adminq_get_pd(struct ionic_adminq_ctx *ctx, uint32_t *pd_handle)
 {
     if (!ctx->pd_valid) {
-        int ret = ionic_rm_alloc_pd(ctx->pvrdma_handle, &ctx->pd_handle);
+        int ret = ernic_rm_alloc_pd(ctx->pvrdma_handle, &ctx->pd_handle);
         if (ret)
             return ret;
         ctx->pd_valid = true;
@@ -345,30 +346,30 @@ void ionic_adminq_release_all(struct ionic_adminq_ctx *ctx)
         if (!e->valid)
             continue;
         pvrdma_qp_stats_forget(ctx->pvrdma_handle, e->qp_id);
-        ionic_rm_dealloc_qp(ctx->pvrdma_handle, e->qpn);
+        ernic_rm_dealloc_qp(ctx->pvrdma_handle, e->qpn);
         e->valid = false;
     }
     for (uint32_t i = 0; i < MAX_SRQ_MAP; i++) {
         if (ctx->srq_map[i].valid) {
-            ionic_rm_dealloc_srq(ctx->pvrdma_handle, ctx->srq_map[i].handle);
+            ernic_rm_dealloc_srq(ctx->pvrdma_handle, ctx->srq_map[i].handle);
             ctx->srq_map[i].valid = false;
         }
     }
     for (uint32_t i = 0; i < MAX_MR_MAP; i++) {
         if (ctx->mr_map[i].valid) {
-            ionic_rm_dealloc_mr(ctx->pvrdma_handle, ctx->mr_map[i].handle);
+            ernic_rm_dealloc_mr(ctx->pvrdma_handle, ctx->mr_map[i].handle);
             ctx->mr_map[i].valid = false;
         }
     }
     for (uint32_t i = 0; i < MAX_CQ_MAP; i++) {
         if (ctx->cq_map[i].valid) {
-            ionic_rm_dealloc_cq(ctx->pvrdma_handle, ctx->cq_map[i].handle);
+            ernic_rm_dealloc_cq(ctx->pvrdma_handle, ctx->cq_map[i].handle);
             ctx->cq_map[i].valid = false;
         }
     }
     /* Last: the QPs, MRs and SRQs above were made in it */
     if (ctx->pd_valid) {
-        ionic_rm_dealloc_pd(ctx->pvrdma_handle, ctx->pd_handle);
+        ernic_rm_dealloc_pd(ctx->pvrdma_handle, ctx->pd_handle);
         ctx->pd_valid = false;
     }
 }
@@ -683,7 +684,7 @@ static uint8_t handle_create_cq_op(struct ionic_adminq_ctx *ctx,
         return IONIC_RC_ENOSPC;
     }
 
-    int ret = ionic_rm_alloc_cq(ctx->pvrdma_handle, 1u << ring.depth_log2,
+    int ret = ernic_rm_alloc_cq(ctx->pvrdma_handle, 1u << ring.depth_log2,
                                 &cq_handle);
     if (ret) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
@@ -757,7 +758,7 @@ static void adminq_srq_unwind(struct ionic_adminq_ctx *ctx, uint32_t srq_id,
                               uint32_t srq_handle)
 {
     ionic_datapath_unregister_srq(ctx->dp, srq_id);
-    ionic_rm_dealloc_srq(ctx->pvrdma_handle, srq_handle);
+    ernic_rm_dealloc_srq(ctx->pvrdma_handle, srq_handle);
     adminq_unmap_srq(ctx, srq_id);
 }
 
@@ -832,7 +833,7 @@ static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
      * the depth. Bounded above, so the shift is defined. */
     uint32_t max_wr = 1u << body[26];
     uint32_t srq_handle;
-    ret = ionic_rm_alloc_srq(ctx->pvrdma_handle, pd_handle, max_wr,
+    ret = ernic_rm_alloc_srq(ctx->pvrdma_handle, pd_handle, max_wr,
                              ERNIC_MAX_SRQ_SGE, low_wqes_limit, &srq_handle);
     if (ret) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
@@ -845,7 +846,7 @@ static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
      * them apart. See IONIC_SRQ_QID_BASE. */
     uint32_t srq_id;
     if (!adminq_alloc_srq(ctx, srq_handle, low_wqes_limit, &srq_id)) {
-        ionic_rm_dealloc_srq(ctx->pvrdma_handle, srq_handle);
+        ernic_rm_dealloc_srq(ctx->pvrdma_handle, srq_handle);
         return IONIC_RC_ENOSPC;
     }
 
@@ -964,7 +965,7 @@ static uint8_t handle_modify_srq_op(struct ionic_adminq_ctx *ctx,
      * forever. UCX's rc_verbs does not: it refills from its own accounting.
      */
     if (limit) {
-        int ret = ionic_rm_modify_srq(ctx->pvrdma_handle, e->handle, limit);
+        int ret = ernic_rm_modify_srq(ctx->pvrdma_handle, e->handle, limit);
         if (ret) {
             vfu_log(ctx->vfu_ctx, LOG_ERR,
                     "ionic_adminq MODIFY_SRQ %u: failed (%d)", qid, ret);
@@ -1002,7 +1003,7 @@ static uint8_t handle_query_srq_op(struct ionic_adminq_ctx *ctx,
     }
 
     uint32_t max_wr = 0, max_sge = 0, rm_limit = 0;
-    if (ionic_rm_query_srq(ctx->pvrdma_handle, e->handle, &max_wr, &max_sge,
+    if (ernic_rm_query_srq(ctx->pvrdma_handle, e->handle, &max_wr, &max_sge,
                            &rm_limit)) {
         return IONIC_RC_ERDMA;
     }
@@ -1043,7 +1044,7 @@ static uint8_t handle_destroy_srq_op(struct ionic_adminq_ctx *ctx,
      * thread takes the SRQ lock, and unregister clears valid under it. */
     ionic_datapath_unregister_srq(ctx->dp, qid);
 
-    ionic_rm_dealloc_srq(ctx->pvrdma_handle, handle);
+    ernic_rm_dealloc_srq(ctx->pvrdma_handle, handle);
     adminq_unmap_srq(ctx, qid);
 
     vfu_log(ctx->vfu_ctx, LOG_INFO, "ionic_adminq DESTROY_SRQ srq_id=%u", qid);
@@ -1117,7 +1118,7 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
      * accepts receives and completes none of them.
      *
      * Checked here, before anything is allocated, rather than at the bind
-     * below. Refusing after ionic_rm_alloc_qp(), the QP map entry and
+     * below. Refusing after ernic_rm_alloc_qp(), the QP map entry and
      * ionic_datapath_register_qp() have run would leak a backend QP and
      * leave qp_id mapped on every rejected command, so a guest could
      * exhaust the table with commands the device is busy refusing.
@@ -1180,7 +1181,7 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
     }
 
     uint32_t qpn;
-    ret = ionic_rm_alloc_qp(ctx->pvrdma_handle, pd_handle, ib_qp_type,
+    ret = ernic_rm_alloc_qp(ctx->pvrdma_handle, pd_handle, ib_qp_type,
                             1u << sq.depth_log2, /* max_send_wr */
                             1u << rq.depth_log2, /* max_recv_wr */
                             send_cq, recv_cq, &qpn);
@@ -1558,7 +1559,7 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
             return IONIC_RC_ERDMA;
         }
 
-        ret = ionic_rm_alloc_mr(ctx->pvrdma_handle, pd_handle, access,
+        ret = ernic_rm_alloc_mr(ctx->pvrdma_handle, pd_handle, access,
                                 &mr_handle);
         if (ret) {
             vfu_log(ctx->vfu_ctx, LOG_ERR,
@@ -1611,7 +1612,7 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
                     mr_id);
             return IONIC_RC_ENOENT;
         }
-        ionic_rm_dealloc_mr(ctx->pvrdma_handle, mr_handle);
+        ernic_rm_dealloc_mr(ctx->pvrdma_handle, mr_handle);
         adminq_unmap_mr(ctx, mr_id);
         return IONIC_RC_SUCCESS;
     }
@@ -1630,7 +1631,7 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         /* Never created here, so nothing to release */
         if (!adminq_lookup_cq(ctx, cq_id, &cq_handle))
             return IONIC_RC_SUCCESS;
-        ionic_rm_dealloc_cq(ctx->pvrdma_handle, cq_handle);
+        ernic_rm_dealloc_cq(ctx->pvrdma_handle, cq_handle);
         adminq_unmap_cq(ctx, cq_id);
         return IONIC_RC_SUCCESS;
     }
@@ -1651,7 +1652,7 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         pvrdma_qp_stats_forget(ctx->pvrdma_handle, qp_id);
         if (!adminq_lookup_qp(ctx, qp_id, &qpn))
             return IONIC_RC_SUCCESS;
-        ionic_rm_dealloc_qp(ctx->pvrdma_handle, qpn);
+        ernic_rm_dealloc_qp(ctx->pvrdma_handle, qpn);
         adminq_unmap_qp(ctx, qp_id);
         return IONIC_RC_SUCCESS;
     }
@@ -1778,7 +1779,7 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         }
 
         int ret =
-            ionic_rm_modify_qp(ctx->pvrdma_handle, qpn, attr_mask, type_state,
+            ernic_rm_modify_qp(ctx->pvrdma_handle, qpn, attr_mask, type_state,
                                sq_psn, rq_psn, qkey_dest_qpn, dgid);
         if (ret) {
             vfu_log(ctx->vfu_ctx, LOG_ERR,
@@ -1869,7 +1870,7 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
 
         uint8_t state = 0, path_mtu = IBV_MTU_1024;
         uint32_t dest_qpn = 0, access = 0, rq_psn = 0, sq_psn = 0;
-        if (ionic_rm_query_qp(ctx->pvrdma_handle, qpn, &state, &path_mtu,
+        if (ernic_rm_query_qp(ctx->pvrdma_handle, qpn, &state, &path_mtu,
                               &dest_qpn, &access, &rq_psn, &sq_psn) != 0) {
             vfu_log(ctx->vfu_ctx, LOG_ERR, "ionic_adminq QUERY_QP %u: failed",
                     qp_id);

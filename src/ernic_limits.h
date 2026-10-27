@@ -70,10 +70,10 @@ _Static_assert(ERNIC_MAX_CQ > ERNIC_MAX_AQ,
 
 /*
  * SRQs. The device assigns their ids (see IONIC_SRQ_QID_BASE in
- * rocm_ernic_compat.h), and the count becomes the guest's max_srq verbatim.
- * The admin queue's map is scanned linearly, so a much larger value wants
- * an indexed lookup instead; the ids are dense, so indexing is easy when it
- * is needed.
+ * ionic/ionic_datapath.h), and the count becomes the guest's max_srq
+ * verbatim. The admin queue's map is scanned linearly, so a much larger
+ * value wants an indexed lookup instead; the ids are dense, so indexing is
+ * easy when it is needed.
  */
 #define ERNIC_MAX_SRQ 256u
 

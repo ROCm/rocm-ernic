@@ -35,6 +35,7 @@
 
 #include "byteorder.h"
 #include "ernic_limits.h"
+#include "ernic_stats.h"
 #include "ionic/ionic_adminq.h"
 #include "ionic/ionic_datapath.h"
 #include "ionic/ionic_eth_emu.h"

@@ -36,6 +36,8 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "byteorder.h"
+#include "ernic_mesh.h"
+#include "ernic_stats.h"
 #include "ionic/ionic_datapath.h"
 #include "ionic/ionic_datapath_priv.h"
 #include "ionic/ionic_eth_emu.h"
@@ -162,20 +164,20 @@ static bool g_wire_reply[WIRE_MAX];
 static size_t g_nwire;
 
 /*
- * What the mesh says: whether ionic_mesh_has_room() finds room to queue a
- * request, and, unless it is 0, what ionic_mesh_sendv() returns instead of
+ * What the mesh says: whether ernic_mesh_has_room() finds room to queue a
+ * request, and, unless it is 0, what ernic_mesh_sendv() returns instead of
  * taking the message.
  */
 static bool g_room;
 static int g_send_rc;
 
 /*
- * Called by the next ionic_mesh_sendv(), once, if set: how a row acts in the
+ * Called by the next ernic_mesh_sendv(), once, if set: how a row acts in the
  * middle of a pass, as a mesh receive thread can.
  */
 static void (*g_sendv_hook)(void);
 
-int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
+int ernic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
                      size_t hdr_len, const void *body, size_t body_len,
                      uint64_t tag, bool reply)
 {
@@ -226,28 +228,28 @@ struct PVRDMADev {
 };
 static struct PVRDMADev g_mesh;
 static uint32_t g_local_node = UINT32_MAX;
-static ionic_mesh_recv_fn g_recv_fn;
+static ernic_mesh_recv_fn g_recv_fn;
 static void *g_recv_opaque;
 
-uint32_t ionic_mesh_local_node(pvrdma_handle_t handle)
+uint32_t ernic_mesh_local_node(pvrdma_handle_t handle)
 {
     (void)handle;
     return g_local_node;
 }
-uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle, const uint8_t *gid)
+uint32_t ernic_mesh_node_from_gid(pvrdma_handle_t handle, const uint8_t *gid)
 {
     (void)handle;
     (void)gid;
     return UINT32_MAX;
 }
-bool ionic_mesh_has_room(pvrdma_handle_t handle, uint32_t dst_node, size_t len)
+bool ernic_mesh_has_room(pvrdma_handle_t handle, uint32_t dst_node, size_t len)
 {
     (void)handle;
     (void)dst_node;
     (void)len;
     return g_room;
 }
-void ionic_mesh_set_recv_cb(pvrdma_handle_t handle, ionic_mesh_recv_fn fn,
+void ernic_mesh_set_recv_cb(pvrdma_handle_t handle, ernic_mesh_recv_fn fn,
                             void *opaque)
 {
     (void)handle;
@@ -494,7 +496,7 @@ static uint64_t g_cancel_tag;
 static uint64_t g_cancel_mask;
 static uint32_t g_cancel_cqes;
 
-void ionic_mesh_cancel(pvrdma_handle_t handle, uint64_t tag, uint64_t mask)
+void ernic_mesh_cancel(pvrdma_handle_t handle, uint64_t tag, uint64_t mask)
 {
     (void)handle;
     g_ncancel++;
@@ -2067,11 +2069,11 @@ static void check_mesh_recv_sizes(void)
         {"boundary", "a message that is just the wire header",
          "queued, then dropped by the next poll", IONIC_WIRE_HDR_LEN,
          MR_POLLED},
-        {"boundary", "a message of IONIC_MESH_MAX_MSG bytes",
-         "queued, then dropped by the next poll", IONIC_MESH_MAX_MSG,
+        {"boundary", "a message of ERNIC_MESH_MAX_MSG bytes",
+         "queued, then dropped by the next poll", ERNIC_MESH_MAX_MSG,
          MR_POLLED},
-        {"negative", "a message one byte over IONIC_MESH_MAX_MSG",
-         "refused, not queued", (size_t)IONIC_MESH_MAX_MSG + 1, MR_REFUSED},
+        {"negative", "a message one byte over ERNIC_MESH_MAX_MSG",
+         "refused, not queued", (size_t)ERNIC_MESH_MAX_MSG + 1, MR_REFUSED},
         {"corner", "a message still queued when the data path is destroyed",
          "freed with the data path", IONIC_WIRE_HDR_LEN, MR_DESTROYED},
     };
@@ -2276,7 +2278,7 @@ static const char *rq_crowded(struct ionic_datapath *dp, bool past)
     const size_t hdr = IONIC_WIRE_HDR_LEN;
 
     /* Four of the largest SENDs: the first waits, the rest behind it */
-    if (!rq_fill(DP_RX_MAX_BYTES / IONIC_MESH_MAX_MSG, IONIC_MESH_MAX_MSG,
+    if (!rq_fill(DP_RX_MAX_BYTES / ERNIC_MESH_MAX_MSG, ERNIC_MESH_MAX_MSG,
                  true))
         return "the queue didn't take DP_RX_MAX_BYTES of SENDs";
     poll_at(dp, T0);
@@ -2291,7 +2293,7 @@ static const char *rq_crowded(struct ionic_datapath *dp, bool past)
         return rq_offer(hdr, false) == 0 ? NULL : "the message was taken";
 
     poll_at(dp, T0 + 1 + DP_RX_CROWDED_MS);
-    if (!rq_rnr_acks(DP_RX_MAX_BYTES / IONIC_MESH_MAX_MSG))
+    if (!rq_rnr_acks(DP_RX_MAX_BYTES / ERNIC_MESH_MAX_MSG))
         return "the SENDs weren't each answered with RNR-retry-exceeded";
     if (!rq_empty(dp))
         return "the queue wasn't left empty";
@@ -2318,8 +2320,8 @@ static const char *rq_run(struct ionic_datapath *dp, enum rq_scenario scenario)
         return rq_offer(hdr, false) == 1 ? NULL : "a pass didn't make room";
     case RQ_BYTES:
         /* Three of the largest, and two that come to the fourth exactly */
-        if (!rq_fill(3, IONIC_MESH_MAX_MSG, false) ||
-            rq_offer(IONIC_MESH_MAX_MSG - hdr, false) != 1 ||
+        if (!rq_fill(3, ERNIC_MESH_MAX_MSG, false) ||
+            rq_offer(ERNIC_MESH_MAX_MSG - hdr, false) != 1 ||
             rq_offer(hdr, false) != 1)
             return "the queue didn't take DP_RX_MAX_BYTES";
         if (rq_offer(hdr, false) != 0)
@@ -2417,22 +2419,22 @@ static void check_mesh_recv_room(void)
 
 /*
  * The replies a node asks one peer for at once come to no more than
- * IONIC_MESH_REPLY_BUDGET, headers included, since the peer drops a reply it
+ * ERNIC_MESH_REPLY_BUDGET, headers included, since the peer drops a reply it
  * has no room to queue.  A request that would pass it waits, as one the mesh
  * has no room for does, until enough replies have come back, or the requests
  * have been given up on.  A READ's reply is as long as the READ, an atomic's
  * 8 bytes, and the rest bare headers; a READ longer than any reply is
  * answered with a bare header too.
  *
- * Each READ of BIG_READ bytes asks for a reply of IONIC_MESH_MAX_MSG, so two
+ * Each READ of BIG_READ bytes asks for a reply of ERNIC_MESH_MAX_MSG, so two
  * come to the budget exactly.  Nothing answers unless a row does, and the
  * READs are never gathered, so they needn't fit guest memory.
  */
 #define WIRE_HDR   ((uint32_t)IONIC_WIRE_HDR_LEN)
-#define BIG_READ   (IONIC_MESH_MAX_MSG - WIRE_HDR)
+#define BIG_READ   (ERNIC_MESH_MAX_MSG - WIRE_HDR)
 #define OTHER_NODE 2u
 
-_Static_assert(2 * IONIC_MESH_MAX_MSG == IONIC_MESH_REPLY_BUDGET,
+_Static_assert(2 * ERNIC_MESH_MAX_MSG == ERNIC_MESH_REPLY_BUDGET,
                "two BIG_READs no longer fill the reply budget exactly");
 
 enum rb_scenario {
@@ -2588,7 +2590,7 @@ static void check_reply_budget(void)
         enum rb_scenario scenario;
     } rows[] = {
         {"boundary",
-         "two READs whose replies come to IONIC_MESH_REPLY_BUDGET exactly",
+         "two READs whose replies come to ERNIC_MESH_REPLY_BUDGET exactly",
          "both are sent", RB_FULL},
         {"positive", "a WRITE behind them, whose reply is a bare ACK",
          "it waits, on every pass, and isn't sent", RB_OVER},

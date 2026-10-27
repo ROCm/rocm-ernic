@@ -36,6 +36,8 @@
 
 #include "byteorder.h"
 #include "ernic_limits.h"
+#include "ernic_rm.h"
+#include "ernic_stats.h"
 #include "fake_vfu.h"
 #include "ionic/ionic_bar.h"
 #include "ionic/ionic_datapath.h"
@@ -5663,14 +5665,14 @@ static void test_teardown(void)
 
     PVRDMADev *pvrdma = h.dev->pvrdma_handle;
     bool made =
-        check(T, ionic_rm_alloc_pd(pvrdma, &pd) == 0, "no PD") &&
-        check(T, ionic_rm_alloc_cq(pvrdma, 16, &cq) == 0, "no CQ") &&
+        check(T, ernic_rm_alloc_pd(pvrdma, &pd) == 0, "no PD") &&
+        check(T, ernic_rm_alloc_cq(pvrdma, 16, &cq) == 0, "no CQ") &&
         check(T,
-              ionic_rm_alloc_qp(pvrdma, pd, IBV_QPT_RC, 16, 16, cq, cq, &qpn) ==
+              ernic_rm_alloc_qp(pvrdma, pd, IBV_QPT_RC, 16, 16, cq, cq, &qpn) ==
                   0,
               "no QP") &&
         check(T,
-              ionic_rm_alloc_mr(pvrdma, pd, IBV_ACCESS_LOCAL_WRITE, &mr) == 0,
+              ernic_rm_alloc_mr(pvrdma, pd, IBV_ACCESS_LOCAL_WRITE, &mr) == 0,
               "no DMA memory region");
 
     if (made)
@@ -5874,7 +5876,7 @@ static uint32_t lp_create(const char *T, PVRDMADev *pvrdma, uint32_t pd,
     uint32_t qpn = 0;
 
     if (!check(T,
-               ionic_rm_alloc_qp(pvrdma, pd, type, 16, 16, cq, cq, &qpn) == 0,
+               ernic_rm_alloc_qp(pvrdma, pd, type, 16, 16, cq, cq, &qpn) == 0,
                "creating a QP of type %u failed", type))
         return 0;
     return qpn;
@@ -5887,7 +5889,7 @@ static void lp_rts(const char *T, PVRDMADev *pvrdma, uint32_t qpn,
     static const uint8_t states[] = {IH_QPS_INIT, IH_QPS_RTR, IH_QPS_RTS};
 
     for (size_t i = 0; i < sizeof(states) / sizeof(states[0]); i++) {
-        int rc = ionic_rm_modify_qp(pvrdma, qpn, IBV_QP_STATE, states[i], 0, 0,
+        int rc = ernic_rm_modify_qp(pvrdma, qpn, IBV_QP_STATE, states[i], 0, 0,
                                     dest, NULL);
         if (!check(T, rc == 0, "QP %u to state %u: %d", qpn, states[i], rc))
             return;
@@ -5901,7 +5903,7 @@ static void lp_expect(const char *T, PVRDMADev *pvrdma, uint32_t qpn,
     uint8_t state = 0;
     uint32_t got = UINT32_MAX;
     int rc =
-        ionic_rm_query_qp(pvrdma, qpn, &state, NULL, &got, NULL, NULL, NULL);
+        ernic_rm_query_qp(pvrdma, qpn, &state, NULL, &got, NULL, NULL, NULL);
 
     check(T, rc == 0 && state == IH_QPS_RTS && got == dest,
           "QP %u: query returned %d with state %u and destination %u, "
@@ -5919,8 +5921,8 @@ static void test_loopback_pair(void)
         return;
 
     PVRDMADev *pvrdma = h.dev->pvrdma_handle;
-    if (!check(T, ionic_rm_alloc_pd(pvrdma, &pd) == 0, "no PD") ||
-        !check(T, ionic_rm_alloc_cq(pvrdma, 16, &cq) == 0, "no CQ")) {
+    if (!check(T, ernic_rm_alloc_pd(pvrdma, &pd) == 0, "no PD") ||
+        !check(T, ernic_rm_alloc_cq(pvrdma, 16, &cq) == 0, "no CQ")) {
         teardown(T, &h);
         return;
     }
@@ -5977,18 +5979,18 @@ static void test_loopback_pair(void)
     /* A QP destroyed while waiting is gone, and can't be paired */
     uint32_t gone = lp_create(T, pvrdma, pd, cq, IBV_QPT_RC);
     lp_rts(T, pvrdma, gone, 0);
-    ionic_rm_dealloc_qp(pvrdma, gone);
+    ernic_rm_dealloc_qp(pvrdma, gone);
     uint32_t rc6 = lp_create(T, pvrdma, pd, cq, IBV_QPT_RC);
     lp_rts(T, pvrdma, rc6, 0);
     lp_expect(T, pvrdma, rc6, 0);
 
     /* The backend only sees INIT, RTR and RTS, but a query reports Error */
     uint8_t state = 0;
-    int rc = ionic_rm_modify_qp(pvrdma, rc6, IBV_QP_STATE, IH_QPS_ERR, 0, 0, 0,
+    int rc = ernic_rm_modify_qp(pvrdma, rc6, IBV_QP_STATE, IH_QPS_ERR, 0, 0, 0,
                                 NULL);
     check(T,
           rc == 0 &&
-              ionic_rm_query_qp(pvrdma, rc6, &state, NULL, NULL, NULL, NULL,
+              ernic_rm_query_qp(pvrdma, rc6, &state, NULL, NULL, NULL, NULL,
                                 NULL) == 0 &&
               state == IH_QPS_ERR,
           "QP %u to Error returned %d and reports state %u", rc6, rc, state);

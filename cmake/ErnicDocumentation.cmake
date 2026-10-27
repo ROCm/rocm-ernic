@@ -64,6 +64,9 @@ if(ERNIC_BUILD_DOCS)
     set(ERNIC_DOXYFILE_INPUT
       "${PROJECT_SOURCE_DIR}/src/rocm_ernic_internal.h"
       "${PROJECT_SOURCE_DIR}/src/rocm_ernic_compat.h"
+      "${PROJECT_SOURCE_DIR}/src/ernic_rm.h"
+      "${PROJECT_SOURCE_DIR}/src/ernic_mesh.h"
+      "${PROJECT_SOURCE_DIR}/src/ernic_stats.h"
       "${PROJECT_SOURCE_DIR}/src/ionic/ionic_bar.h"
       "${PROJECT_SOURCE_DIR}/src/ionic/ionic_device.h"
       "${PROJECT_SOURCE_DIR}/src/ionic/ionic_eth_emu.h"

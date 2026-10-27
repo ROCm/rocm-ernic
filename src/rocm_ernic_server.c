@@ -44,6 +44,7 @@
 #include "ernic_socket.h"
 #include "ernic_time.h"
 #include "ernic_log.h"
+#include "ernic_stats.h"
 #include "ionic/ionic_bar.h"
 #include "ionic/ionic_device.h"
 #include "ionic/ionic_eth_emu.h"

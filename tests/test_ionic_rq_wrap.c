@@ -39,6 +39,8 @@
 
 #include "ernic_ib.h"
 #include "ernic_limits.h"
+#include "ernic_mesh.h"
+#include "ernic_stats.h"
 #include "ionic/ionic_datapath.h"
 #include "ionic/ionic_datapath_priv.h"
 #include "ionic/ionic_eth_emu.h"
@@ -82,18 +84,18 @@ void ionic_eth_emu_count_rdma(struct ionic_eth_emu *emu, uint64_t bytes,
     (void)is_tx;
 }
 
-uint32_t ionic_mesh_local_node(pvrdma_handle_t handle)
+uint32_t ernic_mesh_local_node(pvrdma_handle_t handle)
 {
     (void)handle;
     return UINT32_MAX;
 }
-uint32_t ionic_mesh_node_from_gid(pvrdma_handle_t handle, const uint8_t *gid)
+uint32_t ernic_mesh_node_from_gid(pvrdma_handle_t handle, const uint8_t *gid)
 {
     (void)handle;
     (void)gid;
     return UINT32_MAX;
 }
-int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
+int ernic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
                      size_t hdr_len, const void *body, size_t body_len,
                      uint64_t tag, bool reply)
 {
@@ -107,20 +109,20 @@ int ionic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
     (void)body_len;
     return -1;
 }
-bool ionic_mesh_has_room(pvrdma_handle_t handle, uint32_t dst_node, size_t len)
+bool ernic_mesh_has_room(pvrdma_handle_t handle, uint32_t dst_node, size_t len)
 {
     (void)handle;
     (void)dst_node;
     (void)len;
     return true;
 }
-void ionic_mesh_cancel(pvrdma_handle_t handle, uint64_t tag, uint64_t mask)
+void ernic_mesh_cancel(pvrdma_handle_t handle, uint64_t tag, uint64_t mask)
 {
     (void)handle;
     (void)tag;
     (void)mask;
 }
-void ionic_mesh_set_recv_cb(pvrdma_handle_t handle, ionic_mesh_recv_fn fn,
+void ernic_mesh_set_recv_cb(pvrdma_handle_t handle, ernic_mesh_recv_fn fn,
                             void *opaque)
 {
     (void)handle;

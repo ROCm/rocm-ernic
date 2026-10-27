@@ -42,6 +42,8 @@
 #include "byteorder.h"
 #include "ernic_dma.h"
 #include "ernic_limits.h"
+#include "ernic_rm.h"
+#include "ernic_stats.h"
 #include "ionic/ionic_adminq_priv.h"
 #include "ionic/ionic_datapath.h"
 #include "rocm_ernic_compat.h"
@@ -133,7 +135,7 @@ static uint32_t g_rq_psn;
 static uint32_t g_sq_psn;
 static int g_query_rc;
 
-int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
+int ernic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
                       uint8_t *path_mtu, uint32_t *dest_qpn,
                       uint32_t *access_flags, uint32_t *rq_psn,
                       uint32_t *sq_psn)
@@ -157,7 +159,7 @@ int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
     return 0;
 }
 
-int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
+int ernic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
                        uint8_t type_state, uint32_t sq_psn, uint32_t rq_psn,
                        uint32_t qkey_dest_qpn, const uint8_t *dest_gid_16bytes)
 {
@@ -172,25 +174,25 @@ int ionic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
     return 0;
 }
 
-int ionic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle)
+int ernic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle)
 {
     (void)handle;
     *pd_handle = 1;
     return 0;
 }
-void ionic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle)
+void ernic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle)
 {
     (void)handle;
     (void)pd_handle;
 }
-int ionic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe, uint32_t *cq_handle)
+int ernic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe, uint32_t *cq_handle)
 {
     (void)handle;
     (void)cqe;
     *cq_handle = 1;
     return 0;
 }
-void ionic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
+void ernic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
 {
     (void)handle;
     (void)cq_handle;
@@ -200,7 +202,7 @@ void ionic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
  * rejected command leaks a backend QP. */
 static uint32_t g_qp_alloc_calls;
 
-int ionic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
+int ernic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
                       uint8_t qp_type, uint32_t max_send_wr,
                       uint32_t max_recv_wr, uint32_t send_cq_handle,
                       uint32_t recv_cq_handle, uint32_t *qpn)
@@ -216,12 +218,12 @@ int ionic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
     *qpn = QP_QPN;
     return 0;
 }
-void ionic_rm_dealloc_qp(pvrdma_handle_t handle, uint32_t qpn)
+void ernic_rm_dealloc_qp(pvrdma_handle_t handle, uint32_t qpn)
 {
     (void)handle;
     (void)qpn;
 }
-int ionic_rm_alloc_mr(pvrdma_handle_t handle, uint32_t pd_handle,
+int ernic_rm_alloc_mr(pvrdma_handle_t handle, uint32_t pd_handle,
                       uint32_t access_flags, uint32_t *mr_handle)
 {
     (void)handle;
@@ -230,7 +232,7 @@ int ionic_rm_alloc_mr(pvrdma_handle_t handle, uint32_t pd_handle,
     *mr_handle = 1;
     return 0;
 }
-void ionic_rm_dealloc_mr(pvrdma_handle_t handle, uint32_t mr_handle)
+void ernic_rm_dealloc_mr(pvrdma_handle_t handle, uint32_t mr_handle)
 {
     (void)handle;
     (void)mr_handle;
@@ -409,7 +411,7 @@ static uint32_t g_registered_srq_id;
 static uint32_t g_unregistered_srq_id;
 static uint8_t g_registered_depth_log2;
 
-int ionic_rm_alloc_srq(pvrdma_handle_t handle, uint32_t pd_handle,
+int ernic_rm_alloc_srq(pvrdma_handle_t handle, uint32_t pd_handle,
                        uint32_t max_wr, uint32_t max_sge, uint32_t srq_limit,
                        uint32_t *srq_handle)
 {
@@ -425,14 +427,14 @@ int ionic_rm_alloc_srq(pvrdma_handle_t handle, uint32_t pd_handle,
     return 0;
 }
 
-void ionic_rm_dealloc_srq(pvrdma_handle_t handle, uint32_t srq_handle)
+void ernic_rm_dealloc_srq(pvrdma_handle_t handle, uint32_t srq_handle)
 {
     (void)handle;
     g_dealloc_calls++;
     g_last_dealloc_handle = srq_handle;
 }
 
-int ionic_rm_modify_srq(pvrdma_handle_t handle, uint32_t srq_handle,
+int ernic_rm_modify_srq(pvrdma_handle_t handle, uint32_t srq_handle,
                         uint32_t srq_limit)
 {
     (void)handle;
@@ -447,7 +449,7 @@ int ionic_rm_modify_srq(pvrdma_handle_t handle, uint32_t srq_handle,
     return 0;
 }
 
-int ionic_rm_query_srq(pvrdma_handle_t handle, uint32_t srq_handle,
+int ernic_rm_query_srq(pvrdma_handle_t handle, uint32_t srq_handle,
                        uint32_t *max_wr, uint32_t *max_sge, uint32_t *srq_limit)
 {
     (void)handle;
@@ -988,7 +990,7 @@ static void test_qp_binding_checks_the_srq_id(void)
                                     sizeof(qpb)) != 0);
     check("bind-unknown-srq-never-bound", g_bind_calls == 0);
     /* And refused before anything was allocated. Checking after
-     * ionic_rm_alloc_qp() would turn each rejected command into a
+     * ernic_rm_alloc_qp() would turn each rejected command into a
      * leaked backend QP, so a guest could drain the table with
      * commands the device is busy refusing. */
     check("bind-unknown-srq-allocated-no-qp", g_qp_alloc_calls == 0);
