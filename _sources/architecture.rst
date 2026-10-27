@@ -414,7 +414,9 @@ ionic world are:
    sees it, and the TCP backend would fail the RTR transition
    anyway (see `More Than One VM: the TCP Mesh`_).
 #. Carrying the TCP mesh, through the ``ernic_mesh_*()``
-   wrappers.
+   wrappers. They call the backend's optional mesh operations
+   (``RdmaMeshOps``), which only the TCP backend has; on any
+   other backend they answer that there is no mesh.
 
 The core does **not** move data for the ionic device, or post
 its completions. All data movement happens in

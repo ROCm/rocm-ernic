@@ -853,7 +853,9 @@ it, the admin queue refuses the MODIFY_QP before the core
 sees it, and the TCP backend would fail the RTR transition
 anyway (see <a class="reference internal" href="#more-than-one-vm-the-tcp-mesh">More Than One VM: the TCP Mesh</a>).</p></li>
 <li><p>Carrying the TCP mesh, through the <code class="docutils literal notranslate"><span class="pre">ernic_mesh_*()</span></code>
-wrappers.</p></li>
+wrappers. They call the backend’s optional mesh operations
+(<code class="docutils literal notranslate"><span class="pre">RdmaMeshOps</span></code>), which only the TCP backend has; on any
+other backend they answer that there is no mesh.</p></li>
 </ol>
 <p>The core does <strong>not</strong> move data for the ionic device, or post
 its completions. All data movement happens in
