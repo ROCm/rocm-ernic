@@ -756,6 +756,9 @@ type with ids above the QP id range.</p></li>
 ┌───────────────────────┼─────────────────────────────┐
 │ ionic front end       │                             │
 │                       ▼                             │
+│  ionic_device.c ──── builds, wires, polls and tears │
+│    │                 down the four below            │
+│    ▼                                                │
 │  ionic_eth_emu.c ─── BAR 0 registers, device        │
 │    │    │            commands, Ethernet queues,     │
 │    │    │            interrupt controller, BAR 2    │
@@ -861,8 +864,12 @@ its completions. All data movement happens in
 </section>
 <section id="the-main-loop">
 <h3>The Main Loop<a class="headerlink" href="#the-main-loop" title="Link to this heading">#</a></h3>
-<p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_server.c</span></code> builds the device, then waits for
-QEMU to connect. Once QEMU has connected, it loops:</p>
+<p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_server.c</span></code> builds the RDMA core and its
+backend, then the ionic device in front of them
+(<code class="docutils literal notranslate"><span class="pre">ionic_device_create()</span></code> in <code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_device.c</span></code>,
+which creates the ionic objects and wires them together once),
+then waits for QEMU to connect. Once QEMU has connected, it
+loops:</p>
 <ol class="arabic simple">
 <li><p>Write the stats file, if there is one, about once a second.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">vfu_run_ctx()</span></code>: handle pending vfio-user messages. BAR
@@ -870,6 +877,8 @@ accesses arrive here as callbacks, and <strong>BAR 2 doorbells for
 send queues are executed inside the callback</strong> (see
 <a class="reference internal" href="#the-data-path">The Data Path</a>).</p></li>
 <li><p>Run any GLib idle callbacks.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ionic_device_poll()</span></code>, the device’s share, which is the
+next three steps.</p></li>
 <li><p>Move received Ethernet frames from the TAP, and frames an
 in-process endpoint queued for the guest, into the guest’s
 receive rings. Rewrite the Ethernet statistics in guest
@@ -1907,11 +1916,18 @@ and the main loop polls.</p></li>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_server.c</span></code></p></td>
 <td><p>Startup, PCI identity, BARs, MSI-X, main loop</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_internal.h</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ernic_socket.c</span></code></p></td>
+<td><p>The vfio-user socket’s permissions</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_internal.h</span></code></p></td>
 <td><p>The top-level device struct</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_bar.h</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_bar.h</span></code></p></td>
 <td><p>BAR layout constants</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_device.c</span></code></p></td>
+<td><p>The ionic device as one object: builds, wires, polls and
+tears down the files below</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_eth_emu.c</span></code></p></td>
 <td><p>Registers, device commands, LIF, Ethernet queues,

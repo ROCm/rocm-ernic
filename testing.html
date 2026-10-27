@@ -505,7 +505,9 @@ needs <code class="docutils literal notranslate"><span class="pre">CAP_NET_ADMIN
 <h3>In-process ionic device harness<a class="headerlink" href="#in-process-ionic-device-harness" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">ernic-test-ionic-harness</span></code> runs the whole emulated device
 inside the test process. It links every source the server is
-built from except <code class="docutils literal notranslate"><span class="pre">rocm_ernic_server.c</span></code>, and replaces
+built from except <code class="docutils literal notranslate"><span class="pre">rocm_ernic_server.c</span></code> and
+<code class="docutils literal notranslate"><span class="pre">ernic_socket.c</span></code>, builds the device with
+<code class="docutils literal notranslate"><span class="pre">ionic_device_create()</span></code> as the server does, and replaces
 libvfio-user with <code class="docutils literal notranslate"><span class="pre">tests/fake_vfu.c</span></code>, which keeps guest
 memory in heap buffers and counts interrupts instead of
 delivering them. <code class="docutils literal notranslate"><span class="pre">tests/ionic_harness.c</span></code> then plays the
