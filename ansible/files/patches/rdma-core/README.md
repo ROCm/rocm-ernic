@@ -19,7 +19,7 @@ produces a guest that cannot create an SRQ.
 | `master` | none |
 
 It is still open as [linux-rdma/rdma-core#1799][pr]. Without it the guest
-reaches a very confusing state: the kernel advertises `max_srq = 32768`, and
+reaches a very confusing state: the kernel advertises `max_srq = 256`, and
 `ibv_create_srq()` returns `EOPNOTSUPP` — because libibverbs dispatches to a
 provider that has no `create_srq` op at all.
 
