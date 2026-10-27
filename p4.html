@@ -884,8 +884,8 @@ an empty one is a permanently empty table rather than a
 harmless default; it is refused. And <code class="docutils literal notranslate"><span class="pre">max_size</span></code> is the only
 number in the document that names a large allocation without
 the document’s own size bounding it, so the entries all
-tables ask for between them are budgeted against a single
-ceiling.</p>
+tables in every pipeline ask for between them are budgeted
+against a single ceiling.</p>
 <p>Unknown keys are ignored, not rejected. That is deliberate:
 <code class="docutils literal notranslate"><span class="pre">p4c</span></code> emits <code class="docutils literal notranslate"><span class="pre">program</span></code>, <code class="docutils literal notranslate"><span class="pre">source_info</span></code>, <code class="docutils literal notranslate"><span class="pre">action_ids</span></code> and
 <code class="docutils literal notranslate"><span class="pre">force_arith</span></code>, none of which appear in bmv2’s own
