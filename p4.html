@@ -621,10 +621,11 @@ and cannot be otherwise.</p>
 generic codec is held to <code class="docutils literal notranslate"><span class="pre">p4_fp8.c</span></code> for E4M3 – all 256
 decodings and a four-million-float encode sweep must agree
 exactly – which is how it inherits that file’s own
-validation against <code class="docutils literal notranslate"><span class="pre">ml_dtypes</span></code>; fp16 is checked against
-numpy for all 65536 encodings in both directions, and every
-encoding of every format must survive a decode and re-encode
-unchanged unless it is a NaN.</p>
+validation against <code class="docutils literal notranslate"><span class="pre">ml_dtypes</span></code>. Every encoding of every
+format must survive a decode and re-encode unchanged unless it
+is a NaN. fp16 was also checked against numpy when the codec
+was written – all 65536 decodings and 2.1 million encodes
+agreed exactly – but no test repeats that comparison.</p>
 <p><code class="docutils literal notranslate"><span class="pre">tests/data/p4/fp8_convert.p4</span></code> is the worked example.</p>
 <p>What is not built yet: checksums and calculations; negative
 literals in actions; and counters, meters, registers and
@@ -873,8 +874,8 @@ is refused as a signed field anyway, and compiles an unsigned
 <code class="docutils literal notranslate"><span class="pre">ttl</span> <span class="pre">-</span> <span class="pre">1</span></code> to <code class="docutils literal notranslate"><span class="pre">(ttl</span> <span class="pre">+</span> <span class="pre">0xff)</span> <span class="pre">&amp;</span> <span class="pre">0xff</span></code>. Running <code class="docutils literal notranslate"><span class="pre">-0x1</span></code> as
 <code class="docutils literal notranslate"><span class="pre">0x1</span></code> would make the TTL go up, and what a negative value
 means depends on the width it is stored into, which an extern
-argument does not have. <code class="docutils literal notranslate"><span class="pre">loopback.json</span></code> has both empty and
-gets as far as the walker does.</p>
+argument does not have. <code class="docutils literal notranslate"><span class="pre">loopback.json</span></code> has both empty, and
+loads.</p>
 <p>Every document is untrusted, so there is no clamping and no
 truncation anywhere in the loader: an oversized array, a name
 with a newline in it, a width given as a floating-point
@@ -895,10 +896,11 @@ device. Three things line up by construction:</p>
 <ul class="simple">
 <li><p><strong>bmv2 JSON and p4info as the program artifacts</strong>, so any P4
 program <code class="docutils literal notranslate"><span class="pre">p4c</span></code> can compile is loadable.</p></li>
-<li><p><strong>P4Runtime semantics on the update path</strong> – entities,
-<code class="docutils literal notranslate"><span class="pre">INSERT</span></code>/<code class="docutils literal notranslate"><span class="pre">MODIFY</span></code>/<code class="docutils literal notranslate"><span class="pre">DELETE</span></code>, and role plus election-id
-arbitration – so the network-facing control API is the one the
-ecosystem already speaks.</p></li>
+<li><p><strong>P4Runtime semantics on the update path</strong> – table entries,
+<code class="docutils literal notranslate"><span class="pre">INSERT</span></code>/<code class="docutils literal notranslate"><span class="pre">MODIFY</span></code>/<code class="docutils literal notranslate"><span class="pre">DELETE</span></code>, and P4Runtime’s match rules
+– so a network-facing control API can be the one the
+ecosystem already speaks. Arbitration is not modelled: the
+update record carries no role and no election id.</p></li>
 <li><p><strong>The</strong> <a class="reference external" href="https://github.com/sonic-net/DASH">DASH</a> <strong>pipeline as
 the target program.</strong> <code class="docutils literal notranslate"><span class="pre">dash-pipeline/bmv2/dash_pipeline.p4</span></code>
 models the DASH overlay dataplane and is the closest open
@@ -965,8 +967,10 @@ the rules this code is held to.</p>
 <p>Three tiers, none of which needs a VM, RDMA hardware or root.</p>
 <dl class="simple">
 <dt><code class="docutils literal notranslate"><span class="pre">p4-engine-unit</span></code> (<code class="docutils literal notranslate"><span class="pre">tests/test_p4_engine.c</span></code>)</dt><dd><p>The engine as a function: the port model, the input validation,
-the frame bounds and the statistics. Links the engine’s
-translation unit and nothing else. The loader is held to
+the frame bounds and the statistics. Links the engine’s own
+translation units – <code class="docutils literal notranslate"><span class="pre">p4_engine.c</span></code>, <code class="docutils literal notranslate"><span class="pre">p4_exec.c</span></code>,
+<code class="docutils literal notranslate"><span class="pre">p4_json.c</span></code> and <code class="docutils literal notranslate"><span class="pre">p4_table.c</span></code> – and none of the device’s.
+The loader is held to
 <code class="docutils literal notranslate"><span class="pre">tests/data/p4/reject_cases.json</span></code>, each case of which must be
 refused with the errno and the reason it names, and
 <code class="docutils literal notranslate"><span class="pre">tests/data/p4/features.json</span></code> runs frames through a parser
