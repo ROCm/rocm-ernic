@@ -1064,6 +1064,13 @@
     timeout prints the threads created, joined and exited.
   * `ernic-device-tuple-unit` no longer fails in a build directory with a
     long path.
+  * `ernic-mesh-stress` no longer fails intermittently on "the reaped
+    peer's connection is closed from the manager's end". The manager
+    reaped that peer about 10 s after it connected, exactly when the test
+    gave up waiting; the test now allows the registration timeout plus a
+    health-check interval. Its "a peer that never registers is reaped"
+    check now waits for that peer's own log line, rather than passing on
+    lines that earlier peers left in the log.
   * The Nix `analysis-sanitizers`, `analysis-tsan` and `analysis-valgrind`
     targets fail when the server didn't get through the exercise, rather
     than report a clean run; `summary.txt` starts with `exercise: clean` or

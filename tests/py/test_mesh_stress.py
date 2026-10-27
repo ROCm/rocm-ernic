@@ -264,7 +264,7 @@ def test_malformed_peers(suite, mesh_):
     with mesh.MeshPeer(port=port) as peer:
         peer.send_raw(b"\x00" * (mesh.HEADER_SIZE - 1))
         suite.check(
-            peer.wait_closed(mesh.REGISTER_TIMEOUT_MS / 1000.0 + 10.0),
+            peer.wait_closed(mesh_.reap_timeout() + 10.0),
             "a truncated header does not hold a connection open forever",
         )
 
@@ -283,9 +283,17 @@ def test_malformed_peers(suite, mesh_):
     # TCP_REGISTER_TIMEOUT_MS to register and then reaps it, so this one
     # is left connected rather than closed from here -- closing it would
     # pass whether or not the reaper works.
+    #
+    # The rows above leave "which didn't register" in the log too, so the
+    # wait is for this peer's address, counted from a mark. And it allows
+    # a whole health-check interval past the timeout: this peer connects
+    # just after the pass that reaped the truncated header, so it is
+    # reaped not by the next pass but by the one after.
     with mesh.MeshPeer(port=port) as peer:
+        reaped = f"127.0.0.1:{peer.sock.getsockname()[1]}, which didn't register"
+        mark = manager.log_text().count(reaped)
         suite.check(
-            manager.wait_for_log("which didn't register", 30),
+            manager.wait_for_count(reaped, mark + 1, mesh_.reap_timeout() + 10.0),
             "a peer that never registers is reaped",
         )
         suite.check(
