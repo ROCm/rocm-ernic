@@ -98,10 +98,12 @@ The backend string is ``nvmeof`` optionally followed by
      - Namespace identifier.
    * - ``model=``
      - ``rocm-ernic NVMe-oF target``
-     - Identify-controller model string.
+     - Identify-controller model string, 1 to 40
+       printable ASCII characters.
    * - ``serial=``
      - ``ERNIC0000000000001``
-     - Identify-controller serial number.
+     - Identify-controller serial number, 1 to 20
+       printable ASCII characters.
 
 A malformed option is refused before the device is
 presented, rather than surfacing later as a failed connect:
