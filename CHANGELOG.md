@@ -807,6 +807,11 @@
   * A work request naming unregistered memory fails on the QP that posted
     it, with a local protection error. A SEND used to complete successfully
     and put the error on the peer's receive.
+  * A send work request whose WQE the device can't read from guest memory
+    completes with `IBV_WC_LOC_QP_OP_ERR`, the QP is flushed as on entering
+    Error, and the server logs a warning. The device used to skip it
+    silently, so its consumer waited forever for a completion and the
+    driver never got the send queue slot back.
   * UD and GSI receives with v4-mapped addresses carry the IPv4 header real
     hardware delivers and are flagged IPv4. The flag and the header used to
     disagree, so the kernel CM resolved a bogus source address and silently

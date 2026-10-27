@@ -2900,6 +2900,10 @@ static uint32_t sq_rdma(struct ionic_datapath *dp,
     return IONIC_STS_OK;
 }
 
+/*
+ * Runs the WQE in @slot of @q's send queue. Returns false when sq_service()
+ * is to stop at it: it is to be retried later, or the QP has been flushed.
+ */
 static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                            uint32_t qp_id, uint32_t slot)
 {
@@ -2912,8 +2916,38 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
     uint8_t wqe[1u << IONIC_WQE_MAX_STRIDE_LOG2];
     uint32_t read_sz = stride < sizeof(wqe) ? stride : (uint32_t)sizeof(wqe);
     if (!run || run < read_sz ||
-        ernic_dma_read(dp->dma, dp->vfu_ctx, gpa, wqe, read_sz) < 0)
-        return true;
+        ernic_dma_read(dp->dma, dp->vfu_ctx, gpa, wqe, read_sz) < 0) {
+        /*
+         * A WQE the device can't fetch is completed in error, and the QP
+         * goes to Error, as a NIC's does on a fetch fault. Taken as done
+         * without either, the work request vanished: nothing completed it,
+         * and the driver never got its slot back. Retrying it, as the admin
+         * queue does, would wedge the queue on memory the guest may have
+         * unmapped for good.
+         *
+         * Its wqe_id is in the WQE, but both drivers set it to the SQ index
+         * the WQE was posted at, and mask it with sq.mask, so the slot names
+         * the same work request. It is an NPG completion whatever the op
+         * was: an MSN one would complete whichever remote op holds the next
+         * MSN, and the driver's ionic_comp_npg() takes an error for a WQE
+         * of either kind. LOCAL_QP_OPER_ERR, IB_WC_LOC_QP_OP_ERR to the
+         * consumer, is IB's error for a work request the QP itself couldn't
+         * process; LOCAL_PROT_ERR is for a buffer an MR doesn't cover, and
+         * the ring isn't one.
+         *
+         * The error goes first: had the driver seen the flush before it, it
+         * could have flushed this work request and lost the cause. The flush
+         * empties the queue, so sq_service() has nothing left to run.
+         */
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: QP %u SQ WQE %u at %#" PRIx64
+                " can't be read; flushing the QP",
+                qp_id, slot, gpa);
+        cq_post_send_npg(dp, q->sq_cq_id, qp_id, slot,
+                         IONIC_STS_LOCAL_QP_OPER_ERR);
+        ionic_datapath_flush_qp(dp, qp_id);
+        return false;
+    }
 
     uint64_t wqe_id;
     memcpy(&wqe_id, wqe + 0, 8);
@@ -3158,8 +3192,9 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
 
 /*
  * Runs @q's send queue from sq_cons up to the last doorbell, stopping at a
- * SEND that is waiting for a receive, or at a WQE for another node that the
- * mesh has no room to queue yet.
+ * SEND that is waiting for a receive, at a WQE for another node that the
+ * mesh has no room to queue yet, or at a WQE it can't read, which flushes
+ * the QP.
  */
 static void sq_service(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                        uint32_t qp_id)
