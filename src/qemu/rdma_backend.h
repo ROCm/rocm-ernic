@@ -67,6 +67,7 @@ bool tcp_backend_ionic_has_room(RdmaBackendDev *backend_dev, uint32_t dst_node,
                                 size_t len);
 void tcp_backend_ionic_cancel(RdmaBackendDev *backend_dev, uint64_t tag,
                               uint64_t mask);
+/* Returns once nothing is still calling the callback it replaces. */
 void tcp_backend_set_ionic_recv_cb(RdmaBackendDev *backend_dev,
                                    tcp_ionic_recv_fn fn, void *opaque);
 

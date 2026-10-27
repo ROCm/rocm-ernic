@@ -172,6 +172,12 @@ static inline void qemu_cond_signal(QemuCond *cond)
     qemu_thread_check(pthread_cond_signal(&cond->cond), "pthread_cond_signal");
 }
 
+static inline void qemu_cond_broadcast(QemuCond *cond)
+{
+    qemu_thread_check(pthread_cond_broadcast(&cond->cond),
+                      "pthread_cond_broadcast");
+}
+
 /*
  * Wait until signalled.  Like pthread_cond_wait(), it can also return without
  * a signal, so callers recheck their condition in a loop.

@@ -383,6 +383,8 @@ void ionic_datapath_destroy(struct ionic_datapath *dp)
     if (!dp)
         return;
 
+    /* Waits out a receive thread already in dp_mesh_recv(), so nothing can
+     * reach dp once it has returned. */
     if (dp->pvrdma_handle)
         ionic_mesh_set_recv_cb(dp->pvrdma_handle, NULL, NULL);
 

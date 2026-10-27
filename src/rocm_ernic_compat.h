@@ -544,6 +544,12 @@ bool ionic_mesh_has_room(pvrdma_handle_t handle, uint32_t dst_node, size_t len);
  * Replies are left alone.  See tcp_backend_ionic_cancel().
  */
 void ionic_mesh_cancel(pvrdma_handle_t handle, uint64_t tag, uint64_t mask);
+/*
+ * Register fn to be called, on a receive thread, with each message for this
+ * node, or none for NULL.  Returns once no receive thread is still calling
+ * the callback it replaces, so that clearing it lets the caller free what it
+ * used.  Never call it from the callback.
+ */
 void ionic_mesh_set_recv_cb(pvrdma_handle_t handle, ionic_mesh_recv_fn fn,
                             void *opaque);
 

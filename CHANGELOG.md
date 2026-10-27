@@ -803,7 +803,10 @@
   peer can't kill the server with SIGPIPE. The health check and the
   registration timeout use the monotonic clock, so an NTP step can't declare
   every node dead. `tcp-mesh-ci` fails a node that exits non-zero or isn't
-  gone 30 seconds after SIGTERM.
+  gone 30 seconds after SIGTERM. A message from a peer that arrived as the
+  server shut down, or as its startup failed, could reach the ionic data
+  path after it was freed; the data path now waits for any message being
+  handed to it before it goes.
 * **SIGINT and SIGTERM go to the server's main thread.** The server's own
   threads (the TCP backend's) block every signal but those a fault raises,
   so a shutdown signal can no longer land on one of them and interrupt its
