@@ -540,6 +540,20 @@ static void test_load_parses(void)
                                  "\"transitions\":[]}]}],"
                                  "\"deparsers\":[]}") == -EINVAL,
           "extracting a header that does not exist is refused");
+    /* Metadata is not on the wire, so a parser has no business filling it
+     * from the frame. */
+    check(load_text(eng, P4_HDRS "\"parsers\":[{\"name\":\"p\",\"id\":0,"
+                                 "\"init_state\":\"start\",\"parse_states\":["
+                                 "{\"name\":\"start\",\"id\":0,"
+                                 "\"parser_ops\":[{\"op\":\"extract\","
+                                 "\"parameters\":[{\"type\":\"regular\","
+                                 "\"value\":\"standard_metadata\"}]}],"
+                                 "\"transition_key\":[],"
+                                 "\"transitions\":[]}]}],"
+                                 "\"deparsers\":[]}") == -EINVAL,
+          "extracting a metadata header is refused");
+    check(strstr(p4_engine_load_error(eng), "which is metadata") != NULL,
+          "the error says the header is metadata");
 
     /* Actions. */
 #define P4_ACT(body) P4_FRONT "\"actions\":[" body "]}"
@@ -1893,6 +1907,51 @@ static void test_parser_loop(void)
 }
 
 /*
+ * A parser that extracts one header twice.  The second extract overwrites
+ * the first, so the header is valid once but the parser read two headers'
+ * worth of the frame, and the payload starts after both: bmv2 emits the
+ * second copy and then the payload, dropping the first.  Working out where
+ * the payload starts from the valid headers counted one, and put the
+ * second copy on the wire twice.
+ */
+#define P4_TWICE_PROG                                                        \
+    P4_HDRS "\"parsers\":[{\"name\":\"p\",\"id\":0,"                         \
+            "\"init_state\":\"start\",\"parse_states\":["                    \
+            "{\"name\":\"start\",\"id\":0,\"parser_ops\":["                  \
+            "{\"op\":\"extract\",\"parameters\":[{\"type\":\"regular\","     \
+            "\"value\":\"eth\"}]},"                                          \
+            "{\"op\":\"extract\",\"parameters\":[{\"type\":\"regular\","     \
+            "\"value\":\"eth\"}]}],"                                         \
+            "\"transition_key\":[],"                                         \
+            "\"transitions\":[{\"value\":\"default\",\"mask\":null,"         \
+            "\"next_state\":null}]}]}],"                                     \
+            "\"deparsers\":[{\"name\":\"d\",\"id\":0,\"order\":[\"eth\"]}]," \
+            "\"actions\":[],\"pipelines\":[{\"name\":\"ingress\",\"id\":0,"  \
+            "\"init_table\":null,\"tables\":[],\"action_profiles\":[],"      \
+            "\"conditionals\":[]}]}"
+
+static void test_parser_extract_twice(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    uint8_t in[64], out[128];
+    struct p4_result res;
+
+    fill_frame(in, sizeof(in));
+    checkf(load_text(eng, P4_TWICE_PROG) == 0,
+           "a parser extracting one header twice is refused: %s",
+           load_why(eng));
+    check(p4_engine_process(eng, P4_PORT_HOST, in, sizeof(in), out, sizeof(out),
+                            &res) == 0,
+          "a frame runs through the parser");
+    check(res.verdict == P4_VERDICT_FORWARD, "the frame is forwarded");
+    check(res.len == sizeof(in) - 14 &&
+              memcmp(out, in + 14, sizeof(in) - 14) == 0,
+          "the first copy of the header was not dropped, as bmv2 does");
+
+    p4_engine_destroy(eng);
+}
+
+/*
  * Two members with one name: json-c keeps the last, and the loader takes
  * what json-c gives it, so the second __meta__ is the one checked.  p4c
  * never writes a duplicate; this pins down what happens when something
@@ -2527,6 +2586,7 @@ int main(void)
     test_extern_after_drop();
     test_reject_corpus();
     test_parser_loop();
+    test_parser_extract_twice();
     test_duplicate_keys();
     test_deparse_overflow();
     test_features_parser();

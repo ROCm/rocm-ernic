@@ -118,8 +118,14 @@ static void imm_value(const uint8_t *imm, uint16_t cap, uint16_t len,
 
 /* ---- the parser -------------------------------------------------------- */
 
+/*
+ * Parse @frame into @phv.  On success *@consumed is how far the parser read,
+ * which is where the payload starts.  That is the parser's position, not
+ * the total of the headers left valid: a header extracted twice is valid
+ * once but took bytes twice, and in bmv2 the payload starts after both.
+ */
 static int run_parser(const struct p4_program *prog, struct p4_phv *phv,
-                      const uint8_t *frame, size_t len)
+                      const uint8_t *frame, size_t len, size_t *consumed)
 {
     p4_idx_t state = prog->init_state;
     size_t pos = 0;
@@ -204,6 +210,7 @@ static int run_parser(const struct p4_program *prog, struct p4_phv *phv,
             return -EBADMSG;
         state = next;
     }
+    *consumed = pos;
     return 0;
 }
 
@@ -516,23 +523,6 @@ static int run_deparser(const struct p4_program *prog, const struct p4_phv *phv,
 }
 
 /*
- * How many bytes the parser took, which is what the deparser must skip.
- * Derived from the headers it marked valid rather than tracked separately,
- * so the two cannot disagree.
- */
-static size_t parsed_bytes(const struct p4_program *prog,
-                           const struct p4_phv *phv)
-{
-    size_t n = 0;
-
-    for (uint16_t h = 0; h < prog->nheaders; h++) {
-        if (phv->valid[h] && !prog->headers[h].metadata)
-            n += hdr_bytes(prog, h);
-    }
-    return n;
-}
-
-/*
  * Write an architecture field, if the program declared it.
  *
  * The guard is not a nicety: phv_set() indexes prog->headers[ref.header]
@@ -608,6 +598,7 @@ int p4_exec_run(const struct p4_program *prog, const struct p4_entries *ent,
 {
     struct p4_phv phv;
     bool dropped = false;
+    size_t consumed = 0;
     int rc;
 
     if (!prog || !frame || !out || !res || len == 0)
@@ -631,7 +622,7 @@ int p4_exec_run(const struct p4_program *prog, const struct p4_entries *ent,
         phv_set(prog, &phv, prog->ingress_port, &v);
     }
 
-    rc = run_parser(prog, &phv, frame, len);
+    rc = run_parser(prog, &phv, frame, len, &consumed);
     if (rc)
         return rc;
 
@@ -655,6 +646,6 @@ int p4_exec_run(const struct p4_program *prog, const struct p4_entries *ent,
     if (dropped)
         return 0;
 
-    return run_deparser(prog, &phv, frame, len, parsed_bytes(prog, &phv), out,
-                        out_cap, &res->len);
+    return run_deparser(prog, &phv, frame, len, consumed, out, out_cap,
+                        &res->len);
 }

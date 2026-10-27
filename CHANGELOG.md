@@ -1007,6 +1007,10 @@
   * A parser `select` on a field that isn't a whole number of bytes, such
     as a VLAN ID, matched none of the values p4c writes: the key now gives
     each field whole bytes of its own, as bmv2 does.
+  * A parser that extracted the same header twice put bytes back on the
+    wire: the payload now starts where the parser stopped reading, as in
+    bmv2. A parser that extracts into a metadata header, which also did
+    this and which p4c never emits, is refused at load.
   * A literal wider than the field it's assigned to, and a table's default
     argument wider than its parameter, are refused at load rather than
     truncated on every packet. A table entry's arguments and key fields are
