@@ -341,7 +341,7 @@ Inside the Server
         sees QEMU types)            src/p4/, the optional
               │                     P4 engine
               ▼
-       src/qemu/                  resource manager (rdma_rm)
+       src/pvrdma/                resource manager (rdma_rm)
        src/rdma/                  backend vtable: none,
                                   loopback, tcp mesh
        src/qemu-compat/           the QEMU APIs the QEMU-derived
@@ -378,7 +378,7 @@ The Device Core
 ^^^^^^^^^^^^^^^
 
 The device core is ``src/rocm_ernic_compat.c``,
-``src/qemu/``, and ``src/rdma/``.
+``src/pvrdma/``, and ``src/rdma/``.
 
 rocm-ernic began as an emulator of the VMware paravirtual RDMA
 device (PVRDMA), using the device model from QEMU's
@@ -1460,7 +1460,7 @@ Where to Look in the Source
        ``src/ernic_rm.h``, ``src/ernic_mesh.h``
      - Bridge to the QEMU-derived core: the device's lifecycle,
        and wrappers for the resource manager and the mesh
-   * - ``src/qemu/``
+   * - ``src/pvrdma/``
      - Resource manager and backend dispatch, forked from QEMU
    * - ``src/rdma/rdma_backend_*.c``
      - Backend registry; none, loopback, and TCP mesh backends

@@ -782,7 +782,7 @@ rocm_ernic_compat.c          src/nvmeof/, src/s3/
  sees QEMU types)            src/p4/, the optional
        │                     P4 engine
        ▼
-src/qemu/                  resource manager (rdma_rm)
+src/pvrdma/                resource manager (rdma_rm)
 src/rdma/                  backend vtable: none,
                            loopback, tcp mesh
 src/qemu-compat/           the QEMU APIs the QEMU-derived
@@ -818,7 +818,7 @@ timer, so the same workload gives the same failures.</p></li>
 <section id="the-device-core">
 <h3>The Device Core<a class="headerlink" href="#the-device-core" title="Link to this heading">#</a></h3>
 <p>The device core is <code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_compat.c</span></code>,
-<code class="docutils literal notranslate"><span class="pre">src/qemu/</span></code>, and <code class="docutils literal notranslate"><span class="pre">src/rdma/</span></code>.</p>
+<code class="docutils literal notranslate"><span class="pre">src/pvrdma/</span></code>, and <code class="docutils literal notranslate"><span class="pre">src/rdma/</span></code>.</p>
 <p>rocm-ernic began as an emulator of the VMware paravirtual RDMA
 device (PVRDMA), using the device model from QEMU’s
 <code class="docutils literal notranslate"><span class="pre">hw/rdma/</span></code>. That guest-facing personality has been removed
@@ -1985,7 +1985,7 @@ the P4 pipeline</p></td>
 <td><p>Bridge to the QEMU-derived core: the device’s lifecycle,
 and wrappers for the resource manager and the mesh</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/qemu/</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/pvrdma/</span></code></p></td>
 <td><p>Resource manager and backend dispatch, forked from QEMU</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/rdma_backend_*.c</span></code></p></td>

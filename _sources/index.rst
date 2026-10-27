@@ -84,7 +84,7 @@ a host TAP:
 Acknowledgments
 ---------------
 
-The RDMA device logic in ``src/qemu/`` is adapted from the
+The RDMA device logic in ``src/pvrdma/`` is adapted from the
 QEMU PVRDMA implementation. The original authors of that work:
 
 - Yuval Shaia <yuval.shaia@oracle.com> (Oracle)
@@ -100,7 +100,7 @@ The emulator itself is ``GPL-2.0-or-later``:
 
 - Everything under ``src/`` and ``tests/``, and the fuzz harnesses in
   ``nix/analysis/fuzz/``, which build against ``src/``.
-- The VMware/Linux uAPI header ``src/qemu/vmw_pvrdma-abi.h`` is
+- The VMware/Linux uAPI header ``src/pvrdma/vmw_pvrdma-abi.h`` is
   instead dual ``GPL-2.0`` / ``BSD-2-Clause``.
 
 The patches under ``ansible/files/patches/`` modify the Linux ionic drivers
