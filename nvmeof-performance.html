@@ -491,16 +491,48 @@ than in-capsule data. <code class="docutils literal notranslate"><span class="pr
 </section>
 <section id="reproducing">
 <h2><a class="toc-backref" href="#id2" role="doc-backlink">Reproducing</a><a class="headerlink" href="#reproducing" title="Link to this heading">#</a></h2>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># One server, one guest -- a complete fabric.</span>
-<span class="nv">ERNIC_INSTANCES</span><span class="o">=</span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span><span class="nv">ERNIC_BACKEND</span><span class="o">=</span><span class="s1">'nvmeof:size=8G,bs=4096,queues=4'</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>bash<span class="w"> </span>ci/jobs/vm-up.sh
-bash<span class="w"> </span>ci/jobs/vm-nvmeof.sh
+<p>One server and one guest are a complete fabric. This needs the
+Ansible prerequisites in <a class="reference internal" href="testing.html"><span class="doc">Testing</span></a> and, for
+<code class="docutils literal notranslate"><span class="pre">ernicctl</span> <span class="pre">vm-launch</span></code>, those in <a class="reference internal" href="service.html"><span class="doc">systemd Service and ernicctl</span></a>. Host setup writes
+<code class="file docutils literal notranslate"><span class="pre">/etc/rocm-ernic/rocm-ernic.env</span></code> from its template, which
+has no backend setting, so choose the backend after host setup
+rather than before it:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>ansible
+
+<span class="c1"># 0. Fetch the pinned guest image to where host setup points</span>
+<span class="c1">#    ERNIC_VM_BACKING (the directory must be writable by you).</span>
+.<span class="w"> </span>../ci/guest-image.env
+../scripts/fetch-guest-image.sh<span class="w"> </span>--tag<span class="w"> </span><span class="s2">"</span><span class="nv">$GUEST_ARTIFACT_TAG</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--dest<span class="w"> </span><span class="s2">"/opt/qemu-images/artifacts/</span><span class="nv">$GUEST_ARTIFACT_TAG</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--expect-disk<span class="w"> </span><span class="s2">"</span><span class="nv">$GUEST_ARTIFACT_DISK</span><span class="s2">"</span>
+
+<span class="c1"># 1. Build and install the service with one instance.  Run the</span>
+<span class="c1">#    play, not site.yml --tags host-setup: site.yml always</span>
+<span class="c1">#    registers the VMs, and there are none yet.</span>
+ansible-playbook<span class="w"> </span>playbooks/host-setup.yml<span class="w"> </span>-e<span class="w"> </span><span class="nv">ernic_instances</span><span class="o">=</span><span class="m">1</span>
+
+<span class="c1"># 2. Put the instance on the NVMe-oF backend.</span>
+<span class="nb">echo</span><span class="w"> </span><span class="s1">'ERNIC_BACKEND=nvmeof:size=8G,bs=4096,queues=4'</span><span class="w"> </span><span class="p">|</span>
+<span class="w">  </span>sudo<span class="w"> </span>tee<span class="w"> </span>-a<span class="w"> </span>/etc/rocm-ernic/rocm-ernic.env
+sudo<span class="w"> </span>systemctl<span class="w"> </span>restart<span class="w"> </span>rocm-ernic
+
+<span class="c1"># 3. Attach the guest.</span>
+sudo<span class="w"> </span>ernicctl<span class="w"> </span>vm-launch<span class="w"> </span><span class="m">1</span>
+
+<span class="c1"># 4. Provision the guest, then connect and sweep.</span>
+ansible-playbook<span class="w"> </span>ci-site.yml<span class="w"> </span>--tags<span class="w"> </span>guest-setup,nvmeof<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-e<span class="w"> </span><span class="nv">ernic_project_root</span><span class="o">=</span><span class="s2">"</span><span class="nv">$PWD</span><span class="s2">/.."</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-e<span class="w"> </span><span class="nv">ernic_nvmeof_queues</span><span class="o">=</span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-e<span class="w"> </span><span class="nv">ernic_nvmeof_perf_csv</span><span class="o">=</span>/tmp/nvmeof-sweep.csv
 </pre></div>
 </div>
-<p><code class="docutils literal notranslate"><span class="pre">ci/jobs/vm-nvmeof.sh</span></code> provisions the guest, connects, and runs
-the short sweep that feeds the trend chart. The longer sweep
-below was driven by hand against the resulting
+<p>Step 4 uses <code class="docutils literal notranslate"><span class="pre">ci-site.yml</span></code> because it registers the running
+guest in the <code class="docutils literal notranslate"><span class="pre">ernic_vms</span></code> group first, which the NVMe-oF play
+needs (run alone, the play finds no hosts and does nothing), and
+because it imports no host-setup play, so it leaves the edited
+env file alone. The play connects and runs the short sweep that
+feeds the trend chart. The longer sweep below was driven by hand
+against the resulting
 <code class="docutils literal notranslate"><span class="pre">/dev/nvme0n1</span></code>; each run is <code class="docutils literal notranslate"><span class="pre">--direct=1</span> <span class="pre">--time_based</span>
 <span class="pre">--runtime=15</span></code> with <code class="docutils literal notranslate"><span class="pre">libaio</span></code>.</p>
 </section>

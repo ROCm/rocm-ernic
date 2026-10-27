@@ -26,8 +26,8 @@ the curve between them.
 Test Environment
 ----------------
 
-The reference environment is the self-hosted CI node,
-**hpe-rack-15.adc.amd.com** (AMD EPYC 7513, 128 threads), with
+The reference environment is the since-retired self-hosted CI
+node, **hpe-rack-15.adc.amd.com** (AMD EPYC 7513, 128 threads), with
 the TCP mesh backend: a manager and a worker server instance on
 one host, each attached to a guest VM over localhost loopback.
 
@@ -78,10 +78,6 @@ record per run to ``perf/history.jsonl`` on the ``gh-pages``
 branch and refreshes the shields.io badges beside it; the charts
 and the trend tables are rendered from that record when the site
 is next built. Nothing CI writes lands on ``develop``.
-``ci/jobs/perf.sh`` drives the same two plays on the
-self-hosted node, but that lane no longer publishes: it sweeps,
-reports and gates regressions, and its numbers stay in the run's
-artifacts.
 
 Everything published is therefore measured on a GitHub-hosted
 runner, including the ``nvmeof`` series that the same workflow
@@ -118,7 +114,7 @@ property of the emulator.
 Reference Measurements
 ----------------------
 
-One full ``ci/jobs/perf.sh`` run on the reference node above,
+One full run of both plays on the reference node above,
 against ``rocm-ernic`` at 59d5b73 and a resolute guest running
 7.2.3-070203-generic with the ionic sources pinned at v7.2.4.
 The guests were freshly launched from the published image

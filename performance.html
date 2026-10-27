@@ -428,8 +428,8 @@ that device was removed; they remain in the git history.</p>
 </nav>
 <section id="test-environment">
 <h2><a class="toc-backref" href="#id1" role="doc-backlink">Test Environment</a><a class="headerlink" href="#test-environment" title="Link to this heading">#</a></h2>
-<p>The reference environment is the self-hosted CI node,
-<strong>hpe-rack-15.adc.amd.com</strong> (AMD EPYC 7513, 128 threads), with
+<p>The reference environment is the since-retired self-hosted CI
+node, <strong>hpe-rack-15.adc.amd.com</strong> (AMD EPYC 7513, 128 threads), with
 the TCP mesh backend: a manager and a worker server instance on
 one host, each attached to a guest VM over localhost loopback.</p>
 <p>This is the environment for the <a class="reference internal" href="#reference-measurements">Reference Measurements</a> below
@@ -490,11 +490,7 @@ the results to <code class="docutils literal notranslate"><span class="pre">ci/r
 record per run to <code class="docutils literal notranslate"><span class="pre">perf/history.jsonl</span></code> on the <code class="docutils literal notranslate"><span class="pre">gh-pages</span></code>
 branch and refreshes the shields.io badges beside it; the charts
 and the trend tables are rendered from that record when the site
-is next built. Nothing CI writes lands on <code class="docutils literal notranslate"><span class="pre">develop</span></code>.
-<code class="docutils literal notranslate"><span class="pre">ci/jobs/perf.sh</span></code> drives the same two plays on the
-self-hosted node, but that lane no longer publishes: it sweeps,
-reports and gates regressions, and its numbers stay in the run’s
-artifacts.</p>
+is next built. Nothing CI writes lands on <code class="docutils literal notranslate"><span class="pre">develop</span></code>.</p>
 <p>Everything published is therefore measured on a GitHub-hosted
 runner, including the <code class="docutils literal notranslate"><span class="pre">nvmeof</span></code> series that the same workflow
 sweeps with fio against an in-process NVMe-oF controller (see the
@@ -526,7 +522,7 @@ property of the emulator.</p>
 </section>
 <section id="reference-measurements">
 <h2><a class="toc-backref" href="#id4" role="doc-backlink">Reference Measurements</a><a class="headerlink" href="#reference-measurements" title="Link to this heading">#</a></h2>
-<p>One full <code class="docutils literal notranslate"><span class="pre">ci/jobs/perf.sh</span></code> run on the reference node above,
+<p>One full run of both plays on the reference node above,
 against <code class="docutils literal notranslate"><span class="pre">rocm-ernic</span></code> at 59d5b73 and a resolute guest running
 7.2.3-070203-generic with the ionic sources pinned at v7.2.4.
 The guests were freshly launched from the published image

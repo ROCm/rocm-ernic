@@ -10,7 +10,7 @@ on GitHub-hosted runners at 2026-10-27 04:43:58 UTC.
 Each runner class is charted on its own axes and never joined into one
 line. A GitHub-hosted runner has noisy neighbours and no fixed CPU, so
 its figures are comparable with each other over time but not with the
-lab node's. The README shields read the GitHub-hosted series.
+retired lab node's. The README shields read the GitHub-hosted series.
 
 Each panel carries one message size on its own scale. Bandwidth at 4 KiB
 and at 1 MiB differ by more than an order of magnitude, so a shared axis
@@ -46,7 +46,7 @@ a969a3bb --    --     --
 ======== ===== ====== =====
 
 
-Measured on the self-hosted lab node:
+Measured on the retired self-hosted lab node:
 
 .. raw:: html
    :file: perf-history/chart-bandwidth-self-hosted.html
@@ -89,7 +89,7 @@ a969a3bb --     --     --
 ======== ====== ====== =======
 
 
-Measured on the self-hosted lab node:
+Measured on the retired self-hosted lab node:
 
 .. raw:: html
    :file: perf-history/chart-latency-self-hosted.html

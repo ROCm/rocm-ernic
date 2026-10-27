@@ -289,8 +289,8 @@ The ``ernic_host_setup`` role does this from
 then passes ``--tap ${ERNIC_TAP_PREFIX}${id}`` to each
 instance. A missing TAP is a warning rather than an error
 there, so a loopback-only host still starts --- but the guest
-comes up with no Ethernet, which is why ``ci/doctor.sh`` and
-``ci/jobs/vm-up.sh`` check for the interfaces up front.
+comes up with no Ethernet, and every guest-to-guest test then
+fails without saying why.
 
 The bridge carries no IP of its own by default; the guests
 address each other directly across it. Set

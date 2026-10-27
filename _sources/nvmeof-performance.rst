@@ -48,17 +48,50 @@ than in-capsule data. ``maxcmd`` is 128.
 Reproducing
 -----------
 
+One server and one guest are a complete fabric. This needs the
+Ansible prerequisites in :doc:`testing` and, for
+``ernicctl vm-launch``, those in :doc:`service`. Host setup writes
+:file:`/etc/rocm-ernic/rocm-ernic.env` from its template, which
+has no backend setting, so choose the backend after host setup
+rather than before it:
+
 .. code-block:: bash
 
-   # One server, one guest -- a complete fabric.
-   ERNIC_INSTANCES=1 \
-     ERNIC_BACKEND='nvmeof:size=8G,bs=4096,queues=4' \
-     bash ci/jobs/vm-up.sh
-   bash ci/jobs/vm-nvmeof.sh
+   cd ansible
 
-``ci/jobs/vm-nvmeof.sh`` provisions the guest, connects, and runs
-the short sweep that feeds the trend chart. The longer sweep
-below was driven by hand against the resulting
+   # 0. Fetch the pinned guest image to where host setup points
+   #    ERNIC_VM_BACKING (the directory must be writable by you).
+   . ../ci/guest-image.env
+   ../scripts/fetch-guest-image.sh --tag "$GUEST_ARTIFACT_TAG" \
+     --dest "/opt/qemu-images/artifacts/$GUEST_ARTIFACT_TAG" \
+     --expect-disk "$GUEST_ARTIFACT_DISK"
+
+   # 1. Build and install the service with one instance.  Run the
+   #    play, not site.yml --tags host-setup: site.yml always
+   #    registers the VMs, and there are none yet.
+   ansible-playbook playbooks/host-setup.yml -e ernic_instances=1
+
+   # 2. Put the instance on the NVMe-oF backend.
+   echo 'ERNIC_BACKEND=nvmeof:size=8G,bs=4096,queues=4' |
+     sudo tee -a /etc/rocm-ernic/rocm-ernic.env
+   sudo systemctl restart rocm-ernic
+
+   # 3. Attach the guest.
+   sudo ernicctl vm-launch 1
+
+   # 4. Provision the guest, then connect and sweep.
+   ansible-playbook ci-site.yml --tags guest-setup,nvmeof \
+     -e ernic_project_root="$PWD/.." \
+     -e ernic_nvmeof_queues=4 \
+     -e ernic_nvmeof_perf_csv=/tmp/nvmeof-sweep.csv
+
+Step 4 uses ``ci-site.yml`` because it registers the running
+guest in the ``ernic_vms`` group first, which the NVMe-oF play
+needs (run alone, the play finds no hosts and does nothing), and
+because it imports no host-setup play, so it leaves the edited
+env file alone. The play connects and runs the short sweep that
+feeds the trend chart. The longer sweep below was driven by hand
+against the resulting
 ``/dev/nvme0n1``; each run is ``--direct=1 --time_based
 --runtime=15`` with ``libaio``.
 

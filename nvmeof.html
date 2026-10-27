@@ -681,8 +681,8 @@ reports, checks that a file-backed namespace appears on
 disk at the right size, and checks that malformed options
 are refused.</p></li>
 </ul>
-<p>The end-to-end connect needs a guest. It runs in three
-places, all doing the same thing: discover, connect, check
+<p>The end-to-end connect needs a guest. One Ansible play does
+it, by hand or in CI: discover, connect, check
 the namespace appears, write 16 MiB of random data through
 <code class="docutils literal notranslate"><span class="pre">O_DIRECT</span></code> and compare digests on read-back, run a short
 fio job, disconnect, and check the namespace went away. The
@@ -690,27 +690,16 @@ digest comparison is the check that proves the RDMA
 transfers behind the capsules actually moved the bytes, and
 the disconnect is the only thing that exercises the CM
 teardown path at all.</p>
-<p>The Ansible play is the reusable definition, and needs a
-single guest already provisioned against an instance running
-the controller:</p>
+<p>The play needs a single guest already provisioned against an
+instance running the controller. Run it through <code class="docutils literal notranslate"><span class="pre">ci-site.yml</span></code>,
+which first registers the running guest in the <code class="docutils literal notranslate"><span class="pre">ernic_vms</span></code>
+group; run alone, the play finds no hosts and does nothing:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>ansible
-ansible-playbook<span class="w"> </span>playbooks/nvmeof-tests.yml
+ansible-playbook<span class="w"> </span>ci-site.yml<span class="w"> </span>--tags<span class="w"> </span>nvmeof<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-e<span class="w"> </span><span class="nv">ernic_project_root</span><span class="o">=</span><span class="s2">"</span><span class="nv">$PWD</span><span class="s2">/.."</span>
 </pre></div>
 </div>
-<p>The self-hosted lane drives it from shell so each step lands
-in the CI results as its own check, and provisions the guest
-itself first:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">ERNIC_INSTANCES</span><span class="o">=</span><span class="m">1</span>
-<span class="nb">export</span><span class="w"> </span><span class="nv">ERNIC_BACKEND</span><span class="o">=</span>nvmeof:size<span class="o">=</span>256M,bs<span class="o">=</span><span class="m">4096</span>
-bash<span class="w"> </span>ci/jobs/vm-up.sh
-bash<span class="w"> </span>ci/jobs/vm-nvmeof.sh
-bash<span class="w"> </span>ci/jobs/vm-down.sh
-</pre></div>
-</div>
-<p>Export them rather than prefixing a single command: all
-three scripts read both, and <code class="docutils literal notranslate"><span class="pre">ERNIC_INSTANCES</span></code> defaults to
-2.</p>
-<p>And the hosted lane runs the whole thing from scratch –
+<p>The hosted lane runs the whole thing from scratch –
 build, boot a guest, provision it, connect – in
 <code class="file docutils literal notranslate"><span class="pre">.github/workflows/nvmeof-lane.yml</span></code>, which is the
 cheapest end-to-end RDMA test in the matrix precisely
@@ -719,26 +708,21 @@ workflow with a single <code class="docutils literal notranslate"><span class="p
 <code class="file docutils literal notranslate"><span class="pre">.github/workflows/system-tests.yml</span></code>: false on a pull
 request, true on a scheduled or dispatched run against
 <code class="docutils literal notranslate"><span class="pre">develop</span></code>. The steps are the same either way, so a green pull
-request and a scheduled run mean the same thing.
-The <code class="docutils literal notranslate"><span class="pre">vm-nvmeof</span></code> job in
-<code class="file docutils literal notranslate"><span class="pre">.github/workflows/self-hosted-ci.yml</span></code> runs the
-self-hosted lane at the functional tier and above.</p>
+request and a scheduled run mean the same thing.</p>
 <p>The controller’s address, port and NQN are Ansible
 variables (<code class="docutils literal notranslate"><span class="pre">ernic_nvmeof_traddr</span></code>, <code class="docutils literal notranslate"><span class="pre">ernic_nvmeof_trsvcid</span></code>,
 <code class="docutils literal notranslate"><span class="pre">ernic_nvmeof_nqn</span></code> and friends in
 <code class="file docutils literal notranslate"><span class="pre">ansible/group_vars/all.yml</span></code>); they have to match the
 <code class="docutils literal notranslate"><span class="pre">--backend</span></code> options the instance was started with.</p>
-<p>Both lanes aim the connect at the controller’s queue ceiling
+<p>The play aims the connect at the controller’s queue ceiling
 rather than leaving it to the initiator, which would otherwise
 ask for one queue per online CPU and make the lane’s coverage a
 property of the runner rather than of the controller. The
 ceiling is the <code class="docutils literal notranslate"><span class="pre">queues=</span></code> key of the <code class="docutils literal notranslate"><span class="pre">--backend</span></code> string, or
-eight when the key is absent: <code class="docutils literal notranslate"><span class="pre">ci/jobs/vm-nvmeof.sh</span></code> reads it
-out of <code class="docutils literal notranslate"><span class="pre">ERNIC_BACKEND</span></code> (override with <code class="docutils literal notranslate"><span class="pre">NVMEOF_QUEUES</span></code>),
-and the play takes it from <code class="docutils literal notranslate"><span class="pre">ernic_nvmeof_queues</span></code>, which like
-the variables above has to be told what the instance was
-started with. Both then read
-<code class="file docutils literal notranslate"><span class="pre">/sys/class/nvme/nvmeN/queue_count</span></code> back and fail unless
+eight when the key is absent. The play takes it from
+<code class="docutils literal notranslate"><span class="pre">ernic_nvmeof_queues</span></code>, which like the variables above has to
+be told what the instance was started with. It then reads
+<code class="file docutils literal notranslate"><span class="pre">/sys/class/nvme/nvmeN/queue_count</span></code> back and fails unless
 it matches, because too few queues is not an error to
 <code class="docutils literal notranslate"><span class="pre">nvme-cli</span></code>. A guest with fewer vCPUs than half the ceiling
 cannot reach it – see <a class="reference internal" href="nvmeof-performance.html#nvmeof-mr-budget"><span class="std std-ref">The MR budget caps the queue count</span></a> – so the
@@ -784,7 +768,8 @@ numbers describe a broken controller.</p></li>
 <code class="docutils literal notranslate"><span class="pre">ernic_nvmeof_perf_csv</span></code> to a path and the play writes one
 bandwidth CSV there:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>ansible
-ansible-playbook<span class="w"> </span>playbooks/nvmeof-tests.yml<span class="w"> </span><span class="se">\</span>
+ansible-playbook<span class="w"> </span>ci-site.yml<span class="w"> </span>--tags<span class="w"> </span>nvmeof<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-e<span class="w"> </span><span class="nv">ernic_project_root</span><span class="o">=</span><span class="s2">"</span><span class="nv">$PWD</span><span class="s2">/.."</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-e<span class="w"> </span><span class="nv">ernic_nvmeof_perf_csv</span><span class="o">=</span>/tmp/nvmeof-bw.csv
 </pre></div>
 </div>
@@ -792,10 +777,9 @@ ansible-playbook<span class="w"> </span>playbooks/nvmeof-tests.yml<span class="w
 <code class="file docutils literal notranslate"><span class="pre">ansible/group_vars/all.yml</span></code>. They are not free-form:
 they have to stay equal to <code class="docutils literal notranslate"><span class="pre">TRACKED_SIZES</span></code> in
 <code class="file docutils literal notranslate"><span class="pre">ci/report/publish-perf.py</span></code> or the chart quietly drops
-a series. The shell lane captures the same sweep in
-<code class="docutils literal notranslate"><span class="pre">probe_fio_sweep</span></code>, and refuses to record it unless the
-guest ran under KVM – numbers measured under TCG are one to
-two orders of magnitude off and would poison the history.</p>
+a series. Sweep only a guest running under KVM: numbers
+measured under TCG are one to two orders of magnitude off, and
+neither the play nor the hosted lane checks the accelerator.</p>
 </section>
 <section id="limitations">
 <h2>Limitations<a class="headerlink" href="#limitations" title="Link to this heading">#</a></h2>

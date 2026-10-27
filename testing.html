@@ -411,7 +411,6 @@
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-driver-ci">Guest Driver CI</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#self-hosted-ci">Self-Hosted CI</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#adding-new-tests">Adding New Tests</a></li>
 </ul>
             </nav>
@@ -664,9 +663,8 @@ what it reports, including that bad options are refused).</p>
 </div>
 <p>The guest-side connect needs a VM. It lives in
 <code class="docutils literal notranslate"><span class="pre">ansible/playbooks/nvmeof-tests.yml</span></code>, which the hosted
-<code class="docutils literal notranslate"><span class="pre">system-test-nvmeof</span></code> job runs end to end and which
-<code class="docutils literal notranslate"><span class="pre">ci/jobs/vm-nvmeof.sh</span></code> mirrors check-by-check for the
-self-hosted lane. See <a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>.</p>
+<code class="docutils literal notranslate"><span class="pre">system-test-nvmeof</span></code> job runs end to end. See
+<a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>.</p>
 </section>
 <section id="s3-over-rdma-tests">
 <h3>S3-over-RDMA tests<a class="headerlink" href="#s3-over-rdma-tests" title="Link to this heading">#</a></h3>
@@ -684,9 +682,7 @@ server once per documented option spelling).</p>
 <code class="docutils literal notranslate"><span class="pre">ibv_reg_mr</span></code> for the token to describe.
 <code class="docutils literal notranslate"><span class="pre">tests/s3_rdma_client.c</span></code> is built and run inside the guest
 by <code class="docutils literal notranslate"><span class="pre">ansible/playbooks/s3-tests.yml</span></code>, which the hosted
-<code class="docutils literal notranslate"><span class="pre">system-test-s3</span></code> job runs end to end and which
-<code class="docutils literal notranslate"><span class="pre">ci/jobs/vm-s3.sh</span></code> mirrors check-by-check for the
-self-hosted lane. See <a class="reference internal" href="s3.html"><span class="doc">S3 over RDMA Object Store</span></a>.</p>
+<code class="docutils literal notranslate"><span class="pre">system-test-s3</span></code> job runs end to end. See <a class="reference internal" href="s3.html"><span class="doc">S3 over RDMA Object Store</span></a>.</p>
 </section>
 </section>
 <section id="running-tests">
@@ -909,8 +905,10 @@ plain therefore tears down the guests the run needs, and
 <a class="reference internal" href="#ansible-guest-image"><span class="std std-ref">The guest image</span></a> below), then:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>ansible
 
-<span class="c1"># 1. Build, install the service and ernicctl.</span>
-ansible-playbook<span class="w"> </span>site.yml<span class="w"> </span>--tags<span class="w"> </span>host-setup
+<span class="c1"># 1. Build, install the service and ernicctl.  Run the</span>
+<span class="c1">#    play, not site.yml --tags host-setup: site.yml always</span>
+<span class="c1">#    registers the VMs, and there are none yet.</span>
+ansible-playbook<span class="w"> </span>playbooks/host-setup.yml
 
 <span class="c1"># 2. Attach a VM to each instance.</span>
 sudo<span class="w"> </span>ernicctl<span class="w"> </span>vm-launch<span class="w"> </span><span class="m">1</span>
@@ -926,10 +924,9 @@ for as long as the guests stay up. Dropping the override is
 what you want when you <em>do</em> mean to recycle the mesh — it
 stops the VMs and restarts the service, after which step 2
 has to be repeated.</p>
-<p>VMs brought up by <code class="docutils literal notranslate"><span class="pre">ci/jobs/vm-up.sh</span></code> are the CI path and
-run unprivileged. Drive those with <code class="docutils literal notranslate"><span class="pre">ci-site.yml</span></code>, which
-imports no host-setup play and so neither tears them down nor
-touches the systemd service.</p>
+<p>The CI lanes launch their own VMs and drive them with
+<code class="docutils literal notranslate"><span class="pre">ci-site.yml</span></code>, which imports no host-setup play and so
+neither tears them down nor touches the systemd service.</p>
 <p><code class="docutils literal notranslate"><span class="pre">site.yml</span></code> runs six plays in order:</p>
 <ol class="arabic simple">
 <li><p><strong>host-setup</strong> – builds the project, installs the
@@ -1029,9 +1026,8 @@ operations, which take tens of minutes over the emulated NIC;
 <code class="docutils literal notranslate"><span class="pre">ernic_rdma_tutorial_ops</span></code> (default 10000) sets the count.
 <code class="docutils literal notranslate"><span class="pre">ernic_rdma_tutorial_timeout</span></code> bounds each process and
 <code class="docutils literal notranslate"><span class="pre">ernic_rdma_tutorial_port</span></code> picks the ports they connect on.</p>
-<p>Both CI lanes that run the sanity play run this one after
-it: the two-VM job in <code class="docutils literal notranslate"><span class="pre">system-tests.yml</span></code> and
-<code class="docutils literal notranslate"><span class="pre">ci/jobs/vm-functional.sh</span></code>.</p>
+<p>The two-VM job in <code class="docutils literal notranslate"><span class="pre">system-tests.yml</span></code> runs it after the
+sanity play.</p>
 </section>
 <section id="the-guest-image">
 <span id="ansible-guest-image"></span><h3>The guest image<a class="headerlink" href="#the-guest-image" title="Link to this heading">#</a></h3>
@@ -1045,9 +1041,9 @@ provider.</p>
 <p><code class="docutils literal notranslate"><span class="pre">scripts/fetch-guest-image.sh</span></code> pulls the image and its
 <code class="docutils literal notranslate"><span class="pre">vm-info.json</span></code> metadata with <code class="docutils literal notranslate"><span class="pre">oras</span></code>, decompresses the
 qcow2 and runs <code class="docutils literal notranslate"><span class="pre">qemu-img</span> <span class="pre">check</span></code> over it. The download is
-skipped when the tag is already unpacked. <code class="docutils literal notranslate"><span class="pre">ci/jobs/vm-up.sh</span></code>
-calls the same script, so the lab host and CI land the same
-bytes in the same layout.</p>
+skipped when the tag is already unpacked. It lands the same
+bytes in the same layout as <code class="docutils literal notranslate"><span class="pre">.github/actions/fetch-guest-vm</span></code>,
+which the hosted jobs use.</p>
 <p>It also checks the image’s <code class="docutils literal notranslate"><span class="pre">vm-info.json</span></code> against this
 checkout and refuses the image when they disagree. That
 happens between the metadata pull and the disk pull, so a
@@ -1073,7 +1069,7 @@ to be hardcoded – shields.io cannot read the image – so
 without a check a tag bump would leave the front page
 advertising a kernel nothing ships. Two independent
 implementations compare them: the fetch script, on the
-self-hosted and manual paths, and an inline copy in the
+manual path, and an inline copy in the
 <code class="docutils literal notranslate"><span class="pre">Read</span> <span class="pre">VM</span> <span class="pre">info</span></code> step of the loopback job in
 <code class="docutils literal notranslate"><span class="pre">.github/workflows/system-tests.yml</span></code>, on every pull
 request. The hosted jobs pull through
@@ -1082,17 +1078,15 @@ neither copy is redundant.</p>
 <p>Four more properties are site expectations rather than
 repo-derivable facts, so the caller supplies them:
 <code class="docutils literal notranslate"><span class="pre">--expect-user</span></code>, <code class="docutils literal notranslate"><span class="pre">--expect-disk</span></code>, <code class="docutils literal notranslate"><span class="pre">--expect-release</span></code>
-and <code class="docutils literal notranslate"><span class="pre">--expect-flavour</span></code>. <code class="docutils literal notranslate"><span class="pre">ci/lib/common.sh</span></code> passes all
-four, which is what catches a <code class="docutils literal notranslate"><span class="pre">gpu</span></code>-flavour image reaching
-a lane whose roles want the ionic userspace. These
-assertions used to live in <code class="docutils literal notranslate"><span class="pre">playbooks/vm-fetch.yml</span></code>, which
-0.2.0 removed; in the script they cover every caller, not
-just the one that ran a play.</p>
-<p>Keep <code class="docutils literal notranslate"><span class="pre">ernic_vm_artifact_tag</span></code> equal to
-<code class="docutils literal notranslate"><span class="pre">GUEST_ARTIFACT_TAG</span></code> in
-<code class="docutils literal notranslate"><span class="pre">.github/workflows/system-tests.yml</span></code> <em>and</em> to
-<code class="docutils literal notranslate"><span class="pre">CI_GUEST_ARTIFACT_TAG</span></code> in <code class="docutils literal notranslate"><span class="pre">ci/lib/common.sh</span></code>. Nothing
-compares those three to each other.</p>
+and <code class="docutils literal notranslate"><span class="pre">--expect-flavour</span></code>. <code class="docutils literal notranslate"><span class="pre">--expect-flavour</span> <span class="pre">ionic</span></code> is what
+catches a <code class="docutils literal notranslate"><span class="pre">gpu</span></code>-flavour image reaching roles that want the
+ionic userspace. These assertions used to live in
+<code class="docutils literal notranslate"><span class="pre">playbooks/vm-fetch.yml</span></code>, which 0.2.0 removed; in the
+script they cover every caller, not just the one that ran a
+play.</p>
+<p><code class="docutils literal notranslate"><span class="pre">ernic_vm_artifact_tag</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">GUEST_ARTIFACT_TAG</span></code>
+in <code class="docutils literal notranslate"><span class="pre">ci/guest-image.env</span></code>, the pin the CI lanes read, so the
+VMs launched here are the VMs CI tests unless you override it.</p>
 <p>The pinned image is flavour <code class="docutils literal notranslate"><span class="pre">ionic</span></code> and carries no ROCm,
 so <code class="docutils literal notranslate"><span class="pre">ernic_gpu_passthrough</span></code> defaults off alongside it. A
 GPU rig needs a GPU-flavoured image.</p>
@@ -1159,68 +1153,6 @@ build toolchain before handing over; the mainline kernel
 itself must already be in the guest image, and
 <code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code> asserts that it matches the pinned ref
 before it starts the DKMS build.</p>
-</section>
-<section id="self-hosted-ci">
-<h2>Self-Hosted CI<a class="headerlink" href="#self-hosted-ci" title="Link to this heading">#</a></h2>
-<p>The GitHub-hosted workflows can only build and unit-test.
-Anything needing KVM, a provisioned guest image, or two
-guests exchanging RDMA traffic runs on a self-hosted runner
-instead, driven by the harness in <code class="docutils literal notranslate"><span class="pre">ci/</span></code>.</p>
-<p>It runs in three tiers:</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Tier</p></th>
-<th class="head"><p>Scope</p></th>
-<th class="head"><p>Needs KVM</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p>1</p></td>
-<td><p>build, ctest, loopback backend</p></td>
-<td><p>no</p></td>
-</tr>
-<tr class="row-odd"><td><p>2</p></td>
-<td><p>two-VM RDMA functional</p></td>
-<td><p>yes</p></td>
-</tr>
-<tr class="row-even"><td><p>3</p></td>
-<td><p>performance sweeps</p></td>
-<td><p>yes</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p>Tiers 2 and 3 are scheduled onto runners carrying the
-<code class="docutils literal notranslate"><span class="pre">kvm</span></code> label, so a node without KVM access stops
-attracting those jobs rather than failing them.</p>
-<p>The harness runs entirely unprivileged. The launcher and
-<code class="docutils literal notranslate"><span class="pre">ernicctl</span></code> are environment-driven, so the control plane
-is redirected under a workspace the CI user owns rather
-than <code class="docutils literal notranslate"><span class="pre">/run</span></code>, <code class="docutils literal notranslate"><span class="pre">/var/log</span></code> and <code class="docutils literal notranslate"><span class="pre">/usr/local</span></code>.</p>
-<p>Test logic is not duplicated: <code class="docutils literal notranslate"><span class="pre">ansible/ci-site.yml</span></code>
-drives the same guest-setup, sanity, RDMA-Tutorial and
-performance plays
-described above, supplying only the inventory
-registration that <code class="docutils literal notranslate"><span class="pre">site.yml</span></code> would normally provide.</p>
-<p>Check whether a node is ready:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ci/doctor.sh
-</pre></div>
-</div>
-<p>Run any tier by hand:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>bash<span class="w"> </span>ci/jobs/build.sh
-bash<span class="w"> </span>ci/jobs/loopback.sh
-bash<span class="w"> </span>ci/jobs/vm-up.sh
-bash<span class="w"> </span>ci/jobs/vm-functional.sh
-bash<span class="w"> </span>ci/jobs/perf.sh
-bash<span class="w"> </span>ci/jobs/vm-down.sh
-</pre></div>
-</div>
-<p>Results are merged into a functional and performance
-report by <code class="docutils literal notranslate"><span class="pre">ci/report/gen-report.py</span></code>, which also checks
-medians against a stored baseline and exits non-zero on
-regressions. See <code class="docutils literal notranslate"><span class="pre">ci/README.md</span></code> for node setup,
-registration and the security notes that apply because
-this is a public repository.</p>
 </section>
 <section id="adding-new-tests">
 <h2>Adding New Tests<a class="headerlink" href="#adding-new-tests" title="Link to this heading">#</a></h2>
@@ -1333,7 +1265,6 @@ this is a public repository.</p>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-driver-ci">Guest Driver CI</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#self-hosted-ci">Self-Hosted CI</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#adding-new-tests">Adding New Tests</a></li>
 </ul>
   </nav></div>
