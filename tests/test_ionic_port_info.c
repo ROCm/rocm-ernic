@@ -34,6 +34,7 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "byteorder.h"
+#include "ernic_limits.h"
 #include "ionic/ionic_adminq.h"
 #include "ionic/ionic_datapath.h"
 #include "ionic/ionic_eth_emu.h"
@@ -507,9 +508,8 @@ static void test_srq_capability_is_published(void)
     /* This is the value the driver copies into max_srq. Zero here is exactly
      * the state that makes UCX drop rc_verbs and leaves nixl with ud_verbs,
      * which cannot do one-sided RDMA at all. */
-    CHECK(qid_count == IONIC_EMU_SRQ_COUNT,
-          "srq_qtype.qid_count is %u, expected %u", qid_count,
-          (unsigned)IONIC_EMU_SRQ_COUNT);
+    CHECK(qid_count == ERNIC_MAX_SRQ, "srq_qtype.qid_count is %u, expected %u",
+          qid_count, (unsigned)ERNIC_MAX_SRQ);
 
     CHECK((rdma[LIF_ID_ALLOC_QID_CAP_OFF] & IONIC_LIF_RDMA_ALLOC_QID_SRQ) != 0,
           "alloc_qid_cap does not claim SRQ qid allocation");

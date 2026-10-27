@@ -27,24 +27,12 @@
 
 #define PAGE_SIZE 4096
 
+/* The QP, CQ, SRQ, AH, MR and SGE limits are the device's, in
+ * ernic_limits.h. */
 #define MAX_MR_SIZE         (1UL << 32)
-#define MAX_QP              1024
-#define MAX_SGE             32
-#define MAX_CQ              2048
 #define MAX_PD              1024
 #define MAX_QP_RD_ATOM      16
 #define MAX_QP_INIT_RD_ATOM 16
-#define MAX_AH              64
-#define MAX_SRQ             512
-
-/*
- * Must stay equal to IONIC_MAX_MR in src/ionic/ionic_datapath.h, which explains
- * the value; this header is QEMU-derived and cannot include that one.  It was
- * 1024, which is exactly the 8 * 128 regions an nvme-rdma initiator
- * pre-allocates for the default eight NVMe-oF I/O queues -- leaving none for
- * the admin queue, so the connect failed on the last queue with -ENOMEM.
- */
-#define MAX_MR 2048
 
 /*
  * Number of page-table pages backing each WQ/CQ ring.

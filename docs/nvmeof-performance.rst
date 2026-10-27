@@ -190,11 +190,10 @@ A stock ``nvme-rdma`` initiator runs with ``register_always``,
 and allocates a pool of **128 memory regions per queue** at
 connect time -- admin queue included -- rather than per I/O. An
 N-queue controller therefore needs ``(N + 1) * 128`` regions
-before the first capsule moves, and the emulator's table is a
-fixed ``IONIC_MAX_MR`` = 2048
-(:file:`src/ionic/ionic_datapath.h`, which also sizes
-``MAX_MR`` in :file:`src/qemu/rdma_rm_defs.h` and in
-:file:`src/ionic/ionic_datapath_priv.h`). That puts the ceiling
+before the first capsule moves, and the emulator's tables hold
+a fixed ``ERNIC_MAX_MR`` = 2048 (:file:`src/ernic_limits.h`,
+which sizes every table that holds a region and the count the
+guest is told). That puts the ceiling
 at 15 I/O queues, which ``ionic_datapath_nvmeof_cfg_check()``
 enforces at startup:
 

@@ -13,6 +13,7 @@
 #include <stdbool.h>
 #include <vfio-user/libvfio-user.h>
 
+#include "ernic_limits.h"
 #include "rocm_ernic_compat.h"
 
 struct ionic_eth_emu;
@@ -27,24 +28,17 @@ struct ionic_datapath;
  * controller therefore needs (N + 1) * IONIC_MR_PER_QUEUE regions to be
  * reachable before the first capsule moves.
  *
- * IONIC_MAX_MR sizes three tables that all have to hold that many: the
- * rdma_rm resource table (MAX_MR in src/qemu/rdma_rm_defs.h, which cannot
- * include this header), the data path's own dp_mr array, and the admin
- * queue's driver-id-to-handle map.  Whichever is smallest is the real
- * ceiling, so they are kept equal deliberately.
- *
- * It is not sized for the maximum 64 queues: dp_reg_mr() walks the whole
- * table on every fast registration -- that is, on every NVMe command -- so
- * the constant is also a per-I/O cost, and 2048 covers the default 8 queues
- * with headroom without doubling that walk again.
- * ionic_datapath_nvmeof_cfg_check() rejects a queue count that would not
- * fit.
+ * The device holds ERNIC_MAX_MR (ernic_limits.h), which is not sized for
+ * the maximum 64 queues: dp_reg_mr() walks the whole table on every fast
+ * registration -- that is, on every NVMe command -- so the limit is also a
+ * per-I/O cost, and it covers the default 8 queues with headroom without
+ * doubling that walk again. ionic_datapath_nvmeof_cfg_check() rejects a
+ * queue count that would not fit.
  */
 #define IONIC_MR_PER_QUEUE 128
-#define IONIC_MAX_MR       2048
 
 /* Largest max_queues that fits the budget, admin queue included. */
-#define IONIC_MAX_MR_QUEUES ((IONIC_MAX_MR / IONIC_MR_PER_QUEUE) - 1)
+#define IONIC_MAX_MR_QUEUES ((int)(ERNIC_MAX_MR / IONIC_MR_PER_QUEUE) - 1)
 
 /*
  * Description of a guest-resident ring or memory region as the driver hands

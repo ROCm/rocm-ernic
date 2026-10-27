@@ -557,6 +557,22 @@
   module's directory includes its headers by path from `src/` (e.g.
   `#include "ionic/ionic_datapath.h"`); files within the directory
   include each other by bare name.
+* **The guest is told the RDMA resource counts the device can hold.** It
+  was told 32768 QPs, 65536 CQs (reported as `max_cq` 32768) and 131072
+  memory regions, but the device could hold only 256 QPs, 256 CQs and 2048
+  regions, so creating more failed partway, and each backend sized its own
+  tables differently. The guest now sees 256 QPs, 512 CQs (`max_cq` 256)
+  and 2048 memory regions (`max_mr` 2049, as the driver reserves one), and
+  every table holds that many on every backend, the default `none`
+  included, which held only 256 regions. That is twice the CQs there were
+  room for (the driver spends two on each verbs CQ, so each QP can now have
+  one) and as many QPs and regions; SRQs (256) and address handles (32768)
+  are unchanged. A guest can open 1023 RDMA user
+  contexts, one per doorbell page the device really has, rather than being
+  told 32771. SRQ ids now start at 256 rather than 32768. A `CREATE_CQ` or
+  `CREATE_QP` naming an id at or above the count is refused with
+  `IONIC_RC_EQID` instead of reporting a queue that would never work. The
+  limits are in `src/ernic_limits.h`.
 
 ### Removed
 

@@ -21,6 +21,7 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "byteorder.h"
+#include "ernic_limits.h"
 #include "ionic_datapath.h"
 #include "ionic_datapath_fw.h"
 #include "ionic_datapath_priv.h"
@@ -42,8 +43,8 @@ bool ionic_datapath_nvmeof_cfg_check(const struct nvmeof_target_cfg *cfg,
      * message that names the real limit. */
     snprintf(err, errlen,
              "queues must be 1..%d, one per %d memory regions in a "
-             "table of %d (got '%" PRIu16 "')",
-             IONIC_MAX_MR_QUEUES, IONIC_MR_PER_QUEUE, IONIC_MAX_MR,
+             "table of %u (got '%" PRIu16 "')",
+             IONIC_MAX_MR_QUEUES, IONIC_MR_PER_QUEUE, ERNIC_MAX_MR,
              cfg->max_queues);
     return false;
 }

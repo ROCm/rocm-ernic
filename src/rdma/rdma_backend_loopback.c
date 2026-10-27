@@ -15,8 +15,8 @@
 
 #include "rdma_backend_ops.h"
 #include "rdma_backend_defs.h"
-#include "rdma_rm_defs.h"
 #include "rdma_utils.h"
+#include "ernic_limits.h"
 #include "qemu/thread.h"
 #include "rocm-ernic-warnings.h"
 #include <errno.h>
@@ -139,23 +139,22 @@ static int loopback_query_device(RdmaBackendDev *backend_dev,
                                  struct ibv_device_attr *attr)
 {
     memset(attr, 0, sizeof(*attr));
-    attr->max_qp = 1024;
+    /* The counts size rdma_rm's tables, so they are the device's limits,
+     * not literals: a table smaller than the LIF identity promises is the
+     * real ceiling. A max_mr of 1024 once failed an nvme-rdma connect at
+     * QID 8, which registers 128 regions per queue up front. */
+    attr->max_qp = ERNIC_MAX_QP;
     attr->max_qp_wr = 1024;
-    attr->max_sge = 32;
-    attr->max_cq = 1024;
+    attr->max_sge = ERNIC_MAX_SGE;
+    attr->max_cq = ERNIC_MAX_CQ;
     attr->max_cqe = 8192;
-    /* Sizes rdma_rm's MR table, so it has to be the real ceiling and
-     * not a literal: an nvme-rdma initiator registers queue_size
-     * regions per queue up front, and 8 queues alone want
-     * 8 * 128 + 32 = 1056.  A 1024 here shadowed MAX_MR and failed
-     * the connect at QID 8. */
-    attr->max_mr = MAX_MR;
+    attr->max_mr = ERNIC_MAX_MR;
     attr->max_pd = 1024;
     attr->max_mr_size = 0xFFFFFFFF;
     attr->atomic_cap = IBV_ATOMIC_HCA;
-    attr->max_srq = MAX_SRQ;
+    attr->max_srq = ERNIC_MAX_SRQ;
     attr->max_srq_wr = 1024;
-    attr->max_srq_sge = 32;
+    attr->max_srq_sge = ERNIC_MAX_SRQ_SGE;
     return 0;
 }
 

@@ -22,6 +22,7 @@
 
 #include <vfio-user/libvfio-user.h>
 
+#include "ernic_limits.h"
 #include "ionic_datapath.h"
 #include "net/net_headers.h"
 #include "qemu/thread.h"
@@ -32,19 +33,10 @@
  * -------------------------------------------------------------------------
  */
 
-#define MAX_QP (1u << 15)
-#define MAX_CQ (1u << 16)
-/* The same count ionic_eth_emu.c puts in the LIF identity as the guest's
- * max_srq, so an srq_id the guest is entitled to use always indexes this
- * table. */
-#define MAX_SRQ IONIC_EMU_SRQ_COUNT
-/* Matches the nahs_per_lif the LIF identity advertises, so an ah_id the
- * guest is entitled to allocate always indexes this table. */
-#define MAX_AH (1u << 15)
-/* Sized with the rdma_rm table and the admin queue's map; see
- * IONIC_MAX_MR in ionic_datapath.h for why they have to agree. */
-#define MAX_MR  IONIC_MAX_MR
-#define MAX_SGE 32
+/*
+ * The QP, CQ, SRQ, AH and MR tables hold ernic_limits.h's counts, what the
+ * LIF identity promises the guest, so every id it may use indexes them.
+ */
 
 /* In-flight work requests waiting for a peer instance to answer. */
 #define MAX_PENDING 1024
@@ -306,9 +298,9 @@ struct dp_mr {
 };
 
 struct dp_sge_list {
-    uint64_t va[MAX_SGE];
-    uint32_t len[MAX_SGE];
-    uint32_t lkey[MAX_SGE];
+    uint64_t va[ERNIC_MAX_SGE];
+    uint32_t len[ERNIC_MAX_SGE];
+    uint32_t lkey[ERNIC_MAX_SGE];
     uint32_t count;
     uint32_t total;
 };
@@ -392,7 +384,7 @@ struct ionic_datapath {
     struct ionic_cq_ring *cq;   /* indexed by driver cq_id */
     struct ionic_srq_ring *srq; /* indexed by driver srq_id */
     struct ionic_ah *ah;        /* indexed by driver ah_id */
-    struct dp_mr mr[MAX_MR];
+    struct dp_mr mr[ERNIC_MAX_MR];
 
     uint32_t qp_count;
     uint32_t cq_count;

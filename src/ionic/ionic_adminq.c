@@ -28,6 +28,7 @@
 #include "byteorder.h"
 #include "ernic_dma.h"
 #include "ernic_ib.h"
+#include "ernic_limits.h"
 #include "ionic_adminq.h"
 #include "ionic_adminq_priv.h"
 #include "ionic_datapath.h"
@@ -121,7 +122,7 @@ static int adminq_get_pd(struct ionic_adminq_ctx *ctx, uint32_t *pd_handle)
 static struct ionic_cq_map_entry *adminq_cq_free_entry(
     struct ionic_adminq_ctx *ctx)
 {
-    for (int i = 0; i < MAX_CQ_MAP; i++)
+    for (uint32_t i = 0; i < MAX_CQ_MAP; i++)
         if (!ctx->cq_map[i].valid)
             return &ctx->cq_map[i];
     return NULL;
@@ -132,7 +133,7 @@ static struct ionic_cq_map_entry *adminq_cq_free_entry(
  * slot that holds it.
  *
  * The id has to land inside the datapath's SRQ table, which is indexed by
- * srq_id - IONIC_SRQ_QID_BASE and holds IONIC_EMU_SRQ_COUNT entries. Taking
+ * srq_id - IONIC_SRQ_QID_BASE and holds ERNIC_MAX_SRQ entries. Taking
  * the id from the slot index makes that true by construction: every id this
  * can return is in range, and an id is reusable the moment DESTROY_SRQ frees
  * its slot.
@@ -203,7 +204,7 @@ static void adminq_unmap_srq(struct ionic_adminq_ctx *ctx, uint32_t srq_id)
 static bool adminq_lookup_cq(const struct ionic_adminq_ctx *ctx, uint32_t cq_id,
                              uint32_t *handle)
 {
-    for (int i = 0; i < MAX_CQ_MAP; i++) {
+    for (uint32_t i = 0; i < MAX_CQ_MAP; i++) {
         if (ctx->cq_map[i].valid && ctx->cq_map[i].cq_id == cq_id) {
             *handle = ctx->cq_map[i].handle;
             return true;
@@ -217,7 +218,7 @@ static bool adminq_lookup_cq(const struct ionic_adminq_ctx *ctx, uint32_t cq_id,
 static struct ionic_qp_map_entry *adminq_qp_free_entry(
     struct ionic_adminq_ctx *ctx)
 {
-    for (int i = 0; i < MAX_QP_MAP; i++)
+    for (uint32_t i = 0; i < MAX_QP_MAP; i++)
         if (!ctx->qp_map[i].valid)
             return &ctx->qp_map[i];
     return NULL;
@@ -226,7 +227,7 @@ static struct ionic_qp_map_entry *adminq_qp_free_entry(
 static struct ionic_qp_map_entry *adminq_qp_entry(struct ionic_adminq_ctx *ctx,
                                                   uint32_t qp_id)
 {
-    for (int i = 0; i < MAX_QP_MAP; i++)
+    for (uint32_t i = 0; i < MAX_QP_MAP; i++)
         if (ctx->qp_map[i].valid && ctx->qp_map[i].qp_id == qp_id)
             return &ctx->qp_map[i];
     return NULL;
@@ -247,7 +248,7 @@ static bool adminq_lookup_qp(struct ionic_adminq_ctx *ctx, uint32_t qp_id,
 static bool adminq_lookup_qp_id(const struct ionic_adminq_ctx *ctx,
                                 uint32_t qpn, uint32_t *qp_id)
 {
-    for (int i = 0; i < MAX_QP_MAP; i++) {
+    for (uint32_t i = 0; i < MAX_QP_MAP; i++) {
         if (ctx->qp_map[i].valid && ctx->qp_map[i].qpn == qpn) {
             *qp_id = ctx->qp_map[i].qp_id;
             return true;
@@ -258,7 +259,7 @@ static bool adminq_lookup_qp_id(const struct ionic_adminq_ctx *ctx,
 
 static void adminq_unmap_qp(struct ionic_adminq_ctx *ctx, uint32_t qp_id)
 {
-    for (int i = 0; i < MAX_QP_MAP; i++)
+    for (uint32_t i = 0; i < MAX_QP_MAP; i++)
         if (ctx->qp_map[i].valid && ctx->qp_map[i].qp_id == qp_id)
             ctx->qp_map[i].valid = false;
 }
@@ -268,7 +269,7 @@ static void adminq_unmap_qp(struct ionic_adminq_ctx *ctx, uint32_t qp_id)
 static struct ionic_mr_map_entry *adminq_mr_free_entry(
     struct ionic_adminq_ctx *ctx)
 {
-    for (int i = 0; i < MAX_MR_MAP; i++)
+    for (uint32_t i = 0; i < MAX_MR_MAP; i++)
         if (!ctx->mr_map[i].valid)
             return &ctx->mr_map[i];
     return NULL;
@@ -277,7 +278,7 @@ static struct ionic_mr_map_entry *adminq_mr_free_entry(
 static bool adminq_lookup_mr(const struct ionic_adminq_ctx *ctx, uint32_t mr_id,
                              uint32_t *handle)
 {
-    for (int i = 0; i < MAX_MR_MAP; i++) {
+    for (uint32_t i = 0; i < MAX_MR_MAP; i++) {
         if (ctx->mr_map[i].valid && ctx->mr_map[i].mr_id == mr_id) {
             *handle = ctx->mr_map[i].handle;
             return true;
@@ -288,14 +289,14 @@ static bool adminq_lookup_mr(const struct ionic_adminq_ctx *ctx, uint32_t mr_id,
 
 static void adminq_unmap_mr(struct ionic_adminq_ctx *ctx, uint32_t mr_id)
 {
-    for (int i = 0; i < MAX_MR_MAP; i++)
+    for (uint32_t i = 0; i < MAX_MR_MAP; i++)
         if (ctx->mr_map[i].valid && ctx->mr_map[i].mr_id == mr_id)
             ctx->mr_map[i].valid = false;
 }
 
 static void adminq_unmap_cq(struct ionic_adminq_ctx *ctx, uint32_t cq_id)
 {
-    for (int i = 0; i < MAX_CQ_MAP; i++)
+    for (uint32_t i = 0; i < MAX_CQ_MAP; i++)
         if (ctx->cq_map[i].valid && ctx->cq_map[i].cq_id == cq_id)
             ctx->cq_map[i].valid = false;
 }
@@ -338,7 +339,7 @@ void ionic_adminq_release_all(struct ionic_adminq_ctx *ctx)
         return;
     ionic_datapath_reset_rdma(ctx->dp);
 
-    for (int i = 0; i < MAX_QP_MAP; i++) {
+    for (uint32_t i = 0; i < MAX_QP_MAP; i++) {
         struct ionic_qp_map_entry *e = &ctx->qp_map[i];
 
         if (!e->valid)
@@ -353,13 +354,13 @@ void ionic_adminq_release_all(struct ionic_adminq_ctx *ctx)
             ctx->srq_map[i].valid = false;
         }
     }
-    for (int i = 0; i < MAX_MR_MAP; i++) {
+    for (uint32_t i = 0; i < MAX_MR_MAP; i++) {
         if (ctx->mr_map[i].valid) {
             ionic_rm_dealloc_mr(ctx->pvrdma_handle, ctx->mr_map[i].handle);
             ctx->mr_map[i].valid = false;
         }
     }
-    for (int i = 0; i < MAX_CQ_MAP; i++) {
+    for (uint32_t i = 0; i < MAX_CQ_MAP; i++) {
         if (ctx->cq_map[i].valid) {
             ionic_rm_dealloc_cq(ctx->pvrdma_handle, ctx->cq_map[i].handle);
             ctx->cq_map[i].valid = false;
@@ -622,6 +623,18 @@ static uint8_t handle_create_cq_op(struct ionic_adminq_ctx *ctx,
     uint32_t id_ver = ernic_get_le32(body + 12);
     uint32_t cq_id = id_ver & 0x00ffffffu;
 
+    /*
+     * The driver takes its CQ ids from below the count in the LIF identity,
+     * which is all the data path's table holds. A CQ past it would be
+     * reported created and then never complete anything.
+     */
+    if (cq_id >= ERNIC_MAX_CQ) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_CQ %u: cq_id is not below %u", cq_id,
+                ERNIC_MAX_CQ);
+        return IONIC_RC_EQID;
+    }
+
     /* ionic_admin_create_cq: eq_id[0:3], depth_log2[4], stride_log2[5],
      * dir_size_log2[6], page_size_log2[7], cq_flags[8:11], id_ver[12:15],
      * tbl_index[16:19], map_count[20:23], dma_addr[24:31], dbid_flags[32:33] */
@@ -665,7 +678,7 @@ static uint8_t handle_create_cq_op(struct ionic_adminq_ctx *ctx,
     struct ionic_cq_map_entry *entry = adminq_cq_free_entry(ctx);
     if (!entry) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
-                "ionic_adminq CREATE_CQ %u: CQ map full (%d CQs)", cq_id,
+                "ionic_adminq CREATE_CQ %u: CQ map full (%u CQs)", cq_id,
                 MAX_CQ_MAP);
         return IONIC_RC_ENOSPC;
     }
@@ -733,10 +746,6 @@ static uint8_t ionic_qpt_to_ib(uint8_t ionic_qpt, uint32_t qp_id)
         return IBV_QPT_RC;
     }
 }
-
-/* Mirrors IONIC_MAX_SRQ_SGES in the guest driver's ionic_fw.h. The driver
- * rejects a create whose max_sge exceeds it, so the two have to agree. */
-/* IONIC_MAX_SRQ_SGES now lives in rocm_ernic_compat.h. */
 
 /*
  * Undo a partly built SRQ. Safe at any point after the id is allocated:
@@ -819,12 +828,12 @@ static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
         return IONIC_RC_ERDMA;
     }
 
-    /* max_sge is the device's IONIC_MAX_SRQ_SGES; the ring geometry gives
+    /* max_sge is the device's ERNIC_MAX_SRQ_SGE; the ring geometry gives
      * the depth. Bounded above, so the shift is defined. */
     uint32_t max_wr = 1u << body[26];
     uint32_t srq_handle;
     ret = ionic_rm_alloc_srq(ctx->pvrdma_handle, pd_handle, max_wr,
-                             IONIC_MAX_SRQ_SGES, low_wqes_limit, &srq_handle);
+                             ERNIC_MAX_SRQ_SGE, low_wqes_limit, &srq_handle);
     if (ret) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
                 "ionic_adminq CREATE_SRQ: rdma_rm_alloc_srq failed (%d)", ret);
@@ -1063,6 +1072,14 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
     uint8_t type_state = body[62];
     uint8_t ib_qp_type = ionic_qpt_to_ib(type_state & 0x0fu, qp_id);
 
+    /* As for a CQ: the data path holds QP ids below the identity's count. */
+    if (qp_id >= ERNIC_MAX_QP) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_QP %u: qp_id is not below %u", qp_id,
+                ERNIC_MAX_QP);
+        return IONIC_RC_EQID;
+    }
+
     /*
      * Refused before anything is allocated, like the checks below: an id
      * already in use, which mapped over would lose the QP that had it, and
@@ -1077,7 +1094,7 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
     struct ionic_qp_map_entry *entry = adminq_qp_free_entry(ctx);
     if (!entry) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
-                "ionic_adminq CREATE_QP %u: QP map full (%d QPs)", qp_id,
+                "ionic_adminq CREATE_QP %u: QP map full (%u QPs)", qp_id,
                 MAX_QP_MAP);
         return IONIC_RC_ENOSPC;
     }
@@ -1527,7 +1544,7 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         struct ionic_mr_map_entry *entry = adminq_mr_free_entry(ctx);
         if (!entry) {
             vfu_log(ctx->vfu_ctx, LOG_ERR,
-                    "ionic_adminq CREATE_MR %u: MR map full (%d MRs)", mr_id,
+                    "ionic_adminq CREATE_MR %u: MR map full (%u MRs)", mr_id,
                     MAX_MR_MAP);
             return IONIC_RC_ENOSPC;
         }

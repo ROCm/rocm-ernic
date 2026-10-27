@@ -35,6 +35,7 @@
 #include <unistd.h>
 
 #include "byteorder.h"
+#include "ernic_limits.h"
 #include "fake_vfu.h"
 #include "ionic/ionic_bar.h"
 #include "ionic/ionic_datapath.h"
@@ -57,7 +58,9 @@
 #include "p4_table.h"
 #endif
 #include "pvrdma.h"
+#include "rdma_backend.h"
 #include "rdma_backend_defs.h"
+#include "rdma_backend_ops.h"
 #include "rdma_rm.h"
 #include "rocm_ernic_compat.h"
 /*
@@ -209,8 +212,8 @@ static void test_devcmds(void)
         check(T, rdma[qtypes[i].off] == qtypes[i].qtype,
               "qtype at rdma+%u is %u, expected %u", qtypes[i].off,
               rdma[qtypes[i].off], qtypes[i].qtype);
-    check(T, ernic_get_le32(rdma + 100) == IONIC_EMU_SRQ_COUNT,
-          "srq qid_count is %u", ernic_get_le32(rdma + 100));
+    check(T, ernic_get_le32(rdma + 100) == ERNIC_MAX_SRQ, "srq qid_count is %u",
+          ernic_get_le32(rdma + 100));
     check(T, rdma[113] & 2u, "SRQ qid allocation not advertised");
     check(T, rdma[LIFID_RDMA_ADMIN_OPS] > IH_ADMIN_DESTROY_SRQ,
           "admin_opcodes %u refuses the SRQ commands",
@@ -2024,12 +2027,12 @@ static void test_full_tables(void)
                    fake_vfu_alloc(h->vfu, IH_PAGE_SIZE, IH_PAGE_SIZE));
     ernic_put_le16(body + 40, IH_ACCESS_ALL);
     body[44] = 12;
-    for (n = 2; n <= IONIC_MAX_MR; n++) {
+    for (n = 2; n <= ERNIC_MAX_MR; n++) {
         ernic_put_le32(body + 20, 0x100u + n);
         if ((rc = ih_admin(h, IH_ADMIN_CREATE_MR, body, sizeof(body), NULL)))
             break;
     }
-    check(T, n == IONIC_MAX_MR && rc == IONIC_RC_ENOSPC,
+    check(T, n == ERNIC_MAX_MR && rc == IONIC_RC_ENOSPC,
           "%u MRs, then status %d", n, rc);
 
     /* So REG_MR of an id no CREATE_MR made finds no room, and its key names
@@ -2051,6 +2054,170 @@ static void test_full_tables(void)
                 IH_STS_REMOTE_ACC_ERR);
 
     rc_teardown(T, &r);
+}
+
+/* ---- Device limits ------------------------------------------------------ */
+
+/*
+ * What the identity promises the guest, every table has room for. The
+ * guest was once told 32768 QPs and 65536 CQs by a device whose admin queue
+ * could map 256 of each, so its 257th CREATE failed; and a backend sizes the
+ * resource manager's tables, which the identity knows nothing about. So
+ * this checks the counts the driver reads, the tables every backend sizes,
+ * and that the guest can create a CQ and a QP under every id it may name --
+ * and none past them, which the data path's tables have no room for.
+ */
+
+/* CREATE_CQ of @id, with its ring at @ring; returns as ih_admin() does. */
+static int limits_create_cq(struct ih *h, uint32_t id, uint64_t ring)
+{
+    uint8_t body[34] = {0};
+
+    ernic_put_le32(body + 0, IH_EQ_ID);
+    body[4] = 6;  /* depth_log2: 64 CQEs, */
+    body[5] = 5;  /* of 32 bytes, fill the page */
+    body[7] = 12; /* page_size_log2 */
+    ernic_put_le32(body + 12, id | 1u << 24);
+    ernic_put_le32(body + 20, 1);
+    ernic_put_le64(body + 24, ring);
+    return ih_admin(h, IH_ADMIN_CREATE_CQ, body, sizeof(body), NULL);
+}
+
+/* CREATE_QP of an RC QP @id on CQ @cq, with its rings at @sq and @rq. */
+static int limits_create_qp(struct ih *h, uint32_t id, uint32_t cq, uint64_t sq,
+                            uint64_t rq)
+{
+    uint8_t body[64] = {0};
+
+    ernic_put_le32(body + 8, cq);
+    body[12] = 4; /* depth_log2: 16 WQEs, */
+    body[13] = 7; /* of 128 bytes, in half the page */
+    body[15] = 12;
+    ernic_put_le32(body + 20, 1);
+    ernic_put_le64(body + 24, sq);
+    ernic_put_le32(body + 32, cq);
+    body[36] = 4;
+    body[37] = 7;
+    body[39] = 12;
+    ernic_put_le32(body + 40, 0xffffffffu); /* no SRQ */
+    ernic_put_le32(body + 44, 1);
+    ernic_put_le64(body + 48, rq);
+    ernic_put_le32(body + 56, id | 1u << 24);
+    body[62] = IH_QPT_RC;
+    return ih_admin(h, IH_ADMIN_CREATE_QP, body, sizeof(body), NULL);
+}
+
+static void test_limits(void)
+{
+    static const char T[] = "limits";
+    struct ih h;
+
+    /*
+     * Every backend's query_device(), which sizes the resource manager's
+     * tables, reports the limits. Called directly, since the TCP backend
+     * can't be set up without a mesh; none of them looks at the device.
+     */
+    for (unsigned t = 0; t < RDMA_BACKEND_TYPE_MAX; t++) {
+        const RdmaBackendOps *ops = rdma_backend_get_ops((RdmaBackendType)t);
+        RdmaBackendDev dev;
+        struct ibv_device_attr a;
+
+        if (!check(T, ops && ops->query_device, "backend %u has no query", t))
+            continue;
+        memset(&dev, 0, sizeof(dev));
+        if (!check(T, ops->query_device(&dev, &a) == 0, "%s: query failed",
+                   ops->name))
+            continue;
+        /* A backend that can't make an SRQ has no table for one */
+        int srqs = ops->create_srq ? (int)ERNIC_MAX_SRQ : 0;
+        check(T,
+              a.max_qp == (int)ERNIC_MAX_QP && a.max_cq == (int)ERNIC_MAX_CQ &&
+                  a.max_mr == (int)ERNIC_MAX_MR && a.max_srq == srqs,
+              "%s: %d QPs, %d CQs, %d MRs and %d SRQs, expected %u, %u, %u "
+              "and %d",
+              ops->name, a.max_qp, a.max_cq, a.max_mr, a.max_srq, ERNIC_MAX_QP,
+              ERNIC_MAX_CQ, ERNIC_MAX_MR, srqs);
+    }
+
+    if (!check(T, ih_create(&h, "loopback"), "device not created"))
+        return;
+
+    /* The counts, read where the driver reads them */
+    const uint32_t db_pages = IONIC_BAR2_DB_SIZE / IONIC_DB_PAGE_SIZE;
+    uint8_t cmd[64] = {IH_CMD_IDENTIFY}, comp[16], data[1912];
+    if (check(T, ih_devcmd(&h, cmd, comp, data, 512) == 0, "IDENTIFY failed"))
+        check(T, ernic_get_le32(data + 0x10) == db_pages,
+              "ndbpgs_per_lif is %u, not the %u pages of BAR2",
+              ernic_get_le32(data + 0x10), db_pages);
+    cmd[0] = IH_CMD_LIF_IDENTIFY;
+    if (check(T, ih_devcmd(&h, cmd, comp, data, sizeof(data)) == 0,
+              "LIF_IDENTIFY failed")) {
+        const uint8_t *rdma = data + LIFID_RDMA;
+        static const struct {
+            uint32_t off;
+            const char *what;
+            uint32_t want;
+        } counts[] = {
+            /* The driver never hands out MR index 0 */
+            {8, "nmrs_per_lif", ERNIC_MAX_MR + 1u},
+            {12, "nahs_per_lif", ERNIC_MAX_AH},
+            {36, "aq_qtype.qid_count", ERNIC_MAX_AQ},
+            {48, "sq_qtype.qid_count", ERNIC_MAX_QP},
+            {60, "rq_qtype.qid_count", ERNIC_MAX_QP},
+            {72, "cq_qtype.qid_count", ERNIC_MAX_CQ},
+            {100, "srq_qtype.qid_count", ERNIC_MAX_SRQ},
+        };
+        for (size_t i = 0; i < sizeof(counts) / sizeof(counts[0]); i++)
+            check(T, ernic_get_le32(rdma + counts[i].off) == counts[i].want,
+                  "%s is %u, expected %u", counts[i].what,
+                  ernic_get_le32(rdma + counts[i].off), counts[i].want);
+    }
+
+    if (!check(T, ih_bringup(&h), "bring-up failed")) {
+        teardown(T, &h);
+        return;
+    }
+
+    /*
+     * A CQ under every id the driver can give one but the admin CQ's, all
+     * on one page, since none of them completes anything; then one past the
+     * last, which nothing can hold.
+     */
+    uint64_t page = fake_vfu_alloc(h.vfu, IH_PAGE_SIZE, IH_PAGE_SIZE);
+    uint32_t id;
+    int rc = 0;
+    for (id = 0; id < ERNIC_MAX_CQ; id++)
+        if (id != IH_ACQ_ID && (rc = limits_create_cq(&h, id, page)) != 0)
+            break;
+    check(T, id == ERNIC_MAX_CQ, "CREATE_CQ %u of %u failed with status %d", id,
+          ERNIC_MAX_CQ, rc);
+    rc = limits_create_cq(&h, ERNIC_MAX_CQ, page);
+    check(T, rc == IONIC_RC_EQID, "CREATE_CQ %u: status %d, expected %d",
+          ERNIC_MAX_CQ, rc, IONIC_RC_EQID);
+    rc = limits_create_cq(&h, 0x00ffffffu, page);
+    check(T, rc == IONIC_RC_EQID, "CREATE_CQ 0xffffff: status %d, expected %d",
+          rc, IONIC_RC_EQID);
+
+    /* And a QP under every id, with the rings in two halves of a page */
+    for (id = 0; id < ERNIC_MAX_QP; id++)
+        if ((rc = limits_create_qp(&h, id, 1, page, page + IH_PAGE_SIZE / 2)))
+            break;
+    check(T, id == ERNIC_MAX_QP, "CREATE_QP %u of %u failed with status %d", id,
+          ERNIC_MAX_QP, rc);
+    rc = limits_create_qp(&h, ERNIC_MAX_QP, 1, page, page + IH_PAGE_SIZE / 2);
+    check(T, rc == IONIC_RC_EQID, "CREATE_QP %u: status %d, expected %d",
+          ERNIC_MAX_QP, rc, IONIC_RC_EQID);
+
+    /* The refused ones took nothing */
+    const RdmaDeviceResources *res =
+        &((PVRDMADev *)h.dev->pvrdma_handle)->rdma_dev_res;
+    check(T,
+          res->cq_tbl.used == ERNIC_MAX_CQ - 1u &&
+              res->qp_tbl.used == ERNIC_MAX_QP,
+          "%u CQs and %u QPs in the resource manager, expected %u and %u",
+          res->cq_tbl.used, res->qp_tbl.used, ERNIC_MAX_CQ - 1u, ERNIC_MAX_QP);
+
+    teardown(T, &h);
 }
 
 /* ---- Flush when a QP enters the Error state ----------------------------- */
@@ -2493,7 +2660,7 @@ static void test_srq(void)
     }
     check(T,
           srq.id >= IONIC_SRQ_QID_BASE &&
-              srq.id < IONIC_SRQ_QID_BASE + IONIC_EMU_SRQ_COUNT,
+              srq.id < IONIC_SRQ_QID_BASE + ERNIC_MAX_SRQ,
           "SRQ id %#x is outside the SRQ range", srq.id);
 
     bool ok = ih_cq_create(&h, &cqf, 5, 5) && ih_cq_create(&h, &cqg, 6, 5) &&
@@ -5147,8 +5314,8 @@ static void test_nvmeof_queue_limit(void)
     err[0] = '\0';
     snprintf(want, sizeof(want),
              "queues must be 1..%d, one per %d memory regions in a table of "
-             "%d (got '%d')",
-             IONIC_MAX_MR_QUEUES, IONIC_MR_PER_QUEUE, IONIC_MAX_MR,
+             "%u (got '%d')",
+             IONIC_MAX_MR_QUEUES, IONIC_MR_PER_QUEUE, ERNIC_MAX_MR,
              IONIC_MAX_MR_QUEUES + 1);
     check(T, !ionic_datapath_nvmeof_cfg_check(&cfg, err, sizeof(err)),
           "%d queues accepted", IONIC_MAX_MR_QUEUES + 1);
@@ -5744,6 +5911,7 @@ static const struct {
     {"wrap", test_wrap},
     {"dp-dma", test_dp_dma_faults},
     {"tables", test_full_tables},
+    {"limits", test_limits},
     {"cq-events", test_cq_events},
     {"qp-flush", test_qp_flush},
     {"qp-flush-srq", test_qp_flush_srq},

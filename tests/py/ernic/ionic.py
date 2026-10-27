@@ -161,9 +161,11 @@ GRH_SIZE = 40
 
 # SRQ ids start above the QP id space, and have to: a qtype-7 doorbell
 # carries either a QP id or an SRQ id and the device tells them apart by
-# the number alone (IONIC_SRQ_QID_BASE in src/rocm_ernic_compat.h).
-IONIC_EMU_QP_COUNT_SHARED = 1 << 15
-IONIC_SRQ_QID_BASE = IONIC_EMU_QP_COUNT_SHARED
+# the number alone (IONIC_SRQ_QID_BASE in src/rocm_ernic_compat.h). The
+# QP id space is the QP count the LIF identity gives, ERNIC_MAX_QP in
+# src/ernic_limits.h.
+ERNIC_MAX_QP = 256
+IONIC_SRQ_QID_BASE = ERNIC_MAX_QP
 
 ROCE_UDP_PORT = 4791
 

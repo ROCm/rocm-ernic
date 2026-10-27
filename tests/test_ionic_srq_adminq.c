@@ -12,7 +12,7 @@
  * the return code would not, which is why these assert on both.
  *
  * The other thing pinned here is capacity. max_srq is advertised from
- * IONIC_EMU_SRQ_COUNT, and the id->handle map is sized from the same
+ * ERNIC_MAX_SRQ, and the id->handle map is sized from the same
  * constant, so the two cannot drift. Creating one past the end must FAIL:
  * before, the map logged "full" and returned, while CREATE_SRQ still handed
  * the guest an id that no lookup would ever resolve again -- which surfaces
@@ -41,6 +41,7 @@
 
 #include "byteorder.h"
 #include "ernic_dma.h"
+#include "ernic_limits.h"
 #include "ionic/ionic_adminq_priv.h"
 #include "ionic/ionic_datapath.h"
 #include "rocm_ernic_compat.h"
@@ -454,7 +455,7 @@ int ionic_rm_query_srq(pvrdma_handle_t handle, uint32_t srq_handle,
     if (max_wr)
         *max_wr = 64;
     if (max_sge)
-        *max_sge = IONIC_MAX_SRQ_SGES;
+        *max_sge = ERNIC_MAX_SRQ_SGE;
     if (srq_limit)
         *srq_limit = 8;
     return 0;
@@ -690,7 +691,7 @@ static void test_destroy_releases_everything(void)
 
 /*
  * Capacity, which is the whole point of tying MAX_SRQ_MAP to the advertised
- * IONIC_EMU_SRQ_COUNT. The map holds exactly what max_srq promises, and the
+ * ERNIC_MAX_SRQ. The map holds exactly what max_srq promises, and the
  * one past the end is refused -- not accepted with an id that resolves to
  * nothing, which is what a bare "map full" warning used to produce.
  */
@@ -716,7 +717,7 @@ static void test_map_capacity_is_enforced(void)
 /*
  * Every id the allocator hands out has to index the datapath's SRQ table,
  * which srq_by_qid() addresses as srq_id - IONIC_SRQ_QID_BASE over
- * IONIC_EMU_SRQ_COUNT entries. An id past the end is not caught anywhere
+ * ERNIC_MAX_SRQ entries. An id past the end is not caught anywhere
  * downstream: srq_by_qid() returns NULL, registration does nothing, and the
  * guest is handed a queue that accepts posts and completes none of them.
  */
@@ -733,7 +734,7 @@ static void test_ids_stay_inside_the_datapath_table(void)
             worst = id - IONIC_SRQ_QID_BASE;
     }
     check("range-filled-the-map", i == MAX_SRQ_MAP);
-    check("range-every-id-indexes-the-table", worst < IONIC_EMU_SRQ_COUNT);
+    check("range-every-id-indexes-the-table", worst < ERNIC_MAX_SRQ);
     /* Slot 0 is usable; the counter that preceded this skipped it. */
     check("range-uses-the-first-slot", g_registered_srq_id != 0);
 }
@@ -754,7 +755,7 @@ static void test_ids_are_recycled_across_churn(void)
     ctx_reset();
     for (uint32_t i = 0; i < MAX_SRQ_MAP * 2; i++) {
         id = create_one();
-        if (id == 0 || id - IONIC_SRQ_QID_BASE >= IONIC_EMU_SRQ_COUNT) {
+        if (id == 0 || id - IONIC_SRQ_QID_BASE >= ERNIC_MAX_SRQ) {
             in_range = false;
             break;
         }
@@ -1053,7 +1054,7 @@ static void test_create_qp_body_must_reach_type_state(void)
 /*
  * An SRQ whose id never reaches the guest is one the guest can neither use
  * nor free: it holds a table slot until the device is reset, and the map has
- * only IONIC_EMU_SRQ_COUNT of them. The handler used to skip the response
+ * only ERNIC_MAX_SRQ of them. The handler used to skip the response
  * write when the buffer was too short or its address zero, and then report
  * success -- leaving the driver holding the zero its buffer came with, which
  * names IONIC_SRQ_QID_BASE + 0, a real and probably someone else's queue.

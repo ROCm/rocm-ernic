@@ -32,6 +32,7 @@
 
 #include "byteorder.h"
 #include "ernic_dma.h"
+#include "ernic_limits.h"
 #include "ionic_bar.h"
 #include "ionic_rdma_devcmd.h"
 #include "ionic_eth_emu.h"
@@ -64,9 +65,8 @@
 #define RDMA_QUEUE_STRIDE_OFF  15 /* u8  */
 #define RDMA_QUEUE_DMA_OFF     16 /* le64 */
 
-/* Max queues we track */
+/* Max queues we track; the admin queue count is the LIF identity's */
 #define IONIC_MAX_EQ 32
-#define IONIC_MAX_AQ 4
 
 /* An EQE (struct ionic_v1_eqe) is one be32, so an EQ's stride is at least
  * 2^2: anything smaller and each event would overwrite part of the next. */
@@ -124,7 +124,7 @@ struct ionic_rdma_devcmd_state {
     bool pending_cq_valid;
 
     /* AQ table */
-    struct ionic_rdma_aq aq[IONIC_MAX_AQ];
+    struct ionic_rdma_aq aq[ERNIC_MAX_AQ];
     int aq_count;
 
     /* Admin queue service context (ionic_adminq.c) */
@@ -313,7 +313,7 @@ static void handle_create_cq(struct ionic_rdma_devcmd_state *s,
 static void handle_create_adminq(struct ionic_rdma_devcmd_state *s,
                                  const uint8_t *cmd, uint8_t *comp)
 {
-    if (s->aq_count >= IONIC_MAX_AQ) {
+    if (s->aq_count >= ERNIC_MAX_AQ) {
         vfu_log(s->vfu_ctx, LOG_ERR,
                 "ionic_rdma_devcmd: CREATE_ADMINQ: too many AQs");
         comp[0] = 1;

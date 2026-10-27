@@ -20,6 +20,7 @@
 
 #include <vfio-user/libvfio-user.h>
 
+#include "ernic_limits.h"
 #include "ionic_adminq.h"
 #include "ionic_datapath.h"
 #include "rocm_ernic_compat.h"
@@ -106,22 +107,18 @@ enum ionic_qp_state {
  * Per-AQ ring state
  * -------------------------------------------------------------------------
  */
-#define MAX_AQ     4
-#define MAX_CQ_MAP 256
-#define MAX_QP_MAP 256
-/* Tied to the advertised ceiling, not merely equal to it today: max_srq comes
- * from IONIC_EMU_SRQ_COUNT, and a map smaller than that silently loses the
- * mappings for every SRQ past the end. */
-#define MAX_SRQ_MAP IONIC_EMU_SRQ_COUNT
 /*
- * One entry per region the rdma_rm table can hold.  At 256 against a
- * 1024-entry table, every MR past the 256th was created successfully and then
- * had no map entry, so DESTROY_MR could not resolve its handle and silently
- * dropped it -- leaking the resource for the lifetime of the process.  An
- * nvme-rdma connect allocates 128 regions per queue, so that ceiling was
- * reached two queues in.
+ * One entry for each queue or region the LIF identity lets the guest create,
+ * from ernic_limits.h: a map smaller than that is the device's real ceiling,
+ * whatever the guest was told. The CQ and QP maps were once 256 entries
+ * against a promise of 65536 and 32768, so the guest's 257th CREATE failed.
+ * A map is searched linearly, so a much larger limit wants an indexed one.
  */
-#define MAX_MR_MAP IONIC_MAX_MR
+#define MAX_AQ      ERNIC_MAX_AQ
+#define MAX_CQ_MAP  ERNIC_MAX_CQ
+#define MAX_QP_MAP  ERNIC_MAX_QP
+#define MAX_SRQ_MAP ERNIC_MAX_SRQ
+#define MAX_MR_MAP  ERNIC_MAX_MR
 
 struct ionic_aq_ring {
     bool valid;

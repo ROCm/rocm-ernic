@@ -21,6 +21,7 @@
 
 #include <vfio-user/libvfio-user.h>
 
+#include "ernic_limits.h"
 #include "ionic_bar.h"
 #include "ionic_emu_stats.h"
 #include "ionic_eth_emu.h"
@@ -258,17 +259,29 @@
  * validates against it.
  */
 #define IONIC_NPTS_PER_LIF  (1u << 31) /* 2G PTEs -> 4 TiB max_mr_size */
-#define IONIC_NMRS_PER_LIF  (1u << 17) /* 128K MRs              */
-#define IONIC_NAHS_PER_LIF  (1u << 15) /* 32K AHs               */
 #define IONIC_MAX_STRIDE    9          /* log2(512) bytes/WQE   */
 #define IONIC_PAGE_SIZE_CAP (1u << 12) /* 4K pages supported     */
 
-/* Number of emulated AQs we report in LIF identity; the EQ count is the
- * profile's queues.rdma_eqs. */
-#define IONIC_EMU_AQ_COUNT   4
-#define IONIC_EMU_QP_COUNT   (1u << 15)
-#define IONIC_EMU_CQ_COUNT   (1u << 16)
-#define IONIC_EMU_UDMA_SHIFT 3 /* 8 queues per group */
+/*
+ * The resource counts the LIF identity advertises come from ernic_limits.h,
+ * which explains them; the EQ count is the profile's queues.rdma_eqs.
+ * nmrs_per_lif is one more than the device holds, because the driver never
+ * hands out MR index 0.
+ */
+#define IONIC_EMU_NMRS_PER_LIF (ERNIC_MAX_MR + 1u)
+#define IONIC_EMU_UDMA_SHIFT   3 /* 8 queues per group */
+
+/*
+ * The driver's udma count, which it fixes rather than reading it from the
+ * identity (ionic_lif_cfg.c); rsvd_dimensions repeats it. Each udma gets
+ * half the QP and CQ ids, in groups of 2^udma_shift (ionic_bitid_to_qid()),
+ * so each half has to hold at least one whole group.
+ */
+#define IONIC_UDMA_COUNT 2u
+_Static_assert(ERNIC_MAX_QP / IONIC_UDMA_COUNT >= 1u << IONIC_EMU_UDMA_SHIFT,
+               "a udma's half of the QP ids is smaller than one group");
+_Static_assert(ERNIC_MAX_CQ / IONIC_UDMA_COUNT >= 1u << IONIC_EMU_UDMA_SHIFT,
+               "a udma's half of the CQ ids is smaller than one group");
 
 /* Room for the most Ethernet Tx/Rx queue pairs a profile can offer; the
  * LIF advertises the profile's queues.eth of them. */

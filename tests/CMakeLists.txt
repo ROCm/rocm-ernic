@@ -1516,10 +1516,13 @@ set_tests_properties(pvrdma-stats-unit PROPERTIES TIMEOUT 30)
 # one DMA at a time in the admin queue, the data path and Ethernet,
 # tables fills the EQ, admin queue and MR tables, and wrap sends lengths
 # and registers regions whose sums or ends carry past 2^32 or 2^64.
+# limits checks that the counts the LIF identity promises are what every
+# backend's tables hold, and fills the CQ and QP ids to the last.
 # nvmeof-queues refuses more NVMe-oF queues than the MR table can serve.
 set(ERNIC_HARNESS_GROUPS
     devcmds bringup rdma-reset rdma-reset-frees admin admin-dma rc atomic
-    wrap dp-dma tables cq-events qp-flush qp-flush-srq ud srq eth eth-dma
+    wrap dp-dma tables limits cq-events qp-flush qp-flush-srq ud srq eth
+    eth-dma
     nvmeof nvmeof-queues s3 teardown backend-names none loopback-pair)
 if(ERNIC_BUILD_P4)
     list(APPEND ERNIC_HARNESS_GROUPS p4-port fp8-map p4-rdma p4-cvt p4-cvt-map
