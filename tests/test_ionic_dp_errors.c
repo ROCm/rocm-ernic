@@ -701,6 +701,8 @@ static void wire_feed(struct ionic_datapath *dp)
     static uint8_t buf[WIRE_MAX][WIRE_BYTES];
     size_t len[WIRE_MAX];
 
+    (void)dp;
+
     memcpy(buf, g_wire, sizeof(buf));
     memcpy(len, g_wire_len, sizeof(len));
     g_nwire = 0;

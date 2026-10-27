@@ -49,41 +49,29 @@ void ernic_dma_destroy(struct ernic_dma *dma)
     free(dma);
 }
 
+/* dma_xfer_piece()'s answer for a piece that needs too many entries */
+#define DMA_PIECE_TOO_BIG 1
+
 /*
- * The transfer behind ernic_dma_read() and ernic_dma_write(): exactly one of
- * @rbuf, the destination of a read, and @wbuf, the source of a write, is
- * non-NULL.
+ * Copy one piece of a transfer, of a non-zero @len, through one list.
+ * Returns 0, DMA_PIECE_TOO_BIG if the piece needs more entries than the list
+ * holds (and is more than one byte, so it can be halved), or a negative
+ * errno. Exactly one of @rbuf, the destination of a read, and @wbuf, the
+ * source of a write, is non-NULL.
  */
-static int dma_xfer(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx, uint64_t gpa,
-                    uint8_t *rbuf, const uint8_t *wbuf, size_t len)
+static int dma_xfer_piece(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx,
+                          uint64_t gpa, uint8_t *rbuf, const uint8_t *wbuf,
+                          size_t len)
 {
     size_t done = 0;
     int cnt;
 
-    if (!ernic_dma_range_ok(gpa, len))
-        return -EINVAL;
-    /* libvfio-user maps a zero length to no entries, and vfu_sgl_get()
-     * can't take none. */
-    if (!len)
-        return 0;
-
     cnt = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)gpa, len, dma->sg,
                           ERNIC_DMA_SGL_MAX, wbuf ? PROT_WRITE : PROT_READ);
-    if (cnt < -1 && len > 1) {
-        /*
-         * -(entries needed) - 1, with errno 0: more host mappings than
-         * there's room for. Map each half on its own. A span of n bytes
-         * needs at most n entries, so halving ends by the time the pieces
-         * are ERNIC_DMA_SGL_MAX bytes long, and the list is free again
-         * before each half is mapped.
-         */
-        size_t half = len / 2;
-        int rc = dma_xfer(dma, vfu_ctx, gpa, rbuf, wbuf, half);
-        if (rc < 0)
-            return rc;
-        return dma_xfer(dma, vfu_ctx, gpa + half, rbuf ? rbuf + half : NULL,
-                        wbuf ? wbuf + half : NULL, len - half);
-    }
+    /* -(entries needed) - 1, with errno 0: more host mappings than there's
+     * room for. */
+    if (cnt < -1 && len > 1)
+        return DMA_PIECE_TOO_BIG;
     if (cnt <= 0)
         return -EIO;
 
@@ -108,6 +96,45 @@ static int dma_xfer(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx, uint64_t gpa,
         vfu_sgl_mark_dirty(vfu_ctx, dma->sg, nsg);
     vfu_sgl_put(vfu_ctx, dma->sg, dma->iov, nsg);
     return done == len ? 0 : -EIO;
+}
+
+/*
+ * The transfer behind ernic_dma_read() and ernic_dma_write(): exactly one of
+ * @rbuf, the destination of a read, and @wbuf, the source of a write, is
+ * non-NULL.
+ */
+static int dma_xfer(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx, uint64_t gpa,
+                    uint8_t *rbuf, const uint8_t *wbuf, size_t len)
+{
+    size_t done = 0;
+    size_t piece = len;
+
+    if (!ernic_dma_range_ok(gpa, len))
+        return -EINVAL;
+
+    /*
+     * A piece that needs more entries than one list holds is halved until
+     * it fits, and then the rest is tried whole. A span of n bytes needs at
+     * most n entries, so halving ends by the time a piece is
+     * ERNIC_DMA_SGL_MAX bytes long, and the list is free again before each
+     * piece is mapped. A zero length isn't mapped at all: libvfio-user maps
+     * it to no entries, and vfu_sgl_get() can't take none.
+     */
+    while (done < len) {
+        int rc =
+            dma_xfer_piece(dma, vfu_ctx, gpa + done, rbuf ? rbuf + done : NULL,
+                           wbuf ? wbuf + done : NULL, piece);
+
+        if (rc < 0)
+            return rc;
+        if (rc == DMA_PIECE_TOO_BIG) {
+            piece /= 2;
+            continue;
+        }
+        done += piece;
+        piece = len - done;
+    }
+    return 0;
 }
 
 int ernic_dma_read(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx, uint64_t gpa,

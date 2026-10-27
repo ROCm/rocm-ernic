@@ -84,8 +84,11 @@ void ernic_log_set_level(ErnicLogLevel lvl)
  * Threads that make the first call together all read the environment, but
  * only the one whose compare-exchange stores the result warns about a bad
  * value, and a level that ernic_log_set_level() stored in the meantime
- * isn't overwritten.  (pthread_once() would deadlock instead: the warning
- * logs, which calls back into this function.)
+ * isn't overwritten.
+ *
+ * The warning is written as ernic_vlog() would write it, but not through
+ * it, which would call back into this function.  A bad value leaves the
+ * level at the default, ERNIC_LOG_WARN, so ernic_vlog() would print it.
  */
 ErnicLogLevel ernic_log_get_level(void)
 {
@@ -110,10 +113,11 @@ ErnicLogLevel ernic_log_get_level(void)
         if (atomic_compare_exchange_strong(&g_log_level, &cur, (int)lvl)) {
             cur = (int)lvl;
             if (invalid) {
-                ernic_log(ERNIC_LOG_WARN,
-                          "Ignoring invalid ERNIC_LOG_LEVEL='%s' "
-                          "(expected none|error|warn|info|debug)",
-                          env);
+                fprintf(stderr,
+                        "WARN: Ignoring invalid ERNIC_LOG_LEVEL='%s' "
+                        "(expected none|error|warn|info|debug)\n",
+                        env);
+                fflush(stderr);
             }
         }
     }

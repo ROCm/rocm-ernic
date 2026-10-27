@@ -121,6 +121,10 @@ cmake --build build
   `-Wdocumentation-pedantic` reports as unknown commands. Clang checks
   that each `@param` names a real parameter. A plain `/*` comment isn't
   checked.
+- **Remove a parameter nothing needs.** Where a function pointer's type
+  requires one the function doesn't use (a backend's ops, a library
+  callback), write `(void)name;` in the function: `-Wunused-parameter`
+  and clang-tidy's `misc-unused-parameters` both report it otherwise.
 - **Include a project header by its path from `src/`**
   (`"pvrdma/rdma_rm.h"`, `"p4/p4_engine.h"`, `"byteorder.h"`), even from
   a file in the same directory: IWYU spells a header one way, so a bare

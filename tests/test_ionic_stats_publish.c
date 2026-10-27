@@ -78,7 +78,8 @@ static const uint8_t mac_bcast[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
 static uint8_t g_frame[2048];
 
-static const uint8_t *make_frame(const uint8_t dst[6], size_t len)
+/* A frame to dst, filling all of g_frame: callers take what they need. */
+static const uint8_t *make_frame(const uint8_t dst[6])
 {
     memset(g_frame, 0x3c, sizeof(g_frame));
     memcpy(g_frame, dst, 6);
@@ -223,7 +224,7 @@ static void tx_one(struct ionic_eth_emu *emu, uint64_t addr, uint16_t len)
 static void tx_frame(struct ionic_eth_emu *emu, const uint8_t dst[6],
                      uint16_t len)
 {
-    memcpy(g_mem + TX_BUF, make_frame(dst, len), len);
+    memcpy(g_mem + TX_BUF, make_frame(dst), len);
     tx_one(emu, TX_BUF, len);
 }
 
@@ -254,7 +255,7 @@ static void rx_tap(struct ionic_eth_emu *emu, const uint8_t dst[6], size_t len)
     static int fake_net;
 
     emu->net = (struct ionic_eth_net *)&fake_net;
-    g_net_rx_frame = make_frame(dst, len);
+    g_net_rx_frame = make_frame(dst);
     g_net_rx_len = len;
     ionic_eth_emu_poll_rx(emu);
 }
@@ -814,7 +815,7 @@ static void port_reset_then_reinit(char *got, size_t len)
     port_init(emu, PORT_PA);
     setup_rxq(emu, 2, RX_BUF_CAP);
     rx_tap(emu, mac_bcast, 42);
-    ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast, 64), 64);
+    ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast), 64);
     devcmd(emu, IONIC_CMD_PORT_RESET, 0);
     port_init(emu, PORT_PA);
     memset(g_mem, POISON, sizeof(g_mem));
@@ -1016,7 +1017,7 @@ static void inbox_no_buffer(char *got, size_t len)
     struct ionic_eth_emu *emu = new_emu(1000);
 
     setup_rxq(emu, 0, RX_BUF_CAP);
-    ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast, 64), 64);
+    ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast), 64);
     ionic_eth_emu_poll_rx(emu);
     snprintf(got, len,
              "rx_ucast_drop %" PRIu64 ", rx_queue_empty %" PRIu64
@@ -1031,8 +1032,8 @@ static void inbox_too_big_then_ok(char *got, size_t len)
     struct ionic_eth_emu *emu = new_emu(1000);
 
     setup_rxq(emu, 2, 64);
-    ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast, 100), 100);
-    ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast, 60), 60);
+    ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast), 100);
+    ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast), 60);
     ionic_eth_emu_poll_rx(emu);
     snprintf(got, len,
              "rx_ucast %" PRIu64 ", rx_ucast_drop %" PRIu64
@@ -1049,7 +1050,7 @@ static void inbox_full(char *got, size_t len)
     int rc = 0;
 
     for (unsigned int i = 0; i <= ETH_INBOX_MAX_FRAMES; i++)
-        rc = ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_bcast, 64), 64);
+        rc = ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_bcast), 64);
     snprintf(got, len, "last rc %d, rx_bcast_drop %" PRIu64 "/%" PRIu64, rc,
              counter(emu, IONIC_LIF_RX_BCAST_DROP_PACKETS),
              counter(emu, IONIC_LIF_RX_BCAST_DROP_BYTES));
@@ -1112,7 +1113,7 @@ static void inbox_wait_port(char *got, size_t len)
     uint64_t waiting;
 
     setup_rxq(emu, 0, RX_BUF_CAP);
-    ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast, 64), 64);
+    ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast), 64);
     ionic_eth_emu_poll_rx(emu);
     ionic_eth_emu_poll_rx(emu);
     waiting = port_counter(emu, IONIC_PORT_FRAMES_RX_ALL);
@@ -1132,8 +1133,8 @@ static void inbox_too_long_port(char *got, size_t len)
     struct ionic_eth_emu *emu = new_emu_mtu1000();
 
     setup_rxq(emu, 2, RX_BUF_CAP);
-    ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast, 1019), 1019);
-    ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast, 60), 60);
+    ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast), 1019);
+    ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast), 60);
     ionic_eth_emu_poll_rx(emu);
     snprintf(got, len,
              "frames_rx_too_long %" PRIu64 ", rx_ucast %" PRIu64
@@ -1164,7 +1165,7 @@ static void inbox_full_port(char *got, size_t len)
     struct ionic_eth_emu *emu = new_emu(1000);
 
     for (unsigned int i = 0; i <= ETH_INBOX_MAX_FRAMES; i++)
-        ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_bcast, 64), 64);
+        ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_bcast), 64);
     snprintf(got, len,
              "frames_rx_all %" PRIu64 ", frames_rx_broadcast %" PRIu64
              ", frames_rx_65b_127b %" PRIu64 ", frames_rx_dropped %" PRIu64,
@@ -1398,7 +1399,7 @@ static void fault_inbox_held(char *got, size_t len)
         attach_fault(emu, "eth_rx: after 2 effect drop");
 
     setup_rxq(emu, 0, RX_BUF_CAP);
-    ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast, 64), 64);
+    ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast), 64);
     for (int i = 0; i < 3; i++)
         ionic_eth_emu_poll_rx(emu);
     snprintf(got, len,
@@ -1416,7 +1417,7 @@ static void fault_inbox_nobuf(char *got, size_t len)
         attach_fault(emu, "eth_rx: every 1 effect nobuf");
 
     setup_rxq(emu, 1, RX_BUF_CAP);
-    ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast, 64), 64);
+    ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast), 64);
     ionic_eth_emu_poll_rx(emu);
     snprintf(got, len,
              "rx_ucast_drop %" PRIu64 ", rx_queue_empty %" PRIu64
@@ -1689,8 +1690,7 @@ static void file_inbox_folded(char *got, size_t len)
     size_t n;
 
     /* The inbox overflow counter, folded by the writer. */
-    ionic_emu_stats_rx_inbox_full(&emu->stats, make_frame(mac_ucast, 64), 64,
-                                  0);
+    ionic_emu_stats_rx_inbox_full(&emu->stats, make_frame(mac_ucast), 64, 0);
     text = stats_text(emu, &n);
     again = stats_text(emu, &n);
     snprintf(got, len,

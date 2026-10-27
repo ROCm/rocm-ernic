@@ -142,6 +142,17 @@ static bool cq_empty(struct ih *h, struct ih_cq *cq)
     return !ih_cq_poll(h, cq, &e);
 }
 
+/* Poll @n completions from @cq, leaving the last in @e. */
+static bool cq_poll_n(struct ih *h, struct ih_cq *cq, unsigned n,
+                      struct ih_cqe *e)
+{
+    for (unsigned i = 0; i < n; i++) {
+        if (!ih_cq_poll(h, cq, e))
+            return false;
+    }
+    return true;
+}
+
 /* Drain the EQ, counting the events for @cq_id. */
 static unsigned eq_count(struct ih *h, uint32_t cq_id)
 {
@@ -2655,8 +2666,7 @@ static void test_ud(void)
     s.qkey = UD_QKEY;
     s.dest_qpn = 22;
     ih_post_send(&h, &c, &s);
-    check(T, ih_cq_poll(&h, &cqc, &e) && ih_cq_poll(&h, &cqc, &e),
-          "refused UD sends did not complete");
+    check(T, cq_poll_n(&h, &cqc, 2, &e), "refused UD sends did not complete");
     check(T, cq_empty(&h, &cqd), "a refused datagram was delivered");
 
     /* Unsignalled, and naming an AH that was never created: delivered all

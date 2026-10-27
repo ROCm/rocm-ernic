@@ -44,6 +44,20 @@
 #define POLL_TRIES    2000
 #define POLL_DELAY_US 1000
 
+/*
+ * The next of a run of test values from @state, by SplitMix64, which takes
+ * any seed. Not rand(), so that the printed seed gives the same values
+ * whatever the C library.
+ */
+static uint64_t next_test_value(uint64_t *state)
+{
+    uint64_t z = (*state += UINT64_C(0x9e3779b97f4a7c15));
+
+    z = (z ^ (z >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+    z = (z ^ (z >> 27)) * UINT64_C(0x94d049bb133111eb);
+    return z ^ (z >> 31);
+}
+
 /* Bounded poll for a single completion. Returns 0 on success, -1 on
  * timeout or poll error. */
 static int poll_one(struct ibv_cq *cq, struct ibv_wc *wc)
@@ -83,6 +97,7 @@ int main(void)
     int ndev;
     int it;
     uint32_t seed;
+    uint64_t state;
     enum ernic_device_result lookup;
 
     dev_list = ibv_get_device_list(&ndev);
@@ -239,12 +254,12 @@ int main(void)
     }
 
     seed = (uint32_t)getpid() ^ (uint32_t)time(NULL);
-    srand(seed);
+    state = seed;
     printf("seed=%" PRIu32 "\n", seed);
 
     for (it = 0; it < ITERATIONS; it++) {
         uint64_t recv_wr_id = UINT64_C(0x5245435632494d4d) + (uint64_t)it;
-        uint32_t imm = (uint32_t)rand();
+        uint32_t imm = (uint32_t)(next_test_value(&state) >> 32);
         struct ibv_sge rsge, wsge;
         struct ibv_recv_wr rwr;
         struct ibv_recv_wr *bad_r = NULL;
@@ -267,7 +282,7 @@ int main(void)
         }
 
         for (int i = 0; i < PAYLOAD_LEN; i++)
-            src_buf[i] = (unsigned char)(rand() & 0xff);
+            src_buf[i] = (unsigned char)(next_test_value(&state) & 0xff);
 
         memset(&wsge, 0, sizeof(wsge));
         wsge.addr = (uintptr_t)src_buf;

@@ -579,6 +579,8 @@ static void tcp_fini(RdmaBackendDev *backend_dev)
 static int tcp_query_device(RdmaBackendDev *backend_dev,
                             struct ibv_device_attr *attr)
 {
+    (void)backend_dev;
+
     memset(attr, 0, sizeof(*attr));
     /*
      * The counts size rdma_rm's tables (rdma_rm_init()), and nothing else
@@ -632,6 +634,8 @@ static int tcp_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
     TcpBackendPrivate *priv = get_private(backend_dev);
     uint32_t handle;
 
+    (void)pd;
+
     if (!priv) {
         return -EINVAL;
     }
@@ -651,6 +655,9 @@ static int tcp_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
 static int tcp_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, void *addr,
                          size_t length, uint64_t guest_start, int access)
 {
+    (void)pd;
+    (void)addr;
+    (void)guest_start;
     (void)access;
 
     mr->ibmr = NULL;
@@ -661,6 +668,8 @@ static int tcp_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, void *addr,
 
 static void tcp_destroy_mr(RdmaBackendMR *mr)
 {
+    (void)mr;
+
     rdma_info_report("TCP: Destroyed MR");
 }
 
@@ -715,6 +724,14 @@ static int tcp_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
     TcpBackendPrivate *priv = get_private(scq->backend_dev);
     uint32_t qpn;
 
+    (void)pd;
+    (void)rcq;
+    (void)srq;
+    (void)max_send_wr;
+    (void)max_recv_wr;
+    (void)max_send_sge;
+    (void)max_recv_sge;
+
     if (!priv) {
         return -EINVAL;
     }
@@ -732,6 +749,9 @@ static int tcp_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
 static void tcp_destroy_qp(RdmaBackendQP *qp, RdmaDeviceResources *dev_res)
 {
     uint32_t qpn = (uint32_t)(uintptr_t)qp->ibqp;
+
+    (void)dev_res;
+
     rdma_info_report("TCP: Destroyed QP qpn=%u", qpn);
 }
 
@@ -747,6 +767,9 @@ static uint32_t tcp_qpn(const RdmaBackendQP *qp)
 static int tcp_qp_state_init(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                              uint8_t qp_type, uint32_t qkey)
 {
+    (void)qp_type;
+    (void)qkey;
+
     if (!get_private(backend_dev)) {
         return -EINVAL;
     }
@@ -769,6 +792,11 @@ static int tcp_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     uint32_t qpn = (uint32_t)(uintptr_t)qp->ibqp;
     char gidbuf[TCP_GID_STR_LEN];
     uint32_t resolved;
+
+    (void)sgid_idx;
+    (void)rq_psn;
+    (void)qkey;
+    (void)qkey_set;
 
     if (!priv) {
         return -EINVAL;
@@ -826,6 +854,8 @@ static int tcp_qp_state_rts(RdmaBackendQP *qp, uint8_t qp_type, uint32_t sq_psn,
 
 static int tcp_get_backend_gid_index(RdmaBackendDev *backend_dev, int sgid_idx)
 {
+    (void)backend_dev;
+
     return sgid_idx;
 }
 
@@ -837,6 +867,8 @@ static int tcp_create_srq(RdmaBackendSRQ *srq, RdmaBackendPD *pd,
                           uint32_t max_wr, uint32_t max_sge, uint32_t srq_limit)
 {
     TcpSRQ *tsrq = g_new0(TcpSRQ, 1);
+
+    (void)pd;
 
     tsrq->max_wr = max_wr;
     tsrq->max_sge = max_sge;

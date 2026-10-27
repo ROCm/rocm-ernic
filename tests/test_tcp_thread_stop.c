@@ -1042,6 +1042,16 @@ static bool wait_for_type(int fd, TcpMsgType type, int timeout_ms)
     return false;
 }
 
+/* wait_for_type() @n times, each given @timeout_ms of its own. */
+static bool wait_for_types(int fd, TcpMsgType type, unsigned n, int timeout_ms)
+{
+    for (unsigned i = 0; i < n; i++) {
+        if (!wait_for_type(fd, type, timeout_ms))
+            return false;
+    }
+    return true;
+}
+
 /* ---- The whole backend ------------------------------------------------- */
 
 /*
@@ -4483,8 +4493,7 @@ static const char *reap_young(TcpBackendPrivate *priv, uint16_t port,
     /* As a worker answers, so no pass finds the worker silent and closes it */
     if (!send_heartbeat(w, 1))
         return "could not answer the health check";
-    if (!wait_for_type(w, TCP_MSG_HEARTBEAT, 3000) ||
-        !wait_for_type(w, TCP_MSG_HEARTBEAT, 3000))
+    if (!wait_for_types(w, TCP_MSG_HEARTBEAT, 2, 3000))
         return "the health check didn't make two passes";
     pfd.fd = fd;
     pfd.events = POLLIN;
@@ -8206,9 +8215,13 @@ static int run_wl_case(const struct wl_case *c)
  */
 static _Thread_local bool g_fail_malloc;
 
-/* The names are --wrap's, so they are reserved identifiers by necessity. */
+/*
+ * The names are --wrap's, so they are reserved identifiers by necessity, and
+ * they can't be static, since the linker has to find them.
+ */
 ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_OFF
 /* NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c) */
+/* NOLINTBEGIN(misc-use-internal-linkage) */
 void *__real_malloc(size_t size);
 void *__wrap_malloc(size_t size);
 
@@ -8221,6 +8234,7 @@ void *__wrap_malloc(size_t size)
     }
     return __real_malloc(size);
 }
+/* NOLINTEND(misc-use-internal-linkage) */
 /* NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c) */
 ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_ON
 

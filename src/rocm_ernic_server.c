@@ -166,6 +166,8 @@ static void vfu_log_cb(vfu_ctx_t *vfu_ctx, int level, const char *msg)
 {
     const char *prefix = "rocm-ernic";
 
+    (void)vfu_ctx;
+
     switch (level) {
     case LOG_EMERG:
     case LOG_ALERT:
@@ -501,7 +503,7 @@ static int device_init(rocm_ernic_dev_t *dev)
  * Setup PCI configuration for the emulated ionic device.  Returns 0, or -1
  * after saying why.
  */
-static int setup_pci_config(vfu_ctx_t *vfu_ctx, const rocm_ernic_dev_t *dev)
+static int setup_pci_config(vfu_ctx_t *vfu_ctx)
 {
     int ret;
 
@@ -1412,7 +1414,7 @@ static int setup_vfu_device(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     int ret;
 
     /* Setup PCI configuration and BARs, which say why they failed */
-    if (setup_pci_config(vfu_ctx, dev) < 0 || setup_bars(vfu_ctx, dev) < 0) {
+    if (setup_pci_config(vfu_ctx) < 0 || setup_bars(vfu_ctx, dev) < 0) {
         return -1;
     }
 

@@ -57,6 +57,9 @@ Checks:
 
   # IWYU checks the includes (iwyu.yml), as in hipObject
   - -misc-include-cleaner
+  # It wants C11's Annex K functions, such as memcpy_s(), which glibc
+  # doesn't have and rocm-ernic won't use
+  - -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
 
   # TODO: These checks report problems in the current code. Fix the code
   # and delete the check's line here, or move it to "Not wanted" with a
@@ -88,20 +91,10 @@ Checks:
   # finds can change with the set of checks
   - -clang-analyzer-optin.taint.TaintedAlloc  # TODO(1)
   - -clang-analyzer-security.ArrayBound  # TODO(2)
-  # It wants C11's Annex K functions, such as memcpy_s(), which glibc
-  # doesn't have
-  - -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling  # TODO(1454)
   - -clang-analyzer-unix.Stream  # TODO(1)
   - -cppcoreguidelines-avoid-non-const-global-variables  # TODO(210)
   - -cppcoreguidelines-init-variables  # TODO(843)
   - -cppcoreguidelines-interfaces-global-init  # TODO(1)
-  - -misc-no-recursion  # TODO(4)
-  - -misc-predictable-rand  # TODO(2)
-  - -cert-msc30-c  # TODO: the same check
-  - -cert-msc50-cpp  # TODO: the same check
-  - -misc-redundant-expression  # TODO(2)
-  - -misc-unused-parameters  # TODO(86)
-  - -misc-use-internal-linkage  # TODO(5)
   - -modernize-avoid-c-style-cast  # TODO(19)
   - -modernize-macro-to-enum  # TODO(1191)
   - -cppcoreguidelines-macro-to-enum  # TODO: the same check
