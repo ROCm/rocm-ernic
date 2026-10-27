@@ -356,7 +356,7 @@ static const struct {
     {"nqn=nvmet-test", true, "explicit nqn"},
     {"ip=10.0.0.1,port=4421", true, "address override"},
     {"queues=4", true, "queue count"},
-    {"queues=15", true, "queue count at the MR ceiling"},
+    {"queues=64", true, "queue count at NVMEOF_MAX_QUEUES"},
     {"model=widget,serial=SN1", true, "identify strings"},
     {"size=64M,bs=4096,nsid=1", true, "combination"},
     {"size", false, "missing ="},
@@ -378,8 +378,7 @@ static const struct {
     {"port=0x1145", false, "hex port"},
     {"nsid=-1", false, "negative nsid"},
     {"queues=0", false, "zero queues"},
-    {"queues=16", false, "one queue past the MR ceiling"},
-    {"queues=65", false, "too many queues"},
+    {"queues=65", false, "one queue past NVMEOF_MAX_QUEUES"},
     {"nonsense=1", false, "unknown key"},
 };
 

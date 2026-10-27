@@ -606,9 +606,9 @@ static int tcp_query_device(RdmaBackendDev *backend_dev,
      *
      * Note what this does NOT do. No receive is served from here. Every
      * ionic receive, local and off the TCP mesh alike, is satisfied by
-     * deliver_recv() in ionic_datapath.c, reading either the destination
-     * QP's own RQ ring or -- for a QP bound to one -- the SRQ's ring,
-     * straight out of guest memory. This backend has no receive queues.
+     * ionic_dp_deliver_recv() in ionic_datapath.c, reading either the
+     * destination QP's own RQ ring or -- for a QP bound to one -- the SRQ's
+     * ring, straight out of guest memory. This backend has no receive queues.
      *
      * So for ionic this value only sizes the rdma_rm table the adminq
      * handler allocates out of. The datapath half it used to disclaim is

@@ -1423,6 +1423,11 @@ Where to Look in the Source
      - RDMA control path
    * - ``src/ionic/ionic_datapath.c``
      - RDMA data path and inter-server wire protocol
+   * - ``src/ionic/ionic_datapath_nvmeof.c``,
+       ``src/ionic/ionic_datapath_s3.c``,
+       ``src/ionic/ionic_datapath_p4.c``
+     - The data path's side of the NVMe-oF and S3 targets and
+       the P4 pipeline
    * - ``src/ernic_dma.c``
      - Copying to and from guest memory, for all of the above
    * - ``src/rocm_ernic_compat.c``, ``.h``

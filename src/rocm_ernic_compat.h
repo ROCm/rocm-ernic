@@ -513,12 +513,13 @@ typedef bool (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node, void *buf,
  *
  * STRIDE: 2^8. The driver's SRQ WQE is 64 bytes, so this is two doublings
  * of headroom above anything real, and it fits the WQE buffer the receive
- * path reads into (rwqe in deliver_recv(), which ionic_datapath.c
+ * path reads into (rwqe in ionic_dp_deliver_recv(), which ionic_datapath.c
  * static-asserts).
  *
  * The stride needs a floor as well as a ceiling, and for a different
- * reason. deliver_recv() reads min(stride, sizeof rwqe) bytes and then
- * takes the work request id from offset 0 and the SGE count from offset 9.
+ * reason. ionic_dp_deliver_recv() reads min(stride, sizeof rwqe) bytes and
+ * then takes the work request id from offset 0 and the SGE count from
+ * offset 9.
  * A stride below the payload offset leaves those bytes unwritten, so the
  * receive is driven by whatever was on the stack. 2^5 is that offset --
  * ionic_datapath.c static-asserts the two agree -- and the driver asks for

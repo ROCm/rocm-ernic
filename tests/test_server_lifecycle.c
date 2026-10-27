@@ -601,6 +601,25 @@ static const struct lifecycle_case cases[] = {
      .want_dropped = 0,
      .want_shutdown = 0,
      .want_line = "nvmeof backend: cannot open"},
+    /* The controller would take 16, but the device's MR table can't
+     * register for them; refused at startup, not when the guest connects */
+    {.category = "negative",
+     .description = "an nvmeof backend with more queues than the MR table "
+                    "serves",
+     .expected = "the server exits non-zero before creating the socket",
+     .backend = "nvmeof:size=1M,queues=16",
+     .want_socket = false,
+     .want_gone = true,
+     .settle = false,
+     .action = IDLE,
+     .clients = 0,
+     .sig = 0,
+     .sigs = 0,
+     .want_exit = -1,
+     .want_dropped = 0,
+     .want_shutdown = 0,
+     .want_line = "nvmeof backend: queues must be 1..15, one per 128 memory "
+                  "regions in a table of 2048 (got '16')"},
     {.category = "negative",
      .description = "TCP mesh worker whose manager accepts it and never "
                     "answers",

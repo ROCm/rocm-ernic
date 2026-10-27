@@ -46,7 +46,7 @@
 
 #include "byteorder.h"
 #include "ernic_err.h"
-#include "ionic/ionic_datapath.h" /* IONIC_MAX_MR_QUEUES, the queue ceiling */
+#include "nvmeof.h"
 #include "nvmeof_target.h"
 #include "nvmeof_target_priv.h"
 #include "parse_int.h"
@@ -219,18 +219,10 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
             }
         } else if (strcmp(key, "queues") == 0) {
             uint32_t v;
-            if (!ernic_parse_u32(val, &v) || v == 0 ||
-                v > IONIC_MAX_MR_QUEUES) {
-                /* The ceiling is the memory-region budget, not the NVMe spec:
-                 * the initiator pre-allocates IONIC_MR_PER_QUEUE regions per
-                 * queue at connect time.  Refusing here turns what was a bare
-                 * "invalid arguments/configuration" from nvme connect, long
-                 * after startup, into a message that names the real limit. */
-                ernic_set_err(
-                    err, errlen,
-                    "queues must be 1..%d, one per %d memory regions in a "
-                    "table of %d (got '%s')",
-                    IONIC_MAX_MR_QUEUES, IONIC_MR_PER_QUEUE, IONIC_MAX_MR, val);
+            if (!ernic_parse_u32(val, &v) || v == 0 || v > NVMEOF_MAX_QUEUES) {
+                /* A transport may allow fewer, and checks that itself. */
+                ernic_set_err(err, errlen, "queues must be 1..%d (got '%s')",
+                              NVMEOF_MAX_QUEUES, val);
                 ok = false;
             } else {
                 cfg->max_queues = (uint16_t)v;

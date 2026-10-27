@@ -37,6 +37,9 @@ struct nvmeof_dma_ops {
                         uint32_t len);
 };
 
+/* The most I/O queues the controller offers.  A transport may allow fewer. */
+#define NVMEOF_MAX_QUEUES 64
+
 struct nvmeof_target_cfg {
     char subnqn[NVMEOF_NQN_FIELD];
     char serial[21];
@@ -48,7 +51,7 @@ struct nvmeof_target_cfg {
     uint32_t nsid;
     uint32_t traddr;     /* target IPv4, host byte order */
     uint16_t trsvcid;    /* target port */
-    uint16_t max_queues; /* I/O queues offered to the host */
+    uint16_t max_queues; /* I/O queues offered, 1..NVMEOF_MAX_QUEUES */
     uint16_t queue_depth;
 };
 

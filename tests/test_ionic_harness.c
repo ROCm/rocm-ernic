@@ -45,12 +45,14 @@
 #include "ionic/ionic_status.h"
 #include "nvmeof/nvmeof.h"
 #include "nvmeof/nvmeof_cm.h"
+#include "nvmeof/nvmeof_target.h"
 #ifdef ERNIC_HAVE_P4
 #include "p4_devcmd.h"
 #include "p4_engine.h"
 #include "p4_fp8.h"
 #include "p4_fmt.h"
 #include "p4_port.h"
+#include "p4_program.h"
 #include "p4_table.h"
 #endif
 #include "pvrdma.h"
@@ -5115,6 +5117,56 @@ static void test_nvmeof(void)
     teardown(T, &h);
 }
 
+/*
+ * The device takes no more NVMe-oF queues than its memory-region table can
+ * register for, IONIC_MR_PER_QUEUE each. The server checks the options
+ * with ionic_datapath_nvmeof_cfg_check() at startup, and attaching refuses
+ * them too, so a caller that skipped the check gets no controller.
+ */
+static void test_nvmeof_queue_limit(void)
+{
+    static const char T[] = "nvmeof-queues";
+    struct nvmeof_target_cfg cfg;
+    char err[256], want[256];
+    struct ih h;
+
+    nvmeof_target_cfg_defaults(&cfg);
+    cfg.size = 1u << 20;
+
+    cfg.max_queues = IONIC_MAX_MR_QUEUES;
+    err[0] = '\0';
+    check(T, ionic_datapath_nvmeof_cfg_check(&cfg, err, sizeof(err)),
+          "%d queues refused: %s", IONIC_MAX_MR_QUEUES, err);
+
+    cfg.max_queues = IONIC_MAX_MR_QUEUES + 1;
+    err[0] = '\0';
+    snprintf(want, sizeof(want),
+             "queues must be 1..%d, one per %d memory regions in a table of "
+             "%d (got '%d')",
+             IONIC_MAX_MR_QUEUES, IONIC_MR_PER_QUEUE, IONIC_MAX_MR,
+             IONIC_MAX_MR_QUEUES + 1);
+    check(T, !ionic_datapath_nvmeof_cfg_check(&cfg, err, sizeof(err)),
+          "%d queues accepted", IONIC_MAX_MR_QUEUES + 1);
+    check(T, strcmp(err, want) == 0, "refused with '%s', not '%s'", err, want);
+
+    if (!check(T, ih_create(&h, "none"), "device not created"))
+        return;
+    err[0] = '\0';
+    check(
+        T,
+        !ionic_datapath_attach_nvmeof(h.dev->ionic_dp, &cfg, err, sizeof(err)),
+        "a controller with %d queues attached", IONIC_MAX_MR_QUEUES + 1);
+    check(T, strcmp(err, want) == 0, "attach refused with '%s', not '%s'", err,
+          want);
+
+    cfg.max_queues = IONIC_MAX_MR_QUEUES;
+    check(T,
+          ionic_datapath_attach_nvmeof(h.dev->ionic_dp, &cfg, err, sizeof(err)),
+          "a controller with %d queues did not attach: %s", IONIC_MAX_MR_QUEUES,
+          err);
+    teardown(T, &h);
+}
+
 /* ---- The S3 store's RDMA data plane ------------------------------------- */
 
 #define S3H_BACKEND    "s3:size=1M"
@@ -5705,6 +5757,7 @@ static const struct {
     {"p4-devcmd-errors", test_p4_devcmd_errors},
 #endif
     {"nvmeof", test_nvmeof},
+    {"nvmeof-queues", test_nvmeof_queue_limit},
     {"s3", test_s3},
     {"teardown", test_teardown},
     {"backend-names", test_backend_names},

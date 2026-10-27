@@ -25,9 +25,6 @@
 /* An IB management datagram is always 256 bytes. */
 #define IB_MAD_SIZE 256
 
-/* A received UD datagram is preceded by a 40-byte global route header. */
-#define IB_GRH_SIZE 40
-
 /*
  * QP numbers handed out for the controller side of each connection.
  * They have to be 24-bit values the guest will accept in MODIFY_QP, and

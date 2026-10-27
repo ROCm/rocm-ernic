@@ -200,8 +200,8 @@ threads (`qemu_thread_create()`).
   another struct only when the code reaches the lock through the same
   object (`conn->priv->lock`, not a `priv` it can't tell is the same). It
   doesn't follow a lock taken conditionally (`if (sr) lock`, later `if
-  (sr) unlock`); pair them, as `deliver_recv()` does. A GLib table's
-  contents are opaque to it, so the pointer to the table is what's
+  (sr) unlock`); pair them, as `ionic_dp_deliver_recv()` does. A GLib
+  table's contents are opaque to it, so the pointer to the table is what's
   annotated. Where it can't follow correct code (setup before an object
   is shared, teardown after its threads are joined, a read that the field's
   comment explains is safe without the lock), wrap the smallest region in
@@ -315,6 +315,14 @@ scanned too). Add new general patterns here when a scanner reports one.
   `src/ionic/ionic_adminq_priv.h`) and lists the module's `.c` in
   `tests/CMakeLists.txt`. Only the module and its tests include that
   header; prefix its functions with the module name.
+- **Ignoring the result of a function a test stubs out**
+  (`cpp/useless-expression`). CodeQL resolves a call to every definition
+  of its callee in any target the file is built into, so where a unit
+  test links a no-op stub (`ionic_eth_emu_queue_rx_frame()` in
+  `tests/test_ionic_cq_arm.c`), a bare call statement in `src/` has "no
+  effect". Check the result, or if dropping it is right, cast the call
+  to `(void)` with a comment saying why, as `dp_s3_tx_frame()` in
+  `ionic_datapath_s3.c` does.
 - **`${{ }}` in a workflow `run:` block** (zizmor `template-injection`)
   for any value not fixed in the workflow, even one read from a repo
   file: it's pasted in before the shell parses it. Map it to `env:` and
