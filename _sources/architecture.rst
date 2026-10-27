@@ -334,7 +334,7 @@ Inside the Server
        │                      table, data copies, CQEs, the  │
        │                      inter-server wire protocol     │
        └──────┬───────────────────────────┬──────────────────┘
-              │ ionic_rm_*, ionic_mesh_*  │ attach
+              │ ernic_rm_*, ernic_mesh_*  │ attach
               ▼                           ▼
        rocm_ernic_compat.c          src/nvmeof/, src/s3/
        (bridge; only file that      in-process targets;
@@ -395,10 +395,14 @@ still say "pvrdma":
   pluggable **backend** through the vtable in
   ``src/rdma/rdma_backend_ops.h``.
 
-The ionic admin queue reaches these through the ``ionic_rm_*()``
+The ionic admin queue reaches these through the ``ernic_rm_*()``
 wrappers in ``rocm_ernic_compat.c``, which is the only file that
-includes the QEMU headers. Today the core's jobs in the ionic
-world are:
+includes the QEMU headers. The front end sees the core only
+through four small headers, each included only where it's used:
+``rocm_ernic_compat.h`` creates and destroys it, and
+``ernic_rm.h``, ``ernic_mesh.h``, and ``ernic_stats.h`` declare
+the wrappers for the resource manager, the mesh, and the
+statistics. Today the core's jobs in the ionic world are:
 
 #. Bookkeeping and limits for each object the guest creates.
 #. Recording each QP's state and passing the INIT, RTR, and RTS
@@ -409,7 +413,7 @@ world are:
    it, the admin queue refuses the MODIFY_QP before the core
    sees it, and the TCP backend would fail the RTR transition
    anyway (see `More Than One VM: the TCP Mesh`_).
-#. Carrying the TCP mesh, through the ``ionic_mesh_*()``
+#. Carrying the TCP mesh, through the ``ernic_mesh_*()``
    wrappers.
 #. Statistics: the device and per-QP counters the guest reads
    as ``hw_counters`` (through the admin queue's statistics
@@ -1446,9 +1450,12 @@ Where to Look in the Source
        the P4 pipeline
    * - ``src/ernic_dma.c``
      - Copying to and from guest memory, for all of the above
-   * - ``src/rocm_ernic_compat.c``, ``.h``
-     - Bridge to the QEMU-derived core; mesh wrappers; shared
-       limits
+   * - ``src/rocm_ernic_compat.c``, ``.h``,
+       ``src/ernic_rm.h``, ``src/ernic_mesh.h``,
+       ``src/ernic_stats.h``
+     - Bridge to the QEMU-derived core: the device's lifecycle,
+       and wrappers for the resource manager, the mesh, and the
+       statistics
    * - ``src/qemu/``
      - Resource manager and backend dispatch, forked from QEMU
    * - ``src/rdma/rdma_backend_*.c``
