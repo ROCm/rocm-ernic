@@ -725,11 +725,10 @@ backend to measure the small-block path.</p>
 and allocates a pool of <strong>128 memory regions per queue</strong> at
 connect time – admin queue included – rather than per I/O. An
 N-queue controller therefore needs <code class="docutils literal notranslate"><span class="pre">(N</span> <span class="pre">+</span> <span class="pre">1)</span> <span class="pre">*</span> <span class="pre">128</span></code> regions
-before the first capsule moves, and the emulator’s table is a
-fixed <code class="docutils literal notranslate"><span class="pre">IONIC_MAX_MR</span></code> = 2048
-(<code class="file docutils literal notranslate"><span class="pre">src/ionic/ionic_datapath.h</span></code>, which also sizes
-<code class="docutils literal notranslate"><span class="pre">MAX_MR</span></code> in <code class="file docutils literal notranslate"><span class="pre">src/qemu/rdma_rm_defs.h</span></code> and in
-<code class="file docutils literal notranslate"><span class="pre">src/ionic/ionic_datapath_priv.h</span></code>). That puts the ceiling
+before the first capsule moves, and the emulator’s tables hold
+a fixed <code class="docutils literal notranslate"><span class="pre">ERNIC_MAX_MR</span></code> = 2048 (<code class="file docutils literal notranslate"><span class="pre">src/ernic_limits.h</span></code>,
+which sizes every table that holds a region and the count the
+guest is told). That puts the ceiling
 at 15 I/O queues, which <code class="docutils literal notranslate"><span class="pre">ionic_datapath_nvmeof_cfg_check()</span></code>
 enforces at startup:</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Error: nvmeof backend: queues must be 1..15, one per 128
