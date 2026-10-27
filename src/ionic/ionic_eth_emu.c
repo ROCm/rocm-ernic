@@ -1354,11 +1354,17 @@ void ionic_eth_emu_handle_q_identify(const struct ionic_eth_emu *emu,
 /* -------------------------------------------------------------------------
  * Q_INIT (opcode 40)
  *
- * The driver calls this to initialise admin queue, notifyq, and (optionally)
- * rxq/txq.  We stub it: return success so the driver proceeds to call
- * ionic_auxbus_register().
+ * The driver calls this to initialise the admin queue (over the devcmd
+ * window), the notifyq, and each rxq/txq (over the admin queue).  A queue
+ * that can't be set up is refused with a non-zero status, and left as it
+ * was: the driver fails the queue's init and never rings its doorbell.
  * -------------------------------------------------------------------------
  */
+
+/* eth_queue.depth is a uint16_t, so 2^15 is the deepest ring it holds.  The
+ * driver never asks for more than 2^14 (IONIC_MAX_RX_DESC). */
+#define ETH_Q_MAX_RING_SIZE 15u
+
 void ionic_eth_emu_handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
                                  uint8_t *comp)
 {
@@ -1387,24 +1393,40 @@ void ionic_eth_emu_handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
     /* ring_size is the guest's exponent, and isn't checked until further
      * down, so it is logged as one rather than shifted by. */
     vfu_log(emu->vfu_ctx, LOG_INFO,
-            "ionic_eth_emu: Q_INIT qtype=%u index=%u intr=%u depth=2^%u "
-            "ring=%#" PRIx64 " cq=%#" PRIx64,
+            "ionic_eth_emu: Q_INIT qtype=%u index=%" PRIu32
+            " intr=%u depth=2^%u ring=%#" PRIx64 " cq=%#" PRIx64,
             qtype, index, intr_index, ring_size, ring_base, cq_ring_base);
 
-    if (qtype < IONIC_QTYPE_ETH_MAX && index < eth_qcount(emu) &&
-        ring_size < 16) {
-        struct eth_queue *q = &emu->eth_q[qtype][index];
-        *q = (struct eth_queue){
-            .valid = true,
-            .intr_index = intr_index,
-            .ring_base = ring_base,
-            .cq_ring_base = cq_ring_base,
-            .sg_ring_base = sg_ring_base,
-            .depth = (uint16_t)(1u << ring_size),
-            /* ionic_cq_init() starts with done_color = 1. */
-            .cq_color = 1,
-        };
+    uint8_t status = IONIC_RC_SUCCESS;
+
+    if (qtype >= IONIC_QTYPE_ETH_MAX)
+        status = IONIC_RC_EQTYPE;
+    else if (index >= eth_qcount(emu))
+        status = IONIC_RC_EQID;
+    else if (ring_size > ETH_Q_MAX_RING_SIZE)
+        status = IONIC_RC_ERANGE;
+
+    if (status != IONIC_RC_SUCCESS) {
+        vfu_log(emu->vfu_ctx, LOG_ERR,
+                "ionic_eth_emu: Q_INIT qtype=%u index=%" PRIu32
+                " depth=2^%u refused (qtype below %d, index below %" PRIu32
+                ", depth at most 2^%u)",
+                qtype, index, ring_size, IONIC_QTYPE_ETH_MAX, eth_qcount(emu),
+                ETH_Q_MAX_RING_SIZE);
+        comp[0] = status;
+        return;
     }
+
+    emu->eth_q[qtype][index] = (struct eth_queue){
+        .valid = true,
+        .intr_index = intr_index,
+        .ring_base = ring_base,
+        .cq_ring_base = cq_ring_base,
+        .sg_ring_base = sg_ring_base,
+        .depth = (uint16_t)(1u << ring_size),
+        /* ionic_cq_init() starts with done_color = 1. */
+        .cq_color = 1,
+    };
 
     /* ionic_q_init_comp layout:
      *   [0]   u8   status
@@ -1420,7 +1442,7 @@ void ionic_eth_emu_handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
      * Ethernet admin path, the exact hw_index is not critical since
      * ionic_rdma.ko handles the RDMA doorbell page independently.
      */
-    comp[0] = 0;                     /* status OK */
+    comp[0] = IONIC_RC_SUCCESS;      /* status    */
     comp[1] = 0;                     /* rsvd      */
     ernic_put_le16(comp + 2, 0);     /* comp_index */
     ernic_put_le32(comp + 4, index); /* hw_index as le32 */
