@@ -516,7 +516,7 @@ modules are needed:
 ``fetch-ionic-sources`` sparse-clones only the two ionic
 subtrees --- ``drivers/net/ethernet/pensando/ionic`` and
 ``drivers/infiniband/hw/ionic`` --- from
-``IONIC_KERNEL_REF`` (default ``v7.2.4``) and applies
+``IONIC_KERNEL_REF`` (default ``v7.2.6``) and applies
 ``ansible/files/patches/*.patch`` in filename order with
 ``git am``. The
 DKMS package is registered as ``ionic-ernic``.
@@ -531,12 +531,12 @@ DKMS package is registered as ``ionic-ernic``.
    The ionic sources track IB-core helpers that move between
    minor releases --- ``v7.2.4`` sources on a 7.0 kernel fail
    on ``ib_umem_get_va``, ``ib_copy_validate_udata_in`` and
-   ``ib_respond_udata`` --- so the default ``v7.2.4`` needs a
+   ``ib_respond_udata`` --- so the default ``v7.2.6`` needs a
    7.2.x guest. A point-release gap (``v7.2.4`` sources on
-   7.2.3) is fine. No Ubuntu stock kernel qualifies today:
+   7.2.6) is fine. No Ubuntu stock kernel qualifies today:
    noble HWE is 6.17 and resolute GA is 7.0, so the guest
    image bakes a mainline kernel from the Ubuntu mainline
-   PPA --- the ``ionic`` flavour pins 7.2.3 --- and
+   PPA --- the ``ionic`` flavour pins 7.2.6 --- and
    ``ernic_guest_setup`` asserts the match before it starts
    the DKMS build.
 

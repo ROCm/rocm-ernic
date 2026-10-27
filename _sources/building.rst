@@ -265,7 +265,7 @@ Build Options
      - Enable the DKMS targets that build the patched
        upstream ionic guest modules (see :doc:`ionic`)
    * - ``IONIC_KERNEL_REF``
-     - ``v7.2.4``
+     - ``v7.2.6``
      - Linux kernel tag or SHA the ionic sources are fetched
        from; must be ``v6.18`` or newer
    * - ``IONIC_KERNEL_REPO``

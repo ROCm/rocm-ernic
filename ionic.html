@@ -961,7 +961,7 @@ sudo<span class="w"> </span>cmake<span class="w"> </span>--build<span class="w">
 <p><code class="docutils literal notranslate"><span class="pre">fetch-ionic-sources</span></code> sparse-clones only the two ionic
 subtrees — <code class="docutils literal notranslate"><span class="pre">drivers/net/ethernet/pensando/ionic</span></code> and
 <code class="docutils literal notranslate"><span class="pre">drivers/infiniband/hw/ionic</span></code> — from
-<code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code> (default <code class="docutils literal notranslate"><span class="pre">v7.2.4</span></code>) and applies
+<code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code> (default <code class="docutils literal notranslate"><span class="pre">v7.2.6</span></code>) and applies
 <code class="docutils literal notranslate"><span class="pre">ansible/files/patches/*.patch</span></code> in filename order with
 <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">am</span></code>. The
 DKMS package is registered as <code class="docutils literal notranslate"><span class="pre">ionic-ernic</span></code>.</p>
@@ -974,12 +974,12 @@ older refs cannot supply the RDMA half of the stack.</p>
 The ionic sources track IB-core helpers that move between
 minor releases — <code class="docutils literal notranslate"><span class="pre">v7.2.4</span></code> sources on a 7.0 kernel fail
 on <code class="docutils literal notranslate"><span class="pre">ib_umem_get_va</span></code>, <code class="docutils literal notranslate"><span class="pre">ib_copy_validate_udata_in</span></code> and
-<code class="docutils literal notranslate"><span class="pre">ib_respond_udata</span></code> — so the default <code class="docutils literal notranslate"><span class="pre">v7.2.4</span></code> needs a
+<code class="docutils literal notranslate"><span class="pre">ib_respond_udata</span></code> — so the default <code class="docutils literal notranslate"><span class="pre">v7.2.6</span></code> needs a
 7.2.x guest. A point-release gap (<code class="docutils literal notranslate"><span class="pre">v7.2.4</span></code> sources on
-7.2.3) is fine. No Ubuntu stock kernel qualifies today:
+7.2.6) is fine. No Ubuntu stock kernel qualifies today:
 noble HWE is 6.17 and resolute GA is 7.0, so the guest
 image bakes a mainline kernel from the Ubuntu mainline
-PPA — the <code class="docutils literal notranslate"><span class="pre">ionic</span></code> flavour pins 7.2.3 — and
+PPA — the <code class="docutils literal notranslate"><span class="pre">ionic</span></code> flavour pins 7.2.6 — and
 <code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code> asserts the match before it starts
 the DKMS build.</p>
 </div>
