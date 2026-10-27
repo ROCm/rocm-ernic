@@ -286,11 +286,17 @@ static const char *in_dir(char *buf, size_t len, const char *name)
     return buf;
 }
 
-/* Make a UNIX socket file at @path with mode @mode.  Exits on failure. */
-static void make_socket(const char *path, mode_t mode)
+/*
+ * Make a UNIX socket file at @path, mode 0600, as the server does: the
+ * kernel applies the umask to the socket it creates, so there's no window
+ * with another mode and no chmod() by name.  Exits on failure.
+ */
+static void make_socket(const char *path)
 {
     struct sockaddr_un sa;
     int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    mode_t old_mask;
+    int rc;
 
     memset(&sa, 0, sizeof(sa));
     sa.sun_family = AF_UNIX;
@@ -299,10 +305,28 @@ static void make_socket(const char *path, mode_t mode)
         setup_failed("making socket", path);
     }
     memcpy(sa.sun_path, path, strlen(path) + 1);
-    if (fd < 0 || bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0 ||
-        chmod(path, mode) < 0)
+    if (fd < 0)
+        setup_failed("making socket", path);
+    old_mask = umask(0177);
+    rc = bind(fd, (struct sockaddr *)&sa, sizeof(sa));
+    umask(old_mask);
+    if (rc < 0)
         setup_failed("making socket", path);
     close(fd);
+}
+
+/*
+ * Give @name in the scratch directory mode @mode.  It's named relative to
+ * the directory, not by its path, so the change can only land on what's in
+ * the scratch directory.  Exits on failure.
+ */
+static void set_mode(const char *name, mode_t mode)
+{
+    int dfd = open(g_dir, O_PATH | O_DIRECTORY | O_CLOEXEC);
+
+    if (dfd < 0 || fchmodat(dfd, name, mode, 0) < 0)
+        setup_failed("chmod", name);
+    close(dfd);
 }
 
 /* Make a regular file at @path, mode 0600.  Exits on failure. */
@@ -465,7 +489,7 @@ static void test_remove_stale(void)
     check_said(test, NULL);
 
     test = "remove_stale: a socket at the path";
-    make_socket(path, 0600);
+    make_socket(path);
     capture_begin();
     check(test, ernic_socket_remove_stale(path), "refused");
     capture_end();
@@ -484,7 +508,7 @@ static void test_remove_stale(void)
     /* lstat(), not stat(): the link is what's at the path. */
     test = "remove_stale: a symlink to a socket at the path";
     in_dir(target, sizeof(target), "target.sock");
-    make_socket(target, 0600);
+    make_socket(target);
     make_symlink(target, path);
     capture_begin();
     check(test, !ernic_socket_remove_stale(path), "accepted");
@@ -534,7 +558,7 @@ static void test_remove_stale_relative(void)
 
     if (cwd < 0 || chdir(g_dir) < 0)
         setup_failed("changing to", g_dir);
-    make_socket("rel.sock", 0600);
+    make_socket("rel.sock");
     capture_begin();
     check(test, ernic_socket_remove_stale("rel.sock"), "refused");
     capture_end();
@@ -544,7 +568,7 @@ static void test_remove_stale_relative(void)
 
     /* The directory is "." here, from strdup() rather than strndup(). */
     test = "remove_stale: no memory for a relative path's directory";
-    make_socket("rel.sock", 0600);
+    make_socket("rel.sock");
     fail_next(FAIL_STRDUP, ENOMEM);
     capture_begin();
     check(test, !ernic_socket_remove_stale("rel.sock"), "accepted");
@@ -567,7 +591,7 @@ static void test_remove_stale_failures(void)
     in_dir(path, sizeof(path), "x.sock");
 
     test = "remove_stale: no memory for the directory";
-    make_socket(path, 0600);
+    make_socket(path);
     fail_next(FAIL_STRNDUP, ENOMEM);
     capture_begin();
     check(test, !ernic_socket_remove_stale(path), "accepted");
@@ -597,127 +621,131 @@ static void test_remove_stale_failures(void)
 
 /* ---- ernic_socket_access_ok() ------------------------------------------ */
 
-static void test_access_ok(void)
+/*
+ * Check @path with ernic_socket_access_ok(), letting in @want_gid and
+ * comparing against @created (either may be NULL), and check that it
+ * accepts it if @want_ok, or refuses it saying @want_said.  *@st gets what
+ * was checked.
+ */
+static void access_row(const char *test, const char *path,
+                       const gid_t *want_gid, const struct stat *created,
+                       bool want_ok, const char *want_said, struct stat *st)
+{
+    capture_begin();
+    check(test, ernic_socket_access_ok(path, want_gid, created, st) == want_ok,
+          want_ok ? "refused" : "accepted");
+    capture_end();
+    check_said(test, want_said);
+}
+
+/* *st is what was checked, and @created picks out one socket. */
+static void test_access_ok_identity(void)
 {
     char path[128], other[128];
     struct stat created, other_st, st;
+
+    in_dir(path, sizeof(path), "x.sock");
+    in_dir(other, sizeof(other), "other.sock");
+    make_socket(path);
+    make_socket(other);
+    lstat_or_die(path, &created);
+    lstat_or_die(other, &other_st);
+
+    memset(&st, 0, sizeof(st));
+    access_row("access_ok: a socket only its owner can use", path, NULL, NULL,
+               true, NULL, &st);
+    check("access_ok: a socket only its owner can use",
+          st.st_ino == created.st_ino && S_ISSOCK(st.st_mode),
+          "*st isn't what was checked");
+    access_row("access_ok: the socket found earlier", path, NULL, &created,
+               true, NULL, &st);
+    access_row("access_ok: another socket than the one found earlier", path,
+               NULL, &other_st, false,
+               "is no longer the socket the server created", &st);
+    clear_dir();
+}
+
+/*
+ * The mode must be exactly 0600, or 0660 with the group to let in, and
+ * that group the socket's.
+ */
+static void test_access_ok_mode(void)
+{
+    char path[128];
+    struct stat st;
     gid_t gid = getgid();
     gid_t not_gid = gid + 1;
-    const char *test;
+
+    in_dir(path, sizeof(path), "x.sock");
+    make_socket(path);
+
+    set_mode("x.sock", 0640);
+    access_row("access_ok: mode 0640", path, NULL, NULL, false,
+               "is mode 0640, not 0600", &st);
+
+    set_mode("x.sock", 0660);
+    access_row("access_ok: mode 0660 without a group to let in", path, NULL,
+               NULL, false, "is mode 0660, not 0600", &st);
+    access_row("access_ok: mode 0660 and the group to let in", path, &gid, NULL,
+               true, NULL, &st);
+    access_row("access_ok: mode 0660 and another group", path, &not_gid, NULL,
+               false, "has group", &st);
+
+    set_mode("x.sock", 0600);
+    access_row("access_ok: mode 0600 with a group to let in", path, &gid, NULL,
+               false, "is mode 0600, not 0660", &st);
+    clear_dir();
+}
+
+/* Any access ACL is refused, and so is not being able to tell. */
+static void test_access_ok_acl(void)
+{
+    char path[128];
+    struct stat st;
+
+    in_dir(path, sizeof(path), "x.sock");
+    make_socket(path);
+
+    acl_present = true;
+    access_row("access_ok: an ACL", path, NULL, NULL, false, "has an ACL", &st);
+    acl_present = false;
+
+    fail_next(FAIL_LGETXATTR, EIO);
+    access_row("access_ok: the ACL can't be read", path, NULL, NULL, false,
+               "cannot check the ACL", &st);
+    check("access_ok: the ACL can't be read", fail_happened(),
+          "lgetxattr() wasn't called");
+
+    /* A file system without ACLs can't have one on the socket. */
+    fail_next(FAIL_LGETXATTR, ENOTSUP);
+    access_row("access_ok: a file system without ACLs", path, NULL, NULL, true,
+               NULL, &st);
+    check("access_ok: a file system without ACLs", fail_happened(),
+          "lgetxattr() wasn't called");
+    clear_dir();
+}
+
+/* Only a socket is accepted, checked as it is, without following a link. */
+static void test_access_ok_not_socket(void)
+{
+    char path[128], other[128];
+    struct stat st;
 
     in_dir(path, sizeof(path), "x.sock");
     in_dir(other, sizeof(other), "other.sock");
 
-    test = "access_ok: a socket only its owner can use";
-    make_socket(path, 0600);
-    memset(&st, 0, sizeof(st));
-    capture_begin();
-    check(test, ernic_socket_access_ok(path, NULL, NULL, &st), "refused");
-    capture_end();
-    check_said(test, NULL);
-    lstat_or_die(path, &created);
-    check(test, st.st_ino == created.st_ino && S_ISSOCK(st.st_mode),
-          "*st isn't what was checked");
+    access_row("access_ok: nothing at the path", path, NULL, NULL, false,
+               "cannot stat socket", &st);
 
-    test = "access_ok: the socket found earlier";
-    capture_begin();
-    check(test, ernic_socket_access_ok(path, NULL, &created, &st), "refused");
-    capture_end();
-    check_said(test, NULL);
-
-    test = "access_ok: another socket than the one found earlier";
-    make_socket(other, 0600);
-    lstat_or_die(other, &other_st);
-    capture_begin();
-    check(test, !ernic_socket_access_ok(path, NULL, &other_st, &st),
-          "accepted");
-    capture_end();
-    check_said(test, "is no longer the socket the server created");
-
-    test = "access_ok: mode 0640";
-    if (chmod(path, 0640) < 0)
-        setup_failed("chmod", path);
-    capture_begin();
-    check(test, !ernic_socket_access_ok(path, NULL, NULL, &st), "accepted");
-    capture_end();
-    check_said(test, "is mode 0640, not 0600");
-
-    test = "access_ok: mode 0660 without a group to let in";
-    if (chmod(path, 0660) < 0)
-        setup_failed("chmod", path);
-    capture_begin();
-    check(test, !ernic_socket_access_ok(path, NULL, NULL, &st), "accepted");
-    capture_end();
-    check_said(test, "is mode 0660, not 0600");
-
-    test = "access_ok: mode 0660 and the group to let in";
-    capture_begin();
-    check(test, ernic_socket_access_ok(path, &gid, NULL, &st), "refused");
-    capture_end();
-    check_said(test, NULL);
-
-    test = "access_ok: mode 0660 and another group";
-    capture_begin();
-    check(test, !ernic_socket_access_ok(path, &not_gid, NULL, &st), "accepted");
-    capture_end();
-    check_said(test, "has group");
-
-    test = "access_ok: mode 0600 with a group to let in";
-    if (chmod(path, 0600) < 0)
-        setup_failed("chmod", path);
-    capture_begin();
-    check(test, !ernic_socket_access_ok(path, &gid, NULL, &st), "accepted");
-    capture_end();
-    check_said(test, "is mode 0600, not 0660");
-
-    test = "access_ok: an ACL";
-    acl_present = true;
-    capture_begin();
-    check(test, !ernic_socket_access_ok(path, NULL, NULL, &st), "accepted");
-    capture_end();
-    acl_present = false;
-    check_said(test, "has an ACL");
-
-    test = "access_ok: the ACL can't be read";
-    fail_next(FAIL_LGETXATTR, EIO);
-    capture_begin();
-    check(test, !ernic_socket_access_ok(path, NULL, NULL, &st), "accepted");
-    capture_end();
-    check(test, fail_happened(), "lgetxattr() wasn't called");
-    check_said(test, "cannot check the ACL");
-
-    /* A file system without ACLs can't have one on the socket. */
-    test = "access_ok: a file system without ACLs";
-    fail_next(FAIL_LGETXATTR, ENOTSUP);
-    capture_begin();
-    check(test, ernic_socket_access_ok(path, NULL, NULL, &st), "refused");
-    capture_end();
-    check(test, fail_happened(), "lgetxattr() wasn't called");
-    check_said(test, NULL);
-    clear_dir();
-
-    test = "access_ok: nothing at the path";
-    capture_begin();
-    check(test, !ernic_socket_access_ok(path, NULL, NULL, &st), "accepted");
-    capture_end();
-    check_said(test, "cannot stat socket");
-
-    test = "access_ok: a regular file";
     make_file(path);
-    capture_begin();
-    check(test, !ernic_socket_access_ok(path, NULL, NULL, &st), "accepted");
-    capture_end();
-    check_said(test, "is not a socket");
+    access_row("access_ok: a regular file", path, NULL, NULL, false,
+               "is not a socket", &st);
     clear_dir();
 
-    /* Checked as it is: the link, not the socket it leads to. */
-    test = "access_ok: a symlink to a good socket";
-    make_socket(other, 0600);
+    make_socket(other);
     make_symlink(other, path);
-    capture_begin();
-    check(test, !ernic_socket_access_ok(path, NULL, NULL, &st), "accepted");
-    capture_end();
-    check_said(test, "is not a socket");
+    access_row("access_ok: a symlink to a good socket", path, NULL, NULL, false,
+               "is not a socket", &st);
     clear_dir();
 }
 
@@ -729,7 +757,7 @@ static void test_access_ok(void)
  */
 static void make_created(const char *path, struct stat *created)
 {
-    make_socket(path, 0600);
+    make_socket(path);
     lstat_or_die(path, created);
 }
 
@@ -776,9 +804,8 @@ static void test_set_group(void)
     /* What a server sharing a directory with someone else could meet. */
     test = "set_group: another socket put at the path";
     make_created(path, &created);
-    if (unlink(path) < 0)
-        setup_failed("unlink", path);
-    make_socket(path, 0600);
+    clear_dir();
+    make_socket(path);
     capture_begin();
     check(test, !ernic_socket_set_group(path, "own", gid, &created),
           "accepted");
@@ -865,7 +892,10 @@ int main(void)
     test_remove_stale_long_name();
     test_remove_stale_relative();
     test_remove_stale_failures();
-    test_access_ok();
+    test_access_ok_identity();
+    test_access_ok_mode();
+    test_access_ok_acl();
+    test_access_ok_not_socket();
     test_set_group();
     test_set_group_failures();
 
