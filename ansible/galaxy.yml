@@ -33,16 +33,8 @@ tags:
   - qemu
   - virtualization
 
-# sbates130272.batesste was a dependency through 0.1.0 and is not
-# one now: ernic_image_prep was its only consumer, and the golden
-# image that role built has been replaced by a published guest
-# artifact (batesste-ci-images, flavour "ionic").  Declaring it
-# would cost a consumer amazon.aws and community.libvirt for
-# nothing.  ansible.posix went the same way with vm-create.yml.
-#
-# community.general is the sole remaining dependency and the thing
-# that sets the ansible-core >=2.18 floor in meta/runtime.yml --
-# directly now, rather than inherited through batesste.
+# community.general is the sole dependency and the thing that sets
+# the ansible-core >=2.18 floor in meta/runtime.yml.
 dependencies:
   community.general: ">=13.3.0"
 

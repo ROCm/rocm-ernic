@@ -15,9 +15,8 @@
 #       bash ci/jobs/vm-up.sh
 #   bash ci/jobs/vm-nvmeof.sh
 #
-# The guest steps mirror the nvmeof_setup role in
-# batesste-ansible (host mode): load nvme-rdma, discover,
-# connect, use the namespace, disconnect.
+# The guest steps: load nvme-rdma, discover, connect, use
+# the namespace, disconnect.
 #
 # ansible/playbooks/nvmeof-tests.yml checks the same things
 # and is what the hosted system-test-nvmeof job runs.  This

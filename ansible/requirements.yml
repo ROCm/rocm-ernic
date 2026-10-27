@@ -14,18 +14,8 @@
 #   - name: sbates130272.rocm_ernic
 #     version: ">=0.2.0"
 #
-# Two collections left this list in 0.2.0, both because the play
-# that used them went with the golden-image path:
-# sbates130272.batesste (only ernic_image_prep used it) and
-# ansible.posix (only vm-create.yml did).  That takes this file
-# from six collections and ~29M -- batesste pulls in amazon.aws
-# and community.libvirt -- to one, which is why the hosted
-# workflows can install from it directly again instead of
-# cherry-picking community.general to dodge the round trips.
-#
 # community.general >=13.3.0 is what sets the ansible-core >=2.18
-# floor in meta/runtime.yml; it is now a direct choice rather
-# than something inherited through batesste.
+# floor in meta/runtime.yml.
 ---
 collections:
   # community.general.modprobe and .make, used by the guest and

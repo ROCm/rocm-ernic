@@ -577,13 +577,8 @@ jobs:
         # bundle leaves community.general invisible.
         #
         # community.general by name rather than -r requirements.yml:
-        # since 0.2.0 that file resolves to this one collection
-        # anyway, so the two are equivalent and this needs no
-        # checkout.  Through 0.1.0 it was six collections and ~29M --
-        # sbates130272.batesste dragged in amazon.aws and
-        # community.libvirt for ernic_image_prep, which no longer
-        # exists -- and six galaxy round trips was six chances to hit
-        # the 500 that has already reddened runs.
+        # that file lists only this one collection, so the two are
+        # equivalent and this needs no checkout.
         ansible --version
         # Galaxy resets connections often enough to fail a lane on its
         # own, and only someone with write access can rerun the job.
