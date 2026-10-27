@@ -24,12 +24,11 @@
 #include "p4/p4_program.h"
 
 /*
- * Widest key field or action argument an entry may carry, in bytes.  128
- * bits covers an IPv6 address, which is the widest thing a real program
- * matches on; a field wider than this can still be parsed and deparsed,
- * it just cannot be a table key.
+ * Widest key field or action argument an entry may carry, in bytes; see
+ * P4_MAX_ENTRY_BYTES, which the loader holds every key field and action
+ * argument to.
  */
-#define P4_MATCH_BYTES 16
+#define P4_MATCH_BYTES P4_MAX_ENTRY_BYTES
 
 enum p4_update_type {
     P4_UPDATE_INSERT = 0,

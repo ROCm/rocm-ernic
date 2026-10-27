@@ -493,6 +493,18 @@ P4Runtime has a client omit a "don't care" field from the
 entry, where this record, which always carries every key
 field, writes it as a zero prefix or mask.
 
+``p4c`` writes a key ``field & constant`` as the whole field
+with the constant as its mask. As in bmv2, the packet's key is
+put under that mask before it is matched, and so is every
+entry's before it is stored or compared: under ``0x00ff``, an
+entry for ``0x1234`` is the entry for ``0x0034``, and matches
+``0xab34`` too. P4Runtime knows nothing of the mask, so that
+is what a value it accepts means.
+
+An entry carries at most 128 bits of a key field or an action
+argument, so a table keyed on a wider field, or an action
+taking a wider argument, is refused at load.
+
 A table with no entry for a packet takes its default action,
 which is why ``minimal_forward.json`` drops a frame until an
 entry for its destination is installed, and forwards it
@@ -546,6 +558,18 @@ with a newline in it, a width given as a floating-point
 number, a duplicate name or id, a literal wider than the field
 it is assigned to, and a reference to something that does not
 exist are each a rejection.
+
+So is a program that would load and then not run as written.
+Tables and conditionals share one namespace across every
+pipeline, as in bmv2, since a next table and a table update
+reach only the first of a name. A condition's operands must be
+what its operator takes, as bmv2 types them: a header for
+``valid``, booleans for ``not``, ``and`` and ``or``, values
+for ``<`` and its kin, and two of a kind for ``==`` and
+``!=``; the executor would read anything else as a number. A
+header that goes on a wire is a whole number of bytes, as
+``p4c`` requires for bmv2, and ``standard_metadata``'s
+``egress_spec`` and ``ingress_port`` have v1model's 9 bits.
 
 So is a document that would cost too much to parse. A program
 may be up to 4 MiB, but json-c spends far more heap on a
@@ -662,7 +686,8 @@ Three tiers, none of which needs a VM, RDMA hardware or root.
    refused with the errno and the reason it names, and
    ``tests/data/p4/features.json`` runs frames through a parser
    ``select`` with masks, LPM and ternary tables, every arithmetic
-   primitive and every comparison.
+   primitive and every comparison. ``tests/data/p4/key_mask.json``
+   covers a masked table key and a 128-bit key and argument.
 
 ``ionic-harness-p4-port`` (``tests/test_ionic_harness.c``)
    The engine attached to the whole in-process device, with

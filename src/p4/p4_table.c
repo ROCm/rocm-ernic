@@ -57,7 +57,8 @@ void p4_entries_destroy(struct p4_entries *ent)
     free(ent);
 }
 
-/* Locate a table by name, over every pipeline. */
+/* Locate a table by name, over every pipeline. The loader refuses two
+ * tables of one name, wherever they are. */
 static bool find_table(const struct p4_program *prog, const char *name,
                        p4_idx_t *pipe, p4_idx_t *table)
 {
@@ -124,6 +125,21 @@ static void value_and(const struct p4_value *a, const struct p4_value *b,
 {
     for (size_t i = 0; i < P4_VALUE_BYTES; i++)
         out->b[i] = (uint8_t)(a->b[i] & b->b[i]);
+}
+
+/*
+ * A packet's key field under the key's mask, as bmv2 builds the key: the
+ * mask is right-aligned like the value, and covers no byte above its own.
+ */
+static void key_under_mask(const struct p4_table_key *k,
+                           const struct p4_value *key, struct p4_value *out)
+{
+    value_zero(out);
+    for (size_t i = 0; i < P4_MATCH_BYTES; i++) {
+        size_t b = P4_VALUE_BYTES - P4_MATCH_BYTES + i;
+
+        out->b[b] = (uint8_t)(key->b[b] & k->mask[i]);
+    }
 }
 
 /* The width of the field key @i of @tb matches on. */
@@ -350,6 +366,7 @@ int p4_entries_update(struct p4_entries *ent, const struct p4_program *prog,
     struct p4_table_entries *tbl_e;
     const struct p4_table *tb;
     struct p4_entry *found = NULL;
+    struct p4_update masked;
     int rc;
 
     if (err && err_len)
@@ -367,6 +384,22 @@ int p4_entries_update(struct p4_entries *ent, const struct p4_program *prog,
 
     tb = &prog->pipelines[pipe].tables[table];
     tbl_e = &ent->t[pipe][table];
+
+    /*
+     * bmv2 puts an entry's key under the program's key mask before storing
+     * or comparing it, as it does a packet's: under 0x00ff, 0x1234 is
+     * 0x0034, and the same row. P4Runtime knows nothing of the mask, so
+     * this is what a value it accepts means. resolve() has checked the
+     * value as given, and the rest of this works on the masked one.
+     */
+    masked = *up;
+    for (uint16_t i = 0; i < tb->nkey; i++) {
+        if (!tb->key[i].has_mask)
+            continue;
+        for (size_t b = 0; b < P4_MATCH_BYTES; b++)
+            masked.match[i].value[b] &= tb->key[i].mask[b];
+    }
+    up = &masked;
 
     for (uint32_t i = 0; i < tbl_e->cap; i++) {
         if (tbl_e->e[i].used && same_key(tb, &tbl_e->e[i], up)) {
@@ -437,12 +470,22 @@ const struct p4_entry *p4_entries_lookup(const struct p4_entries *ent,
     const struct p4_table_entries *tbl_e;
     const struct p4_table *tb;
     const struct p4_entry *best = NULL;
+    struct p4_value key[P4_MAX_TABLE_KEY];
     uint32_t best_rank = 0;
 
     if (!ent || !prog || pipe >= prog->npipelines)
         return NULL;
     tb = &prog->pipelines[pipe].tables[table];
     tbl_e = &ent->t[pipe][table];
+
+    /* Once per lookup, not per entry: every entry's key is already under
+     * the mask (p4_entries_update()). */
+    for (uint16_t k = 0; k < tb->nkey; k++) {
+        if (tb->key[k].has_mask)
+            key_under_mask(&tb->key[k], &keys[k], &key[k]);
+        else
+            key[k] = keys[k];
+    }
 
     for (uint32_t i = 0; i < tbl_e->cap; i++) {
         const struct p4_entry *e = &tbl_e->e[i];
@@ -452,7 +495,7 @@ const struct p4_entry *p4_entries_lookup(const struct p4_entries *ent,
         if (!e->used)
             continue;
         for (uint16_t k = 0; k < tb->nkey && all; k++) {
-            if (!field_matches(tb, prog, e, k, &keys[k]))
+            if (!field_matches(tb, prog, e, k, &key[k]))
                 all = false;
         }
         if (!all)
