@@ -878,6 +878,7 @@ int ih_srq_create(struct ih *h, struct ih_srq *srq, uint8_t depth_log2)
 
     memset(srq, 0, sizeof(*srq));
     srq->next_wqe_id = 1;
+    srq->db_qtype = IH_QTYPE_RQ;
     if (!ring_alloc(h, &srq->ring, depth_log2, WQE_STRIDE_LOG2))
         return -1;
     fake_vfu_write(h->vfu, resp, poison, sizeof(poison));
@@ -1039,9 +1040,9 @@ uint64_t ih_post_send(struct ih *h, struct ih_qp *qp, const struct ih_send *s)
     return wqe_id;
 }
 
-static uint64_t post_recv(struct ih *h, struct ih_ring *rq, uint32_t qid,
-                          uint64_t *next_wqe_id, const struct ih_sge *sge,
-                          uint8_t nsge)
+static uint64_t post_recv(struct ih *h, struct ih_ring *rq, int db_qtype,
+                          uint8_t db_ring, uint32_t qid, uint64_t *next_wqe_id,
+                          const struct ih_sge *sge, uint8_t nsge)
 {
     uint8_t wqe[1u << WQE_STRIDE_LOG2];
     uint64_t wqe_id = (*next_wqe_id)++;
@@ -1059,20 +1060,23 @@ static uint64_t post_recv(struct ih *h, struct ih_ring *rq, uint32_t qid,
         return 0;
     }
     rq->prod++;
-    ih_doorbell(h, IH_QTYPE_RQ, qid, 0, (uint16_t)(rq->prod % ring_depth(rq)));
+    ih_doorbell(h, db_qtype, qid, db_ring,
+                (uint16_t)(rq->prod % ring_depth(rq)));
     return wqe_id;
 }
 
 uint64_t ih_post_recv(struct ih *h, struct ih_qp *qp, const struct ih_sge *sge,
                       uint8_t nsge)
 {
-    return post_recv(h, &qp->rq, qp->id, &qp->next_wqe_id, sge, nsge);
+    return post_recv(h, &qp->rq, IH_QTYPE_RQ, 0, qp->id, &qp->next_wqe_id, sge,
+                     nsge);
 }
 
 uint64_t ih_post_srq_recv(struct ih *h, struct ih_srq *srq,
                           const struct ih_sge *sge, uint8_t nsge)
 {
-    return post_recv(h, &srq->ring, srq->id, &srq->next_wqe_id, sge, nsge);
+    return post_recv(h, &srq->ring, srq->db_qtype, srq->db_ring, srq->id,
+                     &srq->next_wqe_id, sge, nsge);
 }
 
 bool ih_cq_poll(struct ih *h, struct ih_cq *cq, struct ih_cqe *cqe)

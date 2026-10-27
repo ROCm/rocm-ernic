@@ -46,6 +46,9 @@
 #define IH_QTYPE_RQ         7
 #define IH_QTYPE_CQ         8
 
+/* The doorbell ring the provider sets for an SRQ (IONIC_DBELL_RING_SRQ) */
+#define IH_DB_RING_SRQ 3
+
 /* Device commands (enum ionic_cmd_opcode) */
 #define IH_CMD_NOP           0
 #define IH_CMD_IDENTIFY      1
@@ -230,6 +233,13 @@ struct ih_srq {
     uint32_t id; /* as CREATE_SRQ returned it */
     struct ih_ring ring;
     uint64_t next_wqe_id;
+    /*
+     * Where ih_post_srq_recv() rings the doorbell: the RQ qtype and ring 0,
+     * as the guest kernel does, unless a test changes them after
+     * ih_srq_create().
+     */
+    int db_qtype;
+    uint8_t db_ring;
 };
 
 struct ih_qp {

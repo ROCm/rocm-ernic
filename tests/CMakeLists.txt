@@ -1500,7 +1500,8 @@ set_tests_properties(ernic-stats-unit PROPERTIES TIMEOUT 30)
 # In-process ionic device harness: the whole device, driven as the guest
 # driver drives it, one CTest test per group so a failure names its area.
 # Bring-up and devcmds, RDMA_RESET_LIF, refused admin commands, RC
-# transfers, atomics and fast registration, CQ events, UD, SRQ, Ethernet
+# transfers, atomics and fast registration, CQ events, UD, SRQ (srq-*-ring
+# with each provider's doorbell; srq with the kernel's), Ethernet
 # Tx/Rx, the NVMe-oF CM handshake and Connect over the GSI QP, the S3
 # store's RDMA GET and PUT, key 0 refused by both targets, and the flush a
 # QP entering the Error state owes its outstanding work requests.
@@ -1520,7 +1521,7 @@ set_tests_properties(ernic-stats-unit PROPERTIES TIMEOUT 30)
 set(ERNIC_HARNESS_GROUPS
     devcmds bringup rdma-reset rdma-reset-faults rdma-reset-frees admin
     admin-dma rc atomic wrap dp-dma tables limits cq-events qp-flush
-    qp-flush-srq ud srq eth eth-dma
+    qp-flush-srq ud srq srq-rq-ring srq-cq-ring eth eth-dma
     nvmeof nvmeof-queues s3 mesh-none teardown backend-names none
     loopback-pair)
 if(ERNIC_BUILD_P4)
