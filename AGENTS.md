@@ -111,6 +111,15 @@ cmake --build build
 - Standard C11; no GNU extensions without permission. Atomics
   (`<stdatomic.h>`) and threads (`qemu/thread.h` over pthreads) are
   available; see [Thread safety](#thread-safety).
+- **The library is POSIX.1-2008 plus glibc's `_DEFAULT_SOURCE`**, which
+  `ernic_set_compiler_flags()` defines for every target. Don't add
+  `_GNU_SOURCE` to a target or to `CMAKE_C_FLAGS`: it exposes every GNU
+  function, and silences clang-tidy's `android-cloexec-*` checks. A file
+  that needs a GNU or Linux extension (`accept4()`, `pipe2()`, `O_PATH`)
+  writes `#define _GNU_SOURCE` before its first `#include`, with a comment
+  naming what for, as `src/rdma/tcp_conn.c` does. For `environ`, declare
+  `extern char **environ;` as POSIX requires, rather than defining
+  `_GNU_SOURCE` for it.
 - **Don't `goto` past an initialized declaration into its scope**
   (GCC's `-Wjump-misses-init`), as a `goto out` to the cleanup at the
   end of a function does over everything declared after it. Declare

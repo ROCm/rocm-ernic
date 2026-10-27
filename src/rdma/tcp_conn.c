@@ -16,6 +16,9 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+/* accept4() is a GNU extension */
+#define _GNU_SOURCE
+
 #include "rdma/rdma_backend_tcp_priv.h"
 #include "ernic_time.h"
 #include "pvrdma/rdma_utils.h"

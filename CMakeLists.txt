@@ -313,7 +313,6 @@ target_include_directories(rocm-ernic SYSTEM PRIVATE
 target_compile_definitions(rocm-ernic PRIVATE
     GIT_SHA_FULL="${ERNIC_GIT_SHA_FULL}"
     GIT_SHA_SHORT="${ERNIC_GIT_SHA_SHORT}"
-    _GNU_SOURCE
     $<$<BOOL:${ERNIC_BUILD_P4}>:ERNIC_HAVE_P4>
 )
 

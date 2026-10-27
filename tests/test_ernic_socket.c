@@ -22,6 +22,9 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+/* O_PATH is a Linux extension */
+#define _GNU_SOURCE
+
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>

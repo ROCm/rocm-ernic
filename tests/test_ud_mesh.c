@@ -39,6 +39,9 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+/* accept4() is a GNU extension */
+#define _GNU_SOURCE
+
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -327,7 +330,7 @@ static int oob_listen(void)
     printf("waiting for the client on port %d\n", OOB_PORT);
     fflush(stdout);
 
-    peer = accept(fd, NULL, NULL);
+    peer = accept4(fd, NULL, NULL, SOCK_CLOEXEC);
     if (peer < 0)
         perror("accept");
     close(fd);

@@ -101,9 +101,28 @@ endfunction()
 
 # Apply compiler warning and hardening flags to ``target``
 # based on the compiler (GCC or Clang) used for each source,
-# along with the linker hardening flags, and -Werror if
-# ERNIC_WERROR is on.
+# along with the feature-test macros, the linker hardening flags,
+# and -Werror if ERNIC_WERROR is on.
 function(ernic_set_compiler_flags target)
+    # The library interfaces the code may use: C11 (CMAKE_C_STANDARD)
+    # plus POSIX.1-2008, and glibc's _DEFAULT_SOURCE for the BSD and
+    # System V extensions it relies on (libvfio-user's public header uses
+    # loff_t, and src/p4/p4_devcmd.c uses <endian.h>'s htole32() family).
+    # glibc defines both by default, but not under -std=c11.
+    #
+    # Not _GNU_SOURCE, which makes every GNU extension visible, so a
+    # GNU-only function could slip in unnoticed, and which hides
+    # clang-tidy's android-cloexec-* findings. A source file that needs a
+    # GNU extension defines _GNU_SOURCE itself, before its first
+    # #include, and says what for.
+    #
+    # NOTE: ernic_check_libc_disabled_macro_expansion() compiles its check
+    #       with the same macros; change both together.
+    target_compile_definitions(${target} PRIVATE
+      _POSIX_C_SOURCE=200809L
+      _DEFAULT_SOURCE
+    )
+
     get_target_property(sources ${target} SOURCES)
     foreach(source IN LISTS sources)
         unset(compiler_flags)

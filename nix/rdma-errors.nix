@@ -24,7 +24,8 @@ stdenv.mkDerivation {
   buildInputs = [ rdma-core ];
   buildPhase = ''
     runHook preBuild
-    $CC -std=c11 -O2 -Wall -Wextra -Werror -D_GNU_SOURCE -Isrc \
+    $CC -std=c11 -O2 -Wall -Wextra -Werror \
+      -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -Isrc \
       -o ernic-rdma-errors tests/guest/ernic_rdma_errors.c -libverbs
     runHook postBuild
   '';

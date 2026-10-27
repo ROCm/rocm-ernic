@@ -60,6 +60,10 @@
 #include <valgrind/valgrind.h>
 #endif
 
+/* POSIX leaves declaring environ to the program; only _GNU_SOURCE makes
+ * <unistd.h> do it */
+extern char **environ;
+
 #define SOCKET_WAIT_MS 20000 /* sanitizer builds start slowly */
 #define EXIT_WAIT_MS   20000
 #define LOG_WAIT_MS    5000

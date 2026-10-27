@@ -555,6 +555,15 @@
     `misc-use-internal-linkage`. A parameter a function doesn't use is now
     a warning (an error with `ERNIC_WERROR`): remove it, or, where an
     interface requires it, write `(void)name;` in the function.
+  * Every target compiles with `_POSIX_C_SOURCE=200809L` and
+    `_DEFAULT_SOURCE`, set by `ernic_set_compiler_flags()`, not
+    `_GNU_SOURCE`, so a GNU-only function no longer compiles unnoticed, and
+    clang-tidy's `android-cloexec-*` checks, which `_GNU_SOURCE` silences,
+    run on the rest of the code. A source file that needs a GNU or Linux
+    extension (`accept4()`, `pipe2()`, `O_PATH`) defines `_GNU_SOURCE`
+    itself, before its first `#include`. The guest
+    test builds in CI and the Nix fuzz and `ernic-rdma-errors` builds pass
+    the same macros.
 * **Stricter linting in CI.** ansible-lint 26.10.1 runs with `--strict`.
   ShellCheck excludes no checks; suppress one only on its command, with a
   reason. actionlint 1.7.12 checks the workflows (runner labels in

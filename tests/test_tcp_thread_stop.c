@@ -143,6 +143,9 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+/* accept4() is a GNU extension */
+#define _GNU_SOURCE
+
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -2327,7 +2330,8 @@ static int accept_within(int lfd)
 {
     struct pollfd pfd = {.fd = lfd, .events = POLLIN};
 
-    return poll(&pfd, 1, 5000) == 1 ? accept(lfd, NULL, NULL) : -1;
+    return poll(&pfd, 1, 5000) == 1 ? accept4(lfd, NULL, NULL, SOCK_CLOEXEC)
+                                    : -1;
 }
 
 /* ---- Registering twice ------------------------------------------------- */
