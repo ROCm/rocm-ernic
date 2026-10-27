@@ -334,7 +334,10 @@ _Static_assert(sizeof(struct p4_rpc_load_chunk) == 16,
  * reads @value, an LPM field reads @prefix_bits as well, a ternary field
  * reads @mask.  The device does not infer a match kind from which fields
  * are set, because a guest that set the wrong ones would then get a
- * different match than it asked for.
+ * different match than it asked for.  It refuses, as P4Runtime does, a
+ * @value with a bit set past an LPM field's prefix or outside a ternary
+ * field's mask; and a nonzero @prefix_bits in a field that is not LPM,
+ * which says the guest meant a different table.
  */
 struct p4_rpc_entry_match {
     uint16_t len;         /* significant bytes of @value and @mask */
@@ -357,7 +360,7 @@ _Static_assert(sizeof(struct p4_rpc_entry_param) == 20,
 struct p4_rpc_entry_update {
     uint8_t type; /* enum p4_update_type */
     uint8_t rsvd[3];
-    uint32_t priority;
+    uint32_t priority; /* nonzero with a ternary key, else 0; higher wins */
     uint16_t nmatch;
     uint16_t nparams;
     char table[P4_DEVCMD_NAME_MAX + 1];

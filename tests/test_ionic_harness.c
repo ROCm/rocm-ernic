@@ -4462,6 +4462,7 @@ static void p4d_acl(struct p4_rpc_entry_update *u,
     memset(m, 0, 2 * sizeof(*m));
     memset(p, 0, sizeof(*p));
     u->type = P4_WIRE_UPDATE_INSERT;
+    u->priority = htole32(1); /* a ternary key needs one */
     u->nmatch = htole16(2);
     u->nparams = htole16(1);
     (void)snprintf(u->table, sizeof(u->table), "acl");

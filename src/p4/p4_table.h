@@ -41,7 +41,9 @@ enum p4_update_type {
  * One key field of an entry.  Which of these fields matter is decided by
  * the table's own key definition, not by the record: an exact field reads
  * @value, an LPM field also reads @prefix_bits, and a ternary field reads
- * @mask.
+ * @mask.  As in P4Runtime, @value has no bit set past an LPM field's
+ * prefix or outside a ternary field's mask; and @prefix_bits is 0 in a
+ * field that is not LPM.  An update that breaks any of these is refused.
  */
 struct p4_match_spec {
     uint16_t len; /* significant bytes of @value and @mask */
@@ -66,7 +68,9 @@ struct p4_update {
     uint8_t type;
     char table[P4_MAX_NAME + 1];
     char action[P4_MAX_NAME + 1];
-    uint32_t priority; /* ternary only; higher wins */
+    /* Higher wins.  Nonzero in a table with a ternary key, 0 in any other,
+     * as in P4Runtime. */
+    uint32_t priority;
     uint16_t nmatch;
     uint16_t nparams;
     struct p4_match_spec match[P4_MAX_TABLE_KEY];

@@ -1680,6 +1680,18 @@ static uint8_t p4_match_kind(const char *s, bool *ok)
     return 0;
 }
 
+static const char *p4_match_name(uint8_t kind)
+{
+    switch (kind) {
+    case P4_MATCH_EXACT:
+        return "exact";
+    case P4_MATCH_LPM:
+        return "lpm";
+    default:
+        return "ternary";
+    }
+}
+
 /* Find a pipeline node by name, over both tables and conditionals. */
 static p4_idx_t p4_find_node(const struct p4_pipeline *pl, const char *name)
 {
@@ -1731,6 +1743,7 @@ static int p4_walk_table(struct p4_walk *w, const struct json_object *t,
     char mt[P4_MAX_NAME + 1];
     size_t nk, na;
     uint32_t id, max_size;
+    uint8_t keys_kind;
     bool ok, flag;
 
     if (!p4_get_str(t, "name", dst->name, sizeof(dst->name)))
@@ -1799,6 +1812,8 @@ static int p4_walk_table(struct p4_walk *w, const struct json_object *t,
                        "table '%s' has a bad or oversized key "
                        "(at most %d)",
                        dst->name, P4_MAX_TABLE_KEY);
+    keys_kind = P4_MATCH_EXACT;
+    dst->lpm_key = P4_IDX_NONE;
     for (size_t i = 0; i < nk; i++) {
         struct json_object *kf = json_object_array_get_idx(key, i);
         struct json_object *tgt;
@@ -1814,6 +1829,18 @@ static int p4_walk_table(struct p4_walk *w, const struct json_object *t,
                            "table '%s' key %zu matches '%s', which is not "
                            "supported",
                            dst->name, i, mt);
+        /* One LPM key at most, in any table, as p4c requires: an LPM table
+         * ranks its entries by that key's prefix, so a second would have
+         * no say in which wins. */
+        if (dst->key[i].match_type == P4_MATCH_LPM) {
+            if (dst->lpm_key != P4_IDX_NONE)
+                return p4_fail(w, -EINVAL,
+                               "table '%s' has more than one LPM key",
+                               dst->name);
+            dst->lpm_key = (p4_idx_t)i;
+        }
+        if (dst->key[i].match_type > keys_kind)
+            keys_kind = dst->key[i].match_type;
         if (!json_object_object_get_ex(kf, "target", &tgt) ||
             !p4_pair_strings(tgt, h, sizeof(h), f, sizeof(f)))
             return p4_fail(w, -EINVAL, "table '%s' key %zu has a bad target",
@@ -1825,6 +1852,19 @@ static int p4_walk_table(struct p4_walk *w, const struct json_object *t,
                            dst->name, h, f);
     }
     dst->nkey = (uint16_t)nk;
+
+    /*
+     * The lookup goes by the table's match_type, so it must be the one its
+     * keys make it, as p4c derives it: ternary if any key is, else LPM if
+     * one is, else exact. An "exact" table with a ternary key would take
+     * the first hit and ignore priority; an "lpm" one without an LPM key
+     * would have no prefix to rank by.
+     */
+    if (dst->match_type != keys_kind)
+        return p4_fail(w, -EINVAL,
+                       "table '%s' matches '%s', but its keys make it '%s'",
+                       dst->name, p4_match_name(dst->match_type),
+                       p4_match_name(keys_kind));
 
     if (!p4_get_array(t, "actions", &acts, P4_MAX_TABLE_ACTIONS, &na))
         return p4_fail(w, -EINVAL,

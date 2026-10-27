@@ -203,6 +203,10 @@ struct p4_action {
  */
 #define P4_MAX_TOTAL_ENTRIES 65536u
 
+/*
+ * In increasing generality: a table is the most general of its keys' kinds,
+ * and the loader relies on the order to check that.
+ */
 enum p4_match_kind {
     P4_MATCH_EXACT = 0,
     P4_MATCH_LPM,
@@ -228,6 +232,7 @@ struct p4_table {
     uint16_t nkey;
     uint16_t nactions;
     struct p4_table_key key[P4_MAX_TABLE_KEY];
+    p4_idx_t lpm_key; /* into @key; P4_IDX_NONE when no key is LPM */
     p4_idx_t actions[P4_MAX_TABLE_ACTIONS]; /* into program actions */
     p4_idx_t next[P4_MAX_TABLE_ACTIONS];    /* into pipeline nodes */
     p4_idx_t base_default_next;
