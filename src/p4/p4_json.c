@@ -746,6 +746,13 @@ static int p4_walk_parser_ops(struct p4_walk *w, const struct json_object *st,
             return p4_fail(w, -EINVAL,
                            "state '%s' extracts '%s', which is not a header",
                            dst->name, pval);
+        /* Metadata is valid from the start and not on the wire, so
+         * extracting into it would overwrite architecture state with
+         * frame bytes. p4c never emits this. */
+        if (w->prog->headers[dst->ops[i].header].metadata)
+            return p4_fail(w, -EINVAL,
+                           "state '%s' extracts '%s', which is metadata",
+                           dst->name, pval);
     }
     dst->nops = (uint16_t)n;
     return 0;
