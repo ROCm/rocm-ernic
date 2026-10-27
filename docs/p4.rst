@@ -531,8 +531,8 @@ an empty one is a permanently empty table rather than a
 harmless default; it is refused. And ``max_size`` is the only
 number in the document that names a large allocation without
 the document's own size bounding it, so the entries all
-tables ask for between them are budgeted against a single
-ceiling.
+tables in every pipeline ask for between them are budgeted
+against a single ceiling.
 
 Unknown keys are ignored, not rejected. That is deliberate:
 ``p4c`` emits ``program``, ``source_info``, ``action_ids`` and

@@ -34,11 +34,16 @@ _Static_assert(P4_PROGRAM_MAX <= INT_MAX,
 _Static_assert(P4_PROGRAM_MAX <= SIZE_MAX / P4_JSON_COST_OBJECT,
                "the weight of a document fits a size_t");
 
-/* Walk state: the destination, and somewhere to record the first problem. */
+/*
+ * Walk state: the destination, somewhere to record the first problem, and
+ * the entries every pipeline's tables have asked for so far, which
+ * P4_MAX_TOTAL_ENTRIES bounds across the whole program.
+ */
 struct p4_walk {
     struct p4_program *prog;
     char *err;
     size_t err_len;
+    uint32_t total_entries;
     bool failed;
 };
 
@@ -1959,7 +1964,7 @@ static int p4_walk_key_mask(struct p4_walk *w, const struct json_object *kf,
 
 /* One table's key, actions and size. The next pointers come later. */
 static int p4_walk_table(struct p4_walk *w, const struct json_object *t,
-                         struct p4_table *dst, uint32_t *total_entries)
+                         struct p4_table *dst)
 {
     struct json_object *key, *acts, *v;
     char mt[P4_MAX_NAME + 1];
@@ -2025,11 +2030,11 @@ static int p4_walk_table(struct p4_walk *w, const struct json_object *t,
      * Subtraction first. max_size is the one number here that names a
      * large allocation without the document's own size bounding it.
      */
-    if (max_size > P4_MAX_TOTAL_ENTRIES - *total_entries)
+    if (max_size > P4_MAX_TOTAL_ENTRIES - w->total_entries)
         return p4_fail(w, -EINVAL,
                        "the tables ask for more than %u entries between them",
                        P4_MAX_TOTAL_ENTRIES);
-    *total_entries += max_size;
+    w->total_entries += max_size;
     dst->max_size = max_size;
 
     if (!p4_get_array(t, "key", &key, P4_MAX_TABLE_KEY, &nk))
@@ -2403,7 +2408,7 @@ static int p4_walk_pipeline(struct p4_walk *w, const struct json_object *p,
     struct json_object *tables, *conds, *v;
     char init[P4_MAX_NAME + 1];
     size_t nt, nc;
-    uint32_t id, total_entries = 0;
+    uint32_t id;
     int rc;
 
     if (!p4_get_str(p, "name", pl->name, sizeof(pl->name)))
@@ -2435,7 +2440,7 @@ static int p4_walk_pipeline(struct p4_walk *w, const struct json_object *p,
                            "pipeline '%s' table %zu is not an "
                            "object",
                            pl->name, i);
-        rc = p4_walk_table(w, t, &pl->tables[i], &total_entries);
+        rc = p4_walk_table(w, t, &pl->tables[i]);
         if (rc)
             return rc;
         rc = p4_check_node_unique(w, pl, pl->tables[i].name);

@@ -236,7 +236,8 @@ struct p4_action {
 #define P4_MAX_EXPR_DEPTH    8
 
 /*
- * An aggregate ceiling on the entries all tables together may claim.
+ * An aggregate ceiling on the entries all tables together may claim, in
+ * every pipeline.
  * max_size is the one number in the document that names a large allocation
  * without being bounded by the size of the document: a few kilobytes of
  * JSON can otherwise ask for a gigabyte of host heap.
