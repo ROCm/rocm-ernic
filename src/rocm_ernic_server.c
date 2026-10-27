@@ -235,8 +235,7 @@ static ssize_t bar0_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
         return -1;
     }
 
-    if (dev->pvrdma_handle)
-        pvrdma_bar0_mmio_count(dev->pvrdma_handle, is_write);
+    ernic_stats_bar0_access(dev->stats, is_write);
 
     /* The client chooses both, and offset is signed, so neither the
      * conversion nor the sum may be formed before they are known to fit. */
@@ -287,8 +286,7 @@ static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
         return -1;
     }
 
-    if (dev->pvrdma_handle)
-        pvrdma_uar_mmio_count(dev->pvrdma_handle, is_write);
+    ernic_stats_doorbell_access(dev->stats, is_write);
     return ionic_eth_emu_bar2_access(emu, buf, count, offset, is_write);
 }
 
@@ -310,9 +308,7 @@ static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
     case VFU_RESET_DEVICE:
         /* Guest requested device reset; client still connected */
         conn_str = "connected (device reset)";
-        if (dev->pvrdma_handle) {
-            pvrdma_inc_stats_reset_count(dev->pvrdma_handle);
-        }
+        ernic_stats_device_reset(dev->stats);
         break;
 
     case VFU_RESET_LOST_CONN:
@@ -326,19 +322,15 @@ static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
         /* Guest requested PCI FLR; client still connected */
         vfu_log(vfu_ctx, LOG_INFO, "PCI FLR requested");
         conn_str = "connected (PCI FLR)";
-        if (dev->pvrdma_handle) {
-            pvrdma_inc_stats_reset_count(dev->pvrdma_handle);
-        }
+        ernic_stats_device_reset(dev->stats);
         break;
     default:
         break;
     }
 
-    if (dev->pvrdma_handle && conn_str) {
-        pvrdma_set_stats_connection_state(dev->pvrdma_handle, conn_str);
-        if (dev->stats_file_path) {
-            pvrdma_write_stats(dev->pvrdma_handle);
-        }
+    if (conn_str) {
+        ernic_stats_set_connection(dev->stats, conn_str);
+        ernic_stats_write(dev->stats);
     }
 
     return 0;
@@ -464,15 +456,22 @@ static int p4_load_program_file(struct p4_engine *eng, const char *path)
 #endif /* ERNIC_HAVE_P4 */
 
 /**
- * Build the device: the RDMA core and its backend, then the ionic device the
- * guest sees in front of them.  The ionic device owns the registers and
- * doorbells, but the resource manager and backend behind them come from the
- * core.  Returns 0, or -1 after saying why.
+ * Build the device: the statistics, the RDMA core and its backend, then the
+ * ionic device the guest sees in front of them, which counts into the
+ * statistics.  The ionic device owns the registers and doorbells, but the
+ * resource manager and backend behind them come from the core.  Returns 0,
+ * or -1 after saying why.
  */
 static int device_init(rocm_ernic_dev_t *dev)
 {
     struct ionic_device_cfg cfg;
     char err[512] = "";
+
+    dev->stats = ernic_stats_create();
+    if (!dev->stats) {
+        fprintf(stderr, "Failed to allocate the statistics\n");
+        return -1;
+    }
 
     if (pvrdma_device_init(dev) < 0)
         return -1;
@@ -480,6 +479,7 @@ static int device_init(rocm_ernic_dev_t *dev)
     memset(&cfg, 0, sizeof(cfg));
     cfg.vfu_ctx = dev->vfu_ctx;
     cfg.pvrdma = dev->pvrdma_handle;
+    cfg.stats = dev->stats;
     cfg.backend = dev->backend_type_str;
     cfg.profile = &dev->profile;
     cfg.mac = dev->mac_addr_set ? dev->mac_addr : NULL;
@@ -936,11 +936,15 @@ static void server_teardown(rocm_ernic_dev_t *dev)
     ionic_device_destroy(dev->ionic);
     dev->ionic = NULL;
 
-    /* Then the RDMA core, and the ctx last. */
+    /* Then the RDMA core and the statistics, and the ctx last.  Destroying
+     * the ctx calls device_reset_cb(), which finds no statistics, so the
+     * stats file keeps what it said before shutdown. */
     if (dev->pvrdma_handle) {
         pvrdma_device_destroy(dev->pvrdma_handle);
         dev->pvrdma_handle = NULL;
     }
+    ernic_stats_destroy(dev->stats);
+    dev->stats = NULL;
 
     vfu_destroy_ctx(dev->vfu_ctx);
     dev->vfu_ctx = NULL;
@@ -1321,7 +1325,7 @@ static vfu_ctx_t *create_socket(const struct server_opts *opts,
      * kept.  --socket-group widens it to 0660 below, once the group is the
      * one asked for.  The umask is per process, so this must stay ahead of
      * the first thread, and it's restored so the log file gets the caller's.
-     * (The stats file is always 0644; see pvrdma_write_stats_impl().) */
+     * (The stats file is always 0644; see ernic_stats_write().) */
     old_umask = umask(S_IXUSR | S_IRWXG | S_IRWXO);
     vfu_ctx = vfu_create_ctx(VFU_TRANS_SOCK, path, LIBVFIO_USER_FLAG_ATTACH_NB,
                              dev, VFU_DEV_TYPE_PCI);
@@ -1369,29 +1373,35 @@ static vfu_ctx_t *create_socket(const struct server_opts *opts,
 
 /**
  * Point the statistics file, if there is one, at this instance, and write it
- * once.
+ * once.  Returns 0, or -1 after saying why.
  */
-static void setup_stats_file(rocm_ernic_dev_t *dev, const char *socket_path)
+static int setup_stats_file(rocm_ernic_dev_t *dev, const char *socket_path)
 {
     char profile_line[IONIC_PROFILE_CHAIN_MAX + 32];
+    struct ernic_stats_instance inst;
 
-    if (!dev->stats_file_path || !dev->pvrdma_handle)
-        return;
+    if (!dev->stats_file_path)
+        return 0;
 
-    pvrdma_set_stats_file(dev->pvrdma_handle, dev->stats_file_path);
-    pvrdma_set_stats_instance_info(dev->pvrdma_handle, socket_path,
-                                   dev->backend_type_str);
-    pvrdma_set_stats_pci_ids(dev->pvrdma_handle, PCI_VENDOR_ID_PENSANDO,
-                             PCI_DEVICE_ID_AMD_IONIC_ERNIC);
     snprintf(profile_line, sizeof(profile_line), "%s (hash 0x%016" PRIx64 ")",
              dev->profile.chain, ionic_profile_hash(&dev->profile));
-    pvrdma_set_stats_nic_profile(dev->pvrdma_handle, profile_line);
-    pvrdma_set_stats_section(dev->pvrdma_handle, ionic_eth_emu_write_stats,
-                             ionic_device_eth_emu(dev->ionic));
+    memset(&inst, 0, sizeof(inst));
+    inst.socket_path = socket_path;
+    inst.backend = dev->backend_type_str;
+    inst.nic_profile = profile_line;
+    inst.pci_vid = PCI_VENDOR_ID_PENSANDO;
+    inst.pci_did = PCI_DEVICE_ID_AMD_IONIC_ERNIC;
+    memcpy(inst.mac, dev->mac_addr, sizeof(inst.mac));
+    if (ernic_stats_set_file(dev->stats, dev->stats_file_path) < 0 ||
+        ernic_stats_set_instance(dev->stats, &inst) < 0) {
+        fprintf(stderr, "Error: out of memory for the stats file\n");
+        return -1;
+    }
     ernic_startup_report("rocm-ernic: Statistics will be written to: %s "
                          "(every ~1 second)",
                          dev->stats_file_path);
-    pvrdma_write_stats(dev->pvrdma_handle);
+    ernic_stats_write(dev->stats);
+    return 0;
 }
 
 /**
@@ -1522,10 +1532,8 @@ static int setup_device(rocm_ernic_dev_t *dev, const struct server_opts *opts)
         return -1;
     }
 
-    if (device_init(dev) < 0)
+    if (device_init(dev) < 0 || setup_stats_file(dev, opts->socket_path) < 0)
         return -1;
-
-    setup_stats_file(dev, opts->socket_path);
 
     if (setup_vfu_device(vfu_ctx, dev) < 0)
         return -1;
@@ -1568,10 +1576,10 @@ static void serve_client(rocm_ernic_dev_t *dev)
     g_main_context_push_thread_default(main_context);
     while (!g_shutdown_requested) {
         /* Write stats periodically (every ~1 second) */
-        if (dev->stats_file_path && dev->pvrdma_handle) {
+        if (dev->stats_file_path) {
             uint64_t now_ms = ernic_monotonic_ms();
             if (now_ms >= next_stats_write_ms) {
-                pvrdma_write_stats(dev->pvrdma_handle);
+                ernic_stats_write(dev->stats);
                 next_stats_write_ms = now_ms + 1000u;
             }
         }
@@ -1593,13 +1601,9 @@ static void serve_client(rocm_ernic_dev_t *dev)
             ernic_startup_report(
                 "rocm-ernic: Client disconnected after %" PRIu64 " loops",
                 loop_count);
-            if (dev->pvrdma_handle) {
-                pvrdma_set_stats_connection_state(
-                    dev->pvrdma_handle, "disconnected (client closed)");
-                if (dev->stats_file_path) {
-                    pvrdma_write_stats(dev->pvrdma_handle);
-                }
-            }
+            ernic_stats_set_connection(dev->stats,
+                                       "disconnected (client closed)");
+            ernic_stats_write(dev->stats);
             break;
         } else if (ret < 0 && errno == EINTR) {
             /* Interrupted by signal */
@@ -1681,9 +1685,7 @@ static int run(rocm_ernic_dev_t *dev)
 
         ernic_startup_report("rocm-ernic: Client connected!");
         dev->client_lost = false;
-        if (dev->pvrdma_handle) {
-            pvrdma_set_stats_connection_state(dev->pvrdma_handle, "connected");
-        }
+        ernic_stats_set_connection(dev->stats, "connected");
 
         serve_client(dev);
     }
@@ -1812,9 +1814,7 @@ int main(int argc, char *argv[])
     g_cleanup_in_progress = 1;
 
     /* Write stats before cleanup */
-    if (dev->pvrdma_handle) {
-        pvrdma_write_stats(dev->pvrdma_handle);
-    }
+    ernic_stats_write(dev->stats);
 
     /* Disable signal handlers during cleanup */
     set_signal_handler(SIGINT, SIG_IGN);

@@ -358,6 +358,8 @@ struct ionic_datapath {
     struct ernic_dma *dma;
     struct ionic_eth_emu *eth_emu;
     pvrdma_handle_t pvrdma_handle;
+    /* The server's counters, or NULL */
+    struct ernic_stats *stats;
 
     ionic_dp_cq_event_fn_t cq_event_fn;
     void *cq_event_opaque;
@@ -519,12 +521,13 @@ const char *ionic_dp_ud_delivery_refused(const struct ionic_qp_ring *sq,
 #define DP_RDMA_RX 2u
 
 /*
- * Count @bytes of RDMA payload once for the stats file (by @op, against
- * @qp_id) and once per direction in @dirs for the guest's struct
- * ionic_lif_stats (tx/rx_rdma_ucast_*).
+ * Count @bytes of RDMA payload once for the server's statistics (by @op,
+ * against @qp_id) and once per direction in @dirs for the guest's struct
+ * ionic_lif_stats (tx/rx_rdma_ucast_*).  The two count differently, so
+ * neither is derived from the other; see ernic_stats.h.
  */
 void ionic_dp_rdma_bytes(const struct ionic_datapath *dp, uint32_t qp_id,
-                         uint64_t bytes, enum pvrdma_stat_op op,
+                         uint64_t bytes, enum ernic_stat_op op,
                          unsigned int dirs);
 
 /* -------------------------------------------------------------------------

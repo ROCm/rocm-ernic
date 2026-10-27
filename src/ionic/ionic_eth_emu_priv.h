@@ -28,7 +28,6 @@
 #include "ionic_eth_net.h"
 #include "ionic_profile.h"
 #include "qemu/thread.h"
-#include "rocm_ernic_compat.h"
 
 /* -------------------------------------------------------------------------
  * ionic_if.h constants we need without pulling in the full kernel header.
@@ -413,8 +412,9 @@ struct ionic_eth_emu {
     ionic_rdma_devcmd_fn_t p4_devcmd_fn;
     void *p4_devcmd_opaque;
 
-    /* Statistics sink, shared with the pvrdma resource manager. */
-    pvrdma_handle_t pvrdma_handle;
+    /* The server's counters (ernic_stats.h), or NULL; stats above is the
+     * guest's */
+    struct ernic_stats *stats_sink;
 
     /* Data-path handler for BAR2 doorbell writes. */
     struct ionic_datapath *dp;

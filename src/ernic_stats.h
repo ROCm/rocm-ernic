@@ -1,13 +1,23 @@
 /*
- * Statistics: the RDMA core's counters and the stats file
+ * Statistics: the device's counters and the stats file
  *
- * The device front end counts what it does here, through the opaque handle
- * from rocm_ernic_compat.h: MMIO accesses, interrupts, Ethernet and RDMA
- * bytes, admin commands, and per-QP doorbells, WQEs and completions. The
- * admin queue reads the totals back for the guest's STATS_VALS and
- * QP_STATS_VALS commands, and the server writes them, with what it sets
- * here about the instance, to the stats file. rocm_ernic_compat.c
- * implements it.
+ * The server creates one struct ernic_stats for the instance and hands it
+ * to the ionic device, which counts what it does here: MMIO accesses,
+ * interrupts, Ethernet and RDMA bytes, admin commands, and per-QP
+ * doorbells, WQEs and completions.  The admin queue reads the totals back
+ * for the guest's STATS_VALS and QP_STATS_VALS commands, and the server
+ * writes them to the stats file that ernic-exporter and ernicctl read,
+ * with what it sets here about the instance and the section the ionic
+ * device adds (its LIF and port counters).
+ *
+ * The guest's LIF statistics block (ionic/ionic_emu_stats.h) counts some of
+ * the same traffic, but not the same way: by direction rather than by
+ * operation and QP, and from zero again whenever the guest resets the LIF.
+ * Neither can be derived from the other, so the data path counts RDMA bytes
+ * into both (ionic_dp_rdma_bytes()).
+ *
+ * Main loop thread only.  Every function accepts a NULL @st and does
+ * nothing, so code that counts can run in a unit test without one.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -18,112 +28,172 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdio.h> /* FILE, for pvrdma_set_stats_section() */
+#include <stdio.h> /* FILE, for ernic_stats_section_fn */
 
-#include "rocm_ernic_compat.h"
-
-/**
- * pvrdma_bar0_mmio_count - Record a BAR0 (MSI-X) MMIO access for statistics
- * @handle: Device handle
- * @is_write: true for write, false for read
- */
-void pvrdma_bar0_mmio_count(pvrdma_handle_t handle, bool is_write);
+/* Opaque; from ernic_stats_create(). */
+struct ernic_stats;
 
 /**
- * pvrdma_uar_mmio_count - Record a doorbell-window MMIO access for statistics
- * @handle: Device handle
- * @is_write: true for write, false for read
+ * ernic_stats_create - Create the counters, all zero, with no stats file
  *
- * The ionic BAR2 doorbell page is what these counters see; the names
- * uar_reads/uar_writes are kept from the PVRDMA UAR they used to count.
+ * Returns: the counters, or NULL when out of memory
  */
-void pvrdma_uar_mmio_count(pvrdma_handle_t handle, bool is_write);
+struct ernic_stats *ernic_stats_create(void);
 
 /**
- * pvrdma_irq_count - Record one delivered MSI-X interrupt
- * @handle: Device handle
+ * ernic_stats_destroy - Free the counters
+ * @st: from ernic_stats_create(), or NULL
+ */
+void ernic_stats_destroy(struct ernic_stats *st);
+
+/*
+ * Device counters
+ */
+
+/**
+ * ernic_stats_bar0_access - Count one BAR0 (registers and MSI-X) access
+ * @st: Statistics
+ * @is_write: true for a write, false for a read
+ */
+void ernic_stats_bar0_access(struct ernic_stats *st, bool is_write);
+
+/**
+ * ernic_stats_doorbell_access - Count one BAR2 (doorbell page) access
+ * @st: Statistics
+ * @is_write: true for a write, false for a read
  *
- * The ionic path triggers the vector itself and reports it here.
+ * The stats file calls these uar_reads and uar_writes, after the PVRDMA UAR
+ * they used to count.
  */
-void pvrdma_irq_count(pvrdma_handle_t handle);
+void ernic_stats_doorbell_access(struct ernic_stats *st, bool is_write);
 
 /**
- * pvrdma_eth_bytes_count - Record guest Ethernet bytes moved
- * @handle: Device handle
+ * ernic_stats_irq - Count one delivered MSI-X interrupt
+ * @st: Statistics
+ */
+void ernic_stats_irq(struct ernic_stats *st);
+
+/**
+ * ernic_stats_eth_bytes - Count guest Ethernet bytes moved
+ * @st: Statistics
  * @bytes: Frame length
  * @is_tx: true for guest-to-host, false for host-to-guest
  */
-void pvrdma_eth_bytes_count(pvrdma_handle_t handle, uint64_t bytes, bool is_tx);
+void ernic_stats_eth_bytes(struct ernic_stats *st, uint64_t bytes, bool is_tx);
 
 /**
- * pvrdma_adminq_count - Record one executed admin-queue command
- * @handle: Device handle
+ * ernic_stats_command - Count one executed admin queue command
+ * @st: Statistics
  */
-void pvrdma_adminq_count(pvrdma_handle_t handle);
+void ernic_stats_command(struct ernic_stats *st);
 
-/* Operation classes for pvrdma_rdma_bytes_count(). */
-enum pvrdma_stat_op {
-    PVRDMA_STAT_SEND,
-    PVRDMA_STAT_RECV,
-    PVRDMA_STAT_RDMA_READ,
-    PVRDMA_STAT_RDMA_WRITE,
+/**
+ * ernic_stats_device_reset - Count one device reset or PCI FLR
+ * @st: Statistics
+ */
+void ernic_stats_device_reset(struct ernic_stats *st);
+
+/*
+ * Per-QP counters
+ *
+ * A QP is the driver's qp_id, which is below ERNIC_MAX_QP (ernic_limits.h);
+ * these ignore any other.  A QP's counters exist from the first thing
+ * counted against it until ernic_stats_qp_forget().
+ */
+
+/* Operation classes for ernic_stats_rdma_bytes(). */
+enum ernic_stat_op {
+    ERNIC_STAT_SEND,
+    ERNIC_STAT_RECV,
+    ERNIC_STAT_RDMA_READ,
+    ERNIC_STAT_RDMA_WRITE,
 };
 
-/* Pass as @qp_id to update only the device totals. */
-#define PVRDMA_STAT_NO_QP 0xffffffffu
+/* Pass as @qp_id to ernic_stats_rdma_bytes() to count only the totals. */
+#define ERNIC_STAT_NO_QP UINT32_MAX
 
 /**
- * pvrdma_rdma_bytes_count - Record RDMA bytes against the device and a QP
- * @handle: Device handle
- * @qp_id: QP to attribute the bytes to, or PVRDMA_STAT_NO_QP for totals only
+ * ernic_stats_rdma_bytes - Count RDMA bytes against the device and a QP
+ * @st: Statistics
+ * @qp_id: QP to attribute the bytes to, or ERNIC_STAT_NO_QP for the totals
+ *         only
  * @bytes: Number of bytes actually moved
  * @stat_op: Operation class
  */
-void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
-                             uint64_t bytes, enum pvrdma_stat_op stat_op);
+void ernic_stats_rdma_bytes(struct ernic_stats *st, uint32_t qp_id,
+                            uint64_t bytes, enum ernic_stat_op stat_op);
 
 /**
- * pvrdma_qp_doorbell_count - Record one doorbell ring against a QP
- * @handle: Device handle
+ * ernic_stats_qp_doorbell - Count one doorbell ring against a QP
+ * @st: Statistics
  * @qp_id: QP the doorbell targets
  * @is_send: true for the send queue, false for the receive queue
  *
- * One increment per ring, not per WQE the ring drains.
+ * One per ring, however many WQEs the ring makes ready.
  */
-void pvrdma_qp_doorbell_count(pvrdma_handle_t handle, uint32_t qp_id,
-                              bool is_send);
+void ernic_stats_qp_doorbell(struct ernic_stats *st, uint32_t qp_id,
+                             bool is_send);
+
+/*
+ * Send WQE opcodes for ernic_stats_qp_wqe(), each with its line in the
+ * stats file's "WQEs by opcode".  The order and names are the PVRDMA ABI's
+ * (PVRDMA_WR_*), which the file has always used.
+ */
+enum ernic_stat_wr {
+    ERNIC_STAT_WR_RDMA_WRITE,
+    ERNIC_STAT_WR_RDMA_WRITE_WITH_IMM,
+    ERNIC_STAT_WR_SEND,
+    ERNIC_STAT_WR_SEND_WITH_IMM,
+    ERNIC_STAT_WR_RDMA_READ,
+    ERNIC_STAT_WR_ATOMIC_CMP_AND_SWP,
+    ERNIC_STAT_WR_ATOMIC_FETCH_AND_ADD,
+    ERNIC_STAT_WR_LSO,
+    ERNIC_STAT_WR_SEND_WITH_INV,
+    ERNIC_STAT_WR_RDMA_READ_WITH_INV,
+    ERNIC_STAT_WR_LOCAL_INV,
+    ERNIC_STAT_WR_FAST_REG_MR,
+    ERNIC_STAT_WR_MASKED_ATOMIC_CMP_SWP,
+    ERNIC_STAT_WR_MASKED_ATOMIC_FETCH,
+    ERNIC_STAT_WR_BIND_MW,
+    ERNIC_STAT_WR_REG_SIG_MR,
+    ERNIC_STAT_WR_ERROR,
+    ERNIC_STAT_WR_SEND_DC,
+    ERNIC_STAT_WR_COUNT
+};
 
 /**
- * pvrdma_qp_wqe_count - Record one processed send WQE against a QP
- * @handle: Device handle
+ * ernic_stats_qp_wqe - Count one processed send WQE against a QP
+ * @st: Statistics
  * @qp_id: QP that owns the WQE
- * @pvrdma_opcode: PVRDMA_WR_* index, or >= 18 to count only the total
- *
- * Callers on the ionic path must translate their own opcode space first; see
- * ionic_op_to_pvrdma_wr() in ionic_datapath.c.
+ * @wr: enum ernic_stat_wr, or ERNIC_STAT_WR_COUNT or more to count the WQE
+ *      in the QP's total only
  */
-void pvrdma_qp_wqe_count(pvrdma_handle_t handle, uint32_t qp_id,
-                         unsigned int pvrdma_opcode);
+void ernic_stats_qp_wqe(struct ernic_stats *st, uint32_t qp_id,
+                        unsigned int wr);
 
 /**
- * pvrdma_qp_cqe_count - Record one completion posted to a QP's CQ
- * @handle: Device handle
+ * ernic_stats_qp_cqe - Count one completion posted for a QP
+ * @st: Statistics
  * @qp_id: QP the completion belongs to
  */
-void pvrdma_qp_cqe_count(pvrdma_handle_t handle, uint32_t qp_id);
+void ernic_stats_qp_cqe(struct ernic_stats *st, uint32_t qp_id);
 
 /**
- * pvrdma_qp_stats_forget - Drop the per-QP counters for a destroyed QP
- * @handle: Device handle
+ * ernic_stats_qp_forget - Drop a destroyed QP's counters
+ * @st: Statistics
  * @qp_id: QP being destroyed
  *
- * pvrdma_get_qp_stats() inserts lazily and never evicts, so without this the
- * exported QP count only ever grows and destroyed QPs keep reporting.
+ * The stats file then stops listing it, and a new QP with the same id
+ * starts from zero.
  */
-void pvrdma_qp_stats_forget(pvrdma_handle_t handle, uint32_t qp_id);
+void ernic_stats_qp_forget(struct ernic_stats *st, uint32_t qp_id);
+
+/*
+ * Reading the counters back
+ */
 
 /* Device totals, as reported to the guest by the ionic STATS_VALS command. */
-struct pvrdma_dev_counters {
+struct ernic_dev_counters {
     uint64_t commands;
     uint64_t total_bytes_sent;
     uint64_t total_bytes_received;
@@ -132,7 +202,7 @@ struct pvrdma_dev_counters {
 };
 
 /* One QP's counters, as reported by the ionic QP_STATS_VALS command. */
-struct pvrdma_qp_counters {
+struct ernic_qp_counters {
     uint64_t doorbell_send;
     uint64_t doorbell_recv;
     uint64_t wqes_processed;
@@ -144,93 +214,96 @@ struct pvrdma_qp_counters {
 };
 
 /**
- * pvrdma_get_dev_counters - Snapshot the device totals
- * @handle: Device handle
+ * ernic_stats_dev_counters - Snapshot the device totals
+ * @st: Statistics
  * @out: Filled on success, zeroed on failure
  *
- * Returns 0, or -EINVAL for a NULL handle or @out.
+ * Returns: 0, or -EINVAL for a NULL @st or @out
  */
-int pvrdma_get_dev_counters(pvrdma_handle_t handle,
-                            struct pvrdma_dev_counters *out);
+int ernic_stats_dev_counters(const struct ernic_stats *st,
+                             struct ernic_dev_counters *out);
 
 /**
- * pvrdma_get_qp_counters - Snapshot one QP's counters
- * @handle: Device handle
+ * ernic_stats_qp_counters - Snapshot one QP's counters
+ * @st: Statistics
  * @qp_id: QP to read
  * @out: Filled on success, zeroed on failure
  *
- * A QP that has not counted anything yet reads as all zeros; this does not
- * create an entry for it.  Returns 0, or -EINVAL for a NULL handle or @out.
+ * A QP with nothing counted yet reads as all zeros.
+ *
+ * Returns: 0, or -EINVAL for a NULL @st or @out
  */
-int pvrdma_get_qp_counters(pvrdma_handle_t handle, uint32_t qp_id,
-                           struct pvrdma_qp_counters *out);
+int ernic_stats_qp_counters(const struct ernic_stats *st, uint32_t qp_id,
+                            struct ernic_qp_counters *out);
 
 /*
  * The stats file
  */
 
 /**
- * pvrdma_set_stats_file - Set statistics output file path
- * @handle: Device handle
- * @stats_file: Path to stats output file (will be copied)
+ * ernic_stats_set_file - Set the path ernic_stats_write() writes to
+ * @st: Statistics
+ * @path: Path, copied, or NULL for no file
+ *
+ * Returns: 0, or -ENOMEM, leaving no file set
  */
-void pvrdma_set_stats_file(pvrdma_handle_t handle, const char *stats_file);
+int ernic_stats_set_file(struct ernic_stats *st, const char *path);
+
+/* What the stats file's "Instance" block shows about the server. */
+struct ernic_stats_instance {
+    const char *socket_path; /* NULL shows "(not set)" */
+    const char *backend;     /* the --backend string; NULL: "(not set)" */
+    const char *nic_profile; /* chain and hash; NULL: "(not set)" */
+    uint16_t pci_vid;        /* both 0 shows "(not set)" */
+    uint16_t pci_did;
+    uint8_t mac[6];
+};
 
 /**
- * pvrdma_set_stats_instance_info - Set instance info for stats file display
- * @handle: Device handle
- * @socket_path: Socket path for this instance (may be NULL)
- * @backend_type_str: Full backend string e.g. loopback (may be NULL)
+ * ernic_stats_set_instance - Set the stats file's "Instance" block
+ * @st: Statistics
+ * @inst: What to show; its strings are copied
+ *
+ * Returns: 0, or -ENOMEM, leaving the block as it was
  */
-void pvrdma_set_stats_instance_info(pvrdma_handle_t handle,
-                                    const char *socket_path,
-                                    const char *backend_type_str);
+int ernic_stats_set_instance(struct ernic_stats *st,
+                             const struct ernic_stats_instance *inst);
 
 /**
- * pvrdma_set_stats_pci_ids - Set PCI VID:DID for stats file display
- * @handle: Device handle
- * @vid: PCI Vendor ID (e.g. 0x1022)
- * @did: PCI Device ID (e.g. 0x8000)
+ * ernic_stats_set_connection - Set the connection state the file shows
+ * @st: Statistics
+ * @state: e.g. "connected" or "disconnected (lost connection)", or NULL to
+ *         show "(not set)".  Not copied: pass a string literal.
+ *
+ * ernic-exporter reports any state starting "connected" as up.
  */
-void pvrdma_set_stats_pci_ids(pvrdma_handle_t handle, uint16_t vid,
-                              uint16_t did);
+void ernic_stats_set_connection(struct ernic_stats *st, const char *state);
+
+/* Writes one section of the stats file to @fp. */
+typedef void (*ernic_stats_section_fn)(FILE *fp, void *opaque);
 
 /**
- * pvrdma_set_stats_connection_state - Set connection state for stats display
- * @handle: Device handle
- * @connection_str: e.g. "connected", "disconnected (lost connection)" (may be
- *                  NULL; shown as "(not set)" in stats file)
+ * ernic_stats_set_section - Add a section to the stats file
+ * @st: Statistics
+ * @write_fn: Writes the section, after "Device Statistics"; NULL removes it
+ * @opaque: Passed to @write_fn
+ *
+ * There is one section, which the ionic device sets for its LIF and port
+ * counters.
  */
-void pvrdma_set_stats_connection_state(pvrdma_handle_t handle,
-                                       const char *connection_str);
+void ernic_stats_set_section(struct ernic_stats *st,
+                             ernic_stats_section_fn write_fn, void *opaque);
 
 /**
- * pvrdma_set_stats_nic_profile - Set the NIC profile for stats display
- * @handle:  Device handle
- * @profile: the profile chain and hash, e.g. "compat (hash 0x...)" (may be
- *           NULL; shown as "(not set)" in stats file)
+ * ernic_stats_write - Replace the stats file with the counters as they are
+ * @st: Statistics
+ *
+ * A reader sees the old file or the new one, whole, never part of one; a
+ * write that fails leaves the old file, and logs why.
+ *
+ * Returns: true if a new file replaced the old one; false if it didn't, or
+ * there is no file
  */
-void pvrdma_set_stats_nic_profile(pvrdma_handle_t handle, const char *profile);
-
-/**
- * pvrdma_set_stats_section - Add a section to the stats file
- * @handle: Device handle
- * @fn:     writes the section, after "Device Statistics" (NULL removes it)
- * @opaque: passed to @fn
- */
-void pvrdma_set_stats_section(pvrdma_handle_t handle,
-                              void (*fn)(FILE *fp, void *opaque), void *opaque);
-
-/**
- * pvrdma_inc_stats_reset_count - Increment device reset count for stats
- * @handle: Device handle
- */
-void pvrdma_inc_stats_reset_count(pvrdma_handle_t handle);
-
-/**
- * pvrdma_write_stats - Write statistics to file
- * @handle: Device handle
- */
-void pvrdma_write_stats(pvrdma_handle_t handle);
+bool ernic_stats_write(struct ernic_stats *st);
 
 #endif /* ERNIC_STATS_H */

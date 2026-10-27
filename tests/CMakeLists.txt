@@ -932,28 +932,30 @@ target_include_directories(ernic-test-log-level PRIVATE
 target_compile_definitions(ernic-test-log-level PRIVATE _GNU_SOURCE)
 target_link_libraries(ernic-test-log-level PRIVATE pthread)
 
-# Stats file test: the file ernic-exporter reads is replaced whole, never
-# seen half written, and a failed write leaves the last one in place. It
-# links pvrdma_stats.c, error-report.c and ernic_log.c directly.
-add_executable(ernic-test-pvrdma-stats test_pvrdma_stats.c
-    ${PROJECT_SOURCE_DIR}/src/rdma/pvrdma_stats.c
-    ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
+# Statistics test: the counters, and the stats file ernic-exporter reads,
+# which is replaced whole, never seen half written, and a failed write
+# leaves the last one in place. It links ernic_stats.c and ernic_log.c
+# directly, and fails their allocations on demand with the S3 tests'
+# wrappers (s3_alloc_fail.h).
+add_executable(ernic-test-ernic-stats test_ernic_stats.c
+    s3_alloc_fail.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_stats.c
     ${PROJECT_SOURCE_DIR}/src/ernic_log.c
 )
-target_include_directories(ernic-test-pvrdma-stats PRIVATE
+target_include_directories(ernic-test-ernic-stats PRIVATE
     ${PROJECT_SOURCE_DIR}/src
-    ${PROJECT_SOURCE_DIR}/src/rdma
-    ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
-    ${PROJECT_SOURCE_DIR}/src/qemu
+    ${PROJECT_SOURCE_DIR}/shared
 )
-target_include_directories(ernic-test-pvrdma-stats SYSTEM PRIVATE
+target_include_directories(ernic-test-ernic-stats SYSTEM PRIVATE
     ${GLIB2_INCLUDE_DIRS}
-    ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
-target_compile_definitions(ernic-test-pvrdma-stats PRIVATE _GNU_SOURCE)
-target_link_directories(ernic-test-pvrdma-stats PRIVATE ${GLIB2_LIBRARY_DIRS})
-target_link_libraries(ernic-test-pvrdma-stats PRIVATE
+target_compile_definitions(ernic-test-ernic-stats PRIVATE _GNU_SOURCE)
+target_link_directories(ernic-test-ernic-stats PRIVATE ${GLIB2_LIBRARY_DIRS})
+target_link_libraries(ernic-test-ernic-stats PRIVATE
     ${GLIB2_LIBRARIES} pthread)
+target_link_options(ernic-test-ernic-stats PRIVATE
+    "LINKER:--wrap=malloc,--wrap=calloc,--wrap=realloc"
+    "LINKER:--wrap=strdup,--wrap=getentropy")
 
 # In-process ionic device harness. It links every source the server is
 # built from except SERVER_SOURCES (main() and the socket's permissions),
@@ -1108,7 +1110,7 @@ set(ERNIC_TEST_TARGETS
     test_rdma_res_tbl
     test_qemu_stubs
     ernic-test-log-level
-    ernic-test-pvrdma-stats
+    ernic-test-ernic-stats
     ernic-test-ionic-harness
 )
 
@@ -1497,12 +1499,13 @@ add_test(
 )
 set_tests_properties(log-level-unit PROPERTIES TIMEOUT 60)
 
-# Stats file unit test: replaced whole, and kept when a write fails
+# Statistics unit test: the counters, and the stats file replaced whole and
+# kept when a write fails
 add_test(
-    NAME pvrdma-stats-unit
-    COMMAND $<TARGET_FILE:ernic-test-pvrdma-stats>
+    NAME ernic-stats-unit
+    COMMAND $<TARGET_FILE:ernic-test-ernic-stats>
 )
-set_tests_properties(pvrdma-stats-unit PROPERTIES TIMEOUT 30)
+set_tests_properties(ernic-stats-unit PROPERTIES TIMEOUT 30)
 
 # In-process ionic device harness: the whole device, driven as the guest
 # driver drives it, one CTest test per group so a failure names its area.

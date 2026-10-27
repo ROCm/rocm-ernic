@@ -5,13 +5,12 @@
  * the server) reaches the RDMA core in src/qemu/, so that the front end
  * doesn't include the core's headers. This header creates and destroys the
  * core and names it with an opaque handle. What the front end does with the
- * handle is in three narrower headers, each included only where it's used:
+ * handle is in two narrower headers, each included only where it's used:
  *
  *   ernic_rm.h     the resource manager, for the admin queue
  *   ernic_mesh.h   the TCP mesh, for the data path
- *   ernic_stats.h  counters and the stats file
  *
- * rocm_ernic_compat.c implements all four.
+ * rocm_ernic_compat.c implements all three.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -27,8 +26,8 @@ typedef struct rocm_ernic_dev rocm_ernic_dev_t;
  * Opaque handle to RDMA device
  *
  * This hides the QEMU PVRDMADev structure from our code: the struct is
- * incomplete here, and only the files that include pvrdma.h
- * (rocm_ernic_compat.c and src/rdma/pvrdma_stats.c) can see its members.
+ * incomplete here, and only rocm_ernic_compat.c, which includes pvrdma.h,
+ * can see its members.
  * Unlike a void *, the compiler diagnoses any other pointer passed where a
  * handle belongs.
  *

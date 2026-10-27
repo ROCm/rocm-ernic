@@ -313,9 +313,10 @@ void ionic_eth_emu_register_adminq(struct ionic_eth_emu *emu,
     emu->adminq = adminq;
 }
 
-void ionic_eth_emu_set_pvrdma(struct ionic_eth_emu *emu, pvrdma_handle_t handle)
+void ionic_eth_emu_set_stats(struct ionic_eth_emu *emu,
+                             struct ernic_stats *stats)
 {
-    emu->pvrdma_handle = handle;
+    emu->stats_sink = stats;
 }
 
 void ionic_eth_emu_set_mac(struct ionic_eth_emu *emu, const uint8_t mac[6])
@@ -339,7 +340,7 @@ static int deliver_irq(struct ionic_eth_emu *emu, int vec)
 
     int ret = vfu_irq_trigger(emu->vfu_ctx, (uint32_t)vec);
     if (!ret)
-        pvrdma_irq_count(emu->pvrdma_handle);
+        ernic_stats_irq(emu->stats_sink);
 
     return ret;
 }
@@ -1698,7 +1699,7 @@ static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
                 ionic_emu_port_frame(&emu->stats, emu->frame, len, true, 0);
             }
             if (emu->net || emu->tx_filter)
-                pvrdma_eth_bytes_count(emu->pvrdma_handle, len, true);
+                ernic_stats_eth_bytes(emu->stats_sink, len, true);
         }
 
         /* struct ionic_txq_comp: status @0, comp_index le16 @2, colour @15. */
@@ -1884,7 +1885,7 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
         if (rc == 0) {
             hit[qid] = true;
             ionic_emu_stats_frame(&emu->stats, emu->frame, (size_t)len, false);
-            pvrdma_eth_bytes_count(emu->pvrdma_handle, (uint64_t)len, false);
+            ernic_stats_eth_bytes(emu->stats_sink, (uint64_t)len, false);
         } else {
             ionic_emu_stats_drop(&emu->stats, emu->frame, (size_t)len, false,
                                  rx_drop_reason(rc));
@@ -1933,7 +1934,7 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
         if (rc == 0) {
             hit[qid] = true;
             ionic_emu_stats_frame(&emu->stats, f->data, f->len, false);
-            pvrdma_eth_bytes_count(emu->pvrdma_handle, (uint64_t)f->len, false);
+            ernic_stats_eth_bytes(emu->stats_sink, (uint64_t)f->len, false);
             free(f);
         } else if (rc != -ENOBUFS) {
             ionic_emu_stats_drop(&emu->stats, f->data, f->len, false,

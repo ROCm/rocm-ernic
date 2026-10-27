@@ -133,8 +133,8 @@ struct stats_case {
     uint32_t length;
     uint32_t id_ver;
     uint16_t body_len;
-    int dev_rc; /* pvrdma_get_dev_counters() result */
-    int qp_rc;  /* pvrdma_get_qp_counters() result */
+    int dev_rc; /* ernic_stats_dev_counters() result */
+    int qp_rc;  /* ernic_stats_qp_counters() result */
     bool max;   /* every counter is UINT64_MAX */
     uint8_t want_rc;
     size_t want_written; /* bytes from dma; 0 = guest memory untouched */
@@ -235,7 +235,7 @@ static const struct stats_case cases[] = {
     {"boundary", "values with length 20, not a multiple of 8",
      "whole values only: 2 values (16 bytes)", VALS, BUF_GPA, 20, 0,
      STATS_BODY_LEN, 0, 0, false, 0, 16, CONTENT_DEV_VALS},
-    {"boundary", "device values with length exactly the five pvrdma totals",
+    {"boundary", "device values with length exactly the five device totals",
      "the totals and no RDMA counter (40 bytes)", VALS, BUF_GPA, 40, 0,
      STATS_BODY_LEN, 0, 0, false, 0, 40, CONTENT_DEV_VALS},
     {"boundary", "device values with length one value past the totals",
@@ -831,9 +831,9 @@ int main(void)
     check_names("device stat", dev_stats, DEV_STATS_COUNT);
     check_names("QP stat", qp_stats, QP_STATS_COUNT);
     check_order("device stat", dev_stats, DEV_STATS_COUNT, dev_head, 5,
-                "the 5 pvrdma totals, then the 30 RDMA counters");
+                "the 5 ernic_stats totals, then the 30 RDMA counters");
     check_order("QP stat", qp_stats, QP_STATS_COUNT, qp_head, 8,
-                "the 8 pvrdma counters, then the 30 RDMA counters");
+                "the 8 ernic_stats counters, then the 30 RDMA counters");
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);

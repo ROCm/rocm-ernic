@@ -20,6 +20,7 @@
 
 /* Forward declarations */
 typedef struct rocm_ernic_dev rocm_ernic_dev_t;
+struct ernic_stats;
 struct ionic_device;
 struct ionic_fault_set;
 
@@ -64,8 +65,10 @@ struct rocm_ernic_dev {
      */
     bool client_lost;
 
-    /* Statistics */
-    char *stats_file_path; /* Path to stats output file */
+    /* The device's counters and the stats file (ernic_stats.h), which the
+     * ionic device counts into */
+    struct ernic_stats *stats;
+    char *stats_file_path; /* --stats-file, or NULL */
 
     /* Faults from --inject, or NULL (ionic_fault.h) */
     struct ionic_fault_set *faults;
