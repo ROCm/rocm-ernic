@@ -101,9 +101,13 @@
     v1model` emits. `-J` / `--p4-program PATH` loads one at startup and
     implies `--p4`. A program using a feature the engine lacks, including
     signed fields and negative literals, is refused by name, and the server
-    doesn't start. Fields up to 512 bits work. Tables support exact,
-    longest-prefix and ternary matching, with ties broken as P4 requires,
-    and entries are inserted, modified and deleted through one
+    doesn't start. A program may be up to 4 MiB, but one with so many JSON
+    values that parsing it would take more than about 50 MiB of host memory
+    is refused before it is parsed (objects weigh 8, arrays 2, anything
+    else 1, against a budget of 524288); compiler output of up to about
+    4 MiB, or 1.75 MiB minified, fits. Fields up to 512 bits work. Tables
+    support exact, longest-prefix and ternary matching, with ties broken as
+    P4 requires, and entries are inserted, modified and deleted through one
     P4Runtime-shaped update, whichever control plane sends it. p4c
     qualifies table and action names with their control
     (`IngressImpl.forward`, not `forward`), so a control plane must use the

@@ -26,12 +26,13 @@
 #include "p4_value.h"
 #include "parse_int.h"
 
-/*
- * The whole document is handed to json-c in one call, so the input cap is
- * also the only bound on the size of the tree json-c builds from it.
- */
+/* The whole document is handed to json-c in one call. */
 _Static_assert(P4_PROGRAM_MAX <= INT_MAX,
                "json_tokener_parse_ex takes an int length");
+
+/* p4_json_cost() can't overflow, even weighing every byte as an object. */
+_Static_assert(P4_PROGRAM_MAX <= SIZE_MAX / P4_JSON_COST_OBJECT,
+               "the weight of a document fits a size_t");
 
 /* Walk state: the destination, and somewhere to record the first problem. */
 struct p4_walk {
@@ -2330,12 +2331,86 @@ static int p4_walk_pipelines(struct p4_walk *w, const struct json_object *root)
     return 0;
 }
 
+/*
+ * Weigh what json-c would build from @len bytes at @s, in the units of
+ * P4_JSON_COST_OBJECT and its neighbours (p4_json.h), without building it.
+ *
+ * For a document json-c accepts, this counts exactly the values it builds,
+ * object keys included. For one it refuses, it may count more, never less:
+ * json-c builds only from the part before its error, which is valid and so
+ * counted exactly, and gives up there. Outside a string, each run of bytes
+ * that aren't brackets, separators, quotes or whitespace is one value: a
+ * number or literal in a valid document, something json-c refuses
+ * otherwise.
+ *
+ * A string is closed only by the quote that opened it, and a backslash hides
+ * the byte after it. Both quotes matter: json-c 0.18 accepts a single-quoted
+ * key even under JSON_TOKENER_STRICT, and a double quote inside one is
+ * literal. A scan that knew only double quotes would take `{'a"b':` as the
+ * start of a string and skip every value up to the next double quote.
+ */
+static size_t p4_json_cost(const char *s, size_t len)
+{
+    size_t cost = 0;
+    char quote = '\0'; /* the quote of the string we are in, if any */
+    bool escaped = false;
+    bool in_value = false; /* in a number or literal */
+
+    for (size_t i = 0; i < len; i++) {
+        char c = s[i];
+
+        if (quote != '\0') {
+            if (escaped)
+                escaped = false;
+            else if (c == '\\')
+                escaped = true;
+            else if (c == quote)
+                quote = '\0';
+            continue;
+        }
+
+        switch (c) {
+        case '{':
+            cost += P4_JSON_COST_OBJECT;
+            in_value = false;
+            break;
+        case '[':
+            cost += P4_JSON_COST_ARRAY;
+            in_value = false;
+            break;
+        case '"':
+        case '\'':
+            cost += P4_JSON_COST_OTHER;
+            quote = c;
+            in_value = false;
+            break;
+        case '}':
+        case ']':
+        case ',':
+        case ':':
+        case ' ':
+        case '\t':
+        case '\n':
+        case '\r':
+            in_value = false;
+            break;
+        default:
+            if (!in_value)
+                cost += P4_JSON_COST_OTHER;
+            in_value = true;
+            break;
+        }
+    }
+    return cost;
+}
+
 int p4_json_parse(const void *buf, size_t len, struct p4_program **out,
                   char *err, size_t err_len)
 {
     struct json_tokener *tok;
     struct json_object *root = NULL;
     struct p4_walk w;
+    size_t cost;
     int rc;
 
     if (err && err_len)
@@ -2351,6 +2426,16 @@ int p4_json_parse(const void *buf, size_t len, struct p4_program **out,
     if (len == 0 || len > P4_PROGRAM_MAX)
         return p4_fail(&w, -EINVAL, "the program is %zu bytes; want 1 to %u",
                        len, P4_PROGRAM_MAX);
+
+    /* Before json-c allocates anything. */
+    cost = p4_json_cost(buf, len);
+    if (cost > P4_JSON_MAX_COST)
+        return p4_fail(&w, -EINVAL,
+                       "the program has too many JSON values: they weigh "
+                       "%zu, at most %u (an object %u, an array %u, anything "
+                       "else %u)",
+                       cost, P4_JSON_MAX_COST, P4_JSON_COST_OBJECT,
+                       P4_JSON_COST_ARRAY, P4_JSON_COST_OTHER);
 
     tok = json_tokener_new_ex(P4_JSON_MAX_DEPTH);
     if (!tok)

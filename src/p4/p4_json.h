@@ -40,6 +40,27 @@ struct p4_program;
 #define P4_JSON_MAX_DEPTH 32
 
 /*
+ * The depth is limited, but the breadth is not, and json-c spends far more
+ * on a value than the value takes as text: measured on json-c 0.18, `{}`
+ * costs about 790 bytes of heap (an object starts with a 16-entry hash
+ * table), `[]` about 150, and a number, string or object key 70 to 105. A
+ * P4_PROGRAM_MAX document of `{},{},...` would take a gigabyte, all
+ * allocated on the thread that services the vfio-user poll loop.
+ *
+ * So before json-c sees a document, the loader weighs what json-c would
+ * build from it, in these units of about 70 to 100 bytes of heap, and
+ * refuses one over P4_JSON_MAX_COST. That caps the tree at about 50 MiB,
+ * and the parse at tens of milliseconds, whatever the document's shape.
+ * The p4c artifacts in tests/data/p4/ take a unit for every 8 to 13 bytes
+ * of text as p4c indents it, or 3.5 to 5 minified, so the budget admits
+ * one of about 4 MiB as p4c writes it, or at least 1.75 MiB minified.
+ */
+#define P4_JSON_COST_OBJECT 8u
+#define P4_JSON_COST_ARRAY  2u
+#define P4_JSON_COST_OTHER  1u /* a number, string, literal or object key */
+#define P4_JSON_MAX_COST    (512u * 1024u)
+
+/*
  * Parse @len bytes of bmv2 JSON at @buf into a newly allocated program,
  * stored in *@out on success.
  *
@@ -53,8 +74,8 @@ struct p4_program;
  * terminator.  It names the offending construct where it can.
  *
  * Returns 0, or a negative errno: -EINVAL for a document this will not
- * accept, -ENOMEM, -ENOSYS for a construct that is understood but not
- * implemented.
+ * accept, including one over P4_JSON_MAX_COST, -ENOMEM, -ENOSYS for a
+ * construct that is understood but not implemented.
  */
 int p4_json_parse(const void *buf, size_t len, struct p4_program **out,
                   char *err, size_t err_len);

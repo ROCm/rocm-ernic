@@ -25,6 +25,8 @@
 #include <string.h>
 
 #include <json-c/json_object.h>
+/* json_object_object_foreach expands to the link-hash walkers. */
+#include <json-c/linkhash.h> // IWYU pragma: keep
 #include <json-c/json_tokener.h>
 #include <json-c/json_types.h>
 
@@ -952,6 +954,205 @@ static void test_load_real_artifacts(void)
     check(p4_engine_has_program(eng), "a program is installed");
 
     p4_engine_destroy(eng);
+}
+
+/*
+ * What the loader's scan should make of a document, weighed from the tree
+ * json-c built rather than from the text, so the two are independent. With
+ * an explicit stack, not recursion, and SIZE_MAX if that overflows.
+ */
+static size_t tree_cost(struct json_object *root)
+{
+    struct json_object *stack[4096];
+    size_t n = 0, cost = 0;
+
+    stack[n++] = root;
+    while (n > 0) {
+        struct json_object *o = stack[--n];
+
+        if (json_object_is_type(o, json_type_object)) {
+            cost += P4_JSON_COST_OBJECT;
+            json_object_object_foreach(o, key, v)
+            {
+                (void)key;
+                cost += P4_JSON_COST_OTHER;
+                if (n == sizeof(stack) / sizeof(stack[0]))
+                    return SIZE_MAX;
+                stack[n++] = v;
+            }
+        } else if (json_object_is_type(o, json_type_array)) {
+            cost += P4_JSON_COST_ARRAY;
+            for (size_t i = 0; i < json_object_array_length(o); i++) {
+                if (n == sizeof(stack) / sizeof(stack[0]))
+                    return SIZE_MAX;
+                stack[n++] = json_object_array_get_idx(o, i);
+            }
+        } else {
+            cost += P4_JSON_COST_OTHER; /* null is a NULL object */
+        }
+    }
+    return cost;
+}
+
+/*
+ * @base (@base_len bytes, a JSON object weighing @base_cost) with an
+ * ignored key added, "pad", whose array of copies of @elem (each weighing
+ * @elem_cost) and then zeros brings the whole to P4_JSON_MAX_COST + @over.
+ * NULL if @base doesn't end in '}' or the result is over P4_PROGRAM_MAX.
+ */
+static char *pad_to_budget(const char *base, size_t base_len, size_t base_cost,
+                           const char *elem, size_t elem_cost, size_t over,
+                           size_t *out_len)
+{
+    static const char key[] = ",\"pad\":[";
+    size_t fixed = base_cost + P4_JSON_COST_OTHER + P4_JSON_COST_ARRAY;
+    size_t elem_len = strlen(elem);
+    size_t want = P4_JSON_MAX_COST + over;
+    size_t nelem, nzero, cap, n;
+    char *doc;
+
+    while (base_len > 0 &&
+           (base[base_len - 1] == ' ' || base[base_len - 1] == '\t' ||
+            base[base_len - 1] == '\r' || base[base_len - 1] == '\n'))
+        base_len--;
+    if (base_len == 0 || base[base_len - 1] != '}' || fixed > want)
+        return NULL;
+    base_len--;
+    nelem = (want - fixed) / elem_cost;
+    nzero = (want - fixed) % elem_cost;
+
+    /* Every element with a comma after it, then "]}". */
+    cap = base_len + sizeof(key) + nelem * (elem_len + 1) + nzero * 2 + 2;
+    if (cap > P4_PROGRAM_MAX)
+        return NULL;
+    doc = malloc(cap);
+    if (!doc)
+        return NULL;
+    memcpy(doc, base, base_len);
+    n = base_len;
+    memcpy(doc + n, key, sizeof(key) - 1);
+    n += sizeof(key) - 1;
+    for (size_t i = 0; i < nelem; i++) {
+        memcpy(doc + n, elem, elem_len);
+        n += elem_len;
+        doc[n++] = ',';
+    }
+    for (size_t i = 0; i < nzero; i++) {
+        doc[n++] = '0';
+        doc[n++] = ',';
+    }
+    if (nelem + nzero > 0)
+        n--; /* the last comma */
+    doc[n++] = ']';
+    doc[n++] = '}';
+    *out_len = n;
+    return doc;
+}
+
+/*
+ * The budget on what json-c builds. A real program padded with an ignored
+ * key to exactly P4_JSON_MAX_COST loads, and one unit more is refused before
+ * json-c sees it, for each kind of value. Exactly, because the scan's count
+ * of the program is checked against json-c's own tree of it.
+ */
+static void test_load_cost_budget(void)
+{
+    static const struct {
+        const char *elem;
+        size_t cost;
+    } pads[] = {
+        {"0", P4_JSON_COST_OTHER},
+        {"{}", P4_JSON_COST_OBJECT},
+        {"[]", P4_JSON_COST_ARRAY},
+        /* Brackets and an escaped quote in a string weigh nothing. */
+        {"\"\\\"{[\"", P4_JSON_COST_OTHER},
+        /*
+         * json-c 0.18 accepts a single-quoted key even when STRICT, and the
+         * double quote in it is literal. A scan that took it for the start
+         * of a string would skip to the next element's and miss the rest.
+         */
+        {"{'\"':[]}",
+         P4_JSON_COST_OBJECT + P4_JSON_COST_OTHER + P4_JSON_COST_ARRAY},
+    };
+    struct p4_program *prog = NULL;
+    struct json_tokener *tok;
+    struct json_object *root;
+    size_t n = 0, base_cost, dlen = 0;
+    char err[256];
+    char *base, *doc;
+    int rc;
+
+    base = read_fixture("minimal_forward.json", &n);
+    if (!base) {
+        check(false, "minimal_forward.json could not be read");
+        return;
+    }
+    tok = json_tokener_new();
+    if (!tok) {
+        check(false, "json_tokener_new failed");
+        free(base);
+        return;
+    }
+    root = json_tokener_parse_ex(tok, base, (int)n);
+    json_tokener_free(tok);
+    if (!root) {
+        check(false, "minimal_forward.json is not JSON");
+        free(base);
+        return;
+    }
+    base_cost = tree_cost(root);
+    json_object_put(root);
+    if (base_cost >= P4_JSON_MAX_COST) {
+        checkf(false, "minimal_forward.json weighs %zu", base_cost);
+        free(base);
+        return;
+    }
+
+    for (size_t i = 0; i < sizeof(pads) / sizeof(pads[0]); i++) {
+        for (size_t over = 0; over <= 1; over++) {
+            doc = pad_to_budget(base, n, base_cost, pads[i].elem, pads[i].cost,
+                                over, &dlen);
+            if (!doc) {
+                checkf(false, "padding with %s could not be built",
+                       pads[i].elem);
+                continue;
+            }
+            rc = p4_json_parse(doc, dlen, &prog, err, sizeof(err));
+            if (over == 0) {
+                checkf(rc == 0, "padded with %s to the budget: %d (%s)",
+                       pads[i].elem, rc, err);
+                if (rc == 0)
+                    p4_json_free(prog);
+            } else {
+                checkf(rc == -EINVAL &&
+                           strstr(err, "too many JSON values") != NULL,
+                       "padded with %s past the budget: %d (%s)", pads[i].elem,
+                       rc, err);
+            }
+            free(doc);
+        }
+    }
+    free(base);
+
+    /* The document that would have taken a gigabyte: refused unparsed. */
+    doc = malloc(P4_PROGRAM_MAX);
+    if (!doc) {
+        check(false, "out of memory");
+        return;
+    }
+    n = 0;
+    memcpy(doc, "{\"a\":[", 6);
+    n += 6;
+    while (n + 3 + 2 <= P4_PROGRAM_MAX) {
+        memcpy(doc + n, "{},", 3);
+        n += 3;
+    }
+    memcpy(doc + n - 1, "]}", 2);
+    n++;
+    rc = p4_json_parse(doc, n, &prog, err, sizeof(err));
+    checkf(rc == -EINVAL && strstr(err, "too many JSON values") != NULL,
+           "a document of empty objects: %d (%s)", rc, err);
+    free(doc);
 }
 
 /*
@@ -2711,6 +2912,7 @@ int main(void)
     test_lifecycle();
     test_load_parses();
     test_load_real_artifacts();
+    test_load_cost_budget();
     test_execute();
     test_execute_egress();
     test_execute_no_egress_assignment();
