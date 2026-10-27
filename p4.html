@@ -882,6 +882,20 @@ with a newline in it, a width given as a floating-point
 number, a duplicate name or id, a literal wider than the field
 it is assigned to, and a reference to something that does not
 exist are each a rejection.</p>
+<p>So is a document that would cost too much to parse. A program
+may be up to 4 MiB, but json-c spends far more heap on a
+value than the value takes as text – about 790 bytes for
+<code class="docutils literal notranslate"><span class="pre">{}</span></code> – so 4 MiB of empty objects would take a gigabyte,
+allocated on the thread that also services the vfio-user poll
+loop. Before json-c sees a document, the loader weighs the
+values in it, an object as 8, an array as 2 and anything else,
+object keys included, as 1, and refuses one weighing more than
+524288 (<code class="docutils literal notranslate"><span class="pre">P4_JSON_MAX_COST</span></code>). That holds the parse to about
+50 MiB and tens of milliseconds. The <code class="docutils literal notranslate"><span class="pre">p4c</span></code> artifacts in
+<code class="docutils literal notranslate"><span class="pre">tests/data/p4/</span></code> weigh a unit for every 8 to 13 bytes as
+<code class="docutils literal notranslate"><span class="pre">p4c</span></code> indents them, or 3.5 to 5 bytes minified, so the
+budget admits one of about 4 MiB as <code class="docutils literal notranslate"><span class="pre">p4c</span></code> writes it, or at
+least 1.75 MiB minified.</p>
 <p>A parser <code class="docutils literal notranslate"><span class="pre">select</span></code> on several fields gives each field whole
 bytes of the key, right-aligned in them, as bmv2 builds it and
 as <code class="docutils literal notranslate"><span class="pre">p4c</span></code> writes the values it is compared with: selecting on a
