@@ -1965,11 +1965,15 @@ static bool test_srq_backend_fails(void)
     return ok;
 }
 
+/* Run every case, each printing its own ok or FAIL line, rather than
+ * stopping at the first failure; exit 1 if any failed. */
 int main(void)
 {
     int failures = 0;
     struct ibv_device_attr attr;
 
+    /* The table allocator: a full table of each bitmap shape (see the top
+     * of the file), a free from a full table, and the lock around a free. */
     if (!test_fill_to_capacity("full-exact-word", TBL_SZ_EXACT)) {
         failures++;
     }
@@ -1984,6 +1988,8 @@ int main(void)
         failures++;
     }
 
+    /* rdma_rm_init(): limits it accepts, zero included, a negative limit
+     * it refuses, and a failed table or bitmap allocation unwound. */
     if (!test_init_succeeds("init-one-each", &one_each)) {
         failures++;
     }
@@ -2005,6 +2011,7 @@ int main(void)
         failures++;
     }
 
+    /* MRs with and without a backend, and a backend that can't make one. */
     if (!test_mr_lifecycle("mr-no-backend", false)) {
         failures++;
     }
@@ -2015,6 +2022,8 @@ int main(void)
         failures++;
     }
 
+    /* The backend's GID index at RTR: one that fits a uint8_t, one that
+     * doesn't, and the backend's error. */
     if (!test_gid_index("gid-index-200", 200)) {
         failures++;
     }
@@ -2025,6 +2034,8 @@ int main(void)
         failures++;
     }
 
+    /* A QP from creation through RTS and a query, with each backend
+     * operation on the way failing in turn, then none. */
     static const struct {
         const char *name;
         BackendOp op;
@@ -2041,6 +2052,9 @@ int main(void)
         }
     }
 
+    /* QPs the backend gives a duplicate number, skips (GSI), or doesn't
+     * have, then guest handles that name nothing and tables that are full
+     * or missing. */
     if (!test_qpn_in_use()) {
         failures++;
     }
@@ -2059,6 +2073,7 @@ int main(void)
     if (!test_alloc_refused()) {
         failures++;
     }
+    /* SRQs: limits, binding a QP, double free, and a failing backend. */
     if (!test_srq_lifecycle()) {
         failures++;
     }
