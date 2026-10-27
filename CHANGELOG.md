@@ -1187,6 +1187,11 @@
     packet header vector loaded, and then dropped every frame and, if it
     declared `rdma_metadata`, failed every RDMA operation. It's now refused
     at load with `EINVAL`, saying how many bytes its headers take.
+  * The 65536-entry ceiling on the `max_size` of a program's tables applied
+    to each pipeline separately, so a program could ask for twice it,
+    65536 entries in ingress and 65536 in egress. It now covers the whole
+    program, and a program asking for more is refused at load with
+    `EINVAL`.
   * A hex literal, mask, select value or default argument with a `\u0000`
     in it loaded as the part before the NUL (`"0x00ff\u0000zz"` as
     `0x00ff`), and an arm whose value was `"default\u0000zz"` loaded as a

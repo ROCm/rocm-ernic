@@ -852,6 +852,29 @@ static void test_load_parses(void)
                                  "\"conditionals\":[]}")) == -EINVAL,
           "two tables that together exceed the entry budget are refused");
 
+    /* The budget is the whole program's, not each pipeline's, and a
+     * program that uses exactly all of it loads; reject_cases.json has
+     * the same pair one entry over. */
+#define P4_BUDGET_PIPE(pname, pid, tname, max)                   \
+    "{\"name\":\"" pname "\",\"id\":" pid ","                    \
+    "\"init_table\":\"" tname "\",\"tables\":["                  \
+    "{\"name\":\"" tname "\",\"id\":0,\"match_type\":\"exact\"," \
+    "\"type\":\"simple\",\"max_size\":" max ","                  \
+    "\"with_counters\":false,\"direct_meters\":null,"            \
+    "\"support_timeout\":false,"                                 \
+    "\"key\":[],\"actions\":[\"a\"],"                            \
+    "\"next_tables\":{\"a\":null}}"                              \
+    "],\"action_profiles\":[],\"conditionals\":[]}"
+
+    static const char budget_doc[] =
+        P4_PIPE(P4_BUDGET_PIPE("ingress", "0", "t", "32768") "," P4_BUDGET_PIPE(
+            "egress", "1", "e", "32768"));
+#undef P4_BUDGET_PIPE
+
+    checkf(load_text(eng, budget_doc) == 0,
+           "two pipelines that fill the entry budget exactly are refused: %s",
+           load_why(eng));
+
     /* A pipeline must have an ingress. */
     check(load_text(eng, P4_PIPE("{\"name\":\"egress\",\"id\":0,"
                                  "\"init_table\":null,\"tables\":[],"
