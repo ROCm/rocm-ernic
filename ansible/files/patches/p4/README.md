@@ -5,12 +5,13 @@ an auxiliary device to bind a P4 control driver to.
 
 ## Base
 
-Generated against **`v7.2.4`** of
+Applies to **`v7.2.6`** of
 `https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git`, which is
 the ref `IONIC_KERNEL_REF` pins in
 [`cmake/ErnicKernelModule.cmake`](../../../../cmake/ErnicKernelModule.cmake). That
 is the same base the series in [`../`](../) uses, and the two are
-applied to one tree, base series first.
+applied to one tree, base series first. It was generated against `v7.2.4`;
+none of the files it touches changed in between.
 
 | File | Touches | Upstream? |
 | --- | --- | --- |
@@ -55,7 +56,7 @@ base series up by default. Name both:
 ```bash
 ansible/files/scripts/fetch-ionic-sources.sh \
     --source-dir /path/to/ionic-src \
-    --kernel-ref v7.2.4 \
+    --kernel-ref v7.2.6 \
     --patches-dir ansible/files/patches \
     --patches-dir ansible/files/patches/p4
 ```

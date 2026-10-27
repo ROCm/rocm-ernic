@@ -9,15 +9,15 @@
 # refs, on a machine that may have no ernic at all. It is a build gate, not a
 # provisioning step, and defaults to --build-only for that reason.
 #
-# WHICH BASE, AND WHY IT IS PATCHED. The series is rebased onto v7.2.4 --
-# the same ref IONIC_KERNEL_REF pins and the kernel the CI guest and the
-# qemu-minimal fleet VMs actually run (7.2.4-070204-generic). That is the
-# whole point: a guest can build this without a kernel upgrade.
+# WHICH BASE, AND WHY IT IS PATCHED. The series applies to v7.2.6 -- the
+# same ref IONIC_KERNEL_REF pins and the kernel the CI guest runs
+# (7.2.6-070206-generic). That is the whole point: a guest can build this
+# without a kernel upgrade.
 #
 # It did not start there. The upstream commits target rdma/for-next and
 # apply to no mainline tag; three earlier for-next commits carried as
-# 0001-0003 get the series onto v7.3-rc6, and rebasing from there to v7.2.4
-# needed four context fixes, none of them semantic:
+# 0001-0003 get the series onto v7.3-rc6, and rebasing from there to v7.2.4,
+# the previous base, needed four context fixes, none of them semantic:
 #
 #   0001  ionic_ctx_resp has no phc_offset on 7.2.4; rcq_sign_bit +
 #         comp_mask still total the 4 bytes rsvd2[3] occupied, so the
@@ -38,9 +38,11 @@
 # the nine.
 #
 # Verified end to end: builds as a DKMS package on 7.2.4-070204-generic and
-# installs ionic.ko + ionic_rdma.ko into updates/dkms.
+# installs ionic.ko + ionic_rdma.ko into updates/dkms. v7.2.6 changed no
+# ionic file the series touches, so it applies there unchanged and builds
+# against the 7.2.6-070206-generic headers.
 ernic_srq_dkms_sources:
-  - ref: v7.2.4
+  - ref: v7.2.6
     repo: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
     note: >-
       Matches IONIC_KERNEL_REF and the guest kernel, plus patches/srq.

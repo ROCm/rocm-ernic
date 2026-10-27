@@ -41,7 +41,7 @@ against a prepared ionic source tree, not just against kernel headers:
 
 ```bash
 ansible/files/scripts/fetch-ionic-sources.sh \
-    --source-dir /tmp/ionic-src --kernel-ref v7.2.4 \
+    --source-dir /tmp/ionic-src --kernel-ref v7.2.6 \
     --patches-dir ansible/files/patches \
     --patches-dir ansible/files/patches/p4
 

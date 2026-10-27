@@ -19,12 +19,12 @@ landed — and rdma-core 61 or newer, which is where `providers/ionic` did.
 
 The floor is not enough on its own. The ionic sources track IB-core helpers
 that move between minor releases, so the guest kernel's major.minor must also
-match `IONIC_KERNEL_REF`: `v7.2.4` sources build on a 7.2.3 kernel but not on a
+match `IONIC_KERNEL_REF`: `v7.2.6` sources build on a 7.2.x kernel but not on a
 7.0 one. The role asserts this before the DKMS build rather than letting it
 fail as a wall of implicit-declaration errors. Supplying a matching kernel is
 the base image's job — in this repo, the `ionic` flavour of
 [batesste-ci-images](https://github.com/sbates130272/batesste-ci-images), which
-pins mainline 7.2.3.
+pins mainline 7.2.6.
 
 ## Overview
 

@@ -97,7 +97,7 @@ matters:
    does not. Compare the two layouts:
 
    ```
-   ours (7.2.4 + ../srq)     ... expdb_qtypes, rcq_sign_bit(1), comp_mask(2)
+   ours (7.2.6 + ../srq)     ... expdb_qtypes, rcq_sign_bit(1), comp_mask(2)
    this base                 ... expdb_qtypes, rsvd2[3],        phc_offset(8)
    ```
 

@@ -96,8 +96,8 @@ CI_VM_ARTIFACT_DIR="${CI_VM_ARTIFACT_DIR:-${CI_VM_IMAGE_DIR}/artifacts/${CI_GUES
 # below, which are overridable and say what this lane should use.
 # fetch_guest_image asserts the image against these two, so overriding
 # CI_VM_BACKING to relocate the overlays does not reject the fetch.
-CI_GUEST_IMAGE_DISK="batesste-ci-vm.qcow2"
-CI_GUEST_IMAGE_USER="batesste"
+CI_GUEST_IMAGE_DISK="${GUEST_ARTIFACT_DISK}"
+CI_GUEST_IMAGE_USER="${GUEST_ARTIFACT_USER}"
 CI_VM_BACKING="${CI_VM_BACKING:-${CI_VM_ARTIFACT_DIR}/${CI_GUEST_IMAGE_DISK}}"
 # The account and key baked into that image.
 CI_VM_SSH_USER="${CI_VM_SSH_USER:-${CI_GUEST_IMAGE_USER}}"

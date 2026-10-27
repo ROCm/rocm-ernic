@@ -187,7 +187,7 @@ verify_image() {
     disk=$(basename -- "$(jq -r '.image_path // ""' "$info")")
 
     [ -n "$kernel" ] || fail "vm-info.json for ${TAG} carries no kernel_release"
-    # 7.2.3-061203-generic -> 7.2.3
+    # 7.2.6-070206-generic -> 7.2.6
     kver="${kernel%%-*}"
 
     # 1. The floor.  Below 6.18 there is no drivers/infiniband/hw/ionic,
@@ -199,7 +199,7 @@ verify_image() {
     # 2. The floor is necessary but not sufficient.  The ionic sources
     #    track IB-core helpers that move between minor releases, so the
     #    guest kernel's major.minor must equal the pinned ref's:
-    #    v7.2.4 sources on a 7.0 kernel fail on ib_umem_get_va.
+    #    v7.2.x sources on a 7.0 kernel fail on ib_umem_get_va.
     cmake="${PROJECT_ROOT}/cmake/ErnicKernelModule.cmake"
     [ -f "$cmake" ] || fail \
         "no cmake/ErnicKernelModule.cmake under ${PROJECT_ROOT}" \
@@ -272,7 +272,7 @@ verify_image() {
          "flavour ${flavour}" >&2
 }
 
-# A 3.7 GB pull per run is not acceptable for a per-commit CI job, so the
+# A 1.6 GB pull per run is not acceptable for a per-commit CI job, so the
 # stamp records which tag the directory holds.  Tags are pinned and
 # date-prefixed, and DEST is tag-scoped by every caller, so a matching
 # stamp with the disk present means there is nothing to do.
@@ -291,7 +291,7 @@ cd "$DEST"
 
 echo "=== Fetching metadata for ${REF} ===" >&2
 # Referrer first: it is kilobytes, so a bad reference fails in seconds
-# rather than after a 3.7 GB download.
+# rather than after a 1.6 GB download.
 DIGEST=$(retry oras discover --format json "$REF" \
     | jq -r --arg t "$INFO_TYPE" \
         '[.referrers[] | select(.artifactType==$t)]
@@ -320,7 +320,7 @@ chmod 600 "$KEY"
 # or a file in this checkout, all of which are on disk now, and a rejection
 # is deterministic for the checkout -- re-pulling identical bytes cannot
 # change the verdict.  Checking first means a stale badge or an unbumped
-# IONIC_KERNEL_REF costs seconds instead of 3.7 GB, twice: once to fail,
+# IONIC_KERNEL_REF costs seconds instead of 1.6 GB, twice: once to fail,
 # once more on the retry, since the failure exits before the stamp and
 # oras re-downloads blobs that are already in the directory.
 [ "$VERIFY" = false ] || verify_image
@@ -340,7 +340,7 @@ fi
 
 # --long=27 matches the compressor's window, which zstd otherwise refuses
 # as needing too much memory to decode.  Unlike the hosted action this
-# keeps the .zst: on a persistent host the 3.7 GB is cheaper than
+# keeps the .zst: on a persistent host the 1.6 GB is cheaper than
 # re-pulling it, and --force is the way to redo the decompression.
 zstd -d --long=27 -q -f "${ZST[0]}" -o "${ZST[0]%.zst}"
 

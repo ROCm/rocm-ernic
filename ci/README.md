@@ -71,16 +71,17 @@ and flavour the artifact is known to ship, and the script
 rejects an image whose `vm-info.json` disagrees, or whose
 kernel is below 6.18, skewed from `IONIC_KERNEL_REF`, or
 different from the badge on `README.md`. Those checks run
-after the kilobyte metadata pull and before the 3.7 GB disk
+after the kilobyte metadata pull and before the 1.6 GB disk
 pull, so a wrong image fails in seconds rather than forty
 minutes into a lane. The expectations come from
 `CI_GUEST_IMAGE_USER` and `CI_GUEST_IMAGE_DISK`, not from
 `CI_VM_SSH_USER` and `CI_VM_BACKING`, so overriding either of
 those knobs still fetches.
 
-Keep the tag equal to `GUEST_ARTIFACT_TAG`
-in `.github/workflows/system-tests.yml` and
-`ernic_vm_artifact_tag` in `ansible/group_vars/all.yml`.
+The tag, disk name and login account are pinned only in
+`ci/guest-image.env`, which `lib/common.sh`, the GitHub
+lanes and `ansible/group_vars/all.yml` all read; a bump is
+one edit there.
 
 The backing qcow2 is never written at runtime -- each VM
 gets its own overlay -- so unlike the VM names and SSH
@@ -492,7 +493,7 @@ Useful overrides:
 | `CI_GUEST_ARTIFACT_TAG` | see `ci/lib/common.sh` | image tag to pull |
 | `CI_VM_ARTIFACT_DIR` | `${CI_VM_IMAGE_DIR}/artifacts/${CI_GUEST_ARTIFACT_TAG}` | where it is unpacked |
 | `CI_VM_BACKING` | the artifact's qcow2 | backing disk for the overlays |
-| `CI_VM_SSH_USER` | `batesste` | guest login account |
+| `CI_VM_SSH_USER` | the artifact's account (`ubuntu`) | guest login account |
 | `CI_VM_SSH_IDENTITY` | the artifact's `id_rsa` | key used for guest ssh |
 | `CI_VM_VCPUS` | `8` | guest vCPUs |
 | `NVMEOF_QUEUES` | `ERNIC_BACKEND`'s `queues=`, else `8` | queue ceiling the connect aims at |

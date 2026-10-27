@@ -83,7 +83,7 @@ runs:
 
       echo "=== Fetching metadata for ${REF} ==="
       # Referrer first: it is kilobytes, so a bad reference fails in
-      # seconds rather than after a 3.7 GB download.
+      # seconds rather than after a 1.6 GB download.
       DIGEST=$(retry oras discover --format json "$REF" \
         | jq -r --arg t "$INFO_TYPE" \
             '[.referrers[] | select(.artifactType==$t)]
@@ -123,7 +123,7 @@ runs:
 
       # --long=27 matches the compressor's window, which zstd otherwise
       # refuses as needing too much memory to decode.  --rm releases the
-      # 3.7 GB .zst as the 5.75 GB disk lands: the runner does not
+      # 1.6 GB .zst as the 3.2 GB disk lands: the runner does not
       # comfortably hold both alongside a build tree.
       zstd -d --long=27 --rm -q "${ZST[0]}"
 

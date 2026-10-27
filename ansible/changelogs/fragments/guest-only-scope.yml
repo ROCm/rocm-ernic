@@ -10,7 +10,7 @@ breaking_changes:
     RDMA node.  In this repo that guest is the published ``ionic`` flavour
     of `batesste-ci-images
     <https://github.com/sbates130272/batesste-ci-images>`__, which pins
-    mainline 7.2.3 on Ubuntu 26.04 and bakes the RDMA userspace, the DKMS
+    mainline 7.2.6 on Ubuntu 26.04 and bakes the RDMA userspace, the DKMS
     toolchain and ``perftest``.  The mainline kernel and masking
     ``unattended-upgrades`` are the image's business now; the
     ``modules-load.d`` entries moved into ``ernic_guest_setup`` instead,
