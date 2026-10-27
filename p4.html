@@ -851,6 +851,16 @@ nonzero priority, and one in any other table must give none.</p>
 <p>P4Runtime has a client omit a “don’t care” field from the
 entry, where this record, which always carries every key
 field, writes it as a zero prefix or mask.</p>
+<p><code class="docutils literal notranslate"><span class="pre">p4c</span></code> writes a key <code class="docutils literal notranslate"><span class="pre">field</span> <span class="pre">&amp;</span> <span class="pre">constant</span></code> as the whole field
+with the constant as its mask. As in bmv2, the packet’s key is
+put under that mask before it is matched, and so is every
+entry’s before it is stored or compared: under <code class="docutils literal notranslate"><span class="pre">0x00ff</span></code>, an
+entry for <code class="docutils literal notranslate"><span class="pre">0x1234</span></code> is the entry for <code class="docutils literal notranslate"><span class="pre">0x0034</span></code>, and matches
+<code class="docutils literal notranslate"><span class="pre">0xab34</span></code> too. P4Runtime knows nothing of the mask, so that
+is what a value it accepts means.</p>
+<p>An entry carries at most 128 bits of a key field or an action
+argument, so a table keyed on a wider field, or an action
+taking a wider argument, is refused at load.</p>
 <p>A table with no entry for a packet takes its default action,
 which is why <code class="docutils literal notranslate"><span class="pre">minimal_forward.json</span></code> drops a frame until an
 entry for its destination is installed, and forwards it
@@ -899,6 +909,17 @@ with a newline in it, a width given as a floating-point
 number, a duplicate name or id, a literal wider than the field
 it is assigned to, and a reference to something that does not
 exist are each a rejection.</p>
+<p>So is a program that would load and then not run as written.
+Tables and conditionals share one namespace across every
+pipeline, as in bmv2, since a next table and a table update
+reach only the first of a name. A condition’s operands must be
+what its operator takes, as bmv2 types them: a header for
+<code class="docutils literal notranslate"><span class="pre">valid</span></code>, booleans for <code class="docutils literal notranslate"><span class="pre">not</span></code>, <code class="docutils literal notranslate"><span class="pre">and</span></code> and <code class="docutils literal notranslate"><span class="pre">or</span></code>, values
+for <code class="docutils literal notranslate"><span class="pre">&lt;</span></code> and its kin, and two of a kind for <code class="docutils literal notranslate"><span class="pre">==</span></code> and
+<code class="docutils literal notranslate"><span class="pre">!=</span></code>; the executor would read anything else as a number. A
+header that goes on a wire is a whole number of bytes, as
+<code class="docutils literal notranslate"><span class="pre">p4c</span></code> requires for bmv2, and <code class="docutils literal notranslate"><span class="pre">standard_metadata</span></code>’s
+<code class="docutils literal notranslate"><span class="pre">egress_spec</span></code> and <code class="docutils literal notranslate"><span class="pre">ingress_port</span></code> have v1model’s 9 bits.</p>
 <p>So is a document that would cost too much to parse. A program
 may be up to 4 MiB, but json-c spends far more heap on a
 value than the value takes as text – about 790 bytes for
@@ -1006,7 +1027,8 @@ The loader is held to
 refused with the errno and the reason it names, and
 <code class="docutils literal notranslate"><span class="pre">tests/data/p4/features.json</span></code> runs frames through a parser
 <code class="docutils literal notranslate"><span class="pre">select</span></code> with masks, LPM and ternary tables, every arithmetic
-primitive and every comparison.</p>
+primitive and every comparison. <code class="docutils literal notranslate"><span class="pre">tests/data/p4/key_mask.json</span></code>
+covers a masked table key and a 128-bit key and argument.</p>
 </dd>
 <dt><code class="docutils literal notranslate"><span class="pre">ionic-harness-p4-port</span></code> (<code class="docutils literal notranslate"><span class="pre">tests/test_ionic_harness.c</span></code>)</dt><dd><p>The engine attached to the whole in-process device, with
 libvfio-user replaced by a fake. Covers the transmit filter
