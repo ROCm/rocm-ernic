@@ -55,7 +55,11 @@
 #include "nvmeof/nvmeof_cm.h"
 #include "nvmeof/nvmeof_target.h"
 #ifdef ERNIC_HAVE_P4
+#include <syslog.h>
+
+#include "ernic_log.h"
 #include "ionic/ionic_datapath_p4.h"
+#include "ionic/ionic_datapath_priv.h"
 #include "ionic/ionic_eth_p4.h"
 #include "p4/p4_devcmd.h"
 #include "p4/p4_engine.h"
@@ -5533,6 +5537,274 @@ static void test_p4_deny(void)
     teardown(T, &h);
 }
 
+/* The clock in p4-log-limit, which moves only when told to. */
+static uint64_t p4l_now;
+
+static uint64_t p4l_now_ms(void)
+{
+    return p4l_now;
+}
+
+/* Denied writes, and refused commands, sent in a flood */
+#define P4L_FLOOD (3u * ERNIC_LOG_LIMIT_BURST)
+
+/*
+ * A flood of P4L_FLOOD commands through the command surface, each of which
+ * @send sends and checks was refused: a burst of lines in one interval, and
+ * in the next, the line @report counting the rest before the next one, which
+ * starts with @line.
+ */
+static void p4l_flood(const char *T, struct ih *h, const char *what,
+                      bool (*send)(struct ih *h, uint64_t req), uint64_t req,
+                      const char *report, const char *line)
+{
+    unsigned long base = fake_vfu_log_count(h->vfu, LOG_WARNING);
+
+    for (unsigned i = 0; i < P4L_FLOOD; i++)
+        if (!check(T, send(h, req), "%s %u was not refused", what, i))
+            return;
+    check(
+        T,
+        fake_vfu_log_count(h->vfu, LOG_WARNING) - base == ERNIC_LOG_LIMIT_BURST,
+        "%u %s in one interval logged %lu lines, not %u", P4L_FLOOD, what,
+        fake_vfu_log_count(h->vfu, LOG_WARNING) - base, ERNIC_LOG_LIMIT_BURST);
+
+    p4l_now += ERNIC_LOG_LIMIT_MS;
+    base = fake_vfu_log_count(h->vfu, LOG_WARNING);
+    check(T, send(h, req), "the next interval's %s was not refused", what);
+    check(T, fake_vfu_log_count(h->vfu, LOG_WARNING) - base == 2,
+          "the next interval's %s logged %lu lines, not 2", what,
+          fake_vfu_log_count(h->vfu, LOG_WARNING) - base);
+    check(T, strcmp(fake_vfu_log_text(h->vfu, LOG_WARNING, 1), report) == 0,
+          "the %s held back were reported as '%s', not '%s'", what,
+          fake_vfu_log_text(h->vfu, LOG_WARNING, 1), report);
+    check(T,
+          strncmp(fake_vfu_log_text(h->vfu, LOG_WARNING, 0), line,
+                  strlen(line)) == 0,
+          "the next interval's %s was logged as '%s'", what,
+          fake_vfu_log_text(h->vfu, LOG_WARNING, 0));
+}
+
+/* An update to a table features.json doesn't have. */
+static bool p4l_send_update(struct ih *h, uint64_t req)
+{
+    struct p4_rpc_entry_update u;
+    struct p4_rpc_entry_match m[2];
+    struct p4_rpc_entry_param pa;
+    uint8_t comp[16];
+
+    p4d_acl(&u, m, &pa, 0xC0A80001u, 1);
+    (void)snprintf(u.table, sizeof(u.table), "ghost");
+    return p4d_entry(h, req, &u, m, 2, &pa, 1, 0, comp) == P4_STS_EINVAL;
+}
+
+/* A commit with no load begun. */
+static bool p4l_send_commit(struct ih *h, uint64_t req)
+{
+    uint8_t comp[16];
+
+    (void)req;
+    return p4d_commit(h, comp) == P4_STS_EINVAL;
+}
+
+/*
+ * p4-log-limit's floods through @pd, the command surface: refused table
+ * updates, with a program loaded so that they get as far as the engine, and
+ * refused commits; and then an unknown opcode, which has a limit of its own,
+ * so the floods don't hold it back.
+ */
+static void p4l_devcmd(const char *T, struct ih *h, struct p4_devcmd *pd)
+{
+    const uint64_t req = fake_vfu_alloc(h->vfu, 65536, 4096);
+    char report[FAKE_VFU_LOG_LEN];
+    uint8_t comp[16];
+
+    p4_devcmd_set_clock(pd, p4l_now_ms);
+    if (!check(T, p4d_load(h, req, "features.json", comp) == P4_STS_OK,
+               "the guest could not load features.json"))
+        return;
+
+    (void)snprintf(report, sizeof(report),
+                   "p4_devcmd: %u more refused table update(s) not logged",
+                   P4L_FLOOD - ERNIC_LOG_LIMIT_BURST);
+    p4l_flood(T, h, "refused updates", p4l_send_update, req, report,
+              "p4_devcmd: guest table update refused: ");
+    (void)snprintf(report, sizeof(report),
+                   "p4_devcmd: %u more refused program(s) not logged",
+                   P4L_FLOOD - ERNIC_LOG_LIMIT_BURST);
+    p4l_flood(T, h, "refused commits", p4l_send_commit, req, report,
+              "p4_devcmd: guest program refused: ");
+
+    /* The device routes only 70-72 here, so the unknown opcode comes in
+     * directly. */
+    uint8_t cmd[64] = {0};
+    unsigned long base = fake_vfu_log_count(h->vfu, LOG_WARNING);
+
+    cmd[0] = 73;
+    p4_devcmd_dispatch(pd, cmd, comp);
+    check(T,
+          fake_vfu_log_count(h->vfu, LOG_WARNING) - base == 1 &&
+              strcmp(fake_vfu_log_text(h->vfu, LOG_WARNING, 0),
+                     "p4_devcmd: unknown opcode=73") == 0,
+          "an unknown opcode after the floods logged %lu lines, the last '%s'",
+          fake_vfu_log_count(h->vfu, LOG_WARNING) - base,
+          fake_vfu_log_text(h->vfu, LOG_WARNING, 0));
+}
+
+/*
+ * A guest that loops on something the device logs gets a burst of lines
+ * through in each interval, and the next line says how many were held back:
+ * through the data path, for work requests the program denies, and through
+ * the command surface, for refused table updates and programs and unknown
+ * opcodes.  Unlimited, each was a line per request, with nothing to stop a
+ * guest from filling the host's disk.
+ *
+ * Both run on the test's clock, so a flood stays in one interval until the
+ * test moves the clock on to the next.
+ */
+static void test_p4_log_limit(void)
+{
+    const char *T = "p4-log-limit";
+    struct ih h;
+    struct ih_cq cq;
+    struct ih_qp a, b;
+    struct ih_mr mra = {0}, mrc = {0};
+    struct ih_cqe e;
+    struct p4_update up;
+    char err[160];
+    unsigned long base;
+
+    if (!setup(T, &h, "loopback"))
+        return;
+    /* Set before any work reaches the data path; the loopback backend has
+     * no receive threads to read it. */
+    p4l_now = UINT64_C(1000000);
+    h.dp->now_ms = p4l_now_ms;
+
+    bool ok = ih_cq_create(&h, &cq, P4R_CQ, 6) &&
+              ih_qp_create(&h, &a, P4R_QP_A, IH_QPT_RC, &cq, &cq, NULL) &&
+              ih_qp_create(&h, &b, P4R_QP_B, IH_QPT_RC, &cq, &cq, NULL) &&
+              ih_qp_connect(&h, &a, &b) &&
+              ih_mr_create(&h, &mra, FP8R_MR_A, FP8R_VA_A, P4R_MR_LEN,
+                           IH_ACCESS_ALL, false) &&
+              ih_mr_create(&h, &mrc, FP8R_MR_C, FP8R_VA_C, P4R_MR_LEN,
+                           IH_ACCESS_ALL, true);
+    if (!check(T, ok, "setup failed")) {
+        ih_mr_free(&mra);
+        ih_mr_free(&mrc);
+        teardown(T, &h);
+        return;
+    }
+
+    struct p4_engine *eng = p4_engine_create();
+    if (!check(T, eng != NULL, "p4_engine_create failed")) {
+        ih_mr_free(&mra);
+        ih_mr_free(&mrc);
+        teardown(T, &h);
+        return;
+    }
+    check(T, p4r_load(eng, "rdma_deny.json") == 0,
+          "the deny program did not load");
+    ionic_datapath_set_p4_engine(h.dp, eng);
+
+    memset(&up, 0, sizeof(up));
+    up.type = P4_UPDATE_INSERT;
+    (void)snprintf(up.table, sizeof(up.table), "Ing.acl");
+    (void)snprintf(up.action, sizeof(up.action), "Ing.deny");
+    up.nmatch = 1;
+    up.match[0].len = 1;
+    up.match[0].value[P4_MATCH_BYTES - 1] = IH_OP_RDMA_WRITE;
+    check(T, p4_engine_update(eng, &up, err, sizeof(err)) == 0,
+          "the WRITE entry was not installed: %s", err);
+
+    struct ih_sge sge = {.va = FP8R_VA_A, .len = P4R_N, .lkey = mra.lkey};
+    struct ih_send w = {
+        .op = IH_OP_RDMA_WRITE,
+        .flags = IH_WQE_SIGNALLED,
+        .remote_va = FP8R_VA_C,
+        .rkey = mrc.lkey,
+        .sge = &sge,
+        .nsge = 1,
+    };
+
+    /*
+     * A flood of denials in one interval: a burst of lines saying so, and a
+     * burst saying that work requests completed in error, no more.
+     */
+    base = fake_vfu_log_count(h.vfu, LOG_WARNING);
+    for (unsigned i = 0; i < P4L_FLOOD; i++) {
+        ih_post_send(&h, &a, &w);
+        if (!check(T,
+                   ih_cq_poll(&h, &cq, &e) && e.error &&
+                       e.status_len == IH_STS_LOCAL_QP_OPER,
+                   "denied write %u did not fail as a denial", i))
+            break;
+    }
+    check(T,
+          fake_vfu_log_count(h.vfu, LOG_WARNING) - base ==
+              2 * ERNIC_LOG_LIMIT_BURST,
+          "%u denials in one interval logged %lu lines, not %u", P4L_FLOOD,
+          fake_vfu_log_count(h.vfu, LOG_WARNING) - base,
+          2 * ERNIC_LOG_LIMIT_BURST);
+
+    /*
+     * The next interval's first denial is logged, and its error completion,
+     * each after a line that counts the ones that weren't.
+     */
+    char denials[FAKE_VFU_LOG_LEN], errors[FAKE_VFU_LOG_LEN];
+
+    (void)snprintf(denials, sizeof(denials),
+                   "ionic_datapath: %u more P4 denial(s) not logged",
+                   P4L_FLOOD - ERNIC_LOG_LIMIT_BURST);
+    (void)snprintf(errors, sizeof(errors),
+                   "ionic_datapath: %u more error completion(s) not logged",
+                   P4L_FLOOD - ERNIC_LOG_LIMIT_BURST);
+
+    /* The last four, newest first: the counts are whole lines, and the
+     * others are checked by how they start. */
+    const struct {
+        const char *text;
+        bool whole;
+    } want_last[] = {
+        {"ionic_datapath: CQ ", false},
+        {errors, true},
+        {"ionic_datapath: QP ", false},
+        {denials, true},
+    };
+
+    p4l_now += ERNIC_LOG_LIMIT_MS;
+    base = fake_vfu_log_count(h.vfu, LOG_WARNING);
+    ih_post_send(&h, &a, &w);
+    check(T, ih_cq_poll(&h, &cq, &e) && e.error,
+          "the next interval's denied write did not fail");
+    check(T, fake_vfu_log_count(h.vfu, LOG_WARNING) - base == 4,
+          "the next interval's denial logged %lu lines, not 4",
+          fake_vfu_log_count(h.vfu, LOG_WARNING) - base);
+    for (size_t i = 0; i < sizeof(want_last) / sizeof(want_last[0]); i++) {
+        const char *got = fake_vfu_log_text(h.vfu, LOG_WARNING, i);
+        const char *want = want_last[i].text;
+
+        check(T,
+              want_last[i].whole ? strcmp(got, want) == 0
+                                 : strncmp(got, want, strlen(want)) == 0,
+              "line %zu from the end was '%s', not '%s'", i, got, want);
+    }
+
+    ionic_datapath_set_p4_engine(h.dp, NULL);
+
+    struct p4_devcmd *pd = p4_devcmd_create(h.vfu, eng, P4_SCOPE_LOAD);
+    if (check(T, pd != NULL, "p4_devcmd_create failed")) {
+        ionic_eth_emu_register_p4_handler(h.emu, p4_devcmd_dispatch, pd);
+        p4l_devcmd(T, &h, pd);
+        ionic_eth_emu_register_p4_handler(h.emu, NULL, NULL);
+        p4_devcmd_destroy(pd);
+    }
+    p4_engine_destroy(eng);
+    ih_mr_free(&mra);
+    ih_mr_free(&mrc);
+    teardown(T, &h);
+}
+
 #endif /* ERNIC_HAVE_P4 */
 
 static void test_nvmeof(void)
@@ -6372,6 +6644,7 @@ static const struct {
     {"p4-cvt-map", test_p4_cvt_then_map},
     {"p4-drop-map", test_p4_drop_then_map},
     {"p4-deny", test_p4_deny},
+    {"p4-log-limit", test_p4_log_limit},
     {"p4-devcmd", test_p4_devcmd},
     {"p4-devcmd-errors", test_p4_devcmd_errors},
 #endif

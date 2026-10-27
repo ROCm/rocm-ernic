@@ -181,3 +181,30 @@ void ernic_startup_report(const char *fmt, ...)
     printf("\n");
     fflush(stdout);
 }
+
+/*
+ * A zeroed limit's interval starts at 0, so on the real clock the first call
+ * starts a new one, and on a test's clock starting at 0 the first call is in
+ * it, with nothing logged yet: either way the first line gets through.  A
+ * clock earlier than the interval's start (a test's, set back) starts a new
+ * one rather than waiting for the clock to catch up.
+ */
+bool ernic_log_limit(ErnicLogLimit *lim, uint64_t now_ms, uint64_t *held)
+{
+    if (now_ms < lim->start_ms ||
+        now_ms - lim->start_ms >= ERNIC_LOG_LIMIT_MS) {
+        lim->start_ms = now_ms;
+        lim->logged = 0;
+    }
+
+    if (lim->logged >= ERNIC_LOG_LIMIT_BURST) {
+        lim->held++;
+        *held = 0;
+        return false;
+    }
+
+    lim->logged++;
+    *held = lim->held;
+    lim->held = 0;
+    return true;
+}

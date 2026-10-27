@@ -14,6 +14,9 @@
 
 #include <endian.h>
 #include <errno.h>
+#include <inttypes.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
@@ -21,6 +24,8 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "ernic_dma.h"
+#include "ernic_log.h"
+#include "ernic_time.h"
 #include "p4/p4_devcmd.h"
 #include "p4/p4_engine.h"
 #include "p4/p4_program.h"
@@ -58,6 +63,15 @@ struct p4_devcmd {
     struct ernic_dma *dma;
     struct p4_engine *eng;
     enum p4_scope scope; /* the operator's grant; never widened */
+
+    /* The limits on what a guest can have logged once per command it sends:
+     * a refused table update, a refused program, and an unknown opcode,
+     * on @now_ms's clock (see p4_devcmd_set_clock()).  Commands all arrive
+     * on the vfu thread, so no lock. */
+    uint64_t (*now_ms)(void);
+    ErnicLogLimit log_update;
+    ErnicLogLimit log_commit;
+    ErnicLogLimit log_opcode;
 };
 
 /*
@@ -131,6 +145,24 @@ const char *p4_scope_name(enum p4_scope scope)
     }
 }
 
+/*
+ * Whether to log one more of the lines @lim limits.  If any were held back,
+ * it says first how many @what there were.
+ */
+static bool p4_devcmd_log_ok(struct p4_devcmd *pd, ErnicLogLimit *lim,
+                             const char *what)
+{
+    uint64_t held;
+
+    if (!ernic_log_limit(lim, pd->now_ms ? pd->now_ms() : ernic_monotonic_ms(),
+                         &held))
+        return false;
+    if (held)
+        vfu_log(pd->vfu_ctx, LOG_WARNING,
+                "p4_devcmd: %" PRIu64 " more %s not logged", held, what);
+    return true;
+}
+
 /* The definition of @ep/@op, or NULL if this device has no such thing. */
 static const struct p4_op_def *p4_find_op(uint32_t ep, uint32_t op)
 {
@@ -175,6 +207,11 @@ void p4_devcmd_destroy(struct p4_devcmd *pd)
         return;
     ernic_dma_destroy(pd->dma);
     free(pd);
+}
+
+void p4_devcmd_set_clock(struct p4_devcmd *pd, uint64_t (*now_ms)(void))
+{
+    pd->now_ms = now_ms;
 }
 
 /* -------------------------------------------------------------------------
@@ -380,7 +417,7 @@ static uint8_t rpc_load_chunk(const struct p4_devcmd *pd, const uint8_t *req,
         p4_engine_load_chunk(pd->eng, le64toh(h.offset), req + sizeof(h), len));
 }
 
-static uint8_t rpc_entry_update(const struct p4_devcmd *pd, const uint8_t *req,
+static uint8_t rpc_entry_update(struct p4_devcmd *pd, const uint8_t *req,
                                 uint32_t req_len)
 {
     struct p4_rpc_entry_update u;
@@ -461,7 +498,8 @@ static uint8_t rpc_entry_update(const struct p4_devcmd *pd, const uint8_t *req,
 
     err[0] = '\0';
     rc = p4_engine_update(pd->eng, &up, err, sizeof(err));
-    if (rc < 0 && err[0]) {
+    if (rc < 0 && err[0] &&
+        p4_devcmd_log_ok(pd, &pd->log_update, "refused table update(s)")) {
         /* The engine says which table or action was wrong; the guest gets
          * only a status code, so the detail has to land in the log or it
          * is lost. */
@@ -501,7 +539,7 @@ static uint8_t rpc_stats_read(const struct p4_devcmd *pd, uint8_t *resp,
  * -------------------------------------------------------------------------
  */
 
-static uint8_t handle_rpc(const struct p4_devcmd *pd, const uint8_t *cmd,
+static uint8_t handle_rpc(struct p4_devcmd *pd, const uint8_t *cmd,
                           uint32_t *resp_written)
 {
     struct p4_devcmd_rpc_cmd c;
@@ -566,7 +604,8 @@ static uint8_t handle_rpc(const struct p4_devcmd *pd, const uint8_t *cmd,
             break;
         case P4_OP_LOAD_COMMIT:
             status = p4_status_of(p4_engine_load_commit(pd->eng));
-            if (status != P4_STS_OK) {
+            if (status != P4_STS_OK &&
+                p4_devcmd_log_ok(pd, &pd->log_commit, "refused program(s)")) {
                 const char *why = p4_engine_load_error(pd->eng);
 
                 /* The guest cannot be told which P4 feature it used, so
@@ -652,8 +691,9 @@ void p4_devcmd_dispatch(void *opaque, const uint8_t *cmd, uint8_t *comp)
         status = handle_rpc(pd, cmd, &resp_written);
         break;
     default:
-        vfu_log(pd->vfu_ctx, LOG_WARNING, "p4_devcmd: unknown opcode=%u",
-                cmd[0]);
+        if (p4_devcmd_log_ok(pd, &pd->log_opcode, "unknown opcode(s)"))
+            vfu_log(pd->vfu_ctx, LOG_WARNING, "p4_devcmd: unknown opcode=%u",
+                    cmd[0]);
         status = P4_STS_EOPCODE;
         break;
     }

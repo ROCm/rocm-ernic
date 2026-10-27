@@ -15,7 +15,8 @@
  * contiguous, which is what the real library does too. Address 0 is never
  * mapped.
  *
- * Interrupts are counted per vector rather than delivered.
+ * Interrupts are counted per vector rather than delivered, and log messages
+ * are counted per level and the last few kept, for a test to check.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -93,5 +94,25 @@ void fake_vfu_fail_nth_get(vfu_ctx_t *ctx, unsigned long n);
 
 /* Scatter/gather entries currently got and not yet put back. */
 size_t fake_vfu_mapped(const vfu_ctx_t *ctx);
+
+/*
+ * vfu_log() keeps what it's given, whether or not ERNIC_FAKE_VFU_LOG_LEVEL
+ * has it print: for each syslog level, a count and the last
+ * FAKE_VFU_LOG_KEEP messages, each cut to FAKE_VFU_LOG_LEN - 1 characters.
+ * The device logs through it only on the vfu thread, so keeping them takes
+ * no lock.
+ */
+#define FAKE_VFU_LOG_LEVELS 8 /* LOG_EMERG (0) to LOG_DEBUG (7) */
+#define FAKE_VFU_LOG_KEEP   4
+#define FAKE_VFU_LOG_LEN    256
+
+/* Messages vfu_log() was given at @level since the context was created. */
+unsigned long fake_vfu_log_count(const vfu_ctx_t *ctx, int level);
+
+/*
+ * The message vfu_log() was given at @level @back messages ago, 0 being the
+ * last, or "" if there was none or @back is FAKE_VFU_LOG_KEEP or more.
+ */
+const char *fake_vfu_log_text(const vfu_ctx_t *ctx, int level, size_t back);
 
 #endif /* FAKE_VFU_H */
