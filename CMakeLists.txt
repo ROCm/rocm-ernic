@@ -147,6 +147,11 @@ endif()
 # Source file groups
 # ---------------------------------------------------------------
 
+# The server's log, which the rest of the sources print through
+set(COMMON_SOURCES
+    src/ernic_log.c
+)
+
 # rocm-ernic's fork of QEMU's PVRDMA resource manager and backend device,
 # under Oracle / Red Hat copyright (see src/qemu/README.md)
 set(QEMU_SOURCES
@@ -249,6 +254,7 @@ set(SERVER_SOURCES
 
 set(ALL_SOURCES
     ${SERVER_SOURCES}
+    ${COMMON_SOURCES}
     ${BRIDGE_SOURCES}
     ${IONIC_EMU_SOURCES}
     ${NVMEOF_SOURCES}

@@ -37,11 +37,16 @@
 #include <glib.h> /* For g_main_context_iteration() */
 
 /* Internal headers */
-#include "rocm_ernic_internal.h"
+/*
+ * struct rocm_ernic_dev.  IWYU credits uses of it to the repeated
+ * rocm_ernic_dev_t typedef in rocm_ernic_compat.h, so it would drop this.
+ */
+#include "rocm_ernic_internal.h" // IWYU pragma: keep
 #include "rocm_ernic_compat.h"
 #include "ernic_time.h"
-#include "qemu/error-report.h"
+#include "ernic_log.h"
 #include "ionic/ionic_adminq.h"
+#include "ionic/ionic_bar.h"
 #include "ionic/ionic_datapath.h"
 #include "ionic/ionic_eth_emu.h"
 #include "ionic/ionic_eth_net.h"
@@ -309,7 +314,6 @@ static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
     switch (type) {
     case VFU_RESET_DEVICE:
         /* Guest requested device reset; client still connected */
-        dev->device_active = false;
         conn_str = "connected (device reset)";
         if (dev->pvrdma_handle) {
             pvrdma_inc_stats_reset_count(dev->pvrdma_handle);
@@ -319,7 +323,6 @@ static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
     case VFU_RESET_LOST_CONN:
         /* Socket/connection lost */
         vfu_log(vfu_ctx, LOG_INFO, "Client connection lost");
-        dev->device_active = false;
         dev->client_lost = true;
         conn_str = "disconnected (lost connection)";
         break;
@@ -327,7 +330,6 @@ static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
     case VFU_RESET_PCI_FLR:
         /* Guest requested PCI FLR; client still connected */
         vfu_log(vfu_ctx, LOG_INFO, "PCI FLR requested");
-        dev->device_active = false;
         conn_str = "connected (PCI FLR)";
         if (dev->pvrdma_handle) {
             pvrdma_inc_stats_reset_count(dev->pvrdma_handle);
@@ -395,8 +397,6 @@ static int pvrdma_device_init(rocm_ernic_dev_t *dev)
                 dev->backend_type_str);
         return -1;
     }
-
-    dev->device_initialized = true;
 
     ernic_startup_report(
         "RDMA device core initialized successfully with '%s' backend",
@@ -603,8 +603,6 @@ static int ionic_device_init(rocm_ernic_dev_t *dev)
 
     /* Wire the datapath into the eth emulator's BAR2 handler */
     ionic_eth_emu_register_datapath(dev->ionic_emu, dev->ionic_dp);
-
-    dev->device_initialized = true;
 
     printf(
         "ionic emulation initialized (VID:DID %#x:%#x, SSVID:SDID %#x:%#x)\n",
@@ -1397,8 +1395,6 @@ int main(int argc, char *argv[])
     }
     ionic_profile_defaults(&dev->profile);
     dev->verbose = false;
-    dev->device_initialized = false;
-    dev->device_active = false;
     dev->client_lost = false;
     dev->mac_addr_set = false;
     /* Default MAC: 72:6f:63:6d:2d:6e (first 6 bytes of "rocm-nic" in ASCII hex)

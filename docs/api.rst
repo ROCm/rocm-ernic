@@ -20,6 +20,11 @@ Compatibility Bridge
 ionic Emulation
 ---------------
 
+BAR Layout
+^^^^^^^^^^
+
+.. doxygenfile:: ionic_bar.h
+
 Ethernet Emulator
 ^^^^^^^^^^^^^^^^^
 

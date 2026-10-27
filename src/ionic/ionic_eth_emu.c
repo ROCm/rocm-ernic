@@ -42,6 +42,7 @@
 #include "byteorder.h"
 #include "ernic_dma.h"
 #include "ionic_eth_emu.h"
+#include "ionic_bar.h"
 #include "ionic_eth_emu_priv.h"
 #include "ionic_emu_stats.h"
 #include "ionic_eth_net.h"
@@ -54,7 +55,6 @@
 #include "qemu/thread.h"
 #include "rocm-ernic-warnings.h"
 #include "rocm_ernic_compat.h"
-#include "rocm_ernic_internal.h"
 
 /* The data path refuses a WQE stride above the max_stride advertised here,
  * and sizes its WQE buffers for it. */
@@ -373,7 +373,7 @@ static bool region_access_ok(loff_t offset, size_t count, size_t size)
 ssize_t ionic_eth_emu_bar0_access(struct ionic_eth_emu *emu, char *buf,
                                   size_t count, loff_t offset, bool is_write)
 {
-    if (!region_access_ok(offset, count, BAR0_BUF_SIZE)) {
+    if (!region_access_ok(offset, count, IONIC_BAR0_REGS_SIZE)) {
         errno = EINVAL;
         return -1;
     }
@@ -403,7 +403,7 @@ ssize_t ionic_eth_emu_bar0_access(struct ionic_eth_emu *emu, char *buf,
 
     /* Interrupt controller writes. */
     if (offset >= (loff_t)IONIC_BAR0_INTR_CTRL_OFFSET && count == 4 &&
-        (size_t)offset + count <= BAR0_BUF_SIZE) {
+        (size_t)offset + count <= IONIC_BAR0_REGS_SIZE) {
         loff_t rel = offset - (loff_t)IONIC_BAR0_INTR_CTRL_OFFSET;
         int vec = (int)(rel / INTR_REG_STRIDE);
         if (vec >= 0 && vec < IONIC_MSIX_MAX_VECTORS) {

@@ -812,10 +812,6 @@ int ionic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
     return 0;
 }
 
-/* pvrdma_get_dev_resources is retained in the header for potential future use
- * but is currently unused — the ionic path uses the ionic_rm_* wrappers above
- * instead. */
-
 uint32_t ionic_mesh_local_node(pvrdma_handle_t handle)
 {
     PVRDMADev *pvrdma = handle;

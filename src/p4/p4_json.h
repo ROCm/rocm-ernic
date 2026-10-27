@@ -39,9 +39,6 @@ struct p4_program;
  */
 #define P4_JSON_MAX_DEPTH 32
 
-/* Longest name accepted for any object in the program. */
-#define P4_MAX_NAME 63
-
 /*
  * Parse @len bytes of bmv2 JSON at @buf into a newly allocated program,
  * stored in *@out on success.

@@ -23,100 +23,16 @@
 
 /* Forward declarations */
 typedef struct rocm_ernic_dev rocm_ernic_dev_t;
-
-/* ---------------------------------------------------------------------------
- * Legacy PVRDMA BAR layout (kept for reference during ionic migration).
- * These are used by the PVRDMA emulation layer in src/qemu/.
- * ---------------------------------------------------------------------------
- */
-#ifndef RDMA_BAR0_MSIX_SIZE
-#define RDMA_BAR0_MSIX_SIZE (16 * 1024) /* 16 KB for MSI-X */
-#endif
-#ifndef RDMA_BAR1_REGS_SIZE
-#define RDMA_BAR1_REGS_SIZE 64 /* 64 DWORDs = 256 bytes */
-#endif
-#ifndef MAX_UCS
-#define MAX_UCS 512 /* Maximum number of user contexts */
-#endif
-#ifndef RDMA_BAR2_UAR_SIZE
-#define RDMA_BAR2_UAR_SIZE (0x1000 * MAX_UCS) /* Each UC gets 4KB page */
-#endif
-
-/* Legacy PVRDMA MSI-X interrupt vectors */
-#define RDMA_MAX_INTRS            3
-#define INTR_VEC_CMD_RING         0
-#define INTR_VEC_CMD_ASYNC_EVENTS 1
-#define INTR_VEC_CMD_COMPLETION_Q 2
-
-/* ---------------------------------------------------------------------------
- * ionic BAR layout.  Checked against upstream v7.2.4:
- * drivers/net/ethernet/pensando/ionic/{ionic_if.h,ionic_dev.c,ionic_bus_pci.c}
- *
- * ionic_map_bars() walks PCI BARs 0..5, skips any without IORESOURCE_MEM,
- * and compacts what is left into ionic->bars[].  So the driver's indices
- * are positional, not PCI BAR numbers:
- *   bars[0] = register BAR   -- ionic_dev_setup() requires len >= 0x8000
- *   bars[1] = doorbell BAR   (IONIC_PCI_BAR_DBELL)
- *   bars[2] = CMB, optional  (IONIC_PCI_BAR_CMB)
- *
- * Our BAR0 is 64-bit, so it consumes PCI BAR0+BAR1 and the guest sees our
- * PCI BAR2 as bars[1].  We expose no third MEM BAR, so the driver takes
- * the "no CMB" path.
- *
- * BAR0 map.  The first 32 KB is the ionic register window, laid out
- * exactly as ionic_dev_setup() expects.  MSI-X cannot live at offset 0
- * (that is the DEVI signature the driver probes) or at 0x2000 (intr_ctrl),
- * so the table and PBA sit above the register window:
- *
- *   0x0000  dev_info_regs   (signature, fw_status, fw_heartbeat, ...)
- *   0x0800  dev_cmd_regs    (doorbell, done, cmd, comp, data)
- *   0x1000  intr_status
- *   0x2000  intr_ctrl       (32 B per vector)
- *   0x8000  MSI-X table     <- above IONIC_BAR0_SIZE, invisible to ionic
- *   0xa000  MSI-X PBA
- *   0x10000 end
- *
- * BAR2: doorbell pages -- kernel page at index kern_pid, user pages at
- * higher indices via mmap.
- * ---------------------------------------------------------------------------
- */
-#define IONIC_BAR0_REGS_SIZE  0x8000u  /* 32 KB ionic register window */
-#define IONIC_BAR0_MSIX_TABLE 0x8000u  /* MSI-X table, above the regs */
-#define IONIC_BAR0_MSIX_PBA   0xa000u  /* MSI-X PBA                   */
-#define IONIC_BAR0_TOTAL_SIZE 0x10000u /* 64 KB total BAR0            */
-#define IONIC_BAR2_DB_SIZE    (4 * 1024 * 1024) /* 4 MB doorbell pages */
-#define IONIC_DB_PAGE_SIZE    4096              /* one 4K page per LIF */
-#define IONIC_KERN_PID        0                 /* kernel doorbell page */
-
-/* ionic MSI-X vectors.  ionic_lif_size() budgets 1 (adminq) + one per Tx/Rx
- * queue pair + one per RDMA EQ, and ionic_create_rdma_admin() hard-fails with
- * -EINVAL below IONIC_EQ_COUNT_MIN = 4 EQs, so a 4-vector table cannot carry
- * both halves of the driver.  This is the most any NIC profile may ask for:
- * 1 + 64 queue pairs + 32 EQs = 97 fits.  The table actually set up is the
- * profile's queues.intr_vectors. */
-#define IONIC_MSIX_MAX_VECTORS 128
-
-/* An MSI-X table entry is 16 bytes and the PBA one bit per vector, in
- * qwords; both must fit where the capability says they are. */
-_Static_assert(IONIC_BAR0_MSIX_TABLE >= IONIC_BAR0_REGS_SIZE,
-               "the MSI-X table must sit above the ionic register window");
-_Static_assert(IONIC_BAR0_MSIX_TABLE + IONIC_MSIX_MAX_VECTORS * 16u <=
-                   IONIC_BAR0_MSIX_PBA,
-               "the MSI-X table for every vector must end before the PBA");
-_Static_assert(IONIC_BAR0_MSIX_PBA +
-                       (IONIC_MSIX_MAX_VECTORS + 63u) / 64u * 8u <=
-                   IONIC_BAR0_TOTAL_SIZE,
-               "the MSI-X PBA for every vector must fit in BAR0");
+struct ionic_fault_set;
 
 /**
  * rocm_ernic_dev - Main device structure
  *
  * This structure contains both the libvfio-user context and a handle to
  * the RDMA device implementation. The actual device structures are
- * hidden behind the opaque pvrdma_handle_t.
+ * hidden behind the opaque pvrdma_handle_t.  The BAR layout is in
+ * ionic/ionic_bar.h.
  */
-struct ionic_fault_set;
-
 struct rocm_ernic_dev {
     /* libvfio-user context */
     vfu_ctx_t *vfu_ctx;
@@ -148,10 +64,7 @@ struct rocm_ernic_dev {
     const char *backend_name;
 
     /* Device state flags */
-    bool device_initialized; /* Device structure created */
-    bool device_realized;    /* Backend initialized */
-    bool device_active;      /* Client connected and device running */
-    bool verbose;            /* Verbose logging enabled */
+    bool verbose; /* Verbose logging enabled */
     /*
      * The client went and libvfio-user reset the context, unmapping all
      * guest memory.  Set by device_reset_cb(), inside vfu_run_ctx(), and

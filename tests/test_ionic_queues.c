@@ -9,7 +9,7 @@
  * vector budget fits where the profile says it should, and that queue
  * indices past the profile's count are refused without touching memory.
  * That every one of the 128 vectors has room in BAR0 is a compile-time
- * check, in rocm_ernic_internal.h and ionic_eth_emu_priv.h.
+ * check, in ionic_bar.h and ionic_eth_emu_priv.h.
  *
  * Then Rx steering: the flow hash against an independent FNV-1a reference
  * over well-formed, tagged, fragmented and truncated frames; the set of Rx
@@ -37,6 +37,7 @@
 #include <sys/types.h>
 
 #include "byteorder.h"
+#include "ionic/ionic_bar.h"
 #include "ionic/ionic_emu_stats.h"
 #include "ionic/ionic_eth_emu.h"
 #include "ionic_eth_emu_fakes.h"
@@ -46,7 +47,6 @@
 #include "ionic/ionic_profile.h"
 #include "qemu/thread.h"
 #include "ionic/ionic_status.h"
-#include "rocm_ernic_internal.h"
 
 /* Offsets in union ionic_dev_identity and union ionic_lif_identity
  * (ionic_if.h), written here independently of the emulator's copies. */

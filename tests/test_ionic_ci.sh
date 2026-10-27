@@ -103,7 +103,7 @@ pass "ionic banner present"
 
 # --- Test 4: correct BAR layout ---
 # BAR0 is 64K: a 32K ionic register window (ionic_dev_setup() requires
-# >= IONIC_BAR0_SIZE = 0x8000) plus the MSI-X table/PBA above it, which
+# >= IONIC_BAR0_REGS_SIZE = 0x8000) plus the MSI-X table/PBA above it, which
 # cannot alias the register window.  BAR2 is the 4M doorbell BAR.
 echo ""
 echo "Test 4: BAR layout (BAR0=64K total / 32K regs, BAR2=4M)"

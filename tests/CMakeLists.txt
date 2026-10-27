@@ -228,7 +228,7 @@ endif()
 add_executable(test_nvmeof_target
     test_nvmeof_target.c
     ${PROJECT_SOURCE_DIR}/src/nvmeof/nvmeof_target.c
-    ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_log.c
 )
 target_include_directories(test_nvmeof_target PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -245,7 +245,7 @@ add_executable(test_nvmeof_cm
     test_nvmeof_cm.c
     ${PROJECT_SOURCE_DIR}/src/nvmeof/nvmeof_cm.c
     ${PROJECT_SOURCE_DIR}/src/nvmeof/nvmeof_target.c
-    ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_log.c
 )
 target_include_directories(test_nvmeof_cm PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -866,6 +866,7 @@ target_link_libraries(ernic-test-tcp-thread-stop PRIVATE
 add_executable(test_rdma_res_tbl test_rdma_res_tbl.c
     ${PROJECT_SOURCE_DIR}/src/qemu/rdma_rm.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_log.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
 )
 target_include_directories(test_rdma_res_tbl PRIVATE
@@ -915,10 +916,12 @@ target_link_directories(test_qemu_stubs PRIVATE
 target_link_libraries(test_qemu_stubs PRIVATE
     ${GLIB2_LIBRARIES} ${IBVERBS_LIBRARIES} pthread)
 
-# Log level test: ERNIC_LOG_LEVEL parsing, and threads racing the first
-# lookup. It links error-report.c directly.
+# Log level test: ERNIC_LOG_LEVEL parsing, threads racing the first lookup,
+# and what each reporter prints. It links ernic_log.c and error-report.c
+# directly.
 add_executable(ernic-test-log-level test_log_level.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_log.c
 )
 target_include_directories(ernic-test-log-level PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -930,10 +933,11 @@ target_link_libraries(ernic-test-log-level PRIVATE pthread)
 
 # Stats file test: the file ernic-exporter reads is replaced whole, never
 # seen half written, and a failed write leaves the last one in place. It
-# links pvrdma_stats.c and error-report.c directly.
+# links pvrdma_stats.c, error-report.c and ernic_log.c directly.
 add_executable(ernic-test-pvrdma-stats test_pvrdma_stats.c
     ${PROJECT_SOURCE_DIR}/src/rdma/pvrdma_stats.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_log.c
 )
 target_include_directories(ernic-test-pvrdma-stats PRIVATE
     ${PROJECT_SOURCE_DIR}/src
@@ -958,6 +962,7 @@ target_link_libraries(ernic-test-pvrdma-stats PRIVATE
 # source lists come from the top-level CMakeLists.txt, so the harness keeps
 # linking what the server links.
 set(ERNIC_HARNESS_DEVICE_SOURCES
+    ${COMMON_SOURCES}
     ${BRIDGE_SOURCES}
     ${IONIC_EMU_SOURCES}
     ${NVMEOF_SOURCES}
