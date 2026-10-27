@@ -64,3 +64,19 @@ Datapath
 ^^^^^^^^
 
 .. doxygenfile:: ionic_datapath.h
+
+Datapath Targets
+^^^^^^^^^^^^^^^^
+
+.. doxygenfile:: ionic_datapath_nvmeof.h
+
+.. doxygenfile:: ionic_datapath_s3.h
+
+P4 Attachment
+^^^^^^^^^^^^^
+
+Built only with ``ERNIC_BUILD_P4``.
+
+.. doxygenfile:: ionic_datapath_p4.h
+
+.. doxygenfile:: ionic_eth_p4.h
