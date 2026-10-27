@@ -46,7 +46,7 @@ Installation
 
 The nightly ``rocm-ernic`` and ``rocm-ernic-exporter`` packages
 install all of this under ``/usr``, with the configuration in
-``/etc/rocm-ernic/rocm-ernic.env`` (see ``INSTALL.md``).
+``/etc/rocm-ernic/rocm-ernic.env`` (see :ref:`nightly-packages`).
 
 Otherwise, build and install with CMake:
 
