@@ -132,6 +132,16 @@ struct p4_parse_state {
     struct p4_transition transitions[P4_MAX_TRANSITIONS];
 };
 
+/*
+ * Widest table key field or action argument, in bytes: what a table entry
+ * carries (P4_MATCH_BYTES in p4_table.h).  128 bits covers an IPv6
+ * address, which is the widest thing a real program matches on.  A field
+ * wider than this can still be parsed, deparsed and assigned; the loader
+ * refuses one as a table key, and an action argument wider than this,
+ * because no entry could fully specify either.
+ */
+#define P4_MAX_ENTRY_BYTES 16
+
 #define P4_MAX_ACTIONS      64
 #define P4_MAX_RUNTIME_ARGS 8  /* per action */
 #define P4_MAX_PRIMITIVES   32 /* per action */
@@ -235,9 +245,16 @@ enum p4_match_kind {
     P4_MATCH_TERNARY,
 };
 
+/*
+ * One key field.  p4c writes `field & constant` as the field with a
+ * @mask, which bmv2 applies to the packet's key and to every entry's
+ * before they meet; @mask is right-aligned, like a value.
+ */
 struct p4_table_key {
     uint8_t match_type;
+    bool has_mask;
     struct p4_field_ref field;
+    uint8_t mask[P4_MAX_ENTRY_BYTES];
 };
 
 /*

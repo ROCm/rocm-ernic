@@ -2803,6 +2803,146 @@ static void test_features_ternary(void)
     p4_engine_destroy(eng);
 }
 
+/* key_mask.json's frame: Ethernet of type @type, then the 128-bit @addr. */
+static void key_mask_frame(struct frame *f, uint16_t type, const uint8_t *addr)
+{
+    frame_eth(f, type);
+    memcpy(f->b + f->len, addr, 16);
+    f->len += 16;
+    put_be(f, UINT64_C(0x0102030405060708), 8);
+}
+
+/* An entry in key_mask.json's by_type, for the key @type. */
+static void by_type_entry(struct p4_update *up, uint8_t type, uint16_t key)
+{
+    memset(up, 0, sizeof(*up));
+    up->type = type;
+    (void)snprintf(up->table, sizeof(up->table), "IngressImpl.by_type");
+    (void)snprintf(up->action, sizeof(up->action), "IngressImpl.set_egress");
+    up->nmatch = 1;
+    up->match[0].len = 2;
+    put_spec(up->match[0].value, key, 2);
+    up->nparams = 1;
+    up->params[0].len = 2;
+    put_spec(up->params[0].value, P4_PORT_UPLINK, 2);
+}
+
+/*
+ * key_mask.json. by_type matches `etherType & 0x00ff`, which p4c writes as
+ * the field with a mask; ignoring the mask matched the whole field, so an
+ * entry for 0x0034 took only 0x0034. by_addr matches a 128-bit field and
+ * writes a 128-bit argument, the widest an entry carries.
+ */
+static void test_key_mask(void)
+{
+    static const uint8_t addr[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
+                                     0,    0,    0,    0,    0, 0, 0, 1};
+    static const uint8_t addr2[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
+                                      0,    0,    0,    0,    0, 0, 0, 2};
+    struct p4_engine *eng = p4_engine_create();
+    struct p4_update up;
+    struct frame f;
+    uint8_t out[256], other[16];
+    struct p4_result res;
+
+    checkf(load_fixture(eng, "key_mask.json") == 0,
+           "key_mask.json is refused: %s", load_why(eng));
+
+    /* The packet's key is under the mask, so only the low byte counts. */
+    by_type_entry(&up, P4_UPDATE_INSERT, 0x0034u);
+    check(update(eng, &up) == 0, "an entry for 0x0034 is not installed");
+    key_mask_frame(&f, 0x1234u, addr);
+    check(forwards_to(eng, &f, P4_PORT_UPLINK),
+          "0x1234 under the mask 0x00ff did not match 0x0034");
+    key_mask_frame(&f, 0xab34u, addr);
+    check(forwards_to(eng, &f, P4_PORT_UPLINK),
+          "0xab34 under the mask 0x00ff did not match 0x0034");
+    key_mask_frame(&f, 0x1235u, addr);
+    check(drops(eng, &f), "0x1235 under the mask 0x00ff matched 0x0034");
+
+    /* So is an entry's: 0x1234 is 0x0034, the row already there. */
+    by_type_entry(&up, P4_UPDATE_INSERT, 0x1234u);
+    check(update(eng, &up) == -EEXIST,
+          "0x1234 under the mask is not the row 0x0034");
+    by_type_entry(&up, P4_UPDATE_DELETE, 0x5634u);
+    check(update(eng, &up) == 0, "deleting 0x5634 did not delete 0x0034");
+    key_mask_frame(&f, 0x1234u, addr);
+    check(drops(eng, &f), "a frame matched the deleted row");
+
+    /* A 128-bit key and a 128-bit argument, every byte of each used. */
+    by_type_entry(&up, P4_UPDATE_INSERT, 0x0034u);
+    check(update(eng, &up) == 0, "the entry for 0x0034 is not reinstalled");
+    memset(&up, 0, sizeof(up));
+    up.type = P4_UPDATE_INSERT;
+    (void)snprintf(up.table, sizeof(up.table), "IngressImpl.by_addr");
+    (void)snprintf(up.action, sizeof(up.action), "IngressImpl.set_addr");
+    up.nmatch = 1;
+    set_spec(&up.match[0], addr, 16);
+    up.nparams = 1;
+    up.params[0].len = 16;
+    memcpy(up.params[0].value, addr2, 16);
+    check(update(eng, &up) == 0, "a 128-bit entry is not installed");
+
+    key_mask_frame(&f, 0x0034u, addr);
+    check(run_frame(eng, &f, out, sizeof(out), &res) == 0 &&
+              res.verdict == P4_VERDICT_FORWARD && res.len == f.len,
+          "the frame for the 128-bit entry was not forwarded");
+    check(memcmp(out + 14, addr2, 16) == 0,
+          "the 128-bit argument was not written in full");
+
+    /* The top byte of the key is compared too. */
+    memcpy(other, addr, sizeof(other));
+    other[0] ^= 0x80u;
+    key_mask_frame(&f, 0x0034u, other);
+    check(run_frame(eng, &f, out, sizeof(out), &res) == 0 &&
+              res.verdict == P4_VERDICT_FORWARD &&
+              memcmp(out + 14, other, 16) == 0,
+          "a key differing only in its top bit matched the 128-bit entry");
+
+    p4_engine_destroy(eng);
+}
+
+/*
+ * == and != take two of a kind, and two booleans are a kind as much as two
+ * values are: the check that refuses `field == true` must not refuse
+ * `(a > b) == true`.
+ */
+static void test_condition_types(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+
+#define P4_COND(expr)                                                    \
+    P4_PIPE(                                                             \
+        "{\"name\":\"ingress\",\"id\":0,\"init_table\":\"c\","           \
+        "\"tables\":[" P4_TBL(                                           \
+            "t",                                                         \
+            "{\"a\":null}") "],"                                         \
+                            "\"action_profiles\":[],\"conditionals\":[{" \
+                            "\"name\":\"c\","                            \
+                            "\"id\":0,\"expression\":{\"type\":"         \
+                            "\"expression\",\"value\":" expr             \
+                            "},\"true_next\":\"t\",\"false_next\":null}]}")
+
+    checkf(load_text(
+               eng, P4_COND("{\"op\":\"==\",\"left\":{\"type\":\"expression\","
+                            "\"value\":{\"op\":\">\",\"left\":{\"type\":"
+                            "\"field\",\"value\":[\"eth\",\"ty\"]},\"right\":"
+                            "{\"type\":\"hexstr\",\"value\":\"0x5\"}}},"
+                            "\"right\":{\"type\":\"bool\",\"value\":true}}")) ==
+               0,
+           "a comparison == true is refused: %s", load_why(eng));
+    checkf(
+        load_text(eng, P4_COND("{\"op\":\"!=\",\"left\":{\"type\":"
+                               "\"expression\",\"value\":{\"op\":\"valid\","
+                               "\"left\":null,\"right\":{\"type\":\"header\","
+                               "\"value\":\"eth\"}}},\"right\":{\"type\":"
+                               "\"bool\",\"value\":false}}")) == 0,
+        "valid(eth) != false is refused: %s", load_why(eng));
+
+#undef P4_COND
+    p4_engine_destroy(eng);
+}
+
 /* The entry store and the executor, called the wrong way. */
 static void test_entries_api(void)
 {
@@ -2931,6 +3071,8 @@ int main(void)
     test_features_lpm();
     test_lpm_key_not_first();
     test_features_ternary();
+    test_key_mask();
+    test_condition_types();
     test_entries_api();
     test_engine_edges();
     test_load_rejects_bad_input();

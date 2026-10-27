@@ -112,18 +112,15 @@ static bool p4_get_array(const struct json_object *parent, const char *key,
 }
 
 /*
- * Copy a JSON string that is a name: 1 to out_cap - 1 bytes, all of them
- * printable.  Copied rather than borrowed, since every pointer json-c hands
- * back dies with the tree.
+ * A JSON string as a C string, or NULL if @v is not a string or holds a NUL.
  *
- * Every string the loader keeps, looks a name up by, or prints comes
- * through here; one compared only against a literal ("default", "*") or
- * parsed as a number need not.  The printable check is not cosmetic: names
- * reach the log and the error messages above, and JSON's \u escapes decode
- * to control characters, so a newline or an ANSI escape in one is log
- * injection.
+ * Every string the loader reads goes through here, whatever it is for.
+ * json-c decodes \u0000 to a byte like any other, and the C string ends at
+ * it, so whatever follows is invisible to strcmp(), to
+ * ernic_parse_hexstr(), and to every check: "0x00ff\u0000zz" would parse
+ * as 0x00ff, and "default\u0000zz" would be a default arm.
  */
-static bool p4_str_val(struct json_object *v, char *out, size_t out_cap)
+static const char *p4_cstr(struct json_object *v)
 {
     const char *s;
     int n;
@@ -131,24 +128,42 @@ static bool p4_str_val(struct json_object *v, char *out, size_t out_cap)
     /* Before get_string_len: on a null it returns NULL, and on an array it
      * returns the serialisation with a length of zero. */
     if (!v || !json_object_is_type(v, json_type_string))
-        return false;
+        return NULL;
 
     n = json_object_get_string_len(v);
-    if (n <= 0 || (size_t)n >= out_cap)
-        return false;
-
     s = json_object_get_string(v);
+    if (!s || n < 0 || strlen(s) != (size_t)n)
+        return NULL;
+    return s;
+}
+
+/*
+ * Copy a JSON string that is a name: 1 to out_cap - 1 bytes, all of them
+ * printable.  Copied rather than borrowed, since every pointer json-c hands
+ * back dies with the tree.
+ *
+ * Every string the loader keeps, looks a name up by, or prints comes
+ * through here; one compared only against a literal ("default", "*") or
+ * parsed as a number comes through p4_cstr() alone.  The printable check is
+ * not cosmetic: names reach the log and the error messages above, and
+ * JSON's \u escapes decode to control characters, so a newline or an ANSI
+ * escape in one is log injection.
+ */
+static bool p4_str_val(struct json_object *v, char *out, size_t out_cap)
+{
+    const char *s = p4_cstr(v);
+    size_t n;
+
     if (!s)
         return false;
-    /* An embedded NUL would make the rest of the name invisible to every
-     * check below this one. */
-    if (strlen(s) != (size_t)n)
+    n = strlen(s);
+    if (n == 0 || n >= out_cap)
         return false;
 
-    if (!p4_name_printable(s, (size_t)n))
+    if (!p4_name_printable(s, n))
         return false;
 
-    memcpy(out, s, (size_t)n);
+    memcpy(out, s, n);
     out[n] = '\0';
     return true;
 }
@@ -364,8 +379,7 @@ static int p4_walk_header_types(struct p4_walk *w,
             /* A width of "*" is a variable-length field. Naming it is
              * worth more than "not an integer". Any other string is just
              * a bad width, not a feature. */
-            if (fbits && json_object_is_type(fbits, json_type_string) &&
-                strcmp(json_object_get_string(fbits), "*") == 0)
+            if (p4_cstr(fbits) && strcmp(p4_cstr(fbits), "*") == 0)
                 return p4_fail(w, -ENOSYS,
                                "'%s.%s' is variable length, which is not "
                                "supported",
@@ -471,6 +485,21 @@ static int p4_walk_headers(struct p4_walk *w, const struct json_object *root)
                            "header '%s' names header type '%s', which does "
                            "not exist",
                            dst->name, type_name);
+
+        /*
+         * A header that can go on a wire is whole bytes, as p4c requires
+         * of bmv2 and bmv2 assumes. One that isn't would be extracted
+         * and emitted rounded up to a byte, taking bits of whatever
+         * follows it in the frame. Metadata never touches a wire, so it
+         * may be any width.
+         */
+        if (!dst->metadata &&
+            w->prog->header_types[dst->header_type].total_bits % 8u != 0)
+            return p4_fail(w, -EINVAL,
+                           "header '%s' is %u bits, which is not a whole "
+                           "number of bytes",
+                           dst->name,
+                           w->prog->header_types[dst->header_type].total_bits);
 
         for (size_t j = 0; j < i; j++) {
             if (strcmp(w->prog->headers[j].name, dst->name) == 0)
@@ -639,18 +668,24 @@ static int p4_resolve_rdma_metadata(struct p4_walk *w)
 static int p4_resolve_std_metadata(struct p4_walk *w)
 {
     static const char *const std = "standard_metadata";
+    /* v1model's PortId_t, the type of both. */
+    static const uint16_t port_bits = 9;
 
-    if (!p4_resolve_field(w->prog, std, "egress_spec", &w->prog->egress_spec))
+    if (!p4_resolve_arch_field(w, std, "egress_spec", port_bits,
+                               &w->prog->egress_spec)) {
+        if (w->failed)
+            return -EINVAL;
         return p4_fail(w, -EINVAL,
                        "no '%s.egress_spec'; a program without it cannot say "
                        "where a packet goes",
                        std);
-    /* ingress_port is optional: a program may never read it. */
-    if (!p4_resolve_field(w->prog, std, "ingress_port",
-                          &w->prog->ingress_port)) {
-        w->prog->ingress_port.header = P4_IDX_NONE;
-        w->prog->ingress_port.field = P4_IDX_NONE;
     }
+    /* ingress_port is optional: a program may never read it. Left unset,
+     * the reference is P4_IDX_NONE. */
+    if (!p4_resolve_arch_field(w, std, "ingress_port", port_bits,
+                               &w->prog->ingress_port) &&
+        w->failed)
+        return -EINVAL;
     return 0;
 }
 
@@ -838,8 +873,8 @@ static int p4_walk_transitions(struct p4_walk *w, const struct json_object *st,
 
         if (has_type && strcmp(type, "default") == 0) {
             td->is_default = true;
-        } else if (!has_type && json_object_is_type(val, json_type_string) &&
-                   strcmp(json_object_get_string(val), "default") == 0) {
+        } else if (!has_type && p4_cstr(val) &&
+                   strcmp(p4_cstr(val), "default") == 0) {
             td->is_default = true;
         } else if (has_type && strcmp(type, "hexstr") != 0) {
             return p4_fail(w, -ENOSYS,
@@ -856,7 +891,7 @@ static int p4_walk_transitions(struct p4_walk *w, const struct json_object *st,
                                "state '%s' transition %zu has a non-string "
                                "value",
                                dst->name, i);
-            vs = json_object_get_string(val);
+            vs = p4_cstr(val);
             if (!vs ||
                 !ernic_parse_hexstr(vs, td->value, sizeof(td->value), &vlen,
                                     &neg) ||
@@ -878,7 +913,7 @@ static int p4_walk_transitions(struct p4_walk *w, const struct json_object *st,
                     return p4_fail(w, -EINVAL,
                                    "state '%s' transition %zu has a bad mask",
                                    dst->name, i);
-                ms = json_object_get_string(mask);
+                ms = p4_cstr(mask);
                 if (!ms ||
                     !ernic_parse_hexstr(ms, td->mask, sizeof(td->mask), &vlen,
                                         &neg) ||
@@ -1082,22 +1117,23 @@ static const struct {
     uint8_t min_params;
     uint8_t max_params;
     /* Only meaningful for P4_PRIM_EXTERN; the name that matched is what
-     * says which method was called. */
+     * says which method was called, and on which extern type. */
     uint8_t method;
+    uint8_t extern_type;
 } p4_primitives[] = {
-    {"assign", P4_PRIM_ASSIGN, 2, 2, 0},
-    {"modify_field", P4_PRIM_ASSIGN, 2, 2, 0},
-    {"add", P4_PRIM_ADD, 3, 3, 0},
-    {"add_to_field", P4_PRIM_ADD, 2, 2, 0},
-    {"subtract", P4_PRIM_SUB, 3, 3, 0},
-    {"subtract_from_field", P4_PRIM_SUB, 2, 2, 0},
-    {"drop", P4_PRIM_DROP, 0, 1, 0},
-    {"mark_to_drop", P4_PRIM_DROP, 0, 1, 0},
-    {"no_op", P4_PRIM_NOP, 0, 0, 0},
+    {"assign", P4_PRIM_ASSIGN, 2, 2, 0, 0},
+    {"modify_field", P4_PRIM_ASSIGN, 2, 2, 0, 0},
+    {"add", P4_PRIM_ADD, 3, 3, 0, 0},
+    {"add_to_field", P4_PRIM_ADD, 2, 2, 0, 0},
+    {"subtract", P4_PRIM_SUB, 3, 3, 0, 0},
+    {"subtract_from_field", P4_PRIM_SUB, 2, 2, 0, 0},
+    {"drop", P4_PRIM_DROP, 0, 1, 0, 0},
+    {"mark_to_drop", P4_PRIM_DROP, 0, 1, 0, 0},
+    {"no_op", P4_PRIM_NOP, 0, 0, 0, 0},
     /* The call form p4c emits for an extern: _<Type>_<method>, with the
      * instance as the first parameter. */
-    {"_Fp8_map", P4_PRIM_EXTERN, 2, 2, P4_EXTERN_FP8_MAP},
-    {"_Fp8_cvt", P4_PRIM_EXTERN, 3, 3, P4_EXTERN_FP8_CVT},
+    {"_Fp8_map", P4_PRIM_EXTERN, 2, 2, P4_EXTERN_FP8_MAP, P4_EXTERN_FP8},
+    {"_Fp8_cvt", P4_PRIM_EXTERN, 3, 3, P4_EXTERN_FP8_CVT, P4_EXTERN_FP8},
 };
 
 /* One operand of a primitive. */
@@ -1134,7 +1170,7 @@ static int p4_walk_operand(struct p4_walk *w, const struct json_object *p,
 
         if (!json_object_is_type(val, json_type_string))
             return p4_fail(w, -EINVAL, "%s has a non-string literal", where);
-        vs = json_object_get_string(val);
+        vs = p4_cstr(val);
         if (!vs ||
             !ernic_parse_hexstr(vs, dst->imm, sizeof(dst->imm), &n, &neg))
             return p4_fail(w, -EINVAL, "%s has a malformed literal", where);
@@ -1341,6 +1377,13 @@ static int p4_walk_actions(struct p4_walk *w, const struct json_object *root)
                 return p4_fail(w, -EINVAL,
                                "action '%s' argument %zu has a bad width",
                                dst->name, r);
+            /* Its value comes from a table entry or the default entry,
+             * neither of which can carry more. */
+            if (bits > P4_MAX_ENTRY_BYTES * 8u)
+                return p4_fail(w, -EINVAL,
+                               "action '%s' argument %zu is %u bits, at most "
+                               "%u",
+                               dst->name, r, bits, P4_MAX_ENTRY_BYTES * 8u);
             dst->runtime_bits[r] = (uint16_t)bits;
         }
         dst->nruntime = (uint16_t)nrt;
@@ -1425,6 +1468,15 @@ static int p4_walk_actions(struct p4_walk *w, const struct json_object *root)
                     return p4_fail(w, -EINVAL,
                                    "%s does not name the extern it calls on",
                                    where);
+                /* The method belongs to the type the name says, and is
+                 * run as one of that type's. */
+                if (w->prog->externs[pd->params[0].inst].type !=
+                    p4_primitives[which].extern_type)
+                    return p4_fail(w, -EINVAL,
+                                   "%s calls on '%s', which is of another "
+                                   "type",
+                                   where,
+                                   w->prog->externs[pd->params[0].inst].name);
                 for (size_t q = 1; q < nparams; q++) {
                     if (pd->params[q].kind == P4_OPD_EXTERN)
                         return p4_fail(w, -EINVAL,
@@ -1447,6 +1499,11 @@ static int p4_walk_actions(struct p4_walk *w, const struct json_object *root)
                     const struct p4_operand *o = &pd->params[q];
                     uint32_t lbits;
 
+                    /* An extern instance has no value; read as one, it
+                     * would be zero on every packet. */
+                    if (o->kind == P4_OPD_EXTERN)
+                        return p4_fail(w, -EINVAL,
+                                       "%s reads an extern as a value", where);
                     if (o->kind != P4_OPD_HEXSTR)
                         continue;
                     lbits = be_bit_length(o->imm, sizeof(o->imm));
@@ -1466,17 +1523,101 @@ static int p4_walk_actions(struct p4_walk *w, const struct json_object *root)
     return 0;
 }
 
+/*
+ * What an operand of a condition is, as bmv2 types it: a header, a boolean
+ * (a bool literal, or any operator here, all of which yield one), or a value
+ * (a field or a literal). P4_ET_SAME is what == and != take: two of a kind.
+ */
+enum p4_expr_type {
+    P4_ET_NONE = 0,
+    P4_ET_HEADER,
+    P4_ET_BOOL,
+    P4_ET_DATA,
+    P4_ET_SAME,
+};
+
 static const struct {
     const char *name;
     uint8_t op;
     bool unary;
+    uint8_t takes; /* enum p4_expr_type */
 } p4_expr_ops[] = {
-    {"valid", P4_EXPR_VALID, true}, {"not", P4_EXPR_NOT, true},
-    {"==", P4_EXPR_EQ, false},      {"!=", P4_EXPR_NE, false},
-    {"<", P4_EXPR_LT, false},       {"<=", P4_EXPR_LE, false},
-    {">", P4_EXPR_GT, false},       {">=", P4_EXPR_GE, false},
-    {"and", P4_EXPR_AND, false},    {"or", P4_EXPR_OR, false},
+    {"valid", P4_EXPR_VALID, true, P4_ET_HEADER},
+    {"not", P4_EXPR_NOT, true, P4_ET_BOOL},
+    {"==", P4_EXPR_EQ, false, P4_ET_SAME},
+    {"!=", P4_EXPR_NE, false, P4_ET_SAME},
+    {"<", P4_EXPR_LT, false, P4_ET_DATA},
+    {"<=", P4_EXPR_LE, false, P4_ET_DATA},
+    {">", P4_EXPR_GT, false, P4_ET_DATA},
+    {">=", P4_EXPR_GE, false, P4_ET_DATA},
+    {"and", P4_EXPR_AND, false, P4_ET_BOOL},
+    {"or", P4_EXPR_OR, false, P4_ET_BOOL},
 };
+
+static uint8_t p4_expr_type_of(const struct p4_expr_operand *o)
+{
+    switch (o->kind) {
+    case P4_EO_HEADER:
+        return P4_ET_HEADER;
+    case P4_EO_BOOL:
+    case P4_EO_EXPR:
+        return P4_ET_BOOL;
+    case P4_EO_FIELD:
+    case P4_EO_HEXSTR:
+        return P4_ET_DATA;
+    default:
+        return P4_ET_NONE;
+    }
+}
+
+static const char *p4_expr_type_name(uint8_t t)
+{
+    switch (t) {
+    case P4_ET_HEADER:
+        return "a header";
+    case P4_ET_BOOL:
+        return "a boolean";
+    default:
+        return "a value";
+    }
+}
+
+/*
+ * Each operand of an operator must be what it takes. The executor reads
+ * whatever it is given as a number -- a header as its validity bit, a
+ * comparison as 0 or 1 -- so `valid(field)` would test the field for zero
+ * and `hdr == 5` would compare a validity bit, each a different program
+ * from the one written. p4c never emits either, and bmv2 types its
+ * operands the same way (asserting that == and != compare two of a kind).
+ */
+static int p4_check_expr_types(struct p4_walk *w,
+                               const struct p4_expr_node *node, size_t which,
+                               const char *where)
+{
+    const char *opname = p4_expr_ops[which].name;
+    uint8_t takes = p4_expr_ops[which].takes;
+    uint8_t l = p4_expr_type_of(&node->left);
+    uint8_t r = p4_expr_type_of(&node->right);
+
+    if (takes == P4_ET_SAME) {
+        /* bmv2 compares two headers' contents, which is not built. */
+        if (l == P4_ET_HEADER && r == P4_ET_HEADER)
+            return p4_fail(w, -ENOSYS,
+                           "%s: '%s' compares headers, which is not "
+                           "supported",
+                           where, opname);
+        if (l != r)
+            return p4_fail(w, -EINVAL, "%s: '%s' compares %s with %s", where,
+                           opname, p4_expr_type_name(l), p4_expr_type_name(r));
+        return 0;
+    }
+    /* A unary operator's left is P4_ET_NONE, already checked absent. */
+    if ((!p4_expr_ops[which].unary && l != takes) || r != takes)
+        return p4_fail(w, -EINVAL, "%s: '%s' takes %s, not %s", where, opname,
+                       p4_expr_type_name(takes),
+                       p4_expr_type_name(r != takes ? r : l));
+    return 0;
+}
 
 static int p4_walk_expr(struct p4_walk *w, const struct json_object *tv,
                         struct p4_conditional *cond, p4_idx_t *slot,
@@ -1542,7 +1683,7 @@ static int p4_walk_expr_operand(struct p4_walk *w, const struct json_object *tv,
 
         if (!json_object_is_type(val, json_type_string))
             return p4_fail(w, -EINVAL, "%s has a non-string literal", where);
-        vs = json_object_get_string(val);
+        vs = p4_cstr(val);
         if (!vs ||
             !ernic_parse_hexstr(vs, dst->imm, sizeof(dst->imm), &n, &neg) ||
             neg)
@@ -1645,7 +1786,7 @@ static int p4_walk_expr(struct p4_walk *w, const struct json_object *tv,
                        opname);
     }
 
-    return 0;
+    return p4_check_expr_types(w, node, which, where);
 }
 
 static uint8_t p4_match_kind(const char *s, bool *ok)
@@ -1689,6 +1830,29 @@ static p4_idx_t p4_find_node(const struct p4_pipeline *pl, const char *name)
 }
 
 /*
+ * Refuse a second table or conditional called @name, in this pipeline or
+ * an earlier one, before it joins @pl's nodes. A next or init_table name
+ * resolves to the first node of that name, and a table update to the first
+ * table, so a second would be unreachable by either. bmv2 keeps one
+ * namespace for the control nodes of every pipeline, and refuses the same.
+ * Pipelines not walked yet have no nodes, so all of them can be searched.
+ */
+static int p4_check_node_unique(struct p4_walk *w, const struct p4_pipeline *pl,
+                                const char *name)
+{
+    for (size_t p = 0; p < P4_MAX_PIPELINES; p++) {
+        const struct p4_pipeline *other = &w->prog->pipelines[p];
+
+        if (p4_find_node(other, name) != P4_IDX_NONE)
+            return p4_fail(w, -EINVAL,
+                           "two tables or conditionals are called '%s', the "
+                           "second in pipeline '%s'",
+                           name, pl->name);
+    }
+    return 0;
+}
+
+/*
  * Resolve a "next" name to a node. A JSON null means the pipeline ends
  * here, which is P4_IDX_NONE -- distinct from a name that does not
  * resolve, which is an error.
@@ -1714,6 +1878,45 @@ static int p4_resolve_next(struct p4_walk *w, const struct p4_pipeline *pl,
     return 0;
 }
 
+/*
+ * A key field's mask. p4c writes a key `field & constant` as the field with
+ * the constant as a mask (backends/bmv2/common/control.h), and null for any
+ * other key; bmv2 masks the packet's key and each entry's with it before
+ * they meet. Ignored, it would match the whole field.
+ */
+static int p4_walk_key_mask(struct p4_walk *w, const struct json_object *kf,
+                            struct p4_table *dst, size_t i, uint16_t fbits)
+{
+    struct p4_table_key *k = &dst->key[i];
+    struct json_object *mask;
+    const char *ms;
+    size_t mlen = 0;
+    bool neg = false;
+
+    k->has_mask = false;
+    if (!json_object_object_get_ex(kf, "mask", &mask) ||
+        json_object_is_type(mask, json_type_null))
+        return 0;
+
+    if (!json_object_is_type(mask, json_type_string))
+        return p4_fail(w, -EINVAL, "table '%s' key %zu has a bad mask",
+                       dst->name, i);
+    ms = p4_cstr(mask);
+    if (!ms || !ernic_parse_hexstr(ms, k->mask, sizeof(k->mask), &mlen, &neg) ||
+        neg)
+        return p4_fail(w, -EINVAL, "table '%s' key %zu has a bad mask",
+                       dst->name, i);
+    /* p4c writes it at the field's width; a bit past that would mask
+     * nothing, and is a different program from the one written. */
+    if (be_bit_length(k->mask, sizeof(k->mask)) > fbits)
+        return p4_fail(w, -EINVAL,
+                       "table '%s' key %zu has a mask wider than its %u-bit "
+                       "field",
+                       dst->name, i, fbits);
+    k->has_mask = true;
+    return 0;
+}
+
 /* One table's key, actions and size. The next pointers come later. */
 static int p4_walk_table(struct p4_walk *w, const struct json_object *t,
                          struct p4_table *dst, uint32_t *total_entries)
@@ -1722,8 +1925,10 @@ static int p4_walk_table(struct p4_walk *w, const struct json_object *t,
     char mt[P4_MAX_NAME + 1];
     size_t nk, na;
     uint32_t id, max_size;
+    uint16_t fbits;
     uint8_t keys_kind;
     bool ok, flag;
+    int rc;
 
     if (!p4_get_str(t, "name", dst->name, sizeof(dst->name)))
         return p4_fail(w, -EINVAL, "a table has a bad name");
@@ -1830,6 +2035,18 @@ static int p4_walk_table(struct p4_walk *w, const struct json_object *t,
                            "table '%s' matches on '%s.%s', which does not "
                            "exist",
                            dst->name, h, f);
+        /* An entry carries at most this much of a key field, so a wider
+         * one could never be matched in full. */
+        fbits = p4_field_bits(w->prog, dst->key[i].field);
+        if (fbits > P4_MAX_ENTRY_BYTES * 8u)
+            return p4_fail(w, -EINVAL,
+                           "table '%s' matches on '%s.%s', which is %u bits; "
+                           "a key field is at most %u",
+                           dst->name, h, f, fbits, P4_MAX_ENTRY_BYTES * 8u);
+
+        rc = p4_walk_key_mask(w, kf, dst, i, fbits);
+        if (rc)
+            return rc;
     }
     dst->nkey = (uint16_t)nk;
 
@@ -1941,7 +2158,7 @@ static int p4_walk_table(struct p4_walk *w, const struct json_object *t,
                                "table '%s' default argument %zu is not a "
                                "literal",
                                dst->name, i);
-            vs = json_object_get_string(e);
+            vs = p4_cstr(e);
             if (!vs ||
                 !ernic_parse_hexstr(vs, dst->default_data[i], P4_MAX_IMM_BYTES,
                                     &blen, &neg) ||
@@ -2181,6 +2398,15 @@ static int p4_walk_pipeline(struct p4_walk *w, const struct json_object *p,
         rc = p4_walk_table(w, t, &pl->tables[i], &total_entries);
         if (rc)
             return rc;
+        rc = p4_check_node_unique(w, pl, pl->tables[i].name);
+        if (rc)
+            return rc;
+        for (size_t j = 0; j < i; j++) {
+            if (pl->tables[j].id == pl->tables[i].id)
+                return p4_fail(w, -EINVAL, "tables '%s' and '%s' share id %u",
+                               pl->tables[j].name, pl->tables[i].name,
+                               pl->tables[i].id);
+        }
         pl->nodes[pl->nnodes].kind = P4_NODE_TABLE;
         pl->nodes[pl->nnodes].index = (p4_idx_t)i;
         pl->nnodes++;
@@ -2204,6 +2430,15 @@ static int p4_walk_pipeline(struct p4_walk *w, const struct json_object *p,
             return p4_fail(w, -EINVAL, "conditional '%s' has a bad id",
                            cd->name);
         cd->id = id;
+        rc = p4_check_node_unique(w, pl, cd->name);
+        if (rc)
+            return rc;
+        for (size_t j = 0; j < i; j++) {
+            if (pl->conditionals[j].id == cd->id)
+                return p4_fail(w, -EINVAL,
+                               "conditionals '%s' and '%s' share id %u",
+                               pl->conditionals[j].name, cd->name, cd->id);
+        }
 
         (void)snprintf(where, sizeof(where), "condition '%s'", cd->name);
         if (!json_object_object_get_ex(c, "expression", &expr))
@@ -2293,6 +2528,11 @@ static int p4_walk_pipelines(struct p4_walk *w, const struct json_object *root)
                        w->prog->pipelines[i].name) == 0)
                 return p4_fail(w, -EINVAL, "duplicate pipeline '%s'",
                                w->prog->pipelines[i].name);
+            if (w->prog->pipelines[j].id == w->prog->pipelines[i].id)
+                return p4_fail(
+                    w, -EINVAL, "pipelines '%s' and '%s' share id %u",
+                    w->prog->pipelines[j].name, w->prog->pipelines[i].name,
+                    w->prog->pipelines[i].id);
         }
         if (strcmp(w->prog->pipelines[i].name, "ingress") == 0)
             have_ingress = true;

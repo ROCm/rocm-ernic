@@ -232,6 +232,27 @@ the default action, `allow()`, does nothing. `ionic-harness-p4-deny`
 checks that a denied operation transfers nothing and fails with a local
 QP operation error, on RC and UD, signalled or not.
 
+## key_mask.json
+
+**Compiled, not hand written**, from `src/key_mask.p4`, without
+`--emit-externs`:
+
+```
+build-p4c/bin/p4c-bm2-ss --std p4-16 -I build-p4c/p4include \
+    -o tests/data/p4/key_mask.json \
+    tests/data/p4/src/key_mask.p4
+```
+
+Two tables at the edges of what a key can be. `IngressImpl.by_type`
+matches `etherType & 0x00ff`, which p4c writes as the whole field with
+`"mask": "0x00ff"`; bmv2 puts both the packet's key and each entry's under
+the mask, so an entry for `0x0034` takes `0x1234` and `0xab34`, and one for
+`0x1234` is the same row. (A slice, `etherType[7:0]`, is not written as a
+mask by this p4c: it copies the slice into a `scalars` field and keys on
+that.) `IngressImpl.by_addr` matches a 128-bit field and its action takes a
+128-bit argument, the widest an entry carries. `p4-engine-unit` checks all
+of it.
+
 ## fp8_cvt_then_map.json
 
 **Compiled, not hand written**, from `src/fp8_cvt_then_map.p4` with the

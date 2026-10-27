@@ -1141,6 +1141,27 @@
     nonzero `prefix_bits` in a field that isn't LPM, which was ignored, is
     refused too. A delete is checked like an insert, so a malformed one is
     `EINVAL` rather than `ENOENT`.
+  * A table key p4c writes with a mask, `field & 0x00ff : exact`, matched
+    the whole field, so an entry for `0x0034` took only `0x0034`. The key
+    is now put under the mask, as in bmv2, and so is each entry's: an entry
+    for `0x1234` is the row for `0x0034`, and a second one is a duplicate.
+  * Programs that loaded and then didn't run as written are refused at
+    load with `EINVAL`: a table keyed on a field wider than 128 bits, or an
+    action argument wider than 128 bits, which no entry could set in full;
+    an extern instance read as a value, which read as 0; a condition with
+    an operand of the wrong kind, such as `valid` of a field, `not` or
+    `and` of a field, `>` of a header, or `==` between a field and a
+    boolean, each of which read the operand as a number (`==` between two
+    headers is refused with `ENOSYS`, as not implemented); a header that
+    isn't a whole number of bytes and isn't metadata, which p4c refuses for
+    bmv2; a `standard_metadata.egress_spec` or `ingress_port` of other
+    than 9 bits; and, as bmv2 refuses them, two tables or conditionals with
+    one name in any pipeline, which made the second unreachable, and two
+    tables, two conditionals or two pipelines with one id.
+  * A hex literal, mask, select value or default argument with a `\u0000`
+    in it loaded as the part before the NUL (`"0x00ff\u0000zz"` as
+    `0x00ff`), and an arm whose value was `"default\u0000zz"` loaded as a
+    default arm. Each is refused with `EINVAL`.
   * Load errors say what's wrong: an empty or truncated program says so, a
     field width given as a string other than `"*"` is a bad width rather
     than variable-length, a bad `base_default_next` is named as such, and
