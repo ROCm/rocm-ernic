@@ -24,12 +24,12 @@
 #include <glib.h> /* For GBytes and GHashTable */
 
 #include "ernic_ib.h"
-#include "qemu/bitmap.h" /* For bitmap operations */
-#include "qemu/thread.h" /* For qemu_mutex_lock() */
-#include "rdma_utils.h"
-#include "rdma_backend.h"
-#include "rdma_backend_ops.h" /* For RdmaBackendOps definition */
-#include "rdma_rm.h"
+#include "pvrdma/rdma_backend.h"
+#include "pvrdma/rdma_rm.h"
+#include "pvrdma/rdma_utils.h"
+#include "qemu/bitmap.h"           /* For bitmap operations */
+#include "qemu/thread.h"           /* For qemu_mutex_lock() */
+#include "rdma/rdma_backend_ops.h" /* For RdmaBackendOps definition */
 
 /*
  * Returns 0, -EOVERFLOW if tbl_sz * res_sz doesn't fit in a size_t, or

@@ -33,11 +33,11 @@
 #include "byteorder.h"
 #include "ernic_dma.h"
 #include "ernic_limits.h"
-#include "ionic_bar.h"
-#include "ionic_rdma_devcmd.h"
-#include "ionic_eth_emu.h"
-#include "ionic_adminq.h"
-#include "ionic_datapath.h"
+#include "ionic/ionic_bar.h"
+#include "ionic/ionic_rdma_devcmd.h"
+#include "ionic/ionic_eth_emu.h"
+#include "ionic/ionic_adminq.h"
+#include "ionic/ionic_datapath.h"
 
 /* -------------------------------------------------------------------------
  * ionic_if.h constants (devcmd opcodes and structs)

@@ -20,8 +20,8 @@
 #include <stdint.h>
 #include <errno.h>
 
-#include "rdma_backend.h"
-#include "rdma_backend_ops.h" /* For RdmaBackendOps structure definition */
+#include "pvrdma/rdma_backend.h"
+#include "rdma/rdma_backend_ops.h" /* For RdmaBackendOps structure definition */
 
 int rdma_backend_create_srq(RdmaBackendSRQ *srq, RdmaBackendPD *pd,
                             uint32_t max_wr, uint32_t max_sge,

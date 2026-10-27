@@ -22,11 +22,11 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "ernic_limits.h"
-#include "ionic_bar.h"
-#include "ionic_emu_stats.h"
-#include "ionic_eth_emu.h"
-#include "ionic_eth_net.h"
-#include "ionic_profile.h"
+#include "ionic/ionic_bar.h"
+#include "ionic/ionic_emu_stats.h"
+#include "ionic/ionic_eth_emu.h"
+#include "ionic/ionic_eth_net.h"
+#include "ionic/ionic_profile.h"
 #include "qemu/thread.h"
 
 /* -------------------------------------------------------------------------

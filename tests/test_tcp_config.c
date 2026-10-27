@@ -45,10 +45,10 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "pvrdma/rdma_backend_defs.h"
 #include "qemu/error-report.h"
 #include "qemu/thread.h"
 #include "rdma/rdma_backend_tcp_priv.h"
-#include "rdma_backend_defs.h"
 
 /* ---- Stubs for the TU's external symbols -------------------------------
  * Only error_report() is reachable, from tcp_init_with_interval() refusing

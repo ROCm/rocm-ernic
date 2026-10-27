@@ -10,7 +10,7 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include "ionic_emu_stats.h"
+#include "ionic/ionic_emu_stats.h"
 
 #include <stdatomic.h>
 #include <string.h>

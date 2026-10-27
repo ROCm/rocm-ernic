@@ -22,8 +22,8 @@
 
 #include "ernic_limits.h"
 #include "ernic_stats.h"
-#include "ionic_adminq.h"
-#include "ionic_datapath.h"
+#include "ionic/ionic_adminq.h"
+#include "ionic/ionic_datapath.h"
 #include "rocm_ernic_compat.h"
 
 struct ernic_dma;

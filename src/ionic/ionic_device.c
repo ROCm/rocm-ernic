@@ -7,7 +7,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-#include "ionic_device.h"
+#include "ionic/ionic_device.h"
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -18,11 +18,11 @@
 
 #include "ernic_stats.h"
 #include "ernic_time.h"
-#include "ionic_adminq.h"
-#include "ionic_bar.h"
-#include "ionic_datapath.h"
-#include "ionic_eth_emu.h"
-#include "ionic_rdma_devcmd.h"
+#include "ionic/ionic_adminq.h"
+#include "ionic/ionic_bar.h"
+#include "ionic/ionic_datapath.h"
+#include "ionic/ionic_eth_emu.h"
+#include "ionic/ionic_rdma_devcmd.h"
 #include "nvmeof/nvmeof_target.h"
 #include "rocm_ernic_compat.h"
 #include "s3/s3_target.h"
@@ -30,9 +30,9 @@
 #include <inttypes.h>
 
 #include "ernic_log.h"
-#include "p4_devcmd.h"
-#include "p4_engine.h"
-#include "p4_port.h"
+#include "p4/p4_devcmd.h"
+#include "p4/p4_engine.h"
+#include "p4/p4_port.h"
 #endif
 
 struct ionic_device {

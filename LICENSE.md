@@ -38,9 +38,9 @@ The emulator itself is `GPL-2.0-or-later` (see `LICENSE_GPL.md`):
 * Everything under `src/` and `tests/`, and the fuzz harnesses in
   `nix/analysis/fuzz/`, which build against `src/`.
 
-* The files under `src/qemu/` were imported from the QEMU project
+* The files under `src/pvrdma/` were imported from the QEMU project
   (`https://gitlab.com/qemu-project/qemu`). The VMware/Linux uAPI header
-  `src/qemu/vmw_pvrdma-abi.h` is instead dual `GPL-2.0` / `BSD-2-Clause`,
+  `src/pvrdma/vmw_pvrdma-abi.h` is instead dual `GPL-2.0` / `BSD-2-Clause`,
   as stated in its header comment.
 
 The patches under `ansible/files/patches/` modify code from other projects

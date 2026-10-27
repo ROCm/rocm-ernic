@@ -155,10 +155,10 @@ set(COMMON_SOURCES
 )
 
 # rocm-ernic's fork of QEMU's PVRDMA resource manager and backend device,
-# under Oracle / Red Hat copyright (see src/qemu/README.md)
-set(QEMU_SOURCES
-    src/qemu/rdma_backend.c
-    src/qemu/rdma_rm.c
+# under Oracle / Red Hat copyright (see src/pvrdma/README.md)
+set(PVRDMA_SOURCES
+    src/pvrdma/rdma_backend.c
+    src/pvrdma/rdma_rm.c
 )
 
 # The QEMU APIs that code calls, implemented for a standalone process
@@ -266,7 +266,7 @@ set(ALL_SOURCES
     ${S3_SOURCES}
     ${RDMA_BACKEND_SOURCES}
     ${QEMU_COMPAT_SOURCES}
-    ${QEMU_SOURCES}
+    ${PVRDMA_SOURCES}
 )
 
 if(ERNIC_BUILD_P4)
@@ -288,14 +288,13 @@ else()
     set(ERNIC_IBVERBS_INCLUDE_DIRS "${IBVERBS_INCLUDE_DIRS}")
 endif()
 
-# src/rdma and src/qemu are searched directly because the QEMU
-# sources include their headers, and rdma_backend_ops.h, by bare name.
+# Sources include a header in a subdirectory of src/ by its path from src/
+# ("pvrdma/rdma_rm.h"), even from the same directory. qemu-compat/include
+# stands in for QEMU's own include tree, so its headers keep QEMU's names
+# ("qemu/thread.h").
 target_include_directories(rocm-ernic PRIVATE
     ${PROJECT_SOURCE_DIR}/src
-    ${PROJECT_SOURCE_DIR}/src/rdma
-    ${PROJECT_SOURCE_DIR}/src/qemu
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
-    ${PROJECT_SOURCE_DIR}/src/p4
     ${PROJECT_SOURCE_DIR}/shared
 )
 

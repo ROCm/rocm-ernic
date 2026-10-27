@@ -17,8 +17,8 @@
 #include <string.h>
 
 #include "ernic_err.h"
-#include "ionic_fault.h"
-#include "ionic_status.h"
+#include "ionic/ionic_fault.h"
+#include "ionic/ionic_status.h"
 
 static const char *const site_names[IONIC_FAULT_SITE_COUNT] = {
     [IONIC_FAULT_SITE_STATS_VALS] = "stats_vals",

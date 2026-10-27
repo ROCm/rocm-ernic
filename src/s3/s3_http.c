@@ -19,7 +19,7 @@
 #include <strings.h>
 
 #include "parse_int.h"
-#include "s3_http.h"
+#include "s3/s3_http.h"
 
 /*
  * tolower and toupper are called as (tolower)(c) and (toupper)(c)

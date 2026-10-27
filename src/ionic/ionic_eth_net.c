@@ -25,7 +25,7 @@
 #include <linux/if_tun.h>
 #include <sys/ioctl.h>
 
-#include "ionic_eth_net.h"
+#include "ionic/ionic_eth_net.h"
 
 _Static_assert(IONIC_ETH_NET_IFNAME_MAX == IFNAMSIZ - 1,
                "IONIC_ETH_NET_IFNAME_MAX must match the kernel's IFNAMSIZ");

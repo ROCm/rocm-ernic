@@ -21,7 +21,7 @@
 
 #include <stdint.h>
 
-#include "rdma_backend_defs.h"
+#include "pvrdma/rdma_backend_defs.h"
 
 struct ibv_srq_attr;
 

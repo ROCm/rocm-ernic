@@ -29,12 +29,12 @@ Upstream, these lived in QEMU's `hw/rdma/`, `hw/rdma/vmw/`, and
 ## Build
 
 - The server, `rocm-ernic`, builds the `.c` files listed in
-  `QEMU_SOURCES` in the top-level `CMakeLists.txt`. So does
+  `PVRDMA_SOURCES` in the top-level `CMakeLists.txt`. So does
   `ernic-test-ionic-harness`, and `test_rdma_res_tbl` builds
   `rdma_rm.c`, in `tests/CMakeLists.txt`.
-- The sources include their own headers, and `rdma_backend_ops.h` from
-  `src/rdma/`, by bare name, so any target that builds them needs
-  `src/qemu` and `src/rdma` on its include path.
+- Like the rest of `src/`, the sources include every header by its path
+  from `src/`, their own (`"pvrdma/rdma_rm.h"`) as well as others
+  (`"rdma/rdma_backend_ops.h"`).
 - The QEMU APIs the code calls are implemented in
   [`src/qemu-compat/`](../qemu-compat/).
 - `test_rdma_res_tbl` tests the resource manager through its public
@@ -149,8 +149,9 @@ labeled them vendored, exempt from the compiler warnings, clang-tidy,
 IWYU, codespell, and the coverage floor until they were cleaned up.
 Commented-out code, and then the code nothing used, were removed, and
 the warnings the compilers then reported were fixed. Once the compilers,
-clang-tidy, and codespell reported nothing in it, it moved here, with
-the exemptions dropped.
+clang-tidy, and codespell reported nothing in it, it moved to
+`src/qemu/`, with the exemptions dropped, and then here, named for what
+it is rather than where it came from.
 
 ### Why it matters
 

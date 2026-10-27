@@ -80,7 +80,8 @@ Per-tool targets: `analysis-clang-tidy`, `analysis-cppcheck`,
 Triage (`nix/analysis/triage/`) loads every tool's report, drops noise and
 out-of-scope paths, deduplicates, cross-references findings flagged by
 multiple tools, and ranks by priority. `src/net/`, `src/rdma/` and
-`src/qemu/` (the untrusted-input paths) are treated as security-sensitive.
+`src/pvrdma/` (the untrusted-input paths) are treated as
+security-sensitive.
 
 `analysis-semgrep` first runs `semgrep --test` on each rule fixture in
 `nix/analysis/semgrep-tests/`, where a `// ruleid:` comment marks a line

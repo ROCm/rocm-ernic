@@ -11,7 +11,7 @@
 
 #include <string.h>
 
-#include "p4_fmt.h"
+#include "p4/p4_fmt.h"
 
 #define F32_SIGN_MASK 0x80000000u
 #define F32_ABS_MASK  0x7FFFFFFFu

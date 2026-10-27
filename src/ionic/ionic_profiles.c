@@ -15,7 +15,7 @@
 #include <stddef.h>
 #include <string.h>
 
-#include "ionic_profile.h"
+#include "ionic/ionic_profile.h"
 
 /* profiles/compat.ini */
 static const char compat_ini[] =

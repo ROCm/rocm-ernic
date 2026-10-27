@@ -13,7 +13,7 @@
 
 #include <string.h>
 
-#include "p4_fp8.h"
+#include "p4/p4_fp8.h"
 
 #define FP8_SIGN_MASK 0x80u
 #define FP8_EXP_MASK  0x78u

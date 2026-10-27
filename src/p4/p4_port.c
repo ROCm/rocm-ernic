@@ -13,8 +13,8 @@
 
 #include "ionic/ionic_eth_emu.h"
 #include "ionic/ionic_eth_net.h"
-#include "p4_engine.h"
-#include "p4_port.h"
+#include "p4/p4_engine.h"
+#include "p4/p4_port.h"
 
 /*
  * The engine must accept anything the emulator can hand it: p4_port_frame()

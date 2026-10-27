@@ -28,15 +28,15 @@
  */
 #include "rocm_ernic_internal.h" // IWYU pragma: keep
 
-/* QEMU-derived headers, from src/qemu/ */
-#include "pvrdma.h"
-#include "rdma_backend.h"
-#include "rdma_backend_defs.h"
+/* QEMU-derived headers */
+#include "pvrdma/pvrdma.h"
+#include "pvrdma/rdma_backend.h"
+#include "pvrdma/rdma_backend_defs.h"
+#include "pvrdma/rdma_rm.h"
+#include "pvrdma/rdma_rm_defs.h"
+#include "pvrdma/rdma_utils.h"
+#include "pvrdma/vmw_pvrdma-abi.h"
 #include "rdma/rdma_backend_ops.h"
-#include "rdma_rm.h"
-#include "rdma_rm_defs.h"
-#include "rdma_utils.h"
-#include "vmw_pvrdma-abi.h"
 
 /*
  * Device Management (rocm_ernic_compat.h)

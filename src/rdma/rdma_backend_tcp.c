@@ -19,14 +19,14 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include "rdma_backend_ops.h"
-#include "rdma_backend_tcp_priv.h"
-#include "rdma_backend_defs.h"
-#include "rdma_utils.h"
+#include "rdma/rdma_backend_ops.h"
+#include "rdma/rdma_backend_tcp_priv.h"
 #include "ernic_limits.h"
 #include "ernic_mesh.h"
 #include "ernic_time.h"
 #include "parse_int.h"
+#include "pvrdma/rdma_backend_defs.h"
+#include "pvrdma/rdma_utils.h"
 #include "qemu/thread.h"
 #include "rocm-ernic-warnings.h"
 #include <errno.h>

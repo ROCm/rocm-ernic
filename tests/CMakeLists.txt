@@ -187,7 +187,6 @@ if(ERNIC_BUILD_P4)
     )
     target_include_directories(ernic-test-p4-engine PRIVATE
         ${PROJECT_SOURCE_DIR}/src
-        ${PROJECT_SOURCE_DIR}/src/p4
     )
     target_compile_definitions(ernic-test-p4-engine PRIVATE _GNU_SOURCE)
     target_link_libraries(ernic-test-p4-engine PRIVATE PkgConfig::JSONC)
@@ -203,7 +202,7 @@ if(ERNIC_BUILD_P4)
         ${PROJECT_SOURCE_DIR}/src/p4/p4_fp8.c
     )
     target_include_directories(ernic-test-p4-fp8 PRIVATE
-        ${PROJECT_SOURCE_DIR}/src/p4
+        ${PROJECT_SOURCE_DIR}/src
     )
     target_compile_definitions(ernic-test-p4-fp8 PRIVATE _GNU_SOURCE)
 
@@ -218,7 +217,7 @@ if(ERNIC_BUILD_P4)
         ${PROJECT_SOURCE_DIR}/src/p4/p4_fp8.c
     )
     target_include_directories(ernic-test-p4-fmt PRIVATE
-        ${PROJECT_SOURCE_DIR}/src/p4
+        ${PROJECT_SOURCE_DIR}/src
     )
     target_compile_definitions(ernic-test-p4-fmt PRIVATE _GNU_SOURCE)
 endif()
@@ -745,7 +744,6 @@ target_include_directories(test_tcp_mesh_topology PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
     ${PROJECT_SOURCE_DIR}/shared
-    ${PROJECT_SOURCE_DIR}/src/qemu
 )
 # Headers from outside the project are SYSTEM includes, matching the main
 # target, so the backend and the test are still warning-checked.
@@ -776,7 +774,6 @@ target_include_directories(test_tcp_gid_resolve PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
     ${PROJECT_SOURCE_DIR}/shared
-    ${PROJECT_SOURCE_DIR}/src/qemu
 )
 # Headers from outside the project are SYSTEM includes, matching the main
 # target, so the backend and the test are still warning-checked.
@@ -803,7 +800,6 @@ target_include_directories(ernic-test-tcp-config PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
     ${PROJECT_SOURCE_DIR}/shared
-    ${PROJECT_SOURCE_DIR}/src/qemu
 )
 # Headers from outside the project are SYSTEM includes, matching the main
 # target, so the backend and the test are still warning-checked.
@@ -831,7 +827,6 @@ target_include_directories(ernic-test-tcp-thread-stop PRIVATE
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
     ${PROJECT_SOURCE_DIR}/shared
-    ${PROJECT_SOURCE_DIR}/src/qemu
 )
 # Headers from outside the project are SYSTEM includes, matching the main
 # target, so the backend and the test are still warning-checked.
@@ -865,16 +860,14 @@ target_link_libraries(ernic-test-tcp-thread-stop PRIVATE
 # demand. It stubs the backend entry points rdma_rm.c calls, so no RDMA
 # subsystem link is needed.
 add_executable(test_rdma_res_tbl test_rdma_res_tbl.c
-    ${PROJECT_SOURCE_DIR}/src/qemu/rdma_rm.c
+    ${PROJECT_SOURCE_DIR}/src/pvrdma/rdma_rm.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
     ${PROJECT_SOURCE_DIR}/src/ernic_log.c
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
 )
 target_include_directories(test_rdma_res_tbl PRIVATE
     ${PROJECT_SOURCE_DIR}/src
-    ${PROJECT_SOURCE_DIR}/src/rdma
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
-    ${PROJECT_SOURCE_DIR}/src/qemu
 )
 # Headers from outside the project are SYSTEM includes, matching the main
 # target.
@@ -897,7 +890,6 @@ add_executable(test_qemu_stubs test_qemu_stubs.c
 )
 target_include_directories(test_qemu_stubs PRIVATE
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
-    ${PROJECT_SOURCE_DIR}/src/qemu
     ${PROJECT_SOURCE_DIR}/shared
 )
 target_include_directories(test_qemu_stubs SYSTEM PRIVATE
@@ -972,7 +964,7 @@ set(ERNIC_HARNESS_DEVICE_SOURCES
     ${S3_SOURCES}
     ${RDMA_BACKEND_SOURCES}
     ${QEMU_COMPAT_SOURCES}
-    ${QEMU_SOURCES}
+    ${PVRDMA_SOURCES}
 )
 if(ERNIC_BUILD_P4)
     list(APPEND ERNIC_HARNESS_DEVICE_SOURCES ${P4_SOURCES})
@@ -986,11 +978,8 @@ add_executable(ernic-test-ionic-harness
 )
 target_include_directories(ernic-test-ionic-harness PRIVATE
     ${PROJECT_SOURCE_DIR}/src
-    ${PROJECT_SOURCE_DIR}/src/rdma
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
-    ${PROJECT_SOURCE_DIR}/src/p4
     ${PROJECT_SOURCE_DIR}/shared
-    ${PROJECT_SOURCE_DIR}/src/qemu
 )
 # Headers from outside the project are SYSTEM includes, matching the main
 # target.
@@ -1029,11 +1018,8 @@ add_executable(ernic-test-gsi-mesh
 )
 target_include_directories(ernic-test-gsi-mesh PRIVATE
     ${PROJECT_SOURCE_DIR}/src
-    ${PROJECT_SOURCE_DIR}/src/rdma
     ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
-    ${PROJECT_SOURCE_DIR}/src/p4
     ${PROJECT_SOURCE_DIR}/shared
-    ${PROJECT_SOURCE_DIR}/src/qemu
 )
 # Headers from outside the project are SYSTEM includes, matching the main
 # target.

@@ -20,10 +20,10 @@
 #include <json-c/json_tokener.h>
 #include <json-c/json_types.h>
 
-#include "p4_engine.h"
-#include "p4_json.h"
-#include "p4_program.h"
-#include "p4_value.h"
+#include "p4/p4_engine.h"
+#include "p4/p4_json.h"
+#include "p4/p4_program.h"
+#include "p4/p4_value.h"
 #include "parse_int.h"
 
 /* The whole document is handed to json-c in one call. */

@@ -8,10 +8,10 @@
 #include <errno.h>
 #include <string.h>
 
-#include "p4_exec.h"
-#include "p4_table.h"
-#include "p4_value.h"
-#include "p4_program.h"
+#include "p4/p4_exec.h"
+#include "p4/p4_table.h"
+#include "p4/p4_value.h"
+#include "p4/p4_program.h"
 
 /*
  * The packet header vector: one contiguous byte range per header instance,

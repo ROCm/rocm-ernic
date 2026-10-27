@@ -484,11 +484,18 @@
   before 5d64ebf, unmapping all of a client's memory left a stale region
   lookup cache. The VM lanes' container images still carry 8039244, which
   has only the second fix.
-* **The QEMU-derived code moved from `third-party/qemu/` to `src/qemu/`**,
-  flattened, and `third-party/` is gone. It is no longer treated as
-  vendored: compiler warnings, `ERNIC_WERROR`, clang-tidy, IWYU, codespell
-  and the coverage floor all apply. Local branches touching it need their
-  paths updated.
+* **The QEMU-derived code moved from `third-party/qemu/` to
+  `src/pvrdma/`**, flattened, and `third-party/` is gone. It is no longer
+  treated as vendored: compiler warnings, `ERNIC_WERROR`, clang-tidy, IWYU,
+  codespell and the coverage floor all apply. Local branches touching it
+  need their paths updated.
+* **Headers in a subdirectory of `src/` are included by their path from
+  `src/`** (`"pvrdma/rdma_rm.h"`, `"rdma/rdma_backend_ops.h"`,
+  `"p4/p4_engine.h"`), from every file, including those in the same
+  directory. `src/pvrdma/`, `src/rdma/` and `src/p4/` are no longer on
+  any target's include path, so a local branch that includes one of their
+  headers by bare name from another directory won't build until it adds
+  the directory.
 * **rocm-xio is built against the ionic provider** (`-DGDA_IONIC=ON
   -DRDMA_CORE_BUILD=OFF`), with the `rdma-core/ionic-gda` patches applied
   to the guest's rdma-core, rather than the `rocm_ernic` GDA backend.
@@ -560,10 +567,10 @@
   default, unchecked mutex.
 * **For contributors:** the ionic device emulation, the NVMe-oF target
   and the S3 target moved from the top of `src/` into `src/ionic/`,
-  `src/nvmeof/` and `src/s3/`. File names are unchanged. Code outside a
-  module's directory includes its headers by path from `src/` (e.g.
-  `#include "ionic/ionic_datapath.h"`); files within the directory
-  include each other by bare name.
+  `src/nvmeof/` and `src/s3/`. File names are unchanged. Code includes a
+  module's headers by path from `src/` (e.g.
+  `#include "ionic/ionic_datapath.h"`), within the module's directory as
+  well as outside it.
 * **The guest is told the RDMA resource counts the device can hold.** It
   was told 32768 QPs, 65536 CQs (reported as `max_cq` 32768) and 131072
   memory regions, but the device could hold only 256 QPs, 256 CQs and 2048

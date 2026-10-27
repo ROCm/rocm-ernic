@@ -17,9 +17,9 @@
 #include "byteorder.h"
 #include "ernic_err.h"
 #include "net/net_headers.h"
-#include "s3_http.h"
-#include "s3_target.h"
-#include "s3_tcp.h"
+#include "s3/s3_http.h"
+#include "s3/s3_target.h"
+#include "s3/s3_tcp.h"
 
 #define S3_TCP_MSS_DEFAULT 1460u
 #define S3_TCP_MSS_FLOOR   536u

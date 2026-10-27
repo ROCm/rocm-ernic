@@ -25,7 +25,7 @@
 
 #include "rocm_ernic_compat.h"
 #ifdef ERNIC_HAVE_P4
-#include "p4_devcmd.h"
+#include "p4/p4_devcmd.h"
 #endif
 
 /* Opaque device state. */

@@ -10,7 +10,7 @@
 
 #include "byteorder.h"
 #include "parse_int.h"
-#include "s3_token.h"
+#include "s3/s3_token.h"
 
 static const char HEX[] = "0123456789abcdef";
 

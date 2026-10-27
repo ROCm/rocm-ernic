@@ -12,10 +12,10 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include "rdma_backend_ops.h"
-#include "rdma_backend_defs.h"
-#include <rdma_backend.h> /* declares rdma_backend_{init,fini}_with_ops */
-#include "rdma_utils.h"
+#include "rdma/rdma_backend_ops.h"
+#include "pvrdma/rdma_backend.h" /* declares rdma_backend_{init,fini}_with_ops */
+#include "pvrdma/rdma_backend_defs.h"
+#include "pvrdma/rdma_utils.h"
 #include <errno.h>
 #include <string.h>
 

@@ -31,11 +31,11 @@
 #include "ernic_limits.h"
 #include "ernic_rm.h"
 #include "ernic_stats.h"
-#include "ionic_adminq.h"
-#include "ionic_adminq_priv.h"
-#include "ionic_datapath.h"
-#include "ionic_fault.h"
-#include "ionic_status.h"
+#include "ionic/ionic_adminq.h"
+#include "ionic/ionic_adminq_priv.h"
+#include "ionic/ionic_datapath.h"
+#include "ionic/ionic_fault.h"
+#include "ionic/ionic_status.h"
 
 /* -------------------------------------------------------------------------
  * ionic_fw.h constants (keep in sync with pinned kernel ref)
