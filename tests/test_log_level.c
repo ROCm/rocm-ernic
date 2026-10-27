@@ -1,6 +1,7 @@
 /*
  *
- * Unit tests for the log level in error-report.c.
+ * Unit tests for the log level in ernic_log.c, and the reporters that
+ * print through it.
  *
  * The level is looked up from ERNIC_LOG_LEVEL on first use, so each case
  * runs in a new process that starts with it unresolved: this program,
@@ -17,8 +18,8 @@
  *
  * Before the children, this process checks what doesn't depend on the
  * first call: which strings parse to a level, each level's name, and that
- * each reporter prints at its own level and above and nothing below,
- * with its output captured from stdout and stderr.
+ * each reporter, ours and QEMU's, prints at its own level and above and
+ * nothing below, with its output captured from stdout and stderr.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -41,6 +42,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "ernic_log.h"
 #include "parse_int.h"
 #include "qemu/error-report.h"
 
@@ -456,6 +458,31 @@ static void report_startup(void)
     ernic_startup_report("%s", "the message");
 }
 
+static void log_error(void)
+{
+    ernic_log(ERNIC_LOG_ERROR, "%s", "the message");
+}
+
+static void log_warn(void)
+{
+    ernic_log(ERNIC_LOG_WARN, "%s", "the message");
+}
+
+static void log_info(void)
+{
+    ernic_log(ERNIC_LOG_INFO, "%s", "the message");
+}
+
+static void log_debug(void)
+{
+    ernic_log(ERNIC_LOG_DEBUG, "%s", "the message");
+}
+
+static void log_none(void)
+{
+    ernic_log(ERNIC_LOG_NONE, "%s", "the message");
+}
+
 /*
  * Runs report() with stdout and stderr both sent to a scratch file, and
  * puts what they got in buf. Returns false if the redirection failed.
@@ -501,6 +528,9 @@ static bool capture(void (*report)(void), char *buf, size_t len)
     return ok;
 }
 
+/* A reporter's lowest level for one that never prints. */
+#define NEVER (ERNIC_LOG_DEBUG + 1)
+
 /*
  * Each reporter prints at its own level and above, and nothing below it.
  * Returns 1 if a check failed, else 0.
@@ -510,7 +540,7 @@ static int check_reporters(void)
     static const struct {
         const char *name;
         void (*report)(void);
-        ErnicLogLevel level; /* the lowest level that prints it */
+        int level; /* the lowest level that prints it, or NEVER */
         const char *text;
     } reporters[] = {
         {"error_report", report_error, ERNIC_LOG_ERROR, "ERROR: the message\n"},
@@ -518,6 +548,13 @@ static int check_reporters(void)
         {"info_report", report_info, ERNIC_LOG_INFO, "INFO: the message\n"},
         {"ernic_startup_report", report_startup, ERNIC_LOG_WARN,
          "the message\n"},
+        {"ernic_log(error)", log_error, ERNIC_LOG_ERROR,
+         "ERROR: the message\n"},
+        {"ernic_log(warn)", log_warn, ERNIC_LOG_WARN, "WARN: the message\n"},
+        {"ernic_log(info)", log_info, ERNIC_LOG_INFO, "INFO: the message\n"},
+        {"ernic_log(debug)", log_debug, ERNIC_LOG_DEBUG,
+         "DEBUG: the message\n"},
+        {"ernic_log(none)", log_none, NEVER, ""},
     };
     int failed = 0;
 
@@ -525,7 +562,7 @@ static int check_reporters(void)
         ernic_log_set_level((ErnicLogLevel)lvl);
         for (size_t i = 0; i < sizeof(reporters) / sizeof(reporters[0]); i++) {
             const char *want =
-                lvl >= (int)reporters[i].level ? reporters[i].text : "";
+                lvl >= reporters[i].level ? reporters[i].text : "";
             char got[256];
 
             if (!capture(reporters[i].report, got, sizeof(got))) {

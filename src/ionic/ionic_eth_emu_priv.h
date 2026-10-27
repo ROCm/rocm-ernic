@@ -1,8 +1,9 @@
 /*
  * ionic_eth_emu_priv.h — ionic Ethernet emulator internals, for its unit tests
  *
- * The BAR0 register and dev_cmd layout, the device command and identity
- * constants, and the emulator state that ionic_eth_emu.c works with. Only
+ * The dev_info and dev_cmd register layout (where they sit in BAR0 is in
+ * ionic_bar.h), the device command and identity constants, and the emulator
+ * state that ionic_eth_emu.c works with. Only
  * ionic_eth_emu.c and its unit tests include this; the rest of the device
  * sees struct ionic_eth_emu only through the opaque declaration in
  * ionic_eth_emu.h.
@@ -20,13 +21,13 @@
 
 #include <vfio-user/libvfio-user.h>
 
+#include "ionic_bar.h"
 #include "ionic_emu_stats.h"
 #include "ionic_eth_emu.h"
 #include "ionic_eth_net.h"
 #include "ionic_profile.h"
 #include "qemu/thread.h"
 #include "rocm_ernic_compat.h"
-#include "rocm_ernic_internal.h"
 
 /* -------------------------------------------------------------------------
  * ionic_if.h constants we need without pulling in the full kernel header.
@@ -36,13 +37,6 @@
 #define IONIC_DEV_INFO_SIGNATURE 0x44455649u /* 'DEVI' */
 #define IONIC_DEV_INFO_VERSION   1
 #define IONIC_FW_STS_F_RUNNING   0x01u
-
-/* BAR0 layout offsets */
-#define IONIC_BAR0_DEV_INFO_REGS_OFFSET 0x0000u
-#define IONIC_BAR0_DEV_CMD_REGS_OFFSET  0x0800u
-#define IONIC_BAR0_INTR_STATUS_OFFSET   0x1000u
-#define IONIC_BAR0_INTR_CTRL_OFFSET     0x2000u
-#define IONIC_BAR0_SIZE                 0x8000u /* 32 KB */
 
 /* dev_info_regs field offsets (union ionic_dev_info_regs in ionic_if.h).
  * fw_version is at +0x0c, NOT +0x08 -- +0x08 is fw_heartbeat, which the
@@ -312,11 +306,6 @@
  * -------------------------------------------------------------------------
  */
 
-/* Size of the emulated BAR0 shadow buffer (32 KB).
- * This must equal the BAR0 size advertised to the guest in setup_bars(),
- * or the driver gets a window it cannot address. */
-#define BAR0_BUF_SIZE IONIC_BAR0_SIZE
-
 /* The dev_cmd data window ends exactly where intr_status begins; a
  * larger data area would silently corrupt the interrupt registers. */
 _Static_assert(IONIC_BAR0_DEV_CMD_REGS_OFFSET + DEVCMD_DATA_OFF +
@@ -368,7 +357,7 @@ _Static_assert(DEVCMD_COMP_OFF == DEVCMD_CMD_OFF + 64u,
  * the register window the driver maps. */
 _Static_assert(
     IONIC_BAR0_INTR_CTRL_OFFSET + IONIC_MSIX_MAX_VECTORS * INTR_REG_STRIDE <=
-        IONIC_BAR0_SIZE,
+        IONIC_BAR0_REGS_SIZE,
     "intr_ctrl for every vector must fit in the BAR0 register window");
 _Static_assert(IONIC_BAR0_INTR_STATUS_OFFSET + IONIC_MSIX_MAX_VECTORS / 8u <=
                    IONIC_BAR0_INTR_CTRL_OFFSET,
@@ -405,10 +394,10 @@ struct ionic_eth_emu {
     vfu_ctx_t *vfu_ctx;
     struct ernic_dma *dma; /* main loop thread only, like every DMA */
 
-    /* Shadow copy of BAR0 contents.  Reads are served from here;
-     * writes update it and, when the doorbell byte is written, trigger
-     * command processing. */
-    uint8_t bar0[BAR0_BUF_SIZE];
+    /* Shadow copy of BAR0's register window; the server serves the MSI-X
+     * table and PBA above it.  Reads are served from here; writes update it
+     * and, when the doorbell byte is written, trigger command processing. */
+    uint8_t bar0[IONIC_BAR0_REGS_SIZE];
 
     /* Shadow copy of BAR2 (doorbell pages). */
     uint8_t *bar2;

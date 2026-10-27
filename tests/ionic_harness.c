@@ -23,6 +23,7 @@
 #include "byteorder.h"
 #include "fake_vfu.h"
 #include "ionic/ionic_adminq.h"
+#include "ionic/ionic_bar.h"
 #include "ionic/ionic_datapath.h"
 #include "ionic/ionic_eth_emu.h"
 #include "ionic/ionic_rdma_devcmd.h"

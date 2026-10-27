@@ -46,11 +46,11 @@
 
 #include "byteorder.h"
 #include "ernic_err.h"
+#include "ernic_log.h"
 #include "nvmeof.h"
 #include "nvmeof_target.h"
 #include "nvmeof_target_priv.h"
 #include "parse_int.h"
-#include "qemu/error-report.h"
 
 #define NVMEOF_DEFAULT_NQN        "nvmet-test"
 #define NVMEOF_DEFAULT_SIZE       (64ull << 20)
@@ -945,8 +945,9 @@ static uint16_t do_property_set(const struct nvmeof_queue *q,
      * and complete the shutdown anyway.
      */
     if (shn != 0 && old_shn == 0 && ns_sync(t, 0, t->ns_len) != 0) {
-        error_report("nvmeof: writing back %s for a shutdown failed: %s",
-                     t->cfg.file, strerror(errno));
+        ernic_log(ERNIC_LOG_ERROR,
+                  "nvmeof: writing back %s for a shutdown failed: %s",
+                  t->cfg.file, strerror(errno));
     }
 
     if (t->ctrl.cc & NVME_CC_ENABLE) {

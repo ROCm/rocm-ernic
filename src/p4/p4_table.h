@@ -21,7 +21,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "p4_json.h"
 #include "p4_program.h"
 
 /*

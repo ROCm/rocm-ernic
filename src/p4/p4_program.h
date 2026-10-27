@@ -21,7 +21,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "p4_json.h" /* P4_MAX_NAME */
+/* Longest name accepted for any object in the program. */
+#define P4_MAX_NAME 63
 
 #define P4_MAX_HEADER_TYPES 64
 #define P4_MAX_FIELDS       64 /* per header type */

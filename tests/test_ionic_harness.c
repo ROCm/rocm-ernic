@@ -36,6 +36,7 @@
 
 #include "byteorder.h"
 #include "fake_vfu.h"
+#include "ionic/ionic_bar.h"
 #include "ionic/ionic_datapath.h"
 #include "ionic/ionic_eth_emu.h"
 /* For the emulator's admin queue pointer, which rdma-reset checks */
@@ -59,7 +60,11 @@
 #include "rdma_backend_defs.h"
 #include "rdma_rm.h"
 #include "rocm_ernic_compat.h"
-#include "rocm_ernic_internal.h"
+/*
+ * struct rocm_ernic_dev.  IWYU credits uses of it to the repeated
+ * rocm_ernic_dev_t typedef in rocm_ernic_compat.h, so it would drop this.
+ */
+#include "rocm_ernic_internal.h" // IWYU pragma: keep
 #include "s3/s3_token.h"
 
 static int failures;
