@@ -857,29 +857,55 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv419pvrdma_backend_namePKc">
 <span id="_CPPv319pvrdma_backend_namePKc"></span><span id="_CPPv219pvrdma_backend_namePKc"></span><span id="pvrdma_backend_name__cCP"></span><span class="target" id="rocm__ernic__compat_8h_1a47bda5de5274854a5e143802423757be"></span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">pvrdma_backend_name</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">backend_type_str</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv419pvrdma_backend_namePKc" title="Link to this definition">#</a><br /></dt>
-<dd><p>pvrdma_backend_name - Name the backend a –backend string selects &#64;backend_type_str: e.g. “loopback” or “nvmeof:size=1G” (may be NULL, meaning “none”)</p>
+<dd><p><p>pvrdma_backend_name - Name the backend a –backend string selects</p>
 <p>The name is everything before the first ‘:’, and must match exactly.</p>
+</p>
 <p>Returns: “none”, “loopback”, “tcp”, “nvmeof” or “s3”, or NULL if the name is none of them </p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>backend_type_str</strong> – e.g. “loopback” or “nvmeof:size=1G” (may be NULL, meaning “none”)</p>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv420pvrdma_device_createPK16rocm_ernic_dev_tPKc">
 <span id="_CPPv320pvrdma_device_createPK16rocm_ernic_dev_tPKc"></span><span id="_CPPv220pvrdma_device_createPK16rocm_ernic_dev_tPKc"></span><span id="pvrdma_device_create__rocm_ernic_dev_tCP.cCP"></span><span class="target" id="rocm__ernic__compat_8h_1a47e6f98deed9b450a20772116bc9d69f"></span><a class="reference internal" href="#_CPPv415pvrdma_handle_t" title="pvrdma_handle_t"><span class="n"><span class="pre">pvrdma_handle_t</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">pvrdma_device_create</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">const</span></span><span class="w"> </span><a class="reference internal" href="#_CPPv416rocm_ernic_dev_t" title="rocm_ernic_dev_t"><span class="n"><span class="pre">rocm_ernic_dev_t</span></span></a><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">dev</span></span>, <span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">backend_type_str</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv420pvrdma_device_createPK16rocm_ernic_dev_tPKc" title="Link to this definition">#</a><br /></dt>
-<dd><p>pvrdma_device_create - Create and initialize RDMA device &#64;dev: Parent rocm_ernic device structure &#64;backend_type_str: Backend and its config, as <a class="reference internal" href="#rocm__ernic__compat_8h_1a47bda5de5274854a5e143802423757be"><span class="std std-ref">pvrdma_backend_name()</span></a> takes</p>
-<p>Returns: Opaque handle to RDMA device, or NULL on failure, including an unknown backend </p>
+<dd><p><p>pvrdma_device_create - Create and initialize RDMA device</p>
+<p>Returns: Opaque handle to RDMA device, or NULL on failure, including an unknown backend</p>
+</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>dev</strong> – Parent rocm_ernic device structure </p></li>
+<li><p><strong>backend_type_str</strong> – Backend and its config, as <a class="reference internal" href="#rocm__ernic__compat_8h_1a47bda5de5274854a5e143802423757be"><span class="std std-ref">pvrdma_backend_name()</span></a> takes</p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv421pvrdma_device_destroy15pvrdma_handle_t">
 <span id="_CPPv321pvrdma_device_destroy15pvrdma_handle_t"></span><span id="_CPPv221pvrdma_device_destroy15pvrdma_handle_t"></span><span id="pvrdma_device_destroy__pvrdma_handle_t"></span><span class="target" id="rocm__ernic__compat_8h_1afcc74e40f39a2b5d02a3dee358321113"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">pvrdma_device_destroy</span></span></span><span class="sig-paren">(</span><a class="reference internal" href="#_CPPv415pvrdma_handle_t" title="pvrdma_handle_t"><span class="n"><span class="pre">pvrdma_handle_t</span></span></a><span class="w"> </span><span class="n sig-param"><span class="pre">handle</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv421pvrdma_device_destroy15pvrdma_handle_t" title="Link to this definition">#</a><br /></dt>
-<dd><p>pvrdma_device_destroy - Clean up and destroy PVRDMA device &#64;handle: Device handle from <a class="reference internal" href="#rocm__ernic__compat_8h_1a47e6f98deed9b450a20772116bc9d69f"><span class="std std-ref">pvrdma_device_create()</span></a></p>
+<dd><p>pvrdma_device_destroy - Clean up and destroy PVRDMA device </p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>handle</strong> – Device handle from <a class="reference internal" href="#rocm__ernic__compat_8h_1a47e6f98deed9b450a20772116bc9d69f"><span class="std std-ref">pvrdma_device_create()</span></a></p>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv421pvrdma_device_realize15pvrdma_handle_t">
 <span id="_CPPv321pvrdma_device_realize15pvrdma_handle_t"></span><span id="_CPPv221pvrdma_device_realize15pvrdma_handle_t"></span><span id="pvrdma_device_realize__pvrdma_handle_t"></span><span class="target" id="rocm__ernic__compat_8h_1a83e2631d84cd16cefb594402378481aa"></span><span class="kt"><span class="pre">int</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">pvrdma_device_realize</span></span></span><span class="sig-paren">(</span><a class="reference internal" href="#_CPPv415pvrdma_handle_t" title="pvrdma_handle_t"><span class="n"><span class="pre">pvrdma_handle_t</span></span></a><span class="w"> </span><span class="n sig-param"><span class="pre">handle</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv421pvrdma_device_realize15pvrdma_handle_t" title="Link to this definition">#</a><br /></dt>
-<dd><p>pvrdma_device_realize - Complete device initialization &#64;handle: Device handle</p>
-<p>Initializes RDMA backend, loads device attributes, etc. Returns: 0 on success, -errno on failure </p>
+<dd><p><p>pvrdma_device_realize - Complete device initialization</p>
+<p>Initializes RDMA backend, loads device attributes, etc. Returns: 0 on success, -errno on failure</p>
+</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>handle</strong> – Device handle</p>
+</dd>
+</dl>
 </dd></dl>
 
 </div>
@@ -891,13 +917,32 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv417ernic_rm_alloc_cq15pvrdma_handle_t8uint32_tP8uint32_t">
 <span id="_CPPv317ernic_rm_alloc_cq15pvrdma_handle_t8uint32_tP8uint32_t"></span><span id="_CPPv217ernic_rm_alloc_cq15pvrdma_handle_t8uint32_tP8uint32_t"></span><span id="ernic_rm_alloc_cq__pvrdma_handle_t.uint32_t.uint32_tP"></span><span class="target" id="ernic__rm_8h_1ae602f7e025bae04233cccb5564bb791b"></span><span class="kt"><span class="pre">int</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_rm_alloc_cq</span></span></span><span class="sig-paren">(</span><a class="reference internal" href="#_CPPv415pvrdma_handle_t" title="pvrdma_handle_t"><span class="n"><span class="pre">pvrdma_handle_t</span></span></a><span class="w"> </span><span class="n sig-param"><span class="pre">handle</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">cqe</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">cq_handle</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv417ernic_rm_alloc_cq15pvrdma_handle_t8uint32_tP8uint32_t" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_rm_alloc_cq - Allocate a completion queue via rdma_rm &#64;handle: pvrdma device handle (must be realized) &#64;cqe: number of CQ entries &#64;cq_handle: output: allocated CQ handle </p>
+<dd><p>ernic_rm_alloc_cq - Allocate a completion queue via rdma_rm </p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>handle</strong> – pvrdma device handle (must be realized) </p></li>
+<li><p><strong>cqe</strong> – number of CQ entries </p></li>
+<li><p><strong>cq_handle</strong> – output: allocated CQ handle </p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv417ernic_rm_alloc_mr15pvrdma_handle_t8uint32_t8uint32_tP8uint32_t">
 <span id="_CPPv317ernic_rm_alloc_mr15pvrdma_handle_t8uint32_t8uint32_tP8uint32_t"></span><span id="_CPPv217ernic_rm_alloc_mr15pvrdma_handle_t8uint32_t8uint32_tP8uint32_t"></span><span id="ernic_rm_alloc_mr__pvrdma_handle_t.uint32_t.uint32_t.uint32_tP"></span><span class="target" id="ernic__rm_8h_1a31cd6c3de98a5b92bbc68146a8660389"></span><span class="kt"><span class="pre">int</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_rm_alloc_mr</span></span></span><span class="sig-paren">(</span><a class="reference internal" href="#_CPPv415pvrdma_handle_t" title="pvrdma_handle_t"><span class="n"><span class="pre">pvrdma_handle_t</span></span></a><span class="w"> </span><span class="n sig-param"><span class="pre">handle</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">pd_handle</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">access_flags</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">mr_handle</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv417ernic_rm_alloc_mr15pvrdma_handle_t8uint32_t8uint32_tP8uint32_t" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_rm_alloc_mr - Allocate a memory region &#64;pd_handle: protection domain &#64;access_flags: MR access flags &#64;mr_handle: output handle </p>
+<dd><p>ernic_rm_alloc_mr - Allocate a memory region </p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>handle</strong> – pvrdma device handle </p></li>
+<li><p><strong>pd_handle</strong> – protection domain </p></li>
+<li><p><strong>access_flags</strong> – MR access flags </p></li>
+<li><p><strong>mr_handle</strong> – output handle </p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
@@ -909,13 +954,39 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv417ernic_rm_alloc_qp15pvrdma_handle_t8uint32_t7uint8_t8uint32_t8uint32_t8uint32_t8uint32_tP8uint32_t">
 <span id="_CPPv317ernic_rm_alloc_qp15pvrdma_handle_t8uint32_t7uint8_t8uint32_t8uint32_t8uint32_t8uint32_tP8uint32_t"></span><span id="_CPPv217ernic_rm_alloc_qp15pvrdma_handle_t8uint32_t7uint8_t8uint32_t8uint32_t8uint32_t8uint32_tP8uint32_t"></span><span id="ernic_rm_alloc_qp__pvrdma_handle_t.uint32_t.uint8_t.uint32_t.uint32_t.uint32_t.uint32_t.uint32_tP"></span><span class="target" id="ernic__rm_8h_1a1e885eae28147bd5ab5eefd626021b66"></span><span class="kt"><span class="pre">int</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_rm_alloc_qp</span></span></span><span class="sig-paren">(</span><a class="reference internal" href="#_CPPv415pvrdma_handle_t" title="pvrdma_handle_t"><span class="n"><span class="pre">pvrdma_handle_t</span></span></a><span class="w"> </span><span class="n sig-param"><span class="pre">handle</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">pd_handle</span></span>, <span class="n"><span class="pre">uint8_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">qp_type</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">max_send_wr</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">max_recv_wr</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">send_cq_handle</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">recv_cq_handle</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">qpn</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv417ernic_rm_alloc_qp15pvrdma_handle_t8uint32_t7uint8_t8uint32_t8uint32_t8uint32_t8uint32_tP8uint32_t" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_rm_alloc_qp - Allocate a queue pair &#64;handle: pvrdma device handle &#64;pd_handle: protection domain handle &#64;qp_type: QP type (enum ibv_qp_type, or ERNIC_IB_QPT_GSI) &#64;max_send_wr: max send work requests &#64;max_recv_wr: max recv work requests &#64;send_cq_handle: CQ handle for send completions &#64;recv_cq_handle: CQ handle for recv completions &#64;qpn: output: QP number assigned </p>
+<dd><p>ernic_rm_alloc_qp - Allocate a queue pair </p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>handle</strong> – pvrdma device handle </p></li>
+<li><p><strong>pd_handle</strong> – protection domain handle </p></li>
+<li><p><strong>qp_type</strong> – QP type (enum ibv_qp_type, or ERNIC_IB_QPT_GSI) </p></li>
+<li><p><strong>max_send_wr</strong> – max send work requests </p></li>
+<li><p><strong>max_recv_wr</strong> – max recv work requests </p></li>
+<li><p><strong>send_cq_handle</strong> – CQ handle for send completions </p></li>
+<li><p><strong>recv_cq_handle</strong> – CQ handle for recv completions </p></li>
+<li><p><strong>qpn</strong> – output: QP number assigned </p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv418ernic_rm_alloc_srq15pvrdma_handle_t8uint32_t8uint32_t8uint32_t8uint32_tP8uint32_t">
 <span id="_CPPv318ernic_rm_alloc_srq15pvrdma_handle_t8uint32_t8uint32_t8uint32_t8uint32_tP8uint32_t"></span><span id="_CPPv218ernic_rm_alloc_srq15pvrdma_handle_t8uint32_t8uint32_t8uint32_t8uint32_tP8uint32_t"></span><span id="ernic_rm_alloc_srq__pvrdma_handle_t.uint32_t.uint32_t.uint32_t.uint32_t.uint32_tP"></span><span class="target" id="ernic__rm_8h_1ac9b0e9458308d593d94e64382751306a"></span><span class="kt"><span class="pre">int</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_rm_alloc_srq</span></span></span><span class="sig-paren">(</span><a class="reference internal" href="#_CPPv415pvrdma_handle_t" title="pvrdma_handle_t"><span class="n"><span class="pre">pvrdma_handle_t</span></span></a><span class="w"> </span><span class="n sig-param"><span class="pre">handle</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">pd_handle</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">max_wr</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">max_sge</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">srq_limit</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">srq_handle</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv418ernic_rm_alloc_srq15pvrdma_handle_t8uint32_t8uint32_t8uint32_t8uint32_tP8uint32_t" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_rm_alloc_srq - Allocate a shared receive queue &#64;pd_handle: protection domain the SRQ belongs to &#64;srq_limit: low-watermark at which the device raises an SRQ_LIMIT event &#64;srq_handle: output: allocated SRQ handle </p>
+<dd><p>ernic_rm_alloc_srq - Allocate a shared receive queue </p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>handle</strong> – pvrdma device handle (must be realized) </p></li>
+<li><p><strong>pd_handle</strong> – protection domain the SRQ belongs to </p></li>
+<li><p><strong>max_wr</strong> – max receive work requests </p></li>
+<li><p><strong>max_sge</strong> – max scatter/gather entries per work request </p></li>
+<li><p><strong>srq_limit</strong> – low-watermark at which the device raises an SRQ_LIMIT event </p></li>
+<li><p><strong>srq_handle</strong> – output: allocated SRQ handle </p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
@@ -951,7 +1022,21 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv418ernic_rm_modify_qp15pvrdma_handle_t8uint32_t8uint32_t7uint8_t8uint32_t8uint32_t8uint32_tPK7uint8_t">
 <span id="_CPPv318ernic_rm_modify_qp15pvrdma_handle_t8uint32_t8uint32_t7uint8_t8uint32_t8uint32_t8uint32_tPK7uint8_t"></span><span id="_CPPv218ernic_rm_modify_qp15pvrdma_handle_t8uint32_t8uint32_t7uint8_t8uint32_t8uint32_t8uint32_tPK7uint8_t"></span><span id="ernic_rm_modify_qp__pvrdma_handle_t.uint32_t.uint32_t.uint8_t.uint32_t.uint32_t.uint32_t.uint8_tCP"></span><span class="target" id="ernic__rm_8h_1a643636885ed58fc8bd9c32013287d9af"></span><span class="kt"><span class="pre">int</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_rm_modify_qp</span></span></span><span class="sig-paren">(</span><a class="reference internal" href="#_CPPv415pvrdma_handle_t" title="pvrdma_handle_t"><span class="n"><span class="pre">pvrdma_handle_t</span></span></a><span class="w"> </span><span class="n sig-param"><span class="pre">handle</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">qpn</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">attr_mask</span></span>, <span class="n"><span class="pre">uint8_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">type_state</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">sq_psn</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">rq_psn</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">qkey_dest_qpn</span></span>, <span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="n"><span class="pre">uint8_t</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">dest_gid_16bytes</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv418ernic_rm_modify_qp15pvrdma_handle_t8uint32_t8uint32_t7uint8_t8uint32_t8uint32_t8uint32_tPK7uint8_t" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_rm_modify_qp - Modify a queue pair’s state &#64;qpn: QP number (handle) &#64;attr_mask: IB attr mask (big-endian u32 from WQE, we convert) &#64;type_state: ionic type_state byte: bits[3:0]=to_state, bits[7:4]=from_state &#64;sq_psn: SQ starting PSN &#64;rq_psn: RQ starting PSN &#64;qkey: Q-Key / destination QPN (combined le32) &#64;dest_gid: 16-byte destination GID (raw bytes, zeroed if not RC) </p>
+<dd><p>ernic_rm_modify_qp - Modify a queue pair’s state </p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>handle</strong> – pvrdma device handle </p></li>
+<li><p><strong>qpn</strong> – QP number (handle) </p></li>
+<li><p><strong>attr_mask</strong> – IB attr mask (big-endian u32 from WQE, we convert) </p></li>
+<li><p><strong>type_state</strong> – ionic type_state byte: bits[3:0]=to_state, bits[7:4]=from_state </p></li>
+<li><p><strong>sq_psn</strong> – SQ starting PSN </p></li>
+<li><p><strong>rq_psn</strong> – RQ starting PSN </p></li>
+<li><p><strong>qkey_dest_qpn</strong> – Q-Key / destination QPN (combined le32) </p></li>
+<li><p><strong>dest_gid_16bytes</strong> – 16-byte destination GID (raw bytes, zeroed if not RC) </p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
@@ -963,8 +1048,23 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv417ernic_rm_query_qp15pvrdma_handle_t8uint32_tP7uint8_tP7uint8_tP8uint32_tP8uint32_tP8uint32_tP8uint32_t">
 <span id="_CPPv317ernic_rm_query_qp15pvrdma_handle_t8uint32_tP7uint8_tP7uint8_tP8uint32_tP8uint32_tP8uint32_tP8uint32_t"></span><span id="_CPPv217ernic_rm_query_qp15pvrdma_handle_t8uint32_tP7uint8_tP7uint8_tP8uint32_tP8uint32_tP8uint32_tP8uint32_t"></span><span id="ernic_rm_query_qp__pvrdma_handle_t.uint32_t.uint8_tP.uint8_tP.uint32_tP.uint32_tP.uint32_tP.uint32_tP"></span><span class="target" id="ernic__rm_8h_1a8dbd29e7caf49f3edb09d9c9038dd852"></span><span class="kt"><span class="pre">int</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_rm_query_qp</span></span></span><span class="sig-paren">(</span><a class="reference internal" href="#_CPPv415pvrdma_handle_t" title="pvrdma_handle_t"><span class="n"><span class="pre">pvrdma_handle_t</span></span></a><span class="w"> </span><span class="n sig-param"><span class="pre">handle</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">qpn</span></span>, <span class="n"><span class="pre">uint8_t</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">state</span></span>, <span class="n"><span class="pre">uint8_t</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">path_mtu</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">dest_qpn</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">access_flags</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">rq_psn</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">sq_psn</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv417ernic_rm_query_qp15pvrdma_handle_t8uint32_tP7uint8_tP7uint8_tP8uint32_tP8uint32_tP8uint32_tP8uint32_t" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_rm_query_qp - Read a queue pair’s attributes back out of rdma_rm &#64;qpn: QP number (handle) &#64;state: ibv_qp_state the device holds for the QP &#64;path_mtu: ibv_mtu enum &#64;dest_qpn: peer QPN, 0 when the backend tracks none &#64;access_flags: ibv_access_flags bitmask &#64;rq_psn: receive PSN the guest last set, 0 if it never set one &#64;sq_psn: send PSN the guest last set, 0 if it never set one</p>
-<p>Any out parameter may be NULL. Returns 0 on success, -errno on failure. </p>
+<dd><p><p>ernic_rm_query_qp - Read a queue pair’s attributes back out of rdma_rm</p>
+<p>Any out parameter may be NULL. Returns 0 on success, -errno on failure.</p>
+</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>handle</strong> – pvrdma device handle </p></li>
+<li><p><strong>qpn</strong> – QP number (handle) </p></li>
+<li><p><strong>state</strong> – ibv_qp_state the device holds for the QP </p></li>
+<li><p><strong>path_mtu</strong> – ibv_mtu enum </p></li>
+<li><p><strong>dest_qpn</strong> – peer QPN, 0 when the backend tracks none </p></li>
+<li><p><strong>access_flags</strong> – ibv_access_flags bitmask </p></li>
+<li><p><strong>rq_psn</strong> – receive PSN the guest last set, 0 if it never set one </p></li>
+<li><p><strong>sq_psn</strong> – send PSN the guest last set, 0 if it never set one</p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
@@ -1190,13 +1290,26 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv423ernic_stats_bar0_accessP11ernic_statsb">
 <span id="_CPPv323ernic_stats_bar0_accessP11ernic_statsb"></span><span id="_CPPv223ernic_stats_bar0_accessP11ernic_statsb"></span><span id="ernic_stats_bar0_access__ernic_statsP.b"></span><span class="target" id="ernic__stats_8h_1a2ded9e327ce000c98e8bdabf181428be"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_stats_bar0_access</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ernic_stats</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">st</span></span>, <span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">is_write</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv423ernic_stats_bar0_accessP11ernic_statsb" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_stats_bar0_access - Count one BAR0 (registers and MSI-X) access &#64;st: Statistics &#64;is_write: true for a write, false for a read </p>
+<dd><p>ernic_stats_bar0_access - Count one BAR0 (registers and MSI-X) access </p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>st</strong> – Statistics </p></li>
+<li><p><strong>is_write</strong> – true for a write, false for a read </p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv419ernic_stats_commandP11ernic_stats">
 <span id="_CPPv319ernic_stats_commandP11ernic_stats"></span><span id="_CPPv219ernic_stats_commandP11ernic_stats"></span><span id="ernic_stats_command__ernic_statsP"></span><span class="target" id="ernic__stats_8h_1a59700da882f117693302f2b1e9bafc1a"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_stats_command</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ernic_stats</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">st</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv419ernic_stats_commandP11ernic_stats" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_stats_command - Count one executed admin queue command &#64;st: Statistics </p>
+<dd><p>ernic_stats_command - Count one executed admin queue command </p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>st</strong> – Statistics </p>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
@@ -1209,115 +1322,256 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv419ernic_stats_destroyP11ernic_stats">
 <span id="_CPPv319ernic_stats_destroyP11ernic_stats"></span><span id="_CPPv219ernic_stats_destroyP11ernic_stats"></span><span id="ernic_stats_destroy__ernic_statsP"></span><span class="target" id="ernic__stats_8h_1a3fa8717f59bec9f6de4f811eec399047"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_stats_destroy</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ernic_stats</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">st</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv419ernic_stats_destroyP11ernic_stats" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_stats_destroy - Free the counters &#64;st: from <a class="reference internal" href="#ernic__stats_8h_1a37525b25289e99878fc0d804c38d7053"><span class="std std-ref">ernic_stats_create()</span></a>, or NULL </p>
+<dd><p>ernic_stats_destroy - Free the counters </p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>st</strong> – from <a class="reference internal" href="#ernic__stats_8h_1a37525b25289e99878fc0d804c38d7053"><span class="std std-ref">ernic_stats_create()</span></a>, or NULL </p>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv424ernic_stats_dev_countersPK11ernic_statsP18ernic_dev_counters">
 <span id="_CPPv324ernic_stats_dev_countersPK11ernic_statsP18ernic_dev_counters"></span><span id="_CPPv224ernic_stats_dev_countersPK11ernic_statsP18ernic_dev_counters"></span><span id="ernic_stats_dev_counters__ernic_statsCP.ernic_dev_countersP"></span><span class="target" id="ernic__stats_8h_1a14d284cf0b5d35cde498d909ef4f7a7e"></span><span class="kt"><span class="pre">int</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_stats_dev_counters</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ernic_stats</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">st</span></span>, <span class="k"><span class="pre">struct</span></span><span class="w"> </span><a class="reference internal" href="#_CPPv418ernic_dev_counters" title="ernic_dev_counters"><span class="n"><span class="pre">ernic_dev_counters</span></span></a><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">out</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv424ernic_stats_dev_countersPK11ernic_statsP18ernic_dev_counters" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_stats_dev_counters - Snapshot the device totals &#64;st: Statistics &#64;out: Filled on success, zeroed on failure</p>
-<p>Returns: 0, or -EINVAL for a NULL &#64;st or &#64;out </p>
+<dd><p><p>ernic_stats_dev_counters - Snapshot the device totals</p>
+<p>Returns: 0, or -EINVAL for a NULL</p>
+<code class="docutils literal notranslate"><span class="pre">st</span></code> or <code class="docutils literal notranslate"><span class="pre">out</span></code> </p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>st</strong> – Statistics </p></li>
+<li><p><strong>out</strong> – Filled on success, zeroed on failure</p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv424ernic_stats_device_resetP11ernic_stats">
 <span id="_CPPv324ernic_stats_device_resetP11ernic_stats"></span><span id="_CPPv224ernic_stats_device_resetP11ernic_stats"></span><span id="ernic_stats_device_reset__ernic_statsP"></span><span class="target" id="ernic__stats_8h_1a2c5ff2581145f97c42b30d4aff160249"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_stats_device_reset</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ernic_stats</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">st</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv424ernic_stats_device_resetP11ernic_stats" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_stats_device_reset - Count one device reset or PCI FLR &#64;st: Statistics </p>
+<dd><p>ernic_stats_device_reset - Count one device reset or PCI FLR </p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>st</strong> – Statistics </p>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv427ernic_stats_doorbell_accessP11ernic_statsb">
 <span id="_CPPv327ernic_stats_doorbell_accessP11ernic_statsb"></span><span id="_CPPv227ernic_stats_doorbell_accessP11ernic_statsb"></span><span id="ernic_stats_doorbell_access__ernic_statsP.b"></span><span class="target" id="ernic__stats_8h_1ae718a2964041644a7419bdee9525ed61"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_stats_doorbell_access</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ernic_stats</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">st</span></span>, <span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">is_write</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv427ernic_stats_doorbell_accessP11ernic_statsb" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_stats_doorbell_access - Count one BAR2 (doorbell page) access &#64;st: Statistics &#64;is_write: true for a write, false for a read</p>
-<p>The stats file calls these uar_reads and uar_writes, after the PVRDMA UAR they used to count. </p>
+<dd><p><p>ernic_stats_doorbell_access - Count one BAR2 (doorbell page) access</p>
+<p>The stats file calls these uar_reads and uar_writes, after the PVRDMA UAR they used to count.</p>
+</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>st</strong> – Statistics </p></li>
+<li><p><strong>is_write</strong> – true for a write, false for a read</p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv421ernic_stats_eth_bytesP11ernic_stats8uint64_tb">
 <span id="_CPPv321ernic_stats_eth_bytesP11ernic_stats8uint64_tb"></span><span id="_CPPv221ernic_stats_eth_bytesP11ernic_stats8uint64_tb"></span><span id="ernic_stats_eth_bytes__ernic_statsP.uint64_t.b"></span><span class="target" id="ernic__stats_8h_1a206e42bb4508ea05a52fc9244df29fe3"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_stats_eth_bytes</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ernic_stats</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">st</span></span>, <span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">bytes</span></span>, <span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">is_tx</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv421ernic_stats_eth_bytesP11ernic_stats8uint64_tb" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_stats_eth_bytes - Count guest Ethernet bytes moved &#64;st: Statistics &#64;bytes: Frame length &#64;is_tx: true for guest-to-host, false for host-to-guest </p>
+<dd><p>ernic_stats_eth_bytes - Count guest Ethernet bytes moved </p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>st</strong> – Statistics </p></li>
+<li><p><strong>bytes</strong> – Frame length </p></li>
+<li><p><strong>is_tx</strong> – true for guest-to-host, false for host-to-guest </p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv415ernic_stats_irqP11ernic_stats">
 <span id="_CPPv315ernic_stats_irqP11ernic_stats"></span><span id="_CPPv215ernic_stats_irqP11ernic_stats"></span><span id="ernic_stats_irq__ernic_statsP"></span><span class="target" id="ernic__stats_8h_1af5ca4b667a1ca3b710619c9f56a3923c"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_stats_irq</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ernic_stats</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">st</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv415ernic_stats_irqP11ernic_stats" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_stats_irq - Count one delivered MSI-X interrupt &#64;st: Statistics </p>
+<dd><p>ernic_stats_irq - Count one delivered MSI-X interrupt </p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>st</strong> – Statistics </p>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv423ernic_stats_qp_countersPK11ernic_stats8uint32_tP17ernic_qp_counters">
 <span id="_CPPv323ernic_stats_qp_countersPK11ernic_stats8uint32_tP17ernic_qp_counters"></span><span id="_CPPv223ernic_stats_qp_countersPK11ernic_stats8uint32_tP17ernic_qp_counters"></span><span id="ernic_stats_qp_counters__ernic_statsCP.uint32_t.ernic_qp_countersP"></span><span class="target" id="ernic__stats_8h_1aba8e132a2f0fbf65074156e2dfeb930f"></span><span class="kt"><span class="pre">int</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_stats_qp_counters</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ernic_stats</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">st</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">qp_id</span></span>, <span class="k"><span class="pre">struct</span></span><span class="w"> </span><a class="reference internal" href="#_CPPv417ernic_qp_counters" title="ernic_qp_counters"><span class="n"><span class="pre">ernic_qp_counters</span></span></a><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">out</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv423ernic_stats_qp_countersPK11ernic_stats8uint32_tP17ernic_qp_counters" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_stats_qp_counters - Snapshot one QP’s counters &#64;st: Statistics &#64;qp_id: QP to read &#64;out: Filled on success, zeroed on failure</p>
+<dd><p><p>ernic_stats_qp_counters - Snapshot one QP’s counters</p>
 <p>A QP with nothing counted yet reads as all zeros.</p>
-<p>Returns: 0, or -EINVAL for a NULL &#64;st or &#64;out </p>
+</p>
+<p>Returns: 0, or -EINVAL for a NULL <code class="docutils literal notranslate"><span class="pre">st</span></code> or <code class="docutils literal notranslate"><span class="pre">out</span></code></p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>st</strong> – Statistics </p></li>
+<li><p><strong>qp_id</strong> – QP to read </p></li>
+<li><p><strong>out</strong> – Filled on success, zeroed on failure</p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv418ernic_stats_qp_cqeP11ernic_stats8uint32_t">
 <span id="_CPPv318ernic_stats_qp_cqeP11ernic_stats8uint32_t"></span><span id="_CPPv218ernic_stats_qp_cqeP11ernic_stats8uint32_t"></span><span id="ernic_stats_qp_cqe__ernic_statsP.uint32_t"></span><span class="target" id="ernic__stats_8h_1a3e2c75368c1d94e8e427eb746ab8c8cc"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_stats_qp_cqe</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ernic_stats</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">st</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">qp_id</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv418ernic_stats_qp_cqeP11ernic_stats8uint32_t" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_stats_qp_cqe - Count one completion posted for a QP &#64;st: Statistics &#64;qp_id: QP the completion belongs to </p>
+<dd><p>ernic_stats_qp_cqe - Count one completion posted for a QP </p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>st</strong> – Statistics </p></li>
+<li><p><strong>qp_id</strong> – QP the completion belongs to </p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv423ernic_stats_qp_doorbellP11ernic_stats8uint32_tb">
 <span id="_CPPv323ernic_stats_qp_doorbellP11ernic_stats8uint32_tb"></span><span id="_CPPv223ernic_stats_qp_doorbellP11ernic_stats8uint32_tb"></span><span id="ernic_stats_qp_doorbell__ernic_statsP.uint32_t.b"></span><span class="target" id="ernic__stats_8h_1a8913338cfffd59ede593b6dccf9f45fd"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_stats_qp_doorbell</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ernic_stats</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">st</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">qp_id</span></span>, <span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">is_send</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv423ernic_stats_qp_doorbellP11ernic_stats8uint32_tb" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_stats_qp_doorbell - Count one doorbell ring against a QP &#64;st: Statistics &#64;qp_id: QP the doorbell targets &#64;is_send: true for the send queue, false for the receive queue</p>
-<p>One per ring, however many WQEs the ring makes ready. </p>
+<dd><p><p>ernic_stats_qp_doorbell - Count one doorbell ring against a QP</p>
+<p>One per ring, however many WQEs the ring makes ready.</p>
+</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>st</strong> – Statistics </p></li>
+<li><p><strong>qp_id</strong> – QP the doorbell targets </p></li>
+<li><p><strong>is_send</strong> – true for the send queue, false for the receive queue</p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv421ernic_stats_qp_forgetP11ernic_stats8uint32_t">
 <span id="_CPPv321ernic_stats_qp_forgetP11ernic_stats8uint32_t"></span><span id="_CPPv221ernic_stats_qp_forgetP11ernic_stats8uint32_t"></span><span id="ernic_stats_qp_forget__ernic_statsP.uint32_t"></span><span class="target" id="ernic__stats_8h_1a0b020f8bb31f0251fd0f4298c0ad43e6"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_stats_qp_forget</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ernic_stats</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">st</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">qp_id</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv421ernic_stats_qp_forgetP11ernic_stats8uint32_t" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_stats_qp_forget - Drop a destroyed QP’s counters &#64;st: Statistics &#64;qp_id: QP being destroyed</p>
-<p>The stats file then stops listing it, and a new QP with the same id starts from zero. </p>
+<dd><p><p>ernic_stats_qp_forget - Drop a destroyed QP’s counters</p>
+<p>The stats file then stops listing it, and a new QP with the same id starts from zero.</p>
+</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>st</strong> – Statistics </p></li>
+<li><p><strong>qp_id</strong> – QP being destroyed</p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv418ernic_stats_qp_wqeP11ernic_stats8uint32_tj">
 <span id="_CPPv318ernic_stats_qp_wqeP11ernic_stats8uint32_tj"></span><span id="_CPPv218ernic_stats_qp_wqeP11ernic_stats8uint32_tj"></span><span id="ernic_stats_qp_wqe__ernic_statsP.uint32_t.unsigned-i"></span><span class="target" id="ernic__stats_8h_1a53b88b0e6df175ae807e59f6a8d0ca8d"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_stats_qp_wqe</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ernic_stats</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">st</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">qp_id</span></span>, <span class="kt"><span class="pre">unsigned</span></span><span class="w"> </span><span class="kt"><span class="pre">int</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">wr</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv418ernic_stats_qp_wqeP11ernic_stats8uint32_tj" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_stats_qp_wqe - Count one processed send WQE against a QP &#64;st: Statistics &#64;qp_id: QP that owns the WQE &#64;wr: enum <a class="reference internal" href="#ernic__stats_8h_1a35e1369f003ac8a7ec4ff2a5be95ec00"><span class="std std-ref">ernic_stat_wr</span></a>, or ERNIC_STAT_WR_COUNT or more to count the WQE in the QP’s total only </p>
+<dd><p>ernic_stats_qp_wqe - Count one processed send WQE against a QP </p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>st</strong> – Statistics </p></li>
+<li><p><strong>qp_id</strong> – QP that owns the WQE </p></li>
+<li><p><strong>wr</strong> – enum <a class="reference internal" href="#ernic__stats_8h_1a35e1369f003ac8a7ec4ff2a5be95ec00"><span class="std std-ref">ernic_stat_wr</span></a>, or ERNIC_STAT_WR_COUNT or more to count the WQE in the QP’s total only </p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv422ernic_stats_rdma_bytesP11ernic_stats8uint32_t8uint64_t13ernic_stat_op">
 <span id="_CPPv322ernic_stats_rdma_bytesP11ernic_stats8uint32_t8uint64_t13ernic_stat_op"></span><span id="_CPPv222ernic_stats_rdma_bytesP11ernic_stats8uint32_t8uint64_t13ernic_stat_op"></span><span id="ernic_stats_rdma_bytes__ernic_statsP.uint32_t.uint64_t.ernic_stat_op"></span><span class="target" id="ernic__stats_8h_1afc8f90d4b651d5b56f0f97f13d774fcf"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_stats_rdma_bytes</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ernic_stats</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">st</span></span>, <span class="n"><span class="pre">uint32_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">qp_id</span></span>, <span class="n"><span class="pre">uint64_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">bytes</span></span>, <span class="k"><span class="pre">enum</span></span><span class="w"> </span><a class="reference internal" href="#_CPPv413ernic_stat_op" title="ernic_stat_op"><span class="n"><span class="pre">ernic_stat_op</span></span></a><span class="w"> </span><span class="n sig-param"><span class="pre">stat_op</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv422ernic_stats_rdma_bytesP11ernic_stats8uint32_t8uint64_t13ernic_stat_op" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_stats_rdma_bytes - Count RDMA bytes against the device and a QP &#64;st: Statistics &#64;qp_id: QP to attribute the bytes to, or ERNIC_STAT_NO_QP for the totals only &#64;bytes: Number of bytes actually moved &#64;stat_op: Operation class </p>
+<dd><p>ernic_stats_rdma_bytes - Count RDMA bytes against the device and a QP </p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>st</strong> – Statistics </p></li>
+<li><p><strong>qp_id</strong> – QP to attribute the bytes to, or ERNIC_STAT_NO_QP for the totals only </p></li>
+<li><p><strong>bytes</strong> – Number of bytes actually moved </p></li>
+<li><p><strong>stat_op</strong> – Operation class </p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv426ernic_stats_set_connectionP11ernic_statsPKc">
 <span id="_CPPv326ernic_stats_set_connectionP11ernic_statsPKc"></span><span id="_CPPv226ernic_stats_set_connectionP11ernic_statsPKc"></span><span id="ernic_stats_set_connection__ernic_statsP.cCP"></span><span class="target" id="ernic__stats_8h_1a9782a44f03c0e270295001eeb6ee5800"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_stats_set_connection</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ernic_stats</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">st</span></span>, <span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">state</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv426ernic_stats_set_connectionP11ernic_statsPKc" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_stats_set_connection - Set the connection state the file shows &#64;st: Statistics &#64;state: e.g. “connected” or “disconnected (lost connection)”, or NULL to show “(not set)”. Not copied: pass a string literal.</p>
-<p>ernic-exporter reports any state starting “connected” as up. </p>
+<dd><p><p>ernic_stats_set_connection - Set the connection state the file shows</p>
+<p>ernic-exporter reports any state starting “connected” as up.</p>
+</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>st</strong> – Statistics </p></li>
+<li><p><strong>state</strong> – e.g. “connected” or “disconnected (lost connection)”, or NULL to show “(not set)”. Not copied: pass a string literal.</p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv420ernic_stats_set_fileP11ernic_statsPKc">
 <span id="_CPPv320ernic_stats_set_fileP11ernic_statsPKc"></span><span id="_CPPv220ernic_stats_set_fileP11ernic_statsPKc"></span><span id="ernic_stats_set_file__ernic_statsP.cCP"></span><span class="target" id="ernic__stats_8h_1ab93550fd61072dd03808ea2bf5031b37"></span><span class="kt"><span class="pre">int</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_stats_set_file</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ernic_stats</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">st</span></span>, <span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="kt"><span class="pre">char</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">path</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv420ernic_stats_set_fileP11ernic_statsPKc" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_stats_set_file - Set the path <a class="reference internal" href="#ernic__stats_8h_1a7be9e8986515b99689a18849a8fd10ec"><span class="std std-ref">ernic_stats_write()</span></a> writes to &#64;st: Statistics &#64;path: Path, copied, or NULL for no file</p>
-<p>Returns: 0, or -ENOMEM, leaving no file set </p>
+<dd><p>ernic_stats_set_file - Set the path <a class="reference internal" href="#ernic__stats_8h_1a7be9e8986515b99689a18849a8fd10ec"><span class="std std-ref">ernic_stats_write()</span></a><p>writes to</p>
+<p>Returns: 0, or -ENOMEM, leaving no file set</p>
+</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>st</strong> – Statistics </p></li>
+<li><p><strong>path</strong> – Path, copied, or NULL for no file</p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv424ernic_stats_set_instanceP11ernic_statsPK20ernic_stats_instance">
 <span id="_CPPv324ernic_stats_set_instanceP11ernic_statsPK20ernic_stats_instance"></span><span id="_CPPv224ernic_stats_set_instanceP11ernic_statsPK20ernic_stats_instance"></span><span id="ernic_stats_set_instance__ernic_statsP.ernic_stats_instanceCP"></span><span class="target" id="ernic__stats_8h_1a3b470ca1abc7031644daf893b198b1bb"></span><span class="kt"><span class="pre">int</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_stats_set_instance</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ernic_stats</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">st</span></span>, <span class="k"><span class="pre">const</span></span><span class="w"> </span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><a class="reference internal" href="#_CPPv420ernic_stats_instance" title="ernic_stats_instance"><span class="n"><span class="pre">ernic_stats_instance</span></span></a><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">inst</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv424ernic_stats_set_instanceP11ernic_statsPK20ernic_stats_instance" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_stats_set_instance - Set the stats file’s “Instance” block &#64;st: Statistics &#64;inst: What to show; its strings are copied</p>
-<p>Returns: 0, or -ENOMEM, leaving the block as it was </p>
+<dd><p><p>ernic_stats_set_instance - Set the stats file’s “Instance” block</p>
+<p>Returns: 0, or -ENOMEM, leaving the block as it was</p>
+</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>st</strong> – Statistics </p></li>
+<li><p><strong>inst</strong> – What to show; its strings are copied</p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv423ernic_stats_set_sectionP11ernic_stats22ernic_stats_section_fnPv">
 <span id="_CPPv323ernic_stats_set_sectionP11ernic_stats22ernic_stats_section_fnPv"></span><span id="_CPPv223ernic_stats_set_sectionP11ernic_stats22ernic_stats_section_fnPv"></span><span id="ernic_stats_set_section__ernic_statsP.ernic_stats_section_fn.voidP"></span><span class="target" id="ernic__stats_8h_1a539b2f11c9d57197c5f17379c377a92e"></span><span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_stats_set_section</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ernic_stats</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">st</span></span>, <a class="reference internal" href="#_CPPv422ernic_stats_section_fn" title="ernic_stats_section_fn"><span class="n"><span class="pre">ernic_stats_section_fn</span></span></a><span class="w"> </span><span class="n sig-param"><span class="pre">write_fn</span></span>, <span class="kt"><span class="pre">void</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">opaque</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv423ernic_stats_set_sectionP11ernic_stats22ernic_stats_section_fnPv" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_stats_set_section - Add a section to the stats file &#64;st: Statistics &#64;write_fn: Writes the section, after “Device Statistics”; NULL removes it &#64;opaque: Passed to &#64;write_fn</p>
-<p>There is one section, which the ionic device sets for its LIF and port counters. </p>
+<dd><p><p>ernic_stats_set_section - Add a section to the stats file</p>
+<p>There is one section, which the ionic device sets for its LIF and port counters.</p>
+</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>st</strong> – Statistics </p></li>
+<li><p><strong>write_fn</strong> – Writes the section, after “Device Statistics”; NULL removes it </p></li>
+<li><p><strong>opaque</strong> – Passed to <code class="docutils literal notranslate"><span class="pre">write_fn</span></code></p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="cpp function">
 <dt class="sig sig-object cpp" id="_CPPv417ernic_stats_writeP11ernic_stats">
 <span id="_CPPv317ernic_stats_writeP11ernic_stats"></span><span id="_CPPv217ernic_stats_writeP11ernic_stats"></span><span id="ernic_stats_write__ernic_statsP"></span><span class="target" id="ernic__stats_8h_1a7be9e8986515b99689a18849a8fd10ec"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ernic_stats_write</span></span></span><span class="sig-paren">(</span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ernic_stats</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="n sig-param"><span class="pre">st</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv417ernic_stats_writeP11ernic_stats" title="Link to this definition">#</a><br /></dt>
-<dd><p>ernic_stats_write - Replace the stats file with the counters as they are &#64;st: Statistics</p>
+<dd><p><p>ernic_stats_write - Replace the stats file with the counters as they are</p>
 <p>A reader sees the old file or the new one, whole, never part of one; a write that fails leaves the old file, and logs why.</p>
+</p>
 <p>Returns: true if a new file replaced the old one; false if it didn’t, or there is no file </p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>st</strong> – Statistics</p>
+</dd>
+</dl>
 </dd></dl>
 
 </div>

@@ -725,10 +725,14 @@ cmake<span class="w"> </span>--build<span class="w"> </span>build
 </div>
 <p>To run the tests under valgrind’s memcheck, as the Build and
 Test workflow’s GCC Debug leg does, use a GCC build without the
-sanitizers and with valgrind installed before configuring. Leave
-out the tests that start the server or run a script, which
+sanitizers, configured with valgrind installed and with
+<code class="docutils literal notranslate"><span class="pre">-DERNIC_TRIVIAL_AUTO_VAR_INIT=OFF</span></code>, since a build that fills
+uninitialized locals hides the reads of them memcheck reports.
+Leave out the tests that start the server or run a script, which
 valgrind would only check the script for:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">skip</span><span class="o">=</span><span class="s1">'pci-config-test|find-rdma-device-tuple|find-ipv4-gid-index'</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cmake<span class="w"> </span>-B<span class="w"> </span>build<span class="w"> </span>-G<span class="w"> </span>Ninja<span class="w"> </span>-DERNIC_TRIVIAL_AUTO_VAR_INIT<span class="o">=</span>OFF
+cmake<span class="w"> </span>--build<span class="w"> </span>build
+<span class="nv">skip</span><span class="o">=</span><span class="s1">'pci-config-test|find-rdma-device-tuple|find-ipv4-gid-index'</span>
 <span class="nv">skip</span><span class="o">+=</span><span class="s1">'|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci'</span>
 <span class="nv">skip</span><span class="o">+=</span><span class="s1">'|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli'</span>
 <span class="nv">skip</span><span class="o">+=</span><span class="s1">'|cmake-subproject|ernic-package-deb'</span>
