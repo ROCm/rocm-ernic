@@ -795,6 +795,11 @@ first – keeps the dependency set it had before.</p>
 parse state machine, the deparser’s emit order, the actions,
 and the pipelines with their tables and conditionals – and
 then runs: parse, walk the pipeline, deparse.</p>
+<p>A program’s headers, metadata included, share a 1024-byte
+packet header vector, each in whole bytes. The loader lays
+them out once, and refuses a program whose headers take more,
+saying how many bytes they need; loaded, it would drop every
+frame and fail every RDMA operation it governs.</p>
 <p>Where a frame goes is the program’s decision. It writes
 <code class="docutils literal notranslate"><span class="pre">standard_metadata.egress_spec</span></code>, and the engine turns that
 into an egress port, so a program without that field cannot

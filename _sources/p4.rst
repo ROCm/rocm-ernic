@@ -429,6 +429,12 @@ parse state machine, the deparser's emit order, the actions,
 and the pipelines with their tables and conditionals -- and
 then runs: parse, walk the pipeline, deparse.
 
+A program's headers, metadata included, share a 1024-byte
+packet header vector, each in whole bytes. The loader lays
+them out once, and refuses a program whose headers take more,
+saying how many bytes they need; loaded, it would drop every
+frame and fail every RDMA operation it governs.
+
 Where a frame goes is the program's decision. It writes
 ``standard_metadata.egress_spec``, and the engine turns that
 into an egress port, so a program without that field cannot
