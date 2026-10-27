@@ -64,7 +64,8 @@ let
 
   compileLines = lib.concatMapStringsSep "\n" (h: ''
     echo "Building fuzz_${h.name}..."
-    clang ${sanFlags} ${includeFlags} ${h.cflags or ""} -D_GNU_SOURCE \
+    clang ${sanFlags} ${includeFlags} ${h.cflags or ""} \
+      -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
       "nix/analysis/fuzz/fuzz_${h.name}.c" \
       ${lib.concatStringsSep " " (map (f: "\"${f}\"") h.extra)} \
       $GLIB \

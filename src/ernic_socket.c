@@ -5,6 +5,9 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+/* O_PATH and AT_EMPTY_PATH are Linux extensions */
+#define _GNU_SOURCE
+
 #include "ernic_socket.h"
 
 #include <errno.h>

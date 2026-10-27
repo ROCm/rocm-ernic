@@ -11,9 +11,6 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-/* nanosleep() is POSIX, not ISO C */
-#define _GNU_SOURCE
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

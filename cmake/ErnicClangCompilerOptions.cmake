@@ -59,7 +59,8 @@ endfunction()
 function(ernic_check_libc_disabled_macro_expansion outvar flags resultvar)
     cmake_push_check_state(RESET)
     set(CMAKE_REQUIRED_FLAGS "${flags} -Werror=disabled-macro-expansion")
-    set(CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
+    # The feature-test macros ernic_set_compiler_flags() gives every target
+    set(CMAKE_REQUIRED_DEFINITIONS -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE)
     check_c_source_compiles("
         #include <stdio.h>
         #include <string.h>

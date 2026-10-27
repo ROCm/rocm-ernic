@@ -964,11 +964,11 @@ jobs:
         T="$1"
         cd /tmp/guest-rdma-tests
         read -ra IBV_FLAGS <<< "$(pkg-config --cflags --libs libibverbs)"
-        # -D_GNU_SOURCE matches target_compile_definitions() in
-        # tests/CMakeLists.txt; without it test_data_transfer picks up an
-        # implicit declaration of usleep().
-        gcc -O2 -Wall -Wextra -D_GNU_SOURCE -o "$T" "$T.c" \
-          "${IBV_FLAGS[@]}"
+        # The feature-test macros match ernic_set_compiler_flags() in
+        # cmake/ErnicCompilerOptions.cmake; without _DEFAULT_SOURCE,
+        # test_data_transfer picks up an implicit declaration of usleep().
+        gcc -O2 -Wall -Wextra -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+          -o "$T" "$T.c" "${IBV_FLAGS[@]}"
         set +e
         timeout 120s "./$T"
         exit $?

@@ -26,10 +26,6 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-
 #include <arpa/inet.h>
 #include <inttypes.h>
 #include <netinet/in.h>

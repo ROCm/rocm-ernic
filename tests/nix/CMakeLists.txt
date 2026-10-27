@@ -47,7 +47,6 @@ function(ernic_add_fuzz_replay harness)
     target_include_directories(${target} SYSTEM PRIVATE
         ${GLIB2_INCLUDE_DIRS}
     )
-    target_compile_definitions(${target} PRIVATE _GNU_SOURCE)
     target_link_directories(${target} PRIVATE ${GLIB2_LIBRARY_DIRS})
     target_link_libraries(${target} PRIVATE ${GLIB2_LIBRARIES})
 

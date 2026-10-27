@@ -33,6 +33,9 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+/* accept4() is a GNU extension */
+#define _GNU_SOURCE
+
 #include <arpa/inet.h>
 #include <errno.h>
 #include <glib.h>
@@ -430,7 +433,7 @@ static void check_accepts(int listen_fd, const char *host, uint16_t port,
         CHECK(false, "couldn't connect to %s port %u", host, port);
         return;
     }
-    fd = accept(listen_fd, (struct sockaddr *)&peer, &peer_len);
+    fd = accept4(listen_fd, (struct sockaddr *)&peer, &peer_len, SOCK_CLOEXEC);
     if (fd < 0) {
         CHECK(false, "accepting from %s failed: %s", host, strerror(errno));
         close(client);

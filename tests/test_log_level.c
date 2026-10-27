@@ -29,6 +29,9 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+/* pipe2() is a GNU extension, and so is <unistd.h> declaring environ */
+#define _GNU_SOURCE
+
 #include <fcntl.h>
 #include <inttypes.h>
 #include <limits.h>
