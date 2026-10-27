@@ -247,7 +247,6 @@ struct ih_qp {
  */
 #define IH_PAGE_SIZE 4096u
 
-
 struct ih_mr {
     uint32_t lkey; /* the driver's full mrid: index | key << 24 */
     uint64_t va;

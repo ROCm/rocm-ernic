@@ -4129,7 +4129,6 @@ static void test_p4_rdma(void)
     teardown(T, &h);
 }
 
-
 /* ---- The guest's own way in to the engine ------------------------------ */
 
 /*
@@ -6086,7 +6085,6 @@ static void test_loopback_pair(void)
 }
 
 /* ---- Driver ------------------------------------------------------------ */
-
 
 static const struct {
     const char *name;

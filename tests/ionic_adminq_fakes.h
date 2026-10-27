@@ -124,7 +124,6 @@ void vfu_log(vfu_ctx_t *vfu_ctx, int level, const char *fmt, ...)
     (void)fmt;
 }
 
-
 /* ---- Stubs for the admin queue's other external symbols --------------- */
 
 #define QP_ID    7u

@@ -1716,8 +1716,7 @@ static int p4_resolve_next(struct p4_walk *w, const struct p4_pipeline *pl,
 
 /* One table's key, actions and size. The next pointers come later. */
 static int p4_walk_table(struct p4_walk *w, const struct json_object *t,
-                         const struct p4_pipeline *pl, struct p4_table *dst,
-                         uint32_t *total_entries)
+                         struct p4_table *dst, uint32_t *total_entries)
 {
     struct json_object *key, *acts, *v;
     char mt[P4_MAX_NAME + 1];
@@ -1963,7 +1962,6 @@ static int p4_walk_table(struct p4_walk *w, const struct json_object *t,
         dst->ndefault_data = (uint16_t)ndata;
     }
 
-    (void)pl;
     return 0;
 }
 
@@ -2180,7 +2178,7 @@ static int p4_walk_pipeline(struct p4_walk *w, const struct json_object *p,
                            "pipeline '%s' table %zu is not an "
                            "object",
                            pl->name, i);
-        rc = p4_walk_table(w, t, pl, &pl->tables[i], &total_entries);
+        rc = p4_walk_table(w, t, &pl->tables[i], &total_entries);
         if (rc)
             return rc;
         pl->nodes[pl->nnodes].kind = P4_NODE_TABLE;

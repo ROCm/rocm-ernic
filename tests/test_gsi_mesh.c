@@ -67,7 +67,6 @@
 /* The Q_Key ib_mad uses for GSI; the device checks it on a datagram. */
 #define GM_QKEY 0x80010000u
 
-
 static int failures;
 
 static bool gm_check(bool cond, const char *fmt, ...)
@@ -112,7 +111,6 @@ static void gm_pump(struct ih *a, struct ih *b, unsigned rounds)
         nanosleep(&ts, NULL);
     }
 }
-
 
 /*
  * One device's GSI plumbing: a CQ, QP1 and an MR big enough for a MAD out

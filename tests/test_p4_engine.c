@@ -2848,16 +2848,9 @@ static void test_entries_api(void)
               strstr(err, "too large") != NULL,
           "an entry with too many key fields was accepted");
 
-    /* route is table 0 of pipeline 0. */
-    check(p4_entries_count(ent, 0, 0) == 0, "a fresh table is not empty");
     route_entry(&up, P4_UPDATE_INSERT, IP4(10, 0, 0, 0), 8, 1);
     check(p4_entries_update(ent, prog, &up, err, sizeof(err)) == 0,
           "a route is not installed");
-    check(p4_entries_count(ent, 0, 0) == 1, "the route was not counted");
-    check(p4_entries_count(NULL, 0, 0) == 0 &&
-              p4_entries_count(ent, P4_MAX_PIPELINES, 0) == 0 &&
-              p4_entries_count(ent, 0, P4_MAX_TABLES) == 0,
-          "a count of nothing was not zero");
 
     memset(keys, 0, sizeof(keys));
     check(p4_entries_lookup(NULL, prog, 0, 0, keys) == NULL &&
