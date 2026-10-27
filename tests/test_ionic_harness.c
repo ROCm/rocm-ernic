@@ -5108,7 +5108,8 @@ static void test_p4_cvt_then_map(void)
           "the two-extern program did not load");
     ionic_datapath_set_p4_engine(h.dp, eng);
 
-    memset(src, 0x3C, sizeof(src)); /* fp16 1.0, low byte first */
+    /* Every element fp16 1.0, 0x3C00, low byte first. */
+    memset(src, 0, sizeof(src));
     for (uint32_t i = 1; i < P4C_N_IN; i += 2)
         src[i] = 0x3Cu;
     check(T, ih_mr_write(&h, &mra, FP8R_VA_A, src, sizeof(src)),

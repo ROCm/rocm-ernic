@@ -205,7 +205,12 @@ static int run_parser(const struct p4_program *prog, struct p4_phv *phv,
                 matched = true;
             }
         }
-        /* No arm matched and no default: bmv2 rejects the packet. */
+        /*
+         * No arm matched and no default.  P4 calls that error.NoMatch and
+         * rejects; bmv2 has no reject state and would end the parse as if
+         * it had accepted.  Here it is a parse error, and the frame is
+         * dropped.
+         */
         if (!matched)
             return -EBADMSG;
         state = next;
@@ -251,11 +256,11 @@ static void operand_value(const struct p4_program *prog,
  * Run one action's primitives.
  *
  * Returns 0, or a negative errno when a primitive could not be carried
- * out.  Nothing that runs here can fail today -- every supported
- * primitive is total -- but an extern will be able to: it reaches outside
- * the pipeline, and a failure there has to reach the caller rather than
- * leaving the operation silently not done while the work request that
- * asked for it completes successfully.
+ * out.  The built-in primitives are total; an extern call is not.  It
+ * reaches outside the pipeline, can decline or fail there, and fails
+ * outright on the frame path, which has no regions to give it.  Its error
+ * has to reach the caller rather than leaving the operation silently not
+ * done while the work request that asked for it completes successfully.
  */
 static int run_action(const struct p4_program *prog, struct p4_phv *phv,
                       const struct p4_extern_ops *ops,

@@ -1,12 +1,12 @@
 /*
  * p4_engine.c — match-action pipeline execution
  *
- * Phase 1 of the engine: the façade, the port model, the frame bounds and
- * the statistics are real; the pipeline itself is not loaded yet, so every
- * frame takes the no-program path and is forwarded unchanged to the other
- * port.  That is deliberately byte-for-byte what the emulator did before
- * this module existed, so wiring the engine in cannot change behaviour until
- * a program is actually loaded.
+ * The façade over the loader, the table store and the executor: the port
+ * model, the frame bounds, the statistics, chunked program loading, and
+ * the one entry point for table updates.  With no program loaded, every
+ * frame is forwarded unchanged to the other port, byte-for-byte what the
+ * emulator does without the engine, so turning the engine on changes
+ * nothing until a program is loaded.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later

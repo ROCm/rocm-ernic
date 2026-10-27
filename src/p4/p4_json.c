@@ -1780,7 +1780,8 @@ static int p4_walk_table(struct p4_walk *w, const struct json_object *t,
      * The mere presence of "entries" makes a table immutable in bmv2 and
      * makes its size the number of entries given, so an empty array is a
      * permanently empty table rather than a harmless default. Refuse it
-     * either way: there is no control plane to populate one yet.
+     * either way: const entries are not implemented, and an empty list
+     * would be a table no control plane could ever fill.
      */
     if (json_object_object_get_ex(t, "entries", &v) &&
         !json_object_is_type(v, json_type_null))
@@ -1906,9 +1907,10 @@ static int p4_walk_table(struct p4_walk *w, const struct json_object *t,
     dst->default_action = P4_IDX_NONE;
 
     /*
-     * default_entry is what a table does on a miss. Without it, and
-     * without a control plane to install entries, a table does nothing at
-     * all, so the program would parse and deparse and decide nothing.
+     * default_entry is what a table does on a miss, which is every
+     * lookup until a control plane installs an entry. Without it, such a
+     * table does nothing at all, so the program would parse and deparse
+     * and decide nothing.
      */
     if (p4_get_obj(t, "default_entry", &v)) {
         struct json_object *data;
@@ -2429,10 +2431,7 @@ int p4_json_parse(const void *buf, size_t len, struct p4_program **out,
     if (rc)
         goto out;
 
-    /*
-     * The program is loaded.  Executing it is a separate matter: nothing
-     * runs a pipeline yet, so a loaded program still forwards nothing.
-     */
+    /* The program is loaded.  Running it is p4_exec.c's business. */
     rc = 0;
 
 out:

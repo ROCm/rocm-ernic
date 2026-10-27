@@ -175,7 +175,8 @@ target_include_directories(ernic-test-byteorder PRIVATE
 )
 
 # P4 engine test. The engine is frames-in/frames-out, so this links the
-# real translation unit and nothing else -- no device, no guest memory.
+# engine's own translation units and nothing else -- no device, no guest
+# memory.
 if(ERNIC_BUILD_P4)
     add_executable(ernic-test-p4-engine
         test_p4_engine.c

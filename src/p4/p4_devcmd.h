@@ -1,11 +1,10 @@
 /*
  * p4_devcmd.h — the guest's way in to the P4 engine
  *
- * Until now a P4 program could only be loaded by the operator, on the
- * server's command line, and a table entry could not be installed by
- * anyone at all: p4_engine_update() had no caller outside the unit tests.
- * This is the command surface that changes that, so a driver in the guest
- * can push a program down and program its tables.
+ * The command surface through which a driver in the guest pushes a P4
+ * program down, programs its tables, and reads the engine's counters.  The
+ * operator can load a program on the server's command line; this is the
+ * only way to install a table entry.
  *
  * Shaped like pds_fwctl, not wire-identical to it.  Upstream pds_fwctl
  * (Documentation/userspace-api/fwctl/pds_fwctl.rst) binds to a
@@ -374,9 +373,8 @@ _Static_assert(sizeof(struct p4_rpc_entry_update) == 140,
 /*
  * P4_EP_STATS / P4_OP_STATS_READ response.
  *
- * The engine's counters have had exactly one way out of the process until
- * now -- a line printed at shutdown -- which a guest cannot see and a
- * running test cannot read.
+ * The engine's counters as a guest, or a running test, can read them.  The
+ * only other way out of the process is a line printed at shutdown.
  */
 /*
  * Mirrors struct p4_stats exactly, and deliberately adds nothing: the

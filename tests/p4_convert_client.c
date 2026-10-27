@@ -397,7 +397,7 @@ static void bench(struct ctx *c, FILE *csv, enum p4_fmt src, enum p4_fmt dst,
     }
     fill_pattern(c->src, in_len, 1);
 
-    /* One pass to take the first-touch costs out of the measurement. */
+    /* A few passes to take the first-touch costs out of the measurement. */
     for (unsigned i = 0; i < 8; i++) {
         enum ibv_wc_status st;
 
@@ -659,7 +659,9 @@ int main(int argc, char **argv)
     case_convert(&c, P4_FMT_FP4_E2M1, P4_FMT_FP32, 2048); /* widen, 1:8 */
     case_convert(&c, P4_FMT_FP8_E4M3, P4_FMT_BF16, 2048); /* widen */
     case_convert(&c, P4_FMT_FP8_E4M3, P4_FMT_FP8_E5M2, 2048); /* same width */
-    /* An odd number of 4-bit elements is half a byte at one end. */
+    /* One element, the smallest conversion there is.  An odd number of
+     * 4-bit elements cannot be asked for: it ends half way through a
+     * byte, and the device refuses it as malformed. */
     case_convert(&c, P4_FMT_FP16, P4_FMT_FP8_E4M3, 1);
 
     if (g_fail == 0 && csv_path) {

@@ -229,10 +229,11 @@ Rounding is to nearest with ties to even throughout. The
 generic codec is held to ``p4_fp8.c`` for E4M3 -- all 256
 decodings and a four-million-float encode sweep must agree
 exactly -- which is how it inherits that file's own
-validation against ``ml_dtypes``; fp16 is checked against
-numpy for all 65536 encodings in both directions, and every
-encoding of every format must survive a decode and re-encode
-unchanged unless it is a NaN.
+validation against ``ml_dtypes``. Every encoding of every
+format must survive a decode and re-encode unchanged unless it
+is a NaN. fp16 was also checked against numpy when the codec
+was written -- all 65536 decodings and 2.1 million encodes
+agreed exactly -- but no test repeats that comparison.
 
 ``tests/data/p4/fp8_convert.p4`` is the worked example.
 
@@ -518,8 +519,8 @@ is refused as a signed field anyway, and compiles an unsigned
 ``ttl - 1`` to ``(ttl + 0xff) & 0xff``. Running ``-0x1`` as
 ``0x1`` would make the TTL go up, and what a negative value
 means depends on the width it is stored into, which an extern
-argument does not have. ``loopback.json`` has both empty and
-gets as far as the walker does.
+argument does not have. ``loopback.json`` has both empty, and
+loads.
 
 Every document is untrusted, so there is no clamping and no
 truncation anywhere in the loader: an oversized array, a name
@@ -543,10 +544,11 @@ device. Three things line up by construction:
 
 - **bmv2 JSON and p4info as the program artifacts**, so any P4
   program ``p4c`` can compile is loadable.
-- **P4Runtime semantics on the update path** -- entities,
-  ``INSERT``/``MODIFY``/``DELETE``, and role plus election-id
-  arbitration -- so the network-facing control API is the one the
-  ecosystem already speaks.
+- **P4Runtime semantics on the update path** -- table entries,
+  ``INSERT``/``MODIFY``/``DELETE``, and P4Runtime's match rules
+  -- so a network-facing control API can be the one the
+  ecosystem already speaks. Arbitration is not modelled: the
+  update record carries no role and no election id.
 - **The** `DASH <https://github.com/sonic-net/DASH>`_ **pipeline as
   the target program.** ``dash-pipeline/bmv2/dash_pipeline.p4``
   models the DASH overlay dataplane and is the closest open
@@ -619,8 +621,10 @@ Three tiers, none of which needs a VM, RDMA hardware or root.
 
 ``p4-engine-unit`` (``tests/test_p4_engine.c``)
    The engine as a function: the port model, the input validation,
-   the frame bounds and the statistics. Links the engine's
-   translation unit and nothing else. The loader is held to
+   the frame bounds and the statistics. Links the engine's own
+   translation units -- ``p4_engine.c``, ``p4_exec.c``,
+   ``p4_json.c`` and ``p4_table.c`` -- and none of the device's.
+   The loader is held to
    ``tests/data/p4/reject_cases.json``, each case of which must be
    refused with the errno and the reason it names, and
    ``tests/data/p4/features.json`` runs frames through a parser
