@@ -529,6 +529,21 @@ number, a duplicate name or id, a literal wider than the field
 it is assigned to, and a reference to something that does not
 exist are each a rejection.
 
+So is a document that would cost too much to parse. A program
+may be up to 4 MiB, but json-c spends far more heap on a
+value than the value takes as text -- about 790 bytes for
+``{}`` -- so 4 MiB of empty objects would take a gigabyte,
+allocated on the thread that also services the vfio-user poll
+loop. Before json-c sees a document, the loader weighs the
+values in it, an object as 8, an array as 2 and anything else,
+object keys included, as 1, and refuses one weighing more than
+524288 (``P4_JSON_MAX_COST``). That holds the parse to about
+50 MiB and tens of milliseconds. The ``p4c`` artifacts in
+``tests/data/p4/`` weigh a unit for every 8 to 13 bytes as
+``p4c`` indents them, or 3.5 to 5 bytes minified, so the
+budget admits one of about 4 MiB as ``p4c`` writes it, or at
+least 1.75 MiB minified.
+
 A parser ``select`` on several fields gives each field whole
 bytes of the key, right-aligned in them, as bmv2 builds it and
 as ``p4c`` writes the values it is compared with: selecting on a
