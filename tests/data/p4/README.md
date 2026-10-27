@@ -215,6 +215,21 @@ declines it and the pipeline stops at the call; the drop was already
 made, so `ionic_datapath.c` completes the write without transferring
 rather than dispatching what the program denied.
 
+## fp8_cvt_then_map.json
+
+**Compiled, not hand written**, from `src/fp8_cvt_then_map.p4` with the
+same command. Its action calls `fp8.cvt()`, then `fp8.map()`, then
+`mark_to_drop()`.
+
+It exists to be refused. The conversion writes the destination; `map()`
+then declines, because a conversion's work request has one gather entry
+and a reduction needs two, and the pipeline stops before the drop. Letting
+the operation through at that point would dispatch the ordinary RDMA write
+over the converted result and report success, so `ionic_datapath.c` fails
+it instead: once an extern has written the destination, nothing may
+transfer on top of it. `ionic-harness-p4-cvt-map` checks both that the
+operation fails and that the raw source did not land in the destination.
+
 ## skeleton.json
 
 Hand written: the smallest complete program the loader accepts, with one

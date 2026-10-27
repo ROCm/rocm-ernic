@@ -214,7 +214,9 @@ set(NVMEOF_SOURCES
 )
 
 # P4-programmable match-action stage between the guest and the host network.
-# Off by default until the control plane lands; see docs/p4.rst.
+# Off by default because it takes a direct dependency on json-c, which a
+# superproject building rocm-ernic should not have to satisfy unasked; see
+# docs/p4.rst.
 option(ERNIC_BUILD_P4
   "Build the P4 match-action engine"
   OFF)

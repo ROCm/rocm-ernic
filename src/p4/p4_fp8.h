@@ -92,11 +92,18 @@ bool p4_fp8_map(enum p4_fp8_op op, const uint8_t *a, const uint8_t *b, size_t n,
 /*
  * Reduce two equal-length fp8 buffers to one fp8 value.
  *
- * @a and @b are @n bytes each, every byte one E4M3 value.  Returns the
- * result, or P4_FP8_NAN if any input is NaN, which is what makes a bad
- * operand visible to the caller rather than silently absorbed.  @n of 0
- * yields the operation's identity: zero for ADD and MUL, and the smallest
- * representable value for MAX.
+ * @a and @b are @n bytes each, every byte one E4M3 value.  What the
+ * result is depends on @op, and for MUL it is not a product of every
+ * element but a dot product:
+ *
+ *     ADD   sum of a[i] + b[i]     every element of both buffers summed
+ *     MUL   sum of a[i] * b[i]     the dot product of @a and @b
+ *     MAX   max of a[i] and b[i]   the largest element of either
+ *
+ * Writes the result to @out, or P4_FP8_NAN if any input is NaN, which is
+ * what makes a bad operand visible to the caller rather than silently
+ * absorbed.  @n of 0 yields the sum's identity, zero, for ADD and MUL, and
+ * the most negative finite value, -448, for MAX.
  *
  * Returns false and leaves @out untouched on a bad argument.
  */
