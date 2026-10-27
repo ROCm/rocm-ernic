@@ -344,7 +344,10 @@ jobs:
       # valgrind would only check bash, CMake, or the program that starts
       # the server. The next step runs the server under valgrind instead.
       # Valgrind writes its reports to a log for each test, not to ctest's
-      # output, so the logs of the tests with a report are printed here.
+      # output, so the logs of the tests with a report are printed here. A
+      # log with no summary at all is from a test that was killed before it
+      # finished, usually by its ctest timeout, which isn't a valgrind error;
+      # it says so rather than send someone looking for a memory bug.
       - name: Test with valgrind
         if: matrix.valgrind == 'on'
         run: |
@@ -356,10 +359,18 @@ jobs:
             || status=$?
           shopt -s nullglob
           for log in build/Testing/Temporary/MemoryChecker.*.log; do
-            if ! grep -q 'ERROR SUMMARY: 0 errors' "${log}"; then
-              echo "::error::valgrind reported errors in ${log}"
-              cat "${log}"
+            if grep -q 'ERROR SUMMARY: 0 errors' "${log}"; then
+              continue
             fi
+            # MemoryChecker.<n>.log is test #<n> in ctest's output.
+            n="${log##*/MemoryChecker.}"
+            n="${n%.log}"
+            if grep -q 'ERROR SUMMARY:' "${log}"; then
+              echo "::error::valgrind reported errors in test #${n} (${log})"
+            else
+              echo "::error::test #${n} was killed before valgrind wrote a summary, not a valgrind error; see ctest's output above for a timeout (${log})"
+            fi
+            cat "${log}"
           done
           exit "${status}"
 
@@ -401,11 +412,16 @@ jobs:
           found=0
           for log in "${logs}"/*.log; do
             found=1
-            if ! grep -q 'ERROR SUMMARY: 0 errors' "${log}"; then
-              echo "::error::valgrind reported errors in ${log}"
-              cat "${log}"
-              status=1
+            if grep -q 'ERROR SUMMARY: 0 errors' "${log}"; then
+              continue
             fi
+            if grep -q 'ERROR SUMMARY:' "${log}"; then
+              echo "::error::valgrind reported errors in ${log}"
+            else
+              echo "::error::a server was killed before valgrind wrote a summary in ${log}"
+            fi
+            cat "${log}"
+            status=1
           done
           if [ "${found}" -eq 0 ]; then
             echo "::error::no server ran under valgrind"
