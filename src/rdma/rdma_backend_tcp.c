@@ -23,9 +23,8 @@
 #include "rdma_backend_tcp_priv.h"
 #include "rdma_backend_defs.h"
 #include "rdma_backend.h"
-#include "rdma_rm_defs.h"
 #include "rdma_utils.h"
-#include "rocm_ernic_compat.h"
+#include "ernic_limits.h"
 #include "ernic_time.h"
 #include "parse_int.h"
 #include "qemu/thread.h"
@@ -579,32 +578,30 @@ static int tcp_query_device(RdmaBackendDev *backend_dev,
                             struct ibv_device_attr *attr)
 {
     memset(attr, 0, sizeof(*attr));
-    attr->max_qp = 1024;
-    attr->max_qp_wr = 1024;
-    attr->max_sge = 32;
-    attr->max_cq = 1024;
-    attr->max_cqe = 8192;
-    /* As in the loopback backend: this sizes rdma_rm's MR table, and
-     * a literal below MAX_MR silently caps it under what an
-     * nvme-rdma connect registers up front. */
-    attr->max_mr = MAX_MR;
-    attr->max_pd = 1024;
-    attr->max_mr_size = 0xFFFFFFFF;
-    attr->atomic_cap = IBV_ATOMIC_HCA;
     /*
-     * This sizes rdma_rm's SRQ table (res_tbl_init in rdma_rm.c), and
-     * nothing else reads it: what the guest sees as max_srq comes from the
-     * LIF identity, which ionic_eth_emu.c fills from IONIC_EMU_SRQ_COUNT.
-     * Leaving this zero while advertising a non-zero count there is not a
-     * capability mismatch the guest can detect -- it is a table of size
-     * zero, so the very first CREATE_SRQ fails with
+     * The counts size rdma_rm's tables (rdma_rm_init()), and nothing else
+     * reads them: what the guest sees comes from the LIF identity. Both are
+     * the device's limits from ernic_limits.h; a table smaller than the
+     * identity's count is the device's real ceiling. Leaving max_srq zero
+     * once made a table of size zero, so the very first CREATE_SRQ failed
+     * with
      *
      *   Table SRQ, failed to allocate, bitmap is full
      *
      * surfacing in the guest as ibv_create_srq() returning EINVAL on a
-     * device that just reported max_srq=32768. Keep the two in step.
-     *
-     * Note what this does NOT do. No receive is served from here. Every
+     * device that had just reported a non-zero max_srq.
+     */
+    attr->max_qp = ERNIC_MAX_QP;
+    attr->max_qp_wr = 1024;
+    attr->max_sge = ERNIC_MAX_SGE;
+    attr->max_cq = ERNIC_MAX_CQ;
+    attr->max_cqe = 8192;
+    attr->max_mr = ERNIC_MAX_MR;
+    attr->max_pd = 1024;
+    attr->max_mr_size = 0xFFFFFFFF;
+    attr->atomic_cap = IBV_ATOMIC_HCA;
+    /*
+     * Note what max_srq does NOT do. No receive is served from here. Every
      * ionic receive, local and off the TCP mesh alike, is satisfied by
      * ionic_dp_deliver_recv() in ionic_datapath.c, reading either the
      * destination QP's own RQ ring or -- for a QP bound to one -- the SRQ's
@@ -615,9 +612,9 @@ static int tcp_query_device(RdmaBackendDev *backend_dev,
      * done: ionic_datapath.c has an SRQ qtype, consumes the ring, and
      * tests/test_srq_transfer.c moves a payload across one.
      */
-    attr->max_srq = IONIC_EMU_SRQ_COUNT;
+    attr->max_srq = ERNIC_MAX_SRQ;
     attr->max_srq_wr = 65535;
-    attr->max_srq_sge = IONIC_MAX_SRQ_SGES;
+    attr->max_srq_sge = ERNIC_MAX_SRQ_SGE;
     return 0;
 }
 

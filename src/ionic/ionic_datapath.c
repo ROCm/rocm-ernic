@@ -46,6 +46,7 @@
 #include "dma_range.h"
 #include "ernic_dma.h"
 #include "ernic_ib.h"
+#include "ernic_limits.h"
 #include "ernic_time.h"
 #include "ionic_datapath.h"
 #include "ionic_datapath_fw.h"
@@ -298,10 +299,10 @@ struct ionic_datapath *ionic_datapath_create(vfu_ctx_t *vfu_ctx,
     dp->vfu_ctx = vfu_ctx;
     dp->eth_emu = eth_emu;
 
-    dp->qp = calloc(MAX_QP, sizeof(*dp->qp));
-    dp->cq = calloc(MAX_CQ, sizeof(*dp->cq));
-    dp->srq = calloc(MAX_SRQ, sizeof(*dp->srq));
-    dp->ah = calloc(MAX_AH, sizeof(*dp->ah));
+    dp->qp = calloc(ERNIC_MAX_QP, sizeof(*dp->qp));
+    dp->cq = calloc(ERNIC_MAX_CQ, sizeof(*dp->cq));
+    dp->srq = calloc(ERNIC_MAX_SRQ, sizeof(*dp->srq));
+    dp->ah = calloc(ERNIC_MAX_AH, sizeof(*dp->ah));
     dp->dma = ernic_dma_create();
     if (!dp->qp || !dp->cq || !dp->srq || !dp->ah || !dp->dma) {
         free(dp->qp);
@@ -312,10 +313,10 @@ struct ionic_datapath *ionic_datapath_create(vfu_ctx_t *vfu_ctx,
         free(dp);
         return NULL;
     }
-    dp->qp_count = MAX_QP;
-    dp->cq_count = MAX_CQ;
-    dp->srq_count = MAX_SRQ;
-    dp->ah_count = MAX_AH;
+    dp->qp_count = ERNIC_MAX_QP;
+    dp->cq_count = ERNIC_MAX_CQ;
+    dp->srq_count = ERNIC_MAX_SRQ;
+    dp->ah_count = ERNIC_MAX_AH;
     dp->local_node = UINT32_MAX;
     qemu_mutex_init(&dp->rx_lock);
     /* ionic_dp_now_ms(), as now_ms is NULL; no other thread can reach dp yet */
@@ -400,7 +401,7 @@ void ionic_datapath_destroy(struct ionic_datapath *dp)
     }
     for (uint32_t i = 0; i < dp->cq_count; i++)
         ionic_dp_buf_release(&dp->cq[i].buf);
-    for (int i = 0; i < MAX_MR; i++)
+    for (uint32_t i = 0; i < ERNIC_MAX_MR; i++)
         ionic_dp_buf_release(&dp->mr[i].buf);
     free(dp->qp);
     free(dp->cq);
@@ -854,7 +855,7 @@ uint32_t ionic_dp_node_from_gid(const struct ionic_datapath *dp,
 
 static struct dp_mr *mr_find(struct ionic_datapath *dp, uint32_t lkey)
 {
-    for (int i = 0; i < MAX_MR; i++)
+    for (uint32_t i = 0; i < ERNIC_MAX_MR; i++)
         if (dp->mr[i].valid && dp->mr[i].lkey == lkey)
             return &dp->mr[i];
     return NULL;
@@ -884,7 +885,7 @@ int ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
 
     struct dp_mr *m = mr_find(dp, lkey);
     if (!m) {
-        for (int i = 0; i < MAX_MR; i++) {
+        for (uint32_t i = 0; i < ERNIC_MAX_MR; i++) {
             if (!dp->mr[i].valid) {
                 m = &dp->mr[i];
                 break;
@@ -952,7 +953,7 @@ void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey)
 static void dp_mr_drop_id(struct ionic_datapath *dp, uint32_t key,
                           bool keep_key)
 {
-    for (int i = 0; i < MAX_MR; i++) {
+    for (uint32_t i = 0; i < ERNIC_MAX_MR; i++) {
         if (dp->mr[i].valid && (!keep_key || dp->mr[i].lkey != key) &&
             (dp->mr[i].lkey & 0x00ffffffu) == (key & 0x00ffffffu))
             ionic_datapath_unregister_mr(dp, dp->mr[i].lkey);
@@ -1573,26 +1574,32 @@ static void cq_post_send_npg(struct ionic_datapath *dp, uint32_t cq_id,
  * -------------------------------------------------------------------------
  */
 
+/* parse_sges() reads at most ERNIC_MAX_SGE, which must be every SGE the
+ * largest WQE has room for. */
+_Static_assert(WQE_PLD_OFF + ERNIC_MAX_SGE * 16u >=
+                   1u << IONIC_WQE_MAX_STRIDE_LOG2,
+               "the largest WQE holds SGEs that parse_sges() would not read");
+
 /*
  * Read a WQE's SGE list into @out.
  *
- * Each length is the guest's own u32, and MAX_SGE of them can add up to far
- * more than a u32 holds. Summed in one, the total wrapped: a SEND of SGEs of
- * 0xfffffff0 and 0x20 bytes went out as a 16-byte message. Returns false when
- * the lengths add up to more than UINT32_MAX, with @out->total held at
- * UINT32_MAX: no message is that long, so a send must be refused, but as
- * the capacity of a receive it is still a bound no message exceeds.
+ * Each length is the guest's own u32, and ERNIC_MAX_SGE of them can add up
+ * to far more than a u32 holds. Summed in one, the total wrapped: a SEND of
+ * SGEs of 0xfffffff0 and 0x20 bytes went out as a 16-byte message. Returns
+ * false when the lengths add up to more than UINT32_MAX, with @out->total held
+ * at UINT32_MAX: no message is that long, so a send must be refused, but as the
+ * capacity of a receive it is still a bound no message exceeds.
  */
 static bool parse_sges(const uint8_t *wqe, uint32_t stride, uint8_t num_sge,
                        struct dp_sge_list *out)
 {
     uint32_t avail = stride > WQE_PLD_OFF ? stride - WQE_PLD_OFF : 0;
     uint32_t max_sge = avail / 16;
-    uint64_t total = 0; /* MAX_SGE u32s, so it cannot wrap */
+    uint64_t total = 0; /* ERNIC_MAX_SGE u32s, so it cannot wrap */
 
     out->count = 0;
-    if (max_sge > MAX_SGE)
-        max_sge = MAX_SGE;
+    if (max_sge > ERNIC_MAX_SGE)
+        max_sge = ERNIC_MAX_SGE;
     if (num_sge < max_sge)
         max_sge = num_sge;
 
@@ -1734,10 +1741,10 @@ static bool dp_ring_take(struct ionic_datapath *dp, uint32_t *cons,
      * read_sz, not stride: parse_sges() derives how many SGEs it may walk
      * from the size it is given, and only read_sz bytes were read. Passing
      * a stride larger than the buffer would authorise walking up to
-     * MAX_SGE entries -- byte 543 -- because parse_sges() caps on MAX_SGE
-     * and avail/16 but has no idea how much of the WQE actually arrived.
-     * The ring geometry checks keep the two equal; read_sz is what keeps
-     * the walk inside rwqe if they ever aren't.
+     * ERNIC_MAX_SGE entries -- byte 543 -- because parse_sges() caps on
+     * ERNIC_MAX_SGE and avail/16 but has no idea how much of the WQE actually
+     * arrived. The ring geometry checks keep the two equal; read_sz is what
+     * keeps the walk inside rwqe if they ever aren't.
      *
      * A receive whose lengths add up past UINT32_MAX can take any message,
      * which is what the total parse_sges() leaves for it says.
@@ -3802,7 +3809,7 @@ void ionic_datapath_reset_rdma(struct ionic_datapath *dp)
             ionic_datapath_unregister_cq(dp, i);
     for (uint32_t i = 0; i < dp->ah_count; i++)
         ionic_datapath_unregister_ah(dp, i);
-    for (int i = 0; i < MAX_MR; i++) {
+    for (uint32_t i = 0; i < ERNIC_MAX_MR; i++) {
         if (dp->mr[i].valid) {
             ionic_dp_buf_release(&dp->mr[i].buf);
             dp->mr[i].valid = false;

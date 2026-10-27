@@ -31,6 +31,7 @@
 
 #include "byteorder.h"
 #include "golden/ionic_compat_identity.h"
+#include "ionic/ionic_bar.h"
 #include "ionic/ionic_eth_emu.h"
 #include "ionic_eth_emu_fakes.h"
 #include "ionic/ionic_eth_emu_priv.h"
@@ -151,10 +152,13 @@ static long golden_diff(const struct blocks *got, enum block blk)
     return -1;
 }
 
-/* An emulator with @ini layered on compat, or compat when @ini is NULL. */
+/*
+ * An emulator with @ini layered on compat, or compat when @ini is NULL. Its
+ * BAR2 is the server's, since IDENTIFY counts the doorbell pages in it.
+ */
 static struct ionic_eth_emu *make_emu(const char *ini, bool set_profile)
 {
-    struct ionic_eth_emu *emu = ionic_eth_emu_create(NULL, 4096);
+    struct ionic_eth_emu *emu = ionic_eth_emu_create(NULL, IONIC_BAR2_DB_SIZE);
     struct ionic_profile p;
     char err[256];
 

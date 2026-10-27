@@ -15,6 +15,7 @@
 #include "rdma_backend_ops.h"
 #include "rdma_backend_defs.h"
 #include "rdma_utils.h"
+#include "ernic_limits.h"
 #include <infiniband/verbs.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -32,17 +33,21 @@ static void none_fini(RdmaBackendDev *backend_dev)
     /* Nothing to cleanup */
 }
 
-/* Query operations - return defaults */
+/*
+ * The counts size rdma_rm's tables, so they are the device's limits: a table
+ * smaller than the LIF identity promises is the real ceiling. No SRQs, as
+ * this backend can't make one.
+ */
 static int none_query_device(RdmaBackendDev *backend_dev,
                              struct ibv_device_attr *attr)
 {
     memset(attr, 0, sizeof(*attr));
-    attr->max_qp = 256;
+    attr->max_qp = ERNIC_MAX_QP;
     attr->max_qp_wr = 256;
-    attr->max_sge = 32;
-    attr->max_cq = 256;
+    attr->max_sge = ERNIC_MAX_SGE;
+    attr->max_cq = ERNIC_MAX_CQ;
     attr->max_cqe = 4096;
-    attr->max_mr = 256;
+    attr->max_mr = ERNIC_MAX_MR;
     attr->max_pd = 256;
     return 0;
 }

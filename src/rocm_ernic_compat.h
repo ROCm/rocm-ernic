@@ -16,6 +16,8 @@
 #include <stdbool.h>
 #include <stdio.h> /* FILE, for pvrdma_set_stats_section() */
 
+#include "ernic_limits.h"
+
 /* Forward declarations */
 typedef struct rocm_ernic_dev rocm_ernic_dev_t;
 
@@ -455,29 +457,6 @@ typedef bool (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node, void *buf,
 #define IONIC_MESH_REPLY_BUDGET (32u << 20)
 
 /*
- * SRQ sizing, shared because three places have to agree and nothing else
- * makes them: ionic_eth_emu.c puts the count in the LIF identity (it
- * becomes the guest's max_srq verbatim), rdma_backend_tcp.c sizes
- * rdma_rm's SRQ table from it, and ionic_adminq.c reports the SGE limit
- * in CREATE_SRQ. A count advertised to the guest but not reflected in the
- * table is not a smaller ceiling -- it is a table of size zero, so the
- * first ibv_create_srq() fails EINVAL on a device claiming max_srq=32768.
- *
- * 256 because that is what every table behind it can actually hold. This was
- * 1<<15, which no table matched: ionic_adminq.c tracks the id->handle mapping
- * in a fixed 256-entry array, so the 257th CREATE_SRQ stored nothing and still
- * handed the guest an id -- a live SRQ id that no later lookup could resolve.
- * An advertised ceiling is a promise the admin path has to keep, and the
- * cheapest way to keep it is to promise what the smallest table holds.
- *
- * Raising this is fine, but raise the adminq map with it: that map is scanned
- * linearly, so a large value wants an indexed lookup rather than a bigger
- * scan. The ids are dense (IONIC_SRQ_QID_BASE + n), so indexing is easy when
- * it is needed.
- */
-#define IONIC_EMU_SRQ_COUNT 256u
-
-/*
  * SRQ ids start above the QP id space, and they have to.
  *
  * There is no separate SRQ doorbell qtype: ionic_post_recv_common() rings
@@ -491,13 +470,14 @@ typedef bool (*ionic_mesh_recv_fn)(void *opaque, uint32_t src_node, void *buf,
  *
  * The guest's QP ids are bounded by the qp_count in the LIF identity, so
  * starting SRQ ids at that bound keeps the two apart with no table to
- * consult.
+ * consult. The last one still has to fit the 24 bits a doorbell, and an
+ * admin command's id_ver, carry a qid in.
  */
-#define IONIC_EMU_QP_COUNT_SHARED (1u << 15)
-#define IONIC_SRQ_QID_BASE        IONIC_EMU_QP_COUNT_SHARED
-
-/* Mirrors IONIC_MAX_SRQ_SGES in the guest driver's ionic_fw.h. */
-#define IONIC_MAX_SRQ_SGES 2
+#define IONIC_SRQ_QID_BASE ERNIC_MAX_QP
+_Static_assert(IONIC_SRQ_QID_BASE >= ERNIC_MAX_QP,
+               "SRQ ids would overlap the guest's QP ids");
+_Static_assert(IONIC_SRQ_QID_BASE + ERNIC_MAX_SRQ <= (1u << 24),
+               "SRQ ids would not fit a 24-bit qid");
 
 /*
  * Ceilings for the ring geometry exponents a guest may ask for.

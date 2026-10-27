@@ -14,6 +14,7 @@
 
 #include <glib.h>
 #include <infiniband/verbs.h>
+#include "ernic_limits.h"
 #include "rocm_ernic_compat.h"
 /*
  * struct rocm_ernic_dev.  IWYU credits uses of it to the repeated
@@ -87,17 +88,19 @@ pvrdma_handle_t pvrdma_device_create(const rocm_ernic_dev_t *dev,
     /* Copy MAC address from rocm_ernic_dev */
     memcpy(pvrdma->mac_addr, dev->mac_addr, 6);
 
-    /* Initialize device attributes with defaults */
-    pvrdma->dev_attr.max_qp = MAX_QP;
-    pvrdma->dev_attr.max_cq = MAX_CQ;
-    pvrdma->dev_attr.max_mr = MAX_MR;
+    /* Defaults, until pvrdma_device_realize() replaces them all with the
+     * backend's query_device() */
+    pvrdma->dev_attr.max_qp = ERNIC_MAX_QP;
+    pvrdma->dev_attr.max_cq = ERNIC_MAX_CQ;
+    pvrdma->dev_attr.max_mr = ERNIC_MAX_MR;
     pvrdma->dev_attr.max_pd = MAX_PD;
     pvrdma->dev_attr.max_qp_rd_atom = MAX_QP_RD_ATOM;
     pvrdma->dev_attr.max_qp_init_rd_atom = MAX_QP_INIT_RD_ATOM;
-    pvrdma->dev_attr.max_ah = MAX_AH;
-    pvrdma->dev_attr.max_srq = MAX_SRQ;
+    pvrdma->dev_attr.max_ah = ERNIC_MAX_AH;
+    pvrdma->dev_attr.max_srq = ERNIC_MAX_SRQ;
     pvrdma->dev_attr.max_mr_size = MAX_MR_SIZE;
-    pvrdma->dev_attr.max_sge = MAX_SGE; /* Required for calculations below */
+    pvrdma->dev_attr.max_sge =
+        ERNIC_MAX_SGE; /* Required for calculations below */
 
     /* Calculate dynamic device capabilities (from init_dev_caps in
      * upstream QEMU's hw/rdma/vmw/pvrdma_main.c) */

@@ -41,6 +41,7 @@
 
 #include "byteorder.h"
 #include "ernic_dma.h"
+#include "ernic_limits.h"
 #include "ionic_eth_emu.h"
 #include "ionic_bar.h"
 #include "ionic_eth_emu_priv.h"
@@ -871,7 +872,13 @@ void ionic_eth_emu_handle_identify(const struct ionic_eth_emu *emu,
      * It is also the MSI-X table size the server sets up. */
     ernic_put_le32(dev_id + DEVID_NINTRS_OFF,
                    ionic_profile_intr_vectors(&emu->profile));
-    ernic_put_le32(dev_id + DEVID_NDBPGS_OFF, IONIC_EMU_QP_COUNT + 4);
+    /* One doorbell page per process using RDMA, and one for the kernel:
+     * every page BAR2 has. The driver hands each user context one and
+     * maps it from BAR2, so a count past the end of BAR2 has it map pages
+     * that aren't the device's. */
+    size_t db_pages = emu->bar2_size / IONIC_DB_PAGE_SIZE;
+    ernic_put_le32(dev_id + DEVID_NDBPGS_OFF,
+                   db_pages > UINT32_MAX ? UINT32_MAX : (uint32_t)db_pages);
 
     /* ethtool divides by intr_coal_div, so it must not be zero. */
     ernic_put_le32(dev_id + DEVID_INTR_COAL_MULT_OFF, 1);
@@ -962,9 +969,9 @@ void ionic_eth_emu_handle_lif_identify(struct ionic_eth_emu *emu,
     rdma[2] = IONIC_RDMA_ADMIN_OPCODES; /* admin_opcodes  */
     rdma[3] = 0;                        /* minor_version  */
 
-    ernic_put_le32(rdma + 4, IONIC_NPTS_PER_LIF);  /* npts_per_lif */
-    ernic_put_le32(rdma + 8, IONIC_NMRS_PER_LIF);  /* nmrs_per_lif */
-    ernic_put_le32(rdma + 12, IONIC_NAHS_PER_LIF); /* nahs_per_lif */
+    ernic_put_le32(rdma + 4, IONIC_NPTS_PER_LIF);     /* npts_per_lif */
+    ernic_put_le32(rdma + 8, IONIC_EMU_NMRS_PER_LIF); /* nmrs_per_lif */
+    ernic_put_le32(rdma + 12, ERNIC_MAX_AH);          /* nahs_per_lif */
 
     rdma[16] = IONIC_MAX_STRIDE;     /* max_stride */
     rdma[17] = 6;                    /* cl_stride (log2 64B cache line) */
@@ -973,7 +980,7 @@ void ionic_eth_emu_handle_lif_identify(struct ionic_eth_emu *emu,
     rdma[20] = 6;                    /* rsq_stride                       */
     rdma[21] = 8;                    /* dcqcn_profiles                   */
     rdma[22] = IONIC_EMU_UDMA_SHIFT; /* udma_shift                  */
-    rdma[23] = 2;                    /* rsvd_dimensions (udma_count=2)   */
+    rdma[23] = IONIC_UDMA_COUNT;     /* rsvd_dimensions (udma_count)     */
 
     ernic_put_le64(rdma + 24, IONIC_PAGE_SIZE_CAP); /* page_size_cap */
 
@@ -997,25 +1004,25 @@ void ionic_eth_emu_handle_lif_identify(struct ionic_eth_emu *emu,
     /* aq_qtype at rdma+32 */
     uint8_t *aq = rdma + 32;
     aq[0] = IONIC_RDMA_QTYPE_AQ;
-    ernic_put_le32(aq + 4, IONIC_EMU_AQ_COUNT);
+    ernic_put_le32(aq + 4, ERNIC_MAX_AQ);
     ernic_put_le32(aq + 8, 0);
 
     /* sq_qtype at rdma+44 */
     uint8_t *sq = rdma + 32 + QTYPE_SZ;
     sq[0] = IONIC_RDMA_QTYPE_SQ;
-    ernic_put_le32(sq + 4, IONIC_EMU_QP_COUNT);
+    ernic_put_le32(sq + 4, ERNIC_MAX_QP);
     ernic_put_le32(sq + 8, 0);
 
     /* rq_qtype at rdma+56 */
     uint8_t *rq = rdma + 32 + 2 * QTYPE_SZ;
     rq[0] = IONIC_RDMA_QTYPE_RQ;
-    ernic_put_le32(rq + 4, IONIC_EMU_QP_COUNT);
+    ernic_put_le32(rq + 4, ERNIC_MAX_QP);
     ernic_put_le32(rq + 8, 0);
 
     /* cq_qtype at rdma+68 */
     uint8_t *cq = rdma + 32 + 3 * QTYPE_SZ;
     cq[0] = IONIC_RDMA_QTYPE_CQ;
-    ernic_put_le32(cq + 4, IONIC_EMU_CQ_COUNT);
+    ernic_put_le32(cq + 4, ERNIC_MAX_CQ);
     ernic_put_le32(cq + 8, 0);
 
     /* eq_qtype at rdma+80 */
@@ -1050,7 +1057,7 @@ void ionic_eth_emu_handle_lif_identify(struct ionic_eth_emu *emu,
     uint8_t *srq = rdma + LIF_ID_SRQ_QTYPE_OFF;
     srq[0] = IONIC_RDMA_QTYPE_SRQ;
     /* qid_count -- becomes the guest's max_srq */
-    ernic_put_le32(srq + 4, IONIC_EMU_SRQ_COUNT);
+    ernic_put_le32(srq + 4, ERNIC_MAX_SRQ);
     ernic_put_le32(srq + 8, 0); /* qid_base */
 
     /*
