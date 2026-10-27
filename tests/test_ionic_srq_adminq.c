@@ -238,14 +238,15 @@ void ernic_rm_dealloc_mr(pvrdma_handle_t handle, uint32_t mr_handle)
     (void)mr_handle;
 }
 
-void ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
-                                uint32_t eq_id,
-                                const struct ionic_dp_ring_desc *ring)
+int ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
+                               uint32_t eq_id,
+                               const struct ionic_dp_ring_desc *ring)
 {
     (void)dp;
     (void)cq_id;
     (void)eq_id;
     (void)ring;
+    return 0;
 }
 void ionic_datapath_unregister_cq(struct ionic_datapath *dp, uint32_t cq_id)
 {
@@ -266,11 +267,11 @@ void ionic_datapath_rdma_counters(const struct ionic_datapath *dp,
     (void)qp_id;
     memset(out, 0, sizeof(*out) * IONIC_DP_RDMA_COUNT);
 }
-void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
-                                uint8_t ib_qp_type, uint32_t sq_cq_id,
-                                const struct ionic_dp_ring_desc *sq,
-                                uint32_t rq_cq_id,
-                                const struct ionic_dp_ring_desc *rq)
+int ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
+                               uint8_t ib_qp_type, uint32_t sq_cq_id,
+                               const struct ionic_dp_ring_desc *sq,
+                               uint32_t rq_cq_id,
+                               const struct ionic_dp_ring_desc *rq)
 {
     (void)dp;
     (void)qp_id;
@@ -279,6 +280,7 @@ void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
     (void)sq;
     (void)rq_cq_id;
     (void)rq;
+    return 0;
 }
 void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id)
 {

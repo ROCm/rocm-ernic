@@ -183,9 +183,11 @@ void ernic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle)
     (void)handle;
     (void)pd_handle;
 }
-/* How many CQs and MRs were allocated. */
+/* How many CQs and MRs were allocated, and how many freed. */
 static unsigned g_alloc_cq_calls;
 static unsigned g_alloc_mr_calls;
+static unsigned g_dealloc_cq_calls;
+static unsigned g_dealloc_mr_calls;
 
 int ernic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe, uint32_t *cq_handle)
 {
@@ -199,10 +201,13 @@ void ernic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
 {
     (void)handle;
     (void)cq_handle;
+    g_dealloc_cq_calls++;
 }
-/* How many QPs were allocated, and the IB type of the last one. */
+/* How many QPs were allocated, the IB type of the last one, and how many
+ * were freed. */
 static unsigned g_alloc_qp_calls;
 static uint8_t g_alloc_qp_type;
+static unsigned g_dealloc_qp_calls;
 
 int ernic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
                       uint8_t qp_type, uint32_t max_send_wr,
@@ -224,6 +229,7 @@ void ernic_rm_dealloc_qp(pvrdma_handle_t handle, uint32_t qpn)
 {
     (void)handle;
     (void)qpn;
+    g_dealloc_qp_calls++;
 }
 int ernic_rm_alloc_mr(pvrdma_handle_t handle, uint32_t pd_handle,
                       uint32_t access_flags, uint32_t *mr_handle)
@@ -239,16 +245,23 @@ void ernic_rm_dealloc_mr(pvrdma_handle_t handle, uint32_t mr_handle)
 {
     (void)handle;
     (void)mr_handle;
+    g_dealloc_mr_calls++;
 }
 
-void ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
-                                uint32_t eq_id,
-                                const struct ionic_dp_ring_desc *ring)
+/* What the data path's CQ, QP and MR registrations return, and how many MR
+ * registrations there were. */
+static int g_register_rc;
+static unsigned g_register_mr_calls;
+
+int ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
+                               uint32_t eq_id,
+                               const struct ionic_dp_ring_desc *ring)
 {
     (void)dp;
     (void)cq_id;
     (void)eq_id;
     (void)ring;
+    return g_register_rc;
 }
 void ionic_datapath_unregister_cq(struct ionic_datapath *dp, uint32_t cq_id)
 {
@@ -259,11 +272,11 @@ void ionic_datapath_reset_rdma(struct ionic_datapath *dp)
 {
     (void)dp;
 }
-void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
-                                uint8_t ib_qp_type, uint32_t sq_cq_id,
-                                const struct ionic_dp_ring_desc *sq,
-                                uint32_t rq_cq_id,
-                                const struct ionic_dp_ring_desc *rq)
+int ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
+                               uint8_t ib_qp_type, uint32_t sq_cq_id,
+                               const struct ionic_dp_ring_desc *sq,
+                               uint32_t rq_cq_id,
+                               const struct ionic_dp_ring_desc *rq)
 {
     (void)dp;
     (void)qp_id;
@@ -272,6 +285,7 @@ void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
     (void)sq;
     (void)rq_cq_id;
     (void)rq;
+    return g_register_rc;
 }
 void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id)
 {
@@ -292,7 +306,8 @@ int ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
     (void)va;
     (void)length;
     (void)buf;
-    return 0;
+    g_register_mr_calls++;
+    return g_register_rc;
 }
 void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey)
 {
@@ -559,6 +574,11 @@ static void ctx_reset(void)
     g_alloc_qp_type = 0;
     g_alloc_cq_calls = 0;
     g_alloc_mr_calls = 0;
+    g_dealloc_qp_calls = 0;
+    g_dealloc_cq_calls = 0;
+    g_dealloc_mr_calls = 0;
+    g_register_rc = 0;
+    g_register_mr_calls = 0;
 }
 
 #endif /* IONIC_ADMINQ_FAKES_H */

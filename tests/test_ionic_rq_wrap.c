@@ -713,12 +713,15 @@ static void test_registration_accepts_an_ordinary_ring(void)
     dp->cq = g_reg_cq;
     dp->cq_count = 4;
 
-    ionic_datapath_register_cq(dp, 1, 2, &ring);
-    check(dp->cq[1].valid, "a CQ with an ordinary geometry registers");
+    check(ionic_datapath_register_cq(dp, 1, 2, &ring) == 0,
+          "a CQ with an ordinary geometry registers");
+    check(dp->cq[1].valid, "and is left valid");
     check(dp->cq[1].depth == 64, "the CQ kept its depth");
 
-    ionic_datapath_register_qp(dp, RQ_QP_ID, IBV_QPT_RC, 1, &ring, 1, &ring);
-    check(dp->qp[RQ_QP_ID].valid, "a QP with ordinary rings registers");
+    check(ionic_datapath_register_qp(dp, RQ_QP_ID, IBV_QPT_RC, 1, &ring, 1,
+                                     &ring) == 0,
+          "a QP with ordinary rings registers");
+    check(dp->qp[RQ_QP_ID].valid, "and is left valid");
 
     check(ionic_datapath_register_srq(dp, SRQ_QID, &ring) == 0,
           "an SRQ with an ordinary ring registers");

@@ -11,6 +11,10 @@
  * manager's tables one command at a time. Each command must now be refused
  * before anything is allocated.
  *
+ * A CQ, QP or MR the data path then refuses to register was reported
+ * created too, with no ring or page table behind it. That refusal must fail
+ * the command, free the resource and leave the id unmapped.
+ *
  * The test links ionic_adminq.c, reaches its context through
  * ionic_adminq_priv.h, and stubs its external symbols with
  * ionic_adminq_fakes.h.
@@ -22,6 +26,7 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -262,11 +267,69 @@ static void test_mr_map(void)
               g_ctx.mr_map[MAX_MR_MAP - 1].mr_id == NEW_ID);
 }
 
+/* ---- The data path refusing a registration ---------------------------- */
+
+/* What the data path returns, and the status that must fail the command:
+ * one the driver turns back into the same errno. */
+static const struct {
+    const char *what;
+    int err;
+    uint8_t status;
+} dp_refusals[] = {
+    {"EINVAL", -EINVAL, IONIC_RC_EINVAL},
+    {"ENOMEM", -ENOMEM, IONIC_RC_ENOMEM},
+    {"ENOSPC", -ENOSPC, IONIC_RC_ENOSPC},
+    {"EIO", -EIO, IONIC_RC_EIO},
+};
+
+static void test_dp_refusal(void)
+{
+    for (size_t i = 0; i < sizeof(dp_refusals) / sizeof(dp_refusals[0]); i++) {
+        printf("the data path refuses with %s:\n", dp_refusals[i].what);
+
+        ctx_reset();
+        g_register_rc = dp_refusals[i].err;
+        check("cq-refused", create_cq() == dp_refusals[i].status);
+        check("cq-refused-freed",
+              g_alloc_cq_calls == 1 && g_dealloc_cq_calls == 1);
+        check("cq-refused-unmapped", cq_entries(NEW_ID) == 0);
+
+        qp_ctx_reset();
+        g_register_rc = dp_refusals[i].err;
+        check("qp-refused", create_qp() == dp_refusals[i].status);
+        check("qp-refused-freed",
+              g_alloc_qp_calls == 1 && g_dealloc_qp_calls == 1);
+        check("qp-refused-unmapped", qp_entries(NEW_ID) == 0);
+
+        ctx_reset();
+        g_register_rc = dp_refusals[i].err;
+        check("mr-refused", create_mr() == dp_refusals[i].status);
+        check("mr-refused-freed",
+              g_alloc_mr_calls == 1 && g_dealloc_mr_calls == 1);
+        check("mr-refused-unmapped", mr_entries(NEW_ID) == 0);
+    }
+
+    /* An MR with no region yet, as ib_alloc_mr() makes, has nothing to
+     * register: REG_MR binds it later */
+    uint8_t body[45];
+
+    ctx_reset();
+    g_register_rc = -EINVAL;
+    build_mr_body(body, NEW_ID);
+    ernic_put_le64(body + 8, 0);
+    check("mr-empty-accepted",
+          ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_MR, body,
+                                    sizeof(body)) == IONIC_RC_SUCCESS);
+    check("mr-empty-not-registered", g_register_mr_calls == 0);
+    check("mr-empty-mapped", mr_entries(NEW_ID) == 1);
+}
+
 int main(void)
 {
     test_cq_map();
     test_qp_map();
     test_mr_map();
+    test_dp_refusal();
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);

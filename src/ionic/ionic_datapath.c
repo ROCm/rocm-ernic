@@ -446,12 +446,12 @@ void ionic_datapath_destroy(struct ionic_datapath *dp)
  * -------------------------------------------------------------------------
  */
 
-void ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
-                                uint32_t eq_id,
-                                const struct ionic_dp_ring_desc *ring)
+int ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
+                               uint32_t eq_id,
+                               const struct ionic_dp_ring_desc *ring)
 {
-    if (!dp || cq_id >= dp->cq_count)
-        return;
+    if (!dp || !ring || cq_id >= dp->cq_count)
+        return -EINVAL;
 
     struct ionic_cq_ring *c = &dp->cq[cq_id];
     uint8_t stride_log2 = ionic_dp_cq_stride_log2(ring);
@@ -471,7 +471,7 @@ void ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
                 cq_id, ring->depth_log2, stride_log2);
         ionic_dp_buf_release(&c->buf);
         c->valid = false;
-        return;
+        return -EINVAL;
     }
     /*
      * depth * stride is exactly what the ring occupies -- taken from the
@@ -480,13 +480,14 @@ void ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
      * time. Reading it here made the span zero and rejected every CQ in
      * the device, so nothing ever completed while data still moved.
      */
-    if (ionic_dp_buf_init(
-            dp, &c->buf, &ring->buf, 0,
-            ionic_dp_ring_span_bytes(ring->depth_log2, stride_log2)) < 0) {
+    int rc = ionic_dp_buf_init(
+        dp, &c->buf, &ring->buf, 0,
+        ionic_dp_ring_span_bytes(ring->depth_log2, stride_log2));
+    if (rc < 0) {
         vfu_log(dp->vfu_ctx, LOG_ERR,
                 "ionic_datapath: CQ %u page table read failed", cq_id);
         c->valid = false;
-        return;
+        return rc;
     }
     c->depth = 1u << ring->depth_log2;
     c->stride_log2 = stride_log2;
@@ -500,6 +501,7 @@ void ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
     vfu_log(dp->vfu_ctx, LOG_INFO,
             "ionic_datapath: CQ %u depth=%u stride=2^%u eq=%u pages=%u", cq_id,
             c->depth, c->stride_log2, eq_id, c->buf.npages);
+    return 0;
 }
 
 void ionic_datapath_unregister_cq(struct ionic_datapath *dp, uint32_t cq_id)
@@ -537,14 +539,14 @@ static void sq_busy_set(struct ionic_datapath *dp, struct ionic_qp_ring *q)
 /* Defined with the other pending_* helpers, below the transmit path. */
 static uint32_t pending_cancel_qp(struct ionic_datapath *dp, uint32_t qp_id);
 
-void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
-                                uint8_t ib_qp_type, uint32_t sq_cq_id,
-                                const struct ionic_dp_ring_desc *sq,
-                                uint32_t rq_cq_id,
-                                const struct ionic_dp_ring_desc *rq)
+int ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
+                               uint8_t ib_qp_type, uint32_t sq_cq_id,
+                               const struct ionic_dp_ring_desc *sq,
+                               uint32_t rq_cq_id,
+                               const struct ionic_dp_ring_desc *rq)
 {
-    if (!dp || qp_id >= dp->qp_count)
-        return;
+    if (!dp || !sq || !rq || qp_id >= dp->qp_count)
+        return -EINVAL;
 
     struct ionic_qp_ring *q = &dp->qp[qp_id];
 
@@ -566,18 +568,28 @@ void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
                 "rq(depth=2^%u stride=2^%u)",
                 qp_id, sq->depth_log2, sq->stride_log2, rq->depth_log2,
                 rq->stride_log2);
-        return;
+        return -EINVAL;
     }
 
-    if (ionic_dp_buf_init(
-            dp, &q->sq_buf, &sq->buf, 0,
-            ionic_dp_ring_span_bytes(sq->depth_log2, sq->stride_log2)) < 0 ||
-        ionic_dp_buf_init(
+    int rc = ionic_dp_buf_init(
+        dp, &q->sq_buf, &sq->buf, 0,
+        ionic_dp_ring_span_bytes(sq->depth_log2, sq->stride_log2));
+    if (rc == 0)
+        rc = ionic_dp_buf_init(
             dp, &q->rq_buf, &rq->buf, 0,
-            ionic_dp_ring_span_bytes(rq->depth_log2, rq->stride_log2)) < 0) {
+            ionic_dp_ring_span_bytes(rq->depth_log2, rq->stride_log2));
+    if (rc < 0) {
         vfu_log(dp->vfu_ctx, LOG_ERR,
                 "ionic_datapath: QP %u page table read failed", qp_id);
-        return;
+        /*
+         * ionic_dp_buf_init() has already released the ring it failed on,
+         * and the SQ may already be the new QP's. Left valid, a QP
+         * registered under this id before would resolve the released ring to
+         * guest physical address 0 onwards, so it goes, as DESTROY_QP would
+         * take it.
+         */
+        ionic_datapath_unregister_qp(dp, qp_id);
+        return rc;
     }
     q->ib_qp_type = ib_qp_type;
     q->sq_depth = 1u << sq->depth_log2;
@@ -613,6 +625,7 @@ void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
             "rq(depth=%u stride=2^%u cq=%u)",
             qp_id, ib_qp_type, q->sq_depth, q->sq_stride_log2, sq_cq_id,
             q->rq_depth, q->rq_stride_log2, rq_cq_id);
+    return 0;
 }
 
 /*
