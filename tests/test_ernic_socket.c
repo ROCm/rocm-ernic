@@ -801,10 +801,14 @@ static void test_set_group(void)
     capture_end();
     check_said(test, "cannot open socket");
 
-    /* What a server sharing a directory with someone else could meet. */
+    /*
+     * What a server sharing a directory with someone else could meet.  The
+     * server's socket stays, moved aside, while the other is made: removing
+     * it first lets ext4 give the other its inode number, and then the two
+     * can't be told apart.
+     */
     test = "set_group: another socket put at the path";
-    make_created(path, &created);
-    clear_dir();
+    make_created(other, &created);
     make_socket(path);
     capture_begin();
     check(test, !ernic_socket_set_group(path, "own", gid, &created),
