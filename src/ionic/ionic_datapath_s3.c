@@ -19,8 +19,8 @@
 
 #include <vfio-user/libvfio-user.h>
 
-#include "ionic/ionic_datapath.h"
 #include "ionic/ionic_datapath_priv.h"
+#include "ionic/ionic_datapath_s3.h"
 #include "ionic/ionic_eth_emu.h"
 #include "s3/s3_tcp.h"
 #include "s3/s3_target.h"

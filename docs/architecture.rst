@@ -1455,6 +1455,8 @@ Where to Look in the Source
        ``src/ionic/ionic_datapath_p4.c``
      - The data path's side of the NVMe-oF and S3 targets and
        the P4 pipeline
+   * - ``src/ionic/ionic_eth_p4.c``
+     - The P4 pipeline on the Ethernet frame filters
    * - ``src/ernic_dma.c``
      - Copying to and from guest memory, for all of the above
    * - ``src/ernic_stats.c``, ``.h``
@@ -1480,5 +1482,5 @@ Where to Look in the Source
      - In-process S3 store
    * - ``src/p4/``
      - P4 engine: program loader, tables, the pipeline, its
-       Ethernet port and device commands, and the fp8 and format
-       conversion externs
+       device commands, and the fp8 and format conversion
+       externs

@@ -21,6 +21,8 @@
 #include "ionic/ionic_adminq.h"
 #include "ionic/ionic_bar.h"
 #include "ionic/ionic_datapath.h"
+#include "ionic/ionic_datapath_nvmeof.h"
+#include "ionic/ionic_datapath_s3.h"
 #include "ionic/ionic_eth_emu.h"
 #include "ionic/ionic_rdma_devcmd.h"
 #include "nvmeof/nvmeof_target.h"
@@ -30,9 +32,10 @@
 #include <inttypes.h>
 
 #include "ernic_log.h"
+#include "ionic/ionic_datapath_p4.h"
+#include "ionic/ionic_eth_p4.h"
 #include "p4/p4_devcmd.h"
 #include "p4/p4_engine.h"
-#include "p4/p4_port.h"
 #endif
 
 struct ionic_device {
@@ -48,10 +51,10 @@ struct ionic_device {
     uint64_t (*now_ms)(void);
 
 #ifdef ERNIC_HAVE_P4
-    /* Borrowed from ionic_device_attach_p4()'s caller; set once the port
-     * is attached */
+    /* Borrowed from ionic_device_attach_p4()'s caller; set once the ports
+     * are attached */
     struct p4_engine *p4_engine;
-    struct p4_port *p4_port;
+    struct ionic_eth_p4 *eth_p4;
     /* NULL unless the guest was granted a scope */
     struct p4_devcmd *p4_devcmd;
 #endif
@@ -190,10 +193,10 @@ struct ionic_device *ionic_device_create(const struct ionic_device_cfg *cfg,
 static void report_p4_stats(const struct ionic_device *dev)
 {
     struct p4_stats es;
-    struct p4_port_stats ps;
+    struct ionic_eth_p4_stats ps;
 
     p4_engine_get_stats(dev->p4_engine, &es);
-    p4_port_get_stats(dev->p4_port, &ps);
+    ionic_eth_p4_get_stats(dev->eth_p4, &ps);
     ernic_startup_report(
         "rocm-ernic: P4 stats: host_in=%" PRIu64 " host_out=%" PRIu64
         " uplink_in=%" PRIu64 " uplink_out=%" PRIu64 " dropped=%" PRIu64
@@ -216,9 +219,9 @@ void ionic_device_destroy(struct ionic_device *dev)
 #ifdef ERNIC_HAVE_P4
     if (dev->p4_engine) {
         report_p4_stats(dev);
-        /* Before the data path, which clears the Tx filter slot the P4 port
-         * is holding on the S3 target's behalf. */
-        p4_port_detach(dev->p4_port);
+        /* Before the data path, which clears the Tx filter slot the P4
+         * attachment is holding on the S3 target's behalf. */
+        ionic_eth_p4_detach(dev->eth_p4);
         ionic_eth_emu_register_p4_handler(dev->emu, NULL, NULL);
         p4_devcmd_destroy(dev->p4_devcmd);
     }
@@ -237,7 +240,7 @@ void ionic_device_destroy(struct ionic_device *dev)
 bool ionic_device_attach_p4(struct ionic_device *dev, struct p4_engine *eng,
                             enum p4_scope guest_scope, char *err, size_t errlen)
 {
-    struct p4_port_upstream upstream;
+    struct ionic_eth_p4_upstream upstream;
 
     if (!dev || !eng || dev->p4_engine) {
         snprintf(err, errlen, "P4 engine missing or already attached");
@@ -246,9 +249,9 @@ bool ionic_device_attach_p4(struct ionic_device *dev, struct p4_engine *eng,
 
     memset(&upstream, 0, sizeof(upstream));
     ionic_eth_emu_get_tx_filter(dev->emu, &upstream.fn, &upstream.ctx);
-    dev->p4_port =
-        p4_port_attach(dev->emu, eng, upstream.fn ? &upstream : NULL);
-    if (!dev->p4_port) {
+    dev->eth_p4 =
+        ionic_eth_p4_attach(dev->emu, eng, upstream.fn ? &upstream : NULL);
+    if (!dev->eth_p4) {
         snprintf(err, errlen, "failed to attach the P4 engine");
         return false;
     }
