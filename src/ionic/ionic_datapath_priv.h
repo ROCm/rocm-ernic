@@ -508,8 +508,14 @@ int ionic_dp_buf_init(const struct ionic_datapath *dp, struct dp_buf *b,
                       uint64_t span);
 
 /*
- * Why a send from @sq may not deliver into @dq with Q_Key @sent_qkey, or
- * NULL when it may.
+ * The high-order bit of a Q_Key, which makes it a controlled key. A send
+ * whose work request carries one uses the sending QP's own Q_Key instead.
+ */
+#define DP_QKEY_CONTROLLED UINT32_C(0x80000000)
+
+/*
+ * Why a send from @sq may not deliver into @dq with Q_Key @sent_qkey, the
+ * one its work request carries, or NULL when it may.
  */
 const char *ionic_dp_ud_delivery_refused(const struct ionic_qp_ring *sq,
                                          const struct ionic_qp_ring *dq,

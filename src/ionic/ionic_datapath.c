@@ -2505,6 +2505,16 @@ static void dp_ud_grh(const struct ionic_datapath *dp, uint8_t grh[IB_GRH_SIZE],
  * queue, and hand the kernel forged connection-management MADs. QP1's
  * Q_Key is privileged precisely so unprivileged consumers cannot.
  *
+ * So a work request's Q_Key with the high-order bit set is not taken as a
+ * key. The IB spec reserves those "controlled" keys for privileged
+ * consumers and has the device send the QP's own Q_Key in their place, and
+ * only a privileged consumer can give its QP one: the guest kernel refuses
+ * MODIFY_QP with such a key from user space (ionic_check_modify_qp()
+ * returns -EPERM). The WQE's key is whatever the sending process wrote, so
+ * taken literally it would let any process send as QP1 by writing
+ * 0x80010000. The kernel relies on the substitution itself: ib_mad sends
+ * every MAD with IB_QP_SET_QKEY (0x80000000), meaning QP1's own key.
+ *
  * The Q_Key is only checked once the destination has one. A QP that has not
  * been through MODIFY_QP with IB_QP_QKEY has no key to match, which is the
  * state QP1 is in before the kernel configures it; refusing there would
@@ -2525,7 +2535,14 @@ const char *ionic_dp_ud_delivery_refused(const struct ionic_qp_ring *sq,
         return NULL;
     if (!qp_is_datagram(dq))
         return "transport type accepts no datagrams";
-    if (dq->qkey_valid && sent_qkey != dq->qkey)
+    if (!dq->qkey_valid)
+        return NULL;
+    if (sent_qkey & DP_QKEY_CONTROLLED) {
+        if (!sq->qkey_valid)
+            return "sender has no Q_Key of its own to send";
+        sent_qkey = sq->qkey;
+    }
+    if (sent_qkey != dq->qkey)
         return "Q_Key is not that queue's";
     return NULL;
 }
@@ -3649,11 +3666,14 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
  *
  * Doorbell layout (struct ionic_doorbell, little-endian):
  *   le16 p_index   [0:1]
- *   u8   ring      [2]    — 0 = work, 1 = arm, 2 = arm solicited
+ *   u8   ring      [2]    — 0 = work, 1 = arm, 2 = arm solicited,
+ *                           3 = SRQ (IONIC_DBELL_RING_SRQ)
  *   u8   qid_lo    [3]
  *   le16 qid_hi    [4:5]
  * -------------------------------------------------------------------------
  */
+
+#define DP_DB_RING_SRQ 3u
 
 /*
  * Advance a receive ring's producer from a doorbell's index.
@@ -3688,6 +3708,35 @@ static bool rq_prod_advance(uint32_t *prod, uint32_t depth, uint16_t p_index)
     return true;
 }
 
+/*
+ * A receive posted to the SRQ @qid. Its doorbell comes in two forms, both
+ * with the SRQ's id: the guest kernel, and the provider with our
+ * ansible/files/patches/rdma-core/0005, ring the RQ qtype, as for a QP's
+ * own RQ; the provider without it (rdma-core #1799, as proposed upstream)
+ * rings the CQ qtype with ring 3, IONIC_DBELL_RING_SRQ. Missing either is a
+ * hang rather than an error: a QP on the SRQ completes its sends and never
+ * a receive.
+ */
+static void srq_doorbell(struct ionic_datapath *dp, uint32_t qid,
+                         uint16_t p_index)
+{
+    struct ionic_srq_ring *sr = srq_by_qid(dp, qid);
+    bool posted = false;
+
+    /* Lock first, then read valid: sampling it outside the lock is what let
+     * this race unregister_srq. srq_by_qid() only does the bounds
+     * arithmetic, which is stable for the datapath's life. */
+    if (sr) {
+        qemu_mutex_lock(&sr->lock);
+        if (sr->valid)
+            posted = rq_prod_advance(&sr->prod, sr->depth, p_index);
+        qemu_mutex_unlock(&sr->lock);
+    }
+    if (!posted)
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: doorbell for unregistered SRQ %u", qid);
+}
+
 void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
                              uint64_t doorbell_val)
 {
@@ -3702,6 +3751,12 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
 
     switch (qtype) {
     case DP_QTYPE_CQ: {
+        /* Ring 3 names an SRQ, not a CQ, and SRQ ids overlap CQ ids, so it
+         * is told apart before the id is read as a CQ's. */
+        if (ring == DP_DB_RING_SRQ) {
+            srq_doorbell(dp, qid, p_index);
+            return;
+        }
         if (qid >= dp->cq_count || !dp->cq[qid].valid)
             return;
         struct ionic_cq_ring *c = &dp->cq[qid];
@@ -3731,22 +3786,7 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
          * found no buffer and simply never completed.
          */
         if (qid >= IONIC_SRQ_QID_BASE) {
-            struct ionic_srq_ring *sr = srq_by_qid(dp, qid);
-            bool posted = false;
-
-            /* Lock first, then read valid: sampling it outside the lock is
-             * what let this race unregister_srq. srq_by_qid() only does the
-             * bounds arithmetic, which is stable for the datapath's life. */
-            if (sr) {
-                qemu_mutex_lock(&sr->lock);
-                if (sr->valid)
-                    posted = rq_prod_advance(&sr->prod, sr->depth, p_index);
-                qemu_mutex_unlock(&sr->lock);
-            }
-            if (!posted)
-                vfu_log(dp->vfu_ctx, LOG_WARNING,
-                        "ionic_datapath: doorbell for unregistered SRQ %u",
-                        qid);
+            srq_doorbell(dp, qid, p_index);
             return;
         }
         if (qid < dp->qp_count && dp->qp[qid].valid) {

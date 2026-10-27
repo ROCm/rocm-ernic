@@ -2711,9 +2711,14 @@ static void test_ud(void)
 
 /* ---- Shared receive queues --------------------------------------------- */
 
-static void test_srq(void)
+/*
+ * The SRQ's receives announced with the doorbell @db_qtype and @db_ring.
+ * Each driver that posts to an SRQ has its own form, and a form the device
+ * misses is a hang: the SRQ never learns of a receive, so a SEND to a QP on
+ * it completes and its receive never does.
+ */
+static void test_srq_rung(const char *T, int db_qtype, uint8_t db_ring)
 {
-    const char *T = "srq";
     struct ih h;
     struct ih_cq cqf, cqg;
     struct ih_qp f, g;
@@ -2733,8 +2738,16 @@ static void test_srq(void)
           srq.id >= IONIC_SRQ_QID_BASE &&
               srq.id < IONIC_SRQ_QID_BASE + ERNIC_MAX_SRQ,
           "SRQ id %#x is outside the SRQ range", srq.id);
+    srq.db_qtype = db_qtype;
+    srq.db_ring = db_ring;
 
-    bool ok = ih_cq_create(&h, &cqf, 5, 5) && ih_cq_create(&h, &cqg, 6, 5) &&
+    /*
+     * On the CQ qtype, F's CQ takes the SRQ's id, which CQ ids may share:
+     * only the ring says the doorbell is the SRQ's.
+     */
+    uint32_t cqf_id = db_qtype == IH_QTYPE_CQ ? srq.id : 5;
+    bool ok = ih_cq_create(&h, &cqf, cqf_id, 5) &&
+              ih_cq_create(&h, &cqg, 6, 5) &&
               ih_qp_create(&h, &f, 30, IH_QPT_RC, &cqf, &cqf, &srq) &&
               ih_qp_create(&h, &g, 31, IH_QPT_RC, &cqg, &cqg, NULL) &&
               ih_qp_connect(&h, &f, &g) &&
@@ -2789,12 +2802,32 @@ static void test_srq(void)
     check(T, ih_srq_destroy(&h, &srq) == 0, "DESTROY_SRQ failed");
 
     /* A doorbell for the destroyed SRQ is ignored */
-    ih_doorbell(&h, IH_QTYPE_RQ, srq.id, 0, 1);
+    ih_doorbell(&h, db_qtype, srq.id, db_ring, 1);
 
     check(T, ih_mr_destroy(&h, &mr) == 0, "DESTROY_MR failed");
     check(T, ih_cq_destroy(&h, &cqf) == 0 && ih_cq_destroy(&h, &cqg) == 0,
           "DESTROY_CQ failed");
     teardown(T, &h);
+}
+
+/* The guest kernel's form: the RQ qtype, as for a QP's own RQ */
+static void test_srq(void)
+{
+    test_srq_rung("srq", IH_QTYPE_RQ, 0);
+}
+
+/* The provider with ansible/files/patches/rdma-core/0005: the RQ qtype, but
+ * with the SRQ ring it sets in every SRQ doorbell */
+static void test_srq_rq_ring(void)
+{
+    test_srq_rung("srq-rq-ring", IH_QTYPE_RQ, IH_DB_RING_SRQ);
+}
+
+/* The provider as proposed upstream (rdma-core #1799): the CQ qtype, with
+ * the SRQ ring */
+static void test_srq_cq_ring(void)
+{
+    test_srq_rung("srq-cq-ring", IH_QTYPE_CQ, IH_DB_RING_SRQ);
 }
 
 /* ---- Ethernet Tx and Rx ------------------------------------------------- */
@@ -6108,6 +6141,8 @@ static const struct {
     {"qp-flush-srq", test_qp_flush_srq},
     {"ud", test_ud},
     {"srq", test_srq},
+    {"srq-rq-ring", test_srq_rq_ring},
+    {"srq-cq-ring", test_srq_cq_ring},
     {"eth", test_eth},
     {"eth-dma", test_eth_dma_faults},
 #ifdef ERNIC_HAVE_P4

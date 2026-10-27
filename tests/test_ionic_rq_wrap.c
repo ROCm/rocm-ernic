@@ -621,14 +621,46 @@ static void test_ud_delivery_is_refused_to_the_wrong_queue(void)
     check(ionic_dp_ud_delivery_refused(&ud, &ud, 0) != NULL,
           "a zero Q_Key is refused");
 
-    /* QP1's key is privileged; the point of checking it is that an
-     * unprivileged guest guessing a QPN cannot reach the GSI queue. */
+    /*
+     * QP1's key is controlled. A WQE can't present it: a key there with the
+     * high bit set stands for the sending QP's own, and only the kernel can
+     * give a QP a controlled key. Taking the WQE's key literally would let
+     * any process that wrote 0x80010000 reach QP1.
+     */
     gsi.qkey_valid = true;
     gsi.qkey = 0x80010000u;
-    check(ionic_dp_ud_delivery_refused(&ud, &gsi, 0x80010000u) == NULL,
-          "the privileged GSI Q_Key is delivered");
+    check(ionic_dp_ud_delivery_refused(&ud, &gsi, 0x80010000u) != NULL,
+          "a user QP writing GSI's Q_Key into its WQE is refused");
+    check(ionic_dp_ud_delivery_refused(&ud, &gsi, DP_QKEY_CONTROLLED) != NULL,
+          "a user QP's controlled key sends its own, not GSI's");
     check(ionic_dp_ud_delivery_refused(&ud, &gsi, 0x11111111u) != NULL,
           "GSI refuses a datagram that does not present its Q_Key");
+
+    /* The substitution, between two user QPs: @ud's own key is 0x11111111,
+     * which its peer here shares. */
+    struct ionic_qp_ring peer = ud;
+    check(ionic_dp_ud_delivery_refused(&ud, &peer, DP_QKEY_CONTROLLED) == NULL,
+          "a controlled key in the WQE sends the sender's own Q_Key");
+    check(ionic_dp_ud_delivery_refused(&ud, &peer, 0x91111111u) == NULL,
+          "only the high bit of a controlled key matters");
+
+    /* A QP with no Q_Key of its own has none to send in a controlled one's
+     * place. */
+    struct ionic_qp_ring bare = {.valid = true, .ib_qp_type = IBV_QPT_UD};
+    check(ionic_dp_ud_delivery_refused(&bare, &gsi, 0x80010000u) != NULL,
+          "a controlled key from a QP with no Q_Key is refused");
+
+    /*
+     * What the kernel does: ib_mad sends every MAD from QP1 with
+     * IB_QP_SET_QKEY (0x80000000), so it goes out with QP1's own key and
+     * reaches QP1. Taken literally, that key would match nothing.
+     */
+    struct ionic_qp_ring gsi_tx = gsi;
+    check(ionic_dp_ud_delivery_refused(&gsi_tx, &gsi, DP_QKEY_CONTROLLED) ==
+              NULL,
+          "a MAD from QP1 with IB_QP_SET_QKEY reaches QP1");
+    check(ionic_dp_ud_delivery_refused(&gsi_tx, &gsi, 0x80010000u) == NULL,
+          "QP1 sending its own key explicitly reaches QP1");
 }
 
 /* Storage for the registration tests, which need a CQ table too. */

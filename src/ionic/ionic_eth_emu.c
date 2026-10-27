@@ -457,7 +457,7 @@ ssize_t ionic_eth_emu_bar2_access(struct ionic_eth_emu *emu, char *buf,
     /* Doorbell write: decode and forward to the appropriate queue.
      * ionic doorbell layout (8 bytes, little-endian):
      *   [15:0]  p_index  (producer index)
-     *   [23:16] ring     (0=normal, 1=arm CQ/EQ)
+     *   [23:16] ring     (0=normal, 1=arm CQ/EQ, 2=arm solicited, 3=SRQ)
      *   [31:24] qid_lo
      *   [47:32] qid_hi
      *   [63:48] reserved
@@ -1059,7 +1059,9 @@ void ionic_eth_emu_handle_lif_identify(struct ionic_eth_emu *emu,
     srq[0] = IONIC_RDMA_QTYPE_SRQ;
     /* qid_count -- becomes the guest's max_srq */
     ernic_put_le32(srq + 4, ERNIC_MAX_SRQ);
-    ernic_put_le32(srq + 8, 0); /* qid_base */
+    /* qid_base -- the first id handle_create_srq_op() hands out. The driver
+     * reads only the count, but the field should still be true. */
+    ernic_put_le32(srq + 8, IONIC_SRQ_QID_BASE);
 
     /*
      * Both halves of the gate are required. ionic_query_device() reports an

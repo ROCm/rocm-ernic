@@ -122,6 +122,10 @@ static inline uint8_t ionic_dp_cq_stride_log2(
  * starting SRQ ids at that bound keeps the two apart with no table to
  * consult. The last one still has to fit the 24 bits a doorbell, and an
  * admin command's id_ver, carry a qid in.
+ *
+ * The provider as proposed upstream (rdma-core #1799) rings the CQ qtype
+ * for an SRQ instead, with ring 3, which no CQ doorbell uses. SRQ ids do
+ * overlap CQ ids, so there the ring is what tells them apart.
  */
 #define IONIC_SRQ_QID_BASE ERNIC_MAX_QP
 _Static_assert(IONIC_SRQ_QID_BASE >= ERNIC_MAX_QP,

@@ -646,6 +646,18 @@
   and NVMe-oF a data transfer error. NVMe-oF also refuses a data block SGL
   that is neither keyed nor in capsule, which carried no key at all, as an
   invalid SGL descriptor type. Host memory was never reachable.
+* **Any guest process could send a datagram as the kernel's QP1.** The
+  device took the Q_Key in a UD send's work request literally, and the
+  sending process writes the work request, so a process that wrote QP1's
+  well-known key, `0x80010000`, could hand the guest kernel forged MADs (CM
+  messages, for instance) from inside the same VM. A Q_Key with the
+  high-order bit set is a controlled key, which only privileged consumers
+  may send: as the IB spec requires, the device now sends the sending QP's
+  own Q_Key in its place, and refuses the datagram if that QP has none. The
+  guest kernel refuses a controlled key on a user QP. This also lets the
+  kernel's own MADs, which `ib_mad` sends with `0x80000000` to stand for
+  QP1's key, reach a QP1 in the same VM, which they couldn't. Datagrams
+  between servers are still not checked.
 * **Memory errors a guest could cause in the ionic device.** A malicious or
   buggy guest could make the server:
   * use freed memory, with an admin queue doorbell after `RDMA_RESET_LIF`;
@@ -729,6 +741,15 @@
     disagree, so the kernel CM resolved a bogus source address and silently
     dropped every CM REQ, and guest-to-guest `rdma_connect()` retried
     forever.
+  * A QP on an SRQ receives with the ionic provider as proposed upstream
+    (rdma-core #1799), without `ansible/files/patches/rdma-core/0005`. That
+    provider rings an SRQ's doorbell on the CQ qtype with the SRQ ring,
+    which the device ignored, so the QP completed its sends and never a
+    receive. The device accepts that form and the RQ qtype the guest kernel
+    and the patched provider use.
+  * The LIF identity reports the SRQ ids' real `qid_base`, 256, the first
+    id `CREATE_SRQ` gives out. It reported 0. The guest driver doesn't read
+    it.
   * An MSI-X interrupt raised while its vector is masked, as every vector is
     after reset, is delivered when the guest unmasks it, by either path,
     rather than lost.

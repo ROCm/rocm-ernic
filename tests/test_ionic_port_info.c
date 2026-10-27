@@ -511,6 +511,12 @@ static void test_srq_capability_is_published(void)
     CHECK(qid_count == ERNIC_MAX_SRQ, "srq_qtype.qid_count is %u, expected %u",
           qid_count, (unsigned)ERNIC_MAX_SRQ);
 
+    /* The driver ignores the base, but CREATE_SRQ's ids start here. */
+    uint32_t qid_base = ernic_get_le32(srq + 8);
+    CHECK(qid_base == IONIC_SRQ_QID_BASE,
+          "srq_qtype.qid_base is %u, expected %u", qid_base,
+          (unsigned)IONIC_SRQ_QID_BASE);
+
     CHECK((rdma[LIF_ID_ALLOC_QID_CAP_OFF] & IONIC_LIF_RDMA_ALLOC_QID_SRQ) != 0,
           "alloc_qid_cap does not claim SRQ qid allocation");
 
