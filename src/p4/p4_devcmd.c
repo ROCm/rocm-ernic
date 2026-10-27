@@ -428,6 +428,13 @@ static uint8_t rpc_entry_update(const struct p4_devcmd *pd, const uint8_t *req,
     memcpy(up.action, u.action, P4_DEVCMD_NAME_MAX);
     up.action[P4_DEVCMD_NAME_MAX] = '\0';
 
+    /* The engine names a table or action it refuses in a message that is
+     * logged, so a name that could forge a log line or drive the terminal
+     * is refused here, before anything prints it. */
+    if (!p4_name_printable(up.table, strlen(up.table)) ||
+        !p4_name_printable(up.action, strlen(up.action)))
+        return P4_STS_EINVAL;
+
     p = req + sizeof(u);
     for (uint16_t i = 0; i < nmatch; i++) {
         struct p4_rpc_entry_match m;

@@ -2005,6 +2005,10 @@ static void reject_case(const struct json_object *c, size_t i)
            err);
     checkf(strstr(err, want) != NULL, "%s: refused with \"%s\", want \"%s\"",
            name, err, want);
+    /* The reason reaches the log, so a name echoed into it must not carry
+     * a newline or an escape from the document. */
+    checkf(p4_name_printable(err, strlen(err)),
+           "%s: the refusal is not printable", name);
     if (rc == 0)
         p4_json_free(prog);
     free(doc);

@@ -48,6 +48,9 @@ SANITIZER_RE = re.compile(
 # P4_PROGRAM_MAX in src/p4/p4_engine.h: the largest program the engine takes.
 P4_PROGRAM_MAX = 4 * 1024 * 1024
 
+# P4_STS_EINVAL in src/p4/p4_devcmd.h: a malformed request.
+P4_STS_EINVAL = 3
+
 
 def p4_stats(server):
     """Parse the server's shutdown statistics line into a dict.
@@ -481,6 +484,61 @@ def test_cvt_guest_loads_program(suite, server_factory):
         stop_server(server)
 
 
+def test_entry_name_injection(suite, server_factory):
+    """A table update naming something unprintable is refused unlogged.
+
+    The engine names a table or action it refuses, and the server logs
+    that, so a guest choosing the name chooses what goes into the log.
+    The printable unknown table is the control: it shows that a refusal
+    does reach the log, so the forged lines' absence means something.
+    """
+    # The entry is otherwise valid for Ing.policy, so an action name gets
+    # as far as the engine's action lookup, which is what echoes it.
+    rows = (
+        (
+            "a newline in the table",
+            "Ing.policy\nrocm-ernic: FORGED-TABLE",
+            "Ing.convert",
+        ),
+        ("an escape in the action", "Ing.policy", "Ing.convert\x1b[2JFORGED-ACTION"),
+        # U+00E9 goes on the wire as UTF-8, two bytes past 0x7F.
+        ("a byte past ASCII", "Ing.éFORGED-HIGH", "Ing.convert"),
+    )
+    params = [bytes([p4.P4_FMT_FP16]), bytes([p4.P4_FMT_FP8_E4M3])]
+    with server_factory(["--p4", "--p4-guest-scope", "load"]) as server:
+        fix = CvtFixture(server)
+        try:
+            p4.load_program(fix.driver, convert_program())
+            suite.check_eq(
+                p4.entry(
+                    fix.driver, (p4.P4_UPDATE_INSERT, "Ing.nosuch", "Ing.convert")
+                ),
+                P4_STS_EINVAL,
+                "an unknown table was refused",
+            )
+            for what, table, action in rows:
+                suite.check_eq(
+                    p4.entry(
+                        fix.driver,
+                        (p4.P4_UPDATE_INSERT, table, action),
+                        matches=[bytes([ionic.OP_RDMA_WRITE])],
+                        params=params,
+                    ),
+                    P4_STS_EINVAL,
+                    f"a name with {what} was refused",
+                )
+        finally:
+            fix.close()
+        log = server.log_text()
+        stop_server(server)
+
+    suite.check(
+        "no table 'Ing.nosuch'" in log, "the unknown table's refusal was logged"
+    )
+    for tag in ("FORGED-TABLE", "FORGED-ACTION", "FORGED-HIGH"):
+        suite.check(tag not in log, f"{tag} never reached the log")
+
+
 def test_cvt_narrowing(suite, server_factory):
     """fp16 in one region becomes fp8 in a region half as long.
 
@@ -651,6 +709,7 @@ TESTS = (
     ("a file that cannot be a program is refused", test_program_file_refused),
     ("a scope that is not one is refused", test_bad_guest_scope),
     ("a guest loads the conversion program", test_cvt_guest_loads_program),
+    ("an unprintable entry name stays out of the log", test_entry_name_injection),
     ("fp16 narrows to fp8 on the RDMA path", test_cvt_narrowing),
     ("fp4 widens to fp16 on the RDMA path", test_cvt_widening),
     ("a two-entry write stays an ordinary transfer", test_cvt_plain_write_untouched),

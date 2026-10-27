@@ -112,24 +112,25 @@ static bool p4_get_array(const struct json_object *parent, const char *key,
 }
 
 /*
- * Fetch a string, copying it rather than borrowing: every pointer json-c
- * hands back dies with the tree.
+ * Copy a JSON string that is a name: 1 to out_cap - 1 bytes, all of them
+ * printable.  Copied rather than borrowed, since every pointer json-c hands
+ * back dies with the tree.
  *
- * The printable check is not cosmetic.  Names reach the log and the error
- * messages above, so a newline or an ANSI escape in one is log injection.
+ * Every string the loader keeps, looks a name up by, or prints comes
+ * through here; one compared only against a literal ("default", "*") or
+ * parsed as a number need not.  The printable check is not cosmetic: names
+ * reach the log and the error messages above, and JSON's \u escapes decode
+ * to control characters, so a newline or an ANSI escape in one is log
+ * injection.
  */
-static bool p4_get_str(const struct json_object *parent, const char *key,
-                       char *out, size_t out_cap)
+static bool p4_str_val(struct json_object *v, char *out, size_t out_cap)
 {
-    struct json_object *v;
     const char *s;
     int n;
 
-    if (!json_object_object_get_ex(parent, key, &v))
-        return false;
     /* Before get_string_len: on a null it returns NULL, and on an array it
      * returns the serialisation with a length of zero. */
-    if (!json_object_is_type(v, json_type_string))
+    if (!v || !json_object_is_type(v, json_type_string))
         return false;
 
     n = json_object_get_string_len(v);
@@ -144,14 +145,23 @@ static bool p4_get_str(const struct json_object *parent, const char *key,
     if (strlen(s) != (size_t)n)
         return false;
 
-    for (int i = 0; i < n; i++) {
-        if (s[i] < 0x20 || s[i] > 0x7E)
-            return false;
-    }
+    if (!p4_name_printable(s, (size_t)n))
+        return false;
 
     memcpy(out, s, (size_t)n);
     out[n] = '\0';
     return true;
+}
+
+/* Fetch member @key of @parent as a name, as p4_str_val() does. */
+static bool p4_get_str(const struct json_object *parent, const char *key,
+                       char *out, size_t out_cap)
+{
+    struct json_object *v;
+
+    if (!json_object_object_get_ex(parent, key, &v))
+        return false;
+    return p4_str_val(v, out, out_cap);
 }
 
 /*
@@ -330,8 +340,6 @@ static int p4_walk_header_types(struct p4_walk *w,
             struct json_object *fname, *fbits;
             struct p4_field *fd = &dst->fields[f];
             size_t tlen;
-            const char *sn;
-            int sl;
             int64_t bits;
 
             if (!tuple || !json_object_is_type(tuple, json_type_array))
@@ -348,20 +356,9 @@ static int p4_walk_header_types(struct p4_walk *w,
             if (!fname || !json_object_is_type(fname, json_type_string))
                 return p4_fail(w, -EINVAL, "'%s' field %zu has no name",
                                dst->name, f);
-            sl = json_object_get_string_len(fname);
-            sn = json_object_get_string(fname);
-            if (sl <= 0 || (size_t)sl >= sizeof(fd->name) || !sn ||
-                strlen(sn) != (size_t)sl)
+            if (!p4_str_val(fname, fd->name, sizeof(fd->name)))
                 return p4_fail(w, -EINVAL, "'%s' field %zu has a bad name",
                                dst->name, f);
-            for (int c = 0; c < sl; c++) {
-                if (sn[c] < 0x20 || sn[c] > 0x7E)
-                    return p4_fail(w, -EINVAL,
-                                   "'%s' field %zu has an unprintable name",
-                                   dst->name, f);
-            }
-            memcpy(fd->name, sn, (size_t)sl);
-            fd->name[sl] = '\0';
 
             fbits = json_object_array_get_idx(tuple, 1);
             /* A width of "*" is a variable-length field. Naming it is
@@ -661,29 +658,12 @@ static int p4_resolve_std_metadata(struct p4_walk *w)
 static bool p4_pair_strings(const struct json_object *arr, char *a, size_t acap,
                             char *b, size_t bcap)
 {
-    struct json_object *e;
-    const char *s;
-    int n;
-
     if (!arr || !json_object_is_type(arr, json_type_array) ||
         json_object_array_length(arr) != 2)
         return false;
 
-    for (int i = 0; i < 2; i++) {
-        char *dst = (i == 0) ? a : b;
-        size_t cap = (i == 0) ? acap : bcap;
-
-        e = json_object_array_get_idx(arr, (size_t)i);
-        if (!e || !json_object_is_type(e, json_type_string))
-            return false;
-        n = json_object_get_string_len(e);
-        s = json_object_get_string(e);
-        if (n <= 0 || (size_t)n >= cap || !s || strlen(s) != (size_t)n)
-            return false;
-        memcpy(dst, s, (size_t)n);
-        dst[n] = '\0';
-    }
-    return true;
+    return p4_str_val(json_object_array_get_idx(arr, 0), a, acap) &&
+           p4_str_val(json_object_array_get_idx(arr, 1), b, bcap);
 }
 
 /*
@@ -995,7 +975,7 @@ static int p4_walk_parser(struct p4_walk *w, const struct json_object *root)
         for (size_t t = 0; t < nt; t++) {
             struct json_object *tr = json_object_array_get_idx(tarr, t);
             struct json_object *next;
-            const char *name;
+            char name[P4_MAX_NAME + 1];
             p4_idx_t idx;
 
             if (!tr || !json_object_object_get_ex(tr, "next_state", &next))
@@ -1004,11 +984,10 @@ static int p4_walk_parser(struct p4_walk *w, const struct json_object *root)
             /* null means the parser accepts on this arm. */
             if (json_object_is_type(next, json_type_null))
                 continue;
-            if (!json_object_is_type(next, json_type_string))
+            if (!p4_str_val(next, name, sizeof(name)))
                 return p4_fail(w, -EINVAL,
                                "state '%s' arm %zu has a bad next_state",
                                dst->name, t);
-            name = json_object_get_string(next);
             idx = P4_IDX_NONE;
             for (uint16_t j = 0; j < w->prog->nparse_states; j++) {
                 if (strcmp(w->prog->parse_states[j].name, name) == 0) {
@@ -1063,15 +1042,12 @@ static int p4_walk_deparser(struct p4_walk *w, const struct json_object *root)
 
     for (size_t i = 0; i < no; i++) {
         struct json_object *e = json_object_array_get_idx(order, i);
-        const char *name;
+        char name[P4_MAX_NAME + 1];
         p4_idx_t h;
-        int sl;
 
         if (!e || !json_object_is_type(e, json_type_string))
             return p4_fail(w, -EINVAL, "deparser order %zu is not a name", i);
-        sl = json_object_get_string_len(e);
-        name = json_object_get_string(e);
-        if (sl <= 0 || sl > P4_MAX_NAME || !name || strlen(name) != (size_t)sl)
+        if (!p4_str_val(e, name, sizeof(name)))
             return p4_fail(w, -EINVAL, "deparser order %zu has a bad name", i);
 
         h = p4_find_header(w->prog, name);
@@ -1182,13 +1158,12 @@ static int p4_walk_operand(struct p4_walk *w, const struct json_object *p,
     }
 
     if (strcmp(type, "extern") == 0) {
-        const char *iname;
+        char iname[P4_MAX_NAME + 1];
 
-        if (!json_object_is_type(val, json_type_string))
+        if (!p4_str_val(val, iname, sizeof(iname)))
             return p4_fail(w, -EINVAL, "%s names an extern badly", where);
-        iname = json_object_get_string(val);
         dst->inst = P4_IDX_NONE;
-        for (uint16_t i = 0; iname && i < w->prog->nexterns; i++) {
+        for (uint16_t i = 0; i < w->prog->nexterns; i++) {
             if (strcmp(w->prog->externs[i].name, iname) == 0) {
                 dst->inst = (p4_idx_t)i;
                 break;
@@ -1197,7 +1172,7 @@ static int p4_walk_operand(struct p4_walk *w, const struct json_object *p,
         if (dst->inst == P4_IDX_NONE)
             return p4_fail(w, -EINVAL,
                            "%s calls on '%s', which was never instantiated",
-                           where, iname ? iname : "");
+                           where, iname);
         dst->kind = P4_OPD_EXTERN;
         return 0;
     }
@@ -1547,17 +1522,16 @@ static int p4_walk_expr_operand(struct p4_walk *w, const struct json_object *tv,
         return 0;
     }
     if (strcmp(type, "header") == 0) {
-        const char *hn;
+        char hn[P4_MAX_NAME + 1];
 
-        if (!json_object_is_type(val, json_type_string))
+        if (!p4_str_val(val, hn, sizeof(hn)))
             return p4_fail(w, -EINVAL, "%s names a header badly", where);
-        hn = json_object_get_string(val);
-        dst->header = hn ? p4_find_header(w->prog, hn) : P4_IDX_NONE;
+        dst->header = p4_find_header(w->prog, hn);
         if (dst->header == P4_IDX_NONE)
             return p4_fail(w, -EINVAL,
                            "%s uses header '%s', which does not "
                            "exist",
-                           where, hn ? hn : "");
+                           where, hn);
         dst->kind = P4_EO_HEADER;
         return 0;
     }
@@ -1602,7 +1576,7 @@ static int p4_walk_expr(struct p4_walk *w, const struct json_object *tv,
 {
     struct json_object *val, *left, *right, *opobj;
     struct p4_expr_node *node;
-    const char *opname;
+    char opname[P4_MAX_NAME + 1];
     p4_idx_t self;
     size_t which;
     bool known = false;
@@ -1621,9 +1595,8 @@ static int p4_walk_expr(struct p4_walk *w, const struct json_object *tv,
     if (!json_object_object_get_ex(val, "op", &opobj) ||
         !json_object_is_type(opobj, json_type_string))
         return p4_fail(w, -EINVAL, "%s has no operator", where);
-    opname = json_object_get_string(opobj);
-    if (!opname)
-        return p4_fail(w, -EINVAL, "%s has no operator", where);
+    if (!p4_str_val(opobj, opname, sizeof(opname)))
+        return p4_fail(w, -EINVAL, "%s has a bad operator", where);
 
     for (which = 0; which < sizeof(p4_expr_ops) / sizeof(p4_expr_ops[0]);
          which++) {
@@ -1724,21 +1697,20 @@ static int p4_resolve_next(struct p4_walk *w, const struct p4_pipeline *pl,
                            struct json_object *v, p4_idx_t *out,
                            const char *where)
 {
-    const char *name;
+    char name[P4_MAX_NAME + 1];
 
     if (!v || json_object_is_type(v, json_type_null)) {
         *out = P4_IDX_NONE;
         return 0;
     }
-    if (!json_object_is_type(v, json_type_string))
+    if (!p4_str_val(v, name, sizeof(name)))
         return p4_fail(w, -EINVAL, "%s has a bad next", where);
-    name = json_object_get_string(v);
-    *out = name ? p4_find_node(pl, name) : P4_IDX_NONE;
+    *out = p4_find_node(pl, name);
     if (*out == P4_IDX_NONE)
         return p4_fail(w, -EINVAL,
                        "%s points at '%s', which is not a table "
                        "or condition",
-                       where, name ? name : "");
+                       where, name);
     return 0;
 }
 
@@ -1883,14 +1855,13 @@ static int p4_walk_table(struct p4_walk *w, const struct json_object *t,
         return p4_fail(w, -EINVAL, "table '%s' has no actions", dst->name);
     for (size_t i = 0; i < na; i++) {
         struct json_object *e = json_object_array_get_idx(acts, i);
-        const char *name;
+        char name[P4_MAX_NAME + 1];
 
-        if (!e || !json_object_is_type(e, json_type_string))
+        if (!p4_str_val(e, name, sizeof(name)))
             return p4_fail(w, -EINVAL, "table '%s' action %zu is not a name",
                            dst->name, i);
-        name = json_object_get_string(e);
         dst->actions[i] = P4_IDX_NONE;
-        for (uint16_t a = 0; name && a < w->prog->nactions; a++) {
+        for (uint16_t a = 0; a < w->prog->nactions; a++) {
             if (strcmp(w->prog->actions[a].name, name) == 0) {
                 dst->actions[i] = (p4_idx_t)a;
                 break;
@@ -1900,7 +1871,7 @@ static int p4_walk_table(struct p4_walk *w, const struct json_object *t,
             return p4_fail(w, -EINVAL,
                            "table '%s' names action '%s', which does not "
                            "exist",
-                           dst->name, name ? name : "");
+                           dst->name, name);
         dst->next[i] = P4_IDX_NONE;
     }
     dst->nactions = (uint16_t)na;
@@ -2068,6 +2039,10 @@ static int p4_walk_next_tables(struct p4_walk *w, const struct json_object *t,
         bool found = false;
 
         (void)val2;
+        /* A member name is a string from the document like any other, so
+         * it is checked before the message below can print it. */
+        if (!p4_name_printable(key2, strlen(key2)))
+            return p4_fail(w, -EINVAL, "%s has an unprintable key", where);
         for (uint16_t i = 0; i < dst->nactions; i++) {
             if (strcmp(w->prog->actions[dst->actions[i]].name, key2) == 0) {
                 found = true;
