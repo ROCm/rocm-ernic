@@ -124,12 +124,18 @@ static void test_transfers(void)
                        "more regions than one list holds");
     check(calls == 3, "more regions than one list holds: not split in two");
 
-    /* The whole of guest memory, which splits again below the halves. */
+    /* The whole of guest memory, which splits again below the halves: 512
+     * regions take the whole, two halves of 256, then four quarters of 128,
+     * each of which fits. A split piece's halves are each tried once, not
+     * the rest of the transfer after every piece. */
     static uint8_t all[MEM_SIZE];
+    unsigned long before = fake_vfu_map_count(g_vfu);
     fill(all, sizeof(all), 4);
     check(ernic_dma_write(g_dma, g_vfu, FAKE_VFU_GPA_BASE, all, sizeof(all)) ==
               0,
           "all of guest memory: write failed");
+    check(fake_vfu_map_count(g_vfu) - before == 7,
+          "all of guest memory: not split into quarters");
     static uint8_t back[MEM_SIZE];
     check(fake_vfu_read(g_vfu, FAKE_VFU_GPA_BASE, back, sizeof(back)) &&
               memcmp(back, all, sizeof(all)) == 0,

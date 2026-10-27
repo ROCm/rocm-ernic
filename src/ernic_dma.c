@@ -13,6 +13,7 @@
 #include "ernic_dma.h"
 
 #include <errno.h>
+#include <limits.h> /* CHAR_BIT */
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h> /* PROT_READ, PROT_WRITE */
@@ -106,21 +107,34 @@ static int dma_xfer_piece(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx,
 static int dma_xfer(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx, uint64_t gpa,
                     uint8_t *rbuf, const uint8_t *wbuf, size_t len)
 {
+    /*
+     * The second halves of split pieces, still to be done, the last split's
+     * on top. A piece at depth d of the splitting is at most len / 2^d
+     * bytes, rounded up, and only a piece of two bytes or more is split, so
+     * no more than one per bit of size_t is ever waiting.
+     */
+    size_t pending[sizeof(size_t) * CHAR_BIT];
+    size_t npending = 0;
     size_t done = 0;
     size_t piece = len;
 
     if (!ernic_dma_range_ok(gpa, len))
         return -EINVAL;
+    /* libvfio-user maps a zero length to no entries, and vfu_sgl_get()
+     * can't take none. */
+    if (!len)
+        return 0;
 
     /*
-     * A piece that needs more entries than one list holds is halved until
-     * it fits, and then the rest is tried whole. A span of n bytes needs at
-     * most n entries, so halving ends by the time a piece is
-     * ERNIC_DMA_SGL_MAX bytes long, and the list is free again before each
-     * piece is mapped. A zero length isn't mapped at all: libvfio-user maps
-     * it to no entries, and vfu_sgl_get() can't take none.
+     * A piece that needs more entries than one list holds is split in two,
+     * and the halves are done in order, each split again if it still
+     * doesn't fit. Each half is tried once, rather than the whole rest of
+     * the transfer after every piece, which on fragmented memory maps
+     * several times as often. A span of n bytes needs at most n entries,
+     * so splitting ends by the time a piece is ERNIC_DMA_SGL_MAX bytes
+     * long, and the list is free again before each piece is mapped.
      */
-    while (done < len) {
+    for (;;) {
         int rc =
             dma_xfer_piece(dma, vfu_ctx, gpa + done, rbuf ? rbuf + done : NULL,
                            wbuf ? wbuf + done : NULL, piece);
@@ -128,13 +142,15 @@ static int dma_xfer(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx, uint64_t gpa,
         if (rc < 0)
             return rc;
         if (rc == DMA_PIECE_TOO_BIG) {
+            pending[npending++] = piece - piece / 2;
             piece /= 2;
             continue;
         }
         done += piece;
-        piece = len - done;
+        if (npending == 0)
+            return 0;
+        piece = pending[--npending];
     }
-    return 0;
 }
 
 int ernic_dma_read(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx, uint64_t gpa,
