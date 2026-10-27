@@ -19,14 +19,11 @@
 #ifndef RDMA_BACKEND_H
 #define RDMA_BACKEND_H
 
-#include <stdbool.h>
-#include <stddef.h>
 #include <stdint.h>
 
 #include "rdma_backend_defs.h"
 
 struct ibv_srq_attr;
-union ibv_gid;
 
 /* Multi-backend abstraction functions */
 const RdmaBackendOps *rdma_backend_get_ops(RdmaBackendType type);
@@ -36,55 +33,6 @@ const char *rdma_backend_type_to_string(RdmaBackendType type);
 int rdma_backend_init_with_ops(RdmaBackendDev *backend_dev,
                                RdmaBackendType type, const char *config);
 void rdma_backend_fini_with_ops(RdmaBackendDev *backend_dev);
-
-/*
- * Opaque node-to-node transport for the ionic data path.
- *
- * ionic MRs are guest-physical page tables reached over vfio-user DMA, which
- * only the ionic data path can resolve, so the mesh carries ionic's own
- * protocol as an opaque payload rather than RDMA operations of its own.
- *
- * The callback returns true having taken buf, which is from malloc(), and
- * must then free() it on every path, rejections included.  It returns false,
- * leaving buf with the caller, when it has no room for the message yet: the
- * receive thread offers it again shortly, and reads nothing more from the
- * peer meanwhile, which is how a node that falls behind slows its peers
- * down.  len is never 0.
- */
-typedef bool (*tcp_ionic_recv_fn)(void *opaque, uint32_t src_node, void *buf,
-                                  size_t len);
-
-/*
- * Header and body stay separate until they are queued.  Never waits for the
- * peer; -EAGAIN for a request (!reply) there is no room to queue yet.  tag is
- * the caller's name for a request, which tcp_backend_ionic_cancel() takes it
- * back by.  See rdma_backend_tcp.c.
- */
-int tcp_backend_send_ionic_v(RdmaBackendDev *backend_dev, uint32_t dst_node,
-                             const void *hdr, size_t hdr_len, const void *body,
-                             size_t body_len, uint64_t tag, bool reply);
-bool tcp_backend_ionic_has_room(RdmaBackendDev *backend_dev, uint32_t dst_node,
-                                size_t len);
-void tcp_backend_ionic_cancel(RdmaBackendDev *backend_dev, uint64_t tag,
-                              uint64_t mask);
-/* Returns once nothing is still calling the callback it replaces. */
-void tcp_backend_set_ionic_recv_cb(RdmaBackendDev *backend_dev,
-                                   tcp_ionic_recv_fn fn, void *opaque);
-
-/*
- * Mesh addressing, shared with the ionic data path so there is one copy of
- * the GID-to-node rule.  Returns UINT32_MAX when the backend is not a mesh.
- */
-uint32_t tcp_backend_local_node_id(RdmaBackendDev *backend_dev);
-uint32_t tcp_backend_node_from_gid(RdmaBackendDev *backend_dev,
-                                   const union ibv_gid *dgid);
-/*
- * Claim a GID for this node, or withdraw it, and re-advertise.  What would
- * make a guest address that appears after the mesh formed resolvable by a
- * peer -- nothing calls it yet outside the tests; see rdma_backend_tcp.c.
- */
-int tcp_backend_claim_gid(RdmaBackendDev *backend_dev, const union ibv_gid *gid,
-                          bool add);
 
 int rdma_backend_create_srq(RdmaBackendSRQ *srq, RdmaBackendPD *pd,
                             uint32_t max_wr, uint32_t max_sge,

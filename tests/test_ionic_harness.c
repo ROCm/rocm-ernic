@@ -36,6 +36,7 @@
 
 #include "byteorder.h"
 #include "ernic_limits.h"
+#include "ernic_mesh.h"
 #include "ernic_rm.h"
 #include "ernic_stats.h"
 #include "fake_vfu.h"
@@ -5629,6 +5630,82 @@ static void test_s3(void)
     teardown(T, &h);
 }
 
+/* ---- Backends with no mesh --------------------------------------------- */
+
+/* Never called: no backend here has a mesh to call it from */
+static bool mesh_none_recv(void *opaque, uint32_t src_node, void *buf,
+                           size_t len)
+{
+    (void)opaque;
+    (void)src_node;
+    (void)len;
+    free(buf);
+    return true;
+}
+
+/*
+ * The data path calls the mesh wrappers whatever the backend, and only the
+ * TCP backend has mesh operations. On every other backend the wrappers
+ * answer themselves: no node, nothing to send on, room for anything, and no
+ * peers to cancel for, call back from, or tell about a GID. The TCP
+ * backend's operations once took every backend's private block for their
+ * own, so shutting down a loopback server that a guest had used wrote the
+ * receive callback past the end of the loopback state.
+ */
+static void test_mesh_none(void)
+{
+    static const char T[] = "mesh-none";
+    static const char *const backends[] = {"none", "loopback", NV_BACKEND,
+                                           S3H_BACKEND};
+    static const uint8_t hdr[8] = {1};
+    static int opaque;
+    uint8_t gid[16] = {0xfe, 0x80};
+
+    for (unsigned t = 0; t < RDMA_BACKEND_TYPE_MAX; t++) {
+        const RdmaBackendOps *ops = rdma_backend_get_ops((RdmaBackendType)t);
+
+        if (!check(T, ops != NULL, "backend %u isn't registered", t))
+            continue;
+        if (t == RDMA_BACKEND_TYPE_TCP)
+            check(T, ops->mesh != NULL, "%s: no mesh", ops->name);
+        else
+            check(T, ops->mesh == NULL, "%s: a mesh", ops->name);
+    }
+
+    /* No device at all, then each backend's, as the data path calls them */
+    for (size_t i = 0; i <= sizeof(backends) / sizeof(backends[0]); i++) {
+        const char *name = i == 0 ? "no device" : backends[i - 1];
+        pvrdma_handle_t handle = NULL;
+        struct ih h;
+        uint32_t node;
+        int rc;
+
+        if (i > 0) {
+            if (!setup(T, &h, name))
+                continue;
+            handle = h.dev->pvrdma_handle;
+        }
+
+        node = ernic_mesh_local_node(handle);
+        check(T, node == UINT32_MAX, "%s: local node %u", name, node);
+        node = ernic_mesh_node_from_gid(handle, gid);
+        check(T, node == UINT32_MAX, "%s: the GID is node %u's", name, node);
+        rc = ernic_mesh_claim_gid(handle, gid, true);
+        check(T, rc == (handle ? 0 : -EINVAL), "%s: claiming a GID gave %d",
+              name, rc);
+        rc = ernic_mesh_sendv(handle, 2, hdr, sizeof(hdr), NULL, 0, 0, false);
+        check(T, rc == -EINVAL, "%s: a send gave %d, not -EINVAL", name, rc);
+        check(T, ernic_mesh_has_room(handle, 2, sizeof(hdr)),
+              "%s: no room to send", name);
+        ernic_mesh_cancel(handle, 0, UINT64_MAX);
+        ernic_mesh_set_recv_cb(handle, mesh_none_recv, &opaque);
+        ernic_mesh_set_recv_cb(handle, NULL, NULL);
+
+        if (i > 0)
+            teardown(T, &h);
+    }
+}
+
 /* ---- Teardown ---------------------------------------------------------- */
 
 /*
@@ -6049,6 +6126,7 @@ static const struct {
     {"nvmeof", test_nvmeof},
     {"nvmeof-queues", test_nvmeof_queue_limit},
     {"s3", test_s3},
+    {"mesh-none", test_mesh_none},
     {"teardown", test_teardown},
     {"backend-names", test_backend_names},
     {"none", test_none},

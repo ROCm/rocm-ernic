@@ -4,9 +4,11 @@
  * ionic resolves rkeys against its own guest-physical MR table rather than
  * through rdma_rm, so it cannot use the backend's RDMA messages.  It carries
  * its own protocol as an opaque mesh payload instead; these are thin
- * wrappers over the tcp_backend_* entry points, through the opaque handle
- * from rocm_ernic_compat.h, so ionic_datapath.c does not have to pull in the
- * QEMU-derived headers.  rocm_ernic_compat.c implements them.
+ * wrappers over the backend's mesh operations (RdmaMeshOps, in
+ * rdma/rdma_backend_ops.h), through the opaque handle from
+ * rocm_ernic_compat.h, so ionic_datapath.c does not have to pull in the
+ * QEMU-derived headers.  rocm_ernic_compat.c implements them, and answers
+ * for a backend with no mesh (loopback, none, nvmeof and s3) itself.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -26,8 +28,7 @@
  * malloc(), and must free() it on every path, rejections included.  One that
  * returns false has no room for the message yet, and leaves buf with the
  * mesh, which offers it again shortly and reads nothing more from that peer
- * meanwhile.  It must match tcp_ionic_recv_fn, which ernic_mesh_set_recv_cb()
- * casts it to.
+ * meanwhile.  len is never 0.
  */
 typedef bool (*ernic_mesh_recv_fn)(void *opaque, uint32_t src_node, void *buf,
                                    size_t len);
@@ -74,7 +75,7 @@ int ernic_mesh_claim_gid(pvrdma_handle_t handle, const uint8_t *gid_16bytes,
  * negative errno.  -EAGAIN means a request (!reply) found the queue to
  * dst_node full, and is to be tried again later; a reply is queued past that
  * point.  tag is the caller's name for a request, for ernic_mesh_cancel(); a
- * reply's is ignored.  See tcp_backend_send_ionic_v().
+ * reply's is ignored.  See tcp_mesh_sendv() in rdma_backend_tcp.c.
  */
 int ernic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
                      size_t hdr_len, const void *body, size_t body_len,
@@ -87,7 +88,7 @@ bool ernic_mesh_has_room(pvrdma_handle_t handle, uint32_t dst_node, size_t len);
 /*
  * Take back the queued requests that haven't started to go out and whose tag
  * matches tag in the bits mask selects, so none of them reaches its peer.
- * Replies are left alone.  See tcp_backend_ionic_cancel().
+ * Replies are left alone.  See tcp_mesh_cancel() in rdma_backend_tcp.c.
  */
 void ernic_mesh_cancel(pvrdma_handle_t handle, uint64_t tag, uint64_t mask);
 /*
