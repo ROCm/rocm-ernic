@@ -15,6 +15,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include <errno.h>
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -599,6 +600,25 @@ void ionic_adminq_post_cqe(const struct ionic_adminq_ctx *ctx,
  * -------------------------------------------------------------------------
  */
 
+/*
+ * The status that fails a command whose data path registration returned
+ * @err. The driver turns each back into the errno here
+ * (ionic_error_to_errno()), so the guest learns why.
+ */
+static uint8_t adminq_dp_status(int err)
+{
+    switch (err) {
+    case -EINVAL:
+        return IONIC_RC_EINVAL;
+    case -ENOMEM:
+        return IONIC_RC_ENOMEM;
+    case -ENOSPC:
+        return IONIC_RC_ENOSPC;
+    default:
+        return IONIC_RC_EIO;
+    }
+}
+
 /* -------------------------------------------------------------------------
  * ionic_admin_create_cq body (34 bytes from ionic_fw.h):
  *   le32 eq_id        [0:3]
@@ -633,8 +653,8 @@ static uint8_t handle_create_cq_op(struct ionic_adminq_ctx *ctx,
 
     /*
      * The driver takes its CQ ids from below the count in the LIF identity,
-     * which is all the data path's table holds. A CQ past it would be
-     * reported created and then never complete anything.
+     * which is all the data path's table holds. A CQ past it has no slot
+     * there, so it is refused before anything is allocated for it.
      */
     if (cq_id >= ERNIC_MAX_CQ) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
@@ -659,7 +679,7 @@ static uint8_t handle_create_cq_op(struct ionic_adminq_ctx *ctx,
     /*
      * The depth is a guest exponent, and the CQ is sized by shifting by it,
      * so it is checked first, along with the stride the data path would
-     * otherwise refuse after the CQ had been allocated and reported created.
+     * otherwise refuse only after the CQ had been allocated.
      */
     if (!ionic_dp_ring_geometry_ok(
             ring.depth_log2, ionic_dp_cq_stride_log2(&ring),
@@ -700,10 +720,23 @@ static uint8_t handle_create_cq_op(struct ionic_adminq_ctx *ctx,
         return IONIC_RC_ERDMA;
     }
 
+    /*
+     * Its failure is the command's failure: a CQ the data path has no ring
+     * for never completes anything. It is registered before the id is
+     * mapped, so on failure only the resource manager's CQ needs releasing,
+     * and the driver can use the id again.
+     */
+    ret = ionic_datapath_register_cq(ctx->dp, cq_id, eq_id, &ring);
+    if (ret) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_CQ %u: datapath registration failed (%d)",
+                cq_id, ret);
+        ernic_rm_dealloc_cq(ctx->pvrdma_handle, cq_handle);
+        return adminq_dp_status(ret);
+    }
+
     *entry = (struct ionic_cq_map_entry){
         .valid = true, .cq_id = cq_id, .handle = cq_handle};
-
-    ionic_datapath_register_cq(ctx->dp, cq_id, eq_id, &ring);
 
     vfu_log(ctx->vfu_ctx, LOG_INFO,
             "ionic_adminq CREATE_CQ cq_id=%u handle=%u depth=2^%u", cq_id,
@@ -1199,11 +1232,19 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
         return IONIC_RC_ERDMA;
     }
 
+    /* As for CREATE_CQ: a QP with no rings ignores its doorbells. */
+    ret = ionic_datapath_register_qp(ctx->dp, qp_id, ib_qp_type, sq_cq_id, &sq,
+                                     rq_cq_id, &rq);
+    if (ret) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_QP %u: datapath registration failed (%d)",
+                qp_id, ret);
+        ernic_rm_dealloc_qp(ctx->pvrdma_handle, qpn);
+        return adminq_dp_status(ret);
+    }
+
     *entry =
         (struct ionic_qp_map_entry){.valid = true, .qp_id = qp_id, .qpn = qpn};
-
-    ionic_datapath_register_qp(ctx->dp, qp_id, ib_qp_type, sq_cq_id, &sq,
-                               rq_cq_id, &rq);
 
     /*
      * The id was read and checked before any of the above was allocated.
@@ -1502,10 +1543,10 @@ static uint8_t handle_create_mr_op(struct ionic_adminq_ctx *ctx,
     /*
      * Refused before anything is allocated: a region that runs past the
      * end of the address space, which the data path would otherwise
-     * decline to register under a command that had succeeded; an id
-     * already in use, which mapped over would lose the MR that had it;
-     * and a full map, which would leave the new one unmapped. Either MR
-     * could then never be found again by DESTROY_MR, and would leak.
+     * refuse only after the MR had been allocated; an id already in use,
+     * which mapped over would lose the MR that had it; and a full map,
+     * which would leave the new one unmapped. Either MR could then never
+     * be found again by DESTROY_MR, and would leak.
      * The driver surfaces this as the -ENOMEM its ib_alloc_mr() already
      * knows how to unwind.
      */
@@ -1545,19 +1586,35 @@ static uint8_t handle_create_mr_op(struct ionic_adminq_ctx *ctx,
                 mr_id, ret);
         return IONIC_RC_ERDMA;
     }
-    *entry = (struct ionic_mr_map_entry){
-        .valid = true, .mr_id = mr_id, .handle = mr_handle};
-
     struct ionic_dp_buf_desc mrbuf = {.dma_addr = ernic_get_le64(body + 32),
                                       .map_count = ernic_get_le32(body + 28),
                                       .page_size_log2 = body[44]};
-    /*
-     * Not yet the command's failure. An MR that a REG_MR work request
-     * binds later arrives with no region and is refused here, as it
-     * should be; failing the command for the other reasons would need
-     * the resource manager's MR above unwound first.
-     */
-    (void)ionic_datapath_register_mr(ctx->dp, mrid, mr_va, mr_len, &mrbuf);
+    if (mr_len == 0) {
+        /*
+         * No region yet: ib_alloc_mr() and ib_alloc_mw() create the MR
+         * empty, and a REG_MR work request binds it later. Nothing is
+         * reachable through its key until then, whatever was bound to the
+         * key before.
+         */
+        ionic_datapath_unregister_mr(ctx->dp, mrid);
+    } else {
+        /*
+         * As for CREATE_CQ: an MR the data path has no page table for is
+         * one every access through its key fails.
+         */
+        ret = ionic_datapath_register_mr(ctx->dp, mrid, mr_va, mr_len, &mrbuf);
+        if (ret) {
+            vfu_log(ctx->vfu_ctx, LOG_ERR,
+                    "ionic_adminq CREATE_MR %u: datapath registration failed "
+                    "(%d)",
+                    mr_id, ret);
+            ernic_rm_dealloc_mr(ctx->pvrdma_handle, mr_handle);
+            return adminq_dp_status(ret);
+        }
+    }
+
+    *entry = (struct ionic_mr_map_entry){
+        .valid = true, .mr_id = mr_id, .handle = mr_handle};
 
     vfu_log(ctx->vfu_ctx, LOG_INFO,
             "ionic_adminq CREATE_MR mr_id=%u handle=%u access=%#x pd=%u "

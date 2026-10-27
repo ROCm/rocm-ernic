@@ -916,17 +916,27 @@ static void test_admin_dma_faults(void)
               "CREATE_SRQ after refused ones failed"))
         check(T, ih_srq_destroy(&h, &srq) == 0, "DESTROY_SRQ failed");
 
-    /* A CQ or QP whose page table can't be read still completes the
-     * command: the data path has no way to report it. Each can be
-     * destroyed. CREATE_QP's page table is its third DMA, after both of the
-     * WQE's strides. */
+    /*
+     * CREATE_CQ and CREATE_QP fail too when their page table can't be
+     * read, since the queue would have no ring. Each leaves nothing behind:
+     * the resource manager holds no more than before, and the id can be
+     * created again. CREATE_QP's page table is its third DMA, after both of
+     * the WQE's strides.
+     */
+    const PVRDMADev *pvrdma = h.dev->pvrdma_handle;
+    const RdmaDeviceResources *res = &pvrdma->rdma_dev_res;
+    const uint32_t cqs = res->cq_tbl.used, qps = res->qp_tbl.used;
+
     memset(body, 0, sizeof(body));
     build_cq(body, 8, 5);
     ernic_put_le32(body + 20, 2);
     ernic_put_le64(body + 24, h.scratch);
     fake_vfu_fail_nth_map(h.vfu, 2);
-    check(T, ih_admin(&h, IH_ADMIN_CREATE_CQ, body, 34, NULL) >= 0,
-          "CREATE_CQ with an unreadable page table drew no completion");
+    check(T, ih_admin(&h, IH_ADMIN_CREATE_CQ, body, 34, NULL) == IONIC_RC_EIO,
+          "CREATE_CQ with an unreadable page table succeeded");
+    check(T, res->cq_tbl.used == cqs, "the refused CREATE_CQ kept its CQ");
+    check(T, ih_admin(&h, IH_ADMIN_CREATE_CQ, body, 34, NULL) == 0,
+          "CREATE_CQ of the refused CQ's id failed");
     ernic_put_le32(body, 2);
     check(T, ih_admin(&h, IH_ADMIN_DESTROY_CQ, body, 4, NULL) == 0,
           "DESTROY_CQ of that CQ failed");
@@ -937,8 +947,11 @@ static void test_admin_dma_faults(void)
     ernic_put_le64(body + 24, h.scratch);
     ernic_put_le32(body + 56, 4);
     fake_vfu_fail_nth_map(h.vfu, 3);
-    check(T, ih_admin(&h, IH_ADMIN_CREATE_QP, body, 64, NULL) >= 0,
-          "CREATE_QP with an unreadable page table drew no completion");
+    check(T, ih_admin(&h, IH_ADMIN_CREATE_QP, body, 64, NULL) == IONIC_RC_EIO,
+          "CREATE_QP with an unreadable page table succeeded");
+    check(T, res->qp_tbl.used == qps, "the refused CREATE_QP kept its QP");
+    check(T, ih_admin(&h, IH_ADMIN_CREATE_QP, body, 64, NULL) == 0,
+          "CREATE_QP of the refused QP's id failed");
     ernic_put_le32(body, 4);
     check(T, ih_admin(&h, IH_ADMIN_DESTROY_QP, body, 4, NULL) == 0,
           "DESTROY_QP of that QP failed");
@@ -1988,18 +2001,38 @@ static void test_dp_dma_faults(void)
     check(T, eq_count(h, RC_CQ_A) == 0, "an unwritable event arrived");
     expect_send(T, "RDMA_WRITE with its event refused", &r, 0);
 
-    /* An MR whose page table can't be read takes no RDMA */
+    /*
+     * An MR whose page table can't be read, or has more entries than its
+     * region needs, is refused, and leaves nothing behind: the resource
+     * manager holds no more MRs than before, no key reaches the region, and
+     * the id can be created again.
+     */
+    const PVRDMADev *pvrdma = h->dev->pvrdma_handle;
+    const uint32_t mrs = pvrdma->rdma_dev_res.mr_tbl.used;
     struct ih_mr mrc;
-    fake_vfu_fail_nth_map(h->vfu, 2);
-    if (check(T,
-              ih_mr_create(h, &mrc, MR_C, VA_C, 2 * IH_PAGE_SIZE, IH_ACCESS_ALL,
-                           false),
-              "CREATE_MR with an unreadable page table failed")) {
+    if (check(T, ih_mr_alloc(h, &mrc, MR_C, VA_C, 2 * IH_PAGE_SIZE, false),
+              "MR pages not allocated")) {
+        fake_vfu_fail_nth_map(h->vfu, 2);
+        check(T,
+              create_mr_as(h, MR_C, VA_C, 2 * IH_PAGE_SIZE, mrc.npages,
+                           mrc.pt_gpa) == IONIC_RC_EIO,
+              "CREATE_MR with an unreadable page table succeeded");
+        check(T,
+              create_mr_as(h, MR_C, VA_C, IH_PAGE_SIZE, mrc.npages + 1,
+                           mrc.pt_gpa) == IONIC_RC_EINVAL,
+              "CREATE_MR with too long a page table succeeded");
+        check(T, pvrdma->rdma_dev_res.mr_tbl.used == mrs,
+              "the refused CREATE_MRs kept their MRs");
         s.remote_va = VA_C;
         s.rkey = MR_C;
         ih_post_send(h, &r.a, &s);
-        expect_send(T, "RDMA_WRITE to an MR with no page table", &r,
-                    IH_STS_REMOTE_ACC_ERR);
+        expect_send(T, "RDMA_WRITE to a refused MR", &r, IH_STS_REMOTE_ACC_ERR);
+        check(T,
+              create_mr_as(h, MR_C, VA_C, 2 * IH_PAGE_SIZE, mrc.npages,
+                           mrc.pt_gpa) == 0,
+              "CREATE_MR of the refused MR's id failed");
+        ih_post_send(h, &r.a, &s);
+        expect_send(T, "RDMA_WRITE to the MR created again", &r, 0);
         check(T, ih_mr_destroy(h, &mrc) == 0, "DESTROY_MR C failed");
     }
 
@@ -2025,12 +2058,18 @@ static void test_dp_dma_faults(void)
                   -EINVAL,
               "the data path took an SRQ of 2^%u by 2^%u", bad.depth_log2,
               bad.stride_log2);
-        ionic_datapath_register_qp(dp, RC_QP_A, IBV_QPT_RC, RC_CQ_A, &bad,
-                                   RC_CQ_A, &good);
+        check(T,
+              ionic_datapath_register_qp(dp, RC_QP_A, IBV_QPT_RC, RC_CQ_A, &bad,
+                                         RC_CQ_A, &good) == -EINVAL,
+              "the data path took an SQ of 2^%u by 2^%u", bad.depth_log2,
+              bad.stride_log2);
         /* An RQ has no stride floor here: an SRQ-bound QP's is zero */
         if (bad.stride_log2 >= IONIC_WQE_MIN_STRIDE_LOG2)
-            ionic_datapath_register_qp(dp, RC_QP_A, IBV_QPT_RC, RC_CQ_A, &good,
-                                       RC_CQ_A, &bad);
+            check(T,
+                  ionic_datapath_register_qp(dp, RC_QP_A, IBV_QPT_RC, RC_CQ_A,
+                                             &good, RC_CQ_A, &bad) == -EINVAL,
+                  "the data path took an RQ of 2^%u by 2^%u", bad.depth_log2,
+                  bad.stride_log2);
     }
     s.remote_va = VA_B + 0x800;
     s.rkey = MR_B;
@@ -2045,7 +2084,9 @@ static void test_dp_dma_faults(void)
     fill(cq_was, sizeof(cq_was), 0x5a);
     fake_vfu_write(h->vfu, bad_cq.buf.dma_addr, cq_was, sizeof(cq_was));
     bad_cq.stride_log2 = 4;
-    ionic_datapath_register_cq(dp, RC_CQ_A, IH_EQ_ID, &bad_cq);
+    check(T,
+          ionic_datapath_register_cq(dp, RC_CQ_A, IH_EQ_ID, &bad_cq) == -EINVAL,
+          "the data path took a CQ of stride 2^%u", bad_cq.stride_log2);
     ih_post_send(h, &r.a, &s);
     check(T, cq_empty(h, &r.cqa), "a CQ with a refused stride took a CQE");
     fake_vfu_read(h->vfu, bad_cq.buf.dma_addr, cq_now, sizeof(cq_now));

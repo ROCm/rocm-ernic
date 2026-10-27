@@ -828,6 +828,13 @@
     `CREATE_QP` and `CREATE_MR` fail when they name an id already in use.
     Each used to succeed and leave a CQ, QP or MR that could never be
     destroyed, so a guest could use up the server's resources.
+  * `CREATE_CQ`, `CREATE_QP` and `CREATE_MR` fail when the device can't use
+    the page table they name: `EIO` when it can't be read, `EINVAL` when it
+    has more entries than the queue or region needs or a page size the
+    device doesn't support. Each used to succeed, leaving a CQ that never
+    completed anything, a QP whose doorbells did nothing, or an MR that
+    every access through its key failed with a remote access error.
+    `CREATE_SRQ` already failed.
   * `RDMA_RESET_LIF`, which the guest driver sends whenever it loads,
     frees every QP, CQ, MR, SRQ and address handle the driver had made.
     A driver that reloaded, crashed or rebooted with them still in place

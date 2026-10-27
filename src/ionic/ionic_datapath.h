@@ -148,17 +148,28 @@ void ionic_datapath_destroy(struct ionic_datapath *dp);
 void ionic_datapath_set_cq_event_cb(struct ionic_datapath *dp,
                                     ionic_dp_cq_event_fn_t fn, void *opaque);
 
-/* Registration, driven from the admin queue handlers in ionic_adminq.c. */
-void ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
-                                uint32_t eq_id,
-                                const struct ionic_dp_ring_desc *ring);
+/*
+ * Registration, driven from the admin queue handlers in ionic_adminq.c.
+ *
+ * The CQ and QP registrations return 0, or a negative errno with nothing
+ * registered under the id, an earlier registration of it included (except
+ * that a QP refused for its geometry keeps the rings it had): -EINVAL for an
+ * unknown id, a ring geometry outside the bounds the admin queue checks, or
+ * a page table the device can't honour, -ENOMEM, or -EIO when the page table
+ * can't be read. The caller must fail CREATE_CQ or CREATE_QP on a negative
+ * return: a CQ with no ring never completes anything, and a QP with none
+ * ignores its doorbells.
+ */
+int ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
+                               uint32_t eq_id,
+                               const struct ionic_dp_ring_desc *ring);
 void ionic_datapath_unregister_cq(struct ionic_datapath *dp, uint32_t cq_id);
 
-void ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
-                                uint8_t ib_qp_type, uint32_t sq_cq_id,
-                                const struct ionic_dp_ring_desc *sq,
-                                uint32_t rq_cq_id,
-                                const struct ionic_dp_ring_desc *rq);
+int ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
+                               uint8_t ib_qp_type, uint32_t sq_cq_id,
+                               const struct ionic_dp_ring_desc *sq,
+                               uint32_t rq_cq_id,
+                               const struct ionic_dp_ring_desc *rq);
 void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id);
 
 /*

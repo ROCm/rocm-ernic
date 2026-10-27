@@ -536,7 +536,10 @@ static void register_qp_as(struct ionic_datapath *dp, uint32_t qp_id,
     struct ionic_dp_ring_desc rq = sq;
 
     rq.buf.dma_addr = RQ_GPA(qp_id);
-    ionic_datapath_register_qp(dp, qp_id, type, cq_id, &sq, cq_id, &rq);
+    if (ionic_datapath_register_qp(dp, qp_id, type, cq_id, &sq, cq_id, &rq)) {
+        printf("FAIL: QP %u did not register\n", qp_id);
+        failures++;
+    }
     g_sq_slot[qp_id] = 0;
 }
 
@@ -584,13 +587,16 @@ static struct ionic_datapath *setup(void)
     dp->rx_polled_ms = T0;
     qemu_mutex_unlock(&dp->rx_lock);
 
-    ionic_datapath_register_cq(dp, CQ_ID, 0, &cq);
+    if (ionic_datapath_register_cq(dp, CQ_ID, 0, &cq) ||
+        ionic_datapath_register_mr(dp, MR_KEY, MR_GPA, MR_LEN, &mr)) {
+        ionic_datapath_destroy(dp);
+        return NULL;
+    }
     register_qp(dp, QP_A, CQ_ID);
     register_qp(dp, QP_B, CQ_ID);
     register_qp(dp, QP_C, CQ_UNKNOWN);
     ionic_datapath_set_dest(dp, QP_A, QP_B, UINT32_MAX);
     ionic_datapath_set_dest(dp, QP_B, QP_A, UINT32_MAX);
-    ionic_datapath_register_mr(dp, MR_KEY, MR_GPA, MR_LEN, &mr);
     return dp;
 }
 
