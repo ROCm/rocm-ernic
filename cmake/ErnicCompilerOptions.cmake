@@ -25,6 +25,14 @@ option(ERNIC_WERROR
   "Treat compiler warnings as errors for project code"
   OFF)
 
+# Fill every automatic variable the code doesn't initialize with a
+# pattern, so a read of one before it's written can't see stale stack
+# memory. Turn it off for a build that runs under valgrind's memcheck,
+# since initializing every variable hides the reads memcheck reports.
+option(ERNIC_TRIVIAL_AUTO_VAR_INIT
+  "Initialize automatic variables with a pattern (off for valgrind)"
+  ON)
+
 # Linker hardening, following the OpenSSF Compiler Options Hardening Guide
 # for C and C++. Some distributions' compilers pass some of these by
 # default (Ubuntu's GCC passes all but --no-copy-dt-needed-entries, which

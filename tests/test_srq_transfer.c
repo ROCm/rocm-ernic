@@ -66,8 +66,18 @@ int main(void)
     struct ibv_device_attr dev_attr;
     struct ibv_qp_attr qp_attr;
     union ibv_gid my_gid;
+    struct ibv_srq_init_attr srq_init;
+    struct ibv_qp_init_attr qp_init;
+    struct ibv_sge rsge, ssge;
+    struct ibv_recv_wr rwr;
+    struct ibv_recv_wr *bad_rwr;
+    struct ibv_send_wr swr;
+    struct ibv_send_wr *bad_swr;
     unsigned char *buf = NULL;
     enum ernic_device_result lookup;
+    int got_send, got_recv;
+    unsigned recv_len;
+    time_t deadline;
     int ndev = 0;
     int rc = 1;
 
@@ -117,7 +127,7 @@ int main(void)
         goto out;
     }
 
-    struct ibv_srq_init_attr srq_init = {
+    srq_init = (struct ibv_srq_init_attr){
         .attr = {.max_wr = SRQ_DEPTH, .max_sge = 1, .srq_limit = 0},
     };
     srq = ibv_create_srq(pd, &srq_init);
@@ -129,7 +139,7 @@ int main(void)
 
     /* srq set and cap.max_recv_wr left 0: the QP has no receive ring of its
      * own, which is the case the datapath has to get right. */
-    struct ibv_qp_init_attr qp_init = {
+    qp_init = (struct ibv_qp_init_attr){
         .send_cq = cq,
         .recv_cq = cq,
         .srq = srq,
@@ -213,32 +223,32 @@ int main(void)
         goto out;
     }
 
-    struct ibv_sge rsge = {
+    rsge = (struct ibv_sge){
         .addr = (uintptr_t)(buf + MSG_LEN),
         .length = MSG_LEN,
         .lkey = mr->lkey,
     };
-    struct ibv_recv_wr rwr = {.wr_id = 0xBEEF, .sg_list = &rsge, .num_sge = 1};
-    struct ibv_recv_wr *bad_rwr = NULL;
+    rwr = (struct ibv_recv_wr){.wr_id = 0xBEEF, .sg_list = &rsge, .num_sge = 1};
+    bad_rwr = NULL;
     if (ibv_post_srq_recv(srq, &rwr, &bad_rwr)) {
         perror("ibv_post_srq_recv");
         goto out;
     }
     printf("posted a receive to the SRQ\n");
 
-    struct ibv_sge ssge = {
+    ssge = (struct ibv_sge){
         .addr = (uintptr_t)buf,
         .length = MSG_LEN,
         .lkey = mr->lkey,
     };
-    struct ibv_send_wr swr = {
+    swr = (struct ibv_send_wr){
         .wr_id = 0xCAFE,
         .sg_list = &ssge,
         .num_sge = 1,
         .opcode = IBV_WR_SEND,
         .send_flags = IBV_SEND_SIGNALED,
     };
-    struct ibv_send_wr *bad_swr = NULL;
+    bad_swr = NULL;
     if (ibv_post_send(qp, &swr, &bad_swr)) {
         perror("ibv_post_send");
         goto out;
@@ -250,9 +260,10 @@ int main(void)
      * that ignores the SRQ doorbell has no receive to satisfy the SEND, so
      * the recv completion simply never arrives.
      */
-    int got_send = 0, got_recv = 0;
-    unsigned recv_len = 0;
-    time_t deadline = time(NULL) + POLL_SECONDS;
+    got_send = 0;
+    got_recv = 0;
+    recv_len = 0;
+    deadline = time(NULL) + POLL_SECONDS;
     while ((!got_send || !got_recv) && time(NULL) < deadline) {
         struct ibv_wc wc[4];
         int n = ibv_poll_cq(cq, 4, wc);

@@ -700,6 +700,7 @@ static void test_arp(void)
 {
     const char *name = "arp";
     struct fixture fx;
+    const uint8_t *f, *arp;
 
     if (!fixture_up(&fx, name, 0))
         return;
@@ -714,8 +715,8 @@ static void test_arp(void)
         goto out;
     }
 
-    const uint8_t *f = fx.cap->f[0].buf;
-    const uint8_t *arp = f + ETH_LEN;
+    f = fx.cap->f[0].buf;
+    arp = f + ETH_LEN;
 
     if (get_be(f + T_ETH_TYPE, 2) != 0x0806)
         fail(name, "reply ethertype 0x%04x", get_be(f + T_ETH_TYPE, 2));
@@ -755,6 +756,7 @@ static void test_ping(void)
     const char *name = "ping";
     struct fixture fx;
     static const char payload[] = "abcdefghijklmnopqrstuvwxyz012345";
+    const uint8_t *f, *ip, *icmp;
 
     if (!fixture_up(&fx, name, 0))
         return;
@@ -771,9 +773,9 @@ static void test_ping(void)
     if (!checksums_ok(name, fx.cap->f[0].buf, fx.cap->f[0].len))
         goto out;
 
-    const uint8_t *f = fx.cap->f[0].buf;
-    const uint8_t *ip = f + ETH_LEN;
-    const uint8_t *icmp = ip + IP_LEN;
+    f = fx.cap->f[0].buf;
+    ip = f + ETH_LEN;
+    icmp = ip + IP_LEN;
 
     if (ip[T_IP_PROTOCOL] != 1)
         fail(name, "reply protocol %u, want ICMP", ip[T_IP_PROTOCOL]);
@@ -799,6 +801,9 @@ static void test_request_response(void)
     struct fixture fx;
     uint32_t srv = 0;
     char body[8192];
+    size_t n, got, got2;
+    uint32_t expect;
+    bool fin = false;
 
     if (!fixture_up(&fx, name, 0))
         return;
@@ -808,15 +813,15 @@ static void test_request_response(void)
 
     static const char req[] = "GET / HTTP/1.1\r\nHost: 192.168.200.1\r\n\r\n";
     cap_reset(fx.cap);
-    size_t n = build_tcp(fx.frame, fx.mac, GUEST_PORT, 1001, srv,
-                         FLAG_ACK | FLAG_PSH, req, strlen(req));
+    n = build_tcp(fx.frame, fx.mac, GUEST_PORT, 1001, srv, FLAG_ACK | FLAG_PSH,
+                  req, strlen(req));
     if (!s3_tcp_rx_frame(fx.tcp, fx.frame, n, 20)) {
         fail(name, "the request segment was not consumed");
         goto out;
     }
     check_all_checksums(name, fx.cap);
 
-    size_t got = collect(fx.cap, body, sizeof(body));
+    got = collect(fx.cap, body, sizeof(body));
     if (got == 0) {
         fail(name, "no response data was sent");
         goto out;
@@ -830,7 +835,7 @@ static void test_request_response(void)
 
     /* Every data segment must be sequenced from the server's ISS with no
      * gaps, or the guest's stack silently stalls waiting for the hole. */
-    uint32_t expect = srv;
+    expect = srv;
     for (unsigned i = 0; i < fx.cap->n; i++) {
         size_t plen = 0;
         const uint8_t *tcp = as_tcp(fx.cap->f[i].buf, fx.cap->f[i].len, &plen);
@@ -866,7 +871,7 @@ static void test_request_response(void)
     s3_tcp_rx_frame(fx.tcp, fx.frame, n, 40);
     check_all_checksums(name, fx.cap);
 
-    size_t got2 = collect(fx.cap, body, sizeof(body));
+    got2 = collect(fx.cap, body, sizeof(body));
     if (got2 == 0) {
         fail(name, "the second request on the connection went unanswered");
         goto out;
@@ -888,7 +893,6 @@ static void test_request_response(void)
                   srv + (uint32_t)got + (uint32_t)got2, FLAG_ACK, NULL, 0);
     s3_tcp_rx_frame(fx.tcp, fx.frame, n, 50);
 
-    bool fin = false;
     for (unsigned i = 0; i < fx.cap->n; i++) {
         const uint8_t *tcp = as_tcp(fx.cap->f[i].buf, fx.cap->f[i].len, NULL);
         if (tcp != NULL && (tcp_flags(tcp) & FLAG_FIN))
@@ -1090,6 +1094,8 @@ static void test_split_request(void)
     struct fixture fx;
     uint32_t srv = 0;
     char body[8192];
+    size_t total, got, n, first, again;
+    uint32_t seq;
 
     if (!fixture_up(&fx, name, 0))
         return;
@@ -1102,14 +1108,14 @@ static void test_split_request(void)
                               "Content-Length: 11\r\n"
                               "\r\n"
                               "hello world";
-    size_t total = strlen(req);
-    uint32_t seq = 5001;
+    total = strlen(req);
+    seq = 5001;
 
     cap_reset(fx.cap);
     for (size_t at = 0; at < total; at += 7) {
         size_t chunk = total - at < 7 ? total - at : 7;
-        size_t n = build_tcp(fx.frame, fx.mac, GUEST_PORT, seq, srv, FLAG_ACK,
-                             req + at, chunk);
+        n = build_tcp(fx.frame, fx.mac, GUEST_PORT, seq, srv, FLAG_ACK,
+                      req + at, chunk);
         if (!s3_tcp_rx_frame(fx.tcp, fx.frame, n, 20)) {
             fail(name, "a mid-request segment was not consumed");
             goto out;
@@ -1118,7 +1124,7 @@ static void test_split_request(void)
     }
     check_all_checksums(name, fx.cap);
 
-    size_t got = collect(fx.cap, body, sizeof(body));
+    got = collect(fx.cap, body, sizeof(body));
     if (got == 0) {
         fail(name, "the reassembled request went unanswered");
         goto out;
@@ -1137,14 +1143,14 @@ static void test_split_request(void)
     /* A duplicate segment must be discarded, not appended. */
     cap_reset(fx.cap);
     static const char dup[] = "GET /ernic/split HTTP/1.1\r\n\r\n";
-    size_t n = build_tcp(fx.frame, fx.mac, GUEST_PORT, seq, srv, FLAG_ACK, dup,
-                         strlen(dup));
+    n = build_tcp(fx.frame, fx.mac, GUEST_PORT, seq, srv, FLAG_ACK, dup,
+                  strlen(dup));
     s3_tcp_rx_frame(fx.tcp, fx.frame, n, 30);
-    size_t first = collect(fx.cap, body, sizeof(body));
+    first = collect(fx.cap, body, sizeof(body));
 
     cap_reset(fx.cap);
     s3_tcp_rx_frame(fx.tcp, fx.frame, n, 31); /* same segment again */
-    size_t again = collect(fx.cap, body, sizeof(body));
+    again = collect(fx.cap, body, sizeof(body));
     if (first == 0)
         fail(name, "the GET went unanswered");
     if (again != 0)
@@ -1159,6 +1165,7 @@ static void test_stray_segment(void)
 {
     const char *name = "stray-segment";
     struct fixture fx;
+    const uint8_t *tcp;
 
     if (!fixture_up(&fx, name, 0))
         return;
@@ -1173,7 +1180,7 @@ static void test_stray_segment(void)
         fail(name, "a stray segment produced %u frames, want 1", fx.cap->n);
         goto out;
     }
-    const uint8_t *tcp = as_tcp(fx.cap->f[0].buf, fx.cap->f[0].len, NULL);
+    tcp = as_tcp(fx.cap->f[0].buf, fx.cap->f[0].len, NULL);
     if (tcp == NULL || !(tcp_flags(tcp) & FLAG_RST))
         fail(name, "a stray segment was not reset (flags 0x%02x)",
              tcp ? (unsigned)tcp_flags(tcp) : 0u);
@@ -1207,6 +1214,9 @@ static void test_conn_limit(void)
     const char *name = "conn-limit";
     struct fixture fx;
     const unsigned slots = 2;
+    size_t n;
+    const uint8_t *tcp;
+    const struct s3_tcp_stats *st;
 
     if (!fixture_up(&fx, name, slots))
         return;
@@ -1222,19 +1232,19 @@ static void test_conn_limit(void)
              slots);
 
     cap_reset(fx.cap);
-    size_t n = build_tcp(fx.frame, fx.mac, 50099, 9000, 0, FLAG_SYN, NULL, 0);
+    n = build_tcp(fx.frame, fx.mac, 50099, 9000, 0, FLAG_SYN, NULL, 0);
     s3_tcp_rx_frame(fx.tcp, fx.frame, n, 10);
     if (fx.cap->n != 1) {
         fail(name, "the refused SYN produced %u frames, want 1", fx.cap->n);
         goto out;
     }
-    const uint8_t *tcp = as_tcp(fx.cap->f[0].buf, fx.cap->f[0].len, NULL);
+    tcp = as_tcp(fx.cap->f[0].buf, fx.cap->f[0].len, NULL);
     if (tcp == NULL || !(tcp_flags(tcp) & FLAG_RST))
         fail(name, "a SYN with no slot free was not reset");
     if (s3_tcp_conn_count(fx.tcp) != slots)
         fail(name, "the refused SYN still consumed a slot");
 
-    const struct s3_tcp_stats *st = s3_tcp_statistics(fx.tcp);
+    st = s3_tcp_statistics(fx.tcp);
     if (st->refused != 1)
         fail(name, "refused counter is %" PRIu64 ", want 1", st->refused);
     if (st->accepts != slots)
@@ -1290,6 +1300,8 @@ static void test_oversized_request(void)
     uint32_t srv = 0;
     char body[8192];
     char *junk = malloc(1024);
+    uint32_t seq = 2;
+    bool answered = false;
 
     if (junk == NULL)
         return;
@@ -1302,8 +1314,6 @@ static void test_oversized_request(void)
     if (!handshake(&fx, name, GUEST_PORT, 1, &srv, 10))
         goto out;
 
-    uint32_t seq = 2;
-    bool answered = false;
     for (unsigned i = 0; i < S3_HTTP_REQUEST_MAX / 1024 + 4; i++) {
         cap_reset(fx.cap);
         size_t n = build_tcp(fx.frame, fx.mac, GUEST_PORT, seq, srv, FLAG_ACK,
@@ -1346,6 +1356,11 @@ static void test_oversized_stream(void)
     size_t answered = 0;
     bool fin_seen = false;
     bool acked = false;
+    /* Enough segments to fill the receive buffer twice over, so most of
+     * the body arrives after the endpoint has given up on the request. */
+    const unsigned rounds = S3_HTTP_REQUEST_MAX / (unsigned)sizeof(junk) + 12;
+    uint32_t seq = 2;
+    size_t n;
 
     memset(junk, 'A', sizeof(junk));
 
@@ -1354,20 +1369,15 @@ static void test_oversized_stream(void)
     if (!handshake(&fx, name, GUEST_PORT, 1, &srv, 10))
         goto out;
 
-    /* Enough segments to fill the receive buffer twice over, so most of
-     * the body arrives after the endpoint has given up on the request. */
-    const unsigned rounds = S3_HTTP_REQUEST_MAX / (unsigned)sizeof(junk) + 12;
-    uint32_t seq = 2;
-
     for (unsigned i = 0; i < rounds; i++) {
         /* Acknowledge the answer on its own the way a client still
          * writing its body does: that is what releases the FIN. */
         bool ack_only = answered > 0 && !acked;
 
         cap_reset(fx.cap);
-        size_t n = build_tcp(
-            fx.frame, fx.mac, GUEST_PORT, seq, srv + (uint32_t)answered,
-            FLAG_ACK, ack_only ? NULL : junk, ack_only ? 0 : sizeof(junk));
+        n = build_tcp(fx.frame, fx.mac, GUEST_PORT, seq,
+                      srv + (uint32_t)answered, FLAG_ACK,
+                      ack_only ? NULL : junk, ack_only ? 0 : sizeof(junk));
         if (!s3_tcp_rx_frame(fx.tcp, fx.frame, n, 20 + i)) {
             fail(name, "a body segment was not consumed");
             goto out;
@@ -1417,8 +1427,8 @@ static void test_oversized_stream(void)
     /* The ACK of our own FIN has to disarm its retransmit timer as well as
      * clear a send buffer it has no bytes left in. */
     cap_reset(fx.cap);
-    size_t n = build_tcp(fx.frame, fx.mac, GUEST_PORT, seq,
-                         srv + (uint32_t)answered + 1, FLAG_ACK, NULL, 0);
+    n = build_tcp(fx.frame, fx.mac, GUEST_PORT, seq,
+                  srv + (uint32_t)answered + 1, FLAG_ACK, NULL, 0);
     s3_tcp_rx_frame(fx.tcp, fx.frame, n, 100);
     if (s3_tcp_has_work(fx.tcp))
         fail(name, "the ACK of our FIN left its retransmit armed");
@@ -1457,6 +1467,12 @@ static void test_oversized_exact_fit(void)
     uint8_t junk[1460];
     unsigned responses = 0;
     uint32_t seq = 2;
+    /* Whole segments until the next one would not fit, then the one that
+     * does not: that is the segment the endpoint answers. */
+    const unsigned whole = S3_HTTP_REQUEST_MAX / (unsigned)sizeof(junk);
+    const size_t gap = S3_HTTP_REQUEST_MAX - whole * sizeof(junk);
+    size_t n;
+    unsigned extra;
 
     memset(junk, 'A', sizeof(junk));
 
@@ -1465,15 +1481,10 @@ static void test_oversized_exact_fit(void)
     if (!handshake(&fx, name, GUEST_PORT, 1, &srv, 10))
         goto out;
 
-    /* Whole segments until the next one would not fit, then the one that
-     * does not: that is the segment the endpoint answers. */
-    const unsigned whole = S3_HTTP_REQUEST_MAX / (unsigned)sizeof(junk);
-    const size_t gap = S3_HTTP_REQUEST_MAX - whole * sizeof(junk);
-
     for (unsigned i = 0; i <= whole; i++) {
         cap_reset(fx.cap);
-        size_t n = build_tcp(fx.frame, fx.mac, GUEST_PORT, seq, srv, FLAG_ACK,
-                             junk, sizeof(junk));
+        n = build_tcp(fx.frame, fx.mac, GUEST_PORT, seq, srv, FLAG_ACK, junk,
+                      sizeof(junk));
         if (!s3_tcp_rx_frame(fx.tcp, fx.frame, n, 20 + i)) {
             fail(name, "a body segment was not consumed");
             goto out;
@@ -1495,15 +1506,14 @@ static void test_oversized_exact_fit(void)
     /* The refusal consumed no buffer, so this still fits -- and brings the
      * buffer to exactly the parser's limit. */
     cap_reset(fx.cap);
-    size_t n =
-        build_tcp(fx.frame, fx.mac, GUEST_PORT, seq, srv, FLAG_ACK, junk, gap);
+    n = build_tcp(fx.frame, fx.mac, GUEST_PORT, seq, srv, FLAG_ACK, junk, gap);
     if (!s3_tcp_rx_frame(fx.tcp, fx.frame, n, 100)) {
         fail(name, "the exact-fit segment was not consumed");
         goto out;
     }
     check_all_checksums(name, fx.cap);
 
-    unsigned extra = count_http_payloads(fx.cap);
+    extra = count_http_payloads(fx.cap);
     if (extra != 0) {
         fail(name,
              "a segment that exactly filled the buffer drew %u more "
@@ -1527,6 +1537,8 @@ static void test_probe_close(void)
     const char *name = "probe-close";
     struct fixture fx;
     uint32_t srv = 0;
+    size_t n;
+    bool fin = false;
 
     if (!fixture_up(&fx, name, 0))
         return;
@@ -1535,12 +1547,11 @@ static void test_probe_close(void)
         goto out;
 
     cap_reset(fx.cap);
-    size_t n = build_tcp(fx.frame, fx.mac, GUEST_PORT, 1001, srv,
-                         FLAG_ACK | FLAG_FIN, NULL, 0);
+    n = build_tcp(fx.frame, fx.mac, GUEST_PORT, 1001, srv, FLAG_ACK | FLAG_FIN,
+                  NULL, 0);
     s3_tcp_rx_frame(fx.tcp, fx.frame, n, 20);
     check_all_checksums(name, fx.cap);
 
-    bool fin = false;
     for (unsigned i = 0; i < fx.cap->n; i++) {
         const uint8_t *tcp = as_tcp(fx.cap->f[i].buf, fx.cap->f[i].len, NULL);
         if (tcp != NULL && (tcp_flags(tcp) & FLAG_FIN))
@@ -1605,6 +1616,8 @@ static void test_retransmit_data(void)
     uint32_t srv = 0;
     uint8_t first[1514];
     size_t first_len = 0;
+    size_t n;
+    const uint8_t *f;
 
     if (!fixture_up(&fx, name, 0))
         return;
@@ -1613,11 +1626,11 @@ static void test_retransmit_data(void)
 
     static const char req[] = "GET / HTTP/1.1\r\n\r\n";
     cap_reset(fx.cap);
-    size_t n = build_tcp(fx.frame, fx.mac, GUEST_PORT, 1001, srv,
-                         FLAG_ACK | FLAG_PSH, req, strlen(req));
+    n = build_tcp(fx.frame, fx.mac, GUEST_PORT, 1001, srv, FLAG_ACK | FLAG_PSH,
+                  req, strlen(req));
     s3_tcp_rx_frame(fx.tcp, fx.frame, n, 20);
 
-    const uint8_t *f = only_data_frame(fx.cap, &first_len);
+    f = only_data_frame(fx.cap, &first_len);
     if (f == NULL || tcp_seq(frame_tcp(f)) != srv) {
         fail(name, "the response was not one segment at seq %u", srv);
         goto out;
@@ -1677,6 +1690,8 @@ static void test_retransmit_fin(void)
     const char *name = "retransmit-fin";
     struct fixture fx;
     uint32_t srv = 0;
+    size_t n;
+    const uint8_t *tcp;
 
     if (!fixture_up(&fx, name, 0))
         return;
@@ -1685,12 +1700,11 @@ static void test_retransmit_fin(void)
 
     /* The peer closes first, with nothing sent either way. */
     cap_reset(fx.cap);
-    size_t n = build_tcp(fx.frame, fx.mac, GUEST_PORT, 1001, srv,
-                         FLAG_ACK | FLAG_FIN, NULL, 0);
+    n = build_tcp(fx.frame, fx.mac, GUEST_PORT, 1001, srv, FLAG_ACK | FLAG_FIN,
+                  NULL, 0);
     s3_tcp_rx_frame(fx.tcp, fx.frame, n, 20);
-    const uint8_t *tcp = fx.cap->n == 1
-                             ? as_tcp(fx.cap->f[0].buf, fx.cap->f[0].len, NULL)
-                             : NULL;
+    tcp = fx.cap->n == 1 ? as_tcp(fx.cap->f[0].buf, fx.cap->f[0].len, NULL)
+                         : NULL;
     if (tcp == NULL || !(tcp_flags(tcp) & FLAG_FIN) || tcp_seq(tcp) != srv) {
         fail(name, "the peer's FIN was not answered with a FIN at seq %u", srv);
         goto out;
@@ -1746,6 +1760,7 @@ static void test_retransmit_syn_ack(void)
                                        6200, 12600, 25400, 51000};
     const unsigned want = sizeof(want_at) / sizeof(want_at[0]);
     const uint64_t want_reset = 102200;
+    const struct s3_tcp_stats *st;
 
     if (!fixture_up(&fx, name, 0))
         return;
@@ -1809,7 +1824,7 @@ static void test_retransmit_syn_ack(void)
     if (s3_tcp_conn_count(fx.tcp) != 0)
         fail(name, "the connection outlived its retransmit limit");
 
-    const struct s3_tcp_stats *st = s3_tcp_statistics(fx.tcp);
+    st = s3_tcp_statistics(fx.tcp);
     if (st->retransmits != want || st->resets != 1)
         fail(name,
              "%" PRIu64 " retransmits and %" PRIu64 " resets, want %u and 1",
@@ -1912,6 +1927,9 @@ static void test_zero_window(void)
     const size_t obj_len = 3000;
     char resp[8192];
     size_t got = 0;
+    static const char req[] = "GET /ernic/obj HTTP/1.1\r\n\r\n";
+    const uint32_t cseq = 1001 + (uint32_t)strlen(req);
+    size_t n;
 
     if (!fixture_up(&fx, name, 0))
         return;
@@ -1919,13 +1937,9 @@ static void test_zero_window(void)
         !handshake(&fx, name, GUEST_PORT, 1000, &srv, 10))
         goto out;
 
-    static const char req[] = "GET /ernic/obj HTTP/1.1\r\n\r\n";
-    const uint32_t cseq = 1001 + (uint32_t)strlen(req);
-
     /* The request closes the window; then each one-byte probe is
      * acknowledged with the window still closed. */
     for (unsigned i = 0; i < 2; i++) {
-        size_t n;
         if (i == 0)
             n = build_tcp_ex(fx.frame, fx.mac, GUEST_PORT, 1001, srv,
                              FLAG_ACK | FLAG_PSH, 0, NULL, 0, req, strlen(req));
@@ -1953,8 +1967,8 @@ static void test_zero_window(void)
 
     /* A window update with nothing new acknowledged opens the window. */
     cap_reset(fx.cap);
-    size_t n = build_tcp_ex(fx.frame, fx.mac, GUEST_PORT, cseq, srv + 2,
-                            FLAG_ACK, 8192, NULL, 0, NULL, 0);
+    n = build_tcp_ex(fx.frame, fx.mac, GUEST_PORT, cseq, srv + 2, FLAG_ACK,
+                     8192, NULL, 0, NULL, 0);
     s3_tcp_rx_frame(fx.tcp, fx.frame, n, 40);
     check_all_checksums(name, fx.cap);
     got += collect(fx.cap, resp + got, sizeof(resp) - got);
@@ -1991,6 +2005,8 @@ static void test_reset_segments(void)
     const char *name = "reset-segments";
     struct fixture fx;
     uint32_t srv = 0;
+    size_t n;
+    const uint8_t *tcp;
 
     if (!fixture_up(&fx, name, 0))
         return;
@@ -1998,8 +2014,7 @@ static void test_reset_segments(void)
         goto out;
 
     cap_reset(fx.cap);
-    size_t n =
-        build_tcp(fx.frame, fx.mac, GUEST_PORT, 1001, 0, FLAG_RST, NULL, 0);
+    n = build_tcp(fx.frame, fx.mac, GUEST_PORT, 1001, 0, FLAG_RST, NULL, 0);
     if (!s3_tcp_rx_frame(fx.tcp, fx.frame, n, 20))
         fail(name, "an RST for a connection was not consumed");
     if (fx.cap->n != 0)
@@ -2022,9 +2037,8 @@ static void test_reset_segments(void)
     cap_reset(fx.cap);
     n = build_tcp(fx.frame, fx.mac, GUEST_PORT, 1001, srv, FLAG_ACK, "x", 1);
     s3_tcp_rx_frame(fx.tcp, fx.frame, n, 40);
-    const uint8_t *tcp = fx.cap->n == 1
-                             ? as_tcp(fx.cap->f[0].buf, fx.cap->f[0].len, NULL)
-                             : NULL;
+    tcp = fx.cap->n == 1 ? as_tcp(fx.cap->f[0].buf, fx.cap->f[0].len, NULL)
+                         : NULL;
     if (tcp == NULL || !(tcp_flags(tcp) & FLAG_RST))
         fail(name, "data on a reset connection was not reset");
 
@@ -2215,6 +2229,8 @@ static void test_create(void)
     struct capture *cap = calloc(1, sizeof(*cap));
     char err[128] = "";
     struct fixture fx;
+    size_t n;
+    const uint8_t *tcp;
 
     if (cap == NULL) {
         fail(name, "out of memory");
@@ -2274,11 +2290,10 @@ static void test_create(void)
             goto out;
     }
     cap_reset(fx.cap);
-    size_t n = build_tcp(fx.frame, fx.mac, 50999, 100, 0, FLAG_SYN, NULL, 0);
+    n = build_tcp(fx.frame, fx.mac, 50999, 100, 0, FLAG_SYN, NULL, 0);
     s3_tcp_rx_frame(fx.tcp, fx.frame, n, 10);
-    const uint8_t *tcp = fx.cap->n == 1
-                             ? as_tcp(fx.cap->f[0].buf, fx.cap->f[0].len, NULL)
-                             : NULL;
+    tcp = fx.cap->n == 1 ? as_tcp(fx.cap->f[0].buf, fx.cap->f[0].len, NULL)
+                         : NULL;
     if (tcp == NULL || !(tcp_flags(tcp) & FLAG_RST))
         fail(name, "connection %d was not refused", S3_TCP_MAX_CONNS + 1);
     if (s3_tcp_conn_count(fx.tcp) != S3_TCP_MAX_CONNS)
@@ -2320,6 +2335,9 @@ static void test_response_too_large(void)
     char hex[S3_TOKEN_HEX_LEN + 1];
     char text[512];
     const size_t len = (16u << 20) + 1;
+    int status;
+    size_t n;
+    const uint8_t *tcp;
 
     if (!fixture_up(&fx, name, 0))
         return;
@@ -2338,7 +2356,7 @@ static void test_response_too_large(void)
         goto out;
     }
     s3_target_exec(fx.target, &req, &pattern_dma, NULL, &resp);
-    int status = resp.status;
+    status = resp.status;
     s3_http_response_free(&resp);
     if (status != 200) {
         fail(name, "the seed PUT gave status %d", status);
@@ -2349,14 +2367,13 @@ static void test_response_too_large(void)
         goto out;
     static const char get[] = "GET /ernic/huge HTTP/1.1\r\n\r\n";
     cap_reset(fx.cap);
-    size_t n = build_tcp(fx.frame, fx.mac, GUEST_PORT, 1001, srv,
-                         FLAG_ACK | FLAG_PSH, get, strlen(get));
+    n = build_tcp(fx.frame, fx.mac, GUEST_PORT, 1001, srv, FLAG_ACK | FLAG_PSH,
+                  get, strlen(get));
     s3_tcp_rx_frame(fx.tcp, fx.frame, n, 20);
     check_all_checksums(name, fx.cap);
 
-    const uint8_t *tcp = fx.cap->n == 1
-                             ? as_tcp(fx.cap->f[0].buf, fx.cap->f[0].len, NULL)
-                             : NULL;
+    tcp = fx.cap->n == 1 ? as_tcp(fx.cap->f[0].buf, fx.cap->f[0].len, NULL)
+                         : NULL;
     if (tcp == NULL || !(tcp_flags(tcp) & FLAG_RST))
         fail(name, "an unqueueable response drew %u frames, not one RST",
              fx.cap->n);

@@ -101,7 +101,6 @@ function(get_ernic_clang_warning_flags outvar compiler_version)
         -fstack-protector-strong
 
         -fstrict-flex-arrays=3
-        -ftrivial-auto-var-init=pattern
 
         # Zero the registers a function used when it returns, so their
         # contents don't outlive the call or serve as ROP gadgets
@@ -137,6 +136,7 @@ function(get_ernic_clang_warning_flags outvar compiler_version)
         -Wdate-time
         -Wdisabled-macro-expansion
         -Wdocumentation
+        -Wdocumentation-pedantic
         -Wdouble-promotion
         -Wduplicate-enum
         -Wendif-labels
@@ -144,10 +144,10 @@ function(get_ernic_clang_warning_flags outvar compiler_version)
         -Wextra-semi
         -Wextra-semi-stmt
         -Wfloat-equal
+        # Includes -Wformat-nonliteral, -Wformat-security, and -Wformat-y2k
         -Wformat=2
         -Wformat-non-iso
         -Wformat-pedantic
-        -Wformat-security
         -Wformat-type-confusion
         -Wfour-char-constants
         -Wfuse-ld-path
@@ -300,6 +300,10 @@ function(get_ernic_clang_warning_flags outvar compiler_version)
         ${fortify_flags}
         ${flags}
     )
+
+    if(ERNIC_TRIVIAL_AUTO_VAR_INIT)
+        list(APPEND flags -ftrivial-auto-var-init=pattern)
+    endif()
 
     # Control-flow protection (Intel CET) only exists on x86
     check_c_compiler_flag(-fcf-protection=full

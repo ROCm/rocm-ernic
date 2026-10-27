@@ -17,11 +17,11 @@
 #include <stdio.h>
 
 /**
- * ernic_set_err() - format an error message into @err
+ * ernic_set_err() - format an error message into @p err
  *
  * For the parsers and setup functions that report failure through an
- * optional (@err, @err_len) buffer. Does nothing if @err is NULL or
- * @err_len is 0. A message too long for the buffer is truncated: it is
+ * optional (@p err, @p err_len) buffer. Does nothing if @p err is NULL or
+ * @p err_len is 0. A message too long for the buffer is truncated: it is
  * for a human to read.
  */
 __attribute__((format(printf, 3, 4))) static inline void ernic_set_err(

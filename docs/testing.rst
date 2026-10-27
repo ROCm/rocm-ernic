@@ -338,12 +338,16 @@ With verbose output on failure:
 
 To run the tests under valgrind's memcheck, as the Build and
 Test workflow's GCC Debug leg does, use a GCC build without the
-sanitizers and with valgrind installed before configuring. Leave
-out the tests that start the server or run a script, which
+sanitizers, configured with valgrind installed and with
+``-DERNIC_TRIVIAL_AUTO_VAR_INIT=OFF``, since a build that fills
+uninitialized locals hides the reads of them memcheck reports.
+Leave out the tests that start the server or run a script, which
 valgrind would only check the script for:
 
 .. code-block:: bash
 
+   cmake -B build -G Ninja -DERNIC_TRIVIAL_AUTO_VAR_INIT=OFF
+   cmake --build build
    skip='pci-config-test|find-rdma-device-tuple|find-ipv4-gid-index'
    skip+='|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci'
    skip+='|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli'

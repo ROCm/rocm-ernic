@@ -533,6 +533,19 @@
     with `ERNIC_WERROR`). clang-tidy's `readability-non-const-parameter`
     is enabled, which reports a pointer parameter to a built-in type that
     could point to const.
+  * GCC 12 and later fill every local variable the code doesn't
+    initialize with a pattern (`-ftrivial-auto-var-init=pattern`), as Clang
+    already did, so a read before the first write can't see stale stack
+    memory. The new `ERNIC_TRIVIAL_AUTO_VAR_INIT` option (on by default)
+    turns it off for both compilers, for a build run under valgrind, since
+    the filling hides the reads of uninitialized locals that memcheck
+    reports. CI's valgrind leg and the Nix valgrind lane turn it off.
+  * GCC builds with `-Wjump-misses-init`, and from GCC 14
+    `-Wmissing-variable-declarations`; Clang builds with
+    `-Wdocumentation-pedantic`. A `goto` past an initialized declaration
+    into its scope, or a kernel-doc `@name:` or `@name` in a `/**`
+    comment, is now a warning (an error with `ERNIC_WERROR`); declare the
+    variable before the `goto`, and write `@param name` and `@p name`.
 * **Stricter linting in CI.** ansible-lint 26.10.1 runs with `--strict`.
   ShellCheck excludes no checks; suppress one only on its command, with a
   reason. actionlint 1.7.12 checks the workflows (runner labels in

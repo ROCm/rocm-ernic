@@ -16,7 +16,7 @@
 #include <stdint.h>
 
 /**
- * ernic_dma_range_ok() - does [@gpa, @gpa + @len) stay inside the address
+ * ernic_dma_range_ok() - does [@p gpa, @p gpa + @p len) stay inside the address
  *                        space?
  *
  * Every guest DMA address and length reaches us from a queue descriptor, a

@@ -185,6 +185,10 @@ int main(void)
     snprintf(wrk, sizeof(wrk), "tcp:worker:127.0.0.1:%u", (unsigned)port);
 
     struct ih a, b;
+    uint32_t node_a, node_b, seen_a, seen_b, node_b2, seen_b2;
+    struct ih_sge rx, rx_self, tx;
+    struct ih_send s;
+    struct gm_counts ca, cb;
 
     /*
      * Creating either device needs no VM, no RDMA hardware and no root, so a
@@ -205,7 +209,8 @@ int main(void)
 
     /* 1. The mesh forms. The manager is always node 0 (tcp_init()); the
      * worker is assigned a non-zero id by REGISTER_RESP. */
-    uint32_t node_a = UINT32_MAX, node_b = UINT32_MAX;
+    node_a = UINT32_MAX;
+    node_b = UINT32_MAX;
 
     for (unsigned i = 0; i < 250; i++) {
         node_a = ernic_mesh_local_node(a.dev->pvrdma_handle);
@@ -232,8 +237,8 @@ int main(void)
              "the worker could not claim its GID");
 
     /* 3. Each resolves the other's GID, and to the other's node. */
-    uint32_t seen_b = gm_wait_resolve(&a, &b, &a, gid_b);
-    uint32_t seen_a = gm_wait_resolve(&a, &b, &b, gid_a);
+    seen_b = gm_wait_resolve(&a, &b, &a, gid_b);
+    seen_a = gm_wait_resolve(&a, &b, &b, gid_a);
 
     gm_check(seen_b == node_b,
              "the manager resolved the worker's GID to node %u, want %u",
@@ -272,34 +277,35 @@ int main(void)
     mad[16] = 0x00; /* attribute id 0x0010: ConnectRequest */
     mad[17] = 0x10;
 
-    struct ih_sge rx = {.va = eb.mr.va + GM_RX_OFF,
-                        .len = IH_GRH_SIZE + GM_MAD_LEN,
-                        .lkey = eb.mr.lkey};
+    rx = (struct ih_sge){.va = eb.mr.va + GM_RX_OFF,
+                         .len = IH_GRH_SIZE + GM_MAD_LEN,
+                         .lkey = eb.mr.lkey};
     /*
      * The sender posts a receive too, on its own QP1. Without one a MAD
      * that came back round would be dropped for want of a buffer and the
      * loopback check below could not tell that from a MAD that was
      * correctly forwarded -- both leave the sender's CQ empty.
      */
-    struct ih_sge rx_self = {.va = ea.mr.va + GM_RX_OFF,
-                             .len = IH_GRH_SIZE + GM_MAD_LEN,
-                             .lkey = ea.mr.lkey};
-    struct ih_sge tx = {
+    rx_self = (struct ih_sge){.va = ea.mr.va + GM_RX_OFF,
+                              .len = IH_GRH_SIZE + GM_MAD_LEN,
+                              .lkey = ea.mr.lkey};
+    tx = (struct ih_sge){
         .va = ea.mr.va + GM_TX_OFF, .len = GM_MAD_LEN, .lkey = ea.mr.lkey};
-    struct ih_send s = {.op = IH_OP_SEND,
-                        .flags = IH_WQE_SIGNALLED,
-                        .ah_id = GM_AH,
-                        .dest_qpn = 1,
-                        .qkey = GM_QKEY,
-                        .sge = &tx,
-                        .nsge = 1};
+    s = (struct ih_send){.op = IH_OP_SEND,
+                         .flags = IH_WQE_SIGNALLED,
+                         .ah_id = GM_AH,
+                         .dest_qpn = 1,
+                         .qkey = GM_QKEY,
+                         .sge = &tx,
+                         .nsge = 1};
 
     ih_mr_write(&a, &ea.mr, tx.va, mad, sizeof(mad));
     ih_post_recv(&b, &eb.qp, &rx, 1);
     ih_post_recv(&a, &ea.qp, &rx_self, 1);
     ih_post_send(&a, &ea.qp, &s);
 
-    struct gm_counts ca = {0}, cb = {0};
+    memset(&ca, 0, sizeof(ca));
+    memset(&cb, 0, sizeof(cb));
 
     for (unsigned i = 0; i < 250 && cb.recvs == 0; i++) {
         gm_pump(&a, &b, 1);
@@ -382,7 +388,7 @@ int main(void)
         goto out_a;
     }
 
-    uint32_t node_b2 = UINT32_MAX;
+    node_b2 = UINT32_MAX;
 
     for (unsigned i = 0; i < 400; i++) {
         node_b2 = ernic_mesh_local_node(b2.dev->pvrdma_handle);
@@ -399,7 +405,7 @@ int main(void)
     gm_check(ernic_mesh_claim_gid(b2.dev->pvrdma_handle, gid_b, true) == 0,
              "the restarted worker could not claim its GID");
 
-    uint32_t seen_b2 = gm_wait_resolve(&a, &b2, &a, gid_b);
+    seen_b2 = gm_wait_resolve(&a, &b2, &a, gid_b);
 
     gm_check(seen_b2 == node_b2,
              "after the restart the worker's GID resolves to node %u, want "

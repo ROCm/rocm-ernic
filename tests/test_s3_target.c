@@ -438,6 +438,7 @@ static void test_body_put_get(void)
     const char *name = "body-put-get";
     struct s3_target *t = make_target(NULL);
     struct reply r;
+    const char *etag, *clen;
 
     if (t == NULL)
         return;
@@ -453,7 +454,7 @@ static void test_body_put_get(void)
 
     /* Clients compare the ETag against their own digest, so it has to be
      * the real MD5; this one is cross-checked against md5sum(1). */
-    const char *etag = hdr(&r, "ETag");
+    etag = hdr(&r, "ETag");
     if (etag == NULL ||
         strcmp(etag, "\"30f3c93e46436deb58ba70816a8ec124\"") != 0)
         fail(name, "ETag %s, want \"30f3c93e46436deb58ba70816a8ec124\"",
@@ -487,7 +488,7 @@ static void test_body_put_get(void)
         fail(name, "HEAD status %d", r.resp.status);
     if (r.resp.body_len != 0)
         fail(name, "HEAD returned a %zu byte body", r.resp.body_len);
-    const char *clen = hdr(&r, "x-amz-content-length");
+    clen = hdr(&r, "x-amz-content-length");
     uint64_t clen_val;
     if (!ernic_parse_u64(clen, &clen_val) || clen_val != strlen(payload))
         fail(name, "HEAD length header \"%s\"", clen ? clen : "(absent)");
@@ -536,6 +537,10 @@ static void test_rdma_put_get(void)
     char token[S3_TOKEN_HEX_LEN + 1];
     struct reply r;
     const size_t len = 64 * 1024;
+    const uint64_t dst = 512u * 1024;
+    const char *reply, *bytes;
+    int code = 0;
+    const struct s3_target_stats *st;
 
     if (t == NULL || h == NULL) {
         fail(name, "setup failed");
@@ -557,8 +562,7 @@ static void test_rdma_put_get(void)
         goto out;
     }
 
-    const char *reply = hdr(&r, "x-amz-rdma-reply");
-    int code = 0;
+    reply = hdr(&r, "x-amz-rdma-reply");
     struct s3_token peer;
     if (reply == NULL) {
         fail(name, "no x-amz-rdma-reply on an RDMA PUT");
@@ -574,7 +578,7 @@ static void test_rdma_put_get(void)
             fail(name, "reply qpn 0x%x is not in the target range",
                  peer.qp_num);
     }
-    const char *bytes = hdr(&r, "x-amz-rdma-bytes");
+    bytes = hdr(&r, "x-amz-rdma-bytes");
     uint64_t bytes_val;
     if (!ernic_parse_u64(bytes, &bytes_val) || bytes_val != len)
         fail(name, "x-amz-rdma-bytes \"%s\"", bytes ? bytes : "(absent)");
@@ -586,7 +590,6 @@ static void test_rdma_put_get(void)
 
     /* GET the object back into a different window of the same buffer and
      * compare, which is what a real client's verify step does. */
-    const uint64_t dst = 512u * 1024;
     memset(h->buf + dst, 0, len);
     mint(token, dst, len);
     if (!exec_req(t, &r, &host_ops, h, "GET", "/ernic/blob", token, NULL, NULL,
@@ -602,7 +605,7 @@ static void test_rdma_put_get(void)
         fail(name, "the object did not come back byte-for-byte");
     reply_free(&r);
 
-    const struct s3_target_stats *st = s3_target_statistics(t);
+    st = s3_target_statistics(t);
     if (st->puts != 1 || st->gets != 1)
         fail(name, "stats: %" PRIu64 " puts, %" PRIu64 " gets", st->puts,
              st->gets);
@@ -667,22 +670,6 @@ static void test_rdma_ranged_get(void)
     char token[S3_TOKEN_HEX_LEN + 1];
     struct reply r;
     const size_t len = 4096;
-
-    if (t == NULL || h == NULL) {
-        fail(name, "setup failed");
-        goto out;
-    }
-
-    for (size_t i = 0; i < len; i++)
-        h->buf[i] = (uint8_t)i;
-    mint(token, 0, len);
-    if (!exec_req(t, &r, &host_ops, h, "PUT", "/ernic/ramp", token, NULL, NULL,
-                  0)) {
-        fail(name, "PUT could not be built");
-        goto out;
-    }
-    reply_free(&r);
-
     struct {
         const char *range;
         size_t off, want;
@@ -704,8 +691,23 @@ static void test_rdma_ranged_get(void)
         {"bytes=-", 0, 0, 416},
         {"bytes=0-18446744073709551616", 0, 0, 416}, /* past UINT64_MAX */
     };
-
     const uint64_t dst = 512u * 1024;
+
+    if (t == NULL || h == NULL) {
+        fail(name, "setup failed");
+        goto out;
+    }
+
+    for (size_t i = 0; i < len; i++)
+        h->buf[i] = (uint8_t)i;
+    mint(token, 0, len);
+    if (!exec_req(t, &r, &host_ops, h, "PUT", "/ernic/ramp", token, NULL, NULL,
+                  0)) {
+        fail(name, "PUT could not be built");
+        goto out;
+    }
+    reply_free(&r);
+
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         char hdrline[64];
         snprintf(hdrline, sizeof(hdrline), "Range: %s", cases[i].range);
@@ -754,6 +756,7 @@ static void test_rdma_put_body_get(void)
     struct reply r;
     char put_etag[64] = "";
     const size_t len = 4096;
+    const char *e;
 
     if (t == NULL || h == NULL) {
         fail(name, "setup failed");
@@ -774,7 +777,7 @@ static void test_rdma_put_body_get(void)
         reply_free(&r);
         goto out;
     }
-    const char *e = hdr(&r, "ETag");
+    e = hdr(&r, "ETag");
     if (e != NULL)
         snprintf(put_etag, sizeof(put_etag), "%s", e);
     reply_free(&r);
@@ -816,6 +819,7 @@ static void test_body_ranged_get(void)
     struct s3_target *t = make_target(NULL);
     struct reply r;
     char payload[100];
+    const char *cr;
 
     if (t == NULL)
         return;
@@ -840,7 +844,7 @@ static void test_body_ranged_get(void)
         fail(name, "ranged GET could not be built");
         goto out;
     }
-    const char *cr = hdr(&r, "Content-Range");
+    cr = hdr(&r, "Content-Range");
     if (r.resp.status != 206)
         fail(name, "bytes=10-19: status %d, want 206", r.resp.status);
     else if (r.resp.body_len != 10 || memcmp(r.text, payload + 10, 10) != 0)
@@ -934,6 +938,8 @@ static void test_rdma_short_transfer(void)
     char token[S3_TOKEN_HEX_LEN + 1];
     struct reply r;
     const size_t len = 8192;
+    const char *reply;
+    int code = 0;
 
     if (t == NULL || h == NULL) {
         fail(name, "setup failed");
@@ -949,8 +955,7 @@ static void test_rdma_short_transfer(void)
     }
     if (r.resp.status != 500)
         fail(name, "short RDMA read gave status %d, want 500", r.resp.status);
-    const char *reply = hdr(&r, "x-amz-rdma-reply");
-    int code = 0;
+    reply = hdr(&r, "x-amz-rdma-reply");
     struct s3_token peer;
     if (reply == NULL ||
         !s3_reply_parse_peer(reply, strlen(reply), &peer, &code) || code != 500)
@@ -1231,6 +1236,7 @@ static void test_multipart(void)
     struct reply r;
     const size_t part = 16 * 1024;
     const unsigned nparts = 3;
+    const uint64_t dst = 512u * 1024;
 
     if (t == NULL || h == NULL) {
         fail(name, "setup failed");
@@ -1300,7 +1306,6 @@ static void test_multipart(void)
              s3_target_bytes_used(t), part * nparts);
 
     /* Read it back and compare against what we uploaded. */
-    const uint64_t dst = 512u * 1024;
     memset(h->buf + dst, 0, part * nparts);
     mint(token, dst, part * nparts);
     if (!exec_req(t, &r, &host_ops, h, "GET", "/ernic/big", token, NULL, NULL,
@@ -1941,6 +1946,15 @@ static void test_rdma_get_paths(void)
     char token[S3_TOKEN_HEX_LEN + 1];
     char big[8192];
     char small[100];
+    const struct {
+        const char *target;
+        const char *data;
+        size_t len;
+    } seed[] = {
+        {"/ernic/big", big, sizeof(big)},
+        {"/ernic/small", small, sizeof(small)},
+        {"/ernic/empty", NULL, 0},
+    };
     struct reply r;
 
     if (t == NULL || h == NULL) {
@@ -1951,15 +1965,6 @@ static void test_rdma_get_paths(void)
     memset(big, 'B', sizeof(big));
     for (size_t i = 0; i < sizeof(small); i++)
         small[i] = (char)('a' + i % 26);
-    const struct {
-        const char *target;
-        const char *data;
-        size_t len;
-    } seed[] = {
-        {"/ernic/big", big, sizeof(big)},
-        {"/ernic/small", small, sizeof(small)},
-        {"/ernic/empty", NULL, 0},
-    };
     for (size_t i = 0; i < sizeof(seed) / sizeof(seed[0]); i++) {
         if (!exec_req(t, &r, NULL, NULL, "PUT", seed[i].target, NULL, NULL,
                       seed[i].data, seed[i].len)) {
@@ -2073,6 +2078,8 @@ static void test_upload_table_full(void)
     char id[64] = "";
     char target[128];
     struct reply r;
+    size_t len = 0;
+    uint8_t *wire;
 
     if (t == NULL)
         return;
@@ -2092,8 +2099,7 @@ static void test_upload_table_full(void)
     if (r.resp.status != 503 || strstr(r.text, "<Code>SlowDown</Code>") == NULL)
         fail(name, "the 17th initiate: status %d: %s", r.resp.status, r.text);
 
-    size_t len = 0;
-    uint8_t *wire = s3_http_response_serialize(&r.resp, &len);
+    wire = s3_http_response_serialize(&r.resp, &len);
     static const char line[] = "HTTP/1.1 503 Service Unavailable\r\n";
     if (wire == NULL)
         fail(name, "the 503 did not serialise");

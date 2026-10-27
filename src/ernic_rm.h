@@ -21,9 +21,9 @@
 
 /**
  * ernic_rm_alloc_cq - Allocate a completion queue via rdma_rm
- * @handle: pvrdma device handle (must be realized)
- * @cqe:    number of CQ entries
- * @cq_handle: output: allocated CQ handle
+ * @param handle pvrdma device handle (must be realized)
+ * @param cqe number of CQ entries
+ * @param cq_handle output: allocated CQ handle
  */
 int ernic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe,
                       uint32_t *cq_handle);
@@ -35,9 +35,12 @@ void ernic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle);
 
 /**
  * ernic_rm_alloc_srq - Allocate a shared receive queue
- * @pd_handle: protection domain the SRQ belongs to
- * @srq_limit: low-watermark at which the device raises an SRQ_LIMIT event
- * @srq_handle: output: allocated SRQ handle
+ * @param handle pvrdma device handle (must be realized)
+ * @param pd_handle protection domain the SRQ belongs to
+ * @param max_wr max receive work requests
+ * @param max_sge max scatter/gather entries per work request
+ * @param srq_limit low-watermark at which the device raises an SRQ_LIMIT event
+ * @param srq_handle output: allocated SRQ handle
  */
 int ernic_rm_alloc_srq(pvrdma_handle_t handle, uint32_t pd_handle,
                        uint32_t max_wr, uint32_t max_sge, uint32_t srq_limit,
@@ -73,14 +76,14 @@ void ernic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle);
 
 /**
  * ernic_rm_alloc_qp - Allocate a queue pair
- * @handle:        pvrdma device handle
- * @pd_handle:     protection domain handle
- * @qp_type:       QP type (enum ibv_qp_type, or ERNIC_IB_QPT_GSI)
- * @max_send_wr:   max send work requests
- * @max_recv_wr:   max recv work requests
- * @send_cq_handle: CQ handle for send completions
- * @recv_cq_handle: CQ handle for recv completions
- * @qpn:           output: QP number assigned
+ * @param handle pvrdma device handle
+ * @param pd_handle protection domain handle
+ * @param qp_type QP type (enum ibv_qp_type, or ERNIC_IB_QPT_GSI)
+ * @param max_send_wr max send work requests
+ * @param max_recv_wr max recv work requests
+ * @param send_cq_handle CQ handle for send completions
+ * @param recv_cq_handle CQ handle for recv completions
+ * @param qpn output: QP number assigned
  */
 int ernic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
                       uint8_t qp_type, uint32_t max_send_wr,
@@ -94,9 +97,10 @@ void ernic_rm_dealloc_qp(pvrdma_handle_t handle, uint32_t qpn);
 
 /**
  * ernic_rm_alloc_mr - Allocate a memory region
- * @pd_handle:     protection domain
- * @access_flags:  MR access flags
- * @mr_handle:     output handle
+ * @param handle pvrdma device handle
+ * @param pd_handle protection domain
+ * @param access_flags MR access flags
+ * @param mr_handle output handle
  */
 int ernic_rm_alloc_mr(pvrdma_handle_t handle, uint32_t pd_handle,
                       uint32_t access_flags, uint32_t *mr_handle);
@@ -108,13 +112,16 @@ void ernic_rm_dealloc_mr(pvrdma_handle_t handle, uint32_t mr_handle);
 
 /**
  * ernic_rm_modify_qp - Modify a queue pair's state
- * @qpn:        QP number (handle)
- * @attr_mask:  IB attr mask (big-endian u32 from WQE, we convert)
- * @type_state: ionic type_state byte: bits[3:0]=to_state, bits[7:4]=from_state
- * @sq_psn:     SQ starting PSN
- * @rq_psn:     RQ starting PSN
- * @qkey:       Q-Key / destination QPN (combined le32)
- * @dest_gid:   16-byte destination GID (raw bytes, zeroed if not RC)
+ * @param handle pvrdma device handle
+ * @param qpn QP number (handle)
+ * @param attr_mask IB attr mask (big-endian u32 from WQE, we convert)
+ * @param type_state ionic type_state byte: bits[3:0]=to_state,
+ *                   bits[7:4]=from_state
+ * @param sq_psn SQ starting PSN
+ * @param rq_psn RQ starting PSN
+ * @param qkey_dest_qpn Q-Key / destination QPN (combined le32)
+ * @param dest_gid_16bytes 16-byte destination GID (raw bytes, zeroed if not
+ *                         RC)
  */
 int ernic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
                        uint8_t type_state, uint32_t sq_psn, uint32_t rq_psn,
@@ -122,13 +129,14 @@ int ernic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
 
 /**
  * ernic_rm_query_qp - Read a queue pair's attributes back out of rdma_rm
- * @qpn:          QP number (handle)
- * @state:        ibv_qp_state the device holds for the QP
- * @path_mtu:     ibv_mtu enum
- * @dest_qpn:     peer QPN, 0 when the backend tracks none
- * @access_flags: ibv_access_flags bitmask
- * @rq_psn:       receive PSN the guest last set, 0 if it never set one
- * @sq_psn:       send PSN the guest last set, 0 if it never set one
+ * @param handle pvrdma device handle
+ * @param qpn QP number (handle)
+ * @param state ibv_qp_state the device holds for the QP
+ * @param path_mtu ibv_mtu enum
+ * @param dest_qpn peer QPN, 0 when the backend tracks none
+ * @param access_flags ibv_access_flags bitmask
+ * @param rq_psn receive PSN the guest last set, 0 if it never set one
+ * @param sq_psn send PSN the guest last set, 0 if it never set one
  *
  * Any out parameter may be NULL.  Returns 0 on success, -errno on failure.
  */

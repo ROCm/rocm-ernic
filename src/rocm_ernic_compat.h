@@ -43,8 +43,8 @@ typedef struct PVRDMADev *pvrdma_handle_t;
 
 /**
  * pvrdma_backend_name - Name the backend a --backend string selects
- * @backend_type_str: e.g. "loopback" or "nvmeof:size=1G" (may be NULL,
- *                    meaning "none")
+ * @param backend_type_str e.g. "loopback" or "nvmeof:size=1G" (may be NULL,
+ *                         meaning "none")
  *
  * The name is everything before the first ':', and must match exactly.
  *
@@ -55,8 +55,9 @@ const char *pvrdma_backend_name(const char *backend_type_str);
 
 /**
  * pvrdma_device_create - Create and initialize RDMA device
- * @dev: Parent rocm_ernic device structure
- * @backend_type_str: Backend and its config, as pvrdma_backend_name() takes
+ * @param dev Parent rocm_ernic device structure
+ * @param backend_type_str Backend and its config, as
+ *                         pvrdma_backend_name() takes
  *
  * Returns: Opaque handle to RDMA device, or NULL on failure, including an
  * unknown backend
@@ -66,13 +67,13 @@ pvrdma_handle_t pvrdma_device_create(const rocm_ernic_dev_t *dev,
 
 /**
  * pvrdma_device_destroy - Clean up and destroy PVRDMA device
- * @handle: Device handle from pvrdma_device_create()
+ * @param handle Device handle from pvrdma_device_create()
  */
 void pvrdma_device_destroy(pvrdma_handle_t handle);
 
 /**
  * pvrdma_device_realize - Complete device initialization
- * @handle: Device handle
+ * @param handle Device handle
  *
  * Initializes RDMA backend, loads device attributes, etc.
  * Returns: 0 on success, -errno on failure

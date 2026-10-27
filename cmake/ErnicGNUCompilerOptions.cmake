@@ -40,6 +40,9 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
         -Wmissing-prototypes
         -Wstrict-prototypes
         -Wbad-function-cast
+        # A goto or switch that jumps past a variable's initializer into
+        # its scope
+        -Wjump-misses-init
         -Wnested-externs
         -Wold-style-definition
         -Wold-style-declaration
@@ -60,13 +63,11 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
         -Wduplicated-branches
         -Wduplicated-cond
         -Wfloat-equal
+        # Includes -Wformat-nonliteral, -Wformat-security, and -Wformat-y2k
         -Wformat=2
-        -Wformat-nonliteral
         -Wformat-overflow=2
-        -Wformat-security
         -Wformat-signedness
         -Wformat-truncation=2
-        -Wformat-y2k
         -Wimplicit-fallthrough=5
         -Winvalid-pch
         -Wlogical-op
@@ -95,8 +96,8 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
 
         -Wpointer-arith
         -Wredundant-decls
+        # Includes -Wshadow=local
         -Wshadow
-        -Wshadow-local
         -Wshift-overflow=2
         # Warn about functions the stack protector doesn't cover
         -Wstack-protector
@@ -108,7 +109,6 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
         -Wundef
         -Wuninitialized
         -Wunknown-pragmas
-        -Wunsafe-loop-optimizations
         -Wunused
         -Wunused-const-variable=1
         -Wunused-macros
@@ -141,10 +141,17 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
     if(compiler_version VERSION_GREATER_EQUAL 12)
         set(flags
             -Wbidi-chars=any
+            # Warn about a variable -ftrivial-auto-var-init can't initialize,
+            # such as one declared in a switch before its first case. Without
+            # ERNIC_TRIVIAL_AUTO_VAR_INIT, it never warns.
             -Wtrivial-auto-var-init
             -Wuse-after-free=3
             ${flags}
         )
+
+        if(ERNIC_TRIVIAL_AUTO_VAR_INIT)
+            list(APPEND flags -ftrivial-auto-var-init=pattern)
+        endif()
 
         # Only use _FORTIFY_SOURCE if the optimization level is -O2, -O3,
         # or -Os
@@ -171,6 +178,9 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
             -Walloc-size
             -Wcalloc-transposed-args
             -Wflex-array-member-not-at-end
+            # A global variable defined with no earlier declaration, which
+            # should be static or declared in a header
+            -Wmissing-variable-declarations
 
             # -Wuseless-cast (C-valid from GCC 14) is deliberately left
             # unset.  Whether a cast is useless depends on the target's

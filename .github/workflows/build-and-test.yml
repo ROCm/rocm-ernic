@@ -93,7 +93,8 @@ jobs:
           # that the sanitizers don't look for. Every other key matches
           # that leg, so this adds valgrind to it rather than adding a leg.
           # It can't be a sanitizer leg, since valgrind can't run a program
-          # built with ASan or TSan, or a Clang one, since Clang's
+          # built with ASan or TSan. It builds with
+          # -DERNIC_TRIVIAL_AUTO_VAR_INIT=OFF, since
           # -ftrivial-auto-var-init=pattern initializes every local
           # variable, which hides the reads valgrind would report.
           - os: ubuntu-24.04
@@ -207,6 +208,7 @@ jobs:
           SANITIZER: ${{ matrix.sanitizer }}
           BUILD_TYPE: ${{ matrix.build_type }}
           COVERAGE: ${{ matrix.coverage }}
+          VALGRIND: ${{ matrix.valgrind }}
         run: |
           asan=OFF
           tsan=OFF
@@ -217,6 +219,10 @@ jobs:
           coverage=OFF
           if [ "$COVERAGE" = "on" ]; then
             coverage=ON
+          fi
+          auto_var_init=ON
+          if [ "$VALGRIND" = "on" ]; then
+            auto_var_init=OFF
           fi
 
           # Only the Debug legs need their optimisation level adjusted, and
@@ -257,7 +263,8 @@ jobs:
             -DERNIC_BUILD_P4=ON \
             -DERNIC_USE_SANITIZERS=$asan \
             -DERNIC_USE_THREAD_SANITIZER=$tsan \
-            -DERNIC_USE_CODE_COVERAGE=$coverage
+            -DERNIC_USE_CODE_COVERAGE=$coverage \
+            -DERNIC_TRIVIAL_AUTO_VAR_INIT=$auto_var_init
 
       - name: Build project
         run: cmake --build build

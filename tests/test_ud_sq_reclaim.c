@@ -79,9 +79,15 @@ int main(void)
     struct ibv_qp *sqp = NULL, *rqp = NULL;
     struct ibv_mr *mr = NULL;
     struct ibv_ah *ah = NULL;
+    struct ibv_qp_init_attr sia, ria;
+    struct ibv_qp *qps[2];
+    struct ibv_ah_attr aa;
     unsigned char *buf = NULL;
     union ibv_gid gid;
     enum ernic_device_result lookup;
+    const char *se;
+    int signal_every;
+    int posted, signalled_done, recv_reaped;
     int ndev = 0, rc = 1;
 
     dev_list = ibv_get_device_list(&ndev);
@@ -115,7 +121,7 @@ int main(void)
         goto out;
     }
 
-    struct ibv_qp_init_attr sia = {
+    sia = (struct ibv_qp_init_attr){
         .send_cq = scq,
         .recv_cq = scq,
         .qp_type = IBV_QPT_UD,
@@ -125,7 +131,7 @@ int main(void)
                 .max_recv_sge = 1,
                 .max_inline_data = 256},
     };
-    struct ibv_qp_init_attr ria = {
+    ria = (struct ibv_qp_init_attr){
         .send_cq = rcq,
         .recv_cq = rcq,
         .qp_type = IBV_QPT_UD,
@@ -143,7 +149,8 @@ int main(void)
     printf("sender qpn=%u (sq depth %d), receiver qpn=%u\n", sqp->qp_num,
            SQ_DEPTH, rqp->qp_num);
 
-    struct ibv_qp *qps[2] = {sqp, rqp};
+    qps[0] = sqp;
+    qps[1] = rqp;
     for (int i = 0; i < 2; i++) {
         struct ibv_qp_attr a = {.qp_state = IBV_QPS_INIT,
                                 .pkey_index = 0,
@@ -188,7 +195,7 @@ int main(void)
         perror("ibv_query_gid");
         goto out;
     }
-    struct ibv_ah_attr aa = {
+    aa = (struct ibv_ah_attr){
         .is_global = 1,
         .port_num = 1,
         .grh = {.dgid = gid, .sgid_index = 0, .hop_limit = 1}};
@@ -214,8 +221,8 @@ int main(void)
     }
 
     /* Overridable so the unsignalled run length can be bisected. */
-    const char *se = getenv("ERNIC_SIGNAL_EVERY");
-    int signal_every = SIGNAL_EVERY;
+    se = getenv("ERNIC_SIGNAL_EVERY");
+    signal_every = SIGNAL_EVERY;
     if (se && !ernic_parse_int(se, &signal_every)) {
         fprintf(stderr, "FAIL: ERNIC_SIGNAL_EVERY=\"%s\" is not a number\n",
                 se);
@@ -225,7 +232,9 @@ int main(void)
         signal_every = 1;
     printf("signalling every %d sends\n", signal_every);
 
-    int posted = 0, signalled_done = 0, recv_reaped = 0;
+    posted = 0;
+    signalled_done = 0;
+    recv_reaped = 0;
     for (int n = 0; n < ITERS; n++) {
         int sig = ((n + 1) % signal_every) == 0;
         struct ibv_sge sge = {.addr = (uintptr_t)buf + GRH_LEN,

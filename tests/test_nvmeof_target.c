@@ -527,7 +527,9 @@ static void test_handshake(void)
     struct nvmeof_queue *aq = nvmeof_target_open_queue(t, 100);
     check("handshake", aq != NULL, "admin queue not opened");
     if (aq == NULL) {
-        goto out;
+        free(h);
+        nvmeof_target_destroy(t);
+        return;
     }
 
     /* An I/O command before Connect must be refused, not executed. */
@@ -734,7 +736,6 @@ static void test_handshake(void)
           get_csts(aq, h, 26, &csts) == 0 && csts == NVME_CSTS_RDY,
           "CSTS.SHST carried over from a shutdown while disabled");
 
-out:
     free(h);
     nvmeof_target_destroy(t);
 }
@@ -1221,6 +1222,7 @@ static void test_connect_reject(void)
     uint8_t rsp[NVME_CQE_SIZE];
     struct capsule c;
     const char *hostnqn = "nqn.2014-08.org.nvmexpress:uuid:reject";
+    struct nvmeof_queue *q;
 
     if (t == NULL || h == NULL) {
         fail("connect-reject", "setup failed");
@@ -1237,7 +1239,7 @@ static void test_connect_reject(void)
     }
 
     /* Only record format 0 exists. */
-    const uint16_t recfmts[] = {1, 0xffff};
+    static const uint16_t recfmts[] = {1, 0xffff};
     for (size_t i = 0; i < sizeof(recfmts) / sizeof(recfmts[0]); i++) {
         connect_capsule(&c, h, 0, 31, "nvmet-test", hostnqn);
         ernic_put_le16(c.b + NVMEOF_CONNECT_RECFMT_OFF, recfmts[i]);
@@ -1251,7 +1253,7 @@ static void test_connect_reject(void)
      * SQSIZE is 0-based, and a 1-entry queue is invalid, so 0 is refused;
      * so is anything past CAP.MQES, queue_depth - 1.
      */
-    const uint16_t sqsizes[] = {0, 128, 0xffff};
+    static const uint16_t sqsizes[] = {0, 128, 0xffff};
     for (size_t i = 0; i < sizeof(sqsizes) / sizeof(sqsizes[0]); i++) {
         do_connect(aq, h, 0, sqsizes[i], "nvmet-test", hostnqn, rsp);
         check_connect_reject("connect-sqsize", aq, rsp,
@@ -1260,7 +1262,7 @@ static void test_connect_reject(void)
     }
 
     /* An I/O queue needs an association to join. */
-    struct nvmeof_queue *q = nvmeof_target_open_queue(t, 2);
+    q = nvmeof_target_open_queue(t, 2);
     if (q == NULL) {
         fail("connect-qid", "queue not opened");
         goto out;
@@ -1285,7 +1287,7 @@ static void test_connect_reject(void)
     }
 
     /* QID is 1-based for I/O queues, up to the configured count. */
-    const uint16_t qids[] = {5, 0xffff};
+    static const uint16_t qids[] = {5, 0xffff};
     for (size_t i = 0; i < sizeof(qids) / sizeof(qids[0]); i++) {
         do_connect(q, h, qids[i], 31, "nvmet-test", hostnqn, rsp);
         check_connect_reject("connect-qid", q, rsp,

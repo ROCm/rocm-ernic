@@ -65,9 +65,16 @@ int main(void)
     struct ibv_mr *mr = NULL;
     struct ibv_device_attr dev_attr;
     struct ibv_srq_attr srq_attr;
+    struct ibv_srq_init_attr srq_init;
+    struct ibv_qp_init_attr qp_init;
+    struct ibv_sge sge;
+    struct ibv_recv_wr wr;
+    struct ibv_recv_wr *bad;
+    struct ibv_srq_attr mod;
     void *buf = NULL;
     enum ernic_device_result lookup;
     int ndev = 0;
+    int align_rc;
     int rc = 1;
 
     dev_list = ibv_get_device_list(&ndev);
@@ -131,7 +138,7 @@ int main(void)
      * as something else is the shape of a broken id round-trip: the emulator
      * assigns the SRQ id and DMAs it back, and if that response is lost the
      * driver silently keeps id 0. */
-    struct ibv_srq_init_attr srq_init = {
+    srq_init = (struct ibv_srq_init_attr){
         .attr = {.max_wr = SRQ_DEPTH, .max_sge = 1, .srq_limit = 0},
     };
     srq = ibv_create_srq(pd, &srq_init);
@@ -155,7 +162,7 @@ int main(void)
     /* 3. Bind a QP to it. The emulator accepted this argument and discarded
      * it for a long time; a QP that silently keeps its own receive queue
      * looks identical here and only diverges at step 4. */
-    struct ibv_qp_init_attr qp_init = {
+    qp_init = (struct ibv_qp_init_attr){
         .send_cq = cq,
         .recv_cq = cq,
         .srq = srq,
@@ -200,7 +207,7 @@ int main(void)
     /* posix_memalign() returns the error number and is not required to set
      * errno, so perror() here could print "Success" or something stale and
      * unrelated. */
-    int align_rc = posix_memalign(&buf, 4096, BUF_LEN);
+    align_rc = posix_memalign(&buf, 4096, BUF_LEN);
     if (align_rc) {
         fprintf(stderr, "posix_memalign: %s\n", strerror(align_rc));
         goto out;
@@ -214,13 +221,13 @@ int main(void)
         goto out;
     }
 
-    struct ibv_sge sge = {
+    sge = (struct ibv_sge){
         .addr = (uintptr_t)buf,
         .length = BUF_LEN,
         .lkey = mr->lkey,
     };
-    struct ibv_recv_wr wr = {.wr_id = 0x5151, .sg_list = &sge, .num_sge = 1};
-    struct ibv_recv_wr *bad = NULL;
+    wr = (struct ibv_recv_wr){.wr_id = 0x5151, .sg_list = &sge, .num_sge = 1};
+    bad = NULL;
 
     if (ibv_post_srq_recv(srq, &wr, &bad)) {
         perror("ibv_post_srq_recv");
@@ -230,7 +237,7 @@ int main(void)
 
     /* Modify the watermark: the only SRQ attribute the ionic admin path
      * carries (ionic_admin_modify_srq is qid + low_wqes_limit). */
-    struct ibv_srq_attr mod = {.srq_limit = 4};
+    mod = (struct ibv_srq_attr){.srq_limit = 4};
     if (ibv_modify_srq(srq, &mod, IBV_SRQ_LIMIT)) {
         perror("ibv_modify_srq");
         goto out;
