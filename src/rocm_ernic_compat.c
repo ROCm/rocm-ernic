@@ -2,8 +2,8 @@
  * Compatibility Bridge Implementation
  *
  * This file implements the wrapper functions that isolate QEMU code from
- * our libvfio-user server: rocm_ernic_compat.h, ernic_rm.h, ernic_mesh.h and
- * ernic_stats.h. Only this file includes QEMU headers.
+ * our libvfio-user server: rocm_ernic_compat.h, ernic_rm.h and ernic_mesh.h.
+ * Only this file includes QEMU headers.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -21,7 +21,6 @@
 #include "ernic_limits.h"
 #include "ernic_mesh.h"
 #include "ernic_rm.h"
-#include "ernic_stats.h"
 #include "rocm_ernic_compat.h"
 /*
  * struct rocm_ernic_dev.  IWYU credits uses of it to the repeated
@@ -36,7 +35,6 @@
 #include "rdma/rdma_backend_ops.h"
 #include "rdma_rm.h"
 #include "rdma_rm_defs.h"
-#include "rdma/pvrdma_stats.h"
 #include "rdma_utils.h"
 #include "vmw_pvrdma-abi.h"
 
@@ -92,9 +90,6 @@ pvrdma_handle_t pvrdma_device_create(const rocm_ernic_dev_t *dev,
         }
     }
 
-    /* Copy MAC address from rocm_ernic_dev */
-    memcpy(pvrdma->mac_addr, dev->mac_addr, 6);
-
     /* Defaults, until pvrdma_device_realize() replaces them all with the
      * backend's query_device() */
     pvrdma->dev_attr.max_qp = ERNIC_MAX_QP;
@@ -145,13 +140,6 @@ pvrdma_handle_t pvrdma_device_create(const rocm_ernic_dev_t *dev,
         rdma_info_report("  max_srq_wr=%d", pvrdma->dev_attr.max_srq_wr);
     }
 
-    /* Initialize stats */
-    memset(&pvrdma->stats, 0, sizeof(pvrdma->stats));
-    pvrdma->stats.qp_stats =
-        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
-    pvrdma->stats.stats_file = NULL;
-    pvrdma->stats.stats_write_count = 0;
-
     rdma_info_report("PVRDMA device created (handle=%p)", (void *)pvrdma);
 
     return pvrdma;
@@ -178,24 +166,6 @@ void pvrdma_device_destroy(pvrdma_handle_t handle)
 
     /* Clean up backend using the new abstraction */
     rdma_backend_fini_with_ops(&pvrdma->backend_dev);
-
-    /* Free stats hash table */
-    if (pvrdma->stats.qp_stats) {
-        g_hash_table_destroy(pvrdma->stats.qp_stats);
-        pvrdma->stats.qp_stats = NULL;
-    }
-    if (pvrdma->stats.stats_file) {
-        free(pvrdma->stats.stats_file);
-        pvrdma->stats.stats_file = NULL;
-    }
-    free(pvrdma->stats_socket_path);
-    pvrdma->stats_socket_path = NULL;
-    free(pvrdma->stats_backend_str);
-    pvrdma->stats_backend_str = NULL;
-    free(pvrdma->stats_connection_str);
-    pvrdma->stats_connection_str = NULL;
-    pvrdma_stats_set_nic_profile(NULL);
-    pvrdma_stats_set_section(NULL, NULL);
 
     /* Free device names */
     free(pvrdma->backend_device_name);
@@ -265,348 +235,6 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
     rdma_info_report("PVRDMA device realized successfully");
 
     return 0;
-}
-
-/*
- * Counters (ernic_stats.h)
- */
-
-void pvrdma_bar0_mmio_count(pvrdma_handle_t handle, bool is_write)
-{
-    PVRDMADev *pvrdma = handle;
-
-    if (!pvrdma) {
-        return;
-    }
-    if (is_write) {
-        pvrdma->stats.bar0_writes++;
-    } else {
-        pvrdma->stats.bar0_reads++;
-    }
-}
-
-void pvrdma_uar_mmio_count(pvrdma_handle_t handle, bool is_write)
-{
-    PVRDMADev *pvrdma = handle;
-
-    if (!pvrdma) {
-        return;
-    }
-    if (is_write) {
-        pvrdma->stats.uar_writes++;
-    } else {
-        pvrdma->stats.uar_reads++;
-    }
-}
-
-void pvrdma_irq_count(pvrdma_handle_t handle)
-{
-    PVRDMADev *pvrdma = handle;
-
-    if (!pvrdma) {
-        return;
-    }
-    pvrdma->stats.interrupts++;
-}
-
-void pvrdma_eth_bytes_count(pvrdma_handle_t handle, uint64_t bytes, bool is_tx)
-{
-    PVRDMADev *pvrdma = handle;
-
-    if (!pvrdma) {
-        return;
-    }
-    if (is_tx) {
-        pvrdma->stats.total_ip_bytes_tx += bytes;
-    } else {
-        pvrdma->stats.total_ip_bytes_rx += bytes;
-    }
-}
-
-void pvrdma_adminq_count(pvrdma_handle_t handle)
-{
-    PVRDMADev *pvrdma = handle;
-
-    if (!pvrdma) {
-        return;
-    }
-    pvrdma->stats.commands++;
-}
-
-void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
-                             uint64_t bytes, enum pvrdma_stat_op stat_op)
-{
-    PVRDMADev *pvrdma = handle;
-    PVRDMAQPStats *qp;
-
-    if (!pvrdma || !bytes) {
-        return;
-    }
-
-    qp = qp_id == PVRDMA_STAT_NO_QP ? NULL : pvrdma_get_qp_stats(pvrdma, qp_id);
-
-    switch (stat_op) {
-    case PVRDMA_STAT_SEND:
-        pvrdma->stats.total_bytes_sent += bytes;
-        if (qp) {
-            qp->bytes_sent += bytes;
-        }
-        break;
-    case PVRDMA_STAT_RECV:
-        pvrdma->stats.total_bytes_received += bytes;
-        if (qp) {
-            qp->bytes_received += bytes;
-        }
-        break;
-    case PVRDMA_STAT_RDMA_READ:
-        pvrdma->stats.total_bytes_rdma_read += bytes;
-        if (qp) {
-            qp->bytes_rdma_read += bytes;
-        }
-        break;
-    case PVRDMA_STAT_RDMA_WRITE:
-        pvrdma->stats.total_bytes_rdma_write += bytes;
-        if (qp) {
-            qp->bytes_rdma_write += bytes;
-        }
-        break;
-    default:
-        break;
-    }
-}
-
-void pvrdma_qp_doorbell_count(pvrdma_handle_t handle, uint32_t qp_id,
-                              bool is_send)
-{
-    PVRDMADev *pvrdma = handle;
-    PVRDMAQPStats *qp;
-
-    if (!pvrdma || qp_id == PVRDMA_STAT_NO_QP) {
-        return;
-    }
-
-    qp = pvrdma_get_qp_stats(pvrdma, qp_id);
-    if (!qp) {
-        return;
-    }
-
-    if (is_send) {
-        qp->doorbell_send++;
-    } else {
-        qp->doorbell_recv++;
-    }
-}
-
-void pvrdma_qp_wqe_count(pvrdma_handle_t handle, uint32_t qp_id,
-                         unsigned int pvrdma_opcode)
-{
-    PVRDMADev *pvrdma = handle;
-    PVRDMAQPStats *qp;
-
-    if (!pvrdma || qp_id == PVRDMA_STAT_NO_QP) {
-        return;
-    }
-
-    qp = pvrdma_get_qp_stats(pvrdma, qp_id);
-    if (!qp) {
-        return;
-    }
-
-    qp->wqes_processed++;
-    if (pvrdma_opcode < G_N_ELEMENTS(qp->wqes_by_opcode)) {
-        qp->wqes_by_opcode[pvrdma_opcode]++;
-    }
-}
-
-void pvrdma_qp_cqe_count(pvrdma_handle_t handle, uint32_t qp_id)
-{
-    PVRDMADev *pvrdma = handle;
-    PVRDMAQPStats *qp;
-
-    if (!pvrdma || qp_id == PVRDMA_STAT_NO_QP) {
-        return;
-    }
-
-    qp = pvrdma_get_qp_stats(pvrdma, qp_id);
-    if (qp) {
-        qp->cqes_posted++;
-    }
-}
-
-void pvrdma_qp_stats_forget(pvrdma_handle_t handle, uint32_t qp_id)
-{
-    PVRDMADev *pvrdma = handle;
-
-    if (!pvrdma || !pvrdma->stats.qp_stats || qp_id == PVRDMA_STAT_NO_QP) {
-        return;
-    }
-
-    g_hash_table_remove(pvrdma->stats.qp_stats, GUINT_TO_POINTER(qp_id));
-}
-
-int pvrdma_get_dev_counters(pvrdma_handle_t handle,
-                            struct pvrdma_dev_counters *out)
-{
-    PVRDMADev *pvrdma = handle;
-
-    if (!out) {
-        return -EINVAL;
-    }
-    memset(out, 0, sizeof(*out));
-    if (!pvrdma) {
-        return -EINVAL;
-    }
-
-    out->commands = pvrdma->stats.commands;
-    out->total_bytes_sent = pvrdma->stats.total_bytes_sent;
-    out->total_bytes_received = pvrdma->stats.total_bytes_received;
-    out->total_bytes_rdma_read = pvrdma->stats.total_bytes_rdma_read;
-    out->total_bytes_rdma_write = pvrdma->stats.total_bytes_rdma_write;
-    return 0;
-}
-
-int pvrdma_get_qp_counters(pvrdma_handle_t handle, uint32_t qp_id,
-                           struct pvrdma_qp_counters *out)
-{
-    PVRDMADev *pvrdma = handle;
-    const PVRDMAQPStats *qp = NULL;
-
-    if (!out) {
-        return -EINVAL;
-    }
-    memset(out, 0, sizeof(*out));
-    if (!pvrdma) {
-        return -EINVAL;
-    }
-
-    /* A plain lookup: pvrdma_get_qp_stats() would insert an entry. */
-    if (pvrdma->stats.qp_stats && qp_id != PVRDMA_STAT_NO_QP) {
-        qp = g_hash_table_lookup(pvrdma->stats.qp_stats,
-                                 GUINT_TO_POINTER(qp_id));
-    }
-    if (!qp) {
-        return 0;
-    }
-
-    out->doorbell_send = qp->doorbell_send;
-    out->doorbell_recv = qp->doorbell_recv;
-    out->wqes_processed = qp->wqes_processed;
-    out->cqes_posted = qp->cqes_posted;
-    out->bytes_sent = qp->bytes_sent;
-    out->bytes_received = qp->bytes_received;
-    out->bytes_rdma_read = qp->bytes_rdma_read;
-    out->bytes_rdma_write = qp->bytes_rdma_write;
-    return 0;
-}
-
-/*
- * The stats file (ernic_stats.h)
- */
-
-void pvrdma_set_stats_file(pvrdma_handle_t handle, const char *stats_file)
-{
-    PVRDMADev *pvrdma = handle;
-
-    if (!pvrdma) {
-        return;
-    }
-
-    free(pvrdma->stats.stats_file);
-    if (stats_file) {
-        pvrdma->stats.stats_file = strdup(stats_file);
-        if (!pvrdma->stats.stats_file) {
-            rdma_error_report("stats file: out of memory for its path; "
-                              "statistics won't be written");
-        }
-    } else {
-        pvrdma->stats.stats_file = NULL;
-    }
-}
-
-void pvrdma_set_stats_instance_info(pvrdma_handle_t handle,
-                                    const char *socket_path,
-                                    const char *backend_type_str)
-{
-    PVRDMADev *pvrdma = handle;
-
-    if (!pvrdma) {
-        return;
-    }
-
-    free(pvrdma->stats_socket_path);
-    pvrdma->stats_socket_path = socket_path ? strdup(socket_path) : NULL;
-    if (socket_path && !pvrdma->stats_socket_path) {
-        rdma_error_report("stats file: out of memory for the socket path");
-    }
-
-    free(pvrdma->stats_backend_str);
-    pvrdma->stats_backend_str =
-        backend_type_str ? strdup(backend_type_str) : NULL;
-    if (backend_type_str && !pvrdma->stats_backend_str) {
-        rdma_error_report("stats file: out of memory for the backend");
-    }
-}
-
-void pvrdma_set_stats_pci_ids(pvrdma_handle_t handle, uint16_t vid,
-                              uint16_t did)
-{
-    PVRDMADev *pvrdma = handle;
-
-    if (pvrdma) {
-        pvrdma->stats_pci_vid = vid;
-        pvrdma->stats_pci_did = did;
-    }
-}
-
-void pvrdma_set_stats_connection_state(pvrdma_handle_t handle,
-                                       const char *connection_str)
-{
-    PVRDMADev *pvrdma = handle;
-
-    if (!pvrdma) {
-        return;
-    }
-
-    free(pvrdma->stats_connection_str);
-    pvrdma->stats_connection_str =
-        connection_str ? strdup(connection_str) : NULL;
-    if (connection_str && !pvrdma->stats_connection_str) {
-        rdma_error_report("stats file: out of memory for the connection "
-                          "state");
-    }
-}
-
-void pvrdma_set_stats_nic_profile(pvrdma_handle_t handle, const char *profile)
-{
-    if (handle)
-        pvrdma_stats_set_nic_profile(profile);
-}
-
-void pvrdma_set_stats_section(pvrdma_handle_t handle,
-                              void (*fn)(FILE *fp, void *opaque), void *opaque)
-{
-    if (handle)
-        pvrdma_stats_set_section(fn, opaque);
-}
-
-void pvrdma_inc_stats_reset_count(pvrdma_handle_t handle)
-{
-    PVRDMADev *pvrdma = handle;
-
-    if (pvrdma) {
-        pvrdma->stats.reset_count++;
-    }
-}
-
-void pvrdma_write_stats(pvrdma_handle_t handle)
-{
-    PVRDMADev *pvrdma = handle;
-
-    if (!pvrdma) {
-        return;
-    }
-
-    pvrdma_write_stats_impl(pvrdma);
 }
 
 /* -------------------------------------------------------------------------

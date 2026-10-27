@@ -147,9 +147,11 @@ endif()
 # Source file groups
 # ---------------------------------------------------------------
 
-# The server's log, which the rest of the sources print through
+# The server's log, which the rest of the sources print through, and its
+# statistics, which the device counts into
 set(COMMON_SOURCES
     src/ernic_log.c
+    src/ernic_stats.c
 )
 
 # rocm-ernic's fork of QEMU's PVRDMA resource manager and backend device,
@@ -181,7 +183,6 @@ set(RDMA_BACKEND_SOURCES
     src/rdma/rdma_backend_none.c
     src/rdma/rdma_backend_loopback.c
     ${TCP_BACKEND_SOURCES}
-    src/rdma/pvrdma_stats.c
 )
 
 # Compatibility bridge layer

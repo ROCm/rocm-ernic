@@ -31,7 +31,6 @@
 #include "ionic/ionic_adminq.h"
 #include "ionic/ionic_datapath.h"
 #include "ionic/ionic_eth_net.h"
-#include "rocm_ernic_compat.h"
 
 /* ---- Fake guest memory ------------------------------------------------- */
 
@@ -140,14 +139,14 @@ int vfu_irq_trigger(vfu_ctx_t *vfu_ctx, uint32_t subindex)
     return 0;
 }
 
-void pvrdma_irq_count(pvrdma_handle_t handle)
+void ernic_stats_irq(struct ernic_stats *st)
 {
-    (void)handle;
+    (void)st;
 }
 
-void pvrdma_eth_bytes_count(pvrdma_handle_t handle, uint64_t bytes, bool is_tx)
+void ernic_stats_eth_bytes(struct ernic_stats *st, uint64_t bytes, bool is_tx)
 {
-    (void)handle;
+    (void)st;
     (void)bytes;
     (void)is_tx;
 }

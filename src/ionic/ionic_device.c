@@ -16,6 +16,7 @@
 
 #include <vfio-user/libvfio-user.h>
 
+#include "ernic_stats.h"
 #include "ernic_time.h"
 #include "ionic_adminq.h"
 #include "ionic_bar.h"
@@ -36,6 +37,8 @@
 
 struct ionic_device {
     vfu_ctx_t *vfu_ctx;
+    /* Borrowed; the stats file has the emulator's section while it's set */
+    struct ernic_stats *stats;
 
     struct ionic_eth_emu *emu;
     /* Owns the admin queue context */
@@ -142,7 +145,7 @@ struct ionic_device *ionic_device_create(const struct ionic_device_cfg *cfg,
 
     /* The front of the device: registers, device commands and doorbells.
      * RDMA devcmds go to the handler, RDMA doorbells to the data path. */
-    ionic_eth_emu_set_pvrdma(dev->emu, cfg->pvrdma);
+    ionic_eth_emu_set_stats(dev->emu, cfg->stats);
     if (cfg->mac)
         ionic_eth_emu_set_mac(dev->emu, cfg->mac);
     if (cfg->profile)
@@ -157,10 +160,16 @@ struct ionic_device *ionic_device_create(const struct ionic_device_cfg *cfg,
      * and MR describe rings the data path then serves. */
     ionic_rdma_devcmd_set_eth_emu(dev->rdma, dev->emu);
     ionic_rdma_devcmd_set_pvrdma(dev->rdma, cfg->pvrdma);
+    ionic_rdma_devcmd_set_stats(dev->rdma, cfg->stats);
     ionic_rdma_devcmd_set_faults(dev->rdma, cfg->faults);
     ionic_rdma_devcmd_set_datapath(dev->rdma, dev->dp);
 
     ionic_datapath_set_pvrdma(dev->dp, cfg->pvrdma);
+    ionic_datapath_set_stats(dev->dp, cfg->stats);
+
+    /* The Ethernet side's LIF and port counters go in the stats file too */
+    dev->stats = cfg->stats;
+    ernic_stats_set_section(dev->stats, ionic_eth_emu_write_stats, dev->emu);
 
     if (!target_setup(dev->dp, cfg->backend, err, errlen)) {
         ionic_device_destroy(dev);
@@ -198,6 +207,8 @@ void ionic_device_destroy(struct ionic_device *dev)
 {
     if (!dev)
         return;
+
+    ernic_stats_set_section(dev->stats, NULL, NULL);
 
 #ifdef ERNIC_HAVE_P4
     if (dev->p4_engine) {

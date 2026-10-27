@@ -345,7 +345,7 @@ void ionic_adminq_release_all(struct ionic_adminq_ctx *ctx)
 
         if (!e->valid)
             continue;
-        pvrdma_qp_stats_forget(ctx->pvrdma_handle, e->qp_id);
+        ernic_stats_qp_forget(ctx->stats, e->qp_id);
         ernic_rm_dealloc_qp(ctx->pvrdma_handle, e->qpn);
         e->valid = false;
     }
@@ -431,6 +431,13 @@ void ionic_adminq_set_pvrdma(struct ionic_adminq_ctx *ctx,
 {
     if (ctx)
         ctx->pvrdma_handle = handle;
+}
+
+void ionic_adminq_set_stats(struct ionic_adminq_ctx *ctx,
+                            struct ernic_stats *stats)
+{
+    if (ctx)
+        ctx->stats = stats;
 }
 
 void ionic_adminq_update_prod(struct ionic_adminq_ctx *ctx, int aq_idx,
@@ -1350,7 +1357,7 @@ static uint8_t handle_stats_op(struct ionic_adminq_ctx *ctx, uint8_t op,
             return f->status;
         }
         memset(&v, 0, sizeof(v));
-        if (pvrdma_get_dev_counters(ctx->pvrdma_handle, &v.pv) != 0)
+        if (ernic_stats_dev_counters(ctx->stats, &v.stats) != 0)
             return IONIC_RC_EIO;
         ionic_datapath_rdma_counters(ctx->dp, IONIC_DP_DEVICE, v.rdma);
         return stats_write_vals(ctx, dma, length, dev_stats, DEV_STATS_COUNT,
@@ -1370,7 +1377,7 @@ static uint8_t handle_stats_op(struct ionic_adminq_ctx *ctx, uint8_t op,
             return IONIC_RC_ENOENT;
         }
         memset(&v, 0, sizeof(v));
-        if (pvrdma_get_qp_counters(ctx->pvrdma_handle, qp_id, &v.pv) != 0)
+        if (ernic_stats_qp_counters(ctx->stats, qp_id, &v.stats) != 0)
             return IONIC_RC_EIO;
         ionic_datapath_rdma_counters(ctx->dp, qp_id, v.rdma);
         return stats_write_vals(ctx, dma, length, qp_stats, QP_STATS_COUNT, &v);
@@ -1649,7 +1656,7 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         ionic_datapath_unregister_qp(ctx->dp, qp_id);
         /* Per-QP stats are keyed on the driver-side qp_id, not the resource
          * manager's qpn, so drop them here while qp_id is still in hand. */
-        pvrdma_qp_stats_forget(ctx->pvrdma_handle, qp_id);
+        ernic_stats_qp_forget(ctx->stats, qp_id);
         if (!adminq_lookup_qp(ctx, qp_id, &qpn))
             return IONIC_RC_SUCCESS;
         ernic_rm_dealloc_qp(ctx->pvrdma_handle, qpn);
@@ -2080,7 +2087,7 @@ void ionic_adminq_poll(struct ionic_adminq_ctx *ctx, vfu_ctx_t *vfu_ctx)
              * 2^IONIC_ADMINQ_MAX_DEPTH_LOG2 deep. */
             uint16_t cmd_idx = (uint16_t)slot;
             ionic_adminq_post_cqe(ctx, r, cmd_idx, op, status, ctx->resp_len);
-            pvrdma_adminq_count(ctx->pvrdma_handle);
+            ernic_stats_command(ctx->stats);
 
             /* Never write back to guest WQE memory — the driver owns the ring.
              * Use producer-index tracking to avoid re-processing stale entries.

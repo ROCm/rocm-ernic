@@ -65,10 +65,16 @@ typedef void (*ionic_adminq_cq_event_fn_t)(void *opaque, uint32_t eq_id,
 void ionic_adminq_set_cq_event_cb(struct ionic_adminq_ctx *ctx,
                                   ionic_adminq_cq_event_fn_t fn, void *opaque);
 
-/* Set the pvrdma handle for the resource manager (ernic_rm.h) and the
- * counters (ernic_stats.h). @handle is from pvrdma_device_create(). */
+/* Set the pvrdma handle for the resource manager (ernic_rm.h). @handle is
+ * from pvrdma_device_create(). */
 void ionic_adminq_set_pvrdma(struct ionic_adminq_ctx *ctx,
                              pvrdma_handle_t handle);
+
+/* Set the counters (ernic_stats.h) to count commands into and read back for
+ * STATS_VALS and QP_STATS_VALS, or NULL, which fails those two. */
+struct ernic_stats;
+void ionic_adminq_set_stats(struct ionic_adminq_ctx *ctx,
+                            struct ernic_stats *stats);
 
 /*
  * Give the admin queue a datapath to register CQ/QP/MR rings with, so that

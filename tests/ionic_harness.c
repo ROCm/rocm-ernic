@@ -149,6 +149,11 @@ bool ih_create_faults(struct ih *h, const char *backend,
     dev->vfu_ctx = h->vfu;
     dev->backend_type_str = strdup(backend);
 
+    dev->stats = ernic_stats_create();
+    if (!dev->stats) {
+        ih_destroy(h);
+        return fail("out of memory for the statistics");
+    }
     dev->pvrdma_handle = pvrdma_device_create(dev, backend);
     if (!dev->pvrdma_handle) {
         ih_destroy(h);
@@ -163,6 +168,7 @@ bool ih_create_faults(struct ih *h, const char *backend,
     memset(&cfg, 0, sizeof(cfg));
     cfg.vfu_ctx = h->vfu;
     cfg.pvrdma = dev->pvrdma_handle;
+    cfg.stats = dev->stats;
     cfg.backend = backend;
     cfg.faults = faults;
     dev->ionic = ionic_device_create(&cfg, err, sizeof(err));
@@ -186,12 +192,13 @@ bool ih_destroy(struct ih *h)
 
     if (dev) {
         /*
-         * The server's teardown: the device, then the RDMA core, both
-         * before the context goes, as in the server: the device's teardown
-         * puts back any mappings through it.
+         * The server's teardown: the device, then the RDMA core and the
+         * statistics, all before the context goes, as in the server: the
+         * device's teardown puts back any mappings through it.
          */
         ionic_device_destroy(dev->ionic);
         pvrdma_device_destroy(dev->pvrdma_handle);
+        ernic_stats_destroy(dev->stats);
         free(dev->backend_type_str);
         free(dev);
     }
@@ -213,7 +220,7 @@ void ih_poll(struct ih *h)
 
 void ih_bar0_read(struct ih *h, uint32_t off, void *buf, size_t len)
 {
-    pvrdma_bar0_mmio_count(h->dev->pvrdma_handle, false);
+    ernic_stats_bar0_access(h->dev->stats, false);
     if (ionic_eth_emu_bar0_access(h->emu, buf, len, off, false) !=
         (ssize_t)len) {
         fail("BAR0 read of %zu bytes at %#x refused", len, off);
@@ -230,7 +237,7 @@ void ih_bar0_write(struct ih *h, uint32_t off, const void *buf, size_t len)
         return;
     }
     memcpy(tmp, buf, len);
-    pvrdma_bar0_mmio_count(h->dev->pvrdma_handle, true);
+    ernic_stats_bar0_access(h->dev->stats, true);
     if (ionic_eth_emu_bar0_access(h->emu, (char *)tmp, len, off, true) !=
         (ssize_t)len)
         fail("BAR0 write of %zu bytes at %#x refused", len, off);
@@ -268,7 +275,7 @@ void ih_doorbell(struct ih *h, int qtype, uint32_t qid, uint8_t ring,
     uint8_t b[8];
 
     ernic_put_le64(b, val);
-    pvrdma_uar_mmio_count(h->dev->pvrdma_handle, true);
+    ernic_stats_doorbell_access(h->dev->stats, true);
     /* The kernel's doorbell page is page 0, one u64 slot per qtype. */
     if (ionic_eth_emu_bar2_access(h->emu, (char *)b, sizeof(b),
                                   (loff_t)qtype * 8, true) != sizeof(b))

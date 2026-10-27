@@ -6,8 +6,8 @@
  * the RDMA devcmd handler, the admin queue context that handler creates, and
  * the data path.  This module creates them, wires them together once, polls
  * them, and tears them down in the order they need.  The RDMA core behind
- * them (pvrdma_device_create()) is the caller's, as are the vfio-user
- * context, the socket and the main loop.
+ * them (pvrdma_device_create()) is the caller's, as are the statistics they
+ * count into, the vfio-user context, the socket and the main loop.
  *
  * Main loop thread only: the device DMAs into guest memory.
  *
@@ -37,6 +37,10 @@ struct ionic_device_cfg {
     /* The RDMA core, from pvrdma_device_create(), realized.  It must
      * outlive the device. */
     pvrdma_handle_t pvrdma;
+    /* The counters the device counts into (ernic_stats.h), or NULL for none.
+     * The device adds its Ethernet counters to their stats file as a
+     * section.  They must outlive the device. */
+    struct ernic_stats *stats;
     /* The --backend string, e.g. "loopback" or "nvmeof:size=1G".  An
      * "nvmeof" or "s3" backend attaches that in-process target, with the
      * options after the ':'.  NULL means "none". */
@@ -93,8 +97,8 @@ bool ionic_device_has_work(struct ionic_device *dev);
 
 /*
  * The parts, for code that works on one directly: the server's BAR
- * callbacks, TAP attach and statistics file use the Ethernet emulator, and
- * the tests reach into all three.  NULL for a NULL @dev.
+ * callbacks and TAP attach use the Ethernet emulator, and the tests reach
+ * into all three.  NULL for a NULL @dev.
  */
 struct ionic_eth_emu *ionic_device_eth_emu(const struct ionic_device *dev);
 struct ionic_datapath *ionic_device_datapath(const struct ionic_device *dev);

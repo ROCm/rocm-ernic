@@ -327,6 +327,14 @@ void ionic_datapath_set_pvrdma(struct ionic_datapath *dp,
                                pvrdma_handle_t handle);
 
 /*
+ * Set the statistics (ernic_stats.h) to count doorbells, WQEs, completions
+ * and RDMA bytes into, or NULL for none.  They must outlive @dp.
+ */
+struct ernic_stats;
+void ionic_datapath_set_stats(struct ionic_datapath *dp,
+                              struct ernic_stats *stats);
+
+/*
  * Process a doorbell write from BAR2.
  * @qtype:        hardware queue type (decoded from BAR2 page offset)
  * @doorbell_val: 8-byte little-endian doorbell value

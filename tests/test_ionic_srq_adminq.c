@@ -370,27 +370,27 @@ uint32_t ionic_dp_node_from_gid(const struct ionic_datapath *dp,
     return g_node_from_gid;
 }
 
-void pvrdma_adminq_count(pvrdma_handle_t handle)
+void ernic_stats_command(struct ernic_stats *st)
 {
-    (void)handle;
+    (void)st;
 }
-void pvrdma_qp_stats_forget(pvrdma_handle_t handle, uint32_t qp_id)
+void ernic_stats_qp_forget(struct ernic_stats *st, uint32_t qp_id)
 {
-    (void)handle;
+    (void)st;
     (void)qp_id;
 }
 /* The statistics commands are not under test here. */
-int pvrdma_get_dev_counters(pvrdma_handle_t handle,
-                            struct pvrdma_dev_counters *out)
+int ernic_stats_dev_counters(const struct ernic_stats *st,
+                             struct ernic_dev_counters *out)
 {
-    (void)handle;
+    (void)st;
     memset(out, 0, sizeof(*out));
     return 0;
 }
-int pvrdma_get_qp_counters(pvrdma_handle_t handle, uint32_t qp_id,
-                           struct pvrdma_qp_counters *out)
+int ernic_stats_qp_counters(const struct ernic_stats *st, uint32_t qp_id,
+                            struct ernic_qp_counters *out)
 {
-    (void)handle;
+    (void)st;
     (void)qp_id;
     memset(out, 0, sizeof(*out));
     return 0;

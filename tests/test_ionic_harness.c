@@ -2468,13 +2468,20 @@ static void test_cq_events(void)
         char path[sizeof(dir) + 16];
         snprintf(path, sizeof(path), "%s/stats", dir);
 
-        pvrdma_handle_t ph = h->dev->pvrdma_handle;
-        pvrdma_set_stats_file(ph, path);
-        pvrdma_set_stats_instance_info(ph, "/tmp/harness.sock", "loopback");
-        pvrdma_set_stats_pci_ids(ph, 0x1dd8, 0x1002);
-        pvrdma_set_stats_connection_state(ph, "connected");
-        pvrdma_inc_stats_reset_count(ph);
-        pvrdma_write_stats(ph);
+        struct ernic_stats *st = h->dev->stats;
+        struct ernic_stats_instance inst = {
+            .socket_path = "/tmp/harness.sock",
+            .backend = "loopback",
+            .pci_vid = 0x1dd8,
+            .pci_did = 0x1002,
+        };
+        check(T,
+              ernic_stats_set_file(st, path) == 0 &&
+                  ernic_stats_set_instance(st, &inst) == 0,
+              "can't point the statistics at a file");
+        ernic_stats_set_connection(st, "connected");
+        ernic_stats_device_reset(st);
+        check(T, ernic_stats_write(st), "the stats file wasn't written");
 
         FILE *fp = fopen(path, "re");
         char text[16384] = "";
@@ -2485,6 +2492,8 @@ static void test_cq_events(void)
         }
         check(T, strstr(text, "SEND") != NULL && strstr(text, "connected"),
               "the stats file is missing the traffic");
+        check(T, strstr(text, "\nLIF Statistics:\n") != NULL,
+              "the device didn't add its section to the stats file");
         unlink(path);
         rmdir(dir);
     }

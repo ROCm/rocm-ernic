@@ -16,10 +16,9 @@
 
 #include <vfio-user/libvfio-user.h>
 
-#include "rocm_ernic_compat.h"
-
 /* Opaque emulator state. */
 struct ionic_eth_emu;
+struct ernic_stats;
 
 /*
  * Callback type for a devcmd this layer does not implement itself and
@@ -85,12 +84,11 @@ ssize_t ionic_eth_emu_bar2_access(struct ionic_eth_emu *emu, char *buf,
 int ionic_eth_emu_trigger_irq(struct ionic_eth_emu *emu, int vec);
 
 /*
- * Set the pvrdma handle so the emulator can record interrupts and Ethernet
- * bytes into the shared statistics block.
- * @handle: from pvrdma_device_create().
+ * Set the statistics (ernic_stats.h) the emulator counts interrupts and
+ * Ethernet bytes into, or NULL for none.  They must outlive @emu.
  */
-void ionic_eth_emu_set_pvrdma(struct ionic_eth_emu *emu,
-                              pvrdma_handle_t handle);
+void ionic_eth_emu_set_stats(struct ionic_eth_emu *emu,
+                             struct ernic_stats *stats);
 
 /* Register the datapath handler for doorbell writes (BAR2). */
 struct ionic_datapath;
@@ -196,8 +194,8 @@ const struct ionic_emu_stats *ionic_eth_emu_get_stats(
 /*
  * Write the "LIF Statistics" section of the --stats-file: every named
  * counter of struct ionic_lif_stats, by its ionic_if.h name, zero or not, so
- * the set of lines never changes.  @opaque is the struct ionic_eth_emu; the
- * signature matches pvrdma_set_stats_section().  Main loop thread only.
+ * the set of lines never changes.  @opaque is the struct ionic_eth_emu; it's
+ * an ernic_stats_section_fn.  Main loop thread only.
  */
 void ionic_eth_emu_write_stats(FILE *fp, void *opaque);
 

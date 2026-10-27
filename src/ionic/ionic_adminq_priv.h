@@ -148,8 +148,10 @@ struct ionic_adminq_ctx {
     struct ionic_aq_ring aq[MAX_AQ];
     int aq_count;
 
-    /* pvrdma handle, for the resource manager and the counters. */
+    /* pvrdma handle, for the resource manager. */
     pvrdma_handle_t pvrdma_handle;
+    /* The server's counters, or NULL */
+    struct ernic_stats *stats;
 
     /* Bytes a handler DMA'd into the command's response buffer, for the
      * completion's status_length. Reset before every dispatch; only the
@@ -247,17 +249,17 @@ struct adminq_stat {
 };
 
 /*
- * What a VALS command reports: the pvrdma totals, then the data path's RDMA
- * error counters (IONIC_DP_RDMA_COUNTERS), at the offsets the HDRS table
- * gives.
+ * What a VALS command reports: the ernic_stats.h counters, then the data
+ * path's RDMA error counters (IONIC_DP_RDMA_COUNTERS), at the offsets the
+ * HDRS table gives.
  */
 struct adminq_dev_vals {
-    struct pvrdma_dev_counters pv;
+    struct ernic_dev_counters stats;
     uint64_t rdma[IONIC_DP_RDMA_COUNT];
 };
 
 struct adminq_qp_vals {
-    struct pvrdma_qp_counters pv;
+    struct ernic_qp_counters stats;
     uint64_t rdma[IONIC_DP_RDMA_COUNT];
 };
 
@@ -273,26 +275,28 @@ struct adminq_qp_vals {
  * up; existing readers of them see the same files as before.
  */
 static const struct adminq_stat dev_stats[] = {
-    {"commands", offsetof(struct adminq_dev_vals, pv.commands)},
-    {"total_bytes_sent", offsetof(struct adminq_dev_vals, pv.total_bytes_sent)},
+    {"commands", offsetof(struct adminq_dev_vals, stats.commands)},
+    {"total_bytes_sent",
+     offsetof(struct adminq_dev_vals, stats.total_bytes_sent)},
     {"total_bytes_received",
-     offsetof(struct adminq_dev_vals, pv.total_bytes_received)},
+     offsetof(struct adminq_dev_vals, stats.total_bytes_received)},
     {"total_bytes_rdma_read",
-     offsetof(struct adminq_dev_vals, pv.total_bytes_rdma_read)},
+     offsetof(struct adminq_dev_vals, stats.total_bytes_rdma_read)},
     {"total_bytes_rdma_write",
-     offsetof(struct adminq_dev_vals, pv.total_bytes_rdma_write)},
+     offsetof(struct adminq_dev_vals, stats.total_bytes_rdma_write)},
     IONIC_DP_RDMA_COUNTERS(DEV_RDMA_STAT)};
 #define DEV_STATS_COUNT (sizeof(dev_stats) / sizeof(dev_stats[0]))
 
 static const struct adminq_stat qp_stats[] = {
-    {"doorbell_send", offsetof(struct adminq_qp_vals, pv.doorbell_send)},
-    {"doorbell_recv", offsetof(struct adminq_qp_vals, pv.doorbell_recv)},
-    {"wqes_processed", offsetof(struct adminq_qp_vals, pv.wqes_processed)},
-    {"cqes_posted", offsetof(struct adminq_qp_vals, pv.cqes_posted)},
-    {"bytes_sent", offsetof(struct adminq_qp_vals, pv.bytes_sent)},
-    {"bytes_received", offsetof(struct adminq_qp_vals, pv.bytes_received)},
-    {"bytes_rdma_read", offsetof(struct adminq_qp_vals, pv.bytes_rdma_read)},
-    {"bytes_rdma_write", offsetof(struct adminq_qp_vals, pv.bytes_rdma_write)},
+    {"doorbell_send", offsetof(struct adminq_qp_vals, stats.doorbell_send)},
+    {"doorbell_recv", offsetof(struct adminq_qp_vals, stats.doorbell_recv)},
+    {"wqes_processed", offsetof(struct adminq_qp_vals, stats.wqes_processed)},
+    {"cqes_posted", offsetof(struct adminq_qp_vals, stats.cqes_posted)},
+    {"bytes_sent", offsetof(struct adminq_qp_vals, stats.bytes_sent)},
+    {"bytes_received", offsetof(struct adminq_qp_vals, stats.bytes_received)},
+    {"bytes_rdma_read", offsetof(struct adminq_qp_vals, stats.bytes_rdma_read)},
+    {"bytes_rdma_write",
+     offsetof(struct adminq_qp_vals, stats.bytes_rdma_write)},
     IONIC_DP_RDMA_COUNTERS(QP_RDMA_STAT)};
 #define QP_STATS_COUNT (sizeof(qp_stats) / sizeof(qp_stats[0]))
 

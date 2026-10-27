@@ -133,6 +133,7 @@ struct ionic_rdma_devcmd_state {
     /* What every admin queue context is given when it's created, since one
      * is created at each CREATE_ADMINQ after an RDMA_RESET_LIF. */
     pvrdma_handle_t pvrdma_handle;
+    struct ernic_stats *stats;
     struct ionic_fault_set *faults;
     struct ionic_datapath *dp;
 };
@@ -161,6 +162,7 @@ static void wire_adminq_ctx(struct ionic_rdma_devcmd_state *s)
 {
     ionic_adminq_set_cq_event_cb(s->adminq_ctx, rdma_cq_event_cb, s);
     ionic_adminq_set_pvrdma(s->adminq_ctx, s->pvrdma_handle);
+    ionic_adminq_set_stats(s->adminq_ctx, s->stats);
     ionic_adminq_set_faults(s->adminq_ctx, s->faults);
     ionic_adminq_set_datapath(s->adminq_ctx, s->dp);
 }
@@ -457,6 +459,15 @@ void ionic_rdma_devcmd_set_pvrdma(struct ionic_rdma_devcmd_state *s,
         return;
     s->pvrdma_handle = handle;
     ionic_adminq_set_pvrdma(s->adminq_ctx, handle);
+}
+
+void ionic_rdma_devcmd_set_stats(struct ionic_rdma_devcmd_state *s,
+                                 struct ernic_stats *stats)
+{
+    if (!s)
+        return;
+    s->stats = stats;
+    ionic_adminq_set_stats(s->adminq_ctx, stats);
 }
 
 void ionic_rdma_devcmd_set_faults(struct ionic_rdma_devcmd_state *s,

@@ -59,25 +59,26 @@
 #include "rocm-ernic-warnings.h"
 
 /*
- * The per-QP wqes_by_opcode histogram is indexed by PVRDMA_WR_*, whose
- * numbering is a different permutation of the same operations than
+ * The stats file's per-QP "WQEs by opcode" is indexed by enum ernic_stat_wr,
+ * whose numbering is a different permutation of the same operations than
  * enum ionic_v1_op, so the two spaces need an explicit translation.
- * Every ionic opcode has exactly one PVRDMA counterpart; the reverse does
- * not hold (LSO and the indices above SEND_WITH_INV are unreachable here).
+ * Every ionic opcode has exactly one counterpart; the reverse does not hold
+ * (LSO and the opcodes after SEND_WITH_INV other than LOCAL_INV and
+ * FAST_REG_MR are unreachable here).
  */
-static unsigned int ionic_op_to_pvrdma_wr(uint8_t op)
+static unsigned int ionic_op_to_stat_wr(uint8_t op)
 {
     static const uint8_t map[] = {
-        [IONIC_V1_OP_SEND] = 2,           /* PVRDMA_WR_SEND */
-        [IONIC_V1_OP_SEND_INV] = 8,       /* PVRDMA_WR_SEND_WITH_INV */
-        [IONIC_V1_OP_SEND_IMM] = 3,       /* PVRDMA_WR_SEND_WITH_IMM */
-        [IONIC_V1_OP_RDMA_READ] = 4,      /* PVRDMA_WR_RDMA_READ */
-        [IONIC_V1_OP_RDMA_WRITE] = 0,     /* PVRDMA_WR_RDMA_WRITE */
-        [IONIC_V1_OP_RDMA_WRITE_IMM] = 1, /* PVRDMA_WR_RDMA_WRITE_WITH_IMM */
-        [IONIC_V1_OP_ATOMIC_CS] = 5,      /* PVRDMA_WR_ATOMIC_CMP_AND_SWP */
-        [IONIC_V1_OP_ATOMIC_FA] = 6,      /* PVRDMA_WR_ATOMIC_FETCH_AND_ADD */
-        [IONIC_V1_OP_REG_MR] = 11,        /* PVRDMA_WR_FAST_REG_MR */
-        [IONIC_V1_OP_LOCAL_INV] = 10,     /* PVRDMA_WR_LOCAL_INV */
+        [IONIC_V1_OP_SEND] = ERNIC_STAT_WR_SEND,
+        [IONIC_V1_OP_SEND_INV] = ERNIC_STAT_WR_SEND_WITH_INV,
+        [IONIC_V1_OP_SEND_IMM] = ERNIC_STAT_WR_SEND_WITH_IMM,
+        [IONIC_V1_OP_RDMA_READ] = ERNIC_STAT_WR_RDMA_READ,
+        [IONIC_V1_OP_RDMA_WRITE] = ERNIC_STAT_WR_RDMA_WRITE,
+        [IONIC_V1_OP_RDMA_WRITE_IMM] = ERNIC_STAT_WR_RDMA_WRITE_WITH_IMM,
+        [IONIC_V1_OP_ATOMIC_CS] = ERNIC_STAT_WR_ATOMIC_CMP_AND_SWP,
+        [IONIC_V1_OP_ATOMIC_FA] = ERNIC_STAT_WR_ATOMIC_FETCH_AND_ADD,
+        [IONIC_V1_OP_REG_MR] = ERNIC_STAT_WR_FAST_REG_MR,
+        [IONIC_V1_OP_LOCAL_INV] = ERNIC_STAT_WR_LOCAL_INV,
     };
 
     /* Out of range counts toward the QP total but no histogram bucket. */
@@ -132,10 +133,10 @@ static void dp_inmsg_free(struct dp_inmsg *m)
  */
 
 void ionic_dp_rdma_bytes(const struct ionic_datapath *dp, uint32_t qp_id,
-                         uint64_t bytes, enum pvrdma_stat_op op,
+                         uint64_t bytes, enum ernic_stat_op op,
                          unsigned int dirs)
 {
-    pvrdma_rdma_bytes_count(dp->pvrdma_handle, qp_id, bytes, op);
+    ernic_stats_rdma_bytes(dp->stats, qp_id, bytes, op);
     if (dirs & DP_RDMA_TX)
         ionic_eth_emu_count_rdma(dp->eth_emu, bytes, true);
     if (dirs & DP_RDMA_RX)
@@ -368,6 +369,13 @@ void ionic_datapath_set_pvrdma(struct ionic_datapath *dp,
     ernic_mesh_set_recv_cb(dp->pvrdma_handle, dp_mesh_recv, dp);
     vfu_log(dp->vfu_ctx, LOG_INFO, "ionic_datapath: mesh node %u",
             dp->local_node);
+}
+
+void ionic_datapath_set_stats(struct ionic_datapath *dp,
+                              struct ernic_stats *stats)
+{
+    if (dp)
+        dp->stats = stats;
 }
 
 void ionic_datapath_set_cq_event_cb(struct ionic_datapath *dp,
@@ -1307,7 +1315,7 @@ static void cq_post(struct ionic_datapath *dp, uint32_t cq_id,
         return;
     }
 
-    pvrdma_qp_cqe_count(dp->pvrdma_handle, qid);
+    ernic_stats_qp_cqe(dp->stats, qid);
     if (error)
         dp_count_cqe_err(dp, qid, type, status_len);
 
@@ -1890,7 +1898,7 @@ int64_t ionic_dp_deliver_recv(struct ionic_datapath *dp,
                 dst_qp_id, dst.total, src->total, src_qp_id, copied, status);
     }
 
-    ionic_dp_rdma_bytes(dp, dst_qp_id, copied, PVRDMA_STAT_RECV, DP_RDMA_RX);
+    ionic_dp_rdma_bytes(dp, dst_qp_id, copied, ERNIC_STAT_RECV, DP_RDMA_RX);
 
     /* GSI and UD receives carry a source MAC; nothing else does. */
     uint8_t smac[6];
@@ -2380,11 +2388,11 @@ static enum dp_post remote_post(struct ionic_datapath *dp,
         /* A READ has moved nothing yet; it is counted when the response
          * scatters into p->local. */
         if (wire_op == IONIC_WIRE_WRITE || wire_op == IONIC_WIRE_WRITE_IMM)
-            ionic_dp_rdma_bytes(dp, qp_id, payload_len, PVRDMA_STAT_RDMA_WRITE,
+            ionic_dp_rdma_bytes(dp, qp_id, payload_len, ERNIC_STAT_RDMA_WRITE,
                                 DP_RDMA_TX);
         else if (wire_op != IONIC_WIRE_READ_REQ &&
                  wire_op != IONIC_WIRE_ATOMIC_REQ)
-            ionic_dp_rdma_bytes(dp, qp_id, payload_len, PVRDMA_STAT_SEND,
+            ionic_dp_rdma_bytes(dp, qp_id, payload_len, ERNIC_STAT_SEND,
                                 DP_RDMA_TX);
     } else if (rc == -EAGAIN) {
         /* The room checked above went to a route that changed since */
@@ -2580,8 +2588,7 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
 
     uint8_t op = wqe[8];
     if (!q->sq_rnr && !q->sq_busy) /* a retry is the same WQE again */
-        pvrdma_qp_wqe_count(dp->pvrdma_handle, qp_id,
-                            ionic_op_to_pvrdma_wr(op));
+        ernic_stats_qp_wqe(dp->stats, qp_id, ionic_op_to_stat_wr(op));
 
     uint16_t flags = ernic_get_be16(wqe + 10);
 
@@ -2964,7 +2971,7 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                     dst_id, RNR_RETRY_MS, src.total, qp_id);
             status = IONIC_STS_RNR_RETRY_EXCEEDED;
         } else
-            ionic_dp_rdma_bytes(dp, qp_id, src.total, PVRDMA_STAT_SEND,
+            ionic_dp_rdma_bytes(dp, qp_id, src.total, ERNIC_STAT_SEND,
                                 DP_RDMA_TX);
         break;
     }
@@ -3024,8 +3031,8 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         }
 
         ionic_dp_rdma_bytes(dp, qp_id, moved,
-                            to_remote ? PVRDMA_STAT_RDMA_WRITE
-                                      : PVRDMA_STAT_RDMA_READ,
+                            to_remote ? ERNIC_STAT_RDMA_WRITE
+                                      : ERNIC_STAT_RDMA_READ,
                             DP_RDMA_TX | DP_RDMA_RX);
 
         /* Only the _IMM form consumes a receive on the far side, and it does
@@ -3246,7 +3253,7 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
 
     /* A plain RDMA op names only an rkey, so the QP it quotes may not exist
      * here; attribute those bytes to the device alone. */
-    uint32_t stat_qp = dq ? dst_qp_id : PVRDMA_STAT_NO_QP;
+    uint32_t stat_qp = dq ? dst_qp_id : ERNIC_STAT_NO_QP;
 
     /*
      * A peer may only name memory this instance has registered.  sge_gpa()
@@ -3328,7 +3335,7 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
         } else {
             /* The responder counts what landed in its own memory too, so each
              * instance's totals describe the traffic it actually moved. */
-            ionic_dp_rdma_bytes(dp, stat_qp, n, PVRDMA_STAT_RDMA_WRITE,
+            ionic_dp_rdma_bytes(dp, stat_qp, n, ERNIC_STAT_RDMA_WRITE,
                                 DP_RDMA_RX);
 
             if (h.op == IONIC_WIRE_WRITE_IMM && dq) {
@@ -3356,7 +3363,7 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
                     rkey, remote_va, length);
             status = IONIC_STS_REMOTE_ACC_ERR;
         } else {
-            ionic_dp_rdma_bytes(dp, stat_qp, length, PVRDMA_STAT_RDMA_READ,
+            ionic_dp_rdma_bytes(dp, stat_qp, length, ERNIC_STAT_RDMA_READ,
                                 DP_RDMA_TX);
         }
 
@@ -3407,7 +3414,7 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
 
             /* The requester's READ bytes only exist once they have landed. */
             if (h.op == IONIC_WIRE_READ_RESP)
-                ionic_dp_rdma_bytes(dp, p->qp_id, got, PVRDMA_STAT_RDMA_READ,
+                ionic_dp_rdma_bytes(dp, p->qp_id, got, ERNIC_STAT_RDMA_READ,
                                     DP_RDMA_RX);
         }
         pending_complete(dp, p, status);
@@ -3745,7 +3752,7 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
         if (qid < dp->qp_count && dp->qp[qid].valid) {
             if (rq_prod_advance(&dp->qp[qid].rq_prod, dp->qp[qid].rq_depth,
                                 p_index))
-                pvrdma_qp_doorbell_count(dp->pvrdma_handle, qid, false);
+                ernic_stats_qp_doorbell(dp->stats, qid, false);
         }
         return;
 
@@ -3759,7 +3766,7 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
     if (qid >= dp->qp_count || !dp->qp[qid].valid)
         return;
 
-    pvrdma_qp_doorbell_count(dp->pvrdma_handle, qid, true);
+    ernic_stats_qp_doorbell(dp->stats, qid, true);
 
     struct ionic_qp_ring *q = &dp->qp[qid];
 

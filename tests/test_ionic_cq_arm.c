@@ -286,31 +286,30 @@ int ionic_eth_emu_queue_rx_frame(struct ionic_eth_emu *emu, const void *frame,
     return -1;
 }
 
-void pvrdma_qp_cqe_count(pvrdma_handle_t handle, uint32_t qp_id)
+void ernic_stats_qp_cqe(struct ernic_stats *st, uint32_t qp_id)
 {
-    (void)handle;
+    (void)st;
     (void)qp_id;
 }
-void pvrdma_qp_doorbell_count(pvrdma_handle_t handle, uint32_t qp_id,
-                              bool is_send)
+void ernic_stats_qp_doorbell(struct ernic_stats *st, uint32_t qp_id,
+                             bool is_send)
 {
-    (void)handle;
+    (void)st;
     (void)qp_id;
     (void)is_send;
 }
-void pvrdma_qp_wqe_count(pvrdma_handle_t handle, uint32_t qp_id,
-                         unsigned int pvrdma_opcode)
+void ernic_stats_qp_wqe(struct ernic_stats *st, uint32_t qp_id, unsigned int wr)
 {
-    (void)handle;
+    (void)st;
     (void)qp_id;
-    (void)pvrdma_opcode;
+    (void)wr;
 }
 static uint64_t g_file_rdma_bytes; /* what reached the stats file */
 
-void pvrdma_rdma_bytes_count(pvrdma_handle_t handle, uint32_t qp_id,
-                             uint64_t bytes, enum pvrdma_stat_op stat_op)
+void ernic_stats_rdma_bytes(struct ernic_stats *st, uint32_t qp_id,
+                            uint64_t bytes, enum ernic_stat_op stat_op)
 {
-    (void)handle;
+    (void)st;
     (void)qp_id;
     (void)stat_op;
     g_file_rdma_bytes += bytes;
@@ -532,7 +531,7 @@ static void test_rdma_bytes_directions(void)
         bool ok;
 
         g_file_rdma_bytes = g_lif_rdma_tx = g_lif_rdma_rx = 0;
-        ionic_dp_rdma_bytes(&dp, 1, rows[i].bytes, PVRDMA_STAT_SEND,
+        ionic_dp_rdma_bytes(&dp, 1, rows[i].bytes, ERNIC_STAT_SEND,
                             rows[i].dirs);
         ok = g_file_rdma_bytes == rows[i].want_file &&
              g_lif_rdma_tx == rows[i].want_tx &&
