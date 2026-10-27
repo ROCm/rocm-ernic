@@ -247,6 +247,15 @@
     # ─────────────────────────────────────────────────
     # RDMA bandwidth test (ib_send_bw)
     # ─────────────────────────────────────────────────
+    #
+    # -F on both sides.  After the transfer, perftest calibrates the
+    # CPU's clock against gettimeofday() to print its report, and in a
+    # guest whose vCPU the host preempts the fit can fail ("Correlation
+    # coefficient r^2: ... < 0.9").  Without -F the bandwidth tools then
+    # print "Can't produce a report" and exit 1, failing a test whose
+    # RDMA worked.  With it they report 0 instead, so the exit status is
+    # the RDMA's alone.  This test checks that RC SENDs cross the mesh,
+    # not how fast.
     - name: "RDMA BW test: start ib_send_bw server on VM1"
       ansible.builtin.shell:
         cmd: >-
@@ -255,7 +264,7 @@
           sudo systemctl reset-failed ib-send-bw-server 2>/dev/null;
           sudo systemd-run --unit=ib-send-bw-server
           bash -c "ib_send_bw -d {{ rdma_dev }} -x {{ vm1_gid_index }}
-          -n 10 --report_gbits
+          -n 10 --report_gbits -F
           >/tmp/ib_send_bw_server.log 2>&1";
           sleep 1'
       changed_when: true
@@ -268,7 +277,7 @@
       ansible.builtin.shell:
         cmd: >-
           {{ vm2_ssh }} 'timeout 30 ib_send_bw
-          -d {{ rdma_dev }} -x {{ vm2_gid_index }} -n 10 --report_gbits
+          -d {{ rdma_dev }} -x {{ vm2_gid_index }} -n 10 --report_gbits -F
           {{ vm1_ip }} 2>&1'
       register: ib_send_bw_result
       changed_when: false

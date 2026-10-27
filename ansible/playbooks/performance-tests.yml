@@ -297,34 +297,52 @@
           SERVER_IP="{{ vm1_ip }}"
           UNIT="perftest-bw-$TOOL-$SZ"
 
-          # Clean both VMs before starting server
-          {{ vm1_run }} '{{ kill_perftest }}'
-          {{ vm2_run }} '{{ kill_perftest }}'
-          sleep 2
+          # Twice at most, and the second time only if perftest could
+          # not calibrate the CPU's clock.  It does that after the
+          # transfer, to print its report, and in a guest whose vCPU the
+          # host preempts the fit can fail ("Correlation coefficient
+          # r^2: ... < 0.9"); a bandwidth tool then prints "Can't
+          # produce a report" and exits 1, though the RDMA worked.  -F
+          # would make it report 0 instead, a figure this sweep would
+          # publish, so run the pair again.  Any other failure is
+          # recorded at once.
+          for ATTEMPT in 1 2; do
+            # Clean both VMs before starting server
+            {{ vm1_run }} '{{ kill_perftest }}'
+            {{ vm2_run }} '{{ kill_perftest }}'
+            sleep 2
 
-          {{ vm1_run }} "
-            sudo systemctl stop $UNIT 2>/dev/null;
-            sudo systemctl reset-failed $UNIT 2>/dev/null;
-            sudo systemd-run --quiet --unit=$UNIT \
-              bash -c '$TOOL -d $DEV -x $GID1 -s $SZ -n $N \
-                --report_gbits \
-                >/tmp/${UNIT}.log 2>&1';
-            sleep 1
-          "
+            {{ vm1_run }} "
+              sudo systemctl stop $UNIT 2>/dev/null;
+              sudo systemctl reset-failed $UNIT 2>/dev/null;
+              sudo systemd-run --quiet --unit=$UNIT \
+                bash -c '$TOOL -d $DEV -x $GID1 -s $SZ -n $N \
+                  --report_gbits \
+                  >/tmp/${UNIT}.log 2>&1';
+              sleep 1
+            "
 
-          sleep 3
+            sleep 3
 
-          RAW=$({{ vm2_run }} "
-            timeout {{ perftest_timeout }} \
-              $TOOL -d $DEV -x $GID2 -s $SZ -n $N \
-              --report_gbits $SERVER_IP 2>&1
-          ")
-          RC=$?
+            RAW=$({{ vm2_run }} "
+              timeout {{ perftest_timeout }} \
+                $TOOL -d $DEV -x $GID2 -s $SZ -n $N \
+                --report_gbits $SERVER_IP 2>&1
+            ")
+            RC=$?
+
+            if [ "$RC" -eq 0 ] || [ "$ATTEMPT" -eq 2 ] ||
+               ! grep -q "Can't produce a report" <<<"$RAW"; then
+              break
+            fi
+            echo "attempt $ATTEMPT: perftest could not calibrate the CPU" \
+              "clock; running the pair again"
+          done
 
           # What the client printed says why it failed.  The server's
           # log is written when it exits, so it's empty if the server
           # is still waiting for a client that never connected.
-          if [ $RC -ne 0 ]; then
+          if [ "$RC" -ne 0 ]; then
             echo "{{ item.0.label }},$SZ,FAIL,FAIL,FAIL" \
               >> "{{ bw_csv }}"
             echo "FAIL rc=$RC"
@@ -496,31 +514,42 @@
           RUN="{{ item.1 }}"
           UNIT="perftest-rel-$TOOL-run$RUN"
 
-          # Clean both VMs before starting server
-          {{ vm1_run }} '{{ kill_perftest }}'
-          {{ vm2_run }} '{{ kill_perftest }}'
-          sleep 2
+          # Twice at most, the second time only if perftest could not
+          # calibrate the CPU's clock, as in the bandwidth sweep.
+          for ATTEMPT in 1 2; do
+            # Clean both VMs before starting server
+            {{ vm1_run }} '{{ kill_perftest }}'
+            {{ vm2_run }} '{{ kill_perftest }}'
+            sleep 2
 
-          {{ vm1_run }} "
-            sudo systemctl stop $UNIT 2>/dev/null;
-            sudo systemctl reset-failed $UNIT 2>/dev/null;
-            sudo systemd-run --quiet --unit=$UNIT \
-              bash -c '$TOOL -d $DEV -x $GID1 -s $SZ -n $N \
-                --report_gbits \
-                >/tmp/${UNIT}.log 2>&1';
-            sleep 1
-          "
+            {{ vm1_run }} "
+              sudo systemctl stop $UNIT 2>/dev/null;
+              sudo systemctl reset-failed $UNIT 2>/dev/null;
+              sudo systemd-run --quiet --unit=$UNIT \
+                bash -c '$TOOL -d $DEV -x $GID1 -s $SZ -n $N \
+                  --report_gbits \
+                  >/tmp/${UNIT}.log 2>&1';
+              sleep 1
+            "
 
-          sleep 3
+            sleep 3
 
-          RAW=$({{ vm2_run }} "
-            timeout {{ perftest_timeout }} \
-              $TOOL -d $DEV -x $GID2 -s $SZ -n $N \
-              --report_gbits $SERVER_IP 2>&1
-          ")
-          RC=$?
+            RAW=$({{ vm2_run }} "
+              timeout {{ perftest_timeout }} \
+                $TOOL -d $DEV -x $GID2 -s $SZ -n $N \
+                --report_gbits $SERVER_IP 2>&1
+            ")
+            RC=$?
 
-          if [ $RC -ne 0 ]; then
+            if [ "$RC" -eq 0 ] || [ "$ATTEMPT" -eq 2 ] ||
+               ! grep -q "Can't produce a report" <<<"$RAW"; then
+              break
+            fi
+            echo "attempt $ATTEMPT: perftest could not calibrate the CPU" \
+              "clock; running the pair again"
+          done
+
+          if [ "$RC" -ne 0 ]; then
             echo "{{ item.0.label }},$RUN,$SZ,FAIL,FAIL,FAIL" \
               >> "{{ rel_csv }}"
             echo "FAIL rc=$RC"

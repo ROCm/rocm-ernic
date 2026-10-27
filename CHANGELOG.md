@@ -1120,6 +1120,15 @@
     errors.
   * `ernic-device-tuple-unit` no longer fails in a build directory with a
     long path.
+  * The two-VM lane's `ib_send_bw` sanity test could fail when the RDMA
+    worked: perftest calibrates the guest's CPU clock to print its report,
+    and when a busy host preempts the vCPU that fails (`Correlation
+    coefficient r^2: ... < 0.9`) and a bandwidth tool exits 1 with `Can't
+    produce a report`. The test now runs it with `-F`, which reports 0
+    instead, so only the RDMA decides. The loopback lane's perftest sweep
+    and `performance-tests.yml`, which use the figures, run a pair once
+    more when that happens, and the sweep now gives each pair the fresh
+    port its comment promised; every pair had used 18516.
   * `ernic-mesh-stress` no longer fails intermittently on "the reaped
     peer's connection is closed from the manager's end". The manager
     reaped that peer about 10 s after it connected, exactly when the test
