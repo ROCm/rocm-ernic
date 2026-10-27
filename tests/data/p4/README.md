@@ -212,8 +212,25 @@ the reverse of `fp8_policy.p4`'s order.
 It exists to show that a drop made before the extern declines still
 stands. A one-SGE RDMA write is not a reduction's shape, so `map()`
 declines it and the pipeline stops at the call; the drop was already
-made, so `ionic_datapath.c` completes the write without transferring
-rather than dispatching what the program denied.
+made, so `ionic_datapath.c` fails the write without transferring, as it
+does any operation the program denies, rather than dispatching it.
+
+## rdma_deny.json
+
+**Compiled, not hand written**, from `src/rdma_deny.p4`, without
+`--emit-externs`, since it calls none:
+
+```
+build-p4c/bin/p4c-bm2-ss --std p4-16 -I build-p4c/p4include \
+    -o tests/data/p4/rdma_deny.json \
+    tests/data/p4/src/rdma_deny.p4
+```
+
+An access list for the RDMA path: the table `Ing.acl`, keyed on the
+opcode, whose `deny()` action calls `mark_to_drop()` and nothing else;
+the default action, `allow()`, does nothing. `ionic-harness-p4-deny`
+checks that a denied operation transfers nothing and fails with a local
+QP operation error, on RC and UD, signalled or not.
 
 ## fp8_cvt_then_map.json
 

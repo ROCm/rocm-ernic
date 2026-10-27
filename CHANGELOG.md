@@ -126,13 +126,15 @@
     conversion, `cvt(src_fmt, dst_fmt)`, in either direction between fp32,
     fp16, bf16, fp8 E4M3, fp8 E5M2 and fp4 E2M1 (OCP MX, two to a byte).
     Any other WRITE is declined and dispatched as an ordinary transfer,
-    unless the program has already dropped it. An action that calls the
-    extern must also `mark_to_drop()`. All regions are local: a peer node's
-    rkey is refused. Rounding is to nearest, ties to even. A value too large
-    for its format becomes an infinity where the format has one and
-    otherwise saturates (E4M3 to +/-448, so one overflowed term can't make a
-    whole result NaN), as does a NaN in fp4. `tests/data/p4/fp8_policy.p4`
-    and `fp8_convert.p4` are the worked examples.
+    unless the program has already dropped it. An operation the program
+    drops without an extern doing it fails with a local QP operation error.
+    An action that calls the extern must also `mark_to_drop()`. All regions
+    are local: a peer node's rkey is refused. Rounding is to nearest, ties
+    to even. A value too large for its format becomes an infinity where the
+    format has one and otherwise saturates (E4M3 to +/-448, so one
+    overflowed term can't make a whole result NaN), as does a NaN in fp4.
+    `tests/data/p4/fp8_policy.p4` and `fp8_convert.p4` are the worked
+    examples.
   * **Programmable from the guest.** `--p4-guest-scope` is the operator's
     grant: `none` (the default), `read` (identify, enumerate, read
     counters), `write` (also change table entries) or `load` (also replace
@@ -1037,6 +1039,12 @@
     WRITE on the device; one that dropped an operation before calling the
     extern had it dispatched anyway; and one calling the extern twice could
     have an ordinary transfer overwrite the result.
+  * An RDMA operation the program dropped completed successfully, so the
+    sender was told it was done while its peer never saw it. It now fails
+    with a local QP operation error (`IBV_WC_LOC_QP_OP_ERR`), on every
+    transport and whether or not it was signalled, and the server logs that
+    the P4 program denied it. A drop that goes with an fp8 extern call
+    still completes successfully, since the extern did the operation.
   * Frames between 9217 bytes and the 9582-byte MTU were dropped with
     `--p4` on.
   * Signed fields and negative literals were loaded as unsigned (bmv2's
