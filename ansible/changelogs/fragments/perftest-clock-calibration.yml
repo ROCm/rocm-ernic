@@ -1,0 +1,19 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+bugfixes:
+  - >-
+    ``sanity-tests.yml`` no longer fails ``ib_send_bw`` when perftest
+    can't calibrate the guest's CPU clock.  perftest does that after the
+    transfer, to print its report, and on a host that preempts the guest's
+    vCPU the fit can fail (``Correlation coefficient r^2: ... < 0.9``),
+    after which a bandwidth tool prints ``Can't produce a report`` and
+    exits 1.  Both sides now run with ``-F``, so it reports 0 instead, and
+    the test fails only if the RDMA does.
+  - >-
+    ``performance-tests.yml`` runs a bandwidth or reliability pair once
+    more when perftest couldn't calibrate the CPU clock, rather than
+    recording the size as ``FAIL``.  Any other failure is still recorded
+    at once.

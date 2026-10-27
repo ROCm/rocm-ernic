@@ -1058,9 +1058,19 @@ jobs:
 
         # A fresh port per run: perftest's out-of-band listener would
         # otherwise hit a TIME_WAIT socket from the previous size and
-        # fail in a way that looks like a device problem.
-        PORT=18515
-        next_port() { PORT=$((PORT + 1)); echo "$PORT"; }
+        # fail in a way that looks like a device problem.  The last
+        # port used is kept in a file: run_pair runs in a command
+        # substitution, a subshell, so a variable it changed would be
+        # back at its old value for the next call, and every run would
+        # get the same port.
+        PORT_FILE=$(mktemp)
+        echo 18515 > "$PORT_FILE"
+        next_port() {
+          local p
+          p=$(( $(cat "$PORT_FILE") + 1 ))
+          echo "$p" > "$PORT_FILE"
+          echo "$p"
+        }
 
         # $1 tool, $2 size, $3 iters, $4 column of the summary line,
         # $5.. extra args.  Prints the field, or nothing if the pair
@@ -1068,17 +1078,39 @@ jobs:
         # means.
         run_pair() {
           local tool=$1 sz=$2 iters=$3 col=$4; shift 4
-          local p out
-          p=$(next_port)
+          local p out srv rc attempt
 
-          timeout 90 "$tool" -d "$DEV" -x "$GIDX" -s "$sz" -n "$iters" \
-            -p "$p" "$@" >/tmp/perf-server.log 2>&1 &
-          local srv=$!
-          sleep 1
+          # Twice at most, and the second time only if perftest could
+          # not calibrate the CPU's clock.  It does that after the
+          # transfer, to print its report, and in a guest whose vCPU the
+          # host preempts the fit can fail ("Correlation coefficient
+          # r^2: ... < 0.9"); a bandwidth tool then prints "Can't
+          # produce a report" and exits 1, though the RDMA worked.  -F
+          # would make it report 0 instead, which the regression check
+          # below would fail on, so run the pair again.  Any other
+          # failure fails at once.
+          for attempt in 1 2; do
+            p=$(next_port)
 
-          out=$(timeout 90 "$tool" -d "$DEV" -x "$GIDX" -s "$sz" -n "$iters" \
-            -p "$p" "$@" 127.0.0.1 2>&1) || {
-            local rc=$?
+            timeout 90 "$tool" -d "$DEV" -x "$GIDX" -s "$sz" -n "$iters" \
+              -p "$p" "$@" >/tmp/perf-server.log 2>&1 &
+            srv=$!
+            sleep 1
+
+            rc=0
+            out=$(timeout 90 "$tool" -d "$DEV" -x "$GIDX" -s "$sz" \
+              -n "$iters" -p "$p" "$@" 127.0.0.1 2>&1) || rc=$?
+            wait "$srv" 2>/dev/null || true
+
+            if [ "$rc" -eq 0 ] || [ "$attempt" -eq 2 ] ||
+               ! grep -q "Can't produce a report" <<<"$out"; then
+              break
+            fi
+            echo "  $tool -s $sz: perftest could not calibrate the" \
+              "CPU clock; running the pair again" >&2
+          done
+
+          if [ "$rc" -ne 0 ]; then
             # Dump both sides whole.  A tail is the wrong end here:
             # stdout is block-buffered into a capture while stderr is
             # not, so perftest's failure message lands *above* the test
@@ -1087,10 +1119,8 @@ jobs:
             echo "$out" >&2
             echo "  server output:" >&2
             cat /tmp/perf-server.log >&2
-            wait "$srv" 2>/dev/null || true
             return 1
-          }
-          wait "$srv" 2>/dev/null || true
+          fi
 
           # The summary line is the last one carrying a leading byte
           # count; perftest prints a trailing blank line and, on some
