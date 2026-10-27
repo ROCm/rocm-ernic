@@ -30,8 +30,8 @@
       The VMs must be up and running before this point; neither
       site.yml nor ci-site.yml launches them.  On the developer
       path the service has to be installed before it can launch
-      anything, so the order is: "ansible-playbook site.yml --tags
-      host-setup", then "sudo ernicctl vm-launch <id>" once per
+      anything, so the order is: "ansible-playbook
+      playbooks/host-setup.yml", then "sudo ernicctl vm-launch <id>" once per
       instance, then "ansible-playbook site.yml -e
       ernic_restart_existing=false".  Without that last override
       phase 1 stops the guests again before this play runs.  CI

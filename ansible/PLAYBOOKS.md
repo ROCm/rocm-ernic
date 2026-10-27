@@ -68,8 +68,10 @@ is host setup, launch, then everything else:
 ```bash
 cd ansible
 
-# 1. Build, install the service and ernicctl.
-ansible-playbook site.yml --tags host-setup
+# 1. Build, install the service and ernicctl.  Run the play,
+#    not site.yml --tags host-setup: site.yml always registers
+#    the VMs, and there are none yet.
+ansible-playbook playbooks/host-setup.yml
 
 # 2. Attach a VM to each instance.
 sudo ernicctl vm-launch 1
