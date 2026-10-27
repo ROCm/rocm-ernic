@@ -142,7 +142,10 @@
     upstream `pds_fwctl` and keeping its opcode numbers, but not
     wire-identical to it. LIF capability bit 2, `IONIC_LIF_CAP_P4`, is set
     only when the engine is on and a scope is granted; real hardware never
-    sets it.
+    sets it. Names a guest or a program supplies reach the server log, so
+    any name with a byte that isn't printable ASCII is refused: a table
+    update naming one fails with `P4_STS_EINVAL`, and a program using one
+    anywhere is refused.
   * **A guest driver.** The optional ionic patch series
     `ansible/files/patches/p4/` creates a `p4` auxiliary device when the
     capability bit is set, and the `drivers/ernic_p4/` kernel module binds

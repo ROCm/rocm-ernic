@@ -444,7 +444,10 @@ modify or delete, naming a table and an action by name -- and
 is the single path by which any control plane changes a
 table. A network-facing client and the guest's own device
 commands are both meant to produce one of these, rather than
-each having its own way in.
+each having its own way in. The engine names a table or
+action it can't find in a message the server logs, so the
+device commands refuse an update whose table or action name
+holds anything but printable ASCII before the engine sees it.
 
 Exact, longest-prefix and ternary matching all work, and the
 ties are broken as P4 requires: the longest prefix wins for

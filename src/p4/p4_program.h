@@ -19,10 +19,32 @@
 #define P4_PROGRAM_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /* Longest name accepted for any object in the program. */
 #define P4_MAX_NAME 63
+
+/*
+ * True when the @n bytes at @s are all printable ASCII.
+ *
+ * Names come from the program document and from a guest's table updates,
+ * and both kinds reach the log and the error messages.  A newline or an
+ * ANSI escape in one is log injection, so every name taken from outside is
+ * held to this before anything compares, stores or prints it.
+ */
+static inline bool p4_name_printable(const char *s, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        /* Through unsigned char, so a byte past 0x7F is refused whether
+         * or not plain char is signed. */
+        unsigned char c = (unsigned char)s[i];
+
+        if (c < 0x20 || c > 0x7E)
+            return false;
+    }
+    return true;
+}
 
 #define P4_MAX_HEADER_TYPES 64
 #define P4_MAX_FIELDS       64 /* per header type */
