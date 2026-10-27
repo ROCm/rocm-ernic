@@ -6,8 +6,9 @@
  * ionic_lif_size() then wants 1 + min(queues, vCPUs) + min(EQs, vCPUs)
  * vectors and halves its EQs or queues until that fits.  These rows check
  * that each NIC profile's [queues] keys reach the identity, that the
- * vector budget fits where the profile says it should, and that queue
- * indices past the profile's count are refused without touching memory.
+ * vector budget fits where the profile says it should, and that a Q_INIT
+ * of a queue past the profile's count, of an unknown qtype or of a ring too
+ * deep is refused with a non-zero status, without touching memory.
  * That every one of the 128 vectors has room in BAR0 is a compile-time
  * check, in ionic_bar.h and ionic_eth_emu_priv.h.
  *
@@ -143,9 +144,11 @@ static uint32_t driver_nintrs(const struct shape *s, uint32_t cpus)
     return 1u + nxqs + min_u32(s->lif_eqs, cpus);
 }
 
-/* Q_INIT for @qtype/@index with a 4-entry ring at @ring. */
-static void q_init(struct ionic_eth_emu *emu, uint8_t qtype, uint32_t index,
-                   uint16_t intr, uint64_t ring, uint64_t cq)
+/* Q_INIT for @qtype/@index with a 2^@depth_log2-entry ring at @ring.
+ * Returns the completion's status. */
+static uint8_t q_init_depth(struct ionic_eth_emu *emu, uint8_t qtype,
+                            uint32_t index, uint8_t depth_log2, uint16_t intr,
+                            uint64_t ring, uint64_t cq)
 {
     uint8_t cmd[64] = {0};
     uint8_t comp[16] = {0};
@@ -154,10 +157,18 @@ static void q_init(struct ionic_eth_emu *emu, uint8_t qtype, uint32_t index,
     cmd[4] = qtype;
     ernic_put_le32(cmd + 8, index);
     ernic_put_le16(cmd + 14, intr);
-    cmd[19] = 2; /* log2 of the ring depth */
+    cmd[19] = depth_log2;
     ernic_put_le64(cmd + 20, ring);
     ernic_put_le64(cmd + 28, cq);
     ionic_eth_emu_handle_q_init(emu, cmd, comp);
+    return comp[0];
+}
+
+/* Q_INIT for @qtype/@index with a 4-entry ring at @ring. */
+static uint8_t q_init(struct ionic_eth_emu *emu, uint8_t qtype, uint32_t index,
+                      uint16_t intr, uint64_t ring, uint64_t cq)
+{
+    return q_init_depth(emu, qtype, index, 2, intr, ring, cq);
 }
 
 /* ---- Identity and the vector budget ------------------------------------ */
@@ -277,7 +288,7 @@ static void run_shape_case(const struct shape_case *c)
     ionic_eth_emu_destroy(emu);
 }
 
-/* ---- Queue indices past the profile's count ---------------------------- */
+/* ---- Q_INIT of a queue the device can't set up -------------------------- */
 
 #define RING 0x0100u
 #define CQ   0x0200u
@@ -289,37 +300,87 @@ struct qinit_case {
     const char *layer;
     uint8_t qtype;
     uint32_t index;
-    bool want_valid;
+    uint8_t depth_log2;
+    uint8_t want_status; /* IONIC_RC_SUCCESS: the queue is set up */
 };
 
 static const struct qinit_case qinit_cases[] = {
     {"positive", "Rx queue 15 with queues.eth = 16", "initialized",
-     "[queues]\neth = 16\n", IONIC_QTYPE_RXQ, 15, true},
+     "[queues]\neth = 16\n", IONIC_QTYPE_RXQ, 15, 2, IONIC_RC_SUCCESS},
     {"boundary", "Rx queue 0 with queues.eth = 1", "initialized",
-     "[queues]\neth = 1\n", IONIC_QTYPE_RXQ, 0, true},
-    {"boundary", "Rx queue 1 with queues.eth = 1", "refused: past the count",
-     "[queues]\neth = 1\n", IONIC_QTYPE_RXQ, 1, false},
+     "[queues]\neth = 1\n", IONIC_QTYPE_RXQ, 0, 2, IONIC_RC_SUCCESS},
+    {"boundary", "Rx queue 1 with queues.eth = 1",
+     "refused with EQID: past the count", "[queues]\neth = 1\n",
+     IONIC_QTYPE_RXQ, 1, 2, IONIC_RC_EQID},
     {"boundary", "Tx queue 63 with queues.eth = 64", "initialized",
-     "[queues]\neth = 64\n", IONIC_QTYPE_TXQ, 63, true},
+     "[queues]\neth = 64\n", IONIC_QTYPE_TXQ, 63, 2, IONIC_RC_SUCCESS},
     {"boundary", "Tx queue 64 with queues.eth = 64",
-     "refused: past the array, with no write out of bounds",
-     "[queues]\neth = 64\n", IONIC_QTYPE_TXQ, 64, false},
-    {"negative", "Rx queue 4 with compat's 4 queues", "refused", NULL,
-     IONIC_QTYPE_RXQ, 4, false},
-    {"negative", "Rx queue 0xffffffff", "refused", "[queues]\neth = 64\n",
-     IONIC_QTYPE_RXQ, 0xffffffffu, false},
+     "refused with EQID: past the array, with no write out of bounds",
+     "[queues]\neth = 64\n", IONIC_QTYPE_TXQ, 64, 2, IONIC_RC_EQID},
+    {"negative", "Rx queue 4 with compat's 4 queues", "refused with EQID", NULL,
+     IONIC_QTYPE_RXQ, 4, 2, IONIC_RC_EQID},
+    {"negative", "Rx queue 0xffffffff", "refused with EQID",
+     "[queues]\neth = 64\n", IONIC_QTYPE_RXQ, 0xffffffffu, 2, IONIC_RC_EQID},
+    {"boundary", "qtype 5, one past the Ethernet qtypes",
+     "refused with EQTYPE, with no write out of bounds", NULL, 5, 0, 2,
+     IONIC_RC_EQTYPE},
+    {"negative", "qtype 255", "refused with EQTYPE", NULL, 255, 0, 2,
+     IONIC_RC_EQTYPE},
+    {"boundary", "Tx queue 0 with a 2^15-entry ring", "initialized", NULL,
+     IONIC_QTYPE_TXQ, 0, 15, IONIC_RC_SUCCESS},
+    {"boundary", "Tx queue 0 with a 2^16-entry ring",
+     "refused with ERANGE: too deep for the queue's depth", NULL,
+     IONIC_QTYPE_TXQ, 0, 16, IONIC_RC_ERANGE},
+    {"negative", "Tx queue 0 with a 2^32-entry ring",
+     "refused with ERANGE, not shifted by", NULL, IONIC_QTYPE_TXQ, 0, 32,
+     IONIC_RC_ERANGE},
+    {"negative", "Tx queue 0 with a 2^255-entry ring", "refused with ERANGE",
+     NULL, IONIC_QTYPE_TXQ, 0, 255, IONIC_RC_ERANGE},
 };
 
+/* The status is the one expected, and the only queue set up is the one
+ * asked for, if it succeeded. */
 static void run_qinit_case(const struct qinit_case *c)
 {
     struct ionic_eth_emu *emu = new_emu(NULL, c->layer);
+    bool want_valid = c->want_status == IONIC_RC_SUCCESS;
+    unsigned nvalid = 0;
     bool valid = false;
+    uint8_t status;
 
-    q_init(emu, c->qtype, c->index, 1, RING, CQ);
-    for (uint32_t i = 0; i < IONIC_EMU_ETH_QMAX; i++)
-        if (emu->eth_q[c->qtype][i].valid)
-            valid = valid || i == c->index;
-    report(valid == c->want_valid, c->category, c->description, c->expected);
+    status = q_init_depth(emu, c->qtype, c->index, c->depth_log2, 1, RING, CQ);
+    for (uint8_t t = 0; t < IONIC_QTYPE_ETH_MAX; t++) {
+        for (uint32_t i = 0; i < IONIC_EMU_ETH_QMAX; i++) {
+            const struct eth_queue *q = &emu->eth_q[t][i];
+
+            if (!q->valid)
+                continue;
+            nvalid++;
+            /* Only a row that wants success has a depth it's safe to
+             * shift by. */
+            valid = valid || (want_valid && t == c->qtype && i == c->index &&
+                              q->depth == 1u << c->depth_log2);
+        }
+    }
+    report(status == c->want_status && valid == want_valid &&
+               nvalid == (want_valid ? 1u : 0u),
+           c->category, c->description, c->expected);
+    ionic_eth_emu_destroy(emu);
+}
+
+/* A refused Q_INIT of a queue already set up leaves it as it was. */
+static void check_qinit_refused_keeps_queue(void)
+{
+    struct ionic_eth_emu *emu = new_emu(NULL, NULL);
+    const struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_TXQ][1];
+    uint8_t first = q_init(emu, IONIC_QTYPE_TXQ, 1, 1, RING, CQ);
+    uint8_t second = q_init_depth(emu, IONIC_QTYPE_TXQ, 1, 16, 7, 0x900, 0xa00);
+
+    report(first == IONIC_RC_SUCCESS && second == IONIC_RC_ERANGE && q->valid &&
+               q->depth == 4 && q->intr_index == 1 && q->ring_base == RING &&
+               q->cq_ring_base == CQ,
+           "corner", "Q_INIT of Tx queue 1 again with a 2^16-entry ring",
+           "refused with ERANGE; the queue keeps its first ring");
     ionic_eth_emu_destroy(emu);
 }
 
@@ -1329,6 +1390,7 @@ int main(void)
         run_shape_case(&shape_cases[i]);
     for (size_t i = 0; i < sizeof(qinit_cases) / sizeof(qinit_cases[0]); i++)
         run_qinit_case(&qinit_cases[i]);
+    check_qinit_refused_keeps_queue();
     check_txq_past_count();
     check_vectors();
     for (size_t i = 0; i < sizeof(hash_cases) / sizeof(hash_cases[0]); i++)
