@@ -330,7 +330,6 @@ ernic_add_test_program(test_ionic_emu_stats
     SOURCES
         test_ionic_emu_stats.c
         ${PROJECT_SOURCE_DIR}/src/ionic/ionic_emu_stats.c
-    DEPS pthread
 )
 
 # ionic NIC identity test. It links the eth emulator, calls its devcmd

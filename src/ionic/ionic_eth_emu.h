@@ -175,8 +175,8 @@ void ionic_eth_emu_register_rx_filter(struct ionic_eth_emu *emu,
  * endpoint: the S3 control plane's replies, and what the P4 pipeline sends
  * to the host port.  The frame is copied onto an internal queue and
  * delivered by the next ionic_eth_emu_poll_rx(), which holds it there until
- * the Rx queue it steers to has a buffer.  Today's callers are all on the
- * main loop thread, but the queue is locked, so any thread may call this.
+ * the Rx queue it steers to has a buffer.  Main loop thread only: the queue
+ * is not locked.
  *
  * Returns 0 on success, -ENOSPC when the queue is full, -ENOMEM, or
  * -EINVAL.
@@ -194,8 +194,8 @@ int ionic_eth_emu_queue_rx_frame(struct ionic_eth_emu *emu, const void *frame,
 void ionic_eth_emu_publish_stats(struct ionic_eth_emu *emu, uint64_t now_ms);
 
 /*
- * The counters behind the published block, with the off-thread ones folded
- * in, for the --stats-file writer.  Main loop thread only.
+ * The counters behind the published block, with the RDMA ones refreshed
+ * from the data path, for the --stats-file writer.  Main loop thread only.
  */
 const struct ionic_emu_stats *ionic_eth_emu_get_stats(
     struct ionic_eth_emu *emu);
