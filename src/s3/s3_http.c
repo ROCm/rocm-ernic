@@ -109,6 +109,48 @@ static const char *const framing_headers[] = {
     "x-amz-rdma-token",
 };
 
+/*
+ * Whether @s (@len bytes) is a token (RFC 9110 5.6.2), the only form a
+ * header name takes.  Anything else -- whitespace before the colon, a
+ * folded line's indent, a CR or a NUL -- would be stored under a name that
+ * no lookup finds, or that one finds where another parser would not.  The
+ * ranges are spelled out because isalnum() depends on the locale.
+ */
+static bool is_token(const char *s, size_t len)
+{
+    static const char tchar_punct[] = "!#$%&'*+-.^_`|~";
+
+    if (len == 0)
+        return false;
+    for (size_t i = 0; i < len; i++) {
+        char c = s[i];
+        if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') ||
+            (c >= 'a' && c <= 'z'))
+            continue;
+        /* memchr(), not strchr(), which would find a NUL's terminator. */
+        if (memchr(tchar_punct, c, sizeof(tchar_punct) - 1) == NULL)
+            return false;
+    }
+    return true;
+}
+
+/*
+ * Whether the head (@len bytes, ending in LF) holds a byte this parser and
+ * another along the way could read differently: a NUL, which ends the C
+ * strings stored from it early, or a CR not followed by LF, which another
+ * parser may take for the end of a line.
+ */
+static bool head_has_ambiguous_byte(const char *head, size_t len)
+{
+    for (size_t i = 0; i < len; i++) {
+        if (head[i] == '\0')
+            return true;
+        if (head[i] == '\r' && (i + 1 == len || head[i + 1] != '\n'))
+            return true;
+    }
+    return false;
+}
+
 /* Which framing header @name (@len bytes, no NUL) is, or NULL for none. */
 static const char *framing_header(const char *name, size_t len)
 {
@@ -149,6 +191,15 @@ ssize_t s3_http_parse(const void *buf, size_t len, struct s3_http_request *req)
     memset(req, 0, sizeof(*req));
     req->keep_alive =
         true; /* HTTP/1.1 default; the request line may lower it */
+
+    /* A NUL makes the bytes checked here and the C strings stored from
+     * them disagree: "Content-Length: 0\0 5" is stored as a length of 0.
+     * A bare CR makes this parser and another disagree on where a line
+     * ends: "X-Foo: a\rContent-Length: 5" is one header here and two to
+     * a parser that ends lines at CR.  RFC 9110 5.5 and RFC 9112 2.2
+     * allow refusing both. */
+    if (head_has_ambiguous_byte(base, hdr_len))
+        return -EINVAL;
 
     const char *p = base;
     const char *hdr_end = base + hdr_len;
@@ -212,9 +263,9 @@ ssize_t s3_http_parse(const void *buf, size_t len, struct s3_http_request *req)
 
         /* RFC 9112 5.1 requires refusing whitespace before the colon.
          * Stored, "Content-Length :" is a header no lookup finds, and a
-         * leading space (an obsolete line folding) is the same. */
-        if (memchr(hline, ' ', nlen) != NULL ||
-            memchr(hline, '\t', nlen) != NULL)
+         * leading space (an obsolete line folding) is the same; so is any
+         * other name that is not a token. */
+        if (!is_token(hline, nlen))
             return -EINVAL;
 
         const char *framing = framing_header(hline, nlen);

@@ -1090,8 +1090,13 @@
   `Transfer-Encoding` or `x-amz-rdma-token` header given twice (the first
   was used), or one past the 24th header or with a value of 512 bytes or
   more (it was ignored, so the server misjudged where the request ended).
-  So is any header with whitespace in its name, as in `Content-Length : 5`
-  or an indented continuation line, which was also ignored.
+  So is any header whose name isn't an HTTP token, such as one with
+  whitespace in it, as in `Content-Length : 5` or an indented continuation
+  line, which was also ignored. So is a NUL anywhere in the request line
+  or headers, which could hide a second `Content-Length` from the
+  duplicate check or cut a value short, and a CR not followed by LF there,
+  which a proxy that ends lines at a CR would read as a header this server
+  didn't see.
 * **Server startup and shutdown.**
   * `--socket-group` changed the socket's mode through its path, so a
     symlink swapped in could make a root server give another file mode

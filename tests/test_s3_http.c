@@ -706,6 +706,13 @@ static void test_parse_framing_headers(void)
         "PUT /x HTTP/1.1\r\nTransfer-Encoding\t: chunked\r\n\r\n",
         "GET /x HTTP/1.1\r\nX-Other : 1\r\n\r\n",
         "GET /x HTTP/1.1\r\nX-Other: 1\r\n Content-Length: 5\r\n\r\n",
+        /* Any other name that is not a token, or no name at all. */
+        "PUT /x HTTP/1.1\r\nContent-Length\v: 5\r\n\r\nhello",
+        "PUT /x HTTP/1.1\r\n\"Content-Length\": 5\r\n\r\nhello",
+        "GET /x HTTP/1.1\r\nX/Other: 1\r\n\r\n",
+        "GET /x HTTP/1.1\r\nX-Other\x7f: 1\r\n\r\n",
+        "GET /x HTTP/1.1\r\nX-\xc3\xa9: 1\r\n\r\n",
+        "GET /x HTTP/1.1\r\n: 1\r\n\r\n",
     };
 
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
@@ -713,6 +720,15 @@ static void test_parse_framing_headers(void)
         if (n != -EINVAL)
             fail(name, "case %zu returned %zd, want -EINVAL", i, n);
     }
+
+    /* Every character a token may hold is kept, and found. */
+    static const char tchars[] = "GET /x HTTP/1.1\r\n"
+                                 "!#$%&'*+-.^_`|~09AZaz: 1\r\n\r\n";
+    n = s3_http_parse(tchars, strlen(tchars), &req);
+    if (n != (ssize_t)strlen(tchars))
+        fail(name, "a name of every token character returned %zd", n);
+    else if (s3_http_header_get(&req, "!#$%&'*+-.^_`|~09azaz") == NULL)
+        fail(name, "a name of every token character was not found");
 
     /* In the slot past the header limit, each fails the request. */
     static const char *const late[] = {
@@ -764,6 +780,67 @@ static void test_parse_framing_headers(void)
 out:
     free(fill);
     free(text);
+}
+
+/*
+ * A NUL in the head would be checked as raw bytes but stored as the C
+ * string before it.  In a name it hides a second Content-Length from the
+ * duplicate check, in a value it cuts the length short, and in the request
+ * line it cuts the method or query short.  A CR not followed by LF is a
+ * line ending to some parsers, so another along the way would see a
+ * header here that this one does not.  The lengths count the bytes after
+ * a NUL, which strlen() would not.
+ */
+static void test_parse_ambiguous_bytes(void)
+{
+    const char *name = "parse-ambiguous-bytes";
+    struct s3_http_request req;
+
+    static const char nul_name[] = "PUT /x HTTP/1.1\r\n"
+                                   "Content-Length: 0\r\n"
+                                   "Content-Length\0: 5\r\n\r\nhello";
+    static const char nul_value[] = "PUT /x HTTP/1.1\r\n"
+                                    "Content-Length: 0\0 5\r\n\r\nhello";
+    static const char nul_method[] = "GE\0T /x HTTP/1.1\r\n\r\n";
+    static const char nul_query[] = "GET /x?a\0b HTTP/1.1\r\n\r\n";
+    static const char cr_name[] = "PUT /x HTTP/1.1\r\n"
+                                  "Content-Length\r: 5\r\n\r\nhello";
+    static const char cr_value[] = "PUT /x HTTP/1.1\r\n"
+                                   "X-Other: 1\rContent-Length: 5\r\n\r\nhello";
+    static const char cr_request_line[] = "PUT /x HTTP/1.1\r"
+                                          "Content-Length: 5\r\n\r\nhello";
+    static const char cr_line_end[] = "PUT /x HTTP/1.1\r\n"
+                                      "X-Other: 1\r\r\n\r\n";
+    static const struct {
+        const char *text;
+        size_t len;
+    } bad[] = {
+        {nul_name, sizeof(nul_name) - 1},
+        {nul_value, sizeof(nul_value) - 1},
+        {nul_method, sizeof(nul_method) - 1},
+        {nul_query, sizeof(nul_query) - 1},
+        {cr_name, sizeof(cr_name) - 1},
+        {cr_value, sizeof(cr_value) - 1},
+        {cr_request_line, sizeof(cr_request_line) - 1},
+        {cr_line_end, sizeof(cr_line_end) - 1},
+    };
+
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        ssize_t n = s3_http_parse(bad[i].text, bad[i].len, &req);
+        if (n != -EINVAL)
+            fail(name, "case %zu returned %zd, want -EINVAL", i, n);
+    }
+
+    /* Either in the body is data, not part of the head. */
+    static const char in_body[] = "PUT /x HTTP/1.1\r\n"
+                                  "Content-Length: 4\r\n\r\na\0\rb";
+    ssize_t n = s3_http_parse(in_body, sizeof(in_body) - 1, &req);
+    if (n != (ssize_t)(sizeof(in_body) - 1))
+        fail(name, "a NUL and a CR in the body returned %zd", n);
+    else if (req.body_len != 4 || memcmp(req.body, "a\0\rb", 4) != 0)
+        fail(name, "a NUL and a CR in the body were not kept");
+
+    ok(name);
 }
 
 /*
@@ -1028,6 +1105,7 @@ int main(void)
     test_parse_field_limits();
     test_too_many_headers();
     test_parse_framing_headers();
+    test_parse_ambiguous_bytes();
     test_response_value_too_long();
     test_response_format_error();
     test_response_alloc_failures();
