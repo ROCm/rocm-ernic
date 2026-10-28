@@ -637,6 +637,136 @@ static void test_too_many_headers(void)
 }
 
 /*
+ * Build "PUT /ernic/k HTTP/1.1", @npad X-Pad headers, then @tail, into
+ * @text.  The length written, or 0 if it does not fit.
+ */
+static size_t padded_request(char *text, size_t cap, unsigned npad,
+                             const char *tail)
+{
+    size_t at = 0;
+    int w = snprintf(text, cap, "PUT /ernic/k HTTP/1.1\r\n");
+    if (w < 0 || (size_t)w >= cap)
+        return 0;
+    at = (size_t)w;
+    for (unsigned i = 0; i < npad; i++) {
+        w = snprintf(text + at, cap - at, "X-Pad-%u: %u\r\n", i, i);
+        if (w < 0 || (size_t)w >= cap - at)
+            return 0;
+        at += (size_t)w;
+    }
+    w = snprintf(text + at, cap - at, "%s", tail);
+    if (w < 0 || (size_t)w >= cap - at)
+        return 0;
+    return at + (size_t)w;
+}
+
+/*
+ * Content-Length, Transfer-Encoding and x-amz-rdma-token decide where a
+ * request ends.  Ignoring one, or picking one of two, would read the body
+ * as the next request, so where another header would be dropped or the
+ * first copy kept, these fail the request.
+ */
+static void test_parse_framing_headers(void)
+{
+    const char *name = "parse-framing-headers";
+    struct s3_http_request req;
+    char *text = malloc(4096);
+    char *fill = malloc(1024);
+    size_t len;
+    ssize_t n;
+    int w;
+
+    if (text == NULL || fill == NULL) {
+        fail(name, "out of memory");
+        goto out;
+    }
+
+    static const char *const bad[] = {
+        /* Repeated, with the same value or not, in any case. */
+        "PUT /x HTTP/1.1\r\n"
+        "Content-Length: 5\r\n"
+        "Content-Length: 0\r\n\r\n",
+        "PUT /x HTTP/1.1\r\n"
+        "Content-Length: 5\r\n"
+        "Content-Length: 5\r\n\r\n",
+        "PUT /x HTTP/1.1\r\n"
+        "Content-Length: 5\r\n"
+        "content-length: 5\r\n\r\n",
+        "PUT /x HTTP/1.1\r\n"
+        "Transfer-Encoding: identity\r\n"
+        "Transfer-Encoding: chunked\r\n\r\n",
+        "PUT /x HTTP/1.1\r\n"
+        "Transfer-Encoding: identity\r\n"
+        "Transfer-Encoding: identity\r\n\r\n",
+        "PUT /x HTTP/1.1\r\n"
+        "x-amz-rdma-token: a\r\n"
+        "X-Amz-Rdma-Token: b\r\n\r\n",
+        /* Whitespace before the colon, on any header, and a folded line. */
+        "PUT /x HTTP/1.1\r\nContent-Length : 5\r\n\r\nhello",
+        "PUT /x HTTP/1.1\r\nTransfer-Encoding\t: chunked\r\n\r\n",
+        "GET /x HTTP/1.1\r\nX-Other : 1\r\n\r\n",
+        "GET /x HTTP/1.1\r\nX-Other: 1\r\n Content-Length: 5\r\n\r\n",
+    };
+
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        n = s3_http_parse(bad[i], strlen(bad[i]), &req);
+        if (n != -EINVAL)
+            fail(name, "case %zu returned %zd, want -EINVAL", i, n);
+    }
+
+    /* In the slot past the header limit, each fails the request. */
+    static const char *const late[] = {
+        "Content-Length: 5\r\n\r\nhello",
+        "Transfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+        "x-amz-rdma-token: t\r\n\r\n",
+    };
+    for (size_t i = 0; i < sizeof(late) / sizeof(late[0]); i++) {
+        len = padded_request(text, 4096, S3_HTTP_MAX_HEADERS, late[i]);
+        if (len == 0) {
+            fail(name, "late case %zu does not fit", i);
+            continue;
+        }
+        n = s3_http_parse(text, len, &req);
+        if (n != -EINVAL)
+            fail(name, "late case %zu returned %zd, want -EINVAL", i, n);
+    }
+
+    /* In the last slot within it, it is kept. */
+    len = padded_request(text, 4096, S3_HTTP_MAX_HEADERS - 1,
+                         "Content-Length: 5\r\n\r\nhello");
+    n = len > 0 ? s3_http_parse(text, len, &req) : -1;
+    if (len == 0)
+        fail(name, "the last-slot request does not fit");
+    else if (n != (ssize_t)len)
+        fail(name, "Content-Length in the last slot returned %zd", n);
+    else if (req.body_len != 5 || memcmp(req.body, "hello", 5) != 0)
+        fail(name, "Content-Length in the last slot lost the body");
+
+    /* A value too long to store: a length padded with zeros, and a token. */
+    memset(fill, '0', S3_HTTP_VALUE_MAX);
+    fill[S3_HTTP_VALUE_MAX] = '\0';
+    w = snprintf(text, 4096,
+                 "PUT /x HTTP/1.1\r\nContent-Length: %s5\r\n\r\nhello", fill);
+    n = s3_http_parse(text, (size_t)w, &req);
+    if (n != -EINVAL)
+        fail(name, "an oversized Content-Length returned %zd", n);
+
+    memset(fill, 'a', S3_HTTP_VALUE_MAX);
+    w = snprintf(text, 4096,
+                 "PUT /x HTTP/1.1\r\nx-amz-rdma-token: %s\r\n"
+                 "Content-Length: 5\r\n\r\n",
+                 fill);
+    n = s3_http_parse(text, (size_t)w, &req);
+    if (n != -EINVAL)
+        fail(name, "an oversized x-amz-rdma-token returned %zd", n);
+
+    ok(name);
+out:
+    free(fill);
+    free(text);
+}
+
+/*
  * s3_http_response_printf() formats into a 512-byte stack buffer first
  * and goes to the heap only for longer output.  The output lengths either
  * side of that boundary, 511 bytes and 512 with the two the format adds,
@@ -897,6 +1027,7 @@ int main(void)
     test_parse_lf_only();
     test_parse_field_limits();
     test_too_many_headers();
+    test_parse_framing_headers();
     test_response_value_too_long();
     test_response_format_error();
     test_response_alloc_failures();

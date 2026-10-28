@@ -97,6 +97,30 @@ static const char *find_header_end(const char *buf, size_t len, size_t *hdr_len)
     return NULL;
 }
 
+/*
+ * The headers that decide where a request ends: its length, its encoding,
+ * and whether its payload is on the socket at all.  One of these that is
+ * ignored or ambiguous makes the body, or the next request, be read from
+ * the wrong bytes.
+ */
+static const char *const framing_headers[] = {
+    "content-length",
+    "transfer-encoding",
+    "x-amz-rdma-token",
+};
+
+/* Which framing header @name (@len bytes, no NUL) is, or NULL for none. */
+static const char *framing_header(const char *name, size_t len)
+{
+    for (size_t i = 0; i < sizeof(framing_headers) / sizeof(framing_headers[0]);
+         i++) {
+        const char *f = framing_headers[i];
+        if (strlen(f) == len && strncasecmp(name, f, len) == 0)
+            return f;
+    }
+    return NULL;
+}
+
 /* Advance past one line, returning its length without the terminator. */
 static const char *next_line(const char *p, const char *end, size_t *linelen)
 {
@@ -168,7 +192,10 @@ ssize_t s3_http_parse(const void *buf, size_t len, struct s3_http_request *req)
     /* Header lines.  A header we have no room for is dropped rather than
      * failing the request: the ones this server acts on are few and come
      * first in every client that matters, and a 431 for a stray
-     * X-Amz-Trace header would be a worse answer than ignoring it. */
+     * X-Amz-Trace header would be a worse answer than ignoring it.  A
+     * framing header that would be dropped, or that appears twice, fails
+     * the request instead (RFC 9112 6.3 allows refusing a repeated
+     * Content-Length). */
     while (p < hdr_end) {
         const char *hline = p;
         p = next_line(p, hdr_end, &linelen);
@@ -182,6 +209,18 @@ ssize_t s3_http_parse(const void *buf, size_t len, struct s3_http_request *req)
             return -EINVAL;
 
         size_t nlen = (size_t)(colon - hline);
+
+        /* RFC 9112 5.1 requires refusing whitespace before the colon.
+         * Stored, "Content-Length :" is a header no lookup finds, and a
+         * leading space (an obsolete line folding) is the same. */
+        if (memchr(hline, ' ', nlen) != NULL ||
+            memchr(hline, '\t', nlen) != NULL)
+            return -EINVAL;
+
+        const char *framing = framing_header(hline, nlen);
+        if (framing != NULL && s3_http_header_get(req, framing) != NULL)
+            return -EINVAL;
+
         const char *v = colon + 1;
         size_t vlen = linelen - nlen - 1;
         while (vlen > 0 && (*v == ' ' || *v == '\t')) {
@@ -191,12 +230,14 @@ ssize_t s3_http_parse(const void *buf, size_t len, struct s3_http_request *req)
         while (vlen > 0 && (v[vlen - 1] == ' ' || v[vlen - 1] == '\t'))
             vlen--;
 
-        if (req->nhdr >= S3_HTTP_MAX_HEADERS)
+        struct s3_http_header *h =
+            req->nhdr < S3_HTTP_MAX_HEADERS ? &req->hdr[req->nhdr] : NULL;
+        if (h == NULL || !copy_bounded(h->name, sizeof(h->name), hline, nlen) ||
+            !copy_bounded(h->value, sizeof(h->value), v, vlen)) {
+            if (framing != NULL)
+                return -EINVAL;
             continue;
-        struct s3_http_header *h = &req->hdr[req->nhdr];
-        if (!copy_bounded(h->name, sizeof(h->name), hline, nlen) ||
-            !copy_bounded(h->value, sizeof(h->value), v, vlen))
-            continue;
+        }
         for (char *n = h->name; *n; n++)
             *n = lower(*n);
         req->nhdr++;
