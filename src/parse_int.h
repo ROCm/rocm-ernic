@@ -240,6 +240,33 @@ static inline bool ernic_parse_hex_u32(const char *s, uint32_t *out)
 }
 
 /*
+ * Parse an octal uint32_t, such as the "flags:" field of Linux's
+ * /proc/PID/fdinfo/FD: octal digits only, with no sign or space. A leading
+ * '0' is just a digit. Rejects NULL/empty input, anything else, and values
+ * above UINT32_MAX. On success stores the value in *out and returns true;
+ * otherwise leaves *out untouched and returns false.
+ */
+static inline bool ernic_parse_oct_u32(const char *s, uint32_t *out)
+{
+    if (!s || *s == '\0') {
+        return false;
+    }
+
+    uint32_t v = 0;
+    for (const char *p = s; *p; p++) {
+        /* Unsigned, so a character below '0' wraps to a large value. */
+        unsigned d = (unsigned)(unsigned char)*p - (unsigned)'0';
+        if (d > 7 || v > (UINT32_MAX >> 3)) {
+            return false;
+        }
+        v = (v << 3) | d;
+    }
+
+    *out = v;
+    return true;
+}
+
+/*
  * Decode the 2 * n hex digits at s, in either case, into the n bytes at out,
  * the first digit of each pair being the high half of its byte. Every one of
  * them must be a hex digit. Like ernic_parse_u64_span(), it doesn't look at

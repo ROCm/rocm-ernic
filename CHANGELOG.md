@@ -1201,6 +1201,9 @@
     negotiation no longer takes the server down.
   * A `--log-file` that can't be made stdout or stderr is an error, rather
     than logging some of the output elsewhere.
+  * `--log-file` works when the server is started with stdout or stderr
+    closed. The server used to close that stream again after redirecting it,
+    so its output was lost or written to the next file or socket it opened.
   * `--backend tcp` with no role is refused, rather than a crash.
   * Out-of-memory when copying arguments and configuration is an error,
     rather than a crash or running without them.

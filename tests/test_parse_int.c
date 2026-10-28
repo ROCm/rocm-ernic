@@ -389,6 +389,23 @@ int main(void)
         {"leading-space", " 1", false, 0},
     };
 
+    static const struct u32_case oct_u32_cases[] = {
+        {"null", NULL, false, 0},
+        {"empty", "", false, 0},
+        {"zero", "0", true, 0},
+        {"valid", "755", true, 0755},
+        {"fdinfo-flags", "02100001", true, 02100001},
+        {"max", "37777777777", true, UINT32_MAX},
+        {"max-plus-one", "40000000000", false, 0},
+        {"leading-zeros", "000000000000017", true, 017},
+        {"bad-digit", "78", false, 0},
+        {"below-zero", "1/", false, 0},
+        {"prefix", "0o17", false, 0},
+        {"negative", "-1", false, 0},
+        {"newline", "17\n", false, 0},
+        {"leading-space", " 1", false, 0},
+    };
+
     static const struct u64_case u64_cases[] = {
         {"null", NULL, false, 0},
         {"empty", "", false, 0},
@@ -539,6 +556,7 @@ int main(void)
     size_t ni = sizeof(int_cases) / sizeof(int_cases[0]);
     size_t nu = sizeof(u32_cases) / sizeof(u32_cases[0]);
     size_t nhu = sizeof(hex_u32_cases) / sizeof(hex_u32_cases[0]);
+    size_t nou = sizeof(oct_u32_cases) / sizeof(oct_u32_cases[0]);
     size_t n64 = sizeof(u64_cases) / sizeof(u64_cases[0]);
     size_t nspan = sizeof(span_cases) / sizeof(span_cases[0]);
     size_t nsize = sizeof(size_cases) / sizeof(size_cases[0]);
@@ -555,6 +573,9 @@ int main(void)
     }
     for (size_t i = 0; i < nhu; i++) {
         failures += run_u32("hex-u32", ernic_parse_hex_u32, &hex_u32_cases[i]);
+    }
+    for (size_t i = 0; i < nou; i++) {
+        failures += run_u32("oct-u32", ernic_parse_oct_u32, &oct_u32_cases[i]);
     }
     for (size_t i = 0; i < n64; i++) {
         failures += run_u64("u64", ernic_parse_u64, &u64_cases[i]);
@@ -585,8 +606,8 @@ int main(void)
         printf("parse_int: %d case(s) FAILED\n", failures);
         return 1;
     }
-    printf("parse_int: all %zu cases passed\n", ni + nu + nhu + n64 + nspan +
-                                                    nsize + nhex + nhexstr +
-                                                    nfits + nmac + np);
+    printf("parse_int: all %zu cases passed\n",
+           ni + nu + nhu + nou + n64 + nspan + nsize + nhex + nhexstr + nfits +
+               nmac + np);
     return 0;
 }

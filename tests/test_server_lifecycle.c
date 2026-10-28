@@ -5,7 +5,7 @@
  * Each row starts the real server binary, mostly on the loopback backend,
  * does something to it (nothing, a client that hangs up, a client that sends
  * a bad header, a client that never speaks), signals it, and checks the exit
- * status and the log.  Seven things are pinned here:
+ * status and the log.  Eight things are pinned here:
  *
  *   - only the socket's owner, and the group --socket-group names, can
  *     connect to it, whatever the umask or a default ACL on its directory;
@@ -22,7 +22,9 @@
  *   - SIGTERM still shuts the server down if it was started with SIGINT and
  *     SIGTERM blocked, as a mask is inherited across exec;
  *   - a startup failure after the backend has started its threads stops
- *     and joins them before the server exits.
+ *     and joins them before the server exits;
+ *   - --log-file becomes stdout and stderr, not close-on-exec, even when
+ *     the server was started with stdout closed.
  *
  * Usage: test_server_lifecycle
  *
@@ -59,6 +61,8 @@
 #ifdef ERNIC_HAVE_VALGRIND_H
 #include <valgrind/valgrind.h>
 #endif
+
+#include "parse_int.h"
 
 /* POSIX leaves declaring environ to the program; only _GNU_SOURCE makes
  * <unistd.h> do it */
@@ -380,6 +384,34 @@ static bool sanitizer_reported(const char *path)
     return false;
 }
 
+/*
+ * Whether @pid's descriptor @fd is open and not close-on-exec, from the
+ * octal "flags:" line of /proc/PID/fdinfo/FD.
+ */
+static bool fd_inherited(pid_t pid, int fd)
+{
+    char path[64], line[128];
+    bool inherited = false;
+    FILE *f;
+
+    snprintf(path, sizeof(path), "/proc/%d/fdinfo/%d", (int)pid, fd);
+    f = fopen(path, "re");
+    if (!f)
+        return false;
+    while (fgets(line, sizeof(line), f)) {
+        uint32_t flags;
+
+        if (strncmp(line, "flags:\t", 7) != 0)
+            continue;
+        line[strcspn(line, "\n")] = '\0';
+        inherited = ernic_parse_oct_u32(line + 7, &flags) &&
+                    (flags & (uint32_t)O_CLOEXEC) == 0;
+        break;
+    }
+    fclose(f);
+    return inherited;
+}
+
 /* waitpid() with a deadline; the server is SIGKILLed if it overstays. */
 static int wait_exit(pid_t pid, int *status)
 {
@@ -464,12 +496,15 @@ struct lifecycle_case {
     mode_t umask;      /* the umask for set_umask */
     bool fd_limit;     /* run the server with stdin closed and RLIMIT_NOFILE 1,
                           so the one file it can open is fd 0 */
+    bool no_stdout;    /* run the server with stdin open and stdout closed, so
+                          the next file it opens is fd 1 */
     bool block_sigs;   /* start the server with SIGINT and SIGTERM blocked */
     enum dir_acl acl;  /* put the socket in a directory with this ACL */
     enum sock_pre pre; /* what's at the socket's path beforehand */
     enum sock_group group;
     const char *opt;     /* another option for the server, or NULL */
-    const char *opt_arg; /* its argument, or NULL for none */
+    const char *opt_arg; /* its argument, or NULL for none; "@LOG@" is the
+                            row's log */
     bool want_socket;    /* the socket should appear, mode 0600, or 0660 and the
                             group asked for */
     bool want_gone;      /* refused: no socket left once the server exits */
@@ -1193,6 +1228,26 @@ static const struct lifecycle_case cases[] = {
      .want_exit = 0,
      .want_dropped = 0,
      .want_shutdown = 1},
+    /* The log file opens as fd 1, so dup2() onto stdout does nothing.  It's
+     * the row's log, so the lines the server writes to stdout once started
+     * reach it only if the server left it open. */
+    {.category = "corner",
+     .description = "--log-file, with the server started with stdout closed",
+     .expected = "the log stays stdout and stderr, not close-on-exec, so it "
+                 "gets the lines written after startup",
+     .backend = "loopback",
+     .no_stdout = true,
+     .opt = "--log-file",
+     .opt_arg = "@LOG@",
+     .want_socket = true,
+     .settle = true,
+     .action = IDLE,
+     .clients = 0,
+     .sig = SIGTERM,
+     .sigs = 1,
+     .want_exit = 0,
+     .want_dropped = 0,
+     .want_shutdown = 1},
     {.category = "corner",
      .description = "SIGTERM sent twice",
      .expected = "still exits 0 with exactly one 'Shutdown complete'",
@@ -1317,10 +1372,13 @@ static pid_t start_server(const struct lifecycle_case *c, const char *backend,
 {
     char *entry = NULL;
     char **env = NULL;
+    const char *opt_arg = c->opt_arg;
     pid_t pid;
 
     /* Built here, since the child may only call async-signal-safe functions
      * until it execs, and setenv() and malloc() aren't */
+    if (opt_arg && strcmp(opt_arg, "@LOG@") == 0)
+        opt_arg = log;
     if (c->env_name) {
         env = server_env(c->env_name, c->env_value, &entry);
         if (!env)
@@ -1346,6 +1404,8 @@ static pid_t start_server(const struct lifecycle_case *c, const char *backend,
         if (dup2(fd, STDOUT_FILENO) < 0 || dup2(fd, STDERR_FILENO) < 0)
             _exit(126);
         close(fd);
+        if (c->no_stdout)
+            close(STDOUT_FILENO);
         /* getrlimit() and setrlimit() aren't on POSIX's async-signal-safe
          * list, but glibc's are bare system calls that take no lock */
         if (c->fd_limit) {
@@ -1378,8 +1438,8 @@ static pid_t start_server(const struct lifecycle_case *c, const char *backend,
         }
         if (c->opt) {
             opt[n++] = c->opt;
-            if (c->opt_arg)
-                opt[n++] = c->opt_arg;
+            if (opt_arg)
+                opt[n++] = opt_arg;
         }
         execl(g_server, g_server, "--socket", sock, "--backend", backend,
               opt[0], opt[1], opt[2], opt[3], (char *)NULL);
@@ -1552,6 +1612,13 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
                c->category, c->description);
         return 0;
     }
+    /* Without stdin, the server's log would open as fd 0, not stdout. */
+    if (c->no_stdout && fcntl(STDIN_FILENO, F_GETFD) < 0) {
+        printf("FAIL %s: %s; this process has no stdin for the server to "
+               "inherit\n",
+               c->category, c->description);
+        return 1;
+    }
 
     switch (c->group) {
     case SG_NONE:
@@ -1703,6 +1770,14 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
     if (ok && c->want_socket && c->settle)
         ok = socket_perms_ok(sock, want_mode, want_gid, false, "once serving",
                              why, sizeof(why));
+
+    if (ok && c->no_stdout &&
+        (!fd_inherited(pid, STDOUT_FILENO) ||
+         !fd_inherited(pid, STDERR_FILENO))) {
+        snprintf(why, sizeof(why),
+                 "the server's stdout or stderr is closed or close-on-exec");
+        ok = false;
+    }
 
     for (int i = 0; ok && i < c->clients; i++) {
         int fd = connect_unix(sock);
