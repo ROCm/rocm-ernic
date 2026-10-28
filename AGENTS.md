@@ -71,7 +71,7 @@ cmake --build build
   tests under [valgrind](#c). **Build Release too**: it's the only CI
   configuration with GCC's dataflow warnings, `_FORTIFY_SOURCE=3`, and
   `NDEBUG`.
-- Docs build without the C dependencies:
+- Docs build without a C compiler or the C dependencies:
   `-DERNIC_DOCS_ONLY=ON -DERNIC_BUILD_DOCS=ON`.
 
 ## Tests

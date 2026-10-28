@@ -17,11 +17,30 @@ set(ROCM_ERNIC_VERSION
   "${ROCM_ERNIC_VERSION_MAJOR}.${ROCM_ERNIC_VERSION_MINOR}.${ROCM_ERNIC_VERSION_PATCH}"
 )
 
+# No languages yet: the docs-only build below needs no compiler, so C is
+# enabled after it
 project(rocm-ernic
     VERSION ${ROCM_ERNIC_VERSION}
     DESCRIPTION "Emulated RDMA NIC for Virtual Machines"
-    LANGUAGES C
+    HOMEPAGE_URL "https://github.com/ROCm/rocm-ernic"
+    LANGUAGES NONE
 )
+
+# Add cmake/ to the module search path
+list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
+
+# Docs-only mode: build documentation without requiring a C compiler,
+# libvfio-user, glib, or libibverbs.
+option(ERNIC_DOCS_ONLY
+  "Only configure documentation targets"
+  OFF)
+
+if(ERNIC_DOCS_ONLY)
+    include(ErnicDocumentation)
+    return()
+endif()
+
+enable_language(C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -29,14 +48,13 @@ set(CMAKE_C_EXTENSIONS OFF)
 
 # Default to a RelWithDebInfo build: optimized, with NDEBUG and
 # _FORTIFY_SOURCE like a build to deploy, but with debug info. CI names
-# its build types (Debug and Release) and doesn't rely on this. This has
-# to come after project(), since that's where CMake decides whether the
-# generator is multi-config.
+# its build types (Debug and Release) and doesn't rely on this.
 # Multi-config generators (Ninja Multi-Config, Xcode, etc.) pick the
 # configuration at build time and don't use CMAKE_BUILD_TYPE. For
-# single-config generators, project() creates an empty cache entry, so
-# FORCE is needed to replace it. When rocm-ernic is a subproject, the
-# build type is the superproject's to choose.
+# single-config generators, enabling the first language creates an empty
+# cache entry, so this has to come after enable_language(), and FORCE is
+# needed to replace it. When rocm-ernic is a subproject, the build type
+# is the superproject's to choose.
 get_property(ERNIC_IS_MULTI_CONFIG GLOBAL
   PROPERTY GENERATOR_IS_MULTI_CONFIG)
 if(PROJECT_IS_TOP_LEVEL AND NOT ERNIC_IS_MULTI_CONFIG)
@@ -47,20 +65,6 @@ if(PROJECT_IS_TOP_LEVEL AND NOT ERNIC_IS_MULTI_CONFIG)
     set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
       "Debug" "Release" "RelWithDebInfo" "MinSizeRel" "None"
     )
-endif()
-
-# Add cmake/ to the module search path
-list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
-
-# Docs-only mode: build documentation without requiring
-# libvfio-user, glib, or libibverbs.
-option(ERNIC_DOCS_ONLY
-  "Only configure documentation targets"
-  OFF)
-
-if(ERNIC_DOCS_ONLY)
-    include(ErnicDocumentation)
-    return()
 endif()
 
 # Enable CTest (automatically calls enable_testing())
@@ -84,30 +88,22 @@ if(NOT VFIO_USER_FOUND)
     # because pkg_check_modules already created INTERNAL cache
     # entries (e.g. VFIO_USER_INCLUDEDIR) that would shadow
     # find_library / find_path results.
-    # No NO_DEFAULT_PATH: the default search also covers
-    # CMAKE_PREFIX_PATH, which is what the failure message below
-    # tells the user to set for a non-standard prefix such as
-    # ~/.local.
+    # The default search covers /usr/local and /usr, with their
+    # multiarch library directories (e.g. lib/x86_64-linux-gnu), and
+    # CMAKE_PREFIX_PATH, which is what the failure message below tells
+    # the user to set for a non-standard prefix such as ~/.local.
     find_library(VFIO_USER_FALLBACK_LIB
         NAMES vfio-user
-        HINTS
-            /usr/local/lib
-            /usr/local/lib/x86_64-linux-gnu
-            /usr/lib
-            /usr/lib/x86_64-linux-gnu
         DOC "Path to libvfio-user library"
     )
     find_path(VFIO_USER_FALLBACK_INC
         NAMES vfio-user/libvfio-user.h
-        HINTS
-            /usr/local/include
-            /usr/include
         DOC "Path to libvfio-user headers"
     )
     if(NOT VFIO_USER_FALLBACK_LIB OR NOT VFIO_USER_FALLBACK_INC)
         message(FATAL_ERROR
           "libvfio-user not found via pkg-config, in "
-          "/usr/local, or on CMAKE_PREFIX_PATH.\n"
+          "/usr/local or /usr, or on CMAKE_PREFIX_PATH.\n"
           "Install it from "
           "https://github.com/nutanix/libvfio-user\n"
           "then either add its pkgconfig dir to "
@@ -377,39 +373,51 @@ include(ErnicDocumentation)
 # ---------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------
-message("")
-message("=== rocm-ernic Configuration ===")
-message("  Version      : ${PROJECT_VERSION}")
-message("  Git SHA      : ${ERNIC_GIT_SHA_SHORT}")
-message("  Build type   : ${CMAKE_BUILD_TYPE}")
-message("  C compiler   : ${CMAKE_C_COMPILER_ID} "
-  "${CMAKE_C_COMPILER_VERSION}")
-message("  Install prefix: ${CMAKE_INSTALL_PREFIX}")
-message("")
-message("  Dependencies:")
-if(VFIO_USER_FOUND)
-    message("    libvfio-user : "
-      "${VFIO_USER_VERSION} (pkg-config)")
-else()
-    message("    libvfio-user : "
-      "${VFIO_USER_FALLBACK_LIB} (fallback)")
+# For a top-level build only: a superproject's configure output is its
+# own. STATUS messages go to stdout, where message() with no mode would
+# go to stderr, and --log-level can quiet them.
+if(PROJECT_IS_TOP_LEVEL)
+    if(ERNIC_IS_MULTI_CONFIG)
+        list(JOIN CMAKE_CONFIGURATION_TYPES ", " ernic_build_type)
+        string(APPEND ernic_build_type " (chosen at build time)")
+    else()
+        set(ernic_build_type "${CMAKE_BUILD_TYPE}")
+    endif()
+
+    message(STATUS "")
+    message(STATUS "=== rocm-ernic Configuration ===")
+    message(STATUS "  Version        : ${PROJECT_VERSION}")
+    message(STATUS "  Git SHA        : ${ERNIC_GIT_SHA_SHORT}")
+    message(STATUS "  Build type     : ${ernic_build_type}")
+    message(STATUS "  C compiler     : ${CMAKE_C_COMPILER_ID} "
+      "${CMAKE_C_COMPILER_VERSION}")
+    message(STATUS "  Install prefix : ${CMAKE_INSTALL_PREFIX}")
+    message(STATUS "")
+    message(STATUS "  Dependencies:")
+    if(VFIO_USER_FOUND)
+        message(STATUS "    libvfio-user : "
+          "${VFIO_USER_VERSION} (pkg-config)")
+    else()
+        message(STATUS "    libvfio-user : "
+          "${VFIO_USER_FALLBACK_LIB} (fallback)")
+    endif()
+    message(STATUS "    Private libvfio-user : ${ERNIC_BUNDLE_VFIO_USER}")
+    message(STATUS "    glib-2.0     : ${GLIB2_VERSION}")
+    message(STATUS "    libibverbs   : ${IBVERBS_VERSION}")
+    message(STATUS "")
+    message(STATUS "  Sanitizers:")
+    message(STATUS "    ASAN/LSAN/UBSAN : ${ERNIC_USE_SANITIZERS}")
+    message(STATUS "    TSAN            : ${ERNIC_USE_THREAD_SANITIZER}")
+    message(STATUS "    Shared runtime  : ${ERNIC_SANITIZER_SHARED_RUNTIME}")
+    message(STATUS "")
+    message(STATUS "  Code coverage    : ${ERNIC_USE_CODE_COVERAGE}")
+    message(STATUS "  IWYU             : ${ERNIC_USE_IWYU}")
+    message(STATUS "  clang-tidy       : ${ERNIC_USE_CLANG_TIDY}")
+    message(STATUS "")
+    message(STATUS "  Kernel module (DKMS):")
+    message(STATUS "    ERNIC_BUILD_KMOD : ${ERNIC_BUILD_KMOD}")
+    message(STATUS "")
+    message(STATUS "  Documentation:")
+    message(STATUS "    Build docs : ${ERNIC_BUILD_DOCS}")
+    message(STATUS "")
 endif()
-message("    Private libvfio-user : ${ERNIC_BUNDLE_VFIO_USER}")
-message("    glib-2.0     : ${GLIB2_VERSION}")
-message("    libibverbs   : ${IBVERBS_VERSION}")
-message("")
-message("  Sanitizers:")
-message("    ASAN/LSAN/UBSAN : ${ERNIC_USE_SANITIZERS}")
-message("    TSAN            : ${ERNIC_USE_THREAD_SANITIZER}")
-message("    Shared runtime  : ${ERNIC_SANITIZER_SHARED_RUNTIME}")
-message("")
-message("  Code coverage    : ${ERNIC_USE_CODE_COVERAGE}")
-message("  IWYU             : ${ERNIC_USE_IWYU}")
-message("  clang-tidy       : ${ERNIC_USE_CLANG_TIDY}")
-message("")
-message("  Kernel module (DKMS):")
-message("    ERNIC_BUILD_KMOD : ${ERNIC_BUILD_KMOD}")
-message("")
-message("  Documentation:")
-message("    Build docs : ${ERNIC_BUILD_DOCS}")
-message("")

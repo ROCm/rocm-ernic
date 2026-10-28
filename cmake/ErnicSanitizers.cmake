@@ -238,9 +238,11 @@ endif()
 
 if(ERNIC_USE_THREAD_SANITIZER)
     message(WARNING
-      "TSAN has known problems with higher levels of entropy, "
-      "try using `sudo sysctl vm.mmap_rnd_bits=28` if you "
-      "encounter errors concerning unexpected memory mappings.")
+      "ThreadSanitizer stops a program at startup with \"unexpected "
+      "memory mapping\" when the kernel randomizes the address space "
+      "with more bits than it supports. Run the programs and ctest under "
+      "`setarch \"$(uname -m)\" -R`, which turns the randomization off "
+      "for them.")
 endif()
 
 if(NOT (ERNIC_USE_SANITIZERS OR ERNIC_USE_THREAD_SANITIZER))

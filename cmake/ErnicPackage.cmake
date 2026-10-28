@@ -42,11 +42,9 @@ if(NOT ERNIC_PACKAGE_RELEASE)
       "version. Use another, such as 1.")
 endif()
 
-set(CPACK_PACKAGE_NAME rocm-ernic)
+# CPack takes the packages' name, version, summary and homepage from
+# project()
 set(CPACK_PACKAGE_VENDOR "Advanced Micro Devices, Inc.")
-set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY ${PROJECT_DESCRIPTION})
-set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/ROCm/rocm-ernic")
 set(CPACK_PACKAGE_CONTACT "rocm-ernic-maintainer@amd.com")
 
 # Install into a staging directory with DESTDIR, under the configured
@@ -108,7 +106,7 @@ endif()
 set(CPACK_DEBIAN_ERNIC_EXPORTER_PACKAGE_NAME rocm-ernic-exporter)
 set(CPACK_DEBIAN_ERNIC_EXPORTER_PACKAGE_ARCHITECTURE all)
 set(CPACK_DEBIAN_ERNIC_EXPORTER_PACKAGE_DEPENDS
-    "python3, python3-venv, rocm-ernic (= ${CPACK_PACKAGE_VERSION}-${ERNIC_PACKAGE_RELEASE})")
+    "python3, python3-venv, rocm-ernic (= ${PROJECT_VERSION}-${ERNIC_PACKAGE_RELEASE})")
 set(CPACK_DEBIAN_ERNIC_EXPORTER_DESCRIPTION
     "A Prometheus exporter for the statistics of the rocm-ernic server, with
 its systemd service and a Grafana dashboard.")
