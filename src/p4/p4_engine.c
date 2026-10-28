@@ -13,6 +13,8 @@
  */
 
 #include <errno.h>
+#include <inttypes.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,7 +43,11 @@ struct p4_engine {
     uint8_t *load_buf;
     size_t load_total;
     size_t load_got;
-    /* Why the last load was refused, for a caller to report onwards. */
+    /*
+     * Why the last load was refused, for a caller to report onwards.  A
+     * begin clears it and every failed step sets it, so it never carries
+     * an earlier load's reason.
+     */
     char load_err[160];
 
     struct p4_stats stats;
@@ -126,20 +132,51 @@ void p4_engine_load_abort(struct p4_engine *eng)
     eng->load_got = 0;
 }
 
+/*
+ * Record why a load step failed, for p4_engine_load_error().  Every failure
+ * says why, so a caller never reads the reason an earlier load was refused
+ * as the reason for this one.
+ */
+static void p4_engine_load_fail(struct p4_engine *eng, const char *fmt, ...)
+    __attribute__((format(printf, 2, 3)));
+
+static void p4_engine_load_fail(struct p4_engine *eng, const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    /* Truncation is fine here; the message is for a human. */
+    (void)vsnprintf(eng->load_err, sizeof(eng->load_err), fmt, ap);
+    va_end(ap);
+}
+
 int p4_engine_load_begin(struct p4_engine *eng, size_t total_len)
 {
     if (!eng)
         return -EINVAL;
-    if (total_len == 0 || total_len > P4_PROGRAM_MAX)
+
+    /* A new load, so the last one's reason no longer applies. */
+    eng->load_err[0] = '\0';
+
+    if (total_len == 0) {
+        p4_engine_load_fail(eng, "the program is empty");
         return -EINVAL;
+    }
+    if (total_len > P4_PROGRAM_MAX) {
+        p4_engine_load_fail(eng, "the program is %zu bytes; the limit is %u",
+                            total_len, P4_PROGRAM_MAX);
+        return -EINVAL;
+    }
 
     /* Whatever was part-way through is gone; this is the only place a
      * second load is allowed to disturb a first. */
     p4_engine_load_abort(eng);
 
     eng->load_buf = malloc(total_len);
-    if (!eng->load_buf)
+    if (!eng->load_buf) {
+        p4_engine_load_fail(eng, "no memory for a %zu-byte program", total_len);
         return -ENOMEM;
+    }
     eng->load_total = total_len;
     eng->load_got = 0;
     return 0;
@@ -150,14 +187,26 @@ int p4_engine_load_chunk(struct p4_engine *eng, uint64_t offset,
 {
     if (!eng)
         return -EINVAL;
-    if (!eng->load_buf)
-        return -EINVAL; /* no load in progress */
+    if (!eng->load_buf) {
+        p4_engine_load_fail(eng, "a chunk arrived with no load in progress");
+        return -EINVAL;
+    }
 
     /* A null buffer is a failed chunk like any other, and the contract
      * in p4_engine.h is that a failed chunk abandons the load. Returning
      * without abandoning let a caller retry into a half-filled buffer
      * through this one door and no other. */
-    if (!data || len == 0 || offset != eng->load_got) {
+    if (!data || len == 0) {
+        p4_engine_load_fail(eng, "a chunk at offset %" PRIu64 " has no data",
+                            offset);
+        p4_engine_load_abort(eng);
+        return -EINVAL;
+    }
+    if (offset != eng->load_got) {
+        p4_engine_load_fail(eng,
+                            "a chunk at offset %" PRIu64
+                            " is out of order: the next offset is %zu",
+                            offset, eng->load_got);
         p4_engine_load_abort(eng);
         return -EINVAL;
     }
@@ -168,6 +217,10 @@ int p4_engine_load_chunk(struct p4_engine *eng, uint64_t offset,
      * never exceeds load_total, so the subtraction cannot underflow.
      */
     if (len > eng->load_total - eng->load_got) {
+        p4_engine_load_fail(eng,
+                            "a %zu-byte chunk at offset %" PRIu64
+                            " runs past the %zu-byte program",
+                            len, offset, eng->load_total);
         p4_engine_load_abort(eng);
         return -EINVAL;
     }
@@ -184,9 +237,8 @@ int p4_engine_load_commit(struct p4_engine *eng)
     if (!eng->load_buf || eng->load_got != eng->load_total) {
         /* The parser never saw this, so its reason from some earlier load
          * is not the reason now. */
-        (void)snprintf(eng->load_err, sizeof(eng->load_err),
-                       "the program is incomplete: %zu of %zu bytes",
-                       eng->load_got, eng->load_total);
+        p4_engine_load_fail(eng, "the program is incomplete: %zu of %zu bytes",
+                            eng->load_got, eng->load_total);
         p4_engine_load_abort(eng);
         return -EINVAL;
     }
@@ -205,6 +257,7 @@ int p4_engine_load_commit(struct p4_engine *eng)
     struct p4_entries *entries = p4_entries_create(prog);
 
     if (!entries) {
+        p4_engine_load_fail(eng, "no memory for the program's tables");
         p4_json_free(prog);
         return -ENOMEM;
     }

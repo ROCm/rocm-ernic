@@ -5,7 +5,7 @@
  * exception: p4_engine_load_error() is all an operator gets.  The test is
  * linked with --wrap for the allocators (s3_alloc_fail.h) and for
  * json_tokener_new_ex(), whose own allocations happen inside json-c where
- * --wrap can't reach them, so each of the parser's allocations can be
+ * --wrap can't reach them, so each of the loader's allocations can be
  * failed in turn.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
@@ -128,8 +128,38 @@ static bool stage(struct p4_engine *eng, const char *doc, size_t len)
 }
 
 /*
- * What an operator sees: a commit the parser refuses for want of memory
- * has a reason, and leaves the running program in place.
+ * A begin with no memory for the program's buffer says so, rather than
+ * leaving the reason the last load was refused.
+ */
+static void test_begin(size_t len)
+{
+    static const char junk[] = "not json";
+    struct p4_engine *eng = p4_engine_create();
+    const char *why;
+
+    check(eng != NULL, "no engine");
+    if (!eng)
+        return;
+
+    check(stage(eng, junk, sizeof(junk) - 1u) &&
+              p4_engine_load_commit(eng) == -EINVAL &&
+              p4_engine_load_error(eng) != NULL,
+          "non-JSON was not refused by the parser with a reason");
+
+    s3_alloc_fail_arm(0);
+    check(p4_engine_load_begin(eng, len) == -ENOMEM &&
+              (why = p4_engine_load_error(eng)) != NULL &&
+              strstr(why, "memory") != NULL,
+          "a begin with no memory for the program's buffer was not refused "
+          "with its own reason");
+    check(s3_alloc_fail_disarm(), "the begin allocated nothing");
+
+    p4_engine_destroy(eng);
+}
+
+/*
+ * What an operator sees: a commit refused for want of memory has a reason,
+ * and leaves the running program in place.
  */
 static void test_commit(const char *doc, size_t len)
 {
@@ -168,6 +198,19 @@ static void test_commit(const char *doc, size_t len)
           "a commit with no memory for the program dropped the running "
           "program");
 
+    /* Then its tables, once the program has parsed. */
+    check(stage(eng, doc, len), "a load did not begin");
+    s3_alloc_fail_arm(1);
+    check(p4_engine_load_commit(eng) == -ENOMEM &&
+              (why = p4_engine_load_error(eng)) != NULL &&
+              strstr(why, "tables") != NULL,
+          "a commit with no memory for the program's tables was not refused "
+          "with a reason");
+    check(s3_alloc_fail_disarm(), "the commit allocated too little");
+    check(p4_engine_has_program(eng),
+          "a commit with no memory for the program's tables dropped the "
+          "running program");
+
     p4_engine_destroy(eng);
 }
 
@@ -179,6 +222,7 @@ int main(void)
     check(doc != NULL, "minimal_forward.json can't be read");
     if (doc) {
         test_parse(doc, len);
+        test_begin(len);
         test_commit(doc, len);
         free(doc);
     }

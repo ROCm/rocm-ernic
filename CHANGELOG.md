@@ -1239,7 +1239,10 @@
     field width given as a string other than `"*"` is a bad width rather
     than variable-length, a bad `base_default_next` is named as such, and
     committing an incomplete load says how much arrived instead of
-    repeating an earlier load's reason.
+    repeating an earlier load's reason. A refused begin or chunk, such as
+    an oversized program or a chunk out of order, also says why, rather
+    than leaving an earlier load's reason in place, and so does a begin or
+    commit refused for want of memory for the program's buffer or tables.
 * **Test and analysis tooling.**
   * `p4-fmt-unit` was built without the project's warnings, sanitizers and
     coverage instrumentation.

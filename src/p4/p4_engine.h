@@ -158,9 +158,12 @@ int p4_engine_update(struct p4_engine *eng, const struct p4_update *up,
                      char *err, size_t err_len);
 
 /*
- * Why the last load was refused, or NULL if none has been.  The string
- * names the offending construct where it can, so a caller can tell a user
- * which P4 feature they used rather than that the file was bad.
+ * Why the last load was refused, or NULL if it wasn't.  The string names
+ * the offending construct where it can, so a caller can tell a user which
+ * P4 feature they used rather than that the file was bad.
+ *
+ * A begin clears it, and a failed begin, chunk or commit sets it, so it is
+ * always about the current load and never left over from an earlier one.
  */
 const char *p4_engine_load_error(const struct p4_engine *eng);
 
