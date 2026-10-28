@@ -81,6 +81,9 @@
     path: "{{ ernic_p4_dkms_source_dir }}"
     state: absent
 
+# No creates: the tree existing says nothing about which series it carries.
+# The script's sentinel names the ref and a digest of the repository and the
+# series, and the script skips the fetch only when it matches.
 - name: Fetch ionic sources with both patch series
   become: true
   ansible.builtin.command:
@@ -91,7 +94,8 @@
       {% if ernic_p4_dkms_kernel_repo %}--repo {{ ernic_p4_dkms_kernel_repo }}
       {% endif %}
       {% for d in ernic_p4_dkms_patches_dirs %}--patches-dir {{ d }} {% endfor %}
-    creates: "{{ ernic_p4_dkms_source_dir }}/drivers/net/ethernet"
+  register: ernic_p4_dkms_fetch
+  changed_when: "'nothing to do' not in ernic_p4_dkms_fetch.stdout"
 
 # The check that makes a tree without patches/p4 loud.
 #
@@ -341,7 +345,7 @@
           2>/dev/null || echo "  (none)"
       echo "loaded ionic:"
       modinfo -n ionic 2>/dev/null | sed 's/^/  /' || echo "  (not loaded)"
-      echo "fetch sentinels (a stale one skips the re-fetch):"
+      echo "fetch sentinels (kernel ref, and digest of repo and patch series):"
       find /var/tmp/ionic-src -maxdepth 1 -name '.patches-applied-*' \
           -printf '  %f\n' 2>/dev/null || echo "  (none)"
       echo "capability bit in the tree ionic was built from:"

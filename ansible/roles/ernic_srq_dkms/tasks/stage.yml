@@ -19,6 +19,7 @@
     path: "{{ ernic_srq_ctl_dir }}"
     state: absent
 
+# No creates:, for the reason build_one.yml gives.
 - name: "Fetch and patch ionic sources on the controller
     ({{ ernic_srq_src.ref[:12] }})"
   delegate_to: localhost
@@ -30,7 +31,8 @@
       --kernel-ref {{ ernic_srq_src.ref }}
       --repo {{ ernic_srq_src.repo }}
       --patches-dir {{ ernic_srq_dkms_patches_dir }}
-    creates: "{{ ernic_srq_ctl_dir }}/drivers/infiniband/hw/ionic"
+  register: ernic_srq_dkms_ctl_fetch
+  changed_when: "'nothing to do' not in ernic_srq_dkms_ctl_fetch.stdout"
 
 # The same guard build_one.yml applies for a local build, applied where the
 # sources now are. A ref predating the series fetches and builds fine and
@@ -84,9 +86,13 @@
 # not be installed in a guest, and the port-forwarded ssh these guests use
 # suits it poorly.
 #
+# Made on every run, with no creates:, so that an archive an earlier run left
+# behind is never shipped in place of the tree just fetched. The tree is a
+# sparse checkout, so this is cheap.
+#
 # ansible-lint takes any tar for an extraction and suggests unarchive, which
-# can't create an archive. community.general.archive can, but has no creates
-# and builds the archive in Python, which is far slower over a kernel tree.
+# can't create an archive. community.general.archive can, but builds the
+# archive in Python, which is far slower over a kernel tree.
 - name: "Archive the patched tree on the controller
     ({{ ernic_srq_src.ref[:12] }})"
   delegate_to: localhost
@@ -97,7 +103,7 @@
       --exclude=.git
       -czf {{ ernic_srq_ctl_dir }}.tar.gz
       {{ ernic_srq_ctl_dir | basename }}
-    creates: "{{ ernic_srq_ctl_dir }}.tar.gz"
+  changed_when: true
 
 - name: "Unpack the tree on the target ({{ ernic_srq_src.ref[:12] }})"
   become: true

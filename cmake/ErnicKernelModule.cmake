@@ -63,30 +63,27 @@ set(IONIC_FETCH_SCRIPT
 # This custom target:
 #   1. Sparse-clones only the two ionic subtrees from the pinned ref.
 #   2. Applies ansible/files/patches/*.patch in filename order via git am.
-# It is a dependency of the build/install targets so it runs once and
-# is skipped on subsequent builds if the sentinel file exists.
-
-set(IONIC_FETCH_SENTINEL
-    "${IONIC_SOURCE_DIR}/.patches-applied-${IONIC_KERNEL_REF}")
+# It is a dependency of the build/install targets.
+#
+# The target always runs, and the script decides whether there is work
+# to do: it leaves a sentinel named for the ref and a digest of the
+# repository and the patch series, and exits early when that sentinel is
+# present, so changing IONIC_KERNEL_REF, IONIC_KERNEL_REPO or a patch
+# fetches the sources again.  CMake can't name the sentinel as an
+# OUTPUT, since the digest is computed by the script, and passing --force
+# would make the script delete and fetch the tree again on every build.
 
 if(ERNIC_BUILD_KMOD)
     # -- fetch-ionic-sources -------------------------------------------------
-    add_custom_command(
-        OUTPUT "${IONIC_FETCH_SENTINEL}"
+    add_custom_target(fetch-ionic-sources
         COMMAND "${IONIC_FETCH_SCRIPT}"
             --source-dir "${IONIC_SOURCE_DIR}"
             --kernel-ref "${IONIC_KERNEL_REF}"
             --patches-dir "${IONIC_PATCHES_DIR}"
             --repo "${IONIC_KERNEL_REPO}"
-            --force
         COMMENT
-            "Fetching Linux ${IONIC_KERNEL_REF} ionic sources and applying patches"
+            "Fetching and patching Linux ${IONIC_KERNEL_REF} ionic sources if needed"
         VERBATIM
-    )
-
-    add_custom_target(fetch-ionic-sources
-        DEPENDS "${IONIC_FETCH_SENTINEL}"
-        COMMENT "ionic sources fetched and patches applied"
     )
 
     # -- build-ionic-dkms ----------------------------------------------------
