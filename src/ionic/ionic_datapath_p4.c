@@ -14,8 +14,8 @@
 
 #include <errno.h>
 #include <stdbool.h>
-#include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
 
@@ -40,9 +40,9 @@ void ionic_datapath_set_p4_engine(struct ionic_datapath *dp,
 }
 
 /*
- * Blocks the operands are streamed through.  Small enough that three of
- * them on the stack of a function on the poll-loop thread is unremarkable,
- * large enough that a megabyte moves in a few dozen passes.
+ * Blocks the result is written out in.  Small enough to sit on the stack
+ * of a function on the poll-loop thread, large enough that a megabyte
+ * moves in a few dozen passes.
  */
 #define FP8_MAP_CHUNK 2048u
 
@@ -67,16 +67,10 @@ int ionic_datapath_fp8_map(struct ionic_datapath *dp, uint8_t op,
                            uint64_t b_va, uint32_t len, uint32_t c_rkey,
                            uint64_t c_va)
 {
-    /*
-     * Both operands are staged a block at a time rather than combined in
-     * place.  They are independently scattered across guest pages and the
-     * operation has to see matching elements of each, which a page-at-a-
-     * time walk of two separate scatter lists does not give.
-     */
-    uint8_t a[FP8_MAP_CHUNK];
-    uint8_t b[FP8_MAP_CHUNK];
     uint8_t c[FP8_MAP_CHUNK];
+    uint8_t *ab;
     uint32_t done = 0;
+    int rc = 0;
 
     if (!dp || len == 0 || len > IONIC_FP8_MAP_MAX)
         return -EINVAL;
@@ -92,50 +86,81 @@ int ionic_datapath_fp8_map(struct ionic_datapath *dp, uint8_t op,
         !fp8_key_ok(dp, c_rkey, c_va, len))
         return -EACCES;
 
+    /*
+     * Both operands are read in full before a byte of the result is
+     * written.  The destination may overlap either of them, and streaming
+     * a block at a time would then overwrite operand bytes a later block
+     * has still to read.  Whether the regions overlap cannot be told from
+     * the request -- two keys may be registered over the same guest pages
+     * -- so they are staged whatever the request says.  The cap bounds
+     * this at two bytes an element.
+     */
+    ab = malloc(2u * (size_t)len);
+    if (!ab)
+        return -ENOMEM;
+    if (ionic_dp_sge_to_host(dp, a_lkey, a_va, ab, len) != len ||
+        ionic_dp_sge_to_host(dp, b_lkey, b_va, ab + len, len) != len) {
+        rc = -EFAULT;
+        goto out;
+    }
+
     while (done < len) {
         uint32_t n = len - done;
 
         if (n > FP8_MAP_CHUNK)
             n = FP8_MAP_CHUNK;
 
-        if (ionic_dp_sge_to_host(dp, a_lkey, a_va + done, a, n) != n ||
-            ionic_dp_sge_to_host(dp, b_lkey, b_va + done, b, n) != n)
-            return -EFAULT;
-
-        if (!p4_fp8_map((enum p4_fp8_op)op, a, b, n, c))
-            return -EINVAL;
+        if (!p4_fp8_map((enum p4_fp8_op)op, ab + done, ab + len + done, n, c)) {
+            rc = -EINVAL;
+            goto out;
+        }
 
         /* Out through the same path an RDMA WRITE takes, so the result
          * reaches the destination the way any other payload would. */
-        if (ionic_dp_host_to_sge(dp, c_rkey, c_va + done, c, n) != n)
-            return -EFAULT;
+        if (ionic_dp_host_to_sge(dp, c_rkey, c_va + done, c, n) != n) {
+            rc = -EFAULT;
+            goto out;
+        }
 
         done += n;
     }
 
-    return 0;
+out:
+    free(ab);
+    return rc;
 }
 
 /*
  * Elements converted per pass.  Even, so a 4-bit format's chunk always
- * lands on a byte boundary at both ends, and small enough that the two
- * staging buffers -- at most four bytes an element each way -- are an
- * unremarkable amount of stack on the poll-loop thread.
+ * lands on a byte boundary at both ends, and small enough that the result
+ * buffer -- at most four bytes an element -- is an unremarkable amount of
+ * stack on the poll-loop thread.
  */
 #define FMT_CVT_CHUNK_ELEMS 512u
+
+/* The widest format, fp32, in bytes an element. */
+#define FMT_MAX_ELEM_BYTES 4u
 
 int ionic_datapath_fmt_convert(struct ionic_datapath *dp, uint8_t src_fmt,
                                uint8_t dst_fmt, uint32_t a_lkey, uint64_t a_va,
                                uint32_t in_len, uint32_t c_rkey, uint64_t c_va)
 {
-    uint8_t in[FMT_CVT_CHUNK_ELEMS * 4u];
-    uint8_t out[FMT_CVT_CHUNK_ELEMS * 4u];
+    uint8_t out[FMT_CVT_CHUNK_ELEMS * FMT_MAX_ELEM_BYTES];
+    uint8_t *in;
     size_t n_elems, out_len;
     uint32_t done = 0;
+    int rc = 0;
 
     if (!dp || in_len == 0)
         return -EINVAL;
     if (!p4_fmt_valid(src_fmt) || !p4_fmt_valid(dst_fmt))
+        return -EINVAL;
+    /*
+     * More bytes than the element cap allows in any format.  The element
+     * check below refuses it too, but this is the bound on the source's
+     * staging buffer, in the terms that buffer is sized in.
+     */
+    if (in_len > IONIC_FP8_MAP_MAX * FMT_MAX_ELEM_BYTES)
         return -EINVAL;
 
     /*
@@ -158,33 +183,51 @@ int ionic_datapath_fmt_convert(struct ionic_datapath *dp, uint8_t src_fmt,
         !fp8_key_ok(dp, c_rkey, c_va, (uint32_t)out_len))
         return -EACCES;
 
+    /*
+     * The whole source is read before a byte of the result is written.
+     * The destination may overlap it -- widening into the same address
+     * does, every time -- and streaming a chunk at a time would then
+     * overwrite source bytes a later chunk has still to read.  Whether the
+     * regions overlap cannot be told from the request, since two keys may
+     * be registered over the same guest pages, so the source is staged
+     * whatever the request says.  The element cap bounds it.
+     */
+    in = malloc(in_len);
+    if (!in)
+        return -ENOMEM;
+    if (ionic_dp_sge_to_host(dp, a_lkey, a_va, in, in_len) != in_len) {
+        rc = -EFAULT;
+        goto out;
+    }
+
     while (done < n_elems) {
         size_t n = n_elems - done;
-        size_t in_bytes, out_bytes;
+        size_t out_bytes;
 
         if (n > FMT_CVT_CHUNK_ELEMS)
             n = FMT_CVT_CHUNK_ELEMS;
-        in_bytes = p4_fmt_bytes((enum p4_fmt)src_fmt, n);
         out_bytes = p4_fmt_bytes((enum p4_fmt)dst_fmt, n);
 
-        if (ionic_dp_sge_to_host(
-                dp, a_lkey, a_va + p4_fmt_bytes((enum p4_fmt)src_fmt, done), in,
-                (uint32_t)in_bytes) != in_bytes)
-            return -EFAULT;
-
-        if (!p4_fmt_convert((enum p4_fmt)src_fmt, (enum p4_fmt)dst_fmt, in, n,
-                            out))
-            return -EINVAL;
+        if (!p4_fmt_convert((enum p4_fmt)src_fmt, (enum p4_fmt)dst_fmt,
+                            in + p4_fmt_bytes((enum p4_fmt)src_fmt, done), n,
+                            out)) {
+            rc = -EINVAL;
+            goto out;
+        }
 
         if (ionic_dp_host_to_sge(
                 dp, c_rkey, c_va + p4_fmt_bytes((enum p4_fmt)dst_fmt, done),
-                out, (uint32_t)out_bytes) != out_bytes)
-            return -EFAULT;
+                out, (uint32_t)out_bytes) != out_bytes) {
+            rc = -EFAULT;
+            goto out;
+        }
 
         done += (uint32_t)n;
     }
 
-    return 0;
+out:
+    free(in);
+    return rc;
 }
 
 /*

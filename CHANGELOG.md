@@ -1308,6 +1308,11 @@
     an oversized program or a chunk out of order, also says why, rather
     than leaving an earlier load's reason in place, and so does a begin or
     commit refused for want of memory for the program's buffer or tables.
+  * An fp8 `cvt()` or `map()` whose destination overlapped its source, or
+    one of its operands, could overwrite input before reading it and
+    still complete successfully; converting more than 512 fp16 elements to
+    fp32 in place always did. The device now reads all its input before
+    writing any of the result, so the regions may overlap.
 * **Test and analysis tooling.**
   * `p4-fmt-unit` was built without the project's warnings, sanitizers and
     coverage instrumentation.
@@ -1368,16 +1373,6 @@
     families and the QP never reached RTR. A guest without the GID now fails
     the play with its GID table. The examples in `docs/testing.rst` look the
     index up too.
-
-### Limitations
-
-* **A P4 conversion's destination must not overlap its source**, and the
-  device doesn't check. The conversion streams a chunk at a time, so an
-  overlapping destination corrupts the source before it is read, and the
-  operation completes successfully with wrong results; widening in place
-  does it easily. Checking needs more than comparing ranges, since two keys
-  can cover the same guest pages. A guest can only corrupt memory it
-  registered itself.
 
 ### Known issues
 

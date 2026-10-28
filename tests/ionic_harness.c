@@ -798,18 +798,16 @@ static uint64_t mr_dma_addr(const struct ih_mr *mr)
     return mr->pt_gpa;
 }
 
-bool ih_mr_create(struct ih *h, struct ih_mr *mr, uint32_t lkey, uint64_t va,
-                  uint64_t len, uint32_t access, bool reversed)
+/* CREATE_MR for an MR whose pages are already in place; frees them if it
+ * fails. */
+static bool mr_register(struct ih *h, struct ih_mr *mr, uint32_t access)
 {
     uint8_t body[45] = {0};
 
-    if (!ih_mr_alloc(h, mr, lkey, va, len, reversed))
-        return false;
-
     /* struct ionic_admin_create_mr */
-    ernic_put_le64(body + 0, va);
-    ernic_put_le64(body + 8, len);
-    ernic_put_le32(body + 20, lkey);
+    ernic_put_le64(body + 0, mr->va);
+    ernic_put_le64(body + 8, mr->len);
+    ernic_put_le32(body + 20, mr->lkey);
     ernic_put_le32(body + 28, mr->npages);
     ernic_put_le64(body + 32, mr_dma_addr(mr));
     ernic_put_le16(body + 40, (uint16_t)access);
@@ -817,9 +815,38 @@ bool ih_mr_create(struct ih *h, struct ih_mr *mr, uint32_t lkey, uint64_t va,
     int rc = ih_admin(h, IH_ADMIN_CREATE_MR, body, sizeof(body), NULL);
     if (rc != 0) {
         ih_mr_free(mr);
-        return fail("CREATE_MR %#x: %d", lkey, rc);
+        return fail("CREATE_MR %#x: %d", mr->lkey, rc);
     }
     return true;
+}
+
+bool ih_mr_create(struct ih *h, struct ih_mr *mr, uint32_t lkey, uint64_t va,
+                  uint64_t len, uint32_t access, bool reversed)
+{
+    if (!ih_mr_alloc(h, mr, lkey, va, len, reversed))
+        return false;
+    return mr_register(h, mr, access);
+}
+
+bool ih_mr_alias(struct ih *h, struct ih_mr *alias, const struct ih_mr *src,
+                 uint32_t lkey, uint64_t va, uint32_t access)
+{
+    memset(alias, 0, sizeof(*alias));
+    if (va % IH_PAGE_SIZE != src->va % IH_PAGE_SIZE)
+        return fail("an alias at %#" PRIx64 " can't share the pages of one "
+                    "at %#" PRIx64,
+                    va, src->va);
+    alias->pages = calloc(src->npages, sizeof(*alias->pages));
+    if (!alias->pages)
+        return fail("out of memory");
+    memcpy(alias->pages, src->pages, src->npages * sizeof(*alias->pages));
+    alias->lkey = lkey;
+    alias->va = va;
+    alias->len = src->len;
+    alias->npages = src->npages;
+    /* The page table lists the same pages, so it can be the same one. */
+    alias->pt_gpa = src->pt_gpa;
+    return mr_register(h, alias, access);
 }
 
 int ih_mr_destroy(struct ih *h, struct ih_mr *mr)

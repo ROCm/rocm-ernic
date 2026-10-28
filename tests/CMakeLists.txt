@@ -683,10 +683,17 @@ ernic_add_test_program(ernic-test-ionic-harness
         test_ionic_harness.c
         ionic_harness.c
         fake_vfu.c
+        s3_alloc_fail.c
         ${ERNIC_HARNESS_DEVICE_SOURCES}
     DEPS ${ERNIC_HARNESS_DEPS}
     HEADER_DEPS vfio-user
 )
+# The fp8 groups fail the data path's allocations on demand with the S3
+# tests' wrappers (s3_alloc_fail.h). Unarmed, they pass every call
+# through, so the other groups see the real allocator.
+target_link_options(ernic-test-ionic-harness PRIVATE
+    "LINKER:--wrap=malloc,--wrap=calloc,--wrap=realloc"
+    "LINKER:--wrap=strdup,--wrap=getentropy")
 target_compile_definitions(ernic-test-ionic-harness PRIVATE
     $<$<BOOL:${ERNIC_BUILD_P4}>:ERNIC_HAVE_P4>
     # Real p4c artifacts, so the RDMA path is held to what the compiler
@@ -993,9 +1000,10 @@ set(ERNIC_HARNESS_GROUPS
     nvmeof nvmeof-queues s3 mesh-none teardown backend-names none
     loopback-pair)
 if(ERNIC_BUILD_P4)
-    list(APPEND ERNIC_HARNESS_GROUPS p4-port p4-attach fp8-map p4-rdma p4-cvt
-                                      p4-cvt-map p4-drop-map p4-deny
-                                      p4-log-limit p4-devcmd p4-devcmd-errors)
+    list(APPEND ERNIC_HARNESS_GROUPS p4-port p4-attach fp8-map fp8-overlap
+                                      p4-rdma p4-cvt p4-cvt-map p4-drop-map
+                                      p4-deny p4-log-limit p4-devcmd
+                                      p4-devcmd-errors)
 endif()
 foreach(ernic_harness_group IN LISTS ERNIC_HARNESS_GROUPS)
     ernic_add_unit_test(ionic-harness-${ernic_harness_group}

@@ -68,6 +68,7 @@
 #include "p4/p4_fmt.h"
 #include "p4/p4_program.h"
 #include "p4/p4_table.h"
+#include "s3_alloc_fail.h"
 #endif
 #include "pvrdma/pvrdma.h"
 #include "pvrdma/rdma_backend.h"
@@ -4007,6 +4008,187 @@ static void test_fp8_map(void)
     teardown(T, &h);
 }
 
+/* A second key over A's pages, so the same memory has two names. */
+#define FP8R_MR_D IH_MRID(4, 0x03)
+#define FP8R_VA_D UINT64_C(0x7F5000000000)
+
+/* fp16 elements widened in place: more than one of the conversion's
+ * chunks, so a device that wrote a chunk before reading the next would
+ * have destroyed the next one's input. */
+#define FP8O_N_ELEMS 1400u
+
+/* How many of @n bytes at @va in @mr differ from @want. */
+static unsigned fp8o_wrong(struct ih *h, const struct ih_mr *mr, uint64_t va,
+                           const uint8_t *want, size_t n)
+{
+    static uint8_t got[FP8O_N_ELEMS * 4u];
+    unsigned wrong = 0;
+
+    if (n > sizeof(got) || !ih_mr_read(h, mr, va, got, n))
+        return (unsigned)n;
+    for (size_t i = 0; i < n; i++)
+        if (got[i] != want[i])
+            wrong++;
+    return wrong;
+}
+
+/*
+ * A destination that overlaps its input. The device can't tell whether two
+ * regions overlap, since two keys can name the same pages, so it reads all
+ * the input before writing any of the result, and the answer is the one a
+ * separate destination would get. Each case below once completed
+ * successfully with the input overwritten part way through.
+ */
+static void test_fp8_overlap(void)
+{
+    const char *T = "fp8-overlap";
+    struct ih h;
+    struct ih_mr mra = {0}, mrb = {0}, mrd = {0};
+    enum { N = 5000 };
+    static uint8_t src[FP8O_N_ELEMS * 2u], want[FP8O_N_ELEMS * 4u];
+    static uint8_t a[N], b[N], sum[N];
+
+    if (!setup(T, &h, "loopback"))
+        return;
+
+    if (!check(T,
+               ih_mr_create(&h, &mra, FP8R_MR_A, FP8R_VA_A, FP8R_MR_LEN,
+                            IH_ACCESS_ALL, true) &&
+                   ih_mr_create(&h, &mrb, FP8R_MR_B, FP8R_VA_B, FP8R_MR_LEN,
+                                IH_ACCESS_ALL, false) &&
+                   ih_mr_alias(&h, &mrd, &mra, FP8R_MR_D, FP8R_VA_D,
+                               IH_ACCESS_ALL),
+               "the memory regions were not registered")) {
+        ih_mr_free(&mra);
+        ih_mr_free(&mrb);
+        ih_mr_free(&mrd);
+        teardown(T, &h);
+        return;
+    }
+
+    /* fp16 from 0.5 up to just under 1.0 in its smallest steps, so every
+     * element differs from its neighbours and a misplaced one shows up. */
+    for (uint32_t i = 0; i < FP8O_N_ELEMS; i++) {
+        uint16_t v = (uint16_t)(0x3800u + (i % 1024u));
+
+        src[2u * i] = (uint8_t)(v & 0xFFu);
+        src[2u * i + 1u] = (uint8_t)(v >> 8);
+    }
+    check(T, p4_fmt_convert(P4_FMT_FP16, P4_FMT_FP32, src, FP8O_N_ELEMS, want),
+          "the oracle refused the source buffer");
+
+    /* fp16 to fp32 at the same address, through the same key: every byte
+     * read is written twice over. */
+    check(T, ih_mr_write(&h, &mra, FP8R_VA_A, src, sizeof(src)),
+          "write the fp16 source");
+    check(T,
+          ionic_datapath_fmt_convert(h.dp, P4_FMT_FP16, P4_FMT_FP32, mra.lkey,
+                                     FP8R_VA_A, sizeof(src), mra.lkey,
+                                     FP8R_VA_A) == 0,
+          "widening in place failed");
+    {
+        unsigned wrong = fp8o_wrong(&h, &mra, FP8R_VA_A, want, sizeof(want));
+
+        check(T, wrong == 0, "widening in place got %u of %zu bytes wrong",
+              wrong, sizeof(want));
+    }
+
+    /* The same, written through the second key: no comparison of keys and
+     * addresses would call these two regions the same memory. */
+    check(T, ih_mr_write(&h, &mra, FP8R_VA_A, src, sizeof(src)),
+          "write the fp16 source again");
+    check(T,
+          ionic_datapath_fmt_convert(h.dp, P4_FMT_FP16, P4_FMT_FP32, mra.lkey,
+                                     FP8R_VA_A, sizeof(src), mrd.lkey,
+                                     FP8R_VA_D) == 0,
+          "widening through a second key failed");
+    {
+        unsigned wrong = fp8o_wrong(&h, &mra, FP8R_VA_A, want, sizeof(want));
+
+        check(T, wrong == 0,
+              "widening through a second key got %u of %zu bytes wrong", wrong,
+              sizeof(want));
+    }
+
+    /*
+     * map() with its destination one byte into the first operand: each
+     * result lands on the operand byte after its own, which a device
+     * streaming the operands would read as the next block's first input.
+     */
+    for (unsigned i = 0; i < N; i++)
+        a[i] = (uint8_t)(0x30u + i % 16u); /* E4M3 0.5 to 0.9375 */
+    memset(b, 0x38, sizeof(b));            /* 1.0 */
+    check(T, p4_fp8_map(P4_FP8_OP_ADD, a, b, N, sum),
+          "the oracle refused the operands");
+    check(T, ih_mr_write(&h, &mra, FP8R_VA_A, a, sizeof(a)), "write A");
+    check(T, ih_mr_write(&h, &mrb, FP8R_VA_B, b, sizeof(b)), "write B");
+    check(T,
+          ionic_datapath_fp8_map(h.dp, P4_FP8_OP_ADD, mra.lkey, FP8R_VA_A,
+                                 mrb.lkey, FP8R_VA_B, N, mra.lkey,
+                                 FP8R_VA_A + 1) == 0,
+          "a map into its own operand failed");
+    {
+        unsigned wrong = fp8o_wrong(&h, &mra, FP8R_VA_A + 1, sum, N);
+
+        check(T, wrong == 0, "a map into its own operand got %u of %u wrong",
+              wrong, (unsigned)N);
+    }
+
+    /* A source too long to stage in any format is refused before anything
+     * is read. */
+    check(T,
+          ionic_datapath_fmt_convert(h.dp, P4_FMT_FP32, P4_FMT_FP16, mra.lkey,
+                                     FP8R_VA_A, IONIC_FP8_MAP_MAX * 4u + 4u,
+                                     mrd.lkey, FP8R_VA_D) == -EINVAL,
+          "a source longer than the cap in any format was accepted");
+
+    /*
+     * No memory to stage the input in: the operation is refused, and
+     * since nothing is written before the input is all read, the
+     * destination is as it was. B is the destination here, primed with a
+     * pattern neither operation would write.
+     */
+    {
+        static uint8_t primed[FP8O_N_ELEMS * 4u];
+        int rc;
+        bool fired;
+
+        memset(primed, 0x5A, sizeof(primed));
+        check(T, ih_mr_write(&h, &mrb, FP8R_VA_B, primed, sizeof(primed)),
+              "prime B");
+
+        s3_alloc_fail_arm(0);
+        rc = ionic_datapath_fmt_convert(h.dp, P4_FMT_FP16, P4_FMT_FP32,
+                                        mra.lkey, FP8R_VA_A, sizeof(src),
+                                        mrb.lkey, FP8R_VA_B);
+        fired = s3_alloc_fail_disarm();
+        check(T, fired && rc == -ENOMEM,
+              "a conversion that couldn't stage its source returned %d "
+              "(allocation %s)",
+              rc, fired ? "failed" : "not reached");
+
+        s3_alloc_fail_arm(0);
+        rc =
+            ionic_datapath_fp8_map(h.dp, P4_FP8_OP_ADD, mra.lkey, FP8R_VA_A,
+                                   mra.lkey, FP8R_VA_A, N, mrb.lkey, FP8R_VA_B);
+        fired = s3_alloc_fail_disarm();
+        check(T, fired && rc == -ENOMEM,
+              "a map that couldn't stage its operands returned %d "
+              "(allocation %s)",
+              rc, fired ? "failed" : "not reached");
+
+        check(T, fp8o_wrong(&h, &mrb, FP8R_VA_B, primed, sizeof(primed)) == 0,
+              "an operation that couldn't stage its input wrote anyway");
+    }
+
+    check(T, fake_vfu_mapped(h.vfu) == 0, "guest memory left mapped");
+    check(T, ih_mr_destroy(&h, &mrd) == 0, "DESTROY_MR D failed");
+    check(T, ih_mr_destroy(&h, &mra) == 0, "DESTROY_MR A failed");
+    check(T, ih_mr_destroy(&h, &mrb) == 0, "DESTROY_MR B failed");
+
+    teardown(T, &h);
+}
+
 /* ---- A P4 program governing an RDMA operation -------------------------- */
 
 #define P4R_CQ     7
@@ -6857,6 +7039,7 @@ static const struct {
     {"p4-port", test_p4_port},
     {"p4-attach", test_p4_attach},
     {"fp8-map", test_fp8_map},
+    {"fp8-overlap", test_fp8_overlap},
     {"p4-rdma", test_p4_rdma},
     {"p4-cvt", test_p4_cvt},
     {"p4-cvt-map", test_p4_cvt_then_map},
