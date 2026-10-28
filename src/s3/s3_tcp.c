@@ -13,6 +13,7 @@
 #include "byteorder.h"
 #include "ernic_err.h"
 #include "ernic_siphash.h"
+#include "ernic_time.h"
 #include "net/net_headers.h"
 #include "s3/s3_http.h"
 #include "s3/s3_target.h"
@@ -133,16 +134,16 @@ static bool seq_le(uint32_t a, uint32_t b)
 
 /*
  * The initial send sequence number for a connection from @p peer_ip and
- * @p peer_port, as RFC 6528 computes it: a clock that ticks every 4 us,
- * plus a keyed hash of the connection's addresses and ports.  The hash
- * makes the number unpredictable without the key, so nothing that sees
- * one connection's numbers can work out another's and forge segments for
- * it.  The clock keeps the numbers for one pair of endpoints moving
- * forward, as RFC 793's did, so that a new connection between them is
- * unlikely to start inside an old one's sequence space.
+ * @p peer_port, as RFC 6528 computes it: a clock that ticks every 4 us
+ * (cfg.now_us), plus a keyed hash of the connection's addresses and
+ * ports.  The hash makes the number unpredictable without the key, so
+ * nothing that sees one connection's numbers can work out another's and
+ * forge segments for it.  The clock keeps the numbers for one pair of
+ * endpoints moving forward, as RFC 793's did, so that a new connection
+ * between them is unlikely to start inside an old one's sequence space.
  */
 static uint32_t conn_iss(const struct s3_tcp *s, uint32_t peer_ip,
-                         uint16_t peer_port, uint64_t now_ms)
+                         uint16_t peer_port)
 {
     /* Local address and port, then remote; the order and byte order only
      * have to be the same every time. */
@@ -153,8 +154,9 @@ static uint32_t conn_iss(const struct s3_tcp *s, uint32_t peer_ip,
     ernic_put_be32(tuple + 6, peer_ip);
     ernic_put_be16(tuple + 10, peer_port);
 
-    /* 250 ticks of 4 us to the millisecond, wrapping every 4.8 hours */
-    uint32_t clock = (uint32_t)(now_ms * 250u);
+    /* Wraps every 4.8 hours */
+    uint64_t now_us = s->cfg.now_us ? s->cfg.now_us() : ernic_monotonic_us();
+    uint32_t clock = (uint32_t)(now_us / 4u);
     return clock + (uint32_t)ernic_siphash24(s->isn_key, tuple, sizeof(tuple));
 }
 
@@ -647,7 +649,7 @@ static bool handle_tcp(struct s3_tcp *s, const uint8_t *frame, size_t len,
         c->peer_ip = peer_ip;
         c->peer_port = peer_port;
         c->rcv_nxt = seq + 1;
-        c->snd_una = conn_iss(s, peer_ip, peer_port, now_ms);
+        c->snd_una = conn_iss(s, peer_ip, peer_port);
         c->peer_win = window;
         c->mss = S3_TCP_MSS_DEFAULT;
 

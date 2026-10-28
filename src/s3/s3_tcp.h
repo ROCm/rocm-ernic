@@ -46,6 +46,14 @@ struct s3_tcp_cfg {
     uint16_t port; /* TCP port the S3 control plane listens on */
     uint8_t mac[6];
     unsigned max_conns; /* 0 selects S3_TCP_MAX_CONNS */
+    /*
+     * The clock initial sequence numbers are taken from, in microseconds:
+     * finer than the millisecond clock the entry points are given, so that
+     * a connection reopened within a millisecond doesn't start where the
+     * last one did.  NULL selects ernic_monotonic_us(); a test sets its own
+     * to know the numbers.
+     */
+    uint64_t (*now_us)(void);
 };
 
 struct s3_tcp_stats {
