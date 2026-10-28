@@ -14,7 +14,12 @@
 ernic_source_dir: ""
 
 ernic_source_repo_url: "https://github.com/ROCm/rocm-ernic.git"
-ernic_source_repo_version: "develop"
+# No default: a moving branch silently decouples the compiled sources from
+# the collection that told them how to build, so a consumer must name a
+# SHA or tag. The playbooks in this repo set it to the repo root via
+# ernic_source_dir and never reach this clone path; standalone consumers
+# must set it explicitly or the clone task will fail with a clear message.
+ernic_source_repo_version: ""
 ernic_source_clone_dir: "/var/tmp/rocm-ernic-src"
 
 # Re-clone even when the checkout already exists.

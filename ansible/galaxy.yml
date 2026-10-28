@@ -3,6 +3,16 @@
 # SPDX-License-Identifier: MIT
 
 ---
+# PUBLISHING STATUS: Only 0.1.0 has been published to Galaxy. That version
+# predates the ionic rewrite and does not work with any current server.
+# Versions 0.2.0 and 0.3.0 are carried here but have not been uploaded.
+# The supported install path is a pinned git SHA, not a Galaxy release;
+# see PLAYBOOKS.md for the correct ansible-galaxy command.
+#
+# NAMESPACE NOTE: The Galaxy namespace is sbates130272 (a personal account).
+# Changing it requires registering a new namespace on Galaxy. Until that
+# migration happens, the namespace stays here as-is rather than being
+# silently wrong in a published artifact.
 namespace: sbates130272
 name: rocm_ernic
 version: 0.3.0

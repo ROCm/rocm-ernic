@@ -22,14 +22,18 @@ apply it directly.
 ernic_source_dir: ""
 
 ernic_source_repo_url: "https://github.com/ROCm/rocm-ernic.git"
-ernic_source_repo_version: "develop"
+# No default. Must be set to a SHA or tag when ernic_source_dir is empty.
+# A moving branch (e.g. "develop") silently decouples the compiled sources
+# from the collection version. The role fails at playbook start if neither
+# ernic_source_dir nor ernic_source_repo_version is set.
+ernic_source_repo_version: ""
 ernic_source_clone_dir: "/var/tmp/rocm-ernic-src"
 ernic_source_force_clone: false
 ```
 
-Pin `ernic_source_repo_version` to a commit SHA for any run you intend to
-reproduce; `develop` moves. The only release tag on the repo today is
-`ansible-v0.1.0`, so a SHA is the pin — not a version tag.
+`ernic_source_repo_version` has **no default** and must be a SHA or tag that
+matches the collection you installed. The only release tag on the repo today
+is `ansible-v0.1.0`, so a SHA is the pin — not a version tag.
 
 Pinning the collection does not pin this. The driver sources, the patch
 series, `udev/99-rocm-ernic.rules` and the ionic kernel ref (`ernic_ionic_kernel_ref`
