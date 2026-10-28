@@ -452,6 +452,11 @@ static void test_load_whole_program_in_one_chunk(void)
  * A header section carrying standard_metadata, which v1model always emits
  * and without which a program cannot say where a packet goes.
  */
+/* What p4c emits for an egress control that does nothing. */
+#define P4_EMPTY_EGRESS                                  \
+    "{\"name\":\"egress\",\"id\":1,\"init_table\":null," \
+    "\"tables\":[],\"action_profiles\":[],\"conditionals\":[]}"
+
 #define P4_HDRS                                                \
     "{\"__meta__\":{\"version\":[2,24]},"                      \
     "\"header_types\":[{\"name\":\"eth_t\",\"id\":0,"          \
@@ -463,16 +468,19 @@ static void test_load_whole_program_in_one_chunk(void)
     "{\"name\":\"standard_metadata\",\"id\":1,"                \
     "\"header_type\":\"std_t\",\"metadata\":true}],"
 
-#define P4_PARSER                                                    \
-    P4_HDRS "\"parsers\":[{\"name\":\"p\",\"id\":0,"                 \
-            "\"init_state\":\"start\",\"parse_states\":["            \
-            "{\"name\":\"start\",\"id\":0,"                          \
-            "\"parser_ops\":[{\"op\":\"extract\","                   \
-            "\"parameters\":[{\"type\":\"regular\","                 \
-            "\"value\":\"eth\"}]}],"                                 \
-            "\"transition_key\":[],"                                 \
-            "\"transitions\":[{\"value\":\"default\",\"mask\":null," \
-            "\"next_state\":null}]}]}],"
+/* A parser extracting eth, for a document whose headers declare it. */
+#define P4_PARSE_ETH                                         \
+    "\"parsers\":[{\"name\":\"p\",\"id\":0,"                 \
+    "\"init_state\":\"start\",\"parse_states\":["            \
+    "{\"name\":\"start\",\"id\":0,"                          \
+    "\"parser_ops\":[{\"op\":\"extract\","                   \
+    "\"parameters\":[{\"type\":\"regular\","                 \
+    "\"value\":\"eth\"}]}],"                                 \
+    "\"transition_key\":[],"                                 \
+    "\"transitions\":[{\"value\":\"default\",\"mask\":null," \
+    "\"next_state\":null}]}]}],"
+
+#define P4_PARSER P4_HDRS P4_PARSE_ETH
 
 #define P4_FRONT                                         \
     P4_PARSER "\"deparsers\":[{\"name\":\"d\",\"id\":0," \
@@ -785,10 +793,13 @@ static void test_load_parses(void)
           "a name containing a newline is refused");
 
     /* Pipelines, tables and conditionals. */
-#define P4_PIPE(body)                                   \
+#define P4_PIPES(body)                                  \
     P4_FRONT "\"actions\":[{\"name\":\"a\",\"id\":0,"   \
              "\"runtime_data\":[],\"primitives\":[]}]," \
              "\"pipelines\":[" body "]}"
+
+    /* @body is ingress, and egress is empty. */
+#define P4_PIPE(body) P4_PIPES(body "," P4_EMPTY_EGRESS)
 
 #define P4_TBL(name, nextbody)                                  \
     "{\"name\":\"" name "\",\"id\":0,\"match_type\":\"exact\"," \
@@ -932,8 +943,8 @@ static void test_load_parses(void)
     "\"next_tables\":{\"a\":null}}"                              \
     "],\"action_profiles\":[],\"conditionals\":[]}"
 
-    static const char budget_doc[] =
-        P4_PIPE(P4_BUDGET_PIPE("ingress", "0", "t", "32768") "," P4_BUDGET_PIPE(
+    static const char budget_doc[] = P4_PIPES(
+        P4_BUDGET_PIPE("ingress", "0", "t", "32768") "," P4_BUDGET_PIPE(
             "egress", "1", "e", "32768"));
 #undef P4_BUDGET_PIPE
 
@@ -1287,26 +1298,27 @@ static void test_execute(void)
 }
 
 /* A program whose default action sends every frame to a chosen port. */
-#define P4_TO_PORT(port)                                              \
-    P4_PARSER "\"deparsers\":[{\"name\":\"d\",\"id\":0,"              \
-              "\"order\":[\"eth\"]}],"                                \
-              "\"actions\":[{\"name\":\"fwd\",\"id\":0,"              \
-              "\"runtime_data\":[],"                                  \
-              "\"primitives\":[{\"op\":\"assign\",\"parameters\":["   \
-              "{\"type\":\"field\",\"value\":[\"standard_metadata\"," \
-              "\"egress_spec\"]},"                                    \
-              "{\"type\":\"hexstr\",\"value\":\"" port "\"}]}]}],"    \
-              "\"pipelines\":[{\"name\":\"ingress\",\"id\":0,"        \
-              "\"init_table\":\"t\",\"tables\":["                     \
-              "{\"name\":\"t\",\"id\":0,\"match_type\":\"exact\","    \
-              "\"type\":\"simple\",\"max_size\":16,"                  \
-              "\"with_counters\":false,\"direct_meters\":null,"       \
-              "\"support_timeout\":false,\"key\":[],"                 \
-              "\"actions\":[\"fwd\"],"                                \
-              "\"next_tables\":{\"fwd\":null},"                       \
-              "\"default_entry\":{\"action_id\":0,"                   \
-              "\"action_data\":[]}}],"                                \
-              "\"action_profiles\":[],\"conditionals\":[]}]}"
+#define P4_TO_PORT(port)                                                     \
+    P4_PARSER "\"deparsers\":[{\"name\":\"d\",\"id\":0,"                     \
+              "\"order\":[\"eth\"]}],"                                       \
+              "\"actions\":[{\"name\":\"fwd\",\"id\":0,"                     \
+              "\"runtime_data\":[],"                                         \
+              "\"primitives\":[{\"op\":\"assign\",\"parameters\":["          \
+              "{\"type\":\"field\",\"value\":[\"standard_metadata\","        \
+              "\"egress_spec\"]},"                                           \
+              "{\"type\":\"hexstr\",\"value\":\"" port "\"}]}]}],"           \
+              "\"pipelines\":[{\"name\":\"ingress\",\"id\":0,"               \
+              "\"init_table\":\"t\",\"tables\":["                            \
+              "{\"name\":\"t\",\"id\":0,\"match_type\":\"exact\","           \
+              "\"type\":\"simple\",\"max_size\":16,"                         \
+              "\"with_counters\":false,\"direct_meters\":null,"              \
+              "\"support_timeout\":false,\"key\":[],"                        \
+              "\"actions\":[\"fwd\"],"                                       \
+              "\"next_tables\":{\"fwd\":null},"                              \
+              "\"default_entry\":{\"action_id\":0,"                          \
+              "\"action_data\":[]}}],"                                       \
+              "\"action_profiles\":[],\"conditionals\":[]}," P4_EMPTY_EGRESS \
+              "]}"
 
 /*
  * A program that runs without assigning egress_spec has not chosen a
@@ -1635,7 +1647,7 @@ static void test_table_entry_errors(void)
     "\"mask\":null}],"                                   \
     "\"actions\":[\"nope\"],"                            \
     "\"next_tables\":{\"nope\":null}}],"                 \
-    "\"action_profiles\":[],\"conditionals\":[]}]}"
+    "\"action_profiles\":[],\"conditionals\":[]}," P4_EMPTY_EGRESS "]}"
 
 static void test_rdma_metadata(void)
 {
@@ -1995,6 +2007,277 @@ static void test_extern_after_drop(void)
     p4_engine_destroy(eng);
 }
 
+/* ---- Ingress, then egress ----------------------------------------------- */
+
+/*
+ * A program with both pipelines, listed egress first, each one keyless
+ * table whose default action runs @ing or @eg, which are primitives.  It
+ * extracts eth from a frame, declares rdma_metadata for an operation and
+ * egress_port for egress, and has an Fp8 extern, so one program serves
+ * every case below.
+ */
+#define P4_PIPES_HDRS                                                    \
+    "{\"__meta__\":{\"version\":[2,24]},"                                \
+    "\"header_types\":[{\"name\":\"eth_t\",\"id\":0,"                    \
+    "\"fields\":[[\"dst\",48],[\"src\",48],[\"ty\",16]]},"               \
+    "{\"name\":\"std_t\",\"id\":1,"                                      \
+    "\"fields\":[[\"ingress_port\",9],[\"egress_spec\",9],"              \
+    "[\"egress_port\",9]]},"                                             \
+    "{\"name\":\"rdma_t\",\"id\":2,\"fields\":[[\"opcode\",8]]}],"       \
+    "\"headers\":[{\"name\":\"eth\",\"id\":0,"                           \
+    "\"header_type\":\"eth_t\",\"metadata\":false},"                     \
+    "{\"name\":\"standard_metadata\",\"id\":1,"                          \
+    "\"header_type\":\"std_t\",\"metadata\":true},"                      \
+    "{\"name\":\"rdma_metadata\",\"id\":2,"                              \
+    "\"header_type\":\"rdma_t\",\"metadata\":true}],"                    \
+    "\"extern_instances\":[{\"name\":\"fp8\",\"id\":0,\"type\":\"Fp8\"," \
+    "\"attribute_values\":[]}],"                                         \
+    "\"deparsers\":[{\"name\":\"d\",\"id\":0,\"order\":[\"eth\"]}],"
+
+/* The pipelines, egress first, each one keyless table running its action. */
+#define P4_PIPES_TAIL                                                    \
+    "\"pipelines\":["                                                    \
+    "{\"name\":\"egress\",\"id\":1,\"init_table\":\"t_eg\",\"tables\":[" \
+    "{\"name\":\"t_eg\",\"id\":0,\"match_type\":\"exact\","              \
+    "\"type\":\"simple\",\"max_size\":16,"                               \
+    "\"with_counters\":false,\"direct_meters\":null,"                    \
+    "\"support_timeout\":false,\"key\":[],"                              \
+    "\"actions\":[\"eg\"],\"next_tables\":{\"eg\":null},"                \
+    "\"default_entry\":{\"action_id\":1,\"action_data\":[]}}],"          \
+    "\"action_profiles\":[],\"conditionals\":[]},"                       \
+    "{\"name\":\"ingress\",\"id\":0,\"init_table\":\"t_ing\","           \
+    "\"tables\":["                                                       \
+    "{\"name\":\"t_ing\",\"id\":0,\"match_type\":\"exact\","             \
+    "\"type\":\"simple\",\"max_size\":16,"                               \
+    "\"with_counters\":false,\"direct_meters\":null,"                    \
+    "\"support_timeout\":false,\"key\":[],"                              \
+    "\"actions\":[\"ing\"],\"next_tables\":{\"ing\":null},"              \
+    "\"default_entry\":{\"action_id\":0,\"action_data\":[]}}],"          \
+    "\"action_profiles\":[],\"conditionals\":[]}]}"
+
+#define P4_TWO_PIPES(ing, eg)                                          \
+    P4_PIPES_HDRS P4_PARSE_ETH                                         \
+        "\"actions\":[{\"name\":\"ing\",\"id\":0,\"runtime_data\":[]," \
+        "\"primitives\":[" ing "]},"                                   \
+        "{\"name\":\"eg\",\"id\":1,\"runtime_data\":[],"               \
+        "\"primitives\":[" eg "]}]," P4_PIPES_TAIL
+
+#define P4_FIELD(h, f) "{\"type\":\"field\",\"value\":[\"" h "\",\"" f "\"]}"
+#define P4_HEX(v)      "{\"type\":\"hexstr\",\"value\":\"" v "\"}"
+#define P4_SPEC        P4_FIELD("standard_metadata", "egress_spec")
+#define P4_EPORT       P4_FIELD("standard_metadata", "egress_port")
+#define P4_ETY         P4_FIELD("eth", "ty")
+#define P4_ESRC        P4_FIELD("eth", "src")
+
+#define P4_ASSIGN(dst, src) \
+    "{\"op\":\"assign\",\"parameters\":[" dst "," src "]}"
+#define P4_MARK_DROP                             \
+    "{\"op\":\"mark_to_drop\",\"parameters\":[{" \
+    "\"type\":\"header\",\"value\":\"standard_metadata\"}]}"
+#define P4_MAP(arg)                                              \
+    "{\"op\":\"_Fp8_map\",\"parameters\":[{\"type\":\"extern\"," \
+    "\"value\":\"fp8\"}," arg "]}"
+
+/* Ingress sends the frame to the uplink and marks its type. */
+#define P4_ROUTE_UP \
+    P4_ASSIGN(P4_SPEC, P4_HEX("0x1")) "," P4_ASSIGN(P4_ETY, P4_HEX("0xaaaa"))
+
+/* Egress writes egress_port into the type and egress_spec into src. */
+#define P4_RECORD P4_ASSIGN(P4_ETY, P4_EPORT) "," P4_ASSIGN(P4_ESRC, P4_SPEC)
+
+/*
+ * Frames through both pipelines, as simple_switch runs them: ingress by
+ * name and then egress, whatever order the program lists them in; egress
+ * seeing the port ingress chose as egress_port, and egress_spec reset;
+ * and egress able to drop a frame but not to send it elsewhere.
+ */
+static void test_pipelines_frame(void)
+{
+    static const uint8_t zero[6] = {0};
+    struct p4_engine *eng = p4_engine_create();
+    uint8_t in[64], out[128];
+    struct p4_result res;
+
+    fill_frame(in, sizeof(in));
+
+    /*
+     * Ingress routes to the uplink, and egress writes what it sees into
+     * the frame.  Listed first, egress used to run first, before ingress
+     * had chosen a port, and ingress then wrote over what it had written.
+     */
+    checkf(load_text(eng, P4_TWO_PIPES(P4_ROUTE_UP, P4_RECORD)) == 0,
+           "a program listing egress first is refused: %s", load_why(eng));
+    check(p4_engine_process(eng, P4_PORT_HOST, in, sizeof(in), out, sizeof(out),
+                            &res) == 0,
+          "a frame did not run through both pipelines");
+    check(res.verdict == P4_VERDICT_FORWARD &&
+              res.egress_port == P4_PORT_UPLINK && res.len == sizeof(in),
+          "the frame did not go where ingress sent it");
+    check(out[12] == 0x00 && out[13] == 0x01,
+          "egress did not run after ingress, with the port it chose as "
+          "egress_port");
+    check(memcmp(out + 6, zero, sizeof(zero)) == 0,
+          "egress saw the egress_spec ingress left, not 0");
+    check(memcmp(out + 14, in + 14, sizeof(in) - 14) == 0,
+          "the payload changed");
+
+    /* Ingress chooses no port, so the frame goes to the other one, and
+     * that is the egress_port egress sees. */
+    checkf(load_text(eng, P4_TWO_PIPES(P4_ASSIGN(P4_ETY, P4_HEX("0xaaaa")),
+                                       P4_ASSIGN(P4_ETY, P4_EPORT))) == 0,
+           "a program whose ingress chooses no port is refused: %s",
+           load_why(eng));
+    check(p4_engine_process(eng, P4_PORT_HOST, in, sizeof(in), out, sizeof(out),
+                            &res) == 0 &&
+              res.verdict == P4_VERDICT_FORWARD &&
+              res.egress_port == P4_PORT_UPLINK,
+          "a host frame ingress didn't route was not sent to the uplink");
+    check(out[12] == 0x00 && out[13] == 0x01,
+          "egress did not see the uplink as egress_port");
+    check(p4_engine_process(eng, P4_PORT_UPLINK, in, sizeof(in), out,
+                            sizeof(out), &res) == 0 &&
+              res.verdict == P4_VERDICT_FORWARD &&
+              res.egress_port == P4_PORT_HOST,
+          "an uplink frame ingress didn't route was not sent to the host");
+    check(out[12] == 0x00 && out[13] == 0x00,
+          "egress did not see the host as egress_port");
+
+    /* Egress assigning a port does not move the frame... */
+    checkf(load_text(eng, P4_TWO_PIPES(P4_ASSIGN(P4_SPEC, P4_HEX("0x1")),
+                                       P4_ASSIGN(P4_SPEC, P4_HEX("0x0")))) == 0,
+           "a program whose egress assigns egress_spec is refused: %s",
+           load_why(eng));
+    check(p4_engine_process(eng, P4_PORT_HOST, in, sizeof(in), out, sizeof(out),
+                            &res) == 0 &&
+              res.verdict == P4_VERDICT_FORWARD &&
+              res.egress_port == P4_PORT_UPLINK,
+          "egress sent the frame somewhere other than ingress did");
+
+    /* ...unless it is the drop port, */
+    checkf(load_text(eng, P4_TWO_PIPES(P4_ASSIGN(P4_SPEC, P4_HEX("0x1")),
+                                       P4_ASSIGN(P4_SPEC, P4_HEX("0x1ff")))) ==
+               0,
+           "a program whose egress assigns the drop port is refused: %s",
+           load_why(eng));
+    check(p4_engine_process(eng, P4_PORT_HOST, in, sizeof(in), out, sizeof(out),
+                            &res) == 0 &&
+              res.verdict == P4_VERDICT_DROP,
+          "egress assigning the drop port did not drop the frame");
+
+    /* and mark_to_drop() drops it too. */
+    checkf(load_text(eng, P4_TWO_PIPES(P4_ASSIGN(P4_SPEC, P4_HEX("0x1")),
+                                       P4_MARK_DROP)) == 0,
+           "a program whose egress drops is refused: %s", load_why(eng));
+    check(p4_engine_process(eng, P4_PORT_HOST, in, sizeof(in), out, sizeof(out),
+                            &res) == 0 &&
+              res.verdict == P4_VERDICT_DROP,
+          "egress calling mark_to_drop() did not drop the frame");
+
+    p4_engine_destroy(eng);
+}
+
+/* Parse @json and give it an empty table store, for the executor itself. */
+static bool exec_setup(const char *json, struct p4_program **prog,
+                       struct p4_entries **ent)
+{
+    char err[160];
+
+    *prog = NULL;
+    *ent = NULL;
+    if (p4_json_parse(json, strlen(json), prog, err, sizeof(err)) != 0) {
+        checkf(false, "an executor test's program is refused: %s", err);
+        return false;
+    }
+    *ent = p4_entries_create(*prog);
+    if (!*ent) {
+        check(false, "p4_entries_create failed");
+        p4_json_free(*prog);
+        *prog = NULL;
+        return false;
+    }
+    return true;
+}
+
+/*
+ * A frame dropped in ingress never reaches egress, as in simple_switch.
+ * The engine drops these frames either way, and a dropped frame is never
+ * deparsed, so the executor is asked, and egress calls an extern: on the
+ * frame path that fails the frame, so an egress that ran shows as an
+ * error.
+ */
+static void test_pipelines_ingress_drop(void)
+{
+    struct p4_program *prog;
+    struct p4_entries *ent;
+    struct p4_exec_result er;
+    uint8_t in[64], out[128];
+
+    fill_frame(in, sizeof(in));
+
+    /* Ingress names the drop port. */
+    if (exec_setup(
+            P4_TWO_PIPES(P4_ASSIGN(P4_SPEC, P4_HEX("0x1ff")), P4_MAP(P4_EPORT)),
+            &prog, &ent)) {
+        check(p4_exec_run(prog, ent, P4_PORT_HOST, P4_PORT_UPLINK, in,
+                          sizeof(in), out, sizeof(out), &er) == 0,
+              "egress ran for a frame ingress sent to the drop port");
+        check(er.dropped, "ingress assigning the drop port did not drop");
+        p4_entries_destroy(ent);
+        p4_json_free(prog);
+    }
+
+    /* Ingress calls mark_to_drop(). */
+    if (exec_setup(P4_TWO_PIPES(P4_MARK_DROP, P4_MAP(P4_EPORT)), &prog, &ent)) {
+        check(p4_exec_run(prog, ent, P4_PORT_HOST, P4_PORT_UPLINK, in,
+                          sizeof(in), out, sizeof(out), &er) == 0,
+              "egress ran for a frame ingress dropped");
+        check(er.dropped, "ingress's drop was lost");
+        p4_entries_destroy(ent);
+        p4_json_free(prog);
+    }
+}
+
+/*
+ * The same for an RDMA operation: ingress first, egress seeing what
+ * ingress assigned to egress_spec as egress_port, and egress, with the
+ * externs it calls, not run for an operation ingress dropped.
+ */
+static void test_pipelines_rdma(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    struct extern_log log;
+    struct p4_extern_ops ops;
+    struct p4_rdma_meta meta;
+    bool suppress = false;
+
+    memset(&log, 0, sizeof(log));
+    ops.call = extern_record;
+    ops.ctx = &log;
+    memset(&meta, 0, sizeof(meta));
+    meta.opcode = 4;
+
+    checkf(load_text(eng, P4_TWO_PIPES(P4_ASSIGN(P4_SPEC, P4_HEX("0x5")),
+                                       P4_MAP(P4_EPORT))) == 0,
+           "an RDMA program listing egress first is refused: %s",
+           load_why(eng));
+    check(p4_engine_process_rdma(eng, &ops, &meta, &suppress) == 0,
+          "an operation did not run through both pipelines");
+    check(log.calls == 1 && log.op == 5,
+          "egress did not run after ingress, with ingress's egress_spec as "
+          "egress_port");
+    check(!suppress, "an operation nothing dropped was suppressed");
+
+    log.calls = 0;
+    checkf(load_text(eng, P4_TWO_PIPES(P4_MARK_DROP, P4_MAP(P4_EPORT))) == 0,
+           "an RDMA program whose ingress drops is refused: %s", load_why(eng));
+    check(p4_engine_process_rdma(eng, &ops, &meta, &suppress) == 0,
+          "an operation ingress dropped did not run");
+    check(log.calls == 0, "egress called an extern for a dropped operation");
+    check(suppress, "ingress's drop was lost");
+
+    p4_engine_destroy(eng);
+}
+
 /* ---- The reject corpus -------------------------------------------------- */
 
 /*
@@ -2176,7 +2459,7 @@ static void test_reject_corpus(void)
             "\"deparsers\":[{\"name\":\"d\",\"id\":0,\"order\":[]}],"       \
             "\"actions\":[],\"pipelines\":[{\"name\":\"ingress\",\"id\":0," \
             "\"init_table\":null,\"tables\":[],\"action_profiles\":[],"     \
-            "\"conditionals\":[]}]}"
+            "\"conditionals\":[]}," P4_EMPTY_EGRESS "]}"
 
 static void test_parser_loop(void)
 {
@@ -2222,7 +2505,7 @@ static void test_parser_loop(void)
             "\"deparsers\":[{\"name\":\"d\",\"id\":0,\"order\":[\"eth\"]}]," \
             "\"actions\":[],\"pipelines\":[{\"name\":\"ingress\",\"id\":0,"  \
             "\"init_table\":null,\"tables\":[],\"action_profiles\":[],"      \
-            "\"conditionals\":[]}]}"
+            "\"conditionals\":[]}," P4_EMPTY_EGRESS "]}"
 
 static void test_parser_extract_twice(void)
 {
@@ -2279,11 +2562,12 @@ static void test_duplicate_keys(void)
  * not have.  Bytes the output buffer cannot hold are refused, whether it
  * is a header or the payload after one that does not fit.
  */
-#define P4_DEPARSE(order)                                                 \
-    P4_PARSER "\"deparsers\":[{\"name\":\"d\",\"id\":0,\"order\":[" order \
-              "]}],\"actions\":[],\"pipelines\":[{\"name\":\"ingress\","  \
-              "\"id\":0,\"init_table\":null,\"tables\":[],"               \
-              "\"action_profiles\":[],\"conditionals\":[]}]}"
+#define P4_DEPARSE(order)                                                    \
+    P4_PARSER "\"deparsers\":[{\"name\":\"d\",\"id\":0,\"order\":[" order    \
+              "]}],\"actions\":[],\"pipelines\":[{\"name\":\"ingress\","     \
+              "\"id\":0,\"init_table\":null,\"tables\":[],"                  \
+              "\"action_profiles\":[],\"conditionals\":[]}," P4_EMPTY_EGRESS \
+              "]}"
 
 static void test_deparse_overflow(void)
 {
@@ -2454,8 +2738,8 @@ static void test_phv_backstop(void)
     prog->phv_bytes = P4_PHV_BYTES + 1;
     fill_frame(buf, sizeof(buf));
     memset(&meta, 0, sizeof(meta));
-    check(p4_exec_run(prog, ent, P4_PORT_HOST, buf, sizeof(buf), buf,
-                      sizeof(buf), &er) == -ENOSPC,
+    check(p4_exec_run(prog, ent, P4_PORT_HOST, P4_PORT_UPLINK, buf, sizeof(buf),
+                      buf, sizeof(buf), &er) == -ENOSPC,
           "a frame ran under a program too big for the PHV");
     check(p4_exec_run_meta(prog, ent, NULL, &meta, &er) == -ENOSPC,
           "an operation ran under a program too big for the PHV");
@@ -2923,25 +3207,26 @@ static void test_entries_packed(void)
  * An LPM table whose LPM key is not its first, the usual {vrf: exact;
  * dst: lpm} shape: here the EtherType stands in for the VRF.
  */
-#define P4_VRF_PROG                                                     \
-    P4_FRONT "\"actions\":[{\"name\":\"fwd\",\"id\":0,"                 \
-             "\"runtime_data\":[{\"name\":\"port\",\"bitwidth\":9}],"   \
-             "\"primitives\":[{\"op\":\"assign\",\"parameters\":["      \
-             "{\"type\":\"field\",\"value\":[\"standard_metadata\","    \
-             "\"egress_spec\"]},"                                       \
-             "{\"type\":\"runtime_data\",\"value\":0}]}]}],"            \
-             "\"pipelines\":[{\"name\":\"ingress\",\"id\":0,"           \
-             "\"init_table\":\"vrf_route\",\"tables\":["                \
-             "{\"name\":\"vrf_route\",\"id\":0,\"match_type\":\"lpm\"," \
-             "\"type\":\"simple\",\"max_size\":16,"                     \
-             "\"with_counters\":false,\"direct_meters\":null,"          \
-             "\"support_timeout\":false,"                               \
-             "\"key\":[{\"match_type\":\"exact\","                      \
-             "\"target\":[\"eth\",\"ty\"],\"mask\":null},"              \
-             "{\"match_type\":\"lpm\","                                 \
-             "\"target\":[\"eth\",\"dst\"],\"mask\":null}],"            \
-             "\"actions\":[\"fwd\"],\"next_tables\":{\"fwd\":null}}],"  \
-             "\"action_profiles\":[],\"conditionals\":[]}]}"
+#define P4_VRF_PROG                                                         \
+    P4_FRONT "\"actions\":[{\"name\":\"fwd\",\"id\":0,"                     \
+             "\"runtime_data\":[{\"name\":\"port\",\"bitwidth\":9}],"       \
+             "\"primitives\":[{\"op\":\"assign\",\"parameters\":["          \
+             "{\"type\":\"field\",\"value\":[\"standard_metadata\","        \
+             "\"egress_spec\"]},"                                           \
+             "{\"type\":\"runtime_data\",\"value\":0}]}]}],"                \
+             "\"pipelines\":[{\"name\":\"ingress\",\"id\":0,"               \
+             "\"init_table\":\"vrf_route\",\"tables\":["                    \
+             "{\"name\":\"vrf_route\",\"id\":0,\"match_type\":\"lpm\","     \
+             "\"type\":\"simple\",\"max_size\":16,"                         \
+             "\"with_counters\":false,\"direct_meters\":null,"              \
+             "\"support_timeout\":false,"                                   \
+             "\"key\":[{\"match_type\":\"exact\","                          \
+             "\"target\":[\"eth\",\"ty\"],\"mask\":null},"                  \
+             "{\"match_type\":\"lpm\","                                     \
+             "\"target\":[\"eth\",\"dst\"],\"mask\":null}],"                \
+             "\"actions\":[\"fwd\"],\"next_tables\":{\"fwd\":null}}],"      \
+             "\"action_profiles\":[],\"conditionals\":[]}," P4_EMPTY_EGRESS \
+             "]}"
 
 /* An entry in P4_VRF_PROG's table: EtherType @ty, @dst/@plen, to @port. */
 static void vrf_entry(struct p4_update *up, uint8_t type, uint16_t ty,
@@ -3321,9 +3606,9 @@ static void test_entries_api(void)
 
     memset(buf, 0, sizeof(buf));
     memset(&meta, 0, sizeof(meta));
-    check(p4_exec_run(NULL, ent, 0, buf, sizeof(buf), buf, sizeof(buf), &er) ==
-                  -EINVAL &&
-              p4_exec_run(prog, ent, 0, buf, 0, buf, sizeof(buf), &er) ==
+    check(p4_exec_run(NULL, ent, 0, 1, buf, sizeof(buf), buf, sizeof(buf),
+                      &er) == -EINVAL &&
+              p4_exec_run(prog, ent, 0, 1, buf, 0, buf, sizeof(buf), &er) ==
                   -EINVAL,
           "the executor ran with nothing to run");
     check(p4_exec_run_meta(NULL, ent, NULL, &meta, &er) == -EINVAL &&
@@ -3393,6 +3678,9 @@ int main(void)
     test_rdma_few_fields();
     test_extern_call();
     test_extern_after_drop();
+    test_pipelines_frame();
+    test_pipelines_ingress_drop();
+    test_pipelines_rdma();
     test_reject_corpus();
     test_parser_loop();
     test_parser_extract_twice();

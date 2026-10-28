@@ -308,8 +308,9 @@ int p4_engine_process(struct p4_engine *eng, uint32_t in_port,
 
     if (eng->prog) {
         struct p4_exec_result er;
-        int rc = p4_exec_run(eng->prog, eng->entries, in_port, frame, len, out,
-                             out_cap, &er);
+        int rc =
+            p4_exec_run(eng->prog, eng->entries, in_port, p4_peer_port(in_port),
+                        frame, len, out, out_cap, &er);
 
         if (rc != 0) {
             /* A frame the program could not be run over is dropped rather

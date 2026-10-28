@@ -226,6 +226,15 @@ struct p4_action {
     struct p4_primitive primitives[P4_MAX_PRIMITIVES];
 };
 
+/*
+ * v1model's two pipelines, which bmv2's simple_switch finds by name: the
+ * loader puts each in its slot whatever order the document lists them in,
+ * and refuses any other name.  Both are required, so npipelines is always
+ * P4_MAX_PIPELINES.
+ */
+#define P4_PIPE_INGRESS 0u
+#define P4_PIPE_EGRESS  1u
+
 #define P4_MAX_PIPELINES     2
 #define P4_MAX_TABLES        32 /* per pipeline */
 #define P4_MAX_CONDITIONALS  32 /* per pipeline */
@@ -372,10 +381,12 @@ struct p4_program {
      * The program addresses them like any other field, so they are
      * resolved once at load rather than searched for per packet.
      * egress_spec is how a program says where a packet goes, so a program
-     * without it cannot forward and is refused.
+     * without it cannot forward and is refused.  egress_port is the port
+     * ingress chose, which egress reads; like ingress_port it is optional.
      */
     struct p4_field_ref egress_spec;
     struct p4_field_ref ingress_port;
+    struct p4_field_ref egress_port;
 
     /*
      * The RDMA operation a program may match on, when it declares a

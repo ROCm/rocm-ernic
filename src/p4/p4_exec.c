@@ -28,7 +28,8 @@ struct p4_phv {
      * Whether anything the program ran assigned standard_metadata's
      * egress_spec.  A program that never does has expressed no opinion
      * about where the frame goes, which is not the same as asking for
-     * port 0 -- see p4_engine_process().
+     * port 0 -- see p4_engine_process().  Cleared as egress starts
+     * (enter_egress()), since only ingress chooses the port.
      */
     bool egress_assigned;
 };
@@ -548,6 +549,32 @@ static void meta_set(const struct p4_program *prog, struct p4_phv *phv,
     phv_set(prog, phv, ref, &val);
 }
 
+/* egress_spec, which every program declares; the loader refuses one that
+ * does not. */
+static uint32_t egress_spec_get(const struct p4_program *prog,
+                                const struct p4_phv *phv)
+{
+    struct p4_value v;
+
+    phv_get(prog, phv, prog->egress_spec, &v);
+    return value_u32(&v);
+}
+
+/*
+ * Hand a packet from ingress to egress, as simple_switch does: egress_port
+ * says where ingress sent it, @port, and egress_spec starts again at one
+ * past P4_DROP_PORT -- 512, which v1model's nine bits hold as 0 -- so that
+ * egress drops it only by assigning the drop port itself.  From here on
+ * @phv->egress_assigned is about egress's assignments, not ingress's.
+ */
+static void enter_egress(const struct p4_program *prog, struct p4_phv *phv,
+                         uint32_t port)
+{
+    meta_set(prog, phv, prog->egress_port, port);
+    meta_set(prog, phv, prog->egress_spec, P4_DROP_PORT + 1u);
+    phv->egress_assigned = false;
+}
+
 int p4_exec_run_meta(const struct p4_program *prog,
                      const struct p4_entries *ent,
                      const struct p4_extern_ops *ops,
@@ -583,29 +610,40 @@ int p4_exec_run_meta(const struct p4_program *prog,
     meta_set(prog, &phv, prog->rdma_imm_data, meta->imm_data);
     meta_set(prog, &phv, prog->rdma_rkey, meta->rkey);
 
-    for (uint16_t p = 0; p < prog->npipelines; p++) {
-        rc = run_pipeline(prog, &phv, ent, ops, (p4_idx_t)p,
-                          &prog->pipelines[p], &dropped);
-        if (rc) {
-            /* A drop marked before the pipeline stopped still stands;
-             * see the header. */
-            res->dropped = dropped;
-            return rc;
-        }
+    rc = run_pipeline(prog, &phv, ent, ops, P4_PIPE_INGRESS,
+                      &prog->pipelines[P4_PIPE_INGRESS], &dropped);
+    /* An operation dropped in ingress never reaches egress, as in
+     * simple_switch, so egress's externs are not called for it. */
+    if (rc == 0 && !dropped) {
+        /* egress_spec decides nothing here (see the header), but egress
+         * still sees it as egress_port, as simple_switch would show it. */
+        enter_egress(prog, &phv, egress_spec_get(prog, &phv));
+        rc = run_pipeline(prog, &phv, ent, ops, P4_PIPE_EGRESS,
+                          &prog->pipelines[P4_PIPE_EGRESS], &dropped);
+    }
+    if (rc) {
+        /* A drop marked before the pipeline stopped still stands; see the
+         * header. */
+        res->dropped = dropped;
+        return rc;
     }
 
-    /* egress_spec is deliberately not read; see the header. */
+    /* egress_spec is deliberately not read for the verdict; see the
+     * header. */
     res->dropped = dropped;
     res->len = 0;
     return 0;
 }
 
 int p4_exec_run(const struct p4_program *prog, const struct p4_entries *ent,
-                uint32_t ingress_port, const void *frame, size_t len, void *out,
-                size_t out_cap, struct p4_exec_result *res)
+                uint32_t ingress_port, uint32_t default_port, const void *frame,
+                size_t len, void *out, size_t out_cap,
+                struct p4_exec_result *res)
 {
     struct p4_phv phv;
     bool dropped = false;
+    bool assigned;
+    uint32_t port;
     size_t consumed = 0;
     int rc;
 
@@ -634,23 +672,34 @@ int p4_exec_run(const struct p4_program *prog, const struct p4_entries *ent,
     if (rc)
         return rc;
 
-    for (uint16_t p = 0; p < prog->npipelines; p++) {
-        /* No ops on this path: an extern's operands come from a work
-         * request, and a frame has none.  See run_action(). */
-        rc = run_pipeline(prog, &phv, ent, NULL, (p4_idx_t)p,
-                          &prog->pipelines[p], &dropped);
+    /* No ops on this path: an extern's operands come from a work request,
+     * and a frame has none.  See run_action(). */
+    rc = run_pipeline(prog, &phv, ent, NULL, P4_PIPE_INGRESS,
+                      &prog->pipelines[P4_PIPE_INGRESS], &dropped);
+    if (rc)
+        return rc;
+
+    /* Ingress decides where the frame goes; egress may drop it but not
+     * send it elsewhere, as in simple_switch. */
+    assigned = phv.egress_assigned;
+    port = egress_spec_get(prog, &phv);
+    if (port == P4_DROP_PORT)
+        dropped = true;
+
+    /* A frame dropped in ingress never reaches egress. */
+    if (!dropped) {
+        enter_egress(prog, &phv, assigned ? port : default_port);
+        rc = run_pipeline(prog, &phv, ent, NULL, P4_PIPE_EGRESS,
+                          &prog->pipelines[P4_PIPE_EGRESS], &dropped);
         if (rc)
             return rc;
+        if (egress_spec_get(prog, &phv) == P4_DROP_PORT)
+            dropped = true;
     }
 
     res->dropped = dropped;
-    res->egress_assigned = phv.egress_assigned;
-    {
-        struct p4_value v;
-
-        phv_get(prog, &phv, prog->egress_spec, &v);
-        res->egress_spec = value_u32(&v);
-    }
+    res->egress_assigned = assigned;
+    res->egress_spec = port;
     if (dropped)
         return 0;
 
