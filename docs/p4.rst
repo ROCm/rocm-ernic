@@ -797,34 +797,62 @@ module does not fail.
 
 The ionic modules running in the guest must carry the P4 patch series
 (``ansible/files/patches/p4/``), which registers the auxiliary device
-that ``ernic_p4.ko`` binds to. The patch directory layout is:
+that ``ernic_p4.ko`` binds to. ``fetch-ionic-sources.sh`` applies the
+``*.patch`` files of each ``--patches-dir`` it is given, in order, and
+not those of a directory's subdirectories. There are three series:
 
-- ``ansible/files/patches/`` — the base series (UC address-handle fix only).
-- ``ansible/files/patches/srq/`` — the SRQ series; apply on top of the base
-  to enable SRQ (``max_srq > 0``).
-- ``ansible/files/patches/p4/`` — the P4 series; apply on top of the base
-  to create the auxiliary device ``ernic_p4.ko`` binds to.
+- ``ansible/files/patches/`` — the base series: the UC address-handle
+  fix only. ``ernic_guest_setup`` always applies it.
+- ``ansible/files/patches/srq/`` — the SRQ series, which enables SRQ
+  (``max_srq > 0``). It **replaces** the base series rather than adding
+  to it: it carries its own copy of the UC address-handle fix as
+  ``0009``, so applied after the base series, ``git am`` fails on that
+  copy. ``ernic_srq_dkms`` builds ionic with the SRQ series alone.
+- ``ansible/files/patches/p4/`` — the P4 series, which creates the
+  auxiliary device ``ernic_p4.ko`` binds to. It applies after either the
+  base series or the SRQ series.
 
-The P4 and SRQ series are independent of each other and can be applied
-together or separately, both on top of the base series.
+Because ``ernic_guest_setup`` applies the base series first, listing
+``patches/srq`` in its ``ernic_guest_ionic_extra_patches`` fails. No role
+builds the SRQ and P4 series together.
 
-The correct way to build P4-capable ionic modules is through
-``ernic_guest_setup`` with the P4 series listed in
-``ernic_guest_ionic_extra_patches``:
+To give a guest P4 (``.github/workflows/p4-lane.yml`` does each step):
 
-.. code-block:: yaml
+#. Build and load P4-capable ionic modules: run ``ernic_guest_setup``
+   with the P4 series listed in ``ernic_guest_ionic_extra_patches``,
 
-   ernic_guest_ionic_extra_patches:
-     - patches/p4
+   .. code-block:: yaml
 
-That variable causes ``ernic_guest_setup`` to apply the P4 patch series on
-top of the base series when building ionic, which creates the auxiliary
-device. Once the P4-patched ionic modules are installed and loaded, run
-``ernic_p4_dkms`` to build and load ``ernic_p4.ko``. The module locates
-the correct ``Module.symvers`` by searching for the export of
-``ionic_adminq_post_wait``, whose CRC changes when ``struct ionic_lif`` is
-patched; building against the wrong symvers causes ``modprobe`` to refuse
-the module.
+      ernic_guest_ionic_extra_patches:
+        - patches/p4
+
+   and it applies the P4 series after the base series when it builds
+   ionic. ``ernic_p4_dkms`` doesn't do this step: it patches a copy of
+   the ionic sources only to build ``ernic_p4.ko`` against, and neither
+   builds nor loads ionic.
+
+#. Install the build prerequisites on the guest: ``dkms``, ``git``,
+   ``make``, and headers for the running kernel. ``ernic_p4_dkms``
+   checks for the first three and installs none of them.
+
+#. Put the files ``ernic_p4_dkms`` reads on the guest, under
+   ``ernic_p4_dkms_repo_dir`` (default ``/opt/rocm-ernic``):
+   ``drivers/ernic_p4/``, ``ansible/files/scripts/fetch-ionic-sources.sh``,
+   the base and P4 series in ``ansible/files/patches/``, and
+   ``cmake/ErnicKernelModule.cmake``, which pins the kernel ref. This is
+   a path on the guest, where the role runs; ``ernic_guest_setup`` stages
+   only the patches and the ionic helper scripts, and its
+   ``ernic_source_dir`` names a checkout on the controller.
+   ``ansible/playbooks/p4-tests.yml`` stages them from the controller.
+   Take them from the same revision ``ernic_guest_setup`` patched ionic
+   from, so that the P4 series ``ernic_p4.ko`` is built against is the
+   one the running ionic carries.
+
+#. Run ``ernic_p4_dkms`` to build and load ``ernic_p4.ko``. The module
+   locates the correct ``Module.symvers`` by searching for the export of
+   ``ionic_adminq_post_wait``, whose CRC changes when ``struct
+   ionic_lif`` is patched; building against the wrong symvers causes
+   ``modprobe`` to refuse the module.
 
 Activating P4 from the guest
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
