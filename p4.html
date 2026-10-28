@@ -603,24 +603,15 @@ already produces for an ordinary one-buffer write.</p>
 <p>This is the only operation whose destination is not the same
 length as its source. Each region is checked against its own
 length, and nothing beyond the result is written.</p>
-<p><strong>The destination may not overlap the source</strong>, and the
-device does not check that it does not. A conversion is
-streamed a chunk at a time – read, convert, write – so a
-destination overlapping the part of the source still to be
-read destroys it before it is used, and the operation then
-completes successfully with wrong results from that point
-on. Widening reaches it easily: fp16 to fp32 into the same
-address writes two bytes for every one it has read, so the
-second chunk’s input is gone before the first is finished.</p>
-<p>It is unchecked because checking it is not a range
-comparison. Two keys may be registered over the same guest
-pages, so overlap has to be decided on what the keys resolve
-to rather than on the keys themselves, and the answer that
-also covers that case is to stage the whole source before
-writing any of it. Until then a guest that overlaps the two
-regions corrupts its own memory with its own keys: it
-reaches nothing it has not registered, and every region is
-still checked for that.</p>
+<p><strong>The destination may overlap the source.</strong> The device reads
+the whole source before it writes any of the result, so
+converting in place – fp16 to fp32 at the same address, say
+– gives the same result as converting into a separate
+buffer. The same holds for <code class="docutils literal notranslate"><span class="pre">map()</span></code>, whose destination may
+overlap either operand. The device doesn’t try to detect
+overlap instead: two keys may be registered over the same
+guest pages, so whether two regions overlap can’t be decided
+from the keys and addresses in the request.</p>
 <p>Two conventions, and both follow from what a format can
 represent rather than from taste. A magnitude too large for
 the destination becomes an infinity if the format has one and
