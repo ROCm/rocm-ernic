@@ -24,6 +24,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/uio.h>
+#include <sys/un.h>
 #include <syslog.h>
 #include <getopt.h>
 #include <inttypes.h>
@@ -71,8 +72,9 @@
 /* PCI Class Codes (from linux/pci_ids.h) */
 #define PCI_BASE_CLASS_NETWORK 0x02
 
-/* Socket path for vfio-user communication */
-#define DEFAULT_SOCKET_PATH "/tmp/vfio-user-rocm-ernic.sock"
+/* The vfio-user socket's name without --socket, in the directory
+ * default_socket_path() picks */
+#define DEFAULT_SOCKET_NAME "vfio-user-rocm-ernic.sock"
 
 /* Flags shared with signal_handler() */
 static volatile sig_atomic_t g_shutdown_requested = 0;
@@ -694,8 +696,13 @@ static void usage(const char *progname)
 
     /* Options that apply whatever the backend. */
     fprintf(stderr, "Options:\n");
-    fprintf(stderr, "  -s, --socket PATH    Socket path (default: %s)\n",
-            DEFAULT_SOCKET_PATH);
+    fprintf(stderr, "  -s, --socket PATH    Socket path (default: /run/%s\n",
+            DEFAULT_SOCKET_NAME);
+    fprintf(stderr, "                       as root, otherwise\n");
+    fprintf(stderr, "                       $XDG_RUNTIME_DIR/%s,\n",
+            DEFAULT_SOCKET_NAME);
+    fprintf(stderr, "                       or /tmp/%s without it)\n",
+            DEFAULT_SOCKET_NAME);
     fprintf(stderr, "  -G, --socket-group GROUP Let this group, a name or a "
                     "gid, connect to the\n");
     fprintf(stderr, "                       socket (mode 0660); without it, "
@@ -1327,6 +1334,51 @@ static int load_p4_engine(rocm_ernic_dev_t *dev, const char *program)
 #endif
 
 /**
+ * Write the socket path to use without --socket into @p buf, of @p len bytes.
+ * Returns false after saying why if it doesn't fit.
+ *
+ * Where it can, it's in a directory only the server's user can write to, so
+ * no one else can take the name before the server binds it (see
+ * create_socket()): /run as root, and otherwise $XDG_RUNTIME_DIR, which the
+ * XDG Base Directory spec has owned by the user and mode 0700.  The spec says
+ * to ignore a relative $XDG_RUNTIME_DIR.  Without a usable one, as in many
+ * containers, it's /tmp, with a warning: anyone can write there, but this is
+ * a development tool that people run by hand, and refusing to start there
+ * was judged worse.
+ *
+ * Root doesn't use $XDG_RUNTIME_DIR, which `sudo -E` could have kept from
+ * another user: the socket, mode 0600 and owned by root, would be in their
+ * directory but not open to their QEMU.
+ */
+static bool default_socket_path(char *buf, size_t len)
+{
+    const char *dir = "/run";
+    int n;
+
+    if (geteuid() != 0) {
+        dir = getenv("XDG_RUNTIME_DIR");
+        if (!dir || dir[0] != '/') {
+            dir = "/tmp";
+            fprintf(stderr,
+                    "Warning: no --socket, and XDG_RUNTIME_DIR isn't set to "
+                    "an absolute path, so the socket is %s/%s, where another "
+                    "user could create one first; name a socket in a "
+                    "directory only you can write to with --socket\n",
+                    dir, DEFAULT_SOCKET_NAME);
+        }
+    }
+    n = snprintf(buf, len, "%s/%s", dir, DEFAULT_SOCKET_NAME);
+    if (n < 0 || (size_t)n >= len) {
+        fprintf(stderr,
+                "Error: the default socket path, %s/%s, is too long "
+                "for a UNIX socket; name one with --socket\n",
+                dir, DEFAULT_SOCKET_NAME);
+        return false;
+    }
+    return true;
+}
+
+/**
  * Create the vfio-user context, with @p dev as its private data, and let only
  * whom the options name connect to its socket.  Returns NULL after saying
  * why.
@@ -1749,9 +1801,11 @@ int main(int argc, char *argv[])
 {
     struct server_opts opts;
     rocm_ernic_dev_t *dev;
+    /* The socket path without --socket; a longer one wouldn't fit in a
+     * UNIX socket's address */
+    char default_socket[sizeof(((struct sockaddr_un *)NULL)->sun_path)];
 
     memset(&opts, 0, sizeof(opts));
-    opts.socket_path = DEFAULT_SOCKET_PATH;
     opts.log_level = ERNIC_LOG_WARN;
 #ifdef ERNIC_HAVE_P4
     opts.p4_guest_scope = P4_SCOPE_NONE;
@@ -1786,6 +1840,15 @@ int main(int argc, char *argv[])
         (opts.log_file_path && redirect_output(opts.log_file_path) < 0)) {
         dev_free(dev);
         return EXIT_FAILURE;
+    }
+
+    /* After the log is open, so any warning or refusal is in it */
+    if (!opts.socket_path) {
+        if (!default_socket_path(default_socket, sizeof(default_socket))) {
+            dev_free(dev);
+            return EXIT_FAILURE;
+        }
+        opts.socket_path = default_socket;
     }
 
     /* Resolved before the socket exists, so a group that can't be resolved

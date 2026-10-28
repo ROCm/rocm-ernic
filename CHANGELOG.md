@@ -356,6 +356,16 @@
   `--socket-group`. The server refuses to start if the socket ends up with
   other permissions or an ACL (which a default ACL on its directory causes;
   remove it with `setfacl -k` or use another directory).
+* **Breaking:** **The default vfio-user socket is no longer in `/tmp`.**
+  Without `--socket`, it is `/run/vfio-user-rocm-ernic.sock` as root and
+  `$XDG_RUNTIME_DIR/vfio-user-rocm-ernic.sock` otherwise, rather than
+  `/tmp/vfio-user-rocm-ernic.sock`, a fixed name in a directory anyone can
+  write to, where another user could create a socket at the name first and
+  take the guest's memory from its QEMU. A server that isn't root and has no
+  absolute `XDG_RUNTIME_DIR` still uses `/tmp/vfio-user-rocm-ernic.sock`,
+  and warns. Point QEMU at the new path, or pass `--socket`; the service
+  and `ernicctl`, which always pass it, are unaffected. `test_pci_client`
+  defaults to the same path.
 * **The server checks its `--socket` path before using it.** It removes
   what is there only if it is a socket, acting relative to the directory so
   a path changed in between can't redirect it, and refuses to start, saying

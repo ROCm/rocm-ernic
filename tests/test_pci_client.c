@@ -17,6 +17,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -29,6 +30,9 @@
 #define PCI_VENDOR_ID_PENSANDO      0x1dd8u
 #define PCI_DEVICE_ID_ROCM_ERNIC    0x1002u
 #define PCI_SUBDEVICE_ID_ROCM_ERNIC 0x5400u
+
+/* The server's socket name without --socket (rocm_ernic_server.c) */
+#define DEFAULT_SOCKET_NAME "vfio-user-rocm-ernic.sock"
 
 /* Test results */
 typedef struct {
@@ -52,6 +56,13 @@ static int connect_to_server(const char *socket_path)
 {
     int fd;
     struct sockaddr_un addr;
+    size_t len = strlen(socket_path);
+
+    /* A path that does not fit sun_path cannot be connected to. */
+    if (len >= sizeof(addr.sun_path)) {
+        warnx("socket path too long: %s", socket_path);
+        return -1;
+    }
 
     fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) {
@@ -61,7 +72,7 @@ static int connect_to_server(const char *socket_path)
 
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, socket_path, sizeof(addr.sun_path) - 1);
+    memcpy(addr.sun_path, socket_path, len + 1);
 
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         warn("connect to %s", socket_path);
@@ -296,14 +307,43 @@ static void usage(const char *progname)
     printf("Test client for rocm-ernic vfio-user server\n");
     printf("\n");
     printf("Options:\n");
-    printf("  -s, --socket PATH   Socket path (default: "
-           "/tmp/vfio-user-rocm-ernic.sock)\n");
+    printf("  -s, --socket PATH   Socket path (default: the server's,\n");
+    printf("                      /run/%s as root,\n", DEFAULT_SOCKET_NAME);
+    printf("                      otherwise $XDG_RUNTIME_DIR/%s,\n",
+           DEFAULT_SOCKET_NAME);
+    printf("                      or /tmp/%s without it)\n",
+           DEFAULT_SOCKET_NAME);
     printf("  -h, --help          Show this help\n");
+}
+
+/*
+ * Write the server's socket path without --socket into @p buf, of @p len
+ * bytes, as default_socket_path() in rocm_ernic_server.c does.  Returns false
+ * after saying why if it doesn't fit.
+ */
+static bool default_socket_path(char *buf, size_t len)
+{
+    const char *dir = "/run";
+    int n;
+
+    if (geteuid() != 0) {
+        dir = getenv("XDG_RUNTIME_DIR");
+        if (!dir || dir[0] != '/')
+            dir = "/tmp";
+    }
+    n = snprintf(buf, len, "%s/%s", dir, DEFAULT_SOCKET_NAME);
+    if (n < 0 || (size_t)n >= len) {
+        fprintf(stderr, "Error: the default socket path, %s/%s, is too long\n",
+                dir, DEFAULT_SOCKET_NAME);
+        return false;
+    }
+    return true;
 }
 
 int main(int argc, char **argv)
 {
-    const char *socket_path = "/tmp/vfio-user-rocm-ernic.sock";
+    const char *socket_path = NULL;
+    char default_socket[sizeof(((struct sockaddr_un *)NULL)->sun_path)];
     int fd = -1;
     test_results_t results = {0};
     int ret = 1;
@@ -329,6 +369,12 @@ int main(int argc, char **argv)
             usage(argv[0]);
             return 1;
         }
+    }
+
+    if (!socket_path) {
+        if (!default_socket_path(default_socket, sizeof(default_socket)))
+            return 1;
+        socket_path = default_socket;
     }
 
     printf("=================================================\n");

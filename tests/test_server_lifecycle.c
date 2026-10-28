@@ -5,12 +5,14 @@
  * Each row starts the real server binary, mostly on the loopback backend,
  * does something to it (nothing, a client that hangs up, a client that sends
  * a bad header, a client that never speaks), signals it, and checks the exit
- * status and the log.  Seven things are pinned here:
+ * status and the log.  Eight things are pinned here:
  *
  *   - only the socket's owner, and the group --socket-group names, can
  *     connect to it, whatever the umask or a default ACL on its directory;
  *   - at startup, the server removes a stale socket at its path, and leaves
  *     anything else there alone and refuses to start;
+ *   - without --socket, it puts the socket in $XDG_RUNTIME_DIR, and without
+ *     a usable one in /tmp, with a warning;
  *   - a client that drops out during vfio-user negotiation no longer takes
  *     the server down: it logs the drop and waits for the next client;
  *   - a clean shutdown frees the ionic layer.  When the server itself is
@@ -72,6 +74,12 @@ extern char **environ;
 #define DROPPED_LINE  "client dropped during negotiation"
 #define SHUTDOWN_LINE "Shutdown complete"
 #define STALE_LINE    "Removed stale socket file"
+
+/* The server's socket name without --socket (rocm_ernic_server.c), and
+ * where it is without XDG_RUNTIME_DIR */
+#define DEFAULT_SOCKET_NAME "vfio-user-rocm-ernic.sock"
+#define TMP_DEFAULT_SOCKET  "/tmp/" DEFAULT_SOCKET_NAME
+#define TMP_WARNING_LINE    "XDG_RUNTIME_DIR isn't set to an absolute path"
 
 /* What a row leaves in a regular file at the socket's path. */
 #define KEEP_CONTENT "not a socket\n"
@@ -457,8 +465,12 @@ struct lifecycle_case {
     const char *expected;
     /* --backend value: @DIR@ is the scratch dir, @PORT@ a free TCP port */
     const char *backend;
-    const char *env_name; /* an environment variable for the server, or NULL */
-    const char *env_value;
+    const char *env_name;  /* an environment variable for the server, or NULL */
+    const char *env_value; /* its value, or NULL to remove it */
+    bool default_socket;   /* no --socket; without env_name, XDG_RUNTIME_DIR
+                              is a directory of the row's own, which the
+                              socket should appear in */
+    bool want_tmp;         /* the socket should be TMP_DEFAULT_SOCKET instead */
     bool fake_manager; /* hold @PORT@ open as a manager that never answers */
     bool set_umask;    /* run the server under umask, not the inherited one */
     mode_t umask;      /* the umask for set_umask */
@@ -1066,6 +1078,100 @@ static const struct lifecycle_case cases[] = {
      .want_dropped = 0,
      .want_shutdown = 0,
      .want_line = "has no file name"},
+    /* Without --socket, the socket goes in a directory only the server's
+     * user can write to if there is one, and otherwise in /tmp, with a
+     * warning.  Not applicable as root, whose default is in /run. */
+    {.category = "positive",
+     .description = "no --socket, and XDG_RUNTIME_DIR is a directory",
+     .expected = "the socket is " DEFAULT_SOCKET_NAME " in it, mode 0600, "
+                 "then a clean shutdown",
+     .backend = "loopback",
+     .default_socket = true,
+     .want_socket = true,
+     .settle = true,
+     .action = IDLE,
+     .clients = 0,
+     .sig = SIGTERM,
+     .sigs = 1,
+     .want_exit = 0,
+     .want_dropped = 0,
+     .want_shutdown = 1},
+    {.category = "negative",
+     .description = "no --socket, and no XDG_RUNTIME_DIR",
+     .expected = "the socket is " TMP_DEFAULT_SOCKET ", mode 0600, with a "
+                 "warning, then a clean shutdown",
+     .backend = "loopback",
+     .default_socket = true,
+     .env_name = "XDG_RUNTIME_DIR",
+     .env_value = NULL,
+     .want_tmp = true,
+     .want_socket = true,
+     .settle = true,
+     .action = IDLE,
+     .clients = 0,
+     .sig = SIGTERM,
+     .sigs = 1,
+     .want_exit = 0,
+     .want_dropped = 0,
+     .want_shutdown = 1,
+     .want_line = TMP_WARNING_LINE},
+    {.category = "negative",
+     .description = "no --socket, and XDG_RUNTIME_DIR is empty",
+     .expected = "the same as no XDG_RUNTIME_DIR",
+     .backend = "loopback",
+     .default_socket = true,
+     .env_name = "XDG_RUNTIME_DIR",
+     .env_value = "",
+     .want_tmp = true,
+     .want_socket = true,
+     .settle = true,
+     .action = IDLE,
+     .clients = 0,
+     .sig = SIGTERM,
+     .sigs = 1,
+     .want_exit = 0,
+     .want_dropped = 0,
+     .want_shutdown = 1,
+     .want_line = TMP_WARNING_LINE},
+    /* The XDG Base Directory spec says to ignore a relative path. */
+    {.category = "negative",
+     .description = "no --socket, and XDG_RUNTIME_DIR is a relative path",
+     .expected = "the same as no XDG_RUNTIME_DIR",
+     .backend = "loopback",
+     .default_socket = true,
+     .env_name = "XDG_RUNTIME_DIR",
+     .env_value = "run/user",
+     .want_tmp = true,
+     .want_socket = true,
+     .settle = true,
+     .action = IDLE,
+     .clients = 0,
+     .sig = SIGTERM,
+     .sigs = 1,
+     .want_exit = 0,
+     .want_dropped = 0,
+     .want_shutdown = 1,
+     .want_line = TMP_WARNING_LINE},
+    {.category = "boundary",
+     .description = "no --socket, and XDG_RUNTIME_DIR too long for the "
+                    "socket's path to fit sun_path",
+     .expected = "the server says so and exits non-zero",
+     .backend = "loopback",
+     .default_socket = true,
+     .env_name = "XDG_RUNTIME_DIR",
+     .env_value = "/tmp/ernic-lifecycle-a-runtime-directory-whose-name-"
+                  "leaves-no-room-for-the-socket-file",
+     .want_socket = false,
+     .want_gone = true,
+     .settle = false,
+     .action = IDLE,
+     .clients = 0,
+     .sig = 0,
+     .sigs = 0,
+     .want_exit = -1,
+     .want_dropped = 0,
+     .want_shutdown = 0,
+     .want_line = "is too long"},
     /* Every row that wants a socket checks that it's mode 0600, or 0660 and
      * the group asked for, as soon as it appears and again once the server
      * is up.  The server sets all of it before the socket can be served. */
@@ -1273,27 +1379,32 @@ static bool expand_backend(const char *src, uint16_t port, char *dst,
 
 /*
  * The environment for the server: this process's, with name=value in place
- * of any name= already in it.  Its strings are this process's, apart from
- * the last, name=value, which is stored in *entry.  The caller frees both
- * the array and *entry.  Returns NULL if there's no memory.
+ * of any name= already in it, or with none if @value is NULL.  Its strings
+ * are this process's, apart from the last, name=value, which is stored in
+ * *entry (NULL if @value is).  The caller frees both the array and *entry.
+ * Returns NULL if there's no memory.
  *
  * The new string is on the heap, not in a buffer of the caller's, so that
  * no stack address ends up in environ when the child installs the array.
  */
 static char **server_env(const char *name, const char *value, char **entry)
 {
-    size_t name_len = strlen(name), value_len = strlen(value), n = 0, out = 0;
+    size_t name_len = strlen(name), n = 0, out = 0;
     char **env;
 
     *entry = NULL;
-    if (name_len > SIZE_MAX - 2 - value_len) /* '=' and '\0' */
-        return NULL;
-    *entry = malloc(name_len + value_len + 2);
-    if (!*entry)
-        return NULL;
-    memcpy(*entry, name, name_len);
-    (*entry)[name_len] = '=';
-    memcpy(*entry + name_len + 1, value, value_len + 1);
+    if (value) {
+        size_t value_len = strlen(value);
+
+        if (name_len > SIZE_MAX - 2 - value_len) /* '=' and '\0' */
+            return NULL;
+        *entry = malloc(name_len + value_len + 2);
+        if (!*entry)
+            return NULL;
+        memcpy(*entry, name, name_len);
+        (*entry)[name_len] = '=';
+        memcpy(*entry + name_len + 1, value, value_len + 1);
+    }
     while (environ[n])
         n++;
     env = calloc(n + 2, sizeof(*env));
@@ -1311,9 +1422,14 @@ static char **server_env(const char *name, const char *value, char **entry)
     return env;
 }
 
-/* @group is the --socket-group to pass, or NULL for none. */
+/*
+ * @group is the --socket-group to pass, or NULL for none.  @dir is the
+ * socket's directory, which is XDG_RUNTIME_DIR for a default_socket row
+ * without env_name.
+ */
 static pid_t start_server(const struct lifecycle_case *c, const char *backend,
-                          const char *sock, const char *log, const char *group)
+                          const char *sock, const char *dir, const char *log,
+                          const char *group)
 {
     char *entry = NULL;
     char **env = NULL;
@@ -1321,8 +1437,9 @@ static pid_t start_server(const struct lifecycle_case *c, const char *backend,
 
     /* Built here, since the child may only call async-signal-safe functions
      * until it execs, and setenv() and malloc() aren't */
-    if (c->env_name) {
-        env = server_env(c->env_name, c->env_value, &entry);
+    if (c->env_name || c->default_socket) {
+        env = c->env_name ? server_env(c->env_name, c->env_value, &entry)
+                          : server_env("XDG_RUNTIME_DIR", dir, &entry);
         if (!env)
             return -1;
     }
@@ -1369,9 +1486,13 @@ static pid_t start_server(const struct lifecycle_case *c, const char *backend,
         }
         /* The options a row may add, packed to the front, since execl()
          * stops at the first NULL */
-        const char *opt[4] = {NULL, NULL, NULL, NULL};
+        const char *opt[6] = {NULL, NULL, NULL, NULL, NULL, NULL};
         size_t n = 0;
 
+        if (!c->default_socket) {
+            opt[n++] = "--socket";
+            opt[n++] = sock;
+        }
         if (group) {
             opt[n++] = "--socket-group";
             opt[n++] = group;
@@ -1381,8 +1502,8 @@ static pid_t start_server(const struct lifecycle_case *c, const char *backend,
             if (c->opt_arg)
                 opt[n++] = c->opt_arg;
         }
-        execl(g_server, g_server, "--socket", sock, "--backend", backend,
-              opt[0], opt[1], opt[2], opt[3], (char *)NULL);
+        execl(g_server, g_server, "--backend", backend, opt[0], opt[1], opt[2],
+              opt[3], opt[4], opt[5], (char *)NULL);
         _exit(127);
     }
     free(env);
@@ -1541,10 +1662,20 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
     bool ok = true, exited = false, own_dir = false;
     pid_t pid;
 
-    /* Root can search any directory, so there's nothing to refuse. */
-    if (c->pre == PRE_NO_SEARCH && geteuid() == 0) {
+    /* Root can search any directory, so there's nothing to refuse; and its
+     * default socket is in /run, whatever XDG_RUNTIME_DIR says. */
+    if ((c->pre == PRE_NO_SEARCH || c->default_socket) && geteuid() == 0) {
         printf("ok   %s: %s; not applicable as root\n", c->category,
                c->description);
+        return 0;
+    }
+    /* The server would remove a socket there, even a live server's.  This
+     * process starts no other server at that path, and other tests name
+     * theirs. */
+    if (c->want_tmp && access(TMP_DEFAULT_SOCKET, F_OK) == 0) {
+        printf("ok   %s: %s; not applicable: " TMP_DEFAULT_SOCKET
+               " is already there\n",
+               c->category, c->description);
         return 0;
     }
     if (c->fd_limit && !fd_limit_works()) {
@@ -1605,8 +1736,9 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
         break;
     }
 
-    /* A row with an ACL, or with a directory the server can't search or
-     * read, gets a directory of its own for the socket. */
+    /* A row with an ACL, with a directory the server can't search or read,
+     * or that relies on the default socket, gets a directory of its own for
+     * the socket. */
     if (c->acl != NO_ACL) {
         snprintf(dir, sizeof(dir), "%s/row%zu.d", g_dir, idx);
         if (!make_acl_dir(dir, c->acl)) {
@@ -1615,9 +1747,17 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
             return 1;
         }
         own_dir = true;
-    } else if (c->pre == PRE_NO_SEARCH || c->pre == PRE_NO_READ) {
+    } else if (c->pre == PRE_NO_SEARCH || c->pre == PRE_NO_READ ||
+               c->default_socket) {
+        /* A default_socket row's is mode 0700, as XDG_RUNTIME_DIR is. */
+        mode_t mode = 0700;
+
+        if (c->pre == PRE_NO_SEARCH)
+            mode = 0600;
+        else if (c->pre == PRE_NO_READ)
+            mode = 0300;
         snprintf(dir, sizeof(dir), "%s/row%zu.d", g_dir, idx);
-        if (mkdir(dir, c->pre == PRE_NO_SEARCH ? 0600 : 0300) < 0) {
+        if (mkdir(dir, mode) < 0) {
             printf("FAIL %s: %s; could not make %s: %s\n", c->category,
                    c->description, dir, strerror(errno));
             return 1;
@@ -1630,6 +1770,10 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
     }
     if (c->pre == PRE_DIR_SLASH)
         snprintf(sock, sizeof(sock), "%s/", dir);
+    else if (c->want_tmp)
+        snprintf(sock, sizeof(sock), "%s", TMP_DEFAULT_SOCKET);
+    else if (c->default_socket)
+        snprintf(sock, sizeof(sock), "%s/" DEFAULT_SOCKET_NAME, dir);
     else
         snprintf(sock, sizeof(sock), "%s/row%zu.sock", dir, idx);
     snprintf(target, sizeof(target), "%s/row%zu.target", g_dir, idx);
@@ -1660,8 +1804,8 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
             close(port_fd);
         return 1;
     }
-    pid =
-        start_server(c, backend, sock, log, c->group == SG_NONE ? NULL : group);
+    pid = start_server(c, backend, sock, dir, log,
+                       c->group == SG_NONE ? NULL : group);
     if (pid < 0) {
         printf("FAIL %s: %s; could not start the server\n", c->category,
                c->description);

@@ -55,11 +55,23 @@ entries. An entry naming another user would let that user
 connect without the mode showing it. Remove the default ACL
 (``setfacl -k DIR``), or put the socket in another directory.
 
-Put the socket in a directory that only the server's user and
-root can write to, such as ``/run/rocm-ernic``, which the
-service uses, or one of your own. Don't put it in a directory
-other users can write to, such as ``/tmp``, even though the
-server's default socket and the examples here are there. The
+Without ``--socket``, the socket is
+``/run/vfio-user-rocm-ernic.sock`` when the server runs as root,
+and otherwise ``vfio-user-rocm-ernic.sock`` in
+``$XDG_RUNTIME_DIR``, the directory that systemd-logind gives
+each logged-in user, which only that user can write to. If
+``$XDG_RUNTIME_DIR`` isn't set to an absolute path, as in many
+containers and sessions not started through systemd-logind, a
+server that isn't root falls back to
+``/tmp/vfio-user-rocm-ernic.sock`` and warns that it has. Name
+a socket with ``--socket`` there instead, for the reasons
+below.
+
+If you name the socket, put it in a directory that only the
+server's user and root can write to, such as
+``/run/rocm-ernic``, which the service uses, or one of your
+own. Don't put it in a directory other users can write to,
+such as ``/tmp``, even though the examples here are there. The
 sticky bit on ``/tmp`` stops other users removing or replacing
 the server's socket, but not creating their own at the same
 name first, while the server isn't running. A server that
