@@ -17,7 +17,6 @@
 #ifndef P4_TABLE_H
 #define P4_TABLE_H
 
-#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -80,15 +79,30 @@ struct p4_entries;
 struct p4_value;
 
 /*
+ * One key field of an installed entry, in the form the lookup reads: a
+ * packet's field, under the program's key mask, matches when (field & @mask)
+ * == @value.  Both are big-endian and right-aligned, the field's low
+ * P4_MATCH_BYTES, which hold all of it: the loader refuses a key field
+ * wider.  @mask is all ones for an exact field, the prefix for an LPM one,
+ * and the entry's own mask for a ternary one, and @value has no bit set
+ * outside it, so two entries with the same @value and @mask match the same
+ * packets.
+ */
+struct p4_entry_key {
+    uint8_t value[P4_MATCH_BYTES];
+    uint8_t mask[P4_MATCH_BYTES];
+};
+
+/*
  * An entry, once installed.  Returned by a lookup so the executor can run
  * its action; the caller must not keep it across an update.
  */
 struct p4_entry {
-    bool used;
     uint32_t priority;
+    uint32_t rank; /* larger wins: the LPM prefix length, or the priority */
     p4_idx_t action;
     uint16_t nparams;
-    struct p4_match_spec match[P4_MAX_TABLE_KEY];
+    struct p4_entry_key key[P4_MAX_TABLE_KEY];
     struct p4_param params[P4_MAX_RUNTIME_ARGS];
 };
 
@@ -111,7 +125,10 @@ int p4_entries_update(struct p4_entries *ent, const struct p4_program *prog,
 /*
  * Find the entry matching @keys, or NULL.  @keys holds one value per key
  * field of the table, in order.  Ties are broken as P4 requires: the
- * longest prefix for LPM, the highest priority for ternary.
+ * longest prefix for LPM, the highest priority for ternary.  Which of two
+ * matching ternary entries of the same priority wins is unspecified, and
+ * can change when another entry is deleted.  The cost is in proportion to
+ * the entries installed, not to the table's size.
  */
 const struct p4_entry *p4_entries_lookup(const struct p4_entries *ent,
                                          const struct p4_program *prog,

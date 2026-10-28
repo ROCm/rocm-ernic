@@ -472,10 +472,15 @@ holds anything but printable ASCII before the engine sees it.
 
 Exact, longest-prefix and ternary matching all work, and the
 ties are broken as P4 requires: the longest prefix wins for
-LPM, the highest priority for ternary. A table's memory is
-taken when its first entry arrives, not when the program
-loads, so a program declaring large tables and putting
-nothing in them costs nothing.
+LPM, the highest priority for ternary. Which of two
+overlapping ternary entries of the same priority wins is
+unspecified, and can change when another entry is deleted.
+A table's memory is taken when its first entry arrives, not
+when the program loads, so a program declaring large tables
+and putting nothing in them costs nothing. A lookup reads
+only the entries installed, not the whole table, but it reads
+each of them in turn, so a full table of 65536 entries costs
+every frame that consults it a scan of all of them.
 
 The lookup goes by the table's ``match_type``, so the loader
 checks it is the one the table's keys make it, as p4c

@@ -2825,6 +2825,100 @@ static void test_features_lpm(void)
     p4_engine_destroy(eng);
 }
 
+/* Does a frame to @dst, which the route table decides, leave by @port? */
+static bool routes_to(struct p4_engine *eng, uint32_t dst, uint32_t port)
+{
+    struct frame f;
+
+    ip_frame(&f, IP4(192, 0, 2, 1), dst, 64, PROTO_TCP);
+    return forwards_to(eng, &f, port);
+}
+
+/* Is a frame to @dst dropped, which is what a route table miss does? */
+static bool unrouted(struct p4_engine *eng, uint32_t dst)
+{
+    struct frame f;
+
+    ip_frame(&f, IP4(192, 0, 2, 1), dst, 64, PROTO_TCP);
+    return drops(eng, &f);
+}
+
+/*
+ * The store keeps its entries packed, so a delete moves the last one into
+ * the hole: every entry must still be found, matched, modified and
+ * deleted wherever it ends up, and a full table must take an entry again
+ * once one is deleted.  "route" holds 64.
+ */
+static void test_entries_packed(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    struct p4_update up;
+    bool all = true;
+
+    checkf(load_fixture(eng, "features.json") == 0,
+           "features.json is refused: %s", load_why(eng));
+
+    route_entry(&up, P4_UPDATE_INSERT, IP4(10, 0, 0, 0), 8, P4_PORT_HOST);
+    check(update(eng, &up) == 0, "10/8 is not installed");
+    route_entry(&up, P4_UPDATE_INSERT, IP4(172, 16, 0, 0), 12, P4_PORT_UPLINK);
+    check(update(eng, &up) == 0, "172.16/12 is not installed");
+    route_entry(&up, P4_UPDATE_INSERT, IP4(192, 168, 0, 0), 16, P4_PORT_UPLINK);
+    check(update(eng, &up) == 0, "192.168/16 is not installed");
+
+    /* The first goes, and the last moves into its place. */
+    route_entry(&up, P4_UPDATE_DELETE, IP4(10, 0, 0, 0), 8, 0);
+    check(update(eng, &up) == 0, "10/8 is not deleted");
+    check(unrouted(eng, IP4(10, 1, 2, 3)), "10/8 still routes once deleted");
+    check(routes_to(eng, IP4(192, 168, 1, 1), P4_PORT_UPLINK),
+          "192.168/16 was lost when 10/8 was deleted");
+    check(routes_to(eng, IP4(172, 16, 1, 1), P4_PORT_UPLINK),
+          "172.16/12 was lost when 10/8 was deleted");
+
+    /* The moved entry is the same row to a modify and a delete. */
+    route_entry(&up, P4_UPDATE_MODIFY, IP4(192, 168, 0, 0), 16, P4_PORT_HOST);
+    check(update(eng, &up) == 0, "the moved 192.168/16 is not modified");
+    check(routes_to(eng, IP4(192, 168, 1, 1), P4_PORT_HOST),
+          "the moved 192.168/16 did not take its modification");
+    route_entry(&up, P4_UPDATE_INSERT, IP4(192, 168, 0, 0), 16, P4_PORT_UPLINK);
+    check(update(eng, &up) == -EEXIST,
+          "the moved 192.168/16 was inserted a second time");
+    route_entry(&up, P4_UPDATE_DELETE, IP4(192, 168, 0, 0), 16, 0);
+    check(update(eng, &up) == 0, "the moved 192.168/16 is not deleted");
+    check(unrouted(eng, IP4(192, 168, 1, 1)),
+          "192.168/16 still routes once deleted");
+    check(routes_to(eng, IP4(172, 16, 1, 1), P4_PORT_UPLINK),
+          "172.16/12 was lost when 192.168/16 was deleted");
+
+    /* The only one, so the table is empty. */
+    route_entry(&up, P4_UPDATE_DELETE, IP4(172, 16, 0, 0), 12, 0);
+    check(update(eng, &up) == 0, "172.16/12 is not deleted");
+    check(unrouted(eng, IP4(172, 16, 1, 1)),
+          "172.16/12 still routes once deleted");
+    check(update(eng, &up) == -ENOENT, "an empty table deleted a row");
+
+    /* Full, then a hole in the middle, then full again. */
+    for (uint32_t i = 0; i < 64; i++) {
+        route_entry(&up, P4_UPDATE_INSERT, IP4(10, i, 0, 0), 16,
+                    P4_PORT_UPLINK);
+        if (update(eng, &up) != 0)
+            all = false;
+    }
+    check(all, "64 routes do not fit in a 64-row table");
+    route_entry(&up, P4_UPDATE_INSERT, IP4(11, 0, 0, 0), 16, P4_PORT_UPLINK);
+    check(update(eng, &up) == -ENOSPC, "a 65th row went into a 64-row table");
+    route_entry(&up, P4_UPDATE_DELETE, IP4(10, 5, 0, 0), 16, 0);
+    check(update(eng, &up) == 0, "10.5/16 is not deleted from a full table");
+    route_entry(&up, P4_UPDATE_INSERT, IP4(11, 0, 0, 0), 16, P4_PORT_UPLINK);
+    check(update(eng, &up) == 0, "a full table took nothing after a delete");
+    check(unrouted(eng, IP4(10, 5, 1, 1)), "10.5/16 still routes once deleted");
+    check(routes_to(eng, IP4(10, 63, 1, 1), P4_PORT_UPLINK),
+          "10.63/16 was lost when it moved into 10.5/16's place");
+    check(routes_to(eng, IP4(11, 0, 1, 1), P4_PORT_UPLINK),
+          "11/16 does not route in the table it filled");
+
+    p4_engine_destroy(eng);
+}
+
 /*
  * An LPM table whose LPM key is not its first, the usual {vrf: exact;
  * dst: lpm} shape: here the EtherType stands in for the VRF.
@@ -3309,6 +3403,7 @@ int main(void)
     test_features_parser();
     test_features_actions();
     test_features_lpm();
+    test_entries_packed();
     test_lpm_key_not_first();
     test_features_ternary();
     test_key_mask();
