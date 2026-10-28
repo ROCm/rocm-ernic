@@ -103,6 +103,7 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
         -Wswitch-enum
         -Wtrampolines
         -Wundef
+        -Wunknown-pragmas
         -Wunused-macros
         -Wvariadic-macros
         -Wvla
