@@ -827,9 +827,13 @@ To give a guest P4 (``.github/workflows/p4-lane.yml`` does each step):
         - patches/p4
 
    and it applies the P4 series after the base series when it builds
-   ionic. ``ernic_p4_dkms`` doesn't do this step: it patches a copy of
-   the ionic sources only to build ``ernic_p4.ko`` against, and neither
-   builds nor loads ionic.
+   ionic. ``ernic_p4_dkms`` doesn't do this step: it neither installs
+   nor loads ionic. It patches a copy of the ionic sources only to build
+   ``ernic_p4.ko`` against, and when the ionic DKMS sources this step
+   puts under ``/usr/src`` have no ``Module.symvers`` for the running
+   kernel (dkms empties its build directory after installing), it
+   rebuilds them in place to regenerate the symbols, and installs
+   nothing from the build.
 
 #. Install the build prerequisites on the guest: ``dkms``, ``git``,
    ``make``, and headers for the running kernel. ``ernic_p4_dkms``
