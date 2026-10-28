@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "ernic_attributes.h"
 #include "p4/p4_engine.h"
 #include "p4/p4_exec.h"
 #include "p4/p4_json.h"
@@ -138,7 +139,7 @@ void p4_engine_load_abort(struct p4_engine *eng)
  * as the reason for this one.
  */
 static void p4_engine_load_fail(struct p4_engine *eng, const char *fmt, ...)
-    __attribute__((format(printf, 2, 3)));
+    ERNIC_PRINTF_FORMAT(2, 3);
 
 static void p4_engine_load_fail(struct p4_engine *eng, const char *fmt, ...)
 {

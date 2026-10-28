@@ -35,6 +35,7 @@
 #include <unistd.h>
 
 #include <infiniband/verbs.h>
+#include "ernic_attributes.h"
 #include "ernic_counter_snapshot.h"
 #include "parse_int.h"
 
@@ -184,10 +185,9 @@ static struct want want_for(const struct rdma_case *rc, const char *name)
  * Appends to got, after ", " unless it is empty, cutting what does not fit.
  * *used is strlen(got) on entry and stays so.
  */
-__attribute__((format(printf, 4, 5))) static void got_add(char *got,
-                                                          size_t got_len,
-                                                          size_t *used,
-                                                          const char *fmt, ...)
+ERNIC_PRINTF_FORMAT(4, 5)
+static void got_add(char *got, size_t got_len, size_t *used, const char *fmt,
+                    ...)
 {
     va_list ap;
     int n;

@@ -16,6 +16,8 @@
 #include <stddef.h>
 #include <stdio.h>
 
+#include "ernic_attributes.h"
+
 /**
  * ernic_set_err() - format an error message into @p err
  *
@@ -24,8 +26,9 @@
  * @p err_len is 0. A message too long for the buffer is truncated: it is
  * for a human to read.
  */
-__attribute__((format(printf, 3, 4))) static inline void ernic_set_err(
-    char *err, size_t err_len, const char *fmt, ...)
+ERNIC_PRINTF_FORMAT(3, 4)
+static inline void ernic_set_err(char *err, size_t err_len, const char *fmt,
+                                 ...)
 {
     va_list ap;
 

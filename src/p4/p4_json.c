@@ -20,6 +20,7 @@
 #include <json-c/json_tokener.h>
 #include <json-c/json_types.h>
 
+#include "ernic_attributes.h"
 #include "p4/p4_engine.h"
 #include "p4/p4_json.h"
 #include "p4/p4_program.h"
@@ -53,7 +54,7 @@ struct p4_walk {
  * consequences after it only buries it.
  */
 static int p4_fail(struct p4_walk *w, int rc, const char *fmt, ...)
-    __attribute__((format(printf, 3, 4)));
+    ERNIC_PRINTF_FORMAT(3, 4);
 
 static int p4_fail(struct p4_walk *w, int rc, const char *fmt, ...)
 {

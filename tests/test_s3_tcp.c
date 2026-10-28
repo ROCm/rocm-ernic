@@ -34,6 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "ernic_attributes.h"
 #include "s3_alloc_fail.h"
 #include "s3/s3_http.h"
 #include "s3/s3_target.h"
@@ -57,7 +58,7 @@ static const uint8_t BCAST_MAC[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 static int failures;
 
 static void fail(const char *name, const char *fmt, ...)
-    __attribute__((format(printf, 2, 3)));
+    ERNIC_PRINTF_FORMAT(2, 3);
 
 static void fail(const char *name, const char *fmt, ...)
 {

@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "ernic_attributes.h"
 #include "ernic_err.h"
 #include "ionic/ionic_fault.h"
 #include "ionic/ionic_status.h"
@@ -506,9 +507,8 @@ void ionic_fault_clear(struct ionic_fault *f)
 }
 
 /* Append to @buf at *@pos, counting what would not fit, as snprintf(). */
-__attribute__((format(printf, 4, 5))) static void out_add(char *buf, size_t len,
-                                                          size_t *pos,
-                                                          const char *fmt, ...)
+ERNIC_PRINTF_FORMAT(4, 5)
+static void out_add(char *buf, size_t len, size_t *pos, const char *fmt, ...)
 {
     char *dst = NULL;
     size_t room = 0;

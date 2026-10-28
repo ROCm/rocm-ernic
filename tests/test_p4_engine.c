@@ -30,6 +30,7 @@
 #include <json-c/json_tokener.h>
 #include <json-c/json_types.h>
 
+#include "ernic_attributes.h"
 #include "p4/p4_engine.h"
 #include "p4/p4_exec.h"
 #include "p4/p4_fp8.h"
@@ -49,8 +50,7 @@ static void check(bool cond, const char *what)
 }
 
 /* For a failure whose reason the code under test produced. */
-static void checkf(bool cond, const char *fmt, ...)
-    __attribute__((format(printf, 2, 3)));
+static void checkf(bool cond, const char *fmt, ...) ERNIC_PRINTF_FORMAT(2, 3);
 
 static void checkf(bool cond, const char *fmt, ...)
 {

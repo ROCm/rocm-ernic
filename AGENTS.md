@@ -111,6 +111,12 @@ cmake --build build
 - Standard C11; no GNU extensions without permission. Atomics
   (`<stdatomic.h>`) and threads (`qemu/thread.h` over pthreads) are
   available; see [Thread safety](#thread-safety).
+- **No bare `__attribute__`.** Use C11's own forms (`_Alignas`,
+  `_Noreturn`, `_Static_assert`), and for the rest, the macros in
+  [`src/ernic_attributes.h`](src/ernic_attributes.h), which expand to
+  nothing for other compilers: `ERNIC_PRINTF_FORMAT()` on any function
+  taking a printf format. Add a macro there for a new attribute. Clang's
+  thread-safety annotations are in `qemu/clang-tsa.h`.
 - **The library is POSIX.1-2008 plus glibc's `_DEFAULT_SOURCE`**, which
   `ernic_set_compiler_flags()` defines for every target. Don't add
   `_GNU_SOURCE` to a target or to `CMAKE_C_FLAGS`: it exposes every GNU

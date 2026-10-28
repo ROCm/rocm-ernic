@@ -44,6 +44,7 @@
 #include <time.h>
 
 #include "byteorder.h"
+#include "ernic_attributes.h"
 #include "ernic_mesh.h"
 #include "ionic_harness.h"
 #include "parse_int.h"
@@ -71,8 +72,7 @@
 
 static int failures;
 
-static bool gm_check(bool cond, const char *fmt, ...)
-    __attribute__((format(printf, 2, 3)));
+static bool gm_check(bool cond, const char *fmt, ...) ERNIC_PRINTF_FORMAT(2, 3);
 
 static bool gm_check(bool cond, const char *fmt, ...)
 {

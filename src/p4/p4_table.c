@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "ernic_attributes.h"
 #include "p4/p4_table.h"
 #include "p4/p4_value.h"
 
@@ -35,7 +36,7 @@ struct p4_entries {
 };
 
 static int fail(char *err, size_t err_len, int rc, const char *fmt, ...)
-    __attribute__((format(printf, 4, 5)));
+    ERNIC_PRINTF_FORMAT(4, 5);
 
 static int fail(char *err, size_t err_len, int rc, const char *fmt, ...)
 {

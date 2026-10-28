@@ -14,6 +14,7 @@
 #include <string.h>
 #include <strings.h>
 
+#include "ernic_attributes.h"
 #include "parse_int.h"
 #include "s3/s3_http.h"
 
@@ -438,7 +439,7 @@ const char *s3_http_reason(int status)
  * in full, in which case *@off is left alone.
  */
 static bool append(char *buf, size_t cap, size_t *off, const char *fmt, ...)
-    __attribute__((format(printf, 4, 5)));
+    ERNIC_PRINTF_FORMAT(4, 5);
 
 static bool append(char *buf, size_t cap, size_t *off, const char *fmt, ...)
 {
