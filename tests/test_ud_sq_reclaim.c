@@ -32,11 +32,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #include <infiniband/verbs.h>
 
 #include "ernic_device.h"
+#include "ernic_time.h"
 #include "parse_int.h"
 
 #define GRH_LEN      40
@@ -50,8 +50,8 @@
 
 static int poll_one(struct ibv_cq *cq, struct ibv_wc *wc, int required)
 {
-    time_t deadline = time(NULL) + POLL_SECONDS;
-    while (time(NULL) < deadline) {
+    uint64_t deadline_ms = ernic_monotonic_ms() + POLL_SECONDS * UINT64_C(1000);
+    while (ernic_monotonic_ms() < deadline_ms) {
         int n = ibv_poll_cq(cq, 1, wc);
         if (n < 0)
             return -1;

@@ -57,6 +57,7 @@
 #include <infiniband/verbs.h>
 
 #include "ernic_device.h"
+#include "ernic_time.h"
 
 #define GRH_LEN       40
 #define MSG_LEN       256
@@ -184,9 +185,9 @@ static int post_recv(struct ud_ep *ep, uint64_t wr_id)
 static int poll_for(struct ibv_cq *cq, enum ibv_wc_opcode opcode,
                     struct ibv_wc *out)
 {
-    time_t deadline = time(NULL) + POLL_SECONDS;
+    uint64_t deadline_ms = ernic_monotonic_ms() + POLL_SECONDS * UINT64_C(1000);
 
-    while (time(NULL) < deadline) {
+    while (ernic_monotonic_ms() < deadline_ms) {
         struct ibv_wc wc;
         int n = ibv_poll_cq(cq, 1, &wc);
 

@@ -426,7 +426,7 @@
           {{ item }} 'mkdir -p /tmp/ud-mesh' &&
           tar -cf -
           -C {{ ernic_project_root }}/tests test_ud_mesh.c ernic_device.h
-          -C {{ ernic_project_root }}/src parse_int.h |
+          -C {{ ernic_project_root }}/src parse_int.h ernic_time.h |
           {{ item }} 'tar -C /tmp/ud-mesh -xf -'
       loop:
         - "{{ vm1_ssh }}"

@@ -36,11 +36,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #include <infiniband/verbs.h>
 
 #include "ernic_device.h"
+#include "ernic_time.h"
 
 #define SRQ_DEPTH    16
 #define MSG_LEN      256
@@ -77,7 +77,7 @@ int main(void)
     enum ernic_device_result lookup;
     int got_send, got_recv;
     unsigned recv_len;
-    time_t deadline;
+    uint64_t deadline_ms;
     int ndev = 0;
     int rc = 1;
 
@@ -263,8 +263,8 @@ int main(void)
     got_send = 0;
     got_recv = 0;
     recv_len = 0;
-    deadline = time(NULL) + POLL_SECONDS;
-    while ((!got_send || !got_recv) && time(NULL) < deadline) {
+    deadline_ms = ernic_monotonic_ms() + POLL_SECONDS * UINT64_C(1000);
+    while ((!got_send || !got_recv) && ernic_monotonic_ms() < deadline_ms) {
         struct ibv_wc wc[4];
         int n = ibv_poll_cq(cq, 4, wc);
         if (n < 0) {
