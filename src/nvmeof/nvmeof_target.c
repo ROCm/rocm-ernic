@@ -148,6 +148,11 @@ static bool parse_ipv4(const char *s, uint32_t *out)
     return true;
 }
 
+/*
+ * Apply each key=value option in @opts to @cfg, stopping at the first bad
+ * one, which @err names.  An option may be given more than once; the last
+ * wins.  On failure @cfg may already hold some of the options.
+ */
 bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
                              char *err, size_t errlen)
 {
@@ -155,6 +160,7 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
         return true;
     }
 
+    /* strtok_r() writes NULs into the string it splits. */
     char *dup = strdup(opts);
     if (dup == NULL) {
         ernic_set_err(err, errlen, "out of memory");
@@ -163,8 +169,10 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
 
     bool ok = true;
     char *save = NULL;
+    /* strtok_r() skips empty fields, so "a=1,,b=2" is two options. */
     for (char *tok = strtok_r(dup, ",", &save); tok != NULL && ok;
          tok = strtok_r(NULL, ",", &save)) {
+        /* Split at the first '=', so a value may itself contain one. */
         char *eq = strchr(tok, '=');
         if (eq == NULL) {
             ernic_set_err(err, errlen, "option '%s' is not key=value", tok);
@@ -175,7 +183,9 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
         const char *key = tok;
         const char *val = eq + 1;
 
+        /* Numbers go through parse_int.h, which refuses trailing text. */
         if (strcmp(key, "nqn") == 0) {
+            /* NVMEOF_NQN_MAX counts the NUL; refuse rather than truncate. */
             if (*val == '\0' || strlen(val) >= NVMEOF_NQN_MAX) {
                 ernic_set_err(err, errlen, "nqn must be 1..%d characters",
                               NVMEOF_NQN_MAX - 1);
@@ -188,6 +198,7 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
                 ernic_set_err(err, errlen, "bad size '%s'", val);
                 ok = false;
             } else {
+                /* Lets size_image() tell size= from the default. */
                 cfg->size_set = true;
             }
         } else if (strcmp(key, "file") == 0) {
@@ -195,6 +206,7 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
                 ernic_set_err(err, errlen, "file needs a path");
                 ok = false;
             } else {
+                /* A repeated file= replaces the earlier path. */
                 free(cfg->file);
                 cfg->file = strdup(val);
                 if (cfg->file == NULL) {
@@ -215,6 +227,7 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
             }
         } else if (strcmp(key, "nsid") == 0) {
             uint32_t v;
+            /* NVMe reserves 0 (no namespace) and 0xffffffff (all). */
             if (!ernic_parse_u32(val, &v) || v == 0 || v == 0xffffffffu) {
                 ernic_set_err(err, errlen, "bad nsid '%s'", val);
                 ok = false;
@@ -271,6 +284,11 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
     }
     free(dup);
 
+    /*
+     * Checked after the loop because size= and bs= may come in either
+     * order.  A file-backed namespace without size= gets its size from the
+     * image later, and size_image() checks that one.
+     */
     if (ok && cfg->size % cfg->block_size != 0) {
         ernic_set_err(err, errlen,
                       "size %" PRIu64 " is not a multiple of bs %u", cfg->size,

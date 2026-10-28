@@ -679,11 +679,20 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, const rocm_ernic_dev_t *dev)
 }
 
 /**
- * Print usage information
+ * Print the command-line help to stderr, for --help and after a bad option.
+ * Keep it in step with long_options[] in parse_options().
+ * @param progname The program name to show, argv[0]
  */
 static void usage(const char *progname)
 {
+    /*
+     * The defaults named here are copies of the code's, so change both
+     * together. tests/test_nvmeof_ci.sh greps this text for the backend
+     * list and an nvmeof example.
+     */
     fprintf(stderr, "Usage: %s [OPTIONS]\n", progname);
+
+    /* Options that apply whatever the backend. */
     fprintf(stderr, "Options:\n");
     fprintf(stderr, "  -s, --socket PATH    Socket path (default: %s)\n",
             DEFAULT_SOCKET_PATH);
@@ -715,6 +724,12 @@ static void usage(const char *progname)
     fprintf(stderr, "                       Pre-create it with: ip tuntap add "
                     "dev IFNAME\n");
     fprintf(stderr, "                       mode tap user $USER\n");
+
+    /*
+     * The NIC's shape. --stats-interval-ms and --eth-queues are applied
+     * after every --nic-profile layer, whatever their order on the command
+     * line, so they beat every profile.
+     */
     fprintf(stderr, "      --nic-profile NAME|PATH  Shape the NIC from a "
                     "profile (repeatable;\n");
     fprintf(stderr, "                       later layers win). NAME is a "
@@ -740,6 +755,8 @@ static void usage(const char *progname)
     fprintf(stderr, "                       Beats every profile; the guest "
                     "uses at most\n");
     fprintf(stderr, "                       one per vCPU.\n");
+
+    /* A testing aid; ionic_fault_set_add() parses the grammar. */
     fprintf(stderr, "      --inject FAULT   Inject a fault (repeatable), as "
                     "'SITE: PATTERN effect EFFECT'\n");
     fprintf(stderr, "                       e.g. 'stats_vals: every 100 effect "
@@ -750,6 +767,8 @@ static void usage(const char *progname)
                     "and effects: stats_vals fail\n");
     fprintf(stderr, "                       [status S]; eth_rx drop, nobuf; "
                     "eth_tx drop\n");
+
+    /* Only a server built with the P4 engine (ERNIC_BUILD_P4) has these. */
 #ifdef ERNIC_HAVE_P4
     fprintf(stderr, "  -P, --p4             Put the P4 match-action engine on "
                     "the emulated wire\n");
@@ -771,6 +790,11 @@ static void usage(const char *progname)
     fprintf(stderr, "                       Implies --p4.\n");
 #endif
     fprintf(stderr, "  -h, --help           Show this help message\n");
+
+    /*
+     * The values of --backend: a type, optionally followed by ':' and its
+     * options, which validate_backend_options() checks before startup.
+     */
     fprintf(stderr, "\n");
     fprintf(stderr, "Backend Types:\n");
     fprintf(stderr, "  none: No backend (minimal stubs)\n");
@@ -785,6 +809,7 @@ static void usage(const char *progname)
     fprintf(stderr, "                    Worker Mode (connects to manager):\n");
     fprintf(stderr,
             "                      tcp:worker:<manager_host>:<manager_port>\n");
+    /* "%%" prints the '%' before a link-local address's zone. */
     fprintf(stderr, "                    A host is a name or an IPv4 or IPv6 "
                     "address; an IPv6\n"
                     "                    address goes in brackets: "
@@ -795,6 +820,8 @@ static void usage(const char *progname)
                     "- Start manager on port 5000\n");
     fprintf(stderr, "                        tcp:worker:192.168.1.100:5000    "
                     "- Worker connects to manager\n");
+
+    /* nvmeof_target_cfg_parse() takes these options. */
     fprintf(stderr, "  nvmeof: in-process NVMe-oF controller the guest can "
                     "`nvme connect` to\n");
     fprintf(stderr, "                    Options (comma-separated):\n");
@@ -824,6 +851,8 @@ static void usage(const char *progname)
                     "1 GiB, 4 KiB blocks\n");
     fprintf(stderr, "                      nvmeof:file=/tmp/ns0.img,size=1G - "
                     "File-backed namespace\n");
+
+    /* s3_target_cfg_parse() takes these options. */
     fprintf(stderr, "  s3: in-process S3-over-RDMA object store the guest "
                     "reaches over HTTP\n");
     fprintf(stderr, "                    Options (comma-separated):\n");
