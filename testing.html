@@ -1158,21 +1158,41 @@ before it starts the DKMS build.</p>
 <h2>Adding New Tests<a class="headerlink" href="#adding-new-tests" title="Link to this heading">#</a></h2>
 <ol class="arabic simple">
 <li><p>Create a test source file in <code class="docutils literal notranslate"><span class="pre">tests/</span></code>.</p></li>
-<li><p>Add the executable to <code class="docutils literal notranslate"><span class="pre">tests/CMakeLists.txt</span></code>.</p></li>
-<li><p>Register the test with <code class="docutils literal notranslate"><span class="pre">add_test()</span></code>.</p></li>
+<li><p>Build it in <code class="docutils literal notranslate"><span class="pre">tests/CMakeLists.txt</span></code> with
+<code class="docutils literal notranslate"><span class="pre">ernic_add_test_program()</span></code> (<code class="docutils literal notranslate"><span class="pre">cmake/ErnicTesting.cmake</span></code>),
+which gives it the project’s warning, hardening and
+sanitizer flags and include directories. <code class="docutils literal notranslate"><span class="pre">DEPS</span></code> names the
+libraries it links (<code class="docutils literal notranslate"><span class="pre">glib</span></code>, <code class="docutils literal notranslate"><span class="pre">ibverbs</span></code>, <code class="docutils literal notranslate"><span class="pre">vfio-user</span></code>,
+<code class="docutils literal notranslate"><span class="pre">json-c</span></code>, <code class="docutils literal notranslate"><span class="pre">pthread</span></code>) and <code class="docutils literal notranslate"><span class="pre">HEADER_DEPS</span></code> those whose
+headers it only includes. Where a family of tests links the
+same part of <code class="docutils literal notranslate"><span class="pre">src/</span></code>, use its list from the top of the file
+(<code class="docutils literal notranslate"><span class="pre">ERNIC_TEST_ADMINQ_SOURCES</span></code>, for one).</p></li>
+<li><p>Register a test that runs the program on its own with
+<code class="docutils literal notranslate"><span class="pre">ernic_add_unit_test()</span></code>, giving its timeout. A test that
+needs a script around the program, such as one that starts
+the server, uses <code class="docutils literal notranslate"><span class="pre">add_test()</span></code>.</p></li>
 </ol>
-<p>Example:</p>
-<div class="highlight-cmake notranslate"><div class="highlight"><pre><span></span><span class="nb">add_executable</span><span class="p">(</span><span class="s">test_new_feature</span>
-<span class="w">    </span><span class="s">test_new_feature.c</span>
+<p>Examples:</p>
+<div class="highlight-cmake notranslate"><div class="highlight"><pre><span></span><span class="nb">ernic_add_test_program</span><span class="p">(</span><span class="s">ernic-test-new-feature</span>
+<span class="w">    </span><span class="s">SOURCES</span>
+<span class="w">        </span><span class="s">test_new_feature.c</span>
+<span class="w">        </span><span class="o">${</span><span class="nv">ERNIC_TEST_ADMINQ_SOURCES</span><span class="o">}</span>
+<span class="w">    </span><span class="s">DEPS</span><span class="w"> </span><span class="s">glib</span>
+<span class="w">    </span><span class="s">HEADER_DEPS</span><span class="w"> </span><span class="s">vfio-user</span>
 <span class="p">)</span>
+<span class="nb">ernic_add_unit_test</span><span class="p">(</span><span class="s">new-feature-unit</span><span class="w"> </span><span class="s">ernic-test-new-feature</span>
+<span class="w">    </span><span class="s">TIMEOUT</span><span class="w"> </span><span class="s">30</span><span class="p">)</span>
 
+<span class="nb">ernic_add_test_program</span><span class="p">(</span><span class="s">test_new_client</span>
+<span class="w">    </span><span class="s">SOURCES</span><span class="w"> </span><span class="s">test_new_client.c</span>
+<span class="p">)</span>
 <span class="nb">add_test</span><span class="p">(</span>
-<span class="w">    </span><span class="s">NAME</span><span class="w"> </span><span class="s">new-feature-test</span>
+<span class="w">    </span><span class="s">NAME</span><span class="w"> </span><span class="s">new-client-test</span>
 <span class="w">    </span><span class="s">COMMAND</span><span class="w"> </span><span class="o">${</span><span class="nv">CMAKE_CURRENT_SOURCE_DIR</span><span class="o">}</span><span class="s">/run-test.sh</span>
-<span class="w">        </span><span class="o">$&lt;</span><span class="nv">TARGET_FILE:test_new_feature</span><span class="o">&gt;</span>
+<span class="w">        </span><span class="o">$&lt;</span><span class="nv">TARGET_FILE:test_new_client</span><span class="o">&gt;</span>
 <span class="w">        </span><span class="o">$&lt;</span><span class="nv">TARGET_FILE:rocm-ernic</span><span class="o">&gt;</span>
 <span class="p">)</span>
-<span class="nb">set_tests_properties</span><span class="p">(</span><span class="s">new-feature-test</span><span class="w"> </span><span class="s">PROPERTIES</span>
+<span class="nb">set_tests_properties</span><span class="p">(</span><span class="s">new-client-test</span><span class="w"> </span><span class="s">PROPERTIES</span>
 <span class="w">    </span><span class="s">TIMEOUT</span><span class="w"> </span><span class="s">30</span>
 <span class="w">    </span><span class="s">RUN_SERIAL</span><span class="w"> </span><span class="s">TRUE</span>
 <span class="p">)</span>
