@@ -319,14 +319,17 @@ jobs:
 
       # ernic-package-deb (tests/package/run-package-test.cmake) builds
       # the DEB packages, with the service files (ERNIC_INSTALL_SERVICE
-      # above), and checks their files, modes, and dependencies. It's only
-      # registered if dpkg-dev, file, and readelf are installed, as they
-      # are on the hosted image, so --no-tests=error makes sure it ran.
-      # It runs CMake and CPack, not the server, so it needs no setarch.
+      # above), and checks their files, modes, and dependencies.
+      # ernic-package-deb-config-paths (run-config-paths-test.cmake)
+      # builds them again with prefixes that move the configuration,
+      # such as /opt/<name>. They're only registered if dpkg-dev, file,
+      # and readelf are installed, as they are on the hosted image, so
+      # --no-tests=error makes sure they ran. They run CMake and CPack,
+      # not the server, so they need no setarch.
       - name: Check the packages
         run: |
           ctest --test-dir build --output-on-failure --no-tests=error \
-            -R '^ernic-package-deb$'
+            -R '^ernic-package-deb(-config-paths)?$'
 
       - name: Run remaining tests
         env:
@@ -337,7 +340,7 @@ jobs:
             TEST_WRAP="setarch $(uname -m) -R"
           fi
           $TEST_WRAP ctest --test-dir build --output-on-failure \
-            -E '^(ionic-ci|ernic-package-deb)$' \
+            -E '^(ionic-ci|ernic-package-deb(-config-paths)?)$' \
             --output-junit build/Testing/ctest-junit.xml
 
       # Runs the test programs under valgrind's memcheck. Valgrind makes a
@@ -362,7 +365,7 @@ jobs:
           ctest --test-dir build -T memcheck --output-on-failure --no-tests=error -j"$(nproc)" \
             --overwrite "MemoryCheckCommand=$(command -v valgrind)" \
             --overwrite "MemoryCheckCommandOptions=--leak-check=full --track-origins=yes --num-callers=40 --error-exitcode=1" \
-            -E '^(pci-config-test|find-rdma-device-tuple|find-ipv4-gid-index|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli|cmake-subproject|ernic-package-deb|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver|ernic-ionic-hw-stats|ernic-mesh-stress|ernic-mesh-flow)$' \
+            -E '^(pci-config-test|find-rdma-device-tuple|find-ipv4-gid-index|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli|cmake-subproject|ernic-package-deb|ernic-package-deb-config-paths|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver|ernic-ionic-hw-stats|ernic-mesh-stress|ernic-mesh-flow)$' \
             || status=$?
           shopt -s nullglob
           for log in build/Testing/Temporary/MemoryChecker.*.log; do

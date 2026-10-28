@@ -14,7 +14,17 @@ ernic_build_type: Release
 ernic_install_prefix: /usr/local
 
 # ── Service / env-file settings ──────────────────
-ernic_config_dir: /etc/rocm-ernic
+# Where the installed service and ernicctl read the env file. With the
+# prefix /opt/<name>, CMake installs the configuration in
+# /etc/opt/<name>/rocm-ernic and they read it there (GNUInstallDirs
+# leaves /opt/homebrew/ alone); with any other prefix they read
+# /etc/rocm-ernic.
+ernic_config_dir: >-
+  {{ ('/etc' ~ (ernic_install_prefix | regex_replace('/+$', ''))
+      ~ '/rocm-ernic')
+     if (ernic_install_prefix is match('/opt/')
+         and ernic_install_prefix is not match('/opt/homebrew/'))
+     else '/etc/rocm-ernic' }}
 ernic_bin: "{{ ernic_install_prefix }}/bin/rocm-ernic"
 ernic_run_dir: /run/rocm-ernic
 ernic_log_dir: /var/log/rocm-ernic

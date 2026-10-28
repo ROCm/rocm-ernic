@@ -191,7 +191,12 @@ files, and, with ``ERNIC_BUNDLE_VFIO_USER``, the server's
 ``DT_RPATH``. It's registered in a top-level build when
 ``dpkg-dev``, ``file``, and ``readelf`` are installed. A change to
 the install rules has to update its lists of files, in
-``tests/package/run-package-test.cmake``.
+``tests/package/run-package-test.cmake``. The
+``ernic-package-deb-config-paths`` test, registered with it,
+configures and builds the server again with prefixes that move
+the configuration file, such as ``/opt/<name>``, and checks
+where the packages install it and where the installed files
+read it.
 
 Build Options
 -------------

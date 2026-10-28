@@ -174,10 +174,8 @@ and launcher"
 # cmake --install --prefix leaves them pointing at the configured one.
 #
 # The configuration is the exception: the files read it from
-# /etc/rocm-ernic, where an install to /usr puts it. When it's installed
-# outside the prefix (ERNIC_SYSCONF_DIR is absolute), such as in
-# /etc/opt/<name> for the prefix /opt/<name>, they name that directory
-# instead. Under the prefix, it has to be copied to /etc/rocm-ernic.
+# /etc/rocm-ernic, where an install to /usr puts it, and in the installed
+# copy from ERNIC_CONFIG_READ_DIR (see below).
 #
 #   type         PROGRAMS or FILES, as for install()
 #   source       The file, relative to the source directory
@@ -191,10 +189,8 @@ function(ernic_install_with_paths type source destination component)
         "${CMAKE_INSTALL_FULL_LIBEXECDIR}/rocm-ernic" text "${text}")
     string(REPLACE "/usr/local/share/rocm-ernic"
         "${CMAKE_INSTALL_FULL_DATADIR}/rocm-ernic" text "${text}")
-    if(IS_ABSOLUTE "${ERNIC_SYSCONF_DIR}")
-        string(REPLACE "/etc/rocm-ernic/"
-            "${ERNIC_SYSCONF_DIR}/" text "${text}")
-    endif()
+    string(REPLACE "/etc/rocm-ernic/"
+        "${ERNIC_CONFIG_READ_DIR}/" text "${text}")
 
     # Write the file through configure_file(), which only changes it when
     # its contents change, so it isn't reinstalled on every configure
@@ -216,12 +212,10 @@ if(ERNIC_INSTALL_SERVICE)
 
     # The configuration goes in /etc when the prefix is /usr, and in
     # /etc/opt/<name> when it's /opt/<name>. GNUInstallDirs only says so
-    # in CMAKE_INSTALL_FULL_SYSCONFDIR; CMAKE_INSTALL_SYSCONFDIR is still
-    # etc, which would put it in /usr/etc. It writes the /opt one with a
-    # doubled slash (/etc//opt/<name>), which would reach the package's
-    # list of configuration files, so both paths are normalized. Under
-    # other prefixes it's under the prefix, and has to be copied to /etc
-    # (see docs/service.rst).
+    # in CMAKE_INSTALL_FULL_SYSCONFDIR; CMAKE_INSTALL_SYSCONFDIR can still
+    # be etc, which would put it in /usr/etc. It writes the /opt one with
+    # a doubled slash (/etc//opt/<name>), which would reach the package's
+    # list of configuration files, so both paths are normalized.
     cmake_path(SET ernic_sysconf_full NORMALIZE
         "${CMAKE_INSTALL_FULL_SYSCONFDIR}")
     cmake_path(SET ernic_sysconf_under_prefix NORMALIZE
@@ -233,6 +227,20 @@ if(ERNIC_INSTALL_SERVICE)
     endif()
     # The installed file, for the package's list of configuration files
     set(ERNIC_ENV_FILE "${ernic_sysconf_full}/rocm-ernic/rocm-ernic.env")
+
+    # Where the installed files read the configuration from. Under the
+    # prefix, as with the default /usr/local, it's a copy to edit and put
+    # in /etc/rocm-ernic (see docs/service.rst), and they read it there,
+    # however CMAKE_INSTALL_SYSCONFDIR names it. Outside the prefix, as
+    # in /etc for /usr or /etc/opt/<name> for /opt/<name>, they read it
+    # where it's installed.
+    cmake_path(IS_PREFIX CMAKE_INSTALL_PREFIX "${ernic_sysconf_full}"
+        NORMALIZE ernic_sysconf_in_prefix)
+    if(ernic_sysconf_in_prefix)
+        set(ERNIC_CONFIG_READ_DIR "/etc/rocm-ernic")
+    else()
+        set(ERNIC_CONFIG_READ_DIR "${ernic_sysconf_full}/rocm-ernic")
+    endif()
 
     # systemd unit files
     ernic_install_with_paths(FILES service/rocm-ernic.service

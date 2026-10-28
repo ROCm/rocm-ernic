@@ -64,6 +64,10 @@ ernic_restart_existing: true    # stop a previous mesh before starting
 
 ernic_build_type: Release
 ernic_install_prefix: /usr/local
+# Where the env file is written: /etc/rocm-ernic, or
+# /etc/opt/<name>/rocm-ernic with the prefix /opt/<name>, which is
+# where the installed service reads it
+ernic_config_dir: /etc/rocm-ernic
 
 ernic_instances: 2
 ernic_tcp_port: 6320

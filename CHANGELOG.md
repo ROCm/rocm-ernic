@@ -741,10 +741,15 @@
 * **Installing with `ERNIC_INSTALL_SERVICE` under an `/opt/<name>` prefix
   works.** `rocm-ernic.env` goes in `/etc/opt/<name>/rocm-ernic`, and the
   installed units, `ernicctl`, the exporter and the driver pack now read it
-  there, where they read `/etc/rocm-ernic` and missed it. The DEB package
-  lists it as a configuration file by its real path; it named
+  there, where they read `/etc/rocm-ernic` and missed it. The same goes for
+  any `CMAKE_INSTALL_SYSCONFDIR` outside the prefix; one under the prefix,
+  however it's written, is still a copy to put in `/etc/rocm-ernic`. The DEB
+  package lists it as a configuration file by its real path; it named
   `/etc//opt/<name>/...`. Configuring no longer gives CMake's CMP0177
-  warning.
+  warning. The Ansible role `ernic_host_setup` writes the env file in
+  `/etc/opt/<name>/rocm-ernic` when `ernic_install_prefix` is `/opt/<name>`.
+  The new `ernic-package-deb-config-paths` CTest test builds the packages
+  under such prefixes and checks both paths.
 * **Any guest process could read and write all guest memory through the S3
   and NVMe-oF targets.** Key 0 is the ionic driver's reserved DMA key, which
   the device reads as a raw guest bus address, and both targets passed the

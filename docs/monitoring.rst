@@ -79,9 +79,11 @@ Quick Start
 Configuration
 -------------
 
-All settings come from the same
-``/etc/rocm-ernic/rocm-ernic.env`` file that the main
-service uses, plus two exporter-specific variables:
+All settings come from the same environment file that the
+main service uses, ``/etc/rocm-ernic/rocm-ernic.env``, or
+``/etc/opt/<name>/rocm-ernic/rocm-ernic.env`` when installed
+to ``/opt/<name>`` (see :doc:`service`), plus two
+exporter-specific variables:
 
 .. list-table::
    :header-rows: 1
@@ -98,7 +100,8 @@ service uses, plus two exporter-specific variables:
      - ``9840``
      - HTTP port for the ``/metrics`` endpoint.
 
-Override via environment or in the env file:
+Override via environment or in the env file (shown here in
+its default location):
 
 .. code-block:: bash
 

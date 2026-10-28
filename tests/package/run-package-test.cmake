@@ -35,9 +35,10 @@
 #     The service files name /usr/local, which is replaced when they're
 #     installed elsewhere, so no file names it unless that's the prefix.
 #     Every program a systemd unit runs from under the prefix is in a
-#     package. When the packaged configuration is in /etc (with the
-#     prefix /usr, or /etc/opt/<name> with /opt/<name>), the units read
-#     it, and every file that names a rocm-ernic.env names it.
+#     package. The units, and every file that names a rocm-ernic.env,
+#     read the packaged configuration when it's outside the prefix (in
+#     /etc with the prefix /usr, or /etc/opt/<name> with /opt/<name>),
+#     and /etc/rocm-ernic/rocm-ernic.env when it's under it.
 #   - With ERNIC_BUNDLE_VFIO_USER, that the server finds its libvfio-user
 #     through a DT_RPATH, which LD_LIBRARY_PATH can't override, and that
 #     the library has no run path of its own
@@ -455,28 +456,40 @@ if(NOT INSTALL_PREFIX STREQUAL "/usr/local")
     endforeach()
 endif()
 
-# When the configuration is in /etc, every file that names a
-# rocm-ernic.env names the packaged one
-if(ENV_FILE MATCHES "^/etc/")
-    foreach(file IN LISTS text_files)
-        file(STRINGS ${file} lines REGEX "/rocm-ernic\\.env")
-        foreach(line IN LISTS lines)
-            string(REGEX MATCHALL "/[^ \t\"'`=]*/rocm-ernic\\.env" names
-                "${line}")
-            foreach(name IN LISTS names)
-                if(NOT name STREQUAL ENV_FILE)
-                    string(REPLACE "${root}" "" path "${file}")
-                    fail("${path} names ${name}, not ${ENV_FILE}: ${line}")
-                endif()
-            endforeach()
-        endforeach()
-    endforeach()
+# Where the installed files should read the configuration. Under the
+# prefix, the packaged file is a copy to put in /etc/rocm-ernic, so they
+# read it there; outside it, as in /etc or /etc/opt/<name>, they read
+# the packaged file.
+set(read_env_file)
+if(INSTALL_SERVICE)
+    cmake_path(IS_PREFIX INSTALL_PREFIX "${ENV_FILE}" NORMALIZE
+        env_file_in_prefix)
+    if(env_file_in_prefix)
+        set(read_env_file /etc/rocm-ernic/rocm-ernic.env)
+    else()
+        set(read_env_file "${ENV_FILE}")
+    endif()
 endif()
 
+# Every file that names a rocm-ernic.env names that one
+foreach(file IN LISTS text_files)
+    file(STRINGS ${file} lines REGEX "/rocm-ernic\\.env")
+    foreach(line IN LISTS lines)
+        string(REGEX MATCHALL "/[^ \t\"'`=]*/rocm-ernic\\.env" names
+            "${line}")
+        foreach(name IN LISTS names)
+            if(NOT name STREQUAL read_env_file)
+                string(REPLACE "${root}" "" path "${file}")
+                fail("${path} names ${name}, not ${read_env_file}: ${line}")
+            endif()
+        endforeach()
+    endforeach()
+endforeach()
+
 # Every program a unit runs from under the prefix is in a package, and
-# each unit reads the packaged configuration, and nothing else, when
-# that's in /etc. An Exec line's command can start with characters that
-# change how systemd runs it, such as "-", which are removed.
+# each unit reads that configuration, and nothing else. An Exec line's
+# command can start with characters that change how systemd runs it,
+# such as "-", which are removed.
 file(GLOB units ${root}${units_dir}/*.service)
 foreach(unit IN LISTS units)
     string(REPLACE "${root}" "" unit_path "${unit}")
@@ -485,8 +498,8 @@ foreach(unit IN LISTS units)
     foreach(line IN LISTS lines)
         if(line MATCHES "^EnvironmentFile=-?(.*)$")
             set(env_file "${CMAKE_MATCH_1}")
-            if(ENV_FILE MATCHES "^/etc/" AND NOT env_file STREQUAL ENV_FILE)
-                fail("${unit_path} reads ${env_file}, not ${ENV_FILE}")
+            if(NOT env_file STREQUAL read_env_file)
+                fail("${unit_path} reads ${env_file}, not ${read_env_file}")
             endif()
             set(reads_env_file ON)
             continue()
@@ -500,8 +513,9 @@ foreach(unit IN LISTS units)
             endif()
         endforeach()
     endforeach()
-    if(ENV_FILE MATCHES "^/etc/" AND NOT reads_env_file)
-        fail("${unit_path} doesn't read ${ENV_FILE} (no EnvironmentFile=)")
+    if(NOT reads_env_file)
+        fail("${unit_path} doesn't read ${read_env_file} "
+            "(no EnvironmentFile=)")
     endif()
 endforeach()
 if(INSTALL_SERVICE AND NOT units)
