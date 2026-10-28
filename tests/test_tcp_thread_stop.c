@@ -5858,7 +5858,8 @@ static int run_ra_case(const struct ra_case *c)
  * connection, unless the row says otherwise.  Node EV_OLDEST has
  * been dead longest, then node EV_NEXT, then the nodes with the highest ids,
  * so the oldest is neither the first id nor the last.  Node EV_OLDEST claims
- * ev_gid.  Then a new worker registers.
+ * ev_gid, and its claims are alive only if it is, as the manager keeps them
+ * (tcp_node_set_alive()).  Then a new worker registers.
  */
 
 /*
@@ -5912,8 +5913,8 @@ static const struct ev_case ev_cases[] = {
     {"negative",
      "the node dead longest has been declared dead, but its connection is "
      "still up",
-     "it is kept, with its connection and claims; the next oldest is "
-     "evicted",
+     "it is kept, with its connection and its claims, which still don't "
+     "resolve; the next oldest is evicted",
      EV_LIVE_CONN},
     {"boundary", "a new node registers in a table one short of full",
      "nothing is evicted", EV_ROOM},
@@ -5969,6 +5970,16 @@ static uint32_t ev_resolve(TcpBackendPrivate *priv)
     return tcp_resolve_node_from_gid(priv, &gid);
 }
 
+static bool ev_has_claims(TcpBackendPrivate *priv, uint32_t id)
+{
+    bool has;
+
+    qemu_mutex_lock(&priv->gid_table_lock);
+    has = g_hash_table_contains(priv->node_gids, GUINT_TO_POINTER(id));
+    qemu_mutex_unlock(&priv->gid_table_lock);
+    return has;
+}
+
 /* Put node id in the table, last heard from dead_s seconds ago. */
 static bool ev_plant(TcpBackendPrivate *priv, uint32_t id, bool alive,
                      uint64_t dead_s)
@@ -6008,6 +6019,8 @@ static bool ev_connect(struct ev_fixture *fx, uint32_t id, bool ended)
 static const char *ev_setup(struct ev_fixture *fx, enum ev_scenario scenario)
 {
     TcpBackendPrivate *priv = fx->priv;
+    uint64_t last_ms = 0;
+    bool alive = false;
 
     fx->last =
         scenario == EV_ROOM ? TCP_MAX_MESH_NODES - 2 : TCP_MAX_MESH_NODES - 1;
@@ -6041,9 +6054,19 @@ static const char *ev_setup(struct ev_fixture *fx, enum ev_scenario scenario)
     priv->next_available_node_id = fx->last + 1;
     qemu_mutex_unlock(&priv->mesh_table_lock);
 
+    /*
+     * tcp_gid_claims_set() records the claims alive; declaring the node's
+     * liveness again makes them as alive as it is
+     */
     tcp_gid_claims_set(priv, EV_OLDEST, (const uint8_t(*)[16]) & ev_gid, 1);
-    return ev_resolve(priv) == EV_OLDEST ? NULL
-                                         : "node EV_OLDEST's claim didn't take";
+    if (!node_get(priv, EV_OLDEST, &alive, &last_ms))
+        return "node EV_OLDEST isn't in the table";
+    node_set(priv, EV_OLDEST, alive, last_ms);
+    if (!ev_has_claims(priv, EV_OLDEST))
+        return "node EV_OLDEST's claim didn't take";
+    return ev_resolve(priv) == (alive ? EV_OLDEST : UINT32_MAX)
+               ? NULL
+               : "node EV_OLDEST's claim isn't as alive as it is";
 }
 
 /* Register a new worker on *fd, asking for want; the answer's id and result */
@@ -6083,16 +6106,6 @@ static const char *ev_kept(TcpBackendPrivate *priv, uint32_t last,
     return gone == UINT32_MAX || !ev_in_table(priv, gone)
                ? NULL
                : "the node that should have been evicted wasn't";
-}
-
-static bool ev_has_claims(TcpBackendPrivate *priv, uint32_t id)
-{
-    bool has;
-
-    qemu_mutex_lock(&priv->gid_table_lock);
-    has = g_hash_table_contains(priv->node_gids, GUINT_TO_POINTER(id));
-    qemu_mutex_unlock(&priv->gid_table_lock);
-    return has;
 }
 
 /*
@@ -6185,8 +6198,6 @@ static const char *ev_dead(struct ev_fixture *fx, enum ev_scenario scenario)
         return "the table isn't full";
     if (ev_has_claims(priv, EV_OLDEST))
         return "the evicted node's claims were kept";
-    if (ev_resolve(priv) != UINT32_MAX)
-        return "the evicted node still owns its GID";
     why = ev_broadcasts(fx->fresh[0], id, EV_OLDEST);
     if (why)
         return why;
@@ -6220,8 +6231,11 @@ static const char *ev_live_conn(struct ev_fixture *fx)
     if (table_get(priv, EV_OLDEST) != fx->conn[EV_OLDEST] ||
         conn_retired(fx->conn[EV_OLDEST]))
         return "the oldest node's connection was closed";
-    return ev_resolve(priv) == EV_OLDEST ? NULL
-                                         : "the oldest node lost its GID";
+    if (!ev_has_claims(priv, EV_OLDEST))
+        return "the oldest node's claims were dropped";
+    return ev_resolve(priv) == UINT32_MAX ? NULL
+                                          : "the oldest node's GID resolves, "
+                                            "though it is dead";
 }
 
 /* EV_ROOM and EV_AGAIN: nothing is evicted */
@@ -6394,8 +6408,6 @@ static const char *ev_unpublished(struct ev_fixture *fx)
         why = "the evicted node's advertisement wasn't handled";
     if (!why && ev_has_claims(priv, EV_OLDEST))
         why = "the advertisement put the evicted node's claims back";
-    if (!why && ev_resolve(priv) != UINT32_MAX)
-        why = "the evicted node owns its GID again";
     tcp_retire_conn(conn);
     return why;
 }
