@@ -53,21 +53,21 @@ include(${SETTINGS})
 
 # Fail the test with a message. The message can't contain semicolons,
 # so lists in it have to be joined first.
-function(fail)
+function(ernic_fail)
     string(JOIN "" text ${ARGN})
     message(FATAL_ERROR "run-package-test: ${text}")
 endfunction()
 
 # Run a command, fail with its output if it fails, and set out_var to
 # its standard output
-function(run_command out_var description)
+function(ernic_run_command out_var description)
     execute_process(
         COMMAND ${ARGN}
         RESULT_VARIABLE result
         OUTPUT_VARIABLE output
         ERROR_VARIABLE error)
     if(NOT result EQUAL 0)
-        fail("${description} failed:\n${output}${error}")
+        ernic_fail("${description} failed:\n${output}${error}")
     endif()
     set(${out_var} "${output}" PARENT_SCOPE)
 endfunction()
@@ -82,11 +82,11 @@ set(config_args)
 if(CONFIG)
     set(config_args -C ${CONFIG})
 endif()
-run_command(unused "cpack -G DEB"
+ernic_run_command(unused "cpack -G DEB"
     ${CMAKE_CPACK_COMMAND} --config ${CPACK_CONFIG} -G DEB
         -B ${package_dir} ${config_args})
 
-run_command(build_architecture "dpkg --print-architecture"
+ernic_run_command(build_architecture "dpkg --print-architecture"
     ${DPKG} --print-architecture)
 string(STRIP "${build_architecture}" build_architecture)
 
@@ -136,7 +136,7 @@ if(INSTALL_SERVICE)
         RELATIVE ${SOURCE_DIR}/ansible/files/patches
         ${SOURCE_DIR}/ansible/files/patches/*.patch)
     if(NOT patches)
-        fail("found no driver patches in "
+        ernic_fail("found no driver patches in "
             "${SOURCE_DIR}/ansible/files/patches")
     endif()
     foreach(patch IN LISTS patches)
@@ -165,7 +165,7 @@ endif()
 # Turn a DEB relationship field into a list of package names, without
 # version constraints or architecture qualifiers:
 # "pkg (>= 1), a | b:any" -> "pkg;a;b"
-function(parse_deb_relations out_var text)
+function(ernic_parse_deb_relations out_var text)
     string(REGEX REPLACE "\\([^)]*\\)" "" text "${text}")
     string(REGEX REPLACE ":[a-z0-9]+" "" text "${text}")
     string(REGEX REPLACE "[ \t\n]" "" text "${text}")
@@ -174,8 +174,8 @@ function(parse_deb_relations out_var text)
 endfunction()
 
 # Read one field of a package's control file into out_var
-function(read_field out_var package field)
-    run_command(value "read ${field} from ${package}"
+function(ernic_read_field out_var package field)
+    ernic_run_command(value "read ${field} from ${package}"
         ${DPKG_DEB} -f ${package} ${field})
     string(STRIP "${value}" value)
     set(${out_var} "${value}" PARENT_SCOPE)
@@ -183,56 +183,56 @@ endfunction()
 
 file(GLOB packages ${package_dir}/*.deb)
 if(NOT packages)
-    fail("cpack -G DEB didn't create any packages")
+    ernic_fail("cpack -G DEB didn't create any packages")
 endif()
 
 set(found_packages)
 set(all_files)
 foreach(package IN LISTS packages)
-    read_field(name ${package} Package)
+    ernic_read_field(name ${package} Package)
     cmake_path(GET package FILENAME package_file)
     set(what "${package_file} (${name})")
 
     if(NOT name IN_LIST expected_packages)
         list(JOIN expected_packages ", " expected_text)
-        fail("${what}: unexpected package (expected ${expected_text})")
+        ernic_fail("${what}: unexpected package (expected ${expected_text})")
     endif()
     if(name IN_LIST found_packages)
-        fail("cpack -G DEB created more than one ${name} package")
+        ernic_fail("cpack -G DEB created more than one ${name} package")
     endif()
     list(APPEND found_packages ${name})
 
-    read_field(version ${package} Version)
+    ernic_read_field(version ${package} Version)
     if(NOT version STREQUAL "${VERSION}")
-        fail("${what}: version is ${version}, not ${VERSION}")
+        ernic_fail("${what}: version is ${version}, not ${VERSION}")
     endif()
 
-    read_field(architecture ${package} Architecture)
+    ernic_read_field(architecture ${package} Architecture)
     if(NOT architecture STREQUAL "${${name}_architecture}")
-        fail("${what}: architecture is ${architecture}, not "
+        ernic_fail("${what}: architecture is ${architecture}, not "
             "${${name}_architecture}")
     endif()
 
-    read_field(depends ${package} Depends)
+    ernic_read_field(depends ${package} Depends)
     set(${name}_depends_field "${depends}")
-    parse_deb_relations(depends "${depends}")
+    ernic_parse_deb_relations(depends "${depends}")
     set(${name}_found_depends ${depends})
     foreach(depend IN LISTS ${name}_depends)
         if(NOT depend IN_LIST depends)
-            fail("${what}: doesn't depend on ${depend} (Depends: "
+            ernic_fail("${what}: doesn't depend on ${depend} (Depends: "
                 "${${name}_depends_field})")
         endif()
     endforeach()
 
-    read_field(recommends ${package} Recommends)
-    parse_deb_relations(recommends "${recommends}")
+    ernic_read_field(recommends ${package} Recommends)
+    ernic_parse_deb_relations(recommends "${recommends}")
     set(expected "${${name}_recommends}")
     list(SORT recommends)
     list(SORT expected)
     if(NOT "${recommends}" STREQUAL "${expected}")
         list(JOIN recommends ", " recommends_text)
         list(JOIN expected ", " expected_text)
-        fail("${what}: recommends '${recommends_text}', not "
+        ernic_fail("${what}: recommends '${recommends_text}', not "
             "'${expected_text}'")
     endif()
 
@@ -240,7 +240,7 @@ foreach(package IN LISTS packages)
     # archive's conffiles, which is there only if there are any
     set(control_dir ${TEST_DIR}/control/${name})
     file(MAKE_DIRECTORY ${TEST_DIR}/control)
-    run_command(unused "extract the control files of ${package_file}"
+    ernic_run_command(unused "extract the control files of ${package_file}"
         ${DPKG_DEB} -e ${package} ${control_dir})
     set(conffiles)
     if(EXISTS ${control_dir}/conffiles)
@@ -250,14 +250,14 @@ foreach(package IN LISTS packages)
     if(NOT "${conffiles}" STREQUAL "${expected}")
         list(JOIN conffiles ", " conffiles_text)
         list(JOIN expected ", " expected_text)
-        fail("${what}: configuration files are '${conffiles_text}', not "
+        ernic_fail("${what}: configuration files are '${conffiles_text}', not "
             "'${expected_text}'")
     endif()
 
     # <mode> <owner> <size> <date> <time> ./<path>. Directories end with
     # "/". Their modes aren't checked: CPack takes them from the staged
     # install, and so from the umask of whoever builds the packages.
-    run_command(listing "list ${package_file}" ${DPKG_DEB} -c ${package})
+    ernic_run_command(listing "list ${package_file}" ${DPKG_DEB} -c ${package})
     string(REPLACE "\n" ";" listing "${listing}")
     set(expected ${${name}_programs} ${${name}_files})
     set(files)
@@ -267,7 +267,7 @@ foreach(package IN LISTS packages)
         endif()
         if(NOT line MATCHES
                 "^(.)([^ ]+) +[^ ]+ +[0-9]+ +[^ ]+ +[^ ]+ +\\.(/.*)$")
-            fail("${what}: can't read this line of its listing: ${line}")
+            ernic_fail("${what}: can't read this line of its listing: ${line}")
         endif()
         set(type "${CMAKE_MATCH_1}")
         set(mode "${CMAKE_MATCH_2}")
@@ -276,13 +276,13 @@ foreach(package IN LISTS packages)
             continue()
         endif()
         if(NOT type STREQUAL "-")
-            fail("${what}: ${path} isn't a regular file or a directory")
+            ernic_fail("${what}: ${path} isn't a regular file or a directory")
         endif()
         if(path IN_LIST all_files)
-            fail("${what}: ${path} is in another package too")
+            ernic_fail("${what}: ${path} is in another package too")
         endif()
         if(NOT path IN_LIST expected)
-            fail("${what}: contains ${path}, which it shouldn't")
+            ernic_fail("${what}: contains ${path}, which it shouldn't")
         endif()
         if(path IN_LIST ${name}_programs)
             set(expected_mode rwxr-xr-x)
@@ -290,7 +290,8 @@ foreach(package IN LISTS packages)
             set(expected_mode rw-r--r--)
         endif()
         if(NOT mode STREQUAL expected_mode)
-            fail("${what}: ${path} has mode ${mode}, not ${expected_mode}")
+            ernic_fail("${what}: ${path} has mode ${mode}, not "
+                "${expected_mode}")
         endif()
         list(APPEND files "${path}")
         list(APPEND all_files "${path}")
@@ -298,11 +299,11 @@ foreach(package IN LISTS packages)
 
     foreach(file IN LISTS expected)
         if(NOT file IN_LIST files)
-            fail("${what}: doesn't contain ${file}")
+            ernic_fail("${what}: doesn't contain ${file}")
         endif()
     endforeach()
 
-    run_command(unused "extract ${package_file}"
+    ernic_run_command(unused "extract ${package_file}"
         ${DPKG_DEB} -x ${package} ${root})
 
     message(STATUS "run-package-test: ${what}: OK")
@@ -310,7 +311,7 @@ endforeach()
 
 foreach(name IN LISTS expected_packages)
     if(NOT name IN_LIST found_packages)
-        fail("cpack -G DEB didn't create ${name}")
+        ernic_fail("cpack -G DEB didn't create ${name}")
     endif()
 endforeach()
 
@@ -327,7 +328,7 @@ if(INSTALL_SERVICE)
         endif()
     endforeach()
     if(NOT found)
-        fail("${exporter} doesn't depend on ${exact_depend} (Depends: "
+        ernic_fail("${exporter} doesn't depend on ${exact_depend} (Depends: "
             "${${exporter}_depends_field})")
     endif()
 endif()
@@ -336,8 +337,8 @@ endif()
 
 # Set out_var to the libraries an ELF file needs, and rpath_var and
 # runpath_var to its DT_RPATH and DT_RUNPATH, empty if it has none
-function(read_dynamic out_var rpath_var runpath_var file)
-    run_command(dynamic "readelf -d ${file}" ${READELF} -W -d ${file})
+function(ernic_read_dynamic out_var rpath_var runpath_var file)
+    ernic_run_command(dynamic "readelf -d ${file}" ${READELF} -W -d ${file})
     string(REGEX MATCHALL "\\(NEEDED\\)[^\n]*\\[[^]\n]+\\]" needed
         "${dynamic}")
     list(TRANSFORM needed REPLACE "^.*\\[([^]]+)\\]$" "\\1")
@@ -358,7 +359,7 @@ endfunction()
 # an ELF file in it needs. The private libvfio-user is in rocm-ernic
 # itself. Without it, nothing can provide libvfio-user, since Ubuntu
 # doesn't package it, so it's left out.
-function(check_library_depends file needed)
+function(ernic_check_library_depends file needed)
     foreach(library IN LISTS needed)
         if(BUNDLE_VFIO_USER AND library STREQUAL VFIO_USER_SONAME)
             continue()
@@ -375,7 +376,7 @@ function(check_library_depends file needed)
             OUTPUT_VARIABLE owners_text
             ERROR_VARIABLE error)
         if(NOT result EQUAL 0)
-            fail("${file} needs ${library}, which no installed package "
+            ernic_fail("${file} needs ${library}, which no installed package "
                 "has, so rocm-ernic can't depend on it:\n${error}")
         endif()
         string(REPLACE "\n" ";" lines "${owners_text}")
@@ -386,7 +387,7 @@ function(check_library_depends file needed)
                 continue()
             endif()
             string(SUBSTRING "${line}" 0 ${separator} line_owners)
-            parse_deb_relations(line_owners "${line_owners}")
+            ernic_parse_deb_relations(line_owners "${line_owners}")
             list(APPEND owners ${line_owners})
         endforeach()
 
@@ -399,16 +400,16 @@ function(check_library_depends file needed)
         if(NOT found)
             list(REMOVE_DUPLICATES owners)
             list(JOIN owners ", " owners_text)
-            fail("${file} needs ${library}, but ${server} doesn't depend "
-                "on a package that has it (${owners_text}). Depends: "
+            ernic_fail("${file} needs ${library}, but ${server} doesn't "
+                "depend on a package that has it (${owners_text}). Depends: "
                 "${${server}_depends_field}")
         endif()
     endforeach()
 endfunction()
 
 set(server_program ${root}${BINDIR}/rocm-ernic)
-read_dynamic(needed rpath runpath ${server_program})
-check_library_depends(${BINDIR}/rocm-ernic "${needed}")
+ernic_read_dynamic(needed rpath runpath ${server_program})
+ernic_check_library_depends(${BINDIR}/rocm-ernic "${needed}")
 
 if(BUNDLE_VFIO_USER)
     set(private_lib_dir ${LIBDIR}/rocm-ernic)
@@ -416,20 +417,20 @@ if(BUNDLE_VFIO_USER)
         OUTPUT_VARIABLE relative_rpath)
     set(expected_rpath "$ORIGIN/${relative_rpath}")
     if(NOT rpath STREQUAL expected_rpath OR NOT runpath STREQUAL "")
-        fail("${BINDIR}/rocm-ernic has DT_RPATH '${rpath}' and DT_RUNPATH "
-            "'${runpath}', not DT_RPATH '${expected_rpath}' and no "
-            "DT_RUNPATH")
+        ernic_fail("${BINDIR}/rocm-ernic has DT_RPATH '${rpath}' and "
+            "DT_RUNPATH '${runpath}', not DT_RPATH '${expected_rpath}' and "
+            "no DT_RUNPATH")
     endif()
     if(NOT VFIO_USER_SONAME IN_LIST needed)
-        fail("${BINDIR}/rocm-ernic doesn't need ${VFIO_USER_SONAME}")
+        ernic_fail("${BINDIR}/rocm-ernic doesn't need ${VFIO_USER_SONAME}")
     endif()
 
-    read_dynamic(needed rpath runpath ${root}${private_vfio_user})
+    ernic_read_dynamic(needed rpath runpath ${root}${private_vfio_user})
     if(NOT rpath STREQUAL "" OR NOT runpath STREQUAL "")
-        fail("${private_vfio_user} has a run path (DT_RPATH '${rpath}', "
+        ernic_fail("${private_vfio_user} has a run path (DT_RPATH '${rpath}', "
             "DT_RUNPATH '${runpath}')")
     endif()
-    check_library_depends(${private_vfio_user} "${needed}")
+    ernic_check_library_depends(${private_vfio_user} "${needed}")
 endif()
 
 # ── Paths in the installed files ─────────────────
@@ -474,8 +475,8 @@ if(NOT INSTALL_PREFIX STREQUAL "/usr/local")
             endif()
             if(rest MATCHES "/usr/local/")
                 string(REPLACE "${root}" "" path "${file}")
-                fail("${path} names /usr/local/, but the packages install "
-                    "to ${INSTALL_PREFIX}: ${line}")
+                ernic_fail("${path} names /usr/local/, but the packages "
+                    "install to ${INSTALL_PREFIX}: ${line}")
             endif()
         endforeach()
     endforeach()
@@ -490,7 +491,8 @@ foreach(file IN LISTS text_files)
         foreach(name IN LISTS names)
             if(NOT name STREQUAL read_env_file)
                 string(REPLACE "${root}" "" path "${file}")
-                fail("${path} names ${name}, not ${read_env_file}: ${line}")
+                ernic_fail("${path} names ${name}, not ${read_env_file}: "
+                    "${line}")
             endif()
         endforeach()
     endforeach()
@@ -509,7 +511,8 @@ foreach(unit IN LISTS units)
         if(line MATCHES "^EnvironmentFile=-?(.*)$")
             set(env_file "${CMAKE_MATCH_1}")
             if(NOT env_file STREQUAL read_env_file)
-                fail("${unit_path} reads ${env_file}, not ${read_env_file}")
+                ernic_fail("${unit_path} reads ${env_file}, not "
+                    "${read_env_file}")
             endif()
             set(reads_env_file ON)
             continue()
@@ -519,17 +522,18 @@ foreach(unit IN LISTS units)
         foreach(word IN LISTS words)
             string(FIND "${word}" "${INSTALL_PREFIX}/" position)
             if(position EQUAL 0 AND NOT word IN_LIST all_files)
-                fail("${unit_path} runs ${word}, which isn't in a package")
+                ernic_fail("${unit_path} runs ${word}, which isn't in a "
+                    "package")
             endif()
         endforeach()
     endforeach()
     if(NOT reads_env_file)
-        fail("${unit_path} doesn't read ${read_env_file} "
+        ernic_fail("${unit_path} doesn't read ${read_env_file} "
             "(no EnvironmentFile=)")
     endif()
 endforeach()
 if(INSTALL_SERVICE AND NOT units)
-    fail("found no systemd units in the packages")
+    ernic_fail("found no systemd units in the packages")
 endif()
 
 message(STATUS "run-package-test: OK")

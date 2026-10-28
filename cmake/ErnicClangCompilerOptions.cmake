@@ -78,7 +78,7 @@ endfunction()
 
 # Populate ``outvar`` with clang warning flags appropriate for
 # the given ``compiler_version``.
-function(get_ernic_clang_warning_flags outvar compiler_version)
+function(ernic_get_clang_warning_flags outvar compiler_version)
 
     set(flags
         -Wall

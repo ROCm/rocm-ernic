@@ -17,7 +17,7 @@ include(ErnicFortifySource)
 
 # Populate ``outvar`` with GCC warning flags appropriate for
 # the given ``compiler_version``.
-function(get_ernic_gnu_warning_flags outvar compiler_version)
+function(ernic_get_gnu_warning_flags outvar compiler_version)
 
     set(flags
         -Wall

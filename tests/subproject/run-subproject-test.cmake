@@ -26,7 +26,7 @@ include(${SETTINGS})
 set(parent_build_dir ${TEST_DIR}/parent-build)
 
 # Run a command and fail with its output if it fails
-function(run_step description)
+function(ernic_run_step description)
     execute_process(
         COMMAND ${ARGN}
         RESULT_VARIABLE result
@@ -47,7 +47,7 @@ if(MAKE_PROGRAM)
     list(APPEND generator_args -DCMAKE_MAKE_PROGRAM=${MAKE_PROGRAM})
 endif()
 
-run_step("configure the parent project"
+ernic_run_step("configure the parent project"
     ${CMAKE_COMMAND} -S ${PARENT_SOURCE_DIR} -B ${parent_build_dir}
         ${generator_args} -C ${PARENT_CACHE})
 
@@ -55,6 +55,6 @@ set(config_args)
 if(CONFIG)
     set(config_args --config ${CONFIG})
 endif()
-run_step("build rocm-ernic in the parent project"
+ernic_run_step("build rocm-ernic in the parent project"
     ${CMAKE_COMMAND} --build ${parent_build_dir} --target rocm-ernic
         ${config_args})
