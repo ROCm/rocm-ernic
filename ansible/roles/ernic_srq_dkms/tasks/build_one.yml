@@ -29,13 +29,13 @@
 
 # Discarded rather than reused, because this role exists to VERIFY the patches
 # apply and build. The fetch script's sentinel names the ref and a digest of
-# patches/srq, so it does fetch again when the series changes, but it names
-# the ref, not the commit the ref resolved to, and it cannot tell that a tree
-# was edited after it was patched. On a persistent build host either one
-# means the role builds sources that are not what the repository holds and
-# reports success, which is the one answer a verification gate must never
-# give. Re-fetching costs a clone; being wrong costs a merged patch that does
-# not apply.
+# the repository and patches/srq, so it does fetch again when either changes,
+# but it names the ref, not the commit the ref resolved to, and it cannot tell
+# that a tree was edited after it was patched. On a persistent build host
+# either one means the role builds sources that are not what the repository
+# holds and reports success, which is the one answer a verification gate must
+# never give. Re-fetching costs a clone; being wrong costs a merged patch that
+# does not apply.
 #
 # The fetch task has no `creates:`. A directory that exists says nothing
 # about which series was applied, and the sentinel's name depends on the

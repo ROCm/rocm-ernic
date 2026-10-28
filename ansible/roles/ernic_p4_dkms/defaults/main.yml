@@ -48,9 +48,10 @@ ernic_p4_dkms_source_dir: /usr/src/ionic-ernic-p4
 ernic_p4_dkms_src_pointer: /etc/ernic-p4-ionic-src
 
 # Re-fetch rather than trust a cached tree. The fetch script's sentinel
-# covers the ref and the series, so it would usually be right -- but this
-# role exists to verify that what is in the repository builds, and a role
-# that can report success against last week's sources is not doing that.
+# covers the ref, the repository and the series, so it would usually be
+# right -- but this role exists to verify that what is in the repository
+# builds, and a role that can report success against last week's sources
+# is not doing that.
 ernic_p4_dkms_force_fetch: true
 
 # Module.symvers of the ionic the guest actually runs.

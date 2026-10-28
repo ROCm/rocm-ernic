@@ -17,7 +17,7 @@ bugfixes:
     set to false, ``ernic_srq_dkms`` and ``ernic_p4_dkms`` skipped the
     ionic source fetch whenever a tree for the ref existed, so a changed
     patch series was never applied.  The fetch script now decides, and
-    fetches again when the ref or the series changes.
+    fetches again when the ref, the repository or the series changes.
   - >-
     With ``ernic_srq_dkms_fetch_on_controller``, ``ernic_srq_dkms`` shipped
     the archive an earlier run had left on the controller rather than the

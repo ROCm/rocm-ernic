@@ -1179,8 +1179,8 @@
     `--patches-dir` and `--source-dir` now work.
   * With `ERNIC_BUILD_KMOD=ON`, every `build-ionic-dkms` or
     `install-ionic-dkms` deleted the ionic sources and cloned them again.
-    The sources are now fetched again only when `IONIC_KERNEL_REF` or the
-    patch series changes.
+    The sources are now fetched again only when `IONIC_KERNEL_REF`,
+    `IONIC_KERNEL_REPO` or the patch series changes.
   * A failed ionic DKMS build reports the right `make.log`, and says when
     the log it found was written for another kernel.
   * `ernicctl driver-push --install` ran the installer on

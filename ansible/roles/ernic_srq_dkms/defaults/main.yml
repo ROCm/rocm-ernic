@@ -90,11 +90,11 @@ ernic_srq_dkms_scripts_dir: "{{ role_path }}/../../files/scripts"
 
 # Re-fetch the ionic sources even when a checkout for this ref already exists.
 # On by default: the role's purpose is to prove patches/srq applies and builds.
-# Without it the fetch script still fetches again when the ref's name or the
-# series changes, but not when the ref now resolves to another commit or the
-# tree was edited after it was patched, and the gate would pass on sources the
-# repository does not hold. Set false only for a throwaway iteration on a tree
-# you have not touched.
+# Without it the fetch script still fetches again when the ref's name, the
+# repository or the series changes, but not when the ref now resolves to
+# another commit or the tree was edited after it was patched, and the gate
+# would pass on sources the repository does not hold. Set false only for a
+# throwaway iteration on a tree you have not touched.
 ernic_srq_dkms_force_fetch: true
 
 # Fetch and patch on the CONTROLLER, then ship the tree to the target and build

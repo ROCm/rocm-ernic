@@ -9,10 +9,11 @@
 # The guest has outbound internet, so it sparse-clones the kernel
 # itself with the same fetch-ionic-sources.sh the host build uses,
 # staged from the collection by stage_sources.yml.  The script leaves a
-# sentinel named for the ref and a digest of the patch series, and skips
-# the fetch when it is present, so re-runs are cheap and a changed series
-# is fetched again.  That is why the fetch task has no creates: the name
-# depends on the digest, which only the script computes.
+# sentinel named for the ref and a digest of the repository and the patch
+# series, and skips the fetch when it is present, so re-runs are cheap and
+# a changed repository or series is fetched again.  That is why the fetch
+# task has no creates: the name depends on the digest, which only the
+# script computes.
 
 ---
 # ernic_ionic_ref and ernic_ionic_kver are resolved by the

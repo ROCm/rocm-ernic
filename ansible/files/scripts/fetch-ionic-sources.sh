@@ -99,9 +99,12 @@ done
 # renaming a patch counts as a change too.
 # Every series contributes, and each directory's name goes in too: naming
 # one series and not another is exactly the change this has to notice.
-patch_digest() {
+# The repository goes in as well, because the same ref in another fork can
+# be another tree.
+tree_digest() {
     local d f
     {
+        printf '%s\n' "${KERNEL_REPO}"
         for d in "${PATCHES_DIRS[@]}"; do
             printf '%s\n' "${d}"
             for f in "${d}"/*.patch; do
@@ -113,13 +116,13 @@ patch_digest() {
     } | sha256sum | cut -c1-16
 }
 
-SENTINEL="${SOURCE_DIR}/.patches-applied-${KERNEL_REF}-$(patch_digest)"
+SENTINEL="${SOURCE_DIR}/.patches-applied-${KERNEL_REF}-$(tree_digest)"
 
 # The Ansible roles' fetch tasks report a change unless they see "nothing
 # to do" in this message.
 if [ -f "${SENTINEL}" ] && ! ${FORCE}; then
-    echo "-- ionic sources already at ${KERNEL_REF} with this series;" \
-         "nothing to do"
+    echo "-- ionic sources already at ${KERNEL_REF} from ${KERNEL_REPO}" \
+         "with this series; nothing to do"
     exit 0
 fi
 

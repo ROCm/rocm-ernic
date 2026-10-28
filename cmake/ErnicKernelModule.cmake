@@ -67,10 +67,11 @@ set(IONIC_FETCH_SCRIPT
 #
 # The target always runs, and the script decides whether there is work
 # to do: it leaves a sentinel named for the ref and a digest of the
-# patch series, and exits early when that sentinel is present.  CMake
-# can't name the sentinel as an OUTPUT, since the digest is computed by
-# the script, and passing --force would make the script delete and
-# fetch the tree again on every build.
+# repository and the patch series, and exits early when that sentinel is
+# present, so changing IONIC_KERNEL_REF, IONIC_KERNEL_REPO or a patch
+# fetches the sources again.  CMake can't name the sentinel as an
+# OUTPUT, since the digest is computed by the script, and passing --force
+# would make the script delete and fetch the tree again on every build.
 
 if(ERNIC_BUILD_KMOD)
     # -- fetch-ionic-sources -------------------------------------------------
