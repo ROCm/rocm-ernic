@@ -3180,8 +3180,10 @@ static void test_engine_edges(void)
     struct p4_engine *eng = p4_engine_create();
     struct p4_rdma_meta meta;
     struct p4_update up;
+    struct p4_program *prog = NULL;
     bool suppress = true;
     char err[4];
+    char why[128];
 
     memset(&meta, 0, sizeof(meta));
     check(p4_engine_process_rdma(eng, NULL, &meta, &suppress) == -ENOENT &&
@@ -3201,6 +3203,15 @@ static void test_engine_edges(void)
           "a chunk with no engine was accepted");
     check(p4_engine_load_commit(NULL) == -EINVAL,
           "a commit with no engine was accepted");
+
+    /* The parser says why on every failure, a missing argument included. */
+    check(p4_json_parse(NULL, 1, &prog, why, sizeof(why)) == -EINVAL &&
+              why[0] != '\0' && prog == NULL,
+          "a parse with no buffer was not refused with a reason");
+    check(p4_json_parse("{}", 2, NULL, why, sizeof(why)) == -EINVAL &&
+              why[0] != '\0',
+          "a parse with nowhere to put the program was not refused with a "
+          "reason");
 
     p4_engine_destroy(eng);
 }

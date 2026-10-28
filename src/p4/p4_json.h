@@ -71,7 +71,8 @@ struct p4_program;
  *
  * @err, when not NULL, receives a one-line description of the first thing
  * that was wrong, NUL terminated and at most @err_len bytes including the
- * terminator.  It names the offending construct where it can.
+ * terminator.  It names the offending construct where it can.  Every
+ * failure fills it in, running out of memory included.
  *
  * Returns 0, or a negative errno: -EINVAL for a document this will not
  * accept, including one over P4_JSON_MAX_COST, -ENOMEM, -ENOSYS for a

@@ -2674,12 +2674,12 @@ int p4_json_parse(const void *buf, size_t len, struct p4_program **out,
     if (err && err_len)
         err[0] = '\0';
 
-    if (!buf || !out)
-        return -EINVAL;
-
     memset(&w, 0, sizeof(w));
     w.err = err;
     w.err_len = err_len;
+
+    if (!buf || !out)
+        return p4_fail(&w, -EINVAL, "no program buffer or no place to put it");
 
     if (len == 0 || len > P4_PROGRAM_MAX)
         return p4_fail(&w, -EINVAL, "the program is %zu bytes; want 1 to %u",
@@ -2697,7 +2697,7 @@ int p4_json_parse(const void *buf, size_t len, struct p4_program **out,
 
     tok = json_tokener_new_ex(P4_JSON_MAX_DEPTH);
     if (!tok)
-        return -ENOMEM;
+        return p4_fail(&w, -ENOMEM, "no memory for the JSON tokener");
     json_tokener_set_flags(tok,
                            JSON_TOKENER_STRICT | JSON_TOKENER_VALIDATE_UTF8);
 
@@ -2740,7 +2740,7 @@ int p4_json_parse(const void *buf, size_t len, struct p4_program **out,
 
     w.prog = calloc(1, sizeof(*w.prog));
     if (!w.prog) {
-        rc = -ENOMEM;
+        rc = p4_fail(&w, -ENOMEM, "no memory for the program");
         goto out;
     }
 
