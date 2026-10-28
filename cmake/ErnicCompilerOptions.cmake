@@ -100,9 +100,9 @@ function(ernic_set_linker_flags target)
 endfunction()
 
 # Apply compiler warning and hardening flags to ``target``
-# based on the compiler (GCC or Clang) used for each source,
-# along with the feature-test macros, the linker hardening flags,
-# and -Werror if ERNIC_WERROR is on.
+# based on the C compiler (GCC or Clang), along with the
+# feature-test macros, the linker hardening flags, and -Werror
+# if ERNIC_WERROR is on.
 function(ernic_set_compiler_flags target)
     # The library interfaces the code may use: C11 (CMAKE_C_STANDARD)
     # plus POSIX.1-2008, and glibc's _DEFAULT_SOURCE for the BSD and
@@ -123,28 +123,19 @@ function(ernic_set_compiler_flags target)
       _DEFAULT_SOURCE
     )
 
-    get_target_property(sources ${target} SOURCES)
-    foreach(source IN LISTS sources)
-        unset(compiler_flags)
-        get_source_file_property(language ${source} LANGUAGE)
-        if(NOT language)
-            set(language C)
-        endif()
-        set(compiler_id "${CMAKE_${language}_COMPILER_ID}")
-        set(compiler_version
-          "${CMAKE_${language}_COMPILER_VERSION}")
-
-        if(compiler_id STREQUAL "GNU")
-            get_ernic_gnu_warning_flags(compiler_flags
-              ${compiler_version})
-        elseif(compiler_id STREQUAL "Clang")
-            get_ernic_clang_warning_flags(compiler_flags
-              ${compiler_version})
-        endif()
-
-        target_compile_options(${target} PRIVATE
-          $<$<COMPILE_LANG_AND_ID:${language},${compiler_id}>:${compiler_flags}>)
-    endforeach()
+    # Every source is C, the only language project() enables. The flags
+    # apply to the whole target, including sources added after this call.
+    set(compiler_flags)
+    if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+        get_ernic_gnu_warning_flags(compiler_flags
+          ${CMAKE_C_COMPILER_VERSION})
+    elseif(CMAKE_C_COMPILER_ID STREQUAL "Clang")
+        get_ernic_clang_warning_flags(compiler_flags
+          ${CMAKE_C_COMPILER_VERSION})
+    endif()
+    if(compiler_flags)
+        target_compile_options(${target} PRIVATE ${compiler_flags})
+    endif()
 
     if(ERNIC_WERROR)
         target_compile_options(${target} PRIVATE -Werror)
