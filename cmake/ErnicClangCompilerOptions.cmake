@@ -113,7 +113,6 @@ function(get_ernic_clang_warning_flags outvar compiler_version)
         -fno-strict-aliasing
 
         # C-specific warnings
-        -Wimplicit-function-declaration
         -Wmissing-prototypes
         -Wstrict-prototypes
         -Wbad-function-cast
@@ -132,7 +131,6 @@ function(get_ernic_clang_warning_flags outvar compiler_version)
         -Wcomma
         -Wcompound-token-split-by-space
         -Wconditional-uninitialized
-        -Wconversion
         -Wcstring-format-directive
         -Wdate-time
         -Wdisabled-macro-expansion
@@ -151,7 +149,6 @@ function(get_ernic_clang_warning_flags outvar compiler_version)
         -Wformat-pedantic
         -Wformat-type-confusion
         -Wfour-char-constants
-        -Wfuse-ld-path
         -Wglobal-constructors
         -Wimplicit-fallthrough
         -Wincompatible-function-pointer-types-strict
@@ -166,6 +163,7 @@ function(get_ernic_clang_warning_flags outvar compiler_version)
         -Wmissing-noreturn
         -Wmissing-variable-declarations
         -Wnewline-eof
+        # Includes -Wconversion and -Wsign-compare
         -Wnon-gcc
         -Wnonportable-system-include-path
         -Wnull-dereference
@@ -183,7 +181,6 @@ function(get_ernic_clang_warning_flags outvar compiler_version)
         # -Wpacked-non-pod, is C++-only.
         #-Wpacked
 
-        -Wpartial-availability
         -Wpointer-arith
         -Wpoison-system-directories
         -Wpragmas
@@ -194,15 +191,12 @@ function(get_ernic_clang_warning_flags outvar compiler_version)
         -Wshadow-all
         -Wshift-sign-overflow
         -Wsigned-enum-bitfield
-        -Wsource-uses-openmp
         -Wstatic-in-inline
         -Wswitch-default
         -Wswitch-enum
         -Wtautological-constant-in-range-compare
-        -Wtype-limits
         -Wunaligned-access
         -Wundef
-        -Wundef-prefix
         -Wunguarded-availability
         -Wunreachable-code-aggressive
         #-Wunsafe-buffer-usage # TODO: Fix issues
@@ -220,7 +214,6 @@ function(get_ernic_clang_warning_flags outvar compiler_version)
         set(flags
             -Wnonportable-private-system-apinotes-path
             -Wopenacc
-            -Wsource-uses-openacc
             ${flags}
         )
     endif()
@@ -235,7 +228,6 @@ function(get_ernic_clang_warning_flags outvar compiler_version)
     if(compiler_version VERSION_GREATER_EQUAL 20.1)
         set(flags
             -Wdecls-in-multiple-modules
-            -Wvariadic-macro-arguments-omitted
             ${flags}
         )
     endif()
