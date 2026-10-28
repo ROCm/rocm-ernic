@@ -115,6 +115,9 @@ cmake --build build
 - Standard C11; no GNU extensions without permission. Atomics
   (`<stdatomic.h>`) and threads (`qemu/thread.h` over pthreads) are
   available; see [Thread safety](#thread-safety).
+- **64-bit Linux only.** 32-bit systems aren't supported, so large-file
+  and 64-bit `time_t` macros (`_FILE_OFFSET_BITS`, `_TIME_BITS`) aren't
+  needed.
 - **No bare `__attribute__`.** Use C11's own forms (`_Alignas`,
   `_Noreturn`, `_Static_assert`), and for the rest, the macros in
   [`src/ernic_attributes.h`](src/ernic_attributes.h), which expand to
@@ -124,10 +127,10 @@ cmake --build build
 - **The library is POSIX.1-2008 plus glibc's `_DEFAULT_SOURCE`**, which
   `ernic_set_compiler_flags()` defines for every target, and every file
   gets exactly those. Don't define `_GNU_SOURCE` or any other feature-test
-  macro (`_XOPEN_SOURCE`, `_ISOC23_SOURCE`, `_FILE_OFFSET_BITS`, ...) in a
-  file, a header, a target, or `CMAKE_C_FLAGS`. `_GNU_SOURCE` exposes
-  every GNU function, turns on glibc's C23 interfaces (const-preserving
-  `strchr()`, a `strtol()` that accepts `0b`), and silences clang-tidy's
+  macro (`_XOPEN_SOURCE`, `_ISOC23_SOURCE`, ...) in a file, a header, a
+  target, or `CMAKE_C_FLAGS`. `_GNU_SOURCE` exposes every GNU function,
+  turns on glibc's C23 interfaces (const-preserving `strchr()`, a
+  `strtol()` that accepts `0b`), and silences clang-tidy's
   `android-cloexec-*` checks. Call a GNU or Linux extension (`accept4()`,
   `pipe2()`, `O_PATH`, `pthread_setname_np()`) through its wrapper in
   [`src/ernic_gnu.h`](src/ernic_gnu.h); `src/ernic_gnu.c`, the only file

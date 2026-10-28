@@ -9,8 +9,8 @@ Building and Installing
 Requirements
 ------------
 
-rocm-ernic builds with GCC or Clang on Linux, and is tested on
-Ubuntu 24.04. It needs:
+rocm-ernic builds with GCC or Clang on 64-bit Linux, and is tested
+on Ubuntu 24.04. 32-bit systems aren't supported. It needs:
 
 - CMake 3.21 or later
 - pkg-config

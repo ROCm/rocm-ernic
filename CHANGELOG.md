@@ -1492,6 +1492,10 @@
     `POLL_SECONDS` rather than as little as a second less. The lanes copy
     `src/ernic_time.h` into the guest with the test sources.
 
+### Limitations
+
+* rocm-ernic supports only 64-bit Linux; 32-bit systems aren't supported.
+
 ### Known issues
 
 * The TCP backend still looks up mesh nodes' hostnames with a lookup that
