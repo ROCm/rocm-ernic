@@ -1446,6 +1446,12 @@
     families and the QP never reached RTR. A guest without the GID now fails
     the play with its GID table. The examples in `docs/testing.rst` look the
     index up too.
+  * The guest SRQ and UD tests (`test_srq_transfer`, `test_ud_transfer`,
+    `test_ud_sq_reclaim`, `test_ud_mesh`) time their completion waits on
+    the monotonic clock rather than `time(NULL)`, so a clock step in the
+    guest can't cut a wait short or stretch it, and a wait lasts its full
+    `POLL_SECONDS` rather than as little as a second less. The lanes copy
+    `src/ernic_time.h` into the guest with the test sources.
 
 ### Known issues
 

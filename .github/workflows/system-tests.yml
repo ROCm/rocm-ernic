@@ -949,7 +949,7 @@ jobs:
         scp -F "$SSH_CONFIG" -P "$SSH_PORT" \
           tests/test_data_transfer.c tests/test_rdma_cm.c \
           tests/test_ud_transfer.c tests/test_ud_sq_reclaim.c \
-          tests/ernic_device.h src/parse_int.h \
+          tests/ernic_device.h src/parse_int.h src/ernic_time.h \
           "${VM_USER}@localhost:/tmp/guest-rdma-tests/"
 
         FAILED=0
@@ -1332,7 +1332,7 @@ jobs:
           "mkdir -p /tmp/srq-test"
         scp -F "$SSH_CONFIG" -P "$SSH_PORT" \
           tests/test_srq.c tests/test_srq_transfer.c tests/ernic_device.h \
-          src/parse_int.h \
+          src/parse_int.h src/ernic_time.h \
           "${VM_USER}@localhost:/tmp/srq-test/"
 
         # test_srq first, then test_srq_transfer: the first says the verbs
