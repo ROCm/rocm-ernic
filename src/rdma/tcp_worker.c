@@ -179,15 +179,33 @@ int tcp_worker_register_with_manager(TcpBackendPrivate *priv,
 {
     uint8_t reg[TCP_REGISTER_NODE_LEN];
     TcpConnection *conn;
-    char hostname[256];
+    /*
+     * A byte more than the field, so that a name too long for it has no NUL
+     * in its first TCP_HOSTNAME_LEN bytes, even where gethostname()
+     * terminates a name it cuts short
+     */
+    char hostname[TCP_HOSTNAME_LEN + 1];
     uint32_t local = tcp_local_node(priv);
     int fd, ret;
 
-    /* Get local hostname */
+    /*
+     * The peers connect to the name this node registers, so it has to be
+     * this host's: with no name, or part of one, it gives up rather than
+     * make one up.  "localhost" would have every peer connect to itself.
+     */
     if (gethostname(hostname, sizeof(hostname)) < 0) {
-        strncpy(hostname, "localhost", sizeof(hostname) - 1);
+        rdma_error_report("TCP: can't register with the manager: "
+                          "gethostname() failed: %s",
+                          strerror(errno));
+        return -1;
     }
-    hostname[sizeof(hostname) - 1] = '\0';
+    if (!memchr(hostname, '\0', TCP_HOSTNAME_LEN)) {
+        rdma_error_report("TCP: can't register with the manager: this "
+                          "host's name is longer than the %d characters "
+                          "registration carries",
+                          TCP_HOSTNAME_LEN - 1);
+        return -1;
+    }
 
     fd = tcp_connect_to_remote(priv->manager_host, priv->manager_port, running,
                                deadline_ms);
@@ -256,9 +274,10 @@ int tcp_worker_register_with_manager(TcpBackendPrivate *priv,
 /*
  * The peers a worker is to connect to, out of the first num_nodes entries of
  * a MESH_TOPOLOGY update, appended to targets: each node the manager reports
- * alive whose id is higher than this one's.  Of each pair of workers, only
- * the one with the lower id connects, so the two don't connect to each other
- * at once; the manager, node 0, is already connected through manager_conn.
+ * alive whose id is higher than this one's, and whose hostname fits its
+ * field.  Of each pair of workers, only the one with the lower id connects,
+ * so the two don't connect to each other at once; the manager, node 0, is
+ * already connected through manager_conn.
  */
 static void tcp_topology_targets(const TcpBackendPrivate *priv,
                                  const uint8_t *topo, uint32_t num_nodes,
@@ -290,11 +309,17 @@ static void tcp_topology_targets(const TcpBackendPrivate *priv,
             continue;
         }
 
+        /* Only a broken or hostile manager sends one: cut short, the name
+         * could be another host's */
+        if (!tcp_hostname_get(target.host,
+                              entry + TCP_MESH_NODE_HOSTNAME_OFF)) {
+            rdma_error_report("TCP: Skipping connection to peer %u, whose "
+                              "hostname in the topology update fills its %d "
+                              "bytes with no NUL",
+                              peer_id, TCP_HOSTNAME_LEN);
+            continue;
+        }
         target.node_id = peer_id;
-        /* Not g_strlcpy(): the peer's hostname may not be terminated */
-        strncpy(target.host, (const char *)entry + TCP_MESH_NODE_HOSTNAME_OFF,
-                sizeof(target.host) - 1);
-        target.host[sizeof(target.host) - 1] = '\0';
         target.port = ernic_get_be16(entry + TCP_MESH_NODE_PORT_OFF);
         g_array_append_val(targets, target);
     }

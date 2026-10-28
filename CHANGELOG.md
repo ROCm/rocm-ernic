@@ -1107,6 +1107,15 @@
   port 1, and `tcp:worker:host:5000:junk` was taken for `host:5000`. The
   server now refuses to start with such a config, saying what is wrong
   with the address.
+* **TCP mesh: a hostname too long for the mesh's messages is refused.** The
+  messages carry a hostname of at most 255 characters, and a longer one was
+  cut short, which could name another host. A manager now refuses a
+  registration whose hostname doesn't fit (result `-EINVAL`), a worker
+  doesn't connect to a peer whose hostname in a topology update doesn't, and
+  a `--backend tcp:` config whose host is 256 characters or more is refused
+  at startup. A worker whose `gethostname()` fails, or whose host name is
+  too long, no longer registers as `localhost`, which would have had its
+  peers connect to themselves; it logs why and doesn't register.
 * **NVMe-oF backend.**
   * A shutdown requested with `CC.EN` still set, as the specification has
     it, now completes. Hosts polled until their timeout (SPDK waited ten
