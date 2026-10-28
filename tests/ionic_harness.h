@@ -466,6 +466,14 @@ bool ih_qp_connect(struct ih *h, const struct ih_qp *a, const struct ih_qp *b);
  */
 bool ih_mr_create(struct ih *h, struct ih_mr *mr, uint32_t lkey, uint64_t va,
                   uint64_t len, uint32_t access, bool reversed);
+/*
+ * Register @src's pages again as @lkey at @va, which must have the same
+ * offset into a page as @src's: two keys naming the same guest memory, as
+ * a guest gets by registering one buffer twice. @alias gets its own copy
+ * of the page list, so each is freed or destroyed on its own.
+ */
+bool ih_mr_alias(struct ih *h, struct ih_mr *alias, const struct ih_mr *src,
+                 uint32_t lkey, uint64_t va, uint32_t access);
 int ih_mr_destroy(struct ih *h, struct ih_mr *mr);
 
 /* Allocate the backing pages and page table only, without CREATE_MR, for

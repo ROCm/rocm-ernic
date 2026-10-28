@@ -38,10 +38,13 @@ void ionic_datapath_set_p4_engine(struct ionic_datapath *dp,
 /*
  * The most a single fp8 operation or conversion may move, in elements.  The
  * work happens on the thread that also services the vfio-user poll loop, so
- * this is a bound on how long a guest may stall that loop, not a bound on
- * memory -- the streaming would take any length.  A megabyte of elements is
- * a visible pause; this is the point at which that was judged acceptable,
- * and it is one constant to revisit when it is not.
+ * this is first a bound on how long a guest may stall that loop.  A
+ * megabyte of elements is a visible pause; this is the point at which that
+ * was judged acceptable, and it is one constant to revisit when it is not.
+ *
+ * It also bounds the memory an operation stages its input in: both
+ * operands of a map(), two bytes an element, or the source of a
+ * conversion, at most four (fp32).  A megabyte at most.
  */
 #define IONIC_FP8_MAP_MAX 262144u
 
@@ -55,9 +58,8 @@ void ionic_datapath_set_p4_engine(struct ionic_datapath *dp,
  * partial buffers is what a collective does, so this is the primitive an
  * allreduce is built from.
  *
- * The regions are streamed in blocks rather than staged whole, so the
- * length is bounded by what a guest may ask the poll loop to do in one go
- * rather than by how much will fit on the stack.
+ * Both operands are read in full before any of the result is written, so
+ * the destination may overlap either of them, or both.
  *
  * This is the implementation of the fp8 extern's map(): a program's action
  * chooses @op, and the work request, not the program, names the regions
@@ -67,8 +69,9 @@ void ionic_datapath_set_p4_engine(struct ionic_datapath *dp,
  * one fp8 value per byte, and the destination region is the same length.
  *
  * Returns 0, or a negative errno: -EINVAL for an argument out of range,
- * -EACCES for a key the guest may not name here, -EFAULT when a region
- * could not be read or written in full.
+ * -EACCES for a key the guest may not name here, -ENOMEM when the
+ * operands could not be staged, -EFAULT when a region could not be read or
+ * written in full.
  */
 int ionic_datapath_fp8_map(struct ionic_datapath *dp, uint8_t op,
                            uint32_t a_lkey, uint64_t a_va, uint32_t b_lkey,
@@ -86,25 +89,14 @@ int ionic_datapath_fp8_map(struct ionic_datapath *dp, uint8_t op,
  *
  * This is the only operation whose destination length is not its source
  * length, so each region is checked against its own, in full, before a
- * byte moves.  Returns 0, or a negative errno.
+ * byte moves.  Returns 0, or a negative errno, as ionic_datapath_fp8_map()
+ * does.
  *
- * The destination may not overlap the source, and nothing here checks
- * that it does not.  The conversion streams a chunk at a time -- read,
- * convert, write -- so a destination that overlaps the part of the
- * source still to be read is overwritten before it is used, and the
- * operation then completes successfully with wrong results from that
- * point on.  Widening makes it easy to reach: fp16 to fp32 into the same
- * address writes two bytes for every one it has read, so the second
- * chunk's input is gone before the first chunk is finished.
- *
- * Not checked because checking it properly is not a range comparison.
- * Two different keys may be registered over the same guest pages, so
- * overlap has to be decided on what the keys resolve to rather than on
- * the keys themselves, and the honest fix is to stage the whole source
- * before writing any of it.  Until then this is the guest corrupting its
- * own memory with its own keys -- it can reach nothing it has not
- * registered, and every region is still checked for that -- so it is
- * recorded here rather than guessed at.
+ * The whole source is read before any of the result is written, so the
+ * destination may overlap it: converting fp16 to fp32 in place works.
+ * Overlap can't be checked for instead, since two keys may be registered
+ * over the same guest pages and so name the same memory at different
+ * addresses.
  */
 int ionic_datapath_fmt_convert(struct ionic_datapath *dp, uint8_t src_fmt,
                                uint8_t dst_fmt, uint32_t a_lkey, uint64_t a_va,
