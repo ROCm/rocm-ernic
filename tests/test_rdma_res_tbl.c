@@ -697,10 +697,14 @@ static bool test_dealloc_locks(void)
     const char *name = "dealloc-locks";
     bool ok = true;
     struct ibv_device_attr a = one_each;
-    LockObserver obs;
+    /* Allocated: qemu_thread_create() keeps its argument in the heap */
+    LockObserver *obs = malloc(sizeof(*obs));
     QemuThread thread;
     uint32_t handle = UINT32_MAX;
 
+    if (!obs) {
+        abort();
+    }
     memset(&dev_res, 0, sizeof(dev_res));
     alloc_injectors_reset();
     if (rdma_rm_init(&dev_res, &a) != 0 ||
@@ -708,14 +712,13 @@ static bool test_dealloc_locks(void)
         abort();
     }
 
-    obs.tbl = &dev_res.cq_tbl;
-    atomic_init(&obs.freed, 0);
-    atomic_init(&obs.seen, 0);
-    atomic_init(&obs.done, false);
-    obs.mismatches = 0;
-    obs.not_freed = 0;
-    if (qemu_thread_create(&thread, "lock-observer", lock_observer, &obs) !=
-        0) {
+    obs->tbl = &dev_res.cq_tbl;
+    atomic_init(&obs->freed, 0);
+    atomic_init(&obs->seen, 0);
+    atomic_init(&obs->done, false);
+    obs->mismatches = 0;
+    obs->not_freed = 0;
+    if (qemu_thread_create(&thread, "lock-observer", lock_observer, obs) != 0) {
         abort();
     }
 
@@ -725,8 +728,9 @@ static bool test_dealloc_locks(void)
         uint32_t again = UINT32_MAX;
 
         rdma_rm_dealloc_cq(&dev_res, handle);
-        atomic_store_explicit(&obs.freed, cycle, memory_order_relaxed);
-        while (atomic_load_explicit(&obs.seen, memory_order_relaxed) != cycle) {
+        atomic_store_explicit(&obs->freed, cycle, memory_order_relaxed);
+        while (atomic_load_explicit(&obs->seen, memory_order_relaxed) !=
+               cycle) {
             sched_yield();
         }
 
@@ -739,22 +743,23 @@ static bool test_dealloc_locks(void)
             ok = false;
         }
     }
-    atomic_store_explicit(&obs.done, true, memory_order_relaxed);
+    atomic_store_explicit(&obs->done, true, memory_order_relaxed);
     qemu_thread_join(&thread);
 
-    if (obs.mismatches != 0) {
+    if (obs->mismatches != 0) {
         printf("FAIL %-18s: the bitmap and the count disagreed under the "
                "lock %u time(s)\n",
-               name, obs.mismatches);
+               name, obs->mismatches);
         ok = false;
     }
-    if (obs.not_freed != 0) {
+    if (obs->not_freed != 0) {
         printf("FAIL %-18s: the entry was still in use under the lock after "
                "%u of %u frees\n",
-               name, obs.not_freed, LOCK_CYCLES);
+               name, obs->not_freed, LOCK_CYCLES);
         ok = false;
     }
 
+    free(obs);
     rdma_rm_fini(&dev_res);
 
     if (ok) {
