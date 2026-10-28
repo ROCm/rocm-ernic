@@ -37,8 +37,9 @@
   * Port (MAC) statistics: the 89 `frames_*` and `octets_*` counters
     `ethtool -S` shows, by result, by unicast, multicast and broadcast, and
     by size bucket, counted as on the wire and cleared on PORT_RESET. A frame
-    dropped for want of a receive buffer, or because the mesh inbox is full,
-    counts as received and as `frames_rx_dropped`.
+    dropped for want of a receive buffer, or because the S3 target's or P4
+    pipeline's queue of frames for the guest is full, counts as received and
+    as `frames_rx_dropped`.
   * `hw_counters` under `/sys/class/infiniband/<dev>/ports/1/` for the
     in-tree `ionic_rdma` driver, for the device and for each QP: commands,
     bytes sent and received, RDMA read and write bytes, doorbells, WQEs and

@@ -17,11 +17,8 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
-#include <pthread.h>
-#include <sched.h>
 
 #include "byteorder.h"
 #include "ionic/ionic_emu_stats.h"
@@ -206,7 +203,7 @@ static const struct count_case count_cases[] = {
      {OP_DROP, NULL, 0, true, IONIC_EMU_DROP_DISABLED, 1},
      {{IONIC_LIF_TX_QUEUE_DISABLED, 1}, {END_VALUES}}},
     {"positive",
-     "Rx inbox full, after fold",
+     "Rx inbox full",
      "rx_ucast_drop_* +1; no queue counter (the guest never saw it)",
      {OP_INBOX_FULL, mac_ucast, 128, false, 0, 1},
      {{IONIC_LIF_RX_UCAST_DROP_PACKETS, 1},
@@ -282,7 +279,7 @@ static const struct count_case count_cases[] = {
       {IONIC_LIF_RX_MCAST_BYTES, 64},
       {END_VALUES}}},
     {"corner",
-     "inbox full 1000 times, then fold",
+     "inbox full 1000 times",
      "rx_bcast_drop_packets 1000, rx_bcast_drop_bytes 64000",
      {OP_INBOX_FULL, mac_bcast, 64, false, 0, 1000},
      {{IONIC_LIF_RX_BCAST_DROP_PACKETS, 1000},
@@ -334,7 +331,6 @@ static void test_counting(void)
         ionic_emu_stats_reset(&st);
         for (unsigned int r = 0; r < c->in.repeat; r++)
             run_op(&st, c);
-        ionic_emu_stats_fold(&st);
 
         for (size_t k = 0; k < MAX_EXPECT && c->want[k].idx >= 0; k++)
             want[c->want[k].idx] = c->want[k].value;
@@ -396,7 +392,7 @@ static void test_classify(void)
     }
 }
 
-/* ---- Fill, fold, reset, wrap ------------------------------------------ */
+/* ---- Fill, reset, wrap ------------------------------------------------ */
 
 static uint64_t qword_at(const uint8_t *buf, unsigned int idx)
 {
@@ -465,7 +461,7 @@ static void test_fill(void)
                   (uint64_t)memcmp(out + IONIC_LIF_TX_UCAST_BYTES * 8, le, 8));
     }
 
-    /* corner: reset() zeroes every qword, including the atomics */
+    /* corner: reset() zeroes every qword */
     for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++)
         st.lif[q] = q + 1;
     ionic_emu_stats_rx_inbox_full(&st, frame_to(mac_ucast, 64), 64, 0);
@@ -477,19 +473,8 @@ static void test_fill(void)
         for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++)
             nonzero += qword_at(out, q) != 0;
         check_u64("corner", "reset(), then fill()",
-                  "every qword 0, including the folded inbox atomic", 0,
-                  nonzero);
+                  "every qword 0, including the inbox drop", 0, nonzero);
     }
-
-    /* corner: folding twice counts the inbox drop once */
-    ionic_emu_stats_reset(&st);
-    ionic_emu_stats_rx_inbox_full(&st, frame_to(mac_ucast, 64), 64, 0);
-    ionic_emu_stats_fold(&st);
-    ionic_emu_stats_fold(&st);
-    ionic_emu_stats_fill(&st, out);
-    check_u64("corner", "inbox-full atomic folded twice (and once by fill)",
-              "counted once", 1,
-              qword_at(out, IONIC_LIF_RX_UCAST_DROP_PACKETS));
 }
 
 /* ---- Port (MAC) counters ------------------------------------------------ */
@@ -959,12 +944,7 @@ static void test_port_inbox_full(void)
 
         ionic_emu_stats_reset(&st);
         ionic_emu_stats_rx_inbox_full(&st, f, c->in.len, c->in.max_frame);
-        /* Nothing reaches the port until the main thread folds. */
-        ok = port_matches(&st, (const struct expect_counter[]){{END_VALUES}}, 1,
-                          got, sizeof(got));
-        ionic_emu_stats_fold(&st);
-        ok =
-            port_matches(&st, c->want, MAX_PORT_EXPECT, got, sizeof(got)) && ok;
+        ok = port_matches(&st, c->want, MAX_PORT_EXPECT, got, sizeof(got));
         drops = st.lif[IONIC_LIF_RX_UCAST_DROP_PACKETS] +
                 st.lif[IONIC_LIF_RX_MCAST_DROP_PACKETS] +
                 st.lif[IONIC_LIF_RX_BCAST_DROP_PACKETS];
@@ -990,13 +970,13 @@ static void test_port_clear(void)
         const char *description;
         const char *expected;
         unsigned int frames;      /* received and counted before the clear */
-        unsigned int inbox_drops; /* still pending in the atomics */
+        unsigned int inbox_drops; /* dropped by a full inbox before it */
         unsigned int after;       /* received after the clear */
     } cases[] = {
         {"positive", "traffic, then clear", "port 0, LIF rx_ucast_packets 3", 3,
          0, 0},
-        {"corner", "an inbox drop not folded yet, then clear",
-         "port 0, LIF rx_ucast_drop_packets 1 (folded, not lost)", 0, 1, 0},
+        {"corner", "an inbox drop, then clear",
+         "port 0, LIF rx_ucast_drop_packets 1 (kept)", 0, 1, 0},
         {"positive", "traffic, clear, then one more frame",
          "port frames_rx_all 1, LIF rx_ucast_packets 3", 2, 0, 1},
         {"boundary", "clear with nothing counted", "port 0, LIF 0", 0, 0, 0},
@@ -1019,7 +999,6 @@ static void test_port_clear(void)
             ionic_emu_port_frame(&st, f, 60, false, MAX_FRAME_1500);
             ionic_emu_stats_frame(&st, f, 60, false);
         }
-        ionic_emu_stats_fold(&st);
         for (unsigned int q = 0; q < IONIC_PORT_STATS_QWORDS; q++)
             if (q != IONIC_PORT_FRAMES_RX_ALL)
                 port_sum += cases[i].after ? 0 : st.port[q];
@@ -1309,93 +1288,6 @@ static void test_layout(void)
         (uint64_t)(ionic_emu_lif_stat_name(IONIC_LIF_STATS_QWORDS) != NULL));
 }
 
-struct producer {
-    struct ionic_emu_stats *stats;
-    atomic_bool *start;
-    atomic_uint *done;
-    const uint8_t *frame;
-    unsigned int count;
-};
-
-static void *produce_drops(void *opaque)
-{
-    struct producer *p = opaque;
-
-    while (!atomic_load(p->start))
-        sched_yield();
-    for (unsigned int i = 0; i < p->count; i++)
-        ionic_emu_stats_rx_inbox_full(p->stats, p->frame, 64, 0);
-    atomic_fetch_add(p->done, 1);
-    return NULL;
-}
-
-static void test_concurrent_fold(void)
-{
-    static const struct {
-        const char *description;
-        unsigned int count;
-    } cases[] = {{"boundary: zero events", 0},
-                 {"boundary: one event per class", 1},
-                 {"corner: three producers race the folder", 20000}};
-    static const unsigned int indices[] = {IONIC_LIF_RX_UCAST_DROP_BYTES,
-                                           IONIC_LIF_RX_MCAST_DROP_BYTES,
-                                           IONIC_LIF_RX_BCAST_DROP_BYTES};
-    uint8_t frames[3][64] = {{0}};
-
-    memcpy(frames[0], mac_ucast, 6);
-    memcpy(frames[1], mac_mcast, 6);
-    memcpy(frames[2], mac_bcast, 6);
-    for (size_t row = 0; row < sizeof(cases) / sizeof(cases[0]); row++) {
-        struct ionic_emu_stats st;
-        atomic_bool start = false;
-        atomic_uint done = 0;
-        struct producer args[3];
-        pthread_t threads[3];
-        unsigned int created = 0;
-
-        ionic_emu_stats_reset(&st);
-        for (unsigned int c = 0; c < 3; c++) {
-            args[c] = (struct producer){&st, &start, &done, frames[c],
-                                        cases[row].count};
-            if (pthread_create(&threads[c], NULL, produce_drops, &args[c]) != 0)
-                break;
-            created++;
-        }
-        atomic_store(&start, true);
-        while (atomic_load(&done) < created) {
-            ionic_emu_stats_fold(&st);
-            sched_yield();
-        }
-        for (unsigned int c = 0; c < created; c++) {
-            void *result = NULL;
-
-            if (pthread_join(threads[c], &result) != 0 || result != NULL)
-                failures++;
-        }
-        check_u64("positive", cases[row].description, "all producers started",
-                  3, created);
-        ionic_emu_stats_fold(&st);
-        ionic_emu_stats_fold(&st);
-        for (unsigned int c = 0; c < 3; c++) {
-            check_u64("corner", cases[row].description,
-                      "exact byte total after final fold",
-                      (uint64_t)cases[row].count * 64, st.lif[indices[c]]);
-            check_u64("corner", cases[row].description,
-                      "exact packet total, never counted twice",
-                      cases[row].count, st.lif[indices[c] + 1]);
-            check_u64("corner", cases[row].description, "pending bytes empty",
-                      0, atomic_load(&st.inbox_drop_bytes[c]));
-            check_u64("corner", cases[row].description, "pending packets empty",
-                      0, atomic_load(&st.inbox_drop_packets[c]));
-        }
-        check_u64("corner", cases[row].description,
-                  "frames_rx_all and frames_rx_dropped exact at the port",
-                  (uint64_t)cases[row].count * 3 * 2,
-                  st.port[IONIC_PORT_FRAMES_RX_ALL] +
-                      st.port[IONIC_PORT_FRAMES_RX_DROPPED]);
-    }
-}
-
 /*
  * struct ionic_port_stats and struct ionic_port_info up to it, copied from
  * the kernel's ionic_if.h (Linux 6.18).  Field order is upstream's, and it is
@@ -1624,7 +1516,6 @@ static void test_port_layout(void)
 
 int main(void)
 {
-    test_concurrent_fold();
     test_classify();
     test_counting();
     test_fill();

@@ -20,10 +20,7 @@
  * kernel's ionic_if.h; the LIF block's reserved slots are never written, so
  * they stay zero as the driver expects.
  *
- * Everything here runs on the main loop thread except
- * ionic_emu_stats_rx_inbox_full(), which may be called from any thread, as
- * ionic_eth_emu_queue_rx_frame() may.  It counts into atomics that the main
- * thread folds into the block.
+ * Everything here runs on the main loop thread.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -286,13 +283,6 @@ struct ionic_emu_stats {
 
     /* Host-order copy of struct ionic_port_stats, by ionic_port_stat. */
     uint64_t port[IONIC_PORT_STATS_QWORDS];
-
-    /* Rx inbox overflow, which may be counted off the main thread; see
-     * fold(). */
-    _Atomic uint64_t inbox_drop_bytes[IONIC_EMU_MAC_CLASSES];
-    _Atomic uint64_t inbox_drop_packets[IONIC_EMU_MAC_CLASSES];
-    /* What the MAC counted for those frames, by ionic_port_stat. */
-    _Atomic uint64_t inbox_port[IONIC_PORT_STATS_QWORDS];
 };
 
 /*
@@ -301,7 +291,7 @@ struct ionic_emu_stats {
  */
 int ionic_emu_mac_class(const uint8_t *frame, size_t len);
 
-/* Zero every counter, including the atomics. */
+/* Zero every counter. */
 void ionic_emu_stats_reset(struct ionic_emu_stats *st);
 
 /* A frame the guest sent (@is_tx) or received, @len bytes on the wire. */
@@ -320,8 +310,7 @@ void ionic_emu_stats_drop(struct ionic_emu_stats *st, const uint8_t *frame,
  * The Rx inbox (ionic_eth_emu_queue_rx_frame()) was full, so the frame is
  * gone.  The MAC took it in, as
  * ionic_emu_port_frame() counts it with @max_frame, and the LIF had nowhere
- * to put it, unless the MAC refused it first for being too long.  Safe to
- * call from any thread.
+ * to put it, unless the MAC refused it first for being too long.
  */
 void ionic_emu_stats_rx_inbox_full(struct ionic_emu_stats *st,
                                    const uint8_t *frame, size_t len,
@@ -346,24 +335,21 @@ bool ionic_emu_port_frame(struct ionic_emu_stats *st, const uint8_t *frame,
 /* A frame the MAC took in but the LIF dropped (any ionic_emu_drop on rx). */
 void ionic_emu_port_rx_dropped(struct ionic_emu_stats *st);
 
-/* Move the inbox atomics into the blocks, zeroing them.  Main thread only. */
-void ionic_emu_stats_fold(struct ionic_emu_stats *st);
-
 /*
- * PORT_RESET: fold, then zero the port counters.  The LIF counters are kept,
- * as LIF_RESET is a separate command.  Main thread only.
+ * PORT_RESET: zero the port counters.  The LIF counters are kept, as
+ * LIF_RESET is a separate command.
  */
 void ionic_emu_port_clear(struct ionic_emu_stats *st);
 
 /*
- * Fold, then render struct ionic_lif_stats into @out (little-endian, every
- * reserved qword zero).
+ * Render struct ionic_lif_stats into @out (little-endian, every reserved
+ * qword zero).
  */
-void ionic_emu_stats_fill(struct ionic_emu_stats *st,
+void ionic_emu_stats_fill(const struct ionic_emu_stats *st,
                           uint8_t out[IONIC_LIF_STATS_BYTES]);
 
-/* Fold, then render struct ionic_port_stats into @out (little-endian). */
-void ionic_emu_port_fill(struct ionic_emu_stats *st,
+/* Render struct ionic_port_stats into @out (little-endian). */
+void ionic_emu_port_fill(const struct ionic_emu_stats *st,
                          uint8_t out[IONIC_PORT_STATS_BYTES]);
 
 /* The ionic_if.h name of port counter @idx, or NULL past the end. */

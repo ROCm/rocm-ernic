@@ -27,7 +27,6 @@
 #include "ionic/ionic_eth_emu.h"
 #include "ionic/ionic_eth_net.h"
 #include "ionic/ionic_profile.h"
-#include "qemu/thread.h"
 
 /* -------------------------------------------------------------------------
  * ionic_if.h constants we need without pulling in the full kernel header.
@@ -458,14 +457,14 @@ struct ionic_eth_emu {
 
     /*
      * Frames for the guest from in-process endpoints (the S3 control plane
-     * and the P4 pipeline, both on the main loop thread today).  Producers
-     * append under @inbox_lock; the main loop drains the queue from
-     * ionic_eth_emu_poll_rx().
+     * and the P4 pipeline), appended by ionic_eth_emu_queue_rx_frame() and
+     * drained by ionic_eth_emu_poll_rx().  Main loop thread only, so
+     * unlocked: the mesh threads never feed it, since the mesh carries no
+     * Ethernet.
      */
-    QemuMutex inbox_lock;
-    struct eth_inbox_frame *inbox_head TSA_GUARDED_BY(inbox_lock);
-    struct eth_inbox_frame *inbox_tail TSA_GUARDED_BY(inbox_lock);
-    unsigned inbox_count TSA_GUARDED_BY(inbox_lock);
+    struct eth_inbox_frame *inbox_head;
+    struct eth_inbox_frame *inbox_tail;
+    unsigned inbox_count;
 };
 
 /* The width of the names in the stats file's "LIF Statistics" section: the

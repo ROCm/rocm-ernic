@@ -27,6 +27,7 @@
 #include <sys/types.h>
 
 #include "byteorder.h"
+#include "ionic/ionic_bar.h"
 #include "ionic/ionic_datapath.h"
 #include "ionic/ionic_emu_stats.h"
 #include "ionic/ionic_eth_emu.h"
@@ -34,7 +35,6 @@
 #include "ionic/ionic_eth_emu_priv.h"
 #include "ionic/ionic_fault.h"
 #include "ionic/ionic_profile.h"
-#include "qemu/thread.h"
 #include "parse_int.h"
 
 /* ---- Guest memory layout ----------------------------------------------- */
@@ -1001,17 +1001,6 @@ static void rx_tap_too_big(char *got, size_t len)
     ionic_eth_emu_destroy(emu);
 }
 
-/* How many frames are waiting in emu's inbox, read under its lock */
-static unsigned inbox_count(struct ionic_eth_emu *emu)
-{
-    unsigned n;
-
-    qemu_mutex_lock(&emu->inbox_lock);
-    n = emu->inbox_count;
-    qemu_mutex_unlock(&emu->inbox_lock);
-    return n;
-}
-
 static void inbox_no_buffer(char *got, size_t len)
 {
     struct ionic_eth_emu *emu = new_emu(1000);
@@ -1023,7 +1012,7 @@ static void inbox_no_buffer(char *got, size_t len)
              "rx_ucast_drop %" PRIu64 ", rx_queue_empty %" PRIu64
              ", still queued %u",
              counter(emu, IONIC_LIF_RX_UCAST_DROP_PACKETS),
-             counter(emu, IONIC_LIF_RX_QUEUE_EMPTY), inbox_count(emu));
+             counter(emu, IONIC_LIF_RX_QUEUE_EMPTY), emu->inbox_count);
     ionic_eth_emu_destroy(emu);
 }
 
@@ -1040,7 +1029,7 @@ static void inbox_too_big_then_ok(char *got, size_t len)
              ", rx_desc_data_error %" PRIu64 ", still queued %u",
              counter(emu, IONIC_LIF_RX_UCAST_PACKETS),
              counter(emu, IONIC_LIF_RX_UCAST_DROP_PACKETS),
-             counter(emu, IONIC_LIF_RX_DESC_DATA_ERROR), inbox_count(emu));
+             counter(emu, IONIC_LIF_RX_DESC_DATA_ERROR), emu->inbox_count);
     ionic_eth_emu_destroy(emu);
 }
 
@@ -1140,7 +1129,7 @@ static void inbox_too_long_port(char *got, size_t len)
              "frames_rx_too_long %" PRIu64 ", rx_ucast %" PRIu64
              ", still queued %u",
              port_counter(emu, IONIC_PORT_FRAMES_RX_TOO_LONG),
-             counter(emu, IONIC_LIF_RX_UCAST_PACKETS), inbox_count(emu));
+             counter(emu, IONIC_LIF_RX_UCAST_PACKETS), emu->inbox_count);
     ionic_eth_emu_destroy(emu);
 }
 
@@ -1405,7 +1394,7 @@ static void fault_inbox_held(char *got, size_t len)
     snprintf(got, len,
              "eligible %" PRIu64 ", fired %" PRIu64 ", still queued %u",
              site_fault(set, IONIC_FAULT_SITE_ETH_RX)->eligible,
-             site_fault(set, IONIC_FAULT_SITE_ETH_RX)->fired, inbox_count(emu));
+             site_fault(set, IONIC_FAULT_SITE_ETH_RX)->fired, emu->inbox_count);
     ionic_eth_emu_destroy(emu);
     ionic_fault_set_free(set);
 }
@@ -1423,7 +1412,7 @@ static void fault_inbox_nobuf(char *got, size_t len)
              "rx_ucast_drop %" PRIu64 ", rx_queue_empty %" PRIu64
              ", still queued %u",
              counter(emu, IONIC_LIF_RX_UCAST_DROP_PACKETS),
-             counter(emu, IONIC_LIF_RX_QUEUE_EMPTY), inbox_count(emu));
+             counter(emu, IONIC_LIF_RX_QUEUE_EMPTY), emu->inbox_count);
     ionic_eth_emu_destroy(emu);
     ionic_fault_set_free(set);
 }
@@ -1683,13 +1672,13 @@ static void file_shape(char *got, size_t len)
     ionic_eth_emu_destroy(emu);
 }
 
-static void file_inbox_folded(char *got, size_t len)
+static void file_inbox_full(char *got, size_t len)
 {
     struct ionic_eth_emu *emu = new_emu(1000);
     char *text, *again;
     size_t n;
 
-    /* The inbox overflow counter, folded by the writer. */
+    /* A frame the inbox had no room for. */
     ionic_emu_stats_rx_inbox_full(&emu->stats, make_frame(mac_ucast), 64, 0);
     text = stats_text(emu, &n);
     again = stats_text(emu, &n);
@@ -1796,9 +1785,9 @@ static const struct publish_case stats_file_cases[] = {
     {"boundary", "the name column fits the longest ionic_if.h name",
      "longest 35, width 35", file_longest_name},
     {"corner", "Rx inbox full, then the stats file twice",
-     "rx_ucast_drop_packets 1, rx_ucast_drop_bytes 64, second write 1 (fold "
-     "is not double-counted)",
-     file_inbox_folded},
+     "rx_ucast_drop_packets 1, rx_ucast_drop_bytes 64, second write 1 (writing "
+     "counts nothing)",
+     file_inbox_full},
 };
 
 int main(void)
