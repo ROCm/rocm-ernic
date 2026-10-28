@@ -47,6 +47,10 @@ set(ERNIC_TEST_P4_ENGINE_SOURCES
     ${PROJECT_SOURCE_DIR}/src/p4/p4_json.c
     ${PROJECT_SOURCE_DIR}/src/p4/p4_table.c
 )
+# Real p4c artifacts, so the tests that load a program hold the loader to
+# what the compiler actually emits rather than to what the format
+# documentation says.
+set(ERNIC_TEST_P4_FIXTURE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/data/p4)
 
 # The TCP backend's sources. The list comes from the top-level
 # CMakeLists.txt, so the tests keep linking what the server links.
@@ -94,7 +98,7 @@ set(ERNIC_GUEST_ONLY_TESTS
     test_ud_sq_reclaim
     test_ud_mesh
 )
-foreach(guest_test ${ERNIC_GUEST_ONLY_TESTS})
+foreach(guest_test IN LISTS ERNIC_GUEST_ONLY_TESTS)
     ernic_add_test_program(${guest_test}
         SOURCES ${guest_test}.c
         DEPS ibverbs
@@ -114,9 +118,11 @@ ernic_add_test_program(test_ernic_device
     SOURCES test_ernic_device.c
     HEADER_DEPS ibverbs
 )
+set(ERNIC_DEVICE_FIXTURE_ROOT
+    ${CMAKE_CURRENT_BINARY_DIR}/ernic-device-fixture)
 target_compile_definitions(test_ernic_device PRIVATE
-    ERNIC_SYSFS_INFINIBAND="${CMAKE_CURRENT_BINARY_DIR}/ernic-device-fixture/class/infiniband"
-    ERNIC_TEST_FIXTURE_ROOT="${CMAKE_CURRENT_BINARY_DIR}/ernic-device-fixture"
+    ERNIC_SYSFS_INFINIBAND="${ERNIC_DEVICE_FIXTURE_ROOT}/class/infiniband"
+    ERNIC_TEST_FIXTURE_ROOT="${ERNIC_DEVICE_FIXTURE_ROOT}"
 )
 
 # The bounds check every guest DMA address and length passes before it
@@ -171,10 +177,8 @@ if(ERNIC_BUILD_P4)
             ${ERNIC_TEST_P4_ENGINE_SOURCES}
         DEPS json-c
     )
-    # Real p4c artifacts, so the loader is held to what the compiler
-    # actually emits rather than to what the format documentation says.
     target_compile_definitions(ernic-test-p4-engine PRIVATE
-        P4_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/p4")
+        P4_FIXTURE_DIR="${ERNIC_TEST_P4_FIXTURE_DIR}")
 
     # Loading a program when memory runs out. It fails the loader's
     # allocations on demand with the S3 tests' wrappers (s3_alloc_fail.h),
@@ -188,7 +192,7 @@ if(ERNIC_BUILD_P4)
         DEPS json-c
     )
     target_compile_definitions(ernic-test-p4-alloc-fail PRIVATE
-        P4_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/p4")
+        P4_FIXTURE_DIR="${ERNIC_TEST_P4_FIXTURE_DIR}")
     target_link_options(ernic-test-p4-alloc-fail PRIVATE
         "LINKER:--wrap=malloc,--wrap=calloc,--wrap=realloc"
         "LINKER:--wrap=strdup,--wrap=getentropy"
@@ -482,6 +486,9 @@ ernic_add_test_program(ernic-test-ionic-fault
         test_ionic_fault.c
         ${PROJECT_SOURCE_DIR}/src/ionic/ionic_fault.c
 )
+
+# The checks ernic-rdma-errors makes on a guest's hw_counters
+# (guest/ernic_counter_snapshot.h), run on the host. Header-only.
 ernic_add_test_program(test_ionic_counter_snapshot
     SOURCES test_ionic_counter_snapshot.c
 )
@@ -699,9 +706,7 @@ target_link_options(ernic-test-ionic-harness PRIVATE
     "LINKER:--wrap=strdup,--wrap=getentropy")
 target_compile_definitions(ernic-test-ionic-harness PRIVATE
     $<$<BOOL:${ERNIC_BUILD_P4}>:ERNIC_HAVE_P4>
-    # Real p4c artifacts, so the RDMA path is held to what the compiler
-    # emits rather than to a fixture written to suit it.
-    $<$<BOOL:${ERNIC_BUILD_P4}>:P4_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/p4">
+    $<$<BOOL:${ERNIC_BUILD_P4}>:P4_FIXTURE_DIR="${ERNIC_TEST_P4_FIXTURE_DIR}">
 )
 target_compile_options(ernic-test-ionic-harness PRIVATE
     ${GLIB2_CFLAGS_OTHER})
@@ -765,11 +770,12 @@ ernic_add_unit_test(ernic-device-tuple-unit test_ernic_device
 # test_data_transfer, test_write_imm and test_rdma_cm -- and the guest-only
 # SRQ and UD tests built alongside them -- are deliberately not
 # registered with CTest. They need a real RDMA device, which no host running
-# ctest has -- the runners run ctest outside the guest. Registered here they returned 77 and CTest reported the skip as
-# a pass, so they looked like coverage while testing nothing. They are built
-# (test_data_transfer is the loopback config step's TEST_BIN) and are run for
-# real inside the VM by the loopback job in system-tests.yml, where a device
-# is guaranteed and exit 77 is treated as a failure.
+# ctest has -- the runners run ctest outside the guest. Registered here they
+# returned 77 and CTest reported the skip as a pass, so they looked like
+# coverage while testing nothing. They are built (test_data_transfer is the
+# loopback config step's TEST_BIN) and are run for real inside the VM by the
+# loopback job in system-tests.yml, where a device is guaranteed and exit 77
+# is treated as a failure.
 
 # Guest DMA range check unit test (table-driven)
 ernic_add_unit_test(dma-range-unit test_dma_range TIMEOUT 30)
@@ -915,6 +921,10 @@ ernic_add_unit_test(ionic-srq-adminq-unit test_ionic_srq_adminq TIMEOUT 30)
 # token, and the canonical form parses back to the same fault.
 ernic_add_unit_test(ionic-fault-unit ernic-test-ionic-fault TIMEOUT 30)
 
+# hw_counters snapshot unit test: a sysfs counter's text is read only as
+# plain unsigned decimal, the counter names before and after a run must be
+# the same set, and a counter that went down is refused rather than read
+# as a huge increase.
 ernic_add_unit_test(ionic-counter-snapshot-unit test_ionic_counter_snapshot
     TIMEOUT 30)
 
@@ -1072,13 +1082,13 @@ set_tests_properties(ionic-eth-queues-cli PROPERTIES
 add_test(
     NAME ionic-ci
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_ionic_ci.sh
+        $<TARGET_FILE:rocm-ernic>
     WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
 )
 set_tests_properties(ionic-ci PROPERTIES
     TIMEOUT 60
     RUN_SERIAL TRUE
     SKIP_RETURN_CODE 77
-    ENVIRONMENT "SERVER_BIN=$<TARGET_FILE:rocm-ernic>"
 )
 
 # TCP mesh registration suite: GID advertisement across a three-node mesh,
@@ -1088,6 +1098,7 @@ set_tests_properties(ionic-ci PROPERTIES
 add_test(
     NAME tcp-mesh-ci
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_tcp_mesh_ci.sh
+        $<TARGET_FILE:rocm-ernic>
     WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
 )
 # Generous timeout: the suite starts several servers and waits on mesh
@@ -1098,7 +1109,6 @@ set_tests_properties(tcp-mesh-ci PROPERTIES
     TIMEOUT 420
     RUN_SERIAL TRUE
     SKIP_RETURN_CODE 77
-    ENVIRONMENT "SERVER_BIN=$<TARGET_FILE:rocm-ernic>"
 )
 
 # NVMe-oF backend CI suite: every documented option spelling starts a server
@@ -1108,13 +1118,13 @@ set_tests_properties(tcp-mesh-ci PROPERTIES
 add_test(
     NAME nvmeof-ci
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_nvmeof_ci.sh
+        $<TARGET_FILE:rocm-ernic>
     WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
 )
 set_tests_properties(nvmeof-ci PROPERTIES
     TIMEOUT 120
     RUN_SERIAL TRUE
     SKIP_RETURN_CODE 77
-    ENVIRONMENT "SERVER_BIN=$<TARGET_FILE:rocm-ernic>"
 )
 
 # S3 backend CI suite: every documented option spelling starts a server with
@@ -1124,13 +1134,13 @@ set_tests_properties(nvmeof-ci PROPERTIES
 add_test(
     NAME s3-ci
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_s3_ci.sh
+        $<TARGET_FILE:rocm-ernic>
     WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
 )
 set_tests_properties(s3-ci PROPERTIES
     TIMEOUT 120
     RUN_SERIAL TRUE
     SKIP_RETURN_CODE 77
-    ENVIRONMENT "SERVER_BIN=$<TARGET_FILE:rocm-ernic>"
 )
 
 # ---------------------------------------------------------------
@@ -1195,6 +1205,7 @@ if(ERNIC_BUILD_P4)
         RUN_SERIAL TRUE
     )
 endif()
+
 # The hardware statistics a guest's hw_counters are built from: the
 # STATS_HDRS / STATS_VALS / QP_STATS_HDRS / QP_STATS_VALS tables, the
 # values behind them, and that the --stats-file the exporter reads
