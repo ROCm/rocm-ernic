@@ -3385,6 +3385,196 @@ static bool dp_remote_atomic(struct ionic_datapath *dp, uint32_t rkey,
 }
 
 /*
+ * An inbound SEND, SEND_IMM or SEND_INV @h from @src_node, carrying @payload,
+ * for @dq (NULL when its QP doesn't exist here).  Returns false, having
+ * consumed nothing, when @dq has no posted receive and @allow_retry says to
+ * leave the message queued; otherwise acknowledges it and returns true.
+ */
+static bool dp_wire_send(struct ionic_datapath *dp, uint32_t src_node,
+                         const struct ionic_wire_hdr *h,
+                         struct ionic_qp_ring *dq, const uint8_t *payload,
+                         uint32_t payload_len, bool allow_retry)
+{
+    uint8_t recv_op = h->op == IONIC_WIRE_SEND_IMM   ? CQE_RECV_OP_SEND_IMM
+                      : h->op == IONIC_WIRE_SEND_INV ? CQE_RECV_OP_SEND_INV
+                                                     : CQE_RECV_OP_SEND;
+    struct dp_sge_list src = {.count = 0, .total = h->length};
+    uint32_t status = IONIC_STS_OK;
+
+    if (h->length > payload_len)
+        src.total = payload_len;
+
+    if (!dq) {
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: SEND from node %u to unknown QP %u", src_node,
+                h->dst_qp_id);
+        status = IONIC_STS_REMOTE_ACC_ERR;
+    } else if (ionic_dp_deliver_recv(dp, dq, h->dst_qp_id, h->src_qp_id, &src,
+                                     payload, recv_op, h->imm_be) < 0) {
+        /* RNR: nothing has been consumed, so the message can simply wait
+         * for the guest to post a receive. */
+        if (allow_retry)
+            return false;
+
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: QP %u posted no receive in time, "
+                "dropping %u bytes from node %u",
+                h->dst_qp_id, src.total, src_node);
+        status = IONIC_STS_RNR_RETRY_EXCEEDED;
+    }
+    dp_wire_reply(dp, src_node, IONIC_WIRE_ACK, h, status, NULL, 0);
+    return true;
+}
+
+/*
+ * An inbound WRITE or WRITE_IMM @h from @src_node, carrying @payload, and
+ * its acknowledgement.  @dq is the QP that receives a WRITE_IMM's immediate
+ * (NULL when it doesn't exist here), and @stat_qp the QP its bytes count
+ * against.
+ */
+static void dp_wire_write(struct ionic_datapath *dp, uint32_t src_node,
+                          const struct ionic_wire_hdr *h,
+                          struct ionic_qp_ring *dq, uint32_t stat_qp,
+                          const uint8_t *payload, uint32_t payload_len)
+{
+    uint32_t status = IONIC_STS_OK;
+
+    /*
+     * Check the message and the range before moving anything, as
+     * sq_rdma() does.  ionic_dp_host_to_sge() writes until it runs out of
+     * region, so a WRITE longer than its payload, or than the region past
+     * remote_va, would land what fitted and only then be refused.  Neither
+     * reaches past the region, but a refused WRITE must not change it.
+     * remote_post() always sends a payload of exactly the WRITE's length,
+     * so any other size is malformed.  Zero length is exempt from the
+     * range check, as from dp_handle_wire()'s rkey check.
+     */
+    if (h->length != payload_len) {
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: node %u sent a %u-byte write with %u "
+                "bytes of payload, rejecting",
+                src_node, h->length, payload_len);
+        status = IONIC_STS_REMOTE_ACC_ERR;
+    } else if (h->length != 0 &&
+               !ionic_dp_mr_covers(dp, h->rkey, h->remote_va, h->length)) {
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: remote write rkey=%#x va=%#" PRIx64
+                " len=%u is outside the region",
+                h->rkey, h->remote_va, h->length);
+        status = IONIC_STS_REMOTE_ACC_ERR;
+    } else if (ionic_dp_host_to_sge(dp, h->rkey, h->remote_va, payload,
+                                    h->length) != h->length) {
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: remote write rkey=%#x va=%#" PRIx64
+                " of %u bytes failed",
+                h->rkey, h->remote_va, h->length);
+        status = IONIC_STS_REMOTE_ACC_ERR;
+    } else {
+        /* The responder counts what landed in its own memory too, so each
+         * instance's totals describe the traffic it actually moved. */
+        ionic_dp_rdma_bytes(dp, stat_qp, h->length, ERNIC_STAT_RDMA_WRITE,
+                            DP_RDMA_RX);
+
+        if (h->op == IONIC_WIRE_WRITE_IMM && dq) {
+            struct dp_sge_list written = {.count = 0, .total = h->length};
+            ionic_dp_deliver_recv(dp, dq, h->dst_qp_id, h->src_qp_id, &written,
+                                  NULL, CQE_RECV_OP_RDMA_IMM, h->imm_be);
+        }
+    }
+    dp_wire_reply(dp, src_node, IONIC_WIRE_ACK, h, status, NULL, 0);
+}
+
+/*
+ * An inbound READ_REQ @h from @src_node, answered with the data it names or
+ * an error.  @stat_qp is the QP its bytes count against.
+ */
+static void dp_wire_read(struct ionic_datapath *dp, uint32_t src_node,
+                         const struct ionic_wire_hdr *h, uint32_t stat_qp)
+{
+    uint8_t *data = NULL;
+    uint32_t length = h->length;
+    uint32_t status = IONIC_STS_OK;
+
+    if (length > IONIC_WIRE_MAX_PAYLOAD)
+        status = IONIC_STS_REMOTE_ACC_ERR;
+    else if (length && !(data = malloc(length)))
+        status = IONIC_STS_REMOTE_ACC_ERR;
+    else if (ionic_dp_sge_to_host(dp, h->rkey, h->remote_va, data, length) !=
+             length) {
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: remote read rkey=%#x va=%#" PRIx64
+                " of %u bytes failed",
+                h->rkey, h->remote_va, length);
+        status = IONIC_STS_REMOTE_ACC_ERR;
+    } else {
+        ionic_dp_rdma_bytes(dp, stat_qp, length, ERNIC_STAT_RDMA_READ,
+                            DP_RDMA_TX);
+    }
+
+    dp_wire_reply(dp, src_node, IONIC_WIRE_READ_RESP, h, status,
+                  status == IONIC_STS_OK ? data : NULL,
+                  status == IONIC_STS_OK ? length : 0);
+    free(data);
+}
+
+/*
+ * An inbound ATOMIC_REQ @h from @src_node, answered with the value the
+ * target held before it or an error.
+ */
+static void dp_wire_atomic(struct ionic_datapath *dp, uint32_t src_node,
+                           const struct ionic_wire_hdr *h)
+{
+    uint64_t old = 0;
+    uint8_t old_le[8];
+    uint32_t status = IONIC_STS_OK;
+
+    if (!dp_remote_atomic(dp, h->rkey, h->remote_va, h->atomic_cs, h->swap_add,
+                          h->compare, &old)) {
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: remote atomic rkey=%#x va=%#" PRIx64 " failed",
+                h->rkey, h->remote_va);
+        status = IONIC_STS_REMOTE_ACC_ERR;
+    }
+    ernic_put_le64(old_le, old);
+    dp_wire_reply(dp, src_node, IONIC_WIRE_ATOMIC_RESP, h, status, old_le,
+                  status == IONIC_STS_OK ? sizeof(old_le) : 0);
+}
+
+/*
+ * An ACK, READ_RESP or ATOMIC_RESP @h, carrying @payload, that answers one
+ * of this instance's requests: land what it returns and complete the
+ * request.  A response to a request no longer pending is ignored.
+ */
+static void dp_wire_response(struct ionic_datapath *dp,
+                             const struct ionic_wire_hdr *h,
+                             const uint8_t *payload, uint32_t payload_len)
+{
+    struct dp_pending *p = pending_find(dp, h->req_id);
+    if (!p)
+        return;
+
+    uint32_t status = h->status;
+    if (status == IONIC_STS_OK && h->op != IONIC_WIRE_ACK) {
+        uint32_t want = p->length < payload_len ? p->length : payload_len;
+
+        /* The peer answered; anything that goes wrong from here is this
+         * guest's own memory refusing the landing.  An ATOMIC_RESP's
+         * le64 is a u64 as this guest's memory holds one, so it lands
+         * as-is, like READ data (see dp_atomic_apply()). */
+        dp_fault_clear(dp);
+        uint32_t got = dp_scatter(dp, &p->local, payload, want);
+        if (got != want)
+            status = dp_fault_status(dp, IONIC_STS_LOCAL_PROT_ERR);
+
+        /* The requester's READ bytes only exist once they have landed. */
+        if (h->op == IONIC_WIRE_READ_RESP)
+            ionic_dp_rdma_bytes(dp, p->qp_id, got, ERNIC_STAT_RDMA_READ,
+                                DP_RDMA_RX);
+    }
+    pending_complete(dp, p, status);
+}
+
+/*
  * Apply one inbound message.  Returns false only when the message is an
  * inbound SEND that found no posted receive and @allow_retry says to leave it
  * queued; the caller then hands it back on a later poll.  Every other outcome,
@@ -3405,11 +3595,8 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
     }
 
     uint32_t dst_qp_id = h.dst_qp_id;
-    uint32_t src_qp_id = h.src_qp_id;
     uint32_t length = h.length;
     uint32_t rkey = h.rkey;
-    uint64_t remote_va = h.remote_va;
-    uint32_t status = IONIC_STS_OK;
 
     struct ionic_qp_ring *dq =
         dst_qp_id < dp->qp_count && dp->qp[dst_qp_id].valid ? &dp->qp[dst_qp_id]
@@ -3455,157 +3642,28 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
     switch (h.op) {
     case IONIC_WIRE_SEND:
     case IONIC_WIRE_SEND_IMM:
-    case IONIC_WIRE_SEND_INV: {
-        uint8_t recv_op = h.op == IONIC_WIRE_SEND_IMM   ? CQE_RECV_OP_SEND_IMM
-                          : h.op == IONIC_WIRE_SEND_INV ? CQE_RECV_OP_SEND_INV
-                                                        : CQE_RECV_OP_SEND;
-        struct dp_sge_list src = {.count = 0, .total = length};
-
-        if (length > payload_len)
-            src.total = payload_len;
-
-        if (!dq) {
-            vfu_log(dp->vfu_ctx, LOG_WARNING,
-                    "ionic_datapath: SEND from node %u to unknown QP %u",
-                    src_node, dst_qp_id);
-            status = IONIC_STS_REMOTE_ACC_ERR;
-        } else if (ionic_dp_deliver_recv(dp, dq, dst_qp_id, src_qp_id, &src,
-                                         payload, recv_op, h.imm_be) < 0) {
-            /* RNR: nothing has been consumed, so the message can simply wait
-             * for the guest to post a receive. */
-            if (allow_retry)
-                return false;
-
-            vfu_log(dp->vfu_ctx, LOG_WARNING,
-                    "ionic_datapath: QP %u posted no receive in time, "
-                    "dropping %u bytes from node %u",
-                    dst_qp_id, src.total, src_node);
-            status = IONIC_STS_RNR_RETRY_EXCEEDED;
-        }
-        dp_wire_reply(dp, src_node, IONIC_WIRE_ACK, &h, status, NULL, 0);
-        break;
-    }
+    case IONIC_WIRE_SEND_INV:
+        return dp_wire_send(dp, src_node, &h, dq, payload, payload_len,
+                            allow_retry);
 
     case IONIC_WIRE_WRITE:
-    case IONIC_WIRE_WRITE_IMM: {
-        /*
-         * Check the message and the range before moving anything, as
-         * sq_rdma() does.  ionic_dp_host_to_sge() writes until it runs out of
-         * region, so a WRITE longer than its payload, or than the region past
-         * remote_va, would land what fitted and only then be refused.  Neither
-         * reaches past the region, but a refused WRITE must not change it.
-         * remote_post() always sends a payload of exactly the WRITE's length,
-         * so any other size is malformed.  Zero length is exempt from the
-         * range check, as from the rkey check above.
-         */
-        if (length != payload_len) {
-            vfu_log(dp->vfu_ctx, LOG_WARNING,
-                    "ionic_datapath: node %u sent a %u-byte write with %u "
-                    "bytes of payload, rejecting",
-                    src_node, length, payload_len);
-            status = IONIC_STS_REMOTE_ACC_ERR;
-        } else if (length != 0 &&
-                   !ionic_dp_mr_covers(dp, rkey, remote_va, length)) {
-            vfu_log(dp->vfu_ctx, LOG_WARNING,
-                    "ionic_datapath: remote write rkey=%#x va=%#" PRIx64
-                    " len=%u is outside the region",
-                    rkey, remote_va, length);
-            status = IONIC_STS_REMOTE_ACC_ERR;
-        } else if (ionic_dp_host_to_sge(dp, rkey, remote_va, payload, length) !=
-                   length) {
-            vfu_log(dp->vfu_ctx, LOG_WARNING,
-                    "ionic_datapath: remote write rkey=%#x va=%#" PRIx64
-                    " of %u bytes failed",
-                    rkey, remote_va, length);
-            status = IONIC_STS_REMOTE_ACC_ERR;
-        } else {
-            /* The responder counts what landed in its own memory too, so each
-             * instance's totals describe the traffic it actually moved. */
-            ionic_dp_rdma_bytes(dp, stat_qp, length, ERNIC_STAT_RDMA_WRITE,
-                                DP_RDMA_RX);
-
-            if (h.op == IONIC_WIRE_WRITE_IMM && dq) {
-                struct dp_sge_list written = {.count = 0, .total = length};
-                ionic_dp_deliver_recv(dp, dq, dst_qp_id, src_qp_id, &written,
-                                      NULL, CQE_RECV_OP_RDMA_IMM, h.imm_be);
-            }
-        }
-        dp_wire_reply(dp, src_node, IONIC_WIRE_ACK, &h, status, NULL, 0);
+    case IONIC_WIRE_WRITE_IMM:
+        dp_wire_write(dp, src_node, &h, dq, stat_qp, payload, payload_len);
         break;
-    }
 
-    case IONIC_WIRE_READ_REQ: {
-        uint8_t *data = NULL;
-
-        if (length > IONIC_WIRE_MAX_PAYLOAD)
-            status = IONIC_STS_REMOTE_ACC_ERR;
-        else if (length && !(data = malloc(length)))
-            status = IONIC_STS_REMOTE_ACC_ERR;
-        else if (ionic_dp_sge_to_host(dp, rkey, remote_va, data, length) !=
-                 length) {
-            vfu_log(dp->vfu_ctx, LOG_WARNING,
-                    "ionic_datapath: remote read rkey=%#x va=%#" PRIx64
-                    " of %u bytes failed",
-                    rkey, remote_va, length);
-            status = IONIC_STS_REMOTE_ACC_ERR;
-        } else {
-            ionic_dp_rdma_bytes(dp, stat_qp, length, ERNIC_STAT_RDMA_READ,
-                                DP_RDMA_TX);
-        }
-
-        dp_wire_reply(dp, src_node, IONIC_WIRE_READ_RESP, &h, status,
-                      status == IONIC_STS_OK ? data : NULL,
-                      status == IONIC_STS_OK ? length : 0);
-        free(data);
+    case IONIC_WIRE_READ_REQ:
+        dp_wire_read(dp, src_node, &h, stat_qp);
         break;
-    }
 
-    case IONIC_WIRE_ATOMIC_REQ: {
-        uint64_t old = 0;
-        uint8_t old_le[8];
-
-        if (!dp_remote_atomic(dp, rkey, remote_va, h.atomic_cs, h.swap_add,
-                              h.compare, &old)) {
-            vfu_log(dp->vfu_ctx, LOG_WARNING,
-                    "ionic_datapath: remote atomic rkey=%#x va=%#" PRIx64
-                    " failed",
-                    rkey, remote_va);
-            status = IONIC_STS_REMOTE_ACC_ERR;
-        }
-        ernic_put_le64(old_le, old);
-        dp_wire_reply(dp, src_node, IONIC_WIRE_ATOMIC_RESP, &h, status, old_le,
-                      status == IONIC_STS_OK ? sizeof(old_le) : 0);
+    case IONIC_WIRE_ATOMIC_REQ:
+        dp_wire_atomic(dp, src_node, &h);
         break;
-    }
 
     case IONIC_WIRE_ACK:
     case IONIC_WIRE_READ_RESP:
-    case IONIC_WIRE_ATOMIC_RESP: {
-        struct dp_pending *p = pending_find(dp, h.req_id);
-        if (!p)
-            break;
-
-        status = h.status;
-        if (status == IONIC_STS_OK && h.op != IONIC_WIRE_ACK) {
-            uint32_t want = p->length < payload_len ? p->length : payload_len;
-
-            /* The peer answered; anything that goes wrong from here is this
-             * guest's own memory refusing the landing.  An ATOMIC_RESP's
-             * le64 is a u64 as this guest's memory holds one, so it lands
-             * as-is, like READ data (see dp_atomic_apply()). */
-            dp_fault_clear(dp);
-            uint32_t got = dp_scatter(dp, &p->local, payload, want);
-            if (got != want)
-                status = dp_fault_status(dp, IONIC_STS_LOCAL_PROT_ERR);
-
-            /* The requester's READ bytes only exist once they have landed. */
-            if (h.op == IONIC_WIRE_READ_RESP)
-                ionic_dp_rdma_bytes(dp, p->qp_id, got, ERNIC_STAT_RDMA_READ,
-                                    DP_RDMA_RX);
-        }
-        pending_complete(dp, p, status);
+    case IONIC_WIRE_ATOMIC_RESP:
+        dp_wire_response(dp, &h, payload, payload_len);
         break;
-    }
 
     default:
         vfu_log(dp->vfu_ctx, LOG_WARNING,
