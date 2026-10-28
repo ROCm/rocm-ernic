@@ -362,6 +362,72 @@ static void test_load_sequence(void)
     p4_engine_destroy(eng);
 }
 
+/* Load bytes the parser refuses, so the engine holds the parser's reason. */
+static void load_not_json(struct p4_engine *eng)
+{
+    static const char junk[] = "not json";
+
+    check(p4_engine_load_begin(eng, sizeof(junk) - 1u) == 0 &&
+              p4_engine_load_chunk(eng, 0, junk, sizeof(junk) - 1u) == 0 &&
+              p4_engine_load_commit(eng) == -EINVAL &&
+              p4_engine_load_error(eng) != NULL,
+          "non-JSON was not refused by the parser with a reason");
+}
+
+/*
+ * The reason a caller reads is about the load it just tried, whichever step
+ * refused it. Each case follows a load the parser refused, so a step that
+ * failed without saying why would still report the parser's reason.
+ */
+static void test_load_error_is_current(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    uint8_t data[64];
+
+    fill_frame(data, sizeof(data));
+
+    load_not_json(eng);
+    check(p4_engine_load_begin(eng, 0) == -EINVAL &&
+              strstr(load_why(eng), "empty") != NULL,
+          "a refused empty begin did not say why");
+
+    load_not_json(eng);
+    check(p4_engine_load_begin(eng, P4_PROGRAM_MAX + 1) == -EINVAL &&
+              strstr(load_why(eng), "limit") != NULL,
+          "a refused oversized begin did not say why");
+
+    load_not_json(eng);
+    check(p4_engine_load_begin(eng, sizeof(data)) == 0 &&
+              p4_engine_load_error(eng) == NULL,
+          "a begin left an earlier load's reason in place");
+
+    check(p4_engine_load_chunk(eng, 8, data, 8) == -EINVAL &&
+              strstr(load_why(eng), "out of order") != NULL,
+          "a chunk that skips forward did not say why");
+
+    load_not_json(eng);
+    check(p4_engine_load_chunk(eng, 0, data, 8) == -EINVAL &&
+              strstr(load_why(eng), "no load in progress") != NULL,
+          "a chunk outside a load did not say why");
+
+    check(p4_engine_load_begin(eng, 32) == 0 &&
+              p4_engine_load_chunk(eng, 0, data, sizeof(data)) == -EINVAL &&
+              strstr(load_why(eng), "runs past") != NULL,
+          "a chunk longer than the program did not say why");
+
+    check(p4_engine_load_begin(eng, 32) == 0 &&
+              p4_engine_load_chunk(eng, 0, data, 0) == -EINVAL &&
+              strstr(load_why(eng), "has no data") != NULL,
+          "a zero-length chunk did not say why");
+
+    check(p4_engine_load_begin(eng, 32) == 0 &&
+              p4_engine_load_chunk(eng, 0, NULL, 8) == -EINVAL &&
+              strstr(load_why(eng), "has no data") != NULL,
+          "a NULL chunk did not say why");
+
+    p4_engine_destroy(eng);
+}
+
 static void test_load_whole_program_in_one_chunk(void)
 {
     struct p4_engine *eng = p4_engine_create();
@@ -3252,6 +3318,7 @@ int main(void)
     test_load_rejects_bad_input();
     test_load_chunk_bounds();
     test_load_sequence();
+    test_load_error_is_current();
     test_load_whole_program_in_one_chunk();
     test_forward_unchanged();
     test_rejects_bad_input();
