@@ -28,6 +28,11 @@
  * sender got nothing would pass if the MAD vanished; checking only that the
  * peer got it would pass if it were also copied back.
  *
+ * Then what the MAD arrives behind (6, 7), that a restarted worker gets its
+ * address back (8), and that an AH finds its address's owner when it sends,
+ * not when it was made: one made before anyone claimed its address (9), and
+ * one made before its owner restarted under a new node id (10).
+ *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -41,11 +46,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <syslog.h>
 #include <time.h>
 
 #include "byteorder.h"
 #include "ernic_attributes.h"
 #include "ernic_mesh.h"
+#include "fake_vfu.h"
 #include "ionic_harness.h"
 #include "parse_int.h"
 #include "pvrdma/pvrdma.h"
@@ -55,18 +62,23 @@
  * something here can move it rather than fail. */
 #define GM_PORT_DEFAULT 18640
 
-/* Two addresses on a subnet nothing else in the tree uses, so a stray claim
- * from another test cannot make these contested. */
+/* Addresses on a subnet nothing else in the tree uses, so a stray claim from
+ * another test cannot make these contested. The worker claims C late. */
 #define GM_IP_A 0xc0a8fa01u /* 192.168.250.1 */
 #define GM_IP_B 0xc0a8fa02u /* 192.168.250.2 */
+#define GM_IP_C 0xc0a8fa03u /* 192.168.250.3 */
 
-#define GM_CQ      1u
-#define GM_AH      7u
-#define GM_MR      IH_MRID(10, 0x08)
-#define GM_VA      UINT64_C(0x7f6100000000)
-#define GM_TX_OFF  0x0000u
-#define GM_RX_OFF  0x0200u
-#define GM_MAD_LEN 256u
+#define GM_CQ         1u
+#define GM_AH         7u
+#define GM_AH_LATE    8u  /* to C, made before anyone claims it */
+#define GM_AH_NO_ADDR 9u  /* made with no header template */
+#define GM_AH_SELF    10u /* to the manager's own address */
+#define GM_AH_UNKNOWN 99u /* never made */
+#define GM_MR         IH_MRID(10, 0x08)
+#define GM_VA         UINT64_C(0x7f6100000000)
+#define GM_TX_OFF     0x0000u
+#define GM_RX_OFF     0x0200u
+#define GM_MAD_LEN    256u
 /* The Q_Key ib_mad uses for GSI; the device checks it on a datagram. */
 #define GM_QKEY 0x80010000u
 
@@ -154,6 +166,62 @@ static void gm_drain(struct ih *h, struct gm_ep *ep, struct gm_counts *c)
 }
 
 /*
+ * Send a MAD from @from's QP1 on @hf through AH @ah_id, after posting a
+ * receive on both QP1s, so one that went to either could land. Pump both
+ * devices until @to's QP1 on @ht receives it or ~0.5 s pass, then a few
+ * rounds more, so a copy that went somewhere else too is counted. @cf and
+ * @ct get what each side's CQ held.
+ */
+static void gm_send_mad(struct ih *hf, struct gm_ep *from, struct ih *ht,
+                        struct gm_ep *to, uint32_t ah_id, struct gm_counts *cf,
+                        struct gm_counts *ct)
+{
+    struct ih_sge rx_from = {.va = from->mr.va + GM_RX_OFF,
+                             .len = IH_GRH_SIZE + GM_MAD_LEN,
+                             .lkey = from->mr.lkey};
+    struct ih_sge rx_to = {.va = to->mr.va + GM_RX_OFF,
+                           .len = IH_GRH_SIZE + GM_MAD_LEN,
+                           .lkey = to->mr.lkey};
+    struct ih_sge tx = {.va = from->mr.va + GM_TX_OFF,
+                        .len = GM_MAD_LEN,
+                        .lkey = from->mr.lkey};
+    struct ih_send s = {.op = IH_OP_SEND,
+                        .flags = IH_WQE_SIGNALLED,
+                        .ah_id = ah_id,
+                        .dest_qpn = 1,
+                        .qkey = GM_QKEY,
+                        .sge = &tx,
+                        .nsge = 1};
+
+    memset(cf, 0, sizeof(*cf));
+    memset(ct, 0, sizeof(*ct));
+    ih_post_recv(ht, &to->qp, &rx_to, 1);
+    ih_post_recv(hf, &from->qp, &rx_from, 1);
+    ih_post_send(hf, &from->qp, &s);
+
+    for (unsigned i = 0; i < 250 && ct->recvs == 0; i++) {
+        gm_pump(hf, ht, 1);
+        gm_drain(hf, from, cf);
+        gm_drain(ht, to, ct);
+    }
+    gm_pump(hf, ht, 10);
+    gm_drain(hf, from, cf);
+    gm_drain(ht, to, ct);
+}
+
+/* Whether @h logged a warning mentioning @what since it had logged @since. */
+static bool gm_warned(struct ih *h, unsigned long since, const char *what)
+{
+    unsigned long n = fake_vfu_log_count(h->vfu, LOG_WARNING) - since;
+
+    for (size_t back = 0; back < n && back < FAKE_VFU_LOG_KEEP; back++) {
+        if (strstr(fake_vfu_log_text(h->vfu, LOG_WARNING, back), what))
+            return true;
+    }
+    return false;
+}
+
+/*
  * Wait for @h to resolve @gid to some node, up to ~5s. Registration and the
  * advertisement that follows it are asynchronous, so a bare check races.
  */
@@ -168,6 +236,141 @@ static uint32_t gm_wait_resolve(struct ih *a, struct ih *b, struct ih *h,
         gm_pump(a, b, 1);
     }
     return UINT32_MAX;
+}
+
+/*
+ * 9. An AH made before any node owns its address, through which @a's QP1
+ * sends to @b's once @b claims it.
+ *
+ * Which node an AH's address is on used to be looked up once, when the AH
+ * was made, and an address no node owned then made the AH local for good.
+ * Its MADs went to the sender's own QP1, as the destination QPN is 1 either
+ * way -- the misdelivery 4/5 checks for, by another route. An AH can
+ * outlive the moment the mesh learns its address: the GID claim and the
+ * address resolution that makes the AH are separate events.
+ */
+static void gm_late_claim(struct ih *a, struct gm_ep *ea, struct ih *b,
+                          struct gm_ep *eb, uint32_t node_b)
+{
+    uint8_t gid_c[16];
+    struct gm_counts ca, cb;
+
+    gm_gid_for_ip(gid_c, GM_IP_C);
+    if (!gm_check(ih_ah_create(a, GM_AH_LATE, GM_IP_A, GM_IP_C) == 0,
+                  "CREATE_AH for an address nobody owns failed"))
+        return;
+
+    /* Nobody owns C: the MAD is dropped, and completes as sent. */
+    unsigned long since = fake_vfu_log_count(a->vfu, LOG_WARNING);
+    gm_send_mad(a, ea, b, eb, GM_AH_LATE, &ca, &cb);
+    gm_check(ca.sends == 1,
+             "a MAD to an address nobody owns got %u send completions, want 1",
+             ca.sends);
+    gm_check(ca.recvs == 0,
+             "a MAD to an address nobody owns was delivered to the sender's "
+             "own QP1");
+    gm_check(cb.recvs == 0,
+             "a MAD to an address nobody owns reached the worker's QP1");
+    gm_check(gm_warned(a, since, "no mesh node owns AH 8's destination"),
+             "no warning for the MAD dropped for want of an owner");
+
+    /* The worker claims C, and the same AH now reaches it. */
+    gm_check(ernic_mesh_claim_gid(b->dev->pvrdma_handle, gid_c, true) == 0,
+             "the worker could not claim a second GID");
+    uint32_t seen_c = gm_wait_resolve(a, b, a, gid_c);
+    if (!gm_check(seen_c == node_b,
+                  "the manager resolved the worker's late GID to node %u, "
+                  "want %u",
+                  seen_c, node_b))
+        return;
+
+    gm_send_mad(a, ea, b, eb, GM_AH_LATE, &ca, &cb);
+    gm_check(cb.recvs == 1,
+             "once its address was claimed, the worker's QP1 got %u MADs "
+             "through an AH made before, want 1",
+             cb.recvs);
+    gm_check(ca.recvs == 0,
+             "once its address was claimed, a MAD through an AH made before "
+             "still came back to the sender's own QP1");
+}
+
+/*
+ * 9, continued. A MAD to the sender's own address stays on its node, but two
+ * AHs' MADs have nowhere to go at all: one the device was never told about,
+ * and one whose header template held no address. On a mesh both are
+ * dropped, as a MAD to an unowned address is. Both used to be taken as
+ * local.
+ */
+static void gm_nowhere(struct ih *a, struct gm_ep *ea, struct ih *b,
+                       struct gm_ep *eb)
+{
+    static const struct {
+        uint32_t ah_id;
+        const char *what;
+        const char *warning;
+    } rows[] = {
+        {GM_AH_UNKNOWN, "an unknown AH", "AH 99 is unknown"},
+        {GM_AH_NO_ADDR, "an AH with no address",
+         "AH 9 has no destination address"},
+    };
+    uint8_t body[24] = {0};
+    struct gm_counts ca, cb;
+
+    /* An address the sender's own node owns is the one place it stays. */
+    if (gm_check(ih_ah_create(a, GM_AH_SELF, GM_IP_A, GM_IP_A) == 0,
+                 "CREATE_AH to the manager's own address failed")) {
+        gm_send_mad(a, ea, b, eb, GM_AH_SELF, &ca, &cb);
+        gm_check(ca.recvs == 1 && cb.recvs == 0,
+                 "a MAD to the manager's own address reached its QP1 %u "
+                 "time(s) and the worker's %u, want 1 and 0",
+                 ca.recvs, cb.recvs);
+    }
+
+    /* CREATE_AH with no header template: accepted, with no address */
+    ernic_put_le32(body + 16, GM_AH_NO_ADDR | 1u << 24);
+    if (!gm_check(ih_admin(a, IH_ADMIN_CREATE_AH, body, sizeof(body), NULL) ==
+                      0,
+                  "CREATE_AH with no header template failed"))
+        return;
+
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        unsigned long since = fake_vfu_log_count(a->vfu, LOG_WARNING);
+
+        gm_send_mad(a, ea, b, eb, rows[i].ah_id, &ca, &cb);
+        gm_check(ca.sends == 1,
+                 "a MAD through %s got %u send completions, want 1",
+                 rows[i].what, ca.sends);
+        gm_check(ca.recvs == 0 && cb.recvs == 0,
+                 "a MAD through %s was delivered (sender %u, worker %u)",
+                 rows[i].what, ca.recvs, cb.recvs);
+        gm_check(gm_warned(a, since, rows[i].warning),
+                 "no warning that a MAD through %s was dropped", rows[i].what);
+    }
+}
+
+/*
+ * 10. After the worker restarts under a new node id and claims its address
+ * again, the AH @a made to it before the restart reaches the new node. Its
+ * node used to be looked up once, so it kept naming the dead one.
+ */
+static void gm_after_restart(struct ih *a, struct gm_ep *ea, struct ih *b2)
+{
+    struct gm_ep eb2;
+    struct gm_counts ca, cb;
+
+    memset(&eb2, 0, sizeof(eb2));
+    if (gm_check(gm_ep_open(b2, &eb2),
+                 "GSI endpoint setup on the restarted worker failed")) {
+        gm_send_mad(a, ea, b2, &eb2, GM_AH, &ca, &cb);
+        gm_check(cb.recvs == 1,
+                 "the restarted worker's QP1 got %u MADs through an AH made "
+                 "before the restart, want 1",
+                 cb.recvs);
+        gm_check(ca.recvs == 0,
+                 "a MAD through an AH made before the restart came back to "
+                 "the sender's own QP1");
+    }
+    ih_mr_free(&eb2.mr);
 }
 
 /*
@@ -391,6 +594,9 @@ int main(void)
                  "the MAD is not behind the 40-byte header");
     }
 
+    gm_late_claim(&a, &ea, &b, &eb, node_b);
+    gm_nowhere(&a, &ea, &b, &eb);
+
     /*
      * 8. The worker restarts, and its address has to come back with it.
      *
@@ -402,9 +608,10 @@ int main(void)
      * withdrawing what an unreachable node claimed, the address stops
      * working at the moment the guest comes back, and never recovers:
      * nothing else retires a claim.
+     *
+     * The manager's endpoint stays, for 10.
      */
     ih_mr_free(&eb.mr);
-    ih_mr_free(&ea.mr);
     ih_destroy(&b);
 
     /*
@@ -417,15 +624,15 @@ int main(void)
      */
     if (!gm_check(gm_wait_hung_up(&a, node_b),
                   "the manager never saw node %u hang up", node_b))
-        goto out_a;
+        goto out_ea;
 
     struct ih b2;
 
     if (!gm_check(ih_create(&b2, wrk), "the worker could not be recreated"))
-        goto out_a;
+        goto out_ea;
     if (!gm_check(ih_bringup(&b2), "the restarted worker did not come up")) {
         ih_destroy(&b2);
-        goto out_a;
+        goto out_ea;
     }
 
     node_b2 = UINT32_MAX;
@@ -455,9 +662,11 @@ int main(void)
                  ? "the dead node's claim was never withdrawn, so the GID is "
                    "contested and routes nowhere"
                  : "it resolves to the wrong node");
+    if (seen_b2 == node_b2)
+        gm_after_restart(&a, &ea, &b2);
 
     ih_destroy(&b2);
-    goto out_a;
+    goto out_ea;
 
 out_ep:
     ih_mr_free(&eb.mr);
@@ -465,6 +674,9 @@ out_ep:
 
 out:
     ih_destroy(&b);
+    goto out_a;
+out_ea:
+    ih_mr_free(&ea.mr);
 out_a:
     ih_destroy(&a);
     if (failures)

@@ -224,11 +224,15 @@ void ionic_datapath_flush_qp(struct ionic_datapath *dp, uint32_t qp_id);
  * Without this table a UD send had nowhere to resolve its ah_id, so the
  * datapath fell back to q->dest_qp_id, which a UD QP never sets, and
  * delivered every datagram back to the sender's own QP.
+ *
+ * @dgid is NULL when the template held no address. Which node owns @dgid
+ * is looked up on each send, not here: the mesh may learn the address
+ * later, or its owner may come back under a new node id.
  */
 void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
                                 const uint8_t dgid[ERNIC_GID_LEN],
                                 const uint8_t sgid[ERNIC_GID_LEN],
-                                const uint8_t dmac[6], uint32_t dest_node_id);
+                                const uint8_t dmac[6]);
 void ionic_datapath_unregister_ah(struct ionic_datapath *dp, uint32_t ah_id);
 
 /*
@@ -245,6 +249,10 @@ void ionic_datapath_set_qkey(struct ionic_datapath *dp, uint32_t qp_id,
  * address in the RoCE header template.  @dest_node_id is a mesh node id;
  * when it names this instance the peer QP is local and never leaves the
  * emulator.  Pass UINT32_MAX when there is no mesh.
+ *
+ * Unlike an AH's, the node is resolved once, here.  That is right for a
+ * connected QP: if its peer's node restarts under a new id, the peer QP is
+ * gone with it, and the QP has to be connected again anyway.
  */
 void ionic_datapath_set_dest(struct ionic_datapath *dp, uint32_t qp_id,
                              uint32_t dest_qp_id, uint32_t dest_node_id);

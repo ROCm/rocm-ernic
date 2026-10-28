@@ -767,6 +767,22 @@
 
 ### Fixed
 
+* **On a mesh, a datagram could be delivered to the sender's own VM instead
+  of its destination.** The node a UD or GSI address handle points at was
+  looked up once, at `CREATE_AH`, and an AH whose destination GID no node
+  owned yet was taken as local for good: every datagram through it went to
+  the QP with the same number in the sender's own VM, so a MAD meant for a
+  peer landed on the sender's own QP1. That held even after the mesh
+  learned the address, and an AH whose destination restarted under a new
+  node id kept sending to the dead one. The node is now looked up on every
+  send. On a mesh, a datagram through an AH whose destination no node owns,
+  that has no destination address, or that the device doesn't know is
+  dropped and completes as sent, as an undeliverable datagram does; a
+  warning names the AH, limited to a few lines at a time. That includes a
+  datagram to the sender's own address when `ERNIC_TCP_GUEST_GIDS` doesn't
+  list it, which a connected QP already couldn't reach. Without a mesh
+  (the `loopback` backend and the in-process targets) nothing changes.
+  `gsi-mesh` covers each case.
 * **Work requests with three to eight SGEs failed, or named the wrong
   memory.** The ionic driver, in the kernel and in rdma-core, creates a
   queue that takes that many SGEs with *speculative* SGE lists: a work
