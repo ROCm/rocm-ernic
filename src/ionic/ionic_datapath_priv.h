@@ -216,6 +216,10 @@ struct ionic_qp_ring {
     /* The send queue is stopped on a WQE for another node that the mesh has
      * no room to queue yet; also counted in ionic_datapath.sq_stalled. */
     bool sq_busy;
+    /* The WQE at sq_cons couldn't be read, and its error completion and the
+     * flush wait for the requests this QP posted before it to be answered
+     * (sq_fault_finish()); nothing more on the send queue runs meanwhile. */
+    bool sq_fault;
     uint32_t rq_prod;
     uint32_t rq_cons;
     uint32_t msn; /* running send sequence for SEND_MSN completions */

@@ -68,8 +68,22 @@
 #define WQE_PLD_OFF             32
 #define WQE_ATOMIC_SGE_OFF      48
 
-#define IONIC_STS_OK             0
-#define IONIC_STS_REMOTE_ACC_ERR 9
+#define IONIC_STS_OK                0
+#define IONIC_STS_LOCAL_QP_OPER_ERR 2
+#define IONIC_STS_WQE_FLUSHED_ERR   4
+#define IONIC_STS_REMOTE_ACC_ERR    9
+#define IONIC_STS_RETRY_EXCEEDED    11
+
+/* struct ionic_v1_cqe: its type and error bits, and where its fields lie */
+#define CQE_ERROR_BIT     0x02u
+#define CQE_TYPE_MASK     (7u << 5)
+#define CQE_TYPE_RECV     (1u << 5)
+#define CQE_TYPE_SEND_MSN (2u << 5)
+#define CQE_TYPE_SEND_NPG (3u << 5)
+#define CQE_MSN_OFF       4  /* be32 send.msg_msn */
+#define CQE_NPG_WQE_OFF   16 /* native u64 send.npg_wqe_id */
+#define CQE_STATUS_OFF    24 /* be32 status_length */
+#define CQE_QTF_OFF       28 /* be32 qid, type and flags */
 
 /* The data path's clock, which the rows set so the RNR and pending-timeout
  * rows sit exactly on their deadlines. */
@@ -83,11 +97,13 @@ static uint64_t fake_now_ms(void)
 /* ---- Fake guest memory --------------------------------------------------
  *
  * GPA n is g_mem[n]; anything past the end fails, as an unmapped address
- * would.
+ * would, and so does anything that takes in g_hole_gpa, unless it is
+ * UINT64_MAX.
  */
 
 #define GUEST_MEM_SIZE 0x10000u
 static uint8_t g_mem[GUEST_MEM_SIZE];
+static uint64_t g_hole_gpa = UINT64_MAX;
 
 struct fake_sg {
     uint64_t addr;
@@ -109,6 +125,8 @@ int vfu_addr_to_sgl(vfu_ctx_t *vfu_ctx, vfu_dma_addr_t dma_addr, size_t len,
     (void)prot;
     /* Written so a huge addr cannot wrap the sum back into range. */
     if (max_nr_sgs < 1 || addr > GUEST_MEM_SIZE || len > GUEST_MEM_SIZE - addr)
+        return -1;
+    if (g_hole_gpa >= addr && g_hole_gpa - addr < len)
         return -1;
     sg->addr = addr;
     sg->len = len;
@@ -501,6 +519,7 @@ static const char *const counter_name[IONIC_DP_RDMA_COUNT] = {
 #define RECV_GPA   0x6000u
 #define RING_DEPTH 4 /* log2 */
 #define WQE_STRIDE 6 /* log2: 64 bytes, room for two SGEs */
+#define CQE_STRIDE 5 /* log2: 32 bytes, one CQE */
 #define T0         1000000u
 #define OP_UNKNOWN 0x0fu
 
@@ -559,7 +578,7 @@ static struct ionic_datapath *setup(void)
     struct ionic_dp_ring_desc cq = {
         .buf = {.dma_addr = CQ_GPA, .map_count = 1},
         .depth_log2 = 6,
-        .stride_log2 = 5,
+        .stride_log2 = CQE_STRIDE,
     };
     struct ionic_dp_buf_desc mr = {.dma_addr = MR_GPA, .map_count = 1};
 
@@ -568,6 +587,7 @@ static struct ionic_datapath *setup(void)
     memset(g_mem, 0, sizeof(g_mem));
     for (size_t i = 0; i < MR_LEN; i++)
         g_mem[SRC_GPA + i] = (uint8_t)i;
+    g_hole_gpa = UINT64_MAX;
     g_nwire = 0;
     g_room = true;
     g_send_rc = 0;
@@ -2665,6 +2685,190 @@ static void check_reply_budget(void)
     }
 }
 
+/*
+ * A send WQE the device can't read completes in error, named by its slot,
+ * and the QP is flushed, but only once the requests posted before it have
+ * completed. The drivers retire a send queue in order, so while an earlier
+ * READ waits for its answer, a flush would have them flush the READ and the
+ * WQE both, and report no error; and the flush takes the READ back, so its
+ * answer could never complete it. Each row's completions are compared, in
+ * order, with what the drivers need to report the READ, then the error, then
+ * a flush of whatever is left.
+ */
+enum uw_scenario {
+    UW_ALONE,    /* nothing posted before it */
+    UW_ANSWERED, /* a remote READ before it, which is answered */
+    UW_DEADLINE, /* the READ unanswered at PENDING_MS */
+    UW_EXPIRED,  /* and just past it */
+    UW_FLUSHED,  /* QP_A flushed while it waits, then the READ answered */
+};
+
+/*
+ * A completion on CQ_ID for QP_A. @id is a SEND_MSN's MSN, or the wqe_id of
+ * an NPG completion that isn't a flush.
+ */
+struct uw_cqe {
+    uint32_t type;
+    uint32_t status;
+    uint64_t id;
+};
+
+#define UW_MAX_CQES 4
+
+/* Whether CQ_ID holds exactly @n completions, and they are @want */
+static const char *uw_cqes(const struct ionic_datapath *dp,
+                           const struct uw_cqe *want, uint32_t n)
+{
+    static char why[128];
+
+    if (dp->cq[CQ_ID].prod != n) {
+        snprintf(why, sizeof(why), "%" PRIu32 " completions, not %" PRIu32,
+                 dp->cq[CQ_ID].prod, n);
+        return why;
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        const uint8_t *c = g_mem + CQ_GPA + ((size_t)i << CQE_STRIDE);
+        uint32_t qtf = ernic_get_be32(c + CQE_QTF_OFF);
+        uint32_t status = ernic_get_be32(c + CQE_STATUS_OFF);
+        bool error = (qtf & CQE_ERROR_BIT) != 0;
+        uint64_t id = 0;
+
+        if (want[i].type == CQE_TYPE_SEND_MSN)
+            id = ernic_get_be32(c + CQE_MSN_OFF);
+        else if (want[i].type == CQE_TYPE_SEND_NPG &&
+                 want[i].status != IONIC_STS_WQE_FLUSHED_ERR)
+            memcpy(&id, c + CQE_NPG_WQE_OFF, sizeof(id));
+
+        if ((qtf & CQE_TYPE_MASK) != want[i].type || qtf >> 8 != QP_A ||
+            status != want[i].status ||
+            error != (want[i].status != IONIC_STS_OK) || id != want[i].id) {
+            snprintf(why, sizeof(why),
+                     "completion %" PRIu32 " is type %" PRIu32 " qid %" PRIu32
+                     " status %" PRIu32 " (error %d) id %" PRIu64,
+                     i, (qtf & CQE_TYPE_MASK) >> 5, qtf >> 8, status, error,
+                     id);
+            return why;
+        }
+    }
+    return NULL;
+}
+
+static const char *uw_run(struct ionic_datapath *dp, enum uw_scenario scenario)
+{
+    struct uw_cqe want[UW_MAX_CQES];
+    uint32_t n = 0;
+    /* The slot of the WQE that can't be read: after the READ's, if any */
+    uint32_t slot = scenario == UW_ALONE ? 0 : 1;
+    const char *why;
+
+    remote(dp, QP_B);
+    if (scenario != UW_ALONE) {
+        post_send(dp, QP_A, &READ_OK);
+        if (g_nwire != 1)
+            return "the READ wasn't sent";
+    }
+    g_hole_gpa = SQ_GPA(QP_A) + ((uint64_t)slot << WQE_STRIDE);
+    post_send(dp, QP_A, &WRITE_OK);
+
+    if (scenario != UW_ALONE) {
+        /*
+         * The guest maps the slot back and posts another WRITE. Neither
+         * runs: the WQE that couldn't be read has ended the queue.
+         */
+        g_hole_gpa = UINT64_MAX;
+        post_send(dp, QP_A, &WRITE_OK);
+        if (dp->cq[CQ_ID].prod != 0)
+            return "something completed while the READ waited";
+        if (g_nwire != 1)
+            return "a WRITE behind the READ was sent";
+    }
+
+    switch (scenario) {
+    case UW_ALONE:
+        break;
+    case UW_ANSWERED:
+        pump(dp);
+        want[n++] = (struct uw_cqe){CQE_TYPE_SEND_MSN, IONIC_STS_OK, 1};
+        break;
+    case UW_DEADLINE:
+        g_nwire = 0;
+        poll_at(dp, T0 + PENDING_MS);
+        return uw_cqes(dp, NULL, 0);
+    case UW_EXPIRED:
+        g_nwire = 0;
+        poll_at(dp, T0 + PENDING_MS + 1);
+        want[n++] =
+            (struct uw_cqe){CQE_TYPE_SEND_MSN, IONIC_STS_RETRY_EXCEEDED, 1};
+        break;
+    case UW_FLUSHED:
+    default:
+        /* The flush takes the READ back, so nothing completes for it */
+        ionic_datapath_flush_qp(dp, QP_A);
+        pump(dp);
+        want[n++] =
+            (struct uw_cqe){CQE_TYPE_SEND_NPG, IONIC_STS_WQE_FLUSHED_ERR, 0};
+        want[n++] =
+            (struct uw_cqe){CQE_TYPE_RECV, IONIC_STS_WQE_FLUSHED_ERR, 0};
+        return uw_cqes(dp, want, n);
+    }
+
+    want[n++] =
+        (struct uw_cqe){CQE_TYPE_SEND_NPG, IONIC_STS_LOCAL_QP_OPER_ERR, slot};
+    want[n++] =
+        (struct uw_cqe){CQE_TYPE_SEND_NPG, IONIC_STS_WQE_FLUSHED_ERR, 0};
+    want[n++] = (struct uw_cqe){CQE_TYPE_RECV, IONIC_STS_WQE_FLUSHED_ERR, 0};
+    why = uw_cqes(dp, want, n);
+    if (!why &&
+        dp->qp[QP_A].sq_cons % dp->qp[QP_A].sq_depth != dp->qp[QP_A].sq_prod)
+        why = "the flush didn't empty the send queue";
+    return why;
+}
+
+static void check_unreadable_wqe(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        enum uw_scenario scenario;
+    } rows[] = {
+        {"positive", "a send WQE the device can't read, with nothing before it",
+         "it completes at once with LOCAL_QP_OPER_ERR, by its slot, then "
+         "both queues are flushed",
+         UW_ALONE},
+        {"positive",
+         "a send WQE the device can't read, behind a remote READ that is "
+         "then answered",
+         "nothing completes or is sent until the answer; then the READ "
+         "completes, then the WQE in error, then both flushes",
+         UW_ANSWERED},
+        {"boundary", "the READ before it still unanswered at PENDING_MS",
+         "nothing completes", UW_DEADLINE},
+        {"positive", "the READ before it given up on just past PENDING_MS",
+         "the READ completes with RETRY_EXCEEDED, then the WQE in error, "
+         "then both flushes",
+         UW_EXPIRED},
+        {"corner", "QP_A flushed while the WQE waits, then the READ answered",
+         "only the two flushes: the READ was taken back, and the WQE is "
+         "flushed with the rest",
+         UW_FLUSHED},
+    };
+
+    for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
+        struct ionic_datapath *dp = setup();
+        const char *why = dp ? uw_run(dp, rows[row].scenario)
+                             : "could not create a data path";
+
+        ionic_datapath_destroy(dp);
+        printf("%s %s: %s; expected: %s\n", why ? "FAIL" : "ok  ",
+               rows[row].category, rows[row].description, rows[row].expected);
+        if (why) {
+            printf("     %s\n", why);
+            failures++;
+        }
+    }
+}
+
 int main(void)
 {
     check_wire_hdr_layout();
@@ -2675,6 +2879,7 @@ int main(void)
     check_mesh_recv_sizes();
     check_mesh_recv_room();
     check_reply_budget();
+    check_unreadable_wqe();
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
         run_case(&cases[i]);
     for (size_t i = 0; i < sizeof(getter_cases) / sizeof(getter_cases[0]); i++)

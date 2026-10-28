@@ -1964,7 +1964,6 @@ static const struct dp_dma_fault dp_dma_faults[] = {
     {"ATOMIC_FA's write", IH_OP_ATOMIC_FA, 3, IH_STS_REMOTE_ACC_ERR},
     {"ATOMIC_FA's result", IH_OP_ATOMIC_FA, 4, IH_STS_LOCAL_ACC_ERR},
     {"RDMA_WRITE's completion", IH_OP_RDMA_WRITE, 4, NO_CQE},
-    {"RDMA_WRITE's WQE", IH_OP_RDMA_WRITE, 1, NO_CQE},
 };
 
 static void test_dp_dma_faults(void)
@@ -1972,6 +1971,7 @@ static void test_dp_dma_faults(void)
     const char *T = "dp-dma";
     struct rc r;
     struct ih *h = &r.h;
+    struct ih_cqe e;
     struct ih_sge sge = {.va = VA_A + 0x900, .len = 8, .lkey = MR_A};
     struct ih_send s = {.flags = IH_WQE_SIGNALLED,
                         .remote_va = VA_B + 0x800,
@@ -1997,12 +1997,46 @@ static void test_dp_dma_faults(void)
             check(T, cq_empty(h, &r.cqa), "%s refused: a completion arrived",
                   c->what);
             /* A WQE that ran took an MSN, though its completion was lost */
-            if (c->fail > 1)
-                r.msn_a++;
+            r.msn_a++;
         }
         check(T, fake_vfu_mapped(h->vfu) == 0,
               "%s refused: guest memory left mapped", c->what);
     }
+
+    /*
+     * A WQE the device can't read completes in error, named by its slot,
+     * which is what the drivers put in its wqe_id, and flushes the QP. It
+     * takes no MSN, which the send after it checks.
+     */
+    uint32_t slot = r.a.sq.prod % (1u << r.a.sq.depth_log2);
+    s.op = IH_OP_RDMA_WRITE;
+    fake_vfu_fail_nth_map(h->vfu, 1);
+    ih_post_send(h, &r.a, &s);
+    fake_vfu_fail_nth_map(h->vfu, 0);
+    if (check(T, ih_cq_poll(h, &r.cqa, &e),
+              "an unreadable WQE did not complete"))
+        check(T,
+              e.type == IH_CQE_TYPE_SEND_NPG && e.qid == RC_QP_A && e.error &&
+                  e.status_len == IH_STS_LOCAL_QP_OPER && e.wqe_id == slot,
+              "an unreadable WQE: type %u qid %u status %u (error %d) "
+              "wqe_id %" PRIu64 ", expected type %d qid %d status %d "
+              "wqe_id %" PRIu32,
+              e.type, e.qid, e.status_len, e.error, e.wqe_id,
+              IH_CQE_TYPE_SEND_NPG, RC_QP_A, IH_STS_LOCAL_QP_OPER, slot);
+    bool flushed_sq = false, flushed_rq = false;
+    while (ih_cq_poll(h, &r.cqa, &e)) {
+        check(T, e.error && e.status_len == IH_STS_WQE_FLUSHED_ERR,
+              "an unreadable WQE: completion status %u (error %d) after it, "
+              "expected only flushes",
+              e.status_len, e.error);
+        flushed_sq |= e.type == IH_CQE_TYPE_SEND_NPG;
+        flushed_rq |= e.type == IH_CQE_TYPE_RECV;
+    }
+    check(T, flushed_sq && flushed_rq,
+          "an unreadable WQE: QP flushed send queue %d, receive queue %d",
+          flushed_sq, flushed_rq);
+    check(T, fake_vfu_mapped(h->vfu) == 0,
+          "an unreadable WQE: guest memory left mapped");
 
     /* An event the device can't write is lost, but its completion isn't */
     ih_cq_arm(h, &r.cqa);
