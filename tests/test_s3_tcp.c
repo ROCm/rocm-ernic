@@ -35,6 +35,7 @@
 #include <string.h>
 
 #include "ernic_attributes.h"
+#include "ernic_siphash.h"
 #include "s3_alloc_fail.h"
 #include "s3/s3_http.h"
 #include "s3/s3_target.h"
@@ -414,6 +415,15 @@ struct fixture {
     uint8_t frame[2048];
 };
 
+/* The clock a fixture's endpoint takes initial sequence numbers from
+ * (cfg.now_us), in microseconds, so a test knows what they are. */
+static uint64_t fake_us;
+
+static uint64_t fake_now_us(void)
+{
+    return fake_us;
+}
+
 /*
  * Fake guest memory, so the RDMA data plane can be exercised through the
  * TCP endpoint rather than stubbed out.  The real one resolves an rkey
@@ -514,6 +524,7 @@ static bool fixture_up_dma(struct fixture *fx, const char *name,
     s3_tcp_cfg_from_target(&ncfg, fx->target);
     if (max_conns)
         ncfg.max_conns = max_conns;
+    ncfg.now_us = fake_now_us;
     memcpy(fx->mac, ncfg.mac, 6);
 
     fx->tcp = s3_tcp_create(&ncfg, fx->target, dma, dma_ctx, cap_tx, fx->cap,
@@ -2306,6 +2317,151 @@ out:
     fixture_down(&fx);
 }
 
+/*
+ * The SYN|ACK's sequence number for a SYN from GUEST_PORT + @i at @now_us
+ * microseconds, as RFC 6528 computes it with @key: a clock ticking every
+ * 4 us plus SipHash-2-4 of the local address and port and then the remote
+ * ones, all big-endian.
+ */
+static uint32_t rfc6528_iss(const uint8_t key[ERNIC_SIPHASH_KEY_LEN],
+                            unsigned i, uint64_t now_us)
+{
+    uint8_t tuple[12];
+
+    put_be(tuple, 4, TARGET_IP);
+    put_be(tuple + 4, 2, TARGET_PORT);
+    put_be(tuple + 6, 4, GUEST_IP);
+    put_be(tuple + 10, 2, GUEST_PORT + i);
+    return (uint32_t)(now_us / 4u) +
+           (uint32_t)ernic_siphash24(key, tuple, sizeof(tuple));
+}
+
+/*
+ * The initial sequence number is RFC 6528's, keyed with what getentropy()
+ * gave s3_tcp_create(): a fixed key gives exactly the number it predicts,
+ * for each connection and as the clock moves on, and a random key a
+ * different one. (That differs falsely one time in 2^32.)
+ */
+static void test_iss(void)
+{
+    const char *name = "iss";
+    /* Microseconds: two connections at once, then one a few ticks into a
+     * later millisecond, and one long enough after that the clock has
+     * wrapped. */
+    static const uint64_t when[] = {7000, 7000, 1000012,
+                                    UINT64_C(0x123456789abc)};
+    uint8_t key[ERNIC_SIPHASH_KEY_LEN];
+    struct fixture fx;
+    uint32_t srv = 0;
+    int before = failures;
+
+    for (size_t i = 0; i < sizeof(key); i++)
+        key[i] = (uint8_t)i; /* what s3_alloc_fail_entropy_fixed() gives */
+
+    s3_alloc_fail_entropy_fixed(true);
+    bool up = fixture_up(&fx, name, 0);
+    s3_alloc_fail_entropy_fixed(false);
+    if (!up)
+        return;
+
+    for (unsigned i = 0; i < sizeof(when) / sizeof(when[0]); i++) {
+        fake_us = when[i];
+        if (!handshake(&fx, name, (uint16_t)(GUEST_PORT + i), 100, &srv,
+                       when[i] / 1000))
+            goto out;
+        uint32_t want = rfc6528_iss(key, i, when[i]);
+        if (srv - 1 != want)
+            fail(name,
+                 "connection %u at %" PRIu64 " us started at %#" PRIx32
+                 ", want %#" PRIx32,
+                 i, when[i], srv - 1, want);
+    }
+    fixture_down(&fx);
+
+    if (!fixture_up(&fx, name, 0))
+        return;
+    fake_us = when[0];
+    if (!handshake(&fx, name, GUEST_PORT, 100, &srv, when[0] / 1000))
+        goto out;
+    if (srv - 1 == rfc6528_iss(key, 0, when[0]))
+        fail(name, "a random key gave the fixed key's sequence number");
+
+    if (failures == before)
+        ok(name);
+out:
+    fixture_down(&fx);
+}
+
+/*
+ * The endpoint keeps no TIME_WAIT, so a guest can reset a connection and
+ * open another from the same port at once. Within the same millisecond,
+ * the second must still start past the first: the clock is microseconds,
+ * not the millisecond clock the entry points are given.
+ */
+static void test_iss_same_ms_reconnect(void)
+{
+    const char *name = "iss-same-ms-reconnect";
+    struct fixture fx;
+    uint32_t first = 0;
+    uint32_t second = 0;
+    size_t n;
+
+    if (!fixture_up(&fx, name, 0))
+        return;
+
+    fake_us = 5000;
+    if (!handshake(&fx, name, GUEST_PORT, 100, &first, 5))
+        goto out;
+    n = build_tcp(fx.frame, fx.mac, GUEST_PORT, 101, 0, FLAG_RST, NULL, 0);
+    s3_tcp_rx_frame(fx.tcp, fx.frame, n, 5);
+    if (s3_tcp_conn_count(fx.tcp) != 0) {
+        fail(name, "the RST left the connection open");
+        goto out;
+    }
+
+    fake_us = 5004; /* one 4 us tick on, the same millisecond */
+    if (!handshake(&fx, name, GUEST_PORT, 100, &second, 5))
+        goto out;
+    if (second - first != 1)
+        fail(name,
+             "the reconnection started %" PRIu32 " past the first, want 1",
+             second - first);
+    else
+        ok(name);
+out:
+    fixture_down(&fx);
+}
+
+/* s3_tcp_create() refuses to run without a key for the sequence numbers,
+ * and says why. */
+static void test_create_no_entropy(void)
+{
+    const char *name = "create-no-entropy";
+    struct s3_target_cfg tcfg;
+    struct s3_tcp_cfg ncfg;
+    char err[128] = "";
+
+    s3_target_cfg_defaults(&tcfg);
+    struct s3_target *target = s3_target_create(&tcfg, err, sizeof(err));
+    if (target == NULL) {
+        fail(name, "target create: %s", err);
+        return;
+    }
+    s3_tcp_cfg_from_target(&ncfg, target);
+
+    s3_alloc_fail_entropy(true);
+    struct s3_tcp *s = s3_tcp_create(&ncfg, target, NULL, NULL, cap_tx, NULL,
+                                     err, sizeof(err));
+    s3_alloc_fail_entropy(false);
+    if (s != NULL || strstr(err, "random key") == NULL)
+        fail(name, "create without entropy: %p, \"%s\"", (void *)s, err);
+    else
+        ok(name);
+
+    s3_tcp_destroy(s);
+    s3_target_destroy(target);
+}
+
 /* Hand out @len bytes of a fixed pattern as if read from a client buffer,
  * so the store can hold an object larger than any test buffer. */
 static uint32_t pattern_from_host(void *ctx, uint32_t key, uint64_t addr,
@@ -2617,6 +2773,9 @@ int main(void)
     test_malformed_frames();
     test_ping_too_big();
     test_create();
+    test_iss();
+    test_iss_same_ms_reconnect();
+    test_create_no_entropy();
     test_response_too_large();
     test_create_alloc_failures();
     test_request_alloc_failures();

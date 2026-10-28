@@ -8,10 +8,12 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
+#include <unistd.h>
 
 #include "byteorder.h"
 #include "ernic_err.h"
+#include "ernic_siphash.h"
+#include "ernic_time.h"
 #include "net/net_headers.h"
 #include "s3/s3_http.h"
 #include "s3/s3_target.h"
@@ -84,7 +86,7 @@ struct s3_tcp {
     unsigned conn_cap;
 
     struct s3_tcp_stats stats;
-    uint32_t iss; /* rotating initial send sequence */
+    uint8_t isn_key[ERNIC_SIPHASH_KEY_LEN]; /* RFC 6528's secret key */
     uint16_t ip_id;
     uint8_t frame[FRAME_MAX];
 };
@@ -128,6 +130,34 @@ static bool seq_lt(uint32_t a, uint32_t b)
 static bool seq_le(uint32_t a, uint32_t b)
 {
     return a == b || seq_lt(a, b);
+}
+
+/*
+ * The initial send sequence number for a connection from @p peer_ip and
+ * @p peer_port, as RFC 6528 computes it: a clock that ticks every 4 us
+ * (cfg.now_us), plus a keyed hash of the connection's addresses and
+ * ports.  The hash makes the number unpredictable without the key, so
+ * nothing that sees one connection's numbers can work out another's and
+ * forge segments for it.  The clock keeps the numbers for one pair of
+ * endpoints moving forward, as RFC 793's did, so that a new connection
+ * between them is unlikely to start inside an old one's sequence space.
+ */
+static uint32_t conn_iss(const struct s3_tcp *s, uint32_t peer_ip,
+                         uint16_t peer_port)
+{
+    /* Local address and port, then remote; the order and byte order only
+     * have to be the same every time. */
+    uint8_t tuple[12];
+
+    ernic_put_be32(tuple, s->cfg.ip);
+    ernic_put_be16(tuple + 4, s->cfg.port);
+    ernic_put_be32(tuple + 6, peer_ip);
+    ernic_put_be16(tuple + 10, peer_port);
+
+    /* Wraps every 4.8 hours */
+    uint64_t now_us = s->cfg.now_us ? s->cfg.now_us() : ernic_monotonic_us();
+    uint32_t clock = (uint32_t)(now_us / 4u);
+    return clock + (uint32_t)ernic_siphash24(s->isn_key, tuple, sizeof(tuple));
 }
 
 /* ------------------------------------------------------------------ */
@@ -619,8 +649,7 @@ static bool handle_tcp(struct s3_tcp *s, const uint8_t *frame, size_t len,
         c->peer_ip = peer_ip;
         c->peer_port = peer_port;
         c->rcv_nxt = seq + 1;
-        c->snd_una = s->iss;
-        s->iss += 0x01000000u;
+        c->snd_una = conn_iss(s, peer_ip, peer_port);
         c->peer_win = window;
         c->mss = S3_TCP_MSS_DEFAULT;
 
@@ -794,6 +823,14 @@ struct s3_tcp *s3_tcp_create(const struct s3_tcp_cfg *cfg,
         return NULL;
     }
 
+    /* Without the key anyone could compute the sequence numbers, so there
+     * is no running without one. */
+    if (getentropy(s->isn_key, sizeof(s->isn_key)) != 0) {
+        ernic_set_err(err, errlen, "no random key for TCP sequence numbers");
+        free(s);
+        return NULL;
+    }
+
     s->cfg = *cfg;
     if (s->cfg.max_conns == 0) {
         s->cfg.max_conns = S3_TCP_MAX_CONNS;
@@ -811,7 +848,6 @@ struct s3_tcp *s3_tcp_create(const struct s3_tcp_cfg *cfg,
     s->dma_ctx = dma_ctx;
     s->tx = tx;
     s->tx_ctx = tx_ctx;
-    s->iss = 0x1000u;
     return s;
 }
 

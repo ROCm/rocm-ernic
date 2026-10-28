@@ -23,6 +23,7 @@ static bool armed;
 static unsigned countdown; /* allocations to let through before failing */
 static bool fired;
 static bool entropy_fails;
+static bool entropy_fixed;
 
 void s3_alloc_fail_arm(unsigned nth)
 {
@@ -40,6 +41,11 @@ bool s3_alloc_fail_disarm(void)
 void s3_alloc_fail_entropy(bool fail)
 {
     entropy_fails = fail;
+}
+
+void s3_alloc_fail_entropy_fixed(bool fixed)
+{
+    entropy_fixed = fixed;
 }
 
 static bool should_fail(void)
@@ -102,6 +108,13 @@ int __wrap_getentropy(void *buf, size_t len)
     if (entropy_fails) {
         errno = ENOSYS;
         return -1;
+    }
+    if (entropy_fixed) {
+        unsigned char *p = buf;
+        for (size_t i = 0; i < len; i++) {
+            p[i] = (unsigned char)i;
+        }
+        return 0;
     }
     return __real_getentropy(buf, len);
 }

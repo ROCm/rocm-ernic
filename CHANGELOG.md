@@ -1116,7 +1116,12 @@
   or headers, which could hide a second `Content-Length` from the
   duplicate check or cut a value short, and a CR not followed by LF there,
   which a proxy that ends lines at a CR would read as a header this server
-  didn't see.
+  didn't see. The in-band TCP endpoint's initial sequence numbers were
+  predictable (the first connection's was always `0x1000`, and each later
+  one's `0x01000000` past the last). They are now chosen as RFC 6528 says,
+  from a clock and a hash of the connection's addresses and ports keyed
+  with random bytes, so one connection's numbers don't give away another's.
+  The `s3` backend doesn't start if it can't get the random bytes.
 * **Server startup and shutdown.**
   * `--socket-group` changed the socket's mode through its path, so a
     symlink swapped in could make a root server give another file mode

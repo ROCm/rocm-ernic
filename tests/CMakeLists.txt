@@ -161,6 +161,15 @@ target_include_directories(ernic-test-byteorder PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
 
+# SipHash-2-4 (ernic_siphash.h) against the reference test vectors.
+add_executable(ernic-test-siphash
+    test_siphash.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_siphash.c
+)
+target_include_directories(ernic-test-siphash PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+)
+
 # P4 engine test. The engine is frames-in/frames-out, so this links the
 # engine's own translation units and nothing else -- no device, no guest
 # memory.
@@ -294,6 +303,7 @@ target_include_directories(test_s3_target PRIVATE ${PROJECT_SOURCE_DIR}/src)
 # an independent implementation in the test.
 add_executable(test_s3_tcp
     test_s3_tcp.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_siphash.c
     ${PROJECT_SOURCE_DIR}/src/s3/s3_tcp.c
     ${PROJECT_SOURCE_DIR}/src/s3/s3_target.c
     ${PROJECT_SOURCE_DIR}/src/s3/s3_http.c
@@ -1060,6 +1070,7 @@ set(ERNIC_TEST_TARGETS
     ernic-test-ionic-eth-net
     test_parse_int
     ernic-test-byteorder
+    ernic-test-siphash
     test_nvmeof_target
     test_nvmeof_cm
     test_s3_token
@@ -1190,6 +1201,13 @@ add_test(
     COMMAND $<TARGET_FILE:ernic-test-byteorder>
 )
 set_tests_properties(byteorder-unit PROPERTIES TIMEOUT 30)
+
+# SipHash-2-4 against the reference implementation's test vectors
+add_test(
+    NAME siphash-unit
+    COMMAND $<TARGET_FILE:ernic-test-siphash>
+)
+set_tests_properties(siphash-unit PROPERTIES TIMEOUT 30)
 
 # P4 engine unit test: port model, frame bounds, and the no-program path.
 if(ERNIC_BUILD_P4)

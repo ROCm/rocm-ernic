@@ -31,6 +31,15 @@ static inline uint64_t ernic_monotonic_ms(void)
     return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
 }
 
+/* Microseconds on CLOCK_MONOTONIC, from the same origin. */
+static inline uint64_t ernic_monotonic_us(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
 /*
  * Sleep for us microseconds on CLOCK_MONOTONIC.  A signal handler ends the
  * sleep early, so a caller that loops on a flag the handler sets sees it at
