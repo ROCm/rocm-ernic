@@ -272,11 +272,11 @@ int rdma_rm_alloc_mr(RdmaDeviceResources *dev_res, uint32_t pd_handle,
 
     /*
      * Create backend MR using vtable dispatch. There is no host memory behind
-     * the MR (see RdmaRmMR), so the backend gets no address or length.
+     * the MR (see RdmaRmMR), so create_mr takes no address or length.
      */
     if (pd->backend_pd.backend_ops && pd->backend_pd.backend_ops->create_mr) {
         ret = pd->backend_pd.backend_ops->create_mr(
-            &mr->backend_mr, &pd->backend_pd, NULL, 0, 0, access_flags);
+            &mr->backend_mr, &pd->backend_pd, access_flags);
         if (ret) {
             rdma_error_report("Backend create_mr failed: %d", ret);
             ret = -EIO;

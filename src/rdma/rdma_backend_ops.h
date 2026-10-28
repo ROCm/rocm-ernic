@@ -52,8 +52,7 @@ struct RdmaBackendOps {
     int (*create_pd)(RdmaBackendDev *backend_dev, RdmaBackendPD *pd);
 
     /* Memory Region operations */
-    int (*create_mr)(RdmaBackendMR *mr, RdmaBackendPD *pd, void *addr,
-                     size_t length, uint64_t guest_start, int access);
+    int (*create_mr)(RdmaBackendMR *mr, RdmaBackendPD *pd, int access);
     void (*destroy_mr)(RdmaBackendMR *mr);
     uint32_t (*mr_lkey)(const RdmaBackendMR *mr);
 
