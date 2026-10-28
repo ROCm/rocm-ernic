@@ -237,6 +237,14 @@ with the *sender's* address as its source. Forwarding the MAD
 correctly and describing it wrongly looks identical from
 every other angle, and is what used to strand ``rdma_cm``.
 
+It also checks that an address handle finds its destination's
+node when it sends, not when it was made. A MAD through an AH
+whose address no node owns yet is dropped rather than delivered
+to the sender's own QP1, and once the worker claims the address
+the same AH reaches it. So does an AH made before the worker
+restarts under a new node id. A MAD through an AH the device
+doesn't know, or one with no address, is dropped too.
+
 That is the path ``rdma_cm`` depends on and the one
 ``ERNIC_TCP_GUEST_GIDS`` cannot cover: it is read once at
 startup, and one environment variable cannot describe two

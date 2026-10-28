@@ -259,14 +259,16 @@ struct ionic_qp_ring {
  */
 struct ionic_ah {
     bool valid;
+    /* The destination, or none when the template held no address. Which
+     * node owns it is looked up on each send; see dp_ud_route(). */
     uint8_t dgid[ERNIC_GID_LEN];
+    bool dgid_valid;
     /* The guest's own GID, taken from the same RoCE header template the
      * destination came out of. Needed to put a truthful source in the GRH of
      * a datagram leaving for another instance; see dp_ud_grh(). */
     uint8_t sgid[ERNIC_GID_LEN];
     bool sgid_valid;
     uint8_t dmac[6];
-    uint32_t node_id; /* UINT32_MAX = local / no mesh */
 };
 
 /*
@@ -458,12 +460,14 @@ struct ionic_datapath {
      * @rx_waiting, since @rx_crowded_ms on @now_ms's clock.
      * @rx_dropped_logged is how much of @rx_dropped has been logged.
      * @log_cq_error limits cq_post()'s line for each error completion,
-     * which a guest can have it log once per work request.
+     * which a guest can have it log once per work request, and
+     * @log_ud_unroutable sq_send()'s for each datagram that has nowhere to go.
      */
     bool rx_crowded;
     uint64_t rx_crowded_ms;
     uint64_t rx_dropped_logged;
     ErnicLogLimit log_cq_error;
+    ErnicLogLimit log_ud_unroutable;
 
     /*
      * Why the last transfer stopped short.  A byte count on its own cannot

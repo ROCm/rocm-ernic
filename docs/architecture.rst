@@ -841,9 +841,16 @@ Datagrams (UD and GSI)
 A UD send names its destination per WQE: an AH id and a
 destination QP number. The emulator delivers by QP number, and
 uses the AH only to decide which server the destination lives
-on and to fill in the GRH. An AH whose destination GID no server
-owns is treated as local, so sends through it are delivered by
-QP number within the same VM.
+on and to fill in the GRH. Which server that is gets looked up
+on every send, not when the AH is created, so an AH made before
+any server owned its destination GID works once one does, and
+one whose server restarted under a new node id follows it. With
+a mesh, a datagram through an AH whose destination no server
+owns, through an AH with no destination address, or through an
+AH the device doesn't know, is dropped and completes as sent, as
+an undeliverable datagram does on a real network. It is never
+delivered to the same-numbered QP in the sender's own VM. With
+no mesh every destination is in the same VM.
 
 When the destination is in the same VM, the emulator enforces
 the datagram rules before delivering: the destination must
@@ -936,16 +943,17 @@ worker that has just registered is sent the whole table.
 Changes made while the thread is sending go out together in
 its next round.
 
-The admin queue consults that table when a QP reaches RTR and
-when an AH is created. The two differ when no node owns the
-destination GID:
+The admin queue consults that table when a QP reaches RTR, and
+the data path on every datagram it sends. The two differ when
+no node owns the destination GID:
 
 - For a connected (RC or UC) QP, MODIFY_QP fails. Picking a
   default node instead would deliver writes into the wrong VM's
-  memory.
-- CREATE_AH succeeds, and the AH is treated as local (see
-  `Datagrams (UD and GSI)`_). Creating an AH does not reject an
-  unknown destination.
+  memory. The node is looked up once: if it restarts under a new
+  id, the peer QP is gone with it anyway.
+- CREATE_AH succeeds, since the mesh may learn the address later,
+  and each datagram sent through the AH is dropped until it does
+  (see `Datagrams (UD and GSI)`_).
 
 The ionic Wire Protocol
 ^^^^^^^^^^^^^^^^^^^^^^^
@@ -1385,7 +1393,9 @@ model:
   is delivered to whichever QP it names.
 - A connected QP whose destination resolves to no known node
   fails MODIFY_QP instead of going to a default node. An AH with
-  such a destination is still created, and treated as local.
+  such a destination is still created, but a datagram sent
+  through it is dropped, never delivered to a QP in the sender's
+  own VM.
 
 What Is Not Emulated
 --------------------

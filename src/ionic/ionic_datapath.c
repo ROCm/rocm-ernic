@@ -797,16 +797,19 @@ void ionic_datapath_bind_qp_srq(struct ionic_datapath *dp, uint32_t qp_id,
 void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
                                 const uint8_t dgid[ERNIC_GID_LEN],
                                 const uint8_t sgid[ERNIC_GID_LEN],
-                                const uint8_t dmac[6], uint32_t dest_node_id)
+                                const uint8_t dmac[6])
 {
     if (!dp || ah_id >= dp->ah_count)
         return;
 
     struct ionic_ah *ah = &dp->ah[ah_id];
-    if (dgid)
+    if (dgid) {
         memcpy(ah->dgid, dgid, ERNIC_GID_LEN);
-    else
+        ah->dgid_valid = true;
+    } else {
         memset(ah->dgid, 0, ERNIC_GID_LEN);
+        ah->dgid_valid = false;
+    }
     if (sgid) {
         memcpy(ah->sgid, sgid, ERNIC_GID_LEN);
         ah->sgid_valid = true;
@@ -818,14 +821,12 @@ void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
         memcpy(ah->dmac, dmac, 6);
     else
         memset(ah->dmac, 0, 6);
-    ah->node_id = dest_node_id;
     ah->valid = true;
 
-    vfu_log(
-        dp->vfu_ctx, LOG_INFO,
-        "ionic_datapath: AH %u -> node %u mac %02x:%02x:%02x:%02x:%02x:%02x",
-        ah_id, dest_node_id, ah->dmac[0], ah->dmac[1], ah->dmac[2], ah->dmac[3],
-        ah->dmac[4], ah->dmac[5]);
+    vfu_log(dp->vfu_ctx, LOG_INFO,
+            "ionic_datapath: AH %u -> mac %02x:%02x:%02x:%02x:%02x:%02x", ah_id,
+            ah->dmac[0], ah->dmac[1], ah->dmac[2], ah->dmac[3], ah->dmac[4],
+            ah->dmac[5]);
 }
 
 void ionic_datapath_unregister_ah(struct ionic_datapath *dp, uint32_t ah_id)
@@ -2720,6 +2721,69 @@ static void dp_complete_send(struct ionic_datapath *dp, struct ionic_qp_ring *q,
 }
 
 /*
+ * Which instance a datagram through @ah is for, @ah being NULL for a handle
+ * the device doesn't know. Sets *@node to the mesh node it goes to, or to
+ * UINT32_MAX when it stays in this instance, and returns true; returns false
+ * when it can go nowhere.
+ *
+ * With no mesh, every datagram stays here, as every peer does. With one, the
+ * node that owns the AH's destination GID is looked up now, on every send.
+ * It used to be looked up once, at CREATE_AH, and an AH whose address no
+ * node owned yet was taken as local for good: its datagrams went to the
+ * same-numbered QP in this guest, so a MAD meant for a peer landed on our
+ * own QP1. An AH whose owner restarted under a new node id kept sending to
+ * the dead one. Now an address no live node owns alone, or an AH with no
+ * address at all, means the datagram is dropped, and never delivered here
+ * by default: the same exact lookup MODIFY_QP makes for a connected QP.
+ */
+static bool dp_ud_route(const struct ionic_datapath *dp,
+                        const struct ionic_ah *ah, uint32_t *node)
+{
+    *node = UINT32_MAX;
+    if (dp->local_node == UINT32_MAX)
+        return true;
+    if (!ah || !ah->dgid_valid)
+        return false;
+
+    uint32_t owner = ionic_dp_node_from_gid(dp, ah->dgid);
+    if (owner == UINT32_MAX)
+        return false;
+    if (owner != dp->local_node)
+        *node = owner;
+    return true;
+}
+
+/* Say why dp_ud_route() found nowhere for QP @qp_id's datagram to go. */
+static void dp_ud_log_unroutable(struct ionic_datapath *dp, uint32_t qp_id,
+                                 uint32_t dst_id, uint32_t ah_id,
+                                 const struct ionic_ah *ah)
+{
+    if (!ionic_dp_log_ok(dp, &dp->log_ud_unroutable, "unroutable datagram(s)"))
+        return;
+
+    if (!ah) {
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: QP %u datagram to QP %u dropped: AH %u is "
+                "unknown",
+                qp_id, dst_id, ah_id);
+    } else if (!ah->dgid_valid) {
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: QP %u datagram to QP %u dropped: AH %u has "
+                "no destination address",
+                qp_id, dst_id, ah_id);
+    } else {
+        const uint8_t *g = ah->dgid;
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: QP %u datagram to QP %u dropped: no mesh "
+                "node owns AH %u's destination gid "
+                "%02x%02x:%02x%02x:%02x%02x:%02x%02x:"
+                "%02x%02x:%02x%02x:%02x%02x:%02x%02x",
+                qp_id, dst_id, ah_id, g[0], g[1], g[2], g[3], g[4], g[5], g[6],
+                g[7], g[8], g[9], g[10], g[11], g[12], g[13], g[14], g[15]);
+    }
+}
+
+/*
  * A SEND, SEND_INV or SEND_IMM WQE on @q (@qp_id) that gathers @src, and
  * that process_sq_wqe() has not already handed to the mesh: it goes to a
  * target in this process, as a datagram to another node, or to a QP of
@@ -2769,15 +2833,22 @@ static uint32_t sq_send(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         uint32_t ah_id = ernic_get_be32(wqe + WQE_SEND_AH_OFF);
         ah =
             ah_id < dp->ah_count && dp->ah[ah_id].valid ? &dp->ah[ah_id] : NULL;
-        if (!ah && ah_id) {
-            /* Not fatal -- a local peer needs no address -- but it
-             * means CREATE_AH never reached us for this handle. */
+        if (!ah && ah_id && dp->local_node == UINT32_MAX) {
+            /* Not fatal -- with no mesh every peer is local, and needs no
+             * address -- but it means CREATE_AH never reached us for this
+             * handle. */
             vfu_log(dp->vfu_ctx, LOG_WARNING,
                     "ionic_datapath: QP %u SEND names unknown AH %u", qp_id,
                     ah_id);
         }
-        if (ah && dp->local_node != UINT32_MAX && ah->node_id != UINT32_MAX &&
-            ah->node_id != dp->local_node) {
+
+        /* Like any datagram with nowhere to go, it completes as sent. */
+        uint32_t node;
+        if (!dp_ud_route(dp, ah, &node)) {
+            dp_ud_log_unroutable(dp, qp_id, dst_id, ah_id, ah);
+            return IONIC_STS_OK;
+        }
+        if (node != UINT32_MAX) {
             /*
              * The datagram is for another instance. The GRH goes on
              * here, before it leaves, so the receiving side can deliver
@@ -2808,7 +2879,7 @@ static uint32_t sq_send(struct ionic_datapath *dp, struct ionic_qp_ring *q,
              */
             enum dp_post posted =
                 remote_post(dp, q, qp_id, op, wqe_id, false, false, &gsrc, wqe,
-                            dst_id, ah->node_id, gbuf);
+                            dst_id, node, gbuf);
             if (posted == DP_POST_BUSY) {
                 sq_busy_set(dp, q);
                 *stalled = true;
@@ -2817,7 +2888,7 @@ static uint32_t sq_send(struct ionic_datapath *dp, struct ionic_qp_ring *q,
             if (posted != DP_POST_SENT) {
                 vfu_log(dp->vfu_ctx, LOG_WARNING,
                         "ionic_datapath: QP %u UD send to node %u failed",
-                        qp_id, ah->node_id);
+                        qp_id, node);
             }
             return IONIC_STS_OK;
         }

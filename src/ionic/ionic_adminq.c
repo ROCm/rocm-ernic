@@ -1475,21 +1475,37 @@ static uint8_t handle_create_ah_op(const struct ionic_adminq_ctx *ctx,
             adminq_parse_roce_hdr(ctx, hdr_dma, hdr_len, dgid, sgid, dmac);
 
     /*
-     * An unparsable template is not fatal. A handle naming a peer inside
-     * this instance needs no address -- the datagram is routed by its QPN --
-     * so refusing the create would break the local case to protect the
-     * remote one. Register it without a node and let the send path complain
-     * if it ever needs an address it has not got.
+     * An unparsable template is not fatal. With no mesh a handle needs no
+     * address -- the datagram is routed by its QPN -- so refusing the create
+     * would break that case to protect the mesh one. Register it without an
+     * address and let the send path drop what needs one.
+     *
+     * Nor is an address no mesh node owns yet: the mesh may learn it later.
+     * The send path looks the owner up on every send; the lookup here is
+     * only for the log.
      */
-    uint32_t node =
-        dgid_valid ? ionic_dp_node_from_gid(ctx->dp, dgid) : UINT32_MAX;
-
     ionic_datapath_register_ah(ctx->dp, ah_id, dgid_valid ? dgid : NULL,
                                dgid_valid ? sgid : NULL,
-                               dgid_valid ? dmac : NULL, node);
+                               dgid_valid ? dmac : NULL);
 
-    vfu_log(ctx->vfu_ctx, LOG_INFO, "ionic_adminq CREATE_AH %u: node %u%s",
-            ah_id, node, dgid_valid ? "" : " (no address in the RoCE header)");
+    if (!dgid_valid) {
+        vfu_log(ctx->vfu_ctx, LOG_INFO,
+                "ionic_adminq CREATE_AH %u: no address in the RoCE header",
+                ah_id);
+    } else if (ionic_dp_local_node(ctx->dp) != UINT32_MAX) {
+        uint32_t node = ionic_dp_node_from_gid(ctx->dp, dgid);
+
+        if (node == UINT32_MAX)
+            vfu_log(ctx->vfu_ctx, LOG_INFO,
+                    "ionic_adminq CREATE_AH %u: no mesh node owns its "
+                    "destination yet",
+                    ah_id);
+        else
+            vfu_log(ctx->vfu_ctx, LOG_INFO,
+                    "ionic_adminq CREATE_AH %u: destination on node %u for "
+                    "now",
+                    ah_id, node);
+    }
     return IONIC_RC_SUCCESS;
 }
 

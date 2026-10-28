@@ -427,14 +427,13 @@ void ionic_datapath_set_qkey(struct ionic_datapath *dp, uint32_t qp_id,
 }
 void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
                                 const uint8_t dgid[16], const uint8_t sgid[16],
-                                const uint8_t dmac[6], uint32_t dest_node_id)
+                                const uint8_t dmac[6])
 {
     (void)dp;
     (void)ah_id;
     (void)dgid;
     (void)sgid;
     (void)dmac;
-    (void)dest_node_id;
 }
 void ionic_datapath_unregister_ah(struct ionic_datapath *dp, uint32_t ah_id)
 {
