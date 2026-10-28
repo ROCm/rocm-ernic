@@ -47,6 +47,8 @@
 #include "ernic_mesh.h"
 #include "ionic_harness.h"
 #include "parse_int.h"
+#include "pvrdma/pvrdma.h"
+#include "rdma/rdma_backend_tcp_priv.h"
 
 /* The mesh listens on loopback. Overridable so a CI runner that already has
  * something here can move it rather than fail. */
@@ -166,6 +168,32 @@ static uint32_t gm_wait_resolve(struct ih *a, struct ih *b, struct ih *h,
         gm_pump(a, b, 1);
     }
     return UINT32_MAX;
+}
+
+/*
+ * Wait, up to ~5s, for the manager @a to have seen node @node_id's
+ * connection end, as registration checks it (tcp_collect_dead_claimants()):
+ * its receive thread has read the hang-up, or the health check has retired
+ * the connection.  Nothing public changes then -- the node owns its GIDs
+ * until something declares it dead -- so this asks the backend.
+ */
+static bool gm_wait_hung_up(struct ih *a, uint32_t node_id)
+{
+    TcpBackendPrivate *priv =
+        a->dev->pvrdma_handle->backend_dev.backend_private;
+
+    for (unsigned i = 0; i < 2500; i++) {
+        TcpConnection *conn = tcp_connection_lookup(priv, node_id);
+        bool gone = !conn || tcp_conn_dead(conn);
+
+        tcp_connection_unref(conn);
+        if (gone)
+            return true;
+        ih_poll(a);
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 2 * 1000 * 1000};
+        nanosleep(&ts, NULL);
+    }
+    return false;
 }
 
 int main(void)
@@ -378,6 +406,18 @@ int main(void)
     ih_mr_free(&eb.mr);
     ih_mr_free(&ea.mr);
     ih_destroy(&b);
+
+    /*
+     * The manager has to have seen the old worker hang up before the new one
+     * registers.  Registration declares dead only the nodes whose connection
+     * has ended; until the manager's receive thread reads the end of node_b's,
+     * node_b is alive, as far as the manager can tell, and keeps its GID until
+     * the health check's next pass.  Nothing orders that thread before the
+     * new worker's registration, and on a loaded machine it can run after.
+     */
+    if (!gm_check(gm_wait_hung_up(&a, node_b),
+                  "the manager never saw node %u hang up", node_b))
+        goto out_a;
 
     struct ih b2;
 

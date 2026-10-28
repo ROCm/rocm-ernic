@@ -1038,7 +1038,8 @@ bool tcp_node_set_alive(TcpBackendPrivate *priv, MeshNodeInfo *node, bool alive,
 /*
  * Declare a node dead, which withdraws its GID claims, only if it is still
  * unreachable; false when it has a live connection again, which a stale
- * list cannot be trusted for, or was dead already.
+ * list cannot be trusted for, or was dead already.  The caller asks for the
+ * broadcast that tells the workers.
  */
 bool tcp_declare_dead_if_unreachable(TcpBackendPrivate *priv, uint32_t node_id)
     TSA_EXCLUDES(priv->mesh_table_lock);

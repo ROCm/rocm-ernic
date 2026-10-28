@@ -739,7 +739,11 @@
     past libvfio-user's range check;
   * write part of an RDMA READ or WRITE that runs past the end of its
     region before refusing it (within the region, so no other memory was
-    reached); it is now refused before anything moves.
+    reached); it is now refused before anything moves, whether it comes
+    from this server or from another over the mesh. A mesh WRITE whose
+    length isn't the size of the payload it carries is refused too, with
+    nothing written: one claiming more landed its payload first, and one
+    claiming less wrote that much and dropped the rest.
 * **A guest could fill the host's disk with warnings.** Every RDMA
   completion in error, other than a flush, logged a `completing QP ... in
   error` line, and with the P4 engine, so did every operation the program
@@ -991,6 +995,15 @@
   other workers it is dead), and owns them again if it answers; GIDs a
   dead node advertises are its own only once it answers. Two live
   claimants still contest a GID.
+* **TCP mesh: a restarted worker's GIDs could still resolve to its old
+  id.** The manager answered a registration before declaring dead the
+  nodes it had found unreachable, so a restarted worker could be told its
+  new id, and claim its guest's GIDs, while the manager still resolved them
+  to the old id, a node that was gone. The manager now declares those nodes
+  dead before it answers. This failed the `gsi-mesh` test a few runs in a
+  hundred, as did the test itself: it restarted the worker without waiting
+  for the manager to see the old one hang up, which the manager can't act
+  on until it does. It now waits.
 * **TCP mesh: more than 64 registrations.** A manager never dropped a node
   from its node table, and a restarted worker registers as a new node, so
   once a mesh had had more than 64 registrations in total, its topology and

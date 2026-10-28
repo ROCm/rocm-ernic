@@ -2060,6 +2060,112 @@ static void check_destroyed_qp_replies(void)
 }
 
 /*
+ * A WRITE from another node is checked before any of it lands: one whose
+ * header length isn't its payload's, or whose range runs past the end of the
+ * rkey's region, is refused with the region untouched, as sq_rdma() refuses
+ * one from this node.  Each row is a WRITE from QP_A on the peer to QP_B.
+ */
+#define RW_MAX_PAYLOAD 64u
+
+static const char *rw_run(struct ionic_datapath *dp, uint32_t rkey, uint64_t va,
+                          uint32_t length, uint32_t payload_len,
+                          uint32_t want_status)
+{
+    uint8_t msg[IONIC_WIRE_HDR_LEN + RW_MAX_PAYLOAD];
+    uint8_t before[MR_LEN];
+    struct ionic_wire_hdr h;
+
+    if (payload_len > RW_MAX_PAYLOAD)
+        return "the row's payload doesn't fit the message";
+    remote(dp, QP_B);
+    /* Not the payload's bytes, so a byte that lands shows */
+    memset(g_mem + MR_GPA, 0x5a, MR_LEN);
+    memcpy(before, g_mem + MR_GPA, sizeof(before));
+
+    memset(&h, 0, sizeof(h));
+    h.magic = IONIC_WIRE_MAGIC;
+    h.op = IONIC_WIRE_WRITE;
+    h.src_qp_id = QP_A;
+    h.dst_qp_id = QP_B;
+    h.req_id = 1;
+    h.rkey = rkey;
+    h.length = length;
+    h.remote_va = va;
+    ionic_dp_wire_hdr_put(msg, &h);
+    for (uint32_t i = 0; i < payload_len; i++)
+        msg[IONIC_WIRE_HDR_LEN + i] = (uint8_t)(0xa0u + i);
+    mesh_recv(msg, IONIC_WIRE_HDR_LEN + payload_len);
+    poll_at(dp, g_now_ms + 1);
+
+    if (g_nwire != 1)
+        return "the peer wasn't answered once";
+    ionic_dp_wire_hdr_get(&h, g_wire[0]);
+    if (h.op != IONIC_WIRE_ACK || h.status != want_status)
+        return want_status == IONIC_STS_OK
+                   ? "the WRITE wasn't acknowledged"
+                   : "the WRITE wasn't refused with a remote access error";
+    if (want_status != IONIC_STS_OK)
+        return memcmp(before, g_mem + MR_GPA, sizeof(before)) == 0
+                   ? NULL
+                   : "the refused WRITE changed the region";
+    return memcmp(g_mem + va, msg + IONIC_WIRE_HDR_LEN, length) == 0
+               ? NULL
+               : "the WRITE didn't land";
+}
+
+static void check_remote_write_bounds(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        uint32_t rkey;
+        uint64_t va;
+        uint32_t length;
+        uint32_t payload_len;
+        uint32_t status;
+    } rows[] = {
+        {"positive", "a 64-byte WRITE with 64 bytes of payload",
+         "lands, and is acknowledged", MR_KEY, MR_GPA, 64, 64, IONIC_STS_OK},
+        {"negative", "a 64-byte WRITE with 32 bytes of payload",
+         "refused with a remote access error, and none of it lands", MR_KEY,
+         MR_GPA, 64, 32, IONIC_STS_REMOTE_ACC_ERR},
+        {"negative", "a 32-byte WRITE with 64 bytes of payload",
+         "refused with a remote access error, and none of it lands", MR_KEY,
+         MR_GPA, 32, 64, IONIC_STS_REMOTE_ACC_ERR},
+        {"boundary", "a WRITE ending at the last byte of the region",
+         "lands, and is acknowledged", MR_KEY, MR_GPA + MR_LEN - 64, 64, 64,
+         IONIC_STS_OK},
+        {"boundary", "a WRITE ending one byte past the region",
+         "refused with a remote access error, and none of it lands", MR_KEY,
+         MR_GPA + MR_LEN - 63, 64, 64, IONIC_STS_REMOTE_ACC_ERR},
+        {"corner",
+         "a zero-length WRITE with rkey 0, va 0 and no payload, as UCX's "
+         "flush",
+         "acknowledged", 0, 0, 0, 0, IONIC_STS_OK},
+        {"corner", "a zero-length WRITE with 8 bytes of payload",
+         "refused with a remote access error, and none of it lands", MR_KEY,
+         MR_GPA, 0, 8, IONIC_STS_REMOTE_ACC_ERR},
+    };
+
+    for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
+        struct ionic_datapath *dp = setup();
+        const char *why =
+            dp ? rw_run(dp, rows[row].rkey, rows[row].va, rows[row].length,
+                        rows[row].payload_len, rows[row].status)
+               : "could not create a data path";
+
+        ionic_datapath_destroy(dp);
+        printf("%s %s: %s; expected: %s\n", why ? "FAIL" : "ok  ",
+               rows[row].category, rows[row].description, rows[row].expected);
+        if (why) {
+            printf("     %s\n", why);
+            failures++;
+        }
+    }
+}
+
+/*
  * Message sizes at the mesh's edge.  The data path takes the buffer the mesh
  * received a message into rather than copying it, so it has to free it
  * however the message ends: refused for its size, applied by a poll (here
@@ -2876,6 +2982,7 @@ int main(void)
     check_late_responses();
     check_mesh_cancel();
     check_destroyed_qp_replies();
+    check_remote_write_bounds();
     check_mesh_recv_sizes();
     check_mesh_recv_room();
     check_reply_budget();

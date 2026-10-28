@@ -3488,9 +3488,31 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
 
     case IONIC_WIRE_WRITE:
     case IONIC_WIRE_WRITE_IMM: {
-        uint32_t n = length > payload_len ? payload_len : length;
-
-        if (ionic_dp_host_to_sge(dp, rkey, remote_va, payload, n) != length) {
+        /*
+         * Check the message and the range before moving anything, as
+         * sq_rdma() does.  ionic_dp_host_to_sge() writes until it runs out of
+         * region, so a WRITE longer than its payload, or than the region past
+         * remote_va, would land what fitted and only then be refused.  Neither
+         * reaches past the region, but a refused WRITE must not change it.
+         * remote_post() always sends a payload of exactly the WRITE's length,
+         * so any other size is malformed.  Zero length is exempt from the
+         * range check, as from the rkey check above.
+         */
+        if (length != payload_len) {
+            vfu_log(dp->vfu_ctx, LOG_WARNING,
+                    "ionic_datapath: node %u sent a %u-byte write with %u "
+                    "bytes of payload, rejecting",
+                    src_node, length, payload_len);
+            status = IONIC_STS_REMOTE_ACC_ERR;
+        } else if (length != 0 &&
+                   !ionic_dp_mr_covers(dp, rkey, remote_va, length)) {
+            vfu_log(dp->vfu_ctx, LOG_WARNING,
+                    "ionic_datapath: remote write rkey=%#x va=%#" PRIx64
+                    " len=%u is outside the region",
+                    rkey, remote_va, length);
+            status = IONIC_STS_REMOTE_ACC_ERR;
+        } else if (ionic_dp_host_to_sge(dp, rkey, remote_va, payload, length) !=
+                   length) {
             vfu_log(dp->vfu_ctx, LOG_WARNING,
                     "ionic_datapath: remote write rkey=%#x va=%#" PRIx64
                     " of %u bytes failed",
@@ -3499,11 +3521,11 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
         } else {
             /* The responder counts what landed in its own memory too, so each
              * instance's totals describe the traffic it actually moved. */
-            ionic_dp_rdma_bytes(dp, stat_qp, n, ERNIC_STAT_RDMA_WRITE,
+            ionic_dp_rdma_bytes(dp, stat_qp, length, ERNIC_STAT_RDMA_WRITE,
                                 DP_RDMA_RX);
 
             if (h.op == IONIC_WIRE_WRITE_IMM && dq) {
-                struct dp_sge_list written = {.count = 0, .total = n};
+                struct dp_sge_list written = {.count = 0, .total = length};
                 ionic_dp_deliver_recv(dp, dq, dst_qp_id, src_qp_id, &written,
                                       NULL, CQE_RECV_OP_RDMA_IMM, h.imm_be);
             }
