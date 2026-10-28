@@ -538,7 +538,7 @@
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N17ionic_bar0_window26IONIC_BAR0_WINDOW_STRADDLEE"><code class="docutils literal notranslate"><span class="pre">IONIC_BAR0_WINDOW_STRADDLE</span></code></a></li>
 </ul>
 </li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv417ionic_bar0_window7int64_t6size_t"><code class="docutils literal notranslate"><span class="pre">ionic_bar0_window()</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv419ionic_bar0_classify7int64_t6size_t"><code class="docutils literal notranslate"><span class="pre">ionic_bar0_classify()</span></code></a></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#device">Device</a><ul class="nav section-nav flex-column">
@@ -1826,8 +1826,8 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <div class="breathe-sectiondef docutils container">
 <p class="breathe-sectiondef-title rubric" id="breathe-section-title-functions">Functions</p>
 <dl class="cpp function">
-<dt class="sig sig-object cpp" id="_CPPv417ionic_bar0_window7int64_t6size_t">
-<span id="_CPPv317ionic_bar0_window7int64_t6size_t"></span><span id="_CPPv217ionic_bar0_window7int64_t6size_t"></span><span id="ionic_bar0_window__int64_t.s"></span><span class="target" id="ionic__bar_8h_1ac2acd7b8d62f48d3e4d8d441fae73f30"></span><span class="k"><span class="pre">static</span></span><span class="w"> </span><span class="k"><span class="pre">inline</span></span><span class="w"> </span><span class="k"><span class="pre">enum</span></span><span class="w"> </span><a class="reference internal" href="#_CPPv417ionic_bar0_window7int64_t6size_t" title="ionic_bar0_window"><span class="n"><span class="pre">ionic_bar0_window</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ionic_bar0_window</span></span></span><span class="sig-paren">(</span><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">offset</span></span>, <span class="n"><span class="pre">size_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">count</span></span><span class="sig-paren">)</span><br /></dt>
+<dt class="sig sig-object cpp" id="_CPPv419ionic_bar0_classify7int64_t6size_t">
+<span id="_CPPv319ionic_bar0_classify7int64_t6size_t"></span><span id="_CPPv219ionic_bar0_classify7int64_t6size_t"></span><span id="ionic_bar0_classify__int64_t.s"></span><span class="target" id="ionic__bar_8h_1a1be0066d239db3ea4a0f356399681fb3"></span><span class="k"><span class="pre">static</span></span><span class="w"> </span><span class="k"><span class="pre">inline</span></span><span class="w"> </span><span class="k"><span class="pre">enum</span></span><span class="w"> </span><a class="reference internal" href="#_CPPv417ionic_bar0_window" title="ionic_bar0_window"><span class="n"><span class="pre">ionic_bar0_window</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">ionic_bar0_classify</span></span></span><span class="sig-paren">(</span><span class="n"><span class="pre">int64_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">offset</span></span>, <span class="n"><span class="pre">size_t</span></span><span class="w"> </span><span class="n sig-param"><span class="pre">count</span></span><span class="sig-paren">)</span><a class="headerlink" href="#_CPPv419ionic_bar0_classify7int64_t6size_t" title="Link to this definition">#</a><br /></dt>
 <dd><p>Which part of BAR0 an access of <code class="docutils literal notranslate"><span class="pre">count</span></code> bytes at <code class="docutils literal notranslate"><span class="pre">offset</span></code> goes to.</p>
 <p>The client chooses both, and <code class="docutils literal notranslate"><span class="pre">offset</span></code> is signed (libvfio-user’s loff_t), so neither the conversion nor the sum is formed before it is known to fit. libvfio-user refuses an access outside the region before calling the server, so only a test reaches IONIC_BAR0_WINDOW_OUTSIDE.</p>
 <dl class="field-list simple">
@@ -3046,7 +3046,7 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N17ionic_bar0_window26IONIC_BAR0_WINDOW_STRADDLEE"><code class="docutils literal notranslate"><span class="pre">IONIC_BAR0_WINDOW_STRADDLE</span></code></a></li>
 </ul>
 </li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv417ionic_bar0_window7int64_t6size_t"><code class="docutils literal notranslate"><span class="pre">ionic_bar0_window()</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv419ionic_bar0_classify7int64_t6size_t"><code class="docutils literal notranslate"><span class="pre">ionic_bar0_classify()</span></code></a></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#device">Device</a><ul class="nav section-nav flex-column">
