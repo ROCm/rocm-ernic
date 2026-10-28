@@ -287,9 +287,9 @@ _Static_assert(IONIC_BAR0_DEV_CMD_REGS_OFFSET + DEVCMD_DATA_OFF +
                        DEVCMD_DATA_SIZE ==
                    IONIC_BAR0_INTR_STATUS_OFFSET,
                "dev_cmd data window must abut intr_status at 0x1000");
-_Static_assert(DEVCMD_DATA_OFF == DEVCMD_COMP_OFF + 16u + 48u,
+_Static_assert(DEVCMD_DATA_OFF == DEVCMD_COMP_OFF + IONIC_DEVCMD_COMP_LEN + 48u,
                "dev_cmd data must follow comp[16] + rsvd[48]");
-_Static_assert(DEVCMD_COMP_OFF == DEVCMD_CMD_OFF + 64u,
+_Static_assert(DEVCMD_COMP_OFF == DEVCMD_CMD_OFF + IONIC_DEVCMD_CMD_LEN,
                "dev_cmd comp must follow cmd[64]");
 
 /* Ethernet logical queue types (enum ionic_logical_qtype).  These index both
@@ -305,6 +305,12 @@ _Static_assert(DEVCMD_COMP_OFF == DEVCMD_CMD_OFF + 64u,
 #define ADMIN_CMD_SIZE        64u
 #define ADMIN_COMP_SIZE       16u
 #define ADMIN_COMP_COLOR_MASK 0x80u
+
+/* The admin queue hands its entries to the same handlers as the BAR0
+ * window. */
+_Static_assert(ADMIN_CMD_SIZE == IONIC_DEVCMD_CMD_LEN &&
+                   ADMIN_COMP_SIZE == IONIC_DEVCMD_COMP_LEN,
+               "adminq entries must be the size of a devcmd's");
 
 /* struct ionic_txq_desc / ionic_rxq_desc / their completions are all 16 B. */
 #define ETH_DESC_SIZE 16u

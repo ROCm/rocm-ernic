@@ -355,7 +355,7 @@ _Static_assert(TCP_TOPOLOGY_LEN == 17028,
  *   [8:]    TCP_MAX_NODE_GIDS 16-byte GIDs, the first num_gids in use and
  *           the rest zero
  */
-#define TCP_NODE_GIDS_LEN         (8 + TCP_MAX_NODE_GIDS * 16)
+#define TCP_NODE_GIDS_LEN         (8 + TCP_MAX_NODE_GIDS * ERNIC_GID_LEN)
 #define TCP_NODE_GIDS_NODE_ID_OFF 0
 #define TCP_NODE_GIDS_NUM_OFF     4
 #define TCP_NODE_GIDS_GIDS_OFF    8
@@ -368,7 +368,7 @@ typedef struct {
 /* A node's advertised set, as held in memory rather than on the wire. */
 typedef struct {
     uint32_t num_gids;
-    uint8_t gids[TCP_MAX_NODE_GIDS][16];
+    uint8_t gids[TCP_MAX_NODE_GIDS][ERNIC_GID_LEN];
     /*
      * Whether the claimant is answering. A dead node's claims are kept but
      * take no part in resolution, so the node's addresses are unreachable
@@ -495,7 +495,7 @@ struct TcpBackendPrivate {
      * This node's own GIDs, seeded from ERNIC_TCP_GUEST_GIDS and then changed
      * by the guest through tcp_claim_gid().  Both are protected by lock.
      */
-    uint8_t local_gids[TCP_MAX_NODE_GIDS][16] TSA_GUARDED_BY(lock);
+    uint8_t local_gids[TCP_MAX_NODE_GIDS][ERNIC_GID_LEN] TSA_GUARDED_BY(lock);
     uint32_t num_local_gids TSA_GUARDED_BY(lock);
 
     /* Listen socket (for accepting connections) */
@@ -846,14 +846,16 @@ static inline bool tcp_has_mesh_table(const TcpBackendPrivate *priv)
 
 /*
  * View a GID array as const, for the functions that only read one.  Before
- * C23, ISO C does not convert uint8_t (*)[16] to const uint8_t (*)[16]
+ * C23, ISO C does not convert uint8_t (*)[N] to const uint8_t (*)[N]
  * implicitly, because the const qualifies the array's elements rather than
- * the array.  Taking the array through a typed parameter keeps its [16]
- * shape checked, which a bare cast at each call site would not.
+ * the array.  Taking the array through a typed parameter keeps its
+ * [ERNIC_GID_LEN] shape checked, which a bare cast at each call site would
+ * not.
  */
-static inline const uint8_t (*tcp_const_gids(uint8_t (*gids)[16]))[16]
+static inline const uint8_t (
+    *tcp_const_gids(uint8_t (*gids)[ERNIC_GID_LEN]))[ERNIC_GID_LEN]
 {
-    return (const uint8_t(*)[16])gids;
+    return (const uint8_t(*)[ERNIC_GID_LEN])gids;
 }
 
 /*
@@ -986,12 +988,12 @@ void tcp_free_pending_conns(TcpBackendPrivate *priv);
  * tcp_gid.c: GIDs, the GID -> node table, and the messages that advertise a
  * node's GIDs
  */
-char *tcp_gid_str(const uint8_t gid[16], char buf[TCP_GID_STR_LEN]);
+char *tcp_gid_str(const uint8_t gid[ERNIC_GID_LEN], char buf[TCP_GID_STR_LEN]);
 uint32_t tcp_parse_guest_gids(const char *val,
-                              uint8_t out[TCP_MAX_NODE_GIDS][16]);
+                              uint8_t out[TCP_MAX_NODE_GIDS][ERNIC_GID_LEN]);
 void tcp_gid_key_free(gpointer key);
 bool tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
-                        const uint8_t (*gids)[16], uint32_t num_gids)
+                        const uint8_t (*gids)[ERNIC_GID_LEN], uint32_t num_gids)
     TSA_EXCLUDES(priv->gid_table_lock);
 void tcp_gid_claims_forget(TcpBackendPrivate *priv, uint32_t node_id)
     TSA_EXCLUDES(priv->gid_table_lock);
@@ -1012,7 +1014,8 @@ uint32_t tcp_resolve_node_from_gid(TcpBackendPrivate *priv,
                                    const union ibv_gid *dgid)
     TSA_EXCLUDES(priv->gid_table_lock);
 void tcp_fill_node_gids(TcpNodeGidsWire *out, uint32_t node_id,
-                        const uint8_t (*gids)[16], uint32_t num_gids);
+                        const uint8_t (*gids)[ERNIC_GID_LEN],
+                        uint32_t num_gids);
 void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
                         const TcpNodeGidsWire *payload)
     TSA_EXCLUDES(conn->lock);

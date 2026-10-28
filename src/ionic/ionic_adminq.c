@@ -476,8 +476,9 @@ void ionic_adminq_update_prod(struct ionic_adminq_ctx *ctx, int aq_idx,
  * Returns 1 on success, 0 if the template could not be parsed.
  */
 static int adminq_parse_roce_hdr(const struct ionic_adminq_ctx *ctx,
-                                 uint64_t gpa, uint32_t len, uint8_t dgid[16],
-                                 uint8_t sgid[16], uint8_t dmac[6])
+                                 uint64_t gpa, uint32_t len,
+                                 uint8_t dgid[ERNIC_GID_LEN],
+                                 uint8_t sgid[ERNIC_GID_LEN], uint8_t dmac[6])
 {
     uint8_t hdr[128];
 
@@ -502,11 +503,11 @@ static int adminq_parse_roce_hdr(const struct ionic_adminq_ctx *ctx,
     if (ethertype == 0x0800) { /* IPv4: saddr at +12, daddr at +16 */
         if (off + 20 > len)
             return 0;
-        memset(dgid, 0, 16);
+        memset(dgid, 0, ERNIC_GID_LEN);
         dgid[10] = 0xff;
         dgid[11] = 0xff;
         memcpy(dgid + 12, hdr + off + 16, 4);
-        memset(sgid, 0, 16);
+        memset(sgid, 0, ERNIC_GID_LEN);
         sgid[10] = 0xff;
         sgid[11] = 0xff;
         memcpy(sgid + 12, hdr + off + 12, 4);
@@ -516,8 +517,8 @@ static int adminq_parse_roce_hdr(const struct ionic_adminq_ctx *ctx,
     if (ethertype == 0x86dd) { /* IPv6: saddr at +8, daddr at +24 */
         if (off + 40 > len)
             return 0;
-        memcpy(dgid, hdr + off + 24, 16);
-        memcpy(sgid, hdr + off + 8, 16);
+        memcpy(dgid, hdr + off + 24, ERNIC_GID_LEN);
+        memcpy(sgid, hdr + off + 8, ERNIC_GID_LEN);
         return 1;
     }
 
@@ -1466,8 +1467,8 @@ static uint8_t handle_create_ah_op(const struct ionic_adminq_ctx *ctx,
     uint32_t hdr_len = ernic_get_le32(body + 8);
     uint32_t ah_id = ernic_get_le32(body + 16) & 0x00ffffffu;
 
-    uint8_t dgid[16] = {0};
-    uint8_t sgid[16] = {0};
+    uint8_t dgid[ERNIC_GID_LEN] = {0};
+    uint8_t sgid[ERNIC_GID_LEN] = {0};
     uint8_t dmac[6] = {0};
     bool dgid_valid = false;
     if (hdr_len && hdr_dma)
@@ -1688,8 +1689,9 @@ static uint8_t handle_modify_qp_op(struct ionic_adminq_ctx *ctx,
     uint32_t ah_id_len;
     bool dgid_valid = false;
     uint64_t ah_dma;
-    uint8_t dgid[16] = {0};
-    uint8_t sgid[16] = {0}; /* parsed but unused here; see CREATE_AH */
+    uint8_t dgid[ERNIC_GID_LEN] = {0};
+    uint8_t sgid[ERNIC_GID_LEN] = {
+        0}; /* parsed but unused here; see CREATE_AH */
     uint8_t dmac[6] = {0};
 
     ah_id_len = ernic_get_le32(body + 32);

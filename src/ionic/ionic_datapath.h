@@ -226,7 +226,8 @@ void ionic_datapath_flush_qp(struct ionic_datapath *dp, uint32_t qp_id);
  * delivered every datagram back to the sender's own QP.
  */
 void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
-                                const uint8_t dgid[16], const uint8_t sgid[16],
+                                const uint8_t dgid[ERNIC_GID_LEN],
+                                const uint8_t sgid[ERNIC_GID_LEN],
                                 const uint8_t dmac[6], uint32_t dest_node_id);
 void ionic_datapath_unregister_ah(struct ionic_datapath *dp, uint32_t ah_id);
 

@@ -38,6 +38,9 @@
 #include "pvrdma/vmw_pvrdma-abi.h"
 #include "rdma/rdma_backend_ops.h"
 
+_Static_assert(sizeof(union ibv_gid) == ERNIC_GID_LEN,
+               "a raw GID must fill exactly one union ibv_gid");
+
 /*
  * Device Management (rocm_ernic_compat.h)
  */

@@ -508,6 +508,49 @@ static void check_fw_version_shrinks(void)
         failures++;
 }
 
+typedef void (*identify_fn)(const struct ionic_eth_emu *emu, const uint8_t *cmd,
+                            uint8_t *comp, uint8_t *data);
+
+/*
+ * Corner: each identity union is words[478], the whole data window, so its
+ * handler must clear all of it, not leave an earlier command's bytes past
+ * the fields it fills.  @blk's golden length is the part the golden rows
+ * already check.  LIF_IDENTIFY's golden block is the whole window, so it
+ * needs no row here.
+ */
+static void check_identity_clears_window(const char *name, enum block blk,
+                                         identify_fn handle)
+{
+    struct ionic_eth_emu *emu = make_emu(NULL, false);
+    static uint8_t data[DEVCMD_DATA_SIZE];
+    uint8_t cmd[IONIC_DEVCMD_CMD_LEN], comp[IONIC_DEVCMD_COMP_LEN];
+    long stale_at = -1;
+
+    if (emu) {
+        memset(data, 0xa5, sizeof(data));
+        memset(cmd, 0, sizeof(cmd));
+        memset(comp, 0, sizeof(comp));
+        handle(emu, cmd, comp, data);
+        ionic_eth_emu_destroy(emu);
+        for (size_t i = golden[blk].len; i < sizeof(data); i++) {
+            if (data[i] != 0) {
+                stale_at = (long)i;
+                break;
+            }
+        }
+    }
+    bool ok = emu && stale_at < 0;
+
+    printf("%s corner: %s over a window full of 0xa5; expected: zero from "
+           "byte %zu to the end of the data window\n",
+           ok ? "ok  " : "FAIL", name, golden[blk].len);
+    if (!ok) {
+        if (emu)
+            printf("     byte %ld is 0x%02x\n", stale_at, data[stale_at]);
+        failures++;
+    }
+}
+
 int main(void)
 {
     for (size_t i = 0; i < sizeof(golden_cases) / sizeof(golden_cases[0]); i++)
@@ -515,6 +558,10 @@ int main(void)
     for (size_t i = 0; i < sizeof(field_cases) / sizeof(field_cases[0]); i++)
         run_field_case(&field_cases[i]);
     check_fw_version_shrinks();
+    check_identity_clears_window("IDENTIFY", BLK_DEV_IDENTITY,
+                                 ionic_eth_emu_handle_identify);
+    check_identity_clears_window("Q_IDENTIFY", BLK_Q_IDENTITY0,
+                                 ionic_eth_emu_handle_q_identify);
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);
