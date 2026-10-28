@@ -582,6 +582,13 @@
     itself, before its first `#include`. The guest
     test builds in CI and the Nix fuzz and `ernic-rdma-errors` builds pass
     the same macros.
+  * A configure that can't find GLib or libibverbs names the package to
+    install (`libglib2.0-dev` or `glib2-devel`, `libibverbs-dev` or
+    `libibverbs-devel`); it stopped before showing that message.
+  * The build type alone decides whether the server has debug info, as for
+    every other target: a `Release` or `MinSizeRel` server, such as the
+    release tarball's and the `.deb` packages', no longer has any. Build
+    `RelWithDebInfo` (the default) for an optimized server with it.
 * **Stricter linting in CI.** ansible-lint 26.10.1 runs with `--strict`.
   ShellCheck excludes no checks; suppress one only on its command, with a
   reason. actionlint 1.7.12 checks the workflows (runner labels in
