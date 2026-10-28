@@ -35,6 +35,7 @@
 #include <string.h>
 
 #include "ernic_attributes.h"
+#include "ernic_siphash.h"
 #include "s3_alloc_fail.h"
 #include "s3/s3_http.h"
 #include "s3/s3_target.h"
@@ -2306,6 +2307,104 @@ out:
     fixture_down(&fx);
 }
 
+/*
+ * The SYN|ACK's sequence number for a SYN from GUEST_PORT + @i at @now, as
+ * RFC 6528 computes it with @key: the 4 us clock plus SipHash-2-4 of the
+ * local address and port and then the remote ones, all big-endian.
+ */
+static uint32_t rfc6528_iss(const uint8_t key[ERNIC_SIPHASH_KEY_LEN],
+                            unsigned i, uint64_t now)
+{
+    uint8_t tuple[12];
+
+    put_be(tuple, 4, TARGET_IP);
+    put_be(tuple + 4, 2, TARGET_PORT);
+    put_be(tuple + 6, 4, GUEST_IP);
+    put_be(tuple + 10, 2, GUEST_PORT + i);
+    return (uint32_t)(now * 250u) +
+           (uint32_t)ernic_siphash24(key, tuple, sizeof(tuple));
+}
+
+/*
+ * The initial sequence number is RFC 6528's, keyed with what getentropy()
+ * gave s3_tcp_create(): a fixed key gives exactly the number it predicts,
+ * for each connection and as the clock moves on, and a random key a
+ * different one. (That differs falsely one time in 2^32.)
+ */
+static void test_iss(void)
+{
+    const char *name = "iss";
+    static const uint64_t when[] = {7, 7, 1000, UINT64_C(0x123456789)};
+    uint8_t key[ERNIC_SIPHASH_KEY_LEN];
+    struct fixture fx;
+    uint32_t srv = 0;
+    int before = failures;
+
+    for (size_t i = 0; i < sizeof(key); i++)
+        key[i] = (uint8_t)i; /* what s3_alloc_fail_entropy_fixed() gives */
+
+    s3_alloc_fail_entropy_fixed(true);
+    bool up = fixture_up(&fx, name, 0);
+    s3_alloc_fail_entropy_fixed(false);
+    if (!up)
+        return;
+
+    for (unsigned i = 0; i < sizeof(when) / sizeof(when[0]); i++) {
+        if (!handshake(&fx, name, (uint16_t)(GUEST_PORT + i), 100, &srv,
+                       when[i]))
+            goto out;
+        uint32_t want = rfc6528_iss(key, i, when[i]);
+        if (srv - 1 != want)
+            fail(name,
+                 "connection %u at %" PRIu64 " ms started at %#" PRIx32
+                 ", want %#" PRIx32,
+                 i, when[i], srv - 1, want);
+    }
+    fixture_down(&fx);
+
+    if (!fixture_up(&fx, name, 0))
+        return;
+    if (!handshake(&fx, name, GUEST_PORT, 100, &srv, when[0]))
+        goto out;
+    if (srv - 1 == rfc6528_iss(key, 0, when[0]))
+        fail(name, "a random key gave the fixed key's sequence number");
+
+    if (failures == before)
+        ok(name);
+out:
+    fixture_down(&fx);
+}
+
+/* s3_tcp_create() refuses to run without a key for the sequence numbers,
+ * and says why. */
+static void test_create_no_entropy(void)
+{
+    const char *name = "create-no-entropy";
+    struct s3_target_cfg tcfg;
+    struct s3_tcp_cfg ncfg;
+    char err[128] = "";
+
+    s3_target_cfg_defaults(&tcfg);
+    struct s3_target *target = s3_target_create(&tcfg, err, sizeof(err));
+    if (target == NULL) {
+        fail(name, "target create: %s", err);
+        return;
+    }
+    s3_tcp_cfg_from_target(&ncfg, target);
+
+    s3_alloc_fail_entropy(true);
+    struct s3_tcp *s = s3_tcp_create(&ncfg, target, NULL, NULL, cap_tx, NULL,
+                                     err, sizeof(err));
+    s3_alloc_fail_entropy(false);
+    if (s != NULL || strstr(err, "random key") == NULL)
+        fail(name, "create without entropy: %p, \"%s\"", (void *)s, err);
+    else
+        ok(name);
+
+    s3_tcp_destroy(s);
+    s3_target_destroy(target);
+}
+
 /* Hand out @len bytes of a fixed pattern as if read from a client buffer,
  * so the store can hold an object larger than any test buffer. */
 static uint32_t pattern_from_host(void *ctx, uint32_t key, uint64_t addr,
@@ -2617,6 +2716,8 @@ int main(void)
     test_malformed_frames();
     test_ping_too_big();
     test_create();
+    test_iss();
+    test_create_no_entropy();
     test_response_too_large();
     test_create_alloc_failures();
     test_request_alloc_failures();

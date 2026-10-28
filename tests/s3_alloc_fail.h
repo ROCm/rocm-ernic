@@ -34,4 +34,10 @@ bool s3_alloc_fail_disarm(void);
 /* While @fail, getentropy() fails with ENOSYS. */
 void s3_alloc_fail_entropy(bool fail);
 
+/*
+ * While @fixed, getentropy() fills its buffer with 0, 1, 2, ... rather
+ * than random bytes, so a test can know a key the code under test drew.
+ */
+void s3_alloc_fail_entropy_fixed(bool fixed);
+
 #endif /* S3_ALLOC_FAIL_H */
