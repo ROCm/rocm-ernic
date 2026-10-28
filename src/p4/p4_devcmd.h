@@ -140,19 +140,23 @@ enum p4_devcmd_op_stats {
  * Deliberately a small closed set rather than an errno: an errno means
  * different numbers on different architectures, and this one crosses to
  * a guest that may not share ours.
+ *
+ * 9 was a "load already in progress" status that was never returned: a
+ * LOAD_BEGIN abandons any load in progress and starts over.  It stays
+ * reserved rather than renumbering the codes after it.
  */
 enum p4_devcmd_status {
     P4_STS_OK = 0,
-    P4_STS_EOPCODE = 1,  /* no such endpoint or operation */
-    P4_STS_EPERM = 2,    /* the operator has not granted that scope */
-    P4_STS_EINVAL = 3,   /* a malformed request */
-    P4_STS_ERANGE = 4,   /* a length or address outside what is allowed */
-    P4_STS_EFAULT = 5,   /* guest memory could not be read or written */
-    P4_STS_ENOENT = 6,   /* no program loaded */
-    P4_STS_EEXIST = 7,   /* the entry is already there */
-    P4_STS_ENOSPC = 8,   /* the table is full */
-    P4_STS_EBUSY = 9,    /* a load is already in progress */
-    P4_STS_EDEVICE = 10, /* the engine refused it; see the server log */
+    P4_STS_EOPCODE = 1,    /* no such endpoint or operation */
+    P4_STS_EPERM = 2,      /* the scope granted or claimed doesn't fit */
+    P4_STS_EINVAL = 3,     /* a malformed request */
+    P4_STS_ERANGE = 4,     /* a buffer too long, or a response one short */
+    P4_STS_EFAULT = 5,     /* guest memory could not be read or written */
+    P4_STS_ENOENT = 6,     /* no program loaded, or no such entry */
+    P4_STS_EEXIST = 7,     /* the entry is already there */
+    P4_STS_ENOSPC = 8,     /* the table is full */
+    P4_STS_RESERVED_9 = 9, /* never returned */
+    P4_STS_EDEVICE = 10,   /* the engine refused it; see the server log */
 };
 
 /* ---- IDENT (70) ------------------------------------------------------ */
@@ -337,9 +341,16 @@ _Static_assert(sizeof(struct p4_rpc_load_chunk) == 16,
  * @value with a bit set past an LPM field's prefix or outside a ternary
  * field's mask; and a nonzero @prefix_bits in a field that is not LPM,
  * which says the guest meant a different table.
+ *
+ * @value and @mask are big-endian and right-aligned: the device reads
+ * the last @len bytes of each array and ignores the bytes before them.
+ * An IPv4 address goes in value[12..15] with @len 4; one written to
+ * value[0..3] is never read, and the entry matches whatever is in
+ * value[12..15] instead.  struct p4_rpc_entry_param's @value is laid out
+ * the same way.
  */
 struct p4_rpc_entry_match {
-    uint16_t len;         /* significant bytes of @value and @mask */
+    uint16_t len;         /* significant bytes: the last @len of each */
     uint16_t prefix_bits; /* LPM only */
     uint8_t value[P4_DEVCMD_VALUE_MAX];
     uint8_t mask[P4_DEVCMD_VALUE_MAX];
@@ -347,9 +358,12 @@ struct p4_rpc_entry_match {
 _Static_assert(sizeof(struct p4_rpc_entry_match) == 36,
                "struct p4_rpc_entry_match has padding");
 
-/* Mirrors struct p4_param: one argument of the action the entry runs. */
+/*
+ * Mirrors struct p4_param: one argument of the action the entry runs,
+ * big-endian and right-aligned in @value as a match's value is.
+ */
 struct p4_rpc_entry_param {
-    uint16_t len;
+    uint16_t len; /* significant bytes: the last @len of @value */
     uint16_t rsvd;
     uint8_t value[P4_DEVCMD_VALUE_MAX];
 };
@@ -357,7 +371,7 @@ _Static_assert(sizeof(struct p4_rpc_entry_param) == 20,
                "struct p4_rpc_entry_param has padding");
 
 struct p4_rpc_entry_update {
-    uint8_t type; /* enum p4_update_type */
+    uint8_t type; /* enum p4_wire_update_type */
     uint8_t rsvd[3];
     uint32_t priority; /* nonzero with a ternary key, else 0; higher wins */
     uint16_t nmatch;

@@ -4729,9 +4729,9 @@ out_mr:
     ih_mr_free(&mrc);
 out:
     /*
-     * A narrower grant refuses the wide operations and keeps the narrow
-     * ones, and the refusal does not depend on what the caller claims:
-     * the operator's grant is checked before the caller's own scope.
+     * A narrower grant refuses the wide operations, whatever the caller
+     * claims, and keeps the narrow ones, but only for a caller that
+     * claims no more than it was granted.
      */
     ionic_datapath_set_p4_engine(h.dp, NULL);
     p4_devcmd_destroy(pd);
@@ -4751,6 +4751,11 @@ out:
                       buf, (uint32_t)sizeof(struct p4_rpc_stats),
                       comp) == P4_STS_OK,
               "a read-only guest could not read the counters");
+        check(T,
+              p4d_rpc(&h, P4_SCOPE_LOAD, P4_EP_STATS, P4_OP_STATS_READ, 0, 0,
+                      buf, (uint32_t)sizeof(struct p4_rpc_stats),
+                      comp) == P4_STS_EPERM,
+              "a read-only guest claiming load was let read the counters");
     }
 
     ionic_eth_emu_register_p4_handler(h.emu, NULL, NULL);
@@ -5029,8 +5034,8 @@ static void test_p4_devcmd_errors(void)
           "QUERY into memory the device cannot reach did not fault");
 
     /* RPC: operations there are none of, a caller asking for less than an
-     * operation needs, buffers over the limits, and a request that cannot
-     * be read. */
+     * operation needs or for a scope there is none of, buffers over the
+     * limits, and a request that cannot be read. */
     check(T,
           p4d_rpc(&h, P4_SCOPE_LOAD, P4_EP_PROGRAM, 9, 0, 0, 0, 0, comp) ==
               P4_STS_EOPCODE,
@@ -5042,6 +5047,11 @@ static void test_p4_devcmd_errors(void)
           p4d_rpc(&h, P4_SCOPE_READ, P4_EP_PROGRAM, P4_OP_LOAD_BEGIN, req, 8, 0,
                   0, comp) == P4_STS_EPERM,
           "a caller asking for read was let begin a load");
+    check(T,
+          p4d_rpc(&h, P4_SCOPE_LOAD + 1, P4_EP_STATS, P4_OP_STATS_READ, 0, 0,
+                  buf, (uint32_t)sizeof(struct p4_rpc_stats),
+                  comp) == P4_STS_EPERM,
+          "a caller claiming a scope there is none of was accepted");
     check(T,
           p4d_rpc(&h, P4_SCOPE_LOAD, P4_EP_PROGRAM, P4_OP_LOAD_CHUNK, req,
                   65537, 0, 0, comp) == P4_STS_ERANGE,

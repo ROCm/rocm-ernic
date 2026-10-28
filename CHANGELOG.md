@@ -147,10 +147,14 @@
     upstream `pds_fwctl` and keeping its opcode numbers, but not
     wire-identical to it. LIF capability bit 2, `IONIC_LIF_CAP_P4`, is set
     only when the engine is on and a scope is granted; real hardware never
-    sets it. Names a guest or a program supplies reach the server log, so
-    any name with a byte that isn't printable ASCII is refused: a table
-    update naming one fails with `P4_STS_EINVAL`, and a program using one
-    anywhere is refused.
+    sets it. Each RPC also claims a scope, and one claiming less than its
+    operation needs or more than the operator granted fails with
+    `P4_STS_EPERM`. A table update's key values, masks and action arguments
+    are big-endian and right-aligned in their 16-byte fields: the device
+    reads the last `len` bytes. Names a guest or a program supplies reach
+    the server log, so any name with a byte that isn't printable ASCII is
+    refused: a table update naming one fails with `P4_STS_EINVAL`, and a
+    program using one anywhere is refused.
   * **A guest driver.** The optional ionic patch series
     `ansible/files/patches/p4/` creates a `p4` auxiliary device when the
     capability bit is set, and the `drivers/ernic_p4/` kernel module binds

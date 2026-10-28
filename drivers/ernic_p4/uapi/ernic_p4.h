@@ -73,8 +73,9 @@ struct ernic_p4_query {
  * @ep:       endpoint id
  * @op:       operation id
  * @scope:    the scope being asked for; the device refuses a request
- *            whose scope is below what the operation needs, and refuses
- *            any request the operator's grant does not cover
+ *            whose scope is below what the operation needs or above
+ *            what the operator granted, and refuses any operation the
+ *            operator's grant does not cover
  * @status:   the device's status byte
  */
 struct ernic_p4_rpc {
