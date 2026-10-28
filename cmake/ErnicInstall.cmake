@@ -228,20 +228,22 @@ endfunction()
 
 # Refuse an install path that ernic_install_with_paths() can't write into
 # the installed files as it is. They put it in shell and Python string
-# literals, and in systemd units, which split on whitespace and expand
-# "%" specifiers. A quote ends a literal early, "$", a backtick or a
-# backslash is expanded in a shell's double quotes, and ";" separates
-# shell commands. A path is refused rather than quoted, since each kind
-# of file would need it quoted differently.
+# literals, in unquoted assignments in the environment file, which the
+# driver pack's shell script sources, and in systemd units, which split
+# on whitespace and expand "%" specifiers. Rather than list what each of
+# those reads specially (quotes, "$", backticks, backslashes, "(", "|",
+# ";", "*" and more), only characters none of them does are allowed. A
+# path is refused rather than quoted, since each kind of file would need
+# it quoted differently.
 #
 #   var  The variable holding the path, for the message
 function(ernic_check_install_path var)
-    if("${${var}}" MATCHES "[\"'$`\\\\%; \t\r\n]")
+    if(NOT "${${var}}" MATCHES "^[A-Za-z0-9_./+@,-]*$")
         message(FATAL_ERROR
           "ERNIC_INSTALL_SERVICE writes ${var} (${${var}}) into scripts "
-          "and systemd units, so it can't contain quotes, $, `, \\, %, ; "
-          "or whitespace. Choose another CMAKE_INSTALL_PREFIX or "
-          "CMAKE_INSTALL_* directory.")
+          "and systemd units, so it can contain only letters, digits and "
+          ". _ / + - @ , characters. Choose another CMAKE_INSTALL_PREFIX "
+          "or CMAKE_INSTALL_* directory.")
     endif()
 endfunction()
 

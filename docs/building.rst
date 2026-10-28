@@ -92,8 +92,8 @@ to install them somewhere else, configure with that prefix rather
 than passing ``--prefix`` to ``cmake --install``. To stage an
 install, use ``DESTDIR``. The paths are written into scripts and
 systemd units as they are, so a prefix or ``CMAKE_INSTALL_*``
-directory with a quote, ``$``, a backtick, a backslash, ``%``,
-``;``, or whitespace in it is refused when configuring.
+directory with anything but letters, digits, and
+``. _ / + - @ ,`` in it is refused when configuring.
 
 .. _nightly-packages:
 

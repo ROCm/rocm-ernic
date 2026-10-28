@@ -190,5 +190,7 @@ check_refused(quote-in-sysconfdir /usr
     "-DCMAKE_INSTALL_SYSCONFDIR=/etc/site\"west")
 check_refused(dollar-in-prefix "/opt/ernic$HOME"
     "writes CMAKE_INSTALL_FULL_BINDIR \\(/opt/ernic\\$HOME/bin\\)")
+check_refused(paren-in-prefix "/opt/ernic(test)"
+    "writes CMAKE_INSTALL_FULL_BINDIR \\(/opt/ernic\\(test\\)/bin\\)")
 
 message(STATUS "run-config-paths-test: OK")
