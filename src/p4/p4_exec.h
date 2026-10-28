@@ -29,6 +29,14 @@
  */
 #define P4_PORT_RDMA 2u
 
+/*
+ * simple_switch's drop port, the most a 9-bit port can say: a frame whose
+ * egress_spec is this at the end of ingress or of egress is dropped.
+ * mark_to_drop() sets it there; here it marks the drop directly, so a
+ * program reaches this only by assigning the port itself.
+ */
+#define P4_DROP_PORT 511u
+
 /* One RDMA operation, as the pipeline sees it. */
 struct p4_rdma_meta {
     uint8_t opcode;
@@ -63,9 +71,11 @@ struct p4_extern_ops {
 struct p4_exec_result {
     bool dropped;
     /*
-     * True when the program assigned egress_spec.  False means it ran to
+     * True when ingress assigned egress_spec.  False means it ran to
      * completion without choosing a port, which the frame path treats as
-     * "no opinion" rather than as a request for port 0.
+     * "no opinion" rather than as a request for port 0.  Both are what
+     * ingress left: as in simple_switch, egress can drop a frame but not
+     * send it to another port.
      */
     bool egress_assigned;
     uint32_t egress_spec;
@@ -76,6 +86,11 @@ struct p4_exec_result {
  * Run @prog over the @len bytes at @frame, arriving on @ingress_port, and
  * write the deparsed result to @out.
  *
+ * Ingress runs, then egress, as simple_switch runs them.  A frame dropped in
+ * ingress, by mark_to_drop() or an egress_spec of P4_DROP_PORT, never reaches
+ * egress.  Egress sees the port ingress chose as egress_port, or @default_port
+ * if it chose none: where the caller sends a frame that ingress didn't route.
+ *
  * Returns 0, or a negative errno when the frame could not be run at all --
  * which is distinct from the program deciding to drop it, reported in
  * @res.  -EMSGSIZE means the frame did not hold the headers the parser
@@ -85,8 +100,9 @@ struct p4_entries;
 struct p4_program;
 
 int p4_exec_run(const struct p4_program *prog, const struct p4_entries *ent,
-                uint32_t ingress_port, const void *frame, size_t len, void *out,
-                size_t out_cap, struct p4_exec_result *res);
+                uint32_t ingress_port, uint32_t default_port, const void *frame,
+                size_t len, void *out, size_t out_cap,
+                struct p4_exec_result *res);
 
 /*
  * Run @prog over an RDMA operation rather than a frame.
@@ -99,10 +115,14 @@ int p4_exec_run(const struct p4_program *prog, const struct p4_entries *ent,
  * program serve both planes.
  *
  * The verdict is @res->dropped alone.  egress_spec is meaningless here and
- * is deliberately not read: it is zero in a freshly initialised packet,
+ * is deliberately not read for it: it is zero in a freshly initialised packet,
  * zero is a legitimate port, and a table with no entries runs no action at
  * all -- so keying the verdict on it would suppress every operation on a
  * device whose tables are empty.
+ *
+ * Ingress runs, then egress; an operation dropped in ingress never reaches
+ * egress, so egress calls no extern for it. Egress sees egress_spec as ingress
+ * left it, as egress_port.
  *
  * @ops is how an action's extern call reaches the operation's regions.
  * Passing NULL makes any such call fail the operation, which is what the

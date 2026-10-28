@@ -1285,6 +1285,17 @@
     than 9 bits; and, as bmv2 refuses them, two tables or conditionals with
     one name in any pipeline, which made the second unreachable, and two
     tables, two conditionals or two pipelines with one id.
+  * Pipelines ran in the order the program listed them, so one listing
+    `egress` first ran it before `ingress`, and egress never saw the port
+    ingress chose. As in bmv2's `simple_switch`, `ingress` now runs and
+    then `egress`, which sees that port as `standard_metadata.egress_port`
+    (for a frame ingress didn't route, the other port, where it goes) and
+    starts with `egress_spec` at 0. Egress can drop a frame but no longer
+    send it to another port, and a packet ingress drops never reaches
+    egress, so egress calls no fp8 extern for it. A pipeline with a name
+    other than `ingress` or `egress`, which used to run second, a program
+    with no `egress` (p4c always emits one), and an `egress_port` of other
+    than 9 bits are refused at load with `EINVAL`.
   * A program whose headers and metadata took more than the 1024-byte
     packet header vector loaded, and then dropped every frame and, if it
     declared `rdma_metadata`, failed every RDMA operation. It's now refused

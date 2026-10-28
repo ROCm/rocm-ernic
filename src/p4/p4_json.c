@@ -724,10 +724,14 @@ static int p4_resolve_std_metadata(struct p4_walk *w)
                        "where a packet goes",
                        std);
     }
-    /* ingress_port is optional: a program may never read it. Left unset,
-     * the reference is P4_IDX_NONE. */
+    /* ingress_port and egress_port are optional: a program may never read
+     * them. Left unset, the reference is P4_IDX_NONE. */
     if (!p4_resolve_arch_field(w, std, "ingress_port", port_bits,
                                &w->prog->ingress_port) &&
+        w->failed)
+        return -EINVAL;
+    if (!p4_resolve_arch_field(w, std, "egress_port", port_bits,
+                               &w->prog->egress_port) &&
         w->failed)
         return -EINVAL;
     return 0;
@@ -2402,7 +2406,10 @@ static int p4_check_acyclic(struct p4_walk *w, const struct p4_pipeline *pl)
     return 0;
 }
 
-/* One pipeline: its tables and conditionals, then the graph between them. */
+/*
+ * One pipeline: its tables and conditionals, then the graph between them.
+ * The caller has read its name into @pl, to choose its slot.
+ */
 static int p4_walk_pipeline(struct p4_walk *w, const struct json_object *p,
                             struct p4_pipeline *pl)
 {
@@ -2412,8 +2419,6 @@ static int p4_walk_pipeline(struct p4_walk *w, const struct json_object *p,
     uint32_t id;
     int rc;
 
-    if (!p4_get_str(p, "name", pl->name, sizeof(pl->name)))
-        return p4_fail(w, -EINVAL, "a pipeline has a bad name");
     if (!p4_get_u32(p, "id", 0, P4_MAX_ID, &id))
         return p4_fail(w, -EINVAL, "pipeline '%s' has a bad id", pl->name);
     pl->id = id;
@@ -2552,7 +2557,7 @@ static int p4_walk_pipelines(struct p4_walk *w, const struct json_object *root)
 {
     struct json_object *arr;
     size_t n;
-    bool have_ingress = false;
+    bool seen[P4_MAX_PIPELINES] = {false};
 
     if (!p4_get_array(root, "pipelines", &arr, P4_MAX_PIPELINES, &n))
         return p4_fail(w, -EINVAL,
@@ -2562,31 +2567,55 @@ static int p4_walk_pipelines(struct p4_walk *w, const struct json_object *root)
 
     for (size_t i = 0; i < n; i++) {
         struct json_object *p = json_object_array_get_idx(arr, i);
+        char name[P4_MAX_NAME + 1];
+        struct p4_pipeline *pl;
+        size_t slot;
         int rc;
 
         if (!p || !json_object_is_type(p, json_type_object))
             return p4_fail(w, -EINVAL, "pipelines[%zu] is not an object", i);
-        rc = p4_walk_pipeline(w, p, &w->prog->pipelines[i]);
+        if (!p4_get_str(p, "name", name, sizeof(name)))
+            return p4_fail(w, -EINVAL, "a pipeline has a bad name");
+
+        /*
+         * simple_switch runs the pipeline called ingress and then the one
+         * called egress, whatever order the document lists them in, and
+         * never runs any other; p4c emits no other for v1model. The slot
+         * is the order the executor runs them in.
+         */
+        if (strcmp(name, "ingress") == 0)
+            slot = P4_PIPE_INGRESS;
+        else if (strcmp(name, "egress") == 0)
+            slot = P4_PIPE_EGRESS;
+        else
+            return p4_fail(w, -EINVAL,
+                           "pipeline '%s' is neither 'ingress' nor 'egress', "
+                           "the two v1model runs",
+                           name);
+        if (seen[slot])
+            return p4_fail(w, -EINVAL, "duplicate pipeline '%s'", name);
+
+        pl = &w->prog->pipelines[slot];
+        memcpy(pl->name, name, strlen(name) + 1);
+        rc = p4_walk_pipeline(w, p, pl);
         if (rc)
             return rc;
-        for (size_t j = 0; j < i; j++) {
-            if (strcmp(w->prog->pipelines[j].name,
-                       w->prog->pipelines[i].name) == 0)
-                return p4_fail(w, -EINVAL, "duplicate pipeline '%s'",
-                               w->prog->pipelines[i].name);
-            if (w->prog->pipelines[j].id == w->prog->pipelines[i].id)
-                return p4_fail(
-                    w, -EINVAL, "pipelines '%s' and '%s' share id %u",
-                    w->prog->pipelines[j].name, w->prog->pipelines[i].name,
-                    w->prog->pipelines[i].id);
+        for (size_t j = 0; j < P4_MAX_PIPELINES; j++) {
+            if (seen[j] && w->prog->pipelines[j].id == pl->id)
+                return p4_fail(w, -EINVAL,
+                               "pipelines '%s' and '%s' share id %u",
+                               w->prog->pipelines[j].name, pl->name, pl->id);
         }
-        if (strcmp(w->prog->pipelines[i].name, "ingress") == 0)
-            have_ingress = true;
+        seen[slot] = true;
     }
-    w->prog->npipelines = (uint16_t)n;
 
-    if (!have_ingress)
+    /* simple_switch looks both up for every packet, and p4c emits both,
+     * egress empty when the program's egress does nothing. */
+    if (!seen[P4_PIPE_INGRESS])
         return p4_fail(w, -EINVAL, "no 'ingress' pipeline");
+    if (!seen[P4_PIPE_EGRESS])
+        return p4_fail(w, -EINVAL, "no 'egress' pipeline");
+    w->prog->npipelines = (uint16_t)n;
     return 0;
 }
 
