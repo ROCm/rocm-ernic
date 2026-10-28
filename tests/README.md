@@ -197,24 +197,35 @@ CMake build configuration for tests:
 To add a new test:
 
 1. Create test program in `tests/` directory
-2. Add executable to `tests/CMakeLists.txt`
-3. Register test with `add_test()`
+2. Build it in `tests/CMakeLists.txt` with `ernic_add_test_program()`
+   (`cmake/ErnicTesting.cmake`), which applies the project's flags;
+   use a shared source list such as `ERNIC_TEST_ADMINQ_SOURCES` where
+   one fits
+3. Register a test that runs the program on its own with
+   `ernic_add_unit_test()`, and one that needs a script around it with
+   `add_test()`
 4. Update this README
 
-Example:
+Examples:
 
 ```cmake
-add_executable(test_new_feature
-    test_new_feature.c
+ernic_add_test_program(ernic-test-new-feature
+    SOURCES
+        test_new_feature.c
+        ${ERNIC_TEST_ADMINQ_SOURCES}
+    DEPS glib
+    HEADER_DEPS vfio-user
 )
+ernic_add_unit_test(new-feature-unit ernic-test-new-feature TIMEOUT 30)
 
+ernic_add_test_program(test_new_client SOURCES test_new_client.c)
 add_test(
-    NAME new-feature-test
+    NAME new-client-test
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run-test.sh
-        $<TARGET_FILE:test_new_feature>
+        $<TARGET_FILE:test_new_client>
         $<TARGET_FILE:rocm-ernic>
 )
-set_tests_properties(new-feature-test PROPERTIES
+set_tests_properties(new-client-test PROPERTIES
     TIMEOUT 30
     RUN_SERIAL TRUE
 )

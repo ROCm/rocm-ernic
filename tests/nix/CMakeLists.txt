@@ -28,47 +28,25 @@ set(ERNIC_FUZZ_DIR ${PROJECT_SOURCE_DIR}/nix/analysis/fuzz)
 function(ernic_add_fuzz_replay harness)
     set(target fuzz_replay_${harness})
 
-    add_executable(${target}
-        ${ERNIC_FUZZ_DIR}/fuzz_${harness}.c
-        fuzz_replay_main.c
-        ${ARGN}
-    )
-
     # The harness sources, and the ported .c files passed in ARGN, are ours
     # and are warning-clean, so they are built under the project flags --
     # keeping them there is the point of building them here.
-    target_include_directories(${target} PRIVATE
-        ${ERNIC_FUZZ_DIR}
-        ${PROJECT_SOURCE_DIR}/src
-        ${PROJECT_SOURCE_DIR}/src/qemu-compat/include
+    ernic_add_test_program(${target}
+        SOURCES
+            ${ERNIC_FUZZ_DIR}/fuzz_${harness}.c
+            fuzz_replay_main.c
+            ${ARGN}
+        DEPS glib
     )
-    # Headers from outside the project are SYSTEM includes so their warnings
-    # stay quiet.
-    target_include_directories(${target} SYSTEM PRIVATE
-        ${GLIB2_INCLUDE_DIRS}
-    )
-    target_link_directories(${target} PRIVATE ${GLIB2_LIBRARY_DIRS})
-    target_link_libraries(${target} PRIVATE ${GLIB2_LIBRARIES})
+    target_include_directories(${target} PRIVATE ${ERNIC_FUZZ_DIR})
 
-    # Project warning / hardening flags, matching the parent's
-    # ERNIC_TEST_TARGETS loop.
-    ernic_set_compiler_flags(${target})
-
-    add_test(
-        NAME fuzz-replay-${harness}
-        COMMAND $<TARGET_FILE:${target}>
-    )
-    set_tests_properties(fuzz-replay-${harness} PROPERTIES TIMEOUT 30)
+    ernic_add_unit_test(fuzz-replay-${harness} ${target} TIMEOUT 30)
 endfunction()
 
 # The stats harness links the admin queue and includes the shared fake device
 # from tests/, like tests/test_ionic_stats.c does, and defines
 # LLVMFuzzerInitialize() to check its seed table before replaying.
-ernic_add_fuzz_replay(ionic_stats
-    ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
-    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_adminq.c
-    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_fault.c
-)
+ernic_add_fuzz_replay(ionic_stats ${ERNIC_TEST_ADMINQ_SOURCES})
 target_include_directories(fuzz_replay_ionic_stats PRIVATE
     ${PROJECT_SOURCE_DIR}/tests
 )

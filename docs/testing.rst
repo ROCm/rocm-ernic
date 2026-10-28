@@ -828,24 +828,44 @@ Adding New Tests
 ----------------
 
 1. Create a test source file in ``tests/``.
-2. Add the executable to ``tests/CMakeLists.txt``.
-3. Register the test with ``add_test()``.
+2. Build it in ``tests/CMakeLists.txt`` with
+   ``ernic_add_test_program()`` (``cmake/ErnicTesting.cmake``),
+   which gives it the project's warning, hardening and
+   sanitizer flags and include directories. ``DEPS`` names the
+   libraries it links (``glib``, ``ibverbs``, ``vfio-user``,
+   ``json-c``, ``pthread``) and ``HEADER_DEPS`` those whose
+   headers it only includes. Where a family of tests links the
+   same part of ``src/``, use its list from the top of the file
+   (``ERNIC_TEST_ADMINQ_SOURCES``, for one).
+3. Register a test that runs the program on its own with
+   ``ernic_add_unit_test()``, giving its timeout. A test that
+   needs a script around the program, such as one that starts
+   the server, uses ``add_test()``.
 
-Example:
+Examples:
 
 .. code-block:: cmake
 
-   add_executable(test_new_feature
-       test_new_feature.c
+   ernic_add_test_program(ernic-test-new-feature
+       SOURCES
+           test_new_feature.c
+           ${ERNIC_TEST_ADMINQ_SOURCES}
+       DEPS glib
+       HEADER_DEPS vfio-user
    )
+   ernic_add_unit_test(new-feature-unit ernic-test-new-feature
+       TIMEOUT 30)
 
+   ernic_add_test_program(test_new_client
+       SOURCES test_new_client.c
+   )
    add_test(
-       NAME new-feature-test
+       NAME new-client-test
        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run-test.sh
-           $<TARGET_FILE:test_new_feature>
+           $<TARGET_FILE:test_new_client>
            $<TARGET_FILE:rocm-ernic>
    )
-   set_tests_properties(new-feature-test PROPERTIES
+   set_tests_properties(new-client-test PROPERTIES
        TIMEOUT 30
        RUN_SERIAL TRUE
    )

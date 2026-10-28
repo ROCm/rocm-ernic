@@ -627,6 +627,15 @@
   module's headers by path from `src/` (e.g.
   `#include "ionic/ionic_datapath.h"`), within the module's directory as
   well as outside it.
+* **For contributors:** test programs are built with
+  `ernic_add_test_program()` and registered with `ernic_add_unit_test()`
+  (`cmake/ErnicTesting.cmake`), replacing the hand-kept
+  `ERNIC_TEST_TARGETS` list; a test program left out of that list was
+  built without the project's warnings and sanitizers. The tests that link
+  the same part of `src/` share a source list (e.g.
+  `ERNIC_TEST_ADMINQ_SOURCES`). Every test program now has `src/`,
+  `src/qemu-compat/include/` and `shared/` on its include path, and
+  libibverbs' headers are system headers for the guest test programs too.
 * **The guest is told the RDMA resource counts the device can hold.** It
   was told 32768 QPs, 65536 CQs (reported as `max_cq` 32768) and 131072
   memory regions, but the device could hold only 256 QPs, 256 CQs and 2048
