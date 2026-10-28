@@ -7,8 +7,9 @@
 # CMake version according to latest ROCm platform requirements
 cmake_minimum_required(VERSION 3.21)
 
-# Set the version in variables so we can use them in *.in files
-# and avoid version mismatch.
+# The release workflow (.github/workflows/release.yml) reads the version
+# from these three set() calls with a regex and checks it against the
+# release tag, so keep each one as set(ROCM_ERNIC_VERSION_<PART> <number>).
 set(ROCM_ERNIC_VERSION_MAJOR 0)
 set(ROCM_ERNIC_VERSION_MINOR 2)
 set(ROCM_ERNIC_VERSION_PATCH 0)
