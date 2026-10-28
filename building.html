@@ -670,8 +670,8 @@ the docs workflows turn it on</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_DOCS_ONLY</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
-<td><p>Configure only documentation targets (no library
-dependencies required)</p></td>
+<td><p>Configure only documentation targets (no C compiler
+or library dependencies required)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_KMOD</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
@@ -899,8 +899,9 @@ cmake<span class="w"> </span>--build<span class="w"> </span>build<span class="w"
 </pre></div>
 </div>
 <p>The generated HTML is written to <code class="docutils literal notranslate"><span class="pre">build/docs/html/</span></code>.</p>
-<p>To build documentation without needing the project’s library
-dependencies (libvfio-user, glib, libibverbs):</p>
+<p>To build documentation without needing a C compiler or the
+project’s library dependencies (libvfio-user, glib,
+libibverbs):</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cmake<span class="w"> </span>-B<span class="w"> </span>build<span class="w"> </span>-DERNIC_DOCS_ONLY<span class="o">=</span>ON<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-DERNIC_BUILD_DOCS<span class="o">=</span>ON
 cmake<span class="w"> </span>--build<span class="w"> </span>build<span class="w"> </span>--target<span class="w"> </span>sphinx-html

@@ -271,8 +271,8 @@ Build Options
        the docs workflows turn it on
    * - ``ERNIC_DOCS_ONLY``
      - ``OFF``
-     - Configure only documentation targets (no library
-       dependencies required)
+     - Configure only documentation targets (no C compiler
+       or library dependencies required)
    * - ``ERNIC_BUILD_KMOD``
      - ``OFF``
      - Enable the DKMS targets that build the patched
@@ -531,8 +531,9 @@ environment is created automatically in the build tree.
 
 The generated HTML is written to ``build/docs/html/``.
 
-To build documentation without needing the project's library
-dependencies (libvfio-user, glib, libibverbs):
+To build documentation without needing a C compiler or the
+project's library dependencies (libvfio-user, glib,
+libibverbs):
 
 .. code-block:: bash
 
