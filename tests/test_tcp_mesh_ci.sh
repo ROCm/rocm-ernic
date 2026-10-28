@@ -21,7 +21,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-$PROJECT_ROOT/build}"
-SERVER_BIN="${SERVER_BIN:-$BUILD_DIR/rocm-ernic}"
+# The server: the first argument (as CTest passes it), else $SERVER_BIN,
+# else the one in $BUILD_DIR.
+SERVER_BIN="${1:-${SERVER_BIN:-$BUILD_DIR/rocm-ernic}}"
 # A command to run the server under, such as valgrind and its options. It's
 # split on whitespace, so no word of it can contain a space.
 read -r -a SERVER_WRAPPER <<<"${ERNIC_TEST_SERVER_WRAPPER:-}"

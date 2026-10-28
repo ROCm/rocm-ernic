@@ -704,6 +704,11 @@
   `ci/guest-image.env` (new `GUEST_ARTIFACT_USER`) instead of keeping its
   own copy. An inventory that sets `ernic_vm_ssh_user` to `batesste` must
   drop the setting.
+* **`test_ionic_ci.sh`, `test_tcp_mesh_ci.sh`, `test_nvmeof_ci.sh` and
+  `test_s3_ci.sh` take the server's path as their first argument**, which
+  is how CTest now passes it to them, as it does to every other suite that
+  starts the server. `SERVER_BIN`, and then `$BUILD_DIR/rocm-ernic`, still
+  apply when it's omitted.
 
 ### Removed
 
