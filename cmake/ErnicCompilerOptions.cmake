@@ -127,10 +127,10 @@ function(ernic_set_compiler_flags target)
     # apply to the whole target, including sources added after this call.
     set(compiler_flags)
     if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
-        get_ernic_gnu_warning_flags(compiler_flags
+        ernic_get_gnu_warning_flags(compiler_flags
           ${CMAKE_C_COMPILER_VERSION})
     elseif(CMAKE_C_COMPILER_ID STREQUAL "Clang")
-        get_ernic_clang_warning_flags(compiler_flags
+        ernic_get_clang_warning_flags(compiler_flags
           ${CMAKE_C_COMPILER_VERSION})
     endif()
     if(compiler_flags)

@@ -30,39 +30,39 @@ endif()
 include(${SETTINGS})
 
 # Fail the test with a message
-function(fail)
+function(ernic_fail)
     string(JOIN "" text ${ARGN})
     message(FATAL_ERROR "run-config-paths-test: ${text}")
 endfunction()
 
 # Run a command and fail with its output if it fails
-function(run_step description)
+function(ernic_run_step description)
     execute_process(
         COMMAND ${ARGN}
         RESULT_VARIABLE result
         OUTPUT_VARIABLE output
         ERROR_VARIABLE output)
     if(NOT result EQUAL 0)
-        fail("${description} failed:\n${output}")
+        ernic_fail("${description} failed:\n${output}")
     endif()
 endfunction()
 
 # Fail unless a file in the extracted packages has a line that is
 # exactly the expected one
-function(check_line root file expected)
+function(ernic_check_line root file expected)
     if(NOT EXISTS "${root}${file}")
-        fail("the packages don't contain ${file}")
+        ernic_fail("the packages don't contain ${file}")
     endif()
     file(STRINGS "${root}${file}" lines)
     if(NOT expected IN_LIST lines)
-        fail("${file} has no line '${expected}'")
+        ernic_fail("${file} has no line '${expected}'")
     endif()
 endfunction()
 
 # Set env_var and dir_var to the ENV_FILE and TEST_DIR of a case's
 # package test settings. They're included in this function so that they
 # don't replace this test's own settings.
-function(read_package_settings file env_var dir_var)
+function(ernic_read_package_settings file env_var dir_var)
     include(${file})
     set(${env_var} "${ENV_FILE}" PARENT_SCOPE)
     set(${dir_var} "${TEST_DIR}" PARENT_SCOPE)
@@ -87,48 +87,48 @@ endif()
 #   env_file  Where the packages should install rocm-ernic.env
 #   read      Where the installed files should read it from
 #   ARGN      More options for configuring
-function(check_case name prefix env_file read)
+function(ernic_check_case name prefix env_file read)
     set(build_dir ${TEST_DIR}/${name})
-    run_step("${name}: configure"
+    ernic_run_step("${name}: configure"
         ${CMAKE_COMMAND} -S ${SOURCE_DIR} -B ${build_dir}
             ${generator_args} -C ${INITIAL_CACHE}
             -DCMAKE_INSTALL_PREFIX=${prefix}
             -DERNIC_INSTALL_SERVICE=ON
             ${ARGN})
-    run_step("${name}: build the server"
+    ernic_run_step("${name}: build the server"
         ${CMAKE_COMMAND} --build ${build_dir} --target rocm-ernic
             ${config_args})
 
     set(package_settings
         ${build_dir}/tests/package/package-test-settings.cmake)
     if(NOT EXISTS ${package_settings})
-        fail("${name}: the package test isn't set up in ${build_dir}")
+        ernic_fail("${name}: the package test isn't set up in ${build_dir}")
     endif()
-    read_package_settings(${package_settings} installed_env_file
+    ernic_read_package_settings(${package_settings} installed_env_file
         package_test_dir)
     if(NOT installed_env_file STREQUAL env_file)
-        fail("${name}: rocm-ernic.env is installed as ${installed_env_file}, "
-            "not ${env_file}")
+        ernic_fail("${name}: rocm-ernic.env is installed as "
+            "${installed_env_file}, not ${env_file}")
     endif()
 
     set(package_config_args)
     if(CONFIG)
         set(package_config_args -DCONFIG=${CONFIG})
     endif()
-    run_step("${name}: run-package-test.cmake"
+    ernic_run_step("${name}: run-package-test.cmake"
         ${CMAKE_COMMAND} -DSETTINGS=${package_settings} ${package_config_args}
             -P ${PACKAGE_TEST})
 
     # run-package-test.cmake extracts the packages here
     set(root ${package_test_dir}/root)
     if(NOT EXISTS ${root}${env_file})
-        fail("${name}: the packages don't contain ${env_file}")
+        ernic_fail("${name}: the packages don't contain ${env_file}")
     endif()
     set(unit ${prefix}/lib/systemd/system/rocm-ernic.service)
-    check_line(${root} ${unit} "EnvironmentFile=${read}")
-    check_line(${root} ${unit}
+    ernic_check_line(${root} ${unit} "EnvironmentFile=${read}")
+    ernic_check_line(${root} ${unit}
         "ExecStart=${prefix}/libexec/rocm-ernic/rocm-ernic-launcher")
-    check_line(${root} ${prefix}/bin/ernicctl "ENV_FILE = \"${read}\"")
+    ernic_check_line(${root} ${prefix}/bin/ernicctl "ENV_FILE = \"${read}\"")
 
     message(STATUS "run-config-paths-test: ${name}: OK")
 endfunction()
@@ -140,7 +140,7 @@ endfunction()
 #   message  A regular expression the error has to match, with its
 #            whitespace as single spaces
 #   ARGN     More options for configuring
-function(check_refused name prefix message)
+function(ernic_check_refused name prefix message)
     execute_process(
         COMMAND ${CMAKE_COMMAND} -S ${SOURCE_DIR} -B ${TEST_DIR}/${name}
             ${generator_args} -C ${INITIAL_CACHE}
@@ -151,12 +151,12 @@ function(check_refused name prefix message)
         OUTPUT_VARIABLE output
         ERROR_VARIABLE output)
     if(result EQUAL 0)
-        fail("${name}: configuring succeeded, but should have failed")
+        ernic_fail("${name}: configuring succeeded, but should have failed")
     endif()
     # CMake wraps the error's lines, so match it as one line
     string(REGEX REPLACE "[ \t\r\n]+" " " flat "${output}")
     if(NOT flat MATCHES "${message}")
-        fail("${name}: configuring failed, but not with '${message}':\n"
+        ernic_fail("${name}: configuring failed, but not with '${message}':\n"
             "${output}")
     endif()
     message(STATUS "run-config-paths-test: ${name}: OK")
@@ -164,13 +164,13 @@ endfunction()
 
 # GNUInstallDirs puts the configuration of a package in /opt/<name> in
 # /etc/opt/<name>, outside the prefix, where it's read
-check_case(opt /opt/ernic-test
+ernic_check_case(opt /opt/ernic-test
     /etc/opt/ernic-test/rocm-ernic/rocm-ernic.env
     /etc/opt/ernic-test/rocm-ernic/rocm-ernic.env)
 
 # An absolute CMAKE_INSTALL_SYSCONFDIR under the prefix is the same as
 # the default etc: the installed file is a copy to put in /etc
-check_case(sysconf-in-prefix /usr/local
+ernic_check_case(sysconf-in-prefix /usr/local
     /usr/local/etc/rocm-ernic/rocm-ernic.env
     /etc/rocm-ernic/rocm-ernic.env
     -DCMAKE_INSTALL_SYSCONFDIR=/usr/local/etc)
@@ -179,18 +179,18 @@ check_case(sysconf-in-prefix /usr/local
 # it is, even under /usr/local. The prefix starts with /etc/rocm-ernic/,
 # the path the source files read the configuration from, which mustn't
 # change the installed programs' paths.
-check_case(sysconf-outside-prefix /etc/rocm-ernic/app
+ernic_check_case(sysconf-outside-prefix /etc/rocm-ernic/app
     /usr/local/etc/rocm-ernic/rocm-ernic.env
     /usr/local/etc/rocm-ernic/rocm-ernic.env
     -DCMAKE_INSTALL_SYSCONFDIR=/usr/local/etc)
 
 # Paths that can't go into the installed scripts and units as they are
-check_refused(quote-in-sysconfdir /usr
+ernic_check_refused(quote-in-sysconfdir /usr
     "writes ERNIC_ENV_FILE \\(/etc/site\"west/[^)]*\\) into scripts"
     "-DCMAKE_INSTALL_SYSCONFDIR=/etc/site\"west")
-check_refused(dollar-in-prefix "/opt/ernic$HOME"
+ernic_check_refused(dollar-in-prefix "/opt/ernic$HOME"
     "writes CMAKE_INSTALL_FULL_BINDIR \\(/opt/ernic\\$HOME/bin\\)")
-check_refused(paren-in-prefix "/opt/ernic(test)"
+ernic_check_refused(paren-in-prefix "/opt/ernic(test)"
     "writes CMAKE_INSTALL_FULL_BINDIR \\(/opt/ernic\\(test\\)/bin\\)")
 
 message(STATUS "run-config-paths-test: OK")
