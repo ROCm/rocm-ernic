@@ -298,9 +298,10 @@ static uint32_t tcp_collect_dead_claimants(TcpBackendPrivate *priv,
 /*
  * Declare @node_id dead if it is still unreachable, which takes its claims
  * out of resolution, and say whether it was alive until now; if it was, the
- * broadcaster tells the workers.  Returns false when the node has a live
- * connection again, leaving it alone, when it was dead already, or when it
- * has been evicted meanwhile.
+ * caller asks the broadcaster to tell the workers (tcp_broadcast_node()),
+ * once it may: a registration declares before it answers, and asks after.
+ * Returns false when the node has a live connection again, leaving it alone,
+ * when it was dead already, or when it has been evicted meanwhile.
  *
  * This is what the health check would decide on its next pass: a node with
  * no live connection can't be answering.  Deciding it here, as a node
@@ -338,8 +339,6 @@ bool tcp_declare_dead_if_unreachable(TcpBackendPrivate *priv, uint32_t node_id)
 
     if (gids)
         tcp_gid_claims_report_alive(node_id, false);
-    if (declared)
-        tcp_broadcast_node(priv, node_id);
     return declared;
 }
 
@@ -392,7 +391,11 @@ typedef struct {
     TcpConnection *evicted_conn;
     bool gids_back;     /* a node registering again got its claims back */
     uint32_t num_nodes; /* the size of the mesh, for the answer */
-    /* Nodes gone from the mesh, declared dead once the answer has gone */
+    /*
+     * Nodes with no live connection: collected when the node is admitted,
+     * then, once tcp_register_declare_stale() has run, just those it
+     * declared dead, for the mesh to be told once the answer has gone
+     */
     uint32_t stale[TCP_MAX_MESH_NODES];
     uint32_t num_stale;
 } TcpAdmission;
@@ -510,9 +513,10 @@ static bool tcp_register_admit(TcpBackendPrivate *priv, TcpConnection *conn,
 
     /*
      * Nodes that can no longer be reached, declared dead, which withdraws
-     * their GIDs, once the tables are unlocked. A worker that restarted is
-     * among them, under the id it had before, and it is about to claim those
-     * GIDs again under its new one.
+     * their GIDs, once the tables are unlocked and before the answer goes
+     * (tcp_register_declare_stale()). A worker that restarted is among them,
+     * under the id it had before, and it is about to claim those GIDs again
+     * under its new one.
      *
      * Before conn_table_lock, not under it: the lookups inside take that
      * lock themselves.
@@ -587,6 +591,42 @@ static bool tcp_register_admit(TcpBackendPrivate *priv, TcpConnection *conn,
 }
 
 /*
+ * Declare dead the nodes a registration admitted as adm->node_id found
+ * unreachable, keeping in adm->stale just those it declared, for
+ * tcp_register_tell_mesh() to tell the mesh about.
+ *
+ * Before the answer, not after: the answer is what lets the worker claim its
+ * GIDs, and a worker that restarted claims the ones its old id still holds.
+ * Declared after, the old id's claims would still resolve, to a node that
+ * isn't there, for anyone who looked between the answer and the declaration
+ * (the restart in test_gsi_mesh).
+ *
+ * Nodes that can't be reached are declared dead, keeping their claims,
+ * rather than discarded: that is enough to take a node out of resolution, so
+ * it stops contesting the GIDs the registering node is about to claim, and
+ * it leaves the claims to restore if the node answers a heartbeat again, or
+ * registers again under its own id, rather than having restarted.  The new
+ * node's claims come in its advertisement, which its receive thread reads
+ * only after this.
+ */
+static void tcp_register_declare_stale(TcpBackendPrivate *priv,
+                                       TcpAdmission *adm)
+{
+    uint32_t n = 0;
+
+    for (uint32_t i = 0; i < adm->num_stale; i++) {
+        uint32_t id = adm->stale[i];
+
+        /* An evicted node's claims are gone already */
+        if (id == adm->node_id || id == adm->evicted)
+            continue;
+        if (tcp_declare_dead_if_unreachable(priv, id))
+            adm->stale[n++] = id;
+    }
+    adm->num_stale = n;
+}
+
+/*
  * Answer, on conn, a registration admitted as adm->node_id.
  */
 static void tcp_register_answer(TcpBackendPrivate *priv, TcpConnection *conn,
@@ -626,25 +666,12 @@ static void tcp_register_answer(TcpBackendPrivate *priv, TcpConnection *conn,
 static void tcp_register_tell_mesh(TcpBackendPrivate *priv,
                                    const TcpAdmission *adm)
 {
-    /*
-     * Nodes that can't be reached are declared dead, keeping their claims,
-     * rather than discarded: that is enough to take a node out of
-     * resolution, so it stops contesting the GIDs the registering node is
-     * about to claim, and it leaves the claims to restore if the node
-     * answers a heartbeat again, or registers again under its own id, rather
-     * than having restarted.  The new node's claims come in its
-     * advertisement, which its receive thread reads only after this.
-     */
+    /* The nodes tcp_register_declare_stale() declared dead */
     for (uint32_t i = 0; i < adm->num_stale; i++) {
-        uint32_t id = adm->stale[i];
-
-        /* An evicted node's claims are gone already */
-        if (id == adm->node_id || id == adm->evicted)
-            continue;
-        if (tcp_declare_dead_if_unreachable(priv, id))
-            rdma_info_report("TCP: node %u is gone; declared it dead as node "
-                             "%u registers",
-                             id, adm->node_id);
+        rdma_info_report("TCP: node %u is gone; declared it dead as node %u "
+                         "registers",
+                         adm->stale[i], adm->node_id);
+        tcp_broadcast_node(priv, adm->stale[i]);
     }
 
     /*
@@ -731,6 +758,7 @@ bool tcp_manager_recv_register(TcpConnection *conn, const TcpRecvMsg *msg)
                          reg.host, reg.port);
     }
 
+    tcp_register_declare_stale(priv, &adm);
     tcp_register_answer(priv, conn, &adm);
     tcp_register_tell_mesh(priv, &adm);
     return false;

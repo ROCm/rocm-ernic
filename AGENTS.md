@@ -854,7 +854,10 @@ through `tcp_node_set_alive()`**, which writes both under
 `mesh_table_lock`, and new claims take the node's `is_alive`
 (`tcp_gid_claims_set_if_member()`). A registration declares dead every
 node with no live connection (`tcp_declare_dead_if_unreachable()`), as
-the health check would on its next pass.
+the health check would on its next pass, and **before it answers**
+(`tcp_register_declare_stale()`): the answer lets a restarted worker
+claim the GIDs its old id still holds. Only the broadcasts wait for the
+answer.
 Workers keep no liveness of their own; the manager advertises a dead node
 as owning nothing (`tcp_snapshot_node_gids()`), which is what gives an
 empty advertisement meaning.
