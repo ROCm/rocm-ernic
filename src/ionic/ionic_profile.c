@@ -422,7 +422,17 @@ int ionic_profile_warning(const struct ionic_profile *p, char *msg,
     return 1;
 }
 
-/* Store one key's value in @q.  @where is "source:line: group.key". */
+/*
+ * Store one key's value in @q.  @where is "source:line: group.key".
+ *
+ * @raw is the value as written and @str the same value with GKeyFile's
+ * escapes (\s, \n, \\, ...) decoded; both are trimmed.  Only fw_version, the
+ * one free-text key, reads @str.  Every other key is a name or a number read
+ * from @raw, so an escape in one is refused, not decoded.
+ *
+ * Returns 0, or -1 with the reason in @err and @q unchanged: each case
+ * checks the whole value before it stores any of it.
+ */
 static int set_value(struct ionic_profile *q, const struct schema_key *k,
                      const char *raw, const char *str, const char *where,
                      char *err, size_t err_len)
@@ -431,6 +441,7 @@ static int set_value(struct ionic_profile *q, const struct schema_key *k,
     int rc, idx;
 
     switch (k->kind) {
+    /* Named keys: a name's index in its table is its enum value. */
     case KEY_ASIC_TYPE:
         idx = pick_name(asic_names, N_ELEMS(asic_names), raw);
         if (idx < 0) {
@@ -455,6 +466,13 @@ static int set_value(struct ionic_profile *q, const struct schema_key *k,
         q->link.xcvr = (uint8_t)idx;
         return 0;
 
+    /*
+     * Free text, which the device reports to the guest.  fw_version_ok()
+     * checks the length again, but this gives a too-long value its own
+     * message.  A backslash is refused because --print-profile writes the
+     * value back unescaped, where GKeyFile would read it as an escape, and
+     * leading or trailing blanks because reading it back strips them.
+     */
     case KEY_FW_VERSION:
         if (strlen(str) > IONIC_PROFILE_FW_VERSION_MAX) {
             ernic_set_err(err, err_len, "%s: %zu characters; at most %u", where,
@@ -469,9 +487,15 @@ static int set_value(struct ionic_profile *q, const struct schema_key *k,
                 where, IONIC_PROFILE_FW_VERSION_MAX);
             return -1;
         }
+        /* The checks above leave room for the NUL. */
         memcpy(q->identity.fw_version, str, strlen(str) + 1);
         return 0;
 
+    /*
+     * Numbers.  number() has already reported anything that isn't digits
+     * (rc < 0); rc == 1 is a number too big for 64 bits, which each case
+     * refuses like any other number it can't take.
+     */
     case KEY_ASIC_REV:
         rc = number(raw, where, &v, err, err_len);
         if (rc < 0)
@@ -488,6 +512,7 @@ static int set_value(struct ionic_profile *q, const struct schema_key *k,
         rc = number(raw, where, &v, err, err_len);
         if (rc < 0)
             return -1;
+        /* One of the IONIC_SPEED_* values in speeds[], not a range. */
         for (size_t i = 0; rc == 0 && i < N_ELEMS(speeds); i++)
             if (v == speeds[i]) {
                 q->link.speed_mbps = speeds[i];
@@ -513,6 +538,7 @@ static int set_value(struct ionic_profile *q, const struct schema_key *k,
         q->link.mtu_max = (uint32_t)v;
         return 0;
 
+    /* Shared with --eth-queues, which overrides the profile. */
     case KEY_ETH_QUEUES:
         return ionic_profile_set_eth_queues(q, raw, where, err, err_len);
 
@@ -521,6 +547,11 @@ static int set_value(struct ionic_profile *q, const struct schema_key *k,
                       IONIC_PROFILE_RDMA_EQS_MAX, &q->queues.rdma_eqs, err,
                       err_len);
 
+    /*
+     * "auto" (stored as 0, which the range below refuses as a number) or a
+     * count.  Anything that isn't digits is reported here, so the message
+     * can mention "auto"; ranged() then parses it again for the range.
+     */
     case KEY_INTR_VECTORS:
         if (strcmp(raw, "auto") == 0) {
             q->queues.intr_vectors = IONIC_PROFILE_INTR_VECTORS_AUTO;
@@ -536,9 +567,12 @@ static int set_value(struct ionic_profile *q, const struct schema_key *k,
                       IONIC_PROFILE_INTR_VECTORS_MAX, &q->queues.intr_vectors,
                       err, err_len);
 
+    /* Shared with --stats-interval-ms, which overrides the profile. */
     case KEY_STATS_INTERVAL:
         return ionic_profile_set_stats_interval(q, raw, where, err, err_len);
 
+    /* A schema[] row whose kind has no case above: a bug here, not in the
+     * profile, but refused rather than silently ignored. */
     default:
         ernic_set_err(err, err_len, "%s: no handler for this key", where);
         return -1;
