@@ -652,15 +652,15 @@ Python must run on **3.10**: nothing newer, such as `tomllib`, `except*`,
 or `typing.Self`.
 
 - **black**, **pylint**, and **vermin** over every `*.py` and
-  extension-less python-shebang script, except `nix/analysis/triage/` and
-  `.cmake-format.py`. pylint needs `prometheus/requirements-exporter.txt`
-  and PyYAML installed. vermin (`pip install vermin`) isn't in CI, and
-  black and pylint (run under 3.12 in CI:
+  extension-less python-shebang script, except `nix/analysis/triage/`.
+  pylint needs `prometheus/requirements-exporter.txt` and PyYAML
+  installed. vermin (`pip install vermin`) isn't in CI, and black and
+  pylint (run under 3.12 in CI:
   [pylint.yml](.github/workflows/pylint.yml)) miss most newer-Python
   usage; it prints `Target versions not met` on a violation.
 
   ```bash
-  git ls-files -- ':!:nix/analysis/triage/' ':!:.cmake-format.py' |
+  git ls-files -- ':!:nix/analysis/triage/' |
     while IFS= read -r f; do
       if [[ "$f" == *.py ]]; then
         echo "$f"
