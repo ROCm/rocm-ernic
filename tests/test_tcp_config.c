@@ -307,6 +307,43 @@ static void test_bad_host_port_is_refused(void)
     }
 }
 
+/*
+ * A manager's host goes in its topology entry, whose field holds
+ * TCP_HOSTNAME_LEN - 1 characters and a NUL.  A longer host was cut short.
+ */
+static void test_long_host(void)
+{
+    char s[TCP_HOSTNAME_LEN + 16];
+
+    printf("  a host that fills the mesh's hostname field is the longest "
+           "taken\n");
+
+    for (size_t len = TCP_HOSTNAME_LEN - 1; len <= TCP_HOSTNAME_LEN; len++) {
+        bool fits = len < TCP_HOSTNAME_LEN;
+        char *host = NULL;
+        uint16_t port = 7;
+        int ret;
+
+        memset(s, 'h', len);
+        snprintf(s + len, sizeof(s) - len, ":5000");
+        last_error = NULL;
+        ret = tcp_parse_host_port(s, "test", &host, &port);
+
+        if (fits) {
+            CHECK(ret == 0, "a %zu-character host was refused (%d)", len, ret);
+            CHECK(host && strlen(host) == len && strspn(host, "h") == len,
+                  "a %zu-character host wasn't kept whole", len);
+            CHECK(port == 5000, "a %zu-character host gave port %u", len, port);
+        } else {
+            CHECK(ret == -EINVAL, "a %zu-character host returned %d", len, ret);
+            CHECK(!host, "a %zu-character host was set", len);
+            CHECK(last_error && strstr(last_error, "invalid address"),
+                  "a %zu-character host didn't report an invalid address", len);
+        }
+        g_free(host);
+    }
+}
+
 /* Configs whose role is fine and whose address isn't.  tcp_init() refuses
  * them before it listens or connects. */
 static const char *const bad_address_configs[] = {
@@ -559,6 +596,7 @@ int main(void)
     test_init_refuses_no_role();
     test_host_port_is_parsed();
     test_bad_host_port_is_refused();
+    test_long_host();
     test_init_refuses_bad_address();
     test_peer_addr_is_formatted();
     test_listen_takes_both_families();

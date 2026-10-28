@@ -131,8 +131,8 @@ const char *tcp_config_role(const char *config, TcpMode *mode)
  * address goes in brackets, as in a URL ("[fe80::1%eth0]:5000"), and *host
  * is what's inside them.  A host outside brackets can't contain a colon, so a
  * bare IPv6 address, or anything after the port, is refused rather than split
- * somewhere else.  Returns 0, or -EINVAL having logged why, starting with
- * @who.
+ * somewhere else, as is a host of TCP_HOSTNAME_LEN characters or more.
+ * Returns 0, or -EINVAL having logged why, starting with @who.
  */
 int tcp_parse_host_port(const char *s, const char *who, char **host,
                         uint16_t *port)
@@ -165,6 +165,11 @@ int tcp_parse_host_port(const char *s, const char *who, char **host,
 
     if (end == start) {
         why = "no host";
+        goto invalid;
+    }
+    /* A manager's host goes in the topology, whose field would cut it short */
+    if ((size_t)(end - start) >= TCP_HOSTNAME_LEN) {
+        why = "a host too long for the mesh's messages";
         goto invalid;
     }
 

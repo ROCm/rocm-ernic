@@ -371,7 +371,7 @@ static void tcp_refuse_registration(TcpBackendPrivate *priv,
 typedef struct {
     /* The worker's own id, to have it back, or 0xFFFFFFFF for a new one */
     uint32_t requested_id;
-    char host[256];
+    char host[TCP_HOSTNAME_LEN];
     uint16_t port;
 } TcpRegistration;
 
@@ -403,17 +403,21 @@ typedef struct {
 
 /*
  * Read a REGISTER_NODE's payload, of at least TCP_REGISTER_NODE_LEN_V3
- * bytes, into *reg.  Returns false, having logged why, if the peer doesn't
- * speak this protocol version, for the caller to refuse it.  A short payload
- * is one that predates the version field entirely; both cases get the same
- * answer, with a result the worker surfaces instead of timing out.
+ * bytes, into *reg.  Returns 0, or, having logged why, a negative errno for
+ * the caller to refuse the registration with, which the worker surfaces
+ * instead of timing out:
+ *
+ * - -EPROTO if the peer doesn't speak this protocol version.  A short
+ *   payload is one that predates the version field entirely, and gets the
+ *   same answer.
+ * - -EINVAL if the hostname fills its field with no NUL.  Cut short, it
+ *   could name another host, which every other worker would be told to
+ *   connect to.
  */
-static bool tcp_register_read(const TcpRecvMsg *msg, TcpRegistration *reg)
+static int tcp_register_read(const TcpRecvMsg *msg, TcpRegistration *reg)
 {
     const uint8_t *payload = msg->payload;
-    const char *hostname;
     uint32_t peer_version = 0;
-    size_t host_len;
 
     if (msg->hdr.msg_len >= TCP_REGISTER_NODE_LEN) {
         peer_version = ernic_get_be32(payload + TCP_REGISTER_NODE_VERSION_OFF);
@@ -425,19 +429,21 @@ static bool tcp_register_read(const TcpRecvMsg *msg, TcpRegistration *reg)
                           "advertisement routes every destination to one "
                           "default node",
                           peer_version, TCP_PROTOCOL_VERSION);
-        return false;
+        return -EPROTO;
     }
 
     reg->requested_id =
         ernic_get_be32(payload + TCP_REGISTER_NODE_REQUESTED_OFF);
     reg->port = ernic_get_be16(payload + TCP_REGISTER_NODE_PORT_OFF);
-    /* The hostname comes off the wire and need not be terminated, so bound
-     * the read to the field. */
-    hostname = (const char *)payload + TCP_REGISTER_NODE_HOSTNAME_OFF;
-    host_len = strnlen(hostname, sizeof(reg->host) - 1);
-    memcpy(reg->host, hostname, host_len);
-    reg->host[host_len] = '\0';
-    return true;
+    if (!tcp_hostname_get(reg->host,
+                          payload + TCP_REGISTER_NODE_HOSTNAME_OFF)) {
+        rdma_error_report("TCP: refusing a registration whose hostname "
+                          "fills its %d bytes with no NUL; cut short, it "
+                          "could name another host",
+                          TCP_HOSTNAME_LEN);
+        return -EINVAL;
+    }
+    return 0;
 }
 
 /*
@@ -705,6 +711,7 @@ bool tcp_manager_recv_register(TcpConnection *conn, const TcpRecvMsg *msg)
     TcpRegistration reg;
     TcpAdmission adm;
     char thread_name[32];
+    int ret;
 
     if (!priv || !priv->is_manager) {
         rdma_error_report("TCP: REGISTER_NODE received by non-manager");
@@ -716,8 +723,9 @@ bool tcp_manager_recv_register(TcpConnection *conn, const TcpRecvMsg *msg)
         return false;
     }
 
-    if (!tcp_register_read(msg, &reg)) {
-        tcp_refuse_registration(priv, conn, msg->hdr.src_node_id, -EPROTO);
+    ret = tcp_register_read(msg, &reg);
+    if (ret < 0) {
+        tcp_refuse_registration(priv, conn, msg->hdr.src_node_id, ret);
         return true;
     }
 
@@ -995,7 +1003,11 @@ static void tcp_send_mesh_topology(TcpBackendPrivate *priv)
         uint8_t *entry = topo + TCP_TOPOLOGY_NODE_OFF(num_nodes);
 
         ernic_put_be32(entry + TCP_MESH_NODE_ID_OFF, node->node_id);
-        /* Terminated within the field, by the zeroing above */
+        /*
+         * Terminated within the field, by the zeroing above.  No name is cut
+         * short: a worker's came in such a field (tcp_hostname_get()), and
+         * tcp_parse_host_port() refuses a manager's that wouldn't fit.
+         */
         memcpy(entry + TCP_MESH_NODE_HOSTNAME_OFF, node->hostname,
                strnlen(node->hostname, TCP_HOSTNAME_LEN - 1));
         ernic_put_be16(entry + TCP_MESH_NODE_PORT_OFF, node->port);

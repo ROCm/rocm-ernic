@@ -238,7 +238,11 @@ typedef struct {
     uint32_t dst_qpn;
 } TcpMsgHeader;
 
-/* The size of a payload's hostname field, which needn't be terminated */
+/*
+ * The size of a payload's hostname field.  The name ends at a NUL within the
+ * field, so it is at most TCP_HOSTNAME_LEN - 1 characters, and a field with
+ * no NUL is refused (tcp_hostname_get()) rather than cut short.
+ */
 #define TCP_HOSTNAME_LEN 256
 
 /*
@@ -267,7 +271,7 @@ typedef struct {
  *
  * TCP_MSG_REGISTER_NODE, TCP_REGISTER_NODE_LEN bytes:
  *
- *   [0:255]   hostname, not necessarily terminated
+ *   [0:255]   hostname, terminated within the field
  *   [256:257] be16 port the worker listens on
  *   [258:261] be32 requested_node_id, 0xFFFFFFFF for a new one
  *   [262:265] be32 version (appended in v4)
@@ -319,7 +323,7 @@ _Static_assert(TCP_REGISTER_NODE_PORT_OFF == TCP_HOSTNAME_LEN,
  * Node entry @i is at TCP_TOPOLOGY_NODE_OFF(@i), TCP_MESH_NODE_LEN bytes:
  *
  *   [0:3]     be32 node_id
- *   [4:259]   hostname, not necessarily terminated
+ *   [4:259]   hostname, terminated within the field
  *   [260:261] be16 port
  *   [262]     is_alive, 1 or 0
  *   [263:265] reserved, zero
@@ -875,7 +879,7 @@ typedef struct {
 /* A peer a worker is to connect to, picked from a MESH_TOPOLOGY update. */
 typedef struct {
     uint32_t node_id;
-    char host[256];
+    char host[TCP_HOSTNAME_LEN];
     uint16_t port;
 } TcpPeerTarget;
 
@@ -927,6 +931,7 @@ bool tcp_format_peer_addr(const struct sockaddr_storage *ss, char *host,
 uint32_t tcp_send_timeout_ms(const TcpBackendPrivate *priv);
 void tcp_msg_hdr_put(uint8_t *wire, const TcpMsgHeader *hdr);
 void tcp_msg_hdr_get(TcpMsgHeader *hdr, const uint8_t *wire);
+bool tcp_hostname_get(char *host, const uint8_t *wire);
 int tcp_send_message2(const TcpBackendPrivate *priv, TcpConnection *conn,
                       TcpMsgType msg_type, const void *payload,
                       size_t payload_len, const void *payload2,

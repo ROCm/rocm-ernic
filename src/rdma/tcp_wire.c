@@ -437,6 +437,24 @@ void tcp_msg_hdr_get(TcpMsgHeader *hdr, const uint8_t *wire)
 }
 
 /*
+ * Copy the TCP_HOSTNAME_LEN-byte hostname field at @wire into @host, which
+ * holds TCP_HOSTNAME_LEN bytes.  Returns false, leaving @host empty, if the
+ * field has no NUL in it: the name is too long to have been sent whole, and
+ * what was sent of it could name another host.
+ */
+bool tcp_hostname_get(char *host, const uint8_t *wire)
+{
+    const uint8_t *nul = memchr(wire, '\0', TCP_HOSTNAME_LEN);
+
+    if (!nul) {
+        host[0] = '\0';
+        return false;
+    }
+    memcpy(host, wire, (size_t)(nul - wire) + 1);
+    return true;
+}
+
+/*
  * Send a message on conn.  The caller holds conn->lock, which serialises
  * writes to the socket, and has checked conn->sockfd under it.
  *

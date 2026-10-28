@@ -56,6 +56,11 @@
  * once for each time.  The registration rows send a second REGISTER_NODE
  * on the same connection.
  *
+ * A hostname in a REGISTER_NODE or a topology update that filled its field
+ * with no NUL used to be cut short, which could name another host.  The
+ * hostname rows check that the manager refuses such a registration, and a
+ * topology row that a worker doesn't connect to such a peer.
+ *
  * A manager never dropped a node from its table, so once more nodes had
  * registered than its broadcasts carry, it left nodes out of them.  The
  * eviction rows fill the table and check that a new node evicts the node
@@ -1168,23 +1173,36 @@ static int worker_attach(TcpBackendPrivate *priv, TcpConnection **connp)
 #define WORKER_PORT 1
 
 /*
- * Send a v4 REGISTER_NODE for a worker at hostname:port, asking for node id
- * requested.
+ * Send a v4 REGISTER_NODE for a worker at port, asking for node id requested,
+ * whose hostname field is the TCP_HOSTNAME_LEN bytes at host, NUL or not.
  */
-static bool send_register_from(int fd, const char *hostname, uint16_t port,
-                               uint32_t requested)
+static bool send_register_field(int fd, const uint8_t *host, uint16_t port,
+                                uint32_t requested)
 {
     uint8_t buf[TCP_MSG_HDR_LEN + TCP_REGISTER_NODE_LEN];
     uint8_t *reg = buf + TCP_MSG_HDR_LEN;
 
     memset(buf, 0, sizeof(buf));
     put_hdr(buf, TCP_MSG_REGISTER_NODE, TCP_REGISTER_NODE_LEN, 0);
-    snprintf((char *)reg + TCP_REGISTER_NODE_HOSTNAME_OFF, TCP_HOSTNAME_LEN,
-             "%s", hostname);
+    memcpy(reg + TCP_REGISTER_NODE_HOSTNAME_OFF, host, TCP_HOSTNAME_LEN);
     ernic_put_be16(reg + TCP_REGISTER_NODE_PORT_OFF, port);
     ernic_put_be32(reg + TCP_REGISTER_NODE_REQUESTED_OFF, requested);
     ernic_put_be32(reg + TCP_REGISTER_NODE_VERSION_OFF, TCP_PROTOCOL_VERSION);
     return send(fd, buf, sizeof(buf), 0) == (ssize_t)sizeof(buf);
+}
+
+/*
+ * Send a v4 REGISTER_NODE for a worker at hostname:port, asking for node id
+ * requested.
+ */
+static bool send_register_from(int fd, const char *hostname, uint16_t port,
+                               uint32_t requested)
+{
+    uint8_t host[TCP_HOSTNAME_LEN];
+
+    memset(host, 0, sizeof(host));
+    snprintf((char *)host, sizeof(host), "%s", hostname);
+    return send_register_field(fd, host, port, requested);
 }
 
 /* As a worker at port WORKER_PORT, which nothing listens on */
@@ -2543,6 +2561,7 @@ enum tp_scenario {
     TP_DROPPED, /* a peer reported dead while the worker connects to another */
     TP_DIES,    /* a peer reported dead while the worker connects to it */
     TP_FROM_PEER, /* an update from a peer, then from the manager */
+    TP_LONG_HOST, /* peers whose hostnames fill their fields */
 };
 
 struct tp_case {
@@ -2599,6 +2618,12 @@ static const struct tp_case tp_cases[] = {
      "the peer's is ignored, and the peer it names connected to only after "
      "the manager's",
      TP_FROM_PEER, LONG_INTERVAL_S},
+    {"negative",
+     "an update naming a peer whose hostname fills its field with no NUL, "
+     "one whose NUL is the field's last byte, and one at 127.0.0.1",
+     "the first is dropped; the others are kept to connect to, their names "
+     "whole",
+     TP_LONG_HOST, LONG_INTERVAL_S},
 };
 
 /* A worker that is node TP_LOCAL, with a connection to the manager. */
@@ -2809,6 +2834,9 @@ static const char *tp_listen(struct tp_net *net, enum tp_scenario scenario)
     case TP_FROM_PEER:
         ok = tp_listener(net, 0, true);
         break;
+    case TP_LONG_HOST: /* nothing is connected to */
+        ok = true;
+        break;
     default:
         ok = false;
         break;
@@ -2834,6 +2862,19 @@ static void tp_entry(struct tp_topology *topo, uint32_t id, uint16_t port,
     ernic_put_be16(entry + TCP_MESH_NODE_PORT_OFF, port);
     entry[TCP_MESH_NODE_ALIVE_OFF] = alive ? 1 : 0;
     ernic_put_be32(topo->bytes + TCP_TOPOLOGY_NUM_NODES_OFF, n + 1);
+}
+
+/*
+ * Make the hostname of topo's entry i len 'h's, filling the field with no
+ * NUL if len is TCP_HOSTNAME_LEN.
+ */
+static void tp_entry_name(struct tp_topology *topo, uint32_t i, size_t len)
+{
+    uint8_t *host =
+        topo->bytes + TCP_TOPOLOGY_NODE_OFF(i) + TCP_MESH_NODE_HOSTNAME_OFF;
+
+    memset(host, 0, TCP_HOSTNAME_LEN);
+    memset(host, 'h', len);
 }
 
 /* Send topo on fd, as the manager does. */
@@ -3194,6 +3235,38 @@ static const char *tp_from_peer(struct tp_fixture *fx, struct tp_net *net,
 }
 
 /*
+ * TP_LONG_HOST: the peers the worker would connect to.  No peer-connect
+ * thread runs, so they stay as the update left them, and the heartbeat after
+ * it shows it was handled.
+ */
+static const char *tp_long_host(struct tp_fixture *fx)
+{
+    GArray *targets;
+    const TcpPeerTarget *other, *third;
+    const char *why = NULL;
+
+    if (!tp_answers(fx, 2000))
+        return "the heartbeat after the update wasn't answered";
+    qemu_mutex_lock(&fx->priv->peer_lock);
+    targets = fx->priv->peer_targets;
+    if (targets->len != 2) {
+        why = "the worker didn't keep just two peers";
+    } else {
+        other = &g_array_index(targets, TcpPeerTarget, 0);
+        third = &g_array_index(targets, TcpPeerTarget, 1);
+        if (other->node_id != TP_OTHER ||
+            strlen(other->host) != TCP_HOSTNAME_LEN - 1 ||
+            strspn(other->host, "h") != TCP_HOSTNAME_LEN - 1)
+            why = "the peer whose name fills its field wasn't kept whole";
+        else if (third->node_id != TP_THIRD ||
+                 strcmp(third->host, "127.0.0.1") != 0)
+            why = "the peer at 127.0.0.1 wasn't kept";
+    }
+    qemu_mutex_unlock(&fx->priv->peer_lock);
+    return why;
+}
+
+/*
  * TP_SKIPS: the worker connected to TP_OTHER at net->port[0] on an earlier
  * update, which named it there.  The peer-connect thread is started only
  * once both are in place: each pass closes a connection to a higher id that
@@ -3240,6 +3313,13 @@ static const char *tp_topology(struct tp_fixture *fx, struct tp_net *net,
     case TP_FROM_PEER:
         tp_entry(topo, TP_PEER, net->port[0], true);
         return NULL;
+    case TP_LONG_HOST:
+        tp_entry(topo, TP_PEER, WORKER_PORT, true);
+        tp_entry_name(topo, 0, TCP_HOSTNAME_LEN);
+        tp_entry(topo, TP_OTHER, WORKER_PORT, true);
+        tp_entry_name(topo, 1, TCP_HOSTNAME_LEN - 1);
+        tp_entry(topo, TP_THIRD, WORKER_PORT, true);
+        return NULL;
     default:
         return "unknown scenario";
     }
@@ -3282,6 +3362,8 @@ static const char *tp_run(struct tp_fixture *fx, struct tp_net *net,
         return tp_dropped(fx, net);
     case TP_DIES:
         return tp_dies(fx, net);
+    case TP_LONG_HOST:
+        return tp_long_host(fx);
     case TP_FROM_PEER: /* sent above */
     default:
         return "unknown scenario";
@@ -3309,8 +3391,12 @@ static int run_tp_case(const struct tp_case *c)
     g_current_row = c->description;
     alarm(row_timeout_s());
 
-    /* TP_SKIPS starts the peer-connect thread itself */
-    why = tp_setup(&fx, c->interval, c->scenario != TP_SKIPS);
+    /*
+     * TP_SKIPS starts the peer-connect thread itself, and TP_LONG_HOST needs
+     * none, to keep the peers the update named as they are
+     */
+    why = tp_setup(&fx, c->interval,
+                   c->scenario != TP_SKIPS && c->scenario != TP_LONG_HOST);
     if (!why)
         why = tp_listen(&net, c->scenario);
     else
@@ -5828,6 +5914,136 @@ static int run_ra_case(const struct ra_case *c)
         close(w1);
     if (w2 >= 0)
         close(w2);
+    return ok ? 0 : 1;
+}
+
+/* ---- A hostname too long for its field --------------------------------- */
+
+/*
+ * A REGISTER_NODE's hostname field is TCP_HOSTNAME_LEN bytes.  The manager
+ * kept the first TCP_HOSTNAME_LEN - 1 of a field with no NUL in it, and
+ * registered the worker under what was left, which could be another host's,
+ * and which every other worker would be told to connect to.  It refuses
+ * such a registration now, with -EINVAL; a name whose NUL is the field's last
+ * byte is the longest it takes.
+ *
+ * Each row starts a manager with tcp_init(), stops its health-check thread,
+ * as the registering-again rows do, and registers a worker over a
+ * socketpair, with a hostname of 'h's.
+ */
+
+struct hn_case {
+    const char *category;
+    const char *description;
+    const char *expected;
+    size_t len; /* the hostname's length, TCP_HOSTNAME_LEN for no NUL */
+};
+
+static const struct hn_case hn_cases[] = {
+    {"boundary",
+     "a registration whose hostname fills the field, its NUL the last byte",
+     "registered under the whole name", TCP_HOSTNAME_LEN - 1},
+    {"negative", "a registration whose hostname fills the field with no NUL",
+     "refused with -EINVAL, given no id, and no node made; the connection is "
+     "left for the reap",
+     TCP_HOSTNAME_LEN},
+};
+
+/* Whether node id is in the mesh under a hostname of len 'h's */
+static bool hn_registered_as(TcpBackendPrivate *priv, uint32_t id, size_t len)
+{
+    const MeshNodeInfo *node;
+    bool as;
+
+    qemu_mutex_lock(&priv->mesh_table_lock);
+    node = g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(id));
+    as = node && strlen(node->hostname) == len &&
+         strspn(node->hostname, "h") == len;
+    qemu_mutex_unlock(&priv->mesh_table_lock);
+    return as;
+}
+
+/* Register with a hostname of len 'h's, on *fd; returns NULL, or what failed */
+static const char *hn_run(TcpBackendPrivate *priv, size_t len, int *fd)
+{
+    TcpConnection *conn = NULL;
+    uint8_t host[TCP_HOSTNAME_LEN];
+    guint nodes = mesh_node_count(priv);
+    uint32_t id = UINT32_MAX;
+    int32_t result = 1;
+
+    memset(host, 0, sizeof(host));
+    memset(host, 'h', len);
+    *fd = worker_attach(priv, &conn);
+    if (*fd < 0 || !send_register_field(*fd, host, WORKER_PORT, UINT32_MAX))
+        return "could not register";
+    if (!register_answer(*fd, &id, &result))
+        return "the registration wasn't answered";
+
+    if (len < TCP_HOSTNAME_LEN) {
+        if (result != 0 || id == 0 || id == UINT32_MAX)
+            return "the registration was refused";
+        return hn_registered_as(priv, id, len)
+                   ? NULL
+                   : "the node wasn't registered under the whole name";
+    }
+    if (result != -EINVAL || id != 0)
+        return "refused with the wrong answer, or given an id";
+    /* The connection stays pending, so the reap or teardown frees it */
+    if (!wait_dead(conn))
+        return "the refused connection was read on";
+    if (mesh_node_count(priv) != nodes)
+        return "the mesh has a new node";
+    return pending_count(priv) == 1
+               ? NULL
+               : "the refused connection isn't waiting to be reaped";
+}
+
+static int run_hn_case(const struct hn_case *c)
+{
+    RdmaBackendDev dev;
+    TcpBackendPrivate *priv;
+    char config[64];
+    const char *why;
+    uint16_t port = free_port();
+    int fd = -1;
+    bool ok;
+
+    atomic_store(&g_creates, 0);
+    atomic_store(&g_joins, 0);
+    atomic_store(&g_exits, 0);
+    memset(&dev, 0, sizeof(dev));
+    snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
+
+    g_current_row = c->description;
+    alarm(row_timeout_s());
+    if (port == 0 ||
+        tcp_init_with_interval(&dev, config, LONG_INTERVAL_S) != 0) {
+        printf("FAIL hostname %s: %s; could not start a manager\n", c->category,
+               c->description);
+        alarm(0);
+        return 1;
+    }
+    priv = dev.backend_private;
+    tcp_stop_health_check_thread(priv);
+
+    why = hn_run(priv, c->len, &fd);
+
+    rdma_backend_ops_tcp.fini(&dev);
+    alarm(0);
+    if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
+                 atomic_load(&g_exits) != atomic_load(&g_creates)))
+        why = "a thread wasn't joined exactly once";
+
+    ok = !why;
+    printf("%s hostname %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
+           c->category, c->description, c->expected);
+    if (!ok)
+        printf("     %s\n", why);
+    fflush(stdout);
+
+    if (fd >= 0)
+        close(fd);
     return ok ? 0 : 1;
 }
 
@@ -8984,6 +9200,8 @@ int main(void)
         failures += run_sender_case(&sender_cases[i]);
     for (size_t i = 0; i < sizeof(ra_cases) / sizeof(ra_cases[0]); i++)
         failures += run_ra_case(&ra_cases[i]);
+    for (size_t i = 0; i < sizeof(hn_cases) / sizeof(hn_cases[0]); i++)
+        failures += run_hn_case(&hn_cases[i]);
     for (size_t i = 0; i < sizeof(ev_cases) / sizeof(ev_cases[0]); i++)
         failures += run_ev_case(&ev_cases[i]);
     for (size_t i = 0; i < sizeof(lv_cases) / sizeof(lv_cases[0]); i++)
