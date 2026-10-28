@@ -33,9 +33,6 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-/* accept4() is a GNU extension */
-#define _GNU_SOURCE
-
 #include <arpa/inet.h>
 #include <errno.h>
 #include <glib.h>
@@ -48,6 +45,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "ernic_gnu.h"
 #include "pvrdma/rdma_backend_defs.h"
 #include "qemu/error-report.h"
 #include "qemu/thread.h"
@@ -475,7 +473,7 @@ static void check_accepts(int listen_fd, const char *host, uint16_t port,
         CHECK(false, "couldn't connect to %s port %u", host, port);
         return;
     }
-    fd = accept4(listen_fd, (struct sockaddr *)&peer, &peer_len, SOCK_CLOEXEC);
+    fd = ernic_gnu_accept4(listen_fd, (struct sockaddr *)&peer, &peer_len, 0);
     if (fd < 0) {
         CHECK(false, "accepting from %s failed: %s", host, strerror(errno));
         close(client);

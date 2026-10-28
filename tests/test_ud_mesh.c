@@ -39,9 +39,6 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-/* accept4() is a GNU extension */
-#define _GNU_SOURCE
-
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -57,6 +54,7 @@
 #include <infiniband/verbs.h>
 
 #include "ernic_device.h"
+#include "ernic_gnu.h"
 #include "ernic_time.h"
 
 #define GRH_LEN       40
@@ -331,7 +329,7 @@ static int oob_listen(void)
     printf("waiting for the client on port %d\n", OOB_PORT);
     fflush(stdout);
 
-    peer = accept4(fd, NULL, NULL, SOCK_CLOEXEC);
+    peer = ernic_gnu_accept4(fd, NULL, NULL, 0);
     if (peer < 0)
         perror("accept");
     close(fd);

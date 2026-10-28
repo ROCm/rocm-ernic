@@ -35,9 +35,6 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-/* pthread_getname_np() is a GNU extension */
-#define _GNU_SOURCE
-
 #include <errno.h>
 #include <inttypes.h>
 #include <limits.h>
@@ -54,6 +51,7 @@
 
 #include <glib.h>
 
+#include "ernic_gnu.h"
 #include "qemu/bitmap.h"
 #include "qemu/thread.h"
 #include "rocm-ernic-warnings.h"
@@ -247,7 +245,8 @@ static void test_thread_signal_mask(void)
 /* The name the thread has, into arg, a QEMU_THREAD_NAME_LEN buffer. */
 static void *record_name(void *arg)
 {
-    if (pthread_getname_np(pthread_self(), arg, QEMU_THREAD_NAME_LEN) != 0) {
+    if (ernic_gnu_pthread_getname_np(pthread_self(), arg,
+                                     QEMU_THREAD_NAME_LEN) != 0) {
         g_strlcpy(arg, "(unknown)", QEMU_THREAD_NAME_LEN);
     }
     return NULL;

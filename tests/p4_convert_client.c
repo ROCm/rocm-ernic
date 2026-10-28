@@ -31,8 +31,6 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#define _POSIX_C_SOURCE 200809L
-
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>

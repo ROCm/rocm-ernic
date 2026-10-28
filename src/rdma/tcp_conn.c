@@ -16,10 +16,8 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-/* accept4() is a GNU extension */
-#define _GNU_SOURCE
-
 #include "rdma/rdma_backend_tcp_priv.h"
+#include "ernic_gnu.h"
 #include "ernic_time.h"
 #include "pvrdma/rdma_utils.h"
 #include "qemu/thread.h"
@@ -882,8 +880,9 @@ void *tcp_accept_thread(void *opaque)
     while (atomic_load(&priv->accept_thread_running)) {
         memset(&client_addr, 0, sizeof(client_addr));
         client_len = sizeof(client_addr);
-        sockfd = accept4(priv->listen_fd, (struct sockaddr *)&client_addr,
-                         &client_len, SOCK_CLOEXEC | SOCK_NONBLOCK);
+        sockfd =
+            ernic_gnu_accept4(priv->listen_fd, (struct sockaddr *)&client_addr,
+                              &client_len, SOCK_NONBLOCK);
 
         /* The listen socket is blocking, so there's no EAGAIN to retry */
         if (sockfd < 0) {

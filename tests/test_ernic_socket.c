@@ -22,9 +22,6 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-/* O_PATH is a Linux extension */
-#define _GNU_SOURCE
-
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -41,6 +38,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "ernic_gnu.h"
 #include "ernic_socket.h"
 #include "rocm-ernic-warnings.h"
 
@@ -330,7 +328,7 @@ static void make_socket(const char *path)
  */
 static void set_mode(const char *name, mode_t mode)
 {
-    int dfd = open(g_dir, O_PATH | O_DIRECTORY | O_CLOEXEC);
+    int dfd = ernic_gnu_open_path(g_dir, O_DIRECTORY);
 
     if (dfd < 0 || fchmodat(dfd, name, mode, 0) < 0)
         setup_failed("chmod", name);
@@ -562,7 +560,7 @@ static void test_remove_stale_relative(void)
 {
     const char *test = "remove_stale: a relative path with no directory";
     char path[128];
-    int cwd = open(".", O_PATH | O_DIRECTORY | O_CLOEXEC);
+    int cwd = ernic_gnu_open_path(".", O_DIRECTORY);
 
     if (cwd < 0 || chdir(g_dir) < 0)
         setup_failed("changing to", g_dir);

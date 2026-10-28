@@ -29,9 +29,6 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-/* pipe2() is a GNU extension, and so is <unistd.h> declaring environ */
-#define _GNU_SOURCE
-
 #include <fcntl.h>
 #include <inttypes.h>
 #include <limits.h>
@@ -47,6 +44,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "ernic_gnu.h"
 #include "ernic_log.h"
 #include "parse_int.h"
 #include "qemu/error-report.h"
@@ -54,6 +52,10 @@
 #define NTHREADS    8
 #define RACE_ROUNDS 200
 #define NO_LEVEL    (-1)
+
+/* POSIX leaves declaring environ to the program; only _GNU_SOURCE makes
+ * <unistd.h> do it */
+extern char **environ;
 
 static const char ENV_NAME[] = "ERNIC_LOG_LEVEL";
 static const char WARNING[] = "Ignoring invalid ERNIC_LOG_LEVEL";
@@ -311,7 +313,7 @@ static bool run_round(size_t index, int round)
     int status;
     pid_t pid;
 
-    if (pipe2(fds, O_CLOEXEC) != 0) {
+    if (ernic_gnu_pipe2(fds, 0) != 0) {
         printf("FAIL %s: pipe2 failed\n", c->description);
         return false;
     }

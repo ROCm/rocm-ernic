@@ -11,9 +11,6 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-/* pthread_setname_np() is a GNU extension */
-#define _GNU_SOURCE
-
 #include <stdint.h>
 #include <inttypes.h>
 #include <limits.h>
@@ -30,6 +27,8 @@
  */
 #include "qemu/thread.h"
 #include "qemu/bitmap.h"
+
+#include "ernic_gnu.h"
 
 /*
  * Thread Operations
@@ -116,7 +115,7 @@ void qemu_thread_set_name(const char *name)
     char buf[QEMU_THREAD_NAME_LEN];
 
     g_strlcpy(buf, name, sizeof(buf));
-    (void)pthread_setname_np(pthread_self(), buf);
+    (void)ernic_gnu_pthread_setname_np(pthread_self(), buf);
 }
 
 void qemu_thread_join(QemuThread *thread)

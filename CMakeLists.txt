@@ -150,9 +150,11 @@ endif()
 # ---------------------------------------------------------------
 
 # The server's log, which the rest of the sources print through, and its
-# statistics, which the device counts into; and SipHash, for values a guest
-# must not predict
+# statistics, which the device counts into; SipHash, for values a guest
+# must not predict; and the GNU extensions, which only ernic_gnu.c may
+# call (see ernic_gnu.h)
 set(COMMON_SOURCES
+    src/ernic_gnu.c
     src/ernic_log.c
     src/ernic_siphash.c
     src/ernic_stats.c

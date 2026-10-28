@@ -666,7 +666,11 @@ jobs:
         set -e
         cd /tmp/p4-fp8
         read -ra IBV_FLAGS <<< "$(pkg-config --cflags --libs libibverbs)"
-        gcc -O2 -Wall -Wextra \
+        # The project's C standard and feature-test macros, as
+        # ernic_set_compiler_flags() in cmake/ErnicCompilerOptions.cmake
+        # gives every target
+        gcc -std=c11 -pedantic -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+          -O2 -Wall -Wextra \
           -o p4_fp8_client p4_fp8_client.c \
           "${IBV_FLAGS[@]}"
         ls -l /dev/ernic-p4
@@ -726,7 +730,11 @@ jobs:
         set -e
         cd /tmp/p4-cvt
         read -ra IBV_FLAGS <<< "$(pkg-config --cflags --libs libibverbs)"
-        gcc -O2 -Wall -Wextra \
+        # The project's C standard and feature-test macros, as
+        # ernic_set_compiler_flags() in cmake/ErnicCompilerOptions.cmake
+        # gives every target
+        gcc -std=c11 -pedantic -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+          -O2 -Wall -Wextra \
           -o p4_convert_client p4_convert_client.c p4/p4_fmt.c -I. \
           "${IBV_FLAGS[@]}"
         set +e

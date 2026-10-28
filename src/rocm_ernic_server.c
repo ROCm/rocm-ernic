@@ -18,8 +18,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
-#include <err.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -41,6 +41,7 @@
  */
 #include "rocm_ernic_internal.h" // IWYU pragma: keep
 #include "rocm_ernic_compat.h"
+#include "ernic_attributes.h"
 #include "ernic_socket.h"
 #include "ernic_time.h"
 #include "ernic_log.h"
@@ -73,6 +74,23 @@
 
 /* Socket path for vfio-user communication */
 #define DEFAULT_SOCKET_PATH "/tmp/vfio-user-rocm-ernic.sock"
+
+/*
+ * Print "rocm-ernic: <message>: <errno's description>" to stderr, for a
+ * failure that left its reason in errno.
+ */
+ERNIC_PRINTF_FORMAT(1, 2)
+static void warn_errno(const char *fmt, ...)
+{
+    int e = errno;
+    va_list ap;
+
+    fputs("rocm-ernic: ", stderr);
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fprintf(stderr, ": %s\n", strerror(e));
+}
 
 /* Flags shared with signal_handler() */
 static volatile sig_atomic_t g_shutdown_requested = 0;
@@ -504,7 +522,7 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx)
     ret =
         vfu_pci_init(vfu_ctx, VFU_PCI_TYPE_EXPRESS, PCI_HEADER_TYPE_NORMAL, 0);
     if (ret < 0) {
-        warn("vfu_pci_init() failed");
+        warn_errno("vfu_pci_init() failed");
         return -1;
     }
 
@@ -545,7 +563,7 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
      * ionic_eth_emu. */
     dev->bar0_mem = calloc(1, IONIC_BAR0_TOTAL_SIZE - IONIC_BAR0_REGS_SIZE);
     if (!dev->bar0_mem) {
-        warn("ionic: Failed to allocate BAR0 MSI-X shadow");
+        warn_errno("ionic: Failed to allocate BAR0 MSI-X shadow");
         return -1;
     }
 
@@ -553,7 +571,7 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
         vfu_ctx, VFU_PCI_DEV_BAR0_REGION_IDX, IONIC_BAR0_TOTAL_SIZE,
         bar0_access, VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL, 0, -1, 0);
     if (ret < 0) {
-        warn("ionic: Failed to setup BAR0");
+        warn_errno("ionic: Failed to setup BAR0");
         return -1;
     }
 
@@ -561,7 +579,7 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
         vfu_ctx, VFU_PCI_DEV_BAR2_REGION_IDX, IONIC_BAR2_DB_SIZE, bar2_access,
         VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL, 0, -1, 0);
     if (ret < 0) {
-        warn("ionic: Failed to setup BAR2");
+        warn_errno("ionic: Failed to setup BAR2");
         return -1;
     }
 
@@ -914,7 +932,7 @@ static rocm_ernic_dev_t *dev_new(void)
     rocm_ernic_dev_t *dev = calloc(1, sizeof(*dev));
 
     if (!dev) {
-        warn("Failed to allocate device structure");
+        warn_errno("Failed to allocate device structure");
         return NULL;
     }
     dev->backend_type_str = strdup("loopback");
@@ -1245,7 +1263,7 @@ static int redirect_output(const char *path)
     bool is_std;
 
     if (fd < 0) {
-        warn("Failed to open log file: %s", path);
+        warn_errno("Failed to open log file: %s", path);
         return -1;
     }
     /* If the server was started with stdout or stderr closed, the log took
@@ -1258,7 +1276,7 @@ static int redirect_output(const char *path)
      * descriptors as the server was started with them */
     if ((is_std && fcntl(fd, F_SETFD, 0) < 0) || dup2(fd, STDOUT_FILENO) < 0 ||
         dup2(fd, STDERR_FILENO) < 0) {
-        warn("Failed to redirect output to log file: %s", path);
+        warn_errno("Failed to redirect output to log file: %s", path);
         close(fd);
         return -1;
     }
@@ -1362,7 +1380,7 @@ static vfu_ctx_t *create_socket(const struct server_opts *opts,
                              dev, VFU_DEV_TYPE_PCI);
     umask(old_umask);
     if (!vfu_ctx) {
-        warn("vfu_create_ctx() failed");
+        warn_errno("vfu_create_ctx() failed");
         return NULL;
     }
 
@@ -1451,7 +1469,7 @@ static int setup_vfu_device(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
 
     /* Setup interrupts */
     if (setup_interrupts(vfu_ctx, dev) < 0) {
-        warn("setup_interrupts() failed");
+        warn_errno("setup_interrupts() failed");
         return -1;
     }
 
@@ -1463,21 +1481,21 @@ static int setup_vfu_device(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     ret = vfu_setup_device_dma(vfu_ctx, dma_register_cb, dma_unregister_cb);
 #endif
     if (ret < 0) {
-        warn("vfu_setup_device_dma() failed");
+        warn_errno("vfu_setup_device_dma() failed");
         return -1;
     }
 
     /* Setup reset callback */
     ret = vfu_setup_device_reset_cb(vfu_ctx, device_reset_cb);
     if (ret < 0) {
-        warn("vfu_setup_device_reset_cb() failed");
+        warn_errno("vfu_setup_device_reset_cb() failed");
         return -1;
     }
 
     /* Realize the device */
     ret = vfu_realize_ctx(vfu_ctx);
     if (ret < 0) {
-        warn("vfu_realize_ctx() failed");
+        warn_errno("vfu_realize_ctx() failed");
         return -1;
     }
 
@@ -1559,7 +1577,7 @@ static int setup_device(rocm_ernic_dev_t *dev, const struct server_opts *opts)
     /* Setup logging */
     if (vfu_setup_log(vfu_ctx, vfu_log_cb,
                       vfu_log_threshold(ernic_log_get_level())) < 0) {
-        warn("vfu_setup_log() failed");
+        warn_errno("vfu_setup_log() failed");
         return -1;
     }
 
@@ -1710,7 +1728,7 @@ static int run(rocm_ernic_dev_t *dev)
             vfu_log(vfu_ctx, LOG_ERR,
                     "vfu_attach_ctx() failed with errno=%d: %s", errno,
                     strerror(errno));
-            warn("vfu_attach_ctx() failed");
+            warn_errno("vfu_attach_ctx() failed");
             return -1;
         }
 
@@ -1809,7 +1827,9 @@ int main(int argc, char *argv[])
     if (set_signal_handler(SIGINT, signal_handler) == -1 ||
         set_signal_handler(SIGTERM, signal_handler) == -1 ||
         unblock_shutdown_signals() == -1) {
-        err(EXIT_FAILURE, "Failed to setup signal handlers");
+        warn_errno("Failed to setup signal handlers");
+        dev_free(dev);
+        return EXIT_FAILURE;
     }
 
     report_startup(dev, &opts);
