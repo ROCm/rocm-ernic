@@ -181,7 +181,7 @@ if(ERNIC_BUILD_P4)
     target_compile_definitions(ernic-test-p4-engine PRIVATE
         P4_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/p4")
 
-    # Loading a program when memory runs out. It fails the parser's
+    # Loading a program when memory runs out. It fails the loader's
     # allocations on demand with the S3 tests' wrappers (s3_alloc_fail.h),
     # and json_tokener_new_ex() with its own, since json-c allocates the
     # tokener where --wrap can't reach.
