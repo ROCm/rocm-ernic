@@ -1,0 +1,12 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+minor_changes:
+  - >-
+    galaxy.yml: document that only 0.1.0 has been published to Galaxy (it
+    predates the ionic rewrite and does not work with a current server), and
+    that the Git SHA pin is the supported install path. PLAYBOOKS.md now
+    shows the ``git+https://...#/ansible/,<SHA>`` form and warns against a
+    bare ``ansible-galaxy collection install sbates130272.rocm_ernic``.

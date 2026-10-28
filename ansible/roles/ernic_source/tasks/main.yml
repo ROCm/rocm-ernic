@@ -14,6 +14,19 @@
 # SRQ roles need no checkout at all.
 
 ---
+- name: Verify ernic_source_repo_version is set when a clone is needed
+  ansible.builtin.assert:
+    that:
+      - (ernic_source_dir | trim | length > 0)
+        or (ernic_source_repo_version | trim | length > 0)
+    fail_msg: >-
+      ernic_source_repo_version is not set and ernic_source_dir is empty.
+      Set ernic_source_repo_version to a SHA or tag (e.g. the commit that
+      matches your server build), or point ernic_source_dir at an existing
+      checkout. A moving branch as the default silently decouples the compiled
+      sources from the collection version, so there is no safe default here.
+  run_once: true
+
 - name: Resolve the rocm-ernic source checkout
   when: not (ernic_source_resolved | default(false))
   block:

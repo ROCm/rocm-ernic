@@ -45,17 +45,26 @@ these playbooks reach its roles by short name and always run
 against this checkout. That path is relative, so run
 `ansible-playbook` from this directory.
 
-To use the roles from another project, install the published
-collection and address them by fully qualified name:
+To use the roles from another project, install the collection from a
+pinned git SHA and address them by fully qualified name:
 
 ```bash
-ansible-galaxy collection install sbates130272.rocm_ernic
+ansible-galaxy collection install \
+  git+https://github.com/ROCm/rocm-ernic.git#/ansible/,<SHA>
 ```
 
 ```yaml
 roles:
   - role: sbates130272.rocm_ernic.ernic_guest_setup
 ```
+
+> **Note on Galaxy**: the only version published to Ansible Galaxy
+> (`sbates130272.rocm_ernic` 0.1.0) was built before the ionic
+> rewrite and will not work with any current server. Versions 0.2.0
+> and 0.3.0 are carried in `galaxy.yml` but have not been published.
+> Install from a pinned SHA as shown above — that is the only
+> supported path. Do not use `ansible-galaxy collection install
+> sbates130272.rocm_ernic` without a version specifier.
 
 ## Quick Start
 

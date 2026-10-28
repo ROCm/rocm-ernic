@@ -1,0 +1,13 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+bugfixes:
+  - >-
+    ernic_source: remove the ``develop`` default for
+    ``ernic_source_repo_version``. A moving branch silently decouples the
+    compiled sources from the collection version, so a consumer must now name
+    a SHA or tag explicitly. A preflight assertion in the role fails early with
+    a clear message when neither ``ernic_source_dir`` nor
+    ``ernic_source_repo_version`` is set.

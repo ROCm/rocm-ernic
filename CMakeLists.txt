@@ -366,6 +366,9 @@ include(ErnicInstall)
 
 # Packages, for a top-level build only (see ErnicPackage.cmake)
 if(PROJECT_IS_TOP_LEVEL)
+    # Guest packages must be included before ErnicPackage so their component
+    # names are known when ErnicPackage calls include(CPack).
+    include(ErnicGuestPackage)
     include(ErnicPackage)
 endif()
 
