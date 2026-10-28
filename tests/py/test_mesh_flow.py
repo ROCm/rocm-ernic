@@ -56,8 +56,9 @@ CQ_ID = 1
 MESH_SIZE = 3
 # The pairs of nodes whose QPs are connected to each other
 PAIRS = ((0, 1), (1, 2))
-# Each node's MR, which a SEND during the flood lands in
-MR_KEY = 0x0100_0001
+# Each node's MR, which a SEND during the flood lands in. Its key is index
+# 1 above key byte 1, as the driver's ionic_mrid() builds a key.
+MR_KEY = (1 << 8) | 0x01
 MR_VA = 0x0000_7F00_0000_0000
 MR_LEN = 2 * ionic.PAGE_SIZE
 
@@ -69,9 +70,9 @@ STS_RNR_RETRY_EXCEEDED = 12
 # Each round of the two-way test has nodes 1 and 2 each post a send
 # queue's worth of WRITEs to the other at once: 60 MiB each way, past the
 # 32 MiB a node queues for a connection. Each node's MR is a half to send
-# from and a half the other's WRITEs land in. The MR's id, the key's low
-# 24 bits, mustn't be MR_KEY's.
-TWO_WAY_KEY = 0x0100_0002
+# from and a half the other's WRITEs land in. The MR's index mustn't be
+# MR_KEY's.
+TWO_WAY_KEY = (2 << 8) | 0x01
 TWO_WAY_VA = 0x0000_7F10_0000_0000
 TWO_WAY_WRITE = 4 << 20
 TWO_WAY_DEPTH = (1 << ionic.QP_DEPTH_LOG2) - 1
@@ -93,9 +94,9 @@ GAVE_UP = "filled the mesh's inbound queue"
 # 1 at once: 120 MiB of replies, past the 64 MiB node 1 queues for a
 # connection. Node 1 plugs node 2's queue first, as in the two-way test,
 # so the replies wait on node 1. Each node's MR is what the READs read
-# and land in, and what the plug sends from. Its id mustn't be MR_KEY's
-# or TWO_WAY_KEY's. The QPs and CQs are the READ test's own.
-READ_KEY = 0x0100_0003
+# and land in, and what the plug sends from. Its index mustn't be
+# MR_KEY's or TWO_WAY_KEY's. The QPs and CQs are the READ test's own.
+READ_KEY = (3 << 8) | 0x01
 READ_VA = 0x0000_7F20_0000_0000
 READ_SIZE = 8 << 20
 READ_QP = QP_BASE + 16

@@ -266,34 +266,33 @@ static void adminq_unmap_qp(struct ionic_adminq_ctx *ctx, uint32_t qp_id)
             ctx->qp_map[i].valid = false;
 }
 
-/* A free entry in the MR map, or NULL if it is full; see
- * adminq_cq_free_entry(). */
-static struct ionic_mr_map_entry *adminq_mr_free_entry(
-    struct ionic_adminq_ctx *ctx)
+/* The MR map's entry for @mrid's index, whatever its key byte, or NULL for
+ * an index the map has no slot for. */
+static struct ionic_mr_map_entry *adminq_mr_entry(struct ionic_adminq_ctx *ctx,
+                                                  uint32_t mrid)
 {
-    for (uint32_t i = 0; i < MAX_MR_MAP; i++)
-        if (!ctx->mr_map[i].valid)
-            return &ctx->mr_map[i];
-    return NULL;
+    uint32_t slot;
+
+    return ionic_mr_slot(mrid, &slot) ? &ctx->mr_map[slot] : NULL;
 }
 
-static bool adminq_lookup_mr(const struct ionic_adminq_ctx *ctx, uint32_t mr_id,
+static bool adminq_lookup_mr(struct ionic_adminq_ctx *ctx, uint32_t mrid,
                              uint32_t *handle)
 {
-    for (uint32_t i = 0; i < MAX_MR_MAP; i++) {
-        if (ctx->mr_map[i].valid && ctx->mr_map[i].mr_id == mr_id) {
-            *handle = ctx->mr_map[i].handle;
-            return true;
-        }
-    }
-    return false;
+    const struct ionic_mr_map_entry *e = adminq_mr_entry(ctx, mrid);
+
+    if (!e || !e->valid)
+        return false;
+    *handle = e->handle;
+    return true;
 }
 
-static void adminq_unmap_mr(struct ionic_adminq_ctx *ctx, uint32_t mr_id)
+static void adminq_unmap_mr(struct ionic_adminq_ctx *ctx, uint32_t mrid)
 {
-    for (uint32_t i = 0; i < MAX_MR_MAP; i++)
-        if (ctx->mr_map[i].valid && ctx->mr_map[i].mr_id == mr_id)
-            ctx->mr_map[i].valid = false;
+    struct ionic_mr_map_entry *e = adminq_mr_entry(ctx, mrid);
+
+    if (e)
+        e->valid = false;
 }
 
 static void adminq_unmap_cq(struct ionic_adminq_ctx *ctx, uint32_t cq_id)
@@ -1523,7 +1522,7 @@ static uint8_t handle_create_mr_op(struct ionic_adminq_ctx *ctx,
      *   le64 va         [0:7]
      *   le64 length     [8:15]
      *   le32 pd_id      [16:19]
-     *   le32 id_ver     [20:23]  (mrid | ver<<24)
+     *   le32 id_ver     [20:23]  (index << 8 | key byte)
      *   le32 tbl_index  [24:27]
      *   le32 map_count  [28:31]
      *   le64 dma_addr   [32:39]
@@ -1533,9 +1532,10 @@ static uint8_t handle_create_mr_op(struct ionic_adminq_ctx *ctx,
      *   u8   dir_size_log2  [43]
      *   u8   page_size_log2 [44] */
     /* The full mrid, key byte included, is what userspace puts in an SGE
-     * lkey; the low 24 bits alone are the id we track resources by. */
+     * lkey; the index above the byte is what we track the MR by, since
+     * fast registration rotates the byte. */
     uint32_t mrid = ernic_get_le32(body + 20);
-    uint32_t mr_id = mrid & 0x00ffffffu;
+    uint32_t mr_index = mrid >> IONIC_MRID_INDEX_SHIFT;
 
     uint32_t access = ernic_get_le16(body + 40) & IONIC_MRF_ACCESS_MASK;
     uint64_t mr_va = ernic_get_le64(body + 0);
@@ -1544,47 +1544,46 @@ static uint8_t handle_create_mr_op(struct ionic_adminq_ctx *ctx,
     /*
      * Refused before anything is allocated: a region that runs past the
      * end of the address space, which the data path would otherwise
-     * refuse only after the MR had been allocated; an id already in use,
-     * which mapped over would lose the MR that had it; and a full map,
-     * which would leave the new one unmapped. Either MR could then never
-     * be found again by DESTROY_MR, and would leak.
-     * The driver surfaces this as the -ENOMEM its ib_alloc_mr() already
-     * knows how to unwind.
+     * refuse only after the MR had been allocated; an index the map has
+     * no slot for, which the driver, told the device holds ERNIC_MAX_MR,
+     * never hands out; and an index already in use, which mapped over
+     * would lose the MR that had it, which could then never be found
+     * again by DESTROY_MR, and would leak.
      */
     if (mr_len > UINT64_MAX - mr_va) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
                 "ionic_adminq CREATE_MR %u: %" PRIu64 " bytes at %#" PRIx64
                 " run past the end of the address space",
-                mr_id, mr_len, mr_va);
+                mr_index, mr_len, mr_va);
         return IONIC_RC_ERANGE;
     }
-    uint32_t mr_handle;
-    if (adminq_lookup_mr(ctx, mr_id, &mr_handle)) {
-        vfu_log(ctx->vfu_ctx, LOG_ERR,
-                "ionic_adminq CREATE_MR %u: mr_id already in use", mr_id);
-        return IONIC_RC_EEXIST;
-    }
-    struct ionic_mr_map_entry *entry = adminq_mr_free_entry(ctx);
+    struct ionic_mr_map_entry *entry = adminq_mr_entry(ctx, mrid);
     if (!entry) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
-                "ionic_adminq CREATE_MR %u: MR map full (%u MRs)", mr_id,
+                "ionic_adminq CREATE_MR %u: index outside 1..%u", mr_index,
                 MAX_MR_MAP);
-        return IONIC_RC_ENOSPC;
+        return IONIC_RC_ERANGE;
+    }
+    if (entry->valid) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_MR %u: index already in use", mr_index);
+        return IONIC_RC_EEXIST;
     }
 
+    uint32_t mr_handle;
     uint32_t pd_handle;
     int ret = adminq_get_pd(ctx, &pd_handle);
     if (ret) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
                 "ionic_adminq CREATE_MR %u: rdma_rm_alloc_pd failed (%d)",
-                mr_id, ret);
+                mr_index, ret);
         return IONIC_RC_ERDMA;
     }
 
     ret = ernic_rm_alloc_mr(ctx->pvrdma_handle, pd_handle, access, &mr_handle);
     if (ret) {
         vfu_log(ctx->vfu_ctx, LOG_ERR, "ionic_adminq CREATE_MR %u: failed (%d)",
-                mr_id, ret);
+                mr_index, ret);
         return IONIC_RC_ERDMA;
     }
     struct ionic_dp_buf_desc mrbuf = {.dma_addr = ernic_get_le64(body + 32),
@@ -1608,21 +1607,20 @@ static uint8_t handle_create_mr_op(struct ionic_adminq_ctx *ctx,
             vfu_log(ctx->vfu_ctx, LOG_ERR,
                     "ionic_adminq CREATE_MR %u: datapath registration failed "
                     "(%d)",
-                    mr_id, ret);
+                    mr_index, ret);
             ernic_rm_dealloc_mr(ctx->pvrdma_handle, mr_handle);
             return adminq_dp_status(ret);
         }
     }
 
-    *entry = (struct ionic_mr_map_entry){
-        .valid = true, .mr_id = mr_id, .handle = mr_handle};
+    *entry = (struct ionic_mr_map_entry){.valid = true, .handle = mr_handle};
 
     vfu_log(ctx->vfu_ctx, LOG_INFO,
-            "ionic_adminq CREATE_MR mr_id=%u handle=%u access=%#x pd=%u "
+            "ionic_adminq CREATE_MR mr_index=%u handle=%u access=%#x pd=%u "
             "va=%#" PRIx64 " len=%" PRIu64 " pt=%#" PRIx64 " maps=%" PRIu32
             " pgsz_log2=%u",
-            mr_id, mr_handle, access, pd_handle, mr_va, mr_len, mrbuf.dma_addr,
-            mrbuf.map_count, (unsigned)mrbuf.page_size_log2);
+            mr_index, mr_handle, access, pd_handle, mr_va, mr_len,
+            mrbuf.dma_addr, mrbuf.map_count, (unsigned)mrbuf.page_size_log2);
     return IONIC_RC_SUCCESS;
 }
 
@@ -1946,19 +1944,22 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
         }
         uint32_t mrid, mr_handle;
         mrid = ernic_get_le32(body);
-        uint32_t mr_id = mrid & 0x00ffffffu;
+        uint32_t mr_index = mrid >> IONIC_MRID_INDEX_SHIFT;
+        /* Whatever key the MR is bound under now: fast registration may
+         * have rotated it since CREATE_MR, and a binding left behind would
+         * keep the pages of a destroyed MR reachable. */
         ionic_datapath_unregister_mr(ctx->dp, mrid);
         /* A miss now means the resource is stranded: nothing else holds the
          * handle.  It used to be reported as success, which is how the table
          * filled up without a single line in the log. */
-        if (!adminq_lookup_mr(ctx, mr_id, &mr_handle)) {
+        if (!adminq_lookup_mr(ctx, mrid, &mr_handle)) {
             vfu_log(ctx->vfu_ctx, LOG_WARNING,
                     "ionic_adminq DESTROY_MR %u: no mapping; resource leaked",
-                    mr_id);
+                    mr_index);
             return IONIC_RC_ENOENT;
         }
         ernic_rm_dealloc_mr(ctx->pvrdma_handle, mr_handle);
-        adminq_unmap_mr(ctx, mr_id);
+        adminq_unmap_mr(ctx, mrid);
         return IONIC_RC_SUCCESS;
     }
 

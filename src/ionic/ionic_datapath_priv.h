@@ -298,7 +298,7 @@ struct ionic_cq_ring {
 
 struct dp_mr {
     bool valid;
-    uint32_t lkey;
+    uint32_t lkey; /* the one key, of the 256 its slot's index has, bound */
     uint64_t va;
     uint64_t length;
     struct dp_buf buf;
@@ -399,11 +399,11 @@ struct ionic_datapath {
     ErnicLogLimit p4_log_no_drop;
 #endif
 
-    struct ionic_qp_ring *qp;   /* indexed by driver qp_id */
-    struct ionic_cq_ring *cq;   /* indexed by driver cq_id */
-    struct ionic_srq_ring *srq; /* indexed by driver srq_id */
-    struct ionic_ah *ah;        /* indexed by driver ah_id */
-    struct dp_mr mr[ERNIC_MAX_MR];
+    struct ionic_qp_ring *qp;      /* indexed by driver qp_id */
+    struct ionic_cq_ring *cq;      /* indexed by driver cq_id */
+    struct ionic_srq_ring *srq;    /* indexed by driver srq_id */
+    struct ionic_ah *ah;           /* indexed by driver ah_id */
+    struct dp_mr mr[ERNIC_MAX_MR]; /* indexed by ionic_mr_slot() */
 
     uint32_t qp_count;
     uint32_t cq_count;

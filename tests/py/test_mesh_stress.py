@@ -53,7 +53,8 @@ from ernic.server import Server
 # the destination a node names unambiguous.
 QP_BASE = 16
 CQ_ID = 1
-MR_KEY = 0x0100_0001
+# MR index 1 above key byte 1, as the driver's ionic_mrid() builds a key
+MR_KEY = (1 << 8) | 0x01
 MR_VA = 0x0000_7F00_0000_0000
 MR_LEN = 2 * ionic.PAGE_SIZE
 

@@ -37,8 +37,10 @@ QP_B = 11
 CQ_A = 1
 CQ_B = 2
 
-MR_A = 0x0100_0001
-MR_B = 0x0200_0002
+# MR keys as the driver's ionic_mrid() builds them: the MR's index, from
+# 1 up, above a key byte
+MR_A = (1 << 8) | 0x01
+MR_B = (2 << 8) | 0x02
 VA_A = 0x0000_7F00_0000_0100
 VA_B = 0x0000_7F10_0000_0000
 MR_LEN = 3 * ionic.PAGE_SIZE

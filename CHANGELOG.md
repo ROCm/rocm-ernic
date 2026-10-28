@@ -255,7 +255,8 @@
     coverage of `src/` from about 51% to 67%.
     Its `admin-dma`, `dp-dma` and `eth-dma` groups refuse guest memory
     accesses one at a time, as libvfio-user does for an address the client
-    has unmapped, and `tables` fills the EQ, admin queue and MR tables.
+    has unmapped, `tables` fills the EQ, admin queue and MR tables, and
+    `mr-keys` checks that only the key an MR is bound under reaches it.
   * `tests/py/` drives real server processes over the vfio-user socket from
     Python, the way a VMM does, with guest memory in a shared `memfd` and
     nothing outside the standard library: `ernic-vfu-client` (the protocol,
@@ -710,6 +711,22 @@
   and NVMe-oF a data transfer error. NVMe-oF also refuses a data block SGL
   that is neither keyed nor in capsule, which carried no key at all, as an
   invalid SGL descriptor type. Host memory was never reachable.
+* **A memory region's old keys still reached its pages, after
+  `DESTROY_MR` too.** The ionic driver builds an MR's key from the MR's
+  index above a key byte, which each fast registration (`IB_WR_REG_MR`,
+  posted by `nvme-rdma` ahead of every command) rotates. The device read
+  the key the other way round, as a 24-bit id below the byte, so a fast
+  registration added a binding instead of replacing the MR's last one,
+  and `DESTROY_MR` dropped only the binding under the key the MR was
+  created with. A peer holding an rkey the MR had since rotated away from
+  could read and write the pages it named, even after the MR was destroyed
+  and the guest had reused them. An MR now has one binding, under the key
+  its last registration gave it, and `DESTROY_MR` drops it whatever key
+  it is under. `CREATE_MR` refuses an MR index of 0 or above the 2048 the
+  device holds with `ERANGE` (the driver never asks for one), and an index
+  already in use, under any key byte, with `EEXIST`. Resolving a key is
+  now a direct lookup, not a search of the MR table, which the data path
+  did for every 4 KiB it moved.
 * **Any guest process could send a datagram as the kernel's QP1.** The
   device took the Q_Key in a UD send's work request literally, and the
   sending process writes the work request, so a process that wrote QP1's

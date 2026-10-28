@@ -257,8 +257,15 @@ struct ih_qp {
  */
 #define IH_PAGE_SIZE 4096u
 
+/*
+ * An MR key as the driver builds it (ionic_mrid() in its ionic_fw.h): the
+ * MR's index, 1 to ERNIC_MAX_MR, above a key byte that fast registration
+ * rotates.
+ */
+#define IH_MRID(index, key) (((uint32_t)(index) << 8) | (uint8_t)(key))
+
 struct ih_mr {
-    uint32_t lkey; /* the driver's full mrid: index | key << 24 */
+    uint32_t lkey; /* the driver's full mrid: IH_MRID() */
     uint64_t va;
     uint64_t len;
     uint32_t npages;

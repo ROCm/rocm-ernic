@@ -980,8 +980,8 @@ static void test_admin_dma_faults(void)
 #define RC_QP_A 10
 #define RC_QP_B 11
 #define RC_QP_C 12
-#define MR_A    0x01000001u
-#define MR_B    0x02000002u
+#define MR_A    IH_MRID(1, 0x01)
+#define MR_B    IH_MRID(2, 0x02)
 #define VA_A    UINT64_C(0x00007f0000000100)
 #define VA_B    UINT64_C(0x00007f1000000000)
 #define MR_LEN  (3 * IH_PAGE_SIZE)
@@ -1574,9 +1574,9 @@ static void test_atomic_and_reg_mr(void)
      * a rotated key, and LOCAL_INV unbinds it again.
      */
     struct ih_mr fr;
-    const uint32_t fr_id = 0x00000003u, fr_key = 0x04000000u | fr_id;
+    const uint32_t fr_id = 4u, fr_key = IH_MRID(fr_id, 0x04);
     uint8_t body[45] = {0};
-    ernic_put_le32(body + 20, 0x03000000u | fr_id);
+    ernic_put_le32(body + 20, IH_MRID(fr_id, 0x03));
     ernic_put_le16(body + 40, IH_ACCESS_ALL);
     check(T, ih_admin(h, IH_ADMIN_CREATE_MR, body, sizeof(body), NULL) == 0,
           "CREATE_MR of an unbound MR failed");
@@ -1623,7 +1623,7 @@ static void test_atomic_and_reg_mr(void)
                 IH_STS_REMOTE_ACC_ERR);
 
     ih_mr_free(&fr);
-    ernic_put_le32(body, 0x03000000u | fr_id);
+    ernic_put_le32(body, IH_MRID(fr_id, 0x03));
     check(T, ih_admin(h, IH_ADMIN_DESTROY_MR, body, 4, NULL) == 0,
           "DESTROY_MR of the fast-registered MR failed");
 
@@ -1639,9 +1639,9 @@ static void test_atomic_and_reg_mr(void)
  * near address 0, guest physical address 0 itself.
  */
 
-#define WRAP_KEY_A 0x05000005u
-#define WRAP_KEY_B 0x06000006u
-#define WRAP_FR_ID 0x00000007u
+#define WRAP_KEY_A IH_MRID(5, 0x05)
+#define WRAP_KEY_B IH_MRID(6, 0x06)
+#define WRAP_FR_ID 7u
 #define WRAP_CQ    7
 #define WRAP_QP    14
 #define WRAP_VA    UINT64_C(0x00007f4000000000)
@@ -1837,10 +1837,10 @@ static void wrap_mrs(const char *T, struct rc *r)
      * Fast registration of a region past 2^64 binds nothing. It used to be
      * bound, and resolved nowhere: its end wrapped to below its start.
      */
-    const uint32_t fr_key = 0x08000000u | WRAP_FR_ID;
+    const uint32_t fr_key = IH_MRID(WRAP_FR_ID, 0x08);
     uint8_t body[45] = {0};
     struct ih_mr fr;
-    ernic_put_le32(body + 20, 0x07000000u | WRAP_FR_ID);
+    ernic_put_le32(body + 20, IH_MRID(WRAP_FR_ID, 0x07));
     ernic_put_le16(body + 40, IH_ACCESS_ALL);
     if (!check(T,
                ih_admin(h, IH_ADMIN_CREATE_MR, body, sizeof(body), NULL) == 0,
@@ -1892,7 +1892,7 @@ static void wrap_mrs(const char *T, struct rc *r)
         write_to(T, r, "RDMA_WRITE through a fast-registered MR", fr_key,
                  fr.va + 8, sizeof(want), 0);
         struct ih_send rotated = reg;
-        rotated.key = 0x09000000u | WRAP_FR_ID;
+        rotated.key = IH_MRID(WRAP_FR_ID, 0x09);
         post_local_op(T, h, &small, &cqs, &rotated, "REG_MR in a 32-byte WQE",
                       IH_STS_MEM_MGMT_ERR);
         write_to(T, r, "RDMA_WRITE through a key a short REG_MR replaced",
@@ -1925,7 +1925,7 @@ static void wrap_mrs(const char *T, struct rc *r)
     }
 
     ih_mr_free(&fr);
-    check(T, destroy_mr_id(h, 0x07000000u | WRAP_FR_ID) == 0,
+    check(T, destroy_mr_id(h, IH_MRID(WRAP_FR_ID, 0x07)) == 0,
           "DESTROY_MR of the fast-registered MR failed");
 }
 
@@ -1942,10 +1942,128 @@ static void test_wrap(void)
     rc_teardown(T, &r);
 }
 
+/* ---- MR keys ------------------------------------------------------------ */
+
+/*
+ * An MR's key is its index above a key byte that fast registration rotates,
+ * and only the key the MR is bound under reaches it. The byte was once read
+ * as part of the index, so a rotation added a binding instead of replacing
+ * one: every earlier key still reached the MR's pages, and still did once
+ * DESTROY_MR had destroyed the MR.
+ */
+
+#define KEYS_ID 9u
+#define KEYS_VA UINT64_C(0x00007f6000000000)
+
+static void test_mr_keys(void)
+{
+    const char *T = "mr-keys";
+    const uint32_t created = IH_MRID(KEYS_ID, 0x10);
+    struct rc r;
+    struct ih *h = &r.h;
+    struct ih_mr fr;
+    uint8_t want[64], other[64], got[64];
+
+    if (!rc_setup(T, &r))
+        return;
+    fill(want, sizeof(want), 0x4b);
+    fill(other, sizeof(other), 0x6c);
+    ih_mr_write(h, &r.mra, VA_A, want, sizeof(want));
+
+    uint8_t body[45] = {0};
+    ernic_put_le32(body + 20, created);
+    ernic_put_le16(body + 40, IH_ACCESS_ALL);
+    if (!check(T,
+               ih_admin(h, IH_ADMIN_CREATE_MR, body, sizeof(body), NULL) == 0,
+               "CREATE_MR of an unbound MR failed") ||
+        !check(T,
+               ih_mr_alloc(h, &fr, IH_MRID(KEYS_ID, 0x11), KEYS_VA,
+                           IH_PAGE_SIZE, false),
+               "MR pages not allocated")) {
+        rc_teardown(T, &r);
+        return;
+    }
+
+    /* REG_MR binds the MR under a rotated key, and only that key */
+    struct ih_send reg = {
+        .op = IH_OP_REG_MR, .key = IH_MRID(KEYS_ID, 0x11), .mr = &fr};
+    post_local_op(T, h, &r.a, &r.cqa, &reg, "REG_MR", 0);
+    write_to(T, &r, "RDMA_WRITE through the key REG_MR bound", reg.key, KEYS_VA,
+             sizeof(want), 0);
+    write_to(T, &r, "RDMA_WRITE through the key the MR was created with",
+             created, KEYS_VA, sizeof(want), IH_STS_REMOTE_ACC_ERR);
+
+    /* Rotated again, the key before reaches nothing */
+    const uint32_t old_key = reg.key;
+    reg.key = IH_MRID(KEYS_ID, 0x12);
+    post_local_op(T, h, &r.a, &r.cqa, &reg, "REG_MR under a rotated key", 0);
+    write_to(T, &r, "RDMA_WRITE through a key the MR rotated away from",
+             old_key, KEYS_VA, sizeof(want), IH_STS_REMOTE_ACC_ERR);
+    write_to(T, &r, "RDMA_WRITE through the rotated key", reg.key, KEYS_VA,
+             sizeof(want), 0);
+
+    /* LOCAL_INV of the earlier key leaves the binding that replaced it */
+    struct ih_send inv = {.op = IH_OP_LOCAL_INV, .key = old_key};
+    post_local_op(T, h, &r.a, &r.cqa, &inv, "LOCAL_INV of an earlier key", 0);
+    write_to(T, &r, "RDMA_WRITE after a LOCAL_INV of an earlier key", reg.key,
+             KEYS_VA, sizeof(want), 0);
+
+    /* Index 0 is the reserved lkey's, and one past ERNIC_MAX_MR the device
+     * has no slot for: neither names an MR to bind */
+    const uint32_t no_mr[] = {IH_MRID(0, 0x05), IH_MRID(ERNIC_MAX_MR + 1, 0)};
+    for (size_t i = 0; i < sizeof(no_mr) / sizeof(no_mr[0]); i++) {
+        struct ih_send bad = {.op = IH_OP_REG_MR, .key = no_mr[i], .mr = &fr};
+
+        post_local_op(T, h, &r.a, &r.cqa, &bad,
+                      "REG_MR of an index with no slot", IH_STS_MEM_MGMT_ERR);
+        write_to(T, &r, "RDMA_WRITE through an index with no slot", no_mr[i],
+                 KEYS_VA, sizeof(want), IH_STS_REMOTE_ACC_ERR);
+    }
+    check(T,
+          create_mr_as(h, IH_MRID(ERNIC_MAX_MR + 1, 0x01), KEYS_VA,
+                       IH_PAGE_SIZE, 1, fr.pages[0]) == IONIC_RC_ERANGE,
+          "CREATE_MR of an index past the table was not refused");
+
+    /* An index in use is refused, whatever its key byte */
+    check(T,
+          create_mr_as(h, IH_MRID(KEYS_ID, 0x77), KEYS_VA, IH_PAGE_SIZE, 1,
+                       fr.pages[0]) == IONIC_RC_EEXIST,
+          "CREATE_MR of an index in use under another key was not refused");
+
+    /*
+     * DESTROY_MR names the MR by the key it was created with, and takes
+     * away its binding under the rotated one: a write through that key
+     * must not reach the pages of a destroyed MR.
+     */
+    check(T, destroy_mr_id(h, created) == 0, "DESTROY_MR failed");
+    ih_mr_write(h, &r.mra, VA_A, other, sizeof(other));
+    write_to(T, &r, "RDMA_WRITE through a destroyed MR's rotated key", reg.key,
+             KEYS_VA, sizeof(other), IH_STS_REMOTE_ACC_ERR);
+    ih_mr_read(h, &fr, KEYS_VA, got, sizeof(got));
+    check(T, memcmp(got, want, sizeof(got)) == 0,
+          "a write through a destroyed MR's rotated key landed");
+
+    /* The index is free again */
+    check(T,
+          create_mr_as(h, IH_MRID(KEYS_ID, 0x13), KEYS_VA, IH_PAGE_SIZE, 1,
+                       fr.pages[0]) == 0,
+          "CREATE_MR of a destroyed MR's index failed");
+    write_to(T, &r, "RDMA_WRITE through an index created again",
+             IH_MRID(KEYS_ID, 0x13), KEYS_VA, sizeof(other), 0);
+    ih_mr_read(h, &fr, KEYS_VA, got, sizeof(got));
+    check(T, memcmp(got, other, sizeof(got)) == 0,
+          "RDMA_WRITE through an index created again did not land");
+    check(T, destroy_mr_id(h, IH_MRID(KEYS_ID, 0x13)) == 0,
+          "DESTROY_MR failed");
+
+    ih_mr_free(&fr);
+    rc_teardown(T, &r);
+}
+
 /* ---- The data path when guest memory can't be reached ------------------ */
 
 #define NO_CQE UINT32_MAX
-#define MR_C   0x03000003u
+#define MR_C   IH_MRID(3, 0x03)
 #define VA_C   UINT64_C(0x00007f2000000000)
 
 /* An 8-byte RDMA_WRITE or ATOMIC_FA from A to B, with the DMA @fail refused,
@@ -2172,7 +2290,9 @@ static void test_full_tables(void)
     check(T, ionic_rdma_devcmd_post_cq_event(h->rdma, 9, RC_CQ_A) == -ENOENT,
           "an event was posted to an EQ that doesn't exist");
 
-    /* CREATE_MR fills the MR table, every one of them on the same page */
+    /* CREATE_MR fills the MR table, every one of them on the same page:
+     * indices 1 and 2 are A's and B's, and one past ERNIC_MAX_MR has no
+     * slot */
     uint8_t body[45] = {0};
     ernic_put_le64(body + 0, VA_C);
     ernic_put_le64(body + 8, IH_PAGE_SIZE);
@@ -2181,22 +2301,22 @@ static void test_full_tables(void)
                    fake_vfu_alloc(h->vfu, IH_PAGE_SIZE, IH_PAGE_SIZE));
     ernic_put_le16(body + 40, IH_ACCESS_ALL);
     body[44] = 12;
-    for (n = 2; n <= ERNIC_MAX_MR; n++) {
-        ernic_put_le32(body + 20, 0x100u + n);
+    for (n = 3; n <= ERNIC_MAX_MR + 1; n++) {
+        ernic_put_le32(body + 20, IH_MRID(n, 0x5a));
         if ((rc = ih_admin(h, IH_ADMIN_CREATE_MR, body, sizeof(body), NULL)))
             break;
     }
-    check(T, n == ERNIC_MAX_MR && rc == IONIC_RC_ENOSPC,
-          "%u MRs, then status %d", n, rc);
+    check(T, n == ERNIC_MAX_MR + 1 && rc == IONIC_RC_ERANGE,
+          "MRs up to index %u, then status %d", n, rc);
 
-    /* So REG_MR of an id no CREATE_MR made finds no room, and its key names
+    /* So REG_MR of an index past the table binds nothing, and its key names
      * nothing */
-    const uint32_t key = 0x00fff000u;
+    const uint32_t key = IH_MRID(0xfff0u, 0x00);
     struct ih_send reg = {.op = IH_OP_REG_MR, .key = key, .mr = &r.mrb};
     struct ih_cqe e;
     ih_post_send(h, &r.a, &reg);
     check(T, ih_cq_poll(h, &r.cqa, &e) && e.type == IH_CQE_TYPE_SEND_NPG,
-          "REG_MR into a full table did not complete");
+          "REG_MR past a full table did not complete");
     struct ih_sge sge = {.va = VA_A, .len = 8, .lkey = MR_A};
     struct ih_send w = {.op = IH_OP_RDMA_WRITE,
                         .remote_va = r.mrb.va,
@@ -2204,7 +2324,7 @@ static void test_full_tables(void)
                         .sge = &sge,
                         .nsge = 1};
     ih_post_send(h, &r.a, &w);
-    expect_send(T, "RDMA_WRITE through a key with no room", &r,
+    expect_send(T, "RDMA_WRITE through a key with no slot", &r,
                 IH_STS_REMOTE_ACC_ERR);
 
     rc_teardown(T, &r);
@@ -2617,7 +2737,7 @@ static void test_ud(void)
               ih_qp_create(&h, &c, 20, IH_QPT_UD, &cqc, &cqc, NULL) &&
               ih_qp_create(&h, &d, 21, IH_QPT_UD, &cqd, &cqd, NULL) &&
               ih_qp_create(&h, &rcq, 22, IH_QPT_RC, &cqd, &cqd, NULL) &&
-              ih_mr_create(&h, &mr, 0x06000006u, UINT64_C(0x7f4000000000),
+              ih_mr_create(&h, &mr, IH_MRID(6, 0x06), UINT64_C(0x7f4000000000),
                            2 * IH_PAGE_SIZE, IH_ACCESS_ALL, false);
     for (uint32_t qp = 20; ok && qp <= 21; qp++)
         ok = ih_qp_modify(&h, qp, IH_QP_STATE | IH_QP_QKEY, IH_QPS_INIT,
@@ -2842,7 +2962,7 @@ static void test_srq_rung(const char *T, int db_qtype, uint8_t db_ring)
               ih_qp_create(&h, &f, 30, IH_QPT_RC, &cqf, &cqf, &srq) &&
               ih_qp_create(&h, &g, 31, IH_QPT_RC, &cqg, &cqg, NULL) &&
               ih_qp_connect(&h, &f, &g) &&
-              ih_mr_create(&h, &mr, 0x07000007u, UINT64_C(0x7f5000000000),
+              ih_mr_create(&h, &mr, IH_MRID(7, 0x07), UINT64_C(0x7f5000000000),
                            IH_PAGE_SIZE, IH_ACCESS_ALL, false);
     if (!check(T, ok, "SRQ setup failed")) {
         ih_mr_free(&mr);
@@ -3271,7 +3391,7 @@ static void test_eth_dma_faults(void)
 #define NV_GSI_CQ 1
 #define NV_RC_CQ  2
 #define NV_RC_QP  0x42u
-#define NV_MR     0x08000008u
+#define NV_MR     IH_MRID(8, 0x08)
 #define NV_VA     UINT64_C(0x7f6000000000)
 
 /* Where things live in the MR */
@@ -3647,9 +3767,9 @@ static void test_p4_attach(void)
 
 /* ---- In-network elementwise compute across three memory regions ------- */
 
-#define FP8R_MR_A   0x03000001u
-#define FP8R_MR_B   0x03000002u
-#define FP8R_MR_C   0x03000003u
+#define FP8R_MR_A   IH_MRID(1, 0x03)
+#define FP8R_MR_B   IH_MRID(2, 0x03)
+#define FP8R_MR_C   IH_MRID(3, 0x03)
 #define FP8R_VA_A   UINT64_C(0x7F2000000000)
 #define FP8R_VA_B   UINT64_C(0x7F3000000000)
 #define FP8R_VA_C   UINT64_C(0x7F4000000000)
@@ -6074,7 +6194,7 @@ static void test_nvmeof_queue_limit(void)
 #define S3H_TCP_SYN    0x02u
 #define S3H_TCP_PSH    0x08u
 #define S3H_TCP_ACK    0x10u
-#define S3H_MR         0x0a00000au
+#define S3H_MR         IH_MRID(10, 0x0a)
 #define S3H_VA         UINT64_C(0x7f7000000000)
 #define S3H_LEN        64u
 
@@ -6709,6 +6829,7 @@ static const struct {
     {"rc", test_rc},
     {"atomic", test_atomic_and_reg_mr},
     {"wrap", test_wrap},
+    {"mr-keys", test_mr_keys},
     {"dp-dma", test_dp_dma_faults},
     {"tables", test_full_tables},
     {"limits", test_limits},

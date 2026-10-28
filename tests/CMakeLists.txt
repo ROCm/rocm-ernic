@@ -587,8 +587,9 @@ target_include_directories(ernic-test-ionic-adminq-poll SYSTEM PRIVATE
 
 # ionic admin queue id map test. It links the admin queue and stubs the rest
 # with ionic_adminq_fakes.h, so the CQ, QP and MR maps can be filled
-# directly, and checks a CREATE_CQ, CREATE_QP or CREATE_MR whose map is full
-# or whose id is in use is refused before anything is allocated.
+# directly, and checks a CREATE_CQ or CREATE_QP whose map is full, a
+# CREATE_MR whose index has no slot, or any of them whose id is in use is
+# refused before anything is allocated.
 add_executable(ernic-test-ionic-adminq-maps
     test_ionic_adminq_maps.c
     ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
@@ -1520,6 +1521,8 @@ set_tests_properties(ernic-stats-unit PROPERTIES TIMEOUT 30)
 # one DMA at a time in the admin queue, the data path and Ethernet,
 # tables fills the EQ, admin queue and MR tables, and wrap sends lengths
 # and registers regions whose sums or ends carry past 2^32 or 2^64.
+# mr-keys checks that only the key an MR is bound under reaches it, through
+# fast registration's rotations, LOCAL_INV and DESTROY_MR.
 # limits checks that the counts the LIF identity promises are what every
 # backend's tables hold, and fills the CQ and QP ids to the last.
 # nvmeof-queues refuses more NVMe-oF queues than the MR table can serve.
@@ -1529,7 +1532,7 @@ set_tests_properties(ernic-stats-unit PROPERTIES TIMEOUT 30)
 # backend answer without one.
 set(ERNIC_HARNESS_GROUPS
     devcmds bringup rdma-reset rdma-reset-faults rdma-reset-frees admin
-    admin-dma rc atomic wrap dp-dma tables limits cq-events qp-flush
+    admin-dma rc atomic wrap mr-keys dp-dma tables limits cq-events qp-flush
     qp-flush-srq ud srq srq-rq-ring srq-cq-ring eth eth-dma
     nvmeof nvmeof-queues s3 mesh-none teardown backend-names none
     loopback-pair)
