@@ -41,9 +41,11 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -202,30 +204,39 @@ static void test_thread_signal_mask(void)
     sigset_t caller;
     sigset_t before;
     sigset_t after;
-    sigset_t in_thread;
+    /* Allocated: qemu_thread_create() keeps its argument in the heap */
+    sigset_t *in_thread = malloc(sizeof(*in_thread));
     QemuThread thread;
+
+    if (!in_thread) {
+        printf("FAIL malloc\n");
+        failures++;
+        return;
+    }
 
     sigemptyset(&caller);
     sigaddset(&caller, SIGUSR2);
     pthread_sigmask(SIG_SETMASK, &caller, &before);
 
-    sigemptyset(&in_thread);
-    if (qemu_thread_create(&thread, "record-mask", record_mask, &in_thread) !=
+    sigemptyset(in_thread);
+    if (qemu_thread_create(&thread, "record-mask", record_mask, in_thread) !=
         0) {
         printf("FAIL qemu_thread_create\n");
         failures++;
         pthread_sigmask(SIG_SETMASK, &before, NULL);
+        free(in_thread);
         return;
     }
     qemu_thread_join(&thread);
     pthread_sigmask(SIG_SETMASK, &before, &after);
 
     for (size_t i = 0; i < sizeof(blocked) / sizeof(blocked[0]); i++) {
-        check_blocked(&in_thread, blocked[i], true, "new thread");
+        check_blocked(in_thread, blocked[i], true, "new thread");
     }
     for (size_t i = 0; i < sizeof(faults) / sizeof(faults[0]); i++) {
-        check_blocked(&in_thread, faults[i], false, "new thread");
+        check_blocked(in_thread, faults[i], false, "new thread");
     }
+    free(in_thread);
 
     /* The caller's mask is the one it had before. */
     check_blocked(&after, SIGUSR2, true, "caller");
@@ -252,12 +263,19 @@ static void *rename_self(void *arg)
 static void check_thread_name(const char *given, void *(*fn)(void *),
                               const char *want)
 {
-    char name[QEMU_THREAD_NAME_LEN] = "";
+    /* Allocated: qemu_thread_create() keeps its argument in the heap */
+    char *name = calloc(1, QEMU_THREAD_NAME_LEN);
     QemuThread thread;
 
+    if (!name) {
+        printf("FAIL calloc %s\n", given);
+        failures++;
+        return;
+    }
     if (qemu_thread_create(&thread, given, fn, name) != 0) {
         printf("FAIL qemu_thread_create %s\n", given);
         failures++;
+        free(name);
         return;
     }
     qemu_thread_join(&thread);
@@ -266,6 +284,7 @@ static void check_thread_name(const char *given, void *(*fn)(void *),
                given, name, want);
         failures++;
     }
+    free(name);
 }
 
 static void test_thread_names(void)
@@ -335,18 +354,20 @@ static void test_mutex_misuse_aborts(void)
 #endif
 }
 
+/* Allocated, mutex included: qemu_thread_create() keeps its argument in the
+ * heap */
 typedef struct {
-    QemuMutex *mutex;
+    QemuMutex mutex;
     int ret;
 } TrylockArg;
 
 static void *trylock_once(void *opaque)
 {
     TrylockArg *t = opaque;
-    int ret = qemu_mutex_trylock(t->mutex);
+    int ret = qemu_mutex_trylock(&t->mutex);
 
     if (ret == 0) {
-        qemu_mutex_unlock(t->mutex);
+        qemu_mutex_unlock(&t->mutex);
     }
     t->ret = ret;
     return NULL;
@@ -355,25 +376,31 @@ static void *trylock_once(void *opaque)
 /* EBUSY is trylock's normal answer for a held mutex, not a failure. */
 static void test_trylock_busy(void)
 {
-    QemuMutex mutex;
     QemuThread thread;
-    TrylockArg t = {.mutex = &mutex, .ret = -1};
+    TrylockArg *t = malloc(sizeof(*t));
 
-    qemu_mutex_init(&mutex);
-    qemu_mutex_lock(&mutex);
-    if (qemu_thread_create(&thread, "trylock-once", trylock_once, &t) != 0) {
+    if (!t) {
+        printf("FAIL malloc\n");
+        failures++;
+        return;
+    }
+    t->ret = -1;
+    qemu_mutex_init(&t->mutex);
+    qemu_mutex_lock(&t->mutex);
+    if (qemu_thread_create(&thread, "trylock-once", trylock_once, t) != 0) {
         printf("FAIL qemu_thread_create\n");
         failures++;
     } else {
         qemu_thread_join(&thread);
-        if (t.ret != EBUSY) {
+        if (t->ret != EBUSY) {
             printf("FAIL trylock of a held mutex returned %d, not EBUSY\n",
-                   t.ret);
+                   t->ret);
             failures++;
         }
     }
-    qemu_mutex_unlock(&mutex);
-    qemu_mutex_destroy(&mutex);
+    qemu_mutex_unlock(&t->mutex);
+    qemu_mutex_destroy(&t->mutex);
+    free(t);
 }
 
 /* ETIMEDOUT is a timed wait's normal answer, not a failure. */
