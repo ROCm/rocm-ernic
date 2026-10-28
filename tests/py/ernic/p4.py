@@ -44,9 +44,9 @@ P4_SCOPE_READ = 1
 P4_SCOPE_WRITE = 2
 P4_SCOPE_LOAD = 3
 
-# enum p4_wire_update_type, which is NOT the host's enum p4_update_type:
-# the wire numbering starts at zero and the host's at one, and a guest
-# cannot see the host header.
+# enum p4_wire_update_type: the same values as the host's enum
+# p4_update_type, which p4_devcmd.c asserts, but spelled separately
+# because a guest cannot see the host header.
 P4_UPDATE_INSERT = 0
 P4_UPDATE_MODIFY = 1
 P4_UPDATE_DELETE = 2

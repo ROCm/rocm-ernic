@@ -357,7 +357,12 @@ static uint8_t handle_query(const struct p4_devcmd *pd, const uint8_t *cmd)
  * -------------------------------------------------------------------------
  */
 
-/* Map an engine errno onto the closed set the guest sees. */
+/*
+ * Map an engine errno onto the closed set the guest sees.  Only the errnos
+ * the engine returns have a case; the rest of what it can return (-ENOMEM,
+ * and the parser's -EMSGSIZE, -ELOOP, -EBADMSG and -ENOSYS) is
+ * P4_STS_EDEVICE.
+ */
 static uint8_t p4_status_of(int rc)
 {
     switch (rc) {
@@ -371,11 +376,6 @@ static uint8_t p4_status_of(int rc)
         return P4_STS_EEXIST;
     case -ENOSPC:
         return P4_STS_ENOSPC;
-    case -EBUSY:
-        return P4_STS_EBUSY;
-    case -EFBIG:
-    case -ERANGE:
-        return P4_STS_ERANGE;
     default:
         return P4_STS_EDEVICE;
     }
@@ -545,7 +545,7 @@ static uint8_t handle_rpc(struct p4_devcmd *pd, const uint8_t *cmd,
     struct p4_devcmd_rpc_cmd c;
     const struct p4_op_def *def;
     uint8_t *req = NULL, *resp = NULL;
-    uint32_t req_len, resp_len, ep, op;
+    uint32_t req_len, resp_len, ep, op, claim;
     uint8_t status;
 
     memcpy(&c, cmd, sizeof(c));
@@ -559,14 +559,22 @@ static uint8_t handle_rpc(struct p4_devcmd *pd, const uint8_t *cmd,
         return P4_STS_EOPCODE;
 
     /*
-     * Two separate checks, in this order.  The operator's grant comes
-     * first because it is the one that must not be inferable: a guest
-     * probing operations would otherwise learn which ones exist from the
-     * difference between "not permitted" and "asked for too little".
+     * The operator's grant has to cover the operation, and the caller's
+     * claim has to lie between what the operation needs and what the
+     * operator granted: a claim above the grant, or above any scope
+     * there is, is refused even for an operation the grant covers.  The
+     * claim is compared as a number, before it is ever an enum p4_scope,
+     * because a guest can send any byte.
+     *
+     * None of this hides anything, and the order of the checks is not a
+     * defence: IDENT reports the grant, QUERY lists every operation with
+     * the scope it needs, and an operation there is none of has already
+     * been refused above with its own status.
      */
-    if (pd->scope < def->scope || pd->scope == P4_SCOPE_NONE)
+    claim = c.scope;
+    if (pd->scope == P4_SCOPE_NONE || pd->scope < def->scope)
         return P4_STS_EPERM;
-    if ((enum p4_scope)c.scope < def->scope)
+    if (claim < (uint32_t)def->scope || claim > (uint32_t)pd->scope)
         return P4_STS_EPERM;
 
     if (req_len > P4_DEVCMD_REQ_MAX || resp_len > P4_DEVCMD_RESP_MAX)
