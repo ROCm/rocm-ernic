@@ -3,6 +3,10 @@
 # SPDX-License-Identifier: MIT
 
 ---
+# Configured on every run, not only when there's no build yet, so that
+# a changed ernic_install_prefix or ernic_build_type reaches the build.
+# The paths the installed files name, and ernic_config_dir, follow the
+# prefix.
 - name: Configure the CMake build
   ansible.builtin.command:
     argv:
@@ -15,7 +19,7 @@
       - "-DCMAKE_INSTALL_PREFIX={{ ernic_install_prefix }}"
       - -DERNIC_INSTALL_SERVICE=ON
     chdir: "{{ ernic_source_dir }}"
-    creates: "{{ ernic_build_dir }}/build.ninja"
+  changed_when: true
 
 - name: Build the project
   ansible.builtin.command:

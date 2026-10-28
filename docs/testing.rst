@@ -348,7 +348,7 @@ valgrind would only check the script for:
    skip='pci-config-test|find-rdma-device-tuple|find-ipv4-gid-index'
    skip+='|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci'
    skip+='|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli'
-   skip+='|cmake-subproject|ernic-package-deb'
+   skip+='|cmake-subproject|ernic-package-deb|ernic-package-deb-config-paths'
    opts='--leak-check=full --track-origins=yes --num-callers=40'
    opts+=' --error-exitcode=1'
    ctest --test-dir build -T memcheck --output-on-failure \

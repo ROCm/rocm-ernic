@@ -1,0 +1,20 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+bugfixes:
+  - >-
+    ``ernic_host_setup`` writes the env file where the installed service
+    and ``ernicctl`` read it when ``ernic_install_prefix`` is
+    ``/opt/<name>``: ``ernic_config_dir`` now defaults to
+    ``/etc/opt/<name>/rocm-ernic`` there, following rocm-ernic's install
+    rules, rather than ``/etc/rocm-ernic``, where the service would no
+    longer find it.  A trailing slash on the prefix is ignored, as CMake
+    ignores it.  With any other prefix it is still ``/etc/rocm-ernic``.
+  - >-
+    ``ernic_host_setup`` configures the rocm-ernic build on every run,
+    not only when there is no build yet, so that a changed
+    ``ernic_install_prefix`` or ``ernic_build_type`` reaches the
+    installed files.  Before, the service went on running from, and
+    reading its configuration where, the first prefix put them.

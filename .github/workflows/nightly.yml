@@ -203,18 +203,20 @@ jobs:
       - name: Test
         run: |
           ctest --test-dir build --output-on-failure \
-            -E '^ernic-package-deb$'
+            -E '^ernic-package-deb(-config-paths)?$'
 
       # ernic-package-deb (tests/package/run-package-test.cmake) builds
       # the packages and checks their files, modes, dependencies,
       # configuration file, the paths in the service files, and the
-      # server's DT_RPATH to its libvfio-user. It's only registered if
-      # the tools it needs are installed, so --no-tests=error makes sure
-      # it ran.
+      # server's DT_RPATH to its libvfio-user.
+      # ernic-package-deb-config-paths builds them again with prefixes
+      # that move the configuration, such as /opt/<name>. They're only
+      # registered if the tools they need are installed, so
+      # --no-tests=error makes sure they ran.
       - name: Check the packages
         run: |
           ctest --test-dir build --output-on-failure --no-tests=error \
-            -R '^ernic-package-deb$'
+            -R '^ernic-package-deb(-config-paths)?$'
 
       - name: Package
         run: |

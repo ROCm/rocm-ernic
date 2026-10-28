@@ -89,3 +89,54 @@ add_test(
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run-package-test.cmake
 )
 set_tests_properties(ernic-package-deb PROPERTIES TIMEOUT 300)
+
+# Build the packages again with prefixes that move the configuration,
+# such as /opt/<name> (see run-config-paths-test.cmake). Each case
+# configures and builds the server in a build directory of its own,
+# with this build's compiler and dependencies, as cmake-subproject
+# does: the libvfio-user it found without pkg-config, if it did, and its
+# private copy if it has one. Without that copy, dpkg-shlibdeps finds
+# libvfio-user only where the system's libraries are, and the nightly
+# build's isn't. It doesn't run the server, so it's built without
+# sanitizers.
+set(ERNIC_CONFIG_PATHS_CACHE
+    ${CMAKE_CURRENT_BINARY_DIR}/config-paths-cache.cmake)
+set(ERNIC_CONFIG_PATHS_CACHE_ENTRIES)
+foreach(var IN ITEMS
+        CMAKE_PREFIX_PATH
+        CMAKE_C_COMPILER
+        ERNIC_WERROR
+        VFIO_USER_FALLBACK_LIB
+        VFIO_USER_FALLBACK_INC
+        ERNIC_BUNDLE_VFIO_USER
+        ERNIC_VFIO_USER_LICENSE)
+    if(DEFINED ${var})
+        string(APPEND ERNIC_CONFIG_PATHS_CACHE_ENTRIES
+            "set(${var} \"${${var}}\" CACHE STRING \"\")\n")
+    endif()
+endforeach()
+file(WRITE ${ERNIC_CONFIG_PATHS_CACHE}
+    "${ERNIC_CONFIG_PATHS_CACHE_ENTRIES}")
+
+set(ERNIC_CONFIG_PATHS_TEST_SETTINGS
+    ${CMAKE_CURRENT_BINARY_DIR}/config-paths-test-settings.cmake)
+file(CONFIGURE
+    OUTPUT ${ERNIC_CONFIG_PATHS_TEST_SETTINGS}
+    CONTENT [[
+set(TEST_DIR "@CMAKE_CURRENT_BINARY_DIR@/config-paths-test")
+set(SOURCE_DIR "@PROJECT_SOURCE_DIR@")
+set(INITIAL_CACHE "@ERNIC_CONFIG_PATHS_CACHE@")
+set(GENERATOR "@CMAKE_GENERATOR@")
+set(MAKE_PROGRAM "@CMAKE_MAKE_PROGRAM@")
+set(PACKAGE_TEST "@CMAKE_CURRENT_SOURCE_DIR@/run-package-test.cmake")
+]]
+    @ONLY)
+
+add_test(
+    NAME ernic-package-deb-config-paths
+    COMMAND ${CMAKE_COMMAND}
+        -DSETTINGS=${ERNIC_CONFIG_PATHS_TEST_SETTINGS}
+        -DCONFIG=$<CONFIG>
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run-config-paths-test.cmake
+)
+set_tests_properties(ernic-package-deb-config-paths PROPERTIES TIMEOUT 600)

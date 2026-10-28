@@ -148,9 +148,10 @@ libvfio-user (ERNIC_BUNDLE_VFIO_USER)")
     # developer's LD_LIBRARY_PATH to their own libvfio-user build, which has
     # the same soname but may not have the same ABI, would replace the
     # server's copy.
-    file(RELATIVE_PATH ernic_vfio_user_rpath
-        "${CMAKE_INSTALL_FULL_BINDIR}"
-        "${CMAKE_INSTALL_FULL_LIBDIR}/rocm-ernic")
+    set(ernic_vfio_user_full_dir "${CMAKE_INSTALL_FULL_LIBDIR}/rocm-ernic")
+    cmake_path(RELATIVE_PATH ernic_vfio_user_full_dir
+        BASE_DIRECTORY "${CMAKE_INSTALL_FULL_BINDIR}"
+        OUTPUT_VARIABLE ernic_vfio_user_rpath)
     set_target_properties(rocm-ernic PROPERTIES
         INSTALL_RPATH "$ORIGIN/${ernic_vfio_user_rpath}")
     target_link_options(rocm-ernic PRIVATE "LINKER:--disable-new-dtags")
@@ -172,18 +173,44 @@ and launcher"
 # project is configured, so installing to another prefix with
 # cmake --install --prefix leaves them pointing at the configured one.
 #
+# The configuration is the exception: the files read it from
+# /etc/rocm-ernic/rocm-ernic.env, where an install to /usr puts it, and in
+# the installed copy from ERNIC_ENV_READ_FILE (see below).
+#
+# The paths go into shell and Python string literals and systemd units
+# as they are, so ernic_check_install_path() refuses any that those
+# would read as something else.
+#
 #   type         PROGRAMS or FILES, as for install()
 #   source       The file, relative to the source directory
 #   destination  The install directory, as for install()
 #   component    The install component
 function(ernic_install_with_paths type source destination component)
     file(READ "${PROJECT_SOURCE_DIR}/${source}" text)
-    string(REPLACE "/usr/local/bin/"
-        "${CMAKE_INSTALL_FULL_BINDIR}/" text "${text}")
-    string(REPLACE "/usr/local/libexec/rocm-ernic"
-        "${CMAKE_INSTALL_FULL_LIBEXECDIR}/rocm-ernic" text "${text}")
-    string(REPLACE "/usr/local/share/rocm-ernic"
-        "${CMAKE_INSTALL_FULL_DATADIR}/rocm-ernic" text "${text}")
+
+    set(from_paths
+        "/usr/local/bin/"
+        "/usr/local/libexec/rocm-ernic"
+        "/usr/local/share/rocm-ernic"
+        "/etc/rocm-ernic/rocm-ernic.env")
+    set(to_paths
+        "${CMAKE_INSTALL_FULL_BINDIR}/"
+        "${CMAKE_INSTALL_FULL_LIBEXECDIR}/rocm-ernic"
+        "${CMAKE_INSTALL_FULL_DATADIR}/rocm-ernic"
+        "${ERNIC_ENV_READ_FILE}")
+    # In two passes, through placeholders, so that a path one replacement
+    # puts in (a prefix of /etc/rocm-ernic/app, say) isn't changed by
+    # another
+    set(i 0)
+    foreach(from IN LISTS from_paths)
+        string(REPLACE "${from}" "@ERNIC_INSTALL_PATH_${i}@" text "${text}")
+        math(EXPR i "${i} + 1")
+    endforeach()
+    set(i 0)
+    foreach(to IN LISTS to_paths)
+        string(REPLACE "@ERNIC_INSTALL_PATH_${i}@" "${to}" text "${text}")
+        math(EXPR i "${i} + 1")
+    endforeach()
 
     # Write the file through configure_file(), which only changes it when
     # its contents change, so it isn't reinstalled on every configure
@@ -199,26 +226,69 @@ function(ernic_install_with_paths type source destination component)
     )
 endfunction()
 
+# Refuse an install path that ernic_install_with_paths() can't write into
+# the installed files as it is. They put it in shell and Python string
+# literals, in unquoted assignments in the environment file, which the
+# driver pack's shell script sources, and in systemd units, which split
+# on whitespace and expand "%" specifiers. Rather than list what each of
+# those reads specially (quotes, "$", backticks, backslashes, "(", "|",
+# ";", "*" and more), only characters none of them does are allowed. A
+# path is refused rather than quoted, since each kind of file would need
+# it quoted differently.
+#
+#   var  The variable holding the path, for the message
+function(ernic_check_install_path var)
+    if(NOT "${${var}}" MATCHES "^[A-Za-z0-9_./+@,-]*$")
+        message(FATAL_ERROR
+          "ERNIC_INSTALL_SERVICE writes ${var} (${${var}}) into scripts "
+          "and systemd units, so it can contain only letters, digits and "
+          ". _ / + - @ , characters. Choose another CMAKE_INSTALL_PREFIX "
+          "or CMAKE_INSTALL_* directory.")
+    endif()
+endfunction()
+
 if(ERNIC_INSTALL_SERVICE)
     set(ERNIC_LIBEXEC_DIR "${CMAKE_INSTALL_LIBEXECDIR}/rocm-ernic")
     set(ERNIC_SHARE_DIR "${CMAKE_INSTALL_DATADIR}/rocm-ernic")
 
-    # The configuration goes in /etc, where the services and ernicctl
-    # read it, when the prefix is /usr. GNUInstallDirs only says so in
-    # CMAKE_INSTALL_FULL_SYSCONFDIR; CMAKE_INSTALL_SYSCONFDIR is still
-    # etc, which would put it in /usr/etc. Under other prefixes it's
-    # under the prefix, and has to be copied to /etc (see
-    # docs/service.rst).
-    if(CMAKE_INSTALL_FULL_SYSCONFDIR STREQUAL
-            "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_SYSCONFDIR}")
+    # The configuration goes in /etc when the prefix is /usr, and in
+    # /etc/opt/<name> when it's /opt/<name>. GNUInstallDirs only says so
+    # in CMAKE_INSTALL_FULL_SYSCONFDIR; CMAKE_INSTALL_SYSCONFDIR can still
+    # be etc, which would put it in /usr/etc. It writes the /opt one with
+    # a doubled slash (/etc//opt/<name>), which would reach the package's
+    # list of configuration files, so both paths are normalized.
+    cmake_path(SET ernic_sysconf_full NORMALIZE
+        "${CMAKE_INSTALL_FULL_SYSCONFDIR}")
+    cmake_path(SET ernic_sysconf_under_prefix NORMALIZE
+        "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_SYSCONFDIR}")
+    if(ernic_sysconf_full STREQUAL ernic_sysconf_under_prefix)
         set(ERNIC_SYSCONF_DIR "${CMAKE_INSTALL_SYSCONFDIR}/rocm-ernic")
     else()
-        set(ERNIC_SYSCONF_DIR
-          "${CMAKE_INSTALL_FULL_SYSCONFDIR}/rocm-ernic")
+        set(ERNIC_SYSCONF_DIR "${ernic_sysconf_full}/rocm-ernic")
     endif()
     # The installed file, for the package's list of configuration files
-    set(ERNIC_ENV_FILE
-      "${CMAKE_INSTALL_FULL_SYSCONFDIR}/rocm-ernic/rocm-ernic.env")
+    set(ERNIC_ENV_FILE "${ernic_sysconf_full}/rocm-ernic/rocm-ernic.env")
+
+    # Where the installed files read the configuration from. Under the
+    # prefix, as with the default /usr/local, it's a copy to edit and put
+    # in /etc/rocm-ernic (see docs/service.rst), and they read it there,
+    # however CMAKE_INSTALL_SYSCONFDIR names it. Outside the prefix, as
+    # in /etc for /usr or /etc/opt/<name> for /opt/<name>, they read it
+    # where it's installed.
+    cmake_path(IS_PREFIX CMAKE_INSTALL_PREFIX "${ernic_sysconf_full}"
+        NORMALIZE ernic_sysconf_in_prefix)
+    if(ernic_sysconf_in_prefix)
+        set(ERNIC_ENV_READ_FILE "/etc/rocm-ernic/rocm-ernic.env")
+    else()
+        set(ERNIC_ENV_READ_FILE "${ERNIC_ENV_FILE}")
+    endif()
+
+    # The paths that ernic_install_with_paths() writes into the installed
+    # files, and the one the package lists as its configuration
+    ernic_check_install_path(CMAKE_INSTALL_FULL_BINDIR)
+    ernic_check_install_path(CMAKE_INSTALL_FULL_LIBEXECDIR)
+    ernic_check_install_path(CMAKE_INSTALL_FULL_DATADIR)
+    ernic_check_install_path(ERNIC_ENV_FILE)
 
     # systemd unit files
     ernic_install_with_paths(FILES service/rocm-ernic.service

@@ -33,10 +33,13 @@
 #     configuration file, which upgrades keep
 #   - That the installed files name where the packages install things.
 #     The service files name /usr/local, which is replaced when they're
-#     installed elsewhere, so no file names it unless that's the prefix.
+#     installed elsewhere, so no file names it unless that's the prefix
+#     or the configuration's directory is under it.
 #     Every program a systemd unit runs from under the prefix is in a
-#     package, and the units read the packaged configuration when it's in
-#     /etc.
+#     package. The units, and every file that names a rocm-ernic.env,
+#     read the packaged configuration when it's outside the prefix (in
+#     /etc with the prefix /usr, or /etc/opt/<name> with /opt/<name>),
+#     and /etc/rocm-ernic/rocm-ernic.env when it's under it.
 #   - With ERNIC_BUNDLE_VFIO_USER, that the server finds its libvfio-user
 #     through a DT_RPATH, which LD_LIBRARY_PATH can't override, and that
 #     the library has no run path of its own
@@ -105,8 +108,7 @@ set(${server}_recommends)
 set(${server}_conffiles)
 
 if(BUNDLE_VFIO_USER)
-    get_filename_component(vfio_user_license_name "${VFIO_USER_LICENSE}"
-        NAME)
+    cmake_path(GET VFIO_USER_LICENSE FILENAME vfio_user_license_name)
     set(private_vfio_user ${LIBDIR}/rocm-ernic/${VFIO_USER_SONAME})
     list(APPEND ${server}_files
         ${private_vfio_user}
@@ -188,7 +190,7 @@ set(found_packages)
 set(all_files)
 foreach(package IN LISTS packages)
     read_field(name ${package} Package)
-    get_filename_component(package_file ${package} NAME)
+    cmake_path(GET package FILENAME package_file)
     set(what "${package_file} (${name})")
 
     if(NOT name IN_LIST expected_packages)
@@ -409,7 +411,9 @@ read_dynamic(needed rpath runpath ${server_program})
 check_library_depends(${BINDIR}/rocm-ernic "${needed}")
 
 if(BUNDLE_VFIO_USER)
-    file(RELATIVE_PATH relative_rpath ${BINDIR} ${LIBDIR}/rocm-ernic)
+    set(private_lib_dir ${LIBDIR}/rocm-ernic)
+    cmake_path(RELATIVE_PATH private_lib_dir BASE_DIRECTORY ${BINDIR}
+        OUTPUT_VARIABLE relative_rpath)
     set(expected_rpath "$ORIGIN/${relative_rpath}")
     if(NOT rpath STREQUAL expected_rpath OR NOT runpath STREQUAL "")
         fail("${BINDIR}/rocm-ernic has DT_RPATH '${rpath}' and DT_RUNPATH "
@@ -433,26 +437,69 @@ endif()
 # The ELF files are left out: what the compiler and the libraries put in
 # them isn't up to the install rules
 file(GLOB_RECURSE installed_files LIST_DIRECTORIES false ${root}/*)
+set(text_files)
+foreach(file IN LISTS installed_files)
+    file(READ ${file} magic LIMIT 4 HEX)
+    if(NOT magic STREQUAL "7f454c46")
+        list(APPEND text_files ${file})
+    endif()
+endforeach()
+
+# Where the installed files should read the configuration. Under the
+# prefix, the packaged file is a copy to put in /etc/rocm-ernic, so they
+# read it there; outside it, as in /etc or /etc/opt/<name>, they read
+# the packaged file.
+set(read_env_file)
+if(INSTALL_SERVICE)
+    cmake_path(IS_PREFIX INSTALL_PREFIX "${ENV_FILE}" NORMALIZE
+        env_file_in_prefix)
+    if(env_file_in_prefix)
+        set(read_env_file /etc/rocm-ernic/rocm-ernic.env)
+    else()
+        set(read_env_file "${ENV_FILE}")
+    endif()
+endif()
+
+# No file names /usr/local/ unless that's the prefix. The configuration
+# can be outside the prefix in a directory under /usr/local, so the path
+# the files read it from doesn't count.
 if(NOT INSTALL_PREFIX STREQUAL "/usr/local")
-    foreach(file IN LISTS installed_files)
-        file(READ ${file} magic LIMIT 4 HEX)
-        if(magic STREQUAL "7f454c46")
-            continue()
-        endif()
+    foreach(file IN LISTS text_files)
         file(STRINGS ${file} lines REGEX "/usr/local/")
-        if(lines)
-            string(REPLACE "${root}" "" path "${file}")
-            list(GET lines 0 line)
-            fail("${path} names /usr/local/, but the packages install "
-                "to ${INSTALL_PREFIX}: ${line}")
-        endif()
+        foreach(line IN LISTS lines)
+            if(read_env_file)
+                string(REPLACE "${read_env_file}" "" rest "${line}")
+            else()
+                set(rest "${line}")
+            endif()
+            if(rest MATCHES "/usr/local/")
+                string(REPLACE "${root}" "" path "${file}")
+                fail("${path} names /usr/local/, but the packages install "
+                    "to ${INSTALL_PREFIX}: ${line}")
+            endif()
+        endforeach()
     endforeach()
 endif()
 
+# Every file that names a rocm-ernic.env names that one
+foreach(file IN LISTS text_files)
+    file(STRINGS ${file} lines REGEX "/rocm-ernic\\.env")
+    foreach(line IN LISTS lines)
+        string(REGEX MATCHALL "/[^ \t\"'`=]*/rocm-ernic\\.env" names
+            "${line}")
+        foreach(name IN LISTS names)
+            if(NOT name STREQUAL read_env_file)
+                string(REPLACE "${root}" "" path "${file}")
+                fail("${path} names ${name}, not ${read_env_file}: ${line}")
+            endif()
+        endforeach()
+    endforeach()
+endforeach()
+
 # Every program a unit runs from under the prefix is in a package, and
-# each unit reads the packaged configuration, and nothing else, when
-# that's in /etc. An Exec line's command can start with characters that
-# change how systemd runs it, such as "-", which are removed.
+# each unit reads that configuration, and nothing else. An Exec line's
+# command can start with characters that change how systemd runs it,
+# such as "-", which are removed.
 file(GLOB units ${root}${units_dir}/*.service)
 foreach(unit IN LISTS units)
     string(REPLACE "${root}" "" unit_path "${unit}")
@@ -461,8 +508,8 @@ foreach(unit IN LISTS units)
     foreach(line IN LISTS lines)
         if(line MATCHES "^EnvironmentFile=-?(.*)$")
             set(env_file "${CMAKE_MATCH_1}")
-            if(ENV_FILE MATCHES "^/etc/" AND NOT env_file STREQUAL ENV_FILE)
-                fail("${unit_path} reads ${env_file}, not ${ENV_FILE}")
+            if(NOT env_file STREQUAL read_env_file)
+                fail("${unit_path} reads ${env_file}, not ${read_env_file}")
             endif()
             set(reads_env_file ON)
             continue()
@@ -476,8 +523,9 @@ foreach(unit IN LISTS units)
             endif()
         endforeach()
     endforeach()
-    if(ENV_FILE MATCHES "^/etc/" AND NOT reads_env_file)
-        fail("${unit_path} doesn't read ${ENV_FILE} (no EnvironmentFile=)")
+    if(NOT reads_env_file)
+        fail("${unit_path} doesn't read ${read_env_file} "
+            "(no EnvironmentFile=)")
     endif()
 endforeach()
 if(INSTALL_SERVICE AND NOT units)

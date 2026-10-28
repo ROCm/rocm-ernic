@@ -33,9 +33,9 @@ set(ERNIC_COVERAGE_DIR "${PROJECT_BINARY_DIR}/coverage")
 # one of its prefixes may not be the compiler's.
 function(ernic_find_coverage_tools)
     string(REGEX MATCH "^[0-9]+" major "${CMAKE_C_COMPILER_VERSION}")
-    get_filename_component(compiler_dir "${CMAKE_C_COMPILER}" DIRECTORY)
-    get_filename_component(compiler_path "${CMAKE_C_COMPILER}" REALPATH)
-    get_filename_component(compiler_real_dir "${compiler_path}" DIRECTORY)
+    cmake_path(GET CMAKE_C_COMPILER PARENT_PATH compiler_dir)
+    file(REAL_PATH "${CMAKE_C_COMPILER}" compiler_path)
+    cmake_path(GET compiler_path PARENT_PATH compiler_real_dir)
 
     foreach(tool IN ITEMS profdata cov)
         string(TOUPPER ${tool} tool_upper)
