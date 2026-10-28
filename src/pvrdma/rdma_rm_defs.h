@@ -25,23 +25,6 @@
 #include "pvrdma/rdma_backend_defs.h"
 #include "qemu/thread.h" /* For QemuMutex */
 
-#define PAGE_SIZE 4096
-
-/* The QP, CQ, SRQ, AH, MR and SGE limits are the device's, in
- * ernic_limits.h. */
-#define MAX_MR_SIZE         (1UL << 32)
-#define MAX_PD              1024
-#define MAX_QP_RD_ATOM      16
-#define MAX_QP_INIT_RD_ATOM 16
-
-/*
- * Number of page-table pages backing each WQ/CQ ring.
- * Upstream PVRDMA uses 1; we double it so that bidirectional
- * traffic at 64 KB+ does not exhaust MR page-table entries
- * when both send and recv rings are fully populated.
- */
-#define PVRDMA_PG_TBL_PAGES 2
-
 #define MAX_RM_TBL_NAME 16
 
 typedef struct RdmaRmResTbl {

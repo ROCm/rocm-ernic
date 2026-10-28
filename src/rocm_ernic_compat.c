@@ -16,9 +16,7 @@
 #include <string.h>
 #include <errno.h>
 
-#include <glib.h>
 #include <infiniband/verbs.h>
-#include "ernic_limits.h"
 #include "ernic_mesh.h"
 #include "ernic_rm.h"
 #include "rocm_ernic_compat.h"
@@ -35,7 +33,6 @@
 #include "pvrdma/rdma_rm.h"
 #include "pvrdma/rdma_rm_defs.h"
 #include "pvrdma/rdma_utils.h"
-#include "pvrdma/vmw_pvrdma-abi.h"
 #include "rdma/rdma_backend_ops.h"
 
 _Static_assert(sizeof(union ibv_gid) == ERNIC_GID_LEN,
@@ -91,56 +88,6 @@ pvrdma_handle_t pvrdma_device_create(const rocm_ernic_dev_t *dev,
             free(pvrdma);
             return NULL;
         }
-    }
-
-    /* Defaults, until pvrdma_device_realize() replaces them all with the
-     * backend's query_device() */
-    pvrdma->dev_attr.max_qp = ERNIC_MAX_QP;
-    pvrdma->dev_attr.max_cq = ERNIC_MAX_CQ;
-    pvrdma->dev_attr.max_mr = ERNIC_MAX_MR;
-    pvrdma->dev_attr.max_pd = MAX_PD;
-    pvrdma->dev_attr.max_qp_rd_atom = MAX_QP_RD_ATOM;
-    pvrdma->dev_attr.max_qp_init_rd_atom = MAX_QP_INIT_RD_ATOM;
-    pvrdma->dev_attr.max_ah = ERNIC_MAX_AH;
-    pvrdma->dev_attr.max_srq = ERNIC_MAX_SRQ;
-    pvrdma->dev_attr.max_mr_size = MAX_MR_SIZE;
-    pvrdma->dev_attr.max_sge =
-        ERNIC_MAX_SGE; /* Required for calculations below */
-
-    /* Calculate dynamic device capabilities (from init_dev_caps in
-     * upstream QEMU's hw/rdma/vmw/pvrdma_main.c) */
-    {
-        size_t pg_tbl_bytes =
-            PVRDMA_PG_TBL_PAGES * PAGE_SIZE * (PAGE_SIZE / sizeof(uint64_t));
-        size_t wr_sz = MAX(sizeof(struct pvrdma_sq_wqe_hdr),
-                           sizeof(struct pvrdma_rq_wqe_hdr));
-
-        rdma_info_report("Calculating device capabilities:");
-        rdma_info_report("  PAGE_SIZE=%zu, pg_tbl_bytes=%zu", (size_t)PAGE_SIZE,
-                         pg_tbl_bytes);
-
-        /* Calculate max_qp_wr */
-        pvrdma->dev_attr.max_qp_wr =
-            (int)(pg_tbl_bytes /
-                      (wr_sz + sizeof(struct pvrdma_sge) *
-                                   (size_t)pvrdma->dev_attr.max_sge) -
-                  PAGE_SIZE);
-
-        /* Calculate max_cqe */
-        pvrdma->dev_attr.max_cqe =
-            (int)(pg_tbl_bytes / sizeof(struct pvrdma_cqe) - PAGE_SIZE);
-
-        /* Calculate max_srq_wr */
-        pvrdma->dev_attr.max_srq_wr =
-            (int)(pg_tbl_bytes / ((sizeof(struct pvrdma_rq_wqe_hdr) +
-                                   sizeof(struct pvrdma_sge)) *
-                                  (size_t)pvrdma->dev_attr.max_sge) -
-                  PAGE_SIZE);
-
-        rdma_info_report("  max_qp_wr=%d", pvrdma->dev_attr.max_qp_wr);
-        rdma_info_report("  max_cqe=%d", pvrdma->dev_attr.max_cqe);
-        rdma_info_report("  max_sge=%d", pvrdma->dev_attr.max_sge);
-        rdma_info_report("  max_srq_wr=%d", pvrdma->dev_attr.max_srq_wr);
     }
 
     rdma_info_report("PVRDMA device created (handle=%p)", (void *)pvrdma);
