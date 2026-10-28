@@ -1242,19 +1242,28 @@ static int redirect_output(const char *path)
     /* NOLINTBEGIN(android-cloexec-open) */
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
     /* NOLINTEND(android-cloexec-open) */
+    bool is_std;
 
     if (fd < 0) {
         warn("Failed to open log file: %s", path);
         return -1;
     }
-    /* stderr changes only if both succeed, so on failure the reason still
-     * goes to the inherited one */
-    if (dup2(fd, STDOUT_FILENO) < 0 || dup2(fd, STDERR_FILENO) < 0) {
+    /* If the server was started with stdout or stderr closed, the log took
+     * its number, and dup2() onto itself does nothing, not even clear
+     * close-on-exec.  So that's cleared here (FD_CLOEXEC is the only
+     * descriptor flag), and fd, now the stream itself, is kept open. */
+    is_std = fd == STDOUT_FILENO || fd == STDERR_FILENO;
+    /* stderr changes only if all succeed, so on failure the reason still
+     * goes to the inherited one, if any, and closing fd leaves the
+     * descriptors as the server was started with them */
+    if ((is_std && fcntl(fd, F_SETFD, 0) < 0) || dup2(fd, STDOUT_FILENO) < 0 ||
+        dup2(fd, STDERR_FILENO) < 0) {
         warn("Failed to redirect output to log file: %s", path);
         close(fd);
         return -1;
     }
-    close(fd);
+    if (!is_std)
+        close(fd);
     return 0;
 }
 
