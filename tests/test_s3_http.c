@@ -637,6 +637,213 @@ static void test_too_many_headers(void)
 }
 
 /*
+ * Build "PUT /ernic/k HTTP/1.1", @npad X-Pad headers, then @tail, into
+ * @text.  The length written, or 0 if it does not fit.
+ */
+static size_t padded_request(char *text, size_t cap, unsigned npad,
+                             const char *tail)
+{
+    size_t at = 0;
+    int w = snprintf(text, cap, "PUT /ernic/k HTTP/1.1\r\n");
+    if (w < 0 || (size_t)w >= cap)
+        return 0;
+    at = (size_t)w;
+    for (unsigned i = 0; i < npad; i++) {
+        w = snprintf(text + at, cap - at, "X-Pad-%u: %u\r\n", i, i);
+        if (w < 0 || (size_t)w >= cap - at)
+            return 0;
+        at += (size_t)w;
+    }
+    w = snprintf(text + at, cap - at, "%s", tail);
+    if (w < 0 || (size_t)w >= cap - at)
+        return 0;
+    return at + (size_t)w;
+}
+
+/*
+ * Content-Length, Transfer-Encoding and x-amz-rdma-token decide where a
+ * request ends.  Ignoring one, or picking one of two, would read the body
+ * as the next request, so where another header would be dropped or the
+ * first copy kept, these fail the request.
+ */
+static void test_parse_framing_headers(void)
+{
+    const char *name = "parse-framing-headers";
+    struct s3_http_request req;
+    char *text = malloc(4096);
+    char *fill = malloc(1024);
+    size_t len;
+    ssize_t n;
+    int w;
+
+    if (text == NULL || fill == NULL) {
+        fail(name, "out of memory");
+        goto out;
+    }
+
+    static const char *const bad[] = {
+        /* Repeated, with the same value or not, in any case. */
+        "PUT /x HTTP/1.1\r\n"
+        "Content-Length: 5\r\n"
+        "Content-Length: 0\r\n\r\n",
+        "PUT /x HTTP/1.1\r\n"
+        "Content-Length: 5\r\n"
+        "Content-Length: 5\r\n\r\n",
+        "PUT /x HTTP/1.1\r\n"
+        "Content-Length: 5\r\n"
+        "content-length: 5\r\n\r\n",
+        "PUT /x HTTP/1.1\r\n"
+        "Transfer-Encoding: identity\r\n"
+        "Transfer-Encoding: chunked\r\n\r\n",
+        "PUT /x HTTP/1.1\r\n"
+        "Transfer-Encoding: identity\r\n"
+        "Transfer-Encoding: identity\r\n\r\n",
+        "PUT /x HTTP/1.1\r\n"
+        "x-amz-rdma-token: a\r\n"
+        "X-Amz-Rdma-Token: b\r\n\r\n",
+        /* Whitespace before the colon, on any header, and a folded line. */
+        "PUT /x HTTP/1.1\r\nContent-Length : 5\r\n\r\nhello",
+        "PUT /x HTTP/1.1\r\nTransfer-Encoding\t: chunked\r\n\r\n",
+        "GET /x HTTP/1.1\r\nX-Other : 1\r\n\r\n",
+        "GET /x HTTP/1.1\r\nX-Other: 1\r\n Content-Length: 5\r\n\r\n",
+        /* Any other name that is not a token, or no name at all. */
+        "PUT /x HTTP/1.1\r\nContent-Length\v: 5\r\n\r\nhello",
+        "PUT /x HTTP/1.1\r\n\"Content-Length\": 5\r\n\r\nhello",
+        "GET /x HTTP/1.1\r\nX/Other: 1\r\n\r\n",
+        "GET /x HTTP/1.1\r\nX-Other\x7f: 1\r\n\r\n",
+        "GET /x HTTP/1.1\r\nX-\xc3\xa9: 1\r\n\r\n",
+        "GET /x HTTP/1.1\r\n: 1\r\n\r\n",
+    };
+
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        n = s3_http_parse(bad[i], strlen(bad[i]), &req);
+        if (n != -EINVAL)
+            fail(name, "case %zu returned %zd, want -EINVAL", i, n);
+    }
+
+    /* Every character a token may hold is kept, and found. */
+    static const char tchars[] = "GET /x HTTP/1.1\r\n"
+                                 "!#$%&'*+-.^_`|~09AZaz: 1\r\n\r\n";
+    n = s3_http_parse(tchars, strlen(tchars), &req);
+    if (n != (ssize_t)strlen(tchars))
+        fail(name, "a name of every token character returned %zd", n);
+    else if (s3_http_header_get(&req, "!#$%&'*+-.^_`|~09azaz") == NULL)
+        fail(name, "a name of every token character was not found");
+
+    /* In the slot past the header limit, each fails the request. */
+    static const char *const late[] = {
+        "Content-Length: 5\r\n\r\nhello",
+        "Transfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+        "x-amz-rdma-token: t\r\n\r\n",
+    };
+    for (size_t i = 0; i < sizeof(late) / sizeof(late[0]); i++) {
+        len = padded_request(text, 4096, S3_HTTP_MAX_HEADERS, late[i]);
+        if (len == 0) {
+            fail(name, "late case %zu does not fit", i);
+            continue;
+        }
+        n = s3_http_parse(text, len, &req);
+        if (n != -EINVAL)
+            fail(name, "late case %zu returned %zd, want -EINVAL", i, n);
+    }
+
+    /* In the last slot within it, it is kept. */
+    len = padded_request(text, 4096, S3_HTTP_MAX_HEADERS - 1,
+                         "Content-Length: 5\r\n\r\nhello");
+    n = len > 0 ? s3_http_parse(text, len, &req) : -1;
+    if (len == 0)
+        fail(name, "the last-slot request does not fit");
+    else if (n != (ssize_t)len)
+        fail(name, "Content-Length in the last slot returned %zd", n);
+    else if (req.body_len != 5 || memcmp(req.body, "hello", 5) != 0)
+        fail(name, "Content-Length in the last slot lost the body");
+
+    /* A value too long to store: a length padded with zeros, and a token. */
+    memset(fill, '0', S3_HTTP_VALUE_MAX);
+    fill[S3_HTTP_VALUE_MAX] = '\0';
+    w = snprintf(text, 4096,
+                 "PUT /x HTTP/1.1\r\nContent-Length: %s5\r\n\r\nhello", fill);
+    n = s3_http_parse(text, (size_t)w, &req);
+    if (n != -EINVAL)
+        fail(name, "an oversized Content-Length returned %zd", n);
+
+    memset(fill, 'a', S3_HTTP_VALUE_MAX);
+    w = snprintf(text, 4096,
+                 "PUT /x HTTP/1.1\r\nx-amz-rdma-token: %s\r\n"
+                 "Content-Length: 5\r\n\r\n",
+                 fill);
+    n = s3_http_parse(text, (size_t)w, &req);
+    if (n != -EINVAL)
+        fail(name, "an oversized x-amz-rdma-token returned %zd", n);
+
+    ok(name);
+out:
+    free(fill);
+    free(text);
+}
+
+/*
+ * A NUL in the head would be checked as raw bytes but stored as the C
+ * string before it.  In a name it hides a second Content-Length from the
+ * duplicate check, in a value it cuts the length short, and in the request
+ * line it cuts the method or query short.  A CR not followed by LF is a
+ * line ending to some parsers, so another along the way would see a
+ * header here that this one does not.  The lengths count the bytes after
+ * a NUL, which strlen() would not.
+ */
+static void test_parse_ambiguous_bytes(void)
+{
+    const char *name = "parse-ambiguous-bytes";
+    struct s3_http_request req;
+
+    static const char nul_name[] = "PUT /x HTTP/1.1\r\n"
+                                   "Content-Length: 0\r\n"
+                                   "Content-Length\0: 5\r\n\r\nhello";
+    static const char nul_value[] = "PUT /x HTTP/1.1\r\n"
+                                    "Content-Length: 0\0 5\r\n\r\nhello";
+    static const char nul_method[] = "GE\0T /x HTTP/1.1\r\n\r\n";
+    static const char nul_query[] = "GET /x?a\0b HTTP/1.1\r\n\r\n";
+    static const char cr_name[] = "PUT /x HTTP/1.1\r\n"
+                                  "Content-Length\r: 5\r\n\r\nhello";
+    static const char cr_value[] = "PUT /x HTTP/1.1\r\n"
+                                   "X-Other: 1\rContent-Length: 5\r\n\r\nhello";
+    static const char cr_request_line[] = "PUT /x HTTP/1.1\r"
+                                          "Content-Length: 5\r\n\r\nhello";
+    static const char cr_line_end[] = "PUT /x HTTP/1.1\r\n"
+                                      "X-Other: 1\r\r\n\r\n";
+    static const struct {
+        const char *text;
+        size_t len;
+    } bad[] = {
+        {nul_name, sizeof(nul_name) - 1},
+        {nul_value, sizeof(nul_value) - 1},
+        {nul_method, sizeof(nul_method) - 1},
+        {nul_query, sizeof(nul_query) - 1},
+        {cr_name, sizeof(cr_name) - 1},
+        {cr_value, sizeof(cr_value) - 1},
+        {cr_request_line, sizeof(cr_request_line) - 1},
+        {cr_line_end, sizeof(cr_line_end) - 1},
+    };
+
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        ssize_t n = s3_http_parse(bad[i].text, bad[i].len, &req);
+        if (n != -EINVAL)
+            fail(name, "case %zu returned %zd, want -EINVAL", i, n);
+    }
+
+    /* Either in the body is data, not part of the head. */
+    static const char in_body[] = "PUT /x HTTP/1.1\r\n"
+                                  "Content-Length: 4\r\n\r\na\0\rb";
+    ssize_t n = s3_http_parse(in_body, sizeof(in_body) - 1, &req);
+    if (n != (ssize_t)(sizeof(in_body) - 1))
+        fail(name, "a NUL and a CR in the body returned %zd", n);
+    else if (req.body_len != 4 || memcmp(req.body, "a\0\rb", 4) != 0)
+        fail(name, "a NUL and a CR in the body were not kept");
+
+    ok(name);
+}
+
+/*
  * s3_http_response_printf() formats into a 512-byte stack buffer first
  * and goes to the heap only for longer output.  The output lengths either
  * side of that boundary, 511 bytes and 512 with the two the format adds,
@@ -897,6 +1104,8 @@ int main(void)
     test_parse_lf_only();
     test_parse_field_limits();
     test_too_many_headers();
+    test_parse_framing_headers();
+    test_parse_ambiguous_bytes();
     test_response_value_too_long();
     test_response_format_error();
     test_response_alloc_failures();
