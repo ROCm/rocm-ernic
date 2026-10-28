@@ -94,11 +94,11 @@
  */
 
 #include <errno.h>
-#include <inttypes.h>
 #include <sched.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -765,8 +765,8 @@ static bool test_dealloc_locks(void)
 
 /* ---- MR cases ----------------------------------------------------------
  *
- * An MR in the resource manager is a table slot and the backend's MR. It
- * owns no memory, so allocating one must hand the backend no address, and
+ * An MR in the resource manager is a table slot and the backend's MR.
+ * Allocating one must hand the backend that MR and the access flags, and
  * freeing one must destroy the backend's MR exactly once and free the slot,
  * however often it is called.
  */
@@ -778,9 +778,6 @@ typedef struct {
     int create_rc; /* what create_mr returns */
     const RdmaBackendMR *created;
     const RdmaBackendMR *destroyed;
-    const void *addr;
-    size_t length;
-    uint64_t guest_start;
     int access;
 } MrCalls;
 
@@ -793,15 +790,11 @@ static int rec_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
     return 0;
 }
 
-static int rec_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, void *addr,
-                         size_t length, uint64_t guest_start, int access)
+static int rec_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, int access)
 {
     (void)pd;
     mr_calls.create_calls++;
     mr_calls.created = mr;
-    mr_calls.addr = addr;
-    mr_calls.length = length;
-    mr_calls.guest_start = guest_start;
     mr_calls.access = access;
     return mr_calls.create_rc;
 }
@@ -874,13 +867,6 @@ static bool test_mr_lifecycle(const char *name, bool with_backend)
         if (mr_calls.created != &mr->backend_mr) {
             printf("FAIL %-18s: create_mr was not given the MR's backend MR\n",
                    name);
-            ok = false;
-        }
-        if (mr_calls.addr || mr_calls.length != 0 ||
-            mr_calls.guest_start != 0) {
-            printf("FAIL %-18s: create_mr was given memory (addr %p, length "
-                   "%zu, guest_start %" PRIu64 "), but an MR has none\n",
-                   name, mr_calls.addr, mr_calls.length, mr_calls.guest_start);
             ok = false;
         }
         if (mr_calls.access != MR_ACCESS) {

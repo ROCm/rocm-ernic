@@ -652,17 +652,14 @@ static int tcp_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
  * Memory Region Operations
  */
 
-static int tcp_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, void *addr,
-                         size_t length, uint64_t guest_start, int access)
+static int tcp_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, int access)
 {
     (void)pd;
-    (void)addr;
-    (void)guest_start;
     (void)access;
 
     mr->ibmr = NULL;
 
-    rdma_info_report("TCP: Created MR len=%zu", length);
+    rdma_info_report("TCP: Created MR");
     return 0;
 }
 

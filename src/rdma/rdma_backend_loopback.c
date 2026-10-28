@@ -187,21 +187,18 @@ static int loopback_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
  * Memory Region Operations
  */
 
-static int loopback_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, void *addr,
-                              size_t length, uint64_t guest_start, int access)
+static int loopback_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, int access)
 {
     static uint32_t mr_counter = 1;
     uint32_t handle = mr_counter++;
 
     (void)pd;
-    (void)addr;
-    (void)guest_start;
     (void)access;
 
     /* Store handle in mr structure */
     mr->ibmr = (struct ibv_mr *)(uintptr_t)handle;
 
-    rdma_info_report("Loopback: Created MR handle %u, len=%zu", handle, length);
+    rdma_info_report("Loopback: Created MR handle %u", handle);
     return 0;
 }
 

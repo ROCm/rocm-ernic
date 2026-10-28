@@ -68,13 +68,9 @@ static int none_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
 }
 
 /* MR operations - stub implementations */
-static int none_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, void *addr,
-                          size_t length, uint64_t guest_start, int access)
+static int none_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, int access)
 {
     (void)pd;
-    (void)addr;
-    (void)length;
-    (void)guest_start;
     (void)access;
 
     mr->ibmr = NULL;
