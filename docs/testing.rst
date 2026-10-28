@@ -111,6 +111,10 @@ Each group of checks is its own CTest test:
 - ``ionic-harness-rc``, ``-atomic``, ``-cq-events``: sends,
   RDMA reads and writes, atomics and fast registration
   between two RC QPs on the loopback backend, and CQ arming
+- ``ionic-harness-spec-sge``: the same, with work requests
+  laid out behind a speculative SGE length table, as the
+  driver posts them, and the list formats the device must
+  refuse
 - ``ionic-harness-wrap``: send lengths and memory regions
   whose sums or ends carry past 2^32 or 2^64, which the
   device must refuse rather than wrap

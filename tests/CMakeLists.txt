@@ -1000,8 +1000,11 @@ ernic_add_unit_test(ernic-stats-unit ernic-test-ernic-stats TIMEOUT 30)
 # one DMA at a time in the admin queue, the data path and Ethernet,
 # tables fills the EQ, admin queue and MR tables, and wrap sends lengths
 # and registers regions whose sums or ends carry past 2^32 or 2^64.
-# mr-keys checks that only the key an MR is bound under reaches it, through
-# fast registration's rotations, LOCAL_INV and DESTROY_MR.
+# spec-sge moves data with work requests laid out behind a speculative
+# SGE length table, as the driver posts them, and refuses list formats it
+# doesn't define. mr-keys checks that only the key an MR is bound under
+# reaches it, through fast registration's rotations, LOCAL_INV and
+# DESTROY_MR.
 # limits checks that the counts the LIF identity promises are what every
 # backend's tables hold, and fills the CQ and QP ids to the last.
 # nvmeof-queues refuses more NVMe-oF queues than the MR table can serve.
@@ -1011,8 +1014,8 @@ ernic_add_unit_test(ernic-stats-unit ernic-test-ernic-stats TIMEOUT 30)
 # backend answer without one.
 set(ERNIC_HARNESS_GROUPS
     devcmds bringup rdma-reset rdma-reset-faults rdma-reset-frees admin
-    admin-dma rc atomic wrap mr-keys dp-dma tables limits cq-events qp-flush
-    qp-flush-srq ud srq srq-rq-ring srq-cq-ring eth eth-dma
+    admin-dma rc spec-sge atomic wrap mr-keys dp-dma tables limits cq-events
+    qp-flush qp-flush-srq ud srq srq-rq-ring srq-cq-ring eth eth-dma
     nvmeof nvmeof-queues s3 mesh-none teardown backend-names none
     loopback-pair)
 if(ERNIC_BUILD_P4)

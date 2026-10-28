@@ -767,6 +767,19 @@
 
 ### Fixed
 
+* **Work requests with three to eight SGEs failed, or named the wrong
+  memory.** The ionic driver, in the kernel and in rdma-core, creates a
+  queue that takes that many SGEs with *speculative* SGE lists: a work
+  request with more than two SGEs carries a table of their lengths in the
+  first two SGE slots, and the SGEs after it. The device read the table as
+  SGEs, so such a send, RDMA read or write, or receive named addresses the
+  guest never gave it, and usually failed with a protection or access error;
+  `nvmet-rdma`'s multi-page RDMA writes, for one, could not gather. The
+  device now reads both layouts, SPEC32 and SPEC16, from the work request's
+  flags. A work request in a list format the driver doesn't define is
+  refused rather than guessed at: a send completes with `IB_WC_LOC_QP_OP_ERR`
+  and a receive takes no data, so a message with a payload completes it with
+  `IB_WC_LOC_LEN_ERR`. The `ionic-harness-spec-sge` test covers both.
 * **Installing with `ERNIC_INSTALL_SERVICE` under an `/opt/<name>` prefix
   works.** `rocm-ernic.env` goes in `/etc/opt/<name>/rocm-ernic`, and the
   installed units, `ernicctl`, the exporter and the driver pack now read it

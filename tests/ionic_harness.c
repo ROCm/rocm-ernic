@@ -962,15 +962,45 @@ int ih_ah_create(struct ih *h, uint32_t ah_id, uint32_t sip, uint32_t dip)
 
 /* ---- Work requests and completions ------------------------------------- */
 
-static void put_sges(uint8_t *wqe, const struct ih_sge *sge, uint8_t nsge)
+/*
+ * Write @nsge SGEs into the payload of the @wqe_len-byte WQE at @wqe, as the
+ * driver's ionic_prep_pld() does. With @spec and more than IH_SPEC_FIRST_SGE
+ * of them, a table of their lengths goes in the first slots -- be32 for up
+ * to eight, be16 for more -- and the flags say which. False if they don't
+ * fit.
+ */
+static bool put_sges(uint8_t *wqe, uint32_t wqe_len, const struct ih_sge *sge,
+                     uint8_t nsge, bool spec)
 {
+    uint32_t sgl_off = WQE_PLD_OFF;
+    uint16_t fmt = 0;
+
+    if (spec && nsge > IH_SPEC_FIRST_SGE) {
+        fmt = nsge > IH_SPEC32_MAX_SGE ? IH_WQE_SPEC16 : IH_WQE_SPEC32;
+        sgl_off += IH_SPEC_FIRST_SGE * 16u;
+    }
+    if (nsge > (wqe_len - sgl_off) / 16u ||
+        (fmt == IH_WQE_SPEC16 && nsge > IH_SPEC16_MAX_SGE))
+        return fail("%u SGEs do not fit a %u-byte WQE", nsge, wqe_len);
+
     for (uint8_t i = 0; i < nsge; i++) {
-        uint8_t *p = wqe + WQE_PLD_OFF + 16u * i;
+        uint8_t *p = wqe + sgl_off + 16u * i;
 
         ernic_put_be64(p, sge[i].va);
         ernic_put_be32(p + 8, sge[i].len);
         ernic_put_be32(p + 12, sge[i].lkey);
+
+        if (fmt == IH_WQE_SPEC32) {
+            ernic_put_be32(wqe + WQE_PLD_OFF + 4u * i, sge[i].len);
+        } else if (fmt == IH_WQE_SPEC16) {
+            if (sge[i].len > UINT16_MAX)
+                return fail("SGE %u's %u bytes do not fit a SPEC16 table", i,
+                            sge[i].len);
+            ernic_put_be16(wqe + WQE_PLD_OFF + 2u * i, (uint16_t)sge[i].len);
+        }
     }
+    ernic_put_be16(wqe + 10, (uint16_t)(ernic_get_be16(wqe + 10) | fmt));
+    return true;
 }
 
 uint64_t ih_post_send(struct ih *h, struct ih_qp *qp, const struct ih_send *s)
@@ -1053,8 +1083,8 @@ uint64_t ih_post_send(struct ih *h, struct ih_qp *qp, const struct ih_send *s)
         if (s->flags & IH_WQE_INLINE) {
             memcpy(wqe + WQE_PLD_OFF, s->inline_data, s->inline_len);
             ernic_put_be32(wqe + 28, s->length ? s->length : s->inline_len);
-        } else {
-            put_sges(wqe, s->sge, s->nsge);
+        } else if (!put_sges(wqe, stride, s->sge, s->nsge, qp->spec)) {
+            return 0;
         }
     }
 
@@ -1070,19 +1100,16 @@ uint64_t ih_post_send(struct ih *h, struct ih_qp *qp, const struct ih_send *s)
 
 static uint64_t post_recv(struct ih *h, struct ih_ring *rq, int db_qtype,
                           uint8_t db_ring, uint32_t qid, uint64_t *next_wqe_id,
-                          const struct ih_sge *sge, uint8_t nsge)
+                          const struct ih_sge *sge, uint8_t nsge, bool spec)
 {
     uint8_t wqe[1u << WQE_STRIDE_LOG2];
     uint64_t wqe_id = (*next_wqe_id)++;
 
-    if (nsge > (sizeof(wqe) - WQE_PLD_OFF) / 16) {
-        fail("receive WQE has too many SGEs");
-        return 0;
-    }
     memset(wqe, 0, sizeof(wqe));
     memcpy(wqe, &wqe_id, 8);
     wqe[9] = nsge;
-    put_sges(wqe, sge, nsge);
+    if (!put_sges(wqe, sizeof(wqe), sge, nsge, spec))
+        return 0;
     if (!fake_vfu_write(h->vfu, ring_slot(rq, rq->prod), wqe, sizeof(wqe))) {
         fail("RQ write failed");
         return 0;
@@ -1097,14 +1124,14 @@ uint64_t ih_post_recv(struct ih *h, struct ih_qp *qp, const struct ih_sge *sge,
                       uint8_t nsge)
 {
     return post_recv(h, &qp->rq, IH_QTYPE_RQ, 0, qp->id, &qp->next_wqe_id, sge,
-                     nsge);
+                     nsge, qp->spec);
 }
 
 uint64_t ih_post_srq_recv(struct ih *h, struct ih_srq *srq,
                           const struct ih_sge *sge, uint8_t nsge)
 {
     return post_recv(h, &srq->ring, srq->db_qtype, srq->db_ring, srq->id,
-                     &srq->next_wqe_id, sge, nsge);
+                     &srq->next_wqe_id, sge, nsge, srq->spec);
 }
 
 bool ih_cq_poll(struct ih *h, struct ih_cq *cq, struct ih_cqe *cqe)

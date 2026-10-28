@@ -32,6 +32,22 @@
 #define IONIC_V1_FLAG_SIG 0x0008u
 
 /*
+ * The top four bits of the flags are the SGE list's format ("sgl spec
+ * format" in ionic_fw.h). Zero is a plain list. A QP created with
+ * speculative SGEs describes a work request with more than
+ * IONIC_V1_SPEC_FIRST_SGE SGEs differently: a table of their lengths, be32
+ * (SPEC32, up to eight SGEs) or be16 (SPEC16, more), fills the first
+ * IONIC_V1_SPEC_FIRST_SGE SGE slots, and the SGEs follow it. The table
+ * repeats the lengths the SGEs carry. The driver defines no other format.
+ * ionic_rdma.ko and rdma-core's ionic provider both create a send or
+ * receive queue that way when it takes three to eight SGEs (IONIC_SPEC_HIGH).
+ */
+#define IONIC_V1_FLAG_SPEC_MASK 0xf000u
+#define IONIC_V1_FLAG_SPEC32    0x1000u
+#define IONIC_V1_FLAG_SPEC16    0x2000u
+#define IONIC_V1_SPEC_FIRST_SGE 2u
+
+/*
  * struct ionic_v1_wqe:
  *   [0:7]   u64  wqe_id (native endian: SQ producer index / RQ meta index)
  *   [8]     u8   op
@@ -44,7 +60,8 @@
  *     [24:27] be32 dest_qkey
  *     [28:31] be32 length
  *   recv body: [16:31] reserved
- *   [32...] payload: struct ionic_sge { be64 va; be32 len; be32 lkey; }
+ *   [32...] payload: struct ionic_sge { be64 va; be32 len; be32 lkey; },
+ *           after the speculative length table when the flags name one
  */
 #define WQE_PLD_OFF      32
 #define WQE_SEND_LEN_OFF 28

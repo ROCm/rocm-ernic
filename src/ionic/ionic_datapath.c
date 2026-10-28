@@ -1619,36 +1619,70 @@ static void cq_post_send_npg(struct ionic_datapath *dp, uint32_t cq_id,
  */
 
 /* parse_sges() reads at most ERNIC_MAX_SGE, which must be every SGE the
- * largest WQE has room for. */
+ * largest WQE has room for. A speculative length table only leaves less. */
 _Static_assert(WQE_PLD_OFF + ERNIC_MAX_SGE * 16u >=
                    1u << IONIC_WQE_MAX_STRIDE_LOG2,
                "the largest WQE holds SGEs that parse_sges() would not read");
 
+/* What parse_sges() made of a WQE's SGE list. */
+enum dp_sgl {
+    DP_SGL_OK,
+    DP_SGL_TOO_LONG, /* the lengths add up to more than UINT32_MAX */
+    DP_SGL_BAD_FMT,  /* a list format the driver does not define */
+};
+
 /*
- * Read a WQE's SGE list into @out.
+ * Read the SGE list of the @wqe_len bytes of WQE at @wqe into @out. Only
+ * what lies inside those bytes is read, whatever @num_sge says.
+ *
+ * Where the list starts depends on its format, in the WQE's flags. A
+ * speculative list (IONIC_V1_FLAG_SPEC32 or _SPEC16) starts after the table
+ * of lengths in the first two slots. Read from the first slot, as it was
+ * before the device knew the format, the table's bytes became SGEs, so a
+ * work request with more than two SGEs named addresses it never meant:
+ * nvmet-rdma's multi-page RDMA WRITEs could not gather. The table only
+ * repeats what the SGEs say, so it is not read. A format the driver doesn't
+ * define gives DP_SGL_BAD_FMT and an empty @out: there is no telling where
+ * its SGEs are, and guessing would move bytes the guest didn't name.
  *
  * Each length is the guest's own u32, and ERNIC_MAX_SGE of them can add up
  * to far more than a u32 holds. Summed in one, the total wrapped: a SEND of
  * SGEs of 0xfffffff0 and 0x20 bytes went out as a 16-byte message. Returns
- * false when the lengths add up to more than UINT32_MAX, with @out->total held
- * at UINT32_MAX: no message is that long, so a send must be refused, but as the
- * capacity of a receive it is still a bound no message exceeds.
+ * DP_SGL_TOO_LONG when the lengths add up to more than UINT32_MAX, with
+ * @out->total held at UINT32_MAX: no message is that long, so a send must be
+ * refused, but as the capacity of a receive it is still a bound no message
+ * exceeds.
  */
-static bool parse_sges(const uint8_t *wqe, uint32_t stride, uint8_t num_sge,
-                       struct dp_sge_list *out)
+static enum dp_sgl parse_sges(const uint8_t *wqe, uint32_t wqe_len,
+                              uint8_t num_sge, struct dp_sge_list *out)
 {
-    uint32_t avail = stride > WQE_PLD_OFF ? stride - WQE_PLD_OFF : 0;
-    uint32_t max_sge = avail / 16;
+    uint32_t sgl_off = WQE_PLD_OFF;
     uint64_t total = 0; /* ERNIC_MAX_SGE u32s, so it cannot wrap */
 
     out->count = 0;
+    out->total = 0;
+
+    switch (ernic_get_be16(wqe + 10) & IONIC_V1_FLAG_SPEC_MASK) {
+    case 0:
+        break;
+    case IONIC_V1_FLAG_SPEC32:
+    case IONIC_V1_FLAG_SPEC16:
+        sgl_off += IONIC_V1_SPEC_FIRST_SGE * 16u;
+        break;
+    default:
+        return DP_SGL_BAD_FMT;
+    }
+
+    uint32_t avail = wqe_len > sgl_off ? wqe_len - sgl_off : 0;
+    uint32_t max_sge = avail / 16;
+
     if (max_sge > ERNIC_MAX_SGE)
         max_sge = ERNIC_MAX_SGE;
     if (num_sge < max_sge)
         max_sge = num_sge;
 
     for (uint32_t i = 0; i < max_sge; i++) {
-        const uint8_t *p = wqe + WQE_PLD_OFF + (size_t)i * 16;
+        const uint8_t *p = wqe + sgl_off + (size_t)i * 16;
         out->va[i] = ernic_get_be64(p + 0);
         out->len[i] = ernic_get_be32(p + 8);
         out->lkey[i] = ernic_get_be32(p + 12);
@@ -1656,7 +1690,7 @@ static bool parse_sges(const uint8_t *wqe, uint32_t stride, uint8_t num_sge,
         out->count++;
     }
     out->total = total > UINT32_MAX ? UINT32_MAX : (uint32_t)total;
-    return total <= UINT32_MAX;
+    return total <= UINT32_MAX ? DP_SGL_OK : DP_SGL_TOO_LONG;
 }
 
 /*
@@ -1792,8 +1826,19 @@ static bool dp_ring_take(struct ionic_datapath *dp, uint32_t *cons,
      *
      * A receive whose lengths add up past UINT32_MAX can take any message,
      * which is what the total parse_sges() leaves for it says.
+     *
+     * A receive whose list is in a format the driver doesn't define is
+     * still taken, but with no buffer, so nothing is written on a guess: a
+     * SEND with a payload completes it with a length error. An empty SEND,
+     * or a WRITE_IMM, which scatters nothing into its receive, completes
+     * it as usual.
      */
-    (void)parse_sges(rwqe, read_sz, rwqe[9], dst);
+    if (parse_sges(rwqe, read_sz, rwqe[9], dst) == DP_SGL_BAD_FMT)
+        vfu_log(dp->vfu_ctx, LOG_WARNING,
+                "ionic_datapath: receive WQE %" PRIu64
+                " has SGE list format %#x, which the driver does not define; "
+                "taking it as empty",
+                *wqe_id, ernic_get_be16(rwqe + 10) & IONIC_V1_FLAG_SPEC_MASK);
 
     (*cons)++;
     return true;
@@ -3110,15 +3155,30 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         src.len[0] = inl_len;
         src.lkey[0] = 0;
         src.total = inl_len;
-    } else if (!parse_sges(wqe, read_sz, wqe[9], &src)) {
-        /* read_sz, not stride, for the reason given in
-         * ionic_dp_deliver_recv(). */
-        vfu_log(dp->vfu_ctx, LOG_WARNING,
-                "ionic_datapath: QP %u op %u gathers more than %" PRIu32
-                " bytes",
-                qp_id, op, UINT32_MAX);
-        dp_complete_send(dp, q, qp_id, wqe_id, remote, IONIC_STS_LOCAL_LEN_ERR);
-        return true; /* completed, in error: the WQE is done with */
+    } else {
+        /* read_sz, not stride, for the reason given in dp_ring_take(). */
+        enum dp_sgl sgl = parse_sges(wqe, read_sz, wqe[9], &src);
+
+        /* A list the device can't find is a work request the QP can't
+         * process, which is LOCAL_QP_OPER_ERR, as for an unknown opcode. */
+        if (sgl == DP_SGL_BAD_FMT) {
+            vfu_log(dp->vfu_ctx, LOG_WARNING,
+                    "ionic_datapath: QP %u op %u has SGE list format %#x, "
+                    "which the driver does not define",
+                    qp_id, op, flags & IONIC_V1_FLAG_SPEC_MASK);
+            dp_complete_send(dp, q, qp_id, wqe_id, remote,
+                             IONIC_STS_LOCAL_QP_OPER_ERR);
+            return true; /* completed, in error: the WQE is done with */
+        }
+        if (sgl == DP_SGL_TOO_LONG) {
+            vfu_log(dp->vfu_ctx, LOG_WARNING,
+                    "ionic_datapath: QP %u op %u gathers more than %" PRIu32
+                    " bytes",
+                    qp_id, op, UINT32_MAX);
+            dp_complete_send(dp, q, qp_id, wqe_id, remote,
+                             IONIC_STS_LOCAL_LEN_ERR);
+            return true; /* completed, in error: the WQE is done with */
+        }
     }
 
     /*
