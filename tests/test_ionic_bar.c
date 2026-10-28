@@ -1,5 +1,5 @@
 /*
- * Unit tests for ionic_bar0_window() in ionic/ionic_bar.h.
+ * Unit tests for ionic_bar0_classify() in ionic/ionic_bar.h.
  *
  * The server's BAR0 callback sends an access to the ionic register window
  * or the MSI-X shadow above it by what this returns, and refuses anything
@@ -74,7 +74,7 @@ int main(void)
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         enum ionic_bar0_window got =
-            ionic_bar0_window(cases[i].offset, cases[i].count);
+            ionic_bar0_classify(cases[i].offset, cases[i].count);
 
         if (got != cases[i].want) {
             printf("  FAIL: %s: offset=%" PRId64 " count=%zu gave %s, "

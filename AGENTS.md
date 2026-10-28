@@ -691,12 +691,13 @@ or `typing.Self`.
 
 - **codespell** with [`.codespellrc`](.codespellrc), whole tree:
   `codespell` (CI: [codespell.yml](.github/workflows/codespell.yml)).
-- **doc8**: `doc8 docs/ --max-line-length 80`. The docs must build (needs
-  Doxygen, not the C dependencies; CI:
+- **doc8**: `doc8 docs/ --max-line-length 80`. The docs must build
+  without a Sphinx warning (needs Doxygen, not the C dependencies; CI:
   [docs-check.yml](.github/workflows/docs-check.yml)):
 
   ```bash
-  cmake -B build-docs -DERNIC_DOCS_ONLY=ON -DERNIC_BUILD_DOCS=ON
+  cmake -B build-docs -DERNIC_DOCS_ONLY=ON -DERNIC_BUILD_DOCS=ON \
+    -DERNIC_DOCS_WERROR=ON
   cmake --build build-docs --target sphinx-html
   ```
 

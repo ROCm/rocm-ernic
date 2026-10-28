@@ -250,6 +250,10 @@
     the functions' annotations; a new Thread safety workflow builds with
     Clang 23, the first to check the fields' and the order in C, and fails
     on any finding.
+  * `-DERNIC_DOCS_WERROR=ON` makes `sphinx-html` fail on any Sphinx
+    warning. It is off by default; the Docs Check and Docs Deploy workflows
+    turn it on, so a change that adds a warning fails Docs Check and isn't
+    published.
   * `ERNIC_SANITIZER_SHARED_RUNTIME` selects the shared or static sanitizer
     runtime. It defaults to the compiler's own choice: `ON` with GCC, `OFF`
     with Clang, where `ON` adds an RPATH to the runtime's directory.

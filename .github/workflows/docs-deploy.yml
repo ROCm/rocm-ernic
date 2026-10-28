@@ -87,7 +87,8 @@ jobs:
       run: |
         cmake -S . -B build \
           -DERNIC_DOCS_ONLY=ON \
-          -DERNIC_BUILD_DOCS=ON
+          -DERNIC_BUILD_DOCS=ON \
+          -DERNIC_DOCS_WERROR=ON
 
     - name: Build documentation
       run: cmake --build build --target sphinx-html
