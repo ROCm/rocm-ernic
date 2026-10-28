@@ -739,7 +739,11 @@
     past libvfio-user's range check;
   * write part of an RDMA READ or WRITE that runs past the end of its
     region before refusing it (within the region, so no other memory was
-    reached); it is now refused before anything moves.
+    reached); it is now refused before anything moves, whether it comes
+    from this server or from another over the mesh. A mesh WRITE whose
+    length isn't the size of the payload it carries is refused too, with
+    nothing written: one claiming more landed its payload first, and one
+    claiming less wrote that much and dropped the rest.
 * **A guest could fill the host's disk with warnings.** Every RDMA
   completion in error, other than a flush, logged a `completing QP ... in
   error` line, and with the P4 engine, so did every operation the program
