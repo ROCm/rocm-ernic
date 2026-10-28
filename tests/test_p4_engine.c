@@ -2200,8 +2200,10 @@ static bool exec_setup(const char *json, struct p4_program **prog,
 
 /*
  * A frame dropped in ingress never reaches egress, as in simple_switch.
- * The engine drops these frames either way, so the executor is asked:
- * an egress that ran shows in its result.
+ * The engine drops these frames either way, and a dropped frame is never
+ * deparsed, so the executor is asked, and egress calls an extern: on the
+ * frame path that fails the frame, so an egress that ran shows as an
+ * error.
  */
 static void test_pipelines_ingress_drop(void)
 {
@@ -2212,19 +2214,19 @@ static void test_pipelines_ingress_drop(void)
 
     fill_frame(in, sizeof(in));
 
-    /* Ingress names the drop port, and egress would report it as a port. */
-    if (exec_setup(P4_TWO_PIPES(P4_ASSIGN(P4_SPEC, P4_HEX("0x1ff")),
-                                P4_ASSIGN(P4_ETY, P4_EPORT)),
-                   &prog, &ent)) {
+    /* Ingress names the drop port. */
+    if (exec_setup(
+            P4_TWO_PIPES(P4_ASSIGN(P4_SPEC, P4_HEX("0x1ff")), P4_MAP(P4_EPORT)),
+            &prog, &ent)) {
         check(p4_exec_run(prog, ent, P4_PORT_HOST, P4_PORT_UPLINK, in,
                           sizeof(in), out, sizeof(out), &er) == 0,
-              "a frame sent to the drop port did not run");
+              "egress ran for a frame ingress sent to the drop port");
         check(er.dropped, "ingress assigning the drop port did not drop");
         p4_entries_destroy(ent);
         p4_json_free(prog);
     }
 
-    /* Ingress drops, and egress calls an extern, which fails a frame. */
+    /* Ingress calls mark_to_drop(). */
     if (exec_setup(P4_TWO_PIPES(P4_MARK_DROP, P4_MAP(P4_EPORT)), &prog, &ent)) {
         check(p4_exec_run(prog, ent, P4_PORT_HOST, P4_PORT_UPLINK, in,
                           sizeof(in), out, sizeof(out), &er) == 0,
