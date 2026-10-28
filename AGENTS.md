@@ -22,10 +22,9 @@ that move:
   standalone build doesn't show. For example, `ERNIC_WERROR` is off by
   default so a compiler we haven't tried doesn't break a downstream build;
   CI turns it on.
-- **Don't assume rocm-ernic is the top-level project.** New CMake code
-  uses `PROJECT_*_DIR` or `CMAKE_CURRENT_*_DIR`, not
-  `CMAKE_SOURCE_DIR`/`CMAKE_BINARY_DIR` (which older code, especially
-  `tests/CMakeLists.txt`, still uses).
+- **Don't assume rocm-ernic is the top-level project.** CMake code uses
+  `PROJECT_*_DIR` or `CMAKE_CURRENT_*_DIR`, not
+  `CMAKE_SOURCE_DIR`/`CMAKE_BINARY_DIR`.
 - **Namespace what you add**: `ERNIC_` for cache variables, `ernic-` for
   targets. Don't add more generic names like `doxygen`, `sphinx-html`, or
   `test_*`.
@@ -88,8 +87,13 @@ cmake --build build
 - A plain build sanitizes nothing, unit tests included; CI also builds
   with `ERNIC_USE_SANITIZERS` and `ERNIC_USE_THREAD_SANITIZER` (for when
   to run them locally, see
-  [What to run locally](#what-to-run-locally)). Pass new tests to
-  `ernic_set_compiler_flags()`; don't give them `-fsanitize` flags.
+  [What to run locally](#what-to-run-locally)). Build a new test program
+  with `ernic_add_test_program()`, which passes it to
+  `ernic_set_compiler_flags()`, and register it with
+  `ernic_add_unit_test()` ([`ErnicTesting.cmake`](cmake/ErnicTesting.cmake));
+  don't give it `-fsanitize` flags. A family of tests that links the same
+  part of `src/` shares a source list (`ERNIC_TEST_ADMINQ_SOURCES`) at
+  the top of `tests/CMakeLists.txt`.
 - **Run TSan tests under `setarch "$(uname -m)" -R`**, as CI does.
   Without it, most tests abort with `FATAL: ThreadSanitizer: unexpected
   memory mapping` (ASLR colliding with shadow memory, not a test failure).
