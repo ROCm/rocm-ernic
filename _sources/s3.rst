@@ -163,7 +163,11 @@ connection, and an orderly FIN. Eight connections at a time.
 There is no congestion control, no SACK, no out-of-order
 reassembly and no fragmentation, because every one of those
 exists to cope with a real network and there is not one
-between these two endpoints.
+between these two endpoints. Initial sequence numbers are
+chosen as RFC 6528 says, from a 4 microsecond clock plus a
+SipHash of the connection's addresses and ports, keyed with
+random bytes drawn at startup, so one connection's numbers
+don't give away another's.
 
 The endpoint's MAC is derived from its address --
 ``02:53:`` followed by the four address bytes, so

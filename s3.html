@@ -557,7 +557,11 @@ connection, and an orderly FIN. Eight connections at a time.
 There is no congestion control, no SACK, no out-of-order
 reassembly and no fragmentation, because every one of those
 exists to cope with a real network and there is not one
-between these two endpoints.</p>
+between these two endpoints. Initial sequence numbers are
+chosen as RFC 6528 says, from a 4 microsecond clock plus a
+SipHash of the connection’s addresses and ports, keyed with
+random bytes drawn at startup, so one connection’s numbers
+don’t give away another’s.</p>
 <p>The endpoint’s MAC is derived from its address –
 <code class="docutils literal notranslate"><span class="pre">02:53:</span></code> followed by the four address bytes, so
 192.168.200.1 is <code class="docutils literal notranslate"><span class="pre">02:53:c0:a8:c8:01</span></code>. It is locally
