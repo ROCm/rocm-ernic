@@ -90,7 +90,10 @@ files refer to each other by their installed paths, which come
 from ``CMAKE_INSTALL_PREFIX`` when the project is configured, so
 to install them somewhere else, configure with that prefix rather
 than passing ``--prefix`` to ``cmake --install``. To stage an
-install, use ``DESTDIR``.
+install, use ``DESTDIR``. The paths are written into scripts and
+systemd units as they are, so a prefix or ``CMAKE_INSTALL_*``
+directory with anything but letters, digits, and
+``. _ / + - @ ,`` in it is refused when configuring.
 
 .. _nightly-packages:
 
@@ -191,7 +194,13 @@ files, and, with ``ERNIC_BUNDLE_VFIO_USER``, the server's
 ``DT_RPATH``. It's registered in a top-level build when
 ``dpkg-dev``, ``file``, and ``readelf`` are installed. A change to
 the install rules has to update its lists of files, in
-``tests/package/run-package-test.cmake``.
+``tests/package/run-package-test.cmake``. The
+``ernic-package-deb-config-paths`` test, registered with it,
+configures and builds the server again with prefixes that move
+the configuration file, such as ``/opt/<name>``, and checks
+where the packages install it and where the installed files
+read it. It also checks that install paths the installed files
+can't hold are refused.
 
 Build Options
 -------------

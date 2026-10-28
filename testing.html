@@ -731,7 +731,7 @@ cmake<span class="w"> </span>--build<span class="w"> </span>build
 <span class="nv">skip</span><span class="o">=</span><span class="s1">'pci-config-test|find-rdma-device-tuple|find-ipv4-gid-index'</span>
 <span class="nv">skip</span><span class="o">+=</span><span class="s1">'|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci'</span>
 <span class="nv">skip</span><span class="o">+=</span><span class="s1">'|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli'</span>
-<span class="nv">skip</span><span class="o">+=</span><span class="s1">'|cmake-subproject|ernic-package-deb'</span>
+<span class="nv">skip</span><span class="o">+=</span><span class="s1">'|cmake-subproject|ernic-package-deb|ernic-package-deb-config-paths'</span>
 <span class="nv">opts</span><span class="o">=</span><span class="s1">'--leak-check=full --track-origins=yes --num-callers=40'</span>
 <span class="nv">opts</span><span class="o">+=</span><span class="s1">' --error-exitcode=1'</span>
 ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>-T<span class="w"> </span>memcheck<span class="w"> </span>--output-on-failure<span class="w"> </span><span class="se">\</span>

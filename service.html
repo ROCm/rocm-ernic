@@ -548,20 +548,24 @@ sudo<span class="w"> </span>cmake<span class="w"> </span>--install<span class="w
 </table>
 </div>
 <p>All destinations are relative to <code class="docutils literal notranslate"><span class="pre">CMAKE_INSTALL_PREFIX</span></code>,
-shown here for the default <code class="docutils literal notranslate"><span class="pre">/usr/local</span></code>, except that with
-the prefix <code class="docutils literal notranslate"><span class="pre">/usr</span></code>, the environment file goes in
-<code class="docutils literal notranslate"><span class="pre">/etc/rocm-ernic/</span></code>. The installed units, scripts,
+shown here for the default <code class="docutils literal notranslate"><span class="pre">/usr/local</span></code>, except the
+environment file’s with two kinds of prefix: with <code class="docutils literal notranslate"><span class="pre">/usr</span></code>, it
+goes in <code class="docutils literal notranslate"><span class="pre">/etc/rocm-ernic/</span></code>, and with <code class="docutils literal notranslate"><span class="pre">/opt/&lt;name&gt;</span></code>, in
+<code class="docutils literal notranslate"><span class="pre">/etc/opt/&lt;name&gt;/rocm-ernic/</span></code>. The installed units, scripts,
 <code class="docutils literal notranslate"><span class="pre">ernicctl</span></code>, and environment file name each other by their
 paths under the prefix the project was configured with.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>The systemd units and <code class="docutils literal notranslate"><span class="pre">ernicctl</span></code> read the environment
-file from <code class="docutils literal notranslate"><span class="pre">/etc/rocm-ernic/rocm-ernic.env</span></code>. Under any
-prefix but <code class="docutils literal notranslate"><span class="pre">/usr</span></code>, the install rule places it under the
-prefix: with the default prefix it lands in
-<code class="docutils literal notranslate"><span class="pre">/usr/local/etc/rocm-ernic/</span></code>, so copy or symlink it into
-<code class="docutils literal notranslate"><span class="pre">/etc/rocm-ernic/</span></code> before starting the service. Likewise,
-systemd does not read units from
+<p>When the environment file is installed outside the prefix,
+as with <code class="docutils literal notranslate"><span class="pre">/usr</span></code> or <code class="docutils literal notranslate"><span class="pre">/opt/&lt;name&gt;</span></code>, or with an absolute
+<code class="docutils literal notranslate"><span class="pre">CMAKE_INSTALL_SYSCONFDIR</span></code> outside it, the systemd units
+and <code class="docutils literal notranslate"><span class="pre">ernicctl</span></code> read it where it is installed. When it is
+under the prefix, they read it from
+<code class="docutils literal notranslate"><span class="pre">/etc/rocm-ernic/rocm-ernic.env</span></code> instead: with the
+default prefix it lands in <code class="docutils literal notranslate"><span class="pre">/usr/local/etc/rocm-ernic/</span></code>,
+so copy or symlink it into <code class="docutils literal notranslate"><span class="pre">/etc/rocm-ernic/</span></code> before
+starting the service.
+Likewise, systemd does not read units from
 <code class="docutils literal notranslate"><span class="pre">/usr/local/lib/systemd/system</span></code> by default; install with
 <code class="docutils literal notranslate"><span class="pre">-DCMAKE_INSTALL_PREFIX=/usr</span></code> or copy the units into
 <code class="docutils literal notranslate"><span class="pre">/etc/systemd/system/</span></code>.</p>
@@ -575,10 +579,14 @@ sudo<span class="w"> </span>systemctl<span class="w"> </span><span class="nb">en
 </section>
 <section id="configuration">
 <h2><a class="toc-backref" href="#id4" role="doc-backlink">Configuration</a><a class="headerlink" href="#configuration" title="Link to this heading">#</a></h2>
-<p>All settings live in <code class="docutils literal notranslate"><span class="pre">/etc/rocm-ernic/rocm-ernic.env</span></code>
-(a shell-sourceable key=value file used by systemd’s
-<code class="docutils literal notranslate"><span class="pre">EnvironmentFile=</span></code> directive).  Edit this file to
-match your environment. The defaults below are for an
+<p>All settings live in the environment file (a
+shell-sourceable key=value file used by systemd’s
+<code class="docutils literal notranslate"><span class="pre">EnvironmentFile=</span></code> directive). Edit it to match your
+environment. The service reads it from
+<code class="docutils literal notranslate"><span class="pre">/etc/rocm-ernic/rocm-ernic.env</span></code>, or from
+<code class="docutils literal notranslate"><span class="pre">/etc/opt/&lt;name&gt;/rocm-ernic/rocm-ernic.env</span></code> when installed
+to <code class="docutils literal notranslate"><span class="pre">/opt/&lt;name&gt;</span></code> (see <a class="reference internal" href="#installation">Installation</a>); the examples on
+this page use the first. The defaults below are for an
 install under <code class="docutils literal notranslate"><span class="pre">/usr/local</span></code>; under another prefix, such as
 the packages’ <code class="docutils literal notranslate"><span class="pre">/usr</span></code>, the paths are under that prefix.</p>
 <section id="server-settings">

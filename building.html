@@ -476,7 +476,10 @@ files refer to each other by their installed paths, which come
 from <code class="docutils literal notranslate"><span class="pre">CMAKE_INSTALL_PREFIX</span></code> when the project is configured, so
 to install them somewhere else, configure with that prefix rather
 than passing <code class="docutils literal notranslate"><span class="pre">--prefix</span></code> to <code class="docutils literal notranslate"><span class="pre">cmake</span> <span class="pre">--install</span></code>. To stage an
-install, use <code class="docutils literal notranslate"><span class="pre">DESTDIR</span></code>.</p>
+install, use <code class="docutils literal notranslate"><span class="pre">DESTDIR</span></code>. The paths are written into scripts and
+systemd units as they are, so a prefix or <code class="docutils literal notranslate"><span class="pre">CMAKE_INSTALL_*</span></code>
+directory with anything but letters, digits, and
+<code class="docutils literal notranslate"><span class="pre">.</span> <span class="pre">_</span> <span class="pre">/</span> <span class="pre">+</span> <span class="pre">-</span> <span class="pre">&#64;</span> <span class="pre">,</span></code> in it is refused when configuring.</p>
 </section>
 <section id="nightly-packages">
 <span id="id1"></span><h2>Nightly Packages<a class="headerlink" href="#nightly-packages" title="Link to this heading">#</a></h2>
@@ -572,7 +575,13 @@ files, and, with <code class="docutils literal notranslate"><span class="pre">ER
 <code class="docutils literal notranslate"><span class="pre">DT_RPATH</span></code>. It’s registered in a top-level build when
 <code class="docutils literal notranslate"><span class="pre">dpkg-dev</span></code>, <code class="docutils literal notranslate"><span class="pre">file</span></code>, and <code class="docutils literal notranslate"><span class="pre">readelf</span></code> are installed. A change to
 the install rules has to update its lists of files, in
-<code class="docutils literal notranslate"><span class="pre">tests/package/run-package-test.cmake</span></code>.</p>
+<code class="docutils literal notranslate"><span class="pre">tests/package/run-package-test.cmake</span></code>. The
+<code class="docutils literal notranslate"><span class="pre">ernic-package-deb-config-paths</span></code> test, registered with it,
+configures and builds the server again with prefixes that move
+the configuration file, such as <code class="docutils literal notranslate"><span class="pre">/opt/&lt;name&gt;</span></code>, and checks
+where the packages install it and where the installed files
+read it. It also checks that install paths the installed files
+can’t hold are refused.</p>
 </section>
 <section id="build-options">
 <h2>Build Options<a class="headerlink" href="#build-options" title="Link to this heading">#</a></h2>

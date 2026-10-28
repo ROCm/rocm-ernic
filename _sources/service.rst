@@ -87,21 +87,25 @@ This installs:
        ``ernic-exporter.service``
 
 All destinations are relative to ``CMAKE_INSTALL_PREFIX``,
-shown here for the default ``/usr/local``, except that with
-the prefix ``/usr``, the environment file goes in
-``/etc/rocm-ernic/``. The installed units, scripts,
+shown here for the default ``/usr/local``, except the
+environment file's with two kinds of prefix: with ``/usr``, it
+goes in ``/etc/rocm-ernic/``, and with ``/opt/<name>``, in
+``/etc/opt/<name>/rocm-ernic/``. The installed units, scripts,
 ``ernicctl``, and environment file name each other by their
 paths under the prefix the project was configured with.
 
 .. note::
 
-   The systemd units and ``ernicctl`` read the environment
-   file from ``/etc/rocm-ernic/rocm-ernic.env``. Under any
-   prefix but ``/usr``, the install rule places it under the
-   prefix: with the default prefix it lands in
-   ``/usr/local/etc/rocm-ernic/``, so copy or symlink it into
-   ``/etc/rocm-ernic/`` before starting the service. Likewise,
-   systemd does not read units from
+   When the environment file is installed outside the prefix,
+   as with ``/usr`` or ``/opt/<name>``, or with an absolute
+   ``CMAKE_INSTALL_SYSCONFDIR`` outside it, the systemd units
+   and ``ernicctl`` read it where it is installed. When it is
+   under the prefix, they read it from
+   ``/etc/rocm-ernic/rocm-ernic.env`` instead: with the
+   default prefix it lands in ``/usr/local/etc/rocm-ernic/``,
+   so copy or symlink it into ``/etc/rocm-ernic/`` before
+   starting the service.
+   Likewise, systemd does not read units from
    ``/usr/local/lib/systemd/system`` by default; install with
    ``-DCMAKE_INSTALL_PREFIX=/usr`` or copy the units into
    ``/etc/systemd/system/``.
@@ -117,10 +121,14 @@ enable the service at boot:
 Configuration
 -------------
 
-All settings live in ``/etc/rocm-ernic/rocm-ernic.env``
-(a shell-sourceable key=value file used by systemd's
-``EnvironmentFile=`` directive).  Edit this file to
-match your environment. The defaults below are for an
+All settings live in the environment file (a
+shell-sourceable key=value file used by systemd's
+``EnvironmentFile=`` directive). Edit it to match your
+environment. The service reads it from
+``/etc/rocm-ernic/rocm-ernic.env``, or from
+``/etc/opt/<name>/rocm-ernic/rocm-ernic.env`` when installed
+to ``/opt/<name>`` (see `Installation`_); the examples on
+this page use the first. The defaults below are for an
 install under ``/usr/local``; under another prefix, such as
 the packages' ``/usr``, the paths are under that prefix.
 
