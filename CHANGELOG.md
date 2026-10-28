@@ -324,6 +324,15 @@
     `ernic-pair-pingpong` in a guest runs `ibv_rc_pingpong` against the
     other, and `--ssh-port N` forwards ssh to both, on N and N+1.
     `nix run .#run-ionic-pair-test` checks RC ping-pong both ways.
+* **The server's threads are named**, so `top -H`, `ps -L`, gdb and
+  ThreadSanitizer's reports say which is which. The TCP backend's are
+  `tcp-accept`, `tcp-health`, `tcp-broadcast` (manager) and `tcp-peers`
+  (worker), and for each connection `tcp-recv-<node>` and
+  `tcp-send-<node>`. A worker's receive thread for its manager is
+  `tcp-mgr-recv` (its send thread is `tcp-send-0`, the manager's id), and
+  the manager's receive thread for a connection that hasn't registered is
+  `tcp-recv-new`, renamed for the node once it registers. Linux keeps 15
+  characters of a name, so a node id past 999999 is cut short.
 
 ### Changed
 
