@@ -1133,31 +1133,62 @@ talking to a server that has no <code class="docutils literal notranslate"><span
 module does not fail.</p>
 <p>The ionic modules running in the guest must carry the P4 patch series
 (<code class="docutils literal notranslate"><span class="pre">ansible/files/patches/p4/</span></code>), which registers the auxiliary device
-that <code class="docutils literal notranslate"><span class="pre">ernic_p4.ko</span></code> binds to. The patch directory layout is:</p>
+that <code class="docutils literal notranslate"><span class="pre">ernic_p4.ko</span></code> binds to. <code class="docutils literal notranslate"><span class="pre">fetch-ionic-sources.sh</span></code> applies the
+<code class="docutils literal notranslate"><span class="pre">*.patch</span></code> files of each <code class="docutils literal notranslate"><span class="pre">--patches-dir</span></code> it is given, in order, and
+not those of a directory’s subdirectories. There are three series:</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">ansible/files/patches/</span></code> — the base series (UC address-handle fix only).</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">ansible/files/patches/srq/</span></code> — the SRQ series; apply on top of the base
-to enable SRQ (<code class="docutils literal notranslate"><span class="pre">max_srq</span> <span class="pre">&gt;</span> <span class="pre">0</span></code>).</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">ansible/files/patches/p4/</span></code> — the P4 series; apply on top of the base
-to create the auxiliary device <code class="docutils literal notranslate"><span class="pre">ernic_p4.ko</span></code> binds to.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ansible/files/patches/</span></code> — the base series: the UC address-handle
+fix only. <code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code> always applies it.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ansible/files/patches/srq/</span></code> — the SRQ series, which enables SRQ
+(<code class="docutils literal notranslate"><span class="pre">max_srq</span> <span class="pre">&gt;</span> <span class="pre">0</span></code>). It <strong>replaces</strong> the base series rather than adding
+to it: it carries its own copy of the UC address-handle fix as
+<code class="docutils literal notranslate"><span class="pre">0009</span></code>, so applied after the base series, <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">am</span></code> fails on that
+copy. <code class="docutils literal notranslate"><span class="pre">ernic_srq_dkms</span></code> builds ionic with the SRQ series alone.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ansible/files/patches/p4/</span></code> — the P4 series, which creates the
+auxiliary device <code class="docutils literal notranslate"><span class="pre">ernic_p4.ko</span></code> binds to. It applies after either the
+base series or the SRQ series.</p></li>
 </ul>
-<p>The P4 and SRQ series are independent of each other and can be applied
-together or separately, both on top of the base series.</p>
-<p>The correct way to build P4-capable ionic modules is through
-<code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code> with the P4 series listed in
-<code class="docutils literal notranslate"><span class="pre">ernic_guest_ionic_extra_patches</span></code>:</p>
+<p>Because <code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code> applies the base series first, listing
+<code class="docutils literal notranslate"><span class="pre">patches/srq</span></code> in its <code class="docutils literal notranslate"><span class="pre">ernic_guest_ionic_extra_patches</span></code> fails. No role
+builds the SRQ and P4 series together.</p>
+<p>To give a guest P4 (<code class="docutils literal notranslate"><span class="pre">.github/workflows/p4-lane.yml</span></code> does each step):</p>
+<ol class="arabic">
+<li><p>Build and load P4-capable ionic modules: run <code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code>
+with the P4 series listed in <code class="docutils literal notranslate"><span class="pre">ernic_guest_ionic_extra_patches</span></code>,</p>
 <div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">ernic_guest_ionic_extra_patches</span><span class="p">:</span>
 <span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">patches/p4</span>
 </pre></div>
 </div>
-<p>That variable causes <code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code> to apply the P4 patch series on
-top of the base series when building ionic, which creates the auxiliary
-device. Once the P4-patched ionic modules are installed and loaded, run
-<code class="docutils literal notranslate"><span class="pre">ernic_p4_dkms</span></code> to build and load <code class="docutils literal notranslate"><span class="pre">ernic_p4.ko</span></code>. The module locates
-the correct <code class="docutils literal notranslate"><span class="pre">Module.symvers</span></code> by searching for the export of
-<code class="docutils literal notranslate"><span class="pre">ionic_adminq_post_wait</span></code>, whose CRC changes when <code class="docutils literal notranslate"><span class="pre">struct</span> <span class="pre">ionic_lif</span></code> is
-patched; building against the wrong symvers causes <code class="docutils literal notranslate"><span class="pre">modprobe</span></code> to refuse
-the module.</p>
+<p>and it applies the P4 series after the base series when it builds
+ionic. <code class="docutils literal notranslate"><span class="pre">ernic_p4_dkms</span></code> doesn’t do this step: it neither installs
+nor loads ionic. It patches a copy of the ionic sources only to build
+<code class="docutils literal notranslate"><span class="pre">ernic_p4.ko</span></code> against, and when the ionic DKMS sources this step
+puts under <code class="docutils literal notranslate"><span class="pre">/usr/src</span></code> have no <code class="docutils literal notranslate"><span class="pre">Module.symvers</span></code> for the running
+kernel (dkms empties its build directory after installing), it
+rebuilds them in place to regenerate the symbols, and installs
+nothing from the build.</p>
+</li>
+<li><p>Install the build prerequisites on the guest: <code class="docutils literal notranslate"><span class="pre">dkms</span></code>, <code class="docutils literal notranslate"><span class="pre">git</span></code>,
+<code class="docutils literal notranslate"><span class="pre">make</span></code>, and headers for the running kernel. <code class="docutils literal notranslate"><span class="pre">ernic_p4_dkms</span></code>
+checks for the first three and installs none of them.</p></li>
+<li><p>Put the files <code class="docutils literal notranslate"><span class="pre">ernic_p4_dkms</span></code> reads on the guest, under
+<code class="docutils literal notranslate"><span class="pre">ernic_p4_dkms_repo_dir</span></code> (default <code class="docutils literal notranslate"><span class="pre">/opt/rocm-ernic</span></code>):
+<code class="docutils literal notranslate"><span class="pre">drivers/ernic_p4/</span></code>, <code class="docutils literal notranslate"><span class="pre">ansible/files/scripts/fetch-ionic-sources.sh</span></code>,
+the base and P4 series in <code class="docutils literal notranslate"><span class="pre">ansible/files/patches/</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">cmake/ErnicKernelModule.cmake</span></code>, which pins the kernel ref. This is
+a path on the guest, where the role runs; <code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code> stages
+only the patches and the ionic helper scripts, and its
+<code class="docutils literal notranslate"><span class="pre">ernic_source_dir</span></code> names a checkout on the controller.
+<code class="docutils literal notranslate"><span class="pre">ansible/playbooks/p4-tests.yml</span></code> stages them from the controller.
+Take them from the same revision <code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code> patched ionic
+from, so that the P4 series <code class="docutils literal notranslate"><span class="pre">ernic_p4.ko</span></code> is built against is the
+one the running ionic carries.</p></li>
+<li><p>Run <code class="docutils literal notranslate"><span class="pre">ernic_p4_dkms</span></code> to build and load <code class="docutils literal notranslate"><span class="pre">ernic_p4.ko</span></code>. The module
+locates the correct <code class="docutils literal notranslate"><span class="pre">Module.symvers</span></code> by searching for the export of
+<code class="docutils literal notranslate"><span class="pre">ionic_adminq_post_wait</span></code>, whose CRC changes when <code class="docutils literal notranslate"><span class="pre">struct</span>
+<span class="pre">ionic_lif</span></code> is patched; building against the wrong symvers causes
+<code class="docutils literal notranslate"><span class="pre">modprobe</span></code> to refuse the module.</p></li>
+</ol>
 </section>
 <section id="activating-p4-from-the-guest">
 <h3>Activating P4 from the guest<a class="headerlink" href="#activating-p4-from-the-guest" title="Link to this heading">#</a></h3>
