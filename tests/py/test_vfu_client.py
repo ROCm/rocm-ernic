@@ -40,6 +40,8 @@ PCI_DEVICE_ID_ROCM_ERNIC = 0x1002
 PCI_SUBDEVICE_ID_ROCM_ERNIC = 0x5400
 
 BAR0_SIZE = 64 << 10
+# The ionic register window; the MSI-X table and PBA are above it.
+BAR0_REGS_SIZE = 32 << 10
 IONIC_DEV_SIG = 0x44455649  # "DEVI"
 
 # struct ionic_lif_info: the status block at 256, link_status at +10.
@@ -50,6 +52,9 @@ PORT_OPER_STATUS_UP = 1
 # write to guest memory fails.
 CLIENT_DISCONNECTED = "Client disconnected after"
 LIF_STATS_WRITE_FAILED = "LIF stats write to"
+# What the server logs when it refuses a BAR0 access across the
+# register/MSI-X split.
+BAR0_STRADDLE_REFUSED = "ionic BAR0 access straddling the register/MSI-X split"
 
 
 def refused(suite, what, func, *expected):
@@ -124,7 +129,7 @@ def test_config_space(suite, client):
     suite.check_eq(cfg[0x0E] & 0x7F, 0, "header type is a normal function")
 
 
-def test_bar_access(suite, client):
+def test_bar_access(suite, client, server):
     """BAR0 reads, and the offsets and counts a guest must not get away with."""
     suite.check_eq(client.read_bar32(0, 0), IONIC_DEV_SIG, "BAR0 signature")
 
@@ -133,6 +138,17 @@ def test_bar_access(suite, client):
         "a BAR0 read running past the end of the region",
         lambda: client.read_region(0, BAR0_SIZE - 16, 64),
         errno.EINVAL,
+    )
+    refused(
+        suite,
+        "a BAR0 read across the register/MSI-X split",
+        lambda: client.read_region(0, BAR0_REGS_SIZE - 4, 8),
+        errno.EINVAL,
+    )
+    # libvfio-user passes this one on, so the refusal is the server's own.
+    suite.check(
+        server.wait_for_log(BAR0_STRADDLE_REFUSED),
+        "the server refused the read across the split",
     )
     refused(
         suite,
@@ -397,7 +413,7 @@ def main():
             suite.run("version negotiation", test_negotiation, client)
             suite.run("device and region info", test_device_info, client)
             suite.run("PCI configuration space", test_config_space, client)
-            suite.run("BAR access and its bounds", test_bar_access, client)
+            suite.run("BAR access and its bounds", test_bar_access, client, server)
             suite.run("DMA mapping", test_dma, client)
             suite.run("interrupts", test_irqs, client)
             suite.run("stats file", test_stats_file, stats_path)

@@ -4,6 +4,7 @@
  * Where the guest driver finds each register block, the MSI-X table and the
  * doorbell pages.  The server sizes the BARs from this and serves the MSI-X
  * table; ionic_eth_emu.c serves the register window and the doorbells.
+ * ionic_bar0_window() says which of the two a BAR0 access goes to.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -14,6 +15,9 @@
 
 #ifndef IONIC_BAR_H
 #define IONIC_BAR_H
+
+#include <stddef.h>
+#include <stdint.h>
 
 /* ---------------------------------------------------------------------------
  * ionic BAR layout.  Checked against upstream v7.2.6:
@@ -81,5 +85,40 @@ _Static_assert(IONIC_BAR0_MSIX_PBA +
                        (IONIC_MSIX_MAX_VECTORS + 63u) / 64u * 8u <=
                    IONIC_BAR0_TOTAL_SIZE,
                "the MSI-X PBA for every vector must fit in BAR0");
+
+/* Where a BAR0 access goes */
+enum ionic_bar0_window {
+    IONIC_BAR0_WINDOW_REGS,     /* the ionic register window */
+    IONIC_BAR0_WINDOW_MSIX,     /* the MSI-X table and PBA above it */
+    IONIC_BAR0_WINDOW_OUTSIDE,  /* refused: not wholly inside BAR0 */
+    IONIC_BAR0_WINDOW_STRADDLE, /* refused: across the register/MSI-X split */
+};
+
+/**
+ * Which part of BAR0 an access of @p count bytes at @p offset goes to.
+ *
+ * The client chooses both, and @p offset is signed (libvfio-user's
+ * loff_t), so neither the conversion nor the sum is formed before it is
+ * known to fit.  libvfio-user refuses an access outside the region before
+ * calling the server, so only a test reaches IONIC_BAR0_WINDOW_OUTSIDE.
+ *
+ * @param offset Where the access starts, from the start of BAR0
+ * @param count  How many bytes it covers
+ */
+static inline enum ionic_bar0_window ionic_bar0_window(int64_t offset,
+                                                       size_t count)
+{
+    if (offset < 0 || (uint64_t)offset > IONIC_BAR0_TOTAL_SIZE ||
+        count > IONIC_BAR0_TOTAL_SIZE - (uint64_t)offset)
+        return IONIC_BAR0_WINDOW_OUTSIDE;
+
+    uint64_t off = (uint64_t)offset;
+
+    if (count <= IONIC_BAR0_REGS_SIZE && off <= IONIC_BAR0_REGS_SIZE - count)
+        return IONIC_BAR0_WINDOW_REGS;
+    if (off < IONIC_BAR0_REGS_SIZE)
+        return IONIC_BAR0_WINDOW_STRADDLE;
+    return IONIC_BAR0_WINDOW_MSIX;
+}
 
 #endif /* IONIC_BAR_H */
