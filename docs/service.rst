@@ -87,21 +87,23 @@ This installs:
        ``ernic-exporter.service``
 
 All destinations are relative to ``CMAKE_INSTALL_PREFIX``,
-shown here for the default ``/usr/local``, except that with
-the prefix ``/usr``, the environment file goes in
-``/etc/rocm-ernic/``. The installed units, scripts,
+shown here for the default ``/usr/local``, except the
+environment file's with two kinds of prefix: with ``/usr``, it
+goes in ``/etc/rocm-ernic/``, and with ``/opt/<name>``, in
+``/etc/opt/<name>/rocm-ernic/``. The installed units, scripts,
 ``ernicctl``, and environment file name each other by their
 paths under the prefix the project was configured with.
 
 .. note::
 
-   The systemd units and ``ernicctl`` read the environment
-   file from ``/etc/rocm-ernic/rocm-ernic.env``. Under any
-   prefix but ``/usr``, the install rule places it under the
-   prefix: with the default prefix it lands in
-   ``/usr/local/etc/rocm-ernic/``, so copy or symlink it into
-   ``/etc/rocm-ernic/`` before starting the service. Likewise,
-   systemd does not read units from
+   With the prefix ``/usr`` or ``/opt/<name>``, the systemd
+   units and ``ernicctl`` read the environment file where it
+   is installed. Under any other prefix they read it from
+   ``/etc/rocm-ernic/rocm-ernic.env``, but the install rule
+   places it under the prefix: with the default prefix it
+   lands in ``/usr/local/etc/rocm-ernic/``, so copy or symlink
+   it into ``/etc/rocm-ernic/`` before starting the service.
+   Likewise, systemd does not read units from
    ``/usr/local/lib/systemd/system`` by default; install with
    ``-DCMAKE_INSTALL_PREFIX=/usr`` or copy the units into
    ``/etc/systemd/system/``.

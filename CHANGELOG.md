@@ -738,6 +738,13 @@
 
 ### Fixed
 
+* **Installing with `ERNIC_INSTALL_SERVICE` under an `/opt/<name>` prefix
+  works.** `rocm-ernic.env` goes in `/etc/opt/<name>/rocm-ernic`, and the
+  installed units, `ernicctl`, the exporter and the driver pack now read it
+  there, where they read `/etc/rocm-ernic` and missed it. The DEB package
+  lists it as a configuration file by its real path; it named
+  `/etc//opt/<name>/...`. Configuring no longer gives CMake's CMP0177
+  warning.
 * **Any guest process could read and write all guest memory through the S3
   and NVMe-oF targets.** Key 0 is the ionic driver's reserved DMA key, which
   the device reads as a raw guest bus address, and both targets passed the

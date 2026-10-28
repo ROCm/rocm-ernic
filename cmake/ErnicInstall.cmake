@@ -148,9 +148,10 @@ libvfio-user (ERNIC_BUNDLE_VFIO_USER)")
     # developer's LD_LIBRARY_PATH to their own libvfio-user build, which has
     # the same soname but may not have the same ABI, would replace the
     # server's copy.
-    file(RELATIVE_PATH ernic_vfio_user_rpath
-        "${CMAKE_INSTALL_FULL_BINDIR}"
-        "${CMAKE_INSTALL_FULL_LIBDIR}/rocm-ernic")
+    set(ernic_vfio_user_full_dir "${CMAKE_INSTALL_FULL_LIBDIR}/rocm-ernic")
+    cmake_path(RELATIVE_PATH ernic_vfio_user_full_dir
+        BASE_DIRECTORY "${CMAKE_INSTALL_FULL_BINDIR}"
+        OUTPUT_VARIABLE ernic_vfio_user_rpath)
     set_target_properties(rocm-ernic PROPERTIES
         INSTALL_RPATH "$ORIGIN/${ernic_vfio_user_rpath}")
     target_link_options(rocm-ernic PRIVATE "LINKER:--disable-new-dtags")
@@ -172,6 +173,12 @@ and launcher"
 # project is configured, so installing to another prefix with
 # cmake --install --prefix leaves them pointing at the configured one.
 #
+# The configuration is the exception: the files read it from
+# /etc/rocm-ernic, where an install to /usr puts it. When it's installed
+# outside the prefix (ERNIC_SYSCONF_DIR is absolute), such as in
+# /etc/opt/<name> for the prefix /opt/<name>, they name that directory
+# instead. Under the prefix, it has to be copied to /etc/rocm-ernic.
+#
 #   type         PROGRAMS or FILES, as for install()
 #   source       The file, relative to the source directory
 #   destination  The install directory, as for install()
@@ -184,6 +191,10 @@ function(ernic_install_with_paths type source destination component)
         "${CMAKE_INSTALL_FULL_LIBEXECDIR}/rocm-ernic" text "${text}")
     string(REPLACE "/usr/local/share/rocm-ernic"
         "${CMAKE_INSTALL_FULL_DATADIR}/rocm-ernic" text "${text}")
+    if(IS_ABSOLUTE "${ERNIC_SYSCONF_DIR}")
+        string(REPLACE "/etc/rocm-ernic/"
+            "${ERNIC_SYSCONF_DIR}/" text "${text}")
+    endif()
 
     # Write the file through configure_file(), which only changes it when
     # its contents change, so it isn't reinstalled on every configure
@@ -203,22 +214,25 @@ if(ERNIC_INSTALL_SERVICE)
     set(ERNIC_LIBEXEC_DIR "${CMAKE_INSTALL_LIBEXECDIR}/rocm-ernic")
     set(ERNIC_SHARE_DIR "${CMAKE_INSTALL_DATADIR}/rocm-ernic")
 
-    # The configuration goes in /etc, where the services and ernicctl
-    # read it, when the prefix is /usr. GNUInstallDirs only says so in
-    # CMAKE_INSTALL_FULL_SYSCONFDIR; CMAKE_INSTALL_SYSCONFDIR is still
-    # etc, which would put it in /usr/etc. Under other prefixes it's
-    # under the prefix, and has to be copied to /etc (see
-    # docs/service.rst).
-    if(CMAKE_INSTALL_FULL_SYSCONFDIR STREQUAL
-            "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_SYSCONFDIR}")
+    # The configuration goes in /etc when the prefix is /usr, and in
+    # /etc/opt/<name> when it's /opt/<name>. GNUInstallDirs only says so
+    # in CMAKE_INSTALL_FULL_SYSCONFDIR; CMAKE_INSTALL_SYSCONFDIR is still
+    # etc, which would put it in /usr/etc. It writes the /opt one with a
+    # doubled slash (/etc//opt/<name>), which would reach the package's
+    # list of configuration files, so both paths are normalized. Under
+    # other prefixes it's under the prefix, and has to be copied to /etc
+    # (see docs/service.rst).
+    cmake_path(SET ernic_sysconf_full NORMALIZE
+        "${CMAKE_INSTALL_FULL_SYSCONFDIR}")
+    cmake_path(SET ernic_sysconf_under_prefix NORMALIZE
+        "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_SYSCONFDIR}")
+    if(ernic_sysconf_full STREQUAL ernic_sysconf_under_prefix)
         set(ERNIC_SYSCONF_DIR "${CMAKE_INSTALL_SYSCONFDIR}/rocm-ernic")
     else()
-        set(ERNIC_SYSCONF_DIR
-          "${CMAKE_INSTALL_FULL_SYSCONFDIR}/rocm-ernic")
+        set(ERNIC_SYSCONF_DIR "${ernic_sysconf_full}/rocm-ernic")
     endif()
     # The installed file, for the package's list of configuration files
-    set(ERNIC_ENV_FILE
-      "${CMAKE_INSTALL_FULL_SYSCONFDIR}/rocm-ernic/rocm-ernic.env")
+    set(ERNIC_ENV_FILE "${ernic_sysconf_full}/rocm-ernic/rocm-ernic.env")
 
     # systemd unit files
     ernic_install_with_paths(FILES service/rocm-ernic.service

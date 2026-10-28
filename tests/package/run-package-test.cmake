@@ -35,8 +35,9 @@
 #     The service files name /usr/local, which is replaced when they're
 #     installed elsewhere, so no file names it unless that's the prefix.
 #     Every program a systemd unit runs from under the prefix is in a
-#     package, and the units read the packaged configuration when it's in
-#     /etc.
+#     package. When the packaged configuration is in /etc (with the
+#     prefix /usr, or /etc/opt/<name> with /opt/<name>), the units read
+#     it, and every file that names a rocm-ernic.env names it.
 #   - With ERNIC_BUNDLE_VFIO_USER, that the server finds its libvfio-user
 #     through a DT_RPATH, which LD_LIBRARY_PATH can't override, and that
 #     the library has no run path of its own
@@ -105,8 +106,7 @@ set(${server}_recommends)
 set(${server}_conffiles)
 
 if(BUNDLE_VFIO_USER)
-    get_filename_component(vfio_user_license_name "${VFIO_USER_LICENSE}"
-        NAME)
+    cmake_path(GET VFIO_USER_LICENSE FILENAME vfio_user_license_name)
     set(private_vfio_user ${LIBDIR}/rocm-ernic/${VFIO_USER_SONAME})
     list(APPEND ${server}_files
         ${private_vfio_user}
@@ -188,7 +188,7 @@ set(found_packages)
 set(all_files)
 foreach(package IN LISTS packages)
     read_field(name ${package} Package)
-    get_filename_component(package_file ${package} NAME)
+    cmake_path(GET package FILENAME package_file)
     set(what "${package_file} (${name})")
 
     if(NOT name IN_LIST expected_packages)
@@ -409,7 +409,9 @@ read_dynamic(needed rpath runpath ${server_program})
 check_library_depends(${BINDIR}/rocm-ernic "${needed}")
 
 if(BUNDLE_VFIO_USER)
-    file(RELATIVE_PATH relative_rpath ${BINDIR} ${LIBDIR}/rocm-ernic)
+    set(private_lib_dir ${LIBDIR}/rocm-ernic)
+    cmake_path(RELATIVE_PATH private_lib_dir BASE_DIRECTORY ${BINDIR}
+        OUTPUT_VARIABLE relative_rpath)
     set(expected_rpath "$ORIGIN/${relative_rpath}")
     if(NOT rpath STREQUAL expected_rpath OR NOT runpath STREQUAL "")
         fail("${BINDIR}/rocm-ernic has DT_RPATH '${rpath}' and DT_RUNPATH "
@@ -433,12 +435,16 @@ endif()
 # The ELF files are left out: what the compiler and the libraries put in
 # them isn't up to the install rules
 file(GLOB_RECURSE installed_files LIST_DIRECTORIES false ${root}/*)
+set(text_files)
+foreach(file IN LISTS installed_files)
+    file(READ ${file} magic LIMIT 4 HEX)
+    if(NOT magic STREQUAL "7f454c46")
+        list(APPEND text_files ${file})
+    endif()
+endforeach()
+
 if(NOT INSTALL_PREFIX STREQUAL "/usr/local")
-    foreach(file IN LISTS installed_files)
-        file(READ ${file} magic LIMIT 4 HEX)
-        if(magic STREQUAL "7f454c46")
-            continue()
-        endif()
+    foreach(file IN LISTS text_files)
         file(STRINGS ${file} lines REGEX "/usr/local/")
         if(lines)
             string(REPLACE "${root}" "" path "${file}")
@@ -446,6 +452,24 @@ if(NOT INSTALL_PREFIX STREQUAL "/usr/local")
             fail("${path} names /usr/local/, but the packages install "
                 "to ${INSTALL_PREFIX}: ${line}")
         endif()
+    endforeach()
+endif()
+
+# When the configuration is in /etc, every file that names a
+# rocm-ernic.env names the packaged one
+if(ENV_FILE MATCHES "^/etc/")
+    foreach(file IN LISTS text_files)
+        file(STRINGS ${file} lines REGEX "/rocm-ernic\\.env")
+        foreach(line IN LISTS lines)
+            string(REGEX MATCHALL "/[^ \t\"'`=]*/rocm-ernic\\.env" names
+                "${line}")
+            foreach(name IN LISTS names)
+                if(NOT name STREQUAL ENV_FILE)
+                    string(REPLACE "${root}" "" path "${file}")
+                    fail("${path} names ${name}, not ${ENV_FILE}: ${line}")
+                endif()
+            endforeach()
+        endforeach()
     endforeach()
 endif()
 
