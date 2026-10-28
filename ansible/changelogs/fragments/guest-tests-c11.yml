@@ -1,0 +1,12 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+trivial:
+  - >-
+    The guest builds of the S3 client in ``s3-tests.yml`` and the UD mesh
+    test in ``sanity-tests.yml`` compile with ``-std=c11 -pedantic`` and
+    the feature-test macros the project's own build uses. The UD mesh test
+    also copies ``src/ernic_gnu.c`` and ``src/ernic_gnu.h`` into the guest
+    and links them, for the ``accept4()`` it calls.

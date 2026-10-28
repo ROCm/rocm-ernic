@@ -108,13 +108,16 @@ function(ernic_set_compiler_flags target)
     # plus POSIX.1-2008, and glibc's _DEFAULT_SOURCE for the BSD and
     # System V extensions it relies on (libvfio-user's public header uses
     # loff_t, and src/p4/p4_devcmd.c uses <endian.h>'s htole32() family).
-    # glibc defines both by default, but not under -std=c11.
+    # glibc defines both by default, but not under -std=c11. With
+    # _DEFAULT_SOURCE, glibc raises _POSIX_C_SOURCE to its own default
+    # (202405L in glibc 2.43).
     #
     # Not _GNU_SOURCE, which makes every GNU extension visible, so a
-    # GNU-only function could slip in unnoticed, and which hides
-    # clang-tidy's android-cloexec-* findings. A source file that needs a
-    # GNU extension defines _GNU_SOURCE itself, before its first
-    # #include, and says what for.
+    # GNU-only function could slip in unnoticed, and which also turns on
+    # glibc's C23 interfaces. Only src/ernic_gnu.c defines it, and wraps the
+    # extensions for the rest (see ernic_gnu.h). The ernic-feature-macros
+    # test checks that no other file is compiled with a feature-test macro
+    # of its own.
     #
     # NOTE: ernic_check_libc_disabled_macro_expansion() compiles its check
     #       with the same macros; change both together.
@@ -122,6 +125,13 @@ function(ernic_set_compiler_flags target)
       _POSIX_C_SOURCE=200809L
       _DEFAULT_SOURCE
     )
+
+    # ernic-feature-macros reads each file's compile command from
+    # compile_commands.json
+    if(BUILD_TESTING)
+        set_target_properties(${target} PROPERTIES
+          EXPORT_COMPILE_COMMANDS ON)
+    endif()
 
     # Every source is C, the only language project() enables. The flags
     # apply to the whole target, including sources added after this call.

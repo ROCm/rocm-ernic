@@ -591,11 +591,16 @@
     `_DEFAULT_SOURCE`, set by `ernic_set_compiler_flags()`, not
     `_GNU_SOURCE`, so a GNU-only function no longer compiles unnoticed, and
     clang-tidy's `android-cloexec-*` checks, which `_GNU_SOURCE` silences,
-    run on the rest of the code. A source file that needs a GNU or Linux
-    extension (`accept4()`, `pipe2()`, `O_PATH`) defines `_GNU_SOURCE`
-    itself, before its first `#include`. The guest
-    test builds in CI and the Nix fuzz and `ernic-rdma-errors` builds pass
-    the same macros.
+    run on the rest of the code. Only `src/ernic_gnu.c` defines
+    `_GNU_SOURCE`, which also turns on glibc's C23 and POSIX.1-2024
+    interfaces; it wraps the GNU and Linux extensions the code uses
+    (`accept4()`, `pipe2()`, `O_PATH`, thread names) for the rest. The
+    `ernic-feature-macros` test fails if any other file is compiled as
+    another C standard, or with a feature-test macro of its own, from its
+    source, a header, or the compiler flags. Nothing uses BSD's `<err.h>`.
+    The guest test builds in CI and Ansible compile with
+    `-std=c11 -pedantic` and the same macros, as do the Nix fuzz and
+    `ernic-rdma-errors` builds.
   * A configure that can't find GLib or libibverbs names the package to
     install (`libglib2.0-dev` or `glib2-devel`, `libibverbs-dev` or
     `libibverbs-devel`); it stopped before showing that message.
@@ -1486,6 +1491,10 @@
     guest can't cut a wait short or stretch it, and a wait lasts its full
     `POLL_SECONDS` rather than as little as a second less. The lanes copy
     `src/ernic_time.h` into the guest with the test sources.
+
+### Limitations
+
+* rocm-ernic supports only 64-bit Linux; 32-bit systems aren't supported.
 
 ### Known issues
 

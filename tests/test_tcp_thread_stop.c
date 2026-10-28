@@ -148,9 +148,6 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-/* accept4() is a GNU extension */
-#define _GNU_SOURCE
-
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -180,6 +177,7 @@
 #include <infiniband/verbs.h>
 
 #include "byteorder.h"
+#include "ernic_gnu.h"
 #include "ernic_time.h"
 #include "pvrdma/rdma_backend_defs.h"
 #include "qemu/error-report.h"
@@ -234,7 +232,7 @@ void qemu_thread_set_name(const char *name)
     char buf[QEMU_THREAD_NAME_LEN];
 
     g_strlcpy(buf, name, sizeof(buf));
-    (void)pthread_setname_np(pthread_self(), buf);
+    (void)ernic_gnu_pthread_setname_np(pthread_self(), buf);
 }
 
 static void *trampoline_run(void *opaque)
@@ -2364,7 +2362,7 @@ static int accept_within(int lfd)
 {
     struct pollfd pfd = {.fd = lfd, .events = POLLIN};
 
-    return poll(&pfd, 1, 5000) == 1 ? accept4(lfd, NULL, NULL, SOCK_CLOEXEC)
+    return poll(&pfd, 1, 5000) == 1 ? ernic_gnu_accept4(lfd, NULL, NULL, 0)
                                     : -1;
 }
 

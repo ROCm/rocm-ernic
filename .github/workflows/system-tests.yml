@@ -820,7 +820,11 @@ jobs:
         set -e
         cd /tmp/rdma-verify
         read -ra IBV_FLAGS <<< "$(pkg-config --libs libibverbs)"
-        cc -O2 -Wall -Wextra -o rdma_verify rdma_verify.c "${IBV_FLAGS[@]}"
+        # The project's C standard and feature-test macros, as
+        # ernic_set_compiler_flags() in cmake/ErnicCompilerOptions.cmake
+        # gives every target
+        cc -std=c11 -pedantic -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+          -O2 -Wall -Wextra -o rdma_verify rdma_verify.c "${IBV_FLAGS[@]}"
         # Bounded so a hang fails the step in seconds rather than
         # burning the job's 60-minute budget.
         timeout 120 ./rdma_verify "$RDMA_DEVICE"
@@ -850,7 +854,11 @@ jobs:
         set -e
         cd /tmp/write-imm-smoke
         read -ra IBV_FLAGS <<< "$(pkg-config --cflags --libs libibverbs)"
-        gcc -O2 -Wall -Wextra \
+        # The project's C standard and feature-test macros, as
+        # ernic_set_compiler_flags() in cmake/ErnicCompilerOptions.cmake
+        # gives every target
+        gcc -std=c11 -pedantic -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+          -O2 -Wall -Wextra \
           -o test_write_imm test_write_imm.c \
           "${IBV_FLAGS[@]}"
         set +e
@@ -904,7 +912,11 @@ jobs:
         set -e
         cd /tmp/srq-smoke
         read -ra IBV_FLAGS <<< "$(pkg-config --cflags --libs libibverbs)"
-        gcc -O2 -Wall -Wextra \
+        # The project's C standard and feature-test macros, as
+        # ernic_set_compiler_flags() in cmake/ErnicCompilerOptions.cmake
+        # gives every target
+        gcc -std=c11 -pedantic -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+          -O2 -Wall -Wextra \
           -o test_srq test_srq.c \
           "${IBV_FLAGS[@]}"
         set +e
@@ -964,11 +976,11 @@ jobs:
         T="$1"
         cd /tmp/guest-rdma-tests
         read -ra IBV_FLAGS <<< "$(pkg-config --cflags --libs libibverbs)"
-        # The feature-test macros match ernic_set_compiler_flags() in
-        # cmake/ErnicCompilerOptions.cmake; without _DEFAULT_SOURCE,
-        # test_data_transfer picks up an implicit declaration of usleep().
-        gcc -O2 -Wall -Wextra -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
-          -o "$T" "$T.c" "${IBV_FLAGS[@]}"
+        # The project's C standard and feature-test macros, as
+        # ernic_set_compiler_flags() in cmake/ErnicCompilerOptions.cmake
+        # gives every target
+        gcc -std=c11 -pedantic -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+          -O2 -Wall -Wextra -o "$T" "$T.c" "${IBV_FLAGS[@]}"
         set +e
         timeout 120s "./$T"
         exit $?
@@ -1351,8 +1363,11 @@ jobs:
         T="$1"
         cd /tmp/srq-test
         read -ra IBV_FLAGS <<< "$(pkg-config --cflags --libs libibverbs)"
-        gcc -O2 -Wall -Wextra -o "$T" "$T.c" \
-          "${IBV_FLAGS[@]}"
+        # The project's C standard and feature-test macros, as
+        # ernic_set_compiler_flags() in cmake/ErnicCompilerOptions.cmake
+        # gives every target
+        gcc -std=c11 -pedantic -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+          -O2 -Wall -Wextra -o "$T" "$T.c" "${IBV_FLAGS[@]}"
         set +e
         timeout 60s "./$T"
         exit $?

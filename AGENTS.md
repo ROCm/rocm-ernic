@@ -115,6 +115,9 @@ cmake --build build
 - Standard C11; no GNU extensions without permission. Atomics
   (`<stdatomic.h>`) and threads (`qemu/thread.h` over pthreads) are
   available; see [Thread safety](#thread-safety).
+- **64-bit Linux only.** 32-bit systems aren't supported, so large-file
+  and 64-bit `time_t` macros (`_FILE_OFFSET_BITS`, `_TIME_BITS`) aren't
+  needed.
 - **No bare `__attribute__`.** Use C11's own forms (`_Alignas`,
   `_Noreturn`, `_Static_assert`), and for the rest, the macros in
   [`src/ernic_attributes.h`](src/ernic_attributes.h), which expand to
@@ -122,14 +125,27 @@ cmake --build build
   taking a printf format. Add a macro there for a new attribute. Clang's
   thread-safety annotations are in `qemu/clang-tsa.h`.
 - **The library is POSIX.1-2008 plus glibc's `_DEFAULT_SOURCE`**, which
-  `ernic_set_compiler_flags()` defines for every target. Don't add
-  `_GNU_SOURCE` to a target or to `CMAKE_C_FLAGS`: it exposes every GNU
-  function, and silences clang-tidy's `android-cloexec-*` checks. A file
-  that needs a GNU or Linux extension (`accept4()`, `pipe2()`, `O_PATH`)
-  writes `#define _GNU_SOURCE` before its first `#include`, with a comment
-  naming what for, as `src/rdma/tcp_conn.c` does. For `environ`, declare
-  `extern char **environ;` as POSIX requires, rather than defining
-  `_GNU_SOURCE` for it.
+  `ernic_set_compiler_flags()` defines for every target, and every file
+  gets exactly those. Don't define `_GNU_SOURCE` or any other feature-test
+  macro (`_XOPEN_SOURCE`, `_ISOC23_SOURCE`, ...) in a file, a header, a
+  target, or `CMAKE_C_FLAGS`. `_GNU_SOURCE` exposes every GNU function,
+  turns on glibc's C23 interfaces (const-preserving `strchr()`, a
+  `strtol()` that accepts `0b`), and silences clang-tidy's
+  `android-cloexec-*` checks. Call a GNU or Linux extension (`accept4()`,
+  `pipe2()`, `O_PATH`, `pthread_setname_np()`) through its wrapper in
+  [`src/ernic_gnu.h`](src/ernic_gnu.h); `src/ernic_gnu.c`, the only file
+  that defines `_GNU_SOURCE`, holds the wrappers and nothing else, so
+  add one there for a new extension and link `ernic_gnu.c` into the
+  tests that need it. For `environ`, declare `extern char **environ;` as
+  POSIX requires. The `ernic-feature-macros` test checks all of this,
+  and the C standard, for every file the build compiles, and looks for a
+  `#define` of a feature-test macro in the ones it doesn't. A workflow or
+  playbook that compiles a test program in a guest passes `-std=c11
+  -pedantic -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE`, and ships and
+  links `ernic_gnu.c` if the program calls a wrapper.
+- **Don't use BSD's `<err.h>`** (`err()`, `warn()`): print the message
+  and `strerror(errno)` with `fprintf()`, as `warn_errno()` in
+  `rocm_ernic_server.c` does.
 - **Don't `goto` past an initialized declaration into its scope**
   (GCC's `-Wjump-misses-init`), as a `goto out` to the cleanup at the
   end of a function does over everything declared after it. Declare
@@ -505,7 +521,7 @@ touches. The commands are in the sections below.
   ctest --test-dir build -T memcheck --output-on-failure \
     --overwrite "MemoryCheckCommand=$(command -v valgrind)" \
     --overwrite "MemoryCheckCommandOptions=--leak-check=full --track-origins=yes --num-callers=40 --error-exitcode=1" \
-    -E '^(pci-config-test|find-rdma-device-tuple|find-ipv4-gid-index|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli|cmake-subproject|ernic-package-deb|ernic-package-deb-config-paths|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver|ernic-ionic-hw-stats|ernic-mesh-stress|ernic-mesh-flow)$'
+    -E '^(pci-config-test|find-rdma-device-tuple|find-ipv4-gid-index|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli|cmake-subproject|ernic-package-deb|ernic-package-deb-config-paths|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver|ernic-ionic-hw-stats|ernic-mesh-stress|ernic-mesh-flow|ernic-feature-macros)$'
   ```
 
   The excluded tests run scripts, CMake, Python, or a server launcher.

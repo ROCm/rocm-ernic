@@ -426,7 +426,8 @@
           {{ item }} 'mkdir -p /tmp/ud-mesh' &&
           tar -cf -
           -C {{ ernic_project_root }}/tests test_ud_mesh.c ernic_device.h
-          -C {{ ernic_project_root }}/src parse_int.h ernic_time.h |
+          -C {{ ernic_project_root }}/src parse_int.h ernic_time.h
+          ernic_gnu.c ernic_gnu.h |
           {{ item }} 'tar -C /tmp/ud-mesh -xf -'
       loop:
         - "{{ vm1_ssh }}"
@@ -443,8 +444,13 @@
           set -e
           cd /tmp/ud-mesh
           read -ra ibverbs <<< "$(pkg-config --cflags --libs libibverbs)"
-          gcc -O2 -Wall -Wextra -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
-            -o test_ud_mesh test_ud_mesh.c "${ibverbs[@]}"
+          # The project's C standard and feature-test macros, as
+          # ernic_set_compiler_flags() in cmake/ErnicCompilerOptions.cmake
+          # gives every target. ernic_gnu.c holds the accept4() the test
+          # calls.
+          gcc -std=c11 -pedantic -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+            -O2 -Wall -Wextra -o test_ud_mesh test_ud_mesh.c ernic_gnu.c \
+            "${ibverbs[@]}"
           EOF
       loop:
         - "{{ vm1_ssh }}"

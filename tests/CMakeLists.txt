@@ -53,9 +53,11 @@ set(ERNIC_TEST_P4_ENGINE_SOURCES
 set(ERNIC_TEST_P4_FIXTURE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/data/p4)
 
 # The TCP backend's sources. The list comes from the top-level
-# CMakeLists.txt, so the tests keep linking what the server links.
+# CMakeLists.txt, so the tests keep linking what the server links, plus
+# the GNU extensions it calls.
 set(ERNIC_TCP_TEST_SOURCES ${TCP_BACKEND_SOURCES})
 list(TRANSFORM ERNIC_TCP_TEST_SOURCES PREPEND "${PROJECT_SOURCE_DIR}/")
+list(APPEND ERNIC_TCP_TEST_SOURCES ${PROJECT_SOURCE_DIR}/src/ernic_gnu.c)
 
 # -- test_pci_client (no extra dependencies) ---------------------
 ernic_add_test_program(test_pci_client SOURCES test_pci_client.c)
@@ -104,6 +106,9 @@ foreach(guest_test IN LISTS ERNIC_GUEST_ONLY_TESTS)
         DEPS ibverbs
     )
 endforeach()
+# test_ud_mesh accepts its out-of-band connection with accept4(). The
+# guest build in ansible/playbooks/sanity-tests.yml links the same file.
+target_sources(test_ud_mesh PRIVATE ${PROJECT_SOURCE_DIR}/src/ernic_gnu.c)
 
 # -- Unit tests --------------------------------------------------
 
@@ -414,6 +419,7 @@ add_dependencies(test_server_lifecycle rocm-ernic)
 ernic_add_test_program(ernic-test-socket
     SOURCES
         test_ernic_socket.c
+        ${PROJECT_SOURCE_DIR}/src/ernic_gnu.c
         ${PROJECT_SOURCE_DIR}/src/ernic_socket.c
         ${PROJECT_SOURCE_DIR}/src/ernic_log.c
 )
@@ -615,6 +621,7 @@ ernic_add_test_program(test_rdma_res_tbl
         test_rdma_res_tbl.c
         ${PROJECT_SOURCE_DIR}/src/pvrdma/rdma_rm.c
         ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
+        ${PROJECT_SOURCE_DIR}/src/ernic_gnu.c
         ${PROJECT_SOURCE_DIR}/src/ernic_log.c
         ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
     DEPS glib ibverbs pthread
@@ -626,6 +633,7 @@ ernic_add_test_program(test_rdma_res_tbl
 ernic_add_test_program(test_qemu_stubs
     SOURCES
         test_qemu_stubs.c
+        ${PROJECT_SOURCE_DIR}/src/ernic_gnu.c
         ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
     DEPS glib ibverbs pthread
 )
@@ -643,6 +651,7 @@ ernic_add_test_program(ernic-test-log-level
     SOURCES
         test_log_level.c
         ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
+        ${PROJECT_SOURCE_DIR}/src/ernic_gnu.c
         ${PROJECT_SOURCE_DIR}/src/ernic_log.c
     DEPS pthread
 )
@@ -1269,3 +1278,33 @@ add_subdirectory(subproject)
 # Build and check the DEB packages
 # ---------------------------------------------------------------
 add_subdirectory(package)
+
+# ---------------------------------------------------------------
+# One language and C library interface for every file
+# ---------------------------------------------------------------
+# Every file is compiled as exactly the C standard CMAKE_C_STANDARD names,
+# with the feature-test macros ernic_set_compiler_flags() defines and no
+# others, except src/ernic_gnu.c, the one file allowed _GNU_SOURCE. The
+# check reads compile_commands.json, which only the Ninja and Makefile
+# generators write, at the top of the build tree: CMAKE_BINARY_DIR, which
+# is a superproject's when rocm-ernic is built inside one.
+set(ERNIC_STDC_VERSION_99 199901L)
+set(ERNIC_STDC_VERSION_11 201112L)
+set(ERNIC_STDC_VERSION_17 201710L)
+if(NOT DEFINED ERNIC_STDC_VERSION_${CMAKE_C_STANDARD})
+    message(FATAL_ERROR "No __STDC_VERSION__ for C${CMAKE_C_STANDARD}; add "
+      "it to tests/CMakeLists.txt")
+endif()
+if(CMAKE_GENERATOR MATCHES "Ninja|Makefiles")
+    add_test(
+        NAME ernic-feature-macros
+        COMMAND ${CMAKE_COMMAND}
+            "-DCOMPILE_COMMANDS=${CMAKE_BINARY_DIR}/compile_commands.json"
+            "-DSOURCE_DIR=${PROJECT_SOURCE_DIR}"
+            "-DBINARY_DIR=${PROJECT_BINARY_DIR}"
+            "-DGNU_SOURCE_FILE=${PROJECT_SOURCE_DIR}/src/ernic_gnu.c"
+            "-DSTDC_VERSION=${ERNIC_STDC_VERSION_${CMAKE_C_STANDARD}}"
+            -P ${PROJECT_SOURCE_DIR}/cmake/ErnicCheckFeatureMacros.cmake
+    )
+    set_tests_properties(ernic-feature-macros PROPERTIES TIMEOUT 300)
+endif()

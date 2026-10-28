@@ -5,9 +5,6 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-/* O_PATH and AT_EMPTY_PATH are Linux extensions */
-#define _GNU_SOURCE
-
 #include "ernic_socket.h"
 
 #include <errno.h>
@@ -21,6 +18,7 @@
 #include <sys/xattr.h>
 #include <unistd.h>
 
+#include "ernic_gnu.h"
 #include "ernic_log.h"
 #include "parse_int.h"
 
@@ -98,7 +96,7 @@ bool ernic_socket_set_group(const char *path, const char *name, gid_t gid,
     struct stat st;
     bool ok = false;
     int n;
-    int fd = open(path, O_PATH | O_NOFOLLOW | O_CLOEXEC);
+    int fd = ernic_gnu_open_path(path, O_NOFOLLOW);
 
     if (fd < 0) {
         fprintf(stderr, "rocm-ernic: cannot open socket %s: %s\n", path,
@@ -112,7 +110,7 @@ bool ernic_socket_set_group(const char *path, const char *name, gid_t gid,
     }
     if (!socket_is_created(path, &st, created))
         goto out;
-    if (fchownat(fd, "", (uid_t)-1, gid, AT_EMPTY_PATH) < 0) {
+    if (ernic_gnu_fchown_path(fd, (uid_t)-1, gid) < 0) {
         int e = errno;
 
         fprintf(stderr, "rocm-ernic: cannot give socket %s the group %s: %s\n",
@@ -225,7 +223,7 @@ bool ernic_socket_remove_stale(const char *path)
     if (*name == '\0') {
         fprintf(stderr, "rocm-ernic: socket path \"%s\" has no file name\n",
                 path);
-    } else if ((dfd = open(dir, O_PATH | O_DIRECTORY | O_CLOEXEC)) < 0) {
+    } else if ((dfd = ernic_gnu_open_path(dir, O_DIRECTORY)) < 0) {
         fprintf(stderr, "rocm-ernic: cannot open socket directory %s: %s\n",
                 dir, strerror(errno));
     } else if (fstatat(dfd, name, &st, AT_SYMLINK_NOFOLLOW) < 0) {

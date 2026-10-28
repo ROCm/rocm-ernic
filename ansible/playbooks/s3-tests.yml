@@ -168,7 +168,12 @@
         chdir: "{{ ernic_s3_dir }}"
         cmd: |
           read -ra ibverbs <<< "$(pkg-config --libs libibverbs)"
-          cc -O2 -Wall -Wextra -o s3_rdma_client s3_rdma_client.c "${ibverbs[@]}"
+          # The project's C standard and feature-test macros, as
+          # ernic_set_compiler_flags() in cmake/ErnicCompilerOptions.cmake
+          # gives every target
+          cc -std=c11 -pedantic -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+            -O2 -Wall -Wextra -o s3_rdma_client s3_rdma_client.c \
+            "${ibverbs[@]}"
       register: ernic_s3_build
       changed_when: true
 

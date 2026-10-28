@@ -11,7 +11,7 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
-#include <err.h>
+#include <errno.h>
 #include <getopt.h>
 #include <limits.h>
 #include <stdbool.h>
@@ -55,7 +55,7 @@ static int connect_to_server(const char *socket_path)
 
     fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) {
-        warn("socket");
+        perror("socket");
         return -1;
     }
 
@@ -64,7 +64,7 @@ static int connect_to_server(const char *socket_path)
     strncpy(addr.sun_path, socket_path, sizeof(addr.sun_path) - 1);
 
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        warn("connect to %s", socket_path);
+        fprintf(stderr, "connect to %s: %s\n", socket_path, strerror(errno));
         close(fd);
         return -1;
     }
