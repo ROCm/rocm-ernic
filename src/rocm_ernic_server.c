@@ -239,7 +239,7 @@ static ssize_t bar0_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
 
     ernic_stats_bar0_access(dev->stats, is_write);
 
-    enum ionic_bar0_window win = ionic_bar0_window(offset, count);
+    enum ionic_bar0_window win = ionic_bar0_classify(offset, count);
 
     if (win == IONIC_BAR0_WINDOW_REGS)
         return ionic_eth_emu_bar0_access(emu, buf, count, offset, is_write);

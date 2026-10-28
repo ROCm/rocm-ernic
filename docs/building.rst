@@ -256,6 +256,10 @@ Build Options
    * - ``ERNIC_BUILD_DOCS``
      - ``OFF``
      - Build Sphinx + Breathe + Doxygen documentation
+   * - ``ERNIC_DOCS_WERROR``
+     - ``OFF``
+     - Treat Sphinx warnings as errors (``sphinx-build -W``);
+       the docs workflows turn it on
    * - ``ERNIC_DOCS_ONLY``
      - ``OFF``
      - Configure only documentation targets (no library
@@ -526,3 +530,6 @@ dependencies (libvfio-user, glib, libibverbs):
    cmake -B build -DERNIC_DOCS_ONLY=ON \
      -DERNIC_BUILD_DOCS=ON
    cmake --build build --target sphinx-html
+
+Add ``-DERNIC_DOCS_WERROR=ON`` to fail the build on any Sphinx
+warning, as the Docs Check workflow does.

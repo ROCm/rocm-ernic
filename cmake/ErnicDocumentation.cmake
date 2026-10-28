@@ -15,6 +15,13 @@ option(ERNIC_BUILD_DOCS
   "Build documentation with Sphinx + Breathe + Doxygen"
   OFF)
 
+# Off by default, like ERNIC_WERROR, so a superproject's build doesn't
+# fail on a warning from a Sphinx, Breathe or Doxygen version we have not
+# seen. The docs workflows turn it on, so new warnings still fail there.
+option(ERNIC_DOCS_WERROR
+  "Treat Sphinx warnings as errors when building the documentation"
+  OFF)
+
 if(ERNIC_BUILD_DOCS)
     find_package(Doxygen REQUIRED)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
@@ -122,8 +129,16 @@ if(ERNIC_BUILD_DOCS)
     )
 
     # ── Sphinx target: RST + Doxygen XML -> HTML ───────
+    # Since Sphinx 8.1, -W reports every warning before failing, so it
+    # needs no --keep-going.
+    set(ERNIC_SPHINX_WERROR_FLAGS "")
+    if(ERNIC_DOCS_WERROR)
+        set(ERNIC_SPHINX_WERROR_FLAGS -W)
+    endif()
+
     add_custom_target(sphinx-html
       COMMAND ${SPHINX_BUILD}
+        ${ERNIC_SPHINX_WERROR_FLAGS}
         -b html
         -c ${PROJECT_BINARY_DIR}/docs-sphinx
         ${PROJECT_SOURCE_DIR}/docs

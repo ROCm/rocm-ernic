@@ -4,7 +4,7 @@
  * Where the guest driver finds each register block, the MSI-X table and the
  * doorbell pages.  The server sizes the BARs from this and serves the MSI-X
  * table; ionic_eth_emu.c serves the register window and the doorbells.
- * ionic_bar0_window() says which of the two a BAR0 access goes to.
+ * ionic_bar0_classify() says which of the two a BAR0 access goes to.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -105,8 +105,8 @@ enum ionic_bar0_window {
  * @param offset Where the access starts, from the start of BAR0
  * @param count  How many bytes it covers
  */
-static inline enum ionic_bar0_window ionic_bar0_window(int64_t offset,
-                                                       size_t count)
+static inline enum ionic_bar0_window ionic_bar0_classify(int64_t offset,
+                                                         size_t count)
 {
     if (offset < 0 || (uint64_t)offset > IONIC_BAR0_TOTAL_SIZE ||
         count > IONIC_BAR0_TOTAL_SIZE - (uint64_t)offset)
