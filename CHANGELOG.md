@@ -1220,7 +1220,7 @@
     in it loaded as the part before the NUL (`"0x00ff\u0000zz"` as
     `0x00ff`), and an arm whose value was `"default\u0000zz"` loaded as a
     default arm. Each is refused with `EINVAL`.
-  * A program refused because loading it ran out of memory gave no reason
+  * A program refused because parsing it ran out of memory gave no reason
     for the refusal; it now says so.
   * Load errors say what's wrong: an empty or truncated program says so, a
     field width given as a string other than `"*"` is a bad width rather

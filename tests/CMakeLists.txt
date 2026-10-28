@@ -181,6 +181,30 @@ if(ERNIC_BUILD_P4)
     target_compile_definitions(ernic-test-p4-engine PRIVATE
         P4_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/p4")
 
+    # Loading a program when memory runs out. It fails the parser's
+    # allocations on demand with the S3 tests' wrappers (s3_alloc_fail.h),
+    # and json_tokener_new_ex() with its own, since json-c allocates the
+    # tokener where --wrap can't reach.
+    add_executable(ernic-test-p4-alloc-fail
+        test_p4_alloc_fail.c
+        s3_alloc_fail.c
+        ${PROJECT_SOURCE_DIR}/src/p4/p4_engine.c
+        ${PROJECT_SOURCE_DIR}/src/p4/p4_exec.c
+        ${PROJECT_SOURCE_DIR}/src/p4/p4_json.c
+        ${PROJECT_SOURCE_DIR}/src/p4/p4_table.c
+    )
+    target_include_directories(ernic-test-p4-alloc-fail PRIVATE
+        ${PROJECT_SOURCE_DIR}/src
+        ${PROJECT_SOURCE_DIR}/shared
+    )
+    target_link_libraries(ernic-test-p4-alloc-fail PRIVATE PkgConfig::JSONC)
+    target_compile_definitions(ernic-test-p4-alloc-fail PRIVATE
+        P4_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/p4")
+    target_link_options(ernic-test-p4-alloc-fail PRIVATE
+        "LINKER:--wrap=malloc,--wrap=calloc,--wrap=realloc"
+        "LINKER:--wrap=strdup,--wrap=getentropy"
+        "LINKER:--wrap=json_tokener_new_ex")
+
     # OCP FP8 E4M3 arithmetic: the extern the pipeline calls, since P4
     # itself has no floating-point type. Pure computation, no device.
     add_executable(ernic-test-p4-fp8
@@ -1073,7 +1097,8 @@ set(ERNIC_TEST_TARGETS
 
 if(ERNIC_BUILD_P4)
     list(APPEND ERNIC_TEST_TARGETS
-        ernic-test-p4-engine ernic-test-p4-fp8 ernic-test-p4-fmt)
+        ernic-test-p4-engine ernic-test-p4-alloc-fail ernic-test-p4-fp8
+        ernic-test-p4-fmt)
 endif()
 
 foreach(ernic_test_target IN LISTS ERNIC_TEST_TARGETS)
@@ -1175,6 +1200,12 @@ if(ERNIC_BUILD_P4)
         COMMAND $<TARGET_FILE:ernic-test-p4-engine>
     )
     set_tests_properties(p4-engine-unit PROPERTIES TIMEOUT 120)
+
+    add_test(
+        NAME p4-alloc-fail-unit
+        COMMAND $<TARGET_FILE:ernic-test-p4-alloc-fail>
+    )
+    set_tests_properties(p4-alloc-fail-unit PROPERTIES TIMEOUT 30)
 
     add_test(
         NAME p4-fp8-unit

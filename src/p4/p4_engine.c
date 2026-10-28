@@ -191,6 +191,7 @@ int p4_engine_load_commit(struct p4_engine *eng)
         return -EINVAL;
     }
 
+    /* The parser writes its reason into load_err on every failure. */
     struct p4_program *prog = NULL;
     int rc = p4_json_parse(eng->load_buf, eng->load_got, &prog, eng->load_err,
                            sizeof(eng->load_err));
