@@ -48,16 +48,26 @@ than in-capsule data. ``maxcmd`` is 128.
 Reproducing
 -----------
 
+<<<<<<< Updated upstream
 One server and one guest are a complete fabric. This needs the
 Ansible prerequisites in :doc:`testing` and, for
 ``ernicctl vm-launch``, those in :doc:`service`. Host setup writes
 :file:`/etc/rocm-ernic/rocm-ernic.env` from its template, which
 has no backend setting, so choose the backend after host setup
 rather than before it:
+=======
+One server and one guest are a complete fabric. Set
+``ERNIC_INSTANCES=1`` and
+``ERNIC_BACKEND=nvmeof:size=8G,bs=4096,queues=4`` in
+:file:`/etc/rocm-ernic/rocm-ernic.env`, launch and provision
+the guest as in :doc:`testing`, then run the NVMe-oF play with
+the sweep turned on:
+>>>>>>> Stashed changes
 
 .. code-block:: bash
 
    cd ansible
+<<<<<<< Updated upstream
 
    # 0. Fetch the pinned guest image to where host setup points
    #    ERNIC_VM_BACKING (the directory must be writable by you).
@@ -92,6 +102,15 @@ because it imports no host-setup play, so it leaves the edited
 env file alone. The play connects and runs the short sweep that
 feeds the trend chart. The longer sweep below was driven by hand
 against the resulting
+=======
+   ansible-playbook playbooks/nvmeof-tests.yml \
+     -e ernic_nvmeof_queues=4 \
+     -e ernic_nvmeof_perf_csv=/tmp/nvmeof-sweep.csv
+
+The play connects and runs the short sweep that feeds the trend
+chart. The longer sweep below was driven by hand against the
+resulting
+>>>>>>> Stashed changes
 ``/dev/nvme0n1``; each run is ``--direct=1 --time_based
 --runtime=15`` with ``libaio``.
 

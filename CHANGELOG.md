@@ -689,9 +689,12 @@
 * **The unused packet parse and checksum helpers** in
   `src/net/net_headers.h`, with `net-checksum-unit` and `fuzz_net_headers`.
 * **The `/run-ci` pull request comment command** and `ci-command.yml`.
+<<<<<<< Updated upstream
 * **`.cmake-format.py`, cmakelang's configuration.** CI lints CMake with
   cmakelint (`.cmakelintrc`), and nothing ran cmakelang's `cmake-format`
   or `cmake-lint`; the CMake files don't follow `cmake-format`'s layout.
+=======
+>>>>>>> Stashed changes
 * **The self-hosted CI**, whose lab runner was retired: the
   `self-hosted-ci.yml` workflow and its harness, `ci/runner/`, `ci/jobs/`,
   `ci/lib/common.sh` and `ci/doctor.sh`. The VM tests run in

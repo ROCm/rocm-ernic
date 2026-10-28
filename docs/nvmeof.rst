@@ -305,9 +305,13 @@ the disconnect is the only thing that exercises the CM
 teardown path at all.
 
 The play needs a single guest already provisioned against an
+<<<<<<< Updated upstream
 instance running the controller. Run it through ``ci-site.yml``,
 which first registers the running guest in the ``ernic_vms``
 group; run alone, the play finds no hosts and does nothing:
+=======
+instance running the controller:
+>>>>>>> Stashed changes
 
 .. code-block:: bash
 
