@@ -130,7 +130,9 @@ else()
 endif()
 
 # -- glib-2.0 ----------------------------------------------------
-pkg_check_modules(GLIB2 REQUIRED glib-2.0)
+# Not REQUIRED, which would stop the configure before the message below
+# could say what to install; likewise libibverbs.
+pkg_check_modules(GLIB2 glib-2.0)
 if(NOT GLIB2_FOUND)
     message(FATAL_ERROR
       "glib-2.0 not found. Install libglib2.0-dev "
@@ -139,7 +141,7 @@ if(NOT GLIB2_FOUND)
 endif()
 
 # -- libibverbs ---------------------------------------------------
-pkg_check_modules(IBVERBS REQUIRED libibverbs)
+pkg_check_modules(IBVERBS libibverbs)
 if(NOT IBVERBS_FOUND)
     message(FATAL_ERROR
       "libibverbs not found. Install libibverbs-dev "
@@ -321,7 +323,6 @@ target_compile_definitions(rocm-ernic PRIVATE
 
 target_compile_options(rocm-ernic PRIVATE
     ${GLIB2_CFLAGS_OTHER}
-    -g
 )
 
 target_link_directories(rocm-ernic PRIVATE
