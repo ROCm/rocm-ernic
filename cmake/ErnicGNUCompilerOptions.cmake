@@ -36,7 +36,6 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
         -fno-strict-aliasing
 
         # C-specific warnings
-        -Wimplicit-function-declaration
         -Wmissing-prototypes
         -Wstrict-prototypes
         -Wbad-function-cast
@@ -45,7 +44,6 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
         -Wjump-misses-init
         -Wnested-externs
         -Wold-style-definition
-        -Wold-style-declaration
 
         # General quality warnings
         -Walloca
@@ -54,7 +52,6 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
         -Wattribute-alias=2
         # Plain -Wcast-align only warns on targets that require aligned
         # access, so it does nothing on x86-64. =strict warns everywhere.
-        -Wcast-align
         -Wcast-align=strict
         -Wcast-qual
         -Wconversion
@@ -71,7 +68,6 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
         -Wimplicit-fallthrough=5
         -Winvalid-pch
         -Wlogical-op
-        -Wmissing-braces
         -Wmissing-declarations
         -Wmissing-include-dirs
         -Wnormalized
@@ -107,10 +103,6 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
         -Wswitch-enum
         -Wtrampolines
         -Wundef
-        -Wuninitialized
-        -Wunknown-pragmas
-        -Wunused
-        -Wunused-const-variable=1
         -Wunused-macros
         -Wvariadic-macros
         -Wvla
@@ -172,8 +164,6 @@ function(get_ernic_gnu_warning_flags outvar compiler_version)
 
     if(compiler_version VERSION_GREATER_EQUAL 14)
         set(flags
-            -Walloc-size
-            -Wcalloc-transposed-args
             -Wflex-array-member-not-at-end
             # A global variable defined with no earlier declaration, which
             # should be static or declared in a header
