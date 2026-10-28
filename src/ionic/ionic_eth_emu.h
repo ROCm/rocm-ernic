@@ -21,13 +21,22 @@ struct ionic_eth_emu;
 struct ernic_stats;
 
 /*
+ * A devcmd's command and completion (union ionic_dev_cmd and union
+ * ionic_dev_cmd_comp in ionic_if.h).  They are the same size whether the
+ * command came through the BAR0 devcmd window or the Ethernet admin queue.
+ */
+#define IONIC_DEVCMD_CMD_LEN  64u
+#define IONIC_DEVCMD_COMP_LEN 16u
+
+/*
  * Callback type for a devcmd this layer does not implement itself and
- * forwards to the module that does: the RDMA opcodes 50-53, and the P4
- * opcodes 70-72.
+ * forwards to the module that does: the RDMA opcodes
+ * (IONIC_CMD_RDMA_*, ionic_rdma_devcmd.h) and the P4 opcodes
+ * (IONIC_CMD_P4_*, p4/p4_devcmd.h).
  *
  * @opaque: caller-supplied pointer (set via the matching register call)
- * @cmd:    64-byte command buffer (opcode in cmd[0])
- * @comp:   16-byte completion buffer to fill on return
+ * @cmd:    IONIC_DEVCMD_CMD_LEN-byte command buffer (opcode in cmd[0])
+ * @comp:   IONIC_DEVCMD_COMP_LEN-byte completion buffer to fill on return
  */
 typedef void (*ionic_rdma_devcmd_fn_t)(void *opaque, const uint8_t *cmd,
                                        uint8_t *comp);

@@ -795,7 +795,8 @@ void ionic_datapath_bind_qp_srq(struct ionic_datapath *dp, uint32_t qp_id,
 }
 
 void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
-                                const uint8_t dgid[16], const uint8_t sgid[16],
+                                const uint8_t dgid[ERNIC_GID_LEN],
+                                const uint8_t sgid[ERNIC_GID_LEN],
                                 const uint8_t dmac[6], uint32_t dest_node_id)
 {
     if (!dp || ah_id >= dp->ah_count)
@@ -803,14 +804,14 @@ void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
 
     struct ionic_ah *ah = &dp->ah[ah_id];
     if (dgid)
-        memcpy(ah->dgid, dgid, 16);
+        memcpy(ah->dgid, dgid, ERNIC_GID_LEN);
     else
-        memset(ah->dgid, 0, 16);
+        memset(ah->dgid, 0, ERNIC_GID_LEN);
     if (sgid) {
-        memcpy(ah->sgid, sgid, 16);
+        memcpy(ah->sgid, sgid, ERNIC_GID_LEN);
         ah->sgid_valid = true;
     } else {
-        memset(ah->sgid, 0, 16);
+        memset(ah->sgid, 0, ERNIC_GID_LEN);
         ah->sgid_valid = false;
     }
     if (dmac)
@@ -1347,7 +1348,7 @@ static void cq_post(struct ionic_datapath *dp, uint32_t cq_id,
 }
 
 /* ::ffff:a.b.c.d -- the GID an IPv4 RoCEv2 port advertises for itself. */
-static bool dp_gid_is_v4mapped(const uint8_t gid[16])
+static bool dp_gid_is_v4mapped(const uint8_t gid[ERNIC_GID_LEN])
 {
     static const uint8_t prefix[12] = {0, 0, 0, 0, 0,    0,
                                        0, 0, 0, 0, 0xff, 0xff};
@@ -1364,9 +1365,9 @@ static void dp_grh_ipv6(uint8_t grh[IB_GRH_SIZE], uint32_t paylen,
     grh[6] = 0x1b; /* IB_GRH_NEXT_HDR */
     grh[7] = 64;
     if (sgid)
-        memcpy(grh + 8, sgid, 16);
+        memcpy(grh + 8, sgid, ERNIC_GID_LEN);
     if (dgid)
-        memcpy(grh + 24, dgid, 16);
+        memcpy(grh + 24, dgid, ERNIC_GID_LEN);
 }
 
 /*

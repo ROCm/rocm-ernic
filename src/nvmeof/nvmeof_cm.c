@@ -169,7 +169,11 @@ enum {
 /* Connection table                                                   */
 /* ------------------------------------------------------------------ */
 
-#define NVMEOF_CM_MAX_CONN 66
+/*
+ * One for each queue the controller can open -- the admin queue and up to
+ * NVMEOF_MAX_QUEUES I/O queues -- and one spare.
+ */
+#define NVMEOF_CM_MAX_CONN (NVMEOF_MAX_QUEUES + 2)
 
 struct nvmeof_cm_conn {
     bool in_use;

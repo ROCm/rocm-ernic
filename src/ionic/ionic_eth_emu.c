@@ -52,8 +52,12 @@
 #include "ionic/ionic_profile.h"
 #include "ionic/ionic_datapath.h"
 #include "ionic/ionic_adminq.h"
+#include "ionic/ionic_rdma_devcmd.h"
 #include "ionic/ionic_status.h"
 #include "ionic/ionic_fault.h"
+/* Only for the opcodes, which are part of the wire format and so defined
+ * without ERNIC_HAVE_P4. */
+#include "p4/p4_devcmd.h"
 #include "qemu/thread.h"
 #include "rocm-ernic-warnings.h"
 
@@ -708,7 +712,7 @@ static void process_devcmd(struct ionic_eth_emu *emu)
     uint8_t opcode = cmd[0];
 
     /* Clear completion and data before filling. */
-    memset(comp, 0, 16);
+    memset(comp, 0, IONIC_DEVCMD_COMP_LEN);
 
     vfu_log(emu->vfu_ctx, LOG_INFO, "ionic_eth_emu: devcmd opcode=%u", opcode);
 
@@ -797,18 +801,18 @@ static void process_devcmd(struct ionic_eth_emu *emu)
         comp[0] = 0;
         break;
 
-    /* RDMA devcmds 50-53 forwarded to ionic_rdma_devcmd.c */
-    case 50:
-    case 51:
-    case 52:
-    case 53:
+    /* RDMA devcmds forwarded to ionic_rdma_devcmd.c */
+    case IONIC_CMD_RDMA_RESET_LIF:
+    case IONIC_CMD_RDMA_CREATE_EQ:
+    case IONIC_CMD_RDMA_CREATE_CQ:
+    case IONIC_CMD_RDMA_CREATE_ADMINQ:
         handle_rdma_cmd(emu, cmd, comp);
         break;
 
-    /* P4 devcmds 70-72 forwarded to p4_devcmd.c */
-    case 70:
-    case 71:
-    case 72:
+    /* P4 devcmds forwarded to p4_devcmd.c */
+    case IONIC_CMD_P4_IDENT:
+    case IONIC_CMD_P4_RPC:
+    case IONIC_CMD_P4_QUERY:
         handle_p4_cmd(emu, cmd, comp);
         break;
 
@@ -832,7 +836,8 @@ static void process_devcmd(struct ionic_eth_emu *emu)
  *
  * union ionic_dev_identity field offsets, from offsetof() against the real
  * ionic_if.h.  Note nlifs is at +0x08, not +0x04: version/type are followed
- * by rsvd[2], nports and rsvd2[3] before the first __le32.
+ * by rsvd[2], nports and rsvd2[3] before the first __le32.  The union is
+ * words[478], the whole data window, and the driver copies all of it back.
  * -------------------------------------------------------------------------
  */
 #define DEVID_VERSION_OFF        0x00u
@@ -861,7 +866,7 @@ void ionic_eth_emu_handle_identify(const struct ionic_eth_emu *emu,
      */
 
     uint8_t *dev_id = data; /* union ionic_dev_identity at offset 0 */
-    memset(dev_id, 0, 512);
+    memset(dev_id, 0, DEVCMD_DATA_SIZE);
 
     dev_id[DEVID_VERSION_OFF] = 1; /* version */
     dev_id[DEVID_TYPE_OFF] = 0;    /* type: IONIC_DEV_TYPE_ENET */
@@ -1311,6 +1316,10 @@ void ionic_eth_emu_handle_q_identify(const struct ionic_eth_emu *emu,
      *   le16 max_sg_elems   @22
      *   le16 sg_desc_stride @24
      *
+     * The union is words[478], the whole data window.  The Linux driver
+     * reads only these fields, but all of it is cleared, so that none of
+     * an earlier command's data is left in the answer.
+     *
      * ionic_lif_queue_identify() only asks about the four Ethernet logical
      * qtypes, and it overwrites max_sg_elems with its own per-qtype limit
      * afterwards, so the sizes are what actually matter here. */
@@ -1321,7 +1330,7 @@ void ionic_eth_emu_handle_q_identify(const struct ionic_eth_emu *emu,
 #define QID_MAX_SG_ELEMS_OFF   22u
 #define QID_SG_DESC_STRIDE_OFF 24u
 
-    memset(data, 0, 64);
+    memset(data, 0, DEVCMD_DATA_SIZE);
     data[0] = 0; /* version 0: the base descriptor formats */
     data[1] = 1; /* supported: bit 0 = version 0 */
 
@@ -1512,19 +1521,19 @@ void ionic_eth_emu_process_adminq_cmd(struct ionic_eth_emu *emu,
         handle_q_control(emu, cmd, comp);
         break;
 
-    /* ionic_rdma_devcmd() is a misnomer: RDMA opcodes 50-53 go out over the
+    /* ionic_rdma_devcmd() is a misnomer: the RDMA opcodes go out over the
      * Ethernet adminq, not the BAR0 devcmd window. */
-    case 50:
-    case 51:
-    case 52:
-    case 53:
+    case IONIC_CMD_RDMA_RESET_LIF:
+    case IONIC_CMD_RDMA_CREATE_EQ:
+    case IONIC_CMD_RDMA_CREATE_CQ:
+    case IONIC_CMD_RDMA_CREATE_ADMINQ:
         handle_rdma_cmd(emu, cmd, comp);
         break;
 
     /* P4 devcmds, which reach the engine the same two ways. */
-    case 70:
-    case 71:
-    case 72:
+    case IONIC_CMD_P4_IDENT:
+    case IONIC_CMD_P4_RPC:
+    case IONIC_CMD_P4_QUERY:
         handle_p4_cmd(emu, cmd, comp);
         break;
 

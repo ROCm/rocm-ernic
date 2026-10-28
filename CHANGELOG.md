@@ -756,6 +756,12 @@
   the doorbell of a queue that didn't exist. It now fails with
   `IONIC_RC_EQTYPE`, `IONIC_RC_EQID` or `IONIC_RC_ERANGE`. The Linux `ionic`
   driver never asks for such a queue.
+* **`IDENTIFY` and `Q_IDENTIFY` left stale bytes in their answers.** Each
+  identity fills the whole 1912-byte devcmd data window, but the device
+  cleared only the first 512 bytes for `IDENTIFY` and the first 64 for
+  `Q_IDENTIFY`, so the rest still held whatever an earlier command or the
+  driver had left there. Both now clear all of it, as `LIF_IDENTIFY`
+  already did. The Linux `ionic` driver uses none of those bytes.
 * **Guest lengths and addresses that wrap past 2^32 or 2^64.**
   * An inline SEND claiming more data than its work request holds read on
     past the request into whatever guest memory followed it, with no memory

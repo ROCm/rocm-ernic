@@ -38,6 +38,13 @@ struct PVRDMADev; // IWYU pragma: keep
 typedef struct PVRDMADev *pvrdma_handle_t;
 
 /*
+ * The length of a GID, as raw bytes in network order: an IPv6 address, or
+ * an IPv4 one mapped into IPv6 (::ffff:a.b.c.d).  GIDs cross this interface
+ * that way, not as the core's union ibv_gid, which is the same size.
+ */
+#define ERNIC_GID_LEN 16u
+
+/*
  * RDMA Device Management
  */
 

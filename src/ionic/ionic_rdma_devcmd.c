@@ -40,14 +40,10 @@
 #include "ionic/ionic_datapath.h"
 
 /* -------------------------------------------------------------------------
- * ionic_if.h constants (devcmd opcodes and structs)
+ * ionic_if.h structs (the opcodes are in ionic_rdma_devcmd.h)
  * Keep in sync with the pinned kernel ref.
  * -------------------------------------------------------------------------
  */
-#define IONIC_CMD_RDMA_RESET_LIF     50
-#define IONIC_CMD_RDMA_CREATE_EQ     51
-#define IONIC_CMD_RDMA_CREATE_CQ     52
-#define IONIC_CMD_RDMA_CREATE_ADMINQ 53
 
 /*
  * struct ionic_rdma_reset_cmd (64 bytes):
@@ -414,7 +410,7 @@ void ionic_rdma_devcmd_dispatch(void *opaque, const uint8_t *cmd, uint8_t *comp)
     struct ionic_rdma_devcmd_state *s = opaque;
     uint8_t opcode = cmd[0];
 
-    memset(comp, 0, 16);
+    memset(comp, 0, IONIC_DEVCMD_COMP_LEN);
 
     switch (opcode) {
     case IONIC_CMD_RDMA_RESET_LIF:

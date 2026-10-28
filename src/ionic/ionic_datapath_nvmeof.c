@@ -29,6 +29,7 @@
 #include "nvmeof/nvmeof.h"
 #include "nvmeof/nvmeof_cm.h"
 #include "nvmeof/nvmeof_target.h"
+#include "rocm_ernic_compat.h"
 
 bool ionic_datapath_nvmeof_cfg_check(const struct nvmeof_target_cfg *cfg,
                                      char *err, size_t errlen)
@@ -116,8 +117,9 @@ static void dp_nvmeof_learn_gids(struct ionic_datapath *dp, const uint8_t *mad)
 {
     if (ernic_get_be16(mad + 16) != 0x0010) /* CM_ATTR_REQ */
         return;
-    memcpy(dp->nvmeof_dgid, mad + 80, 16); /* primary local  = guest */
-    memcpy(dp->nvmeof_sgid, mad + 96, 16); /* primary remote = us    */
+    memcpy(dp->nvmeof_dgid, mad + 80,
+           ERNIC_GID_LEN); /* primary local  = guest */
+    memcpy(dp->nvmeof_sgid, mad + 96, ERNIC_GID_LEN); /* primary remote = us */
 }
 
 /*

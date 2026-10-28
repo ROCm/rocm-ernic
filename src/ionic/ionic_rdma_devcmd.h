@@ -13,6 +13,16 @@
 
 #include "rocm_ernic_compat.h"
 
+/*
+ * The opcodes (enum ionic_cmd_opcode in ionic_if.h).  They arrive through
+ * both the BAR0 devcmd window and the Ethernet admin queue, which forward
+ * them to ionic_rdma_devcmd_dispatch().
+ */
+#define IONIC_CMD_RDMA_RESET_LIF     50
+#define IONIC_CMD_RDMA_CREATE_EQ     51
+#define IONIC_CMD_RDMA_CREATE_CQ     52
+#define IONIC_CMD_RDMA_CREATE_ADMINQ 53
+
 struct ionic_rdma_devcmd_state;
 struct ionic_eth_emu;
 

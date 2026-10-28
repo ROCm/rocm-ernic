@@ -259,11 +259,11 @@ struct ionic_qp_ring {
  */
 struct ionic_ah {
     bool valid;
-    uint8_t dgid[16];
+    uint8_t dgid[ERNIC_GID_LEN];
     /* The guest's own GID, taken from the same RoCE header template the
      * destination came out of. Needed to put a truthful source in the GRH of
      * a datagram leaving for another instance; see dp_ud_grh(). */
-    uint8_t sgid[16];
+    uint8_t sgid[ERNIC_GID_LEN];
     bool sgid_valid;
     uint8_t dmac[6];
     uint32_t node_id; /* UINT32_MAX = local / no mesh */
@@ -372,8 +372,9 @@ struct ionic_datapath {
     /* In-process NVMe-oF controller, NULL unless --backend nvmeof. */
     struct nvmeof_target *nvmeof;
     struct nvmeof_cm *nvmeof_cm;
-    uint8_t nvmeof_sgid[16]; /* controller GID, learned from the CM REQ */
-    uint8_t nvmeof_dgid[16]; /* the guest's own GID                    */
+    uint8_t nvmeof_sgid[ERNIC_GID_LEN]; /* controller GID, learned from the CM
+                                           REQ */
+    uint8_t nvmeof_dgid[ERNIC_GID_LEN]; /* the guest's own GID */
 
     /* In-process S3 object store, NULL unless --backend s3. */
     struct s3_target *s3;
