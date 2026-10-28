@@ -140,6 +140,17 @@
 #define IH_WQE_INLINE    0x0004u
 #define IH_WQE_SIGNALLED 0x0008u
 
+/*
+ * The SGE list's format, in the top four bits of the flags: a speculative
+ * list puts a table of the SGEs' lengths, be32 or be16, in the first
+ * IH_SPEC_FIRST_SGE SGE slots. No other format is defined.
+ */
+#define IH_WQE_SPEC32     0x1000u
+#define IH_WQE_SPEC16     0x2000u
+#define IH_SPEC_FIRST_SGE 2u
+#define IH_SPEC32_MAX_SGE 8u
+#define IH_SPEC16_MAX_SGE 16u
+
 /* ionic_v1_cqe: type in bits 7:5 of qid_type_flags, receive opcode in the
  * top byte of src_qpn_op */
 #define IH_CQE_TYPE_ADMIN    0
@@ -240,6 +251,7 @@ struct ih_srq {
      */
     int db_qtype;
     uint8_t db_ring;
+    bool spec; /* as ih_qp's */
 };
 
 struct ih_qp {
@@ -248,6 +260,14 @@ struct ih_qp {
     struct ih_ring sq;
     struct ih_ring rq;
     uint64_t next_wqe_id;
+    /*
+     * Lay out a work request with more than IH_SPEC_FIRST_SGE SGEs as a
+     * queue created with speculative SGEs does, behind a table of their
+     * lengths. The driver creates every queue of three to eight SGEs that
+     * way; the device learns it from each WQE's flags, so a test may set
+     * this at any time.
+     */
+    bool spec;
 };
 
 /*

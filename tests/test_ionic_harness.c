@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <syslog.h>
 #include <unistd.h>
 
 #include "byteorder.h"
@@ -56,8 +57,6 @@
 #include "nvmeof/nvmeof_cm.h"
 #include "nvmeof/nvmeof_target.h"
 #ifdef ERNIC_HAVE_P4
-#include <syslog.h>
-
 #include "ernic_log.h"
 #include "ionic/ionic_datapath_p4.h"
 #include "ionic/ionic_datapath_priv.h"
@@ -1380,6 +1379,306 @@ static void test_rc(void)
     }
 
     widest_wqe_send(T, &r);
+    rc_teardown(T, &r);
+}
+
+/* ---- Speculative SGE lists --------------------------------------------- */
+
+/*
+ * The driver creates a queue that takes three to eight SGEs with speculative
+ * SGEs, kernel and user alike, and lays out a work request with more than
+ * two of them behind a table of their lengths in the first two SGE slots.
+ * The device read the table as SGEs, so every such request named addresses
+ * nobody had given it: nvmet-rdma's multi-page RDMA WRITEs could not gather.
+ *
+ * These are rc's rows with both QPs laying out their work requests that
+ * way. Behind the table a 128-byte WQE has room for four SGEs. The last two
+ * rows fail, but for the reason rc's do, not over the SGE list.
+ */
+static const struct rc_case spec_cases[] = {
+    {"SEND, 3 SGEs into 4", IH_OP_SEND, 6000, 3, 4, 0, false, false, 0, 0},
+    {"SEND, 4 SGEs into 3", IH_OP_SEND, 777, 4, 3, 0, false, false, 0, 0},
+    {"SEND, 2 SGEs, so no table", IH_OP_SEND, 300, 2, 2, 0, false, false, 0, 0},
+    {"SEND, 3 SGEs into 1", IH_OP_SEND, 450, 3, 1, 0, false, false, 0, 0},
+    {"SEND_IMM, 3 SGEs", IH_OP_SEND_IMM, 900, 3, 3, 0, false, false, 0, 0},
+    {"RDMA_WRITE, 4 SGEs", IH_OP_RDMA_WRITE, 8000, 4, 0, 0, false, false, 0, 0},
+    {"RDMA_WRITE_IMM, 3 SGEs", IH_OP_RDMA_WRITE_IMM, 500, 3, 0, 0, false, false,
+     0, 0},
+    {"RDMA_READ, 3 SGEs", IH_OP_RDMA_READ, 4500, 3, 0, 0, false, false, 0, 0},
+    {"RDMA_WRITE, 4 SGEs, bad rkey", IH_OP_RDMA_WRITE, 64, 4, 0, 0, false, true,
+     IH_STS_REMOTE_ACC_ERR, 0},
+    {"SEND too big for a 3-SGE receive", IH_OP_SEND, 400, 3, 3, 300, false,
+     false, 0, IH_STS_LOCAL_LEN_ERR},
+};
+
+/*
+ * Sixteen SGEs, the most a SPEC16 table describes, from an SQ with the
+ * largest stride, received into four. Each SGE has a different length, so
+ * an SGE list misread from the table can't come out right by chance.
+ */
+#define SPEC16_CQ_C 3
+#define SPEC16_CQ_D 4
+#define SPEC16_QP_C 12
+#define SPEC16_QP_D 13
+
+static void spec16_send(const char *T, struct rc *r)
+{
+    struct ih *h = &r->h;
+    struct ih_cq cqc, cqd;
+    struct ih_qp c, d;
+    struct ih_cqe e;
+
+    memset(&e, 0, sizeof(e));
+    bool ok = ih_cq_create(h, &cqc, SPEC16_CQ_C, 6) &&
+              ih_cq_create(h, &cqd, SPEC16_CQ_D, 6) &&
+              ih_qp_create_stride(h, &c, SPEC16_QP_C, IH_QPT_RC, &cqc, &cqc,
+                                  NULL, IH_WQE_MAX_STRIDE_LOG2) &&
+              ih_qp_create(h, &d, SPEC16_QP_D, IH_QPT_RC, &cqd, &cqd, NULL) &&
+              ih_qp_connect(h, &c, &d);
+    if (!check(T, ok, "SPEC16 setup failed"))
+        return;
+    c.spec = true;
+    d.spec = true;
+
+    struct ih_sge sge[IH_SPEC16_MAX_SGE], into[4];
+    uint8_t want[512], got[512];
+    uint32_t total = 0;
+
+    for (uint32_t i = 0; i < IH_SPEC16_MAX_SGE; i++) {
+        sge[i] = (struct ih_sge){
+            .va = VA_A + SRC_OFF + total, .len = 3 * i + 1, .lkey = MR_A};
+        total += sge[i].len;
+    }
+    fill(want, total, 0x5c);
+    memset(got, 0, total);
+    ih_mr_write(h, &r->mra, VA_A + SRC_OFF, want, total);
+    ih_mr_write(h, &r->mrb, VA_B + DST_OFF, got, total);
+
+    ih_post_recv(h, &d, into, split_sges(into, 4, VA_B + DST_OFF, total, MR_B));
+    struct ih_send s = {
+        .op = IH_OP_SEND, .sge = sge, .nsge = IH_SPEC16_MAX_SGE};
+    ih_post_send(h, &c, &s);
+
+    check(T, ih_cq_poll(h, &cqc, &e) && !e.error,
+          "a SPEC16 SEND of %u SGEs did not complete", IH_SPEC16_MAX_SGE);
+    check(T, ih_cq_poll(h, &cqd, &e) && !e.error && e.status_len == total,
+          "a SPEC16 SEND of %u bytes was received as %u", total, e.status_len);
+    ih_mr_read(h, &r->mrb, VA_B + DST_OFF, got, total);
+    check(T, memcmp(got, want, total) == 0,
+          "a SPEC16 SEND did not arrive whole");
+
+    check(T, ih_qp_destroy(h, &c) == 0, "DESTROY_QP C failed");
+    check(T, ih_qp_destroy(h, &d) == 0, "DESTROY_QP D failed");
+    check(T, ih_cq_destroy(h, &cqc) == 0, "DESTROY_CQ C failed");
+    check(T, ih_cq_destroy(h, &cqd) == 0, "DESTROY_CQ D failed");
+}
+
+/* A speculative receive out of an SRQ, which the device reads the same way */
+#define SPEC_SRQ_CQ_E 5
+#define SPEC_SRQ_CQ_F 6
+#define SPEC_SRQ_QP_E 14
+#define SPEC_SRQ_QP_F 15
+
+static void spec_srq_recv(const char *T, struct rc *r)
+{
+    struct ih *h = &r->h;
+    struct ih_srq srq;
+    struct ih_cq cq_e, cq_f;
+    struct ih_qp qp_e, qp_f;
+    struct ih_cqe e;
+
+    memset(&e, 0, sizeof(e));
+    int rc = ih_srq_create(h, &srq, 4);
+    if (!check(T, rc == 0, "CREATE_SRQ: %d", rc))
+        return;
+    srq.spec = true;
+
+    bool ok =
+        ih_cq_create(h, &cq_e, SPEC_SRQ_CQ_E, 6) &&
+        ih_cq_create(h, &cq_f, SPEC_SRQ_CQ_F, 6) &&
+        ih_qp_create(h, &qp_e, SPEC_SRQ_QP_E, IH_QPT_RC, &cq_e, &cq_e, &srq) &&
+        ih_qp_create(h, &qp_f, SPEC_SRQ_QP_F, IH_QPT_RC, &cq_f, &cq_f, NULL) &&
+        ih_qp_connect(h, &qp_e, &qp_f);
+    if (!check(T, ok, "speculative SRQ setup failed")) {
+        ih_srq_destroy(h, &srq);
+        return;
+    }
+    qp_f.spec = true;
+
+    uint8_t want[1000], got[1000];
+    struct ih_sge src[3], dst[4];
+    fill(want, sizeof(want), 0x3a);
+    memset(got, 0, sizeof(got));
+    ih_mr_write(h, &r->mra, VA_A + SRC_OFF, want, sizeof(want));
+    ih_mr_write(h, &r->mrb, VA_B + DST_OFF, got, sizeof(got));
+
+    uint64_t id = ih_post_srq_recv(
+        h, &srq, dst, split_sges(dst, 4, VA_B + DST_OFF, sizeof(got), MR_B));
+    struct ih_send s = {.op = IH_OP_SEND, .sge = src};
+    s.nsge = split_sges(src, 3, VA_A + SRC_OFF, sizeof(want), MR_A);
+    ih_post_send(h, &qp_f, &s);
+
+    check(T, ih_cq_poll(h, &cq_f, &e) && !e.error,
+          "a SEND into a speculative SRQ receive did not complete");
+    if (check(T, ih_cq_poll(h, &cq_e, &e),
+              "no speculative SRQ receive completion"))
+        check(T, !e.error && e.wqe_id == id && e.status_len == sizeof(want),
+              "the speculative SRQ receive completed WQE %" PRIu64
+              " with %u bytes (error %d)",
+              e.wqe_id, e.status_len, e.error);
+    ih_mr_read(h, &r->mrb, VA_B + DST_OFF, got, sizeof(got));
+    check(T, memcmp(got, want, sizeof(got)) == 0,
+          "a SEND into a speculative SRQ receive did not arrive whole");
+
+    check(T, ih_qp_destroy(h, &qp_e) == 0 && ih_qp_destroy(h, &qp_f) == 0,
+          "DESTROY_QP failed");
+    check(T, ih_srq_destroy(h, &srq) == 0, "DESTROY_SRQ failed");
+    check(T, ih_cq_destroy(h, &cq_e) == 0 && ih_cq_destroy(h, &cq_f) == 0,
+          "DESTROY_CQ failed");
+}
+
+/*
+ * Write @flags into the receive WQE last posted on @qp. The harness only
+ * writes the formats the driver does; a guest can write anything.
+ */
+static bool last_recv_set_flags(struct ih *h, const struct ih_qp *qp,
+                                uint16_t flags)
+{
+    const struct ih_ring *rq = &qp->rq;
+    uint32_t slot = (rq->prod - 1) % (1u << rq->depth_log2);
+    uint8_t b[2];
+
+    ernic_put_be16(b, flags);
+    return fake_vfu_write(h->vfu,
+                          rq->gpa + ((uint64_t)slot << rq->stride_log2) + 10, b,
+                          sizeof(b));
+}
+
+/*
+ * Whether a warning the device logged after the first @since mentions
+ * @what. Only the last FAKE_VFU_LOG_KEEP are kept to look at.
+ */
+static bool warned_since(struct ih *h, unsigned long since, const char *what)
+{
+    unsigned long n = fake_vfu_log_count(h->vfu, LOG_WARNING) - since;
+
+    for (size_t back = 0; back < n && back < FAKE_VFU_LOG_KEEP; back++) {
+        if (strstr(fake_vfu_log_text(h->vfu, LOG_WARNING, back), what))
+            return true;
+    }
+    return false;
+}
+
+/*
+ * The four format bits have room for fifteen list formats besides the plain
+ * one, and the driver defines two. The device can't tell where the SGEs of
+ * any other are, so it
+ * moves nothing rather than guess: a send completes with LOCAL_QP_OPER_ERR,
+ * as an unknown opcode does, and consumes no receive; a receive takes no
+ * bytes, so a SEND with a payload completes it with a length error and an
+ * empty one completes it.
+ */
+static void spec_bad_formats(const char *T, struct rc *r)
+{
+    struct ih *h = &r->h;
+    struct ih_cqe e;
+    uint8_t want[64], got[64], guard[64];
+    struct ih_sge from = {.va = VA_A + SRC_OFF, .len = 32, .lkey = MR_A};
+    struct ih_sge into = {.va = VA_B + DST_OFF, .len = 64, .lkey = MR_B};
+
+    r->a.spec = false;
+    r->b.spec = false;
+    fill(want, sizeof(want), 0x71);
+    memset(guard, 0xee, sizeof(guard));
+    ih_mr_write(h, &r->mra, VA_A + SRC_OFF, want, sizeof(want));
+    ih_mr_write(h, &r->mrb, VA_B + DST_OFF, guard, sizeof(guard));
+
+    /* Every undefined send format is refused, and takes no receive. */
+    uint64_t recv_id = ih_post_recv(h, &r->b, &into, 1);
+    for (uint16_t fmt = 3; fmt <= 15; fmt++) {
+        char what[64], fmt_s[32];
+        snprintf(what, sizeof(what), "SEND in SGE list format %u", fmt);
+        snprintf(fmt_s, sizeof(fmt_s), "format %#x", (unsigned)fmt << 12);
+        struct ih_send s = {.op = IH_OP_SEND,
+                            .flags = (uint16_t)(fmt << 12),
+                            .sge = &from,
+                            .nsge = 1};
+        unsigned long since = fake_vfu_log_count(h->vfu, LOG_WARNING);
+        ih_post_send(h, &r->a, &s);
+        expect_send(T, what, r, IH_STS_LOCAL_QP_OPER);
+        check(T, warned_since(h, since, fmt_s), "%s: no warning naming %s",
+              what, fmt_s);
+        check(T, cq_empty(h, &r->cqb), "%s: a receive completed", what);
+    }
+
+    /* The receive the refused sends left is still there for a good one. */
+    struct ih_send s = {.op = IH_OP_SEND, .sge = &from, .nsge = 1};
+    ih_post_send(h, &r->a, &s);
+    expect_send(T, "SEND after the refused ones", r, 0);
+    if (check(T, ih_cq_poll(h, &r->cqb, &e),
+              "no receive for the SEND after the refused ones"))
+        check(T, !e.error && e.wqe_id == recv_id && e.status_len == 32,
+              "the SEND after the refused ones completed WQE %" PRIu64
+              " with %u bytes (error %d)",
+              e.wqe_id, e.status_len, e.error);
+    ih_mr_read(h, &r->mrb, VA_B + DST_OFF, got, sizeof(got));
+    check(T, memcmp(got, want, 32) == 0 && memcmp(got + 32, guard, 32) == 0,
+          "the SEND after the refused ones did not arrive");
+
+    /* A receive in an undefined format takes no bytes... */
+    ih_mr_write(h, &r->mrb, VA_B + DST_OFF, guard, sizeof(guard));
+    recv_id = ih_post_recv(h, &r->b, &into, 1);
+    check(T, last_recv_set_flags(h, &r->b, 0x3000u),
+          "could not rewrite the receive's flags");
+    unsigned long since = fake_vfu_log_count(h->vfu, LOG_WARNING);
+    ih_post_send(h, &r->a, &s);
+    expect_send(T, "SEND into a receive in format 3", r, 0);
+    check(T, warned_since(h, since, "format 0x3000"),
+          "no warning naming the receive's format 0x3000");
+    if (check(T, ih_cq_poll(h, &r->cqb, &e),
+              "no completion for the receive in format 3"))
+        check(T,
+              e.error && e.status_len == IH_STS_LOCAL_LEN_ERR &&
+                  e.wqe_id == recv_id,
+              "the receive in format 3 completed WQE %" PRIu64
+              " with status %u (error %d), not a length error",
+              e.wqe_id, e.status_len, e.error);
+    ih_mr_read(h, &r->mrb, VA_B + DST_OFF, got, sizeof(got));
+    check(T, memcmp(got, guard, sizeof(guard)) == 0,
+          "a receive in format 3 was written to");
+
+    /* ...so an empty SEND is all it can take. */
+    recv_id = ih_post_recv(h, &r->b, &into, 1);
+    check(T, last_recv_set_flags(h, &r->b, 0xf000u),
+          "could not rewrite the receive's flags");
+    s.nsge = 0;
+    ih_post_send(h, &r->a, &s);
+    expect_send(T, "empty SEND into a receive in format 15", r, 0);
+    if (check(T, ih_cq_poll(h, &r->cqb, &e),
+              "no completion for the receive in format 15"))
+        check(T, !e.error && e.status_len == 0 && e.wqe_id == recv_id,
+              "the receive in format 15 completed WQE %" PRIu64
+              " with %u (error %d), not 0 bytes",
+              e.wqe_id, e.status_len, e.error);
+    check(T, cq_empty(h, &r->cqb), "an extra completion on B");
+}
+
+static void test_spec_sge(void)
+{
+    const char *T = "spec-sge";
+    struct rc r;
+
+    if (!rc_setup(T, &r))
+        return;
+    r.a.spec = true;
+    r.b.spec = true;
+
+    for (size_t i = 0; i < sizeof(spec_cases) / sizeof(spec_cases[0]); i++)
+        run_rc_case(T, &r, &spec_cases[i], (uint8_t)(i * 29 + 5));
+
+    spec16_send(T, &r);
+    spec_srq_recv(T, &r);
+    spec_bad_formats(T, &r);
     rc_teardown(T, &r);
 }
 
@@ -7020,6 +7319,7 @@ static const struct {
     {"admin", test_admin_errors},
     {"admin-dma", test_admin_dma_faults},
     {"rc", test_rc},
+    {"spec-sge", test_spec_sge},
     {"atomic", test_atomic_and_reg_mr},
     {"wrap", test_wrap},
     {"mr-keys", test_mr_keys},
