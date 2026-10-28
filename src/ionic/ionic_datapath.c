@@ -886,12 +886,20 @@ uint32_t ionic_dp_node_from_gid(const struct ionic_datapath *dp,
     return ernic_mesh_node_from_gid(dp->pvrdma_handle, dgid);
 }
 
+/*
+ * The region @lkey is bound to, or NULL. The whole key must match: an
+ * earlier rotation of it names the same slot, and must reach nothing.
+ */
 static struct dp_mr *mr_find(struct ionic_datapath *dp, uint32_t lkey)
 {
-    for (uint32_t i = 0; i < ERNIC_MAX_MR; i++)
-        if (dp->mr[i].valid && dp->mr[i].lkey == lkey)
-            return &dp->mr[i];
-    return NULL;
+    uint32_t slot;
+
+    if (!ionic_mr_slot(lkey, &slot))
+        return NULL;
+
+    struct dp_mr *m = &dp->mr[slot];
+
+    return m->valid && m->lkey == lkey ? m : NULL;
 }
 
 int ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
@@ -901,11 +909,19 @@ int ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
     if (!dp)
         return -EINVAL;
 
+    uint32_t slot;
+    if (!ionic_mr_slot(lkey, &slot)) {
+        vfu_log(dp->vfu_ctx, LOG_ERR,
+                "ionic_datapath: MR %#x has no index from 1 to %u", lkey,
+                ERNIC_MAX_MR);
+        return -EINVAL;
+    }
+
     /*
      * A region past the top of the address space is no region: the bounds
      * checks against it in ionic_dp_mr_covers() and sge_gpa() assume va +
      * length fits. Refused like a registration that fails below, with any
-     * earlier binding of the key dropped rather than left in place.
+     * earlier binding of the MR dropped rather than left in place.
      */
     if (length > UINT64_MAX - va) {
         vfu_log(dp->vfu_ctx, LOG_ERR,
@@ -916,19 +932,8 @@ int ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
         return -EINVAL;
     }
 
-    struct dp_mr *m = mr_find(dp, lkey);
-    if (!m) {
-        for (uint32_t i = 0; i < ERNIC_MAX_MR; i++) {
-            if (!dp->mr[i].valid) {
-                m = &dp->mr[i];
-                break;
-            }
-        }
-    }
-    if (!m) {
-        vfu_log(dp->vfu_ctx, LOG_WARNING, "ionic_datapath: MR table full");
-        return -ENOSPC;
-    }
+    /* The MR's one slot, whichever key it was bound under before */
+    struct dp_mr *m = &dp->mr[slot];
 
     /* A memory region's span is its length; the guest said so in
      * CREATE_MR and the rkey checks already hold it to that. */
@@ -937,10 +942,10 @@ int ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
         vfu_log(dp->vfu_ctx, LOG_ERR,
                 "ionic_datapath: MR %#x page table read failed", lkey);
         /*
-         * ionic_dp_buf_init() has already released the page table of an MR
-         * this key was bound to, and left a zero base in its place. Still
-         * valid, the old binding would resolve every address in it to guest
-         * physical address 0 onwards.
+         * ionic_dp_buf_init() has already released the page table the MR
+         * was bound to, under this key or an earlier one, and left a zero
+         * base in its place. Still valid, the old binding would resolve
+         * every address in it to guest physical address 0 onwards.
          */
         m->valid = false;
         return rc;
@@ -959,13 +964,31 @@ int ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
     return 0;
 }
 
-void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey)
+static void dp_mr_unbind(struct dp_mr *m)
 {
-    struct dp_mr *m = dp ? mr_find(dp, lkey) : NULL;
-    if (!m)
-        return;
     ionic_dp_buf_release(&m->buf);
     m->valid = false;
+}
+
+void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t key)
+{
+    uint32_t slot;
+
+    if (dp && ionic_mr_slot(key, &slot))
+        dp_mr_unbind(&dp->mr[slot]);
+}
+
+/*
+ * LOCAL_INV: unbind the MR only if it is bound under @key. An earlier
+ * rotation of the key names nothing, so it can't take away the binding that
+ * replaced it.
+ */
+static void dp_local_inv(struct ionic_datapath *dp, uint32_t key)
+{
+    struct dp_mr *m = mr_find(dp, key);
+
+    if (m)
+        dp_mr_unbind(m);
 }
 
 /*
@@ -975,29 +998,13 @@ void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey)
  * -- register_always defaults on -- so without it the keyed SGLs the NVMe-oF
  * controller relies on never name a mapped region.
  *
- * ib_update_fast_reg_key() rotates only the top byte, so the previous key for
- * the same MR id has to be dropped or the table fills one rotation at a time.
+ * ib_update_fast_reg_key() rotates only the key byte, so the new key names
+ * the same slot as the old one, and the binding replaces it there: the old
+ * key reaches nothing from then on.
  */
-/*
- * Drop every binding of @key's MR id (its low 24 bits) except @key itself,
- * or every one if @keep_key is false: the earlier rotations of the key that
- * a REG_MR replaces.
- */
-static void dp_mr_drop_id(struct ionic_datapath *dp, uint32_t key,
-                          bool keep_key)
-{
-    for (uint32_t i = 0; i < ERNIC_MAX_MR; i++) {
-        if (dp->mr[i].valid && (!keep_key || dp->mr[i].lkey != key) &&
-            (dp->mr[i].lkey & 0x00ffffffu) == (key & 0x00ffffffu))
-            ionic_datapath_unregister_mr(dp, dp->mr[i].lkey);
-    }
-}
-
 static int dp_reg_mr(struct ionic_datapath *dp, const uint8_t *wqe,
                      uint32_t key)
 {
-    dp_mr_drop_id(dp, key, true);
-
     struct ionic_dp_buf_desc buf = {
         .dma_addr = ernic_get_be64(wqe + WQE_REG_MR_DMA_ADDR_OFF),
         .map_count = ernic_get_be32(wqe + WQE_REG_MR_MAP_COUNT_OFF),
@@ -3032,14 +3039,14 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         uint32_t reg_status = IONIC_STS_OK;
 
         if (op != IONIC_V1_OP_REG_MR) {
-            ionic_datapath_unregister_mr(dp, ernic_get_be32(wqe + 12));
+            dp_local_inv(dp, ernic_get_be32(wqe + 12));
         } else if (read_sz < WQE_REG_MR_MIN_SZ) {
             /* Like any other REG_MR that fails, it leaves the MR with no
              * binding, under this key or an earlier rotation of it. */
             vfu_log(dp->vfu_ctx, LOG_WARNING,
                     "ionic_datapath: QP %u REG_MR WQE truncated (%u bytes)",
                     qp_id, read_sz);
-            dp_mr_drop_id(dp, ernic_get_be32(wqe + 12), false);
+            ionic_datapath_unregister_mr(dp, ernic_get_be32(wqe + 12));
             reg_status = IONIC_STS_MEM_MGMT_OPER_ERR;
         } else if (dp_reg_mr(dp, wqe, ernic_get_be32(wqe + 12)) < 0) {
             reg_status = IONIC_STS_MEM_MGMT_OPER_ERR;

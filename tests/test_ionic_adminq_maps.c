@@ -9,7 +9,9 @@
  * use replaced the entry of the one that had it, as an MR did too. Either
  * way a resource could never be freed, so a guest could fill the resource
  * manager's tables one command at a time. Each command must now be refused
- * before anything is allocated.
+ * before anything is allocated. The MR map has a slot for every index the
+ * driver hands out, so it can't fill; a key whose index has no slot is
+ * refused instead.
  *
  * A CQ, QP or MR the data path then refuses to register was reported
  * created too, with no ring or page table behind it. That refusal must fail
@@ -54,6 +56,16 @@ static void check(const char *name, bool ok)
 #define HELD_HANDLE 77u /* the handle of the entry an id in use has */
 #define CQ_ID       1u  /* the CQ the QPs name */
 
+/*
+ * An MR key as the driver builds it (ionic_mrid() in its ionic_fw.h): the
+ * MR's index above a key byte that fast registration rotates. The driver
+ * hands out indices 1 to MAX_MR_MAP, and the map keeps index i's MR at
+ * i - 1. NEW_KEY names index NEW_ID.
+ */
+#define MR_KEY(index, byte) (((uint32_t)(index) << 8) | (uint32_t)(byte))
+#define NEW_KEY             MR_KEY(NEW_ID, 0x5au)
+#define NEW_SLOT            (NEW_ID - 1u)
+
 /* ---- Bodies, from the driver's side (ionic_fw.h) ------------------------ */
 
 static void build_cq_body(uint8_t body[34], uint32_t cq_id)
@@ -80,11 +92,11 @@ static void build_qp_body(uint8_t body[64], uint32_t qp_id, uint32_t cq_id)
     body[62] = 0; /* ionic qp type 0 -> IB_QPT_RC */
 }
 
-static void build_mr_body(uint8_t body[45], uint32_t mr_id)
+static void build_mr_body(uint8_t body[45], uint32_t mrid)
 {
     memset(body, 0, 45);
     ernic_put_le64(body + 8, PAGE_LEN); /* length */
-    ernic_put_le32(body + 20, mr_id);
+    ernic_put_le32(body + 20, mrid);
     body[44] = 12; /* page_size_log2 */
 }
 
@@ -103,13 +115,6 @@ static void fill_qp_map(uint32_t nfree)
     for (uint32_t i = 0; i < MAX_QP_MAP - nfree; i++)
         g_ctx.qp_map[i] = (struct ionic_qp_map_entry){
             .valid = true, .qp_id = FILL_ID + i, .qpn = FILL_ID + i};
-}
-
-static void fill_mr_map(uint32_t nfree)
-{
-    for (uint32_t i = 0; i < MAX_MR_MAP - nfree; i++)
-        g_ctx.mr_map[i] = (struct ionic_mr_map_entry){
-            .valid = true, .mr_id = FILL_ID + i, .handle = FILL_ID + i};
 }
 
 /*
@@ -135,12 +140,13 @@ static uint32_t qp_entries(uint32_t id)
     return n;
 }
 
-static uint32_t mr_entries(uint32_t id)
+/* The MR map has no ids to match, only the slots the indices name */
+static uint32_t mr_entries(void)
 {
     uint32_t n = 0;
 
     for (uint32_t i = 0; i < MAX_MR_MAP; i++)
-        n += g_ctx.mr_map[i].valid && g_ctx.mr_map[i].mr_id == id;
+        n += g_ctx.mr_map[i].valid;
     return n;
 }
 
@@ -232,39 +238,83 @@ static void test_qp_map(void)
 
 /* ---- MRs ---------------------------------------------------------------- */
 
-static uint8_t create_mr(void)
+static uint8_t create_mr_key(uint32_t key)
 {
     uint8_t body[45];
 
-    build_mr_body(body, NEW_ID);
+    build_mr_body(body, key);
     return ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_MR, body,
+                                     sizeof(body));
+}
+
+static uint8_t create_mr(void)
+{
+    return create_mr_key(NEW_KEY);
+}
+
+static uint8_t destroy_mr(uint32_t key)
+{
+    uint8_t body[4];
+
+    ernic_put_le32(body, key);
+    return ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_DESTROY_MR, body,
                                      sizeof(body));
 }
 
 static void test_mr_map(void)
 {
+    /* Each MR goes in its index's slot, the last index's included */
     ctx_reset();
-    fill_mr_map(0);
-    check("mr-full-refused", create_mr() == IONIC_RC_ENOSPC);
-    check("mr-full-allocated-nothing", g_alloc_mr_calls == 0);
+    check("mr-accepted", create_mr() == IONIC_RC_SUCCESS);
+    check("mr-mapped-at-its-index",
+          g_ctx.mr_map[NEW_SLOT].valid && mr_entries() == 1);
 
     ctx_reset();
-    g_ctx.mr_map[5] = (struct ionic_mr_map_entry){
-        .valid = true, .mr_id = NEW_ID, .handle = HELD_HANDLE};
+    check("mr-last-index-accepted",
+          create_mr_key(MR_KEY(MAX_MR_MAP, 0x01u)) == IONIC_RC_SUCCESS);
+    check("mr-last-index-mapped",
+          g_ctx.mr_map[MAX_MR_MAP - 1].valid && mr_entries() == 1);
+
+    /* Index 0, the reserved lkey's, and those past the last have no slot */
+    ctx_reset();
+    check("mr-index-0-refused",
+          create_mr_key(MR_KEY(0, 0x5au)) == IONIC_RC_ERANGE);
+    check("mr-index-past-last-refused",
+          create_mr_key(MR_KEY(MAX_MR_MAP + 1, 0x5au)) == IONIC_RC_ERANGE);
+    check("mr-top-index-refused", create_mr_key(UINT32_MAX) == IONIC_RC_ERANGE);
+    check("mr-no-slot-allocated-nothing", g_alloc_mr_calls == 0 &&
+                                              g_register_mr_calls == 0 &&
+                                              mr_entries() == 0);
+
+    /* An index in use is refused, under any key byte: a rotated key names
+     * the same MR, not another */
+    ctx_reset();
+    g_ctx.mr_map[NEW_SLOT] =
+        (struct ionic_mr_map_entry){.valid = true, .handle = HELD_HANDLE};
     check("mr-in-use-refused", create_mr() == IONIC_RC_EEXIST);
+    check("mr-in-use-other-byte-refused",
+          create_mr_key(MR_KEY(NEW_ID, 0xa5u)) == IONIC_RC_EEXIST);
     check("mr-in-use-allocated-nothing", g_alloc_mr_calls == 0);
-    check("mr-in-use-entry-kept", g_ctx.mr_map[5].valid &&
-                                      g_ctx.mr_map[5].mr_id == NEW_ID &&
-                                      g_ctx.mr_map[5].handle == HELD_HANDLE);
-    check("mr-in-use-one-entry", mr_entries(NEW_ID) == 1);
+    check("mr-in-use-entry-kept",
+          g_ctx.mr_map[NEW_SLOT].valid &&
+              g_ctx.mr_map[NEW_SLOT].handle == HELD_HANDLE);
+    check("mr-in-use-one-entry", mr_entries() == 1);
 
+    /* DESTROY_MR finds the MR by its index, and has the data path drop it
+     * under the key it names, which the data path resolves to the index */
     ctx_reset();
-    fill_mr_map(1);
-    check("mr-last-entry-accepted", create_mr() == IONIC_RC_SUCCESS);
-    check("mr-last-entry-allocated-once", g_alloc_mr_calls == 1);
-    check("mr-last-entry-mapped",
-          g_ctx.mr_map[MAX_MR_MAP - 1].valid &&
-              g_ctx.mr_map[MAX_MR_MAP - 1].mr_id == NEW_ID);
+    g_ctx.mr_map[NEW_SLOT] =
+        (struct ionic_mr_map_entry){.valid = true, .handle = HELD_HANDLE};
+    check("mr-destroyed", destroy_mr(NEW_KEY) == IONIC_RC_SUCCESS);
+    check("mr-destroyed-freed", g_dealloc_mr_calls == 1 && mr_entries() == 0);
+    check("mr-destroyed-unregistered",
+          g_unregister_mr_calls == 1 && g_unregister_mr_key == NEW_KEY);
+    check("mr-destroyed-again-refused",
+          destroy_mr(NEW_KEY) == IONIC_RC_ENOENT && g_dealloc_mr_calls == 1);
+    check("mr-destroy-no-slot-refused",
+          destroy_mr(MR_KEY(MAX_MR_MAP + 1, 0x5au)) == IONIC_RC_ENOENT &&
+              destroy_mr(MR_KEY(0, 0x5au)) == IONIC_RC_ENOENT &&
+              g_dealloc_mr_calls == 1);
 }
 
 /* ---- The data path refusing a registration ---------------------------- */
@@ -306,7 +356,7 @@ static void test_dp_refusal(void)
         check("mr-refused", create_mr() == dp_refusals[i].status);
         check("mr-refused-freed",
               g_alloc_mr_calls == 1 && g_dealloc_mr_calls == 1);
-        check("mr-refused-unmapped", mr_entries(NEW_ID) == 0);
+        check("mr-refused-unmapped", mr_entries() == 0);
     }
 
     /* An MR with no region yet, as ib_alloc_mr() makes, has nothing to
@@ -315,13 +365,13 @@ static void test_dp_refusal(void)
 
     ctx_reset();
     g_register_rc = -EINVAL;
-    build_mr_body(body, NEW_ID);
+    build_mr_body(body, NEW_KEY);
     ernic_put_le64(body + 8, 0);
     check("mr-empty-accepted",
           ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_MR, body,
                                     sizeof(body)) == IONIC_RC_SUCCESS);
     check("mr-empty-not-registered", g_register_mr_calls == 0);
-    check("mr-empty-mapped", mr_entries(NEW_ID) == 1);
+    check("mr-empty-mapped", g_ctx.mr_map[NEW_SLOT].valid && mr_entries() == 1);
 }
 
 int main(void)

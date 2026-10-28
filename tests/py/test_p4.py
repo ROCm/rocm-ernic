@@ -395,7 +395,9 @@ def test_tx_ring_refuses_to_overrun(suite, server_factory):
 
 CVT_CQ_A, CVT_CQ_B = 11, 12
 CVT_QP_A, CVT_QP_B = 60, 61
-CVT_MR_SRC, CVT_MR_DST = 0x05000001, 0x05000002
+# MR indices 1 and 2 above key byte 5, as the driver's ionic_mrid() builds
+# a key
+CVT_MR_SRC, CVT_MR_DST = (1 << 8) | 0x05, (2 << 8) | 0x05
 CVT_VA_SRC = 0x7E1000000000
 CVT_VA_DST = 0x7E2000000000
 CVT_MR_LEN = 4 * 4096

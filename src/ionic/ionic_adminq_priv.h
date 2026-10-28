@@ -113,7 +113,8 @@ enum ionic_qp_state {
  * from ernic_limits.h: a map smaller than that is the device's real ceiling,
  * whatever the guest was told. The CQ and QP maps were once 256 entries
  * against a promise of 65536 and 32768, so the guest's 257th CREATE failed.
- * A map is searched linearly, so a much larger limit wants an indexed one.
+ * The CQ and QP maps are searched linearly, so a much larger limit wants an
+ * indexed one, as the MR map is.
  */
 #define MAX_AQ      ERNIC_MAX_AQ
 #define MAX_CQ_MAP  ERNIC_MAX_CQ
@@ -183,10 +184,11 @@ struct ionic_adminq_ctx {
         uint32_t dest_qp_id;
     } qp_map[MAX_QP_MAP];
 
-    /* And for MRs: the driver's mrid vs the backend's handle. */
+    /* And for MRs: the driver's mrid vs the backend's handle. Indexed by
+     * ionic_mr_slot(), so the entry stays the MR's whatever key byte fast
+     * registration has rotated its mrid to. */
     struct ionic_mr_map_entry {
         bool valid;
-        uint32_t mr_id;
         uint32_t handle;
     } mr_map[MAX_MR_MAP];
 

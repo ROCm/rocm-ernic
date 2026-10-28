@@ -260,19 +260,53 @@ uint32_t ionic_dp_node_from_gid(const struct ionic_datapath *dp,
                                 const uint8_t *dgid);
 
 /*
- * MR registration.  @lkey is the driver's full mrid (index | key << 24), which
+ * An MR's key -- the driver's mrid, and every lkey and rkey that names the
+ * MR -- is the MR's index above a key byte (ionic_mrid() in the driver's
+ * ionic_fw.h). The byte is what fast registration rotates
+ * (ib_update_fast_reg_key()), so every key an MR has had shares its index.
+ */
+#define IONIC_MRID_INDEX_SHIFT 8
+
+/*
+ * The slot the MR @key names has in the admin queue's map and the data
+ * path's table: its index less one, since the driver hands out indices 1 to
+ * ERNIC_MAX_MR and keeps 0 for the reserved lkey. False, with @slot
+ * untouched, for a key whose index is outside that range, which names no MR
+ * the device can hold.
+ */
+static inline bool ionic_mr_slot(uint32_t key, uint32_t *slot)
+{
+    uint32_t index = key >> IONIC_MRID_INDEX_SHIFT;
+
+    if (index == 0 || index > ERNIC_MAX_MR)
+        return false;
+    *slot = index - 1;
+    return true;
+}
+
+/*
+ * MR registration.  @lkey is the driver's full mrid, key byte included, which
  * is exactly what userspace puts in an SGE.  @va/@length describe the region in
- * the client's address space; @buf resolves it to guest physical pages.
+ * the client's address space; @buf resolves it to guest physical pages.  The
+ * binding replaces whatever the MR's index was bound to, under any key, so
+ * only @lkey reaches the region afterwards.
  *
- * Returns 0, or a negative errno with nothing registered under @lkey, any
- * earlier binding of it included: -EINVAL for a region past the end of the
- * address space or a page table the device can't honour, -ENOSPC when the
- * MR table is full, -ENOMEM, or -EIO when the page table can't be read.
+ * Returns 0, or a negative errno with nothing registered under the MR's
+ * index, under @lkey or any earlier key: -EINVAL for a key whose index the
+ * device has no slot for, a region past the end of the address space or a
+ * page table the device can't honour, -ENOMEM, or -EIO when the page table
+ * can't be read.
  */
 int ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
                                uint64_t va, uint64_t length,
                                const struct ionic_dp_buf_desc *buf);
-void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey);
+
+/*
+ * Drop the region @key's MR is bound to, under @key or any other key byte:
+ * DESTROY_MR names an MR by the key it was created with, which fast
+ * registration has since rotated.
+ */
+void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t key);
 
 /*
  * Set the pvrdma handle so the datapath can post sends via the backend, and

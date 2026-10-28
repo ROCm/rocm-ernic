@@ -248,10 +248,13 @@ void ernic_rm_dealloc_mr(pvrdma_handle_t handle, uint32_t mr_handle)
     g_dealloc_mr_calls++;
 }
 
-/* What the data path's CQ, QP and MR registrations return, and how many MR
- * registrations there were. */
+/* What the data path's CQ, QP and MR registrations return, how many MR
+ * registrations and unregistrations there were, and the key of the last
+ * unregistration. */
 static int g_register_rc;
 static unsigned g_register_mr_calls;
+static unsigned g_unregister_mr_calls;
+static uint32_t g_unregister_mr_key;
 
 int ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
                                uint32_t eq_id,
@@ -309,10 +312,11 @@ int ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
     g_register_mr_calls++;
     return g_register_rc;
 }
-void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t lkey)
+void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t key)
 {
     (void)dp;
-    (void)lkey;
+    g_unregister_mr_calls++;
+    g_unregister_mr_key = key;
 }
 void ionic_datapath_set_dest(struct ionic_datapath *dp, uint32_t qp_id,
                              uint32_t dest_qp_id, uint32_t dest_node_id)
@@ -579,6 +583,8 @@ static void ctx_reset(void)
     g_dealloc_mr_calls = 0;
     g_register_rc = 0;
     g_register_mr_calls = 0;
+    g_unregister_mr_calls = 0;
+    g_unregister_mr_key = 0;
 }
 
 #endif /* IONIC_ADMINQ_FAKES_H */

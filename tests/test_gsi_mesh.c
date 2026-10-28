@@ -61,7 +61,7 @@
 
 #define GM_CQ      1u
 #define GM_AH      7u
-#define GM_MR      0x0800000au
+#define GM_MR      IH_MRID(10, 0x08)
 #define GM_VA      UINT64_C(0x7f6100000000)
 #define GM_TX_OFF  0x0000u
 #define GM_RX_OFF  0x0200u
