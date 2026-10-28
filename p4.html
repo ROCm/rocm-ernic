@@ -395,6 +395,11 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#what-cannot-be-tested-without-privilege">What cannot be tested without privilege</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-side-requirements">Guest-side requirements</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ernic-p4-ko"><code class="docutils literal notranslate"><span class="pre">ernic_p4.ko</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#activating-p4-from-the-guest">Activating P4 from the guest</a></li>
+</ul>
+</li>
 </ul>
             </nav>
         </div>
@@ -1112,6 +1117,66 @@ on and lands in the guest’s receive ring, which
 <code class="docutils literal notranslate"><span class="pre">ernic-p4-driver</span></code> checks.</p>
 </section>
 </section>
+<section id="guest-side-requirements">
+<h2>Guest-side requirements<a class="headerlink" href="#guest-side-requirements" title="Link to this heading">#</a></h2>
+<p>Everything above describes the server’s P4 engine. Using P4 from a guest
+requires two additional guest-side components that are not part of the
+server build.</p>
+<section id="ernic-p4-ko">
+<h3><code class="docutils literal notranslate"><span class="pre">ernic_p4.ko</span></code><a class="headerlink" href="#ernic-p4-ko" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">drivers/ernic_p4/ernic_p4.ko</span></code> is an out-of-tree kernel module that
+binds to an auxiliary device the patched ionic Ethernet driver creates.
+The server advertises the auxiliary device only when <code class="docutils literal notranslate"><span class="pre">--p4-guest-scope</span></code>
+is passed; without it, the module loads but finds nothing to bind to, and
+<code class="docutils literal notranslate"><span class="pre">/dev/ernic-p4</span></code> does not appear. That is a valid configuration — a guest
+talking to a server that has no <code class="docutils literal notranslate"><span class="pre">--p4-guest-scope</span></code> is correct, and the
+module does not fail.</p>
+<p>The ionic modules running in the guest must carry the P4 patch series
+(<code class="docutils literal notranslate"><span class="pre">ansible/files/patches/p4/</span></code>), which registers the auxiliary device
+that <code class="docutils literal notranslate"><span class="pre">ernic_p4.ko</span></code> binds to. The patch directory layout is:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">ansible/files/patches/</span></code> — the base series (UC address-handle fix only).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ansible/files/patches/srq/</span></code> — the SRQ series; apply on top of the base
+to enable SRQ (<code class="docutils literal notranslate"><span class="pre">max_srq</span> <span class="pre">&gt;</span> <span class="pre">0</span></code>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ansible/files/patches/p4/</span></code> — the P4 series; apply on top of the base
+to create the auxiliary device <code class="docutils literal notranslate"><span class="pre">ernic_p4.ko</span></code> binds to.</p></li>
+</ul>
+<p>The P4 and SRQ series are independent of each other and can be applied
+together or separately, both on top of the base series.</p>
+<p>The correct way to build P4-capable ionic modules is through
+<code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code> with the P4 series listed in
+<code class="docutils literal notranslate"><span class="pre">ernic_guest_ionic_extra_patches</span></code>:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">ernic_guest_ionic_extra_patches</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">patches/p4</span>
+</pre></div>
+</div>
+<p>That variable causes <code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code> to apply the P4 patch series on
+top of the base series when building ionic, which creates the auxiliary
+device. Once the P4-patched ionic modules are installed and loaded, run
+<code class="docutils literal notranslate"><span class="pre">ernic_p4_dkms</span></code> to build and load <code class="docutils literal notranslate"><span class="pre">ernic_p4.ko</span></code>. The module locates
+the correct <code class="docutils literal notranslate"><span class="pre">Module.symvers</span></code> by searching for the export of
+<code class="docutils literal notranslate"><span class="pre">ionic_adminq_post_wait</span></code>, whose CRC changes when <code class="docutils literal notranslate"><span class="pre">struct</span> <span class="pre">ionic_lif</span></code> is
+patched; building against the wrong symvers causes <code class="docutils literal notranslate"><span class="pre">modprobe</span></code> to refuse
+the module.</p>
+</section>
+<section id="activating-p4-from-the-guest">
+<h3>Activating P4 from the guest<a class="headerlink" href="#activating-p4-from-the-guest" title="Link to this heading">#</a></h3>
+<p>Once <code class="docutils literal notranslate"><span class="pre">ernic_p4.ko</span></code> is loaded and <code class="docutils literal notranslate"><span class="pre">/dev/ernic-p4</span></code> appears, the guest
+controls the P4 engine through ionic device commands 70, 71 and 72
+(described in <a class="reference internal" href="#the-guest-s-control-surface">The guest’s control surface</a> above). The scope of what
+the guest may do — which opcodes are permitted, which table operations are
+allowed — is determined by <code class="docutils literal notranslate"><span class="pre">--p4-guest-scope</span></code> on the server, not by the
+guest. A guest that exceeds its scope receives an error completion; it
+cannot escalate beyond what the server operator granted.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><code class="docutils literal notranslate"><span class="pre">docs/p4.rst</span></code> describes the engine and its API. It does not cover
+the performance or reliability of P4 programs in production: program
+correctness is the operator’s responsibility and nothing in rocm-ernic
+verifies it.</p>
+</div>
+</section>
+</section>
 </section>
 
 
@@ -1180,6 +1245,11 @@ on and lands in the guest’s receive ring, which
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#testing">Testing</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#reading-the-counters">Reading the counters</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#what-cannot-be-tested-without-privilege">What cannot be tested without privilege</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-side-requirements">Guest-side requirements</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ernic-p4-ko"><code class="docutils literal notranslate"><span class="pre">ernic_p4.ko</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#activating-p4-from-the-guest">Activating P4 from the guest</a></li>
 </ul>
 </li>
 </ul>
