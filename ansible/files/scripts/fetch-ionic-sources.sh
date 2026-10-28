@@ -115,6 +115,8 @@ patch_digest() {
 
 SENTINEL="${SOURCE_DIR}/.patches-applied-${KERNEL_REF}-$(patch_digest)"
 
+# The Ansible roles' fetch tasks report a change unless they see "nothing
+# to do" in this message.
 if [ -f "${SENTINEL}" ] && ! ${FORCE}; then
     echo "-- ionic sources already at ${KERNEL_REF} with this series;" \
          "nothing to do"

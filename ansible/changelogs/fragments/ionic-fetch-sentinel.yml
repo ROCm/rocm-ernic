@@ -1,0 +1,25 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+bugfixes:
+  - >-
+    ``ernic_guest_setup`` reported its ionic source fetch as changed on every
+    run.  The task waited for a sentinel file that
+    ``fetch-ionic-sources.sh`` no longer writes, since the sentinel's name
+    now carries a digest of the patch series, so it ran every time.  The
+    script still skipped the fetch itself, so nothing was fetched twice,
+    but the role was not idempotent.  The task now reports a change only
+    when the script fetches.
+  - >-
+    With ``ernic_srq_dkms_force_fetch`` or ``ernic_p4_dkms_force_fetch``
+    set to false, ``ernic_srq_dkms`` and ``ernic_p4_dkms`` skipped the
+    ionic source fetch whenever a tree for the ref existed, so a changed
+    patch series was never applied.  The fetch script now decides, and
+    fetches again when the ref or the series changes.
+  - >-
+    With ``ernic_srq_dkms_fetch_on_controller``, ``ernic_srq_dkms`` shipped
+    the archive an earlier run had left on the controller rather than the
+    tree it had just fetched, ``ernic_srq_dkms_force_fetch`` included.  The
+    archive is now made on every run.

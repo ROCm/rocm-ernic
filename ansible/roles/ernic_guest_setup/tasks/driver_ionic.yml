@@ -8,8 +8,11 @@
 #
 # The guest has outbound internet, so it sparse-clones the kernel
 # itself with the same fetch-ionic-sources.sh the host build uses,
-# staged from the collection by stage_sources.yml.  The .patches-applied-<ref> sentinel that script writes makes
-# re-runs cheap, so there is no separate Ansible stamp here.
+# staged from the collection by stage_sources.yml.  The script leaves a
+# sentinel named for the ref and a digest of the patch series, and skips
+# the fetch when it is present, so re-runs are cheap and a changed series
+# is fetched again.  That is why the fetch task has no creates: the name
+# depends on the digest, which only the script computes.
 
 ---
 # ernic_ionic_ref and ernic_ionic_kver are resolved by the
@@ -114,8 +117,8 @@
       --kernel-ref {{ ernic_ionic_ref }}
       --patches-dir {{ ernic_guest_ionic_dir }}/patches
       {% for d in ernic_guest_ionic_extra_patches %}--patches-dir {{ ernic_guest_ionic_dir }}/{{ d }} {% endfor %}
-    creates: >-
-      {{ ernic_ionic_source_dir }}/.patches-applied-{{ ernic_ionic_ref }}
+  register: ernic_ionic_fetch
+  changed_when: "'nothing to do' not in ernic_ionic_fetch.stdout"
 
 - name: Install the ionic-ernic DKMS package
   ansible.builtin.command:

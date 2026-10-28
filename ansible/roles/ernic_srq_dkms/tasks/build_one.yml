@@ -28,13 +28,18 @@
   ansible.builtin.include_tasks: stage.yml
 
 # Discarded rather than reused, because this role exists to VERIFY the patches
-# apply and build. Both available caches key on the kernel ref alone -- a
-# `creates:` on the checkout directory here, and the fetch script's own
-# sentinel -- so neither notices that patches/srq changed. On a persistent
-# build host that means an edited patch series is never re-applied: the role
-# rebuilds last week's sources and reports success, which is the one answer a
-# verification gate must never give. Re-fetching costs a clone; being wrong
-# costs a merged patch that does not apply.
+# apply and build. The fetch script's sentinel names the ref and a digest of
+# patches/srq, so it does fetch again when the series changes, but it names
+# the ref, not the commit the ref resolved to, and it cannot tell that a tree
+# was edited after it was patched. On a persistent build host either one
+# means the role builds sources that are not what the repository holds and
+# reports success, which is the one answer a verification gate must never
+# give. Re-fetching costs a clone; being wrong costs a merged patch that does
+# not apply.
+#
+# The fetch task has no `creates:`. A directory that exists says nothing
+# about which series was applied, and the sentinel's name depends on the
+# digest, which only the script computes, so the script decides.
 - name: "Discard any cached checkout for {{ ernic_srq_src.ref[:12] }}"
   become: true
   when:
@@ -54,7 +59,8 @@
       --kernel-ref {{ ernic_srq_src.ref }}
       --repo {{ ernic_srq_src.repo }}
       --patches-dir {{ ernic_srq_dkms_patches_dir }}
-    creates: "{{ ernic_srq_dir }}/drivers/infiniband/hw/ionic"
+  register: ernic_srq_dkms_fetch
+  changed_when: "'nothing to do' not in ernic_srq_dkms_fetch.stdout"
 
 # The check that makes a wrong ref loud.
 #
