@@ -750,6 +750,12 @@
   `/etc/opt/<name>/rocm-ernic` when `ernic_install_prefix` is `/opt/<name>`.
   The new `ernic-package-deb-config-paths` CTest test builds the packages
   under such prefixes and checks both paths.
+* **With `ERNIC_INSTALL_SERVICE`, an install path that the installed scripts
+  and units can't hold is refused when configuring**: one with a quote, `$`,
+  a backtick, a backslash, `%`, `;` or whitespace in it. The path was
+  written into them as it was, so a quote ended a string early in
+  `ernicctl` and the exporter, and `$` or a backtick was expanded by the
+  driver pack's shell script.
 * **Any guest process could read and write all guest memory through the S3
   and NVMe-oF targets.** Key 0 is the ionic driver's reserved DMA key, which
   the device reads as a raw guest bus address, and both targets passed the

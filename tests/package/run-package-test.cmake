@@ -33,7 +33,8 @@
 #     configuration file, which upgrades keep
 #   - That the installed files name where the packages install things.
 #     The service files name /usr/local, which is replaced when they're
-#     installed elsewhere, so no file names it unless that's the prefix.
+#     installed elsewhere, so no file names it unless that's the prefix
+#     or the configuration's directory is under it.
 #     Every program a systemd unit runs from under the prefix is in a
 #     package. The units, and every file that names a rocm-ernic.env,
 #     read the packaged configuration when it's outside the prefix (in
@@ -444,18 +445,6 @@ foreach(file IN LISTS installed_files)
     endif()
 endforeach()
 
-if(NOT INSTALL_PREFIX STREQUAL "/usr/local")
-    foreach(file IN LISTS text_files)
-        file(STRINGS ${file} lines REGEX "/usr/local/")
-        if(lines)
-            string(REPLACE "${root}" "" path "${file}")
-            list(GET lines 0 line)
-            fail("${path} names /usr/local/, but the packages install "
-                "to ${INSTALL_PREFIX}: ${line}")
-        endif()
-    endforeach()
-endif()
-
 # Where the installed files should read the configuration. Under the
 # prefix, the packaged file is a copy to put in /etc/rocm-ernic, so they
 # read it there; outside it, as in /etc or /etc/opt/<name>, they read
@@ -469,6 +458,27 @@ if(INSTALL_SERVICE)
     else()
         set(read_env_file "${ENV_FILE}")
     endif()
+endif()
+
+# No file names /usr/local/ unless that's the prefix. The configuration
+# can be outside the prefix in a directory under /usr/local, so the path
+# the files read it from doesn't count.
+if(NOT INSTALL_PREFIX STREQUAL "/usr/local")
+    foreach(file IN LISTS text_files)
+        file(STRINGS ${file} lines REGEX "/usr/local/")
+        foreach(line IN LISTS lines)
+            if(read_env_file)
+                string(REPLACE "${read_env_file}" "" rest "${line}")
+            else()
+                set(rest "${line}")
+            endif()
+            if(rest MATCHES "/usr/local/")
+                string(REPLACE "${root}" "" path "${file}")
+                fail("${path} names /usr/local/, but the packages install "
+                    "to ${INSTALL_PREFIX}: ${line}")
+            endif()
+        endforeach()
+    endforeach()
 endif()
 
 # Every file that names a rocm-ernic.env names that one

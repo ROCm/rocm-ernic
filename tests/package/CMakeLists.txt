@@ -94,13 +94,23 @@ set_tests_properties(ernic-package-deb PROPERTIES TIMEOUT 300)
 # such as /opt/<name> (see run-config-paths-test.cmake). Each case
 # configures and builds the server in a build directory of its own,
 # with this build's compiler and dependencies, as cmake-subproject
-# does. It doesn't run the server, so it's built without sanitizers.
+# does, and its private libvfio-user if it has one: without that,
+# dpkg-shlibdeps finds libvfio-user only where the system's libraries
+# are, and the nightly build's isn't. It doesn't run the server, so it's
+# built without sanitizers.
 set(ERNIC_CONFIG_PATHS_CACHE
     ${CMAKE_CURRENT_BINARY_DIR}/config-paths-cache.cmake)
 set(ERNIC_CONFIG_PATHS_CACHE_ENTRIES)
-foreach(var IN ITEMS CMAKE_PREFIX_PATH CMAKE_C_COMPILER ERNIC_WERROR)
-    string(APPEND ERNIC_CONFIG_PATHS_CACHE_ENTRIES
-        "set(${var} \"${${var}}\" CACHE STRING \"\")\n")
+foreach(var IN ITEMS
+        CMAKE_PREFIX_PATH
+        CMAKE_C_COMPILER
+        ERNIC_WERROR
+        ERNIC_BUNDLE_VFIO_USER
+        ERNIC_VFIO_USER_LICENSE)
+    if(DEFINED ${var})
+        string(APPEND ERNIC_CONFIG_PATHS_CACHE_ENTRIES
+            "set(${var} \"${${var}}\" CACHE STRING \"\")\n")
+    endif()
 endforeach()
 file(WRITE ${ERNIC_CONFIG_PATHS_CACHE}
     "${ERNIC_CONFIG_PATHS_CACHE_ENTRIES}")

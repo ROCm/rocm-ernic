@@ -18,7 +18,9 @@
 # on it. It then checks the configuration file's path in the packages,
 # and the path the service unit and ernicctl read it from, against
 # literal values: run-package-test.cmake works them out the way the
-# install rules do, so it can't tell if both are wrong.
+# install rules do, so it can't tell if both are wrong. Other cases
+# configure with install paths the installed files can't hold, and check
+# that they're refused.
 
 cmake_minimum_required(VERSION 3.21)
 
@@ -122,10 +124,41 @@ function(check_case name prefix env_file read)
     if(NOT EXISTS ${root}${env_file})
         fail("${name}: the packages don't contain ${env_file}")
     endif()
-    check_line(${root} ${prefix}/lib/systemd/system/rocm-ernic.service
-        "EnvironmentFile=${read}")
+    set(unit ${prefix}/lib/systemd/system/rocm-ernic.service)
+    check_line(${root} ${unit} "EnvironmentFile=${read}")
+    check_line(${root} ${unit}
+        "ExecStart=${prefix}/libexec/rocm-ernic/rocm-ernic-launcher")
     check_line(${root} ${prefix}/bin/ernicctl "ENV_FILE = \"${read}\"")
 
+    message(STATUS "run-config-paths-test: ${name}: OK")
+endfunction()
+
+# Configure one case that has to be refused, and check the error
+#
+#   name     The case's build directory, under TEST_DIR
+#   prefix   CMAKE_INSTALL_PREFIX
+#   message  A regular expression the error has to match, with its
+#            whitespace as single spaces
+#   ARGN     More options for configuring
+function(check_refused name prefix message)
+    execute_process(
+        COMMAND ${CMAKE_COMMAND} -S ${SOURCE_DIR} -B ${TEST_DIR}/${name}
+            ${generator_args} -C ${INITIAL_CACHE}
+            -DCMAKE_INSTALL_PREFIX=${prefix}
+            -DERNIC_INSTALL_SERVICE=ON
+            ${ARGN}
+        RESULT_VARIABLE result
+        OUTPUT_VARIABLE output
+        ERROR_VARIABLE output)
+    if(result EQUAL 0)
+        fail("${name}: configuring succeeded, but should have failed")
+    endif()
+    # CMake wraps the error's lines, so match it as one line
+    string(REGEX REPLACE "[ \t\r\n]+" " " flat "${output}")
+    if(NOT flat MATCHES "${message}")
+        fail("${name}: configuring failed, but not with '${message}':\n"
+            "${output}")
+    endif()
     message(STATUS "run-config-paths-test: ${name}: OK")
 endfunction()
 
@@ -141,5 +174,21 @@ check_case(sysconf-in-prefix /usr/local
     /usr/local/etc/rocm-ernic/rocm-ernic.env
     /etc/rocm-ernic/rocm-ernic.env
     -DCMAKE_INSTALL_SYSCONFDIR=/usr/local/etc)
+
+# An absolute CMAKE_INSTALL_SYSCONFDIR outside the prefix is read where
+# it is, even under /usr/local. The prefix starts with /etc/rocm-ernic/,
+# the path the source files read the configuration from, which mustn't
+# change the installed programs' paths.
+check_case(sysconf-outside-prefix /etc/rocm-ernic/app
+    /usr/local/etc/rocm-ernic/rocm-ernic.env
+    /usr/local/etc/rocm-ernic/rocm-ernic.env
+    -DCMAKE_INSTALL_SYSCONFDIR=/usr/local/etc)
+
+# Paths that can't go into the installed scripts and units as they are
+check_refused(quote-in-sysconfdir /usr
+    "writes ERNIC_ENV_FILE \\(/etc/site\"west/[^)]*\\) into scripts"
+    "-DCMAKE_INSTALL_SYSCONFDIR=/etc/site\"west")
+check_refused(dollar-in-prefix "/opt/ernic$HOME"
+    "writes CMAKE_INSTALL_FULL_BINDIR \\(/opt/ernic\\$HOME/bin\\)")
 
 message(STATUS "run-config-paths-test: OK")

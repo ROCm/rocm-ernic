@@ -90,7 +90,10 @@ files refer to each other by their installed paths, which come
 from ``CMAKE_INSTALL_PREFIX`` when the project is configured, so
 to install them somewhere else, configure with that prefix rather
 than passing ``--prefix`` to ``cmake --install``. To stage an
-install, use ``DESTDIR``.
+install, use ``DESTDIR``. The paths are written into scripts and
+systemd units as they are, so a prefix or ``CMAKE_INSTALL_*``
+directory with a quote, ``$``, a backtick, a backslash, ``%``,
+``;``, or whitespace in it is refused when configuring.
 
 .. _nightly-packages:
 
@@ -196,7 +199,8 @@ the install rules has to update its lists of files, in
 configures and builds the server again with prefixes that move
 the configuration file, such as ``/opt/<name>``, and checks
 where the packages install it and where the installed files
-read it.
+read it. It also checks that install paths the installed files
+can't hold are refused.
 
 Build Options
 -------------
