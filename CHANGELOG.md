@@ -108,7 +108,10 @@
     4 MiB, or 1.75 MiB minified, fits. Fields up to 512 bits work. Tables
     support exact, longest-prefix and ternary matching, with ties broken as
     P4 requires, and entries are inserted, modified and deleted through one
-    P4Runtime-shaped update, whichever control plane sends it. p4c
+    P4Runtime-shaped update, whichever control plane sends it. Which of two
+    overlapping ternary entries of the same priority wins is unspecified.
+    A lookup scans the entries installed, not the table's `max_size`, so
+    its cost grows with what a control plane installs. p4c
     qualifies table and action names with their control
     (`IngressImpl.forward`, not `forward`), so a control plane must use the
     qualified names. `scripts/fetch-p4c.sh` puts a pinned p4c in a private
