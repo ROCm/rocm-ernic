@@ -13,8 +13,10 @@
 #ifndef QEMU_ERROR_REPORT_H
 #define QEMU_ERROR_REPORT_H
 
-void error_report(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-void warn_report(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-void info_report(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+#include "ernic_attributes.h"
+
+void error_report(const char *fmt, ...) ERNIC_PRINTF_FORMAT(1, 2);
+void warn_report(const char *fmt, ...) ERNIC_PRINTF_FORMAT(1, 2);
+void info_report(const char *fmt, ...) ERNIC_PRINTF_FORMAT(1, 2);
 
 #endif /* QEMU_ERROR_REPORT_H */

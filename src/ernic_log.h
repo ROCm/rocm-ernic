@@ -21,6 +21,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "ernic_attributes.h"
+
 /*
  * Runtime log level.  Set from the --log-level command line option or
  * the ERNIC_LOG_LEVEL environment variable; defaults to ERNIC_LOG_WARN
@@ -45,13 +47,12 @@ bool ernic_log_enabled(ErnicLogLevel lvl);
  * isn't a level a message can have, and logs nothing.
  */
 void ernic_log(ErnicLogLevel lvl, const char *fmt, ...)
-    __attribute__((format(printf, 2, 3)));
+    ERNIC_PRINTF_FORMAT(2, 3);
 void ernic_vlog(ErnicLogLevel lvl, const char *fmt, va_list ap)
-    __attribute__((format(printf, 2, 0)));
+    ERNIC_PRINTF_FORMAT(2, 0);
 
 /* One-shot startup/shutdown lines: unprefixed, printed at WARN and above. */
-void ernic_startup_report(const char *fmt, ...)
-    __attribute__((format(printf, 1, 2)));
+void ernic_startup_report(const char *fmt, ...) ERNIC_PRINTF_FORMAT(1, 2);
 
 /*
  * A limit on how often one message is logged, for a message that something

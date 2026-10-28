@@ -21,6 +21,7 @@
 #include <sys/types.h>
 
 #include "byteorder.h"
+#include "ernic_attributes.h"
 #include "ernic_stats.h"
 #include "fake_vfu.h"
 #include "ionic/ionic_device.h"
@@ -62,7 +63,7 @@
 /* RoCE v2's UDP port */
 #define ROCE_UDP_PORT 4791
 
-static bool fail(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static bool fail(const char *fmt, ...) ERNIC_PRINTF_FORMAT(1, 2);
 
 static bool fail(const char *fmt, ...)
 {
@@ -76,7 +77,7 @@ static bool fail(const char *fmt, ...)
     return false;
 }
 
-static int fail_rc(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static int fail_rc(const char *fmt, ...) ERNIC_PRINTF_FORMAT(1, 2);
 
 /* fail() for the functions that report failure as -1 */
 static int fail_rc(const char *fmt, ...)

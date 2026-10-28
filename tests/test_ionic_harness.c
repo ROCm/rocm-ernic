@@ -35,6 +35,7 @@
 #include <unistd.h>
 
 #include "byteorder.h"
+#include "ernic_attributes.h"
 #include "ernic_limits.h"
 #include "ernic_mesh.h"
 #include "ernic_rm.h"
@@ -84,7 +85,7 @@
 static int failures;
 
 static bool check(const char *test, bool cond, const char *fmt, ...)
-    __attribute__((format(printf, 3, 4)));
+    ERNIC_PRINTF_FORMAT(3, 4);
 
 static bool check(const char *test, bool cond, const char *fmt, ...)
 {

@@ -2,8 +2,9 @@
 #
 # ernic-rdma-errors (tests/guest/ernic_rdma_errors.c), packaged on its own so
 # a guest can install it with its own pkgs: it needs only libibverbs and the
-# header-only src/parse_int.h, not the server's dependencies.  The CMake
-# build compiles the same file, so the warning and analysis gates see it too.
+# headers src/parse_int.h and src/ernic_attributes.h, not the server's
+# dependencies.  The CMake build compiles the same file, so the warning and
+# analysis gates see it too.
 #
 # Usage:
 #   ernic-rdma-errors = pkgs.callPackage ./nix/rdma-errors.nix { };
@@ -18,6 +19,7 @@ stdenv.mkDerivation {
     fileset = lib.fileset.unions [
       ../tests/guest/ernic_rdma_errors.c
       ../tests/guest/ernic_counter_snapshot.h
+      ../src/ernic_attributes.h
       ../src/parse_int.h
     ];
   };

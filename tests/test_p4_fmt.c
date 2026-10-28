@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "ernic_attributes.h"
 #include "p4/p4_fmt.h"
 #include "p4/p4_fp8.h"
 
@@ -39,8 +40,7 @@ static void check(bool cond, const char *what)
     }
 }
 
-static void checkf(bool cond, const char *fmt, ...)
-    __attribute__((format(printf, 2, 3)));
+static void checkf(bool cond, const char *fmt, ...) ERNIC_PRINTF_FORMAT(2, 3);
 
 static void checkf(bool cond, const char *fmt, ...)
 {

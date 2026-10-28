@@ -33,6 +33,7 @@
 #include <unistd.h>
 
 #include "byteorder.h"
+#include "ernic_attributes.h"
 #include "nvmeof/nvmeof.h"
 #include "nvmeof/nvmeof_target.h"
 #include "nvmeof/nvmeof_target_priv.h"
@@ -44,7 +45,7 @@
 static int failures;
 
 static void fail(const char *name, const char *fmt, ...)
-    __attribute__((format(printf, 2, 3)));
+    ERNIC_PRINTF_FORMAT(2, 3);
 
 static void fail(const char *name, const char *fmt, ...)
 {

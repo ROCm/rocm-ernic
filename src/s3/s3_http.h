@@ -25,6 +25,8 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+#include "ernic_attributes.h"
+
 #define S3_HTTP_MAX_HEADERS 24
 #define S3_HTTP_NAME_MAX    64
 #define S3_HTTP_VALUE_MAX   512
@@ -107,14 +109,13 @@ void s3_http_response_free(struct s3_http_response *resp);
 
 /* Set (or replace) a header.  Silently sets resp->oom if there is no room. */
 void s3_http_response_header(struct s3_http_response *resp, const char *name,
-                             const char *fmt, ...)
-    __attribute__((format(printf, 3, 4)));
+                             const char *fmt, ...) ERNIC_PRINTF_FORMAT(3, 4);
 
 /* Append to the body. */
 void s3_http_response_write(struct s3_http_response *resp, const void *data,
                             size_t len);
 void s3_http_response_printf(struct s3_http_response *resp, const char *fmt,
-                             ...) __attribute__((format(printf, 2, 3)));
+                             ...) ERNIC_PRINTF_FORMAT(2, 3);
 
 /*
  * Render status line, headers and body into one freshly allocated

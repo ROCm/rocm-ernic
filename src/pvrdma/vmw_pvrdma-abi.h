@@ -74,16 +74,16 @@ enum pvrdma_wr_opcode {
 
 /* PVRDMA masked atomic compare and swap */
 struct pvrdma_ex_cmp_swap {
-    uint64_t __attribute__((aligned(8))) swap_val;
-    uint64_t __attribute__((aligned(8))) compare_val;
-    uint64_t __attribute__((aligned(8))) swap_mask;
-    uint64_t __attribute__((aligned(8))) compare_mask;
+    _Alignas(8) uint64_t swap_val;
+    _Alignas(8) uint64_t compare_val;
+    _Alignas(8) uint64_t swap_mask;
+    _Alignas(8) uint64_t compare_mask;
 };
 
 /* PVRDMA masked atomic fetch and add */
 struct pvrdma_ex_fetch_add {
-    uint64_t __attribute__((aligned(8))) add_val;
-    uint64_t __attribute__((aligned(8))) field_boundary;
+    _Alignas(8) uint64_t add_val;
+    _Alignas(8) uint64_t field_boundary;
 };
 
 /* PVRDMA address vector. */
@@ -101,26 +101,26 @@ struct pvrdma_av {
 
 /* PVRDMA scatter/gather entry */
 struct pvrdma_sge {
-    uint64_t __attribute__((aligned(8))) addr;
+    _Alignas(8) uint64_t addr;
     uint32_t length;
     uint32_t lkey;
 };
 
 /* PVRDMA receive queue work request */
 struct pvrdma_rq_wqe_hdr {
-    uint64_t __attribute__((aligned(8))) wr_id; /* wr id */
-    uint32_t num_sge;                           /* size of s/g array */
-    uint32_t total_len;                         /* reserved */
+    _Alignas(8) uint64_t wr_id; /* wr id */
+    uint32_t num_sge;           /* size of s/g array */
+    uint32_t total_len;         /* reserved */
 };
 /* Use pvrdma_sge (ib_sge) for receive queue s/g array elements. */
 
 /* PVRDMA send queue work request */
 struct pvrdma_sq_wqe_hdr {
-    uint64_t __attribute__((aligned(8))) wr_id; /* wr id */
-    uint32_t num_sge;                           /* size of s/g array */
-    uint32_t total_len;                         /* reserved */
-    uint32_t opcode;                            /* operation type */
-    uint32_t send_flags;                        /* wr flags */
+    _Alignas(8) uint64_t wr_id; /* wr id */
+    uint32_t num_sge;           /* size of s/g array */
+    uint32_t total_len;         /* reserved */
+    uint32_t opcode;            /* operation type */
+    uint32_t send_flags;        /* wr flags */
     union {
         uint32_t imm_data;
         uint32_t invalidate_rkey;
@@ -128,19 +128,19 @@ struct pvrdma_sq_wqe_hdr {
     uint32_t reserved;
     union {
         struct {
-            uint64_t __attribute__((aligned(8))) remote_addr;
+            _Alignas(8) uint64_t remote_addr;
             uint32_t rkey;
             uint8_t reserved[4];
         } rdma;
         struct {
-            uint64_t __attribute__((aligned(8))) remote_addr;
-            uint64_t __attribute__((aligned(8))) compare_add;
-            uint64_t __attribute__((aligned(8))) swap;
+            _Alignas(8) uint64_t remote_addr;
+            _Alignas(8) uint64_t compare_add;
+            _Alignas(8) uint64_t swap;
             uint32_t rkey;
             uint32_t reserved;
         } atomic;
         struct {
-            uint64_t __attribute__((aligned(8))) remote_addr;
+            _Alignas(8) uint64_t remote_addr;
             uint32_t log_arg_sz;
             uint32_t rkey;
             union {
@@ -149,8 +149,8 @@ struct pvrdma_sq_wqe_hdr {
             } wr_data;
         } masked_atomics;
         struct {
-            uint64_t __attribute__((aligned(8))) iova_start;
-            uint64_t __attribute__((aligned(8))) pl_pdir_dma;
+            _Alignas(8) uint64_t iova_start;
+            _Alignas(8) uint64_t pl_pdir_dma;
             uint32_t page_shift;
             uint32_t page_list_len;
             uint32_t length;
@@ -169,8 +169,8 @@ struct pvrdma_sq_wqe_hdr {
 
 /* Completion queue element. */
 struct pvrdma_cqe {
-    uint64_t __attribute__((aligned(8))) wr_id;
-    uint64_t __attribute__((aligned(8))) qp;
+    _Alignas(8) uint64_t wr_id;
+    _Alignas(8) uint64_t qp;
     uint32_t opcode;
     uint32_t status;
     uint32_t byte_len;
@@ -187,5 +187,23 @@ struct pvrdma_cqe {
     uint8_t network_hdr_type;
     uint8_t reserved2[6]; /* Pad to next power of 2 (64). */
 };
+
+/*
+ * The device's queue limits (rocm_ernic_compat.c) are computed from these
+ * sizes, so they're guest-visible. The _Alignas(8) members keep the layouts
+ * the same on targets where uint64_t is only 4-byte aligned in a struct.
+ */
+_Static_assert(sizeof(struct pvrdma_sge) == 16 &&
+                   _Alignof(struct pvrdma_sge) == 8,
+               "pvrdma_sge layout");
+_Static_assert(sizeof(struct pvrdma_rq_wqe_hdr) == 16 &&
+                   _Alignof(struct pvrdma_rq_wqe_hdr) == 8,
+               "pvrdma_rq_wqe_hdr layout");
+_Static_assert(sizeof(struct pvrdma_sq_wqe_hdr) == 80 &&
+                   _Alignof(struct pvrdma_sq_wqe_hdr) == 8,
+               "pvrdma_sq_wqe_hdr layout");
+_Static_assert(sizeof(struct pvrdma_cqe) == 64 &&
+                   _Alignof(struct pvrdma_cqe) == 8,
+               "pvrdma_cqe layout");
 
 #endif /* VMW_PVRDMA_ABI_H */
