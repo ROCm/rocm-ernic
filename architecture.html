@@ -1260,6 +1260,14 @@ previous key for that MR</p></td>
 treating the WQE’s own payload area as the source buffer. One
 claiming more than that area holds fails with a length error,
 as does a send whose SGE lengths add up to more than 4 GiB.</p>
+<p>The driver creates a queue that takes three to eight SGEs with
+<em>speculative</em> SGE lists. A WQE on one with more than two SGEs
+starts with a table of their lengths, 32-bit or 16-bit as its
+flags say, in the first two SGE slots, and the SGEs follow it.
+The emulator skips the table and reads the SGEs. A WQE whose
+flags name a list format the driver doesn’t define is refused
+rather than guessed at: a send completes with a QP operation
+error, and a receive takes no data.</p>
 <p>Copies between two guest buffers go through a 4 KiB bounce
 buffer on the server’s stack, one contiguous run at a time.</p>
 <p>Each WQE then gets a send completion on the SQ’s CQ. RC and UC
