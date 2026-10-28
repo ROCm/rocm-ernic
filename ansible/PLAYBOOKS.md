@@ -56,6 +56,11 @@ ansible-galaxy collection install \
 ```yaml
 roles:
   - role: sbates130272.rocm_ernic.ernic_guest_setup
+    vars:
+      # ernic_source_repo_version has no default — it must be set to the
+      # SHA that matches your server build, or set ernic_source_dir to an
+      # existing checkout instead.
+      ernic_source_repo_version: "<SHA>"
 ```
 
 > **Note on Galaxy**: the only version published to Ansible Galaxy

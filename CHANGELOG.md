@@ -229,6 +229,16 @@
     `dpkg-dev`, `file` and `readelf` are installed. A change to the install
     rules must update its file lists in
     `tests/package/run-package-test.cmake`.
+* **Guest package scaffold.** `-DERNIC_BUILD_GUEST_PACKAGES=ON` (default
+  `OFF`) enables `cmake/ErnicGuestPackage.cmake`, which defines the names
+  and CPack component identifiers for three guest-side DEB packages:
+  `ionic-ernic-dkms` (SRQ-patched ionic modules), `ionic-ernic-srq-provider`
+  (rdma-core SRQ provider patch set) and `ionic-ernic-p4-dkms`
+  (`ernic_p4.ko`). All three are versioned from `PROJECT_VERSION` so
+  server/guest skew is a `dpkg --compare-versions` check. **Note:** the
+  `install()` targets, `dkms.conf` generation, postinst scripts and CI lanes
+  that would produce actual `.deb` files are not yet implemented; this option
+  only registers the package metadata.
 * **Build options.**
   * rocm-ernic can be built inside another CMake project with
     `add_subdirectory()`, and then leaves the build type to the parent
