@@ -676,10 +676,14 @@ RDMA operations become fp8 reductions; that is not a
 capability to hand out as a side effect of the operator
 enabling the engine for their own use. Each operation
 declares the scope it needs, <code class="docutils literal notranslate"><span class="pre">query</span></code> advertises that scope,
-and the device refuses a request for which either the
-operator’s grant or the caller’s own claim is too narrow –
-the operator’s grant first, so that probing cannot reveal
-which operations exist.</p>
+and each request claims a scope of its own. The device
+refuses a request when the operator’s grant doesn’t cover
+the operation, or when the claim is below what the operation
+needs or above what the operator granted, even for an
+operation the grant covers. None of this is secret:
+<code class="docutils literal notranslate"><span class="pre">identify</span></code> reports the grant, <code class="docutils literal notranslate"><span class="pre">query</span></code> lists every
+operation with the scope it needs, and an operation that
+doesn’t exist is refused with its own status.</p>
 <section id="shaped-like-pds-fwctl-not-pds-fwctl">
 <h3>Shaped like pds_fwctl, not pds_fwctl<a class="headerlink" href="#shaped-like-pds-fwctl-not-pds-fwctl" title="Link to this heading">#</a></h3>
 <p>The opcode numbers are upstream’s
@@ -871,6 +875,14 @@ is what a value it accepts means.</p>
 <p>An entry carries at most 128 bits of a key field or an action
 argument, so a table keyed on a wider field, or an action
 taking a wider argument, is refused at load.</p>
+<p>The guest’s update record (<code class="docutils literal notranslate"><span class="pre">struct</span> <span class="pre">p4_rpc_entry_match</span></code> and
+<code class="docutils literal notranslate"><span class="pre">struct</span> <span class="pre">p4_rpc_entry_param</span></code> in <code class="docutils literal notranslate"><span class="pre">src/p4/p4_devcmd.h</span></code>)
+carries each value, mask and argument in a 16-byte array,
+big-endian and <strong>right-aligned</strong>: the device reads the last
+<code class="docutils literal notranslate"><span class="pre">len</span></code> bytes and ignores the ones before them. An IPv4
+address with <code class="docutils literal notranslate"><span class="pre">len</span></code> 4 goes in bytes 12 to 15; written to
+bytes 0 to 3, it is never read, and the entry matches
+whatever is in bytes 12 to 15 instead.</p>
 <p>A table with no entry for a packet takes its default action,
 which is why <code class="docutils literal notranslate"><span class="pre">minimal_forward.json</span></code> drops a frame until an
 entry for its destination is installed, and forwards it
