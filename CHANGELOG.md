@@ -593,6 +593,16 @@
     every other target: a `Release` or `MinSizeRel` server, such as the
     release tarball's and the `.deb` packages', no longer has any. Build
     `RelWithDebInfo` (the default) for an optimized server with it.
+  * A docs-only configure (`-DERNIC_DOCS_ONLY=ON`) no longer needs a C
+    compiler.
+  * The configuration summary at the end of a configure is printed as
+    status messages, to stdout rather than stderr, so `--log-level=NOTICE`
+    or higher hides it. With a multi-config generator it lists the
+    configurations rather than an empty build type, and a superproject
+    that builds rocm-ernic no longer prints it.
+  * Configuring with `ERNIC_USE_THREAD_SANITIZER` recommends running the
+    programs under `setarch "$(uname -m)" -R`, as CI does, rather than
+    lowering `vm.mmap_rnd_bits` with `sysctl`.
 * **Stricter linting in CI.** ansible-lint 26.10.1 runs with `--strict`.
   ShellCheck excludes no checks; suppress one only on its command, with a
   reason. actionlint 1.7.12 checks the workflows (runner labels in

@@ -33,14 +33,7 @@ if(ERNIC_BUILD_DOCS)
     set(ERNIC_DOCS_REQUIREMENTS
       "${PROJECT_SOURCE_DIR}/requirements.txt")
 
-    if(WIN32)
-        set(ERNIC_VENV_BIN
-          "${ERNIC_DOCS_VENV}/Scripts")
-    else()
-        set(ERNIC_VENV_BIN
-          "${ERNIC_DOCS_VENV}/bin")
-    endif()
-
+    set(ERNIC_VENV_BIN "${ERNIC_DOCS_VENV}/bin")
     set(SPHINX_BUILD "${ERNIC_VENV_BIN}/sphinx-build")
 
     add_custom_command(
@@ -143,9 +136,10 @@ if(ERNIC_BUILD_DOCS)
         -c ${PROJECT_BINARY_DIR}/docs-sphinx
         ${PROJECT_SOURCE_DIR}/docs
         ${ERNIC_DOC_PATH}/html
-      DEPENDS doxygen docs-venv ernic-counter-docs
       WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
       COMMENT "Building Sphinx HTML documentation"
       VERBATIM
     )
+    # add_custom_target()'s DEPENDS names files, not targets
+    add_dependencies(sphinx-html doxygen docs-venv ernic-counter-docs)
 endif()
