@@ -133,12 +133,25 @@ static inline void qemu_mutex_unlock(QemuMutex *mutex)
 }
 
 /*
+ * The most a thread's name keeps, its terminating NUL included: Linux's
+ * TASK_COMM_LEN.  A longer name is cut short.
+ */
+#define QEMU_THREAD_NAME_LEN 16
+
+/*
  * Thread creation and management.  qemu_thread_create() returns
  * pthread_create()'s result, since a thread can fail to start for want of
  * resources (EAGAIN); qemu_thread_join() aborts if pthread_join() fails.
+ *
+ * The new thread takes name, as qemu_thread_set_name() gives it, before it
+ * calls start_routine; it is what top -H, gdb, and TSan's reports show.
+ * qemu_thread_set_name() names the calling thread, for one whose role is
+ * settled only once it is running.  A name is only a debugging aid, so
+ * failing to set one is ignored.
  */
-int qemu_thread_create(QemuThread *thread, void *(*start_routine)(void *),
-                       void *arg);
+int qemu_thread_create(QemuThread *thread, const char *name,
+                       void *(*start_routine)(void *), void *arg);
+void qemu_thread_set_name(const char *name);
 void qemu_thread_join(QemuThread *thread);
 
 /*

@@ -215,12 +215,12 @@ static int parse_tcp_config_manager(const char *args, char **manager_host,
 }
 
 /*
- * Start a backend thread whose stop flag is *running.  The flag is set
- * first, because the thread exits as soon as it finds it clear.  If the
- * thread can't be created (the process is out of threads or memory), the
- * flag is cleared again and false is returned: every stop joins only when
- * the flag is set, and a join of a thread that was never created is
- * undefined behavior.
+ * Start a backend thread named name (cut short to QEMU_THREAD_NAME_LEN),
+ * whose stop flag is *running.  The flag is set first, because the thread
+ * exits as soon as it finds it clear.  If the thread can't be created (the
+ * process is out of threads or memory), the flag is cleared again and false
+ * is returned: every stop joins only when the flag is set, and a join of a
+ * thread that was never created is undefined behavior.
  *
  * No stop may run between the set and the clear.  Callers hold the lock the
  * stop takes first, or start the thread before the stop can reach it.
@@ -229,7 +229,7 @@ bool tcp_start_thread(QemuThread *thread, const char *name, void *(*fn)(void *),
                       void *arg, atomic_bool *running)
 {
     atomic_store(running, true);
-    if (qemu_thread_create(thread, fn, arg) != 0) {
+    if (qemu_thread_create(thread, name, fn, arg) != 0) {
         atomic_store(running, false);
         rdma_error_report("TCP: Failed to start thread %s", name);
         return false;

@@ -11,6 +11,9 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+/* pthread_setname_np() is a GNU extension */
+#define _GNU_SOURCE
+
 #include <stdint.h>
 #include <inttypes.h>
 #include <limits.h>
@@ -48,13 +51,41 @@
  *
  * pthread_sigmask() fails only for an invalid first argument, so a failure
  * there is a bug, and aborts.
+ *
+ * The thread names itself, in qemu_thread_start(), rather than being named
+ * by its creator: glibc names another thread by writing to its file in
+ * /proc, which takes a descriptor the process may have run out of, but names
+ * the calling thread with prctl().
  */
-int qemu_thread_create(QemuThread *thread, void *(*start_routine)(void *),
-                       void *arg)
+
+/* What qemu_thread_start() needs, from g_new() and freed by the thread */
+typedef struct QemuThreadStart {
+    void *(*start_routine)(void *);
+    void *arg;
+    char name[QEMU_THREAD_NAME_LEN];
+} QemuThreadStart;
+
+static void *qemu_thread_start(void *opaque)
 {
+    QemuThreadStart start = *(QemuThreadStart *)opaque;
+
+    g_free(opaque);
+    qemu_thread_set_name(start.name);
+    return start.start_routine(start.arg);
+}
+
+int qemu_thread_create(QemuThread *thread, const char *name,
+                       void *(*start_routine)(void *), void *arg)
+{
+    QemuThreadStart *start = g_new0(QemuThreadStart, 1);
     sigset_t set;
     sigset_t oldset;
     int ret;
+
+    start->start_routine = start_routine;
+    start->arg = arg;
+    /* Cut short to what the kernel keeps */
+    g_strlcpy(start->name, name, sizeof(start->name));
 
     sigfillset(&set);
     sigdelset(&set, SIGSEGV);
@@ -64,11 +95,28 @@ int qemu_thread_create(QemuThread *thread, void *(*start_routine)(void *),
 
     qemu_thread_check(pthread_sigmask(SIG_SETMASK, &set, &oldset),
                       "pthread_sigmask");
-    ret = pthread_create(&thread->thread, NULL, start_routine, arg);
+    ret = pthread_create(&thread->thread, NULL, qemu_thread_start, start);
     qemu_thread_check(pthread_sigmask(SIG_SETMASK, &oldset, NULL),
                       "pthread_sigmask");
 
+    if (ret != 0) {
+        g_free(start);
+    }
     return ret;
+}
+
+/*
+ * pthread_setname_np() refuses a name longer than the kernel keeps
+ * (ERANGE), so it is cut short first.  Naming the calling thread can't
+ * otherwise fail on Linux, and a thread without a name works the same, so
+ * the result is ignored.
+ */
+void qemu_thread_set_name(const char *name)
+{
+    char buf[QEMU_THREAD_NAME_LEN];
+
+    g_strlcpy(buf, name, sizeof(buf));
+    (void)pthread_setname_np(pthread_self(), buf);
 }
 
 void qemu_thread_join(QemuThread *thread)

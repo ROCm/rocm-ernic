@@ -714,7 +714,8 @@ static bool test_dealloc_locks(void)
     atomic_init(&obs.done, false);
     obs.mismatches = 0;
     obs.not_freed = 0;
-    if (qemu_thread_create(&thread, lock_observer, &obs) != 0) {
+    if (qemu_thread_create(&thread, "lock-observer", lock_observer, &obs) !=
+        0) {
         abort();
     }
 

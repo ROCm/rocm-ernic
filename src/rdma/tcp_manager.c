@@ -25,6 +25,7 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <glib.h>
 #include <time.h>
@@ -703,6 +704,7 @@ bool tcp_manager_recv_register(TcpConnection *conn, const TcpRecvMsg *msg)
     TcpBackendPrivate *priv = conn->priv;
     TcpRegistration reg;
     TcpAdmission adm;
+    char thread_name[32];
 
     if (!priv || !priv->is_manager) {
         rdma_error_report("TCP: REGISTER_NODE received by non-manager");
@@ -735,6 +737,13 @@ bool tcp_manager_recv_register(TcpConnection *conn, const TcpRecvMsg *msg)
         tcp_refuse_registration(priv, conn, msg->hdr.src_node_id, adm.refused);
         return true;
     }
+
+    /*
+     * This is conn's receive thread, started as tcp-recv-new; name it for
+     * the node now, as a worker names its receive threads.
+     */
+    snprintf(thread_name, sizeof(thread_name), "tcp-recv-%u", adm.node_id);
+    qemu_thread_set_name(thread_name);
 
     if (adm.replaced) {
         tcp_retire_conn(adm.replaced);
@@ -929,7 +938,7 @@ void tcp_manager_accept(TcpBackendPrivate *priv, int sockfd, const char *host,
         tcp_connection_unref(conn);
         return;
     }
-    if (!tcp_start_recv_thread(conn, "tcp-recv-pending")) {
+    if (!tcp_start_recv_thread(conn, "tcp-recv-new")) {
         qemu_mutex_unlock(&priv->conn_table_lock);
         tcp_connection_unref(conn);
         return;

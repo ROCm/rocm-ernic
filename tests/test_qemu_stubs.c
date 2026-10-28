@@ -15,7 +15,9 @@
  *
  * qemu_thread_create() must start each thread with every signal blocked
  * except those a fault raises, so the process's signals go to the main
- * thread, and must leave its caller's own mask as it was.
+ * thread, and must leave its caller's own mask as it was.  The thread must
+ * already have its name when its start routine runs, cut short to what the
+ * kernel keeps, and qemu_thread_set_name() must rename the calling thread.
  *
  * The mutex wrappers in qemu/thread.h must abort when a lock is misused,
  * each case in a child process like the oversize map: destroying a locked
@@ -33,12 +35,16 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+/* pthread_getname_np() is a GNU extension */
+#define _GNU_SOURCE
+
 #include <errno.h>
 #include <inttypes.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -204,7 +210,8 @@ static void test_thread_signal_mask(void)
     pthread_sigmask(SIG_SETMASK, &caller, &before);
 
     sigemptyset(&in_thread);
-    if (qemu_thread_create(&thread, record_mask, &in_thread) != 0) {
+    if (qemu_thread_create(&thread, "record-mask", record_mask, &in_thread) !=
+        0) {
         printf("FAIL qemu_thread_create\n");
         failures++;
         pthread_sigmask(SIG_SETMASK, &before, NULL);
@@ -224,6 +231,51 @@ static void test_thread_signal_mask(void)
     check_blocked(&after, SIGUSR2, true, "caller");
     check_blocked(&after, SIGINT, false, "caller");
     check_blocked(&after, SIGTERM, false, "caller");
+}
+
+/* The name the thread has, into arg, a QEMU_THREAD_NAME_LEN buffer. */
+static void *record_name(void *arg)
+{
+    if (pthread_getname_np(pthread_self(), arg, QEMU_THREAD_NAME_LEN) != 0) {
+        g_strlcpy(arg, "(unknown)", QEMU_THREAD_NAME_LEN);
+    }
+    return NULL;
+}
+
+/* Renames itself, then records the name it has. */
+static void *rename_self(void *arg)
+{
+    qemu_thread_set_name("renamed-thread-too-long");
+    return record_name(arg);
+}
+
+static void check_thread_name(const char *given, void *(*fn)(void *),
+                              const char *want)
+{
+    char name[QEMU_THREAD_NAME_LEN] = "";
+    QemuThread thread;
+
+    if (qemu_thread_create(&thread, given, fn, name) != 0) {
+        printf("FAIL qemu_thread_create %s\n", given);
+        failures++;
+        return;
+    }
+    qemu_thread_join(&thread);
+    if (strcmp(name, want) != 0) {
+        printf("FAIL thread started as \"%s\" is called \"%s\", not \"%s\"\n",
+               given, name, want);
+        failures++;
+    }
+}
+
+static void test_thread_names(void)
+{
+    check_thread_name("tcp-accept", record_name, "tcp-accept");
+    /* The longest name kept whole, then names a byte and more past it */
+    check_thread_name("tcp-send-123456", record_name, "tcp-send-123456");
+    check_thread_name("tcp-send-1234567", record_name, "tcp-send-123456");
+    check_thread_name("tcp-send-4294967295", record_name, "tcp-send-429496");
+    check_thread_name("tcp-recv-new", rename_self, "renamed-thread-");
 }
 
 /* ---- Mutexes --------------------------------------------------------- */
@@ -309,7 +361,7 @@ static void test_trylock_busy(void)
 
     qemu_mutex_init(&mutex);
     qemu_mutex_lock(&mutex);
-    if (qemu_thread_create(&thread, trylock_once, &t) != 0) {
+    if (qemu_thread_create(&thread, "trylock-once", trylock_once, &t) != 0) {
         printf("FAIL qemu_thread_create\n");
         failures++;
     } else {
@@ -355,6 +407,7 @@ int main(void)
     expect_abort(oversize_map, "oversize map");
     test_mutex_misuse_aborts();
     test_thread_signal_mask();
+    test_thread_names();
     test_trylock_busy();
     test_timedwait_deadline_passed();
 

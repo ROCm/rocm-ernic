@@ -204,7 +204,8 @@ void info_report(const char *fmt, ...)
 /*
  * Real threads.  The trampoline counts the start routines that returned,
  * so "the join came back" and "the thread actually left its loop" are
- * checked separately.
+ * checked separately.  Each is named, as qemu_stubs.c names them, so a TSan
+ * report here says which thread was which.
  */
 static atomic_int g_creates;
 static atomic_int g_joins;
@@ -220,7 +221,16 @@ static atomic_int g_create_failures; /* calls failed by g_creates_left */
 struct trampoline {
     void *(*fn)(void *);
     void *arg;
+    char name[QEMU_THREAD_NAME_LEN];
 };
+
+void qemu_thread_set_name(const char *name)
+{
+    char buf[QEMU_THREAD_NAME_LEN];
+
+    g_strlcpy(buf, name, sizeof(buf));
+    (void)pthread_setname_np(pthread_self(), buf);
+}
 
 static void *trampoline_run(void *opaque)
 {
@@ -228,13 +238,14 @@ static void *trampoline_run(void *opaque)
     void *ret;
 
     free(opaque);
+    qemu_thread_set_name(t.name);
     ret = t.fn(t.arg);
     atomic_fetch_add(&g_exits, 1);
     return ret;
 }
 
-int qemu_thread_create(QemuThread *thread, void *(*start_routine)(void *),
-                       void *arg)
+int qemu_thread_create(QemuThread *thread, const char *name,
+                       void *(*start_routine)(void *), void *arg)
 {
     struct trampoline *t;
     int left = atomic_load(&g_creates_left);
@@ -251,6 +262,7 @@ int qemu_thread_create(QemuThread *thread, void *(*start_routine)(void *),
         return -1;
     t->fn = start_routine;
     t->arg = arg;
+    g_strlcpy(t->name, name, sizeof(t->name));
     if (pthread_create(&thread->thread, NULL, trampoline_run, t) != 0) {
         free(t);
         return -1;
@@ -564,7 +576,8 @@ static int run_case(const struct stop_case *c)
 
     if (c->setup != NOT_STARTED) {
         atomic_store(&priv->accept_thread_running, true);
-        qemu_thread_create(&priv->accept_thread, tcp_accept_thread, priv);
+        qemu_thread_create(&priv->accept_thread, "tcp-accept",
+                           tcp_accept_thread, priv);
         if (c->setup == BLOCKED)
             sleep_ms(100);
     }
@@ -739,7 +752,7 @@ static int run_health_case(const struct health_case *c)
     alarm(row_timeout_s());
     if (c->setup != NOT_STARTED) {
         atomic_store(&priv->health_check_running, true);
-        qemu_thread_create(&priv->health_check_thread,
+        qemu_thread_create(&priv->health_check_thread, "tcp-health",
                            tcp_manager_health_check_thread, priv);
         if (c->setup == BLOCKED)
             sleep_ms(100);
@@ -852,7 +865,8 @@ static TcpConnection *recv_conn_new(TcpBackendPrivate *priv, uint32_t id,
     *peer = sv[1];
     if (start) {
         atomic_store(&conn->recv_thread_running, true);
-        qemu_thread_create(&conn->recv_thread, tcp_recv_thread_per_conn, conn);
+        qemu_thread_create(&conn->recv_thread, "tcp-recv",
+                           tcp_recv_thread_per_conn, conn);
     }
     return conn;
 }
@@ -1142,7 +1156,8 @@ static int worker_attach(TcpBackendPrivate *priv, TcpConnection **connp)
     qemu_mutex_lock(&priv->conn_table_lock);
     g_ptr_array_add(priv->pending_conns, conn);
     atomic_store(&conn->recv_thread_running, true);
-    qemu_thread_create(&conn->recv_thread, tcp_recv_thread_per_conn, conn);
+    qemu_thread_create(&conn->recv_thread, "tcp-recv", tcp_recv_thread_per_conn,
+                       conn);
     qemu_mutex_unlock(&priv->conn_table_lock);
     if (connp)
         *connp = conn;
@@ -1829,7 +1844,8 @@ static int run_hs_case(const struct hs_case *c)
         why = "could not open a listening socket";
     } else {
         atomic_store(&priv->accept_thread_running, true);
-        qemu_thread_create(&priv->accept_thread, tcp_accept_thread, priv);
+        qemu_thread_create(&priv->accept_thread, "tcp-accept",
+                           tcp_accept_thread, priv);
         if (c->peer != HS_GOOD && c->peer != HS_SPLIT && !hs_dup(c->peer))
             why = hs_bad_peer(c->peer, ntohs(addr.sin_port), &bad);
         if (!why && !hs_waits(c->peer))
@@ -1987,7 +2003,7 @@ static void mgr_start(struct mgr_fixture *fx, uint64_t dead_s)
     for (uint32_t i = 0; i < fx->nodes; i++)
         fx->node[i]->last_heartbeat_ms = last_ms;
     atomic_store(&fx->priv->health_check_running, true);
-    qemu_thread_create(&fx->priv->health_check_thread,
+    qemu_thread_create(&fx->priv->health_check_thread, "tcp-health",
                        tcp_manager_health_check_thread, fx->priv);
 }
 
@@ -2945,7 +2961,8 @@ static TcpConnection *tp_publish(struct tp_fixture *fx, struct tp_net *net,
     }
     if (start) {
         atomic_store(&conn->recv_thread_running, true);
-        qemu_thread_create(&conn->recv_thread, tcp_recv_thread_per_conn, conn);
+        qemu_thread_create(&conn->recv_thread, "tcp-recv",
+                           tcp_recv_thread_per_conn, conn);
     }
     qemu_mutex_lock(&fx->priv->conn_table_lock);
     g_hash_table_insert(fx->priv->connections, GUINT_TO_POINTER(id), conn);

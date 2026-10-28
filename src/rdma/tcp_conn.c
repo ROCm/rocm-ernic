@@ -28,6 +28,7 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <glib.h>
@@ -412,13 +413,23 @@ static void *tcp_send_thread(void *opaque)
  * Start conn's send thread unless it is running.  Returns 0, or -ENOMEM if it
  * couldn't be started.  The caller holds sendq_lock, and has checked the
  * queue isn't closed: a closed queue's thread may have been joined already.
+ *
+ * The thread is named for the node it sends to, as its connection's receive
+ * thread is, or tcp-send-new on a manager's connection that hasn't
+ * registered.  On a worker, tcp-send-0 is the manager's.
  */
 static int tcp_sendq_start(TcpConnection *conn) TSA_REQUIRES(conn->sendq_lock)
 {
+    char name[32] = "tcp-send-new";
+
     if (conn->send_thread_started) {
         return 0;
     }
-    if (qemu_thread_create(&conn->send_thread, tcp_send_thread, conn) != 0) {
+    if (conn->node_id != UINT32_MAX) {
+        snprintf(name, sizeof(name), "tcp-send-%u", conn->node_id);
+    }
+    if (qemu_thread_create(&conn->send_thread, name, tcp_send_thread, conn) !=
+        0) {
         rdma_error_report("TCP: Failed to start the send thread for node %u",
                           conn->node_id);
         return -ENOMEM;

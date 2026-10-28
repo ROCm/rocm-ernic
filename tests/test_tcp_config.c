@@ -72,13 +72,18 @@ void info_report(const char *fmt, ...)
 {
     (void)fmt;
 }
-int qemu_thread_create(QemuThread *thread, void *(*start_routine)(void *),
-                       void *arg)
+int qemu_thread_create(QemuThread *thread, const char *name,
+                       void *(*start_routine)(void *), void *arg)
 {
     (void)thread;
+    (void)name;
     (void)start_routine;
     (void)arg;
     return 0;
+}
+void qemu_thread_set_name(const char *name)
+{
+    (void)name;
 }
 void qemu_thread_join(QemuThread *thread)
 {
