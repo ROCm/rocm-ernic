@@ -268,6 +268,18 @@ static inline bool ernic_parse_hex(const char *s, size_t n, uint8_t *out)
 }
 
 /*
+ * Whether digits hex digits fit in out_cap bytes, two to a byte, with an odd
+ * one taking a byte of its own. ernic_parse_hexstr()'s capacity check, apart
+ * so a test can reach a capacity no buffer could have.
+ */
+static inline bool ernic_hexstr_fits(size_t digits, size_t out_cap)
+{
+    /* Compare bytes rather than forming 2 * out_cap, which would wrap for a
+     * capacity over SIZE_MAX / 2. */
+    return digits / 2 + digits % 2 <= out_cap;
+}
+
+/*
  * Parse a bmv2 "hexstr": a 0x-prefixed, variable-width hexadecimal value
  * that may be negative and may have an odd number of digits.
  *
@@ -318,9 +330,7 @@ static inline bool ernic_parse_hexstr(const char *s, uint8_t *out,
      * byte, so pair from the right. */
     size_t nbytes = digits / 2 + digits % 2;
 
-    /* Compare the bytes against the capacity rather than forming
-     * 2 * out_cap, which would wrap for a large capacity. */
-    if (nbytes > out_cap) {
+    if (!ernic_hexstr_fits(digits, out_cap)) {
         return false;
     }
     for (size_t i = 0; i < digits; i++) {

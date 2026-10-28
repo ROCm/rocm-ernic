@@ -239,33 +239,26 @@ static ssize_t bar0_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
 
     ernic_stats_bar0_access(dev->stats, is_write);
 
-    /* The client chooses both, and offset is signed, so neither the
-     * conversion nor the sum may be formed before they are known to fit. */
-    if (offset < 0 || (uint64_t)offset > IONIC_BAR0_TOTAL_SIZE ||
-        count > IONIC_BAR0_TOTAL_SIZE - (size_t)offset) {
+    enum ionic_bar0_window win = ionic_bar0_window(offset, count);
+
+    if (win == IONIC_BAR0_WINDOW_REGS)
+        return ionic_eth_emu_bar0_access(emu, buf, count, offset, is_write);
+
+    /* Both refusals share one branch: libvfio-user refuses an access
+     * outside BAR0 before it gets here, so only a straddle reaches it from
+     * a client, and test_ionic_bar.c checks the classification itself. */
+    if (win != IONIC_BAR0_WINDOW_MSIX) {
         vfu_log(vfu_ctx, LOG_ERR,
-                "ionic BAR0 access out of bounds: offset=%#" PRIx64
-                " count=%zu",
+                "ionic BAR0 access %s: offset=%#" PRIx64 " count=%zu",
+                win == IONIC_BAR0_WINDOW_OUTSIDE
+                    ? "out of bounds"
+                    : "straddling the register/MSI-X split",
                 (uint64_t)offset, count);
         errno = EINVAL;
         return -1;
     }
 
-    size_t off = (size_t)offset;
-
-    if (count <= IONIC_BAR0_REGS_SIZE && off <= IONIC_BAR0_REGS_SIZE - count)
-        return ionic_eth_emu_bar0_access(emu, buf, count, offset, is_write);
-
-    if (off < IONIC_BAR0_REGS_SIZE) {
-        vfu_log(vfu_ctx, LOG_ERR,
-                "ionic BAR0 access straddling the register/MSI-X split: "
-                "offset=%#zx count=%zu",
-                off, count);
-        errno = EINVAL;
-        return -1;
-    }
-
-    size_t msix_off = off - IONIC_BAR0_REGS_SIZE;
+    size_t msix_off = (size_t)offset - IONIC_BAR0_REGS_SIZE;
     if (is_write)
         memcpy((char *)dev->bar0_mem + msix_off, buf, count);
     else

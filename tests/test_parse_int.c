@@ -227,6 +227,30 @@ static int run_hexstr(const struct hexstr_case *tc)
     return 0;
 }
 
+/*
+ * ernic_hexstr_fits() on its own, for capacities over SIZE_MAX / 2: no
+ * buffer can be that large, so run_hexstr() can't reach them. Comparing
+ * digits against 2 * out_cap wraps there and refuses a string that fits.
+ */
+struct hexstr_fits_case {
+    const char *name;
+    size_t digits;
+    size_t cap;
+    bool expect;
+};
+
+static int run_hexstr_fits(const struct hexstr_fits_case *tc)
+{
+    bool fits = ernic_hexstr_fits(tc->digits, tc->cap);
+    if (fits != tc->expect) {
+        printf("FAIL hexstr-fits %-20s: digits=%zu cap=%zu fits=%d "
+               "expected %d\n",
+               tc->name, tc->digits, tc->cap, fits, tc->expect);
+        return 1;
+    }
+    return 0;
+}
+
 static int run_hex(const struct hex_case *tc)
 {
     uint8_t out[sizeof(tc->expect)];
@@ -453,6 +477,21 @@ int main(void)
         {"decimal", "255", 4, false, false, 0, {0}},
     };
 
+    static const struct hexstr_fits_case hexstr_fits_cases[] = {
+        {"one-digit", 1, 1, true},
+        {"two-per-byte", 4, 2, true},
+        {"odd-rounds-up", 3, 2, true},
+        {"one-digit-over", 5, 2, false},
+        {"odd-over", 3, 1, false},
+        {"zero-cap", 1, 0, false},
+        /* 2 * cap is SIZE_MAX + 1, which wraps to 0. */
+        {"half-max-cap", SIZE_MAX, SIZE_MAX / 2 + 1, true},
+        {"half-max-cap-over", SIZE_MAX, SIZE_MAX / 2, false},
+        {"even-under-max", SIZE_MAX - 1, SIZE_MAX / 2, true},
+        /* 2 * cap wraps to SIZE_MAX - 1. */
+        {"max-cap", SIZE_MAX, SIZE_MAX, true},
+    };
+
     static const struct hex_case hex_cases[] = {
         {"null", NULL, 1, false, {0}},
         {"zero-n", "ab", 0, false, {0}},
@@ -505,6 +544,7 @@ int main(void)
     size_t nsize = sizeof(size_cases) / sizeof(size_cases[0]);
     size_t nhex = sizeof(hex_cases) / sizeof(hex_cases[0]);
     size_t nhexstr = sizeof(hexstr_cases) / sizeof(hexstr_cases[0]);
+    size_t nfits = sizeof(hexstr_fits_cases) / sizeof(hexstr_fits_cases[0]);
     size_t nmac = sizeof(mac_cases) / sizeof(mac_cases[0]);
     size_t np = sizeof(port_cases) / sizeof(port_cases[0]);
     for (size_t i = 0; i < ni; i++) {
@@ -528,6 +568,9 @@ int main(void)
     for (size_t i = 0; i < nhexstr; i++) {
         failures += run_hexstr(&hexstr_cases[i]);
     }
+    for (size_t i = 0; i < nfits; i++) {
+        failures += run_hexstr_fits(&hexstr_fits_cases[i]);
+    }
     for (size_t i = 0; i < nhex; i++) {
         failures += run_hex(&hex_cases[i]);
     }
@@ -542,7 +585,8 @@ int main(void)
         printf("parse_int: %d case(s) FAILED\n", failures);
         return 1;
     }
-    printf("parse_int: all %zu cases passed\n",
-           ni + nu + nhu + n64 + nspan + nsize + nhex + nhexstr + nmac + np);
+    printf("parse_int: all %zu cases passed\n", ni + nu + nhu + n64 + nspan +
+                                                    nsize + nhex + nhexstr +
+                                                    nfits + nmac + np);
     return 0;
 }

@@ -123,6 +123,10 @@ target_compile_definitions(test_ernic_device PRIVATE
 # reaches vfu_addr_to_sgl(). Header-only, so it links nothing.
 ernic_add_test_program(test_dma_range SOURCES test_dma_range.c)
 
+# Which part of BAR0 an access goes to, including the out-of-bounds
+# accesses libvfio-user refuses before the server sees them. Header-only.
+ernic_add_test_program(ernic-test-ionic-bar SOURCES test_ionic_bar.c)
+
 # The one path between host buffers and guest memory (ernic_dma.c), against
 # fake_vfu.c's guest memory: transfers across region boundaries, ones that
 # need more scatter/gather entries than one list holds, and every failure
@@ -772,6 +776,9 @@ ernic_add_unit_test(ernic-device-tuple-unit test_ernic_device
 ernic_add_unit_test(dma-range-unit test_dma_range TIMEOUT 30)
 
 ernic_add_unit_test(ernic-dma-unit ernic-test-dma TIMEOUT 30)
+
+# BAR0 access classification (table-driven)
+ernic_add_unit_test(ionic-bar-unit ernic-test-ionic-bar TIMEOUT 30)
 
 # TAP backend: an overlong interface name is refused, not truncated
 ernic_add_unit_test(ionic-eth-net-unit ernic-test-ionic-eth-net TIMEOUT 30)
