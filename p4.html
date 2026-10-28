@@ -789,14 +789,35 @@ first – keeps the dependency set it had before.</p>
 <p>A program loads completely – the header definitions, the
 parse state machine, the deparser’s emit order, the actions,
 and the pipelines with their tables and conditionals – and
-then runs: parse, walk the pipeline, deparse.</p>
+then runs: parse, walk the pipelines, deparse.</p>
+<p>As bmv2’s <code class="docutils literal notranslate"><span class="pre">simple_switch</span></code> does, the engine runs the
+pipeline called <code class="docutils literal notranslate"><span class="pre">ingress</span></code> and then the one called
+<code class="docutils literal notranslate"><span class="pre">egress</span></code>, whatever order the program lists them in. Those
+are the only two v1model has, so a pipeline with any other
+name is refused at load, as is a program missing either.
+<code class="docutils literal notranslate"><span class="pre">p4c</span></code> always emits both, and an egress that does nothing as
+an empty pipeline. Between the two:</p>
+<ul class="simple">
+<li><p>A packet ingress drops with <code class="docutils literal notranslate"><span class="pre">mark_to_drop()</span></code> never
+reaches egress, so egress calls no extern for it. Nor does a
+frame ingress sends to port 511, the drop port.</p></li>
+<li><p>Egress sees the port ingress chose as
+<code class="docutils literal notranslate"><span class="pre">standard_metadata.egress_port</span></code>, if the program declares
+it. A frame ingress didn’t route shows the other port,
+where it is going; an RDMA operation shows whatever ingress
+left in <code class="docutils literal notranslate"><span class="pre">egress_spec</span></code>. <code class="docutils literal notranslate"><span class="pre">egress_spec</span></code> starts egress at 0.</p></li>
+<li><p>Egress can drop a frame, with <code class="docutils literal notranslate"><span class="pre">mark_to_drop()</span></code> or by
+assigning 511 to <code class="docutils literal notranslate"><span class="pre">egress_spec</span></code>, but not send it to another
+port: any other value it assigns there is ignored. An RDMA
+operation’s verdict is its drop alone, as in ingress.</p></li>
+</ul>
 <p>A program’s headers, metadata included, share a 1024-byte
 packet header vector, each in whole bytes. The loader lays
 them out once, and refuses a program whose headers take more,
 saying how many bytes they need; loaded, it would drop every
 frame and fail every RDMA operation it governs.</p>
-<p>Where a frame goes is the program’s decision. It writes
-<code class="docutils literal notranslate"><span class="pre">standard_metadata.egress_spec</span></code>, and the engine turns that
+<p>Where a frame goes is the program’s decision. Its ingress
+writes <code class="docutils literal notranslate"><span class="pre">standard_metadata.egress_spec</span></code>, and the engine turns that
 into an egress port, so a program without that field cannot
 say where a packet goes and is refused at load. An
 <code class="docutils literal notranslate"><span class="pre">egress_spec</span></code> naming a port this two-port device does not
@@ -932,7 +953,8 @@ for <code class="docutils literal notranslate"><span class="pre">&lt;</span></co
 <code class="docutils literal notranslate"><span class="pre">!=</span></code>; the executor would read anything else as a number. A
 header that goes on a wire is a whole number of bytes, as
 <code class="docutils literal notranslate"><span class="pre">p4c</span></code> requires for bmv2, and <code class="docutils literal notranslate"><span class="pre">standard_metadata</span></code>’s
-<code class="docutils literal notranslate"><span class="pre">egress_spec</span></code> and <code class="docutils literal notranslate"><span class="pre">ingress_port</span></code> have v1model’s 9 bits.</p>
+<code class="docutils literal notranslate"><span class="pre">egress_spec</span></code>, <code class="docutils literal notranslate"><span class="pre">ingress_port</span></code> and <code class="docutils literal notranslate"><span class="pre">egress_port</span></code> have
+v1model’s 9 bits.</p>
 <p>So is a document that would cost too much to parse. A program
 may be up to 4 MiB, but json-c spends far more heap on a
 value than the value takes as text – about 790 bytes for
