@@ -489,13 +489,13 @@ static int adminq_parse_roce_hdr(const struct ionic_adminq_ctx *ctx,
     memcpy(dmac, hdr, 6);
 
     uint32_t off = 12;
-    uint16_t ethertype = (uint16_t)((hdr[off] << 8) | hdr[off + 1]);
+    uint16_t ethertype = ernic_get_be16(hdr + off);
 
     if (ethertype == 0x8100) { /* 802.1Q tag, ethertype repeats after it */
         off += 4;
         if (off + 2 > len)
             return 0;
-        ethertype = (uint16_t)((hdr[off] << 8) | hdr[off + 1]);
+        ethertype = ernic_get_be16(hdr + off);
     }
     off += 2;
 

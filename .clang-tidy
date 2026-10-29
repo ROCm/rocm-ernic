@@ -65,13 +65,18 @@ Checks:
   # test-case tables lead with the same fields. The space it would save
   # is a few KB per device
   - -clang-analyzer-optin.performance.Padding
+  # ibverbs and POSIX define their flags as int (IBV_QP_STATE | IBV_QP_PORT,
+  # flags | O_CLOEXEC, revents & POLLIN), so combining them can only be
+  # written with signed operands. It also reports signed shift counts and
+  # parenthesised literals, which can't go wrong; UBSan reports a shift
+  # that overflows
+  - -bugprone-signed-bitwise
 
   # TODO: These checks report problems in the current code. Fix the code
   # and delete the check's line here, or move it to "Not wanted" with a
   # reason. The count is the number of places clang-tidy 23 reports in
   # the Debug and Release builds together.
   - -bugprone-easily-swappable-parameters  # TODO(400)
-  - -bugprone-signed-bitwise  # TODO(1108)
   - -cert-err33-c  # TODO(780): unchecked return values
   - -cppcoreguidelines-avoid-non-const-global-variables  # TODO(249)
   - -cppcoreguidelines-init-variables  # TODO(1293)
