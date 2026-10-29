@@ -65,59 +65,60 @@ Checks:
   # and delete the check's line here, or move it to "Not wanted" with a
   # reason. The count is the number of places clang-tidy 23 reports in
   # the Debug and Release builds together.
-  - -bugprone-assignment-in-if-condition  # TODO(10)
-  - -bugprone-branch-clone  # TODO(1)
-  - -bugprone-easily-swappable-parameters  # TODO(326)
-  - -bugprone-implicit-widening-of-multiplication-result  # TODO(90)
+  - -bugprone-assignment-in-if-condition  # TODO(17)
+  - -bugprone-branch-clone  # TODO(2)
+  - -bugprone-easily-swappable-parameters  # TODO(390)
+  - -bugprone-implicit-widening-of-multiplication-result  # TODO(146)
   - -bugprone-invalid-enum-default-initialization  # TODO(3)
   - -bugprone-multi-level-implicit-pointer-conversion  # TODO(5)
-  - -bugprone-not-null-terminated-result  # TODO(1)
-  - -bugprone-reserved-identifier  # TODO(2)
+  - -bugprone-not-null-terminated-result  # TODO(6)
+  - -bugprone-reserved-identifier  # TODO(1)
   - -cert-dcl37-c  # TODO: the same check
   # The same check, but it also reports the __real_ and __wrap_ functions
-  # that the linker's --wrap option needs (10 of its 12)
-  - -cert-dcl51-cpp  # TODO(12)
-  - -bugprone-signed-bitwise  # TODO(779)
+  # that the linker's --wrap option needs (30 of its 31)
+  - -cert-dcl51-cpp  # TODO(31)
+  - -bugprone-signed-bitwise  # TODO(1104)
   - -bugprone-suspicious-memory-comparison  # TODO(6)
   - -cert-exp42-c  # TODO: the same check
   - -cert-flp37-c  # TODO: the same check
-  - -cert-err33-c  # TODO(673): unchecked return values
-  - -clang-analyzer-core.CallAndMessage  # TODO(9)
+  - -cert-err33-c  # TODO(729): unchecked return values
+  - -clang-analyzer-core.CallAndMessage  # TODO(3)
   - -clang-analyzer-core.NonNullParamChecker  # TODO(2)
-  - -clang-analyzer-core.NullDereference  # TODO(1)
-  - -clang-analyzer-optin.performance.Padding  # TODO(18)
-  # Only reported in Release, and only with the other checks here off.
-  # The analyzer follows paths through the code, so which problems it
-  # finds can change with the set of checks
+  - -clang-analyzer-core.NullDereference  # TODO(4)
+  - -clang-analyzer-optin.performance.Padding  # TODO(20)
+  # Once reported only in Release, and only with the other checks here
+  # off; now in both builds with them on. The analyzer follows paths
+  # through the code, so which problems it finds can change with the set
+  # of checks
   - -clang-analyzer-optin.taint.TaintedAlloc  # TODO(1)
-  - -clang-analyzer-security.ArrayBound  # TODO(2)
-  - -clang-analyzer-unix.Stream  # TODO(1)
-  - -cppcoreguidelines-avoid-non-const-global-variables  # TODO(210)
-  - -cppcoreguidelines-init-variables  # TODO(843)
+  - -clang-analyzer-security.ArrayBound  # TODO(6)
+  - -clang-analyzer-unix.Stream  # TODO(2)
+  - -cppcoreguidelines-avoid-non-const-global-variables  # TODO(234)
+  - -cppcoreguidelines-init-variables  # TODO(1266)
   - -cppcoreguidelines-interfaces-global-init  # TODO(1)
-  - -modernize-avoid-c-style-cast  # TODO(19)
-  - -modernize-macro-to-enum  # TODO(1191)
+  - -modernize-avoid-c-style-cast  # TODO(27)
+  - -modernize-macro-to-enum  # TODO(1208)
   - -cppcoreguidelines-macro-to-enum  # TODO: the same check
   - -performance-no-int-to-ptr  # TODO(16)
   - -readability-avoid-nested-conditional-operator  # TODO(16)
-  - -readability-braces-around-statements  # TODO(2820)
+  - -readability-braces-around-statements  # TODO(3754)
   - -readability-else-after-return  # TODO(4)
-  - -readability-function-cognitive-complexity  # TODO(72)
+  - -readability-function-cognitive-complexity  # TODO(87)
   # hipObject turns this off
-  - -readability-identifier-length  # TODO(3103)
-  - -readability-implicit-bool-conversion  # TODO(466)
+  - -readability-identifier-length  # TODO(4287)
+  - -readability-implicit-bool-conversion  # TODO(769)
   - -readability-inconsistent-declaration-parameter-name  # TODO(2)
-  - -readability-inconsistent-ifelse-braces  # TODO(5)
-  - -readability-isolate-declaration  # TODO(225)
-  - -readability-magic-numbers  # TODO(4073)
+  - -readability-inconsistent-ifelse-braces  # TODO(4)
+  - -readability-isolate-declaration  # TODO(377)
+  - -readability-magic-numbers  # TODO(5088)
   - -cppcoreguidelines-avoid-magic-numbers  # TODO: the same check
-  - -readability-math-missing-parentheses  # TODO(187)
-  - -readability-redundant-casting  # TODO(24)
-  - -readability-redundant-nested-if  # TODO(3)
+  - -readability-math-missing-parentheses  # TODO(271)
+  - -readability-redundant-casting  # TODO(32)
+  - -readability-redundant-nested-if  # TODO(4)
   - -readability-redundant-parentheses  # TODO(3)
-  - -readability-trailing-comma  # TODO(1068)
-  - -readability-uppercase-literal-suffix  # TODO(499)
-  - -readability-use-concise-preprocessor-directives  # TODO(2)
+  - -readability-trailing-comma  # TODO(1156)
+  - -readability-uppercase-literal-suffix  # TODO(975)
+  - -readability-use-concise-preprocessor-directives  # TODO(4)
 WarningsAsErrors: '*'
 
 CheckOptions:
