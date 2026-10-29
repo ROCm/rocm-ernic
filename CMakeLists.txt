@@ -4,8 +4,10 @@
 
 # Top-level CMake file for rocm-ernic
 
-# CMake version according to latest ROCm platform requirements
-cmake_minimum_required(VERSION 3.21)
+# TheRock, which will build rocm-ernic, requires 3.25. 3.25.0 and 3.25.1
+# pass FetchContent_Declare()'s SYSTEM on to ExternalProject_Add() as part
+# of the previous option's value, which breaks the download.
+cmake_minimum_required(VERSION 3.25.2)
 
 # The release workflow (.github/workflows/release.yml) reads the version
 # from these three set() calls with a regex and checks it against the

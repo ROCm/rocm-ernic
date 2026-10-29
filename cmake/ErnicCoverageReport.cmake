@@ -13,7 +13,7 @@
 #   SOURCE_DIR      The sources to report on
 #   BINARIES        The instrumented executables
 
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 3.25.2)
 
 foreach(var IN ITEMS LLVM_PROFDATA LLVM_COV COVERAGE_DIR SOURCE_DIR BINARIES)
     if(NOT ${var})

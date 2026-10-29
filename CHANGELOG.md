@@ -714,6 +714,13 @@
   is how CTest now passes it to them, as it does to every other suite that
   starts the server. `SERVER_BIN`, and then `$BUILD_DIR/rocm-ernic`, still
   apply when it's omitted.
+* **Breaking:** **Building needs CMake 3.25.2 or later**, not 3.21. TheRock
+  needs 3.25, and 3.25.0 and 3.25.1 break `FetchContent_Declare()`'s
+  `SYSTEM` option. Ubuntu 24.04's CMake is new enough; on an older system,
+  install a newer one, e.g. with `pip install cmake`.
+* **`ERNIC_WERROR` sets CMake's `COMPILE_WARNING_AS_ERROR`** on the
+  project's targets rather than adding `-Werror` itself, so
+  `cmake --compile-no-warning-as-error` now overrides it.
 
 ### Removed
 

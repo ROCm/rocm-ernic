@@ -37,7 +37,7 @@
 #   GNU_SOURCE_FILE   The one file allowed to define _GNU_SOURCE
 #   STDC_VERSION      The __STDC_VERSION__ every file must have
 
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 3.25.2)
 
 foreach(var IN ITEMS COMPILE_COMMANDS SOURCE_DIR BINARY_DIR GNU_SOURCE_FILE
         STDC_VERSION)

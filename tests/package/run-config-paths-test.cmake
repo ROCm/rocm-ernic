@@ -22,7 +22,7 @@
 # configure with install paths the installed files can't hold, and check
 # that they're refused.
 
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 3.25.2)
 
 if(NOT SETTINGS)
     message(FATAL_ERROR "run-config-paths-test: SETTINGS is not set")
@@ -57,15 +57,6 @@ function(ernic_check_line root file expected)
     if(NOT expected IN_LIST lines)
         ernic_fail("${file} has no line '${expected}'")
     endif()
-endfunction()
-
-# Set env_var and dir_var to the ENV_FILE and TEST_DIR of a case's
-# package test settings. They're included in this function so that they
-# don't replace this test's own settings.
-function(ernic_read_package_settings file env_var dir_var)
-    include(${file})
-    set(${env_var} "${ENV_FILE}" PARENT_SCOPE)
-    set(${dir_var} "${TEST_DIR}" PARENT_SCOPE)
 endfunction()
 
 file(REMOVE_RECURSE ${TEST_DIR})
@@ -104,8 +95,13 @@ function(ernic_check_case name prefix env_file read)
     if(NOT EXISTS ${package_settings})
         ernic_fail("${name}: the package test isn't set up in ${build_dir}")
     endif()
-    ernic_read_package_settings(${package_settings} installed_env_file
-        package_test_dir)
+    # The case's ENV_FILE and TEST_DIR. Its settings are included in a
+    # block so that they don't replace this test's own.
+    block(PROPAGATE installed_env_file package_test_dir)
+        include(${package_settings})
+        set(installed_env_file "${ENV_FILE}")
+        set(package_test_dir "${TEST_DIR}")
+    endblock()
     if(NOT installed_env_file STREQUAL env_file)
         ernic_fail("${name}: rocm-ernic.env is installed as "
             "${installed_env_file}, not ${env_file}")
