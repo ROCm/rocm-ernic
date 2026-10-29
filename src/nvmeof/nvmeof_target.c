@@ -647,10 +647,7 @@ static uint16_t sgl_read(const struct nvmeof_sgl *sgl, const uint8_t *capsule,
 /* Pad with spaces rather than NULs: NVMe ASCII fields are not strings. */
 static void ascii_field(uint8_t *dst, size_t len, const char *src)
 {
-    size_t n = strlen(src);
-    if (n > len) {
-        n = len;
-    }
+    size_t n = strnlen(src, len);
     memcpy(dst, src, n);
     memset(dst + n, ' ', len - n);
 }

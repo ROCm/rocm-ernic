@@ -4593,6 +4593,8 @@ static int p4r_load_patched(struct p4_engine *eng, const char *name,
         return -ENOMEM;
     }
     memcpy(out, buf, at);
+    /* The fixture is counted, not NUL-terminated, and so is the result.
+     * NOLINTNEXTLINE(bugprone-not-null-terminated-result) */
     memcpy(out + at, to, tlen);
     memcpy(out + at + tlen, buf + at + flen, n - at - flen);
     n = out_len;
@@ -6748,8 +6750,11 @@ static bool s3h_segment(struct s3h_conn *c, uint8_t flags, const char *data)
     tcp[12] = 5 << 4;
     tcp[13] = flags;
     ernic_put_be16(tcp + 14, 0xffff);
-    if (len)
+    if (len) {
+        /* A TCP payload, not a string
+         * NOLINTNEXTLINE(bugprone-not-null-terminated-result) */
         memcpy(tcp + 20, data, len);
+    }
 
     c->seq += (uint32_t)len + ((flags & S3H_TCP_SYN) ? 1u : 0u);
     return c->fn(c->ctx, f, 54 + len);

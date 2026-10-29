@@ -68,7 +68,7 @@ static bool should_fail(void)
  * they can't be static, since the linker has to find them.
  */
 ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_OFF
-/* NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c) */
+/* NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp) */
 /* NOLINTBEGIN(misc-use-internal-linkage) */
 void *__real_malloc(size_t size);
 void *__real_calloc(size_t nmemb, size_t size);
@@ -119,5 +119,5 @@ int __wrap_getentropy(void *buf, size_t len)
     return __real_getentropy(buf, len);
 }
 /* NOLINTEND(misc-use-internal-linkage) */
-/* NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c) */
+/* NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp) */
 ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_ON

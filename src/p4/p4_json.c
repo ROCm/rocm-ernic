@@ -917,10 +917,9 @@ static int p4_walk_transitions(struct p4_walk *w, const struct json_object *st,
             return p4_fail(w, -EINVAL, "state '%s' transition %zu has no value",
                            dst->name, i);
 
-        if (has_type && strcmp(type, "default") == 0) {
-            td->is_default = true;
-        } else if (!has_type && p4_cstr(val) &&
-                   strcmp(p4_cstr(val), "default") == 0) {
+        if ((has_type && strcmp(type, "default") == 0) ||
+            (!has_type && p4_cstr(val) &&
+             strcmp(p4_cstr(val), "default") == 0)) {
             td->is_default = true;
         } else if (has_type && strcmp(type, "hexstr") != 0) {
             return p4_fail(w, -ENOSYS,

@@ -236,7 +236,7 @@ static char **child_env(const char *value, char **entry)
     while (environ[n]) {
         n++;
     }
-    env = calloc(n + 2, sizeof(*env));
+    env = (char **)calloc(n + 2, sizeof(*env));
     if (!env) {
         free(*entry);
         *entry = NULL;
@@ -286,7 +286,7 @@ static pid_t start_child(size_t index, int fd)
         return -1;
     }
     if (posix_spawn_file_actions_init(&actions) != 0) {
-        free(env);
+        free((void *)env);
         free(entry);
         return -1;
     }
@@ -296,7 +296,7 @@ static pid_t start_child(size_t index, int fd)
         pid = -1;
     }
     posix_spawn_file_actions_destroy(&actions);
-    free(env);
+    free((void *)env);
     free(entry);
     return pid;
 }

@@ -75,12 +75,12 @@ static int ep_init(struct ibv_context *ctx, struct ibv_pd *pd, struct ud_ep *ep)
         return -1;
     }
 
-    struct ibv_qp_attr a = {
-        .qp_state = IBV_QPS_INIT,
-        .pkey_index = 0,
-        .port_num = 1,
-        .qkey = QKEY,
-    };
+    struct ibv_qp_attr a;
+    memset(&a, 0, sizeof(a));
+    a.qp_state = IBV_QPS_INIT;
+    a.pkey_index = 0;
+    a.port_num = 1;
+    a.qkey = QKEY;
     if (ibv_modify_qp(ep->qp, &a,
                       IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT |
                           IBV_QP_QKEY)) {

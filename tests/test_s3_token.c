@@ -78,6 +78,19 @@ _Static_assert(sizeof(REF_HEX) - 1 == S3_TOKEN_HEX_LEN,
 static const uint8_t REF_GID[16] = {0, 0, 0,    0,    0,    0,    0,    0,
                                     0, 0, 0xff, 0xff, 0xc0, 0xa8, 0xc8, 0x09};
 
+/*
+ * Every field of @a and @b equal.  A whole-struct memcmp() would also
+ * compare the padding, which assigning a field may change.
+ */
+static bool token_equal(const struct s3_token *a, const struct s3_token *b)
+{
+    return a->qp_num == b->qp_num &&
+           memcmp(a->gid, b->gid, sizeof(a->gid)) == 0 && a->rkey == b->rkey &&
+           a->remote_addr == b->remote_addr && a->length == b->length &&
+           a->transport == b->transport && a->port_num == b->port_num &&
+           a->lid == b->lid;
+}
+
 static void test_decode_reference(void)
 {
     const char *name = "decode-reference";
@@ -331,7 +344,7 @@ static void test_reply_peer_round_trip(void)
     }
     if (code != 200)
         fail(name, "code %d, want 200", code);
-    if (memcmp(&back, &peer, sizeof(peer)) != 0)
+    if (!token_equal(&back, &peer))
         fail(name, "peer token did not survive the round trip");
 
     /* A reply with no token is a code, not a peer. */
@@ -461,7 +474,7 @@ static void test_reply_format_codes(void)
         if (code != cases[i].want)
             fail(name, "code %d: read back as %d, want %d", in, code,
                  cases[i].want);
-        if (memcmp(&back, &peer, sizeof(peer)) != 0)
+        if (!token_equal(&back, &peer))
             fail(name, "code %d: peer token did not survive the round trip",
                  in);
     }

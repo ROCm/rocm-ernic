@@ -273,6 +273,8 @@ static size_t build_ping(uint8_t *out, const uint8_t *dst_mac, uint16_t id,
     icmp[T_ICMP_TYPE] = 8; /* echo request */
     put_be(icmp + T_ICMP_ID, 2, id);
     put_be(icmp + T_ICMP_SEQ, 2, seq);
+    /* An ICMP payload, not a string
+     * NOLINTNEXTLINE(bugprone-not-null-terminated-result) */
     memcpy(icmp + ICMP_LEN, data, dlen);
     put_be(icmp + T_ICMP_CHECKSUM, 2, ones_sum(icmp, icmp_len, 0));
 

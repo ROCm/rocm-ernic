@@ -70,48 +70,36 @@ Checks:
   # and delete the check's line here, or move it to "Not wanted" with a
   # reason. The count is the number of places clang-tidy 23 reports in
   # the Debug and Release builds together.
-  - -bugprone-assignment-in-if-condition  # TODO(17)
-  - -bugprone-branch-clone  # TODO(2)
-  - -bugprone-easily-swappable-parameters  # TODO(390)
-  - -bugprone-implicit-widening-of-multiplication-result  # TODO(146)
-  - -bugprone-invalid-enum-default-initialization  # TODO(3)
-  - -bugprone-multi-level-implicit-pointer-conversion  # TODO(5)
-  - -bugprone-not-null-terminated-result  # TODO(6)
-  - -bugprone-reserved-identifier  # TODO(1)
-  - -cert-dcl37-c  # TODO: the same check
-  # The same check, but it also reports the __real_ and __wrap_ functions
-  # that the linker's --wrap option needs (30 of its 31)
-  - -cert-dcl51-cpp  # TODO(31)
-  - -bugprone-signed-bitwise  # TODO(1104)
-  - -bugprone-suspicious-memory-comparison  # TODO(6)
-  - -cert-exp42-c  # TODO: the same check
-  - -cert-flp37-c  # TODO: the same check
-  - -cert-err33-c  # TODO(729): unchecked return values
-  - -cppcoreguidelines-avoid-non-const-global-variables  # TODO(234)
-  - -cppcoreguidelines-init-variables  # TODO(1266)
+  - -bugprone-assignment-in-if-condition  # TODO(16)
+  - -bugprone-easily-swappable-parameters  # TODO(400)
+  - -bugprone-implicit-widening-of-multiplication-result  # TODO(151)
+  - -bugprone-signed-bitwise  # TODO(1108)
+  - -cert-err33-c  # TODO(780): unchecked return values
+  - -cppcoreguidelines-avoid-non-const-global-variables  # TODO(249)
+  - -cppcoreguidelines-init-variables  # TODO(1293)
   - -cppcoreguidelines-interfaces-global-init  # TODO(1)
   - -modernize-avoid-c-style-cast  # TODO(27)
-  - -modernize-macro-to-enum  # TODO(1208)
+  - -modernize-macro-to-enum  # TODO(1236)
   - -cppcoreguidelines-macro-to-enum  # TODO: the same check
   - -performance-no-int-to-ptr  # TODO(16)
   - -readability-avoid-nested-conditional-operator  # TODO(16)
-  - -readability-braces-around-statements  # TODO(3754)
+  - -readability-braces-around-statements  # TODO(3836)
   - -readability-else-after-return  # TODO(4)
-  - -readability-function-cognitive-complexity  # TODO(87)
+  - -readability-function-cognitive-complexity  # TODO(115)
   # hipObject turns this off
-  - -readability-identifier-length  # TODO(4287)
-  - -readability-implicit-bool-conversion  # TODO(769)
+  - -readability-identifier-length  # TODO(4343)
+  - -readability-implicit-bool-conversion  # TODO(610)
   - -readability-inconsistent-declaration-parameter-name  # TODO(2)
-  - -readability-inconsistent-ifelse-braces  # TODO(4)
-  - -readability-isolate-declaration  # TODO(377)
-  - -readability-magic-numbers  # TODO(5088)
+  - -readability-inconsistent-ifelse-braces  # TODO(3)
+  - -readability-isolate-declaration  # TODO(386)
+  - -readability-magic-numbers  # TODO(4953)
   - -cppcoreguidelines-avoid-magic-numbers  # TODO: the same check
-  - -readability-math-missing-parentheses  # TODO(271)
+  - -readability-math-missing-parentheses  # TODO(274)
   - -readability-redundant-casting  # TODO(32)
-  - -readability-redundant-nested-if  # TODO(4)
+  - -readability-redundant-nested-if  # TODO(3)
   - -readability-redundant-parentheses  # TODO(3)
-  - -readability-trailing-comma  # TODO(1156)
-  - -readability-uppercase-literal-suffix  # TODO(975)
+  - -readability-trailing-comma  # TODO(1202)
+  - -readability-uppercase-literal-suffix  # TODO(1008)
   - -readability-use-concise-preprocessor-directives  # TODO(4)
 WarningsAsErrors: '*'
 

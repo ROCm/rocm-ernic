@@ -43,7 +43,7 @@ static void check(bool cond, const char *what)
  * they can't be static, since the linker has to find them.
  */
 ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_OFF
-/* NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c) */
+/* NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp) */
 /* NOLINTBEGIN(misc-use-internal-linkage) */
 struct json_tokener *__real_json_tokener_new_ex(int depth);
 struct json_tokener *__wrap_json_tokener_new_ex(int depth);
@@ -53,7 +53,7 @@ struct json_tokener *__wrap_json_tokener_new_ex(int depth)
     return tokener_fails ? NULL : __real_json_tokener_new_ex(depth);
 }
 /* NOLINTEND(misc-use-internal-linkage) */
-/* NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c) */
+/* NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp) */
 ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_ON
 
 static char *read_fixture(const char *name, size_t *len)

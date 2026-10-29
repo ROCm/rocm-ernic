@@ -8483,7 +8483,7 @@ static _Thread_local bool g_fail_malloc;
  * they can't be static, since the linker has to find them.
  */
 ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_OFF
-/* NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c) */
+/* NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp) */
 /* NOLINTBEGIN(misc-use-internal-linkage) */
 void *__real_malloc(size_t size);
 void *__wrap_malloc(size_t size);
@@ -8498,7 +8498,7 @@ void *__wrap_malloc(size_t size)
     return __real_malloc(size);
 }
 /* NOLINTEND(misc-use-internal-linkage) */
-/* NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c) */
+/* NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp) */
 ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_ON
 
 enum st_scenario {

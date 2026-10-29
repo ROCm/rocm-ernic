@@ -59,6 +59,25 @@ static bool profile_is(const struct ionic_profile *p, const struct want *w)
            p->queues.intr_vectors == w->intr_vectors;
 }
 
+/* Every field of @a and @b equal, the strings' unused bytes included.  A
+ * whole-struct memcmp() would also compare the padding, which assigning a
+ * field may change. */
+static bool profile_equal(const struct ionic_profile *a,
+                          const struct ionic_profile *b)
+{
+    return a->identity.asic_type == b->identity.asic_type &&
+           a->identity.asic_rev == b->identity.asic_rev &&
+           memcmp(a->identity.fw_version, b->identity.fw_version,
+                  sizeof(a->identity.fw_version)) == 0 &&
+           a->link.speed_mbps == b->link.speed_mbps &&
+           a->link.xcvr == b->link.xcvr && a->link.mtu_max == b->link.mtu_max &&
+           a->queues.eth == b->queues.eth &&
+           a->queues.rdma_eqs == b->queues.rdma_eqs &&
+           a->queues.intr_vectors == b->queues.intr_vectors &&
+           a->stats.interval_ms == b->stats.interval_ms &&
+           memcmp(a->chain, b->chain, sizeof(a->chain)) == 0;
+}
+
 static void print_profile(const char *label, const struct ionic_profile *p)
 {
     printf("     %s: asic_type %u, asic_rev %u, fw_version '%s', speed %" PRIu32
@@ -634,15 +653,14 @@ static void run_text_case(const struct text_case *c)
 
     ionic_profile_defaults(&p);
     for (int i = 0; i < MAX_LAYERS && c->layers[i]; i++) {
-        unsigned char before[sizeof(p)];
+        struct ionic_profile before = p;
         char source[16];
         size_t len = strlen(c->layers[i]);
 
-        memcpy(before, &p, sizeof(p));
         snprintf(source, sizeof(source), "layer%d", i + 1);
         if (ionic_profile_apply_text(&p, source, c->layers[i], len, err,
                                      sizeof(err)) != 0) {
-            unchanged = memcmp(before, &p, sizeof(p)) == 0;
+            unchanged = profile_equal(&before, &p);
             failed_at = c->layers[i];
             break;
         }
@@ -1174,17 +1192,17 @@ static void check_file_boundaries(void)
         {"boundary", "exactly 1 MiB", "accepted; only chain changes",
          IONIC_PROFILE_FILE_MAX, false, true},
         {"boundary", "one byte above 1 MiB",
-         "size error; all profile bytes unchanged", IONIC_PROFILE_FILE_MAX + 1,
+         "size error; all profile fields unchanged", IONIC_PROFILE_FILE_MAX + 1,
          false, false},
         {"negative", "FIFO with no writer",
-         "prompt file-type error; all profile bytes unchanged", 0, true, false},
+         "prompt file-type error; all profile fields unchanged", 0, true,
+         false},
     };
     char path[512];
 
     snprintf(path, sizeof(path), "%s/boundary.ini", g_tmpdir);
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-        struct ionic_profile p;
-        unsigned char before[sizeof(p)];
+        struct ionic_profile p, before;
         char err[512] = "";
         bool ready = false, ok = false;
 
@@ -1204,7 +1222,7 @@ static void check_file_boundaries(void)
             free(data);
         }
         ionic_profile_defaults(&p);
-        memcpy(before, &p, sizeof(p));
+        before = p;
         if (ready) {
             int rc;
 
@@ -1214,11 +1232,10 @@ static void check_file_boundaries(void)
             alarm(0);
             if (cases[i].accepted) {
                 ok = rc == 0 && strstr(p.chain, path) != NULL;
-                memcpy(p.chain, before + offsetof(struct ionic_profile, chain),
-                       sizeof(p.chain));
-                ok = ok && memcmp(before, &p, sizeof(p)) == 0;
+                memcpy(p.chain, before.chain, sizeof(p.chain));
+                ok = ok && profile_equal(&before, &p);
             } else {
-                ok = rc != 0 && memcmp(before, &p, sizeof(p)) == 0 &&
+                ok = rc != 0 && profile_equal(&before, &p) &&
                      strstr(err, cases[i].fifo ? "not a regular file"
                                                : "larger than 1048576 bytes");
             }

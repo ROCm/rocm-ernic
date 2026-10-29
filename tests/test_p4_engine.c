@@ -1142,6 +1142,8 @@ static char *pad_to_budget(const char *base, size_t base_len, size_t base_cost,
     memcpy(doc + n, key, sizeof(key) - 1);
     n += sizeof(key) - 1;
     for (size_t i = 0; i < nelem; i++) {
+        /* The document is counted (@out_len), not NUL-terminated
+         * NOLINTNEXTLINE(bugprone-not-null-terminated-result) */
         memcpy(doc + n, elem, elem_len);
         n += elem_len;
         doc[n++] = ',';
@@ -1250,6 +1252,8 @@ static void test_load_cost_budget(void)
         return;
     }
     n = 0;
+    /* The document is counted (n), not NUL-terminated */
+    /* NOLINTBEGIN(bugprone-not-null-terminated-result) */
     memcpy(doc, "{\"a\":[", 6);
     n += 6;
     while (n + 3 + 2 <= P4_PROGRAM_MAX) {
@@ -1257,6 +1261,7 @@ static void test_load_cost_budget(void)
         n += 3;
     }
     memcpy(doc + n - 1, "]}", 2);
+    /* NOLINTEND(bugprone-not-null-terminated-result) */
     n++;
     rc = p4_json_parse(doc, n, &prog, err, sizeof(err));
     checkf(rc == -EINVAL && strstr(err, "too many JSON values") != NULL,
