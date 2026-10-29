@@ -41,10 +41,6 @@ rocm-ernic will move into the
 by [TheRock](https://github.com/ROCm/TheRock). Make changes that survive
 the move:
 
-- **Ask before changing link options**: linker flags
-  (`ernic_set_linker_flags()`, `target_link_options()`), `-pthread`, or
-  static versus shared linking. What builds and tests fine here can break
-  TheRock. Other CMake changes are fine, within these rules.
 - **Keep the defaults safe for a superproject**: e.g. `ERNIC_WERROR` is
   off by default so an untried compiler can't break a downstream build.
 - **Don't assume we're the top-level project**: use `PROJECT_*_DIR` or
@@ -54,16 +50,6 @@ the move:
 - **Set flags per target** with `ernic_set_compiler_flags()` and
   `ernic_add_sanitizers()` ([`cmake/`](cmake/)), never globally
   (`add_compile_options()`, `CMAKE_C_FLAGS`).
-
-Sister projects:
-**hipObject** ([ROCm/hipObject](https://github.com/ROCm/hipObject)), an
-RDMA-accelerated S3 client for AMD GPUs, whose CI runs on our ionic NIC
-and whose protocol our S3 target speaks ([docs/s3.rst](docs/s3.rst)); and
-**hipFile**, GPU-direct file I/O in rocm-systems
-([`projects/hipfile`](https://github.com/ROCm/rocm-systems/tree/develop/projects/hipfile)),
-which already builds with TheRock and is our model for the move
-(`cmake/ErnicSanitizers.cmake` follows it). Borrow ideas freely either
-way, but ask before creating a to-do file for, or editing, either one.
 
 ## Build and test
 
@@ -120,8 +106,8 @@ workflow for their environment).
 ## C code
 
 - **C11 for 64-bit Linux**, with no GNU extensions unless you have
-  permission, and no `_FILE_OFFSET_BITS` or `_TIME_BITS`. Atomics
-  (`<stdatomic.h>`) and threads (`qemu/thread.h`) are available.
+  permission. Atomics (`<stdatomic.h>`) and threads (`qemu/thread.h`)
+  are available.
 - **No bare `__attribute__`.** Use C11's forms (`_Alignas`, `_Noreturn`,
   `_Static_assert`), or a macro from
   [`src/ernic_attributes.h`](src/ernic_attributes.h), which expand to
@@ -145,8 +131,6 @@ workflow for their environment).
   - A workflow or playbook compiling a test program in a guest passes
     `-std=c11 -pedantic -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE`, and
     ships and links `ernic_gnu.c` if the program calls a wrapper.
-- **No BSD `<err.h>`**: `fprintf()` the message and `strerror(errno)`,
-  as `warn_errno()` in `rocm_ernic_server.c` does.
 - **Don't `goto` past an initialized declaration into its scope**
   (`-Wjump-misses-init`), as `goto out` to the cleanup does over
   everything declared after it. Declare the variable before the first
@@ -515,7 +499,7 @@ notice to them.
 
 ## Changelog
 
-**Every change a deployer, user, or contributor could notice needs a
+**Every change a deployer or user could notice needs a
 [CHANGELOG.md](CHANGELOG.md) entry in the same change**: the
 guest-visible device, server options and environment variables,
 `ernicctl`, service and udev files, ernic-exporter metrics, the mesh
