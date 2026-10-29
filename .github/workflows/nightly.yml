@@ -180,9 +180,10 @@ jobs:
       # Installed under /usr, so the service files name the paths the
       # packages install to.
       #
-      # Warnings aren't errors here. The build workflow checks them, but
-      # only on Ubuntu 24.04, so another release's compiler can warn about
-      # code that workflow passes. That shouldn't stop the packages.
+      # Warnings aren't errors here. The build workflow checks them on
+      # both releases, but on the runner images, whose compilers can
+      # differ from the container's, e.g. after an update to either. That
+      # shouldn't stop the packages.
       - name: Configure
         env:
           RELEASE: ${{ needs.version.outputs.release }}~${{ matrix.ubuntu }}

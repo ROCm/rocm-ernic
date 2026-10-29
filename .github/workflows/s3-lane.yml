@@ -37,7 +37,7 @@ jobs:
     # Only the configuration, not the lane name: every caller's name is
     # prefixed onto this one, and the callers already say S3.
     name: Single Server
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     container:
       image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260918.g7438e48-qemu11.1.1-vfu.8039244

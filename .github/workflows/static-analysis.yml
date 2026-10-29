@@ -51,7 +51,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       contains(github.event.pull_request.labels.*.name, 'run-static')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Non-merge-blocking: this converts any failure below into a neutral/green
     # conclusion so the check is purely informational and never gates a PR.
     continue-on-error: true

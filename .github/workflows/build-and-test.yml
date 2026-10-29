@@ -49,7 +49,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04]
+        # The full matrix runs on Ubuntu 26.04, whose default compilers
+        # are GCC 15 and Clang 21. Two smoke legs at the end of the
+        # include list build and test with Ubuntu 24.04's GCC 13 and
+        # Clang 18.
+        os: [ubuntu-26.04]
         compiler: [gcc, clang]
         # `asan` builds with -DERNIC_USE_SANITIZERS=ON, which turns on
         # ASan, LSan, UBSan, and the compiler's other checks that can be
@@ -82,7 +86,7 @@ jobs:
         include:
           # One code coverage leg (LLVM source-based coverage, so Clang).
           # Debug, so the report's lines match the source.
-          - os: ubuntu-24.04
+          - os: ubuntu-26.04
             compiler: clang
             sanitizer: 'off'
             build_type: Debug
@@ -97,12 +101,29 @@ jobs:
           # -DERNIC_TRIVIAL_AUTO_VAR_INIT=OFF, since
           # -ftrivial-auto-var-init=pattern initializes every local
           # variable, which hides the reads valgrind would report.
-          - os: ubuntu-24.04
+          - os: ubuntu-26.04
             compiler: gcc
             sanitizer: 'off'
             build_type: Debug
             coverage: 'off'
             valgrind: 'on'
+          # The smoke legs, with Ubuntu 24.04's default compilers, which
+          # warn about different things than newer ones. GCC builds
+          # Release, the only build type with its dataflow warnings;
+          # Clang's warnings don't depend on the optimizer, so it builds
+          # Debug, which keeps the assertions. Neither uses a sanitizer.
+          # Their os matches no leg above, so each is a leg of its own
+          # rather than an addition to one.
+          - os: ubuntu-24.04
+            compiler: gcc
+            sanitizer: 'off'
+            build_type: Release
+            coverage: 'off'
+          - os: ubuntu-24.04
+            compiler: clang
+            sanitizer: 'off'
+            build_type: Debug
+            coverage: 'off'
 
     # The sanitizer builds make every report fatal: ASan, LSan, and UBSan
     # with -fno-sanitize-recover=all, and TSan with halt_on_error=1, which
@@ -174,12 +195,12 @@ jobs:
       - name: Clone and build libvfio-user
         if: steps.cache-libvfio-user.outputs.cache-hit != 'true'
         run: |
-          # meson builds libvfio-user and libcmocka-dev builds its tests;
-          # nothing else in this job needs either, and the cache key is
-          # static, so installing them here keeps them off the
-          # steady-state cache-hit path. json-c is not among them: this
-          # project needs it too, so it is installed unconditionally
-          # above.
+          # meson builds libvfio-user, whose setup requires cmocka even
+          # though only its tests use it; nothing else in this job needs
+          # either, and the cache key is static, so installing them here
+          # keeps them off the steady-state cache-hit path. json-c is not
+          # among them: this project needs it too, so it is installed
+          # unconditionally above.
           sudo apt-get install -y meson libcmocka-dev
           # Pin to 5b9c722 (pci: preserve upper address bits of small
           # 64-bit BARs, Oct 23 2026). Before it, the upper half of a
@@ -191,12 +212,15 @@ jobs:
           # a cached region pointer to freed memory for the next DMA. The
           # VM lanes' container images are still built with 8039244, the
           # commit before it.
+          #
+          # Only the library is built and installed: its tests don't build
+          # with Ubuntu 26.04's cmocka 2.
           git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user
           cd /tmp/libvfio-user
           git checkout 5b9c722
           meson setup build --prefix=/usr -Dwarning_level=0
-          ninja -C build
-          sudo ninja -C build install
+          meson compile -C build vfio-user
+          sudo meson install -C build --no-rebuild --tags runtime,devel
           sudo ldconfig
 
       - name: Reload ldconfig after cache restore
@@ -296,9 +320,9 @@ jobs:
       # TEST_WRAP is the ASLR workaround for the tsan legs: TSan maps a large
       # fixed shadow region at startup and aborts with "unexpected memory
       # mapping" when the loader has already randomised something into it.
-      # Ubuntu 24.04 ships 32 bits of mmap entropy, which is enough for that
-      # to happen on essentially every run -- unwrapped, 13 of 14 tests die
-      # before main().
+      # The hosted runners' kernels use 32 bits of mmap entropy, which is
+      # enough for that to happen on essentially every run -- unwrapped on
+      # Ubuntu 24.04, 13 of 14 tests died before main().
       #
       # `setarch -R` is used rather than `sysctl -w vm.mmap_rnd_bits=28`
       # because it needs no privileges. The sysctl is the other standard fix
@@ -531,20 +555,23 @@ jobs:
           path: build/Testing/
           retention-days: 7
 
-      # A single leg publishes binaries: gcc, Release, uninstrumented.
+      # A single leg publishes binaries: Ubuntu 26.04, gcc, Release,
+      # uninstrumented.
       #
       # Release because that is what anyone downloading these would want to
       # run, gcc because it is the reference compiler, and uninstrumented
       # because a sanitizer build is a check rather than an artifact and
-      # cannot run without its runtime anyway.
+      # cannot run without its runtime anyway. The os is checked because the
+      # Ubuntu 24.04 gcc smoke leg matches the other three.
       #
-      # Gating on all three matters now that build_type is in the matrix:
-      # the old `sanitizer == 'off'` condition would match four legs, and
-      # since artifact names must be unique within a run, the three extra
-      # uploads would be a hard failure rather than a silent duplicate.
+      # Gating on all four matters: `sanitizer == 'off'` alone would match
+      # the coverage leg too, which has the same artifact name as plain
+      # clang Debug, and since artifact names must be unique within a run,
+      # that would be a hard failure rather than a silent duplicate.
       - name: Upload binaries
         if: >-
-          success() && matrix.sanitizer == 'off'
+          success() && matrix.os == 'ubuntu-26.04'
+          && matrix.sanitizer == 'off'
           && matrix.compiler == 'gcc' && matrix.build_type == 'Release'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

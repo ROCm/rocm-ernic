@@ -21,6 +21,10 @@ env:
   INSTALL_PREFIX: /tmp/rocm-ernic-release/usr/local
 
 jobs:
+  # Built on the oldest Ubuntu release that's supported, not the newest
+  # that the rest of CI uses: the server is linked against the glibc of
+  # the release it's built on, so a server built on 26.04 wouldn't run
+  # on 24.04.
   build:
     name: Build release assets
     runs-on: ubuntu-24.04
@@ -174,7 +178,7 @@ jobs:
     if: >-
       github.ref_type == 'tag' &&
       github.ref_name == format('v{0}', needs.build.outputs.version)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     steps:

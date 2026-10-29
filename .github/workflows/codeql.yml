@@ -49,7 +49,7 @@ concurrency:
 jobs:
   analyze:
     name: ${{ matrix.name }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     permissions:
       contents: read
@@ -95,7 +95,7 @@ jobs:
 
       # Built before CodeQL is initialized so that only rocm-ernic's own
       # compilation is traced. Keep the pinned commit in sync with
-      # build-and-test.yml.
+      # build-and-test.yml, which says why only the library is built.
       - name: Build and install libvfio-user
         if: matrix.language == 'c-cpp'
         run: |
@@ -103,8 +103,8 @@ jobs:
           cd /tmp/libvfio-user
           git checkout 5b9c722
           meson setup build --prefix=/usr -Dwarning_level=0
-          ninja -C build
-          sudo ninja -C build install
+          meson compile -C build vfio-user
+          sudo meson install -C build --no-rebuild --tags runtime,devel
           sudo ldconfig
 
       # security-and-quality is a superset of security-extended, which the

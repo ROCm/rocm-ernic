@@ -15,14 +15,15 @@ failing file rather than stopping at the first.
 ## Warning builds
 
 Every C change needs a GCC Debug build and its tests, and GCC Release and
-Clang builds (building is enough), all with `-DERNIC_WERROR=ON`. Use CI's
-compilers, Ubuntu 24.04's GCC 13 and Clang 18, if they're installed: they
-warn about different things than newer ones. Release is the only
-configuration with GCC's dataflow warnings, `_FORTIFY_SOURCE=3`, and
-`NDEBUG`.
+Clang builds (building is enough), all with `-DERNIC_WERROR=ON`. CI's
+main matrix uses Ubuntu 26.04's GCC 15 and Clang 21; its Ubuntu 24.04
+smoke legs use GCC 13 (Release) and Clang 18 (Debug). Build Release with
+GCC 13 if it's installed: its dataflow warnings have failed CI where GCC
+15's passed. Release is the only configuration with GCC's dataflow
+warnings, `_FORTIFY_SOURCE=3`, and `NDEBUG`.
 
 ```bash
-cmake -B build-gcc -G Ninja -DCMAKE_C_COMPILER=gcc-13 \
+cmake -B build-gcc -G Ninja -DCMAKE_C_COMPILER=gcc-15 \
   -DCMAKE_BUILD_TYPE=Debug -DERNIC_WERROR=ON -DERNIC_BUILD_P4=ON
 cmake --build build-gcc
 ctest --test-dir build-gcc -j"$(nproc)" --output-on-failure
@@ -31,13 +32,14 @@ cmake -B build-gcc-release -G Ninja -DCMAKE_C_COMPILER=gcc-13 \
   -DCMAKE_BUILD_TYPE=Release -DERNIC_WERROR=ON -DERNIC_BUILD_P4=ON
 cmake --build build-gcc-release -- -k 0
 
-cmake -B build-clang -G Ninja -DCMAKE_C_COMPILER=clang-18 \
+cmake -B build-clang -G Ninja -DCMAKE_C_COMPILER=clang-21 \
   -DCMAKE_BUILD_TYPE=Debug -DERNIC_WERROR=ON -DERNIC_BUILD_P4=ON
 cmake --build build-clang -- -k 0
 ```
 
-CI builds both compilers in Debug and Release; a failure in a
-configuration not built here means building that one locally.
+CI also builds GCC 15 Release, Clang 21 Release, and Clang 18 Debug; a
+failure in a configuration not built here means building that one
+locally.
 
 ## clang-tidy
 

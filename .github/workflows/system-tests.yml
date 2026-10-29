@@ -96,7 +96,7 @@ env:
 jobs:
   system-test-loopback-vm:
     name: Loopback Backend System Tests
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     container:
       image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260918.g7438e48-qemu11.1.1-vfu.8039244
@@ -1523,7 +1523,7 @@ jobs:
 
   system-test-two-vms:
     name: TCP Mesh Backend System Tests (Two VMs)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 90
     # This job is the RDMA and TCP/IP perf source for the README
     # shields, so on a scheduled run it commits the trend history and

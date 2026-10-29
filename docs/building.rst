@@ -10,12 +10,13 @@ Requirements
 ------------
 
 rocm-ernic builds with GCC or Clang on 64-bit Linux, and is tested
-on Ubuntu 24.04. 32-bit systems aren't supported. It needs:
+on Ubuntu 26.04 and 24.04. 32-bit systems aren't supported. It
+needs:
 
 - CMake 3.25.2 or later
 - pkg-config
-- libvfio-user, built from source (see below), which needs Meson
-  and Ninja to build
+- libvfio-user, built from source (see below), which needs Meson,
+  Ninja, and cmocka to build
 - libibverbs and librdmacm development packages
 - GLib 2.0 development package
 - json-c development package. libvfio-user needs it, and with
@@ -26,18 +27,22 @@ Install them on Ubuntu/Debian:
 .. code-block:: bash
 
    sudo apt install cmake meson ninja-build pkg-config \
-     libibverbs-dev librdmacm-dev libglib2.0-dev libjson-c-dev
+     libibverbs-dev librdmacm-dev libglib2.0-dev libjson-c-dev \
+     libcmocka-dev
 
 Build and install ``libvfio-user`` if it is not already
-available on your system:
+available on your system. Its setup needs cmocka, though only its
+tests use it. This builds only the library, since the tests, at
+the commit CI pins, don't build with cmocka 2, which Ubuntu 26.04
+ships:
 
 .. code-block:: bash
 
    git clone https://github.com/nutanix/libvfio-user.git
    cd libvfio-user
    meson setup build --prefix=/usr
-   ninja -C build
-   sudo ninja -C build install
+   meson compile -C build vfio-user
+   sudo meson install -C build --no-rebuild --tags runtime,devel
    sudo ldconfig
 
 If libvfio-user is installed somewhere other than ``/usr`` or
@@ -401,7 +406,7 @@ program. If the runtime isn't in a directory that the dynamic
 linker searches, as with Clang's, the programs get an RPATH to
 it. When the option is ``OFF``, programs link the static
 runtime. It defaults to what the compiler does on its own:
-``ON`` with GCC and ``OFF`` with Clang. Ubuntu's Clang 18
+``ON`` with GCC and ``OFF`` with Clang. Ubuntu 24.04's Clang 18
 ignores the programs' default run-time options when they use
 its shared runtime.
 

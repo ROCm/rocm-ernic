@@ -75,10 +75,11 @@ ctest --test-dir build -j"$(nproc)" --output-on-failure
   root (git ignores them): an incremental build recompiles, and re-runs
   clang-tidy or IWYU on, only what changed.
 
-CI builds GCC and Clang × Debug and Release × no sanitizer, ASan, and
-TSan, plus a Clang coverage build, and runs the tests under valgrind in
-the GCC Debug build. Only Release has GCC's dataflow warnings,
-`_FORTIFY_SOURCE=3`, and `NDEBUG`. CI also runs
+CI builds GCC 15 and Clang 21 × Debug and Release × no sanitizer, ASan,
+and TSan on Ubuntu 26.04, plus a Clang coverage build, and runs the tests
+under valgrind in the GCC Debug build. Smoke builds on Ubuntu 24.04 build
+and test with GCC 13 (Release) and Clang 18 (Debug). Only Release has
+GCC's dataflow warnings, `_FORTIFY_SOURCE=3`, and `NDEBUG`. CI also runs
 `tests/test_loopback_ci.sh` and `tests/test_data_transfer` (see the
 workflow for their environment).
 
@@ -376,7 +377,7 @@ The skills have the commands.
   - clang-format on the files you touched.
   - A GCC Debug build with `-DERNIC_WERROR=ON`, and all its tests.
   - GCC Release and Clang builds with `-DERNIC_WERROR=ON` (building is
-    enough), preferably with CI's GCC 13 and Clang 18.
+    enough), preferably with the smoke builds' GCC 13 and CI's Clang 21.
   - clang-tidy, in a Debug build.
 - **When the change calls for it**, with one compiler, running only the
   affected tests:

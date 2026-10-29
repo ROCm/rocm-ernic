@@ -6,7 +6,7 @@
 # (src/qemu-compat/include/qemu/clang-tsa.h): which lock guards each field,
 # which a function needs held or not, and the order locks are taken in.
 # Earlier clangs check the functions' annotations, which the Build and Test
-# workflow's clang 18 does, but not the fields' or the order, which in C
+# workflow's clang 21 does, but not the fields' or the order, which in C
 # only clang 23 gets right.
 #
 # Only the thread-safety warnings are errors here, so a warning that a newer
@@ -48,12 +48,12 @@ concurrency:
 jobs:
   thread-safety:
     name: Thread-safety analysis (clang 23)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
 
     env:
       LLVM_VERSION: 23
       # The Ubuntu release of the runner, for apt.llvm.org
-      UBUNTU_CODENAME: noble
+      UBUNTU_CODENAME: resolute
       # The fingerprint of apt.llvm.org's signing key, which is public
       LLVM_SIGNER_FINGERPRINT: 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
 
@@ -114,9 +114,10 @@ jobs:
             /usr/lib/x86_64-linux-gnu/libvfio-user*
             /usr/lib/x86_64-linux-gnu/pkgconfig/libvfio-user.pc
             /usr/include/vfio-user
-          key: libvfio-user-5b9c722-ubuntu-24.04
+          key: libvfio-user-5b9c722-ubuntu-26.04
 
-      # Keep the pinned commit in step with build-and-test.yml
+      # Keep the pinned commit in step with build-and-test.yml, which says
+      # why only the library is built
       - name: Clone and build libvfio-user
         if: steps.cache-libvfio-user.outputs.cache-hit != 'true'
         run: |
@@ -125,8 +126,8 @@ jobs:
           cd /tmp/libvfio-user
           git checkout 5b9c722
           meson setup build --prefix=/usr -Dwarning_level=0
-          ninja -C build
-          sudo ninja -C build install
+          meson compile -C build vfio-user
+          sudo meson install -C build --no-rebuild --tags runtime,devel
           sudo ldconfig
 
       - name: Reload ldconfig after cache restore
