@@ -8,6 +8,32 @@ RDMA NIC for virtual machines built on libvfio-user. See
 [ansible/README.md](ansible/README.md) for provisioning lab guests and
 hosts.
 
+## Skills and directory guides
+
+This file holds the rules. How to run the checks is in skills under
+[`.claude/skills/`](.claude/skills/), in the Agent Skills format, which
+agents that support skills load when a task needs one. If yours doesn't,
+read the skill's `SKILL.md` when its task comes up:
+
+- [`ernic-c-checks`](.claude/skills/ernic-c-checks/SKILL.md): the GCC and
+  Clang warning builds, clang-tidy, the clang 23 thread-safety build,
+  include-what-you-use, and coverage.
+- [`ernic-sanitizers`](.claude/skills/ernic-sanitizers/SKILL.md): ASan
+  and TSan builds and runs, and looping threaded tests.
+- [`ernic-valgrind`](.claude/skills/ernic-valgrind/SKILL.md): memcheck on
+  the unit tests and the server.
+- [`ernic-lint`](.claude/skills/ernic-lint/SKILL.md): shell, workflow,
+  CMake, Python, spelling, docs, and Ansible checks.
+
+Two directories have their own AGENTS.md, which adds to this one. Read it
+before changing anything there:
+
+- [`src/rdma/AGENTS.md`](src/rdma/AGENTS.md): the TCP mesh's GID
+  resolution, node liveness, broadcasts, eviction, and connection
+  lifetime, and the traps in each.
+- [`src/p4/AGENTS.md`](src/p4/AGENTS.md): matching what the real P4 tools
+  accept and refuse.
+
 ## Project direction
 
 rocm-ernic will move into the
@@ -64,9 +90,9 @@ ctest --test-dir build -j"$(nproc)" --output-on-failure
   clang-tidy or IWYU on, only what changed.
 
 CI builds GCC and Clang × Debug and Release × no sanitizer, ASan, and
-TSan, plus a Clang coverage build, and runs the tests under
-[valgrind](#valgrind) in the GCC Debug build. Only Release has GCC's
-dataflow warnings, `_FORTIFY_SOURCE=3`, and `NDEBUG`. CI also runs
+TSan, plus a Clang coverage build, and runs the tests under valgrind in
+the GCC Debug build. Only Release has GCC's dataflow warnings,
+`_FORTIFY_SOURCE=3`, and `NDEBUG`. CI also runs
 `tests/test_loopback_ci.sh` and `tests/test_data_transfer` (see the
 workflow for their environment).
 
@@ -82,18 +108,14 @@ workflow for their environment).
   `-fsanitize` flags. Tests that link the same part of `src/` share a
   source list (`ERNIC_TEST_ADMINQ_SOURCES`) at the top of
   `tests/CMakeLists.txt`.
-- A plain build sanitizes nothing, tests included; see
-  [Sanitizers](#sanitizers).
+- A plain build sanitizes nothing, tests included; CI's sanitizer legs
+  build with `ERNIC_USE_SANITIZERS` and `ERNIC_USE_THREAD_SANITIZER`.
 - **Wait for events, not time**: wait with a deadline for something
   observable (a log line, a counter, a registration), never a fixed
   sleep. For threaded tests, see [below](#testing-threaded-code).
 - **Coverage of `src/` must not fall below `MIN_LINE_COVERAGE`** in
   build-and-test.yml, checked on every PR, so test new and changed code,
-  error paths included. To measure: Clang, `-DCMAKE_BUILD_TYPE=Debug`
-  (as CI, so lines match the source), `-DERNIC_USE_CODE_COVERAGE=ON`,
-  `ctest`, then build `ernic-coverage`, which writes
-  `coverage/report.txt` and `coverage/lines.txt`. Profiles accumulate;
-  delete `coverage/profraw` to start over.
+  error paths included.
 
 ## C code
 
@@ -139,10 +161,10 @@ workflow for their environment).
 - **Include a project header by its path from `src/`**
   (`"pvrdma/rdma_rm.h"`, `"byteorder.h"`), even from the same directory,
   since IWYU spells a header only one way and takes a bare `"rdma_rm.h"`
-  for a missing include. The other include roots are
-  `shared/` and `src/qemu-compat/include/` (stand-ins for QEMU's
-  headers, `"qemu/thread.h"`). Don't add a subdirectory of `src/` to an
-  include path.
+  for a missing include. The other include roots are `shared/` and
+  `src/qemu-compat/include/` (stand-ins for QEMU's headers,
+  `"qemu/thread.h"`). Don't add a subdirectory of `src/` to an include
+  path.
 - **Use explicitly sized types**: `uint32_t`, `uint64_t`, `size_t` for
   sizes, never `long` for a wire or 64-bit value. Write 64-bit constants
   with `UINT64_C()`, not an `L`, `UL`, or `ULL` suffix.
@@ -170,9 +192,8 @@ workflow for their environment).
   on a decoded header converts it with a `_put()`/`_get()` pair
   (`tcp_msg_hdr_put()`, `ionic_dp_wire_hdr_put()`), the only code that
   touches its bytes, and a test checks the bytes written against a
-  literal. `htons()`/`htonl()`
-  are still right for `struct sockaddr_in`. Don't copy
-  `src/p4/p4_devcmd.c`, which predates this.
+  literal. `htons()`/`htonl()` are still right for `struct sockaddr_in`.
+  Don't copy `src/p4/p4_devcmd.c`, which predates this.
 - **Allocate the way the layer does**, and free with the allocator's
   partner (`g_free()` for anything GLib returns, e.g.
   `g_key_file_get_string()`):
@@ -196,9 +217,10 @@ workflow for their environment).
 **Races already cause intermittent CI failures**, so thread safety is a
 correctness requirement for any change to shared state. The main thread
 runs the vfio-user context and poll loop, and only it may DMA into guest
-memory. The TCP backend ([`rdma_backend_tcp.c`](src/rdma/rdma_backend_tcp.c)
-and the `tcp_*.c` files) adds accept, health-check, and per-connection
-receive threads (`qemu_thread_create()`).
+memory. The TCP backend
+([`rdma_backend_tcp.c`](src/rdma/rdma_backend_tcp.c) and the `tcp_*.c`
+files) adds accept, health-check, and per-connection receive threads
+(`qemu_thread_create()`).
 
 - **Anything one thread writes and another reads needs a lock
   (`QemuMutex`) or an atomic**; otherwise it's a data race (UB), and e.g.
@@ -231,7 +253,7 @@ Annotate with
 on one that takes a lock or joins a thread that does; and
 `TSA_ACQUIRED_AFTER` for a new lock's place in the order. Every clang
 build checks functions, but only clang 23 checks fields and order in C
-([how to run it](#clang-tidy-and-the-thread-safety-analysis)).
+(see `ernic-c-checks`).
 
 The analysis can't follow everything:
 
@@ -249,9 +271,9 @@ The analysis can't follow everything:
 
 ### Testing threaded code
 
-- **Run [TSan](#sanitizers)**, and don't trust a pass: not every script
-  fails on a server-side report, so grep
-  `Testing/Temporary/LastTest.log` for `WARNING: ThreadSanitizer`.
+- **Run TSan** (`ernic-sanitizers`) for any change to shared state or
+  threads, and grep its log for reports: a passing test doesn't prove
+  TSan was quiet.
 - **A flaky test is a suspected race.** Find the race; don't retry,
   lengthen the timeout, or add a sleep.
 - **A test must not race the threads it tests.** A thread acting at
@@ -261,9 +283,7 @@ The analysis can't follow everything:
   can reach (e.g. not a mesh peer connecting to a lower node id, which
   the protocol forbids).
 - **Loop new threaded tests so the timing moves**: hundreds of runs in
-  one process, pinned with `taskset -c 0` (one race failed 13/300
-  unpinned, 168/300 pinned). To confirm a window, add a delay there in a
-  scratch copy and check the test fails.
+  one process, pinned to one CPU (`ernic-sanitizers` says how).
 
 ## Security
 
@@ -288,7 +308,11 @@ server. Security beats speed and convenience.
 - **`memset` wire data to zero before filling it in**: completions,
   admin responses, anything DMAed to the guest or sent to a peer
   (`= {0}` needn't zero padding). Give new wire structs a
-  `_Static_assert` on their size.
+  `_Static_assert` on their size. Valgrind can't check writes into
+  guest memory, so this rule is all that covers them.
+- **Never guess a mesh peer.** A GID the TCP mesh can't resolve fails
+  the command; sending to a default node is a silent write into another
+  guest's memory. See [`src/rdma/AGENTS.md`](src/rdma/AGENTS.md).
 - **Keep the hardening**: `_FORTIFY_SOURCE`
   ([`ErnicFortifySource.cmake`](cmake/ErnicFortifySource.cmake)),
   `-fstack-protector-strong`, `-fstack-clash-protection`, and from
@@ -316,9 +340,9 @@ new general patterns here when a scanner reports one.
   `fstatat()`/`unlinkat()`, as `ernic_socket_remove_stale()` does.
 - **Running a program named by `getenv()` or `argv`**
   (`cpp/uncontrolled-process-operation`, into `exec*()`, `system()`, or
-  `popen()`): run a tool such as valgrind
-  from outside (`--trace-children=yes`), and compile in built programs'
-  paths with `$<TARGET_FILE:...>`, like `ERNIC_SERVER_PATH` in
+  `popen()`): run a tool such as valgrind from outside
+  (`--trace-children=yes`), and compile in built programs' paths with
+  `$<TARGET_FILE:...>`, like `ERNIC_SERVER_PATH` in
   `test_server_lifecycle.c`.
 - **A stack address stored where it can outlive its frame**
   (`cpp/stack-address-escape`), even if unused after return: allocate
@@ -352,10 +376,9 @@ new general patterns here when a scanner reports one.
 
 ## Checks
 
-**Every change must pass every check below for the files it touches; a
-change with an outstanding finding isn't finished.** CI runs most of them
-on every PR; locally, run [what's likely to fail](#what-to-run-locally)
-from the repository root.
+**Every change must pass every check for the files it touches; a change
+with an outstanding finding isn't finished.** CI runs most of them on
+every PR. Locally, run what's likely to fail, below.
 
 Fix the code rather than suppressing a finding. Suppress only the
 unavoidable (vendored code, framework quirks), as narrowly as possible,
@@ -363,34 +386,37 @@ with a comment saying why.
 
 ### What to run locally
 
-- **Always, for a C change**:
+The skills have the commands.
+
+- **Always, for a C change** (`ernic-c-checks`):
   - clang-format on the files you touched.
   - A GCC Debug build with `-DERNIC_WERROR=ON`, and all its tests.
   - GCC Release and Clang builds with `-DERNIC_WERROR=ON` (building is
-    enough), preferably with CI's compilers, Ubuntu 24.04's GCC 13 and
-    Clang 18, which warn about different things than newer ones.
+    enough), preferably with CI's GCC 13 and Clang 18.
   - clang-tidy, in a Debug build.
 - **When the change calls for it**, with one compiler, running only the
-  affected tests (`ctest -R`):
-  - Shared state or threads: TSan, then the
-    [loop](#testing-threaded-code) for new or changed threaded tests.
-    Races are our most common CI failure; don't skip this. For a lock, a
-    guarded field, or an annotation, also the clang 23 build.
-  - Pointers, buffers, lengths, or outside input: ASan.
-  - Wire data, or anything passed to `send()`/`write()`: valgrind.
+  affected tests:
+  - Shared state or threads: TSan, then the loop for new or changed
+    threaded tests (`ernic-sanitizers`). Races are our most common CI
+    failure; don't skip this. For a lock, a guarded field, or an
+    annotation, also the clang 23 build (`ernic-c-checks`).
+  - Pointers, buffers, lengths, or outside input: ASan
+    (`ernic-sanitizers`).
+  - Wire data, or anything passed to `send()`/`write()`: valgrind
+    (`ernic-valgrind`).
   - New error paths or a lot of new code: coverage, if `src/` is near
-    the floor.
-  - Changed `#include`s: IWYU.
+    the floor (`ernic-c-checks`).
+  - Changed `#include`s: IWYU (`ernic-c-checks`).
   - A new test: the revert check in [Review](#review-your-change).
-- **Run what CI doesn't**: vermin, and any check whose workflow's
-  `paths:` filter misses your change. The shell, CMake, Python,
-  spelling, docs, and Ansible checks are quick; run each on the files of
-  its kind you touch.
+- **Shell, workflows, CMake, Python, docs, Ansible** (`ernic-lint`): the
+  checks are quick, so run each for any file of its kind you touch, even
+  where CI would: a workflow's `paths:` filter can miss a change, and
+  vermin isn't in CI.
 - **Leave to CI** the other compiler and build type for each sanitizer,
   clang-tidy in Release, valgrind on every test and server test, and
   coverage otherwise. When CI fails one, reproduce it locally.
 
-### Formatting and warnings
+### C
 
 - **clang-format 18.1.3 exactly** (CI's version) with
   [`.clang-format`](.clang-format), over every `.c` and `.h`; fix with
@@ -412,146 +438,16 @@ with a comment saying why.
   `ROCM_ERNIC_WARN_<NAME>_OFF`/`_ON` pair, add both to `StatementMacros`
   in `.clang-format`, and wrap the smallest region. Delete macros left
   unused.
-
-### Sanitizers
-
-- `-DERNIC_USE_SANITIZERS=ON` (ASan, LSan, UBSan, and compatible checks)
-  and `-DERNIC_USE_THREAD_SANITIZER=ON` don't combine, so each needs its
-  own build directory. Sanitizer flags go only in
+- **Every sanitizer report is fatal.** Sanitizer flags go only in
   [`ErnicSanitizers.cmake`](cmake/ErnicSanitizers.cmake).
-- **Every report is fatal.** The default run-time options are in
-  [`sanitizer-default-options.c`](cmake/sanitizer-default-options.c);
-  `*SAN_OPTIONS` override them. Run ASan's tests with
-  `export ASAN_OPTIONS=detect_leaks=1`.
-- **TSan**: build Debug with `-DCMAKE_C_FLAGS_DEBUG="-g -Og"`, as CI
-  does, since `-O0` hides races. Run the tests under
-  `setarch "$(uname -m)" -R`, as CI does; otherwise most abort with
-  `FATAL: ThreadSanitizer: unexpected memory mapping` (ASLR colliding with
-  shadow memory, not a test failure).
-- **Under full ASan, the tests that start the server can time out**
-  (`nvmeof-ci`, `s3-ci`, `ionic-ci`, `ionic-server-smoke`,
-  `pci-config-test`). Only a real failure, or a timeout without
-  sanitizers, counts against a change.
-
-### Valgrind
-
-Memcheck finds uninitialized reads the sanitizers miss, including bytes
-passed to `send()`/`write()`. Build with **GCC**, without sanitizers,
-with `-DERNIC_TRIVIAL_AUTO_VAR_INIT=OFF` (the default pattern-fill of
-locals hides those reads), and with valgrind installed first so
-`tcp-thread-stop-unit` finds `<valgrind/valgrind.h>` (it skips a
-`RLIMIT_NOFILE` row valgrind breaks). CI runs every test
-this way; locally, swap the `-E` for an `-R` naming the affected unit
-tests:
-
-```bash
-ctest --test-dir build -T memcheck --output-on-failure \
-  --overwrite "MemoryCheckCommand=$(command -v valgrind)" \
-  --overwrite "MemoryCheckCommandOptions=--leak-check=full --track-origins=yes --num-callers=40 --error-exitcode=1" \
-  -E '^(pci-config-test|find-rdma-device-tuple|find-ipv4-gid-index|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli|cmake-subproject|ernic-package-deb|ernic-package-deb-config-paths|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver|ernic-ionic-hw-stats|ernic-mesh-stress|ernic-mesh-flow|ernic-feature-macros)$'
-```
-
-The excluded tests run scripts, CMake, Python, or a server launcher.
-Reports go to `build/Testing/Temporary/MemoryChecker.*.log`.
-
-The server tests run the server under `ERNIC_TEST_SERVER_WRAPPER` (split
-on whitespace); a new script that starts the server must too.
-`test_server_lifecycle` can't take a command from the environment (see
-the [scanner patterns](#patterns-the-security-scanners-report)), so run
-it under valgrind with `--trace-children=yes`. Not every script checks
-the server's exit, so check the logs. Limit the `-R` to the tests that
-exercise the change:
-
-```bash
-rm -rf build/valgrind-server
-mkdir build/valgrind-server
-opts="--log-file=$PWD/build/valgrind-server/%p.log --leak-check=full --track-origins=yes --num-callers=40 --error-exitcode=1"
-ERNIC_TEST_SERVER_WRAPPER="valgrind $opts" \
-  ctest --test-dir build --output-on-failure \
-  -R '^(pci-config-test|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver|ernic-ionic-hw-stats|ernic-mesh-flow|ionic-stats-interval-cli|ionic-eth-queues-cli)$'
-valgrind --trace-children=yes $opts build/tests/test_server_lifecycle
-grep -L 'ERROR SUMMARY: 0 errors' build/valgrind-server/*.log
-```
-
-Valgrind doesn't check writes into mapped guest memory; the `memset`
-rule in [Security](#security) covers those.
-
-### clang-tidy and the thread-safety analysis
-
-**clang-tidy** with [`.clang-tidy`](.clang-tidy): every finding is an
-error. It needs clang-tidy 19+ and the same-version Clang. It runs during
-the build, so a rebuild checks only what changed. CI
-([clang-tidy.yml](.github/workflows/clang-tidy.yml)) uses clang-tidy 23,
-Debug and Release (`NDEBUG` and `_FORTIFY_SOURCE` change the analysis);
-locally, Debug is enough:
-
-```bash
-cmake -B build-tidy -G Ninja -DCMAKE_C_COMPILER=clang-23 \
-  -DCMAKE_BUILD_TYPE=Debug -DERNIC_BUILD_P4=ON -DERNIC_USE_CLANG_TIDY=ON \
-  -DERNIC_CLANG_TIDY_EXE=/usr/bin/clang-tidy-23
-cmake --build build-tidy -- -k 0
-```
-
-`.clang-tidy` enables whole check groups, then disables, marked `TODO`,
-checks the code doesn't pass yet. Never add to that list to silence a
-finding; when the code passes a `TODO` check, delete its line and its
-aliases'. Unavoidable findings get `// NOLINTNEXTLINE(check-name)` with a
-reason.
-
-**The [thread-safety analysis](#clangs-thread-safety-analysis)**: any
-clang build, CI's clang 18 included, fails on a broken function
-annotation. Fields and lock order need clang 23, which
-[thread-safety.yml](.github/workflows/thread-safety.yml) uses, failing
-only on these warnings:
-
-```bash
-cmake -B build-clang23 -G Ninja -DCMAKE_C_COMPILER=clang-23 \
-  -DCMAKE_BUILD_TYPE=Debug -DERNIC_BUILD_P4=ON \
-  -DCMAKE_C_FLAGS="-Werror=thread-safety -Werror=thread-safety-beta -Werror=thread-safety-negative -Werror=thread-safety-pointer"
-cmake --build build-clang23 -- -k 0
-```
-
-### include-what-you-use
-
-Use `apt install iwyu` with the clang it's built on
-(`include-what-you-use --version`), in its own build directory (it
-rejects options it doesn't know, such as GCC 15's
-`-fzero-init-padding-bits`). A rebuild checks only what changed. To check
-every file as CI ([iwyu.yml](.github/workflows/iwyu.yml)) does, start
-from empty `build-iwyu` and `iwyu-runs` directories:
-
-```bash
-cmake -B build-iwyu -G Ninja -DCMAKE_C_COMPILER=clang-19 \
-  -DCMAKE_BUILD_TYPE=Debug -DERNIC_BUILD_P4=ON -DERNIC_USE_IWYU=ON \
-  -DERNIC_IWYU_EXE="$PWD/ci/iwyu/iwyu-wrapper.sh"
-mkdir build-iwyu/iwyu-runs
-ERNIC_IWYU_LOG_DIR="$PWD/build-iwyu/iwyu-runs" cmake --build build-iwyu
-ci/iwyu/check-iwyu.sh build-iwyu/iwyu-runs
-```
-
-(Without `ERNIC_IWYU_EXE`, the suggestions are just in the build
-output.) CI fails only if IWYU itself fails, and lists files with
-suggestions. Apply the correct ones for files you touch (a header for a
-symbol you get only indirectly; no `<stdint.h>` beside `<inttypes.h>`).
-Ignore the wrong ones:
-
-- Forward-declaring a module's opaque type (`struct nvmeof_cm;`) in a
-  file that includes the module's header.
-- Naming an internal header instead of the public one, or insisting on
-  one of several headers that repeat a typedef (legal in C11, as
-  `rocm_ernic_compat.h` and `rocm_ernic_internal.h` do for
-  `rocm_ernic_dev_t`). Fix these with a mapping in
-  [`cmake/iwyu-libc.imp`](cmake/iwyu-libc.imp) or
-  [`cmake/iwyu-ernic.imp`](cmake/iwyu-ernic.imp), or an
-  `// IWYU pragma: export` in the header that should provide the symbol.
-
-### Static analysis
-
-PRs labelled `run-static` also get clang-tidy, cppcheck, flawfinder, and
-the Clang static analyzer, via `nix/analysis/`
-([static-analysis.yml](.github/workflows/static-analysis.yml)). It never
-fails, but read its findings for files you touched; its clang-tidy checks
-aren't `.clang-tidy`'s.
+- **clang-tidy** ([`.clang-tidy`](.clang-tidy)): every finding is an
+  error. `.clang-tidy` enables whole check groups, then disables, marked
+  `TODO`, checks the code doesn't pass yet. Never add to that list to
+  silence a finding; when the code passes a `TODO` check, delete its line
+  and its aliases'. Unavoidable findings get
+  `// NOLINTNEXTLINE(check-name)` with a reason.
+- **IWYU**: apply its correct suggestions for files you touch;
+  `ernic-c-checks` lists the wrong ones to ignore.
 
 ### Shell
 
@@ -560,127 +456,43 @@ aren't `.clang-tidy`'s.
   that may run as root (`service/`, the Ansible collection's `files/`)
   use `#!/bin/bash`, so they don't depend on `PATH`.
   `ansible/files/scripts/setup-ionic-dkms.sh` and
-  `fetch-ionic-sources.sh` use
-  `#!/bin/bash -eu`, despite their own `set -euo pipefail`, because
-  `ansible-test sanity` accepts no other bash form; don't "tidy" it.
-- **ShellCheck 0.11.0**, default checks only, over every `*.sh`,
-  `*.sh.in`, and extension-less executable with a shell shebang (CI:
-  [shellcheck.yml](.github/workflows/shellcheck.yml)):
-
-  ```bash
-  git ls-files | while IFS= read -r f; do
-    if [[ "$f" == *.sh || "$f" == *.sh.in ]]; then
-      echo "$f"
-    elif [[ "${f##*/}" != *.* && -x "$f" ]] &&
-      head -n1 -- "$f" | grep -Eqs '^#!.*\b(ba)?sh\b'; then
-      echo "$f"
-    fi
-  done | xargs -d '\n' shellcheck
-  ```
-
-  Suppress only on the one command, with `# shellcheck disable=SCnnnn`
-  and a reason (e.g. SC2329 for a cleanup function run only by `trap` in
-  a script ending in `exit`).
-- **[actionlint](https://github.com/rhysd/actionlint)**
-  (`pip install actionlint-py`) checks workflows and ShellChecks their
-  `run:` blocks; [`.github/actionlint.yaml`](.github/actionlint.yaml)
-  ignores the unsupported `$/` form of `uses:`.
-- **[`tools/check-embedded-shell.py`](tools/check-embedded-shell.py)**
-  (needs PyYAML and ShellCheck 0.11.0; `--list` shows what it found)
-  checks shell the others miss: Ansible `shell:`/`raw:` tasks (as `sh`
-  unless `executable` is set), composite actions' `run:` steps, script
-  heredocs in any of these, and workflow `run:` blocks GitHub runs under
-  `sh` (no `shell:` in a job with `container:`; keep those POSIX or set
-  `shell: bash`). For a heredoc to be checked, run a shell visibly
-  (`'bash -s'`, `bash`, or `ssh` with no remote command) and quote the
-  delimiter (`<<'EOF'`) unless the local shell must expand something.
-  Prefer a heredoc to a quoted `ssh` command string, which isn't checked.
-
-### CMake
-
-**cmakelint** with [`.cmakelintrc`](.cmakelintrc) (CI:
-[cmakelint.yml](.github/workflows/cmakelint.yml)):
-
-```bash
-git ls-files -z -- 'CMakeLists.txt' '*/CMakeLists.txt' '*.cmake' |
-  xargs -0 cmakelint
-```
+  `fetch-ionic-sources.sh` use `#!/bin/bash -eu`, despite their own
+  `set -euo pipefail`, because `ansible-test sanity` accepts no other
+  bash form; don't "tidy" it.
+- **ShellCheck 0.11.0**, default checks only. Suppress only on the one
+  command, with `# shellcheck disable=SCnnnn` and a reason (e.g. SC2329
+  for a cleanup function run only by `trap` in a script ending in
+  `exit`).
+- **Shell embedded in YAML** is checked too: Ansible `shell:`/`raw:`
+  tasks, composite actions' `run:` steps, and workflow `run:` blocks.
+  GitHub runs a step without `shell:` in a job with `container:` under
+  `sh`; keep those POSIX or set `shell: bash`. For a heredoc to be
+  checked, run a shell visibly (`'bash -s'`, `bash`, or `ssh` with no
+  remote command) and quote the delimiter (`<<'EOF'`) unless the local
+  shell must expand something. Prefer a heredoc to a quoted `ssh` command
+  string, which isn't checked.
 
 ### Python
 
-Python must run on **3.10** (no `tomllib`, `except*`, `typing.Self`, ...).
-Run **black**, **pylint**, and **vermin** over every `*.py` and
-extension-less python script except `nix/analysis/triage/`. pylint needs
-`prometheus/requirements-exporter.txt` and PyYAML installed. CI
-([pylint.yml](.github/workflows/pylint.yml)) runs black and pylint under
-3.12, which miss most newer-Python usage, but not vermin
-(`pip install vermin`), which prints `Target versions not met` on a
-violation.
+- Python must run on **3.10** (no `tomllib`, `except*`, `typing.Self`,
+  ...).
+- black, pylint, and vermin must pass on every `*.py` and extension-less
+  python script except `nix/analysis/triage/`. Suppress a pylint finding
+  on the one line (`# pylint: disable-next=...`) with a reason.
 
-```bash
-git ls-files -- ':!:nix/analysis/triage/' |
-  while IFS= read -r f; do
-    if [[ "$f" == *.py ]]; then
-      echo "$f"
-    elif [[ "${f##*/}" != *.* ]] &&
-      head -n1 -- "$f" | grep -Eqs '^#!.*python'; then
-      echo "$f"
-    fi
-  done > /tmp/python-files
-xargs -d '\n' black --check < /tmp/python-files
-xargs -d '\n' pylint < /tmp/python-files
-xargs -d '\n' vermin -t=3.10- --violations --no-tips < /tmp/python-files
-```
+### Docs and Ansible
 
-Suppress a pylint finding on the one line
-(`# pylint: disable-next=...`) with a reason.
+- The docs build without a Sphinx warning, and pass doc8 at 80 columns.
+- The Ansible collection passes `ansible-lint --strict` and
+  `ansible-test sanity`, at the versions
+  [ansible-collection.yml](.github/workflows/ansible-collection.yml) pins.
 
-### Spelling, documentation, and Ansible
+## The QEMU fork in `src/pvrdma/`
 
-- **codespell** with [`.codespellrc`](.codespellrc) over the whole tree
-  (CI: [codespell.yml](.github/workflows/codespell.yml)).
-- **doc8**: `doc8 docs/ --max-line-length 80`.
-- The docs must build without a Sphinx warning (needs Doxygen, not the C
-  dependencies; CI: [docs-check.yml](.github/workflows/docs-check.yml)):
-
-  ```bash
-  cmake -B build-docs -DERNIC_DOCS_ONLY=ON -DERNIC_BUILD_DOCS=ON \
-    -DERNIC_DOCS_WERROR=ON
-  cmake --build build-docs --target sphinx-html
-  ```
-
-- **ansible-lint** (`--strict`) and **`ansible-test sanity`** on
-  `ansible/`, with the commands, requirements, and ansible-lint version
-  pinned in
-  [ansible-collection.yml](.github/workflows/ansible-collection.yml);
-  other versions report different problems.
-
-## Forked and emulated code
-
-**`src/pvrdma/`** is QEMU's PVRDMA device model core, forked and heavily
+`src/pvrdma/` is QEMU's PVRDMA device model core, forked and heavily
 rewritten. Upstream deleted it, so it's ours to modify, built and checked
 like the rest of `src/`. Keep each file's original copyright lines.
 History: [src/pvrdma/README.md](src/pvrdma/README.md).
-
-**`src/p4/`** emulates real P4, so **do what the real P4 tools do**, not
-what seems reasonable: p4c for what a program may contain, P4Runtime for
-what a table entry may be (the update record is P4Runtime-shaped), and
-bmv2 for run-time behaviour. Check before deciding: p4c's
-`backends/bmv2/common/control.h` (at the version `scripts/fetch-p4c.sh`
-pins), the P4Runtime spec's "Match Format" section, and bmv2's
-`docs/JSON_format.md`. p4c and P4Runtime win over bmv2's looser spec
-(bmv2 allows a `ternary` table with no ternary key; p4c never emits one,
-so the loader refuses it).
-
-- **Refuse what they refuse, with `-EINVAL`**: a value with bits past its
-  LPM prefix or outside its mask, a priority where P4Runtime forbids one,
-  a second LPM key. Check a delete like an insert.
-- **Depart only where our representation differs**, and document it in
-  `docs/p4.rst`: the record always carries every key field, so a "don't
-  care" field is a zero prefix or mask where P4Runtime omits it.
-- **Compute a program's facts at load**, not at lookup
-  (`p4_table.lpm_key`, not key 0), and add a case to
-  `tests/data/p4/reject_cases.json` for each new load refusal.
 
 ## Copyright lines
 
@@ -745,125 +557,3 @@ ask for most:
 - **Do the words match the code?** Comments, docs, changelog, and PR
   description claim only what the diff does: no check described as
   stronger than it is, no guarantee on one path claimed for all.
-
-## Known defects and traps
-
-### TCP mesh GID resolution: never default a peer
-
-The TCP backend once resolved every destination GID to one node (guessing
-a node id from a GID octet, then falling back to node 0 or 1), silently
-sending traffic for nodes 2+ to the wrong node.
-
-Node identity is now configured, not inferred. Each instance gets its
-guest RoCE addresses in `ERNIC_TCP_GUEST_GIDS` (comma-separated,
-`inet_pton` notation; IPv4 stored as `::ffff:a.b.c.d`, as
-`adminq_parse_roce_hdr()` builds it) and, once it knows its node id,
-advertises them as `TCP_MSG_NODE_GIDS`. The manager fans these out, and
-peers keep a `GID -> node id` table keyed on all 16 bytes.
-
-`tcp_resolve_node_from_gid()` ([`tcp_gid.c`](src/rdma/tcp_gid.c)) is
-only an exact lookup. A miss returns `UINT32_MAX`, and MODIFY_QP fails,
-logging the full GID (`tcp_qp_state_rtr()` returns `-EINVAL`,
-`rdma_rm_modify_qp()` `-EIO`). **Never reintroduce a default peer**: a
-wrong node is a silent write into another guest's memory.
-
-`service/rocm-ernic-launcher` derives each instance's IPv6 link-local GID
-from its MAC, as the guest does; override it with `ERNIC_GUEST_GIDS_<n>`
-when peers target a static address. Unlisted addresses are unreachable.
-Reproducing a failure needs three or more nodes and the `-T` TAP plus
-bridge setup. Covered by `tests/test_tcp_gid_resolve.c`.
-
-### Dead and restarted mesh nodes
-
-A dead node stays in `mesh_nodes` with `is_alive = false`. A node that
-went quiet comes back under its id (a worker that loses the manager
-registers again asking for it, `tcp_register_again()`), but a restarted
-one registers again and gets a new id (ids are monotonic, so not stable
-across runs). Both ids then claim the same GIDs.
-
-So `TcpNodeGids` has an `alive` flag, cleared when the manager declares a
-node dead and set when it answers or registers again, and
-`tcp_gid_index_rebuild()` skips non-alive claimants: the restarted guest
-owns its addresses under its new id, and a late node regains them
-without re-advertising. Two *live* claimants still resolve to nothing.
-
-- On the manager the flag copies `is_alive`: **change either only
-  through `tcp_node_set_alive()`**, which writes both under
-  `mesh_table_lock`. New claims take the node's `is_alive`
-  (`tcp_gid_claims_set_if_member()`).
-- Don't make the index read `is_alive` from `mesh_nodes`: that takes
-  `mesh_table_lock` under `gid_table_lock`, against the lock order.
-- A registration declares dead every node with no live connection
-  (`tcp_declare_dead_if_unreachable()`), as the next health check would,
-  **before it answers** (`tcp_register_declare_stale()`), because the
-  answer lets a restarted worker claim the GIDs its old id still holds.
-  Only the broadcasts wait for the answer.
-- Workers keep no liveness of their own: the manager advertises a dead
-  node as owning nothing (`tcp_snapshot_node_gids()`), which is what an
-  empty advertisement means.
-
-**Broadcasts** all come from one manager thread,
-`tcp_broadcast_thread()`; handlers only ask for them
-(`tcp_broadcast_topology()`, `tcp_broadcast_node()`,
-`tcp_broadcast_node_gids()`, `tcp_broadcast_gid_table_to()`). A pass
-sends a changed node's set to every worker, and the whole GID table only
-to a node that just registered. **Don't send a topology or GID set from
-anywhere else**: pruning against the topology (`tcp_gid_claims_prune()`)
-is safe only because one thread sends the snapshots in the order it took
-them. Ask only once a registration's answer has gone, since a worker
-ignores what comes before it.
-
-**Eviction.** Broadcasts carry at most `TCP_MAX_MESH_NODES` (64) nodes,
-so when a node registers in a full table, the manager evicts the node
-dead longest with no live connection (`tcp_evict_dead_node()`), drops its
-claims, and advertises it as owning nothing; if none qualifies, it
-refuses the newcomer with `-ENOSPC`. An evicted id is never reused, and
-nothing is evicted once teardown has begun (`priv->stopping`, which
-`tcp_register_again()` also checks).
-
-- **Never keep a `MeshNodeInfo *` after dropping `mesh_table_lock`**:
-  eviction frees it. Keep the node id and look it up again, as
-  `TcpHealthCheckItem` does.
-- A receive thread can outlive its connection's place in the table, so
-  the manager records an advertisement only while its node is in
-  `mesh_nodes`, checked under that lock
-  (`tcp_gid_claims_set_if_member()`); otherwise a late one would restore
-  an evicted node's claims.
-- A worker cut off from the manager misses the eviction's empty
-  advertisement, and later GID tables don't mention the node, so workers
-  drop the claims of every node a topology update from the manager
-  leaves out (`tcp_gid_claims_prune()`).
-
-Covered by `test_dead_node_stops_owning_its_gids()` in
-`tests/test_tcp_gid_resolve.c`, the eviction and liveness rows in
-`tests/test_tcp_thread_stop.c`, and the churn rounds in
-`tests/py/test_mesh_stress.py`.
-
-### Connection lifetime
-
-- A manager reaps connections that never registered
-  (`tcp_reap_pending_conns()`) and retires a registered node's connection
-  when it hangs up or stops answering (`tcp_health_check_retire()`). It
-  never connects to a node; a worker reconnects to it
-  (`tcp_worker_manager_pass()`).
-- A worker closes a dead connection to another worker on its
-  peer-connect thread's next pass (`tcp_worker_peer_sweep()`), and they
-  reconnect. The accept thread and `tcp_worker_publish_peer()` replace a
-  dead connection, never a live one.
-- `TcpConnection` is reference counted, so the data path may hold one
-  after it leaves its table; see its comment for the rules.
-- A failed `accept()` (e.g. `EMFILE`, which leaves the connection queued)
-  is retried after 100 ms. Without that backoff it once logged 295 GB.
-- Registration hits a wall at about 40 nodes (measured on 64). The
-  full-mesh connection cost behind it is inferred, **not** confirmed in
-  the code.
-
-### The mesh has no Ethernet or DHCP path
-
-Guest TCP/IP uses the host TAP/bridge
-([`ionic_eth_net.c`](src/ionic/ionic_eth_net.c)); the mesh carries only
-`TCP_MSG_IONIC` and control traffic. Don't rebuild guest networking
-inside it. The removed Ethernet and DHCP relay paths' ordinals remain as
-`TCP_MSG_RESERVED_18..20`: renumbering would change the wire format,
-bumping `TCP_PROTOCOL_VERSION` (checked at registration and the
-worker-to-worker handshake) and cutting off every unupgraded peer.
