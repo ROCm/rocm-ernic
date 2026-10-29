@@ -617,25 +617,23 @@ static bool p4_resolve_arch_field(struct p4_walk *w, const char *hdr,
                                   struct p4_field_ref *out)
 {
     const struct p4_header_type *ht;
+    /* Resolved here rather than in @out, which points into the program,
+     * and copied to @out only once the width checks. */
+    struct p4_field_ref ref;
 
     out->header = P4_IDX_NONE;
     out->field = P4_IDX_NONE;
 
-    if (!p4_resolve_field(w->prog, hdr, field, out))
+    if (!p4_resolve_field(w->prog, hdr, field, &ref))
         return false;
 
-    ht = &w->prog->header_types[w->prog->headers[out->header].header_type];
-    if (ht->fields[out->field].bits != bits) {
-        /* Read the width before clearing the reference, not after: the
-         * message needs the field this used to point at. */
-        uint16_t found = ht->fields[out->field].bits;
-
-        out->header = P4_IDX_NONE;
-        out->field = P4_IDX_NONE;
+    ht = &w->prog->header_types[w->prog->headers[ref.header].header_type];
+    if (ht->fields[ref.field].bits != bits) {
         (void)p4_fail(w, -EINVAL, "'%s.%s' is %u bits; it must be %u", hdr,
-                      field, found, bits);
+                      field, ht->fields[ref.field].bits, bits);
         return false;
     }
+    *out = ref;
     return true;
 }
 

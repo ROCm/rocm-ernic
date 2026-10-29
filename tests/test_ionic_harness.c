@@ -51,6 +51,7 @@
 #include "ionic/ionic_eth_emu_priv.h"
 #include "ionic/ionic_fault.h"
 #include "ionic_harness.h"
+#include "ionic/ionic_profile.h"
 #include "ionic/ionic_rdma_devcmd.h"
 #include "ionic/ionic_status.h"
 #include "nvmeof/nvmeof.h"
@@ -84,23 +85,30 @@
 
 static int failures;
 
-static bool check(const char *test, bool cond, const char *fmt, ...)
-    ERNIC_PRINTF_FORMAT(3, 4);
+static void check_failed(const char *test, const char *fmt, ...)
+    ERNIC_PRINTF_FORMAT(2, 3);
 
-static bool check(const char *test, bool cond, const char *fmt, ...)
+/* Report and count a failed check. */
+static void check_failed(const char *test, const char *fmt, ...)
 {
     va_list ap;
 
-    if (cond)
-        return true;
     printf("FAIL %-12s: ", test);
     va_start(ap, fmt);
     vprintf(fmt, ap);
     va_end(ap);
     printf("\n");
     failures++;
-    return false;
 }
+
+/*
+ * Give whether @cond holds, reporting it if not. A macro rather than a
+ * function: the static analyzer doesn't follow a variadic function, so it
+ * couldn't see that this gives @cond and would report paths where a check
+ * that failed went on as if it had passed.
+ */
+#define check(test, cond, ...) \
+    ((cond) ? true : (check_failed((test), __VA_ARGS__), false))
 
 /* ---- Helpers ----------------------------------------------------------- */
 
@@ -3409,7 +3417,7 @@ static void test_eth(void)
     struct tx_seen *seen = calloc(1, sizeof(*seen));
 
     if (seen == NULL) {
-        check(T, false, "out of memory");
+        check_failed(T, "out of memory");
         return;
     }
     if (!setup(T, &h, "loopback")) {
@@ -3578,7 +3586,7 @@ static void test_eth_dma_faults(void)
     uint8_t cmd[64] = {0}, comp[16], desc[16], buf[64];
 
     if (seen == NULL) {
-        check(T, false, "out of memory");
+        check_failed(T, "out of memory");
         return;
     }
     if (!setup(T, &h, "loopback")) {
@@ -3903,7 +3911,7 @@ static void test_p4_port(void)
     struct ionic_eth_p4_stats pstats;
 
     if (up == NULL) {
-        check(T, false, "out of memory");
+        check_failed(T, "out of memory");
         return;
     }
     if (!setup(T, &h, "loopback")) {
@@ -4508,8 +4516,9 @@ static char *p4d_read_file(const char *name, size_t *out_len)
     f = fopen(path, "rbe"); /* e: O_CLOEXEC */
     if (!f)
         return NULL;
+    /* No fixture is larger than a program the engine takes. */
     if (fseek(f, 0, SEEK_END) != 0 || (n = ftell(f)) < 0 ||
-        fseek(f, 0, SEEK_SET) != 0) {
+        (uint64_t)n > P4_PROGRAM_MAX || fseek(f, 0, SEEK_SET) != 0) {
         fclose(f);
         return NULL;
     }
@@ -4549,7 +4558,7 @@ static int p4r_load(struct p4_engine *eng, const char *name)
 static int p4r_load_patched(struct p4_engine *eng, const char *name,
                             const char *from, const char *to)
 {
-    size_t n = 0, flen = strlen(from), tlen = strlen(to), at;
+    size_t n = 0, flen = strlen(from), tlen = strlen(to), at, out_len;
     char *buf = p4d_read_file(name, &n);
     char *out, *hit;
     int rc;
@@ -4557,13 +4566,12 @@ static int p4r_load_patched(struct p4_engine *eng, const char *name,
     if (!buf)
         return -ENOENT;
     /* The fixture is not NUL-terminated, so search a copy that is. */
-    out = malloc(n + 1);
+    out = calloc(n + 1, 1);
     if (!out) {
         free(buf);
         return -ENOMEM;
     }
     memcpy(out, buf, n);
-    out[n] = '\0';
     hit = strstr(out, from);
     if (!hit || strstr(hit + 1, from)) {
         free(out);
@@ -4572,7 +4580,14 @@ static int p4r_load_patched(struct p4_engine *eng, const char *name,
     }
     at = (size_t)(hit - out);
     free(out);
-    out = malloc(n - flen + tlen);
+    /* @from was found, so n >= flen, and with tlen bounded too, out_len
+     * can't wrap. Nothing larger would load anyway. */
+    out_len = n - flen + tlen;
+    if (tlen > P4_PROGRAM_MAX || out_len > P4_PROGRAM_MAX) {
+        free(buf);
+        return -EINVAL;
+    }
+    out = malloc(out_len);
     if (!out) {
         free(buf);
         return -ENOMEM;
@@ -4580,7 +4595,7 @@ static int p4r_load_patched(struct p4_engine *eng, const char *name,
     memcpy(out, buf, at);
     memcpy(out + at, to, tlen);
     memcpy(out + at + tlen, buf + at + flen, n - at - flen);
-    n = n - flen + tlen;
+    n = out_len;
     free(buf);
 
     rc = p4_engine_load_begin(eng, n);

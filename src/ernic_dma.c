@@ -14,6 +14,7 @@
 
 #include <errno.h>
 #include <limits.h> /* CHAR_BIT */
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h> /* PROT_READ, PROT_WRITE */
@@ -54,21 +55,24 @@ void ernic_dma_destroy(struct ernic_dma *dma)
 #define DMA_PIECE_TOO_BIG 1
 
 /*
- * Copy one piece of a transfer, of a non-zero @len, through one list.
- * Returns 0, DMA_PIECE_TOO_BIG if the piece needs more entries than the list
- * holds (and is more than one byte, so it can be halved), or a negative
- * errno. Exactly one of @rbuf, the destination of a read, and @wbuf, the
- * source of a write, is non-NULL.
+ * Copy one piece of a transfer, of a non-zero @len, through one list: @len
+ * bytes at @off in the transfer's buffer, to or from @gpa. Returns 0,
+ * DMA_PIECE_TOO_BIG if the piece needs more entries than the list holds
+ * (and is more than one byte, so it can be halved), or a negative errno.
+ * @write says which way: from @wbuf into the guest, or from the guest into
+ * @rbuf; the other is NULL. Both point to the start of the transfer, so a
+ * NULL one is never offset. The direction is a parameter, not which buffer
+ * is NULL, so the static analyzer doesn't think both could be.
  */
 static int dma_xfer_piece(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx,
-                          uint64_t gpa, uint8_t *rbuf, const uint8_t *wbuf,
-                          size_t len)
+                          uint64_t gpa, bool write, uint8_t *rbuf,
+                          const uint8_t *wbuf, size_t off, size_t len)
 {
     size_t done = 0;
     int cnt;
 
     cnt = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)gpa, len, dma->sg,
-                          ERNIC_DMA_SGL_MAX, wbuf ? PROT_WRITE : PROT_READ);
+                          ERNIC_DMA_SGL_MAX, write ? PROT_WRITE : PROT_READ);
     /* -(entries needed) - 1, with errno 0: more host mappings than there's
      * room for. */
     if (cnt < -1 && len > 1)
@@ -86,26 +90,25 @@ static int dma_xfer_piece(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx,
 
         if (n > len - done)
             n = len - done;
-        if (wbuf)
-            memcpy(dma->iov[i].iov_base, wbuf + done, n);
+        if (write)
+            memcpy(dma->iov[i].iov_base, wbuf + off + done, n);
         else
-            memcpy(rbuf + done, dma->iov[i].iov_base, n);
+            memcpy(rbuf + off + done, dma->iov[i].iov_base, n);
         done += n;
     }
 
-    if (wbuf)
+    if (write)
         vfu_sgl_mark_dirty(vfu_ctx, dma->sg, nsg);
     vfu_sgl_put(vfu_ctx, dma->sg, dma->iov, nsg);
     return done == len ? 0 : -EIO;
 }
 
 /*
- * The transfer behind ernic_dma_read() and ernic_dma_write(): exactly one of
- * @rbuf, the destination of a read, and @wbuf, the source of a write, is
- * non-NULL.
+ * The transfer behind ernic_dma_read() and ernic_dma_write(), with @write,
+ * @rbuf, and @wbuf as for dma_xfer_piece().
  */
 static int dma_xfer(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx, uint64_t gpa,
-                    uint8_t *rbuf, const uint8_t *wbuf, size_t len)
+                    bool write, uint8_t *rbuf, const uint8_t *wbuf, size_t len)
 {
     /*
      * The second halves of split pieces, still to be done, the last split's
@@ -135,9 +138,8 @@ static int dma_xfer(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx, uint64_t gpa,
      * long, and the list is free again before each piece is mapped.
      */
     for (;;) {
-        int rc =
-            dma_xfer_piece(dma, vfu_ctx, gpa + done, rbuf ? rbuf + done : NULL,
-                           wbuf ? wbuf + done : NULL, piece);
+        int rc = dma_xfer_piece(dma, vfu_ctx, gpa + done, write, rbuf, wbuf,
+                                done, piece);
 
         if (rc < 0)
             return rc;
@@ -156,11 +158,11 @@ static int dma_xfer(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx, uint64_t gpa,
 int ernic_dma_read(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx, uint64_t gpa,
                    void *buf, size_t len)
 {
-    return dma_xfer(dma, vfu_ctx, gpa, buf, NULL, len);
+    return dma_xfer(dma, vfu_ctx, gpa, false, buf, NULL, len);
 }
 
 int ernic_dma_write(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx, uint64_t gpa,
                     const void *buf, size_t len)
 {
-    return dma_xfer(dma, vfu_ctx, gpa, NULL, buf, len);
+    return dma_xfer(dma, vfu_ctx, gpa, true, NULL, buf, len);
 }

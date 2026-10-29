@@ -980,8 +980,9 @@ static char *read_fixture(const char *name, size_t *len)
     f = fopen(path, "rbe"); /* e: O_CLOEXEC */
     if (!f)
         return NULL;
+    /* No fixture is larger than a program the engine takes. */
     if (fseek(f, 0, SEEK_END) != 0 || (n = ftell(f)) < 0 ||
-        fseek(f, 0, SEEK_SET) != 0) {
+        (uint64_t)n > P4_PROGRAM_MAX || fseek(f, 0, SEEK_SET) != 0) {
         fclose(f);
         return NULL;
     }
@@ -1111,10 +1112,18 @@ static char *pad_to_budget(const char *base, size_t base_len, size_t base_cost,
     size_t nelem, nzero, cap, n;
     char *doc;
 
+    /*
+     * @base_len is a fixture's size, which the analyzer takes as tainted,
+     * and it can't prove an index derived from it is below the size of a
+     * buffer allocated from the same value. Every index here and below is
+     * in bounds, and rewriting this one only moves the report to the next.
+     */
+    /* NOLINTBEGIN(clang-analyzer-security.ArrayBound) */
     while (base_len > 0 &&
            (base[base_len - 1] == ' ' || base[base_len - 1] == '\t' ||
             base[base_len - 1] == '\r' || base[base_len - 1] == '\n'))
         base_len--;
+    /* NOLINTEND(clang-analyzer-security.ArrayBound) */
     if (base_len == 0 || base[base_len - 1] != '}' || fixed > want)
         return NULL;
     base_len--;

@@ -60,6 +60,11 @@ Checks:
   # It wants C11's Annex K functions, such as memcpy_s(), which glibc
   # doesn't have and rocm-ernic won't use
   - -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+  # Fields are ordered for the reader and for Clang's thread-safety
+  # analysis, which wants each guarded field after its lock, and the
+  # test-case tables lead with the same fields. The space it would save
+  # is a few KB per device
+  - -clang-analyzer-optin.performance.Padding
 
   # TODO: These checks report problems in the current code. Fix the code
   # and delete the check's line here, or move it to "Not wanted" with a
@@ -82,17 +87,6 @@ Checks:
   - -cert-exp42-c  # TODO: the same check
   - -cert-flp37-c  # TODO: the same check
   - -cert-err33-c  # TODO(729): unchecked return values
-  - -clang-analyzer-core.CallAndMessage  # TODO(3)
-  - -clang-analyzer-core.NonNullParamChecker  # TODO(2)
-  - -clang-analyzer-core.NullDereference  # TODO(4)
-  - -clang-analyzer-optin.performance.Padding  # TODO(20)
-  # Once reported only in Release, and only with the other checks here
-  # off; now in both builds with them on. The analyzer follows paths
-  # through the code, so which problems it finds can change with the set
-  # of checks
-  - -clang-analyzer-optin.taint.TaintedAlloc  # TODO(1)
-  - -clang-analyzer-security.ArrayBound  # TODO(6)
-  - -clang-analyzer-unix.Stream  # TODO(2)
   - -cppcoreguidelines-avoid-non-const-global-variables  # TODO(234)
   - -cppcoreguidelines-init-variables  # TODO(1266)
   - -cppcoreguidelines-interfaces-global-init  # TODO(1)

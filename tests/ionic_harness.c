@@ -63,9 +63,10 @@
 /* RoCE v2's UDP port */
 #define ROCE_UDP_PORT 4791
 
-static bool fail(const char *fmt, ...) ERNIC_PRINTF_FORMAT(1, 2);
+static void fail_msg(const char *fmt, ...) ERNIC_PRINTF_FORMAT(1, 2);
 
-static bool fail(const char *fmt, ...)
+/* Report a harness failure. */
+static void fail_msg(const char *fmt, ...)
 {
     va_list ap;
 
@@ -74,23 +75,16 @@ static bool fail(const char *fmt, ...)
     vfprintf(stderr, fmt, ap);
     va_end(ap);
     fputc('\n', stderr);
-    return false;
 }
 
-static int fail_rc(const char *fmt, ...) ERNIC_PRINTF_FORMAT(1, 2);
-
-/* fail() for the functions that report failure as -1 */
-static int fail_rc(const char *fmt, ...)
-{
-    va_list ap;
-
-    fputs("harness: ", stderr);
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    va_end(ap);
-    fputc('\n', stderr);
-    return -1;
-}
+/*
+ * Report a failure and give false, or for the functions that report
+ * failure as -1, -1. Macros rather than functions: the static analyzer
+ * doesn't follow a variadic function, so it couldn't see what one returns
+ * and would report paths where a failed step succeeded.
+ */
+#define fail(...)    (fail_msg(__VA_ARGS__), false)
+#define fail_rc(...) (fail_msg(__VA_ARGS__), -1)
 
 /* ---- Rings ------------------------------------------------------------- */
 
@@ -239,7 +233,7 @@ void ih_bar0_read(struct ih *h, uint32_t off, void *buf, size_t len)
     ernic_stats_bar0_access(h->dev->stats, false);
     if (ionic_eth_emu_bar0_access(h->emu, buf, len, off, false) !=
         (ssize_t)len) {
-        fail("BAR0 read of %zu bytes at %#x refused", len, off);
+        fail_msg("BAR0 read of %zu bytes at %#x refused", len, off);
         memset(buf, 0xff, len);
     }
 }
@@ -249,14 +243,15 @@ void ih_bar0_write(struct ih *h, uint32_t off, const void *buf, size_t len)
     uint8_t tmp[64];
 
     if (len > sizeof(tmp)) {
-        fail("BAR0 write of %zu bytes is larger than the harness allows", len);
+        fail_msg("BAR0 write of %zu bytes is larger than the harness allows",
+                 len);
         return;
     }
     memcpy(tmp, buf, len);
     ernic_stats_bar0_access(h->dev->stats, true);
     if (ionic_eth_emu_bar0_access(h->emu, (char *)tmp, len, off, true) !=
         (ssize_t)len)
-        fail("BAR0 write of %zu bytes at %#x refused", len, off);
+        fail_msg("BAR0 write of %zu bytes at %#x refused", len, off);
 }
 
 uint32_t ih_bar0_read32(struct ih *h, uint32_t off)
@@ -295,7 +290,7 @@ void ih_doorbell(struct ih *h, int qtype, uint32_t qid, uint8_t ring,
     /* The kernel's doorbell page is page 0, one u64 slot per qtype. */
     if (ionic_eth_emu_bar2_access(h->emu, (char *)b, sizeof(b),
                                   (loff_t)qtype * 8, true) != sizeof(b))
-        fail("doorbell write for qtype %d refused", qtype);
+        fail_msg("doorbell write for qtype %d refused", qtype);
 }
 
 int ih_devcmd(struct ih *h, const uint8_t cmd[64], uint8_t comp[16], void *data,
@@ -311,7 +306,7 @@ int ih_devcmd(struct ih *h, const uint8_t cmd[64], uint8_t comp[16], void *data,
     ih_bar0_write32(h, BAR0_DEVCMD, 1);
 
     if (!(ih_bar0_read32(h, BAR0_DEVCMD_DONE) & 1u)) {
-        fail("devcmd %u never set done", cmd[0]);
+        fail_msg("devcmd %u never set done", cmd[0]);
         return -1;
     }
     ih_bar0_read(h, BAR0_DEVCMD_COMP, comp, 16);
@@ -340,13 +335,13 @@ int ih_eth_admin(struct ih *h, const uint8_t cmd[64], uint8_t comp[16])
     if (!fake_vfu_read(h->vfu, ring_slot(cq, cq->cons), comp, 16))
         return fail_rc("eth admin CQ read failed");
     if (((comp[15] & 0x80u) != 0) != ring_color(cq)) {
-        fail("eth adminq command %u drew no completion", cmd[0]);
+        fail_msg("eth adminq command %u drew no completion", cmd[0]);
         return -1;
     }
     cq->cons++;
     if (ernic_get_le16(comp + 2) != slot) {
-        fail("eth admin completion for slot %u, expected %u",
-             ernic_get_le16(comp + 2), slot);
+        fail_msg("eth admin completion for slot %u, expected %u",
+                 ernic_get_le16(comp + 2), slot);
         return -1;
     }
     return comp[0];
@@ -444,10 +439,11 @@ int ih_admin_complete(struct ih *h, uint8_t op, int slot, uint32_t *resp_len)
 
     if (ernic_get_be16(cqe) != (uint32_t)slot || cqe[2] != op ||
         (qtf >> 8) != 0 || ((qtf >> 5) & 7u) != IH_CQE_TYPE_ADMIN) {
-        fail("admin completion for op %u slot %u (qid %u type %u), expected "
-             "op %u slot %u",
-             cqe[2], ernic_get_be16(cqe), qtf >> 8, (qtf >> 5) & 7u, op,
-             (unsigned)slot);
+        fail_msg(
+            "admin completion for op %u slot %u (qid %u type %u), expected "
+            "op %u slot %u",
+            cqe[2], ernic_get_be16(cqe), qtf >> 8, (qtf >> 5) & 7u, op,
+            (unsigned)slot);
         return -1;
     }
 
@@ -467,14 +463,14 @@ int ih_admin_complete(struct ih *h, uint8_t op, int slot, uint32_t *resp_len)
             break;
         }
         if (h->eq_held_n == IH_EQ_HELD_MAX) {
-            fail("more than %u EQ events ahead of admin op %u's",
-                 IH_EQ_HELD_MAX, op);
+            fail_msg("more than %u EQ events ahead of admin op %u's",
+                     IH_EQ_HELD_MAX, op);
             return -1;
         }
         h->eq_held[h->eq_held_n++] = ev_cq;
     }
     if (!saw_admin) {
-        fail("admin op %u completed with no event on the EQ", op);
+        fail_msg("admin op %u completed with no event on the EQ", op);
         return -1;
     }
 
@@ -482,7 +478,7 @@ int ih_admin_complete(struct ih *h, uint8_t op, int slot, uint32_t *resp_len)
     if (qtf & 2u) {
         /* The status code is the whole field, as the driver reads it. */
         if (sl == 0 || sl > UINT8_MAX) {
-            fail("admin op %u has the error bit with status %u", op, sl);
+            fail_msg("admin op %u has the error bit with status %u", op, sl);
             return -1;
         }
         return (int)sl;
@@ -930,7 +926,7 @@ int ih_srq_create(struct ih *h, struct ih_srq *srq, uint8_t depth_log2)
     fake_vfu_read(h->vfu, resp, r, sizeof(r));
     srq->id = ernic_get_le32(r);
     if (resp_len != 5) {
-        fail("CREATE_SRQ reported a %u-byte response", resp_len);
+        fail_msg("CREATE_SRQ reported a %u-byte response", resp_len);
         return -1;
     }
     return 0;
@@ -1012,7 +1008,7 @@ uint64_t ih_post_send(struct ih *h, struct ih_qp *qp, const struct ih_send *s)
 
     if (s->nsge > (stride - WQE_PLD_OFF) / 16 ||
         s->inline_len > stride - WQE_PLD_OFF) {
-        fail("send WQE does not fit a %u-byte stride", stride);
+        fail_msg("send WQE does not fit a %u-byte stride", stride);
         return 0;
     }
     for (uint8_t i = 0; i < s->nsge; i++)
@@ -1089,7 +1085,7 @@ uint64_t ih_post_send(struct ih *h, struct ih_qp *qp, const struct ih_send *s)
     }
 
     if (!fake_vfu_write(h->vfu, ring_slot(&qp->sq, qp->sq.prod), wqe, stride)) {
-        fail("SQ write failed");
+        fail_msg("SQ write failed");
         return 0;
     }
     qp->sq.prod++;
@@ -1111,7 +1107,7 @@ static uint64_t post_recv(struct ih *h, struct ih_ring *rq, int db_qtype,
     if (!put_sges(wqe, sizeof(wqe), sge, nsge, spec))
         return 0;
     if (!fake_vfu_write(h->vfu, ring_slot(rq, rq->prod), wqe, sizeof(wqe))) {
-        fail("RQ write failed");
+        fail_msg("RQ write failed");
         return 0;
     }
     rq->prod++;

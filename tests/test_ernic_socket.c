@@ -338,7 +338,12 @@ static void set_mode(const char *name, mode_t mode)
 /* Make a regular file at @path, mode 0600.  Exits on failure. */
 static void make_file(const char *path)
 {
+    /* With _FORTIFY_SOURCE, glibc 2.40 and later give Clang an
+     * open(path, flags, mode) overload, and android-cloexec-open looks for
+     * O_CLOEXEC in its mode */
+    /* NOLINTBEGIN(android-cloexec-open) */
     int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    /* NOLINTEND(android-cloexec-open) */
 
     if (fd < 0)
         setup_failed("making file", path);

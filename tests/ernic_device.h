@@ -62,6 +62,7 @@ static inline int ernic_read_hex_attr(const char *name, const char *suffix,
     FILE *attr;
     int length;
     char *got;
+    char *newline;
     uint32_t parsed;
 
     if (!name || !suffix || !value)
@@ -81,7 +82,9 @@ static inline int ernic_read_hex_attr(const char *name, const char *suffix,
         return 0;
 
     /* sysfs writes these as 0x%04x and a newline. */
-    line[strcspn(line, "\n")] = '\0';
+    newline = strchr(line, '\n');
+    if (newline)
+        *newline = '\0';
     if (strncmp(line, "0x", 2) != 0 || !ernic_parse_hex_u32(line + 2, &parsed))
         return 0;
     *value = parsed;
