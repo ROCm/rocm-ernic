@@ -50,6 +50,10 @@ the move:
 - **Set flags per target** with `ernic_set_compiler_flags()` and
   `ernic_add_sanitizers()` ([`cmake/`](cmake/)), never globally
   (`add_compile_options()`, `CMAKE_C_FLAGS`).
+- **Never remove `-pthread`**: `ernic_set_compiler_flags()` compiles and
+  links every program with it because TheRock's sanitizer builds need it,
+  even though it looks redundant. A program built without that function
+  needs it too.
 
 ## Build and test
 

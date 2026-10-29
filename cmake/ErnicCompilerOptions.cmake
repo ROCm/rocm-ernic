@@ -101,8 +101,8 @@ endfunction()
 
 # Apply compiler warning and hardening flags to ``target``
 # based on the C compiler (GCC or Clang), along with the
-# feature-test macros, the linker hardening flags, and warnings as
-# errors if ERNIC_WERROR is on.
+# feature-test macros, -pthread, the linker hardening flags, and
+# warnings as errors if ERNIC_WERROR is on.
 function(ernic_set_compiler_flags target)
     # The library interfaces the code may use: C11 (CMAKE_C_STANDARD)
     # plus POSIX.1-2008, and glibc's _DEFAULT_SOURCE for the BSD and
@@ -153,6 +153,14 @@ function(ernic_set_compiler_flags target)
         set_target_properties(${target} PROPERTIES
           COMPILE_WARNING_AS_ERROR ON)
     endif()
+
+    # -pthread is critical for sanitizer builds through TheRock, as it is
+    # for hipFile's and hipObject's tests. It's needed even though glibc
+    # 2.34 and later has the thread functions in libc, and GLib's compile
+    # flags usually add it, so every program is compiled and linked with
+    # it explicitly. NEVER REMOVE IT.
+    target_compile_options(${target} PRIVATE -pthread)
+    target_link_options(${target} PRIVATE -pthread)
 
     ernic_set_linker_flags(${target})
 
