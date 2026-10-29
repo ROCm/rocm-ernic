@@ -138,22 +138,25 @@ static int run_u64(const char *kind, bool (*parse)(const char *, uint64_t *),
     return 0;
 }
 
-static int run_span(const struct span_case *tc)
+static int run_span(const char *kind,
+                    bool (*parse)(const char *, size_t, uint64_t *),
+                    const struct span_case *tc)
 {
     uint64_t v = UINT64_C(0xDEADBEEFDEADBEEF);
-    bool ok = ernic_parse_u64_span(tc->input, tc->len, &v);
+    bool ok = parse(tc->input, tc->len, &v);
     if (ok != tc->expect_ok) {
-        printf("FAIL span %-16s: ok=%d expected %d\n", tc->name, ok,
+        printf("FAIL %s %-16s: ok=%d expected %d\n", kind, tc->name, ok,
                tc->expect_ok);
         return 1;
     }
     if (ok && v != tc->expect_val) {
-        printf("FAIL span %-16s: val=%" PRIu64 " expected %" PRIu64 "\n",
+        printf("FAIL %s %-16s: val=%" PRIu64 " expected %" PRIu64 "\n", kind,
                tc->name, v, tc->expect_val);
         return 1;
     }
     if (!ok && v != UINT64_C(0xDEADBEEFDEADBEEF)) {
-        printf("FAIL span %-16s: changed the output on failure\n", tc->name);
+        printf("FAIL %s %-16s: changed the output on failure\n", kind,
+               tc->name);
         return 1;
     }
     return 0;
@@ -437,6 +440,26 @@ int main(void)
         {"sign", "-1", 2, false, 0},
     };
 
+    static const struct span_case hex_span_cases[] = {
+        {"null", NULL, 1, false, 0},
+        {"zero-length", "123", 0, false, 0},
+        {"zero", "0", 1, true, 0},
+        {"lower", "7f2000000000", 12, true, UINT64_C(0x7f2000000000)},
+        {"upper", "7F2000000000", 12, true, UINT64_C(0x7f2000000000)},
+        {"prefix", "40000:ff", 5, true, 0x40000},
+        {"stops-at-colon", "40000:ff", 6, false, 0},
+        /* Shorter than len: the NUL fails it, and nothing past is read. */
+        {"short", "ab", 3, false, 0},
+        {"max", "ffffffffffffffff", 16, true, UINT64_MAX},
+        {"max-mixed-case", "FFFFffffFFFFffff", 16, true, UINT64_MAX},
+        {"seventeen-digits", "10000000000000000", 17, false, 0},
+        {"seventeen-zeros", "00000000000000001", 17, false, 0},
+        {"hex-prefix", "0x10", 4, false, 0},
+        {"bad-digit", "1g", 2, false, 0},
+        {"sign", "-1", 2, false, 0},
+        {"leading-space", " 1", 2, false, 0},
+    };
+
     static const struct u64_case size_cases[] = {
         {"null", NULL, false, 0},
         {"empty", "", false, 0},
@@ -559,6 +582,7 @@ int main(void)
     size_t nou = sizeof(oct_u32_cases) / sizeof(oct_u32_cases[0]);
     size_t n64 = sizeof(u64_cases) / sizeof(u64_cases[0]);
     size_t nspan = sizeof(span_cases) / sizeof(span_cases[0]);
+    size_t nhspan = sizeof(hex_span_cases) / sizeof(hex_span_cases[0]);
     size_t nsize = sizeof(size_cases) / sizeof(size_cases[0]);
     size_t nhex = sizeof(hex_cases) / sizeof(hex_cases[0]);
     size_t nhexstr = sizeof(hexstr_cases) / sizeof(hexstr_cases[0]);
@@ -581,7 +605,11 @@ int main(void)
         failures += run_u64("u64", ernic_parse_u64, &u64_cases[i]);
     }
     for (size_t i = 0; i < nspan; i++) {
-        failures += run_span(&span_cases[i]);
+        failures += run_span("span", ernic_parse_u64_span, &span_cases[i]);
+    }
+    for (size_t i = 0; i < nhspan; i++) {
+        failures +=
+            run_span("hex-span", ernic_parse_hex_u64_span, &hex_span_cases[i]);
     }
     for (size_t i = 0; i < nsize; i++) {
         failures += run_u64("size", ernic_parse_size, &size_cases[i]);
@@ -607,7 +635,7 @@ int main(void)
         return 1;
     }
     printf("parse_int: all %zu cases passed\n",
-           ni + nu + nhu + nou + n64 + nspan + nsize + nhex + nhexstr + nfits +
-               nmac + np);
+           ni + nu + nhu + nou + n64 + nspan + nhspan + nsize + nhex + nhexstr +
+               nfits + nmac + np);
     return 0;
 }

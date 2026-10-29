@@ -978,21 +978,11 @@ void ionic_eth_emu_handle_lif_identify(struct ionic_eth_emu *emu,
 
     ernic_put_le64(rdma + 24, IONIC_PAGE_SIZE_CAP); /* page_size_cap */
 
-    /* ionic_lif_logical_qtype layout (8 bytes each):
-     *   u8  qtype    (hardware qtype number)
-     *   u8  rsvd[3]
-     *   le32 qid_count
-     *   le32 qid_base
-     *   -- wait, that is 9 bytes; kernel struct is:
-     *     u8 qtype; u8 rsvd[3]; le32 qid_count; le32 qid_base; = 12 bytes.
-     *
-     * From ionic_if.h:
-     *   struct ionic_lif_logical_qtype {
-     *       u8  qtype;
-     *       u8  rsvd[3];
-     *       __le32 qid_count;
-     *       __le32 qid_base;
-     *   };  -- 12 bytes
+    /* struct ionic_lif_logical_qtype from ionic_if.h, 12 bytes each:
+     *   0  u8     qtype      (hardware qtype number)
+     *   1  u8     rsvd[3]
+     *   4  __le32 qid_count
+     *   8  __le32 qid_base
      */
 #define QTYPE_SZ 12
     /* aq_qtype at rdma+32 */

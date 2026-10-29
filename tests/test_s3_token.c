@@ -278,7 +278,9 @@ static void test_reply_codes(void)
         {"204\r\n", true, 204},
         {"", false, 0},
         {"2000", false, 0},
+        {"99999999999999999999", false, 0},
         {"20x", false, 0},
+        {"20x:", false, 0},
         /* A code with the peer token behind it, as parse_peer() sees. */
         {"404:", true, 404},
         {"\r\n", false, 0},
