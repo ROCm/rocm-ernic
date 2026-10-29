@@ -57,10 +57,8 @@ Quick Start
    /opt/ernic-exporter-venv/bin/pip install \
        -r /usr/share/rocm-ernic/requirements-exporter.txt
 
-   # 2. Start the exporter (uses system Python if
-   #    prometheus_client is installed system-wide,
-   #    otherwise point the unit at the venv -- see
-   #    Ansible section below)
+   # 2. Start the exporter. The unit runs it with the
+   #    venv's Python, from step 1.
    sudo systemctl daemon-reload
    sudo systemctl enable --now ernic-exporter
 
@@ -108,35 +106,6 @@ its default location):
    echo "ERNIC_EXPORTER_PORT=9841" | \
        sudo tee -a /etc/rocm-ernic/rocm-ernic.env
    sudo systemctl restart ernic-exporter
-
-Ansible variables (``group_vars/all.yml``):
-
-.. list-table::
-   :header-rows: 1
-   :widths: 35 20 45
-
-   * - Variable
-     - Default
-     - Description
-   * - ``ernic_monitoring``
-     - ``true``
-     - Feature gate; set ``false`` to skip
-       monitoring deployment entirely.
-   * - ``ernic_exporter_port``
-     - ``9840``
-     - Maps to ``ERNIC_EXPORTER_PORT``.
-   * - ``ernic_exporter_venv``
-     - ``/opt/ernic-exporter-venv``
-     - Path for the Python venv.
-   * - ``ernic_exporter_scrape_interval``
-     - ``5s``
-     - Prometheus scrape interval.
-   * - ``ernic_prometheus_config_dir``
-     - ``/etc/prometheus/file_sd``
-     - Directory for Prometheus ``file_sd`` configs.
-   * - ``ernic_grafana_dashboard_dir``
-     - ``/var/lib/grafana/dashboards``
-     - Grafana provisioning dashboards directory.
 
 Metrics Reference
 -----------------
@@ -472,10 +441,15 @@ Grafana Dashboard
 
 The dashboard JSON is at
 ``prometheus/grafana/ernic-dashboard.json`` in the
-source tree and
-is installed to the Grafana provisioning directory by
-the Ansible playbook.  It can also be imported manually
-via the Grafana UI (Dashboards > Import > Upload JSON).
+source tree.  The ``rocm-ernic-exporter`` package
+installs it as
+``/usr/share/rocm-ernic/grafana/ernic-dashboard.json``,
+and a CMake install with ``ERNIC_INSTALL_SERVICE`` as
+``<prefix>/share/rocm-ernic/grafana/ernic-dashboard.json``
+(``/usr/local`` by default; see :doc:`building`).
+Nothing adds it to Grafana: import it in the Grafana UI
+(Dashboards > Import > Upload JSON), or copy it to the
+directory a Grafana dashboard provider reads.
 
 Dashboard rows:
 
