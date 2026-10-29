@@ -361,6 +361,8 @@ valgrind would only check the script for:
    skip+='|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci'
    skip+='|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli'
    skip+='|cmake-subproject|ernic-package-deb|ernic-package-deb-config-paths'
+   skip+='|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver'
+   skip+='|ernic-ionic-hw-stats|ernic-mesh-stress|ernic-mesh-flow'
    skip+='|ernic-feature-macros'
    opts='--leak-check=full --track-origins=yes --num-callers=40'
    opts+=' --error-exitcode=1'
@@ -387,6 +389,8 @@ as above:
 
    srv='pci-config-test|ionic-server-smoke'
    srv+='|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci'
+   srv+='|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver'
+   srv+='|ernic-ionic-hw-stats|ernic-mesh-flow'
    srv+='|ionic-stats-interval-cli|ionic-eth-queues-cli'
    logs="$PWD/build/valgrind-server"
    rm -rf "$logs"
@@ -398,6 +402,9 @@ as above:
    grep -L 'ERROR SUMMARY: 0 errors' "$logs"/*.log
 
 The last command lists the logs with a report.
+``ernic-mesh-stress`` isn't in the list: it kills nodes with
+``SIGKILL`` on purpose, so their logs never get a summary. CI
+runs it under the sanitizers instead.
 
 Multi-VM RDMA Testing
 ---------------------
