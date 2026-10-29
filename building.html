@@ -408,12 +408,13 @@ limited hardware. It may not work on your system yet.</p>
 <section id="requirements">
 <h2>Requirements<a class="headerlink" href="#requirements" title="Link to this heading">#</a></h2>
 <p>rocm-ernic builds with GCC or Clang on 64-bit Linux, and is tested
-on Ubuntu 24.04. 32-bit systems aren’t supported. It needs:</p>
+on Ubuntu 26.04 and 24.04. 32-bit systems aren’t supported. It
+needs:</p>
 <ul class="simple">
 <li><p>CMake 3.25.2 or later</p></li>
 <li><p>pkg-config</p></li>
-<li><p>libvfio-user, built from source (see below), which needs Meson
-and Ninja to build</p></li>
+<li><p>libvfio-user, built from source (see below), which needs Meson,
+Ninja, and cmocka to build</p></li>
 <li><p>libibverbs and librdmacm development packages</p></li>
 <li><p>GLib 2.0 development package</p></li>
 <li><p>json-c development package. libvfio-user needs it, and with
@@ -421,16 +422,20 @@ and Ninja to build</p></li>
 </ul>
 <p>Install them on Ubuntu/Debian:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>cmake<span class="w"> </span>meson<span class="w"> </span>ninja-build<span class="w"> </span>pkg-config<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>libibverbs-dev<span class="w"> </span>librdmacm-dev<span class="w"> </span>libglib2.0-dev<span class="w"> </span>libjson-c-dev
+<span class="w">  </span>libibverbs-dev<span class="w"> </span>librdmacm-dev<span class="w"> </span>libglib2.0-dev<span class="w"> </span>libjson-c-dev<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>libcmocka-dev
 </pre></div>
 </div>
 <p>Build and install <code class="docutils literal notranslate"><span class="pre">libvfio-user</span></code> if it is not already
-available on your system:</p>
+available on your system. Its setup needs cmocka, though only its
+tests use it. This builds only the library, since the tests, at
+the commit CI pins, don’t build with cmocka 2, which Ubuntu 26.04
+ships:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/nutanix/libvfio-user.git
 <span class="nb">cd</span><span class="w"> </span>libvfio-user
 meson<span class="w"> </span>setup<span class="w"> </span>build<span class="w"> </span>--prefix<span class="o">=</span>/usr
-ninja<span class="w"> </span>-C<span class="w"> </span>build
-sudo<span class="w"> </span>ninja<span class="w"> </span>-C<span class="w"> </span>build<span class="w"> </span>install
+meson<span class="w"> </span>compile<span class="w"> </span>-C<span class="w"> </span>build<span class="w"> </span>vfio-user
+sudo<span class="w"> </span>meson<span class="w"> </span>install<span class="w"> </span>-C<span class="w"> </span>build<span class="w"> </span>--no-rebuild<span class="w"> </span>--tags<span class="w"> </span>runtime,devel
 sudo<span class="w"> </span>ldconfig
 </pre></div>
 </div>
@@ -796,7 +801,7 @@ program. If the runtime isn’t in a directory that the dynamic
 linker searches, as with Clang’s, the programs get an RPATH to
 it. When the option is <code class="docutils literal notranslate"><span class="pre">OFF</span></code>, programs link the static
 runtime. It defaults to what the compiler does on its own:
-<code class="docutils literal notranslate"><span class="pre">ON</span></code> with GCC and <code class="docutils literal notranslate"><span class="pre">OFF</span></code> with Clang. Ubuntu’s Clang 18
+<code class="docutils literal notranslate"><span class="pre">ON</span></code> with GCC and <code class="docutils literal notranslate"><span class="pre">OFF</span></code> with Clang. Ubuntu 24.04’s Clang 18
 ignores the programs’ default run-time options when they use
 its shared runtime.</p>
 <p>If ThreadSanitizer stops a program at startup with an
