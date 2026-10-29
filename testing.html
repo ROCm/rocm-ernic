@@ -743,6 +743,8 @@ cmake<span class="w"> </span>--build<span class="w"> </span>build
 <span class="nv">skip</span><span class="o">+=</span><span class="s1">'|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci'</span>
 <span class="nv">skip</span><span class="o">+=</span><span class="s1">'|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli'</span>
 <span class="nv">skip</span><span class="o">+=</span><span class="s1">'|cmake-subproject|ernic-package-deb|ernic-package-deb-config-paths'</span>
+<span class="nv">skip</span><span class="o">+=</span><span class="s1">'|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver'</span>
+<span class="nv">skip</span><span class="o">+=</span><span class="s1">'|ernic-ionic-hw-stats|ernic-mesh-stress|ernic-mesh-flow'</span>
 <span class="nv">skip</span><span class="o">+=</span><span class="s1">'|ernic-feature-macros'</span>
 <span class="nv">opts</span><span class="o">=</span><span class="s1">'--leak-check=full --track-origins=yes --num-callers=40'</span>
 <span class="nv">opts</span><span class="o">+=</span><span class="s1">' --error-exitcode=1'</span>
@@ -766,6 +768,8 @@ the scripts don’t all check how the server exited. With <code class="docutils 
 as above:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">srv</span><span class="o">=</span><span class="s1">'pci-config-test|ionic-server-smoke'</span>
 <span class="nv">srv</span><span class="o">+=</span><span class="s1">'|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci'</span>
+<span class="nv">srv</span><span class="o">+=</span><span class="s1">'|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver'</span>
+<span class="nv">srv</span><span class="o">+=</span><span class="s1">'|ernic-ionic-hw-stats|ernic-mesh-flow'</span>
 <span class="nv">srv</span><span class="o">+=</span><span class="s1">'|ionic-stats-interval-cli|ionic-eth-queues-cli'</span>
 <span class="nv">logs</span><span class="o">=</span><span class="s2">"</span><span class="nv">$PWD</span><span class="s2">/build/valgrind-server"</span>
 rm<span class="w"> </span>-rf<span class="w"> </span><span class="s2">"</span><span class="nv">$logs</span><span class="s2">"</span>
@@ -777,7 +781,10 @@ valgrind<span class="w"> </span>--trace-children<span class="o">=</span>yes<span
 grep<span class="w"> </span>-L<span class="w"> </span><span class="s1">'ERROR SUMMARY: 0 errors'</span><span class="w"> </span><span class="s2">"</span><span class="nv">$logs</span><span class="s2">"</span>/*.log
 </pre></div>
 </div>
-<p>The last command lists the logs with a report.</p>
+<p>The last command lists the logs with a report.
+<code class="docutils literal notranslate"><span class="pre">ernic-mesh-stress</span></code> isn’t in the list: it kills nodes with
+<code class="docutils literal notranslate"><span class="pre">SIGKILL</span></code> on purpose, so their logs never get a summary. CI
+runs it under the sanitizers instead.</p>
 </section>
 </section>
 <section id="multi-vm-rdma-testing">

@@ -387,6 +387,7 @@
 </li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#fault-injection">Fault Injection</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-driver-patched-upstream-ionic">Guest Driver: Patched Upstream ionic</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#building-and-installing">Building and Installing</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#loading-and-verifying">Loading and Verifying</a></li>
@@ -910,6 +911,129 @@ the LIF counters are kept. The stats file has a
 </section>
 </section>
 </section>
+<section id="fault-injection">
+<h2>Fault Injection<a class="headerlink" href="#fault-injection" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">--inject</span></code> makes chosen events fail, so a test can check
+how the guest copes. Give it once for each fault; a site
+takes one fault at most:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>./build/rocm-ernic<span class="w"> </span>--tap<span class="w"> </span>ernic0<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--inject<span class="w"> </span><span class="s1">'stats_vals: after 2 count 3 effect fail status eagain'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--inject<span class="w"> </span><span class="s1">'eth_rx: every 10 effect drop'</span>
+</pre></div>
+</div>
+<p>A fault reads <code class="docutils literal notranslate"><span class="pre">SITE:</span> <span class="pre">PATTERN</span> <span class="pre">effect</span> <span class="pre">EFFECT</span> <span class="pre">[status</span> <span class="pre">S]</span></code>,
+in the grammar of tc netem’s loss models. The pattern says
+which of the site’s events the fault fires on, counting them
+from 1:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 35.0%" />
+<col style="width: 65.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Pattern</p></th>
+<th class="head"><p>Fires on</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">every</span> <span class="pre">N</span></code></p></td>
+<td><p>events N, 2N, 3N, …</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">after</span> <span class="pre">N</span> <span class="pre">[count</span> <span class="pre">M]</span></code></p></td>
+<td><p>events N to N+M-1; M is 1 if not given</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">burst</span> <span class="pre">N</span> <span class="pre">every</span> <span class="pre">M</span></code></p></td>
+<td><p>the first N of every M events; N may not exceed M</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sequence</span> <span class="pre">&quot;1x3,0x10&quot;</span></code></p></td>
+<td><p>a list of <code class="docutils literal notranslate"><span class="pre">1</span></code> (fire) and <code class="docutils literal notranslate"><span class="pre">0</span></code> (pass) items, each
+repeated K times if written <code class="docutils literal notranslate"><span class="pre">1xK</span></code> or <code class="docutils literal notranslate"><span class="pre">0xK</span></code>, run
+over and over; at most 65536 events long</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Every number is at least 1. A pattern counts only its site’s
+events, never time, so the same guest workload gives the
+same failures and a test can assert exact counts. A
+malformed fault stops the server at startup with a message
+naming the bad token.</p>
+<p>The sites, what counts as an event at each, and the effects
+each takes:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 14.0%" />
+<col style="width: 28.0%" />
+<col style="width: 58.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Site</p></th>
+<th class="head"><p>Event</p></th>
+<th class="head"><p>Effects</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stats_vals</span></code></p></td>
+<td><p>a <code class="docutils literal notranslate"><span class="pre">STATS_VALS</span></code> admin command: the guest reading the
+device’s <code class="docutils literal notranslate"><span class="pre">hw_counters</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">fail</span> <span class="pre">[status</span> <span class="pre">S]</span></code>: the command completes with ionic
+status S and writes nothing. S is <code class="docutils literal notranslate"><span class="pre">eio</span></code> if not
+given; it is any <code class="docutils literal notranslate"><span class="pre">IONIC_RC_*</span></code> name in lower case
+without the prefix, such as <code class="docutils literal notranslate"><span class="pre">eagain</span></code>, <code class="docutils literal notranslate"><span class="pre">einval</span></code> or
+<code class="docutils literal notranslate"><span class="pre">bad_addr</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">eth_rx</span></code></p></td>
+<td><p>a frame arriving for the guest</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">drop</span></code>: the frame is lost before the NIC sees it.
+Nothing is delivered and no counter moves.</p>
+<p><code class="docutils literal notranslate"><span class="pre">nobuf</span></code>: the NIC drops it as if no receive buffer
+were posted. The port counts a received frame and
+<code class="docutils literal notranslate"><span class="pre">frames_rx_dropped</span></code>; the LIF counts <code class="docutils literal notranslate"><span class="pre">rx_*_drop_*</span></code>
+and <code class="docutils literal notranslate"><span class="pre">rx_queue_empty</span></code> (<code class="docutils literal notranslate"><span class="pre">rx_dropped</span></code> and
+<code class="docutils literal notranslate"><span class="pre">rx_over_errors</span></code> in the guest). A frame over the
+port’s maximum is counted as too long instead, as any
+other is, and the LIF never sees it</p>
+</td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">eth_tx</span></code></p></td>
+<td><p>a frame gathered from a transmit descriptor</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">drop</span></code>: the frame is never sent, but the descriptor
+still completes, so the guest sees a successful
+transmit. Only the LIF’s <code class="docutils literal notranslate"><span class="pre">tx_*_drop_*</span></code> count it
+(<code class="docutils literal notranslate"><span class="pre">tx_dropped</span></code> in the guest); no port counter moves</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The guest’s kernel reads every <code class="docutils literal notranslate"><span class="pre">hw_counters</span></code> value once
+while it registers the RDMA device, so that read is
+<code class="docutils literal notranslate"><span class="pre">stats_vals</span></code> event 1. A fault that fires on it fails
+<code class="docutils literal notranslate"><span class="pre">ib_register_device()</span></code>, and the guest has no RDMA device.
+<code class="docutils literal notranslate"><span class="pre">every</span> <span class="pre">N</span></code> and <code class="docutils literal notranslate"><span class="pre">after</span> <span class="pre">N</span></code> with N of 2 or more leave it
+alone; <code class="docutils literal notranslate"><span class="pre">burst</span></code> always fires on event 1, as does a
+<code class="docutils literal notranslate"><span class="pre">sequence</span></code> that starts with <code class="docutils literal notranslate"><span class="pre">1</span></code>.</p>
+<p>An <code class="docutils literal notranslate"><span class="pre">eth_rx</span></code> event is a frame read from the TAP, or one
+that the S3 target or the P4 engine has queued for the
+guest. A queued frame the guest has no buffer for yet waits
+in the queue, and is one event however long it waits. With
+the P4 engine on the wire, a TAP frame is an event before
+the engine sees it, and the frame the program sends on to
+the guest is another. An <code class="docutils literal notranslate"><span class="pre">eth_tx</span></code> event is counted whether
+or not the server has a TAP, and before the S3 target or the
+P4 engine sees the frame, so a dropped frame reaches neither.</p>
+<p>At startup the server prints each fault in its canonical
+form (<code class="docutils literal notranslate"><span class="pre">Fault:</span> <span class="pre">eth_rx:</span> <span class="pre">every</span> <span class="pre">10</span> <span class="pre">effect</span> <span class="pre">drop</span></code>). At a clean
+shutdown it prints how many events each site saw and how
+many the fault fired on, so a test can check the guest’s
+counters against them:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Fault eth_rx: eligible 1200, fired 120
+</pre></div>
+</div>
+<p>Both lines are printed unless <code class="docutils literal notranslate"><span class="pre">--log-level</span></code> is <code class="docutils literal notranslate"><span class="pre">error</span></code>
+or <code class="docutils literal notranslate"><span class="pre">none</span></code>. With <code class="docutils literal notranslate"><span class="pre">--log-level</span> <span class="pre">info</span></code>, the server also logs
+each <code class="docutils literal notranslate"><span class="pre">stats_vals</span></code> failure it injects, with the event’s
+number.</p>
+</section>
 <section id="guest-driver-patched-upstream-ionic">
 <h2>Guest Driver: Patched Upstream ionic<a class="headerlink" href="#guest-driver-patched-upstream-ionic" title="Link to this heading">#</a></h2>
 <p>The guest driver is <em>not</em> built from this repository. The
@@ -1214,6 +1338,7 @@ reports an unknown link speed and width; this is cosmetic</p></li>
 </li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#fault-injection">Fault Injection</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-driver-patched-upstream-ionic">Guest Driver: Patched Upstream ionic</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#building-and-installing">Building and Installing</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#loading-and-verifying">Loading and Verifying</a></li>
