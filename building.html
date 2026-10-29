@@ -410,7 +410,7 @@ limited hardware. It may not work on your system yet.</p>
 <p>rocm-ernic builds with GCC or Clang on 64-bit Linux, and is tested
 on Ubuntu 24.04. 32-bit systems aren’t supported. It needs:</p>
 <ul class="simple">
-<li><p>CMake 3.21 or later</p></li>
+<li><p>CMake 3.25.2 or later</p></li>
 <li><p>pkg-config</p></li>
 <li><p>libvfio-user, built from source (see below), which needs Meson
 and Ninja to build</p></li>
@@ -721,9 +721,11 @@ false, such as <code class="docutils literal notranslate"><span class="pre">0</s
 </section>
 <section id="warnings-as-errors">
 <span id="werror-policy"></span><h2>Warnings as Errors<a class="headerlink" href="#warnings-as-errors" title="Link to this heading">#</a></h2>
-<p><code class="docutils literal notranslate"><span class="pre">ERNIC_WERROR</span></code> adds <code class="docutils literal notranslate"><span class="pre">-Werror</span></code> to every target that
+<p><code class="docutils literal notranslate"><span class="pre">ERNIC_WERROR</span></code> sets CMake’s <code class="docutils literal notranslate"><span class="pre">COMPILE_WARNING_AS_ERROR</span></code>
+property (<code class="docutils literal notranslate"><span class="pre">-Werror</span></code> with GCC and Clang) on every target that
 <code class="docutils literal notranslate"><span class="pre">ernic_set_compiler_flags()</span></code> sets up: the server, the test
-programs, and the fuzz harness replay programs.</p>
+programs, and the fuzz harness replay programs.
+<code class="docutils literal notranslate"><span class="pre">cmake</span> <span class="pre">--compile-no-warning-as-error</span></code> overrides it.</p>
 <p>It defaults to <code class="docutils literal notranslate"><span class="pre">OFF</span></code> so that a packager or downstream
 consumer building with a compiler version we have not tested
 is never blocked by a newly-introduced warning. That
