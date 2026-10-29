@@ -40,13 +40,8 @@ bool s3_token_decode(const char *hex, struct s3_token *out)
         return false;
 
     uint8_t buf[S3_TOKEN_BIN_LEN];
-    for (size_t i = 0; i < sizeof(buf); i++) {
-        int hi = ernic_hex_digit(hex[i * 2]);
-        int lo = ernic_hex_digit(hex[i * 2 + 1]);
-        if (hi < 0 || lo < 0)
-            return false;
-        buf[i] = (uint8_t)((hi << 4) | lo);
-    }
+    if (!ernic_parse_hex(hex, sizeof(buf), buf))
+        return false;
 
     memset(out, 0, sizeof(*out));
     out->transport = buf[0];
@@ -57,23 +52,6 @@ bool s3_token_decode(const char *hex, struct s3_token *out)
     out->length = ernic_get_le64(buf + 33);
     out->port_num = buf[41];
     out->lid = ernic_get_le16(buf + 42);
-    return true;
-}
-
-/* strtoull on a bounded, NUL-free slice without copying it out. */
-static bool parse_hex_u64(const char *p, size_t len, uint64_t *out)
-{
-    if (len == 0 || len > 16)
-        return false;
-
-    uint64_t v = 0;
-    for (size_t i = 0; i < len; i++) {
-        int n = ernic_hex_digit(p[i]);
-        if (n < 0)
-            return false;
-        v = (v << 4) | (uint64_t)n;
-    }
-    *out = v;
     return true;
 }
 
@@ -103,8 +81,8 @@ bool s3_token_parse_header(const char *value, struct s3_token *out)
         return false;
 
     uint64_t addr = 0, len = 0;
-    if (!parse_hex_u64(c1 + 1, (size_t)(c2 - c1 - 1), &addr) ||
-        !parse_hex_u64(c2 + 1, strlen(c2 + 1), &len))
+    if (!ernic_parse_hex_u64_span(c1 + 1, (size_t)(c2 - (c1 + 1)), &addr) ||
+        !ernic_parse_hex_u64_span(c2 + 1, strlen(c2 + 1), &len))
         return false;
 
     /* Zero means "no override": hipObject sends the token's own values
@@ -143,18 +121,10 @@ bool s3_reply_parse_code(const char *reply, size_t len, int *http_code)
     }
 
     /* A decimal status, optionally followed by ":<peer token>". */
-    size_t n = 0;
-    unsigned code = 0;
-    while (n < len) {
-        unsigned digit = (unsigned char)reply[n] - (unsigned)'0';
-        if (digit > 9)
-            break;
-        code = code * 10u + digit;
-        if (code > 999u)
-            return false;
-        n++;
-    }
-    if (n == 0 || (n != len && reply[n] != ':'))
+    const char *colon = memchr(reply, ':', len);
+    size_t n = colon != NULL ? (size_t)(colon - reply) : len;
+    uint64_t code;
+    if (!ernic_parse_u64_span(reply, n, &code) || code > 999)
         return false;
 
     *http_code = (int)code;

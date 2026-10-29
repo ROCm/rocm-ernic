@@ -240,6 +240,36 @@ static inline bool ernic_parse_hex_u32(const char *s, uint32_t *out)
 }
 
 /*
+ * Parse the len characters at s as a hexadecimal uint64_t, for a number that
+ * is part of a longer string, such as the address and length fields of an S3
+ * RDMA token header. len must be one to sixteen, and every one of them a hex
+ * digit, in either case: no "0x" prefix, sign, or space. A NUL isn't a hex
+ * digit, so a string shorter than len fails without being read past its end.
+ * Sixteen digits is the limit even if the leading ones are zero, as
+ * ernic_parse_hex_u32() stops at eight. On success stores the value in *out
+ * and returns true; otherwise leaves *out untouched and returns false.
+ */
+static inline bool ernic_parse_hex_u64_span(const char *s, size_t len,
+                                            uint64_t *out)
+{
+    if (!s || len == 0 || len > 16) {
+        return false;
+    }
+
+    uint64_t v = 0;
+    for (size_t i = 0; i < len; i++) {
+        int d = ernic_hex_digit(s[i]);
+        if (d < 0) {
+            return false;
+        }
+        v = (v << 4) | (uint64_t)d;
+    }
+
+    *out = v;
+    return true;
+}
+
+/*
  * Parse an octal uint32_t, such as the "flags:" field of Linux's
  * /proc/PID/fdinfo/FD: octal digits only, with no sign or space. A leading
  * '0' is just a digit. Rejects NULL/empty input, anything else, and values
