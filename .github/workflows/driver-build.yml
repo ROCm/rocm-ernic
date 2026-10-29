@@ -56,7 +56,7 @@ jobs:
   # p4/ series goes on top of the base series, at the same ref.
   ionic-patches:
     name: Apply ionic Driver Patches (${{ matrix.series }})
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
 
     strategy:
       fail-fast: false
@@ -266,7 +266,7 @@ jobs:
   # another matrix entry, because nothing here fetches a kernel.
   rdma-core-patches:
     name: Apply rdma-core ionic Patches
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
 
     steps:
     - name: Checkout code

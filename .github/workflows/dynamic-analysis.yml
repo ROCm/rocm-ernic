@@ -58,7 +58,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       contains(github.event.pull_request.labels.*.name, 'run-dynamic')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     outputs:
       tools: ${{ steps.pick.outputs.tools }}
     steps:
@@ -90,7 +90,7 @@ jobs:
     # single pull request. fuzz.yml and static-analysis.yml avoid this by
     # putting their condition directly on a single job.
     if: needs.select.result == 'success' && needs.select.outputs.tools != ''
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Non-merge-blocking: informational only, never gates a PR.
     continue-on-error: true
     timeout-minutes: 45

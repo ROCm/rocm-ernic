@@ -24,6 +24,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Ubuntu 24.04, not the 26.04 that the rest of CI uses, for its
+  # clang-format 18.1.3, the version the tree is formatted with (see
+  # AGENTS.md). Ubuntu 26.04's clang-format-18 is 18.1.8.
   clang-format:
     name: Check C formatting
     runs-on: ubuntu-24.04

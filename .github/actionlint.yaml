@@ -4,6 +4,14 @@
 #
 # actionlint configuration (https://github.com/rhysd/actionlint).
 
+# actionlint 1.7.12, the latest release, predates GitHub's Ubuntu 26.04
+# runner and reports its label as unknown. It's a hosted runner, not a
+# self-hosted one, but this is the only way to tell actionlint about a
+# label. Remove it once a release knows the label.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04
+
 paths:
   .github/workflows/**/*.yml:
     ignore:

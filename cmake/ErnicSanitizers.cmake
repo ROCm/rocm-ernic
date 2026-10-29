@@ -20,10 +20,11 @@
 # such as a sanitizer build of libvfio-user, can then be loaded into the
 # same program. When it's off, programs link the static runtime instead.
 # It defaults to what the compiler does without an option: on with GCC,
-# and off with Clang. Ubuntu's Clang 18, which CI uses, builds its shared
-# runtimes so that they never call a program's __asan_default_options()
-# or __tsan_default_options(), so with them the defaults in
-# sanitizer-default-options.c are ignored.
+# and off with Clang. Ubuntu 24.04's Clang 18 builds its shared runtimes
+# so that they never call a program's __asan_default_options() or
+# __tsan_default_options(), so with them the defaults in
+# sanitizer-default-options.c are ignored. Ubuntu 26.04's Clang 21 calls
+# them.
 #
 # Libraries that come from the system, such as libvfio-user, GLib, and
 # libibverbs, aren't instrumented.
@@ -85,9 +86,9 @@ endfunction()
 # instrumentation, so that its functions' frames are always on the real
 # stack. The run-time option detect_stack_use_after_return can't do this
 # reliably: the ASAN_OPTIONS environment variable overrides it, and
-# Ubuntu's Clang 18 shared runtime ignores a program's default options.
-# Does nothing unless ERNIC_USE_SANITIZERS is on, since AddressSanitizer
-# is off otherwise.
+# Ubuntu 24.04's Clang 18 shared runtime ignores a program's default
+# options. Does nothing unless ERNIC_USE_SANITIZERS is on, since
+# AddressSanitizer is off otherwise.
 function(ernic_disable_asan_use_after_return target)
     if(NOT ERNIC_USE_SANITIZERS)
         return()

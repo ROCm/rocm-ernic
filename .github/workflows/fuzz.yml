@@ -44,7 +44,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       contains(github.event.pull_request.labels.*.name, 'run-fuzz')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Non-merge-blocking: informational only, never gates a PR.
     continue-on-error: true
     timeout-minutes: 30

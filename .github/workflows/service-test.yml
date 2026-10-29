@@ -24,7 +24,7 @@ concurrency:
 jobs:
   ernicctl-syntax:
     name: ernicctl Python syntax and imports
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
@@ -56,7 +56,7 @@ jobs:
 
   bash-syntax:
     name: Bash script syntax
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
@@ -82,7 +82,7 @@ jobs:
 
   systemd-unit-lint:
     name: systemd unit file validation
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
@@ -98,7 +98,7 @@ jobs:
 
   env-file-check:
     name: Environment file validation
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
@@ -125,7 +125,7 @@ jobs:
 
   cmake-service-install:
     name: CMake service install targets
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
@@ -145,7 +145,7 @@ jobs:
     - name: Clone and build libvfio-user
       run: |
         # Keep the pinned commit in step with build-and-test.yml, which
-        # says why it is this one.
+        # says why it is this one and why only the library is built.
         git clone \
           https://github.com/nutanix/libvfio-user.git \
           /tmp/libvfio-user
@@ -153,8 +153,9 @@ jobs:
         git checkout 5b9c722
         meson setup build --prefix=/usr \
           -Dwarning_level=0
-        ninja -C build
-        sudo ninja -C build install
+        meson compile -C build vfio-user
+        sudo meson install -C build --no-rebuild \
+          --tags runtime,devel
         sudo ldconfig
 
     - name: Configure with service install
@@ -271,7 +272,7 @@ jobs:
 
   launcher-unit-test:
     name: Launcher script unit tests
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
@@ -438,7 +439,7 @@ jobs:
 
   ernicctl-status-offline:
     name: ernicctl status without service
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:

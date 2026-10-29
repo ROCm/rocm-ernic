@@ -665,6 +665,14 @@
   as NixOS. Installed service and driver-pack scripts keep `/bin/bash`; the
   two in the Ansible collection use `#!/bin/bash -eu`, which `ansible-test
   sanity` requires.
+* **CI runs on Ubuntu 26.04**, so the build matrix, sanitizers, valgrind
+  and coverage use GCC 15 and Clang 21 rather than GCC 13 and Clang 18.
+  Two smoke legs on Ubuntu 24.04 build and run the tests with GCC 13
+  (Release) and Clang 18 (Debug). The release archives are still built on
+  Ubuntu 24.04, so they run there, and the clang-format check stays on it
+  for clang-format 18.1.3. `docs/building.rst` builds only libvfio-user's
+  library, and installs cmocka, which its setup needs: its tests don't
+  build with Ubuntu 26.04's cmocka 2.
 * **Hosted CI starts guests with `-machine hpet=off`**, avoiding an
   occasional early-boot hang of the nested guest kernel, and
   `scripts/qemu-vm-diagnose.sh` reports more about a guest that never
