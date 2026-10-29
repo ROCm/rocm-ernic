@@ -12,7 +12,7 @@ Requirements
 rocm-ernic builds with GCC or Clang on 64-bit Linux, and is tested
 on Ubuntu 24.04. 32-bit systems aren't supported. It needs:
 
-- CMake 3.21 or later
+- CMake 3.25.2 or later
 - pkg-config
 - libvfio-user, built from source (see below), which needs Meson
   and Ninja to build
@@ -313,9 +313,11 @@ Build Options
 Warnings as Errors
 ------------------
 
-``ERNIC_WERROR`` adds ``-Werror`` to every target that
+``ERNIC_WERROR`` sets CMake's ``COMPILE_WARNING_AS_ERROR``
+property (``-Werror`` with GCC and Clang) on every target that
 ``ernic_set_compiler_flags()`` sets up: the server, the test
 programs, and the fuzz harness replay programs.
+``cmake --compile-no-warning-as-error`` overrides it.
 
 It defaults to ``OFF`` so that a packager or downstream
 consumer building with a compiler version we have not tested

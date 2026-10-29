@@ -16,7 +16,7 @@
 #      the parent's build type and install prefix alone
 #   2. Build the rocm-ernic server in it
 
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 3.25.2)
 
 if(NOT SETTINGS)
     message(FATAL_ERROR "run-subproject-test: SETTINGS is not set")

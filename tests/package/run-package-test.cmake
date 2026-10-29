@@ -44,7 +44,7 @@
 #     through a DT_RPATH, which LD_LIBRARY_PATH can't override, and that
 #     the library has no run path of its own
 
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 3.25.2)
 
 if(NOT SETTINGS)
     message(FATAL_ERROR "run-package-test: SETTINGS is not set")

@@ -101,8 +101,8 @@ endfunction()
 
 # Apply compiler warning and hardening flags to ``target``
 # based on the C compiler (GCC or Clang), along with the
-# feature-test macros, the linker hardening flags, and -Werror
-# if ERNIC_WERROR is on.
+# feature-test macros, the linker hardening flags, and warnings as
+# errors if ERNIC_WERROR is on.
 function(ernic_set_compiler_flags target)
     # The library interfaces the code may use: C11 (CMAKE_C_STANDARD)
     # plus POSIX.1-2008, and glibc's _DEFAULT_SOURCE for the BSD and
@@ -147,8 +147,11 @@ function(ernic_set_compiler_flags target)
         target_compile_options(${target} PRIVATE ${compiler_flags})
     endif()
 
+    # CMake's property, rather than -Werror, so CMake gives the compiler
+    # its own flag, and cmake --compile-no-warning-as-error can turn it off
     if(ERNIC_WERROR)
-        target_compile_options(${target} PRIVATE -Werror)
+        set_target_properties(${target} PROPERTIES
+          COMPILE_WARNING_AS_ERROR ON)
     endif()
 
     ernic_set_linker_flags(${target})
