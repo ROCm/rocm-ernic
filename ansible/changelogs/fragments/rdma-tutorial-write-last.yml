@@ -1,0 +1,14 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+bugfixes:
+  - >-
+    ``tutorial-tests.yml``'s RDMA write example fixes a second race in
+    upstream's example that could hang it.  The client posted its last
+    WRITE unsignaled and exited at once, destroying its QP, which may drop
+    a WRITE the NIC hasn't sent yet; the client passed while the server
+    waited out ``ernic_rdma_tutorial_timeout`` for it.
+    ``playbooks/files/rdma-tutorial/write.patch`` now has the client wait
+    for that WRITE to complete.
