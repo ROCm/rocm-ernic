@@ -826,6 +826,10 @@
   as it was, so a quote ended a string early in `ernicctl` and the
   exporter, `$` or a backtick was expanded by the driver pack's shell
   script, and a `(` made the environment file a shell syntax error there.
+* **The exporter's license is installed beside rocm-ernic's when
+  `CMAKE_INSTALL_DATADIR` is set.** It went in `<datadir>/doc`, and
+  rocm-ernic's licenses in `<datarootdir>/doc`. With the default
+  `CMAKE_INSTALL_DATADIR` the two are the same, so nothing moves.
 * **Any guest process could read and write all guest memory through the S3
   and NVMe-oF targets.** Key 0 is the ionic driver's reserved DMA key, which
   the device reads as a raw guest bus address, and both targets passed the

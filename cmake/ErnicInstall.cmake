@@ -84,9 +84,9 @@ libvfio-user (ERNIC_BUNDLE_VFIO_USER)")
     execute_process(
         COMMAND ${CMAKE_READELF} -W -d -l "${ernic_vfio_user_file}"
         OUTPUT_VARIABLE ernic_vfio_user_elf
-        RESULT_VARIABLE result
+        RESULT_VARIABLE ernic_readelf_result
     )
-    if(NOT result EQUAL 0)
+    if(NOT ernic_readelf_result EQUAL 0)
         message(FATAL_ERROR
           "readelf can't read ${ernic_vfio_user_file}")
     endif()
@@ -328,10 +328,11 @@ if(ERNIC_INSTALL_SERVICE)
         COMPONENT ernic_exporter
     )
 
-    # The exporter's package has its own copy of the license
+    # The exporter's package has its own copy of the license, in its own
+    # directory beside CMAKE_INSTALL_DOCDIR (<datarootdir>/doc/rocm-ernic)
     install(FILES
         ${PROJECT_SOURCE_DIR}/LICENSE.md
-        DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/rocm-ernic-exporter
+        DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/doc/rocm-ernic-exporter
         COMPONENT ernic_exporter
     )
 

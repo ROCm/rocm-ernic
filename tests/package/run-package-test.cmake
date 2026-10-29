@@ -154,7 +154,7 @@ if(INSTALL_SERVICE)
         ${units_dir}/ernic-exporter.service
         ${share_dir}/requirements-exporter.txt
         ${share_dir}/grafana/ernic-dashboard.json
-        ${DATADIR}/doc/rocm-ernic-exporter/LICENSE.md)
+        ${DATAROOTDIR}/doc/rocm-ernic-exporter/LICENSE.md)
     set(${exporter}_depends python3 python3-venv)
     set(${exporter}_recommends)
     set(${exporter}_conffiles)

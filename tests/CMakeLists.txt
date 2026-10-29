@@ -717,8 +717,6 @@ target_compile_definitions(ernic-test-ionic-harness PRIVATE
     $<$<BOOL:${ERNIC_BUILD_P4}>:ERNIC_HAVE_P4>
     $<$<BOOL:${ERNIC_BUILD_P4}>:P4_FIXTURE_DIR="${ERNIC_TEST_P4_FIXTURE_DIR}">
 )
-target_compile_options(ernic-test-ionic-harness PRIVATE
-    ${GLIB2_CFLAGS_OTHER})
 
 # Two whole devices in one process, meshed over loopback TCP: the GSI/CM
 # path that rdma_cm depends on, which test_ud_mesh can only cover with two
@@ -738,7 +736,6 @@ ernic_add_test_program(ernic-test-gsi-mesh
 target_compile_definitions(ernic-test-gsi-mesh PRIVATE
     $<$<BOOL:${ERNIC_BUILD_P4}>:ERNIC_HAVE_P4>
 )
-target_compile_options(ernic-test-gsi-mesh PRIVATE ${GLIB2_CFLAGS_OTHER})
 
 # ---------------------------------------------------------------
 # Register tests with CTest
