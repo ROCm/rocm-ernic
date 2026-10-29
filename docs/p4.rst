@@ -704,8 +704,8 @@ program and every table entry are validated against the loaded
 program before use: field, header, action and table identifiers
 are range-checked, frame lengths are bounded at both ends of the
 pipeline, and a frame larger than the engine will handle is
-rejected and counted rather than truncated. See ``AGENTS.md`` for
-the rules this code is held to.
+rejected and counted rather than truncated. See ``AGENTS.md``
+and ``src/p4/AGENTS.md`` for the rules this code is held to.
 
 Testing
 -------

@@ -249,7 +249,7 @@ def git_files(*patterns: str) -> list[str]:
 
 
 def shell_scripts() -> list[str]:
-    """The files the ShellCheck workflow checks; see AGENTS.md."""
+    """The files the ShellCheck workflow checks; see the ernic-lint skill."""
     found = []
     for f in git_files():
         name = f.rsplit("/", 1)[-1]

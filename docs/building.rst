@@ -473,8 +473,9 @@ version:
 The mapping files ``cmake/iwyu-*.imp`` correct IWYU where it
 names the wrong header. CI's IWYU workflow lists the files with
 suggestions on the run's summary page, and fails only if IWYU
-itself fails. ``AGENTS.md`` describes how to run that check
-locally and which suggestions to ignore.
+itself fails. ``.claude/skills/ernic-c-checks/SKILL.md``
+describes how to run that check locally and which suggestions
+to ignore.
 
 .. _clang-tidy:
 
