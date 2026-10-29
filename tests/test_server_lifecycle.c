@@ -623,7 +623,8 @@ static bool refuse_fd(pid_t pid, int fd, const char *log, char *why, size_t len)
         snprintf(why, len, "version negotiation failed");
         return false;
     }
-    /* Attached, and done opening descriptors for it */
+    /* Attached.  The server opens no more descriptors to serve a client:
+     * run() creates its GLib main context before attaching one. */
     if (!wait_for_log(log, CONNECTED_LINE, 1)) {
         snprintf(why, len, "the server never logged '%s'", CONNECTED_LINE);
         return false;

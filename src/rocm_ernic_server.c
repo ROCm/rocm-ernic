@@ -1615,20 +1615,18 @@ static int setup_device(rocm_ernic_dev_t *dev, const struct server_opts *opts)
 
 /**
  * Serve the client that has attached, until it goes, vfu_run_ctx() fails,
- * or shutdown is requested.  Returns true if the client went, which leaves
- * the context ready to attach the next one.
+ * or shutdown is requested, iterating @p main_context, this thread's
+ * default.  Returns true if the client went, which leaves the context ready
+ * to attach the next one.
  */
-static bool serve_client(rocm_ernic_dev_t *dev)
+static bool serve_client(rocm_ernic_dev_t *dev, GMainContext *main_context)
 {
     vfu_ctx_t *vfu_ctx = dev->vfu_ctx;
     uint64_t loop_count = 0;
     uint64_t next_stats_write_ms = 0;
-    GMainContext *main_context = g_main_context_default();
     bool gone = false;
     int ret;
 
-    /* Acquire the main context so we can iterate it */
-    g_main_context_push_thread_default(main_context);
     while (!g_shutdown_requested) {
         /* Write stats periodically (every ~1 second) */
         if (dev->stats_file_path) {
@@ -1695,8 +1693,6 @@ static bool serve_client(rocm_ernic_dev_t *dev)
     }
     vfu_log(vfu_ctx, LOG_INFO,
             ">>> Event loop exited after %" PRIu64 " iterations", loop_count);
-    /* Release the main context */
-    g_main_context_pop_thread_default(main_context);
     return gone;
 }
 
@@ -1708,7 +1704,17 @@ static bool serve_client(rocm_ernic_dev_t *dev)
 static int run(rocm_ernic_dev_t *dev)
 {
     vfu_ctx_t *vfu_ctx = dev->vfu_ctx;
+    /*
+     * Created before any client attaches, as creating it opens a
+     * descriptor (GLib's wakeup), so that serving a client opens none.  The
+     * server-lifecycle test relies on that: once a client has connected, it
+     * leaves the server no room for another.
+     */
+    GMainContext *main_context = g_main_context_default();
+    int ret = 0;
 
+    /* Acquire the main context so we can iterate it */
+    g_main_context_push_thread_default(main_context);
     while (!g_shutdown_requested) {
         /* Attach to client (non-blocking) */
         if (vfu_attach_ctx(vfu_ctx) < 0) {
@@ -1737,7 +1743,8 @@ static int run(rocm_ernic_dev_t *dev)
                     "vfu_attach_ctx() failed with errno=%d: %s", errno,
                     strerror(errno));
             warn_errno("vfu_attach_ctx() failed");
-            return -1;
+            ret = -1;
+            break;
         }
 
         ernic_startup_report("rocm-ernic: Client connected!");
@@ -1751,13 +1758,16 @@ static int run(rocm_ernic_dev_t *dev)
          * attached, there's no call to drop it, and attaching again fails
          * with EINVAL every time.
          */
-        if (!serve_client(dev) && !g_shutdown_requested) {
+        if (!serve_client(dev, main_context) && !g_shutdown_requested) {
             fprintf(stderr, "rocm-ernic: serving the client failed with it "
                             "still attached; exiting\n");
-            return -1;
+            ret = -1;
+            break;
         }
     }
-    return 0;
+    /* Release the main context */
+    g_main_context_pop_thread_default(main_context);
+    return ret;
 }
 
 /**
