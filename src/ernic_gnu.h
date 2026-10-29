@@ -24,6 +24,8 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 
+struct rlimit;
+
 /*
  * accept4(): accept a connection on @sockfd with @flags (SOCK_NONBLOCK, or
  * 0), always adding SOCK_CLOEXEC.  Returns the new descriptor, or -1 with
@@ -60,5 +62,13 @@ int ernic_gnu_fchown_path(int fd, uid_t owner, gid_t group);
  */
 int ernic_gnu_pthread_setname_np(pthread_t thread, const char *name);
 int ernic_gnu_pthread_getname_np(pthread_t thread, char *name, size_t len);
+
+/*
+ * prlimit() on RLIMIT_NOFILE: set and/or get the descriptor limit of process
+ * @pid, or of the caller if @pid is 0.  Either pointer may be NULL.  Returns
+ * 0, or -1 with errno set.
+ */
+int ernic_gnu_prlimit_nofile(pid_t pid, const struct rlimit *new_limit,
+                             struct rlimit *old_limit);
 
 #endif /* ERNIC_GNU_H */

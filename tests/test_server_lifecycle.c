@@ -4,8 +4,9 @@
  *
  * Each row starts the real server binary, mostly on the loopback backend,
  * does something to it (nothing, a client that hangs up, a client that sends
- * a bad header, a client that never speaks), signals it, and checks the exit
- * status and the log.  Eight things are pinned here:
+ * a bad header, a client that never speaks, a client the server can't
+ * serve), signals it, and checks the exit status and the log.  Nine things
+ * are pinned here:
  *
  *   - only the socket's owner, and the group --socket-group names, can
  *     connect to it, whatever the umask or a default ACL on its directory;
@@ -13,6 +14,8 @@
  *     anything else there alone and refuses to start;
  *   - a client that drops out during vfio-user negotiation no longer takes
  *     the server down: it logs the drop and waits for the next client;
+ *   - if serving a client fails while it's still attached, the server
+ *     exits, rather than trying to attach again forever;
  *   - a clean shutdown frees the ionic layer.  When the server itself is
  *     built with -DERNIC_USE_SANITIZERS=ON, LeakSanitizer runs at its exit
  *     and any report fails the row;
@@ -38,6 +41,7 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
@@ -51,6 +55,7 @@
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/un.h>
 #include <sys/wait.h>
@@ -62,6 +67,8 @@
 #include <valgrind/valgrind.h>
 #endif
 
+#include "byteorder.h"
+#include "ernic_gnu.h"
 #include "parse_int.h"
 
 /* POSIX leaves declaring environ to the program; only _GNU_SOURCE makes
@@ -73,9 +80,10 @@ extern char **environ;
 #define LOG_WAIT_MS    5000
 #define SETTLE_MS      300
 
-#define DROPPED_LINE  "client dropped during negotiation"
-#define SHUTDOWN_LINE "Shutdown complete"
-#define STALE_LINE    "Removed stale socket file"
+#define DROPPED_LINE   "client dropped during negotiation"
+#define SHUTDOWN_LINE  "Shutdown complete"
+#define STALE_LINE     "Removed stale socket file"
+#define CONNECTED_LINE "Client connected!"
 
 /* What a row leaves in a regular file at the socket's path. */
 #define KEEP_CONTENT "not a socket\n"
@@ -434,11 +442,40 @@ static int wait_exit(pid_t pid, int *status)
 /* ---- Client actions ---------------------------------------------------- */
 
 enum action {
-    IDLE,    /* no client at all */
-    HANG_UP, /* connect, then close without a word */
-    BAD_HDR, /* send a header that is not VFIO_USER_VERSION, then close */
-    SILENT,  /* connect and stay connected, saying nothing */
+    IDLE,       /* no client at all */
+    HANG_UP,    /* connect, then close without a word */
+    BAD_HDR,    /* send a header that is not VFIO_USER_VERSION, then close */
+    SILENT,     /* connect and stay connected, saying nothing */
+    FD_REFUSED, /* negotiate, then send a request carrying a descriptor the
+                   server has no room to receive, and stay connected */
 };
+
+/*
+ * A vfio-user message header, little-endian:
+ *
+ *   0       2       4               8               12              16
+ *   +-------+-------+---------------+---------------+---------------+
+ *   |msg_id |  cmd  |   msg_size    |     flags     |   error_no    |
+ *   +-------+-------+---------------+---------------+---------------+
+ *
+ * msg_size counts the header.  The low 4 bits of flags are the type (0, a
+ * command; 1, a reply), and bit 5 marks a reply as an error.
+ */
+#define VFU_HDR_MSG_ID_OFF 0
+#define VFU_HDR_CMD_OFF    2
+#define VFU_HDR_SIZE_OFF   4
+#define VFU_HDR_FLAGS_OFF  8
+#define VFU_HDR_LEN        16
+#define VFU_FLAG_ERROR     UINT32_C(0x20)
+
+#define VFU_CMD_VERSION         1
+#define VFU_CMD_DEVICE_GET_INFO 4
+
+/* VFIO_USER_VERSION's body: 16-bit major and minor, then optional JSON. */
+#define VFU_VERSION_LEN 4
+
+/* The largest VERSION reply negotiate() takes: its JSON is a few lines. */
+#define VFU_REPLY_MAX 4096
 
 /*
  * A vfio-user message header (struct vfio_user_header): msg_id, cmd,
@@ -453,6 +490,165 @@ static int send_bad_header(int fd)
     return send(fd, hdr, sizeof(hdr), MSG_NOSIGNAL) == (ssize_t)sizeof(hdr)
                ? 0
                : -1;
+}
+
+/* A command header with no flags or error, of @size bytes in all. */
+static void vfu_hdr_put(uint8_t *p, uint16_t msg_id, uint16_t cmd,
+                        uint32_t size)
+{
+    memset(p, 0, VFU_HDR_LEN);
+    ernic_put_le16(p + VFU_HDR_MSG_ID_OFF, msg_id);
+    ernic_put_le16(p + VFU_HDR_CMD_OFF, cmd);
+    ernic_put_le32(p + VFU_HDR_SIZE_OFF, size);
+}
+
+/* Receive exactly @len bytes.  False on an error, EOF or the timeout. */
+static bool recv_all(int fd, uint8_t *buf, size_t len)
+{
+    while (len > 0) {
+        ssize_t n = recv(fd, buf, len, 0);
+
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n <= 0)
+            return false;
+        buf += n;
+        len -= (size_t)n;
+    }
+    return true;
+}
+
+/*
+ * Negotiate as a vfio-user client: send VFIO_USER_VERSION 0.0 with no
+ * capabilities, so the server sends no descriptor back, and read its reply.
+ * False if that isn't a successful VERSION reply within EXIT_WAIT_MS.
+ */
+static bool negotiate(int fd)
+{
+    struct timeval tv = {EXIT_WAIT_MS / 1000, 0};
+    uint8_t msg[VFU_HDR_LEN + VFU_VERSION_LEN] = {0};
+    uint8_t reply[VFU_REPLY_MAX];
+    uint32_t size;
+
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0)
+        return false;
+    vfu_hdr_put(msg, 1, VFU_CMD_VERSION, (uint32_t)sizeof(msg));
+    if (send(fd, msg, sizeof(msg), MSG_NOSIGNAL) != (ssize_t)sizeof(msg) ||
+        !recv_all(fd, reply, VFU_HDR_LEN))
+        return false;
+    size = ernic_get_le32(reply + VFU_HDR_SIZE_OFF);
+    if (ernic_get_le16(reply + VFU_HDR_CMD_OFF) != VFU_CMD_VERSION ||
+        (ernic_get_le32(reply + VFU_HDR_FLAGS_OFF) & VFU_FLAG_ERROR) != 0 ||
+        size < VFU_HDR_LEN || size > sizeof(reply))
+        return false;
+    return recv_all(fd, reply + VFU_HDR_LEN, size - VFU_HDR_LEN);
+}
+
+/* The lowest descriptor @pid has free, from /proc/PID/fd; -1 if unknown. */
+static int lowest_free_fd(pid_t pid)
+{
+    bool used[1024] = {false};
+    char path[64];
+    struct dirent *e;
+    DIR *d;
+
+    snprintf(path, sizeof(path), "/proc/%d/fd", (int)pid);
+    d = opendir(path);
+    if (!d)
+        return -1;
+    while ((e = readdir(d)) != NULL) {
+        int fd;
+
+        if (ernic_parse_int(e->d_name, &fd) && fd >= 0 &&
+            (size_t)fd < sizeof(used) / sizeof(used[0]))
+            used[fd] = true;
+    }
+    closedir(d);
+    for (size_t i = 0; i < sizeof(used) / sizeof(used[0]); i++)
+        if (!used[i])
+            return (int)i;
+    return -1;
+}
+
+/*
+ * Send a VFIO_USER_DEVICE_GET_INFO header with a descriptor for /dev/null
+ * attached.  Returns 0, or -1.
+ */
+static int send_with_fd(int fd)
+{
+    union {
+        struct cmsghdr align;
+        char buf[CMSG_SPACE(sizeof(int))];
+    } ctl;
+    uint8_t hdr[VFU_HDR_LEN];
+    struct iovec iov = {.iov_base = hdr, .iov_len = sizeof(hdr)};
+    struct msghdr msg;
+    struct cmsghdr *cmsg;
+    ssize_t n;
+    int null_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+
+    if (null_fd < 0)
+        return -1;
+    vfu_hdr_put(hdr, 2, VFU_CMD_DEVICE_GET_INFO, (uint32_t)sizeof(hdr));
+    memset(&ctl, 0, sizeof(ctl));
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = ctl.buf;
+    msg.msg_controllen = sizeof(ctl.buf);
+    cmsg = CMSG_FIRSTHDR(&msg);
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type = SCM_RIGHTS;
+    cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+    memcpy(CMSG_DATA(cmsg), &null_fd, sizeof(int));
+    n = sendmsg(fd, &msg, MSG_NOSIGNAL);
+    close(null_fd);
+    return n == (ssize_t)sizeof(hdr) ? 0 : -1;
+}
+
+/*
+ * The FD_REFUSED action on @fd, a connection to the server @pid: negotiate,
+ * lower the server's RLIMIT_NOFILE to its lowest free descriptor, so it has
+ * room for no more, and send a request carrying one.  The kernel can't
+ * install it, so the server's recvmsg() reports MSG_CTRUNC, and libvfio-user
+ * fails vfu_run_ctx() with EFAULT, leaving the client attached.  If not,
+ * says why in @why.
+ */
+static bool refuse_fd(pid_t pid, int fd, const char *log, char *why, size_t len)
+{
+    struct rlimit lim;
+    int lowest;
+
+    if (!negotiate(fd)) {
+        snprintf(why, len, "version negotiation failed");
+        return false;
+    }
+    /* Attached, and done opening descriptors for it */
+    if (!wait_for_log(log, CONNECTED_LINE, 1)) {
+        snprintf(why, len, "the server never logged '%s'", CONNECTED_LINE);
+        return false;
+    }
+    lowest = lowest_free_fd(pid);
+    if (lowest < 0) {
+        snprintf(why, len, "could not find the server's lowest free fd");
+        return false;
+    }
+    if (ernic_gnu_prlimit_nofile(pid, NULL, &lim) < 0) {
+        snprintf(why, len, "could not read the server's RLIMIT_NOFILE: %s",
+                 strerror(errno));
+        return false;
+    }
+    lim.rlim_cur = (rlim_t)lowest;
+    if (ernic_gnu_prlimit_nofile(pid, &lim, NULL) < 0) {
+        snprintf(why, len, "could not lower the server's RLIMIT_NOFILE: %s",
+                 strerror(errno));
+        return false;
+    }
+    if (send_with_fd(fd) < 0) {
+        snprintf(why, len, "could not send the descriptor");
+        return false;
+    }
+    return true;
 }
 
 /* ---- Tests ------------------------------------------------------------- */
@@ -625,6 +821,26 @@ static const struct lifecycle_case cases[] = {
      .want_dropped = 1,
      .want_shutdown = 1,
      .want_line = "Invalid argument"},
+    /* libvfio-user can't drop the client, and attaching again while it's
+     * attached fails with EINVAL, which the server used to take for a client
+     * dropping out during negotiation and retry at once, forever. */
+    {.category = "negative",
+     .description = "a request carrying a descriptor the server has no room "
+                    "to receive",
+     .expected = "vfu_run_ctx() fails with the client attached: the server "
+                 "exits non-zero and removes its socket",
+     .backend = "loopback",
+     .want_socket = true,
+     .want_gone = true,
+     .settle = true,
+     .action = FD_REFUSED,
+     .clients = 1,
+     .sig = 0,
+     .sigs = 0,
+     .want_exit = -1,
+     .want_dropped = 0,
+     .want_shutdown = 0,
+     .want_line = "failed with it still attached"},
     {.category = "negative",
      .description = "an nvmeof namespace file that cannot be opened",
      .expected = "ionic init unwinds and the server exits non-zero, no "
@@ -1791,7 +2007,11 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
             snprintf(why, sizeof(why), "could not send the header");
             ok = false;
         }
-        if (c->action == SILENT && nheld < (int)(sizeof(held) / sizeof(*held)))
+        if (c->action == FD_REFUSED &&
+            !refuse_fd(pid, fd, log, why, sizeof(why)))
+            ok = false;
+        if ((c->action == SILENT || c->action == FD_REFUSED) &&
+            nheld < (int)(sizeof(held) / sizeof(*held)))
             held[nheld++] = fd;
         else
             close(fd);
@@ -1812,8 +2032,10 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
     if (ok && c->action == SILENT)
         sleep_ms(SETTLE_MS); /* let the server block in negotiation */
 
-    /* Still serving: alive, and the socket still takes connections. */
-    if (ok && c->want_socket && waitpid(pid, &status, WNOHANG) == pid) {
+    /* Still serving: alive, and the socket still takes connections.  A row
+     * with no signal to send waits for the server to exit by itself. */
+    if (ok && c->want_socket && c->sig != 0 &&
+        waitpid(pid, &status, WNOHANG) == pid) {
         describe_status(status, got, sizeof(got));
         snprintf(why, sizeof(why), "server already gone (%s)", got);
         ok = false;
