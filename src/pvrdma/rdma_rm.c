@@ -830,7 +830,7 @@ int rdma_rm_init(RdmaDeviceResources *dev_res,
 {
     int ret;
 
-    rdma_info_report("rdma_rm_init: ENTRY dev_res=%p", (void *)dev_res);
+    rdma_debug_report("rdma_rm_init: ENTRY dev_res=%p", (void *)dev_res);
 
     /*
      * The limits come from the backend's query_device(), and the struct

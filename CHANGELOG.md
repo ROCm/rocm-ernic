@@ -431,6 +431,10 @@
 * **The default log level is `warn`**, so the per-operation `INFO:` lines
   are gone in steady state; `--log-level info` restores them. `-v` /
   `--verbose` is `--log-level debug`.
+* **Log lines that print host addresses are logged at `debug`**, not
+  `info`: "PVRDMA device created", "rdma_rm_init: ENTRY", and the loopback
+  backend's "Created QP" and `loopback_mr_lkey` lines. `--log-level debug`
+  shows them.
 * **Breaking:** **Two exporter gauges lost their `_total` suffix**:
   `ernic_instances_total` is now `ernic_instances` and `ernic_vms_total` is
   `ernic_vms`. Update hand-written dashboards, alerts and recording rules;

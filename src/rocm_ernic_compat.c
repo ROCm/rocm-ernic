@@ -90,7 +90,7 @@ pvrdma_handle_t pvrdma_device_create(const rocm_ernic_dev_t *dev,
         }
     }
 
-    rdma_info_report("PVRDMA device created (handle=%p)", (void *)pvrdma);
+    rdma_debug_report("PVRDMA device created (handle=%p)", (void *)pvrdma);
 
     return pvrdma;
 }

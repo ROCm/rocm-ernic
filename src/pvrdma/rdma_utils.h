@@ -19,6 +19,7 @@
 #ifndef RDMA_UTILS_H
 #define RDMA_UTILS_H
 
+#include "ernic_log.h"
 #include "qemu/error-report.h"
 
 /*
@@ -30,5 +31,6 @@
 #define rdma_error_report(...) error_report("rdma: " __VA_ARGS__)
 #define rdma_warn_report(...)  warn_report("rdma: " __VA_ARGS__)
 #define rdma_info_report(...)  info_report("rdma: " __VA_ARGS__)
+#define rdma_debug_report(...) ernic_log(ERNIC_LOG_DEBUG, "rdma: " __VA_ARGS__)
 
 #endif
