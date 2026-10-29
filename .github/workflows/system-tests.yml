@@ -774,7 +774,7 @@ jobs:
           ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" 'ibv_devices' || true
           echo "=== ionic modules ==="
           ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
-            'lsmod | grep ionic; dmesg | grep -i ionic | tail -30' || true
+            'lsmod | grep ionic; sudo -n dmesg | grep -i ionic | tail -30' || true
           exit 1
         fi
         echo "✓ RDMA device found: $DEVICE"
@@ -2549,7 +2549,7 @@ jobs:
           if [ -z "$DEV" ]; then
             echo "✗ ${LABEL}: no RDMA device found"
             ssh -F "$SSH_CONFIG" -p "$PORT" "${VM_USER}@localhost" \
-              'ibv_devices; lsmod | grep ionic; dmesg | grep -i ionic | tail -30' || true
+              'ibv_devices; lsmod | grep ionic; sudo -n dmesg | grep -i ionic | tail -30' || true
             FAILED=$((FAILED + 1))
             continue
           fi

@@ -619,7 +619,7 @@ jobs:
           echo "✗ RDMA device not found in the guest"
           ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" 'ibv_devices' || true
           ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
-            'lsmod | grep ionic; dmesg | grep -i ionic | tail -30' || true
+            'lsmod | grep ionic; sudo -n dmesg | grep -i ionic | tail -30' || true
           exit 1
         fi
         echo "✓ RDMA device found: $DEVICE"
