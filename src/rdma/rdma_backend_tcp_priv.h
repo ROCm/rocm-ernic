@@ -117,8 +117,8 @@
  * again later; a reply, past TCP_SENDQ_REPLY_BYTES, is refused with -ENOBUFS.
  * Either fits one message of the largest size in an empty queue.
  */
-#define TCP_SENDQ_REQUEST_BYTES (2u * TCP_MAX_PAYLOAD_LEN)
-#define TCP_SENDQ_REPLY_BYTES   (4u * TCP_MAX_PAYLOAD_LEN)
+#define TCP_SENDQ_REQUEST_BYTES ((size_t)2 * TCP_MAX_PAYLOAD_LEN)
+#define TCP_SENDQ_REPLY_BYTES   ((size_t)4 * TCP_MAX_PAYLOAD_LEN)
 /* So a limit less a message's length, at most TCP_MAX_PAYLOAD_LEN, can't wrap
  */
 _Static_assert(TCP_SENDQ_REQUEST_BYTES >= TCP_MAX_PAYLOAD_LEN,

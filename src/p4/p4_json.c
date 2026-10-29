@@ -2709,7 +2709,7 @@ int p4_json_parse(const void *buf, size_t len, struct p4_program **out,
         return p4_fail(&w, -EINVAL, "no program buffer or no place to put it");
 
     if (len == 0 || len > P4_PROGRAM_MAX)
-        return p4_fail(&w, -EINVAL, "the program is %zu bytes; want 1 to %u",
+        return p4_fail(&w, -EINVAL, "the program is %zu bytes; want 1 to %zu",
                        len, P4_PROGRAM_MAX);
 
     /* Before json-c allocates anything. */
@@ -2717,7 +2717,7 @@ int p4_json_parse(const void *buf, size_t len, struct p4_program **out,
     if (cost > P4_JSON_MAX_COST)
         return p4_fail(&w, -EINVAL,
                        "the program has too many JSON values: they weigh "
-                       "%zu, at most %u (an object %u, an array %u, anything "
+                       "%zu, at most %zu (an object %u, an array %u, anything "
                        "else %u)",
                        cost, P4_JSON_MAX_COST, P4_JSON_COST_OBJECT,
                        P4_JSON_COST_ARRAY, P4_JSON_COST_OTHER);

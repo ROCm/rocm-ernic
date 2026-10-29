@@ -164,7 +164,7 @@ int p4_engine_load_begin(struct p4_engine *eng, size_t total_len)
         return -EINVAL;
     }
     if (total_len > P4_PROGRAM_MAX) {
-        p4_engine_load_fail(eng, "the program is %zu bytes; the limit is %u",
+        p4_engine_load_fail(eng, "the program is %zu bytes; the limit is %zu",
                             total_len, P4_PROGRAM_MAX);
         return -EINVAL;
     }

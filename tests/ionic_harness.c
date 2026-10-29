@@ -400,7 +400,7 @@ int ih_admin_post(struct ih *h, uint8_t op, const void *body, uint16_t len)
      * so a WQE that reaches the end of the ring continues at its start. */
     for (uint32_t i = 0; i < strides; i++) {
         if (!fake_vfu_write(h->vfu, ring_slot(q, q->prod + i),
-                            buf + i * ADMIN_STRIDE, ADMIN_STRIDE))
+                            buf + (size_t)i * ADMIN_STRIDE, ADMIN_STRIDE))
             return fail_rc("admin WQE write failed");
     }
     q->prod += strides;
@@ -723,16 +723,16 @@ bool ih_qp_connect(struct ih *h, const struct ih_qp *a, const struct ih_qp *b)
 
     for (size_t i = 0; i < 2; i++) {
         uint32_t self = ends[i][0]->id, peer = ends[i][1]->id;
-        int rc;
+        int rc = ih_qp_modify(h, self, IH_QP_STATE, IH_QPS_INIT, 0, NULL, 0);
 
-        if ((rc = ih_qp_modify(h, self, IH_QP_STATE, IH_QPS_INIT, 0, NULL,
-                               0)) != 0 ||
-            (rc = ih_qp_modify(
-                 h, self,
-                 IH_QP_STATE | IH_QP_AV | IH_QP_DEST_QPN | IH_QP_RQ_PSN,
-                 IH_QPS_RTR, peer, hdr, (uint32_t)hdr_len)) != 0 ||
-            (rc = ih_qp_modify(h, self, IH_QP_STATE | IH_QP_SQ_PSN, IH_QPS_RTS,
-                               0, NULL, 0)) != 0)
+        if (rc == 0)
+            rc = ih_qp_modify(
+                h, self, IH_QP_STATE | IH_QP_AV | IH_QP_DEST_QPN | IH_QP_RQ_PSN,
+                IH_QPS_RTR, peer, hdr, (uint32_t)hdr_len);
+        if (rc == 0)
+            rc = ih_qp_modify(h, self, IH_QP_STATE | IH_QP_SQ_PSN, IH_QPS_RTS,
+                              0, NULL, 0);
+        if (rc != 0)
             return fail("connecting QP %u to %u: %d", self, peer, rc);
     }
     return true;
@@ -980,19 +980,20 @@ static bool put_sges(uint8_t *wqe, uint32_t wqe_len, const struct ih_sge *sge,
         return fail("%u SGEs do not fit a %u-byte WQE", nsge, wqe_len);
 
     for (uint8_t i = 0; i < nsge; i++) {
-        uint8_t *p = wqe + sgl_off + 16u * i;
+        uint8_t *p = wqe + sgl_off + (size_t)16 * i;
 
         ernic_put_be64(p, sge[i].va);
         ernic_put_be32(p + 8, sge[i].len);
         ernic_put_be32(p + 12, sge[i].lkey);
 
         if (fmt == IH_WQE_SPEC32) {
-            ernic_put_be32(wqe + WQE_PLD_OFF + 4u * i, sge[i].len);
+            ernic_put_be32(wqe + WQE_PLD_OFF + (size_t)4 * i, sge[i].len);
         } else if (fmt == IH_WQE_SPEC16) {
             if (sge[i].len > UINT16_MAX)
                 return fail("SGE %u's %u bytes do not fit a SPEC16 table", i,
                             sge[i].len);
-            ernic_put_be16(wqe + WQE_PLD_OFF + 2u * i, (uint16_t)sge[i].len);
+            ernic_put_be16(wqe + WQE_PLD_OFF + (size_t)2 * i,
+                           (uint16_t)sge[i].len);
         }
     }
     ernic_put_be16(wqe + 10, (uint16_t)(ernic_get_be16(wqe + 10) | fmt));

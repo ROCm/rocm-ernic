@@ -458,7 +458,8 @@ static void test_fill(void)
 
         check_u64("corner", "fill() writes little-endian",
                   "bytes 08 07 06 05 04 03 02 01 at qword 16", 0,
-                  (uint64_t)memcmp(out + IONIC_LIF_TX_UCAST_BYTES * 8, le, 8));
+                  (uint64_t)memcmp(out + (size_t)IONIC_LIF_TX_UCAST_BYTES * 8,
+                                   le, 8));
     }
 
     /* corner: reset() zeroes every qword */

@@ -229,7 +229,7 @@ static void test_parse_header_bare_and_bad(void)
         fail(name, "accepted NULL");
 
     /* A token of the right length that isn't hex. */
-    snprintf(hdr, sizeof(hdr), "%.*sg:1000:40000", S3_TOKEN_HEX_LEN - 1,
+    snprintf(hdr, sizeof(hdr), "%.*sg:1000:40000", (int)(S3_TOKEN_HEX_LEN - 1),
              REF_HEX);
     if (s3_token_parse_header(hdr, &t))
         fail(name, "accepted a non-hex token in the three-field form");
@@ -336,7 +336,7 @@ static void test_reply_peer_round_trip(void)
 
     s3_reply_format(200, &peer, reply);
     if (strlen(reply) != 4 + S3_TOKEN_HEX_LEN) {
-        fail(name, "reply is %zu chars, want %d", strlen(reply),
+        fail(name, "reply is %zu chars, want %zu", strlen(reply),
              4 + S3_TOKEN_HEX_LEN);
         return;
     }
@@ -379,7 +379,8 @@ static void test_reply_peer_rejects(void)
     if (s3_reply_parse_peer(reply, strlen(reply), &back, &code))
         fail(name, "accepted a code that isn't a number");
 
-    snprintf(reply, sizeof(reply), "200:%.*s", S3_TOKEN_HEX_LEN - 1, hex);
+    snprintf(reply, sizeof(reply), "200:%.*s", (int)(S3_TOKEN_HEX_LEN - 1),
+             hex);
     if (s3_reply_parse_peer(reply, strlen(reply), &back, &code))
         fail(name, "accepted a token one character short");
 
@@ -465,7 +466,7 @@ static void test_reply_format_codes(void)
         snprintf(want, sizeof(want), "%d:%s", cases[i].want, hex);
         if (memcmp(buf, want, strlen(want) + 1) != 0) {
             fail(name, "code %d: formatted\n  %.*s\nwant\n  %s", in,
-                 S3_REPLY_MAX, buf, want);
+                 (int)S3_REPLY_MAX, buf, want);
             continue;
         }
 

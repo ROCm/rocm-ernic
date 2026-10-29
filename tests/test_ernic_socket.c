@@ -440,13 +440,14 @@ static void test_resolve_group_grows(void)
     const char *test = "resolve: a group entry bigger than the first buffer";
     gid_t gid = 12345;
 
-    grp_erange_below = 64 * 1024;
+    grp_erange_below = (size_t)64 * 1024;
     grp_calls = 0;
     grp_max_len = 0;
     check(test, ernic_socket_resolve_group("root", &gid), "refused");
     check(test, gid == 0, "resolved to the wrong gid");
     check(test, grp_calls > 1, "didn't retry");
-    check(test, grp_max_len >= 64 * 1024, "never offered a big enough buffer");
+    check(test, grp_max_len >= (size_t)64 * 1024,
+          "never offered a big enough buffer");
     grp_erange_below = 0;
 }
 

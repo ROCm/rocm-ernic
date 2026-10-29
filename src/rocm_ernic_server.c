@@ -429,15 +429,15 @@ static int p4_load_program_file(struct p4_engine *eng, const char *path)
                 strerror(errno));
         return -1;
     }
-    if (fseek(f, 0, SEEK_END) != 0 || (size = ftell(f)) < 0 ||
-        fseek(f, 0, SEEK_SET) != 0) {
+    size = fseek(f, 0, SEEK_END) == 0 ? ftell(f) : -1;
+    if (size < 0 || fseek(f, 0, SEEK_SET) != 0) {
         fprintf(stderr, "rocm-ernic: cannot size P4 program '%s'\n", path);
         fclose(f);
         return -1;
     }
     if ((uint64_t)size == 0 || (uint64_t)size > P4_PROGRAM_MAX) {
         fprintf(stderr,
-                "rocm-ernic: P4 program '%s' is %ld bytes; the limit is %u\n",
+                "rocm-ernic: P4 program '%s' is %ld bytes; the limit is %zu\n",
                 path, size, P4_PROGRAM_MAX);
         fclose(f);
         return -1;
@@ -596,7 +596,7 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     ernic_startup_report(
         "rocm-ernic: ionic BARs configured: BAR0=%zu (regs=%zu) BAR2=%zu",
         (size_t)IONIC_BAR0_TOTAL_SIZE, (size_t)IONIC_BAR0_REGS_SIZE,
-        (size_t)IONIC_BAR2_DB_SIZE);
+        IONIC_BAR2_DB_SIZE);
 
     return 0;
 }

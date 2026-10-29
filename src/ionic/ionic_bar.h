@@ -62,9 +62,9 @@
 #define IONIC_BAR0_MSIX_PBA   0xa000u  /* MSI-X PBA                   */
 #define IONIC_BAR0_TOTAL_SIZE 0x10000u /* 64 KB total BAR0            */
 
-#define IONIC_BAR2_DB_SIZE (4 * 1024 * 1024) /* 4 MB doorbell pages */
-#define IONIC_DB_PAGE_SIZE 4096              /* one 4K page per LIF */
-#define IONIC_KERN_PID     0                 /* kernel doorbell page */
+#define IONIC_BAR2_DB_SIZE ((size_t)4 * 1024 * 1024) /* 4 MB doorbell pages */
+#define IONIC_DB_PAGE_SIZE 4096                      /* one 4K page per LIF */
+#define IONIC_KERN_PID     0                         /* kernel doorbell page */
 
 /* ionic MSI-X vectors.  ionic_lif_size() budgets 1 (adminq) + one per Tx/Rx
  * queue pair + one per RDMA EQ, and ionic_create_rdma_admin() hard-fails with

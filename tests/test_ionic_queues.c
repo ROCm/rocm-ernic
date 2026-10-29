@@ -53,7 +53,7 @@
 #define DEVID_NINTRS_OFF        0x0cu
 #define DEVID_EQ_COUNT_OFF      0x1cu
 #define LIFID_CONFIG_QCOUNT_OFF 0x0b0u /* le32 queue_count[16], by qtype */
-#define QTYPE_SZ                12u    /* struct ionic_lif_logical_qtype */
+#define QTYPE_SZ                ((size_t)12) /* struct ionic_lif_logical_qtype */
 
 static int failures;
 
@@ -117,10 +117,10 @@ static void read_shape(struct ionic_eth_emu *emu, struct shape *s)
 
     memset(data, 0, sizeof(data));
     ionic_eth_emu_handle_lif_identify(emu, cmd, comp, data);
-    s->rxq =
-        ernic_get_le32(data + LIFID_CONFIG_QCOUNT_OFF + 4u * IONIC_QTYPE_RXQ);
-    s->txq =
-        ernic_get_le32(data + LIFID_CONFIG_QCOUNT_OFF + 4u * IONIC_QTYPE_TXQ);
+    s->rxq = ernic_get_le32(data + LIFID_CONFIG_QCOUNT_OFF +
+                            sizeof(uint32_t) * IONIC_QTYPE_RXQ);
+    s->txq = ernic_get_le32(data + LIFID_CONFIG_QCOUNT_OFF +
+                            sizeof(uint32_t) * IONIC_QTYPE_TXQ);
     /* eq_qtype is the fifth ionic_lif_logical_qtype after rdma+32. */
     s->lif_eqs =
         ernic_get_le32(data + LIF_ID_RDMA_OFF + 32u + 4u * QTYPE_SZ + 4u);
@@ -406,7 +406,7 @@ static void check_vectors(void)
     struct ionic_eth_emu *emu = new_emu("generic-400g", NULL);
     uint32_t zero = 0;
     loff_t mask127 = (loff_t)IONIC_BAR0_INTR_CTRL_OFFSET +
-                     127 * INTR_REG_STRIDE + INTR_MASK_OFF;
+                     (loff_t)127 * INTR_REG_STRIDE + INTR_MASK_OFF;
 
     report(
         ionic_eth_emu_trigger_irq(emu, 127) == 0 && emu->intr_pending[127] == 1,
@@ -1191,11 +1191,11 @@ static void check_ring_wrap(void)
         size_t len = frame_for(frame, emu, 1, &seed);
         bool ok = true;
 
-        for (unsigned int slot = 1; slot < 4; slot++)
+        for (size_t slot = 1; slot < 4; slot++)
             memcpy(g_mem + RXQ_RING(1) + slot * ETH_DESC_SIZE,
                    g_mem + RXQ_RING(1), ETH_DESC_SIZE);
         for (unsigned int n = 0; n < cases[row].packets; n++) {
-            unsigned int slot = n % 4;
+            size_t slot = n % 4;
             uint8_t *comp = g_mem + RXQ_CQ(1) + slot * ETH_COMP_SIZE;
 
             q->prod = (uint16_t)((q->head + 1) % 4);

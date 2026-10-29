@@ -213,17 +213,21 @@ bool ernic_socket_remove_stale(const char *path)
     char *dir = slash ? strndup(path, (size_t)(slash - path) + 1) : strdup(".");
     struct stat st;
     bool ok = false;
-    int dfd = -1;
 
     if (!dir) {
         fprintf(stderr, "rocm-ernic: out of memory\n");
         return false;
     }
-
     if (*name == '\0') {
         fprintf(stderr, "rocm-ernic: socket path \"%s\" has no file name\n",
                 path);
-    } else if ((dfd = ernic_gnu_open_path(dir, O_DIRECTORY)) < 0) {
+        free(dir);
+        return false;
+    }
+
+    int dfd = ernic_gnu_open_path(dir, O_DIRECTORY);
+
+    if (dfd < 0) {
         fprintf(stderr, "rocm-ernic: cannot open socket directory %s: %s\n",
                 dir, strerror(errno));
     } else if (fstatat(dfd, name, &st, AT_SYMLINK_NOFOLLOW) < 0) {

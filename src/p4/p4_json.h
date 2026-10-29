@@ -58,7 +58,7 @@ struct p4_program;
 #define P4_JSON_COST_OBJECT 8u
 #define P4_JSON_COST_ARRAY  2u
 #define P4_JSON_COST_OTHER  1u /* a number, string, literal or object key */
-#define P4_JSON_MAX_COST    (512u * 1024u)
+#define P4_JSON_MAX_COST    ((size_t)512 * 1024)
 
 /*
  * Parse @len bytes of bmv2 JSON at @buf into a newly allocated program,

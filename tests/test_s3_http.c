@@ -1016,7 +1016,7 @@ static void test_response_body_growth(void)
         s3_http_response_free(&resp);
         return;
     }
-    if (resp.body_len != chunks * 11) {
+    if (resp.body_len != (size_t)chunks * 11) {
         fail(name, "body_len %zu, want %u", resp.body_len, chunks * 11);
         s3_http_response_free(&resp);
         return;
@@ -1024,7 +1024,7 @@ static void test_response_body_growth(void)
     for (unsigned i = 0; i < chunks; i++) {
         char want[16];
         snprintf(want, sizeof(want), "<K>%04u</K>", i);
-        if (memcmp(resp.body + i * 11, want, 11) != 0) {
+        if (memcmp(resp.body + (size_t)i * 11, want, 11) != 0) {
             fail(name, "chunk %u corrupted across a realloc", i);
             s3_http_response_free(&resp);
             return;

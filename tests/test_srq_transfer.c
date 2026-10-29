@@ -209,14 +209,14 @@ int main(void)
     /* One buffer, two halves: send out of the first, receive into the
      * second, so a delivery that never happened leaves the second zeroed
      * and the comparison fails rather than trivially passing. */
-    buf = calloc(1, MSG_LEN * 2);
+    buf = calloc(1, (size_t)MSG_LEN * 2);
     if (!buf) {
         perror("calloc");
         goto out;
     }
     fill_pattern(buf, MSG_LEN);
 
-    mr = ibv_reg_mr(pd, buf, MSG_LEN * 2,
+    mr = ibv_reg_mr(pd, buf, (size_t)MSG_LEN * 2,
                     IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
     if (!mr) {
         perror("ibv_reg_mr");

@@ -70,7 +70,7 @@ static int poll_one(struct ibv_cq *cq, struct ibv_wc *wc)
             return -1;
         }
         {
-            struct timespec ts = {0, POLL_DELAY_US * 1000};
+            struct timespec ts = {0, (long)POLL_DELAY_US * 1000};
 
             nanosleep(&ts, NULL);
         }

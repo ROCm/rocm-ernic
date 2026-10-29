@@ -106,7 +106,7 @@ static void write_wqe(uint64_t gpa, uint32_t depth, uint32_t slot, uint8_t op,
 
     if (nstrides > sizeof(wqe) / STRIDE)
         abort();
-    for (uint32_t i = 0; i < nstrides; i++)
+    for (size_t i = 0; i < nstrides; i++)
         memcpy(g_mem + gpa + ((slot + i) % depth) * STRIDE, wqe + i * STRIDE,
                STRIDE);
 }
@@ -137,7 +137,7 @@ static void ring_doorbell(uint32_t depth, uint32_t slot, uint32_t produced)
  * @status (0 for success). */
 static bool cqe_is(uint32_t idx, uint32_t slot, uint8_t op, uint8_t status)
 {
-    const uint8_t *cqe = g_mem + ACQ_GPA + idx * CQE_LEN;
+    const uint8_t *cqe = g_mem + ACQ_GPA + (size_t)idx * CQE_LEN;
     uint16_t cmd_idx = ernic_get_be16(cqe);
     uint32_t status_length = ernic_get_be32(cqe + 24);
     uint32_t qtf = ernic_get_be32(cqe + 28);

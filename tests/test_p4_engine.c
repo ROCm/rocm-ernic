@@ -981,8 +981,8 @@ static char *read_fixture(const char *name, size_t *len)
     if (!f)
         return NULL;
     /* No fixture is larger than a program the engine takes. */
-    if (fseek(f, 0, SEEK_END) != 0 || (n = ftell(f)) < 0 ||
-        (uint64_t)n > P4_PROGRAM_MAX || fseek(f, 0, SEEK_SET) != 0) {
+    n = fseek(f, 0, SEEK_END) == 0 ? ftell(f) : -1;
+    if (n < 0 || (uint64_t)n > P4_PROGRAM_MAX || fseek(f, 0, SEEK_SET) != 0) {
         fclose(f);
         return NULL;
     }

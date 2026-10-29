@@ -434,7 +434,7 @@ static uint64_t fake_now_us(void)
  */
 #define FAKE_RKEY 0x00000101u
 #define FAKE_BASE 0x70000000ull
-#define FAKE_SIZE (256u * 1024u)
+#define FAKE_SIZE (UINT64_C(256) * 1024)
 
 struct fake_mem {
     uint8_t buf[FAKE_SIZE];
@@ -445,7 +445,8 @@ static bool fake_range_ok(uint32_t key, uint64_t addr, uint32_t len,
 {
     if (key != FAKE_RKEY)
         return false;
-    if (addr < FAKE_BASE || addr - FAKE_BASE + len > FAKE_SIZE)
+    if (addr < FAKE_BASE || len > FAKE_SIZE ||
+        addr - FAKE_BASE > FAKE_SIZE - len)
         return false;
     *off = addr - FAKE_BASE;
     return true;
