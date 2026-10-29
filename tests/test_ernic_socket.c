@@ -116,7 +116,7 @@ static size_t grp_max_len;
  * they can't be static, since the linker has to find them.
  */
 ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_OFF
-/* NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c) */
+/* NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp) */
 /* NOLINTBEGIN(misc-use-internal-linkage) */
 void *__real_malloc(size_t size);
 char *__real_strdup(const char *s);
@@ -201,7 +201,7 @@ int __wrap_unlinkat(int dirfd, const char *path, int flags)
                                       : __real_unlinkat(dirfd, path, flags);
 }
 /* NOLINTEND(misc-use-internal-linkage) */
-/* NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c) */
+/* NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp) */
 ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_ON
 
 /*

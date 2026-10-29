@@ -152,10 +152,12 @@ int main(void)
     qps[0] = sqp;
     qps[1] = rqp;
     for (int i = 0; i < 2; i++) {
-        struct ibv_qp_attr a = {.qp_state = IBV_QPS_INIT,
-                                .pkey_index = 0,
-                                .port_num = 1,
-                                .qkey = QKEY};
+        struct ibv_qp_attr a;
+        memset(&a, 0, sizeof(a));
+        a.qp_state = IBV_QPS_INIT;
+        a.pkey_index = 0;
+        a.port_num = 1;
+        a.qkey = QKEY;
         if (ibv_modify_qp(qps[i], &a,
                           IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT |
                               IBV_QP_QKEY)) {

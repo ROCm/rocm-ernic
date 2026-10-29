@@ -75,7 +75,7 @@ vfu_ctx_t *fake_vfu_create(size_t region_size, size_t nregions)
     if (!ctx)
         return NULL;
 
-    ctx->regions = calloc(nregions, sizeof(*ctx->regions));
+    ctx->regions = (uint8_t **)calloc(nregions, sizeof(*ctx->regions));
     if (!ctx->regions) {
         free(ctx);
         return NULL;
@@ -107,7 +107,7 @@ size_t fake_vfu_destroy(vfu_ctx_t *ctx)
 
     for (size_t i = 0; i < ctx->nregions; i++)
         free(ctx->regions[i]);
-    free(ctx->regions);
+    free((void *)ctx->regions);
     free(ctx);
     return leaked;
 }

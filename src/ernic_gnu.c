@@ -8,8 +8,9 @@
 /*
  * The only file allowed to define _GNU_SOURCE (see ernic_gnu.h).  It also
  * turns on glibc's C23 and POSIX.1-2024 interfaces here, so keep this file
- * to the wrappers.
+ * to the wrappers.  The name is glibc's, so it's reserved by necessity.
  */
+/* NOLINTNEXTLINE(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp) */
 #define _GNU_SOURCE
 
 #include "ernic_gnu.h"

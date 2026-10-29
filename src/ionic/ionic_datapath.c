@@ -3633,9 +3633,10 @@ static void dp_wire_read(struct ionic_datapath *dp, uint32_t src_node,
     uint32_t length = h->length;
     uint32_t status = IONIC_STS_OK;
 
-    if (length > IONIC_WIRE_MAX_PAYLOAD)
-        status = IONIC_STS_REMOTE_ACC_ERR;
-    else if (length && !(data = malloc(length)))
+    if (length && length <= IONIC_WIRE_MAX_PAYLOAD)
+        data = malloc(length);
+
+    if (length > IONIC_WIRE_MAX_PAYLOAD || (length && !data))
         status = IONIC_STS_REMOTE_ACC_ERR;
     else if (ionic_dp_sge_to_host(dp, h->rkey, h->remote_va, data, length) !=
              length) {

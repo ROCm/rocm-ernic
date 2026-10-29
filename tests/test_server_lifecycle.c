@@ -1571,7 +1571,7 @@ static char **server_env(const char *name, const char *value, char **entry)
     memcpy(*entry + name_len + 1, value, value_len + 1);
     while (environ[n])
         n++;
-    env = calloc(n + 2, sizeof(*env));
+    env = (char **)calloc(n + 2, sizeof(*env));
     if (!env) {
         free(*entry);
         *entry = NULL;
@@ -1665,7 +1665,7 @@ static pid_t start_server(const struct lifecycle_case *c, const char *backend,
               opt[0], opt[1], opt[2], opt[3], (char *)NULL);
         _exit(127);
     }
-    free(env);
+    free((void *)env);
     free(entry);
     return pid;
 }

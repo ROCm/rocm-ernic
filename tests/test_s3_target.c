@@ -66,6 +66,20 @@ static void ok(const char *name)
 }
 
 /*
+ * Every field of @a and @b equal, the bucket name's unused bytes included.
+ * A whole-struct memcmp() would also compare the padding, which assigning a
+ * field may change.
+ */
+static bool cfg_equal(const struct s3_target_cfg *a,
+                      const struct s3_target_cfg *b)
+{
+    return memcmp(a->bucket, b->bucket, sizeof(a->bucket)) == 0 &&
+           a->capacity == b->capacity && a->max_objects == b->max_objects &&
+           a->traddr == b->traddr && a->trsvcid == b->trsvcid &&
+           a->max_part == b->max_part;
+}
+
+/*
  * Lift the upload id out of an InitiateMultipartUploadResult into dst.
  *
  * A reply that names no id, or that opens the element without closing it,
@@ -395,7 +409,7 @@ static void test_cfg_parse(void)
         if (!s3_target_cfg_parse(&cfg, none[i], err, sizeof(err)))
             fail(name, "rejected %s options: %s", none[i] ? "empty" : "NULL",
                  err);
-        else if (memcmp(&cfg, &want, sizeof(cfg)) != 0)
+        else if (!cfg_equal(&cfg, &want))
             fail(name, "%s options changed the defaults",
                  none[i] ? "empty" : "NULL");
     }
