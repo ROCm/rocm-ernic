@@ -433,7 +433,7 @@ int p4_entries_update(struct p4_entries *ent, const struct p4_program *prog,
                             "out of memory for table '%s'", tb->name);
             tbl_e->cap = cap;
         }
-        if (tbl_e->n == tbl_e->cap)
+        if (tbl_e->n >= tbl_e->cap)
             return fail(err, err_len, -ENOSPC, "table '%s' is full (%u)",
                         tb->name, tbl_e->cap);
         found = &tbl_e->e[tbl_e->n++];

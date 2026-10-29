@@ -445,9 +445,15 @@ static int p4_load_program_file(struct p4_engine *eng, const char *path)
 
     rc = p4_engine_load_begin(eng, (size_t)size);
     while (rc == 0 && total < (size_t)size) {
-        size_t n = fread(buf, 1, sizeof(buf), f);
+        size_t want = (size_t)size - total;
+        size_t n;
 
-        if (n == 0) {
+        if (want > sizeof(buf))
+            want = sizeof(buf);
+        n = fread(buf, 1, want, f);
+        /* A short read is an error or the end of a file that shrank since
+         * it was sized; either way, stop. */
+        if (n != want) {
             rc = -EIO;
             break;
         }

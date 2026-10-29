@@ -988,6 +988,11 @@ static int run_recv_case(const struct recv_case *c)
         sleep_ms(200); /* let the threads block */
     }
 
+    if (ok && c->first_exited && n == 0) {
+        printf("FAIL recv %s: %s; the row has no connection to hang up\n",
+               c->category, c->description);
+        ok = false;
+    }
     if (ok && c->first_exited) {
         /* The first running table connection's peer hangs up. */
         close(peers[0]);
@@ -4092,6 +4097,18 @@ static const struct sp_case sp_cases[] = {
      "the call gives up with -1", 10, 0, SP_HANGUP, 0, 0, -1},
 };
 
+/* The messages in the stream, in order */
+struct sp_msg {
+    TcpMsgType type;
+    uint32_t seq, len;
+    uint8_t fill;
+};
+
+static const struct sp_msg sp_msgs[] = {
+    {TCP_MSG_HEARTBEAT, 100, SP_A_LEN, 0xa5},
+    {TCP_MSG_HANDSHAKE, 200, SP_B_LEN, 0x5a},
+};
+
 /* The writer's half of a row: the rest of what the row sends, and the end */
 struct sp_writer {
     int fd;
@@ -4154,12 +4171,7 @@ static bool sp_matches(const TcpMsgHeader *hdr, const void *payload,
 static const char *sp_read(const struct sp_case *c, int fd,
                            const atomic_bool *running, int *ret)
 {
-    static const struct {
-        TcpMsgType type;
-        uint32_t seq, len;
-        uint8_t fill;
-    } want[] = {{TCP_MSG_HEARTBEAT, 100, SP_A_LEN, 0xa5},
-                {TCP_MSG_HANDSHAKE, 200, SP_B_LEN, 0x5a}};
+    const struct sp_msg *want = sp_msgs;
     uint64_t deadline_ms =
         c->deadline_ms ? ernic_monotonic_ms() + c->deadline_ms : 0;
 
@@ -4217,15 +4229,19 @@ static int run_sp_case(const struct sp_case *c)
     double took = 0.0;
     bool ok;
 
-    /* The two messages sp_read() expects */
-    sp_put(stream, TCP_MSG_HEARTBEAT, 100, SP_A_LEN, 0xa5);
-    sp_put(stream + SP_A, TCP_MSG_HANDSHAKE, 200, SP_B_LEN, 0x5a);
+    sp_put(stream, sp_msgs[0].type, sp_msgs[0].seq, sp_msgs[0].len,
+           sp_msgs[0].fill);
+    sp_put(stream + SP_A, sp_msgs[1].type, sp_msgs[1].seq, sp_msgs[1].len,
+           sp_msgs[1].fill);
     atomic_init(&running, true);
 
     g_current_row = c->description;
     alarm(row_timeout_s());
     if (c->first + c->later > SP_ALL) {
         why = "the row sends more than the stream";
+    } else if (c->want_msgs < 0 ||
+               (size_t)c->want_msgs > G_N_ELEMENTS(sp_msgs)) {
+        why = "the row wants more messages than the stream holds";
     } else if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
         why = "could not open a socketpair";
     } else if (fcntl(sv[0], F_SETFL, fcntl(sv[0], F_GETFL, 0) | O_NONBLOCK) <

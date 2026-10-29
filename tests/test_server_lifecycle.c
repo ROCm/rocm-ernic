@@ -408,10 +408,13 @@ static bool fd_inherited(pid_t pid, int fd)
         return false;
     while (fgets(line, sizeof(line), f)) {
         uint32_t flags;
+        char *newline;
 
         if (strncmp(line, "flags:\t", 7) != 0)
             continue;
-        line[strcspn(line, "\n")] = '\0';
+        newline = strchr(line, '\n');
+        if (newline)
+            *newline = '\0';
         inherited = ernic_parse_oct_u32(line + 7, &flags) &&
                     (flags & (uint32_t)O_CLOEXEC) == 0;
         break;
