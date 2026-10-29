@@ -1295,6 +1295,12 @@
     guest to a different interface.
   * A client that disconnects, or sends something else, during vfio-user
     negotiation no longer takes the server down.
+  * If serving a client failed while it was still connected (such as a
+    request carrying a descriptor the server had no room to receive), the
+    server tried to attach it again in a loop that never ended, using a
+    whole CPU and logging "client dropped during negotiation" millions of
+    times a minute. libvfio-user can't drop the client, so the server now
+    logs the failure and exits non-zero.
   * A `--log-file` that can't be made stdout or stderr is an error, rather
     than logging some of the output elsewhere.
   * `--log-file` works when the server is started with stdout or stderr

@@ -398,7 +398,9 @@ check_include_file(valgrind/valgrind.h ERNIC_HAVE_VALGRIND_H)
 # program that runs whatever its arguments name is what CodeQL's
 # cpp/uncontrolled-process-operation reports.
 ernic_add_test_program(test_server_lifecycle
-    SOURCES test_server_lifecycle.c
+    SOURCES
+        test_server_lifecycle.c
+        ${PROJECT_SOURCE_DIR}/src/ernic_gnu.c
 )
 target_compile_definitions(test_server_lifecycle PRIVATE
     "ERNIC_SERVER_PATH=\"$<TARGET_FILE:rocm-ernic>\"")
