@@ -21,26 +21,26 @@ if(GIT_EXECUTABLE)
     execute_process(
         COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
         WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-        OUTPUT_VARIABLE _git_sha_full
+        OUTPUT_VARIABLE ernic_git_sha_full
         OUTPUT_STRIP_TRAILING_WHITESPACE
         ERROR_QUIET
-        RESULT_VARIABLE _git_result
+        RESULT_VARIABLE ernic_git_result
     )
-    if(_git_result EQUAL 0)
-        set(ERNIC_GIT_SHA_FULL "${_git_sha_full}"
+    if(ernic_git_result EQUAL 0)
+        set(ERNIC_GIT_SHA_FULL "${ernic_git_sha_full}"
           CACHE STRING "Full git SHA of the current commit"
           FORCE)
 
         execute_process(
             COMMAND ${GIT_EXECUTABLE} rev-parse --short=8 HEAD
             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-            OUTPUT_VARIABLE _git_sha_short
+            OUTPUT_VARIABLE ernic_git_sha_short
             OUTPUT_STRIP_TRAILING_WHITESPACE
             ERROR_QUIET
-            RESULT_VARIABLE _git_short_result
+            RESULT_VARIABLE ernic_git_short_result
         )
-        if(_git_short_result EQUAL 0)
-            set(ERNIC_GIT_SHA_SHORT "${_git_sha_short}"
+        if(ernic_git_short_result EQUAL 0)
+            set(ERNIC_GIT_SHA_SHORT "${ernic_git_sha_short}"
               CACHE STRING
               "Short git SHA of the current commit"
               FORCE)
