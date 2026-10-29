@@ -7,6 +7,12 @@
 # ernic_add_test_program() and ernic_add_unit_test()
 include(ErnicTesting)
 
+# No test here sets SKIP_RETURN_CODE. Every registered test needs no VM,
+# no RDMA device and no root, so a test that can't run (a missing server,
+# a missing tool) is broken, and has to fail rather than show up as
+# skipped. A test that needs a device isn't registered; see
+# test_data_transfer below.
+
 # -- Sources several tests link ----------------------------------
 # Each family of unit tests below links the same part of src/. A test
 # needing a different set lists its own.
@@ -865,7 +871,6 @@ add_test(
 )
 set_tests_properties(server-lifecycle PROPERTIES
     TIMEOUT 300
-    SKIP_RETURN_CODE 77
 )
 
 # The socket's permission helpers, each refusal checked for its reason,
@@ -1043,9 +1048,6 @@ endforeach()
 # 180s, not the 60 the harness groups use: this one waits on a real TCP
 # registration handshake between two devices, and the memcheck lane runs it
 # under valgrind, where that handshake is far slower than the work itself.
-#
-# No SKIP_RETURN_CODE: the test needs no VM, no RDMA device and no root, so
-# every way it can fail to start is a regression that has to be red.
 ernic_add_unit_test(gsi-mesh ernic-test-gsi-mesh TIMEOUT 180 RUN_SERIAL)
 
 # ionic server smoke test: start the server, verify socket and banner.
@@ -1058,7 +1060,6 @@ add_test(
 set_tests_properties(ionic-server-smoke PROPERTIES
     TIMEOUT 15
     RUN_SERIAL TRUE
-    SKIP_RETURN_CODE 77
 )
 
 # --stats-interval-ms range checks and precedence over --nic-profile, read
@@ -1070,7 +1071,6 @@ add_test(
 )
 set_tests_properties(ionic-stats-interval-cli PROPERTIES
     TIMEOUT 30
-    SKIP_RETURN_CODE 77
 )
 
 # --eth-queues range checks and precedence over --nic-profile, read back
@@ -1082,7 +1082,6 @@ add_test(
 )
 set_tests_properties(ionic-eth-queues-cli PROPERTIES
     TIMEOUT 30
-    SKIP_RETURN_CODE 77
 )
 
 # ionic CI test suite: comprehensive checks on the ionic emulation path
@@ -1097,7 +1096,6 @@ add_test(
 set_tests_properties(ionic-ci PROPERTIES
     TIMEOUT 60
     RUN_SERIAL TRUE
-    SKIP_RETURN_CODE 77
 )
 
 # TCP mesh registration suite: GID advertisement across a three-node mesh,
@@ -1117,7 +1115,6 @@ add_test(
 set_tests_properties(tcp-mesh-ci PROPERTIES
     TIMEOUT 420
     RUN_SERIAL TRUE
-    SKIP_RETURN_CODE 77
 )
 
 # NVMe-oF backend CI suite: every documented option spelling starts a server
@@ -1133,7 +1130,6 @@ add_test(
 set_tests_properties(nvmeof-ci PROPERTIES
     TIMEOUT 120
     RUN_SERIAL TRUE
-    SKIP_RETURN_CODE 77
 )
 
 # S3 backend CI suite: every documented option spelling starts a server with
@@ -1149,7 +1145,6 @@ add_test(
 set_tests_properties(s3-ci PROPERTIES
     TIMEOUT 120
     RUN_SERIAL TRUE
-    SKIP_RETURN_CODE 77
 )
 
 # ---------------------------------------------------------------
