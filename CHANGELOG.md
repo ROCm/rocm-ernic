@@ -64,9 +64,25 @@
 * **Fault injection.** `--inject 'SITE: PATTERN effect EFFECT [status S]'`
   (repeatable) uses tc netem's grammar with the deterministic patterns
   `every N`, `after N [count M]`, `burst N every M` and `sequence "..."`.
-  The first site is `stats_vals`, which makes the guest's `hw_counters`
-  reads fail on demand (`effect fail`). A malformed fault stops the server
-  at startup with an error naming the bad token.
+  Patterns count events, never time, so a test can assert exact counts.
+  The server prints each fault at startup and, at shutdown, how many
+  events each site saw and how many the fault fired on
+  (`Fault eth_rx: eligible N, fired N`). A malformed fault stops the
+  server at startup with an error naming the bad token. Documented in
+  `docs/ionic.rst`. The sites:
+  * `stats_vals` makes the guest's `hw_counters` reads fail on demand
+    (`effect fail`, with any ionic status; `eio` by default). The kernel
+    reads them once while registering the RDMA device, so a fault that
+    fires on the first read leaves the guest with no RDMA device.
+  * `eth_rx` acts on a frame arriving for the guest, from the TAP or
+    queued by the S3 target or the P4 engine. `effect drop` loses it
+    before the NIC sees it, and no counter moves. `effect nobuf` drops it
+    as if no receive buffer were posted: `rx_queue_empty` and
+    `rx_*_drop_*` count it (`rx_dropped` and `rx_over_errors` in the
+    guest), and so does the port's `frames_rx_dropped`.
+  * `eth_tx` acts on a frame the guest transmits. `effect drop` never
+    sends it but still completes the descriptor; `tx_*_drop_*` count it
+    (`tx_dropped` in the guest).
 * **An NVMe over Fabrics target**,
   `--backend nvmeof[:size=...,bs=...,file=...,nqn=...,ip=...,port=...]`,
   reachable from the guest with a stock `nvme connect -t rdma`, so one VM
@@ -304,6 +320,19 @@
     too big for the first buffer, and a failing `chown()`, `chmod()`,
     `unlink()`, ACL lookup or allocation. Each refusal is checked for the
     reason it gives.
+  * `ionic-fault-unit` checks that each `--inject` pattern fires on
+    exactly the events it should, that a malformed fault is refused with
+    a message naming the bad token, and that a fault's canonical form
+    parses back to the same fault. A new fuzz harness, `fuzz_fault_parse`,
+    drives the same parser with arbitrary strings.
+  * The Nix fuzz harnesses (`fuzz_ionic_stats`, `fuzz_profile_parse`,
+    `fuzz_eth_classify` and `fuzz_fault_parse`) are also built by CMake,
+    without libFuzzer, and each checks its seed table and replays a fixed
+    set of inputs under CTest (`fuzz-replay-<harness>`), so a change that
+    breaks one fails an ordinary PR rather than the next opt-in fuzz run.
+    `fuzz-seed-files-<harness>` checks that `FUZZ_EMIT_SEEDS=1` writes the
+    seeds as private files (mode 0600) and refuses to replace an existing
+    file, symlink, FIFO or directory.
 * **A valgrind leg.** The GCC Debug build without sanitizers also runs the
   tests under memcheck, which finds reads of uninitialized memory,
   including bytes passed to `send()`, that the sanitizers don't; any error,

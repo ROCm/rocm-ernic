@@ -467,6 +467,117 @@ the port counters, so the next ``PORT_INIT`` starts from 0;
 the LIF counters are kept. The stats file has a
 ``Port Statistics`` section, one line per counter.
 
+Fault Injection
+---------------
+
+``--inject`` makes chosen events fail, so a test can check
+how the guest copes. Give it once for each fault; a site
+takes one fault at most:
+
+.. code-block:: bash
+
+   ./build/rocm-ernic --tap ernic0 \
+     --inject 'stats_vals: after 2 count 3 effect fail status eagain' \
+     --inject 'eth_rx: every 10 effect drop'
+
+A fault reads ``SITE: PATTERN effect EFFECT [status S]``,
+in the grammar of tc netem's loss models. The pattern says
+which of the site's events the fault fires on, counting them
+from 1:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 65
+
+   * - Pattern
+     - Fires on
+   * - ``every N``
+     - events N, 2N, 3N, ...
+   * - ``after N [count M]``
+     - events N to N+M-1; M is 1 if not given
+   * - ``burst N every M``
+     - the first N of every M events; N may not exceed M
+   * - ``sequence "1x3,0x10"``
+     - a list of ``1`` (fire) and ``0`` (pass) items, each
+       repeated K times if written ``1xK`` or ``0xK``, run
+       over and over; at most 65536 events long
+
+Every number is at least 1. A pattern counts only its site's
+events, never time, so the same guest workload gives the
+same failures and a test can assert exact counts. A
+malformed fault stops the server at startup with a message
+naming the bad token.
+
+The sites, what counts as an event at each, and the effects
+each takes:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 14 28 58
+
+   * - Site
+     - Event
+     - Effects
+   * - ``stats_vals``
+     - a ``STATS_VALS`` admin command: the guest reading the
+       device's ``hw_counters``
+     - ``fail [status S]``: the command completes with ionic
+       status S and writes nothing. S is ``eio`` if not
+       given; it is any ``IONIC_RC_*`` name in lower case
+       without the prefix, such as ``eagain``, ``einval`` or
+       ``bad_addr``
+   * - ``eth_rx``
+     - a frame arriving for the guest
+     - ``drop``: the frame is lost before the NIC sees it.
+       Nothing is delivered and no counter moves.
+
+       ``nobuf``: the NIC drops it as if no receive buffer
+       were posted. The port counts a received frame and
+       ``frames_rx_dropped``; the LIF counts ``rx_*_drop_*``
+       and ``rx_queue_empty`` (``rx_dropped`` and
+       ``rx_over_errors`` in the guest). A frame over the
+       port's maximum is counted as too long instead, as any
+       other is, and the LIF never sees it
+   * - ``eth_tx``
+     - a frame gathered from a transmit descriptor
+     - ``drop``: the frame is never sent, but the descriptor
+       still completes, so the guest sees a successful
+       transmit. Only the LIF's ``tx_*_drop_*`` count it
+       (``tx_dropped`` in the guest); no port counter moves
+
+The guest's kernel reads every ``hw_counters`` value once
+while it registers the RDMA device, so that read is
+``stats_vals`` event 1. A fault that fires on it fails
+``ib_register_device()``, and the guest has no RDMA device.
+``every N`` and ``after N`` with N of 2 or more leave it
+alone; ``burst`` always fires on event 1, as does a
+``sequence`` that starts with ``1``.
+
+An ``eth_rx`` event is a frame read from the TAP, or one
+that the S3 target or the P4 engine has queued for the
+guest. A queued frame the guest has no buffer for yet waits
+in the queue, and is one event however long it waits. With
+the P4 engine on the wire, a TAP frame is an event before
+the engine sees it, and the frame the program sends on to
+the guest is another. An ``eth_tx`` event is counted whether
+or not the server has a TAP, and before the S3 target or the
+P4 engine sees the frame, so a dropped frame reaches neither.
+
+At startup the server prints each fault in its canonical
+form (``Fault: eth_rx: every 10 effect drop``). At a clean
+shutdown it prints how many events each site saw and how
+many the fault fired on, so a test can check the guest's
+counters against them:
+
+.. code-block:: text
+
+   Fault eth_rx: eligible 1200, fired 120
+
+Both lines are printed unless ``--log-level`` is ``error``
+or ``none``. With ``--log-level info``, the server also logs
+each ``stats_vals`` failure it injects, with the event's
+number.
+
 Guest Driver: Patched Upstream ionic
 ------------------------------------
 
