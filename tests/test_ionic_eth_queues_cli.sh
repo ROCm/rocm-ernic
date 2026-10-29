@@ -8,7 +8,7 @@
 # Copyright (C) Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
-# Exit 0 = pass, exit 1 = fail, exit 77 = skip.
+# Exit 0 = pass, exit 1 = fail.
 
 set -uo pipefail
 
@@ -18,8 +18,8 @@ if [ -z "$SERVER" ]; then
     exit 1
 fi
 if [ ! -x "$SERVER" ]; then
-    echo "SKIP: server not found: $SERVER"
-    exit 77
+    echo "FAIL: server not found: $SERVER"
+    exit 1
 fi
 # Run the server under ERNIC_TEST_SERVER_WRAPPER (e.g. valgrind), split on
 # whitespace, if it's set.

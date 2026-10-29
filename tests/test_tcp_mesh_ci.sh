@@ -30,17 +30,17 @@ read -r -a SERVER_WRAPPER <<<"${ERNIC_TEST_SERVER_WRAPPER:-}"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
-YELLOW='\033[1;33m'
 NC='\033[0m'
 
 pass() { echo -e "${GREEN}✓ $*${NC}"; }
 fail() { echo -e "${RED}✗ $*${NC}"; exit 1; }
-skip() { echo -e "${YELLOW}⚠ $*${NC}"; exit 77; }
 
+# Neither is a reason to skip: CTest passes the server it just built, and
+# the build requires python3.
 if [ ! -x "$SERVER_BIN" ]; then
-    skip "server binary not found: $SERVER_BIN"
+    fail "server binary not found: $SERVER_BIN"
 fi
-command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+command -v python3 >/dev/null 2>&1 || fail "python3 not available"
 
 RUN="/tmp/ernic-mesh-ci-$$"
 mkdir -p "$RUN"

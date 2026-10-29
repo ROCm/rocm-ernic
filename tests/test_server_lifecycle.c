@@ -1907,8 +1907,8 @@ int main(int argc, char **argv)
         return 2;
     }
     if (access(g_server, X_OK) != 0) {
-        printf("SKIP: server not found: %s\n", g_server);
-        return 77;
+        printf("FAIL: server not found: %s\n", g_server);
+        return 1;
     }
     if (!mkdtemp(g_dir)) {
         perror("mkdtemp");

@@ -31,10 +31,9 @@ NC='\033[0m'
 
 pass() { echo -e "${GREEN}✓ $*${NC}"; }
 fail() { echo -e "${RED}✗ $*${NC}"; exit 1; }
-skip() { echo -e "${YELLOW}⚠ $*${NC}"; exit 77; }
 
 if [ ! -x "$SERVER_BIN" ]; then
-    skip "server binary not found: $SERVER_BIN"
+    fail "server binary not found: $SERVER_BIN"
 fi
 
 echo "================================================="

@@ -714,6 +714,13 @@
   is how CTest now passes it to them, as it does to every other suite that
   starts the server. `SERVER_BIN`, and then `$BUILD_DIR/rocm-ernic`, still
   apply when it's omitted.
+* **No CTest test reports itself skipped any more.** `server-lifecycle`,
+  `ionic-server-smoke`, `ionic-stats-interval-cli`, `ionic-eth-queues-cli`,
+  `ionic-ci` and `tcp-mesh-ci` exited 77, which CTest counted as a skip,
+  when the server binary (or, for `tcp-mesh-ci`, `python3`) was missing;
+  they now fail. None of them needs a VM, an RDMA device or root, so a
+  skip only hid a broken build. `nvmeof-ci` and `s3-ci` also lose
+  `SKIP_RETURN_CODE`, though they never used it.
 * **Breaking:** **Building needs CMake 3.25.2 or later**, not 3.21. TheRock
   needs 3.25, and 3.25.0 and 3.25.1 break `FetchContent_Declare()`'s
   `SYSTEM` option. Ubuntu 24.04's CMake is new enough; on an older system,

@@ -3,7 +3,7 @@
 #
 # Smoke-test: start rocm-ernic, verify the socket appears,
 # and check the server log for the expected ionic startup banner.
-# Exit 0 = pass, exit 1 = fail, exit 77 = skip.
+# Exit 0 = pass, exit 1 = fail.
 
 set -euo pipefail
 
@@ -13,8 +13,8 @@ if [ -z "$SERVER" ]; then
     exit 1
 fi
 if [ ! -x "$SERVER" ]; then
-    echo "SKIP: server not found: $SERVER"
-    exit 77
+    echo "FAIL: server not found: $SERVER"
+    exit 1
 fi
 
 SOCKET="/tmp/vfio-ionic-smoke-$$.sock"
