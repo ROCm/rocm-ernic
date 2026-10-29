@@ -2215,8 +2215,12 @@ static int listen_unanswering(uint16_t *port, int *filler)
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 ||
         listen(fd, 0) < 0 ||
-        getsockname(fd, (struct sockaddr *)&addr, &len) < 0 ||
-        (*filler = connect_loopback(ntohs(addr.sin_port))) < 0) {
+        getsockname(fd, (struct sockaddr *)&addr, &len) < 0) {
+        close(fd);
+        return -1;
+    }
+    *filler = connect_loopback(ntohs(addr.sin_port));
+    if (*filler < 0) {
         close(fd);
         return -1;
     }
@@ -5584,12 +5588,15 @@ static int run_sender_case(const struct sender_case *c)
     tcp_stop_health_check_thread(priv);
 
     w1 = worker_register(priv);
-    if (w1 < 0 || !wait_for_registered(priv, 1))
+    if (w1 < 0 || !wait_for_registered(priv, 1)) {
         why = "worker 1 did not register";
-    else if ((w2 = worker_register(priv)) < 0 || !wait_for_registered(priv, 2))
-        why = "worker 2 did not register";
-    else
-        why = sender_run(&dev, w1, w2, c->scenario);
+    } else {
+        w2 = worker_register(priv);
+        if (w2 < 0 || !wait_for_registered(priv, 2))
+            why = "worker 2 did not register";
+        else
+            why = sender_run(&dev, w1, w2, c->scenario);
+    }
 
     rdma_backend_ops_tcp.fini(&dev);
     alarm(0);
@@ -6846,8 +6853,11 @@ static const char *lv_gone(TcpBackendPrivate *priv, int w1, int w2, int *w3)
         why = "node 2's connection didn't end";
     if (!why && (!node_get(priv, 2, &alive, &last) || !alive))
         why = "node 2 was declared dead before the registration";
-    if (!why && (*w3 = worker_register(priv)) < 0)
-        why = "could not register worker 3";
+    if (!why) {
+        *w3 = worker_register(priv);
+        if (*w3 < 0)
+            why = "could not register worker 3";
+    }
     if (!why && !reported(w1, 2, false, 2000))
         why = "worker 1 wasn't told node 2 is dead";
     if (!why && gids_for(w1, 2) != 0)
@@ -6890,14 +6900,17 @@ static int run_lv_case(const struct lv_case *c)
     tcp_stop_health_check_thread(priv);
 
     w1 = worker_register(priv);
-    if (w1 < 0 || !wait_for_registered(priv, 1))
+    if (w1 < 0 || !wait_for_registered(priv, 1)) {
         why = "worker 1 did not register";
-    else if ((w2 = worker_register(priv)) < 0 || !wait_for_registered(priv, 2))
-        why = "worker 2 did not register";
-    else if (c->scenario == LV_DEAD_ADVERTISES)
-        why = lv_dead_advertises(priv, w1, w2);
-    else
-        why = lv_gone(priv, w1, w2, &w3);
+    } else {
+        w2 = worker_register(priv);
+        if (w2 < 0 || !wait_for_registered(priv, 2))
+            why = "worker 2 did not register";
+        else if (c->scenario == LV_DEAD_ADVERTISES)
+            why = lv_dead_advertises(priv, w1, w2);
+        else
+            why = lv_gone(priv, w1, w2, &w3);
+    }
 
     rdma_backend_ops_tcp.fini(&dev);
     alarm(0);
@@ -8115,10 +8128,11 @@ static const char *wl_slow_peers(struct dc_worker *w, int *slow)
 
     memset(&topo, 0, sizeof(topo));
     for (uint32_t i = 0; i < WL_SLOW; i++) {
+        int *pair = slow + (size_t)2 * i;
         uint16_t port;
 
-        slow[2 * i] = listen_unanswering(&port, &slow[2 * i + 1]);
-        if (slow[2 * i] < 0)
+        pair[0] = listen_unanswering(&port, &pair[1]);
+        if (pair[0] < 0)
             return "could not open the peers' listeners";
         tp_entry(&topo, WL_SLOW_FIRST + i, port, true);
     }
@@ -9035,10 +9049,13 @@ static const char *st_unpublish(struct mgr_fixture *fx)
     queued = conn->sendq.length;
     bytes = conn->sendq_bytes;
     qemu_mutex_unlock(&conn->sendq_lock);
-    if (!closed || queued != 0 || bytes != 0)
+    if (!closed || queued != 0 || bytes != 0) {
         why = "the queue was still open, or still held the request";
-    else if ((rc = st_send(fx->priv, 0, false)) != -ENOTCONN && rc != -EPIPE)
-        why = "the next send to the node didn't fail";
+    } else {
+        rc = st_send(fx->priv, 0, false);
+        if (rc != -ENOTCONN && rc != -EPIPE)
+            why = "the next send to the node didn't fail";
+    }
 
     /* The table's reference is now this row's, to retire and drop */
     tcp_retire_conn(conn);

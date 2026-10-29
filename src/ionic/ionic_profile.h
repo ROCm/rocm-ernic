@@ -103,7 +103,7 @@ enum ionic_profile_xcvr {
 #define IONIC_PROFILE_CHAIN_MAX 512u
 
 /* A profile file larger than this is refused rather than read. */
-#define IONIC_PROFILE_FILE_MAX (1024u * 1024u)
+#define IONIC_PROFILE_FILE_MAX ((size_t)1024 * 1024)
 
 struct ionic_profile {
     struct {

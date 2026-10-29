@@ -70,9 +70,7 @@ Checks:
   # and delete the check's line here, or move it to "Not wanted" with a
   # reason. The count is the number of places clang-tidy 23 reports in
   # the Debug and Release builds together.
-  - -bugprone-assignment-in-if-condition  # TODO(16)
   - -bugprone-easily-swappable-parameters  # TODO(400)
-  - -bugprone-implicit-widening-of-multiplication-result  # TODO(151)
   - -bugprone-signed-bitwise  # TODO(1108)
   - -cert-err33-c  # TODO(780): unchecked return values
   - -cppcoreguidelines-avoid-non-const-global-variables  # TODO(249)

@@ -145,7 +145,7 @@ static uint32_t rotl32(uint32_t v, unsigned n)
 static void md5_block(struct md5_ctx *c, const uint8_t *p)
 {
     uint32_t m[16];
-    for (int i = 0; i < 16; i++) {
+    for (size_t i = 0; i < 16; i++) {
         m[i] = (uint32_t)p[i * 4] | ((uint32_t)p[i * 4 + 1] << 8) |
                ((uint32_t)p[i * 4 + 2] << 16) | ((uint32_t)p[i * 4 + 3] << 24);
     }
@@ -233,7 +233,7 @@ static void md5_final(struct md5_ctx *c, uint8_t out[16])
         tail[i] = (uint8_t)(bits >> (8 * i));
     md5_update(c, tail, 8);
 
-    for (int i = 0; i < 4; i++) {
+    for (size_t i = 0; i < 4; i++) {
         out[i * 4] = (uint8_t)c->state[i];
         out[i * 4 + 1] = (uint8_t)(c->state[i] >> 8);
         out[i * 4 + 2] = (uint8_t)(c->state[i] >> 16);
@@ -252,7 +252,7 @@ static void md5_buf(const void *data, size_t len, uint8_t out[16])
 static void md5_hex(const uint8_t md5[16], char *out)
 {
     static const char HEX[] = "0123456789abcdef";
-    for (int i = 0; i < 16; i++) {
+    for (size_t i = 0; i < 16; i++) {
         out[i * 2] = HEX[md5[i] >> 4];
         out[i * 2 + 1] = HEX[md5[i] & 0xf];
     }

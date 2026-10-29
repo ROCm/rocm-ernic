@@ -993,7 +993,7 @@ static void test_admin_dma_faults(void)
 #define MR_B    IH_MRID(2, 0x02)
 #define VA_A    UINT64_C(0x00007f0000000100)
 #define VA_B    UINT64_C(0x00007f1000000000)
-#define MR_LEN  (3 * IH_PAGE_SIZE)
+#define MR_LEN  (UINT64_C(3) * IH_PAGE_SIZE)
 
 struct rc {
     struct ih h;
@@ -1891,7 +1891,7 @@ static void test_atomic_and_reg_mr(void)
           "CREATE_MR of an unbound MR failed");
     if (!check(T,
                ih_mr_alloc(h, &fr, fr_key, UINT64_C(0x7f3000000200),
-                           2 * IH_PAGE_SIZE, true),
+                           UINT64_C(2) * IH_PAGE_SIZE, true),
                "MR pages not allocated")) {
         rc_teardown(T, &r);
         return;
@@ -2154,7 +2154,9 @@ static void wrap_mrs(const char *T, struct rc *r)
     if (!check(T,
                ih_admin(h, IH_ADMIN_CREATE_MR, body, sizeof(body), NULL) == 0,
                "CREATE_MR of an unbound MR failed") ||
-        !check(T, ih_mr_alloc(h, &fr, fr_key, WRAP_VA, 2 * IH_PAGE_SIZE, false),
+        !check(T,
+               ih_mr_alloc(h, &fr, fr_key, WRAP_VA, UINT64_C(2) * IH_PAGE_SIZE,
+                           false),
                "MR pages not allocated"))
         return;
 
@@ -2482,12 +2484,14 @@ static void test_dp_dma_faults(void)
     const PVRDMADev *pvrdma = h->dev->pvrdma_handle;
     const uint32_t mrs = pvrdma->rdma_dev_res.mr_tbl.used;
     struct ih_mr mrc;
-    if (check(T, ih_mr_alloc(h, &mrc, MR_C, VA_C, 2 * IH_PAGE_SIZE, false),
-              "MR pages not allocated")) {
+    if (check(
+            T,
+            ih_mr_alloc(h, &mrc, MR_C, VA_C, UINT64_C(2) * IH_PAGE_SIZE, false),
+            "MR pages not allocated")) {
         fake_vfu_fail_nth_map(h->vfu, 2);
         check(T,
-              create_mr_as(h, MR_C, VA_C, 2 * IH_PAGE_SIZE, mrc.npages,
-                           mrc.pt_gpa) == IONIC_RC_EIO,
+              create_mr_as(h, MR_C, VA_C, UINT64_C(2) * IH_PAGE_SIZE,
+                           mrc.npages, mrc.pt_gpa) == IONIC_RC_EIO,
               "CREATE_MR with an unreadable page table succeeded");
         check(T,
               create_mr_as(h, MR_C, VA_C, IH_PAGE_SIZE, mrc.npages + 1,
@@ -2500,8 +2504,8 @@ static void test_dp_dma_faults(void)
         ih_post_send(h, &r.a, &s);
         expect_send(T, "RDMA_WRITE to a refused MR", &r, IH_STS_REMOTE_ACC_ERR);
         check(T,
-              create_mr_as(h, MR_C, VA_C, 2 * IH_PAGE_SIZE, mrc.npages,
-                           mrc.pt_gpa) == 0,
+              create_mr_as(h, MR_C, VA_C, UINT64_C(2) * IH_PAGE_SIZE,
+                           mrc.npages, mrc.pt_gpa) == 0,
               "CREATE_MR of the refused MR's id failed");
         ih_post_send(h, &r.a, &s);
         expect_send(T, "RDMA_WRITE to the MR created again", &r, 0);
@@ -2612,7 +2616,8 @@ static void test_full_tables(void)
     body[44] = 12;
     for (n = 3; n <= ERNIC_MAX_MR + 1; n++) {
         ernic_put_le32(body + 20, IH_MRID(n, 0x5a));
-        if ((rc = ih_admin(h, IH_ADMIN_CREATE_MR, body, sizeof(body), NULL)))
+        rc = ih_admin(h, IH_ADMIN_CREATE_MR, body, sizeof(body), NULL);
+        if (rc != 0)
             break;
     }
     check(T, n == ERNIC_MAX_MR + 1 && rc == IONIC_RC_ERANGE,
@@ -2769,9 +2774,13 @@ static void test_limits(void)
     uint64_t page = fake_vfu_alloc(h.vfu, IH_PAGE_SIZE, IH_PAGE_SIZE);
     uint32_t id;
     int rc = 0;
-    for (id = 0; id < ERNIC_MAX_CQ; id++)
-        if (id != IH_ACQ_ID && (rc = limits_create_cq(&h, id, page)) != 0)
+    for (id = 0; id < ERNIC_MAX_CQ; id++) {
+        if (id == IH_ACQ_ID)
+            continue;
+        rc = limits_create_cq(&h, id, page);
+        if (rc != 0)
             break;
+    }
     check(T, id == ERNIC_MAX_CQ, "CREATE_CQ %u of %u failed with status %d", id,
           ERNIC_MAX_CQ, rc);
     rc = limits_create_cq(&h, ERNIC_MAX_CQ, page);
@@ -2782,9 +2791,11 @@ static void test_limits(void)
           rc, IONIC_RC_EQID);
 
     /* And a QP under every id, with the rings in two halves of a page */
-    for (id = 0; id < ERNIC_MAX_QP; id++)
-        if ((rc = limits_create_qp(&h, id, 1, page, page + IH_PAGE_SIZE / 2)))
+    for (id = 0; id < ERNIC_MAX_QP; id++) {
+        rc = limits_create_qp(&h, id, 1, page, page + IH_PAGE_SIZE / 2);
+        if (rc != 0)
             break;
+    }
     check(T, id == ERNIC_MAX_QP, "CREATE_QP %u of %u failed with status %d", id,
           ERNIC_MAX_QP, rc);
     rc = limits_create_qp(&h, ERNIC_MAX_QP, 1, page, page + IH_PAGE_SIZE / 2);
@@ -3047,7 +3058,7 @@ static void test_ud(void)
               ih_qp_create(&h, &d, 21, IH_QPT_UD, &cqd, &cqd, NULL) &&
               ih_qp_create(&h, &rcq, 22, IH_QPT_RC, &cqd, &cqd, NULL) &&
               ih_mr_create(&h, &mr, IH_MRID(6, 0x06), UINT64_C(0x7f4000000000),
-                           2 * IH_PAGE_SIZE, IH_ACCESS_ALL, false);
+                           UINT64_C(2) * IH_PAGE_SIZE, IH_ACCESS_ALL, false);
     for (uint32_t qp = 20; ok && qp <= 21; qp++)
         ok = ih_qp_modify(&h, qp, IH_QP_STATE | IH_QP_QKEY, IH_QPS_INIT,
                           UD_QKEY, NULL, 0) == 0 &&
@@ -3283,7 +3294,7 @@ static void test_srq_rung(const char *T, int db_qtype, uint8_t db_ring)
     uint64_t ids[2];
     for (unsigned i = 0; i < 2; i++) {
         struct ih_sge dst = {
-            .va = mr.va + 512 + 64 * i, .len = 64, .lkey = mr.lkey};
+            .va = mr.va + 512 + UINT64_C(64) * i, .len = 64, .lkey = mr.lkey};
         ids[i] = ih_post_srq_recv(&h, &srq, &dst, 1);
     }
     for (unsigned i = 0; i < 2; i++) {
@@ -3299,7 +3310,8 @@ static void test_srq_rung(const char *T, int db_qtype, uint8_t db_ring)
             check(T, !e.error && e.qid == 30 && e.wqe_id == ids[i],
                   "SRQ receive %u completed for QP %u WQE %" PRIu64, i, e.qid,
                   e.wqe_id);
-            ih_mr_read(&h, &mr, mr.va + 512 + 64 * i, got, sizeof(got));
+            ih_mr_read(&h, &mr, mr.va + 512 + UINT64_C(64) * i, got,
+                       sizeof(got));
             check(T, memcmp(got, v, sizeof(v)) == 0,
                   "SRQ receive %u carried the wrong data", i);
         }
@@ -3425,12 +3437,12 @@ static void test_eth(void)
         return;
     }
 
-    const uint64_t txr = fake_vfu_alloc(h.vfu, 8 * 16, 64);
-    const uint64_t txc = fake_vfu_alloc(h.vfu, 8 * 16, 64);
-    const uint64_t txsg = fake_vfu_alloc(h.vfu, 8 * 8 * 16, 64);
-    const uint64_t rxr = fake_vfu_alloc(h.vfu, 8 * 16, 64);
-    const uint64_t rxc = fake_vfu_alloc(h.vfu, 8 * 16, 64);
-    const uint64_t bufs = fake_vfu_alloc(h.vfu, 8 * 2048, 4096);
+    const uint64_t txr = fake_vfu_alloc(h.vfu, (size_t)8 * 16, 64);
+    const uint64_t txc = fake_vfu_alloc(h.vfu, (size_t)8 * 16, 64);
+    const uint64_t txsg = fake_vfu_alloc(h.vfu, (size_t)8 * 8 * 16, 64);
+    const uint64_t rxr = fake_vfu_alloc(h.vfu, (size_t)8 * 16, 64);
+    const uint64_t rxc = fake_vfu_alloc(h.vfu, (size_t)8 * 16, 64);
+    const uint64_t bufs = fake_vfu_alloc(h.vfu, (size_t)8 * 2048, 4096);
     /* Queues the device can't set up are refused, so the driver never rings
      * them: a ring size it can't shift by (UBSan reports a Q_INIT that
      * does), an unknown qtype, and an index past the LIF's queue count. */
@@ -3471,7 +3483,7 @@ static void test_eth(void)
     ernic_put_le16(sg + 8, 100);
     ernic_put_le64(sg + 16, bufs + 150);
     ernic_put_le16(sg + 24, 50);
-    fake_vfu_write(h.vfu, txsg + 1 * 8 * 16, sg, sizeof(sg));
+    fake_vfu_write(h.vfu, txsg + UINT64_C(1) * 8 * 16, sg, sizeof(sg));
 
     ih_doorbell(&h, IH_QTYPE_ETH_TXQ, 0, 0, 2);
     check(T, seen->frames == 2, "the Tx filter saw %u frames", seen->frames);
@@ -3491,8 +3503,8 @@ static void test_eth(void)
     for (unsigned i = 0; i < 2; i++) {
         memset(desc, 0, sizeof(desc));
         ernic_put_le16(desc + 6, i == 0 ? 2048 : 64);
-        ernic_put_le64(desc + 8, bufs + 2048 * (i + 1));
-        fake_vfu_write(h.vfu, rxr + 16 * i, desc, sizeof(desc));
+        ernic_put_le64(desc + 8, bufs + UINT64_C(2048) * (i + 1));
+        fake_vfu_write(h.vfu, rxr + UINT64_C(16) * i, desc, sizeof(desc));
     }
     ih_doorbell(&h, IH_QTYPE_ETH_RXQ, 0, 0, 2);
 
@@ -3534,7 +3546,8 @@ static void test_eth(void)
     check(T, fake_vfu_irq_count(h.vfu, RX_INTR) == 2,
           "an oversized frame wedged the Rx queue behind it");
     uint8_t got_small[64];
-    fake_vfu_read(h.vfu, bufs + 2048 * 2, got_small, sizeof(got_small));
+    fake_vfu_read(h.vfu, bufs + UINT64_C(2048) * 2, got_small,
+                  sizeof(got_small));
     check(T, memcmp(got_small, small, sizeof(small)) == 0,
           "the frame behind the oversized one is wrong");
 
@@ -3613,18 +3626,19 @@ static void test_eth_dma_faults(void)
     const uint32_t depth = 1u << h.eth_aq.depth_log2;
     ih_doorbell(&h, IH_QTYPE_ETH_ADMINQ, 0, 0,
                 (uint16_t)(h.eth_aq.prod % depth));
-    fake_vfu_read(h.vfu, h.eth_acq.gpa + (h.eth_acq.cons % depth) * 16u, comp,
+    fake_vfu_read(h.vfu,
+                  h.eth_acq.gpa + (h.eth_acq.cons % depth) * UINT64_C(16), comp,
                   sizeof(comp));
     check(T, (comp[15] & 0x80u) && comp[0] == 0,
           "the admin command did not complete on the next doorbell");
     h.eth_acq.cons++;
     check(T, ih_eth_admin(&h, cmd, comp) == 0, "the next admin command failed");
 
-    const uint64_t txr = fake_vfu_alloc(h.vfu, 8 * 16, 64);
-    const uint64_t txc = fake_vfu_alloc(h.vfu, 8 * 16, 64);
-    const uint64_t txsg = fake_vfu_alloc(h.vfu, 8 * 8 * 16, 64);
-    const uint64_t rxr = fake_vfu_alloc(h.vfu, 8 * 16, 64);
-    const uint64_t rxc = fake_vfu_alloc(h.vfu, 8 * 16, 64);
+    const uint64_t txr = fake_vfu_alloc(h.vfu, (size_t)8 * 16, 64);
+    const uint64_t txc = fake_vfu_alloc(h.vfu, (size_t)8 * 16, 64);
+    const uint64_t txsg = fake_vfu_alloc(h.vfu, (size_t)8 * 8 * 16, 64);
+    const uint64_t rxr = fake_vfu_alloc(h.vfu, (size_t)8 * 16, 64);
+    const uint64_t rxc = fake_vfu_alloc(h.vfu, (size_t)8 * 16, 64);
     const uint64_t bufs = fake_vfu_alloc(h.vfu, 2048, 4096);
     bool ok = q_init(&h, IH_QTYPE_ETH_TXQ, TX_INTR, 3, txr, txc, txsg) &&
               q_init(&h, IH_QTYPE_ETH_RXQ, RX_INTR, 3, rxr, rxc, 0) &&
@@ -3648,11 +3662,11 @@ static void test_eth_dma_faults(void)
         ernic_put_le64(desc, bufs << 12 | (uint64_t)c->nsge << 8);
         ernic_put_le16(desc + 8, c->len);
         fake_vfu_write(h.vfu, txr + 16u * i, desc, sizeof(desc));
-        for (unsigned j = 0; j < 2; j++) {
+        for (size_t j = 0; j < 2; j++) {
             ernic_put_le64(sg + 16 * j, bufs + 50 + 100 * j);
             ernic_put_le16(sg + 16 * j + 8, c->sg_len[j]);
         }
-        fake_vfu_write(h.vfu, txsg + 8u * 16u * i, sg, sizeof(sg));
+        fake_vfu_write(h.vfu, txsg + UINT64_C(8) * 16 * i, sg, sizeof(sg));
 
         fake_vfu_fail_nth_map(h.vfu, c->fail);
         ih_doorbell(&h, IH_QTYPE_ETH_TXQ, 0, 0, (uint16_t)(i + 1));
@@ -3919,8 +3933,8 @@ static void test_p4_port(void)
         return;
     }
 
-    const uint64_t txr = fake_vfu_alloc(h.vfu, 8 * 16, 64);
-    const uint64_t txc = fake_vfu_alloc(h.vfu, 8 * 16, 64);
+    const uint64_t txr = fake_vfu_alloc(h.vfu, (size_t)8 * 16, 64);
+    const uint64_t txc = fake_vfu_alloc(h.vfu, (size_t)8 * 16, 64);
     const uint64_t buf = fake_vfu_alloc(h.vfu, 4096, 4096);
     check(T, q_init(&h, IH_QTYPE_ETH_TXQ, TX_INTR, 3, txr, txc, 0),
           "Q_INIT of the Tx queue failed");
@@ -4082,7 +4096,7 @@ static void test_p4_attach(void)
 #define FP8R_VA_A   UINT64_C(0x7F2000000000)
 #define FP8R_VA_B   UINT64_C(0x7F3000000000)
 #define FP8R_VA_C   UINT64_C(0x7F4000000000)
-#define FP8R_MR_LEN (4u * IH_PAGE_SIZE)
+#define FP8R_MR_LEN (UINT64_C(4) * IH_PAGE_SIZE)
 
 /*
  * The worked example: the NIC reads two operand regions, combines them
@@ -4375,7 +4389,7 @@ static void test_fp8_overlap(void)
 
     /* fp16 from 0.5 up to just under 1.0 in its smallest steps, so every
      * element differs from its neighbours and a misplaced one shows up. */
-    for (uint32_t i = 0; i < FP8O_N_ELEMS; i++) {
+    for (size_t i = 0; i < FP8O_N_ELEMS; i++) {
         uint16_t v = (uint16_t)(0x3800u + (i % 1024u));
 
         src[2u * i] = (uint8_t)(v & 0xFFu);
@@ -4502,7 +4516,7 @@ static void test_fp8_overlap(void)
 #define P4R_QP_A   40
 #define P4R_QP_B   41
 #define P4R_N      3000u
-#define P4R_MR_LEN (4u * IH_PAGE_SIZE)
+#define P4R_MR_LEN (UINT64_C(4) * IH_PAGE_SIZE)
 
 /* The bytes of a compiled fixture, or NULL. The caller frees them. */
 static char *p4d_read_file(const char *name, size_t *out_len)
@@ -4517,8 +4531,8 @@ static char *p4d_read_file(const char *name, size_t *out_len)
     if (!f)
         return NULL;
     /* No fixture is larger than a program the engine takes. */
-    if (fseek(f, 0, SEEK_END) != 0 || (n = ftell(f)) < 0 ||
-        (uint64_t)n > P4_PROGRAM_MAX || fseek(f, 0, SEEK_SET) != 0) {
+    n = fseek(f, 0, SEEK_END) == 0 ? ftell(f) : -1;
+    if (n < 0 || (uint64_t)n > P4_PROGRAM_MAX || fseek(f, 0, SEEK_SET) != 0) {
         fclose(f);
         return NULL;
     }
@@ -5732,7 +5746,7 @@ static void test_p4_cvt(void)
     {
         static const uint16_t pattern[6] = {0x3C00u, 0x4000u, 0x4400u,
                                             0x7E00u, 0x7C00u, 0x0000u};
-        for (uint32_t i = 0; i < P4C_N_ELEMS; i++) {
+        for (size_t i = 0; i < P4C_N_ELEMS; i++) {
             uint16_t v = pattern[i % 6u];
 
             src[2u * i] = (uint8_t)(v & 0xFFu);
@@ -5767,7 +5781,7 @@ static void test_p4_cvt(void)
     check(T, ih_cq_poll(&h, &cq, &e) && !e.error,
           "the plain write did not complete");
     check(T, ih_mr_read(&h, &mrc, FP8R_VA_C, got, sizeof(got)), "read back C");
-    check(T, memcmp(got, src, P4C_N_IN) == 0,
+    check(T, memcmp(got, src, sizeof(src)) == 0,
           "with no entry the operation was not an ordinary write");
 
     /* Now the entry: fp16 in, fp8 E4M3 out. */
@@ -6457,7 +6471,7 @@ static void test_p4_log_limit(void)
     }
     check(T,
           fake_vfu_log_count(h.vfu, LOG_WARNING) - base ==
-              2 * ERNIC_LOG_LIMIT_BURST,
+              (unsigned long)2 * ERNIC_LOG_LIMIT_BURST,
           "%u denials in one interval logged %lu lines, not %u", P4L_FLOOD,
           fake_vfu_log_count(h.vfu, LOG_WARNING) - base,
           2 * ERNIC_LOG_LIMIT_BURST);
@@ -6539,7 +6553,7 @@ static void test_nvmeof(void)
               ih_cq_create(&h, &rcq, NV_RC_CQ, 5) &&
               ih_qp_create(&h, &gsi, 1, IH_QPT_UD, &gcq, &gcq, NULL) &&
               ih_qp_create(&h, &rc, NV_RC_QP, IH_QPT_RC, &rcq, &rcq, NULL) &&
-              ih_mr_create(&h, &mr, NV_MR, NV_VA, 2 * IH_PAGE_SIZE,
+              ih_mr_create(&h, &mr, NV_MR, NV_VA, UINT64_C(2) * IH_PAGE_SIZE,
                            IH_ACCESS_ALL, false);
     if (!check(T, ok, "NVMe-oF setup failed")) {
         ih_mr_free(&mr);

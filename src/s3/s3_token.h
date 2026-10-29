@@ -39,7 +39,7 @@
  *   [42:43]  lid
  */
 #define S3_TOKEN_BIN_LEN 44
-#define S3_TOKEN_HEX_LEN (S3_TOKEN_BIN_LEN * 2)
+#define S3_TOKEN_HEX_LEN ((size_t)S3_TOKEN_BIN_LEN * 2)
 
 /*
  * Transport byte.  cuObject requires Dynamic Connection on ConnectX;

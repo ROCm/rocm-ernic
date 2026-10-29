@@ -675,7 +675,7 @@ static char *read_file(const char *path, size_t *len, char *err, size_t err_len)
         goto fail;
     }
     if (st.st_size > (off_t)IONIC_PROFILE_FILE_MAX) {
-        ernic_set_err(err, err_len, "NIC profile '%s' is larger than %u bytes",
+        ernic_set_err(err, err_len, "NIC profile '%s' is larger than %zu bytes",
                       path, IONIC_PROFILE_FILE_MAX);
         goto fail;
     }

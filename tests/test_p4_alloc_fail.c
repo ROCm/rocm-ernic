@@ -67,8 +67,8 @@ static char *read_fixture(const char *name, size_t *len)
     f = fopen(path, "rbe"); /* e: O_CLOEXEC */
     if (!f)
         return NULL;
-    if (fseek(f, 0, SEEK_END) != 0 || (n = ftell(f)) < 0 ||
-        fseek(f, 0, SEEK_SET) != 0) {
+    n = fseek(f, 0, SEEK_END) == 0 ? ftell(f) : -1;
+    if (n < 0 || fseek(f, 0, SEEK_SET) != 0) {
         fclose(f);
         return NULL;
     }

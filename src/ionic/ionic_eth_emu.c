@@ -944,10 +944,12 @@ void ionic_eth_emu_handle_lif_identify(struct ionic_eth_emu *emu,
      * TXQ/RXQ straight out of it and hands the result to alloc_etherdev_mqs(),
      * which returns NULL (-ENOMEM) if it is zero. */
     uint8_t *qcount = data + LIFID_CONFIG_QCOUNT_OFF;
-    ernic_put_le32(qcount + 4u * IONIC_QTYPE_ADMINQ, 1);
-    ernic_put_le32(qcount + 4u * IONIC_QTYPE_NOTIFYQ, 1);
-    ernic_put_le32(qcount + 4u * IONIC_QTYPE_RXQ, eth_qcount(emu));
-    ernic_put_le32(qcount + 4u * IONIC_QTYPE_TXQ, eth_qcount(emu));
+    ernic_put_le32(qcount + sizeof(uint32_t) * IONIC_QTYPE_ADMINQ, 1);
+    ernic_put_le32(qcount + sizeof(uint32_t) * IONIC_QTYPE_NOTIFYQ, 1);
+    ernic_put_le32(qcount + sizeof(uint32_t) * IONIC_QTYPE_RXQ,
+                   eth_qcount(emu));
+    ernic_put_le32(qcount + sizeof(uint32_t) * IONIC_QTYPE_TXQ,
+                   eth_qcount(emu));
 
     memcpy(data + LIFID_CONFIG_NAME_OFF, "ernic0", 7);
 
@@ -994,7 +996,7 @@ void ionic_eth_emu_handle_lif_identify(struct ionic_eth_emu *emu,
      *       __le32 qid_base;
      *   };  -- 12 bytes
      */
-#define QTYPE_SZ 12
+#define QTYPE_SZ ((size_t)12)
     /* aq_qtype at rdma+32 */
     uint8_t *aq = rdma + 32;
     aq[0] = IONIC_RDMA_QTYPE_AQ;

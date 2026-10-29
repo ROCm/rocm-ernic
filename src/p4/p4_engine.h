@@ -62,7 +62,7 @@ struct p4_engine;
  * size of DASH is a few hundred kilobytes; this is well clear of that and
  * bounds what a guest can make the server allocate.
  */
-#define P4_PROGRAM_MAX (4u * 1024u * 1024u)
+#define P4_PROGRAM_MAX ((size_t)4 * 1024 * 1024)
 
 enum p4_verdict {
     P4_VERDICT_DROP = 0,

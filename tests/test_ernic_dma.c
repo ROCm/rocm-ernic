@@ -34,7 +34,7 @@
 #define MEM_SIZE    ((uint64_t)REGION_SIZE * NREGIONS)
 
 /* A transfer that needs about 200 entries, and its halves about 100. */
-#define BIG_LEN (REGION_SIZE * 200u)
+#define BIG_LEN ((size_t)REGION_SIZE * 200)
 _Static_assert(BIG_LEN / REGION_SIZE > ERNIC_DMA_SGL_MAX,
                "BIG_LEN must need more entries than one list holds");
 _Static_assert(BIG_LEN / 2 / REGION_SIZE + 2 <= ERNIC_DMA_SGL_MAX,

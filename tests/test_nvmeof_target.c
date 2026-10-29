@@ -38,7 +38,7 @@
 #include "nvmeof/nvmeof_target.h"
 #include "nvmeof/nvmeof_target_priv.h"
 
-#define HOST_BUF_SIZE (256 * 1024)
+#define HOST_BUF_SIZE (UINT64_C(256) * 1024)
 #define HOST_BASE     0x40000000ull
 #define HOST_RKEY     0x1234u
 
@@ -1950,7 +1950,7 @@ static void test_sync(void)
 
         /* FUA writes back the pages the write touched.  Block 9 doesn't
          * start a page, so the range has to be rounded down to one. */
-        const uint64_t off = 9 * 512;
+        const uint64_t off = UINT64_C(9) * 512;
         const uint64_t start = off - off % (uint64_t)page;
         for (size_t i = 0; i < sizeof(fua_ops); i++) {
             sync_reset(false);

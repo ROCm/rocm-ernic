@@ -121,7 +121,7 @@ static void gm_pump(struct ih *a, struct ih *b, unsigned rounds)
     for (unsigned i = 0; i < rounds; i++) {
         ih_poll(a);
         ih_poll(b);
-        struct timespec ts = {.tv_sec = 0, .tv_nsec = 2 * 1000 * 1000};
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = (long)2 * 1000 * 1000};
         nanosleep(&ts, NULL);
     }
 }
@@ -140,7 +140,7 @@ static bool gm_ep_open(struct ih *h, struct gm_ep *ep)
 {
     return ih_cq_create(h, &ep->cq, GM_CQ, 5) &&
            ih_qp_create(h, &ep->qp, 1, IH_QPT_UD, &ep->cq, &ep->cq, NULL) &&
-           ih_mr_create(h, &ep->mr, GM_MR, GM_VA, 2 * IH_PAGE_SIZE,
+           ih_mr_create(h, &ep->mr, GM_MR, GM_VA, UINT64_C(2) * IH_PAGE_SIZE,
                         IH_ACCESS_ALL, false);
 }
 
@@ -393,7 +393,7 @@ static bool gm_wait_hung_up(struct ih *a, uint32_t node_id)
         if (gone)
             return true;
         ih_poll(a);
-        struct timespec ts = {.tv_sec = 0, .tv_nsec = 2 * 1000 * 1000};
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = (long)2 * 1000 * 1000};
         nanosleep(&ts, NULL);
     }
     return false;

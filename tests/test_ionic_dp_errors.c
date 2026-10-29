@@ -508,7 +508,7 @@ static const char *const counter_name[IONIC_DP_RDMA_COUNT] = {
 #define LOCAL_NODE 0u
 #define PEER_NODE  1u
 #define CQ_GPA     0x0000u
-#define SQ_GPA(qp) (0x1000u * ((qp) - 1u))
+#define SQ_GPA(qp) (UINT64_C(0x1000) * ((qp) - 1u))
 #define RQ_GPA(qp) (SQ_GPA(qp) + 0x400u)
 #define SRC_GPA    0x4000u /* the requester's payload, key 0 */
 #define RESULT_GPA 0x4800u /* where an atomic's original value lands */

@@ -551,8 +551,8 @@ static void test_rdma_put_get(void)
     struct host_mem *h = calloc(1, sizeof(*h));
     char token[S3_TOKEN_HEX_LEN + 1];
     struct reply r;
-    const size_t len = 64 * 1024;
-    const uint64_t dst = 512u * 1024;
+    const size_t len = (size_t)64 * 1024;
+    const uint64_t dst = UINT64_C(512) * 1024;
     const char *reply, *bytes;
     int code = 0;
     const struct s3_target_stats *st;
@@ -647,7 +647,7 @@ static void test_rdma_put_with_content_length(void)
     struct host_mem *h = calloc(1, sizeof(*h));
     char token[S3_TOKEN_HEX_LEN + 1];
     struct reply r;
-    const size_t len = 64 * 1024;
+    const size_t len = (size_t)64 * 1024;
 
     if (t == NULL || h == NULL) {
         fail(name, "setup failed");
@@ -706,7 +706,7 @@ static void test_rdma_ranged_get(void)
         {"bytes=-", 0, 0, 416},
         {"bytes=0-18446744073709551616", 0, 0, 416}, /* past UINT64_MAX */
     };
-    const uint64_t dst = 512u * 1024;
+    const uint64_t dst = UINT64_C(512) * 1024;
 
     if (t == NULL || h == NULL) {
         fail(name, "setup failed");
@@ -1043,7 +1043,7 @@ static void test_rdma_errors(void)
     }
 
     /* Larger than maxpart. */
-    mint(token, 0, 128 * 1024);
+    mint(token, 0, UINT64_C(128) * 1024);
     if (exec_req(t, &r, &host_ops, h, "PUT", "/ernic/k", token, NULL, NULL,
                  0)) {
         if (r.resp.status != 400)
@@ -1249,9 +1249,9 @@ static void test_multipart(void)
     char token[S3_TOKEN_HEX_LEN + 1];
     char upload_id[64] = "";
     struct reply r;
-    const size_t part = 16 * 1024;
+    const size_t part = (size_t)16 * 1024;
     const unsigned nparts = 3;
-    const uint64_t dst = 512u * 1024;
+    const uint64_t dst = UINT64_C(512) * 1024;
 
     if (t == NULL || h == NULL) {
         fail(name, "setup failed");

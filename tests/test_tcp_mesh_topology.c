@@ -185,7 +185,7 @@ static const uint8_t *gids_slot(const TcpNodeGidsWire *wire, uint32_t i)
  * unused slot that reaches the wire un-zeroed is unambiguous.
  */
 #define POISON_BYTE     0xAB
-#define POISON_STACK_SZ (1024 * 1024)
+#define POISON_STACK_SZ ((size_t)1024 * 1024)
 
 /*
  * One run of the pass on the poisoned stack. The thread checks that a local
@@ -610,7 +610,8 @@ static int check_gid_set(const char *what, const TcpNodeGidsWire *wire,
 
     if (gids_num(wire) != want ||
         (want && memcmp(gids_slot(wire, 0), claimed[0], 16) != 0) ||
-        memcmp(gids_slot(wire, want), zero[0], sizeof(zero) - want * 16) != 0) {
+        memcmp(gids_slot(wire, want), zero[0],
+               sizeof(zero) - (size_t)want * 16) != 0) {
         printf("FAIL %-16s: node %u's set has %u GID(s), expected %u, or "
                "isn't zero past them\n",
                what, id, gids_num(wire), want);
