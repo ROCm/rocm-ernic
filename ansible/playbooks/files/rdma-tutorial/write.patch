@@ -30,6 +30,12 @@ is RoCE, which addresses it by GID, so this:
   clear. The 'A' it left in the last byte then counted as the next
   message, and the two sides' counts drifted apart until one waited
   forever for a message the other never sent.
+- Has the client wait for its last WRITE to complete before it exits.
+  The server waits for that WRITE, but upstream posts it unsignaled and
+  exits at once, and exiting destroys the QP, which may drop a WRITE
+  the NIC hasn't sent yet. The client then passed while the server
+  waited out its timeout. The last WRITE is now signaled, and the
+  client polls until it completes or fails.
 
 diff --git a/Makefile b/Makefile
 index 162bcbc..ad5ad4c 100644
@@ -45,10 +51,20 @@ index 162bcbc..ad5ad4c 100644
  SRCS=main.c client.c config.c ib.c server.c setup_ib.c sock.c
  OBJS=$(SRCS:.c=.o)
 diff --git a/client.c b/client.c
-index 7219cc5..0ecf1ce 100644
+index 7219cc5..24e327a 100644
 --- a/client.c
 +++ b/client.c
-@@ -51,7 +51,7 @@ void *client_thread_func (void *arg)
+@@ -11,7 +11,8 @@
+ 
+ void *client_thread_func (void *arg)
+ {
+-    int         ret		 = 0, n = 0;
++    int         ret		 = 0, n = 0, i = 0;
++    bool        stop		 = false;
+     long	thread_id	 = (long) arg;
+     int         msg_size	 = config_info.msg_size;
+ 
+@@ -51,7 +52,7 @@ void *client_thread_func (void *arg)
  
      while (ops_count < TOT_NUM_OPS) {
  	/* loop till receive a msg from server */
@@ -57,6 +73,48 @@ index 7219cc5..0ecf1ce 100644
  	}
  
  	/* reset recv buffer */
+@@ -59,7 +60,10 @@ void *client_thread_func (void *arg)
+ 
+ 	/* send a msg back to the server */
+ 	ops_count += 1;
+-	if ((ops_count % SIG_INTERVAL) == 0) {
++	if (ops_count == TOT_NUM_OPS) {
++	    ret = post_write_signaled (msg_size, lkey, IB_WR_ID_STOP, qp, send_buf_ptr, raddr, rkey);
++	    check (ret == 0, "thread[%ld]: failed to post the last write", thread_id);
++	} else if ((ops_count % SIG_INTERVAL) == 0) {
+ 	    ret = post_write_signaled (msg_size, lkey, 0, qp, send_buf_ptr, raddr, rkey);
+ 	} else {
+ 	    ret = post_write_unsignaled (msg_size, lkey, 0, qp, send_buf_ptr, raddr, rkey);
+@@ -74,11 +78,28 @@ void *client_thread_func (void *arg)
+ 	    gettimeofday (&start, NULL);
+ 	}
+ 
+-	n = ibv_poll_cq (cq, num_wc, wc);
++	/* the last write's completion is waited for below */
++	if (ops_count < TOT_NUM_OPS) {
++	    n = ibv_poll_cq (cq, num_wc, wc);
++	}
+ 	debug ("ops_count = %ld", ops_count);
+     }
+ 
+     gettimeofday (&end, NULL);
++
++    /* wait for the last write to complete: the server is waiting for it,
++     * and exiting destroys the QP, which may drop a write not yet sent */
++    while (stop != true) {
++	n = ibv_poll_cq (cq, num_wc, wc);
++	check (n >= 0, "thread[%ld]: failed to poll cq", thread_id);
++	for (i = 0; i < n; i++) {
++	    check (wc[i].status == IBV_WC_SUCCESS, "thread[%ld]: write failed: %s",
++		   thread_id, ibv_wc_status_str (wc[i].status));
++	    if (wc[i].wr_id == IB_WR_ID_STOP) {
++		stop = true;
++	    }
++	}
++    }
+     /* dump statistics */
+     duration   = (double)((end.tv_sec - start.tv_sec) * 1000000 + 
+ 			  (end.tv_usec - start.tv_usec));
 diff --git a/ib.c b/ib.c
 index 638bcdf..2377f5b 100644
 --- a/ib.c

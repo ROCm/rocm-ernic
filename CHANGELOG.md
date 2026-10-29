@@ -1474,6 +1474,11 @@
     of a message before clearing it. Taking it as arrived on either end let
     the rest of a WRITE land after the clear and count as the next message,
     which could leave the server waiting until `timeout` killed it.
+  * RDMA-Tutorial's write example's client waits for its last WRITE to
+    complete before it exits. Upstream posts that WRITE unsignaled and
+    exits at once, destroying the QP, which may drop a WRITE not yet sent;
+    the client then passed while the server waited for that WRITE until
+    `timeout` killed it.
   * The VM lanes boot a guest image (`ci/guest-image.env`) with
     `unattended-upgrades` removed. In the old one it could start as a lane
     began provisioning and hold the dpkg lock past the role's 300-second
