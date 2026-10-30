@@ -1,0 +1,12 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+trivial:
+  - >-
+    ``nvmeof-tests.yml`` gives ``nvme disconnect`` 180 seconds.  One
+    that hangs in the guest kernel used to stall the play until the CI
+    job's own limit cancelled it, with no record of where; now the play
+    fails, printing the stacks of the guest's blocked tasks and the end
+    of its kernel log.
