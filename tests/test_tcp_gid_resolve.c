@@ -425,7 +425,7 @@ static void test_ud_rtr_needs_no_destination(void)
     memset(&bqp, 0, sizeof(bqp));
     dev.backend_private = priv;
     dev.backend_type = RDMA_BACKEND_TYPE_TCP;
-    bqp.ibqp = (struct ibv_qp *)(uintptr_t)7u;
+    bqp.qpn = 7;
 
     gid_v4(raw, 11);
     tcp_gid_claims_set(priv, 2, (const uint8_t(*)[16]) & raw, 1);

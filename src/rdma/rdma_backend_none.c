@@ -61,8 +61,7 @@ static int none_query_device(RdmaBackendDev *backend_dev,
 /* PD operations - stub implementations */
 static int none_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
 {
-    (void)backend_dev;
-    (void)pd;
+    pd->backend_dev = backend_dev;
 
     return 0;
 }
@@ -73,7 +72,7 @@ static int none_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, int access)
     (void)pd;
     (void)access;
 
-    mr->ibmr = NULL;
+    mr->handle = 0;
     return 0;
 }
 
@@ -97,7 +96,7 @@ static int none_create_cq(RdmaBackendDev *backend_dev, RdmaBackendCQ *cq,
     (void)cqe;
 
     cq->backend_dev = backend_dev;
-    cq->ibcq = NULL;
+    cq->handle = 0;
     return 0;
 }
 
@@ -116,7 +115,6 @@ static int none_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
 {
     (void)qp_type;
     (void)pd;
-    (void)scq;
     (void)rcq;
     (void)srq;
     (void)max_send_wr;
@@ -124,7 +122,9 @@ static int none_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
     (void)max_send_sge;
     (void)max_recv_sge;
 
-    qp->ibqp = NULL;
+    qp->backend_dev = scq->backend_dev;
+    qp->priv = NULL;
+    qp->qpn = 0;
     return 0;
 }
 

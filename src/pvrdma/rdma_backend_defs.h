@@ -19,7 +19,7 @@
 #ifndef RDMA_BACKEND_DEFS_H
 #define RDMA_BACKEND_DEFS_H
 
-#include <infiniband/verbs.h>
+#include <stdint.h>
 
 /* Forward declare backend ops (defined in rdma_backend_ops.h) */
 typedef struct RdmaBackendOps RdmaBackendOps;
@@ -46,28 +46,38 @@ typedef struct RdmaBackendDev {
     void *backend_private; /* Backend-specific data */
 } RdmaBackendDev;
 
+/*
+ * The backend objects are the resource manager's, but only the backend that
+ * created one reads the fields before backend_ops: the device it was created
+ * on, a number it hands out, or a pointer to its own state for the object.
+ * A backend that needs no number or state leaves those zero.
+ */
+
 typedef struct RdmaBackendPD {
+    RdmaBackendDev *backend_dev;
     const struct RdmaBackendOps *backend_ops; /* For destroy dispatch */
 } RdmaBackendPD;
 
 typedef struct RdmaBackendMR {
-    struct ibv_mr *ibmr;
+    uint32_t handle; /* The backend's number for the MR (loopback: its lkey) */
     const struct RdmaBackendOps *backend_ops; /* For destroy dispatch */
 } RdmaBackendMR;
 
 typedef struct RdmaBackendCQ {
     RdmaBackendDev *backend_dev;
-    struct ibv_cq *ibcq;
+    uint32_t handle; /* The backend's number for the CQ */
     const struct RdmaBackendOps *backend_ops; /* For destroy dispatch */
 } RdmaBackendCQ;
 
 typedef struct RdmaBackendQP {
-    struct ibv_qp *ibqp;
+    RdmaBackendDev *backend_dev;
+    void *priv;   /* The backend's state for the QP (loopback: LoopbackQP) */
+    uint32_t qpn; /* The QP's number, from a backend that keeps no state */
     const struct RdmaBackendOps *backend_ops; /* For destroy dispatch */
 } RdmaBackendQP;
 
 typedef struct RdmaBackendSRQ {
-    struct ibv_srq *ibsrq;
+    void *priv; /* The backend's state for the SRQ (LoopbackSRQ, TcpSRQ) */
     const struct RdmaBackendOps *backend_ops; /* For destroy dispatch */
 } RdmaBackendSRQ;
 

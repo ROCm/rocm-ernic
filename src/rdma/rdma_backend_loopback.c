@@ -46,9 +46,6 @@ typedef struct {
 
     /* Connection info */
     uint32_t remote_qpn;
-
-    /* Backend device reference for auto-pairing */
-    RdmaBackendDev *backend_dev;
 } LoopbackQP;
 
 /* The first QPN handed out, and the lowest after wrapping, to stay clear of
@@ -63,6 +60,7 @@ typedef struct {
 
     /* Handle generators */
     uint32_t next_pd_handle TSA_GUARDED_BY(lock);
+    uint32_t next_mr_handle TSA_GUARDED_BY(lock);
     uint32_t next_cq_handle TSA_GUARDED_BY(lock);
     uint32_t next_qpn TSA_GUARDED_BY(lock);
 } LoopbackBackendPrivate;
@@ -77,6 +75,18 @@ static LoopbackBackendPrivate *get_private(RdmaBackendDev *backend_dev)
         return NULL;
     }
     return (LoopbackBackendPrivate *)backend_dev->backend_private;
+}
+
+/* The LoopbackQP loopback_create_qp() gave @qp, or NULL */
+static LoopbackQP *loopback_qp(const RdmaBackendQP *qp)
+{
+    return qp->priv;
+}
+
+/* The LoopbackSRQ loopback_create_srq() gave @srq, or NULL */
+static LoopbackSRQ *loopback_srq(const RdmaBackendSRQ *srq)
+{
+    return srq->priv;
 }
 
 /*
@@ -100,6 +110,7 @@ static int loopback_init(RdmaBackendDev *backend_dev, const char *config)
         g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
 
     priv->next_pd_handle = 1;
+    priv->next_mr_handle = 1;
     priv->next_cq_handle = 1;
     priv->next_qpn = LOOPBACK_FIRST_QPN;
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
@@ -169,8 +180,6 @@ static int loopback_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
     LoopbackBackendPrivate *priv = get_private(backend_dev);
     uint32_t handle;
 
-    (void)pd;
-
     if (!priv) {
         return -EINVAL;
     }
@@ -179,6 +188,7 @@ static int loopback_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
     handle = priv->next_pd_handle++;
     qemu_mutex_unlock(&priv->lock);
 
+    pd->backend_dev = backend_dev;
     rdma_info_report("Loopback: Created PD handle %u", handle);
     return 0;
 }
@@ -189,14 +199,24 @@ static int loopback_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
 
 static int loopback_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, int access)
 {
-    static uint32_t mr_counter = 1;
-    uint32_t handle = mr_counter++;
+    LoopbackBackendPrivate *priv = get_private(pd->backend_dev);
+    uint32_t handle;
 
-    (void)pd;
     (void)access;
 
-    /* Store handle in mr structure */
-    mr->ibmr = (struct ibv_mr *)(uintptr_t)handle;
+    if (!priv) {
+        return -EINVAL;
+    }
+
+    /* Skip 0 once the counter wraps: rdma_rm_alloc_mr() takes an lkey of 0
+     * to mean the backend has none */
+    qemu_mutex_lock(&priv->lock);
+    do {
+        handle = priv->next_mr_handle++;
+    } while (handle == 0);
+    qemu_mutex_unlock(&priv->lock);
+
+    mr->handle = handle;
 
     rdma_info_report("Loopback: Created MR handle %u", handle);
     return 0;
@@ -211,10 +231,7 @@ static void loopback_destroy_mr(RdmaBackendMR *mr)
 
 static uint32_t loopback_mr_lkey(const RdmaBackendMR *mr)
 {
-    uint32_t handle = (uint32_t)(uintptr_t)mr->ibmr;
-    rdma_debug_report(">>> loopback_mr_lkey: mr=%p, ibmr=%p, handle=%u",
-                      (const void *)mr, (void *)mr->ibmr, handle);
-    return handle; /* lkey = handle */
+    return mr->handle; /* lkey = handle */
 }
 
 /*
@@ -236,7 +253,7 @@ static int loopback_create_cq(RdmaBackendDev *backend_dev, RdmaBackendCQ *cq,
     qemu_mutex_unlock(&priv->lock);
 
     cq->backend_dev = backend_dev;
-    cq->ibcq = (struct ibv_cq *)(uintptr_t)handle;
+    cq->handle = handle;
 
     rdma_info_report("Loopback: Created CQ handle %u with %" PRIu32 " entries",
                      handle, cqe);
@@ -245,8 +262,7 @@ static int loopback_create_cq(RdmaBackendDev *backend_dev, RdmaBackendCQ *cq,
 
 static void loopback_destroy_cq(RdmaBackendCQ *cq)
 {
-    uint32_t handle = (uint32_t)(uintptr_t)cq->ibcq;
-    rdma_info_report("Loopback: Destroyed CQ handle %u", handle);
+    rdma_info_report("Loopback: Destroyed CQ handle %u", cq->handle);
 }
 
 /*
@@ -277,7 +293,6 @@ static int loopback_create_qp(RdmaBackendQP *qp, uint8_t qp_type,
     lqp = g_new0(LoopbackQP, 1);
     lqp->qp_type = qp_type;
     lqp->state = IBV_QPS_RESET;
-    lqp->backend_dev = scq->backend_dev; /* Store for auto-pairing */
 
     /*
      * Skip any number still in use once the counter wraps: inserting over a
@@ -292,11 +307,10 @@ static int loopback_create_qp(RdmaBackendQP *qp, uint8_t qp_type,
     g_hash_table_insert(priv->qps, GUINT_TO_POINTER(lqp->qpn), lqp);
     qemu_mutex_unlock(&priv->lock);
 
-    /* Store the actual LoopbackQP pointer, not the QPN! */
-    qp->ibqp = (struct ibv_qp *)lqp;
+    qp->backend_dev = scq->backend_dev; /* For destroy and auto-pairing */
+    qp->priv = lqp;
 
-    rdma_debug_report("Loopback: Created QP %u type=%d (stored lqp=%p as ibqp)",
-                      lqp->qpn, qp_type, (void *)lqp);
+    rdma_info_report("Loopback: Created QP %u type=%d", lqp->qpn, qp_type);
     return 0;
 }
 
@@ -307,7 +321,7 @@ static int loopback_create_qp(RdmaBackendQP *qp, uint8_t qp_type,
  */
 static void loopback_destroy_qp(RdmaBackendQP *qp, RdmaDeviceResources *dev_res)
 {
-    LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
+    LoopbackQP *lqp = loopback_qp(qp);
     LoopbackBackendPrivate *priv;
     uint32_t qpn;
 
@@ -316,8 +330,8 @@ static void loopback_destroy_qp(RdmaBackendQP *qp, RdmaDeviceResources *dev_res)
         return;
     }
     qpn = lqp->qpn;
-    priv = get_private(lqp->backend_dev);
-    qp->ibqp = NULL;
+    priv = get_private(qp->backend_dev);
+    qp->priv = NULL;
     if (priv) {
         /* The table's value destructor frees lqp. */
         qemu_mutex_lock(&priv->lock);
@@ -329,7 +343,7 @@ static void loopback_destroy_qp(RdmaBackendQP *qp, RdmaDeviceResources *dev_res)
 
 static uint32_t loopback_qpn(const RdmaBackendQP *qp)
 {
-    LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
+    LoopbackQP *lqp = loopback_qp(qp);
     return lqp ? lqp->qpn : 0;
 }
 
@@ -344,7 +358,7 @@ static int loopback_qp_state_init(RdmaBackendDev *backend_dev,
     (void)backend_dev;
     (void)qp_type;
     (void)qkey;
-    LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
+    LoopbackQP *lqp = loopback_qp(qp);
 
     if (lqp) {
         lqp->state = IBV_QPS_INIT;
@@ -363,7 +377,7 @@ static int loopback_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
     (void)dgid;
     (void)qkey;
     (void)qkey_set;
-    LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
+    LoopbackQP *lqp = loopback_qp(qp);
 
     /* DCT reaches RTR as its penultimate arming step; no remote QPN needed. */
     if (qp_type == IBV_QPT_DRIVER) {
@@ -480,7 +494,7 @@ static int loopback_qp_state_rts(RdmaBackendQP *qp, uint8_t qp_type,
 {
     (void)qkey;
     (void)qkey_set;
-    LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
+    LoopbackQP *lqp = loopback_qp(qp);
     LoopbackBackendPrivate *priv = NULL;
 
     if (!lqp) {
@@ -499,11 +513,9 @@ static int loopback_qp_state_rts(RdmaBackendQP *qp, uint8_t qp_type,
     rdma_info_report("Loopback: QP %u -> RTS (sq_psn=%u)", lqp->qpn, sq_psn);
 
     /* Try to auto-pair this QP with another unpaired QP */
-    if (lqp->backend_dev) {
-        priv = get_private(lqp->backend_dev);
-        if (priv) {
-            loopback_auto_pair_qp(priv, lqp);
-        }
+    priv = get_private(qp->backend_dev);
+    if (priv) {
+        loopback_auto_pair_qp(priv, lqp);
     }
 
     return 0;
@@ -512,7 +524,7 @@ static int loopback_qp_state_rts(RdmaBackendQP *qp, uint8_t qp_type,
 static int loopback_query_qp(RdmaBackendQP *qp, struct ibv_qp_attr *attr,
                              int attr_mask, struct ibv_qp_init_attr *init_attr)
 {
-    LoopbackQP *lqp = (LoopbackQP *)qp->ibqp;
+    LoopbackQP *lqp = loopback_qp(qp);
 
     (void)attr_mask;
 
@@ -555,7 +567,7 @@ static int loopback_create_srq(RdmaBackendSRQ *srq, RdmaBackendPD *pd,
     lsrq->max_wr = max_wr;
     lsrq->max_sge = max_sge;
     lsrq->srq_limit = srq_limit;
-    srq->ibsrq = (struct ibv_srq *)(uintptr_t)lsrq;
+    srq->priv = lsrq;
     rdma_info_report("Loopback: Created SRQ (max_wr=%u max_sge=%u)", max_wr,
                      max_sge);
     return 0;
@@ -563,19 +575,19 @@ static int loopback_create_srq(RdmaBackendSRQ *srq, RdmaBackendPD *pd,
 
 static void loopback_destroy_srq(RdmaBackendSRQ *srq)
 {
-    LoopbackSRQ *lsrq = (LoopbackSRQ *)(uintptr_t)srq->ibsrq;
+    LoopbackSRQ *lsrq = loopback_srq(srq);
 
     if (!lsrq) {
         return;
     }
     g_free(lsrq);
-    srq->ibsrq = NULL;
+    srq->priv = NULL;
     rdma_info_report("Loopback: Destroyed SRQ");
 }
 
 static int loopback_query_srq(RdmaBackendSRQ *srq, struct ibv_srq_attr *attr)
 {
-    LoopbackSRQ *lsrq = (LoopbackSRQ *)(uintptr_t)srq->ibsrq;
+    LoopbackSRQ *lsrq = loopback_srq(srq);
 
     if (!lsrq || !attr) {
         return -EINVAL;
@@ -589,7 +601,7 @@ static int loopback_query_srq(RdmaBackendSRQ *srq, struct ibv_srq_attr *attr)
 static int loopback_modify_srq(RdmaBackendSRQ *srq, struct ibv_srq_attr *attr,
                                int mask)
 {
-    LoopbackSRQ *lsrq = (LoopbackSRQ *)(uintptr_t)srq->ibsrq;
+    LoopbackSRQ *lsrq = loopback_srq(srq);
 
     if (!lsrq || !attr) {
         return -EINVAL;
