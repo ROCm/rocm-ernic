@@ -318,7 +318,6 @@ target_include_directories(rocm-ernic SYSTEM PRIVATE
 target_compile_definitions(rocm-ernic PRIVATE
     GIT_SHA_FULL="${ERNIC_GIT_SHA_FULL}"
     GIT_SHA_SHORT="${ERNIC_GIT_SHA_SHORT}"
-    $<$<BOOL:${ERNIC_BUILD_P4}>:ERNIC_HAVE_P4>
 )
 
 target_compile_options(rocm-ernic PRIVATE
@@ -338,6 +337,7 @@ target_link_libraries(rocm-ernic PRIVATE
 )
 
 if(ERNIC_BUILD_P4)
+    target_compile_definitions(rocm-ernic PRIVATE ERNIC_HAVE_P4)
     target_link_libraries(rocm-ernic PRIVATE PkgConfig::JSONC)
 endif()
 

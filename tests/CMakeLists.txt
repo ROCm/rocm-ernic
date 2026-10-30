@@ -522,9 +522,9 @@ ernic_add_test_program(test_ionic_dp_errors
 # they test the data path that ships; each stubs the one P4 hook it calls.
 # CodeQL also needs every build of ionic_datapath.c to agree: given two
 # versions of a function, it calls one of them unreachable.
-target_compile_definitions(test_ionic_dp_errors PRIVATE
-    $<$<BOOL:${ERNIC_BUILD_P4}>:ERNIC_HAVE_P4>
-)
+if(ERNIC_BUILD_P4)
+    target_compile_definitions(test_ionic_dp_errors PRIVATE ERNIC_HAVE_P4)
+endif()
 
 # ionic CQ arm-semantics test. It links the datapath, reaches the private CQ
 # state through ionic_datapath_priv.h, and counts the event callback
@@ -540,9 +540,9 @@ ernic_add_test_program(test_ionic_cq_arm
     DEPS vfio-user glib pthread
     HEADER_DEPS ibverbs
 )
-target_compile_definitions(test_ionic_cq_arm PRIVATE
-    $<$<BOOL:${ERNIC_BUILD_P4}>:ERNIC_HAVE_P4>
-)
+if(ERNIC_BUILD_P4)
+    target_compile_definitions(test_ionic_cq_arm PRIVATE ERNIC_HAVE_P4)
+endif()
 
 # ionic receive-ring and buffer test. Like the CQ arm test, it links the
 # datapath, reaches its rings through ionic_datapath_priv.h, and links the
@@ -554,9 +554,9 @@ ernic_add_test_program(test_ionic_rq_wrap
     DEPS vfio-user glib pthread
     HEADER_DEPS ibverbs
 )
-target_compile_definitions(test_ionic_rq_wrap PRIVATE
-    $<$<BOOL:${ERNIC_BUILD_P4}>:ERNIC_HAVE_P4>
-)
+if(ERNIC_BUILD_P4)
+    target_compile_definitions(test_ionic_rq_wrap PRIVATE ERNIC_HAVE_P4)
+endif()
 
 # TCP mesh broadcast test. It links the TCP backend, reaches its helpers
 # through rdma_backend_tcp_priv.h, and stubs the backend's externals, so no
@@ -734,10 +734,11 @@ ernic_add_test_program(ernic-test-ionic-harness
 target_link_options(ernic-test-ionic-harness PRIVATE
     "LINKER:--wrap=malloc,--wrap=calloc,--wrap=realloc"
     "LINKER:--wrap=strdup,--wrap=getentropy")
-target_compile_definitions(ernic-test-ionic-harness PRIVATE
-    $<$<BOOL:${ERNIC_BUILD_P4}>:ERNIC_HAVE_P4>
-    $<$<BOOL:${ERNIC_BUILD_P4}>:P4_FIXTURE_DIR="${ERNIC_TEST_P4_FIXTURE_DIR}">
-)
+if(ERNIC_BUILD_P4)
+    target_compile_definitions(ernic-test-ionic-harness PRIVATE
+        ERNIC_HAVE_P4
+        P4_FIXTURE_DIR="${ERNIC_TEST_P4_FIXTURE_DIR}")
+endif()
 
 # Two whole devices in one process, meshed over loopback TCP: the GSI/CM
 # path that rdma_cm depends on, which test_ud_mesh can only cover with two
@@ -754,9 +755,9 @@ ernic_add_test_program(ernic-test-gsi-mesh
 # It builds ERNIC_HARNESS_DEVICE_SOURCES, which carries the P4 engine
 # when ERNIC_BUILD_P4 is on, so it needs the same define and the same
 # json-c as the harness target beside it.
-target_compile_definitions(ernic-test-gsi-mesh PRIVATE
-    $<$<BOOL:${ERNIC_BUILD_P4}>:ERNIC_HAVE_P4>
-)
+if(ERNIC_BUILD_P4)
+    target_compile_definitions(ernic-test-gsi-mesh PRIVATE ERNIC_HAVE_P4)
+endif()
 
 # ---------------------------------------------------------------
 # Register tests with CTest
