@@ -19,7 +19,7 @@ static uint64_t rotl64(uint64_t x, unsigned b)
 {
     /* b is always one of SipRound's constants, 13 to 32, so neither shift
      * is by 0 or 64. */
-    return (x << b) | (x >> (64u - b));
+    return (x << b) | (x >> (64U - b));
 }
 
 static void sipround(uint64_t v[4])
@@ -60,7 +60,7 @@ uint64_t ernic_siphash24(const uint8_t key[ERNIC_SIPHASH_KEY_LEN],
         k0 ^ UINT64_C(0x6c7967656e657261), /* "lygenera" */
         k1 ^ UINT64_C(0x7465646279746573), /* "tedbytes" */
     };
-    size_t whole = len - len % 8;
+    size_t whole = len - (len % 8);
 
     for (size_t i = 0; i < whole; i += 8) {
         compress(v, ernic_get_le64(p + i));

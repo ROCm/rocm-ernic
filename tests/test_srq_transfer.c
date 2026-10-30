@@ -49,8 +49,9 @@
 /* The payload, chosen so a short or zeroed delivery is obvious. */
 static void fill_pattern(unsigned char *p, size_t n)
 {
-    for (size_t i = 0; i < n; i++)
+    for (size_t i = 0; i < n; i++) {
         p[i] = (unsigned char)(0xA5 ^ (i & 0xff));
+    }
 }
 
 int main(void)
@@ -68,14 +69,16 @@ int main(void)
     union ibv_gid my_gid;
     struct ibv_srq_init_attr srq_init;
     struct ibv_qp_init_attr qp_init;
-    struct ibv_sge rsge, ssge;
+    struct ibv_sge rsge;
+    struct ibv_sge ssge;
     struct ibv_recv_wr rwr;
     struct ibv_recv_wr *bad_rwr;
     struct ibv_send_wr swr;
     struct ibv_send_wr *bad_swr;
     unsigned char *buf = NULL;
     enum ernic_device_result lookup;
-    int got_send, got_recv;
+    int got_send;
+    int got_recv;
     unsigned recv_len;
     uint64_t deadline_ms;
     int ndev = 0;
@@ -86,8 +89,9 @@ int main(void)
         lookup = ernic_requested_device() ? ERNIC_DEVICE_MISMATCH
                                           : ERNIC_DEVICE_ABSENT;
         ernic_report_no_device(lookup);
-        if (dev_list)
+        if (dev_list) {
             ibv_free_device_list(dev_list);
+        }
         return lookup == ERNIC_DEVICE_MISMATCH ? 1 : 77;
     }
 
@@ -263,7 +267,7 @@ int main(void)
     got_send = 0;
     got_recv = 0;
     recv_len = 0;
-    deadline_ms = ernic_monotonic_ms() + POLL_SECONDS * UINT64_C(1000);
+    deadline_ms = ernic_monotonic_ms() + (POLL_SECONDS * UINT64_C(1000));
     while ((!got_send || !got_recv) && ernic_monotonic_ms() < deadline_ms) {
         struct ibv_wc wc[4];
         int n = ibv_poll_cq(cq, 4, wc);
@@ -325,20 +329,27 @@ int main(void)
      * live on the SRQ and possibly a send on the QP, both pointing into buf
      * through mr. Destroying the QP and the SRQ first is what flushes them. */
 out:
-    if (qp)
+    if (qp) {
         ibv_destroy_qp(qp);
-    if (srq)
+    }
+    if (srq) {
         ibv_destroy_srq(srq);
-    if (mr)
+    }
+    if (mr) {
         ibv_dereg_mr(mr);
+    }
     free(buf);
-    if (cq)
+    if (cq) {
         ibv_destroy_cq(cq);
-    if (pd)
+    }
+    if (pd) {
         ibv_dealloc_pd(pd);
-    if (ctx)
+    }
+    if (ctx) {
         ibv_close_device(ctx);
-    if (dev_list)
+    }
+    if (dev_list) {
         ibv_free_device_list(dev_list);
+    }
     return rc;
 }

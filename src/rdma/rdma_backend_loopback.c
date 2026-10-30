@@ -50,7 +50,7 @@ typedef struct {
 
 /* The first QPN handed out, and the lowest after wrapping, to stay clear of
  * the special QPs */
-#define LOOPBACK_FIRST_QPN 100u
+#define LOOPBACK_FIRST_QPN 100U
 
 typedef struct {
     QemuMutex lock;
@@ -400,7 +400,8 @@ static int loopback_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
 static void loopback_auto_pair_qp(LoopbackBackendPrivate *priv, LoopbackQP *lqp)
 {
     GHashTableIter iter;
-    gpointer key, value;
+    gpointer key;
+    gpointer value;
     LoopbackQP *other_qp;
     uint32_t other_qpn;
 

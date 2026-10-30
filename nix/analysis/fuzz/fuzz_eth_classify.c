@@ -45,8 +45,8 @@
 
 #include "fuzz_harness.h"
 
-#define MACS_LEN 12u
-#define TAG_LEN  4u
+#define MACS_LEN 12U
+#define TAG_LEN  4U
 
 static uint32_t l2_hash(const uint8_t *frame)
 {
@@ -54,7 +54,7 @@ static uint32_t l2_hash(const uint8_t *frame)
 
     for (size_t i = 0; i < MACS_LEN; i++) {
         h ^= frame[i];
-        h *= 0x01000193u;
+        h *= 0x01000193U;
     }
     return h;
 }
@@ -63,18 +63,20 @@ static int ref_mac_class(const uint8_t *frame, size_t len)
 {
     static const uint8_t bcast[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
-    if (len < 6)
+    if (len < 6) {
         return -1;
-    if (memcmp(frame, bcast, 6) == 0)
+    }
+    if (memcmp(frame, bcast, 6) == 0) {
         return IONIC_EMU_BCAST;
-    return (frame[0] & 1u) ? IONIC_EMU_MCAST : IONIC_EMU_UCAST;
+    }
+    return (frame[0] & 1U) ? IONIC_EMU_MCAST : IONIC_EMU_UCAST;
 }
 
 static bool is_tag(const uint8_t *p)
 {
     uint16_t t = (uint16_t)((uint16_t)(p[0] << 8) | p[1]);
 
-    return t == 0x8100u || t == 0x88a8u;
+    return t == 0x8100U || t == 0x88a8U;
 }
 
 /* VLAN tags the hash skips at the front of @frame, up to two. */
@@ -95,8 +97,9 @@ static uint8_t *exact_copy(const uint8_t *data, size_t len)
 {
     uint8_t *p = malloc(len ? len : 1);
 
-    if (p && len)
+    if (p && len) {
         memcpy(p, data, len);
+    }
     return p;
 }
 
@@ -111,8 +114,9 @@ static const char *check_frame(const uint8_t *data, size_t size, uint32_t *hash)
     uint32_t h;
 
     *hash = 0;
-    if (!frame)
+    if (!frame) {
         return NULL;
+    }
 
     if (ionic_emu_mac_class(frame, size) != ref_mac_class(frame, size)) {
         why = "MAC class differs from the reference";
@@ -141,16 +145,18 @@ static const char *check_frame(const uint8_t *data, size_t size, uint32_t *hash)
         size_t tlen = size + TAG_LEN;
         uint8_t *tagged = malloc(tlen);
 
-        if (!tagged)
+        if (!tagged) {
             goto out;
+        }
         memcpy(tagged, frame, MACS_LEN);
         tagged[MACS_LEN] = 0x81;
         tagged[MACS_LEN + 1] = 0x00;
         tagged[MACS_LEN + 2] = 0x00;
         tagged[MACS_LEN + 3] = 0x64; /* VID 100 */
         memcpy(tagged + MACS_LEN + TAG_LEN, frame + MACS_LEN, size - MACS_LEN);
-        if (ionic_eth_flow_hash(tagged, tlen) != h)
+        if (ionic_eth_flow_hash(tagged, tlen) != h) {
             why = "an added VLAN tag changed the hash";
+        }
         free(tagged);
     }
 
@@ -263,10 +269,12 @@ static bool emit_seed(size_t i, const uint8_t *buf, size_t len)
         return false;
     }
     ok = fwrite(buf, 1, len, f) == len;
-    if (fclose(f) != 0)
+    if (fclose(f) != 0) {
         ok = false;
-    if (!ok)
+    }
+    if (!ok) {
         fprintf(stderr, "fuzz_eth_classify: cannot write %s\n", path);
+    }
     return ok;
 }
 
@@ -292,23 +300,27 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
         printf("%s %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", s->category,
                s->description, s->expected);
         if (!ok) {
-            if (why)
+            if (why) {
                 printf("     %s\n", why);
+            }
             failures++;
         }
-        if (emit_seeds && !emit_seed(i, s->frame, s->len))
+        if (emit_seeds && !emit_seed(i, s->frame, s->len)) {
             unwritten++;
+        }
     }
     fflush(stdout);
     if (failures || unwritten) {
         /* libFuzzer ignores this function's return value, so a broken
          * seed, or a corpus that could not be written, has to stop the run
          * itself.  abort() rather than exit(), which isn't thread safe. */
-        if (failures)
+        if (failures) {
             fprintf(stderr, "fuzz_eth_classify: %d seed(s) failed\n", failures);
-        if (unwritten)
+        }
+        if (unwritten) {
             fprintf(stderr, "fuzz_eth_classify: %d seed(s) not written\n",
                     unwritten);
+        }
         abort();
     }
     return 0;

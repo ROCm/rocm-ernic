@@ -62,11 +62,11 @@ struct ionic_dp_ring_desc {
  * receive WQE ahead of its payload (WQE_PLD_OFF in ionic_datapath.c), which
  * the data path reads from every WQE.
  */
-#define IONIC_RING_MAX_DEPTH_LOG2  24u
-#define IONIC_RING_MAX_STRIDE_LOG2 16u
-#define IONIC_CQ_MIN_STRIDE_LOG2   5u
-#define IONIC_WQE_MIN_STRIDE_LOG2  5u
-#define IONIC_WQE_MAX_STRIDE_LOG2  9u
+#define IONIC_RING_MAX_DEPTH_LOG2  24U
+#define IONIC_RING_MAX_STRIDE_LOG2 16U
+#define IONIC_CQ_MIN_STRIDE_LOG2   5U
+#define IONIC_WQE_MIN_STRIDE_LOG2  5U
+#define IONIC_WQE_MAX_STRIDE_LOG2  9U
 
 /* True if a ring's exponents are within the bounds above. */
 static inline bool ionic_dp_ring_geometry_ok(uint8_t depth_log2,
@@ -109,7 +109,7 @@ static inline uint8_t ionic_dp_cq_stride_log2(
 #define IONIC_SRQ_QID_BASE ERNIC_MAX_QP
 _Static_assert(IONIC_SRQ_QID_BASE >= ERNIC_MAX_QP,
                "SRQ ids would overlap the guest's QP ids");
-_Static_assert(IONIC_SRQ_QID_BASE + ERNIC_MAX_SRQ <= (1u << 24),
+_Static_assert(IONIC_SRQ_QID_BASE + ERNIC_MAX_SRQ <= (1U << 24),
                "SRQ ids would not fit a 24-bit qid");
 
 /*
@@ -132,9 +132,9 @@ _Static_assert(IONIC_SRQ_QID_BASE + ERNIC_MAX_SRQ <= (1u << 24),
  * -- ionic_datapath.c static-asserts the two agree -- and the driver asks
  * for 2^6, so this rejects only geometries no real driver requests.
  */
-#define IONIC_SRQ_MAX_DEPTH_LOG2  16u
-#define IONIC_SRQ_MAX_STRIDE_LOG2 8u
-#define IONIC_SRQ_MIN_STRIDE_LOG2 5u
+#define IONIC_SRQ_MAX_DEPTH_LOG2  16U
+#define IONIC_SRQ_MAX_STRIDE_LOG2 8U
+#define IONIC_SRQ_MIN_STRIDE_LOG2 5U
 
 /* Raised once completions have been written to a CQ. */
 typedef void (*ionic_dp_cq_event_fn_t)(void *opaque, uint32_t eq_id,
@@ -286,8 +286,9 @@ static inline bool ionic_mr_slot(uint32_t key, uint32_t *slot)
 {
     uint32_t index = key >> IONIC_MRID_INDEX_SHIFT;
 
-    if (index == 0 || index > ERNIC_MAX_MR)
+    if (index == 0 || index > ERNIC_MAX_MR) {
         return false;
+    }
     *slot = index - 1;
     return true;
 }

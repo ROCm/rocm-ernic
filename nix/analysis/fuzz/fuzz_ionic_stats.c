@@ -65,12 +65,12 @@
 
 #define MAX_BODY   64
 #define IN_HDR     ((size_t)2)
-#define F_OP_MASK  0x03u
-#define F_DEV_FAIL 0x04u
-#define F_QP_FAIL  0x08u
-#define F_MAX      0x10u
-#define F_FAULT    0x20u
-#define QP_ID_MASK 0x00ffffffu
+#define F_OP_MASK  0x03U
+#define F_DEV_FAIL 0x04U
+#define F_QP_FAIL  0x08U
+#define F_MAX      0x10U
+#define F_FAULT    0x20U
+#define QP_ID_MASK 0x00ffffffU
 
 static const uint8_t ops[4] = {
     IONIC_V1_ADMIN_STATS_HDRS,
@@ -133,28 +133,33 @@ static const char *check_hdrs(const struct fake_sg *w, uint32_t length,
     static const uint8_t zero[STAT_HDR_SIZE];
     size_t want = length / STAT_HDR_SIZE;
 
-    if (want > count + 1)
+    if (want > count + 1) {
         want = count + 1;
-    if (w->len != want * STAT_HDR_SIZE)
+    }
+    if (w->len != want * STAT_HDR_SIZE) {
         return "header write is not min(count + 1, length / 32) entries";
+    }
 
     for (size_t i = 0; i < want; i++) {
-        const uint8_t *e = g_mem + w->addr + i * STAT_HDR_SIZE;
+        const uint8_t *e = g_mem + w->addr + (i * STAT_HDR_SIZE);
         uint32_t be;
 
         if (i == count) {
-            if (memcmp(e, zero, sizeof(zero)) != 0)
+            if (memcmp(e, zero, sizeof(zero)) != 0) {
                 return "the NONE terminator is not all zero";
+            }
             continue;
         }
         memcpy(&be, e, 4);
         be = be32toh(be);
         if (be >> STAT_TYPE_SHIFT != STAT_TYPE_LE64 ||
-            (be & 0x0fffffffu) != i * STAT_VAL_SIZE)
+            (be & 0x0fffffffU) != i * STAT_VAL_SIZE) {
             return "a header is not an LE64 at the next 8-byte slot";
+        }
         if (memchr(e + 4, '\0', STAT_NAME_LEN) == NULL ||
-            strcmp((const char *)e + 4, stats[i].name) != 0)
+            strcmp((const char *)e + 4, stats[i].name) != 0) {
             return "a header name is unterminated or not the table's";
+        }
     }
     return NULL;
 }
@@ -166,19 +171,22 @@ static const char *check_vals(const struct fake_sg *w, uint32_t length,
 {
     size_t want = length / STAT_VAL_SIZE;
 
-    if (want > count)
+    if (want > count) {
         want = count;
-    if (w->len != want * STAT_VAL_SIZE)
+    }
+    if (w->len != want * STAT_VAL_SIZE) {
         return "value write is not min(count, length / 8) values";
+    }
 
     for (size_t i = 0; i < want; i++) {
         size_t field = stats[i].off / sizeof(uint64_t);
         uint64_t v;
         uint64_t expect = qp ? qp_value(qp_id, field) : dev_value(field);
 
-        memcpy(&v, g_mem + w->addr + i * STAT_VAL_SIZE, sizeof(v));
-        if (le64toh(v) != expect)
+        memcpy(&v, g_mem + w->addr + (i * STAT_VAL_SIZE), sizeof(v));
+        if (le64toh(v) != expect) {
             return "a value is not the counter its header names";
+        }
     }
     return NULL;
 }
@@ -200,8 +208,9 @@ static const char *run_input(const uint8_t *data, size_t size, uint8_t *rc_out)
     const struct fake_sg *w = &g_writes[0];
 
     *rc_out = 0;
-    if (size < IN_HDR)
+    if (size < IN_HDR) {
         return NULL;
+    }
     flags = data[0];
     op = ops[flags & F_OP_MASK];
     body_len = data[1] % (MAX_BODY + 1);
@@ -210,19 +219,22 @@ static const char *run_input(const uint8_t *data, size_t size, uint8_t *rc_out)
     g_dev_rc = (flags & F_DEV_FAIL) ? -1 : 0;
     g_qp_rc = (flags & F_QP_FAIL) ? -1 : 0;
     g_max = (flags & F_MAX) != 0;
-    if (flags & F_FAULT)
+    if (flags & F_FAULT) {
         g_ctx.faults = fault_set();
+    }
 
     memset(body, 0, sizeof(body));
-    if (size - IN_HDR < body_len)
+    if (size - IN_HDR < body_len) {
         memcpy(body, data + IN_HDR, size - IN_HDR);
-    else
+    } else {
         memcpy(body, data + IN_HDR, body_len);
+    }
     if (size > IN_HDR + body_len) {
         size_t mem_len = size - IN_HDR - body_len;
 
-        if (mem_len > GUEST_MEM_SIZE)
+        if (mem_len > GUEST_MEM_SIZE) {
             mem_len = GUEST_MEM_SIZE;
+        }
         memcpy(g_mem, data + IN_HDR + body_len, mem_len);
     }
     memcpy(g_before, g_mem, sizeof(g_before));
@@ -239,49 +251,64 @@ static const char *run_input(const uint8_t *data, size_t size, uint8_t *rc_out)
     rc = ionic_adminq_dispatch_wqe(&g_ctx, op, body, (uint16_t)body_len);
     *rc_out = rc;
 
-    if (!is_stats_status(rc))
+    if (!is_stats_status(rc)) {
         return "status is not a stats completion code";
-    if (g_nwrites > 1)
+    }
+    if (g_nwrites > 1) {
         return "more than one DMA write";
+    }
     for (size_t i = 0; i < GUEST_MEM_SIZE; i++) {
         bool inside = g_nwrites == 1 && i >= w->addr && i < w->addr + w->len;
 
-        if (!inside && g_mem[i] != g_before[i])
+        if (!inside && g_mem[i] != g_before[i]) {
             return "a byte outside the write changed";
+        }
     }
-    if (body_len < STATS_BODY_LEN)
+    if (body_len < STATS_BODY_LEN) {
         return rc == IONIC_RC_EINVAL ? NULL : "a short body was not EINVAL";
-    if (dma == 0)
+    }
+    if (dma == 0) {
         return rc == IONIC_RC_BAD_ADDR ? NULL
                                        : "a zero dma_addr was not BAD_ADDR";
+    }
     if (op == IONIC_V1_ADMIN_QP_STATS_VALS &&
-        !qp_is_mapped(id_ver & QP_ID_MASK))
+        !qp_is_mapped(id_ver & QP_ID_MASK)) {
         return rc == IONIC_RC_ENOENT ? NULL : "an unmapped QP was not ENOENT";
-    if (op == IONIC_V1_ADMIN_STATS_VALS && (flags & F_FAULT))
+    }
+    if (op == IONIC_V1_ADMIN_STATS_VALS && (flags & F_FAULT)) {
         return rc == IONIC_RC_EIO ? NULL : "the injected fault did not fail";
-    if (rc != 0)
+    }
+    if (rc != 0) {
         return g_nwrites == 0 ? NULL : "a failed command wrote";
+    }
 
-    if (g_nwrites != 1)
+    if (g_nwrites != 1) {
         return "success without a DMA write";
-    if (w->addr != dma)
+    }
+    if (w->addr != dma) {
         return "wrote somewhere other than dma_addr";
-    if (w->len > length)
+    }
+    if (w->len > length) {
         return "wrote past length";
+    }
 
-    if (is_hdrs(op))
+    if (is_hdrs(op)) {
         return is_qp(op) ? check_hdrs(w, length, qp_stats, QP_STATS_COUNT)
                          : check_hdrs(w, length, dev_stats, DEV_STATS_COUNT);
+    }
     if (is_qp(op)) {
-        if (g_qp_rc != 0)
+        if (g_qp_rc != 0) {
             return "QP values succeeded though the snapshot failed";
-        if (!qp_is_mapped(id_ver & QP_ID_MASK))
+        }
+        if (!qp_is_mapped(id_ver & QP_ID_MASK)) {
             return "QP values written for an unmapped QP";
+        }
         return check_vals(w, length, qp_stats, QP_STATS_COUNT, true,
                           id_ver & QP_ID_MASK);
     }
-    if (g_dev_rc != 0)
+    if (g_dev_rc != 0) {
         return "device values succeeded though the snapshot failed";
+    }
     return check_vals(w, length, dev_stats, DEV_STATS_COUNT, false, 0);
 }
 
@@ -311,10 +338,10 @@ struct seed {
     uint8_t want_rc;
 };
 
-#define OP_HDRS    0u
-#define OP_VALS    1u
-#define OP_QP_HDRS 2u
-#define OP_QP_VALS 3u
+#define OP_HDRS    0U
+#define OP_VALS    1U
+#define OP_QP_HDRS 2U
+#define OP_QP_VALS 3U
 
 static const struct seed seeds[] = {
     {"positive", "device headers into a full page",
@@ -362,7 +389,7 @@ static const struct seed seeds[] = {
      BUF_GPA, PAGE_LEN, QP_ID, 0},
     {"corner", "QP values with every id_ver version bit set",
      "the version byte is ignored: QP_ID's counters", OP_QP_VALS,
-     STATS_BODY_LEN, BUF_GPA, PAGE_LEN, 0xff000000u | QP_ID, 0},
+     STATS_BODY_LEN, BUF_GPA, PAGE_LEN, 0xff000000U | QP_ID, 0},
     {"corner", "device values with every counter at UINT64_MAX",
      "all ones round-trip", OP_VALS | F_MAX, STATS_BODY_LEN, BUF_GPA, PAGE_LEN,
      0, 0},
@@ -414,10 +441,12 @@ static bool emit_seed(size_t i, const uint8_t *buf, size_t len)
         return false;
     }
     ok = fwrite(buf, 1, len, f) == len;
-    if (fclose(f) != 0)
+    if (fclose(f) != 0) {
         ok = false;
-    if (!ok)
+    }
+    if (!ok) {
         fprintf(stderr, "fuzz_ionic_stats: cannot write %s\n", path);
+    }
     return ok;
 }
 
@@ -447,19 +476,22 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
                    why ? ": " : "", why ? why : "");
             failures++;
         }
-        if (emit_seeds && !emit_seed(i, buf, len))
+        if (emit_seeds && !emit_seed(i, buf, len)) {
             unwritten++;
+        }
     }
     fflush(stdout);
     if (failures || unwritten) {
         /* libFuzzer ignores this function's return value, so a broken
          * seed, or a corpus that could not be written, has to stop the run
          * itself.  abort() rather than exit(), which isn't thread safe. */
-        if (failures)
+        if (failures) {
             fprintf(stderr, "fuzz_ionic_stats: %d seed(s) failed\n", failures);
-        if (unwritten)
+        }
+        if (unwritten) {
             fprintf(stderr, "fuzz_ionic_stats: %d seed(s) not written\n",
                     unwritten);
+        }
         abort();
     }
     return 0;

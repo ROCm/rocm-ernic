@@ -26,9 +26,9 @@
 #include <linux/pci_regs.h>
 
 /* Emulated ionic device IDs */
-#define PCI_VENDOR_ID_PENSANDO      0x1dd8u
-#define PCI_DEVICE_ID_ROCM_ERNIC    0x1002u
-#define PCI_SUBDEVICE_ID_ROCM_ERNIC 0x5400u
+#define PCI_VENDOR_ID_PENSANDO      0x1dd8U
+#define PCI_DEVICE_ID_ROCM_ERNIC    0x1002U
+#define PCI_SUBDEVICE_ID_ROCM_ERNIC 0x5400U
 
 /* Test results */
 typedef struct {
@@ -142,8 +142,8 @@ static int run_pci_tests(int fd, test_results_t *results)
     if (ret < 0) {
         return -1;
     }
-    results->vendor_id = (uint16_t)(vid_did & 0xFFFFu);
-    results->device_id = (uint16_t)((vid_did >> 16) & 0xFFFFu);
+    results->vendor_id = (uint16_t)(vid_did & 0xFFFFU);
+    results->device_id = (uint16_t)((vid_did >> 16) & 0xFFFFU);
 
     printf("  Vendor ID:  0x%04x", results->vendor_id);
     if (results->vendor_id == PCI_VENDOR_ID_PENSANDO) {
@@ -165,8 +165,8 @@ static int run_pci_tests(int fd, test_results_t *results)
     if (ret < 0) {
         return -1;
     }
-    results->subsystem_vendor_id = (uint16_t)(ssvid_sdid & 0xFFFFu);
-    results->subsystem_device_id = (uint16_t)((ssvid_sdid >> 16) & 0xFFFFu);
+    results->subsystem_vendor_id = (uint16_t)(ssvid_sdid & 0xFFFFU);
+    results->subsystem_device_id = (uint16_t)((ssvid_sdid >> 16) & 0xFFFFU);
 
     printf("  Subsystem:  0x%04x:0x%04x", results->subsystem_vendor_id,
            results->subsystem_device_id);

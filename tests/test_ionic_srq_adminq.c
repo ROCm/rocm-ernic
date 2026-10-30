@@ -76,8 +76,9 @@ int vfu_addr_to_sgl(vfu_ctx_t *vfu_ctx, vfu_dma_addr_t dma_addr, size_t len,
 
     (void)vfu_ctx;
     (void)prot;
-    if (max_nr_sgs < 1 || addr + len > GUEST_MEM_SIZE)
+    if (max_nr_sgs < 1 || addr + len > GUEST_MEM_SIZE) {
         return -1;
+    }
     sg->addr = addr;
     sg->len = len;
     return 1;
@@ -90,8 +91,9 @@ int vfu_sgl_get(vfu_ctx_t *vfu_ctx, dma_sg_t *sgl, struct iovec *iov,
 
     (void)vfu_ctx;
     (void)flags;
-    if (cnt < 1)
+    if (cnt < 1) {
         return -1;
+    }
     iov->iov_base = g_mem + sg->addr;
     iov->iov_len = sg->len;
     return 0;
@@ -124,7 +126,7 @@ void vfu_log(vfu_ctx_t *vfu_ctx, int level, const char *fmt, ...)
 
 /* Only the QP's backend number is referenced, by the query_qp stub below;
  * this test drives the SRQ opcodes. */
-#define QP_QPN 42u
+#define QP_QPN 42U
 
 /* What the resource manager will claim about the queried QP. */
 static uint8_t g_state;
@@ -142,20 +144,27 @@ int ernic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
 {
     (void)handle;
     (void)qpn;
-    if (g_query_rc)
+    if (g_query_rc) {
         return g_query_rc;
-    if (state)
+    }
+    if (state) {
         *state = g_state;
-    if (path_mtu)
+    }
+    if (path_mtu) {
         *path_mtu = g_path_mtu;
-    if (dest_qpn)
+    }
+    if (dest_qpn) {
         *dest_qpn = g_dest_qpn;
-    if (access_flags)
+    }
+    if (access_flags) {
         *access_flags = g_access;
-    if (rq_psn)
+    }
+    if (rq_psn) {
         *rq_psn = g_rq_psn;
-    if (sq_psn)
+    }
+    if (sq_psn) {
         *sq_psn = g_sq_psn;
+    }
     return 0;
 }
 
@@ -386,7 +395,7 @@ int ernic_stats_qp_counters(const struct ernic_stats *st, uint32_t qp_id,
 
 /* ---- Recording SRQ stubs ----------------------------------------------- */
 
-#define SRQ_HANDLE_BASE 100u
+#define SRQ_HANDLE_BASE 100U
 
 static uint32_t g_alloc_calls;
 static uint32_t g_dealloc_calls;
@@ -405,8 +414,9 @@ int ernic_rm_alloc_srq(pvrdma_handle_t handle,
 {
     (void)handle;
     (void)attr;
-    if (g_alloc_rc)
+    if (g_alloc_rc) {
         return g_alloc_rc;
+    }
     /* Distinct per call, so a test can tell which allocation a lookup found. */
     *srq_handle = SRQ_HANDLE_BASE + g_alloc_calls++;
     return 0;
@@ -426,8 +436,9 @@ int ernic_rm_modify_srq(pvrdma_handle_t handle, uint32_t srq_handle,
     /* Mirrors rdma_rm_modify_srq(), which rejects a limit of 0 outright.
      * Reproducing that here is what makes the limit-0 case below a test:
      * a handler that forwards 0 to the resource manager fails, as it did. */
-    if (srq_limit == 0)
+    if (srq_limit == 0) {
         return -EINVAL;
+    }
     g_modify_handle = srq_handle;
     g_modify_limit = srq_limit;
     g_modify_calls++;
@@ -439,12 +450,15 @@ int ernic_rm_query_srq(pvrdma_handle_t handle, uint32_t srq_handle,
 {
     (void)handle;
     (void)srq_handle;
-    if (max_wr)
+    if (max_wr) {
         *max_wr = 64;
-    if (max_sge)
+    }
+    if (max_sge) {
         *max_sge = ERNIC_MAX_SRQ_SGE;
-    if (srq_limit)
+    }
+    if (srq_limit) {
         *srq_limit = 8;
+    }
     return 0;
 }
 
@@ -453,13 +467,14 @@ int ernic_rm_query_srq(pvrdma_handle_t handle, uint32_t srq_handle,
 static int g_register_srq_rc;
 
 int ionic_datapath_register_srq(struct ionic_datapath *dp, uint32_t srq_id,
-                                const struct ionic_dp_ring_desc *ring)
+                                const struct ionic_dp_ring_desc *rq)
 {
     (void)dp;
-    if (g_register_srq_rc)
+    if (g_register_srq_rc) {
         return g_register_srq_rc;
+    }
     g_registered_srq_id = srq_id;
-    g_registered_depth_log2 = ring ? ring->depth_log2 : 0;
+    g_registered_depth_log2 = rq ? rq->depth_log2 : 0;
     return 0;
 }
 
@@ -476,8 +491,9 @@ static int failures;
 static void check(const char *name, bool ok)
 {
     printf("%s %s\n", ok ? "ok  " : "FAIL", name);
-    if (!ok)
+    if (!ok) {
         failures++;
+    }
 }
 
 /*
@@ -493,9 +509,9 @@ static struct ionic_adminq_ctx g_ctx;
 /* Made in main(); outlives every ctx_reset(). */
 static struct ernic_dma *g_dma;
 
-#define RESP_GPA       256u
+#define RESP_GPA       256U
 #define SRQ_DEPTH_LOG2 6
-#define SRQ_LIMIT      12u
+#define SRQ_LIMIT      12U
 
 static void ctx_reset(void)
 {
@@ -553,8 +569,9 @@ static uint32_t create_one(void)
 
     build_create(body, RESP_GPA, IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN);
     if (ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_SRQ, body,
-                                  sizeof(body)))
+                                  sizeof(body))) {
         return 0;
+    }
     return resp_srq_id();
 }
 
@@ -642,7 +659,7 @@ static void test_unknown_id_is_refused(void)
     ctx_reset();
     (void)create_one();
 
-    build_id_body(body, sizeof(body), IONIC_SRQ_QID_BASE + 4242u);
+    build_id_body(body, sizeof(body), IONIC_SRQ_QID_BASE + 4242U);
     check("modify-unknown-id-refused",
           ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_SRQ, body,
                                     6) != 0);
@@ -684,13 +701,15 @@ static void test_destroy_releases_everything(void)
  */
 static void test_map_capacity_is_enforced(void)
 {
-    uint32_t i, last = 0;
+    uint32_t i;
+    uint32_t last = 0;
 
     ctx_reset();
     for (i = 0; i < MAX_SRQ_MAP; i++) {
         last = create_one();
-        if (last == 0)
+        if (last == 0) {
             break;
+        }
     }
     check("capacity-fills-to-advertised-max", i == MAX_SRQ_MAP && last != 0);
 
@@ -710,15 +729,19 @@ static void test_map_capacity_is_enforced(void)
  */
 static void test_ids_stay_inside_the_datapath_table(void)
 {
-    uint32_t i, id, worst = 0;
+    uint32_t i;
+    uint32_t id;
+    uint32_t worst = 0;
 
     ctx_reset();
     for (i = 0; i < MAX_SRQ_MAP; i++) {
         id = create_one();
-        if (id == 0)
+        if (id == 0) {
             break;
-        if (id - IONIC_SRQ_QID_BASE > worst)
+        }
+        if (id - IONIC_SRQ_QID_BASE > worst) {
             worst = id - IONIC_SRQ_QID_BASE;
+        }
     }
     check("range-filled-the-map", i == MAX_SRQ_MAP);
     check("range-every-id-indexes-the-table", worst < ERNIC_MAX_SRQ);
@@ -909,8 +932,8 @@ static void test_zero_limit_is_accepted(void)
  *
  * Minimal valid bodies -- only the fields the handler reads.
  */
-#define TEST_CQ_ID 3u
-#define TEST_QP_ID 4u
+#define TEST_CQ_ID 3U
+#define TEST_QP_ID 4U
 
 static void build_cq_body(uint8_t body[34], uint32_t cq_id)
 {
@@ -932,7 +955,7 @@ static void build_qp_body(uint8_t body[64], uint32_t qp_id, uint32_t cq_id,
     ernic_put_le32(body + 32, cq_id); /* rq_cq_id */
     /* A QP bound to an SRQ has no RQ, and the driver leaves its geometry
      * zero. */
-    if (srq_id == 0xffffffffu) {
+    if (srq_id == 0xffffffffU) {
         body[36] = 4; /* rq_depth_log2 */
         body[37] = 7; /* rq_stride_log2 */
     }
@@ -986,7 +1009,7 @@ static void test_qp_binding_checks_the_srq_id(void)
     build_cq_body(cqb, TEST_CQ_ID);
     (void)ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_CQ, cqb,
                                     sizeof(cqb));
-    build_qp_body(qpb, TEST_QP_ID, TEST_CQ_ID, 1u);
+    build_qp_body(qpb, TEST_QP_ID, TEST_CQ_ID, 1U);
     check("bind-out-of-range-srq-refused",
           ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_QP, qpb,
                                     sizeof(qpb)) != 0);
@@ -999,7 +1022,7 @@ static void test_qp_binding_checks_the_srq_id(void)
     build_cq_body(cqb, TEST_CQ_ID);
     (void)ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_CQ, cqb,
                                     sizeof(cqb));
-    build_qp_body(qpb, TEST_QP_ID, TEST_CQ_ID, 0xffffffffu);
+    build_qp_body(qpb, TEST_QP_ID, TEST_CQ_ID, 0xffffffffU);
     check("no-srq-sentinel-accepted",
           ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_QP, qpb,
                                     sizeof(qpb)) == 0);
@@ -1022,7 +1045,7 @@ static void test_create_qp_body_must_reach_type_state(void)
     build_cq_body(cqb, TEST_CQ_ID);
     (void)ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_CREATE_CQ, cqb,
                                     sizeof(cqb));
-    build_qp_body(qpb, TEST_QP_ID, TEST_CQ_ID, 0xffffffffu);
+    build_qp_body(qpb, TEST_QP_ID, TEST_CQ_ID, 0xffffffffU);
 
     /* One short of the last field. */
     check("create-qp-body-62-refused",

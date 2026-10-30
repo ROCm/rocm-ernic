@@ -21,8 +21,8 @@
 
 #include "byteorder.h"
 
-#define GUARD 0xa5u
-#define OFF   3u /* unaligned for every width */
+#define GUARD 0xa5U
+#define OFF   3U /* unaligned for every width */
 
 struct bo_case {
     const char *name;
@@ -48,29 +48,32 @@ static void put(const struct bo_case *tc, uint8_t *p)
 {
     switch (tc->bits) {
     case 16:
-        if (tc->big)
+        if (tc->big) {
             ernic_put_be16(p, (uint16_t)tc->value);
-        else
+        } else {
             ernic_put_le16(p, (uint16_t)tc->value);
+        }
         break;
     case 32:
-        if (tc->big)
+        if (tc->big) {
             ernic_put_be32(p, (uint32_t)tc->value);
-        else
+        } else {
             ernic_put_le32(p, (uint32_t)tc->value);
+        }
         break;
     default:
-        if (tc->big)
+        if (tc->big) {
             ernic_put_be64(p, tc->value);
-        else
+        } else {
             ernic_put_le64(p, tc->value);
+        }
         break;
     }
 }
 
 static int run_case(const struct bo_case *tc)
 {
-    size_t n = tc->bits / 8u;
+    size_t n = tc->bits / 8U;
     uint8_t buf[OFF + sizeof(tc->bytes) + OFF];
     uint8_t want[sizeof(buf)];
     uint64_t got;
@@ -112,22 +115,22 @@ int main(void)
      * which a shift done in a signed int instead of the field's own type
      * would get wrong. */
     static const struct bo_case cases[] = {
-        {"le16-pattern", 16, false, 0x0102u, {0x02, 0x01}},
+        {"le16-pattern", 16, false, 0x0102U, {0x02, 0x01}},
         {"le16-zero", 16, false, 0, {0x00, 0x00}},
-        {"le16-ones", 16, false, 0xffffu, {0xff, 0xff}},
-        {"le16-top-bit", 16, false, 0x8000u, {0x00, 0x80}},
-        {"be16-pattern", 16, true, 0x0102u, {0x01, 0x02}},
+        {"le16-ones", 16, false, 0xffffU, {0xff, 0xff}},
+        {"le16-top-bit", 16, false, 0x8000U, {0x00, 0x80}},
+        {"be16-pattern", 16, true, 0x0102U, {0x01, 0x02}},
         {"be16-zero", 16, true, 0, {0x00, 0x00}},
-        {"be16-ones", 16, true, 0xffffu, {0xff, 0xff}},
-        {"be16-top-bit", 16, true, 0x8000u, {0x80, 0x00}},
-        {"le32-pattern", 32, false, 0x01020304u, {0x04, 0x03, 0x02, 0x01}},
+        {"be16-ones", 16, true, 0xffffU, {0xff, 0xff}},
+        {"be16-top-bit", 16, true, 0x8000U, {0x80, 0x00}},
+        {"le32-pattern", 32, false, 0x01020304U, {0x04, 0x03, 0x02, 0x01}},
         {"le32-zero", 32, false, 0, {0x00, 0x00, 0x00, 0x00}},
-        {"le32-ones", 32, false, 0xffffffffu, {0xff, 0xff, 0xff, 0xff}},
-        {"le32-top-bit", 32, false, 0x80000000u, {0x00, 0x00, 0x00, 0x80}},
-        {"be32-pattern", 32, true, 0x01020304u, {0x01, 0x02, 0x03, 0x04}},
+        {"le32-ones", 32, false, 0xffffffffU, {0xff, 0xff, 0xff, 0xff}},
+        {"le32-top-bit", 32, false, 0x80000000U, {0x00, 0x00, 0x00, 0x80}},
+        {"be32-pattern", 32, true, 0x01020304U, {0x01, 0x02, 0x03, 0x04}},
         {"be32-zero", 32, true, 0, {0x00, 0x00, 0x00, 0x00}},
-        {"be32-ones", 32, true, 0xffffffffu, {0xff, 0xff, 0xff, 0xff}},
-        {"be32-top-bit", 32, true, 0x80000000u, {0x80, 0x00, 0x00, 0x00}},
+        {"be32-ones", 32, true, 0xffffffffU, {0xff, 0xff, 0xff, 0xff}},
+        {"be32-top-bit", 32, true, 0x80000000U, {0x80, 0x00, 0x00, 0x00}},
         {"le64-pattern",
          64,
          false,
@@ -174,8 +177,9 @@ int main(void)
     size_t n = sizeof(cases) / sizeof(cases[0]);
     int failures = 0;
 
-    for (size_t i = 0; i < n; i++)
+    for (size_t i = 0; i < n; i++) {
         failures += run_case(&cases[i]);
+    }
 
     if (failures) {
         printf("byteorder: %d case(s) FAILED\n", failures);

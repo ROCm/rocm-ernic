@@ -50,10 +50,10 @@ static const size_t generated_sizes[] = {0, 1, 14, 54, 64, 547, 548, 1024};
  */
 static void fill_pattern(uint8_t *buf, size_t size, uint32_t seed)
 {
-    uint32_t state = seed * 1664525U + 1013904223U;
+    uint32_t state = (seed * 1664525U) + 1013904223U;
 
     for (size_t i = 0; i < size; i++) {
-        state = state * 1664525U + 1013904223U;
+        state = (state * 1664525U) + 1013904223U;
         buf[i] = (uint8_t)(state >> 24);
     }
 }

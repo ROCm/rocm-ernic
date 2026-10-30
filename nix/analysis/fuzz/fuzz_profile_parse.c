@@ -69,36 +69,49 @@ static const char *check_fields(const struct ionic_profile *p)
     size_t n = strnlen(fw, sizeof(p->identity.fw_version));
     bool speed_ok = false;
 
-    if (p->identity.asic_type > IONIC_PROFILE_ASIC_SALINA)
+    if (p->identity.asic_type > IONIC_PROFILE_ASIC_SALINA) {
         return "asic_type out of range";
-    if (p->link.xcvr > IONIC_PROFILE_XCVR_NONE)
+    }
+    if (p->link.xcvr > IONIC_PROFILE_XCVR_NONE) {
         return "xcvr out of range";
-    for (size_t i = 0; i < sizeof(speeds) / sizeof(speeds[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(speeds) / sizeof(speeds[0]); i++) {
         speed_ok = speed_ok || p->link.speed_mbps == speeds[i];
-    if (!speed_ok)
+    }
+    if (!speed_ok) {
         return "speed_mbps is not a supported speed";
+    }
     if (p->link.mtu_max < IONIC_PROFILE_MTU_MIN ||
-        p->link.mtu_max > IONIC_PROFILE_MTU_MAX)
+        p->link.mtu_max > IONIC_PROFILE_MTU_MAX) {
         return "mtu_max out of range";
+    }
     if (p->queues.eth < IONIC_PROFILE_ETH_QUEUES_MIN ||
-        p->queues.eth > IONIC_PROFILE_ETH_QUEUES_MAX)
+        p->queues.eth > IONIC_PROFILE_ETH_QUEUES_MAX) {
         return "queues.eth out of range";
+    }
     if (p->queues.rdma_eqs < IONIC_PROFILE_RDMA_EQS_MIN ||
-        p->queues.rdma_eqs > IONIC_PROFILE_RDMA_EQS_MAX)
+        p->queues.rdma_eqs > IONIC_PROFILE_RDMA_EQS_MAX) {
         return "queues.rdma_eqs out of range";
+    }
     if (ionic_profile_intr_vectors(p) < IONIC_PROFILE_INTR_VECTORS_MIN ||
-        ionic_profile_intr_vectors(p) > IONIC_PROFILE_INTR_VECTORS_MAX)
+        ionic_profile_intr_vectors(p) > IONIC_PROFILE_INTR_VECTORS_MAX) {
         return "queues.intr_vectors out of range";
+    }
     if (p->stats.interval_ms < IONIC_PROFILE_STATS_INTERVAL_MIN ||
-        p->stats.interval_ms > IONIC_PROFILE_STATS_INTERVAL_MAX)
+        p->stats.interval_ms > IONIC_PROFILE_STATS_INTERVAL_MAX) {
         return "stats.interval_ms out of range";
-    if (n == 0 || n > IONIC_PROFILE_FW_VERSION_MAX)
+    }
+    if (n == 0 || n > IONIC_PROFILE_FW_VERSION_MAX) {
         return "fw_version empty or not NUL-terminated";
-    for (size_t i = 0; i < n; i++)
-        if (fw[i] < 0x20 || fw[i] > 0x7e)
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (fw[i] < 0x20 || fw[i] > 0x7e) {
             return "fw_version is not printable ASCII";
-    if (strcmp(p->chain, "compat") != 0)
+        }
+    }
+    if (strcmp(p->chain, "compat") != 0) {
         return "a text layer changed the chain";
+    }
     return NULL;
 }
 
@@ -108,8 +121,9 @@ static char *format_alloc(const struct ionic_profile *p, int *len)
     int n = ionic_profile_format(p, NULL, 0);
     char *buf;
 
-    if (n < 0)
+    if (n < 0) {
         return NULL;
+    }
     buf = malloc((size_t)n + 1);
     if (buf && ionic_profile_format(p, buf, (size_t)n + 1) != n) {
         free(buf);
@@ -123,13 +137,15 @@ static const char *check_roundtrip(const struct ionic_profile *p)
 {
     struct ionic_profile q;
     char err[512];
-    int n, m;
+    int n;
+    int m;
     char *text = format_alloc(p, &n);
     char *again;
     const char *why = NULL;
 
-    if (!text)
+    if (!text) {
         return "printed form could not be formatted";
+    }
     ionic_profile_defaults(&q);
     if (ionic_profile_apply_text(&q, "printed", text, (size_t)n, err,
                                  sizeof(err)) != 0) {
@@ -137,13 +153,15 @@ static const char *check_roundtrip(const struct ionic_profile *p)
         free(text);
         return "printed form rejected";
     }
-    if (!same_values(p, &q))
+    if (!same_values(p, &q)) {
         why = "printed form reads back to different values";
-    else if (ionic_profile_hash(p) != ionic_profile_hash(&q))
+    } else if (ionic_profile_hash(p) != ionic_profile_hash(&q)) {
         why = "printed form reads back to a different hash";
+    }
     again = why ? NULL : format_alloc(&q, &m);
-    if (!why && (!again || strcmp(text, again) != 0))
+    if (!why && (!again || strcmp(text, again) != 0)) {
         why = "printed form is not a fixed point";
+    }
     free(again);
     free(text);
     return why;
@@ -156,7 +174,8 @@ static const char *check_roundtrip(const struct ionic_profile *p)
  */
 static const char *run_profile(const char *text, size_t len, bool *accepted)
 {
-    struct ionic_profile p, before;
+    struct ionic_profile p;
+    struct ionic_profile before;
     char err[512];
     const char *why;
 
@@ -166,15 +185,18 @@ static const char *run_profile(const char *text, size_t len, bool *accepted)
     *accepted =
         ionic_profile_apply_text(&p, "fuzz", text, len, err, sizeof(err)) == 0;
     if (!*accepted) {
-        if (err[0] == '\0' || memchr(err, '\0', sizeof(err)) == NULL)
+        if (err[0] == '\0' || memchr(err, '\0', sizeof(err)) == NULL) {
             return "a rejected layer has no message";
-        if (!same_values(&p, &before) || strcmp(p.chain, before.chain) != 0)
+        }
+        if (!same_values(&p, &before) || strcmp(p.chain, before.chain) != 0) {
             return "a rejected layer changed the profile";
+        }
         return NULL;
     }
     why = check_fields(&p);
-    if (!why)
+    if (!why) {
         why = check_roundtrip(&p);
+    }
     return why;
 }
 
@@ -184,10 +206,12 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     const char *why;
     bool accepted;
 
-    if (!text)
+    if (!text) {
         return 0;
-    if (size)
+    }
+    if (size) {
         memcpy(text, data, size);
+    }
     why = run_profile(text, size, &accepted);
     if (why) {
         fprintf(stderr, "fuzz_profile_parse: %s\n", why);
@@ -308,10 +332,12 @@ static bool emit_seed(size_t i, const uint8_t *buf, size_t len)
         return false;
     }
     ok = fwrite(buf, 1, len, f) == len;
-    if (fclose(f) != 0)
+    if (fclose(f) != 0) {
         ok = false;
-    if (!ok)
+    }
+    if (!ok) {
         fprintf(stderr, "fuzz_profile_parse: cannot write %s\n", path);
+    }
     return ok;
 }
 
@@ -343,20 +369,23 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
             failures++;
         }
         if (emit_seeds && text &&
-            !emit_seed(i, (const uint8_t *)text, strlen(text)))
+            !emit_seed(i, (const uint8_t *)text, strlen(text))) {
             unwritten++;
+        }
     }
     fflush(stdout);
     if (failures || unwritten) {
         /* libFuzzer ignores this function's return value, so a broken
          * seed, or a corpus that could not be written, has to stop the run
          * itself.  abort() rather than exit(), which isn't thread safe. */
-        if (failures)
+        if (failures) {
             fprintf(stderr, "fuzz_profile_parse: %d seed(s) failed\n",
                     failures);
-        if (unwritten)
+        }
+        if (unwritten) {
             fprintf(stderr, "fuzz_profile_parse: %d seed(s) not written\n",
                     unwritten);
+        }
         abort();
     }
     return 0;

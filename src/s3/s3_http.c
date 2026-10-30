@@ -32,8 +32,9 @@ static char lower(char c)
 static bool ieq(const char *a, const char *b)
 {
     for (; *a && *b; a++, b++) {
-        if (lower(*a) != lower(*b))
+        if (lower(*a) != lower(*b)) {
             return false;
+        }
     }
     return *a == *b;
 }
@@ -51,21 +52,25 @@ static bool percent_decode(const char *src, size_t srclen, char *dst,
     while (i < srclen) {
         char c = src[i];
         if (c == '%') {
-            if (i + 2 >= srclen)
+            if (i + 2 >= srclen) {
                 return false;
+            }
             int hi = ernic_hex_digit(src[i + 1]);
             int lo = ernic_hex_digit(src[i + 2]);
-            if (hi < 0 || lo < 0)
+            if (hi < 0 || lo < 0) {
                 return false;
+            }
             c = (char)((hi << 4) | lo);
             i += 3; /* '%' and two hex digits */
         } else {
             i++;
         }
-        if (c == '\0')
+        if (c == '\0') {
             return false; /* a NUL smuggled in through %00 */
-        if (o + 1 >= dstcap)
+        }
+        if (o + 1 >= dstcap) {
             return false;
+        }
         dst[o++] = c;
     }
     dst[o] = '\0';
@@ -74,8 +79,9 @@ static bool percent_decode(const char *src, size_t srclen, char *dst,
 
 static bool copy_bounded(char *dst, size_t dstcap, const char *src, size_t len)
 {
-    if (len + 1 > dstcap)
+    if (len + 1 > dstcap) {
         return false;
+    }
     memcpy(dst, src, len);
     dst[len] = '\0';
     return true;
@@ -121,16 +127,19 @@ static bool is_token(const char *s, size_t len)
 {
     static const char tchar_punct[] = "!#$%&'*+-.^_`|~";
 
-    if (len == 0)
+    if (len == 0) {
         return false;
+    }
     for (size_t i = 0; i < len; i++) {
         char c = s[i];
         if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') ||
-            (c >= 'a' && c <= 'z'))
+            (c >= 'a' && c <= 'z')) {
             continue;
+        }
         /* memchr(), not strchr(), which would find a NUL's terminator. */
-        if (memchr(tchar_punct, c, sizeof(tchar_punct) - 1) == NULL)
+        if (memchr(tchar_punct, c, sizeof(tchar_punct) - 1) == NULL) {
             return false;
+        }
     }
     return true;
 }
@@ -144,10 +153,12 @@ static bool is_token(const char *s, size_t len)
 static bool head_has_ambiguous_byte(const char *head, size_t len)
 {
     for (size_t i = 0; i < len; i++) {
-        if (head[i] == '\0')
+        if (head[i] == '\0') {
             return true;
-        if (head[i] == '\r' && (i + 1 == len || head[i + 1] != '\n'))
+        }
+        if (head[i] == '\r' && (i + 1 == len || head[i + 1] != '\n')) {
             return true;
+        }
     }
     return false;
 }
@@ -158,8 +169,9 @@ static const char *framing_header(const char *name, size_t len)
     for (size_t i = 0; i < sizeof(framing_headers) / sizeof(framing_headers[0]);
          i++) {
         const char *f = framing_headers[i];
-        if (strlen(f) == len && strncasecmp(name, f, len) == 0)
+        if (strlen(f) == len && strncasecmp(name, f, len) == 0) {
             return f;
+        }
     }
     return NULL;
 }
@@ -168,11 +180,13 @@ static const char *framing_header(const char *name, size_t len)
 static const char *next_line(const char *p, const char *end, size_t *linelen)
 {
     const char *nl = memchr(p, '\n', (size_t)(end - p));
-    if (nl == NULL)
+    if (nl == NULL) {
         return NULL;
+    }
     size_t n = (size_t)(nl - p);
-    if (n > 0 && p[n - 1] == '\r')
+    if (n > 0 && p[n - 1] == '\r') {
         n--;
+    }
     *linelen = n;
     return nl + 1;
 }
@@ -182,12 +196,14 @@ ssize_t s3_http_parse(const void *buf, size_t len, struct s3_http_request *req)
     const char *base = buf;
     size_t hdr_len = 0;
 
-    if (len == 0)
+    if (len == 0) {
         return 0;
+    }
 
     const char *body = find_header_end(base, len, &hdr_len);
-    if (body == NULL)
+    if (body == NULL) {
         return len >= S3_HTTP_REQUEST_MAX ? -EMSGSIZE : 0;
+    }
 
     memset(req, 0, sizeof(*req));
     req->keep_alive =
@@ -199,8 +215,9 @@ ssize_t s3_http_parse(const void *buf, size_t len, struct s3_http_request *req)
      * ends: "X-Foo: a\rContent-Length: 5" is one header here and two to
      * a parser that ends lines at CR.  RFC 9110 5.5 and RFC 9112 2.2
      * allow refusing both. */
-    if (head_has_ambiguous_byte(base, hdr_len))
+    if (head_has_ambiguous_byte(base, hdr_len)) {
         return -EINVAL;
+    }
 
     const char *p = base;
     const char *hdr_end = base + hdr_len;
@@ -208,38 +225,46 @@ ssize_t s3_http_parse(const void *buf, size_t len, struct s3_http_request *req)
 
     /* Request line: METHOD SP request-target SP HTTP-version */
     p = next_line(p, hdr_end, &linelen);
-    if (p == NULL || linelen == 0)
+    if (p == NULL || linelen == 0) {
         return -EINVAL;
+    }
 
     const char *line = base;
     const char *sp1 = memchr(line, ' ', linelen);
-    if (sp1 == NULL)
+    if (sp1 == NULL) {
         return -EINVAL;
+    }
     const char *sp2 = memchr(sp1 + 1, ' ', linelen - (size_t)(sp1 - line) - 1);
-    if (sp2 == NULL)
+    if (sp2 == NULL) {
         return -EINVAL;
+    }
 
     if (!copy_bounded(req->method, sizeof(req->method), line,
-                      (size_t)(sp1 - line)))
+                      (size_t)(sp1 - line))) {
         return -EINVAL;
-    for (char *m = req->method; *m; m++)
+    }
+    for (char *m = req->method; *m; m++) {
         *m = (char)(toupper)((unsigned char)*m);
+    }
 
     const char *target = sp1 + 1;
     size_t target_len = (size_t)(sp2 - target);
     const char *qmark = memchr(target, '?', target_len);
     size_t path_len = qmark ? (size_t)(qmark - target) : target_len;
 
-    if (!percent_decode(target, path_len, req->path, sizeof(req->path)))
+    if (!percent_decode(target, path_len, req->path, sizeof(req->path))) {
         return -EINVAL;
+    }
     if (qmark != NULL && !copy_bounded(req->query, sizeof(req->query),
-                                       qmark + 1, target_len - path_len - 1))
+                                       qmark + 1, target_len - path_len - 1)) {
         return -EINVAL;
+    }
 
     /* "HTTP/1.0" defaults to close, and nothing older is served at all. */
     size_t ver_len = linelen - (size_t)(sp2 + 1 - line);
-    if (ver_len >= 8 && !memcmp(sp2 + 1, "HTTP/1.0", 8))
+    if (ver_len >= 8 && !memcmp(sp2 + 1, "HTTP/1.0", 8)) {
         req->keep_alive = false;
+    }
 
     /* Header lines.  A header we have no room for is dropped rather than
      * failing the request: the ones this server acts on are few and come
@@ -251,14 +276,17 @@ ssize_t s3_http_parse(const void *buf, size_t len, struct s3_http_request *req)
     while (p < hdr_end) {
         const char *hline = p;
         p = next_line(p, hdr_end, &linelen);
-        if (p == NULL)
+        if (p == NULL) {
             break;
-        if (linelen == 0)
+        }
+        if (linelen == 0) {
             break; /* the blank line that ends the block */
+        }
 
         const char *colon = memchr(hline, ':', linelen);
-        if (colon == NULL)
+        if (colon == NULL) {
             return -EINVAL;
+        }
 
         size_t nlen = (size_t)(colon - hline);
 
@@ -266,12 +294,14 @@ ssize_t s3_http_parse(const void *buf, size_t len, struct s3_http_request *req)
          * Stored, "Content-Length :" is a header no lookup finds, and a
          * leading space (an obsolete line folding) is the same; so is any
          * other name that is not a token. */
-        if (!is_token(hline, nlen))
+        if (!is_token(hline, nlen)) {
             return -EINVAL;
+        }
 
         const char *framing = framing_header(hline, nlen);
-        if (framing != NULL && s3_http_header_get(req, framing) != NULL)
+        if (framing != NULL && s3_http_header_get(req, framing) != NULL) {
             return -EINVAL;
+        }
 
         const char *v = colon + 1;
         size_t vlen = linelen - nlen - 1;
@@ -279,19 +309,22 @@ ssize_t s3_http_parse(const void *buf, size_t len, struct s3_http_request *req)
             v++;
             vlen--;
         }
-        while (vlen > 0 && (v[vlen - 1] == ' ' || v[vlen - 1] == '\t'))
+        while (vlen > 0 && (v[vlen - 1] == ' ' || v[vlen - 1] == '\t')) {
             vlen--;
+        }
 
         struct s3_http_header *h =
             req->nhdr < S3_HTTP_MAX_HEADERS ? &req->hdr[req->nhdr] : NULL;
         if (h == NULL || !copy_bounded(h->name, sizeof(h->name), hline, nlen) ||
             !copy_bounded(h->value, sizeof(h->value), v, vlen)) {
-            if (framing != NULL)
+            if (framing != NULL) {
                 return -EINVAL;
+            }
             continue;
         }
-        for (char *n = h->name; *n; n++)
+        for (char *n = h->name; *n; n++) {
             *n = lower(*n);
+        }
         req->nhdr++;
     }
 
@@ -313,8 +346,10 @@ ssize_t s3_http_parse(const void *buf, size_t len, struct s3_http_request *req)
          * bounds a body on the socket -- an object announced by a token
          * never lands there and is as large as the store will allow.
          */
-        if (!ernic_parse_u64(cl, &v) || (!req->rdma && v > S3_HTTP_REQUEST_MAX))
+        if (!ernic_parse_u64(cl, &v) ||
+            (!req->rdma && v > S3_HTTP_REQUEST_MAX)) {
             return -EINVAL;
+        }
         req->content_length = (size_t)v;
     }
 
@@ -322,18 +357,21 @@ ssize_t s3_http_parse(const void *buf, size_t len, struct s3_http_request *req)
      * silent misread would hand the object store a length prefix as if
      * it were data. */
     const char *xfer_enc = s3_http_header_get(req, "transfer-encoding");
-    if (xfer_enc != NULL && !ieq(xfer_enc, "identity"))
+    if (xfer_enc != NULL && !ieq(xfer_enc, "identity")) {
         return -EINVAL;
+    }
 
     const char *conn = s3_http_header_get(req, "connection");
-    if (conn != NULL && ieq(conn, "close"))
+    if (conn != NULL && ieq(conn, "close")) {
         req->keep_alive = false;
+    }
 
     size_t on_wire = req->rdma ? 0 : req->content_length;
 
     size_t have = len - hdr_len;
-    if (have < on_wire)
+    if (have < on_wire) {
         return hdr_len + on_wire > S3_HTTP_REQUEST_MAX ? -EMSGSIZE : 0;
+    }
 
     req->body = on_wire ? (const uint8_t *)body : NULL;
     req->body_len = on_wire;
@@ -344,8 +382,9 @@ const char *s3_http_header_get(const struct s3_http_request *req,
                                const char *name)
 {
     for (unsigned i = 0; i < req->nhdr; i++) {
-        if (ieq(req->hdr[i].name, name))
+        if (ieq(req->hdr[i].name, name)) {
             return req->hdr[i].value;
+        }
     }
     return NULL;
 }
@@ -366,17 +405,20 @@ bool s3_http_query_get(const struct s3_http_request *req, const char *key,
             if (out != NULL && outlen > 0) {
                 const char *v = eq ? eq + 1 : "";
                 size_t vlen = eq ? seglen - nlen - 1 : 0;
-                if (!percent_decode(v, vlen, out, outlen))
+                if (!percent_decode(v, vlen, out, outlen)) {
                     return false;
+                }
             }
             return true;
         }
-        if (amp == NULL)
+        if (amp == NULL) {
             break;
+        }
         p = amp + 1;
     }
-    if (out != NULL && outlen > 0)
+    if (out != NULL && outlen > 0) {
         out[0] = '\0';
+    }
     return false;
 }
 
@@ -424,15 +466,17 @@ void s3_http_response_header(struct s3_http_response *resp, const char *name,
     va_start(ap, fmt);
     int n = vsnprintf(h->value, sizeof(h->value), fmt, ap);
     va_end(ap);
-    if (n < 0 || (size_t)n >= sizeof(h->value))
+    if (n < 0 || (size_t)n >= sizeof(h->value)) {
         resp->oom = true;
+    }
 }
 
 void s3_http_response_write(struct s3_http_response *resp, const void *data,
                             size_t len)
 {
-    if (resp->oom || len == 0)
+    if (resp->oom || len == 0) {
         return;
+    }
 
     /* A body past SIZE_MAX is out of memory too; summed, it would wrap to a
      * size the buffer already has room for. */
@@ -445,8 +489,9 @@ void s3_http_response_write(struct s3_http_response *resp, const void *data,
     if (need > resp->body_cap) {
         size_t cap = resp->body_cap ? resp->body_cap : 256;
         /* Doubling past SIZE_MAX / 2 would wrap, and then never stop. */
-        while (cap < need)
+        while (cap < need) {
             cap = cap > SIZE_MAX / 2 ? need : cap * 2;
+        }
         uint8_t *nb = realloc(resp->body, cap);
         if (nb == NULL) {
             resp->oom = true;
@@ -541,8 +586,9 @@ static bool append(char *buf, size_t cap, size_t *off, const char *fmt, ...)
     va_start(ap, fmt);
     int n = vsnprintf(buf + *off, room, fmt, ap);
     va_end(ap);
-    if (n < 0 || (size_t)n >= room)
+    if (n < 0 || (size_t)n >= room) {
         return false;
+    }
     *off += (size_t)n;
     return true;
 }
@@ -550,16 +596,19 @@ static bool append(char *buf, size_t cap, size_t *off, const char *fmt, ...)
 uint8_t *s3_http_response_serialize(const struct s3_http_response *resp,
                                     size_t *out_len)
 {
-    if (resp->oom)
+    if (resp->oom) {
         return NULL;
+    }
 
     size_t cap = 128 + resp->body_len;
-    for (unsigned i = 0; i < resp->nhdr; i++)
+    for (unsigned i = 0; i < resp->nhdr; i++) {
         cap += strlen(resp->hdr[i].name) + strlen(resp->hdr[i].value) + 4;
+    }
 
     uint8_t *out = malloc(cap);
-    if (out == NULL)
+    if (out == NULL) {
         return NULL;
+    }
 
     /* The 128 bytes of slack cover the status line and the two headers
      * below, so running out of room means that sum has gone stale. */
@@ -567,24 +616,27 @@ uint8_t *s3_http_response_serialize(const struct s3_http_response *resp,
     size_t off = 0;
     bool fits = append(text, cap, &off, "HTTP/1.1 %d %s\r\n", resp->status,
                        s3_http_reason(resp->status));
-    for (unsigned i = 0; fits && i < resp->nhdr; i++)
+    for (unsigned i = 0; fits && i < resp->nhdr; i++) {
         fits = append(text, cap, &off, "%s: %s\r\n", resp->hdr[i].name,
                       resp->hdr[i].value);
+    }
 
     /* Content-Length and Connection are ours, not the caller's: getting
      * either wrong desynchronises a keep-alive connection for good. */
-    if (fits)
+    if (fits) {
         fits = append(
             text, cap, &off, "Content-Length: %zu\r\nConnection: %s\r\n\r\n",
             resp->body_len, resp->keep_alive ? "keep-alive" : "close");
+    }
 
     if (!fits || cap - off < resp->body_len) {
         free(out);
         return NULL;
     }
 
-    if (resp->body_len)
+    if (resp->body_len) {
         memcpy(out + off, resp->body, resp->body_len);
+    }
 
     *out_len = off + resp->body_len;
     return out;

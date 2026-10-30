@@ -56,8 +56,9 @@ static void checkf(bool cond, const char *fmt, ...)
 {
     va_list ap;
 
-    if (cond)
+    if (cond) {
         return;
+    }
     printf("p4_engine: FAIL ");
     va_start(ap, fmt);
     vprintf(fmt, ap);
@@ -69,8 +70,9 @@ static void checkf(bool cond, const char *fmt, ...)
 /* A frame that is distinguishable from an all-zero buffer. */
 static void fill_frame(uint8_t *buf, size_t len)
 {
-    for (size_t i = 0; i < len; i++)
-        buf[i] = (uint8_t)(i * 7u + 1u);
+    for (size_t i = 0; i < len; i++) {
+        buf[i] = (uint8_t)((i * 7U) + 1U);
+    }
 }
 
 static void test_lifecycle(void)
@@ -229,7 +231,8 @@ static void test_load_rejects_bad_input(void)
 {
     struct p4_engine *eng = p4_engine_create();
     uint8_t data[64];
-    size_t got, total;
+    size_t got;
+    size_t total;
 
     fill_frame(data, sizeof(data));
 
@@ -257,7 +260,8 @@ static void test_load_chunk_bounds(void)
 {
     struct p4_engine *eng = p4_engine_create();
     uint8_t data[64];
-    size_t got, total;
+    size_t got;
+    size_t total;
 
     fill_frame(data, sizeof(data));
 
@@ -321,7 +325,8 @@ static void test_load_sequence(void)
 {
     struct p4_engine *eng = p4_engine_create();
     uint8_t data[96];
-    size_t got, total;
+    size_t got;
+    size_t total;
 
     fill_frame(data, sizeof(data));
 
@@ -367,8 +372,8 @@ static void load_not_json(struct p4_engine *eng)
 {
     static const char junk[] = "not json";
 
-    check(p4_engine_load_begin(eng, sizeof(junk) - 1u) == 0 &&
-              p4_engine_load_chunk(eng, 0, junk, sizeof(junk) - 1u) == 0 &&
+    check(p4_engine_load_begin(eng, sizeof(junk) - 1U) == 0 &&
+              p4_engine_load_chunk(eng, 0, junk, sizeof(junk) - 1U) == 0 &&
               p4_engine_load_commit(eng) == -EINVAL &&
               p4_engine_load_error(eng) != NULL,
           "non-JSON was not refused by the parser with a reason");
@@ -494,11 +499,13 @@ static int load_text(struct p4_engine *eng, const char *json)
     size_t n = strlen(json);
     int rc = p4_engine_load_begin(eng, n);
 
-    if (rc != 0)
+    if (rc != 0) {
         return rc;
+    }
     rc = p4_engine_load_chunk(eng, 0, json, n);
-    if (rc != 0)
+    if (rc != 0) {
         return rc;
+    }
     return p4_engine_load_commit(eng);
 }
 
@@ -978,8 +985,9 @@ static char *read_fixture(const char *name, size_t *len)
 
     (void)snprintf(path, sizeof(path), "%s/%s", P4_FIXTURE_DIR, name);
     f = fopen(path, "rbe"); /* e: O_CLOEXEC */
-    if (!f)
+    if (!f) {
         return NULL;
+    }
     /* No fixture is larger than a program the engine takes. */
     n = fseek(f, 0, SEEK_END) == 0 ? ftell(f) : -1;
     if (n < 0 || (uint64_t)n > P4_PROGRAM_MAX || fseek(f, 0, SEEK_SET) != 0) {
@@ -1007,13 +1015,16 @@ static int load_fixture(struct p4_engine *eng, const char *name)
     char *buf = read_fixture(name, &n);
     int rc;
 
-    if (!buf)
+    if (!buf) {
         return -ENOENT;
+    }
     rc = p4_engine_load_begin(eng, n);
-    if (rc == 0)
+    if (rc == 0) {
         rc = p4_engine_load_chunk(eng, 0, buf, n);
-    if (rc == 0)
+    }
+    if (rc == 0) {
         rc = p4_engine_load_commit(eng);
+    }
     free(buf);
     return rc;
 }
@@ -1065,7 +1076,8 @@ static void test_load_real_artifacts(void)
 static size_t tree_cost(struct json_object *root)
 {
     struct json_object *stack[4096];
-    size_t n = 0, cost = 0;
+    size_t n = 0;
+    size_t cost = 0;
 
     stack[n++] = root;
     while (n > 0) {
@@ -1077,15 +1089,17 @@ static size_t tree_cost(struct json_object *root)
             {
                 (void)key;
                 cost += P4_JSON_COST_OTHER;
-                if (n == sizeof(stack) / sizeof(stack[0]))
+                if (n == sizeof(stack) / sizeof(stack[0])) {
                     return SIZE_MAX;
+                }
                 stack[n++] = v;
             }
         } else if (json_object_is_type(o, json_type_array)) {
             cost += P4_JSON_COST_ARRAY;
             for (size_t i = 0; i < json_object_array_length(o); i++) {
-                if (n == sizeof(stack) / sizeof(stack[0]))
+                if (n == sizeof(stack) / sizeof(stack[0])) {
                     return SIZE_MAX;
+                }
                 stack[n++] = json_object_array_get_idx(o, i);
             }
         } else {
@@ -1109,7 +1123,10 @@ static char *pad_to_budget(const char *base, size_t base_len, size_t base_cost,
     size_t fixed = base_cost + P4_JSON_COST_OTHER + P4_JSON_COST_ARRAY;
     size_t elem_len = strlen(elem);
     size_t want = P4_JSON_MAX_COST + over;
-    size_t nelem, nzero, cap, n;
+    size_t nelem;
+    size_t nzero;
+    size_t cap;
+    size_t n;
     char *doc;
 
     /*
@@ -1121,22 +1138,26 @@ static char *pad_to_budget(const char *base, size_t base_len, size_t base_cost,
     /* NOLINTBEGIN(clang-analyzer-security.ArrayBound) */
     while (base_len > 0 &&
            (base[base_len - 1] == ' ' || base[base_len - 1] == '\t' ||
-            base[base_len - 1] == '\r' || base[base_len - 1] == '\n'))
+            base[base_len - 1] == '\r' || base[base_len - 1] == '\n')) {
         base_len--;
+    }
     /* NOLINTEND(clang-analyzer-security.ArrayBound) */
-    if (base_len == 0 || base[base_len - 1] != '}' || fixed > want)
+    if (base_len == 0 || base[base_len - 1] != '}' || fixed > want) {
         return NULL;
+    }
     base_len--;
     nelem = (want - fixed) / elem_cost;
     nzero = (want - fixed) % elem_cost;
 
     /* Every element with a comma after it, then "]}". */
-    cap = base_len + sizeof(key) + nelem * (elem_len + 1) + nzero * 2 + 2;
-    if (cap > P4_PROGRAM_MAX)
+    cap = base_len + sizeof(key) + (nelem * (elem_len + 1)) + (nzero * 2) + 2;
+    if (cap > P4_PROGRAM_MAX) {
         return NULL;
+    }
     doc = malloc(cap);
-    if (!doc)
+    if (!doc) {
         return NULL;
+    }
     memcpy(doc, base, base_len);
     n = base_len;
     memcpy(doc + n, key, sizeof(key) - 1);
@@ -1152,8 +1173,9 @@ static char *pad_to_budget(const char *base, size_t base_len, size_t base_cost,
         doc[n++] = '0';
         doc[n++] = ',';
     }
-    if (nelem + nzero > 0)
+    if (nelem + nzero > 0) {
         n--; /* the last comma */
+    }
     doc[n++] = ']';
     doc[n++] = '}';
     *out_len = n;
@@ -1188,9 +1210,12 @@ static void test_load_cost_budget(void)
     struct p4_program *prog = NULL;
     struct json_tokener *tok;
     struct json_object *root;
-    size_t n = 0, base_cost, dlen = 0;
+    size_t n = 0;
+    size_t base_cost;
+    size_t dlen = 0;
     char err[256];
-    char *base, *doc;
+    char *base;
+    char *doc;
     int rc;
 
     base = read_fixture("minimal_forward.json", &n);
@@ -1232,8 +1257,9 @@ static void test_load_cost_budget(void)
             if (over == 0) {
                 checkf(rc == 0, "padded with %s to the budget: %d (%s)",
                        pads[i].elem, rc, err);
-                if (rc == 0)
+                if (rc == 0) {
                     p4_json_free(prog);
+                }
             } else {
                 checkf(rc == -EINVAL &&
                            strstr(err, "too many JSON values") != NULL,
@@ -1276,12 +1302,14 @@ static void test_load_cost_budget(void)
 static void test_execute(void)
 {
     struct p4_engine *eng = p4_engine_create();
-    uint8_t in[64], out[128];
+    uint8_t in[64];
+    uint8_t out[128];
     struct p4_result res;
     struct p4_stats st;
 
-    for (size_t i = 0; i < sizeof(in); i++)
+    for (size_t i = 0; i < sizeof(in); i++) {
         in[i] = (uint8_t)i;
+    }
 
     /* bmv2's own loopback program forwards what it is given, unchanged. */
     check(load_fixture(eng, "loopback.json") == 0, "loopback.json loads");
@@ -1348,12 +1376,14 @@ static void test_execute(void)
 static void test_execute_no_egress_assignment(void)
 {
     struct p4_engine *eng = p4_engine_create();
-    uint8_t in[64], out[128];
+    uint8_t in[64];
+    uint8_t out[128];
     struct p4_result res;
     struct p4_stats st;
 
-    for (size_t i = 0; i < sizeof(in); i++)
+    for (size_t i = 0; i < sizeof(in); i++) {
         in[i] = (uint8_t)i;
+    }
 
     check(load_fixture(eng, "fp8_policy.json") == 0, "fp8_policy.json loads");
 
@@ -1385,11 +1415,13 @@ static void test_execute_no_egress_assignment(void)
 static void test_execute_egress(void)
 {
     struct p4_engine *eng = p4_engine_create();
-    uint8_t in[64], out[128];
+    uint8_t in[64];
+    uint8_t out[128];
     struct p4_result res;
 
-    for (size_t i = 0; i < sizeof(in); i++)
+    for (size_t i = 0; i < sizeof(in); i++) {
         in[i] = (uint8_t)i;
+    }
 
     /* To the uplink: the ordinary direction. */
     check(load_text(eng, P4_TO_PORT("0x1")) == 0, "a forwarding program "
@@ -1442,11 +1474,13 @@ static void test_execute_egress(void)
 static void test_execute_wide_field(void)
 {
     struct p4_engine *eng = p4_engine_create();
-    uint8_t in[64], out[128];
+    uint8_t in[64];
+    uint8_t out[128];
     struct p4_result res;
 
-    for (size_t i = 0; i < sizeof(in); i++)
+    for (size_t i = 0; i < sizeof(in); i++) {
         in[i] = (uint8_t)i;
+    }
 
     check(load_fixture(eng, "wide_field.json") == 0,
           "the 128-bit field program loads");
@@ -1478,13 +1512,15 @@ static void set_spec(struct p4_match_spec *m, const uint8_t *v, uint16_t len)
 static void test_table_entries(void)
 {
     struct p4_engine *eng = p4_engine_create();
-    uint8_t in[64], out[128];
+    uint8_t in[64];
+    uint8_t out[128];
     struct p4_result res;
     struct p4_update up;
     char err[160];
 
-    for (size_t i = 0; i < sizeof(in); i++)
+    for (size_t i = 0; i < sizeof(in); i++) {
         in[i] = (uint8_t)i;
+    }
 
     /* minimal_forward's table has one exact key on ethernet.dstAddr and a
      * default action that drops. */
@@ -1523,7 +1559,7 @@ static void test_table_entries(void)
         uint8_t other[64];
 
         memcpy(other, in, sizeof(other));
-        other[0] ^= 0xFFu;
+        other[0] ^= 0xFFU;
         check(p4_engine_process(eng, P4_PORT_HOST, other, sizeof(other), out,
                                 sizeof(out), &res) == 0,
               "another frame runs");
@@ -1848,8 +1884,9 @@ static int extern_record(void *ctx, uint8_t type, uint8_t method,
     l->type = type;
     l->method = method;
     l->nargs = nargs;
-    if (nargs)
+    if (nargs) {
         l->op = args[0].b[P4_VALUE_BYTES - 1];
+    }
     return l->fail_with;
 }
 
@@ -1948,7 +1985,8 @@ static void test_extern_call(void)
     checkf(p4_engine_update(eng, &up, err, sizeof(err)) == 0,
            "the entry for opcode 0 is not installed: %s", err);
     {
-        uint8_t in[64], out[64];
+        uint8_t in[64];
+        uint8_t out[64];
         struct p4_result res;
 
         fill_frame(in, sizeof(in));
@@ -2109,7 +2147,8 @@ static void test_pipelines_frame(void)
 {
     static const uint8_t zero[6] = {0};
     struct p4_engine *eng = p4_engine_create();
-    uint8_t in[64], out[128];
+    uint8_t in[64];
+    uint8_t out[128];
     struct p4_result res;
 
     fill_frame(in, sizeof(in));
@@ -2224,7 +2263,8 @@ static void test_pipelines_ingress_drop(void)
     struct p4_program *prog;
     struct p4_entries *ent;
     struct p4_exec_result er;
-    uint8_t in[64], out[128];
+    uint8_t in[64];
+    uint8_t out[128];
 
     fill_frame(in, sizeof(in));
 
@@ -2304,23 +2344,26 @@ static void test_pipelines_rdma(void)
 static bool latin1_decode(const char *s, size_t n, uint8_t *out,
                           size_t *out_len)
 {
-    size_t i = 0, o = 0;
+    size_t i = 0;
+    size_t o = 0;
 
     while (i < n) {
         uint8_t c = (uint8_t)s[i];
         uint8_t next;
 
-        if (c < 0x80u) {
+        if (c < 0x80U) {
             out[o++] = c;
             i++;
             continue;
         }
-        if ((c != 0xC2u && c != 0xC3u) || i + 1 >= n)
+        if ((c != 0xC2U && c != 0xC3U) || i + 1 >= n) {
             return false;
+        }
         next = (uint8_t)s[i + 1];
-        if ((next & 0xC0u) != 0x80u)
+        if ((next & 0xC0U) != 0x80U) {
             return false;
-        out[o++] = (uint8_t)(((c & 0x03u) << 6) | (next & 0x3Fu));
+        }
+        out[o++] = (uint8_t)(((c & 0x03U) << 6) | (next & 0x3FU));
         i += 2;
     }
     *out_len = o;
@@ -2334,10 +2377,12 @@ static const char *case_str(const struct json_object *c, const char *key,
     struct json_object *v;
 
     if (!json_object_object_get_ex(c, key, &v) ||
-        !json_object_is_type(v, json_type_string))
+        !json_object_is_type(v, json_type_string)) {
         return NULL;
-    if (len)
+    }
+    if (len) {
         *len = (size_t)json_object_get_string_len(v);
+    }
     return json_object_get_string(v);
 }
 
@@ -2348,12 +2393,14 @@ static void reject_case(const struct json_object *c, size_t i)
     const char *enc = case_str(c, "encoding", NULL);
     const char *want_errno = case_str(c, "errno", NULL);
     const char *want = case_str(c, "error", NULL);
-    size_t jlen = 0, dlen = 0;
+    size_t jlen = 0;
+    size_t dlen = 0;
     const char *json = case_str(c, "json", &jlen);
     struct p4_program *prog = NULL;
     char err[256];
     uint8_t *doc;
-    int want_rc, rc;
+    int want_rc;
+    int rc;
 
     if (!name || !json || !want_errno || !want) {
         checkf(false, "reject case %zu is missing a member", i);
@@ -2395,8 +2442,9 @@ static void reject_case(const struct json_object *c, size_t i)
      * a newline or an escape from the document. */
     checkf(p4_name_printable(err, strlen(err)),
            "%s: the refusal is not printable", name);
-    if (rc == 0)
+    if (rc == 0) {
         p4_json_free(prog);
+    }
     free(doc);
 }
 
@@ -2415,7 +2463,8 @@ static void test_reject_corpus(void)
     struct json_object *root;
     struct p4_program *prog = NULL;
     char err[256];
-    size_t n = 0, ncases;
+    size_t n = 0;
+    size_t ncases;
     char *buf;
 
     /* The skeleton itself loads, so the defect is the only thing that can
@@ -2447,8 +2496,9 @@ static void test_reject_corpus(void)
     } else {
         ncases = json_object_array_length(root);
         check(ncases > 0, "reject_cases.json has no cases");
-        for (size_t i = 0; i < ncases; i++)
+        for (size_t i = 0; i < ncases; i++) {
             reject_case(json_object_array_get_idx(root, i), i);
+        }
     }
     json_object_put(root);
     json_tokener_free(tok);
@@ -2478,7 +2528,8 @@ static void test_reject_corpus(void)
 static void test_parser_loop(void)
 {
     struct p4_engine *eng = p4_engine_create();
-    uint8_t in[64], out[64];
+    uint8_t in[64];
+    uint8_t out[64];
     struct p4_result res;
     struct p4_stats st;
 
@@ -2524,7 +2575,8 @@ static void test_parser_loop(void)
 static void test_parser_extract_twice(void)
 {
     struct p4_engine *eng = p4_engine_create();
-    uint8_t in[64], out[128];
+    uint8_t in[64];
+    uint8_t out[128];
     struct p4_result res;
 
     fill_frame(in, sizeof(in));
@@ -2586,7 +2638,8 @@ static void test_duplicate_keys(void)
 static void test_deparse_overflow(void)
 {
     struct p4_engine *eng = p4_engine_create();
-    uint8_t in[64], out[64];
+    uint8_t in[64];
+    uint8_t out[64];
     struct p4_result res;
     struct p4_stats st;
 
@@ -2640,8 +2693,9 @@ static int build_padded(char *buf, size_t cap, unsigned last_bits)
     size_t pos;
     int n;
 
-    if (strncmp(whole, P4_HDRS, sizeof(P4_HDRS) - 1) != 0)
+    if (strncmp(whole, P4_HDRS, sizeof(P4_HDRS) - 1) != 0) {
         return -1;
+    }
     n = snprintf(buf, cap,
                  "{\"__meta__\":{\"version\":[2,24]},"
                  "\"header_types\":[{\"name\":\"eth_t\",\"id\":0,"
@@ -2649,13 +2703,15 @@ static int build_padded(char *buf, size_t cap, unsigned last_bits)
                  "{\"name\":\"std_t\",\"id\":1,"
                  "\"fields\":[[\"ingress_port\",9],[\"egress_spec\",9]]},"
                  "{\"name\":\"pad_t\",\"id\":2,\"fields\":[");
-    if (n < 0 || (size_t)n >= cap)
+    if (n < 0 || (size_t)n >= cap) {
         return -1;
+    }
     pos = (size_t)n;
     for (unsigned i = 0; i < 15; i++) {
         n = snprintf(buf + pos, cap - pos, "[\"p%u\",512],", i);
-        if (n < 0 || (size_t)n >= cap - pos)
+        if (n < 0 || (size_t)n >= cap - pos) {
             return -1;
+        }
         pos += (size_t)n;
     }
     n = snprintf(buf + pos, cap - pos,
@@ -2667,8 +2723,9 @@ static int build_padded(char *buf, size_t cap, unsigned last_bits)
                  "{\"name\":\"standard_metadata\",\"id\":1,"
                  "\"header_type\":\"std_t\",\"metadata\":true}],%s",
                  last_bits, rest);
-    if (n < 0 || (size_t)n >= cap - pos)
+    if (n < 0 || (size_t)n >= cap - pos) {
         return -1;
+    }
     return 0;
 }
 
@@ -2680,7 +2737,8 @@ static int build_padded(char *buf, size_t cap, unsigned last_bits)
 static void test_phv_size(void)
 {
     struct p4_engine *eng = p4_engine_create();
-    uint8_t in[64], out[64];
+    uint8_t in[64];
+    uint8_t out[64];
     struct p4_result res;
     char doc[4096];
 
@@ -2740,8 +2798,9 @@ static void test_phv_backstop(void)
     checkf(p4_json_parse(text, n, &prog, err, sizeof(err)) == 0,
            "rdma_deny.json is refused: %s", err);
     free(text);
-    if (!prog)
+    if (!prog) {
         return;
+    }
     ent = p4_entries_create(prog);
     if (!ent) {
         check(false, "p4_entries_create failed");
@@ -2772,8 +2831,9 @@ struct frame {
 
 static void put_be(struct frame *f, uint64_t v, unsigned bytes)
 {
-    for (unsigned i = 0; i < bytes; i++)
-        f->b[f->len++] = (uint8_t)(v >> (8u * (bytes - 1u - i)));
+    for (unsigned i = 0; i < bytes; i++) {
+        f->b[f->len++] = (uint8_t)(v >> (8U * (bytes - 1U - i)));
+    }
 }
 
 static void frame_eth(struct frame *f, uint16_t type)
@@ -2787,40 +2847,41 @@ static void frame_eth(struct frame *f, uint16_t type)
 /* A tag with priority and DEI zero, which the program does not read. */
 static void frame_vlan(struct frame *f, uint16_t vid, uint16_t type)
 {
-    put_be(f, vid & 0x0FFFu, 2);
+    put_be(f, vid & 0x0FFFU, 2);
     put_be(f, type, 2);
 }
 
 /* Where frame_ipv4() puts the fields dec_ttl changes, from the header. */
-#define IP4_DIFFSERV 1u
-#define IP4_ID       4u
-#define IP4_TTL      8u
-#define IP4_CSUM     10u
+#define IP4_DIFFSERV 1U
+#define IP4_ID       4U
+#define IP4_TTL      8U
+#define IP4_CSUM     10U
 
 /* An IPv4 header, then 16 bytes of payload. */
 static void frame_ipv4(struct frame *f, uint32_t src, uint32_t dst, uint8_t ttl,
                        uint8_t proto)
 {
-    put_be(f, 0x45u, 1); /* version 4, IHL 5 */
-    put_be(f, 0x10u, 1); /* diffserv */
-    put_be(f, 36u, 2);   /* total length */
-    put_be(f, 0x1234u, 2);
-    put_be(f, 0u, 2); /* flags, fragment offset */
+    put_be(f, 0x45U, 1); /* version 4, IHL 5 */
+    put_be(f, 0x10U, 1); /* diffserv */
+    put_be(f, 36U, 2);   /* total length */
+    put_be(f, 0x1234U, 2);
+    put_be(f, 0U, 2); /* flags, fragment offset */
     put_be(f, ttl, 1);
     put_be(f, proto, 1);
-    put_be(f, 0u, 2); /* checksum */
+    put_be(f, 0U, 2); /* checksum */
     put_be(f, src, 4);
     put_be(f, dst, 4);
-    for (unsigned i = 0; i < 16; i++)
-        put_be(f, 0xA0u + i, 1);
+    for (unsigned i = 0; i < 16; i++) {
+        put_be(f, 0xA0U + i, 1);
+    }
 }
 
 #define IP4(a, b, c, d)                                                     \
     (((uint32_t)(a) << 24) | ((uint32_t)(b) << 16) | ((uint32_t)(c) << 8) | \
      (uint32_t)(d))
 
-#define PROTO_TCP 6u
-#define PROTO_UDP 17u
+#define PROTO_TCP 6U
+#define PROTO_UDP 17U
 
 /* Run @f in from the host port. */
 static int run_frame(struct p4_engine *eng, const struct frame *f, uint8_t *out,
@@ -2855,15 +2916,16 @@ static bool drops(struct p4_engine *eng, const struct frame *f)
 static void ip_frame(struct frame *f, uint32_t src, uint32_t dst, uint8_t ttl,
                      uint8_t proto)
 {
-    frame_eth(f, 0x0800u);
+    frame_eth(f, 0x0800U);
     frame_ipv4(f, src, dst, ttl, proto);
 }
 
 /* @v, right-aligned in the @len significant bytes of a match value. */
 static void put_spec(uint8_t *dst, uint64_t v, uint16_t len)
 {
-    for (uint16_t i = 0; i < len; i++)
-        dst[P4_MATCH_BYTES - 1u - i] = (uint8_t)(v >> (8u * i));
+    for (uint16_t i = 0; i < len; i++) {
+        dst[P4_MATCH_BYTES - 1U - i] = (uint8_t)(v >> (8U * i));
+    }
 }
 
 /* An entry in the LPM table "route": @prefix/@plen to @port. */
@@ -2937,9 +2999,10 @@ static void test_features_parser(void)
 
     /* Neither IPv4 nor tagged: the default arm, and the frame goes on
      * unchanged, to the other port, since nothing chose one. */
-    frame_eth(&f, 0x88B5u);
-    for (unsigned i = 0; i < 50; i++)
+    frame_eth(&f, 0x88B5U);
+    for (unsigned i = 0; i < 50; i++) {
         put_be(&f, i, 1);
+    }
     check(run_frame(eng, &f, out, sizeof(out), &res) == 0 &&
               res.verdict == P4_VERDICT_FORWARD &&
               res.egress_port == P4_PORT_UPLINK && res.len == f.len &&
@@ -2948,23 +3011,23 @@ static void test_features_parser(void)
 
     /* Tagged, and not IPv4: the masked arm accepts it, and the pipeline
      * drops it, because valid(vlan). */
-    frame_eth(&f, 0x8100u);
-    frame_vlan(&f, 10, 0x88B5u);
+    frame_eth(&f, 0x8100U);
+    frame_vlan(&f, 10, 0x88B5U);
     put_be(&f, 0, 8);
     check(drops(eng, &f), "a tagged non-IP frame was not dropped");
 
     /* VLAN 10 over IPv4: the two-field arm. */
-    frame_eth(&f, 0x8100u);
-    frame_vlan(&f, 10, 0x0800u);
+    frame_eth(&f, 0x8100U);
+    frame_vlan(&f, 10, 0x0800U);
     frame_ipv4(&f, IP4(192, 0, 2, 1), IP4(10, 1, 2, 3), 64, PROTO_TCP);
     check(forwards_to(eng, &f, P4_PORT_UPLINK),
           "VLAN 10 over IPv4 did not match its two-field arm");
 
     /* 0x9100 is 0x8100 under the mask 0xefff, and the second tag loops
      * back into parse_vlan. */
-    frame_eth(&f, 0x9100u);
-    frame_vlan(&f, 99, 0x8100u);
-    frame_vlan(&f, 10, 0x0800u);
+    frame_eth(&f, 0x9100U);
+    frame_vlan(&f, 99, 0x8100U);
+    frame_vlan(&f, 10, 0x0800U);
     frame_ipv4(&f, IP4(192, 0, 2, 1), IP4(10, 1, 2, 3), 64, PROTO_TCP);
     check(forwards_to(eng, &f, P4_PORT_UPLINK),
           "a 0x9100 tag over an 0x8100 one was not parsed through");
@@ -2972,8 +3035,8 @@ static void test_features_parser(void)
     /* VLAN 11 over IPv4 matches no arm, and parse_vlan has no default:
      * the parser rejects it. */
     p4_engine_get_stats(eng, &st);
-    frame_eth(&f, 0x8100u);
-    frame_vlan(&f, 11, 0x0800u);
+    frame_eth(&f, 0x8100U);
+    frame_vlan(&f, 11, 0x0800U);
     frame_ipv4(&f, IP4(192, 0, 2, 1), IP4(10, 1, 2, 3), 64, PROTO_TCP);
     check(drops(eng, &f), "a frame no arm matched was not dropped");
     {
@@ -2986,9 +3049,10 @@ static void test_features_parser(void)
 
     /* Forty tags: parse_vlan loops on every one, and the parser stops at
      * its bound long before the frame runs out. */
-    frame_eth(&f, 0x8100u);
-    for (unsigned i = 0; i < 40; i++)
-        frame_vlan(&f, 1, 0x8100u);
+    frame_eth(&f, 0x8100U);
+    for (unsigned i = 0; i < 40; i++) {
+        frame_vlan(&f, 1, 0x8100U);
+    }
     check(drops(eng, &f), "a frame looping in the parser was not dropped");
 
     p4_engine_destroy(eng);
@@ -3005,7 +3069,8 @@ static void test_features_actions(void)
     struct p4_engine *eng = p4_engine_create();
     struct p4_update up;
     struct frame f;
-    uint8_t out[256], want[256];
+    uint8_t out[256];
+    uint8_t want[256];
     struct p4_result res;
     const size_t ip = 14; /* where the IPv4 header starts */
 
@@ -3047,7 +3112,9 @@ static void test_features_lpm(void)
 {
     struct p4_engine *eng = p4_engine_create();
     struct p4_update up;
-    struct frame to_10_1, to_10_2, to_192;
+    struct frame to_10_1;
+    struct frame to_10_2;
+    struct frame to_192;
 
     checkf(load_fixture(eng, "features.json") == 0,
            "features.json is refused: %s", load_why(eng));
@@ -3097,14 +3164,14 @@ static void test_features_lpm(void)
     /* The same row, however it is written: a byte past the 4 that are
      * significant. */
     route_entry(&up, P4_UPDATE_INSERT, IP4(10, 0, 0, 0), 8, P4_PORT_UPLINK);
-    up.match[0].value[0] = 0xAAu;
+    up.match[0].value[0] = 0xAAU;
     check(update(eng, &up) == -EEXIST,
           "a byte the lookup never reads made a second 10/8");
 
     /* What does not fit is refused, not truncated. */
     route_entry(&up, P4_UPDATE_INSERT, IP4(172, 16, 0, 0), 33, P4_PORT_UPLINK);
     check(update(eng, &up) == -EINVAL, "a 33-bit IPv4 prefix was accepted");
-    route_entry(&up, P4_UPDATE_INSERT, IP4(172, 16, 0, 0), 12, 0x3FFu);
+    route_entry(&up, P4_UPDATE_INSERT, IP4(172, 16, 0, 0), 12, 0x3FFU);
     check(update(eng, &up) == -EINVAL,
           "a 10-bit port for a 9-bit parameter was accepted");
 
@@ -3198,8 +3265,9 @@ static void test_entries_packed(void)
     for (uint32_t i = 0; i < 64; i++) {
         route_entry(&up, P4_UPDATE_INSERT, IP4(10, i, 0, 0), 16,
                     P4_PORT_UPLINK);
-        if (update(eng, &up) != 0)
+        if (update(eng, &up) != 0) {
             all = false;
+        }
     }
     check(all, "64 routes do not fit in a 64-row table");
     route_entry(&up, P4_UPDATE_INSERT, IP4(11, 0, 0, 0), 16, P4_PORT_UPLINK);
@@ -3279,14 +3347,15 @@ static void test_lpm_key_not_first(void)
            load_why(eng));
 
     /* To 02:00:00:00:00:01; padded past the minimum frame. */
-    frame_eth(&f, 0x0800u);
-    for (unsigned i = 0; i < 6; i++)
+    frame_eth(&f, 0x0800U);
+    for (unsigned i = 0; i < 6; i++) {
         put_be(&f, 0, 8);
+    }
 
     /* The shorter prefix first, so first-match would pick it. */
-    vrf_entry(&up, P4_UPDATE_INSERT, 0x0800u, 0, 0, P4_PORT_UPLINK);
+    vrf_entry(&up, P4_UPDATE_INSERT, 0x0800U, 0, 0, P4_PORT_UPLINK);
     check(update(eng, &up) == 0, "the /0 is not installed");
-    vrf_entry(&up, P4_UPDATE_INSERT, 0x0800u, UINT64_C(0x020000000000), 8,
+    vrf_entry(&up, P4_UPDATE_INSERT, 0x0800U, UINT64_C(0x020000000000), 8,
               P4_PORT_HOST);
     check(update(eng, &up) == 0, "the /8 is not installed");
     check(forwards_to(eng, &f, P4_PORT_HOST),
@@ -3295,11 +3364,12 @@ static void test_lpm_key_not_first(void)
     /* A prefix on the exact field.  Each update would succeed without it:
      * the insert is a new row, and the modify and delete find the /0. */
     for (unsigned type = P4_UPDATE_INSERT; type <= P4_UPDATE_DELETE; type++) {
-        if (type == P4_UPDATE_INSERT)
-            vrf_entry(&up, (uint8_t)type, 0x0800u, UINT64_C(0x020100000000), 16,
+        if (type == P4_UPDATE_INSERT) {
+            vrf_entry(&up, (uint8_t)type, 0x0800U, UINT64_C(0x020100000000), 16,
                       P4_PORT_UPLINK);
-        else
-            vrf_entry(&up, (uint8_t)type, 0x0800u, 0, 0, P4_PORT_UPLINK);
+        } else {
+            vrf_entry(&up, (uint8_t)type, 0x0800U, 0, 0, P4_PORT_UPLINK);
+        }
         up.match[0].prefix_bits = 48;
         checkf(p4_engine_update(eng, &up, err, sizeof(err)) == -EINVAL,
                "update type %u took a prefix on an exact field", type);
@@ -3311,7 +3381,7 @@ static void test_lpm_key_not_first(void)
 
     /* A delete is held to the LPM field's width too, rather than finding
      * no such row. */
-    vrf_entry(&up, P4_UPDATE_DELETE, 0x0800u, 0, 49, 0);
+    vrf_entry(&up, P4_UPDATE_DELETE, 0x0800U, 0, 49, 0);
     check(update(eng, &up) == -EINVAL, "a delete of a /49 in a 48-bit "
                                        "field was not refused");
 
@@ -3344,16 +3414,16 @@ static void test_features_ternary(void)
     /* A: 192.168/16, any protocol, class 6, priority 10. B: 192.168.1/24,
      * class 12, priority 20. C: 192.168.2/24, class 12, priority 5. D: any
      * address, UDP, class 17, priority 1. */
-    acl_entry(&up, P4_UPDATE_INSERT, IP4(192, 168, 0, 0), 0xFFFF0000u, 0, 0, 10,
+    acl_entry(&up, P4_UPDATE_INSERT, IP4(192, 168, 0, 0), 0xFFFF0000U, 0, 0, 10,
               6);
     check(update(eng, &up) == 0, "ACL row A is not installed");
-    acl_entry(&up, P4_UPDATE_INSERT, IP4(192, 168, 1, 0), 0xFFFFFF00u, 0, 0, 20,
+    acl_entry(&up, P4_UPDATE_INSERT, IP4(192, 168, 1, 0), 0xFFFFFF00U, 0, 0, 20,
               12);
     check(update(eng, &up) == 0, "ACL row B is not installed");
-    acl_entry(&up, P4_UPDATE_INSERT, IP4(192, 168, 2, 0), 0xFFFFFF00u, 0, 0, 5,
+    acl_entry(&up, P4_UPDATE_INSERT, IP4(192, 168, 2, 0), 0xFFFFFF00U, 0, 0, 5,
               12);
     check(update(eng, &up) == 0, "ACL row C is not installed");
-    acl_entry(&up, P4_UPDATE_INSERT, 0, 0, PROTO_UDP, 0xFFu, 1, 17);
+    acl_entry(&up, P4_UPDATE_INSERT, 0, 0, PROTO_UDP, 0xFFU, 1, 17);
     check(update(eng, &up) == 0, "ACL row D is not installed");
 
     ip_frame(&f, IP4(192, 168, 1, 5), IP4(10, 1, 2, 3), 64, PROTO_TCP);
@@ -3370,43 +3440,43 @@ static void test_features_ternary(void)
           "D, the lowest priority, beat B");
 
     /* The table holds 4. */
-    acl_entry(&up, P4_UPDATE_INSERT, IP4(172, 16, 0, 0), 0xFFF00000u, 0, 0, 1,
+    acl_entry(&up, P4_UPDATE_INSERT, IP4(172, 16, 0, 0), 0xFFF00000U, 0, 0, 1,
               1);
     check(update(eng, &up) == -ENOSPC, "a fifth row went into a 4-row table");
 
     /* A bit outside the mask is malformed, as in P4Runtime, not another
      * way of writing A. */
-    acl_entry(&up, P4_UPDATE_INSERT, IP4(192, 168, 7, 7), 0xFFFF0000u, 0, 0, 10,
+    acl_entry(&up, P4_UPDATE_INSERT, IP4(192, 168, 7, 7), 0xFFFF0000U, 0, 0, 10,
               6);
     check(update(eng, &up) == -EINVAL, "a bit outside the mask was accepted");
-    acl_entry(&up, P4_UPDATE_DELETE, IP4(192, 168, 7, 7), 0xFFFF0000u, 0, 0, 10,
+    acl_entry(&up, P4_UPDATE_DELETE, IP4(192, 168, 7, 7), 0xFFFF0000U, 0, 0, 10,
               0);
     check(update(eng, &up) == -EINVAL,
           "a delete with a bit outside the mask was accepted");
 
     /* An entry in a table with a ternary key needs a nonzero priority, as
      * in P4Runtime. */
-    acl_entry(&up, P4_UPDATE_INSERT, IP4(172, 16, 0, 0), 0xFFF00000u, 0, 0, 0,
+    acl_entry(&up, P4_UPDATE_INSERT, IP4(172, 16, 0, 0), 0xFFF00000U, 0, 0, 0,
               1);
     check(update(eng, &up) == -EINVAL,
           "a ternary insert with priority 0 was accepted");
-    acl_entry(&up, P4_UPDATE_DELETE, IP4(192, 168, 0, 0), 0xFFFF0000u, 0, 0, 0,
+    acl_entry(&up, P4_UPDATE_DELETE, IP4(192, 168, 0, 0), 0xFFFF0000U, 0, 0, 0,
               0);
     check(update(eng, &up) == -EINVAL,
           "a ternary delete with priority 0 was accepted");
 
     /* A ternary field takes a mask, not a prefix. */
-    acl_entry(&up, P4_UPDATE_DELETE, IP4(192, 168, 0, 0), 0xFFFF0000u, 0, 0, 10,
+    acl_entry(&up, P4_UPDATE_DELETE, IP4(192, 168, 0, 0), 0xFFFF0000U, 0, 0, 10,
               0);
     up.match[0].prefix_bits = 16;
     check(update(eng, &up) == -EINVAL,
           "a delete with a prefix on a ternary field was not refused");
 
     /* A's key at a higher priority is a row of its own. */
-    acl_entry(&up, P4_UPDATE_DELETE, IP4(192, 168, 2, 0), 0xFFFFFF00u, 0, 0, 5,
+    acl_entry(&up, P4_UPDATE_DELETE, IP4(192, 168, 2, 0), 0xFFFFFF00U, 0, 0, 5,
               0);
     check(update(eng, &up) == 0, "ACL row C is not deleted");
-    acl_entry(&up, P4_UPDATE_INSERT, IP4(192, 168, 0, 0), 0xFFFF0000u, 0, 0, 30,
+    acl_entry(&up, P4_UPDATE_INSERT, IP4(192, 168, 0, 0), 0xFFFF0000U, 0, 0, 30,
               3);
     check(update(eng, &up) == 0,
           "A's key at another priority is not a row of its own");
@@ -3415,7 +3485,7 @@ static void test_features_ternary(void)
           "A's key at priority 30 did not beat it at 10");
 
     /* A different mask is a different key, so there is nothing to delete. */
-    acl_entry(&up, P4_UPDATE_DELETE, IP4(192, 168, 0, 0), 0xFFFFFF00u, 0, 0, 10,
+    acl_entry(&up, P4_UPDATE_DELETE, IP4(192, 168, 0, 0), 0xFFFFFF00U, 0, 0, 10,
               0);
     check(update(eng, &up) == -ENOENT,
           "a delete under a different mask found a row");
@@ -3462,35 +3532,36 @@ static void test_key_mask(void)
     struct p4_engine *eng = p4_engine_create();
     struct p4_update up;
     struct frame f;
-    uint8_t out[256], other[16];
+    uint8_t out[256];
+    uint8_t other[16];
     struct p4_result res;
 
     checkf(load_fixture(eng, "key_mask.json") == 0,
            "key_mask.json is refused: %s", load_why(eng));
 
     /* The packet's key is under the mask, so only the low byte counts. */
-    by_type_entry(&up, P4_UPDATE_INSERT, 0x0034u);
+    by_type_entry(&up, P4_UPDATE_INSERT, 0x0034U);
     check(update(eng, &up) == 0, "an entry for 0x0034 is not installed");
-    key_mask_frame(&f, 0x1234u, addr);
+    key_mask_frame(&f, 0x1234U, addr);
     check(forwards_to(eng, &f, P4_PORT_UPLINK),
           "0x1234 under the mask 0x00ff did not match 0x0034");
-    key_mask_frame(&f, 0xab34u, addr);
+    key_mask_frame(&f, 0xab34U, addr);
     check(forwards_to(eng, &f, P4_PORT_UPLINK),
           "0xab34 under the mask 0x00ff did not match 0x0034");
-    key_mask_frame(&f, 0x1235u, addr);
+    key_mask_frame(&f, 0x1235U, addr);
     check(drops(eng, &f), "0x1235 under the mask 0x00ff matched 0x0034");
 
     /* So is an entry's: 0x1234 is 0x0034, the row already there. */
-    by_type_entry(&up, P4_UPDATE_INSERT, 0x1234u);
+    by_type_entry(&up, P4_UPDATE_INSERT, 0x1234U);
     check(update(eng, &up) == -EEXIST,
           "0x1234 under the mask is not the row 0x0034");
-    by_type_entry(&up, P4_UPDATE_DELETE, 0x5634u);
+    by_type_entry(&up, P4_UPDATE_DELETE, 0x5634U);
     check(update(eng, &up) == 0, "deleting 0x5634 did not delete 0x0034");
-    key_mask_frame(&f, 0x1234u, addr);
+    key_mask_frame(&f, 0x1234U, addr);
     check(drops(eng, &f), "a frame matched the deleted row");
 
     /* A 128-bit key and a 128-bit argument, every byte of each used. */
-    by_type_entry(&up, P4_UPDATE_INSERT, 0x0034u);
+    by_type_entry(&up, P4_UPDATE_INSERT, 0x0034U);
     check(update(eng, &up) == 0, "the entry for 0x0034 is not reinstalled");
     memset(&up, 0, sizeof(up));
     up.type = P4_UPDATE_INSERT;
@@ -3503,7 +3574,7 @@ static void test_key_mask(void)
     memcpy(up.params[0].value, addr2, 16);
     check(update(eng, &up) == 0, "a 128-bit entry is not installed");
 
-    key_mask_frame(&f, 0x0034u, addr);
+    key_mask_frame(&f, 0x0034U, addr);
     check(run_frame(eng, &f, out, sizeof(out), &res) == 0 &&
               res.verdict == P4_VERDICT_FORWARD && res.len == f.len,
           "the frame for the 128-bit entry was not forwarded");
@@ -3512,8 +3583,8 @@ static void test_key_mask(void)
 
     /* The top byte of the key is compared too. */
     memcpy(other, addr, sizeof(other));
-    other[0] ^= 0x80u;
-    key_mask_frame(&f, 0x0034u, other);
+    other[0] ^= 0x80U;
+    key_mask_frame(&f, 0x0034U, other);
     check(run_frame(eng, &f, out, sizeof(out), &res) == 0 &&
               res.verdict == P4_VERDICT_FORWARD &&
               memcmp(out + 14, other, 16) == 0,
@@ -3584,8 +3655,9 @@ static void test_entries_api(void)
     checkf(p4_json_parse(text, n, &prog, err, sizeof(err)) == 0,
            "features.json is refused: %s", err);
     free(text);
-    if (!prog)
+    if (!prog) {
         return;
+    }
 
     check(p4_entries_create(NULL) == NULL, "a store was made for no program");
     ent = p4_entries_create(prog);

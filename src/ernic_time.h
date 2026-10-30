@@ -28,7 +28,7 @@ static inline uint64_t ernic_monotonic_ms(void)
     struct timespec ts;
 
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+    return ((uint64_t)ts.tv_sec * 1000U) + ((uint64_t)ts.tv_nsec / 1000000U);
 }
 
 /* Microseconds on CLOCK_MONOTONIC, from the same origin. */
@@ -37,7 +37,7 @@ static inline uint64_t ernic_monotonic_us(void)
     struct timespec ts;
 
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+    return ((uint64_t)ts.tv_sec * 1000000U) + ((uint64_t)ts.tv_nsec / 1000U);
 }
 
 /*
@@ -48,8 +48,8 @@ static inline uint64_t ernic_monotonic_us(void)
 static inline void ernic_sleep_us(uint64_t us)
 {
     struct timespec ts = {
-        .tv_sec = (time_t)(us / 1000000u),
-        .tv_nsec = (long)(us % 1000000u) * 1000,
+        .tv_sec = (time_t)(us / 1000000U),
+        .tv_nsec = (long)(us % 1000000U) * 1000,
     };
 
     clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, NULL);

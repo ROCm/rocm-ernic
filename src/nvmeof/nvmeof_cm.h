@@ -31,8 +31,8 @@
  * they have to be distinguishable from the guest's own QPs, which the
  * ionic driver allocates from zero upwards.
  */
-#define NVMEOF_CM_QPN_BASE 0x00c00000u
-#define NVMEOF_CM_QPN_MASK 0x00ff0000u
+#define NVMEOF_CM_QPN_BASE 0x00c00000U
+#define NVMEOF_CM_QPN_MASK 0x00ff0000U
 
 static inline bool nvmeof_cm_is_target_qpn(uint32_t qpn)
 {

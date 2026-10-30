@@ -94,8 +94,8 @@ static void sleep_ms(uint32_t ms)
 {
     struct timespec ts = {(time_t)(ms / 1000), (long)(ms % 1000) * 1000000};
 
-    while (nanosleep(&ts, &ts) < 0 && errno == EINTR)
-        ;
+    while (nanosleep(&ts, &ts) < 0 && errno == EINTR) {
+    }
 }
 
 static int64_t now_ms(void)
@@ -103,7 +103,7 @@ static int64_t now_ms(void)
     struct timespec ts;
 
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    return ((int64_t)ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
 }
 
 static bool path_is_socket(const char *path)
@@ -119,8 +119,9 @@ static bool path_perms(const char *path, uint32_t *mode, uint32_t *gid)
 {
     struct stat st;
 
-    if (lstat(path, &st) != 0)
+    if (lstat(path, &st) != 0) {
         return false;
+    }
     *mode = (uint32_t)(st.st_mode & 07777);
     *gid = (uint32_t)st.st_gid;
     return true;
@@ -133,9 +134,11 @@ static gid_t my_other_group(void)
     gid_t groups[256];
     int n = getgroups((int)(sizeof(groups) / sizeof(groups[0])), groups);
 
-    for (int i = 0; i < n; i++)
-        if (groups[i] != getegid())
+    for (int i = 0; i < n; i++) {
+        if (groups[i] != getegid()) {
             return groups[i];
+        }
+    }
     return getegid();
 }
 
@@ -145,11 +148,14 @@ static bool in_group(gid_t gid)
     gid_t groups[256];
     int n = getgroups((int)(sizeof(groups) / sizeof(groups[0])), groups);
 
-    if (n < 0 || gid == getegid())
+    if (n < 0 || gid == getegid()) {
         return true;
-    for (int i = 0; i < n; i++)
-        if (groups[i] == gid)
+    }
+    for (int i = 0; i < n; i++) {
+        if (groups[i] == gid) {
             return true;
+        }
+    }
     return false;
 }
 
@@ -169,12 +175,14 @@ static bool foreign_group(gid_t *gid)
 static void group_name(gid_t gid, char *buf, size_t len)
 {
     char grbuf[4096];
-    struct group grp, *found = NULL;
+    struct group grp;
+    struct group *found = NULL;
 
-    if (getgrgid_r(gid, &grp, grbuf, sizeof(grbuf), &found) == 0 && found)
+    if (getgrgid_r(gid, &grp, grbuf, sizeof(grbuf), &found) == 0 && found) {
         snprintf(buf, len, "%s", found->gr_name);
-    else
+    } else {
         snprintf(buf, len, "%u", (unsigned)gid);
+    }
 }
 
 /*
@@ -206,8 +214,9 @@ enum dir_acl {
 
 static uint8_t *put_le(uint8_t *p, uint32_t value, size_t bytes)
 {
-    for (size_t i = 0; i < bytes; i++)
+    for (size_t i = 0; i < bytes; i++) {
         *p++ = (uint8_t)(value >> (8 * i));
+    }
     return p;
 }
 
@@ -222,20 +231,24 @@ static uint8_t *put_acl_entry(uint8_t *p, uint32_t tag, uint32_t perm,
 /* Make dir with the default ACL @kind; false if it can't. */
 static bool make_acl_dir(const char *dir, enum dir_acl kind)
 {
-    uint8_t acl[4 + 5 * 8], *p = acl;
+    uint8_t acl[4 + (5 * 8)];
+    uint8_t *p = acl;
 
-    if (mkdir(dir, 0700) < 0)
+    if (mkdir(dir, 0700) < 0) {
         return false;
+    }
     memset(acl, 0, sizeof(acl));
     p = put_le(p, ACL_XATTR_VERSION, 4);
     /* In the order the kernel requires: by tag, then by id. */
     p = put_acl_entry(p, ACL_USER_OBJ, ACL_RW, ACL_NO_ID);
-    if (kind == ACL_NAMED)
+    if (kind == ACL_NAMED) {
         p = put_acl_entry(p, ACL_USER, ACL_RW, NOBODY_UID);
+    }
     p = put_acl_entry(p, ACL_GROUP_OBJ, kind == ACL_TIGHT ? 0 : ACL_RW,
                       ACL_NO_ID);
-    if (kind == ACL_NAMED)
+    if (kind == ACL_NAMED) {
         p = put_acl_entry(p, ACL_MASK, ACL_RW, ACL_NO_ID);
+    }
     p = put_acl_entry(p, ACL_OTHER, kind == ACL_OPEN ? ACL_RW : 0, ACL_NO_ID);
     return setxattr(dir, "system.posix_acl_default", acl, (size_t)(p - acl),
                     0) == 0;
@@ -248,11 +261,13 @@ static int connect_unix(const char *path)
     int fd;
 
     /* A path that does not fit sun_path cannot be connected to. */
-    if (len >= sizeof(addr.sun_path))
+    if (len >= sizeof(addr.sun_path)) {
         return -1;
+    }
     fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0)
+    if (fd < 0) {
         return -1;
+    }
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     memcpy(addr.sun_path, path, len + 1);
@@ -272,11 +287,13 @@ static bool make_stale_socket(const char *path)
     bool ok;
     int fd;
 
-    if (len >= sizeof(addr.sun_path))
+    if (len >= sizeof(addr.sun_path)) {
         return false;
+    }
     fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0)
+    if (fd < 0) {
         return false;
+    }
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     memcpy(addr.sun_path, path, len + 1);
@@ -297,8 +314,9 @@ static bool write_file(const char *path, const char *content)
     /* NOLINTEND(android-cloexec-open) */
     bool ok;
 
-    if (fd < 0)
+    if (fd < 0) {
         return false;
+    }
     ok = write(fd, content, len) == (ssize_t)len;
     return close(fd) == 0 && ok;
 }
@@ -315,8 +333,9 @@ static int listen_ephemeral(uint16_t *port)
     socklen_t len = sizeof(addr);
     int fd = socket(AF_INET, SOCK_STREAM, 0);
 
-    if (fd < 0)
+    if (fd < 0) {
         return -1;
+    }
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -337,8 +356,9 @@ static char *read_log(const char *path)
     char *buf;
     size_t n;
 
-    if (!f)
+    if (!f) {
         return NULL;
+    }
     buf = calloc(1, 1 << 20);
     if (!buf) {
         fclose(f);
@@ -355,11 +375,13 @@ static int count_in_log(const char *path, const char *needle)
     char *log = read_log(path);
     int n = 0;
 
-    if (!log)
+    if (!log) {
         return 0;
+    }
     for (const char *p = log; (p = strstr(p, needle)) != NULL;
-         p += strlen(needle))
+         p += strlen(needle)) {
         n++;
+    }
     free(log);
     return n;
 }
@@ -369,8 +391,9 @@ static bool wait_for_log(const char *path, const char *needle, int count)
     int64_t deadline = now_ms() + LOG_WAIT_MS;
 
     while (now_ms() < deadline) {
-        if (count_in_log(path, needle) >= count)
+        if (count_in_log(path, needle) >= count) {
             return true;
+        }
         sleep_ms(20);
     }
     return false;
@@ -386,9 +409,11 @@ static bool sanitizer_reported(const char *path)
         "runtime error:",
     };
 
-    for (size_t i = 0; i < sizeof(markers) / sizeof(markers[0]); i++)
-        if (count_in_log(path, markers[i]) > 0)
+    for (size_t i = 0; i < sizeof(markers) / sizeof(markers[0]); i++) {
+        if (count_in_log(path, markers[i]) > 0) {
             return true;
+        }
+    }
     return false;
 }
 
@@ -398,23 +423,27 @@ static bool sanitizer_reported(const char *path)
  */
 static bool fd_inherited(pid_t pid, int fd)
 {
-    char path[64], line[128];
+    char path[64];
+    char line[128];
     bool inherited = false;
     FILE *f;
 
     snprintf(path, sizeof(path), "/proc/%d/fdinfo/%d", (int)pid, fd);
     f = fopen(path, "re");
-    if (!f)
+    if (!f) {
         return false;
+    }
     while (fgets(line, sizeof(line), f)) {
         uint32_t flags;
         char *newline;
 
-        if (strncmp(line, "flags:\t", 7) != 0)
+        if (strncmp(line, "flags:\t", 7) != 0) {
             continue;
+        }
         newline = strchr(line, '\n');
-        if (newline)
+        if (newline) {
             *newline = '\0';
+        }
         inherited = ernic_parse_oct_u32(line + 7, &flags) &&
                     (flags & (uint32_t)O_CLOEXEC) == 0;
         break;
@@ -431,10 +460,12 @@ static int wait_exit(pid_t pid, int *status)
     while (now_ms() < deadline) {
         pid_t r = waitpid(pid, status, WNOHANG);
 
-        if (r == pid)
+        if (r == pid) {
             return 0;
-        if (r < 0 && errno != EINTR)
+        }
+        if (r < 0 && errno != EINTR) {
             return -1;
+        }
         sleep_ms(20);
     }
     kill(pid, SIGKILL);
@@ -511,10 +542,12 @@ static bool recv_all(int fd, uint8_t *buf, size_t len)
     while (len > 0) {
         ssize_t n = recv(fd, buf, len, 0);
 
-        if (n < 0 && errno == EINTR)
+        if (n < 0 && errno == EINTR) {
             continue;
-        if (n <= 0)
+        }
+        if (n <= 0) {
             return false;
+        }
         buf += n;
         len -= (size_t)n;
     }
@@ -533,17 +566,20 @@ static bool negotiate(int fd)
     uint8_t reply[VFU_REPLY_MAX];
     uint32_t size;
 
-    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0)
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
         return false;
+    }
     vfu_hdr_put(msg, 1, VFU_CMD_VERSION, (uint32_t)sizeof(msg));
     if (send(fd, msg, sizeof(msg), MSG_NOSIGNAL) != (ssize_t)sizeof(msg) ||
-        !recv_all(fd, reply, VFU_HDR_LEN))
+        !recv_all(fd, reply, VFU_HDR_LEN)) {
         return false;
+    }
     size = ernic_get_le32(reply + VFU_HDR_SIZE_OFF);
     if (ernic_get_le16(reply + VFU_HDR_CMD_OFF) != VFU_CMD_VERSION ||
         (ernic_get_le32(reply + VFU_HDR_FLAGS_OFF) & VFU_FLAG_ERROR) != 0 ||
-        size < VFU_HDR_LEN || size > sizeof(reply))
+        size < VFU_HDR_LEN || size > sizeof(reply)) {
         return false;
+    }
     return recv_all(fd, reply + VFU_HDR_LEN, size - VFU_HDR_LEN);
 }
 
@@ -557,19 +593,23 @@ static int lowest_free_fd(pid_t pid)
 
     snprintf(path, sizeof(path), "/proc/%d/fd", (int)pid);
     d = opendir(path);
-    if (!d)
+    if (!d) {
         return -1;
+    }
     while ((e = readdir(d)) != NULL) {
         int fd;
 
         if (ernic_parse_int(e->d_name, &fd) && fd >= 0 &&
-            (size_t)fd < sizeof(used) / sizeof(used[0]))
+            (size_t)fd < sizeof(used) / sizeof(used[0])) {
             used[fd] = true;
+        }
     }
     closedir(d);
-    for (size_t i = 0; i < sizeof(used) / sizeof(used[0]); i++)
-        if (!used[i])
+    for (size_t i = 0; i < sizeof(used) / sizeof(used[0]); i++) {
+        if (!used[i]) {
             return (int)i;
+        }
+    }
     return -1;
 }
 
@@ -590,8 +630,9 @@ static int send_with_fd(int fd)
     ssize_t n;
     int null_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
 
-    if (null_fd < 0)
+    if (null_fd < 0) {
         return -1;
+    }
     vfu_hdr_put(hdr, 2, VFU_CMD_DEVICE_GET_INFO, (uint32_t)sizeof(hdr));
     memset(&ctl, 0, sizeof(ctl));
     memset(&msg, 0, sizeof(msg));
@@ -1535,8 +1576,9 @@ static bool expand_backend(const char *src, uint16_t port, char *dst,
         }
         size_t sl = sub ? strlen(sub) : 1;
 
-        if (sl >= len - n)
+        if (sl >= len - n) {
             return false;
+        }
         memcpy(dst + n, sub ? sub : src, sl);
         n += sl;
         src += skip;
@@ -1556,20 +1598,26 @@ static bool expand_backend(const char *src, uint16_t port, char *dst,
  */
 static char **server_env(const char *name, const char *value, char **entry)
 {
-    size_t name_len = strlen(name), value_len = strlen(value), n = 0, out = 0;
+    size_t name_len = strlen(name);
+    size_t value_len = strlen(value);
+    size_t n = 0;
+    size_t out = 0;
     char **env;
 
     *entry = NULL;
-    if (name_len > SIZE_MAX - 2 - value_len) /* '=' and '\0' */
+    if (name_len > SIZE_MAX - 2 - value_len) { /* '=' and '\0' */
         return NULL;
+    }
     *entry = malloc(name_len + value_len + 2);
-    if (!*entry)
+    if (!*entry) {
         return NULL;
+    }
     memcpy(*entry, name, name_len);
     (*entry)[name_len] = '=';
     memcpy(*entry + name_len + 1, value, value_len + 1);
-    while (environ[n])
+    while (environ[n]) {
         n++;
+    }
     env = (char **)calloc(n + 2, sizeof(*env));
     if (!env) {
         free(*entry);
@@ -1578,8 +1626,9 @@ static char **server_env(const char *name, const char *value, char **entry)
     }
     for (size_t i = 0; i < n; i++) {
         if (strncmp(environ[i], name, name_len) != 0 ||
-            environ[i][name_len] != '=')
+            environ[i][name_len] != '=') {
             env[out++] = environ[i];
+        }
     }
     env[out] = *entry;
     return env;
@@ -1596,12 +1645,14 @@ static pid_t start_server(const struct lifecycle_case *c, const char *backend,
 
     /* Built here, since the child may only call async-signal-safe functions
      * until it execs, and setenv() and malloc() aren't */
-    if (opt_arg && strcmp(opt_arg, "@LOG@") == 0)
+    if (opt_arg && strcmp(opt_arg, "@LOG@") == 0) {
         opt_arg = log;
+    }
     if (c->env_name) {
         env = server_env(c->env_name, c->env_value, &entry);
-        if (!env)
+        if (!env) {
             return -1;
+        }
     }
 
     pid = fork();
@@ -1614,28 +1665,35 @@ static pid_t start_server(const struct lifecycle_case *c, const char *backend,
         int fd = open(log, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
         /* NOLINTEND(android-cloexec-open) */
 
-        if (fd < 0)
+        if (fd < 0) {
             _exit(126);
-        if (env)
+        }
+        if (env) {
             environ = env;
-        if (c->set_umask)
+        }
+        if (c->set_umask) {
             umask(c->umask);
-        if (dup2(fd, STDOUT_FILENO) < 0 || dup2(fd, STDERR_FILENO) < 0)
+        }
+        if (dup2(fd, STDOUT_FILENO) < 0 || dup2(fd, STDERR_FILENO) < 0) {
             _exit(126);
+        }
         close(fd);
-        if (c->no_stdout)
+        if (c->no_stdout) {
             close(STDOUT_FILENO);
+        }
         /* getrlimit() and setrlimit() aren't on POSIX's async-signal-safe
          * list, but glibc's are bare system calls that take no lock */
         if (c->fd_limit) {
             struct rlimit lim;
 
             close(STDIN_FILENO);
-            if (getrlimit(RLIMIT_NOFILE, &lim) < 0)
+            if (getrlimit(RLIMIT_NOFILE, &lim) < 0) {
                 _exit(126);
+            }
             lim.rlim_cur = 1;
-            if (setrlimit(RLIMIT_NOFILE, &lim) < 0)
+            if (setrlimit(RLIMIT_NOFILE, &lim) < 0) {
                 _exit(126);
+            }
         }
         if (c->block_sigs) {
             sigset_t set;
@@ -1643,8 +1701,9 @@ static pid_t start_server(const struct lifecycle_case *c, const char *backend,
             sigemptyset(&set);
             sigaddset(&set, SIGINT);
             sigaddset(&set, SIGTERM);
-            if (pthread_sigmask(SIG_BLOCK, &set, NULL) != 0)
+            if (pthread_sigmask(SIG_BLOCK, &set, NULL) != 0) {
                 _exit(126);
+            }
         }
         /* The options a row may add, packed to the front, since execl()
          * stops at the first NULL */
@@ -1657,8 +1716,9 @@ static pid_t start_server(const struct lifecycle_case *c, const char *backend,
         }
         if (c->opt) {
             opt[n++] = c->opt;
-            if (opt_arg)
+            if (opt_arg) {
                 opt[n++] = opt_arg;
+            }
         }
         execl(g_server, g_server, "--socket", sock, "--backend", backend,
               opt[0], opt[1], opt[2], opt[3], (char *)NULL);
@@ -1682,8 +1742,9 @@ static bool wait_for_socket(pid_t pid, const char *sock, const char *log,
 
     *exited = false;
     while (now_ms() < deadline) {
-        if ((!after || count_in_log(log, after) > 0) && path_is_socket(sock))
+        if ((!after || count_in_log(log, after) > 0) && path_is_socket(sock)) {
             return true;
+        }
         if (waitpid(pid, status, WNOHANG) == pid) {
             *exited = true;
             return false;
@@ -1703,14 +1764,16 @@ static bool socket_perms_ok(const char *sock, uint32_t want_mode,
                             gid_t want_gid, bool early, const char *when,
                             char *why, size_t len)
 {
-    uint32_t mode, gid;
+    uint32_t mode;
+    uint32_t gid;
 
     if (!path_perms(sock, &mode, &gid)) {
         snprintf(why, len, "could not stat the socket %s", when);
         return false;
     }
-    if (early && mode == 0600)
+    if (early && mode == 0600) {
         return true;
+    }
     if (mode != want_mode) {
         snprintf(why, len,
                  "the socket was mode %04" PRIo32 " %s, not %04" PRIo32, mode,
@@ -1762,8 +1825,9 @@ static bool left_alone(enum sock_pre pre, const char *sock, const char *target)
         /* Checked through the descriptor that's read, without following a
          * symlink. */
         fd = open(sock, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-        if (fd < 0)
+        if (fd < 0) {
             return false;
+        }
         n = read(fd, buf, sizeof(buf));
         same = fstat(fd, &st) == 0 && S_ISREG(st.st_mode) &&
                n == (ssize_t)strlen(KEEP_CONTENT) &&
@@ -1771,11 +1835,13 @@ static bool left_alone(enum sock_pre pre, const char *sock, const char *target)
         close(fd);
         return same;
     case PRE_SYMLINK:
-        if (lstat(sock, &st) != 0 || !S_ISLNK(st.st_mode))
+        if (lstat(sock, &st) != 0 || !S_ISLNK(st.st_mode)) {
             return false;
+        }
         n = readlink(sock, buf, sizeof(buf) - 1);
-        if (n < 0)
+        if (n < 0) {
             return false;
+        }
         buf[n] = '\0';
         return strcmp(buf, target) == 0 && path_is_socket(target);
     case PRE_NONE:
@@ -1791,29 +1857,40 @@ static bool left_alone(enum sock_pre pre, const char *sock, const char *target)
 
 static bool exit_matches(int status, int want)
 {
-    if (!WIFEXITED(status))
+    if (!WIFEXITED(status)) {
         return false;
-    if (want < 0)
+    }
+    if (want < 0) {
         return WEXITSTATUS(status) != 0;
+    }
     return WEXITSTATUS(status) == want;
 }
 
 static void describe_status(int status, char *buf, size_t len)
 {
-    if (WIFEXITED(status))
+    if (WIFEXITED(status)) {
         snprintf(buf, len, "exited %d", WEXITSTATUS(status));
-    else if (WIFSIGNALED(status))
+    } else if (WIFSIGNALED(status)) {
         snprintf(buf, len, "killed by signal %d", WTERMSIG(status));
-    else
+    } else {
         snprintf(buf, len, "status %#x", (unsigned)status);
+    }
 }
 
 static int run_case(size_t idx, const struct lifecycle_case *c)
 {
-    char sock[320], log[320], backend[512], why[480] = "", got[64] = "";
+    char sock[320];
+    char log[320];
+    char backend[512];
+    char why[480] = "";
+    char got[64] = "";
     char dir[256]; /* shorter than sock, which adds a name to it */
-    char target[320], group[64];
-    int held[8], nheld = 0, status = 0, port_fd = -1;
+    char target[320];
+    char group[64];
+    int held[8];
+    int nheld = 0;
+    int status = 0;
+    int port_fd = -1;
     uint32_t want_mode = 0600;
     uint16_t port = 0;
     gid_t want_gid = 0;
@@ -1914,10 +1991,11 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
     } else {
         snprintf(dir, sizeof(dir), "%s", g_dir);
     }
-    if (c->pre == PRE_DIR_SLASH)
+    if (c->pre == PRE_DIR_SLASH) {
         snprintf(sock, sizeof(sock), "%s/", dir);
-    else
+    } else {
         snprintf(sock, sizeof(sock), "%s/row%zu.sock", dir, idx);
+    }
     snprintf(target, sizeof(target), "%s/row%zu.target", g_dir, idx);
     snprintf(log, sizeof(log), "%s/row%zu.log", g_dir, idx);
     unlink(sock);
@@ -1942,8 +2020,9 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
     if (!expand_backend(c->backend, port, backend, sizeof(backend))) {
         printf("FAIL %s: %s; backend string too long\n", c->category,
                c->description);
-        if (port_fd >= 0)
+        if (port_fd >= 0) {
             close(port_fd);
+        }
         return 1;
     }
     pid =
@@ -1951,8 +2030,9 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
     if (pid < 0) {
         printf("FAIL %s: %s; could not start the server\n", c->category,
                c->description);
-        if (port_fd >= 0)
+        if (port_fd >= 0) {
             close(port_fd);
+        }
         return 1;
     }
 
@@ -1977,18 +2057,20 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
      * asked for, at any moment.  Checked as soon as the socket appears, and
      * again once the server is up, when it must be exactly what was asked
      * for. */
-    if (ok && c->want_socket)
+    if (ok && c->want_socket) {
         ok = socket_perms_ok(sock, want_mode, want_gid, true, "as it appeared",
                              why, sizeof(why));
+    }
 
     if (ok && c->settle && !wait_for_log(log, "waiting for client", 1)) {
         snprintf(why, sizeof(why), "never reached the attach loop");
         ok = false;
     }
 
-    if (ok && c->want_socket && c->settle)
+    if (ok && c->want_socket && c->settle) {
         ok = socket_perms_ok(sock, want_mode, want_gid, false, "once serving",
                              why, sizeof(why));
+    }
 
     if (ok && c->no_stdout &&
         (!fd_inherited(pid, STDOUT_FILENO) ||
@@ -2011,13 +2093,15 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
             ok = false;
         }
         if (c->action == FD_REFUSED &&
-            !refuse_fd(pid, fd, log, why, sizeof(why)))
+            !refuse_fd(pid, fd, log, why, sizeof(why))) {
             ok = false;
+        }
         if ((c->action == SILENT || c->action == FD_REFUSED) &&
-            nheld < (int)(sizeof(held) / sizeof(*held)))
+            nheld < (int)(sizeof(held) / sizeof(*held))) {
             held[nheld++] = fd;
-        else
+        } else {
             close(fd);
+        }
         if (ok && c->want_dropped > 0 &&
             !wait_for_log(log, DROPPED_LINE, i + 1)) {
             if (waitpid(pid, &status, WNOHANG) == pid) {
@@ -2032,8 +2116,9 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
             ok = false;
         }
     }
-    if (ok && c->action == SILENT)
+    if (ok && c->action == SILENT) {
         sleep_ms(SETTLE_MS); /* let the server block in negotiation */
+    }
 
     /* Still serving: alive, and the socket still takes connections.  A row
      * with no signal to send waits for the server to exit by itself. */
@@ -2064,8 +2149,9 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
     if (pid > 0) {
         for (int i = 0; i < c->sigs; i++) {
             kill(pid, c->sig);
-            if (i + 1 < c->sigs)
+            if (i + 1 < c->sigs) {
                 sleep_ms(20);
+            }
         }
         if (wait_exit(pid, &status) < 0) {
             snprintf(why, sizeof(why), "did not exit within %d ms",
@@ -2074,10 +2160,12 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
         }
         describe_status(status, got, sizeof(got));
     }
-    for (int i = 0; i < nheld; i++)
+    for (int i = 0; i < nheld; i++) {
         close(held[i]);
-    if (port_fd >= 0)
+    }
+    if (port_fd >= 0) {
         close(port_fd);
+    }
 
     if (ok && !exit_matches(status, c->want_exit)) {
         snprintf(why, sizeof(why), "%s (want %s)", got,
@@ -2116,10 +2204,12 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
     }
     unlink(sock);
     unlink(log);
-    if (c->pre == PRE_SYMLINK)
+    if (c->pre == PRE_SYMLINK) {
         unlink(target);
-    if (own_dir)
+    }
+    if (own_dir) {
         rmdir(dir);
+    }
     return 0;
 }
 
@@ -2140,8 +2230,9 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         failures += run_case(i, &cases[i]);
+    }
 
     if (failures) {
         printf("\n%d check(s) failed; logs kept in %s\n", failures, g_dir);

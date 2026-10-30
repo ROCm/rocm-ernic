@@ -461,12 +461,14 @@ static bool have_ipv6_loopback(void)
 static void check_accepts(int listen_fd, const char *host, uint16_t port,
                           const char *want_host)
 {
-    struct sockaddr_storage peer, local;
+    struct sockaddr_storage peer;
+    struct sockaddr_storage local;
     socklen_t peer_len = sizeof(peer);
     socklen_t local_len = sizeof(local);
     char local_host[INET6_ADDRSTRLEN];
     uint16_t local_port = 0;
-    int client, fd;
+    int client;
+    int fd;
 
     client = tcp_connect_to_remote(host, port, NULL, 0);
     if (client < 0) {
@@ -537,7 +539,8 @@ static void test_listen_port_in_use(void)
 {
     uint16_t port = 0;
     uint16_t again;
-    int held, fd;
+    int held;
+    int fd;
 
     printf("  a port in use is refused, and *port left alone\n");
 

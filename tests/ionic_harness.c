@@ -29,20 +29,20 @@
 #include "rocm_ernic_compat.h"
 
 /* Guest memory: 32 regions of 1 MiB */
-#define IH_REGION_SIZE (1u << 20)
-#define IH_NREGIONS    32u
+#define IH_REGION_SIZE (1U << 20)
+#define IH_NREGIONS    32U
 
 /* BAR0 register map (union ionic_dev_regs) */
-#define BAR0_DEVCMD       0x0800u
-#define BAR0_DEVCMD_DONE  (BAR0_DEVCMD + 0x04u)
-#define BAR0_DEVCMD_CMD   (BAR0_DEVCMD + 0x08u)
-#define BAR0_DEVCMD_COMP  (BAR0_DEVCMD + 0x48u)
-#define BAR0_DEVCMD_DATA  (BAR0_DEVCMD + 0x88u)
-#define BAR0_INTR_CTRL    0x2000u
-#define BAR0_INTR_STRIDE  32u
-#define BAR0_INTR_MASK    4u
-#define IONIC_DEV_SIG     0x44455649u /* "DEVI" */
-#define DEVCMD_DATA_BYTES 1912u
+#define BAR0_DEVCMD       0x0800U
+#define BAR0_DEVCMD_DONE  (BAR0_DEVCMD + 0x04U)
+#define BAR0_DEVCMD_CMD   (BAR0_DEVCMD + 0x08U)
+#define BAR0_DEVCMD_COMP  (BAR0_DEVCMD + 0x48U)
+#define BAR0_DEVCMD_DATA  (BAR0_DEVCMD + 0x88U)
+#define BAR0_INTR_CTRL    0x2000U
+#define BAR0_INTR_STRIDE  32U
+#define BAR0_INTR_MASK    4U
+#define IONIC_DEV_SIG     0x44455649U /* "DEVI" */
+#define DEVCMD_DATA_BYTES 1912U
 
 /* Ring geometry the harness asks for */
 #define ETH_AQ_DEPTH_LOG2 4
@@ -54,11 +54,11 @@
 #define CQE_STRIDE_LOG2   5
 
 /* Admin WQEs are 64-byte strides behind a 4-byte header */
-#define ADMIN_STRIDE  64u
-#define ADMIN_HDR_LEN 4u
+#define ADMIN_STRIDE  64U
+#define ADMIN_HDR_LEN 4U
 
 /* Where WQE fields sit (struct ionic_v1_wqe) */
-#define WQE_PLD_OFF 32u
+#define WQE_PLD_OFF 32U
 
 /* RoCE v2's UDP port */
 #define ROCE_UDP_PORT 4791
@@ -90,7 +90,7 @@ static void fail_msg(const char *fmt, ...)
 
 static uint32_t ring_depth(const struct ih_ring *r)
 {
-    return 1u << r->depth_log2;
+    return 1U << r->depth_log2;
 }
 
 static uint64_t ring_slot(const struct ih_ring *r, uint32_t idx)
@@ -250,8 +250,9 @@ void ih_bar0_write(struct ih *h, uint32_t off, const void *buf, size_t len)
     memcpy(tmp, buf, len);
     ernic_stats_bar0_access(h->dev->stats, true);
     if (ionic_eth_emu_bar0_access(h->emu, (char *)tmp, len, off, true) !=
-        (ssize_t)len)
+        (ssize_t)len) {
         fail_msg("BAR0 write of %zu bytes at %#x refused", len, off);
+    }
 }
 
 uint32_t ih_bar0_read32(struct ih *h, uint32_t off)
@@ -272,8 +273,9 @@ void ih_bar0_write32(struct ih *h, uint32_t off, uint32_t val)
 
 void ih_intr_mask(struct ih *h, uint32_t vec, bool masked)
 {
-    ih_bar0_write32(h, BAR0_INTR_CTRL + vec * BAR0_INTR_STRIDE + BAR0_INTR_MASK,
-                    masked ? 1u : 0u);
+    ih_bar0_write32(h,
+                    BAR0_INTR_CTRL + (vec * BAR0_INTR_STRIDE) + BAR0_INTR_MASK,
+                    masked ? 1U : 0U);
 }
 
 void ih_doorbell(struct ih *h, int qtype, uint32_t qid, uint8_t ring,
@@ -281,31 +283,33 @@ void ih_doorbell(struct ih *h, int qtype, uint32_t qid, uint8_t ring,
 {
     /* struct ionic_doorbell: le16 p_index, u8 ring, u8 qid_lo, le16 qid_hi */
     uint64_t val = (uint64_t)p_index | (uint64_t)ring << 16 |
-                   (uint64_t)(qid & 0xffu) << 24 |
-                   (uint64_t)((qid >> 8) & 0xffffu) << 32;
+                   (uint64_t)(qid & 0xffU) << 24 |
+                   (uint64_t)((qid >> 8) & 0xffffU) << 32;
     uint8_t b[8];
 
     ernic_put_le64(b, val);
     ernic_stats_doorbell_access(h->dev->stats, true);
     /* The kernel's doorbell page is page 0, one u64 slot per qtype. */
     if (ionic_eth_emu_bar2_access(h->emu, (char *)b, sizeof(b),
-                                  (loff_t)qtype * 8, true) != sizeof(b))
+                                  (loff_t)qtype * 8, true) != sizeof(b)) {
         fail_msg("doorbell write for qtype %d refused", qtype);
+    }
 }
 
 int ih_devcmd(struct ih *h, const uint8_t cmd[64], uint8_t comp[16], void *data,
               size_t data_len)
 {
-    if (data_len > DEVCMD_DATA_BYTES)
+    if (data_len > DEVCMD_DATA_BYTES) {
         return fail_rc("devcmd data window is only %u bytes",
                        DEVCMD_DATA_BYTES);
+    }
 
     /* ionic_dev_cmd_go(): command, clear done, ring. */
     ih_bar0_write(h, BAR0_DEVCMD_CMD, cmd, 64);
     ih_bar0_write32(h, BAR0_DEVCMD_DONE, 0);
     ih_bar0_write32(h, BAR0_DEVCMD, 1);
 
-    if (!(ih_bar0_read32(h, BAR0_DEVCMD_DONE) & 1u)) {
+    if (!(ih_bar0_read32(h, BAR0_DEVCMD_DONE) & 1U)) {
         fail_msg("devcmd %u never set done", cmd[0]);
         return -1;
     }
@@ -324,17 +328,19 @@ int ih_eth_admin(struct ih *h, const uint8_t cmd[64], uint8_t comp[16])
     struct ih_ring *cq = &h->eth_acq;
     uint32_t slot = q->prod % ring_depth(q);
 
-    if (!fake_vfu_write(h->vfu, ring_slot(q, q->prod), cmd, 64))
+    if (!fake_vfu_write(h->vfu, ring_slot(q, q->prod), cmd, 64)) {
         return fail_rc("eth adminq write failed");
+    }
     q->prod++;
     ih_doorbell(h, IH_QTYPE_ETH_ADMINQ, 0, 0,
                 (uint16_t)(q->prod % ring_depth(q)));
 
     /* struct ionic_admin_comp: status, rsvd, le16 comp_index, ... colour in
      * the top bit of the last byte */
-    if (!fake_vfu_read(h->vfu, ring_slot(cq, cq->cons), comp, 16))
+    if (!fake_vfu_read(h->vfu, ring_slot(cq, cq->cons), comp, 16)) {
         return fail_rc("eth admin CQ read failed");
-    if (((comp[15] & 0x80u) != 0) != ring_color(cq)) {
+    }
+    if (((comp[15] & 0x80U) != 0) != ring_color(cq)) {
         fail_msg("eth adminq command %u drew no completion", cmd[0]);
         return -1;
     }
@@ -358,11 +364,13 @@ static bool eq_next_ring(struct ih *h, uint32_t *cq_id)
     uint8_t b[4];
 
     /* struct ionic_v1_eqe: be32 of colour, type, code and qid */
-    if (!fake_vfu_read(h->vfu, ring_slot(&h->eq, h->eq.cons), b, 4))
+    if (!fake_vfu_read(h->vfu, ring_slot(&h->eq, h->eq.cons), b, 4)) {
         return false;
+    }
     uint32_t evt = ernic_get_be32(b);
-    if (((evt & 1u) != 0) != ring_color(&h->eq))
+    if (((evt & 1U) != 0) != ring_color(&h->eq)) {
         return false;
+    }
     h->eq.cons++;
     *cq_id = evt >> 8;
     return true;
@@ -386,22 +394,25 @@ int ih_admin_post(struct ih *h, uint8_t op, const void *body, uint16_t len)
     uint32_t strides = (ADMIN_HDR_LEN + len + ADMIN_STRIDE - 1) / ADMIN_STRIDE;
     uint8_t buf[4 * ADMIN_STRIDE];
 
-    if (strides > 4)
+    if (strides > 4) {
         return fail_rc("admin body of %u bytes is too long", len);
+    }
 
     uint32_t slot = q->prod % ring_depth(q);
 
     memset(buf, 0, sizeof(buf));
     buf[0] = op;
     ernic_put_le16(buf + 2, len);
-    if (len)
+    if (len) {
         memcpy(buf + ADMIN_HDR_LEN, body, len);
+    }
     /* ionic_admin_poll_locked() produces each stride as its own ring entry,
      * so a WQE that reaches the end of the ring continues at its start. */
     for (uint32_t i = 0; i < strides; i++) {
         if (!fake_vfu_write(h->vfu, ring_slot(q, q->prod + i),
-                            buf + (size_t)i * ADMIN_STRIDE, ADMIN_STRIDE))
+                            buf + ((size_t)i * ADMIN_STRIDE), ADMIN_STRIDE)) {
             return fail_rc("admin WQE write failed");
+        }
     }
     q->prod += strides;
     ih_doorbell(h, IH_QTYPE_AQ, 0, 0, (uint16_t)(q->prod % ring_depth(q)));
@@ -413,13 +424,15 @@ int ih_admin(struct ih *h, uint8_t op, const void *body, uint16_t len,
 {
     int slot = ih_admin_post(h, op, body, len);
 
-    if (slot < 0)
+    if (slot < 0) {
         return -1;
+    }
     ih_poll(h);
 
     int rc = ih_admin_complete(h, op, slot, resp_len);
-    if (rc == IH_ADMIN_PENDING)
+    if (rc == IH_ADMIN_PENDING) {
         return fail_rc("admin op %u drew no completion", op);
+    }
     return rc;
 }
 
@@ -430,19 +443,21 @@ int ih_admin_complete(struct ih *h, uint8_t op, int slot, uint32_t *resp_len)
     /* ionic_v1_cqe for an admin command: be16 cmd_idx, u8 cmd_op, ...,
      * be32 status_length, be32 qid_type_flags */
     uint8_t cqe[32];
-    if (!fake_vfu_read(h->vfu, ring_slot(cq, cq->cons), cqe, sizeof(cqe)))
+    if (!fake_vfu_read(h->vfu, ring_slot(cq, cq->cons), cqe, sizeof(cqe))) {
         return fail_rc("admin CQ read failed");
+    }
     uint32_t qtf = ernic_get_be32(cqe + 28);
-    if (((qtf & 1u) != 0) != ring_color(cq))
+    if (((qtf & 1U) != 0) != ring_color(cq)) {
         return IH_ADMIN_PENDING;
+    }
     cq->cons++;
 
     if (ernic_get_be16(cqe) != (uint32_t)slot || cqe[2] != op ||
-        (qtf >> 8) != 0 || ((qtf >> 5) & 7u) != IH_CQE_TYPE_ADMIN) {
+        (qtf >> 8) != 0 || ((qtf >> 5) & 7U) != IH_CQE_TYPE_ADMIN) {
         fail_msg(
             "admin completion for op %u slot %u (qid %u type %u), expected "
             "op %u slot %u",
-            cqe[2], ernic_get_be16(cqe), qtf >> 8, (qtf >> 5) & 7u, op,
+            cqe[2], ernic_get_be16(cqe), qtf >> 8, (qtf >> 5) & 7U, op,
             (unsigned)slot);
         return -1;
     }
@@ -475,7 +490,7 @@ int ih_admin_complete(struct ih *h, uint8_t op, int slot, uint32_t *resp_len)
     }
 
     uint32_t sl = ernic_get_be32(cqe + 24);
-    if (qtf & 2u) {
+    if (qtf & 2U) {
         /* The status code is the whole field, as the driver reads it. */
         if (sl == 0 || sl > UINT8_MAX) {
             fail_msg("admin op %u has the error bit with status %u", op, sl);
@@ -483,17 +498,20 @@ int ih_admin_complete(struct ih *h, uint8_t op, int slot, uint32_t *resp_len)
         }
         return (int)sl;
     }
-    if (resp_len)
+    if (resp_len) {
         *resp_len = sl;
+    }
     return 0;
 }
 
 bool ih_bringup(struct ih *h)
 {
-    uint8_t cmd[64], comp[16];
+    uint8_t cmd[64];
+    uint8_t comp[16];
 
-    if (ih_bar0_read32(h, 0) != IONIC_DEV_SIG)
+    if (ih_bar0_read32(h, 0) != IONIC_DEV_SIG) {
         return fail("no DEVI signature at BAR0 offset 0");
+    }
 
     /* ionic_identify(), ionic_reset(), ionic_port_identify/init(),
      * ionic_lif_identify(), ionic_lif_init(). */
@@ -502,26 +520,30 @@ bool ih_bringup(struct ih *h)
     for (size_t i = 0; i < sizeof(simple); i++) {
         memset(cmd, 0, sizeof(cmd));
         cmd[0] = simple[i];
-        if (ih_devcmd(h, cmd, comp, NULL, 0) != 0)
+        if (ih_devcmd(h, cmd, comp, NULL, 0) != 0) {
             return fail("devcmd %u failed", simple[i]);
+        }
     }
 
     memset(cmd, 0, sizeof(cmd));
     cmd[0] = IH_CMD_PORT_INIT;
     ernic_put_le64(cmd + 8, h->port_info);
-    if (ih_devcmd(h, cmd, comp, NULL, 0) != 0)
+    if (ih_devcmd(h, cmd, comp, NULL, 0) != 0) {
         return fail("PORT_INIT failed");
+    }
 
     memset(cmd, 0, sizeof(cmd));
     cmd[0] = IH_CMD_LIF_INIT;
     ernic_put_le64(cmd + 8, h->lif_info);
-    if (ih_devcmd(h, cmd, comp, NULL, 0) != 0)
+    if (ih_devcmd(h, cmd, comp, NULL, 0) != 0) {
         return fail("LIF_INIT failed");
+    }
 
     /* The Ethernet admin queue: struct ionic_q_init_cmd */
     if (!ring_alloc(h, &h->eth_aq, ETH_AQ_DEPTH_LOG2, 6) ||
-        !ring_alloc(h, &h->eth_acq, ETH_AQ_DEPTH_LOG2, 4))
+        !ring_alloc(h, &h->eth_acq, ETH_AQ_DEPTH_LOG2, 4)) {
         return false;
+    }
     memset(cmd, 0, sizeof(cmd));
     cmd[0] = IH_CMD_Q_INIT;
     cmd[4] = IH_QTYPE_ETH_ADMINQ;
@@ -530,8 +552,9 @@ bool ih_bringup(struct ih *h)
     cmd[19] = ETH_AQ_DEPTH_LOG2;
     ernic_put_le64(cmd + 20, h->eth_aq.gpa);
     ernic_put_le64(cmd + 28, h->eth_acq.gpa);
-    if (ih_devcmd(h, cmd, comp, NULL, 0) != 0)
+    if (ih_devcmd(h, cmd, comp, NULL, 0) != 0) {
         return fail("Q_INIT of the adminq failed");
+    }
 
     ih_intr_mask(h, IH_ETH_ADMINQ_INTR, false);
     ih_intr_mask(h, IH_EQ_INTR, false);
@@ -540,8 +563,9 @@ bool ih_bringup(struct ih *h)
      * ionic_create_rdma_admin(), all over the Ethernet admin queue */
     memset(cmd, 0, sizeof(cmd));
     cmd[0] = IH_CMD_RDMA_RESET;
-    if (ih_eth_admin(h, cmd, comp) != 0)
+    if (ih_eth_admin(h, cmd, comp) != 0) {
         return fail("RDMA_RESET_LIF failed");
+    }
 
     struct {
         uint8_t op;
@@ -556,17 +580,19 @@ bool ih_bringup(struct ih *h)
     };
     for (size_t i = 0; i < sizeof(queues) / sizeof(queues[0]); i++) {
         if (!ring_alloc(h, queues[i].ring, queues[i].depth_log2,
-                        queues[i].stride_log2))
+                        queues[i].stride_log2)) {
             return false;
+        }
         memset(cmd, 0, sizeof(cmd));
         cmd[0] = queues[i].op;
-        ernic_put_le32(cmd + 4, queues[i].qid | 1u << 24);
+        ernic_put_le32(cmd + 4, queues[i].qid | 1U << 24);
         ernic_put_le32(cmd + 8, queues[i].cid);
         cmd[14] = queues[i].depth_log2;
         cmd[15] = queues[i].stride_log2;
         ernic_put_le64(cmd + 16, queues[i].ring->gpa);
-        if (ih_eth_admin(h, cmd, comp) != 0)
+        if (ih_eth_admin(h, cmd, comp) != 0) {
             return fail("RDMA queue devcmd %u failed", queues[i].op);
+        }
     }
 
     /* The server wires the admin queue in on its next loop. */
@@ -582,15 +608,16 @@ bool ih_cq_create(struct ih *h, struct ih_cq *cq, uint32_t id,
     uint8_t body[34] = {0};
 
     cq->id = id;
-    if (!ring_alloc(h, &cq->ring, depth_log2, CQE_STRIDE_LOG2))
+    if (!ring_alloc(h, &cq->ring, depth_log2, CQE_STRIDE_LOG2)) {
         return false;
+    }
 
     /* struct ionic_admin_create_cq */
     ernic_put_le32(body + 0, IH_EQ_ID);
     body[4] = depth_log2;
     body[5] = CQE_STRIDE_LOG2;
     body[7] = 12;
-    ernic_put_le32(body + 12, id | 1u << 24);
+    ernic_put_le32(body + 12, id | 1U << 24);
     ernic_put_le32(body + 20, 1);
     ernic_put_le64(body + 24, cq->ring.gpa);
     int rc = ih_admin(h, IH_ADMIN_CREATE_CQ, body, sizeof(body), NULL);
@@ -619,17 +646,20 @@ bool ih_qp_create_stride(struct ih *h, struct ih_qp *qp, uint32_t id,
 {
     uint8_t body[64] = {0};
 
-    if (sq_stride_log2 > IH_WQE_MAX_STRIDE_LOG2)
+    if (sq_stride_log2 > IH_WQE_MAX_STRIDE_LOG2) {
         return fail("SQ stride 2^%u is above 2^%u", sq_stride_log2,
                     IH_WQE_MAX_STRIDE_LOG2);
+    }
     memset(qp, 0, sizeof(*qp));
     qp->id = id;
     qp->type = type;
     qp->next_wqe_id = 1;
-    if (!ring_alloc(h, &qp->sq, QP_DEPTH_LOG2, sq_stride_log2))
+    if (!ring_alloc(h, &qp->sq, QP_DEPTH_LOG2, sq_stride_log2)) {
         return false;
-    if (!srq && !ring_alloc(h, &qp->rq, QP_DEPTH_LOG2, WQE_STRIDE_LOG2))
+    }
+    if (!srq && !ring_alloc(h, &qp->rq, QP_DEPTH_LOG2, WQE_STRIDE_LOG2)) {
         return false;
+    }
 
     /* struct ionic_admin_create_qp */
     ernic_put_le32(body + 8, scq->id);
@@ -646,11 +676,11 @@ bool ih_qp_create_stride(struct ih *h, struct ih_qp *qp, uint32_t id,
         body[36] = QP_DEPTH_LOG2;
         body[37] = WQE_STRIDE_LOG2;
         body[39] = 12;
-        ernic_put_le32(body + 40, 0xffffffffu);
+        ernic_put_le32(body + 40, 0xffffffffU);
         ernic_put_le32(body + 44, 1);
         ernic_put_le64(body + 48, qp->rq.gpa);
     }
-    ernic_put_le32(body + 56, id | 1u << 24);
+    ernic_put_le32(body + 56, id | 1U << 24);
     body[62] = type;
     int rc = ih_admin(h, IH_ADMIN_CREATE_QP, body, sizeof(body), NULL);
     return rc == 0 || fail("CREATE_QP %u: %d", id, rc);
@@ -672,8 +702,9 @@ int ih_qp_modify(struct ih *h, uint32_t qp_id, const struct ih_qp_mod *mod)
      * DMA-mapped header buffer here. */
     if (mod->hdr) {
         if (mod->hdr_len > 255 ||
-            !fake_vfu_write(h->vfu, h->scratch, mod->hdr, mod->hdr_len))
+            !fake_vfu_write(h->vfu, h->scratch, mod->hdr, mod->hdr_len)) {
             return fail_rc("bad RoCE header template");
+        }
         ernic_put_le32(body + 32, mod->hdr_len << 24);
         ernic_put_le64(body + 48, h->scratch);
     }
@@ -684,7 +715,7 @@ int ih_qp_modify(struct ih *h, uint32_t qp_id, const struct ih_qp_mod *mod)
     ernic_put_le32(body + 12, 0x200); /* sq_psn */
     ernic_put_le32(body + 16, mod->qkey_dest_qpn);
     body[39] = mod->state;
-    ernic_put_le32(body + 56, qp_id | 1u << 24);
+    ernic_put_le32(body + 56, qp_id | 1U << 24);
     return ih_admin(h, IH_ADMIN_MODIFY_QP, body, sizeof(body), NULL);
 }
 
@@ -694,8 +725,9 @@ size_t ih_roce_hdr_v4(uint8_t *buf, size_t cap, uint32_t sip, uint32_t dip)
     static const uint8_t smac[6] = {0x02, 0x00, 0x00, 0x11, 0x22, 0x33};
     const size_t len = 14 + 20 + 8;
 
-    if (cap < len)
+    if (cap < len) {
         return 0;
+    }
     memset(buf, 0, len);
     memcpy(buf, dmac, 6);
     memcpy(buf + 6, smac, 6);
@@ -718,15 +750,16 @@ bool ih_qp_connect(struct ih *h, const struct ih_qp *a, const struct ih_qp *b)
 {
     const struct ih_qp *ends[2][2] = {{a, b}, {b, a}};
     uint8_t hdr[64];
-    size_t hdr_len = ih_roce_hdr_v4(hdr, sizeof(hdr), 0xc0a80001u, 0xc0a80002u);
+    size_t hdr_len = ih_roce_hdr_v4(hdr, sizeof(hdr), 0xc0a80001U, 0xc0a80002U);
 
     for (size_t i = 0; i < 2; i++) {
-        uint32_t self = ends[i][0]->id, peer = ends[i][1]->id;
+        uint32_t self = ends[i][0]->id;
+        uint32_t peer = ends[i][1]->id;
         int rc = ih_qp_modify(h, self,
                               &(struct ih_qp_mod){.attr_mask = IH_QP_STATE,
                                                   .state = IH_QPS_INIT});
 
-        if (rc == 0)
+        if (rc == 0) {
             rc = ih_qp_modify(
                 h, self,
                 &(struct ih_qp_mod){.attr_mask = IH_QP_STATE | IH_QP_AV |
@@ -735,13 +768,16 @@ bool ih_qp_connect(struct ih *h, const struct ih_qp *a, const struct ih_qp *b)
                                     .qkey_dest_qpn = peer,
                                     .hdr = hdr,
                                     .hdr_len = (uint32_t)hdr_len});
-        if (rc == 0)
+        }
+        if (rc == 0) {
             rc = ih_qp_modify(
                 h, self,
                 &(struct ih_qp_mod){.attr_mask = IH_QP_STATE | IH_QP_SQ_PSN,
                                     .state = IH_QPS_RTS});
-        if (rc != 0)
+        }
+        if (rc != 0) {
             return fail("connecting QP %u to %u: %d", self, peer, rc);
+        }
     }
     return true;
 }
@@ -764,8 +800,9 @@ bool ih_mr_alloc(struct ih *h, struct ih_mr *mr, uint32_t lkey, uint64_t va,
     mr->npages =
         (uint32_t)((first_off + len + IH_PAGE_SIZE - 1) / IH_PAGE_SIZE);
     mr->pages = calloc(mr->npages, sizeof(*mr->pages));
-    if (!mr->pages)
+    if (!mr->pages) {
         return fail("out of memory");
+    }
 
     for (uint32_t i = 0; i < mr->npages; i++) {
         uint32_t idx = reversed ? mr->npages - 1 - i : i;
@@ -785,7 +822,7 @@ bool ih_mr_alloc(struct ih *h, struct ih_mr *mr, uint32_t lkey, uint64_t va,
         uint8_t le[8];
 
         ernic_put_le64(le, mr->pages[i]);
-        fake_vfu_write(h->vfu, mr->pt_gpa + i * sizeof(uint64_t), le, 8);
+        fake_vfu_write(h->vfu, mr->pt_gpa + (i * sizeof(uint64_t)), le, 8);
     }
     return true;
 }
@@ -797,8 +834,9 @@ bool ih_mr_alloc(struct ih *h, struct ih_mr *mr, uint32_t lkey, uint64_t va,
  */
 static uint64_t mr_dma_addr(const struct ih_mr *mr)
 {
-    if (mr->npages == 1)
-        return mr->pages[0] + mr->va % IH_PAGE_SIZE;
+    if (mr->npages == 1) {
+        return mr->pages[0] + (mr->va % IH_PAGE_SIZE);
+    }
     return mr->pt_gpa;
 }
 
@@ -827,8 +865,9 @@ static bool mr_register(struct ih *h, struct ih_mr *mr, uint32_t access)
 bool ih_mr_create(struct ih *h, struct ih_mr *mr, uint32_t lkey, uint64_t va,
                   uint64_t len, uint32_t access, bool reversed)
 {
-    if (!ih_mr_alloc(h, mr, lkey, va, len, reversed))
+    if (!ih_mr_alloc(h, mr, lkey, va, len, reversed)) {
         return false;
+    }
     return mr_register(h, mr, access);
 }
 
@@ -836,13 +875,15 @@ bool ih_mr_alias(struct ih *h, struct ih_mr *alias, const struct ih_mr *src,
                  uint32_t lkey, uint64_t va, uint32_t access)
 {
     memset(alias, 0, sizeof(*alias));
-    if (va % IH_PAGE_SIZE != src->va % IH_PAGE_SIZE)
+    if (va % IH_PAGE_SIZE != src->va % IH_PAGE_SIZE) {
         return fail("an alias at %#" PRIx64 " can't share the pages of one "
                     "at %#" PRIx64,
                     va, src->va);
+    }
     alias->pages = calloc(src->npages, sizeof(*alias->pages));
-    if (!alias->pages)
+    if (!alias->pages) {
         return fail("out of memory");
+    }
     memcpy(alias->pages, src->pages, src->npages * sizeof(*alias->pages));
     alias->lkey = lkey;
     alias->va = va;
@@ -865,24 +906,27 @@ int ih_mr_destroy(struct ih *h, struct ih_mr *mr)
 static bool mr_copy(struct ih *h, const struct ih_mr *mr, uint64_t va,
                     void *buf, size_t len, bool to_guest)
 {
-    if (va < mr->va || len > mr->len || va - mr->va > mr->len - len)
+    if (va < mr->va || len > mr->len || va - mr->va > mr->len - len) {
         return fail("[%#" PRIx64 ", +%zu) is outside MR %#x", va, len,
                     mr->lkey);
+    }
 
-    uint64_t off = va - mr->va + mr->va % IH_PAGE_SIZE;
+    uint64_t off = va - mr->va + (mr->va % IH_PAGE_SIZE);
     size_t done = 0;
 
     while (done < len) {
-        uint64_t gpa = mr->pages[off / IH_PAGE_SIZE] + off % IH_PAGE_SIZE;
+        uint64_t gpa = mr->pages[off / IH_PAGE_SIZE] + (off % IH_PAGE_SIZE);
         size_t n = IH_PAGE_SIZE - (size_t)(off % IH_PAGE_SIZE);
 
-        if (n > len - done)
+        if (n > len - done) {
             n = len - done;
+        }
         bool ok = to_guest
                       ? fake_vfu_write(h->vfu, gpa, (uint8_t *)buf + done, n)
                       : fake_vfu_read(h->vfu, gpa, (uint8_t *)buf + done, n);
-        if (!ok)
+        if (!ok) {
             return fail("MR page at %#" PRIx64 " is not guest memory", gpa);
+        }
         done += n;
         off += n;
     }
@@ -911,8 +955,9 @@ int ih_srq_create(struct ih *h, struct ih_srq *srq, uint8_t depth_log2)
     memset(srq, 0, sizeof(*srq));
     srq->next_wqe_id = 1;
     srq->db_qtype = IH_QTYPE_RQ;
-    if (!ring_alloc(h, &srq->ring, depth_log2, WQE_STRIDE_LOG2))
+    if (!ring_alloc(h, &srq->ring, depth_log2, WQE_STRIDE_LOG2)) {
         return -1;
+    }
     fake_vfu_write(h->vfu, resp, poison, sizeof(poison));
 
     /* struct ionic_admin_create_srq */
@@ -926,8 +971,9 @@ int ih_srq_create(struct ih *h, struct ih_srq *srq, uint8_t depth_log2)
 
     uint32_t resp_len = 0;
     int rc = ih_admin(h, IH_ADMIN_CREATE_SRQ, body, sizeof(body), &resp_len);
-    if (rc != 0)
+    if (rc != 0) {
         return rc;
+    }
 
     /* struct ionic_admin_create_srq_resp: le32 id, u8 udma_idx */
     uint8_t r[5];
@@ -954,13 +1000,14 @@ int ih_ah_create(struct ih *h, uint32_t ah_id, uint32_t sip, uint32_t dip)
     uint8_t body[24] = {0};
     size_t hdr_len = ih_roce_hdr_v4(hdr, sizeof(hdr), sip, dip);
 
-    if (!fake_vfu_write(h->vfu, h->scratch, hdr, hdr_len))
+    if (!fake_vfu_write(h->vfu, h->scratch, hdr, hdr_len)) {
         return -1;
+    }
 
     /* struct ionic_admin_create_ah */
     ernic_put_le64(body + 0, h->scratch);
     ernic_put_le32(body + 8, (uint32_t)hdr_len);
-    ernic_put_le32(body + 16, ah_id | 1u << 24);
+    ernic_put_le32(body + 16, ah_id | 1U << 24);
     return ih_admin(h, IH_ADMIN_CREATE_AH, body, sizeof(body), NULL);
 }
 
@@ -981,26 +1028,28 @@ static bool put_sges(uint8_t *wqe, uint32_t wqe_len, const struct ih_sge *sge,
 
     if (spec && nsge > IH_SPEC_FIRST_SGE) {
         fmt = nsge > IH_SPEC32_MAX_SGE ? IH_WQE_SPEC16 : IH_WQE_SPEC32;
-        sgl_off += IH_SPEC_FIRST_SGE * 16u;
+        sgl_off += IH_SPEC_FIRST_SGE * 16U;
     }
-    if (nsge > (wqe_len - sgl_off) / 16u ||
-        (fmt == IH_WQE_SPEC16 && nsge > IH_SPEC16_MAX_SGE))
+    if (nsge > (wqe_len - sgl_off) / 16U ||
+        (fmt == IH_WQE_SPEC16 && nsge > IH_SPEC16_MAX_SGE)) {
         return fail("%u SGEs do not fit a %u-byte WQE", nsge, wqe_len);
+    }
 
     for (uint8_t i = 0; i < nsge; i++) {
-        uint8_t *p = wqe + sgl_off + (size_t)16 * i;
+        uint8_t *p = wqe + sgl_off + ((size_t)16 * i);
 
         ernic_put_be64(p, sge[i].va);
         ernic_put_be32(p + 8, sge[i].len);
         ernic_put_be32(p + 12, sge[i].lkey);
 
         if (fmt == IH_WQE_SPEC32) {
-            ernic_put_be32(wqe + WQE_PLD_OFF + (size_t)4 * i, sge[i].len);
+            ernic_put_be32(wqe + WQE_PLD_OFF + ((size_t)4 * i), sge[i].len);
         } else if (fmt == IH_WQE_SPEC16) {
-            if (sge[i].len > UINT16_MAX)
+            if (sge[i].len > UINT16_MAX) {
                 return fail("SGE %u's %u bytes do not fit a SPEC16 table", i,
                             sge[i].len);
-            ernic_put_be16(wqe + WQE_PLD_OFF + (size_t)2 * i,
+            }
+            ernic_put_be16(wqe + WQE_PLD_OFF + ((size_t)2 * i),
                            (uint16_t)sge[i].len);
         }
     }
@@ -1010,8 +1059,8 @@ static bool put_sges(uint8_t *wqe, uint32_t wqe_len, const struct ih_sge *sge,
 
 uint64_t ih_post_send(struct ih *h, struct ih_qp *qp, const struct ih_send *s)
 {
-    const uint32_t stride = 1u << qp->sq.stride_log2;
-    uint8_t wqe[1u << IH_WQE_MAX_STRIDE_LOG2];
+    const uint32_t stride = 1U << qp->sq.stride_log2;
+    uint8_t wqe[1U << IH_WQE_MAX_STRIDE_LOG2];
     uint64_t wqe_id = qp->next_wqe_id++;
     uint32_t total = 0;
 
@@ -1020,8 +1069,9 @@ uint64_t ih_post_send(struct ih *h, struct ih_qp *qp, const struct ih_send *s)
         fail_msg("send WQE does not fit a %u-byte stride", stride);
         return 0;
     }
-    for (uint8_t i = 0; i < s->nsge; i++)
+    for (uint8_t i = 0; i < s->nsge; i++) {
         total += s->sge[i].len;
+    }
 
     /* struct ionic_v1_wqe */
     memset(wqe, 0, sizeof(wqe));
@@ -1030,10 +1080,11 @@ uint64_t ih_post_send(struct ih *h, struct ih_qp *qp, const struct ih_send *s)
     wqe[9] = s->nsge;
     ernic_put_be16(wqe + 10, s->flags);
     if (s->op == IH_OP_SEND_INV || s->op == IH_OP_LOCAL_INV ||
-        s->op == IH_OP_REG_MR)
+        s->op == IH_OP_REG_MR) {
         ernic_put_be32(wqe + 12, s->key);
-    else
+    } else {
         memcpy(wqe + 12, &s->imm_be, 4);
+    }
 
     switch (s->op) {
     case IH_OP_RDMA_READ:
@@ -1107,14 +1158,15 @@ static uint64_t post_recv(struct ih *h, struct ih_ring *rq, int db_qtype,
                           uint8_t db_ring, uint32_t qid, uint64_t *next_wqe_id,
                           const struct ih_sge *sge, uint8_t nsge, bool spec)
 {
-    uint8_t wqe[1u << WQE_STRIDE_LOG2];
+    uint8_t wqe[1U << WQE_STRIDE_LOG2];
     uint64_t wqe_id = (*next_wqe_id)++;
 
     memset(wqe, 0, sizeof(wqe));
     memcpy(wqe, &wqe_id, 8);
     wqe[9] = nsge;
-    if (!put_sges(wqe, sizeof(wqe), sge, nsge, spec))
+    if (!put_sges(wqe, sizeof(wqe), sge, nsge, spec)) {
         return 0;
+    }
     if (!fake_vfu_write(h->vfu, ring_slot(rq, rq->prod), wqe, sizeof(wqe))) {
         fail_msg("RQ write failed");
         return 0;
@@ -1145,18 +1197,20 @@ bool ih_cq_poll(struct ih *h, struct ih_cq *cq, struct ih_cqe *cqe)
     uint8_t *b = cqe->raw;
 
     memset(cqe, 0, sizeof(*cqe));
-    if (!fake_vfu_read(h->vfu, ring_slot(r, r->cons), b, sizeof(cqe->raw)))
+    if (!fake_vfu_read(h->vfu, ring_slot(r, r->cons), b, sizeof(cqe->raw))) {
         return false;
+    }
 
     /* struct ionic_v1_cqe */
     uint32_t qtf = ernic_get_be32(b + 28);
-    if (((qtf & 1u) != 0) != ring_color(r))
+    if (((qtf & 1U) != 0) != ring_color(r)) {
         return false;
+    }
     r->cons++;
     ih_doorbell(h, IH_QTYPE_CQ, cq->id, 0, (uint16_t)(r->cons % ring_depth(r)));
 
-    cqe->type = (uint8_t)((qtf >> 5) & 7u);
-    cqe->error = (qtf & 2u) != 0;
+    cqe->type = (uint8_t)((qtf >> 5) & 7U);
+    cqe->error = (qtf & 2U) != 0;
     cqe->qid = qtf >> 8;
     cqe->status_len = ernic_get_be32(b + 24);
 
@@ -1167,9 +1221,9 @@ bool ih_cq_poll(struct ih *h, struct ih_cq *cq, struct ih_cqe *cqe)
         memcpy(&cqe->wqe_id, b, 8);
         /* 0x1f, as the driver masks it: bits 30 and 31 of src_qpn_op are
          * IS_VLAN and IS_IPV4, not part of the opcode. */
-        cqe->recv_op = (uint8_t)((qpn_op >> 24) & 0x1fu);
-        cqe->src_qpn = qpn_op & 0xffffffu;
-        cqe->is_ipv4 = (qpn_op & 0x80000000u) != 0;
+        cqe->recv_op = (uint8_t)((qpn_op >> 24) & 0x1fU);
+        cqe->src_qpn = qpn_op & 0xffffffU;
+        cqe->is_ipv4 = (qpn_op & 0x80000000U) != 0;
         memcpy(cqe->smac, b + 12, 6);
         /*
          * There is no SMAC-valid bit on the wire: the driver sets

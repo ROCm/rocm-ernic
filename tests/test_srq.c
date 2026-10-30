@@ -82,8 +82,9 @@ int main(void)
         lookup = ernic_requested_device() ? ERNIC_DEVICE_MISMATCH
                                           : ERNIC_DEVICE_ABSENT;
         ernic_report_no_device(lookup);
-        if (dev_list)
+        if (dev_list) {
             ibv_free_device_list(dev_list);
+        }
         return lookup == ERNIC_DEVICE_MISMATCH ? 1 : 77;
     }
 
@@ -252,20 +253,27 @@ int main(void)
      * memory they point at, or the WQE is still live when its MR is
      * deregistered and its buffer freed. */
 out:
-    if (qp)
+    if (qp) {
         ibv_destroy_qp(qp);
-    if (srq)
+    }
+    if (srq) {
         ibv_destroy_srq(srq);
-    if (mr)
+    }
+    if (mr) {
         ibv_dereg_mr(mr);
+    }
     free(buf);
-    if (cq)
+    if (cq) {
         ibv_destroy_cq(cq);
-    if (pd)
+    }
+    if (pd) {
         ibv_dealloc_pd(pd);
-    if (ctx)
+    }
+    if (ctx) {
         ibv_close_device(ctx);
-    if (dev_list)
+    }
+    if (dev_list) {
         ibv_free_device_list(dev_list);
+    }
     return rc;
 }

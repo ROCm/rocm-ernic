@@ -215,7 +215,9 @@ static int run_case(const Case *c)
  */
 static char **child_env(const char *value, char **entry)
 {
-    size_t name_len = strlen(ENV_NAME), n = 0, out = 0;
+    size_t name_len = strlen(ENV_NAME);
+    size_t n = 0;
+    size_t out = 0;
     char **env;
 
     *entry = NULL;
@@ -497,7 +499,8 @@ static void log_none(void)
 static bool capture(void (*report)(void), char *buf, size_t len)
 {
     FILE *tmp = tmpfile();
-    int saved_out = -1, saved_err = -1;
+    int saved_out = -1;
+    int saved_err = -1;
     bool ok = false;
     size_t n;
 
@@ -652,7 +655,7 @@ static int check_log_limit(void)
         ErnicLogLimit lim = {0};
 
         failed += limit_step(&lim, 1000, true, 0, "a lone line");
-        failed += limit_step(&lim, 1000 + 3 * ERNIC_LOG_LIMIT_MS, true, 0,
+        failed += limit_step(&lim, 1000 + (3 * ERNIC_LOG_LIMIT_MS), true, 0,
                              "a line after a quiet spell");
     }
 
@@ -671,7 +674,8 @@ static int check_log_limit(void)
 
     /* Each limit is its own: one held back doesn't hold back another. */
     {
-        ErnicLogLimit a = {0}, b = {0};
+        ErnicLogLimit a = {0};
+        ErnicLogLimit b = {0};
 
         for (uint32_t n = 0; n <= ERNIC_LOG_LIMIT_BURST; n++) {
             failed += limit_step(&a, 0, n < ERNIC_LOG_LIMIT_BURST, 0,

@@ -729,7 +729,7 @@ static void connect_to_target(struct client *c)
 static void fill_pattern(uint8_t *p, size_t len, uint32_t seed)
 {
     for (size_t i = 0; i < len; i++) {
-        seed = seed * 1103515245u + 12345u;
+        seed = seed * 1103515245U + 12345U;
         p[i] = (uint8_t)(seed >> 16);
     }
 }
@@ -759,7 +759,7 @@ static void test_round_trip(struct client *c, size_t len)
     struct reply r;
     char detail[256];
 
-    fill_pattern(src, len, 0xa5a5u);
+    fill_pattern(src, len, 0xa5a5U);
     memset(dst, 0, len);
 
     if (!obj_put(c, "roundtrip.bin", 0, len, &r)) {
@@ -794,8 +794,8 @@ static void test_round_trip(struct client *c, size_t len)
  * shared through c->buf because test_short_buffer overwrites that half
  * of the buffer in between.
  */
-#define RANGED_LEN  4096u
-#define RANGED_SEED 0x1234u
+#define RANGED_LEN  4096U
+#define RANGED_SEED 0x1234U
 
 static char ranged_etag[64];
 
@@ -844,7 +844,7 @@ static void test_short_buffer(struct client *c)
     struct reply r;
     char detail[128];
 
-    fill_pattern(src, len, 0x9e37u);
+    fill_pattern(src, len, 0x9e37U);
     memset(dst, 0, len);
 
     if (!obj_put(c, "short.bin", 0, len, &r) || r.status != 200) {
@@ -1092,7 +1092,7 @@ int main(int argc, char **argv)
     struct client c;
     const char *dev = NULL;
     const char *csv_path = NULL;
-    size_t buflen = 8u << 20;
+    size_t buflen = 8U << 20;
     int iters = 20;
     bool do_perf = true;
     bool do_func = true;
@@ -1152,7 +1152,7 @@ int main(int argc, char **argv)
             return 1;
         }
     }
-    if (iters < 1 || buflen < (1u << 16)) {
+    if (iters < 1 || buflen < (1U << 16)) {
         usage(argv[0]);
         return 1;
     }
@@ -1170,7 +1170,7 @@ int main(int argc, char **argv)
 
     if (do_func) {
         test_round_trip(&c, 4096);
-        test_round_trip(&c, 1u << 20);
+        test_round_trip(&c, 1U << 20);
         test_ranged_get(&c);
         test_short_buffer(&c);
         test_body_get(&c);
@@ -1179,7 +1179,7 @@ int main(int argc, char **argv)
     }
 
     if (do_perf) {
-        static const size_t sizes[] = {4096, 65536, 1u << 20};
+        static const size_t sizes[] = {4096, 65536, 1U << 20};
         FILE *csv = NULL;
 
         if (csv_path != NULL) {

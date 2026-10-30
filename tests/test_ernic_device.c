@@ -48,8 +48,9 @@ static int write_attr(const char *name, const char *attribute,
 
     length = snprintf(path, sizeof(path),
                       ERNIC_SYSFS_INFINIBAND "/%s/device/%s", name, attribute);
-    if (length < 0 || (size_t)length >= sizeof(path))
+    if (length < 0 || (size_t)length >= sizeof(path)) {
         return 0;
+    }
 
     /* open() rather than fopen() so the fixture never depends on umask.
      * With _FORTIFY_SOURCE, glibc 2.40 and later give Clang an
@@ -59,16 +60,18 @@ static int write_attr(const char *name, const char *attribute,
     fd =
         open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, S_IRUSR | S_IWUSR);
     /* NOLINTEND(android-cloexec-open) */
-    if (fd < 0)
+    if (fd < 0) {
         return 0;
+    }
     file = fdopen(fd, "w");
     if (!file) {
         (void)close(fd);
         return 0;
     }
     result = fprintf(file, "%#x\n", value) >= 0;
-    if (fclose(file) != 0)
+    if (fclose(file) != 0) {
         result = 0;
+    }
 
     return result;
 }
@@ -80,17 +83,20 @@ static void remove_device(const char *name)
 
     for (i = 0; i < sizeof(attributes) / sizeof(attributes[0]); i++) {
         if (snprintf(path, sizeof(path), ERNIC_SYSFS_INFINIBAND "/%s/device/%s",
-                     name, attributes[i]) >= (int)sizeof(path))
+                     name, attributes[i]) >= (int)sizeof(path)) {
             continue;
+        }
         (void)unlink(path);
     }
 
     if (snprintf(path, sizeof(path), ERNIC_SYSFS_INFINIBAND "/%s/device",
-                 name) < (int)sizeof(path))
+                 name) < (int)sizeof(path)) {
         (void)rmdir(path);
+    }
     if (snprintf(path, sizeof(path), ERNIC_SYSFS_INFINIBAND "/%s", name) <
-        (int)sizeof(path))
+        (int)sizeof(path)) {
         (void)rmdir(path);
+    }
 }
 
 static void remove_fixture(void)
@@ -116,12 +122,14 @@ static int create_device(const char *name)
     int length;
 
     length = snprintf(path, sizeof(path), ERNIC_SYSFS_INFINIBAND "/%s", name);
-    if (length < 0 || (size_t)length >= sizeof(path) || !make_dir(path))
+    if (length < 0 || (size_t)length >= sizeof(path) || !make_dir(path)) {
         return 0;
+    }
     length =
         snprintf(path, sizeof(path), ERNIC_SYSFS_INFINIBAND "/%s/device", name);
-    if (length < 0 || (size_t)length >= sizeof(path) || !make_dir(path))
+    if (length < 0 || (size_t)length >= sizeof(path) || !make_dir(path)) {
         return 0;
+    }
 
     return write_attr(name, "vendor", ERNIC_PCI_VENDOR_ID) &&
            write_attr(name, "device", ERNIC_PCI_DEVICE_ID) &&
@@ -175,11 +183,13 @@ static int pad_name(char *name, size_t size, const char *tail, size_t length)
     const size_t tail_len = strlen(tail);
     size_t pad;
 
-    if (length < prefix + tail_len)
+    if (length < prefix + tail_len) {
         return 0;
+    }
     pad = length - prefix - tail_len;
-    if (pad >= size || tail_len >= size - pad)
+    if (pad >= size || tail_len >= size - pad) {
         return 0;
+    }
 
     memset(name, '/', pad);
     memcpy(name + pad, tail, tail_len + 1);
@@ -281,10 +291,12 @@ int main(void)
         goto cleanup;
     }
 
-    if (!run_name_cases())
+    if (!run_name_cases()) {
         goto cleanup;
-    if (!run_path_limit_cases())
+    }
+    if (!run_path_limit_cases()) {
         goto cleanup;
+    }
 
     result = EXIT_SUCCESS;
 

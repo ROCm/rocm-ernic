@@ -71,7 +71,7 @@ enum ionic_fault_effect {
 };
 
 /* The longest sequence a pattern may expand to, in events. */
-#define IONIC_FAULT_SEQ_MAX 65536u
+#define IONIC_FAULT_SEQ_MAX 65536U
 
 struct ionic_fault {
     enum ionic_fault_site site;

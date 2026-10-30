@@ -55,9 +55,9 @@ struct p4_program;
  * of text as p4c indents it, or 3.5 to 5 minified, so the budget admits
  * one of about 4 MiB as p4c writes it, or at least 1.75 MiB minified.
  */
-#define P4_JSON_COST_OBJECT 8u
-#define P4_JSON_COST_ARRAY  2u
-#define P4_JSON_COST_OTHER  1u /* a number, string, literal or object key */
+#define P4_JSON_COST_OBJECT 8U
+#define P4_JSON_COST_ARRAY  2U
+#define P4_JSON_COST_OTHER  1U /* a number, string, literal or object key */
 #define P4_JSON_MAX_COST    ((size_t)512 * 1024)
 
 /*

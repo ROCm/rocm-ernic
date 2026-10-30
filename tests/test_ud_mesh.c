@@ -59,11 +59,11 @@
 
 #define GRH_LEN       40
 #define MSG_LEN       256
-#define QKEY          0x2B2B2B2Bu
+#define QKEY          0x2B2B2B2BU
 #define OOB_PORT      18515
 #define POLL_SECONDS  30
 #define CONNECT_TRIES 120
-#define SEND_WR_ID    0xD1D1u
+#define SEND_WR_ID    0xD1D1U
 
 /* qpn(4) + qkey(4) + gid(16), big-endian, no padding. */
 #define OOB_WIRE_LEN 24
@@ -154,13 +154,16 @@ static int ep_init(struct ibv_context *ctx, struct ibv_pd *pd, struct ud_ep *ep)
 
 static void ep_destroy(struct ud_ep *ep)
 {
-    if (ep->mr)
+    if (ep->mr) {
         ibv_dereg_mr(ep->mr);
+    }
     free(ep->buf);
-    if (ep->qp)
+    if (ep->qp) {
         ibv_destroy_qp(ep->qp);
-    if (ep->cq)
+    }
+    if (ep->cq) {
         ibv_destroy_cq(ep->cq);
+    }
 }
 
 static int post_recv(struct ud_ep *ep, uint64_t wr_id)
@@ -183,16 +186,19 @@ static int post_recv(struct ud_ep *ep, uint64_t wr_id)
 static int poll_for(struct ibv_cq *cq, enum ibv_wc_opcode opcode,
                     struct ibv_wc *out)
 {
-    uint64_t deadline_ms = ernic_monotonic_ms() + POLL_SECONDS * UINT64_C(1000);
+    uint64_t deadline_ms =
+        ernic_monotonic_ms() + (POLL_SECONDS * UINT64_C(1000));
 
     while (ernic_monotonic_ms() < deadline_ms) {
         struct ibv_wc wc;
         int n = ibv_poll_cq(cq, 1, &wc);
 
-        if (n < 0)
+        if (n < 0) {
             return -1;
-        if (n == 0)
+        }
+        if (n == 0) {
             continue;
+        }
         if (wc.status != IBV_WC_SUCCESS) {
             fprintf(stderr, "completion failed: %s\n",
                     ibv_wc_status_str(wc.status));
@@ -209,8 +215,9 @@ static int poll_for(struct ibv_cq *cq, enum ibv_wc_opcode opcode,
 /* Fill the payload with a pattern that is obviously not zeroes or a GRH. */
 static void fill_payload(unsigned char *at)
 {
-    for (int i = 0; i < MSG_LEN; i++)
+    for (int i = 0; i < MSG_LEN; i++) {
         at[i] = (unsigned char)(0xA5 ^ (i & 0xff));
+    }
 }
 
 static int send_all(int fd, const void *buf, size_t len)
@@ -222,8 +229,9 @@ static int send_all(int fd, const void *buf, size_t len)
         ssize_t n = send(fd, p + done, len - done, 0);
 
         if (n < 0) {
-            if (errno == EINTR)
+            if (errno == EINTR) {
                 continue;
+            }
             perror("send");
             return -1;
         }
@@ -241,8 +249,9 @@ static int recv_all(int fd, void *buf, size_t len)
         ssize_t n = recv(fd, p + done, len - done, 0);
 
         if (n < 0) {
-            if (errno == EINTR)
+            if (errno == EINTR) {
                 continue;
+            }
             perror("recv");
             return -1;
         }
@@ -278,12 +287,14 @@ static int oob_exchange(int fd, const struct oob_info *mine,
     memcpy(out + 4, &be, sizeof(be));
     memcpy(out + 8, mine->gid, sizeof(mine->gid));
 
-    if (send_all(fd, out, sizeof(out)) < 0)
+    if (send_all(fd, out, sizeof(out)) < 0) {
         return -1;
+    }
 
     memset(in, 0, sizeof(in));
-    if (recv_all(fd, in, sizeof(in)) < 0)
+    if (recv_all(fd, in, sizeof(in)) < 0) {
         return -1;
+    }
 
     memcpy(&be, in, sizeof(be));
     theirs->qpn = ntohl(be);
@@ -330,8 +341,9 @@ static int oob_listen(void)
     fflush(stdout);
 
     peer = ernic_gnu_accept4(fd, NULL, NULL, 0);
-    if (peer < 0)
+    if (peer < 0) {
         perror("accept");
+    }
     close(fd);
     return peer;
 }
@@ -378,8 +390,9 @@ static int oob_connect(const char *peer_ip)
 
 static void gid_str(const uint8_t *raw, char *out, size_t len)
 {
-    if (!inet_ntop(AF_INET6, raw, out, (socklen_t)len))
+    if (!inet_ntop(AF_INET6, raw, out, (socklen_t)len)) {
         snprintf(out, len, "<unprintable>");
+    }
 }
 
 /* The client half: address the peer's GID and send one datagram. */
@@ -480,14 +493,15 @@ static int run_server(struct ud_ep *ep, const struct oob_info *peer)
 
     if (memcmp(ep->buf + GRH_LEN, expected, MSG_LEN) != 0) {
         /* Say which way it is wrong: landing at 0 is the missing-GRH case. */
-        if (memcmp(ep->buf, expected, MSG_LEN) == 0)
+        if (memcmp(ep->buf, expected, MSG_LEN) == 0) {
             fprintf(stderr,
                     "FAIL: payload landed at offset 0, not %d -- no GRH was\n"
                     "  prepended. Consumers that parse at a fixed offset past\n"
                     "  the GRH read shifted data.\n",
                     GRH_LEN);
-        else
+        } else {
             fprintf(stderr, "FAIL: payload does not match what was sent\n");
+        }
         return 1;
     }
 
@@ -557,8 +571,9 @@ int main(int argc, char **argv)
         lookup = ernic_requested_device() ? ERNIC_DEVICE_MISMATCH
                                           : ERNIC_DEVICE_ABSENT;
         ernic_report_no_device(lookup);
-        if (dev_list)
+        if (dev_list) {
             ibv_free_device_list(dev_list);
+        }
         return lookup == ERNIC_DEVICE_MISMATCH ? 1 : 77;
     }
     ibdev = ernic_find_device(dev_list, ndev, &lookup);
@@ -582,8 +597,9 @@ int main(int argc, char **argv)
         goto out;
     }
 
-    if (ep_init(ctx, pd, &ep))
+    if (ep_init(ctx, pd, &ep)) {
         goto out;
+    }
 
     if (ibv_query_gid(ctx, 1, 0, &my_gid)) {
         perror("ibv_query_gid");
@@ -601,15 +617,18 @@ int main(int argc, char **argv)
      * Post the receive BEFORE the exchange tells the client where to send.
      * The other order is a race the emulator would report as a lost datagram.
      */
-    if (is_server && post_recv(&ep, 0x1))
+    if (is_server && post_recv(&ep, 0x1)) {
         goto out;
+    }
 
     oob = is_server ? oob_listen() : oob_connect(peer_ip);
-    if (oob < 0)
+    if (oob < 0) {
         goto out;
+    }
 
-    if (oob_exchange(oob, &mine, &peer) < 0)
+    if (oob_exchange(oob, &mine, &peer) < 0) {
         goto out;
+    }
 
     gid_str(peer.gid, gidbuf, sizeof(gidbuf));
     printf("peer QPN %u, GID %s\n", peer.qpn, gidbuf);
@@ -624,18 +643,23 @@ int main(int argc, char **argv)
     }
 
     rc = is_server ? run_server(&ep, &peer) : run_client(&ep, pd, &peer);
-    if (rc == 0)
+    if (rc == 0) {
         printf("PASS\n");
+    }
 
 out:
-    if (oob >= 0)
+    if (oob >= 0) {
         close(oob);
+    }
     ep_destroy(&ep);
-    if (pd)
+    if (pd) {
         ibv_dealloc_pd(pd);
-    if (ctx)
+    }
+    if (ctx) {
         ibv_close_device(ctx);
-    if (dev_list)
+    }
+    if (dev_list) {
         ibv_free_device_list(dev_list);
+    }
     return rc;
 }

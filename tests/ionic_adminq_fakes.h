@@ -68,8 +68,10 @@ int vfu_addr_to_sgl(vfu_ctx_t *vfu_ctx, vfu_dma_addr_t dma_addr, size_t len,
     (void)vfu_ctx;
     (void)prot;
     /* Written so a huge addr cannot wrap the sum back into range. */
-    if (max_nr_sgs < 1 || addr > GUEST_MEM_SIZE || len > GUEST_MEM_SIZE - addr)
+    if (max_nr_sgs < 1 || addr > GUEST_MEM_SIZE ||
+        len > GUEST_MEM_SIZE - addr) {
         return -1;
+    }
     sg->addr = addr;
     sg->len = len;
     return 1;
@@ -91,10 +93,12 @@ int vfu_sgl_get(vfu_ctx_t *vfu_ctx, dma_sg_t *sgl, struct iovec *iov,
 
     (void)vfu_ctx;
     (void)flags;
-    if (cnt < 1)
+    if (cnt < 1) {
         return -1;
-    if (g_nwrites < MAX_WRITES)
+    }
+    if (g_nwrites < MAX_WRITES) {
         g_writes[g_nwrites] = *sg;
+    }
     g_nwrites++;
     iov->iov_base = g_mem + sg->addr;
     iov->iov_len = sg->len;
@@ -126,13 +130,13 @@ void vfu_log(vfu_ctx_t *vfu_ctx, int level, const char *fmt, ...)
 
 /* ---- Stubs for the admin queue's other external symbols --------------- */
 
-#define QP_ID    7u
-#define QP_QPN   42u
-#define QP2_ID   9u
-#define QP2_QPN  43u
-#define BUF_GPA  1024u
-#define PAGE_LEN 4096u
-#define POISON   0xa5u
+#define QP_ID    7U
+#define QP_QPN   42U
+#define QP2_ID   9U
+#define QP2_QPN  43U
+#define BUF_GPA  1024U
+#define PAGE_LEN 4096U
+#define POISON   0xa5U
 
 /* Not exercised here; a variable so QUERY_QP's error path stays live. */
 static int g_query_rc;
@@ -439,7 +443,7 @@ static uint32_t g_counters_qp_id;
 
 static uint64_t dev_value(size_t i)
 {
-    return g_max ? UINT64_MAX : 0x1000u + i + 1;
+    return g_max ? UINT64_MAX : 0x1000U + i + 1;
 }
 
 static uint64_t qp_value(uint32_t qp_id, size_t i)
@@ -459,10 +463,12 @@ static void fill_counters(void *out, size_t size, uint64_t (*value)(size_t))
     uint64_t vals[FAKE_COUNTERS_MAX] = {0};
     size_t n = size / sizeof(vals[0]);
 
-    if (n > FAKE_COUNTERS_MAX)
+    if (n > FAKE_COUNTERS_MAX) {
         abort();
-    for (size_t i = 0; i < n; i++)
+    }
+    for (size_t i = 0; i < n; i++) {
         vals[i] = value(i);
+    }
     memcpy(out, vals, n * sizeof(vals[0]));
 }
 
@@ -476,8 +482,9 @@ int ernic_stats_dev_counters(const struct ernic_stats *st,
 {
     (void)st;
     memset(out, 0, sizeof(*out));
-    if (g_dev_rc)
+    if (g_dev_rc) {
         return g_dev_rc;
+    }
     fill_counters(out, sizeof(*out), dev_value);
     return 0;
 }
@@ -487,8 +494,9 @@ int ernic_stats_qp_counters(const struct ernic_stats *st, uint32_t qp_id,
 {
     (void)st;
     memset(out, 0, sizeof(*out));
-    if (g_qp_rc)
+    if (g_qp_rc) {
         return g_qp_rc;
+    }
     g_counters_qp_id = qp_id;
     fill_counters(out, sizeof(*out), qp_value_for_counters);
     return 0;
@@ -511,9 +519,10 @@ void ionic_datapath_rdma_counters(const struct ionic_datapath *dp,
 
     (void)dp;
     g_rdma_qp_id = qp_id;
-    for (size_t i = 0; i < IONIC_DP_RDMA_COUNT; i++)
+    for (size_t i = 0; i < IONIC_DP_RDMA_COUNT; i++) {
         out[i] = qp_id == IONIC_DP_DEVICE ? dev_value(dev_first + i)
                                           : qp_value(qp_id, qp_first + i);
+    }
 }
 
 /* ---- Fixture ----------------------------------------------------------- */
@@ -537,8 +546,9 @@ static void ctx_reset(void)
 {
     if (!g_dma) {
         g_dma = ernic_dma_create();
-        if (!g_dma)
+        if (!g_dma) {
             abort();
+        }
     }
     memset(&g_ctx, 0, sizeof(g_ctx));
     g_ctx.dma = g_dma;

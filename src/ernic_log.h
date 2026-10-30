@@ -71,7 +71,7 @@ void ernic_startup_report(const char *fmt, ...) ERNIC_PRINTF_FORMAT(1, 2);
  * A limit isn't thread safe: keep it where one thread uses it, or under the
  * lock of the object that holds it.
  */
-#define ERNIC_LOG_LIMIT_BURST 10u
+#define ERNIC_LOG_LIMIT_BURST 10U
 #define ERNIC_LOG_LIMIT_MS    UINT64_C(5000)
 
 typedef struct {

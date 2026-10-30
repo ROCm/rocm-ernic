@@ -39,24 +39,24 @@
 
 /* ---- Guest memory layout ----------------------------------------------- */
 
-#define POISON 0xa5u
+#define POISON 0xa5U
 
-#define LIF_PA     0x0100u /* not 0: a zero address means "no LIF" */
-#define LIF_PA2    0x1800u /* a second info block, for re-init */
-#define TX_RING    0x0800u
-#define TX_CQ      0x0900u
-#define TX_BUF     0x0a00u
-#define RX_RING    0x0c00u
-#define RX_CQ      0x0d00u
-#define RX_BUF     0x0e00u /* two buffers of RX_BUF_CAP */
-#define RX_BUF_CAP 1024u
-#define Q_DEPTH    4u
-#define PORT_PA    0x2000u /* a struct ionic_port_info */
+#define LIF_PA     0x0100U /* not 0: a zero address means "no LIF" */
+#define LIF_PA2    0x1800U /* a second info block, for re-init */
+#define TX_RING    0x0800U
+#define TX_CQ      0x0900U
+#define TX_BUF     0x0a00U
+#define RX_RING    0x0c00U
+#define RX_CQ      0x0d00U
+#define RX_BUF     0x0e00U /* two buffers of RX_BUF_CAP */
+#define RX_BUF_CAP 1024U
+#define Q_DEPTH    4U
+#define PORT_PA    0x2000U /* a struct ionic_port_info */
 
 _Static_assert(LIF_PA + IONIC_LIF_INFO_STATS_OFF + IONIC_LIF_STATS_BYTES <=
                    TX_RING,
                "the first info block overlaps the Tx ring");
-_Static_assert(RX_BUF + 2 * RX_BUF_CAP <= LIF_PA2,
+_Static_assert(RX_BUF + (2 * RX_BUF_CAP) <= LIF_PA2,
                "the Rx buffers overlap the second info block");
 _Static_assert(LIF_PA2 + IONIC_LIF_INFO_STATS_OFF + IONIC_LIF_STATS_BYTES <=
                    GUEST_MEM_SIZE,
@@ -145,14 +145,14 @@ static void lif_init(struct ionic_eth_emu *emu, uint64_t pa)
 static uint64_t guest_qword(uint64_t pa, unsigned int idx)
 {
     return ernic_get_le64(g_mem + pa + IONIC_LIF_INFO_STATS_OFF +
-                          (size_t)idx * 8);
+                          ((size_t)idx * 8));
 }
 
 /* Port counter @idx as the guest sees it at PORT_PA + 576. */
 static uint64_t guest_port_qword(unsigned int idx)
 {
     return ernic_get_le64(g_mem + PORT_PA + IONIC_PORT_INFO_STATS_OFF +
-                          (size_t)idx * 8);
+                          ((size_t)idx * 8));
 }
 
 static void port_init(struct ionic_eth_emu *emu, uint64_t pa)
@@ -166,8 +166,9 @@ static uint64_t port_counter(struct ionic_eth_emu *emu, unsigned int idx)
 {
     const struct ionic_emu_stats *st = ionic_eth_emu_get_stats(emu);
 
-    if (!st)
+    if (!st) {
         abort(); /* only a NULL emu has no stats */
+    }
     return st->port[idx];
 }
 
@@ -175,8 +176,9 @@ static uint64_t counter(struct ionic_eth_emu *emu, unsigned int idx)
 {
     const struct ionic_emu_stats *st = ionic_eth_emu_get_stats(emu);
 
-    if (!st)
+    if (!st) {
         abort(); /* only a NULL emu has no stats */
+    }
     return st->lif[idx];
 }
 
@@ -185,8 +187,9 @@ static size_t poisoned(uint64_t pa, size_t len)
 {
     size_t n = 0;
 
-    for (size_t i = 0; i < len; i++)
+    for (size_t i = 0; i < len; i++) {
         n += g_mem[pa + i] == POISON;
+    }
     return n;
 }
 
@@ -213,7 +216,7 @@ static void tx_doorbell(struct ionic_eth_emu *emu, uint16_t p_index)
 static void tx_one(struct ionic_eth_emu *emu, uint64_t addr, uint16_t len)
 {
     const struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_TXQ][0];
-    uint8_t *d = g_mem + TX_RING + (size_t)q->head * ETH_DESC_SIZE;
+    uint8_t *d = g_mem + TX_RING + ((size_t)q->head * ETH_DESC_SIZE);
 
     memset(d, 0, ETH_DESC_SIZE);
     ernic_put_le64(d, addr << TXQ_DESC_ADDR_SHIFT);
@@ -241,11 +244,11 @@ static void setup_rxq(struct ionic_eth_emu *emu, uint16_t posted, uint16_t cap)
     q->depth = Q_DEPTH;
     q->prod = posted;
     for (uint16_t i = 0; i < posted && i < 2; i++) {
-        uint8_t *d = g_mem + RX_RING + (size_t)i * ETH_DESC_SIZE;
+        uint8_t *d = g_mem + RX_RING + ((size_t)i * ETH_DESC_SIZE);
 
         memset(d, 0, ETH_DESC_SIZE);
         ernic_put_le16(d + 6, cap);
-        ernic_put_le64(d + 8, RX_BUF + (uint64_t)i * RX_BUF_CAP);
+        ernic_put_le64(d + 8, RX_BUF + ((uint64_t)i * RX_BUF_CAP));
     }
 }
 
@@ -316,8 +319,9 @@ static unsigned int publish_at(uint32_t interval_ms, const uint64_t *times,
     struct ionic_eth_emu *emu = new_emu(interval_ms);
 
     lif_init(emu, LIF_PA);
-    for (size_t i = 0; i < n; i++)
+    for (size_t i = 0; i < n; i++) {
         ionic_eth_emu_publish_stats(emu, times[i]);
+    }
     ionic_eth_emu_destroy(emu);
     return g_nwrites;
 }
@@ -447,12 +451,15 @@ static void reserved_zero(char *got, size_t len)
 
     lif_init(emu, LIF_PA);
     /* Junk in every slot, named or not, must not reach a reserved one. */
-    for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++)
-        emu->stats.lif[q] = 0x0101010101010101ull * (q + 1);
+    for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++) {
+        emu->stats.lif[q] = UINT64_C(0x0101010101010101) * (q + 1);
+    }
     ionic_eth_emu_publish_stats(emu, 100);
-    for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++)
-        if (!ionic_emu_lif_stat_name(q) && guest_qword(LIF_PA, q) != 0)
+    for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++) {
+        if (!ionic_emu_lif_stat_name(q) && guest_qword(LIF_PA, q) != 0) {
             bad++;
+        }
+    }
     snprintf(got, len, "nonzero reserved qwords %u", bad);
     ionic_eth_emu_destroy(emu);
 }
@@ -490,22 +497,26 @@ static unsigned int lif_slot_of_dp(unsigned int i)
     const char *want = NULL;
 
     for (size_t r = 0; r < sizeof(dp_rdma_renamed) / sizeof(dp_rdma_renamed[0]);
-         r++)
-        if (strcmp(dp_rdma_names[i], dp_rdma_renamed[r].dp) == 0)
+         r++) {
+        if (strcmp(dp_rdma_names[i], dp_rdma_renamed[r].dp) == 0) {
             want = dp_rdma_renamed[r].lif;
+        }
+    }
     if (!want) {
         int n =
             snprintf(prefixed, sizeof(prefixed), "rdma_%s", dp_rdma_names[i]);
 
-        if (n < 0 || (size_t)n >= sizeof(prefixed))
+        if (n < 0 || (size_t)n >= sizeof(prefixed)) {
             return IONIC_LIF_STATS_QWORDS;
+        }
         want = prefixed;
     }
     for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++) {
         const char *name = ionic_emu_lif_stat_name(q);
 
-        if (name && strcmp(name, want) == 0)
+        if (name && strcmp(name, want) == 0) {
             return q;
+        }
     }
     return IONIC_LIF_STATS_QWORDS;
 }
@@ -529,16 +540,20 @@ static void rdma_counters_published(char *got, size_t len)
 {
     struct ionic_eth_emu *emu = new_emu(1000);
     const struct ionic_emu_stats *st;
-    unsigned int no_slot = 0, in_stats = 0, in_guest = 0;
+    unsigned int no_slot = 0;
+    unsigned int in_stats = 0;
+    unsigned int in_guest = 0;
 
     attach_fake_dp(emu);
     lif_init(emu, LIF_PA);
-    for (unsigned int i = 0; i < IONIC_DP_RDMA_COUNT; i++)
+    for (unsigned int i = 0; i < IONIC_DP_RDMA_COUNT; i++) {
         g_dp_rdma[i] = dp_rdma_value(i);
+    }
     ionic_eth_emu_publish_stats(emu, 5000);
     st = ionic_eth_emu_get_stats(emu);
-    if (!st)
+    if (!st) {
         abort(); /* only a NULL emu has no stats */
+    }
     for (unsigned int i = 0; i < IONIC_DP_RDMA_COUNT; i++) {
         unsigned int q = lif_slot_of_dp(i);
 
@@ -557,7 +572,9 @@ static void rdma_counters_published(char *got, size_t len)
 static void rdma_counters_device_reset(char *got, size_t len)
 {
     struct ionic_eth_emu *emu = new_emu(10);
-    uint64_t before, cqe, cnp;
+    uint64_t before;
+    uint64_t cqe;
+    uint64_t cnp;
 
     attach_fake_dp(emu);
     lif_init(emu, LIF_PA);
@@ -662,8 +679,9 @@ static void address_boundaries(void)
                "packets\n",
                ok ? "ok" : "FAIL", cases[i].category, cases[i].description,
                cases[i].expected);
-        if (!ok)
+        if (!ok) {
             failures++;
+        }
         ionic_eth_emu_destroy(emu);
     }
 }
@@ -705,12 +723,14 @@ static void lif_status_address_boundaries(void)
         devcmd(emu, IONIC_CMD_LIF_INIT, cases[i].base);
         ok = g_write_attempts == cases[i].attempts &&
              g_nwrites == cases[i].writes;
-        if (!cases[i].writes)
+        if (!cases[i].writes) {
             ok = ok && poisoned(0, sizeof(g_mem)) == sizeof(g_mem);
+        }
         printf("%s %s: %s; expected: %s\n", ok ? "ok" : "FAIL",
                cases[i].category, cases[i].description, cases[i].expected);
-        if (!ok)
+        if (!ok) {
             failures++;
+        }
         ionic_eth_emu_destroy(emu);
     }
 }
@@ -949,7 +969,7 @@ static void tx_bad_addr(char *got, size_t len)
     struct ionic_eth_emu *emu = new_emu(1000);
 
     setup_txq(emu);
-    tx_one(emu, GUEST_MEM_SIZE + 0x1000u, 64);
+    tx_one(emu, GUEST_MEM_SIZE + 0x1000U, 64);
     snprintf(got, len, "tx_dma_error %" PRIu64 ", tx_ucast %" PRIu64,
              counter(emu, IONIC_LIF_TX_DMA_ERROR),
              counter(emu, IONIC_LIF_TX_UCAST_PACKETS));
@@ -1038,8 +1058,9 @@ static void inbox_full(char *got, size_t len)
     struct ionic_eth_emu *emu = new_emu(1000);
     int rc = 0;
 
-    for (unsigned int i = 0; i <= ETH_INBOX_MAX_FRAMES; i++)
+    for (unsigned int i = 0; i <= ETH_INBOX_MAX_FRAMES; i++) {
         rc = ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_bcast), 64);
+    }
     snprintf(got, len, "last rc %d, rx_bcast_drop %" PRIu64 "/%" PRIu64, rc,
              counter(emu, IONIC_LIF_RX_BCAST_DROP_PACKETS),
              counter(emu, IONIC_LIF_RX_BCAST_DROP_BYTES));
@@ -1153,8 +1174,9 @@ static void inbox_full_port(char *got, size_t len)
 {
     struct ionic_eth_emu *emu = new_emu(1000);
 
-    for (unsigned int i = 0; i <= ETH_INBOX_MAX_FRAMES; i++)
+    for (unsigned int i = 0; i <= ETH_INBOX_MAX_FRAMES; i++) {
         ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_bcast), 64);
+    }
     snprintf(got, len,
              "frames_rx_all %" PRIu64 ", frames_rx_broadcast %" PRIu64
              ", frames_rx_65b_127b %" PRIu64 ", frames_rx_dropped %" PRIu64,
@@ -1320,8 +1342,9 @@ static void fault_tx_every_2(char *got, size_t len)
         attach_fault(emu, "eth_tx: every 2 effect drop");
 
     setup_txq(emu);
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < 4; i++) {
         tx_frame(emu, mac_ucast, 100);
+    }
     snprintf(got, len,
              "tx_ucast %" PRIu64 "/%" PRIu64 ", tx_ucast_drop %" PRIu64
              "/%" PRIu64,
@@ -1369,8 +1392,9 @@ static void fault_rx_after_2(char *got, size_t len)
         attach_fault(emu, "eth_rx: after 2 count 1 effect drop");
 
     setup_rxq(emu, 2, RX_BUF_CAP);
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < 3; i++) {
         rx_tap(emu, mac_ucast, 64);
+    }
     snprintf(got, len,
              "rx_ucast %" PRIu64 ", eligible %" PRIu64 ", fired %" PRIu64,
              counter(emu, IONIC_LIF_RX_UCAST_PACKETS),
@@ -1389,8 +1413,9 @@ static void fault_inbox_held(char *got, size_t len)
 
     setup_rxq(emu, 0, RX_BUF_CAP);
     ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast), 64);
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < 3; i++) {
         ionic_eth_emu_poll_rx(emu);
+    }
     snprintf(got, len,
              "eligible %" PRIu64 ", fired %" PRIu64 ", still queued %u",
              site_fault(set, IONIC_FAULT_SITE_ETH_RX)->eligible,
@@ -1497,8 +1522,9 @@ static void tx_fault_preconditions(void)
 
         setup_txq(emu);
         q->valid = rows[row].valid;
-        if (rows[row].bad_ring)
+        if (rows[row].bad_ring) {
             q->ring_base = GUEST_MEM_SIZE;
+        }
         tx_one(emu, rows[row].address, rows[row].length);
         ok = fault->eligible == 0 && fault->fired == 0;
         q->ring_base = TX_RING;
@@ -1509,8 +1535,9 @@ static void tx_fault_preconditions(void)
         printf("%s %s: %s; expected: %s; next valid frame fires event 1\n",
                ok ? "ok" : "FAIL", rows[row].category, rows[row].description,
                rows[row].expected);
-        if (!ok)
+        if (!ok) {
             failures++;
+        }
         ionic_eth_emu_destroy(emu);
         ionic_fault_set_free(set);
     }
@@ -1584,8 +1611,9 @@ static char *stats_text(void *opaque, size_t *len)
     char *buf = NULL;
     FILE *fp = open_memstream(&buf, len);
 
-    if (!fp)
+    if (!fp) {
         return NULL;
+    }
     ionic_eth_emu_write_stats(fp, opaque);
     fclose(fp);
     return buf;
@@ -1612,13 +1640,14 @@ static uint64_t stats_value(const char *text, const char *name)
 {
     size_t n = strlen(name);
 
-    for (const char *l = text; l && *l; l = next_line(l))
+    for (const char *l = text; l && *l; l = next_line(l)) {
         if (!strncmp(l, "  ", 2) && !strncmp(l + 2, name, n) &&
             l[2 + n] == ' ') {
             const char *sep = strstr(l, " : ");
 
             return sep ? line_u64(sep + 3) : UINT64_MAX;
         }
+    }
     return UINT64_MAX;
 }
 
@@ -1642,12 +1671,16 @@ static void file_traffic(char *got, size_t len)
 static void file_shape(char *got, size_t len)
 {
     struct ionic_eth_emu *emu = new_emu(1000);
-    unsigned int named = 0, lines = 0, misaligned = 0, nonzero = 0;
+    unsigned int named = 0;
+    unsigned int lines = 0;
+    unsigned int misaligned = 0;
+    unsigned int nonzero = 0;
     char *text;
     size_t n;
 
-    for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++)
+    for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++) {
         named += ionic_emu_lif_stat_name(q) != NULL;
+    }
     text = stats_text(emu, &n);
     if (!text) {
         snprintf(got, len, "no stats text");
@@ -1658,10 +1691,11 @@ static void file_shape(char *got, size_t len)
          l = next_line(l)) {
         lines++;
         /* Two spaces, a 35-wide name, then " : ". */
-        if (strncmp(l + 2 + LIF_STAT_NAME_WIDTH, " : ", 3) != 0)
+        if (strncmp(l + 2 + LIF_STAT_NAME_WIDTH, " : ", 3) != 0) {
             misaligned++;
-        else if (line_u64(l + 2 + LIF_STAT_NAME_WIDTH + 3) != 0)
+        } else if (line_u64(l + 2 + LIF_STAT_NAME_WIDTH + 3) != 0) {
             nonzero++;
+        }
     }
     snprintf(got, len,
              "header %d, lines == named %d, misaligned %u, nonzero %u, "
@@ -1675,7 +1709,8 @@ static void file_shape(char *got, size_t len)
 static void file_inbox_full(char *got, size_t len)
 {
     struct ionic_eth_emu *emu = new_emu(1000);
-    char *text, *again;
+    char *text;
+    char *again;
     size_t n;
 
     /* A frame the inbox had no room for. */
@@ -1723,8 +1758,9 @@ static void file_longest_name(char *got, size_t len)
     for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++) {
         const char *name = ionic_emu_lif_stat_name(q);
 
-        if (name && strlen(name) > longest)
+        if (name && strlen(name) > longest) {
             longest = strlen(name);
+        }
     }
     snprintf(got, len, "longest %zu, width %d", longest, LIF_STAT_NAME_WIDTH);
 }
@@ -1732,7 +1768,8 @@ static void file_longest_name(char *got, size_t len)
 static void file_port_section(char *got, size_t len)
 {
     struct ionic_eth_emu *emu = new_emu(1000);
-    unsigned int lines = 0, misaligned = 0;
+    unsigned int lines = 0;
+    unsigned int misaligned = 0;
     const char *sec;
     char *text;
     size_t n;
@@ -1745,8 +1782,9 @@ static void file_port_section(char *got, size_t len)
         for (const char *l = sec + strlen("\nPort Statistics:\n");
              *l && *l != '\n'; l = strchr(l, '\n') + 1) {
             lines++;
-            if (strncmp(l + 2 + PORT_STAT_NAME_WIDTH, " : ", 3) != 0)
+            if (strncmp(l + 2 + PORT_STAT_NAME_WIDTH, " : ", 3) != 0) {
                 misaligned++;
+            }
         }
     }
     snprintf(got, len,
@@ -1762,9 +1800,11 @@ static void file_port_longest_name(char *got, size_t len)
 {
     size_t longest = 0;
 
-    for (unsigned int q = 0; q < IONIC_PORT_STATS_QWORDS; q++)
-        if (strlen(ionic_emu_port_stat_name(q)) > longest)
+    for (unsigned int q = 0; q < IONIC_PORT_STATS_QWORDS; q++) {
+        if (strlen(ionic_emu_port_stat_name(q)) > longest) {
             longest = strlen(ionic_emu_port_stat_name(q));
+        }
+    }
     snprintf(got, len, "longest %zu, width %d", longest, PORT_STAT_NAME_WIDTH);
 }
 
@@ -1806,7 +1846,8 @@ int main(void)
     run_cases(stats_file_cases,
               sizeof(stats_file_cases) / sizeof(stats_file_cases[0]));
 
-    if (failures)
+    if (failures) {
         printf("%d failure(s)\n", failures);
+    }
     return failures ? 1 : 0;
 }

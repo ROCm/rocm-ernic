@@ -100,7 +100,7 @@ static void check(const char *name, bool cond, const char *detail)
 #define REJ_REASON         34
 #define REJ_PRIVATE        108
 
-#define TEST_TRADDR  0xc0a8c801u /* 192.168.200.1 */
+#define TEST_TRADDR  0xc0a8c801U /* 192.168.200.1 */
 #define TEST_PORT    4420
 #define TEST_SERVICE (((uint64_t)0x0106 << 16) | TEST_PORT)
 
@@ -147,22 +147,22 @@ static void req_defaults(struct req_params *p)
 
 static void build_req(uint8_t *m, const struct req_params *p)
 {
-    mad_hdr(m, ATTR_REQ, 0xdeadbeefcafe0001ull);
+    mad_hdr(m, ATTR_REQ, UINT64_C(0xdeadbeefcafe0001));
     ernic_put_be32(m + REQ_LOCAL_COMM_ID, p->comm_id);
     ernic_put_be64(m + REQ_SERVICE_ID, p->service_id);
-    ernic_put_be64(m + REQ_LOCAL_CA_GUID, 0x0002c9030012abcdull);
+    ernic_put_be64(m + REQ_LOCAL_CA_GUID, UINT64_C(0x0002c9030012abcd));
     ernic_put_be32(m + REQ_LOCAL_QPN,
                    (p->qpn << 8) | 4 /* responder resources */);
     ernic_put_be32(m + REQ_LOCAL_EECN, 4 /* initiator depth */);
     ernic_put_be32(m + REQ_REMOTE_EECN,
-                   (uint32_t)((p->transport_service & 0x3) << 1) | (20u << 3));
+                   (uint32_t)((p->transport_service & 0x3) << 1) | (20U << 3));
     ernic_put_be32(m + REQ_STARTING_PSN, 0x123456 << 8);
 
     uint8_t *priv = m + REQ_PRIVATE;
     priv[0] = p->cma_version;
     priv[1] = (uint8_t)(p->ip_version << 4);
     ernic_put_be16(priv + 2, TEST_PORT);
-    ernic_put_be32(priv + 4 + 12, 0xc0a8c814u); /* src 192.168.200.20 */
+    ernic_put_be32(priv + 4 + 12, 0xc0a8c814U); /* src 192.168.200.20 */
     if (p->ip_version == 6) {
         memcpy(priv + 20, p->dst_ip6, 16);
     } else {
@@ -184,7 +184,7 @@ static struct nvmeof_target *make_target(void)
     char err[128] = "";
 
     nvmeof_target_cfg_defaults(&cfg);
-    cfg.size = 1u << 20;
+    cfg.size = 1U << 20;
     struct nvmeof_target *t = nvmeof_target_create(&cfg, err, sizeof(err));
     if (t == NULL) {
         fail("setup", "target create: %s", err);
@@ -196,7 +196,8 @@ static void test_full_handshake(void)
 {
     struct nvmeof_target *t = make_target();
     struct nvmeof_cm *cm = nvmeof_cm_create(t, TEST_TRADDR, TEST_PORT);
-    uint8_t req[IB_MAD_SIZE], rsp[IB_MAD_SIZE];
+    uint8_t req[IB_MAD_SIZE];
+    uint8_t rsp[IB_MAD_SIZE];
     struct nvmeof_cm_result res;
     struct req_params p;
 
@@ -254,7 +255,7 @@ static void test_full_handshake(void)
 
     /* RTU completes the handshake. */
     uint8_t rtu[IB_MAD_SIZE];
-    mad_hdr(rtu, ATTR_RTU, 0xdeadbeefcafe0001ull);
+    mad_hdr(rtu, ATTR_RTU, UINT64_C(0xdeadbeefcafe0001));
     ernic_put_be32(rtu + RTU_LOCAL_COMM_ID, p.comm_id);
     ernic_put_be32(rtu + RTU_REMOTE_COMM_ID, local_comm_id);
     nvmeof_cm_handle_mad(cm, rtu, sizeof(rtu), rsp, &res);
@@ -283,7 +284,7 @@ static void test_full_handshake(void)
 
     /* Disconnect: DREQ draws a DREP and releases the queue. */
     uint8_t dreq[IB_MAD_SIZE];
-    mad_hdr(dreq, ATTR_DREQ, 0xdeadbeefcafe0009ull);
+    mad_hdr(dreq, ATTR_DREQ, UINT64_C(0xdeadbeefcafe0009));
     ernic_put_be32(dreq + DREQ_LOCAL_COMM_ID, p2.comm_id);
     ernic_put_be32(dreq + DREQ_REMOTE_COMM_ID,
                    ernic_get_be32(rsp + REP_LOCAL_COMM_ID));
@@ -302,7 +303,7 @@ static void test_full_handshake(void)
           "the controller queue outlived its connection");
 
     /* A DREQ for a connection we do not know still gets a DREP. */
-    mad_hdr(dreq, ATTR_DREQ, 0xdeadbeefcafe000aull);
+    mad_hdr(dreq, ATTR_DREQ, UINT64_C(0xdeadbeefcafe000a));
     ernic_put_be32(dreq + DREQ_REMOTE_COMM_ID, 0x0badf00d);
     ernic_put_be32(dreq + DREQ_REMOTE_QPN, 0x00999900);
     nvmeof_cm_handle_mad(cm, dreq, sizeof(dreq), rsp, &res);
@@ -330,7 +331,8 @@ static void run_rej(struct nvmeof_cm *cm, struct nvmeof_target *t,
                     const struct req_params *p, const char *what,
                     uint16_t reason, uint16_t nvme_sts)
 {
-    uint8_t req[IB_MAD_SIZE], rsp[IB_MAD_SIZE];
+    uint8_t req[IB_MAD_SIZE];
+    uint8_t rsp[IB_MAD_SIZE];
     struct nvmeof_cm_result res;
 
     build_req(req, p);
@@ -433,7 +435,8 @@ static void test_foreign_mads(void)
 {
     struct nvmeof_target *t = make_target();
     struct nvmeof_cm *cm = nvmeof_cm_create(t, TEST_TRADDR, TEST_PORT);
-    uint8_t m[IB_MAD_SIZE], rsp[IB_MAD_SIZE];
+    uint8_t m[IB_MAD_SIZE];
+    uint8_t rsp[IB_MAD_SIZE];
     struct nvmeof_cm_result res;
 
     if (t == NULL || cm == NULL) {
@@ -496,7 +499,8 @@ static void test_foreign_mads(void)
 static uint32_t connect_req(struct nvmeof_cm *cm, const struct req_params *p,
                             struct nvmeof_cm_result *res)
 {
-    uint8_t req[IB_MAD_SIZE], rsp[IB_MAD_SIZE];
+    uint8_t req[IB_MAD_SIZE];
+    uint8_t rsp[IB_MAD_SIZE];
 
     build_req(req, p);
     if (!nvmeof_cm_handle_mad(cm, req, sizeof(req), rsp, res) ||
@@ -510,7 +514,8 @@ static void test_other_messages(void)
 {
     struct nvmeof_target *t = make_target();
     struct nvmeof_cm *cm = nvmeof_cm_create(t, TEST_TRADDR, TEST_PORT);
-    uint8_t m[IB_MAD_SIZE], rsp[IB_MAD_SIZE];
+    uint8_t m[IB_MAD_SIZE];
+    uint8_t rsp[IB_MAD_SIZE];
     struct nvmeof_cm_result res;
     struct req_params p;
 
@@ -543,7 +548,7 @@ static void test_other_messages(void)
 
     /* A REP is for an active side, which the target never is: REJ it,
      * naming the REP (message_rejected 1) and reason 5, unsupported. */
-    mad_hdr(m, ATTR_REP, 0x0123456789abcdefull);
+    mad_hdr(m, ATTR_REP, UINT64_C(0x0123456789abcdef));
     ernic_put_be32(m + REP_LOCAL_COMM_ID, 0x77665544);
     check("rep", nvmeof_cm_handle_mad(cm, m, sizeof(m), rsp, &res),
           "a REP was not claimed");
@@ -647,7 +652,8 @@ static void test_ip_versions(void)
 static void dreq_by_qpn(struct nvmeof_cm *cm, uint32_t guest_comm_id,
                         uint32_t qpn, struct nvmeof_cm_result *res)
 {
-    uint8_t dreq[IB_MAD_SIZE], rsp[IB_MAD_SIZE];
+    uint8_t dreq[IB_MAD_SIZE];
+    uint8_t rsp[IB_MAD_SIZE];
 
     mad_hdr(dreq, ATTR_DREQ, 0x53);
     ernic_put_be32(dreq + DREQ_LOCAL_COMM_ID, guest_comm_id);
@@ -666,7 +672,8 @@ static void test_dreq_by_qpn(void)
 {
     struct nvmeof_target *t = make_target();
     struct nvmeof_cm *cm = nvmeof_cm_create(t, TEST_TRADDR, TEST_PORT);
-    uint8_t dreq[IB_MAD_SIZE], rsp[IB_MAD_SIZE];
+    uint8_t dreq[IB_MAD_SIZE];
+    uint8_t rsp[IB_MAD_SIZE];
     struct nvmeof_cm_result res;
     struct req_params p;
 
@@ -734,8 +741,10 @@ static void test_reconnect(void)
 {
     struct nvmeof_target *t = make_target();
     struct nvmeof_cm *cm = nvmeof_cm_create(t, TEST_TRADDR, TEST_PORT);
-    uint8_t req[IB_MAD_SIZE], rsp[IB_MAD_SIZE];
-    struct nvmeof_cm_result res, res2;
+    uint8_t req[IB_MAD_SIZE];
+    uint8_t rsp[IB_MAD_SIZE];
+    struct nvmeof_cm_result res;
+    struct nvmeof_cm_result res2;
     struct req_params p;
 
     if (t == NULL || cm == NULL) {
@@ -779,7 +788,7 @@ static void test_reconnect(void)
         req_defaults(&p);
         p.comm_id = 0x1000 + i;
         p.qpn = 0x100 + i;
-        p.qid = (uint16_t)(i % (cfg->max_queues + 1u));
+        p.qid = (uint16_t)(i % (cfg->max_queues + 1U));
         build_req(req, &p);
         nvmeof_cm_handle_mad(cm, req, sizeof(req), rsp, &res);
         if (ernic_get_be16(rsp + MAD_ATTR_ID) == ATTR_REP) {
@@ -803,7 +812,8 @@ static void test_reconnect(void)
 static void test_table_full(void)
 {
     struct nvmeof_cm *cm = nvmeof_cm_create(NULL, TEST_TRADDR, TEST_PORT);
-    uint8_t req[IB_MAD_SIZE], rsp[IB_MAD_SIZE];
+    uint8_t req[IB_MAD_SIZE];
+    uint8_t rsp[IB_MAD_SIZE];
     struct nvmeof_cm_result res;
     struct req_params p;
     unsigned accepted = 0;
@@ -871,8 +881,9 @@ static void test_qpn_wrap(void)
     struct nvmeof_cm *cm = nvmeof_cm_create(NULL, TEST_TRADDR, TEST_PORT);
     /* A QPN is 24 bits; the bits below the mask are free. */
     const uint32_t last =
-        NVMEOF_CM_QPN_BASE | (~NVMEOF_CM_QPN_MASK & 0x00ffffffu);
-    uint8_t req[IB_MAD_SIZE], rsp[IB_MAD_SIZE];
+        NVMEOF_CM_QPN_BASE | (~NVMEOF_CM_QPN_MASK & 0x00ffffffU);
+    uint8_t req[IB_MAD_SIZE];
+    uint8_t rsp[IB_MAD_SIZE];
     struct nvmeof_cm_result res;
     struct req_params p;
     uint32_t want = NVMEOF_CM_QPN_BASE + 1;
@@ -922,9 +933,11 @@ static void test_qpn_wrap(void)
 static void test_qpn_wrap_live(void)
 {
     struct nvmeof_cm *cm = nvmeof_cm_create(NULL, TEST_TRADDR, TEST_PORT);
-    uint8_t dreq[IB_MAD_SIZE], rsp[IB_MAD_SIZE];
+    uint8_t dreq[IB_MAD_SIZE];
+    uint8_t rsp[IB_MAD_SIZE];
     struct nvmeof_cm_result res;
-    struct req_params a, b;
+    struct req_params a;
+    struct req_params b;
     bool wrapped = false, reused = false;
 
     if (cm == NULL) {

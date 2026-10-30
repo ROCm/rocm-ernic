@@ -22,7 +22,7 @@
 #include "ernic_device.h"
 
 #define BUFFER_SIZE  4096
-#define TEST_PATTERN 0xABu
+#define TEST_PATTERN 0xABU
 
 /* Global test resources */
 struct test_context {
@@ -281,9 +281,12 @@ static int poll_completions(struct test_context *ctx, int expected_sends,
 
 static int test_basic_send_recv(struct test_context *ctx)
 {
-    struct ibv_sge send_sge, recv_sge;
-    struct ibv_send_wr send_wr, *bad_send_wr;
-    struct ibv_recv_wr recv_wr, *bad_recv_wr;
+    struct ibv_sge send_sge;
+    struct ibv_sge recv_sge;
+    struct ibv_send_wr send_wr;
+    struct ibv_send_wr *bad_send_wr;
+    struct ibv_recv_wr recv_wr;
+    struct ibv_recv_wr *bad_recv_wr;
     /* uint32_t to match ibv_sge.length; must not exceed the registered MR. */
     const uint32_t test_size = 1024;
 
@@ -347,9 +350,12 @@ static int test_basic_send_recv(struct test_context *ctx)
 
 static int test_multiple_transfers(struct test_context *ctx)
 {
-    struct ibv_sge send_sge, recv_sge;
-    struct ibv_send_wr send_wr, *bad_send_wr;
-    struct ibv_recv_wr recv_wr, *bad_recv_wr;
+    struct ibv_sge send_sge;
+    struct ibv_sge recv_sge;
+    struct ibv_send_wr send_wr;
+    struct ibv_send_wr *bad_send_wr;
+    struct ibv_recv_wr recv_wr;
+    struct ibv_recv_wr *bad_recv_wr;
     const unsigned int num_ops = 5;
     /* uint32_t to match ibv_sge.length; must not exceed the registered MR. */
     const uint32_t test_size = 512;
@@ -361,7 +367,7 @@ static int test_multiple_transfers(struct test_context *ctx)
 
     for (unsigned int i = 0; i < num_ops; i++) {
         /* Prepare buffers */
-        memset(ctx->send_buf, (int)(0x10u + i), test_size);
+        memset(ctx->send_buf, (int)(0x10U + i), test_size);
         memset(ctx->recv_buf, 0, test_size);
 
         /* Post receive */
@@ -370,7 +376,7 @@ static int test_multiple_transfers(struct test_context *ctx)
         recv_sge.lkey = ctx->recv_mr->lkey;
 
         memset(&recv_wr, 0, sizeof(recv_wr));
-        recv_wr.wr_id = 100u + i;
+        recv_wr.wr_id = 100U + i;
         recv_wr.sg_list = &recv_sge;
         recv_wr.num_sge = 1;
 
@@ -385,7 +391,7 @@ static int test_multiple_transfers(struct test_context *ctx)
         send_sge.lkey = ctx->send_mr->lkey;
 
         memset(&send_wr, 0, sizeof(send_wr));
-        send_wr.wr_id = 100u + i;
+        send_wr.wr_id = 100U + i;
         send_wr.sg_list = &send_sge;
         send_wr.num_sge = 1;
         send_wr.opcode = IBV_WR_SEND;
@@ -396,7 +402,7 @@ static int test_multiple_transfers(struct test_context *ctx)
             return -1;
         }
 
-        printf("Transfer %u: posted send/recv\n", i + 1u);
+        printf("Transfer %u: posted send/recv\n", i + 1U);
 
         /* Poll for this pair's completions */
         int prev_sends = ctx->completed_sends;
@@ -421,9 +427,12 @@ static int test_varying_sizes(struct test_context *ctx)
     print_header("Test 3: Varying Transfer Sizes");
 
     for (size_t i = 0; i < num_sizes; i++) {
-        struct ibv_sge send_sge, recv_sge;
-        struct ibv_send_wr send_wr, *bad_send_wr;
-        struct ibv_recv_wr recv_wr, *bad_recv_wr;
+        struct ibv_sge send_sge;
+        struct ibv_sge recv_sge;
+        struct ibv_send_wr send_wr;
+        struct ibv_send_wr *bad_send_wr;
+        struct ibv_recv_wr recv_wr;
+        struct ibv_recv_wr *bad_recv_wr;
         const uint32_t size = sizes[i];
 
         printf("Testing %" PRIu32 " bytes...\n", size);
@@ -434,7 +443,7 @@ static int test_varying_sizes(struct test_context *ctx)
         recv_sge.lkey = ctx->recv_mr->lkey;
 
         memset(&recv_wr, 0, sizeof(recv_wr));
-        recv_wr.wr_id = 200u + i;
+        recv_wr.wr_id = 200U + i;
         recv_wr.sg_list = &recv_sge;
         recv_wr.num_sge = 1;
 
@@ -449,7 +458,7 @@ static int test_varying_sizes(struct test_context *ctx)
         send_sge.lkey = ctx->send_mr->lkey;
 
         memset(&send_wr, 0, sizeof(send_wr));
-        send_wr.wr_id = 200u + i;
+        send_wr.wr_id = 200U + i;
         send_wr.sg_list = &send_sge;
         send_wr.num_sge = 1;
         send_wr.opcode = IBV_WR_SEND;
@@ -478,20 +487,27 @@ static int test_varying_sizes(struct test_context *ctx)
 
 static void cleanup_resources(struct test_context *ctx)
 {
-    if (ctx->qp)
+    if (ctx->qp) {
         ibv_destroy_qp(ctx->qp);
-    if (ctx->send_mr)
+    }
+    if (ctx->send_mr) {
         ibv_dereg_mr(ctx->send_mr);
-    if (ctx->recv_mr)
+    }
+    if (ctx->recv_mr) {
         ibv_dereg_mr(ctx->recv_mr);
-    if (ctx->send_cq)
+    }
+    if (ctx->send_cq) {
         ibv_destroy_cq(ctx->send_cq);
-    if (ctx->recv_cq)
+    }
+    if (ctx->recv_cq) {
         ibv_destroy_cq(ctx->recv_cq);
-    if (ctx->pd)
+    }
+    if (ctx->pd) {
         ibv_dealloc_pd(ctx->pd);
-    if (ctx->context)
+    }
+    if (ctx->context) {
         ibv_close_device(ctx->context);
+    }
     free(ctx->send_buf);
     free(ctx->recv_buf);
 }

@@ -25,8 +25,8 @@ struct ernic_stats;
  * ionic_dev_cmd_comp in ionic_if.h).  They are the same size whether the
  * command came through the BAR0 devcmd window or the Ethernet admin queue.
  */
-#define IONIC_DEVCMD_CMD_LEN  64u
-#define IONIC_DEVCMD_COMP_LEN 16u
+#define IONIC_DEVCMD_CMD_LEN  64U
+#define IONIC_DEVCMD_COMP_LEN 16U
 
 /*
  * Callback type for a devcmd this layer does not implement itself and

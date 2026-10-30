@@ -63,8 +63,9 @@ static int poll_one(struct ibv_cq *cq, struct ibv_wc *wc)
     for (int i = 0; i < POLL_TRIES; i++) {
         int n = ibv_poll_cq(cq, 1, wc);
 
-        if (n > 0)
+        if (n > 0) {
             return 0;
+        }
         if (n < 0) {
             fprintf(stderr, "ibv_poll_cq failed errno=%d\n", errno);
             return -1;
@@ -84,10 +85,14 @@ int main(void)
     struct ibv_device *ibdev;
     struct ibv_context *ctx = NULL;
     struct ibv_pd *pd = NULL;
-    struct ibv_cq *cqa = NULL, *cqb = NULL;
-    struct ibv_qp *qpa = NULL, *qpb = NULL;
-    struct ibv_mr *dst_mr = NULL, *src_mr = NULL;
-    unsigned char *dst_buf = NULL, *src_buf = NULL;
+    struct ibv_cq *cqa = NULL;
+    struct ibv_cq *cqb = NULL;
+    struct ibv_qp *qpa = NULL;
+    struct ibv_qp *qpb = NULL;
+    struct ibv_mr *dst_mr = NULL;
+    struct ibv_mr *src_mr = NULL;
+    unsigned char *dst_buf = NULL;
+    unsigned char *src_buf = NULL;
     struct ibv_qp_init_attr init;
     struct ibv_qp_attr attr;
     union ibv_gid gid;
@@ -103,8 +108,9 @@ int main(void)
         lookup = ernic_requested_device() ? ERNIC_DEVICE_MISMATCH
                                           : ERNIC_DEVICE_ABSENT;
         ernic_report_no_device(lookup);
-        if (dev_list)
+        if (dev_list) {
             ibv_free_device_list(dev_list);
+        }
         return lookup == ERNIC_DEVICE_MISMATCH ? 1 : 77;
     }
 
@@ -258,7 +264,8 @@ int main(void)
     for (it = 0; it < ITERATIONS; it++) {
         uint64_t recv_wr_id = UINT64_C(0x5245435632494d4d) + (uint64_t)it;
         uint32_t imm = (uint32_t)(next_test_value(&state) >> 32);
-        struct ibv_sge rsge, wsge;
+        struct ibv_sge rsge;
+        struct ibv_sge wsge;
         struct ibv_recv_wr rwr;
         struct ibv_recv_wr *bad_r = NULL;
         struct ibv_send_wr swr;
@@ -279,8 +286,9 @@ int main(void)
             goto out;
         }
 
-        for (int i = 0; i < PAYLOAD_LEN; i++)
+        for (int i = 0; i < PAYLOAD_LEN; i++) {
             src_buf[i] = (unsigned char)(next_test_value(&state) & 0xff);
+        }
 
         memset(&wsge, 0, sizeof(wsge));
         wsge.addr = (uintptr_t)src_buf;
@@ -338,25 +346,34 @@ int main(void)
     ret = 0;
 
 out:
-    if (qpa)
+    if (qpa) {
         ibv_destroy_qp(qpa);
-    if (qpb)
+    }
+    if (qpb) {
         ibv_destroy_qp(qpb);
-    if (dst_mr)
+    }
+    if (dst_mr) {
         ibv_dereg_mr(dst_mr);
-    if (src_mr)
+    }
+    if (src_mr) {
         ibv_dereg_mr(src_mr);
+    }
     free(dst_buf);
     free(src_buf);
-    if (cqa)
+    if (cqa) {
         ibv_destroy_cq(cqa);
-    if (cqb)
+    }
+    if (cqb) {
         ibv_destroy_cq(cqb);
-    if (pd)
+    }
+    if (pd) {
         ibv_dealloc_pd(pd);
-    if (ctx)
+    }
+    if (ctx) {
         ibv_close_device(ctx);
-    if (dev_list)
+    }
+    if (dev_list) {
         ibv_free_device_list(dev_list);
+    }
     return ret;
 }

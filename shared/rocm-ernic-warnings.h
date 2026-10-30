@@ -135,7 +135,7 @@
  * same as itself (glibc's sa_handler, for example), which clang reports
  * as a recursive macro expansion wherever the name is used.
  */
-#if defined(__clang__)
+#ifdef __clang__
 #define ROCM_ERNIC_WARN_SELF_REFERENTIAL_MACRO_OFF \
     ROCM_ERNIC_WARN_OFF("disabled-macro-expansion")
 #define ROCM_ERNIC_WARN_SELF_REFERENTIAL_MACRO_ON \
@@ -151,7 +151,7 @@
  * name, and the linker's --wrap=SYM names the wrapper __wrap_SYM and the
  * original __real_SYM, so defining either requires a reserved identifier.
  */
-#if defined(__clang__)
+#ifdef __clang__
 #define ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_OFF \
     ROCM_ERNIC_WARN_OFF("reserved-identifier")
 #define ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_ON \

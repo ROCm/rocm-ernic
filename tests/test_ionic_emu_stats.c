@@ -45,8 +45,9 @@ static uint8_t frame_buf[9216];
 static const uint8_t *frame_to(const uint8_t *dst, size_t len)
 {
     memset(frame_buf, 0x5a, sizeof(frame_buf));
-    if (dst && len >= 6)
+    if (dst && len >= 6) {
         memcpy(frame_buf, dst, 6);
+    }
     return frame_buf;
 }
 
@@ -329,14 +330,17 @@ static void test_counting(void)
         bool ok = true;
 
         ionic_emu_stats_reset(&st);
-        for (unsigned int r = 0; r < c->in.repeat; r++)
+        for (unsigned int r = 0; r < c->in.repeat; r++) {
             run_op(&st, c);
+        }
 
-        for (size_t k = 0; k < MAX_EXPECT && c->want[k].idx >= 0; k++)
+        for (size_t k = 0; k < MAX_EXPECT && c->want[k].idx >= 0; k++) {
             want[c->want[k].idx] = c->want[k].value;
+        }
         for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++) {
-            if (st.lif[q] == want[q])
+            if (st.lif[q] == want[q]) {
                 continue;
+            }
             ok = false;
             /* One "q127=<u64>" entry at a time; stop when it won't fit. */
             char one[48];
@@ -396,7 +400,7 @@ static void test_classify(void)
 
 static uint64_t qword_at(const uint8_t *buf, unsigned int idx)
 {
-    return ernic_get_le64(buf + (size_t)idx * 8);
+    return ernic_get_le64(buf + ((size_t)idx * 8));
 }
 
 static void test_fill(void)
@@ -433,16 +437,19 @@ static void test_fill(void)
               "3 (two datapath drops and one inbox drop)", 3, sum);
 
     /* corner: every reserved qword after fill() is 0 */
-    for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++)
-        st.lif[q] = 0x1111111111111111ull * (q % 15 + 1);
+    for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++) {
+        st.lif[q] = UINT64_C(0x1111111111111111) * ((q % 15) + 1);
+    }
     memset(out, 0xee, sizeof(out));
     ionic_emu_stats_fill(&st, out);
     {
         unsigned int bad = 0;
 
-        for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++)
-            if (!ionic_emu_lif_stat_name(q) && qword_at(out, q) != 0)
+        for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++) {
+            if (!ionic_emu_lif_stat_name(q) && qword_at(out, q) != 0) {
                 bad++;
+            }
+        }
         check_u64("corner",
                   "every reserved qword after fill(), even with junk in the "
                   "block",
@@ -451,28 +458,30 @@ static void test_fill(void)
 
     /* corner: fill() writes little-endian */
     ionic_emu_stats_reset(&st);
-    st.lif[IONIC_LIF_TX_UCAST_BYTES] = 0x0102030405060708ull;
+    st.lif[IONIC_LIF_TX_UCAST_BYTES] = UINT64_C(0x0102030405060708);
     ionic_emu_stats_fill(&st, out);
     {
         static const uint8_t le[8] = {8, 7, 6, 5, 4, 3, 2, 1};
 
         check_u64("corner", "fill() writes little-endian",
                   "bytes 08 07 06 05 04 03 02 01 at qword 16", 0,
-                  (uint64_t)memcmp(out + (size_t)IONIC_LIF_TX_UCAST_BYTES * 8,
+                  (uint64_t)memcmp(out + ((size_t)IONIC_LIF_TX_UCAST_BYTES * 8),
                                    le, 8));
     }
 
     /* corner: reset() zeroes every qword */
-    for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++)
+    for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++) {
         st.lif[q] = q + 1;
+    }
     ionic_emu_stats_rx_inbox_full(&st, frame_to(mac_ucast, 64), 64, 0);
     ionic_emu_stats_reset(&st);
     ionic_emu_stats_fill(&st, out);
     {
         uint64_t nonzero = 0;
 
-        for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++)
+        for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++) {
             nonzero += qword_at(out, q) != 0;
+        }
         check_u64("corner", "reset(), then fill()",
                   "every qword 0, including the inbox drop", 0, nonzero);
     }
@@ -480,7 +489,7 @@ static void test_fill(void)
 
 /* ---- Port (MAC) counters ------------------------------------------------ */
 
-#define MAX_FRAME_1500 1518u /* MTU 1500 + VLAN_ETH_HLEN */
+#define MAX_FRAME_1500 1518U /* MTU 1500 + VLAN_ETH_HLEN */
 #define UNTAGGED       (-1)
 
 /* A @len-byte frame to @dst, tagged with @tpid and PCP @pcp unless @pcp < 0. */
@@ -742,15 +751,17 @@ static bool port_matches(const struct ionic_emu_stats *st,
     size_t used = 0;
     bool ok = true;
 
-    for (size_t k = 0; k < nwant && want[k].idx >= 0; k++)
+    for (size_t k = 0; k < nwant && want[k].idx >= 0; k++) {
         v[want[k].idx] = want[k].value;
+    }
     got[0] = '\0';
     for (unsigned int q = 0; q < IONIC_PORT_STATS_QWORDS; q++) {
         char one[64];
         int n;
 
-        if (st->port[q] == v[q])
+        if (st->port[q] == v[q]) {
             continue;
+        }
         ok = false;
         n = snprintf(one, sizeof(one), "%s%s=%" PRIu64, used ? " " : "",
                      ionic_emu_port_stat_name(q), st->port[q]);
@@ -816,7 +827,8 @@ static const struct bucket_edge bucket_edges[] = {
 static void test_port_buckets(void)
 {
     static struct ionic_emu_stats st;
-    char desc[160], exp[160];
+    char desc[160];
+    char exp[160];
 
     for (size_t i = 0; i < sizeof(bucket_edges) / sizeof(bucket_edges[0]);
          i++) {
@@ -993,16 +1005,19 @@ static void test_port_clear(void)
             ionic_emu_port_frame(&st, f, 60, false, MAX_FRAME_1500);
             ionic_emu_stats_frame(&st, f, 60, false);
         }
-        for (unsigned int n = 0; n < cases[i].inbox_drops; n++)
+        for (unsigned int n = 0; n < cases[i].inbox_drops; n++) {
             ionic_emu_stats_rx_inbox_full(&st, f, 60, MAX_FRAME_1500);
+        }
         ionic_emu_port_clear(&st);
         for (unsigned int n = 0; n < cases[i].after; n++) {
             ionic_emu_port_frame(&st, f, 60, false, MAX_FRAME_1500);
             ionic_emu_stats_frame(&st, f, 60, false);
         }
-        for (unsigned int q = 0; q < IONIC_PORT_STATS_QWORDS; q++)
-            if (q != IONIC_PORT_FRAMES_RX_ALL)
+        for (unsigned int q = 0; q < IONIC_PORT_STATS_QWORDS; q++) {
+            if (q != IONIC_PORT_FRAMES_RX_ALL) {
                 port_sum += cases[i].after ? 0 : st.port[q];
+            }
+        }
         check_u64(cases[i].category, cases[i].description, cases[i].expected,
                   cases[i].after, st.port[IONIC_PORT_FRAMES_RX_ALL]);
         check_u64(cases[i].category, cases[i].description,
@@ -1026,14 +1041,15 @@ static void test_port_misc(void)
     /* corner: over a mixed run the rx size buckets sum to frames_rx_all */
     ionic_emu_stats_reset(&st);
     for (unsigned int i = 0; i < 1000; i++) {
-        size_t len = 1 + (size_t)(i * 7919u) % (sizeof(frame_buf) - 1u);
+        size_t len = 1 + ((size_t)(i * 7919U) % (sizeof(frame_buf) - 1U));
 
         ionic_emu_port_frame(&st, frame_to(mac_ucast, len), len, false,
                              MAX_FRAME_1500);
     }
     for (unsigned int q = IONIC_PORT_FRAMES_RX_LESS_THAN_64B;
-         q <= IONIC_PORT_FRAMES_RX_OTHER; q++)
+         q <= IONIC_PORT_FRAMES_RX_OTHER; q++) {
         sum += st.port[q];
+    }
     check_u64("corner", "1,000 mixed rx frames, some too long",
               "the size buckets sum to frames_rx_all",
               st.port[IONIC_PORT_FRAMES_RX_ALL], sum);
@@ -1079,11 +1095,13 @@ static void test_port_misc(void)
         uint64_t nonzero = 0;
 
         for (size_t i = 0; i < sizeof(inject_only) / sizeof(inject_only[0]);
-             i++)
+             i++) {
             nonzero += st.port[inject_only[i]] != 0;
+        }
         for (unsigned int q = IONIC_PORT_TX_PRIPAUSE_0_1US_COUNT;
-             q <= IONIC_PORT_RX_PRIPAUSE_7_1US_COUNT; q++)
+             q <= IONIC_PORT_RX_PRIPAUSE_7_1US_COUNT; q++) {
             nonzero += st.port[q] != 0;
+        }
         check_u64("corner", "100 ordinary frames each way",
                   "every inject-only counter (FCS, jabber, pause, ...) 0", 0,
                   nonzero);
@@ -1091,15 +1109,17 @@ static void test_port_misc(void)
 
     /* corner: fill() writes little-endian, and every one of the 89 qwords */
     ionic_emu_stats_reset(&st);
-    for (unsigned int q = 0; q < IONIC_PORT_STATS_QWORDS; q++)
-        st.port[q] = 0x0102030405060700ull + q;
+    for (unsigned int q = 0; q < IONIC_PORT_STATS_QWORDS; q++) {
+        st.port[q] = UINT64_C(0x0102030405060700) + q;
+    }
     memset(out, 0xee, sizeof(out));
     ionic_emu_port_fill(&st, out);
     {
         uint64_t bad = 0;
 
-        for (unsigned int q = 0; q < IONIC_PORT_STATS_QWORDS; q++)
-            bad += qword_at(out, q) != 0x0102030405060700ull + q;
+        for (unsigned int q = 0; q < IONIC_PORT_STATS_QWORDS; q++) {
+            bad += qword_at(out, q) != UINT64_C(0x0102030405060700) + q;
+        }
         check_u64("corner", "port fill() with a distinct value per qword",
                   "all 89 qwords, little-endian, in order", 0, bad);
     }
@@ -1110,8 +1130,9 @@ static void test_port_misc(void)
     {
         uint64_t nonzero = 0;
 
-        for (unsigned int q = 0; q < IONIC_PORT_STATS_QWORDS; q++)
+        for (unsigned int q = 0; q < IONIC_PORT_STATS_QWORDS; q++) {
             nonzero += qword_at(out, q) != 0;
+        }
         check_u64("corner", "reset(), then port fill()", "every qword 0", 0,
                   nonzero);
     }
@@ -1253,7 +1274,8 @@ struct kernel_lif_info {
 
 static void test_layout(void)
 {
-    unsigned int named = 0, unnamed_ok = 0;
+    unsigned int named = 0;
+    unsigned int unnamed_ok = 0;
     char desc[128];
 
     check_u64("corner", "layout pin: offsetof(struct ionic_lif_info, stats)",
@@ -1278,9 +1300,11 @@ static void test_layout(void)
 #undef PIN
 
     /* Every other qword is reserved: no name, so the file and fill skip it. */
-    for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++)
-        if (ionic_emu_lif_stat_name(q))
+    for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++) {
+        if (ionic_emu_lif_stat_name(q)) {
             unnamed_ok++;
+        }
+    }
     check_u64("corner",
               "the named qwords are exactly the kernel's non-reserved fields",
               "as many names as LIF_FIELDS rows", named, unnamed_ok);
@@ -1528,7 +1552,8 @@ int main(void)
     test_port_clear();
     test_port_layout();
 
-    if (failures)
+    if (failures) {
         printf("%d failure(s)\n", failures);
+    }
     return failures ? 1 : 0;
 }

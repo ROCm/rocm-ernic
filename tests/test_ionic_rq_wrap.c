@@ -89,10 +89,11 @@ uint32_t ernic_mesh_local_node(pvrdma_handle_t handle)
     (void)handle;
     return UINT32_MAX;
 }
-uint32_t ernic_mesh_node_from_gid(pvrdma_handle_t handle, const uint8_t *gid)
+uint32_t ernic_mesh_node_from_gid(pvrdma_handle_t handle,
+                                  const uint8_t *dest_gid_16bytes)
 {
     (void)handle;
-    (void)gid;
+    (void)dest_gid_16bytes;
     return UINT32_MAX;
 }
 int ernic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
@@ -337,8 +338,9 @@ static int g_failures;
 static void check(bool ok, const char *what)
 {
     printf("%s: %s\n", ok ? "PASS" : "FAIL", what);
-    if (!ok)
+    if (!ok) {
         g_failures++;
+    }
 }
 
 /* Ring 0 carries the index; the arm rings are a CQ concept. */
@@ -348,8 +350,8 @@ static void check(bool ok, const char *what)
 static uint64_t db(uint32_t qid, uint8_t ring, uint16_t p_index)
 {
     return (uint64_t)p_index | ((uint64_t)ring << 16) |
-           ((uint64_t)(qid & 0xffu) << 24) |
-           ((uint64_t)((qid >> 8) & 0xffffu) << 32);
+           ((uint64_t)(qid & 0xffU) << 24) |
+           ((uint64_t)((qid >> 8) & 0xffffU) << 32);
 }
 
 /* ---- Receive-ring fixtures --------------------------------------------- */
@@ -495,8 +497,9 @@ static void test_rq_survives_many_wraps(void)
             rq_doorbell(dp, RQ_QP_ID, idx);
             rq_doorbell(dp, SRQ_QID, idx);
             posted++;
-            if (qp_outstanding(dp) != 1 || srq_outstanding(dp) != 1)
+            if (qp_outstanding(dp) != 1 || srq_outstanding(dp) != 1) {
                 break;
+            }
             dp->qp[RQ_QP_ID].rq_cons = dp->qp[RQ_QP_ID].rq_prod;
             srq_drain(dp);
         }
@@ -516,8 +519,8 @@ static void test_rq_rejects_an_index_past_the_depth(void)
     check(qp_outstanding(dp) == 0, "QP RQ ignores an out-of-range index");
     check(srq_outstanding(dp) == 0, "SRQ ignores an out-of-range index");
 
-    rq_doorbell(dp, RQ_QP_ID, 0xffffu);
-    rq_doorbell(dp, SRQ_QID, 0xffffu);
+    rq_doorbell(dp, RQ_QP_ID, 0xffffU);
+    rq_doorbell(dp, SRQ_QID, 0xffffU);
     check(qp_outstanding(dp) == 0, "QP RQ ignores 0xffff");
     check(srq_outstanding(dp) == 0, "SRQ ignores 0xffff");
 }
@@ -556,7 +559,7 @@ static void test_page_table_is_bounded_by_the_region(void)
     /* A region long enough to need every entry the guest claims, but more
      * of them than the device's page tables hold: the guest chooses the
      * length too, so it alone cannot bound the allocation. */
-    desc.map_count = ERNIC_MAX_PAGE_TABLE_ENTRIES + 1u;
+    desc.map_count = ERNIC_MAX_PAGE_TABLE_ENTRIES + 1U;
     check(ionic_dp_buf_init(&g_dp, &b, &desc, 0,
                             (uint64_t)desc.map_count << 12) == -EINVAL,
           "a table larger than the device's page tables is refused");
@@ -633,10 +636,10 @@ static void test_ud_delivery_is_refused_to_the_wrong_queue(void)
 
     /* Once a queue has a Q_Key, a datagram must present it. */
     ud.qkey_valid = true;
-    ud.qkey = 0x11111111u;
-    check(ionic_dp_ud_delivery_refused(&ud, &ud, 0x11111111u) == NULL,
+    ud.qkey = 0x11111111U;
+    check(ionic_dp_ud_delivery_refused(&ud, &ud, 0x11111111U) == NULL,
           "the right Q_Key is delivered");
-    check(ionic_dp_ud_delivery_refused(&ud, &ud, 0x22222222u) != NULL,
+    check(ionic_dp_ud_delivery_refused(&ud, &ud, 0x22222222U) != NULL,
           "a wrong Q_Key is refused");
     check(ionic_dp_ud_delivery_refused(&ud, &ud, 0) != NULL,
           "a zero Q_Key is refused");
@@ -648,12 +651,12 @@ static void test_ud_delivery_is_refused_to_the_wrong_queue(void)
      * any process that wrote 0x80010000 reach QP1.
      */
     gsi.qkey_valid = true;
-    gsi.qkey = 0x80010000u;
-    check(ionic_dp_ud_delivery_refused(&ud, &gsi, 0x80010000u) != NULL,
+    gsi.qkey = 0x80010000U;
+    check(ionic_dp_ud_delivery_refused(&ud, &gsi, 0x80010000U) != NULL,
           "a user QP writing GSI's Q_Key into its WQE is refused");
     check(ionic_dp_ud_delivery_refused(&ud, &gsi, DP_QKEY_CONTROLLED) != NULL,
           "a user QP's controlled key sends its own, not GSI's");
-    check(ionic_dp_ud_delivery_refused(&ud, &gsi, 0x11111111u) != NULL,
+    check(ionic_dp_ud_delivery_refused(&ud, &gsi, 0x11111111U) != NULL,
           "GSI refuses a datagram that does not present its Q_Key");
 
     /* The substitution, between two user QPs: @ud's own key is 0x11111111,
@@ -661,13 +664,13 @@ static void test_ud_delivery_is_refused_to_the_wrong_queue(void)
     struct ionic_qp_ring peer = ud;
     check(ionic_dp_ud_delivery_refused(&ud, &peer, DP_QKEY_CONTROLLED) == NULL,
           "a controlled key in the WQE sends the sender's own Q_Key");
-    check(ionic_dp_ud_delivery_refused(&ud, &peer, 0x91111111u) == NULL,
+    check(ionic_dp_ud_delivery_refused(&ud, &peer, 0x91111111U) == NULL,
           "only the high bit of a controlled key matters");
 
     /* A QP with no Q_Key of its own has none to send in a controlled one's
      * place. */
     struct ionic_qp_ring bare = {.valid = true, .ib_qp_type = IBV_QPT_UD};
-    check(ionic_dp_ud_delivery_refused(&bare, &gsi, 0x80010000u) != NULL,
+    check(ionic_dp_ud_delivery_refused(&bare, &gsi, 0x80010000U) != NULL,
           "a controlled key from a QP with no Q_Key is refused");
 
     /*
@@ -679,7 +682,7 @@ static void test_ud_delivery_is_refused_to_the_wrong_queue(void)
     check(ionic_dp_ud_delivery_refused(&gsi_tx, &gsi, DP_QKEY_CONTROLLED) ==
               NULL,
           "a MAD from QP1 with IB_QP_SET_QKEY reaches QP1");
-    check(ionic_dp_ud_delivery_refused(&gsi_tx, &gsi, 0x80010000u) == NULL,
+    check(ionic_dp_ud_delivery_refused(&gsi_tx, &gsi, 0x80010000U) == NULL,
           "QP1 sending its own key explicitly reaches QP1");
 }
 

@@ -55,11 +55,13 @@ _Static_assert(EWOULDBLOCK == EAGAIN, "EWOULDBLOCK must equal EAGAIN");
 void tcp_tune_sockbuf(int sockfd)
 {
     const char *val = getenv("ERNIC_TCP_SOCKBUF");
-    int bufsize, got;
+    int bufsize;
+    int got;
     socklen_t len;
 
-    if (!val || !ernic_parse_int(val, &bufsize) || bufsize <= 0)
+    if (!val || !ernic_parse_int(val, &bufsize) || bufsize <= 0) {
         return;
+    }
 
     setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize));
     setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
@@ -145,7 +147,7 @@ int tcp_connect_any(const struct addrinfo *addrs, const atomic_bool *running,
         if (deadline_ms != 0 && left > 1) {
             now_ms = ernic_monotonic_ms();
             if (now_ms < deadline_ms) {
-                attempt_ms = now_ms + (deadline_ms - now_ms) / left;
+                attempt_ms = now_ms + ((deadline_ms - now_ms) / left);
             }
         }
 
@@ -159,8 +161,9 @@ int tcp_connect_any(const struct addrinfo *addrs, const atomic_bool *running,
 
         if (connect(sockfd, rp->ai_addr, rp->ai_addrlen) == 0 ||
             (errno == EINPROGRESS &&
-             tcp_wait_connected(sockfd, running, attempt_ms) == 0))
+             tcp_wait_connected(sockfd, running, attempt_ms) == 0)) {
             return sockfd;
+        }
 
         err = errno;
         close(sockfd);
@@ -170,8 +173,9 @@ int tcp_connect_any(const struct addrinfo *addrs, const atomic_bool *running,
          * the next address.
          */
         if (err == ECANCELED ||
-            (deadline_ms != 0 && ernic_monotonic_ms() >= deadline_ms))
+            (deadline_ms != 0 && ernic_monotonic_ms() >= deadline_ms)) {
             break;
+        }
     }
     errno = err;
     return -1;
@@ -203,7 +207,8 @@ char *tcp_addr_str(const char *host, uint16_t port)
 int tcp_connect_to_remote(const char *host, uint16_t port,
                           const atomic_bool *running, uint64_t deadline_ms)
 {
-    struct addrinfo hints, *res;
+    struct addrinfo hints;
+    struct addrinfo *res;
     char port_str[8];
     char *addr;
     int sockfd;
@@ -407,7 +412,7 @@ uint32_t tcp_send_timeout_ms(const TcpBackendPrivate *priv)
     uint32_t ms =
         atomic_load_explicit(&priv->send_timeout_ms, memory_order_relaxed);
 
-    return priv->is_manager ? ms / 2 + ms % 2 : ms;
+    return priv->is_manager ? (ms / 2) + (ms % 2) : ms;
 }
 
 /* Write @hdr to the TCP_MSG_HDR_LEN bytes at @wire. */

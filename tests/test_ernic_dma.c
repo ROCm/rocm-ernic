@@ -29,15 +29,15 @@
 
 /* Small regions, so a few kilobytes cross more of them than one
  * transfer's list has room for. */
-#define REGION_SIZE 64u
-#define NREGIONS    512u
+#define REGION_SIZE 64U
+#define NREGIONS    512U
 #define MEM_SIZE    ((uint64_t)REGION_SIZE * NREGIONS)
 
 /* A transfer that needs about 200 entries, and its halves about 100. */
 #define BIG_LEN ((size_t)REGION_SIZE * 200)
 _Static_assert(BIG_LEN / REGION_SIZE > ERNIC_DMA_SGL_MAX,
                "BIG_LEN must need more entries than one list holds");
-_Static_assert(BIG_LEN / 2 / REGION_SIZE + 2 <= ERNIC_DMA_SGL_MAX,
+_Static_assert((BIG_LEN / 2 / REGION_SIZE) + 2 <= ERNIC_DMA_SGL_MAX,
                "each half of BIG_LEN must fit in one list");
 
 static int failures;
@@ -47,23 +47,26 @@ static struct ernic_dma *g_dma;
 
 static void check(bool ok, const char *what)
 {
-    if (ok)
+    if (ok) {
         return;
+    }
     printf("  FAIL: %s\n", what);
     failures++;
 }
 
 static void fill(uint8_t *buf, size_t len, uint8_t seed)
 {
-    for (size_t i = 0; i < len; i++)
-        buf[i] = (uint8_t)(seed + i * 7u);
+    for (size_t i = 0; i < len; i++) {
+        buf[i] = (uint8_t)(seed + (i * 7U));
+    }
 }
 
 /* Nothing got with vfu_sgl_get() is still out. */
 static void check_all_put(const char *what)
 {
-    if (fake_vfu_mapped(g_vfu) == 0)
+    if (fake_vfu_mapped(g_vfu) == 0) {
         return;
+    }
     printf("  FAIL: %s: %zu entries left mapped\n", what,
            fake_vfu_mapped(g_vfu));
     failures++;
@@ -77,7 +80,8 @@ static void check_all_put(const char *what)
 static unsigned long round_trip(uint64_t gpa, size_t len, uint8_t seed,
                                 const char *what)
 {
-    static uint8_t want[BIG_LEN], got[BIG_LEN];
+    static uint8_t want[BIG_LEN];
+    static uint8_t got[BIG_LEN];
     unsigned long before = fake_vfu_map_count(g_vfu);
     unsigned long calls;
 
@@ -182,7 +186,8 @@ static void test_refused(void)
         /* Only the first bytes are ever touched: everything here is
          * refused before or at the mapping. */
         size_t len = (size_t)cases[i].len;
-        int rr, wr;
+        int rr;
+        int wr;
 
         memset(buf, 0xee, sizeof(buf));
         rr = ernic_dma_read(g_dma, g_vfu, cases[i].gpa, buf, len);

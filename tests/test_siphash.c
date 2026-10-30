@@ -62,8 +62,9 @@ int main(void)
     uint8_t key[ERNIC_SIPHASH_KEY_LEN];
     int failures = 0;
 
-    for (size_t i = 0; i < sizeof(key); i++)
+    for (size_t i = 0; i < sizeof(key); i++) {
         key[i] = (uint8_t)i;
+    }
 
     for (size_t len = 0; len < sizeof(vectors) / sizeof(vectors[0]); len++) {
         uint8_t *msg = NULL;
@@ -74,8 +75,9 @@ int main(void)
                 printf("FAIL %zu bytes: out of memory\n", len);
                 return 1;
             }
-            for (size_t i = 0; i < len; i++)
+            for (size_t i = 0; i < len; i++) {
                 msg[i] = (uint8_t)i;
+            }
         }
 
         uint64_t got = ernic_siphash24(key, msg, len);
@@ -87,9 +89,10 @@ int main(void)
         }
     }
 
-    if (failures)
+    if (failures) {
         printf("\n%d failure(s)\n", failures);
-    else
+    } else {
         printf("all siphash tests passed\n");
+    }
     return failures;
 }

@@ -66,8 +66,8 @@
 
 /* An EQE (struct ionic_v1_eqe) is one be32, so an EQ's stride is at least
  * 2^2: anything smaller and each event would overwrite part of the next. */
-#define EQ_MIN_STRIDE_LOG2 2u
-_Static_assert((1u << EQ_MIN_STRIDE_LOG2) == sizeof(uint32_t),
+#define EQ_MIN_STRIDE_LOG2 2U
+_Static_assert((1U << EQ_MIN_STRIDE_LOG2) == sizeof(uint32_t),
                "EQ stride floor must be one EQE");
 
 /* -------------------------------------------------------------------------
@@ -149,8 +149,9 @@ static void rdma_cq_event_cb(void *opaque, uint32_t eq_id, uint32_t cq_id);
 
 static void publish_adminq_ctx(const struct ionic_rdma_devcmd_state *s)
 {
-    if (s->eth_emu)
+    if (s->eth_emu) {
         ionic_eth_emu_register_adminq(s->eth_emu, s->adminq_ctx);
+    }
 }
 
 /* Give the context what this file was given; ionic_adminq ignores NULL. */
@@ -180,8 +181,9 @@ static void drop_adminq_ctx(struct ionic_rdma_devcmd_state *s)
 struct ionic_rdma_devcmd_state *ionic_rdma_devcmd_create(vfu_ctx_t *vfu_ctx)
 {
     struct ionic_rdma_devcmd_state *s = calloc(1, sizeof(*s));
-    if (!s)
+    if (!s) {
         return NULL;
+    }
     s->dma = ernic_dma_create();
     if (!s->dma) {
         free(s);
@@ -193,8 +195,9 @@ struct ionic_rdma_devcmd_state *ionic_rdma_devcmd_create(vfu_ctx_t *vfu_ctx)
 
 void ionic_rdma_devcmd_destroy(struct ionic_rdma_devcmd_state *s)
 {
-    if (!s)
+    if (!s) {
         return;
+    }
     drop_adminq_ctx(s);
     ernic_dma_destroy(s->dma);
     free(s);
@@ -239,7 +242,7 @@ static void handle_create_eq(struct ionic_rdma_devcmd_state *s,
     uint32_t cid = ernic_get_le32(cmd + RDMA_QUEUE_CID_OFF);
     uint64_t dma_addr = ernic_get_le64(cmd + RDMA_QUEUE_DMA_OFF);
 
-    uint32_t qid = qid_ver & 0x00ffffffu;
+    uint32_t qid = qid_ver & 0x00ffffffU;
     uint8_t depth_log2 = cmd[RDMA_QUEUE_DEPTH_OFF];
     uint8_t stride_log2 = cmd[RDMA_QUEUE_STRIDE_OFF];
 
@@ -261,7 +264,7 @@ static void handle_create_eq(struct ionic_rdma_devcmd_state *s,
         vfu_log(s->vfu_ctx, LOG_ERR,
                 "ionic_rdma_devcmd: CREATE_EQ qid=%u: refusing interrupt %u "
                 "(max %u)",
-                qid, cid, IONIC_MSIX_MAX_VECTORS - 1u);
+                qid, cid, IONIC_MSIX_MAX_VECTORS - 1U);
         comp[0] = 1;
         return;
     }
@@ -292,7 +295,7 @@ static void handle_create_cq(struct ionic_rdma_devcmd_state *s,
     uint32_t cid = ernic_get_le32(cmd + RDMA_QUEUE_CID_OFF);
     uint64_t dma_addr = ernic_get_le64(cmd + RDMA_QUEUE_DMA_OFF);
 
-    uint32_t qid = qid_ver & 0x00ffffffu;
+    uint32_t qid = qid_ver & 0x00ffffffU;
 
     /* A guest exponent, which the admin queue sizes the CQ by shifting by.
      * Refused here, where the guest sent it, rather than at CREATE_ADMINQ.
@@ -342,7 +345,7 @@ static void handle_create_adminq(struct ionic_rdma_devcmd_state *s,
     uint32_t qid_ver = ernic_get_le32(cmd + RDMA_QUEUE_QID_VER_OFF);
     uint64_t dma_addr = ernic_get_le64(cmd + RDMA_QUEUE_DMA_OFF);
 
-    uint32_t qid = qid_ver & 0x00ffffffu;
+    uint32_t qid = qid_ver & 0x00ffffffU;
 
     /* A guest exponent, which the admin queue sizes the AQ by shifting by.
      * The stride isn't used: admin WQEs have a fixed size. */
@@ -442,8 +445,9 @@ struct ionic_adminq_ctx *ionic_rdma_devcmd_get_adminq_ctx(
 void ionic_rdma_devcmd_set_eth_emu(struct ionic_rdma_devcmd_state *s,
                                    struct ionic_eth_emu *eth_emu)
 {
-    if (!s)
+    if (!s) {
         return;
+    }
     s->eth_emu = eth_emu;
     publish_adminq_ctx(s);
 }
@@ -451,8 +455,9 @@ void ionic_rdma_devcmd_set_eth_emu(struct ionic_rdma_devcmd_state *s,
 void ionic_rdma_devcmd_set_pvrdma(struct ionic_rdma_devcmd_state *s,
                                   pvrdma_handle_t handle)
 {
-    if (!s)
+    if (!s) {
         return;
+    }
     s->pvrdma_handle = handle;
     ionic_adminq_set_pvrdma(s->adminq_ctx, handle);
 }
@@ -460,8 +465,9 @@ void ionic_rdma_devcmd_set_pvrdma(struct ionic_rdma_devcmd_state *s,
 void ionic_rdma_devcmd_set_stats(struct ionic_rdma_devcmd_state *s,
                                  struct ernic_stats *stats)
 {
-    if (!s)
+    if (!s) {
         return;
+    }
     s->stats = stats;
     ionic_adminq_set_stats(s->adminq_ctx, stats);
 }
@@ -469,8 +475,9 @@ void ionic_rdma_devcmd_set_stats(struct ionic_rdma_devcmd_state *s,
 void ionic_rdma_devcmd_set_faults(struct ionic_rdma_devcmd_state *s,
                                   struct ionic_fault_set *faults)
 {
-    if (!s)
+    if (!s) {
         return;
+    }
     s->faults = faults;
     ionic_adminq_set_faults(s->adminq_ctx, faults);
 }
@@ -478,8 +485,9 @@ void ionic_rdma_devcmd_set_faults(struct ionic_rdma_devcmd_state *s,
 void ionic_rdma_devcmd_set_datapath(struct ionic_rdma_devcmd_state *s,
                                     struct ionic_datapath *dp)
 {
-    if (!s)
+    if (!s) {
         return;
+    }
     s->dp = dp;
     ionic_adminq_set_datapath(s->adminq_ctx, dp);
     /* Data-path CQEs need the same EQE-then-MSI-X sequence as admin CQEs. */
@@ -491,8 +499,9 @@ int ionic_rdma_devcmd_post_cq_event(struct ionic_rdma_devcmd_state *s,
 {
     struct ionic_rdma_eq *eq = NULL;
 
-    if (!s)
+    if (!s) {
         return -EINVAL;
+    }
 
     for (int i = 0; i < s->eq_count; i++) {
         if (s->eq[i].valid && s->eq[i].qid == eq_id) {
@@ -514,12 +523,13 @@ int ionic_rdma_devcmd_post_cq_event(struct ionic_rdma_devcmd_state *s,
      * The driver walks the ring until the colour stops matching, so the
      * entry has to be written before the interrupt is raised. */
     uint8_t eqe[4];
-    ernic_put_be32(eqe, (cq_id << 8) | (eq->color ? 1u : 0u));
+    ernic_put_be32(eqe, (cq_id << 8) | (eq->color ? 1U : 0U));
 
     /* Both exponents were bounded at CREATE_EQ, so the shifts are defined
      * and prod * stride < 2^(24 + 16) fits a uint64_t. */
-    uint32_t depth = 1u << eq->depth_log2;
-    uint64_t gpa = eq->dma_addr + (uint64_t)eq->prod * (1u << eq->stride_log2);
+    uint32_t depth = 1U << eq->depth_log2;
+    uint64_t gpa =
+        eq->dma_addr + ((uint64_t)eq->prod * (1U << eq->stride_log2));
 
     vfu_log(s->vfu_ctx, LOG_DEBUG,
             "ionic_rdma_devcmd: EQE eq=%u cq=%u prod=%u color=%u gpa=%#" PRIx64,
@@ -536,8 +546,9 @@ int ionic_rdma_devcmd_post_cq_event(struct ionic_rdma_devcmd_state *s,
         eq->color ^= 1;
     }
 
-    if (!s->eth_emu)
+    if (!s->eth_emu) {
         return 0;
+    }
     /* CREATE_EQ held it below IONIC_MSIX_MAX_VECTORS, so it fits */
     return ionic_eth_emu_trigger_irq(s->eth_emu, (int)eq->intr_index);
 }

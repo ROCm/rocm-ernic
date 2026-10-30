@@ -43,7 +43,7 @@
 #define TCP_DEFAULT_HEALTH_INTERVAL_S 5
 
 /* How often a receive thread offers the data path a message it refused */
-#define TCP_IONIC_RETRY_US 1000u
+#define TCP_IONIC_RETRY_US 1000U
 
 /*
  * The value of the environment variable @name, if it is a positive integer,
@@ -950,8 +950,9 @@ static uint32_t tcp_mesh_local_node(RdmaBackendDev *backend_dev)
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
 
-    if (!priv)
+    if (!priv) {
         return UINT32_MAX;
+    }
     return tcp_local_node(priv);
 }
 
@@ -960,8 +961,9 @@ static uint32_t tcp_mesh_node_from_gid(RdmaBackendDev *backend_dev,
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
 
-    if (!priv)
+    if (!priv) {
         return UINT32_MAX;
+    }
 
     /* UINT32_MAX on a miss, with no default peer: see
      * tcp_resolve_node_from_gid(). The caller fails the command. */
@@ -983,8 +985,9 @@ static int tcp_mesh_claim_gid(RdmaBackendDev *backend_dev,
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
 
-    if (!priv)
+    if (!priv) {
         return 0;
+    }
 
     return tcp_claim_gid(priv, gid, add);
 }
@@ -999,8 +1002,9 @@ static void tcp_mesh_set_recv_cb(RdmaBackendDev *backend_dev,
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
 
-    if (!priv)
+    if (!priv) {
         return;
+    }
 
     qemu_mutex_lock(&priv->lock);
     priv->ionic_recv_fn = fn;
@@ -1008,8 +1012,9 @@ static void tcp_mesh_set_recv_cb(RdmaBackendDev *backend_dev,
     /* A call that began before this has the old callback; one that begins
      * now gets the new one.  The callback only queues the message or
      * refuses it, so the wait is short. */
-    while (priv->ionic_recv_calls > 0)
+    while (priv->ionic_recv_calls > 0) {
         qemu_cond_wait(&priv->ionic_recv_idle, &priv->lock);
+    }
     qemu_mutex_unlock(&priv->lock);
 }
 
@@ -1034,13 +1039,15 @@ void tcp_recv_ionic(const TcpConnection *conn, TcpRecvMsg *msg)
     ernic_mesh_recv_fn fn;
     void *fn_opaque;
 
-    if (!priv || !msg->payload || msg->hdr.msg_len == 0)
+    if (!priv || !msg->payload || msg->hdr.msg_len == 0) {
         return;
+    }
 
     if (msg->hdr.dst_node_id != tcp_local_node(priv)) {
         /* Worker-to-worker: relay to the addressed node. */
-        if (priv->is_manager)
+        if (priv->is_manager) {
             tcp_manager_relay_ionic(priv, msg);
+        }
         return;
     }
 
@@ -1050,8 +1057,9 @@ void tcp_recv_ionic(const TcpConnection *conn, TcpRecvMsg *msg)
         qemu_mutex_lock(&priv->lock);
         fn = priv->ionic_recv_fn;
         fn_opaque = priv->ionic_recv_opaque;
-        if (fn)
+        if (fn) {
             priv->ionic_recv_calls++;
+        }
         qemu_mutex_unlock(&priv->lock);
 
         if (!fn) {
@@ -1064,8 +1072,9 @@ void tcp_recv_ionic(const TcpConnection *conn, TcpRecvMsg *msg)
             fn(fn_opaque, msg->hdr.src_node_id, msg->payload, msg->hdr.msg_len);
 
         qemu_mutex_lock(&priv->lock);
-        if (--priv->ionic_recv_calls == 0)
+        if (--priv->ionic_recv_calls == 0) {
             qemu_cond_broadcast(&priv->ionic_recv_idle);
+        }
         qemu_mutex_unlock(&priv->lock);
 
         if (taken) {
@@ -1075,8 +1084,9 @@ void tcp_recv_ionic(const TcpConnection *conn, TcpRecvMsg *msg)
         }
         /* The receive thread frees the payload */
         if (!atomic_load(&conn->recv_thread_running) ||
-            atomic_load(&priv->stopping))
+            atomic_load(&priv->stopping)) {
             return;
+        }
         ernic_sleep_us(TCP_IONIC_RETRY_US);
     }
 }
@@ -1096,11 +1106,13 @@ static bool tcp_mesh_has_room(RdmaBackendDev *backend_dev, uint32_t dst_node,
     TcpConnection *conn;
     bool room;
 
-    if (!priv)
+    if (!priv) {
         return true;
+    }
     conn = tcp_route_to_node(priv, dst_node);
-    if (!conn)
+    if (!conn) {
         return true;
+    }
     qemu_mutex_lock(&conn->sendq_lock);
     room = conn->sendq_closed || conn->sendq_bytes == 0 ||
            (len <= TCP_SENDQ_REQUEST_BYTES &&
@@ -1133,16 +1145,19 @@ static void tcp_mesh_cancel(RdmaBackendDev *backend_dev, uint64_t tag,
     TcpConnection *manager;
     GPtrArray *conns;
 
-    if (!priv)
+    if (!priv) {
         return;
+    }
 
     /* A worker's connection to the manager, which relays, isn't in the table */
     conns = tcp_conns_snapshot(priv);
     manager = tcp_worker_manager_conn(priv);
-    if (manager)
+    if (manager) {
         g_ptr_array_add(conns, manager);
-    for (guint i = 0; i < conns->len; i++)
+    }
+    for (guint i = 0; i < conns->len; i++) {
         tcp_sendq_cancel(g_ptr_array_index(conns, i), tag, mask);
+    }
     g_ptr_array_free(conns, TRUE);
 }
 
@@ -1174,12 +1189,14 @@ static int tcp_mesh_sendv(RdmaBackendDev *backend_dev, uint32_t dst_node,
 
     /* Each length checked on its own before the sum, which could wrap */
     if (!priv || !hdr || hdr_len == 0 || hdr_len > TCP_MAX_PAYLOAD_LEN ||
-        body_len > TCP_MAX_PAYLOAD_LEN - hdr_len)
+        body_len > TCP_MAX_PAYLOAD_LEN - hdr_len) {
         return -EINVAL;
+    }
 
     local = tcp_local_node(priv);
-    if (dst_node == local)
+    if (dst_node == local) {
         return -EINVAL;
+    }
 
     /* A worker may have no direct socket to another worker; the manager
      * relays. */

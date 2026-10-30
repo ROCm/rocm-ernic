@@ -51,7 +51,7 @@
  * which real RoCE answers with an RNR NAK and a requester-side retry; here the
  * message simply stays queued and is retried on later polls.
  */
-#define RNR_RETRY_MS 5000u
+#define RNR_RETRY_MS 5000U
 
 /*
  * How much the queue of messages from other nodes holds, in bytes and in
@@ -62,7 +62,7 @@
  * applies a few more.
  */
 #define DP_RX_MAX_BYTES ((size_t)4 * ERNIC_MESH_MAX_MSG)
-#define DP_RX_MAX_MSGS  4096u
+#define DP_RX_MAX_MSGS  4096U
 _Static_assert(DP_RX_MAX_BYTES >= ERNIC_MESH_MAX_MSG,
                "the inbound queue must hold the largest message");
 
@@ -76,7 +76,7 @@ _Static_assert(DP_RX_MAX_BYTES >= ERNIC_MESH_MAX_MSG,
  * (TCP_DEFAULT_SEND_TIMEOUT_MS, halved), past which the peer gives up on
  * this node's connection.
  */
-#define DP_RX_CROWDED_MS 500u
+#define DP_RX_CROWDED_MS 500U
 
 /*
  * How long the main thread may go from the end of one pass without starting
@@ -88,7 +88,7 @@ _Static_assert(DP_RX_MAX_BYTES >= ERNIC_MESH_MAX_MSG,
  * longer is still applying what is queued, and holds the receive threads up
  * however long it takes.
  */
-#define DP_RX_STUCK_MS 2000u
+#define DP_RX_STUCK_MS 2000U
 
 /* -------------------------------------------------------------------------
  * Cross-instance wire protocol
@@ -105,7 +105,7 @@ _Static_assert(DP_RX_MAX_BYTES >= ERNIC_MESH_MAX_MSG,
  * -------------------------------------------------------------------------
  */
 
-#define IONIC_WIRE_MAGIC 0x434e4f49u /* "IONC" */
+#define IONIC_WIRE_MAGIC 0x434e4f49U /* "IONC" */
 
 enum ionic_wire_op {
     IONIC_WIRE_SEND = 1,
@@ -545,8 +545,8 @@ const char *ionic_dp_ud_delivery_refused(const struct ionic_qp_ring *sq,
 
 /* Directions for ionic_dp_rdma_bytes(); a local copy both sends and
  * receives. */
-#define DP_RDMA_TX 1u
-#define DP_RDMA_RX 2u
+#define DP_RDMA_TX 1U
+#define DP_RDMA_RX 2U
 
 /*
  * Count @bytes of RDMA payload once for the server's statistics (by @op,

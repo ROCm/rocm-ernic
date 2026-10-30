@@ -82,10 +82,11 @@ void ionic_eth_emu_count_rdma(struct ionic_eth_emu *emu, uint64_t bytes,
                               bool is_tx)
 {
     (void)emu;
-    if (is_tx)
+    if (is_tx) {
         g_lif_rdma_tx += bytes;
-    else
+    } else {
         g_lif_rdma_rx += bytes;
+    }
 }
 
 uint32_t ernic_mesh_local_node(pvrdma_handle_t handle)
@@ -93,10 +94,11 @@ uint32_t ernic_mesh_local_node(pvrdma_handle_t handle)
     (void)handle;
     return UINT32_MAX;
 }
-uint32_t ernic_mesh_node_from_gid(pvrdma_handle_t handle, const uint8_t *gid)
+uint32_t ernic_mesh_node_from_gid(pvrdma_handle_t handle,
+                                  const uint8_t *dest_gid_16bytes)
 {
     (void)handle;
-    (void)gid;
+    (void)dest_gid_16bytes;
     return UINT32_MAX;
 }
 int ernic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
@@ -387,8 +389,9 @@ static int g_failures;
 static void check(bool ok, const char *what)
 {
     printf("%s: %s\n", ok ? "PASS" : "FAIL", what);
-    if (!ok)
+    if (!ok) {
         g_failures++;
+    }
 }
 
 /* Doorbell rings, as the driver uses them. */
@@ -400,8 +403,8 @@ static void check(bool ok, const char *what)
 static uint64_t db(uint32_t qid, uint8_t ring, uint16_t p_index)
 {
     return (uint64_t)p_index | ((uint64_t)ring << 16) |
-           ((uint64_t)(qid & 0xffu) << 24) |
-           ((uint64_t)((qid >> 8) & 0xffffu) << 32);
+           ((uint64_t)(qid & 0xffU) << 24) |
+           ((uint64_t)((qid >> 8) & 0xffffU) << 32);
 }
 
 static void doorbell(struct ionic_datapath *dp, uint32_t qid, uint8_t ring,
@@ -511,7 +514,7 @@ static void test_event_by_interrupt(void)
     check(g_irqs == 1 && g_irq_vec == 3,
           "an armed CQ with no callback raises its EQ's interrupt");
 
-    dp->cq[CQ_ID].eq_id = 0x80000000u;
+    dp->cq[CQ_ID].eq_id = 0x80000000U;
     doorbell(dp, CQ_ID, RING_ARM_ANY, 0);
     check(g_irqs == 1, "an EQ id past INT_MAX raises no interrupt");
 }
@@ -540,8 +543,8 @@ static void test_rdma_bytes_directions(void)
         {"boundary", "a zero-length message", "file 0, lif tx 0, lif rx 0", 0,
          DP_RDMA_TX | DP_RDMA_RX, 0, 0, 0},
         {"boundary", "the largest RDMA message (2^31 bytes)",
-         "file 2147483648, lif tx 2147483648, lif rx 0", 1ull << 31, DP_RDMA_TX,
-         1ull << 31, 1ull << 31, 0},
+         "file 2147483648, lif tx 2147483648, lif rx 0", UINT64_C(1) << 31,
+         DP_RDMA_TX, UINT64_C(1) << 31, UINT64_C(1) << 31, 0},
     };
     struct ionic_datapath dp;
 

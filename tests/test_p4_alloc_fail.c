@@ -65,8 +65,9 @@ static char *read_fixture(const char *name, size_t *len)
 
     (void)snprintf(path, sizeof(path), "%s/%s", P4_FIXTURE_DIR, name);
     f = fopen(path, "rbe"); /* e: O_CLOEXEC */
-    if (!f)
+    if (!f) {
         return NULL;
+    }
     n = fseek(f, 0, SEEK_END) == 0 ? ftell(f) : -1;
     if (n < 0 || fseek(f, 0, SEEK_SET) != 0) {
         fclose(f);
@@ -138,10 +139,11 @@ static void test_begin(size_t len)
     const char *why;
 
     check(eng != NULL, "no engine");
-    if (!eng)
+    if (!eng) {
         return;
+    }
 
-    check(stage(eng, junk, sizeof(junk) - 1u) &&
+    check(stage(eng, junk, sizeof(junk) - 1U) &&
               p4_engine_load_commit(eng) == -EINVAL &&
               p4_engine_load_error(eng) != NULL,
           "non-JSON was not refused by the parser with a reason");
@@ -167,8 +169,9 @@ static void test_commit(const char *doc, size_t len)
     const char *why;
 
     check(eng != NULL, "no engine");
-    if (!eng)
+    if (!eng) {
         return;
+    }
 
     check(stage(eng, doc, len) && p4_engine_load_commit(eng) == 0,
           "the fixture does not load");

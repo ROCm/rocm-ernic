@@ -54,8 +54,9 @@ bool ionic_datapath_attach_s3(struct ionic_datapath *dp,
                               const struct s3_target_cfg *cfg, char *err,
                               size_t errlen)
 {
-    if (!dp || !cfg)
+    if (!dp || !cfg) {
         return false;
+    }
 
     if (!dp->eth_emu) {
         snprintf(err, errlen,
@@ -65,8 +66,9 @@ bool ionic_datapath_attach_s3(struct ionic_datapath *dp,
     }
 
     dp->s3 = s3_target_create(cfg, err, errlen);
-    if (!dp->s3)
+    if (!dp->s3) {
         return false;
+    }
 
     struct s3_tcp_cfg ncfg;
     s3_tcp_cfg_from_target(&ncfg, dp->s3);
@@ -93,8 +95,9 @@ bool ionic_datapath_attach_s3(struct ionic_datapath *dp,
 
 void ionic_dp_s3_detach(struct ionic_datapath *dp)
 {
-    if (dp->eth_emu && dp->s3_tcp)
+    if (dp->eth_emu && dp->s3_tcp) {
         ionic_eth_emu_register_tx_filter(dp->eth_emu, NULL, NULL);
+    }
     s3_tcp_destroy(dp->s3_tcp);
     s3_target_destroy(dp->s3);
 }
@@ -106,6 +109,7 @@ bool ionic_dp_s3_has_work(struct ionic_datapath *dp)
 
 void ionic_dp_s3_poll(struct ionic_datapath *dp)
 {
-    if (dp->s3_tcp)
+    if (dp->s3_tcp) {
         s3_tcp_poll(dp->s3_tcp, ionic_dp_now_ms(dp));
+    }
 }

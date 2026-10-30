@@ -701,8 +701,9 @@ static void tcp_recv_heartbeat(TcpConnection *conn, const TcpRecvMsg *msg)
 {
     TcpBackendPrivate *priv = conn->priv;
 
-    if (!priv)
+    if (!priv) {
         return;
+    }
 
     if (priv->is_manager) {
         tcp_manager_recv_heartbeat(conn);
@@ -839,8 +840,9 @@ void *tcp_recv_thread_per_conn(void *opaque)
             /* NULL if the handler took it */
             free(msg.payload);
 
-            if (hang_up)
+            if (hang_up) {
                 break;
+            }
         }
 
         if (pfd.revents & (POLLHUP | POLLERR)) {

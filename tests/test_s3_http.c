@@ -69,23 +69,30 @@ static void test_parse_get(void)
         fail(name, "consumed %zd of %zu bytes", n, strlen(req_text));
         return;
     }
-    if (strcmp(req.method, "GET") != 0)
+    if (strcmp(req.method, "GET") != 0) {
         fail(name, "method \"%s\"", req.method);
-    if (strcmp(req.path, "/ernic/some/object.bin") != 0)
+    }
+    if (strcmp(req.path, "/ernic/some/object.bin") != 0) {
         fail(name, "path \"%s\"", req.path);
-    if (req.query[0] != '\0')
+    }
+    if (req.query[0] != '\0') {
         fail(name, "query \"%s\", want empty", req.query);
-    if (!req.keep_alive)
+    }
+    if (!req.keep_alive) {
         fail(name, "HTTP/1.1 with no Connection header is not keep-alive");
+    }
 
     /* Header lookup is case-insensitive in both directions. */
     const char *tok = s3_http_header_get(&req, "x-amz-rdma-token");
-    if (tok == NULL || strcmp(tok, "abcdef") != 0)
+    if (tok == NULL || strcmp(tok, "abcdef") != 0) {
         fail(name, "token header \"%s\"", tok ? tok : "(absent)");
-    if (s3_http_header_get(&req, "RANGE") == NULL)
+    }
+    if (s3_http_header_get(&req, "RANGE") == NULL) {
         fail(name, "uppercase lookup missed a header");
-    if (s3_http_header_get(&req, "content-md5") != NULL)
+    }
+    if (s3_http_header_get(&req, "content-md5") != NULL) {
         fail(name, "found a header that is not there");
+    }
 
     ok(name);
 }
@@ -114,11 +121,13 @@ static void test_parse_incremental(void)
         fail(name, "complete request consumed %zd of %zu", n, total);
         return;
     }
-    if (req.content_length != 5)
+    if (req.content_length != 5) {
         fail(name, "content_length %zu, want 5", req.content_length);
+    }
     if (req.body_len != 5 || req.body == NULL ||
-        memcmp(req.body, "hello", 5) != 0)
+        memcmp(req.body, "hello", 5) != 0) {
         fail(name, "body not delivered");
+    }
 
     ok(name);
 }
@@ -144,14 +153,15 @@ static void test_parse_rdma_no_body(void)
         fail(name, "consumed %zd of %zu, want the whole request", n, total);
         return;
     }
-    if (!req.rdma)
+    if (!req.rdma) {
         fail(name, "rdma flag not set");
-    else if (req.content_length != 1048576)
+    } else if (req.content_length != 1048576) {
         fail(name, "content_length %zu, want 1048576", req.content_length);
-    else if (req.body_len != 0 || req.body != NULL)
+    } else if (req.body_len != 0 || req.body != NULL) {
         fail(name, "body_len %zu, want no body on the socket", req.body_len);
-    else
+    } else {
         ok(name);
+    }
 }
 
 /* Without a token the same request must still wait for its body. */
@@ -164,12 +174,13 @@ static void test_parse_body_still_framed(void)
     struct s3_http_request req;
 
     ssize_t n = s3_http_parse(hdrs, strlen(hdrs), &req);
-    if (n != 0)
+    if (n != 0) {
         fail(name, "returned %zd with no body yet, want 0", n);
-    else if (req.rdma)
+    } else if (req.rdma) {
         fail(name, "rdma flag set without a token");
-    else
+    } else {
         ok(name);
+    }
 }
 
 static void test_parse_pipelined(void)
@@ -187,13 +198,14 @@ static void test_parse_pipelined(void)
 
     ssize_t m = s3_http_parse(stream + n, strlen(stream) - (size_t)n, &req);
     if (m <= 0 || strcmp(req.method, "GET") != 0 ||
-        strcmp(req.path, "/ernic/b") != 0)
+        strcmp(req.path, "/ernic/b") != 0) {
         fail(name, "second request: n=%zd method=%s path=%s", m, req.method,
              req.path);
-    else if ((size_t)(n + m) != strlen(stream))
+    } else if ((size_t)(n + m) != strlen(stream)) {
         fail(name, "consumed %zd of %zu bytes total", n + m, strlen(stream));
-    else
+    } else {
         ok(name);
+    }
 }
 
 static void test_parse_errors(void)
@@ -222,8 +234,9 @@ static void test_parse_errors(void)
 
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         ssize_t n = s3_http_parse(bad[i], strlen(bad[i]), &req);
-        if (n != -EINVAL)
+        if (n != -EINVAL) {
             fail(name, "case %zu returned %zd, want -EINVAL", i, n);
+        }
     }
 
     /* A request that will never fit has to be refused, not buffered. */
@@ -235,8 +248,9 @@ static void test_parse_errors(void)
     }
     memset(big, 'A', huge);
     ssize_t n = s3_http_parse(big, huge, &req);
-    if (n != -EMSGSIZE)
+    if (n != -EMSGSIZE) {
         fail(name, "oversized request returned %zd, want -EMSGSIZE", n);
+    }
     free(big);
 
     ok(name);
@@ -264,26 +278,29 @@ static void test_parse_bad_escapes(void)
 
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         ssize_t n = s3_http_parse(bad[i], strlen(bad[i]), &req);
-        if (n != -EINVAL)
+        if (n != -EINVAL) {
             fail(name, "case %zu returned %zd, want -EINVAL", i, n);
+        }
     }
 
     /* An escape that ends the path exactly is whole, not cut short. */
     static const char edge[] = "GET /ernic/a%41 HTTP/1.1\r\n\r\n";
     ssize_t n = s3_http_parse(edge, strlen(edge), &req);
-    if (n != (ssize_t)strlen(edge))
+    if (n != (ssize_t)strlen(edge)) {
         fail(name, "an escape ending the path returned %zd", n);
-    else if (strcmp(req.path, "/ernic/aA") != 0)
+    } else if (strcmp(req.path, "/ernic/aA") != 0) {
         fail(name, "path \"%s\", want \"/ernic/aA\"", req.path);
+    }
 
     /* The query is decoded on lookup, so a bad escape there fails the
      * lookup and leaves the request itself alone. */
     static const char query[] = "GET /ernic?prefix=a%2 HTTP/1.1\r\n\r\n";
     char val[64];
-    if (s3_http_parse(query, strlen(query), &req) <= 0)
+    if (s3_http_parse(query, strlen(query), &req) <= 0) {
         fail(name, "a bad escape in the query failed the whole request");
-    else if (s3_http_query_get(&req, "prefix", val, sizeof(val)))
+    } else if (s3_http_query_get(&req, "prefix", val, sizeof(val))) {
         fail(name, "a bad escape in the query decoded as \"%s\"", val);
+    }
 
     ok(name);
 }
@@ -303,10 +320,11 @@ static void test_parse_http10(void)
 
     for (size_t i = 0; i < sizeof(closing) / sizeof(closing[0]); i++) {
         ssize_t n = s3_http_parse(closing[i], strlen(closing[i]), &req);
-        if (n != (ssize_t)strlen(closing[i]))
+        if (n != (ssize_t)strlen(closing[i])) {
             fail(name, "case %zu returned %zd", i, n);
-        else if (req.keep_alive)
+        } else if (req.keep_alive) {
             fail(name, "case %zu is keep-alive, want close", i);
+        }
     }
 
     ok(name);
@@ -325,15 +343,16 @@ static void test_parse_lf_only(void)
     struct s3_http_request req;
 
     ssize_t n = s3_http_parse(text, strlen(text), &req);
-    if (n != (ssize_t)(strlen(text) - strlen("GET /ernic/k HTTP/1.1\n\n")))
+    if (n != (ssize_t)(strlen(text) - strlen("GET /ernic/k HTTP/1.1\n\n"))) {
         fail(name, "consumed %zd bytes, want the PUT and its body", n);
-    else if (strcmp(req.method, "PUT") != 0 ||
-             strcmp(req.path, "/ernic/k") != 0)
+    } else if (strcmp(req.method, "PUT") != 0 ||
+               strcmp(req.path, "/ernic/k") != 0) {
         fail(name, "request line read as %s %s", req.method, req.path);
-    else if (req.body_len != 5 || memcmp(req.body, "hello", 5) != 0)
+    } else if (req.body_len != 5 || memcmp(req.body, "hello", 5) != 0) {
         fail(name, "body not delivered");
-    else
+    } else {
         ok(name);
+    }
 }
 
 /*
@@ -357,8 +376,9 @@ static void test_parse_field_limits(void)
     static const char *const empty[] = {"\r\n\r\n", "\n\n"};
     for (size_t i = 0; i < sizeof(empty) / sizeof(empty[0]); i++) {
         ssize_t n = s3_http_parse(empty[i], strlen(empty[i]), &req);
-        if (n != -EINVAL)
+        if (n != -EINVAL) {
             fail(name, "empty request line %zu returned %zd", i, n);
+        }
     }
 
     /* method[16]: 15 characters and the NUL. */
@@ -367,10 +387,12 @@ static void test_parse_field_limits(void)
         fill[len] = '\0';
         int w = snprintf(text, 4096, "%s / HTTP/1.1\r\n\r\n", fill);
         ssize_t n = s3_http_parse(text, (size_t)w, &req);
-        if (len == 15 && n != w)
+        if (len == 15 && n != w) {
             fail(name, "a %zu character method returned %zd", len, n);
-        if (len == 16 && n != -EINVAL)
+        }
+        if (len == 16 && n != -EINVAL) {
             fail(name, "a %zu character method returned %zd", len, n);
+        }
     }
 
     /* The raw query: S3_HTTP_QUERY_MAX - 1 characters and the NUL. */
@@ -380,10 +402,12 @@ static void test_parse_field_limits(void)
         int w = snprintf(text, 4096, "GET /ernic?%s HTTP/1.1\r\n\r\n", fill);
         ssize_t n = s3_http_parse(text, (size_t)w, &req);
         bool fits = len < S3_HTTP_QUERY_MAX;
-        if (fits && n != w)
+        if (fits && n != w) {
             fail(name, "a %zu byte query returned %zd", len, n);
-        if (!fits && n != -EINVAL)
+        }
+        if (!fits && n != -EINVAL) {
             fail(name, "a %zu byte query returned %zd", len, n);
+        }
     }
 
     /* Header names and values: one byte short of the buffer, then full. */
@@ -400,10 +424,11 @@ static void test_parse_field_limits(void)
             memset(fill, 'h', len);
             fill[len] = '\0';
             char line[S3_HTTP_VALUE_MAX + 16];
-            if (fields[f].is_name)
+            if (fields[f].is_name) {
                 snprintf(line, sizeof(line), "%s: v", fill);
-            else
+            } else {
                 snprintf(line, sizeof(line), "X-Long: %s", fill);
+            }
             int w = snprintf(
                 text, 4096, "GET / HTTP/1.1\r\n%s\r\nX-After: 1\r\n\r\n", line);
             ssize_t n = s3_http_parse(text, (size_t)w, &req);
@@ -413,12 +438,14 @@ static void test_parse_field_limits(void)
                      fields[f].what, n);
                 continue;
             }
-            if (req.nhdr != (fits ? 2u : 1u))
+            if (req.nhdr != (fits ? 2U : 1U)) {
                 fail(name, "a %zu byte header %s left %u headers, want %u", len,
-                     fields[f].what, req.nhdr, fits ? 2u : 1u);
-            if (s3_http_header_get(&req, "x-after") == NULL)
+                     fields[f].what, req.nhdr, fits ? 2U : 1U);
+            }
+            if (s3_http_header_get(&req, "x-after") == NULL) {
                 fail(name, "a %zu byte header %s lost the next header", len,
                      fields[f].what);
+            }
         }
     }
 
@@ -429,10 +456,12 @@ static void test_parse_field_limits(void)
     } else {
         const char *v = s3_http_header_get(&req, "x-pad");
         const char *e = s3_http_header_get(&req, "x-empty");
-        if (v == NULL || strcmp(v, "value  with space") != 0)
+        if (v == NULL || strcmp(v, "value  with space") != 0) {
             fail(name, "trimmed value \"%s\"", v ? v : "(absent)");
-        if (e == NULL || e[0] != '\0')
+        }
+        if (e == NULL || e[0] != '\0') {
             fail(name, "a blank value read as \"%s\"", e ? e : "(absent)");
+        }
     }
 
     ok(name);
@@ -456,28 +485,33 @@ static void test_response_value_too_long(void)
     memset(value, 'v', S3_HTTP_VALUE_MAX - 1);
     value[S3_HTTP_VALUE_MAX - 1] = '\0';
     s3_http_response_header(&resp, "X-Fits", "%s", value);
-    if (resp.oom)
+    if (resp.oom) {
         fail(name, "a %d byte value set oom", S3_HTTP_VALUE_MAX - 1);
+    }
 
     s3_http_response_write(&resp, "abc", 3);
     s3_http_response_write(&resp, "ignored", 0);
-    if (resp.body_len != 3)
+    if (resp.body_len != 3) {
         fail(name, "body_len %zu after writing 3 bytes", resp.body_len);
+    }
 
     value[S3_HTTP_VALUE_MAX - 1] = 'v';
     value[S3_HTTP_VALUE_MAX] = '\0';
     s3_http_response_header(&resp, "X-Long", "%s", value);
-    if (!resp.oom)
+    if (!resp.oom) {
         fail(name, "a %d byte value did not set oom", S3_HTTP_VALUE_MAX);
+    }
 
     s3_http_response_write(&resp, "def", 3);
-    if (resp.body_len != 3)
+    if (resp.body_len != 3) {
         fail(name, "a write after oom changed body_len to %zu", resp.body_len);
+    }
 
     size_t len = 0;
     uint8_t *wire = s3_http_response_serialize(&resp, &len);
-    if (wire != NULL)
+    if (wire != NULL) {
         fail(name, "serialised a response with a truncated header");
+    }
     free(wire);
     s3_http_response_free(&resp);
 
@@ -497,16 +531,18 @@ static void test_response_format_error(void)
 
     s3_http_response_init(&resp, 200);
     s3_http_response_printf(&resp, "%ls", bad);
-    if (!resp.oom)
+    if (!resp.oom) {
         fail(name, "a failed body format did not set oom");
-    else if (resp.body_len != 0)
+    } else if (resp.body_len != 0) {
         fail(name, "a failed body format wrote %zu bytes", resp.body_len);
+    }
     s3_http_response_free(&resp);
 
     s3_http_response_init(&resp, 200);
     s3_http_response_header(&resp, "X-Bad", "%ls", bad);
-    if (!resp.oom)
+    if (!resp.oom) {
         fail(name, "a failed header format did not set oom");
+    }
     s3_http_response_free(&resp);
 
     ok(name);
@@ -539,25 +575,28 @@ static void test_response_alloc_failures(void)
         bool fired = s3_alloc_fail_disarm();
 
         if (!fired) {
-            if (wire == NULL)
+            if (wire == NULL) {
                 fail(name, "with no allocation failed, nothing serialised");
-            else if (len < 2 * sizeof(big))
+            } else if (len < 2 * sizeof(big)) {
                 fail(name, "serialised %zu bytes, short of the body", len);
+            }
             free(wire);
             s3_http_response_free(&resp);
             break;
         }
-        if (wire != NULL)
+        if (wire != NULL) {
             fail(name, "allocation %u failed, but a response serialised", nth);
+        }
         free(wire);
         s3_http_response_free(&resp);
     }
 
     /* The printf buffer, two body reallocs, and the serialised copy. */
-    if (nth < 4)
+    if (nth < 4) {
         fail(name, "only %u allocations could be failed, want 4", nth);
-    else
+    } else {
         ok(name);
+    }
 }
 
 /*
@@ -595,16 +634,17 @@ static void test_too_many_headers(void)
     at += (size_t)w;
 
     ssize_t n = s3_http_parse(text, at, &req);
-    if (n != (ssize_t)at)
+    if (n != (ssize_t)at) {
         fail(name, "request with too many headers returned %zd, want %zu", n,
              at);
-    else if (req.nhdr != S3_HTTP_MAX_HEADERS)
+    } else if (req.nhdr != S3_HTTP_MAX_HEADERS) {
         fail(name, "kept %u headers, want %d", req.nhdr, S3_HTTP_MAX_HEADERS);
-    else if (s3_http_header_get(&req, "x-late") != NULL)
+    } else if (s3_http_header_get(&req, "x-late") != NULL) {
         fail(name, "a header past the limit was kept");
-    else if (s3_http_header_get(&req, "x-pad-0") == NULL ||
-             s3_http_header_get(&req, "x-pad-23") == NULL)
+    } else if (s3_http_header_get(&req, "x-pad-0") == NULL ||
+               s3_http_header_get(&req, "x-pad-23") == NULL) {
         fail(name, "a header within the limit was dropped");
+    }
 
     struct s3_http_response resp;
     s3_http_response_init(&resp, 200);
@@ -615,22 +655,26 @@ static void test_too_many_headers(void)
     }
     /* Replacing a header needs no new slot, so a full table allows it. */
     s3_http_response_header(&resp, "x-pad-0", "replaced");
-    if (resp.oom)
+    if (resp.oom) {
         fail(name, "replacing a header in a full table set oom");
-    else if (strcmp(resp.hdr[0].value, "replaced") != 0)
+    } else if (strcmp(resp.hdr[0].value, "replaced") != 0) {
         fail(name, "header 0 is \"%s\", want \"replaced\"", resp.hdr[0].value);
+    }
 
     s3_http_response_header(&resp, "X-Late", "1");
-    if (!resp.oom)
+    if (!resp.oom) {
         fail(name, "a header past the limit did not set oom");
-    if (resp.nhdr != S3_HTTP_MAX_HEADERS)
+    }
+    if (resp.nhdr != S3_HTTP_MAX_HEADERS) {
         fail(name, "response has %u headers, want %d", resp.nhdr,
              S3_HTTP_MAX_HEADERS);
+    }
 
     size_t len = 0;
     uint8_t *wire = s3_http_response_serialize(&resp, &len);
-    if (wire != NULL)
+    if (wire != NULL) {
         fail(name, "serialised a response that lost a header");
+    }
     free(wire);
     s3_http_response_free(&resp);
 
@@ -646,18 +690,21 @@ static size_t padded_request(char *text, size_t cap, unsigned npad,
 {
     size_t at = 0;
     int w = snprintf(text, cap, "PUT /ernic/k HTTP/1.1\r\n");
-    if (w < 0 || (size_t)w >= cap)
+    if (w < 0 || (size_t)w >= cap) {
         return 0;
+    }
     at = (size_t)w;
     for (unsigned i = 0; i < npad; i++) {
         w = snprintf(text + at, cap - at, "X-Pad-%u: %u\r\n", i, i);
-        if (w < 0 || (size_t)w >= cap - at)
+        if (w < 0 || (size_t)w >= cap - at) {
             return 0;
+        }
         at += (size_t)w;
     }
     w = snprintf(text + at, cap - at, "%s", tail);
-    if (w < 0 || (size_t)w >= cap - at)
+    if (w < 0 || (size_t)w >= cap - at) {
         return 0;
+    }
     return at + (size_t)w;
 }
 
@@ -718,18 +765,20 @@ static void test_parse_framing_headers(void)
 
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         n = s3_http_parse(bad[i], strlen(bad[i]), &req);
-        if (n != -EINVAL)
+        if (n != -EINVAL) {
             fail(name, "case %zu returned %zd, want -EINVAL", i, n);
+        }
     }
 
     /* Every character a token may hold is kept, and found. */
     static const char tchars[] = "GET /x HTTP/1.1\r\n"
                                  "!#$%&'*+-.^_`|~09AZaz: 1\r\n\r\n";
     n = s3_http_parse(tchars, strlen(tchars), &req);
-    if (n != (ssize_t)strlen(tchars))
+    if (n != (ssize_t)strlen(tchars)) {
         fail(name, "a name of every token character returned %zd", n);
-    else if (s3_http_header_get(&req, "!#$%&'*+-.^_`|~09azaz") == NULL)
+    } else if (s3_http_header_get(&req, "!#$%&'*+-.^_`|~09azaz") == NULL) {
         fail(name, "a name of every token character was not found");
+    }
 
     /* In the slot past the header limit, each fails the request. */
     static const char *const late[] = {
@@ -744,20 +793,22 @@ static void test_parse_framing_headers(void)
             continue;
         }
         n = s3_http_parse(text, len, &req);
-        if (n != -EINVAL)
+        if (n != -EINVAL) {
             fail(name, "late case %zu returned %zd, want -EINVAL", i, n);
+        }
     }
 
     /* In the last slot within it, it is kept. */
     len = padded_request(text, 4096, S3_HTTP_MAX_HEADERS - 1,
                          "Content-Length: 5\r\n\r\nhello");
     n = len > 0 ? s3_http_parse(text, len, &req) : -1;
-    if (len == 0)
+    if (len == 0) {
         fail(name, "the last-slot request does not fit");
-    else if (n != (ssize_t)len)
+    } else if (n != (ssize_t)len) {
         fail(name, "Content-Length in the last slot returned %zd", n);
-    else if (req.body_len != 5 || memcmp(req.body, "hello", 5) != 0)
+    } else if (req.body_len != 5 || memcmp(req.body, "hello", 5) != 0) {
         fail(name, "Content-Length in the last slot lost the body");
+    }
 
     /* A value too long to store: a length padded with zeros, and a token. */
     memset(fill, '0', S3_HTTP_VALUE_MAX);
@@ -765,8 +816,9 @@ static void test_parse_framing_headers(void)
     w = snprintf(text, 4096,
                  "PUT /x HTTP/1.1\r\nContent-Length: %s5\r\n\r\nhello", fill);
     n = s3_http_parse(text, (size_t)w, &req);
-    if (n != -EINVAL)
+    if (n != -EINVAL) {
         fail(name, "an oversized Content-Length returned %zd", n);
+    }
 
     memset(fill, 'a', S3_HTTP_VALUE_MAX);
     w = snprintf(text, 4096,
@@ -774,8 +826,9 @@ static void test_parse_framing_headers(void)
                  "Content-Length: 5\r\n\r\n",
                  fill);
     n = s3_http_parse(text, (size_t)w, &req);
-    if (n != -EINVAL)
+    if (n != -EINVAL) {
         fail(name, "an oversized x-amz-rdma-token returned %zd", n);
+    }
 
     ok(name);
 out:
@@ -828,18 +881,20 @@ static void test_parse_ambiguous_bytes(void)
 
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         ssize_t n = s3_http_parse(bad[i].text, bad[i].len, &req);
-        if (n != -EINVAL)
+        if (n != -EINVAL) {
             fail(name, "case %zu returned %zd, want -EINVAL", i, n);
+        }
     }
 
     /* Either in the body is data, not part of the head. */
     static const char in_body[] = "PUT /x HTTP/1.1\r\n"
                                   "Content-Length: 4\r\n\r\na\0\rb";
     ssize_t n = s3_http_parse(in_body, sizeof(in_body) - 1, &req);
-    if (n != (ssize_t)(sizeof(in_body) - 1))
+    if (n != (ssize_t)(sizeof(in_body) - 1)) {
         fail(name, "a NUL and a CR in the body returned %zd", n);
-    else if (req.body_len != 4 || memcmp(req.body, "a\0\rb", 4) != 0)
+    } else if (req.body_len != 4 || memcmp(req.body, "a\0\rb", 4) != 0) {
         fail(name, "a NUL and a CR in the body were not kept");
+    }
 
     ok(name);
 }
@@ -865,21 +920,23 @@ static void test_response_printf_large(void)
         size_t want = lengths[i];
         struct s3_http_response resp;
 
-        for (size_t j = 0; j < want; j++)
-            text[j] = (char)('a' + j % 26);
+        for (size_t j = 0; j < want; j++) {
+            text[j] = (char)('a' + (j % 26));
+        }
         text[want] = '\0';
 
         s3_http_response_init(&resp, 200);
         s3_http_response_printf(&resp, "<%s>", text);
 
-        if (resp.oom)
+        if (resp.oom) {
             fail(name, "%zu bytes: builder ran out of memory", want);
-        else if (resp.body_len != want + 2)
+        } else if (resp.body_len != want + 2) {
             fail(name, "%zu bytes: body_len %zu, want %zu", want, resp.body_len,
                  want + 2);
-        else if (resp.body[0] != '<' || resp.body[want + 1] != '>' ||
-                 memcmp(resp.body + 1, text, want) != 0)
+        } else if (resp.body[0] != '<' || resp.body[want + 1] != '>' ||
+                   memcmp(resp.body + 1, text, want) != 0) {
             fail(name, "%zu bytes: body is not what was formatted", want);
+        }
         s3_http_response_free(&resp);
     }
 
@@ -900,30 +957,36 @@ static void test_query(void)
         fail(name, "parse failed");
         return;
     }
-    if (strcmp(req.path, "/ernic") != 0)
+    if (strcmp(req.path, "/ernic") != 0) {
         fail(name, "query was not split off the path: \"%s\"", req.path);
+    }
 
     if (!s3_http_query_get(&req, "list-type", val, sizeof(val)) ||
-        strcmp(val, "2") != 0)
+        strcmp(val, "2") != 0) {
         fail(name, "list-type = \"%s\"", val);
+    }
 
     /* Percent-decoding happens on lookup, not on parse. */
     if (!s3_http_query_get(&req, "prefix", val, sizeof(val)) ||
-        strcmp(val, "a/b c") != 0)
+        strcmp(val, "a/b c") != 0) {
         fail(name, "prefix = \"%s\", want \"a/b c\"", val);
+    }
 
     /* A valueless key is present with an empty value. */
-    if (!s3_http_query_get(&req, "uploads", val, sizeof(val)))
+    if (!s3_http_query_get(&req, "uploads", val, sizeof(val))) {
         fail(name, "valueless key reported absent");
-    else if (val[0] != '\0')
+    } else if (val[0] != '\0') {
         fail(name, "valueless key yielded \"%s\"", val);
+    }
 
-    if (s3_http_query_get(&req, "delimiter", val, sizeof(val)))
+    if (s3_http_query_get(&req, "delimiter", val, sizeof(val))) {
         fail(name, "found a key that is not there");
+    }
 
     /* "max-keys" must not be found by a prefix match on "max". */
-    if (s3_http_query_get(&req, "max", val, sizeof(val)))
+    if (s3_http_query_get(&req, "max", val, sizeof(val))) {
         fail(name, "prefix-matched \"max\" against \"max-keys\"");
+    }
 
     ok(name);
 }
@@ -957,16 +1020,21 @@ static void test_response(void)
     memcpy(text, wire, len);
     text[len] = '\0';
 
-    if (strncmp(text, "HTTP/1.1 200 OK\r\n", 17) != 0)
+    if (strncmp(text, "HTTP/1.1 200 OK\r\n", 17) != 0) {
         fail(name, "status line: %.20s", text);
-    if (strstr(text, "\r\nETag: \"0123456789abcdef\"\r\n") == NULL)
+    }
+    if (strstr(text, "\r\nETag: \"0123456789abcdef\"\r\n") == NULL) {
         fail(name, "ETag header missing or malformed");
-    if (strstr(text, "\r\nContent-Length: 17\r\n") == NULL)
+    }
+    if (strstr(text, "\r\nContent-Length: 17\r\n") == NULL) {
         fail(name, "Content-Length not written by the serialiser");
-    if (strstr(text, "\r\nConnection: keep-alive\r\n") == NULL)
+    }
+    if (strstr(text, "\r\nConnection: keep-alive\r\n") == NULL) {
         fail(name, "Connection: keep-alive missing");
-    if (strstr(text, "\r\n\r\n<Body count=\"3\"/>") == NULL)
+    }
+    if (strstr(text, "\r\n\r\n<Body count=\"3\"/>") == NULL) {
         fail(name, "body missing or not separated from the headers");
+    }
 
     free(text);
     free(wire);
@@ -986,16 +1054,19 @@ static void test_response_header_replace(void)
     s3_http_response_header(&resp, "content-type", "application/xml");
 
     unsigned seen = 0;
-    for (unsigned i = 0; i < resp.nhdr; i++)
-        if (strcasecmp(resp.hdr[i].name, "content-type") == 0)
+    for (unsigned i = 0; i < resp.nhdr; i++) {
+        if (strcasecmp(resp.hdr[i].name, "content-type") == 0) {
             seen++;
+        }
+    }
 
-    if (seen != 1)
+    if (seen != 1) {
         fail(name, "Content-Type appears %u times, want 1", seen);
-    else if (strcmp(resp.hdr[0].value, "application/xml") != 0)
+    } else if (strcmp(resp.hdr[0].value, "application/xml") != 0) {
         fail(name, "value \"%s\", want the second one", resp.hdr[0].value);
-    else
+    } else {
         ok(name);
+    }
 
     s3_http_response_free(&resp);
 }
@@ -1008,8 +1079,9 @@ static void test_response_body_growth(void)
     const unsigned chunks = 400;
 
     s3_http_response_init(&resp, 200);
-    for (unsigned i = 0; i < chunks; i++)
+    for (unsigned i = 0; i < chunks; i++) {
         s3_http_response_printf(&resp, "<K>%04u</K>", i);
+    }
 
     if (resp.oom) {
         fail(name, "builder ran out of memory");
@@ -1024,7 +1096,7 @@ static void test_response_body_growth(void)
     for (unsigned i = 0; i < chunks; i++) {
         char want[16];
         snprintf(want, sizeof(want), "<K>%04u</K>", i);
-        if (memcmp(resp.body + (size_t)i * 11, want, 11) != 0) {
+        if (memcmp(resp.body + ((size_t)i * 11), want, 11) != 0) {
             fail(name, "chunk %u corrupted across a realloc", i);
             s3_http_response_free(&resp);
             return;
@@ -1050,9 +1122,10 @@ static void test_response_body_wrap(void)
     s3_http_response_init(&resp, 200);
     s3_http_response_write(&resp, "abc", 3);
     s3_http_response_write(&resp, data, SIZE_MAX - 1);
-    if (!resp.oom || resp.body_len != 3)
+    if (!resp.oom || resp.body_len != 3) {
         fail(name, "a write past SIZE_MAX left oom %d and body_len %zu",
              resp.oom, resp.body_len);
+    }
     s3_http_response_free(&resp);
     ok(name);
 }
@@ -1084,10 +1157,12 @@ static void test_reason(void)
         {599, "Unknown"},
     };
 
-    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
-        if (strcmp(s3_http_reason(cases[i].status), cases[i].want) != 0)
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        if (strcmp(s3_http_reason(cases[i].status), cases[i].want) != 0) {
             fail(name, "%d -> \"%s\", want \"%s\"", cases[i].status,
                  s3_http_reason(cases[i].status), cases[i].want);
+        }
+    }
 
     ok(name);
 }
@@ -1118,9 +1193,10 @@ int main(void)
     test_response_printf_large();
     test_reason();
 
-    if (failures)
+    if (failures) {
         printf("\n%d failure(s)\n", failures);
-    else
+    } else {
         printf("\nall s3 http tests passed\n");
+    }
     return failures;
 }

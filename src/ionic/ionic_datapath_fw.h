@@ -28,8 +28,8 @@
 #define IONIC_V1_OP_LOCAL_INV      9
 
 /* enum ionic_v1_flag (be16 at WQE byte 10) */
-#define IONIC_V1_FLAG_INL 0x0004u
-#define IONIC_V1_FLAG_SIG 0x0008u
+#define IONIC_V1_FLAG_INL 0x0004U
+#define IONIC_V1_FLAG_SIG 0x0008U
 
 /*
  * The top four bits of the flags are the SGE list's format ("sgl spec
@@ -42,10 +42,10 @@
  * ionic_rdma.ko and rdma-core's ionic provider both create a send or
  * receive queue that way when it takes three to eight SGEs (IONIC_SPEC_HIGH).
  */
-#define IONIC_V1_FLAG_SPEC_MASK 0xf000u
-#define IONIC_V1_FLAG_SPEC32    0x1000u
-#define IONIC_V1_FLAG_SPEC16    0x2000u
-#define IONIC_V1_SPEC_FIRST_SGE 2u
+#define IONIC_V1_FLAG_SPEC_MASK 0xf000U
+#define IONIC_V1_FLAG_SPEC32    0x1000U
+#define IONIC_V1_FLAG_SPEC16    0x2000U
+#define IONIC_V1_SPEC_FIRST_SGE 2U
 
 /*
  * struct ionic_v1_wqe:
@@ -98,11 +98,11 @@
 
 /* struct ionic_v1_cqe (32 bytes) */
 #define CQE_SIZE          32
-#define CQE_COLOR_BIT     0x01u
-#define CQE_ERROR_BIT     0x02u
-#define CQE_TYPE_RECV     (1u << 5)
-#define CQE_TYPE_SEND_MSN (2u << 5)
-#define CQE_TYPE_SEND_NPG (3u << 5)
+#define CQE_COLOR_BIT     0x01U
+#define CQE_ERROR_BIT     0x02U
+#define CQE_TYPE_RECV     (1U << 5)
+#define CQE_TYPE_SEND_MSN (2U << 5)
+#define CQE_TYPE_SEND_NPG (3U << 5)
 
 /* enum ionic_v1_cqe_src_qpn_bits */
 #define CQE_RECV_OP_SHIFT    24
@@ -110,7 +110,7 @@
 #define CQE_RECV_OP_SEND_INV 1
 #define CQE_RECV_OP_SEND_IMM 2
 #define CQE_RECV_OP_RDMA_IMM 3
-#define CQE_RECV_IS_IPV4     (1u << (7 + CQE_RECV_OP_SHIFT))
+#define CQE_RECV_IS_IPV4     (1U << (7 + CQE_RECV_OP_SHIFT))
 
 /*
  * enum ionic_status from the guest driver's ionic_fw.h, which runs these

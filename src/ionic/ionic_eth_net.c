@@ -48,8 +48,9 @@ struct ionic_eth_net *ionic_eth_net_open_tap(const char *ifname,
     }
 
     struct ionic_eth_net *net = calloc(1, sizeof(*net));
-    if (!net)
+    if (!net) {
         return NULL;
+    }
 
     net->fd = open("/dev/net/tun", O_RDWR | O_CLOEXEC | O_NONBLOCK);
     if (net->fd < 0) {
@@ -62,8 +63,9 @@ struct ionic_eth_net *ionic_eth_net_open_tap(const char *ifname,
     /* IFF_NO_PI: we want raw frames, not the 4-byte tun_pi prefix. */
     ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
     /* ifr is zeroed, so the name stays terminated. */
-    if (ifname_len > 0)
+    if (ifname_len > 0) {
         memcpy(ifr.ifr_name, ifname, ifname_len);
+    }
 
     if (ioctl(net->fd, TUNSETIFF, &ifr) < 0) {
         int err = errno;
@@ -78,8 +80,9 @@ struct ionic_eth_net *ionic_eth_net_open_tap(const char *ifname,
 
     if (out_ifname && out_ifname_len) {
         size_t n = strnlen(net->ifname, sizeof(net->ifname));
-        if (n > out_ifname_len - 1)
+        if (n > out_ifname_len - 1) {
             n = out_ifname_len - 1;
+        }
         memcpy(out_ifname, net->ifname, n);
         out_ifname[n] = '\0';
     }
@@ -89,25 +92,30 @@ struct ionic_eth_net *ionic_eth_net_open_tap(const char *ifname,
 
 void ionic_eth_net_close(struct ionic_eth_net *net)
 {
-    if (!net)
+    if (!net) {
         return;
-    if (net->fd >= 0)
+    }
+    if (net->fd >= 0) {
         close(net->fd);
+    }
     free(net);
 }
 
 int ionic_eth_net_send(const struct ionic_eth_net *net, const void *frame,
                        size_t len)
 {
-    if (!net || net->fd < 0)
+    if (!net || net->fd < 0) {
         return -EBADF;
+    }
 
     for (;;) {
         ssize_t n = write(net->fd, frame, len);
-        if (n >= 0)
+        if (n >= 0) {
             return (size_t)n == len ? 0 : -EIO;
-        if (errno == EINTR)
+        }
+        if (errno == EINTR) {
             continue;
+        }
         /* A tap with no reader on the other end fills up; dropping is what
          * real hardware does with an oversubscribed link. */
         return -errno;
@@ -117,19 +125,24 @@ int ionic_eth_net_send(const struct ionic_eth_net *net, const void *frame,
 ssize_t ionic_eth_net_recv(const struct ionic_eth_net *net, void *buf,
                            size_t cap)
 {
-    if (!net || net->fd < 0)
+    if (!net || net->fd < 0) {
         return -EBADF;
+    }
 
     for (;;) {
         ssize_t n = read(net->fd, buf, cap);
-        if (n > 0)
+        if (n > 0) {
             return n;
-        if (n == 0)
+        }
+        if (n == 0) {
             return 0;
-        if (errno == EINTR)
+        }
+        if (errno == EINTR) {
             continue;
-        if (errno == EAGAIN)
+        }
+        if (errno == EAGAIN) {
             return 0;
+        }
         return -errno;
     }
 }

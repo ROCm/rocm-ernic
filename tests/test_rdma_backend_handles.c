@@ -273,7 +273,10 @@ static void test_tcp_qpn_wrap(void)
     TcpBackendPrivate *priv = tcp_priv_new();
     RdmaBackendDev dev;
     RdmaBackendCQ cq;
-    RdmaBackendQP first, top, wrapped, again;
+    RdmaBackendQP first;
+    RdmaBackendQP top;
+    RdmaBackendQP wrapped;
+    RdmaBackendQP again;
 
     printf("  TCP QPNs skip special and live QPs after wrapping\n");
 

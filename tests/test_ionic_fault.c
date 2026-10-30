@@ -469,8 +469,9 @@ static bool same_fault(const struct ionic_fault *a, const struct ionic_fault *b)
 {
     if (a->site != b->site || a->kind != b->kind || a->n != b->n ||
         a->m != b->m || a->effect != b->effect || a->status != b->status ||
-        a->seq_len != b->seq_len)
+        a->seq_len != b->seq_len) {
         return false;
+    }
     return a->seq_len == 0 || memcmp(a->seq, b->seq, a->seq_len) == 0;
 }
 
@@ -527,12 +528,13 @@ static bool check_fields(const struct fault_case *c, char *why, size_t len)
          f.seq_len == c->seq_len && f.effect == c->effect &&
          f.status == c->status && f.eligible == 0 && f.fired == 0 &&
          (c->seq_len == 0) == (f.seq == NULL);
-    if (!ok)
+    if (!ok) {
         snprintf(why, len,
                  "site %d effect %d kind %d n %" PRIu64 " m %" PRIu64
                  " seq_len %" PRIu32 " status %u",
                  (int)f.site, (int)f.effect, (int)f.kind, f.n, f.m, f.seq_len,
                  (unsigned int)f.status);
+    }
     ionic_fault_clear(&f);
     return ok;
 }
@@ -561,7 +563,8 @@ static bool check_error(const struct fault_case *c, char *why, size_t len)
 
 static bool check_roundtrip(const struct fault_case *c, char *why, size_t len)
 {
-    struct ionic_fault a, b;
+    struct ionic_fault a;
+    struct ionic_fault b;
     char err[128] = "";
     static char text[IONIC_FAULT_SEQ_MAX * 8];
     int n;
@@ -588,8 +591,9 @@ static bool check_roundtrip(const struct fault_case *c, char *why, size_t len)
         return false;
     }
     ok = same_fault(&a, &b);
-    if (!ok)
+    if (!ok) {
         snprintf(why, len, "re-parsed fault differs");
+    }
     ionic_fault_clear(&a);
     ionic_fault_clear(&b);
     return ok;
@@ -603,12 +607,15 @@ static bool check_no_fault(char *why, size_t len)
               ionic_fault_set_get(NULL, IONIC_FAULT_SITE_STATS_VALS) == NULL &&
               ionic_fault_set_get(set, IONIC_FAULT_SITE_COUNT) == NULL;
 
-    for (int i = 0; ok && i < 100; i++)
+    for (int i = 0; ok && i < 100; i++) {
         if (ionic_fault_event(
-                ionic_fault_set_get(set, IONIC_FAULT_SITE_STATS_VALS)))
+                ionic_fault_set_get(set, IONIC_FAULT_SITE_STATS_VALS))) {
             ok = false;
-    if (!ok)
+        }
+    }
+    if (!ok) {
         snprintf(why, len, "an empty or NULL set produced a fault");
+    }
     ionic_fault_set_free(set);
     ionic_fault_set_free(NULL);
     return ok;
@@ -624,15 +631,16 @@ static bool check_duplicate(const struct fault_case *c, char *why, size_t len)
         snprintf(why, len, "no set");
         return false;
     }
-    if (ionic_fault_set_add(set, c->spec, err, sizeof(err)) != 0)
+    if (ionic_fault_set_add(set, c->spec, err, sizeof(err)) != 0) {
         snprintf(why, len, "first add rejected: %s", err);
-    else if (ionic_fault_set_add(set, c->spec, err, sizeof(err)) == 0)
+    } else if (ionic_fault_set_add(set, c->spec, err, sizeof(err)) == 0) {
         snprintf(why, len, "second add accepted");
-    else if (!strstr(err, c->want_err))
+    } else if (!strstr(err, c->want_err)) {
         snprintf(why, len, "message '%s'", err);
-    else
+    } else {
         /* The first fault is still the one installed. */
         ok = ionic_fault_set_get(set, c->site) != NULL;
+    }
     ionic_fault_set_free(set);
     return ok;
 }
@@ -643,7 +651,8 @@ static bool check_truncate(const struct fault_case *c, char *why, size_t len)
     char err[128] = "";
     char full[256];
     char small[64];
-    int want, got;
+    int want;
+    int got;
     bool ok;
 
     if (ionic_fault_parse(c->spec, &f, err, sizeof(err)) != 0) {
@@ -653,14 +662,16 @@ static bool check_truncate(const struct fault_case *c, char *why, size_t len)
     want = ionic_fault_format(&f, full, sizeof(full));
     memset(small, 'Z', sizeof(small));
     got = ionic_fault_format(&f, c->buf_len ? small : NULL, c->buf_len);
-    if (c->buf_len == 0)
+    if (c->buf_len == 0) {
         ok = got == want;
-    else
+    } else {
         ok = got == want && small[c->buf_len - 1] == '\0' &&
              strncmp(small, full, c->buf_len - 1) == 0 &&
              small[c->buf_len] == 'Z';
-    if (!ok)
+    }
+    if (!ok) {
         snprintf(why, len, "returned %d (want %d)", got, want);
+    }
     ionic_fault_clear(&f);
     return ok;
 }
@@ -682,7 +693,9 @@ static bool check_statuses(char *why, size_t len)
 
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         struct ionic_fault f;
-        char spec[96], text[128], err[128] = "";
+        char spec[96];
+        char text[128];
+        char err[128] = "";
 
         snprintf(spec, sizeof(spec), SITE "every 1 effect fail status %s",
                  names[i].name);
@@ -744,8 +757,9 @@ static bool check_sites(char *why, size_t len)
             ok = false;
         }
     }
-    if (set == NULL)
+    if (set == NULL) {
         snprintf(why, len, "no set");
+    }
     ionic_fault_set_free(set);
     return ok;
 }
@@ -815,7 +829,8 @@ static void check_format_boundaries(void)
          256},
     };
     struct ionic_fault fault;
-    char err[128], full[256];
+    char err[128];
+    char full[256];
     int needed;
 
     if (ionic_fault_parse(SITE "sequence 1,0,1 effect fail status eio", &fault,
@@ -843,13 +858,15 @@ static void check_format_boundaries(void)
         memset(out, 'Z', sizeof(out));
         ok = ionic_fault_format(&fault, out, capacity) == needed &&
              memcmp(out, full, written) == 0 && out[written] == '\0';
-        for (size_t j = written + 1; j < sizeof(out); j++)
+        for (size_t j = written + 1; j < sizeof(out); j++) {
             ok = ok && out[j] == 'Z';
+        }
         printf("%s %s: %s; expected: %s\n", ok ? "ok" : "FAIL",
                format_cases[row].category, format_cases[row].description,
                format_cases[row].expected);
-        if (!ok)
+        if (!ok) {
             failures++;
+        }
     }
     ionic_fault_clear(&fault);
     ionic_fault_clear(&fault);
@@ -860,8 +877,9 @@ static void report(bool ok, const char *category, const char *description,
 {
     printf("%s %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", category,
            description, expected);
-    if (!ok)
+    if (!ok) {
         failures++;
+    }
 }
 
 /*
@@ -939,13 +957,16 @@ static void check_hand_built(void)
         ok = ionic_fault_format(&f, text, sizeof(text)) ==
                  (int)strlen(rows[i].text) &&
              strcmp(text, rows[i].text) == 0;
-        for (size_t k = 0; rows[i].fires[k]; k++)
-            if (ionic_fault_event(&f) != (rows[i].fires[k] == '1'))
+        for (size_t k = 0; rows[i].fires[k]; k++) {
+            if (ionic_fault_event(&f) != (rows[i].fires[k] == '1')) {
                 ok = false;
+            }
+        }
         ok = ok && f.fired == rows[i].want_fired;
         report(ok, rows[i].category, rows[i].description, rows[i].expected);
-        if (!ok)
+        if (!ok) {
             printf("     got: '%s', fired %" PRIu64 "\n", text, f.fired);
+        }
     }
 }
 
@@ -1010,8 +1031,9 @@ int main(void)
     check_format_boundaries();
     check_hand_built();
     check_bad_args();
-    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         run_case(&cases[i]);
+    }
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);

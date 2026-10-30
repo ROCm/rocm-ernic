@@ -18,6 +18,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -205,7 +206,7 @@ struct nvmeof_cm *nvmeof_cm_create(struct nvmeof_target *target,
     cm->target = target;
     cm->traddr = traddr;
     cm->trsvcid = trsvcid;
-    cm->next_comm_id = 0x51000001u;
+    cm->next_comm_id = 0x51000001U;
     cm->next_qpn = NVMEOF_CM_QPN_BASE + 1;
     return cm;
 }
@@ -264,7 +265,7 @@ static struct nvmeof_cm_conn *conn_by_local_qpn(struct nvmeof_cm *cm,
  * connections share one.  The connection being set up has a local_qpn of
  * 0, outside the range, so it never clashes with itself.
  */
-_Static_assert(NVMEOF_CM_MAX_CONN < (0x00ffffffu & ~NVMEOF_CM_QPN_MASK),
+_Static_assert(NVMEOF_CM_MAX_CONN < (0x00ffffffU & ~NVMEOF_CM_QPN_MASK),
                "the connection table could hold every controller QPN");
 
 static uint32_t next_local_qpn(struct nvmeof_cm *cm)
@@ -443,7 +444,7 @@ static size_t handle_req(struct nvmeof_cm *cm, const uint8_t *req, uint8_t *rsp,
     c->local_comm_id = cm->next_comm_id++;
     c->guest_qpn = guest_qpn;
     c->local_qpn = next_local_qpn(cm);
-    c->start_psn = (c->local_comm_id ^ 0x5a5a5au) & 0xffffffu;
+    c->start_psn = (c->local_comm_id ^ 0x5a5a5aU) & 0xffffffU;
     c->nvme_qid = qid;
 
     /* Build the REP. */
@@ -455,11 +456,11 @@ static size_t handle_req(struct nvmeof_cm *cm, const uint8_t *req, uint8_t *rsp,
     ernic_put_be32(rsp + CM_REP_STARTING_PSN, c->start_psn << 8);
     rsp[CM_REP_RESP_RESOURCES] = initiator_depth;
     rsp[CM_REP_INITIATOR_DEPTH] = responder_resources;
-    rsp[CM_REP_TARGET_ACK] = (uint8_t)(14u << 3); /* target ack delay */
-    rsp[CM_REP_RNR_RETRY] = (uint8_t)(7u << 5);   /* infinite RNR retry */
+    rsp[CM_REP_TARGET_ACK] = (uint8_t)(14U << 3); /* target ack delay */
+    rsp[CM_REP_RNR_RETRY] = (uint8_t)(7U << 5);   /* infinite RNR retry */
     ernic_put_be64(rsp + CM_REP_LOCAL_CA_GUID,
                    ernic_get_be64(req + CM_REQ_LOCAL_CA_GUID) ^
-                       0x1dd800000000ull);
+                       UINT64_C(0x1dd800000000));
 
     uint8_t *rep_priv = rsp + CM_REP_PRIVATE_DATA;
     ernic_put_le16(rep_priv + NVME_RDMA_CM_REP_RECFMT_OFF,

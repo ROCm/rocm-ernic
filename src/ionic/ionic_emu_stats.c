@@ -31,16 +31,18 @@ static const unsigned int tx_drop_bytes_idx[IONIC_EMU_MAC_CLASSES] = {
     IONIC_LIF_TX_BCAST_DROP_BYTES};
 
 /* In each pair the packet counter follows the byte counter. */
-#define PACKETS_OF(bytes_idx) ((bytes_idx) + 1u)
+#define PACKETS_OF(bytes_idx) ((bytes_idx) + 1U)
 
 int ionic_emu_mac_class(const uint8_t *frame, size_t len)
 {
     static const uint8_t bcast[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
-    if (!frame || len < 6)
+    if (!frame || len < 6) {
         return -1;
-    if (memcmp(frame, bcast, sizeof(bcast)) == 0)
+    }
+    if (memcmp(frame, bcast, sizeof(bcast)) == 0) {
         return IONIC_EMU_BCAST;
+    }
     return (frame[0] & 0x01) ? IONIC_EMU_MCAST : IONIC_EMU_UCAST;
 }
 
@@ -62,8 +64,9 @@ void ionic_emu_stats_frame(struct ionic_emu_stats *st, const uint8_t *frame,
 {
     int c;
 
-    if (len == 0)
+    if (len == 0) {
         return;
+    }
     c = ionic_emu_mac_class(frame, len);
     if (c < 0) {
         /* A runt with no destination MAC: a malformed descriptor. */
@@ -105,10 +108,12 @@ void ionic_emu_stats_drop(struct ionic_emu_stats *st, const uint8_t *frame,
     int reason = drop_reason_idx(is_tx, why);
     int c = ionic_emu_mac_class(frame, len);
 
-    if (reason >= 0)
+    if (reason >= 0) {
         st->lif[reason]++;
-    if (c >= 0)
+    }
+    if (c >= 0) {
         add_pair(st, is_tx ? tx_drop_bytes_idx[c] : rx_drop_bytes_idx[c], len);
+    }
 }
 
 void ionic_emu_stats_rx_inbox_full(struct ionic_emu_stats *st,
@@ -117,10 +122,12 @@ void ionic_emu_stats_rx_inbox_full(struct ionic_emu_stats *st,
 {
     int c = ionic_emu_mac_class(frame, len);
 
-    if (c < 0)
+    if (c < 0) {
         return;
-    if (!ionic_emu_port_frame(st, frame, len, false, max_frame))
+    }
+    if (!ionic_emu_port_frame(st, frame, len, false, max_frame)) {
         return;
+    }
     ionic_emu_port_rx_dropped(st);
     add_pair(st, rx_drop_bytes_idx[c], len);
 }
@@ -128,8 +135,9 @@ void ionic_emu_stats_rx_inbox_full(struct ionic_emu_stats *st,
 void ionic_emu_stats_rdma(struct ionic_emu_stats *st, uint64_t bytes,
                           bool is_tx)
 {
-    if (bytes == 0)
+    if (bytes == 0) {
         return;
+    }
     add_pair(st,
              is_tx ? IONIC_LIF_TX_RDMA_UCAST_BYTES
                    : IONIC_LIF_RX_RDMA_UCAST_BYTES,
@@ -149,7 +157,7 @@ void ionic_emu_port_clear(struct ionic_emu_stats *st)
  */
 static const size_t bucket_max[] = {63,   64,   127,  255,  511, 1023,
                                     1518, 2047, 4095, 8191, 9215};
-#define SIZE_BUCKETS (sizeof(bucket_max) / sizeof(bucket_max[0]) + 1u)
+#define SIZE_BUCKETS ((sizeof(bucket_max) / sizeof(bucket_max[0])) + 1U)
 #define RX_BUCKETS \
     (IONIC_PORT_FRAMES_RX_OTHER - IONIC_PORT_FRAMES_RX_LESS_THAN_64B + 1)
 #define TX_BUCKETS \
@@ -161,8 +169,9 @@ static unsigned int size_bucket(size_t wire)
 {
     unsigned int b = 0;
 
-    while (b < SIZE_BUCKETS - 1u && wire > bucket_max[b])
+    while (b < SIZE_BUCKETS - 1U && wire > bucket_max[b]) {
         b++;
+    }
     return b;
 }
 
@@ -171,11 +180,13 @@ static int frame_pcp(const uint8_t *frame, size_t len)
 {
     uint16_t tpid;
 
-    if (!frame || len < 16)
+    if (!frame || len < 16) {
         return -1;
+    }
     tpid = ernic_get_be16(frame + 12);
-    if (tpid != 0x8100 && tpid != 0x88a8)
+    if (tpid != 0x8100 && tpid != 0x88a8) {
         return -1;
+    }
     return frame[14] >> 5;
 }
 
@@ -196,16 +207,18 @@ bool ionic_emu_port_frame(struct ionic_emu_stats *st, const uint8_t *frame,
 {
     uint64_t *port = st->port;
     size_t wire;
-    int c, pcp;
+    int c;
+    int pcp;
     unsigned int pri;
 
-    if (len == 0)
+    if (len == 0) {
         return true;
+    }
     wire = (len < IONIC_EMU_MIN_FRAME ? IONIC_EMU_MIN_FRAME : len) +
            IONIC_EMU_FCS_LEN;
     c = ionic_emu_mac_class(frame, len);
     pcp = frame_pcp(frame, len);
-    pri = pcp < 0 ? 0u : (unsigned int)pcp;
+    pri = pcp < 0 ? 0U : (unsigned int)pcp;
 
     if (is_tx) {
         port[IONIC_PORT_FRAMES_TX_ALL]++;
@@ -213,10 +226,12 @@ bool ionic_emu_port_frame(struct ionic_emu_stats *st, const uint8_t *frame,
         port[IONIC_PORT_FRAMES_TX_LESS_THAN_64B + size_bucket(wire)]++;
         port[IONIC_PORT_FRAMES_TX_OK]++;
         port[IONIC_PORT_OCTETS_TX_OK] += wire;
-        if (c >= 0)
+        if (c >= 0) {
             port[IONIC_PORT_FRAMES_TX_UNICAST + (unsigned int)c]++;
-        if (pcp >= 0)
+        }
+        if (pcp >= 0) {
             port[IONIC_PORT_FRAMES_TX_VLAN]++;
+        }
         port[IONIC_PORT_FRAMES_TX_PRI_0 + pri]++;
         return true;
     }
@@ -232,10 +247,12 @@ bool ionic_emu_port_frame(struct ionic_emu_stats *st, const uint8_t *frame,
     }
     port[IONIC_PORT_FRAMES_RX_OK]++;
     port[IONIC_PORT_OCTETS_RX_OK] += wire;
-    if (c >= 0)
+    if (c >= 0) {
         port[IONIC_PORT_FRAMES_RX_UNICAST + (unsigned int)c]++;
-    if (pcp >= 0)
+    }
+    if (pcp >= 0) {
         port[IONIC_PORT_FRAMES_RX_VLAN_GOOD]++;
+    }
     port[IONIC_PORT_FRAMES_RX_PRI_0 + pri]++;
     return true;
 }
@@ -248,8 +265,9 @@ void ionic_emu_port_rx_dropped(struct ionic_emu_stats *st)
 void ionic_emu_port_fill(const struct ionic_emu_stats *st,
                          uint8_t out[IONIC_PORT_STATS_BYTES])
 {
-    for (unsigned int q = 0; q < IONIC_PORT_STATS_QWORDS; q++)
-        ernic_put_le64(out + (size_t)q * 8u, st->port[q]);
+    for (unsigned int q = 0; q < IONIC_PORT_STATS_QWORDS; q++) {
+        ernic_put_le64(out + ((size_t)q * 8U), st->port[q]);
+    }
 }
 
 static const char *const port_stat_names[IONIC_PORT_STATS_QWORDS] = {
@@ -269,9 +287,10 @@ void ionic_emu_stats_fill(const struct ionic_emu_stats *st,
     memset(out, 0, IONIC_LIF_STATS_BYTES);
     for (unsigned int q = 0; q < IONIC_LIF_STATS_QWORDS; q++) {
         /* Only named counters reach the guest; reserved slots stay zero. */
-        if (!ionic_emu_lif_stat_name(q))
+        if (!ionic_emu_lif_stat_name(q)) {
             continue;
-        ernic_put_le64(out + (size_t)q * 8u, st->lif[q]);
+        }
+        ernic_put_le64(out + ((size_t)q * 8U), st->lif[q]);
     }
 }
 

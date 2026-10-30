@@ -37,9 +37,9 @@ struct p4_engine;
  * which is what the guest and the host network respectively are.  A P4
  * program's ingress_port and egress_spec metadata carry these values.
  */
-#define P4_PORT_HOST   0u /* the guest's Ethernet queues */
-#define P4_PORT_UPLINK 1u /* the host network backend (TAP) */
-#define P4_PORT_COUNT  2u
+#define P4_PORT_HOST   0U /* the guest's Ethernet queues */
+#define P4_PORT_UPLINK 1U /* the host network backend (TAP) */
+#define P4_PORT_COUNT  2U
 
 /*
  * Largest frame the engine will accept or produce.
@@ -55,7 +55,7 @@ struct p4_engine;
  * two numbers would otherwise drift apart again.  The engine itself keeps
  * no dependency on the emulator's headers.
  */
-#define P4_FRAME_MAX 9600u
+#define P4_FRAME_MAX 9600U
 
 /*
  * Largest program the engine will accept.  A bmv2 JSON for a pipeline the

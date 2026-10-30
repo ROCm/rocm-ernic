@@ -41,7 +41,7 @@
 
 #define GRH_LEN      40
 #define MSG_LEN      256
-#define QKEY         0x11111111u
+#define QKEY         0x11111111U
 #define POLL_SECONDS 10
 
 struct ud_ep {
@@ -136,14 +136,17 @@ static int post_recv(struct ud_ep *ep, uint64_t wr_id)
 static int poll_for(struct ibv_cq *cq, enum ibv_wc_opcode opcode,
                     struct ibv_wc *out)
 {
-    uint64_t deadline_ms = ernic_monotonic_ms() + POLL_SECONDS * UINT64_C(1000);
+    uint64_t deadline_ms =
+        ernic_monotonic_ms() + (POLL_SECONDS * UINT64_C(1000));
     while (ernic_monotonic_ms() < deadline_ms) {
         struct ibv_wc wc;
         int n = ibv_poll_cq(cq, 1, &wc);
-        if (n < 0)
+        if (n < 0) {
             return -1;
-        if (n == 0)
+        }
+        if (n == 0) {
             continue;
+        }
         if (wc.status != IBV_WC_SUCCESS) {
             fprintf(stderr, "completion failed: %s\n",
                     ibv_wc_status_str(wc.status));
@@ -160,8 +163,9 @@ static int poll_for(struct ibv_cq *cq, enum ibv_wc_opcode opcode,
 static int do_send(struct ud_ep *src, struct ud_ep *dst, struct ibv_ah *ah,
                    int inlined)
 {
-    for (int i = 0; i < MSG_LEN; i++)
+    for (int i = 0; i < MSG_LEN; i++) {
         src->buf[GRH_LEN + i] = (unsigned char)(0x5A ^ (i & 0xff));
+    }
     memset(dst->buf, 0, GRH_LEN + MSG_LEN);
 
     struct ibv_sge sge = {
@@ -213,15 +217,16 @@ static int do_send(struct ud_ep *src, struct ud_ep *dst, struct ibv_ah *ah,
 
     if (memcmp(dst->buf + GRH_LEN, src->buf + GRH_LEN, MSG_LEN) != 0) {
         /* Say which way it is wrong: landing at 0 is the missing-GRH case. */
-        if (memcmp(dst->buf, src->buf + GRH_LEN, MSG_LEN) == 0)
+        if (memcmp(dst->buf, src->buf + GRH_LEN, MSG_LEN) == 0) {
             fprintf(stderr,
                     "FAIL: payload landed at offset 0, not %d -- no GRH was\n"
                     "  prepended. Consumers that parse at a fixed offset past\n"
                     "  the GRH read shifted data.\n",
                     GRH_LEN);
-        else
+        } else {
             fprintf(stderr, "FAIL: payload mismatch (%s)\n",
                     inlined ? "inline" : "sge");
+        }
         return -1;
     }
 
@@ -252,12 +257,15 @@ static int do_send_quiet(struct ud_ep *src, struct ud_ep *dst,
     struct ibv_send_wr *bad = NULL;
     struct ibv_wc wc;
 
-    if (ibv_post_send(src->qp, &wr, &bad))
+    if (ibv_post_send(src->qp, &wr, &bad)) {
         return -1;
-    if (poll_for(src->cq, IBV_WC_SEND, &wc) != 1)
+    }
+    if (poll_for(src->cq, IBV_WC_SEND, &wc) != 1) {
         return -1;
-    if (poll_for(dst->cq, IBV_WC_RECV, &wc) != 1)
+    }
+    if (poll_for(dst->cq, IBV_WC_RECV, &wc) != 1) {
         return -1;
+    }
     return 0;
 }
 
@@ -268,14 +276,17 @@ int main(void)
     struct ibv_context *ctx = NULL;
     struct ibv_pd *pd = NULL;
     struct ibv_ah *ah = NULL;
-    struct ud_ep a = {.cq = NULL}, b = {.cq = NULL};
+    struct ud_ep a = {.cq = NULL};
+    struct ud_ep b = {.cq = NULL};
     union ibv_gid gid;
     struct ibv_ah_attr aa;
     unsigned char *src_two = NULL;
     struct ibv_mr *mr_two = NULL;
     enum ernic_device_result lookup;
-    const char *gidx_env, *iter_env;
-    int gidx, iters;
+    const char *gidx_env;
+    const char *iter_env;
+    int gidx;
+    int iters;
     int ndev = 0;
     int rc = 1;
 
@@ -284,8 +295,9 @@ int main(void)
         lookup = ernic_requested_device() ? ERNIC_DEVICE_MISMATCH
                                           : ERNIC_DEVICE_ABSENT;
         ernic_report_no_device(lookup);
-        if (dev_list)
+        if (dev_list) {
             ibv_free_device_list(dev_list);
+        }
         return lookup == ERNIC_DEVICE_MISMATCH ? 1 : 77;
     }
     ibdev = ernic_find_device(dev_list, ndev, &lookup);
@@ -308,8 +320,9 @@ int main(void)
         goto out;
     }
 
-    if (ep_init(ctx, pd, &a) || ep_init(ctx, pd, &b))
+    if (ep_init(ctx, pd, &a) || ep_init(ctx, pd, &b)) {
         goto out;
+    }
     printf("two UD QPs: sender=%u receiver=%u\n", a.qp->qp_num, b.qp->qp_num);
 
     /* Which GID index to build the handle from. Index 0 is the link-local
@@ -351,10 +364,12 @@ int main(void)
         goto out;
     }
 
-    if (post_recv(&b, 0xB1) || do_send(&a, &b, ah, 0))
+    if (post_recv(&b, 0xB1) || do_send(&a, &b, ah, 0)) {
         goto out;
-    if (post_recv(&b, 0xB2) || do_send(&a, &b, ah, 1))
+    }
+    if (post_recv(&b, 0xB2) || do_send(&a, &b, ah, 1)) {
         goto out;
+    }
 
     /*
      * Sustained run. One send and one receive at a time is enough to prove
@@ -377,8 +392,9 @@ int main(void)
             goto out;
         }
     }
-    if (iters)
+    if (iters) {
         printf("sustained %d iterations ok\n", iters);
+    }
 
     /*
      * Two inline segments in one send, which is the shape UCX's ud_verbs
@@ -387,15 +403,18 @@ int main(void)
      * the first segment, or sizes the copy from one of them, delivers a
      * short or shifted message -- and a single-segment test never notices.
      */
-    if (post_recv(&b, 0xD00D))
+    if (post_recv(&b, 0xD00D)) {
         goto out;
+    }
     {
         unsigned char hdr[16];
-        for (int i = 0; i < 16; i++)
+        for (int i = 0; i < 16; i++) {
             hdr[i] = (unsigned char)(0xE0 + i);
+        }
         memcpy(src_two, hdr, 16);
-        for (int i = 0; i < 64; i++)
+        for (int i = 0; i < 64; i++) {
             src_two[16 + i] = (unsigned char)(0x30 ^ i);
+        }
 
         struct ibv_sge sg[2] = {
             {.addr = (uintptr_t)src_two, .length = 16, .lkey = mr_two->lkey},
@@ -453,26 +472,34 @@ int main(void)
      * for the same reason -- a QP cannot be destroyed into a dead CQ. */
 out:
     for (struct ud_ep *e = &a; e; e = (e == &a) ? &b : NULL) {
-        if (e->qp)
+        if (e->qp) {
             ibv_destroy_qp(e->qp);
+        }
     }
-    if (mr_two)
+    if (mr_two) {
         ibv_dereg_mr(mr_two);
-    free(src_two);
-    if (ah)
-        ibv_destroy_ah(ah);
-    for (struct ud_ep *e = &a; e; e = (e == &a) ? &b : NULL) {
-        if (e->mr)
-            ibv_dereg_mr(e->mr);
-        free(e->buf);
-        if (e->cq)
-            ibv_destroy_cq(e->cq);
     }
-    if (pd)
+    free(src_two);
+    if (ah) {
+        ibv_destroy_ah(ah);
+    }
+    for (struct ud_ep *e = &a; e; e = (e == &a) ? &b : NULL) {
+        if (e->mr) {
+            ibv_dereg_mr(e->mr);
+        }
+        free(e->buf);
+        if (e->cq) {
+            ibv_destroy_cq(e->cq);
+        }
+    }
+    if (pd) {
         ibv_dealloc_pd(pd);
-    if (ctx)
+    }
+    if (ctx) {
         ibv_close_device(ctx);
-    if (dev_list)
+    }
+    if (dev_list) {
         ibv_free_device_list(dev_list);
+    }
     return rc;
 }

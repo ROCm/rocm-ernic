@@ -78,17 +78,21 @@ int vfu_addr_to_sgl(vfu_ctx_t *vfu_ctx, vfu_dma_addr_t dma_addr, size_t len,
     uint64_t addr = (uint64_t)(uintptr_t)dma_addr;
 
     (void)vfu_ctx;
-    if (prot & PROT_WRITE)
+    if (prot & PROT_WRITE) {
         g_write_attempts++;
+    }
     /* Written so a dma_addr near UINT64_MAX can't wrap past the check. */
-    if (max_nr_sgs < 1 || addr > GUEST_MEM_SIZE || len > GUEST_MEM_SIZE - addr)
+    if (max_nr_sgs < 1 || addr > GUEST_MEM_SIZE ||
+        len > GUEST_MEM_SIZE - addr) {
         return -1;
+    }
     if ((prot & PROT_WRITE) && g_fail_writes) {
         g_fail_writes--;
         return -1;
     }
-    if (prot & PROT_WRITE)
+    if (prot & PROT_WRITE) {
         g_nwrites++;
+    }
     sg->addr = addr;
     sg->len = len;
     return 1;
@@ -101,8 +105,9 @@ int vfu_sgl_get(vfu_ctx_t *vfu_ctx, dma_sg_t *sgl, struct iovec *iov,
 
     (void)vfu_ctx;
     (void)flags;
-    if (cnt < 1)
+    if (cnt < 1) {
         return -1;
+    }
     iov->iov_base = g_mem + sg->addr;
     iov->iov_len = sg->len;
     return 0;
@@ -128,8 +133,9 @@ void vfu_log(vfu_ctx_t *vfu_ctx, int level, const char *fmt, ...)
 {
     (void)vfu_ctx;
     (void)fmt;
-    if (level <= LOG_WARNING)
+    if (level <= LOG_WARNING) {
         g_nwarnings++;
+    }
 }
 
 int vfu_irq_trigger(vfu_ctx_t *vfu_ctx, uint32_t subindex)
@@ -175,10 +181,11 @@ void ionic_datapath_rdma_counters(const struct ionic_datapath *dp,
                                   uint64_t out[IONIC_DP_RDMA_COUNT])
 {
     (void)dp;
-    if (qp_id == IONIC_DP_DEVICE)
+    if (qp_id == IONIC_DP_DEVICE) {
         memcpy(out, g_dp_rdma, sizeof(g_dp_rdma));
-    else
+    } else {
         memset(out, 0, sizeof(g_dp_rdma));
+    }
 }
 
 void ionic_datapath_reset_rdma_counters(struct ionic_datapath *dp)
@@ -230,8 +237,9 @@ ssize_t ionic_eth_net_recv(const struct ionic_eth_net *net, void *buf,
     size_t len = g_net_rx_len;
 
     (void)net;
-    if (!g_net_rx_frame || len > cap)
+    if (!g_net_rx_frame || len > cap) {
         return 0;
+    }
     memcpy(buf, g_net_rx_frame, len);
     g_net_rx_frame = NULL;
     return (ssize_t)len;

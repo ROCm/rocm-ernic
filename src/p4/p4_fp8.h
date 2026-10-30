@@ -39,8 +39,8 @@
 #include <stdint.h>
 
 /* The canonical NaN encoding, and the largest finite magnitude. */
-#define P4_FP8_NAN 0x7Fu
-#define P4_FP8_MAX 0x7Eu /* 448.0 */
+#define P4_FP8_NAN 0x7FU
+#define P4_FP8_MAX 0x7EU /* 448.0 */
 
 /* The operation p4_fp8_map() applies to each pair of operands. */
 enum p4_fp8_op {

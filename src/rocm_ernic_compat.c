@@ -195,8 +195,9 @@ int pvrdma_device_realize(pvrdma_handle_t handle)
 int ernic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe, uint32_t *cq_handle)
 {
     PVRDMADev *pvrdma = handle;
-    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
+    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx) {
         return -EINVAL;
+    }
     return rdma_rm_alloc_cq(&pvrdma->rdma_dev_res, &pvrdma->backend_dev, cqe,
                             cq_handle);
 }
@@ -204,8 +205,9 @@ int ernic_rm_alloc_cq(pvrdma_handle_t handle, uint32_t cqe, uint32_t *cq_handle)
 void ernic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
 {
     PVRDMADev *pvrdma = handle;
-    if (!pvrdma)
+    if (!pvrdma) {
         return;
+    }
     rdma_rm_dealloc_cq(&pvrdma->rdma_dev_res, cq_handle);
 }
 
@@ -214,8 +216,9 @@ int ernic_rm_alloc_srq(pvrdma_handle_t handle,
                        uint32_t *srq_handle)
 {
     PVRDMADev *pvrdma = handle;
-    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
+    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx) {
         return -EINVAL;
+    }
     return rdma_rm_alloc_srq(&pvrdma->rdma_dev_res, attr->pd_handle,
                              attr->max_wr, attr->max_sge, attr->srq_limit,
                              srq_handle);
@@ -224,8 +227,9 @@ int ernic_rm_alloc_srq(pvrdma_handle_t handle,
 void ernic_rm_dealloc_srq(pvrdma_handle_t handle, uint32_t srq_handle)
 {
     PVRDMADev *pvrdma = handle;
-    if (!pvrdma)
+    if (!pvrdma) {
         return;
+    }
     rdma_rm_dealloc_srq(&pvrdma->rdma_dev_res, srq_handle);
 }
 
@@ -235,8 +239,9 @@ int ernic_rm_modify_srq(pvrdma_handle_t handle, uint32_t srq_handle,
     PVRDMADev *pvrdma = handle;
     struct ibv_srq_attr attr = {.srq_limit = srq_limit};
 
-    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
+    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx) {
         return -EINVAL;
+    }
     /*
      * A limit of 0 disables the low-watermark and is a legal value that the
      * guest driver accepts, but rdma_rm_modify_srq() rejects it outright
@@ -245,8 +250,9 @@ int ernic_rm_modify_srq(pvrdma_handle_t handle, uint32_t srq_handle,
      * copy lives in the adminq's SRQ map, so succeed here rather than
      * turning a valid ibv_modify_srq() into an error.
      */
-    if (srq_limit == 0)
+    if (srq_limit == 0) {
         return 0;
+    }
     /* IBV_SRQ_LIMIT only: the depth is fixed at create time, and the guest
      * driver's modify path carries nothing else (ionic_admin_modify_srq is
      * qid + low_wqes_limit). */
@@ -261,27 +267,33 @@ int ernic_rm_query_srq(pvrdma_handle_t handle, uint32_t srq_handle,
     struct ibv_srq_attr attr = {0};
     int ret;
 
-    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
+    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx) {
         return -EINVAL;
+    }
 
     ret = rdma_rm_query_srq(&pvrdma->rdma_dev_res, srq_handle, &attr);
-    if (ret)
+    if (ret) {
         return ret;
+    }
 
-    if (max_wr)
+    if (max_wr) {
         *max_wr = attr.max_wr;
-    if (max_sge)
+    }
+    if (max_sge) {
         *max_sge = attr.max_sge;
-    if (srq_limit)
+    }
+    if (srq_limit) {
         *srq_limit = attr.srq_limit;
+    }
     return 0;
 }
 
 int ernic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle)
 {
     PVRDMADev *pvrdma = handle;
-    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
+    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx) {
         return -EINVAL;
+    }
     return rdma_rm_alloc_pd(&pvrdma->rdma_dev_res, &pvrdma->backend_dev,
                             pd_handle);
 }
@@ -289,8 +301,9 @@ int ernic_rm_alloc_pd(pvrdma_handle_t handle, uint32_t *pd_handle)
 void ernic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle)
 {
     PVRDMADev *pvrdma = handle;
-    if (!pvrdma)
+    if (!pvrdma) {
         return;
+    }
     rdma_rm_dealloc_pd(&pvrdma->rdma_dev_res, pd_handle);
 }
 
@@ -298,8 +311,9 @@ int ernic_rm_alloc_qp(pvrdma_handle_t handle,
                       const struct ernic_rm_qp_init_attr *attr, uint32_t *qpn)
 {
     PVRDMADev *pvrdma = handle;
-    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
+    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx) {
         return -EINVAL;
+    }
     RdmaRmQP *out_qp = NULL;
     return rdma_rm_alloc_qp(&pvrdma->rdma_dev_res, attr->pd_handle,
                             attr->qp_type, attr->send_cq_handle,
@@ -309,8 +323,9 @@ int ernic_rm_alloc_qp(pvrdma_handle_t handle,
 void ernic_rm_dealloc_qp(pvrdma_handle_t handle, uint32_t qpn)
 {
     PVRDMADev *pvrdma = handle;
-    if (!pvrdma)
+    if (!pvrdma) {
         return;
+    }
     rdma_rm_dealloc_qp(&pvrdma->rdma_dev_res, qpn);
 }
 
@@ -318,9 +333,11 @@ int ernic_rm_alloc_mr(pvrdma_handle_t handle, uint32_t pd_handle,
                       uint32_t access_flags, uint32_t *mr_handle)
 {
     PVRDMADev *pvrdma = handle;
-    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
+    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx) {
         return -EINVAL;
-    uint32_t lkey = 0, rkey = 0;
+    }
+    uint32_t lkey = 0;
+    uint32_t rkey = 0;
     return rdma_rm_alloc_mr(&pvrdma->rdma_dev_res, pd_handle, (int)access_flags,
                             mr_handle, &lkey, &rkey);
 }
@@ -328,8 +345,9 @@ int ernic_rm_alloc_mr(pvrdma_handle_t handle, uint32_t pd_handle,
 void ernic_rm_dealloc_mr(pvrdma_handle_t handle, uint32_t mr_handle)
 {
     PVRDMADev *pvrdma = handle;
-    if (!pvrdma)
+    if (!pvrdma) {
         return;
+    }
     rdma_rm_dealloc_mr(&pvrdma->rdma_dev_res, mr_handle);
 }
 
@@ -337,24 +355,26 @@ int ernic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn,
                        const struct ernic_rm_qp_attr *attr)
 {
     PVRDMADev *pvrdma = handle;
-    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
+    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx) {
         return -EINVAL;
+    }
 
     /* Decode ionic type_state: bits[3:0]=to_state, bits[7:4]=from_state.
      * Map ionic QP state values to ibv_qp_state.  ionic uses the same
      * numeric encoding as IB (RESET=0, INIT=1, RTR=2, RTS=3, SQD=4,
      * SQE=5, ERROR=6) so a direct cast is safe for the common path. */
-    enum ibv_qp_state to_state = (enum ibv_qp_state)(attr->type_state & 0x0fu);
+    enum ibv_qp_state to_state = (enum ibv_qp_state)(attr->type_state & 0x0fU);
 
     /* Build a minimal dgid from the raw bytes provided by the caller. */
     union ibv_gid dgid;
-    if (attr->dest_gid)
+    if (attr->dest_gid) {
         memcpy(&dgid, attr->dest_gid, sizeof(dgid));
-    else
+    } else {
         memset(&dgid, 0, sizeof(dgid));
+    }
 
     /* dest QPN sits in the lower 24 bits of qkey_dest_qpn when sending UD. */
-    uint32_t dqpn = attr->qkey_dest_qpn & 0x00ffffffu;
+    uint32_t dqpn = attr->qkey_dest_qpn & 0x00ffffffU;
     uint32_t qkey = attr->qkey_dest_qpn >> 24;
 
     return rdma_rm_modify_qp(&pvrdma->rdma_dev_res, &pvrdma->backend_dev, qpn,
@@ -373,29 +393,37 @@ int ernic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
     struct ibv_qp_init_attr init_attr;
     int ret;
 
-    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
+    if (!pvrdma || !pvrdma->parent_obj.vfu_ctx) {
         return -EINVAL;
+    }
 
     ret = rdma_rm_query_qp(&pvrdma->rdma_dev_res, qpn, &attr,
                            IBV_QP_STATE | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
                                IBV_QP_ACCESS_FLAGS | IBV_QP_RQ_PSN |
                                IBV_QP_SQ_PSN,
                            &init_attr);
-    if (ret)
+    if (ret) {
         return ret;
+    }
 
-    if (state)
+    if (state) {
         *state = (uint8_t)attr.qp_state;
-    if (path_mtu)
+    }
+    if (path_mtu) {
         *path_mtu = (uint8_t)attr.path_mtu;
-    if (dest_qpn)
+    }
+    if (dest_qpn) {
         *dest_qpn = attr.dest_qp_num;
-    if (access_flags)
+    }
+    if (access_flags) {
         *access_flags = (uint32_t)attr.qp_access_flags;
-    if (rq_psn)
+    }
+    if (rq_psn) {
         *rq_psn = attr.rq_psn;
-    if (sq_psn)
+    }
+    if (sq_psn) {
         *sq_psn = attr.sq_psn;
+    }
     return 0;
 }
 
@@ -413,8 +441,9 @@ static const RdmaMeshOps *pvrdma_mesh(const PVRDMADev *pvrdma)
 {
     const RdmaBackendOps *ops;
 
-    if (!pvrdma)
+    if (!pvrdma) {
         return NULL;
+    }
     ops = pvrdma->backend_dev.backend_ops;
     return ops ? ops->mesh : NULL;
 }
@@ -424,8 +453,9 @@ uint32_t ernic_mesh_local_node(pvrdma_handle_t handle)
     PVRDMADev *pvrdma = handle;
     const RdmaMeshOps *mesh = pvrdma_mesh(pvrdma);
 
-    if (!mesh)
+    if (!mesh) {
         return UINT32_MAX;
+    }
     return mesh->local_node(&pvrdma->backend_dev);
 }
 
@@ -436,11 +466,13 @@ uint32_t ernic_mesh_node_from_gid(pvrdma_handle_t handle,
     const RdmaMeshOps *mesh = pvrdma_mesh(pvrdma);
     union ibv_gid dgid;
 
-    if (!mesh)
+    if (!mesh) {
         return UINT32_MAX;
+    }
 
-    if (!dest_gid_16bytes)
+    if (!dest_gid_16bytes) {
         return mesh->node_from_gid(&pvrdma->backend_dev, NULL);
+    }
 
     memcpy(&dgid, dest_gid_16bytes, sizeof(dgid));
     return mesh->node_from_gid(&pvrdma->backend_dev, &dgid);
@@ -453,11 +485,13 @@ int ernic_mesh_claim_gid(pvrdma_handle_t handle, const uint8_t *gid_16bytes,
     const RdmaMeshOps *mesh = pvrdma_mesh(pvrdma);
     union ibv_gid gid;
 
-    if (!pvrdma || !gid_16bytes)
+    if (!pvrdma || !gid_16bytes) {
         return -EINVAL;
+    }
     /* No peers to tell */
-    if (!mesh)
+    if (!mesh) {
         return 0;
+    }
 
     memcpy(&gid, gid_16bytes, sizeof(gid));
     return mesh->claim_gid(&pvrdma->backend_dev, &gid, add);
@@ -470,8 +504,9 @@ int ernic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
     PVRDMADev *pvrdma = handle;
     const RdmaMeshOps *mesh = pvrdma_mesh(pvrdma);
 
-    if (!mesh)
+    if (!mesh) {
         return -EINVAL;
+    }
     return mesh->sendv(&pvrdma->backend_dev, dst_node, hdr, hdr_len, body,
                        body_len, tag, reply);
 }
@@ -481,8 +516,9 @@ bool ernic_mesh_has_room(pvrdma_handle_t handle, uint32_t dst_node, size_t len)
     PVRDMADev *pvrdma = handle;
     const RdmaMeshOps *mesh = pvrdma_mesh(pvrdma);
 
-    if (!mesh)
+    if (!mesh) {
         return true;
+    }
     return mesh->has_room(&pvrdma->backend_dev, dst_node, len);
 }
 
@@ -491,8 +527,9 @@ void ernic_mesh_cancel(pvrdma_handle_t handle, uint64_t tag, uint64_t mask)
     PVRDMADev *pvrdma = handle;
     const RdmaMeshOps *mesh = pvrdma_mesh(pvrdma);
 
-    if (!mesh)
+    if (!mesh) {
         return;
+    }
     mesh->cancel(&pvrdma->backend_dev, tag, mask);
 }
 
@@ -503,7 +540,8 @@ void ernic_mesh_set_recv_cb(pvrdma_handle_t handle, ernic_mesh_recv_fn fn,
     const RdmaMeshOps *mesh = pvrdma_mesh(pvrdma);
 
     /* With no mesh nothing calls it, so there is nothing to wait for */
-    if (!mesh)
+    if (!mesh) {
         return;
+    }
     mesh->set_recv_cb(&pvrdma->backend_dev, fn, opaque);
 }

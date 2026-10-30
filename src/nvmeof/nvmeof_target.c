@@ -49,10 +49,10 @@
 #include "parse_int.h"
 
 #define NVMEOF_DEFAULT_NQN        "nvmet-test"
-#define NVMEOF_DEFAULT_SIZE       (64ull << 20)
-#define NVMEOF_DEFAULT_BLOCK_SIZE 512u
+#define NVMEOF_DEFAULT_SIZE       (UINT64_C(64) << 20)
+#define NVMEOF_DEFAULT_BLOCK_SIZE 512U
 #define NVMEOF_DEFAULT_PORT       4420
-#define NVMEOF_DEFAULT_TRADDR     0xc0a8c801u /* 192.168.200.1 */
+#define NVMEOF_DEFAULT_TRADDR     0xc0a8c801U /* 192.168.200.1 */
 #define NVMEOF_DEFAULT_QUEUES     8
 #define NVMEOF_DEFAULT_DEPTH      128
 
@@ -228,7 +228,7 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
         } else if (strcmp(key, "nsid") == 0) {
             uint32_t v;
             /* NVMe reserves 0 (no namespace) and 0xffffffff (all). */
-            if (!ernic_parse_u32(val, &v) || v == 0 || v == 0xffffffffu) {
+            if (!ernic_parse_u32(val, &v) || v == 0 || v == 0xffffffffU) {
                 ernic_set_err(err, errlen, "bad nsid '%s'", val);
                 ok = false;
             } else {
@@ -655,7 +655,7 @@ static void ascii_field(uint8_t *dst, size_t len, const char *src)
 static uint8_t lba_shift(uint32_t block_size)
 {
     uint8_t s = 0;
-    while ((1u << s) < block_size) {
+    while ((1U << s) < block_size) {
         s++;
     }
     return s;
@@ -707,7 +707,7 @@ static void build_id_ctrl(const struct nvmeof_target *t, uint8_t *buf)
      * sgls: supported (bit 0), keyed SGLs (bit 2, which nvme-rdma treats
      * as mandatory), and SGL address-as-offset (bit 20) for in-capsule.
      */
-    ernic_put_le32(buf + 536, (1u << 0) | (1u << 2) | (1u << 20));
+    ernic_put_le32(buf + 536, (1U << 0) | (1U << 2) | (1U << 20));
 
     /*
      * A discovery association has to name the discovery NQN here.  Linux
@@ -758,10 +758,10 @@ static void build_ns_desc(const struct nvmeof_target *t, uint8_t *buf)
     buf[1] = 16; /* nidl */
 
     uint8_t *uuid = buf + 4;
-    uint64_t h = 0xcbf29ce484222325ull;
+    uint64_t h = UINT64_C(0xcbf29ce484222325);
     const char *p = t->cfg.subnqn;
     while (*p != '\0') {
-        h = (h ^ (uint8_t)*p++) * 0x100000001b3ull;
+        h = (h ^ (uint8_t)*p++) * UINT64_C(0x100000001b3);
     }
     h ^= t->cfg.nsid;
     for (int i = 0; i < 16; i++) {
@@ -812,11 +812,11 @@ static void build_discovery_log(const struct nvmeof_target *t, uint8_t *buf,
 
 static uint64_t prop_cap(const struct nvmeof_target *t)
 {
-    uint64_t mqes = t->cfg.queue_depth > 0 ? t->cfg.queue_depth - 1u : 0;
-    return mqes |          /* MQES */
-           (1ull << 16) |  /* CQR: contiguous queues required */
-           (15ull << 24) | /* TO: 7.5 seconds */
-           (1ull << 37);   /* CSS: NVM command set */
+    uint64_t mqes = t->cfg.queue_depth > 0 ? t->cfg.queue_depth - 1U : 0;
+    return mqes |                 /* MQES */
+           (UINT64_C(1) << 16) |  /* CQR: contiguous queues required */
+           (UINT64_C(15) << 24) | /* TO: 7.5 seconds */
+           (UINT64_C(1) << 37);   /* CSS: NVM command set */
 }
 
 static uint16_t do_connect(struct nvmeof_queue *q, const uint8_t *sqe,
@@ -960,7 +960,7 @@ static uint16_t ns_sync(const struct nvmeof_target *t, uint64_t off,
     }
 
     /* ns_data is page-aligned, being an mmap(). */
-    uint64_t start = off - off % t->page_size;
+    uint64_t start = off - (off % t->page_size);
     if (t->sync(t->ns_data + start, (size_t)(off + len - start), MS_SYNC) !=
         0) {
         return nvme_status(NVME_SCT_MEDIA, NVME_SC_WRITE_FAULT, 1);
@@ -1110,7 +1110,7 @@ static uint16_t do_get_log_page(const struct nvmeof_queue *q,
     if (want > sgl.length) {
         want = sgl.length;
     }
-    if (want > (1u << 20)) {
+    if (want > (1U << 20)) {
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_INVALID_FIELD, 1);
     }
 
@@ -1267,7 +1267,7 @@ static uint16_t io_range(const struct nvmeof_target *t, const uint8_t *sqe,
                          uint64_t *off, uint64_t *len)
 {
     uint64_t slba = ernic_get_le64(sqe + NVME_SQE_CDW10_OFF);
-    uint32_t nlb = (ernic_get_le32(sqe + NVME_SQE_CDW12_OFF) & 0xffff) + 1u;
+    uint32_t nlb = (ernic_get_le32(sqe + NVME_SQE_CDW12_OFF) & 0xffff) + 1U;
 
     uint64_t blocks = t->cfg.size / t->cfg.block_size;
     if (slba >= blocks || nlb > blocks - slba) {
@@ -1284,7 +1284,8 @@ static uint16_t exec_rw(struct nvmeof_target *t, const uint8_t *capsule,
                         size_t capsule_len, const struct nvmeof_dma_ops *dma,
                         void *ctx, bool write, bool fua)
 {
-    uint64_t off, len;
+    uint64_t off;
+    uint64_t len;
     uint16_t st = io_range(t, capsule, &off, &len);
     if (st != 0) {
         return st;
@@ -1323,7 +1324,8 @@ static uint16_t exec_io(const struct nvmeof_queue *q, const uint8_t *capsule,
     struct nvmeof_target *t = q->target;
     uint8_t opcode = capsule[NVME_SQE_OPCODE_OFF];
     uint32_t nsid = ernic_get_le32(capsule + NVME_SQE_NSID_OFF);
-    uint64_t off, len;
+    uint64_t off;
+    uint64_t len;
     uint16_t st;
 
     /* FUA on a Read asks for the media's copy, which the mapping already
@@ -1418,7 +1420,7 @@ int nvmeof_queue_exec(struct nvmeof_queue *q, const void *capsule, size_t len,
      * Connect yet simply reports zero.
      */
     if (q->sqsize != 0) {
-        q->sq_head = (uint16_t)((q->sq_head + 1u) % ((uint32_t)q->sqsize + 1u));
+        q->sq_head = (uint16_t)((q->sq_head + 1U) % ((uint32_t)q->sqsize + 1U));
     }
 
     ernic_put_le16(out + NVME_CQE_SQHD_OFF, q->sq_head);

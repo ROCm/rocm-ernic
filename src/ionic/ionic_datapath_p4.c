@@ -35,8 +35,9 @@
 void ionic_datapath_set_p4_engine(struct ionic_datapath *dp,
                                   struct p4_engine *eng)
 {
-    if (dp)
+    if (dp) {
         dp->p4_engine = eng;
+    }
 }
 
 /*
@@ -44,7 +45,7 @@ void ionic_datapath_set_p4_engine(struct ionic_datapath *dp,
  * of a function on the poll-loop thread, large enough that a megabyte
  * moves in a few dozen passes.
  */
-#define FP8_MAP_CHUNK 2048u
+#define FP8_MAP_CHUNK 2048U
 
 /*
  * Is @key one the guest may name as an operand here?
@@ -72,8 +73,9 @@ int ionic_datapath_fp8_map(struct ionic_datapath *dp, uint8_t op,
     uint32_t done = 0;
     int rc = 0;
 
-    if (!dp || len == 0 || len > IONIC_FP8_MAP_MAX)
+    if (!dp || len == 0 || len > IONIC_FP8_MAP_MAX) {
         return -EINVAL;
+    }
 
     /*
      * Every region is checked in full before a byte moves.  Checking as we
@@ -83,8 +85,9 @@ int ionic_datapath_fp8_map(struct ionic_datapath *dp, uint8_t op,
      */
     if (!fp8_key_ok(dp, a_lkey, a_va, len) ||
         !fp8_key_ok(dp, b_lkey, b_va, len) ||
-        !fp8_key_ok(dp, c_rkey, c_va, len))
+        !fp8_key_ok(dp, c_rkey, c_va, len)) {
         return -EACCES;
+    }
 
     /*
      * Both operands are read in full before a byte of the result is
@@ -95,9 +98,10 @@ int ionic_datapath_fp8_map(struct ionic_datapath *dp, uint8_t op,
      * -- so they are staged whatever the request says.  The cap bounds
      * this at two bytes an element.
      */
-    ab = malloc(2u * (size_t)len);
-    if (!ab)
+    ab = malloc(2U * (size_t)len);
+    if (!ab) {
         return -ENOMEM;
+    }
     if (ionic_dp_sge_to_host(dp, a_lkey, a_va, ab, len) != len ||
         ionic_dp_sge_to_host(dp, b_lkey, b_va, ab + len, len) != len) {
         rc = -EFAULT;
@@ -107,8 +111,9 @@ int ionic_datapath_fp8_map(struct ionic_datapath *dp, uint8_t op,
     while (done < len) {
         uint32_t n = len - done;
 
-        if (n > FP8_MAP_CHUNK)
+        if (n > FP8_MAP_CHUNK) {
             n = FP8_MAP_CHUNK;
+        }
 
         if (!p4_fp8_map((enum p4_fp8_op)op, ab + done, ab + len + done, n, c)) {
             rc = -EINVAL;
@@ -136,10 +141,10 @@ out:
  * buffer -- at most four bytes an element -- is an unremarkable amount of
  * stack on the poll-loop thread.
  */
-#define FMT_CVT_CHUNK_ELEMS 512u
+#define FMT_CVT_CHUNK_ELEMS 512U
 
 /* The widest format, fp32, in bytes an element. */
-#define FMT_MAX_ELEM_BYTES 4u
+#define FMT_MAX_ELEM_BYTES 4U
 
 int ionic_datapath_fmt_convert(struct ionic_datapath *dp, uint8_t src_fmt,
                                uint8_t dst_fmt, uint32_t a_lkey, uint64_t a_va,
@@ -147,21 +152,25 @@ int ionic_datapath_fmt_convert(struct ionic_datapath *dp, uint8_t src_fmt,
 {
     uint8_t out[FMT_CVT_CHUNK_ELEMS * FMT_MAX_ELEM_BYTES];
     uint8_t *in;
-    size_t n_elems, out_len;
+    size_t n_elems;
+    size_t out_len;
     uint32_t done = 0;
     int rc = 0;
 
-    if (!dp || in_len == 0)
+    if (!dp || in_len == 0) {
         return -EINVAL;
-    if (!p4_fmt_valid(src_fmt) || !p4_fmt_valid(dst_fmt))
+    }
+    if (!p4_fmt_valid(src_fmt) || !p4_fmt_valid(dst_fmt)) {
         return -EINVAL;
+    }
     /*
      * More bytes than the element cap allows in any format.  The element
      * check below refuses it too, but this is the bound on the source's
      * staging buffer, in the terms that buffer is sized in.
      */
-    if (in_len > IONIC_FP8_MAP_MAX * FMT_MAX_ELEM_BYTES)
+    if (in_len > IONIC_FP8_MAP_MAX * FMT_MAX_ELEM_BYTES) {
         return -EINVAL;
+    }
 
     /*
      * A source length that is not a whole number of elements, or an
@@ -170,18 +179,22 @@ int ionic_datapath_fmt_convert(struct ionic_datapath *dp, uint8_t src_fmt,
      * end is not an array of either format.
      */
     n_elems = p4_fmt_elems((enum p4_fmt)src_fmt, in_len);
-    if (n_elems == 0)
+    if (n_elems == 0) {
         return -EINVAL;
-    if (n_elems > IONIC_FP8_MAP_MAX)
+    }
+    if (n_elems > IONIC_FP8_MAP_MAX) {
         return -EINVAL;
+    }
     out_len = p4_fmt_bytes((enum p4_fmt)dst_fmt, n_elems);
-    if (out_len == 0)
+    if (out_len == 0) {
         return -EINVAL;
+    }
 
     /* Each region against its own length; they differ here. */
     if (!fp8_key_ok(dp, a_lkey, a_va, in_len) ||
-        !fp8_key_ok(dp, c_rkey, c_va, (uint32_t)out_len))
+        !fp8_key_ok(dp, c_rkey, c_va, (uint32_t)out_len)) {
         return -EACCES;
+    }
 
     /*
      * The whole source is read before a byte of the result is written.
@@ -193,8 +206,9 @@ int ionic_datapath_fmt_convert(struct ionic_datapath *dp, uint8_t src_fmt,
      * whatever the request says.  The element cap bounds it.
      */
     in = malloc(in_len);
-    if (!in)
+    if (!in) {
         return -ENOMEM;
+    }
     if (ionic_dp_sge_to_host(dp, a_lkey, a_va, in, in_len) != in_len) {
         rc = -EFAULT;
         goto out;
@@ -204,8 +218,9 @@ int ionic_datapath_fmt_convert(struct ionic_datapath *dp, uint8_t src_fmt,
         size_t n = n_elems - done;
         size_t out_bytes;
 
-        if (n > FMT_CVT_CHUNK_ELEMS)
+        if (n > FMT_CVT_CHUNK_ELEMS) {
             n = FMT_CVT_CHUNK_ELEMS;
+        }
         out_bytes = p4_fmt_bytes((enum p4_fmt)dst_fmt, n);
 
         if (!p4_fmt_convert((enum p4_fmt)src_fmt, (enum p4_fmt)dst_fmt,
@@ -285,13 +300,17 @@ static int dp_p4_fp8_map(const struct dp_p4_ctx *c, uint8_t sel)
      * Neither of these is an error: they say the request is an ordinary
      * transfer, not a compute request.  See DP_P4_NOT_COMPUTE.
      */
-    if (c->op != IONIC_V1_OP_RDMA_WRITE && c->op != IONIC_V1_OP_RDMA_WRITE_IMM)
+    if (c->op != IONIC_V1_OP_RDMA_WRITE &&
+        c->op != IONIC_V1_OP_RDMA_WRITE_IMM) {
         return DP_P4_NOT_COMPUTE;
-    if (c->src->count != 2 || c->src->len[0] != c->src->len[1])
+    }
+    if (c->src->count != 2 || c->src->len[0] != c->src->len[1]) {
         return DP_P4_NOT_COMPUTE;
+    }
 
-    if (c->read_sz < WQE_SEND_LEN_OFF + 4u)
+    if (c->read_sz < WQE_SEND_LEN_OFF + 4U) {
         return -EINVAL;
+    }
 
     uint64_t remote_va = ernic_get_be64(c->wqe + WQE_RDMA_VA_OFF);
     uint32_t rkey = ernic_get_be32(c->wqe + WQE_RDMA_RKEY_OFF);
@@ -309,8 +328,9 @@ static int dp_p4_fp8_map(const struct dp_p4_ctx *c, uint8_t sel)
      * which the in-process harness could do, because it sets the field
      * directly, and which no real guest can.
      */
-    if (length != c->src->total)
+    if (length != c->src->total) {
         return -EINVAL;
+    }
 
     return ionic_datapath_fp8_map(c->dp, sel, c->src->lkey[0], c->src->va[0],
                                   c->src->lkey[1], c->src->va[1],
@@ -338,13 +358,17 @@ static int dp_p4_fmt_convert(const struct dp_p4_ctx *c, uint8_t src_fmt,
 {
     /* As in dp_p4_fp8_map(): neither of these is an error, they say the
      * request is an ordinary transfer rather than a conversion. */
-    if (c->op != IONIC_V1_OP_RDMA_WRITE && c->op != IONIC_V1_OP_RDMA_WRITE_IMM)
+    if (c->op != IONIC_V1_OP_RDMA_WRITE &&
+        c->op != IONIC_V1_OP_RDMA_WRITE_IMM) {
         return DP_P4_NOT_COMPUTE;
-    if (c->src->count != 1)
+    }
+    if (c->src->count != 1) {
         return DP_P4_NOT_COMPUTE;
+    }
 
-    if (c->read_sz < WQE_SEND_LEN_OFF + 4u)
+    if (c->read_sz < WQE_SEND_LEN_OFF + 4U) {
         return -EINVAL;
+    }
 
     uint64_t remote_va = ernic_get_be64(c->wqe + WQE_RDMA_VA_OFF);
     uint32_t rkey = ernic_get_be32(c->wqe + WQE_RDMA_RKEY_OFF);
@@ -352,8 +376,9 @@ static int dp_p4_fmt_convert(const struct dp_p4_ctx *c, uint8_t src_fmt,
 
     /* The driver sums the gather list into the length field; with one
      * entry that is the source length, and it has to agree. */
-    if (length != c->src->total)
+    if (length != c->src->total) {
         return -EINVAL;
+    }
 
     return ionic_datapath_fmt_convert(c->dp, src_fmt, dst_fmt, c->src->lkey[0],
                                       c->src->va[0], c->src->len[0], rkey,
@@ -365,15 +390,18 @@ static int dp_p4_extern_call(void *ctx, uint8_t type, uint8_t method,
 {
     struct dp_p4_ctx *c = ctx;
 
-    if (type != P4_EXTERN_FP8)
+    if (type != P4_EXTERN_FP8) {
         return -ENOSYS;
+    }
     /* map(op) names one arithmetic; cvt(src, dst) names two formats. */
     if (method == P4_EXTERN_FP8_MAP) {
-        if (nargs != 1)
+        if (nargs != 1) {
             return -ENOSYS;
+        }
     } else if (method == P4_EXTERN_FP8_CVT) {
-        if (nargs != 2)
+        if (nargs != 2) {
             return -ENOSYS;
+        }
     } else {
         return -ENOSYS;
     }
@@ -385,20 +413,25 @@ static int dp_p4_extern_call(void *ctx, uint8_t type, uint8_t method,
      * it is refused rather than truncated.  Every argument is checked,
      * not just the first: cvt() has two.
      */
-    for (uint8_t a = 0; a < nargs; a++)
-        for (size_t i = 0; i + 1 < P4_VALUE_BYTES; i++)
-            if (args[a].b[i])
+    for (uint8_t a = 0; a < nargs; a++) {
+        for (size_t i = 0; i + 1 < P4_VALUE_BYTES; i++) {
+            if (args[a].b[i]) {
                 return -EINVAL;
+            }
+        }
+    }
 
     int rc;
 
-    if (method == P4_EXTERN_FP8_MAP)
+    if (method == P4_EXTERN_FP8_MAP) {
         rc = dp_p4_fp8_map(c, args[0].b[P4_VALUE_BYTES - 1]);
-    else
+    } else {
         rc = dp_p4_fmt_convert(c, args[0].b[P4_VALUE_BYTES - 1],
                                args[1].b[P4_VALUE_BYTES - 1]);
-    if (rc == 0)
+    }
+    if (rc == 0) {
         c->ran = true;
+    }
     return rc;
 }
 
@@ -420,10 +453,11 @@ static int dp_p4_extern_call(void *ctx, uint8_t type, uint8_t method,
 static uint32_t dp_p4_denied(struct ionic_datapath *dp, uint32_t qp_id,
                              uint8_t op, bool *done)
 {
-    if (ionic_dp_log_ok(dp, &dp->p4_log_denied, "P4 denial(s)"))
+    if (ionic_dp_log_ok(dp, &dp->p4_log_denied, "P4 denial(s)")) {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: QP %u op %u denied by the P4 program", qp_id,
                 op);
+    }
     *done = true;
     return IONIC_STS_LOCAL_QP_OPER_ERR;
 }
@@ -465,7 +499,7 @@ uint32_t ionic_dp_p4_policy(struct ionic_datapath *dp, uint32_t qp_id,
     meta.imm_data = ernic_get_be32((const uint8_t *)&imm_be);
     if ((op == IONIC_V1_OP_RDMA_WRITE || op == IONIC_V1_OP_RDMA_WRITE_IMM ||
          op == IONIC_V1_OP_RDMA_READ) &&
-        read_sz >= WQE_RDMA_RKEY_OFF + 4u) {
+        read_sz >= WQE_RDMA_RKEY_OFF + 4U) {
         meta.rkey = ernic_get_be32(wqe + WQE_RDMA_RKEY_OFF);
     }
 
@@ -477,8 +511,9 @@ uint32_t ionic_dp_p4_policy(struct ionic_datapath *dp, uint32_t qp_id,
      * Every other error is, because the pipeline is the policy and
      * carrying on past a failed one is exactly bypassing it.
      */
-    if (rc == -ENOENT)
+    if (rc == -ENOENT) {
         return IONIC_STS_OK;
+    }
     /*
      * The program selected an arithmetic for a request that is not a
      * compute request -- an ordinary RDMA WRITE, most of the time, because
@@ -507,15 +542,17 @@ uint32_t ionic_dp_p4_policy(struct ionic_datapath *dp, uint32_t qp_id,
      * would with no extern call.
      */
     if (rc == DP_P4_NOT_COMPUTE && !ctx.ran) {
-        if (suppress)
+        if (suppress) {
             return dp_p4_denied(dp, qp_id, op, done);
+        }
         return IONIC_STS_OK;
     }
     if (rc < 0) {
-        if (ionic_dp_log_ok(dp, &dp->p4_log_failed, "P4 pipeline failure(s)"))
+        if (ionic_dp_log_ok(dp, &dp->p4_log_failed, "P4 pipeline failure(s)")) {
             vfu_log(dp->vfu_ctx, LOG_WARNING,
                     "ionic_datapath: QP %u op %u P4 pipeline failed (%d)",
                     qp_id, op, rc);
+        }
         *done = true;
         return IONIC_STS_LOCAL_QP_OPER_ERR;
     }
@@ -534,12 +571,13 @@ uint32_t ionic_dp_p4_policy(struct ionic_datapath *dp, uint32_t qp_id,
      */
     if (ctx.ran && !suppress) {
         if (ionic_dp_log_ok(dp, &dp->p4_log_no_drop,
-                            "P4 extern call(s) without a drop"))
+                            "P4 extern call(s) without a drop")) {
             vfu_log(dp->vfu_ctx, LOG_WARNING,
                     "ionic_datapath: QP %u op %u P4 program called an extern "
                     "but did not suppress the operation; the transfer would "
                     "overwrite the result",
                     qp_id, op);
+        }
         *done = true;
         return IONIC_STS_LOCAL_QP_OPER_ERR;
     }
@@ -549,7 +587,8 @@ uint32_t ionic_dp_p4_policy(struct ionic_datapath *dp, uint32_t qp_id,
         *done = true;
         return IONIC_STS_OK;
     }
-    if (suppress)
+    if (suppress) {
         return dp_p4_denied(dp, qp_id, op, done);
+    }
     return IONIC_STS_OK;
 }

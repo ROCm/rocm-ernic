@@ -37,7 +37,7 @@ void ionic_adminq_release_all(struct ionic_adminq_ctx *ctx);
  * index and its completions' cmd_idx are 16 bits, so an entry past 2^16 is
  * one the driver can't name and the device can't report.
  */
-#define IONIC_ADMINQ_MAX_DEPTH_LOG2 16u
+#define IONIC_ADMINQ_MAX_DEPTH_LOG2 16U
 
 /*
  * Register a new admin queue ring pair.

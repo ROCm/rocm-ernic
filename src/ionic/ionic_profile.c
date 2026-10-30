@@ -77,18 +77,22 @@ static const uint32_t speeds[] = {1000,  10000,  25000,  40000,
 
 static bool known_group(const char *group)
 {
-    for (size_t i = 0; i < SCHEMA_COUNT; i++)
-        if (strcmp(schema[i].group, group) == 0)
+    for (size_t i = 0; i < SCHEMA_COUNT; i++) {
+        if (strcmp(schema[i].group, group) == 0) {
             return true;
+        }
+    }
     return false;
 }
 
 static const struct schema_key *find_key(const char *group, const char *key)
 {
-    for (size_t i = 0; i < SCHEMA_COUNT; i++)
+    for (size_t i = 0; i < SCHEMA_COUNT; i++) {
         if (strcmp(schema[i].group, group) == 0 &&
-            strcmp(schema[i].key, key) == 0)
+            strcmp(schema[i].key, key) == 0) {
             return &schema[i];
+        }
+    }
     return NULL;
 }
 
@@ -111,7 +115,7 @@ void ionic_profile_defaults(struct ionic_profile *p)
 /* ---- Line scanner ------------------------------------------------------ */
 
 /* Longest section or key name; nothing in the schema comes close. */
-#define NAME_MAX_LEN 63u
+#define NAME_MAX_LEN 63U
 
 struct scanned {
     char group[NAME_MAX_LEN + 1];
@@ -136,11 +140,14 @@ static bool take_name(const char *s, const char *e, char *out)
 {
     size_t n = (size_t)(e - s);
 
-    if (n == 0 || n > NAME_MAX_LEN)
+    if (n == 0 || n > NAME_MAX_LEN) {
         return false;
-    for (const char *c = s; c < e; c++)
-        if (!name_char(*c))
+    }
+    for (const char *c = s; c < e; c++) {
+        if (!name_char(*c)) {
             return false;
+        }
+    }
     memcpy(out, s, n);
     out[n] = '\0';
     return true;
@@ -149,10 +156,12 @@ static bool take_name(const char *s, const char *e, char *out)
 static const struct scanned *scan_find(const struct scan *sc, const char *group,
                                        const char *key)
 {
-    for (size_t i = 0; i < sc->count; i++)
+    for (size_t i = 0; i < sc->count; i++) {
         if (strcmp(sc->items[i].group, group) == 0 &&
-            strcmp(sc->items[i].key, key) == 0)
+            strcmp(sc->items[i].key, key) == 0) {
             return &sc->items[i];
+        }
+    }
     return NULL;
 }
 
@@ -165,8 +174,9 @@ static bool scan_add(struct scan *sc, const char *group, const char *key,
         size_t cap = sc->cap ? sc->cap * 2 : 16;
         struct scanned *n = realloc(sc->items, cap * sizeof(*n));
 
-        if (!n)
+        if (!n) {
             return false;
+        }
         sc->items = n;
         sc->cap = cap;
     }
@@ -209,12 +219,15 @@ static int scan_text(struct scan *sc, const char *source, const char *text,
                           line);
             return -1;
         }
-        while (s < e && is_blank(*s))
+        while (s < e && is_blank(*s)) {
             s++;
-        while (e > s && is_blank(e[-1]))
+        }
+        while (e > s && is_blank(e[-1])) {
             e--;
-        if (s == e || *s == '#')
+        }
+        if (s == e || *s == '#') {
             continue;
+        }
 
         if (*s == '[') {
             if (e[-1] != ']' || !take_name(s + 1, e - 1, name)) {
@@ -251,8 +264,9 @@ static int scan_text(struct scan *sc, const char *source, const char *text,
         const char *eq = memchr(s, '=', (size_t)(e - s));
         const char *ke = eq;
 
-        while (ke && ke > s && is_blank(ke[-1]))
+        while (ke && ke > s && is_blank(ke[-1])) {
             ke--;
+        }
         if (!eq || !take_name(s, ke, name)) {
             ernic_set_err(err, err_len,
                           "%s:%u: expected '[section]', 'key = value' or a '#' "
@@ -293,14 +307,17 @@ static int parse_u64(const char *s, uint64_t *out)
 {
     uint64_t v = 0;
 
-    if (!s || *s == '\0')
+    if (!s || *s == '\0') {
         return -1;
+    }
     for (; *s; s++) {
-        if (*s < '0' || *s > '9')
+        if (*s < '0' || *s > '9') {
             return -1;
-        if (v > (UINT64_MAX - (uint64_t)(*s - '0')) / 10)
+        }
+        if (v > (UINT64_MAX - (uint64_t)(*s - '0')) / 10) {
             return -2;
-        v = v * 10 + (uint64_t)(*s - '0');
+        }
+        v = (v * 10) + (uint64_t)(*s - '0');
     }
     *out = v;
     return 0;
@@ -308,9 +325,11 @@ static int parse_u64(const char *s, uint64_t *out)
 
 static int pick_name(const char *const *names, size_t count, const char *v)
 {
-    for (size_t i = 0; i < count; i++)
-        if (strcmp(names[i], v) == 0)
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(names[i], v) == 0) {
             return (int)i;
+        }
+    }
     return -1;
 }
 
@@ -319,12 +338,15 @@ static bool fw_version_ok(const char *v)
     size_t n = strlen(v);
 
     if (n == 0 || n > IONIC_PROFILE_FW_VERSION_MAX || v[0] == ' ' ||
-        v[n - 1] == ' ')
+        v[n - 1] == ' ') {
         return false;
-    for (size_t i = 0; i < n; i++)
+    }
+    for (size_t i = 0; i < n; i++) {
         if ((unsigned char)v[i] < 0x20 || (unsigned char)v[i] > 0x7e ||
-            v[i] == '\\')
+            v[i] == '\\') {
             return false;
+        }
+    }
     return true;
 }
 
@@ -337,9 +359,10 @@ static int number(const char *raw, const char *where, uint64_t *v, char *err,
 {
     int rc = parse_u64(raw, v);
 
-    if (rc == -1)
+    if (rc == -1) {
         ernic_set_err(err, err_len, "%s: integer expected, got '%.40s'", where,
                       raw);
+    }
     return rc == -2 ? 1 : rc;
 }
 
@@ -350,8 +373,9 @@ int ionic_profile_set_stats_interval(struct ionic_profile *p, const char *raw,
     uint64_t v = 0;
     int rc = number(raw, where, &v, err, err_len);
 
-    if (rc < 0)
+    if (rc < 0) {
         return -1;
+    }
     if (rc != 0 || v < IONIC_PROFILE_STATS_INTERVAL_MIN ||
         v > IONIC_PROFILE_STATS_INTERVAL_MAX) {
         ernic_set_err(err, err_len, "%s: '%.40s' out of range %u..%u ms", where,
@@ -373,8 +397,9 @@ static int ranged(const char *raw, const char *where, uint32_t min,
     uint64_t v = 0;
     int rc = number(raw, where, &v, err, err_len);
 
-    if (rc < 0)
+    if (rc < 0) {
         return -1;
+    }
     if (rc != 0 || v < min || v > max) {
         ernic_set_err(err, err_len, "%s: '%.40s' out of range %u..%u", where,
                       raw, min, max);
@@ -393,26 +418,28 @@ int ionic_profile_set_eth_queues(struct ionic_profile *p, const char *raw,
 
 /* "auto" has to fit the MSI-X table for every valid queues.eth and
  * queues.rdma_eqs. */
-_Static_assert(1u + IONIC_PROFILE_ETH_QUEUES_MAX + IONIC_PROFILE_RDMA_EQS_MAX <=
+_Static_assert(1U + IONIC_PROFILE_ETH_QUEUES_MAX + IONIC_PROFILE_RDMA_EQS_MAX <=
                    IONIC_PROFILE_INTR_VECTORS_MAX,
                "intr_vectors = auto must not exceed the most vectors allowed");
 
 uint32_t ionic_profile_intr_vectors(const struct ionic_profile *p)
 {
-    if (p->queues.intr_vectors != IONIC_PROFILE_INTR_VECTORS_AUTO)
+    if (p->queues.intr_vectors != IONIC_PROFILE_INTR_VECTORS_AUTO) {
         return p->queues.intr_vectors;
+    }
     /* At most 1 + 64 + 32 = 97, inside IONIC_PROFILE_INTR_VECTORS_MAX. */
-    return 1u + p->queues.eth + p->queues.rdma_eqs;
+    return 1U + p->queues.eth + p->queues.rdma_eqs;
 }
 
 int ionic_profile_warning(const struct ionic_profile *p, char *msg,
                           size_t msg_len)
 {
-    uint32_t want = 1u + p->queues.eth + p->queues.rdma_eqs;
+    uint32_t want = 1U + p->queues.eth + p->queues.rdma_eqs;
     uint32_t have = ionic_profile_intr_vectors(p);
 
-    if (have >= want)
+    if (have >= want) {
         return 0;
+    }
     ernic_set_err(
         msg, msg_len,
         "queues.intr_vectors = %" PRIu32 " is less than 1 + queues.eth + "
@@ -438,7 +465,8 @@ static int set_value(struct ionic_profile *q, const struct schema_key *k,
                      char *err, size_t err_len)
 {
     uint64_t v = 0;
-    int rc, idx;
+    int rc;
+    int idx;
 
     switch (k->kind) {
     /* Named keys: a name's index in its table is its enum value. */
@@ -498,8 +526,9 @@ static int set_value(struct ionic_profile *q, const struct schema_key *k,
      */
     case KEY_ASIC_REV:
         rc = number(raw, where, &v, err, err_len);
-        if (rc < 0)
+        if (rc < 0) {
             return -1;
+        }
         if (rc != 0 || v > 255) {
             ernic_set_err(err, err_len, "%s: '%.40s' out of range 0..255",
                           where, raw);
@@ -510,14 +539,16 @@ static int set_value(struct ionic_profile *q, const struct schema_key *k,
 
     case KEY_SPEED:
         rc = number(raw, where, &v, err, err_len);
-        if (rc < 0)
+        if (rc < 0) {
             return -1;
+        }
         /* One of the IONIC_SPEED_* values in speeds[], not a range. */
-        for (size_t i = 0; rc == 0 && i < N_ELEMS(speeds); i++)
+        for (size_t i = 0; rc == 0 && i < N_ELEMS(speeds); i++) {
             if (v == speeds[i]) {
                 q->link.speed_mbps = speeds[i];
                 return 0;
             }
+        }
         ernic_set_err(
             err, err_len,
             "%s: '%.40s' is not a supported speed (1000, 10000, 25000, "
@@ -527,8 +558,9 @@ static int set_value(struct ionic_profile *q, const struct schema_key *k,
 
     case KEY_MTU:
         rc = number(raw, where, &v, err, err_len);
-        if (rc < 0)
+        if (rc < 0) {
             return -1;
+        }
         if (rc != 0 || v < IONIC_PROFILE_MTU_MIN || v > IONIC_PROFILE_MTU_MAX) {
             ernic_set_err(err, err_len, "%s: '%.40s' out of range %u..%u",
                           where, raw, IONIC_PROFILE_MTU_MIN,
@@ -589,14 +621,16 @@ int ionic_profile_apply_text(struct ionic_profile *p, const char *source,
     GError *gerr = NULL;
     int rc = -1;
 
-    if (!source)
+    if (!source) {
         source = "profile";
+    }
     if (!text && len) {
         ernic_set_err(err, err_len, "%s: no text", source);
         return -1;
     }
-    if (scan_text(&sc, source, text, len, err, err_len) != 0)
+    if (scan_text(&sc, source, text, len, err, err_len) != 0) {
         goto out;
+    }
 
     kf = g_key_file_new();
     if (len &&
@@ -610,11 +644,13 @@ int ionic_profile_apply_text(struct ionic_profile *p, const char *source,
         const struct scanned *it = &sc.items[i];
         const struct schema_key *k;
         char where[256];
-        gchar *raw, *str;
+        gchar *raw;
+        gchar *str;
         int set;
 
-        if (it->key[0] == '\0')
+        if (it->key[0] == '\0') {
             continue;
+        }
         k = find_key(it->group, it->key);
         raw = g_key_file_get_value(kf, it->group, it->key, NULL);
         str = g_key_file_get_string(kf, it->group, it->key, NULL);
@@ -631,16 +667,19 @@ int ionic_profile_apply_text(struct ionic_profile *p, const char *source,
         }
         g_free(raw);
         g_free(str);
-        if (set != 0)
+        if (set != 0) {
             goto out;
+        }
     }
     *p = q;
     rc = 0;
 out:
-    if (gerr)
+    if (gerr) {
         g_error_free(gerr);
-    if (kf)
+    }
+    if (kf) {
         g_key_file_free(kf);
+    }
     free(sc.items);
     return rc;
 }
@@ -687,8 +726,9 @@ static char *read_file(const char *path, size_t *len, char *err, size_t err_len)
     while (got < (size_t)st.st_size) {
         ssize_t n = read(fd, buf + got, (size_t)st.st_size - got);
 
-        if (n < 0 && errno == EINTR)
+        if (n < 0 && errno == EINTR) {
             continue;
+        }
         if (n <= 0) {
             ernic_set_err(
                 err, err_len, "cannot read NIC profile '%s': %s", path,
@@ -728,8 +768,9 @@ int ionic_profile_apply(struct ionic_profile *p, const char *spec, char *err,
     }
     if (is_path(spec)) {
         file = read_file(spec, &len, err, err_len);
-        if (!file)
+        if (!file) {
             return -1;
+        }
         text = file;
     } else {
         text = ionic_profile_builtin(spec);
@@ -745,8 +786,9 @@ int ionic_profile_apply(struct ionic_profile *p, const char *spec, char *err,
     }
     rc = ionic_profile_apply_text(&q, spec, text, len, err, err_len);
     free(file);
-    if (rc != 0)
+    if (rc != 0) {
         return -1;
+    }
     /* The length check above leaves room for " + ", @spec and the NUL. */
     if (used) {
         memcpy(q.chain + used, " + ", 3);
@@ -769,10 +811,11 @@ static int format_values(const struct ionic_profile *p, char *buf, size_t len)
 {
     char vectors[16];
 
-    if (p->queues.intr_vectors == IONIC_PROFILE_INTR_VECTORS_AUTO)
+    if (p->queues.intr_vectors == IONIC_PROFILE_INTR_VECTORS_AUTO) {
         snprintf(vectors, sizeof(vectors), "auto");
-    else
+    } else {
         snprintf(vectors, sizeof(vectors), "%" PRIu32, p->queues.intr_vectors);
+    }
     return snprintf(
         buf, len,
         "[identity]\n"
@@ -803,13 +846,14 @@ uint64_t ionic_profile_hash(const struct ionic_profile *p)
 {
     char buf[512];
     int n = format_values(p, buf, sizeof(buf));
-    uint64_t h = 0xcbf29ce484222325ull; /* FNV-1a 64 offset basis */
+    uint64_t h = UINT64_C(0xcbf29ce484222325); /* FNV-1a 64 offset basis */
 
-    if (n < 0 || (size_t)n >= sizeof(buf))
+    if (n < 0 || (size_t)n >= sizeof(buf)) {
         return 0;
+    }
     for (int i = 0; i < n; i++) {
         h ^= (uint8_t)buf[i];
-        h *= 0x100000001b3ull; /* FNV-1a 64 prime */
+        h *= UINT64_C(0x100000001b3); /* FNV-1a 64 prime */
     }
     return h;
 }
@@ -822,12 +866,15 @@ int ionic_profile_format(const struct ionic_profile *p, char *buf, size_t len)
 
     /* A file name could hold a newline, which would end the comment. */
     snprintf(chain, sizeof(chain), "%s", p->chain);
-    for (char *c = chain; *c; c++)
-        if ((unsigned char)*c < 0x20 || *c == 0x7f)
+    for (char *c = chain; *c; c++) {
+        if ((unsigned char)*c < 0x20 || *c == 0x7f) {
             *c = '?';
+        }
+    }
     n = format_values(p, values, sizeof(values));
-    if (n < 0 || (size_t)n >= sizeof(values))
+    if (n < 0 || (size_t)n >= sizeof(values)) {
         return -1;
+    }
     return snprintf(buf, len,
                     "# NIC profile: %s\n"
                     "# hash: 0x%016" PRIx64 "\n"

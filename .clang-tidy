@@ -95,21 +95,11 @@ Checks:
   - -cppcoreguidelines-macro-to-enum  # TODO: the same check
   - -performance-no-int-to-ptr  # TODO(16)
   - -readability-avoid-nested-conditional-operator  # TODO(16)
-  - -readability-braces-around-statements  # TODO(3830)
-  - -readability-else-after-return  # TODO(4)
   - -readability-function-cognitive-complexity  # TODO(35)
   - -readability-implicit-bool-conversion  # TODO(73)
-  - -readability-inconsistent-declaration-parameter-name  # TODO(2)
-  - -readability-inconsistent-ifelse-braces  # TODO(3)
-  - -readability-isolate-declaration  # TODO(387)
   - -readability-magic-numbers  # TODO(635)
   - -cppcoreguidelines-avoid-magic-numbers  # TODO: the same check
-  - -readability-math-missing-parentheses  # TODO(265)
-  - -readability-redundant-casting  # TODO(32)
-  - -readability-redundant-nested-if  # TODO(3)
-  - -readability-redundant-parentheses  # TODO(3)
-  - -readability-uppercase-literal-suffix  # TODO(985)
-  - -readability-use-concise-preprocessor-directives  # TODO(4)
+  - -readability-redundant-casting  # TODO(18)
 WarningsAsErrors: '*'
 
 CheckOptions:
@@ -129,6 +119,12 @@ CheckOptions:
   # Count the function's own branches, not those in the macros it uses,
   # such as a test's check macros
   readability-function-cognitive-complexity.IgnoreMacros: true
+  # Constants are mostly defined in macros, so check them too, or a
+  # suffix's case would depend on where the literal is
+  readability-uppercase-literal-suffix.IgnoreMacros: false
+  # (tolower)(c) calls the function rather than glibc's macro, which
+  # Clang reports as expanding recursively (see src/s3/s3_http.c)
+  readability-redundant-parentheses.AllowedDecls: 'tolower;toupper'
   # C has no distinct types for same-typed parameters, so the fix is a
   # parameter struct. Report a run of four or more, where swapping two
   # arguments is easiest; two or three is most of the code's functions

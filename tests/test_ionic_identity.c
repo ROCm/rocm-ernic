@@ -40,8 +40,8 @@
 static int failures;
 
 /* Where the fake driver puts its DMA areas. */
-#define PORT_INFO_PA 1024u
-#define LIF_INFO_PA  4096u
+#define PORT_INFO_PA 1024U
+#define LIF_INFO_PA  4096U
 
 /* ---- Capturing the blocks ---------------------------------------------- */
 
@@ -99,7 +99,8 @@ struct blocks {
 static void capture(struct ionic_eth_emu *emu, struct blocks *out)
 {
     static uint8_t data[DEVCMD_DATA_SIZE];
-    uint8_t cmd[64], comp[16];
+    uint8_t cmd[64];
+    uint8_t comp[16];
 
     memset(out, 0, sizeof(*out));
     memcpy(out->b[BLK_DEV_INFO], emu->bar0 + IONIC_BAR0_DEV_INFO_REGS_OFFSET,
@@ -146,9 +147,11 @@ static void capture(struct ionic_eth_emu *emu, struct blocks *out)
 /* The first offset at which block @blk of @got differs from golden, or -1. */
 static long golden_diff(const struct blocks *got, enum block blk)
 {
-    for (size_t i = 0; i < golden[blk].len; i++)
-        if (got->b[blk][i] != golden[blk].bytes[i])
+    for (size_t i = 0; i < golden[blk].len; i++) {
+        if (got->b[blk][i] != golden[blk].bytes[i]) {
             return (long)i;
+        }
+    }
     return -1;
 }
 
@@ -162,8 +165,9 @@ static struct ionic_eth_emu *make_emu(const char *ini, bool set_profile)
     struct ionic_profile p;
     char err[256];
 
-    if (!emu)
+    if (!emu) {
         return NULL;
+    }
     ionic_profile_defaults(&p);
     if (ini && ionic_profile_apply_text(&p, "row", ini, strlen(ini), err,
                                         sizeof(err)) != 0) {
@@ -171,8 +175,9 @@ static struct ionic_eth_emu *make_emu(const char *ini, bool set_profile)
         ionic_eth_emu_destroy(emu);
         return NULL;
     }
-    if (set_profile)
+    if (set_profile) {
         ionic_eth_emu_set_profile(emu, &p);
+    }
     return emu;
 }
 
@@ -209,19 +214,22 @@ static void run_golden_case(const struct golden_case *c)
         capture(emu, &got);
         ionic_eth_emu_destroy(emu);
     }
-    for (int b = 0; ok && b < BLK_COUNT; b++)
-        if (golden_diff(&got, (enum block)b) >= 0)
+    for (int b = 0; ok && b < BLK_COUNT; b++) {
+        if (golden_diff(&got, (enum block)b) >= 0) {
             ok = false;
+        }
+    }
     printf("%s %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", c->category,
            c->description, c->expected);
     if (!ok) {
         for (int b = 0; emu && b < BLK_COUNT; b++) {
             long at = golden_diff(&got, (enum block)b);
 
-            if (at >= 0)
+            if (at >= 0) {
                 printf("     %s differs at byte %ld: got 0x%02x, golden "
                        "0x%02x\n",
                        block_names[b], at, got.b[b][at], golden[b].bytes[at]);
+            }
         }
         failures++;
     }
@@ -240,15 +248,15 @@ static void run_golden_case(const struct golden_case *c)
 #define PORT_CONFIG_MTU    IONIC_PORT_INFO_CONFIG_MTU_OFF
 #define PORT_STATUS_SPEED  IONIC_PORT_INFO_STATUS_SPEED_OFF
 #define PORT_XCVR_STATE    IONIC_PORT_INFO_XCVR_STATE_OFF
-#define LIF_STATUS_SPEED   12u
+#define LIF_STATUS_SPEED   12U
 /* lif_identity eth.max_frame_size (LIFID_MAX_FRAME_SIZE_OFF, which is local
  * to ionic_eth_emu_handle_lif_identify()). */
-#define LIF_MAX_FRAME 0x01au
+#define LIF_MAX_FRAME 0x01aU
 
-#define FIELD_MAX 32u
+#define FIELD_MAX 32U
 
 /* Blocks a row's key may also change outside its own field. */
-#define ALLOW(blk)   (1u << (blk))
+#define ALLOW(blk)   (1U << (blk))
 #define SPEED_BLOCKS (ALLOW(BLK_PORT_INFO) | ALLOW(BLK_LIF_STATUS))
 #define MTU_BLOCKS   (ALLOW(BLK_PORT_INFO) | ALLOW(BLK_LIF_IDENTITY))
 
@@ -442,11 +450,13 @@ static void run_field_case(const struct field_case *c)
         ionic_eth_emu_destroy(emu);
         field_ok = memcmp(got.b[c->blk] + c->off, c->want, c->len) == 0;
         for (int b = 0; b < BLK_COUNT && rest_ok; b++) {
-            if (c->allow & ALLOW(b))
+            if (c->allow & ALLOW(b)) {
                 continue;
+            }
             for (size_t i = 0; i < golden[b].len; i++) {
-                if (b == (int)c->blk && i >= c->off && i < c->off + c->len)
+                if (b == (int)c->blk && i >= c->off && i < c->off + c->len) {
                     continue;
+                }
                 if (got.b[b][i] != golden[b].bytes[i]) {
                     rest_ok = false;
                     stray_blk = b;
@@ -463,16 +473,19 @@ static void run_field_case(const struct field_case *c)
     if (!ok) {
         if (emu && !field_ok) {
             printf("     %s +%u:", block_names[c->blk], c->off);
-            for (uint32_t i = 0; i < c->len; i++)
+            for (uint32_t i = 0; i < c->len; i++) {
                 printf(" %02x", got.b[c->blk][c->off + i]);
+            }
             printf(" (want");
-            for (uint32_t i = 0; i < c->len; i++)
+            for (uint32_t i = 0; i < c->len; i++) {
                 printf(" %02x", c->want[i]);
+            }
             printf(")\n");
         }
-        if (emu && !rest_ok)
+        if (emu && !rest_ok) {
             printf("     %s changed at byte %ld\n", block_names[stray_blk],
                    stray_at);
+        }
         failures++;
     }
 }
@@ -496,16 +509,19 @@ static void check_fw_version_shrinks(void)
         ionic_eth_emu_set_profile(emu, &p);
         fw = emu->bar0 + IONIC_BAR0_DEV_INFO_REGS_OFFSET + DEVINFO_FW_VERSION;
         ok = memcmp(fw, "v2", 3) == 0;
-        for (size_t i = 3; ok && i < DEVINFO_FWVERS_BUFLEN; i++)
-            if (fw[i] != 0)
+        for (size_t i = 3; ok && i < DEVINFO_FWVERS_BUFLEN; i++) {
+            if (fw[i] != 0) {
                 ok = false;
+            }
+        }
         ionic_eth_emu_destroy(emu);
     }
     printf("%s corner: a shorter fw_version set after a longer one; "
            "expected: 'v2' and 29 zero bytes, no stale tail\n",
            ok ? "ok  " : "FAIL");
-    if (!ok)
+    if (!ok) {
         failures++;
+    }
 }
 
 typedef void (*identify_fn)(const struct ionic_eth_emu *emu, const uint8_t *cmd,
@@ -523,7 +539,8 @@ static void check_identity_clears_window(const char *name, enum block blk,
 {
     struct ionic_eth_emu *emu = make_emu(NULL, false);
     static uint8_t data[DEVCMD_DATA_SIZE];
-    uint8_t cmd[IONIC_DEVCMD_CMD_LEN], comp[IONIC_DEVCMD_COMP_LEN];
+    uint8_t cmd[IONIC_DEVCMD_CMD_LEN];
+    uint8_t comp[IONIC_DEVCMD_COMP_LEN];
     long stale_at = -1;
 
     if (emu) {
@@ -545,18 +562,22 @@ static void check_identity_clears_window(const char *name, enum block blk,
            "byte %zu to the end of the data window\n",
            ok ? "ok  " : "FAIL", name, golden[blk].len);
     if (!ok) {
-        if (emu)
+        if (emu) {
             printf("     byte %ld is 0x%02x\n", stale_at, data[stale_at]);
+        }
         failures++;
     }
 }
 
 int main(void)
 {
-    for (size_t i = 0; i < sizeof(golden_cases) / sizeof(golden_cases[0]); i++)
+    for (size_t i = 0; i < sizeof(golden_cases) / sizeof(golden_cases[0]);
+         i++) {
         run_golden_case(&golden_cases[i]);
-    for (size_t i = 0; i < sizeof(field_cases) / sizeof(field_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(field_cases) / sizeof(field_cases[0]); i++) {
         run_field_case(&field_cases[i]);
+    }
     check_fw_version_shrinks();
     check_identity_clears_window("IDENTIFY", BLK_DEV_IDENTITY,
                                  ionic_eth_emu_handle_identify);

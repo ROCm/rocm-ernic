@@ -50,9 +50,9 @@
 
 /* Offsets in union ionic_dev_identity and union ionic_lif_identity
  * (ionic_if.h), written here independently of the emulator's copies. */
-#define DEVID_NINTRS_OFF        0x0cu
-#define DEVID_EQ_COUNT_OFF      0x1cu
-#define LIFID_CONFIG_QCOUNT_OFF 0x0b0u /* le32 queue_count[16], by qtype */
+#define DEVID_NINTRS_OFF        0x0cU
+#define DEVID_EQ_COUNT_OFF      0x1cU
+#define LIFID_CONFIG_QCOUNT_OFF 0x0b0U /* le32 queue_count[16], by qtype */
 #define QTYPE_SZ                ((size_t)12) /* struct ionic_lif_logical_qtype */
 
 static int failures;
@@ -62,8 +62,9 @@ static void report(bool ok, const char *category, const char *description,
 {
     printf("%s %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", category,
            description, expected);
-    if (!ok)
+    if (!ok) {
         failures++;
+    }
 }
 
 /* ---- Helpers ------------------------------------------------------------ */
@@ -118,12 +119,12 @@ static void read_shape(struct ionic_eth_emu *emu, struct shape *s)
     memset(data, 0, sizeof(data));
     ionic_eth_emu_handle_lif_identify(emu, cmd, comp, data);
     s->rxq = ernic_get_le32(data + LIFID_CONFIG_QCOUNT_OFF +
-                            sizeof(uint32_t) * IONIC_QTYPE_RXQ);
+                            (sizeof(uint32_t) * IONIC_QTYPE_RXQ));
     s->txq = ernic_get_le32(data + LIFID_CONFIG_QCOUNT_OFF +
-                            sizeof(uint32_t) * IONIC_QTYPE_TXQ);
+                            (sizeof(uint32_t) * IONIC_QTYPE_TXQ));
     /* eq_qtype is the fifth ionic_lif_logical_qtype after rdma+32. */
     s->lif_eqs =
-        ernic_get_le32(data + LIF_ID_RDMA_OFF + 32u + 4u * QTYPE_SZ + 4u);
+        ernic_get_le32(data + LIF_ID_RDMA_OFF + 32U + (4U * QTYPE_SZ) + 4U);
 }
 
 static uint32_t min_u32(uint32_t a, uint32_t b)
@@ -140,7 +141,7 @@ static uint32_t driver_nintrs(const struct shape *s, uint32_t cpus)
 {
     uint32_t nxqs = min_u32(min_u32(s->txq, s->rxq), cpus);
 
-    return 1u + nxqs + min_u32(s->lif_eqs, cpus);
+    return 1U + nxqs + min_u32(s->lif_eqs, cpus);
 }
 
 /* A queue's Q_INIT */
@@ -292,19 +293,20 @@ static void run_shape_case(const struct shape_case *c)
     ok = memcmp(&got, &c->want, sizeof(got)) == 0 && fits == c->want_fits &&
          got.dev_nintrs <= IONIC_MSIX_MAX_VECTORS;
     report(ok, c->category, c->description, c->expected);
-    if (!ok)
+    if (!ok) {
         printf("     got rxq %" PRIu32 " txq %" PRIu32 " lif_eqs %" PRIu32
                " dev_eqs %" PRIu32 " nintrs %" PRIu32 "; driver wants %" PRIu32
                " on %" PRIu32 " vCPUs\n",
                got.rxq, got.txq, got.lif_eqs, got.dev_eqs, got.dev_nintrs,
                driver_nintrs(&got, c->cpus), c->cpus);
+    }
     ionic_eth_emu_destroy(emu);
 }
 
 /* ---- Q_INIT of a queue the device can't set up -------------------------- */
 
-#define RING 0x0100u
-#define CQ   0x0200u
+#define RING 0x0100U
+#define CQ   0x0200U
 
 struct qinit_case {
     const char *category;
@@ -333,7 +335,7 @@ static const struct qinit_case qinit_cases[] = {
     {"negative", "Rx queue 4 with compat's 4 queues", "refused with EQID", NULL,
      IONIC_QTYPE_RXQ, 4, 2, IONIC_RC_EQID},
     {"negative", "Rx queue 0xffffffff", "refused with EQID",
-     "[queues]\neth = 64\n", IONIC_QTYPE_RXQ, 0xffffffffu, 2, IONIC_RC_EQID},
+     "[queues]\neth = 64\n", IONIC_QTYPE_RXQ, 0xffffffffU, 2, IONIC_RC_EQID},
     {"boundary", "qtype 5, one past the Ethernet qtypes",
      "refused with EQTYPE, with no write out of bounds", NULL, 5, 0, 2,
      IONIC_RC_EQTYPE},
@@ -372,17 +374,18 @@ static void run_qinit_case(const struct qinit_case *c)
         for (uint32_t i = 0; i < IONIC_EMU_ETH_QMAX; i++) {
             const struct eth_queue *q = &emu->eth_q[t][i];
 
-            if (!q->valid)
+            if (!q->valid) {
                 continue;
+            }
             nvalid++;
             /* Only a row that wants success has a depth it's safe to
              * shift by. */
             valid = valid || (want_valid && t == c->qtype && i == c->index &&
-                              q->depth == 1u << c->depth_log2);
+                              q->depth == 1U << c->depth_log2);
         }
     }
     report(status == c->want_status && valid == want_valid &&
-               nvalid == (want_valid ? 1u : 0u),
+               nvalid == (want_valid ? 1U : 0U),
            c->category, c->description, c->expected);
     ionic_eth_emu_destroy(emu);
 }
@@ -414,7 +417,7 @@ static void check_txq_past_count(void)
 {
     struct ionic_eth_emu *emu = new_emu(NULL, NULL);
     /* p_index 1 in bits 15:0, qid 4 in bits 31:24. */
-    uint64_t db = 1u | (UINT64_C(4) << 24);
+    uint64_t db = 1U | (UINT64_C(4) << 24);
 
     q_init(emu, IONIC_QTYPE_TXQ, 3, 1, RING, CQ);
     g_nwrites = 0;
@@ -432,7 +435,7 @@ static void check_vectors(void)
     struct ionic_eth_emu *emu = new_emu("generic-400g", NULL);
     uint32_t zero = 0;
     loff_t mask127 = (loff_t)IONIC_BAR0_INTR_CTRL_OFFSET +
-                     (loff_t)127 * INTR_REG_STRIDE + INTR_MASK_OFF;
+                     ((loff_t)127 * INTR_REG_STRIDE) + INTR_MASK_OFF;
 
     report(
         ionic_eth_emu_trigger_irq(emu, 127) == 0 && emu->intr_pending[127] == 1,
@@ -454,12 +457,12 @@ static uint32_t ref_fnv(uint32_t h, const uint8_t *p, size_t n)
 {
     while (n--) {
         h ^= *p++;
-        h *= 16777619u;
+        h *= 16777619U;
     }
     return h;
 }
 
-#define REF_BASIS 2166136261u
+#define REF_BASIS 2166136261U
 
 /* What the reference hashes for a row. */
 enum ref_kind {
@@ -501,7 +504,7 @@ static size_t build_flow(uint8_t *f, const struct flow *fl, size_t *l3,
     for (unsigned int i = 0; i < 3 && fl->tags[i]; i++) {
         ernic_put_be16(f + off, fl->tags[i]);
         /* TCI: VID 256 + i */
-        ernic_put_be16(f + off + 2, (uint16_t)(0x0100u + i));
+        ernic_put_be16(f + off + 2, (uint16_t)(0x0100U + i));
         off += 4;
     }
     ernic_put_be16(f + off, fl->ethertype);
@@ -518,14 +521,14 @@ static size_t build_flow(uint8_t *f, const struct flow *fl, size_t *l3,
     } else {
         uint8_t ihl = fl->ihl ? fl->ihl : 5;
 
-        memset(f + off, 0, (size_t)ihl * 4u);
+        memset(f + off, 0, (size_t)ihl * 4U);
         f[off] = (uint8_t)(((fl->version ? fl->version : 4) << 4) | ihl);
         ernic_put_be16(f + off + 6, fl->frag);
         f[off + 8] = 64;
         f[off + 9] = fl->proto;
         memcpy(f + off + 12, fl->src, 4);
         memcpy(f + off + 16, fl->dst, 4);
-        off += (size_t)ihl * 4u;
+        off += (size_t)ihl * 4U;
     }
     *l4 = off;
     ernic_put_be16(f + off, fl->sport);
@@ -540,15 +543,18 @@ static uint32_t ref_hash(const struct flow *fl, enum ref_kind kind,
     size_t alen = flow_is_v6(fl) ? 16 : 4;
     uint32_t h = REF_BASIS;
 
-    if (kind == REF_EMPTY)
+    if (kind == REF_EMPTY) {
         return REF_BASIS;
-    if (kind == REF_L2)
+    }
+    if (kind == REF_L2) {
         return ref_fnv(REF_BASIS, frame_macs, 12);
+    }
     h = ref_fnv(h, fl->src, alen);
     h = ref_fnv(h, fl->dst, alen);
     h = ref_fnv(h, &fl->proto, 1);
-    if (kind == REF_PORTS)
+    if (kind == REF_PORTS) {
         h = ref_fnv(h, f + l4, 4);
+    }
     return h;
 }
 
@@ -650,7 +656,8 @@ static const struct hash_case hash_cases[] = {
 static void run_hash_case(const struct hash_case *c)
 {
     uint8_t f[128];
-    size_t l3, l4;
+    size_t l3;
+    size_t l4;
     size_t full = build_flow(f, &c->fl, &l3, &l4);
     size_t len = c->len == -1   ? full
                  : c->len == -2 ? l4
@@ -683,7 +690,7 @@ static void run_hash_case(const struct hash_case *c)
 /* A deterministic generator, so a failing row always fails the same way. */
 static uint32_t lcg(uint32_t *s)
 {
-    *s = *s * 1664525u + 1013904223u;
+    *s = (*s * 1664525U) + 1013904223U;
     return *s;
 }
 
@@ -691,10 +698,13 @@ static uint32_t lcg(uint32_t *s)
 static size_t random_frame(uint8_t *f, uint32_t *seed)
 {
     struct flow fl = FL_TCP4();
-    size_t l3, l4;
-    uint32_t a = lcg(seed), b = lcg(seed), p = lcg(seed);
+    size_t l3;
+    size_t l4;
+    uint32_t a = lcg(seed);
+    uint32_t b = lcg(seed);
+    uint32_t p = lcg(seed);
 
-    fl.proto = (p & 1u) ? 6 : 17;
+    fl.proto = (p & 1U) ? 6 : 17;
     memcpy(fl.src, &a, 4);
     memcpy(fl.dst, &b, 4);
     fl.sport = (uint16_t)(p >> 8);
@@ -704,20 +714,23 @@ static size_t random_frame(uint8_t *f, uint32_t *seed)
 
 static void check_steer_basic(void)
 {
-    uint8_t act[IONIC_EMU_ETH_QMAX], f[128];
+    uint8_t act[IONIC_EMU_ETH_QMAX];
+    uint8_t f[128];
     uint32_t seed = 1;
     size_t len;
     bool same = true, all0 = true;
     uint32_t hits[IONIC_EMU_ETH_QMAX];
     uint8_t first;
 
-    for (uint32_t i = 0; i < IONIC_EMU_ETH_QMAX; i++)
+    for (uint32_t i = 0; i < IONIC_EMU_ETH_QMAX; i++) {
         act[i] = (uint8_t)i;
+    }
 
     len = random_frame(f, &seed);
     first = ionic_eth_emu_rx_steer(act, 16, f, len);
-    for (int i = 0; i < 1000; i++)
+    for (int i = 0; i < 1000; i++) {
         same = same && ionic_eth_emu_rx_steer(act, 16, f, len) == first;
+    }
     report(same, "corner", "the same 5-tuple steered 1,000 times",
            "the same queue each time");
 
@@ -730,7 +743,10 @@ static void check_steer_basic(void)
 
     static const uint32_t ns[] = {16, 64};
     for (size_t k = 0; k < 2; k++) {
-        uint32_t n = ns[k], missing = 0, lo = UINT32_MAX, hi = 0;
+        uint32_t n = ns[k];
+        uint32_t missing = 0;
+        uint32_t lo = UINT32_MAX;
+        uint32_t hi = 0;
         char desc[96];
 
         memset(hits, 0, sizeof(hits));
@@ -748,8 +764,10 @@ static void check_steer_basic(void)
         report(missing == 0, n == 64 ? "boundary" : "corner", desc,
                "every queue gets at least one frame");
         /* Binomial(4096, 1/n): within 4 sigma, compared as squares. */
-        double mean = 4096.0 / n, var = mean * (1.0 - 1.0 / n);
-        double dlo = (double)lo - mean, dhi = (double)hi - mean;
+        double mean = 4096.0 / n;
+        double var = mean * (1.0 - (1.0 / n));
+        double dlo = (double)lo - mean;
+        double dhi = (double)hi - mean;
         snprintf(desc, sizeof(desc),
                  "spread of 4,096 random tuples over n = %" PRIu32
                  " (min %" PRIu32 ", max %" PRIu32 ")",
@@ -765,7 +783,8 @@ static void check_steer_basic(void)
 static void q_control(struct ionic_eth_emu *emu, uint8_t qtype, uint32_t index,
                       uint8_t oper)
 {
-    uint8_t cmd[64] = {0}, comp[16] = {0xff};
+    uint8_t cmd[64] = {0};
+    uint8_t comp[16] = {0xff};
 
     cmd[0] = IONIC_CMD_Q_CONTROL;
     cmd[1] = qtype;
@@ -909,7 +928,7 @@ static const struct active_case active_cases[] = {
      NULL,
      0xf,
      0xf,
-     {{OP_CTL, 9, 0xffffffffu, IONIC_Q_ENABLE}},
+     {{OP_CTL, 9, 0xffffffffU, IONIC_Q_ENABLE}},
      0xf},
     {"boundary",
      "queues.eth = 1, queue 0 enabled",
@@ -932,34 +951,44 @@ static const struct active_case active_cases[] = {
 static void run_active_case(const struct active_case *c)
 {
     struct ionic_eth_emu *emu = new_emu(NULL, c->layer);
-    uint8_t act[IONIC_EMU_ETH_QMAX], f[128];
-    uint64_t got = 0, reached = 0, stray = 0;
-    uint32_t n, seed = 7;
+    uint8_t act[IONIC_EMU_ETH_QMAX];
+    uint8_t f[128];
+    uint64_t got = 0;
+    uint64_t reached = 0;
+    uint64_t stray = 0;
+    uint32_t n;
+    uint32_t seed = 7;
 
-    for (uint32_t i = 0; i < 64; i++)
-        if (c->init & (1ull << i))
+    for (uint32_t i = 0; i < 64; i++) {
+        if (c->init & (UINT64_C(1) << i)) {
             q_init(emu, IONIC_QTYPE_RXQ, i, (uint16_t)(1 + i), RING, CQ);
-    for (uint32_t i = 0; i < 64; i++)
-        if (c->enable & (1ull << i))
+        }
+    }
+    for (uint32_t i = 0; i < 64; i++) {
+        if (c->enable & (UINT64_C(1) << i)) {
             q_control(emu, IONIC_QTYPE_RXQ, i, IONIC_Q_ENABLE);
+        }
+    }
     for (size_t k = 0; k < 3 && c->ops[k].kind != OP_END; k++) {
         const struct q_op *op = &c->ops[k];
 
-        if (op->kind == OP_INIT)
+        if (op->kind == OP_INIT) {
             q_init(emu, op->qtype, op->index, 1, RING, CQ);
-        else
+        } else {
             q_control(emu, op->qtype, op->index, op->oper);
+        }
     }
 
     n = ionic_eth_emu_rx_active(emu, act);
-    for (uint32_t i = 0; i < n; i++)
-        got |= 1ull << act[i];
+    for (uint32_t i = 0; i < n; i++) {
+        got |= UINT64_C(1) << act[i];
+    }
     for (int i = 0; n && i < 4096; i++) {
         size_t len = random_frame(f, &seed);
         uint8_t q = ionic_eth_emu_rx_steer(act, n, f, len);
 
-        reached |= 1ull << q;
-        stray |= (1ull << q) & ~c->want;
+        reached |= UINT64_C(1) << q;
+        stray |= (UINT64_C(1) << q) & ~c->want;
     }
     if (got != c->want || (n && (reached != c->want || stray))) {
         printf("FAIL %s: %s; expected: %s (0x%016" PRIx64 "); got: active "
@@ -1003,13 +1032,13 @@ static void check_q_control_devcmd(void)
 
 /* ---- Delivery to the steered queue -------------------------------------- */
 
-#define RXQ_BASE    0x0400u
-#define RXQ_SPAN    0x0100u /* per queue: ring, CQ, one buffer */
-#define RXQ_RING(i) (RXQ_BASE + (i) * RXQ_SPAN)
-#define RXQ_CQ(i)   (RXQ_RING(i) + 0x40u)
-#define RXQ_BUF(i)  (RXQ_RING(i) + 0x80u)
-#define RXQ_BUF_CAP 0x80u
-#define RXQ_VEC(i)  (20u + (i))
+#define RXQ_BASE    0x0400U
+#define RXQ_SPAN    0x0100U /* per queue: ring, CQ, one buffer */
+#define RXQ_RING(i) (RXQ_BASE + ((i) * RXQ_SPAN))
+#define RXQ_CQ(i)   (RXQ_RING(i) + 0x40U)
+#define RXQ_BUF(i)  (RXQ_RING(i) + 0x80U)
+#define RXQ_BUF_CAP 0x80U
+#define RXQ_VEC(i)  (20U + (i))
 
 _Static_assert(RXQ_RING(16) <= GUEST_MEM_SIZE, "16 Rx queues fit g_mem");
 
@@ -1043,8 +1072,9 @@ static size_t frame_for(uint8_t *f, const struct ionic_eth_emu *emu,
     for (int i = 0; i < 100000; i++) {
         size_t len = random_frame(f, seed);
 
-        if (n && ionic_eth_emu_rx_steer(act, n, f, len) == want)
+        if (n && ionic_eth_emu_rx_steer(act, n, f, len) == want) {
             return len;
+        }
     }
     /* The row that wanted it then fails on the queue it lands on. */
     printf("FAIL setup: no tuple steers to queue %u\n", want);
@@ -1067,8 +1097,9 @@ static void tap_frame(struct ionic_eth_emu *emu, const uint8_t *f, size_t len)
 {
     static int fake_net;
 
-    if (len > sizeof(tap_buf))
+    if (len > sizeof(tap_buf)) {
         abort(); /* every frame here is built in 128 bytes */
+    }
     memcpy(tap_buf, f, len);
     emu->net = (struct ionic_eth_net *)&fake_net;
     g_net_rx_frame = tap_buf;
@@ -1080,7 +1111,8 @@ static void tap_frame(struct ionic_eth_emu *emu, const uint8_t *f, size_t len)
 static void check_delivery(void)
 {
     struct ionic_eth_emu *emu = rx_emu(4, 1);
-    uint8_t f1[128], f3[128];
+    uint8_t f1[128];
+    uint8_t f3[128];
     uint32_t seed = 11;
     size_t l1 = frame_for(f1, emu, 1, &seed);
     size_t l3 = frame_for(f3, emu, 3, &seed);
@@ -1124,8 +1156,9 @@ static void check_delivery(void)
     /* 16 queues, all with a buffer posted, then 8-15 disabled: a frame
      * steered over all 16 would land on a disabled queue. */
     emu = rx_emu(16, 1);
-    for (uint32_t i = 8; i < 16; i++)
+    for (uint32_t i = 8; i < 16; i++) {
         q_control(emu, IONIC_QTYPE_RXQ, i, IONIC_Q_DISABLE);
+    }
     seed = 15;
     bool upper = false, lower = true;
     for (int i = 0; i < 256; i++) {
@@ -1133,10 +1166,11 @@ static void check_delivery(void)
         tap_frame(emu, f1, l1);
     }
     for (uint32_t i = 0; i < 16; i++) {
-        if (i < 8)
+        if (i < 8) {
             lower = lower && cq_posted(i);
-        else
+        } else {
             upper = upper || cq_posted(i);
+        }
     }
     report(lower && !upper &&
                ionic_eth_emu_get_stats(emu)->lif[IONIC_LIF_RX_QUEUE_EMPTY] ==
@@ -1147,8 +1181,9 @@ static void check_delivery(void)
     ionic_eth_emu_destroy(emu);
 
     emu = rx_emu(4, 1);
-    for (uint32_t i = 0; i < 4; i++)
+    for (uint32_t i = 0; i < 4; i++) {
         q_control(emu, IONIC_QTYPE_RXQ, i, IONIC_Q_DISABLE);
+    }
     seed = 14;
     l1 = random_frame(f1, &seed);
     tap_frame(emu, f1, l1);
@@ -1171,27 +1206,29 @@ static void check_hash_goldens(void)
         uint32_t hash;
     } cases[] = {
         {"positive", "fixed IPv4 TCP tuple", "0xab8b421d", FL_TCP4(), 0,
-         0xab8b421du},
+         0xab8b421dU},
         {"positive", "fixed IPv6 UDP tuple", "0x4517655f", FL_UDP6(), 0,
-         0x4517655fu},
+         0x4517655fU},
         {"corner", "VLAN preserves IPv4 tuple", "0xab8b421d",
-         FL_TCP4(.tags = {0x8100}), 0, 0xab8b421du},
+         FL_TCP4(.tags = {0x8100}), 0, 0xab8b421dU},
         {"corner", "fragment excludes ports", "0x2b767992",
-         FL_TCP4(.frag = 0x2000), 0, 0x2b767992u},
+         FL_TCP4(.frag = 0x2000), 0, 0x2b767992U},
         {"negative", "invalid IPv4 version falls back to MACs", "0x4babd2e8",
-         FL_TCP4(.version = 6), 0, 0x4babd2e8u},
+         FL_TCP4(.version = 6), 0, 0x4babd2e8U},
         {"boundary", "exactly twelve MAC bytes", "0x4babd2e8", FL_TCP4(), 12,
-         0x4babd2e8u},
+         0x4babd2e8U},
         {"boundary", "eleven bytes cannot hold MACs", "0x811c9dc5", FL_TCP4(),
-         11, 0x811c9dc5u},
+         11, 0x811c9dc5U},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         uint8_t frame[128];
-        size_t l3, l4;
+        size_t l3;
+        size_t l4;
         size_t len = build_flow(frame, &cases[i].flow, &l3, &l4);
 
-        if (cases[i].truncate)
+        if (cases[i].truncate) {
             len = cases[i].truncate;
+        }
         report(ionic_eth_flow_hash(frame, len) == cases[i].hash,
                cases[i].category, cases[i].description, cases[i].expected);
     }
@@ -1217,12 +1254,13 @@ static void check_ring_wrap(void)
         size_t len = frame_for(frame, emu, 1, &seed);
         bool ok = true;
 
-        for (size_t slot = 1; slot < 4; slot++)
-            memcpy(g_mem + RXQ_RING(1) + slot * ETH_DESC_SIZE,
+        for (size_t slot = 1; slot < 4; slot++) {
+            memcpy(g_mem + RXQ_RING(1) + (slot * ETH_DESC_SIZE),
                    g_mem + RXQ_RING(1), ETH_DESC_SIZE);
+        }
         for (unsigned int n = 0; n < cases[row].packets; n++) {
             size_t slot = n % 4;
-            uint8_t *comp = g_mem + RXQ_CQ(1) + slot * ETH_COMP_SIZE;
+            uint8_t *comp = g_mem + RXQ_CQ(1) + (slot * ETH_COMP_SIZE);
 
             q->prod = (uint16_t)((q->head + 1) % 4);
             tap_frame(emu, frame, len);
@@ -1275,8 +1313,9 @@ static void check_held_frame_transition(void)
         ionic_eth_emu_queue_rx_frame(emu, frame, len);
         ionic_eth_emu_poll_rx(emu);
         ok = ok && emu->inbox_count == 1 && g_nwrites == 0;
-        for (uint32_t q = 0; q < 4; q++)
+        for (uint32_t q = 0; q < 4; q++) {
             q_control(emu, IONIC_QTYPE_RXQ, q, IONIC_Q_DISABLE);
+        }
         if (cases[row].pause_all) {
             ionic_eth_emu_poll_rx(emu);
             ok = ok && emu->inbox_count == 1 && g_nwrites == 0;
@@ -1288,8 +1327,9 @@ static void check_held_frame_transition(void)
         ok = ok && emu->inbox_count == 0 && g_nwrites == 2 &&
              memcmp(g_mem + RXQ_BUF(cases[row].target), frame, len) == 0 &&
              ionic_eth_emu_get_stats(emu)->lif[IONIC_LIF_RX_QUEUE_EMPTY] == 0;
-        for (uint32_t q = 0; q < 4; q++)
+        for (uint32_t q = 0; q < 4; q++) {
             ok = ok && cq_posted(q) == (q == cases[row].target);
+        }
         ok = ok && fault && fault->eligible == 1 && fault->fired == 0;
         ionic_eth_emu_queue_rx_frame(emu, frame, len);
         ionic_eth_emu_poll_rx(emu);
@@ -1331,8 +1371,9 @@ static void check_fault_poll_budget(void)
 
         ionic_eth_emu_set_faults(emu, set);
         rx = ionic_fault_set_get(set, IONIC_FAULT_SITE_ETH_RX);
-        for (unsigned int n = 0; n < rows[row].frames; n++)
+        for (unsigned int n = 0; n < rows[row].frames; n++) {
             ok = ionic_eth_emu_queue_rx_frame(emu, frame, len) == 0 && ok;
+        }
         ionic_eth_emu_poll_rx(emu);
         ok = ok && rx && rx->eligible == first && rx->fired == first &&
              emu->inbox_count == rows[row].frames - first && g_nwrites == 0;
@@ -1351,7 +1392,8 @@ static void check_two_queue_faults(void)
 {
     struct ionic_eth_emu *emu = rx_emu(2, 1);
     struct ionic_fault_set *set = ionic_fault_set_new();
-    struct ionic_fault *rx, *tx;
+    struct ionic_fault *rx;
+    struct ionic_fault *tx;
     uint8_t frame[128];
     uint32_t seed = 151;
     char err[128];
@@ -1377,7 +1419,7 @@ static void check_two_queue_faults(void)
     q_init(emu, IONIC_QTYPE_TXQ, 1, 22, 0x100, 0x200);
     q_control(emu, IONIC_QTYPE_TXQ, 1, IONIC_Q_ENABLE);
     for (uint16_t i = 0; i < 3; i++) {
-        uint8_t *desc = g_mem + 0x100 + (size_t)i * ETH_DESC_SIZE;
+        uint8_t *desc = g_mem + 0x100 + ((size_t)i * ETH_DESC_SIZE);
         /* p_index i + 1 in bits 15:0, qid 1 in bits 31:24. */
         uint64_t db = (uint64_t)(i + 1) | (UINT64_C(1) << 24);
 
@@ -1400,18 +1442,23 @@ static void check_two_queue_faults(void)
 
 int main(void)
 {
-    for (size_t i = 0; i < sizeof(shape_cases) / sizeof(shape_cases[0]); i++)
+    for (size_t i = 0; i < sizeof(shape_cases) / sizeof(shape_cases[0]); i++) {
         run_shape_case(&shape_cases[i]);
-    for (size_t i = 0; i < sizeof(qinit_cases) / sizeof(qinit_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(qinit_cases) / sizeof(qinit_cases[0]); i++) {
         run_qinit_case(&qinit_cases[i]);
+    }
     check_qinit_refused_keeps_queue();
     check_txq_past_count();
     check_vectors();
-    for (size_t i = 0; i < sizeof(hash_cases) / sizeof(hash_cases[0]); i++)
+    for (size_t i = 0; i < sizeof(hash_cases) / sizeof(hash_cases[0]); i++) {
         run_hash_case(&hash_cases[i]);
+    }
     check_steer_basic();
-    for (size_t i = 0; i < sizeof(active_cases) / sizeof(active_cases[0]); i++)
+    for (size_t i = 0; i < sizeof(active_cases) / sizeof(active_cases[0]);
+         i++) {
         run_active_case(&active_cases[i]);
+    }
     check_q_control_devcmd();
     check_delivery();
     check_fault_poll_budget();

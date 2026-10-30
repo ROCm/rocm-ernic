@@ -673,8 +673,9 @@ static void run_text_case(const struct text_case *c)
            c->description, c->expected);
     if (!ok) {
         printf("     error: %s\n", failed_at ? err : "(none)");
-        if (c->want_err)
+        if (c->want_err) {
             printf("     wanted an error containing: %s\n", c->want_err);
+        }
         print_profile("got", &p);
         failures++;
     }
@@ -697,11 +698,13 @@ static FILE *scratch_open(const char *path)
     /* NOLINTEND(android-cloexec-open) */
     FILE *f;
 
-    if (fd < 0)
+    if (fd < 0) {
         return NULL;
+    }
     f = fdopen(fd, "wb");
-    if (!f)
+    if (!f) {
         close(fd);
+    }
     return f;
 }
 
@@ -720,8 +723,9 @@ static const char *scratch_file(const char *name, const char *text)
         return NULL;
     }
     ok = fputs(text, f) >= 0;
-    if (fclose(f) != 0)
+    if (fclose(f) != 0) {
         ok = false;
+    }
     if (!ok) {
         printf("     setup: cannot write %s\n", path);
         return NULL;
@@ -796,10 +800,11 @@ static void run_spec_case(const struct spec_case *c)
             failures++;
             return;
         }
-        if (strncmp(c->want_chain, "compat + @", 10) == 0)
+        if (strncmp(c->want_chain, "compat + @", 10) == 0) {
             snprintf(want_chain, sizeof(want_chain), "compat + %s", spec);
-        else
+        } else {
             snprintf(want_chain, sizeof(want_chain), "%s", c->want_chain);
+        }
     } else {
         snprintf(want_chain, sizeof(want_chain), "%s", c->want_chain);
     }
@@ -826,14 +831,16 @@ static void report(bool ok, const char *category, const char *description,
 {
     printf("%s %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", category,
            description, expected);
-    if (!ok)
+    if (!ok) {
         failures++;
+    }
 }
 
 /* The built-in text of @name is byte-identical to profiles/@name.ini. */
 static void check_builtin_matches_file(const char *name)
 {
-    char path[512], desc[128];
+    char path[512];
+    char desc[128];
     const char *text = ionic_profile_builtin(name);
     char *file = NULL;
     FILE *f;
@@ -845,12 +852,14 @@ static void check_builtin_matches_file(const char *name)
         size_t len = 0;
 
         file = calloc(1, IONIC_PROFILE_FILE_MAX + 1);
-        if (file)
+        if (file) {
             len = fread(file, 1, IONIC_PROFILE_FILE_MAX, f);
+        }
         ok = file && len == strlen(text) && memcmp(file, text, len) == 0;
     }
-    if (f)
+    if (f) {
         fclose(f);
+    }
     free(file);
     snprintf(desc, sizeof(desc), "built-in %s vs profiles/%s.ini", name, name);
     report(ok, "corner", desc,
@@ -891,8 +900,10 @@ static void check_round_trip(void)
                         "speed_mbps = 400000\nxcvr = fiber\nmtu_max = 9000\n"
                         "[queues]\neth = 9\nrdma_eqs = 5\n"
                         "intr_vectors = auto\n[stats]\ninterval_ms = 250\n";
-    struct ionic_profile p, q;
-    char err[256], text[2048];
+    struct ionic_profile p;
+    struct ionic_profile q;
+    char err[256];
+    char text[2048];
     int n;
     bool ok;
 
@@ -917,7 +928,9 @@ static void check_round_trip(void)
 /* The hash depends on the values only, not on how they were layered. */
 static void check_hash(void)
 {
-    struct ionic_profile a, b, c;
+    struct ionic_profile a;
+    struct ionic_profile b;
+    struct ionic_profile c;
     char err[256];
     const char *l1 = "[link]\nspeed_mbps = 25000\n";
     const char *l2 = "[link]\nxcvr = fiber\n";
@@ -968,11 +981,12 @@ static void check_builtin_queues(void)
              p.queues.intr_vectors == rows[i].intr_vectors &&
              ionic_profile_intr_vectors(&p) == rows[i].resolved;
         report(ok, rows[i].category, rows[i].description, rows[i].expected);
-        if (!ok)
+        if (!ok) {
             printf("     error '%s'; got eth %" PRIu32 " rdma_eqs %" PRIu32
                    " intr_vectors %" PRIu32 " (%" PRIu32 ")\n",
                    err, p.queues.eth, p.queues.rdma_eqs, p.queues.intr_vectors,
                    ionic_profile_intr_vectors(&p));
+        }
     }
 }
 
@@ -1006,8 +1020,9 @@ static void check_intr_vectors(void)
         got = ionic_profile_intr_vectors(&p);
         report(got == rows[i].want, rows[i].category, rows[i].description,
                rows[i].expected);
-        if (got != rows[i].want)
+        if (got != rows[i].want) {
             printf("     got %" PRIu32 "\n", got);
+        }
     }
 }
 
@@ -1040,7 +1055,8 @@ static void check_warnings(void)
 
     for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
         struct ionic_profile p;
-        char err[256] = "", msg[512] = "";
+        char err[256] = "";
+        char msg[512] = "";
         int warned;
         bool ok;
 
@@ -1052,8 +1068,9 @@ static void check_warnings(void)
         ok = ok && (rows[i].want ? warned == 1 && strstr(msg, rows[i].want)
                                  : warned == 0);
         report(ok, rows[i].category, rows[i].description, rows[i].expected);
-        if (!ok)
+        if (!ok) {
             printf("     error '%s'; warning %d '%s'\n", err, warned, msg);
+        }
     }
 }
 
@@ -1067,8 +1084,9 @@ static void check_chain_limit(void)
 
     ionic_profile_defaults(&p);
     while (layers < 1000 &&
-           ionic_profile_apply(&p, "small-vm", err, sizeof(err)) == 0)
+           ionic_profile_apply(&p, "small-vm", err, sizeof(err)) == 0) {
         layers++;
+    }
     ok = layers > 10 && layers < 1000 &&
          strstr(err, "too many profile layers") &&
          strlen(p.chain) < IONIC_PROFILE_CHAIN_MAX;
@@ -1111,8 +1129,9 @@ static void check_bad_args(void)
          profile_is(&p, &compat);
     report(ok, "negative", "text with no source name",
            "errors name the source 'profile'");
-    if (!ok)
+    if (!ok) {
         printf("     error '%s'\n", err);
+    }
 
     err[0] = '\0';
     ok = ionic_profile_apply_text(&p, "layer1", NULL, 5, err, sizeof(err)) !=
@@ -1170,8 +1189,9 @@ static void check_format_fallbacks(void)
            "print a profile with an unnamed ASIC type and transceiver, and "
            "control characters in its chain",
            "'?' for each, so the output stays one comment line and parseable");
-    if (!ok)
+    if (!ok) {
         printf("     got %d:\n%s", n, n > 0 ? text : "");
+    }
 }
 
 /* Exact file boundaries and a FIFO with no writer exercise the real loader. */
@@ -1202,7 +1222,8 @@ static void check_file_boundaries(void)
 
     snprintf(path, sizeof(path), "%s/boundary.ini", g_tmpdir);
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-        struct ionic_profile p, before;
+        struct ionic_profile p;
+        struct ionic_profile before;
         char err[512] = "";
         bool ready = false, ok = false;
 
@@ -1217,8 +1238,9 @@ static void check_file_boundaries(void)
                 data[0] = '#';
                 ready = fwrite(data, 1, cases[i].size, f) == cases[i].size;
             }
-            if (f && fclose(f) != 0)
+            if (f && fclose(f) != 0) {
                 ready = false;
+            }
             free(data);
         }
         ionic_profile_defaults(&p);
@@ -1252,10 +1274,12 @@ int main(void)
         return 1;
     }
 
-    for (size_t i = 0; i < sizeof(text_cases) / sizeof(text_cases[0]); i++)
+    for (size_t i = 0; i < sizeof(text_cases) / sizeof(text_cases[0]); i++) {
         run_text_case(&text_cases[i]);
-    for (size_t i = 0; i < sizeof(spec_cases) / sizeof(spec_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(spec_cases) / sizeof(spec_cases[0]); i++) {
         run_spec_case(&spec_cases[i]);
+    }
     check_builtin_matches_file("compat");
     check_builtin_matches_file("small-vm");
     check_builtin_matches_file("generic-100g");

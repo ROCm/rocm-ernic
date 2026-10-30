@@ -19,12 +19,12 @@
 #include "s3/s3_target.h"
 #include "s3/s3_tcp.h"
 
-#define S3_TCP_MSS_DEFAULT 1460u
-#define S3_TCP_MSS_FLOOR   536u
-#define S3_TCP_WINDOW      65535u
-#define S3_TCP_RTO_MS      200u
-#define S3_TCP_MAX_REXMIT  8u
-#define S3_TCP_IDLE_MS     60000u
+#define S3_TCP_MSS_DEFAULT 1460U
+#define S3_TCP_MSS_FLOOR   536U
+#define S3_TCP_WINDOW      65535U
+#define S3_TCP_RTO_MS      200U
+#define S3_TCP_MAX_REXMIT  8U
+#define S3_TCP_IDLE_MS     60000U
 
 /*
  * Ceiling on what one connection may have queued towards the guest.  A
@@ -32,9 +32,9 @@
  * it, and a client that wants a large object should be using the RDMA
  * data plane, which queues nothing here at all.
  */
-#define S3_TCP_TXBUF_MAX (16u << 20)
+#define S3_TCP_TXBUF_MAX (16U << 20)
 
-#define FRAME_MAX 1514u
+#define FRAME_MAX 1514U
 
 enum s3_conn_state {
     S3_CONN_FREE = 0,
@@ -119,7 +119,7 @@ static uint32_t csum_pseudo(uint32_t src, uint32_t dst, uint16_t len)
  * than by converting the difference to int32_t, which is
  * implementation-defined for every value it would make negative.
  */
-#define SEQ_SIGN 0x80000000u
+#define SEQ_SIGN 0x80000000U
 
 static bool seq_lt(uint32_t a, uint32_t b)
 {
@@ -155,7 +155,7 @@ static uint32_t conn_iss(const struct s3_tcp *s, uint32_t peer_ip,
 
     /* Wraps every 4.8 hours */
     uint64_t now_us = s->cfg.now_us ? s->cfg.now_us() : ernic_monotonic_us();
-    uint32_t clock = (uint32_t)(now_us / 4u);
+    uint32_t clock = (uint32_t)(now_us / 4U);
     return clock + (uint32_t)ernic_siphash24(s->isn_key, tuple, sizeof(tuple));
 }
 

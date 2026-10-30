@@ -36,10 +36,10 @@
 
 #include "parse_int.h"
 
-#define ERNIC_PCI_VENDOR_ID           0x1dd8u
-#define ERNIC_PCI_DEVICE_ID           0x1002u
-#define ERNIC_PCI_SUBSYSTEM_VENDOR_ID 0x1dd8u
-#define ERNIC_PCI_SUBSYSTEM_DEVICE_ID 0x5400u
+#define ERNIC_PCI_VENDOR_ID           0x1dd8U
+#define ERNIC_PCI_DEVICE_ID           0x1002U
+#define ERNIC_PCI_SUBSYSTEM_VENDOR_ID 0x1dd8U
+#define ERNIC_PCI_SUBSYSTEM_DEVICE_ID 0x5400U
 
 /* Overridable only so the lookup can be pointed at a fixture tree. */
 #ifndef ERNIC_SYSFS_INFINIBAND
@@ -65,28 +65,35 @@ static inline int ernic_read_hex_attr(const char *name, const char *suffix,
     char *newline;
     uint32_t parsed;
 
-    if (!name || !suffix || !value)
+    if (!name || !suffix || !value) {
         return 0;
+    }
     /* A truncated path names some other file, so reject it. */
     length = snprintf(path, sizeof(path), ERNIC_SYSFS_INFINIBAND "/%s/%s", name,
                       suffix);
-    if (length < 0 || (size_t)length >= sizeof(path))
+    if (length < 0 || (size_t)length >= sizeof(path)) {
         return 0;
+    }
 
     attr = fopen(path, "re");
-    if (!attr)
+    if (!attr) {
         return 0;
+    }
     got = fgets(line, sizeof(line), attr);
     fclose(attr);
-    if (!got)
+    if (!got) {
         return 0;
+    }
 
     /* sysfs writes these as 0x%04x and a newline. */
     newline = strchr(line, '\n');
-    if (newline)
+    if (newline) {
         *newline = '\0';
-    if (strncmp(line, "0x", 2) != 0 || !ernic_parse_hex_u32(line + 2, &parsed))
+    }
+    if (strncmp(line, "0x", 2) != 0 ||
+        !ernic_parse_hex_u32(line + 2, &parsed)) {
         return 0;
+    }
     *value = parsed;
     return 1;
 }
@@ -112,16 +119,18 @@ static inline int ernic_device_tuple_matches(const char *name)
 static inline int ernic_device_requested_matches(const char *requested,
                                                  const char *name)
 {
-    if (!requested || !name)
+    if (!requested || !name) {
         return 0;
+    }
 
     return strcmp(name, requested) == 0 && ernic_device_tuple_matches(name);
 }
 
 static inline int ernic_device_matches(const char *requested, const char *name)
 {
-    if (requested)
+    if (requested) {
         return ernic_device_requested_matches(requested, name);
+    }
 
     return ernic_device_tuple_matches(name);
 }
@@ -141,11 +150,13 @@ static inline struct ibv_device *ernic_find_device(
     for (int i = 0; i < count; i++) {
         const char *name;
 
-        if (!list[i])
+        if (!list[i]) {
             continue;
+        }
         name = ibv_get_device_name(list[i]);
-        if (!name)
+        if (!name) {
             continue;
+        }
 
         if (ernic_device_matches(requested, name)) {
             *result = ERNIC_DEVICE_FOUND;
@@ -159,18 +170,19 @@ static inline struct ibv_device *ernic_find_device(
 
 static inline void ernic_report_no_device(enum ernic_device_result result)
 {
-    if (result == ERNIC_DEVICE_MISMATCH)
+    if (result == ERNIC_DEVICE_MISMATCH) {
         fprintf(stderr,
                 "RDMA_DEVICE=%s is not present in this guest - failing "
                 "rather than skipping, because the caller asserted it "
                 "exists\n",
                 ernic_requested_device());
-    else
+    } else {
         fprintf(stderr,
                 "No emulated RDMA device (PCI %04x:%04x subsystem %04x:%04x) "
                 "found - skipping test\n",
                 ERNIC_PCI_VENDOR_ID, ERNIC_PCI_DEVICE_ID,
                 ERNIC_PCI_SUBSYSTEM_VENDOR_ID, ERNIC_PCI_SUBSYSTEM_DEVICE_ID);
+    }
 }
 
 #endif /* ERNIC_TESTS_DEVICE_H */

@@ -40,8 +40,9 @@ static inline bool p4_name_printable(const char *s, size_t n)
          * or not plain char is signed. */
         unsigned char c = (unsigned char)s[i];
 
-        if (c < 0x20 || c > 0x7E)
+        if (c < 0x20 || c > 0x7E) {
             return false;
+        }
     }
     return true;
 }
@@ -65,10 +66,10 @@ static inline bool p4_name_printable(const char *s, size_t n)
  * sentinel and never match.
  */
 typedef uint16_t p4_idx_t;
-#define P4_IDX_NONE ((p4_idx_t)0xFFFFu)
+#define P4_IDX_NONE ((p4_idx_t)0xFFFFU)
 
 /* No id may collide with the sentinel, and ids are never used as indices. */
-#define P4_MAX_ID 65534u
+#define P4_MAX_ID 65534U
 
 struct p4_field {
     char name[P4_MAX_NAME + 1];
@@ -232,8 +233,8 @@ struct p4_action {
  * and refuses any other name.  Both are required, so npipelines is always
  * P4_MAX_PIPELINES.
  */
-#define P4_PIPE_INGRESS 0u
-#define P4_PIPE_EGRESS  1u
+#define P4_PIPE_INGRESS 0U
+#define P4_PIPE_EGRESS  1U
 
 #define P4_MAX_PIPELINES     2
 #define P4_MAX_TABLES        32 /* per pipeline */
@@ -251,7 +252,7 @@ struct p4_action {
  * without being bounded by the size of the document: a few kilobytes of
  * JSON can otherwise ask for a gigabyte of host heap.
  */
-#define P4_MAX_TOTAL_ENTRIES 65536u
+#define P4_MAX_TOTAL_ENTRIES 65536U
 
 /*
  * In increasing generality: a table is the most general of its keys' kinds,

@@ -38,7 +38,7 @@ typedef bool (*ernic_mesh_recv_fn)(void *opaque, uint32_t src_node, void *buf,
  * TCP_MAX_PAYLOAD_LEN in rdma_backend_tcp_priv.h, which static-asserts the
  * two agree.
  */
-#define ERNIC_MESH_MAX_MSG (16u << 20)
+#define ERNIC_MESH_MAX_MSG (16U << 20)
 
 /*
  * Most reply bytes, headers included, that a node may have asked one peer
@@ -49,7 +49,7 @@ typedef bool (*ernic_mesh_recv_fn)(void *opaque, uint32_t src_node, void *buf,
  * TCP_SENDQ_REPLY_BYTES - TCP_SENDQ_REQUEST_BYTES.  rdma_backend_tcp_priv.h
  * static-asserts that it fits.
  */
-#define ERNIC_MESH_REPLY_BUDGET (32u << 20)
+#define ERNIC_MESH_REPLY_BUDGET (32U << 20)
 
 /*
  * ernic_mesh_local_node() and ernic_mesh_node_from_gid() return UINT32_MAX

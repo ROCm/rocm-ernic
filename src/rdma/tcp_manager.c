@@ -90,8 +90,9 @@ bool tcp_node_set_alive(TcpBackendPrivate *priv, MeshNodeInfo *node, bool alive,
 
     node->is_alive = alive;
     gids = tcp_gid_claims_set_alive(priv, node->node_id, alive);
-    if (gids_changed)
+    if (gids_changed) {
         *gids_changed = gids;
+    }
     return changed;
 }
 
@@ -216,8 +217,9 @@ static uint32_t tcp_evict_dead_node(TcpBackendPrivate *priv,
 
     *old = NULL;
     if (atomic_load(&priv->stopping) ||
-        g_hash_table_size(priv->mesh_nodes) < TCP_MAX_MESH_NODES)
+        g_hash_table_size(priv->mesh_nodes) < TCP_MAX_MESH_NODES) {
         return UINT32_MAX;
+    }
 
     g_hash_table_iter_init(&iter, priv->mesh_nodes);
     while (g_hash_table_iter_next(&iter, NULL, &value)) {
@@ -225,12 +227,14 @@ static uint32_t tcp_evict_dead_node(TcpBackendPrivate *priv,
         /* Unsigned, so it's right even if the clock was near zero */
         uint64_t age = now_ms - node->last_heartbeat_ms;
 
-        if (node->is_alive || node->node_id == tcp_local_node(priv))
+        if (node->is_alive || node->node_id == tcp_local_node(priv)) {
             continue;
+        }
         conn = g_hash_table_lookup(priv->connections,
                                    GUINT_TO_POINTER(node->node_id));
-        if (conn && !tcp_conn_dead(conn))
+        if (conn && !tcp_conn_dead(conn)) {
             continue;
+        }
         /* The lower id, which registered first, breaks a tie */
         if (victim == UINT32_MAX || age > victim_age ||
             (age == victim_age && node->node_id < victim)) {
@@ -238,8 +242,9 @@ static uint32_t tcp_evict_dead_node(TcpBackendPrivate *priv,
             victim_age = age;
         }
     }
-    if (victim == UINT32_MAX)
+    if (victim == UINT32_MAX) {
         return UINT32_MAX;
+    }
 
     conn = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(victim));
     if (conn) {
@@ -284,14 +289,17 @@ static uint32_t tcp_collect_dead_claimants(TcpBackendPrivate *priv,
         uint32_t node_id = node->node_id;
         TcpConnection *conn;
 
-        if (node_id == tcp_local_node(priv))
+        if (node_id == tcp_local_node(priv)) {
             continue;
+        }
 
         conn = tcp_connection_lookup(priv, node_id);
-        if (!conn || tcp_conn_dead(conn))
+        if (!conn || tcp_conn_dead(conn)) {
             out[n++] = node_id;
-        if (conn)
+        }
+        if (conn) {
             tcp_connection_unref(conn);
+        }
     }
     return n;
 }
@@ -332,14 +340,17 @@ bool tcp_declare_dead_if_unreachable(TcpBackendPrivate *priv, uint32_t node_id)
     qemu_mutex_lock(&priv->mesh_table_lock);
     node = g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(node_id));
     conn = tcp_connection_lookup(priv, node_id);
-    if (node && (!conn || tcp_conn_dead(conn)))
+    if (node && (!conn || tcp_conn_dead(conn))) {
         declared = tcp_node_set_alive(priv, node, false, &gids);
-    if (conn)
+    }
+    if (conn) {
         tcp_connection_unref(conn);
+    }
     qemu_mutex_unlock(&priv->mesh_table_lock);
 
-    if (gids)
+    if (gids) {
         tcp_gid_claims_report_alive(node_id, false);
+    }
     return declared;
 }
 
@@ -582,8 +593,9 @@ static bool tcp_register_admit(TcpBackendPrivate *priv, TcpConnection *conn,
          * Under mesh_table_lock, so the node's claims go with its entry, as
          * far as anything that takes the lock can tell.
          */
-        if (adm->evicted != UINT32_MAX)
+        if (adm->evicted != UINT32_MAX) {
             tcp_gid_claims_forget(priv, adm->evicted);
+        }
         /* For the answer, read under the lock that guards the table */
         adm->num_nodes = g_hash_table_size(priv->mesh_nodes);
     }
@@ -625,10 +637,12 @@ static void tcp_register_declare_stale(TcpBackendPrivate *priv,
         uint32_t id = adm->stale[i];
 
         /* An evicted node's claims are gone already */
-        if (id == adm->node_id || id == adm->evicted)
+        if (id == adm->node_id || id == adm->evicted) {
             continue;
-        if (tcp_declare_dead_if_unreachable(priv, id))
+        }
+        if (tcp_declare_dead_if_unreachable(priv, id)) {
             adm->stale[n++] = id;
+        }
     }
     adm->num_stale = n;
 }
@@ -694,10 +708,12 @@ static void tcp_register_tell_mesh(TcpBackendPrivate *priv,
      */
     tcp_broadcast_topology(priv);
     tcp_broadcast_gid_table_to(priv, adm->node_id);
-    if (adm->gids_back)
+    if (adm->gids_back) {
         tcp_broadcast_node_gids(priv, adm->node_id);
-    if (adm->evicted != UINT32_MAX)
+    }
+    if (adm->evicted != UINT32_MAX) {
         tcp_broadcast_node_gids(priv, adm->evicted);
+    }
 }
 
 /*
@@ -762,15 +778,17 @@ bool tcp_manager_recv_register(TcpConnection *conn, const TcpRecvMsg *msg)
         tcp_retire_conn(adm.evicted_conn);
         tcp_connection_unref(adm.evicted_conn);
     }
-    if (adm.evicted != UINT32_MAX)
+    if (adm.evicted != UINT32_MAX) {
         rdma_info_report("TCP: the mesh is full; evicted node %u, the node "
                          "dead longest, to make room for node %u",
                          adm.evicted, adm.node_id);
+    }
     if (adm.again) {
         rdma_info_report("TCP: Node %u registered again from %s:%u",
                          adm.node_id, reg.host, reg.port);
-        if (adm.gids_back)
+        if (adm.gids_back) {
             tcp_gid_claims_report_alive(adm.node_id, true);
+        }
     } else {
         rdma_info_report("TCP: Registered node %u at %s:%u", adm.node_id,
                          reg.host, reg.port);
@@ -822,8 +840,9 @@ void tcp_manager_recv_heartbeat(TcpConnection *conn)
      */
     if (revived) {
         rdma_info_report("TCP: Node %u is answering again", conn->node_id);
-        if (gids_back)
+        if (gids_back) {
             tcp_gid_claims_report_alive(conn->node_id, true);
+        }
         tcp_broadcast_node(priv, conn->node_id);
     }
 }
@@ -993,7 +1012,8 @@ static void tcp_send_mesh_topology(TcpBackendPrivate *priv)
 
     /* Build topology payload */
     GHashTableIter iter;
-    gpointer key, value;
+    gpointer key;
+    gpointer value;
     g_hash_table_iter_init(&iter, priv->mesh_nodes);
 
     while (g_hash_table_iter_next(&iter, &key, &value)) {
@@ -1064,13 +1084,15 @@ static void tcp_snapshot_node_gids(const TcpBackendPrivate *priv,
 {
     const TcpNodeGids *claims = NULL;
 
-    if (g_hash_table_contains(priv->mesh_nodes, GUINT_TO_POINTER(node_id)))
+    if (g_hash_table_contains(priv->mesh_nodes, GUINT_TO_POINTER(node_id))) {
         claims =
             g_hash_table_lookup(priv->node_gids, GUINT_TO_POINTER(node_id));
-    if (claims && claims->alive)
+    }
+    if (claims && claims->alive) {
         tcp_fill_node_gids(out, node_id, claims->gids, claims->num_gids);
-    else
+    } else {
         tcp_fill_node_gids(out, node_id, NULL, 0);
+    }
 }
 
 /*
@@ -1096,8 +1118,9 @@ static void tcp_snapshot_node_gids(const TcpBackendPrivate *priv,
 static void tcp_send_gid_updates(TcpBackendPrivate *priv, const GArray *tables,
                                  const GArray *nodes)
 {
-    if (!tcp_has_gid_tables(priv) || !tcp_has_mesh_table(priv))
+    if (!tcp_has_gid_tables(priv) || !tcp_has_mesh_table(priv)) {
         return;
+    }
 
     /*
      * The whole table goes on the stack, in wire form, so that a slot
@@ -1131,32 +1154,37 @@ static void tcp_send_gid_updates(TcpBackendPrivate *priv, const GArray *tables,
                                    &table[num_table++]);
         }
     }
-    for (guint i = 0; i < nodes->len; i++)
+    for (guint i = 0; i < nodes->len; i++) {
         tcp_snapshot_node_gids(priv, g_array_index(nodes, uint32_t, i),
                                &changed[i]);
+    }
 
     qemu_mutex_unlock(&priv->gid_table_lock);
     qemu_mutex_unlock(&priv->mesh_table_lock);
 
-    if (overflow)
+    if (overflow) {
         tcp_report_mesh_overflow("GID table", overflow);
+    }
 
     for (guint i = 0; i < tables->len; i++) {
         TcpConnection *conn =
             tcp_connection_lookup(priv, g_array_index(tables, uint32_t, i));
 
-        for (uint32_t n = 0; n < num_table; n++)
+        for (uint32_t n = 0; n < num_table; n++) {
             tcp_send_node_gids(priv, conn, &table[n]);
+        }
         tcp_connection_unref(conn);
     }
 
     if (nodes->len > 0) {
         GPtrArray *conns = tcp_conns_snapshot(priv);
 
-        for (guint i = 0; i < nodes->len; i++)
-            for (guint c = 0; c < conns->len; c++)
+        for (guint i = 0; i < nodes->len; i++) {
+            for (guint c = 0; c < conns->len; c++) {
                 tcp_send_node_gids(priv, g_ptr_array_index(conns, c),
                                    &changed[i]);
+            }
+        }
         g_ptr_array_free(conns, TRUE);
     }
     g_free(changed);
@@ -1204,16 +1232,20 @@ static void tcp_broadcast_ask(TcpBackendPrivate *priv, bool topology,
                               uint32_t gids_of, uint32_t table_to)
     TSA_EXCLUDES(priv->broadcast_lock)
 {
-    if (!priv->is_manager)
+    if (!priv->is_manager) {
         return;
+    }
 
     qemu_mutex_lock(&priv->broadcast_lock);
-    if (topology)
+    if (topology) {
         priv->broadcast_topology = true;
-    if (gids_of != UINT32_MAX)
+    }
+    if (gids_of != UINT32_MAX) {
         g_hash_table_add(priv->broadcast_gids, GUINT_TO_POINTER(gids_of));
-    if (table_to != UINT32_MAX)
+    }
+    if (table_to != UINT32_MAX) {
         g_hash_table_add(priv->broadcast_tables, GUINT_TO_POINTER(table_to));
+    }
     priv->broadcasts_asked++;
     qemu_cond_signal(&priv->broadcast_cond);
     qemu_mutex_unlock(&priv->broadcast_lock);
@@ -1287,10 +1319,12 @@ void tcp_broadcast_pass(TcpBackendPrivate *priv)
     asked = priv->broadcasts_asked;
     qemu_mutex_unlock(&priv->broadcast_lock);
 
-    if (topology)
+    if (topology) {
         tcp_send_mesh_topology(priv);
-    if (tables->len > 0 || nodes->len > 0)
+    }
+    if (tables->len > 0 || nodes->len > 0) {
         tcp_send_gid_updates(priv, tables, nodes);
+    }
 
     qemu_mutex_lock(&priv->broadcast_lock);
     priv->broadcasts_sent = asked;
@@ -1315,12 +1349,14 @@ void *tcp_broadcast_thread(void *opaque)
     for (;;) {
         qemu_mutex_lock(&priv->broadcast_lock);
         while (atomic_load(&priv->broadcast_running) &&
-               priv->broadcasts_sent == priv->broadcasts_asked)
+               priv->broadcasts_sent == priv->broadcasts_asked) {
             qemu_cond_wait(&priv->broadcast_cond, &priv->broadcast_lock);
+        }
         qemu_mutex_unlock(&priv->broadcast_lock);
 
-        if (!atomic_load(&priv->broadcast_running))
+        if (!atomic_load(&priv->broadcast_running)) {
             break;
+        }
         tcp_broadcast_pass(priv);
     }
 
@@ -1357,7 +1393,7 @@ static bool tcp_node_silent(const TcpBackendPrivate *priv,
     TSA_REQUIRES(priv->mesh_table_lock)
 {
     return now_ms - node->last_heartbeat_ms >
-           (uint64_t)priv->health_check_interval_sec * 3000u;
+           (uint64_t)priv->health_check_interval_sec * 3000U;
 }
 
 /*
@@ -1382,8 +1418,9 @@ static void tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items,
         TcpHealthCheckItem item = {node->node_id, NULL, false, false};
         bool newly_dead = false, gids_gone = false;
 
-        if (node->node_id == tcp_local_node(priv))
+        if (node->node_id == tcp_local_node(priv)) {
             continue;
+        }
 
         /* Takes conn_table_lock, in the documented order, after this one */
         item.conn = tcp_connection_lookup(priv, node->node_id);
@@ -1407,20 +1444,23 @@ static void tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items,
                 rdma_warn_report("TCP: Node %u failed health check (last "
                                  "heartbeat: %" PRIu64 " seconds ago)",
                                  node->node_id,
-                                 (now_ms - node->last_heartbeat_ms) / 1000u);
+                                 (now_ms - node->last_heartbeat_ms) / 1000U);
                 tcp_node_set_alive(priv, node, false, &gids_gone);
                 newly_dead = true;
             }
             item.silent = true;
         }
-        if (gids_gone)
+        if (gids_gone) {
             tcp_gid_claims_report_alive(node->node_id, false);
-        if (newly_dead)
+        }
+        if (newly_dead) {
             g_array_append_val(dead, node->node_id);
+        }
 
         /* Every reference taken above lands in items, to be released */
-        if (item.conn)
+        if (item.conn) {
             g_array_append_val(items, item);
+        }
     }
     qemu_mutex_unlock(&priv->mesh_table_lock);
 }
@@ -1463,15 +1503,17 @@ static bool tcp_node_still_silent(TcpBackendPrivate *priv, uint32_t node_id)
     qemu_mutex_lock(&priv->mesh_table_lock);
     node = g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(node_id));
     evicted = !node;
-    if (node)
+    if (node) {
         silent = tcp_node_silent(priv, node, ernic_monotonic_ms());
+    }
     qemu_mutex_unlock(&priv->mesh_table_lock);
-    if (evicted)
+    if (evicted) {
         rdma_info_report("TCP: Node %u has been evicted from the mesh",
                          node_id);
-    else if (!silent)
+    } else if (!silent) {
         rdma_info_report("TCP: Node %u has answered; keeping its connection",
                          node_id);
+    }
     return silent;
 }
 
@@ -1495,12 +1537,14 @@ void tcp_health_check_retire(TcpBackendPrivate *priv, GArray *items)
         TcpHealthCheckItem *item = &g_array_index(items, TcpHealthCheckItem, i);
 
         if (!item->disconnected &&
-            !(item->silent && tcp_node_still_silent(priv, item->node_id)))
+            !(item->silent && tcp_node_still_silent(priv, item->node_id))) {
             continue;
-        if (!item->disconnected)
+        }
+        if (!item->disconnected) {
             rdma_info_report("TCP: Closing the connection to node %u, which "
                              "has stopped answering",
                              item->node_id);
+        }
         tcp_health_check_unpublish(priv, item->node_id, item->conn);
         tcp_connection_unref(item->conn);
         item->conn = NULL;
@@ -1550,9 +1594,10 @@ void *tcp_manager_health_check_thread(void *opaque)
                 &g_array_index(items, TcpHealthCheckItem, i);
             TcpConnection *conn = item->conn;
 
-            if (conn)
+            if (conn) {
                 tcp_send_heartbeat(priv, conn, TCP_MSG_HEARTBEAT,
                                    item->node_id);
+            }
         }
         tcp_health_check_release(items);
 
@@ -1567,8 +1612,9 @@ void *tcp_manager_health_check_thread(void *opaque)
          * for once the node's connection is retired, so a worker told the
          * node is dead finds the manager has closed it.
          */
-        for (guint i = 0; i < dead->len; i++)
+        for (guint i = 0; i < dead->len; i++) {
             tcp_broadcast_node(priv, g_array_index(dead, uint32_t, i));
+        }
         g_array_set_size(dead, 0);
 
         /*

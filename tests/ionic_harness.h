@@ -106,20 +106,20 @@
 
 /* The completion status a flushed work request carries, IONIC_STS_* in the
  * device and IB_WC_WR_FLUSH_ERR by the time a consumer sees it. */
-#define IH_STS_WQE_FLUSHED_ERR 4u
+#define IH_STS_WQE_FLUSHED_ERR 4U
 
-#define IH_QP_STATE    (1u << 0)
-#define IH_QP_QKEY     (1u << 6)
-#define IH_QP_AV       (1u << 7)
-#define IH_QP_RQ_PSN   (1u << 12)
-#define IH_QP_SQ_PSN   (1u << 16)
-#define IH_QP_DEST_QPN (1u << 20)
+#define IH_QP_STATE    (1U << 0)
+#define IH_QP_QKEY     (1U << 6)
+#define IH_QP_AV       (1U << 7)
+#define IH_QP_RQ_PSN   (1U << 12)
+#define IH_QP_SQ_PSN   (1U << 16)
+#define IH_QP_DEST_QPN (1U << 20)
 
 /* IB access flags, the low bits of CREATE_MR's flags */
-#define IH_ACCESS_LOCAL_WRITE   (1u << 0)
-#define IH_ACCESS_REMOTE_WRITE  (1u << 1)
-#define IH_ACCESS_REMOTE_READ   (1u << 2)
-#define IH_ACCESS_REMOTE_ATOMIC (1u << 3)
+#define IH_ACCESS_LOCAL_WRITE   (1U << 0)
+#define IH_ACCESS_REMOTE_WRITE  (1U << 1)
+#define IH_ACCESS_REMOTE_READ   (1U << 2)
+#define IH_ACCESS_REMOTE_ATOMIC (1U << 3)
 #define IH_ACCESS_ALL                                                         \
     (IH_ACCESS_LOCAL_WRITE | IH_ACCESS_REMOTE_WRITE | IH_ACCESS_REMOTE_READ | \
      IH_ACCESS_REMOTE_ATOMIC)
@@ -137,19 +137,19 @@
 #define IH_OP_LOCAL_INV      9
 
 /* enum ionic_v1_flag */
-#define IH_WQE_INLINE    0x0004u
-#define IH_WQE_SIGNALLED 0x0008u
+#define IH_WQE_INLINE    0x0004U
+#define IH_WQE_SIGNALLED 0x0008U
 
 /*
  * The SGE list's format, in the top four bits of the flags: a speculative
  * list puts a table of the SGEs' lengths, be32 or be16, in the first
  * IH_SPEC_FIRST_SGE SGE slots. No other format is defined.
  */
-#define IH_WQE_SPEC32     0x1000u
-#define IH_WQE_SPEC16     0x2000u
-#define IH_SPEC_FIRST_SGE 2u
-#define IH_SPEC32_MAX_SGE 8u
-#define IH_SPEC16_MAX_SGE 16u
+#define IH_WQE_SPEC32     0x1000U
+#define IH_WQE_SPEC16     0x2000U
+#define IH_SPEC_FIRST_SGE 2U
+#define IH_SPEC32_MAX_SGE 8U
+#define IH_SPEC16_MAX_SGE 16U
 
 /* ionic_v1_cqe: type in bits 7:5 of qid_type_flags, receive opcode in the
  * top byte of src_qpn_op */
@@ -195,7 +195,7 @@ struct ih_ring {
 };
 
 /* How many non-admin EQ events an admin wait will step over and hold. */
-#define IH_EQ_HELD_MAX 16u
+#define IH_EQ_HELD_MAX 16U
 
 struct ih {
     vfu_ctx_t *vfu;
@@ -275,7 +275,7 @@ struct ih_qp {
  * pages through a page table. The pages are 4 KiB and may be laid out in
  * any order in guest memory.
  */
-#define IH_PAGE_SIZE 4096u
+#define IH_PAGE_SIZE 4096U
 
 /*
  * An MR key as the driver builds it (ionic_mrid() in its ionic_fw.h): the
@@ -455,7 +455,7 @@ bool ih_qp_create(struct ih *h, struct ih_qp *qp, uint32_t id, uint8_t type,
  * The largest send WQE stride the device advertises (max_stride in the LIF
  * identity), as log2 bytes.
  */
-#define IH_WQE_MAX_STRIDE_LOG2 9u
+#define IH_WQE_MAX_STRIDE_LOG2 9U
 
 /*
  * ih_qp_create(), with a send queue stride of 2^@sq_stride_log2 bytes rather

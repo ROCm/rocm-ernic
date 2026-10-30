@@ -60,7 +60,7 @@
  * widest ratio: 64 KiB of fp32 source is 64 KiB, and 64 KiB of fp4
  * source widens to eight times that.
  */
-#define REGION_LEN (1024u * 1024u)
+#define REGION_LEN (1024U * 1024U)
 
 static int p4_fd = -1;
 static unsigned g_pass, g_fail;
@@ -254,7 +254,7 @@ static double now_s(void)
 /* Deterministic source bytes, so a run is repeatable. */
 static void fill_pattern(uint8_t *buf, size_t len, uint32_t seed)
 {
-    uint32_t x = seed * 2654435761u + 1u;
+    uint32_t x = seed * 2654435761U + 1U;
 
     for (size_t i = 0; i < len; i++) {
         x ^= x << 13;
@@ -327,7 +327,7 @@ static void case_convert(struct ctx *c, enum p4_fmt src, enum p4_fmt dst,
         return;
     }
 
-    fill_pattern(c->src, in_len, (uint32_t)(src * 31u + dst * 7u + n));
+    fill_pattern(c->src, in_len, (uint32_t)(src * 31U + dst * 7U + n));
     if (!p4_fmt_convert(src, dst, c->src, n, c->want)) {
         bad("%s: the oracle refused it", what);
         return;
@@ -360,7 +360,7 @@ static void case_convert(struct ctx *c, enum p4_fmt src, enum p4_fmt dst,
         return;
     }
     for (size_t i = out_len; i < REGION_LEN; i++) {
-        if (c->dst[i] != 0xA5u) {
+        if (c->dst[i] != 0xA5U) {
             bad("%s: wrote past the end of the result at byte %zu", what, i);
             return;
         }

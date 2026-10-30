@@ -32,8 +32,9 @@ struct ernic_dma {
 struct ernic_dma *ernic_dma_create(void)
 {
     struct ernic_dma *dma = calloc(1, sizeof(*dma));
-    if (!dma)
+    if (!dma) {
         return NULL;
+    }
 
     dma->sg = calloc(ERNIC_DMA_SGL_MAX, dma_sg_size());
     if (!dma->sg) {
@@ -45,8 +46,9 @@ struct ernic_dma *ernic_dma_create(void)
 
 void ernic_dma_destroy(struct ernic_dma *dma)
 {
-    if (!dma)
+    if (!dma) {
         return;
+    }
     free(dma->sg);
     free(dma);
 }
@@ -75,30 +77,36 @@ static int dma_xfer_piece(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx,
                           ERNIC_DMA_SGL_MAX, write ? PROT_WRITE : PROT_READ);
     /* -(entries needed) - 1, with errno 0: more host mappings than there's
      * room for. */
-    if (cnt < -1 && len > 1)
+    if (cnt < -1 && len > 1) {
         return DMA_PIECE_TOO_BIG;
-    if (cnt <= 0)
+    }
+    if (cnt <= 0) {
         return -EIO;
+    }
 
     size_t nsg = (size_t)cnt;
 
-    if (vfu_sgl_get(vfu_ctx, dma->sg, dma->iov, nsg, 0) < 0)
+    if (vfu_sgl_get(vfu_ctx, dma->sg, dma->iov, nsg, 0) < 0) {
         return -EIO;
+    }
 
     for (size_t i = 0; i < nsg && done < len; i++) {
         size_t n = dma->iov[i].iov_len;
 
-        if (n > len - done)
+        if (n > len - done) {
             n = len - done;
-        if (write)
+        }
+        if (write) {
             memcpy(dma->iov[i].iov_base, wbuf + off + done, n);
-        else
+        } else {
             memcpy(rbuf + off + done, dma->iov[i].iov_base, n);
+        }
         done += n;
     }
 
-    if (write)
+    if (write) {
         vfu_sgl_mark_dirty(vfu_ctx, dma->sg, nsg);
+    }
     vfu_sgl_put(vfu_ctx, dma->sg, dma->iov, nsg);
     return done == len ? 0 : -EIO;
 }
@@ -121,12 +129,14 @@ static int dma_xfer(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx, uint64_t gpa,
     size_t done = 0;
     size_t piece = len;
 
-    if (!ernic_dma_range_ok(gpa, len))
+    if (!ernic_dma_range_ok(gpa, len)) {
         return -EINVAL;
+    }
     /* libvfio-user maps a zero length to no entries, and vfu_sgl_get()
      * can't take none. */
-    if (!len)
+    if (!len) {
         return 0;
+    }
 
     /*
      * A piece that needs more entries than one list holds is split in two,
@@ -141,16 +151,18 @@ static int dma_xfer(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx, uint64_t gpa,
         int rc = dma_xfer_piece(dma, vfu_ctx, gpa + done, write, rbuf, wbuf,
                                 done, piece);
 
-        if (rc < 0)
+        if (rc < 0) {
             return rc;
+        }
         if (rc == DMA_PIECE_TOO_BIG) {
-            pending[npending++] = piece - piece / 2;
+            pending[npending++] = piece - (piece / 2);
             piece /= 2;
             continue;
         }
         done += piece;
-        if (npending == 0)
+        if (npending == 0) {
             return 0;
+        }
         piece = pending[--npending];
     }
 }
