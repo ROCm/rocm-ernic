@@ -173,7 +173,7 @@ static int frame_pcp(const uint8_t *frame, size_t len)
 
     if (!frame || len < 16)
         return -1;
-    tpid = (uint16_t)(frame[12] << 8 | frame[13]);
+    tpid = ernic_get_be16(frame + 12);
     if (tpid != 0x8100 && tpid != 0x88a8)
         return -1;
     return frame[14] >> 5;

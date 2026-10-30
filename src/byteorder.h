@@ -24,7 +24,7 @@
 
 static inline uint16_t ernic_get_le16(const uint8_t *p)
 {
-    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+    return (uint16_t)((uint32_t)p[0] | ((uint32_t)p[1] << 8));
 }
 
 static inline uint32_t ernic_get_le32(const uint8_t *p)
@@ -66,7 +66,7 @@ static inline void ernic_put_le64(uint8_t *p, uint64_t v)
 
 static inline uint16_t ernic_get_be16(const uint8_t *p)
 {
-    return (uint16_t)(((uint16_t)p[0] << 8) | (uint16_t)p[1]);
+    return (uint16_t)(((uint32_t)p[0] << 8) | (uint32_t)p[1]);
 }
 
 static inline uint32_t ernic_get_be32(const uint8_t *p)
