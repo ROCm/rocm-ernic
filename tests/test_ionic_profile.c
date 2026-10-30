@@ -1279,8 +1279,6 @@ int main(void)
         unlink(path);
         snprintf(path, sizeof(path), "%s/bad.ini", g_tmpdir);
         unlink(path);
-        snprintf(path, sizeof(path), "%s/big.ini", g_tmpdir);
-        unlink(path);
         rmdir(g_tmpdir);
     }
 
