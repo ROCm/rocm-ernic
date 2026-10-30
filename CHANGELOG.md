@@ -431,10 +431,10 @@
 * **The default log level is `warn`**, so the per-operation `INFO:` lines
   are gone in steady state; `--log-level info` restores them. `-v` /
   `--verbose` is `--log-level debug`.
-* **Log lines that print host addresses are logged at `debug`**, not
-  `info`: "PVRDMA device created", "rdma_rm_init: ENTRY", and the loopback
-  backend's "Created QP" and `loopback_mr_lkey` lines. `--log-level debug`
-  shows them.
+* **Log lines that printed host addresses are logged at `debug`**, not
+  `info`: "PVRDMA device created" and "rdma_rm_init: ENTRY".
+  `--log-level debug` shows them. The loopback backend's "Created QP" line
+  no longer prints an address, and its `loopback_mr_lkey` line is gone.
 * **Breaking:** **Two exporter gauges lost their `_total` suffix**:
   `ernic_instances_total` is now `ernic_instances` and `ernic_vms_total` is
   `ernic_vms`. Update hand-written dashboards, alerts and recording rules;
@@ -827,6 +827,10 @@
 
 ### Fixed
 
+* **The TCP backend's QP numbers could collide after wrapping.** After 2^32
+  QPs it handed out numbers from 0, including the special QPs' and those
+  live QPs still held, and a `CREATE_QP` given a live QP's number failed.
+  It now skips both, as the loopback backend does.
 * **On a mesh, a datagram could be delivered to the sender's own VM instead
   of its destination.** The node a UD or GSI address handle points at was
   looked up once, at `CREATE_AH`, and an AH whose destination GID no node

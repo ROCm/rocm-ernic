@@ -57,8 +57,8 @@
  * Below those are the leaves, held one at a time, with nothing taken under
  * them:
  *
- *   lock                     handles, local GIDs, the ionic receive callback
- *                            and the calls to it under way
+ *   lock                     handles, live QPNs, local GIDs, the ionic
+ *                            receive callback and the calls to it under way
  *   TcpConnection.lock       a connection's socket
  *   TcpConnection.sendq_lock a connection's send queue
  *   health_check_lock        stopping the health check
@@ -110,6 +110,9 @@
  * manager gives up in half the time (see tcp_send_timeout_ms()).
  */
 #define TCP_DEFAULT_SEND_TIMEOUT_MS 10000u
+/* The first QPN handed out, and the lowest after wrapping, to stay clear of
+ * the special QPs */
+#define TCP_FIRST_QPN 100u
 /*
  * How many bytes of the data path's messages a connection queues for its
  * send thread.  A request that would take the queue past
@@ -649,6 +652,8 @@ struct TcpBackendPrivate {
     uint32_t next_pd_handle TSA_GUARDED_BY(lock);
     uint32_t next_cq_handle TSA_GUARDED_BY(lock);
     uint32_t next_qpn TSA_GUARDED_BY(lock);
+    /* The live QPs' numbers, a set (GUINT_TO_POINTER), protected by lock */
+    GHashTable *qpns TSA_GUARDED_BY(lock);
 
     /* Sequence number for protocol */
     _Atomic uint32_t next_seq;

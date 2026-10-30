@@ -584,6 +584,19 @@ ernic_add_test_program(test_tcp_gid_resolve
     HEADER_DEPS vfio-user
 )
 
+# RDMA backend handle test. It links the loopback and TCP backends, reaches
+# the TCP backend's state through rdma_backend_tcp_priv.h, and stubs the
+# backends' externals; creating and destroying objects needs no socket or
+# thread.
+ernic_add_test_program(ernic-test-backend-handles
+    SOURCES
+        test_rdma_backend_handles.c
+        ${PROJECT_SOURCE_DIR}/src/rdma/rdma_backend_loopback.c
+        ${ERNIC_TCP_TEST_SOURCES}
+    DEPS glib ibverbs pthread
+    HEADER_DEPS vfio-user
+)
+
 # TCP config test. Like the GID resolution test it links the TCP backend,
 # reaches its helpers through rdma_backend_tcp_priv.h, and stubs the
 # backend's externals; choosing a role needs no socket or thread.
@@ -965,6 +978,12 @@ ernic_add_unit_test(tcp-mesh-topology-unit test_tcp_mesh_topology
 # failure, the zero-filled advertisement tail, and the mesh entry points
 # leaving a non-TCP backend's private block alone.
 ernic_add_unit_test(tcp-gid-resolve-unit test_tcp_gid_resolve TIMEOUT 30)
+
+# RDMA backend handle unit test: asserts each loopback device numbers its MR
+# lkeys from 1, TCP QPNs skip the special QPs and live QPs after wrapping,
+# and both backends' QPs and SRQs keep their state through every operation.
+ernic_add_unit_test(rdma-backend-handles-unit ernic-test-backend-handles
+    TIMEOUT 30)
 
 # TCP config unit test: asserts the manager or worker role is read from the
 # config's prefix, so a worker whose manager's host name contains

@@ -22,6 +22,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <glib.h> /* For GHashTable */
+#include <infiniband/verbs.h>
 #include "pvrdma/rdma_backend_defs.h"
 #include "qemu/thread.h" /* For QemuMutex */
 

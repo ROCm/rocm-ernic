@@ -81,6 +81,12 @@ typedef struct {
     uint32_t srq_limit TSA_GUARDED_BY(lock);
 } TcpSRQ;
 
+/* The TcpSRQ tcp_create_srq() gave @srq, or NULL */
+static TcpSRQ *tcp_srq(const RdmaBackendSRQ *srq)
+{
+    return srq->priv;
+}
+
 static TcpBackendPrivate *get_private(RdmaBackendDev *backend_dev)
 {
     if (!backend_dev) {
@@ -298,6 +304,7 @@ static void tcp_priv_free(TcpBackendPrivate *priv)
     g_hash_table_destroy(priv->connections);
     g_hash_table_destroy(priv->node_gids);
     g_hash_table_destroy(priv->gid_owner);
+    g_hash_table_destroy(priv->qpns);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
 
     if (priv->mesh_table_lock.initialized) {
@@ -363,7 +370,8 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
 
     priv->next_pd_handle = 1;
     priv->next_cq_handle = 1;
-    priv->next_qpn = 100;
+    priv->next_qpn = TCP_FIRST_QPN;
+    priv->qpns = g_hash_table_new(g_direct_hash, g_direct_equal);
     atomic_init(&priv->next_seq, 1);
     atomic_init(&priv->tcp_stats.peer_connect_attempts, 0);
     atomic_init(&priv->tcp_stats.manager_reconnects, 0);
@@ -639,8 +647,6 @@ static int tcp_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
     TcpBackendPrivate *priv = get_private(backend_dev);
     uint32_t handle;
 
-    (void)pd;
-
     if (!priv) {
         return -EINVAL;
     }
@@ -649,6 +655,7 @@ static int tcp_create_pd(RdmaBackendDev *backend_dev, RdmaBackendPD *pd)
     handle = priv->next_pd_handle++;
     qemu_mutex_unlock(&priv->lock);
 
+    pd->backend_dev = backend_dev;
     rdma_info_report("TCP: Created PD handle %u", handle);
     return 0;
 }
@@ -662,7 +669,7 @@ static int tcp_create_mr(RdmaBackendMR *mr, RdmaBackendPD *pd, int access)
     (void)pd;
     (void)access;
 
-    mr->ibmr = NULL;
+    mr->handle = 0;
 
     rdma_info_report("TCP: Created MR");
     return 0;
@@ -701,7 +708,7 @@ static int tcp_create_cq(RdmaBackendDev *backend_dev, RdmaBackendCQ *cq,
     qemu_mutex_unlock(&priv->lock);
 
     cq->backend_dev = backend_dev;
-    cq->ibcq = (struct ibv_cq *)(uintptr_t)handle;
+    cq->handle = handle;
 
     rdma_info_report("TCP: Created CQ handle %u, cqe=%" PRIu32, handle, cqe);
     return 0;
@@ -709,8 +716,7 @@ static int tcp_create_cq(RdmaBackendDev *backend_dev, RdmaBackendCQ *cq,
 
 static void tcp_destroy_cq(RdmaBackendCQ *cq)
 {
-    rdma_info_report("TCP: Destroyed CQ handle %u",
-                     (uint32_t)(uintptr_t)cq->ibcq);
+    rdma_info_report("TCP: Destroyed CQ handle %u", cq->handle);
 }
 
 /*
@@ -738,11 +744,21 @@ static int tcp_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
         return -EINVAL;
     }
 
+    /*
+     * Skip any number still in use once the counter wraps: the resource
+     * manager refuses a QPN it already has, so a live QP's number would fail
+     * the create.  There are far fewer live QPs than numbers, so this ends.
+     */
     qemu_mutex_lock(&priv->lock);
-    qpn = priv->next_qpn++;
+    do {
+        qpn = priv->next_qpn++;
+    } while (qpn < TCP_FIRST_QPN ||
+             g_hash_table_contains(priv->qpns, GUINT_TO_POINTER(qpn)));
+    g_hash_table_add(priv->qpns, GUINT_TO_POINTER(qpn));
     qemu_mutex_unlock(&priv->lock);
 
-    qp->ibqp = (struct ibv_qp *)(uintptr_t)qpn;
+    qp->backend_dev = scq->backend_dev;
+    qp->qpn = qpn;
 
     rdma_info_report("TCP: Created QP qpn=%u, type=%u", qpn, qp_type);
     return 0;
@@ -750,16 +766,21 @@ static int tcp_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
 
 static void tcp_destroy_qp(RdmaBackendQP *qp, RdmaDeviceResources *dev_res)
 {
-    uint32_t qpn = (uint32_t)(uintptr_t)qp->ibqp;
+    TcpBackendPrivate *priv = get_private(qp->backend_dev);
 
     (void)dev_res;
 
-    rdma_info_report("TCP: Destroyed QP qpn=%u", qpn);
+    if (priv) {
+        qemu_mutex_lock(&priv->lock);
+        g_hash_table_remove(priv->qpns, GUINT_TO_POINTER(qp->qpn));
+        qemu_mutex_unlock(&priv->lock);
+    }
+    rdma_info_report("TCP: Destroyed QP qpn=%u", qp->qpn);
 }
 
 static uint32_t tcp_qpn(const RdmaBackendQP *qp)
 {
-    return (uint32_t)(uintptr_t)qp->ibqp;
+    return qp->qpn;
 }
 
 /*
@@ -776,7 +797,7 @@ static int tcp_qp_state_init(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
         return -EINVAL;
     }
 
-    rdma_info_report("TCP: QP %u -> INIT", (uint32_t)(uintptr_t)qp->ibqp);
+    rdma_info_report("TCP: QP %u -> INIT", qp->qpn);
     return 0;
 }
 
@@ -791,7 +812,7 @@ static int tcp_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
                             uint32_t qkey, bool qkey_set)
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
-    uint32_t qpn = (uint32_t)(uintptr_t)qp->ibqp;
+    uint32_t qpn = qp->qpn;
     char gidbuf[TCP_GID_STR_LEN];
     uint32_t resolved;
 
@@ -880,14 +901,14 @@ static int tcp_create_srq(RdmaBackendSRQ *srq, RdmaBackendPD *pd,
     tsrq->srq_limit = srq_limit;
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
 
-    srq->ibsrq = (struct ibv_srq *)(uintptr_t)tsrq;
+    srq->priv = tsrq;
     rdma_info_report("TCP: Created SRQ max_wr=%u", max_wr);
     return 0;
 }
 
 static void tcp_destroy_srq(RdmaBackendSRQ *srq)
 {
-    TcpSRQ *tsrq = (TcpSRQ *)(uintptr_t)srq->ibsrq;
+    TcpSRQ *tsrq = tcp_srq(srq);
     if (!tsrq) {
         return;
     }
@@ -895,13 +916,13 @@ static void tcp_destroy_srq(RdmaBackendSRQ *srq)
     qemu_mutex_destroy(&tsrq->lock);
 
     g_free(tsrq);
-    srq->ibsrq = NULL;
+    srq->priv = NULL;
     rdma_info_report("TCP: Destroyed SRQ");
 }
 
 static int tcp_query_srq(RdmaBackendSRQ *srq, struct ibv_srq_attr *attr)
 {
-    TcpSRQ *tsrq = (TcpSRQ *)(uintptr_t)srq->ibsrq;
+    TcpSRQ *tsrq = tcp_srq(srq);
     if (!tsrq) {
         return -EINVAL;
     }
@@ -918,7 +939,7 @@ static int tcp_query_srq(RdmaBackendSRQ *srq, struct ibv_srq_attr *attr)
 static int tcp_modify_srq(RdmaBackendSRQ *srq, struct ibv_srq_attr *attr,
                           int mask)
 {
-    TcpSRQ *tsrq = (TcpSRQ *)(uintptr_t)srq->ibsrq;
+    TcpSRQ *tsrq = tcp_srq(srq);
     if (!tsrq) {
         return -EINVAL;
     }

@@ -18,6 +18,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <infiniband/verbs.h>
 #include "ernic_mesh.h"
 #include "pvrdma/rdma_backend_defs.h"
 #include "pvrdma/rdma_rm_defs.h"
