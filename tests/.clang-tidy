@@ -1,0 +1,17 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+# clang-tidy configuration for the tests: the top-level .clang-tidy, less
+# the checks below. nix/analysis/fuzz/.clang-tidy turns off the same ones
+# for the fuzz harnesses.
+---
+InheritParentConfig: true
+Checks:
+  # A test checks what the code writes against literal values, which is
+  # clearer than naming each one
+  - -readability-magic-numbers
+  - -cppcoreguidelines-avoid-magic-numbers
+  # A test is a long, linear scenario whose branches are its checks, and
+  # splitting it up scatters the scenario
+  - -readability-function-cognitive-complexity

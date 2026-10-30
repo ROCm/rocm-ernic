@@ -71,6 +71,16 @@ Checks:
   # parenthesised literals, which can't go wrong; UBSan reports a shift
   # that overflows
   - -bugprone-signed-bitwise
+  # Short names such as fd, rc, ok, and n are idiomatic C. Even with those
+  # allowed, and any short name last used within 25 lines of where it's
+  # declared, it reports about a thousand renames that find no bugs.
+  # hipObject turns it off too
+  - -readability-identifier-length
+  # A trailing comma after a multi-line list makes clang-format put one
+  # element on each line, so a test-case table's row of a few lines
+  # becomes one of a dozen or more. Its fix also adds a second comma to
+  # an enumerator that already has one when a multi-line comment follows
+  - -readability-trailing-comma
 
   # TODO: These checks report problems in the current code. Fix the code
   # and delete the check's line here, or move it to "Not wanted" with a
@@ -85,23 +95,20 @@ Checks:
   - -cppcoreguidelines-macro-to-enum  # TODO: the same check
   - -performance-no-int-to-ptr  # TODO(16)
   - -readability-avoid-nested-conditional-operator  # TODO(16)
-  - -readability-braces-around-statements  # TODO(3836)
+  - -readability-braces-around-statements  # TODO(3830)
   - -readability-else-after-return  # TODO(4)
-  - -readability-function-cognitive-complexity  # TODO(115)
-  # hipObject turns this off
-  - -readability-identifier-length  # TODO(4343)
-  - -readability-implicit-bool-conversion  # TODO(610)
+  - -readability-function-cognitive-complexity  # TODO(35)
+  - -readability-implicit-bool-conversion  # TODO(73)
   - -readability-inconsistent-declaration-parameter-name  # TODO(2)
   - -readability-inconsistent-ifelse-braces  # TODO(3)
-  - -readability-isolate-declaration  # TODO(386)
-  - -readability-magic-numbers  # TODO(4953)
+  - -readability-isolate-declaration  # TODO(387)
+  - -readability-magic-numbers  # TODO(635)
   - -cppcoreguidelines-avoid-magic-numbers  # TODO: the same check
-  - -readability-math-missing-parentheses  # TODO(274)
+  - -readability-math-missing-parentheses  # TODO(265)
   - -readability-redundant-casting  # TODO(32)
   - -readability-redundant-nested-if  # TODO(3)
   - -readability-redundant-parentheses  # TODO(3)
-  - -readability-trailing-comma  # TODO(1202)
-  - -readability-uppercase-literal-suffix  # TODO(1008)
+  - -readability-uppercase-literal-suffix  # TODO(985)
   - -readability-use-concise-preprocessor-directives  # TODO(4)
 WarningsAsErrors: '*'
 
@@ -112,11 +119,16 @@ CheckOptions:
   # changes to the environment, and its dlerror() keeps per-thread state.
   # Revisit this if rocm-ernic is built with another C library.
   concurrency-mt-unsafe.FunctionSet: glibc
-  # The default, Remove, mistakes the comma after an empty {} argument for
-  # a trailing comma, as in {a, b, {}, c}, and its fix doesn't compile.
-  # Multi-line lists still need a trailing comma, which also keeps
-  # clang-format from packing several elements onto a line
-  readability-trailing-comma.SingleLineCommaPolicy: Ignore
+  # In C, &&, ||, and ! produce an int that's always 0 or 1, so assigning
+  # one to a bool loses nothing. The option is new in clang-tidy 23; an
+  # earlier one that runs this check on C reports these
+  readability-implicit-bool-conversion.AllowLogicalOperatorConversion: true
+  # Powers of two are sizes, alignments, field widths, and shift counts,
+  # whose meaning the code around them makes clear
+  readability-magic-numbers.IgnorePowersOf2IntegerValues: true
+  # Count the function's own branches, not those in the macros it uses,
+  # such as a test's check macros
+  readability-function-cognitive-complexity.IgnoreMacros: true
   # C has no distinct types for same-typed parameters, so the fix is a
   # parameter struct. Report a run of four or more, where swapping two
   # arguments is easiest; two or three is most of the code's functions
