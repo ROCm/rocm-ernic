@@ -212,8 +212,8 @@ static void loopback_destroy_mr(RdmaBackendMR *mr)
 static uint32_t loopback_mr_lkey(const RdmaBackendMR *mr)
 {
     uint32_t handle = (uint32_t)(uintptr_t)mr->ibmr;
-    rdma_info_report(">>> loopback_mr_lkey: mr=%p, ibmr=%p, handle=%u",
-                     (const void *)mr, (void *)mr->ibmr, handle);
+    rdma_debug_report(">>> loopback_mr_lkey: mr=%p, ibmr=%p, handle=%u",
+                      (const void *)mr, (void *)mr->ibmr, handle);
     return handle; /* lkey = handle */
 }
 
@@ -295,8 +295,8 @@ static int loopback_create_qp(RdmaBackendQP *qp, uint8_t qp_type,
     /* Store the actual LoopbackQP pointer, not the QPN! */
     qp->ibqp = (struct ibv_qp *)lqp;
 
-    rdma_info_report("Loopback: Created QP %u type=%d (stored lqp=%p as ibqp)",
-                     lqp->qpn, qp_type, (void *)lqp);
+    rdma_debug_report("Loopback: Created QP %u type=%d (stored lqp=%p as ibqp)",
+                      lqp->qpn, qp_type, (void *)lqp);
     return 0;
 }
 
