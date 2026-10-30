@@ -388,8 +388,9 @@ static void *tcp_send_thread(void *opaque)
         qemu_mutex_lock(&conn->lock);
         if (conn->sockfd >= 0) {
             ret = tcp_send_message2(conn->priv, conn, msg->msg_type, msg->data,
-                                    msg->len, NULL, 0, msg->seq, msg->src_node,
-                                    msg->dst_node, 0, 0);
+                                    msg->len, NULL, 0, msg->seq,
+                                    (TcpMsgAddr){.src_node = msg->src_node,
+                                                 .dst_node = msg->dst_node});
         }
         qemu_mutex_unlock(&conn->lock);
 
@@ -648,7 +649,8 @@ bool tcp_send_heartbeat(TcpBackendPrivate *priv, TcpConnection *conn,
                     priv, conn, msg_type, NULL, 0,
                     atomic_fetch_add_explicit(&priv->next_seq, 1,
                                               memory_order_relaxed),
-                    tcp_local_node(priv), dst_node, 0, 0);
+                    (TcpMsgAddr){.src_node = tcp_local_node(priv),
+                                 .dst_node = dst_node});
             }
         }
         qemu_mutex_unlock(&conn->lock);

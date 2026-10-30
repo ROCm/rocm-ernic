@@ -873,8 +873,13 @@ static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
      * the depth. Bounded above, so the shift is defined. */
     uint32_t max_wr = 1u << body[26];
     uint32_t srq_handle;
-    ret = ernic_rm_alloc_srq(ctx->pvrdma_handle, pd_handle, max_wr,
-                             ERNIC_MAX_SRQ_SGE, low_wqes_limit, &srq_handle);
+    const struct ernic_rm_srq_init_attr srq_attr = {
+        .pd_handle = pd_handle,
+        .max_wr = max_wr,
+        .max_sge = ERNIC_MAX_SRQ_SGE,
+        .srq_limit = low_wqes_limit,
+    };
+    ret = ernic_rm_alloc_srq(ctx->pvrdma_handle, &srq_attr, &srq_handle);
     if (ret) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
                 "ionic_adminq CREATE_SRQ: rdma_rm_alloc_srq failed (%d)", ret);
@@ -1188,10 +1193,10 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
     };
 
     /*
-     * The ring geometry is guest exponents, and the work request counts
-     * below are shifts by them, so it is checked here too, before anything
-     * is allocated. A QP bound to an SRQ has no receive ring and leaves its
-     * geometry zero, so its RQ is held only to the ceilings.
+     * The ring geometry is guest exponents. The data path checks it too,
+     * but only once the QP is allocated, so it is checked here first. A QP
+     * bound to an SRQ has no receive ring and leaves its geometry zero, so
+     * its RQ is held only to the ceilings.
      */
     uint8_t rq_min_stride_log2 =
         rq_tbl_index_srq_id == 0xffffffffu ? IONIC_WQE_MIN_STRIDE_LOG2 : 0;
@@ -1221,10 +1226,13 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
     }
 
     uint32_t qpn;
-    ret = ernic_rm_alloc_qp(ctx->pvrdma_handle, pd_handle, ib_qp_type,
-                            1u << sq.depth_log2, /* max_send_wr */
-                            1u << rq.depth_log2, /* max_recv_wr */
-                            send_cq, recv_cq, &qpn);
+    const struct ernic_rm_qp_init_attr qp_attr = {
+        .pd_handle = pd_handle,
+        .qp_type = ib_qp_type,
+        .send_cq_handle = send_cq,
+        .recv_cq_handle = recv_cq,
+    };
+    ret = ernic_rm_alloc_qp(ctx->pvrdma_handle, &qp_attr, &qpn);
     if (ret) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
                 "ionic_adminq CREATE_QP %u: rdma_rm_alloc_qp failed (%d)",
@@ -1763,8 +1771,15 @@ static uint8_t handle_modify_qp_op(struct ionic_adminq_ctx *ctx,
             qkey_dest_qpn = dest_qpn;
     }
 
-    int ret = ernic_rm_modify_qp(ctx->pvrdma_handle, qpn, attr_mask, type_state,
-                                 sq_psn, rq_psn, qkey_dest_qpn, dgid);
+    const struct ernic_rm_qp_attr qp_attr = {
+        .attr_mask = attr_mask,
+        .type_state = type_state,
+        .sq_psn = sq_psn,
+        .rq_psn = rq_psn,
+        .qkey_dest_qpn = qkey_dest_qpn,
+        .dest_gid = dgid,
+    };
+    int ret = ernic_rm_modify_qp(ctx->pvrdma_handle, qpn, &qp_attr);
     if (ret) {
         vfu_log(ctx->vfu_ctx, LOG_ERR, "ionic_adminq MODIFY_QP %u: failed (%d)",
                 qp_id, ret);

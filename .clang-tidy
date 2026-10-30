@@ -76,7 +76,6 @@ Checks:
   # and delete the check's line here, or move it to "Not wanted" with a
   # reason. The count is the number of places clang-tidy 23 reports in
   # the Debug and Release builds together.
-  - -bugprone-easily-swappable-parameters  # TODO(400)
   - -cert-err33-c  # TODO(780): unchecked return values
   - -cppcoreguidelines-avoid-non-const-global-variables  # TODO(249)
   - -cppcoreguidelines-init-variables  # TODO(1293)
@@ -118,6 +117,10 @@ CheckOptions:
   # Multi-line lists still need a trailing comma, which also keeps
   # clang-format from packing several elements onto a line
   readability-trailing-comma.SingleLineCommaPolicy: Ignore
+  # C has no distinct types for same-typed parameters, so the fix is a
+  # parameter struct. Report a run of four or more, where swapping two
+  # arguments is easiest; two or three is most of the code's functions
+  bugprone-easily-swappable-parameters.MinimumLength: 4
 
 # Report problems in every header that isn't a system header
 HeaderFilterRegex: '.*'

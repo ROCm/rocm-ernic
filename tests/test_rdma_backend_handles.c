@@ -178,7 +178,7 @@ static guint tcp_live_qpns(TcpBackendPrivate *priv)
 static uint32_t tcp_new_qp(RdmaBackendQP *qp, RdmaBackendCQ *cq)
 {
     memset(qp, 0, sizeof(*qp));
-    if (tcp->create_qp(qp, IBV_QPT_RC, NULL, cq, cq, NULL, 1, 1, 1, 1) != 0) {
+    if (tcp->create_qp(qp, IBV_QPT_RC, NULL, cq, cq, NULL) != 0) {
         return 0;
     }
     return tcp->qpn(qp);
@@ -228,8 +228,7 @@ static void test_loopback_qp_and_srq(void)
     }
 
     memset(&qp, 0, sizeof(qp));
-    CHECK(loopback->create_qp(&qp, IBV_QPT_RC, &d.pd, &d.cq, &d.cq, NULL, 1, 1,
-                              1, 1) == 0,
+    CHECK(loopback->create_qp(&qp, IBV_QPT_RC, &d.pd, &d.cq, &d.cq, NULL) == 0,
           "create_qp failed");
     CHECK(qp.backend_dev == &d.dev, "the QP doesn't name its device");
     CHECK(loopback->qpn(&qp) >= 100, "QPN %" PRIu32 " is a special QP's",

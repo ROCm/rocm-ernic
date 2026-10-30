@@ -241,6 +241,14 @@ typedef struct {
     uint32_t dst_qpn;
 } TcpMsgHeader;
 
+/* Who a message is from and to, for its header: see tcp_send_message() */
+typedef struct {
+    uint32_t src_node;
+    uint32_t dst_node;
+    uint32_t src_qpn;
+    uint32_t dst_qpn;
+} TcpMsgAddr;
+
 /*
  * The size of a payload's hostname field.  The name ends at a NUL within the
  * field, so it is at most TCP_HOSTNAME_LEN - 1 characters, and a field with
@@ -940,13 +948,11 @@ bool tcp_hostname_get(char *host, const uint8_t *wire);
 int tcp_send_message2(const TcpBackendPrivate *priv, TcpConnection *conn,
                       TcpMsgType msg_type, const void *payload,
                       size_t payload_len, const void *payload2,
-                      size_t payload2_len, uint32_t seq, uint32_t src_node,
-                      uint32_t dst_node, uint32_t src_qpn, uint32_t dst_qpn)
+                      size_t payload2_len, uint32_t seq, TcpMsgAddr addr)
     TSA_REQUIRES(conn->lock);
 int tcp_send_message(const TcpBackendPrivate *priv, TcpConnection *conn,
                      TcpMsgType msg_type, const void *payload,
-                     size_t payload_len, uint32_t seq, uint32_t src_node,
-                     uint32_t dst_node, uint32_t src_qpn, uint32_t dst_qpn)
+                     size_t payload_len, uint32_t seq, TcpMsgAddr addr)
     TSA_REQUIRES(conn->lock);
 int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
                      const atomic_bool *running, uint64_t deadline_ms);

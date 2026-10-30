@@ -45,9 +45,7 @@ RdmaRmCQ *rdma_rm_get_cq(RdmaDeviceResources *dev_res, uint32_t cq_handle);
 void rdma_rm_dealloc_cq(RdmaDeviceResources *dev_res, uint32_t cq_handle);
 
 int rdma_rm_alloc_qp(RdmaDeviceResources *dev_res, uint32_t pd_handle,
-                     uint8_t qp_type, uint32_t max_send_wr,
-                     uint32_t max_send_sge, uint32_t send_cq_handle,
-                     uint32_t max_recv_wr, uint32_t max_recv_sge,
+                     uint8_t qp_type, uint32_t send_cq_handle,
                      uint32_t recv_cq_handle, uint32_t *qpn, uint8_t is_srq,
                      uint32_t srq_handle, RdmaRmQP **out_qp);
 RdmaRmQP *rdma_rm_get_qp(RdmaDeviceResources *dev_res, uint32_t qpn);

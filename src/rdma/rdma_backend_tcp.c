@@ -725,9 +725,7 @@ static void tcp_destroy_cq(RdmaBackendCQ *cq)
 
 static int tcp_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
                          RdmaBackendCQ *scq, RdmaBackendCQ *rcq,
-                         RdmaBackendSRQ *srq, uint32_t max_send_wr,
-                         uint32_t max_recv_wr, uint32_t max_send_sge,
-                         uint32_t max_recv_sge)
+                         RdmaBackendSRQ *srq)
 {
     TcpBackendPrivate *priv = get_private(scq->backend_dev);
     uint32_t qpn;
@@ -735,10 +733,6 @@ static int tcp_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
     (void)pd;
     (void)rcq;
     (void)srq;
-    (void)max_send_wr;
-    (void)max_recv_wr;
-    (void)max_send_sge;
-    (void)max_recv_sge;
 
     if (!priv) {
         return -EINVAL;

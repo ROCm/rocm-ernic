@@ -65,9 +65,7 @@ struct RdmaBackendOps {
     /* Queue Pair operations */
     int (*create_qp)(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
                      RdmaBackendCQ *scq, RdmaBackendCQ *rcq,
-                     RdmaBackendSRQ *srq, uint32_t max_send_wr,
-                     uint32_t max_recv_wr, uint32_t max_send_sge,
-                     uint32_t max_recv_sge);
+                     RdmaBackendSRQ *srq);
     void (*destroy_qp)(RdmaBackendQP *qp, RdmaDeviceResources *dev_res);
     uint32_t (*qpn)(const RdmaBackendQP *qp);
 

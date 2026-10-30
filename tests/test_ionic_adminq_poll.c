@@ -85,29 +85,37 @@ static void build_create_qp(uint8_t *body)
     body[62] = IONIC_QPT_UD;
 }
 
+/* A WQE for write_wqe() to put in the admin queue */
+struct aq_wqe {
+    uint32_t slot;     /* where it starts */
+    uint8_t op;        /* NOOP or CREATE_QP */
+    uint16_t len;      /* the body length its header claims */
+    uint32_t nstrides; /* how many of its strides to write */
+};
+
 /*
- * Write the WQE @op, @len into the first @nstrides of its strides, starting
- * at @slot of the ring at @gpa, the way ionic_admin_poll_locked() does: one
- * ring entry per stride, wrapping at the end of the ring.
+ * Write @w into the first @w->nstrides of its strides, starting at
+ * @w->slot of the @depth-entry ring at @gpa, the way
+ * ionic_admin_poll_locked() reads it: one ring entry per stride, wrapping at
+ * the end of the ring.
  */
-static void write_wqe(uint64_t gpa, uint32_t depth, uint32_t slot, uint8_t op,
-                      uint16_t len, uint32_t nstrides)
+static void write_wqe(uint64_t gpa, uint32_t depth, const struct aq_wqe *w)
 {
     uint8_t wqe[AQ_DEPTH * STRIDE];
 
     /* A body that isn't a CREATE_QP is a pattern; nothing reads it. */
     for (size_t i = 0; i < sizeof(wqe); i++)
         wqe[i] = (uint8_t)(i * 7 + 1);
-    wqe[0] = op;
+    wqe[0] = w->op;
     wqe[1] = 0;
-    ernic_put_le16(wqe + 2, len);
-    if (op == IONIC_V1_ADMIN_CREATE_QP)
+    ernic_put_le16(wqe + 2, w->len);
+    if (w->op == IONIC_V1_ADMIN_CREATE_QP)
         build_create_qp(wqe + HDR_LEN);
 
-    if (nstrides > sizeof(wqe) / STRIDE)
+    if (w->nstrides > sizeof(wqe) / STRIDE)
         abort();
-    for (size_t i = 0; i < nstrides; i++)
-        memcpy(g_mem + gpa + ((slot + i) % depth) * STRIDE, wqe + i * STRIDE,
+    for (size_t i = 0; i < w->nstrides; i++)
+        memcpy(g_mem + gpa + ((w->slot + i) % depth) * STRIDE, wqe + i * STRIDE,
                STRIDE);
 }
 
@@ -220,7 +228,11 @@ static void run_case(const struct poll_case *c)
 {
     bool ok = aq_reset(AQ_GPA, AQ_DEPTH_LOG2, c->slot);
 
-    write_wqe(AQ_GPA, AQ_DEPTH, c->slot, c->op, c->len, c->written);
+    write_wqe(AQ_GPA, AQ_DEPTH,
+              &(struct aq_wqe){.slot = c->slot,
+                               .op = c->op,
+                               .len = c->len,
+                               .nstrides = c->written});
     ring_doorbell(AQ_DEPTH, c->slot, c->produced);
     ionic_adminq_poll(&g_ctx, NULL);
 
@@ -253,8 +265,13 @@ static void check_refused_then_next(void)
     const uint32_t big = 5, next = big;
     bool ok = aq_reset(AQ_GPA, AQ_DEPTH_LOG2, 0);
 
-    write_wqe(AQ_GPA, AQ_DEPTH, 0, NOOP, 4 * STRIDE - HDR_LEN + 1, big);
-    write_wqe(AQ_GPA, AQ_DEPTH, next, NOOP, 0, 1);
+    write_wqe(AQ_GPA, AQ_DEPTH,
+              &(struct aq_wqe){.slot = 0,
+                               .op = NOOP,
+                               .len = 4 * STRIDE - HDR_LEN + 1,
+                               .nstrides = big});
+    write_wqe(AQ_GPA, AQ_DEPTH,
+              &(struct aq_wqe){.slot = next, .op = NOOP, .nstrides = 1});
     ring_doorbell(AQ_DEPTH, 0, big + 1);
     ionic_adminq_poll(&g_ctx, NULL);
 
@@ -279,7 +296,9 @@ static void check_unreadable_tail(void)
     const uint64_t gpa = GUEST_MEM_SIZE - 2 * STRIDE;
     bool ok = aq_reset(gpa, depth_log2, 0);
 
-    write_wqe(gpa, 1u << depth_log2, 0, NOOP, 2 * STRIDE + 1, 2);
+    write_wqe(gpa, 1u << depth_log2,
+              &(struct aq_wqe){
+                  .slot = 0, .op = NOOP, .len = 2 * STRIDE + 1, .nstrides = 2});
     ring_doorbell(1u << depth_log2, 0, 3);
     ionic_adminq_poll(&g_ctx, NULL);
 

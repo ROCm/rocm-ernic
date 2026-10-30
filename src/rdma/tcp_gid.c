@@ -520,7 +520,8 @@ void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
             priv, conn, TCP_MSG_NODE_GIDS, payload->bytes,
             sizeof(payload->bytes),
             atomic_fetch_add_explicit(&priv->next_seq, 1, memory_order_relaxed),
-            tcp_local_node(priv), conn->node_id, 0, 0);
+            (TcpMsgAddr){.src_node = tcp_local_node(priv),
+                         .dst_node = conn->node_id});
     }
     qemu_mutex_unlock(&conn->lock);
 }

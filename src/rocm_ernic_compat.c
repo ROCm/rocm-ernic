@@ -209,15 +209,16 @@ void ernic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
     rdma_rm_dealloc_cq(&pvrdma->rdma_dev_res, cq_handle);
 }
 
-int ernic_rm_alloc_srq(pvrdma_handle_t handle, uint32_t pd_handle,
-                       uint32_t max_wr, uint32_t max_sge, uint32_t srq_limit,
+int ernic_rm_alloc_srq(pvrdma_handle_t handle,
+                       const struct ernic_rm_srq_init_attr *attr,
                        uint32_t *srq_handle)
 {
     PVRDMADev *pvrdma = handle;
     if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
         return -EINVAL;
-    return rdma_rm_alloc_srq(&pvrdma->rdma_dev_res, pd_handle, max_wr, max_sge,
-                             srq_limit, srq_handle);
+    return rdma_rm_alloc_srq(&pvrdma->rdma_dev_res, attr->pd_handle,
+                             attr->max_wr, attr->max_sge, attr->srq_limit,
+                             srq_handle);
 }
 
 void ernic_rm_dealloc_srq(pvrdma_handle_t handle, uint32_t srq_handle)
@@ -293,18 +294,16 @@ void ernic_rm_dealloc_pd(pvrdma_handle_t handle, uint32_t pd_handle)
     rdma_rm_dealloc_pd(&pvrdma->rdma_dev_res, pd_handle);
 }
 
-int ernic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
-                      uint8_t qp_type, uint32_t max_send_wr,
-                      uint32_t max_recv_wr, uint32_t send_cq_handle,
-                      uint32_t recv_cq_handle, uint32_t *qpn)
+int ernic_rm_alloc_qp(pvrdma_handle_t handle,
+                      const struct ernic_rm_qp_init_attr *attr, uint32_t *qpn)
 {
     PVRDMADev *pvrdma = handle;
     if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
         return -EINVAL;
     RdmaRmQP *out_qp = NULL;
-    return rdma_rm_alloc_qp(&pvrdma->rdma_dev_res, pd_handle, qp_type,
-                            max_send_wr, 16, send_cq_handle, max_recv_wr, 16,
-                            recv_cq_handle, qpn, 0, 0, &out_qp);
+    return rdma_rm_alloc_qp(&pvrdma->rdma_dev_res, attr->pd_handle,
+                            attr->qp_type, attr->send_cq_handle,
+                            attr->recv_cq_handle, qpn, 0, 0, &out_qp);
 }
 
 void ernic_rm_dealloc_qp(pvrdma_handle_t handle, uint32_t qpn)
@@ -334,9 +333,8 @@ void ernic_rm_dealloc_mr(pvrdma_handle_t handle, uint32_t mr_handle)
     rdma_rm_dealloc_mr(&pvrdma->rdma_dev_res, mr_handle);
 }
 
-int ernic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
-                       uint8_t type_state, uint32_t sq_psn, uint32_t rq_psn,
-                       uint32_t qkey_dest_qpn, const uint8_t *dest_gid_16bytes)
+int ernic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn,
+                       const struct ernic_rm_qp_attr *attr)
 {
     PVRDMADev *pvrdma = handle;
     if (!pvrdma || !pvrdma->parent_obj.vfu_ctx)
@@ -346,22 +344,23 @@ int ernic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
      * Map ionic QP state values to ibv_qp_state.  ionic uses the same
      * numeric encoding as IB (RESET=0, INIT=1, RTR=2, RTS=3, SQD=4,
      * SQE=5, ERROR=6) so a direct cast is safe for the common path. */
-    enum ibv_qp_state to_state = (enum ibv_qp_state)(type_state & 0x0fu);
+    enum ibv_qp_state to_state = (enum ibv_qp_state)(attr->type_state & 0x0fu);
 
     /* Build a minimal dgid from the raw bytes provided by the caller. */
     union ibv_gid dgid;
-    if (dest_gid_16bytes)
-        memcpy(&dgid, dest_gid_16bytes, sizeof(dgid));
+    if (attr->dest_gid)
+        memcpy(&dgid, attr->dest_gid, sizeof(dgid));
     else
         memset(&dgid, 0, sizeof(dgid));
 
     /* dest QPN sits in the lower 24 bits of qkey_dest_qpn when sending UD. */
-    uint32_t dqpn = qkey_dest_qpn & 0x00ffffffu;
-    uint32_t qkey = qkey_dest_qpn >> 24;
+    uint32_t dqpn = attr->qkey_dest_qpn & 0x00ffffffu;
+    uint32_t qkey = attr->qkey_dest_qpn >> 24;
 
     return rdma_rm_modify_qp(&pvrdma->rdma_dev_res, &pvrdma->backend_dev, qpn,
-                             attr_mask, 0, /* sgid_idx: use default GID */
-                             &dgid, dqpn, to_state, qkey, rq_psn, sq_psn);
+                             attr->attr_mask, 0, /* sgid_idx: use default GID */
+                             &dgid, dqpn, to_state, qkey, attr->rq_psn,
+                             attr->sq_psn);
 }
 
 int ernic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,

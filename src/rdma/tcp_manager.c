@@ -363,7 +363,7 @@ static void tcp_refuse_registration(TcpBackendPrivate *priv,
     tcp_send_message(
         priv, conn, TCP_MSG_REGISTER_RESP, nak, sizeof(nak),
         atomic_fetch_add_explicit(&priv->next_seq, 1, memory_order_relaxed),
-        tcp_local_node(priv), dst, 0, 0);
+        (TcpMsgAddr){.src_node = tcp_local_node(priv), .dst_node = dst});
     qemu_mutex_unlock(&conn->lock);
 }
 
@@ -659,7 +659,8 @@ static void tcp_register_answer(TcpBackendPrivate *priv, TcpConnection *conn,
     tcp_send_message(
         priv, conn, TCP_MSG_REGISTER_RESP, resp, sizeof(resp),
         atomic_fetch_add_explicit(&priv->next_seq, 1, memory_order_relaxed),
-        tcp_local_node(priv), adm->node_id, 0, 0);
+        (TcpMsgAddr){.src_node = tcp_local_node(priv),
+                     .dst_node = adm->node_id});
     qemu_mutex_unlock(&conn->lock);
 }
 
@@ -845,11 +846,13 @@ void tcp_manager_relay_ionic(TcpBackendPrivate *priv, const TcpRecvMsg *msg)
          * is what keeps a destination that has stopped reading from costing
          * the sender its connection to the manager.
          */
-        relayed =
-            fwd->sockfd >= 0 &&
-            tcp_send_message(priv, fwd, TCP_MSG_IONIC, msg->payload,
-                             hdr->msg_len, hdr->seq, hdr->src_node_id,
-                             hdr->dst_node_id, hdr->src_qpn, hdr->dst_qpn) == 0;
+        relayed = fwd->sockfd >= 0 &&
+                  tcp_send_message(priv, fwd, TCP_MSG_IONIC, msg->payload,
+                                   hdr->msg_len, hdr->seq,
+                                   (TcpMsgAddr){.src_node = hdr->src_node_id,
+                                                .dst_node = hdr->dst_node_id,
+                                                .src_qpn = hdr->src_qpn,
+                                                .dst_qpn = hdr->dst_qpn}) == 0;
         qemu_mutex_unlock(&fwd->lock);
     }
     tcp_connection_unref(fwd);
@@ -1036,7 +1039,8 @@ static void tcp_send_mesh_topology(TcpBackendPrivate *priv)
                              sizeof(topo),
                              atomic_fetch_add_explicit(&priv->next_seq, 1,
                                                        memory_order_relaxed),
-                             tcp_local_node(priv), conn->node_id, 0, 0);
+                             (TcpMsgAddr){.src_node = tcp_local_node(priv),
+                                          .dst_node = conn->node_id});
         }
         qemu_mutex_unlock(&conn->lock);
     }
