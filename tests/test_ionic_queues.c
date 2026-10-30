@@ -143,22 +143,29 @@ static uint32_t driver_nintrs(const struct shape *s, uint32_t cpus)
     return 1u + nxqs + min_u32(s->lif_eqs, cpus);
 }
 
-/* Q_INIT for @qtype/@index with a 2^@depth_log2-entry ring at @ring.
- * Returns the completion's status. */
-static uint8_t q_init_depth(struct ionic_eth_emu *emu, uint8_t qtype,
-                            uint32_t index, uint8_t depth_log2, uint16_t intr,
-                            uint64_t ring, uint64_t cq)
+/* A queue's Q_INIT */
+struct q_init_cmd {
+    uint8_t qtype;
+    uint32_t index;
+    uint8_t depth_log2;
+    uint16_t intr;
+    uint64_t ring, cq; /* guest addresses */
+};
+
+/* Q_INIT @q; returns the completion's status. */
+static uint8_t q_init_depth(struct ionic_eth_emu *emu,
+                            const struct q_init_cmd *q)
 {
     uint8_t cmd[64] = {0};
     uint8_t comp[16] = {0};
 
     cmd[0] = IONIC_CMD_Q_INIT;
-    cmd[4] = qtype;
-    ernic_put_le32(cmd + 8, index);
-    ernic_put_le16(cmd + 14, intr);
-    cmd[19] = depth_log2;
-    ernic_put_le64(cmd + 20, ring);
-    ernic_put_le64(cmd + 28, cq);
+    cmd[4] = q->qtype;
+    ernic_put_le32(cmd + 8, q->index);
+    ernic_put_le16(cmd + 14, q->intr);
+    cmd[19] = q->depth_log2;
+    ernic_put_le64(cmd + 20, q->ring);
+    ernic_put_le64(cmd + 28, q->cq);
     ionic_eth_emu_handle_q_init(emu, cmd, comp);
     return comp[0];
 }
@@ -167,7 +174,14 @@ static uint8_t q_init_depth(struct ionic_eth_emu *emu, uint8_t qtype,
 static uint8_t q_init(struct ionic_eth_emu *emu, uint8_t qtype, uint32_t index,
                       uint16_t intr, uint64_t ring, uint64_t cq)
 {
-    return q_init_depth(emu, qtype, index, 2, intr, ring, cq);
+    const struct q_init_cmd q = {.qtype = qtype,
+                                 .index = index,
+                                 .depth_log2 = 2,
+                                 .intr = intr,
+                                 .ring = ring,
+                                 .cq = cq};
+
+    return q_init_depth(emu, &q);
 }
 
 /* ---- Identity and the vector budget ------------------------------------ */
@@ -342,12 +356,18 @@ static const struct qinit_case qinit_cases[] = {
 static void run_qinit_case(const struct qinit_case *c)
 {
     struct ionic_eth_emu *emu = new_emu(NULL, c->layer);
+    const struct q_init_cmd cmd = {.qtype = c->qtype,
+                                   .index = c->index,
+                                   .depth_log2 = c->depth_log2,
+                                   .intr = 1,
+                                   .ring = RING,
+                                   .cq = CQ};
     bool want_valid = c->want_status == IONIC_RC_SUCCESS;
     unsigned nvalid = 0;
     bool valid = false;
     uint8_t status;
 
-    status = q_init_depth(emu, c->qtype, c->index, c->depth_log2, 1, RING, CQ);
+    status = q_init_depth(emu, &cmd);
     for (uint8_t t = 0; t < IONIC_QTYPE_ETH_MAX; t++) {
         for (uint32_t i = 0; i < IONIC_EMU_ETH_QMAX; i++) {
             const struct eth_queue *q = &emu->eth_q[t][i];
@@ -373,7 +393,13 @@ static void check_qinit_refused_keeps_queue(void)
     struct ionic_eth_emu *emu = new_emu(NULL, NULL);
     const struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_TXQ][1];
     uint8_t first = q_init(emu, IONIC_QTYPE_TXQ, 1, 1, RING, CQ);
-    uint8_t second = q_init_depth(emu, IONIC_QTYPE_TXQ, 1, 16, 7, 0x900, 0xa00);
+    const struct q_init_cmd deeper = {.qtype = IONIC_QTYPE_TXQ,
+                                      .index = 1,
+                                      .depth_log2 = 16,
+                                      .intr = 7,
+                                      .ring = 0x900,
+                                      .cq = 0xa00};
+    uint8_t second = q_init_depth(emu, &deeper);
 
     report(first == IONIC_RC_SUCCESS && second == IONIC_RC_ERANGE && q->valid &&
                q->depth == 4 && q->intr_index == 1 && q->ring_base == RING &&

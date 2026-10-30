@@ -109,18 +109,12 @@ static void none_destroy_cq(RdmaBackendCQ *cq)
 /* QP operations - stub implementations */
 static int none_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
                           RdmaBackendCQ *scq, RdmaBackendCQ *rcq,
-                          RdmaBackendSRQ *srq, uint32_t max_send_wr,
-                          uint32_t max_recv_wr, uint32_t max_send_sge,
-                          uint32_t max_recv_sge)
+                          RdmaBackendSRQ *srq)
 {
     (void)qp_type;
     (void)pd;
     (void)rcq;
     (void)srq;
-    (void)max_send_wr;
-    (void)max_recv_wr;
-    (void)max_send_sge;
-    (void)max_recv_sge;
 
     qp->backend_dev = scq->backend_dev;
     qp->priv = NULL;

@@ -96,8 +96,7 @@ struct s3_tcp {
 /* ------------------------------------------------------------------ */
 
 /* The sum of the TCP pseudo-header, for net_csum_add() to start from. */
-static uint32_t csum_pseudo(uint32_t src, uint32_t dst, uint8_t proto,
-                            uint16_t len)
+static uint32_t csum_pseudo(uint32_t src, uint32_t dst, uint16_t len)
 {
     uint32_t sum = 0;
 
@@ -105,7 +104,7 @@ static uint32_t csum_pseudo(uint32_t src, uint32_t dst, uint8_t proto,
     sum += src & 0xffff;
     sum += (dst >> 16) & 0xffff;
     sum += dst & 0xffff;
-    sum += proto;
+    sum += IP_PROTOCOL_TCP;
     sum += len;
     return sum;
 }
@@ -261,28 +260,34 @@ static void send_tcp(struct s3_tcp *s, const struct s3_conn *c, uint32_t seq,
         memcpy(tcp + hdrlen, payload, payload_len);
     }
 
-    uint32_t sum = csum_pseudo(s->cfg.ip, c->peer_ip, IP_PROTOCOL_TCP,
-                               (uint16_t)(hdrlen + payload_len));
+    uint32_t sum =
+        csum_pseudo(s->cfg.ip, c->peer_ip, (uint16_t)(hdrlen + payload_len));
     ernic_put_be16(tcp + TCP_CHECKSUM_OFF,
                    net_csum_fold(net_csum_add(sum, tcp, hdrlen + payload_len)));
 
     send_frame(s, ETH_HDR_LEN + IP_HDR_LEN + hdrlen + payload_len);
 }
 
+/* Where a reset goes */
+struct s3_peer {
+    const uint8_t *mac; /* 6 bytes */
+    uint32_t ip;        /* host byte order */
+    uint16_t port;
+};
+
 /*
- * A reset for a segment that belongs to no connection.  It has no
- * s3_conn to hang off, so it takes the peer's addressing directly.
+ * A reset, which may be for a segment that belongs to no connection.  It
+ * has no s3_conn to hang off, so it takes the peer's addressing directly.
  */
-static void send_reset(struct s3_tcp *s, const uint8_t peer_mac[6],
-                       uint32_t peer_ip, uint16_t peer_port, uint32_t seq,
+static void send_reset(struct s3_tcp *s, const struct s3_peer *to, uint32_t seq,
                        uint32_t ack, uint8_t flags)
 {
     struct s3_conn tmp;
 
     memset(&tmp, 0, sizeof(tmp));
-    memcpy(tmp.peer_mac, peer_mac, 6);
-    tmp.peer_ip = peer_ip;
-    tmp.peer_port = peer_port;
+    memcpy(tmp.peer_mac, to->mac, 6);
+    tmp.peer_ip = to->ip;
+    tmp.peer_port = to->port;
     tmp.rcv_nxt = ack;
 
     s->stats.resets++;
@@ -584,8 +589,13 @@ static uint32_t parse_mss(const uint8_t *opt, size_t len)
 
 static void conn_reset(struct s3_tcp *s, struct s3_conn *c)
 {
-    send_reset(s, c->peer_mac, c->peer_ip, c->peer_port, c->snd_una, c->rcv_nxt,
-               TCP_FLAG_RST | TCP_FLAG_ACK);
+    const struct s3_peer to = {
+        .mac = c->peer_mac,
+        .ip = c->peer_ip,
+        .port = c->peer_port,
+    };
+
+    send_reset(s, &to, c->snd_una, c->rcv_nxt, TCP_FLAG_RST | TCP_FLAG_ACK);
     conn_free(c);
 }
 
@@ -613,6 +623,11 @@ static bool handle_tcp(struct s3_tcp *s, const uint8_t *frame, size_t len,
      * count as consumed rather than passed on. */
     uint32_t peer_ip = ernic_get_be32(ip + IP_SRC_OFF);
     uint16_t peer_port = ernic_get_be16(tcp + TCP_SRC_PORT_OFF);
+    const struct s3_peer from = {
+        .mac = peer_mac,
+        .ip = peer_ip,
+        .port = peer_port,
+    };
     uint32_t seq = ernic_get_be32(tcp + TCP_SEQ_OFF);
     uint32_t ack = ernic_get_be32(tcp + TCP_ACK_OFF);
     uint16_t window = ernic_get_be16(tcp + TCP_WINDOW_OFF);
@@ -631,15 +646,14 @@ static bool handle_tcp(struct s3_tcp *s, const uint8_t *frame, size_t len,
 
     if (c == NULL) {
         if (!(flags & TCP_FLAG_SYN) || (flags & TCP_FLAG_ACK)) {
-            send_reset(s, peer_mac, peer_ip, peer_port, ack,
-                       seq + (uint32_t)payload_len, TCP_FLAG_RST);
+            send_reset(s, &from, ack, seq + (uint32_t)payload_len,
+                       TCP_FLAG_RST);
             return true;
         }
         c = conn_alloc(s);
         if (c == NULL) {
             s->stats.refused++;
-            send_reset(s, peer_mac, peer_ip, peer_port, 0, seq + 1,
-                       TCP_FLAG_RST | TCP_FLAG_ACK);
+            send_reset(s, &from, 0, seq + 1, TCP_FLAG_RST | TCP_FLAG_ACK);
             return true;
         }
 

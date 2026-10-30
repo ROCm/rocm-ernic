@@ -467,14 +467,21 @@ bool ih_qp_create_stride(struct ih *h, struct ih_qp *qp, uint32_t id,
                          uint8_t sq_stride_log2);
 int ih_qp_destroy(struct ih *h, struct ih_qp *qp);
 
-/*
- * MODIFY_QP. @qkey_dest_qpn is the destination QPN with IH_QP_DEST_QPN or
- * the Q_Key with IH_QP_QKEY. @hdr, if not NULL, is a RoCE header template
- * the device reads the peer's address from.
- */
-int ih_qp_modify(struct ih *h, uint32_t qp_id, uint32_t attr_mask,
-                 uint8_t state, uint32_t qkey_dest_qpn, const void *hdr,
-                 uint32_t hdr_len);
+/* What ih_qp_modify() changes */
+struct ih_qp_mod {
+    uint32_t attr_mask; /* IH_QP_* */
+    uint8_t state;      /* IH_QPS_* */
+    /* The destination QPN with IH_QP_DEST_QPN, or the Q_Key with
+     * IH_QP_QKEY */
+    uint32_t qkey_dest_qpn;
+    /* If not NULL, a RoCE header template of @hdr_len bytes that the device
+     * reads the peer's address from */
+    const void *hdr;
+    uint32_t hdr_len;
+};
+
+/* MODIFY_QP of QP @qp_id */
+int ih_qp_modify(struct ih *h, uint32_t qp_id, const struct ih_qp_mod *mod);
 
 /* Take two RC QPs through INIT, RTR and RTS, pointed at each other. */
 bool ih_qp_connect(struct ih *h, const struct ih_qp *a, const struct ih_qp *b);

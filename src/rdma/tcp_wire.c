@@ -480,8 +480,7 @@ bool tcp_hostname_get(char *host, const uint8_t *wire)
 int tcp_send_message2(const TcpBackendPrivate *priv, TcpConnection *conn,
                       TcpMsgType msg_type, const void *payload,
                       size_t payload_len, const void *payload2,
-                      size_t payload2_len, uint32_t seq, uint32_t src_node,
-                      uint32_t dst_node, uint32_t src_qpn, uint32_t dst_qpn)
+                      size_t payload2_len, uint32_t seq, TcpMsgAddr addr)
 {
     int sockfd = conn->sockfd;
     uint32_t timeout_ms = tcp_send_timeout_ms(priv);
@@ -505,10 +504,10 @@ int tcp_send_message2(const TcpBackendPrivate *priv, TcpConnection *conn,
     hdr.msg_type = msg_type;
     hdr.msg_len = (uint32_t)(payload_len + payload2_len);
     hdr.seq = seq;
-    hdr.src_node_id = src_node;
-    hdr.dst_node_id = dst_node;
-    hdr.src_qpn = src_qpn;
-    hdr.dst_qpn = dst_qpn;
+    hdr.src_node_id = addr.src_node;
+    hdr.dst_node_id = addr.dst_node;
+    hdr.src_qpn = addr.src_qpn;
+    hdr.dst_qpn = addr.dst_qpn;
     tcp_msg_hdr_put(wire, &hdr);
 
     struct iovec iov[3];
@@ -601,11 +600,10 @@ broken:
 
 int tcp_send_message(const TcpBackendPrivate *priv, TcpConnection *conn,
                      TcpMsgType msg_type, const void *payload,
-                     size_t payload_len, uint32_t seq, uint32_t src_node,
-                     uint32_t dst_node, uint32_t src_qpn, uint32_t dst_qpn)
+                     size_t payload_len, uint32_t seq, TcpMsgAddr addr)
 {
     return tcp_send_message2(priv, conn, msg_type, payload, payload_len, NULL,
-                             0, seq, src_node, dst_node, src_qpn, dst_qpn);
+                             0, seq, addr);
 }
 
 /*

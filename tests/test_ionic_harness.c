@@ -590,54 +590,87 @@ static void build_cq_stride_17(uint8_t *body)
     build_cq(body, 4, 17);
 }
 
+/* A QP's ring geometry, for build_qp() */
+struct qp_rings {
+    uint8_t sq_depth_log2, sq_stride_log2;
+    uint8_t rq_depth_log2, rq_stride_log2;
+};
+
+/* Rings the device takes, for a build_*() to change one thing in */
+static const struct qp_rings good_qp_rings = {
+    .sq_depth_log2 = 4,
+    .sq_stride_log2 = 7,
+    .rq_depth_log2 = 4,
+    .rq_stride_log2 = 7,
+};
+
 /* CREATE_QP for QP 3 on CQ 1, with an RQ of its own */
-static void build_qp(uint8_t *body, uint8_t sq_depth_log2,
-                     uint8_t sq_stride_log2, uint8_t rq_depth_log2,
-                     uint8_t rq_stride_log2)
+static void build_qp(uint8_t *body, const struct qp_rings *r)
 {
     ernic_put_le32(body + 8, 1);
-    body[12] = sq_depth_log2;
-    body[13] = sq_stride_log2;
+    body[12] = r->sq_depth_log2;
+    body[13] = r->sq_stride_log2;
     ernic_put_le32(body + 32, 1);
-    body[36] = rq_depth_log2;
-    body[37] = rq_stride_log2;
+    body[36] = r->rq_depth_log2;
+    body[37] = r->rq_stride_log2;
     ernic_put_le32(body + 40, 0xffffffffu);
     ernic_put_le32(body + 56, 3);
 }
 
 static void build_qp_sq_depth_32(uint8_t *body)
 {
-    build_qp(body, 32, 7, 4, 7);
+    struct qp_rings r = good_qp_rings;
+
+    r.sq_depth_log2 = 32;
+    build_qp(body, &r);
 }
 
 static void build_qp_sq_stride_32(uint8_t *body)
 {
-    build_qp(body, 4, 32, 4, 7);
+    struct qp_rings r = good_qp_rings;
+
+    r.sq_stride_log2 = 32;
+    build_qp(body, &r);
 }
 
 static void build_qp_sq_stride_4(uint8_t *body)
 {
-    build_qp(body, 4, 4, 4, 7);
+    struct qp_rings r = good_qp_rings;
+
+    r.sq_stride_log2 = 4;
+    build_qp(body, &r);
 }
 
 static void build_qp_sq_stride_10(uint8_t *body)
 {
-    build_qp(body, 4, 10, 4, 7);
+    struct qp_rings r = good_qp_rings;
+
+    r.sq_stride_log2 = 10;
+    build_qp(body, &r);
 }
 
 static void build_qp_rq_stride_10(uint8_t *body)
 {
-    build_qp(body, 4, 7, 4, 10);
+    struct qp_rings r = good_qp_rings;
+
+    r.rq_stride_log2 = 10;
+    build_qp(body, &r);
 }
 
 static void build_qp_rq_depth_32(uint8_t *body)
 {
-    build_qp(body, 4, 7, 32, 7);
+    struct qp_rings r = good_qp_rings;
+
+    r.rq_depth_log2 = 32;
+    build_qp(body, &r);
 }
 
 static void build_qp_rq_stride_4(uint8_t *body)
 {
-    build_qp(body, 4, 7, 4, 4);
+    struct qp_rings r = good_qp_rings;
+
+    r.rq_stride_log2 = 4;
+    build_qp(body, &r);
 }
 
 static void build_srq_too_deep(uint8_t *body)
@@ -721,44 +754,56 @@ static const struct bad_admin bad_admins[] = {
     {"QUERY_AH", IH_ADMIN_QUERY_AH, 0, build_none, 0},
 };
 
-/* RDMA queue devcmds, sent over the Ethernet admin queue, whose geometry
- * must be refused */
-struct bad_queue {
-    const char *what;
+/* An RDMA queue devcmd, for rdma_queue_cmd() */
+struct rdma_queue {
     uint8_t op;
     uint8_t depth_log2, stride_log2;
     /* CREATE_EQ's interrupt, or an admin CREATE_CQ's EQ: 0 unless given */
     uint32_t cid;
 };
 
+/* Queues the device takes */
+static const struct rdma_queue good_eq = {
+    .op = IH_CMD_RDMA_EQ, .depth_log2 = 4, .stride_log2 = 2};
+static const struct rdma_queue good_admin_cq = {
+    .op = IH_CMD_RDMA_CQ, .depth_log2 = 6, .stride_log2 = 5, .cid = IH_EQ_ID};
+static const struct rdma_queue good_adminq = {
+    .op = IH_CMD_RDMA_ADMINQ, .depth_log2 = 6, .stride_log2 = 6};
+
+/* RDMA queue devcmds, sent over the Ethernet admin queue, whose geometry
+ * must be refused */
+struct bad_queue {
+    const char *what;
+    struct rdma_queue q;
+};
+
 static const struct bad_queue bad_queues[] = {
-    {"CREATE_EQ 2^32 deep", IH_CMD_RDMA_EQ, 32, 2, 0},
-    {"CREATE_EQ deeper than 2^24", IH_CMD_RDMA_EQ, 25, 2, 0},
-    {"CREATE_EQ with a stride below an EQE", IH_CMD_RDMA_EQ, 4, 1, 0},
-    {"CREATE_EQ with a stride above 2^16", IH_CMD_RDMA_EQ, 4, 17, 0},
+    {"CREATE_EQ 2^32 deep", {IH_CMD_RDMA_EQ, 32, 2, 0}},
+    {"CREATE_EQ deeper than 2^24", {IH_CMD_RDMA_EQ, 25, 2, 0}},
+    {"CREATE_EQ with a stride below an EQE", {IH_CMD_RDMA_EQ, 4, 1, 0}},
+    {"CREATE_EQ with a stride above 2^16", {IH_CMD_RDMA_EQ, 4, 17, 0}},
     /* An interrupt past the MSI-X table, which past INT_MAX was also
      * converted to a negative int when the EQ was raised */
-    {"CREATE_EQ on the interrupt after the last", IH_CMD_RDMA_EQ, 4, 2,
-     IONIC_MSIX_MAX_VECTORS},
-    {"CREATE_EQ on interrupt 2^31", IH_CMD_RDMA_EQ, 4, 2, 0x80000000u},
-    {"admin CREATE_CQ 2^32 deep", IH_CMD_RDMA_CQ, 32, 5, 0},
+    {"CREATE_EQ on the interrupt after the last",
+     {IH_CMD_RDMA_EQ, 4, 2, IONIC_MSIX_MAX_VECTORS}},
+    {"CREATE_EQ on interrupt 2^31", {IH_CMD_RDMA_EQ, 4, 2, 0x80000000u}},
+    {"admin CREATE_CQ 2^32 deep", {IH_CMD_RDMA_CQ, 32, 5, 0}},
     /* Sent after a good admin CREATE_CQ, so only its depth is wrong */
-    {"CREATE_ADMINQ 2^32 deep", IH_CMD_RDMA_ADMINQ, 32, 6, 0},
+    {"CREATE_ADMINQ 2^32 deep", {IH_CMD_RDMA_ADMINQ, 32, 6, 0}},
     /* Deeper than its 16-bit producer index and cmd_idx can count */
-    {"CREATE_ADMINQ 2^17 deep", IH_CMD_RDMA_ADMINQ, 17, 6, 0},
+    {"CREATE_ADMINQ 2^17 deep", {IH_CMD_RDMA_ADMINQ, 17, 6, 0}},
 };
 
 /* Queue id 5 is clear of the harness's own EQ and admin queues. */
-static int rdma_queue_cmd(struct ih *h, uint8_t op, uint8_t depth_log2,
-                          uint8_t stride_log2, uint32_t cid)
+static int rdma_queue_cmd(struct ih *h, const struct rdma_queue *q)
 {
     uint8_t cmd[64] = {0}, comp[16];
 
-    cmd[0] = op;
+    cmd[0] = q->op;
     ernic_put_le32(cmd + 4, 5u | 1u << 24);
-    ernic_put_le32(cmd + 8, cid);
-    cmd[14] = depth_log2;
-    cmd[15] = stride_log2;
+    ernic_put_le32(cmd + 8, q->cid);
+    cmd[14] = q->depth_log2;
+    cmd[15] = q->stride_log2;
     return ih_eth_admin(h, cmd, comp);
 }
 
@@ -767,23 +812,25 @@ static void test_queue_geometry_errors(const char *T, struct ih *h)
     for (size_t i = 0; i < sizeof(bad_queues) / sizeof(bad_queues[0]); i++) {
         const struct bad_queue *c = &bad_queues[i];
 
-        if (c->op == IH_CMD_RDMA_ADMINQ)
-            check(T, rdma_queue_cmd(h, IH_CMD_RDMA_CQ, 6, 5, IH_EQ_ID) == 0,
+        if (c->q.op == IH_CMD_RDMA_ADMINQ)
+            check(T, rdma_queue_cmd(h, &good_admin_cq) == 0,
                   "admin CREATE_CQ failed");
-        int rc =
-            rdma_queue_cmd(h, c->op, c->depth_log2, c->stride_log2, c->cid);
+        int rc = rdma_queue_cmd(h, &c->q);
         check(T, rc == 1, "%s: status %d, expected 1", c->what, rc);
     }
 
     /* A refused CREATE_EQ takes none of the device's 32 EQ slots */
     for (int i = 0; i < 40; i++)
-        (void)rdma_queue_cmd(h, IH_CMD_RDMA_EQ, 32, 2, 0);
-    check(T, rdma_queue_cmd(h, IH_CMD_RDMA_EQ, 4, 2, 0) == 0,
+        (void)rdma_queue_cmd(h, &(struct rdma_queue){.op = IH_CMD_RDMA_EQ,
+                                                     .depth_log2 = 32,
+                                                     .stride_log2 = 2});
+    check(T, rdma_queue_cmd(h, &good_eq) == 0,
           "CREATE_EQ failed after refused ones");
     /* The last interrupt in the table is one an EQ may raise */
-    check(T,
-          rdma_queue_cmd(h, IH_CMD_RDMA_EQ, 4, 2,
-                         IONIC_MSIX_MAX_VECTORS - 1u) == 0,
+    struct rdma_queue last = good_eq;
+
+    last.cid = IONIC_MSIX_MAX_VECTORS - 1u;
+    check(T, rdma_queue_cmd(h, &last) == 0,
           "CREATE_EQ on the last interrupt failed");
 }
 
@@ -961,8 +1008,11 @@ static void test_admin_dma_faults(void)
     check(T, ih_admin(&h, IH_ADMIN_DESTROY_CQ, body, 4, NULL) == 0,
           "DESTROY_CQ of that CQ failed");
 
+    struct qp_rings rings = good_qp_rings;
+
+    rings.sq_depth_log2 = 6;
     memset(body, 0, sizeof(body));
-    build_qp(body, 6, 7, 4, 7);
+    build_qp(body, &rings);
     ernic_put_le32(body + 20, 2);
     ernic_put_le64(body + 24, h.scratch);
     ernic_put_le32(body + 56, 4);
@@ -1805,9 +1855,19 @@ static void test_rdma_reset_frees(void)
 
 /* ---- Atomics and fast registration ------------------------------------- */
 
-static void atomic(const char *test, struct rc *r, uint8_t op, uint64_t add,
-                   uint64_t compare, uint32_t rkey, uint64_t remote_va,
-                   uint32_t status, uint64_t want_old, uint64_t want_new)
+/* An atomic from A into B's MR, and what it should do */
+struct atomic_case {
+    uint8_t op; /* IH_OP_ATOMIC_CS or IH_OP_ATOMIC_FA */
+    uint64_t swap_add;
+    uint64_t compare;
+    uint32_t rkey;
+    uint64_t remote_va; /* 0 for the usual target, 0x800 into B */
+    uint32_t status;    /* the completion's */
+    uint64_t want_old;  /* what it fetches, if it succeeds */
+    uint64_t want_new;  /* what it leaves at the target, if it succeeds */
+};
+
+static void atomic(const char *test, struct rc *r, const struct atomic_case *c)
 {
     struct ih *h = &r->h;
     const uint64_t target = VA_B + 0x800, result = VA_A + 0x900;
@@ -1815,26 +1875,26 @@ static void atomic(const char *test, struct rc *r, uint8_t op, uint64_t add,
 
     ih_mr_write(h, &r->mra, result, &v, 8);
     struct ih_sge sge = {.va = result, .len = 8, .lkey = MR_A};
-    struct ih_send s = {.op = op,
+    struct ih_send s = {.op = c->op,
                         .flags = IH_WQE_SIGNALLED,
-                        .remote_va = remote_va ? remote_va : target,
-                        .rkey = rkey,
-                        .swap_add = add,
-                        .compare = compare,
+                        .remote_va = c->remote_va ? c->remote_va : target,
+                        .rkey = c->rkey,
+                        .swap_add = c->swap_add,
+                        .compare = c->compare,
                         .sge = &sge,
                         .nsge = 1};
     ih_post_send(h, &r->a, &s);
-    expect_send(test, op == IH_OP_ATOMIC_CS ? "ATOMIC_CS" : "ATOMIC_FA", r,
-                status);
-    if (status)
+    expect_send(test, c->op == IH_OP_ATOMIC_CS ? "ATOMIC_CS" : "ATOMIC_FA", r,
+                c->status);
+    if (c->status)
         return;
 
     ih_mr_read(h, &r->mra, result, &v, 8);
-    check(test, v == want_old, "atomic returned %" PRIu64 ", expected %" PRIu64,
-          v, want_old);
+    check(test, v == c->want_old,
+          "atomic returned %" PRIu64 ", expected %" PRIu64, v, c->want_old);
     ih_mr_read(h, &r->mrb, target, &v, 8);
-    check(test, v == want_new, "atomic left %" PRIu64 ", expected %" PRIu64, v,
-          want_new);
+    check(test, v == c->want_new, "atomic left %" PRIu64 ", expected %" PRIu64,
+          v, c->want_new);
 }
 
 static void test_atomic_and_reg_mr(void)
@@ -1848,25 +1908,58 @@ static void test_atomic_and_reg_mr(void)
 
     uint64_t v = 100;
     ih_mr_write(h, &r.mrb, VA_B + 0x800, &v, 8);
-    atomic(T, &r, IH_OP_ATOMIC_FA, 5, 0, MR_B, 0, 0, 100, 105);
-    atomic(T, &r, IH_OP_ATOMIC_CS, 7, 105, MR_B, 0, 0, 105, 7);
-    atomic(T, &r, IH_OP_ATOMIC_CS, 9, 999, MR_B, 0, 0, 7, 7);
+    atomic(T, &r,
+           &(struct atomic_case){.op = IH_OP_ATOMIC_FA,
+                                 .swap_add = 5,
+                                 .rkey = MR_B,
+                                 .want_old = 100,
+                                 .want_new = 105});
+    atomic(T, &r,
+           &(struct atomic_case){.op = IH_OP_ATOMIC_CS,
+                                 .swap_add = 7,
+                                 .compare = 105,
+                                 .rkey = MR_B,
+                                 .want_old = 105,
+                                 .want_new = 7});
+    atomic(T, &r,
+           &(struct atomic_case){.op = IH_OP_ATOMIC_CS,
+                                 .swap_add = 9,
+                                 .compare = 999,
+                                 .rkey = MR_B,
+                                 .want_old = 7,
+                                 .want_new = 7});
     /* Operands of all ones, which the generic SGE parser once read as an
      * SGE running past 2^64, failing a valid compare-and-swap */
     v = UINT64_MAX;
     ih_mr_write(h, &r.mrb, VA_B + 0x800, &v, 8);
-    atomic(T, &r, IH_OP_ATOMIC_CS, UINT64_MAX, UINT64_MAX, MR_B, 0, 0,
-           UINT64_MAX, UINT64_MAX);
-    atomic(T, &r, IH_OP_ATOMIC_FA, 1, 0, 0x7e000099u, 0, IH_STS_REMOTE_ACC_ERR,
-           0, 0);
-    atomic(T, &r, IH_OP_ATOMIC_FA, 1, 0, MR_B, VA_B + MR_LEN - 4,
-           IH_STS_REMOTE_ACC_ERR, 0, 0);
+    atomic(T, &r,
+           &(struct atomic_case){.op = IH_OP_ATOMIC_CS,
+                                 .swap_add = UINT64_MAX,
+                                 .compare = UINT64_MAX,
+                                 .rkey = MR_B,
+                                 .want_old = UINT64_MAX,
+                                 .want_new = UINT64_MAX});
+    atomic(T, &r,
+           &(struct atomic_case){.op = IH_OP_ATOMIC_FA,
+                                 .swap_add = 1,
+                                 .rkey = 0x7e000099u,
+                                 .status = IH_STS_REMOTE_ACC_ERR});
+    atomic(T, &r,
+           &(struct atomic_case){.op = IH_OP_ATOMIC_FA,
+                                 .swap_add = 1,
+                                 .rkey = MR_B,
+                                 .remote_va = VA_B + MR_LEN - 4,
+                                 .status = IH_STS_REMOTE_ACC_ERR});
 
     /* Operands split over two of A's pages, which aren't adjacent in guest
      * memory, can't be read or written as one u64 */
     const uint64_t split = VA_A + IH_PAGE_SIZE - VA_A % IH_PAGE_SIZE - 4;
-    atomic(T, &r, IH_OP_ATOMIC_FA, 1, 0, MR_A, split, IH_STS_REMOTE_ACC_ERR, 0,
-           0);
+    atomic(T, &r,
+           &(struct atomic_case){.op = IH_OP_ATOMIC_FA,
+                                 .swap_add = 1,
+                                 .rkey = MR_A,
+                                 .remote_va = split,
+                                 .status = IH_STS_REMOTE_ACC_ERR});
     struct ih_sge split_sge = {.va = split, .len = 8, .lkey = MR_A};
     struct ih_send fa = {.op = IH_OP_ATOMIC_FA,
                          .remote_va = VA_B + 0x800,
@@ -2587,12 +2680,12 @@ static void test_full_tables(void)
     /* The device has room for 32 EQs and 4 admin queues, one of each the
      * harness's */
     unsigned n = 1;
-    while (n < 64 && (rc = rdma_queue_cmd(h, IH_CMD_RDMA_EQ, 4, 2, 0)) == 0)
+    while (n < 64 && (rc = rdma_queue_cmd(h, &good_eq)) == 0)
         n++;
     check(T, n == 32 && rc == 1, "%u EQs, then status %d", n, rc);
     n = 1;
-    while (n < 8 && rdma_queue_cmd(h, IH_CMD_RDMA_CQ, 6, 5, IH_EQ_ID) == 0 &&
-           (rc = rdma_queue_cmd(h, IH_CMD_RDMA_ADMINQ, 6, 6, 0)) == 0)
+    while (n < 8 && rdma_queue_cmd(h, &good_admin_cq) == 0 &&
+           (rc = rdma_queue_cmd(h, &good_adminq)) == 0)
         n++;
     check(T, n == 4 && rc == 1, "%u admin queues, then status %d", n, rc);
 
@@ -2849,7 +2942,10 @@ static void test_qp_flush(void)
     check(T, eq_count(h, RC_CQ_B) == 0, "arming an empty CQ fired");
 
     /* Only Error flushes. A move to RTS must leave the receive posted. */
-    check(T, ih_qp_modify(h, RC_QP_B, IH_QP_STATE, IH_QPS_RTS, 0, NULL, 0) == 0,
+    check(T,
+          ih_qp_modify(h, RC_QP_B,
+                       &(struct ih_qp_mod){.attr_mask = IH_QP_STATE,
+                                           .state = IH_QPS_RTS}) == 0,
           "MODIFY_QP to RTS failed");
     check(T, cq_empty(h, &r.cqb),
           "a state change other than Error raised a completion");
@@ -2860,13 +2956,18 @@ static void test_qp_flush(void)
      * flush keyed on the byte alone would tear down a live QP.
      */
     check(T,
-          ih_qp_modify(h, RC_QP_B, IH_QP_QKEY, IH_QPS_ERR, 0x1234, NULL, 0) ==
-              0,
+          ih_qp_modify(h, RC_QP_B,
+                       &(struct ih_qp_mod){.attr_mask = IH_QP_QKEY,
+                                           .state = IH_QPS_ERR,
+                                           .qkey_dest_qpn = 0x1234}) == 0,
           "MODIFY_QP of the qkey failed");
     check(T, cq_empty(h, &r.cqb),
           "a MODIFY_QP without IB_QP_STATE flushed the queue pair");
 
-    check(T, ih_qp_modify(h, RC_QP_B, IH_QP_STATE, IH_QPS_ERR, 0, NULL, 0) == 0,
+    check(T,
+          ih_qp_modify(h, RC_QP_B,
+                       &(struct ih_qp_mod){.attr_mask = IH_QP_STATE,
+                                           .state = IH_QPS_ERR}) == 0,
           "MODIFY_QP to Error failed");
 
     unsigned n = 0;
@@ -2919,7 +3020,10 @@ static void test_qp_flush_srq(void)
         return;
     }
 
-    check(T, ih_qp_modify(&h, 30, IH_QP_STATE, IH_QPS_ERR, 0, NULL, 0) == 0,
+    check(T,
+          ih_qp_modify(&h, 30,
+                       &(struct ih_qp_mod){.attr_mask = IH_QP_STATE,
+                                           .state = IH_QPS_ERR}) == 0,
           "MODIFY_QP to Error failed");
 
     unsigned n = 0;
@@ -3060,11 +3164,18 @@ static void test_ud(void)
               ih_mr_create(&h, &mr, IH_MRID(6, 0x06), UINT64_C(0x7f4000000000),
                            UINT64_C(2) * IH_PAGE_SIZE, IH_ACCESS_ALL, false);
     for (uint32_t qp = 20; ok && qp <= 21; qp++)
-        ok = ih_qp_modify(&h, qp, IH_QP_STATE | IH_QP_QKEY, IH_QPS_INIT,
-                          UD_QKEY, NULL, 0) == 0 &&
-             ih_qp_modify(&h, qp, IH_QP_STATE, IH_QPS_RTR, 0, NULL, 0) == 0 &&
-             ih_qp_modify(&h, qp, IH_QP_STATE | IH_QP_SQ_PSN, IH_QPS_RTS, 0,
-                          NULL, 0) == 0;
+        ok = ih_qp_modify(
+                 &h, qp,
+                 &(struct ih_qp_mod){.attr_mask = IH_QP_STATE | IH_QP_QKEY,
+                                     .state = IH_QPS_INIT,
+                                     .qkey_dest_qpn = UD_QKEY}) == 0 &&
+             ih_qp_modify(&h, qp,
+                          &(struct ih_qp_mod){.attr_mask = IH_QP_STATE,
+                                              .state = IH_QPS_RTR}) == 0 &&
+             ih_qp_modify(
+                 &h, qp,
+                 &(struct ih_qp_mod){.attr_mask = IH_QP_STATE | IH_QP_SQ_PSN,
+                                     .state = IH_QPS_RTS}) == 0;
     ok = ok && ih_ah_create(&h, UD_AH, UD_SIP, UD_DIP) == 0;
     if (!check(T, ok, "UD setup failed")) {
         ih_mr_free(&mr);
@@ -3383,30 +3494,35 @@ static bool tx_filter(void *ctx, const void *frame, size_t len)
     return true;
 }
 
-/* Q_INIT of queue @index; returns the completion's status, or -1 if the
- * devcmd never completed. */
-static int q_init_at(struct ih *h, uint8_t qtype, uint32_t index, uint16_t intr,
-                     uint8_t depth_log2, uint64_t ring, uint64_t cq,
-                     uint64_t sg)
+/* An Ethernet queue's Q_INIT */
+struct q_init_cmd {
+    uint8_t qtype;
+    uint32_t index;
+    uint16_t intr;
+    uint8_t depth_log2;
+    uint64_t ring, cq, sg; /* guest addresses; sg 0 for none */
+};
+
+/* Q_INIT @q; returns the completion's status, or -1 if the devcmd never
+ * completed. */
+static int q_init_status(struct ih *h, const struct q_init_cmd *q)
 {
     uint8_t cmd[64] = {0}, comp[16];
 
     cmd[0] = IH_CMD_Q_INIT;
-    cmd[4] = qtype;
-    ernic_put_le32(cmd + 8, index);
-    ernic_put_le16(cmd + 14, intr);
-    cmd[19] = depth_log2;
-    ernic_put_le64(cmd + 20, ring);
-    ernic_put_le64(cmd + 28, cq);
-    ernic_put_le64(cmd + 36, sg);
+    cmd[4] = q->qtype;
+    ernic_put_le32(cmd + 8, q->index);
+    ernic_put_le16(cmd + 14, q->intr);
+    cmd[19] = q->depth_log2;
+    ernic_put_le64(cmd + 20, q->ring);
+    ernic_put_le64(cmd + 28, q->cq);
+    ernic_put_le64(cmd + 36, q->sg);
     return ih_devcmd(h, cmd, comp, NULL, 0);
 }
 
-static bool q_init(struct ih *h, uint8_t qtype, uint16_t intr,
-                   uint8_t depth_log2, uint64_t ring, uint64_t cq, uint64_t sg)
+static bool q_init(struct ih *h, const struct q_init_cmd *q)
 {
-    return q_init_at(h, qtype, 0, intr, depth_log2, ring, cq, sg) ==
-           IONIC_RC_SUCCESS;
+    return q_init_status(h, q) == IONIC_RC_SUCCESS;
 }
 
 /* Q_CONTROL ENABLE, which the driver sends once a queue is initialized. */
@@ -3446,18 +3562,33 @@ static void test_eth(void)
     /* Queues the device can't set up are refused, so the driver never rings
      * them: a ring size it can't shift by (UBSan reports a Q_INIT that
      * does), an unknown qtype, and an index past the LIF's queue count. */
-    int rc = q_init_at(&h, IH_QTYPE_ETH_TXQ, 0, TX_INTR, 32, txr, txc, txsg);
+    const struct q_init_cmd txq = {.qtype = IH_QTYPE_ETH_TXQ,
+                                   .intr = TX_INTR,
+                                   .depth_log2 = 3,
+                                   .ring = txr,
+                                   .cq = txc,
+                                   .sg = txsg};
+    const struct q_init_cmd rxq = {.qtype = IH_QTYPE_ETH_RXQ,
+                                   .intr = RX_INTR,
+                                   .depth_log2 = 3,
+                                   .ring = rxr,
+                                   .cq = rxc};
+    struct q_init_cmd bad = txq;
+
+    bad.depth_log2 = 32;
+    int rc = q_init_status(&h, &bad);
     check(T, rc == IONIC_RC_ERANGE, "a 2^32-entry Tx ring got status %d", rc);
-    rc = q_init_at(&h, IONIC_QTYPE_ETH_MAX, 0, TX_INTR, 3, txr, txc, txsg);
+    bad = txq;
+    bad.qtype = IONIC_QTYPE_ETH_MAX;
+    rc = q_init_status(&h, &bad);
     check(T, rc == IONIC_RC_EQTYPE, "an unknown qtype got status %d", rc);
-    rc = q_init_at(&h, IH_QTYPE_ETH_TXQ, h.emu->profile.queues.eth, TX_INTR, 3,
-                   txr, txc, txsg);
+    bad = txq;
+    bad.index = h.emu->profile.queues.eth;
+    rc = q_init_status(&h, &bad);
     check(T, rc == IONIC_RC_EQID, "a Tx queue past the count got status %d",
           rc);
-    check(T, q_init(&h, IH_QTYPE_ETH_TXQ, TX_INTR, 3, txr, txc, txsg),
-          "Q_INIT of the Tx queue failed");
-    check(T, q_init(&h, IH_QTYPE_ETH_RXQ, RX_INTR, 3, rxr, rxc, 0),
-          "Q_INIT of the Rx queue failed");
+    check(T, q_init(&h, &txq), "Q_INIT of the Tx queue failed");
+    check(T, q_init(&h, &rxq), "Q_INIT of the Rx queue failed");
     check(T, q_enable(&h, IH_QTYPE_ETH_TXQ, 0), "enabling the Tx queue failed");
     check(T, q_enable(&h, IH_QTYPE_ETH_RXQ, 0), "enabling the Rx queue failed");
     ih_intr_mask(&h, TX_INTR, false);
@@ -3640,8 +3771,18 @@ static void test_eth_dma_faults(void)
     const uint64_t rxr = fake_vfu_alloc(h.vfu, (size_t)8 * 16, 64);
     const uint64_t rxc = fake_vfu_alloc(h.vfu, (size_t)8 * 16, 64);
     const uint64_t bufs = fake_vfu_alloc(h.vfu, 2048, 4096);
-    bool ok = q_init(&h, IH_QTYPE_ETH_TXQ, TX_INTR, 3, txr, txc, txsg) &&
-              q_init(&h, IH_QTYPE_ETH_RXQ, RX_INTR, 3, rxr, rxc, 0) &&
+    const struct q_init_cmd txq = {.qtype = IH_QTYPE_ETH_TXQ,
+                                   .intr = TX_INTR,
+                                   .depth_log2 = 3,
+                                   .ring = txr,
+                                   .cq = txc,
+                                   .sg = txsg};
+    const struct q_init_cmd rxq = {.qtype = IH_QTYPE_ETH_RXQ,
+                                   .intr = RX_INTR,
+                                   .depth_log2 = 3,
+                                   .ring = rxr,
+                                   .cq = rxc};
+    bool ok = q_init(&h, &txq) && q_init(&h, &rxq) &&
               q_enable(&h, IH_QTYPE_ETH_TXQ, 0) &&
               q_enable(&h, IH_QTYPE_ETH_RXQ, 0);
     if (!check(T, ok, "Tx and Rx queue setup failed")) {
@@ -3852,8 +3993,15 @@ static int nvme_exchange(const char *test, struct ih *h, struct ih_qp *qp,
     return status;
 }
 
+/* A keyed SGL data block: @len bytes at @addr in the MR @key names */
+struct keyed_sgl {
+    uint64_t addr;
+    uint32_t len;
+    uint32_t key;
+};
+
 static void capsule_init(uint8_t *c, uint8_t opcode, uint16_t cid,
-                         uint64_t addr, uint32_t len, uint32_t key)
+                         struct keyed_sgl sgl)
 {
     memset(c, 0, NVME_SQE_SIZE);
     c[NVME_SQE_OPCODE_OFF] = opcode;
@@ -3861,11 +4009,11 @@ static void capsule_init(uint8_t *c, uint8_t opcode, uint16_t cid,
 
     /* A keyed SGL data block descriptor */
     uint8_t *d = c + NVME_SQE_DPTR_OFF;
-    ernic_put_le64(d, addr);
-    d[8] = (uint8_t)len;
-    d[9] = (uint8_t)(len >> 8);
-    d[10] = (uint8_t)(len >> 16);
-    ernic_put_le32(d + 11, key);
+    ernic_put_le64(d, sgl.addr);
+    d[8] = (uint8_t)sgl.len;
+    d[9] = (uint8_t)(sgl.len >> 8);
+    d[10] = (uint8_t)(sgl.len >> 16);
+    ernic_put_le32(d + 11, sgl.key);
     d[15] = NVME_SGL_TYPE_KEYED_DATA << 4;
 }
 
@@ -3936,8 +4084,12 @@ static void test_p4_port(void)
     const uint64_t txr = fake_vfu_alloc(h.vfu, (size_t)8 * 16, 64);
     const uint64_t txc = fake_vfu_alloc(h.vfu, (size_t)8 * 16, 64);
     const uint64_t buf = fake_vfu_alloc(h.vfu, 4096, 4096);
-    check(T, q_init(&h, IH_QTYPE_ETH_TXQ, TX_INTR, 3, txr, txc, 0),
-          "Q_INIT of the Tx queue failed");
+    const struct q_init_cmd txq = {.qtype = IH_QTYPE_ETH_TXQ,
+                                   .intr = TX_INTR,
+                                   .depth_log2 = 3,
+                                   .ring = txr,
+                                   .cq = txc};
+    check(T, q_init(&h, &txq), "Q_INIT of the Tx queue failed");
     ih_intr_mask(&h, TX_INTR, false);
 
     /* Stand in for the S3 control plane, which really does hold this slot. */
@@ -6140,11 +6292,18 @@ static void test_p4_deny(void)
               ih_mr_create(&h, &mrc, FP8R_MR_C, FP8R_VA_C, P4R_MR_LEN,
                            IH_ACCESS_ALL, true);
     for (uint32_t qp = P4D_QP_C; ok && qp <= P4D_QP_D; qp++)
-        ok = ih_qp_modify(&h, qp, IH_QP_STATE | IH_QP_QKEY, IH_QPS_INIT,
-                          UD_QKEY, NULL, 0) == 0 &&
-             ih_qp_modify(&h, qp, IH_QP_STATE, IH_QPS_RTR, 0, NULL, 0) == 0 &&
-             ih_qp_modify(&h, qp, IH_QP_STATE | IH_QP_SQ_PSN, IH_QPS_RTS, 0,
-                          NULL, 0) == 0;
+        ok = ih_qp_modify(
+                 &h, qp,
+                 &(struct ih_qp_mod){.attr_mask = IH_QP_STATE | IH_QP_QKEY,
+                                     .state = IH_QPS_INIT,
+                                     .qkey_dest_qpn = UD_QKEY}) == 0 &&
+             ih_qp_modify(&h, qp,
+                          &(struct ih_qp_mod){.attr_mask = IH_QP_STATE,
+                                              .state = IH_QPS_RTR}) == 0 &&
+             ih_qp_modify(
+                 &h, qp,
+                 &(struct ih_qp_mod){.attr_mask = IH_QP_STATE | IH_QP_SQ_PSN,
+                                     .state = IH_QPS_RTS}) == 0;
     ok = ok && ih_ah_create(&h, UD_AH, UD_SIP, UD_DIP) == 0;
     if (!check(T, ok, "setup failed")) {
         ih_mr_free(&mra);
@@ -6584,11 +6743,19 @@ static void test_nvmeof(void)
     /* Point the RC QP at the controller and connect the admin queue */
     uint8_t hdr[64];
     size_t hdr_len = ih_roce_hdr_v4(hdr, sizeof(hdr), 0xc0a8c814u, NV_TRADDR);
-    ok =
-        ih_qp_modify(&h, NV_RC_QP, IH_QP_STATE, IH_QPS_INIT, 0, NULL, 0) == 0 &&
-        ih_qp_modify(&h, NV_RC_QP, IH_QP_STATE | IH_QP_AV | IH_QP_DEST_QPN,
-                     IH_QPS_RTR, target_qpn, hdr, (uint32_t)hdr_len) == 0 &&
-        ih_qp_modify(&h, NV_RC_QP, IH_QP_STATE, IH_QPS_RTS, 0, NULL, 0) == 0;
+    ok = ih_qp_modify(&h, NV_RC_QP,
+                      &(struct ih_qp_mod){.attr_mask = IH_QP_STATE,
+                                          .state = IH_QPS_INIT}) == 0 &&
+         ih_qp_modify(&h, NV_RC_QP,
+                      &(struct ih_qp_mod){.attr_mask = IH_QP_STATE | IH_QP_AV |
+                                                       IH_QP_DEST_QPN,
+                                          .state = IH_QPS_RTR,
+                                          .qkey_dest_qpn = target_qpn,
+                                          .hdr = hdr,
+                                          .hdr_len = (uint32_t)hdr_len}) == 0 &&
+         ih_qp_modify(&h, NV_RC_QP,
+                      &(struct ih_qp_mod){.attr_mask = IH_QP_STATE,
+                                          .state = IH_QPS_RTS}) == 0;
     check(T, ok, "moving the RC QP to RTS failed");
 
     uint8_t data[NVMEOF_CONNECT_DATA_SIZE] = {0};
@@ -6600,8 +6767,10 @@ static void test_nvmeof(void)
     ih_mr_write(&h, &mr, mr.va + NV_CONNECT_OFF, data, sizeof(data));
 
     uint8_t cap[NVME_SQE_SIZE];
-    capsule_init(cap, NVME_ADMIN_FABRICS, 1, mr.va + NV_CONNECT_OFF,
-                 sizeof(data), NV_MR);
+    capsule_init(cap, NVME_ADMIN_FABRICS, 1,
+                 (struct keyed_sgl){.addr = mr.va + NV_CONNECT_OFF,
+                                    .len = sizeof(data),
+                                    .key = NV_MR});
     cap[NVMEOF_SQE_FCTYPE_OFF] = NVMEOF_FCTYPE_CONNECT;
     ernic_put_le16(cap + NVMEOF_CONNECT_QID_OFF, 0);
     ernic_put_le16(cap + NVMEOF_CONNECT_SQSIZE_OFF, 31);
@@ -6609,8 +6778,10 @@ static void test_nvmeof(void)
     check(T, sts == 0, "Connect status %#x", (unsigned)sts);
 
     /* Identify Controller writes through the keyed SGL into the MR */
-    capsule_init(cap, NVME_ADMIN_IDENTIFY, 2, mr.va + NV_IDENT_OFF,
-                 NVME_IDENTIFY_SIZE, NV_MR);
+    capsule_init(cap, NVME_ADMIN_IDENTIFY, 2,
+                 (struct keyed_sgl){.addr = mr.va + NV_IDENT_OFF,
+                                    .len = NVME_IDENTIFY_SIZE,
+                                    .key = NV_MR});
     ernic_put_le32(cap + NVME_SQE_CDW10_OFF, NVME_ID_CNS_CTRL);
     sts = nvme_exchange(T, &h, &rc, &rcq, &mr, cap);
     check(T, sts == 0, "Identify status %#x", (unsigned)sts);
@@ -6629,7 +6800,9 @@ static void test_nvmeof(void)
     if (check(T, raw != 0, "out of guest memory for the unregistered page")) {
         memset(raw_page, 0xee, sizeof(raw_page));
         fake_vfu_write(h.vfu, raw, raw_page, sizeof(raw_page));
-        capsule_init(cap, NVME_ADMIN_IDENTIFY, 3, raw, NVME_IDENTIFY_SIZE, 0);
+        capsule_init(cap, NVME_ADMIN_IDENTIFY, 3,
+                     (struct keyed_sgl){
+                         .addr = raw, .len = NVME_IDENTIFY_SIZE, .key = 0});
         ernic_put_le32(cap + NVME_SQE_CDW10_OFF, NVME_ID_CNS_CTRL);
         sts = nvme_exchange(T, &h, &rc, &rcq, &mr, cap);
         check(T, (sts & 0xff) == NVME_SC_DATA_XFER_ERROR,
@@ -7009,8 +7182,14 @@ static void test_teardown(void)
         check(T, ernic_rm_alloc_pd(pvrdma, &pd) == 0, "no PD") &&
         check(T, ernic_rm_alloc_cq(pvrdma, 16, &cq) == 0, "no CQ") &&
         check(T,
-              ernic_rm_alloc_qp(pvrdma, pd, IBV_QPT_RC, 16, 16, cq, cq, &qpn) ==
-                  0,
+              ernic_rm_alloc_qp(pvrdma,
+                                &(struct ernic_rm_qp_init_attr){
+                                    .pd_handle = pd,
+                                    .qp_type = IBV_QPT_RC,
+                                    .send_cq_handle = cq,
+                                    .recv_cq_handle = cq,
+                                },
+                                &qpn) == 0,
               "no QP") &&
         check(T,
               ernic_rm_alloc_mr(pvrdma, pd, IBV_ACCESS_LOCAL_WRITE, &mr) == 0,
@@ -7164,7 +7343,10 @@ static void test_none(void)
     }
 
     /* Moving A to Error leaves B where it was */
-    check(T, ih_qp_modify(&h, a.id, IH_QP_STATE, IH_QPS_ERR, 0, NULL, 0) == 0,
+    check(T,
+          ih_qp_modify(&h, a.id,
+                       &(struct ih_qp_mod){.attr_mask = IH_QP_STATE,
+                                           .state = IH_QPS_ERR}) == 0,
           "A to Error failed");
     if (query_qp(T, &h, a.id, &qa))
         check(T, qa.state == IH_QPS_ERR, "QP A in state %u, not Error",
@@ -7174,10 +7356,16 @@ static void test_none(void)
 
     /* GSI's transitions are recorded without the backend */
     bool gsi_rts =
-        ih_qp_modify(&h, gsi.id, IH_QP_STATE, IH_QPS_INIT, 0, NULL, 0) == 0 &&
-        ih_qp_modify(&h, gsi.id, IH_QP_STATE, IH_QPS_RTR, 0, NULL, 0) == 0 &&
-        ih_qp_modify(&h, gsi.id, IH_QP_STATE | IH_QP_SQ_PSN, IH_QPS_RTS, 0,
-                     NULL, 0) == 0;
+        ih_qp_modify(&h, gsi.id,
+                     &(struct ih_qp_mod){.attr_mask = IH_QP_STATE,
+                                         .state = IH_QPS_INIT}) == 0 &&
+        ih_qp_modify(&h, gsi.id,
+                     &(struct ih_qp_mod){.attr_mask = IH_QP_STATE,
+                                         .state = IH_QPS_RTR}) == 0 &&
+        ih_qp_modify(
+            &h, gsi.id,
+            &(struct ih_qp_mod){.attr_mask = IH_QP_STATE | IH_QP_SQ_PSN,
+                                .state = IH_QPS_RTS}) == 0;
     if (check(T, gsi_rts, "taking QP 1 to RTS failed") &&
         query_qp(T, &h, gsi.id, &qa))
         check(T, qa.state == IH_QPS_RTS && qa.sq_psn == 0x200,
@@ -7214,10 +7402,15 @@ static void test_none(void)
 static uint32_t lp_create(const char *T, PVRDMADev *pvrdma, uint32_t pd,
                           uint32_t cq, uint8_t type)
 {
+    const struct ernic_rm_qp_init_attr attr = {
+        .pd_handle = pd,
+        .qp_type = type,
+        .send_cq_handle = cq,
+        .recv_cq_handle = cq,
+    };
     uint32_t qpn = 0;
 
-    if (!check(T,
-               ernic_rm_alloc_qp(pvrdma, pd, type, 16, 16, cq, cq, &qpn) == 0,
+    if (!check(T, ernic_rm_alloc_qp(pvrdma, &attr, &qpn) == 0,
                "creating a QP of type %u failed", type))
         return 0;
     return qpn;
@@ -7230,8 +7423,12 @@ static void lp_rts(const char *T, PVRDMADev *pvrdma, uint32_t qpn,
     static const uint8_t states[] = {IH_QPS_INIT, IH_QPS_RTR, IH_QPS_RTS};
 
     for (size_t i = 0; i < sizeof(states) / sizeof(states[0]); i++) {
-        int rc = ernic_rm_modify_qp(pvrdma, qpn, IBV_QP_STATE, states[i], 0, 0,
-                                    dest, NULL);
+        const struct ernic_rm_qp_attr attr = {
+            .attr_mask = IBV_QP_STATE,
+            .type_state = states[i],
+            .qkey_dest_qpn = dest,
+        };
+        int rc = ernic_rm_modify_qp(pvrdma, qpn, &attr);
         if (!check(T, rc == 0, "QP %u to state %u: %d", qpn, states[i], rc))
             return;
     }
@@ -7327,8 +7524,11 @@ static void test_loopback_pair(void)
 
     /* The backend only sees INIT, RTR and RTS, but a query reports Error */
     uint8_t state = 0;
-    int rc = ernic_rm_modify_qp(pvrdma, rc6, IBV_QP_STATE, IH_QPS_ERR, 0, 0, 0,
-                                NULL);
+    const struct ernic_rm_qp_attr to_err = {
+        .attr_mask = IBV_QP_STATE,
+        .type_state = IH_QPS_ERR,
+    };
+    int rc = ernic_rm_modify_qp(pvrdma, rc6, &to_err);
     check(T,
           rc == 0 &&
               ernic_rm_query_qp(pvrdma, rc6, &state, NULL, NULL, NULL, NULL,

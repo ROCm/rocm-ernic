@@ -159,18 +159,12 @@ int ernic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
     return 0;
 }
 
-int ernic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
-                       uint8_t type_state, uint32_t sq_psn, uint32_t rq_psn,
-                       uint32_t qkey_dest_qpn, const uint8_t *dest_gid_16bytes)
+int ernic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn,
+                       const struct ernic_rm_qp_attr *attr)
 {
     (void)handle;
     (void)qpn;
-    (void)attr_mask;
-    (void)type_state;
-    (void)sq_psn;
-    (void)rq_psn;
-    (void)qkey_dest_qpn;
-    (void)dest_gid_16bytes;
+    (void)attr;
     return 0;
 }
 
@@ -202,19 +196,12 @@ void ernic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
  * rejected command leaks a backend QP. */
 static uint32_t g_qp_alloc_calls;
 
-int ernic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
-                      uint8_t qp_type, uint32_t max_send_wr,
-                      uint32_t max_recv_wr, uint32_t send_cq_handle,
-                      uint32_t recv_cq_handle, uint32_t *qpn)
+int ernic_rm_alloc_qp(pvrdma_handle_t handle,
+                      const struct ernic_rm_qp_init_attr *attr, uint32_t *qpn)
 {
     g_qp_alloc_calls++;
     (void)handle;
-    (void)pd_handle;
-    (void)qp_type;
-    (void)max_send_wr;
-    (void)max_recv_wr;
-    (void)send_cq_handle;
-    (void)recv_cq_handle;
+    (void)attr;
     *qpn = QP_QPN;
     return 0;
 }
@@ -412,15 +399,12 @@ static uint32_t g_registered_srq_id;
 static uint32_t g_unregistered_srq_id;
 static uint8_t g_registered_depth_log2;
 
-int ernic_rm_alloc_srq(pvrdma_handle_t handle, uint32_t pd_handle,
-                       uint32_t max_wr, uint32_t max_sge, uint32_t srq_limit,
+int ernic_rm_alloc_srq(pvrdma_handle_t handle,
+                       const struct ernic_rm_srq_init_attr *attr,
                        uint32_t *srq_handle)
 {
     (void)handle;
-    (void)pd_handle;
-    (void)max_wr;
-    (void)max_sge;
-    (void)srq_limit;
+    (void)attr;
     if (g_alloc_rc)
         return g_alloc_rc;
     /* Distinct per call, so a test can tell which allocation a lookup found. */

@@ -2311,18 +2311,6 @@ void ionic_dp_wire_hdr_get(struct ionic_wire_hdr *h, const uint8_t *wire)
     h->compare = ernic_get_le64(wire + IONIC_WIRE_COMPARE_OFF);
 }
 
-static void wire_hdr_init(struct ionic_wire_hdr *h, uint8_t op,
-                          uint32_t src_qp_id, uint32_t dst_qp_id,
-                          uint32_t req_id)
-{
-    memset(h, 0, sizeof(*h));
-    h->magic = IONIC_WIRE_MAGIC;
-    h->op = op;
-    h->src_qp_id = src_qp_id;
-    h->dst_qp_id = dst_qp_id;
-    h->req_id = req_id;
-}
-
 /* What remote_post() did with a work request */
 enum dp_post {
     DP_POST_SENT,        /* queued for the peer; its answer completes it */
@@ -2410,7 +2398,11 @@ static enum dp_post remote_post(struct ionic_datapath *dp,
         return DP_POST_FAILED;
     }
 
-    wire_hdr_init(&hdr, wire_op, qp_id, dest_qp_id, p->req_id);
+    hdr = (struct ionic_wire_hdr){.magic = IONIC_WIRE_MAGIC,
+                                  .op = wire_op,
+                                  .src_qp_id = qp_id,
+                                  .dst_qp_id = dest_qp_id,
+                                  .req_id = p->req_id};
 
     if (wire_op == IONIC_WIRE_SEND || wire_op == IONIC_WIRE_SEND_IMM ||
         wire_op == IONIC_WIRE_SEND_INV) {
@@ -3495,11 +3487,14 @@ static void dp_wire_reply(struct ionic_datapath *dp, uint32_t dst_node,
                           uint32_t status, const uint8_t *payload,
                           uint32_t payload_len)
 {
-    struct ionic_wire_hdr r;
-
-    wire_hdr_init(&r, op, req->dst_qp_id, req->src_qp_id, req->req_id);
-    r.status = status;
-    r.length = payload_len;
+    /* The reply goes back the way the request came */
+    const struct ionic_wire_hdr r = {.magic = IONIC_WIRE_MAGIC,
+                                     .op = op,
+                                     .src_qp_id = req->dst_qp_id,
+                                     .dst_qp_id = req->src_qp_id,
+                                     .req_id = req->req_id,
+                                     .status = status,
+                                     .length = payload_len};
     /*
      * A reply the mesh can't queue is lost, and the requester's own timeout
      * for it completes the request; the mesh has logged why.

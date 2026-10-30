@@ -428,9 +428,7 @@ RdmaRmQP *rdma_rm_get_qp(RdmaDeviceResources *dev_res, uint32_t qpn)
 }
 
 int rdma_rm_alloc_qp(RdmaDeviceResources *dev_res, uint32_t pd_handle,
-                     uint8_t qp_type, uint32_t max_send_wr,
-                     uint32_t max_send_sge, uint32_t send_cq_handle,
-                     uint32_t max_recv_wr, uint32_t max_recv_sge,
+                     uint8_t qp_type, uint32_t send_cq_handle,
                      uint32_t recv_cq_handle, uint32_t *qpn, uint8_t is_srq,
                      uint32_t srq_handle, RdmaRmQP **out_qp)
 {
@@ -477,8 +475,7 @@ int rdma_rm_alloc_qp(RdmaDeviceResources *dev_res, uint32_t pd_handle,
     if (pd->backend_pd.backend_ops && pd->backend_pd.backend_ops->create_qp) {
         rc = pd->backend_pd.backend_ops->create_qp(
             &qp->backend_qp, qp_type, &pd->backend_pd, &scq->backend_cq,
-            &rcq->backend_cq, is_srq ? &srq->backend_srq : NULL, max_send_wr,
-            max_recv_wr, max_send_sge, max_recv_sge);
+            &rcq->backend_cq, is_srq ? &srq->backend_srq : NULL);
 
         if (rc) {
             rdma_error_report("Backend create_qp failed: %d", rc);

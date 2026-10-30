@@ -989,9 +989,7 @@ static uint8_t rtr_sgid_idx;
 
 static int gid_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
                          RdmaBackendCQ *scq, RdmaBackendCQ *rcq,
-                         RdmaBackendSRQ *srq, uint32_t max_send_wr,
-                         uint32_t max_recv_wr, uint32_t max_send_sge,
-                         uint32_t max_recv_sge)
+                         RdmaBackendSRQ *srq)
 {
     (void)qp;
     (void)qp_type;
@@ -999,10 +997,6 @@ static int gid_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
     (void)scq;
     (void)rcq;
     (void)srq;
-    (void)max_send_wr;
-    (void)max_recv_wr;
-    (void)max_send_sge;
-    (void)max_recv_sge;
     return 0;
 }
 
@@ -1066,8 +1060,8 @@ static bool test_gid_index(const char *name, int backend_idx)
     if (rdma_rm_init(&dev_res, &a) != 0 ||
         rdma_rm_alloc_pd(&dev_res, &backend_dev, &pd_handle) != 0 ||
         rdma_rm_alloc_cq(&dev_res, NULL, 1, &cq_handle) != 0 ||
-        rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, 1, 1, cq_handle, 1, 1,
-                         cq_handle, &qpn, 0, 0, NULL) != 0) {
+        rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, cq_handle, cq_handle,
+                         &qpn, 0, 0, NULL) != 0) {
         abort();
     }
 
@@ -1150,9 +1144,7 @@ static void fop_destroy_cq(RdmaBackendCQ *cq)
 
 static int fop_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
                          RdmaBackendCQ *scq, RdmaBackendCQ *rcq,
-                         RdmaBackendSRQ *srq, uint32_t max_send_wr,
-                         uint32_t max_recv_wr, uint32_t max_send_sge,
-                         uint32_t max_recv_sge)
+                         RdmaBackendSRQ *srq)
 {
     (void)qp;
     (void)qp_type;
@@ -1160,10 +1152,6 @@ static int fop_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
     (void)scq;
     (void)rcq;
     (void)srq;
-    (void)max_send_wr;
-    (void)max_recv_wr;
-    (void)max_send_sge;
-    (void)max_recv_sge;
     return op_ran(OP_CREATE_QP);
 }
 
@@ -1294,8 +1282,8 @@ static bool test_backend_fails(const char *name, BackendOp op)
         rc = rdma_rm_alloc_cq(&dev_res, &backend_dev, 1, &cq_handle);
     }
     if (rc == 0) {
-        rc = rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, 1, 1, cq_handle,
-                              1, 1, cq_handle, &qpn, 0, 0, NULL);
+        rc = rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, cq_handle,
+                              cq_handle, &qpn, 0, 0, NULL);
     }
     for (size_t i = 0; rc == 0 && i < sizeof(steps) / sizeof(steps[0]); i++) {
         rc = rdma_rm_modify_qp(&dev_res, &backend_dev, qpn, steps[i].mask, 0,
@@ -1419,14 +1407,14 @@ static bool test_qpn_in_use(void)
     if (rdma_rm_init(&dev_res, &a) != 0 ||
         rdma_rm_alloc_pd(&dev_res, &backend_dev, &pd_handle) != 0 ||
         rdma_rm_alloc_cq(&dev_res, &backend_dev, 1, &cq_handle) != 0 ||
-        rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, 1, 1, cq_handle, 1, 1,
-                         cq_handle, &first, 0, 0, NULL) != 0) {
+        rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, cq_handle, cq_handle,
+                         &first, 0, 0, NULL) != 0) {
         abort();
     }
     RdmaRmQP *qp = rdma_rm_get_qp(&dev_res, first);
 
-    int rc = rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, 1, 1, cq_handle,
-                              1, 1, cq_handle, &second, 0, 0, NULL);
+    int rc = rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, cq_handle,
+                              cq_handle, &second, 0, 0, NULL);
     if (rc != -EIO || qp_destroys != 1 || dev_res.qp_tbl.used != 1) {
         printf("FAIL %-18s: a second QPN %u returned %d, destroyed %u "
                "backend QP(s) and left %u QP(s), expected %d, 1 and 1\n",
@@ -1487,8 +1475,8 @@ static bool test_gsi_skips_backend(void)
     if (rdma_rm_init(&dev_res, &a) != 0 ||
         rdma_rm_alloc_pd(&dev_res, &backend_dev, &pd_handle) != 0 ||
         rdma_rm_alloc_cq(&dev_res, &backend_dev, 1, &cq_handle) != 0 ||
-        rdma_rm_alloc_qp(&dev_res, pd_handle, ERNIC_IB_QPT_GSI, 1, 1, cq_handle,
-                         1, 1, cq_handle, &gsi, 0, 0, NULL) != 0) {
+        rdma_rm_alloc_qp(&dev_res, pd_handle, ERNIC_IB_QPT_GSI, cq_handle,
+                         cq_handle, &gsi, 0, 0, NULL) != 0) {
         abort();
     }
 
@@ -1553,8 +1541,8 @@ static bool test_qp_no_backend(void)
     if (rdma_rm_init(&dev_res, &a) != 0 ||
         rdma_rm_alloc_pd(&dev_res, NULL, &pd_handle) != 0 ||
         rdma_rm_alloc_cq(&dev_res, NULL, 1, &cq_handle) != 0 ||
-        rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, 1, 1, cq_handle, 1, 1,
-                         cq_handle, &qpn, 0, 0, NULL) != 0) {
+        rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, cq_handle, cq_handle,
+                         &qpn, 0, 0, NULL) != 0) {
         abort();
     }
 
@@ -1600,10 +1588,10 @@ static bool test_qp_no_backend(void)
 
     /* QP0 can't be modified, and QP1's modifications are recorded. */
     uint32_t smi, gsi;
-    if (rdma_rm_alloc_qp(&dev_res, pd_handle, ERNIC_IB_QPT_SMI, 1, 1, cq_handle,
-                         1, 1, cq_handle, &smi, 0, 0, NULL) != 0 ||
-        rdma_rm_alloc_qp(&dev_res, pd_handle, ERNIC_IB_QPT_GSI, 1, 1, cq_handle,
-                         1, 1, cq_handle, &gsi, 0, 0, NULL) != 0) {
+    if (rdma_rm_alloc_qp(&dev_res, pd_handle, ERNIC_IB_QPT_SMI, cq_handle,
+                         cq_handle, &smi, 0, 0, NULL) != 0 ||
+        rdma_rm_alloc_qp(&dev_res, pd_handle, ERNIC_IB_QPT_GSI, cq_handle,
+                         cq_handle, &gsi, 0, 0, NULL) != 0) {
         abort();
     }
     rc = rdma_rm_modify_qp(&dev_res, NULL, smi, IBV_QP_STATE, 0, &dgid, 0,
@@ -1687,14 +1675,14 @@ static bool test_bad_handles(void)
         const uint32_t h = bad[i];
         int rcs[] = {
             rdma_rm_alloc_mr(&dev_res, h, MR_ACCESS, &handle, &lkey, &rkey),
-            rdma_rm_alloc_qp(&dev_res, h, IBV_QPT_RC, 1, 1, cq_handle, 1, 1,
-                             cq_handle, &handle, 0, 0, NULL),
-            rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, 1, 1, h, 1, 1,
-                             cq_handle, &handle, 0, 0, NULL),
-            rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, 1, 1, cq_handle,
-                             1, 1, h, &handle, 0, 0, NULL),
-            rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, 1, 1, cq_handle,
-                             1, 1, cq_handle, &handle, 1, h, NULL),
+            rdma_rm_alloc_qp(&dev_res, h, IBV_QPT_RC, cq_handle, cq_handle,
+                             &handle, 0, 0, NULL),
+            rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, h, cq_handle,
+                             &handle, 0, 0, NULL),
+            rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, cq_handle, h,
+                             &handle, 0, 0, NULL),
+            rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, cq_handle,
+                             cq_handle, &handle, 1, h, NULL),
             rdma_rm_modify_qp(&dev_res, NULL, h, IBV_QP_STATE, 0, &dgid, 0,
                               IBV_QPS_INIT, 0, 0, 0),
             rdma_rm_query_qp(&dev_res, h, &attr, IBV_QP_STATE, NULL),
@@ -1763,8 +1751,8 @@ static bool test_tables_full(void)
         rdma_rm_alloc_cq(&dev_res, NULL, 1, &cq_handle) != 0 ||
         rdma_rm_alloc_mr(&dev_res, pd_handle, MR_ACCESS, &handle, &lkey,
                          &rkey) != 0 ||
-        rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, 1, 1, cq_handle, 1, 1,
-                         cq_handle, &handle, 0, 0, NULL) != 0 ||
+        rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, cq_handle, cq_handle,
+                         &handle, 0, 0, NULL) != 0 ||
         rdma_rm_alloc_srq(&dev_res, pd_handle, 1, 1, 1, &srq_handle) != 0) {
         abort();
     }
@@ -1772,8 +1760,8 @@ static bool test_tables_full(void)
     int rcs[] = {
         rdma_rm_alloc_pd(&dev_res, NULL, &handle),
         rdma_rm_alloc_mr(&dev_res, pd_handle, MR_ACCESS, &handle, &lkey, &rkey),
-        rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, 1, 1, cq_handle, 1, 1,
-                         cq_handle, &handle, 0, 0, NULL),
+        rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, cq_handle, cq_handle,
+                         &handle, 0, 0, NULL),
         rdma_rm_alloc_srq(&dev_res, pd_handle, 1, 1, 1, &handle),
     };
     for (size_t i = 0; i < sizeof(rcs) / sizeof(rcs[0]); i++) {
@@ -1893,8 +1881,8 @@ static bool test_srq_lifecycle(void)
         ok = false;
     }
 
-    rc = rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, 1, 1, cq_handle, 1,
-                          1, cq_handle, &qpn, 1, srq_handle, NULL);
+    rc = rdma_rm_alloc_qp(&dev_res, pd_handle, IBV_QPT_RC, cq_handle, cq_handle,
+                          &qpn, 1, srq_handle, NULL);
     if (rc != 0) {
         printf("FAIL %-18s: a QP on the SRQ returned %d\n", name, rc);
         ok = false;

@@ -158,18 +158,12 @@ int ernic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
 static int g_modify_rc;
 static uint32_t g_modified_qkey_dest_qpn;
 
-int ernic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn, uint32_t attr_mask,
-                       uint8_t type_state, uint32_t sq_psn, uint32_t rq_psn,
-                       uint32_t qkey_dest_qpn, const uint8_t *dest_gid_16bytes)
+int ernic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn,
+                       const struct ernic_rm_qp_attr *attr)
 {
     (void)handle;
     (void)qpn;
-    (void)attr_mask;
-    (void)type_state;
-    (void)sq_psn;
-    (void)rq_psn;
-    (void)dest_gid_16bytes;
-    g_modified_qkey_dest_qpn = qkey_dest_qpn;
+    g_modified_qkey_dest_qpn = attr->qkey_dest_qpn;
     return g_modify_rc;
 }
 
@@ -196,15 +190,12 @@ void ernic_rm_dealloc_cq(pvrdma_handle_t handle, uint32_t cq_handle)
     (void)handle;
     (void)cq_handle;
 }
-int ernic_rm_alloc_srq(pvrdma_handle_t handle, uint32_t pd_handle,
-                       uint32_t max_wr, uint32_t max_sge, uint32_t srq_limit,
+int ernic_rm_alloc_srq(pvrdma_handle_t handle,
+                       const struct ernic_rm_srq_init_attr *attr,
                        uint32_t *srq_handle)
 {
     (void)handle;
-    (void)pd_handle;
-    (void)max_wr;
-    (void)max_sge;
-    (void)srq_limit;
+    (void)attr;
     *srq_handle = 1;
     return 0;
 }
@@ -234,18 +225,11 @@ int ernic_rm_query_srq(pvrdma_handle_t handle, uint32_t srq_handle,
         *srq_limit = 0;
     return 0;
 }
-int ernic_rm_alloc_qp(pvrdma_handle_t handle, uint32_t pd_handle,
-                      uint8_t qp_type, uint32_t max_send_wr,
-                      uint32_t max_recv_wr, uint32_t send_cq_handle,
-                      uint32_t recv_cq_handle, uint32_t *qpn)
+int ernic_rm_alloc_qp(pvrdma_handle_t handle,
+                      const struct ernic_rm_qp_init_attr *attr, uint32_t *qpn)
 {
     (void)handle;
-    (void)pd_handle;
-    (void)qp_type;
-    (void)max_send_wr;
-    (void)max_recv_wr;
-    (void)send_cq_handle;
-    (void)recv_cq_handle;
+    (void)attr;
     *qpn = QP_QPN;
     return 0;
 }

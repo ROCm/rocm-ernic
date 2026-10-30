@@ -664,27 +664,26 @@ int ih_qp_destroy(struct ih *h, struct ih_qp *qp)
     return ih_admin(h, IH_ADMIN_DESTROY_QP, body, sizeof(body), NULL);
 }
 
-int ih_qp_modify(struct ih *h, uint32_t qp_id, uint32_t attr_mask,
-                 uint8_t state, uint32_t qkey_dest_qpn, const void *hdr,
-                 uint32_t hdr_len)
+int ih_qp_modify(struct ih *h, uint32_t qp_id, const struct ih_qp_mod *mod)
 {
     uint8_t body[60] = {0};
 
     /* The template goes in the scratch page, which is the driver's
      * DMA-mapped header buffer here. */
-    if (hdr) {
-        if (hdr_len > 255 || !fake_vfu_write(h->vfu, h->scratch, hdr, hdr_len))
+    if (mod->hdr) {
+        if (mod->hdr_len > 255 ||
+            !fake_vfu_write(h->vfu, h->scratch, mod->hdr, mod->hdr_len))
             return fail_rc("bad RoCE header template");
-        ernic_put_le32(body + 32, hdr_len << 24);
+        ernic_put_le32(body + 32, mod->hdr_len << 24);
         ernic_put_le64(body + 48, h->scratch);
     }
 
     /* struct ionic_admin_mod_qp */
-    ernic_put_be32(body + 0, attr_mask);
+    ernic_put_be32(body + 0, mod->attr_mask);
     ernic_put_le32(body + 8, 0x100);  /* rq_psn */
     ernic_put_le32(body + 12, 0x200); /* sq_psn */
-    ernic_put_le32(body + 16, qkey_dest_qpn);
-    body[39] = state;
+    ernic_put_le32(body + 16, mod->qkey_dest_qpn);
+    body[39] = mod->state;
     ernic_put_le32(body + 56, qp_id | 1u << 24);
     return ih_admin(h, IH_ADMIN_MODIFY_QP, body, sizeof(body), NULL);
 }
@@ -723,15 +722,24 @@ bool ih_qp_connect(struct ih *h, const struct ih_qp *a, const struct ih_qp *b)
 
     for (size_t i = 0; i < 2; i++) {
         uint32_t self = ends[i][0]->id, peer = ends[i][1]->id;
-        int rc = ih_qp_modify(h, self, IH_QP_STATE, IH_QPS_INIT, 0, NULL, 0);
+        int rc = ih_qp_modify(h, self,
+                              &(struct ih_qp_mod){.attr_mask = IH_QP_STATE,
+                                                  .state = IH_QPS_INIT});
 
         if (rc == 0)
             rc = ih_qp_modify(
-                h, self, IH_QP_STATE | IH_QP_AV | IH_QP_DEST_QPN | IH_QP_RQ_PSN,
-                IH_QPS_RTR, peer, hdr, (uint32_t)hdr_len);
+                h, self,
+                &(struct ih_qp_mod){.attr_mask = IH_QP_STATE | IH_QP_AV |
+                                                 IH_QP_DEST_QPN | IH_QP_RQ_PSN,
+                                    .state = IH_QPS_RTR,
+                                    .qkey_dest_qpn = peer,
+                                    .hdr = hdr,
+                                    .hdr_len = (uint32_t)hdr_len});
         if (rc == 0)
-            rc = ih_qp_modify(h, self, IH_QP_STATE | IH_QP_SQ_PSN, IH_QPS_RTS,
-                              0, NULL, 0);
+            rc = ih_qp_modify(
+                h, self,
+                &(struct ih_qp_mod){.attr_mask = IH_QP_STATE | IH_QP_SQ_PSN,
+                                    .state = IH_QPS_RTS});
         if (rc != 0)
             return fail("connecting QP %u to %u: %d", self, peer, rc);
     }

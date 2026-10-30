@@ -251,7 +251,7 @@ int tcp_worker_register_with_manager(TcpBackendPrivate *priv,
     ret = tcp_send_message(
         priv, conn, TCP_MSG_REGISTER_NODE, reg, sizeof(reg),
         atomic_fetch_add_explicit(&priv->next_seq, 1, memory_order_relaxed),
-        local, 0, 0, 0);
+        (TcpMsgAddr){.src_node = local});
     qemu_mutex_unlock(&conn->lock);
     if (ret < 0) {
         rdma_error_report("TCP: Failed to send registration request");
@@ -463,9 +463,9 @@ static int tcp_send_handshake(TcpConnection *conn, uint32_t local_node_id,
      * not recursive.
      */
     qemu_mutex_lock(&conn->lock);
-    int ret =
-        tcp_send_message(conn->priv, conn, msg_type, payload, sizeof(payload),
-                         1, local_node_id, conn->node_id, 0, 0);
+    int ret = tcp_send_message(
+        conn->priv, conn, msg_type, payload, sizeof(payload), 1,
+        (TcpMsgAddr){.src_node = local_node_id, .dst_node = conn->node_id});
     qemu_mutex_unlock(&conn->lock);
     return ret;
 }
