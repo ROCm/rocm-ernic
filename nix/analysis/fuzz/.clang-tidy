@@ -1,0 +1,16 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+# clang-tidy configuration for the fuzz harnesses, which tests/CMakeLists.txt
+# builds as tests: the same checks as tests/.clang-tidy.
+---
+InheritParentConfig: true
+Checks:
+  # A harness decodes its input at literal offsets and checks literal
+  # values, as a test does
+  - -readability-magic-numbers
+  - -cppcoreguidelines-avoid-magic-numbers
+  # A harness decodes its input, makes the call, and checks the result
+  # step by step, as a test does
+  - -readability-function-cognitive-complexity
