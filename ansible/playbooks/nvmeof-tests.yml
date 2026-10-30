@@ -487,15 +487,57 @@
       delegate_to: localhost
       when: ernic_nvmeof_perf_csv | length > 0
 
+    # A disconnect that never returns is stuck in the guest kernel,
+    # e.g. in ib_drain_qp() waiting for a flush completion the
+    # device never posts.  That wait is uninterruptible, so a
+    # timeout inside the guest could not kill it and would hang
+    # with it; async puts the deadline on the controller instead,
+    # which gives up on the job while the guest stays reachable.
+    # The limit outlasts nvme-rdma's 60 s admin timeout so the
+    # initiator's own recovery gets its chance first.
     - name: Disconnect from the subsystem
-      ansible.builtin.command:
-        argv:
-          - nvme
-          - disconnect
-          - -n
-          - "{{ ernic_nvmeof_nqn }}"
-      register: ernic_nvmeof_disconnect
-      changed_when: true
+      block:
+        - name: Run nvme disconnect
+          ansible.builtin.command:
+            argv:
+              - nvme
+              - disconnect
+              - -n
+              - "{{ ernic_nvmeof_nqn }}"
+          async: 180
+          poll: 5
+          register: ernic_nvmeof_disconnect
+          changed_when: true
+
+      # The hung-task detector warns at KERN_ERR but prints the
+      # backtrace at KERN_INFO, below a quiet guest's console level,
+      # so the serial console shows that a task blocked but not
+      # where.  Ask for the blocked tasks' stacks and read them from
+      # dmesg, which keeps every level.
+      rescue:
+        - name: Dump the stacks of blocked tasks
+          ansible.builtin.shell:
+            cmd: echo w > /proc/sysrq-trigger
+          changed_when: false
+          failed_when: false
+
+        - name: Read the kernel log
+          ansible.builtin.command: dmesg
+          register: ernic_nvmeof_dmesg
+          changed_when: false
+          failed_when: false
+
+        - name: Show the kernel log
+          ansible.builtin.debug:
+            var: ernic_nvmeof_dmesg.stdout_lines[-300:]
+
+        - name: Fail on the disconnect
+          ansible.builtin.fail:
+            msg: >-
+              nvme disconnect -n {{ ernic_nvmeof_nqn }} failed
+              ({{ ansible_failed_result.msg | default('no message') }})
+              stderr={{ ansible_failed_result.stderr | default('') }}.
+              The guest's blocked tasks and kernel log are above.
 
     - name: Show the disconnect result
       ansible.builtin.debug:

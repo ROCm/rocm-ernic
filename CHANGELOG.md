@@ -344,7 +344,9 @@
 * **System tests in guests.**
   * `ansible/playbooks/nvmeof-tests.yml` (discover, connect, an `O_DIRECT`
     digest round trip, fio, disconnect), run by the hosted
-    `system-test-nvmeof` job and by hand with `--tags nvmeof`.
+    `system-test-nvmeof` job and by hand with `--tags nvmeof`. A
+    disconnect that hasn't returned in 180 seconds fails the play,
+    printing the guest's blocked-task stacks and kernel log.
   * `ansible/playbooks/s3-tests.yml`, which builds the libibverbs client
     `tests/s3_rdma_client.c` in the guest, run by `system-test-s3` and
     `--tags s3`. The hosted lane publishes an *S3-over-RDMA GET
