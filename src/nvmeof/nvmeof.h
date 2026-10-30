@@ -62,7 +62,7 @@
 #define NVME_SQE_CDW15_OFF  60
 
 /* Read, Write and Write Zeroes: Force Unit Access, in cdw12 */
-#define NVME_RW_FUA (1u << 30)
+#define NVME_RW_FUA (1U << 30)
 
 /* Fabrics commands overlay the same 64 bytes with fctype at offset 4. */
 #define NVMEOF_SQE_FCTYPE_OFF 4
@@ -215,8 +215,9 @@ enum {
 static inline uint16_t nvme_status(uint8_t sct, uint8_t sc, int dnr)
 {
     uint16_t f = (uint16_t)(((uint16_t)sct << 8) | sc);
-    if (dnr)
+    if (dnr) {
         f |= NVME_STATUS_DNR;
+    }
     return (uint16_t)(f << 1);
 }
 
@@ -251,12 +252,12 @@ enum {
     NVMEOF_PROP_NSSR = 0x20,
 };
 
-#define NVME_CC_ENABLE       0x1u
-#define NVME_CC_SHN_MASK     0xc000u
-#define NVME_CC_SHN_NORMAL   0x4000u
-#define NVME_CSTS_RDY        0x1u
-#define NVME_CSTS_SHST_MASK  0xcu
-#define NVME_CSTS_SHST_CMPLT 0x8u
+#define NVME_CC_ENABLE       0x1U
+#define NVME_CC_SHN_MASK     0xc000U
+#define NVME_CC_SHN_NORMAL   0x4000U
+#define NVME_CSTS_RDY        0x1U
+#define NVME_CSTS_SHST_MASK  0xcU
+#define NVME_CSTS_SHST_CMPLT 0x8U
 
 /* -------------------------------------------------------------------------
  * Discovery log page (Get Log Page, LID 0x70)

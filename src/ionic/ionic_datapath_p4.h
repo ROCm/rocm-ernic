@@ -46,7 +46,7 @@ void ionic_datapath_set_p4_engine(struct ionic_datapath *dp,
  * operands of a map(), two bytes an element, or the source of a
  * conversion, at most four (fp32).  A megabyte at most.
  */
-#define IONIC_FP8_MAP_MAX 262144u
+#define IONIC_FP8_MAP_MAX 262144U
 
 /*
  * Apply an fp8 operation elementwise across two registered memory regions

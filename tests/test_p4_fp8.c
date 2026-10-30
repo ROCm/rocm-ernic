@@ -67,19 +67,19 @@ static void test_known_encodings(void)
         float val;
         const char *name;
     } cases[] = {
-        {0x00, 0.0f, "+0"},
-        {0x38, 1.0f, "1.0"},
-        {0xB8, -1.0f, "-1.0"},
-        {0x40, 2.0f, "2.0"},
-        {0x44, 3.0f, "3.0"},
-        {0x48, 4.0f, "4.0"},
-        {0x3C, 1.5f, "1.5"},
-        {0x30, 0.5f, "0.5"},
-        {0x7E, 448.0f, "max normal"},
-        {0xFE, -448.0f, "min normal"},
-        {0x08, 0.015625f, "smallest normal, 2^-6"},
-        {0x01, 0.001953125f, "smallest subnormal, 2^-9"},
-        {0x07, 0.013671875f, "largest subnormal"},
+        {0x00, 0.0F, "+0"},
+        {0x38, 1.0F, "1.0"},
+        {0xB8, -1.0F, "-1.0"},
+        {0x40, 2.0F, "2.0"},
+        {0x44, 3.0F, "3.0"},
+        {0x48, 4.0F, "4.0"},
+        {0x3C, 1.5F, "1.5"},
+        {0x30, 0.5F, "0.5"},
+        {0x7E, 448.0F, "max normal"},
+        {0xFE, -448.0F, "min normal"},
+        {0x08, 0.015625F, "smallest normal, 2^-6"},
+        {0x01, 0.001953125F, "smallest subnormal, 2^-9"},
+        {0x07, 0.013671875F, "largest subnormal"},
     };
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -92,8 +92,8 @@ static void test_known_encodings(void)
     }
 
     /* -0 decodes to zero but keeps its sign through an encode. */
-    check(feq(p4_fp8_to_float(0x80), 0.0f), "-0 decodes to zero");
-    check(p4_fp8_from_float(-0.0f) == 0x80, "-0 encodes with its sign");
+    check(feq(p4_fp8_to_float(0x80), 0.0F), "-0 decodes to zero");
+    check(p4_fp8_from_float(-0.0F) == 0x80, "-0 encodes with its sign");
 }
 
 static void test_nan(void)
@@ -110,7 +110,7 @@ static void test_nan(void)
      * rather than silently wrapping. */
     check(p4_fp8_from_float(INFINITY) == P4_FP8_MAX,
           "+inf saturates to the largest finite value");
-    check(p4_fp8_from_float(-INFINITY) == (P4_FP8_MAX | 0x80u),
+    check(p4_fp8_from_float(-INFINITY) == (P4_FP8_MAX | 0x80U),
           "-inf saturates with its sign");
 }
 
@@ -121,8 +121,9 @@ static void test_round_trip_exhaustive(void)
         float v;
         uint8_t back;
 
-        if (p4_fp8_is_nan(enc))
+        if (p4_fp8_is_nan(enc)) {
             continue;
+        }
 
         v = p4_fp8_to_float(enc);
         check(!isnan(v) && !isinf(v), "every non-NaN encoding is finite");
@@ -137,30 +138,30 @@ static void test_saturation_and_rounding(void)
 {
     /* Above the top of the range everything saturates; the boundary is the
      * midpoint to where the next value would have been. */
-    check(p4_fp8_from_float(448.0f) == 0x7E, "448 is exact");
-    check(p4_fp8_from_float(456.0f) == 0x7E, "just above 448 rounds down");
-    check(p4_fp8_from_float(464.0f) == 0x7E, "the midpoint saturates");
-    check(p4_fp8_from_float(1.0e30f) == 0x7E, "a huge value saturates");
-    check(p4_fp8_from_float(-1.0e30f) == 0xFE, "a huge negative saturates");
+    check(p4_fp8_from_float(448.0F) == 0x7E, "448 is exact");
+    check(p4_fp8_from_float(456.0F) == 0x7E, "just above 448 rounds down");
+    check(p4_fp8_from_float(464.0F) == 0x7E, "the midpoint saturates");
+    check(p4_fp8_from_float(1.0e30F) == 0x7E, "a huge value saturates");
+    check(p4_fp8_from_float(-1.0e30F) == 0xFE, "a huge negative saturates");
 
     /* Below the bottom it flushes to zero, keeping the sign. */
-    check(p4_fp8_from_float(1.0e-30f) == 0x00, "a tiny value becomes zero");
-    check(p4_fp8_from_float(-1.0e-30f) == 0x80,
+    check(p4_fp8_from_float(1.0e-30F) == 0x00, "a tiny value becomes zero");
+    check(p4_fp8_from_float(-1.0e-30F) == 0x80,
           "a tiny negative becomes negative zero");
 
     /* Ties go to even. Between 1.0 (0x38, mantissa 0) and 1.125 (0x39,
      * mantissa 1) the midpoint is 1.0625, which must pick the even one. */
-    check(p4_fp8_from_float(1.0625f) == 0x38, "a tie rounds to even, down");
+    check(p4_fp8_from_float(1.0625F) == 0x38, "a tie rounds to even, down");
     /* Between 1.125 (mantissa 1) and 1.25 (mantissa 2) the midpoint 1.1875
      * must round up, to the even mantissa. */
-    check(p4_fp8_from_float(1.1875f) == 0x3A, "a tie rounds to even, up");
+    check(p4_fp8_from_float(1.1875F) == 0x3A, "a tie rounds to even, up");
 
     /* Rounding the mantissa up has to carry into the exponent. */
-    check(p4_fp8_from_float(1.9375f) == 0x40,
+    check(p4_fp8_from_float(1.9375F) == 0x40,
           "a mantissa carry increments the exponent");
 
     /* Rounding up out of the subnormals lands on the smallest normal. */
-    check(p4_fp8_from_float(0.0150f) == 0x08,
+    check(p4_fp8_from_float(0.0150F) == 0x08,
           "a subnormal rounding up becomes the smallest normal");
 }
 
@@ -181,9 +182,9 @@ static void test_map(void)
 
         check(p4_fp8_map(P4_FP8_OP_ADD, a, b, 4, out), "ADD succeeds");
         check(out[0] == two, "1+1 is 2");
-        check(feq(p4_fp8_to_float(out[1]), 4.0f), "2+2 is 4");
-        check(feq(p4_fp8_to_float(out[2]), 5.0f), "4+1 is 5");
-        check(feq(p4_fp8_to_float(out[3]), 5.0f), "1+4 is 5");
+        check(feq(p4_fp8_to_float(out[1]), 4.0F), "2+2 is 4");
+        check(feq(p4_fp8_to_float(out[2]), 5.0F), "4+1 is 5");
+        check(feq(p4_fp8_to_float(out[3]), 5.0F), "1+4 is 5");
     }
 
     {
@@ -191,12 +192,12 @@ static void test_map(void)
         const uint8_t b[] = {four, two};
 
         check(p4_fp8_map(P4_FP8_OP_MUL, a, b, 2, out), "MUL succeeds");
-        check(feq(p4_fp8_to_float(out[0]), 8.0f), "2*4 is 8");
-        check(feq(p4_fp8_to_float(out[1]), 8.0f), "4*2 is 8");
+        check(feq(p4_fp8_to_float(out[0]), 8.0F), "2*4 is 8");
+        check(feq(p4_fp8_to_float(out[1]), 8.0F), "4*2 is 8");
 
         check(p4_fp8_map(P4_FP8_OP_MAX, a, b, 2, out), "MAX succeeds");
-        check(feq(p4_fp8_to_float(out[0]), 4.0f), "max(2,4) is 4");
-        check(feq(p4_fp8_to_float(out[1]), 4.0f), "max(4,2) is 4");
+        check(feq(p4_fp8_to_float(out[0]), 4.0F), "max(2,4) is 4");
+        check(feq(p4_fp8_to_float(out[1]), 4.0F), "max(4,2) is 4");
     }
 
     /* A NaN spoils its own element and no other. */

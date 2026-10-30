@@ -189,7 +189,8 @@ static void test_three_nodes_resolve_distinctly(void)
 static void test_link_local_resolves(void)
 {
     TcpBackendPrivate *priv = priv_new();
-    uint8_t a[16], b[16];
+    uint8_t a[16];
+    uint8_t b[16];
 
     printf("  link-local GIDs resolve by exact match\n");
 
@@ -210,7 +211,8 @@ static void test_link_local_resolves(void)
 static void test_unknown_gid_does_not_resolve(void)
 {
     TcpBackendPrivate *priv = priv_new();
-    uint8_t known[16], unknown[16];
+    uint8_t known[16];
+    uint8_t unknown[16];
 
     printf("  unknown GID does not resolve\n");
 
@@ -234,7 +236,8 @@ static void test_unknown_gid_does_not_resolve(void)
 static void test_multiple_and_replacement(void)
 {
     TcpBackendPrivate *priv = priv_new();
-    uint8_t pair[2][16], replacement[1][16];
+    uint8_t pair[2][16];
+    uint8_t replacement[1][16];
 
     printf("  multiple GIDs per node, replaced on re-advertisement\n");
 
@@ -267,7 +270,8 @@ static void test_multiple_and_replacement(void)
 static void test_unchanged_set_changes_nothing(void)
 {
     TcpBackendPrivate *priv = priv_new();
-    uint8_t pair[2][16], swapped[2][16];
+    uint8_t pair[2][16];
+    uint8_t swapped[2][16];
 
     printf("  the same set again changes nothing\n");
 
@@ -349,9 +353,9 @@ static void test_advertisement_bytes(void)
 
     memset(payload.bytes, 0xA5, sizeof(payload.bytes));
     gid_v4(gids[0], 11);
-    tcp_fill_node_gids(&payload, 0x01020304u, (const uint8_t(*)[16])gids, 1);
+    tcp_fill_node_gids(&payload, 0x01020304U, (const uint8_t(*)[16])gids, 1);
 
-    CHECK(sizeof(payload.bytes) == 8 + 8 * 16, "payload is %zu bytes",
+    CHECK(sizeof(payload.bytes) == 8 + (8 * 16), "payload is %zu bytes",
           sizeof(payload.bytes));
     CHECK(memcmp(payload.bytes, head, sizeof(head)) == 0,
           "node_id and num_gids aren't big-endian at 0 and 4");
@@ -415,7 +419,8 @@ static void test_ud_rtr_needs_no_destination(void)
     TcpBackendPrivate *priv = priv_new();
     RdmaBackendDev dev;
     RdmaBackendQP bqp;
-    union ibv_gid zero, known;
+    union ibv_gid zero;
+    union ibv_gid known;
     uint8_t raw[16];
     int rc;
 
@@ -461,7 +466,8 @@ static void test_ud_rtr_needs_no_destination(void)
 static void test_contested_gid_stays_contested(void)
 {
     TcpBackendPrivate *priv = priv_new();
-    uint8_t shared[1][16], own_a[1][16];
+    uint8_t shared[1][16];
+    uint8_t own_a[1][16];
 
     printf("  a contested GID stays contested\n");
 
@@ -531,7 +537,7 @@ static void test_returning_worker_reclaims_its_gids(void)
         g_direct_hash, g_direct_equal, NULL, tcp_mesh_node_info_destroy_notify);
 
     /* The worker's first registration, and the GIDs it then advertised. */
-    g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(1u),
+    g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(1U),
                         tcp_mesh_node_info_new(1, "10.0.0.5", 6320));
     qemu_mutex_unlock(&priv->mesh_table_lock);
 
@@ -545,7 +551,7 @@ static void test_returning_worker_reclaims_its_gids(void)
      * it notices one has died. */
     tcp_gid_claims_set(priv, 1, NULL, 0);
     qemu_mutex_lock(&priv->mesh_table_lock);
-    g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(2u),
+    g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(2U),
                         tcp_mesh_node_info_new(2, "10.0.0.5", 6320));
     qemu_mutex_unlock(&priv->mesh_table_lock);
 
@@ -683,7 +689,7 @@ static const struct hook_case hook_cases[] = {
     {HOOK_CANCEL, "cancel()", 0},
 };
 
-#define MESH_PEER 2u /* the node the hooks address and the GID's owner */
+#define MESH_PEER 2U /* the node the hooks address and the GID's owner */
 
 /* Never called: no row sends it a message.  It takes buf if it is. */
 static bool recv_fn(void *opaque, uint32_t src_node, void *buf, size_t len)

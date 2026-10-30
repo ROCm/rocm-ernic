@@ -186,7 +186,8 @@ int tcp_worker_register_with_manager(TcpBackendPrivate *priv,
      */
     char hostname[TCP_HOSTNAME_LEN + 1];
     uint32_t local = tcp_local_node(priv);
-    int fd, ret;
+    int fd;
+    int ret;
 
     /*
      * The peers connect to the name this node registers, so it has to be
@@ -563,7 +564,8 @@ static void tcp_worker_peer_sweep(TcpBackendPrivate *priv)
     GPtrArray *swept = g_ptr_array_new();
     uint32_t local = tcp_local_node(priv);
     GHashTableIter iter;
-    gpointer key, value;
+    gpointer key;
+    gpointer value;
 
     qemu_mutex_lock(&priv->peer_lock);
     qemu_mutex_lock(&priv->conn_table_lock);
@@ -629,10 +631,10 @@ static void tcp_worker_peer_pass(TcpBackendPrivate *priv, const GArray *targets)
         }
         /* The last connect can have taken an interval */
         tcp_worker_manager_pass(priv);
-        tcp_worker_connect_peer(priv, target, &priv->peer_thread_running,
-                                ernic_monotonic_ms() +
-                                    (uint64_t)priv->health_check_interval_sec *
-                                        1000u);
+        tcp_worker_connect_peer(
+            priv, target, &priv->peer_thread_running,
+            ernic_monotonic_ms() +
+                ((uint64_t)priv->health_check_interval_sec * 1000U));
     }
 }
 
@@ -662,7 +664,7 @@ static void tcp_worker_peer_pass(TcpBackendPrivate *priv, const GArray *targets)
  */
 void tcp_worker_manager_pass(TcpBackendPrivate *priv)
 {
-    uint64_t interval_ms = (uint64_t)priv->health_check_interval_sec * 1000u;
+    uint64_t interval_ms = (uint64_t)priv->health_check_interval_sec * 1000U;
     TcpConnection *conn = tcp_worker_manager_conn(priv);
 
     if (conn) {
@@ -693,7 +695,7 @@ void tcp_worker_manager_pass(TcpBackendPrivate *priv)
         } else {
             rdma_warn_report("TCP: Nothing from the manager for %" PRIu64
                              " s; connecting to it again",
-                             quiet_ms / 1000u);
+                             quiet_ms / 1000U);
         }
 
         /* Takes over manager_conn's reference */
@@ -1063,8 +1065,10 @@ static bool tcp_worker_recv_handshake(const TcpBackendPrivate *priv, int sockfd,
 void tcp_worker_accept(TcpBackendPrivate *priv, int sockfd, const char *host,
                        uint16_t port)
 {
-    uint32_t remote_node_id, remote_version;
-    TcpConnection *conn, *old;
+    uint32_t remote_node_id;
+    uint32_t remote_version;
+    TcpConnection *conn;
+    TcpConnection *old;
     char thread_name[32];
 
     if (!tcp_worker_recv_handshake(priv, sockfd, &remote_node_id,

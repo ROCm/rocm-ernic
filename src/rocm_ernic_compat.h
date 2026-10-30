@@ -42,7 +42,7 @@ typedef struct PVRDMADev *pvrdma_handle_t;
  * an IPv4 one mapped into IPv6 (::ffff:a.b.c.d).  GIDs cross this interface
  * that way, not as the core's union ibv_gid, which is the same size.
  */
-#define ERNIC_GID_LEN 16u
+#define ERNIC_GID_LEN 16U
 
 /*
  * RDMA Device Management

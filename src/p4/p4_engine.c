@@ -62,8 +62,9 @@ struct p4_engine *p4_engine_create(void)
 
 void p4_engine_destroy(struct p4_engine *eng)
 {
-    if (!eng)
+    if (!eng) {
         return;
+    }
     p4_engine_load_abort(eng);
     p4_entries_destroy(eng->entries);
     p4_json_free(eng->prog);
@@ -77,11 +78,13 @@ int p4_engine_process_rdma(const struct p4_engine *eng,
     struct p4_exec_result er;
     int rc;
 
-    if (!eng || !meta || !suppress)
+    if (!eng || !meta || !suppress) {
         return -EINVAL;
+    }
     *suppress = false;
-    if (!eng->prog)
+    if (!eng->prog) {
         return -ENOENT;
+    }
 
     rc = p4_exec_run_meta(eng->prog, eng->entries, ops, meta, &er);
     /* On an error as well: a drop made before the pipeline stopped is
@@ -93,18 +96,20 @@ int p4_engine_process_rdma(const struct p4_engine *eng,
 int p4_engine_update(struct p4_engine *eng, const struct p4_update *up,
                      char *err, size_t err_len)
 {
-    if (!eng || !up)
+    if (!eng || !up) {
         return -EINVAL;
+    }
     if (!eng->prog) {
         if (err && err_len) {
             /* Copied rather than printed: the caller's buffer may be
              * shorter than the message, and a truncating snprintf of a
              * literal is a build warning. */
             static const char msg[] = "no program is loaded";
-            size_t n = sizeof(msg) - 1u;
+            size_t n = sizeof(msg) - 1U;
 
-            if (n >= err_len)
-                n = err_len - 1u;
+            if (n >= err_len) {
+                n = err_len - 1U;
+            }
             memcpy(err, msg, n);
             err[n] = '\0';
         }
@@ -125,8 +130,9 @@ bool p4_engine_has_program(const struct p4_engine *eng)
 
 void p4_engine_load_abort(struct p4_engine *eng)
 {
-    if (!eng)
+    if (!eng) {
         return;
+    }
     free(eng->load_buf);
     eng->load_buf = NULL;
     eng->load_total = 0;
@@ -153,8 +159,9 @@ static void p4_engine_load_fail(struct p4_engine *eng, const char *fmt, ...)
 
 int p4_engine_load_begin(struct p4_engine *eng, size_t total_len)
 {
-    if (!eng)
+    if (!eng) {
         return -EINVAL;
+    }
 
     /* A new load, so the last one's reason no longer applies. */
     eng->load_err[0] = '\0';
@@ -186,8 +193,9 @@ int p4_engine_load_begin(struct p4_engine *eng, size_t total_len)
 int p4_engine_load_chunk(struct p4_engine *eng, uint64_t offset,
                          const void *data, size_t len)
 {
-    if (!eng)
+    if (!eng) {
         return -EINVAL;
+    }
     if (!eng->load_buf) {
         p4_engine_load_fail(eng, "a chunk arrived with no load in progress");
         return -EINVAL;
@@ -233,8 +241,9 @@ int p4_engine_load_chunk(struct p4_engine *eng, uint64_t offset,
 
 int p4_engine_load_commit(struct p4_engine *eng)
 {
-    if (!eng)
+    if (!eng) {
         return -EINVAL;
+    }
     if (!eng->load_buf || eng->load_got != eng->load_total) {
         /* The parser never saw this, so its reason from some earlier load
          * is not the reason now. */
@@ -250,8 +259,9 @@ int p4_engine_load_commit(struct p4_engine *eng)
                            sizeof(eng->load_err));
 
     p4_engine_load_abort(eng);
-    if (rc != 0)
+    if (rc != 0) {
         return rc;
+    }
 
     /* A program that replaces a running one only does so once it has been
      * accepted in full, so a bad load cannot leave the pipeline empty. */
@@ -275,10 +285,12 @@ int p4_engine_load_commit(struct p4_engine *eng)
 void p4_engine_load_progress(const struct p4_engine *eng, size_t *got,
                              size_t *total)
 {
-    if (got)
+    if (got) {
         *got = eng ? eng->load_got : 0;
-    if (total)
+    }
+    if (total) {
         *total = eng ? eng->load_total : 0;
+    }
 }
 
 /* The other end of a two-port device. */
@@ -291,17 +303,20 @@ int p4_engine_process(struct p4_engine *eng, uint32_t in_port,
                       const void *frame, size_t len, void *out, size_t out_cap,
                       struct p4_result *res)
 {
-    if (!eng || !frame || !out || !res || len == 0)
+    if (!eng || !frame || !out || !res || len == 0) {
         return -EINVAL;
-    if (in_port >= P4_PORT_COUNT)
+    }
+    if (in_port >= P4_PORT_COUNT) {
         return -EINVAL;
+    }
 
     if (len > P4_FRAME_MAX) {
         eng->stats.frames_too_big++;
         return -EMSGSIZE;
     }
-    if (len > out_cap)
+    if (len > out_cap) {
         return -ENOSPC;
+    }
 
     memset(res, 0, sizeof(*res));
     eng->stats.frames_in[in_port]++;
@@ -316,8 +331,9 @@ int p4_engine_process(struct p4_engine *eng, uint32_t in_port,
             /* A frame the program could not be run over is dropped rather
              * than forwarded unexamined: the pipeline is the policy, and
              * failing open would bypass it. */
-            if (rc == -EBADMSG || rc == -EMSGSIZE)
+            if (rc == -EBADMSG || rc == -EMSGSIZE) {
                 eng->stats.parse_errors++;
+            }
             eng->stats.frames_dropped++;
             res->verdict = P4_VERDICT_DROP;
             return 0;
@@ -374,9 +390,11 @@ int p4_engine_process(struct p4_engine *eng, uint32_t in_port,
 
 void p4_engine_get_stats(const struct p4_engine *eng, struct p4_stats *out)
 {
-    if (!out)
+    if (!out) {
         return;
+    }
     memset(out, 0, sizeof(*out));
-    if (eng)
+    if (eng) {
         *out = eng->stats;
+    }
 }

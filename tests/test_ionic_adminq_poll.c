@@ -42,21 +42,21 @@
 
 /* ---- Layouts, from the driver's side (ionic_fw.h) ----------------------- */
 
-#define STRIDE      64u /* ADMIN_WQE_STRIDE */
-#define HDR_LEN     4u  /* ADMIN_WQE_HDR_LEN */
-#define CQE_LEN     32u
-#define QP_BODY_LEN 64u /* IONIC_ADMIN_CREATE_QP_IN_V1_LEN */
+#define STRIDE      64U /* ADMIN_WQE_STRIDE */
+#define HDR_LEN     4U  /* ADMIN_WQE_HDR_LEN */
+#define CQE_LEN     32U
+#define QP_BODY_LEN 64U /* IONIC_ADMIN_CREATE_QP_IN_V1_LEN */
 
 /* The admin queue and its CQ. The AQ is followed by poison, which is what
  * reading on past its end finds. */
-#define AQ_GPA        256u
-#define AQ_DEPTH_LOG2 3u
-#define AQ_DEPTH      (1u << AQ_DEPTH_LOG2)
-#define ACQ_GPA       2048u
-#define CQ_ID         1u
+#define AQ_GPA        256U
+#define AQ_DEPTH_LOG2 3U
+#define AQ_DEPTH      (1U << AQ_DEPTH_LOG2)
+#define ACQ_GPA       2048U
+#define CQ_ID         1U
 
-_Static_assert(AQ_GPA + AQ_DEPTH * STRIDE < ACQ_GPA, "AQ runs into the ACQ");
-_Static_assert(ACQ_GPA + AQ_DEPTH * CQE_LEN <= GUEST_MEM_SIZE,
+_Static_assert(AQ_GPA + (AQ_DEPTH * STRIDE) < ACQ_GPA, "AQ runs into the ACQ");
+_Static_assert(ACQ_GPA + (AQ_DEPTH * CQE_LEN) <= GUEST_MEM_SIZE,
                "ACQ runs off guest memory");
 
 static int failures;
@@ -78,10 +78,10 @@ static void build_create_qp(uint8_t *body)
     body[36] = 4;
     body[37] = 7;
     body[39] = 12;
-    ernic_put_le32(body + 40, 0xffffffffu); /* no SRQ */
+    ernic_put_le32(body + 40, 0xffffffffU); /* no SRQ */
     ernic_put_le32(body + 44, 1);
     ernic_put_le64(body + 48, 0x20000);
-    ernic_put_le32(body + 56, 3u | 1u << 24);
+    ernic_put_le32(body + 56, 3U | 1U << 24);
     body[62] = IONIC_QPT_UD;
 }
 
@@ -104,19 +104,23 @@ static void write_wqe(uint64_t gpa, uint32_t depth, const struct aq_wqe *w)
     uint8_t wqe[AQ_DEPTH * STRIDE];
 
     /* A body that isn't a CREATE_QP is a pattern; nothing reads it. */
-    for (size_t i = 0; i < sizeof(wqe); i++)
-        wqe[i] = (uint8_t)(i * 7 + 1);
+    for (size_t i = 0; i < sizeof(wqe); i++) {
+        wqe[i] = (uint8_t)((i * 7) + 1);
+    }
     wqe[0] = w->op;
     wqe[1] = 0;
     ernic_put_le16(wqe + 2, w->len);
-    if (w->op == IONIC_V1_ADMIN_CREATE_QP)
+    if (w->op == IONIC_V1_ADMIN_CREATE_QP) {
         build_create_qp(wqe + HDR_LEN);
+    }
 
-    if (w->nstrides > sizeof(wqe) / STRIDE)
+    if (w->nstrides > sizeof(wqe) / STRIDE) {
         abort();
-    for (size_t i = 0; i < w->nstrides; i++)
-        memcpy(g_mem + gpa + ((w->slot + i) % depth) * STRIDE, wqe + i * STRIDE,
-               STRIDE);
+    }
+    for (size_t i = 0; i < w->nstrides; i++) {
+        memcpy(g_mem + gpa + (((w->slot + i) % depth) * STRIDE),
+               wqe + (i * STRIDE), STRIDE);
+    }
 }
 
 /* A fresh context whose admin queue is at @gpa, 2^@depth_log2 deep, with
@@ -128,8 +132,9 @@ static bool aq_reset(uint64_t gpa, uint8_t depth_log2, uint32_t slot)
     g_ctx.cq_map[0].cq_id = CQ_ID;
     g_ctx.cq_map[0].handle = 1;
     if (!ionic_adminq_register_queue(&g_ctx, 0, gpa, depth_log2, ACQ_GPA,
-                                     AQ_DEPTH_LOG2, 0, 0))
+                                     AQ_DEPTH_LOG2, 0, 0)) {
         return false;
+    }
     g_ctx.aq[0].aq_cons = slot;
     return true;
 }
@@ -145,22 +150,24 @@ static void ring_doorbell(uint32_t depth, uint32_t slot, uint32_t produced)
  * @status (0 for success). */
 static bool cqe_is(uint32_t idx, uint32_t slot, uint8_t op, uint8_t status)
 {
-    const uint8_t *cqe = g_mem + ACQ_GPA + (size_t)idx * CQE_LEN;
+    const uint8_t *cqe = g_mem + ACQ_GPA + ((size_t)idx * CQE_LEN);
     uint16_t cmd_idx = ernic_get_be16(cqe);
     uint32_t status_length = ernic_get_be32(cqe + 24);
     uint32_t qtf = ernic_get_be32(cqe + 28);
 
-    bool error = (qtf & 2u) != 0;
-    return cmd_idx == slot && cqe[2] == op && (qtf & 1u) != 0 &&
+    bool error = (qtf & 2U) != 0;
+    return cmd_idx == slot && cqe[2] == op && (qtf & 1U) != 0 &&
            error == (status != 0) && (!error || status_length == status);
 }
 
 /* Nothing was written to the admin CQ from completion @idx on. */
 static bool cq_untouched_from(uint32_t idx)
 {
-    for (uint32_t i = idx * CQE_LEN; i < AQ_DEPTH * CQE_LEN; i++)
-        if (g_mem[ACQ_GPA + i] != POISON)
+    for (uint32_t i = idx * CQE_LEN; i < AQ_DEPTH * CQE_LEN; i++) {
+        if (g_mem[ACQ_GPA + i] != POISON) {
             return false;
+        }
+    }
     return true;
 }
 
@@ -196,7 +203,7 @@ static const struct poll_case cases[] = {
     {"boundary", "NOOP of 61 bytes, one past the first stride",
      "success, two strides", 0, NOOP, STRIDE - HDR_LEN + 1, 2, 2, 0, 2, false},
     {"boundary", "NOOP of 252 bytes, four strides", "success, four strides", 0,
-     NOOP, 4 * STRIDE - HDR_LEN, 4, 4, 0, 4, false},
+     NOOP, (4 * STRIDE) - HDR_LEN, 4, 4, 0, 4, false},
     {"boundary", "CREATE_QP ending at the last slot",
      "success, a UD QP, two strides", AQ_DEPTH - 2, CREATE_QP, QP_BODY_LEN, 2,
      2, 0, 2, true},
@@ -206,8 +213,8 @@ static const struct poll_case cases[] = {
      "type_state from slot 0, not from past the ring: a UD QP", AQ_DEPTH - 1,
      CREATE_QP, QP_BODY_LEN, 2, 2, 0, 2, true},
     {"corner", "NOOP of 252 bytes wrapping after its second stride",
-     "success, four strides", AQ_DEPTH - 2, NOOP, 4 * STRIDE - HDR_LEN, 4, 4, 0,
-     4, false},
+     "success, four strides", AQ_DEPTH - 2, NOOP, (4 * STRIDE) - HDR_LEN, 4, 4,
+     0, 4, false},
 
     /* negative */
     {"negative", "CREATE_QP claiming two strides with one produced",
@@ -217,7 +224,7 @@ static const struct poll_case cases[] = {
      "refused without running, one stride", AQ_DEPTH - 1, CREATE_QP,
      QP_BODY_LEN, 2, 1, IONIC_RC_EINVAL, 1, false},
     {"negative", "NOOP of 253 bytes, five strides",
-     "refused, the five strides it claims", 0, NOOP, 4 * STRIDE - HDR_LEN + 1,
+     "refused, the five strides it claims", 0, NOOP, (4 * STRIDE) - HDR_LEN + 1,
      5, 5, IONIC_RC_EINVAL, 5, false},
     {"negative", "NOOP of 65535 bytes with three strides produced",
      "refused, the three produced", 0, NOOP, UINT16_MAX, 3, 3, IONIC_RC_EINVAL,
@@ -239,10 +246,11 @@ static void run_case(const struct poll_case *c)
     uint32_t want_cons = (c->slot + c->want_consumed) % AQ_DEPTH;
     ok = ok && g_ctx.aq[0].aq_cons == want_cons &&
          cqe_is(0, c->slot, c->op, c->want_status) && cq_untouched_from(1);
-    if (c->want_qp)
+    if (c->want_qp) {
         ok = ok && g_alloc_qp_calls == 1 && g_alloc_qp_type == IBV_QPT_UD;
-    else
+    } else {
         ok = ok && g_alloc_qp_calls == 0;
+    }
 
     printf("%s %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", c->category,
            c->description, c->expected);
@@ -262,13 +270,14 @@ static void run_case(const struct poll_case *c)
  */
 static void check_refused_then_next(void)
 {
-    const uint32_t big = 5, next = big;
+    const uint32_t big = 5;
+    const uint32_t next = big;
     bool ok = aq_reset(AQ_GPA, AQ_DEPTH_LOG2, 0);
 
     write_wqe(AQ_GPA, AQ_DEPTH,
               &(struct aq_wqe){.slot = 0,
                                .op = NOOP,
-                               .len = 4 * STRIDE - HDR_LEN + 1,
+                               .len = (4 * STRIDE) - HDR_LEN + 1,
                                .nstrides = big});
     write_wqe(AQ_GPA, AQ_DEPTH,
               &(struct aq_wqe){.slot = next, .op = NOOP, .nstrides = 1});
@@ -281,8 +290,9 @@ static void check_refused_then_next(void)
     printf("%s negative: a five-stride NOOP and a NOOP after it; expected: the "
            "first refused, the second run from slot %u\n",
            ok ? "ok  " : "FAIL", next);
-    if (!ok)
+    if (!ok) {
         failures++;
+    }
 }
 
 /*
@@ -293,21 +303,23 @@ static void check_refused_then_next(void)
 static void check_unreadable_tail(void)
 {
     const uint8_t depth_log2 = 2;
-    const uint64_t gpa = GUEST_MEM_SIZE - 2 * STRIDE;
+    const uint64_t gpa = GUEST_MEM_SIZE - (2 * STRIDE);
     bool ok = aq_reset(gpa, depth_log2, 0);
 
-    write_wqe(gpa, 1u << depth_log2,
-              &(struct aq_wqe){
-                  .slot = 0, .op = NOOP, .len = 2 * STRIDE + 1, .nstrides = 2});
-    ring_doorbell(1u << depth_log2, 0, 3);
+    write_wqe(
+        gpa, 1U << depth_log2,
+        &(struct aq_wqe){
+            .slot = 0, .op = NOOP, .len = (2 * STRIDE) + 1, .nstrides = 2});
+    ring_doorbell(1U << depth_log2, 0, 3);
     ionic_adminq_poll(&g_ctx, NULL);
 
     ok = ok && cq_untouched_from(0) && g_ctx.aq[0].aq_cons == 0;
     printf("%s negative: a three-stride NOOP whose third stride is off guest "
            "memory; expected: no completion, nothing consumed\n",
            ok ? "ok  " : "FAIL");
-    if (!ok)
+    if (!ok) {
         failures++;
+    }
 }
 
 /*
@@ -330,14 +342,16 @@ static void check_depth_limit(void)
     printf("%s boundary: admin queues 2^16 and 2^17 deep; expected: the first "
            "registered, the second refused\n",
            ok ? "ok  " : "FAIL");
-    if (!ok)
+    if (!ok) {
         failures++;
+    }
 }
 
 int main(void)
 {
-    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         run_case(&cases[i]);
+    }
     check_refused_then_next();
     check_unreadable_tail();
     check_depth_limit();

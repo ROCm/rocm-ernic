@@ -45,16 +45,17 @@ static int failures;
 static void check(const char *name, bool ok)
 {
     printf("%s %s\n", ok ? "ok  " : "FAIL", name);
-    if (!ok)
+    if (!ok) {
         failures++;
+    }
 }
 
 /* The ids a test creates, and the ones it fills the maps with, which never
  * collide with them */
-#define NEW_ID      3u
-#define FILL_ID     1000u
-#define HELD_HANDLE 77u /* the handle of the entry an id in use has */
-#define CQ_ID       1u  /* the CQ the QPs name */
+#define NEW_ID      3U
+#define FILL_ID     1000U
+#define HELD_HANDLE 77U /* the handle of the entry an id in use has */
+#define CQ_ID       1U  /* the CQ the QPs name */
 
 /*
  * An MR key as the driver builds it (ionic_mrid() in its ionic_fw.h): the
@@ -63,8 +64,8 @@ static void check(const char *name, bool ok)
  * i - 1. NEW_KEY names index NEW_ID.
  */
 #define MR_KEY(index, byte) (((uint32_t)(index) << 8) | (uint32_t)(byte))
-#define NEW_KEY             MR_KEY(NEW_ID, 0x5au)
-#define NEW_SLOT            (NEW_ID - 1u)
+#define NEW_KEY             MR_KEY(NEW_ID, 0x5aU)
+#define NEW_SLOT            (NEW_ID - 1U)
 
 /* ---- Bodies, from the driver's side (ionic_fw.h) ------------------------ */
 
@@ -87,7 +88,7 @@ static void build_qp_body(uint8_t body[64], uint32_t qp_id, uint32_t cq_id)
     ernic_put_le32(body + 32, cq_id);       /* rq_cq_id */
     body[36] = 4;                           /* rq_depth_log2 */
     body[37] = 7;                           /* rq_stride_log2 */
-    ernic_put_le32(body + 40, 0xffffffffu); /* no SRQ */
+    ernic_put_le32(body + 40, 0xffffffffU); /* no SRQ */
     ernic_put_le32(body + 56, qp_id);
     body[62] = 0; /* ionic qp type 0 -> IB_QPT_RC */
 }
@@ -105,16 +106,18 @@ static void build_mr_body(uint8_t body[45], uint32_t mrid)
 /* Fill all but the last @nfree entries of each map with ids no test uses. */
 static void fill_cq_map(uint32_t nfree)
 {
-    for (uint32_t i = 0; i < MAX_CQ_MAP - nfree; i++)
+    for (uint32_t i = 0; i < MAX_CQ_MAP - nfree; i++) {
         g_ctx.cq_map[i] = (struct ionic_cq_map_entry){
             .valid = true, .cq_id = FILL_ID + i, .handle = FILL_ID + i};
+    }
 }
 
 static void fill_qp_map(uint32_t nfree)
 {
-    for (uint32_t i = 0; i < MAX_QP_MAP - nfree; i++)
+    for (uint32_t i = 0; i < MAX_QP_MAP - nfree; i++) {
         g_ctx.qp_map[i] = (struct ionic_qp_map_entry){
             .valid = true, .qp_id = FILL_ID + i, .qpn = FILL_ID + i};
+    }
 }
 
 /*
@@ -126,8 +129,9 @@ static uint32_t cq_entries(uint32_t id)
 {
     uint32_t n = 0;
 
-    for (uint32_t i = 0; i < MAX_CQ_MAP; i++)
+    for (uint32_t i = 0; i < MAX_CQ_MAP; i++) {
         n += g_ctx.cq_map[i].valid && g_ctx.cq_map[i].cq_id == id;
+    }
     return n;
 }
 
@@ -135,8 +139,9 @@ static uint32_t qp_entries(uint32_t id)
 {
     uint32_t n = 0;
 
-    for (uint32_t i = 0; i < MAX_QP_MAP; i++)
+    for (uint32_t i = 0; i < MAX_QP_MAP; i++) {
         n += g_ctx.qp_map[i].valid && g_ctx.qp_map[i].qp_id == id;
+    }
     return n;
 }
 
@@ -145,8 +150,9 @@ static uint32_t mr_entries(void)
 {
     uint32_t n = 0;
 
-    for (uint32_t i = 0; i < MAX_MR_MAP; i++)
+    for (uint32_t i = 0; i < MAX_MR_MAP; i++) {
         n += g_ctx.mr_map[i].valid;
+    }
     return n;
 }
 
@@ -271,16 +277,16 @@ static void test_mr_map(void)
 
     ctx_reset();
     check("mr-last-index-accepted",
-          create_mr_key(MR_KEY(MAX_MR_MAP, 0x01u)) == IONIC_RC_SUCCESS);
+          create_mr_key(MR_KEY(MAX_MR_MAP, 0x01U)) == IONIC_RC_SUCCESS);
     check("mr-last-index-mapped",
           g_ctx.mr_map[MAX_MR_MAP - 1].valid && mr_entries() == 1);
 
     /* Index 0, the reserved lkey's, and those past the last have no slot */
     ctx_reset();
     check("mr-index-0-refused",
-          create_mr_key(MR_KEY(0, 0x5au)) == IONIC_RC_ERANGE);
+          create_mr_key(MR_KEY(0, 0x5aU)) == IONIC_RC_ERANGE);
     check("mr-index-past-last-refused",
-          create_mr_key(MR_KEY(MAX_MR_MAP + 1, 0x5au)) == IONIC_RC_ERANGE);
+          create_mr_key(MR_KEY(MAX_MR_MAP + 1, 0x5aU)) == IONIC_RC_ERANGE);
     check("mr-top-index-refused", create_mr_key(UINT32_MAX) == IONIC_RC_ERANGE);
     check("mr-no-slot-allocated-nothing", g_alloc_mr_calls == 0 &&
                                               g_register_mr_calls == 0 &&
@@ -293,7 +299,7 @@ static void test_mr_map(void)
         (struct ionic_mr_map_entry){.valid = true, .handle = HELD_HANDLE};
     check("mr-in-use-refused", create_mr() == IONIC_RC_EEXIST);
     check("mr-in-use-other-byte-refused",
-          create_mr_key(MR_KEY(NEW_ID, 0xa5u)) == IONIC_RC_EEXIST);
+          create_mr_key(MR_KEY(NEW_ID, 0xa5U)) == IONIC_RC_EEXIST);
     check("mr-in-use-allocated-nothing", g_alloc_mr_calls == 0);
     check("mr-in-use-entry-kept",
           g_ctx.mr_map[NEW_SLOT].valid &&
@@ -312,8 +318,8 @@ static void test_mr_map(void)
     check("mr-destroyed-again-refused",
           destroy_mr(NEW_KEY) == IONIC_RC_ENOENT && g_dealloc_mr_calls == 1);
     check("mr-destroy-no-slot-refused",
-          destroy_mr(MR_KEY(MAX_MR_MAP + 1, 0x5au)) == IONIC_RC_ENOENT &&
-              destroy_mr(MR_KEY(0, 0x5au)) == IONIC_RC_ENOENT &&
+          destroy_mr(MR_KEY(MAX_MR_MAP + 1, 0x5aU)) == IONIC_RC_ENOENT &&
+              destroy_mr(MR_KEY(0, 0x5aU)) == IONIC_RC_ENOENT &&
               g_dealloc_mr_calls == 1);
 }
 

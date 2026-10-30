@@ -59,18 +59,18 @@
  * rejects a region whose chunk count does not divide the page-rounded
  * length, which is why the other guest tests do the same.
  */
-#define REGION_LEN 4096u
+#define REGION_LEN 4096U
 
 /* fp8 E4M3 encodings, and what the reduction should make of them. */
-#define FP8_1_0 0x38u
-#define FP8_2_0 0x40u
-#define FP8_3_0 0x44u
-#define FP8_4_0 0x48u
-#define FP8_6_0 0x4Cu
+#define FP8_1_0 0x38U
+#define FP8_2_0 0x40U
+#define FP8_3_0 0x44U
+#define FP8_4_0 0x48U
+#define FP8_6_0 0x4CU
 
 /* The element given a different value, so a result that ignored
  * position could not pass. */
-#define ODD_ELEMENT 1234u
+#define ODD_ELEMENT 1234U
 
 static int p4_fd = -1;
 

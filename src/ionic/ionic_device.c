@@ -86,8 +86,9 @@ static bool nvmeof_setup(struct ionic_datapath *dp, const char *opts, char *err,
          (dp ? ionic_datapath_attach_nvmeof(dp, &cfg, why, sizeof(why))
              : ionic_datapath_nvmeof_cfg_check(&cfg, why, sizeof(why)));
     free(cfg.file); /* the target keeps its own copy */
-    if (!ok)
+    if (!ok) {
         snprintf(err, errlen, "nvmeof backend: %s", why);
+    }
     return ok;
 }
 
@@ -102,8 +103,9 @@ static bool s3_setup(struct ionic_datapath *dp, const char *opts, char *err,
     s3_target_cfg_defaults(&cfg);
     ok = s3_target_cfg_parse(&cfg, opts, why, sizeof(why)) &&
          (!dp || ionic_datapath_attach_s3(dp, &cfg, why, sizeof(why)));
-    if (!ok)
+    if (!ok) {
         snprintf(err, errlen, "s3 backend: %s", why);
+    }
     return ok;
 }
 
@@ -113,10 +115,12 @@ static bool target_setup(struct ionic_datapath *dp, const char *backend,
 {
     const char *name = pvrdma_backend_name(backend);
 
-    if (name && !strcmp(name, "nvmeof"))
+    if (name && !strcmp(name, "nvmeof")) {
         return nvmeof_setup(dp, backend_opts(backend), err, errlen);
-    if (name && !strcmp(name, "s3"))
+    }
+    if (name && !strcmp(name, "s3")) {
         return s3_setup(dp, backend_opts(backend), err, errlen);
+    }
     return true;
 }
 
@@ -141,8 +145,9 @@ struct ionic_device *ionic_device_create(const struct ionic_device_cfg *cfg,
 
     dev->emu = ionic_eth_emu_create(cfg->vfu_ctx, IONIC_BAR2_DB_SIZE);
     dev->rdma = ionic_rdma_devcmd_create(cfg->vfu_ctx);
-    if (dev->emu)
+    if (dev->emu) {
         dev->dp = ionic_datapath_create(cfg->vfu_ctx, dev->emu);
+    }
     if (!dev->emu || !dev->rdma || !dev->dp) {
         snprintf(err, errlen, "out of memory for the ionic device");
         ionic_device_destroy(dev);
@@ -152,10 +157,12 @@ struct ionic_device *ionic_device_create(const struct ionic_device_cfg *cfg,
     /* The front of the device: registers, device commands and doorbells.
      * RDMA devcmds go to the handler, RDMA doorbells to the data path. */
     ionic_eth_emu_set_stats(dev->emu, cfg->stats);
-    if (cfg->mac)
+    if (cfg->mac) {
         ionic_eth_emu_set_mac(dev->emu, cfg->mac);
-    if (cfg->profile)
+    }
+    if (cfg->profile) {
         ionic_eth_emu_set_profile(dev->emu, cfg->profile);
+    }
     ionic_eth_emu_set_faults(dev->emu, cfg->faults);
     ionic_eth_emu_register_rdma_handler(dev->emu, ionic_rdma_devcmd_dispatch,
                                         dev->rdma);
@@ -211,8 +218,9 @@ static void report_p4_stats(const struct ionic_device *dev)
 
 void ionic_device_destroy(struct ionic_device *dev)
 {
-    if (!dev)
+    if (!dev) {
         return;
+    }
 
     ernic_stats_set_section(dev->stats, NULL, NULL);
 
@@ -278,8 +286,9 @@ bool ionic_device_attach_p4(struct ionic_device *dev, struct p4_engine *eng,
 
 void ionic_device_poll(struct ionic_device *dev)
 {
-    if (!dev)
+    if (!dev) {
         return;
+    }
 
     ionic_eth_emu_poll_rx(dev->emu);
     ionic_eth_emu_publish_stats(dev->emu, dev->now_ms());

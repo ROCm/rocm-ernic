@@ -13,8 +13,9 @@ static int failures;
 static void report(bool ok, const char *description, const char *expected)
 {
     printf("%s %s; expected: %s\n", ok ? "ok" : "FAIL", description, expected);
-    if (!ok)
+    if (!ok) {
         failures++;
+    }
 }
 
 /* Three tables, one per function in ernic_counter_snapshot.h. Every row
@@ -123,10 +124,11 @@ int main(void)
         report(ok == parse[i].accepted && value == (ok ? parse[i].value : 42),
                parse[i].description, parse[i].expected);
     }
-    for (size_t i = 0; i < sizeof(sets) / sizeof(sets[0]); i++)
+    for (size_t i = 0; i < sizeof(sets) / sizeof(sets[0]); i++) {
         report(counter_sets_match(&sets[i].before, &sets[i].after) ==
                    sets[i].same,
                sets[i].description, sets[i].expected);
+    }
     for (size_t i = 0; i < sizeof(deltas) / sizeof(deltas[0]); i++) {
         uint64_t delta = 42;
         bool ok = counter_delta(deltas[i].before, deltas[i].after, &delta);

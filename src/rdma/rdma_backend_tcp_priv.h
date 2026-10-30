@@ -88,31 +88,31 @@
 
 #define TCP_PROTOCOL_MAGIC 0x52444D41 /* "RDMA" */
 /* v4: TCP_MSG_NODE_GIDS, and registration carries a version. */
-#define TCP_PROTOCOL_VERSION 4u
-#define TCP_MAX_PAYLOAD_LEN  (16u << 20) /* 16 MiB */
+#define TCP_PROTOCOL_VERSION 4U
+#define TCP_MAX_PAYLOAD_LEN  (16U << 20) /* 16 MiB */
 /* How long a peer that connects to a worker has to send its whole handshake */
-#define TCP_HANDSHAKE_TIMEOUT_MS 5000u
+#define TCP_HANDSHAKE_TIMEOUT_MS 5000U
 /*
  * How long a peer that connects to a manager has to register.  A worker
  * registers as soon as it has connected, and gives up waiting for the answer
  * after this long itself.
  */
-#define TCP_REGISTER_TIMEOUT_MS 5000u
+#define TCP_REGISTER_TIMEOUT_MS 5000U
 /*
  * How many connections a manager keeps waiting to register at once.  A worker
  * registers within milliseconds of connecting, so only a mesh's worth of
  * workers starting together comes near it.  A connection past it is closed.
  */
-#define TCP_MAX_PENDING_CONNS 64u
+#define TCP_MAX_PENDING_CONNS 64U
 /*
  * How long a send may go without a byte leaving before it gives up and shuts
  * the connection down, unless ERNIC_TCP_SEND_TIMEOUT_MS says otherwise.  A
  * manager gives up in half the time (see tcp_send_timeout_ms()).
  */
-#define TCP_DEFAULT_SEND_TIMEOUT_MS 10000u
+#define TCP_DEFAULT_SEND_TIMEOUT_MS 10000U
 /* The first QPN handed out, and the lowest after wrapping, to stay clear of
  * the special QPs */
-#define TCP_FIRST_QPN 100u
+#define TCP_FIRST_QPN 100U
 /*
  * How many bytes of the data path's messages a connection queues for its
  * send thread.  A request that would take the queue past
@@ -308,8 +308,8 @@ typedef struct {
 #define TCP_REGISTER_RESP_VERSION_OFF   12
 
 /* Sizes before the version field, i.e. what a pre-v4 peer sends. */
-#define TCP_REGISTER_NODE_LEN_V3 262u
-#define TCP_REGISTER_RESP_LEN_V3 12u
+#define TCP_REGISTER_NODE_LEN_V3 262U
+#define TCP_REGISTER_RESP_LEN_V3 12U
 
 _Static_assert(TCP_REGISTER_NODE_VERSION_OFF == TCP_REGISTER_NODE_LEN_V3 &&
                    TCP_REGISTER_NODE_LEN == TCP_REGISTER_NODE_LEN_V3 + 4,
@@ -322,7 +322,7 @@ _Static_assert(TCP_REGISTER_NODE_PORT_OFF == TCP_HOSTNAME_LEN,
 
 /* As many nodes as a topology broadcast can carry, and so as many as the
  * mesh can hold. */
-#define TCP_MAX_MESH_NODES 64u
+#define TCP_MAX_MESH_NODES 64U
 
 /*
  * TCP_MSG_MESH_TOPOLOGY, TCP_TOPOLOGY_LEN bytes, whatever num_nodes is:
@@ -349,7 +349,7 @@ _Static_assert(TCP_MESH_NODE_PORT_OFF ==
                "the port follows the hostname");
 
 #define TCP_TOPOLOGY_NUM_NODES_OFF 0
-#define TCP_TOPOLOGY_NODE_OFF(i)   (4 + (size_t)(i) * TCP_MESH_NODE_LEN)
+#define TCP_TOPOLOGY_NODE_OFF(i)   (4 + ((size_t)(i) * TCP_MESH_NODE_LEN))
 #define TCP_TOPOLOGY_LEN           TCP_TOPOLOGY_NODE_OFF(TCP_MAX_MESH_NODES)
 _Static_assert(TCP_TOPOLOGY_LEN == 17028,
                "the topology payload is on the wire and has changed size");
@@ -370,7 +370,7 @@ _Static_assert(TCP_TOPOLOGY_LEN == 17028,
  *   [8:]    TCP_MAX_NODE_GIDS 16-byte GIDs, the first num_gids in use and
  *           the rest zero
  */
-#define TCP_NODE_GIDS_LEN         (8 + TCP_MAX_NODE_GIDS * ERNIC_GID_LEN)
+#define TCP_NODE_GIDS_LEN         (8 + (TCP_MAX_NODE_GIDS * ERNIC_GID_LEN))
 #define TCP_NODE_GIDS_NODE_ID_OFF 0
 #define TCP_NODE_GIDS_NUM_OFF     4
 #define TCP_NODE_GIDS_GIDS_OFF    8

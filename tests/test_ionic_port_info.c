@@ -70,8 +70,9 @@ int vfu_addr_to_sgl(vfu_ctx_t *vfu_ctx, vfu_dma_addr_t dma_addr, size_t len,
 
     (void)vfu_ctx;
     (void)prot;
-    if (max_nr_sgs < 1 || addr + len > GUEST_MEM_SIZE)
+    if (max_nr_sgs < 1 || addr + len > GUEST_MEM_SIZE) {
         return -1;
+    }
     sg->addr = addr;
     sg->len = len;
     return 1;
@@ -84,8 +85,9 @@ int vfu_sgl_get(vfu_ctx_t *vfu_ctx, dma_sg_t *sgl, struct iovec *iov,
 
     (void)vfu_ctx;
     (void)flags;
-    if (cnt < 1)
+    if (cnt < 1) {
         return -1;
+    }
     iov->iov_base = g_mem + sg->addr;
     iov->iov_len = sg->len;
     return 0;
@@ -218,7 +220,7 @@ static int failures;
     } while (0)
 
 /* Where the fake driver puts its port_info block. */
-#define PORT_INFO_PA 1024u
+#define PORT_INFO_PA 1024U
 
 static uint32_t rd32(uint32_t off)
 {
@@ -259,8 +261,9 @@ static void test_transceiver_is_published(void)
     struct ionic_eth_emu *emu = ionic_eth_emu_create(NULL, 4096);
 
     CHECK(emu != NULL, "ionic_eth_emu_create failed");
-    if (!emu)
+    if (!emu) {
         return;
+    }
 
     memset(g_mem, 0, sizeof(g_mem));
     run_port_init(emu, PORT_INFO_PA);
@@ -292,8 +295,9 @@ static void test_speed_is_non_zero(void)
     struct ionic_eth_emu *emu = ionic_eth_emu_create(NULL, 4096);
 
     CHECK(emu != NULL, "ionic_eth_emu_create failed");
-    if (!emu)
+    if (!emu) {
         return;
+    }
 
     memset(g_mem, 0, sizeof(g_mem));
     run_port_init(emu, PORT_INFO_PA);
@@ -321,8 +325,9 @@ static void test_port_is_up(void)
     struct ionic_eth_emu *emu = ionic_eth_emu_create(NULL, 4096);
 
     CHECK(emu != NULL, "ionic_eth_emu_create failed");
-    if (!emu)
+    if (!emu) {
         return;
+    }
 
     memset(g_mem, 0, sizeof(g_mem));
     run_port_init(emu, PORT_INFO_PA);
@@ -347,15 +352,15 @@ static void test_port_is_up(void)
  */
 static void test_published_offsets_match_the_driver_layout(void)
 {
-    CHECK(IONIC_PORT_INFO_STATUS_SPEED_OFF == 256u + 4u,
+    CHECK(IONIC_PORT_INFO_STATUS_SPEED_OFF == 256U + 4U,
           "status.speed offset drifted from the ionic_if.h layout");
-    CHECK(IONIC_PORT_INFO_STATUS_STATUS_OFF == 256u + 8u,
+    CHECK(IONIC_PORT_INFO_STATUS_STATUS_OFF == 256U + 8U,
           "status.status offset drifted from the ionic_if.h layout");
-    CHECK(IONIC_PORT_INFO_XCVR_STATE_OFF == 256u + 60u,
+    CHECK(IONIC_PORT_INFO_XCVR_STATE_OFF == 256U + 60U,
           "status.xcvr offset drifted from the ionic_if.h layout");
-    CHECK(IONIC_PORT_INFO_XCVR_PID_OFF == IONIC_PORT_INFO_XCVR_STATE_OFF + 2u,
+    CHECK(IONIC_PORT_INFO_XCVR_PID_OFF == IONIC_PORT_INFO_XCVR_STATE_OFF + 2U,
           "xcvr.pid is not two bytes past xcvr.state");
-    CHECK(IONIC_PORT_INFO_PUBLISHED_LEN >= IONIC_PORT_INFO_XCVR_PID_OFF + 2u,
+    CHECK(IONIC_PORT_INFO_PUBLISHED_LEN >= IONIC_PORT_INFO_XCVR_PID_OFF + 2U,
           "the published write is too short to cover xcvr.pid");
 }
 
@@ -368,8 +373,9 @@ static void test_null_info_pa_is_harmless(void)
     struct ionic_eth_emu *emu = ionic_eth_emu_create(NULL, 4096);
 
     CHECK(emu != NULL, "ionic_eth_emu_create failed");
-    if (!emu)
+    if (!emu) {
         return;
+    }
 
     memset(g_mem, 0xa5, sizeof(g_mem));
     run_port_init(emu, 0);
@@ -386,8 +392,9 @@ static void test_port_init_is_idempotent(void)
     uint8_t first[IONIC_PORT_INFO_PUBLISHED_LEN];
 
     CHECK(emu != NULL, "ionic_eth_emu_create failed");
-    if (!emu)
+    if (!emu) {
         return;
+    }
 
     memset(g_mem, 0, sizeof(g_mem));
     run_port_init(emu, PORT_INFO_PA);
@@ -410,8 +417,9 @@ static void test_write_stays_within_the_published_window(void)
     size_t i;
 
     CHECK(emu != NULL, "ionic_eth_emu_create failed");
-    if (!emu)
+    if (!emu) {
         return;
+    }
 
     memset(g_mem, 0, sizeof(g_mem));
     memset(g_mem + PORT_INFO_PA + IONIC_PORT_INFO_PUBLISHED_LEN, 0x5a, 256);
@@ -444,10 +452,11 @@ static void test_lif_identity_advertises_rdma_stats(void)
     uint16_t stats_type;
 
     CHECK(emu != NULL, "ionic_eth_emu_create failed");
-    if (!emu)
+    if (!emu) {
         return;
+    }
 
-    CHECK(LIF_ID_RDMA_STATS_TYPE_OFF == 92u,
+    CHECK(LIF_ID_RDMA_STATS_TYPE_OFF == 92U,
           "stats_type offset drifted from the ionic_if.h layout");
 
     ionic_eth_emu_handle_lif_identify(emu, cmd, comp, data);
@@ -477,10 +486,10 @@ static void test_srq_qtype_is_not_the_sixth_qtype(void)
     /* The trap: five contiguous qtypes, then a four-byte gap of stats_type,
      * rsvd and rcq_sign_bit before srq_qtype. Striding past eq_qtype lands
      * on stats_type, 4 bytes short. */
-    CHECK(LIF_ID_SRQ_QTYPE_OFF == 32u + 5u * 12u + 4u,
+    CHECK(LIF_ID_SRQ_QTYPE_OFF == 32U + (5U * 12U) + 4U,
           "srq_qtype is not four bytes past the fifth qtype slot");
-    CHECK(LIF_ID_SRQ_QTYPE_OFF == 96u, "srq_qtype offset drifted from 96");
-    CHECK(LIF_ID_ALLOC_QID_CAP_OFF == LIF_ID_SRQ_QTYPE_OFF + 12u + 5u,
+    CHECK(LIF_ID_SRQ_QTYPE_OFF == 96U, "srq_qtype offset drifted from 96");
+    CHECK(LIF_ID_ALLOC_QID_CAP_OFF == LIF_ID_SRQ_QTYPE_OFF + 12U + 5U,
           "alloc_qid_cap is not rsvd2[5] past the end of srq_qtype");
 }
 
@@ -492,8 +501,9 @@ static void test_srq_capability_is_published(void)
     uint8_t comp[16] = {0};
 
     CHECK(emu != NULL, "ionic_eth_emu_create failed");
-    if (!emu)
+    if (!emu) {
         return;
+    }
 
     memset(data, 0xaa, sizeof(data)); /* poison: prove we write every field */
     ionic_eth_emu_handle_lif_identify(emu, cmd, comp, data);
@@ -536,8 +546,9 @@ static void test_srq_gate_needs_count_and_alloc_bit(void)
     uint8_t comp[16] = {0};
 
     CHECK(emu != NULL, "ionic_eth_emu_create failed");
-    if (!emu)
+    if (!emu) {
         return;
+    }
 
     memset(data, 0, sizeof(data));
     ionic_eth_emu_handle_lif_identify(emu, cmd, comp, data);

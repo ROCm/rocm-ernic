@@ -39,8 +39,8 @@ static uint16_t hdr_bytes(const struct p4_program *prog, p4_idx_t h)
 {
     return (
         uint16_t)((prog->header_types[prog->headers[h].header_type].total_bits +
-                   7u) /
-                  8u);
+                   7U) /
+                  8U);
 }
 
 /*
@@ -51,8 +51,9 @@ static uint16_t hdr_bytes(const struct p4_program *prog, p4_idx_t h)
 static int phv_init(const struct p4_program *prog, struct p4_phv *phv)
 {
     /* A backstop: the loader never produces a program this is true of. */
-    if (prog->phv_bytes > P4_PHV_BYTES)
+    if (prog->phv_bytes > P4_PHV_BYTES) {
         return -ENOSPC;
+    }
     memset(phv->data, 0, prog->phv_bytes);
     memset(phv->valid, 0, sizeof(phv->valid));
     phv->egress_assigned = false;
@@ -70,7 +71,8 @@ static const struct p4_field *field_of(const struct p4_program *prog,
 static uint32_t phv_bit(const struct p4_program *prog, struct p4_field_ref ref,
                         const struct p4_field *f)
 {
-    return (uint32_t)prog->headers[ref.header].phv_offset * 8u + f->offset_bits;
+    return ((uint32_t)prog->headers[ref.header].phv_offset * 8U) +
+           f->offset_bits;
 }
 
 static void phv_get(const struct p4_program *prog, const struct p4_phv *phv,
@@ -89,8 +91,9 @@ static void phv_set(const struct p4_program *prog, struct p4_phv *phv,
     /* Every assignment the program makes comes through here, so this is
      * the one place that can see egress_spec being written. */
     if (ref.header == prog->egress_spec.header &&
-        ref.field == prog->egress_spec.field)
+        ref.field == prog->egress_spec.field) {
         phv->egress_assigned = true;
+    }
 
     bits_set(phv->data, phv_bit(prog, ref, f), f->bits, v);
 }
@@ -110,10 +113,12 @@ static void imm_value(const uint8_t *imm, uint16_t cap, uint16_t len,
     uint16_t n = (len > cap) ? cap : len;
 
     value_zero(out);
-    if (n > P4_VALUE_BYTES)
+    if (n > P4_VALUE_BYTES) {
         n = P4_VALUE_BYTES;
-    for (uint16_t i = 0; i < n; i++)
-        out->b[P4_VALUE_BYTES - 1u - i] = imm[cap - 1u - i];
+    }
+    for (uint16_t i = 0; i < n; i++) {
+        out->b[P4_VALUE_BYTES - 1U - i] = imm[cap - 1U - i];
+    }
 }
 
 /* ---- the parser -------------------------------------------------------- */
@@ -132,7 +137,7 @@ static int run_parser(const struct p4_program *prog, struct p4_phv *phv,
     /* A parse state graph may legitimately revisit a state, so progress is
      * bounded by steps rather than by a visited set. */
     unsigned steps = 0;
-    const unsigned max_steps = (unsigned)prog->nparse_states * 4u + 16u;
+    const unsigned max_steps = ((unsigned)prog->nparse_states * 4U) + 16U;
 
     while (state != P4_IDX_NONE) {
         const struct p4_parse_state *st = &prog->parse_states[state];
@@ -141,16 +146,18 @@ static int run_parser(const struct p4_program *prog, struct p4_phv *phv,
         p4_idx_t next = P4_IDX_NONE;
         bool matched = false;
 
-        if (++steps > max_steps)
+        if (++steps > max_steps) {
             return -ELOOP;
+        }
 
         for (uint16_t i = 0; i < st->nops; i++) {
             p4_idx_t h = st->ops[i].header;
             uint16_t n = hdr_bytes(prog, h);
 
             /* The frame has to actually hold what the program extracts. */
-            if (n > len - pos)
+            if (n > len - pos) {
                 return -EMSGSIZE;
+            }
             memcpy(phv->data + prog->headers[h].phv_offset, frame + pos, n);
             phv->valid[h] = true;
             pos += n;
@@ -158,8 +165,9 @@ static int run_parser(const struct p4_program *prog, struct p4_phv *phv,
 
         if (st->nkey == 0) {
             /* No select: the one arm, if any, is taken unconditionally. */
-            if (st->ntransitions > 0)
+            if (st->ntransitions > 0) {
                 next = st->transitions[0].next_state;
+            }
             state = next;
             continue;
         }
@@ -172,9 +180,9 @@ static int run_parser(const struct p4_program *prog, struct p4_phv *phv,
             const struct p4_field *f = field_of(prog, st->key[i]);
             struct p4_value v;
 
-            key_bytes += (f->bits + 7u) / 8u;
+            key_bytes += (f->bits + 7U) / 8U;
             phv_get(prog, phv, st->key[i], &v);
-            bits_set(key, key_bytes * 8u - f->bits, f->bits, &v);
+            bits_set(key, (key_bytes * 8U) - f->bits, f->bits, &v);
         }
 
         for (uint16_t i = 0; i < st->ntransitions && !matched; i++) {
@@ -197,8 +205,9 @@ static int run_parser(const struct p4_program *prog, struct p4_phv *phv,
                     kb &= t->mask[ko];
                     vb &= t->mask[ko];
                 }
-                if (kb != vb)
+                if (kb != vb) {
                     eq = false;
+                }
             }
             if (eq) {
                 next = t->next_state;
@@ -211,8 +220,9 @@ static int run_parser(const struct p4_program *prog, struct p4_phv *phv,
          * it had accepted.  Here it is a parse error, and the frame is
          * dropped.
          */
-        if (!matched)
+        if (!matched) {
             return -EBADMSG;
+        }
         state = next;
     }
     *consumed = pos;
@@ -269,7 +279,9 @@ static int run_action(const struct p4_program *prog, struct p4_phv *phv,
 {
     for (uint16_t i = 0; i < act->nprimitives; i++) {
         const struct p4_primitive *p = &act->primitives[i];
-        struct p4_value a, b, r;
+        struct p4_value a;
+        struct p4_value b;
+        struct p4_value r;
 
         switch (p->kind) {
         case P4_PRIM_DROP:
@@ -294,10 +306,11 @@ static int run_action(const struct p4_program *prog, struct p4_phv *phv,
             }
             /* Wrap-around is what a fixed-width field does, and phv_set
              * truncates the result to the destination's width. */
-            if (p->kind == P4_PRIM_ADD)
+            if (p->kind == P4_PRIM_ADD) {
                 value_add(&a, &b, &r);
-            else
+            } else {
                 value_sub(&a, &b, &r);
+            }
             phv_set(prog, phv, p->params[0].field, &r);
             break;
         case P4_PRIM_EXTERN: {
@@ -311,17 +324,20 @@ static int run_action(const struct p4_program *prog, struct p4_phv *phv,
              * and a frame has none; failing is the only honest answer,
              * since carrying on would run part of an action.
              */
-            if (!ops || !ops->call)
+            if (!ops || !ops->call) {
                 return -EPERM;
+            }
 
             /* params[0] is the instance; the rest are the arguments. */
-            for (uint8_t q = 1; q < p->nparams; q++)
+            for (uint8_t q = 1; q < p->nparams; q++) {
                 operand_value(prog, phv, &p->params[q], args, &argv[argc++]);
+            }
 
             rc = ops->call(ops->ctx, prog->externs[p->params[0].inst].type,
                            p->method, argv, argc);
-            if (rc)
+            if (rc) {
                 return rc;
+            }
             break;
         }
         default:
@@ -358,14 +374,14 @@ static void eval_operand(const struct p4_program *prog,
         return;
     case P4_EO_HEADER:
         /* Only valid() takes a header, and it reads the validity bit. */
-        value_set_u32(out, phv->valid[o->header] ? 1u : 0u);
+        value_set_u32(out, phv->valid[o->header] ? 1U : 0U);
         return;
     case P4_EO_BOOL:
-        value_set_u32(out, o->bval ? 1u : 0u);
+        value_set_u32(out, o->bval ? 1U : 0U);
         return;
     case P4_EO_EXPR:
         value_set_u32(out,
-                      eval_node(prog, phv, c, o->expr, depth + 1) ? 1u : 0u);
+                      eval_node(prog, phv, c, o->expr, depth + 1) ? 1U : 0U);
         return;
     default:
         value_zero(out);
@@ -380,13 +396,15 @@ static bool eval_node(const struct p4_program *prog, const struct p4_phv *phv,
                       unsigned depth)
 {
     const struct p4_expr_node *n;
-    struct p4_value l, r;
+    struct p4_value l;
+    struct p4_value r;
     int cmp;
 
     /* A child's index is always greater than its parent's, so this cannot
      * recurse forever; the bound is belt and braces against a later edit. */
-    if (depth > P4_MAX_EXPR_DEPTH || idx >= c->nexpr)
+    if (depth > P4_MAX_EXPR_DEPTH || idx >= c->nexpr) {
         return false;
+    }
     n = &c->expr[idx];
 
     if (n->op == P4_EXPR_VALID || n->op == P4_EXPR_NOT) {
@@ -435,13 +453,14 @@ static int run_pipeline(const struct p4_program *prog, struct p4_phv *phv,
     int rc;
     /* The graph was shown acyclic at load; this bounds it anyway, because
      * the thread running it also services the vfio-user poll loop. */
-    const unsigned max_steps = (unsigned)pl->nnodes + 1u;
+    const unsigned max_steps = (unsigned)pl->nnodes + 1U;
 
     while (node != P4_IDX_NONE) {
         const struct p4_node *n = &pl->nodes[node];
 
-        if (++steps > max_steps)
+        if (++steps > max_steps) {
             return -ELOOP;
+        }
 
         if (n->kind == P4_NODE_CONDITIONAL) {
             const struct p4_conditional *c = &pl->conditionals[n->index];
@@ -455,8 +474,9 @@ static int run_pipeline(const struct p4_program *prog, struct p4_phv *phv,
         const struct p4_entry *hit = NULL;
         struct p4_args args;
 
-        for (uint16_t i = 0; i < t->nkey; i++)
+        for (uint16_t i = 0; i < t->nkey; i++) {
             phv_get(prog, phv, t->key[i].field, &keys[i]);
+        }
         hit = p4_entries_lookup(ent, prog, pipe, n->index, keys);
 
         memset(&args, 0, sizeof(args));
@@ -468,8 +488,9 @@ static int run_pipeline(const struct p4_program *prog, struct p4_phv *phv,
             }
             rc = run_action(prog, phv, ops, &prog->actions[hit->action], &args,
                             dropped);
-            if (rc)
+            if (rc) {
                 return rc;
+            }
             /* A hit follows the edge for the action that matched. */
             node = P4_IDX_NONE;
             for (uint16_t i = 0; i < t->nactions; i++) {
@@ -491,8 +512,9 @@ static int run_pipeline(const struct p4_program *prog, struct p4_phv *phv,
             }
             rc = run_action(prog, phv, ops, &prog->actions[t->default_action],
                             &args, dropped);
-            if (rc)
+            if (rc) {
                 return rc;
+            }
         }
         node = t->base_default_next;
     }
@@ -511,19 +533,22 @@ static int run_deparser(const struct p4_program *prog, const struct p4_phv *phv,
         p4_idx_t h = prog->deparse_order[i];
         uint16_t n;
 
-        if (!phv->valid[h])
+        if (!phv->valid[h]) {
             continue;
+        }
         n = hdr_bytes(prog, h);
-        if (n > out_cap - pos)
+        if (n > out_cap - pos) {
             return -EMSGSIZE;
+        }
         memcpy(out + pos, phv->data + prog->headers[h].phv_offset, n);
         pos += n;
     }
 
     /* Whatever the parser did not consume is the payload, carried through
      * untouched. */
-    if (len - consumed > out_cap - pos)
+    if (len - consumed > out_cap - pos) {
         return -EMSGSIZE;
+    }
     memcpy(out + pos, frame + consumed, len - consumed);
     pos += len - consumed;
 
@@ -543,8 +568,9 @@ static void meta_set(const struct p4_program *prog, struct p4_phv *phv,
 {
     struct p4_value val;
 
-    if (ref.header == P4_IDX_NONE)
+    if (ref.header == P4_IDX_NONE) {
         return;
+    }
     value_set_u32(&val, v);
     phv_set(prog, phv, ref, &val);
 }
@@ -571,7 +597,7 @@ static void enter_egress(const struct p4_program *prog, struct p4_phv *phv,
                          uint32_t port)
 {
     meta_set(prog, phv, prog->egress_port, port);
-    meta_set(prog, phv, prog->egress_spec, P4_DROP_PORT + 1u);
+    meta_set(prog, phv, prog->egress_spec, P4_DROP_PORT + 1U);
     phv->egress_assigned = false;
 }
 
@@ -585,22 +611,26 @@ int p4_exec_run_meta(const struct p4_program *prog,
     bool dropped = false;
     int rc;
 
-    if (!prog || !meta || !res)
+    if (!prog || !meta || !res) {
         return -EINVAL;
+    }
     memset(res, 0, sizeof(*res));
-    if (!prog->has_rdma_metadata)
+    if (!prog->has_rdma_metadata) {
         return -ENOENT;
+    }
 
     rc = phv_init(prog, &phv);
-    if (rc)
+    if (rc) {
         return rc;
+    }
 
     /* Metadata is not on a wire, so it is valid from the start. Every
      * other header stays invalid, which is what makes valid() false and
      * field reads zero for a program that also serves Ethernet. */
     for (uint16_t h = 0; h < prog->nheaders; h++) {
-        if (prog->headers[h].metadata)
+        if (prog->headers[h].metadata) {
             phv.valid[h] = true;
+        }
     }
 
     meta_set(prog, &phv, prog->ingress_port, P4_PORT_RDMA);
@@ -647,19 +677,22 @@ int p4_exec_run(const struct p4_program *prog, const struct p4_entries *ent,
     size_t consumed = 0;
     int rc;
 
-    if (!prog || !frame || !out || !res || len == 0)
+    if (!prog || !frame || !out || !res || len == 0) {
         return -EINVAL;
+    }
 
     memset(res, 0, sizeof(*res));
 
     rc = phv_init(prog, &phv);
-    if (rc)
+    if (rc) {
         return rc;
+    }
 
     /* Metadata is not on the wire, so it is valid from the start. */
     for (uint16_t h = 0; h < prog->nheaders; h++) {
-        if (prog->headers[h].metadata)
+        if (prog->headers[h].metadata) {
             phv.valid[h] = true;
+        }
     }
     if (prog->ingress_port.header != P4_IDX_NONE) {
         struct p4_value v;
@@ -669,39 +702,45 @@ int p4_exec_run(const struct p4_program *prog, const struct p4_entries *ent,
     }
 
     rc = run_parser(prog, &phv, frame, len, &consumed);
-    if (rc)
+    if (rc) {
         return rc;
+    }
 
     /* No ops on this path: an extern's operands come from a work request,
      * and a frame has none.  See run_action(). */
     rc = run_pipeline(prog, &phv, ent, NULL, P4_PIPE_INGRESS,
                       &prog->pipelines[P4_PIPE_INGRESS], &dropped);
-    if (rc)
+    if (rc) {
         return rc;
+    }
 
     /* Ingress decides where the frame goes; egress may drop it but not
      * send it elsewhere, as in simple_switch. */
     assigned = phv.egress_assigned;
     port = egress_spec_get(prog, &phv);
-    if (port == P4_DROP_PORT)
+    if (port == P4_DROP_PORT) {
         dropped = true;
+    }
 
     /* A frame dropped in ingress never reaches egress. */
     if (!dropped) {
         enter_egress(prog, &phv, assigned ? port : default_port);
         rc = run_pipeline(prog, &phv, ent, NULL, P4_PIPE_EGRESS,
                           &prog->pipelines[P4_PIPE_EGRESS], &dropped);
-        if (rc)
+        if (rc) {
             return rc;
-        if (egress_spec_get(prog, &phv) == P4_DROP_PORT)
+        }
+        if (egress_spec_get(prog, &phv) == P4_DROP_PORT) {
             dropped = true;
+        }
     }
 
     res->dropped = dropped;
     res->egress_assigned = assigned;
     res->egress_spec = port;
-    if (dropped)
+    if (dropped) {
         return 0;
+    }
 
     return run_deparser(prog, &phv, frame, len, consumed, out, out_cap,
                         &res->len);

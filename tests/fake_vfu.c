@@ -68,12 +68,14 @@ struct vfu_ctx {
 
 vfu_ctx_t *fake_vfu_create(size_t region_size, size_t nregions)
 {
-    if (!region_size || !nregions || region_size > SIZE_MAX / nregions)
+    if (!region_size || !nregions || region_size > SIZE_MAX / nregions) {
         return NULL;
+    }
 
     vfu_ctx_t *ctx = calloc(1, sizeof(*ctx));
-    if (!ctx)
+    if (!ctx) {
         return NULL;
+    }
 
     ctx->regions = (uint8_t **)calloc(nregions, sizeof(*ctx->regions));
     if (!ctx->regions) {
@@ -92,21 +94,24 @@ vfu_ctx_t *fake_vfu_create(size_t region_size, size_t nregions)
 
     ctx->log_level = -1;
     const char *lvl = getenv("ERNIC_FAKE_VFU_LOG_LEVEL");
-    if (lvl && !ernic_parse_int(lvl, &ctx->log_level))
+    if (lvl && !ernic_parse_int(lvl, &ctx->log_level)) {
         fprintf(stderr, "fake_vfu: ignoring ERNIC_FAKE_VFU_LOG_LEVEL=%s\n",
                 lvl);
+    }
     return ctx;
 }
 
 size_t fake_vfu_destroy(vfu_ctx_t *ctx)
 {
-    if (!ctx)
+    if (!ctx) {
         return 0;
+    }
 
     size_t leaked = ctx->mapped;
 
-    for (size_t i = 0; i < ctx->nregions; i++)
+    for (size_t i = 0; i < ctx->nregions; i++) {
         free(ctx->regions[i]);
+    }
     free((void *)ctx->regions);
     free(ctx);
     return leaked;
@@ -125,12 +130,14 @@ static uint64_t mem_size(const vfu_ctx_t *ctx)
 static bool gpa_offset(const vfu_ctx_t *ctx, uint64_t gpa, uint64_t len,
                        uint64_t *off)
 {
-    if (gpa < FAKE_VFU_GPA_BASE)
+    if (gpa < FAKE_VFU_GPA_BASE) {
         return false;
+    }
 
     uint64_t o = gpa - FAKE_VFU_GPA_BASE;
-    if (o > mem_size(ctx) || len > mem_size(ctx) - o)
+    if (o > mem_size(ctx) || len > mem_size(ctx) - o) {
         return false;
+    }
     *off = o;
     return true;
 }
@@ -138,16 +145,19 @@ static bool gpa_offset(const vfu_ctx_t *ctx, uint64_t gpa, uint64_t len,
 uint64_t fake_vfu_alloc(vfu_ctx_t *ctx, size_t len, size_t align)
 {
     if (!ctx || !len || len > ctx->region_size || !align ||
-        (align & (align - 1)))
+        (align & (align - 1))) {
         return 0;
+    }
 
     uint64_t off = (ctx->next_free + align - 1) & ~(uint64_t)(align - 1);
 
     /* Move to the next region rather than straddle one. */
-    if (off % ctx->region_size + len > ctx->region_size)
-        off = (off / ctx->region_size + 1) * ctx->region_size;
-    if (off > mem_size(ctx) || len > mem_size(ctx) - off)
+    if ((off % ctx->region_size) + len > ctx->region_size) {
+        off = ((off / ctx->region_size) + 1) * ctx->region_size;
+    }
+    if (off > mem_size(ctx) || len > mem_size(ctx) - off) {
         return 0;
+    }
 
     ctx->next_free = off + len;
     return FAKE_VFU_GPA_BASE + off;
@@ -155,8 +165,9 @@ uint64_t fake_vfu_alloc(vfu_ctx_t *ctx, size_t len, size_t align)
 
 uint64_t fake_vfu_alloc_straddling(vfu_ctx_t *ctx, size_t len, size_t before)
 {
-    if (!ctx || !before || before >= len || before > ctx->region_size)
+    if (!ctx || !before || before >= len || before > ctx->region_size) {
         return 0;
+    }
 
     /* The first region boundary at least @before bytes past the free
      * pointer. */
@@ -164,8 +175,9 @@ uint64_t fake_vfu_alloc_straddling(vfu_ctx_t *ctx, size_t len, size_t before)
                         ctx->region_size * ctx->region_size;
     uint64_t off = boundary - before;
 
-    if (boundary > mem_size(ctx) || len - before > mem_size(ctx) - boundary)
+    if (boundary > mem_size(ctx) || len - before > mem_size(ctx) - boundary) {
         return 0;
+    }
 
     ctx->next_free = off + len;
     return FAKE_VFU_GPA_BASE + off;
@@ -176,8 +188,9 @@ static bool copy(vfu_ctx_t *ctx, uint64_t gpa, void *buf, size_t len,
 {
     uint64_t off;
 
-    if (!ctx || !gpa_offset(ctx, gpa, len, &off))
+    if (!ctx || !gpa_offset(ctx, gpa, len, &off)) {
         return false;
+    }
 
     size_t done = 0;
     while (done < len) {
@@ -185,12 +198,14 @@ static bool copy(vfu_ctx_t *ctx, uint64_t gpa, void *buf, size_t len,
         size_t roff = (size_t)(off % ctx->region_size);
         size_t n = ctx->region_size - roff;
 
-        if (n > len - done)
+        if (n > len - done) {
             n = len - done;
-        if (to_guest)
+        }
+        if (to_guest) {
             memcpy(ctx->regions[region] + roff, (const uint8_t *)buf + done, n);
-        else
+        } else {
             memcpy((uint8_t *)buf + done, ctx->regions[region] + roff, n);
+        }
         done += n;
         off += n;
     }
@@ -220,14 +235,16 @@ unsigned long fake_vfu_map_count(const vfu_ctx_t *ctx)
 
 void fake_vfu_fail_nth_map(vfu_ctx_t *ctx, unsigned long n)
 {
-    if (ctx)
+    if (ctx) {
         ctx->fail_map_at = n ? ctx->map_calls + n : 0;
+    }
 }
 
 void fake_vfu_fail_nth_get(vfu_ctx_t *ctx, unsigned long n)
 {
-    if (ctx)
+    if (ctx) {
         ctx->fail_get_at = n ? ctx->get_calls + n : 0;
+    }
 }
 
 size_t fake_vfu_mapped(const vfu_ctx_t *ctx)
@@ -270,22 +287,25 @@ int vfu_addr_to_sgl(vfu_ctx_t *vfu_ctx, vfu_dma_addr_t dma_addr, size_t len,
         size_t roff = (size_t)(off % vfu_ctx->region_size);
         size_t n = vfu_ctx->region_size - roff;
 
-        if (n > len)
+        if (n > len) {
             n = len;
-        if (cnt < max_nr_sgs)
+        }
+        if (cnt < max_nr_sgs) {
             sgl[cnt] = (struct dma_sg){
                 .region = (size_t)(off / vfu_ctx->region_size),
                 .offset = roff,
                 .len = n,
             };
+        }
         cnt++;
         off += n;
         len -= n;
     }
 
     errno = 0;
-    if (cnt > max_nr_sgs)
+    if (cnt > max_nr_sgs) {
         return -(int)cnt - 1;
+    }
     return (int)cnt;
 }
 
@@ -358,8 +378,9 @@ void vfu_log(vfu_ctx_t *vfu_ctx, int level, const char *fmt, ...)
 {
     va_list ap;
 
-    if (!vfu_ctx)
+    if (!vfu_ctx) {
         return;
+    }
 
     if (level >= 0 && level < FAKE_VFU_LOG_LEVELS) {
         size_t *next = &vfu_ctx->log_next[level];
@@ -374,8 +395,9 @@ void vfu_log(vfu_ctx_t *vfu_ctx, int level, const char *fmt, ...)
         *next = (*next + 1) % FAKE_VFU_LOG_KEEP;
     }
 
-    if (level > vfu_ctx->log_level)
+    if (level > vfu_ctx->log_level) {
         return;
+    }
 
     va_start(ap, fmt);
     fprintf(stderr, "vfu[%d]: ", level);
@@ -386,15 +408,18 @@ void vfu_log(vfu_ctx_t *vfu_ctx, int level, const char *fmt, ...)
 
 unsigned long fake_vfu_log_count(const vfu_ctx_t *ctx, int level)
 {
-    if (level < 0 || level >= FAKE_VFU_LOG_LEVELS)
+    if (level < 0 || level >= FAKE_VFU_LOG_LEVELS) {
         return 0;
+    }
     return ctx->log_count[level];
 }
 
 const char *fake_vfu_log_text(const vfu_ctx_t *ctx, int level, size_t back)
 {
-    if (level < 0 || level >= FAKE_VFU_LOG_LEVELS || back >= FAKE_VFU_LOG_KEEP)
+    if (level < 0 || level >= FAKE_VFU_LOG_LEVELS ||
+        back >= FAKE_VFU_LOG_KEEP) {
         return "";
+    }
     return ctx->log_text[level]
                         [(ctx->log_next[level] + FAKE_VFU_LOG_KEEP - 1 - back) %
                          FAKE_VFU_LOG_KEEP];

@@ -78,8 +78,9 @@ struct ernic_stats *ernic_stats_create(void)
 
 void ernic_stats_destroy(struct ernic_stats *st)
 {
-    if (!st)
+    if (!st) {
         return;
+    }
     free(st->file);
     free(st->socket_path);
     free(st->backend);
@@ -93,50 +94,59 @@ void ernic_stats_destroy(struct ernic_stats *st)
 
 void ernic_stats_bar0_access(struct ernic_stats *st, bool is_write)
 {
-    if (!st)
+    if (!st) {
         return;
-    if (is_write)
+    }
+    if (is_write) {
         st->bar0_writes++;
-    else
+    } else {
         st->bar0_reads++;
+    }
 }
 
 void ernic_stats_doorbell_access(struct ernic_stats *st, bool is_write)
 {
-    if (!st)
+    if (!st) {
         return;
-    if (is_write)
+    }
+    if (is_write) {
         st->uar_writes++;
-    else
+    } else {
         st->uar_reads++;
+    }
 }
 
 void ernic_stats_irq(struct ernic_stats *st)
 {
-    if (st)
+    if (st) {
         st->interrupts++;
+    }
 }
 
 void ernic_stats_eth_bytes(struct ernic_stats *st, uint64_t bytes, bool is_tx)
 {
-    if (!st)
+    if (!st) {
         return;
-    if (is_tx)
+    }
+    if (is_tx) {
         st->total_ip_bytes_tx += bytes;
-    else
+    } else {
         st->total_ip_bytes_rx += bytes;
+    }
 }
 
 void ernic_stats_command(struct ernic_stats *st)
 {
-    if (st)
+    if (st) {
         st->commands++;
+    }
 }
 
 void ernic_stats_device_reset(struct ernic_stats *st)
 {
-    if (st)
+    if (st) {
         st->reset_count++;
+    }
 }
 
 /*
@@ -146,8 +156,9 @@ void ernic_stats_device_reset(struct ernic_stats *st)
 /* @qp_id's counters, marked live, or NULL for an id no QP can have. */
 static struct qp_stats *qp_get(struct ernic_stats *st, uint32_t qp_id)
 {
-    if (qp_id >= ERNIC_MAX_QP)
+    if (qp_id >= ERNIC_MAX_QP) {
         return NULL;
+    }
     st->qp[qp_id].live = true;
     return &st->qp[qp_id];
 }
@@ -157,31 +168,36 @@ void ernic_stats_rdma_bytes(struct ernic_stats *st, uint32_t qp_id,
 {
     struct qp_stats *qp;
 
-    if (!st || !bytes)
+    if (!st || !bytes) {
         return;
+    }
 
     qp = qp_get(st, qp_id);
 
     switch (stat_op) {
     case ERNIC_STAT_SEND:
         st->total_bytes_sent += bytes;
-        if (qp)
+        if (qp) {
             qp->bytes_sent += bytes;
+        }
         break;
     case ERNIC_STAT_RECV:
         st->total_bytes_received += bytes;
-        if (qp)
+        if (qp) {
             qp->bytes_received += bytes;
+        }
         break;
     case ERNIC_STAT_RDMA_READ:
         st->total_bytes_rdma_read += bytes;
-        if (qp)
+        if (qp) {
             qp->bytes_rdma_read += bytes;
+        }
         break;
     case ERNIC_STAT_RDMA_WRITE:
         st->total_bytes_rdma_write += bytes;
-        if (qp)
+        if (qp) {
             qp->bytes_rdma_write += bytes;
+        }
         break;
     default:
         break;
@@ -193,37 +209,43 @@ void ernic_stats_qp_doorbell(struct ernic_stats *st, uint32_t qp_id,
 {
     struct qp_stats *qp = st ? qp_get(st, qp_id) : NULL;
 
-    if (!qp)
+    if (!qp) {
         return;
-    if (is_send)
+    }
+    if (is_send) {
         qp->doorbell_send++;
-    else
+    } else {
         qp->doorbell_recv++;
+    }
 }
 
 void ernic_stats_qp_wqe(struct ernic_stats *st, uint32_t qp_id, unsigned int wr)
 {
     struct qp_stats *qp = st ? qp_get(st, qp_id) : NULL;
 
-    if (!qp)
+    if (!qp) {
         return;
+    }
     qp->wqes_processed++;
-    if (wr < ERNIC_STAT_WR_COUNT)
+    if (wr < ERNIC_STAT_WR_COUNT) {
         qp->wqes_by_opcode[wr]++;
+    }
 }
 
 void ernic_stats_qp_cqe(struct ernic_stats *st, uint32_t qp_id)
 {
     struct qp_stats *qp = st ? qp_get(st, qp_id) : NULL;
 
-    if (qp)
+    if (qp) {
         qp->cqes_posted++;
+    }
 }
 
 void ernic_stats_qp_forget(struct ernic_stats *st, uint32_t qp_id)
 {
-    if (st && qp_id < ERNIC_MAX_QP)
+    if (st && qp_id < ERNIC_MAX_QP) {
         memset(&st->qp[qp_id], 0, sizeof(st->qp[qp_id]));
+    }
 }
 
 /*
@@ -233,11 +255,13 @@ void ernic_stats_qp_forget(struct ernic_stats *st, uint32_t qp_id)
 int ernic_stats_dev_counters(const struct ernic_stats *st,
                              struct ernic_dev_counters *out)
 {
-    if (!out)
+    if (!out) {
         return -EINVAL;
+    }
     memset(out, 0, sizeof(*out));
-    if (!st)
+    if (!st) {
         return -EINVAL;
+    }
 
     out->commands = st->commands;
     out->total_bytes_sent = st->total_bytes_sent;
@@ -252,13 +276,16 @@ int ernic_stats_qp_counters(const struct ernic_stats *st, uint32_t qp_id,
 {
     const struct qp_stats *qp;
 
-    if (!out)
+    if (!out) {
         return -EINVAL;
+    }
     memset(out, 0, sizeof(*out));
-    if (!st)
+    if (!st) {
         return -EINVAL;
-    if (qp_id >= ERNIC_MAX_QP)
+    }
+    if (qp_id >= ERNIC_MAX_QP) {
         return 0;
+    }
 
     /* A QP that isn't live is all zeros. */
     qp = &st->qp[qp_id];
@@ -285,8 +312,9 @@ static bool replace_string(char **dst, const char *src)
 
     if (src) {
         copy = strdup(src);
-        if (!copy)
+        if (!copy) {
             return false;
+        }
     }
     free(*dst);
     *dst = copy;
@@ -295,8 +323,9 @@ static bool replace_string(char **dst, const char *src)
 
 int ernic_stats_set_file(struct ernic_stats *st, const char *path)
 {
-    if (!st)
+    if (!st) {
         return 0;
+    }
     if (!replace_string(&st->file, path)) {
         free(st->file);
         st->file = NULL;
@@ -312,8 +341,9 @@ int ernic_stats_set_instance(struct ernic_stats *st,
     char *backend = NULL;
     char *nic_profile = NULL;
 
-    if (!st || !inst)
+    if (!st || !inst) {
         return 0;
+    }
 
     /* All or nothing, so a failure leaves the block as it was. */
     if (!replace_string(&socket_path, inst->socket_path) ||
@@ -338,15 +368,17 @@ int ernic_stats_set_instance(struct ernic_stats *st,
 
 void ernic_stats_set_connection(struct ernic_stats *st, const char *state)
 {
-    if (st)
+    if (st) {
         st->connection = state;
+    }
 }
 
 void ernic_stats_set_section(struct ernic_stats *st,
                              ernic_stats_section_fn write_fn, void *opaque)
 {
-    if (!st)
+    if (!st) {
         return;
+    }
     st->section_fn = write_fn;
     st->section_opaque = write_fn ? opaque : NULL;
 }
@@ -426,16 +458,18 @@ static void write_contents(const struct ernic_stats *st, FILE *fp)
 #undef STATS_LABEL_WIDTH
     fprintf(fp, "\n");
 
-    if (st->section_fn)
+    if (st->section_fn) {
         st->section_fn(fp, st->section_opaque);
+    }
 
     fprintf(fp, "Per-QP Statistics:\n");
     for (uint32_t id = 0; id < ERNIC_MAX_QP; id++) {
         const struct qp_stats *qp = &st->qp[id];
         uint64_t total_wqes = 0;
 
-        if (!qp->live)
+        if (!qp->live) {
             continue;
+        }
         any_qp = true;
 
         fprintf(fp, "  QP %" PRIu32 ":\n", id);
@@ -467,8 +501,9 @@ static void write_contents(const struct ernic_stats *st, FILE *fp)
         }
         fprintf(fp, "\n");
     }
-    if (!any_qp)
+    if (!any_qp) {
         fprintf(fp, "  (no QPs created yet)\n\n");
+    }
 }
 
 bool ernic_stats_write(struct ernic_stats *st)
@@ -480,8 +515,9 @@ bool ernic_stats_write(struct ernic_stats *st)
     int fd;
     int write_err;
 
-    if (!st || !st->file)
+    if (!st || !st->file) {
         return false;
+    }
 
     /* ernic-exporter and ernicctl read the file whenever they like, so it's
      * never rewritten in place, where they could find it empty or half
@@ -526,10 +562,12 @@ bool ernic_stats_write(struct ernic_stats *st)
      * failure writing what's still buffered, and fclose() can fail after
      * that.  A file missing any of it must not replace the old one. */
     write_err = 0;
-    if (fflush(fp) != 0 || ferror(fp))
+    if (fflush(fp) != 0 || ferror(fp)) {
         write_err = errno ? errno : EIO;
-    if (fclose(fp) != 0 && !write_err)
+    }
+    if (fclose(fp) != 0 && !write_err) {
         write_err = errno;
+    }
     if (write_err) {
         ernic_log(ERNIC_LOG_ERROR, "stats: failed to write stats file %s: %s",
                   st->file, strerror(write_err));

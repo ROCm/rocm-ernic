@@ -36,12 +36,14 @@ bool ernic_socket_resolve_group(const char *spec, gid_t *gid)
     /* The buffer getgrnam_r() needs has no fixed bound, so grow it until
      * the entry fits, up to a limit no real group comes near. */
     for (;;) {
-        struct group grp, *found = NULL;
+        struct group grp;
+        struct group *found = NULL;
         char *buf = malloc(len);
         int rc;
 
-        if (!buf)
+        if (!buf) {
             return false;
+        }
         rc = getgrnam_r(spec, &grp, buf, len, &found);
         if (rc == 0 && found) {
             *gid = found->gr_gid;
@@ -49,8 +51,9 @@ bool ernic_socket_resolve_group(const char *spec, gid_t *gid)
             return true;
         }
         free(buf);
-        if (rc != ERANGE || len >= ((size_t)1 << 20))
+        if (rc != ERANGE || len >= ((size_t)1 << 20)) {
             break;
+        }
         len *= 2;
     }
     if (ernic_parse_u32(spec, &n) && n != (uint32_t)(gid_t)-1) {
@@ -69,8 +72,9 @@ static bool socket_is_created(const char *path, const struct stat *st,
                               const struct stat *created)
 {
     if (S_ISSOCK(st->st_mode) && st->st_dev == created->st_dev &&
-        st->st_ino == created->st_ino)
+        st->st_ino == created->st_ino) {
         return true;
+    }
     fprintf(stderr,
             "rocm-ernic: %s is no longer the socket the server created; "
             "keep the socket out of directories others can write to\n",
@@ -108,16 +112,18 @@ bool ernic_socket_set_group(const char *path, const char *name, gid_t gid,
                 strerror(errno));
         goto out;
     }
-    if (!socket_is_created(path, &st, created))
+    if (!socket_is_created(path, &st, created)) {
         goto out;
+    }
     if (ernic_gnu_fchown_path(fd, (uid_t)-1, gid) < 0) {
         int e = errno;
 
         fprintf(stderr, "rocm-ernic: cannot give socket %s the group %s: %s\n",
                 path, name, strerror(e));
-        if (e == EPERM)
+        if (e == EPERM) {
             fprintf(stderr, "rocm-ernic: the server has to run as root or "
                             "be a member of that group\n");
+        }
         goto out;
     }
     n = snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
@@ -154,8 +160,9 @@ bool ernic_socket_access_ok(const char *path, const gid_t *want_gid,
                 strerror(errno));
         return false;
     }
-    if (created && !socket_is_created(path, st, created))
+    if (created && !socket_is_created(path, st, created)) {
         return false;
+    }
     if (!S_ISSOCK(st->st_mode)) {
         fprintf(stderr, "rocm-ernic: %s is not a socket\n", path);
         return false;

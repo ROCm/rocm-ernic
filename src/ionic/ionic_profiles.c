@@ -106,11 +106,14 @@ static const struct {
 
 const char *ionic_profile_builtin(const char *name)
 {
-    if (!name)
+    if (!name) {
         return NULL;
-    for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++)
-        if (strcmp(builtins[i].name, name) == 0)
+    }
+    for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++) {
+        if (strcmp(builtins[i].name, name) == 0) {
             return builtins[i].text;
+        }
+    }
     return NULL;
 }
 

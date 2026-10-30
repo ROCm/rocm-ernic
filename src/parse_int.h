@@ -106,7 +106,7 @@ static inline bool ernic_parse_u64_span(const char *s, size_t len,
         if (v > (UINT64_MAX - d) / 10) {
             return false;
         }
-        v = v * 10 + d;
+        v = (v * 10) + d;
     }
 
     *out = v;
@@ -202,10 +202,10 @@ static inline int ernic_hex_digit(char c)
         return (int)(u - '0');
     }
     if (u >= 'a' && u <= 'f') {
-        return (int)(u - 'a' + 10u);
+        return (int)(u - 'a' + 10U);
     }
     if (u >= 'A' && u <= 'F') {
-        return (int)(u - 'A' + 10u);
+        return (int)(u - 'A' + 10U);
     }
     return -1;
 }
@@ -318,7 +318,7 @@ static inline bool ernic_parse_hex(const char *s, size_t n, uint8_t *out)
     }
     for (size_t i = 0; i < n; i++) {
         unsigned hi = (unsigned)ernic_hex_digit(s[2 * i]);
-        unsigned lo = (unsigned)ernic_hex_digit(s[2 * i + 1]);
+        unsigned lo = (unsigned)ernic_hex_digit(s[(2 * i) + 1]);
         out[i] = (uint8_t)((hi << 4) | lo);
     }
     return true;
@@ -333,7 +333,7 @@ static inline bool ernic_hexstr_fits(size_t digits, size_t out_cap)
 {
     /* Compare bytes rather than forming 2 * out_cap, which would wrap for a
      * capacity over SIZE_MAX / 2. */
-    return digits / 2 + digits % 2 <= out_cap;
+    return (digits / 2) + (digits % 2) <= out_cap;
 }
 
 /*
@@ -385,7 +385,7 @@ static inline bool ernic_parse_hexstr(const char *s, uint8_t *out,
     }
     /* An odd digit count means the first digit is the low half of the top
      * byte, so pair from the right. */
-    size_t nbytes = digits / 2 + digits % 2;
+    size_t nbytes = (digits / 2) + (digits % 2);
 
     if (!ernic_hexstr_fits(digits, out_cap)) {
         return false;
@@ -427,7 +427,7 @@ static inline bool ernic_parse_mac(const char *s, uint8_t out[6])
         return false;
     }
     for (size_t i = 0; i < 6; i++) {
-        const char *pair = s + 3 * i;
+        const char *pair = s + (3 * i);
         if (!ernic_parse_hex(pair, 1, &mac[i])) {
             return false;
         }

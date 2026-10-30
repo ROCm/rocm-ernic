@@ -100,23 +100,31 @@ static void test_decode_reference(void)
         fail(name, "decode rejected the reference token");
         return;
     }
-    if (t.transport != S3_TRANSPORT_RC)
+    if (t.transport != S3_TRANSPORT_RC) {
         fail(name, "transport %u, want %u", t.transport,
              (unsigned)S3_TRANSPORT_RC);
-    if (t.qp_num != 0x00123456u)
+    }
+    if (t.qp_num != 0x00123456U) {
         fail(name, "qp_num 0x%x, want 0x123456", t.qp_num);
-    if (memcmp(t.gid, REF_GID, sizeof(REF_GID)) != 0)
+    }
+    if (memcmp(t.gid, REF_GID, sizeof(REF_GID)) != 0) {
         fail(name, "gid mismatch");
-    if (t.rkey != 0xdeadbeefu)
+    }
+    if (t.rkey != 0xdeadbeefU) {
         fail(name, "rkey 0x%x, want 0xdeadbeef", t.rkey);
-    if (t.remote_addr != 0x00007f1122334000ull)
+    }
+    if (t.remote_addr != UINT64_C(0x00007f1122334000)) {
         fail(name, "addr 0x%" PRIx64 ", want 0x7f1122334000", t.remote_addr);
-    if (t.length != 0x100000ull)
+    }
+    if (t.length != UINT64_C(0x100000)) {
         fail(name, "length 0x%" PRIx64 ", want 0x100000", t.length);
-    if (t.port_num != 1)
+    }
+    if (t.port_num != 1) {
         fail(name, "port_num %u, want 1", t.port_num);
-    if (t.lid != 0)
+    }
+    if (t.lid != 0) {
         fail(name, "lid %u, want 0", t.lid);
+    }
 
     ok(name);
 }
@@ -129,19 +137,20 @@ static void test_encode_reference(void)
 
     memset(&t, 0, sizeof(t));
     t.transport = S3_TRANSPORT_RC;
-    t.qp_num = 0x00123456u;
+    t.qp_num = 0x00123456U;
     memcpy(t.gid, REF_GID, sizeof(REF_GID));
-    t.rkey = 0xdeadbeefu;
-    t.remote_addr = 0x00007f1122334000ull;
-    t.length = 0x100000ull;
+    t.rkey = 0xdeadbeefU;
+    t.remote_addr = UINT64_C(0x00007f1122334000);
+    t.length = UINT64_C(0x100000);
     t.port_num = 1;
     t.lid = 0;
 
     s3_token_encode(&t, hex);
-    if (strcmp(hex, REF_HEX) != 0)
+    if (strcmp(hex, REF_HEX) != 0) {
         fail(name, "encoded\n  %s\nwant\n  %s", hex, REF_HEX);
-    else
+    } else {
         ok(name);
+    }
 }
 
 static void test_decode_rejects(void)
@@ -151,23 +160,27 @@ static void test_decode_rejects(void)
     char shortened[S3_TOKEN_HEX_LEN];
     char bad[S3_TOKEN_HEX_LEN + 1];
 
-    if (s3_token_decode(NULL, &t))
+    if (s3_token_decode(NULL, &t)) {
         fail(name, "accepted NULL");
+    }
 
     memcpy(shortened, REF_HEX, sizeof(shortened) - 1);
     shortened[sizeof(shortened) - 1] = '\0';
-    if (s3_token_decode(shortened, &t))
+    if (s3_token_decode(shortened, &t)) {
         fail(name, "accepted a token one character short");
+    }
 
     memcpy(bad, REF_HEX, sizeof(bad));
     bad[17] = 'g';
-    if (s3_token_decode(bad, &t))
+    if (s3_token_decode(bad, &t)) {
         fail(name, "accepted a non-hex low nibble");
+    }
 
     memcpy(bad, REF_HEX, sizeof(bad));
     bad[16] = 'g';
-    if (s3_token_decode(bad, &t))
+    if (s3_token_decode(bad, &t)) {
         fail(name, "accepted a non-hex high nibble");
+    }
 
     ok(name);
 }
@@ -184,12 +197,15 @@ static void test_parse_header_three_field(void)
         fail(name, "rejected a well-formed three-field header");
         return;
     }
-    if (t.remote_addr != 0x7f2000000000ull)
+    if (t.remote_addr != UINT64_C(0x7f2000000000)) {
         fail(name, "addr override not applied: 0x%" PRIx64, t.remote_addr);
-    if (t.length != 0x40000ull)
+    }
+    if (t.length != UINT64_C(0x40000)) {
         fail(name, "length override not applied: 0x%" PRIx64, t.length);
-    if (t.rkey != 0xdeadbeefu)
+    }
+    if (t.rkey != 0xdeadbeefU) {
         fail(name, "overrides clobbered rkey");
+    }
 
     /* Zero in either field means "keep what the token said". */
     snprintf(hdr, sizeof(hdr), "%s:0:0", REF_HEX);
@@ -197,8 +213,10 @@ static void test_parse_header_three_field(void)
         fail(name, "rejected zero overrides");
         return;
     }
-    if (t.remote_addr != 0x00007f1122334000ull || t.length != 0x100000ull)
+    if (t.remote_addr != UINT64_C(0x00007f1122334000) ||
+        t.length != UINT64_C(0x100000)) {
         fail(name, "zero override was applied instead of ignored");
+    }
 
     ok(name);
 }
@@ -209,54 +227,65 @@ static void test_parse_header_bare_and_bad(void)
     struct s3_token t;
     char hdr[S3_TOKEN_HEX_LEN + 64];
 
-    if (!s3_token_parse_header(REF_HEX, &t))
+    if (!s3_token_parse_header(REF_HEX, &t)) {
         fail(name, "rejected a bare cuObject token");
+    }
 
     /* One colon is a truncated three-field form, not a bare token. */
     snprintf(hdr, sizeof(hdr), "%s:7f2000000000", REF_HEX);
-    if (s3_token_parse_header(hdr, &t))
+    if (s3_token_parse_header(hdr, &t)) {
         fail(name, "accepted a header missing its length field");
+    }
 
     snprintf(hdr, sizeof(hdr), "%s:zz:40000", REF_HEX);
-    if (s3_token_parse_header(hdr, &t))
+    if (s3_token_parse_header(hdr, &t)) {
         fail(name, "accepted a non-hex address override");
+    }
 
     snprintf(hdr, sizeof(hdr), "deadbeef:1000:40000");
-    if (s3_token_parse_header(hdr, &t))
+    if (s3_token_parse_header(hdr, &t)) {
         fail(name, "accepted a short token in the three-field form");
+    }
 
-    if (s3_token_parse_header(NULL, &t))
+    if (s3_token_parse_header(NULL, &t)) {
         fail(name, "accepted NULL");
+    }
 
     /* A token of the right length that isn't hex. */
     snprintf(hdr, sizeof(hdr), "%.*sg:1000:40000", (int)(S3_TOKEN_HEX_LEN - 1),
              REF_HEX);
-    if (s3_token_parse_header(hdr, &t))
+    if (s3_token_parse_header(hdr, &t)) {
         fail(name, "accepted a non-hex token in the three-field form");
+    }
 
     snprintf(hdr, sizeof(hdr), "%s::40000", REF_HEX);
-    if (s3_token_parse_header(hdr, &t))
+    if (s3_token_parse_header(hdr, &t)) {
         fail(name, "accepted an empty address override");
+    }
 
     snprintf(hdr, sizeof(hdr), "%s:1000:", REF_HEX);
-    if (s3_token_parse_header(hdr, &t))
+    if (s3_token_parse_header(hdr, &t)) {
         fail(name, "accepted an empty length override");
+    }
 
     snprintf(hdr, sizeof(hdr), "%s:1000:4z", REF_HEX);
-    if (s3_token_parse_header(hdr, &t))
+    if (s3_token_parse_header(hdr, &t)) {
         fail(name, "accepted a non-hex length override");
+    }
 
     /* 64 bits is 16 hex digits; a 17th would be lost off the top. */
     snprintf(hdr, sizeof(hdr), "%s:10000000000000000:40000", REF_HEX);
-    if (s3_token_parse_header(hdr, &t))
+    if (s3_token_parse_header(hdr, &t)) {
         fail(name, "accepted a 17-digit address override");
+    }
 
     snprintf(hdr, sizeof(hdr), "%s:ffffffffffffffff:FFFFFFFFFFFFFFFF", REF_HEX);
-    if (!s3_token_parse_header(hdr, &t))
+    if (!s3_token_parse_header(hdr, &t)) {
         fail(name, "rejected 16-digit overrides");
-    else if (t.remote_addr != UINT64_MAX || t.length != UINT64_MAX)
+    } else if (t.remote_addr != UINT64_MAX || t.length != UINT64_MAX) {
         fail(name, "16-digit overrides read as 0x%" PRIx64 " and 0x%" PRIx64,
              t.remote_addr, t.length);
+    }
 
     ok(name);
 }
@@ -301,18 +330,21 @@ static void test_reply_codes(void)
                  cases[i].want_ok);
             continue;
         }
-        if (got && code != cases[i].want_code)
+        if (got && code != cases[i].want_code) {
             fail(name, "\"%s\": code %d, want %d", cases[i].in, code,
                  cases[i].want_code);
+        }
     }
 
     /* The NUL a header value may arrive with is trimmed like CR and LF. */
     code = 0;
-    if (!s3_reply_parse_code("201", 4, &code) || code != 201)
+    if (!s3_reply_parse_code("201", 4, &code) || code != 201) {
         fail(name, "\"201\" with its NUL: code %d, want 201", code);
+    }
 
-    if (s3_reply_parse_code(NULL, 3, &code))
+    if (s3_reply_parse_code(NULL, 3, &code)) {
         fail(name, "accepted NULL");
+    }
 
     ok(name);
 }
@@ -320,17 +352,18 @@ static void test_reply_codes(void)
 static void test_reply_peer_round_trip(void)
 {
     const char *name = "reply-peer-round-trip";
-    struct s3_token peer, back;
+    struct s3_token peer;
+    struct s3_token back;
     char reply[S3_REPLY_MAX];
     int code = 0;
 
     memset(&peer, 0, sizeof(peer));
     peer.transport = S3_TRANSPORT_RC;
-    peer.qp_num = 0x00d00001u;
+    peer.qp_num = 0x00d00001U;
     memcpy(peer.gid, REF_GID, sizeof(REF_GID));
     peer.gid[15] = 0x01;
-    peer.rkey = 0x1234u;
-    peer.remote_addr = 0x9000ull;
+    peer.rkey = 0x1234U;
+    peer.remote_addr = UINT64_C(0x9000);
     peer.length = 4096;
     peer.port_num = 1;
 
@@ -344,14 +377,17 @@ static void test_reply_peer_round_trip(void)
         fail(name, "could not parse the reply we just formatted");
         return;
     }
-    if (code != 200)
+    if (code != 200) {
         fail(name, "code %d, want 200", code);
-    if (!token_equal(&back, &peer))
+    }
+    if (!token_equal(&back, &peer)) {
         fail(name, "peer token did not survive the round trip");
+    }
 
     /* A reply with no token is a code, not a peer. */
-    if (s3_reply_parse_peer("200", 3, &back, &code))
+    if (s3_reply_parse_peer("200", 3, &back, &code)) {
         fail(name, "accepted a bare code as a peer reply");
+    }
 
     ok(name);
 }
@@ -366,32 +402,39 @@ static void test_reply_peer_rejects(void)
 
     memcpy(hex, REF_HEX, sizeof(hex));
 
-    if (s3_reply_parse_peer(NULL, 10, &back, &code))
+    if (s3_reply_parse_peer(NULL, 10, &back, &code)) {
         fail(name, "accepted NULL");
-    if (s3_reply_parse_peer("\r\n", 2, &back, &code))
+    }
+    if (s3_reply_parse_peer("\r\n", 2, &back, &code)) {
         fail(name, "accepted a reply of only CR LF");
+    }
 
     snprintf(reply, sizeof(reply), ":%s", hex);
-    if (s3_reply_parse_peer(reply, strlen(reply), &back, &code))
+    if (s3_reply_parse_peer(reply, strlen(reply), &back, &code)) {
         fail(name, "accepted a token with no code");
+    }
 
     snprintf(reply, sizeof(reply), "2x:%s", hex);
-    if (s3_reply_parse_peer(reply, strlen(reply), &back, &code))
+    if (s3_reply_parse_peer(reply, strlen(reply), &back, &code)) {
         fail(name, "accepted a code that isn't a number");
+    }
 
     snprintf(reply, sizeof(reply), "200:%.*s", (int)(S3_TOKEN_HEX_LEN - 1),
              hex);
-    if (s3_reply_parse_peer(reply, strlen(reply), &back, &code))
+    if (s3_reply_parse_peer(reply, strlen(reply), &back, &code)) {
         fail(name, "accepted a token one character short");
+    }
 
     snprintf(reply, sizeof(reply), "200:%s0", hex);
-    if (s3_reply_parse_peer(reply, strlen(reply), &back, &code))
+    if (s3_reply_parse_peer(reply, strlen(reply), &back, &code)) {
         fail(name, "accepted a token one character long");
+    }
 
     hex[0] = 'x';
     snprintf(reply, sizeof(reply), "200:%s", hex);
-    if (s3_reply_parse_peer(reply, strlen(reply), &back, &code))
+    if (s3_reply_parse_peer(reply, strlen(reply), &back, &code)) {
         fail(name, "accepted a token that isn't hex");
+    }
 
     ok(name);
 }
@@ -437,7 +480,8 @@ static void test_reply_format_codes(void)
         {INT_MAX, 500},
     };
 
-    struct s3_token peer, back;
+    struct s3_token peer;
+    struct s3_token back;
     char hex[S3_TOKEN_HEX_LEN + 1];
 
     if (!s3_token_decode(REF_HEX, &peer)) {
@@ -456,8 +500,9 @@ static void test_reply_format_codes(void)
         s3_reply_format(in, &peer, buf);
 
         bool overran = false;
-        for (size_t j = S3_REPLY_MAX; j < sizeof(buf); j++)
+        for (size_t j = S3_REPLY_MAX; j < sizeof(buf); j++) {
             overran = overran || buf[j] != '#';
+        }
         if (overran) {
             fail(name, "code %d: wrote past S3_REPLY_MAX", in);
             continue;
@@ -474,12 +519,14 @@ static void test_reply_format_codes(void)
             fail(name, "code %d: could not parse \"%s\"", in, buf);
             continue;
         }
-        if (code != cases[i].want)
+        if (code != cases[i].want) {
             fail(name, "code %d: read back as %d, want %d", in, code,
                  cases[i].want);
-        if (!token_equal(&back, &peer))
+        }
+        if (!token_equal(&back, &peer)) {
             fail(name, "code %d: peer token did not survive the round trip",
                  in);
+        }
     }
 
     ok(name);
@@ -493,40 +540,48 @@ static void test_gid_ipv4(void)
 
     memset(&t, 0, sizeof(t));
     memcpy(t.gid, REF_GID, sizeof(REF_GID));
-    if (!s3_token_gid_ipv4(&t, dotted, sizeof(dotted)))
+    if (!s3_token_gid_ipv4(&t, dotted, sizeof(dotted))) {
         fail(name, "rejected an IPv4-mapped GID");
-    else if (strcmp(dotted, "192.168.200.9") != 0)
+    } else if (strcmp(dotted, "192.168.200.9") != 0) {
         fail(name, "got \"%s\", want \"192.168.200.9\"", dotted);
+    }
 
     /* Native IPv6: not an error, just not a dotted quad. */
     t.gid[0] = 0xfe;
     t.gid[1] = 0x80;
     t.gid[10] = 0;
     t.gid[11] = 0;
-    if (s3_token_gid_ipv4(&t, dotted, sizeof(dotted)))
+    if (s3_token_gid_ipv4(&t, dotted, sizeof(dotted))) {
         fail(name, "claimed a native IPv6 GID was IPv4-mapped");
-    if (dotted[0] != '\0')
+    }
+    if (dotted[0] != '\0') {
         fail(name, "left stale text in the output buffer");
+    }
 
     /* Too small to hold "192.168.200.9" plus its NUL. */
     memcpy(t.gid, REF_GID, sizeof(REF_GID));
     char tiny[8];
-    if (s3_token_gid_ipv4(&t, tiny, sizeof(tiny)))
+    if (s3_token_gid_ipv4(&t, tiny, sizeof(tiny))) {
         fail(name, "overflowed a short output buffer");
+    }
 
     /* Both 0xff bytes are needed, not just the first. */
     t.gid[11] = 0;
-    if (s3_token_gid_ipv4(&t, dotted, sizeof(dotted)))
+    if (s3_token_gid_ipv4(&t, dotted, sizeof(dotted))) {
         fail(name, "took ::ff00:c0a8:c809 for an IPv4-mapped GID");
+    }
 
     memcpy(t.gid, REF_GID, sizeof(REF_GID));
-    if (s3_token_gid_ipv4(&t, NULL, sizeof(dotted)))
+    if (s3_token_gid_ipv4(&t, NULL, sizeof(dotted))) {
         fail(name, "accepted a NULL output buffer");
+    }
     dotted[0] = 'Z';
-    if (s3_token_gid_ipv4(&t, dotted, 0))
+    if (s3_token_gid_ipv4(&t, dotted, 0)) {
         fail(name, "accepted an output buffer of length 0");
-    if (dotted[0] != 'Z')
+    }
+    if (dotted[0] != 'Z') {
         fail(name, "wrote into an output buffer of length 0");
+    }
 
     ok(name);
 }
@@ -544,9 +599,10 @@ int main(void)
     test_reply_format_codes();
     test_gid_ipv4();
 
-    if (failures)
+    if (failures) {
         printf("\n%d failure(s)\n", failures);
-    else
+    } else {
         printf("\nall s3 token tests passed\n");
+    }
     return failures;
 }

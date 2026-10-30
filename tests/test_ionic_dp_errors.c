@@ -75,11 +75,11 @@
 #define IONIC_STS_RETRY_EXCEEDED    11
 
 /* struct ionic_v1_cqe: its type and error bits, and where its fields lie */
-#define CQE_ERROR_BIT     0x02u
-#define CQE_TYPE_MASK     (7u << 5)
-#define CQE_TYPE_RECV     (1u << 5)
-#define CQE_TYPE_SEND_MSN (2u << 5)
-#define CQE_TYPE_SEND_NPG (3u << 5)
+#define CQE_ERROR_BIT     0x02U
+#define CQE_TYPE_MASK     (7U << 5)
+#define CQE_TYPE_RECV     (1U << 5)
+#define CQE_TYPE_SEND_MSN (2U << 5)
+#define CQE_TYPE_SEND_NPG (3U << 5)
 #define CQE_MSN_OFF       4  /* be32 send.msg_msn */
 #define CQE_NPG_WQE_OFF   16 /* native u64 send.npg_wqe_id */
 #define CQE_STATUS_OFF    24 /* be32 status_length */
@@ -101,7 +101,7 @@ static uint64_t fake_now_ms(void)
  * UINT64_MAX.
  */
 
-#define GUEST_MEM_SIZE 0x10000u
+#define GUEST_MEM_SIZE 0x10000U
 static uint8_t g_mem[GUEST_MEM_SIZE];
 static uint64_t g_hole_gpa = UINT64_MAX;
 
@@ -124,10 +124,13 @@ int vfu_addr_to_sgl(vfu_ctx_t *vfu_ctx, vfu_dma_addr_t dma_addr, size_t len,
     (void)vfu_ctx;
     (void)prot;
     /* Written so a huge addr cannot wrap the sum back into range. */
-    if (max_nr_sgs < 1 || addr > GUEST_MEM_SIZE || len > GUEST_MEM_SIZE - addr)
+    if (max_nr_sgs < 1 || addr > GUEST_MEM_SIZE ||
+        len > GUEST_MEM_SIZE - addr) {
         return -1;
-    if (g_hole_gpa >= addr && g_hole_gpa - addr < len)
+    }
+    if (g_hole_gpa >= addr && g_hole_gpa - addr < len) {
         return -1;
+    }
     sg->addr = addr;
     sg->len = len;
     return 1;
@@ -140,8 +143,9 @@ int vfu_sgl_get(vfu_ctx_t *vfu_ctx, dma_sg_t *sgl, struct iovec *iov,
 
     (void)vfu_ctx;
     (void)flags;
-    if (cnt < 1)
+    if (cnt < 1) {
         return -1;
+    }
     iov->iov_base = g_mem + sg->addr;
     iov->iov_len = sg->len;
     return 0;
@@ -207,13 +211,16 @@ int ernic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
         g_sendv_hook = NULL;
         hook();
     }
-    if (g_send_rc != 0)
+    if (g_send_rc != 0) {
         return g_send_rc;
-    if (g_nwire >= WIRE_MAX || hdr_len + body_len > WIRE_BYTES)
+    }
+    if (g_nwire >= WIRE_MAX || hdr_len + body_len > WIRE_BYTES) {
         return -1;
+    }
     memcpy(g_wire[g_nwire], hdr, hdr_len);
-    if (body_len)
+    if (body_len) {
         memcpy(g_wire[g_nwire] + hdr_len, body, body_len);
+    }
     g_wire_tag[g_nwire] = tag;
     g_wire_reply[g_nwire] = reply;
     g_wire_len[g_nwire++] = hdr_len + body_len;
@@ -254,10 +261,11 @@ uint32_t ernic_mesh_local_node(pvrdma_handle_t handle)
     (void)handle;
     return g_local_node;
 }
-uint32_t ernic_mesh_node_from_gid(pvrdma_handle_t handle, const uint8_t *gid)
+uint32_t ernic_mesh_node_from_gid(pvrdma_handle_t handle,
+                                  const uint8_t *dest_gid_16bytes)
 {
     (void)handle;
-    (void)gid;
+    (void)dest_gid_16bytes;
     return UINT32_MAX;
 }
 bool ernic_mesh_has_room(pvrdma_handle_t handle, uint32_t dst_node, size_t len)
@@ -497,31 +505,31 @@ static const char *const counter_name[IONIC_DP_RDMA_COUNT] = {
  * SGE's va is simply a GPA.  QP_C completes onto a CQ that was never
  * registered.
  */
-#define CQ_ID      1u
-#define CQ_UNKNOWN 99u
-#define QP_A       2u
-#define QP_B       3u
-#define QP_C       4u
-#define QP_ABSENT  500u
+#define CQ_ID      1U
+#define CQ_UNKNOWN 99U
+#define QP_A       2U
+#define QP_B       3U
+#define QP_C       4U
+#define QP_ABSENT  500U
 #define QP_RC      2 /* IB_QPT_RC: the one type that waits out an RNR */
 #define QP_UC      3 /* IB_QPT_UC */
-#define LOCAL_NODE 0u
-#define PEER_NODE  1u
-#define CQ_GPA     0x0000u
-#define SQ_GPA(qp) (UINT64_C(0x1000) * ((qp) - 1u))
-#define RQ_GPA(qp) (SQ_GPA(qp) + 0x400u)
-#define SRC_GPA    0x4000u /* the requester's payload, key 0 */
-#define RESULT_GPA 0x4800u /* where an atomic's original value lands */
-#define MR_GPA     0x5000u /* the one registered region */
-#define MR_LEN     256u
-#define MR_KEY     0x101u
-#define BAD_KEY    0x999u
-#define RECV_GPA   0x6000u
+#define LOCAL_NODE 0U
+#define PEER_NODE  1U
+#define CQ_GPA     0x0000U
+#define SQ_GPA(qp) (UINT64_C(0x1000) * ((qp) - 1U))
+#define RQ_GPA(qp) (SQ_GPA(qp) + 0x400U)
+#define SRC_GPA    0x4000U /* the requester's payload, key 0 */
+#define RESULT_GPA 0x4800U /* where an atomic's original value lands */
+#define MR_GPA     0x5000U /* the one registered region */
+#define MR_LEN     256U
+#define MR_KEY     0x101U
+#define BAD_KEY    0x999U
+#define RECV_GPA   0x6000U
 #define RING_DEPTH 4 /* log2 */
 #define WQE_STRIDE 6 /* log2: 64 bytes, room for two SGEs */
 #define CQE_STRIDE 5 /* log2: 32 bytes, one CQE */
-#define T0         1000000u
-#define OP_UNKNOWN 0x0fu
+#define T0         1000000U
+#define OP_UNKNOWN 0x0fU
 
 /*
  * The data path under test, and what it asked the mesh to cancel: how many
@@ -582,11 +590,13 @@ static struct ionic_datapath *setup(void)
     };
     struct ionic_dp_buf_desc mr = {.dma_addr = MR_GPA, .map_count = 1};
 
-    if (!dp)
+    if (!dp) {
         return NULL;
+    }
     memset(g_mem, 0, sizeof(g_mem));
-    for (size_t i = 0; i < MR_LEN; i++)
+    for (size_t i = 0; i < MR_LEN; i++) {
         g_mem[SRC_GPA + i] = (uint8_t)i;
+    }
     g_hole_gpa = UINT64_MAX;
     g_nwire = 0;
     g_room = true;
@@ -676,7 +686,7 @@ static void post_send(struct ionic_datapath *dp, uint32_t qp_id,
     bool atomic =
         w->op == IONIC_V1_OP_ATOMIC_CS || w->op == IONIC_V1_OP_ATOMIC_FA;
 
-    memset(e, 0, 1u << WQE_STRIDE);
+    memset(e, 0, 1U << WQE_STRIDE);
     ernic_put_be64(e, slot);
     e[8] = w->op;
     e[9] = 1;
@@ -694,8 +704,8 @@ static void post_send(struct ionic_datapath *dp, uint32_t qp_id,
         ernic_put_be32(e + WQE_PLD_OFF + 12, w->lkey);
     }
     ionic_datapath_doorbell(dp, DP_QTYPE_SQ,
-                            (uint64_t)(g_sq_slot[qp_id] & 0xffffu) |
-                                (uint64_t)(qp_id & 0xffu) << 24 |
+                            (uint64_t)(g_sq_slot[qp_id] & 0xffffU) |
+                                (uint64_t)(qp_id & 0xffU) << 24 |
                                 (uint64_t)(qp_id >> 8) << 32);
 }
 
@@ -706,8 +716,8 @@ static void post_recv(struct ionic_datapath *dp, uint32_t qp_id, uint32_t len)
     uint32_t slot = q->rq_prod % q->rq_depth;
     uint8_t *e = g_mem + RQ_GPA(qp_id) + ((size_t)slot << WQE_STRIDE);
 
-    memset(e, 0, 1u << WQE_STRIDE);
-    ernic_put_be64(e, 0x100u + slot);
+    memset(e, 0, 1U << WQE_STRIDE);
+    ernic_put_be64(e, 0x100U + slot);
     e[9] = 1;
     ernic_put_be64(e + WQE_PLD_OFF, RECV_GPA);
     ernic_put_be32(e + WQE_PLD_OFF + 8, len);
@@ -726,8 +736,9 @@ static void wire_feed(struct ionic_datapath *dp)
     memcpy(buf, g_wire, sizeof(buf));
     memcpy(len, g_wire_len, sizeof(len));
     g_nwire = 0;
-    for (size_t i = 0; i < n; i++)
+    for (size_t i = 0; i < n; i++) {
         mesh_recv(buf[i], len[i]);
+    }
 }
 
 static void poll_at(struct ionic_datapath *dp, uint64_t now)
@@ -1315,16 +1326,19 @@ static const struct dp_case cases[] = {
 
 static void add_want(uint64_t *v, const struct want *w, size_t n)
 {
-    for (size_t i = 0; i < n && w[i].n; i++)
+    for (size_t i = 0; i < n && w[i].n; i++) {
         v[w[i].ctr] += w[i].n;
+    }
 }
 
 /* The first counter where @got and @want differ, or -1. */
 static int first_diff(const uint64_t *got, const uint64_t *want)
 {
-    for (int i = 0; i < IONIC_DP_RDMA_COUNT; i++)
-        if (got[i] != want[i])
+    for (int i = 0; i < IONIC_DP_RDMA_COUNT; i++) {
+        if (got[i] != want[i]) {
             return i;
+        }
+    }
     return -1;
 }
 
@@ -1338,7 +1352,8 @@ static void run_case(const struct dp_case *c)
     uint64_t got[IONIC_DP_RDMA_COUNT];
     const char *where = NULL;
     int diff = -1;
-    uint64_t g = 0, w = 0;
+    uint64_t g = 0;
+    uint64_t w = 0;
 
     if (!dp) {
         printf("FAIL %s: %s; expected: %s\n     could not create a data path\n",
@@ -1417,18 +1432,22 @@ static void run_getter_case(const struct getter_case *c)
         ionic_datapath_unregister_qp(dp, QP_A);
         memset(got, 0xa5, sizeof(got));
         ionic_datapath_rdma_counters(c->null_dp ? NULL : dp, c->qp_id, got);
-        for (int i = 0; i < IONIC_DP_RDMA_COUNT; i++)
-            if (got[i])
+        for (int i = 0; i < IONIC_DP_RDMA_COUNT; i++) {
+            if (got[i]) {
                 ok = false;
+            }
+        }
         ionic_datapath_rdma_counters(dp, IONIC_DP_DEVICE, got);
-        if (got[IONIC_DP_REQ_TX_LOCAL_OPER_ERR] != 1)
+        if (got[IONIC_DP_REQ_TX_LOCAL_OPER_ERR] != 1) {
             ok = false;
+        }
         ionic_datapath_destroy(dp);
     }
     printf("%s %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", c->category,
            c->description, c->expected);
-    if (!ok)
+    if (!ok) {
         failures++;
+    }
 }
 
 /* Sum of every RDMA counter @qp_id has, so "all zero" is one comparison. */
@@ -1438,8 +1457,9 @@ static uint64_t rdma_sum(const struct ionic_datapath *dp, uint32_t qp_id)
     uint64_t sum = 0;
 
     ionic_datapath_rdma_counters(dp, qp_id, v);
-    for (int i = 0; i < IONIC_DP_RDMA_COUNT; i++)
+    for (int i = 0; i < IONIC_DP_RDMA_COUNT; i++) {
         sum += v[i];
+    }
     return sum;
 }
 
@@ -1451,7 +1471,10 @@ static uint64_t rdma_sum(const struct ionic_datapath *dp, uint32_t qp_id)
 static void check_reset_counters(void)
 {
     struct ionic_datapath *dp = setup();
-    uint64_t dev_before = 0, qp_before = 0, dev_after = 1, qp_after = 1;
+    uint64_t dev_before = 0;
+    uint64_t qp_before = 0;
+    uint64_t dev_after = 1;
+    uint64_t qp_after = 1;
     bool ok = dp != NULL;
 
     /* A NULL data path is no data path, and is not an error. */
@@ -1540,9 +1563,11 @@ static const struct sq_case sq_cases[] = {
 
 static bool recv_delivered(void)
 {
-    for (uint32_t i = 0; i < SEND64.len; i++)
-        if (g_mem[RECV_GPA + i] != g_mem[SRC_GPA + i])
+    for (uint32_t i = 0; i < SEND64.len; i++) {
+        if (g_mem[RECV_GPA + i] != g_mem[SRC_GPA + i]) {
             return false;
+        }
+    }
     return true;
 }
 
@@ -1646,7 +1671,8 @@ static void check_wire_hdr_layout(void)
         0x41, /* compare */
     };
     static const uint8_t imm[4] = {0xa1, 0xa2, 0xa3, 0xa4};
-    struct ionic_wire_hdr h, back;
+    struct ionic_wire_hdr h;
+    struct ionic_wire_hdr back;
     uint8_t got[IONIC_WIRE_HDR_LEN];
     bool put_ok, get_ok;
 
@@ -1654,13 +1680,13 @@ static void check_wire_hdr_layout(void)
     h.magic = IONIC_WIRE_MAGIC;
     h.op = IONIC_WIRE_ATOMIC_REQ;
     h.atomic_cs = 1;
-    h.src_qp_id = 0x01020304u;
-    h.dst_qp_id = 0x05060708u;
-    h.req_id = 0x090a0b0cu;
-    h.rkey = 0x0d0e0f10u;
-    h.length = 0x11121314u;
+    h.src_qp_id = 0x01020304U;
+    h.dst_qp_id = 0x05060708U;
+    h.req_id = 0x090a0b0cU;
+    h.rkey = 0x0d0e0f10U;
+    h.length = 0x11121314U;
     memcpy(&h.imm_be, imm, sizeof(imm));
-    h.status = 0x15161718u;
+    h.status = 0x15161718U;
     h.remote_va = UINT64_C(0x2122232425262728);
     h.swap_add = UINT64_C(0x3132333435363738);
     h.compare = UINT64_C(0x4142434445464748);
@@ -1713,8 +1739,9 @@ static void check_atomic_byte_order(void)
         if (!dp) {
             why = "no data path";
         } else {
-            if (rows[row].remote)
+            if (rows[row].remote) {
                 remote(dp, QP_B);
+            }
             memcpy(g_mem + MR_GPA, before, sizeof(before));
             post_send(dp, QP_A, &FADD_OK);
             poll_at(dp, g_now_ms);
@@ -1725,24 +1752,30 @@ static void check_atomic_byte_order(void)
                 wire_feed(dp);
                 poll_at(dp, g_now_ms);
                 memset(&h, 0, sizeof(h));
-                if (g_nwire == 1)
+                if (g_nwire == 1) {
                     ionic_dp_wire_hdr_get(&h, g_wire[0]);
+                }
                 if (g_nwire != 1 || h.op != IONIC_WIRE_ATOMIC_RESP ||
-                    g_wire_len[0] != IONIC_WIRE_HDR_LEN + sizeof(before))
+                    g_wire_len[0] != IONIC_WIRE_HDR_LEN + sizeof(before)) {
                     why = "the peer didn't answer with an 8-byte ATOMIC_RESP";
-                else if (memcmp(g_wire[0] + IONIC_WIRE_HDR_LEN, before,
-                                sizeof(before)) != 0)
+                } else if (memcmp(g_wire[0] + IONIC_WIRE_HDR_LEN, before,
+                                  sizeof(before)) != 0) {
                     why = "the ATOMIC_RESP's value isn't little-endian";
+                }
                 /* The answer, back to the requester */
                 wire_feed(dp);
                 poll_at(dp, g_now_ms);
             }
-            if (!why && dp->cq[CQ_ID].prod != 1)
+            if (!why && dp->cq[CQ_ID].prod != 1) {
                 why = "the atomic didn't complete";
-            if (!why && memcmp(g_mem + MR_GPA, after, sizeof(after)) != 0)
+            }
+            if (!why && memcmp(g_mem + MR_GPA, after, sizeof(after)) != 0) {
                 why = "the target wasn't added to as a little-endian u64";
-            if (!why && memcmp(g_mem + RESULT_GPA, before, sizeof(before)) != 0)
+            }
+            if (!why &&
+                memcmp(g_mem + RESULT_GPA, before, sizeof(before)) != 0) {
                 why = "the original value didn't land little-endian";
+            }
             ionic_datapath_destroy(dp);
         }
         printf("%s positive: %s; expected: the u64 in guest byte order\n",
@@ -1778,9 +1811,11 @@ static void check_late_responses(void)
 
     for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
         struct ionic_datapath *dp = setup();
-        struct ionic_wire_hdr request, reply = {0};
+        struct ionic_wire_hdr request;
+        struct ionic_wire_hdr reply = {0};
         uint8_t reply_wire[IONIC_WIRE_HDR_LEN];
-        uint64_t before[4][IONIC_DP_RDMA_COUNT], after[IONIC_DP_RDMA_COUNT];
+        uint64_t before[4][IONIC_DP_RDMA_COUNT];
+        uint64_t after[IONIC_DP_RDMA_COUNT];
         bool ok = dp != NULL;
 
         if (dp) {
@@ -1797,15 +1832,18 @@ static void check_late_responses(void)
                 reply.status = rows[row].status;
                 ionic_dp_wire_hdr_put(reply_wire, &reply);
                 g_nwire = 0;
-                if (rows[row].expire)
-                    poll_at(dp, T0 + PENDING_MS + 1);
-                else {
+                if (rows[row].expire) {
+                    {
+                        poll_at(dp, T0 + PENDING_MS + 1);
+                    }
+                } else {
                     mesh_recv(reply_wire, sizeof(reply_wire));
                     poll_at(dp, T0 + 1);
                 }
                 ok = dp->cq[CQ_ID].prod == 1;
-                for (size_t v = 0; v < 4; v++)
+                for (size_t v = 0; v < 4; v++) {
                     ionic_datapath_rdma_counters(dp, views[v], before[v]);
+                }
                 for (unsigned int repeat = 0; repeat < 2; repeat++) {
                     mesh_recv(reply_wire, sizeof(reply_wire));
                     poll_at(dp, g_now_ms + 1);
@@ -1820,8 +1858,9 @@ static void check_late_responses(void)
         }
         printf("%s %s: %s; expected: %s\n", ok ? "ok" : "FAIL",
                rows[row].category, rows[row].description, rows[row].expected);
-        if (!ok)
+        if (!ok) {
             failures++;
+        }
     }
 }
 
@@ -1861,12 +1900,14 @@ static const char *mc_run(struct ionic_datapath *dp, enum mc_scenario scenario)
 
     remote(dp, QP_B);
     post_send(dp, QP_A, &WRITE_OK);
-    if (g_nwire != 1 || g_wire_reply[0])
+    if (g_nwire != 1 || g_wire_reply[0]) {
         return "the WRITE wasn't sent as a request";
+    }
     ionic_dp_wire_hdr_get(&h, g_wire[0]);
     tag = (uint64_t)dp->qp[QP_A].mesh_id << 32 | h.req_id;
-    if (g_wire_tag[0] != tag)
+    if (g_wire_tag[0] != tag) {
         return "the WRITE isn't called by QP_A's mesh_id and its request id";
+    }
 
     cqes = dp->cq[CQ_ID].prod;
     g_dp = dp;
@@ -1874,15 +1915,18 @@ static const char *mc_run(struct ionic_datapath *dp, enum mc_scenario scenario)
     case MC_TAGGED:
         wire_feed(dp);
         poll_at(dp, g_now_ms);
-        if (g_nwire != 1 || !g_wire_reply[0])
+        if (g_nwire != 1 || !g_wire_reply[0]) {
             return "the ACK wasn't sent as a reply";
+        }
         return g_ncancel == 0 ? NULL : "a request was taken back";
     case MC_FLUSH:
         ionic_datapath_flush_qp(dp, QP_A);
-        if (!mc_cancelled(tag, MC_QP_MASK))
+        if (!mc_cancelled(tag, MC_QP_MASK)) {
             return "QP_A's requests weren't taken back once";
-        if (g_cancel_cqes != cqes || dp->cq[CQ_ID].prod != cqes + 2)
+        }
+        if (g_cancel_cqes != cqes || dp->cq[CQ_ID].prod != cqes + 2) {
             return "they weren't taken back before the flush completions";
+        }
         return NULL;
     case MC_UNREGISTER:
         ionic_datapath_unregister_qp(dp, QP_A);
@@ -1893,8 +1937,9 @@ static const char *mc_run(struct ionic_datapath *dp, enum mc_scenario scenario)
         remote(dp, QP_B);
         ionic_datapath_flush_qp(dp, QP_A);
         if (g_ncancel != 1 || g_cancel_mask != MC_QP_MASK ||
-            g_cancel_tag >> 32 != dp->qp[QP_A].mesh_id)
+            g_cancel_tag >> 32 != dp->qp[QP_A].mesh_id) {
             return "the new QP_A's requests weren't taken back once";
+        }
         return (g_cancel_tag & MC_QP_MASK) != (tag & MC_QP_MASK)
                    ? NULL
                    : "the destroyed QP_A's WRITE was taken back with them";
@@ -1906,10 +1951,12 @@ static const char *mc_run(struct ionic_datapath *dp, enum mc_scenario scenario)
     case MC_EXPIRED:
     default:
         poll_at(dp, T0 + PENDING_MS + 1);
-        if (!mc_cancelled(tag, UINT64_MAX))
+        if (!mc_cancelled(tag, UINT64_MAX)) {
             return "the WRITE wasn't taken back once, alone";
-        if (g_cancel_cqes != cqes || dp->cq[CQ_ID].prod != cqes + 1)
+        }
+        if (g_cancel_cqes != cqes || dp->cq[CQ_ID].prod != cqes + 1) {
             return "it wasn't taken back before its error completion";
+        }
         return NULL;
     }
 }
@@ -1987,17 +2034,20 @@ static const char *dr_run(struct ionic_datapath *dp, const struct wqe *w,
     /* An atomic's original value is zero; let it show where it lands. */
     memset(g_mem + RESULT_GPA, 0xa5, 8);
     post_send(dp, QP_A, w);
-    if (g_nwire != 1 || g_wire_reply[0])
+    if (g_nwire != 1 || g_wire_reply[0]) {
         return "the request wasn't sent";
+    }
     wire_feed(dp);
     poll_at(dp, g_now_ms);
-    if (g_nwire != 1 || !g_wire_reply[0])
+    if (g_nwire != 1 || !g_wire_reply[0]) {
         return "the peer didn't answer it";
+    }
 
     memcpy(before, g_mem + SRC_GPA, sizeof(before));
     cqes = dp->cq[CQ_ID].prod;
-    if (when != DR_RECREATED)
+    if (when != DR_RECREATED) {
         ionic_datapath_unregister_qp(dp, QP_A);
+    }
     if (when != DR_DESTROYED) {
         register_qp(dp, QP_A, CQ_ID);
         remote(dp, QP_B);
@@ -2005,10 +2055,12 @@ static const char *dr_run(struct ionic_datapath *dp, const struct wqe *w,
     wire_feed(dp);
     poll_at(dp, g_now_ms);
 
-    if (dp->cq[CQ_ID].prod != cqes)
+    if (dp->cq[CQ_ID].prod != cqes) {
         return "the answer was completed";
-    if (memcmp(before, g_mem + SRC_GPA, sizeof(before)) != 0)
+    }
+    if (memcmp(before, g_mem + SRC_GPA, sizeof(before)) != 0) {
         return "the answer landed in the consumer's memory";
+    }
     return NULL;
 }
 
@@ -2065,7 +2117,7 @@ static void check_destroyed_qp_replies(void)
  * rkey's region, is refused with the region untouched, as sq_rdma() refuses
  * one from this node.  Each row is a WRITE from QP_A on the peer to QP_B.
  */
-#define RW_MAX_PAYLOAD 64u
+#define RW_MAX_PAYLOAD 64U
 
 static const char *rw_run(struct ionic_datapath *dp, uint32_t rkey, uint64_t va,
                           uint32_t length, uint32_t payload_len,
@@ -2075,8 +2127,9 @@ static const char *rw_run(struct ionic_datapath *dp, uint32_t rkey, uint64_t va,
     uint8_t before[MR_LEN];
     struct ionic_wire_hdr h;
 
-    if (payload_len > RW_MAX_PAYLOAD)
+    if (payload_len > RW_MAX_PAYLOAD) {
         return "the row's payload doesn't fit the message";
+    }
     remote(dp, QP_B);
     /* Not the payload's bytes, so a byte that lands shows */
     memset(g_mem + MR_GPA, 0x5a, MR_LEN);
@@ -2092,22 +2145,26 @@ static const char *rw_run(struct ionic_datapath *dp, uint32_t rkey, uint64_t va,
     h.length = length;
     h.remote_va = va;
     ionic_dp_wire_hdr_put(msg, &h);
-    for (uint32_t i = 0; i < payload_len; i++)
-        msg[IONIC_WIRE_HDR_LEN + i] = (uint8_t)(0xa0u + i);
+    for (uint32_t i = 0; i < payload_len; i++) {
+        msg[IONIC_WIRE_HDR_LEN + i] = (uint8_t)(0xa0U + i);
+    }
     mesh_recv(msg, IONIC_WIRE_HDR_LEN + payload_len);
     poll_at(dp, g_now_ms + 1);
 
-    if (g_nwire != 1)
+    if (g_nwire != 1) {
         return "the peer wasn't answered once";
+    }
     ionic_dp_wire_hdr_get(&h, g_wire[0]);
-    if (h.op != IONIC_WIRE_ACK || h.status != want_status)
+    if (h.op != IONIC_WIRE_ACK || h.status != want_status) {
         return want_status == IONIC_STS_OK
                    ? "the WRITE wasn't acknowledged"
                    : "the WRITE wasn't refused with a remote access error";
-    if (want_status != IONIC_STS_OK)
+    }
+    if (want_status != IONIC_STS_OK) {
         return memcmp(before, g_mem + MR_GPA, sizeof(before)) == 0
                    ? NULL
                    : "the refused WRITE changed the region";
+    }
     return memcmp(g_mem + va, msg + IONIC_WIRE_HDR_LEN, length) == 0
                ? NULL
                : "the WRITE didn't land";
@@ -2186,23 +2243,27 @@ static const char *mr_run(struct ionic_datapath *dp, size_t len,
     void *buf;
 
     remote(dp, QP_B);
-    if (!g_recv_fn)
+    if (!g_recv_fn) {
         return "the data path registered no mesh receive callback";
+    }
     buf = calloc(1, len);
-    if (!buf)
+    if (!buf) {
         return "no memory for the message";
+    }
     if (!g_recv_fn(g_recv_opaque, PEER_NODE, buf, len)) {
         free(buf);
         return "the data path had no room for the message";
     }
 
-    if (ionic_datapath_has_work(dp) != (end != MR_REFUSED))
+    if (ionic_datapath_has_work(dp) != (end != MR_REFUSED)) {
         return end == MR_REFUSED ? "the message was queued"
                                  : "the message wasn't queued";
+    }
     if (end == MR_POLLED) {
         poll_at(dp, g_now_ms + 1);
-        if (ionic_datapath_has_work(dp))
+        if (ionic_datapath_has_work(dp)) {
             return "the poll left the message queued";
+        }
     }
     return NULL;
 }
@@ -2283,8 +2344,9 @@ static int rq_offer(size_t len, bool send)
 {
     uint8_t *buf = calloc(1, len);
 
-    if (!buf)
+    if (!buf) {
         return -1;
+    }
     if (send) {
         struct ionic_wire_hdr h;
 
@@ -2296,8 +2358,9 @@ static int rq_offer(size_t len, bool send)
         h.length = (uint32_t)(len - IONIC_WIRE_HDR_LEN);
         ionic_dp_wire_hdr_put(buf, &h);
     }
-    if (g_recv_fn(g_recv_opaque, PEER_NODE, buf, len))
+    if (g_recv_fn(g_recv_opaque, PEER_NODE, buf, len)) {
         return 1;
+    }
     free(buf);
     return 0;
 }
@@ -2305,9 +2368,11 @@ static int rq_offer(size_t len, bool send)
 /* Whether the data path takes each of @n messages of @len bytes */
 static bool rq_fill(uint32_t n, size_t len, bool send)
 {
-    for (uint32_t i = 0; i < n; i++)
-        if (rq_offer(len, send) != 1)
+    for (uint32_t i = 0; i < n; i++) {
+        if (rq_offer(len, send) != 1) {
             return false;
+        }
+    }
     return true;
 }
 
@@ -2336,14 +2401,17 @@ static bool rq_empty(struct ionic_datapath *dp)
 /* Whether each message sent is an ACK of RNR-retry-exceeded, and there are n */
 static bool rq_rnr_acks(size_t n)
 {
-    if (g_nwire != n)
+    if (g_nwire != n) {
         return false;
+    }
     for (size_t i = 0; i < n; i++) {
         struct ionic_wire_hdr h;
 
         ionic_dp_wire_hdr_get(&h, g_wire[i]);
-        if (h.op != IONIC_WIRE_ACK || h.status != IONIC_STS_RNR_RETRY_EXCEEDED)
+        if (h.op != IONIC_WIRE_ACK ||
+            h.status != IONIC_STS_RNR_RETRY_EXCEEDED) {
             return false;
+        }
     }
     return true;
 }
@@ -2355,25 +2423,31 @@ static const char *rq_stuck(struct ionic_datapath *dp, bool past)
     size_t bytes;
     uint64_t dropped;
 
-    if (!rq_fill(DP_RX_MAX_MSGS, hdr, false))
+    if (!rq_fill(DP_RX_MAX_MSGS, hdr, false)) {
         return "the queue didn't take DP_RX_MAX_MSGS messages";
+    }
     /* setup() put the last pass at T0 */
     g_now_ms = T0 + DP_RX_STUCK_MS + (past ? 1 : 0);
-    if (rq_offer(hdr, false) != (past ? 1 : 0))
+    if (rq_offer(hdr, false) != (past ? 1 : 0)) {
         return past ? "the message was refused, not dropped"
                     : "the message was taken";
+    }
     rq_counts(dp, &msgs, &bytes, &dropped);
-    if (msgs != DP_RX_MAX_MSGS || dropped != (past ? 1 : 0))
+    if (msgs != DP_RX_MAX_MSGS || dropped != (past ? 1 : 0)) {
         return past ? "the message wasn't dropped, once"
                     : "the message was dropped";
-    if (!past)
+    }
+    if (!past) {
         return NULL;
+    }
 
     poll_at(dp, g_now_ms);
-    if (dp->rx_dropped_logged != 1)
+    if (dp->rx_dropped_logged != 1) {
         return "the pass didn't log the drop, once";
-    if (!rq_fill(DP_RX_MAX_MSGS, hdr, false))
+    }
+    if (!rq_fill(DP_RX_MAX_MSGS, hdr, false)) {
         return "the queue didn't take DP_RX_MAX_MSGS messages after the pass";
+    }
     return rq_offer(hdr, false) == 0
                ? NULL
                : "once polled again, a full queue didn't refuse the message";
@@ -2403,23 +2477,27 @@ static const char *rq_long_pass(struct ionic_datapath *dp)
     uint64_t dropped;
 
     post_send(dp, QP_A, &WRITE_OK);
-    if (g_nwire != 1)
+    if (g_nwire != 1) {
         return "the WRITE wasn't sent";
+    }
     len = g_wire_len[0];
     memcpy(request, g_wire[0], len);
     g_nwire = 0;
     mesh_recv(request, len);
-    if (!rq_fill(DP_RX_MAX_MSGS - 1, hdr, false))
+    if (!rq_fill(DP_RX_MAX_MSGS - 1, hdr, false)) {
         return "the queue didn't take DP_RX_MAX_MSGS messages";
+    }
 
     g_mid_pass_offer = -2;
     g_sendv_hook = rq_mid_pass;
     poll_at(dp, T0 + 1);
     rq_counts(dp, &msgs, &bytes, &dropped);
-    if (g_mid_pass_offer == -2)
+    if (g_mid_pass_offer == -2) {
         return "the WRITE wasn't acknowledged";
-    if (g_mid_pass_offer != 0 || dropped != 0)
+    }
+    if (g_mid_pass_offer != 0 || dropped != 0) {
         return "the message was taken during the pass";
+    }
     return rq_offer(hdr, false) == 1
                ? NULL
                : "the message wasn't taken after the pass";
@@ -2431,24 +2509,30 @@ static const char *rq_crowded(struct ionic_datapath *dp, bool past)
 
     /* Four of the largest SENDs: the first waits, the rest behind it */
     if (!rq_fill(DP_RX_MAX_BYTES / ERNIC_MESH_MAX_MSG, ERNIC_MESH_MAX_MSG,
-                 true))
+                 true)) {
         return "the queue didn't take DP_RX_MAX_BYTES of SENDs";
+    }
     poll_at(dp, T0);
-    if (rq_offer(hdr, false) != 0)
+    if (rq_offer(hdr, false) != 0) {
         return "the queue took a message past DP_RX_MAX_BYTES";
+    }
     /* The first pass to find the SENDs keeping it out */
     poll_at(dp, T0 + 1);
     poll_at(dp, T0 + DP_RX_CROWDED_MS);
-    if (g_nwire != 0)
+    if (g_nwire != 0) {
         return "a SEND was answered before DP_RX_CROWDED_MS";
-    if (!past)
+    }
+    if (!past) {
         return rq_offer(hdr, false) == 0 ? NULL : "the message was taken";
+    }
 
     poll_at(dp, T0 + 1 + DP_RX_CROWDED_MS);
-    if (!rq_rnr_acks(DP_RX_MAX_BYTES / ERNIC_MESH_MAX_MSG))
+    if (!rq_rnr_acks(DP_RX_MAX_BYTES / ERNIC_MESH_MAX_MSG)) {
         return "the SENDs weren't each answered with RNR-retry-exceeded";
-    if (!rq_empty(dp))
+    }
+    if (!rq_empty(dp)) {
         return "the queue wasn't left empty";
+    }
     return rq_offer(hdr, false) == 1 ? NULL : "the message wasn't taken";
 }
 
@@ -2457,30 +2541,37 @@ static const char *rq_run(struct ionic_datapath *dp, enum rq_scenario scenario)
     const size_t hdr = IONIC_WIRE_HDR_LEN;
 
     remote(dp, QP_B);
-    if (!g_recv_fn)
+    if (!g_recv_fn) {
         return "the data path registered no mesh receive callback";
+    }
 
     switch (scenario) {
     case RQ_MSGS:
-        if (!rq_fill(DP_RX_MAX_MSGS, hdr, false))
+        if (!rq_fill(DP_RX_MAX_MSGS, hdr, false)) {
             return "the queue didn't take DP_RX_MAX_MSGS messages";
-        if (rq_offer(hdr, false) != 0)
+        }
+        if (rq_offer(hdr, false) != 0) {
             return "the queue took a message past DP_RX_MAX_MSGS";
+        }
         poll_at(dp, g_now_ms + 1);
-        if (!rq_empty(dp))
+        if (!rq_empty(dp)) {
             return "the pass left the queue counted as holding something";
+        }
         return rq_offer(hdr, false) == 1 ? NULL : "a pass didn't make room";
     case RQ_BYTES:
         /* Three of the largest, and two that come to the fourth exactly */
         if (!rq_fill(3, ERNIC_MESH_MAX_MSG, false) ||
             rq_offer(ERNIC_MESH_MAX_MSG - hdr, false) != 1 ||
-            rq_offer(hdr, false) != 1)
+            rq_offer(hdr, false) != 1) {
             return "the queue didn't take DP_RX_MAX_BYTES";
-        if (rq_offer(hdr, false) != 0)
+        }
+        if (rq_offer(hdr, false) != 0) {
             return "the queue took a message past DP_RX_MAX_BYTES";
+        }
         poll_at(dp, g_now_ms + 1);
-        if (!rq_empty(dp))
+        if (!rq_empty(dp)) {
             return "the pass left the queue counted as holding something";
+        }
         return rq_offer(hdr, false) == 1 ? NULL : "a pass didn't make room";
     case RQ_STUCK_EDGE:
         return rq_stuck(dp, false);
@@ -2494,17 +2585,21 @@ static const char *rq_run(struct ionic_datapath *dp, enum rq_scenario scenario)
         return rq_crowded(dp, true);
     case RQ_ROOM_LEFT:
     default:
-        if (rq_offer(hdr, true) != 1)
+        if (rq_offer(hdr, true) != 1) {
             return "the queue didn't take the SEND";
+        }
         poll_at(dp, T0);
-        if (!rq_fill(DP_RX_MAX_MSGS - 1, hdr, false))
+        if (!rq_fill(DP_RX_MAX_MSGS - 1, hdr, false)) {
             return "the queue didn't take the rest of DP_RX_MAX_MSGS";
-        if (rq_offer(hdr, false) != 0)
+        }
+        if (rq_offer(hdr, false) != 0) {
             return "the queue took a message past DP_RX_MAX_MSGS";
+        }
         poll_at(dp, T0 + 1);
         poll_at(dp, T0 + 1 + DP_RX_CROWDED_MS);
-        if (g_nwire != 0)
+        if (g_nwire != 0) {
             return "the SEND was answered";
+        }
         return rq_offer(hdr, false) == 1 ? NULL : "the message wasn't taken";
     }
 }
@@ -2584,7 +2679,7 @@ static void check_mesh_recv_room(void)
  */
 #define WIRE_HDR   ((uint32_t)IONIC_WIRE_HDR_LEN)
 #define BIG_READ   (ERNIC_MESH_MAX_MSG - WIRE_HDR)
-#define OTHER_NODE 2u
+#define OTHER_NODE 2U
 
 _Static_assert(2 * ERNIC_MESH_MAX_MSG == ERNIC_MESH_REPLY_BUDGET,
                "two BIG_READs no longer fill the reply budget exactly");
@@ -2624,7 +2719,8 @@ static void rb_other_qp(struct ionic_datapath *dp, uint32_t node)
 /* Node 1 answers the request at g_wire[@i], a READ, with a bare error */
 static void rb_answer(struct ionic_datapath *dp, size_t i)
 {
-    struct ionic_wire_hdr request, reply;
+    struct ionic_wire_hdr request;
+    struct ionic_wire_hdr reply;
     uint8_t reply_wire[IONIC_WIRE_HDR_LEN];
 
     ionic_dp_wire_hdr_get(&request, g_wire[i]);
@@ -2645,8 +2741,9 @@ static bool rb_write_sent(size_t before)
 {
     struct ionic_wire_hdr h;
 
-    if (g_nwire != before + 1)
+    if (g_nwire != before + 1) {
         return false;
+    }
     ionic_dp_wire_hdr_get(&h, g_wire[before]);
     return h.op == IONIC_WIRE_WRITE;
 }
@@ -2669,18 +2766,21 @@ static const char *rb_run(struct ionic_datapath *dp, enum rb_scenario scenario)
         rb_read(dp, BIG_READ);
         post_send(dp, QP_A, &WRITE_OK);
         poll_at(dp, T0 + 1);
-        if (g_nwire != 2 || !dp->qp[QP_A].sq_busy)
+        if (g_nwire != 2 || !dp->qp[QP_A].sq_busy) {
             return "the WRITE didn't wait";
+        }
         break;
     case RB_FLUSHED:
     case RB_DESTROYED:
         rb_other_qp(dp, PEER_NODE);
-        if (g_nwire != 2 || !dp->qp[QP_B].sq_busy)
+        if (g_nwire != 2 || !dp->qp[QP_B].sq_busy) {
             return "QP_B's WRITE didn't wait behind QP_A's READs";
-        if (scenario == RB_FLUSHED)
+        }
+        if (scenario == RB_FLUSHED) {
             ionic_datapath_flush_qp(dp, QP_A);
-        else
+        } else {
             ionic_datapath_unregister_qp(dp, QP_A);
+        }
         poll_at(dp, T0 + 1);
         return rb_write_sent(2) ? NULL : "QP_B's WRITE wasn't sent";
     case RB_OTHER_NODE:
@@ -2692,16 +2792,18 @@ static const char *rb_run(struct ionic_datapath *dp, enum rb_scenario scenario)
         rb_read(dp, BIG_READ);
         rb_read(dp, BIG_READ - 8 - WIRE_HDR);
         post_send(dp, QP_A, &FADD_OK);
-        if (g_nwire != 3)
+        if (g_nwire != 3) {
             return "the READs and the atomic weren't all sent";
+        }
         post_send(dp, QP_A, &WRITE_OK);
         return g_nwire == 3 && dp->qp[QP_A].sq_busy ? NULL
                                                     : "the WRITE didn't wait";
     case RB_OVERLONG:
         rb_read(dp, BIG_READ);
         rb_read(dp, BIG_READ + 1);
-        if (g_nwire != 2)
+        if (g_nwire != 2) {
             return "the READs weren't both sent";
+        }
         rb_read(dp, BIG_READ);
         return g_nwire == 2 && dp->qp[QP_A].sq_busy
                    ? NULL
@@ -2839,11 +2941,12 @@ static const char *uw_cqes(const struct ionic_datapath *dp,
         bool error = (qtf & CQE_ERROR_BIT) != 0;
         uint64_t id = 0;
 
-        if (want[i].type == CQE_TYPE_SEND_MSN)
+        if (want[i].type == CQE_TYPE_SEND_MSN) {
             id = ernic_get_be32(c + CQE_MSN_OFF);
-        else if (want[i].type == CQE_TYPE_SEND_NPG &&
-                 want[i].status != IONIC_STS_WQE_FLUSHED_ERR)
+        } else if (want[i].type == CQE_TYPE_SEND_NPG &&
+                   want[i].status != IONIC_STS_WQE_FLUSHED_ERR) {
             memcpy(&id, c + CQE_NPG_WQE_OFF, sizeof(id));
+        }
 
         if ((qtf & CQE_TYPE_MASK) != want[i].type || qtf >> 8 != QP_A ||
             status != want[i].status ||
@@ -2870,8 +2973,9 @@ static const char *uw_run(struct ionic_datapath *dp, enum uw_scenario scenario)
     remote(dp, QP_B);
     if (scenario != UW_ALONE) {
         post_send(dp, QP_A, &READ_OK);
-        if (g_nwire != 1)
+        if (g_nwire != 1) {
             return "the READ wasn't sent";
+        }
     }
     g_hole_gpa = SQ_GPA(QP_A) + ((uint64_t)slot << WQE_STRIDE);
     post_send(dp, QP_A, &WRITE_OK);
@@ -2883,10 +2987,12 @@ static const char *uw_run(struct ionic_datapath *dp, enum uw_scenario scenario)
          */
         g_hole_gpa = UINT64_MAX;
         post_send(dp, QP_A, &WRITE_OK);
-        if (dp->cq[CQ_ID].prod != 0)
+        if (dp->cq[CQ_ID].prod != 0) {
             return "something completed while the READ waited";
-        if (g_nwire != 1)
+        }
+        if (g_nwire != 1) {
             return "a WRITE behind the READ was sent";
+        }
     }
 
     switch (scenario) {
@@ -2925,8 +3031,9 @@ static const char *uw_run(struct ionic_datapath *dp, enum uw_scenario scenario)
     want[n++] = (struct uw_cqe){CQE_TYPE_RECV, IONIC_STS_WQE_FLUSHED_ERR, 0};
     why = uw_cqes(dp, want, n);
     if (!why &&
-        dp->qp[QP_A].sq_cons % dp->qp[QP_A].sq_depth != dp->qp[QP_A].sq_prod)
+        dp->qp[QP_A].sq_cons % dp->qp[QP_A].sq_depth != dp->qp[QP_A].sq_prod) {
         why = "the flush didn't empty the send queue";
+    }
     return why;
 }
 
@@ -2987,13 +3094,17 @@ int main(void)
     check_mesh_recv_room();
     check_reply_budget();
     check_unreadable_wqe();
-    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         run_case(&cases[i]);
-    for (size_t i = 0; i < sizeof(getter_cases) / sizeof(getter_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(getter_cases) / sizeof(getter_cases[0]);
+         i++) {
         run_getter_case(&getter_cases[i]);
+    }
     check_reset_counters();
-    for (size_t i = 0; i < sizeof(sq_cases) / sizeof(sq_cases[0]); i++)
+    for (size_t i = 0; i < sizeof(sq_cases) / sizeof(sq_cases[0]); i++) {
         run_sq_case(&sq_cases[i]);
+    }
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);

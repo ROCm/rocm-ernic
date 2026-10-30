@@ -58,12 +58,12 @@
  * being the smallest, so the guest lost none it could have used when the
  * promise came down to it.
  */
-#define ERNIC_MAX_QP 256u
-#define ERNIC_MAX_CQ 512u
+#define ERNIC_MAX_QP 256U
+#define ERNIC_MAX_CQ 512U
 
-_Static_assert((ERNIC_MAX_QP & (ERNIC_MAX_QP - 1u)) == 0,
+_Static_assert((ERNIC_MAX_QP & (ERNIC_MAX_QP - 1U)) == 0,
                "the guest driver needs a power-of-two QP count");
-_Static_assert((ERNIC_MAX_CQ & (ERNIC_MAX_CQ - 1u)) == 0,
+_Static_assert((ERNIC_MAX_CQ & (ERNIC_MAX_CQ - 1U)) == 0,
                "the guest driver needs a power-of-two CQ count");
 _Static_assert(ERNIC_MAX_CQ > ERNIC_MAX_AQ,
                "the admin queues' CQs would leave none for the guest's");
@@ -75,14 +75,14 @@ _Static_assert(ERNIC_MAX_CQ > ERNIC_MAX_AQ,
  * value wants an indexed lookup instead; the ids are dense, so indexing is
  * easy when it is needed.
  */
-#define ERNIC_MAX_SRQ 256u
+#define ERNIC_MAX_SRQ 256U
 
 /*
  * Address handles. The guest driver picks their ids, below this, and they
  * index the data path's table; the admin queue keeps no map of them, and
  * the resource manager no table.
  */
-#define ERNIC_MAX_AH (1u << 15)
+#define ERNIC_MAX_AH (1U << 15)
 
 /*
  * Memory regions. Each one the guest creates takes a slot in the resource
@@ -95,7 +95,7 @@ _Static_assert(ERNIC_MAX_CQ > ERNIC_MAX_AQ,
  * identity advertises one more than this for the guest to be able to create
  * this many, under indices 1 to this.
  */
-#define ERNIC_MAX_MR 2048u
+#define ERNIC_MAX_MR 2048U
 
 /*
  * Page table entries, the LIF identity's npts_per_lif: how many the device's
@@ -142,7 +142,7 @@ _Static_assert(ERNIC_MAX_CQ > ERNIC_MAX_AQ,
  * which the ionic guest driver never reads, and no registration path
  * validates against it.
  */
-#define ERNIC_MAX_PAGE_TABLE_ENTRIES (1u << 31)
+#define ERNIC_MAX_PAGE_TABLE_ENTRIES (1U << 31)
 
 /*
  * SGEs in one work request: the most the data path reads from a WQE. The
@@ -150,13 +150,13 @@ _Static_assert(ERNIC_MAX_CQ > ERNIC_MAX_AQ,
  * identity allows, and ionic_datapath.c checks that this many fill the
  * largest WQE.
  */
-#define ERNIC_MAX_SGE 32u
+#define ERNIC_MAX_SGE 32U
 
 /*
  * SGEs in one SRQ receive, which CREATE_SRQ reports. Mirrors
  * IONIC_MAX_SRQ_SGES in the guest driver's ionic_fw.h, which refuses a
  * create asking for more.
  */
-#define ERNIC_MAX_SRQ_SGE 2u
+#define ERNIC_MAX_SRQ_SGE 2U
 
 #endif /* ERNIC_LIMITS_H */

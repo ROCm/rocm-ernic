@@ -115,8 +115,8 @@ void s3_target_peer_token(const struct s3_target *t, uint32_t rkey,
  * the guest's own QPs, which the ionic driver allocates from zero up.
  * The NVMe-oF responder reserves 0x00c0xxxx for the same reason.
  */
-#define S3_TARGET_QPN_BASE 0x00d00000u
-#define S3_TARGET_QPN_MASK 0x00ff0000u
+#define S3_TARGET_QPN_BASE 0x00d00000U
+#define S3_TARGET_QPN_MASK 0x00ff0000U
 
 static inline bool s3_target_is_target_qpn(uint32_t qpn)
 {

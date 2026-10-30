@@ -88,21 +88,21 @@ enum ionic_qp_state {
 
 /* Command body lengths, from the struct ionic_admin_* layouts that
  * ionic_adminq.c documents above each handler. */
-#define IONIC_ADMIN_CREATE_AH_IN_V1_LEN   24u
-#define IONIC_ADMIN_DESTROY_AH_IN_V1_LEN  4u
-#define IONIC_ADMIN_CREATE_SRQ_IN_V1_LEN  42u
-#define IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN 5u
-#define IONIC_ADMIN_CREATE_MR_IN_V1_LEN   45u
-#define IONIC_ADMIN_DESTROY_MR_IN_V1_LEN  4u
-#define IONIC_ADMIN_DESTROY_CQ_IN_V1_LEN  4u
-#define IONIC_ADMIN_DESTROY_QP_IN_V1_LEN  4u
-#define IONIC_ADMIN_MODIFY_QP_IN_V1_LEN   60u
-#define IONIC_ADMIN_QUERY_QP_IN_V1_LEN    34u
+#define IONIC_ADMIN_CREATE_AH_IN_V1_LEN   24U
+#define IONIC_ADMIN_DESTROY_AH_IN_V1_LEN  4U
+#define IONIC_ADMIN_CREATE_SRQ_IN_V1_LEN  42U
+#define IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN 5U
+#define IONIC_ADMIN_CREATE_MR_IN_V1_LEN   45U
+#define IONIC_ADMIN_DESTROY_MR_IN_V1_LEN  4U
+#define IONIC_ADMIN_DESTROY_CQ_IN_V1_LEN  4U
+#define IONIC_ADMIN_DESTROY_QP_IN_V1_LEN  4U
+#define IONIC_ADMIN_MODIFY_QP_IN_V1_LEN   60U
+#define IONIC_ADMIN_QUERY_QP_IN_V1_LEN    34U
 /* type_state is the last field, at [62], so the body runs to 63 -- see the
  * layout above handle_create_qp_op() in ionic_adminq.c. The guard there read
  * 60, which covers id_ver at [56:59] and nothing after it, so a 60-byte body
  * still had its QP type taken from three bytes the guest never sent. */
-#define IONIC_ADMIN_CREATE_QP_IN_V1_LEN 63u
+#define IONIC_ADMIN_CREATE_QP_IN_V1_LEN 63U
 
 /* -------------------------------------------------------------------------
  * Per-AQ ring state
@@ -240,7 +240,7 @@ struct ionic_adminq_ctx {
 #define STAT_HDR_SIZE   32
 #define STAT_NAME_LEN   28
 #define STAT_TYPE_SHIFT 28
-#define STAT_TYPE_LE64  4u
+#define STAT_TYPE_LE64  4U
 #define STAT_VAL_SIZE   8
 /* The driver accepts up to 128 entries; 64 leaves room to grow. */
 #define STATS_MAX_COUNT 64
@@ -267,10 +267,10 @@ struct adminq_qp_vals {
 
 #define DEV_RDMA_STAT(id, name)                     \
     {name, offsetof(struct adminq_dev_vals, rdma) + \
-               (size_t)IONIC_DP_##id * sizeof(uint64_t)},
+               ((size_t)IONIC_DP_##id * sizeof(uint64_t))},
 #define QP_RDMA_STAT(id, name)                     \
     {name, offsetof(struct adminq_qp_vals, rdma) + \
-               (size_t)IONIC_DP_##id * sizeof(uint64_t)},
+               ((size_t)IONIC_DP_##id * sizeof(uint64_t))},
 
 /*
  * The first five names match the --stats-file labels, so the two views line
@@ -328,8 +328,8 @@ uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
 /* An admin completion (struct ionic_v1_cqe) is CQE_SIZE bytes; these are
  * the color and error bits of its be32 qid_type_flags. */
 #define CQE_SIZE      32
-#define CQE_COLOR_BIT 0x01u
-#define CQE_ERROR_BIT 0x02u
+#define CQE_COLOR_BIT 0x01U
+#define CQE_ERROR_BIT 0x02U
 
 /*
  * Write the admin completion for the WQE at @cmd_idx into @r's CQ and

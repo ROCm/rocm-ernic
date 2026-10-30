@@ -54,9 +54,11 @@ static size_t bytes_written(uint64_t gpa)
 {
     size_t n = 0;
 
-    for (size_t i = 0; gpa + i < GUEST_MEM_SIZE; i++)
-        if (g_mem[gpa + i] != POISON)
+    for (size_t i = 0; gpa + i < GUEST_MEM_SIZE; i++) {
+        if (g_mem[gpa + i] != POISON) {
             n = i + 1;
+        }
+    }
     return n;
 }
 
@@ -69,7 +71,7 @@ static bool hdrs_match(uint64_t gpa, const struct adminq_stat *stats,
                        size_t count, size_t entries)
 {
     for (size_t i = 0; i < entries; i++) {
-        const uint8_t *e = g_mem + gpa + i * STAT_HDR_SIZE;
+        const uint8_t *e = g_mem + gpa + (i * STAT_HDR_SIZE);
         char name[STAT_NAME_LEN];
         uint32_t type_off = ernic_get_be32(e);
 
@@ -77,18 +79,24 @@ static bool hdrs_match(uint64_t gpa, const struct adminq_stat *stats,
         if (i >= count) {
             static const uint8_t zero[STAT_HDR_SIZE];
 
-            if (memcmp(e, zero, sizeof(zero)) != 0)
+            if (memcmp(e, zero, sizeof(zero)) != 0) {
                 return false;
+            }
             continue;
         }
         if (type_off >> STAT_TYPE_SHIFT != STAT_TYPE_LE64 ||
-            (type_off & 0x0fffffffu) != i * STAT_VAL_SIZE)
+            (type_off & 0x0fffffffU) != i * STAT_VAL_SIZE) {
             return false;
-        if (name[STAT_NAME_LEN - 1] != '\0' || strcmp(name, stats[i].name) != 0)
+        }
+        if (name[STAT_NAME_LEN - 1] != '\0' ||
+            strcmp(name, stats[i].name) != 0) {
             return false;
-        for (size_t j = strlen(name); j < sizeof(name); j++)
-            if (name[j] != '\0')
+        }
+        for (size_t j = strlen(name); j < sizeof(name); j++) {
+            if (name[j] != '\0') {
                 return false;
+            }
+        }
     }
     return true;
 }
@@ -97,8 +105,9 @@ static bool hdrs_match(uint64_t gpa, const struct adminq_stat *stats,
 static bool vals_match(uint64_t gpa, size_t n, uint64_t (*value)(size_t))
 {
     for (size_t i = 0; i < n; i++) {
-        if (ernic_get_le64(g_mem + gpa + i * STAT_VAL_SIZE) != value(i))
+        if (ernic_get_le64(g_mem + gpa + (i * STAT_VAL_SIZE)) != value(i)) {
             return false;
+        }
     }
     return true;
 }
@@ -145,7 +154,7 @@ struct stats_case {
 #define QP_HDRS IONIC_V1_ADMIN_QP_STATS_HDRS
 #define VALS    IONIC_V1_ADMIN_STATS_VALS
 #define QP_VALS IONIC_V1_ADMIN_QP_STATS_VALS
-#define VER1    (1u << 24)
+#define VER1    (1U << 24)
 
 static const struct stats_case cases[] = {
     /* positive */
@@ -224,7 +233,7 @@ static const struct stats_case cases[] = {
      DEV_STATS_COUNT * 32, CONTENT_DEV_HDRS},
     {"boundary", "headers with length one byte short of the terminator",
      "whole entries only: 35 headers (1120 bytes)", HDRS, BUF_GPA,
-     (DEV_STATS_COUNT + 1) * 32 - 1, 0, STATS_BODY_LEN, 0, 0, false, 0,
+     ((DEV_STATS_COUNT + 1) * 32) - 1, 0, STATS_BODY_LEN, 0, 0, false, 0,
      DEV_STATS_COUNT * 32, CONTENT_DEV_HDRS},
     {"boundary", "values with length 7, one byte short of a value",
      "ENOSPC (15) and nothing written", VALS, BUF_GPA, 7, 0, STATS_BODY_LEN, 0,
@@ -243,7 +252,7 @@ static const struct stats_case cases[] = {
      STATS_BODY_LEN, 0, 0, false, 0, 48, CONTENT_DEV_VALS},
     {"boundary", "device values with length one byte short of the table",
      "whole values only: all but rx_ecn_pkts (272 bytes)", VALS, BUF_GPA,
-     DEV_STATS_COUNT * 8 - 1, 0, STATS_BODY_LEN, 0, 0, false, 0,
+     (DEV_STATS_COUNT * 8) - 1, 0, STATS_BODY_LEN, 0, 0, false, 0,
      (DEV_STATS_COUNT - 1) * 8, CONTENT_DEV_VALS},
     {"boundary", "QP values with length exactly the table",
      "all 38 counters (304 bytes)", QP_VALS, BUF_GPA, QP_STATS_COUNT * 8,
@@ -261,7 +270,7 @@ static const struct stats_case cases[] = {
     /* corner */
     {"corner", "QP values with every id_ver version bit set",
      "the version byte is ignored and QP_ID is still found", QP_VALS, BUF_GPA,
-     PAGE_LEN, QP_ID | 0xff000000u, STATS_BODY_LEN, 0, 0, false, 0,
+     PAGE_LEN, QP_ID | 0xff000000U, STATS_BODY_LEN, 0, 0, false, 0,
      QP_STATS_COUNT * 8, CONTENT_QP_VALS},
     {"corner", "QP values with every counter at UINT64_MAX",
      "the RDMA counters round-trip as all ones too (304 bytes)", QP_VALS,
@@ -312,8 +321,9 @@ static bool content_matches(const struct stats_case *c)
  */
 static bool one_write_or_none(const struct stats_case *c)
 {
-    if (c->want_written == 0)
+    if (c->want_written == 0) {
         return g_nwrites == 0;
+    }
     return g_nwrites == 1 && g_writes[0].addr == c->dma &&
            g_writes[0].len == c->want_written;
 }
@@ -335,9 +345,11 @@ static void run_case(const struct stats_case *c)
     written = bytes_written(c->dma);
     ok = rc == c->want_rc && written == c->want_written &&
          one_write_or_none(c) && content_matches(c);
-    for (size_t i = 0; i < sizeof(g_mem); i++)
-        if ((uint64_t)i < c->dma || (uint64_t)i - c->dma >= c->want_written)
+    for (size_t i = 0; i < sizeof(g_mem); i++) {
+        if ((uint64_t)i < c->dma || (uint64_t)i - c->dma >= c->want_written) {
             ok = ok && g_mem[i] == POISON;
+        }
+    }
 
     printf("%s %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", c->category,
            c->description, c->expected);
@@ -457,8 +469,9 @@ static void run_fault_case(const struct fault_case *c)
         g_nwrites = 0;
         got[k] = ionic_adminq_dispatch_wqe(&g_ctx, c->op, body, STATS_BODY_LEN);
         got_written[k] = bytes_written(BUF_GPA);
-        if (got[k] != c->want_rc[k] || got_written[k] != want)
+        if (got[k] != c->want_rc[k] || got_written[k] != want) {
             ok = false;
+        }
     }
     g_ctx.faults = NULL;
     ionic_fault_set_free(set);
@@ -466,11 +479,13 @@ static void run_fault_case(const struct fault_case *c)
     printf("%s %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", c->category,
            c->description, c->expected);
     if (!ok) {
-        if (err[0])
+        if (err[0]) {
             printf("     spec rejected: %s\n", err);
-        for (size_t k = 0; k < c->ncmds; k++)
+        }
+        for (size_t k = 0; k < c->ncmds; k++) {
             printf("     command %zu: got rc %u (want %u), %zu bytes written\n",
                    k + 1, got[k], c->want_rc[k], got_written[k]);
+        }
         failures++;
     }
 }
@@ -557,14 +572,15 @@ static void check_fault_eligibility(void)
         printf("%s %s: %s; expected: %s\n", ok ? "ok" : "FAIL",
                eligible_cases[row].category, eligible_cases[row].description,
                eligible_cases[row].expected);
-        if (!ok)
+        if (!ok) {
             failures++;
+        }
     }
 }
 
 /* ---- Completion encoding ---------------------------------------------- */
 
-#define CQE_GPA 512u
+#define CQE_GPA 512U
 
 /*
  * One admin completion posted with @status.  The driver reads
@@ -597,7 +613,8 @@ static const struct cqe_case cqe_cases[] = {
 static void run_cqe_case(const struct cqe_case *c)
 {
     struct ionic_aq_ring r;
-    uint32_t sl, qtf;
+    uint32_t sl;
+    uint32_t qtf;
     bool ok;
 
     ctx_reset();
@@ -631,16 +648,20 @@ static void check_names(const char *table, const struct adminq_stat *stats,
     bool ok = true;
 
     for (size_t i = 0; i < count; i++) {
-        if (strlen(stats[i].name) > STAT_NAME_LEN - 1)
+        if (strlen(stats[i].name) > STAT_NAME_LEN - 1) {
             ok = false;
-        for (size_t j = 0; j < i; j++)
-            if (strcmp(stats[i].name, stats[j].name) == 0)
+        }
+        for (size_t j = 0; j < i; j++) {
+            if (strcmp(stats[i].name, stats[j].name) == 0) {
                 ok = false;
+            }
+        }
     }
     printf("%s corner: every %s name; expected: at most 27 bytes and unique\n",
            ok ? "ok  " : "FAIL", table);
-    if (!ok)
+    if (!ok) {
         failures++;
+    }
 }
 
 /*
@@ -732,13 +753,14 @@ static void check_golden_headers(void)
                 expected[3] = (uint8_t)word;
                 memcpy(expected + 4, name, strlen(name));
             }
-            ok = ok && memcmp(g_mem + BUF_GPA + i * 32, expected, 32) == 0;
+            ok = ok && memcmp(g_mem + BUF_GPA + (i * 32), expected, 32) == 0;
         }
         printf("%s positive: %s; expected: literal ABI names/type/offset, zero "
                "padding and terminator\n",
                ok ? "ok" : "FAIL", wire_cases[row].description);
-        if (!ok)
+        if (!ok) {
             failures++;
+        }
     }
 }
 
@@ -757,7 +779,8 @@ static void check_alternating_qps(void)
 
     ctx_reset();
     for (size_t row = 0; row < sizeof(qp_cases) / sizeof(qp_cases[0]); row++) {
-        uint8_t body[64], before[64];
+        uint8_t body[64];
+        uint8_t before[64];
         uint64_t first;
         uint8_t rc;
         bool ok;
@@ -774,8 +797,9 @@ static void check_alternating_qps(void)
                "buffer on failure\n",
                ok ? "ok" : "FAIL", qp_cases[row].description, qp_cases[row].rc,
                qp_cases[row].first);
-        if (!ok)
+        if (!ok) {
             failures++;
+        }
     }
 }
 
@@ -806,8 +830,9 @@ static void check_order(const char *table, const struct adminq_stat *stats,
         const char *want = i < nhead ? head[i] : rdma_names[i - nhead];
 
         if (strcmp(stats[i].name, want) != 0 ||
-            stats[i].off != i * STAT_VAL_SIZE)
+            stats[i].off != i * STAT_VAL_SIZE) {
             ok = false;
+        }
     }
     printf("%s positive: %s name order; expected: %s\n", ok ? "ok  " : "FAIL",
            table, expected);
@@ -819,12 +844,15 @@ static void check_order(const char *table, const struct adminq_stat *stats,
 
 int main(void)
 {
-    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         run_case(&cases[i]);
-    for (size_t i = 0; i < sizeof(fault_cases) / sizeof(fault_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(fault_cases) / sizeof(fault_cases[0]); i++) {
         run_fault_case(&fault_cases[i]);
-    for (size_t i = 0; i < sizeof(cqe_cases) / sizeof(cqe_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(cqe_cases) / sizeof(cqe_cases[0]); i++) {
         run_cqe_case(&cqe_cases[i]);
+    }
     check_fault_eligibility();
     check_golden_headers();
     check_alternating_qps();

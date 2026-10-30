@@ -38,7 +38,7 @@
 #include <stdint.h>
 
 /* The FNV-1a 32-bit offset basis: the hash of empty input. */
-#define IONIC_ETH_STEER_HASH_EMPTY 0x811c9dc5u
+#define IONIC_ETH_STEER_HASH_EMPTY 0x811c9dc5U
 
 /* The flow hash of @frame's first @len bytes, as described above. */
 uint32_t ionic_eth_flow_hash(const uint8_t *frame, size_t len);

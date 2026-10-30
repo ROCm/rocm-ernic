@@ -69,8 +69,9 @@ int vfu_addr_to_sgl(vfu_ctx_t *vfu_ctx, vfu_dma_addr_t dma_addr, size_t len,
 
     (void)vfu_ctx;
     (void)prot;
-    if (max_nr_sgs < 1 || addr + len > GUEST_MEM_SIZE)
+    if (max_nr_sgs < 1 || addr + len > GUEST_MEM_SIZE) {
         return -1;
+    }
     sg->addr = addr;
     sg->len = len;
     return 1;
@@ -83,8 +84,9 @@ int vfu_sgl_get(vfu_ctx_t *vfu_ctx, dma_sg_t *sgl, struct iovec *iov,
 
     (void)vfu_ctx;
     (void)flags;
-    if (cnt < 1)
+    if (cnt < 1) {
         return -1;
+    }
     iov->iov_base = g_mem + sg->addr;
     iov->iov_len = sg->len;
     return 0;
@@ -115,10 +117,10 @@ void vfu_log(vfu_ctx_t *vfu_ctx, int level, const char *fmt, ...)
 
 /* ---- Stubs for the TU's other external symbols ------------------------- */
 
-#define QP_ID  7u
-#define QP_QPN 42u
-#define SQ_GPA 256u
-#define RQ_GPA 512u
+#define QP_ID  7U
+#define QP_QPN 42U
+#define SQ_GPA 256U
+#define RQ_GPA 512U
 
 /* What the resource manager will claim about the queried QP. */
 static uint8_t g_state;
@@ -137,20 +139,27 @@ int ernic_rm_query_qp(pvrdma_handle_t handle, uint32_t qpn, uint8_t *state,
 {
     (void)handle;
     g_queried_qpn = qpn;
-    if (g_query_rc)
+    if (g_query_rc) {
         return g_query_rc;
-    if (state)
+    }
+    if (state) {
         *state = g_state;
-    if (path_mtu)
+    }
+    if (path_mtu) {
         *path_mtu = g_path_mtu;
-    if (dest_qpn)
+    }
+    if (dest_qpn) {
         *dest_qpn = g_dest_qpn;
-    if (access_flags)
+    }
+    if (access_flags) {
         *access_flags = g_access;
-    if (rq_psn)
+    }
+    if (rq_psn) {
         *rq_psn = g_rq_psn;
-    if (sq_psn)
+    }
+    if (sq_psn) {
         *sq_psn = g_sq_psn;
+    }
     return 0;
 }
 
@@ -217,12 +226,15 @@ int ernic_rm_query_srq(pvrdma_handle_t handle, uint32_t srq_handle,
 {
     (void)handle;
     (void)srq_handle;
-    if (max_wr)
+    if (max_wr) {
         *max_wr = 16;
-    if (max_sge)
+    }
+    if (max_sge) {
         *max_sge = 2;
-    if (srq_limit)
+    }
+    if (srq_limit) {
         *srq_limit = 0;
+    }
     return 0;
 }
 int ernic_rm_alloc_qp(pvrdma_handle_t handle,
@@ -432,8 +444,9 @@ static int failures;
 static void check(const char *name, bool ok)
 {
     printf("%s %s\n", ok ? "ok  " : "FAIL", name);
-    if (!ok)
+    if (!ok) {
         failures++;
+    }
 }
 
 /*
@@ -467,7 +480,7 @@ static void ctx_reset(void)
     g_state = 3;    /* IBV_QPS_RTS */
     g_path_mtu = 3; /* IBV_MTU_1024 */
     g_dest_qpn = 0xd00001;
-    g_access = (1u << 1) | (1u << 2); /* REMOTE_WRITE | REMOTE_READ */
+    g_access = (1U << 1) | (1U << 2); /* REMOTE_WRITE | REMOTE_READ */
     g_rq_psn = 0x0abcde;
     g_sq_psn = 0x123456;
     g_query_rc = 0;
@@ -488,7 +501,7 @@ static void build_body(uint8_t *body, uint32_t qp_id, uint64_t sq_gpa,
     memset(body, 0, 34);
     ernic_put_le64(body + 8, sq_gpa);
     ernic_put_le64(body + 16, rq_gpa);
-    ernic_put_le32(body + 28, qp_id | (1u << 24));
+    ernic_put_le32(body + 28, qp_id | (1U << 24));
 }
 
 static uint16_t rq_flags(void)
@@ -517,7 +530,7 @@ static void test_state_reaches_the_side_buffer(void)
     check("state-nibble-is-rts", (g_mem[RQ_GPA] >> 4) == 3);
     /* The driver computes path_mtu as (state_pmtu & 0xf) - 7. */
     check("mtu-nibble-decodes-to-1024",
-          (int)(g_mem[RQ_GPA] & 0x0f) - 7 == g_path_mtu);
+          (g_mem[RQ_GPA] & 0x0f) - 7 == g_path_mtu);
 }
 
 /* Each state has to survive the round trip, not just the one RTS case. */
@@ -533,8 +546,9 @@ static void test_every_state_round_trips(void)
         build_body(body, QP_ID, SQ_GPA, RQ_GPA);
         if (ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body,
                                       sizeof(body)) != 0 ||
-            (g_mem[RQ_GPA] >> 4) != s)
+            (g_mem[RQ_GPA] >> 4) != s) {
             ok = false;
+        }
     }
     check("all-states-round-trip", ok);
 }
@@ -560,7 +574,7 @@ static void test_access_flags_are_translated(void)
     check("access-flags-in-both-buffers", rq_flags() == sq_flags);
 
     ctx_reset();
-    g_access = 1u << 3; /* REMOTE_ATOMIC alone */
+    g_access = 1U << 3; /* REMOTE_ATOMIC alone */
     build_body(body, QP_ID, SQ_GPA, RQ_GPA);
     (void)ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body,
                                     sizeof(body));
@@ -568,8 +582,8 @@ static void test_access_flags_are_translated(void)
 }
 
 /* A second QP of the device, which a destination can name */
-#define PEER_ID  9u
-#define PEER_QPN 0xd00001u
+#define PEER_ID  9U
+#define PEER_QPN 0xd00001U
 
 static void map_peer(uint32_t qpn)
 {
@@ -585,8 +599,9 @@ static uint32_t queried_dest(void)
 
     build_body(body, QP_ID, SQ_GPA, RQ_GPA);
     if (ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_QUERY_QP, body,
-                                  sizeof(body)) != 0)
+                                  sizeof(body)) != 0) {
         return UINT32_MAX;
+    }
     return ernic_get_be32(g_mem + SQ_GPA + 8);
 }
 
@@ -597,7 +612,7 @@ static void build_rtr_body(uint8_t *body, uint32_t attr_mask, uint32_t dest)
     ernic_put_be32(body + 0, attr_mask);
     ernic_put_le32(body + 16, dest);
     body[39] = 2; /* RTR */
-    ernic_put_le32(body + 56, QP_ID | (1u << 24));
+    ernic_put_le32(body + 56, QP_ID | (1U << 24));
 }
 
 /*
@@ -629,7 +644,7 @@ static void test_dest_is_the_drivers(void)
      * back as the driver gave it, whatever the backend says */
     ctx_reset();
     map_peer(PEER_QPN);
-    build_rtr_body(body, (1u << 0) | (1u << 20), PEER_ID);
+    build_rtr_body(body, (1U << 0) | (1U << 20), PEER_ID);
     check("modify-dest-accepted",
           ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_QP, body,
                                     sizeof(body)) == 0);
@@ -641,7 +656,7 @@ static void test_dest_is_the_drivers(void)
 
     /* So does one naming a QP on another node, untranslated */
     ctx_reset();
-    build_rtr_body(body, (1u << 0) | (1u << 20), 0x123);
+    build_rtr_body(body, (1U << 0) | (1U << 20), 0x123);
     check("remote-dest-accepted",
           ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_QP, body,
                                     sizeof(body)) == 0);
@@ -659,7 +674,7 @@ static void test_failed_modify_changes_nothing(void)
     ctx_reset();
     map_peer(PEER_QPN);
     g_modify_rc = -5;
-    build_rtr_body(body, (1u << 0) | (1u << 20), PEER_ID);
+    build_rtr_body(body, (1U << 0) | (1U << 20), PEER_ID);
     check("failed-modify-fails",
           ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_QP, body,
                                     sizeof(body)) != 0);
@@ -669,7 +684,7 @@ static void test_failed_modify_changes_nothing(void)
 
     ctx_reset();
     g_modify_rc = -5;
-    build_rtr_body(body, (1u << 0) | (1u << 6), 0x11111111u);
+    build_rtr_body(body, (1U << 0) | (1U << 6), 0x11111111U);
     check("failed-qkey-modify-fails",
           ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_QP, body,
                                     sizeof(body)) != 0);
@@ -677,7 +692,7 @@ static void test_failed_modify_changes_nothing(void)
 
     /* And one that succeeds sets the Q_Key */
     ctx_reset();
-    build_rtr_body(body, (1u << 0) | (1u << 6), 0x11111111u);
+    build_rtr_body(body, (1U << 0) | (1U << 6), 0x11111111U);
     check("qkey-modify-accepted",
           ionic_adminq_dispatch_wqe(&g_ctx, IONIC_V1_ADMIN_MODIFY_QP, body,
                                     sizeof(body)) == 0);
@@ -694,7 +709,8 @@ static void test_failed_modify_changes_nothing(void)
 static void test_psns_are_reported(void)
 {
     uint8_t body[34];
-    uint32_t rq_psn, sq_psn;
+    uint32_t rq_psn;
+    uint32_t sq_psn;
 
     ctx_reset();
     build_body(body, QP_ID, SQ_GPA, RQ_GPA);
@@ -775,8 +791,8 @@ static void test_short_body_writes_nothing(void)
 static void build_modify_body(uint8_t *body, uint32_t qp_id)
 {
     memset(body, 0, 60);
-    ernic_put_be32(body + 0, 1u << 20); /* IB_QP_DEST_QPN */
-    ernic_put_le32(body + 56, qp_id | (1u << 24));
+    ernic_put_be32(body + 0, 1U << 20); /* IB_QP_DEST_QPN */
+    ernic_put_le32(body + 56, qp_id | (1U << 24));
 }
 
 static void test_modify_qp_unresolved_gid_only_fails_on_a_mesh(void)

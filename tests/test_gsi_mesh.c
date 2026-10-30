@@ -64,23 +64,23 @@
 
 /* Addresses on a subnet nothing else in the tree uses, so a stray claim from
  * another test cannot make these contested. The worker claims C late. */
-#define GM_IP_A 0xc0a8fa01u /* 192.168.250.1 */
-#define GM_IP_B 0xc0a8fa02u /* 192.168.250.2 */
-#define GM_IP_C 0xc0a8fa03u /* 192.168.250.3 */
+#define GM_IP_A 0xc0a8fa01U /* 192.168.250.1 */
+#define GM_IP_B 0xc0a8fa02U /* 192.168.250.2 */
+#define GM_IP_C 0xc0a8fa03U /* 192.168.250.3 */
 
-#define GM_CQ         1u
-#define GM_AH         7u
-#define GM_AH_LATE    8u  /* to C, made before anyone claims it */
-#define GM_AH_NO_ADDR 9u  /* made with no header template */
-#define GM_AH_SELF    10u /* to the manager's own address */
-#define GM_AH_UNKNOWN 99u /* never made */
+#define GM_CQ         1U
+#define GM_AH         7U
+#define GM_AH_LATE    8U  /* to C, made before anyone claims it */
+#define GM_AH_NO_ADDR 9U  /* made with no header template */
+#define GM_AH_SELF    10U /* to the manager's own address */
+#define GM_AH_UNKNOWN 99U /* never made */
 #define GM_MR         IH_MRID(10, 0x08)
 #define GM_VA         UINT64_C(0x7f6100000000)
-#define GM_TX_OFF     0x0000u
-#define GM_RX_OFF     0x0200u
-#define GM_MAD_LEN    256u
+#define GM_TX_OFF     0x0000U
+#define GM_RX_OFF     0x0200U
+#define GM_MAD_LEN    256U
 /* The Q_Key ib_mad uses for GSI; the device checks it on a datagram. */
-#define GM_QKEY 0x80010000u
+#define GM_QKEY 0x80010000U
 
 static int failures;
 
@@ -88,8 +88,9 @@ static bool gm_check(bool cond, const char *fmt, ...) ERNIC_PRINTF_FORMAT(2, 3);
 
 static bool gm_check(bool cond, const char *fmt, ...)
 {
-    if (cond)
+    if (cond) {
         return true;
+    }
 
     va_list ap;
 
@@ -215,8 +216,9 @@ static bool gm_warned(struct ih *h, unsigned long since, const char *what)
     unsigned long n = fake_vfu_log_count(h->vfu, LOG_WARNING) - since;
 
     for (size_t back = 0; back < n && back < FAKE_VFU_LOG_KEEP; back++) {
-        if (strstr(fake_vfu_log_text(h->vfu, LOG_WARNING, back), what))
+        if (strstr(fake_vfu_log_text(h->vfu, LOG_WARNING, back), what)) {
             return true;
+        }
     }
     return false;
 }
@@ -231,8 +233,9 @@ static uint32_t gm_wait_resolve(struct ih *a, struct ih *b, struct ih *h,
     for (unsigned i = 0; i < 250; i++) {
         uint32_t node = ernic_mesh_node_from_gid(h->dev->pvrdma_handle, gid);
 
-        if (node != UINT32_MAX)
+        if (node != UINT32_MAX) {
             return node;
+        }
         gm_pump(a, b, 1);
     }
     return UINT32_MAX;
@@ -253,12 +256,14 @@ static void gm_late_claim(struct ih *a, struct gm_ep *ea, struct ih *b,
                           struct gm_ep *eb, uint32_t node_b)
 {
     uint8_t gid_c[16];
-    struct gm_counts ca, cb;
+    struct gm_counts ca;
+    struct gm_counts cb;
 
     gm_gid_for_ip(gid_c, GM_IP_C);
     if (!gm_check(ih_ah_create(a, GM_AH_LATE, GM_IP_A, GM_IP_C) == 0,
-                  "CREATE_AH for an address nobody owns failed"))
+                  "CREATE_AH for an address nobody owns failed")) {
         return;
+    }
 
     /* Nobody owns C: the MAD is dropped, and completes as sent. */
     unsigned long since = fake_vfu_log_count(a->vfu, LOG_WARNING);
@@ -281,8 +286,9 @@ static void gm_late_claim(struct ih *a, struct gm_ep *ea, struct ih *b,
     if (!gm_check(seen_c == node_b,
                   "the manager resolved the worker's late GID to node %u, "
                   "want %u",
-                  seen_c, node_b))
+                  seen_c, node_b)) {
         return;
+    }
 
     gm_send_mad(a, ea, b, eb, GM_AH_LATE, &ca, &cb);
     gm_check(cb.recvs == 1,
@@ -314,7 +320,8 @@ static void gm_nowhere(struct ih *a, struct gm_ep *ea, struct ih *b,
          "AH 9 has no destination address"},
     };
     uint8_t body[24] = {0};
-    struct gm_counts ca, cb;
+    struct gm_counts ca;
+    struct gm_counts cb;
 
     /* An address the sender's own node owns is the one place it stays. */
     if (gm_check(ih_ah_create(a, GM_AH_SELF, GM_IP_A, GM_IP_A) == 0,
@@ -327,11 +334,12 @@ static void gm_nowhere(struct ih *a, struct gm_ep *ea, struct ih *b,
     }
 
     /* CREATE_AH with no header template: accepted, with no address */
-    ernic_put_le32(body + 16, GM_AH_NO_ADDR | 1u << 24);
+    ernic_put_le32(body + 16, GM_AH_NO_ADDR | 1U << 24);
     if (!gm_check(ih_admin(a, IH_ADMIN_CREATE_AH, body, sizeof(body), NULL) ==
                       0,
-                  "CREATE_AH with no header template failed"))
+                  "CREATE_AH with no header template failed")) {
         return;
+    }
 
     for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
         unsigned long since = fake_vfu_log_count(a->vfu, LOG_WARNING);
@@ -356,7 +364,8 @@ static void gm_nowhere(struct ih *a, struct gm_ep *ea, struct ih *b,
 static void gm_after_restart(struct ih *a, struct gm_ep *ea, struct ih *b2)
 {
     struct gm_ep eb2;
-    struct gm_counts ca, cb;
+    struct gm_counts ca;
+    struct gm_counts cb;
 
     memset(&eb2, 0, sizeof(eb2));
     if (gm_check(gm_ep_open(b2, &eb2),
@@ -390,8 +399,9 @@ static bool gm_wait_hung_up(struct ih *a, uint32_t node_id)
         bool gone = !conn || tcp_conn_dead(conn);
 
         tcp_connection_unref(conn);
-        if (gone)
+        if (gone) {
             return true;
+        }
         ih_poll(a);
         struct timespec ts = {.tv_sec = 0, .tv_nsec = (long)2 * 1000 * 1000};
         nanosleep(&ts, NULL);
@@ -410,16 +420,26 @@ int main(void)
         return 1;
     }
 
-    char mgr[64], wrk[64];
+    char mgr[64];
+    char wrk[64];
 
     snprintf(mgr, sizeof(mgr), "tcp:manager:listen:%u", (unsigned)port);
     snprintf(wrk, sizeof(wrk), "tcp:worker:127.0.0.1:%u", (unsigned)port);
 
-    struct ih a, b;
-    uint32_t node_a, node_b, seen_a, seen_b, node_b2, seen_b2;
-    struct ih_sge rx, rx_self, tx;
+    struct ih a;
+    struct ih b;
+    uint32_t node_a;
+    uint32_t node_b;
+    uint32_t seen_a;
+    uint32_t seen_b;
+    uint32_t node_b2;
+    uint32_t seen_b2;
+    struct ih_sge rx;
+    struct ih_sge rx_self;
+    struct ih_sge tx;
     struct ih_send s;
-    struct gm_counts ca, cb;
+    struct gm_counts ca;
+    struct gm_counts cb;
 
     /*
      * Creating either device needs no VM, no RDMA hardware and no root, so a
@@ -435,8 +455,9 @@ int main(void)
         fprintf(stderr, "FAIL: no mesh worker\n");
         return 1;
     }
-    if (!gm_check(ih_bringup(&a) && ih_bringup(&b), "device bring-up failed"))
+    if (!gm_check(ih_bringup(&a) && ih_bringup(&b), "device bring-up failed")) {
         goto out;
+    }
 
     /* 1. The mesh forms. The manager is always node 0 (tcp_init()); the
      * worker is assigned a non-zero id by REGISTER_RESP. */
@@ -446,19 +467,23 @@ int main(void)
     for (unsigned i = 0; i < 250; i++) {
         node_a = ernic_mesh_local_node(a.dev->pvrdma_handle);
         node_b = ernic_mesh_local_node(b.dev->pvrdma_handle);
-        if (node_a != UINT32_MAX && node_b != UINT32_MAX && node_b != 0)
+        if (node_a != UINT32_MAX && node_b != UINT32_MAX && node_b != 0) {
             break;
+        }
         gm_pump(&a, &b, 1);
     }
-    if (!gm_check(node_a == 0, "the manager is node %u, want 0", node_a))
+    if (!gm_check(node_a == 0, "the manager is node %u, want 0", node_a)) {
         goto out;
+    }
     if (!gm_check(node_b != UINT32_MAX && node_b != 0,
-                  "worker never registered (node id %u)", node_b))
+                  "worker never registered (node id %u)", node_b)) {
         goto out;
+    }
     gm_check(node_a != node_b, "both nodes were assigned id %u", node_a);
 
     /* 2. Claim a GID on each AFTER the mesh formed. */
-    uint8_t gid_a[16], gid_b[16];
+    uint8_t gid_a[16];
+    uint8_t gid_b[16];
 
     gm_gid_for_ip(gid_a, GM_IP_A);
     gm_gid_for_ip(gid_b, GM_IP_B);
@@ -487,16 +512,19 @@ int main(void)
      * destination QPN in the WQE is 1 either way, so an unresolved peer
      * delivers it to the sender's own GSI QP -- silently, with no log.
      */
-    struct gm_ep ea, eb;
+    struct gm_ep ea;
+    struct gm_ep eb;
 
     memset(&ea, 0, sizeof(ea));
     memset(&eb, 0, sizeof(eb));
     if (!gm_check(gm_ep_open(&a, &ea) && gm_ep_open(&b, &eb),
-                  "GSI endpoint setup failed"))
+                  "GSI endpoint setup failed")) {
         goto out_ep;
+    }
     if (!gm_check(ih_ah_create(&a, GM_AH, GM_IP_A, GM_IP_B) == 0,
-                  "CREATE_AH for the peer failed"))
+                  "CREATE_AH for the peer failed")) {
         goto out_ep;
+    }
 
     uint8_t mad[GM_MAD_LEN];
 
@@ -623,13 +651,15 @@ int main(void)
      * new worker's registration, and on a loaded machine it can run after.
      */
     if (!gm_check(gm_wait_hung_up(&a, node_b),
-                  "the manager never saw node %u hang up", node_b))
+                  "the manager never saw node %u hang up", node_b)) {
         goto out_ea;
+    }
 
     struct ih b2;
 
-    if (!gm_check(ih_create(&b2, wrk), "the worker could not be recreated"))
+    if (!gm_check(ih_create(&b2, wrk), "the worker could not be recreated")) {
         goto out_ea;
+    }
     if (!gm_check(ih_bringup(&b2), "the restarted worker did not come up")) {
         ih_destroy(&b2);
         goto out_ea;
@@ -639,8 +669,9 @@ int main(void)
 
     for (unsigned i = 0; i < 400; i++) {
         node_b2 = ernic_mesh_local_node(b2.dev->pvrdma_handle);
-        if (node_b2 != UINT32_MAX && node_b2 != 0)
+        if (node_b2 != UINT32_MAX && node_b2 != 0) {
             break;
+        }
         gm_pump(&a, &b2, 1);
     }
     gm_check(node_b2 != UINT32_MAX && node_b2 != 0,
@@ -662,8 +693,9 @@ int main(void)
                  ? "the dead node's claim was never withdrawn, so the GID is "
                    "contested and routes nowhere"
                  : "it resolves to the wrong node");
-    if (seen_b2 == node_b2)
+    if (seen_b2 == node_b2) {
         gm_after_restart(&a, &ea, &b2);
+    }
 
     ih_destroy(&b2);
     goto out_ea;
@@ -679,9 +711,10 @@ out_ea:
     ih_mr_free(&ea.mr);
 out_a:
     ih_destroy(&a);
-    if (failures)
+    if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
-    else
+    } else {
         puts("PASS: a GSI MAD addressed to the peer reaches the peer's QP1");
+    }
     return failures ? 1 : 0;
 }

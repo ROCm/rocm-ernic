@@ -33,8 +33,9 @@ static const char *window_name(enum ionic_bar0_window w)
         [IONIC_BAR0_WINDOW_STRADDLE] = "straddle",
     };
 
-    if ((size_t)w >= sizeof(names) / sizeof(names[0]))
+    if ((size_t)w >= sizeof(names) / sizeof(names[0])) {
         return "unknown";
+    }
     return names[w];
 }
 

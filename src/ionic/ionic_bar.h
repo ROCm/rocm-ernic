@@ -52,15 +52,15 @@
  * ---------------------------------------------------------------------------
  */
 /* The register window's blocks */
-#define IONIC_BAR0_DEV_INFO_REGS_OFFSET 0x0000u
-#define IONIC_BAR0_DEV_CMD_REGS_OFFSET  0x0800u
-#define IONIC_BAR0_INTR_STATUS_OFFSET   0x1000u
-#define IONIC_BAR0_INTR_CTRL_OFFSET     0x2000u
+#define IONIC_BAR0_DEV_INFO_REGS_OFFSET 0x0000U
+#define IONIC_BAR0_DEV_CMD_REGS_OFFSET  0x0800U
+#define IONIC_BAR0_INTR_STATUS_OFFSET   0x1000U
+#define IONIC_BAR0_INTR_CTRL_OFFSET     0x2000U
 
-#define IONIC_BAR0_REGS_SIZE  0x8000u  /* 32 KB ionic register window */
-#define IONIC_BAR0_MSIX_TABLE 0x8000u  /* MSI-X table, above the regs */
-#define IONIC_BAR0_MSIX_PBA   0xa000u  /* MSI-X PBA                   */
-#define IONIC_BAR0_TOTAL_SIZE 0x10000u /* 64 KB total BAR0            */
+#define IONIC_BAR0_REGS_SIZE  0x8000U  /* 32 KB ionic register window */
+#define IONIC_BAR0_MSIX_TABLE 0x8000U  /* MSI-X table, above the regs */
+#define IONIC_BAR0_MSIX_PBA   0xa000U  /* MSI-X PBA                   */
+#define IONIC_BAR0_TOTAL_SIZE 0x10000U /* 64 KB total BAR0            */
 
 #define IONIC_BAR2_DB_SIZE ((size_t)4 * 1024 * 1024) /* 4 MB doorbell pages */
 #define IONIC_DB_PAGE_SIZE 4096                      /* one 4K page per LIF */
@@ -78,11 +78,11 @@
  * qwords; both must fit where the capability says they are. */
 _Static_assert(IONIC_BAR0_MSIX_TABLE >= IONIC_BAR0_REGS_SIZE,
                "the MSI-X table must sit above the ionic register window");
-_Static_assert(IONIC_BAR0_MSIX_TABLE + IONIC_MSIX_MAX_VECTORS * 16u <=
+_Static_assert(IONIC_BAR0_MSIX_TABLE + (IONIC_MSIX_MAX_VECTORS * 16U) <=
                    IONIC_BAR0_MSIX_PBA,
                "the MSI-X table for every vector must end before the PBA");
 _Static_assert(IONIC_BAR0_MSIX_PBA +
-                       (IONIC_MSIX_MAX_VECTORS + 63u) / 64u * 8u <=
+                       ((IONIC_MSIX_MAX_VECTORS + 63U) / 64U * 8U) <=
                    IONIC_BAR0_TOTAL_SIZE,
                "the MSI-X PBA for every vector must fit in BAR0");
 
@@ -109,15 +109,18 @@ static inline enum ionic_bar0_window ionic_bar0_classify(int64_t offset,
                                                          size_t count)
 {
     if (offset < 0 || (uint64_t)offset > IONIC_BAR0_TOTAL_SIZE ||
-        count > IONIC_BAR0_TOTAL_SIZE - (uint64_t)offset)
+        count > IONIC_BAR0_TOTAL_SIZE - (uint64_t)offset) {
         return IONIC_BAR0_WINDOW_OUTSIDE;
+    }
 
     uint64_t off = (uint64_t)offset;
 
-    if (count <= IONIC_BAR0_REGS_SIZE && off <= IONIC_BAR0_REGS_SIZE - count)
+    if (count <= IONIC_BAR0_REGS_SIZE && off <= IONIC_BAR0_REGS_SIZE - count) {
         return IONIC_BAR0_WINDOW_REGS;
-    if (off < IONIC_BAR0_REGS_SIZE)
+    }
+    if (off < IONIC_BAR0_REGS_SIZE) {
         return IONIC_BAR0_WINDOW_STRADDLE;
+    }
     return IONIC_BAR0_WINDOW_MSIX;
 }
 

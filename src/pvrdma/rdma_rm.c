@@ -101,14 +101,12 @@ static inline void res_tbl_free(RdmaRmResTbl *tbl)
  */
 static inline void *rdma_res_tbl_get(RdmaRmResTbl *tbl, uint32_t handle)
 {
-    if ((handle < tbl->tbl_sz) && (test_bit(handle, tbl->bitmap))) {
+    if ((handle < tbl->tbl_sz) && test_bit(handle, tbl->bitmap)) {
         /* handle < tbl_sz, so this can't wrap; see res_tbl_init(). */
-        return tbl->tbl + (size_t)handle * tbl->res_sz;
-    } else {
-        rdma_error_report("Table %s, invalid handle %" PRIu32, tbl->name,
-                          handle);
-        return NULL;
+        return tbl->tbl + ((size_t)handle * tbl->res_sz);
     }
+    rdma_error_report("Table %s, invalid handle %" PRIu32, tbl->name, handle);
+    return NULL;
 }
 
 static inline void *rdma_res_tbl_alloc(RdmaRmResTbl *tbl, uint32_t *handle)
@@ -159,9 +157,9 @@ static inline void *rdma_res_tbl_alloc(RdmaRmResTbl *tbl, uint32_t *handle)
     qemu_mutex_unlock(&tbl->lock);
 
     /* *handle < tbl_sz, so this can't wrap; see res_tbl_init(). */
-    memset(tbl->tbl + (size_t)*handle * tbl->res_sz, 0, tbl->res_sz);
+    memset(tbl->tbl + ((size_t)*handle * tbl->res_sz), 0, tbl->res_sz);
 
-    return tbl->tbl + (size_t)*handle * tbl->res_sz;
+    return tbl->tbl + ((size_t)*handle * tbl->res_sz);
 }
 
 /*
@@ -434,7 +432,8 @@ int rdma_rm_alloc_qp(RdmaDeviceResources *dev_res, uint32_t pd_handle,
 {
     int rc;
     RdmaRmQP *qp;
-    RdmaRmCQ *scq, *rcq;
+    RdmaRmCQ *scq;
+    RdmaRmCQ *rcq;
     RdmaRmPD *pd;
     RdmaRmSRQ *srq = NULL;
     uint32_t rm_qpn;
@@ -635,10 +634,10 @@ int rdma_rm_modify_qp(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
      * the one rdma_rm_query_qp() reports.
      */
     if (attr_mask & IBV_QP_RQ_PSN) {
-        qp->rq_psn = rq_psn & 0xffffffu;
+        qp->rq_psn = rq_psn & 0xffffffU;
     }
     if (attr_mask & IBV_QP_SQ_PSN) {
-        qp->sq_psn = sq_psn & 0xffffffu;
+        qp->sq_psn = sq_psn & 0xffffffU;
     }
     if (attr_mask & IBV_QP_STATE) {
         qp->qp_state = qp_state;
@@ -676,27 +675,25 @@ int rdma_rm_query_qp(RdmaDeviceResources *dev_res, uint32_t qp_handle,
             attr->sq_psn = qp->sq_psn;
         }
         return ret;
-    } else {
-        /* The backend keeps no QP state, or there is no backend */
-        rdma_info_report(
-            "rdma_rm_query_qp: No backend query, returning local state for "
-            "QP %u",
-            qp_handle);
-        memset(attr, 0, sizeof(*attr));
-        attr->qp_state = qp->qp_state;
-        attr->cur_qp_state = qp->qp_state;
-        attr->path_mtu = IBV_MTU_1024;
-        attr->qp_access_flags =
-            IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
-        attr->rq_psn = qp->rq_psn;
-        attr->sq_psn = qp->sq_psn;
-
-        if (init_attr) {
-            memset(init_attr, 0, sizeof(*init_attr));
-            init_attr->qp_type = qp->qp_type;
-        }
-        return 0;
     }
+    /* The backend keeps no QP state, or there is no backend */
+    rdma_info_report(
+        "rdma_rm_query_qp: No backend query, returning local state for "
+        "QP %u",
+        qp_handle);
+    memset(attr, 0, sizeof(*attr));
+    attr->qp_state = qp->qp_state;
+    attr->cur_qp_state = qp->qp_state;
+    attr->path_mtu = IBV_MTU_1024;
+    attr->qp_access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
+    attr->rq_psn = qp->rq_psn;
+    attr->sq_psn = qp->sq_psn;
+
+    if (init_attr) {
+        memset(init_attr, 0, sizeof(*init_attr));
+        init_attr->qp_type = qp->qp_type;
+    }
+    return 0;
 }
 
 void rdma_rm_dealloc_qp(RdmaDeviceResources *dev_res, uint32_t qp_handle)

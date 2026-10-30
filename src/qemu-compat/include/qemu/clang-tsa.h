@@ -33,7 +33,7 @@
 #ifndef QEMU_CLANG_TSA_H
 #define QEMU_CLANG_TSA_H
 
-#if defined(__clang__)
+#ifdef __clang__
 #define TSA_ATTR(x) __attribute__((x))
 #else
 #define TSA_ATTR(x)

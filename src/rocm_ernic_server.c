@@ -262,8 +262,9 @@ static ssize_t bar0_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
 
     enum ionic_bar0_window win = ionic_bar0_classify(offset, count);
 
-    if (win == IONIC_BAR0_WINDOW_REGS)
+    if (win == IONIC_BAR0_WINDOW_REGS) {
         return ionic_eth_emu_bar0_access(emu, buf, count, offset, is_write);
+    }
 
     /* Both refusals share one branch: libvfio-user refuses an access
      * outside BAR0 before it gets here, so only a straddle reaches it from
@@ -280,10 +281,11 @@ static ssize_t bar0_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
     }
 
     size_t msix_off = (size_t)offset - IONIC_BAR0_REGS_SIZE;
-    if (is_write)
+    if (is_write) {
         memcpy((char *)dev->bar0_mem + msix_off, buf, count);
-    else
+    } else {
         memcpy(buf, (char *)dev->bar0_mem + msix_off, count);
+    }
     return (ssize_t)count;
 }
 
@@ -447,8 +449,9 @@ static int p4_load_program_file(struct p4_engine *eng, const char *path)
         size_t want = (size_t)size - total;
         size_t n;
 
-        if (want > sizeof(buf))
+        if (want > sizeof(buf)) {
             want = sizeof(buf);
+        }
         n = fread(buf, 1, want, f);
         /* A short read is an error or the end of a file that shrank since
          * it was sized; either way, stop. */
@@ -461,8 +464,9 @@ static int p4_load_program_file(struct p4_engine *eng, const char *path)
     }
     fclose(f);
 
-    if (rc == 0)
+    if (rc == 0) {
         rc = p4_engine_load_commit(eng);
+    }
 
     if (rc != 0) {
         const char *why = p4_engine_load_error(eng);
@@ -493,8 +497,9 @@ static int device_init(rocm_ernic_dev_t *dev)
         return -1;
     }
 
-    if (pvrdma_device_init(dev) < 0)
+    if (pvrdma_device_init(dev) < 0) {
         return -1;
+    }
 
     memset(&cfg, 0, sizeof(cfg));
     cfg.vfu_ctx = dev->vfu_ctx;
@@ -643,7 +648,7 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, const rocm_ernic_dev_t *dev)
     uint32_t nr_intrs = ionic_profile_intr_vectors(&dev->profile);
 
     /* Message Control: bits [10:0] = Table Size-1 */
-    msix_cap.ctrl = (uint16_t)((nr_intrs - 1u) & 0x7FFu);
+    msix_cap.ctrl = (uint16_t)((nr_intrs - 1U) & 0x7FFU);
 
     /* The table/PBA must sit above the 32 KB ionic register window: offset
      * 0 is the DEVI signature ionic_dev_setup() probes and 0x2000 is
@@ -918,12 +923,13 @@ static int validate_backend_options(const rocm_ernic_dev_t *dev)
 
     if (!ionic_device_target_check(dev->backend_type_str, err, sizeof(err))) {
         fprintf(stderr, "Error: %s\n", err);
-        if (!strcmp(name, "nvmeof"))
+        if (!strcmp(name, "nvmeof")) {
             fprintf(stderr, "  Use: --backend nvmeof[:size=64M][,file=PATH]"
                             "[,bs=512][,nqn=NAME][,ip=ADDR][,port=4420]\n");
-        else if (!strcmp(name, "s3"))
+        } else if (!strcmp(name, "s3")) {
             fprintf(stderr, "  Use: --backend s3[:bucket=NAME][,size=256M]"
                             "[,objects=256][,ip=ADDR][,port=9000]\n");
+        }
         return -1;
     }
 
@@ -1183,8 +1189,9 @@ static enum parse_result parse_options(int argc, char *argv[],
         case OPT_INJECT: {
             char fault_err[256];
 
-            if (!dev->faults)
+            if (!dev->faults) {
                 dev->faults = ionic_fault_set_new();
+            }
             if (!dev->faults ||
                 ionic_fault_set_add(dev->faults, optarg, fault_err,
                                     sizeof(fault_err)) != 0) {
@@ -1250,9 +1257,10 @@ static enum parse_result parse_options(int argc, char *argv[],
         }
     }
 
-    if (print_profile)
+    if (print_profile) {
         return print_nic_profile(&dev->profile) ? PARSE_EXIT_SUCCESS
                                                 : PARSE_EXIT_FAILURE;
+    }
     return PARSE_RUN;
 }
 
@@ -1289,8 +1297,9 @@ static int redirect_output(const char *path)
         close(fd);
         return -1;
     }
-    if (!is_std)
+    if (!is_std) {
         close(fd);
+    }
     return 0;
 }
 
@@ -1317,15 +1326,17 @@ static void report_startup(const rocm_ernic_dev_t *dev,
                          " RDMA EQs, %" PRIu32 " MSI-X vectors",
                          dev->profile.queues.eth, dev->profile.queues.rdma_eqs,
                          ionic_profile_intr_vectors(&dev->profile));
-    if (ionic_profile_warning(&dev->profile, warning, sizeof(warning)))
+    if (ionic_profile_warning(&dev->profile, warning, sizeof(warning))) {
         ernic_startup_report("  NIC profile warning: %s", warning);
+    }
     for (int site = 0; site < IONIC_FAULT_SITE_COUNT; site++) {
         const struct ionic_fault *f =
             ionic_fault_set_get(dev->faults, (enum ionic_fault_site)site);
         char spec[256];
 
-        if (f && ionic_fault_format(f, spec, sizeof(spec)) >= 0)
+        if (f && ionic_fault_format(f, spec, sizeof(spec)) >= 0) {
             ernic_startup_report("  Fault: %s", spec);
+        }
     }
 }
 
@@ -1349,8 +1360,9 @@ static int load_p4_engine(rocm_ernic_dev_t *dev, const char *program)
         fprintf(stderr, "rocm-ernic: failed to create the P4 engine\n");
         return -1;
     }
-    if (program && p4_load_program_file(dev->p4_engine, program) != 0)
+    if (program && p4_load_program_file(dev->p4_engine, program) != 0) {
         return -1;
+    }
     return 0;
 }
 #endif
@@ -1371,8 +1383,9 @@ static vfu_ctx_t *create_socket(const struct server_opts *opts,
 
     /* Binding fails if anything is at the path, so remove a socket that a
      * server that didn't exit cleanly left there. */
-    if (!ernic_socket_remove_stale(path))
+    if (!ernic_socket_remove_stale(path)) {
         return NULL;
+    }
 
     /* Create libvfio-user context with non-blocking attach.  It binds and
      * listens on the socket here, creating it with mode 0777 less the umask.
@@ -1438,8 +1451,9 @@ static int setup_stats_file(rocm_ernic_dev_t *dev, const char *socket_path)
     char profile_line[IONIC_PROFILE_CHAIN_MAX + 32];
     struct ernic_stats_instance inst;
 
-    if (!dev->stats_file_path)
+    if (!dev->stats_file_path) {
         return 0;
+    }
 
     snprintf(profile_line, sizeof(profile_line), "%s (hash 0x%016" PRIx64 ")",
              dev->profile.chain, ionic_profile_hash(&dev->profile));
@@ -1590,11 +1604,13 @@ static int setup_device(rocm_ernic_dev_t *dev, const struct server_opts *opts)
         return -1;
     }
 
-    if (device_init(dev) < 0 || setup_stats_file(dev, opts->socket_path) < 0)
+    if (device_init(dev) < 0 || setup_stats_file(dev, opts->socket_path) < 0) {
         return -1;
+    }
 
-    if (setup_vfu_device(vfu_ctx, dev) < 0)
+    if (setup_vfu_device(vfu_ctx, dev) < 0) {
         return -1;
+    }
 
     /* Log MAC address if set */
     if (dev->mac_addr_set) {
@@ -1607,12 +1623,14 @@ static int setup_device(rocm_ernic_dev_t *dev, const struct server_opts *opts)
 
     /* Attach the host network backend before the first client shows up, so a
      * bad --tap is a startup failure rather than a silently dead link. */
-    if (opts->tap_ifname && attach_tap(dev, opts->tap_ifname) < 0)
+    if (opts->tap_ifname && attach_tap(dev, opts->tap_ifname) < 0) {
         return -1;
+    }
 
 #ifdef ERNIC_HAVE_P4
-    if (opts->p4_enabled && attach_p4(dev, opts) < 0)
+    if (opts->p4_enabled && attach_p4(dev, opts) < 0) {
         return -1;
+    }
 #endif
 
     return 0;
@@ -1637,7 +1655,7 @@ static bool serve_client(rocm_ernic_dev_t *dev)
             uint64_t now_ms = ernic_monotonic_ms();
             if (now_ms >= next_stats_write_ms) {
                 ernic_stats_write(dev->stats);
-                next_stats_write_ms = now_ms + 1000u;
+                next_stats_write_ms = now_ms + 1000U;
             }
         }
 
@@ -1663,13 +1681,15 @@ static bool serve_client(rocm_ernic_dev_t *dev)
             ernic_stats_write(dev->stats);
             gone = true;
             break;
-        } else if (ret < 0 && errno == EINTR) {
+        }
+        if (ret < 0 && errno == EINTR) {
             /* Interrupted by signal */
             vfu_log(vfu_ctx, LOG_INFO,
                     "Interrupted by signal after %" PRIu64 " loops",
                     loop_count);
             break;
-        } else if (ret < 0) {
+        }
+        if (ret < 0) {
             vfu_log(vfu_ctx, LOG_ERR,
                     "vfu_run_ctx() failed after %" PRIu64 " loops: %s",
                     loop_count, strerror(errno));
@@ -1719,10 +1739,12 @@ static int run(rocm_ernic_dev_t *dev)
 
                 poll(&pfd, 1, 100);
                 continue;
-            } else if (errno == EINTR) {
+            }
+            if (errno == EINTR) {
                 /* Interrupted by signal, check shutdown flag */
                 continue;
-            } else if (attach_error_is_peer(errno)) {
+            }
+            if (attach_error_is_peer(errno)) {
                 ernic_startup_report("rocm-ernic: client dropped during "
                                      "negotiation (%s); waiting for the next "
                                      "client",
@@ -1767,10 +1789,11 @@ static void report_faults(const rocm_ernic_dev_t *dev)
         const struct ionic_fault *f =
             ionic_fault_set_get(dev->faults, (enum ionic_fault_site)site);
 
-        if (f)
+        if (f) {
             ernic_startup_report(
                 "  Fault %s: eligible %" PRIu64 ", fired %" PRIu64,
                 ionic_fault_site_name(f->site), f->eligible, f->fired);
+        }
     }
 }
 

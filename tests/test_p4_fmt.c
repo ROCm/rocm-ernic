@@ -76,14 +76,14 @@ static float float_of(uint32_t b)
  * Infinity and a quiet NaN by their bits rather than as 1/0 and 0/0, which
  * the undefined-behaviour sanitizer reports as division by zero.
  */
-#define F32_INF float_of(0x7F800000u)
-#define F32_NAN float_of(0x7FC00000u)
+#define F32_INF float_of(0x7F800000U)
+#define F32_NAN float_of(0x7FC00000U)
 
 /* By its bits, as p4_fmt.c works: v != v is the same test, but a compiler
  * warning about comparing floats for equality cannot tell. */
 static bool is_nan(float v)
 {
-    return (bits_of(v) & 0x7FFFFFFFu) > 0x7F800000u;
+    return (bits_of(v) & 0x7FFFFFFFU) > 0x7F800000U;
 }
 
 /* The formats narrower than 32 bits, which are the ones worth sweeping
@@ -101,7 +101,7 @@ static void put_raw(enum p4_fmt f, uint8_t *buf, uint32_t raw)
         buf[0] = (uint8_t)raw;
         break;
     default:
-        buf[0] = (uint8_t)(raw & 0xFFu);
+        buf[0] = (uint8_t)(raw & 0xFFU);
         buf[1] = (uint8_t)(raw >> 8);
         break;
     }
@@ -111,7 +111,7 @@ static uint32_t get_raw(enum p4_fmt f, const uint8_t *buf)
 {
     switch (p4_fmt_bits(f)) {
     case 4:
-        return buf[0] & 0x0Fu;
+        return buf[0] & 0x0FU;
     case 8:
         return buf[0];
     default:
@@ -133,8 +133,9 @@ static void test_e4m3_matches_fp8(void)
         float a = p4_fmt_decode(P4_FMT_FP8_E4M3, &raw, 0);
         float b = p4_fp8_to_float(raw);
 
-        if (!((is_nan(a) && is_nan(b)) || bits_of(a) == bits_of(b)))
+        if (!((is_nan(a) && is_nan(b)) || bits_of(a) == bits_of(b))) {
             bad++;
+        }
     }
     checkf(bad == 0, "E4M3 decode disagrees with p4_fp8.c for %u encodings",
            bad);
@@ -145,15 +146,16 @@ static void test_e4m3_matches_fp8(void)
      * through one exponent's worth of mantissas.
      */
     bad = 0;
-    for (uint64_t u = 0; u < (UINT64_C(1) << 32); u += 1021u) {
+    for (uint64_t u = 0; u < (UINT64_C(1) << 32); u += 1021U) {
         float v;
         uint32_t raw = (uint32_t)u;
         uint8_t got = 0;
 
         memcpy(&v, &raw, sizeof(v));
         p4_fmt_encode(P4_FMT_FP8_E4M3, v, &got, 0);
-        if (got != p4_fp8_from_float(v))
+        if (got != p4_fp8_from_float(v)) {
             bad++;
+        }
     }
     checkf(bad == 0, "E4M3 encode disagrees with p4_fp8.c for %u floats", bad);
 }
@@ -167,11 +169,13 @@ static void test_round_trip_exhaustive(void)
 {
     for (size_t k = 0; k < sizeof(narrow) / sizeof(narrow[0]); k++) {
         enum p4_fmt f = narrow[k];
-        unsigned n = 1u << p4_fmt_bits(f);
-        unsigned finite_bad = 0, nan_bad = 0;
+        unsigned n = 1U << p4_fmt_bits(f);
+        unsigned finite_bad = 0;
+        unsigned nan_bad = 0;
 
         for (unsigned i = 0; i < n; i++) {
-            uint8_t in[4], out[4];
+            uint8_t in[4];
+            uint8_t out[4];
             float v;
 
             put_raw(f, in, i);
@@ -181,8 +185,9 @@ static void test_round_trip_exhaustive(void)
 
             if (is_nan(v)) {
                 /* Allowed to canonicalise, but it must still be a NaN. */
-                if (!is_nan(p4_fmt_decode(f, out, 0)))
+                if (!is_nan(p4_fmt_decode(f, out, 0))) {
                     nan_bad++;
+                }
             } else if (get_raw(f, out) != i) {
                 finite_bad++;
             }
@@ -202,9 +207,9 @@ static void test_round_trip_exhaustive(void)
  */
 static void test_fp4_value_set(void)
 {
-    static const float want[16] = {0.0f,  0.5f,  1.0f,  1.5f,  2.0f,  3.0f,
-                                   4.0f,  6.0f,  -0.0f, -0.5f, -1.0f, -1.5f,
-                                   -2.0f, -3.0f, -4.0f, -6.0f};
+    static const float want[16] = {0.0F,  0.5F,  1.0F,  1.5F,  2.0F,  3.0F,
+                                   4.0F,  6.0F,  -0.0F, -0.5F, -1.0F, -1.5F,
+                                   -2.0F, -3.0F, -4.0F, -6.0F};
 
     for (unsigned i = 0; i < 16; i++) {
         uint8_t raw = (uint8_t)i;
@@ -224,17 +229,17 @@ static void test_fp4_value_set(void)
 
         check(is_nan(nan_v), "the fp16 NaN fixture is not a NaN");
         p4_fmt_encode(P4_FMT_FP4_E2M1, nan_v, &out, 0);
-        checkf(out == 0x7u, "fp4 NaN gave %#x, want the largest finite (0x7)",
+        checkf(out == 0x7U, "fp4 NaN gave %#x, want the largest finite (0x7)",
                out);
     }
     /* And an overflow saturates rather than becoming an infinity. */
     {
         uint8_t out = 0;
 
-        p4_fmt_encode(P4_FMT_FP4_E2M1, 1000.0f, &out, 0);
-        checkf(out == 0x7u, "fp4 1000 gave %#x, want 6.0 (0x7)", out);
-        p4_fmt_encode(P4_FMT_FP4_E2M1, -1000.0f, &out, 0);
-        checkf(out == 0xFu, "fp4 -1000 gave %#x, want -6.0 (0xF)", out);
+        p4_fmt_encode(P4_FMT_FP4_E2M1, 1000.0F, &out, 0);
+        checkf(out == 0x7U, "fp4 1000 gave %#x, want 6.0 (0x7)", out);
+        p4_fmt_encode(P4_FMT_FP4_E2M1, -1000.0F, &out, 0);
+        checkf(out == 0xFU, "fp4 -1000 gave %#x, want -6.0 (0xF)", out);
     }
 }
 
@@ -247,14 +252,14 @@ static void test_fp4_packing(void)
     uint8_t buf[2] = {0, 0};
     uint8_t out[2] = {0xFF, 0xFF};
 
-    p4_fmt_encode(P4_FMT_FP4_E2M1, 1.0f, buf, 0);  /* 0x2, low nibble */
-    p4_fmt_encode(P4_FMT_FP4_E2M1, -6.0f, buf, 1); /* 0xF, high nibble */
-    checkf(buf[0] == 0xF2u, "fp4 packing gave %#x, want 0xf2", buf[0]);
+    p4_fmt_encode(P4_FMT_FP4_E2M1, 1.0F, buf, 0);  /* 0x2, low nibble */
+    p4_fmt_encode(P4_FMT_FP4_E2M1, -6.0F, buf, 1); /* 0xF, high nibble */
+    checkf(buf[0] == 0xF2U, "fp4 packing gave %#x, want 0xf2", buf[0]);
 
     /* Writing one element must leave the other alone. */
-    out[0] = 0xA5u;
-    p4_fmt_encode(P4_FMT_FP4_E2M1, 0.0f, out, 1);
-    checkf((out[0] & 0x0Fu) == 0x05u,
+    out[0] = 0xA5U;
+    p4_fmt_encode(P4_FMT_FP4_E2M1, 0.0F, out, 1);
+    checkf((out[0] & 0x0FU) == 0x05U,
            "writing the high nibble disturbed the low one: %#x", out[0]);
 
     checkf(p4_fmt_bytes(P4_FMT_FP4_E2M1, 2) == 1,
@@ -270,9 +275,10 @@ static void test_fp4_packing(void)
 static void test_both_directions(void)
 {
     /* 1.0, 2.0, 4.0, 6.0 in fp4: encodings 2, 4, 6, 7. */
-    static const uint8_t fp4_in[2] = {0x42u, 0x76u};
-    static const float want[4] = {1.0f, 2.0f, 4.0f, 6.0f};
-    uint8_t wide[4 * 4], back[2];
+    static const uint8_t fp4_in[2] = {0x42U, 0x76U};
+    static const float want[4] = {1.0F, 2.0F, 4.0F, 6.0F};
+    uint8_t wide[4 * 4];
+    uint8_t back[2];
     float got;
 
     /* fp4 -> fp32, the widest widening there is. */
@@ -309,15 +315,16 @@ static void test_both_directions(void)
     /* bf16 -> fp8 E5M2 narrows between two formats that both have
      * infinities, so an overflow becomes one rather than saturating. */
     {
-        uint8_t big[2], small[1];
+        uint8_t big[2];
+        uint8_t small[1];
 
         /* bf16 3.0e38, which E5M2 cannot hold (its max is 57344). */
-        big[0] = 0x0Eu;
-        big[1] = 0x7Fu;
+        big[0] = 0x0EU;
+        big[1] = 0x7FU;
         check(p4_fmt_convert(P4_FMT_BF16, P4_FMT_FP8_E5M2, big, 1, small),
               "bf16 to E5M2 was refused");
         got = p4_fmt_decode(P4_FMT_FP8_E5M2, small, 0);
-        check(got > 0.0f && !(got < F32_INF) && !is_nan(got),
+        check(got > 0.0F && !(got < F32_INF) && !is_nan(got),
               "an overflow into E5M2, which has infinities, did not become "
               "one");
     }
@@ -329,12 +336,13 @@ static void test_both_directions(void)
  */
 static void test_fp32_identity(void)
 {
-    static const float vals[3] = {1.5f, -0.0f, 3.0e38f};
+    static const float vals[3] = {1.5F, -0.0F, 3.0e38F};
     uint8_t buf[12];
 
     memset(buf, 0, sizeof(buf));
-    for (unsigned i = 0; i < 3; i++)
+    for (unsigned i = 0; i < 3; i++) {
         p4_fmt_encode(P4_FMT_FP32, vals[i], buf, i);
+    }
     checkf(buf[4] == 0x00 && buf[7] == 0x80,
            "fp32 -0.0 was stored as %02x..%02x", buf[4], buf[7]);
     for (unsigned i = 0; i < 3; i++) {
@@ -349,13 +357,14 @@ static void test_fp32_identity(void)
 /* Arguments that must be refused rather than guessed at. */
 static void test_bad_arguments(void)
 {
-    uint8_t in[8] = {0}, out[8] = {0};
+    uint8_t in[8] = {0};
+    uint8_t out[8] = {0};
 
     check(!p4_fmt_convert((enum p4_fmt)P4_FMT_COUNT, P4_FMT_FP32, in, 4, out),
           "an unknown source format was accepted");
     /* Deliberately out of range: a table entry can carry any value here.
      * NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) */
-    check(!p4_fmt_convert(P4_FMT_FP32, (enum p4_fmt)0x55u, in, 4, out),
+    check(!p4_fmt_convert(P4_FMT_FP32, (enum p4_fmt)0x55U, in, 4, out),
           "an unknown destination format was accepted");
     check(!p4_fmt_convert(P4_FMT_FP32, P4_FMT_FP4_E2M1, NULL, 4, out),
           "a NULL source was accepted");
@@ -386,8 +395,8 @@ static void test_bad_arguments(void)
               bits_of(p4_fmt_decode(P4_FMT_FP16, NULL, 0)) == 0,
           "decoding nothing gave something other than +0");
     memset(out, 0xEE, sizeof(out));
-    p4_fmt_encode(P4_FMT_COUNT, 1.0f, out, 0);
-    p4_fmt_encode(P4_FMT_FP16, 1.0f, NULL, 0);
+    p4_fmt_encode(P4_FMT_COUNT, 1.0F, out, 0);
+    p4_fmt_encode(P4_FMT_FP16, 1.0F, NULL, 0);
     check(out[0] == 0xEE && out[1] == 0xEE,
           "encoding into an unknown format wrote something");
 
@@ -411,13 +420,13 @@ static void test_overflow_conventions(void)
     uint8_t out[4];
 
     /* fp32 -> fp16: fp16 has infinities. */
-    p4_fmt_encode(P4_FMT_FP16, 1.0e30f, out, 0);
-    checkf(get_raw(P4_FMT_FP16, out) == 0x7C00u,
+    p4_fmt_encode(P4_FMT_FP16, 1.0e30F, out, 0);
+    checkf(get_raw(P4_FMT_FP16, out) == 0x7C00U,
            "fp32 1e30 to fp16 gave %#x, want +infinity",
            get_raw(P4_FMT_FP16, out));
 
     /* fp32 -> E4M3: no infinity, so it saturates to 448. */
-    p4_fmt_encode(P4_FMT_FP8_E4M3, 1.0e30f, out, 0);
+    p4_fmt_encode(P4_FMT_FP8_E4M3, 1.0e30F, out, 0);
     checkf(out[0] == P4_FP8_MAX, "fp32 1e30 to E4M3 gave %#x, want %#x", out[0],
            P4_FP8_MAX);
 

@@ -121,7 +121,7 @@ static void test_bitmap_sizes(void)
 {
     const uint32_t word = CHAR_BIT * sizeof(unsigned long);
     const uint32_t sizes[] = {
-        0, 1, word - 1, word, word + 1, 2 * word, 2 * word + 1,
+        0, 1, word - 1, word, word + 1, 2 * word, (2 * word) + 1,
     };
 
     for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {

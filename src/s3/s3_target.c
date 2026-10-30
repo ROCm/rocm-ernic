@@ -44,15 +44,15 @@
 #include "s3/s3_token.h"
 
 #define S3_DEFAULT_BUCKET   "ernic"
-#define S3_DEFAULT_CAPACITY (256ull << 20)
-#define S3_DEFAULT_OBJECTS  256u
-#define S3_DEFAULT_TRADDR   0xc0a8c801u /* 192.168.200.1 */
+#define S3_DEFAULT_CAPACITY (UINT64_C(256) << 20)
+#define S3_DEFAULT_OBJECTS  256U
+#define S3_DEFAULT_TRADDR   0xc0a8c801U /* 192.168.200.1 */
 #define S3_DEFAULT_PORT     9000
-#define S3_DEFAULT_MAX_PART (256ull << 20)
+#define S3_DEFAULT_MAX_PART (UINT64_C(256) << 20)
 
-#define S3_MAX_UPLOADS   16u
-#define S3_MAX_PARTS     1024u
-#define S3_LIST_MAX_KEYS 1000u
+#define S3_MAX_UPLOADS   16U
+#define S3_MAX_PARTS     1024U
+#define S3_LIST_MAX_KEYS 1000U
 #define S3_ETAG_MAX      48
 
 #define S3_RDMA_TOKEN_HDR "x-amz-rdma-token"
@@ -146,12 +146,15 @@ static void md5_block(struct md5_ctx *c, const uint8_t *p)
 {
     uint32_t m[16];
     for (size_t i = 0; i < 16; i++) {
-        m[i] = (uint32_t)p[i * 4] | ((uint32_t)p[i * 4 + 1] << 8) |
-               ((uint32_t)p[i * 4 + 2] << 16) | ((uint32_t)p[i * 4 + 3] << 24);
+        m[i] = (uint32_t)p[i * 4] | ((uint32_t)p[(i * 4) + 1] << 8) |
+               ((uint32_t)p[(i * 4) + 2] << 16) |
+               ((uint32_t)p[(i * 4) + 3] << 24);
     }
 
-    uint32_t a = c->state[0], b = c->state[1];
-    uint32_t d = c->state[3], cc = c->state[2];
+    uint32_t a = c->state[0];
+    uint32_t b = c->state[1];
+    uint32_t d = c->state[3];
+    uint32_t cc = c->state[2];
 
     for (int i = 0; i < 64; i++) {
         uint32_t f;
@@ -161,10 +164,10 @@ static void md5_block(struct md5_ctx *c, const uint8_t *p)
             g = i;
         } else if (i < 32) {
             f = (d & b) | (~d & cc);
-            g = (5 * i + 1) & 15;
+            g = ((5 * i) + 1) & 15;
         } else if (i < 48) {
             f = b ^ cc ^ d;
-            g = (3 * i + 5) & 15;
+            g = ((3 * i) + 5) & 15;
         } else {
             f = cc ^ (b | ~d);
             g = (7 * i) & 15;
@@ -204,8 +207,9 @@ static void md5_update(struct md5_ctx *c, const void *data, size_t len)
         c->buflen += take;
         p += take;
         len -= take;
-        if (c->buflen < 64)
+        if (c->buflen < 64) {
             return;
+        }
         md5_block(c, c->buf);
         c->buflen = 0;
     }
@@ -229,15 +233,16 @@ static void md5_final(struct md5_ctx *c, uint8_t out[16])
     md5_update(c, pad, padlen);
 
     uint8_t tail[8];
-    for (int i = 0; i < 8; i++)
+    for (int i = 0; i < 8; i++) {
         tail[i] = (uint8_t)(bits >> (8 * i));
+    }
     md5_update(c, tail, 8);
 
     for (size_t i = 0; i < 4; i++) {
         out[i * 4] = (uint8_t)c->state[i];
-        out[i * 4 + 1] = (uint8_t)(c->state[i] >> 8);
-        out[i * 4 + 2] = (uint8_t)(c->state[i] >> 16);
-        out[i * 4 + 3] = (uint8_t)(c->state[i] >> 24);
+        out[(i * 4) + 1] = (uint8_t)(c->state[i] >> 8);
+        out[(i * 4) + 2] = (uint8_t)(c->state[i] >> 16);
+        out[(i * 4) + 3] = (uint8_t)(c->state[i] >> 24);
     }
 }
 
@@ -254,7 +259,7 @@ static void md5_hex(const uint8_t md5[16], char *out)
     static const char HEX[] = "0123456789abcdef";
     for (size_t i = 0; i < 16; i++) {
         out[i * 2] = HEX[md5[i] >> 4];
-        out[i * 2 + 1] = HEX[md5[i] & 0xf];
+        out[(i * 2) + 1] = HEX[md5[i] & 0xf];
     }
     out[32] = '\0';
 }
@@ -490,7 +495,7 @@ void s3_target_peer_token(const struct s3_target *t, uint32_t rkey,
 {
     memset(out, 0, sizeof(*out));
     out->transport = S3_TRANSPORT_RC;
-    out->qp_num = S3_TARGET_QPN_BASE | 1u;
+    out->qp_num = S3_TARGET_QPN_BASE | 1U;
     out->gid[10] = 0xff;
     out->gid[11] = 0xff;
     out->gid[12] = (uint8_t)(t->cfg.traddr >> 24);
@@ -649,7 +654,8 @@ static struct s3_part *part_slot(struct s3_upload *u, uint32_t number)
 
 static int part_cmp(const void *a, const void *b)
 {
-    const struct s3_part *pa = a, *pb = b;
+    const struct s3_part *pa = a;
+    const struct s3_part *pb = b;
     return (pa->number > pb->number) - (pa->number < pb->number);
 }
 
@@ -758,7 +764,8 @@ static bool split_path(const char *path, char *bucket, size_t bucketlen,
 /* "bytes=<first>-<last>", the only Range form S3 answers. */
 static bool parse_range(const char *v, size_t size, size_t *off, size_t *len)
 {
-    uint64_t first, last;
+    uint64_t first;
+    uint64_t last;
 
     if (strncasecmp(v, "bytes=", 6) != 0) {
         return false;
@@ -950,7 +957,8 @@ static void handle_get(struct s3_target *t, const struct s3_http_request *req,
         return;
     }
 
-    size_t off = 0, len = o->len;
+    size_t off = 0;
+    size_t len = o->len;
     bool ranged = false;
     const char *range = s3_http_header_get(req, "range");
     if (range != NULL) {
@@ -1264,7 +1272,8 @@ static void handle_complete(struct s3_target *t, const char *key,
     }
 
     uint8_t digest[16];
-    char hex[33], etag[S3_ETAG_MAX];
+    char hex[33];
+    char etag[S3_ETAG_MAX];
     md5_final(&outer, digest);
     md5_hex(digest, hex);
     snprintf(etag, sizeof(etag), "\"%s-%u\"", hex, u->nparts);
@@ -1385,7 +1394,7 @@ void s3_target_exec(struct s3_target *t, const struct s3_http_request *req,
     resp->keep_alive = req->keep_alive;
     s3_http_response_header(resp, "Server", "rocm-ernic/s3");
     s3_http_response_header(resp, "x-amz-request-id", "%016" PRIx64,
-                            (uint64_t)++t->stats.requests);
+                            ++t->stats.requests);
 
     route(t, req, dma, dma_ctx, resp);
 

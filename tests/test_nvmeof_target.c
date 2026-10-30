@@ -39,8 +39,8 @@
 #include "nvmeof/nvmeof_target_priv.h"
 
 #define HOST_BUF_SIZE (UINT64_C(256) * 1024)
-#define HOST_BASE     0x40000000ull
-#define HOST_RKEY     0x1234u
+#define HOST_BASE     UINT64_C(0x40000000)
+#define HOST_RKEY     0x1234U
 
 static int failures;
 
@@ -209,7 +209,7 @@ static void connect_capsule(struct capsule *c, struct host_mem *h, uint16_t qid,
     uint64_t addr = HOST_BASE;
 
     /* The CID is an opaque 16-bit tag, so wrapping it is harmless. */
-    cap_init(c, NVME_ADMIN_FABRICS, (uint16_t)(0x10u + qid));
+    cap_init(c, NVME_ADMIN_FABRICS, (uint16_t)(0x10U + qid));
     c->b[NVMEOF_SQE_FCTYPE_OFF] = NVMEOF_FCTYPE_CONNECT;
     ernic_put_le16(c->b + NVMEOF_CONNECT_QID_OFF, qid);
     ernic_put_le16(c->b + NVMEOF_CONNECT_SQSIZE_OFF, sqsize);
@@ -316,7 +316,7 @@ static uint16_t get_log(struct nvmeof_queue *q, struct host_mem *h,
 
     cap_init(&c, NVME_ADMIN_GET_LOG_PAGE, cid);
     /* NUMDL is cdw10[31:16], NUMDU cdw11[15:0]. */
-    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, lid | ((numd & 0xffffu) << 16));
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, lid | ((numd & 0xffffU) << 16));
     ernic_put_le32(c.b + NVME_SQE_CDW11_OFF, numd >> 16);
     ernic_put_le64(c.b + NVME_SQE_CDW12_OFF, off);
     cap_keyed_sgl(&c, HOST_BASE, len, HOST_RKEY);
@@ -405,20 +405,26 @@ static void test_status_encoding(void)
 {
     uint16_t s = nvme_status(NVME_SCT_GENERIC, NVME_SC_LBA_RANGE, 1);
 
-    if ((s & 0x8000u) == 0)
+    if ((s & 0x8000U) == 0) {
         fail("status dnr", "DNR not set in %#x", s);
-    if (s & 0x4000u)
+    }
+    if (s & 0x4000U) {
         fail("status more", "More bit set in %#x", s);
-    if (((s >> 1) & 0xffu) != NVME_SC_LBA_RANGE)
-        fail("status sc", "SC is %#x in %#x", (s >> 1) & 0xffu, s);
-    if (((s >> 9) & 0x7u) != NVME_SCT_GENERIC)
-        fail("status sct", "SCT is %#x in %#x", (s >> 9) & 0x7u, s);
-    if (s & 1u)
+    }
+    if (((s >> 1) & 0xffU) != NVME_SC_LBA_RANGE) {
+        fail("status sc", "SC is %#x in %#x", (s >> 1) & 0xffU, s);
+    }
+    if (((s >> 9) & 0x7U) != NVME_SCT_GENERIC) {
+        fail("status sct", "SCT is %#x in %#x", (s >> 9) & 0x7U, s);
+    }
+    if (s & 1U) {
         fail("status phase", "phase bit set in %#x", s);
+    }
 
     uint16_t n = nvme_status(NVME_SCT_GENERIC, NVME_SC_LBA_RANGE, 0);
-    if (n & 0xc000u)
+    if (n & 0xc000U) {
         fail("status nodnr", "DNR or More set without dnr in %#x", n);
+    }
 }
 
 static void test_config(void)
@@ -447,7 +453,7 @@ static void test_config(void)
     check("config-defaults", strcmp(cfg.subnqn, "nvmet-test") == 0,
           "default subnqn is not nvmet-test");
     check("config-defaults", cfg.trsvcid == 4420, "default port is not 4420");
-    check("config-defaults", cfg.size == (64u << 20),
+    check("config-defaults", cfg.size == (64U << 20),
           "default size is not 64M");
     check("config-defaults", cfg.block_size == 512, "default bs is not 512");
     check("config-defaults", !cfg.size_set, "the default size counts as set");
@@ -604,7 +610,7 @@ static void test_handshake(void)
     check("id-ctrl", strcmp((char *)h->buf + 768, "nvmet-test") == 0,
           "Identify Controller subnqn mismatch");
     uint32_t sgls = ernic_get_le32(h->buf + 536);
-    check("id-ctrl", (sgls & (1u << 2)) != 0,
+    check("id-ctrl", (sgls & (1U << 2)) != 0,
           "keyed SGL support not advertised (nvme-rdma requires it)");
     check("id-ctrl", ernic_get_le32(h->buf + 1792) == 4,
           "ioccsz is not 4; the host would send in-capsule write data");
@@ -781,7 +787,7 @@ static void test_io(void)
     uint64_t data_addr = HOST_BASE + 8192;
     uint8_t *src = h->buf + 8192;
     for (uint32_t i = 0; i < nbytes; i++) {
-        src[i] = (uint8_t)(i * 7 + 3);
+        src[i] = (uint8_t)((i * 7) + 3);
     }
 
     cap_init(&c, NVME_CMD_WRITE, 20);
@@ -878,7 +884,7 @@ static void test_io(void)
     /* Starting beyond the last block. */
     cap_init(&c, NVME_CMD_READ, 28);
     ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
-    ernic_put_le64(c.b + NVME_SQE_CDW10_OFF, 1ull << 40);
+    ernic_put_le64(c.b + NVME_SQE_CDW10_OFF, UINT64_C(1) << 40);
     cap_keyed_sgl(&c, back_addr, 512, HOST_RKEY);
     nvmeof_queue_exec(ioq, c.b, c.len, &host_ops, h, rsp);
     check("io-lba-range", rsp_sc(rsp) == NVME_SC_LBA_RANGE,
@@ -1147,7 +1153,7 @@ static void test_discovery(void)
 /* ------------------------------------------------------------------ */
 
 #define FIXTURE_HOSTNQN "nqn.2014-08.org.nvmexpress:uuid:fixture"
-#define FIXTURE_KATO    15000u /* ms; not the host's 5 s default */
+#define FIXTURE_KATO    15000U /* ms; not the host's 5 s default */
 
 /* A target on "size=1M,queues=4" and its admin queue, on handle 1. */
 struct admin_fixture {
@@ -1323,7 +1329,7 @@ static void test_properties(void)
         nvme_status(NVME_SCT_GENERIC, NVME_SC_INVALID_FIELD, 1);
     const uint16_t bad_opcode =
         nvme_status(NVME_SCT_GENERIC, NVME_SC_INVALID_OPCODE, 1);
-    const uint32_t cc_en = NVME_CC_ENABLE | (6u << 16) | (4u << 20);
+    const uint32_t cc_en = NVME_CC_ENABLE | (6U << 16) | (4U << 20);
     uint64_t v;
 
     /* A new association starts with the controller disabled. */
@@ -1369,7 +1375,7 @@ static void test_properties(void)
           "a refused Property Set changed CC");
 
     /* Offsets that aren't a property the controller implements. */
-    const uint32_t unknown[] = {NVMEOF_PROP_NSSR, 0x04, 0x18, 0xffffffffu};
+    const uint32_t unknown[] = {NVMEOF_PROP_NSSR, 0x04, 0x18, 0xffffffffU};
     for (size_t i = 0; i < sizeof(unknown) / sizeof(unknown[0]); i++) {
         uint16_t st = prop_get(f.aq, f.h, 11, unknown[i], 0, &v);
         if (st != bad_field) {
@@ -1448,34 +1454,34 @@ static void test_features(void)
     check("get-num-queues",
           features(f.aq, f.h, NVME_ADMIN_GET_FEATURES, 1, NVME_FEAT_NUM_QUEUES,
                    0, &r) == 0 &&
-              r == (3u | (3u << 16)),
+              r == (3U | (3U << 16)),
           "Number of Queues before Set Features is not the configured 4");
 
     /* A request within the limit is granted as asked, each count its own. */
     check("set-num-queues-fit",
           features(f.aq, f.h, NVME_ADMIN_SET_FEATURES, 2, NVME_FEAT_NUM_QUEUES,
-                   1u | (2u << 16), &r) == 0 &&
-              r == (1u | (2u << 16)),
+                   1U | (2U << 16), &r) == 0 &&
+              r == (1U | (2U << 16)),
           "a Number of Queues within the limit was not granted as asked");
 
     /* Without separate SQs and CQs, the smaller count is what's usable. */
     check("get-num-queues",
           features(f.aq, f.h, NVME_ADMIN_GET_FEATURES, 3, NVME_FEAT_NUM_QUEUES,
                    0, &r) == 0 &&
-              r == (1u | (1u << 16)),
+              r == (1U | (1U << 16)),
           "Get Features did not report the smaller of the granted counts");
 
     /* The most a host may ask for is clamped.  That's 0xfffe, 65535
      * queues: 0xffff is reserved. */
     check("set-num-queues-clamp",
           features(f.aq, f.h, NVME_ADMIN_SET_FEATURES, 4, NVME_FEAT_NUM_QUEUES,
-                   0xfffefffeu, &r) == 0 &&
-              r == (3u | (3u << 16)),
+                   0xfffefffeU, &r) == 0 &&
+              r == (3U | (3U << 16)),
           "Number of Queues was not clamped to the configured 4");
     check("set-num-queues-clamp",
           features(f.aq, f.h, NVME_ADMIN_GET_FEATURES, 5, NVME_FEAT_NUM_QUEUES,
                    0, &r) == 0 &&
-              r == (3u | (3u << 16)),
+              r == (3U | (3U << 16)),
           "Get Features did not report the clamped count");
 
     /* Keep Alive Timer: Connect's KATO, until Set Features changes it. */
@@ -1582,22 +1588,22 @@ static void test_log_page(void)
      * 1 MiB.  NUMD can ask for 16 GiB and a keyed SGL can name 16 MiB, so
      * the cap only applies when both are past it.
      */
-    const uint32_t mib_numd = (1u << 20) / 4 - 1;
+    const uint32_t mib_numd = ((1U << 20) / 4) - 1;
     check("log-size-cap",
           get_log(f.aq, f.h, 5, NVME_LOG_ERROR, UINT32_MAX, 0, 4096) == 0,
           "a NUMD larger than the SGL was not cut to the SGL");
     check("log-size-cap",
-          get_log(f.aq, f.h, 6, NVME_LOG_ERROR, mib_numd, 0, 1u << 20) == 0,
+          get_log(f.aq, f.h, 6, NVME_LOG_ERROR, mib_numd, 0, 1U << 20) == 0,
           "a 1 MiB Get Log Page was refused");
     check("log-size-cap",
-          get_log(f.aq, f.h, 7, NVME_LOG_ERROR, UINT32_MAX, 0, 1u << 20) == 0,
+          get_log(f.aq, f.h, 7, NVME_LOG_ERROR, UINT32_MAX, 0, 1U << 20) == 0,
           "a NUMD past 1 MiB was not cut to a 1 MiB SGL");
     check("log-size-cap",
           get_log(f.aq, f.h, 8, NVME_LOG_ERROR, mib_numd + 1, 0,
-                  (1u << 20) + 4) == bad_field,
+                  (1U << 20) + 4) == bad_field,
           "a Get Log Page of 1 MiB + 4 was accepted");
     check("log-size-cap",
-          get_log(f.aq, f.h, 9, NVME_LOG_ERROR, UINT32_MAX, 0, 0xfffffcu) ==
+          get_log(f.aq, f.h, 9, NVME_LOG_ERROR, UINT32_MAX, 0, 0xfffffcU) ==
               bad_field,
           "a Get Log Page of 16 MiB was accepted");
 
@@ -1776,7 +1782,7 @@ static void test_file_backing(void)
         struct nvmeof_queue *ioq = nvmeof_target_open_queue(t, 2);
         do_connect(ioq, h, 1, 31, "nvmet-test", "nqn.host", rsp);
 
-        check("file-backing", nvmeof_target_config(t)->size == (1u << 20),
+        check("file-backing", nvmeof_target_config(t)->size == (1U << 20),
               "reopening an image without size= did not keep its size");
         check("file-backing", read_one_block(ioq, h, 3) == 0,
               "read back failed");
@@ -1944,14 +1950,14 @@ static void test_sync(void)
               "Flush failed");
         check("sync-flush",
               sync_log.calls == 1 && sync_log.flags == MS_SYNC &&
-                  sync_log.len == (1u << 20),
+                  sync_log.len == (1U << 20),
               "Flush did not write the namespace back synchronously");
         uint8_t *base = sync_log.addr;
 
         /* FUA writes back the pages the write touched.  Block 9 doesn't
          * start a page, so the range has to be rounded down to one. */
         const uint64_t off = UINT64_C(9) * 512;
-        const uint64_t start = off - off % (uint64_t)page;
+        const uint64_t start = off - (off % (uint64_t)page);
         for (size_t i = 0; i < sizeof(fua_ops); i++) {
             sync_reset(false);
             check("sync-fua", io_one(ioq, h, fua_ops[i], 9, NVME_RW_FUA) == 0,
@@ -1990,7 +1996,7 @@ static void test_sync(void)
          * repeating the notification don't.
          */
         struct nvmeof_queue *aq = nvmeof_target_find_queue(t, 1);
-        const uint32_t cc = (6u << 16) | (4u << 20);
+        const uint32_t cc = (6U << 16) | (4U << 20);
         const uint32_t ens[] = {NVME_CC_ENABLE, 0};
         uint32_t csts;
         for (size_t i = 0; i < sizeof(ens) / sizeof(ens[0]); i++) {
@@ -2006,7 +2012,7 @@ static void test_sync(void)
                   "Property Set CC.SHN failed");
             check("sync-shutdown",
                   sync_log.calls == 1 && sync_log.flags == MS_SYNC &&
-                      sync_log.addr == base && sync_log.len == (1u << 20),
+                      sync_log.addr == base && sync_log.len == (1U << 20),
                   "a shutdown did not write the namespace back once, "
                   "synchronously");
             check("sync-shutdown",
@@ -2174,7 +2180,7 @@ static void test_image_size(void)
         fail("image-no-room", "cannot set up %s", path);
     } else {
         struct rlimit lim = old_lim;
-        lim.rlim_cur = 1u << 20;
+        lim.rlim_cur = 1U << 20;
         void (*old_handler)(int) = signal(SIGXFSZ, SIG_IGN);
         if (old_handler == SIG_ERR || setrlimit(RLIMIT_FSIZE, &lim) != 0) {
             fail("image-no-room", "cannot limit the file size");

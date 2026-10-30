@@ -43,20 +43,22 @@ static void eth_p4_emit(struct ionic_eth_p4 *ep, const struct p4_result *res)
 {
     int ret;
 
-    if (res->egress_port == P4_PORT_HOST)
+    if (res->egress_port == P4_PORT_HOST) {
         ret = ionic_eth_emu_queue_rx_frame(ep->emu, ep->out, res->len);
-    else
+    } else {
         ret = ionic_eth_emu_send_to_net(ep->emu, ep->out, res->len);
+    }
 
     if (ret != 0) {
         ep->stats.egress_errors++;
         return;
     }
 
-    if (res->egress_port == P4_PORT_HOST)
+    if (res->egress_port == P4_PORT_HOST) {
         ep->stats.to_guest++;
-    else
+    } else {
         ep->stats.to_net++;
+    }
 }
 
 /*
@@ -71,11 +73,13 @@ static bool eth_p4_frame(struct ionic_eth_p4 *ep, uint32_t in_port,
     struct p4_result res;
 
     if (p4_engine_process(ep->eng, in_port, frame, len, ep->out,
-                          sizeof(ep->out), &res) != 0)
+                          sizeof(ep->out), &res) != 0) {
         return true;
+    }
 
-    if (res.verdict == P4_VERDICT_FORWARD && res.len > 0)
+    if (res.verdict == P4_VERDICT_FORWARD && res.len > 0) {
         eth_p4_emit(ep, &res);
+    }
 
     return true;
 }
@@ -101,17 +105,20 @@ struct ionic_eth_p4 *ionic_eth_p4_attach(
     struct ionic_eth_emu *emu, struct p4_engine *eng,
     const struct ionic_eth_p4_upstream *upstream)
 {
-    if (!emu || !eng)
+    if (!emu || !eng) {
         return NULL;
+    }
 
     struct ionic_eth_p4 *ep = calloc(1, sizeof(*ep));
-    if (!ep)
+    if (!ep) {
         return NULL;
+    }
 
     ep->emu = emu;
     ep->eng = eng;
-    if (upstream)
+    if (upstream) {
         ep->upstream = *upstream;
+    }
 
     ionic_eth_emu_register_tx_filter(emu, eth_p4_tx_filter, ep);
     ionic_eth_emu_register_rx_filter(emu, eth_p4_rx_filter, ep);
@@ -121,8 +128,9 @@ struct ionic_eth_p4 *ionic_eth_p4_attach(
 
 void ionic_eth_p4_detach(struct ionic_eth_p4 *ep)
 {
-    if (!ep)
+    if (!ep) {
         return;
+    }
 
     ionic_eth_emu_register_tx_filter(ep->emu, ep->upstream.fn,
                                      ep->upstream.ctx);
@@ -134,9 +142,11 @@ void ionic_eth_p4_detach(struct ionic_eth_p4 *ep)
 void ionic_eth_p4_get_stats(const struct ionic_eth_p4 *ep,
                             struct ionic_eth_p4_stats *out)
 {
-    if (!out)
+    if (!out) {
         return;
+    }
     memset(out, 0, sizeof(*out));
-    if (ep)
+    if (ep) {
         *out = ep->stats;
+    }
 }

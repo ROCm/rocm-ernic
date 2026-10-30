@@ -52,10 +52,12 @@ static int g_irq_errno;
 int vfu_irq_trigger(vfu_ctx_t *vfu_ctx, uint32_t subindex)
 {
     (void)vfu_ctx;
-    if (g_irq_errno)
+    if (g_irq_errno) {
         return g_irq_errno;
-    if (subindex < IONIC_MSIX_MAX_VECTORS)
+    }
+    if (subindex < IONIC_MSIX_MAX_VECTORS) {
         g_irqs[subindex]++;
+    }
     return 0;
 }
 
@@ -205,7 +207,7 @@ static void intr_write(struct ionic_eth_emu *emu, int vec, unsigned reg_off,
                        uint32_t val)
 {
     loff_t off = (loff_t)IONIC_BAR0_INTR_CTRL_OFFSET +
-                 (loff_t)vec * INTR_REG_STRIDE + (loff_t)reg_off;
+                 ((loff_t)vec * INTR_REG_STRIDE) + (loff_t)reg_off;
     ssize_t ret = ionic_eth_emu_bar0_access(emu, (char *)&val, 4, off, true);
 
     CHECK(ret == 4, "bar0 write of vec %d reg %u returned %zd", vec, reg_off,
@@ -309,8 +311,9 @@ static void test_repeated_assertions_collapse(void)
     struct ionic_eth_emu *emu = emu_new();
     const int vec = 5;
 
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < 4; i++) {
         CHECK(ionic_eth_emu_trigger_irq(emu, vec) == 0, "trigger %d failed", i);
+    }
     CHECK(emu->intr_pending[vec] == 1, "pending should be a level");
 
     intr_write(emu, vec, INTR_MASK_OFF, 0);
@@ -344,9 +347,10 @@ static void test_vector_bounds(void)
     CHECK(ionic_eth_emu_trigger_irq(emu, IONIC_MSIX_MAX_VECTORS) == -EINVAL,
           "vec %d not rejected", IONIC_MSIX_MAX_VECTORS);
 
-    for (int i = 0; i < IONIC_MSIX_MAX_VECTORS; i++)
+    for (int i = 0; i < IONIC_MSIX_MAX_VECTORS; i++) {
         CHECK(emu->intr_pending[i] == 0, "vector %d latched by a bad trigger",
               i);
+    }
 
     ionic_eth_emu_destroy(emu);
 }

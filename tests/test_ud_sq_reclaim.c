@@ -44,17 +44,19 @@
 #define SQ_DEPTH     256 /* UCX_UD_VERBS_TX_QUEUE_LEN */
 #define RQ_DEPTH     128
 #define SIGNAL_EVERY 64
-#define QKEY         0x11111111u
+#define QKEY         0x11111111U
 #define ITERS        1000
 #define POLL_SECONDS 10
 
 static int poll_one(struct ibv_cq *cq, struct ibv_wc *wc, int required)
 {
-    uint64_t deadline_ms = ernic_monotonic_ms() + POLL_SECONDS * UINT64_C(1000);
+    uint64_t deadline_ms =
+        ernic_monotonic_ms() + (POLL_SECONDS * UINT64_C(1000));
     while (ernic_monotonic_ms() < deadline_ms) {
         int n = ibv_poll_cq(cq, 1, wc);
-        if (n < 0)
+        if (n < 0) {
             return -1;
+        }
         if (n > 0) {
             if (wc->status != IBV_WC_SUCCESS) {
                 fprintf(stderr, "completion failed: %s\n",
@@ -63,8 +65,9 @@ static int poll_one(struct ibv_cq *cq, struct ibv_wc *wc, int required)
             }
             return 1;
         }
-        if (!required)
+        if (!required) {
             return 0;
+        }
     }
     return required ? -1 : 0;
 }
@@ -75,11 +78,14 @@ int main(void)
     struct ibv_device *ibdev;
     struct ibv_context *ctx = NULL;
     struct ibv_pd *pd = NULL;
-    struct ibv_cq *scq = NULL, *rcq = NULL;
-    struct ibv_qp *sqp = NULL, *rqp = NULL;
+    struct ibv_cq *scq = NULL;
+    struct ibv_cq *rcq = NULL;
+    struct ibv_qp *sqp = NULL;
+    struct ibv_qp *rqp = NULL;
     struct ibv_mr *mr = NULL;
     struct ibv_ah *ah = NULL;
-    struct ibv_qp_init_attr sia, ria;
+    struct ibv_qp_init_attr sia;
+    struct ibv_qp_init_attr ria;
     struct ibv_qp *qps[2];
     struct ibv_ah_attr aa;
     unsigned char *buf = NULL;
@@ -87,16 +93,20 @@ int main(void)
     enum ernic_device_result lookup;
     const char *se;
     int signal_every;
-    int posted, signalled_done, recv_reaped;
-    int ndev = 0, rc = 1;
+    int posted;
+    int signalled_done;
+    int recv_reaped;
+    int ndev = 0;
+    int rc = 1;
 
     dev_list = ibv_get_device_list(&ndev);
     if (!dev_list || ndev < 1) {
         lookup = ernic_requested_device() ? ERNIC_DEVICE_MISMATCH
                                           : ERNIC_DEVICE_ABSENT;
         ernic_report_no_device(lookup);
-        if (dev_list)
+        if (dev_list) {
             ibv_free_device_list(dev_list);
+        }
         return lookup == ERNIC_DEVICE_MISMATCH ? 1 : 77;
     }
     ibdev = ernic_find_device(dev_list, ndev, &lookup);
@@ -230,8 +240,9 @@ int main(void)
                 se);
         goto out;
     }
-    if (signal_every < 1)
+    if (signal_every < 1) {
         signal_every = 1;
+    }
     printf("signalling every %d sends\n", signal_every);
 
     posted = 0;
@@ -312,24 +323,33 @@ int main(void)
      * address handle. Releasing those first left live WQEs pointing at
      * them. */
 out:
-    if (sqp)
+    if (sqp) {
         ibv_destroy_qp(sqp);
-    if (rqp)
+    }
+    if (rqp) {
         ibv_destroy_qp(rqp);
-    if (ah)
+    }
+    if (ah) {
         ibv_destroy_ah(ah);
-    if (mr)
+    }
+    if (mr) {
         ibv_dereg_mr(mr);
+    }
     free(buf);
-    if (scq)
+    if (scq) {
         ibv_destroy_cq(scq);
-    if (rcq)
+    }
+    if (rcq) {
         ibv_destroy_cq(rcq);
-    if (pd)
+    }
+    if (pd) {
         ibv_dealloc_pd(pd);
-    if (ctx)
+    }
+    if (ctx) {
         ibv_close_device(ctx);
-    if (dev_list)
+    }
+    if (dev_list) {
         ibv_free_device_list(dev_list);
+    }
     return rc;
 }

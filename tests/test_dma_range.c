@@ -31,8 +31,9 @@ static int failures;
 static void check(bool got, uint64_t gpa, uint64_t len, bool want,
                   const char *what)
 {
-    if (got == want)
+    if (got == want) {
         return;
+    }
     printf("  FAIL: %s: gpa=%#" PRIx64 " len=%#" PRIx64 " gave %s, wanted %s\n",
            what, gpa, len, got ? "ok" : "refused", want ? "ok" : "refused");
     failures++;

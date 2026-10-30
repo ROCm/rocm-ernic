@@ -37,12 +37,12 @@
 #include <stdint.h>
 
 /* struct ionic_lif_info: config[256], status[64], then the stats. */
-#define IONIC_LIF_INFO_STATS_OFF 320u
+#define IONIC_LIF_INFO_STATS_OFF 320U
 
 /* struct ionic_lif_stats is 128 __le64 (1024 bytes). */
-#define IONIC_LIF_STATS_QWORDS 128u
-#define IONIC_LIF_STATS_BYTES  1024u
-_Static_assert(IONIC_LIF_STATS_BYTES == IONIC_LIF_STATS_QWORDS * 8u,
+#define IONIC_LIF_STATS_QWORDS 128U
+#define IONIC_LIF_STATS_BYTES  1024U
+_Static_assert(IONIC_LIF_STATS_BYTES == IONIC_LIF_STATS_QWORDS * 8U,
                "struct ionic_lif_stats is 128 qwords");
 
 /* Qword index of each named counter in struct ionic_lif_stats. */
@@ -135,12 +135,12 @@ enum ionic_lif_stat {
 };
 
 /* struct ionic_port_info: config[256], status[320], then the stats. */
-#define IONIC_PORT_INFO_STATS_OFF 576u
+#define IONIC_PORT_INFO_STATS_OFF 576U
 
 /* struct ionic_port_stats is 89 __le64 (712 bytes), none reserved. */
-#define IONIC_PORT_STATS_QWORDS 89u
-#define IONIC_PORT_STATS_BYTES  712u
-_Static_assert(IONIC_PORT_STATS_BYTES == IONIC_PORT_STATS_QWORDS * 8u,
+#define IONIC_PORT_STATS_QWORDS 89U
+#define IONIC_PORT_STATS_BYTES  712U
+_Static_assert(IONIC_PORT_STATS_BYTES == IONIC_PORT_STATS_QWORDS * 8U,
                "struct ionic_port_stats is 89 qwords");
 
 /*
@@ -254,8 +254,8 @@ _Static_assert(IONIC_PORT_STAT_COUNT == IONIC_PORT_STATS_QWORDS,
  * wire, and counts every frame with its 4-byte FCS, which the emulator's
  * frames do not carry.
  */
-#define IONIC_EMU_MIN_FRAME 60u
-#define IONIC_EMU_FCS_LEN   4u
+#define IONIC_EMU_MIN_FRAME 60U
+#define IONIC_EMU_FCS_LEN   4U
 
 /* Destination MAC class: the group bit, with all-ones as broadcast. */
 enum ionic_emu_mac_class {

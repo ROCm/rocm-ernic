@@ -54,8 +54,9 @@ static bool same_fault(const struct ionic_fault *a, const struct ionic_fault *b)
 {
     if (a->site != b->site || a->kind != b->kind || a->n != b->n ||
         a->m != b->m || a->effect != b->effect || a->status != b->status ||
-        a->seq_len != b->seq_len)
+        a->seq_len != b->seq_len) {
         return false;
+    }
     return a->seq_len == 0 || memcmp(a->seq, b->seq, a->seq_len) == 0;
 }
 
@@ -63,28 +64,36 @@ static bool same_fault(const struct ionic_fault *a, const struct ionic_fault *b)
 static bool effect_valid(enum ionic_fault_site site,
                          enum ionic_fault_effect effect)
 {
-    if (site == IONIC_FAULT_SITE_STATS_VALS)
+    if (site == IONIC_FAULT_SITE_STATS_VALS) {
         return effect == IONIC_FAULT_EFFECT_FAIL;
-    if (site == IONIC_FAULT_SITE_ETH_RX)
+    }
+    if (site == IONIC_FAULT_SITE_ETH_RX) {
         return effect == IONIC_FAULT_EFFECT_DROP ||
                effect == IONIC_FAULT_EFFECT_NOBUF;
-    if (site == IONIC_FAULT_SITE_ETH_TX)
+    }
+    if (site == IONIC_FAULT_SITE_ETH_TX) {
         return effect == IONIC_FAULT_EFFECT_DROP;
+    }
     return false;
 }
 
 static const char *check_fields(const struct ionic_fault *f)
 {
-    if ((unsigned int)f->site >= IONIC_FAULT_SITE_COUNT)
+    if ((unsigned int)f->site >= IONIC_FAULT_SITE_COUNT) {
         return "site out of range";
-    if (!effect_valid(f->site, f->effect))
+    }
+    if (!effect_valid(f->site, f->effect)) {
         return "effect not valid for the site";
-    if (f->effect == IONIC_FAULT_EFFECT_FAIL && f->status == 0)
+    }
+    if (f->effect == IONIC_FAULT_EFFECT_FAIL && f->status == 0) {
         return "status 0 is success, not a fault";
-    if (f->effect != IONIC_FAULT_EFFECT_FAIL && f->status != 0)
+    }
+    if (f->effect != IONIC_FAULT_EFFECT_FAIL && f->status != 0) {
         return "a frame effect carries a status";
-    if (f->eligible != 0 || f->fired != 0)
+    }
+    if (f->eligible != 0 || f->fired != 0) {
         return "a fresh fault has counted events";
+    }
     switch (f->kind) {
     case IONIC_FAULT_PAT_EVERY:
         return f->n >= 1 && f->seq == NULL ? NULL : "bad every";
@@ -94,11 +103,14 @@ static const char *check_fields(const struct ionic_fault *f)
         return f->n >= 1 && f->n <= f->m && f->seq == NULL ? NULL : "bad burst";
     case IONIC_FAULT_PAT_SEQUENCE:
         if (f->seq == NULL || f->seq_len == 0 ||
-            f->seq_len > IONIC_FAULT_SEQ_MAX)
+            f->seq_len > IONIC_FAULT_SEQ_MAX) {
             return "bad sequence length";
-        for (uint32_t i = 0; i < f->seq_len; i++)
-            if (f->seq[i] > 1)
+        }
+        for (uint32_t i = 0; i < f->seq_len; i++) {
+            if (f->seq[i] > 1) {
                 return "a sequence byte is not 0 or 1";
+            }
+        }
         return NULL;
     default:
         return "pattern kind out of range";
@@ -111,8 +123,9 @@ static char *format_alloc(const struct ionic_fault *f)
     int n = ionic_fault_format(f, NULL, 0);
     char *buf;
 
-    if (n < 0)
+    if (n < 0) {
         return NULL;
+    }
     buf = malloc((size_t)n + 1);
     if (buf && ionic_fault_format(f, buf, (size_t)n + 1) != n) {
         free(buf);
@@ -129,18 +142,21 @@ static const char *check_roundtrip(const struct ionic_fault *f)
     char *again;
     const char *why = NULL;
 
-    if (!text)
+    if (!text) {
         return "canonical form could not be formatted";
+    }
     if (ionic_fault_parse(text, &g, err, sizeof(err)) != 0) {
         fprintf(stderr, "fuzz_fault_parse: '%.200s': %s\n", text, err);
         free(text);
         return "canonical form rejected";
     }
-    if (!same_fault(f, &g))
+    if (!same_fault(f, &g)) {
         why = "canonical form parses to a different fault";
+    }
     again = why ? NULL : format_alloc(&g);
-    if (!why && (!again || strcmp(text, again) != 0))
+    if (!why && (!again || strcmp(text, again) != 0)) {
         why = "canonical form is not a fixed point";
+    }
     free(again);
     free(text);
     ionic_fault_clear(&g);
@@ -152,10 +168,12 @@ static const char *check_events(struct ionic_fault *f)
     uint64_t fires = 0;
 
     for (uint64_t k = 1; k <= RUN_EVENTS; k++) {
-        if (ionic_fault_event(f))
+        if (ionic_fault_event(f)) {
             fires++;
-        if (f->eligible != k)
+        }
+        if (f->eligible != k) {
             return "eligible does not count every event";
+        }
     }
     return f->fired == fires ? NULL : "fired does not count the fires";
 }
@@ -173,17 +191,21 @@ static const char *run_spec(const char *spec, bool *accepted)
     memset(err, 0, sizeof(err));
     *accepted = ionic_fault_parse(spec, &f, err, sizeof(err)) == 0;
     if (!*accepted) {
-        if (err[0] == '\0' || memchr(err, '\0', sizeof(err)) == NULL)
+        if (err[0] == '\0' || memchr(err, '\0', sizeof(err)) == NULL) {
             return "a rejected spec has no message";
-        if (f.seq != NULL || f.seq_len != 0)
+        }
+        if (f.seq != NULL || f.seq_len != 0) {
             return "a rejected spec owns a sequence";
+        }
         return NULL;
     }
     why = check_fields(&f);
-    if (!why)
+    if (!why) {
         why = check_roundtrip(&f);
-    if (!why)
+    }
+    if (!why) {
         why = check_events(&f);
+    }
     ionic_fault_clear(&f);
     return why;
 }
@@ -194,8 +216,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     const char *why;
     bool accepted;
 
-    if (!spec)
+    if (!spec) {
         return 0;
+    }
     memcpy(spec, data, size);
     spec[size] = '\0';
     why = run_spec(spec, &accepted);
@@ -303,10 +326,12 @@ static bool emit_seed(size_t i, const uint8_t *buf, size_t len)
         return false;
     }
     ok = fwrite(buf, 1, len, f) == len;
-    if (fclose(f) != 0)
+    if (fclose(f) != 0) {
         ok = false;
-    if (!ok)
+    }
+    if (!ok) {
         fprintf(stderr, "fuzz_fault_parse: cannot write %s\n", path);
+    }
     return ok;
 }
 
@@ -335,19 +360,22 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
             failures++;
         }
         if (emit_seeds &&
-            !emit_seed(i, (const uint8_t *)s->spec, strlen(s->spec)))
+            !emit_seed(i, (const uint8_t *)s->spec, strlen(s->spec))) {
             unwritten++;
+        }
     }
     fflush(stdout);
     if (failures || unwritten) {
         /* libFuzzer ignores this function's return value, so a broken
          * seed, or a corpus that could not be written, has to stop the run
          * itself.  abort() rather than exit(), which isn't thread safe. */
-        if (failures)
+        if (failures) {
             fprintf(stderr, "fuzz_fault_parse: %d seed(s) failed\n", failures);
-        if (unwritten)
+        }
+        if (unwritten) {
             fprintf(stderr, "fuzz_fault_parse: %d seed(s) not written\n",
                     unwritten);
+        }
         abort();
     }
     return 0;

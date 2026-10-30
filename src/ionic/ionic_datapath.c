@@ -89,15 +89,15 @@ static unsigned int ionic_op_to_stat_wr(uint8_t op)
 /* The SRQ stride floor exists to guarantee a WQE header is actually present
  * before ionic_dp_deliver_recv() reads one. Tie the two together rather than
  * leaving a 5 and a 32 to drift apart in separate headers. */
-_Static_assert((1u << IONIC_SRQ_MIN_STRIDE_LOG2) >= WQE_PLD_OFF,
+_Static_assert((1U << IONIC_SRQ_MIN_STRIDE_LOG2) >= WQE_PLD_OFF,
                "SRQ stride floor must cover the WQE header");
-_Static_assert((1u << IONIC_WQE_MIN_STRIDE_LOG2) >= WQE_PLD_OFF,
+_Static_assert((1U << IONIC_WQE_MIN_STRIDE_LOG2) >= WQE_PLD_OFF,
                "WQE stride floor must cover the WQE header");
 /* ionic_dp_deliver_recv() reads an SRQ's WQEs into a buffer sized for a
  * QP's. */
 _Static_assert(IONIC_SRQ_MAX_STRIDE_LOG2 <= IONIC_WQE_MAX_STRIDE_LOG2,
                "SRQ stride ceiling must fit the receive WQE buffer");
-_Static_assert((1u << IONIC_CQ_MIN_STRIDE_LOG2) == CQE_SIZE,
+_Static_assert((1U << IONIC_CQ_MIN_STRIDE_LOG2) == CQE_SIZE,
                "CQ stride floor must be one CQE");
 
 /*
@@ -138,10 +138,12 @@ void ionic_dp_rdma_bytes(const struct ionic_datapath *dp, uint32_t qp_id,
                          unsigned int dirs)
 {
     ernic_stats_rdma_bytes(dp->stats, qp_id, bytes, op);
-    if (dirs & DP_RDMA_TX)
+    if (dirs & DP_RDMA_TX) {
         ionic_eth_emu_count_rdma(dp->eth_emu, bytes, true);
-    if (dirs & DP_RDMA_RX)
+    }
+    if (dirs & DP_RDMA_RX) {
         ionic_eth_emu_count_rdma(dp->eth_emu, bytes, false);
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -168,9 +170,10 @@ uint64_t ionic_dp_ring_span_bytes(uint8_t depth_log2, uint8_t stride_log2)
 {
     unsigned total = (unsigned)depth_log2 + (unsigned)stride_log2;
 
-    if (total >= 64)
+    if (total >= 64) {
         return 0;
-    return 1ull << total;
+    }
+    return UINT64_C(1) << total;
 }
 
 /*
@@ -198,19 +201,21 @@ int ionic_dp_buf_init(const struct ionic_datapath *dp, struct dp_buf *b,
     uint32_t map_count = desc->map_count;
 
     ionic_dp_buf_release(b);
-    if (desc->page_size_log2 > 30)
+    if (desc->page_size_log2 > 30) {
         return -EINVAL;
+    }
     b->page_size_log2 = desc->page_size_log2 ? desc->page_size_log2 : 12;
 
-    uint64_t page_size = 1ull << b->page_size_log2;
+    uint64_t page_size = UINT64_C(1) << b->page_size_log2;
     /* The pages @span covers, rounded up, and one more, as above. Rounding
      * up by adding page_size - 1 first wrapped for a span within a page of
      * 2^64, and allowed one page however many the region needed. */
     uint64_t max_pages = (span >> b->page_size_log2) +
-                         ((span & (page_size - 1)) != 0 ? 1u : 0u) + 1;
+                         ((span & (page_size - 1)) != 0 ? 1U : 0U) + 1;
 
-    if (max_pages > ERNIC_MAX_PAGE_TABLE_ENTRIES)
+    if (max_pages > ERNIC_MAX_PAGE_TABLE_ENTRIES) {
         max_pages = ERNIC_MAX_PAGE_TABLE_ENTRIES;
+    }
     if (span == 0 || map_count > max_pages) {
         vfu_log(dp->vfu_ctx, LOG_ERR,
                 "ionic_datapath: page table of %" PRIu32
@@ -239,10 +244,11 @@ int ionic_dp_buf_init(const struct ionic_datapath *dp, struct dp_buf *b,
         return -EIO;
     }
     /* Each entry as the guest wrote it, le64, made a value in place */
-    for (uint32_t i = 0; i < map_count; i++)
+    for (uint32_t i = 0; i < map_count; i++) {
         b->pages[i] = ernic_get_le64((const uint8_t *)&b->pages[i]);
+    }
 
-    b->first_off = (uint32_t)(va & ((1ull << b->page_size_log2) - 1));
+    b->first_off = (uint32_t)(va & ((UINT64_C(1) << b->page_size_log2) - 1));
     return 0;
 }
 
@@ -271,7 +277,7 @@ static uint64_t buf_gpa(const struct dp_buf *b, uint64_t off, uint64_t *run)
     }
 
     uint64_t abs = off + b->first_off;
-    uint64_t psz = 1ull << b->page_size_log2;
+    uint64_t psz = UINT64_C(1) << b->page_size_log2;
     uint64_t idx = abs >> b->page_size_log2;
     uint64_t poff = abs & (psz - 1);
 
@@ -306,8 +312,9 @@ struct ionic_datapath *ionic_datapath_create(vfu_ctx_t *vfu_ctx,
                                              struct ionic_eth_emu *eth_emu)
 {
     struct ionic_datapath *dp = calloc(1, sizeof(*dp));
-    if (!dp)
+    if (!dp) {
         return NULL;
+    }
 
     dp->vfu_ctx = vfu_ctx;
     dp->eth_emu = eth_emu;
@@ -339,8 +346,9 @@ struct ionic_datapath *ionic_datapath_create(vfu_ctx_t *vfu_ctx,
     /* One init per slot, here rather than per registration: a reader that
      * samples srq->valid outside the lock must still find a lock it can
      * take, whatever the control path has done to that slot since. */
-    for (uint32_t i = 0; i < dp->srq_count; i++)
+    for (uint32_t i = 0; i < dp->srq_count; i++) {
         qemu_mutex_init(&dp->srq[i].lock);
+    }
     return dp;
 }
 
@@ -350,12 +358,14 @@ static bool dp_mesh_recv(void *opaque, uint32_t src_node, void *buf,
 void ionic_datapath_set_pvrdma(struct ionic_datapath *dp,
                                pvrdma_handle_t handle)
 {
-    if (!dp)
+    if (!dp) {
         return;
+    }
 
     dp->pvrdma_handle = handle;
-    if (!handle)
+    if (!handle) {
         return;
+    }
 
     /* Fixed once the backend is realized: a manager is node 0 from the
      * start, and a worker's realize waits for its id, which registering
@@ -375,28 +385,32 @@ void ionic_datapath_set_pvrdma(struct ionic_datapath *dp,
 void ionic_datapath_set_stats(struct ionic_datapath *dp,
                               struct ernic_stats *stats)
 {
-    if (dp)
+    if (dp) {
         dp->stats = stats;
+    }
 }
 
 void ionic_datapath_set_cq_event_cb(struct ionic_datapath *dp,
                                     ionic_dp_cq_event_fn_t fn, void *opaque)
 {
-    if (!dp)
+    if (!dp) {
         return;
+    }
     dp->cq_event_fn = fn;
     dp->cq_event_opaque = opaque;
 }
 
 void ionic_datapath_destroy(struct ionic_datapath *dp)
 {
-    if (!dp)
+    if (!dp) {
         return;
+    }
 
     /* Waits out a receive thread already in dp_mesh_recv(), so nothing can
      * reach dp once it has returned. */
-    if (dp->pvrdma_handle)
+    if (dp->pvrdma_handle) {
         ernic_mesh_set_recv_cb(dp->pvrdma_handle, NULL, NULL);
+    }
 
     ionic_dp_nvmeof_detach(dp);
     ionic_dp_s3_detach(dp);
@@ -416,10 +430,12 @@ void ionic_datapath_destroy(struct ionic_datapath *dp)
         ionic_dp_buf_release(&dp->qp[i].sq_buf);
         ionic_dp_buf_release(&dp->qp[i].rq_buf);
     }
-    for (uint32_t i = 0; i < dp->cq_count; i++)
+    for (uint32_t i = 0; i < dp->cq_count; i++) {
         ionic_dp_buf_release(&dp->cq[i].buf);
-    for (uint32_t i = 0; i < ERNIC_MAX_MR; i++)
+    }
+    for (uint32_t i = 0; i < ERNIC_MAX_MR; i++) {
         ionic_dp_buf_release(&dp->mr[i].buf);
+    }
     free(dp->qp);
     free(dp->cq);
     for (uint32_t i = 0; i < dp->srq_count; i++) {
@@ -430,8 +446,9 @@ void ionic_datapath_destroy(struct ionic_datapath *dp)
          * Like the frees below, this relies on nothing else reaching dp
          * now. */
         ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
-        if (dp->srq[i].valid)
+        if (dp->srq[i].valid) {
             ionic_dp_buf_release(&dp->srq[i].buf);
+        }
         ROCM_ERNIC_WARN_THREAD_SAFETY_ON
         qemu_mutex_destroy(&dp->srq[i].lock);
     }
@@ -450,8 +467,9 @@ int ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
                                uint32_t eq_id,
                                const struct ionic_dp_ring_desc *ring)
 {
-    if (!dp || !ring || cq_id >= dp->cq_count)
+    if (!dp || !ring || cq_id >= dp->cq_count) {
         return -EINVAL;
+    }
 
     struct ionic_cq_ring *c = &dp->cq[cq_id];
     uint8_t stride_log2 = ionic_dp_cq_stride_log2(ring);
@@ -489,7 +507,7 @@ int ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
         c->valid = false;
         return rc;
     }
-    c->depth = 1u << ring->depth_log2;
+    c->depth = 1U << ring->depth_log2;
     c->stride_log2 = stride_log2;
     c->prod = 0;
     c->cons = 0;
@@ -506,8 +524,9 @@ int ionic_datapath_register_cq(struct ionic_datapath *dp, uint32_t cq_id,
 
 void ionic_datapath_unregister_cq(struct ionic_datapath *dp, uint32_t cq_id)
 {
-    if (!dp || cq_id >= dp->cq_count)
+    if (!dp || cq_id >= dp->cq_count) {
         return;
+    }
     ionic_dp_buf_release(&dp->cq[cq_id].buf);
     dp->cq[cq_id].valid = false;
 }
@@ -520,8 +539,9 @@ void ionic_datapath_unregister_cq(struct ionic_datapath *dp, uint32_t cq_id)
 static void sq_stall_clear(struct ionic_datapath *dp, struct ionic_qp_ring *q)
 {
     q->sq_fault = false;
-    if (!q->sq_rnr && !q->sq_busy)
+    if (!q->sq_rnr && !q->sq_busy) {
         return;
+    }
     q->sq_rnr = false;
     q->sq_busy = false;
     dp->sq_stalled--;
@@ -533,8 +553,9 @@ static void sq_stall_clear(struct ionic_datapath *dp, struct ionic_qp_ring *q)
  */
 static void sq_busy_set(struct ionic_datapath *dp, struct ionic_qp_ring *q)
 {
-    if (!q->sq_rnr && !q->sq_busy)
+    if (!q->sq_rnr && !q->sq_busy) {
         dp->sq_stalled++;
+    }
     q->sq_busy = true;
 }
 
@@ -547,8 +568,9 @@ int ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
                                uint32_t rq_cq_id,
                                const struct ionic_dp_ring_desc *rq)
 {
-    if (!dp || !sq || !rq || qp_id >= dp->qp_count)
+    if (!dp || !sq || !rq || qp_id >= dp->qp_count) {
         return -EINVAL;
+    }
 
     struct ionic_qp_ring *q = &dp->qp[qp_id];
 
@@ -576,10 +598,11 @@ int ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
     int rc = ionic_dp_buf_init(
         dp, &q->sq_buf, &sq->buf, 0,
         ionic_dp_ring_span_bytes(sq->depth_log2, sq->stride_log2));
-    if (rc == 0)
+    if (rc == 0) {
         rc = ionic_dp_buf_init(
             dp, &q->rq_buf, &rq->buf, 0,
             ionic_dp_ring_span_bytes(rq->depth_log2, rq->stride_log2));
+    }
     if (rc < 0) {
         vfu_log(dp->vfu_ctx, LOG_ERR,
                 "ionic_datapath: QP %u page table read failed", qp_id);
@@ -594,8 +617,8 @@ int ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
         return rc;
     }
     q->ib_qp_type = ib_qp_type;
-    q->sq_depth = 1u << sq->depth_log2;
-    q->rq_depth = 1u << rq->depth_log2;
+    q->sq_depth = 1U << sq->depth_log2;
+    q->rq_depth = 1U << rq->depth_log2;
     q->sq_stride_log2 = sq->stride_log2;
     q->rq_stride_log2 = rq->stride_log2;
     q->sq_cq_id = sq_cq_id;
@@ -657,8 +680,9 @@ static void dp_mesh_cancel_request(const struct ionic_datapath *dp,
 
 void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id)
 {
-    if (!dp || qp_id >= dp->qp_count)
+    if (!dp || qp_id >= dp->qp_count) {
         return;
+    }
     ionic_dp_nvmeof_drop_qp(dp, qp_id);
     /*
      * The requests this QP still has queued in the mesh go out, unlike a
@@ -688,11 +712,13 @@ void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id)
 static struct ionic_srq_ring *srq_by_qid(struct ionic_datapath *dp,
                                          uint32_t srq_qid)
 {
-    if (!dp || srq_qid < IONIC_SRQ_QID_BASE)
+    if (!dp || srq_qid < IONIC_SRQ_QID_BASE) {
         return NULL;
+    }
     uint32_t idx = srq_qid - IONIC_SRQ_QID_BASE;
-    if (idx >= dp->srq_count)
+    if (idx >= dp->srq_count) {
         return NULL;
+    }
     return &dp->srq[idx];
 }
 
@@ -700,8 +726,9 @@ int ionic_datapath_register_srq(struct ionic_datapath *dp, uint32_t srq_id,
                                 const struct ionic_dp_ring_desc *rq)
 {
     struct ionic_srq_ring *sr = srq_by_qid(dp, srq_id);
-    if (!sr || !rq)
+    if (!sr || !rq) {
         return -EINVAL;
+    }
 
     /*
      * Bound the exponents before anything shifts by them. The caller checks
@@ -746,7 +773,7 @@ int ionic_datapath_register_srq(struct ionic_datapath *dp, uint32_t srq_id,
                 "ionic_datapath: SRQ %u page table read failed", srq_id);
         return -EIO;
     }
-    sr->depth = 1u << rq->depth_log2;
+    sr->depth = 1U << rq->depth_log2;
     sr->stride_log2 = rq->stride_log2;
     sr->prod = sr->cons = 0;
     sr->valid = true;
@@ -754,15 +781,16 @@ int ionic_datapath_register_srq(struct ionic_datapath *dp, uint32_t srq_id,
 
     vfu_log(dp->vfu_ctx, LOG_INFO,
             "ionic_datapath: SRQ %u registered depth=%u stride=%u", srq_id,
-            1u << rq->depth_log2, 1u << rq->stride_log2);
+            1U << rq->depth_log2, 1U << rq->stride_log2);
     return 0;
 }
 
 void ionic_datapath_unregister_srq(struct ionic_datapath *dp, uint32_t srq_id)
 {
     struct ionic_srq_ring *sr = srq_by_qid(dp, srq_id);
-    if (!sr)
+    if (!sr) {
         return;
+    }
     /* Under the lock: a receive on another thread may be mid-take. Clearing
      * valid here makes every later take fail rather than read a freed page
      * table, and the lock itself survives -- see register_srq above. The
@@ -782,8 +810,9 @@ void ionic_datapath_unregister_srq(struct ionic_datapath *dp, uint32_t srq_id)
 void ionic_datapath_bind_qp_srq(struct ionic_datapath *dp, uint32_t qp_id,
                                 uint32_t srq_id)
 {
-    if (!dp || qp_id >= dp->qp_count || !srq_by_qid(dp, srq_id))
+    if (!dp || qp_id >= dp->qp_count || !srq_by_qid(dp, srq_id)) {
         return;
+    }
 
     /* Stored as a table index, not the guest-visible qid:
      * ionic_dp_deliver_recv() is on the hot path and should not repeat the
@@ -799,8 +828,9 @@ void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
                                 const uint8_t sgid[ERNIC_GID_LEN],
                                 const uint8_t dmac[6])
 {
-    if (!dp || ah_id >= dp->ah_count)
+    if (!dp || ah_id >= dp->ah_count) {
         return;
+    }
 
     struct ionic_ah *ah = &dp->ah[ah_id];
     if (dgid) {
@@ -817,10 +847,11 @@ void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
         memset(ah->sgid, 0, ERNIC_GID_LEN);
         ah->sgid_valid = false;
     }
-    if (dmac)
+    if (dmac) {
         memcpy(ah->dmac, dmac, 6);
-    else
+    } else {
         memset(ah->dmac, 0, 6);
+    }
     ah->valid = true;
 
     vfu_log(dp->vfu_ctx, LOG_INFO,
@@ -831,8 +862,9 @@ void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
 
 void ionic_datapath_unregister_ah(struct ionic_datapath *dp, uint32_t ah_id)
 {
-    if (!dp || ah_id >= dp->ah_count)
+    if (!dp || ah_id >= dp->ah_count) {
         return;
+    }
     memset(&dp->ah[ah_id], 0, sizeof(dp->ah[ah_id]));
 }
 
@@ -844,8 +876,9 @@ void ionic_datapath_unregister_ah(struct ionic_datapath *dp, uint32_t ah_id)
 void ionic_datapath_set_qkey(struct ionic_datapath *dp, uint32_t qp_id,
                              uint32_t qkey)
 {
-    if (!dp || qp_id >= dp->qp_count || !dp->qp[qp_id].valid)
+    if (!dp || qp_id >= dp->qp_count || !dp->qp[qp_id].valid) {
         return;
+    }
     dp->qp[qp_id].qkey = qkey;
     dp->qp[qp_id].qkey_valid = true;
 }
@@ -853,8 +886,9 @@ void ionic_datapath_set_qkey(struct ionic_datapath *dp, uint32_t qp_id,
 void ionic_datapath_set_dest(struct ionic_datapath *dp, uint32_t qp_id,
                              uint32_t dest_qp_id, uint32_t dest_node_id)
 {
-    if (!dp || qp_id >= dp->qp_count || !dp->qp[qp_id].valid)
+    if (!dp || qp_id >= dp->qp_count || !dp->qp[qp_id].valid) {
         return;
+    }
     dp->qp[qp_id].dest_qp_id = dest_qp_id;
     dp->qp[qp_id].dest_node_id = dest_node_id;
     dp->qp[qp_id].dest_valid = true;
@@ -874,16 +908,18 @@ void ionic_datapath_set_dest(struct ionic_datapath *dp, uint32_t qp_id,
  */
 uint32_t ionic_dp_local_node(const struct ionic_datapath *dp)
 {
-    if (!dp || !dp->pvrdma_handle)
+    if (!dp || !dp->pvrdma_handle) {
         return UINT32_MAX;
+    }
     return ernic_mesh_local_node(dp->pvrdma_handle);
 }
 
 uint32_t ionic_dp_node_from_gid(const struct ionic_datapath *dp,
                                 const uint8_t *dgid)
 {
-    if (!dp || !dp->pvrdma_handle)
+    if (!dp || !dp->pvrdma_handle) {
         return UINT32_MAX;
+    }
     return ernic_mesh_node_from_gid(dp->pvrdma_handle, dgid);
 }
 
@@ -895,8 +931,9 @@ static struct dp_mr *mr_find(struct ionic_datapath *dp, uint32_t lkey)
 {
     uint32_t slot;
 
-    if (!ionic_mr_slot(lkey, &slot))
+    if (!ionic_mr_slot(lkey, &slot)) {
         return NULL;
+    }
 
     struct dp_mr *m = &dp->mr[slot];
 
@@ -907,8 +944,9 @@ int ionic_datapath_register_mr(struct ionic_datapath *dp, uint32_t lkey,
                                uint64_t va, uint64_t length,
                                const struct ionic_dp_buf_desc *buf)
 {
-    if (!dp)
+    if (!dp) {
         return -EINVAL;
+    }
 
     uint32_t slot;
     if (!ionic_mr_slot(lkey, &slot)) {
@@ -975,8 +1013,9 @@ void ionic_datapath_unregister_mr(struct ionic_datapath *dp, uint32_t key)
 {
     uint32_t slot;
 
-    if (dp && ionic_mr_slot(key, &slot))
+    if (dp && ionic_mr_slot(key, &slot)) {
         dp_mr_unbind(&dp->mr[slot]);
+    }
 }
 
 /*
@@ -988,8 +1027,9 @@ static void dp_local_inv(struct ionic_datapath *dp, uint32_t key)
 {
     struct dp_mr *m = mr_find(dp, key);
 
-    if (m)
+    if (m) {
         dp_mr_unbind(m);
+    }
 }
 
 /*
@@ -1030,8 +1070,9 @@ static void dp_fault_clear(struct ionic_datapath *dp)
 /* First reason wins: it is the one that stopped the transfer. */
 static void dp_fault_set(struct ionic_datapath *dp, uint32_t status)
 {
-    if (dp->fault == IONIC_STS_OK)
+    if (dp->fault == IONIC_STS_OK) {
         dp->fault = status;
+    }
 }
 
 static uint32_t dp_fault_status(const struct ionic_datapath *dp,
@@ -1050,8 +1091,9 @@ bool ionic_dp_mr_covers(struct ionic_datapath *dp, uint32_t key, uint64_t va,
 {
     /* No region to hold a bus address to, but the range must still fit the
      * address space rather than wrap back round to its start. */
-    if (key == 0)
+    if (key == 0) {
         return ernic_dma_range_ok(va, len);
+    }
 
     struct dp_mr *m = mr_find(dp, key);
 
@@ -1091,8 +1133,9 @@ static uint64_t sge_gpa(struct ionic_datapath *dp, uint32_t lkey, uint64_t va,
      * only bound such a region ever gets.
      */
     uint64_t left = m->length - (va - m->va);
-    if (*run > left)
+    if (*run > left) {
         *run = left;
+    }
     return gpa;
 }
 
@@ -1108,19 +1151,24 @@ static uint32_t dp_copy_sge(struct ionic_datapath *dp, uint32_t dst_lkey,
     uint32_t done = 0;
 
     while (done < len) {
-        uint64_t src_run, dst_run;
+        uint64_t src_run;
+        uint64_t dst_run;
         uint64_t src = sge_gpa(dp, src_lkey, src_va + done, &src_run);
         uint64_t dst = sge_gpa(dp, dst_lkey, dst_va + done, &dst_run);
-        if (!src_run || !dst_run)
+        if (!src_run || !dst_run) {
             break;
+        }
 
         uint64_t chunk = len - done;
-        if (chunk > src_run)
+        if (chunk > src_run) {
             chunk = src_run;
-        if (chunk > dst_run)
+        }
+        if (chunk > dst_run) {
             chunk = dst_run;
-        if (chunk > sizeof(bounce))
+        }
+        if (chunk > sizeof(bounce)) {
             chunk = sizeof(bounce);
+        }
         size_t n = (size_t)chunk;
 
         if (ernic_dma_read(dp->dma, dp->vfu_ctx, src, bounce, n) < 0 ||
@@ -1146,12 +1194,14 @@ uint32_t ionic_dp_sge_to_host(struct ionic_datapath *dp, uint32_t lkey,
     while (done < len) {
         uint64_t run;
         uint64_t gpa = sge_gpa(dp, lkey, va + done, &run);
-        if (!run)
+        if (!run) {
             break;
+        }
 
         uint64_t chunk = len - done;
-        if (chunk > run)
+        if (chunk > run) {
             chunk = run;
+        }
         if (ernic_dma_read(dp->dma, dp->vfu_ctx, gpa, dst + done,
                            (size_t)chunk) < 0) {
             dp_fault_set(dp, IONIC_STS_LOCAL_ACC_ERR);
@@ -1170,12 +1220,14 @@ uint32_t ionic_dp_host_to_sge(struct ionic_datapath *dp, uint32_t lkey,
     while (done < len) {
         uint64_t run;
         uint64_t gpa = sge_gpa(dp, lkey, va + done, &run);
-        if (!run)
+        if (!run) {
             break;
+        }
 
         uint64_t chunk = len - done;
-        if (chunk > run)
+        if (chunk > run) {
             chunk = run;
+        }
         if (ernic_dma_write(dp->dma, dp->vfu_ctx, gpa, src + done,
                             (size_t)chunk) < 0) {
             dp_fault_set(dp, IONIC_STS_LOCAL_ACC_ERR);
@@ -1202,15 +1254,17 @@ uint32_t ionic_dp_host_to_sge(struct ionic_datapath *dp, uint32_t lkey,
 static void cq_fire_event(const struct ionic_datapath *dp,
                           struct ionic_cq_ring *c, uint32_t cq_id)
 {
-    if (!c->armed)
+    if (!c->armed) {
         return;
+    }
     c->armed = false;
     /* eq_id is the guest's u32: one past INT_MAX has no int to convert to,
      * and ionic_eth_emu_trigger_irq() refuses it whatever it became. */
-    if (dp->cq_event_fn)
+    if (dp->cq_event_fn) {
         dp->cq_event_fn(dp->cq_event_opaque, c->eq_id, cq_id);
-    else if (dp->eth_emu && c->eq_id <= INT_MAX)
+    } else if (dp->eth_emu && c->eq_id <= INT_MAX) {
         ionic_eth_emu_trigger_irq(dp->eth_emu, (int)c->eq_id);
+    }
 }
 
 static int cq_write(const struct ionic_datapath *dp,
@@ -1222,14 +1276,17 @@ static int cq_write(const struct ionic_datapath *dp,
     while (done < len) {
         uint64_t run;
         uint64_t gpa = buf_gpa(&c->buf, off + done, &run);
-        if (!run)
+        if (!run) {
             return -1;
+        }
 
         size_t chunk = len - done;
-        if (run < chunk)
+        if (run < chunk) {
             chunk = (size_t)run;
-        if (ernic_dma_write(dp->dma, dp->vfu_ctx, gpa, src + done, chunk) < 0)
+        }
+        if (ernic_dma_write(dp->dma, dp->vfu_ctx, gpa, src + done, chunk) < 0) {
             return -1;
+        }
         done += chunk;
     }
     return 0;
@@ -1243,8 +1300,9 @@ static void dp_count(struct ionic_datapath *dp, uint32_t qp_id,
                      enum ionic_dp_rdma_counter ctr)
 {
     dp->rdma[ctr]++;
-    if (qp_id < dp->qp_count && dp->qp[qp_id].valid)
+    if (qp_id < dp->qp_count && dp->qp[qp_id].valid) {
         dp->qp[qp_id].rdma[ctr]++;
+    }
 }
 
 /*
@@ -1258,12 +1316,14 @@ static void dp_count_cqe_err(struct ionic_datapath *dp, uint32_t qp_id,
 {
     if (type == CQE_TYPE_RECV) {
         dp_count(dp, qp_id, IONIC_DP_RESP_RX_CQE_ERR);
-        if (status == IONIC_STS_LOCAL_LEN_ERR)
+        if (status == IONIC_STS_LOCAL_LEN_ERR) {
             dp_count(dp, qp_id, IONIC_DP_RESP_RX_LOCAL_LEN_ERR);
+        }
         return;
     }
-    if (type != CQE_TYPE_SEND_MSN)
+    if (type != CQE_TYPE_SEND_MSN) {
         return;
+    }
 
     dp_count(dp, qp_id, IONIC_DP_REQ_RX_CQE_ERR);
     switch (status) {
@@ -1294,8 +1354,9 @@ static void cq_post(struct ionic_datapath *dp, uint32_t cq_id,
                     const uint8_t cqe_body[CQE_SIZE - 8], uint32_t status_len,
                     uint32_t type, uint32_t qid, bool error)
 {
-    if (cq_id >= dp->cq_count || !dp->cq[cq_id].valid)
+    if (cq_id >= dp->cq_count || !dp->cq[cq_id].valid) {
         return;
+    }
 
     struct ionic_cq_ring *c = &dp->cq[cq_id];
     uint8_t cqe[CQE_SIZE];
@@ -1306,7 +1367,7 @@ static void cq_post(struct ionic_datapath *dp, uint32_t cq_id,
 
     uint32_t qtf = (uint32_t)(c->color ? CQE_COLOR_BIT : 0) |
                    (error ? CQE_ERROR_BIT : 0) | type |
-                   ((qid & 0xffffffu) << 8);
+                   ((qid & 0xffffffU) << 8);
     ernic_put_be32(cqe + 28, qtf);
 
     /*
@@ -1322,13 +1383,14 @@ static void cq_post(struct ionic_datapath *dp, uint32_t cq_id,
      * the lines are limited, and in a flood only the first few are named.
      */
     if (error && status_len != IONIC_STS_WQE_FLUSHED_ERR &&
-        ionic_dp_log_ok(dp, &dp->log_cq_error, "error completion(s)"))
+        ionic_dp_log_ok(dp, &dp->log_cq_error, "error completion(s)")) {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: CQ %u completing QP %u in error: status %u, "
                 "cqe type %u",
                 cq_id, qid, status_len, type >> 5);
+    }
 
-    uint32_t stride = 1u << c->stride_log2;
+    uint32_t stride = 1U << c->stride_log2;
     uint64_t base = (uint64_t)(c->prod % c->depth) * stride;
 
     /*
@@ -1345,12 +1407,14 @@ static void cq_post(struct ionic_datapath *dp, uint32_t cq_id,
     }
 
     ernic_stats_qp_cqe(dp->stats, qid);
-    if (error)
+    if (error) {
         dp_count_cqe_err(dp, qid, type, status_len);
+    }
 
     c->prod++;
-    if (c->prod % c->depth == 0)
+    if (c->prod % c->depth == 0) {
         c->color = !c->color;
+    }
 
     cq_fire_event(dp, c, cq_id);
 }
@@ -1372,10 +1436,12 @@ static void dp_grh_ipv6(uint8_t grh[IB_GRH_SIZE], uint32_t paylen,
     ernic_put_be16(grh + 4, (uint16_t)paylen);
     grh[6] = 0x1b; /* IB_GRH_NEXT_HDR */
     grh[7] = 64;
-    if (sgid)
+    if (sgid) {
         memcpy(grh + 8, sgid, ERNIC_GID_LEN);
-    if (dgid)
+    }
+    if (dgid) {
         memcpy(grh + 24, dgid, ERNIC_GID_LEN);
+    }
 }
 
 /*
@@ -1463,14 +1529,15 @@ static void cq_post_recv(struct ionic_datapath *dp, uint32_t cq_id,
     memcpy(body + 0, &rq_wqe_id, 8);
 
     uint32_t qpn_op =
-        ((uint32_t)recv_op << CQE_RECV_OP_SHIFT) | (src_qpn & 0xffffffu);
+        ((uint32_t)recv_op << CQE_RECV_OP_SHIFT) | (src_qpn & 0xffffffU);
     /*
      * A UD or GSI completion is only usable if it also names the sender's
      * link layer: the driver turns src_mac into IB_WC_WITH_SMAC, and ib_cm
      * refuses a MAD whose work completion does not carry one.
      */
-    if (src_mac)
+    if (src_mac) {
         memcpy(body + 12, src_mac, 6);
+    }
     /*
      * Separate from the MAC, and deliberately so. This bit becomes
      * wc->network_hdr_type, which decides where the receiver reads the
@@ -1479,8 +1546,9 @@ static void cq_post_recv(struct ionic_datapath *dp, uint32_t cq_id,
      * writing the IPv6 form, so the kernel read the middle of the
      * destination GID as the source address. It must follow the header.
      */
-    if (is_ipv4)
+    if (is_ipv4) {
         qpn_op |= CQE_RECV_IS_IPV4;
+    }
     ernic_put_be32(body + 8, qpn_op);
     memcpy(body + 20, &imm_be, 4); /* recv.imm_data_rkey, already be32 */
 
@@ -1535,12 +1603,14 @@ static void cq_post_flush(struct ionic_datapath *dp, uint32_t cq_id,
  */
 void ionic_datapath_flush_qp(struct ionic_datapath *dp, uint32_t qp_id)
 {
-    if (!dp || qp_id >= dp->qp_count)
+    if (!dp || qp_id >= dp->qp_count) {
         return;
+    }
 
     struct ionic_qp_ring *q = &dp->qp[qp_id];
-    if (!q->valid)
+    if (!q->valid) {
         return;
+    }
 
     /*
      * Before the flush is published, not after. A pending entry holds the
@@ -1573,8 +1643,9 @@ void ionic_datapath_flush_qp(struct ionic_datapath *dp, uint32_t qp_id)
     q->sq_cons = q->sq_prod;
 
     cq_post_flush(dp, q->sq_cq_id, qp_id, CQE_TYPE_SEND_NPG);
-    if (!q->has_srq)
+    if (!q->has_srq) {
         cq_post_flush(dp, q->rq_cq_id, qp_id, CQE_TYPE_RECV);
+    }
 
     vfu_log(dp->vfu_ctx, LOG_INFO,
             "ionic_datapath: QP %u flushed%s, %u deferred request(s) cancelled",
@@ -1621,8 +1692,8 @@ static void cq_post_send_npg(struct ionic_datapath *dp, uint32_t cq_id,
 
 /* parse_sges() reads at most ERNIC_MAX_SGE, which must be every SGE the
  * largest WQE has room for. A speculative length table only leaves less. */
-_Static_assert(WQE_PLD_OFF + ERNIC_MAX_SGE * 16u >=
-                   1u << IONIC_WQE_MAX_STRIDE_LOG2,
+_Static_assert(WQE_PLD_OFF + (ERNIC_MAX_SGE * 16U) >=
+                   1U << IONIC_WQE_MAX_STRIDE_LOG2,
                "the largest WQE holds SGEs that parse_sges() would not read");
 
 /* What parse_sges() made of a WQE's SGE list. */
@@ -1668,7 +1739,7 @@ static enum dp_sgl parse_sges(const uint8_t *wqe, uint32_t wqe_len,
         break;
     case IONIC_V1_FLAG_SPEC32:
     case IONIC_V1_FLAG_SPEC16:
-        sgl_off += IONIC_V1_SPEC_FIRST_SGE * 16u;
+        sgl_off += IONIC_V1_SPEC_FIRST_SGE * 16U;
         break;
     default:
         return DP_SGL_BAD_FMT;
@@ -1677,13 +1748,15 @@ static enum dp_sgl parse_sges(const uint8_t *wqe, uint32_t wqe_len,
     uint32_t avail = wqe_len > sgl_off ? wqe_len - sgl_off : 0;
     uint32_t max_sge = avail / 16;
 
-    if (max_sge > ERNIC_MAX_SGE)
+    if (max_sge > ERNIC_MAX_SGE) {
         max_sge = ERNIC_MAX_SGE;
-    if (num_sge < max_sge)
+    }
+    if (num_sge < max_sge) {
         max_sge = num_sge;
+    }
 
     for (uint32_t i = 0; i < max_sge; i++) {
-        const uint8_t *p = wqe + sgl_off + (size_t)i * 16;
+        const uint8_t *p = wqe + sgl_off + ((size_t)i * 16);
         out->va[i] = ernic_get_be64(p + 0);
         out->len[i] = ernic_get_be32(p + 8);
         out->lkey[i] = ernic_get_be32(p + 12);
@@ -1711,10 +1784,12 @@ static bool dp_local_sges_ok(struct ionic_datapath *dp,
                              const struct dp_sge_list *l)
 {
     for (uint32_t i = 0; i < l->count; i++) {
-        if (l->len[i] == 0)
+        if (l->len[i] == 0) {
             continue;
-        if (!ionic_dp_mr_covers(dp, l->lkey[i], l->va[i], l->len[i]))
+        }
+        if (!ionic_dp_mr_covers(dp, l->lkey[i], l->va[i], l->len[i])) {
             return false;
+        }
     }
     return true;
 }
@@ -1727,16 +1802,19 @@ uint32_t ionic_dp_gather(struct ionic_datapath *dp, const struct dp_sge_list *l,
 
     for (uint32_t i = 0; i < l->count && done < len; i++) {
         uint32_t chunk = l->len[i];
-        if (chunk > len - done)
+        if (chunk > len - done) {
             chunk = len - done;
-        if (!chunk)
+        }
+        if (!chunk) {
             continue;
+        }
 
         uint32_t n =
             ionic_dp_sge_to_host(dp, l->lkey[i], l->va[i], dst + done, chunk);
         done += n;
-        if (n != chunk)
+        if (n != chunk) {
             break;
+        }
     }
     return done;
 }
@@ -1749,16 +1827,19 @@ static uint32_t dp_scatter(struct ionic_datapath *dp,
 
     for (uint32_t i = 0; i < l->count && done < len; i++) {
         uint32_t chunk = l->len[i];
-        if (chunk > len - done)
+        if (chunk > len - done) {
             chunk = len - done;
-        if (!chunk)
+        }
+        if (!chunk) {
             continue;
+        }
 
         uint32_t n =
             ionic_dp_host_to_sge(dp, l->lkey[i], l->va[i], src + done, chunk);
         done += n;
-        if (n != chunk)
+        if (n != chunk) {
             break;
+        }
     }
     return done;
 }
@@ -1798,21 +1879,23 @@ static bool dp_ring_take(struct ionic_datapath *dp, uint32_t *cons,
                          const struct dp_buf *ring_buf, uint64_t *wqe_id,
                          struct dp_sge_list *dst)
 {
-    if (*cons == prod)
+    if (*cons == prod) {
         return false;
+    }
 
-    uint32_t stride = 1u << stride_log2;
+    uint32_t stride = 1U << stride_log2;
     uint32_t slot = *cons % depth;
     uint64_t run;
     uint64_t gpa = buf_gpa(ring_buf, (uint64_t)slot * stride, &run);
 
     /* Big enough for the largest stride a QP's RQ or an SRQ can have, so
      * the whole WQE is read. */
-    uint8_t rwqe[1u << IONIC_WQE_MAX_STRIDE_LOG2];
+    uint8_t rwqe[1U << IONIC_WQE_MAX_STRIDE_LOG2];
     uint32_t read_sz = stride < sizeof(rwqe) ? stride : (uint32_t)sizeof(rwqe);
     if (!run || run < read_sz ||
-        ernic_dma_read(dp->dma, dp->vfu_ctx, gpa, rwqe, read_sz) < 0)
+        ernic_dma_read(dp->dma, dp->vfu_ctx, gpa, rwqe, read_sz) < 0) {
         return false;
+    }
 
     memcpy(wqe_id, rwqe + 0, 8);
 
@@ -1834,12 +1917,13 @@ static bool dp_ring_take(struct ionic_datapath *dp, uint32_t *cons,
      * or a WRITE_IMM, which scatters nothing into its receive, completes
      * it as usual.
      */
-    if (parse_sges(rwqe, read_sz, rwqe[9], dst) == DP_SGL_BAD_FMT)
+    if (parse_sges(rwqe, read_sz, rwqe[9], dst) == DP_SGL_BAD_FMT) {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: receive WQE %" PRIu64
                 " has SGE list format %#x, which the driver does not define; "
                 "taking it as empty",
                 *wqe_id, ernic_get_be16(rwqe + 10) & IONIC_V1_FLAG_SPEC_MASK);
+    }
 
     (*cons)++;
     return true;
@@ -1873,8 +1957,9 @@ int64_t ionic_dp_deliver_recv(struct ionic_datapath *dp,
      * for the next taker before the scatter -- which can be long.
      */
     if (dq->has_srq) {
-        if (dq->srq_id >= dp->srq_count)
+        if (dq->srq_id >= dp->srq_count) {
             return -1;
+        }
         struct ionic_srq_ring *sr = &dp->srq[dq->srq_id];
         qemu_mutex_lock(&sr->lock);
         /* valid is read only under the lock. The bounds check above is the
@@ -1888,8 +1973,9 @@ int64_t ionic_dp_deliver_recv(struct ionic_datapath *dp,
         taken = dp_ring_take(dp, &dq->rq_cons, dq->rq_prod, dq->rq_depth,
                              dq->rq_stride_log2, &dq->rq_buf, &rq_wqe_id, &dst);
     }
-    if (!taken)
+    if (!taken) {
         return -1;
+    }
 
     uint32_t copied = 0;
 
@@ -1911,7 +1997,10 @@ int64_t ionic_dp_deliver_recv(struct ionic_datapath *dp,
                             src->total < dst.total ? src->total : dst.total);
     } else {
         /* Walk both SGE lists in lockstep, copying the overlap. */
-        uint32_t si = 0, di = 0, soff = 0, doff = 0;
+        uint32_t si = 0;
+        uint32_t di = 0;
+        uint32_t soff = 0;
+        uint32_t doff = 0;
         while (si < src->count && di < dst.count) {
             uint32_t s_rem = src->len[si] - soff;
             uint32_t d_rem = dst.len[di] - doff;
@@ -1922,8 +2011,9 @@ int64_t ionic_dp_deliver_recv(struct ionic_datapath *dp,
                     dp_copy_sge(dp, dst.lkey[di], dst.va[di] + doff,
                                 src->lkey[si], src->va[si] + soff, chunk);
                 copied += n;
-                if (n != chunk)
+                if (n != chunk) {
                     break;
+                }
             }
             soff += chunk;
             doff += chunk;
@@ -1977,8 +2067,9 @@ int64_t ionic_dp_deliver_recv(struct ionic_datapath *dp,
     /* GSI and UD receives carry a source MAC; nothing else does. */
     uint8_t smac[6];
     bool ud = qp_is_datagram(dq);
-    if (ud)
+    if (ud) {
         dp_src_mac(dp, src_qp_id, smac);
+    }
 
     cq_post_recv(
         dp, dq->rq_cq_id, dst_qp_id, rq_wqe_id, src_qp_id, recv_op, imm_be,
@@ -2005,10 +2096,12 @@ static uint32_t rdma_xfer(struct ionic_datapath *dp,
 
     for (uint32_t i = 0; i < local->count && done < len; i++) {
         uint32_t chunk = local->len[i];
-        if (chunk > len - done)
+        if (chunk > len - done) {
             chunk = len - done;
-        if (!chunk)
+        }
+        if (!chunk) {
             continue;
+        }
 
         uint32_t n = to_remote
                          ? dp_copy_sge(dp, rkey, remote_va + done,
@@ -2016,8 +2109,9 @@ static uint32_t rdma_xfer(struct ionic_datapath *dp,
                          : dp_copy_sge(dp, local->lkey[i], local->va[i], rkey,
                                        remote_va + done, chunk);
         done += n;
-        if (n != chunk)
+        if (n != chunk) {
             break;
+        }
     }
     return done;
 }
@@ -2038,14 +2132,16 @@ static bool dp_atomic_apply(struct ionic_datapath *dp, uint64_t gpa,
     uint8_t mem[8];
     uint64_t new_val;
 
-    if (ernic_dma_read(dp->dma, dp->vfu_ctx, gpa, mem, sizeof(mem)) < 0)
+    if (ernic_dma_read(dp->dma, dp->vfu_ctx, gpa, mem, sizeof(mem)) < 0) {
         return false;
+    }
     *old = ernic_get_le64(mem);
 
-    if (compare_swap)
+    if (compare_swap) {
         new_val = *old == compare ? swap_add : *old;
-    else
+    } else {
         new_val = *old + swap_add;
+    }
 
     ernic_put_le64(mem, new_val);
     return ernic_dma_write(dp->dma, dp->vfu_ctx, gpa, mem, sizeof(mem)) >= 0;
@@ -2111,8 +2207,9 @@ static bool do_atomic(struct ionic_datapath *dp, const uint8_t *wqe,
 
 uint64_t ionic_dp_now_ms(const struct ionic_datapath *dp)
 {
-    if (dp->now_ms)
+    if (dp->now_ms) {
         return dp->now_ms();
+    }
     return ernic_monotonic_ms();
 }
 
@@ -2121,11 +2218,13 @@ bool ionic_dp_log_ok(struct ionic_datapath *dp, ErnicLogLimit *lim,
 {
     uint64_t held;
 
-    if (!ernic_log_limit(lim, ionic_dp_now_ms(dp), &held))
+    if (!ernic_log_limit(lim, ionic_dp_now_ms(dp), &held)) {
         return false;
-    if (held)
+    }
+    if (held) {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: %" PRIu64 " more %s not logged", held, what);
+    }
     return true;
 }
 
@@ -2153,9 +2252,11 @@ static struct dp_pending *pending_alloc(struct ionic_datapath *dp)
 static struct dp_pending *pending_find(struct ionic_datapath *dp,
                                        uint32_t req_id)
 {
-    for (int i = 0; i < MAX_PENDING; i++)
-        if (dp->pending[i].valid && dp->pending[i].req_id == req_id)
+    for (int i = 0; i < MAX_PENDING; i++) {
+        if (dp->pending[i].valid && dp->pending[i].req_id == req_id) {
             return &dp->pending[i];
+        }
+    }
     return NULL;
 }
 
@@ -2168,9 +2269,11 @@ static uint64_t pending_reply_bytes(const struct ionic_datapath *dp,
 {
     uint64_t bytes = 0;
 
-    for (int i = 0; i < MAX_PENDING; i++)
-        if (dp->pending[i].valid && dp->pending[i].dest_node == node)
+    for (int i = 0; i < MAX_PENDING; i++) {
+        if (dp->pending[i].valid && dp->pending[i].dest_node == node) {
             bytes += dp->pending[i].reply_bytes;
+        }
+    }
     return bytes;
 }
 
@@ -2208,8 +2311,9 @@ static bool pending_completes_qp(const struct ionic_datapath *dp,
     for (int i = 0; i < MAX_PENDING; i++) {
         const struct dp_pending *p = &dp->pending[i];
 
-        if (p->valid && p->qp_id == qp_id && (p->use_msn || p->signalled))
+        if (p->valid && p->qp_id == qp_id && (p->use_msn || p->signalled)) {
             return true;
+        }
     }
     return false;
 }
@@ -2230,8 +2334,9 @@ static bool pending_completes_qp(const struct ionic_datapath *dp,
 static void sq_fault_finish(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                             uint32_t qp_id)
 {
-    if (!q->sq_fault || pending_completes_qp(dp, qp_id))
+    if (!q->sq_fault || pending_completes_qp(dp, qp_id)) {
         return;
+    }
 
     cq_post_send_npg(dp, q->sq_cq_id, qp_id, q->sq_cons % q->sq_depth,
                      IONIC_STS_LOCAL_QP_OPER_ERR);
@@ -2247,17 +2352,19 @@ static void pending_complete(struct ionic_datapath *dp, struct dp_pending *p,
                                   : NULL;
 
     if (q) {
-        if (p->use_msn)
+        if (p->use_msn) {
             cq_post_send_msn(dp, q->sq_cq_id, p->qp_id, p->msn, status);
-        else if (p->signalled)
+        } else if (p->signalled) {
             cq_post_send_npg(dp, q->sq_cq_id, p->qp_id, p->wqe_id, status);
+        }
     }
     p->valid = false;
 
     /* That may have been the last request a WQE the device couldn't read
      * was waiting for. */
-    if (q)
+    if (q) {
         sq_fault_finish(dp, q, p->qp_id);
+    }
 }
 
 /*
@@ -2487,8 +2594,9 @@ static enum dp_post remote_post(struct ionic_datapath *dp,
 
     if (payload_len) {
         payload = malloc(payload_len);
-        if (!payload)
+        if (!payload) {
             goto out;
+        }
         if (src_host) {
             memcpy(payload, src_host, payload_len);
         } else if (ionic_dp_gather(dp, src, payload, payload_len) !=
@@ -2509,18 +2617,20 @@ static enum dp_post remote_post(struct ionic_datapath *dp,
         p->reply_bytes = reply_bytes;
         /* Claim the MSN only once the request is really on the wire, so a
          * failed send does not leave a hole the driver would wait on. */
-        if (use_msn)
+        if (use_msn) {
             p->msn = ++q->msn;
+        }
 
         /* A READ has moved nothing yet; it is counted when the response
          * scatters into p->local. */
-        if (wire_op == IONIC_WIRE_WRITE || wire_op == IONIC_WIRE_WRITE_IMM)
+        if (wire_op == IONIC_WIRE_WRITE || wire_op == IONIC_WIRE_WRITE_IMM) {
             ionic_dp_rdma_bytes(dp, qp_id, payload_len, ERNIC_STAT_RDMA_WRITE,
                                 DP_RDMA_TX);
-        else if (wire_op != IONIC_WIRE_READ_REQ &&
-                 wire_op != IONIC_WIRE_ATOMIC_REQ)
+        } else if (wire_op != IONIC_WIRE_READ_REQ &&
+                   wire_op != IONIC_WIRE_ATOMIC_REQ) {
             ionic_dp_rdma_bytes(dp, qp_id, payload_len, ERNIC_STAT_SEND,
                                 DP_RDMA_TX);
+        }
     } else if (rc == -EAGAIN) {
         /* The room checked above went to a route that changed since */
         result = DP_POST_BUSY;
@@ -2533,8 +2643,9 @@ static enum dp_post remote_post(struct ionic_datapath *dp,
 
 out:
     free(payload);
-    if (result != DP_POST_SENT)
+    if (result != DP_POST_SENT) {
         p->valid = false;
+    }
     return result;
 }
 
@@ -2564,16 +2675,18 @@ out:
 uint32_t ionic_dp_target_from_host(void *ctx, uint32_t key, uint64_t addr,
                                    void *dst, uint32_t len)
 {
-    if (key == 0)
+    if (key == 0) {
         return 0;
+    }
     return ionic_dp_sge_to_host(ctx, key, addr, dst, len);
 }
 
 uint32_t ionic_dp_target_to_host(void *ctx, uint32_t key, uint64_t addr,
                                  const void *src, uint32_t len)
 {
-    if (key == 0)
+    if (key == 0) {
         return 0;
+    }
     return ionic_dp_host_to_sge(ctx, key, addr, src, len);
 }
 
@@ -2658,19 +2771,24 @@ const char *ionic_dp_ud_delivery_refused(const struct ionic_qp_ring *sq,
      * an RC destination is not a datagram queue -- which is every RC and
      * UC transfer in the device.
      */
-    if (!qp_is_datagram(sq))
+    if (!qp_is_datagram(sq)) {
         return NULL;
-    if (!qp_is_datagram(dq))
+    }
+    if (!qp_is_datagram(dq)) {
         return "transport type accepts no datagrams";
-    if (!dq->qkey_valid)
+    }
+    if (!dq->qkey_valid) {
         return NULL;
+    }
     if (sent_qkey & DP_QKEY_CONTROLLED) {
-        if (!sq->qkey_valid)
+        if (!sq->qkey_valid) {
             return "sender has no Q_Key of its own to send";
+        }
         sent_qkey = sq->qkey;
     }
-    if (sent_qkey != dq->qkey)
+    if (sent_qkey != dq->qkey) {
         return "Q_Key is not that queue's";
+    }
     return NULL;
 }
 
@@ -2732,16 +2850,20 @@ static bool dp_ud_route(const struct ionic_datapath *dp,
                         const struct ionic_ah *ah, uint32_t *node)
 {
     *node = UINT32_MAX;
-    if (dp->local_node == UINT32_MAX)
+    if (dp->local_node == UINT32_MAX) {
         return true;
-    if (!ah || !ah->dgid_valid)
+    }
+    if (!ah || !ah->dgid_valid) {
         return false;
+    }
 
     uint32_t owner = ionic_dp_node_from_gid(dp, ah->dgid);
-    if (owner == UINT32_MAX)
+    if (owner == UINT32_MAX) {
         return false;
-    if (owner != dp->local_node)
+    }
+    if (owner != dp->local_node) {
         *node = owner;
+    }
     return true;
 }
 
@@ -2750,8 +2872,10 @@ static void dp_ud_log_unroutable(struct ionic_datapath *dp, uint32_t qp_id,
                                  uint32_t dst_id, uint32_t ah_id,
                                  const struct ionic_ah *ah)
 {
-    if (!ionic_dp_log_ok(dp, &dp->log_ud_unroutable, "unroutable datagram(s)"))
+    if (!ionic_dp_log_ok(dp, &dp->log_ud_unroutable,
+                         "unroutable datagram(s)")) {
         return;
+    }
 
     if (!ah) {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
@@ -2800,10 +2924,12 @@ static uint32_t sq_send(struct ionic_datapath *dp, struct ionic_qp_ring *q,
      * bound.  Both are answered here and never reach the peer lookup.
      */
     if (q->ib_qp_type == ERNIC_IB_QPT_GSI &&
-        ionic_dp_nvmeof_gsi(dp, q, qp_id, src))
+        ionic_dp_nvmeof_gsi(dp, q, qp_id, src)) {
         return IONIC_STS_OK;
-    if (remote && ionic_dp_nvmeof_rc_send(dp, q, qp_id, src))
+    }
+    if (remote && ionic_dp_nvmeof_rc_send(dp, q, qp_id, src)) {
         return IONIC_STS_OK;
+    }
 
     /*
      * A datagram names its own destination. Connected QPs learned a
@@ -2849,8 +2975,9 @@ static uint32_t sq_send(struct ionic_datapath *dp, struct ionic_qp_ring *q,
              */
             uint8_t gbuf[IB_GRH_SIZE + 8192];
             uint32_t plen = src->total;
-            if (plen > sizeof(gbuf) - IB_GRH_SIZE)
+            if (plen > sizeof(gbuf) - IB_GRH_SIZE) {
                 plen = (uint32_t)(sizeof(gbuf) - IB_GRH_SIZE);
+            }
             if (ionic_dp_gather(dp, src, gbuf + IB_GRH_SIZE, plen) != plen) {
                 vfu_log(dp->vfu_ctx, LOG_WARNING,
                         "ionic_datapath: QP %u UD payload fetch failed", qp_id);
@@ -2933,8 +3060,9 @@ static uint32_t sq_send(struct ionic_datapath *dp, struct ionic_qp_ring *q,
     const uint8_t *src_host = NULL;
     if (qp_is_datagram(dq)) {
         uint32_t plen = src->total;
-        if (plen > sizeof(udbuf) - IB_GRH_SIZE)
+        if (plen > sizeof(udbuf) - IB_GRH_SIZE) {
             plen = (uint32_t)(sizeof(udbuf) - IB_GRH_SIZE);
+        }
         if (ionic_dp_gather(dp, src, udbuf + IB_GRH_SIZE, plen) != plen) {
             vfu_log(dp->vfu_ctx, LOG_WARNING,
                     "ionic_datapath: QP %u UD payload fetch failed", qp_id);
@@ -2966,8 +3094,9 @@ static uint32_t sq_send(struct ionic_datapath *dp, struct ionic_qp_ring *q,
             return IONIC_STS_OK;
         }
         if (!q->sq_rnr) {
-            if (!q->sq_busy)
+            if (!q->sq_busy) {
                 dp->sq_stalled++;
+            }
             q->sq_rnr = true;
             q->sq_rnr_since_ms = now;
             dp_count(dp, dst_id, IONIC_DP_RESP_RX_OUT_OF_BUFFER);
@@ -3058,9 +3187,10 @@ static uint32_t sq_rdma(struct ionic_datapath *dp,
                                        ? &dp->qp[dst_id]
                                        : NULL;
         struct dp_sge_list written = {.count = 0, .total = moved};
-        if (dq)
+        if (dq) {
             ionic_dp_deliver_recv(dp, dq, dst_id, qp_id, &written, NULL,
                                   CQE_RECV_OP_RDMA_IMM, imm_be);
+        }
     }
     return IONIC_STS_OK;
 }
@@ -3072,13 +3202,13 @@ static uint32_t sq_rdma(struct ionic_datapath *dp,
 static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                            uint32_t qp_id, uint32_t slot)
 {
-    uint32_t stride = 1u << q->sq_stride_log2;
+    uint32_t stride = 1U << q->sq_stride_log2;
     uint64_t run;
     uint64_t gpa = buf_gpa(&q->sq_buf, (uint64_t)slot * stride, &run);
 
     /* Big enough for the largest stride an SQ can have, so the whole WQE is
      * read. */
-    uint8_t wqe[1u << IONIC_WQE_MAX_STRIDE_LOG2];
+    uint8_t wqe[1U << IONIC_WQE_MAX_STRIDE_LOG2];
     uint32_t read_sz = stride < sizeof(wqe) ? stride : (uint32_t)sizeof(wqe);
     if (!run || run < read_sz ||
         ernic_dma_read(dp->dma, dp->vfu_ctx, gpa, wqe, read_sz) < 0) {
@@ -3120,8 +3250,9 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
     memcpy(&wqe_id, wqe + 0, 8);
 
     uint8_t op = wqe[8];
-    if (!q->sq_rnr && !q->sq_busy) /* a retry is the same WQE again */
+    if (!q->sq_rnr && !q->sq_busy) { /* a retry is the same WQE again */
         ernic_stats_qp_wqe(dp->stats, qp_id, ionic_op_to_stat_wr(op));
+    }
 
     uint16_t flags = ernic_get_be16(wqe + 10);
 
@@ -3332,8 +3463,9 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
 
         status = sq_send(dp, q, qp_id, op, wqe_id, wqe, &src, imm_be, remote,
                          &stalled);
-        if (stalled)
+        if (stalled) {
             return false;
+        }
         break;
     }
 
@@ -3364,9 +3496,10 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
      * both ends: the requester's error through its completion, and the
      * responder's NAK here, against the QP it would have landed on.
      */
-    if (status == IONIC_STS_REMOTE_ACC_ERR)
+    if (status == IONIC_STS_REMOTE_ACC_ERR) {
         dp_count(dp, q->dest_valid ? q->dest_qp_id : qp_id,
                  IONIC_DP_RESP_TX_REMOTE_ACCESS_ERR);
+    }
 
     dp_complete_send(dp, q, qp_id, wqe_id, remote, status);
     return true;
@@ -3381,12 +3514,14 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
 static void sq_service(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                        uint32_t qp_id)
 {
-    if (q->sq_fault)
+    if (q->sq_fault) {
         return;
+    }
     for (uint32_t n = 0;
          q->sq_cons % q->sq_depth != q->sq_prod && n < q->sq_depth; n++) {
-        if (!process_sq_wqe(dp, q, qp_id, q->sq_cons % q->sq_depth))
+        if (!process_sq_wqe(dp, q, qp_id, q->sq_cons % q->sq_depth)) {
             return;
+        }
         sq_stall_clear(dp, q);
         q->sq_cons++;
     }
@@ -3452,10 +3587,11 @@ static bool dp_mesh_recv(void *opaque, uint32_t src_node, void *buf, size_t len)
     qemu_mutex_lock(&dp->rx_lock);
     room = dp_rx_room(dp->rx_msgs, dp->rx_bytes, len);
     if (room) {
-        if (dp->rx_tail)
+        if (dp->rx_tail) {
             dp->rx_tail->next = m;
-        else
+        } else {
             dp->rx_head = m;
+        }
         dp->rx_tail = m;
         dp->rx_fresh++;
         dp->rx_msgs++;
@@ -3467,17 +3603,20 @@ static bool dp_mesh_recv(void *opaque, uint32_t src_node, void *buf, size_t len)
 
         stuck = !dp->rx_in_pass && now > dp->rx_polled_ms &&
                 now - dp->rx_polled_ms > DP_RX_STUCK_MS;
-        if (stuck)
+        if (stuck) {
             dp->rx_dropped++;
-        else if (len > dp->rx_waiting)
+        } else if (len > dp->rx_waiting) {
             dp->rx_waiting = len;
+        }
     }
     qemu_mutex_unlock(&dp->rx_lock);
 
-    if (room)
+    if (room) {
         return true;
-    if (stuck)
+    }
+    if (stuck) {
         free(buf);
+    }
     free(m);
     return stuck;
 }
@@ -3501,8 +3640,9 @@ static void dp_wire_reply(struct ionic_datapath *dp, uint32_t dst_node,
      */
     dp_mesh_tx(dp, dst_node, 0, &r, payload, payload_len, true);
 
-    if (status == IONIC_STS_REMOTE_ACC_ERR)
+    if (status == IONIC_STS_REMOTE_ACC_ERR) {
         dp_count(dp, req->dst_qp_id, IONIC_DP_RESP_TX_REMOTE_ACCESS_ERR);
+    }
 }
 
 /* Apply a peer's atomic to a local MR, returning the pre-operation value. */
@@ -3534,8 +3674,9 @@ static bool dp_wire_send(struct ionic_datapath *dp, uint32_t src_node,
     struct dp_sge_list src = {.count = 0, .total = h->length};
     uint32_t status = IONIC_STS_OK;
 
-    if (h->length > payload_len)
+    if (h->length > payload_len) {
         src.total = payload_len;
+    }
 
     if (!dq) {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
@@ -3546,8 +3687,9 @@ static bool dp_wire_send(struct ionic_datapath *dp, uint32_t src_node,
                                      payload, recv_op, h->imm_be) < 0) {
         /* RNR: nothing has been consumed, so the message can simply wait
          * for the guest to post a receive. */
-        if (allow_retry)
+        if (allow_retry) {
             return false;
+        }
 
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: QP %u posted no receive in time, "
@@ -3628,13 +3770,16 @@ static void dp_wire_read(struct ionic_datapath *dp, uint32_t src_node,
     uint32_t length = h->length;
     uint32_t status = IONIC_STS_OK;
 
-    if (length && length <= IONIC_WIRE_MAX_PAYLOAD)
+    if (length && length <= IONIC_WIRE_MAX_PAYLOAD) {
         data = malloc(length);
+    }
 
-    if (length > IONIC_WIRE_MAX_PAYLOAD || (length && !data))
-        status = IONIC_STS_REMOTE_ACC_ERR;
-    else if (ionic_dp_sge_to_host(dp, h->rkey, h->remote_va, data, length) !=
-             length) {
+    if (length > IONIC_WIRE_MAX_PAYLOAD || (length && !data)) {
+        {
+            status = IONIC_STS_REMOTE_ACC_ERR;
+        }
+    } else if (ionic_dp_sge_to_host(dp, h->rkey, h->remote_va, data, length) !=
+               length) {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: remote read rkey=%#x va=%#" PRIx64
                 " of %u bytes failed",
@@ -3684,8 +3829,9 @@ static void dp_wire_response(struct ionic_datapath *dp,
                              const uint8_t *payload, uint32_t payload_len)
 {
     struct dp_pending *p = pending_find(dp, h->req_id);
-    if (!p)
+    if (!p) {
         return;
+    }
 
     uint32_t status = h->status;
     if (status == IONIC_STS_OK && h->op != IONIC_WIRE_ACK) {
@@ -3697,13 +3843,15 @@ static void dp_wire_response(struct ionic_datapath *dp,
          * as-is, like READ data (see dp_atomic_apply()). */
         dp_fault_clear(dp);
         uint32_t got = dp_scatter(dp, &p->local, payload, want);
-        if (got != want)
+        if (got != want) {
             status = dp_fault_status(dp, IONIC_STS_LOCAL_PROT_ERR);
+        }
 
         /* The requester's READ bytes only exist once they have landed. */
-        if (h->op == IONIC_WIRE_READ_RESP)
+        if (h->op == IONIC_WIRE_READ_RESP) {
             ionic_dp_rdma_bytes(dp, p->qp_id, got, ERNIC_STAT_RDMA_READ,
                                 DP_RDMA_RX);
+        }
     }
     pending_complete(dp, p, status);
 }
@@ -3834,15 +3982,17 @@ bool ionic_datapath_has_work(struct ionic_datapath *dp)
 {
     bool work;
 
-    if (!dp)
+    if (!dp) {
         return false;
+    }
 
     qemu_mutex_lock(&dp->rx_lock);
     work = dp->rx_fresh != 0;
     qemu_mutex_unlock(&dp->rx_lock);
 
-    if (!work)
+    if (!work) {
         work = ionic_dp_s3_has_work(dp);
+    }
     return work;
 }
 
@@ -3853,8 +4003,9 @@ bool ionic_datapath_has_work(struct ionic_datapath *dp)
  */
 static void dp_rx_log_dropped(struct ionic_datapath *dp, uint64_t dropped)
 {
-    if (dropped == dp->rx_dropped_logged)
+    if (dropped == dp->rx_dropped_logged) {
         return;
+    }
     vfu_log(dp->vfu_ctx, LOG_WARNING,
             "ionic_datapath: dropped %" PRIu64 " mesh message(s) that came "
             "while the queue was full and the device wasn't polling it",
@@ -3873,8 +4024,9 @@ static void dp_rx_note_crowding(struct ionic_datapath *dp, uint32_t kept,
                                 size_t kept_bytes, uint64_t now)
     TSA_REQUIRES(dp->rx_lock)
 {
-    if (dp->rx_waiting != 0 && dp_rx_room(kept, kept_bytes, dp->rx_waiting))
+    if (dp->rx_waiting != 0 && dp_rx_room(kept, kept_bytes, dp->rx_waiting)) {
         dp->rx_waiting = 0;
+    }
 
     if (dp->rx_waiting == 0) {
         dp->rx_crowded = false;
@@ -3887,12 +4039,14 @@ static void dp_rx_note_crowding(struct ionic_datapath *dp, uint32_t kept,
 void ionic_datapath_poll(struct ionic_datapath *dp)
 {
     struct dp_inmsg *list;
-    uint64_t dropped, now;
+    uint64_t dropped;
+    uint64_t now;
     uint32_t queued;
     size_t queued_bytes;
 
-    if (!dp)
+    if (!dp) {
         return;
+    }
 
     ionic_dp_s3_poll(dp);
 
@@ -3920,18 +4074,22 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
      * out for DP_RX_CROWDED_MS, this pass gives up on every SEND still
      * waiting, so the queue empties.
      */
-    struct dp_inmsg *defer_head = NULL, *defer_tail = NULL;
+    struct dp_inmsg *defer_head = NULL;
+    struct dp_inmsg *defer_tail = NULL;
     bool give_up =
         dp->rx_crowded && now - dp->rx_crowded_ms >= DP_RX_CROWDED_MS;
-    size_t done_bytes = 0, kept_bytes = 0;
-    uint32_t done = 0, kept = 0;
+    size_t done_bytes = 0;
+    size_t kept_bytes = 0;
+    uint32_t done = 0;
+    uint32_t kept = 0;
 
-    if (give_up)
+    if (give_up) {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: SENDs waiting for a receive have filled the "
                 "mesh's inbound queue (%" PRIu32 " messages, %zu bytes) for "
                 "%" PRIu64 " ms; those still without one fail now",
                 queued, queued_bytes, now - dp->rx_crowded_ms);
+    }
 
     while (list) {
         struct dp_inmsg *m = list;
@@ -3949,8 +4107,9 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
         }
 
         if (!blocked) {
-            if (!m->first_try_ms)
+            if (!m->first_try_ms) {
                 m->first_try_ms = now;
+            }
 
             if (dp_handle_wire(dp, m->src_node, m->buf, m->len,
                                !give_up &&
@@ -3972,10 +4131,11 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
             }
         }
 
-        if (defer_tail)
+        if (defer_tail) {
             defer_tail->next = m;
-        else
+        } else {
             defer_head = m;
+        }
         defer_tail = m;
         kept++;
         kept_bytes += m->len;
@@ -3985,8 +4145,9 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
     if (defer_head) {
         defer_tail->next = dp->rx_head;
         dp->rx_head = defer_head;
-        if (!dp->rx_tail)
+        if (!dp->rx_tail) {
             dp->rx_tail = defer_tail;
+        }
     }
     dp->rx_msgs -= done;
     dp->rx_bytes -= done_bytes;
@@ -4000,9 +4161,11 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
      * Retry the send queues that are waiting for a local peer's receive, or
      * for room to queue a request to another node.
      */
-    for (uint32_t i = 0; dp->sq_stalled && i < dp->qp_count; i++)
-        if (dp->qp[i].valid && (dp->qp[i].sq_rnr || dp->qp[i].sq_busy))
+    for (uint32_t i = 0; dp->sq_stalled && i < dp->qp_count; i++) {
+        if (dp->qp[i].valid && (dp->qp[i].sq_rnr || dp->qp[i].sq_busy)) {
             sq_service(dp, &dp->qp[i], i);
+        }
+    }
 
     /* A peer that never answers must not wedge the guest's send queue. */
     for (int i = 0; i < MAX_PENDING; i++) {
@@ -4034,7 +4197,7 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
  * -------------------------------------------------------------------------
  */
 
-#define DP_DB_RING_SRQ 3u
+#define DP_DB_RING_SRQ 3U
 
 /*
  * Advance a receive ring's producer from a doorbell's index.
@@ -4063,9 +4226,10 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
  */
 static bool rq_prod_advance(uint32_t *prod, uint32_t depth, uint16_t p_index)
 {
-    if (depth == 0 || (uint32_t)p_index >= depth)
+    if (depth == 0 || (uint32_t)p_index >= depth) {
         return false;
-    *prod += ((uint32_t)p_index - (*prod % depth)) & (depth - 1u);
+    }
+    *prod += ((uint32_t)p_index - (*prod % depth)) & (depth - 1U);
     return true;
 }
 
@@ -4089,22 +4253,24 @@ static void srq_doorbell(struct ionic_datapath *dp, uint32_t qid,
      * arithmetic, which is stable for the datapath's life. */
     if (sr) {
         qemu_mutex_lock(&sr->lock);
-        if (sr->valid)
+        if (sr->valid) {
             posted = rq_prod_advance(&sr->prod, sr->depth, p_index);
+        }
         qemu_mutex_unlock(&sr->lock);
     }
-    if (!posted)
+    if (!posted) {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: doorbell for unregistered SRQ %u", qid);
+    }
 }
 
 void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
                              uint64_t doorbell_val)
 {
-    uint16_t p_index = (uint16_t)(doorbell_val & 0xffffu);
-    uint8_t ring = (uint8_t)((doorbell_val >> 16) & 0xffu);
-    uint32_t qid = (uint32_t)(((doorbell_val >> 24) & 0xffu) |
-                              (((doorbell_val >> 32) & 0xffffu) << 8));
+    uint16_t p_index = (uint16_t)(doorbell_val & 0xffffU);
+    uint8_t ring = (uint8_t)((doorbell_val >> 16) & 0xffU);
+    uint32_t qid = (uint32_t)(((doorbell_val >> 24) & 0xffU) |
+                              (((doorbell_val >> 32) & 0xffffU) << 8));
 
     vfu_log(dp->vfu_ctx, LOG_DEBUG,
             "ionic_datapath: doorbell qtype=%d qid=%u ring=%u p_index=%u",
@@ -4118,8 +4284,9 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
             srq_doorbell(dp, qid, p_index);
             return;
         }
-        if (qid >= dp->cq_count || !dp->cq[qid].valid)
+        if (qid >= dp->cq_count || !dp->cq[qid].valid) {
             return;
+        }
         struct ionic_cq_ring *c = &dp->cq[qid];
         /*
          * ring 0 carries the consumer index; rings 1 and 2 are arm-any and
@@ -4130,8 +4297,9 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
             c->cons = p_index % c->depth;
         } else if (ring == 1 || ring == 2) {
             c->armed = true;
-            if (c->prod % c->depth != c->cons)
+            if (c->prod % c->depth != c->cons) {
                 cq_fire_event(dp, c, qid);
+            }
         }
         return;
     }
@@ -4150,10 +4318,10 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
             srq_doorbell(dp, qid, p_index);
             return;
         }
-        if (qid < dp->qp_count && dp->qp[qid].valid) {
-            if (rq_prod_advance(&dp->qp[qid].rq_prod, dp->qp[qid].rq_depth,
-                                p_index))
-                ernic_stats_qp_doorbell(dp->stats, qid, false);
+        if (qid < dp->qp_count && dp->qp[qid].valid &&
+            rq_prod_advance(&dp->qp[qid].rq_prod, dp->qp[qid].rq_depth,
+                            p_index)) {
+            ernic_stats_qp_doorbell(dp->stats, qid, false);
         }
         return;
 
@@ -4164,8 +4332,9 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
         return;
     }
 
-    if (qid >= dp->qp_count || !dp->qp[qid].valid)
+    if (qid >= dp->qp_count || !dp->qp[qid].valid) {
         return;
+    }
 
     ernic_stats_qp_doorbell(dp->stats, qid, true);
 
@@ -4183,23 +4352,28 @@ void ionic_datapath_rdma_counters(const struct ionic_datapath *dp,
     const uint64_t *src = NULL;
 
     memset(out, 0, IONIC_DP_RDMA_COUNT * sizeof(out[0]));
-    if (!dp)
+    if (!dp) {
         return;
-    if (qp_id == IONIC_DP_DEVICE)
+    }
+    if (qp_id == IONIC_DP_DEVICE) {
         src = dp->rdma;
-    else if (qp_id < dp->qp_count && dp->qp[qp_id].valid)
+    } else if (qp_id < dp->qp_count && dp->qp[qp_id].valid) {
         src = dp->qp[qp_id].rdma;
-    if (src)
+    }
+    if (src) {
         memcpy(out, src, IONIC_DP_RDMA_COUNT * sizeof(out[0]));
+    }
 }
 
 void ionic_datapath_reset_rdma_counters(struct ionic_datapath *dp)
 {
-    if (!dp)
+    if (!dp) {
         return;
+    }
     memset(dp->rdma, 0, sizeof(dp->rdma));
-    for (uint32_t i = 0; i < dp->qp_count; i++)
+    for (uint32_t i = 0; i < dp->qp_count; i++) {
         memset(dp->qp[i].rdma, 0, sizeof(dp->qp[i].rdma));
+    }
 }
 
 /*
@@ -4212,19 +4386,26 @@ void ionic_datapath_reset_rdma_counters(struct ionic_datapath *dp)
  */
 void ionic_datapath_reset_rdma(struct ionic_datapath *dp)
 {
-    if (!dp)
+    if (!dp) {
         return;
-    for (uint32_t i = 0; i < dp->qp_count; i++)
-        if (dp->qp[i].valid)
+    }
+    for (uint32_t i = 0; i < dp->qp_count; i++) {
+        if (dp->qp[i].valid) {
             ionic_datapath_unregister_qp(dp, i);
+        }
+    }
     /* Checks valid under the SRQ's lock itself */
-    for (uint32_t i = 0; i < dp->srq_count; i++)
+    for (uint32_t i = 0; i < dp->srq_count; i++) {
         ionic_datapath_unregister_srq(dp, IONIC_SRQ_QID_BASE + i);
-    for (uint32_t i = 0; i < dp->cq_count; i++)
-        if (dp->cq[i].valid)
+    }
+    for (uint32_t i = 0; i < dp->cq_count; i++) {
+        if (dp->cq[i].valid) {
             ionic_datapath_unregister_cq(dp, i);
-    for (uint32_t i = 0; i < dp->ah_count; i++)
+        }
+    }
+    for (uint32_t i = 0; i < dp->ah_count; i++) {
         ionic_datapath_unregister_ah(dp, i);
+    }
     for (uint32_t i = 0; i < ERNIC_MAX_MR; i++) {
         if (dp->mr[i].valid) {
             ionic_dp_buf_release(&dp->mr[i].buf);

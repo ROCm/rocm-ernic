@@ -40,14 +40,14 @@
 #include "parse_int.h"
 
 #define PORT_NUM        1
-#define BUF_SIZE        4096u
-#define MAX_WANT        4u
-#define POLL_TIMEOUT_MS 10000u
+#define BUF_SIZE        4096U
+#define MAX_WANT        4U
+#define POLL_TIMEOUT_MS 10000U
 /* ionic_rdma's hw_counters are cached for `lifespan` ms (10); wait past it. */
-#define SETTLE_MS 100u
+#define SETTLE_MS 100U
 /* Long enough that the emulator's RNR pass finds no receive, well inside its
  * RNR_RETRY_MS (5000) so the SEND is still delivered. */
-#define NO_RECV_MS 500u
+#define NO_RECV_MS 500U
 
 struct pair {
     struct ibv_context *ctx;
@@ -93,13 +93,13 @@ static uint64_t now_ms(void)
     struct timespec ts;
 
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+    return ((uint64_t)ts.tv_sec * 1000U) + ((uint64_t)ts.tv_nsec / 1000000U);
 }
 
 static void sleep_ms(uint32_t ms)
 {
-    struct timespec ts = {.tv_sec = ms / 1000u,
-                          .tv_nsec = (long)(ms % 1000u) * 1000000L};
+    struct timespec ts = {.tv_sec = ms / 1000U,
+                          .tv_nsec = (long)(ms % 1000U) * 1000000L};
 
     while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {
     }
@@ -123,8 +123,9 @@ static int read_counters(const char *device, struct counters *c)
     memset(c, 0, sizeof(*c));
     if (snprintf(dir_path, sizeof(dir_path),
                  "/sys/class/infiniband/%s/ports/%d/hw_counters", device,
-                 PORT_NUM) >= (int)sizeof(dir_path))
+                 PORT_NUM) >= (int)sizeof(dir_path)) {
         return -1;
+    }
     dir = opendir(dir_path);
     if (!dir) {
         fprintf(stderr, "%s: %s\n", dir_path, strerror(errno));
@@ -137,21 +138,24 @@ static int read_counters(const char *device, struct counters *c)
         uint64_t v;
         bool complete;
 
-        if (!checked_counter(entry->d_name))
+        if (!checked_counter(entry->d_name)) {
             continue;
+        }
         if (c->n == MAX_COUNTERS || strlen(entry->d_name) >= NAME_LEN) {
             fprintf(stderr, "hw_counters: too many or too long names\n");
             closedir(dir);
             return -1;
         }
         if (snprintf(path, sizeof(path), "%s/%s", dir_path, entry->d_name) >=
-            (int)sizeof(path))
+            (int)sizeof(path)) {
             continue;
+        }
         f = fopen(path, "re");
         if (!f || !fgets(text, sizeof(text), f)) {
             fprintf(stderr, "%s: unreadable\n", path);
-            if (f)
+            if (f) {
                 fclose(f);
+            }
             closedir(dir);
             return -1;
         }
@@ -175,9 +179,11 @@ static struct want want_for(const struct rdma_case *rc, const char *name)
 {
     struct want none = {name, 0, false};
 
-    for (size_t i = 0; i < MAX_WANT && rc->want[i].name; i++)
-        if (strcmp(rc->want[i].name, name) == 0)
+    for (size_t i = 0; i < MAX_WANT && rc->want[i].name; i++) {
+        if (strcmp(rc->want[i].name, name) == 0) {
             return rc->want[i];
+        }
+    }
     return none;
 }
 
@@ -193,18 +199,21 @@ static void got_add(char *got, size_t got_len, size_t *used, const char *fmt,
     int n;
 
     if (*used > 0) {
-        if (got_len - *used <= sizeof(", "))
+        if (got_len - *used <= sizeof(", ")) {
             return;
+        }
         memcpy(got + *used, ", ", sizeof(", "));
         *used += sizeof(", ") - 1;
     }
-    if (got_len - *used < 2)
+    if (got_len - *used < 2) {
         return;
+    }
     va_start(ap, fmt);
     n = vsnprintf(got + *used, got_len - *used, fmt, ap);
     va_end(ap);
-    if (n > 0)
+    if (n > 0) {
         *used += (size_t)n < got_len - *used ? (size_t)n : got_len - *used - 1;
+    }
 }
 
 /* Appends "name +delta" for every counter whose delta differs from the row,
@@ -226,25 +235,30 @@ static int compare_counters(const struct rdma_case *rc,
         uint64_t delta;
         struct want want = want_for(rc, after->name[i]);
 
-        for (size_t j = 0; j < before->n; j++)
-            if (strcmp(before->name[j], after->name[i]) == 0)
+        for (size_t j = 0; j < before->n; j++) {
+            if (strcmp(before->name[j], after->name[i]) == 0) {
                 old = before->value[j];
+            }
+        }
         if (!counter_delta(old, after->value[i], &delta)) {
             mismatches++;
             got_add(got, got_len, &used, "%s decreased", after->name[i]);
             continue;
         }
-        if (delta == 0 && want.delta == 0)
+        if (delta == 0 && want.delta == 0) {
             continue;
-        if (want.at_least ? delta < want.delta : delta != want.delta)
+        }
+        if (want.at_least ? delta < want.delta : delta != want.delta) {
             mismatches++;
+        }
         got_add(got, got_len, &used, "%s +%" PRIu64, after->name[i], delta);
     }
     for (size_t i = 0; i < MAX_WANT && rc->want[i].name; i++) {
         bool present = false;
 
-        for (size_t j = 0; j < after->n; j++)
+        for (size_t j = 0; j < after->n; j++) {
             present = present || strcmp(after->name[j], rc->want[i].name) == 0;
+        }
         if (!present) {
             mismatches++;
             got_add(got, got_len, &used, "%s missing", rc->want[i].name);
@@ -257,21 +271,25 @@ static int pick_gid(struct env *env)
 {
     struct ibv_port_attr port;
 
-    if (ibv_query_port(env->ctx, PORT_NUM, &port) != 0)
+    if (ibv_query_port(env->ctx, PORT_NUM, &port) != 0) {
         return -1;
+    }
     for (int i = 0; i < port.gid_tbl_len; i++) {
         struct ibv_gid_entry entry;
         static const uint8_t v4_mapped[12] = {0, 0, 0, 0, 0,    0,
                                               0, 0, 0, 0, 0xff, 0xff};
 
-        if (env->gid_index >= 0 && i != env->gid_index)
+        if (env->gid_index >= 0 && i != env->gid_index) {
             continue;
-        if (ibv_query_gid_ex(env->ctx, PORT_NUM, (uint32_t)i, &entry, 0) != 0)
+        }
+        if (ibv_query_gid_ex(env->ctx, PORT_NUM, (uint32_t)i, &entry, 0) != 0) {
             continue;
+        }
         if (env->gid_index < 0 &&
             (entry.gid_type != IBV_GID_TYPE_ROCE_V2 ||
-             memcmp(entry.gid.raw, v4_mapped, sizeof(v4_mapped)) != 0))
+             memcmp(entry.gid.raw, v4_mapped, sizeof(v4_mapped)) != 0)) {
             continue;
+        }
         env->gid_index = i;
         env->gid = entry.gid;
         return 0;
@@ -309,8 +327,9 @@ static int connect_qp(const struct env *env, struct ibv_qp *qp,
     attr.qp_access_flags = access;
     if (ibv_modify_qp(qp, &attr,
                       IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT |
-                          IBV_QP_ACCESS_FLAGS) != 0)
+                          IBV_QP_ACCESS_FLAGS) != 0) {
         return -1;
+    }
 
     memset(&attr, 0, sizeof(attr));
     attr.qp_state = IBV_QPS_RTR;
@@ -328,8 +347,9 @@ static int connect_qp(const struct env *env, struct ibv_qp *qp,
                       IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU |
                           IBV_QP_DEST_QPN | IBV_QP_RQ_PSN |
                           IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER) !=
-        0)
+        0) {
         return -1;
+    }
 
     memset(&attr, 0, sizeof(attr));
     attr.qp_state = IBV_QPS_RTS;
@@ -346,18 +366,24 @@ static int connect_qp(const struct env *env, struct ibv_qp *qp,
 
 static void pair_close(struct pair *p)
 {
-    if (p->req)
+    if (p->req) {
         ibv_destroy_qp(p->req);
-    if (p->resp)
+    }
+    if (p->resp) {
         ibv_destroy_qp(p->resp);
-    if (p->req_mr)
+    }
+    if (p->req_mr) {
         ibv_dereg_mr(p->req_mr);
-    if (p->resp_mr)
+    }
+    if (p->resp_mr) {
         ibv_dereg_mr(p->resp_mr);
-    if (p->cq)
+    }
+    if (p->cq) {
         ibv_destroy_cq(p->cq);
-    if (p->pd)
+    }
+    if (p->pd) {
         ibv_dealloc_pd(p->pd);
+    }
     free(p->req_buf);
     free(p->resp_buf);
     memset(p, 0, sizeof(*p));
@@ -374,20 +400,24 @@ static int pair_open(const struct env *env, struct pair *p)
     p->req_buf = calloc(1, BUF_SIZE);
     p->resp_buf = calloc(1, BUF_SIZE);
     p->pd = ibv_alloc_pd(env->ctx);
-    if (!p->req_buf || !p->resp_buf || !p->pd)
+    if (!p->req_buf || !p->resp_buf || !p->pd) {
         goto fail;
+    }
     p->cq = ibv_create_cq(env->ctx, 16, NULL, NULL, 0);
     p->req_mr = ibv_reg_mr(p->pd, p->req_buf, BUF_SIZE, access);
     p->resp_mr = ibv_reg_mr(p->pd, p->resp_buf, BUF_SIZE, access);
-    if (!p->cq || !p->req_mr || !p->resp_mr)
+    if (!p->cq || !p->req_mr || !p->resp_mr) {
         goto fail;
+    }
     p->req = create_qp(p);
     p->resp = create_qp(p);
-    if (!p->req || !p->resp)
+    if (!p->req || !p->resp) {
         goto fail;
+    }
     if (connect_qp(env, p->req, p->resp->qp_num) != 0 ||
-        connect_qp(env, p->resp, p->req->qp_num) != 0)
+        connect_qp(env, p->resp, p->req->qp_num) != 0) {
         goto fail;
+    }
     return 0;
 fail:
     fprintf(stderr, "QP pair setup failed: %s\n", strerror(errno));
@@ -406,12 +436,15 @@ static int wait_wc(struct pair *p, const struct ibv_qp *qp, struct ibv_wc *wc)
 
         memset(wc, 0, sizeof(*wc));
         n = ibv_poll_cq(p->cq, 1, wc);
-        if (n < 0)
+        if (n < 0) {
             return -1;
-        if (n == 1 && wc->qp_num == qp->qp_num)
+        }
+        if (n == 1 && wc->qp_num == qp->qp_num) {
             return 0;
-        if (n == 0)
+        }
+        if (n == 0) {
             sleep_ms(1);
+        }
     }
     return -1;
 }
@@ -476,7 +509,7 @@ static int expect_status(struct pair *p, const struct ibv_qp *qp,
 /* A key that no MR in this PD has: the real one with its low byte flipped. */
 static uint32_t bad_key(uint32_t key)
 {
-    return key ^ 0xffu;
+    return key ^ 0xffU;
 }
 
 static int run_succeed(const struct env *env, struct pair *p, char *got,
@@ -485,16 +518,19 @@ static int run_succeed(const struct env *env, struct pair *p, char *got,
     (void)env;
     if (post_send(p, IBV_WR_RDMA_WRITE, 64, p->req_mr->lkey,
                   p->resp_mr->rkey) != 0 ||
-        expect_status(p, p->req, IBV_WC_SUCCESS, got, got_len) != 0)
+        expect_status(p, p->req, IBV_WC_SUCCESS, got, got_len) != 0) {
         return -1;
+    }
     if (post_send(p, IBV_WR_RDMA_READ, 64, p->req_mr->lkey, p->resp_mr->rkey) !=
             0 ||
-        expect_status(p, p->req, IBV_WC_SUCCESS, got, got_len) != 0)
+        expect_status(p, p->req, IBV_WC_SUCCESS, got, got_len) != 0) {
         return -1;
+    }
     if (post_recv(p, BUF_SIZE) != 0 ||
         post_send(p, IBV_WR_SEND, 64, p->req_mr->lkey, 0) != 0 ||
-        expect_status(p, p->resp, IBV_WC_SUCCESS, got, got_len) != 0)
+        expect_status(p, p->resp, IBV_WC_SUCCESS, got, got_len) != 0) {
         return -1;
+    }
     return 0;
 }
 
@@ -503,8 +539,9 @@ static int run_write_bad_rkey(const struct env *env, struct pair *p, char *got,
 {
     (void)env;
     if (post_send(p, IBV_WR_RDMA_WRITE, 64, p->req_mr->lkey,
-                  bad_key(p->resp_mr->rkey)) != 0)
+                  bad_key(p->resp_mr->rkey)) != 0) {
         return -1;
+    }
     return expect_status(p, p->req, IBV_WC_REM_ACCESS_ERR, got, got_len);
 }
 
@@ -513,8 +550,9 @@ static int run_write_bad_lkey(const struct env *env, struct pair *p, char *got,
 {
     (void)env;
     if (post_send(p, IBV_WR_RDMA_WRITE, 64, bad_key(p->req_mr->lkey),
-                  p->resp_mr->rkey) != 0)
+                  p->resp_mr->rkey) != 0) {
         return -1;
+    }
     return expect_status(p, p->req, IBV_WC_LOC_PROT_ERR, got, got_len);
 }
 
@@ -523,8 +561,9 @@ static int run_recv_too_small(const struct env *env, struct pair *p, char *got,
 {
     (void)env;
     if (post_recv(p, 16) != 0 ||
-        post_send(p, IBV_WR_SEND, 64, p->req_mr->lkey, 0) != 0)
+        post_send(p, IBV_WR_SEND, 64, p->req_mr->lkey, 0) != 0) {
         return -1;
+    }
     return expect_status(p, p->resp, IBV_WC_LOC_LEN_ERR, got, got_len);
 }
 
@@ -536,8 +575,9 @@ static int run_atomic_bad_rkey(const struct env *env, struct pair *p, char *got,
         return 1;
     }
     if (post_send(p, IBV_WR_ATOMIC_FETCH_AND_ADD, 8, p->req_mr->lkey,
-                  bad_key(p->resp_mr->rkey)) != 0)
+                  bad_key(p->resp_mr->rkey)) != 0) {
         return -1;
+    }
     return expect_status(p, p->req, IBV_WC_REM_ACCESS_ERR, got, got_len);
 }
 
@@ -545,11 +585,13 @@ static int run_send_no_recv(const struct env *env, struct pair *p, char *got,
                             size_t got_len)
 {
     (void)env;
-    if (post_send(p, IBV_WR_SEND, 64, p->req_mr->lkey, 0) != 0)
+    if (post_send(p, IBV_WR_SEND, 64, p->req_mr->lkey, 0) != 0) {
         return -1;
+    }
     sleep_ms(NO_RECV_MS);
-    if (post_recv(p, BUF_SIZE) != 0)
+    if (post_recv(p, BUF_SIZE) != 0) {
         return -1;
+    }
     return expect_status(p, p->resp, IBV_WC_SUCCESS, got, got_len);
 }
 
@@ -558,8 +600,9 @@ static int run_send_bad_source(const struct env *env, struct pair *p, char *got,
 {
     (void)env;
     if (post_recv(p, BUF_SIZE) != 0 ||
-        post_send(p, IBV_WR_SEND, 64, bad_key(p->req_mr->lkey), 0) != 0)
+        post_send(p, IBV_WR_SEND, 64, bad_key(p->req_mr->lkey), 0) != 0) {
         return -1;
+    }
     return expect_status(p, p->req, IBV_WC_LOC_PROT_ERR, got, got_len);
 }
 
@@ -634,8 +677,9 @@ static int run_case(const struct env *env, const struct rdma_case *rc)
         return 0;
     }
     sleep_ms(SETTLE_MS);
-    if (read_counters(env->device, &after) != 0)
+    if (read_counters(env->device, &after) != 0) {
         return 1;
+    }
     if (rc_run != 0) {
         printf("FAIL %s: %s; expected: %s; got: %s\n", rc->category,
                rc->description, rc->expected, got[0] ? got : "post failed");
@@ -701,8 +745,9 @@ int main(int argc, char **argv)
     }
     for (int i = 0; i < num && !env.ctx; i++) {
         if (want_device &&
-            strcmp(ibv_get_device_name(list[i]), want_device) != 0)
+            strcmp(ibv_get_device_name(list[i]), want_device) != 0) {
             continue;
+        }
         env.ctx = ibv_open_device(list[i]);
         env.device = ibv_get_device_name(list[i]);
     }
@@ -724,8 +769,9 @@ int main(int argc, char **argv)
                   attr.atomic_cap != IBV_ATOMIC_NONE;
     printf("device %s, GID index %d\n", env.device, env.gid_index);
 
-    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         failures += run_case(&env, &cases[i]);
+    }
 
     ibv_close_device(env.ctx);
     ibv_free_device_list(list);

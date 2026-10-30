@@ -52,8 +52,8 @@ char *tcp_gid_str(const uint8_t gid[ERNIC_GID_LEN], char buf[TCP_GID_STR_LEN])
         }
         buf[o++] = hex[gid[i * 2] >> 4];
         buf[o++] = hex[gid[i * 2] & 0x0f];
-        buf[o++] = hex[gid[i * 2 + 1] >> 4];
-        buf[o++] = hex[gid[i * 2 + 1] & 0x0f];
+        buf[o++] = hex[gid[(i * 2) + 1] >> 4];
+        buf[o++] = hex[gid[(i * 2) + 1] & 0x0f];
     }
     buf[o] = '\0';
     return buf;
@@ -78,8 +78,9 @@ uint32_t tcp_parse_guest_gids(const char *val,
 {
     uint32_t n = 0;
 
-    if (!val || !*val)
+    if (!val || !*val) {
         return 0;
+    }
 
     char *dup = g_strdup(val);
     char *save = NULL;
@@ -91,13 +92,16 @@ uint32_t tcp_parse_guest_gids(const char *val,
          * iteration step. */
         char *val_s = tok;
 
-        while (*val_s == ' ')
+        while (*val_s == ' ') {
             val_s++;
+        }
         char *end = val_s + strlen(val_s);
-        while (end > val_s && end[-1] == ' ')
+        while (end > val_s && end[-1] == ' ') {
             *--end = '\0';
-        if (!*val_s)
+        }
+        if (!*val_s) {
             continue;
+        }
 
         if (n == TCP_MAX_NODE_GIDS) {
             rdma_warn_report("TCP: more than %d entries in "
@@ -153,7 +157,8 @@ static void tcp_gid_index_rebuild(TcpBackendPrivate *priv)
     TSA_REQUIRES(priv->gid_table_lock)
 {
     GHashTableIter iter;
-    gpointer key, value;
+    gpointer key;
+    gpointer value;
 
     g_hash_table_remove_all(priv->gid_owner);
 
@@ -171,8 +176,9 @@ static void tcp_gid_index_rebuild(TcpBackendPrivate *priv)
          * a full mesh needs its slot -- own its guest's GID instead of
          * deadlocking against the id it used to have.
          */
-        if (!claims->alive)
+        if (!claims->alive) {
             continue;
+        }
 
         for (uint32_t i = 0; i < claims->num_gids; i++) {
             GBytes *gid = g_bytes_new(claims->gids[i], ERNIC_GID_LEN);
@@ -224,14 +230,16 @@ static bool tcp_gid_claims_record(TcpBackendPrivate *priv, uint32_t node_id,
 
         claims->num_gids = num_gids;
         claims->alive = alive;
-        for (uint32_t i = 0; i < num_gids; i++)
+        for (uint32_t i = 0; i < num_gids; i++) {
             memcpy(claims->gids[i], gids[i], ERNIC_GID_LEN);
+        }
         g_hash_table_insert(priv->node_gids, GUINT_TO_POINTER(node_id), claims);
         changed = true;
     }
 
-    if (changed)
+    if (changed) {
         tcp_gid_index_rebuild(priv);
+    }
 
     qemu_mutex_unlock(&priv->gid_table_lock);
     return changed;
@@ -297,11 +305,13 @@ static void tcp_gid_claims_report(TcpBackendPrivate *priv, uint32_t node_id,
 bool tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
                         const uint8_t (*gids)[ERNIC_GID_LEN], uint32_t num_gids)
 {
-    if (!priv || !tcp_has_gid_tables(priv) || num_gids > TCP_MAX_NODE_GIDS)
+    if (!priv || !tcp_has_gid_tables(priv) || num_gids > TCP_MAX_NODE_GIDS) {
         return false;
+    }
 
-    if (!tcp_gid_claims_record(priv, node_id, gids, num_gids, true))
+    if (!tcp_gid_claims_record(priv, node_id, gids, num_gids, true)) {
         return false;
+    }
     tcp_gid_claims_report(priv, node_id, gids, num_gids, true);
     return true;
 }
@@ -337,8 +347,9 @@ static bool tcp_gid_claims_set_if_member(TcpBackendPrivate *priv,
     const MeshNodeInfo *node;
     bool member, alive = false, changed = false;
 
-    if (!priv || !tcp_has_gid_tables(priv) || num_gids > TCP_MAX_NODE_GIDS)
+    if (!priv || !tcp_has_gid_tables(priv) || num_gids > TCP_MAX_NODE_GIDS) {
         return false;
+    }
 
     qemu_mutex_lock(&priv->mesh_table_lock);
     node = g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(node_id));
@@ -349,8 +360,9 @@ static bool tcp_gid_claims_set_if_member(TcpBackendPrivate *priv,
     }
     qemu_mutex_unlock(&priv->mesh_table_lock);
 
-    if (changed)
+    if (changed) {
         tcp_gid_claims_report(priv, node_id, gids, num_gids, alive);
+    }
     return member;
 }
 
@@ -362,8 +374,9 @@ static bool tcp_gid_claims_set_if_member(TcpBackendPrivate *priv,
 void tcp_gid_claims_forget(TcpBackendPrivate *priv, uint32_t node_id)
 {
     qemu_mutex_lock(&priv->gid_table_lock);
-    if (g_hash_table_remove(priv->node_gids, GUINT_TO_POINTER(node_id)))
+    if (g_hash_table_remove(priv->node_gids, GUINT_TO_POINTER(node_id))) {
         tcp_gid_index_rebuild(priv);
+    }
     qemu_mutex_unlock(&priv->gid_table_lock);
 }
 
@@ -392,10 +405,12 @@ void tcp_gid_claims_prune(TcpBackendPrivate *priv, const uint8_t *topo,
     gpointer key;
     guint dropped = 0;
 
-    if (!tcp_has_gid_tables(priv))
+    if (!tcp_has_gid_tables(priv)) {
         return;
-    if (num_nodes > TCP_MAX_MESH_NODES)
+    }
+    if (num_nodes > TCP_MAX_MESH_NODES) {
         num_nodes = TCP_MAX_MESH_NODES;
+    }
 
     qemu_mutex_lock(&priv->gid_table_lock);
     g_hash_table_iter_init(&iter, priv->node_gids);
@@ -403,23 +418,26 @@ void tcp_gid_claims_prune(TcpBackendPrivate *priv, const uint8_t *topo,
         uint32_t node_id = GPOINTER_TO_UINT(key);
         bool listed = node_id == local;
 
-        for (uint32_t i = 0; !listed && i < num_nodes; i++)
+        for (uint32_t i = 0; !listed && i < num_nodes; i++) {
             listed = ernic_get_be32(topo + TCP_TOPOLOGY_NODE_OFF(i) +
                                     TCP_MESH_NODE_ID_OFF) == node_id;
+        }
         if (!listed) {
             g_hash_table_iter_remove(&iter);
             dropped++;
         }
     }
-    if (dropped)
+    if (dropped) {
         tcp_gid_index_rebuild(priv);
+    }
     qemu_mutex_unlock(&priv->gid_table_lock);
 
     /* Logged outside the lock: rdma_info_report() can block on stderr. */
-    if (dropped)
+    if (dropped) {
         rdma_info_report("TCP: dropped the GIDs of %u node(s) no longer in "
                          "the mesh",
                          dropped);
+    }
 }
 
 /*
@@ -432,8 +450,9 @@ bool tcp_gid_claims_set_alive(TcpBackendPrivate *priv, uint32_t node_id,
 {
     bool changed = false;
 
-    if (!priv || !tcp_has_gid_tables(priv))
+    if (!priv || !tcp_has_gid_tables(priv)) {
         return false;
+    }
 
     qemu_mutex_lock(&priv->gid_table_lock);
 
@@ -471,8 +490,9 @@ void tcp_gid_claims_report_alive(uint32_t node_id, bool alive)
 uint32_t tcp_resolve_node_from_gid(TcpBackendPrivate *priv,
                                    const union ibv_gid *dgid)
 {
-    if (!priv || !dgid || !tcp_has_gid_tables(priv))
+    if (!priv || !dgid || !tcp_has_gid_tables(priv)) {
         return UINT32_MAX;
+    }
 
     GBytes *key = g_bytes_new_static(dgid->raw, ERNIC_GID_LEN);
     gpointer value;
@@ -497,21 +517,25 @@ void tcp_fill_node_gids(TcpNodeGidsWire *out, uint32_t node_id,
                         const uint8_t (*gids)[ERNIC_GID_LEN], uint32_t num_gids)
 {
     memset(out->bytes, 0, sizeof(out->bytes));
-    if (num_gids > TCP_MAX_NODE_GIDS)
+    if (num_gids > TCP_MAX_NODE_GIDS) {
         num_gids = TCP_MAX_NODE_GIDS;
+    }
     ernic_put_be32(out->bytes + TCP_NODE_GIDS_NODE_ID_OFF, node_id);
     ernic_put_be32(out->bytes + TCP_NODE_GIDS_NUM_OFF, num_gids);
-    for (uint32_t i = 0; i < num_gids; i++)
-        memcpy(out->bytes + TCP_NODE_GIDS_GIDS_OFF + (size_t)i * ERNIC_GID_LEN,
+    for (uint32_t i = 0; i < num_gids; i++) {
+        memcpy(out->bytes + TCP_NODE_GIDS_GIDS_OFF +
+                   ((size_t)i * ERNIC_GID_LEN),
                gids[i], ERNIC_GID_LEN);
+    }
 }
 
 /* Send one advertisement on an already-locked-free connection. */
 void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
                         const TcpNodeGidsWire *payload)
 {
-    if (!conn)
+    if (!conn) {
         return;
+    }
 
     /* Checked under the lock tcp_retire_conn() changes them under */
     qemu_mutex_lock(&conn->lock);
@@ -548,10 +572,12 @@ void tcp_send_node_gids(TcpBackendPrivate *priv, TcpConnection *conn,
  */
 void tcp_advertise_local_gids(TcpBackendPrivate *priv)
 {
-    if (!priv)
+    if (!priv) {
         return;
-    if (!priv->is_manager && !tcp_worker_registered(priv))
+    }
+    if (!priv->is_manager && !tcp_worker_registered(priv)) {
         return;
+    }
 
     uint32_t node = tcp_local_node(priv);
 
@@ -611,14 +637,16 @@ int tcp_claim_gid(TcpBackendPrivate *priv, const union ibv_gid *gid, bool add)
     uint32_t i;
     bool changed = false;
 
-    if (!priv || !gid)
+    if (!priv || !gid) {
         return -EINVAL;
+    }
 
     qemu_mutex_lock(&priv->lock);
 
     for (i = 0; i < priv->num_local_gids; i++) {
-        if (memcmp(priv->local_gids[i], gid->raw, ERNIC_GID_LEN) == 0)
+        if (memcmp(priv->local_gids[i], gid->raw, ERNIC_GID_LEN) == 0) {
             break;
+        }
     }
 
     if (add) {
@@ -646,8 +674,9 @@ int tcp_claim_gid(TcpBackendPrivate *priv, const union ibv_gid *gid, bool add)
 
     qemu_mutex_unlock(&priv->lock);
 
-    if (changed)
+    if (changed) {
         tcp_advertise_local_gids(priv);
+    }
 
     return 0;
 }
@@ -662,7 +691,8 @@ void tcp_recv_node_gids(const TcpConnection *conn, const TcpRecvMsg *msg)
     TcpBackendPrivate *priv = conn->priv;
     const uint8_t *adv = msg->payload;
     uint8_t gids[TCP_MAX_NODE_GIDS][ERNIC_GID_LEN];
-    uint32_t node_id, num_gids;
+    uint32_t node_id;
+    uint32_t num_gids;
 
     if (!priv || !adv || msg->hdr.msg_len < TCP_NODE_GIDS_LEN) {
         rdma_error_report("TCP: Invalid NODE_GIDS payload");

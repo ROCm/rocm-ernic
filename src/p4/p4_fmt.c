@@ -13,14 +13,14 @@
 
 #include "p4/p4_fmt.h"
 
-#define F32_SIGN_MASK 0x80000000u
-#define F32_ABS_MASK  0x7FFFFFFFu
+#define F32_SIGN_MASK 0x80000000U
+#define F32_ABS_MASK  0x7FFFFFFFU
 #define F32_EXP_SHIFT 23
-#define F32_MAN_MASK  0x007FFFFFu
+#define F32_MAN_MASK  0x007FFFFFU
 #define F32_MAN_BITS  23
 #define F32_BIAS      127
-#define F32_INF_BITS  0x7F800000u
-#define F32_QNAN_BITS 0x7FC00000u
+#define F32_INF_BITS  0x7F800000U
+#define F32_QNAN_BITS 0x7FC00000U
 
 /*
  * What a format is.  Sign is always one bit, so the width is
@@ -66,10 +66,11 @@ unsigned p4_fmt_bits(enum p4_fmt f)
 {
     const struct fmt_desc *d;
 
-    if (!p4_fmt_valid(f))
+    if (!p4_fmt_valid(f)) {
         return 0;
+    }
     d = &fmt_table[f];
-    return 1u + d->exp_bits + d->man_bits;
+    return 1U + d->exp_bits + d->man_bits;
 }
 
 const char *p4_fmt_name(enum p4_fmt f)
@@ -81,23 +82,27 @@ size_t p4_fmt_bytes(enum p4_fmt f, size_t n)
 {
     unsigned bits = p4_fmt_bits(f);
 
-    if (bits == 0)
+    if (bits == 0) {
         return 0;
+    }
     /* Only a 4-bit format can land mid-byte, and only on an odd count. */
-    if (((n * bits) % 8u) != 0u)
+    if (((n * bits) % 8U) != 0U) {
         return 0;
-    return n * bits / 8u;
+    }
+    return n * bits / 8U;
 }
 
 size_t p4_fmt_elems(enum p4_fmt f, size_t bytes)
 {
     unsigned bits = p4_fmt_bits(f);
 
-    if (bits == 0)
+    if (bits == 0) {
         return 0;
-    if (((bytes * 8u) % bits) != 0u)
+    }
+    if (((bytes * 8U) % bits) != 0U) {
         return 0;
-    return bytes * 8u / bits;
+    }
+    return bytes * 8U / bits;
 }
 
 static uint32_t float_bits(float v)
@@ -122,16 +127,16 @@ static uint32_t fmt_load(enum p4_fmt f, const uint8_t *base, size_t i)
     switch (p4_fmt_bits(f)) {
     case 4:
         /* Two to a byte, low nibble first. */
-        return (i & 1u) ? (uint32_t)(base[i / 2u] >> 4)
-                        : (uint32_t)(base[i / 2u] & 0x0Fu);
+        return (i & 1U) ? (uint32_t)(base[i / 2U] >> 4)
+                        : (uint32_t)(base[i / 2U] & 0x0FU);
     case 8:
         return base[i];
     case 16:
-        return (uint32_t)base[2u * i] | ((uint32_t)base[2u * i + 1u] << 8);
+        return (uint32_t)base[2U * i] | ((uint32_t)base[(2U * i) + 1U] << 8);
     default:
-        return (uint32_t)base[4u * i] | ((uint32_t)base[4u * i + 1u] << 8) |
-               ((uint32_t)base[4u * i + 2u] << 16) |
-               ((uint32_t)base[4u * i + 3u] << 24);
+        return (uint32_t)base[4U * i] | ((uint32_t)base[(4U * i) + 1U] << 8) |
+               ((uint32_t)base[(4U * i) + 2U] << 16) |
+               ((uint32_t)base[(4U * i) + 3U] << 24);
     }
 }
 
@@ -140,24 +145,25 @@ static void fmt_store(enum p4_fmt f, uint8_t *base, size_t i, uint32_t raw)
     switch (p4_fmt_bits(f)) {
     case 4:
         /* Read-modify-write: the other element in this byte is not ours. */
-        if (i & 1u)
-            base[i / 2u] =
-                (uint8_t)((base[i / 2u] & 0x0Fu) | ((raw & 0x0Fu) << 4));
-        else
-            base[i / 2u] = (uint8_t)((base[i / 2u] & 0xF0u) | (raw & 0x0Fu));
+        if (i & 1U) {
+            base[i / 2U] =
+                (uint8_t)((base[i / 2U] & 0x0FU) | ((raw & 0x0FU) << 4));
+        } else {
+            base[i / 2U] = (uint8_t)((base[i / 2U] & 0xF0U) | (raw & 0x0FU));
+        }
         break;
     case 8:
         base[i] = (uint8_t)raw;
         break;
     case 16:
-        base[2u * i] = (uint8_t)(raw & 0xFFu);
-        base[2u * i + 1u] = (uint8_t)((raw >> 8) & 0xFFu);
+        base[2U * i] = (uint8_t)(raw & 0xFFU);
+        base[(2U * i) + 1U] = (uint8_t)((raw >> 8) & 0xFFU);
         break;
     default:
-        base[4u * i] = (uint8_t)(raw & 0xFFu);
-        base[4u * i + 1u] = (uint8_t)((raw >> 8) & 0xFFu);
-        base[4u * i + 2u] = (uint8_t)((raw >> 16) & 0xFFu);
-        base[4u * i + 3u] = (uint8_t)((raw >> 24) & 0xFFu);
+        base[4U * i] = (uint8_t)(raw & 0xFFU);
+        base[(4U * i) + 1U] = (uint8_t)((raw >> 8) & 0xFFU);
+        base[(4U * i) + 2U] = (uint8_t)((raw >> 16) & 0xFFU);
+        base[(4U * i) + 3U] = (uint8_t)((raw >> 24) & 0xFFU);
         break;
     }
 }
@@ -182,14 +188,16 @@ static float make_f32(uint32_t sign, uint32_t sig, int32_t e)
     unsigned p = 0;
     int32_t field;
 
-    if (sig == 0)
+    if (sig == 0) {
         return bits_float(sign);
+    }
 
     /* Put the significand's leading one at bit 23, so the value reads as
      * 1.f * 2^(e + 23).  A loop rather than a count-leading-zeros
      * builtin, which is a GNU extension. */
-    while ((sig >> p) > 1u)
+    while ((sig >> p) > 1U) {
         p++;
+    }
     if (p < F32_MAN_BITS) {
         sig <<= (F32_MAN_BITS - p);
         e -= (int32_t)(F32_MAN_BITS - p);
@@ -199,27 +207,29 @@ static float make_f32(uint32_t sign, uint32_t sig, int32_t e)
     }
 
     field = e + (int32_t)F32_MAN_BITS + F32_BIAS;
-    if (field >= 1)
+    if (field >= 1) {
         return bits_float(sign | ((uint32_t)field << F32_EXP_SHIFT) |
                           (sig & F32_MAN_MASK));
+    }
 
     /* A float32 subnormal.  Shifting cannot lose a bit: the formats that
      * reach here have at most 7 significant bits and float32 keeps 23. */
     {
         uint32_t shift = (uint32_t)(1 - field);
 
-        if (shift > F32_MAN_BITS)
+        if (shift > F32_MAN_BITS) {
             return bits_float(sign);
+        }
         return bits_float(sign | (sig >> shift));
     }
 }
 
 static float fmt_decode_raw(const struct fmt_desc *d, uint32_t raw)
 {
-    const uint32_t man_mask = (1u << d->man_bits) - 1u;
-    const uint32_t exp_mask = (1u << d->exp_bits) - 1u;
+    const uint32_t man_mask = (1U << d->man_bits) - 1U;
+    const uint32_t exp_mask = (1U << d->exp_bits) - 1U;
     const uint32_t sign =
-        ((raw >> (d->exp_bits + d->man_bits)) & 1u) ? F32_SIGN_MASK : 0u;
+        ((raw >> (d->exp_bits + d->man_bits)) & 1U) ? F32_SIGN_MASK : 0U;
     const uint32_t exp = (raw >> d->man_bits) & exp_mask;
     const uint32_t man = raw & man_mask;
 
@@ -230,8 +240,9 @@ static float fmt_decode_raw(const struct fmt_desc *d, uint32_t raw)
             return bits_float(sign | F32_INF_BITS |
                               (man << (F32_MAN_BITS - d->man_bits)));
         }
-        if (d->has_nan && man == man_mask)
+        if (d->has_nan && man == man_mask) {
             return bits_float(sign | F32_QNAN_BITS);
+        }
         /* Otherwise this exponent holds ordinary finite values. */
     }
 
@@ -241,19 +252,22 @@ static float fmt_decode_raw(const struct fmt_desc *d, uint32_t raw)
      * expression with the implicit leading one absent and the exponent
      * pinned one above its field.
      */
-    if (exp == 0)
+    if (exp == 0) {
         return make_f32(sign, man, 1 - d->bias - (int32_t)d->man_bits);
+    }
 
-    return make_f32(sign, (1u << d->man_bits) | man,
+    return make_f32(sign, (1U << d->man_bits) | man,
                     (int32_t)exp - d->bias - (int32_t)d->man_bits);
 }
 
 float p4_fmt_decode(enum p4_fmt f, const uint8_t *base, size_t i)
 {
-    if (!p4_fmt_valid(f) || !base)
-        return 0.0f;
-    if (f == P4_FMT_FP32)
+    if (!p4_fmt_valid(f) || !base) {
+        return 0.0F;
+    }
+    if (f == P4_FMT_FP32) {
         return bits_float(fmt_load(f, base, i)); /* identity */
+    }
     return fmt_decode_raw(&fmt_table[f], fmt_load(f, base, i));
 }
 
@@ -275,25 +289,27 @@ struct fmt_enc {
 
 static void fmt_enc_init(struct fmt_enc *e, const struct fmt_desc *d)
 {
-    const uint32_t man_mask = (1u << d->man_bits) - 1u;
-    const uint32_t exp_mask = (1u << d->exp_bits) - 1u;
-    uint32_t max_exp, max_man;
-    float max_v, step;
+    const uint32_t man_mask = (1U << d->man_bits) - 1U;
+    const uint32_t exp_mask = (1U << d->exp_bits) - 1U;
+    uint32_t max_exp;
+    uint32_t max_man;
+    float max_v;
+    float step;
 
     e->d = d;
 
     if (d->has_inf) {
         /* The all-ones exponent is infinity and NaN, so the largest
          * finite value is one exponent below it. */
-        max_exp = exp_mask - 1u;
+        max_exp = exp_mask - 1U;
         max_man = man_mask;
         e->inf_raw = exp_mask << d->man_bits;
-        e->nan_raw = e->inf_raw | (1u << (d->man_bits - 1u));
+        e->nan_raw = e->inf_raw | (1U << (d->man_bits - 1U));
     } else if (d->has_nan) {
         /* E4M3: the all-ones exponent is finite except for the all-ones
          * significand, which is the only NaN. */
         max_exp = exp_mask;
-        max_man = man_mask - 1u;
+        max_man = man_mask - 1U;
         e->nan_raw = (exp_mask << d->man_bits) | man_mask;
         e->inf_raw = (max_exp << d->man_bits) | max_man;
     } else {
@@ -311,23 +327,28 @@ static void fmt_enc_init(struct fmt_enc *e, const struct fmt_desc *d)
     step = bits_float(
         (uint32_t)((int32_t)max_exp - d->bias - d->man_bits + F32_BIAS)
         << F32_EXP_SHIFT);
-    e->saturate_f32 = float_bits(max_v + step * 0.5f);
+    e->saturate_f32 = float_bits(max_v + (step * 0.5F));
 }
 
 /* Shift @v right by @n, rounding to nearest with ties to even. */
 static uint32_t rne_shift(uint32_t v, unsigned n)
 {
-    uint32_t keep, half, rest;
+    uint32_t keep;
+    uint32_t half;
+    uint32_t rest;
 
-    if (n == 0)
+    if (n == 0) {
         return v;
-    if (n >= 32)
+    }
+    if (n >= 32) {
         return 0;
+    }
     keep = v >> n;
-    half = (v >> (n - 1u)) & 1u;
-    rest = v & ((1u << (n - 1u)) - 1u);
-    if (half && (rest || (keep & 1u)))
+    half = (v >> (n - 1U)) & 1U;
+    rest = v & ((1U << (n - 1U)) - 1U);
+    if (half && (rest || (keep & 1U))) {
         keep++;
+    }
     return keep;
 }
 
@@ -347,12 +368,17 @@ static uint32_t fmt_encode_raw(const struct fmt_enc *e, float v)
     const uint32_t bits = float_bits(v);
     const uint32_t mag = bits & F32_ABS_MASK;
     const uint32_t sign_bit =
-        (bits & F32_SIGN_MASK) ? (1u << (d->exp_bits + d->man_bits)) : 0u;
-    const uint32_t man_mask = (1u << d->man_bits) - 1u;
+        (bits & F32_SIGN_MASK) ? (1U << (d->exp_bits + d->man_bits)) : 0U;
+    const uint32_t man_mask = (1U << d->man_bits) - 1U;
     /* Exponent of the least significant bit of the smallest subnormal. */
     const int32_t emin = 1 - d->bias - (int32_t)d->man_bits;
-    uint32_t sig, q;
-    int32_t src_e, msb = 0, unbiased, field, shift;
+    uint32_t sig;
+    uint32_t q;
+    int32_t src_e;
+    int32_t msb = 0;
+    int32_t unbiased;
+    int32_t field;
+    int32_t shift;
 
     if (mag > F32_INF_BITS) {
         /*
@@ -370,21 +396,23 @@ static uint32_t fmt_encode_raw(const struct fmt_enc *e, float v)
          * largest finite value for a format that has none. */
         return sign_bit | (d->has_inf ? e->inf_raw : e->max_raw);
     }
-    if (mag == 0)
+    if (mag == 0) {
         return sign_bit;
+    }
 
     if ((mag >> F32_EXP_SHIFT) == 0) {
         /* float32 subnormal: no implicit leading one. */
         sig = mag;
         src_e = -126 - (int32_t)F32_MAN_BITS;
     } else {
-        sig = (mag & F32_MAN_MASK) | (1u << F32_EXP_SHIFT);
+        sig = (mag & F32_MAN_MASK) | (1U << F32_EXP_SHIFT);
         src_e =
             (int32_t)(mag >> F32_EXP_SHIFT) - F32_BIAS - (int32_t)F32_MAN_BITS;
     }
 
-    while ((sig >> msb) > 1u)
+    while ((sig >> msb) > 1U) {
         msb++;
+    }
     unbiased = src_e + msb;
     field = unbiased + d->bias;
 
@@ -394,23 +422,25 @@ static uint32_t fmt_encode_raw(const struct fmt_enc *e, float v)
      * shift is a widening conversion and is exact.
      */
     shift = (field >= 1) ? (msb - (int32_t)d->man_bits) : (emin - src_e);
-    if (shift > 0)
+    if (shift > 0) {
         q = rne_shift(sig, (unsigned)shift);
-    else
+    } else {
         q = sig << (unsigned)(-shift);
+    }
 
     if (field < 1) {
         /* Subnormal, or rounded up out of the subnormals onto the
          * smallest normal -- which is the same bit pattern either way. */
         return sign_bit | q;
     }
-    if (q > (man_mask | (man_mask + 1u))) {
+    if (q > (man_mask | (man_mask + 1U))) {
         /* Rounding carried into the exponent. */
         q >>= 1;
         field++;
     }
-    if ((((uint32_t)field << d->man_bits) | (q & man_mask)) > e->max_raw)
+    if ((((uint32_t)field << d->man_bits) | (q & man_mask)) > e->max_raw) {
         return sign_bit | (d->has_inf ? e->inf_raw : e->max_raw);
+    }
     return sign_bit | ((uint32_t)field << d->man_bits) | (q & man_mask);
 }
 
@@ -418,8 +448,9 @@ void p4_fmt_encode(enum p4_fmt f, float v, uint8_t *base, size_t i)
 {
     struct fmt_enc e;
 
-    if (!p4_fmt_valid(f) || !base)
+    if (!p4_fmt_valid(f) || !base) {
         return;
+    }
     if (f == P4_FMT_FP32) {
         fmt_store(f, base, i, float_bits(v)); /* identity */
         return;
@@ -434,19 +465,24 @@ bool p4_fmt_convert(enum p4_fmt src, enum p4_fmt dst, const uint8_t *in,
     struct fmt_enc e;
     bool dst_is_f32;
 
-    if (!in || !out)
+    if (!in || !out) {
         return false;
-    if (!p4_fmt_valid(src) || !p4_fmt_valid(dst))
+    }
+    if (!p4_fmt_valid(src) || !p4_fmt_valid(dst)) {
         return false;
+    }
     /* A half-byte at either end is not an array of either format. */
-    if (p4_fmt_bytes(src, n) == 0 && n != 0)
+    if (p4_fmt_bytes(src, n) == 0 && n != 0) {
         return false;
-    if (p4_fmt_bytes(dst, n) == 0 && n != 0)
+    }
+    if (p4_fmt_bytes(dst, n) == 0 && n != 0) {
         return false;
+    }
 
     dst_is_f32 = (dst == P4_FMT_FP32);
-    if (!dst_is_f32)
+    if (!dst_is_f32) {
         fmt_enc_init(&e, &fmt_table[dst]);
+    }
 
     for (size_t i = 0; i < n; i++) {
         float v = p4_fmt_decode(src, in, i);

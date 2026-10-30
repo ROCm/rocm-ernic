@@ -227,7 +227,7 @@ gpointer g_try_malloc0_n(gsize n_blocks, gsize n_block_bytes)
  * bitmap and only the table memset goes out of bounds. */
 #define TBL_SZ_RAGGED 100
 
-#define GUARD_BYTE 0xC7u
+#define GUARD_BYTE 0xC7U
 
 /*
  * rdma_rm_init() allocates the table itself, so a guard band cannot be
@@ -1045,7 +1045,9 @@ static bool test_gid_index(const char *name, int backend_idx)
     RdmaBackendDev backend_dev;
     struct ibv_device_attr a = one_each;
     union ibv_gid dgid;
-    uint32_t pd_handle, cq_handle, qpn;
+    uint32_t pd_handle;
+    uint32_t cq_handle;
+    uint32_t qpn;
     const bool fits = backend_idx >= 0 && backend_idx <= UINT8_MAX;
 
     memset(&backend_dev, 0, sizeof(backend_dev));
@@ -1256,7 +1258,9 @@ static bool test_backend_fails(const char *name, BackendOp op)
     struct ibv_qp_attr attr;
     struct ibv_qp_init_attr init_attr;
     union ibv_gid dgid;
-    uint32_t pd_handle = UINT32_MAX, cq_handle = UINT32_MAX, qpn = UINT32_MAX;
+    uint32_t pd_handle = UINT32_MAX;
+    uint32_t cq_handle = UINT32_MAX;
+    uint32_t qpn = UINT32_MAX;
     const int expected_rc = op == OP_NONE       ? 0
                             : op == OP_QUERY_QP ? BACKEND_ERR
                                                 : -EIO;
@@ -1395,7 +1399,10 @@ static bool test_qpn_in_use(void)
     bool ok = true;
     RdmaBackendDev backend_dev;
     struct ibv_device_attr a = one_each;
-    uint32_t pd_handle, cq_handle, first, second = UINT32_MAX;
+    uint32_t pd_handle;
+    uint32_t cq_handle;
+    uint32_t first;
+    uint32_t second = UINT32_MAX;
 
     a.max_qp = 2;
     memset(&backend_dev, 0, sizeof(backend_dev));
@@ -1464,7 +1471,9 @@ static bool test_gsi_skips_backend(void)
     struct ibv_device_attr a = one_each;
     struct ibv_qp_attr attr;
     union ibv_gid dgid;
-    uint32_t pd_handle, cq_handle, gsi;
+    uint32_t pd_handle;
+    uint32_t cq_handle;
+    uint32_t gsi;
 
     memset(&backend_dev, 0, sizeof(backend_dev));
     backend_dev.backend_ops = &failing_ops;
@@ -1504,7 +1513,7 @@ static bool test_gsi_skips_backend(void)
         printf("FAIL %-18s: query returned %d with state %d and PSNs "
                "%#x/%#x, expected 0 with %d and 0x12/0x22\n",
                name, rc, (int)attr.qp_state, attr.rq_psn, attr.sq_psn,
-               (int)IBV_QPS_RTS);
+               IBV_QPS_RTS);
         ok = false;
     }
 
@@ -1532,7 +1541,9 @@ static bool test_qp_no_backend(void)
     struct ibv_qp_attr attr;
     struct ibv_qp_init_attr init_attr;
     union ibv_gid dgid;
-    uint32_t pd_handle, cq_handle, qpn;
+    uint32_t pd_handle;
+    uint32_t cq_handle;
+    uint32_t qpn;
 
     a.max_qp = 3;
     memset(&dgid, 0, sizeof(dgid));
@@ -1572,8 +1583,8 @@ static bool test_qp_no_backend(void)
                "and type %d, expected 0 with %d/%d, 0x345678/0xbcdef0 and "
                "%d\n",
                name, rc, (int)attr.qp_state, (int)attr.cur_qp_state,
-               attr.rq_psn, attr.sq_psn, (int)init_attr.qp_type,
-               (int)IBV_QPS_RTR, (int)IBV_QPS_RTR, (int)IBV_QPT_RC);
+               attr.rq_psn, attr.sq_psn, (int)init_attr.qp_type, IBV_QPS_RTR,
+               IBV_QPS_RTR, IBV_QPT_RC);
         ok = false;
     }
 
@@ -1587,7 +1598,8 @@ static bool test_qp_no_backend(void)
     }
 
     /* QP0 can't be modified, and QP1's modifications are recorded. */
-    uint32_t smi, gsi;
+    uint32_t smi;
+    uint32_t gsi;
     if (rdma_rm_alloc_qp(&dev_res, pd_handle, ERNIC_IB_QPT_SMI, cq_handle,
                          cq_handle, &smi, 0, 0, NULL) != 0 ||
         rdma_rm_alloc_qp(&dev_res, pd_handle, ERNIC_IB_QPT_GSI, cq_handle,
@@ -1653,7 +1665,11 @@ static bool test_bad_handles(void)
     struct ibv_qp_attr attr;
     struct ibv_srq_attr srq_attr;
     union ibv_gid dgid;
-    uint32_t pd_handle, cq_handle, handle, lkey, rkey;
+    uint32_t pd_handle;
+    uint32_t cq_handle;
+    uint32_t handle;
+    uint32_t lkey;
+    uint32_t rkey;
 
     memset(&dgid, 0, sizeof(dgid));
     memset(&srq_attr, 0, sizeof(srq_attr));
@@ -1741,7 +1757,12 @@ static bool test_tables_full(void)
     const char *name = "tables-full";
     bool ok = true;
     struct ibv_device_attr a = one_each;
-    uint32_t pd_handle, cq_handle, srq_handle, handle, lkey, rkey;
+    uint32_t pd_handle;
+    uint32_t cq_handle;
+    uint32_t srq_handle;
+    uint32_t handle;
+    uint32_t lkey;
+    uint32_t rkey;
 
     memset(&dev_res, 0, sizeof(dev_res));
     alloc_injectors_reset();
@@ -1836,7 +1857,10 @@ static bool test_srq_lifecycle(void)
     bool ok = true;
     struct ibv_device_attr a = one_each;
     struct ibv_srq_attr srq_attr;
-    uint32_t pd_handle, cq_handle, srq_handle, qpn;
+    uint32_t pd_handle;
+    uint32_t cq_handle;
+    uint32_t srq_handle;
+    uint32_t qpn;
 
     memset(&dev_res, 0, sizeof(dev_res));
     alloc_injectors_reset();
@@ -1913,7 +1937,8 @@ static bool test_srq_backend_fails(void)
     const char *name = "srq-backend-fails";
     bool ok = true;
     struct ibv_device_attr a = one_each;
-    uint32_t pd_handle, srq_handle = UINT32_MAX;
+    uint32_t pd_handle;
+    uint32_t srq_handle = UINT32_MAX;
 
     memset(&dev_res, 0, sizeof(dev_res));
     alloc_injectors_reset();

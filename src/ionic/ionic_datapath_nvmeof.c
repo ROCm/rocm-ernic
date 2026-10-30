@@ -34,8 +34,9 @@
 bool ionic_datapath_nvmeof_cfg_check(const struct nvmeof_target_cfg *cfg,
                                      char *err, size_t errlen)
 {
-    if (cfg->max_queues <= IONIC_MAX_MR_QUEUES)
+    if (cfg->max_queues <= IONIC_MAX_MR_QUEUES) {
         return true;
+    }
 
     /* The ceiling is the memory-region budget, not the NVMe spec: the
      * initiator pre-allocates IONIC_MR_PER_QUEUE regions per queue at
@@ -54,15 +55,18 @@ bool ionic_datapath_attach_nvmeof(struct ionic_datapath *dp,
                                   const struct nvmeof_target_cfg *cfg,
                                   char *err, size_t errlen)
 {
-    if (!dp || !cfg)
+    if (!dp || !cfg) {
         return false;
+    }
 
-    if (!ionic_datapath_nvmeof_cfg_check(cfg, err, errlen))
+    if (!ionic_datapath_nvmeof_cfg_check(cfg, err, errlen)) {
         return false;
+    }
 
     dp->nvmeof = nvmeof_target_create(cfg, err, errlen);
-    if (!dp->nvmeof)
+    if (!dp->nvmeof) {
         return false;
+    }
 
     dp->nvmeof_cm = nvmeof_cm_create(dp->nvmeof, cfg->traddr, cfg->trsvcid);
     if (!dp->nvmeof_cm) {
@@ -91,8 +95,9 @@ void ionic_dp_nvmeof_detach(struct ionic_datapath *dp)
 
 void ionic_dp_nvmeof_drop_qp(struct ionic_datapath *dp, uint32_t qp_id)
 {
-    if (dp->nvmeof_cm)
+    if (dp->nvmeof_cm) {
         nvmeof_cm_drop_qp(dp->nvmeof_cm, qp_id);
+    }
 }
 
 static const struct nvmeof_dma_ops dp_nvmeof_dma_ops = {
@@ -115,8 +120,9 @@ static void dp_nvmeof_grh(const struct ionic_datapath *dp,
  */
 static void dp_nvmeof_learn_gids(struct ionic_datapath *dp, const uint8_t *mad)
 {
-    if (ernic_get_be16(mad + 16) != 0x0010) /* CM_ATTR_REQ */
+    if (ernic_get_be16(mad + 16) != 0x0010) { /* CM_ATTR_REQ */
         return;
+    }
     memcpy(dp->nvmeof_dgid, mad + 80,
            ERNIC_GID_LEN); /* primary local  = guest */
     memcpy(dp->nvmeof_sgid, mad + 96, ERNIC_GID_LEN); /* primary remote = us */
@@ -130,17 +136,20 @@ static void dp_nvmeof_learn_gids(struct ionic_datapath *dp, const uint8_t *mad)
 bool ionic_dp_nvmeof_gsi(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                          uint32_t qp_id, const struct dp_sge_list *src)
 {
-    if (!dp->nvmeof_cm || src->total < IB_MAD_SIZE)
+    if (!dp->nvmeof_cm || src->total < IB_MAD_SIZE) {
         return false;
+    }
 
     uint8_t mad[IB_MAD_SIZE];
-    if (ionic_dp_gather(dp, src, mad, IB_MAD_SIZE) != IB_MAD_SIZE)
+    if (ionic_dp_gather(dp, src, mad, IB_MAD_SIZE) != IB_MAD_SIZE) {
         return false;
+    }
 
     uint8_t rsp[IB_MAD_SIZE];
     struct nvmeof_cm_result res;
-    if (!nvmeof_cm_handle_mad(dp->nvmeof_cm, mad, IB_MAD_SIZE, rsp, &res))
+    if (!nvmeof_cm_handle_mad(dp->nvmeof_cm, mad, IB_MAD_SIZE, rsp, &res)) {
         return false;
+    }
 
     dp_nvmeof_learn_gids(dp, mad);
 
@@ -160,8 +169,9 @@ bool ionic_dp_nvmeof_gsi(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         break;
     }
 
-    if (!res.rsp_len)
+    if (!res.rsp_len) {
         return true;
+    }
 
     uint8_t buf[IB_GRH_SIZE + IB_MAD_SIZE];
     dp_nvmeof_grh(dp, buf, (uint32_t)res.rsp_len);
@@ -171,9 +181,10 @@ bool ionic_dp_nvmeof_gsi(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                              .total = (uint32_t)(IB_GRH_SIZE + res.rsp_len)};
     if (ionic_dp_deliver_recv(dp, q, qp_id,
                               1 /* the peer's GSI QP is also QP1 */, &in, buf,
-                              CQE_RECV_OP_SEND, 0) < 0)
+                              CQE_RECV_OP_SEND, 0) < 0) {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: nvmeof CM reply dropped, no GSI receive");
+    }
     return true;
 }
 
@@ -187,8 +198,9 @@ bool ionic_dp_nvmeof_rc_send(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                              uint32_t qp_id, const struct dp_sge_list *src)
 {
     if (!dp->nvmeof || !q->dest_valid ||
-        !nvmeof_cm_is_target_qpn(q->dest_qp_id))
+        !nvmeof_cm_is_target_qpn(q->dest_qp_id)) {
         return false;
+    }
 
     struct nvmeof_queue *nq = nvmeof_target_find_queue(dp->nvmeof, qp_id);
     if (!nq) {
@@ -210,8 +222,9 @@ bool ionic_dp_nvmeof_rc_send(struct ionic_datapath *dp, struct ionic_qp_ring *q,
 
     uint8_t rsp[NVME_CQE_SIZE];
     int r = nvmeof_queue_exec(nq, capsule, len, &dp_nvmeof_dma_ops, dp, rsp);
-    if (r == NVMEOF_EXEC_HELD)
+    if (r == NVMEOF_EXEC_HELD) {
         return true; /* an AER: answered only when an event occurs */
+    }
     if (r < 0) {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: QP %u bad capsule (%u bytes)", qp_id, len);
@@ -220,9 +233,10 @@ bool ionic_dp_nvmeof_rc_send(struct ionic_datapath *dp, struct ionic_qp_ring *q,
 
     struct dp_sge_list in = {.count = 0, .total = NVME_CQE_SIZE};
     if (ionic_dp_deliver_recv(dp, q, qp_id, q->dest_qp_id, &in, rsp,
-                              CQE_RECV_OP_SEND, 0) < 0)
+                              CQE_RECV_OP_SEND, 0) < 0) {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: QP %u has no receive for a response capsule",
                 qp_id);
+    }
     return true;
 }

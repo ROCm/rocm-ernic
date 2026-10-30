@@ -26,7 +26,7 @@
  * The attribute's names are the reserved spellings, so a macro named
  * printf or format can't break it.
  */
-#if defined(__GNUC__)
+#ifdef __GNUC__
 #define ERNIC_PRINTF_FORMAT(fmt, args) \
     __attribute__((__format__(__printf__, fmt, args)))
 #else

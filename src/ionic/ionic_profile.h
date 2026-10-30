@@ -56,7 +56,7 @@ enum ionic_profile_xcvr {
 };
 
 /* dev_info_regs fw_version is char[32], NUL-terminated. */
-#define IONIC_PROFILE_FW_VERSION_MAX 31u
+#define IONIC_PROFILE_FW_VERSION_MAX 31U
 
 /*
  * link.mtu_max is the largest MTU the guest may set.  The driver derives it
@@ -64,43 +64,43 @@ enum ionic_profile_xcvr {
  * and the emulator's frame buffer (IONIC_ETH_NET_MTU_MAX, 9600 bytes) caps
  * the frame.
  */
-#define IONIC_PROFILE_FRAME_OVERHEAD 18u
-#define IONIC_PROFILE_MTU_MIN        1500u
-#define IONIC_PROFILE_MTU_MAX        (9600u - IONIC_PROFILE_FRAME_OVERHEAD)
+#define IONIC_PROFILE_FRAME_OVERHEAD 18U
+#define IONIC_PROFILE_MTU_MIN        1500U
+#define IONIC_PROFILE_MTU_MAX        (9600U - IONIC_PROFILE_FRAME_OVERHEAD)
 
 /*
  * stats.interval_ms is how often the device rewrites the statistics blocks
  * in guest memory.  The driver never asks for them, so this is also how
  * stale `ip -s link` may be.  --stats-interval-ms overrides it.
  */
-#define IONIC_PROFILE_STATS_INTERVAL_MIN 10u
-#define IONIC_PROFILE_STATS_INTERVAL_MAX 60000u
+#define IONIC_PROFILE_STATS_INTERVAL_MIN 10U
+#define IONIC_PROFILE_STATS_INTERVAL_MAX 60000U
 
 /*
  * queues.eth is the RX and TX queue count the LIF identity advertises; the
  * guest uses min(eth, online vCPUs) of them.  --eth-queues overrides it.
  */
-#define IONIC_PROFILE_ETH_QUEUES_MIN 1u
-#define IONIC_PROFILE_ETH_QUEUES_MAX 64u
+#define IONIC_PROFILE_ETH_QUEUES_MIN 1U
+#define IONIC_PROFILE_ETH_QUEUES_MAX 64U
 
 /*
  * queues.rdma_eqs is the RDMA EQ count.  The RDMA driver fails below 4
  * (IONIC_EQ_COUNT_MIN), and the emulator keeps state for at most 32.
  */
-#define IONIC_PROFILE_RDMA_EQS_MIN 4u
-#define IONIC_PROFILE_RDMA_EQS_MAX 32u
+#define IONIC_PROFILE_RDMA_EQS_MIN 4U
+#define IONIC_PROFILE_RDMA_EQS_MAX 32U
 
 /*
  * queues.intr_vectors is the MSI-X table size and the identity nintrs.  The
  * driver needs 1 (adminq and notifyq) + one per queue pair + one per EQ;
  * "auto" (stored as 0) is exactly that for every queue and EQ.
  */
-#define IONIC_PROFILE_INTR_VECTORS_AUTO 0u
-#define IONIC_PROFILE_INTR_VECTORS_MIN  2u
-#define IONIC_PROFILE_INTR_VECTORS_MAX  128u
+#define IONIC_PROFILE_INTR_VECTORS_AUTO 0U
+#define IONIC_PROFILE_INTR_VECTORS_MIN  2U
+#define IONIC_PROFILE_INTR_VECTORS_MAX  128U
 
 /* The built-in profile names and files that formed a profile, in order. */
-#define IONIC_PROFILE_CHAIN_MAX 512u
+#define IONIC_PROFILE_CHAIN_MAX 512U
 
 /* A profile file larger than this is refused rather than read. */
 #define IONIC_PROFILE_FILE_MAX ((size_t)1024 * 1024)

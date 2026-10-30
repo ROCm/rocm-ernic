@@ -55,8 +55,8 @@ _Static_assert((int)P4_WIRE_UPDATE_INSERT == (int)P4_UPDATE_INSERT &&
  * vfio-user thread busy in one command.  A program arrives in chunks
  * precisely so that it does not have to fit here.
  */
-#define P4_DEVCMD_REQ_MAX  (64u * 1024u)
-#define P4_DEVCMD_RESP_MAX (4u * 1024u)
+#define P4_DEVCMD_REQ_MAX  (64U * 1024U)
+#define P4_DEVCMD_RESP_MAX (4U * 1024U)
 
 struct p4_devcmd {
     vfu_ctx_t *vfu_ctx;
@@ -115,8 +115,9 @@ bool p4_scope_parse(const char *name, enum p4_scope *out)
         {"load", P4_SCOPE_LOAD},
     };
 
-    if (!name || !out)
+    if (!name || !out) {
         return false;
+    }
 
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         if (!strcmp(name, names[i].name)) {
@@ -155,11 +156,13 @@ static bool p4_devcmd_log_ok(struct p4_devcmd *pd, ErnicLogLimit *lim,
     uint64_t held;
 
     if (!ernic_log_limit(lim, pd->now_ms ? pd->now_ms() : ernic_monotonic_ms(),
-                         &held))
+                         &held)) {
         return false;
-    if (held)
+    }
+    if (held) {
         vfu_log(pd->vfu_ctx, LOG_WARNING,
                 "p4_devcmd: %" PRIu64 " more %s not logged", held, what);
+    }
     return true;
 }
 
@@ -167,8 +170,9 @@ static bool p4_devcmd_log_ok(struct p4_devcmd *pd, ErnicLogLimit *lim,
 static const struct p4_op_def *p4_find_op(uint32_t ep, uint32_t op)
 {
     for (size_t i = 0; i < sizeof(p4_ops) / sizeof(p4_ops[0]); i++) {
-        if (p4_ops[i].ep == ep && p4_ops[i].op == op)
+        if (p4_ops[i].ep == ep && p4_ops[i].op == op) {
             return &p4_ops[i];
+        }
     }
     return NULL;
 }
@@ -183,12 +187,14 @@ struct p4_devcmd *p4_devcmd_create(vfu_ctx_t *vfu_ctx, struct p4_engine *eng,
 {
     struct p4_devcmd *pd;
 
-    if (!vfu_ctx || !eng)
+    if (!vfu_ctx || !eng) {
         return NULL;
+    }
 
     pd = calloc(1, sizeof(*pd));
-    if (!pd)
+    if (!pd) {
         return NULL;
+    }
     pd->dma = ernic_dma_create();
     if (!pd->dma) {
         free(pd);
@@ -203,8 +209,9 @@ struct p4_devcmd *p4_devcmd_create(vfu_ctx_t *vfu_ctx, struct p4_engine *eng,
 
 void p4_devcmd_destroy(struct p4_devcmd *pd)
 {
-    if (!pd)
+    if (!pd) {
         return;
+    }
     ernic_dma_destroy(pd->dma);
     free(pd);
 }
@@ -233,8 +240,9 @@ static uint8_t handle_ident(const struct p4_devcmd *pd, const uint8_t *cmd)
     /* A driver that asks for less than the whole structure gets what it
      * asked for rather than an error: a newer device answering an older
      * driver is the ordinary case, and truncation is how that works. */
-    if (len == 0 || len > sizeof(id))
+    if (len == 0 || len > sizeof(id)) {
         return P4_STS_EINVAL;
+    }
 
     memset(&id, 0, sizeof(id));
     id.abi_version = htole32(1);
@@ -247,8 +255,9 @@ static uint8_t handle_ident(const struct p4_devcmd *pd, const uint8_t *cmd)
     id.endpoints =
         htole32((uint32_t)(sizeof(p4_endpoints) / sizeof(p4_endpoints[0])));
 
-    if (ernic_dma_write(pd->dma, pd->vfu_ctx, pa, &id, len) < 0)
+    if (ernic_dma_write(pd->dma, pd->vfu_ctx, pa, &id, len) < 0) {
         return P4_STS_EFAULT;
+    }
 
     return P4_STS_OK;
 }
@@ -262,18 +271,23 @@ static uint8_t handle_query(const struct p4_devcmd *pd, const uint8_t *cmd)
 {
     struct p4_devcmd_query_cmd c;
     uint8_t buf[sizeof(struct p4_devcmd_query_data) +
-                sizeof(p4_ops) / sizeof(p4_ops[0]) *
-                    sizeof(struct p4_query_operation)];
+                (sizeof(p4_ops) / sizeof(p4_ops[0]) *
+                 sizeof(struct p4_query_operation))];
     struct p4_devcmd_query_data hdr;
-    uint32_t buf_len, total = 0, fit, entry_size, want;
+    uint32_t buf_len;
+    uint32_t total = 0;
+    uint32_t fit;
+    uint32_t entry_size;
+    uint32_t want;
     uint8_t *out = buf + sizeof(hdr);
     size_t used = 0;
 
     memcpy(&c, cmd, sizeof(c));
     buf_len = le32toh(c.buf_len);
 
-    if (buf_len < sizeof(hdr) || buf_len > P4_DEVCMD_RESP_MAX)
+    if (buf_len < sizeof(hdr) || buf_len > P4_DEVCMD_RESP_MAX) {
         return P4_STS_EINVAL;
+    }
 
     /*
      * Everything that leaves here is cleared first, header and entries
@@ -291,11 +305,13 @@ static uint8_t handle_query(const struct p4_devcmd *pd, const uint8_t *cmd)
     case P4_QUERY_ENDPOINT:
         entry_size = (uint32_t)sizeof(struct p4_query_operation);
         for (size_t i = 0; i < sizeof(p4_ops) / sizeof(p4_ops[0]); i++) {
-            if (p4_ops[i].ep == le32toh(c.ep))
+            if (p4_ops[i].ep == le32toh(c.ep)) {
                 total++;
+            }
         }
-        if (total == 0)
+        if (total == 0) {
             return P4_STS_EOPCODE;
+        }
         break;
     default:
         return P4_STS_EINVAL;
@@ -309,8 +325,9 @@ static uint8_t handle_query(const struct p4_devcmd *pd, const uint8_t *cmd)
      * walked off the end of its buffer.
      */
     fit = (buf_len - (uint32_t)sizeof(hdr)) / entry_size;
-    if (fit > total)
+    if (fit > total) {
         fit = total;
+    }
 
     if (c.entity == P4_QUERY_ROOT) {
         for (uint32_t i = 0; i < fit; i++) {
@@ -328,8 +345,9 @@ static uint8_t handle_query(const struct p4_devcmd *pd, const uint8_t *cmd)
              i++) {
             struct p4_query_operation e;
 
-            if (p4_ops[i].ep != le32toh(c.ep))
+            if (p4_ops[i].ep != le32toh(c.ep)) {
                 continue;
+            }
             memset(&e, 0, sizeof(e));
             e.id = htole32(p4_ops[i].op);
             e.scope = (uint8_t)p4_ops[i].scope;
@@ -346,8 +364,10 @@ static uint8_t handle_query(const struct p4_devcmd *pd, const uint8_t *cmd)
     memcpy(buf, &hdr, sizeof(hdr));
 
     want = (uint32_t)(sizeof(hdr) + used);
-    if (ernic_dma_write(pd->dma, pd->vfu_ctx, le64toh(c.buf_pa), buf, want) < 0)
+    if (ernic_dma_write(pd->dma, pd->vfu_ctx, le64toh(c.buf_pa), buf, want) <
+        0) {
         return P4_STS_EFAULT;
+    }
 
     return P4_STS_OK;
 }
@@ -386,8 +406,9 @@ static uint8_t rpc_load_begin(const struct p4_devcmd *pd, const uint8_t *req,
 {
     struct p4_rpc_load_begin b;
 
-    if (req_len < sizeof(b))
+    if (req_len < sizeof(b)) {
         return P4_STS_EINVAL;
+    }
     memcpy(&b, req, sizeof(b));
 
     return p4_status_of(p4_engine_load_begin(pd->eng, le32toh(b.total_len)));
@@ -399,8 +420,9 @@ static uint8_t rpc_load_chunk(const struct p4_devcmd *pd, const uint8_t *req,
     struct p4_rpc_load_chunk h;
     uint32_t len;
 
-    if (req_len < sizeof(h))
+    if (req_len < sizeof(h)) {
         return P4_STS_EINVAL;
+    }
     memcpy(&h, req, sizeof(h));
     len = le32toh(h.len);
 
@@ -410,8 +432,9 @@ static uint8_t rpc_load_chunk(const struct p4_devcmd *pd, const uint8_t *req,
      * sizeof(h) + len would wrap for a len near UINT32_MAX and let a
      * short buffer look long enough.
      */
-    if (len == 0 || len > req_len - (uint32_t)sizeof(h))
+    if (len == 0 || len > req_len - (uint32_t)sizeof(h)) {
         return P4_STS_EINVAL;
+    }
 
     return p4_status_of(
         p4_engine_load_chunk(pd->eng, le64toh(h.offset), req + sizeof(h), len));
@@ -422,31 +445,35 @@ static uint8_t rpc_entry_update(struct p4_devcmd *pd, const uint8_t *req,
 {
     struct p4_rpc_entry_update u;
     struct p4_update up;
-    uint16_t nmatch, nparams;
+    uint16_t nmatch;
+    uint16_t nparams;
     uint32_t need;
     const uint8_t *p;
     char err[160];
     int rc;
 
-    if (req_len < sizeof(u))
+    if (req_len < sizeof(u)) {
         return P4_STS_EINVAL;
+    }
     memcpy(&u, req, sizeof(u));
 
     nmatch = le16toh(u.nmatch);
     nparams = le16toh(u.nparams);
 
-    if (nmatch > P4_MAX_TABLE_KEY || nparams > P4_MAX_RUNTIME_ARGS)
+    if (nmatch > P4_MAX_TABLE_KEY || nparams > P4_MAX_RUNTIME_ARGS) {
         return P4_STS_EINVAL;
+    }
 
     /*
      * Both counts are bounded above, so this product cannot overflow a
      * uint32_t -- but it is written against the remaining length rather
      * than added to sizeof(u) for the same reason as the chunk above.
      */
-    need = (uint32_t)nmatch * (uint32_t)sizeof(struct p4_rpc_entry_match) +
-           (uint32_t)nparams * (uint32_t)sizeof(struct p4_rpc_entry_param);
-    if (need > req_len - (uint32_t)sizeof(u))
+    need = ((uint32_t)nmatch * (uint32_t)sizeof(struct p4_rpc_entry_match)) +
+           ((uint32_t)nparams * (uint32_t)sizeof(struct p4_rpc_entry_param));
+    if (need > req_len - (uint32_t)sizeof(u)) {
         return P4_STS_EINVAL;
+    }
 
     memset(&up, 0, sizeof(up));
     up.type = u.type;
@@ -469,8 +496,9 @@ static uint8_t rpc_entry_update(struct p4_devcmd *pd, const uint8_t *req,
      * logged, so a name that could forge a log line or drive the terminal
      * is refused here, before anything prints it. */
     if (!p4_name_printable(up.table, strlen(up.table)) ||
-        !p4_name_printable(up.action, strlen(up.action)))
+        !p4_name_printable(up.action, strlen(up.action))) {
         return P4_STS_EINVAL;
+    }
 
     p = req + sizeof(u);
     for (uint16_t i = 0; i < nmatch; i++) {
@@ -478,8 +506,9 @@ static uint8_t rpc_entry_update(struct p4_devcmd *pd, const uint8_t *req,
 
         memcpy(&m, p, sizeof(m));
         p += sizeof(m);
-        if (le16toh(m.len) > P4_MATCH_BYTES)
+        if (le16toh(m.len) > P4_MATCH_BYTES) {
             return P4_STS_EINVAL;
+        }
         up.match[i].len = le16toh(m.len);
         up.match[i].prefix_bits = le16toh(m.prefix_bits);
         memcpy(up.match[i].value, m.value, P4_MATCH_BYTES);
@@ -490,8 +519,9 @@ static uint8_t rpc_entry_update(struct p4_devcmd *pd, const uint8_t *req,
 
         memcpy(&a, p, sizeof(a));
         p += sizeof(a);
-        if (le16toh(a.len) > P4_MATCH_BYTES)
+        if (le16toh(a.len) > P4_MATCH_BYTES) {
             return P4_STS_EINVAL;
+        }
         up.params[i].len = le16toh(a.len);
         memcpy(up.params[i].value, a.value, P4_MATCH_BYTES);
     }
@@ -515,8 +545,9 @@ static uint8_t rpc_stats_read(const struct p4_devcmd *pd, uint8_t *resp,
     struct p4_stats es;
     struct p4_rpc_stats s;
 
-    if (resp_len < sizeof(s))
+    if (resp_len < sizeof(s)) {
         return P4_STS_ERANGE;
+    }
 
     p4_engine_get_stats(pd->eng, &es);
 
@@ -544,8 +575,13 @@ static uint8_t handle_rpc(struct p4_devcmd *pd, const uint8_t *cmd,
 {
     struct p4_devcmd_rpc_cmd c;
     const struct p4_op_def *def;
-    uint8_t *req = NULL, *resp = NULL;
-    uint32_t req_len, resp_len, ep, op, claim;
+    uint8_t *req = NULL;
+    uint8_t *resp = NULL;
+    uint32_t req_len;
+    uint32_t resp_len;
+    uint32_t ep;
+    uint32_t op;
+    uint32_t claim;
     uint8_t status;
 
     memcpy(&c, cmd, sizeof(c));
@@ -555,8 +591,9 @@ static uint8_t handle_rpc(struct p4_devcmd *pd, const uint8_t *cmd,
     resp_len = le32toh(c.resp_len);
 
     def = p4_find_op(ep, op);
-    if (!def)
+    if (!def) {
         return P4_STS_EOPCODE;
+    }
 
     /*
      * The operator's grant has to cover the operation, and the caller's
@@ -572,18 +609,22 @@ static uint8_t handle_rpc(struct p4_devcmd *pd, const uint8_t *cmd,
      * been refused above with its own status.
      */
     claim = c.scope;
-    if (pd->scope == P4_SCOPE_NONE || pd->scope < def->scope)
+    if (pd->scope == P4_SCOPE_NONE || pd->scope < def->scope) {
         return P4_STS_EPERM;
-    if (claim < (uint32_t)def->scope || claim > (uint32_t)pd->scope)
+    }
+    if (claim < (uint32_t)def->scope || claim > (uint32_t)pd->scope) {
         return P4_STS_EPERM;
+    }
 
-    if (req_len > P4_DEVCMD_REQ_MAX || resp_len > P4_DEVCMD_RESP_MAX)
+    if (req_len > P4_DEVCMD_REQ_MAX || resp_len > P4_DEVCMD_RESP_MAX) {
         return P4_STS_ERANGE;
+    }
 
     if (req_len) {
         req = malloc(req_len);
-        if (!req)
+        if (!req) {
             return P4_STS_EDEVICE;
+        }
         if (ernic_dma_read(pd->dma, pd->vfu_ctx, le64toh(c.req_pa), req,
                            req_len) < 0) {
             free(req);
@@ -643,10 +684,10 @@ static uint8_t handle_rpc(struct p4_devcmd *pd, const uint8_t *cmd,
         break;
     }
 
-    if (status == P4_STS_OK && *resp_written) {
-        if (ernic_dma_write(pd->dma, pd->vfu_ctx, le64toh(c.resp_pa), resp,
-                            *resp_written) < 0)
-            status = P4_STS_EFAULT;
+    if (status == P4_STS_OK && *resp_written &&
+        ernic_dma_write(pd->dma, pd->vfu_ctx, le64toh(c.resp_pa), resp,
+                        *resp_written) < 0) {
+        status = P4_STS_EFAULT;
     }
 
     free(req);
@@ -699,9 +740,10 @@ void p4_devcmd_dispatch(void *opaque, const uint8_t *cmd, uint8_t *comp)
         status = handle_rpc(pd, cmd, &resp_written);
         break;
     default:
-        if (p4_devcmd_log_ok(pd, &pd->log_opcode, "unknown opcode(s)"))
+        if (p4_devcmd_log_ok(pd, &pd->log_opcode, "unknown opcode(s)")) {
             vfu_log(pd->vfu_ctx, LOG_WARNING, "p4_devcmd: unknown opcode=%u",
                     cmd[0]);
+        }
         status = P4_STS_EOPCODE;
         break;
     }

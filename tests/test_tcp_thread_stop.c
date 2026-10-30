@@ -254,15 +254,16 @@ int qemu_thread_create(QemuThread *thread, const char *name,
     int left = atomic_load(&g_creates_left);
 
     while (left > 0 &&
-           !atomic_compare_exchange_weak(&g_creates_left, &left, left - 1))
-        ;
+           !atomic_compare_exchange_weak(&g_creates_left, &left, left - 1)) {
+    }
     if (left == 0) {
         atomic_fetch_add(&g_create_failures, 1);
         return EAGAIN;
     }
     t = malloc(sizeof(*t));
-    if (!t)
+    if (!t) {
         return -1;
+    }
     t->fn = start_routine;
     t->arg = arg;
     g_strlcpy(t->name, name, sizeof(t->name));
@@ -322,7 +323,7 @@ static bool under_valgrind(void)
 
 static unsigned row_timeout_s(void)
 {
-    return under_valgrind() ? ROW_TIMEOUT_S * 6u : ROW_TIMEOUT_S;
+    return under_valgrind() ? ROW_TIMEOUT_S * 6U : ROW_TIMEOUT_S;
 }
 
 static const char *volatile g_current_row = "";
@@ -341,7 +342,7 @@ static void watchdog_count(const char *label, size_t label_len, int n)
         n = 0;
     }
     do {
-        buf[--i] = (char)('0' + n % 10);
+        buf[--i] = (char)('0' + (n % 10));
         n /= 10;
     } while (n > 0 && i > 0);
 
@@ -373,8 +374,9 @@ _Noreturn static void watchdog(int sig)
     (void)sig;
     /* write() is async-signal-safe; the row text is a string literal. */
     if (write(STDOUT_FILENO, msg, sizeof(msg) - 1) < 0 ||
-        write(STDOUT_FILENO, g_current_row, strlen(g_current_row)) < 0)
+        write(STDOUT_FILENO, g_current_row, strlen(g_current_row)) < 0) {
         _exit(1);
+    }
     WATCHDOG_COUNT("; threads created ", atomic_load(&g_creates));
     WATCHDOG_COUNT(", joined ", atomic_load(&g_joins));
     WATCHDOG_COUNT(", exited ", atomic_load(&g_exits));
@@ -405,8 +407,9 @@ static int listen_loopback(void)
     struct sockaddr_in addr;
     int fd = socket(AF_INET, SOCK_STREAM, 0);
 
-    if (fd < 0)
+    if (fd < 0) {
         return -1;
+    }
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -443,7 +446,7 @@ static double now_s(void)
     struct timespec ts;
 
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+    return (double)ts.tv_sec + ((double)ts.tv_nsec / 1e9);
 }
 
 static void sleep_ms(uint32_t ms)
@@ -478,8 +481,9 @@ static TcpConnection *wait_live(TcpBackendPrivate *priv, uint32_t id,
     for (int i = 0; i < 500; i++) {
         TcpConnection *conn = tcp_connection_lookup(priv, id);
 
-        if (conn && conn != old && !tcp_conn_dead(conn))
+        if (conn && conn != old && !tcp_conn_dead(conn)) {
             return conn;
+        }
         tcp_connection_unref(conn);
         sleep_ms(10);
     }
@@ -489,8 +493,9 @@ static TcpConnection *wait_live(TcpBackendPrivate *priv, uint32_t id,
 /* Wait up to 5 s for conn's receive thread to return. */
 static bool wait_dead(const TcpConnection *conn)
 {
-    for (int i = 0; i < 500 && !tcp_conn_dead(conn); i++)
+    for (int i = 0; i < 500 && !tcp_conn_dead(conn); i++) {
         sleep_ms(10);
+    }
     return tcp_conn_dead(conn);
 }
 
@@ -509,8 +514,9 @@ static bool conn_retired(TcpConnection *conn)
 /* Wait up to 5 s for conn to be retired. */
 static bool wait_retired(TcpConnection *conn)
 {
-    for (int i = 0; i < 500 && !conn_retired(conn); i++)
+    for (int i = 0; i < 500 && !conn_retired(conn); i++) {
         sleep_ms(10);
+    }
     return conn_retired(conn);
 }
 
@@ -558,7 +564,8 @@ static int run_case(const struct stop_case *c)
 {
     TcpBackendPrivate *priv = priv_alloc();
     int fd = -1;
-    double start, took;
+    double start;
+    double took;
     bool ok;
 
     atomic_store(&g_joins, 0);
@@ -581,15 +588,17 @@ static int run_case(const struct stop_case *c)
         atomic_store(&priv->accept_thread_running, true);
         qemu_thread_create(&priv->accept_thread, "tcp-accept",
                            tcp_accept_thread, priv);
-        if (c->setup == BLOCKED)
+        if (c->setup == BLOCKED) {
             sleep_ms(100);
+        }
     }
 
     g_current_row = c->description;
     alarm(row_timeout_s());
     start = now_s();
-    for (int i = 0; i < c->stops; i++)
+    for (int i = 0; i < c->stops; i++) {
         tcp_stop_accept_thread(priv);
+    }
     took = now_s() - start;
     alarm(0);
 
@@ -600,15 +609,17 @@ static int run_case(const struct stop_case *c)
 
     printf("%s accept %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
            c->category, c->description, c->expected);
-    if (!ok)
+    if (!ok) {
         printf("     got %d join(s) (want %d), exited %d (want %d), "
                "listening %d (want %d), %.3f s\n",
                atomic_load(&g_joins), c->want_joins, atomic_load(&g_exits),
                (int)c->want_exited, fd < 0 ? -1 : (still_listening(fd) ? 1 : 0),
                (int)c->want_listening, took);
+    }
 
-    if (fd >= 0)
+    if (fd >= 0) {
         close(fd);
+    }
     g_free(priv);
     return ok ? 0 : 1;
 }
@@ -672,10 +683,12 @@ static bool recv_type(int fd, TcpMsgType type, int timeout_ms)
     TcpMsgHeader hdr;
     void *payload = NULL;
 
-    if (poll(&pfd, 1, timeout_ms) != 1)
+    if (poll(&pfd, 1, timeout_ms) != 1) {
         return false;
-    if (tcp_recv_message(fd, &hdr, &payload, NULL, 0) < 0)
+    }
+    if (tcp_recv_message(fd, &hdr, &payload, NULL, 0) < 0) {
         return false;
+    }
     free(payload);
     return hdr.msg_type == type;
 }
@@ -698,10 +711,12 @@ static bool heartbeats_spaced(int fd)
     while (now_s() < end) {
         struct pollfd pfd = {.fd = fd, .events = POLLIN};
 
-        if (!recv_type(fd, TCP_MSG_HEARTBEAT, 5000))
+        if (!recv_type(fd, TCP_MSG_HEARTBEAT, 5000)) {
             return false;
-        if (poll(&pfd, 1, 500) == 0)
+        }
+        if (poll(&pfd, 1, 500) == 0) {
             return recv_type(fd, TCP_MSG_HEARTBEAT, 5000);
+        }
     }
     return false;
 }
@@ -711,7 +726,8 @@ static int run_health_case(const struct health_case *c)
     TcpBackendPrivate *priv = priv_alloc();
     TcpConnection *conn = NULL;
     int sv[2] = {-1, -1};
-    double start, took;
+    double start;
+    double took;
     bool ok = true, spaced = false;
 
     atomic_store(&g_joins, 0);
@@ -757,17 +773,20 @@ static int run_health_case(const struct health_case *c)
         atomic_store(&priv->health_check_running, true);
         qemu_thread_create(&priv->health_check_thread, "tcp-health",
                            tcp_manager_health_check_thread, priv);
-        if (c->setup == BLOCKED)
+        if (c->setup == BLOCKED) {
             sleep_ms(100);
+        }
     }
 
     /* A wait that returned early would send the heartbeats back to back */
-    if (c->peer)
+    if (c->peer) {
         spaced = heartbeats_spaced(sv[1]);
+    }
 
     start = now_s();
-    for (int i = 0; i < c->stops; i++)
+    for (int i = 0; i < c->stops; i++) {
         tcp_stop_health_check_thread(priv);
+    }
     took = now_s() - start;
     alarm(0);
 
@@ -778,11 +797,12 @@ static int run_health_case(const struct health_case *c)
 
     printf("%s health %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
            c->category, c->description, c->expected);
-    if (!ok)
+    if (!ok) {
         printf("     got %d join(s) (want %d), exited %d (want %d), "
                "stop took %.3f s, heartbeats spaced %d\n",
                atomic_load(&g_joins), c->want_joins, atomic_load(&g_exits),
                (int)c->want_exited, took, (int)spaced);
+    }
 
 out:
     /* The thread has been stopped */
@@ -791,8 +811,9 @@ out:
     g_hash_table_destroy(priv->connections);
     g_ptr_array_free(priv->pending_conns, TRUE);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
-    if (sv[1] >= 0)
+    if (sv[1] >= 0) {
         close(sv[1]);
+    }
     qemu_mutex_destroy(&priv->conn_table_lock);
     qemu_mutex_destroy(&priv->mesh_table_lock);
     qemu_cond_destroy(&priv->health_check_cond);
@@ -860,8 +881,9 @@ static TcpConnection *recv_conn_new(TcpBackendPrivate *priv, uint32_t id,
     /* A successful socketpair() always gives two descriptors, but the static
      * analyzer doesn't know that, and would otherwise follow *peer into a
      * send() as -1. */
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0 || sv[0] < 0 || sv[1] < 0)
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0 || sv[0] < 0 || sv[1] < 0) {
         return NULL;
+    }
     conn = tcp_connection_new(priv, id, "peer", 0, sv[0]);
     /* Non-blocking, as the backend makes every connection's socket. */
     fcntl(sv[0], F_SETFL, fcntl(sv[0], F_GETFL, 0) | O_NONBLOCK);
@@ -883,8 +905,9 @@ static bool send_message(int fd, TcpMsgType type, uint32_t len, uint32_t sent)
     uint8_t msg[TCP_MSG_HDR_LEN + TCP_REGISTER_NODE_LEN_V3];
     size_t size = TCP_MSG_HDR_LEN + (size_t)sent;
 
-    if (size > sizeof(msg))
+    if (size > sizeof(msg)) {
         return false;
+    }
     memset(msg, 0, sizeof(msg));
     put_hdr(msg, type, len, 0);
     return send(fd, msg, size, 0) == (ssize_t)size;
@@ -909,8 +932,8 @@ static bool peer_act(TcpConnection *conn, int peer, enum peer_action action)
     case PEER_STOPS_READING:
         /* Under the lock, like every write to the connection's socket */
         qemu_mutex_lock(&conn->lock);
-        while (send(conn->sockfd, fill, sizeof(fill), 0) > 0)
-            ;
+        while (send(conn->sockfd, fill, sizeof(fill), 0) > 0) {
+        }
         qemu_mutex_unlock(&conn->lock);
         return errno == EAGAIN &&
                send_message(peer, TCP_MSG_REGISTER_NODE,
@@ -922,8 +945,9 @@ static bool peer_act(TcpConnection *conn, int peer, enum peer_action action)
 
 static bool wait_for_exits(int n)
 {
-    for (int i = 0; i < 500 && atomic_load(&g_exits) < n; i++)
+    for (int i = 0; i < 500 && atomic_load(&g_exits) < n; i++) {
         sleep_ms(10);
+    }
     return atomic_load(&g_exits) >= n;
 }
 
@@ -931,11 +955,14 @@ static int run_recv_case(const struct recv_case *c)
 {
     TcpBackendPrivate *priv = priv_alloc();
     TcpConnection *all[MAX_RECV_CONNS];
-    int peers[MAX_RECV_CONNS], n = 0, started = 0;
+    int peers[MAX_RECV_CONNS];
+    int n = 0;
+    int started = 0;
     /* The registered ones first, then a manager connection, then pending. */
-    uint32_t in_table = c->table + (c->one_not_started ? 1u : 0u);
-    uint32_t total = in_table + (c->manager ? 1u : 0u) + c->pending;
-    double start, took;
+    uint32_t in_table = c->table + (c->one_not_started ? 1U : 0U);
+    uint32_t total = in_table + (c->manager ? 1U : 0U) + c->pending;
+    double start;
+    double took;
     bool ok = true, flags_clear = true;
 
     atomic_store(&g_joins, 0);
@@ -966,13 +993,14 @@ static int run_recv_case(const struct recv_case *c)
         started += not_started ? 0 : 1;
         /* The receive threads started so far are running */
         qemu_mutex_lock(&priv->conn_table_lock);
-        if (i < in_table)
+        if (i < in_table) {
             g_hash_table_insert(priv->connections, GUINT_TO_POINTER(i + 1),
                                 conn);
-        else if (c->manager && !atomic_load(&priv->manager_conn))
+        } else if (c->manager && !atomic_load(&priv->manager_conn)) {
             atomic_store(&priv->manager_conn, conn);
-        else
+        } else {
             g_ptr_array_add(priv->pending_conns, conn);
+        }
         qemu_mutex_unlock(&priv->conn_table_lock);
     }
 
@@ -1008,37 +1036,44 @@ static int run_recv_case(const struct recv_case *c)
         g_current_row = c->description;
         alarm(row_timeout_s());
         start = now_s();
-        for (int i = 0; i < c->stops; i++)
+        for (int i = 0; i < c->stops; i++) {
             tcp_stop_recv_threads(priv);
+        }
         took = now_s() - start;
         alarm(0);
 
-        for (int i = 0; i < n; i++)
-            if (atomic_load(&all[i]->recv_thread_running))
+        for (int i = 0; i < n; i++) {
+            if (atomic_load(&all[i]->recv_thread_running)) {
                 flags_clear = false;
+            }
+        }
         ok = atomic_load(&g_joins) == c->want_joins &&
              atomic_load(&g_exits) == started && flags_clear && took < 2.0;
 
         printf("%s recv %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
                c->category, c->description, c->expected);
-        if (!ok)
+        if (!ok) {
             printf("     got %d join(s) (want %d), %d exited (want %d), "
                    "flags clear %d, %.3f s\n",
                    atomic_load(&g_joins), c->want_joins, atomic_load(&g_exits),
                    started, (int)flags_clear, took);
+        }
     }
 
     /* Freeing would join a thread still flagged running, and complain. */
-    if (!ok)
+    if (!ok) {
         tcp_stop_recv_threads(priv);
+    }
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     g_hash_table_destroy(priv->connections);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     tcp_free_pending_conns(priv);
     tcp_connection_unref(atomic_load(&priv->manager_conn));
-    for (int i = 0; i < n; i++)
-        if (peers[i] >= 0)
+    for (int i = 0; i < n; i++) {
+        if (peers[i] >= 0) {
             close(peers[i]);
+        }
+    }
     qemu_mutex_destroy(&priv->conn_table_lock);
     g_free(priv);
     return ok ? 0 : 1;
@@ -1056,13 +1091,14 @@ static bool send_heartbeat(int fd, uint32_t src)
 /* Read messages from fd until one of type arrives, for up to timeout_ms. */
 static bool wait_for_type(int fd, TcpMsgType type, int timeout_ms)
 {
-    double end = now_s() + timeout_ms / 1000.0;
+    double end = now_s() + (timeout_ms / 1000.0);
 
     while (now_s() < end) {
         int left = (int)((end - now_s()) * 1000.0);
 
-        if (recv_type(fd, type, left > 0 ? left : 1))
+        if (recv_type(fd, type, left > 0 ? left : 1)) {
             return true;
+        }
     }
     return false;
 }
@@ -1071,8 +1107,9 @@ static bool wait_for_type(int fd, TcpMsgType type, int timeout_ms)
 static bool wait_for_types(int fd, TcpMsgType type, unsigned n, int timeout_ms)
 {
     for (unsigned i = 0; i < n; i++) {
-        if (!wait_for_type(fd, type, timeout_ms))
+        if (!wait_for_type(fd, type, timeout_ms)) {
             return false;
+        }
     }
     return true;
 }
@@ -1133,14 +1170,16 @@ static uint16_t free_port(void)
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     uint16_t port = 0;
 
-    if (fd < 0)
+    if (fd < 0) {
         return 0;
+    }
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0 &&
-        getsockname(fd, (struct sockaddr *)&addr, &len) == 0)
+        getsockname(fd, (struct sockaddr *)&addr, &len) == 0) {
         port = ntohs(addr.sin_port);
+    }
     close(fd);
     return port;
 }
@@ -1155,8 +1194,9 @@ static int worker_attach(TcpBackendPrivate *priv, TcpConnection **connp)
     TcpConnection *conn;
     int sv[2];
 
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0)
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
         return -1;
+    }
     fcntl(sv[0], F_SETFL, fcntl(sv[0], F_GETFL, 0) | O_NONBLOCK);
     conn = tcp_connection_new(priv, UINT32_MAX, "worker", 0, sv[0]);
     /* Or a reap would find it past the registration timeout */
@@ -1167,8 +1207,9 @@ static int worker_attach(TcpBackendPrivate *priv, TcpConnection **connp)
     qemu_thread_create(&conn->recv_thread, "tcp-recv", tcp_recv_thread_per_conn,
                        conn);
     qemu_mutex_unlock(&priv->conn_table_lock);
-    if (connp)
+    if (connp) {
         *connp = conn;
+    }
     return sv[1];
 }
 
@@ -1240,8 +1281,9 @@ static bool wait_for_registered(TcpBackendPrivate *priv, guint n)
         qemu_mutex_lock(&priv->conn_table_lock);
         have = g_hash_table_size(priv->connections);
         qemu_mutex_unlock(&priv->conn_table_lock);
-        if (have >= n)
+        if (have >= n) {
             return true;
+        }
         sleep_ms(10);
     }
     return false;
@@ -1257,11 +1299,12 @@ static bool fill_conn(TcpBackendPrivate *priv, uint32_t node_id)
     TcpConnection *conn = tcp_connection_lookup(priv, node_id);
     bool full;
 
-    if (!conn)
+    if (!conn) {
         return false;
+    }
     qemu_mutex_lock(&conn->lock);
-    while (send(conn->sockfd, fill, sizeof(fill), MSG_NOSIGNAL) > 0)
-        ;
+    while (send(conn->sockfd, fill, sizeof(fill), MSG_NOSIGNAL) > 0) {
+    }
     full = errno == EAGAIN;
     qemu_mutex_unlock(&conn->lock);
     tcp_connection_unref(conn);
@@ -1274,7 +1317,7 @@ static bool fill_conn(TcpBackendPrivate *priv, uint32_t node_id)
  */
 static bool heartbeats_within(int fd, int n, int timeout_ms)
 {
-    double end = now_s() + timeout_ms / 1000.0;
+    double end = now_s() + (timeout_ms / 1000.0);
 
     while (n > 0) {
         struct pollfd pfd = {.fd = fd, .events = POLLIN};
@@ -1283,11 +1326,13 @@ static bool heartbeats_within(int fd, int n, int timeout_ms)
         void *payload = NULL;
 
         if (left_ms <= 0.0 || poll(&pfd, 1, (int)left_ms) != 1 ||
-            tcp_recv_message(fd, &hdr, &payload, NULL, 0) < 0)
+            tcp_recv_message(fd, &hdr, &payload, NULL, 0) < 0) {
             return false;
+        }
         free(payload);
-        if (hdr.msg_type == TCP_MSG_HEARTBEAT)
+        if (hdr.msg_type == TCP_MSG_HEARTBEAT) {
             n--;
+        }
     }
     return true;
 }
@@ -1319,9 +1364,11 @@ static int run_fini_case(const struct fini_case *c)
     TcpConnection *conn1 = NULL;
     char config[64];
     const char *why = NULL;
-    int w1 = -1, w2 = -1;
+    int w1 = -1;
+    int w2 = -1;
     uint16_t port = free_port();
-    double start, took = 0.0;
+    double start;
+    double took = 0.0;
     bool ok;
 
     atomic_store(&g_creates, 0);
@@ -1411,8 +1458,9 @@ static int run_fini_case(const struct fini_case *c)
      * wait on the broadcaster thread, so the health check goes on sending
      * heartbeats meanwhile.
      */
-    if (c->block == BLOCK_HEARTBEAT && !heartbeats_within(w2, 2, 2500))
+    if (c->block == BLOCK_HEARTBEAT && !heartbeats_within(w2, 2, 2500)) {
         why = "the health check stopped sending worker 2 heartbeats";
+    }
 
 stop:
     tcp_connection_unref(conn1);
@@ -1427,15 +1475,18 @@ stop:
 
     printf("%s fini %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", c->category,
            c->description, c->expected);
-    if (!ok)
+    if (!ok) {
         printf("     %s%s%d of %d thread(s) exited, tcp_fini() took %.3f s\n",
                why ? why : "", why ? "; " : "", atomic_load(&g_exits),
                atomic_load(&g_creates), took);
+    }
 
-    if (w1 >= 0)
+    if (w1 >= 0) {
         close(w1);
-    if (w2 >= 0)
+    }
+    if (w2 >= 0) {
         close(w2);
+    }
     return ok ? 0 : 1;
 }
 
@@ -1481,8 +1532,9 @@ static int connect_loopback(uint16_t port)
     struct sockaddr_in addr;
     int fd = socket(AF_INET, SOCK_STREAM, 0);
 
-    if (fd < 0)
+    if (fd < 0) {
         return -1;
+    }
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -1514,7 +1566,8 @@ static int run_create_case(const struct create_case *c)
     char config[64];
     const char *why = NULL;
     uint16_t port = free_port();
-    int init_ret = -1, fd = -1;
+    int init_ret = -1;
+    int fd = -1;
     bool ok;
 
     atomic_store(&g_creates, 0);
@@ -1529,8 +1582,9 @@ static int run_create_case(const struct create_case *c)
         why = "no free TCP port";
         goto out;
     }
-    if (c->when == FAIL_IN_INIT)
+    if (c->when == FAIL_IN_INIT) {
         atomic_store(&g_creates_left, c->creates_left);
+    }
     init_ret = tcp_init_with_interval(&dev, config, LONG_INTERVAL_S);
 
     if (c->when == FAIL_ON_ACCEPT && init_ret == 0) {
@@ -1545,13 +1599,15 @@ static int run_create_case(const struct create_case *c)
             qemu_mutex_lock(&priv->conn_table_lock);
             pending = priv->pending_conns->len;
             qemu_mutex_unlock(&priv->conn_table_lock);
-            if (pending != 0)
+            if (pending != 0) {
                 why = "the connection was left pending";
+            }
         }
     }
     atomic_store(&g_creates_left, -1);
-    if (init_ret == 0)
+    if (init_ret == 0) {
         rdma_backend_ops_tcp.fini(&dev);
+    }
 
 out:
     alarm(0);
@@ -1562,15 +1618,17 @@ out:
 
     printf("%s create %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
            c->category, c->description, c->expected);
-    if (!ok)
+    if (!ok) {
         printf("     %s%stcp_init() returned %d, %d thread(s) created, %d "
                "joined, %d exited\n",
                why ? why : "", why ? "; " : "", init_ret,
                atomic_load(&g_creates), atomic_load(&g_joins),
                atomic_load(&g_exits));
+    }
 
-    if (fd >= 0)
+    if (fd >= 0) {
         close(fd);
+    }
     return ok ? 0 : 1;
 }
 
@@ -1664,15 +1722,18 @@ static bool send_hs_split(int fd, TcpMsgType type, uint32_t len, size_t split,
     uint8_t *hs = msg + TCP_MSG_HDR_LEN;
     size_t size = TCP_MSG_HDR_LEN + (size_t)len;
 
-    if (len > TCP_HANDSHAKE_LEN || split >= TCP_MSG_HDR_LEN)
+    if (len > TCP_HANDSHAKE_LEN || split >= TCP_MSG_HDR_LEN) {
         return false;
+    }
     put_hdr(msg, type, len, HS_NODE);
     ernic_put_be32(hs + TCP_HANDSHAKE_NODE_ID_OFF, HS_NODE);
     ernic_put_be32(hs + TCP_HANDSHAKE_VERSION_OFF, TCP_PROTOCOL_VERSION);
-    if (split == 0)
+    if (split == 0) {
         return send(fd, msg, size, 0) == (ssize_t)size;
-    if (send(fd, msg, split, 0) != (ssize_t)split)
+    }
+    if (send(fd, msg, split, 0) != (ssize_t)split) {
         return false;
+    }
     sleep_ms(HS_SPLIT_MS);
     return !rest ||
            send(fd, msg + split, size - split, 0) == (ssize_t)(size - split);
@@ -1702,8 +1763,9 @@ static bool hs_dup(enum hs_peer peer)
  */
 static int hs_joins(enum hs_peer peer)
 {
-    if (hs_waits(peer))
+    if (hs_waits(peer)) {
         return 1;
+    }
     return peer == HS_DUP_DEAD ? 3 : 2;
 }
 
@@ -1713,8 +1775,9 @@ static const char *hs_bad_peer(enum hs_peer peer, uint16_t port, int *fd)
     int hup;
 
     *fd = connect_loopback(port);
-    if (*fd < 0)
+    if (*fd < 0) {
         return "could not connect";
+    }
     switch (peer) {
     case HS_GOOD:
     case HS_SPLIT:
@@ -1726,26 +1789,32 @@ static const char *hs_bad_peer(enum hs_peer peer, uint16_t port, int *fd)
         return NULL;
     case HS_PARTIAL:
         if (!send_hs_split(*fd, TCP_MSG_HANDSHAKE, TCP_HANDSHAKE_LEN,
-                           HS_SPLIT_AT, false))
+                           HS_SPLIT_AT, false)) {
             return "could not send part of the handshake";
+        }
         sleep_ms(150); /* the thread is waiting for the rest by now */
         return NULL;
     case HS_EMPTY:
-        if (!send_hs(*fd, TCP_MSG_HANDSHAKE, 0))
+        if (!send_hs(*fd, TCP_MSG_HANDSHAKE, 0)) {
             return "could not send the handshake";
+        }
         break;
     case HS_SHORT:
-        if (!send_hs(*fd, TCP_MSG_HANDSHAKE, TCP_HANDSHAKE_LEN - 1))
+        if (!send_hs(*fd, TCP_MSG_HANDSHAKE, TCP_HANDSHAKE_LEN - 1)) {
             return "could not send the handshake";
+        }
         break;
     case HS_OTHER_HANGUP:
-        if (!send_hs(*fd, TCP_MSG_HEARTBEAT, TCP_HANDSHAKE_LEN))
+        if (!send_hs(*fd, TCP_MSG_HEARTBEAT, TCP_HANDSHAKE_LEN)) {
             return "could not send the message";
-        if (!closed_by_peer(*fd))
+        }
+        if (!closed_by_peer(*fd)) {
             return "the message wasn't refused";
+        }
         hup = connect_loopback(port);
-        if (hup < 0)
+        if (hup < 0) {
             return "could not connect the peer that hangs up";
+        }
         close(hup);
         return NULL;
     default:
@@ -1765,17 +1834,21 @@ static const char *hs_good_peer(TcpBackendPrivate *priv, uint16_t port,
     bool flags_ok;
 
     *fd = connect_loopback(port);
-    if (*fd < 0)
+    if (*fd < 0) {
         return "could not connect the good peer";
+    }
     if (!send_hs_split(*fd, TCP_MSG_HANDSHAKE, TCP_HANDSHAKE_LEN,
-                       split ? HS_SPLIT_AT : 0, true))
+                       split ? HS_SPLIT_AT : 0, true)) {
         return "could not send the good handshake";
+    }
     /* The thread answers after it has published the connection */
-    if (!recv_type(*fd, TCP_MSG_HANDSHAKE_RESP, 5000))
+    if (!recv_type(*fd, TCP_MSG_HANDSHAKE_RESP, 5000)) {
         return "the good handshake wasn't answered";
+    }
     conn = tcp_connection_lookup(priv, HS_NODE);
-    if (!conn)
+    if (!conn) {
         return "the good peer's connection isn't in the table";
+    }
     qemu_mutex_lock(&conn->lock);
     flags_ok = fd_flags_are(conn->sockfd, true);
     qemu_mutex_unlock(&conn->lock);
@@ -1797,34 +1870,39 @@ static const char *hs_second_peer(TcpBackendPrivate *priv, uint16_t port,
     TcpConnection *first = tcp_connection_lookup(priv, HS_NODE);
     const char *why = NULL;
 
-    if (!first)
+    if (!first) {
         return "the good peer's connection isn't in the table";
+    }
     if (peer == HS_DUP_DEAD) {
         close(*good);
         *good = -1;
-        if (!wait_dead(first))
+        if (!wait_dead(first)) {
             why = "the good peer's connection didn't die when it hung up";
+        }
     }
     if (!why) {
         *second = connect_loopback(port);
         if (*second < 0 ||
-            !send_hs(*second, TCP_MSG_HANDSHAKE, TCP_HANDSHAKE_LEN))
+            !send_hs(*second, TCP_MSG_HANDSHAKE, TCP_HANDSHAKE_LEN)) {
             why = "could not connect the second peer";
+        }
     }
 
     if (!why && peer == HS_DUP_LIVE) {
-        if (!closed_by_peer(*second))
+        if (!closed_by_peer(*second)) {
             why = "the second peer wasn't refused";
-        else if (table_get(priv, HS_NODE) != first)
+        } else if (table_get(priv, HS_NODE) != first) {
             why = "the connected peer's connection was replaced";
+        }
     } else if (!why) {
         /* Answered once the dead connection is replaced and retired */
-        if (!recv_type(*second, TCP_MSG_HANDSHAKE_RESP, 5000))
+        if (!recv_type(*second, TCP_MSG_HANDSHAKE_RESP, 5000)) {
             why = "the second peer wasn't answered";
-        else if (table_get(priv, HS_NODE) == first)
+        } else if (table_get(priv, HS_NODE) == first) {
             why = "the dead connection wasn't replaced";
-        else if (!conn_retired(first))
+        } else if (!conn_retired(first)) {
             why = "the dead connection wasn't closed";
+        }
     }
     tcp_connection_unref(first);
     return why;
@@ -1836,9 +1914,11 @@ static int run_hs_case(const struct hs_case *c)
     struct sockaddr_in addr;
     socklen_t len = sizeof(addr);
     const char *why = NULL;
-    int bad = -1, good = -1;
+    int bad = -1;
+    int good = -1;
     int want_joins = hs_joins(c->peer);
-    double start, took = 0.0;
+    double start;
+    double took = 0.0;
     bool ok;
 
     atomic_store(&g_creates, 0);
@@ -1867,23 +1947,27 @@ static int run_hs_case(const struct hs_case *c)
         atomic_store(&priv->accept_thread_running, true);
         qemu_thread_create(&priv->accept_thread, "tcp-accept",
                            tcp_accept_thread, priv);
-        if (c->peer != HS_GOOD && c->peer != HS_SPLIT && !hs_dup(c->peer))
+        if (c->peer != HS_GOOD && c->peer != HS_SPLIT && !hs_dup(c->peer)) {
             why = hs_bad_peer(c->peer, ntohs(addr.sin_port), &bad);
-        if (!why && !hs_waits(c->peer))
+        }
+        if (!why && !hs_waits(c->peer)) {
             why = hs_good_peer(priv, ntohs(addr.sin_port), c->peer == HS_SPLIT,
                                &good);
+        }
         /* bad gets the second peer */
-        if (!why && hs_dup(c->peer))
+        if (!why && hs_dup(c->peer)) {
             why = hs_second_peer(priv, ntohs(addr.sin_port), c->peer, &good,
                                  &bad);
+        }
     }
 
     start = now_s();
     tcp_stop_accept_thread(priv);
     took = now_s() - start;
     tcp_stop_recv_threads(priv);
-    if (!why && hs_waits(c->peer) && !closed_by_peer(bad))
+    if (!why && hs_waits(c->peer) && !closed_by_peer(bad)) {
         why = "the waiting peer's connection was left open";
+    }
     alarm(0);
 
     ok = !why && took < 2.0 && atomic_load(&g_joins) == want_joins &&
@@ -1891,24 +1975,28 @@ static int run_hs_case(const struct hs_case *c)
 
     printf("%s handshake %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
            c->category, c->description, c->expected);
-    if (!ok)
+    if (!ok) {
         printf("     %s%s%d join(s) (want %d), %d of %d exited, the accept "
                "thread's stop took %.3f s\n",
                why ? why : "", why ? "; " : "", atomic_load(&g_joins),
                want_joins, atomic_load(&g_exits), atomic_load(&g_creates),
                took);
+    }
 
     /* Every thread has been stopped */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     g_hash_table_destroy(priv->connections);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     tcp_free_pending_conns(priv);
-    if (bad >= 0)
+    if (bad >= 0) {
         close(bad);
-    if (good >= 0)
+    }
+    if (good >= 0) {
         close(good);
-    if (priv->listen_fd >= 0)
+    }
+    if (priv->listen_fd >= 0) {
         close(priv->listen_fd);
+    }
     qemu_mutex_destroy(&priv->conn_table_lock);
     g_free(priv);
     return ok ? 0 : 1;
@@ -1959,8 +2047,9 @@ static const char *mgr_setup(struct mgr_fixture *fx, uint32_t nodes,
 
     memset(fx, 0, sizeof(*fx));
     fx->priv = priv;
-    for (uint32_t i = 0; i < MGR_MAX_NODES; i++)
+    for (uint32_t i = 0; i < MGR_MAX_NODES; i++) {
         fx->peer[i] = -1;
+    }
     priv->is_manager = true;
     atomic_init(&priv->stopping, false);
     atomic_init(&priv->next_seq, 1);
@@ -1992,15 +2081,17 @@ static const char *mgr_setup(struct mgr_fixture *fx, uint32_t nodes,
         uint32_t id = i + 1;
 
         fx->old[i] = recv_conn_new(priv, id, true, &fx->peer[i]);
-        if (!fx->old[i])
+        if (!fx->old[i]) {
             return "could not set up a node's connection";
+        }
         qemu_mutex_lock(&priv->conn_table_lock);
         g_hash_table_insert(priv->connections, GUINT_TO_POINTER(id),
                             tcp_connection_ref(fx->old[i]));
         qemu_mutex_unlock(&priv->conn_table_lock);
         fx->node[i] = tcp_mesh_node_info_new(id, "127.0.0.1", WORKER_PORT);
-        if (!fx->node[i])
+        if (!fx->node[i]) {
             return "could not create a mesh node";
+        }
         fx->node[i]->is_alive = false;
         qemu_mutex_lock(&priv->mesh_table_lock);
         g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(id),
@@ -2019,10 +2110,11 @@ static const char *mgr_setup(struct mgr_fixture *fx, uint32_t nodes,
  */
 static void mgr_start(struct mgr_fixture *fx, uint64_t dead_s)
 {
-    uint64_t last_ms = ernic_monotonic_ms() - dead_s * 1000u;
+    uint64_t last_ms = ernic_monotonic_ms() - (dead_s * 1000U);
 
-    for (uint32_t i = 0; i < fx->nodes; i++)
+    for (uint32_t i = 0; i < fx->nodes; i++) {
         fx->node[i]->last_heartbeat_ms = last_ms;
+    }
     atomic_store(&fx->priv->health_check_running, true);
     qemu_thread_create(&fx->priv->health_check_thread, "tcp-health",
                        tcp_manager_health_check_thread, fx->priv);
@@ -2045,8 +2137,9 @@ static void mgr_teardown(struct mgr_fixture *fx)
     tcp_free_pending_conns(priv);
     for (uint32_t i = 0; i < MGR_MAX_NODES; i++) {
         tcp_connection_unref(fx->old[i]);
-        if (fx->peer[i] >= 0)
+        if (fx->peer[i] >= 0) {
             close(fx->peer[i]);
+        }
     }
     qemu_mutex_destroy(&priv->gid_table_lock);
     qemu_mutex_destroy(&priv->conn_table_lock);
@@ -2092,27 +2185,33 @@ static const char *sl_silent(struct mgr_fixture *fx, int *lfd)
     bool alive;
 
     *lfd = listen_loopback();
-    if (*lfd < 0 || getsockname(*lfd, (struct sockaddr *)&addr, &len) < 0)
+    if (*lfd < 0 || getsockname(*lfd, (struct sockaddr *)&addr, &len) < 0) {
         return "could not open a listening socket";
+    }
     /* Before the thread starts, so nothing reads it meanwhile */
     fx->node[0]->port = ntohs(addr.sin_port);
     fx->node[0]->is_alive = true;
     mgr_start(fx, 4);
 
-    if (!wait_retired(fx->old[0]))
+    if (!wait_retired(fx->old[0])) {
         return "the silent node's connection wasn't closed";
-    if (!closed_by_peer(fx->peer[0]))
+    }
+    if (!closed_by_peer(fx->peer[0])) {
         return "the node didn't see its connection end";
-    if (table_get(fx->priv, 1))
+    }
+    if (table_get(fx->priv, 1)) {
         return "the connection is still in the table";
+    }
     qemu_mutex_lock(&fx->priv->mesh_table_lock);
     alive = fx->node[0]->is_alive;
     qemu_mutex_unlock(&fx->priv->mesh_table_lock);
-    if (alive)
+    if (alive) {
         return "the node wasn't declared dead";
+    }
     pfd.fd = *lfd;
-    if (poll(&pfd, 1, 1500) != 0)
+    if (poll(&pfd, 1, 1500) != 0) {
         return "the manager connected to the node";
+    }
     return atomic_load(&g_joins) == 1
                ? NULL
                : "the node's receive thread wasn't joined exactly once";
@@ -2139,12 +2238,13 @@ static const char *sl_answers(struct mgr_fixture *fx)
     tcp_health_check_retire(fx->priv, items);
 
     after = &g_array_index(items, TcpHealthCheckItem, 0);
-    if (after->conn != fx->old[0])
+    if (after->conn != fx->old[0]) {
         why = "the pass let go of the connection";
-    else if (table_get(fx->priv, 1) != fx->old[0])
+    } else if (table_get(fx->priv, 1) != fx->old[0]) {
         why = "the connection was taken out of the table";
-    else if (conn_retired(fx->old[0]))
+    } else if (conn_retired(fx->old[0])) {
         why = "the connection was closed";
+    }
     tcp_connection_unref(after->conn);
     g_array_free(items, TRUE);
     return why;
@@ -2163,25 +2263,29 @@ static int run_silent_case(const struct sl_case *c)
     g_current_row = c->description;
     alarm(row_timeout_s());
     why = mgr_setup(&fx, 1, 1);
-    if (!why)
+    if (!why) {
         why = c->scenario == SL_SILENT ? sl_silent(&fx, &lfd) : sl_answers(&fx);
+    }
     mgr_teardown(&fx);
     alarm(0);
     if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
-                 atomic_load(&g_exits) != atomic_load(&g_creates)))
+                 atomic_load(&g_exits) != atomic_load(&g_creates))) {
         why = "a thread wasn't joined exactly once";
+    }
 
     ok = !why;
     printf("%s silent %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
            c->category, c->description, c->expected);
-    if (!ok)
+    if (!ok) {
         printf("     %s; %d thread(s) created, %d joined, %d exited\n", why,
                atomic_load(&g_creates), atomic_load(&g_joins),
                atomic_load(&g_exits));
+    }
     fflush(stdout);
 
-    if (lfd >= 0)
+    if (lfd >= 0) {
         close(lfd);
+    }
     return ok ? 0 : 1;
 }
 
@@ -2208,8 +2312,9 @@ static int listen_unanswering(uint16_t *port, int *filler)
 
     *port = 0;
     *filler = -1;
-    if (fd < 0)
+    if (fd < 0) {
         return -1;
+    }
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -2275,7 +2380,9 @@ static int run_connect_case(const struct connect_case *c)
     struct sockaddr_in addr[2];
     struct addrinfo ai[2];
     socklen_t len = sizeof(addr[0]);
-    int lfd[2] = {-1, -1}, filler[2] = {-1, -1}, fd = -1;
+    int lfd[2] = {-1, -1};
+    int filler[2] = {-1, -1};
+    int fd = -1;
     uint16_t port[2] = {0, 0};
     uint32_t addrs = c->target == CT_TWO_UNANSWERING ||
                              c->target == CT_REFUSED_FIRST ||
@@ -2283,7 +2390,8 @@ static int run_connect_case(const struct connect_case *c)
                          ? 2
                          : 1;
     uint64_t deadline_ms = 0;
-    double start, took = 0.0;
+    double start;
+    double took = 0.0;
     bool ok = false;
 
     switch (c->target) {
@@ -2294,8 +2402,9 @@ static int run_connect_case(const struct connect_case *c)
             len = sizeof(addr[i]);
             lfd[i] = listen_loopback();
             if (lfd[i] >= 0 &&
-                getsockname(lfd[i], (struct sockaddr *)&addr[i], &len) == 0)
+                getsockname(lfd[i], (struct sockaddr *)&addr[i], &len) == 0) {
                 port[i] = ntohs(addr[i].sin_port);
+            }
         }
         /* Nothing listens on the first port once its listener is closed */
         if (c->target != CT_LISTENING && lfd[0] >= 0) {
@@ -2305,15 +2414,17 @@ static int run_connect_case(const struct connect_case *c)
         break;
     case CT_UNANSWERING:
     case CT_TWO_UNANSWERING:
-        for (uint32_t i = 0; i < addrs; i++)
+        for (uint32_t i = 0; i < addrs; i++) {
             lfd[i] = listen_unanswering(&port[i], &filler[i]);
+        }
         break;
     case CT_UNANSWERING_FIRST:
         lfd[0] = listen_unanswering(&port[0], &filler[0]);
         lfd[1] = listen_loopback();
         if (lfd[1] >= 0 &&
-            getsockname(lfd[1], (struct sockaddr *)&addr[1], &len) == 0)
+            getsockname(lfd[1], (struct sockaddr *)&addr[1], &len) == 0) {
             port[1] = ntohs(addr[1].sin_port);
+        }
         break;
     default:
         break;
@@ -2337,12 +2448,15 @@ static int run_connect_case(const struct connect_case *c)
     alarm(row_timeout_s());
     if (port[0] != 0 && (addrs == 1 || port[1] != 0)) {
         start = now_s();
-        if (c->timeout_s != 0)
-            deadline_ms = ernic_monotonic_ms() + c->timeout_s * UINT64_C(1000);
-        if (addrs == 1)
+        if (c->timeout_s != 0) {
+            deadline_ms =
+                ernic_monotonic_ms() + (c->timeout_s * UINT64_C(1000));
+        }
+        if (addrs == 1) {
             fd = tcp_connect_to_remote("127.0.0.1", port[0], NULL, deadline_ms);
-        else
+        } else {
             fd = tcp_connect_any(ai, NULL, deadline_ms);
+        }
         took = now_s() - start;
         ok = (fd >= 0) == c->want_fd && took >= c->min_s && took < c->max_s &&
              (fd < 0 || fd_flags_are(fd, true));
@@ -2351,17 +2465,21 @@ static int run_connect_case(const struct connect_case *c)
 
     printf("%s connect %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
            c->category, c->description, c->expected);
-    if (!ok)
+    if (!ok) {
         printf("     port %u, got fd %d after %.3f s\n", (unsigned)port[0], fd,
                took);
+    }
 
-    if (fd >= 0)
+    if (fd >= 0) {
         close(fd);
+    }
     for (uint32_t i = 0; i < 2; i++) {
-        if (filler[i] >= 0)
+        if (filler[i] >= 0) {
             close(filler[i]);
-        if (lfd[i] >= 0)
+        }
+        if (lfd[i] >= 0) {
             close(lfd[i]);
+        }
     }
     return ok ? 0 : 1;
 }
@@ -2421,11 +2539,13 @@ static int count_type(int fd, TcpMsgType type)
         TcpMsgHeader hdr;
         void *payload = NULL;
 
-        if (tcp_recv_message(fd, &hdr, &payload, NULL, 0) < 0)
+        if (tcp_recv_message(fd, &hdr, &payload, NULL, 0) < 0) {
             break;
+        }
         free(payload);
-        if (hdr.msg_type == type)
+        if (hdr.msg_type == type) {
             n++;
+        }
     }
     return n;
 }
@@ -2448,8 +2568,13 @@ static int run_reg_case(const struct reg_case *c)
     char config[64];
     const char *why = NULL;
     uint16_t port = free_port();
-    guint entries = 0, table = 0, pending = 0, nodes_before, nodes = 0;
-    int fd, answers = 0;
+    guint entries = 0;
+    guint table = 0;
+    guint pending = 0;
+    guint nodes_before;
+    guint nodes = 0;
+    int fd;
+    int answers = 0;
     bool ok;
 
     atomic_store(&g_exits, 0);
@@ -2494,8 +2619,9 @@ static int run_reg_case(const struct reg_case *c)
         qemu_mutex_lock(&priv->conn_table_lock);
         table = g_hash_table_size(priv->connections);
         g_hash_table_iter_init(&iter, priv->connections);
-        while (g_hash_table_iter_next(&iter, NULL, &value))
-            entries += value == conn ? 1u : 0u;
+        while (g_hash_table_iter_next(&iter, NULL, &value)) {
+            entries += value == conn ? 1U : 0U;
+        }
         pending = priv->pending_conns->len;
         qemu_mutex_unlock(&priv->conn_table_lock);
         answers = count_type(fd, TCP_MSG_REGISTER_RESP);
@@ -2506,19 +2632,21 @@ static int run_reg_case(const struct reg_case *c)
 
     printf("%s registration %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
            c->category, c->description, c->expected);
-    if (!ok)
+    if (!ok) {
         printf("     %s%s%u table entr%s for the connection (want 1), %u in "
                "the table (want 1), %u pending (want 0), %u new mesh node(s) "
                "(want 1), %d answer(s) (want 1)\n",
                why ? why : "", why ? "; " : "", entries,
                entries == 1 ? "y" : "ies", table, pending, nodes, answers);
+    }
     /* A connection in the table twice is freed twice, and ASan aborts */
     fflush(stdout);
 
     rdma_backend_ops_tcp.fini(&dev);
     alarm(0);
-    if (fd >= 0)
+    if (fd >= 0) {
         close(fd);
+    }
     return ok ? 0 : 1;
 }
 
@@ -2702,10 +2830,12 @@ static const char *tp_setup(struct tp_fixture *fx, uint32_t interval,
     priv->manager_port = 1;
 
     atomic_store(&priv->manager_conn, recv_conn_new(priv, 0, true, &fx->mgr));
-    if (!atomic_load(&priv->manager_conn))
+    if (!atomic_load(&priv->manager_conn)) {
         return "could not connect to the manager";
-    if (peers && !tp_start_peers(fx))
+    }
+    if (peers && !tp_start_peers(fx)) {
         return "could not start the peer-connect thread";
+    }
     return NULL;
 }
 
@@ -2716,7 +2846,8 @@ static const char *tp_setup(struct tp_fixture *fx, uint32_t interval,
 static double tp_teardown(struct tp_fixture *fx)
 {
     TcpBackendPrivate *priv = fx->priv;
-    double start = now_s(), took;
+    double start = now_s();
+    double took;
 
     tcp_stop_threads(priv);
     took = now_s() - start;
@@ -2727,8 +2858,9 @@ static double tp_teardown(struct tp_fixture *fx)
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     tcp_free_pending_conns(priv);
     tcp_connection_unref(atomic_load(&priv->manager_conn));
-    if (fx->mgr >= 0)
+    if (fx->mgr >= 0) {
         close(fx->mgr);
+    }
     qemu_mutex_destroy(&priv->conn_table_lock);
     qemu_cond_destroy(&priv->peer_cond);
     qemu_mutex_destroy(&priv->peer_lock);
@@ -2742,21 +2874,25 @@ static double tp_teardown(struct tp_fixture *fx)
 /* Keep fd, if it's open, to be closed at the end of the row; returns it. */
 static int tp_keep(struct tp_net *net, int fd)
 {
-    if (fd >= 0 && net->nfds < TP_MAX_FDS)
+    if (fd >= 0 && net->nfds < TP_MAX_FDS) {
         net->fds[net->nfds++] = fd;
+    }
     return fd;
 }
 
 static void tp_close(struct tp_net *net)
 {
     for (uint32_t i = 0; i < TP_LISTENERS; i++) {
-        if (net->lfd[i] >= 0)
+        if (net->lfd[i] >= 0) {
             close(net->lfd[i]);
-        if (net->filler[i] >= 0)
+        }
+        if (net->filler[i] >= 0) {
             close(net->filler[i]);
+        }
     }
-    for (uint32_t i = 0; i < net->nfds; i++)
+    for (uint32_t i = 0; i < net->nfds; i++) {
         close(net->fds[i]);
+    }
 }
 
 /*
@@ -2770,8 +2906,9 @@ static int listen_on(uint16_t port)
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     int on = 1;
 
-    if (fd < 0)
+    if (fd < 0) {
         return -1;
+    }
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -2797,8 +2934,9 @@ static bool tp_listener(struct tp_net *net, uint32_t i, bool answering)
     }
     net->lfd[i] = listen_loopback();
     if (net->lfd[i] < 0 ||
-        getsockname(net->lfd[i], (struct sockaddr *)&addr, &len) < 0)
+        getsockname(net->lfd[i], (struct sockaddr *)&addr, &len) < 0) {
         return false;
+    }
     net->port[i] = ntohs(addr.sin_port);
     return true;
 }
@@ -2809,8 +2947,9 @@ static const char *tp_listen(struct tp_net *net, enum tp_scenario scenario)
     bool ok;
 
     memset(net, 0, sizeof(*net));
-    for (uint32_t i = 0; i < TP_LISTENERS; i++)
+    for (uint32_t i = 0; i < TP_LISTENERS; i++) {
         net->lfd[i] = net->filler[i] = -1;
+    }
 
     switch (scenario) {
     case TP_SKIPS:
@@ -2959,8 +3098,9 @@ static guint tp_count(const struct tp_fixture *fx)
 static bool tp_attempts(const struct tp_fixture *fx, uint64_t n)
 {
     for (int i = 0; i < 500; i++) {
-        if (atomic_load(&fx->priv->tcp_stats.peer_connect_attempts) >= n)
+        if (atomic_load(&fx->priv->tcp_stats.peer_connect_attempts) >= n) {
             return true;
+        }
         sleep_ms(10);
     }
     return false;
@@ -2974,13 +3114,16 @@ static const char *tp_connected_to(struct tp_fixture *fx, struct tp_net *net,
                                    int lfd, uint32_t id, int *fd)
 {
     *fd = tp_keep(net, accept_within(lfd));
-    if (*fd < 0)
+    if (*fd < 0) {
         return "the worker never connected";
-    if (!recv_type(*fd, TCP_MSG_HANDSHAKE, 5000))
+    }
+    if (!recv_type(*fd, TCP_MSG_HANDSHAKE, 5000)) {
         return "the worker sent no handshake";
+    }
     /* Published after the handshake is sent */
-    for (int i = 0; i < 500 && !tp_lookup(fx, id); i++)
+    for (int i = 0; i < 500 && !tp_lookup(fx, id); i++) {
         sleep_ms(10);
+    }
     return tp_lookup(fx, id) ? NULL : "the connection wasn't published";
 }
 
@@ -2998,10 +3141,12 @@ static TcpConnection *tp_publish(struct tp_fixture *fx, struct tp_net *net,
     TcpConnection *conn = recv_conn_new(fx->priv, id, false, &peer);
 
     tp_keep(net, peer);
-    if (fd)
+    if (fd) {
         *fd = peer;
-    if (!conn)
+    }
+    if (!conn) {
         return NULL;
+    }
     if (port != 0) {
         g_free(conn->remote_host);
         conn->remote_host = g_strdup("127.0.0.1");
@@ -3030,10 +3175,12 @@ static const char *tp_skips(struct tp_fixture *fx, struct tp_net *net)
     int fd;
 
     why = tp_connected_to(fx, net, net->lfd[1], TP_THIRD, &fd);
-    if (why)
+    if (why) {
         return why;
-    if (poll(&pfd, 1, 0) != 0)
+    }
+    if (poll(&pfd, 1, 0) != 0) {
         return "the worker connected to a node it should have skipped";
+    }
     return tp_count(fx) == 2 ? NULL
                              : "a skipped node's connection was published";
 }
@@ -3044,12 +3191,15 @@ static const char *tp_skips(struct tp_fixture *fx, struct tp_net *net)
  */
 static const char *tp_stop(struct tp_fixture *fx)
 {
-    if (!tp_attempts(fx, 1))
+    if (!tp_attempts(fx, 1)) {
         return "the worker never connected";
-    if (!tp_answers(fx, 2000))
+    }
+    if (!tp_answers(fx, 2000)) {
         return "a heartbeat wasn't answered while the worker connected";
-    if (qemu_mutex_trylock(&fx->priv->conn_table_lock) != 0)
+    }
+    if (qemu_mutex_trylock(&fx->priv->conn_table_lock) != 0) {
         return "the worker held conn_table_lock while connecting";
+    }
     qemu_mutex_unlock(&fx->priv->conn_table_lock);
     return NULL;
 }
@@ -3066,18 +3216,23 @@ static const char *tp_starves(struct tp_fixture *fx, struct tp_net *net,
     double took;
     int fd;
 
-    if (!tp_attempts(fx, 1))
+    if (!tp_attempts(fx, 1)) {
         return "the worker never connected";
-    if (!tp_send(fx, topo))
+    }
+    if (!tp_send(fx, topo)) {
         return "could not send the update again";
-    if (!tp_answers(fx, 2000))
+    }
+    if (!tp_answers(fx, 2000)) {
         return "a heartbeat wasn't answered while the worker connected";
+    }
     why = tp_connected_to(fx, net, net->lfd[1], TP_OTHER, &fd);
-    if (why)
+    if (why) {
         return why;
+    }
     took = now_s() - sent;
-    if (took < 0.9)
+    if (took < 0.9) {
         return "the first connect gave up before the interval";
+    }
     return took < 3.0 ? NULL : "the second peer waited more than an interval";
 }
 
@@ -3090,11 +3245,13 @@ static const char *tp_retry(struct tp_fixture *fx, struct tp_net *net)
 {
     int fd;
 
-    if (!tp_attempts(fx, 2))
+    if (!tp_attempts(fx, 2)) {
         return "the worker never tried the peer again";
+    }
     net->lfd[0] = listen_on(net->port[0]);
-    if (net->lfd[0] < 0)
+    if (net->lfd[0] < 0) {
         return "could not listen on the peer's port again";
+    }
     return tp_connected_to(fx, net, net->lfd[0], TP_PEER, &fd);
 }
 
@@ -3109,20 +3266,25 @@ static const char *tp_race(struct tp_fixture *fx, struct tp_net *net)
     int fd;
 
     /* Past the check for a connection, which the race has to beat */
-    if (!tp_attempts(fx, 1))
+    if (!tp_attempts(fx, 1)) {
         return "the worker never connected";
+    }
     theirs = tp_publish(fx, net, TP_PEER, 0, true, NULL);
-    if (!theirs)
+    if (!theirs) {
         return "could not set up the peer's connection";
+    }
 
     tp_keep(net, accept_within(net->lfd[0]));
     fd = tp_keep(net, accept_within(net->lfd[0]));
-    if (fd < 0)
+    if (fd < 0) {
         return "the connect never got through";
-    if (!closed_by_peer(fd))
+    }
+    if (!closed_by_peer(fd)) {
         return "the worker sent a handshake, or kept its own connection";
-    if (tp_lookup(fx, TP_PEER) != theirs || tp_count(fx) != 1)
+    }
+    if (tp_lookup(fx, TP_PEER) != theirs || tp_count(fx) != 1) {
         return "the peer's connection was replaced";
+    }
     return NULL;
 }
 
@@ -3131,14 +3293,18 @@ static const char *tp_no_threads(struct tp_fixture *fx, struct tp_net *net)
 {
     int fd = tp_keep(net, accept_within(net->lfd[0]));
 
-    if (fd < 0)
+    if (fd < 0) {
         return "the worker never connected";
-    if (!recv_type(fd, TCP_MSG_HANDSHAKE, 5000))
+    }
+    if (!recv_type(fd, TCP_MSG_HANDSHAKE, 5000)) {
         return "the worker sent no handshake";
-    if (!closed_by_peer(fd))
+    }
+    if (!closed_by_peer(fd)) {
         return "the connection wasn't closed";
-    if (atomic_load(&g_create_failures) != 1)
+    }
+    if (atomic_load(&g_create_failures) != 1) {
         return "no receive thread was refused";
+    }
     return tp_count(fx) == 0 ? NULL : "the connection was published";
 }
 
@@ -3157,26 +3323,32 @@ static const char *tp_dropped(struct tp_fixture *fx, struct tp_net *net)
     const char *why;
     int fd;
 
-    if (!tp_attempts(fx, 1))
+    if (!tp_attempts(fx, 1)) {
         return "the worker never connected";
+    }
     memset(&topo, 0, sizeof(topo));
     tp_entry(&topo, TP_PEER, net->port[0], true);
     tp_entry(&topo, TP_OTHER, net->port[1], false);
     tp_entry(&topo, TP_THIRD, net->port[2], true);
-    if (!tp_send(fx, &topo))
+    if (!tp_send(fx, &topo)) {
         return "could not send the second update";
-    if (!tp_answers(fx, 2000))
+    }
+    if (!tp_answers(fx, 2000)) {
         return "the heartbeat after the update wasn't answered";
+    }
 
     tp_keep(net, accept_within(net->lfd[0]));
     why = tp_connected_to(fx, net, net->lfd[0], TP_PEER, &fd);
-    if (why)
+    if (why) {
         return why;
+    }
     why = tp_connected_to(fx, net, net->lfd[2], TP_THIRD, &fd);
-    if (why)
+    if (why) {
         return why;
-    if (poll(&pfd, 1, 0) != 0)
+    }
+    if (poll(&pfd, 1, 0) != 0) {
         return "the worker connected to the peer reported dead";
+    }
     return tp_count(fx) == 2 ? NULL
                              : "the dead peer's connection was published";
 }
@@ -3191,21 +3363,26 @@ static const char *tp_dies(struct tp_fixture *fx, struct tp_net *net)
     struct tp_topology topo;
     int fd;
 
-    if (!tp_attempts(fx, 1))
+    if (!tp_attempts(fx, 1)) {
         return "the worker never connected";
+    }
     memset(&topo, 0, sizeof(topo));
     tp_entry(&topo, TP_PEER, net->port[0], false);
-    if (!tp_send(fx, &topo))
+    if (!tp_send(fx, &topo)) {
         return "could not send the second update";
-    if (!tp_answers(fx, 2000))
+    }
+    if (!tp_answers(fx, 2000)) {
         return "the heartbeat after the update wasn't answered";
+    }
 
     tp_keep(net, accept_within(net->lfd[0]));
     fd = tp_keep(net, accept_within(net->lfd[0]));
-    if (fd < 0)
+    if (fd < 0) {
         return "the connect never got through";
-    if (!closed_by_peer(fd))
+    }
+    if (!closed_by_peer(fd)) {
         return "the worker sent a handshake, or kept the connection";
+    }
     return tp_count(fx) == 0 ? NULL : "the connection was published";
 }
 
@@ -3219,25 +3396,31 @@ static const char *tp_from_peer(struct tp_fixture *fx, struct tp_net *net,
                                 const struct tp_topology *topo)
 {
     guint targets;
-    int peer = -1, fd;
+    int peer = -1;
+    int fd;
 
-    if (!tp_publish(fx, net, TP_LOWER, 0, true, &peer))
+    if (!tp_publish(fx, net, TP_LOWER, 0, true, &peer)) {
         return "could not set up the peer's connection";
-    if (!send_topology(peer, topo))
+    }
+    if (!send_topology(peer, topo)) {
         return "could not send the update as the peer";
+    }
     if (!send_heartbeat(peer, TP_LOWER) ||
-        !wait_for_type(peer, TCP_MSG_HEARTBEAT, 2000))
+        !wait_for_type(peer, TCP_MSG_HEARTBEAT, 2000)) {
         return "the heartbeat after the update wasn't answered";
+    }
 
     qemu_mutex_lock(&fx->priv->peer_lock);
     targets = fx->priv->peer_targets->len;
     qemu_mutex_unlock(&fx->priv->peer_lock);
     if (targets != 0 ||
-        atomic_load(&fx->priv->tcp_stats.peer_connect_attempts) != 0)
+        atomic_load(&fx->priv->tcp_stats.peer_connect_attempts) != 0) {
         return "the worker took the peer's update";
+    }
 
-    if (!tp_send(fx, topo))
+    if (!tp_send(fx, topo)) {
         return "could not send the update as the manager";
+    }
     return tp_connected_to(fx, net, net->lfd[0], TP_PEER, &fd);
 }
 
@@ -3249,11 +3432,13 @@ static const char *tp_from_peer(struct tp_fixture *fx, struct tp_net *net,
 static const char *tp_long_host(struct tp_fixture *fx)
 {
     GArray *targets;
-    const TcpPeerTarget *other, *third;
+    const TcpPeerTarget *other;
+    const TcpPeerTarget *third;
     const char *why = NULL;
 
-    if (!tp_answers(fx, 2000))
+    if (!tp_answers(fx, 2000)) {
         return "the heartbeat after the update wasn't answered";
+    }
     qemu_mutex_lock(&fx->priv->peer_lock);
     targets = fx->priv->peer_targets;
     if (targets->len != 2) {
@@ -3263,11 +3448,12 @@ static const char *tp_long_host(struct tp_fixture *fx)
         third = &g_array_index(targets, TcpPeerTarget, 1);
         if (other->node_id != TP_OTHER ||
             strlen(other->host) != TCP_HOSTNAME_LEN - 1 ||
-            strspn(other->host, "h") != TCP_HOSTNAME_LEN - 1)
+            strspn(other->host, "h") != TCP_HOSTNAME_LEN - 1) {
             why = "the peer whose name fills its field wasn't kept whole";
-        else if (third->node_id != TP_THIRD ||
-                 strcmp(third->host, "127.0.0.1") != 0)
+        } else if (third->node_id != TP_THIRD ||
+                   strcmp(third->host, "127.0.0.1") != 0) {
             why = "the peer at 127.0.0.1 wasn't kept";
+        }
     }
     qemu_mutex_unlock(&fx->priv->peer_lock);
     return why;
@@ -3285,8 +3471,9 @@ static const char *tp_skips_setup(struct tp_fixture *fx, struct tp_net *net)
     TcpPeerTarget earlier = tp_target(TP_OTHER, net->port[0]);
 
     tp_set_target(fx, &earlier);
-    if (!tp_publish(fx, net, TP_OTHER, net->port[0], false, NULL))
+    if (!tp_publish(fx, net, TP_OTHER, net->port[0], false, NULL)) {
         return "could not set up the existing connection";
+    }
     return tp_start_peers(fx) ? NULL
                               : "could not start the peer-connect thread";
 }
@@ -3341,14 +3528,18 @@ static const char *tp_run(struct tp_fixture *fx, struct tp_net *net,
     double sent = now_s();
     int fd;
 
-    if (why)
+    if (why) {
         return why;
-    if (scenario == TP_FROM_PEER)
+    }
+    if (scenario == TP_FROM_PEER) {
         return tp_from_peer(fx, net, &topo);
-    if (scenario == TP_NO_THREADS)
+    }
+    if (scenario == TP_NO_THREADS) {
         atomic_store(&g_creates_left, 0);
-    if (!tp_send(fx, &topo))
+    }
+    if (!tp_send(fx, &topo)) {
         return "could not send the topology update";
+    }
 
     switch (scenario) {
     case TP_CONNECTS:
@@ -3404,30 +3595,35 @@ static int run_tp_case(const struct tp_case *c)
      */
     why = tp_setup(&fx, c->interval,
                    c->scenario != TP_SKIPS && c->scenario != TP_LONG_HOST);
-    if (!why)
+    if (!why) {
         why = tp_listen(&net, c->scenario);
-    else
+    } else {
         tp_listen(&net, TP_CONNECTS); /* so tp_close() has something valid */
-    if (!why)
+    }
+    if (!why) {
         why = tp_run(&fx, &net, c->scenario);
+    }
     atomic_store(&g_creates_left, -1);
 
     took = tp_teardown(&fx);
     alarm(0);
-    if (!why && took >= 1.0)
+    if (!why && took >= 1.0) {
         why = "the stop waited for the worker";
+    }
     if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
-                 atomic_load(&g_exits) != atomic_load(&g_creates)))
+                 atomic_load(&g_exits) != atomic_load(&g_creates))) {
         why = "a thread wasn't joined exactly once";
+    }
 
     ok = !why;
     printf("%s topology %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
            c->category, c->description, c->expected);
-    if (!ok)
+    if (!ok) {
         printf("     %s; %d thread(s) created, %d joined, %d exited, stop took "
                "%.3f s\n",
                why, atomic_load(&g_creates), atomic_load(&g_joins),
                atomic_load(&g_exits), took);
+    }
     fflush(stdout);
 
     tp_close(&net);
@@ -3612,17 +3808,20 @@ static bool wr_recv(int fd, TcpMsgHeader *hdr, void **payload, int timeout_ms)
 static bool wr_until(int fd, TcpMsgType type, int timeout_ms, TcpMsgHeader *hdr,
                      void **payload, int *gids)
 {
-    double end = now_s() + timeout_ms / 1000.0;
+    double end = now_s() + (timeout_ms / 1000.0);
 
     while (now_s() < end) {
         int left = (int)((end - now_s()) * 1000.0);
 
-        if (!wr_recv(fd, hdr, payload, left > 0 ? left : 1))
+        if (!wr_recv(fd, hdr, payload, left > 0 ? left : 1)) {
             return false;
-        if (hdr->msg_type == type)
+        }
+        if (hdr->msg_type == type) {
             return true;
-        if (gids && hdr->msg_type == TCP_MSG_NODE_GIDS)
+        }
+        if (gids && hdr->msg_type == TCP_MSG_NODE_GIDS) {
             (*gids)++;
+        }
         free(*payload);
     }
     *payload = NULL;
@@ -3640,13 +3839,16 @@ static uint32_t wr_node_in(int fd, TcpMsgType type, uint32_t *src)
     void *payload;
     uint32_t id = UINT32_MAX;
 
-    if (!wr_until(fd, type, 5000, &hdr, &payload, NULL))
+    if (!wr_until(fd, type, 5000, &hdr, &payload, NULL)) {
         return UINT32_MAX;
+    }
     /* Both payloads start with the node id, big-endian */
-    if (payload && hdr.msg_len >= sizeof(uint32_t))
+    if (payload && hdr.msg_len >= sizeof(uint32_t)) {
         id = ernic_get_be32(payload);
-    if (src)
+    }
+    if (src) {
         *src = hdr.src_node_id;
+    }
     free(payload);
     return id;
 }
@@ -3661,8 +3863,9 @@ static bool wr_settled(int fd, int *gids)
     void *payload;
 
     if (!send_heartbeat(fd, 0) ||
-        !wr_until(fd, TCP_MSG_HEARTBEAT, 2000, &hdr, &payload, gids))
+        !wr_until(fd, TCP_MSG_HEARTBEAT, 2000, &hdr, &payload, gids)) {
         return false;
+    }
     free(payload);
     return true;
 }
@@ -3678,8 +3881,9 @@ static bool send_register_resp(int fd, uint32_t id, int32_t result,
     uint8_t *resp = msg + TCP_MSG_HDR_LEN;
     size_t size = TCP_MSG_HDR_LEN + (size_t)len;
 
-    if (len > TCP_REGISTER_RESP_LEN)
+    if (len > TCP_REGISTER_RESP_LEN) {
         return false;
+    }
     put_hdr(msg, TCP_MSG_REGISTER_RESP, len, 0);
     ernic_put_be32(resp + TCP_REGISTER_RESP_NODE_ID_OFF, id);
     ernic_put_be32(resp + TCP_REGISTER_RESP_NUM_NODES_OFF, 2);
@@ -3704,16 +3908,19 @@ static const char *wr_registered(int lfd, int *mgr, uint16_t *port)
     const char *why = NULL;
 
     *mgr = accept_within(lfd);
-    if (*mgr < 0)
+    if (*mgr < 0) {
         return "the worker never connected to the manager";
-    if (!wr_recv(*mgr, &hdr, &payload, 5000))
+    }
+    if (!wr_recv(*mgr, &hdr, &payload, 5000)) {
         return "the worker sent no registration";
+    }
     if (hdr.msg_type != TCP_MSG_REGISTER_NODE || !payload ||
-        hdr.msg_len < TCP_REGISTER_NODE_LEN)
+        hdr.msg_len < TCP_REGISTER_NODE_LEN) {
         why = "the worker's first message wasn't a registration";
-    else
+    } else {
         *port = ernic_get_be16((const uint8_t *)payload +
                                TCP_REGISTER_NODE_PORT_OFF);
+    }
     free(payload);
     return why;
 }
@@ -3742,12 +3949,15 @@ static int wr_peer(uint16_t port)
 /* After the answer that registers the worker as WR_ID */
 static const char *wr_after_assign(const struct wr_init *in, int mgr)
 {
-    if (in->ret != 0)
+    if (in->ret != 0) {
         return "tcp_init() failed";
-    if (wr_local(in) != WR_ID)
+    }
+    if (wr_local(in) != WR_ID) {
         return "the worker didn't take the id it was assigned";
-    if (wr_node_in(mgr, TCP_MSG_NODE_GIDS, NULL) != WR_ID)
+    }
+    if (wr_node_in(mgr, TCP_MSG_NODE_GIDS, NULL) != WR_ID) {
         return "the worker didn't advertise its GIDs as its own id";
+    }
     return NULL;
 }
 
@@ -3756,10 +3966,12 @@ static const char *wr_twice(const struct wr_init *in, int mgr)
 {
     int gids = 0;
 
-    if (!wr_assign(mgr, WR_OTHER_ID) || !wr_settled(mgr, &gids))
+    if (!wr_assign(mgr, WR_OTHER_ID) || !wr_settled(mgr, &gids)) {
         return "the worker stopped answering the manager";
-    if (wr_local(in) != WR_ID)
+    }
+    if (wr_local(in) != WR_ID) {
         return "the second answer changed the worker's id";
+    }
     return gids == 0 ? NULL : "the worker advertised its GIDs again";
 }
 
@@ -3768,19 +3980,24 @@ static const char *wr_from_peer(const struct wr_init *in, int mgr,
                                 uint16_t port, int *peer)
 {
     uint32_t src = UINT32_MAX;
-    int peer_gids = 0, mgr_gids = 0;
+    int peer_gids = 0;
+    int mgr_gids = 0;
 
     *peer = wr_peer(port);
-    if (*peer < 0)
+    if (*peer < 0) {
         return "the peer could not connect";
+    }
     if (wr_node_in(*peer, TCP_MSG_HANDSHAKE_RESP, &src) != WR_ID ||
-        src != WR_ID)
+        src != WR_ID) {
         return "the peer's handshake wasn't answered as WR_ID";
+    }
     if (!send_register_resp(*peer, WR_OTHER_ID, 0, TCP_REGISTER_RESP_LEN) ||
-        !wr_settled(*peer, &peer_gids) || !wr_settled(mgr, &mgr_gids))
+        !wr_settled(*peer, &peer_gids) || !wr_settled(mgr, &mgr_gids)) {
         return "the worker stopped answering";
-    if (wr_local(in) != WR_ID)
+    }
+    if (wr_local(in) != WR_ID) {
         return "the peer changed the worker's id";
+    }
     return peer_gids == 0 && mgr_gids == 0
                ? NULL
                : "the worker advertised its GIDs again";
@@ -3797,19 +4014,24 @@ static const char *wr_early_peer(struct wr_init *in, int mgr, uint16_t port,
     uint32_t src = UINT32_MAX;
 
     *peer = wr_peer(port);
-    if (*peer < 0)
+    if (*peer < 0) {
         return "the peer could not connect";
+    }
     pfd.fd = *peer;
-    if (poll(&pfd, 1, 300) != 0)
+    if (poll(&pfd, 1, 300) != 0) {
         return "the worker answered the handshake before it had an id";
-    if (!wr_assign(mgr, WR_ID))
+    }
+    if (!wr_assign(mgr, WR_ID)) {
         return "could not answer the registration";
+    }
     wr_init_join(in);
-    if (in->ret != 0)
+    if (in->ret != 0) {
         return "tcp_init() failed";
+    }
     if (wr_node_in(*peer, TCP_MSG_HANDSHAKE_RESP, &src) != WR_ID ||
-        src != WR_ID)
+        src != WR_ID) {
         return "the handshake wasn't answered as the assigned id";
+    }
     return NULL;
 }
 
@@ -3826,37 +4048,46 @@ static const char *wr_early_topology(struct wr_init *in, int mgr, int low,
     struct sockaddr_in addr;
     socklen_t len = sizeof(addr);
     struct pollfd pfd = {.fd = low, .events = POLLIN};
-    uint16_t low_port, high_port;
+    uint16_t low_port;
+    uint16_t high_port;
 
-    if (getsockname(low, (struct sockaddr *)&addr, &len) < 0)
+    if (getsockname(low, (struct sockaddr *)&addr, &len) < 0) {
         return "could not find the peers' ports";
+    }
     low_port = ntohs(addr.sin_port);
     len = sizeof(addr);
-    if (getsockname(high, (struct sockaddr *)&addr, &len) < 0)
+    if (getsockname(high, (struct sockaddr *)&addr, &len) < 0) {
         return "could not find the peers' ports";
+    }
     high_port = ntohs(addr.sin_port);
 
     memset(&topo, 0, sizeof(topo));
     tp_entry(&topo, WR_LOWER, low_port, true);
     tp_entry(&topo, WR_HIGHER, high_port, true);
-    if (!send_topology(mgr, &topo))
+    if (!send_topology(mgr, &topo)) {
         return "could not send the first update";
+    }
     sleep_ms(300); /* time for a worker that didn't ignore it to connect */
-    if (!wr_assign(mgr, WR_ID))
+    if (!wr_assign(mgr, WR_ID)) {
         return "could not answer the registration";
+    }
     wr_init_join(in);
-    if (in->ret != 0)
+    if (in->ret != 0) {
         return "tcp_init() failed";
+    }
 
     memset(&topo, 0, sizeof(topo));
     tp_entry(&topo, WR_HIGHER, high_port, true);
-    if (!send_topology(mgr, &topo))
+    if (!send_topology(mgr, &topo)) {
         return "could not send the second update";
+    }
     *peer = accept_within(high);
-    if (*peer < 0)
+    if (*peer < 0) {
         return "the worker never connected to the higher id";
-    if (wr_node_in(*peer, TCP_MSG_HANDSHAKE, NULL) != WR_ID)
+    }
+    if (wr_node_in(*peer, TCP_MSG_HANDSHAKE, NULL) != WR_ID) {
         return "the worker didn't introduce itself as the assigned id";
+    }
     return poll(&pfd, 1, 0) == 0 ? NULL
                                  : "the worker connected to the lower id";
 }
@@ -3867,64 +4098,79 @@ static const char *wr_run(const struct wr_case *c, struct wr_init *in, int lfd,
 {
     const char *why;
     uint16_t port = 0;
-    int low = -1, high = -1;
+    int low = -1;
+    int high = -1;
 
     if (c->scenario == WR_NO_RECV) {
         *mgr = accept_within(lfd);
-        if (*mgr < 0)
+        if (*mgr < 0) {
             return "the worker never connected to the manager";
-        if (!closed_by_peer(*mgr))
+        }
+        if (!closed_by_peer(*mgr)) {
             return "the worker didn't close its connection";
+        }
         wr_init_join(in);
-        if (in->ret == 0)
+        if (in->ret == 0) {
             return "tcp_init() succeeded";
+        }
         return in->took < 2.0 ? NULL : "tcp_init() waited for the timeout";
     }
     why = wr_registered(lfd, mgr, &port);
-    if (why)
+    if (why) {
         return why;
+    }
 
     switch (c->scenario) {
     case WR_ASSIGNED:
     case WR_TWICE:
     case WR_FROM_PEER:
-        if (!wr_assign(*mgr, WR_ID))
+        if (!wr_assign(*mgr, WR_ID)) {
             return "could not answer the registration";
+        }
         wr_init_join(in);
         why = wr_after_assign(in, *mgr);
-        if (!why && c->scenario == WR_TWICE)
+        if (!why && c->scenario == WR_TWICE) {
             why = wr_twice(in, *mgr);
-        if (!why && c->scenario == WR_FROM_PEER)
+        }
+        if (!why && c->scenario == WR_FROM_PEER) {
             why = wr_from_peer(in, *mgr, port, peer);
+        }
         return why;
     case WR_REFUSED:
-        if (!send_register_resp(*mgr, 0, -EPROTO, TCP_REGISTER_RESP_LEN))
+        if (!send_register_resp(*mgr, 0, -EPROTO, TCP_REGISTER_RESP_LEN)) {
             return "could not answer the registration";
+        }
         break;
     case WR_RESULT_MIN:
-        if (!send_register_resp(*mgr, 0, INT32_MIN, TCP_REGISTER_RESP_LEN))
+        if (!send_register_resp(*mgr, 0, INT32_MIN, TCP_REGISTER_RESP_LEN)) {
             return "could not answer the registration";
+        }
         break;
     case WR_OLD_VERSION:
-        if (!send_register_resp(*mgr, WR_ID, 0, TCP_REGISTER_RESP_LEN_V3))
+        if (!send_register_resp(*mgr, WR_ID, 0, TCP_REGISTER_RESP_LEN_V3)) {
             return "could not answer the registration";
+        }
         break;
     case WR_SHORT:
-        if (!send_register_resp(*mgr, WR_ID, 0, TCP_REGISTER_RESP_LEN_V3 - 1))
+        if (!send_register_resp(*mgr, WR_ID, 0, TCP_REGISTER_RESP_LEN_V3 - 1)) {
             return "could not answer the registration";
+        }
         break;
     case WR_ID_ZERO:
-        if (!wr_assign(*mgr, 0))
+        if (!wr_assign(*mgr, 0)) {
             return "could not answer the registration";
+        }
         break;
     case WR_ID_NONE:
-        if (!wr_assign(*mgr, UINT32_MAX))
+        if (!wr_assign(*mgr, UINT32_MAX)) {
             return "could not answer the registration";
+        }
         break;
     case WR_NO_ACCEPT:
     case WR_NO_PEERS:
-        if (!wr_assign(*mgr, WR_ID))
+        if (!wr_assign(*mgr, WR_ID)) {
             return "could not answer the registration";
+        }
         break;
     case WR_EARLY_PEER:
         return wr_early_peer(in, *mgr, port, peer);
@@ -3934,10 +4180,12 @@ static const char *wr_run(const struct wr_case *c, struct wr_init *in, int lfd,
         why = low < 0 || high < 0
                   ? "could not open the peers' listeners"
                   : wr_early_topology(in, *mgr, low, high, peer);
-        if (low >= 0)
+        if (low >= 0) {
             close(low);
-        if (high >= 0)
+        }
+        if (high >= 0) {
             close(high);
+        }
         return why;
     case WR_NO_RECV: /* handled above */
     default:
@@ -3946,8 +4194,9 @@ static const char *wr_run(const struct wr_case *c, struct wr_init *in, int lfd,
 
     /* The rows in which tcp_init() fails */
     wr_init_join(in);
-    if (in->ret == 0)
+    if (in->ret == 0) {
         return "tcp_init() succeeded";
+    }
     return in->took < 2.0 ? NULL : "tcp_init() waited for the timeout";
 }
 
@@ -3962,7 +4211,9 @@ static int run_wr_case(const struct wr_case *c)
     struct sockaddr_in addr;
     socklen_t len = sizeof(addr);
     const char *why = NULL;
-    int lfd, mgr = -1, peer = -1;
+    int lfd;
+    int mgr = -1;
+    int peer = -1;
     int creates_left = wr_creates_left(c->scenario);
     bool ok;
 
@@ -3984,46 +4235,56 @@ static int run_wr_case(const struct wr_case *c)
                  (unsigned)ntohs(addr.sin_port));
         atomic_store(&g_creates_left, creates_left);
         /* Not counted: it isn't one of the worker's threads */
-        if (pthread_create(&in.tid, NULL, wr_init_run, &in) != 0)
+        if (pthread_create(&in.tid, NULL, wr_init_run, &in) != 0) {
             why = "could not start tcp_init()";
-        else
+        } else {
             in.running = true;
+        }
     }
-    if (!why)
+    if (!why) {
         why = wr_run(c, &in, lfd, &mgr, &peer);
+    }
 
     /* A row that failed before the answer: refuse, so tcp_init() returns */
-    if (in.running && mgr >= 0)
+    if (in.running && mgr >= 0) {
         send_register_resp(mgr, 0, -EPROTO, TCP_REGISTER_RESP_LEN);
+    }
     wr_init_join(&in);
     atomic_store(&g_creates_left, -1);
-    if (in.ret == 0)
+    if (in.ret == 0) {
         rdma_backend_ops_tcp.fini(&in.dev);
+    }
     alarm(0);
     if (!why && creates_left >= 0 &&
         (atomic_load(&g_creates) != creates_left ||
-         atomic_load(&g_create_failures) != 1))
+         atomic_load(&g_create_failures) != 1)) {
         why = "the thread that couldn't be created wasn't the expected one";
+    }
     if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
-                 atomic_load(&g_exits) != atomic_load(&g_creates)))
+                 atomic_load(&g_exits) != atomic_load(&g_creates))) {
         why = "a thread the worker started wasn't joined exactly once";
+    }
 
     ok = !why;
     printf("%s worker registration %s: %s; expected: %s\n",
            ok ? "ok  " : "FAIL", c->category, c->description, c->expected);
-    if (!ok)
+    if (!ok) {
         printf("     %s; tcp_init() returned %d after %.3f s, %d thread(s) "
                "created, %d joined, %d exited\n",
                why, in.ret, in.took, atomic_load(&g_creates),
                atomic_load(&g_joins), atomic_load(&g_exits));
+    }
     fflush(stdout);
 
-    if (peer >= 0)
+    if (peer >= 0) {
         close(peer);
-    if (mgr >= 0)
+    }
+    if (mgr >= 0) {
         close(mgr);
-    if (lfd >= 0)
+    }
+    if (lfd >= 0) {
         close(lfd);
+    }
     return ok ? 0 : 1;
 }
 
@@ -4046,8 +4307,8 @@ static int run_wr_case(const struct wr_case *c)
  */
 
 #define SP_HDR      ((uint32_t)TCP_MSG_HDR_LEN)
-#define SP_A_LEN    24u                 /* the first message's payload */
-#define SP_B_LEN    16u                 /* the second's */
+#define SP_A_LEN    24U                 /* the first message's payload */
+#define SP_B_LEN    16U                 /* the second's */
 #define SP_A        (SP_HDR + SP_A_LEN) /* the first message, on the wire */
 #define SP_ALL      (SP_A + SP_HDR + SP_B_LEN)
 #define SP_LATER_MS 50
@@ -4129,10 +4390,11 @@ static void *sp_write(void *opaque)
 
     sleep_ms(SP_LATER_MS);
     w->ok = w->len == 0 || send(w->fd, w->buf, w->len, 0) == (ssize_t)w->len;
-    if (w->end == SP_STOP)
+    if (w->end == SP_STOP) {
         atomic_store(w->running, false);
-    else if (w->end == SP_HANGUP)
+    } else if (w->end == SP_HANGUP) {
         w->ok = w->ok && shutdown(w->fd, SHUT_WR) == 0;
+    }
     return NULL;
 }
 
@@ -4147,8 +4409,9 @@ static void sp_put(uint8_t *buf, TcpMsgType type, uint32_t seq, uint32_t len,
     const uint32_t field[8] = {
         TCP_PROTOCOL_MAGIC, type, len, seq, seq + 1, seq + 2, seq + 3, seq + 4};
 
-    for (size_t i = 0; i < 8; i++)
-        ernic_put_be32(buf + 4 * i, field[i]);
+    for (size_t i = 0; i < 8; i++) {
+        ernic_put_be32(buf + (4 * i), field[i]);
+    }
     memset(buf + SP_HDR, fill, len);
 }
 
@@ -4160,11 +4423,14 @@ static bool sp_matches(const TcpMsgHeader *hdr, const void *payload,
     if (hdr->magic != TCP_PROTOCOL_MAGIC || hdr->msg_type != type ||
         hdr->msg_len != len || hdr->seq != seq || hdr->src_node_id != seq + 1 ||
         hdr->dst_node_id != seq + 2 || hdr->src_qpn != seq + 3 ||
-        hdr->dst_qpn != seq + 4 || !payload)
+        hdr->dst_qpn != seq + 4 || !payload) {
         return false;
-    for (uint32_t i = 0; i < len; i++)
-        if (((const uint8_t *)payload)[i] != fill)
+    }
+    for (uint32_t i = 0; i < len; i++) {
+        if (((const uint8_t *)payload)[i] != fill) {
             return false;
+        }
+    }
     return true;
 }
 
@@ -4185,16 +4451,18 @@ static const char *sp_read(const struct sp_case *c, int fd,
         const char *why = NULL;
 
         *ret = tcp_recv_message(fd, &hdr, &payload, running, deadline_ms);
-        if (i == c->want_msgs)
+        if (i == c->want_msgs) {
             why = payload ? "the last call returned a payload" : NULL;
-        else if (*ret != 0)
+        } else if (*ret != 0) {
             why = "a message wasn't read";
-        else if (!sp_matches(&hdr, payload, want[i].type, want[i].seq,
-                             want[i].len, want[i].fill))
+        } else if (!sp_matches(&hdr, payload, want[i].type, want[i].seq,
+                               want[i].len, want[i].fill)) {
             why = "a message read isn't the one sent";
+        }
         free(payload);
-        if (why)
+        if (why) {
             return why;
+        }
     }
     return NULL;
 }
@@ -4213,14 +4481,16 @@ static const char *sp_run(const struct sp_case *c, int fd, int peer,
     const char *why;
     double start;
 
-    if (pthread_create(&writer, NULL, sp_write, &w) != 0)
+    if (pthread_create(&writer, NULL, sp_write, &w) != 0) {
         return "could not start the writer";
+    }
     start = now_s();
     why = sp_read(c, fd, running, ret);
     *took = now_s() - start;
     pthread_join(writer, NULL);
-    if (!why && !w.ok)
+    if (!why && !w.ok) {
         why = "the writer could not send";
+    }
     return why;
 }
 
@@ -4229,7 +4499,8 @@ static int run_sp_case(const struct sp_case *c)
     uint8_t stream[SP_ALL];
     atomic_bool running;
     const char *why = NULL;
-    int sv[2] = {-1, -1}, ret = 0;
+    int sv[2] = {-1, -1};
+    int ret = 0;
     double took = 0.0;
     bool ok;
 
@@ -4258,8 +4529,9 @@ static int run_sp_case(const struct sp_case *c)
     }
     alarm(0);
 
-    if (!why && ret != c->want_ret)
+    if (!why && ret != c->want_ret) {
         why = "the last call returned the wrong value";
+    }
     /*
      * A wait that ends early, or on the writer, rather than at the deadline.
      * ernic_monotonic_ms() truncates to the millisecond, so the deadline can
@@ -4267,22 +4539,27 @@ static int run_sp_case(const struct sp_case *c)
      */
     if (!why && c->deadline_ms &&
         (took < (c->deadline_ms - 10) / 1000.0 ||
-         took >= c->deadline_ms / 1000.0 + 1))
+         took >= (c->deadline_ms / 1000.0) + 1)) {
         why = "the call didn't give up at the deadline";
-    if (!why && took >= 1.0 + (c->deadline_ms ? c->deadline_ms / 1000.0 : 0))
+    }
+    if (!why && took >= 1.0 + (c->deadline_ms ? c->deadline_ms / 1000.0 : 0)) {
         why = "the call didn't give up promptly";
+    }
 
     ok = !why;
     printf("%s partial %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
            c->category, c->description, c->expected);
-    if (!ok)
+    if (!ok) {
         printf("     %s; last call returned %d (want %d), %.3f s\n", why, ret,
                c->want_ret, took);
+    }
 
-    if (sv[0] >= 0)
+    if (sv[0] >= 0) {
         close(sv[0]);
-    if (sv[1] >= 0)
+    }
+    if (sv[1] >= 0) {
         close(sv[1]);
+    }
     return ok ? 0 : 1;
 }
 
@@ -4306,12 +4583,12 @@ static int run_hdr_layout(void)
     TcpMsgHeader hdr = {
         .magic = TCP_PROTOCOL_MAGIC,
         .msg_type = TCP_MSG_IONIC,
-        .msg_len = 0x01020304u,
-        .seq = 0x05060708u,
-        .src_node_id = 0x090a0b0cu,
-        .dst_node_id = 0x0d0e0f10u,
-        .src_qpn = 0x11121314u,
-        .dst_qpn = 0x15161718u,
+        .msg_len = 0x01020304U,
+        .seq = 0x05060708U,
+        .src_node_id = 0x090a0b0cU,
+        .dst_node_id = 0x0d0e0f10U,
+        .src_qpn = 0x11121314U,
+        .dst_qpn = 0x15161718U,
     };
     uint8_t got[TCP_MSG_HDR_LEN];
     bool ok;
@@ -4403,7 +4680,7 @@ static const struct reap_case reap_cases[] = {
 };
 
 /* The peers' descriptors a row keeps open, closed at the end of the row */
-#define REAP_MAX_FDS (TCP_MAX_PENDING_CONNS + 4u)
+#define REAP_MAX_FDS (TCP_MAX_PENDING_CONNS + 4U)
 
 struct reap_fds {
     int fd[REAP_MAX_FDS];
@@ -4413,8 +4690,9 @@ struct reap_fds {
 /* Keep fd, if it's open, to be closed at the end of the row; returns it. */
 static int reap_keep(struct reap_fds *k, int fd)
 {
-    if (fd >= 0 && k->n < REAP_MAX_FDS)
+    if (fd >= 0 && k->n < REAP_MAX_FDS) {
         k->fd[k->n++] = fd;
+    }
     return fd;
 }
 
@@ -4424,10 +4702,12 @@ static int open_fds(void)
     DIR *dir = opendir("/proc/self/fd");
     int n = 0;
 
-    if (!dir)
+    if (!dir) {
         return -1;
-    while (readdir(dir))
+    }
+    while (readdir(dir)) {
         n++;
+    }
     closedir(dir);
     return n;
 }
@@ -4435,8 +4715,9 @@ static int open_fds(void)
 /* Wait up to 5 s for n threads to have been created, or joined, in all. */
 static bool wait_for_count(const atomic_int *count, int n)
 {
-    for (int i = 0; i < 5000 && atomic_load(count) < n; i++)
+    for (int i = 0; i < 5000 && atomic_load(count) < n; i++) {
         sleep_ms(1);
+    }
     return atomic_load(count) >= n;
 }
 
@@ -4478,18 +4759,23 @@ static const char *reap_probes(TcpBackendPrivate *priv, uint16_t port,
     for (int i = 0; i < 100; i++) {
         int fd = reap_connect(port, base + i + 1);
 
-        if (fd < 0)
+        if (fd < 0) {
             return "a peer wasn't given a receive thread";
+        }
         close(fd);
     }
-    if (!wait_for_exits(100))
+    if (!wait_for_exits(100)) {
         return "a receive thread didn't see its peer hang up";
-    if (reap_keep(k, reap_connect(port, base + 101)) < 0)
+    }
+    if (reap_keep(k, reap_connect(port, base + 101)) < 0) {
         return "the last peer wasn't given a receive thread";
-    if (atomic_load(&g_joins) != 100)
+    }
+    if (atomic_load(&g_joins) != 100) {
         return "the threads of the peers that hung up weren't each joined once";
-    if (pending_count(priv) != 1)
+    }
+    if (pending_count(priv) != 1) {
         return "peers that hung up are still waiting to register";
+    }
     return open_fds() - fds <= 2
                ? NULL
                : "the descriptors of the peers that hung up are still open";
@@ -4501,19 +4787,24 @@ static const char *reap_refused(TcpBackendPrivate *priv, uint16_t port,
 {
     int fd = reap_keep(k, reap_connect(port, atomic_load(&g_creates) + 1));
 
-    if (fd < 0)
+    if (fd < 0) {
         return "the peer wasn't given a receive thread";
+    }
     /* All zeros, so version 0 */
     if (!send_message(fd, TCP_MSG_REGISTER_NODE, TCP_REGISTER_NODE_LEN_V3,
-                      TCP_REGISTER_NODE_LEN_V3))
+                      TCP_REGISTER_NODE_LEN_V3)) {
         return "could not send the registration";
-    if (!recv_type(fd, TCP_MSG_REGISTER_RESP, 2000))
+    }
+    if (!recv_type(fd, TCP_MSG_REGISTER_RESP, 2000)) {
         return "the registration wasn't refused";
+    }
     /* A pass comes within the 1 s interval, the timeout after 5 s */
-    if (!closed_within(fd, 2500))
+    if (!closed_within(fd, 2500)) {
         return "the refused peer's connection was left open";
-    if (!wait_for_count(&g_joins, 1))
+    }
+    if (!wait_for_count(&g_joins, 1)) {
         return "the refused peer's thread wasn't joined";
+    }
     return pending_count(priv) == 0 ? NULL
                                     : "the refused peer is still waiting";
 }
@@ -4549,20 +4840,26 @@ static const char *reap_early(TcpBackendPrivate *priv, uint16_t port,
     int w = reap_keep(k, worker_register(priv));
     int fd;
 
-    if (w < 0 || !wait_for_registered(priv, 1))
+    if (w < 0 || !wait_for_registered(priv, 1)) {
         return "the worker did not register";
+    }
     fd = reap_keep(k, reap_connect(port, atomic_load(&g_creates) + 1));
-    if (fd < 0)
+    if (fd < 0) {
         return "the peer wasn't given a receive thread";
-    if (!send_ionic(fd, 5, 1))
+    }
+    if (!send_ionic(fd, 5, 1)) {
         return "could not send the ionic message";
+    }
     /* A pass comes within the 1 s interval, the timeout after 5 s */
-    if (!closed_within(fd, 2500))
+    if (!closed_within(fd, 2500)) {
         return "the peer's connection was left open";
-    if (!wait_for_count(&g_joins, 1))
+    }
+    if (!wait_for_count(&g_joins, 1)) {
         return "the peer's thread wasn't joined";
-    if (count_type(w, TCP_MSG_IONIC) != 0)
+    }
+    if (count_type(w, TCP_MSG_IONIC) != 0) {
         return "the peer's message was relayed";
+    }
     return pending_count(priv) == 0 ? NULL : "the peer is still waiting";
 }
 
@@ -4576,8 +4873,9 @@ static const char *reap_timeout(TcpBackendPrivate *priv, uint16_t port,
     int fd = reap_keep(k, reap_connect(port, atomic_load(&g_creates) + 1));
     bool aged = false;
 
-    if (fd < 0)
+    if (fd < 0) {
         return "the peer wasn't given a receive thread";
+    }
     qemu_mutex_lock(&priv->conn_table_lock);
     if (priv->pending_conns->len == 1) {
         TcpConnection *conn = g_ptr_array_index(priv->pending_conns, 0);
@@ -4588,12 +4886,15 @@ static const char *reap_timeout(TcpBackendPrivate *priv, uint16_t port,
         }
     }
     qemu_mutex_unlock(&priv->conn_table_lock);
-    if (!aged)
+    if (!aged) {
         return "could not age the peer's connection";
-    if (!closed_within(fd, 2500))
+    }
+    if (!closed_within(fd, 2500)) {
         return "the peer's connection was left open";
-    if (!wait_for_count(&g_joins, 1))
+    }
+    if (!wait_for_count(&g_joins, 1)) {
         return "the peer's thread wasn't joined";
+    }
     return pending_count(priv) == 0 ? NULL : "the peer is still waiting";
 }
 
@@ -4609,21 +4910,26 @@ static const char *reap_young(TcpBackendPrivate *priv, uint16_t port,
     int w = reap_keep(k, worker_register(priv));
     int fd;
 
-    if (w < 0 || !wait_for_registered(priv, 1))
+    if (w < 0 || !wait_for_registered(priv, 1)) {
         return "the worker did not register";
+    }
     fd = reap_keep(k, reap_connect(port, atomic_load(&g_creates) + 1));
-    if (fd < 0)
+    if (fd < 0) {
         return "the peer wasn't given a receive thread";
+    }
     count_type(w, TCP_MSG_HEARTBEAT);
     /* As a worker answers, so no pass finds the worker silent and closes it */
-    if (!send_heartbeat(w, 1))
+    if (!send_heartbeat(w, 1)) {
         return "could not answer the health check";
-    if (!wait_for_types(w, TCP_MSG_HEARTBEAT, 2, 3000))
+    }
+    if (!wait_for_types(w, TCP_MSG_HEARTBEAT, 2, 3000)) {
         return "the health check didn't make two passes";
+    }
     pfd.fd = fd;
     pfd.events = POLLIN;
-    if (poll(&pfd, 1, 0) != 0 || pending_count(priv) != 1)
+    if (poll(&pfd, 1, 0) != 0 || pending_count(priv) != 1) {
         return "the peer was closed with time left to register";
+    }
     return NULL;
 }
 
@@ -4663,8 +4969,9 @@ static const char *reap_cap(TcpBackendPrivate *priv, uint16_t port,
 
     for (int i = 0; i < cap; i++) {
         reap_renew(priv);
-        if (reap_keep(k, reap_connect(port, base + i + 1)) < 0)
+        if (reap_keep(k, reap_connect(port, base + i + 1)) < 0) {
             return "a peer under the cap wasn't given a receive thread";
+        }
     }
     /*
      * A peer's receive thread is created under conn_table_lock, which is
@@ -4688,18 +4995,22 @@ static const char *reap_cap(TcpBackendPrivate *priv, uint16_t port,
                  pending_count(priv), atomic_load(&g_exits));
         return why;
     }
-    if (atomic_load(&g_creates) != base + cap)
+    if (atomic_load(&g_creates) != base + cap) {
         return "the peer past the cap was given a receive thread";
+    }
 
     close(k->fd[first]);
     k->fd[first] = -1;
-    if (!wait_for_exits(1))
+    if (!wait_for_exits(1)) {
         return "the thread didn't see its peer hang up";
+    }
     reap_renew(priv);
-    if (reap_keep(k, reap_connect(port, base + cap + 1)) < 0)
+    if (reap_keep(k, reap_connect(port, base + cap + 1)) < 0) {
         return "the peer after one hung up wasn't let in";
-    if (atomic_load(&g_joins) != 1)
+    }
+    if (atomic_load(&g_joins) != 1) {
         return "the thread of the peer that hung up wasn't joined once";
+    }
     return pending_count(priv) == TCP_MAX_PENDING_CONNS
                ? NULL
                : "the wrong number of peers are waiting";
@@ -4713,13 +5024,16 @@ static const char *reap_cap(TcpBackendPrivate *priv, uint16_t port,
  */
 static const char *reap_no_fds(uint16_t port, struct reap_fds *k, int *errors)
 {
-    struct rlimit old, low;
+    struct rlimit old;
+    struct rlimit low;
     int base = atomic_load(&g_creates);
-    int lowest, fd;
+    int lowest;
+    int fd;
 
     *errors = -1;
-    if (getrlimit(RLIMIT_NOFILE, &old) < 0)
+    if (getrlimit(RLIMIT_NOFILE, &old) < 0) {
         return "could not read the descriptor limit";
+    }
     /*
      * The sanitizer runtime briefly takes a descriptor now and then, and
      * if it takes the last one first, the peer's socket() fails with
@@ -4730,8 +5044,9 @@ static const char *reap_no_fds(uint16_t port, struct reap_fds *k, int *errors)
         setrlimit(RLIMIT_NOFILE, &old);
         /* Every descriptor below the lowest free one is open */
         lowest = open("/dev/null", O_RDONLY | O_CLOEXEC);
-        if (lowest < 0)
+        if (lowest < 0) {
             return "could not open /dev/null";
+        }
         low = old;
         low.rlim_cur = (rlim_t)lowest + 1;
         if (setrlimit(RLIMIT_NOFILE, &low) < 0) {
@@ -4747,12 +5062,15 @@ static const char *reap_no_fds(uint16_t port, struct reap_fds *k, int *errors)
     *errors = atomic_load(&g_errors);
     setrlimit(RLIMIT_NOFILE, &old);
 
-    if (fd < 0)
+    if (fd < 0) {
         return "could not connect";
-    if (*errors == 0)
+    }
+    if (*errors == 0) {
         return "accept() didn't fail";
-    if (*errors > 8)
+    }
+    if (*errors > 8) {
         return "accept() was retried without a pause";
+    }
     /* The next retry has a descriptor to give it */
     return wait_for_count(&g_creates, base + 1)
                ? NULL
@@ -4765,7 +5083,7 @@ static const char *reap_no_fds(uint16_t port, struct reap_fds *k, int *errors)
  */
 static bool reported(int fd, uint32_t id, bool alive, int timeout_ms)
 {
-    double end = now_s() + timeout_ms / 1000.0;
+    double end = now_s() + (timeout_ms / 1000.0);
 
     while (now_s() < end) {
         struct pollfd pfd = {.fd = fd, .events = POLLIN};
@@ -4774,10 +5092,12 @@ static bool reported(int fd, uint32_t id, bool alive, int timeout_ms)
         void *payload = NULL;
         bool found = false;
 
-        if (poll(&pfd, 1, left > 0 ? left : 1) != 1)
+        if (poll(&pfd, 1, left > 0 ? left : 1) != 1) {
             continue;
-        if (tcp_recv_message(fd, &hdr, &payload, NULL, 0) < 0)
+        }
+        if (tcp_recv_message(fd, &hdr, &payload, NULL, 0) < 0) {
             return false;
+        }
         if (hdr.msg_type == TCP_MSG_MESH_TOPOLOGY && payload &&
             hdr.msg_len >= TCP_TOPOLOGY_LEN) {
             const uint8_t *topo = payload;
@@ -4787,13 +5107,15 @@ static bool reported(int fd, uint32_t id, bool alive, int timeout_ms)
                 const uint8_t *entry = topo + TCP_TOPOLOGY_NODE_OFF(i);
 
                 if (ernic_get_be32(entry + TCP_MESH_NODE_ID_OFF) == id &&
-                    (entry[TCP_MESH_NODE_ALIVE_OFF] != 0) == alive)
+                    (entry[TCP_MESH_NODE_ALIVE_OFF] != 0) == alive) {
                     found = true;
+                }
             }
         }
         free(payload);
-        if (found)
+        if (found) {
             return true;
+        }
     }
     return false;
 }
@@ -4811,27 +5133,32 @@ static const char *reap_hangup(TcpBackendPrivate *priv, struct reap_fds *k)
     bool alive;
     double start;
     int w1 = reap_keep(k, worker_register(priv));
-    int w2, fd;
+    int w2;
+    int fd;
 
-    if (w1 < 0 || !wait_for_registered(priv, 1))
+    if (w1 < 0 || !wait_for_registered(priv, 1)) {
         return "worker 1 did not register";
+    }
     w2 = worker_register(priv);
     if (w2 < 0 || !wait_for_registered(priv, 2)) {
-        if (w2 >= 0)
+        if (w2 >= 0) {
             close(w2);
+        }
         return "worker 2 did not register";
     }
     /* A reference, so the connection can be looked at once it's released */
     conn = tcp_connection_lookup(priv, 2);
-    if (!conn)
+    if (!conn) {
         return "worker 2 isn't node 2";
+    }
 
     close(w2);
     start = now_s();
-    if (!reported(w1, 2, false, 5000))
+    if (!reported(w1, 2, false, 5000)) {
         why = "worker 1 wasn't told worker 2 is dead";
-    else if (now_s() - start >= 2.5)
+    } else if (now_s() - start >= 2.5) {
         why = "worker 2 was only declared dead once it went silent";
+    }
 
     qemu_mutex_lock(&priv->mesh_table_lock);
     node = g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(2));
@@ -4841,14 +5168,15 @@ static const char *reap_hangup(TcpBackendPrivate *priv, struct reap_fds *k)
     fd = conn->sockfd;
     qemu_mutex_unlock(&conn->lock);
 
-    if (!why && (!node || alive))
+    if (!why && (!node || alive)) {
         why = "node 2 is gone, or still alive";
-    else if (!why && table_get(priv, 2))
+    } else if (!why && table_get(priv, 2)) {
         why = "worker 2's connection is still in the connections table";
-    else if (!why && (fd != -1 || atomic_load(&conn->recv_thread_running)))
+    } else if (!why && (fd != -1 || atomic_load(&conn->recv_thread_running))) {
         why = "worker 2's connection wasn't closed";
-    else if (!why && atomic_load(&g_joins) != 1)
+    } else if (!why && atomic_load(&g_joins) != 1) {
         why = "worker 2's receive thread wasn't joined once";
+    }
     tcp_connection_unref(conn);
     return why;
 }
@@ -4887,7 +5215,8 @@ static int run_reap_case(const struct reap_case *c)
     const char *why;
     uint16_t port;
     int errors = -1;
-    double start, took;
+    double start;
+    double took;
     bool ok;
 
     if (c->scenario == REAP_NO_FDS && under_valgrind()) {
@@ -4920,25 +5249,30 @@ static int run_reap_case(const struct reap_case *c)
     rdma_backend_ops_tcp.fini(&dev);
     took = now_s() - start;
     alarm(0);
-    if (!why && took >= 2.0)
+    if (!why && took >= 2.0) {
         why = "tcp_fini() waited";
+    }
     if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
-                 atomic_load(&g_exits) != atomic_load(&g_creates)))
+                 atomic_load(&g_exits) != atomic_load(&g_creates))) {
         why = "a thread wasn't joined exactly once";
+    }
 
     ok = !why;
     printf("%s reap %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", c->category,
            c->description, c->expected);
-    if (!ok)
+    if (!ok) {
         printf("     %s; %d thread(s) created, %d joined, %d exited, %d "
                "error(s) logged, tcp_fini() took %.3f s\n",
                why, atomic_load(&g_creates), atomic_load(&g_joins),
                atomic_load(&g_exits), errors, took);
+    }
     fflush(stdout);
 
-    for (uint32_t i = 0; i < k.n; i++)
-        if (k.fd[i] >= 0)
+    for (uint32_t i = 0; i < k.n; i++) {
+        if (k.fd[i] >= 0) {
             close(k.fd[i]);
+        }
+    }
     return ok ? 0 : 1;
 }
 
@@ -5031,7 +5365,7 @@ static const struct sender_case sender_cases[] = {
 };
 
 /* The payload each retired or ionic message carries */
-#define SENDER_LEN  8u
+#define SENDER_LEN  8U
 #define SENDER_BYTE 0xab
 
 /*
@@ -5075,22 +5409,28 @@ static bool node_get(TcpBackendPrivate *priv, uint32_t id, bool *alive,
  */
 static const char *sender_heartbeat(TcpBackendPrivate *priv, int w1)
 {
-    uint64_t dead_since = ernic_monotonic_ms() - UINT64_C(1000000), before,
-             last1, last2;
+    uint64_t dead_since = ernic_monotonic_ms() - UINT64_C(1000000);
+    uint64_t before;
+    uint64_t last1;
+    uint64_t last2;
     bool alive1, alive2;
 
     node_set(priv, 1, true, dead_since);
     node_set(priv, 2, false, dead_since);
     before = ernic_monotonic_ms();
-    if (!send_heartbeat(w1, 2))
+    if (!send_heartbeat(w1, 2)) {
         return "could not send the heartbeat";
-    if (!wait_for_type(w1, TCP_MSG_HEARTBEAT_RESP, 2000))
+    }
+    if (!wait_for_type(w1, TCP_MSG_HEARTBEAT_RESP, 2000)) {
         return "the heartbeat wasn't answered";
+    }
     if (!node_get(priv, 1, &alive1, &last1) ||
-        !node_get(priv, 2, &alive2, &last2))
+        !node_get(priv, 2, &alive2, &last2)) {
         return "a node is missing";
-    if (alive2 || last2 != dead_since)
+    }
+    if (alive2 || last2 != dead_since) {
         return "node 2 was revived by a heartbeat that wasn't its own";
+    }
     /*
      * On a machine up for less than 1000 s, dead_since wraps to a value
      * above before, so it has to be ruled out separately.
@@ -5114,8 +5454,9 @@ static bool broadcasts_sent_reach(TcpBackendPrivate *priv, uint64_t n,
         qemu_mutex_lock(&priv->broadcast_lock);
         sent = priv->broadcasts_sent;
         qemu_mutex_unlock(&priv->broadcast_lock);
-        if (sent >= n)
+        if (sent >= n) {
             return true;
+        }
         sleep_ms(10);
     }
     return false;
@@ -5162,16 +5503,20 @@ static const char *sender_revives(TcpBackendPrivate *priv, int w1, int w2)
     uint64_t last;
     bool alive;
 
-    if (!worker_settled(priv, w1, 1) || !worker_settled(priv, w2, 2))
+    if (!worker_settled(priv, w1, 1) || !worker_settled(priv, w2, 2)) {
         return "a registration wasn't finished";
+    }
     count_type(w1, TCP_MSG_MESH_TOPOLOGY);
     node_set(priv, 2, false, ernic_monotonic_ms() - UINT64_C(1000000));
-    if (!send_heartbeat(w2, 2))
+    if (!send_heartbeat(w2, 2)) {
         return "could not send the heartbeat";
-    if (!reported(w1, 2, true, 2000))
+    }
+    if (!reported(w1, 2, true, 2000)) {
         return "worker 1 wasn't told node 2 is alive again";
-    if (!node_get(priv, 2, &alive, &last) || !alive)
+    }
+    if (!node_get(priv, 2, &alive, &last) || !alive) {
         return "node 2 is still dead";
+    }
     return NULL;
 }
 
@@ -5200,7 +5545,7 @@ static bool send_payload(int fd, TcpMsgType type, uint32_t src)
  */
 static int others_before(int fd, TcpMsgType type, int timeout_ms)
 {
-    double end = now_s() + timeout_ms / 1000.0;
+    double end = now_s() + (timeout_ms / 1000.0);
     int others = 0;
 
     while (now_s() < end) {
@@ -5209,13 +5554,16 @@ static int others_before(int fd, TcpMsgType type, int timeout_ms)
         TcpMsgHeader hdr;
         void *payload = NULL;
 
-        if (poll(&pfd, 1, left > 0 ? left : 1) != 1)
+        if (poll(&pfd, 1, left > 0 ? left : 1) != 1) {
             continue;
-        if (tcp_recv_message(fd, &hdr, &payload, NULL, 0) < 0)
+        }
+        if (tcp_recv_message(fd, &hdr, &payload, NULL, 0) < 0) {
             return -1;
+        }
         free(payload);
-        if (hdr.msg_type == type)
+        if (hdr.msg_type == type) {
             return others;
+        }
         others++;
     }
     return -1;
@@ -5238,16 +5586,20 @@ static const char *sender_retired(TcpBackendPrivate *priv, int w1, int w2)
     struct pollfd pfd = {.fd = w2, .events = POLLIN};
 
     /* Finish the registrations, and discard what they sent */
-    if (!worker_settled(priv, w1, 1) || !worker_settled(priv, w2, 2))
+    if (!worker_settled(priv, w1, 1) || !worker_settled(priv, w2, 2)) {
         return "a registration wasn't finished";
+    }
     count_type(w1, TCP_MSG_HEARTBEAT_RESP);
     count_type(w2, TCP_MSG_HEARTBEAT_RESP);
 
-    for (size_t i = 0; i < sizeof(retired) / sizeof(retired[0]); i++)
-        if (!send_payload(w1, retired[i], 2))
+    for (size_t i = 0; i < sizeof(retired) / sizeof(retired[0]); i++) {
+        if (!send_payload(w1, retired[i], 2)) {
             return "could not send a retired message";
-    if (!send_heartbeat(w1, 1))
+        }
+    }
+    if (!send_heartbeat(w1, 1)) {
         return "could not send the heartbeat";
+    }
 
     switch (others_before(w1, TCP_MSG_HEARTBEAT_RESP, 2000)) {
     case -1:
@@ -5283,8 +5635,9 @@ static bool sender_ionic_recv(void *opaque, uint32_t src_node, void *buf,
     (void)opaque;
     atomic_store(&g_ionic_len, len);
     atomic_store(&g_ionic_src, src_node);
-    if (atomic_compare_exchange_strong(&g_ionic_buf, &none, buf))
+    if (atomic_compare_exchange_strong(&g_ionic_buf, &none, buf)) {
         buf = NULL;
+    }
     atomic_fetch_add(&g_ionic_calls, 1);
     free(buf);
     return true;
@@ -5293,15 +5646,20 @@ static bool sender_ionic_recv(void *opaque, uint32_t src_node, void *buf,
 /* Whether sender_ionic_recv() was handed worker 1's payload, once */
 static const char *sender_ionic_check(const uint8_t *buf)
 {
-    if (atomic_load(&g_ionic_calls) != 1 || !buf)
+    if (atomic_load(&g_ionic_calls) != 1 || !buf) {
         return "the callback wasn't called once";
-    if (atomic_load(&g_ionic_src) != 1)
+    }
+    if (atomic_load(&g_ionic_src) != 1) {
         return "the callback wasn't told the message is from node 1";
-    if (atomic_load(&g_ionic_len) != SENDER_LEN)
+    }
+    if (atomic_load(&g_ionic_len) != SENDER_LEN) {
         return "the callback wasn't given the payload's length";
-    for (size_t i = 0; i < SENDER_LEN; i++)
-        if (buf[i] != SENDER_BYTE)
+    }
+    for (size_t i = 0; i < SENDER_LEN; i++) {
+        if (buf[i] != SENDER_BYTE) {
             return "the callback wasn't given the payload";
+        }
+    }
     return NULL;
 }
 
@@ -5318,25 +5676,29 @@ static const char *sender_ionic(RdmaBackendDev *dev, int w1, bool registered)
     uint8_t *buf;
     const char *why = NULL;
 
-    if (!worker_settled(dev->backend_private, w1, 1))
+    if (!worker_settled(dev->backend_private, w1, 1)) {
         return "worker 1's registration wasn't finished";
+    }
     count_type(w1, TCP_MSG_HEARTBEAT_RESP);
 
     atomic_store(&g_ionic_calls, 0);
     atomic_store(&g_ionic_buf, NULL);
-    if (registered)
+    if (registered) {
         rdma_backend_ops_tcp.mesh->set_recv_cb(dev, sender_ionic_recv, NULL);
-    if (!send_payload(w1, TCP_MSG_IONIC, 1))
+    }
+    if (!send_payload(w1, TCP_MSG_IONIC, 1)) {
         why = "could not send the ionic message";
-    else if (!worker_settled(dev->backend_private, w1, 1))
+    } else if (!worker_settled(dev->backend_private, w1, 1)) {
         why = "the heartbeat after the ionic message wasn't answered";
+    }
     rdma_backend_ops_tcp.mesh->set_recv_cb(dev, NULL, NULL);
 
     buf = atomic_load(&g_ionic_buf);
-    if (!why && registered)
+    if (!why && registered) {
         why = sender_ionic_check(buf);
-    else if (!why && atomic_load(&g_ionic_calls) != 0)
+    } else if (!why && atomic_load(&g_ionic_calls) != 0) {
         why = "a callback was called";
+    }
     free(buf);
     return why;
 }
@@ -5365,8 +5727,9 @@ static bool full_ionic_recv(void *opaque, uint32_t src_node, void *buf,
 static bool refusals_reach(int n)
 {
     for (int i = 0; i < 500; i++) {
-        if (atomic_load(&g_ionic_refusals) >= n)
+        if (atomic_load(&g_ionic_refusals) >= n) {
             return true;
+        }
         sleep_ms(10);
     }
     return false;
@@ -5385,8 +5748,9 @@ static const char *sender_full(RdmaBackendDev *dev, int w1, bool stop)
     const char *why = NULL;
     uint8_t *buf;
 
-    if (!worker_settled(dev->backend_private, w1, 1))
+    if (!worker_settled(dev->backend_private, w1, 1)) {
         return "worker 1's registration wasn't finished";
+    }
     count_type(w1, TCP_MSG_HEARTBEAT_RESP);
 
     atomic_store(&g_ionic_calls, 0);
@@ -5409,13 +5773,15 @@ static const char *sender_full(RdmaBackendDev *dev, int w1, bool stop)
     }
 
     atomic_store(&g_ionic_full, false);
-    if (!why && !wait_for_type(w1, TCP_MSG_HEARTBEAT_RESP, 2000))
+    if (!why && !wait_for_type(w1, TCP_MSG_HEARTBEAT_RESP, 2000)) {
         why = "the heartbeat wasn't answered once the message was taken";
+    }
     rdma_backend_ops_tcp.mesh->set_recv_cb(dev, NULL, NULL);
 
     buf = atomic_load(&g_ionic_buf);
-    if (!why)
+    if (!why) {
         why = sender_ionic_check(buf);
+    }
     free(buf);
     return why;
 }
@@ -5438,10 +5804,12 @@ static bool held_ionic_recv(void *opaque, uint32_t src_node, void *buf,
                             size_t len)
 {
     atomic_store(&g_ionic_entered, true);
-    for (int i = 0; i < 10000 && !atomic_load(&g_ionic_release); i++)
+    for (int i = 0; i < 10000 && !atomic_load(&g_ionic_release); i++) {
         sleep_ms(1);
-    if (atomic_load(&g_ionic_cleared))
+    }
+    if (atomic_load(&g_ionic_cleared)) {
         atomic_store(&g_ionic_cleared_early, true);
+    }
     return sender_ionic_recv(opaque, src_node, buf, len);
 }
 
@@ -5467,8 +5835,9 @@ static const char *sender_unregister(RdmaBackendDev *dev, int w1)
     pthread_t clearer;
     uint8_t *buf;
 
-    if (!worker_settled(dev->backend_private, w1, 1))
+    if (!worker_settled(dev->backend_private, w1, 1)) {
         return "worker 1's registration wasn't finished";
+    }
 
     atomic_store(&g_ionic_calls, 0);
     atomic_store(&g_ionic_buf, NULL);
@@ -5480,33 +5849,39 @@ static const char *sender_unregister(RdmaBackendDev *dev, int w1)
     if (!send_payload(w1, TCP_MSG_IONIC, 1)) {
         why = "could not send the ionic message";
     } else {
-        for (int i = 0; i < 500 && !atomic_load(&g_ionic_entered); i++)
+        for (int i = 0; i < 500 && !atomic_load(&g_ionic_entered); i++) {
             sleep_ms(10);
-        if (!atomic_load(&g_ionic_entered))
+        }
+        if (!atomic_load(&g_ionic_entered)) {
             why = "the callback wasn't called";
+        }
     }
     if (why || pthread_create(&clearer, NULL, clear_ionic_recv, dev) != 0) {
-        if (!why)
+        if (!why) {
             why = "could not start the thread that clears the callback";
+        }
         atomic_store(&g_ionic_release, true);
         rdma_backend_ops_tcp.mesh->set_recv_cb(dev, NULL, NULL);
         free(atomic_load(&g_ionic_buf));
         return why;
     }
 
-    for (int i = 0; i < 200 && !atomic_load(&g_ionic_cleared); i++)
+    for (int i = 0; i < 200 && !atomic_load(&g_ionic_cleared); i++) {
         sleep_ms(1);
+    }
     atomic_store(&g_ionic_release, true);
     pthread_join(clearer, NULL);
     /* Done already, unless clearing it didn't wait for it */
-    for (int i = 0; i < 500 && atomic_load(&g_ionic_calls) == 0; i++)
+    for (int i = 0; i < 500 && atomic_load(&g_ionic_calls) == 0; i++) {
         sleep_ms(10);
+    }
 
     buf = atomic_load(&g_ionic_buf);
-    if (atomic_load(&g_ionic_cleared_early))
+    if (atomic_load(&g_ionic_cleared_early)) {
         why = "clearing the callback returned while it was being called";
-    else
+    } else {
         why = sender_ionic_check(buf);
+    }
     free(buf);
     return why;
 }
@@ -5522,8 +5897,9 @@ static bool retire_node_conn(TcpBackendPrivate *priv, uint32_t id)
 
     qemu_mutex_lock(&priv->conn_table_lock);
     conn = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(id));
-    if (conn)
+    if (conn) {
         taken = tcp_conn_table_take(priv, id, conn);
+    }
     qemu_mutex_unlock(&priv->conn_table_lock);
     if (taken) {
         tcp_retire_conn(conn);
@@ -5566,7 +5942,8 @@ static int run_sender_case(const struct sender_case *c)
     char config[64];
     const char *why;
     uint16_t port = free_port();
-    int w1 = -1, w2 = -1;
+    int w1 = -1;
+    int w2 = -1;
     bool ok;
 
     atomic_store(&g_creates, 0);
@@ -5592,29 +5969,34 @@ static int run_sender_case(const struct sender_case *c)
         why = "worker 1 did not register";
     } else {
         w2 = worker_register(priv);
-        if (w2 < 0 || !wait_for_registered(priv, 2))
+        if (w2 < 0 || !wait_for_registered(priv, 2)) {
             why = "worker 2 did not register";
-        else
+        } else {
             why = sender_run(&dev, w1, w2, c->scenario);
+        }
     }
 
     rdma_backend_ops_tcp.fini(&dev);
     alarm(0);
     if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
-                 atomic_load(&g_exits) != atomic_load(&g_creates)))
+                 atomic_load(&g_exits) != atomic_load(&g_creates))) {
         why = "a thread wasn't joined exactly once";
+    }
 
     ok = !why;
     printf("%s sender %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
            c->category, c->description, c->expected);
-    if (!ok)
+    if (!ok) {
         printf("     %s\n", why);
+    }
     fflush(stdout);
 
-    if (w1 >= 0)
+    if (w1 >= 0) {
         close(w1);
-    if (w2 >= 0)
+    }
+    if (w2 >= 0) {
         close(w2);
+    }
     return ok ? 0 : 1;
 }
 
@@ -5700,8 +6082,9 @@ static bool register_answer(int fd, uint32_t *id, int32_t *result)
     void *payload;
     bool ok;
 
-    if (!wr_until(fd, TCP_MSG_REGISTER_RESP, 5000, &hdr, &payload, NULL))
+    if (!wr_until(fd, TCP_MSG_REGISTER_RESP, 5000, &hdr, &payload, NULL)) {
         return false;
+    }
     ok = payload && hdr.msg_len >= TCP_REGISTER_RESP_LEN;
     if (ok) {
         const uint8_t *resp = payload;
@@ -5722,8 +6105,9 @@ static bool ends(int fd)
         struct pollfd pfd = {.fd = fd, .events = POLLIN};
         char buf[4096];
 
-        if (poll(&pfd, 1, 100) == 1 && recv(fd, buf, sizeof(buf), 0) <= 0)
+        if (poll(&pfd, 1, 100) == 1 && recv(fd, buf, sizeof(buf), 0) <= 0) {
             return true;
+        }
     }
     return false;
 }
@@ -5743,16 +6127,19 @@ static int gids_for(int fd, uint32_t id)
         int n = -1;
 
         if (!wr_until(fd, TCP_MSG_NODE_GIDS, left > 0 ? left : 1, &hdr,
-                      &payload, NULL))
+                      &payload, NULL)) {
             return -1;
+        }
         if (payload && hdr.msg_len >= TCP_NODE_GIDS_LEN &&
             ernic_get_be32((const uint8_t *)payload +
-                           TCP_NODE_GIDS_NODE_ID_OFF) == id)
+                           TCP_NODE_GIDS_NODE_ID_OFF) == id) {
             n = (int)ernic_get_be32((const uint8_t *)payload +
                                     TCP_NODE_GIDS_NUM_OFF);
+        }
         free(payload);
-        if (n >= 0)
+        if (n >= 0) {
             return n;
+        }
     }
     return -1;
 }
@@ -5764,9 +6151,10 @@ static int gids_for(int fd, uint32_t id)
  */
 static const char *ra_declare_dead(TcpBackendPrivate *priv)
 {
-    tcp_gid_claims_set(priv, 1, (const uint8_t(*)[16]) & ra_gid, 1);
-    if (ra_resolve(priv) != 1)
+    tcp_gid_claims_set(priv, 1, &ra_gid, 1);
+    if (ra_resolve(priv) != 1) {
         return "worker 1's claim did not take effect";
+    }
     node_set(priv, 1, false, ernic_monotonic_ms() - UINT64_C(1000000));
     return ra_resolve(priv) == UINT32_MAX
                ? NULL
@@ -5789,24 +6177,33 @@ static const char *ra_check(TcpBackendPrivate *priv, enum ra_scenario scenario,
     switch (scenario) {
     case RA_HUNG_UP:
     case RA_DEAD:
-        if (result != 0 || id != 1)
+        if (result != 0 || id != 1) {
             return "worker 1 wasn't given its id back";
-        if (table_get(priv, 1) != fresh)
+        }
+        if (table_get(priv, 1) != fresh) {
             return "the new connection isn't node 1's";
-        if (!conn_retired(old))
+        }
+        if (!conn_retired(old)) {
             return "the old connection wasn't closed";
-        if (mesh_node_count(priv) != nodes)
+        }
+        if (mesh_node_count(priv) != nodes) {
             return "the mesh has a new node";
-        if (scenario == RA_HUNG_UP)
+        }
+        if (scenario == RA_HUNG_UP) {
             return NULL;
-        if (!node_get(priv, 1, &alive, &last) || !alive)
+        }
+        if (!node_get(priv, 1, &alive, &last) || !alive) {
             return "worker 1 is still dead";
-        if (ra_resolve(priv) != 1)
+        }
+        if (ra_resolve(priv) != 1) {
             return "worker 1 didn't own its GID again";
-        if (!reported(w2, 1, true, 2000))
+        }
+        if (!reported(w2, 1, true, 2000)) {
             return "the workers weren't told worker 1 is alive";
-        if (gids_for(w2, 1) != 1)
+        }
+        if (gids_for(w2, 1) != 1) {
             return "the workers weren't told worker 1 owns its GID";
+        }
         return ends(w1) ? NULL : "worker 1's old connection didn't end";
     case RA_LIVE:
     case RA_OTHER_PORT:
@@ -5815,14 +6212,18 @@ static const char *ra_check(TcpBackendPrivate *priv, enum ra_scenario scenario,
         if (result != (scenario == RA_LIVE         ? -EBUSY
                        : scenario == RA_OTHER_PORT ? -EACCES
                                                    : -ENOENT) ||
-            id != 0)
+            id != 0) {
             return "refused with the wrong answer, or given an id";
-        if (!wait_dead(fresh))
+        }
+        if (!wait_dead(fresh)) {
             return "the refused connection was read on";
-        if (table_get(priv, 1) != old || conn_retired(old))
+        }
+        if (table_get(priv, 1) != old || conn_retired(old)) {
             return "worker 1's connection was changed";
-        if (mesh_node_count(priv) != nodes)
+        }
+        if (mesh_node_count(priv) != nodes) {
             return "the mesh has a new node";
+        }
         return pending_count(priv) == 1
                    ? NULL
                    : "the refused connection isn't waiting to be reaped";
@@ -5834,23 +6235,28 @@ static const char *ra_check(TcpBackendPrivate *priv, enum ra_scenario scenario,
 static const char *ra_run(TcpBackendPrivate *priv, int w1,
                           enum ra_scenario scenario, int *w2)
 {
-    TcpConnection *old = tcp_connection_lookup(priv, 1), *fresh = NULL;
-    uint32_t want = 1, id = UINT32_MAX;
+    TcpConnection *old = tcp_connection_lookup(priv, 1);
+    TcpConnection *fresh = NULL;
+    uint32_t want = 1;
+    uint32_t id = UINT32_MAX;
     uint16_t port = WORKER_PORT;
     int32_t result = 1;
     guint nodes;
     const char *why = NULL;
 
-    if (!old)
+    if (!old) {
         return "worker 1 isn't node 1";
-    if (!worker_settled(priv, w1, 1))
+    }
+    if (!worker_settled(priv, w1, 1)) {
         why = "worker 1's registration wasn't finished";
+    }
     nodes = mesh_node_count(priv);
 
     switch (scenario) {
     case RA_HUNG_UP:
-        if (!why && (shutdown(w1, SHUT_RDWR) < 0 || !wait_dead(old)))
+        if (!why && (shutdown(w1, SHUT_RDWR) < 0 || !wait_dead(old))) {
             why = "worker 1's connection didn't end";
+        }
         break;
     case RA_DEAD:
         why = why ? why : ra_declare_dead(priv);
@@ -5872,13 +6278,14 @@ static const char *ra_run(TcpBackendPrivate *priv, int w1,
 
     if (!why) {
         *w2 = worker_attach(priv, &fresh);
-        if (*w2 < 0 || !send_register_from(*w2, "127.0.0.1", port, want))
+        if (*w2 < 0 || !send_register_from(*w2, "127.0.0.1", port, want)) {
             why = "could not register again";
-        else if (!register_answer(*w2, &id, &result))
+        } else if (!register_answer(*w2, &id, &result)) {
             why = "the registration wasn't answered";
-        else
+        } else {
             why = ra_check(priv, scenario, w1, *w2, old, fresh, nodes, id,
                            result);
+        }
     }
     tcp_connection_unref(old);
     return why;
@@ -5891,7 +6298,8 @@ static int run_ra_case(const struct ra_case *c)
     char config[64];
     const char *why;
     uint16_t port = free_port();
-    int w1 = -1, w2 = -1;
+    int w1 = -1;
+    int w2 = -1;
     bool ok;
 
     atomic_store(&g_creates, 0);
@@ -5913,28 +6321,33 @@ static int run_ra_case(const struct ra_case *c)
     tcp_stop_health_check_thread(priv);
 
     w1 = worker_register(priv);
-    if (w1 < 0 || !wait_for_registered(priv, 1))
+    if (w1 < 0 || !wait_for_registered(priv, 1)) {
         why = "worker 1 did not register";
-    else
+    } else {
         why = ra_run(priv, w1, c->scenario, &w2);
+    }
 
     rdma_backend_ops_tcp.fini(&dev);
     alarm(0);
     if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
-                 atomic_load(&g_exits) != atomic_load(&g_creates)))
+                 atomic_load(&g_exits) != atomic_load(&g_creates))) {
         why = "a thread wasn't joined exactly once";
+    }
 
     ok = !why;
     printf("%s register again %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
            c->category, c->description, c->expected);
-    if (!ok)
+    if (!ok) {
         printf("     %s\n", why);
+    }
     fflush(stdout);
 
-    if (w1 >= 0)
+    if (w1 >= 0) {
         close(w1);
-    if (w2 >= 0)
+    }
+    if (w2 >= 0) {
         close(w2);
+    }
     return ok ? 0 : 1;
 }
 
@@ -5996,25 +6409,31 @@ static const char *hn_run(TcpBackendPrivate *priv, size_t len, int *fd)
     memset(host, 0, sizeof(host));
     memset(host, 'h', len);
     *fd = worker_attach(priv, &conn);
-    if (*fd < 0 || !send_register_field(*fd, host, WORKER_PORT, UINT32_MAX))
+    if (*fd < 0 || !send_register_field(*fd, host, WORKER_PORT, UINT32_MAX)) {
         return "could not register";
-    if (!register_answer(*fd, &id, &result))
+    }
+    if (!register_answer(*fd, &id, &result)) {
         return "the registration wasn't answered";
+    }
 
     if (len < TCP_HOSTNAME_LEN) {
-        if (result != 0 || id == 0 || id == UINT32_MAX)
+        if (result != 0 || id == 0 || id == UINT32_MAX) {
             return "the registration was refused";
+        }
         return hn_registered_as(priv, id, len)
                    ? NULL
                    : "the node wasn't registered under the whole name";
     }
-    if (result != -EINVAL || id != 0)
+    if (result != -EINVAL || id != 0) {
         return "refused with the wrong answer, or given an id";
+    }
     /* The connection stays pending, so the reap or teardown frees it */
-    if (!wait_dead(conn))
+    if (!wait_dead(conn)) {
         return "the refused connection was read on";
-    if (mesh_node_count(priv) != nodes)
+    }
+    if (mesh_node_count(priv) != nodes) {
         return "the mesh has a new node";
+    }
     return pending_count(priv) == 1
                ? NULL
                : "the refused connection isn't waiting to be reaped";
@@ -6053,18 +6472,21 @@ static int run_hn_case(const struct hn_case *c)
     rdma_backend_ops_tcp.fini(&dev);
     alarm(0);
     if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
-                 atomic_load(&g_exits) != atomic_load(&g_creates)))
+                 atomic_load(&g_exits) != atomic_load(&g_creates))) {
         why = "a thread wasn't joined exactly once";
+    }
 
     ok = !why;
     printf("%s hostname %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
            c->category, c->description, c->expected);
-    if (!ok)
+    if (!ok) {
         printf("     %s\n", why);
+    }
     fflush(stdout);
 
-    if (fd >= 0)
+    if (fd >= 0) {
         close(fd);
+    }
     return ok ? 0 : 1;
 }
 
@@ -6223,10 +6645,11 @@ static bool ev_plant(TcpBackendPrivate *priv, uint32_t id, bool alive,
 {
     MeshNodeInfo *node = tcp_mesh_node_info_new(id, "127.0.0.1", WORKER_PORT);
 
-    if (!node)
+    if (!node) {
         return false;
+    }
     node->is_alive = alive;
-    node->last_heartbeat_ms = ernic_monotonic_ms() - dead_s * 1000u;
+    node->last_heartbeat_ms = ernic_monotonic_ms() - (dead_s * 1000U);
     qemu_mutex_lock(&priv->mesh_table_lock);
     g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(id), node);
     qemu_mutex_unlock(&priv->mesh_table_lock);
@@ -6238,15 +6661,17 @@ static bool ev_connect(struct ev_fixture *fx, uint32_t id, bool ended)
 {
     TcpConnection *conn = recv_conn_new(fx->priv, id, true, &fx->peer[id]);
 
-    if (!conn)
+    if (!conn) {
         return false;
+    }
     fx->conn[id] = conn;
     qemu_mutex_lock(&fx->priv->conn_table_lock);
     g_hash_table_insert(fx->priv->connections, GUINT_TO_POINTER(id),
                         tcp_connection_ref(conn));
     qemu_mutex_unlock(&fx->priv->conn_table_lock);
-    if (!ended)
+    if (!ended) {
         return true;
+    }
     close(fx->peer[id]);
     fx->peer[id] = -1;
     return wait_dead(conn);
@@ -6262,29 +6687,35 @@ static const char *ev_setup(struct ev_fixture *fx, enum ev_scenario scenario)
     fx->last =
         scenario == EV_ROOM ? TCP_MAX_MESH_NODES - 2 : TCP_MAX_MESH_NODES - 1;
     for (uint32_t id = 2; id <= fx->last; id++) {
-        uint64_t dead_s = id == EV_OLDEST ? 5000u
-                          : id == EV_NEXT ? 4000u
-                                          : 1000u + id;
+        uint64_t dead_s = id == EV_OLDEST ? 5000U
+                          : id == EV_NEXT ? 4000U
+                                          : 1000U + id;
         bool connected = scenario == EV_NONE || scenario == EV_CONNECTED;
 
-        if (!ev_plant(priv, id, scenario == EV_NONE, dead_s))
+        if (!ev_plant(priv, id, scenario == EV_NONE, dead_s)) {
             return "could not make a node";
-        if (connected && !ev_connect(fx, id, false))
+        }
+        if (connected && !ev_connect(fx, id, false)) {
             return "could not connect a node";
+        }
     }
     if ((scenario == EV_ENDED || scenario == EV_HEALTH) &&
-        !ev_connect(fx, EV_OLDEST, true))
+        !ev_connect(fx, EV_OLDEST, true)) {
         return "could not end a node's connection";
-    if (scenario == EV_HEALTH && !ev_connect(fx, EV_NEXT, true))
+    }
+    if (scenario == EV_HEALTH && !ev_connect(fx, EV_NEXT, true)) {
         return "could not end a node's connection";
-    if (scenario == EV_LIVE_CONN && !ev_connect(fx, EV_OLDEST, false))
+    }
+    if (scenario == EV_LIVE_CONN && !ev_connect(fx, EV_OLDEST, false)) {
         return "could not connect a node";
+    }
     /* As tcp_health_check_unpublish() leaves it until it has retired it */
     if (scenario == EV_UNPUBLISHED) {
         fx->conn[EV_OLDEST] =
             recv_conn_new(priv, EV_OLDEST, true, &fx->peer[EV_OLDEST]);
-        if (!fx->conn[EV_OLDEST])
+        if (!fx->conn[EV_OLDEST]) {
             return "could not connect a node";
+        }
     }
 
     qemu_mutex_lock(&priv->mesh_table_lock);
@@ -6295,12 +6726,14 @@ static const char *ev_setup(struct ev_fixture *fx, enum ev_scenario scenario)
      * tcp_gid_claims_set() records the claims alive; declaring the node's
      * liveness again makes them as alive as it is
      */
-    tcp_gid_claims_set(priv, EV_OLDEST, (const uint8_t(*)[16]) & ev_gid, 1);
-    if (!node_get(priv, EV_OLDEST, &alive, &last_ms))
+    tcp_gid_claims_set(priv, EV_OLDEST, &ev_gid, 1);
+    if (!node_get(priv, EV_OLDEST, &alive, &last_ms)) {
         return "node EV_OLDEST isn't in the table";
+    }
     node_set(priv, EV_OLDEST, alive, last_ms);
-    if (!ev_has_claims(priv, EV_OLDEST))
+    if (!ev_has_claims(priv, EV_OLDEST)) {
         return "node EV_OLDEST's claim didn't take";
+    }
     return ev_resolve(priv) == (alive ? EV_OLDEST : UINT32_MAX)
                ? NULL
                : "node EV_OLDEST's claim isn't as alive as it is";
@@ -6311,8 +6744,9 @@ static const char *ev_register(TcpBackendPrivate *priv, int *fd, uint32_t want,
                                uint32_t *id, int32_t *result)
 {
     *fd = worker_attach(priv, NULL);
-    if (*fd < 0 || !send_register(*fd, "127.0.0.1", want))
+    if (*fd < 0 || !send_register(*fd, "127.0.0.1", want)) {
         return "could not register";
+    }
     return register_answer(*fd, id, result)
                ? NULL
                : "the registration wasn't answered";
@@ -6336,9 +6770,10 @@ static const char *ev_kept(TcpBackendPrivate *priv, uint32_t last,
                            uint32_t gone)
 {
     for (uint32_t id = 0; id <= last; id++) {
-        if (id != gone && !ev_in_table(priv, id))
+        if (id != gone && !ev_in_table(priv, id)) {
             return gone == UINT32_MAX ? "a node was evicted"
                                       : "the wrong node was evicted";
+        }
     }
     return gone == UINT32_MAX || !ev_in_table(priv, gone)
                ? NULL
@@ -6360,10 +6795,12 @@ static const char *ev_broadcasts(int fd, uint32_t fresh, uint32_t evicted)
     const char *why = NULL;
     uint32_t n;
 
-    if (fresh >= G_N_ELEMENTS(seen))
+    if (fresh >= G_N_ELEMENTS(seen)) {
         return "the new node's id is out of range";
-    if (!wr_until(fd, TCP_MSG_MESH_TOPOLOGY, 2000, &hdr, &payload, NULL))
+    }
+    if (!wr_until(fd, TCP_MSG_MESH_TOPOLOGY, 2000, &hdr, &payload, NULL)) {
         return "no topology update came";
+    }
     if (!payload || hdr.msg_len < TCP_TOPOLOGY_LEN) {
         free(payload);
         return "the topology update is short";
@@ -6371,28 +6808,33 @@ static const char *ev_broadcasts(int fd, uint32_t fresh, uint32_t evicted)
     topo = payload;
     n = ernic_get_be32(topo + TCP_TOPOLOGY_NUM_NODES_OFF);
     /* n distinct ids of 0 to fresh, but evicted, are all of them */
-    if (n != TCP_MAX_MESH_NODES)
+    if (n != TCP_MAX_MESH_NODES) {
         why = "the topology update doesn't carry a full table";
+    }
     for (uint32_t i = 0; !why && i < n; i++) {
         uint32_t id = ernic_get_be32(topo + TCP_TOPOLOGY_NODE_OFF(i) +
                                      TCP_MESH_NODE_ID_OFF);
 
-        if (id > fresh || id == evicted || seen[id])
+        if (id > fresh || id == evicted || seen[id]) {
             why = "the topology update names a node that isn't in the table";
-        else
+        } else {
             seen[id] = true;
+        }
     }
     free(payload);
-    if (why)
+    if (why) {
         return why;
+    }
 
     memset(seen, 0, sizeof(seen));
     for (n = 0;;) {
         const uint8_t *adv;
-        uint32_t id, num;
+        uint32_t id;
+        uint32_t num;
 
-        if (!wr_until(fd, TCP_MSG_NODE_GIDS, 2000, &hdr, &payload, NULL))
+        if (!wr_until(fd, TCP_MSG_NODE_GIDS, 2000, &hdr, &payload, NULL)) {
             return "the evicted node wasn't advertised";
+        }
         if (!payload || hdr.msg_len < TCP_NODE_GIDS_LEN) {
             free(payload);
             return "an advertisement is short";
@@ -6401,14 +6843,16 @@ static const char *ev_broadcasts(int fd, uint32_t fresh, uint32_t evicted)
         id = ernic_get_be32(adv + TCP_NODE_GIDS_NODE_ID_OFF);
         num = ernic_get_be32(adv + TCP_NODE_GIDS_NUM_OFF);
         free(payload);
-        if (id == evicted)
+        if (id == evicted) {
             return num != 0 ? "the evicted node still owns GIDs"
                    : n != TCP_MAX_MESH_NODES ? "a node in the table wasn't "
                                                "advertised before the evicted "
                                                "one"
                                              : NULL;
-        if (id > fresh || seen[id])
+        }
+        if (id > fresh || seen[id]) {
             return "an advertisement names a node that isn't in the table";
+        }
         seen[id] = true;
         n++;
     }
@@ -6424,26 +6868,35 @@ static const char *ev_dead(struct ev_fixture *fx, enum ev_scenario scenario)
     const char *why;
 
     why = ev_register(priv, &fx->fresh[0], UINT32_MAX, &id, &result);
-    if (why)
+    if (why) {
         return why;
-    if (result != 0 || id != fx->last + 1)
+    }
+    if (result != 0 || id != fx->last + 1) {
         return "the new node wasn't given the next id";
+    }
     why = ev_kept(priv, id, EV_OLDEST);
-    if (why)
+    if (why) {
         return why;
-    if (mesh_node_count(priv) != TCP_MAX_MESH_NODES)
+    }
+    if (mesh_node_count(priv) != TCP_MAX_MESH_NODES) {
         return "the table isn't full";
-    if (ev_has_claims(priv, EV_OLDEST))
+    }
+    if (ev_has_claims(priv, EV_OLDEST)) {
         return "the evicted node's claims were kept";
+    }
     why = ev_broadcasts(fx->fresh[0], id, EV_OLDEST);
-    if (why)
+    if (why) {
         return why;
-    if (atomic_load(&g_errors) != errors)
+    }
+    if (atomic_load(&g_errors) != errors) {
         return "an error was reported";
-    if (scenario != EV_ENDED)
+    }
+    if (scenario != EV_ENDED) {
         return NULL;
-    if (table_get(priv, EV_OLDEST))
+    }
+    if (table_get(priv, EV_OLDEST)) {
         return "the evicted node's connection is still in the table";
+    }
     return wait_retired(fx->conn[EV_OLDEST])
                ? NULL
                : "the evicted node's connection wasn't closed";
@@ -6458,18 +6911,23 @@ static const char *ev_live_conn(struct ev_fixture *fx)
     const char *why;
 
     why = ev_register(priv, &fx->fresh[0], UINT32_MAX, &id, &result);
-    if (why)
+    if (why) {
         return why;
-    if (result != 0 || id != fx->last + 1)
+    }
+    if (result != 0 || id != fx->last + 1) {
         return "the new node wasn't given the next id";
+    }
     why = ev_kept(priv, id, EV_NEXT);
-    if (why)
+    if (why) {
         return why;
+    }
     if (table_get(priv, EV_OLDEST) != fx->conn[EV_OLDEST] ||
-        conn_retired(fx->conn[EV_OLDEST]))
+        conn_retired(fx->conn[EV_OLDEST])) {
         return "the oldest node's connection was closed";
-    if (!ev_has_claims(priv, EV_OLDEST))
+    }
+    if (!ev_has_claims(priv, EV_OLDEST)) {
         return "the oldest node's claims were dropped";
+    }
     return ev_resolve(priv) == UINT32_MAX ? NULL
                                           : "the oldest node's GID resolves, "
                                             "though it is dead";
@@ -6479,7 +6937,8 @@ static const char *ev_live_conn(struct ev_fixture *fx)
 static const char *ev_none(struct ev_fixture *fx, enum ev_scenario scenario)
 {
     TcpBackendPrivate *priv = fx->priv;
-    uint32_t want = UINT32_MAX, id = UINT32_MAX;
+    uint32_t want = UINT32_MAX;
+    uint32_t id = UINT32_MAX;
     int32_t result = 1;
     const char *why;
 
@@ -6491,29 +6950,36 @@ static const char *ev_none(struct ev_fixture *fx, enum ev_scenario scenario)
         node_set(priv, 1, false, ernic_monotonic_ms() - UINT64_C(6000000));
         ended = old && shutdown(fx->w1, SHUT_RDWR) == 0 && wait_dead(old);
         tcp_connection_unref(old);
-        if (!ended)
+        if (!ended) {
             return "worker 1's connection didn't end";
+        }
         want = 1;
     }
     why = ev_register(priv, &fx->fresh[0], want, &id, &result);
-    if (why)
+    if (why) {
         return why;
+    }
     if (scenario == EV_ROOM) {
-        if (result != 0 || id != fx->last + 1)
+        if (result != 0 || id != fx->last + 1) {
             return "the new node wasn't given the next id";
+        }
         why = ev_kept(priv, id, UINT32_MAX);
-        if (!why && mesh_node_count(priv) != TCP_MAX_MESH_NODES)
+        if (!why && mesh_node_count(priv) != TCP_MAX_MESH_NODES) {
             why = "the table isn't full";
-        if (!why && !ev_has_claims(priv, EV_OLDEST))
+        }
+        if (!why && !ev_has_claims(priv, EV_OLDEST)) {
             why = "the oldest node's claims were dropped";
+        }
         return why;
     }
     /* EV_AGAIN */
-    if (result != 0 || id != 1)
+    if (result != 0 || id != 1) {
         return "worker 1 wasn't given its id back";
+    }
     why = ev_kept(priv, fx->last, UINT32_MAX);
-    if (!why && mesh_node_count(priv) != TCP_MAX_MESH_NODES)
+    if (!why && mesh_node_count(priv) != TCP_MAX_MESH_NODES) {
         why = "the table isn't full";
+    }
     return why;
 }
 
@@ -6530,41 +6996,55 @@ static const char *ev_full(struct ev_fixture *fx, enum ev_scenario scenario)
     const char *why;
 
     why = ev_register(priv, &fx->fresh[0], UINT32_MAX, &id, &result);
-    if (why)
+    if (why) {
         return why;
-    if (result != -ENOSPC || id != 0)
+    }
+    if (result != -ENOSPC || id != 0) {
         return "refused with the wrong answer, or given an id";
+    }
     why = ev_kept(priv, fx->last, UINT32_MAX);
-    if (why)
+    if (why) {
         return why;
-    if (mesh_node_count(priv) != TCP_MAX_MESH_NODES)
+    }
+    if (mesh_node_count(priv) != TCP_MAX_MESH_NODES) {
         return "the table isn't full";
-    for (uint32_t i = 2; i <= fx->last; i++)
-        if (table_get(priv, i) != fx->conn[i] || conn_retired(fx->conn[i]))
+    }
+    for (uint32_t i = 2; i <= fx->last; i++) {
+        if (table_get(priv, i) != fx->conn[i] || conn_retired(fx->conn[i])) {
             return "a node's connection was closed";
-    if (!ev_has_claims(priv, EV_OLDEST))
+        }
+    }
+    if (!ev_has_claims(priv, EV_OLDEST)) {
         return "the oldest node's claims were dropped";
-    if (pending_count(priv) != 1)
+    }
+    if (pending_count(priv) != 1) {
         return "the refused connection isn't waiting to be reaped";
-    if (scenario == EV_NONE)
+    }
+    if (scenario == EV_NONE) {
         return NULL;
+    }
 
     /* EV_CONNECTED: the oldest node can be evicted once its connection ends */
     close(fx->peer[EV_OLDEST]);
     fx->peer[EV_OLDEST] = -1;
-    if (!wait_dead(fx->conn[EV_OLDEST]))
+    if (!wait_dead(fx->conn[EV_OLDEST])) {
         return "the oldest node's connection didn't end";
+    }
     why = ev_register(priv, &fx->fresh[1], UINT32_MAX, &id, &result);
-    if (why)
+    if (why) {
         return why;
+    }
     /* The refusal gave the id to nothing, so it is still the next one */
-    if (result != 0 || id != fx->last + 1)
+    if (result != 0 || id != fx->last + 1) {
         return "the new node wasn't given the next id";
+    }
     why = ev_kept(priv, id, EV_OLDEST);
-    if (why)
+    if (why) {
         return why;
-    if (mesh_node_count(priv) != TCP_MAX_MESH_NODES)
+    }
+    if (mesh_node_count(priv) != TCP_MAX_MESH_NODES) {
         return "the table isn't full";
+    }
     return wait_retired(fx->conn[EV_OLDEST])
                ? NULL
                : "the evicted node's connection wasn't closed";
@@ -6592,32 +7072,40 @@ static const char *ev_health(struct ev_fixture *fx)
     g_array_append_val(items, silent);
 
     why = ev_register(priv, &fx->fresh[0], UINT32_MAX, &id, &result);
-    if (!why && (result != 0 || ev_in_table(priv, EV_OLDEST)))
+    if (!why && (result != 0 || ev_in_table(priv, EV_OLDEST))) {
         why = "the first registration didn't evict the oldest node";
+    }
     /* Read what it sent, so the next registration's broadcasts fit */
     if (!why && (!worker_settled(priv, fx->fresh[0], id) ||
-                 !worker_settled(priv, fx->w1, 1)))
+                 !worker_settled(priv, fx->w1, 1))) {
         why = "the first registration wasn't finished";
-    if (!why)
+    }
+    if (!why) {
         why = ev_register(priv, &fx->fresh[1], UINT32_MAX, &id, &result);
-    if (!why && (result != 0 || ev_in_table(priv, EV_NEXT)))
+    }
+    if (!why && (result != 0 || ev_in_table(priv, EV_NEXT))) {
         why = "the second registration didn't evict the next oldest node";
+    }
 
     if (!why) {
         tcp_health_check_retire(priv, items);
         after = &g_array_index(items, TcpHealthCheckItem, 0);
-        if (after->conn)
+        if (after->conn) {
             why = "the pass kept the ended connection";
+        }
         after = &g_array_index(items, TcpHealthCheckItem, 1);
-        if (!why && after->conn != fx->conn[EV_NEXT])
+        if (!why && after->conn != fx->conn[EV_NEXT]) {
             why = "the pass let go of the silent node's connection";
+        }
     }
     if (!why && (!wait_retired(fx->conn[EV_OLDEST]) ||
-                 !wait_retired(fx->conn[EV_NEXT])))
+                 !wait_retired(fx->conn[EV_NEXT]))) {
         why = "an evicted node's connection wasn't closed";
+    }
 
-    for (guint i = 0; i < items->len; i++)
+    for (guint i = 0; i < items->len; i++) {
         tcp_connection_unref(g_array_index(items, TcpHealthCheckItem, i).conn);
+    }
     g_array_free(items, TRUE);
     return why;
 }
@@ -6636,15 +7124,17 @@ static const char *ev_unpublished(struct ev_fixture *fx)
     const char *why;
 
     why = ev_register(priv, &fx->fresh[0], UINT32_MAX, &id, &result);
-    if (!why && (result != 0 || ev_in_table(priv, EV_OLDEST)))
+    if (!why && (result != 0 || ev_in_table(priv, EV_OLDEST))) {
         why = "the oldest node wasn't evicted";
+    }
     /* Its thread answers the heartbeat once it has handled the GIDs */
-    if (!why && (!send_gids(fx->peer[EV_OLDEST], EV_OLDEST,
-                            (const uint8_t(*)[16]) & ev_gid) ||
-                 !worker_settled(priv, fx->peer[EV_OLDEST], EV_OLDEST)))
+    if (!why && (!send_gids(fx->peer[EV_OLDEST], EV_OLDEST, &ev_gid) ||
+                 !worker_settled(priv, fx->peer[EV_OLDEST], EV_OLDEST))) {
         why = "the evicted node's advertisement wasn't handled";
-    if (!why && ev_has_claims(priv, EV_OLDEST))
+    }
+    if (!why && ev_has_claims(priv, EV_OLDEST)) {
         why = "the advertisement put the evicted node's claims back";
+    }
     tcp_retire_conn(conn);
     return why;
 }
@@ -6653,11 +7143,13 @@ static const char *ev_run(struct ev_fixture *fx, enum ev_scenario scenario)
 {
     const char *why;
 
-    if (!worker_settled(fx->priv, fx->w1, 1))
+    if (!worker_settled(fx->priv, fx->w1, 1)) {
         return "worker 1's registration wasn't finished";
+    }
     why = ev_setup(fx, scenario);
-    if (why)
+    if (why) {
         return why;
+    }
     switch (scenario) {
     case EV_DEAD:
     case EV_ENDED:
@@ -6693,10 +7185,12 @@ static int run_ev_case(const struct ev_case *c)
     memset(&dev, 0, sizeof(dev));
     memset(&fx, 0, sizeof(fx));
     fx.w1 = -1;
-    for (uint32_t i = 0; i < TCP_MAX_MESH_NODES; i++)
+    for (uint32_t i = 0; i < TCP_MAX_MESH_NODES; i++) {
         fx.peer[i] = -1;
-    for (size_t i = 0; i < G_N_ELEMENTS(fx.fresh); i++)
+    }
+    for (size_t i = 0; i < G_N_ELEMENTS(fx.fresh); i++) {
         fx.fresh[i] = -1;
+    }
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
 
     g_current_row = c->description;
@@ -6712,34 +7206,41 @@ static int run_ev_case(const struct ev_case *c)
     tcp_stop_health_check_thread(fx.priv);
 
     fx.w1 = worker_register(fx.priv);
-    if (fx.w1 < 0 || !wait_for_registered(fx.priv, 1))
+    if (fx.w1 < 0 || !wait_for_registered(fx.priv, 1)) {
         why = "worker 1 did not register";
-    else
+    } else {
         why = ev_run(&fx, c->scenario);
+    }
 
     rdma_backend_ops_tcp.fini(&dev);
     alarm(0);
     if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
-                 atomic_load(&g_exits) != atomic_load(&g_creates)))
+                 atomic_load(&g_exits) != atomic_load(&g_creates))) {
         why = "a thread wasn't joined exactly once";
+    }
 
     ok = !why;
     printf("%s evict %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", c->category,
            c->description, c->expected);
-    if (!ok)
+    if (!ok) {
         printf("     %s\n", why);
+    }
     fflush(stdout);
 
     for (uint32_t i = 0; i < TCP_MAX_MESH_NODES; i++) {
         tcp_connection_unref(fx.conn[i]);
-        if (fx.peer[i] >= 0)
+        if (fx.peer[i] >= 0) {
             close(fx.peer[i]);
+        }
     }
-    for (size_t i = 0; i < G_N_ELEMENTS(fx.fresh); i++)
-        if (fx.fresh[i] >= 0)
+    for (size_t i = 0; i < G_N_ELEMENTS(fx.fresh); i++) {
+        if (fx.fresh[i] >= 0) {
             close(fx.fresh[i]);
-    if (fx.w1 >= 0)
+        }
+    }
+    if (fx.w1 >= 0) {
         close(fx.w1);
+    }
     return ok ? 0 : 1;
 }
 
@@ -6806,22 +7307,28 @@ static uint32_t lv_resolve(TcpBackendPrivate *priv)
 static const char *lv_dead_advertises(TcpBackendPrivate *priv, int w1, int w2)
 {
     /* Finish the registrations, and discard what they sent */
-    if (!worker_settled(priv, w1, 1) || !worker_settled(priv, w2, 2))
+    if (!worker_settled(priv, w1, 1) || !worker_settled(priv, w2, 2)) {
         return "a registration wasn't finished";
+    }
     count_type(w1, TCP_MSG_NODE_GIDS);
 
     node_set(priv, 2, false, ernic_monotonic_ms() - UINT64_C(1000000));
-    if (!send_gids(w2, 2, (const uint8_t(*)[16]) & lv_gid))
+    if (!send_gids(w2, 2, &lv_gid)) {
         return "could not send the advertisement";
-    if (gids_for(w1, 2) != 0)
+    }
+    if (gids_for(w1, 2) != 0) {
         return "worker 1 was told a dead node owns the GID it advertised";
-    if (lv_resolve(priv) != UINT32_MAX)
+    }
+    if (lv_resolve(priv) != UINT32_MAX) {
         return "a dead node owns the GID it advertised";
+    }
 
-    if (!send_heartbeat(w2, 2))
+    if (!send_heartbeat(w2, 2)) {
         return "could not send the heartbeat";
-    if (gids_for(w1, 2) != 1)
+    }
+    if (gids_for(w1, 2) != 1) {
         return "worker 1 wasn't told node 2 owns its GID once it answered";
+    }
     return lv_resolve(priv) == 2 ? NULL
                                  : "node 2 didn't own its GID once it answered";
 }
@@ -6838,34 +7345,42 @@ static const char *lv_gone(TcpBackendPrivate *priv, int w1, int w2, int *w3)
     uint64_t last;
     bool alive = true;
 
-    if (!conn)
+    if (!conn) {
         return "worker 2 isn't node 2";
+    }
     /* Answered once the advertisement is handled */
-    if (!worker_settled(priv, w1, 1) ||
-        !send_gids(w2, 2, (const uint8_t(*)[16]) & lv_gid) ||
-        !worker_settled(priv, w2, 2))
+    if (!worker_settled(priv, w1, 1) || !send_gids(w2, 2, &lv_gid) ||
+        !worker_settled(priv, w2, 2)) {
         why = "a registration or the advertisement wasn't finished";
-    else if (lv_resolve(priv) != 2)
+    } else if (lv_resolve(priv) != 2) {
         why = "node 2's claim didn't take";
+    }
     count_type(w1, TCP_MSG_MESH_TOPOLOGY);
 
-    if (!why && (shutdown(w2, SHUT_RDWR) < 0 || !wait_dead(conn)))
+    if (!why && (shutdown(w2, SHUT_RDWR) < 0 || !wait_dead(conn))) {
         why = "node 2's connection didn't end";
-    if (!why && (!node_get(priv, 2, &alive, &last) || !alive))
+    }
+    if (!why && (!node_get(priv, 2, &alive, &last) || !alive)) {
         why = "node 2 was declared dead before the registration";
+    }
     if (!why) {
         *w3 = worker_register(priv);
-        if (*w3 < 0)
+        if (*w3 < 0) {
             why = "could not register worker 3";
+        }
     }
-    if (!why && !reported(w1, 2, false, 2000))
+    if (!why && !reported(w1, 2, false, 2000)) {
         why = "worker 1 wasn't told node 2 is dead";
-    if (!why && gids_for(w1, 2) != 0)
+    }
+    if (!why && gids_for(w1, 2) != 0) {
         why = "worker 1 wasn't told node 2 owns nothing";
-    if (!why && (!node_get(priv, 2, &alive, &last) || alive))
+    }
+    if (!why && (!node_get(priv, 2, &alive, &last) || alive)) {
         why = "node 2 wasn't declared dead";
-    if (!why && lv_resolve(priv) != UINT32_MAX)
+    }
+    if (!why && lv_resolve(priv) != UINT32_MAX) {
         why = "node 2 still owns its GID";
+    }
 
     tcp_connection_unref(conn);
     return why;
@@ -6878,7 +7393,9 @@ static int run_lv_case(const struct lv_case *c)
     char config[64];
     const char *why;
     uint16_t port = free_port();
-    int w1 = -1, w2 = -1, w3 = -1;
+    int w1 = -1;
+    int w2 = -1;
+    int w3 = -1;
     bool ok;
 
     atomic_store(&g_creates, 0);
@@ -6904,33 +7421,39 @@ static int run_lv_case(const struct lv_case *c)
         why = "worker 1 did not register";
     } else {
         w2 = worker_register(priv);
-        if (w2 < 0 || !wait_for_registered(priv, 2))
+        if (w2 < 0 || !wait_for_registered(priv, 2)) {
             why = "worker 2 did not register";
-        else if (c->scenario == LV_DEAD_ADVERTISES)
+        } else if (c->scenario == LV_DEAD_ADVERTISES) {
             why = lv_dead_advertises(priv, w1, w2);
-        else
+        } else {
             why = lv_gone(priv, w1, w2, &w3);
+        }
     }
 
     rdma_backend_ops_tcp.fini(&dev);
     alarm(0);
     if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
-                 atomic_load(&g_exits) != atomic_load(&g_creates)))
+                 atomic_load(&g_exits) != atomic_load(&g_creates))) {
         why = "a thread wasn't joined exactly once";
+    }
 
     ok = !why;
     printf("%s liveness %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
            c->category, c->description, c->expected);
-    if (!ok)
+    if (!ok) {
         printf("     %s\n", why);
+    }
     fflush(stdout);
 
-    if (w1 >= 0)
+    if (w1 >= 0) {
         close(w1);
-    if (w2 >= 0)
+    }
+    if (w2 >= 0) {
         close(w2);
-    if (w3 >= 0)
+    }
+    if (w3 >= 0) {
         close(w3);
+    }
     return ok ? 0 : 1;
 }
 
@@ -7033,10 +7556,12 @@ static const char *lt_register_again(struct mgr_fixture *fx, TcpConnection *old,
     const TcpConnection *in_table;
 
     *fd = worker_attach(fx->priv, NULL);
-    if (*fd < 0 || !send_register(*fd, "127.0.0.1", 1))
+    if (*fd < 0 || !send_register(*fd, "127.0.0.1", 1)) {
         return "could not register node 1 again";
-    if (!register_answer(*fd, &id, &result) || result != 0 || id != 1)
+    }
+    if (!register_answer(*fd, &id, &result) || result != 0 || id != 1) {
         return "node 1 wasn't given its id back";
+    }
     in_table = table_get(fx->priv, 1);
     return in_table && in_table != old ? NULL
                                        : "the node has no new connection";
@@ -7063,8 +7588,9 @@ static const char *lt_replace_run(enum lt_scenario scenario)
         held = tcp_connection_lookup(fx.priv, 1);
         tcp_connection_unref(fx.old[0]);
         fx.old[0] = NULL;
-        if (!held)
+        if (!held) {
             why = "node 1 has no connection";
+        }
     }
     if (!why && scenario == LT_GIDS_BACK) {
         /*
@@ -7074,12 +7600,14 @@ static const char *lt_replace_run(enum lt_scenario scenario)
          * its id, and nothing makes it advertise again until then.
          */
         node_set(fx.priv, 1, true, ernic_monotonic_ms());
-        tcp_gid_claims_set(fx.priv, 1, (const uint8_t(*)[16]) & lt_gid, 1);
-        if (lt_resolve(fx.priv) != 1)
+        tcp_gid_claims_set(fx.priv, 1, &lt_gid, 1);
+        if (lt_resolve(fx.priv) != 1) {
             why = "the claim did not take effect";
+        }
         node_set(fx.priv, 1, false, ernic_monotonic_ms() - UINT64_C(1000000));
-        if (!why && lt_resolve(fx.priv) != UINT32_MAX)
+        if (!why && lt_resolve(fx.priv) != UINT32_MAX) {
             why = "a node declared dead still owned its GID";
+        }
     }
     if (!why && scenario == LT_SENDER) {
         memset(&dev, 0, sizeof(dev));
@@ -7089,18 +7617,21 @@ static const char *lt_replace_run(enum lt_scenario scenario)
          * holding the connection's lock, and nothing else ever has it.  The
          * data path only queued the message, and has it back at once.
          */
-        if (!fill_conn(fx.priv, 1))
+        if (!fill_conn(fx.priv, 1)) {
             why = "could not fill node 1's socket";
-        else if (rdma_backend_ops_tcp.mesh->sendv(&dev, 1, hdr, sizeof(hdr),
-                                                  NULL, 0, 0, false) != 0)
+        } else if (rdma_backend_ops_tcp.mesh->sendv(&dev, 1, hdr, sizeof(hdr),
+                                                    NULL, 0, 0, false) != 0) {
             why = "the data path's send wasn't queued";
-        else if (!held_elsewhere(&held->lock))
+        } else if (!held_elsewhere(&held->lock)) {
             why = "the send thread never blocked on node 1";
+        }
     }
-    if (!why)
+    if (!why) {
         why = lt_register_again(&fx, held, &fd);
-    if (!why && scenario == LT_GIDS_BACK && lt_resolve(fx.priv) != 1)
+    }
+    if (!why && scenario == LT_GIDS_BACK && lt_resolve(fx.priv) != 1) {
         why = "the node registered again did not get its GID back";
+    }
     /*
      * A registration that collected this node as unreachable before it
      * registered again must not act on that list now: declaring it dead here
@@ -7108,21 +7639,25 @@ static const char *lt_replace_run(enum lt_scenario scenario)
      * nothing until it next answered a heartbeat.
      */
     if (!why && scenario == LT_GIDS_BACK) {
-        if (tcp_declare_dead_if_unreachable(fx.priv, 1))
+        if (tcp_declare_dead_if_unreachable(fx.priv, 1)) {
             why = "a stale declaration fired against a node registered again";
-        else if (lt_resolve(fx.priv) != 1)
+        } else if (lt_resolve(fx.priv) != 1) {
             why = "a stale declaration undid the registration's revival";
+        }
     }
-    if (!why && !conn_retired(held))
+    if (!why && !conn_retired(held)) {
         why = "the old connection wasn't retired";
+    }
     /* LT_SENDER's connection has a send thread as well */
-    if (!why && atomic_load(&g_joins) != (scenario == LT_SENDER ? 2 : 1))
+    if (!why && atomic_load(&g_joins) != (scenario == LT_SENDER ? 2 : 1)) {
         why = "the old connection's threads weren't each joined once";
+    }
 
     tcp_connection_unref(held);
     mgr_teardown(&fx);
-    if (fd >= 0)
+    if (fd >= 0) {
         close(fd);
+    }
     return why;
 }
 
@@ -7130,13 +7665,15 @@ static const char *lt_replace_run(enum lt_scenario scenario)
 static bool lt_consumed(TcpConnection *conn)
 {
     for (int i = 0; i < 500; i++) {
-        int unread = -1, rc;
+        int unread = -1;
+        int rc;
 
         qemu_mutex_lock(&conn->lock);
         rc = ioctl(conn->sockfd, FIONREAD, &unread);
         qemu_mutex_unlock(&conn->lock);
-        if (rc == 0 && unread == 0)
+        if (rc == 0 && unread == 0) {
             return true;
+        }
         sleep_ms(10);
     }
     return false;
@@ -7196,19 +7733,24 @@ static const char *lt_register_vs_stop(enum lt_scenario scenario)
     struct ev_fixture fx;
     RdmaBackendDev dev;
     TcpBackendPrivate *priv;
-    TcpConnection *conn = NULL, *in_table;
+    TcpConnection *conn = NULL;
+    TcpConnection *in_table;
     const TcpConnection *old = NULL;
     char config[64];
     const char *why = NULL;
     pthread_t stopper;
     uint16_t port = free_port();
     guint pending;
-    int fd = -1, w1 = -1, joins;
+    int fd = -1;
+    int w1 = -1;
+    int joins;
 
     memset(&dev, 0, sizeof(dev));
     snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
-    if (port == 0 || tcp_init_with_interval(&dev, config, LONG_INTERVAL_S) != 0)
+    if (port == 0 ||
+        tcp_init_with_interval(&dev, config, LONG_INTERVAL_S) != 0) {
         return "could not start a manager";
+    }
     priv = dev.backend_private;
     tcp_stop_health_check_thread(priv);
     tcp_stop_accept_thread(priv);
@@ -7228,14 +7770,16 @@ static const char *lt_register_vs_stop(enum lt_scenario scenario)
     if (evict) {
         memset(&fx, 0, sizeof(fx));
         fx.priv = priv;
-        for (uint32_t i = 0; i < TCP_MAX_MESH_NODES; i++)
+        for (uint32_t i = 0; i < TCP_MAX_MESH_NODES; i++) {
             fx.peer[i] = -1;
+        }
         why = ev_setup(&fx, EV_ENDED);
         /* Leaves the table's reference the only one */
         ended = fx.conn[EV_OLDEST];
         tcp_connection_unref(fx.conn[EV_OLDEST]);
-        if (why)
+        if (why) {
             goto out;
+        }
     }
     fd = worker_attach(priv, &conn);
     if (fd < 0) {
@@ -7262,10 +7806,12 @@ static const char *lt_register_vs_stop(enum lt_scenario scenario)
         goto out;
     }
     /* The stop claims every thread in one pass under conn_table_lock */
-    for (int i = 0; i < 500 && atomic_load(&conn->recv_thread_running); i++)
+    for (int i = 0; i < 500 && atomic_load(&conn->recv_thread_running); i++) {
         sleep_ms(10);
-    if (atomic_load(&conn->recv_thread_running))
+    }
+    if (atomic_load(&conn->recv_thread_running)) {
         why = "the stop never claimed the receive thread";
+    }
     qemu_mutex_unlock(&priv->mesh_table_lock);
     pthread_join(stopper, NULL);
 
@@ -7274,17 +7820,18 @@ static const char *lt_register_vs_stop(enum lt_scenario scenario)
      * worker; the connection left pending, and the table, say it was refused.
      */
     if (evict) {
-        if (!why && table_get(priv, EV_OLDEST) != ended)
+        if (!why && table_get(priv, EV_OLDEST) != ended) {
             why = "the claimed connection was taken out of the table";
-        else if (!why && !ev_in_table(priv, EV_OLDEST))
+        } else if (!why && !ev_in_table(priv, EV_OLDEST)) {
             why = "a node was evicted during teardown";
-        else if (!why && (table_get(priv, TCP_MAX_MESH_NODES) ||
-                          mesh_node_count(priv) != TCP_MAX_MESH_NODES))
+        } else if (!why && (table_get(priv, TCP_MAX_MESH_NODES) ||
+                            mesh_node_count(priv) != TCP_MAX_MESH_NODES)) {
             why = "the new node was added to a full table";
-        else if (!why && pending_count(priv) != 1)
+        } else if (!why && pending_count(priv) != 1) {
             why = "the refused connection isn't on the pending list";
-        else if (!why && atomic_load(&g_joins) - joins != 3)
+        } else if (!why && atomic_load(&g_joins) - joins != 3) {
             why = "a receive thread wasn't joined exactly once";
+        }
         goto out;
     }
 
@@ -7292,22 +7839,25 @@ static const char *lt_register_vs_stop(enum lt_scenario scenario)
     in_table = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(1));
     pending = priv->pending_conns->len;
     qemu_mutex_unlock(&priv->conn_table_lock);
-    if (!why && in_table != (again ? old : conn))
+    if (!why && in_table != (again ? old : conn)) {
         why = again ? "the claimed connection was replaced"
                     : "the connection isn't in the connections table";
-    else if (!why && pending != (again ? 1u : 0u))
+    } else if (!why && pending != (again ? 1U : 0U)) {
         why = again ? "the refused connection isn't on the pending list"
                     : "the connection is still on the pending list";
-    else if (!why && atomic_load(&g_joins) - joins != (again ? 2 : 1))
+    } else if (!why && atomic_load(&g_joins) - joins != (again ? 2 : 1)) {
         why = "a receive thread wasn't joined exactly once";
+    }
 
 out:
     /* Joins nothing more; ASan reports it if the connection is freed twice */
     rdma_backend_ops_tcp.fini(&dev);
-    if (fd >= 0)
+    if (fd >= 0) {
         close(fd);
-    if (w1 >= 0)
+    }
+    if (w1 >= 0) {
         close(w1);
+    }
     return why;
 }
 
@@ -7322,22 +7872,25 @@ static int run_lt_case(const struct lt_case *c)
     g_current_row = c->description;
     alarm(row_timeout_s());
     if (c->scenario == LT_REGISTER_VS_STOP || c->scenario == LT_AGAIN_VS_STOP ||
-        c->scenario == LT_EVICT_VS_STOP)
+        c->scenario == LT_EVICT_VS_STOP) {
         why = lt_register_vs_stop(c->scenario);
-    else
+    } else {
         why = lt_replace_run(c->scenario);
+    }
     alarm(0);
     if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
-                 atomic_load(&g_exits) != atomic_load(&g_creates)))
+                 atomic_load(&g_exits) != atomic_load(&g_creates))) {
         why = "a thread wasn't joined exactly once";
+    }
 
     ok = !why;
     printf("%s lifetime %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
            c->category, c->description, c->expected);
-    if (!ok)
+    if (!ok) {
         printf("     %s; %d thread(s) created, %d joined, %d exited\n", why,
                atomic_load(&g_creates), atomic_load(&g_joins),
                atomic_load(&g_exits));
+    }
     fflush(stdout);
     return ok ? 0 : 1;
 }
@@ -7396,49 +7949,59 @@ static const char *pp_run(struct tp_fixture *fx, struct tp_net *net,
 {
     TcpPeerTarget target = tp_target(TP_PEER, net->port[0]);
     TcpConnection *conn;
-    int fd = -1, creates;
+    int fd = -1;
+    int creates;
     bool published;
 
     if (scenario != PP_DROPPED) {
         tp_set_target(fx, &target);
         conn = tp_publish(fx, net, TP_PEER, 0, true, &fd);
-        if (!conn)
+        if (!conn) {
             return "could not set up the connection in the table";
+        }
         *theirs = tcp_connection_ref(conn);
     }
     if (scenario == PP_DEAD) {
         TcpConnection *route;
 
         /* Its peer hangs up; fd is closed at the end of the row */
-        if (shutdown(fd, SHUT_RDWR) < 0 || !wait_dead(*theirs))
+        if (shutdown(fd, SHUT_RDWR) < 0 || !wait_dead(*theirs)) {
             return "the connection in the table didn't die";
+        }
         /* The manager's relay, the one other way to the peer */
         route = tcp_route_to_node(fx->priv, TP_PEER);
         tcp_connection_unref(route);
-        if (route != atomic_load(&fx->priv->manager_conn))
+        if (route != atomic_load(&fx->priv->manager_conn)) {
             return "the data path still picks the dead connection";
+        }
     }
 
     conn = recv_conn_new(fx->priv, TP_PEER, false, ours);
-    if (!conn)
+    if (!conn) {
         return "could not set up the new connection";
+    }
     creates = atomic_load(&g_creates);
     published = tcp_worker_publish_peer(fx->priv, &target, conn);
 
     if (scenario == PP_DEAD) {
-        if (!published || table_get(fx->priv, TP_PEER) != conn)
+        if (!published || table_get(fx->priv, TP_PEER) != conn) {
             return "the new connection wasn't published";
-        if (atomic_load(&g_creates) != creates + 1)
+        }
+        if (atomic_load(&g_creates) != creates + 1) {
             return "the new connection got no receive thread";
+        }
         return conn_retired(*theirs) ? NULL
                                      : "the dead connection wasn't closed";
     }
-    if (published)
+    if (published) {
         return "the new connection was published";
-    if (!closed_by_peer(*ours))
+    }
+    if (!closed_by_peer(*ours)) {
         return "the new connection wasn't closed";
-    if (atomic_load(&g_creates) != creates)
+    }
+    if (atomic_load(&g_creates) != creates) {
         return "a receive thread was started for the new connection";
+    }
     return table_get(fx->priv, TP_PEER) == *theirs
                ? NULL
                : "the connection in the table was changed";
@@ -7461,31 +8024,36 @@ static int run_pp_case(const struct pp_case *c)
 
     why = tp_setup(&fx, LONG_INTERVAL_S, false);
     /* For a port to name, and the peer's ends to close */
-    if (!why)
+    if (!why) {
         why = tp_listen(&net, TP_CONNECTS);
-    else
+    } else {
         tp_listen(&net, TP_CONNECTS);
-    if (!why)
+    }
+    if (!why) {
         why = pp_run(&fx, &net, c->scenario, &theirs, &ours);
+    }
 
     tp_teardown(&fx);
     alarm(0);
     tcp_connection_unref(theirs);
     if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
-                 atomic_load(&g_exits) != atomic_load(&g_creates)))
+                 atomic_load(&g_exits) != atomic_load(&g_creates))) {
         why = "a thread wasn't joined exactly once";
+    }
 
     ok = !why;
     printf("%s publish %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
            c->category, c->description, c->expected);
-    if (!ok)
+    if (!ok) {
         printf("     %s; %d thread(s) created, %d joined, %d exited\n", why,
                atomic_load(&g_creates), atomic_load(&g_joins),
                atomic_load(&g_exits));
+    }
     fflush(stdout);
 
-    if (ours >= 0)
+    if (ours >= 0) {
         close(ours);
+    }
     tp_close(&net);
     return ok ? 0 : 1;
 }
@@ -7572,14 +8140,17 @@ static const char *dc_start(struct dc_worker *w, int lfd, uint16_t port,
 
     snprintf(w->in.config, sizeof(w->in.config), "tcp:worker:127.0.0.1:%u",
              (unsigned)port);
-    if (pthread_create(&w->in.tid, NULL, wr_init_run, &w->in) != 0)
+    if (pthread_create(&w->in.tid, NULL, wr_init_run, &w->in) != 0) {
         return "could not start tcp_init()";
+    }
     w->in.running = true;
     why = wr_registered(lfd, &w->mgr, &w->port);
-    if (why)
+    if (why) {
         return why;
-    if (!wr_assign(w->mgr, id))
+    }
+    if (!wr_assign(w->mgr, id)) {
         return "could not answer the registration";
+    }
     wr_init_join(&w->in);
     return w->in.ret == 0 ? NULL : "tcp_init() failed";
 }
@@ -7588,13 +8159,16 @@ static const char *dc_start(struct dc_worker *w, int lfd, uint16_t port,
 static void dc_stop(struct dc_worker *w)
 {
     /* Failed before the answer: refuse, so tcp_init() returns */
-    if (w->in.running && w->mgr >= 0)
+    if (w->in.running && w->mgr >= 0) {
         send_register_resp(w->mgr, 0, -EPROTO, TCP_REGISTER_RESP_LEN);
+    }
     wr_init_join(&w->in);
-    if (w->in.ret == 0)
+    if (w->in.ret == 0) {
         rdma_backend_ops_tcp.fini(&w->in.dev);
-    if (w->mgr >= 0)
+    }
+    if (w->mgr >= 0) {
         close(w->mgr);
+    }
 }
 
 static TcpBackendPrivate *dc_priv(struct dc_worker *w)
@@ -7628,11 +8202,13 @@ struct dc_conns {
 static const char *dc_connect(struct dc_worker *a, struct dc_worker *b,
                               struct dc_conns *held)
 {
-    if (!dc_report(a, b, true))
+    if (!dc_report(a, b, true)) {
         return "could not report the peer alive";
+    }
     held->ab = wait_live(dc_priv(a), DC_B, NULL);
-    if (!held->ab)
+    if (!held->ab) {
         return "the worker didn't connect to its peer";
+    }
     held->ba = wait_live(dc_priv(b), DC_A, NULL);
     return held->ba ? NULL : "the peer didn't publish the worker's connection";
 }
@@ -7651,26 +8227,34 @@ static const char *dc_dead_then_alive(struct dc_worker *a, struct dc_worker *b,
 
     tcp_stop_peer_thread(dc_priv(b));
     why = dc_connect(a, b, held);
-    if (why)
+    if (why) {
         return why;
-    if (!dc_report(a, b, false))
+    }
+    if (!dc_report(a, b, false)) {
         return "could not report the peer dead";
-    if (!wait_retired(held->ab) || table_get(dc_priv(a), DC_B))
+    }
+    if (!wait_retired(held->ab) || table_get(dc_priv(a), DC_B)) {
         return "the worker kept its connection to a peer reported dead";
-    if (!wait_dead(held->ba))
+    }
+    if (!wait_dead(held->ba)) {
         return "the peer's connection didn't die when the worker closed its "
                "own";
-    if (table_get(dc_priv(b), DC_A) != held->ba)
+    }
+    if (table_get(dc_priv(b), DC_A) != held->ba) {
         return "the peer's dead connection left its table early";
+    }
 
-    if (!dc_report(a, b, true))
+    if (!dc_report(a, b, true)) {
         return "could not report the peer alive again";
+    }
     held->ab2 = wait_live(dc_priv(a), DC_B, held->ab);
-    if (!held->ab2)
+    if (!held->ab2) {
         return "the worker didn't connect again";
+    }
     held->ba2 = wait_live(dc_priv(b), DC_A, held->ba);
-    if (!held->ba2)
+    if (!held->ba2) {
         return "the peer didn't replace its dead connection";
+    }
     return wait_retired(held->ba) ? NULL
                                   : "the peer's dead connection wasn't closed";
 }
@@ -7685,15 +8269,19 @@ static const char *dc_hangs_up(struct dc_worker *a, struct dc_worker *b,
 {
     const char *why = dc_connect(a, b, held);
 
-    if (why)
+    if (why) {
         return why;
-    if (!retire_node_conn(dc_priv(b), DC_A))
+    }
+    if (!retire_node_conn(dc_priv(b), DC_A)) {
         return "the peer's connection wasn't in its table";
+    }
     held->ab2 = wait_live(dc_priv(a), DC_B, held->ab);
-    if (!held->ab2)
+    if (!held->ab2) {
         return "the worker didn't connect again";
-    if (!wait_retired(held->ab))
+    }
+    if (!wait_retired(held->ab)) {
         return "the worker's dead connection wasn't closed";
+    }
     held->ba2 = wait_live(dc_priv(b), DC_A, held->ba);
     return held->ba2 ? NULL : "the peer didn't publish the new connection";
 }
@@ -7708,16 +8296,19 @@ static const char *dc_accepted(struct dc_worker *b, struct dc_conns *held)
     int peer = wr_peer(b->port);
     uint32_t answered;
 
-    if (peer < 0)
+    if (peer < 0) {
         return "the peer could not connect";
+    }
     answered = wr_node_in(peer, TCP_MSG_HANDSHAKE_RESP, NULL);
     /* Published before the answer */
     held->ba = tcp_connection_lookup(dc_priv(b), HS_NODE);
     close(peer);
-    if (answered != DC_B || !held->ba)
+    if (answered != DC_B || !held->ba) {
         return "the worker didn't take the peer's connection";
-    if (!wait_retired(held->ba))
+    }
+    if (!wait_retired(held->ba)) {
         return "the connection of the peer that hung up wasn't closed";
+    }
     return table_get(dc_priv(b), HS_NODE)
                ? "the connection of the peer that hung up is still in the "
                  "table"
@@ -7746,7 +8337,8 @@ static const char *dc_run(enum dc_scenario scenario, struct dc_worker *a,
  */
 static int run_dc_case(const struct dc_case *c)
 {
-    struct dc_worker a, b;
+    struct dc_worker a;
+    struct dc_worker b;
     struct dc_conns held = {NULL, NULL, NULL, NULL};
     struct sockaddr_in addr;
     socklen_t len = sizeof(addr);
@@ -7763,14 +8355,18 @@ static int run_dc_case(const struct dc_case *c)
     g_current_row = c->description;
     alarm(row_timeout_s());
     lfd = listen_loopback();
-    if (lfd < 0 || getsockname(lfd, (struct sockaddr *)&addr, &len) < 0)
+    if (lfd < 0 || getsockname(lfd, (struct sockaddr *)&addr, &len) < 0) {
         why = "could not open the manager's listener";
-    if (!why)
+    }
+    if (!why) {
         why = dc_start(&a, lfd, ntohs(addr.sin_port), DC_A);
-    if (!why)
+    }
+    if (!why) {
         why = dc_start(&b, lfd, ntohs(addr.sin_port), DC_B);
-    if (!why)
+    }
+    if (!why) {
         why = dc_run(c->scenario, &a, &b, &held);
+    }
 
     dc_stop(&a);
     dc_stop(&b);
@@ -7780,20 +8376,23 @@ static int run_dc_case(const struct dc_case *c)
     tcp_connection_unref(held.ab2);
     tcp_connection_unref(held.ba2);
     if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
-                 atomic_load(&g_exits) != atomic_load(&g_creates)))
+                 atomic_load(&g_exits) != atomic_load(&g_creates))) {
         why = "a thread wasn't joined exactly once";
+    }
 
     ok = !why;
     printf("%s dead connection %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
            c->category, c->description, c->expected);
-    if (!ok)
+    if (!ok) {
         printf("     %s; %d thread(s) created, %d joined, %d exited\n", why,
                atomic_load(&g_creates), atomic_load(&g_joins),
                atomic_load(&g_exits));
+    }
     fflush(stdout);
 
-    if (lfd >= 0)
+    if (lfd >= 0) {
         close(lfd);
+    }
     return ok ? 0 : 1;
 }
 
@@ -7838,9 +8437,9 @@ static int run_dc_case(const struct dc_case *c)
 #define WL_SLOW       3
 #define WL_SLOW_FIRST 10
 /* What WL_STUCK sends: more than a socket and its peer's hold */
-#define WL_STUCK_LEN (TCP_MAX_PAYLOAD_LEN - 16u)
+#define WL_STUCK_LEN (TCP_MAX_PAYLOAD_LEN - 16U)
 /* And the QP of a request it queues behind that, then cancels */
-#define WL_CANCEL_QP 7u
+#define WL_CANCEL_QP 7U
 
 enum wl_scenario {
     WL_HANGS_UP, /* the manager closes the connection */
@@ -7940,8 +8539,9 @@ struct wl_fds {
 
 static int wl_keep(struct wl_fds *k, int fd)
 {
-    if (fd >= 0 && k->n < WL_MAX_FDS)
+    if (fd >= 0 && k->n < WL_MAX_FDS) {
         k->fd[k->n++] = fd;
+    }
     return fd;
 }
 
@@ -7975,18 +8575,21 @@ static const char *wl_registers(struct dc_worker *w, int lfd, struct wl_fds *k,
     const char *why = NULL;
 
     *mgr = wl_keep(k, accept_within(lfd));
-    if (*mgr < 0)
+    if (*mgr < 0) {
         return "the worker didn't connect to the manager again";
-    if (!wr_recv(*mgr, &hdr, &payload, 5000))
+    }
+    if (!wr_recv(*mgr, &hdr, &payload, 5000)) {
         return "the worker sent no registration";
+    }
     reg = payload;
     if (hdr.msg_type != TCP_MSG_REGISTER_NODE || !reg ||
-        hdr.msg_len < TCP_REGISTER_NODE_LEN)
+        hdr.msg_len < TCP_REGISTER_NODE_LEN) {
         why = "the worker's first message wasn't a registration";
-    else if (ernic_get_be32(reg + TCP_REGISTER_NODE_REQUESTED_OFF) != WL_ID)
+    } else if (ernic_get_be32(reg + TCP_REGISTER_NODE_REQUESTED_OFF) != WL_ID) {
         why = "the worker didn't ask for its own id";
-    else if (ernic_get_be16(reg + TCP_REGISTER_NODE_PORT_OFF) != w->port)
+    } else if (ernic_get_be16(reg + TCP_REGISTER_NODE_PORT_OFF) != w->port) {
         why = "the worker registered another port";
+    }
     free(payload);
     return why;
 }
@@ -8005,28 +8608,36 @@ static const char *wl_accepted(struct dc_worker *w, int mgr, int high)
     union ibv_gid gid;
     int peer;
 
-    if (!wr_assign(mgr, WL_ID))
+    if (!wr_assign(mgr, WL_ID)) {
         return "could not answer the registration";
-    if (wr_node_in(mgr, TCP_MSG_NODE_GIDS, NULL) != WL_ID)
+    }
+    if (wr_node_in(mgr, TCP_MSG_NODE_GIDS, NULL) != WL_ID) {
         return "the worker didn't advertise its GIDs as WL_ID";
-    if (tcp_local_node(priv) != WL_ID)
+    }
+    if (tcp_local_node(priv) != WL_ID) {
         return "the worker's id changed";
+    }
 
     memcpy(gid.raw, wl_gid, 16);
-    if (!send_gids(mgr, WL_OTHER, &wl_gid) || !wr_settled(mgr, NULL))
+    if (!send_gids(mgr, WL_OTHER, &wl_gid) || !wr_settled(mgr, NULL)) {
         return "the worker stopped answering";
-    if (tcp_resolve_node_from_gid(priv, &gid) != WL_OTHER)
+    }
+    if (tcp_resolve_node_from_gid(priv, &gid) != WL_OTHER) {
         return "the worker ignored a GID table on the new connection";
+    }
 
-    if (getsockname(high, (struct sockaddr *)&addr, &len) < 0)
+    if (getsockname(high, (struct sockaddr *)&addr, &len) < 0) {
         return "could not find the peer's port";
+    }
     memset(&topo, 0, sizeof(topo));
     tp_entry(&topo, WL_HIGHER, ntohs(addr.sin_port), true);
-    if (!send_topology(mgr, &topo))
+    if (!send_topology(mgr, &topo)) {
         return "could not send the topology update";
+    }
     peer = accept_within(high);
-    if (peer < 0)
+    if (peer < 0) {
         return "the worker ignored a topology update on the new connection";
+    }
     close(peer);
     return NULL;
 }
@@ -8060,29 +8671,36 @@ static const char *wl_evicted(struct dc_worker *w, int lfd, struct wl_fds *k)
     tp_entry(&topo, WL_GONE_ID, 1, true);
     if (!send_topology(w->mgr, &topo) ||
         !send_gids(w->mgr, WL_GONE_ID, &wl_gid) ||
-        !send_gids(w->mgr, 0, &wl_mgr_gid) || !wr_settled(w->mgr, NULL))
+        !send_gids(w->mgr, 0, &wl_mgr_gid) || !wr_settled(w->mgr, NULL)) {
         return "the worker stopped answering";
-    if (wl_resolve(w, wl_gid) != WL_GONE_ID || wl_resolve(w, wl_mgr_gid) != 0)
+    }
+    if (wl_resolve(w, wl_gid) != WL_GONE_ID || wl_resolve(w, wl_mgr_gid) != 0) {
         return "the worker ignored the GID table";
+    }
 
     close(w->mgr);
     w->mgr = -1;
     why = wl_registers(w, lfd, k, &mgr);
-    if (why)
+    if (why) {
         return why;
-    if (!wr_assign(mgr, WL_ID))
+    }
+    if (!wr_assign(mgr, WL_ID)) {
         return "could not answer the registration";
-    if (wr_node_in(mgr, TCP_MSG_NODE_GIDS, NULL) != WL_ID)
+    }
+    if (wr_node_in(mgr, TCP_MSG_NODE_GIDS, NULL) != WL_ID) {
         return "the worker didn't advertise its GIDs as WL_ID";
+    }
 
     memset(&topo, 0, sizeof(topo));
     tp_entry(&topo, 0, 1, true);
     tp_entry(&topo, WL_ID, w->port, true);
     if (!send_topology(mgr, &topo) || !send_gids(mgr, 0, &wl_mgr_gid) ||
-        !wr_settled(mgr, NULL))
+        !wr_settled(mgr, NULL)) {
         return "the worker stopped answering";
-    if (wl_resolve(w, wl_gid) != UINT32_MAX)
+    }
+    if (wl_resolve(w, wl_gid) != UINT32_MAX) {
         return "the worker kept the evicted node's GID";
+    }
     return wl_resolve(w, wl_mgr_gid) == 0
                ? NULL
                : "the worker dropped the GID of a node still in the mesh";
@@ -8096,22 +8714,27 @@ static const char *wl_again(struct dc_worker *w, int lfd, int high,
     int mgr;
 
     if (silent) {
-        if (!wait_for_type(w->mgr, TCP_MSG_HEARTBEAT, 3000))
+        if (!wait_for_type(w->mgr, TCP_MSG_HEARTBEAT, 3000)) {
             return "the worker sent the quiet manager no heartbeat";
+        }
     } else {
         close(w->mgr);
         w->mgr = -1;
     }
     why = wl_registers(w, lfd, k, &mgr);
-    if (why)
+    if (why) {
         return why;
-    if (silent && !ends(w->mgr))
+    }
+    if (silent && !ends(w->mgr)) {
         return "the worker kept its connection to the silent manager";
-    if (!conn_retired(old))
+    }
+    if (!conn_retired(old)) {
         return "the old connection wasn't closed";
+    }
     why = wl_accepted(w, mgr, high);
-    if (why)
+    if (why) {
         return why;
+    }
     return wl_attempts(w) == 1 ? NULL
                                : "the worker connected again more than once";
 }
@@ -8128,12 +8751,13 @@ static const char *wl_slow_peers(struct dc_worker *w, int *slow)
 
     memset(&topo, 0, sizeof(topo));
     for (uint32_t i = 0; i < WL_SLOW; i++) {
-        int *pair = slow + (size_t)2 * i;
+        int *pair = slow + ((size_t)2 * i);
         uint16_t port;
 
         pair[0] = listen_unanswering(&port, &pair[1]);
-        if (pair[0] < 0)
+        if (pair[0] < 0) {
             return "could not open the peers' listeners";
+        }
         tp_entry(&topo, WL_SLOW_FIRST + i, port, true);
     }
     return send_topology(w->mgr, &topo) ? NULL
@@ -8153,32 +8777,38 @@ static const char *wl_answered(struct dc_worker *w, int lfd, bool busy)
     double end;
     int answered = 0;
 
-    for (uint32_t i = 0; i < 2 * WL_SLOW; i++)
+    for (uint32_t i = 0; i < 2 * WL_SLOW; i++) {
         slow[i] = -1;
-    if (busy)
+    }
+    if (busy) {
         why = wl_slow_peers(w, slow);
+    }
     end = now_s() + (busy ? 5.5 : 4.5);
 
     while (!why && now_s() < end) {
         int left = (int)((end - now_s()) * 1000.0);
 
         if (wait_for_type(w->mgr, TCP_MSG_HEARTBEAT, left > 0 ? left : 1)) {
-            if (!send_header(w->mgr, TCP_MSG_HEARTBEAT_RESP, 0))
+            if (!send_header(w->mgr, TCP_MSG_HEARTBEAT_RESP, 0)) {
                 why = "could not answer the heartbeat";
+            }
             answered++;
         }
     }
-    if (!why && answered == 0)
+    if (!why && answered == 0) {
         why = "the worker sent the quiet manager no heartbeat";
-    else if (!why && (poll(&pfd, 1, 0) != 0 || wl_attempts(w) != 0))
+    } else if (!why && (poll(&pfd, 1, 0) != 0 || wl_attempts(w) != 0)) {
         why = "the worker connected again to a manager that answered";
-    else if (!why && busy &&
-             atomic_load(&dc_priv(w)->tcp_stats.peer_connect_attempts) <
-                 WL_SLOW)
+    } else if (!why && busy &&
+               atomic_load(&dc_priv(w)->tcp_stats.peer_connect_attempts) <
+                   WL_SLOW) {
         why = "the worker didn't connect to the slow peers";
-    for (uint32_t i = 0; i < 2 * WL_SLOW; i++)
-        if (slow[i] >= 0)
+    }
+    for (uint32_t i = 0; i < 2 * WL_SLOW; i++) {
+        if (slow[i] >= 0) {
             close(slow[i]);
+        }
+    }
     return why;
 }
 
@@ -8195,8 +8825,9 @@ static const char *wl_cancel(RdmaBackendDev *dev, TcpConnection *old)
 
     if (rdma_backend_ops_tcp.mesh->sendv(dev, WL_OTHER, hdr, sizeof(hdr), NULL,
                                          0, (uint64_t)WL_CANCEL_QP << 32,
-                                         false) != 0)
+                                         false) != 0) {
         return "the request to cancel wasn't queued";
+    }
     rdma_backend_ops_tcp.mesh->cancel(dev, (uint64_t)WL_CANCEL_QP << 32,
                                       UINT64_C(0xffffffff00000000));
     qemu_mutex_lock(&old->sendq_lock);
@@ -8229,19 +8860,22 @@ static const char *wl_stuck(struct dc_worker *w, int lfd, int high,
     dev.backend_private = dc_priv(w);
     /* No direct connection to WL_OTHER, so the manager would relay it */
     if (rdma_backend_ops_tcp.mesh->sendv(&dev, WL_OTHER, hdr, sizeof(hdr), body,
-                                         WL_STUCK_LEN, 0, false) != 0)
+                                         WL_STUCK_LEN, 0, false) != 0) {
         why = "the data path's send wasn't queued";
-    else if (!held_elsewhere(&old->lock))
+    } else if (!held_elsewhere(&old->lock)) {
         why = "the send thread never blocked on the manager's connection";
-    else
+    } else {
         why = wl_cancel(&dev, old);
+    }
     /* Three intervals after the manager last said anything, and then some */
-    if (!why && poll(&pfd, 1, 8000) != 1)
+    if (!why && poll(&pfd, 1, 8000) != 1) {
         why = "the worker didn't connect to the manager again";
-    else if (!why)
+    } else if (!why) {
         why = wl_registers(w, lfd, k, &mgr);
-    if (!why && !wait_retired(old))
+    }
+    if (!why && !wait_retired(old)) {
         why = "the old connection wasn't closed";
+    }
     g_free(body);
     return why ? why : wl_accepted(w, mgr, high);
 }
@@ -8264,34 +8898,42 @@ static const char *wl_refused(struct dc_worker *w, int lfd, int high,
     close(w->mgr);
     w->mgr = -1;
     why = wl_registers(w, lfd, k, &mgr);
-    if (why)
+    if (why) {
         return why;
-    if (scenario == WL_OTHER_ID)
+    }
+    if (scenario == WL_OTHER_ID) {
         answered = wr_assign(mgr, WL_ID + 1);
-    else
+    } else {
         answered = send_register_resp(mgr, 0,
                                       scenario == WL_UNKNOWN ? -ENOENT : -EBUSY,
                                       TCP_REGISTER_RESP_LEN);
-    if (!answered)
+    }
+    if (!answered) {
         return "could not answer the registration";
-    if (!ends(mgr))
+    }
+    if (!ends(mgr)) {
         return "the worker kept the refused connection";
-    if (tcp_local_node(dc_priv(w)) != WL_ID)
+    }
+    if (tcp_local_node(dc_priv(w)) != WL_ID) {
         return "the worker's id changed";
+    }
     now = tcp_worker_manager_conn(dc_priv(w));
     tcp_connection_unref(now);
-    if (now)
+    if (now) {
         return "the worker took the refused connection for the manager's";
+    }
     if (scenario != WL_REFUSED) {
         /* Its next pass comes within the 1 s interval */
-        if (poll(&pfd, 1, 2500) != 0 || wl_attempts(w) != 1)
+        if (poll(&pfd, 1, 2500) != 0 || wl_attempts(w) != 1) {
             return "the worker registered again";
+        }
         return NULL;
     }
 
     why = wl_registers(w, lfd, k, &mgr);
-    if (why)
+    if (why) {
         return why;
+    }
     return wl_accepted(w, mgr, high);
 }
 
@@ -8310,13 +8952,16 @@ static const char *wl_gone(struct dc_worker *w, int *lfd, uint16_t port,
     *lfd = -1;
     close(w->mgr);
     w->mgr = -1;
-    for (int i = 0; i < 500 && wl_attempts(w) < 2; i++)
+    for (int i = 0; i < 500 && wl_attempts(w) < 2; i++) {
         sleep_ms(10);
-    if (wl_attempts(w) < 2)
+    }
+    if (wl_attempts(w) < 2) {
         return "the worker didn't keep trying";
+    }
     *lfd = listen_on(port);
-    if (*lfd < 0)
+    if (*lfd < 0) {
         return "could not listen on the manager's port again";
+    }
     why = wl_registers(w, *lfd, k, &mgr);
     return why ? why : wl_accepted(w, mgr, high);
 }
@@ -8336,22 +8981,26 @@ static const char *wl_stop(struct dc_worker *w, int lfd, struct wl_fds *k)
     close(w->mgr);
     w->mgr = -1;
     why = wl_registers(w, lfd, k, &mgr);
-    if (why)
+    if (why) {
         return why;
+    }
     conn = tcp_worker_manager_conn(priv);
     tcp_connection_unref(conn);
-    if (conn)
+    if (conn) {
         return "the worker has a connection to the manager while it registers";
+    }
     conn = tcp_route_to_node(priv, WL_OTHER);
     tcp_connection_unref(conn);
-    if (conn)
+    if (conn) {
         return "the worker routes through a manager it isn't registered with";
+    }
 
     start = now_s();
     rdma_backend_ops_tcp.fini(&w->in.dev);
     w->in.ret = -1; /* so dc_stop() doesn't stop it again */
-    if (now_s() - start >= 1.0)
+    if (now_s() - start >= 1.0) {
         return "the stop waited for the answer";
+    }
     return ends(mgr) ? NULL : "the registering connection wasn't closed";
 }
 
@@ -8361,8 +9010,9 @@ static const char *wl_run(enum wl_scenario scenario, struct dc_worker *w,
     TcpConnection *old = tcp_worker_manager_conn(dc_priv(w));
     const char *why;
 
-    if (!old)
+    if (!old) {
         return "the worker has no connection to the manager";
+    }
     switch (scenario) {
     case WL_HANGS_UP:
     case WL_SILENT:
@@ -8409,7 +9059,8 @@ static int run_wl_case(const struct wl_case *c)
     socklen_t len = sizeof(addr);
     const char *why = NULL;
     uint16_t port = 0;
-    int lfd, high;
+    int lfd;
+    int high;
     bool ok;
 
     atomic_store(&g_creates, 0);
@@ -8423,36 +9074,44 @@ static int run_wl_case(const struct wl_case *c)
     lfd = listen_loopback();
     high = listen_loopback();
     if (lfd < 0 || high < 0 ||
-        getsockname(lfd, (struct sockaddr *)&addr, &len) < 0)
+        getsockname(lfd, (struct sockaddr *)&addr, &len) < 0) {
         why = "could not open the listeners";
-    else
+    } else {
         port = ntohs(addr.sin_port);
-    if (!why)
+    }
+    if (!why) {
         why = dc_start(&w, lfd, port, WL_ID);
-    if (!why)
+    }
+    if (!why) {
         why = wl_run(c->scenario, &w, &lfd, port, high, &k);
+    }
 
     dc_stop(&w);
     alarm(0);
     if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
-                 atomic_load(&g_exits) != atomic_load(&g_creates)))
+                 atomic_load(&g_exits) != atomic_load(&g_creates))) {
         why = "a thread wasn't joined exactly once";
+    }
 
     ok = !why;
     printf("%s manager link %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
            c->category, c->description, c->expected);
-    if (!ok)
+    if (!ok) {
         printf("     %s; %d thread(s) created, %d joined, %d exited\n", why,
                atomic_load(&g_creates), atomic_load(&g_joins),
                atomic_load(&g_exits));
+    }
     fflush(stdout);
 
-    for (uint32_t i = 0; i < k.n; i++)
+    for (uint32_t i = 0; i < k.n; i++) {
         close(k.fd[i]);
-    if (lfd >= 0)
+    }
+    if (lfd >= 0) {
         close(lfd);
-    if (high >= 0)
+    }
+    if (high >= 0) {
         close(high);
+    }
     return ok ? 0 : 1;
 }
 
@@ -8599,7 +9258,7 @@ static const struct st_case st_cases[] = {
 };
 
 /* A worker's send timeout in these rows; the manager's is half */
-#define ST_TIMEOUT_MS 2000u
+#define ST_TIMEOUT_MS 2000U
 
 /*
  * ST_TIMEOUT: the broadcaster's first pass sends the topology, and blocks on
@@ -8610,30 +9269,40 @@ static const char *st_timeout(struct mgr_fixture *fx)
 {
     TcpBackendPrivate *priv = fx->priv;
     TcpConnection *conn = fx->old[0];
-    uint64_t start_ms = ernic_monotonic_ms(), first_ms, second_ms;
+    uint64_t start_ms = ernic_monotonic_ms();
+    uint64_t first_ms;
+    uint64_t second_ms;
 
     if (!tcp_start_thread(&priv->broadcast_thread, "tcp-broadcast",
-                          tcp_broadcast_thread, priv, &priv->broadcast_running))
+                          tcp_broadcast_thread, priv,
+                          &priv->broadcast_running)) {
         return "could not start the broadcaster";
+    }
     tcp_broadcast_topology(priv);
-    if (!held_elsewhere(&conn->lock))
+    if (!held_elsewhere(&conn->lock)) {
         return "the first broadcast never blocked on node 1";
+    }
     tcp_broadcast_node_gids(priv, 1);
 
-    if (!broadcasts_sent_reach(priv, 1, 3 * ST_TIMEOUT_MS))
+    if (!broadcasts_sent_reach(priv, 1, 3 * ST_TIMEOUT_MS)) {
         return "the first broadcast never gave up";
+    }
     first_ms = ernic_monotonic_ms();
-    if (!broadcasts_sent_reach(priv, 2, 3 * ST_TIMEOUT_MS))
+    if (!broadcasts_sent_reach(priv, 2, 3 * ST_TIMEOUT_MS)) {
         return "the second broadcast never finished";
+    }
     second_ms = ernic_monotonic_ms();
 
-    if (first_ms - start_ms < ST_TIMEOUT_MS / 2 - 100u)
+    if (first_ms - start_ms < (ST_TIMEOUT_MS / 2) - 100U) {
         return "the first broadcast didn't give up after the manager's "
                "timeout";
-    if (second_ms - first_ms > 250u)
+    }
+    if (second_ms - first_ms > 250U) {
         return "the second broadcast waited a timeout of its own";
-    if (!wait_dead(conn))
+    }
+    if (!wait_dead(conn)) {
         return "the connection wasn't shut down";
+    }
     mgr_start(fx, 0);
     return wait_retired(conn) ? NULL : "the connection wasn't retired";
 }
@@ -8670,26 +9339,32 @@ static const char *st_datapath(struct mgr_fixture *fx)
     bool closed = false;
     int rc;
 
-    if (st_send(fx->priv, 0, false) != 0)
+    if (st_send(fx->priv, 0, false) != 0) {
         return "the message wasn't queued";
-    if (ernic_monotonic_ms() - start_ms > 100u)
+    }
+    if (ernic_monotonic_ms() - start_ms > 100U) {
         return "queueing the message waited for the peer";
-    if (!wait_dead(conn))
+    }
+    if (!wait_dead(conn)) {
         return "the send thread never gave up on the peer";
+    }
     took_ms = ernic_monotonic_ms() - start_ms;
-    if (took_ms < ST_TIMEOUT_MS / 2 - 100u)
+    if (took_ms < (ST_TIMEOUT_MS / 2) - 100U) {
         return "the send thread gave up before the timeout";
+    }
     /* The send thread shuts the socket down first, then closes the queue */
     for (int i = 0; i < 500; i++) {
         qemu_mutex_lock(&conn->sendq_lock);
         closed = conn->sendq_closed;
         qemu_mutex_unlock(&conn->sendq_lock);
-        if (closed)
+        if (closed) {
             break;
+        }
         sleep_ms(10);
     }
-    if (!closed)
+    if (!closed) {
         return "the send queue is still open";
+    }
     /* The connection is dead, so there is none to the node to send on */
     rc = st_send(fx->priv, 0, false);
     return rc == -ENOTCONN || rc == -EPIPE ? NULL : "the next send didn't fail";
@@ -8699,28 +9374,37 @@ static const char *st_datapath(struct mgr_fixture *fx)
 static const char *st_queue_full(struct mgr_fixture *fx)
 {
     /* With the 16-byte header, each is the largest message there is */
-    const uint32_t len = TCP_MAX_PAYLOAD_LEN - 16u;
+    const uint32_t len = TCP_MAX_PAYLOAD_LEN - 16U;
     RdmaBackendDev dev;
 
     memset(&dev, 0, sizeof(dev));
     dev.backend_private = fx->priv;
-    if (!rdma_backend_ops_tcp.mesh->has_room(&dev, 1, TCP_MAX_PAYLOAD_LEN))
+    if (!rdma_backend_ops_tcp.mesh->has_room(&dev, 1, TCP_MAX_PAYLOAD_LEN)) {
         return "an empty queue had no room";
+    }
     /* Requests up to their limit, the first of them being written */
-    for (uint32_t i = 0; i < TCP_SENDQ_REQUEST_BYTES / TCP_MAX_PAYLOAD_LEN; i++)
-        if (st_send(fx->priv, len, false) != 0)
+    for (uint32_t i = 0; i < TCP_SENDQ_REQUEST_BYTES / TCP_MAX_PAYLOAD_LEN;
+         i++) {
+        if (st_send(fx->priv, len, false) != 0) {
             return "a request within the limit wasn't queued";
-    if (rdma_backend_ops_tcp.mesh->has_room(&dev, 1, 16))
+        }
+    }
+    if (rdma_backend_ops_tcp.mesh->has_room(&dev, 1, 16)) {
         return "has_room() saw room in a full queue";
-    if (st_send(fx->priv, 0, false) != -EAGAIN)
+    }
+    if (st_send(fx->priv, 0, false) != -EAGAIN) {
         return "a request past the limit wasn't refused with -EAGAIN";
+    }
     /* Replies up to theirs */
     for (uint32_t i = TCP_SENDQ_REQUEST_BYTES / TCP_MAX_PAYLOAD_LEN;
-         i < TCP_SENDQ_REPLY_BYTES / TCP_MAX_PAYLOAD_LEN; i++)
-        if (st_send(fx->priv, len, true) != 0)
+         i < TCP_SENDQ_REPLY_BYTES / TCP_MAX_PAYLOAD_LEN; i++) {
+        if (st_send(fx->priv, len, true) != 0) {
             return "a reply within its limit wasn't queued";
-    if (st_send(fx->priv, 0, true) != -ENOBUFS)
+        }
+    }
+    if (st_send(fx->priv, 0, true) != -ENOBUFS) {
         return "a reply past its limit wasn't refused with -ENOBUFS";
+    }
     return NULL;
 }
 
@@ -8732,22 +9416,28 @@ static const char *st_relay(struct mgr_fixture *fx)
     uint64_t took_ms;
     bool alive;
 
-    if (!send_ionic(w1, 1, 2) || !send_heartbeat(w1, 1))
+    if (!send_ionic(w1, 1, 2) || !send_heartbeat(w1, 1)) {
         return "worker 1 couldn't send";
-    if (!wait_for_type(w1, TCP_MSG_HEARTBEAT_RESP, 3 * ST_TIMEOUT_MS))
+    }
+    if (!wait_for_type(w1, TCP_MSG_HEARTBEAT_RESP, 3 * ST_TIMEOUT_MS)) {
         return "worker 1's heartbeat wasn't answered";
+    }
     took_ms = ernic_monotonic_ms() - start_ms;
-    if (took_ms < ST_TIMEOUT_MS / 2 - 100u)
+    if (took_ms < (ST_TIMEOUT_MS / 2) - 100U) {
         return "the relay didn't wait for node 2";
-    if (took_ms >= ST_TIMEOUT_MS)
+    }
+    if (took_ms >= ST_TIMEOUT_MS) {
         return "the heartbeat wasn't answered within worker 1's timeout";
-    if (!wait_dead(fx->old[1]))
+    }
+    if (!wait_dead(fx->old[1])) {
         return "node 2's connection wasn't shut down";
+    }
     qemu_mutex_lock(&fx->priv->mesh_table_lock);
     alive = fx->node[0]->is_alive;
     qemu_mutex_unlock(&fx->priv->mesh_table_lock);
-    if (!alive || tcp_conn_dead(fx->old[0]))
+    if (!alive || tcp_conn_dead(fx->old[0])) {
         return "worker 1 lost its connection, or was declared dead";
+    }
     return NULL;
 }
 
@@ -8781,16 +9471,20 @@ static const char *st_cancel(struct mgr_fixture *fx)
     dev.backend_private = fx->priv;
 
     /* The first, from QP 5 too, is off the queue: the send thread is on it */
-    if (st_send_tag(fx->priv, 100, ST_TAG(5, 1), false) != 0)
+    if (st_send_tag(fx->priv, 100, ST_TAG(5, 1), false) != 0) {
         return "the first message wasn't queued";
-    if (!held_elsewhere(&conn->lock))
+    }
+    if (!held_elsewhere(&conn->lock)) {
         return "the send thread never blocked on the node";
+    }
     for (size_t i = 0; i < sizeof(queued) / sizeof(queued[0]); i++) {
         if (st_send_tag(fx->priv, queued[i].len, queued[i].tag,
-                        queued[i].reply) != 0)
+                        queued[i].reply) != 0) {
             return "a message wasn't queued";
-        if (queued[i].kept)
-            want += queued[i].len + 16u;
+        }
+        if (queued[i].kept) {
+            want += queued[i].len + 16U;
+        }
     }
     rdma_backend_ops_tcp.mesh->cancel(&dev, ST_TAG(5, 0), ST_QP_MASK);
     rdma_backend_ops_tcp.mesh->cancel(&dev, ST_TAG(6, 4), UINT64_MAX);
@@ -8800,17 +9494,21 @@ static const char *st_cancel(struct mgr_fixture *fx)
     for (size_t i = 0; !why && i < sizeof(queued) / sizeof(queued[0]); i++) {
         const TcpQueuedMsg *msg = link ? link->data : NULL;
 
-        if (!queued[i].kept)
+        if (!queued[i].kept) {
             continue;
+        }
         if (!msg || msg->tag != queued[i].tag ||
-            msg->reply != queued[i].reply || msg->len != queued[i].len + 16u)
+            msg->reply != queued[i].reply || msg->len != queued[i].len + 16U) {
             why = "the queue doesn't hold what wasn't cancelled, in order";
+        }
         link = link ? link->next : NULL;
     }
-    if (!why && link)
+    if (!why && link) {
         why = "a cancelled request is still queued";
-    if (!why && conn->sendq_bytes != want)
+    }
+    if (!why && conn->sendq_bytes != want) {
         why = "the queue's byte count is wrong";
+    }
     qemu_mutex_unlock(&conn->sendq_lock);
     return why;
 }
@@ -8819,14 +9517,15 @@ static const char *st_cancel(struct mgr_fixture *fx)
 static const char *st_too_long(struct mgr_fixture *fx)
 {
     /* Never read: each length is refused before either buffer is */
-    static const uint8_t hdr[16], body[16];
+    static const uint8_t hdr[16];
+    static const uint8_t body[16];
     static const struct {
         size_t hdr_len, body_len;
     } rows[] = {
         {64, SIZE_MAX - 31}, /* adds up to 32 */
         {SIZE_MAX, 1},       /* adds up to 0 */
         {16, TCP_MAX_PAYLOAD_LEN - 15},
-        {(size_t)TCP_MAX_PAYLOAD_LEN + 1u, 0},
+        {(size_t)TCP_MAX_PAYLOAD_LEN + 1U, 0},
     };
     TcpConnection *conn = fx->old[0];
     RdmaBackendDev dev;
@@ -8838,11 +9537,13 @@ static const char *st_too_long(struct mgr_fixture *fx)
     for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
         if (rdma_backend_ops_tcp.mesh->sendv(&dev, 1, hdr, rows[i].hdr_len,
                                              body, rows[i].body_len, 0,
-                                             false) != -EINVAL)
+                                             false) != -EINVAL) {
             return "sendv() didn't refuse the lengths";
+        }
         if (tcp_conn_enqueue(conn, hdr, rows[i].hdr_len, body, rows[i].body_len,
-                             1, 0, false) != -EINVAL)
+                             1, 0, false) != -EINVAL) {
             return "tcp_conn_enqueue() didn't refuse the lengths";
+        }
     }
     qemu_mutex_lock(&conn->sendq_lock);
     bytes = conn->sendq_bytes;
@@ -8856,7 +9557,7 @@ static const char *st_too_long(struct mgr_fixture *fx)
  * stays full and the send thread holds the connection's lock nearly all the
  * time.  It answers each heartbeat, as a worker does.
  */
-#define ST_STEADY_LEN (256u << 10) /* larger than the socket's buffer */
+#define ST_STEADY_LEN (256U << 10) /* larger than the socket's buffer */
 
 struct st_reader {
     int fd;
@@ -8875,8 +9576,9 @@ static void *st_reader_run(void *opaque)
         TcpMsgHeader hdr;
         void *payload = NULL;
 
-        if (poll(&pfd, 1, 50) != 1)
+        if (poll(&pfd, 1, 50) != 1) {
             continue;
+        }
         if (tcp_recv_message(r->fd, &hdr, &payload, NULL, 0) < 0) {
             atomic_store(&r->failed, true);
             break;
@@ -8898,7 +9600,8 @@ static const char *st_steady(struct mgr_fixture *fx)
 {
     struct st_reader reader;
     const char *why = NULL;
-    uint32_t sent = 0, full = 0;
+    uint32_t sent = 0;
+    uint32_t full = 0;
     double end;
     bool alive;
 
@@ -8906,8 +9609,9 @@ static const char *st_steady(struct mgr_fixture *fx)
     atomic_init(&reader.running, true);
     atomic_init(&reader.heartbeats, 0);
     atomic_init(&reader.failed, false);
-    if (pthread_create(&reader.tid, NULL, st_reader_run, &reader) != 0)
+    if (pthread_create(&reader.tid, NULL, st_reader_run, &reader) != 0) {
         return "could not start the reader";
+    }
 
     /* Alive and just heard from; nothing is running yet to race this */
     fx->node[0]->is_alive = true;
@@ -8930,16 +9634,18 @@ static const char *st_steady(struct mgr_fixture *fx)
     alive = fx->node[0]->is_alive;
     qemu_mutex_unlock(&fx->priv->mesh_table_lock);
     /* Declared dead, the node has its connection closed, and its end fails */
-    if (!alive)
+    if (!alive) {
         why = "node 1 was declared dead";
-    else if (tcp_conn_dead(fx->old[0]) || table_get(fx->priv, 1) != fx->old[0])
+    } else if (tcp_conn_dead(fx->old[0]) ||
+               table_get(fx->priv, 1) != fx->old[0]) {
         why = "node 1's connection was closed";
-    else if (atomic_load(&reader.failed))
+    } else if (atomic_load(&reader.failed)) {
         why = "node 1's end of the connection failed";
-    else if (atomic_load(&reader.heartbeats) < 3)
+    } else if (atomic_load(&reader.heartbeats) < 3) {
         why = "node 1 got fewer than three heartbeats";
-    else if (full == 0 || sent <= TCP_SENDQ_REQUEST_BYTES / ST_STEADY_LEN)
+    } else if (full == 0 || sent <= TCP_SENDQ_REQUEST_BYTES / ST_STEADY_LEN) {
         why = "the queue was never full, or never drained";
+    }
 
     atomic_store(&reader.running, false);
     pthread_join(reader.tid, NULL);
@@ -8957,11 +9663,14 @@ static int st_queued(TcpConnection *conn, TcpMsgType msg_type, guint *all)
     int n = 0;
 
     qemu_mutex_lock(&conn->sendq_lock);
-    for (GList *link = conn->sendq.head; link != NULL; link = link->next)
-        if (((const TcpQueuedMsg *)link->data)->msg_type == msg_type)
+    for (GList *link = conn->sendq.head; link != NULL; link = link->next) {
+        if (((const TcpQueuedMsg *)link->data)->msg_type == msg_type) {
             n++;
-    if (all)
+        }
+    }
+    if (all) {
         *all = conn->sendq.length;
+    }
     qemu_mutex_unlock(&conn->sendq_lock);
     return n;
 }
@@ -8970,8 +9679,9 @@ static int st_queued(TcpConnection *conn, TcpMsgType msg_type, guint *all)
 static bool st_wait_queued(TcpConnection *conn, TcpMsgType msg_type)
 {
     for (int i = 0; i < 500; i++) {
-        if (st_queued(conn, msg_type, NULL) > 0)
+        if (st_queued(conn, msg_type, NULL) > 0) {
             return true;
+        }
         sleep_ms(10);
     }
     return false;
@@ -8983,8 +9693,9 @@ static bool st_drained(int fd)
     for (int i = 0; i < 500; i++) {
         int unread = -1;
 
-        if (ioctl(fd, SIOCOUTQ, &unread) == 0 && unread == 0)
+        if (ioctl(fd, SIOCOUTQ, &unread) == 0 && unread == 0) {
             return true;
+        }
         sleep_ms(10);
     }
     return false;
@@ -8997,26 +9708,33 @@ static const char *st_coalesce(struct mgr_fixture *fx)
 
     /* Alive, so its heartbeats revive nothing and start no broadcast */
     fx->node[0]->is_alive = true;
-    if (st_send(fx->priv, 0, false) != 0)
+    if (st_send(fx->priv, 0, false) != 0) {
         return "the data path's message wasn't queued";
-    if (!held_elsewhere(&conn->lock))
+    }
+    if (!held_elsewhere(&conn->lock)) {
         return "the send thread never blocked on the node";
+    }
     mgr_start(fx, 0);
-    if (!st_wait_queued(conn, TCP_MSG_HEARTBEAT))
+    if (!st_wait_queued(conn, TCP_MSG_HEARTBEAT)) {
         return "the health check's heartbeat wasn't queued";
-    for (int i = 0; i < ST_FLOOD; i++)
-        if (!send_heartbeat(fx->peer[0], 1))
+    }
+    for (int i = 0; i < ST_FLOOD; i++) {
+        if (!send_heartbeat(fx->peer[0], 1)) {
             return "the node couldn't send its heartbeats";
+        }
+    }
     if (!st_drained(fx->peer[0]) ||
-        !st_wait_queued(conn, TCP_MSG_HEARTBEAT_RESP))
+        !st_wait_queued(conn, TCP_MSG_HEARTBEAT_RESP)) {
         return "the node's heartbeats weren't answered";
+    }
     /*
      * The last heartbeat's answer can still be on its way, which without the
      * coalescing would leave more answers than one, not fewer.
      */
     if (st_queued(conn, TCP_MSG_HEARTBEAT_RESP, &all) != 1 ||
-        st_queued(conn, TCP_MSG_HEARTBEAT, NULL) != 1 || all != 2)
+        st_queued(conn, TCP_MSG_HEARTBEAT, NULL) != 1 || all != 2) {
         return "the queue doesn't hold just one heartbeat and one answer";
+    }
     return NULL;
 }
 
@@ -9030,19 +9748,23 @@ static const char *st_unpublish(struct mgr_fixture *fx)
     size_t bytes;
     int rc;
 
-    if (st_send(fx->priv, 100, false) != 0)
+    if (st_send(fx->priv, 100, false) != 0) {
         return "the first message wasn't queued";
-    if (!held_elsewhere(&conn->lock))
+    }
+    if (!held_elsewhere(&conn->lock)) {
         return "the send thread never blocked on the node";
-    if (st_send(fx->priv, 200, false) != 0)
+    }
+    if (st_send(fx->priv, 200, false) != 0) {
         return "the request wasn't queued";
+    }
 
     /* As the health check, reconnects and replacements do */
     qemu_mutex_lock(&fx->priv->conn_table_lock);
     taken = tcp_conn_table_take(fx->priv, 1, conn);
     qemu_mutex_unlock(&fx->priv->conn_table_lock);
-    if (!taken)
+    if (!taken) {
         return "the connection couldn't be taken out of the table";
+    }
 
     qemu_mutex_lock(&conn->sendq_lock);
     closed = conn->sendq_closed;
@@ -9053,8 +9775,9 @@ static const char *st_unpublish(struct mgr_fixture *fx)
         why = "the queue was still open, or still held the request";
     } else {
         rc = st_send(fx->priv, 0, false);
-        if (rc != -ENOTCONN && rc != -EPIPE)
+        if (rc != -ENOTCONN && rc != -EPIPE) {
             why = "the next send to the node didn't fail";
+        }
     }
 
     /* The table's reference is now this row's, to retire and drop */
@@ -9071,15 +9794,19 @@ static const char *st_unpublish(struct mgr_fixture *fx)
 static const char *st_no_memory(struct mgr_fixture *fx)
 {
     TcpConnection *conn = fx->old[0];
-    guint queued_before, queued;
-    size_t bytes_before, bytes;
+    guint queued_before;
+    guint queued;
+    size_t bytes_before;
+    size_t bytes;
     bool sent, consumed;
     int rc;
 
-    if (st_send(fx->priv, 0, false) != 0)
+    if (st_send(fx->priv, 0, false) != 0) {
         return "the first message wasn't queued";
-    if (!held_elsewhere(&conn->lock))
+    }
+    if (!held_elsewhere(&conn->lock)) {
         return "the send thread never blocked on the node";
+    }
 
     qemu_mutex_lock(&conn->sendq_lock);
     queued_before = conn->sendq.length;
@@ -9090,33 +9817,39 @@ static const char *st_no_memory(struct mgr_fixture *fx)
     rc = st_send(fx->priv, 100, false);
     consumed = !g_fail_malloc;
     g_fail_malloc = false;
-    if (!consumed)
+    if (!consumed) {
         return "the message wasn't allocated with malloc()";
-    if (rc != -ENOMEM)
+    }
+    if (rc != -ENOMEM) {
         return "the message there was no memory for wasn't refused with "
                "-ENOMEM";
+    }
 
     qemu_mutex_lock(&conn->sendq_lock);
     queued = conn->sendq.length;
     bytes = conn->sendq_bytes;
     qemu_mutex_unlock(&conn->sendq_lock);
-    if (queued != queued_before || bytes != bytes_before)
+    if (queued != queued_before || bytes != bytes_before) {
         return "the refused message was queued or counted";
+    }
 
     /* The send thread holds the lock, so the heartbeat goes on the queue */
     g_fail_malloc = true;
     sent = tcp_send_heartbeat(fx->priv, conn, TCP_MSG_HEARTBEAT, 1);
     consumed = !g_fail_malloc;
     g_fail_malloc = false;
-    if (!consumed)
+    if (!consumed) {
         return "the heartbeat wasn't allocated with malloc()";
-    if (sent || st_queued(conn, TCP_MSG_HEARTBEAT, NULL) != 0)
+    }
+    if (sent || st_queued(conn, TCP_MSG_HEARTBEAT, NULL) != 0) {
         return "the heartbeat there was no memory for was reported sent, or "
                "queued";
+    }
 
     if (!tcp_send_heartbeat(fx->priv, conn, TCP_MSG_HEARTBEAT, 1) ||
-        st_queued(conn, TCP_MSG_HEARTBEAT, NULL) != 1)
+        st_queued(conn, TCP_MSG_HEARTBEAT, NULL) != 1) {
         return "the next heartbeat wasn't queued";
+    }
     return tcp_conn_dead(conn) ? "the connection was shut down" : NULL;
 }
 
@@ -9138,10 +9871,12 @@ static int run_st_case(const struct st_case *c)
      * ST_QUEUE_FULL and ST_NO_MEMORY keep the default, so the queue isn't
      * closed under them
      */
-    if (!why && c->scenario != ST_QUEUE_FULL && c->scenario != ST_NO_MEMORY)
+    if (!why && c->scenario != ST_QUEUE_FULL && c->scenario != ST_NO_MEMORY) {
         atomic_store(&fx.priv->send_timeout_ms, ST_TIMEOUT_MS);
-    if (!why && c->scenario != ST_STEADY && !fill_conn(fx.priv, stuck))
+    }
+    if (!why && c->scenario != ST_STEADY && !fill_conn(fx.priv, stuck)) {
         why = "could not fill the node's socket";
+    }
     if (!why) {
         switch (c->scenario) {
         case ST_TIMEOUT:
@@ -9180,16 +9915,18 @@ static int run_st_case(const struct st_case *c)
     mgr_teardown(&fx);
     alarm(0);
     if (!why && (atomic_load(&g_joins) != atomic_load(&g_creates) ||
-                 atomic_load(&g_exits) != atomic_load(&g_creates)))
+                 atomic_load(&g_exits) != atomic_load(&g_creates))) {
         why = "a thread wasn't joined exactly once";
+    }
 
     ok = !why;
     printf("%s stuck peer %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
            c->category, c->description, c->expected);
-    if (!ok)
+    if (!ok) {
         printf("     %s; %d thread(s) created, %d joined, %d exited\n", why,
                atomic_load(&g_creates), atomic_load(&g_joins),
                atomic_load(&g_exits));
+    }
     fflush(stdout);
     return ok ? 0 : 1;
 }
@@ -9199,54 +9936,80 @@ int main(void)
     int failures = 0;
 
     signal(SIGALRM, watchdog);
-    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         failures += run_case(&cases[i]);
-    for (size_t i = 0; i < sizeof(health_cases) / sizeof(health_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(health_cases) / sizeof(health_cases[0]);
+         i++) {
         failures += run_health_case(&health_cases[i]);
-    for (size_t i = 0; i < sizeof(recv_cases) / sizeof(recv_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(recv_cases) / sizeof(recv_cases[0]); i++) {
         failures += run_recv_case(&recv_cases[i]);
-    for (size_t i = 0; i < sizeof(fini_cases) / sizeof(fini_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(fini_cases) / sizeof(fini_cases[0]); i++) {
         failures += run_fini_case(&fini_cases[i]);
-    for (size_t i = 0; i < sizeof(create_cases) / sizeof(create_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(create_cases) / sizeof(create_cases[0]);
+         i++) {
         failures += run_create_case(&create_cases[i]);
-    for (size_t i = 0; i < sizeof(hs_cases) / sizeof(hs_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(hs_cases) / sizeof(hs_cases[0]); i++) {
         failures += run_hs_case(&hs_cases[i]);
-    for (size_t i = 0; i < sizeof(sl_cases) / sizeof(sl_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(sl_cases) / sizeof(sl_cases[0]); i++) {
         failures += run_silent_case(&sl_cases[i]);
+    }
     for (size_t i = 0; i < sizeof(connect_cases) / sizeof(connect_cases[0]);
-         i++)
+         i++) {
         failures += run_connect_case(&connect_cases[i]);
-    for (size_t i = 0; i < sizeof(reg_cases) / sizeof(reg_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(reg_cases) / sizeof(reg_cases[0]); i++) {
         failures += run_reg_case(&reg_cases[i]);
-    for (size_t i = 0; i < sizeof(tp_cases) / sizeof(tp_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(tp_cases) / sizeof(tp_cases[0]); i++) {
         failures += run_tp_case(&tp_cases[i]);
-    for (size_t i = 0; i < sizeof(wr_cases) / sizeof(wr_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(wr_cases) / sizeof(wr_cases[0]); i++) {
         failures += run_wr_case(&wr_cases[i]);
-    for (size_t i = 0; i < sizeof(sp_cases) / sizeof(sp_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(sp_cases) / sizeof(sp_cases[0]); i++) {
         failures += run_sp_case(&sp_cases[i]);
+    }
     failures += run_hdr_layout();
-    for (size_t i = 0; i < sizeof(reap_cases) / sizeof(reap_cases[0]); i++)
+    for (size_t i = 0; i < sizeof(reap_cases) / sizeof(reap_cases[0]); i++) {
         failures += run_reap_case(&reap_cases[i]);
-    for (size_t i = 0; i < sizeof(sender_cases) / sizeof(sender_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(sender_cases) / sizeof(sender_cases[0]);
+         i++) {
         failures += run_sender_case(&sender_cases[i]);
-    for (size_t i = 0; i < sizeof(ra_cases) / sizeof(ra_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(ra_cases) / sizeof(ra_cases[0]); i++) {
         failures += run_ra_case(&ra_cases[i]);
-    for (size_t i = 0; i < sizeof(hn_cases) / sizeof(hn_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(hn_cases) / sizeof(hn_cases[0]); i++) {
         failures += run_hn_case(&hn_cases[i]);
-    for (size_t i = 0; i < sizeof(ev_cases) / sizeof(ev_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(ev_cases) / sizeof(ev_cases[0]); i++) {
         failures += run_ev_case(&ev_cases[i]);
-    for (size_t i = 0; i < sizeof(lv_cases) / sizeof(lv_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(lv_cases) / sizeof(lv_cases[0]); i++) {
         failures += run_lv_case(&lv_cases[i]);
-    for (size_t i = 0; i < sizeof(lt_cases) / sizeof(lt_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(lt_cases) / sizeof(lt_cases[0]); i++) {
         failures += run_lt_case(&lt_cases[i]);
-    for (size_t i = 0; i < sizeof(pp_cases) / sizeof(pp_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(pp_cases) / sizeof(pp_cases[0]); i++) {
         failures += run_pp_case(&pp_cases[i]);
-    for (size_t i = 0; i < sizeof(dc_cases) / sizeof(dc_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(dc_cases) / sizeof(dc_cases[0]); i++) {
         failures += run_dc_case(&dc_cases[i]);
-    for (size_t i = 0; i < sizeof(wl_cases) / sizeof(wl_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(wl_cases) / sizeof(wl_cases[0]); i++) {
         failures += run_wl_case(&wl_cases[i]);
-    for (size_t i = 0; i < sizeof(st_cases) / sizeof(st_cases[0]); i++)
+    }
+    for (size_t i = 0; i < sizeof(st_cases) / sizeof(st_cases[0]); i++) {
         failures += run_st_case(&st_cases[i]);
+    }
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);

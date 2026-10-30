@@ -27,7 +27,7 @@
  * turn an Ethernet frame whose program set egress_spec to 2 from a drop
  * into a send out of the host backend.
  */
-#define P4_PORT_RDMA 2u
+#define P4_PORT_RDMA 2U
 
 /*
  * simple_switch's drop port, the most a 9-bit port can say: a frame whose
@@ -35,7 +35,7 @@
  * mark_to_drop() sets it there; here it marks the drop directly, so a
  * program reaches this only by assigning the port itself.
  */
-#define P4_DROP_PORT 511u
+#define P4_DROP_PORT 511U
 
 /* One RDMA operation, as the pipeline sees it. */
 struct p4_rdma_meta {

@@ -90,8 +90,9 @@ static bool fail_happened(void)
 
 static bool should_fail(enum fail_call call)
 {
-    if (fail_call != call)
+    if (fail_call != call) {
         return false;
+    }
     fail_call = FAIL_NONE;
     fail_fired = true;
     errno = fail_errno;
@@ -162,8 +163,9 @@ int __wrap_getgrnam_r(const char *name, struct group *grp, char *buf,
 {
     if (grp_erange_below) {
         grp_calls++;
-        if (buflen > grp_max_len)
+        if (buflen > grp_max_len) {
             grp_max_len = buflen;
+        }
         if (buflen < grp_erange_below) {
             *result = NULL;
             return ERANGE;
@@ -188,10 +190,12 @@ int __wrap_chmod(const char *path, mode_t mode)
 ssize_t __wrap_lgetxattr(const char *path, const char *name, void *value,
                          size_t size)
 {
-    if (should_fail(FAIL_LGETXATTR))
+    if (should_fail(FAIL_LGETXATTR)) {
         return -1;
-    if (acl_present)
+    }
+    if (acl_present) {
         return 28; /* a header and three entries: user, group and other */
+    }
     return __real_lgetxattr(path, name, value, size);
 }
 
@@ -233,8 +237,9 @@ static void capture_begin(void)
     captured = tmpfile();
     saved_stderr = fcntl(STDERR_FILENO, F_DUPFD_CLOEXEC, 0);
     if (!captured || saved_stderr < 0 ||
-        dup2(fileno(captured), STDERR_FILENO) < 0)
+        dup2(fileno(captured), STDERR_FILENO) < 0) {
         setup_failed("capturing", "stderr");
+    }
 }
 
 /* Stop capturing; what was printed is in said[]. */
@@ -243,12 +248,15 @@ static void capture_end(void)
     size_t n;
 
     fflush(stderr);
-    if (saved_stderr < 0 || !captured || dup2(saved_stderr, STDERR_FILENO) < 0)
+    if (saved_stderr < 0 || !captured ||
+        dup2(saved_stderr, STDERR_FILENO) < 0) {
         setup_failed("restoring", "stderr");
+    }
     close(saved_stderr);
     saved_stderr = -1;
-    if (fseek(captured, 0, SEEK_SET) < 0)
+    if (fseek(captured, 0, SEEK_SET) < 0) {
         setup_failed("reading", "stderr");
+    }
     n = fread(said, 1, sizeof(said) - 1, captured);
     said[n] = '\0';
     fclose(captured);
@@ -311,13 +319,15 @@ static void make_socket(const char *path)
         setup_failed("making socket", path);
     }
     memcpy(sa.sun_path, path, strlen(path) + 1);
-    if (fd < 0)
+    if (fd < 0) {
         setup_failed("making socket", path);
+    }
     old_mask = umask(0177);
     rc = bind(fd, (struct sockaddr *)&sa, sizeof(sa));
     umask(old_mask);
-    if (rc < 0)
+    if (rc < 0) {
         setup_failed("making socket", path);
+    }
     close(fd);
 }
 
@@ -330,8 +340,9 @@ static void set_mode(const char *name, mode_t mode)
 {
     int dfd = ernic_gnu_open_path(g_dir, O_DIRECTORY);
 
-    if (dfd < 0 || fchmodat(dfd, name, mode, 0) < 0)
+    if (dfd < 0 || fchmodat(dfd, name, mode, 0) < 0) {
         setup_failed("chmod", name);
+    }
     close(dfd);
 }
 
@@ -345,23 +356,26 @@ static void make_file(const char *path)
     int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
     /* NOLINTEND(android-cloexec-open) */
 
-    if (fd < 0)
+    if (fd < 0) {
         setup_failed("making file", path);
+    }
     close(fd);
 }
 
 /* Make a symlink at @path to @target.  Exits on failure. */
 static void make_symlink(const char *target, const char *path)
 {
-    if (symlink(target, path) < 0)
+    if (symlink(target, path) < 0) {
         setup_failed("making symlink", path);
+    }
 }
 
 /* lstat() @path into @st.  Exits on failure. */
 static void lstat_or_die(const char *path, struct stat *st)
 {
-    if (lstat(path, st) < 0)
+    if (lstat(path, st) < 0) {
         setup_failed("lstat", path);
+    }
 }
 
 static bool exists(const char *path)
@@ -378,12 +392,14 @@ static void clear_dir(void)
     const struct dirent *e;
     int fd = d ? dirfd(d) : -1;
 
-    if (fd < 0)
+    if (fd < 0) {
         setup_failed("opening", g_dir);
+    }
     while ((e = readdir(d)) != NULL) {
         if (strcmp(e->d_name, ".") != 0 && strcmp(e->d_name, "..") != 0 &&
-            unlinkat(fd, e->d_name, 0) < 0)
+            unlinkat(fd, e->d_name, 0) < 0) {
             setup_failed("removing", e->d_name);
+        }
     }
     closedir(d);
 }
@@ -394,10 +410,12 @@ static int count_fds(void)
     DIR *d = opendir("/proc/self/fd");
     int n = 0;
 
-    if (!d)
+    if (!d) {
         setup_failed("opening", "/proc/self/fd");
-    while (readdir(d) != NULL)
+    }
+    while (readdir(d) != NULL) {
         n++;
+    }
     closedir(d);
     return n;
 }
@@ -412,10 +430,11 @@ static void resolve_row(const char *test, const char *spec, bool want_ok,
     bool ok = ernic_socket_resolve_group(spec, &gid);
 
     check(test, ok == want_ok, want_ok ? "refused" : "accepted");
-    if (want_ok)
+    if (want_ok) {
         check(test, gid == want_gid, "resolved to the wrong gid");
-    else
+    } else {
         check(test, gid == 12345, "changed the gid it refused");
+    }
 }
 
 static void test_resolve_group(void)
@@ -424,7 +443,7 @@ static void test_resolve_group(void)
     resolve_row("resolve: a group name", "root", true, 0);
     /* No group has a name that's a number this big, so it's a gid. */
     resolve_row("resolve: a gid above INT_MAX", "3000000000", true,
-                (gid_t)3000000000u);
+                (gid_t)3000000000U);
     resolve_row("resolve: (gid_t)-1, which lchown() ignores", "4294967295",
                 false, 0);
     resolve_row("resolve: a gid past 32 bits", "4294967296", false, 0);
@@ -490,7 +509,8 @@ static void test_resolve_group_no_memory(void)
 
 static void test_remove_stale(void)
 {
-    char path[128], target[128];
+    char path[128];
+    char target[128];
     const char *test;
 
     test = "remove_stale: nothing at the path";
@@ -568,8 +588,9 @@ static void test_remove_stale_relative(void)
     char path[128];
     int cwd = ernic_gnu_open_path(".", O_DIRECTORY);
 
-    if (cwd < 0 || chdir(g_dir) < 0)
+    if (cwd < 0 || chdir(g_dir) < 0) {
         setup_failed("changing to", g_dir);
+    }
     make_socket("rel.sock");
     capture_begin();
     check(test, ernic_socket_remove_stale("rel.sock"), "refused");
@@ -589,8 +610,9 @@ static void test_remove_stale_relative(void)
     check_said(test, "out of memory");
     check(test, exists(path), "removed the socket");
 
-    if (fchdir(cwd) < 0)
+    if (fchdir(cwd) < 0) {
         setup_failed("changing back from", g_dir);
+    }
     close(cwd);
     clear_dir();
 }
@@ -653,8 +675,11 @@ static void access_row(const char *test, const char *path,
 /* *st is what was checked, and @created picks out one socket. */
 static void test_access_ok_identity(void)
 {
-    char path[128], other[128];
-    struct stat created, other_st, st;
+    char path[128];
+    char other[128];
+    struct stat created;
+    struct stat other_st;
+    struct stat st;
 
     in_dir(path, sizeof(path), "x.sock");
     in_dir(other, sizeof(other), "other.sock");
@@ -740,7 +765,8 @@ static void test_access_ok_acl(void)
 /* Only a socket is accepted, checked as it is, without following a link. */
 static void test_access_ok_not_socket(void)
 {
-    char path[128], other[128];
+    char path[128];
+    char other[128];
     struct stat st;
 
     in_dir(path, sizeof(path), "x.sock");
@@ -783,8 +809,10 @@ static mode_t mode_of(const char *path)
 
 static void test_set_group(void)
 {
-    char path[128], other[128];
-    struct stat created, st;
+    char path[128];
+    char other[128];
+    struct stat created;
+    struct stat st;
     gid_t gid = getgid();
     const char *test;
 

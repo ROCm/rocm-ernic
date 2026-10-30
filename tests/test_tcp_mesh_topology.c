@@ -171,7 +171,7 @@ static uint32_t gids_num(const TcpNodeGidsWire *wire)
 
 static const uint8_t *gids_slot(const TcpNodeGidsWire *wire, uint32_t i)
 {
-    return wire->bytes + TCP_NODE_GIDS_GIDS_OFF + (size_t)i * 16;
+    return wire->bytes + TCP_NODE_GIDS_GIDS_OFF + ((size_t)i * 16);
 }
 
 /*
@@ -273,7 +273,8 @@ static void fill_mesh(GHashTable *mesh_nodes, uint32_t n)
 static void empty_mesh(GHashTable *mesh_nodes)
 {
     GHashTableIter iter;
-    gpointer key, value;
+    gpointer key;
+    gpointer value;
 
     g_hash_table_iter_init(&iter, mesh_nodes);
     while (g_hash_table_iter_next(&iter, &key, &value)) {
@@ -322,7 +323,7 @@ static int fixture_init(struct fixture *f, uint32_t num_nodes)
     qemu_mutex_init(&f->conn.lock);
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     f->conn.sockfd = f->sv[0];
-    g_hash_table_insert(f->priv.connections, GUINT_TO_POINTER(42u), &f->conn);
+    g_hash_table_insert(f->priv.connections, GUINT_TO_POINTER(42U), &f->conn);
     fill_mesh(f->priv.mesh_nodes, num_nodes);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     error_reports = 0;
@@ -519,7 +520,7 @@ static int run_mesh_case(const struct testcase *tc)
 
     /* The point of the test: every byte past the live entries is zero */
     tail = wire + TCP_TOPOLOGY_NODE_OFF(carried);
-    tail_len = (size_t)(TOPO_MAXNODE - carried) * TCP_MESH_NODE_LEN;
+    tail_len = (TOPO_MAXNODE - carried) * TCP_MESH_NODE_LEN;
     for (size_t i = 0; i < tail_len; i++) {
         if (tail[i] != 0) {
             printf("FAIL %-16s: unused slot byte %zu of %zu is 0x%02x, "
@@ -611,7 +612,7 @@ static int check_gid_set(const char *what, const TcpNodeGidsWire *wire,
     if (gids_num(wire) != want ||
         (want && memcmp(gids_slot(wire, 0), claimed[0], 16) != 0) ||
         memcmp(gids_slot(wire, want), zero[0],
-               sizeof(zero) - (size_t)want * 16) != 0) {
+               sizeof(zero) - ((size_t)want * 16)) != 0) {
         printf("FAIL %-16s: node %u's set has %u GID(s), expected %u, or "
                "isn't zero past them\n",
                what, id, gids_num(wire), want);
@@ -644,7 +645,7 @@ static int run_update_case(void)
     tcp_gid_claims_set(&f.priv, 101, claimed, 1);
     tcp_gid_claims_set(&f.priv, 999, claimed, 1);
     qemu_mutex_lock(&f.priv.mesh_table_lock);
-    node = g_hash_table_lookup(f.priv.mesh_nodes, GUINT_TO_POINTER(101u));
+    node = g_hash_table_lookup(f.priv.mesh_nodes, GUINT_TO_POINTER(101U));
     tcp_node_set_alive(&f.priv, node, false, NULL);
     qemu_mutex_unlock(&f.priv.mesh_table_lock);
 
@@ -716,8 +717,9 @@ static bool topology_taken(TcpBackendPrivate *priv)
         qemu_mutex_lock(&priv->broadcast_lock);
         asked = priv->broadcast_topology;
         qemu_mutex_unlock(&priv->broadcast_lock);
-        if (!asked)
+        if (!asked) {
             return true;
+        }
         g_usleep(1000);
     }
     return false;
@@ -775,10 +777,12 @@ static int run_order_case(void)
         }
     }
     qemu_mutex_unlock(&f.priv.conn_table_lock);
-    if (first.started)
+    if (first.started) {
         pthread_join(first.tid, NULL);
-    if (fail)
+    }
+    if (fail) {
         goto out;
+    }
     if (sent_so_far(&f.priv) != 1) {
         printf("FAIL %-16s: the first pass sent %" PRIu64 " broadcast(s), "
                "expected the 1 asked before it\n",
@@ -852,6 +856,6 @@ int main(void)
         printf("\n%d test case(s) FAILED\n", failures);
         return 1;
     }
-    printf("\nAll %zu test cases passed\n", 2 * ncases + 2);
+    printf("\nAll %zu test cases passed\n", (2 * ncases) + 2);
     return 0;
 }

@@ -48,14 +48,15 @@ static inline void bits_get(const uint8_t *src, uint32_t bit_off, uint16_t bits,
     value_zero(out);
     for (uint16_t i = 0; i < bits; i++) {
         uint32_t b = bit_off + i;
-        uint32_t bit = ((uint32_t)src[b / 8u] >> (7u - (b % 8u))) & 1u;
+        uint32_t bit = ((uint32_t)src[b / 8U] >> (7U - (b % 8U))) & 1U;
         /* Bit i from the left of the field is bit (bits-1-i) from the
          * right of the value, which is right-aligned in the buffer. */
-        uint32_t from_right = (uint32_t)(bits - 1u - i);
-        size_t byte = P4_VALUE_BYTES - 1u - (from_right / 8u);
+        uint32_t from_right = (uint32_t)(bits - 1U - i);
+        size_t byte = P4_VALUE_BYTES - 1U - (from_right / 8U);
 
-        if (bit)
-            out->b[byte] |= (uint8_t)(1u << (from_right % 8u));
+        if (bit) {
+            out->b[byte] |= (uint8_t)(1U << (from_right % 8U));
+        }
     }
 }
 
@@ -65,15 +66,16 @@ static inline void bits_set(uint8_t *dst, uint32_t bit_off, uint16_t bits,
 {
     for (uint16_t i = 0; i < bits; i++) {
         uint32_t b = bit_off + i;
-        const uint8_t mask = (uint8_t)(1u << (7u - (b % 8u)));
-        uint32_t from_right = (uint32_t)(bits - 1u - i);
-        size_t byte = P4_VALUE_BYTES - 1u - (from_right / 8u);
-        uint32_t bit = ((uint32_t)v->b[byte] >> (from_right % 8u)) & 1u;
+        const uint8_t mask = (uint8_t)(1U << (7U - (b % 8U)));
+        uint32_t from_right = (uint32_t)(bits - 1U - i);
+        size_t byte = P4_VALUE_BYTES - 1U - (from_right / 8U);
+        uint32_t bit = ((uint32_t)v->b[byte] >> (from_right % 8U)) & 1U;
 
-        if (bit)
-            dst[b / 8u] |= mask;
-        else
-            dst[b / 8u] &= (uint8_t)~mask;
+        if (bit) {
+            dst[b / 8U] |= mask;
+        } else {
+            dst[b / 8U] &= (uint8_t)~mask;
+        }
     }
 }
 
@@ -86,8 +88,9 @@ static inline int value_cmp(const struct p4_value *a, const struct p4_value *b)
 static inline bool value_nonzero(const struct p4_value *v)
 {
     for (size_t i = 0; i < P4_VALUE_BYTES; i++) {
-        if (v->b[i])
+        if (v->b[i]) {
             return true;
+        }
     }
     return false;
 }
@@ -102,7 +105,7 @@ static inline void value_add(const struct p4_value *a, const struct p4_value *b,
     for (size_t i = P4_VALUE_BYTES; i-- > 0;) {
         unsigned sum = (unsigned)a->b[i] + b->b[i] + carry;
 
-        out->b[i] = (uint8_t)(sum & 0xFFu);
+        out->b[i] = (uint8_t)(sum & 0xFFU);
         carry = sum >> 8;
     }
 }
@@ -115,8 +118,8 @@ static inline void value_sub(const struct p4_value *a, const struct p4_value *b,
     for (size_t i = P4_VALUE_BYTES; i-- > 0;) {
         unsigned d = (unsigned)a->b[i] - b->b[i] - borrow;
 
-        out->b[i] = (uint8_t)(d & 0xFFu);
-        borrow = (d >> 8) & 1u;
+        out->b[i] = (uint8_t)(d & 0xFFU);
+        borrow = (d >> 8) & 1U;
     }
 }
 
@@ -124,16 +127,18 @@ static inline uint32_t value_u32(const struct p4_value *v)
 {
     uint32_t x = 0;
 
-    for (size_t i = P4_VALUE_BYTES - 4u; i < P4_VALUE_BYTES; i++)
+    for (size_t i = P4_VALUE_BYTES - 4U; i < P4_VALUE_BYTES; i++) {
         x = (x << 8) | v->b[i];
+    }
     return x;
 }
 
 static inline void value_set_u32(struct p4_value *v, uint32_t x)
 {
     value_zero(v);
-    for (size_t i = 0; i < 4u; i++)
-        v->b[P4_VALUE_BYTES - 1u - i] = (uint8_t)(x >> (8u * i));
+    for (size_t i = 0; i < 4U; i++) {
+        v->b[P4_VALUE_BYTES - 1U - i] = (uint8_t)(x >> (8U * i));
+    }
 }
 
 /*
@@ -148,11 +153,13 @@ static inline uint32_t be_bit_length(const uint8_t *b, size_t n)
     for (size_t i = 0; i < n; i++) {
         uint32_t bits = 8;
 
-        if (!b[i])
+        if (!b[i]) {
             continue;
-        while (!(b[i] & (1u << (bits - 1u))))
+        }
+        while (!(b[i] & (1U << (bits - 1U)))) {
             bits--;
-        return (uint32_t)(n - 1u - i) * 8u + bits;
+        }
+        return ((uint32_t)(n - 1U - i) * 8U) + bits;
     }
     return 0;
 }
