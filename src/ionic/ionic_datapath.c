@@ -2729,9 +2729,12 @@ static void dp_ud_grh(const struct ionic_datapath *dp, uint8_t grh[IB_GRH_SIZE],
      * sender's. A consumer that replies to the GRH source then answers
      * itself.
      */
-    ionic_dp_grh_build(grh, paylen,
-                       ah ? (ah->sgid_valid ? ah->sgid : ah->dgid) : NULL,
-                       ah ? ah->dgid : NULL);
+    const uint8_t *sgid = NULL;
+
+    if (ah) {
+        sgid = ah->sgid_valid ? ah->sgid : ah->dgid;
+    }
+    ionic_dp_grh_build(grh, paylen, sgid, ah ? ah->dgid : NULL);
     (void)dp;
 }
 
@@ -2899,6 +2902,19 @@ static void dp_ud_log_unroutable(struct ionic_datapath *dp, uint32_t qp_id,
     }
 }
 
+/* The receive completion's op for a SEND, SEND_INV or SEND_IMM WQE's @op */
+static uint8_t sq_recv_op(uint8_t op)
+{
+    switch (op) {
+    case IONIC_V1_OP_SEND_IMM:
+        return CQE_RECV_OP_SEND_IMM;
+    case IONIC_V1_OP_SEND_INV:
+        return CQE_RECV_OP_SEND_INV;
+    default:
+        return CQE_RECV_OP_SEND;
+    }
+}
+
 /*
  * A SEND, SEND_INV or SEND_IMM WQE on @q (@qp_id) that gathers @src, and
  * that process_sq_wqe() has not already handed to the mesh: it goes to a
@@ -2913,9 +2929,7 @@ static uint32_t sq_send(struct ionic_datapath *dp, struct ionic_qp_ring *q,
 {
     *stalled = false;
 
-    uint8_t recv_op = op == IONIC_V1_OP_SEND_IMM   ? CQE_RECV_OP_SEND_IMM
-                      : op == IONIC_V1_OP_SEND_INV ? CQE_RECV_OP_SEND_INV
-                                                   : CQE_RECV_OP_SEND;
+    uint8_t recv_op = sq_recv_op(op);
 
     /*
      * With a controller attached the guest is talking to something that
@@ -3657,6 +3671,19 @@ static bool dp_remote_atomic(struct ionic_datapath *dp, uint32_t rkey,
            dp_atomic_apply(dp, gpa, compare_swap, swap_add, compare, old);
 }
 
+/* The receive completion's op for an inbound send's @op */
+static uint8_t wire_recv_op(uint8_t op)
+{
+    switch (op) {
+    case IONIC_WIRE_SEND_IMM:
+        return CQE_RECV_OP_SEND_IMM;
+    case IONIC_WIRE_SEND_INV:
+        return CQE_RECV_OP_SEND_INV;
+    default:
+        return CQE_RECV_OP_SEND;
+    }
+}
+
 /*
  * An inbound SEND, SEND_IMM or SEND_INV @h from @src_node, carrying @payload,
  * for @dq (NULL when its QP doesn't exist here).  Returns false, having
@@ -3668,9 +3695,7 @@ static bool dp_wire_send(struct ionic_datapath *dp, uint32_t src_node,
                          struct ionic_qp_ring *dq, const uint8_t *payload,
                          uint32_t payload_len, bool allow_retry)
 {
-    uint8_t recv_op = h->op == IONIC_WIRE_SEND_IMM   ? CQE_RECV_OP_SEND_IMM
-                      : h->op == IONIC_WIRE_SEND_INV ? CQE_RECV_OP_SEND_INV
-                                                     : CQE_RECV_OP_SEND;
+    uint8_t recv_op = wire_recv_op(h->op);
     struct dp_sge_list src = {.count = 0, .total = h->length};
     uint32_t status = IONIC_STS_OK;
 
@@ -3807,8 +3832,8 @@ static void dp_wire_atomic(struct ionic_datapath *dp, uint32_t src_node,
     uint8_t old_le[8];
     uint32_t status = IONIC_STS_OK;
 
-    if (!dp_remote_atomic(dp, h->rkey, h->remote_va, h->atomic_cs, h->swap_add,
-                          h->compare, &old)) {
+    if (!dp_remote_atomic(dp, h->rkey, h->remote_va, h->atomic_cs != 0,
+                          h->swap_add, h->compare, &old)) {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: remote atomic rkey=%#x va=%#" PRIx64 " failed",
                 h->rkey, h->remote_va);
@@ -3854,6 +3879,19 @@ static void dp_wire_response(struct ionic_datapath *dp,
         }
     }
     pending_complete(dp, p, status);
+}
+
+/* The op of the reply that answers an inbound request's @op */
+static uint8_t wire_reply_op(uint8_t op)
+{
+    switch (op) {
+    case IONIC_WIRE_READ_REQ:
+        return IONIC_WIRE_READ_RESP;
+    case IONIC_WIRE_ATOMIC_REQ:
+        return IONIC_WIRE_ATOMIC_RESP;
+    default:
+        return IONIC_WIRE_ACK;
+    }
 }
 
 /*
@@ -3913,11 +3951,8 @@ static bool dp_handle_wire(struct ionic_datapath *dp, uint32_t src_node,
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: node %u sent op %u with rkey 0, rejecting",
                 src_node, h.op);
-        dp_wire_reply(dp, src_node,
-                      h.op == IONIC_WIRE_READ_REQ     ? IONIC_WIRE_READ_RESP
-                      : h.op == IONIC_WIRE_ATOMIC_REQ ? IONIC_WIRE_ATOMIC_RESP
-                                                      : IONIC_WIRE_ACK,
-                      &h, IONIC_STS_REMOTE_ACC_ERR, NULL, 0);
+        dp_wire_reply(dp, src_node, wire_reply_op(h.op), &h,
+                      IONIC_STS_REMOTE_ACC_ERR, NULL, 0);
         return true;
     }
 

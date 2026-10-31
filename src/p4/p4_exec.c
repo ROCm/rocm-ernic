@@ -409,8 +409,10 @@ static bool eval_node(const struct p4_program *prog, const struct p4_phv *phv,
 
     if (n->op == P4_EXPR_VALID || n->op == P4_EXPR_NOT) {
         eval_operand(prog, phv, c, &n->right, depth, &r);
-        return (n->op == P4_EXPR_VALID) ? value_nonzero(&r)
-                                        : !value_nonzero(&r);
+        if (n->op == P4_EXPR_VALID) {
+            return value_nonzero(&r);
+        }
+        return !value_nonzero(&r);
     }
 
     eval_operand(prog, phv, c, &n->left, depth, &l);

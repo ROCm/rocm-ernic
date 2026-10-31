@@ -2662,7 +2662,8 @@ static void test_setup_alloc_failures(void)
     if (!s3_alloc_fail_disarm()) {
         fail(name, "cfg parse made no allocation to fail");
     } else if (parsed || strstr(err, "out of memory") == NULL) {
-        fail(name, "cfg parse with no memory: parsed %d, \"%s\"", parsed, err);
+        fail(name, "cfg parse with no memory: parsed %d, \"%s\"", (int)parsed,
+             err);
     }
 
     s3_target_cfg_defaults(&cfg);
@@ -2814,12 +2815,12 @@ static void test_request_alloc_failures(void)
                 bool stored = s3_target_object_count(t) == 2;
                 if (status == 200 && (!stored || (fired && !oom))) {
                     fail(name, "%s, allocation %u: 200 with stored %d, oom %d",
-                         cases[c].what, nth, stored, oom);
+                         cases[c].what, nth, (int)stored, (int)oom);
                 }
                 if (status != 200 && (status != 500 || stored ||
                                       s3_target_bytes_used(t) != 3000)) {
                     fail(name, "%s, allocation %u: status %d, stored %d",
-                         cases[c].what, nth, status, stored);
+                         cases[c].what, nth, status, (int)stored);
                 }
                 break;
             }
@@ -2828,14 +2829,14 @@ static void test_request_alloc_failures(void)
                 bool stored = s3_target_object_count(t) == 2;
                 if (status == 200 && (!stored || (fired && !oom))) {
                     fail(name, "%s, allocation %u: 200 with stored %d, oom %d",
-                         cases[c].what, nth, stored, oom);
+                         cases[c].what, nth, (int)stored, (int)oom);
                 }
                 if (status != 200) {
                     /* The seed's 3000 bytes and the part's 5, still held. */
                     if (status != 500 || stored ||
                         s3_target_bytes_used(t) != 3005) {
                         fail(name, "%s, allocation %u: status %d, stored %d",
-                             cases[c].what, nth, status, stored);
+                             cases[c].what, nth, status, (int)stored);
                     }
                     /* The upload is intact, so completing again works. */
                     if (exec_req(t, &r, NULL, NULL, "POST", target, NULL, NULL,

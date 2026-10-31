@@ -489,14 +489,19 @@ static bool check_fires(const struct fault_case *c, char *why, size_t len)
     f.eligible = c->start;
     for (size_t i = 0; i < n; i++) {
         uint64_t k = c->start + i + 1;
-        bool want =
-            c->fires ? c->fires[i] == '1' : (k > c->start && c->want(k));
+        bool want;
+
+        if (c->fires) {
+            want = c->fires[i] == '1';
+        } else {
+            want = k > c->start && c->want(k);
+        }
         bool got = ionic_fault_event(&f);
 
         if (got != want) {
             snprintf(why, len,
                      "event %zu (index %" PRIu64 "): fired %d, want %d", i + 1,
-                     k, got, want);
+                     k, (int)got, (int)want);
             ionic_fault_clear(&f);
             return false;
         }
@@ -958,7 +963,9 @@ static void check_hand_built(void)
                  (int)strlen(rows[i].text) &&
              strcmp(text, rows[i].text) == 0;
         for (size_t k = 0; rows[i].fires[k]; k++) {
-            if (ionic_fault_event(&f) != (rows[i].fires[k] == '1')) {
+            bool fires = rows[i].fires[k] == '1';
+
+            if (ionic_fault_event(&f) != fires) {
                 ok = false;
             }
         }

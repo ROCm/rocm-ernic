@@ -436,9 +436,10 @@ static bool fd_flags_are(int fd, bool nonblocking)
 {
     int fd_flags = fcntl(fd, F_GETFD);
     int status_flags = fcntl(fd, F_GETFL);
+    bool is_nonblocking = (status_flags & O_NONBLOCK) != 0;
 
     return fd_flags >= 0 && status_flags >= 0 && (fd_flags & FD_CLOEXEC) &&
-           ((status_flags & O_NONBLOCK) != 0) == nonblocking;
+           is_nonblocking == nonblocking;
 }
 
 static double now_s(void)
@@ -610,11 +611,15 @@ static int run_case(const struct stop_case *c)
     printf("%s accept %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
            c->category, c->description, c->expected);
     if (!ok) {
+        int listening = -1;
+
+        if (fd >= 0) {
+            listening = still_listening(fd) ? 1 : 0;
+        }
         printf("     got %d join(s) (want %d), exited %d (want %d), "
                "listening %d (want %d), %.3f s\n",
                atomic_load(&g_joins), c->want_joins, atomic_load(&g_exits),
-               (int)c->want_exited, fd < 0 ? -1 : (still_listening(fd) ? 1 : 0),
-               (int)c->want_listening, took);
+               (int)c->want_exited, listening, (int)c->want_listening, took);
     }
 
     if (fd >= 0) {
@@ -1568,6 +1573,7 @@ static int run_create_case(const struct create_case *c)
     uint16_t port = free_port();
     int init_ret = -1;
     int fd = -1;
+    bool init_ok;
     bool ok;
 
     atomic_store(&g_creates, 0);
@@ -1612,7 +1618,8 @@ static int run_create_case(const struct create_case *c)
 out:
     alarm(0);
     atomic_store(&g_creates_left, -1);
-    ok = !why && (init_ret == 0) == c->want_init &&
+    init_ok = init_ret == 0;
+    ok = !why && init_ok == c->want_init &&
          atomic_load(&g_joins) == atomic_load(&g_creates) &&
          atomic_load(&g_exits) == atomic_load(&g_creates);
 
@@ -2458,7 +2465,9 @@ static int run_connect_case(const struct connect_case *c)
             fd = tcp_connect_any(ai, NULL, deadline_ms);
         }
         took = now_s() - start;
-        ok = (fd >= 0) == c->want_fd && took >= c->min_s && took < c->max_s &&
+        bool got_fd = fd >= 0;
+
+        ok = got_fd == c->want_fd && took >= c->min_s && took < c->max_s &&
              (fd < 0 || fd_flags_are(fd, true));
     }
     alarm(0);
@@ -5106,8 +5115,10 @@ static bool reported(int fd, uint32_t id, bool alive, int timeout_ms)
             for (uint32_t i = 0; i < n && i < TCP_MAX_MESH_NODES; i++) {
                 const uint8_t *entry = topo + TCP_TOPOLOGY_NODE_OFF(i);
 
+                bool entry_alive = entry[TCP_MESH_NODE_ALIVE_OFF] != 0;
+
                 if (ernic_get_be32(entry + TCP_MESH_NODE_ID_OFF) == id &&
-                    (entry[TCP_MESH_NODE_ALIVE_OFF] != 0) == alive) {
+                    entry_alive == alive) {
                     found = true;
                 }
             }
@@ -6161,6 +6172,18 @@ static const char *ra_declare_dead(TcpBackendPrivate *priv)
                : "a node declared dead still owned its GID";
 }
 
+/* The result in the answer to a registration refused in @scenario */
+static int32_t ra_refusal(enum ra_scenario scenario)
+{
+    if (scenario == RA_LIVE) {
+        return -EBUSY;
+    }
+    if (scenario == RA_OTHER_PORT) {
+        return -EACCES;
+    }
+    return -ENOENT;
+}
+
 /*
  * The checks once the second connection, fresh, at *w2, has been answered.
  * old is worker 1's connection before, which the caller holds a reference
@@ -6209,10 +6232,7 @@ static const char *ra_check(TcpBackendPrivate *priv, enum ra_scenario scenario,
     case RA_OTHER_PORT:
     case RA_UNKNOWN:
     case RA_MANAGER:
-        if (result != (scenario == RA_LIVE         ? -EBUSY
-                       : scenario == RA_OTHER_PORT ? -EACCES
-                                                   : -ENOENT) ||
-            id != 0) {
+        if (result != ra_refusal(scenario) || id != 0) {
             return "refused with the wrong answer, or given an id";
         }
         if (!wait_dead(fresh)) {
@@ -6634,7 +6654,7 @@ static bool ev_has_claims(TcpBackendPrivate *priv, uint32_t id)
     bool has;
 
     qemu_mutex_lock(&priv->gid_table_lock);
-    has = g_hash_table_contains(priv->node_gids, GUINT_TO_POINTER(id));
+    has = g_hash_table_contains(priv->node_gids, GUINT_TO_POINTER(id)) != FALSE;
     qemu_mutex_unlock(&priv->gid_table_lock);
     return has;
 }
@@ -6687,11 +6707,14 @@ static const char *ev_setup(struct ev_fixture *fx, enum ev_scenario scenario)
     fx->last =
         scenario == EV_ROOM ? TCP_MAX_MESH_NODES - 2 : TCP_MAX_MESH_NODES - 1;
     for (uint32_t id = 2; id <= fx->last; id++) {
-        uint64_t dead_s = id == EV_OLDEST ? 5000U
-                          : id == EV_NEXT ? 4000U
-                                          : 1000U + id;
+        uint64_t dead_s = 1000U + id;
         bool connected = scenario == EV_NONE || scenario == EV_CONNECTED;
 
+        if (id == EV_OLDEST) {
+            dead_s = 5000U;
+        } else if (id == EV_NEXT) {
+            dead_s = 4000U;
+        }
         if (!ev_plant(priv, id, scenario == EV_NONE, dead_s)) {
             return "could not make a node";
         }
@@ -6757,7 +6780,7 @@ static bool ev_in_table(TcpBackendPrivate *priv, uint32_t id)
     bool in;
 
     qemu_mutex_lock(&priv->mesh_table_lock);
-    in = g_hash_table_contains(priv->mesh_nodes, GUINT_TO_POINTER(id));
+    in = g_hash_table_contains(priv->mesh_nodes, GUINT_TO_POINTER(id)) != FALSE;
     qemu_mutex_unlock(&priv->mesh_table_lock);
     return in;
 }
@@ -6844,11 +6867,14 @@ static const char *ev_broadcasts(int fd, uint32_t fresh, uint32_t evicted)
         num = ernic_get_be32(adv + TCP_NODE_GIDS_NUM_OFF);
         free(payload);
         if (id == evicted) {
-            return num != 0 ? "the evicted node still owns GIDs"
-                   : n != TCP_MAX_MESH_NODES ? "a node in the table wasn't "
-                                               "advertised before the evicted "
-                                               "one"
-                                             : NULL;
+            if (num != 0) {
+                return "the evicted node still owns GIDs";
+            }
+            if (n != TCP_MAX_MESH_NODES) {
+                return "a node in the table wasn't advertised before the "
+                       "evicted one";
+            }
+            return NULL;
         }
         if (id > fresh || seen[id]) {
             return "an advertisement names a node that isn't in the table";

@@ -192,14 +192,14 @@ static int frame_pcp(const uint8_t *frame, size_t len)
 
 /* The unicast/multicast/broadcast qwords follow the class order. */
 _Static_assert(
-    (int)IONIC_PORT_FRAMES_RX_MULTICAST ==
-            (int)IONIC_PORT_FRAMES_RX_UNICAST + (int)IONIC_EMU_MCAST &&
-        (int)IONIC_PORT_FRAMES_RX_BROADCAST ==
-            (int)IONIC_PORT_FRAMES_RX_UNICAST + (int)IONIC_EMU_BCAST &&
-        (int)IONIC_PORT_FRAMES_TX_MULTICAST ==
-            (int)IONIC_PORT_FRAMES_TX_UNICAST + (int)IONIC_EMU_MCAST &&
-        (int)IONIC_PORT_FRAMES_TX_BROADCAST ==
-            (int)IONIC_PORT_FRAMES_TX_UNICAST + (int)IONIC_EMU_BCAST,
+    IONIC_PORT_FRAMES_RX_MULTICAST - IONIC_PORT_FRAMES_RX_UNICAST ==
+            IONIC_EMU_MCAST &&
+        IONIC_PORT_FRAMES_RX_BROADCAST - IONIC_PORT_FRAMES_RX_UNICAST ==
+            IONIC_EMU_BCAST &&
+        IONIC_PORT_FRAMES_TX_MULTICAST - IONIC_PORT_FRAMES_TX_UNICAST ==
+            IONIC_EMU_MCAST &&
+        IONIC_PORT_FRAMES_TX_BROADCAST - IONIC_PORT_FRAMES_TX_UNICAST ==
+            IONIC_EMU_BCAST,
     "class qwords in ionic_emu_mac_class order");
 
 bool ionic_emu_port_frame(struct ionic_emu_stats *st, const uint8_t *frame,
