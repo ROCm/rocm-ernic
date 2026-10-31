@@ -549,7 +549,7 @@ static bool tcp_register_admit(TcpBackendPrivate *priv, TcpConnection *conn,
      * REGISTER_NODE on the same socket would otherwise put the connection in
      * the table under a second id, and teardown would free it once for each.
      */
-    pending = g_ptr_array_remove_fast(priv->pending_conns, conn);
+    pending = g_ptr_array_remove_fast(priv->pending_conns, conn) != FALSE;
     if (pending && adm->again) {
         adm->refused = tcp_register_again(priv, reg->requested_id, reg->host,
                                           reg->port, &adm->replaced, &adm->why);

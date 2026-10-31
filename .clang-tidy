@@ -94,12 +94,9 @@ Checks:
   - -modernize-macro-to-enum  # TODO(1236)
   - -cppcoreguidelines-macro-to-enum  # TODO: the same check
   - -performance-no-int-to-ptr  # TODO(16)
-  - -readability-avoid-nested-conditional-operator  # TODO(16)
   - -readability-function-cognitive-complexity  # TODO(35)
-  - -readability-implicit-bool-conversion  # TODO(73)
   - -readability-magic-numbers  # TODO(635)
   - -cppcoreguidelines-avoid-magic-numbers  # TODO: the same check
-  - -readability-redundant-casting  # TODO(18)
 WarningsAsErrors: '*'
 
 CheckOptions:

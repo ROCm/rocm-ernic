@@ -151,7 +151,9 @@ static uint32_t mr_entries(void)
     uint32_t n = 0;
 
     for (uint32_t i = 0; i < MAX_MR_MAP; i++) {
-        n += g_ctx.mr_map[i].valid;
+        if (g_ctx.mr_map[i].valid) {
+            n++;
+        }
     }
     return n;
 }

@@ -575,7 +575,7 @@ static void test_handshake(void)
     uint64_t cap = ernic_get_le64(rsp + NVME_CQE_RESULT_OFF);
     check("prop-cap", rsp_status(rsp) == 0, "Property Get CAP failed");
     check("prop-cap", (cap & 0xffff) == 127, "MQES is not queue_depth - 1");
-    check("prop-cap", (cap >> 37) & 1,
+    check("prop-cap", ((cap >> 37) & 1) != 0,
           "CAP.CSS does not advertise the NVM set");
 
     /* CAP with a 4-byte access is invalid. */

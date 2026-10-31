@@ -305,7 +305,7 @@ int main(int argc, char **argv)
 {
     const char *socket_path = "/tmp/vfio-user-rocm-ernic.sock";
     int fd = -1;
-    test_results_t results = {0};
+    test_results_t results = {.connected = false};
     int ret = 1;
 
     static const struct option long_options[] = {

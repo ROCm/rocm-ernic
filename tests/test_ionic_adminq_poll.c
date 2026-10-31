@@ -156,8 +156,10 @@ static bool cqe_is(uint32_t idx, uint32_t slot, uint8_t op, uint8_t status)
     uint32_t qtf = ernic_get_be32(cqe + 28);
 
     bool error = (qtf & 2U) != 0;
+    bool want_error = status != 0;
+
     return cmd_idx == slot && cqe[2] == op && (qtf & 1U) != 0 &&
-           error == (status != 0) && (!error || status_length == status);
+           error == want_error && (!error || status_length == status);
 }
 
 /* Nothing was written to the admin CQ from completion @idx on. */

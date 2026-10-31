@@ -597,7 +597,7 @@ int rdma_rm_modify_qp(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
 
                 ret = qp->backend_qp.backend_ops->qp_state_rtr(
                     backend_dev, &qp->backend_qp, qp->qp_type, sgid_idx, dgid,
-                    dqpn, rq_psn, qkey, attr_mask & IBV_QP_QKEY);
+                    dqpn, rq_psn, qkey, (attr_mask & IBV_QP_QKEY) != 0);
                 if (ret) {
                     rdma_error_report("Backend qp_state_rtr failed: %d", ret);
                     return -EIO;
@@ -611,7 +611,7 @@ int rdma_rm_modify_qp(RdmaDeviceResources *dev_res, RdmaBackendDev *backend_dev,
                 qp->backend_qp.backend_ops->qp_state_rts) {
                 ret = qp->backend_qp.backend_ops->qp_state_rts(
                     &qp->backend_qp, qp->qp_type, sq_psn, qkey,
-                    attr_mask & IBV_QP_QKEY);
+                    (attr_mask & IBV_QP_QKEY) != 0);
                 if (ret) {
                     rdma_error_report("Backend qp_state_rts failed: %d", ret);
                     return -EIO;

@@ -115,7 +115,13 @@ float p4_fp8_to_float(uint8_t v)
          * Shifting the leading one of the mantissa up to the implicit
          * position gives the exponent to use with it.
          */
-        msb = (man >= 4U) ? 2U : (man >= 2U ? 1U : 0U);
+        if (man >= 4U) {
+            msb = 2U;
+        } else if (man >= 2U) {
+            msb = 1U;
+        } else {
+            msb = 0U;
+        }
         return bits_float(
             sign | ((uint32_t)((int32_t)msb - 9 + F32_BIAS) << F32_EXP_SHIFT) |
             ((man << (F32_EXP_SHIFT - msb)) & F32_MAN_MASK));

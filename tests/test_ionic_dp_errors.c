@@ -2255,7 +2255,9 @@ static const char *mr_run(struct ionic_datapath *dp, size_t len,
         return "the data path had no room for the message";
     }
 
-    if (ionic_datapath_has_work(dp) != (end != MR_REFUSED)) {
+    bool want_queued = end != MR_REFUSED;
+
+    if (ionic_datapath_has_work(dp) != want_queued) {
         return end == MR_REFUSED ? "the message was queued"
                                  : "the message wasn't queued";
     }
@@ -2939,6 +2941,7 @@ static const char *uw_cqes(const struct ionic_datapath *dp,
         uint32_t qtf = ernic_get_be32(c + CQE_QTF_OFF);
         uint32_t status = ernic_get_be32(c + CQE_STATUS_OFF);
         bool error = (qtf & CQE_ERROR_BIT) != 0;
+        bool want_error = want[i].status != IONIC_STS_OK;
         uint64_t id = 0;
 
         if (want[i].type == CQE_TYPE_SEND_MSN) {
@@ -2949,13 +2952,13 @@ static const char *uw_cqes(const struct ionic_datapath *dp,
         }
 
         if ((qtf & CQE_TYPE_MASK) != want[i].type || qtf >> 8 != QP_A ||
-            status != want[i].status ||
-            error != (want[i].status != IONIC_STS_OK) || id != want[i].id) {
+            status != want[i].status || error != want_error ||
+            id != want[i].id) {
             snprintf(why, sizeof(why),
                      "completion %" PRIu32 " is type %" PRIu32 " qid %" PRIu32
                      " status %" PRIu32 " (error %d) id %" PRIu64,
-                     i, (qtf & CQE_TYPE_MASK) >> 5, qtf >> 8, status, error,
-                     id);
+                     i, (qtf & CQE_TYPE_MASK) >> 5, qtf >> 8, status,
+                     (int)error, id);
             return why;
         }
     }

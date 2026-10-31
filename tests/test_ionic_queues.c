@@ -659,10 +659,17 @@ static void run_hash_case(const struct hash_case *c)
     size_t l3;
     size_t l4;
     size_t full = build_flow(f, &c->fl, &l3, &l4);
-    size_t len = c->len == -1   ? full
-                 : c->len == -2 ? l4
-                 : c->len == -3 ? l3 + 10
-                                : (size_t)c->len;
+    size_t len;
+
+    if (c->len == -1) {
+        len = full;
+    } else if (c->len == -2) {
+        len = l4;
+    } else if (c->len == -3) {
+        len = l3 + 10;
+    } else {
+        len = (size_t)c->len;
+    }
     /* An exact-size heap copy, so ASan flags any read past @len. */
     uint8_t *heap = malloc(len ? len : 1);
     uint32_t want = ref_hash(&c->fl, c->want, f, l4);
@@ -1328,7 +1335,9 @@ static void check_held_frame_transition(void)
              memcmp(g_mem + RXQ_BUF(cases[row].target), frame, len) == 0 &&
              ionic_eth_emu_get_stats(emu)->lif[IONIC_LIF_RX_QUEUE_EMPTY] == 0;
         for (uint32_t q = 0; q < 4; q++) {
-            ok = ok && cq_posted(q) == (q == cases[row].target);
+            bool is_target = q == cases[row].target;
+
+            ok = ok && cq_posted(q) == is_target;
         }
         ok = ok && fault && fault->eligible == 1 && fault->fired == 0;
         ionic_eth_emu_queue_rx_frame(emu, frame, len);

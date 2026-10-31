@@ -220,8 +220,8 @@ static bool tcp_gid_claims_record(TcpBackendPrivate *priv, uint32_t node_id,
         g_hash_table_lookup(priv->node_gids, GUINT_TO_POINTER(node_id));
 
     if (num_gids == 0) {
-        changed =
-            g_hash_table_remove(priv->node_gids, GUINT_TO_POINTER(node_id));
+        changed = g_hash_table_remove(priv->node_gids,
+                                      GUINT_TO_POINTER(node_id)) != FALSE;
     } else if (old && old->alive == alive && old->num_gids == num_gids &&
                memcmp(old->gids, gids, (size_t)num_gids * ERNIC_GID_LEN) == 0) {
         changed = false;
