@@ -501,20 +501,20 @@ void ionic_adminq_update_prod(struct ionic_adminq_ctx *ctx, int aq_idx,
  * the alternative -- reusing the destination -- tells the receiver that it
  * sent the datagram to itself.
  *
- * Returns 1 on success, 0 if the template could not be parsed.
+ * Returns whether the template could be parsed.
  */
-static int adminq_parse_roce_hdr(const struct ionic_adminq_ctx *ctx,
-                                 uint64_t gpa, uint32_t len,
-                                 uint8_t dgid[ERNIC_GID_LEN],
-                                 uint8_t sgid[ERNIC_GID_LEN], uint8_t dmac[6])
+static bool adminq_parse_roce_hdr(const struct ionic_adminq_ctx *ctx,
+                                  uint64_t gpa, uint32_t len,
+                                  uint8_t dgid[ERNIC_GID_LEN],
+                                  uint8_t sgid[ERNIC_GID_LEN], uint8_t dmac[6])
 {
     uint8_t hdr[128];
 
     if (len < 14 || len > sizeof(hdr)) {
-        return 0;
+        return false;
     }
     if (ernic_dma_read(ctx->dma, ctx->vfu_ctx, gpa, hdr, len) < 0) {
-        return 0;
+        return false;
     }
 
     memcpy(dmac, hdr, 6);
@@ -525,7 +525,7 @@ static int adminq_parse_roce_hdr(const struct ionic_adminq_ctx *ctx,
     if (ethertype == 0x8100) { /* 802.1Q tag, ethertype repeats after it */
         off += 4;
         if (off + 2 > len) {
-            return 0;
+            return false;
         }
         ethertype = ernic_get_be16(hdr + off);
     }
@@ -533,7 +533,7 @@ static int adminq_parse_roce_hdr(const struct ionic_adminq_ctx *ctx,
 
     if (ethertype == 0x0800) { /* IPv4: saddr at +12, daddr at +16 */
         if (off + 20 > len) {
-            return 0;
+            return false;
         }
         memset(dgid, 0, ERNIC_GID_LEN);
         dgid[10] = 0xff;
@@ -543,21 +543,21 @@ static int adminq_parse_roce_hdr(const struct ionic_adminq_ctx *ctx,
         sgid[10] = 0xff;
         sgid[11] = 0xff;
         memcpy(sgid + 12, hdr + off + 12, 4);
-        return 1;
+        return true;
     }
 
     if (ethertype == 0x86dd) { /* IPv6: saddr at +8, daddr at +24 */
         if (off + 40 > len) {
-            return 0;
+            return false;
         }
         memcpy(dgid, hdr + off + 24, ERNIC_GID_LEN);
         memcpy(sgid, hdr + off + 8, ERNIC_GID_LEN);
-        return 1;
+        return true;
     }
 
     vfu_log(ctx->vfu_ctx, LOG_WARNING,
             "ionic_adminq: unrecognised RoCE header ethertype %#x", ethertype);
-    return 0;
+    return false;
 }
 
 /* -------------------------------------------------------------------------

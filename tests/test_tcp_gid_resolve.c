@@ -727,7 +727,7 @@ static int64_t call_hook(RdmaBackendDev *dev, enum hook hook)
     case HOOK_SEND:
         return mesh->sendv(dev, MESH_PEER, hdr, sizeof(hdr), NULL, 0, 0, false);
     case HOOK_HAS_ROOM:
-        return mesh->has_room(dev, MESH_PEER, sizeof(hdr));
+        return mesh->has_room(dev, MESH_PEER, sizeof(hdr)) ? 1 : 0;
     case HOOK_CANCEL:
         mesh->cancel(dev, 0, UINT64_MAX);
         return 0;

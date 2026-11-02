@@ -1124,7 +1124,7 @@ static void test_response_body_wrap(void)
     s3_http_response_write(&resp, data, SIZE_MAX - 1);
     if (!resp.oom || resp.body_len != 3) {
         fail(name, "a write past SIZE_MAX left oom %d and body_len %zu",
-             resp.oom, resp.body_len);
+             (int)resp.oom, resp.body_len);
     }
     s3_http_response_free(&resp);
     ok(name);

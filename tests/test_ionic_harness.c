@@ -1193,6 +1193,21 @@ static const struct rc_case rc_cases[] = {
 #define SRC_OFF 0x0f0U
 #define DST_OFF 0x123U
 
+/* The receive completion's op for a row's send @op */
+static uint8_t rc_recv_op(uint8_t op)
+{
+    switch (op) {
+    case IH_OP_SEND_IMM:
+        return IH_RECV_OP_SEND_IMM;
+    case IH_OP_SEND_INV:
+        return IH_RECV_OP_SEND_INV;
+    case IH_OP_RDMA_WRITE_IMM:
+        return IH_RECV_OP_RDMA_IMM;
+    default:
+        return IH_RECV_OP_SEND;
+    }
+}
+
 static void run_rc_case(const char *test, struct rc *r, const struct rc_case *c,
                         uint8_t seed)
 {
@@ -1249,10 +1264,7 @@ static void run_rc_case(const char *test, struct rc *r, const struct rc_case *c,
     if (takes_recv) {
         if (check(test, ih_cq_poll(h, &r->cqb, &e), "%s: no receive completion",
                   c->what)) {
-            uint8_t op = c->op == IH_OP_SEND_IMM         ? IH_RECV_OP_SEND_IMM
-                         : c->op == IH_OP_SEND_INV       ? IH_RECV_OP_SEND_INV
-                         : c->op == IH_OP_RDMA_WRITE_IMM ? IH_RECV_OP_RDMA_IMM
-                                                         : IH_RECV_OP_SEND;
+            uint8_t op = rc_recv_op(c->op);
             check(test, e.type == IH_CQE_TYPE_RECV && e.qid == RC_QP_B,
                   "%s: receive completion type %u qid %u", c->what, e.type,
                   e.qid);

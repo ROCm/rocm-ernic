@@ -82,9 +82,12 @@ static bool nvmeof_setup(struct ionic_datapath *dp, const char *opts, char *err,
     bool ok;
 
     nvmeof_target_cfg_defaults(&cfg);
-    ok = nvmeof_target_cfg_parse(&cfg, opts, why, sizeof(why)) &&
-         (dp ? ionic_datapath_attach_nvmeof(dp, &cfg, why, sizeof(why))
-             : ionic_datapath_nvmeof_cfg_check(&cfg, why, sizeof(why)));
+    ok = nvmeof_target_cfg_parse(&cfg, opts, why, sizeof(why));
+    if (ok && dp) {
+        ok = ionic_datapath_attach_nvmeof(dp, &cfg, why, sizeof(why));
+    } else if (ok) {
+        ok = ionic_datapath_nvmeof_cfg_check(&cfg, why, sizeof(why));
+    }
     free(cfg.file); /* the target keeps its own copy */
     if (!ok) {
         snprintf(err, errlen, "nvmeof backend: %s", why);

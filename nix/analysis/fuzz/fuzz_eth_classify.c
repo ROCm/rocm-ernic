@@ -293,9 +293,11 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
         const struct seed *s = &seeds[i];
         uint32_t h;
         const char *why = check_frame(s->frame, s->len, &h);
-        bool l2 = s->len >= MACS_LEN ? h == l2_hash(s->frame)
-                                     : h == IONIC_ETH_STEER_HASH_EMPTY;
-        bool ok = why == NULL && l2 == (s->kind == KIND_L2);
+        uint32_t l2_h =
+            s->len >= MACS_LEN ? l2_hash(s->frame) : IONIC_ETH_STEER_HASH_EMPTY;
+        bool l2 = h == l2_h;
+        bool want_l2 = s->kind == KIND_L2;
+        bool ok = why == NULL && l2 == want_l2;
 
         printf("%s %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", s->category,
                s->description, s->expected);

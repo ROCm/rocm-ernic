@@ -1232,6 +1232,21 @@ static const RdmaBackendOps failing_ops = {
 };
 
 /*
+ * What the resource manager returns with @op failing: success for none, the
+ * backend's error for a query, and -EIO for the rest
+ */
+static int failure_rc(BackendOp op)
+{
+    if (op == OP_NONE) {
+        return 0;
+    }
+    if (op == OP_QUERY_QP) {
+        return BACKEND_ERR;
+    }
+    return -EIO;
+}
+
+/*
  * Make a PD, a CQ and an RC QP on the failing backend, take the QP through
  * INIT and RTR to RTS, and query it, with @op failing. Everything before
  * @op must succeed and nothing after it run. A failed create is -EIO and
@@ -1261,9 +1276,7 @@ static bool test_backend_fails(const char *name, BackendOp op)
     uint32_t pd_handle = UINT32_MAX;
     uint32_t cq_handle = UINT32_MAX;
     uint32_t qpn = UINT32_MAX;
-    const int expected_rc = op == OP_NONE       ? 0
-                            : op == OP_QUERY_QP ? BACKEND_ERR
-                                                : -EIO;
+    const int expected_rc = failure_rc(op);
     const BackendOp expected_last = op == OP_NONE ? OP_QUERY_QP : op;
     const bool have_cq = op == OP_NONE || op > OP_CREATE_CQ;
     const bool have_qp = op == OP_NONE || op > OP_CREATE_QP;
@@ -1329,13 +1342,17 @@ static bool test_backend_fails(const char *name, BackendOp op)
     if (have_qp) {
         const bool rtr = op == OP_NONE || op > OP_QP_RTR;
         const bool rts = op == OP_NONE || op > OP_QP_RTS;
-        const enum ibv_qp_state expected_state = rts   ? IBV_QPS_RTS
-                                                 : rtr ? IBV_QPS_RTR
-                                                 : op > OP_QP_INIT
-                                                     ? IBV_QPS_INIT
-                                                     : IBV_QPS_RESET;
         const uint32_t expected_rq_psn = rtr ? 0x11U : 0U;
         const uint32_t expected_sq_psn = rts ? 0x22U : 0U;
+        enum ibv_qp_state expected_state = IBV_QPS_RESET;
+
+        if (rts) {
+            expected_state = IBV_QPS_RTS;
+        } else if (rtr) {
+            expected_state = IBV_QPS_RTR;
+        } else if (op > OP_QP_INIT) {
+            expected_state = IBV_QPS_INIT;
+        }
 
         fail_op = OP_NONE;
         rc = rdma_rm_query_qp(&dev_res, qpn, &attr, IBV_QP_STATE, &init_attr);

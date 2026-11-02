@@ -341,7 +341,9 @@ static void test_symlink_is_replaced(void)
 
     /* The stats file replaces a symlink at its path; it never writes
      * through one to the file it names */
-    check(T, g_file_set_contents(other, UNTOUCHED, sizeof(UNTOUCHED) - 1, NULL),
+    check(T,
+          g_file_set_contents(other, UNTOUCHED, sizeof(UNTOUCHED) - 1, NULL) !=
+              FALSE,
           "can't write the symlink's target");
     check(T, symlink(OTHER, f.path) == 0, "symlink failed");
     ernic_stats_write(f.st);

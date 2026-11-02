@@ -184,7 +184,9 @@ static void *record_mask(void *arg)
 static void check_blocked(const sigset_t *mask, int signo, bool want,
                           const char *whose)
 {
-    if ((sigismember(mask, signo) == 1) != want) {
+    bool blocked = sigismember(mask, signo) == 1;
+
+    if (blocked != want) {
         printf("FAIL %s: signal %d is %sblocked\n", whose, signo,
                want ? "not " : "");
         failures++;

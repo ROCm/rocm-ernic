@@ -340,7 +340,9 @@ int ih_eth_admin(struct ih *h, const uint8_t cmd[64], uint8_t comp[16])
     if (!fake_vfu_read(h->vfu, ring_slot(cq, cq->cons), comp, 16)) {
         return fail_rc("eth admin CQ read failed");
     }
-    if (((comp[15] & 0x80U) != 0) != ring_color(cq)) {
+    bool color = (comp[15] & 0x80U) != 0;
+
+    if (color != ring_color(cq)) {
         fail_msg("eth adminq command %u drew no completion", cmd[0]);
         return -1;
     }
@@ -368,7 +370,9 @@ static bool eq_next_ring(struct ih *h, uint32_t *cq_id)
         return false;
     }
     uint32_t evt = ernic_get_be32(b);
-    if (((evt & 1U) != 0) != ring_color(&h->eq)) {
+    bool color = (evt & 1U) != 0;
+
+    if (color != ring_color(&h->eq)) {
         return false;
     }
     h->eq.cons++;
@@ -447,7 +451,9 @@ int ih_admin_complete(struct ih *h, uint8_t op, int slot, uint32_t *resp_len)
         return fail_rc("admin CQ read failed");
     }
     uint32_t qtf = ernic_get_be32(cqe + 28);
-    if (((qtf & 1U) != 0) != ring_color(cq)) {
+    bool color = (qtf & 1U) != 0;
+
+    if (color != ring_color(cq)) {
         return IH_ADMIN_PENDING;
     }
     cq->cons++;
@@ -921,9 +927,13 @@ static bool mr_copy(struct ih *h, const struct ih_mr *mr, uint64_t va,
         if (n > len - done) {
             n = len - done;
         }
-        bool ok = to_guest
-                      ? fake_vfu_write(h->vfu, gpa, (uint8_t *)buf + done, n)
-                      : fake_vfu_read(h->vfu, gpa, (uint8_t *)buf + done, n);
+        bool ok;
+
+        if (to_guest) {
+            ok = fake_vfu_write(h->vfu, gpa, (uint8_t *)buf + done, n);
+        } else {
+            ok = fake_vfu_read(h->vfu, gpa, (uint8_t *)buf + done, n);
+        }
         if (!ok) {
             return fail("MR page at %#" PRIx64 " is not guest memory", gpa);
         }
@@ -1203,7 +1213,9 @@ bool ih_cq_poll(struct ih *h, struct ih_cq *cq, struct ih_cqe *cqe)
 
     /* struct ionic_v1_cqe */
     uint32_t qtf = ernic_get_be32(b + 28);
-    if (((qtf & 1U) != 0) != ring_color(r)) {
+    bool color = (qtf & 1U) != 0;
+
+    if (color != ring_color(r)) {
         return false;
     }
     r->cons++;

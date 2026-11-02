@@ -76,8 +76,8 @@ static int run_int(const struct int_case *tc)
     int v = 0xDEAD;
     bool ok = ernic_parse_int(tc->input, &v);
     if (ok != tc->expect_ok) {
-        printf("FAIL int %-16s: ok=%d expected %d\n", tc->name, ok,
-               tc->expect_ok);
+        printf("FAIL int %-16s: ok=%d expected %d\n", tc->name, (int)ok,
+               (int)tc->expect_ok);
         return 1;
     }
     if (ok && v != tc->expect_val) {
@@ -98,8 +98,8 @@ static int run_u32(const char *kind, bool (*parse)(const char *, uint32_t *),
     uint32_t v = 0xDEADBEEF;
     bool ok = parse(tc->input, &v);
     if (ok != tc->expect_ok) {
-        printf("FAIL %s %-16s: ok=%d expected %d\n", kind, tc->name, ok,
-               tc->expect_ok);
+        printf("FAIL %s %-16s: ok=%d expected %d\n", kind, tc->name, (int)ok,
+               (int)tc->expect_ok);
         return 1;
     }
     if (ok && v != tc->expect_val) {
@@ -121,8 +121,8 @@ static int run_u64(const char *kind, bool (*parse)(const char *, uint64_t *),
     uint64_t v = UINT64_C(0xDEADBEEFDEADBEEF);
     bool ok = parse(tc->input, &v);
     if (ok != tc->expect_ok) {
-        printf("FAIL %s %-16s: ok=%d expected %d\n", kind, tc->name, ok,
-               tc->expect_ok);
+        printf("FAIL %s %-16s: ok=%d expected %d\n", kind, tc->name, (int)ok,
+               (int)tc->expect_ok);
         return 1;
     }
     if (ok && v != tc->expect_val) {
@@ -145,8 +145,8 @@ static int run_span(const char *kind,
     uint64_t v = UINT64_C(0xDEADBEEFDEADBEEF);
     bool ok = parse(tc->input, tc->len, &v);
     if (ok != tc->expect_ok) {
-        printf("FAIL %s %-16s: ok=%d expected %d\n", kind, tc->name, ok,
-               tc->expect_ok);
+        printf("FAIL %s %-16s: ok=%d expected %d\n", kind, tc->name, (int)ok,
+               (int)tc->expect_ok);
         return 1;
     }
     if (ok && v != tc->expect_val) {
@@ -187,8 +187,8 @@ static int run_hexstr(const struct hexstr_case *tc)
 
     bool ok = ernic_parse_hexstr(tc->input, out, tc->cap, &len, &neg);
     if (ok != tc->expect_ok) {
-        printf("FAIL hexstr %-14s: ok=%d expected %d\n", tc->name, ok,
-               tc->expect_ok);
+        printf("FAIL hexstr %-14s: ok=%d expected %d\n", tc->name, (int)ok,
+               (int)tc->expect_ok);
         return 1;
     }
     if (!ok) {
@@ -207,8 +207,8 @@ static int run_hexstr(const struct hexstr_case *tc)
         return 0;
     }
     if (neg != tc->expect_neg) {
-        printf("FAIL hexstr %-14s: neg=%d expected %d\n", tc->name, neg,
-               tc->expect_neg);
+        printf("FAIL hexstr %-14s: neg=%d expected %d\n", tc->name, (int)neg,
+               (int)tc->expect_neg);
         return 1;
     }
     if (len != tc->expect_len) {
@@ -248,7 +248,7 @@ static int run_hexstr_fits(const struct hexstr_fits_case *tc)
     if (fits != tc->expect) {
         printf("FAIL hexstr-fits %-20s: digits=%zu cap=%zu fits=%d "
                "expected %d\n",
-               tc->name, tc->digits, tc->cap, fits, tc->expect);
+               tc->name, tc->digits, tc->cap, (int)fits, (int)tc->expect);
         return 1;
     }
     return 0;
@@ -265,8 +265,8 @@ static int run_hex(const struct hex_case *tc)
     memset(out, 0xA5, sizeof(out));
     bool ok = ernic_parse_hex(tc->input, tc->n, out);
     if (ok != tc->expect_ok) {
-        printf("FAIL hex %-16s: ok=%d expected %d\n", tc->name, ok,
-               tc->expect_ok);
+        printf("FAIL hex %-16s: ok=%d expected %d\n", tc->name, (int)ok,
+               (int)tc->expect_ok);
         return 1;
     }
     if (ok && memcmp(out, tc->expect, tc->n) != 0) {
@@ -291,8 +291,8 @@ static int run_mac(const struct mac_case *tc)
     memcpy(out, untouched, sizeof(out));
     bool ok = ernic_parse_mac(tc->input, out);
     if (ok != tc->expect_ok) {
-        printf("FAIL mac %-16s: ok=%d expected %d\n", tc->name, ok,
-               tc->expect_ok);
+        printf("FAIL mac %-16s: ok=%d expected %d\n", tc->name, (int)ok,
+               (int)tc->expect_ok);
         return 1;
     }
     if (ok && memcmp(out, tc->expect, sizeof(out)) != 0) {
@@ -311,8 +311,8 @@ static int run_port(const struct port_case *tc)
     uint16_t p = 0xBEEF;
     bool ok = ernic_parse_port(tc->input, &p);
     if (ok != tc->expect_ok) {
-        printf("FAIL port %-16s: ok=%d expected %d\n", tc->name, ok,
-               tc->expect_ok);
+        printf("FAIL port %-16s: ok=%d expected %d\n", tc->name, (int)ok,
+               (int)tc->expect_ok);
         return 1;
     }
     if (ok && p != tc->expect_val) {

@@ -326,8 +326,8 @@ static void test_reply_codes(void)
         code = 0;
         bool got = s3_reply_parse_code(cases[i].in, strlen(cases[i].in), &code);
         if (got != cases[i].want_ok) {
-            fail(name, "\"%s\": parse returned %d, want %d", cases[i].in, got,
-                 cases[i].want_ok);
+            fail(name, "\"%s\": parse returned %d, want %d", cases[i].in,
+                 (int)got, (int)cases[i].want_ok);
             continue;
         }
         if (got && code != cases[i].want_code) {

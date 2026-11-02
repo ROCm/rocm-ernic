@@ -562,6 +562,12 @@ static const char *status_name(uint8_t status)
     return NULL;
 }
 
+/* Whether event @i of @f's sequence fires */
+static bool seq_fires(const struct ionic_fault *f, uint64_t i)
+{
+    return f->seq[i] != 0;
+}
+
 int ionic_fault_format(const struct ionic_fault *f, char *buf, size_t len)
 {
     const char *st;
@@ -588,10 +594,10 @@ int ionic_fault_format(const struct ionic_fault *f, char *buf, size_t len)
     case IONIC_FAULT_PAT_SEQUENCE:
         out_add(buf, len, &pos, "sequence \"");
         for (uint32_t i = 0; i < f->seq_len;) {
-            bool fire = f->seq[i] != 0;
+            bool fire = seq_fires(f, i);
             uint32_t j = i;
 
-            while (j < f->seq_len && (f->seq[j] != 0) == fire) {
+            while (j < f->seq_len && seq_fires(f, j) == fire) {
                 j++;
             }
             out_add(buf, len, &pos, "%s%c", i ? "," : "", fire ? '1' : '0');
@@ -657,7 +663,7 @@ bool ionic_fault_event(struct ionic_fault *f)
         fire = f->m != 0 && (k - 1) % f->m < f->n;
         break;
     case IONIC_FAULT_PAT_SEQUENCE:
-        fire = f->seq_len != 0 && f->seq[(k - 1) % f->seq_len] != 0;
+        fire = f->seq_len != 0 && seq_fires(f, (k - 1) % f->seq_len);
         break;
     default:
         fire = false;

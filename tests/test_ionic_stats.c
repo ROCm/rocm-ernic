@@ -615,6 +615,7 @@ static void run_cqe_case(const struct cqe_case *c)
     struct ionic_aq_ring r;
     uint32_t sl;
     uint32_t qtf;
+    bool error_bit;
     bool ok;
 
     ctx_reset();
@@ -624,8 +625,8 @@ static void run_cqe_case(const struct cqe_case *c)
     ionic_adminq_post_cqe(&g_ctx, &r, 0, VALS, c->status, 0);
     sl = ernic_get_be32(g_mem + CQE_GPA + 24);
     qtf = ernic_get_be32(g_mem + CQE_GPA + 28);
-    ok = sl == c->want_status_length &&
-         ((qtf & CQE_ERROR_BIT) != 0) == c->want_error_bit;
+    error_bit = (qtf & CQE_ERROR_BIT) != 0;
+    ok = sl == c->want_status_length && error_bit == c->want_error_bit;
 
     printf("%s %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", c->category,
            c->description, c->expected);
