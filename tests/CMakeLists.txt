@@ -236,6 +236,7 @@ endif()
 ernic_add_test_program(test_nvmeof_target
     SOURCES
         test_nvmeof_target.c
+        ${PROJECT_SOURCE_DIR}/src/nvmeof/nvmeof_kv.c
         ${PROJECT_SOURCE_DIR}/src/nvmeof/nvmeof_target.c
         ${PROJECT_SOURCE_DIR}/src/ernic_log.c
     HEADER_DEPS vfio-user
@@ -247,6 +248,7 @@ ernic_add_test_program(test_nvmeof_cm
     SOURCES
         test_nvmeof_cm.c
         ${PROJECT_SOURCE_DIR}/src/nvmeof/nvmeof_cm.c
+        ${PROJECT_SOURCE_DIR}/src/nvmeof/nvmeof_kv.c
         ${PROJECT_SOURCE_DIR}/src/nvmeof/nvmeof_target.c
         ${PROJECT_SOURCE_DIR}/src/ernic_log.c
     HEADER_DEPS vfio-user

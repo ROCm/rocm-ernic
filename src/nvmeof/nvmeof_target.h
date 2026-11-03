@@ -40,20 +40,59 @@ struct nvmeof_dma_ops {
 /* The most I/O queues the controller offers.  A transport may allow fewer. */
 #define NVMEOF_MAX_QUEUES 64
 
+/*
+ * The most namespaces one controller serves.  The reason to have more than
+ * one here is to mix command sets, not to scale, so this is deliberately
+ * small: it bounds the Identify active-namespace list to a single page.
+ */
+#define NVMEOF_MAX_NS 8
+
+/*
+ * One namespace.
+ *
+ * The command set is a property of the namespace, not of the controller.
+ * NVMe 2.0 puts the Command Set Identifier in the namespace's Identify
+ * descriptor, and a controller whose CAP.CSS advertises bit 6 may serve
+ * block and Key Value namespaces side by side -- the host selects "all
+ * supported command sets" in CC.CSS and then reads each namespace's CSI to
+ * decide what it speaks.  So kv, size and block_size belong here.
+ *
+ * Within one namespace the two command sets remain mutually exclusive, and
+ * must: a Store is opcode 01h, which the block command set reads as Write.
+ * kv_max_keys and kv_max_value bound the store; "size" is the total value
+ * capacity, as it is the block capacity for a block namespace.
+ */
+struct nvmeof_ns_cfg {
+    uint32_t nsid;
+    bool kv;
+    char *file;          /* NULL: anonymous memory.  Never set when kv. */
+    uint64_t size;       /* capacity in bytes */
+    bool size_set;       /* size= was given; else an image keeps its size */
+    uint32_t block_size; /* 512, 1024, 2048 or 4096; block namespaces only */
+    uint32_t kv_max_keys;
+    uint32_t kv_max_value;
+};
+
 struct nvmeof_target_cfg {
     char subnqn[NVMEOF_NQN_FIELD];
     char serial[21];
     char model[41];
-    char *file;          /* NULL: anonymous memory */
-    uint64_t size;       /* namespace capacity in bytes */
-    bool size_set;       /* size= was given; else an image keeps its size */
-    uint32_t block_size; /* 512 or 4096 */
-    uint32_t nsid;
     uint32_t traddr;     /* target IPv4, host byte order */
     uint16_t trsvcid;    /* target port */
     uint16_t max_queues; /* I/O queues offered, 1..NVMEOF_MAX_QUEUES */
     uint16_t queue_depth;
+
+    /* At least one, in the order the option string named them. */
+    struct nvmeof_ns_cfg ns[NVMEOF_MAX_NS];
+    unsigned ns_count;
 };
+
+/*
+ * Release what cfg_parse() allocated (the per-namespace file paths).  The
+ * target keeps its own copies, so this is safe to call once create() has
+ * returned, and is the only correct way to discard a parsed cfg.
+ */
+void nvmeof_target_cfg_free(struct nvmeof_target_cfg *cfg);
 
 struct nvmeof_target_stats {
     uint64_t connects;

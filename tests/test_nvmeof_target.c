@@ -35,6 +35,7 @@
 #include "byteorder.h"
 #include "ernic_attributes.h"
 #include "nvmeof/nvmeof.h"
+#include "nvmeof/nvmeof_kv.h"
 #include "nvmeof/nvmeof_target.h"
 #include "nvmeof/nvmeof_target_priv.h"
 
@@ -444,7 +445,7 @@ static void test_config(void)
         if (!ok && err[0] == '\0') {
             fail("config", "%s: rejected with no message", cfg_cases[i].what);
         }
-        free(cfg.file);
+        nvmeof_target_cfg_free(&cfg);
     }
 
     /* Defaults must line up with what the ansible nvmeof_setup role uses. */
@@ -453,21 +454,29 @@ static void test_config(void)
     check("config-defaults", strcmp(cfg.subnqn, "nvmet-test") == 0,
           "default subnqn is not nvmet-test");
     check("config-defaults", cfg.trsvcid == 4420, "default port is not 4420");
-    check("config-defaults", cfg.size == (64U << 20),
+    check("config-defaults", cfg.ns_count == 1,
+          "the default is not exactly one namespace");
+    check("config-defaults", cfg.ns[0].nsid == 1, "the default nsid is not 1");
+    check("config-defaults", !cfg.ns[0].kv,
+          "the default namespace is not a block one");
+    check("config-defaults", cfg.ns[0].size == (64U << 20),
           "default size is not 64M");
-    check("config-defaults", cfg.block_size == 512, "default bs is not 512");
-    check("config-defaults", !cfg.size_set, "the default size counts as set");
+    check("config-defaults", cfg.ns[0].block_size == 512,
+          "default bs is not 512");
+    check("config-defaults", !cfg.ns[0].size_set,
+          "the default size counts as set");
 
     /* Only an explicit size= overrides an existing image's size. */
     char err[128];
     if (!nvmeof_target_cfg_parse(&cfg, "bs=4096", err, sizeof(err))) {
         fail("config-size-set", "bs=4096 rejected: %s", err);
     }
-    check("config-size-set", !cfg.size_set, "size counts as set without size=");
+    check("config-size-set", !cfg.ns[0].size_set,
+          "size counts as set without size=");
     if (!nvmeof_target_cfg_parse(&cfg, "size=64M", err, sizeof(err))) {
         fail("config-size-set", "size=64M rejected: %s", err);
     }
-    check("config-size-set", cfg.size_set,
+    check("config-size-set", cfg.ns[0].size_set,
           "size= equal to the default does not count as set");
 
     /* A model and serial that fill their fields are kept whole. */
@@ -489,10 +498,10 @@ static void test_config(void)
         fail("config-file", "repeated file= rejected: %s", err);
     } else {
         check("config-file",
-              cfg.file != NULL && strcmp(cfg.file, "/tmp/b") == 0,
+              cfg.ns[0].file != NULL && strcmp(cfg.ns[0].file, "/tmp/b") == 0,
               "repeated file= did not take the last value");
     }
-    free(cfg.file);
+    nvmeof_target_cfg_free(&cfg);
 }
 
 /* ------------------------------------------------------------------ */
@@ -513,7 +522,7 @@ static struct nvmeof_target *make_target(const char *opts)
     if (t == NULL) {
         fail("make-target", "create '%s': %s", opts ? opts : "", err);
     }
-    free(cfg.file);
+    nvmeof_target_cfg_free(&cfg);
     return t;
 }
 
@@ -1782,7 +1791,7 @@ static void test_file_backing(void)
         struct nvmeof_queue *ioq = nvmeof_target_open_queue(t, 2);
         do_connect(ioq, h, 1, 31, "nvmet-test", "nqn.host", rsp);
 
-        check("file-backing", nvmeof_target_config(t)->size == (1U << 20),
+        check("file-backing", nvmeof_target_config(t)->ns[0].size == (1U << 20),
               "reopening an image without size= did not keep its size");
         check("file-backing", read_one_block(ioq, h, 3) == 0,
               "read back failed");
@@ -2072,7 +2081,7 @@ static struct nvmeof_target *try_target(const char *opts, char *err,
     if (nvmeof_target_cfg_parse(&cfg, opts, err, errlen)) {
         t = nvmeof_target_create(&cfg, err, errlen);
     }
-    free(cfg.file);
+    nvmeof_target_cfg_free(&cfg);
     return t;
 }
 
@@ -2111,7 +2120,7 @@ static void test_image_size(void)
     if (t == NULL) {
         fail("image-new", "an empty image was refused: %s", err);
     } else {
-        check("image-new", nvmeof_target_config(t)->size == def,
+        check("image-new", nvmeof_target_config(t)->ns[0].size == def,
               "an empty image was not given the default size");
     }
     nvmeof_target_destroy(t);
@@ -2135,7 +2144,7 @@ static void test_image_size(void)
         fail("image-grow", "a size= larger than the image was refused: %s",
              err);
     } else {
-        check("image-grow", nvmeof_target_config(t)->size == 2 * def,
+        check("image-grow", nvmeof_target_config(t)->ns[0].size == 2 * def,
               "growing the image did not change the namespace size");
     }
     nvmeof_target_destroy(t);
@@ -2240,6 +2249,566 @@ static void test_queue_table(void)
     nvmeof_target_destroy(t);
 }
 
+
+/* ------------------------------------------------------------------ */
+/* Key Value command set                                              */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Put a key into a capsule the way the specification splits it: the first
+ * eight bytes in CDW2 and CDW3, the rest in CDW14 and CDW15, the length in
+ * CDW11[07:00].  Written out by hand here rather than calling the
+ * target's own helper, so a change to that helper has to agree with an
+ * independent reading of the layout instead of agreeing with itself.
+ */
+static void cap_kv_key(struct capsule *c, const uint8_t *key, uint8_t len,
+                       uint8_t options)
+{
+    uint8_t raw[NVMEOF_KV_KEY_MAX] = {0};
+
+    memcpy(raw, key, len);
+    memcpy(c->b + NVME_SQE_CDW2_OFF, raw, 4);
+    memcpy(c->b + NVME_SQE_CDW3_OFF, raw + 4, 4);
+    memcpy(c->b + NVME_SQE_CDW14_OFF, raw + 8, 4);
+    memcpy(c->b + NVME_SQE_CDW15_OFF, raw + 12, 4);
+    ernic_put_le32(c->b + NVME_SQE_CDW11_OFF,
+                  (uint32_t)len | ((uint32_t)options << 8));
+}
+
+static void test_kv_store(void)
+{
+    struct nvmeof_kv *kv = nvmeof_kv_create(4, 64);
+    struct nvmeof_kv_key a = {.bytes = "alpha", .len = 5};
+    struct nvmeof_kv_key b = {.bytes = "beta", .len = 4};
+    const uint8_t *value = NULL;
+    uint32_t len = 0;
+
+    check("kv-store", nvmeof_kv_create(0, 64) == NULL, "zero keys accepted");
+    check("kv-store", nvmeof_kv_create(4, 0) == NULL, "zero capacity accepted");
+    if (kv == NULL) {
+        fail("kv-store", "create failed");
+        return;
+    }
+
+    check("kv-store", !nvmeof_kv_exists(kv, &a), "a key exists in a new store");
+    check("kv-store", nvmeof_kv_put(kv, &a, (const uint8_t *)"0123456789", 10),
+          "put failed");
+    check("kv-store", nvmeof_kv_exists(kv, &a), "stored key does not exist");
+    check("kv-store", nvmeof_kv_get(kv, &a, &value, &len) && len == 10 &&
+                          memcmp(value, "0123456789", 10) == 0,
+          "get returned the wrong value");
+    check("kv-store", nvmeof_kv_used(kv) == 10, "used is not the value length");
+
+    /* Replacing a value refunds the old length, so a shorter replacement
+     * can never fail for capacity the key already holds. */
+    check("kv-store", nvmeof_kv_put(kv, &a, (const uint8_t *)"xy", 2),
+          "replace failed");
+    check("kv-store", nvmeof_kv_get(kv, &a, &value, &len) && len == 2,
+          "replace did not shorten the value");
+    check("kv-store", nvmeof_kv_count(kv) == 1, "replace added a key");
+    check("kv-store", nvmeof_kv_used(kv) == 2, "replace did not refund");
+
+    /* "ab" and "ab\0" are different keys: the length is part of the
+     * identity, not just the bytes. */
+    struct nvmeof_kv_key ab = {.bytes = {'a', 'b'}, .len = 2};
+    struct nvmeof_kv_key ab0 = {.bytes = {'a', 'b', 0}, .len = 3};
+    check("kv-store", nvmeof_kv_put(kv, &ab, (const uint8_t *)"1", 1) &&
+                          nvmeof_kv_put(kv, &ab0, (const uint8_t *)"2", 1),
+          "put of two length-distinct keys failed");
+    check("kv-store", nvmeof_kv_get(kv, &ab, &value, &len) && len == 1 &&
+                          value[0] == '1',
+          "a 2-byte key collided with a 3-byte one");
+
+    /* Capacity, then key count. */
+    check("kv-store", !nvmeof_kv_put(kv, &b, NULL, 1000),
+          "a value past capacity was accepted");
+    check("kv-store", nvmeof_kv_put(kv, &b, (const uint8_t *)"z", 1),
+          "put of a fourth key failed");
+    struct nvmeof_kv_key e = {.bytes = "eps", .len = 3};
+    check("kv-store", !nvmeof_kv_put(kv, &e, (const uint8_t *)"z", 1),
+          "a fifth key was accepted into a four-key store");
+
+    /* Every live key is walked exactly once. */
+    uint32_t iter = 0;
+    uint32_t seen = 0;
+    struct nvmeof_kv_key k;
+    while (nvmeof_kv_next(kv, &iter, &k)) {
+        seen++;
+    }
+    check("kv-store", seen == nvmeof_kv_count(kv),
+          "the walk did not see every key once");
+
+    check("kv-store", nvmeof_kv_delete(kv, &a), "delete of a live key failed");
+    check("kv-store", !nvmeof_kv_delete(kv, &a), "delete of a gone key passed");
+    check("kv-store", !nvmeof_kv_exists(kv, &a), "deleted key still exists");
+
+    /* A tombstone must not end a probe: the keys stored after the deleted
+     * one have to stay reachable. */
+    check("kv-store", nvmeof_kv_exists(kv, &b),
+          "a key became unreachable after an earlier key was deleted");
+
+    nvmeof_kv_destroy(kv);
+    nvmeof_kv_destroy(NULL);
+}
+
+static void test_kv_commands(void)
+{
+    struct host_mem *h = calloc(1, sizeof(*h));
+    struct nvmeof_target *t = make_target("kv=1,size=64K,keys=8,maxval=4096");
+    uint8_t rsp[NVME_CQE_SIZE];
+    struct capsule c;
+    const char *hostnqn = "nqn.2014-08.org.nvmexpress:uuid:kv";
+    const uint8_t key[16] = {0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18,
+                             0x29, 0x3a, 0x4b, 0x5c, 0x6d, 0x7e, 0x8f, 0x90};
+
+    if (t == NULL || h == NULL) {
+        free(h);
+        nvmeof_target_destroy(t);
+        return;
+    }
+    h->rkey = HOST_RKEY;
+
+    struct nvmeof_queue *aq = nvmeof_target_open_queue(t, 100);
+    do_connect(aq, h, 0, 31, "nvmet-test", hostnqn, rsp);
+
+    /*
+     * The namespace must declare CSI 1.  This single byte is what makes
+     * Linux hide the block device and give the guest /dev/ngXnY instead,
+     * so without it the whole KV path is unreachable from a real host.
+     */
+    memset(h->buf, 0, NVME_IDENTIFY_SIZE);
+    cap_init(&c, NVME_ADMIN_IDENTIFY, 20);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, NVME_ID_CNS_NS_DESC_LIST);
+    cap_keyed_sgl(&c, HOST_BASE, NVME_IDENTIFY_SIZE, HOST_RKEY);
+    nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
+    check("kv-identify", h->buf[20] == NVME_NIDT_CSI && h->buf[21] == 1 &&
+                             h->buf[24] == NVME_CSI_KV,
+          "descriptor list does not report CSI 1 after the UUID");
+
+    struct nvmeof_queue *q = nvmeof_target_open_queue(t, 101);
+    do_connect(q, h, 1, 31, "nvmet-test", hostnqn, rsp);
+
+    /* Exist on an empty store is a miss, not an error in the transport. */
+    cap_init(&c, NVME_KV_CMD_EXIST, 21);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    cap_kv_key(&c, key, 16, 0);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("kv-exist", rsp_sc(rsp) == NVME_SC_KV_KEY_NOT_EXIST,
+          "Exist on a missing key did not report key-does-not-exist");
+
+    /* Store 1 KiB from "guest memory". */
+    const uint32_t vlen = 1024;
+    for (uint32_t i = 0; i < vlen; i++) {
+        h->buf[i] = (uint8_t)(i * 7 + 3);
+    }
+    cap_init(&c, NVME_KV_CMD_STORE, 22);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, vlen);
+    cap_kv_key(&c, key, 16, 0);
+    cap_keyed_sgl(&c, HOST_BASE, vlen, HOST_RKEY);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("kv-store-cmd", rsp_status(rsp) == 0, "Store failed");
+
+    cap_init(&c, NVME_KV_CMD_EXIST, 23);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    cap_kv_key(&c, key, 16, 0);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("kv-exist", rsp_status(rsp) == 0, "Exist on a stored key failed");
+
+    /* Retrieve into a cleared buffer and compare. */
+    memset(h->buf, 0, vlen);
+    cap_init(&c, NVME_KV_CMD_RETRIEVE, 24);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, vlen);
+    cap_kv_key(&c, key, 16, 0);
+    cap_keyed_sgl(&c, HOST_BASE, vlen, HOST_RKEY);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("kv-retrieve", rsp_status(rsp) == 0, "Retrieve failed");
+    check("kv-retrieve", ernic_get_le32(rsp + NVME_CQE_RESULT_OFF) == vlen,
+          "Retrieve did not report the stored length in the completion");
+    bool same = true;
+    for (uint32_t i = 0; i < vlen && same; i++) {
+        same = h->buf[i] == (uint8_t)(i * 7 + 3);
+    }
+    check("kv-retrieve", same, "Retrieve returned different bytes");
+
+    /*
+     * A buffer smaller than the value is not an error: the host gets what
+     * fits and learns the real length from the completion, which is how a
+     * client knows to ask again with more room.
+     */
+    cap_init(&c, NVME_KV_CMD_RETRIEVE, 25);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, 16);
+    cap_kv_key(&c, key, 16, 0);
+    cap_keyed_sgl(&c, HOST_BASE, 16, HOST_RKEY);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("kv-retrieve", rsp_status(rsp) == 0, "short Retrieve failed");
+    check("kv-retrieve", ernic_get_le32(rsp + NVME_CQE_RESULT_OFF) == vlen,
+          "short Retrieve did not report the full stored length");
+
+    /* Store options. */
+    cap_init(&c, NVME_KV_CMD_STORE, 26);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, 4);
+    cap_kv_key(&c, key, 16, NVME_KV_STORE_OPT_NO_OVERWRITE);
+    cap_keyed_sgl(&c, HOST_BASE, 4, HOST_RKEY);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("kv-store-opt", rsp_sc(rsp) == NVME_SC_KV_KEY_EXISTS,
+          "no-overwrite Store over an existing key was allowed");
+
+    const uint8_t other[4] = {1, 2, 3, 4};
+    cap_init(&c, NVME_KV_CMD_STORE, 27);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, 4);
+    cap_kv_key(&c, other, 4, NVME_KV_STORE_OPT_MUST_EXIST);
+    cap_keyed_sgl(&c, HOST_BASE, 4, HOST_RKEY);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("kv-store-opt", rsp_sc(rsp) == NVME_SC_KV_KEY_NOT_EXIST,
+          "must-exist Store on a missing key was allowed");
+
+    /* Bad key length and oversized value. */
+    cap_init(&c, NVME_KV_CMD_EXIST, 28);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_CDW11_OFF, 0); /* kl = 0 */
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("kv-badkey", rsp_sc(rsp) == NVME_SC_KV_INVALID_KEY_SIZE,
+          "a zero-length key was accepted");
+
+    cap_init(&c, NVME_KV_CMD_STORE, 29);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, 8192); /* > maxval */
+    cap_kv_key(&c, key, 16, 0);
+    cap_keyed_sgl(&c, HOST_BASE, 8192, HOST_RKEY);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("kv-badval", rsp_sc(rsp) == NVME_SC_KV_INVALID_VALUE_SIZE,
+          "a value past maxval was accepted");
+
+    /* A block opcode must not be executed on a KV namespace. */
+    cap_init(&c, NVME_CMD_WRITE_ZEROES, 30);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("kv-opcode", rsp_status(rsp) != 0,
+          "a block Write Zeroes was accepted on a KV namespace");
+
+    /* List reports how many keys it wrote. */
+    memset(h->buf, 0, 256);
+    cap_init(&c, NVME_KV_CMD_LIST, 31);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, 256);
+    cap_kv_key(&c, key, 16, 0);
+    cap_keyed_sgl(&c, HOST_BASE, 256, HOST_RKEY);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("kv-list", rsp_status(rsp) == 0, "List failed");
+    check("kv-list", ernic_get_le32(rsp + NVME_CQE_RESULT_OFF) == 1,
+          "List did not report exactly the one stored key");
+    check("kv-list", h->buf[0] == 16 && memcmp(h->buf + 1, key, 16) == 0,
+          "List did not lead with the stored key and its length");
+
+    /* Delete, then the key is gone. */
+    cap_init(&c, NVME_KV_CMD_DELETE, 32);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    cap_kv_key(&c, key, 16, 0);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("kv-delete", rsp_status(rsp) == 0, "Delete failed");
+
+    cap_init(&c, NVME_KV_CMD_RETRIEVE, 33);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, vlen);
+    cap_kv_key(&c, key, 16, 0);
+    cap_keyed_sgl(&c, HOST_BASE, vlen, HOST_RKEY);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("kv-delete", rsp_sc(rsp) == NVME_SC_KV_KEY_NOT_EXIST,
+          "Retrieve after Delete did not report key-does-not-exist");
+
+    nvmeof_target_destroy(t);
+    free(h);
+}
+
+/* ------------------------------------------------------------------ */
+/* Block and Key Value namespaces on one controller                   */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The command set is per namespace, so one controller can serve both.  The
+ * hazard this guards is the opcode overlap: Store and block Write are both
+ * 01h, and Retrieve and Read are both 02h.  The only thing distinguishing
+ * them is which namespace the command names, so the test below sends 01h to
+ * each namespace in turn and insists the two did entirely different things
+ * to entirely separate storage.
+ */
+static void test_mixed_namespaces(void)
+{
+    struct host_mem *h = calloc(1, sizeof(*h));
+    /* Namespace 1 blocks, namespace 2 Key Value. */
+    struct nvmeof_target *t =
+        make_target("size=1M,bs=512,ns=2,kv=1,size=64K,keys=8,maxval=4096");
+    uint8_t rsp[NVME_CQE_SIZE];
+    struct capsule c;
+    const char *hostnqn = "nqn.2014-08.org.nvmexpress:uuid:mixed";
+    const uint8_t key[16] = {0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x5f, 0x60, 0x61,
+                             0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69};
+
+    if (t == NULL || h == NULL) {
+        free(h);
+        nvmeof_target_destroy(t);
+        return;
+    }
+    h->rkey = HOST_RKEY;
+
+    const struct nvmeof_target_cfg *cfg = nvmeof_target_config(t);
+    check("mixed-config", cfg->ns_count == 2, "not two namespaces");
+    check("mixed-config", cfg->ns[0].nsid == 1 && !cfg->ns[0].kv,
+          "namespace 1 is not a block namespace");
+    check("mixed-config", cfg->ns[1].nsid == 2 && cfg->ns[1].kv,
+          "namespace 2 is not a Key Value namespace");
+
+    struct nvmeof_queue *aq = nvmeof_target_open_queue(t, 200);
+    do_connect(aq, h, 0, 31, "nvmet-test", hostnqn, rsp);
+
+    /*
+     * CAP.CSS must advertise the NVM command set (bit 0) and "one or more
+     * other command sets" (bit 6) together.  With bit 6 clear Linux selects
+     * CC.CSS = NVM and reads every namespace as a block device, which would
+     * execute a Store as a Write; with bit 0 clear it has no business
+     * attaching the block namespace at all.
+     */
+    uint64_t cap = 0;
+    check("mixed-cap", prop_get(aq, h, 1, NVMEOF_PROP_CAP, 1, &cap) == 0,
+          "reading CAP failed");
+    uint64_t css = (cap >> 37) & 0xff;
+    check("mixed-cap", (css & 1U) != 0,
+          "CAP.CSS does not advertise the NVM command set");
+    check("mixed-cap", (css & (1U << 6)) != 0,
+          "CAP.CSS does not advertise a second command set");
+
+    /* The active namespace list carries both, ascending. */
+    memset(h->buf, 0, NVME_IDENTIFY_SIZE);
+    cap_init(&c, NVME_ADMIN_IDENTIFY, 2);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 0);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, NVME_ID_CNS_NS_ACTIVE_LIST);
+    cap_keyed_sgl(&c, HOST_BASE, NVME_IDENTIFY_SIZE, HOST_RKEY);
+    nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
+    check("mixed-nslist",
+          ernic_get_le32(h->buf) == 1 && ernic_get_le32(h->buf + 4) == 2 &&
+              ernic_get_le32(h->buf + 8) == 0,
+          "the active namespace list is not exactly 1 then 2");
+
+    /* Each namespace reports its own command set. */
+    memset(h->buf, 0, NVME_IDENTIFY_SIZE);
+    cap_init(&c, NVME_ADMIN_IDENTIFY, 3);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, NVME_ID_CNS_NS_DESC_LIST);
+    cap_keyed_sgl(&c, HOST_BASE, NVME_IDENTIFY_SIZE, HOST_RKEY);
+    nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
+    check("mixed-csi",
+          h->buf[20] == NVME_NIDT_CSI && h->buf[21] == 1 &&
+              h->buf[24] == NVME_CSI_NVM,
+          "the block namespace does not report CSI 0 explicitly");
+
+    /* CNS 08h must answer for both, or the host skips the namespace
+     * before it ever looks at the command set. */
+    for (uint32_t id = 1; id <= 2; id++) {
+        memset(h->buf, 0, NVME_IDENTIFY_SIZE);
+        cap_init(&c, NVME_ADMIN_IDENTIFY, (uint16_t)(30 + id));
+        ernic_put_le32(c.b + NVME_SQE_NSID_OFF, id);
+        ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, NVME_ID_CNS_NS_CS_INDEP);
+        cap_keyed_sgl(&c, HOST_BASE, NVME_IDENTIFY_SIZE, HOST_RKEY);
+        nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
+        check("mixed-csindep", rsp_status(rsp) == 0,
+              "CNS 08h failed for a namespace");
+        check("mixed-csindep", (h->buf[14] & 1U) != 0,
+              "CNS 08h does not report the namespace ready");
+    }
+
+    memset(h->buf, 0, NVME_IDENTIFY_SIZE);
+    cap_init(&c, NVME_ADMIN_IDENTIFY, 4);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 2);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, NVME_ID_CNS_NS_DESC_LIST);
+    cap_keyed_sgl(&c, HOST_BASE, NVME_IDENTIFY_SIZE, HOST_RKEY);
+    nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
+    check("mixed-csi", h->buf[20] == NVME_NIDT_CSI && h->buf[24] == NVME_CSI_KV,
+          "the Key Value namespace does not report CSI 1");
+
+    /* A namespace the controller does not have. */
+    cap_init(&c, NVME_ADMIN_IDENTIFY, 5);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 3);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, NVME_ID_CNS_NS_DESC_LIST);
+    cap_keyed_sgl(&c, HOST_BASE, NVME_IDENTIFY_SIZE, HOST_RKEY);
+    nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
+    check("mixed-absent", rsp_sc(rsp) == NVME_SC_INVALID_NS,
+          "an absent namespace was not rejected");
+
+    struct nvmeof_queue *q = nvmeof_target_open_queue(t, 201);
+    do_connect(q, h, 1, 31, "nvmet-test", hostnqn, rsp);
+
+    /* 01h to namespace 1: a block Write of one 512-byte block at LBA 0. */
+    const uint64_t blk_addr = HOST_BASE;
+    for (uint32_t i = 0; i < 512; i++) {
+        h->buf[i] = (uint8_t)(0xB0 + (i & 0x0f));
+    }
+    cap_init(&c, NVME_CMD_WRITE, 10);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le64(c.b + NVME_SQE_CDW10_OFF, 0);
+    ernic_put_le32(c.b + NVME_SQE_CDW12_OFF, 0); /* one block */
+    cap_keyed_sgl(&c, blk_addr, 512, HOST_RKEY);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("mixed-io", rsp_status(rsp) == 0, "block Write to nsid 1 failed");
+
+    /* 01h to namespace 2: a KV Store, same opcode, different command set. */
+    const uint32_t vlen = 1024;
+    const uint64_t kv_addr = HOST_BASE + 4096;
+    for (uint32_t i = 0; i < vlen; i++) {
+        h->buf[4096 + i] = (uint8_t)(0x4B ^ (i & 0xff));
+    }
+    cap_init(&c, NVME_KV_CMD_STORE, 11);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 2);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, vlen);
+    cap_kv_key(&c, key, 16, 0);
+    cap_keyed_sgl(&c, kv_addr, vlen, HOST_RKEY);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("mixed-io", rsp_status(rsp) == 0, "KV Store to nsid 2 failed");
+
+    /*
+     * Read both back into cleared memory.  If the dispatch were per
+     * controller, one of these two commands would have gone to the wrong
+     * engine and this is where it shows.
+     */
+    memset(h->buf, 0, 8192);
+    cap_init(&c, NVME_CMD_READ, 12);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le64(c.b + NVME_SQE_CDW10_OFF, 0);
+    ernic_put_le32(c.b + NVME_SQE_CDW12_OFF, 0);
+    cap_keyed_sgl(&c, blk_addr, 512, HOST_RKEY);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("mixed-io", rsp_status(rsp) == 0, "block Read from nsid 1 failed");
+    bool blk_ok = true;
+    for (uint32_t i = 0; i < 512; i++) {
+        if (h->buf[i] != (uint8_t)(0xB0 + (i & 0x0f))) {
+            blk_ok = false;
+        }
+    }
+    check("mixed-io", blk_ok, "the block namespace read back the wrong bytes");
+
+    cap_init(&c, NVME_KV_CMD_RETRIEVE, 13);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 2);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, vlen);
+    cap_kv_key(&c, key, 16, 0);
+    cap_keyed_sgl(&c, kv_addr, vlen, HOST_RKEY);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("mixed-io", rsp_status(rsp) == 0, "KV Retrieve from nsid 2 failed");
+    bool kv_ok = true;
+    for (uint32_t i = 0; i < vlen; i++) {
+        if (h->buf[4096 + i] != (uint8_t)(0x4B ^ (i & 0xff))) {
+            kv_ok = false;
+        }
+    }
+    check("mixed-io", kv_ok, "the KV namespace read back the wrong value");
+
+    /*
+     * And the Store must not have touched the block namespace.  A Store
+     * dispatched as a Write would have landed at an LBA derived from the
+     * key, so check the block we did write is still the one we wrote and
+     * that the rest of the namespace is still zero.
+     */
+    memset(h->buf, 0xff, 512);
+    cap_init(&c, NVME_CMD_READ, 14);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le64(c.b + NVME_SQE_CDW10_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_CDW12_OFF, 0);
+    cap_keyed_sgl(&c, blk_addr, 512, HOST_RKEY);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    bool clean = true;
+    for (uint32_t i = 0; i < 512; i++) {
+        if (h->buf[i] != 0) {
+            clean = false;
+        }
+    }
+    check("mixed-isolation", clean,
+          "a KV Store wrote into the block namespace");
+
+    /* A KV opcode with no block meaning is still refused on nsid 1. */
+    cap_init(&c, NVME_KV_CMD_EXIST, 15);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    cap_kv_key(&c, key, 16, 0);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("mixed-isolation", rsp_sc(rsp) == NVME_SC_INVALID_OPCODE,
+          "a KV Exist was accepted by the block namespace");
+
+    nvmeof_target_destroy(t);
+    free(h);
+}
+
+/* Option strings that only a multi-namespace controller can produce. */
+static void test_mixed_config(void)
+{
+    struct nvmeof_target_cfg cfg;
+    char err[256];
+
+    /* A lone nsid= still means one namespace, numbered that. */
+    nvmeof_target_cfg_defaults(&cfg);
+    if (!nvmeof_target_cfg_parse(&cfg, "nsid=7,size=1M", err, sizeof(err))) {
+        fail("mixed-cfg", "nsid=7 rejected: %s", err);
+    } else {
+        check("mixed-cfg", cfg.ns_count == 1 && cfg.ns[0].nsid == 7,
+              "a lone nsid= did not stay one namespace");
+    }
+    nvmeof_target_cfg_free(&cfg);
+
+    /* Per-namespace keys attach to the namespace being defined. */
+    nvmeof_target_cfg_defaults(&cfg);
+    if (!nvmeof_target_cfg_parse(&cfg, "size=2M,bs=4096,ns=2,kv=1,size=64K",
+                                 err, sizeof(err))) {
+        fail("mixed-cfg", "a two-namespace string was rejected: %s", err);
+    } else {
+        check("mixed-cfg",
+              cfg.ns_count == 2 && cfg.ns[0].size == (2U << 20) &&
+                  cfg.ns[0].block_size == 4096 && !cfg.ns[0].kv,
+              "the first namespace did not keep its own options");
+        check("mixed-cfg",
+              cfg.ns[1].kv && cfg.ns[1].size == (64U << 10) &&
+                  cfg.ns[1].nsid == 2,
+              "the second namespace did not keep its own options");
+    }
+    nvmeof_target_cfg_free(&cfg);
+
+    /* Two namespaces with one id would make the lookup arbitrary. */
+    nvmeof_target_cfg_defaults(&cfg);
+    check("mixed-cfg",
+          !nvmeof_target_cfg_parse(&cfg, "size=1M,ns=1,kv=1", err,
+                                   sizeof(err)),
+          "a duplicate nsid was accepted");
+    nvmeof_target_cfg_free(&cfg);
+
+    /* The per-namespace checks still apply to each namespace. */
+    nvmeof_target_cfg_defaults(&cfg);
+    check("mixed-cfg",
+          !nvmeof_target_cfg_parse(&cfg, "ns=2,kv=1,file=/tmp/x", err,
+                                   sizeof(err)),
+          "file= on a KV namespace was accepted");
+    nvmeof_target_cfg_free(&cfg);
+
+    nvmeof_target_cfg_defaults(&cfg);
+    check("mixed-cfg",
+          !nvmeof_target_cfg_parse(&cfg, "ns=2,size=513,bs=512", err,
+                                   sizeof(err)),
+          "a size that is not whole blocks was accepted on namespace 2");
+    nvmeof_target_cfg_free(&cfg);
+
+    /* More namespaces than the controller has room for. */
+    nvmeof_target_cfg_defaults(&cfg);
+    char many[256] = "size=1M";
+    for (int i = 2; i <= NVMEOF_MAX_NS + 1; i++) {
+        char one[32];
+        snprintf(one, sizeof(one), ",ns=%d,size=1M", i);
+        strncat(many, one, sizeof(many) - strlen(many) - 1);
+    }
+    check("mixed-cfg", !nvmeof_target_cfg_parse(&cfg, many, err, sizeof(err)),
+          "more than NVMEOF_MAX_NS namespaces were accepted");
+    nvmeof_target_cfg_free(&cfg);
+}
+
 int main(void)
 {
     test_status_encoding();
@@ -2256,6 +2825,10 @@ int main(void)
     test_sync();
     test_image_size();
     test_queue_table();
+    test_kv_store();
+    test_kv_commands();
+    test_mixed_config();
+    test_mixed_namespaces();
 
     if (failures == 0) {
         printf("PASS nvmeof-target\n");
