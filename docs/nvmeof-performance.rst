@@ -4,9 +4,11 @@ NVMe-oF Performance
 This page records what the in-process NVMe-oF controller
 (:doc:`nvmeof`) actually delivers, measured with ``fio`` from
 inside a single guest. It complements :doc:`performance`, which
-covers the RDMA verbs path over the TCP mesh, and
-:doc:`perf-trends`, which tracks the 4 KiB random-read number
-over time from the nightly run.
+covers the RDMA verbs path over the TCP mesh,
+:doc:`nvmeof-kv-performance`, which measures the Key Value
+command set on the same controller, and :doc:`perf-trends`,
+which tracks the 4 KiB random-read number over time from the
+nightly run.
 
 The numbers here are not storage numbers. Nothing is measured
 against a real SSD: the namespace is host memory or a host file,

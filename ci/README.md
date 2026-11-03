@@ -136,13 +136,15 @@ bad sweep does not grey a badge out:
 | `badge-rdma.json` | `ib_send_bw`, 1 MiB, peak GB/s | `system-tests.yml` |
 | `badge-tcp.json` | `iperf3`, sustained GB/s | `system-tests.yml` |
 | `badge-nvmeof.json` | fio randread, 4 KiB, IOPS | `system-tests.yml` |
+| `badge-s3.json` | S3 GET, 1 MiB, GB/s | `system-tests.yml` |
+| `badge-nvmekv.json` | KV Retrieve, 64 KiB, GB/s | `system-tests.yml` |
 
 The lane copies them to `perf/` on `gh-pages`, so each badge is
 reachable at
 `https://rocm.github.io/rocm-ernic/perf/badge-<name>.json` as soon
 as that push lands -- no doc build in between.
 
-README.md links all three. Each is committed with a `"no data"`
+README.md links them all. Each is committed with a `"no data"`
 placeholder. The placeholder matters -- without a file at that URL
 shields.io renders an *error*, which looks far worse than a grey
 "no data".

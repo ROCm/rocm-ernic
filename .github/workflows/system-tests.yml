@@ -35,7 +35,9 @@ on:
       # image ran no VM lane.
       - 'ci/**'
       - '.github/workflows/system-tests.yml'
-      - '.github/workflows/nvmeof-lane.yml'   # the nvmeof job's body
+      # Both the nvmeof and the nvmeof-kv jobs' body: one file, two
+      # modes.
+      - '.github/workflows/nvmeof-lane.yml'
       - '.github/workflows/s3-lane.yml'       # the s3 job's body
       - '.github/workflows/p4-lane.yml'       # the p4 job's body
       # The P4 lane is the only thing that exercises these end to end,
@@ -1472,6 +1474,32 @@ jobs:
       # The same rule the two-VM lane publishes under, so the three
       # badges are fed on identical terms: never from a pull request,
       # and a manual run does whatever the dispatch asked for.
+      publish: >-
+        ${{ github.event_name != 'pull_request' &&
+            (github.event_name != 'workflow_dispatch' || inputs.publish) }}
+
+  system-test-nvmeof-kv:
+    # The same lane body, serving one block namespace and one Key Value
+    # namespace instead of one block namespace.  "NVMe Key Value Backend
+    # System Tests / Mixed Namespaces".
+    #
+    # A separate job rather than another step in the lane above because
+    # the controller is started once per job: the backend string decides
+    # the namespace layout, so two layouts need two servers, and two
+    # servers need two guests.
+    name: NVMe Key Value Backend System Tests
+    permissions:
+      contents: write
+      # Dispatching docs-deploy after the publish commit: a push made
+      # with this job's own GITHUB_TOKEN is exempt from triggering
+      # other workflows, so Pages would otherwise never rebuild.
+      actions: write
+    uses: $/.github/workflows/nvmeof-lane.yml
+    with:
+      mode: mixed
+      # The same rule every other publishing lane uses, so the badges
+      # are fed on identical terms: never from a pull request, and a
+      # manual run does whatever the dispatch asked for.
       publish: >-
         ${{ github.event_name != 'pull_request' &&
             (github.event_name != 'workflow_dispatch' || inputs.publish) }}

@@ -216,6 +216,55 @@ test_file_namespace() {
     return 0
 }
 
+# A file-backed BLOCK namespace beside a Key Value one.  The file
+# belongs to the namespace rather than to the controller, so this is the
+# path that sizes one namespace's image while another namespace has no
+# image at all -- and the one where a per-namespace path could be freed
+# twice or not at all.
+test_mixed_file_namespace() {
+    local image="$WORK_DIR/ns-mixed.img"
+    local config="nvmeof:file=$image,size=32M,bs=4096,ns=2,kv=1,size=16M"
+    local what="mixed file-backed and key value"
+
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BLUE}Testing a file-backed block namespace beside a KV one${NC}"
+
+    if ! start_server "$config"; then
+        echo -e "${RED}✗ Server failed to start${NC}"
+        tail -20 "$SERVER_LOG"
+        FAILED+=("$what")
+        stop_server
+        return 1
+    fi
+
+    local ok=0
+    grep -q "nsid 1 block, 33554432 bytes bs=4096" "$SERVER_LOG" || ok=1
+    grep -q "nsid 2 key value, 16777216 bytes" "$SERVER_LOG" || ok=1
+    stop_server
+
+    if [ "$ok" != 0 ]; then
+        echo -e "${RED}✗ The two namespaces were not both reported${NC}"
+        tail -20 "$SERVER_LOG"
+        FAILED+=("$what")
+        return 1
+    fi
+
+    # Only the block namespace has an image.  A KV namespace is refused
+    # with file=, so there is no second file to look for -- its capacity
+    # lives in the store and is allocated as values arrive.
+    local size
+    size=$(stat -c %s "$image" 2>/dev/null || echo 0)
+    if [ "$size" != "33554432" ]; then
+        echo -e "${RED}✗ Block namespace image is $size bytes, expected 33554432${NC}"
+        FAILED+=("$what")
+        return 1
+    fi
+
+    echo -e "${GREEN}✓ Block image at 32 MiB, KV namespace with none${NC}"
+    PASSED+=("$what")
+    return 0
+}
+
 test_usage() {
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${BLUE}Testing usage text${NC}"
@@ -249,6 +298,7 @@ for config in "${BAD_CONFIGS[@]}"; do
 done
 
 test_file_namespace || true
+test_mixed_file_namespace || true
 echo ""
 test_usage || true
 echo ""

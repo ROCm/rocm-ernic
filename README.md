@@ -16,6 +16,7 @@
 [![TCP/IP bandwidth](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2Fperf%2Fbadge-tcp.json)][perf-trends]
 [![NVMe-oF 4K read](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2Fperf%2Fbadge-nvmeof.json)][perf-trends]
 [![S3 1M GET](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2Fperf%2Fbadge-s3.json)][perf-trends]
+[![NVMe KV 64K retrieve](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2Fperf%2Fbadge-nvmekv.json)][perf-trends]
 
 > [!CAUTION]
 > This release is an *early-access* software technology preview. Running

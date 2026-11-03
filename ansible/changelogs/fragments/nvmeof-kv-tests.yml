@@ -1,0 +1,25 @@
+---
+minor_changes:
+  - >-
+    A new ``playbooks/nvmeof-kv-tests.yml``, reached with ``--tags
+    nvmeof-kv``, tests the NVM Express Key Value command set against a
+    controller serving a block namespace AND a Key Value namespace at the
+    same time.  It asserts both namespaces attach and that each reports its
+    own command set --- CSI 0 and CSI 1 --- runs a full Store, Exist,
+    Retrieve, Delete round trip, and checks that a Key Value opcode sent to
+    the block namespace is refused.
+  - >-
+    The same play checks ISOLATION, which is the reason it exists: a Store
+    is opcode 01h and a block Write is opcode 01h, so the only thing
+    telling them apart is the namespace the command names.  A pattern is
+    written to the block namespace before any Key Value traffic and
+    digested afterwards, so a controller dispatching on itself rather than
+    on the addressed namespace fails here even though every other check
+    passes.
+  - >-
+    ``ernic_kv_perf_csv`` turns on a value-size sweep for the trend chart,
+    in the same shape ``ernic_nvmeof_perf_csv`` uses.  It is measured with
+    ``tests/kv_bench.c``, built in the guest, rather than a loop around
+    ``nvme io-passthru``: nvme-cli costs about 5 ms per invocation to fork
+    and exec, which swamps a command this emulator answers in a few hundred
+    microseconds and would report the same flat number at every value size.

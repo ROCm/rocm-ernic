@@ -124,6 +124,22 @@ ernic_add_test_program(test_write_imm
     DEPS ibverbs
 )
 
+# -- kv_bench ----------------------------------------------------
+# The Key Value Store/Retrieve round trip and timing, run inside a
+# guest by ansible/playbooks/nvmeof-kv-tests.yml, which copies this
+# source in and builds it there -- it needs a Key Value namespace, and
+# no host running ctest has one.
+#
+# Built here anyway, and deliberately NOT registered with CTest: the
+# build is what gives it compile coverage, clang-tidy and the warning
+# set on every pull request, rather than only when a VM lane runs.  A
+# guest-only source that nothing builds on the host is a source that
+# breaks silently.  It needs no library beyond libc, which is what
+# keeps the guest side a single scp and a single gcc.
+ernic_add_test_program(kv_bench
+    SOURCES kv_bench.c
+)
+
 # Fixture-backed tests for the C-side emulated RDMA device lookup.
 ernic_add_test_program(test_ernic_device
     SOURCES test_ernic_device.c

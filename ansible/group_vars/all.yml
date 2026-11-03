@@ -195,6 +195,53 @@ ernic_nvmeof_perf_size: "64M"
 ernic_nvmeof_perf_runtime: 10
 ernic_nvmeof_perf_iodepth: 32
 
+# ── NVMe Key Value test defaults ─────────────────
+# These describe a controller serving a BLOCK namespace and a
+# KEY VALUE namespace at once, and must match the --backend
+# options the instance was started with -- the play cannot see
+# that string.  The transport settings above are shared: a
+# mixed controller is one controller, reached the same way.
+#
+# The ids are asserted rather than discovered.  A play that
+# adapted to whatever namespaces it found would pass against a
+# controller serving only one, which is the failure this lane
+# exists to catch.
+ernic_kv_block_nsid: 1
+ernic_kv_kv_nsid: 2
+
+# A fixed 16-byte key, 01..10, split the way the Key Value
+# command set carries it: key[0..7] in CDW2 and CDW3,
+# key[8..15] in CDW14 and CDW15, little-endian, with the key
+# length in CDW11[07:00].  CDW10 carries the value size.
+ernic_kv_cdw2: "0x04030201"
+ernic_kv_cdw3: "0x08070605"
+ernic_kv_cdw14: "0x0c0b0a09"
+ernic_kv_cdw15: "0x100f0e0d"
+ernic_kv_keylen: 16
+
+# How much of the block namespace the isolation check digests
+# either side of the Key Value traffic.  Keep it well under the
+# block namespace's size.
+ernic_kv_block_check_mb: 32
+
+# The value sweep behind the Key Value trend chart and shield.
+# Off by default, like the NVMe-oF one: set ernic_kv_perf_csv to
+# a path on the controller to turn it on.
+#
+# 4 KiB and 64 KiB must stay equal to entries in TRACKED_SIZES
+# in ci/report/publish-perf.py or the chart silently drops a
+# series.  128 KiB is measured for the artifact and the
+# documented table and is the CEILING, not a choice: the
+# controller reports MDTS 5, so one Key Value command carries at
+# most 2^5 * 4 KiB however large maxval is.  That is also why
+# TRACKED_SIZES' third entry, 1 MiB, cannot appear here.
+ernic_kv_perf_csv: ""
+ernic_kv_perf_sweep:
+  - {label: 4k, bytes: 4096}
+  - {label: 64k, bytes: 65536}
+  - {label: 128k, bytes: 131072}
+ernic_kv_perf_iters: 64
+
 # ── S3-over-RDMA test defaults ───────────────────
 # These describe the in-process object store the s3 backend
 # runs, and must match the --backend options the instance was

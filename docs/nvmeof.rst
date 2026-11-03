@@ -95,7 +95,30 @@ The backend string is ``nvmeof`` optionally followed by
        queue included, out of a table of 2048.
    * - ``nsid=``
      - ``1``
-     - Namespace identifier.
+     - Identifier of the namespace being described.
+   * - ``ns=``
+     - unset
+     - Start ANOTHER namespace, numbered by this value;
+       every per-namespace option after it describes that
+       one. Up to eight namespaces, and a repeated id is
+       refused. See :ref:`nvmeof-mixed`.
+   * - ``kv=``
+     - ``0``
+     - Serve this namespace with the NVM Express Key Value
+       command set instead of the block one. ``size=`` is
+       then the total value capacity and owes the block
+       size nothing. Refused together with ``file=``:
+       the store is a hash table in anonymous memory and
+       has no on-disk layout.
+   * - ``keys=``
+     - ``4096``
+     - Most keys live at once, Key Value namespaces only.
+   * - ``maxval=``
+     - ``1M``
+     - Largest single value, Key Value namespaces only.
+       ``mdts`` caps a transfer at 128 KiB whatever this
+       says, so a larger value has to be stored in pieces
+       under separate keys.
    * - ``model=``
      - ``rocm-ernic NVMe-oF target``
      - Identify-controller model string, 1 to 40
@@ -117,10 +140,13 @@ A successful start logs the controller at ``info``:
 
 .. code-block:: console
 
-   ionic_datapath: nvmeof target 'nvmet-test' 1073741824 bytes bs=4096 \
+   ionic_datapath: nvmeof target 'nvmet-test' 1 namespace(s) \
        at 192.168.200.1:4420
+   ionic_datapath:   nsid 1 block, 1073741824 bytes bs=4096
 
-The size it logs is the one settled on, which for an existing
+One line for the controller and one for each namespace: with
+more than one, a single line cannot say which is which. The
+size it logs is the one settled on, which for an existing
 ``file=`` image without ``size=`` is the image's.
 
 .. _nvmeof-durability:
@@ -154,6 +180,70 @@ controller reports the shutdown complete; if that fails, the
 server logs an error and completes the shutdown anyway. A RAM
 namespace has no stable storage, so it reports no write cache
 and those requests are no-ops.
+
+.. _nvmeof-mixed:
+
+Key Value, and several namespaces at once
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``kv=1`` serves a namespace with the NVM Express Key Value
+command set -- Store (01h), Retrieve (02h), List (06h),
+Delete (10h) and Exist (14h) -- instead of blocks. The key
+travels in the command dwords rather than the data buffer:
+``key[0..7]`` in CDW2 and CDW3, ``key[8..15]`` in CDW14 and
+CDW15, the key length in CDW11[07:00], and the value size in
+CDW10.
+
+The command set is a property of the NAMESPACE, not of the
+controller, so one controller can serve both. ``ns=`` opens
+another namespace and everything after it describes that one:
+
+.. code-block:: bash
+
+   rocm-ernic --socket /tmp/vfio-user-rocm-ernic.sock \
+       --backend nvmeof:size=1G,bs=4096,ns=2,kv=1,size=256M
+
+``nsid=`` keeps its own meaning -- it numbers the namespace
+being described, wherever it appears -- so ``size=1M,nsid=7``
+is still one namespace, numbered 7.
+
+In the guest, one ``nvme connect`` brings up both. Linux
+attaches the Key Value namespace, hides only its BLOCK device
+and keeps the generic character device:
+
+.. code-block:: console
+
+   nvme nvme0: block device for nsid 2 not supported (csi 1)
+
+So the block namespace is used as any other, and the Key Value
+one through ``/dev/ngXnY`` with NVMe passthrough. No vendor
+library is needed for either.
+
+.. warning::
+
+   The device names do **not** follow the namespace ids.
+   Linux names namespace devices by the head instance it
+   allocated, and a hidden Key Value namespace still consumes
+   one, so nsid 1 is commonly ``nvme0n2`` and nsid 2 is
+   ``ng0n1``. Resolve through sysfs rather than assuming::
+
+      for d in /sys/class/nvme/nvme0/nvme0n*; do
+          echo "$(basename "$d") -> nsid $(cat "$d/nsid")"
+      done
+
+.. note::
+
+   The two command sets are mutually exclusive WITHIN a
+   namespace, and must be: a Store is opcode 01h, which a
+   block namespace executes as a Write. The controller
+   dispatches on the namespace the command names, reports each
+   namespace's command set in its Identify descriptor, and
+   advertises both in ``CAP.CSS`` so the host reads them
+   per namespace rather than assuming NVM.
+
+:doc:`nvmeof-kv-performance` measures this path, and
+``ansible/playbooks/nvmeof-kv-tests.yml`` is the play that
+exercises it.
 
 Connecting from the Guest
 -------------------------
