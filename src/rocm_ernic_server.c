@@ -892,7 +892,8 @@ static void usage(const char *progname)
                     "File-backed namespace\n");
     fprintf(stderr, "                      nvmeof:kv=1,size=256M           - "
                     "NVMe KV namespace\n");
-    fprintf(stderr, "                      nvmeof:size=1G,ns=2,kv=1,size=256M\n");
+    fprintf(stderr,
+            "                      nvmeof:size=1G,ns=2,kv=1,size=256M\n");
     fprintf(stderr, "                                                      - "
                     "block nsid 1 and KV nsid 2\n");
 

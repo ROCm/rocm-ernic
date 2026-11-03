@@ -344,10 +344,9 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
             }
         } else if (strcmp(key, "keys") == 0) {
             uint32_t v = 0;
-            if (!ernic_parse_u32(val, &v) || v == 0 ||
-                v > NVMEOF_KV_MAX_KEYS) {
+            if (!ernic_parse_u32(val, &v) || v == 0 || v > NVMEOF_KV_MAX_KEYS) {
                 ernic_set_err(err, errlen, "keys must be 1..%u (got '%s')",
-                        NVMEOF_KV_MAX_KEYS, val);
+                              NVMEOF_KV_MAX_KEYS, val);
                 ok = false;
             } else {
                 cur->kv_max_keys = v;
@@ -536,8 +535,8 @@ static bool ns_create(struct nvmeof_ns *ns, const struct nvmeof_ns_cfg *cfg,
         if (!size_image(ns, err, errlen)) {
             return false;
         }
-        ns->data = mmap(NULL, ns->len, PROT_READ | PROT_WRITE, MAP_SHARED,
-                        ns->fd, 0);
+        ns->data =
+            mmap(NULL, ns->len, PROT_READ | PROT_WRITE, MAP_SHARED, ns->fd, 0);
     } else {
         ns->data = mmap(NULL, ns->len, PROT_READ | PROT_WRITE,
                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
@@ -862,8 +861,8 @@ static void build_id_ctrl(const struct nvmeof_target *t, uint8_t *buf)
      * KATO is 5s. */
     ernic_put_le16(buf + 320, 10); /* kas, in 100ms units */
 
-    buf[512] = 0x66;                                      /* sqes: 64B fixed */
-    buf[513] = 0x44;                                      /* cqes: 16B fixed */
+    buf[512] = 0x66;                               /* sqes: 64B fixed */
+    buf[513] = 0x44;                               /* cqes: 16B fixed */
     ernic_put_le16(buf + 514, t->cfg.queue_depth); /* maxcmd */
 
     /* NN is the largest valid namespace id, not the count: the host uses
@@ -994,12 +993,12 @@ static void build_ns_desc(const struct nvmeof_target *t,
 static void build_id_ns_cs_indep(const struct nvmeof_ns *ns, uint8_t *buf)
 {
     memset(buf, 0, NVME_IDENTIFY_SIZE);
-    buf[0] = 0; /* nsfeat */
-    buf[1] = 0; /* nmic: no multipath */
-    buf[2] = 0; /* rescap: no reservations */
-    buf[3] = 0; /* fpi */
-    ernic_put_le32(buf + 4, 0); /* anagrpid */
-    buf[8] = 0;                 /* nsattr */
+    buf[0] = 0;                  /* nsfeat */
+    buf[1] = 0;                  /* nmic: no multipath */
+    buf[2] = 0;                  /* rescap: no reservations */
+    buf[3] = 0;                  /* fpi */
+    ernic_put_le32(buf + 4, 0);  /* anagrpid */
+    buf[8] = 0;                  /* nsattr */
     ernic_put_le16(buf + 10, 0); /* nvmsetid */
     ernic_put_le16(buf + 12, 0); /* endgid */
     /*
@@ -1596,8 +1595,8 @@ static uint16_t io_range(const struct nvmeof_ns *ns, const uint8_t *sqe,
  * the host buffers the capsule's SGL names. */
 static uint16_t exec_rw(struct nvmeof_target *t, struct nvmeof_ns *ns,
                         const uint8_t *capsule, size_t capsule_len,
-                        const struct nvmeof_dma_ops *dma, void *ctx,
-                        bool write, bool fua)
+                        const struct nvmeof_dma_ops *dma, void *ctx, bool write,
+                        bool fua)
 {
     uint64_t off;
     uint64_t len;
@@ -1698,8 +1697,8 @@ static uint16_t kv_exec(struct nvmeof_target *t, struct nvmeof_ns *ns,
     case NVME_KV_CMD_STORE: {
         uint32_t len = cdw10;
         if (len > ns->cfg.kv_max_value) {
-            return nvme_status(NVME_SCT_GENERIC,
-                               NVME_SC_KV_INVALID_VALUE_SIZE, 1);
+            return nvme_status(NVME_SCT_GENERIC, NVME_SC_KV_INVALID_VALUE_SIZE,
+                               1);
         }
 
         bool exists = nvmeof_kv_exists(ns->kv, &key);
@@ -1722,8 +1721,8 @@ static uint16_t kv_exec(struct nvmeof_target *t, struct nvmeof_ns *ns,
         if (len != 0 && staging == NULL) {
             return nvme_status(NVME_SCT_GENERIC, NVME_SC_INTERNAL, 1);
         }
-        uint16_t st = sgl_read(&sgl, capsule, capsule_len, dma, ctx, staging,
-                               len);
+        uint16_t st =
+            sgl_read(&sgl, capsule, capsule_len, dma, ctx, staging, len);
         if (st != 0) {
             free(staging);
             return st;

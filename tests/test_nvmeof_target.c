@@ -2272,7 +2272,7 @@ static void cap_kv_key(struct capsule *c, const uint8_t *key, uint8_t len,
     memcpy(c->b + NVME_SQE_CDW14_OFF, raw + 8, 4);
     memcpy(c->b + NVME_SQE_CDW15_OFF, raw + 12, 4);
     ernic_put_le32(c->b + NVME_SQE_CDW11_OFF,
-                  (uint32_t)len | ((uint32_t)options << 8));
+                   (uint32_t)len | ((uint32_t)options << 8));
 }
 
 static void test_kv_store(void)
@@ -2294,8 +2294,9 @@ static void test_kv_store(void)
     check("kv-store", nvmeof_kv_put(kv, &a, (const uint8_t *)"0123456789", 10),
           "put failed");
     check("kv-store", nvmeof_kv_exists(kv, &a), "stored key does not exist");
-    check("kv-store", nvmeof_kv_get(kv, &a, &value, &len) && len == 10 &&
-                          memcmp(value, "0123456789", 10) == 0,
+    check("kv-store",
+          nvmeof_kv_get(kv, &a, &value, &len) && len == 10 &&
+              memcmp(value, "0123456789", 10) == 0,
           "get returned the wrong value");
     check("kv-store", nvmeof_kv_used(kv) == 10, "used is not the value length");
 
@@ -2312,11 +2313,12 @@ static void test_kv_store(void)
      * identity, not just the bytes. */
     struct nvmeof_kv_key ab = {.bytes = {'a', 'b'}, .len = 2};
     struct nvmeof_kv_key ab0 = {.bytes = {'a', 'b', 0}, .len = 3};
-    check("kv-store", nvmeof_kv_put(kv, &ab, (const uint8_t *)"1", 1) &&
-                          nvmeof_kv_put(kv, &ab0, (const uint8_t *)"2", 1),
+    check("kv-store",
+          nvmeof_kv_put(kv, &ab, (const uint8_t *)"1", 1) &&
+              nvmeof_kv_put(kv, &ab0, (const uint8_t *)"2", 1),
           "put of two length-distinct keys failed");
-    check("kv-store", nvmeof_kv_get(kv, &ab, &value, &len) && len == 1 &&
-                          value[0] == '1',
+    check("kv-store",
+          nvmeof_kv_get(kv, &ab, &value, &len) && len == 1 && value[0] == '1',
           "a 2-byte key collided with a 3-byte one");
 
     /* Capacity, then key count. */
@@ -2382,8 +2384,9 @@ static void test_kv_commands(void)
     ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, NVME_ID_CNS_NS_DESC_LIST);
     cap_keyed_sgl(&c, HOST_BASE, NVME_IDENTIFY_SIZE, HOST_RKEY);
     nvmeof_queue_exec(aq, c.b, c.len, &host_ops, h, rsp);
-    check("kv-identify", h->buf[20] == NVME_NIDT_CSI && h->buf[21] == 1 &&
-                             h->buf[24] == NVME_CSI_KV,
+    check("kv-identify",
+          h->buf[20] == NVME_NIDT_CSI && h->buf[21] == 1 &&
+              h->buf[24] == NVME_CSI_KV,
           "descriptor list does not report CSI 1 after the UUID");
 
     struct nvmeof_queue *q = nvmeof_target_open_queue(t, 101);
@@ -2776,8 +2779,7 @@ static void test_mixed_config(void)
     /* Two namespaces with one id would make the lookup arbitrary. */
     nvmeof_target_cfg_defaults(&cfg);
     check("mixed-cfg",
-          !nvmeof_target_cfg_parse(&cfg, "size=1M,ns=1,kv=1", err,
-                                   sizeof(err)),
+          !nvmeof_target_cfg_parse(&cfg, "size=1M,ns=1,kv=1", err, sizeof(err)),
           "a duplicate nsid was accepted");
     nvmeof_target_cfg_free(&cfg);
 
