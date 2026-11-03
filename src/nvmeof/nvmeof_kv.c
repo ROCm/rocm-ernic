@@ -152,7 +152,8 @@ static struct kv_slot *kv_find(const struct nvmeof_kv *kv,
     return NULL;
 }
 
-bool nvmeof_kv_exists(const struct nvmeof_kv *kv, const struct nvmeof_kv_key *key)
+bool nvmeof_kv_exists(const struct nvmeof_kv *kv,
+                      const struct nvmeof_kv_key *key)
 {
     return kv != NULL && key != NULL && kv_find(kv, key, NULL) != NULL;
 }

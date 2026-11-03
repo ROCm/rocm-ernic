@@ -95,8 +95,7 @@ bool ionic_datapath_attach_nvmeof(struct ionic_datapath *dp,
                     n->nsid, n->size, n->kv_max_keys, n->kv_max_value);
         } else {
             vfu_log(dp->vfu_ctx, LOG_INFO,
-                    "ionic_datapath:   nsid %u block, %" PRIu64
-                    " bytes bs=%u",
+                    "ionic_datapath:   nsid %u block, %" PRIu64 " bytes bs=%u",
                     n->nsid, n->size, n->block_size);
         }
     }

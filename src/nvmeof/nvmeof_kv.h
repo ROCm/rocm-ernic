@@ -52,7 +52,8 @@ struct nvmeof_kv *nvmeof_kv_create(uint32_t max_keys, uint64_t max_bytes);
 void nvmeof_kv_destroy(struct nvmeof_kv *kv);
 
 /* True when the key is present. */
-bool nvmeof_kv_exists(const struct nvmeof_kv *kv, const struct nvmeof_kv_key *key);
+bool nvmeof_kv_exists(const struct nvmeof_kv *kv,
+                      const struct nvmeof_kv_key *key);
 
 /*
  * Look a key up.  On success *value and *len describe memory the store
