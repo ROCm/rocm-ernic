@@ -245,13 +245,27 @@
     # than one command set: in that mode the host stops assuming NVM
     # and reads the descriptor, so a block namespace that says nothing
     # is dropped with "Command set not reported for nsid".
+    # nvme ns-descs -o json returns CSI inside the ns-descs array, not
+    # at the top level.  CSI 1 is encoded as "0x1", so parse with
+    # base 0 (auto-detect) rather than the default base 10.
     - name: Fail when a namespace does not report the expected command set
       ansible.builtin.fail:
         msg: >-
           nsid {{ item.0 }} reports csi
-          {{ (item.1.stdout | from_json).csi | default('(absent)') }},
+          {{ (item.1.stdout | from_json)['ns-descs']
+              | selectattr('Type', 'equalto', 'csi')
+              | map(attribute='csi')
+              | first
+              | default('(absent)') }},
           expected {{ item.2 }}.
-      when: ((item.1.stdout | from_json).csi | default(-1) | int) != (item.2 | int)
+      when: >-
+        (((item.1.stdout | from_json)['ns-descs']
+            | selectattr('Type', 'equalto', 'csi')
+            | map(attribute='csi')
+            | first
+            | default(-1))
+            | int(0, 0))
+        != (item.2 | int)
       loop: "{{ [ernic_kv_block_nsid, ernic_kv_kv_nsid]
                 | zip(ernic_kv_descs.results, [0, 1])
                 | list }}"
