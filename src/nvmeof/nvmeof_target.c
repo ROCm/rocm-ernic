@@ -1676,8 +1676,10 @@ static uint16_t kv_exec(struct nvmeof_target *t, struct nvmeof_ns *ns,
     uint32_t cdw11 = ernic_get_le32(capsule + NVME_SQE_CDW11_OFF);
     uint8_t options = (uint8_t)((cdw11 >> 8) & 0xff);
 
-    struct nvmeof_kv_key key;
-    if (!kv_key_from_capsule(capsule, &key)) {
+    /* List accepts a zero-length key meaning "start from the beginning";
+     * all other opcodes require a valid key. */
+    struct nvmeof_kv_key key = {0};
+    if (!kv_key_from_capsule(capsule, &key) && opcode != NVME_KV_CMD_LIST) {
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_KV_INVALID_KEY_SIZE, 1);
     }
 
@@ -1755,6 +1757,9 @@ static uint16_t kv_exec(struct nvmeof_target *t, struct nvmeof_ns *ns,
          * completion, which is how the host learns it asked with too small
          * a buffer. */
         uint32_t want = cdw10 < stored ? cdw10 : stored;
+        if (want != 0 && sgl.length < want) {
+            return nvme_status(NVME_SCT_GENERIC, NVME_SC_SGL_INVALID_DATA, 1);
+        }
         uint16_t st = 0;
         if (want != 0) {
             st = sgl_write(&sgl, dma, ctx, value, want);
@@ -1786,6 +1791,19 @@ static uint16_t kv_exec(struct nvmeof_target *t, struct nvmeof_ns *ns,
         uint32_t listed = 0;
         uint32_t iter = 0;
         struct nvmeof_kv_key k;
+
+        /* If the host passed a starting key, skip the iterator forward past
+         * it so the response is a continuation page, not a restart. */
+        if (key.len > 0) {
+            struct nvmeof_kv_key scan_k;
+            while (nvmeof_kv_next(ns->kv, &iter, &scan_k)) {
+                if (scan_k.len == key.len &&
+                    memcmp(scan_k.bytes, key.bytes, key.len) == 0) {
+                    break;
+                }
+            }
+        }
+
         while (nvmeof_kv_next(ns->kv, &iter, &k)) {
             if (off + 1u + k.len > cap) {
                 break;
@@ -1796,6 +1814,9 @@ static uint16_t kv_exec(struct nvmeof_target *t, struct nvmeof_ns *ns,
             listed++;
         }
 
+        if (off != 0 && sgl.length < off) {
+            return nvme_status(NVME_SCT_GENERIC, NVME_SC_SGL_INVALID_DATA, 1);
+        }
         uint16_t st = off != 0 ? sgl_write(&sgl, dma, ctx, buf, off) : 0;
         if (st != 0) {
             return st;

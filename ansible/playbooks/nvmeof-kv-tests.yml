@@ -173,7 +173,10 @@
         label: "nsid {{ item }}"
       register: ernic_kv_nsmap
       changed_when: false
-      failed_when: false
+      retries: 15
+      delay: 2
+      until: ernic_kv_nsmap.results | selectattr('rc', 'ne', 0) | list | length == 0
+      failed_when: ernic_kv_nsmap.results | selectattr('rc', 'ne', 0) | list | length > 0
 
     - name: Fail when the controller did not present both namespaces
       ansible.builtin.fail:
@@ -396,14 +399,20 @@
       changed_when: false
       failed_when: false
 
-    - name: Fail when the block namespace accepted a KV opcode
+    - name: Fail when the block namespace did not reject the KV opcode as invalid
       ansible.builtin.fail:
         msg: >-
-          Exist (0x14) was accepted on nsid {{ ernic_kv_block_nsid }},
-          which serves blocks.  Command dispatch is keying off the
-          controller rather than the addressed namespace, which means a
+          Exist (0x14) on nsid {{ ernic_kv_block_nsid }} (block):
+          rc={{ ernic_kv_wrong_ns.rc }},
+          stderr={{ ernic_kv_wrong_ns.stderr | default('') | truncate(200) }}.
+          Expected rejection with 'Invalid Command Opcode'; a KEY_NOT_EXIST
+          or success response means dispatch reached the KV path, so a
           Store (01h) would run as a block Write.
-      when: ernic_kv_wrong_ns.rc == 0
+      when: >-
+        ernic_kv_wrong_ns.rc == 0 or
+        'Invalid Command Opcode' not in
+        (ernic_kv_wrong_ns.stderr | default('') +
+         ernic_kv_wrong_ns.stdout | default(''))
 
     # ── The block namespace is untouched ─────────────
     - name: Digest the block namespace after the KV traffic

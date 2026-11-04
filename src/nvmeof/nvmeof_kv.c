@@ -231,6 +231,34 @@ bool nvmeof_kv_put(struct nvmeof_kv *kv, const struct nvmeof_kv_key *key,
     return true;
 }
 
+/* Rebuild the table from scratch, keeping only LIVE slots and clearing all
+ * tombstones.  This is a best-effort optimisation: a failed calloc leaves the
+ * table intact and the caller continues with a degraded probe chain. */
+static void kv_compact(struct nvmeof_kv *kv)
+{
+    uint32_t size = kv->mask + 1;
+    struct kv_slot *fresh = calloc(size, sizeof(*fresh));
+    if (fresh == NULL) {
+        return;
+    }
+    for (uint32_t i = 0; i < size; i++) {
+        if (kv->slots[i].state != KV_SLOT_LIVE) {
+            continue;
+        }
+        uint32_t idx = (uint32_t)(kv_hash(&kv->slots[i].key) & kv->mask);
+        for (uint32_t probe = 0; probe <= kv->mask; probe++) {
+            struct kv_slot *dst = &fresh[(idx + probe) & kv->mask];
+            if (dst->state == KV_SLOT_EMPTY) {
+                *dst = kv->slots[i];
+                break;
+            }
+        }
+    }
+    free(kv->slots);
+    kv->slots = fresh;
+    kv->occupied = kv->live;
+}
+
 bool nvmeof_kv_delete(struct nvmeof_kv *kv, const struct nvmeof_kv_key *key)
 {
     if (kv == NULL || key == NULL) {
@@ -248,6 +276,12 @@ bool nvmeof_kv_delete(struct nvmeof_kv *kv, const struct nvmeof_kv_key *key)
     slot->state = KV_SLOT_TOMBSTONE;
     memset(&slot->key, 0, sizeof(slot->key));
     kv->live--;
+
+    /* Compact when tombstones outnumber live keys: without it a fully
+     * churned table forces every miss to scan the whole slot array. */
+    if (kv->occupied - kv->live > kv->live) {
+        kv_compact(kv);
+    }
     return true;
 }
 

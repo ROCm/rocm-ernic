@@ -2495,12 +2495,12 @@ static void test_kv_commands(void)
     check("kv-opcode", rsp_status(rsp) != 0,
           "a block Write Zeroes was accepted on a KV namespace");
 
-    /* List reports how many keys it wrote. */
+    /* List reports how many keys it wrote.  No starting key (len=0) means
+     * start from the beginning of the store. */
     memset(h->buf, 0, 256);
     cap_init(&c, NVME_KV_CMD_LIST, 31);
     ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
     ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, 256);
-    cap_kv_key(&c, key, 16, 0);
     cap_keyed_sgl(&c, HOST_BASE, 256, HOST_RKEY);
     nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
     check("kv-list", rsp_status(rsp) == 0, "List failed");
@@ -2524,6 +2524,134 @@ static void test_kv_commands(void)
     nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
     check("kv-delete", rsp_sc(rsp) == NVME_SC_KV_KEY_NOT_EXIST,
           "Retrieve after Delete did not report key-does-not-exist");
+
+    nvmeof_target_destroy(t);
+    free(h);
+}
+
+/*
+ * List pagination: store three one-byte keys, then page through them one at
+ * a time by passing the last key received as the continuation token.  Every
+ * key must appear exactly once across the pages.
+ */
+static void test_kv_list_pagination(void)
+{
+    struct host_mem *h = calloc(1, sizeof(*h));
+    struct nvmeof_target *t = make_target("kv=1,size=64K,keys=8,maxval=4096");
+    uint8_t rsp[NVME_CQE_SIZE];
+    struct capsule c;
+    const char *hostnqn = "nqn.2014-08.org.nvmexpress:uuid:kv-list";
+
+    if (t == NULL || h == NULL) {
+        free(h);
+        nvmeof_target_destroy(t);
+        return;
+    }
+    h->rkey = HOST_RKEY;
+
+    struct nvmeof_queue *aq = nvmeof_target_open_queue(t, 200);
+    do_connect(aq, h, 0, 31, "nvmet-test", hostnqn, rsp);
+    struct nvmeof_queue *q = nvmeof_target_open_queue(t, 201);
+    do_connect(q, h, 1, 31, "nvmet-test", hostnqn, rsp);
+
+    /* Store three single-byte keys: 'x', 'y', 'z'. */
+    const uint8_t ka[1] = {'x'};
+    const uint8_t kb[1] = {'y'};
+    const uint8_t kc[1] = {'z'};
+    const uint8_t val[1] = {0};
+
+    cap_init(&c, NVME_KV_CMD_STORE, 40);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, 1);
+    cap_kv_key(&c, ka, 1, 0);
+    cap_keyed_sgl(&c, HOST_BASE, 1, HOST_RKEY);
+    h->buf[0] = val[0];
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("kv-list-page", rsp_status(rsp) == 0, "Store 'x' failed");
+
+    cap_init(&c, NVME_KV_CMD_STORE, 41);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, 1);
+    cap_kv_key(&c, kb, 1, 0);
+    cap_keyed_sgl(&c, HOST_BASE, 1, HOST_RKEY);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("kv-list-page", rsp_status(rsp) == 0, "Store 'y' failed");
+
+    cap_init(&c, NVME_KV_CMD_STORE, 42);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, 1);
+    cap_kv_key(&c, kc, 1, 0);
+    cap_keyed_sgl(&c, HOST_BASE, 1, HOST_RKEY);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("kv-list-page", rsp_status(rsp) == 0, "Store 'z' failed");
+
+    /*
+     * Page 1: cap=2 (one {len, byte} entry), len=0 means start from the
+     * beginning.  Save the returned key to use as the continuation token.
+     */
+    memset(h->buf, 0, NVME_IDENTIFY_SIZE);
+    cap_init(&c, NVME_KV_CMD_LIST, 43);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, 2);
+    cap_keyed_sgl(&c, HOST_BASE, 2, HOST_RKEY);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("kv-list-page", rsp_status(rsp) == 0, "List page 1 failed");
+    check("kv-list-page", ernic_get_le32(rsp + NVME_CQE_RESULT_OFF) == 1,
+          "List page 1 did not return exactly one key");
+    uint8_t page1_len = h->buf[0];
+    uint8_t page1_key[1];
+    page1_key[0] = h->buf[1];
+    check("kv-list-page", page1_len == 1,
+          "List page 1 key has unexpected length");
+
+    /*
+     * Page 2: continue from page1_key; expect exactly one new key.
+     */
+    memset(h->buf, 0, NVME_IDENTIFY_SIZE);
+    cap_init(&c, NVME_KV_CMD_LIST, 44);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, 2);
+    cap_kv_key(&c, page1_key, 1, 0);
+    cap_keyed_sgl(&c, HOST_BASE, 2, HOST_RKEY);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("kv-list-page", rsp_status(rsp) == 0, "List page 2 failed");
+    check("kv-list-page", ernic_get_le32(rsp + NVME_CQE_RESULT_OFF) == 1,
+          "List page 2 did not return exactly one key");
+    uint8_t page2_key[1];
+    page2_key[0] = h->buf[1];
+    check("kv-list-page", page2_key[0] != page1_key[0],
+          "List page 2 returned the same key as page 1");
+
+    /*
+     * Page 3: continue from page2_key; expect exactly one new key.
+     */
+    memset(h->buf, 0, NVME_IDENTIFY_SIZE);
+    cap_init(&c, NVME_KV_CMD_LIST, 45);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, 2);
+    cap_kv_key(&c, page2_key, 1, 0);
+    cap_keyed_sgl(&c, HOST_BASE, 2, HOST_RKEY);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("kv-list-page", rsp_status(rsp) == 0, "List page 3 failed");
+    check("kv-list-page", ernic_get_le32(rsp + NVME_CQE_RESULT_OFF) == 1,
+          "List page 3 did not return exactly one key");
+    uint8_t page3_key[1];
+    page3_key[0] = h->buf[1];
+    check("kv-list-page",
+          page3_key[0] != page1_key[0] && page3_key[0] != page2_key[0],
+          "List page 3 duplicated an earlier key");
+
+    /* Page 4: should be empty — all three keys consumed. */
+    memset(h->buf, 0, NVME_IDENTIFY_SIZE);
+    cap_init(&c, NVME_KV_CMD_LIST, 46);
+    ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
+    ernic_put_le32(c.b + NVME_SQE_CDW10_OFF, 2);
+    cap_kv_key(&c, page3_key, 1, 0);
+    cap_keyed_sgl(&c, HOST_BASE, 2, HOST_RKEY);
+    nvmeof_queue_exec(q, c.b, c.len, &host_ops, h, rsp);
+    check("kv-list-page", rsp_status(rsp) == 0, "List page 4 (empty) failed");
+    check("kv-list-page", ernic_get_le32(rsp + NVME_CQE_RESULT_OFF) == 0,
+          "List page 4 returned keys after the last key was consumed");
 
     nvmeof_target_destroy(t);
     free(h);
@@ -2829,6 +2957,7 @@ int main(void)
     test_queue_table();
     test_kv_store();
     test_kv_commands();
+    test_kv_list_pagination();
     test_mixed_config();
     test_mixed_namespaces();
 

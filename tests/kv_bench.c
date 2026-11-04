@@ -202,7 +202,7 @@ out:
 
 int main(int argc, char **argv)
 {
-    if (argc < 4) {
+    if (argc < 5) {
         fprintf(stderr,
                 "usage: %s <device> <nsid> <iters> <size> [size ...]\n"
                 "  device  a generic char device, e.g. /dev/ng0n2\n"
@@ -212,13 +212,23 @@ int main(int argc, char **argv)
     }
 
     const char *path = argv[1];
-    uint32_t nsid = (uint32_t)strtoul(argv[2], NULL, 10);
-    int iters = atoi(argv[3]);
 
-    if (nsid == 0 || iters <= 0) {
-        fprintf(stderr, "kv_bench: nsid and iters must be positive\n");
+    char *end;
+    unsigned long long nsid_ll = strtoull(argv[2], &end, 10);
+    if (end == argv[2] || *end != '\0' || nsid_ll == 0 ||
+        nsid_ll > UINT32_MAX) {
+        fprintf(stderr,
+                "kv_bench: nsid must be a positive integer <= 4294967295\n");
         return 2;
     }
+    uint32_t nsid = (uint32_t)nsid_ll;
+
+    long iters_l = strtol(argv[3], &end, 10);
+    if (end == argv[3] || *end != '\0' || iters_l <= 0) {
+        fprintf(stderr, "kv_bench: iters must be a positive integer\n");
+        return 2;
+    }
+    int iters = (int)iters_l;
 
     int fd = open(path, O_RDONLY);
     if (fd < 0) {
@@ -236,12 +246,14 @@ int main(int argc, char **argv)
 
     int rc = 0;
     for (int i = 4; i < argc; i++) {
-        unsigned long len = strtoul(argv[i], NULL, 10);
-        if (len == 0 || len > UINT32_MAX) {
+        unsigned long long len_ll = strtoull(argv[i], &end, 10);
+        if (end == argv[i] || *end != '\0' || len_ll == 0 ||
+            len_ll > UINT32_MAX) {
             fprintf(stderr, "kv_bench: bad size '%s'\n", argv[i]);
             rc = 2;
             break;
         }
+        unsigned long len = (unsigned long)len_ll;
         if (sweep_one(fd, nsid, key, (uint32_t)len, iters) != 0) {
             rc = 1;
             break;
