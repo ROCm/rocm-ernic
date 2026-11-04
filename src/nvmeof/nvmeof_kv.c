@@ -277,9 +277,11 @@ bool nvmeof_kv_delete(struct nvmeof_kv *kv, const struct nvmeof_kv_key *key)
     memset(&slot->key, 0, sizeof(slot->key));
     kv->live--;
 
-    /* Compact when tombstones outnumber live keys: without it a fully
-     * churned table forces every miss to scan the whole slot array. */
-    if (kv->occupied - kv->live > kv->live) {
+    /* Compact when tombstones outnumber live keys and the dead count
+     * crosses a minimum, so a large pre-allocated table is not rebuilt on
+     * every delete when only a few keys have been touched. */
+    uint32_t dead = kv->occupied - kv->live;
+    if (dead > kv->live && dead >= 64U) {
         kv_compact(kv);
     }
     return true;

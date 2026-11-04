@@ -2,6 +2,20 @@
 
 ## UNRELEASED - rocm-ernic 0.0.1
 
+### Fixed
+
+* A KV `List` command whose key-length field (CDW11[07:00]) was nonzero but
+  exceeded `NVMEOF_KV_KEY_MAX` (16) was silently accepted and treated as a
+  zero-length start-from-beginning; it is now rejected with
+  `KV_INVALID_KEY_SIZE`. A zero-length key is still valid for `List` and
+  means "start from the beginning of the namespace".
+
+* Deleting the last (or only) key in a KV namespace triggered a full
+  compaction that scanned and reallocated the entire pre-allocated hash table
+  (up to 2 million slots for the default `keys` limit). Compaction now
+  requires at least 64 tombstones, so a small number of deletes on a large
+  table does not cause a rebuild.
+
 ### Added
 
 * `--backend nvmeof:kv=1[,keys=...,maxval=...]` serves the namespace with the

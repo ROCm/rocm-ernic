@@ -472,12 +472,19 @@
         mode: "0644"
       when: ernic_kv_perf_csv | length > 0
 
+    - name: Copy parse_int.h into the guest for the Key Value benchmark
+      ansible.builtin.copy:
+        src: "{{ ernic_project_root }}/src/parse_int.h"
+        dest: /tmp/parse_int.h
+        mode: "0644"
+      when: ernic_kv_perf_csv | length > 0
+
     - name: Build the Key Value benchmark in the guest
       ansible.builtin.command:
         argv:
           # The project's C standard and feature-test macros, as
           # ernic_set_compiler_flags() gives every target.  No library
-          # beyond libc, which is what keeps this a single scp.
+          # beyond libc; parse_int.h is copied alongside kv_bench.c.
           - gcc
           - -std=c11
           - -pedantic
@@ -486,6 +493,7 @@
           - -O2
           - -Wall
           - -Wextra
+          - -I/tmp
           - -o
           - /tmp/kv_bench
           - /tmp/kv_bench.c

@@ -1677,9 +1677,10 @@ static uint16_t kv_exec(struct nvmeof_target *t, struct nvmeof_ns *ns,
     uint8_t options = (uint8_t)((cdw11 >> 8) & 0xff);
 
     /* List accepts a zero-length key meaning "start from the beginning";
-     * all other opcodes require a valid key. */
+     * a nonzero invalid length is rejected for all opcodes. */
     struct nvmeof_kv_key key = {0};
-    if (!kv_key_from_capsule(capsule, &key) && opcode != NVME_KV_CMD_LIST) {
+    if (!kv_key_from_capsule(capsule, &key) &&
+        (opcode != NVME_KV_CMD_LIST || (cdw11 & 0xff) != 0)) {
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_KV_INVALID_KEY_SIZE, 1);
     }
 

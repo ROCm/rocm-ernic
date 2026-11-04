@@ -38,6 +38,8 @@
 
 #include <linux/nvme_ioctl.h>
 
+#include "parse_int.h"
+
 /* NVM Express Key Value command set, opcodes. */
 #define KV_OPC_STORE    0x01
 #define KV_OPC_RETRIEVE 0x02
@@ -213,22 +215,18 @@ int main(int argc, char **argv)
 
     const char *path = argv[1];
 
-    char *end;
-    unsigned long long nsid_ll = strtoull(argv[2], &end, 10);
-    if (end == argv[2] || *end != '\0' || nsid_ll == 0 ||
-        nsid_ll > UINT32_MAX) {
+    uint32_t nsid;
+    if (!ernic_parse_u32(argv[2], &nsid) || nsid == 0) {
         fprintf(stderr,
                 "kv_bench: nsid must be a positive integer <= 4294967295\n");
         return 2;
     }
-    uint32_t nsid = (uint32_t)nsid_ll;
 
-    long iters_l = strtol(argv[3], &end, 10);
-    if (end == argv[3] || *end != '\0' || iters_l <= 0) {
+    int iters;
+    if (!ernic_parse_int(argv[3], &iters) || iters <= 0) {
         fprintf(stderr, "kv_bench: iters must be a positive integer\n");
         return 2;
     }
-    int iters = (int)iters_l;
 
     // codeql[cpp/path-injection]
     int fd = open(path, O_RDONLY | O_CLOEXEC);
@@ -247,15 +245,13 @@ int main(int argc, char **argv)
 
     int rc = 0;
     for (int i = 4; i < argc; i++) {
-        unsigned long long len_ll = strtoull(argv[i], &end, 10);
-        if (end == argv[i] || *end != '\0' || len_ll == 0 ||
-            len_ll > UINT32_MAX) {
+        uint32_t len;
+        if (!ernic_parse_u32(argv[i], &len) || len == 0) {
             fprintf(stderr, "kv_bench: bad size '%s'\n", argv[i]);
             rc = 2;
             break;
         }
-        unsigned long len = (unsigned long)len_ll;
-        if (sweep_one(fd, nsid, key, (uint32_t)len, iters) != 0) {
+        if (sweep_one(fd, nsid, key, len, iters) != 0) {
             rc = 1;
             break;
         }
