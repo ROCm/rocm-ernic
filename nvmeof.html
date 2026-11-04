@@ -202,6 +202,7 @@
 <li class="toctree-l1"><a class="reference internal" href="testing.html">Testing</a></li>
 <li class="toctree-l1"><a class="reference internal" href="performance.html">Performance</a></li>
 <li class="toctree-l1"><a class="reference internal" href="nvmeof-performance.html">NVMe-oF Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof-kv-performance.html">NVMe Key Value Performance</a></li>
 <li class="toctree-l1"><a class="reference internal" href="perf-trends.html">Performance trends</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
@@ -376,6 +377,7 @@
                 <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#starting-the-server">Starting the Server</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#file-backed-namespaces">File-backed namespaces</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#key-value-and-several-namespaces-at-once">Key Value, and several namespaces at once</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#connecting-from-the-guest">Connecting from the Guest</a></li>
@@ -499,7 +501,34 @@ queue included, out of a table of 2048.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">nsid=</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
-<td><p>Namespace identifier.</p></td>
+<td><p>Identifier of the namespace being described.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ns=</span></code></p></td>
+<td><p>unset</p></td>
+<td><p>Start ANOTHER namespace, numbered by this value;
+every per-namespace option after it describes that
+one. Up to eight namespaces, and a repeated id is
+refused. See <a class="reference internal" href="#nvmeof-mixed"><span class="std std-ref">Key Value, and several namespaces at once</span></a>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">kv=</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
+<td><p>Serve this namespace with the NVM Express Key Value
+command set instead of the block one. <code class="docutils literal notranslate"><span class="pre">size=</span></code> is
+then the total value capacity and owes the block
+size nothing. Refused together with <code class="docutils literal notranslate"><span class="pre">file=</span></code>:
+the store is a hash table in anonymous memory and
+has no on-disk layout.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">keys=</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">4096</span></code></p></td>
+<td><p>Most keys live at once, Key Value namespaces only.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">maxval=</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1M</span></code></p></td>
+<td><p>Largest single value, Key Value namespaces only.
+<code class="docutils literal notranslate"><span class="pre">mdts</span></code> caps a transfer at 128 KiB whatever this
+says, so a larger value has to be stored in pieces
+under separate keys.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">model=</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">rocm-ernic</span> <span class="pre">NVMe-oF</span> <span class="pre">target</span></code></p></td>
@@ -521,11 +550,14 @@ presented, rather than surfacing later as a failed connect:</p>
 </pre></div>
 </div>
 <p>A successful start logs the controller at <code class="docutils literal notranslate"><span class="pre">info</span></code>:</p>
-<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">ionic_datapath: nvmeof target 'nvmet-test' 1073741824 bytes bs=4096 \</span>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">ionic_datapath: nvmeof target 'nvmet-test' 1 namespace(s) \</span>
 <span class="go">    at 192.168.200.1:4420</span>
+<span class="go">ionic_datapath:   nsid 1 block, 1073741824 bytes bs=4096</span>
 </pre></div>
 </div>
-<p>The size it logs is the one settled on, which for an existing
+<p>One line for the controller and one for each namespace: with
+more than one, a single line cannot say which is which. The
+size it logs is the one settled on, which for an existing
 <code class="docutils literal notranslate"><span class="pre">file=</span></code> image without <code class="docutils literal notranslate"><span class="pre">size=</span></code> is the image’s.</p>
 <section id="file-backed-namespaces">
 <span id="nvmeof-durability"></span><h3>File-backed namespaces<a class="headerlink" href="#file-backed-namespaces" title="Link to this heading">#</a></h3>
@@ -552,6 +584,61 @@ controller reports the shutdown complete; if that fails, the
 server logs an error and completes the shutdown anyway. A RAM
 namespace has no stable storage, so it reports no write cache
 and those requests are no-ops.</p>
+</section>
+<section id="key-value-and-several-namespaces-at-once">
+<span id="nvmeof-mixed"></span><h3>Key Value, and several namespaces at once<a class="headerlink" href="#key-value-and-several-namespaces-at-once" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">kv=1</span></code> serves a namespace with the NVM Express Key Value
+command set – Store (01h), Retrieve (02h), List (06h),
+Delete (10h) and Exist (14h) – instead of blocks. The key
+travels in the command dwords rather than the data buffer:
+<code class="docutils literal notranslate"><span class="pre">key[0..7]</span></code> in CDW2 and CDW3, <code class="docutils literal notranslate"><span class="pre">key[8..15]</span></code> in CDW14 and
+CDW15, the key length in CDW11[07:00], and the value size in
+CDW10.</p>
+<p>The command set is a property of the NAMESPACE, not of the
+controller, so one controller can serve both. <code class="docutils literal notranslate"><span class="pre">ns=</span></code> opens
+another namespace and everything after it describes that one:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>rocm-ernic<span class="w"> </span>--socket<span class="w"> </span>/tmp/vfio-user-rocm-ernic.sock<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--backend<span class="w"> </span>nvmeof:size<span class="o">=</span>1G,bs<span class="o">=</span><span class="m">4096</span>,ns<span class="o">=</span><span class="m">2</span>,kv<span class="o">=</span><span class="m">1</span>,size<span class="o">=</span>256M
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">nsid=</span></code> keeps its own meaning – it numbers the namespace
+being described, wherever it appears – so <code class="docutils literal notranslate"><span class="pre">size=1M,nsid=7</span></code>
+is still one namespace, numbered 7.</p>
+<p>In the guest, one <code class="docutils literal notranslate"><span class="pre">nvme</span> <span class="pre">connect</span></code> brings up both. Linux
+attaches the Key Value namespace, hides only its BLOCK device
+and keeps the generic character device:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">nvme nvme0: block device for nsid 2 not supported (csi 1)</span>
+</pre></div>
+</div>
+<p>So the block namespace is used as any other, and the Key Value
+one through <code class="docutils literal notranslate"><span class="pre">/dev/ngXnY</span></code> with NVMe passthrough. No vendor
+library is needed for either.</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>The device names do <strong>not</strong> follow the namespace ids.
+Linux names namespace devices by the head instance it
+allocated, and a hidden Key Value namespace still consumes
+one, so nsid 1 is commonly <code class="docutils literal notranslate"><span class="pre">nvme0n2</span></code> and nsid 2 is
+<code class="docutils literal notranslate"><span class="pre">ng0n1</span></code>. Resolve through sysfs rather than assuming:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>for d in /sys/class/nvme/nvme0/nvme0n*; do
+    echo "$(basename "$d") -&gt; nsid $(cat "$d/nsid")"
+done
+</pre></div>
+</div>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The two command sets are mutually exclusive WITHIN a
+namespace, and must be: a Store is opcode 01h, which a
+block namespace executes as a Write. The controller
+dispatches on the namespace the command names, reports each
+namespace’s command set in its Identify descriptor, and
+advertises both in <code class="docutils literal notranslate"><span class="pre">CAP.CSS</span></code> so the host reads them
+per namespace rather than assuming NVM.</p>
+</div>
+<p><a class="reference internal" href="nvmeof-kv-performance.html"><span class="doc">NVMe Key Value Performance</span></a> measures this path, and
+<code class="docutils literal notranslate"><span class="pre">ansible/playbooks/nvmeof-kv-tests.yml</span></code> is the play that
+exercises it.</p>
 </section>
 </section>
 <section id="connecting-from-the-guest">
@@ -848,6 +935,7 @@ anything else until the data is written.</p></li>
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#starting-the-server">Starting the Server</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#file-backed-namespaces">File-backed namespaces</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#key-value-and-several-namespaces-at-once">Key Value, and several namespaces at once</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#connecting-from-the-guest">Connecting from the Guest</a></li>

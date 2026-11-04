@@ -47,7 +47,7 @@
     <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
-    <link rel="next" title="Performance trends" href="perf-trends.html" />
+    <link rel="next" title="NVMe Key Value Performance" href="nvmeof-kv-performance.html" />
     <link rel="prev" title="Performance" href="performance.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -202,6 +202,7 @@
 <li class="toctree-l1"><a class="reference internal" href="testing.html">Testing</a></li>
 <li class="toctree-l1"><a class="reference internal" href="performance.html">Performance</a></li>
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">NVMe-oF Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof-kv-performance.html">NVMe Key Value Performance</a></li>
 <li class="toctree-l1"><a class="reference internal" href="perf-trends.html">Performance trends</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
@@ -408,9 +409,11 @@
 <p>This page records what the in-process NVMe-oF controller
 (<a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>) actually delivers, measured with <code class="docutils literal notranslate"><span class="pre">fio</span></code> from
 inside a single guest. It complements <a class="reference internal" href="performance.html"><span class="doc">Performance</span></a>, which
-covers the RDMA verbs path over the TCP mesh, and
-<a class="reference internal" href="perf-trends.html"><span class="doc">Performance trends</span></a>, which tracks the 4 KiB random-read number
-over time from the nightly run.</p>
+covers the RDMA verbs path over the TCP mesh,
+<a class="reference internal" href="nvmeof-kv-performance.html"><span class="doc">NVMe Key Value Performance</span></a>, which measures the Key Value
+command set on the same controller, and <a class="reference internal" href="perf-trends.html"><span class="doc">Performance trends</span></a>,
+which tracks the 4 KiB random-read number over time from the
+nightly run.</p>
 <p>The numbers here are not storage numbers. Nothing is measured
 against a real SSD: the namespace is host memory or a host file,
 and every command capsule and RDMA transfer is emulated in
@@ -857,11 +860,11 @@ earlier than the first, at QID 2 rather than QID 8.</p>
       </div>
     </a>
     <a class="right-next"
-       href="perf-trends.html"
+       href="nvmeof-kv-performance.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Performance trends</p>
+        <p class="prev-next-title">NVMe Key Value Performance</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>

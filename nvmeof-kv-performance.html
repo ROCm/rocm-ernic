@@ -1,0 +1,710 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="./" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>NVMe Key Value Performance &#8212; rocm-ernic 0.2.0</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="_static/styles/sphinx-book-theme.css?v=4418a689" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="_static/documentation_options.js?v=7f7c277e"></script>
+    <script src="_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/scripts/sphinx-book-theme.js?v=fab101a9"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'nvmeof-kv-performance';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Performance trends" href="perf-trends.html" />
+    <link rel="prev" title="NVMe-oF Performance" href="nvmeof-performance.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.2.0" />
+  
+    
+    <script src="_static/searchtools.js"></script>
+    <script src="_static/language_data.js"></script>
+    <script src="searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search..."
+         aria-label="Search..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="index.html">
+  
+  
+  
+  
+  
+  
+    <p class="title logo__title">rocm-ernic 0.2.0</p>
+  
+</a></div>
+        <div class="sidebar-primary-item">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button></div>
+        <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
+    <div class="bd-toc-item navbar-nav active">
+        <p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="building.html">Building and Installing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usage.html">Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ionic.html">The ionic Device</a></li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof.html">NVMe-oF Controller</a></li>
+<li class="toctree-l1"><a class="reference internal" href="s3.html">S3 over RDMA Object Store</a></li>
+<li class="toctree-l1"><a class="reference internal" href="p4.html">P4 Match-Action Engine</a></li>
+<li class="toctree-l1"><a class="reference internal" href="service.html">systemd Service and ernicctl</a></li>
+<li class="toctree-l1"><a class="reference internal" href="monitoring.html">Prometheus Monitoring and Grafana Dashboard</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing.html">Testing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="performance.html">Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="nvmeof-performance.html">NVMe-oF Performance</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">NVMe Key Value Performance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="perf-trends.html">Performance trends</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="api.html">API Reference</a></li>
+</ul>
+
+    </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+
+<div class="sbt-scroll-pixel-helper"></div>
+
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item"><button class="sidebar-toggle primary-toggle btn btn-sm" title="Toggle primary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <span class="fa-solid fa-bars"></span>
+</button></div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+
+<div class="article-header-buttons">
+
+
+<a href="https://github.com/ROCm/rocm-ernic" target="_blank"
+   class="btn btn-sm btn-source-repository-button"
+   title="Source repository"
+   data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fab fa-github"></i>
+  </span>
+
+</a>
+
+
+
+
+
+
+<div class="dropdown dropdown-download-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Download this page">
+    <i class="fas fa-download"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="_sources/nvmeof-kv-performance.rst" target="_blank"
+   class="btn btn-sm btn-download-source-button dropdown-item"
+   title="Download source file"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file"></i>
+  </span>
+<span class="btn__text-container">.rst</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li>
+<button onclick="window.print()"
+  class="btn btn-sm btn-download-pdf-button dropdown-item"
+  title="Print to PDF"
+  data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file-pdf"></i>
+  </span>
+<span class="btn__text-container">.pdf</span>
+</button>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+<button onclick="toggleFullScreen()"
+  class="btn btn-sm btn-fullscreen-button pst-navbar-icon"
+  title="Fullscreen mode"
+  data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-expand"></i>
+  </span>
+
+</button>
+
+
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div>
+
+
+<button class="btn btn-sm pst-navbar-icon search-button search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass fa-lg"></i>
+</button>
+<button class="sidebar-toggle secondary-toggle btn btn-sm pst-navbar-icon" title="Toggle secondary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <span class="fa-solid fa-list"></span>
+</button>
+</div></div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="jb-print-docs-body" class="onlyprint">
+    <h1>NVMe Key Value Performance</h1>
+    <!-- Table of contents -->
+    <div id="print-main-content">
+        <div id="jb-print-toc">
+            
+            <div>
+                <h2> Contents </h2>
+            </div>
+            <nav aria-label="Page">
+                <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-the-numbers-are-and-are-not">What the numbers are, and are not</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#test-environment">Test Environment</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#results">Results</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-the-lane-also-checks">What the lane also checks</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reproducing">Reproducing</a></li>
+</ul>
+            </nav>
+        </div>
+    </div>
+</div>
+
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="nvme-key-value-performance">
+<h1>NVMe Key Value Performance<a class="headerlink" href="#nvme-key-value-performance" title="Link to this heading">#</a></h1>
+<p>This page records what the Key Value command set delivers on a
+controller that serves a block namespace and a Key Value namespace at
+the same time (<a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>). It complements
+<a class="reference internal" href="nvmeof-performance.html"><span class="doc">NVMe-oF Performance</span></a>, which measures the block namespace with
+<code class="docutils literal notranslate"><span class="pre">fio</span></code>, and <a class="reference internal" href="perf-trends.html"><span class="doc">Performance trends</span></a>, which tracks the 64 KiB Retrieve
+number over time from the nightly run.</p>
+<p>As with the block page, these are not storage numbers. The namespace
+is a hash table in the server’s own memory and every command capsule
+and RDMA transfer is emulated in userspace, so what the sweep measures
+is the emulator: the capsule round trip, the key decode, and the RDMA
+engine in <code class="file docutils literal notranslate"><span class="pre">src/ionic/ionic_datapath.c</span></code>. Treat a regression here
+as a regression in that code.</p>
+<nav class="contents local" id="sections">
+<p class="topic-title">Sections</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="#what-the-numbers-are-and-are-not" id="id1">What the numbers are, and are not</a></p></li>
+<li><p><a class="reference internal" href="#test-environment" id="id2">Test Environment</a></p></li>
+<li><p><a class="reference internal" href="#results" id="id3">Results</a></p></li>
+<li><p><a class="reference internal" href="#what-the-lane-also-checks" id="id4">What the lane also checks</a></p></li>
+<li><p><a class="reference internal" href="#reproducing" id="id5">Reproducing</a></p></li>
+</ul>
+</nav>
+<section id="what-the-numbers-are-and-are-not">
+<h2><a class="toc-backref" href="#id1" role="doc-backlink">What the numbers are, and are not</a><a class="headerlink" href="#what-the-numbers-are-and-are-not" title="Link to this heading">#</a></h2>
+<p><strong>This is a depth-one synchronous path.</strong> <code class="file docutils literal notranslate"><span class="pre">tests/kv_bench.c</span></code>
+issues one command, waits for it, and issues the next, through
+<code class="docutils literal notranslate"><span class="pre">ioctl(NVME_IOCTL_IO_CMD)</span></code>. That is the right shape for a latency
+figure and for catching a regression in the per-command cost, and it
+is the wrong shape for a throughput headline: a queued initiator over
+<code class="docutils literal notranslate"><span class="pre">io_uring</span></code> passthrough reaches an order of magnitude more bandwidth
+on the same controller, because it keeps many commands outstanding
+rather than paying the round trip serially.</p>
+<p>So read the bandwidth columns as <em>size divided by a fixed per-command
+cost</em>, which is exactly what they are.</p>
+<p><strong>It is not a loop around nvme-cli.</strong> <code class="docutils literal notranslate"><span class="pre">nvme</span> <span class="pre">io-passthru</span></code> costs about
+5 ms per invocation to fork, exec and dynamically link, which is more
+than an order of magnitude above the command it issues. Timing a shell
+loop around it reports the same ~5 ms at every value size: a flat line
+that looks like a working measurement and tracks nothing about the
+device. That is why the lane builds a small benchmark in the guest
+instead.</p>
+</section>
+<section id="test-environment">
+<h2><a class="toc-backref" href="#id2" role="doc-backlink">Test Environment</a><a class="headerlink" href="#test-environment" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Component</p></th>
+<th class="head"><p>Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Host</p></td>
+<td><p>AMD EPYC 9655, 32 threads available</p></td>
+</tr>
+<tr class="row-odd"><td><p>Host kernel</p></td>
+<td><p>6.8.0-117-generic</p></td>
+</tr>
+<tr class="row-even"><td><p>Guest</p></td>
+<td><p>Ubuntu, kernel 7.2.6-070206-generic</p></td>
+</tr>
+<tr class="row-odd"><td><p>Guest vCPUs / memory</p></td>
+<td><p>8 / 16 GiB</p></td>
+</tr>
+<tr class="row-even"><td><p>Emulated device</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1dd8:1002</span></code> (ionic)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Active MTU</p></td>
+<td><p>1024 bytes</p></td>
+</tr>
+<tr class="row-even"><td><p>Backend</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">nvmeof:size=1G,bs=4096,</span></code>
+<code class="docutils literal notranslate"><span class="pre">ns=2,kv=1,size=2G,keys=8192,maxval=1M</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Namespaces</p></td>
+<td><p>nsid 1: 1 GiB block, 4 KiB blocks</p>
+<p>nsid 2: Key Value, 2 GiB, 8192 keys</p>
+</td>
+</tr>
+<tr class="row-even"><td><p>nvme-cli</p></td>
+<td><p>2.16</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The controller reports <code class="docutils literal notranslate"><span class="pre">mdts=5</span></code>, <code class="docutils literal notranslate"><span class="pre">maxcmd=128</span></code> and <code class="docutils literal notranslate"><span class="pre">ioccsz=4</span></code>, so
+every command carries a keyed SGL rather than in-capsule data.</p>
+</section>
+<section id="results">
+<h2><a class="toc-backref" href="#id3" role="doc-backlink">Results</a><a class="headerlink" href="#results" title="Link to this heading">#</a></h2>
+<p>Four runs of 64 iterations each, median reported. <code class="docutils literal notranslate"><span class="pre">kv_bench</span></code> Stores,
+Retrieves, compares the bytes, and only then times each direction.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Value size</p></th>
+<th class="head"><p>Store (GB/s)</p></th>
+<th class="head"><p>Retrieve (GB/s)</p></th>
+<th class="head"><p>Store (µs)</p></th>
+<th class="head"><p>Retrieve (µs)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>4 KiB</p></td>
+<td><p>0.012</p></td>
+<td><p>0.012</p></td>
+<td><p>330</p></td>
+<td><p>331</p></td>
+</tr>
+<tr class="row-odd"><td><p>64 KiB</p></td>
+<td><p>0.244</p></td>
+<td><p>0.199</p></td>
+<td><p>230</p></td>
+<td><p>330</p></td>
+</tr>
+<tr class="row-even"><td><p>128 KiB</p></td>
+<td><p>0.549</p></td>
+<td><p>0.398</p></td>
+<td><p>235</p></td>
+<td><p>328</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Retrieve latency is flat.</strong> 331, 330 and 328 µs across a 32-fold
+change in value size: the transfer itself is not what the time is
+spent on, and the bandwidth column is therefore the value size divided
+by an almost constant per-command cost. A regression in that fixed
+cost is the thing this lane is positioned to catch, and it will show
+up in every row at once rather than at one size.</p>
+<p><strong>Store is faster than Retrieve above 4 KiB, and noisier.</strong> Store
+ranged 0.199 to 0.292 GB/s at 64 KiB and 0.454 to 0.588 at 128 KiB
+across the four runs, against a Retrieve that held within a few per
+cent. The two directions are not symmetric: a Store is a
+host-to-controller transfer the target copies into the store, and a
+Retrieve is the other direction. They are charted separately for that
+reason – one averaged number would hide a regression in whichever
+direction did not move.</p>
+<p><strong>1 MiB is absent by construction.</strong> The controller reports MDTS 5, so
+one Key Value command carries at most <code class="docutils literal notranslate"><span class="pre">2^5</span> <span class="pre">*</span> <span class="pre">4</span> <span class="pre">KiB</span></code> = 128 KiB
+however large <code class="docutils literal notranslate"><span class="pre">maxval</span></code> is, and the kernel refuses a longer transfer
+before the device sees it. 128 KiB is the ceiling, not a choice. That
+is also why the trend chart draws only two of the three tracked sizes
+for this lane.</p>
+</section>
+<section id="what-the-lane-also-checks">
+<h2><a class="toc-backref" href="#id4" role="doc-backlink">What the lane also checks</a><a class="headerlink" href="#what-the-lane-also-checks" title="Link to this heading">#</a></h2>
+<p>The sweep is the last thing the play does. Before it, and on every run
+rather than only when publishing:</p>
+<ul class="simple">
+<li><p>Both namespaces attach, and each reports its <strong>own</strong> command set –
+CSI 0 for the block namespace and CSI 1 for the Key Value one. Both
+have to say so explicitly: once a controller advertises more than
+one command set the host stops assuming NVM, and a block namespace
+that reports nothing is dropped with <code class="docutils literal notranslate"><span class="pre">Command</span> <span class="pre">set</span> <span class="pre">not</span> <span class="pre">reported</span> <span class="pre">for</span>
+<span class="pre">nsid</span></code>.</p></li>
+<li><p>A full Key Value round trip: Exist on an empty store misses, Store,
+Exist hits, Retrieve returns the same bytes, Delete, Exist misses
+again.</p></li>
+<li><p><strong>Isolation, which is the point of the lane.</strong> A pattern is written
+to the block namespace before any Key Value traffic and digested
+afterwards. A Store is opcode 01h and a block Write is opcode 01h;
+the only thing that tells them apart is the namespace the command
+names. A controller that dispatched on itself rather than on the
+addressed namespace would pass every check above and fail this one.</p></li>
+<li><p>A Key Value opcode sent to the block namespace is refused. <code class="docutils literal notranslate"><span class="pre">Exist</span></code>
+(0x14) has no meaning in the NVM command set, so running it rather
+than rejecting it would say dispatch is not per namespace.</p></li>
+</ul>
+</section>
+<section id="reproducing">
+<h2><a class="toc-backref" href="#id5" role="doc-backlink">Reproducing</a><a class="headerlink" href="#reproducing" title="Link to this heading">#</a></h2>
+<p>One server and one guest are a complete fabric, for Key Value exactly
+as for blocks. Start the server on a mixed backend:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>rocm-ernic<span class="w"> </span>--socket<span class="w"> </span>/tmp/vfio-user-rocm-ernic.sock<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--backend<span class="w"> </span><span class="s2">"nvmeof:size=1G,bs=4096,ip=192.168.200.1,\</span>
+<span class="s2">ns=2,kv=1,size=2G,keys=8192,maxval=1M"</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">ns=2</span></code> opens a second namespace numbered 2; the options after it
+describe that one. Then, from the guest, after
+<a class="reference internal" href="testing.html"><span class="doc">Testing</span></a>’s guest setup has run:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>ansible
+ansible-playbook<span class="w"> </span>ci-site.yml<span class="w"> </span>--tags<span class="w"> </span>nvmeof-kv<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-e<span class="w"> </span><span class="nv">ernic_run_dir</span><span class="o">=</span>/tmp/ernic-ci<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-e<span class="w"> </span><span class="nv">ernic_vm_ssh_base_port</span><span class="o">=</span><span class="m">2222</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-e<span class="w"> </span><span class="nv">ernic_instances</span><span class="o">=</span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-e<span class="w"> </span><span class="nv">ernic_kv_perf_csv</span><span class="o">=</span>/tmp/results/perf-csv/nvmekv-bw.csv
+</pre></div>
+</div>
+<p>Leave <code class="docutils literal notranslate"><span class="pre">ernic_kv_perf_csv</span></code> unset to run the functional checks without
+the sweep, which is what a pull request does.</p>
+<p>To run just the benchmark by hand, against the generic char device of
+the Key Value namespace:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>gcc<span class="w"> </span>-std<span class="o">=</span>c11<span class="w"> </span>-O2<span class="w"> </span>-o<span class="w"> </span>kv_bench<span class="w"> </span>tests/kv_bench.c
+sudo<span class="w"> </span>./kv_bench<span class="w"> </span>/dev/ng0n2<span class="w"> </span><span class="m">2</span><span class="w"> </span><span class="m">64</span><span class="w"> </span><span class="m">4096</span><span class="w"> </span><span class="m">65536</span><span class="w"> </span><span class="m">131072</span>
+</pre></div>
+</div>
+<p>Note that the device name is <strong>not</strong> derived from the namespace id.
+Linux names namespace devices by the head instance it allocated, and a
+hidden Key Value namespace still consumes one, so nsid 2 is commonly
+<code class="docutils literal notranslate"><span class="pre">ng0n1</span></code> and nsid 1 is <code class="docutils literal notranslate"><span class="pre">nvme0n2</span></code>. Resolve it through sysfs:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="k">for</span><span class="w"> </span>d<span class="w"> </span><span class="k">in</span><span class="w"> </span>/sys/class/nvme/nvme0/nvme0n*<span class="p">;</span><span class="w"> </span><span class="k">do</span>
+<span class="w">    </span><span class="nb">echo</span><span class="w"> </span><span class="s2">"</span><span class="k">$(</span>basename<span class="w"> </span><span class="s2">"</span><span class="nv">$d</span><span class="s2">"</span><span class="k">)</span><span class="s2"> -&gt; nsid </span><span class="k">$(</span>cat<span class="w"> </span><span class="s2">"</span><span class="nv">$d</span><span class="s2">/nsid"</span><span class="k">)</span><span class="s2">"</span>
+<span class="k">done</span>
+</pre></div>
+</div>
+</section>
+</section>
+
+
+                </article>
+              
+
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="nvmeof-performance.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">NVMe-oF Performance</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="perf-trends.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Performance trends</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item"><div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> Contents
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-the-numbers-are-and-are-not">What the numbers are, and are not</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#test-environment">Test Environment</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#results">Results</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-the-lane-also-checks">What the lane also checks</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reproducing">Reproducing</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+<div class="bd-footer-content__inner container">
+  
+  <div class="footer-item">
+    
+<p class="component-author">
+By Advanced Micro Devices, Inc.
+</p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+
+  <p class="copyright">
+    
+      © Copyright 2025-2026 Advanced Micro Devices, Inc. All rights reserved..
+      <br/>
+    
+  </p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+</div>
+          </footer>
+        
+
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+  </footer>
+  </body>
+</html>

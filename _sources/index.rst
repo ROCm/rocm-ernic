@@ -73,6 +73,7 @@ a host TAP:
    testing
    performance
    nvmeof-performance
+   nvmeof-kv-performance
    perf-trends
 
 .. toctree::
