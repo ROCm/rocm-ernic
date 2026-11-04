@@ -81,6 +81,14 @@ upstream driver expects:
      - 4 MB
      - Doorbell pages; the offset within a page encodes the
        queue type, the page index the process ID
+   * - BAR 4
+     - 8 MB
+     - Controller Memory Buffer (CMB); ``DISCOVER_CMB`` (opcode 80)
+       returns two regions here: ``DEVMEM`` (type 0) and ``EXPDB512``
+       (type 4), each 128 × 64 KiB pages.  ``Q_IDENTIFY`` for TXQ
+       and RXQ sets ``IONIC_QIDENT_F_EXPDB`` so the driver may
+       request express-doorbell QPs that write WQEs directly into
+       this memory instead of ringing a separate doorbell.
 
 The MSI-X table has room for 128 vectors; the device
 advertises the profile's ``queues.intr_vectors`` of them (32
