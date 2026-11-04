@@ -64,6 +64,9 @@
   tombstone deletion, so a List walk cannot skip a live key. Covered by
   `test_kv_store()` and `test_kv_commands()` in `tests/test_nvmeof_target.c`,
   which drive real capsules against it without a VM.
+  `tests/test_nvmeof_kv_compact.c` (`nvmeof-kv-compact-unit`) covers
+  `kv_compact()` directly, including the calloc-failure path that leaves
+  the table intact as a best-effort degraded state.
 
 * **An AMD Pensando ionic NIC.** The server presents `1dd8:1002` (subsystem
   `1dd8:5400`), so guests use the upstream Linux `ionic` and `ionic_rdma`

@@ -258,6 +258,18 @@ ernic_add_test_program(test_nvmeof_target
     HEADER_DEPS vfio-user
 )
 
+# KV store compaction unit test: exercises kv_compact() via the delete
+# path, and the calloc-failure path that leaves the table intact.
+# --wrap=calloc lets the test arm a one-shot failure without changing
+# production code.
+ernic_add_test_program(test_nvmeof_kv_compact
+    SOURCES
+        test_nvmeof_kv_compact.c
+        ${PROJECT_SOURCE_DIR}/src/nvmeof/nvmeof_kv.c
+)
+target_link_options(test_nvmeof_kv_compact PRIVATE
+    "LINKER:--wrap=calloc")
+
 # IB CM responder test. Feeds it the CM MADs a guest running rdma_cm
 # emits and dissects the replies; no MAD ever reaches a wire.
 ernic_add_test_program(test_nvmeof_cm
@@ -862,6 +874,10 @@ endif()
 # NVMe-oF controller unit test: drives the capsule sequence a real
 # nvme-rdma initiator emits, from Fabrics Connect to read-after-write.
 ernic_add_unit_test(nvmeof-target-unit test_nvmeof_target TIMEOUT 30)
+
+# KV store compaction unit test: tombstone-triggered compact and the
+# calloc-failure path that leaves the table intact.
+ernic_add_unit_test(nvmeof-kv-compact-unit test_nvmeof_kv_compact TIMEOUT 30)
 
 # IB CM responder unit test: REQ/REP/RTU/DREQ, plus every rejection path
 # a misaddressed or mismatched "nvme connect" can take.
