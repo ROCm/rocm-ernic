@@ -230,7 +230,7 @@ int main(int argc, char **argv)
     }
     int iters = (int)iters_l;
 
-    int fd = open(path, O_RDONLY);
+    int fd = open(path, O_RDONLY); // codeql[cpp/path-injection] benchmark tool: caller supplies the device path by design
     if (fd < 0) {
         fprintf(stderr, "kv_bench: cannot open %s: %s\n", path,
                 strerror(errno));
