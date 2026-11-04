@@ -175,8 +175,8 @@
       changed_when: false
       retries: 15
       delay: 2
-      until: ernic_kv_nsmap.results | selectattr('rc', 'ne', 0) | list | length == 0
-      failed_when: ernic_kv_nsmap.results | selectattr('rc', 'ne', 0) | list | length > 0
+      until: ernic_kv_nsmap.rc == 0
+      failed_when: ernic_kv_nsmap.rc != 0
 
     - name: Fail when the controller did not present both namespaces
       ansible.builtin.fail:

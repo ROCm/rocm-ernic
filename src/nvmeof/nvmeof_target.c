@@ -1374,7 +1374,7 @@ static uint16_t do_identify(const struct nvmeof_queue *q, const uint8_t *sqe,
             ids[j] = id;
         }
         for (unsigned i = 0; i < n; i++) {
-            ernic_put_le32(buf + (i * 4), ids[i]);
+            ernic_put_le32(buf + ((size_t)i * 4), ids[i]);
         }
         break;
     }
@@ -1805,7 +1805,7 @@ static uint16_t kv_exec(struct nvmeof_target *t, struct nvmeof_ns *ns,
         }
 
         while (nvmeof_kv_next(ns->kv, &iter, &k)) {
-            if (off + 1u + k.len > cap) {
+            if (off + 1U + k.len > cap) {
                 break;
             }
             buf[off++] = k.len;
