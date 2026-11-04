@@ -238,8 +238,7 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    // codeql[cpp/path-injection]
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    int fd = open(path, O_RDONLY | O_CLOEXEC); // codeql[cpp/path-injection]
     if (fd < 0) {
         fprintf(stderr, "kv_bench: cannot open %s: %s\n", path,
                 strerror(errno));
