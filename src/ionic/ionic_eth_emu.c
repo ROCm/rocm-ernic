@@ -831,6 +831,11 @@ static void process_devcmd(struct ionic_eth_emu *emu)
         handle_p4_cmd(emu, cmd, comp);
         break;
 
+    case IONIC_CMD_DISCOVER_CMB:
+        ionic_eth_emu_handle_discover_cmb(data);
+        comp[0] = IONIC_RC_SUCCESS;
+        break;
+
     default:
         vfu_log(emu->vfu_ctx, LOG_WARNING, "ionic_eth_emu: unknown opcode=%u",
                 opcode);
@@ -1392,10 +1397,10 @@ void ionic_eth_emu_handle_q_identify(const struct ionic_eth_emu *emu,
         ernic_put_le16(data + QID_SG_DESC_STRIDE_OFF, TXQ_SG_MAX_ELEMS);
     }
 
-    /* features stays zero: no CMB, no 2x/4x descriptor rings, no expanded
-     * doorbell.  Every one of those changes a ring layout we would then have
-     * to decode differently. */
-    ernic_put_le16(data + QID_FEATURES_OFF, 0);
+    if (qtype == IONIC_QTYPE_TXQ || qtype == IONIC_QTYPE_RXQ)
+        ernic_put_le64(data + QID_FEATURES_OFF, IONIC_QIDENT_F_EXPDB);
+    else
+        ernic_put_le64(data + QID_FEATURES_OFF, 0);
 #undef QID_SG_DESC_STRIDE_OFF
 #undef QID_MAX_SG_ELEMS_OFF
 #undef QID_SG_DESC_SZ_OFF
@@ -1406,6 +1411,37 @@ void ionic_eth_emu_handle_q_identify(const struct ionic_eth_emu *emu,
     /* struct ionic_q_identify_comp: status@0, rsvd@1, comp_index@2, ver@4. */
     comp[0] = 0;
     comp[4] = 0;
+}
+
+/* -------------------------------------------------------------------------
+ * DISCOVER_CMB (opcode 80)
+ *
+ * Writes union ionic_discover_cmb_identity into data[].  We advertise two
+ * regions on PCI BAR4: a DEVMEM region covering the whole 8 MB CMB, and an
+ * EXPDB512 region over the same range, telling the kernel driver that the
+ * CMB carries 512-byte express-doorbell WQE slots.
+ * -------------------------------------------------------------------------
+ */
+void ionic_eth_emu_handle_discover_cmb(uint8_t *data)
+{
+    memset(data, 0, DEVCMD_DATA_SIZE);
+
+    ernic_put_le32(data + CMB_ID_NUM_REGIONS_OFF, 2);
+    ernic_put_le32(data + CMB_ID_FLAGS_OFF, IONIC_CMB_FLAG_EXPDB);
+
+    /* region[0]: DEVMEM — the whole CMB BAR as generic device memory */
+    uint8_t *r0 = data + CMB_ID_REGION_OFF;
+    r0[CMB_REGION_BAR_NUM_OFF] = 4;
+    r0[CMB_REGION_TYPE_OFF] = IONIC_CMB_TYPE_DEVMEM;
+    ernic_put_le32(r0 + CMB_REGION_OFFSET_OFF, 0);
+    ernic_put_le32(r0 + CMB_REGION_LENGTH_OFF, IONIC_CMB_ENTRY_PAGES);
+
+    /* region[1]: EXPDB512 — 512-byte express-doorbell WQE slots */
+    uint8_t *r1 = data + CMB_ID_REGION_OFF + CMB_ID_REGION_SIZE;
+    r1[CMB_REGION_BAR_NUM_OFF] = 4;
+    r1[CMB_REGION_TYPE_OFF] = IONIC_CMB_TYPE_EXPDB512;
+    ernic_put_le32(r1 + CMB_REGION_OFFSET_OFF, 0);
+    ernic_put_le32(r1 + CMB_REGION_LENGTH_OFF, IONIC_CMB_ENTRY_PAGES);
 }
 
 /* -------------------------------------------------------------------------

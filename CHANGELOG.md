@@ -18,6 +18,16 @@
 
 ### Added
 
+* **Express doorbell (CMB / EXPDB) detection.** The server now exposes an
+  8 MB Controller Memory Buffer on BAR4 and responds to `DISCOVER_CMB`
+  (opcode 80): two CMB regions are reported — `DEVMEM` and `EXPDB512` —
+  each 128 × 64 KiB pages on BAR4.  `Q_IDENTIFY` for TXQ (qtype 3) and
+  RXQ (qtype 2) now sets the `IONIC_QIDENT_F_EXPDB` feature bit so the
+  guest `ionic_rdma` driver may request express-doorbell QPs.
+  `CREATE_QP` detects the `IONIC_QPF_SQ_CMB` and `IONIC_QPF_RQ_CMB`
+  flags and logs a warning; actual WQE dispatch from the CMB is not yet
+  implemented.
+
 * `--backend nvmeof:kv=1[,keys=...,maxval=...]` serves the namespace with the
   NVM Express Key Value command set instead of the block one: Store (01h),
   Retrieve (02h), List (06h), Delete (10h) and Exist (14h), with the key

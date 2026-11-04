@@ -309,6 +309,27 @@ static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
     return ionic_eth_emu_bar2_access(emu, buf, count, offset, is_write);
 }
 
+/*
+ * BAR4 (CMB) access callback.
+ *
+ * The guest writes WQEs directly into the CMB via MOVDIR64B; each aligned
+ * 64-byte write is one stride.  Reads are not part of the expdb protocol,
+ * but libvfio-user may deliver them; return zeros for reads and log writes
+ * at debug level so they are visible under -v without noise in production.
+ * Actual WQE dispatch is deferred until the datapath gains a CMB path.
+ */
+static ssize_t bar4_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
+                           loff_t offset, bool is_write)
+{
+    if (is_write) {
+        vfu_log(vfu_ctx, LOG_DEBUG, "CMB BAR4 write: offset=0x%llx count=%zu",
+                (unsigned long long)(uint64_t)offset, count);
+    } else {
+        memset(buf, 0, count);
+    }
+    return (ssize_t)count;
+}
+
 /**
  * Device reset callback
  *
@@ -566,6 +587,7 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx)
  *   BAR0 (64-bit): 32 KB device registers (devcmd + MSI-X ctrl),
  *                  with the MSI-X table/PBA above the register window
  *   BAR2 (64-bit): 4 MB doorbell pages (BAR1 is skipped per ionic spec)
+ *   BAR4 (64-bit): 8 MB Controller Memory Buffer (CMB) for express doorbell
  *
  * Returns 0, or -1 after saying why.
  */
@@ -598,10 +620,19 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
         return -1;
     }
 
-    ernic_startup_report(
-        "rocm-ernic: ionic BARs configured: BAR0=%zu (regs=%zu) BAR2=%zu",
-        (size_t)IONIC_BAR0_TOTAL_SIZE, (size_t)IONIC_BAR0_REGS_SIZE,
-        IONIC_BAR2_DB_SIZE);
+    ret = vfu_setup_region(
+        vfu_ctx, VFU_PCI_DEV_BAR4_REGION_IDX, IONIC_BAR4_CMB_SIZE, bar4_access,
+        VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL, 0, -1, 0);
+    if (ret < 0) {
+        warn_errno("ionic: Failed to setup BAR4 (CMB)");
+        return -1;
+    }
+
+    ernic_startup_report("rocm-ernic: ionic BARs configured: BAR0=%zu "
+                         "(regs=%zu) BAR2=%zu BAR4=%zu (CMB)",
+                         (size_t)IONIC_BAR0_TOTAL_SIZE,
+                         (size_t)IONIC_BAR0_REGS_SIZE, IONIC_BAR2_DB_SIZE,
+                         IONIC_BAR4_CMB_SIZE);
 
     return 0;
 }

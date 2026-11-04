@@ -807,6 +807,7 @@ static uint8_t handle_create_cq_op(struct ionic_adminq_ctx *ctx,
  *   u8   type_state   [62]     qp_type | (state<<4)
  * -------------------------------------------------------------------------
  */
+#define CREATE_QP_PRIV_FLAGS_OFF        4
 #define CREATE_QP_SQ_CQ_ID_OFF          8
 #define CREATE_QP_SQ_DEPTH_LOG2_OFF     12
 #define CREATE_QP_SQ_STRIDE_LOG2_OFF    13
@@ -1192,12 +1193,16 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
         return IONIC_RC_EINVAL;
     }
 
+    uint32_t priv_flags = ernic_get_be32(body + CREATE_QP_PRIV_FLAGS_OFF);
     uint32_t sq_cq_id = ernic_get_le32(body + CREATE_QP_SQ_CQ_ID_OFF);
     uint32_t rq_cq_id = ernic_get_le32(body + CREATE_QP_RQ_CQ_ID_OFF);
     uint32_t qp_id = ernic_get_le32(body + CREATE_QP_ID_VER_OFF) & 0x00ffffffU;
 
     uint8_t type_state = body[CREATE_QP_TYPE_STATE_OFF];
     uint8_t ib_qp_type = ionic_qpt_to_ib(type_state & 0x0fU, qp_id);
+
+    bool sq_cmb = (priv_flags & IONIC_QPF_SQ_CMB) != 0;
+    bool rq_cmb = (priv_flags & IONIC_QPF_RQ_CMB) != 0;
 
     /* As for a CQ: the data path holds QP ids below the identity's count. */
     if (qp_id >= ERNIC_MAX_QP) {
@@ -1334,8 +1339,13 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
         return adminq_dp_status(ret);
     }
 
-    *entry =
-        (struct ionic_qp_map_entry){.valid = true, .qp_id = qp_id, .qpn = qpn};
+    *entry = (struct ionic_qp_map_entry){
+        .valid = true,
+        .qp_id = qp_id,
+        .qpn = qpn,
+        .sq_cmb = sq_cmb,
+        .rq_cmb = rq_cmb,
+    };
 
     /*
      * The id was read and checked before any of the above was allocated.
@@ -1348,11 +1358,18 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
         ionic_datapath_bind_qp_srq(ctx->dp, qp_id, rq_tbl_index_srq_id);
     }
 
+    if (sq_cmb || rq_cmb) {
+        vfu_log(ctx->vfu_ctx, LOG_WARNING,
+                "ionic_adminq CREATE_QP %u: CMB rings requested (sq_cmb=%d "
+                "rq_cmb=%d); WQE dispatch from CMB not yet implemented",
+                qp_id, (int)sq_cmb, (int)rq_cmb);
+    }
+
     vfu_log(ctx->vfu_ctx, LOG_INFO,
             "ionic_adminq CREATE_QP qp_id=%u qpn=%u type=%u sq_cq=%u/%u "
-            "rq_cq=%u/%u pd=%u",
+            "rq_cq=%u/%u pd=%u sq_cmb=%d rq_cmb=%d",
             qp_id, qpn, ib_qp_type, sq_cq_id, send_cq, rq_cq_id, recv_cq,
-            pd_handle);
+            pd_handle, (int)sq_cmb, (int)rq_cmb);
     return IONIC_RC_SUCCESS;
 }
 

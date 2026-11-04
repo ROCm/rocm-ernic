@@ -31,8 +31,7 @@
  *   bars[2] = CMB, optional  (IONIC_PCI_BAR_CMB)
  *
  * Our BAR0 is 64-bit, so it consumes PCI BAR0+BAR1 and the guest sees our
- * PCI BAR2 as bars[1].  We expose no third MEM BAR, so the driver takes
- * the "no CMB" path.
+ * PCI BAR2 as bars[1] and our PCI BAR4 as bars[2] (the CMB BAR).
  *
  * BAR0 map.  The first 32 KB is the ionic register window, laid out
  * exactly as ionic_dev_setup() expects.  MSI-X cannot live at offset 0
@@ -49,6 +48,11 @@
  *
  * BAR2: doorbell pages -- kernel page at index kern_pid, user pages at
  * higher indices via mmap.
+ *
+ * BAR4 (PCI BAR4+5, 64-bit): Controller Memory Buffer (CMB), 8 MB.  The
+ * guest driver maps this region and writes WQEs directly into it with
+ * MOVDIR64B; the last 64-byte write of a multi-stride WQE triggers dispatch
+ * (express doorbell, no separate doorbell ring needed).
  * ---------------------------------------------------------------------------
  */
 /* The register window's blocks */
@@ -93,6 +97,9 @@ static inline uint32_t ionic_db_qid(uint64_t db)
     return (uint32_t)(((db >> IONIC_DB_QID_LO_SHIFT) & 0xffU) |
                       (((db >> IONIC_DB_QID_HI_SHIFT) & 0xffffU) << 8));
 }
+
+#define IONIC_BAR4_CMB_SIZE \
+    ((size_t)8 * 1024 * 1024) /* 8 MB CMB (Controller Memory Buffer) */
 
 /* ionic MSI-X vectors.  ionic_lif_size() budgets 1 (adminq) + one per Tx/Rx
  * queue pair + one per RDMA EQ, and ionic_create_rdma_admin() hard-fails with
