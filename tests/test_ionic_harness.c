@@ -7095,7 +7095,7 @@ static void test_nvmeof_queue_limit(void)
     struct ih h;
 
     nvmeof_target_cfg_defaults(&cfg);
-    cfg.size = 1U << 20;
+    cfg.ns[0].size = 1U << 20;
 
     cfg.max_queues = IONIC_MAX_MR_QUEUES;
     err[0] = '\0';

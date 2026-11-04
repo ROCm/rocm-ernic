@@ -79,11 +79,26 @@ bool ionic_datapath_attach_nvmeof(struct ionic_datapath *dp,
     /* The target's copy has the size an existing image file settled on. */
     cfg = nvmeof_target_config(dp->nvmeof);
     vfu_log(dp->vfu_ctx, LOG_INFO,
-            "ionic_datapath: nvmeof target '%s' %" PRIu64
-            " bytes bs=%u at %u.%u.%u.%u:%u",
-            cfg->subnqn, cfg->size, cfg->block_size, cfg->traddr >> 24,
+            "ionic_datapath: nvmeof target '%s' %u namespace(s) at "
+            "%u.%u.%u.%u:%u",
+            cfg->subnqn, cfg->ns_count, cfg->traddr >> 24,
             (cfg->traddr >> 16) & 0xff, (cfg->traddr >> 8) & 0xff,
             cfg->traddr & 0xff, cfg->trsvcid);
+    /* Per namespace, because the command set is per namespace: a mixed
+     * controller is the interesting case and a single line cannot say it. */
+    for (unsigned i = 0; i < cfg->ns_count; i++) {
+        const struct nvmeof_ns_cfg *n = &cfg->ns[i];
+        if (n->kv) {
+            vfu_log(dp->vfu_ctx, LOG_INFO,
+                    "ionic_datapath:   nsid %u key value, %" PRIu64
+                    " bytes, %u keys, maxval %u",
+                    n->nsid, n->size, n->kv_max_keys, n->kv_max_value);
+        } else {
+            vfu_log(dp->vfu_ctx, LOG_INFO,
+                    "ionic_datapath:   nsid %u block, %" PRIu64 " bytes bs=%u",
+                    n->nsid, n->size, n->block_size);
+        }
+    }
     return true;
 }
 

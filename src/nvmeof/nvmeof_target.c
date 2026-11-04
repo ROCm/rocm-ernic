@@ -44,6 +44,7 @@
 #include "ernic_err.h"
 #include "ernic_log.h"
 #include "nvmeof/nvmeof.h"
+#include "nvmeof/nvmeof_kv.h"
 #include "nvmeof/nvmeof_target.h"
 #include "nvmeof/nvmeof_target_priv.h"
 #include "parse_int.h"
@@ -82,14 +83,26 @@ struct nvmeof_queue {
     bool in_use;
 };
 
+/*
+ * A namespace's runtime state.  Exactly one of data (block) and kv (Key
+ * Value) is live, and cfg.kv says which.
+ */
+struct nvmeof_ns {
+    struct nvmeof_ns_cfg cfg; /* owns cfg.file */
+    uint8_t *data;
+    size_t len;
+    int fd;               /* -1 for a RAM or KV namespace */
+    struct nvmeof_kv *kv; /* non-NULL exactly when cfg.kv */
+};
+
 struct nvmeof_target {
     struct nvmeof_target_cfg cfg;
     struct nvmeof_target_stats stats;
     struct nvmeof_ctrl ctrl;
 
-    uint8_t *ns_data;
-    size_t ns_len;
-    int ns_fd;           /* -1 for a RAM namespace */
+    struct nvmeof_ns ns[NVMEOF_MAX_NS];
+    unsigned ns_count;
+
     uint64_t page_size;  /* msync() wants a page-aligned start */
     nvmeof_sync_fn sync; /* msync(), or a test's stand-in */
 
@@ -97,9 +110,34 @@ struct nvmeof_target {
     unsigned queue_cap;
 };
 
+/*
+ * The namespace with this id, or NULL for one the controller does not
+ * have.  Linear because NVMEOF_MAX_NS is 8 and the list is walked once per
+ * command; a map would cost more than it saves.
+ */
+static struct nvmeof_ns *ns_by_id(struct nvmeof_target *t, uint32_t nsid)
+{
+    for (unsigned i = 0; i < t->ns_count; i++) {
+        if (t->ns[i].cfg.nsid == nsid) {
+            return &t->ns[i];
+        }
+    }
+    return NULL;
+}
+
 /* ------------------------------------------------------------------ */
 /* Configuration                                                      */
 /* ------------------------------------------------------------------ */
+
+static void ns_cfg_defaults(struct nvmeof_ns_cfg *ns, uint32_t nsid)
+{
+    memset(ns, 0, sizeof(*ns));
+    ns->nsid = nsid;
+    ns->size = NVMEOF_DEFAULT_SIZE;
+    ns->block_size = NVMEOF_DEFAULT_BLOCK_SIZE;
+    ns->kv_max_keys = NVMEOF_KV_DEFAULT_KEYS;
+    ns->kv_max_value = NVMEOF_KV_DEFAULT_VALUE;
+}
 
 void nvmeof_target_cfg_defaults(struct nvmeof_target_cfg *cfg)
 {
@@ -107,13 +145,22 @@ void nvmeof_target_cfg_defaults(struct nvmeof_target_cfg *cfg)
     snprintf(cfg->subnqn, sizeof(cfg->subnqn), "%s", NVMEOF_DEFAULT_NQN);
     snprintf(cfg->serial, sizeof(cfg->serial), "ERNIC0000000000001");
     snprintf(cfg->model, sizeof(cfg->model), "rocm-ernic NVMe-oF target");
-    cfg->size = NVMEOF_DEFAULT_SIZE;
-    cfg->block_size = NVMEOF_DEFAULT_BLOCK_SIZE;
-    cfg->nsid = 1;
     cfg->traddr = NVMEOF_DEFAULT_TRADDR;
     cfg->trsvcid = NVMEOF_DEFAULT_PORT;
     cfg->max_queues = NVMEOF_DEFAULT_QUEUES;
     cfg->queue_depth = NVMEOF_DEFAULT_DEPTH;
+
+    /* One block namespace, which is what "nvmeof:" with no options means. */
+    cfg->ns_count = 1;
+    ns_cfg_defaults(&cfg->ns[0], 1);
+}
+
+void nvmeof_target_cfg_free(struct nvmeof_target_cfg *cfg)
+{
+    for (unsigned i = 0; i < cfg->ns_count; i++) {
+        free(cfg->ns[i].file);
+        cfg->ns[i].file = NULL;
+    }
 }
 
 /*
@@ -169,6 +216,21 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
 
     bool ok = true;
     char *save = NULL;
+    /*
+     * Per-namespace keys -- size, bs, file, kv, keys, maxval, nsid -- apply
+     * to the namespace being defined.  "ns=N" opens another one, numbered
+     * N, and everything after it describes that one.
+     *
+     * A separate key rather than a second nsid= because nsid= already means
+     * "number the namespace I am describing", wherever it appears in the
+     * string; making its second occurrence mean something else would change
+     * what "size=1M,nsid=7" has always meant.  So:
+     *
+     *   kv=1,size=256M            one KV namespace, nsid 1   (unchanged)
+     *   size=1M,nsid=7            one block namespace, nsid 7 (unchanged)
+     *   size=1M,ns=2,kv=1,size=64K  block nsid 1 + KV nsid 2  (new)
+     */
+    struct nvmeof_ns_cfg *cur = &cfg->ns[0];
     /* strtok_r() skips empty fields, so "a=1,,b=2" is two options. */
     for (char *tok = strtok_r(dup, ",", &save); tok != NULL && ok;
          tok = strtok_r(NULL, ",", &save)) {
@@ -194,12 +256,12 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
                 snprintf(cfg->subnqn, sizeof(cfg->subnqn), "%s", val);
             }
         } else if (strcmp(key, "size") == 0) {
-            if (!ernic_parse_size(val, &cfg->size) || cfg->size == 0) {
+            if (!ernic_parse_size(val, &cur->size) || cur->size == 0) {
                 ernic_set_err(err, errlen, "bad size '%s'", val);
                 ok = false;
             } else {
                 /* Lets size_image() tell size= from the default. */
-                cfg->size_set = true;
+                cur->size_set = true;
             }
         } else if (strcmp(key, "file") == 0) {
             if (*val == '\0') {
@@ -207,9 +269,9 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
                 ok = false;
             } else {
                 /* A repeated file= replaces the earlier path. */
-                free(cfg->file);
-                cfg->file = strdup(val);
-                if (cfg->file == NULL) {
+                free(cur->file);
+                cur->file = strdup(val);
+                if (cur->file == NULL) {
                     ernic_set_err(err, errlen, "out of memory");
                     ok = false;
                 }
@@ -223,7 +285,7 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
                               val);
                 ok = false;
             } else {
-                cfg->block_size = bs;
+                cur->block_size = bs;
             }
         } else if (strcmp(key, "nsid") == 0) {
             uint32_t v;
@@ -232,7 +294,22 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
                 ernic_set_err(err, errlen, "bad nsid '%s'", val);
                 ok = false;
             } else {
-                cfg->nsid = v;
+                /* Renames the namespace being defined; ns= is what opens
+                 * another one. */
+                cur->nsid = v;
+            }
+        } else if (strcmp(key, "ns") == 0) {
+            uint32_t v;
+            if (!ernic_parse_u32(val, &v) || v == 0 || v == 0xffffffffU) {
+                ernic_set_err(err, errlen, "bad ns '%s'", val);
+                ok = false;
+            } else if (cfg->ns_count >= NVMEOF_MAX_NS) {
+                ernic_set_err(err, errlen, "at most %d namespaces",
+                              NVMEOF_MAX_NS);
+                ok = false;
+            } else {
+                cur = &cfg->ns[cfg->ns_count++];
+                ns_cfg_defaults(cur, v);
             }
         } else if (strcmp(key, "ip") == 0) {
             if (!parse_ipv4(val, &cfg->traddr)) {
@@ -256,6 +333,31 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
                 ok = false;
             } else {
                 cfg->max_queues = (uint16_t)v;
+            }
+        } else if (strcmp(key, "kv") == 0) {
+            uint32_t v = 0;
+            if (!ernic_parse_u32(val, &v) || v > 1) {
+                ernic_set_err(err, errlen, "kv must be 0 or 1 (got '%s')", val);
+                ok = false;
+            } else {
+                cur->kv = v == 1;
+            }
+        } else if (strcmp(key, "keys") == 0) {
+            uint32_t v = 0;
+            if (!ernic_parse_u32(val, &v) || v == 0 || v > NVMEOF_KV_MAX_KEYS) {
+                ernic_set_err(err, errlen, "keys must be 1..%u (got '%s')",
+                              NVMEOF_KV_MAX_KEYS, val);
+                ok = false;
+            } else {
+                cur->kv_max_keys = v;
+            }
+        } else if (strcmp(key, "maxval") == 0) {
+            uint64_t v = 0;
+            if (!ernic_parse_size(val, &v) || v == 0 || v > UINT32_MAX) {
+                ernic_set_err(err, errlen, "bad maxval '%s'", val);
+                ok = false;
+            } else {
+                cur->kv_max_value = (uint32_t)v;
             }
         } else if (strcmp(key, "model") == 0) {
             if (!ident_string_ok(val, sizeof(cfg->model) - 1)) {
@@ -289,11 +391,36 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
      * order.  A file-backed namespace without size= gets its size from the
      * image later, and size_image() checks that one.
      */
-    if (ok && cfg->size % cfg->block_size != 0) {
-        ernic_set_err(err, errlen,
-                      "size %" PRIu64 " is not a multiple of bs %u", cfg->size,
-                      cfg->block_size);
-        ok = false;
+    for (unsigned i = 0; ok && i < cfg->ns_count; i++) {
+        const struct nvmeof_ns_cfg *n = &cfg->ns[i];
+
+        /* A KV namespace stores values, not blocks, so "size" is a byte
+         * capacity and owes the block size nothing.  Checking it anyway
+         * would reject a perfectly good kv=1,size=100M. */
+        if (!n->kv && n->size % n->block_size != 0) {
+            ernic_set_err(err, errlen,
+                          "nsid %u: size %" PRIu64
+                          " is not a multiple of bs %u",
+                          n->nsid, n->size, n->block_size);
+            ok = false;
+        } else if (n->kv && n->file != NULL) {
+            /* The store is a hash table in anonymous memory; there is no
+             * on-disk layout for it, and silently ignoring file= would lose
+             * a user's data expectation rather than their option. */
+            ernic_set_err(err, errlen,
+                          "nsid %u: kv=1 has no file backing store; drop "
+                          "file=",
+                          n->nsid);
+            ok = false;
+        }
+
+        /* Two namespaces with one id would make ns_by_id() arbitrary. */
+        for (unsigned j = 0; ok && j < i; j++) {
+            if (cfg->ns[j].nsid == n->nsid) {
+                ernic_set_err(err, errlen, "nsid %u given twice", n->nsid);
+                ok = false;
+            }
+        }
     }
     return ok;
 }
@@ -309,54 +436,116 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
  * image grows it, and one smaller is refused, as is an image that isn't a
  * whole number of blocks: either would lose the end of the data.
  */
-static bool size_image(struct nvmeof_target *t, char *err, size_t errlen)
+static bool size_image(struct nvmeof_ns *ns, char *err, size_t errlen)
 {
     struct stat st;
 
-    if (fstat(t->ns_fd, &st) != 0) {
-        ernic_set_err(err, errlen, "cannot stat %s: %s", t->cfg.file,
+    if (fstat(ns->fd, &st) != 0) {
+        ernic_set_err(err, errlen, "cannot stat %s: %s", ns->cfg.file,
                       strerror(errno));
         return false;
     }
     if (!S_ISREG(st.st_mode)) {
-        ernic_set_err(err, errlen, "%s is not a regular file", t->cfg.file);
+        ernic_set_err(err, errlen, "%s is not a regular file", ns->cfg.file);
         return false;
     }
 
     /* A regular file's st_size is never negative. */
     uint64_t have = (uint64_t)st.st_size;
-    if (have != 0 && !t->cfg.size_set) {
-        if (have % t->cfg.block_size != 0) {
+    if (have != 0 && !ns->cfg.size_set) {
+        if (have % ns->cfg.block_size != 0) {
             ernic_set_err(err, errlen,
                           "%s is %" PRIu64 " bytes, not a multiple of bs %u; "
                           "give a size= of whole blocks to grow it",
-                          t->cfg.file, have, t->cfg.block_size);
+                          ns->cfg.file, have, ns->cfg.block_size);
             return false;
         }
-        t->cfg.size = have;
-    } else if (have > t->cfg.size) {
+        ns->cfg.size = have;
+    } else if (have > ns->cfg.size) {
         ernic_set_err(err, errlen,
                       "%s is %" PRIu64 " bytes; size=%" PRIu64
                       " would truncate it",
-                      t->cfg.file, have, t->cfg.size);
+                      ns->cfg.file, have, ns->cfg.size);
         return false;
     }
 
     /* ftruncate() takes the size as an off_t, which a size= past its range
      * would become negative in. */
     _Static_assert(sizeof(off_t) == sizeof(int64_t), "off_t is not 64 bits");
-    if (t->cfg.size > (uint64_t)INT64_MAX) {
+    if (ns->cfg.size > (uint64_t)INT64_MAX) {
         ernic_set_err(err, errlen,
                       "size=%" PRIu64 " is too large for a file; the most is "
                       "%" PRId64,
-                      t->cfg.size, INT64_MAX);
+                      ns->cfg.size, INT64_MAX);
         return false;
     }
 
-    t->ns_len = (size_t)t->cfg.size;
-    if (have < t->cfg.size && ftruncate(t->ns_fd, (off_t)t->ns_len) != 0) {
+    ns->len = (size_t)ns->cfg.size;
+    if (have < ns->cfg.size && ftruncate(ns->fd, (off_t)ns->len) != 0) {
         ernic_set_err(err, errlen, "cannot size %s to %zu bytes: %s",
-                      t->cfg.file, t->ns_len, strerror(errno));
+                      ns->cfg.file, ns->len, strerror(errno));
+        return false;
+    }
+    return true;
+}
+
+/*
+ * Bring one namespace up.  A KV namespace has no block image to map: its
+ * capacity lives in the store, whose entries are allocated as they arrive,
+ * so mapping cfg.size bytes as well would reserve the capacity twice.
+ */
+static bool ns_create(struct nvmeof_ns *ns, const struct nvmeof_ns_cfg *cfg,
+                      char *err, size_t errlen)
+{
+    ns->cfg = *cfg;
+    ns->cfg.file = NULL;
+    ns->fd = -1;
+    ns->len = (size_t)cfg->size;
+
+    if (cfg->kv) {
+        ns->kv = nvmeof_kv_create(cfg->kv_max_keys, cfg->size);
+        if (ns->kv == NULL) {
+            ernic_set_err(err, errlen,
+                          "nsid %u: cannot create a %u-key, %llu-byte KV store",
+                          cfg->nsid, cfg->kv_max_keys,
+                          (unsigned long long)cfg->size);
+            return false;
+        }
+        ns->len = 0;
+        return true;
+    }
+
+    if (cfg->file != NULL) {
+        ns->cfg.file = strdup(cfg->file);
+        if (ns->cfg.file == NULL) {
+            ernic_set_err(err, errlen, "out of memory");
+            return false;
+        }
+        /* With _FORTIFY_SOURCE, glibc 2.40 and later give Clang an
+         * open(path, flags, mode) overload, and android-cloexec-open looks
+         * for O_CLOEXEC in its mode */
+        /* NOLINTBEGIN(android-cloexec-open) */
+        ns->fd = open(ns->cfg.file, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+        /* NOLINTEND(android-cloexec-open) */
+        if (ns->fd < 0) {
+            ernic_set_err(err, errlen, "cannot open %s: %s", ns->cfg.file,
+                          strerror(errno));
+            return false;
+        }
+        if (!size_image(ns, err, errlen)) {
+            return false;
+        }
+        ns->data =
+            mmap(NULL, ns->len, PROT_READ | PROT_WRITE, MAP_SHARED, ns->fd, 0);
+    } else {
+        ns->data = mmap(NULL, ns->len, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    }
+    if (ns->data == MAP_FAILED) {
+        ns->data = NULL;
+        ernic_set_err(err, errlen,
+                      "nsid %u: cannot map %zu bytes of namespace: %s",
+                      cfg->nsid, ns->len, strerror(errno));
         return false;
     }
     return true;
@@ -372,49 +561,29 @@ struct nvmeof_target *nvmeof_target_create(const struct nvmeof_target_cfg *cfg,
     }
 
     t->cfg = *cfg;
-    t->cfg.file = NULL;
-    t->ns_fd = -1;
-    t->ns_len = (size_t)cfg->size;
+    /* The namespaces own their paths; the controller copy must not alias
+     * the caller's, which it is free to release once we return. */
+    for (unsigned i = 0; i < NVMEOF_MAX_NS; i++) {
+        t->cfg.ns[i].file = NULL;
+        t->ns[i].fd = -1;
+    }
     t->sync = msync;
 
-    if (cfg->file != NULL) {
-        t->cfg.file = strdup(cfg->file);
-        if (t->cfg.file == NULL) {
-            ernic_set_err(err, errlen, "out of memory");
-            goto fail;
-        }
-        /* With _FORTIFY_SOURCE, glibc 2.40 and later give Clang an
-         * open(path, flags, mode) overload, and android-cloexec-open looks
-         * for O_CLOEXEC in its mode */
-        /* NOLINTBEGIN(android-cloexec-open) */
-        t->ns_fd = open(t->cfg.file, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
-        /* NOLINTEND(android-cloexec-open) */
-        if (t->ns_fd < 0) {
-            ernic_set_err(err, errlen, "cannot open %s: %s", t->cfg.file,
-                          strerror(errno));
-            goto fail;
-        }
-        if (!size_image(t, err, errlen)) {
-            goto fail;
-        }
-        long page = sysconf(_SC_PAGESIZE);
-        if (page <= 0) {
-            ernic_set_err(err, errlen, "cannot read the page size: %s",
-                          strerror(errno));
-            goto fail;
-        }
-        t->page_size = (uint64_t)page;
-        t->ns_data = mmap(NULL, t->ns_len, PROT_READ | PROT_WRITE, MAP_SHARED,
-                          t->ns_fd, 0);
-    } else {
-        t->ns_data = mmap(NULL, t->ns_len, PROT_READ | PROT_WRITE,
-                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-    }
-    if (t->ns_data == MAP_FAILED) {
-        t->ns_data = NULL;
-        ernic_set_err(err, errlen, "cannot map %zu bytes of namespace: %s",
-                      t->ns_len, strerror(errno));
+    long page = sysconf(_SC_PAGESIZE);
+    if (page <= 0) {
+        ernic_set_err(err, errlen, "cannot read the page size: %s",
+                      strerror(errno));
         goto fail;
+    }
+    t->page_size = (uint64_t)page;
+
+    t->ns_count = cfg->ns_count;
+    for (unsigned i = 0; i < t->ns_count; i++) {
+        if (!ns_create(&t->ns[i], &cfg->ns[i], err, errlen)) {
+            goto fail;
+        }
+        /* The settled size, which an image file may have decided. */
+        t->cfg.ns[i].size = t->ns[i].cfg.size;
     }
 
     t->queue_cap = (unsigned)cfg->max_queues + 1;
@@ -436,14 +605,18 @@ void nvmeof_target_destroy(struct nvmeof_target *t)
     if (t == NULL) {
         return;
     }
-    if (t->ns_data != NULL) {
-        munmap(t->ns_data, t->ns_len);
-    }
-    if (t->ns_fd >= 0) {
-        close(t->ns_fd);
+    for (unsigned i = 0; i < t->ns_count; i++) {
+        struct nvmeof_ns *ns = &t->ns[i];
+        if (ns->data != NULL) {
+            munmap(ns->data, ns->len);
+        }
+        if (ns->fd >= 0) {
+            close(ns->fd);
+        }
+        nvmeof_kv_destroy(ns->kv);
+        free(ns->cfg.file);
     }
     free(t->queues);
-    free(t->cfg.file);
     free(t);
 }
 
@@ -688,10 +861,19 @@ static void build_id_ctrl(const struct nvmeof_target *t, uint8_t *buf)
      * KATO is 5s. */
     ernic_put_le16(buf + 320, 10); /* kas, in 100ms units */
 
-    buf[512] = 0x66;                                      /* sqes: 64B fixed */
-    buf[513] = 0x44;                                      /* cqes: 16B fixed */
-    ernic_put_le16(buf + 514, t->cfg.queue_depth);        /* maxcmd */
-    ernic_put_le32(buf + 516, t->ctrl.discovery ? 0 : 1); /* nn */
+    buf[512] = 0x66;                               /* sqes: 64B fixed */
+    buf[513] = 0x44;                               /* cqes: 16B fixed */
+    ernic_put_le16(buf + 514, t->cfg.queue_depth); /* maxcmd */
+
+    /* NN is the largest valid namespace id, not the count: the host uses
+     * it to bound its scan, and an id above it is never probed. */
+    uint32_t nn = 0;
+    for (unsigned i = 0; i < t->ns_count; i++) {
+        if (t->ns[i].cfg.nsid > nn) {
+            nn = t->ns[i].cfg.nsid;
+        }
+    }
+    ernic_put_le32(buf + 516, t->ctrl.discovery ? 0 : nn); /* nn */
     ernic_put_le16(buf + 520, 0x0008); /* oncs: Write Zeroes */
     buf[524] = 0;                      /* fna */
 
@@ -701,7 +883,13 @@ static void build_id_ctrl(const struct nvmeof_target *t, uint8_t *buf)
      * Flush needs the namespace's own NSID, not the broadcast one.  A RAM
      * namespace has no stable media to write back to.
      */
-    buf[525] = t->ns_fd >= 0 ? 0x05 : 0;
+    bool file_backed = false;
+    for (unsigned i = 0; i < t->ns_count; i++) {
+        if (t->ns[i].fd >= 0) {
+            file_backed = true;
+        }
+    }
+    buf[525] = file_backed ? 0x05 : 0;
 
     /*
      * sgls: supported (bit 0), keyed SGLs (bit 2, which nvme-rdma treats
@@ -725,9 +913,9 @@ static void build_id_ctrl(const struct nvmeof_target *t, uint8_t *buf)
     buf[1803] = 1;                 /* msdbd */
 }
 
-static void build_id_ns(const struct nvmeof_target *t, uint8_t *buf)
+static void build_id_ns(const struct nvmeof_ns *ns, uint8_t *buf)
 {
-    uint64_t blocks = t->cfg.size / t->cfg.block_size;
+    uint64_t blocks = ns->cfg.size / ns->cfg.block_size;
 
     memset(buf, 0, NVME_IDENTIFY_SIZE);
     ernic_put_le64(buf + 0, blocks);  /* nsze */
@@ -742,7 +930,7 @@ static void build_id_ns(const struct nvmeof_target *t, uint8_t *buf)
 
     /* LBA format 0: ms = 0, lbads = log2(block size), rp = best. */
     ernic_put_le16(buf + 128, 0);
-    buf[130] = lba_shift(t->cfg.block_size);
+    buf[130] = lba_shift(ns->cfg.block_size);
     buf[131] = 0;
 }
 
@@ -751,7 +939,8 @@ static void build_id_ns(const struct nvmeof_target *t, uint8_t *buf)
  * subsystem NQN and the namespace ID keeps udev's by-id links stable
  * across restarts of the same server configuration.
  */
-static void build_ns_desc(const struct nvmeof_target *t, uint8_t *buf)
+static void build_ns_desc(const struct nvmeof_target *t,
+                          const struct nvmeof_ns *ns, uint8_t *buf)
 {
     memset(buf, 0, NVME_IDENTIFY_SIZE);
     buf[0] = 3;  /* nidt: UUID */
@@ -763,12 +952,62 @@ static void build_ns_desc(const struct nvmeof_target *t, uint8_t *buf)
     while (*p != '\0') {
         h = (h ^ (uint8_t)*p++) * UINT64_C(0x100000001b3);
     }
-    h ^= t->cfg.nsid;
+    h ^= ns->cfg.nsid;
     for (int i = 0; i < 16; i++) {
         uuid[i] = (uint8_t)(h >> ((i % 8) * 8)) ^ (uint8_t)(i * 0x11);
     }
     uuid[6] = (uint8_t)((uuid[6] & 0x0f) | 0x40); /* version 4 */
     uuid[8] = (uint8_t)((uuid[8] & 0x3f) | 0x80); /* variant 1 */
+
+    /*
+     * A Command Set Identifier descriptor after the UUID, on EVERY
+     * namespace.  This one byte is what the host reads to decide which
+     * command set the namespace speaks.
+     *
+     * For a KV namespace it is what makes Linux log "block device for nsid
+     * %u not supported (csi 1)", hide the block device and keep the
+     * namespace, so the guest gets /dev/ngXnY to issue KV commands through.
+     *
+     * For a block namespace it is not optional either, and that is less
+     * obvious: once any namespace here speaks a second command set, CAP.CSS
+     * bit 6 makes the host select CC.CSS = all-supported, and in that mode
+     * it takes every namespace's command set from this descriptor rather
+     * than assuming NVM.  Omitting it on the block namespace is exactly
+     * what "Command set not reported for nsid:1" means, and the namespace
+     * is then dropped.  Saying NVM explicitly costs nothing when the
+     * controller has no KV namespace at all.
+     */
+    uint8_t *csi = buf + 4 + 16;
+    csi[0] = NVME_NIDT_CSI;
+    csi[1] = 1; /* nidl */
+    csi[4] = ns->cfg.kv ? NVME_CSI_KV : NVME_CSI_NVM;
+}
+
+/*
+ * I/O Command Set Independent Identify Namespace (CNS 08h).  Everything
+ * here is true of a namespace whatever command set it speaks, which is why
+ * the host asks for it in place of CNS 00h once CC.CSS is all-supported.
+ * Without an answer the namespace is skipped before its command set is ever
+ * considered, and nothing is logged about why.
+ */
+static void build_id_ns_cs_indep(const struct nvmeof_ns *ns, uint8_t *buf)
+{
+    memset(buf, 0, NVME_IDENTIFY_SIZE);
+    buf[0] = 0;                  /* nsfeat */
+    buf[1] = 0;                  /* nmic: no multipath */
+    buf[2] = 0;                  /* rescap: no reservations */
+    buf[3] = 0;                  /* fpi */
+    ernic_put_le32(buf + 4, 0);  /* anagrpid */
+    buf[8] = 0;                  /* nsattr */
+    ernic_put_le16(buf + 10, 0); /* nvmsetid */
+    ernic_put_le16(buf + 12, 0); /* endgid */
+    /*
+     * NSTAT bit 0, NRDY.  A fabrics host treats a namespace that does not
+     * say it is ready as one to retry later, so a zero here reads as a
+     * device still coming up rather than one that is simply present.
+     */
+    buf[14] = 1;
+    (void)ns;
 }
 
 static void build_discovery_log(const struct nvmeof_target *t, uint8_t *buf,
@@ -813,10 +1052,38 @@ static void build_discovery_log(const struct nvmeof_target *t, uint8_t *buf,
 static uint64_t prop_cap(const struct nvmeof_target *t)
 {
     uint64_t mqes = t->cfg.queue_depth > 0 ? t->cfg.queue_depth - 1U : 0;
+    /*
+     * CAP.CSS is a bitmap at bits 44:37.  Bit 0 is the NVM command set; bit
+     * 6 says one or more *other* I/O command sets are supported, and
+     * selecting one then happens through CC.CSS and Identify's CSI.
+     *
+     * A KV namespace needs bit 6, and the host enforces it: Linux sets
+     * CC.CSS to NVME_CC_CSS_CSI only when it sees bit 6, and nvme_scan_ns()
+     * then refuses any namespace whose CSI is not NVM with "command set not
+     * reported for nsid: %d" -- which it reports even when the Identify
+     * descriptor list named the command set perfectly well, because the
+     * controller never said it could have one.
+     */
+    bool any_kv = false;
+    for (unsigned i = 0; i < t->ns_count; i++) {
+        if (t->ns[i].cfg.kv) {
+            any_kv = true;
+        }
+    }
+    /*
+     * Bit 0 always: the controller understands the NVM command set whether
+     * or not a namespace currently uses it.  Bit 6 as well once any
+     * namespace speaks another one, which makes Linux select CC.CSS = 110b
+     * ("all supported I/O command sets") and then take each namespace's
+     * command set from its own CSI descriptor.  That per-namespace
+     * selection is what lets block and KV namespaces coexist here; with
+     * bit 6 clear the host would read every namespace as NVM.
+     */
+    uint64_t css = UINT64_C(1) | (any_kv ? UINT64_C(1) << 6 : 0);
     return mqes |                 /* MQES */
            (UINT64_C(1) << 16) |  /* CQR: contiguous queues required */
            (UINT64_C(15) << 24) | /* TO: 7.5 seconds */
-           (UINT64_C(1) << 37);   /* CSS: NVM command set */
+           (css << 37);           /* CSS */
 }
 
 static uint16_t do_connect(struct nvmeof_queue *q, const uint8_t *sqe,
@@ -952,17 +1219,16 @@ static uint16_t do_property_get(struct nvmeof_queue *q, const uint8_t *sqe,
  * A failure sets DNR: Linux reports a writeback error once and may already
  * have dropped the dirty pages, so a retry could succeed with the data lost.
  */
-static uint16_t ns_sync(const struct nvmeof_target *t, uint64_t off,
-                        uint64_t len)
+static uint16_t ns_sync(const struct nvmeof_target *t,
+                        const struct nvmeof_ns *ns, uint64_t off, uint64_t len)
 {
-    if (t->ns_fd < 0) {
+    if (ns == NULL || ns->fd < 0) {
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
     }
 
-    /* ns_data is page-aligned, being an mmap(). */
+    /* ns->data is page-aligned, being an mmap(). */
     uint64_t start = off - (off % t->page_size);
-    if (t->sync(t->ns_data + start, (size_t)(off + len - start), MS_SYNC) !=
-        0) {
+    if (t->sync(ns->data + start, (size_t)(off + len - start), MS_SYNC) != 0) {
         return nvme_status(NVME_SCT_MEDIA, NVME_SC_WRITE_FAULT, 1);
     }
     return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
@@ -992,10 +1258,19 @@ static uint16_t do_property_set(const struct nvmeof_queue *q,
      * A Property Set has no status that fits a failed writeback, so log it
      * and complete the shutdown anyway.
      */
-    if (shn != 0 && old_shn == 0 && ns_sync(t, 0, t->ns_len) != 0) {
-        ernic_log(ERNIC_LOG_ERROR,
-                  "nvmeof: writing back %s for a shutdown failed: %s",
-                  t->cfg.file, strerror(errno));
+    if (shn != 0 && old_shn == 0) {
+        /* Every file-backed namespace, and each one named in its own
+         * message: with more than one, "writing back failed" without the
+         * nsid does not say which image is at risk. */
+        for (unsigned i = 0; i < t->ns_count; i++) {
+            const struct nvmeof_ns *ns = &t->ns[i];
+            if (ns_sync(t, ns, 0, ns->len) != 0) {
+                ernic_log(ERNIC_LOG_ERROR,
+                          "nvmeof: nsid %u: writing back %s for a shutdown "
+                          "failed: %s",
+                          ns->cfg.nsid, ns->cfg.file, strerror(errno));
+            }
+        }
     }
 
     if (t->ctrl.cc & NVME_CC_ENABLE) {
@@ -1062,25 +1337,63 @@ static uint16_t do_identify(const struct nvmeof_queue *q, const uint8_t *sqe,
     case NVME_ID_CNS_CTRL:
         build_id_ctrl(t, buf);
         break;
-    case NVME_ID_CNS_NS:
-        if (nsid != t->cfg.nsid) {
+    case NVME_ID_CNS_NS: {
+        const struct nvmeof_ns *ns = ns_by_id(t, nsid);
+        if (ns == NULL || ns->cfg.kv) {
+            /* Identify Namespace is NVM-command-set data.  A KV namespace
+             * has none, and answering with block geometry would describe a
+             * capacity and an LBA format that do not exist. */
             memset(buf, 0, sizeof(buf));
         } else {
-            build_id_ns(t, buf);
+            build_id_ns(ns, buf);
         }
         break;
-    case NVME_ID_CNS_NS_ACTIVE_LIST:
+    }
+    case NVME_ID_CNS_NS_ACTIVE_LIST: {
         memset(buf, 0, sizeof(buf));
-        if (!t->ctrl.discovery && nsid < t->cfg.nsid) {
-            ernic_put_le32(buf, t->cfg.nsid);
+        if (t->ctrl.discovery) {
+            break;
+        }
+        /*
+         * Ascending, and strictly greater than the nsid asked about: the
+         * host walks the list by passing back the last id it saw, so an
+         * unsorted list would make it stop early or loop.
+         */
+        uint32_t ids[NVMEOF_MAX_NS];
+        unsigned n = 0;
+        for (unsigned i = 0; i < t->ns_count; i++) {
+            uint32_t id = t->ns[i].cfg.nsid;
+            if (id <= nsid) {
+                continue;
+            }
+            unsigned j = n++;
+            while (j > 0 && ids[j - 1] > id) {
+                ids[j] = ids[j - 1];
+                j--;
+            }
+            ids[j] = id;
+        }
+        for (unsigned i = 0; i < n; i++) {
+            ernic_put_le32(buf + ((size_t)i * 4), ids[i]);
         }
         break;
-    case NVME_ID_CNS_NS_DESC_LIST:
-        if (nsid != t->cfg.nsid) {
+    }
+    case NVME_ID_CNS_NS_CS_INDEP: {
+        const struct nvmeof_ns *ns = ns_by_id(t, nsid);
+        if (ns == NULL) {
             return nvme_status(NVME_SCT_GENERIC, NVME_SC_INVALID_NS, 1);
         }
-        build_ns_desc(t, buf);
+        build_id_ns_cs_indep(ns, buf);
         break;
+    }
+    case NVME_ID_CNS_NS_DESC_LIST: {
+        const struct nvmeof_ns *ns = ns_by_id(t, nsid);
+        if (ns == NULL) {
+            return nvme_status(NVME_SCT_GENERIC, NVME_SC_INVALID_NS, 1);
+        }
+        build_ns_desc(t, ns, buf);
+        break;
+    }
     default:
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_INVALID_FIELD, 1);
     }
@@ -1263,30 +1576,31 @@ static int exec_admin(struct nvmeof_queue *q, const uint8_t *capsule,
 /* NVM commands                                                       */
 /* ------------------------------------------------------------------ */
 
-static uint16_t io_range(const struct nvmeof_target *t, const uint8_t *sqe,
+static uint16_t io_range(const struct nvmeof_ns *ns, const uint8_t *sqe,
                          uint64_t *off, uint64_t *len)
 {
     uint64_t slba = ernic_get_le64(sqe + NVME_SQE_CDW10_OFF);
     uint32_t nlb = (ernic_get_le32(sqe + NVME_SQE_CDW12_OFF) & 0xffff) + 1U;
 
-    uint64_t blocks = t->cfg.size / t->cfg.block_size;
+    uint64_t blocks = ns->cfg.size / ns->cfg.block_size;
     if (slba >= blocks || nlb > blocks - slba) {
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_LBA_RANGE, 1);
     }
-    *off = slba * t->cfg.block_size;
-    *len = (uint64_t)nlb * t->cfg.block_size;
+    *off = slba * ns->cfg.block_size;
+    *len = (uint64_t)nlb * ns->cfg.block_size;
     return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
 }
 
 /* A Read or, if @write, a Write: the data moves between the namespace and
  * the host buffers the capsule's SGL names. */
-static uint16_t exec_rw(struct nvmeof_target *t, const uint8_t *capsule,
-                        size_t capsule_len, const struct nvmeof_dma_ops *dma,
-                        void *ctx, bool write, bool fua)
+static uint16_t exec_rw(struct nvmeof_target *t, struct nvmeof_ns *ns,
+                        const uint8_t *capsule, size_t capsule_len,
+                        const struct nvmeof_dma_ops *dma, void *ctx, bool write,
+                        bool fua)
 {
     uint64_t off;
     uint64_t len;
-    uint16_t st = io_range(t, capsule, &off, &len);
+    uint16_t st = io_range(ns, capsule, &off, &len);
     if (st != 0) {
         return st;
     }
@@ -1300,26 +1614,226 @@ static uint16_t exec_rw(struct nvmeof_target *t, const uint8_t *capsule,
     }
 
     if (!write) {
-        st = sgl_write(&sgl, dma, ctx, t->ns_data + off, (uint32_t)len);
+        st = sgl_write(&sgl, dma, ctx, ns->data + off, (uint32_t)len);
         if (st == 0) {
             t->stats.read_bytes += len;
         }
     } else {
-        st = sgl_read(&sgl, capsule, capsule_len, dma, ctx, t->ns_data + off,
+        st = sgl_read(&sgl, capsule, capsule_len, dma, ctx, ns->data + off,
                       (uint32_t)len);
         if (st == 0) {
             t->stats.write_bytes += len;
             if (fua) {
-                st = ns_sync(t, off, len);
+                st = ns_sync(t, ns, off, len);
             }
         }
     }
     return st;
 }
 
+
+/* ------------------------------------------------------------------ */
+/* Key Value command set                                              */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Pull the key out of a command capsule.
+ *
+ * The specification splits it: key[0..7] in CDW2 and CDW3, key[8..15] in
+ * CDW14 and CDW15, with the length in CDW11[07:00].  The bytes are an
+ * opaque octet string, so they come out in the order they went in and no
+ * byte swapping applies — only the dwords around them are little-endian.
+ */
+static bool kv_key_from_capsule(const uint8_t *capsule,
+                                struct nvmeof_kv_key *key)
+{
+    uint32_t cdw11 = ernic_get_le32(capsule + NVME_SQE_CDW11_OFF);
+    uint8_t len = (uint8_t)(cdw11 & 0xff);
+
+    if (len == 0 || len > NVMEOF_KV_KEY_MAX) {
+        return false;
+    }
+
+    uint8_t raw[NVMEOF_KV_KEY_MAX];
+    memcpy(raw, capsule + NVME_SQE_CDW2_OFF, 4);
+    memcpy(raw + 4, capsule + NVME_SQE_CDW3_OFF, 4);
+    memcpy(raw + 8, capsule + NVME_SQE_CDW14_OFF, 4);
+    memcpy(raw + 12, capsule + NVME_SQE_CDW15_OFF, 4);
+
+    memset(key->bytes, 0, sizeof(key->bytes));
+    memcpy(key->bytes, raw, len);
+    key->len = len;
+    return true;
+}
+
+static uint16_t kv_exec(struct nvmeof_target *t, struct nvmeof_ns *ns,
+                        const uint8_t *capsule, size_t capsule_len,
+                        const struct nvmeof_dma_ops *dma, void *ctx,
+                        uint32_t *result)
+{
+    uint8_t opcode = capsule[NVME_SQE_OPCODE_OFF];
+    uint32_t cdw10 = ernic_get_le32(capsule + NVME_SQE_CDW10_OFF);
+    uint32_t cdw11 = ernic_get_le32(capsule + NVME_SQE_CDW11_OFF);
+    uint8_t options = (uint8_t)((cdw11 >> 8) & 0xff);
+
+    /* List accepts a zero-length key meaning "start from the beginning";
+     * a nonzero invalid length is rejected for all opcodes. */
+    struct nvmeof_kv_key key = {0};
+    if (!kv_key_from_capsule(capsule, &key) &&
+        (opcode != NVME_KV_CMD_LIST || (cdw11 & 0xff) != 0)) {
+        return nvme_status(NVME_SCT_GENERIC, NVME_SC_KV_INVALID_KEY_SIZE, 1);
+    }
+
+    switch (opcode) {
+    case NVME_KV_CMD_EXIST:
+        if (!nvmeof_kv_exists(ns->kv, &key)) {
+            return nvme_status(NVME_SCT_GENERIC, NVME_SC_KV_KEY_NOT_EXIST, 1);
+        }
+        return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
+
+    case NVME_KV_CMD_DELETE:
+        if (!nvmeof_kv_delete(ns->kv, &key)) {
+            return nvme_status(NVME_SCT_GENERIC, NVME_SC_KV_KEY_NOT_EXIST, 1);
+        }
+        return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
+
+    case NVME_KV_CMD_STORE: {
+        uint32_t len = cdw10;
+        if (len > ns->cfg.kv_max_value) {
+            return nvme_status(NVME_SCT_GENERIC, NVME_SC_KV_INVALID_VALUE_SIZE,
+                               1);
+        }
+
+        bool exists = nvmeof_kv_exists(ns->kv, &key);
+        if ((options & NVME_KV_STORE_OPT_NO_OVERWRITE) != 0 && exists) {
+            return nvme_status(NVME_SCT_GENERIC, NVME_SC_KV_KEY_EXISTS, 1);
+        }
+        if ((options & NVME_KV_STORE_OPT_MUST_EXIST) != 0 && !exists) {
+            return nvme_status(NVME_SCT_GENERIC, NVME_SC_KV_KEY_NOT_EXIST, 1);
+        }
+
+        struct nvmeof_sgl sgl;
+        if (!parse_sgl(capsule, &sgl)) {
+            return nvme_status(NVME_SCT_GENERIC, NVME_SC_SGL_INVALID_TYPE, 1);
+        }
+
+        /* The value arrives through the same keyed SGL a block Write uses,
+         * so it comes out of guest memory by rkey -- including GPU memory,
+         * when the guest registered it there. */
+        uint8_t *staging = len != 0 ? malloc(len) : NULL;
+        if (len != 0 && staging == NULL) {
+            return nvme_status(NVME_SCT_GENERIC, NVME_SC_INTERNAL, 1);
+        }
+        uint16_t st =
+            sgl_read(&sgl, capsule, capsule_len, dma, ctx, staging, len);
+        if (st != 0) {
+            free(staging);
+            return st;
+        }
+        if (!nvmeof_kv_put(ns->kv, &key, staging, len)) {
+            free(staging);
+            /* Out of keys or out of capacity; the host cannot tell the two
+             * apart from the status alone, which the spec accepts. */
+            return nvme_status(NVME_SCT_GENERIC, NVME_SC_CAP_EXCEEDED, 1);
+        }
+        free(staging);
+        t->stats.write_bytes += len;
+        return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
+    }
+
+    case NVME_KV_CMD_RETRIEVE: {
+        const uint8_t *value = NULL;
+        uint32_t stored = 0;
+        if (!nvmeof_kv_get(ns->kv, &key, &value, &stored)) {
+            return nvme_status(NVME_SCT_GENERIC, NVME_SC_KV_KEY_NOT_EXIST, 1);
+        }
+
+        struct nvmeof_sgl sgl;
+        if (!parse_sgl(capsule, &sgl)) {
+            return nvme_status(NVME_SCT_GENERIC, NVME_SC_SGL_INVALID_TYPE, 1);
+        }
+
+        /* CDW10 is the host buffer size, not a demand for that many bytes.
+         * Write at most what fits and report the true length in the
+         * completion, which is how the host learns it asked with too small
+         * a buffer. */
+        uint32_t want = cdw10 < stored ? cdw10 : stored;
+        if (want != 0 && sgl.length < want) {
+            return nvme_status(NVME_SCT_GENERIC, NVME_SC_SGL_INVALID_DATA, 1);
+        }
+        uint16_t st = 0;
+        if (want != 0) {
+            st = sgl_write(&sgl, dma, ctx, value, want);
+        }
+        if (st != 0) {
+            return st;
+        }
+        *result = stored;
+        t->stats.read_bytes += want;
+        return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
+    }
+
+    case NVME_KV_CMD_LIST: {
+        /* A list of {key length, key bytes} records, as many as fit, with
+         * the number returned in the completion. */
+        struct nvmeof_sgl sgl;
+        if (!parse_sgl(capsule, &sgl)) {
+            return nvme_status(NVME_SCT_GENERIC, NVME_SC_SGL_INVALID_TYPE, 1);
+        }
+
+        uint32_t cap = cdw10;
+        if (cap > NVME_IDENTIFY_SIZE) {
+            cap = NVME_IDENTIFY_SIZE;
+        }
+        uint8_t buf[NVME_IDENTIFY_SIZE];
+        memset(buf, 0, sizeof(buf));
+
+        uint32_t off = 0;
+        uint32_t listed = 0;
+        uint32_t iter = 0;
+        struct nvmeof_kv_key k;
+
+        /* If the host passed a starting key, skip the iterator forward past
+         * it so the response is a continuation page, not a restart. */
+        if (key.len > 0) {
+            struct nvmeof_kv_key scan_k;
+            while (nvmeof_kv_next(ns->kv, &iter, &scan_k)) {
+                if (scan_k.len == key.len &&
+                    memcmp(scan_k.bytes, key.bytes, key.len) == 0) {
+                    break;
+                }
+            }
+        }
+
+        while (nvmeof_kv_next(ns->kv, &iter, &k)) {
+            if (off + 1U + k.len > cap) {
+                break;
+            }
+            buf[off++] = k.len;
+            memcpy(buf + off, k.bytes, k.len);
+            off += k.len;
+            listed++;
+        }
+
+        if (off != 0 && sgl.length < off) {
+            return nvme_status(NVME_SCT_GENERIC, NVME_SC_SGL_INVALID_DATA, 1);
+        }
+        uint16_t st = off != 0 ? sgl_write(&sgl, dma, ctx, buf, off) : 0;
+        if (st != 0) {
+            return st;
+        }
+        *result = listed;
+        return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
+    }
+
+    default:
+        return nvme_status(NVME_SCT_GENERIC, NVME_SC_INVALID_OPCODE, 1);
+    }
+}
+
 static uint16_t exec_io(const struct nvmeof_queue *q, const uint8_t *capsule,
                         size_t capsule_len, const struct nvmeof_dma_ops *dma,
-                        void *ctx)
+                        void *ctx, uint8_t *rsp)
 {
     struct nvmeof_target *t = q->target;
     uint8_t opcode = capsule[NVME_SQE_OPCODE_OFF];
@@ -1335,31 +1849,49 @@ static uint16_t exec_io(const struct nvmeof_queue *q, const uint8_t *capsule,
 
     t->stats.io_cmds++;
 
-    if (nsid != t->cfg.nsid) {
+    struct nvmeof_ns *ns = ns_by_id(t, nsid);
+    if (ns == NULL) {
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_INVALID_NS, 1);
+    }
+
+    /*
+     * A KV namespace answers an entirely different command set, and the
+     * opcodes overlap: dispatching on the namespace's own command set
+     * before the switch below is what keeps a Store (01h) from reaching the
+     * block Write path.  This is per namespace, not per controller, so one
+     * controller can serve both -- which is the whole reason the host is
+     * told each namespace's CSI separately.
+     */
+    if (ns->cfg.kv) {
+        uint32_t result = 0;
+        st = kv_exec(t, ns, capsule, capsule_len, dma, ctx, &result);
+        if (result != 0) {
+            ernic_put_le32(rsp + NVME_CQE_RESULT_OFF, result);
+        }
+        return st;
     }
 
     switch (opcode) {
     case NVME_CMD_FLUSH:
-        return ns_sync(t, 0, t->ns_len);
+        return ns_sync(t, ns, 0, ns->len);
 
     case NVME_CMD_DSM:
         /* Deallocate is advisory; honouring it is optional. */
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
 
     case NVME_CMD_WRITE_ZEROES:
-        st = io_range(t, capsule, &off, &len);
+        st = io_range(ns, capsule, &off, &len);
         if (st != 0) {
             return st;
         }
-        memset(t->ns_data + off, 0, (size_t)len);
+        memset(ns->data + off, 0, (size_t)len);
         t->stats.write_bytes += len;
-        return fua ? ns_sync(t, off, len)
+        return fua ? ns_sync(t, ns, off, len)
                    : nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
 
     case NVME_CMD_READ:
     case NVME_CMD_WRITE:
-        return exec_rw(t, capsule, capsule_len, dma, ctx,
+        return exec_rw(t, ns, capsule, capsule_len, dma, ctx,
                        opcode == NVME_CMD_WRITE, fua);
 
     default:
@@ -1402,7 +1934,7 @@ int nvmeof_queue_exec(struct nvmeof_queue *q, const void *capsule, size_t len,
     } else if (q->qid == 0) {
         rc = exec_admin(q, sqe, dma, dma_ctx, out, &status);
     } else {
-        status = exec_io(q, sqe, len, dma, dma_ctx);
+        status = exec_io(q, sqe, len, dma, dma_ctx, out);
         rc = NVMEOF_EXEC_DONE;
     }
 

@@ -184,7 +184,7 @@ static struct nvmeof_target *make_target(void)
     char err[128] = "";
 
     nvmeof_target_cfg_defaults(&cfg);
-    cfg.size = 1U << 20;
+    cfg.ns[0].size = 1U << 20;
     struct nvmeof_target *t = nvmeof_target_create(&cfg, err, sizeof(err));
     if (t == NULL) {
         fail("setup", "target create: %s", err);

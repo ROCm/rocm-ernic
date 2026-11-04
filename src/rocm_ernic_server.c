@@ -869,6 +869,20 @@ static void usage(const char *progname)
         "                      port=NUM     - Service id (default: 4420)\n");
     fprintf(stderr, "                      queues=NUM   - Maximum I/O queues "
                     "(default: 8)\n");
+    fprintf(stderr, "                      kv=1         - Serve the Key Value "
+                    "command set instead\n");
+    fprintf(stderr, "                                     of blocks; size= is "
+                    "the value capacity\n");
+    fprintf(stderr, "                      keys=NUM     - Maximum live keys "
+                    "(kv only, default: 4096)\n");
+    fprintf(stderr, "                      maxval=BYTES - Largest single value "
+                    "(kv only, default: 1M)\n");
+    fprintf(stderr, "                      nsid=NUM     - Number the namespace "
+                    "being described (default: 1)\n");
+    fprintf(stderr, "                      ns=NUM       - Start another "
+                    "namespace, numbered NUM; the\n");
+    fprintf(stderr, "                                     options after it "
+                    "describe that one\n");
     fprintf(stderr, "                    Examples:\n");
     fprintf(stderr, "                      nvmeof                          - "
                     "64 MiB RAM namespace\n");
@@ -876,6 +890,12 @@ static void usage(const char *progname)
                     "1 GiB, 4 KiB blocks\n");
     fprintf(stderr, "                      nvmeof:file=/tmp/ns0.img,size=1G - "
                     "File-backed namespace\n");
+    fprintf(stderr, "                      nvmeof:kv=1,size=256M           - "
+                    "NVMe KV namespace\n");
+    fprintf(stderr,
+            "                      nvmeof:size=1G,ns=2,kv=1,size=256M\n");
+    fprintf(stderr, "                                                      - "
+                    "block nsid 1 and KV nsid 2\n");
 
     /* s3_target_cfg_parse() takes these options. */
     fprintf(stderr, "  s3: in-process S3-over-RDMA object store the guest "

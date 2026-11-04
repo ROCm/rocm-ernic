@@ -103,6 +103,34 @@ CHARTS = (
         "unit": "GB/s",
         "higher_is_better": True,
     },
+    # The Key Value lane's value sweep.  Store and Retrieve are charted
+    # separately because they are not symmetric: a Store is a
+    # host-to-controller transfer the target copies into its store, a
+    # Retrieve is the other direction, and one averaged number would
+    # hide a regression in whichever direction did not move.
+    #
+    # 1 MiB is absent by construction rather than by omission -- the
+    # controller reports MDTS 5, so one Key Value command carries at
+    # most 128 KiB however large maxval is.  That leaves 4 KiB and
+    # 64 KiB of TRACKED_SIZES for this pair.
+    {
+        "key": "nvme_kv",
+        "section": "bandwidth",
+        "metric": "bw_avg_GBs",
+        "verb": "nvmekv",
+        "title": "NVMe Key Value Retrieve bandwidth over time",
+        "unit": "GB/s",
+        "higher_is_better": True,
+    },
+    {
+        "key": "nvme_kv_store",
+        "section": "bandwidth",
+        "metric": "bw_avg_GBs",
+        "verb": "nvmekvst",
+        "title": "NVMe Key Value Store bandwidth over time",
+        "unit": "GB/s",
+        "higher_is_better": True,
+    },
     # The P4 lane's conversion sweep. Rated over the SOURCE bytes, which
     # is the side a caller sizes its buffer by; the destination is a
     # different length for every format pair. 1 MiB is absent by
@@ -234,6 +262,13 @@ def extract(summary, runner=DEFAULT_RUNNER):
     # data plane the badge is about.
     rec["badges"]["s3_bw_GBs"] = _find_median(
         bw_rows, verb="s3", size=TRACKED_SIZES[-1], metric="bw_avg_GBs"
+    )
+    # Key Value headlines Retrieve at 64 KiB, the LARGEST size it and
+    # the tracked set have in common: MDTS caps a KV command at 128 KiB,
+    # so TRACKED_SIZES[-1] would never be measured and the badge would
+    # read "no data" forever.
+    rec["badges"]["nvmekv_bw_GBs"] = _find_median(
+        bw_rows, verb="nvmekv", size=TRACKED_SIZES[1], metric="bw_avg_GBs"
     )
     return rec
 
@@ -603,6 +638,13 @@ BADGES = (
         "key": "s3_bw_GBs",
         "file": "badge-s3.json",
         "label": "S3 1M GET",
+        "unit": "GB/s",
+        "format": _fmt_rate,
+    },
+    {
+        "key": "nvmekv_bw_GBs",
+        "file": "badge-nvmekv.json",
+        "label": "NVMe KV 64K retrieve",
         "unit": "GB/s",
         "format": _fmt_rate,
     },

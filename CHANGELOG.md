@@ -2,7 +2,71 @@
 
 ## UNRELEASED - rocm-ernic 0.0.1
 
+### Fixed
+
+* A KV `List` command whose key-length field (CDW11[07:00]) was nonzero but
+  exceeded `NVMEOF_KV_KEY_MAX` (16) was silently accepted and treated as a
+  zero-length start-from-beginning; it is now rejected with
+  `KV_INVALID_KEY_SIZE`. A zero-length key is still valid for `List` and
+  means "start from the beginning of the namespace".
+
+* Deleting the last (or only) key in a KV namespace triggered a full
+  compaction that scanned and reallocated the entire pre-allocated hash table
+  (up to 2 million slots for the default `keys` limit). Compaction now
+  requires at least 64 tombstones, so a small number of deletes on a large
+  table does not cause a rebuild.
+
 ### Added
+
+* `--backend nvmeof:kv=1[,keys=...,maxval=...]` serves the namespace with the
+  NVM Express Key Value command set instead of the block one: Store (01h),
+  Retrieve (02h), List (06h), Delete (10h) and Exist (14h), with the key
+  carried in CDW2/CDW3 and CDW14/CDW15 and its length in CDW11. The namespace
+  reports CSI 1 in its Identify descriptor list, which is what makes Linux
+  hide the block device, keep the namespace, and give the guest
+  `/dev/ngXnY` to issue KV commands through. Values move over the same keyed
+  SGL a block Write uses, so they come out of guest memory by rkey —
+  including GPU memory, when the guest registered it there.
+
+  The two command sets are mutually exclusive on a namespace because their
+  opcodes collide: a Store is 01h, which a block namespace executes as a
+  Write. `kv=1` is therefore refused together with `file=`, and a block
+  opcode sent to a KV namespace is rejected rather than run.
+
+* `--backend nvmeof:...,ns=N,...` serves **several namespaces from one
+  controller, each with its own command set** — so a single rail can present
+  a block namespace and a Key Value namespace at the same time:
+
+  ```
+  --backend nvmeof:size=1G,bs=4096,ns=2,kv=1,size=256M,keys=4096
+  ```
+
+  `ns=N` opens another namespace numbered N; the options after it describe
+  that one. `nsid=N` keeps its old meaning — it numbers the namespace being
+  described, wherever it appears — so every existing backend string means
+  exactly what it did. Up to `NVMEOF_MAX_NS` (8) namespaces, and a repeated
+  id is refused rather than resolved arbitrarily.
+
+  What makes it work is that the command set is a property of the namespace,
+  not of the controller. Each namespace reports its own CSI in its Identify
+  descriptor list, `CAP.CSS` advertises the NVM command set (bit 0) and
+  "one or more other command sets" (bit 6) together, and the host then
+  selects `CC.CSS` = all-supported and reads each namespace separately.
+  Command dispatch keys off the addressed namespace, which is the only thing
+  that can distinguish a Store from a Write: both are opcode 01h.
+
+  `test_mixed_namespaces()` sends 01h to each namespace of one controller and
+  checks they did different things to separate storage, that the Store did
+  not land in the block namespace, and that a KV opcode is still refused on a
+  block namespace.
+
+  `src/nvmeof_kv.c` is the store behind it — a bounded hash table with
+  tombstone deletion, so a List walk cannot skip a live key. Covered by
+  `test_kv_store()` and `test_kv_commands()` in `tests/test_nvmeof_target.c`,
+  which drive real capsules against it without a VM.
+  `tests/test_nvmeof_kv_compact.c` (`nvmeof-kv-compact-unit`) covers
+  `kv_compact()` directly, including the calloc-failure path that leaves
+  the table intact as a best-effort degraded state.
 
 * **An AMD Pensando ionic NIC.** The server presents `1dd8:1002` (subsystem
   `1dd8:5400`), so guests use the upstream Linux `ionic` and `ionic_rdma`

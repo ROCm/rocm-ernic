@@ -54,6 +54,8 @@
 #define NVME_SQE_CID_OFF    2
 #define NVME_SQE_NSID_OFF   4
 #define NVME_SQE_DPTR_OFF   24
+#define NVME_SQE_CDW2_OFF   8
+#define NVME_SQE_CDW3_OFF   12
 #define NVME_SQE_CDW10_OFF  40
 #define NVME_SQE_CDW11_OFF  44
 #define NVME_SQE_CDW12_OFF  48
@@ -63,6 +65,38 @@
 
 /* Read, Write and Write Zeroes: Force Unit Access, in cdw12 */
 #define NVME_RW_FUA (1U << 30)
+
+/* Namespace Identification Descriptor types (Identify CNS 03h). */
+#define NVME_NIDT_UUID 3
+#define NVME_NIDT_CSI  4
+
+/* Command Set Identifiers. */
+#define NVME_CSI_NVM 0
+#define NVME_CSI_KV  1
+
+/*
+ * NVM Express Key Value Command Set opcodes.
+ *
+ * STORE and RETRIEVE collide with WRITE and READ in the block command set,
+ * which is why a namespace must declare its CSI and why these are only ever
+ * dispatched for one that declared KV.
+ */
+#define NVME_KV_CMD_STORE    0x01
+#define NVME_KV_CMD_RETRIEVE 0x02
+#define NVME_KV_CMD_LIST     0x06
+#define NVME_KV_CMD_DELETE   0x10
+#define NVME_KV_CMD_EXIST    0x14
+
+/* KV status codes, generic status type. */
+#define NVME_SC_KV_INVALID_VALUE_SIZE 0x85
+#define NVME_SC_KV_INVALID_KEY_SIZE   0x86
+#define NVME_SC_KV_KEY_NOT_EXIST      0x87
+#define NVME_SC_KV_UNRECOVERED        0x88
+#define NVME_SC_KV_KEY_EXISTS         0x89
+
+/* Store Option bits in CDW11[15:08]. */
+#define NVME_KV_STORE_OPT_NO_OVERWRITE 0x01 /* fail if the key exists */
+#define NVME_KV_STORE_OPT_MUST_EXIST   0x02 /* fail if it does not */
 
 /* Fabrics commands overlay the same 64 bytes with fctype at offset 4. */
 #define NVMEOF_SQE_FCTYPE_OFF 4
@@ -148,6 +182,13 @@ enum {
     NVME_ID_CNS_CTRL = 0x01,
     NVME_ID_CNS_NS_ACTIVE_LIST = 0x02,
     NVME_ID_CNS_NS_DESC_LIST = 0x03,
+    /*
+     * I/O Command Set Independent Identify Namespace.  The host asks for
+     * this instead of CNS 00h once it has selected CC.CSS = all-supported,
+     * because CNS 00h is NVM-command-set data and means nothing for a
+     * namespace that speaks another one.
+     */
+    NVME_ID_CNS_NS_CS_INDEP = 0x08,
 };
 
 /* Log page identifiers */

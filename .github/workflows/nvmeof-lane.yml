@@ -30,12 +30,27 @@ on:
           to grant contents: write and actions: write.
         type: boolean
         default: false
+      mode:
+        description: >-
+          Which namespace layout to serve.  "block" is one block
+          namespace, the lane this file was written for.  "mixed" is one
+          block namespace and one Key Value namespace on the same
+          controller, which is what exercises per-namespace command-set
+          dispatch.
+
+          The two share this file rather than each having their own
+          because they differ by a backend string and a playbook tag:
+          same backend, same controller, same bring-up.  The s3 and p4
+          lanes are separate files because they serve different
+          backends entirely.
+        type: string
+        default: block
 
 jobs:
   system-test-nvmeof:
     # Only the configuration, not the lane name: every caller's name is
     # prefixed onto this one, and the callers already say NVMe-oF.
-    name: Single Server
+    name: ${{ inputs.mode == 'mixed' && 'Mixed Namespaces' || 'Single Server' }}
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     container:
@@ -59,7 +74,16 @@ jobs:
       # gen-report.py globs <results>/perf-csv/*.csv, so the directory
       # name is part of the contract, not a preference.
       NVMEOF_RESULTS: /tmp/ernic-ci-results
-      NVMEOF_PERF_CSV: /tmp/ernic-ci-results/perf-csv/nvmeof-bw.csv
+      NVMEOF_PERF_CSV: /tmp/ernic-ci-results/perf-csv/${{
+        inputs.mode == 'mixed' && 'nvmekv-bw.csv' || 'nvmeof-bw.csv' }}
+
+      # The Key Value namespace of a mixed controller.  Its id is
+      # part of the contract with the play, which asserts both
+      # namespaces are present rather than adapting to one.
+      NVMEOF_KV_SIZE: 64M
+      NVMEOF_KV_NSID: 2
+      NVMEOF_KV_KEYS: 4096
+      NVMEOF_KV_MAXVAL: 1M
 
     steps:
     - name: Checkout code
@@ -284,14 +308,26 @@ jobs:
 
     - name: Start rocm-ernic server
       shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
       run: |
-        echo "=== Starting rocm-ernic server (nvmeof backend) ==="
+        echo "=== Starting rocm-ernic server (nvmeof backend, ${MODE}) ==="
         # Remove any existing socket
         rm -f /tmp/vfio-user-rocm-ernic.sock
 
+        BACKEND="nvmeof:size=${NVMEOF_SIZE},bs=${NVMEOF_BS},nqn=${NVMEOF_NQN},ip=${NVMEOF_TRADDR},port=${NVMEOF_TRSVCID}"
+        if [ "$MODE" = "mixed" ]; then
+          # ns= opens a second namespace; the options after it describe
+          # that one.  nsid 1 stays the block namespace above, so the
+          # block half of this lane is unchanged and the Key Value half
+          # is added beside it.
+          BACKEND="${BACKEND},ns=${NVMEOF_KV_NSID},kv=1,size=${NVMEOF_KV_SIZE},keys=${NVMEOF_KV_KEYS},maxval=${NVMEOF_KV_MAXVAL}"
+        fi
+        echo "backend: ${BACKEND}"
+
         ./build/rocm-ernic \
           --socket /tmp/vfio-user-rocm-ernic.sock \
-          --backend "nvmeof:size=${NVMEOF_SIZE},bs=${NVMEOF_BS},nqn=${NVMEOF_NQN},ip=${NVMEOF_TRADDR},port=${NVMEOF_TRSVCID}" \
+          --backend "$BACKEND" \
           --verbose > /tmp/vfu_server.log 2>&1 &
         
         SERVER_PID=$!
@@ -755,6 +791,7 @@ jobs:
       shell: bash
       env:
         PUBLISH: ${{ inputs.publish }}
+        MODE: ${{ inputs.mode }}
         VM_USER: ${{ steps.vm_info.outputs.vm_user }}
         SSH_KEY_PRIVATE: ${{ steps.vm_info.outputs.ssh_key_private }}
       run: |
@@ -780,7 +817,22 @@ jobs:
         fi
 
         cd ansible
-        ansible-playbook ci-site.yml --tags nvmeof \
+
+        # The mixed lane runs the Key Value play INSTEAD of the block
+        # one, not as well: both connect to the same subsystem, and the
+        # KV play exercises the block namespace itself -- it writes a
+        # pattern, runs KV traffic over it, and checks the pattern
+        # survived.  Running the block play first would leave the
+        # namespace connected and the KV play would fail at connect.
+        if [ "$MODE" = "mixed" ]; then
+          tags=nvmeof-kv
+          perf_var=ernic_kv_perf_csv
+        else
+          tags=nvmeof
+          perf_var=ernic_nvmeof_perf_csv
+        fi
+
+        ansible-playbook ci-site.yml --tags "$tags" \
           -e ernic_project_root="$PROJECT_ROOT" \
           -e ernic_run_dir="$ERNIC_RUN_DIR" \
           -e ernic_instances=1 \
@@ -789,7 +841,7 @@ jobs:
           -e ernic_nvmeof_nqn="$NVMEOF_NQN" \
           -e ernic_nvmeof_traddr="$NVMEOF_TRADDR" \
           -e ernic_nvmeof_trsvcid="$NVMEOF_TRSVCID" \
-          -e ernic_nvmeof_perf_csv="$perf_csv"
+          -e "$perf_var=$perf_csv"
 
     - name: Check the server survived the run
       if: always()
@@ -826,7 +878,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
-        name: nvmeof-backend-test-logs
+        name: nvmeof-backend-test-logs-${{ inputs.mode || 'block' }}
         path: |
           /tmp/vfu_server.log
           /tmp/qemu.log
@@ -839,7 +891,7 @@ jobs:
       if: inputs.publish && always()
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
-        name: nvmeof-perf-csv
+        name: ${{ inputs.mode == 'mixed' && 'nvmekv-perf-csv' || 'nvmeof-perf-csv' }}
         path: ${{ env.NVMEOF_RESULTS }}/perf-csv/
         if-no-files-found: warn
 
@@ -855,7 +907,7 @@ jobs:
       uses: $/.github/actions/publish-perf
       with:
         results: ${{ env.NVMEOF_RESULTS }}
-        subject: NVMe-oF
+        subject: ${{ inputs.mode == 'mixed' && 'NVMe Key Value' || 'NVMe-oF' }}
         token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Cleanup

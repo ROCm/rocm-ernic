@@ -124,6 +124,22 @@ ernic_add_test_program(test_write_imm
     DEPS ibverbs
 )
 
+# -- kv_bench ----------------------------------------------------
+# The Key Value Store/Retrieve round trip and timing, run inside a
+# guest by ansible/playbooks/nvmeof-kv-tests.yml, which copies this
+# source in and builds it there -- it needs a Key Value namespace, and
+# no host running ctest has one.
+#
+# Built here anyway, and deliberately NOT registered with CTest: the
+# build is what gives it compile coverage, clang-tidy and the warning
+# set on every pull request, rather than only when a VM lane runs.  A
+# guest-only source that nothing builds on the host is a source that
+# breaks silently.  It needs no library beyond libc, which is what
+# keeps the guest side a single scp and a single gcc.
+ernic_add_test_program(kv_bench
+    SOURCES kv_bench.c
+)
+
 # Fixture-backed tests for the C-side emulated RDMA device lookup.
 ernic_add_test_program(test_ernic_device
     SOURCES test_ernic_device.c
@@ -236,10 +252,23 @@ endif()
 ernic_add_test_program(test_nvmeof_target
     SOURCES
         test_nvmeof_target.c
+        ${PROJECT_SOURCE_DIR}/src/nvmeof/nvmeof_kv.c
         ${PROJECT_SOURCE_DIR}/src/nvmeof/nvmeof_target.c
         ${PROJECT_SOURCE_DIR}/src/ernic_log.c
     HEADER_DEPS vfio-user
 )
+
+# KV store compaction unit test: exercises kv_compact() via the delete
+# path, and the calloc-failure path that leaves the table intact.
+# --wrap=calloc lets the test arm a one-shot failure without changing
+# production code.
+ernic_add_test_program(test_nvmeof_kv_compact
+    SOURCES
+        test_nvmeof_kv_compact.c
+        ${PROJECT_SOURCE_DIR}/src/nvmeof/nvmeof_kv.c
+)
+target_link_options(test_nvmeof_kv_compact PRIVATE
+    "LINKER:--wrap=calloc")
 
 # IB CM responder test. Feeds it the CM MADs a guest running rdma_cm
 # emits and dissects the replies; no MAD ever reaches a wire.
@@ -247,6 +276,7 @@ ernic_add_test_program(test_nvmeof_cm
     SOURCES
         test_nvmeof_cm.c
         ${PROJECT_SOURCE_DIR}/src/nvmeof/nvmeof_cm.c
+        ${PROJECT_SOURCE_DIR}/src/nvmeof/nvmeof_kv.c
         ${PROJECT_SOURCE_DIR}/src/nvmeof/nvmeof_target.c
         ${PROJECT_SOURCE_DIR}/src/ernic_log.c
     HEADER_DEPS vfio-user
@@ -844,6 +874,10 @@ endif()
 # NVMe-oF controller unit test: drives the capsule sequence a real
 # nvme-rdma initiator emits, from Fabrics Connect to read-after-write.
 ernic_add_unit_test(nvmeof-target-unit test_nvmeof_target TIMEOUT 30)
+
+# KV store compaction unit test: tombstone-triggered compact and the
+# calloc-failure path that leaves the table intact.
+ernic_add_unit_test(nvmeof-kv-compact-unit test_nvmeof_kv_compact TIMEOUT 30)
 
 # IB CM responder unit test: REQ/REP/RTU/DREQ, plus every rejection path
 # a misaddressed or mismatched "nvme connect" can take.

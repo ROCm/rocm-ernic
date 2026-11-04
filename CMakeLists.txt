@@ -218,6 +218,7 @@ set(IONIC_EMU_SOURCES
 
 # In-process NVMe-oF controller reached over the emulated fabric
 set(NVMEOF_SOURCES
+    src/nvmeof/nvmeof_kv.c
     src/nvmeof/nvmeof_target.c
     src/nvmeof/nvmeof_cm.c
 )

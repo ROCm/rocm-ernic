@@ -24,6 +24,8 @@
 #   functional -- guest setup + sanity tests + RDMA-Tutorial examples
 #   tutorial   -- RDMA-Tutorial examples
 #   nvmeof     -- single-VM NVMe-oF against the in-process controller
+#   nvmeof-kv  -- single-VM NVMe Key Value against a controller
+#                 serving a block AND a Key Value namespace
 #   s3         -- single-VM S3 over RDMA against the in-process store
 #   p4         -- single-VM guest-driven P4 fp8 reduction
 #   perf       -- iperf3 + RDMA perftest sweeps
@@ -57,6 +59,15 @@
 # Single-VM lane, for the same reason as nvmeof above: the
 # instance runs the object store itself, so this is NOT part
 # of the `functional` tag.  Ask for it by name with --tags s3.
+# Single-VM lane like nvmeof above, and separately tagged because it
+# needs a DIFFERENT backend string: a controller serving one block
+# namespace and one Key Value namespace.  Running it against the
+# plain nvmeof lane's single block namespace would fail at the first
+# namespace check.  Ask for it by name with --tags nvmeof-kv.
+- name: "CI: NVMe Key Value tests (mixed-namespace controller)"
+  ansible.builtin.import_playbook: playbooks/nvmeof-kv-tests.yml
+  tags: [nvmeof-kv]
+
 - name: "CI: S3-over-RDMA tests (in-process object store)"
   ansible.builtin.import_playbook: playbooks/s3-tests.yml
   tags: [s3]

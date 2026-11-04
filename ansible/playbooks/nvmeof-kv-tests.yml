@@ -1,0 +1,576 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# NVMe Key Value tests against the in-process controller, on a
+# controller that serves a BLOCK namespace and a KEY VALUE namespace
+# at the same time.
+#
+# Like the nvmeof play this needs only one guest: the server instance
+# runs the target itself, so one VM and one server are a complete
+# fabric.  It requires the instance to have been started on a mixed
+# backend:
+#
+#   rocm-ernic --backend nvmeof:size=256M,bs=4096,ns=2,kv=1,size=64M ...
+#
+# What this play is actually for is the opcode overlap.  A KV Store is
+# opcode 01h and a block Write is opcode 01h; a Retrieve is 02h and a
+# Read is 02h.  The only thing that tells them apart is the namespace
+# the command names.  So every check below is paired: the KV traffic
+# has to work, AND the block namespace has to be byte-identical
+# afterwards.  A controller that dispatched on itself rather than on
+# the addressed namespace would pass the first half and fail the
+# second.
+
+---
+- name: NVMe Key Value tests against a mixed-namespace controller
+  hosts: ernic_vms
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+
+  vars:
+    # See the note in nvmeof-tests.yml: guest-setup is a separate play,
+    # so the role default never reaches this one and the default() here
+    # is the normal path rather than a fallback.
+    ernic_nvmeof_nic_name: "{{ ernic_nic_name | default('rocm-ernic0') }}"
+
+    # Everything else this play is configured by -- the namespace ids,
+    # the key, the sweep and the isolation window -- lives in
+    # group_vars/all.yml beside the NVMe-oF and S3 defaults.  Not here:
+    # a play's own vars OUTRANK group_vars, so a consumer setting them
+    # in their inventory would be silently ignored.
+
+  tasks:
+
+    - name: Install nvme-cli
+      ansible.builtin.apt:
+        name:
+          - nvme-cli
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+      register: ernic_kv_nvme_cli
+      retries: 3
+      delay: 10
+      until: ernic_kv_nvme_cli is succeeded
+
+    - name: Load the NVMe fabrics modules
+      community.general.modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - nvme-fabrics
+        - nvme-rdma
+
+    - name: Check the emulated NIC carries an IPv4 address
+      ansible.builtin.command:
+        cmd: "ip -4 -br addr show {{ ernic_nvmeof_nic_name }}"
+      register: ernic_kv_nic
+      changed_when: false
+      failed_when: false
+
+    # Without an IPv4 address on the NIC the driver populates no RoCEv2
+    # GID, rdma_resolve_addr() has no source to bind to, and the connect
+    # fails with a bare ENETUNREACH that says nothing about why.
+    - name: Fail when the NIC has no address
+      ansible.builtin.assert:
+        that:
+          - ernic_kv_nic.rc == 0
+          - ernic_kv_nic.stdout is search('[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
+        fail_msg: >-
+          {{ ernic_nvmeof_nic_name }} has no IPv4 address, so there is no
+          RoCEv2 GID to connect from.  Re-run guest setup with
+          ernic_configure_nic=true.
+
+    # The controller is not a host on the segment and has no MAC, so
+    # address resolution has nothing to resolve to and the connect
+    # fails with "rdma connection establishment failed (-104)" and
+    # nothing at all in the target's log.  Any link-layer address will
+    # do: the emulator routes by queue pair, not by MAC.
+    - name: Seed the neighbour entry for the controller
+      ansible.builtin.command:
+        argv:
+          - ip
+          - neigh
+          - replace
+          - "{{ ernic_nvmeof_traddr }}"
+          - lladdr
+          - "{{ ernic_nvmeof_lladdr }}"
+          - dev
+          - "{{ ernic_nvmeof_nic_name }}"
+          - nud
+          - permanent
+      changed_when: true
+
+    - name: Connect to the subsystem
+      ansible.builtin.command:
+        argv:
+          - nvme
+          - connect
+          - -t
+          - rdma
+          - -a
+          - "{{ ernic_nvmeof_traddr }}"
+          - -s
+          - "{{ ernic_nvmeof_trsvcid | string }}"
+          - -n
+          - "{{ ernic_nvmeof_nqn }}"
+      register: ernic_kv_connect
+      changed_when: true
+
+    - name: Resolve the controller that was just connected
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          for s in /sys/class/nvme/nvme*; do
+            [ -r "$s/subsysnqn" ] || continue
+            if [ "$(cat "$s/subsysnqn")" = {{ ernic_nvmeof_nqn | quote }} ]; then
+              basename "$s"
+              exit 0
+            fi
+          done
+          exit 1
+      register: ernic_kv_ctrl
+      changed_when: false
+      failed_when: false
+
+    - name: Fail when no controller appeared
+      ansible.builtin.fail:
+        msg: >-
+          No NVMe controller reports subsysnqn
+          {{ ernic_nvmeof_nqn }} after connect.
+      when: ernic_kv_ctrl.rc != 0
+
+    # ── Both namespaces, and which is which ──────────
+    #
+    # Resolve by the nsid sysfs attribute, NOT by device name.  Linux
+    # names namespace devices nvmeXnY by the head instance it allocated,
+    # not by the namespace id, and a hidden KV namespace still consumes
+    # one -- so on this controller nsid 1 is /dev/nvme2n2 and nsid 2 is
+    # ng2n1.  Assuming nvmeXn1 is nsid 1 is wrong here in a way that
+    # silently tests the wrong namespace.
+    - name: Map each namespace id to its device name
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -eu
+          ctrl={{ ernic_kv_ctrl.stdout | quote }}
+          want={{ item | quote }}
+          for d in /sys/class/nvme/"$ctrl"/"$ctrl"n*; do
+            [ -r "$d/nsid" ] || continue
+            if [ "$(cat "$d/nsid")" = "$want" ]; then
+              basename "$d"
+              exit 0
+            fi
+          done
+          exit 1
+      loop:
+        - "{{ ernic_kv_block_nsid }}"
+        - "{{ ernic_kv_kv_nsid }}"
+      loop_control:
+        label: "nsid {{ item }}"
+      register: ernic_kv_nsmap
+      changed_when: false
+      retries: 15
+      delay: 2
+      until: ernic_kv_nsmap.rc == 0
+      failed_when: ernic_kv_nsmap.rc != 0
+
+    - name: Fail when the controller did not present both namespaces
+      ansible.builtin.fail:
+        msg: >-
+          Expected namespaces {{ ernic_kv_block_nsid }} and
+          {{ ernic_kv_kv_nsid }} on {{ ernic_kv_ctrl.stdout }}, but
+          {{ ernic_kv_nsmap.results
+             | selectattr('rc', 'ne', 0)
+             | map(attribute='item')
+             | list }}
+          did not appear.  A mixed controller that presents only one
+          namespace usually means the host rejected the other: check
+          the guest log for "Command set not reported for nsid".
+      when: ernic_kv_nsmap.results | selectattr('rc', 'ne', 0) | list | length > 0
+
+    - name: Name the two namespace devices
+      ansible.builtin.set_fact:
+        # nsid 1: a real block device, because its CSI says NVM.
+        ernic_kv_block_dev: "/dev/{{ ernic_kv_nsmap.results[0].stdout }}"
+        # nsid 2: no block device -- Linux hides it and keeps the
+        # generic char device, which is what takes KV passthrough.
+        ernic_kv_kv_dev: "/dev/ng{{ ernic_kv_nsmap.results[1].stdout
+                                    | regex_replace('^nvme', '') }}"
+
+    - name: Show the namespace map
+      ansible.builtin.debug:
+        msg: >-
+          nsid {{ ernic_kv_block_nsid }} -> {{ ernic_kv_block_dev }}
+          (block), nsid {{ ernic_kv_kv_nsid }} ->
+          {{ ernic_kv_kv_dev }} (key value)
+
+    - name: Check the generic char device for the KV namespace exists
+      ansible.builtin.stat:
+        path: "{{ ernic_kv_kv_dev }}"
+      register: ernic_kv_kv_node
+
+    - name: Fail when the KV namespace has no generic device
+      ansible.builtin.fail:
+        msg: >-
+          {{ ernic_kv_kv_dev }} does not exist.  Linux creates it for
+          any namespace it attaches, so its absence means nsid
+          {{ ernic_kv_kv_nsid }} was never attached.
+      when: not ernic_kv_kv_node.stat.exists
+
+    # ── Each namespace reports its own command set ───
+    - name: Read the namespace identification descriptors
+      ansible.builtin.command:
+        argv:
+          - nvme
+          - ns-descs
+          - "/dev/{{ ernic_kv_ctrl.stdout }}"
+          - -n
+          - "{{ item | string }}"
+          - -o
+          - json
+      loop:
+        - "{{ ernic_kv_block_nsid }}"
+        - "{{ ernic_kv_kv_nsid }}"
+      loop_control:
+        label: "nsid {{ item }}"
+      register: ernic_kv_descs
+      changed_when: false
+
+    # CSI 0 is the NVM command set and CSI 1 is Key Value.  Both have
+    # to be reported EXPLICITLY once the controller advertises more
+    # than one command set: in that mode the host stops assuming NVM
+    # and reads the descriptor, so a block namespace that says nothing
+    # is dropped with "Command set not reported for nsid".
+    # nvme ns-descs -o json returns CSI inside the ns-descs array, not
+    # at the top level.  CSI 1 is encoded as "0x1", so parse with
+    # base 0 (auto-detect) rather than the default base 10.
+    - name: Fail when a namespace does not report the expected command set
+      ansible.builtin.fail:
+        msg: >-
+          nsid {{ item.0 }} reports csi
+          {{ (item.1.stdout | from_json)['ns-descs']
+              | selectattr('Type', 'equalto', 'csi')
+              | map(attribute='csi')
+              | first
+              | default('(absent)') }},
+          expected {{ item.2 }}.
+      when: >-
+        (((item.1.stdout | from_json)['ns-descs']
+            | selectattr('Type', 'equalto', 'csi')
+            | map(attribute='csi')
+            | first
+            | default(-1))
+            | int(0, 0))
+        != (item.2 | int)
+      loop: "{{ [ernic_kv_block_nsid, ernic_kv_kv_nsid]
+                | zip(ernic_kv_descs.results, [0, 1])
+                | list }}"
+      loop_control:
+        label: "nsid {{ item.0 }} expects csi {{ item.2 }}"
+
+    # ── Seed the block namespace ─────────────────────
+    #
+    # Written before any KV traffic so the digest below means
+    # something: the point is that KV commands cannot reach it.
+    - name: Write a known pattern to the block namespace
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -eu
+          dd if=/dev/urandom of=/tmp/ernic-kv-pattern \
+             bs=1M count={{ ernic_kv_block_check_mb }} status=none
+          dd if=/tmp/ernic-kv-pattern of={{ ernic_kv_block_dev | quote }} \
+             bs=1M count={{ ernic_kv_block_check_mb }} oflag=direct status=none
+          sync
+      changed_when: true
+
+    - name: Digest the block namespace before any KV traffic
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -euo pipefail
+          dd if={{ ernic_kv_block_dev | quote }} bs=1M \
+             count={{ ernic_kv_block_check_mb }} iflag=direct status=none \
+            | md5sum | cut -d' ' -f1
+      register: ernic_kv_block_before
+      changed_when: false
+
+    - name: Fail when the block namespace did not take the pattern
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          cmp -n {{ (ernic_kv_block_check_mb | int) * 1024 * 1024 }} \
+               /tmp/ernic-kv-pattern {{ ernic_kv_block_dev | quote }}
+      changed_when: false
+
+    # ── The Key Value round trip ─────────────────────
+    - name: Exist on an empty store reports key-does-not-exist
+      ansible.builtin.command:
+        argv:
+          - nvme
+          - io-passthru
+          - "{{ ernic_kv_kv_dev }}"
+          - "--namespace-id={{ ernic_kv_kv_nsid }}"
+          - --opcode=0x14
+          - "--cdw2={{ ernic_kv_cdw2 }}"
+          - "--cdw3={{ ernic_kv_cdw3 }}"
+          - "--cdw14={{ ernic_kv_cdw14 }}"
+          - "--cdw15={{ ernic_kv_cdw15 }}"
+          - "--cdw11={{ ernic_kv_keylen }}"
+      register: ernic_kv_exist_miss
+      changed_when: false
+      failed_when: false
+
+    - name: Fail when Exist on a missing key succeeded
+      ansible.builtin.fail:
+        msg: >-
+          Exist returned success for a key that was never stored.
+      when: ernic_kv_exist_miss.rc == 0
+
+    - name: Store a value, then Retrieve it into a separate file
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -eu
+          dd if=/dev/urandom of=/tmp/ernic-kv-value bs=1K count=64 status=none
+
+          nvme io-passthru {{ ernic_kv_kv_dev | quote }} \
+            --opcode=0x01 --namespace-id={{ ernic_kv_kv_nsid }} \
+            --cdw2={{ ernic_kv_cdw2 }} --cdw3={{ ernic_kv_cdw3 }} \
+            --cdw14={{ ernic_kv_cdw14 }} --cdw15={{ ernic_kv_cdw15 }} \
+            --cdw11={{ ernic_kv_keylen }} --cdw10=65536 \
+            --data-len=65536 --write --input-file=/tmp/ernic-kv-value
+
+          nvme io-passthru {{ ernic_kv_kv_dev | quote }} \
+            --opcode=0x02 --namespace-id={{ ernic_kv_kv_nsid }} \
+            --cdw2={{ ernic_kv_cdw2 }} --cdw3={{ ernic_kv_cdw3 }} \
+            --cdw14={{ ernic_kv_cdw14 }} --cdw15={{ ernic_kv_cdw15 }} \
+            --cdw11={{ ernic_kv_keylen }} --cdw10=65536 \
+            --data-len=65536 --read --raw-binary > /tmp/ernic-kv-readback
+
+          cmp /tmp/ernic-kv-value /tmp/ernic-kv-readback
+      changed_when: true
+
+    - name: Exist now reports the key is present
+      ansible.builtin.command:
+        argv:
+          - nvme
+          - io-passthru
+          - "{{ ernic_kv_kv_dev }}"
+          - "--namespace-id={{ ernic_kv_kv_nsid }}"
+          - --opcode=0x14
+          - "--cdw2={{ ernic_kv_cdw2 }}"
+          - "--cdw3={{ ernic_kv_cdw3 }}"
+          - "--cdw14={{ ernic_kv_cdw14 }}"
+          - "--cdw15={{ ernic_kv_cdw15 }}"
+          - "--cdw11={{ ernic_kv_keylen }}"
+      changed_when: false
+
+    - name: Delete the key, and check it is gone
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -eu
+          nvme io-passthru {{ ernic_kv_kv_dev | quote }} \
+            --opcode=0x10 --namespace-id={{ ernic_kv_kv_nsid }} \
+            --cdw2={{ ernic_kv_cdw2 }} --cdw3={{ ernic_kv_cdw3 }} \
+            --cdw14={{ ernic_kv_cdw14 }} --cdw15={{ ernic_kv_cdw15 }} \
+            --cdw11={{ ernic_kv_keylen }}
+
+          if nvme io-passthru {{ ernic_kv_kv_dev | quote }} \
+               --opcode=0x14 --namespace-id={{ ernic_kv_kv_nsid }} \
+               --cdw2={{ ernic_kv_cdw2 }} --cdw3={{ ernic_kv_cdw3 }} \
+               --cdw14={{ ernic_kv_cdw14 }} --cdw15={{ ernic_kv_cdw15 }} \
+               --cdw11={{ ernic_kv_keylen }} >/dev/null 2>&1; then
+            echo "Exist still reports the key after Delete" >&2
+            exit 1
+          fi
+      changed_when: true
+
+    # ── A KV opcode must not reach the block namespace ──
+    #
+    # 0x14 is Exist, which the NVM command set does not define.  Sent
+    # to the block namespace it has to be refused as an invalid
+    # opcode; a controller that dispatched on itself would run it.
+    - name: A KV opcode is refused on the block namespace
+      ansible.builtin.command:
+        argv:
+          - nvme
+          - io-passthru
+          - "{{ ernic_kv_block_dev }}"
+          - "--namespace-id={{ ernic_kv_block_nsid }}"
+          - --opcode=0x14
+          - "--cdw2={{ ernic_kv_cdw2 }}"
+          - "--cdw3={{ ernic_kv_cdw3 }}"
+          - "--cdw14={{ ernic_kv_cdw14 }}"
+          - "--cdw15={{ ernic_kv_cdw15 }}"
+          - "--cdw11={{ ernic_kv_keylen }}"
+      register: ernic_kv_wrong_ns
+      changed_when: false
+      failed_when: false
+
+    - name: Fail when the block namespace did not reject the KV opcode as invalid
+      ansible.builtin.fail:
+        msg: >-
+          Exist (0x14) on nsid {{ ernic_kv_block_nsid }} (block):
+          rc={{ ernic_kv_wrong_ns.rc }},
+          stderr={{ ernic_kv_wrong_ns.stderr | default('') | truncate(200) }}.
+          Expected rejection with 'Invalid Command Opcode'; a KEY_NOT_EXIST
+          or success response means dispatch reached the KV path, so a
+          Store (01h) would run as a block Write.
+      when: >-
+        ernic_kv_wrong_ns.rc == 0 or
+        'Invalid Command Opcode' not in
+        (ernic_kv_wrong_ns.stderr | default('') +
+         ernic_kv_wrong_ns.stdout | default(''))
+
+    # ── The block namespace is untouched ─────────────
+    - name: Digest the block namespace after the KV traffic
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -euo pipefail
+          dd if={{ ernic_kv_block_dev | quote }} bs=1M \
+             count={{ ernic_kv_block_check_mb }} iflag=direct status=none \
+            | md5sum | cut -d' ' -f1
+      register: ernic_kv_block_after
+      changed_when: false
+
+    - name: Fail when the KV traffic changed the block namespace
+      ansible.builtin.fail:
+        msg: >-
+          The first {{ ernic_kv_block_check_mb }} MiB of
+          {{ ernic_kv_block_dev }} changed across the Key Value
+          traffic: {{ ernic_kv_block_before.stdout }} before,
+          {{ ernic_kv_block_after.stdout }} after.  A Store reached the
+          block namespace.
+      when: ernic_kv_block_before.stdout != ernic_kv_block_after.stdout
+
+    - name: Show the isolation result
+      ansible.builtin.debug:
+        msg: >-
+          Key Value round trip passed and
+          {{ ernic_kv_block_dev }} is byte-identical across it
+          ({{ ernic_kv_block_after.stdout }}).
+
+    # ── Value-size sweep for the trend chart ─────────
+    #
+    # tests/kv_bench.c rather than a loop around `nvme io-passthru`:
+    # nvme-cli costs about 5 ms per invocation to fork, exec and link,
+    # which swamps a command this emulator answers in a few hundred
+    # microseconds.  A shell loop therefore reports the same ~5 ms at
+    # every value size -- a flat line that looks like a measurement and
+    # tracks nothing.  See the header of that file.
+    - name: Copy the Key Value benchmark into the guest
+      ansible.builtin.copy:
+        src: "{{ ernic_project_root }}/tests/kv_bench.c"
+        dest: /tmp/kv_bench.c
+        mode: "0644"
+      when: ernic_kv_perf_csv | length > 0
+
+    - name: Copy parse_int.h into the guest for the Key Value benchmark
+      ansible.builtin.copy:
+        src: "{{ ernic_project_root }}/src/parse_int.h"
+        dest: /tmp/parse_int.h
+        mode: "0644"
+      when: ernic_kv_perf_csv | length > 0
+
+    - name: Build the Key Value benchmark in the guest
+      ansible.builtin.command:
+        argv:
+          # The project's C standard and feature-test macros, as
+          # ernic_set_compiler_flags() gives every target.  No library
+          # beyond libc; parse_int.h is copied alongside kv_bench.c.
+          - gcc
+          - -std=c11
+          - -pedantic
+          - -D_POSIX_C_SOURCE=200809L
+          - -D_DEFAULT_SOURCE
+          - -O2
+          - -Wall
+          - -Wextra
+          - -I/tmp
+          - -o
+          - /tmp/kv_bench
+          - /tmp/kv_bench.c
+      changed_when: true
+      when: ernic_kv_perf_csv | length > 0
+
+    # One invocation for the whole sweep, so the open and the key are
+    # shared and the per-size numbers are comparable.  It Stores,
+    # Retrieves, COMPARES, and only then times each direction: a
+    # Retrieve that returns the wrong bytes quickly is not a better
+    # number.
+    - name: Sweep Store and Retrieve across the tracked value sizes
+      ansible.builtin.command:
+        argv: "{{ ['/tmp/kv_bench', ernic_kv_kv_dev,
+                   ernic_kv_kv_nsid | string,
+                   ernic_kv_perf_iters | string]
+                  + (ernic_kv_perf_sweep | map(attribute='bytes')
+                     | map('string') | list) }}"
+      register: ernic_kv_sweep
+      changed_when: true
+      when: ernic_kv_perf_csv | length > 0
+
+    # Written on the controller rather than in the guest, because it is
+    # ci/report/publish-perf.py that has to find it.  Two verbs from one
+    # sweep: Store and Retrieve are charted separately because they are
+    # not symmetric here, and one averaged number would hide a
+    # regression in whichever direction did not move.
+    #
+    # msg_rate_mpps is 0: this is a depth-1 synchronous path, so an IOPS
+    # column would only restate the latency already in the chart.
+    - name: Write the sweep CSV on the controller
+      ansible.builtin.copy:
+        dest: "{{ ernic_kv_perf_csv }}"
+        mode: "0644"
+        content: |
+          verb,size,bw_peak_GBs,bw_avg_GBs,msg_rate_mpps
+          {% for line in ernic_kv_sweep.stdout_lines %}
+          {%- set f = line.split() %}
+          nvmekv,{{ f[0] }},{{ f[2] }},{{ f[2] }},0.000000
+          nvmekvst,{{ f[0] }},{{ f[1] }},{{ f[1] }},0.000000
+          {% endfor %}
+      become: false
+      delegate_to: localhost
+      when: ernic_kv_perf_csv | length > 0
+
+    - name: Show the sweep
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.split()[0] }} bytes: store {{ item.split()[1] }} GB/s
+          ({{ item.split()[3] }} us), retrieve {{ item.split()[2] }} GB/s
+          ({{ item.split()[4] }} us)
+      loop: "{{ ernic_kv_sweep.stdout_lines | default([]) }}"
+      when: ernic_kv_perf_csv | length > 0
+
+    # ── Teardown ─────────────────────────────────────
+    #
+    # async for the same reason the nvmeof play uses it: a disconnect
+    # stuck in ib_drain_qp() is uninterruptible, so a timeout inside
+    # the guest could not kill it and would hang with it.  The
+    # deadline goes on the controller instead.
+    - name: Disconnect from the subsystem
+      ansible.builtin.command:
+        argv:
+          - nvme
+          - disconnect
+          - -n
+          - "{{ ernic_nvmeof_nqn }}"
+      register: ernic_kv_disconnect
+      changed_when: true
+      failed_when: false
+      async: 120
+      poll: 5
+
+    - name: Fail when the disconnect did not return
+      ansible.builtin.fail:
+        msg: >-
+          nvme disconnect did not complete within its deadline, which
+          means the guest is stuck draining a queue pair the device
+          never flushed.
+      when: ernic_kv_disconnect is not finished

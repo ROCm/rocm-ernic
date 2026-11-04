@@ -31,7 +31,8 @@ NC='\033[0m'
 
 # Each entry is "<backend string>|<substring the startup log must contain>".
 declare -a CONFIGS=(
-    "nvmeof|nvmeof target 'nvmet-test' 67108864 bytes bs=512 at 192.168.200.1:4420"
+    "nvmeof|nvmeof target 'nvmet-test' 1 namespace(s) at 192.168.200.1:4420"
+    "nvmeof|nsid 1 block, 67108864 bytes bs=512"
     "nvmeof:size=16M|16777216 bytes bs=512"
     "nvmeof:size=1G,bs=4096|1073741824 bytes bs=4096"
     "nvmeof:size=1MiB,bs=1024|1048576 bytes bs=1024"
@@ -39,6 +40,14 @@ declare -a CONFIGS=(
     "nvmeof:ip=10.0.0.5,port=4421|at 10.0.0.5:4421"
     "nvmeof:queues=1,size=4M|4194304 bytes"
     "nvmeof:size=8M,model=ernic-ns,serial=DEADBEEF|8388608 bytes"
+    # One controller, a block namespace and a Key Value one.
+    "nvmeof:size=1G,ns=2,kv=1,size=256M|2 namespace(s)"
+    "nvmeof:size=1G,ns=2,kv=1,size=256M|nsid 1 block, 1073741824 bytes bs=512"
+    "nvmeof:size=1G,ns=2,kv=1,size=256M|nsid 2 key value, 268435456 bytes"
+    "nvmeof:kv=1,size=64M,ns=2,size=32M,bs=4096|nsid 1 key value, 67108864 bytes"
+    "nvmeof:kv=1,size=64M,ns=2,size=32M,bs=4096|nsid 2 block, 33554432 bytes bs=4096"
+    # nsid= still numbers the namespace being described, wherever it appears.
+    "nvmeof:size=4M,nsid=7|nsid 7 block, 4194304 bytes"
 )
 
 # Option spellings that must be rejected before the server comes up.
@@ -51,6 +60,11 @@ declare -a BAD_CONFIGS=(
     "nvmeof:queues=65"
     "nvmeof:ip=999.1.1.1"
     "nvmeof:nonsense=1"
+    "nvmeof:size=1M,ns=1,kv=1"
+    "nvmeof:ns=0,size=1M"
+    "nvmeof:ns=2,kv=1,file=/tmp/x"
+    "nvmeof:ns=2,size=513,bs=512"
+    "nvmeof:size=1M,ns=2,size=1M,ns=3,size=1M,ns=4,size=1M,ns=5,size=1M,ns=6,size=1M,ns=7,size=1M,ns=8,size=1M,ns=9,size=1M"
 )
 
 declare -a PASSED=()
@@ -202,6 +216,55 @@ test_file_namespace() {
     return 0
 }
 
+# A file-backed BLOCK namespace beside a Key Value one.  The file
+# belongs to the namespace rather than to the controller, so this is the
+# path that sizes one namespace's image while another namespace has no
+# image at all -- and the one where a per-namespace path could be freed
+# twice or not at all.
+test_mixed_file_namespace() {
+    local image="$WORK_DIR/ns-mixed.img"
+    local config="nvmeof:file=$image,size=32M,bs=4096,ns=2,kv=1,size=16M"
+    local what="mixed file-backed and key value"
+
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BLUE}Testing a file-backed block namespace beside a KV one${NC}"
+
+    if ! start_server "$config"; then
+        echo -e "${RED}✗ Server failed to start${NC}"
+        tail -20 "$SERVER_LOG"
+        FAILED+=("$what")
+        stop_server
+        return 1
+    fi
+
+    local ok=0
+    grep -q "nsid 1 block, 33554432 bytes bs=4096" "$SERVER_LOG" || ok=1
+    grep -q "nsid 2 key value, 16777216 bytes" "$SERVER_LOG" || ok=1
+    stop_server
+
+    if [ "$ok" != 0 ]; then
+        echo -e "${RED}✗ The two namespaces were not both reported${NC}"
+        tail -20 "$SERVER_LOG"
+        FAILED+=("$what")
+        return 1
+    fi
+
+    # Only the block namespace has an image.  A KV namespace is refused
+    # with file=, so there is no second file to look for -- its capacity
+    # lives in the store and is allocated as values arrive.
+    local size
+    size=$(stat -c %s "$image" 2>/dev/null || echo 0)
+    if [ "$size" != "33554432" ]; then
+        echo -e "${RED}✗ Block namespace image is $size bytes, expected 33554432${NC}"
+        FAILED+=("$what")
+        return 1
+    fi
+
+    echo -e "${GREEN}✓ Block image at 32 MiB, KV namespace with none${NC}"
+    PASSED+=("$what")
+    return 0
+}
+
 test_usage() {
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${BLUE}Testing usage text${NC}"
@@ -235,6 +298,7 @@ for config in "${BAD_CONFIGS[@]}"; do
 done
 
 test_file_namespace || true
+test_mixed_file_namespace || true
 echo ""
 test_usage || true
 echo ""
