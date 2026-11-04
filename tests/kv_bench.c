@@ -47,6 +47,10 @@
 /* Exist (0x14) is exercised by the play through nvme-cli, where the
  * round trip matters more than its cost; it is not benchmarked here. */
 
+/* Upper bound on a value passed to sweep_one; large enough to cover any
+ * realistic bench sweep, small enough to reject a runaway argv argument. */
+#define KV_BENCH_MAX_VALUE_SIZE (64U * 1024U * 1024U)
+
 #define KV_KEY_LEN 16
 
 /* Status codes the target returns, for the messages below. */
@@ -125,6 +129,12 @@ static void fill(uint8_t *p, uint32_t len, uint32_t seed)
 static int sweep_one(int fd, uint32_t nsid, const uint8_t *key, uint32_t len,
                      int iters)
 {
+    if (len > KV_BENCH_MAX_VALUE_SIZE) {
+        fprintf(stderr, "kv_bench: size %u exceeds the bench maximum (%u)\n",
+                len, KV_BENCH_MAX_VALUE_SIZE);
+        return 1;
+    }
+
     /*
      * Every local is declared before the first goto: the project builds
      * with -Wjump-misses-init, where a jump over an initialiser is a
