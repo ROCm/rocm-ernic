@@ -103,13 +103,13 @@ static double now_s(void)
     struct timespec ts;
 
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+    return (double)ts.tv_sec + ((double)ts.tv_nsec / 1e9);
 }
 
 static void fill(uint8_t *p, uint32_t len, uint32_t seed)
 {
     for (uint32_t i = 0; i < len; i++) {
-        p[i] = (uint8_t)((i * 7u) + seed);
+        p[i] = (uint8_t)((i * 7U) + seed);
     }
 }
 
@@ -149,7 +149,7 @@ static int sweep_one(int fd, uint32_t nsid, const uint8_t *key, uint32_t len,
         fprintf(stderr,
                 "kv_bench: Store of %u bytes failed: %s (status 0x%x)\n", len,
                 st < 0 ? strerror(errno) : "device",
-                st < 0 ? 0u : (unsigned)st);
+                st < 0 ? 0U : (unsigned)st);
         goto out;
     }
 
@@ -158,7 +158,7 @@ static int sweep_one(int fd, uint32_t nsid, const uint8_t *key, uint32_t len,
         fprintf(stderr,
                 "kv_bench: Retrieve of %u bytes failed: %s (status 0x%x)\n",
                 len, st < 0 ? strerror(errno) : "device",
-                st < 0 ? 0u : (unsigned)st);
+                st < 0 ? 0U : (unsigned)st);
         goto out;
     }
 
@@ -230,7 +230,8 @@ int main(int argc, char **argv)
     }
     int iters = (int)iters_l;
 
-    int fd = open(path, O_RDONLY); // codeql[cpp/path-injection] benchmark tool: caller supplies the device path by design
+    // codeql[cpp/path-injection]
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
         fprintf(stderr, "kv_bench: cannot open %s: %s\n", path,
                 strerror(errno));

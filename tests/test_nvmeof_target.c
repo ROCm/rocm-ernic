@@ -2403,7 +2403,7 @@ static void test_kv_commands(void)
     /* Store 1 KiB from "guest memory". */
     const uint32_t vlen = 1024;
     for (uint32_t i = 0; i < vlen; i++) {
-        h->buf[i] = (uint8_t)(i * 7 + 3);
+        h->buf[i] = (uint8_t)((i * 7U) + 3);
     }
     cap_init(&c, NVME_KV_CMD_STORE, 22);
     ernic_put_le32(c.b + NVME_SQE_NSID_OFF, 1);
@@ -2432,7 +2432,7 @@ static void test_kv_commands(void)
           "Retrieve did not report the stored length in the completion");
     bool same = true;
     for (uint32_t i = 0; i < vlen && same; i++) {
-        same = h->buf[i] == (uint8_t)(i * 7 + 3);
+        same = h->buf[i] == (uint8_t)((i * 7U) + 3);
     }
     check("kv-retrieve", same, "Retrieve returned different bytes");
 
