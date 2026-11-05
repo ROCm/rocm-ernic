@@ -14,13 +14,13 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdio.h>
 #include <string.h>
 #include <syslog.h>
 
 #include <vfio-user/libvfio-user.h>
 
 #include "byteorder.h"
+#include "ernic_err.h"
 #include "ernic_limits.h"
 #include "ionic/ionic_datapath_fw.h"
 #include "ionic/ionic_datapath_nvmeof.h"
@@ -43,11 +43,11 @@ bool ionic_datapath_nvmeof_cfg_check(const struct nvmeof_target_cfg *cfg,
      * connect time.  Refusing here turns what was a bare "invalid
      * arguments/configuration" from nvme connect, long after startup, into a
      * message that names the real limit. */
-    snprintf(err, errlen,
-             "queues must be 1..%d, one per %d memory regions in a "
-             "table of %u (got '%" PRIu16 "')",
-             IONIC_MAX_MR_QUEUES, IONIC_MR_PER_QUEUE, ERNIC_MAX_MR,
-             cfg->max_queues);
+    ernic_set_err(err, errlen,
+                  "queues must be 1..%d, one per %d memory regions in a "
+                  "table of %u (got '%" PRIu16 "')",
+                  IONIC_MAX_MR_QUEUES, IONIC_MR_PER_QUEUE, ERNIC_MAX_MR,
+                  cfg->max_queues);
     return false;
 }
 
@@ -72,18 +72,19 @@ bool ionic_datapath_attach_nvmeof(struct ionic_datapath *dp,
     if (!dp->nvmeof_cm) {
         nvmeof_target_destroy(dp->nvmeof);
         dp->nvmeof = NULL;
-        snprintf(err, errlen, "out of memory");
+        ernic_set_err(err, errlen, "out of memory");
         return false;
     }
 
     /* The target's copy has the size an existing image file settled on. */
     cfg = nvmeof_target_config(dp->nvmeof);
+
+    char addr[IP_ADDR_STR_LEN];
+
+    ip_addr_str(cfg->traddr, addr);
     vfu_log(dp->vfu_ctx, LOG_INFO,
-            "ionic_datapath: nvmeof target '%s' %u namespace(s) at "
-            "%u.%u.%u.%u:%u",
-            cfg->subnqn, cfg->ns_count, cfg->traddr >> 24,
-            (cfg->traddr >> 16) & 0xff, (cfg->traddr >> 8) & 0xff,
-            cfg->traddr & 0xff, cfg->trsvcid);
+            "ionic_datapath: nvmeof target '%s' %u namespace(s) at %s:%u",
+            cfg->subnqn, cfg->ns_count, addr, cfg->trsvcid);
     /* Per namespace, because the command set is per namespace: a mixed
      * controller is the interesting case and a single line cannot say it. */
     for (unsigned i = 0; i < cfg->ns_count; i++) {
@@ -135,12 +136,14 @@ static void dp_nvmeof_grh(const struct ionic_datapath *dp,
  */
 static void dp_nvmeof_learn_gids(struct ionic_datapath *dp, const uint8_t *mad)
 {
-    if (ernic_get_be16(mad + 16) != 0x0010) { /* CM_ATTR_REQ */
+    if (ernic_get_be16(mad + NVMEOF_CM_MAD_ATTR_ID_OFF) != NVMEOF_CM_ATTR_REQ) {
         return;
     }
-    memcpy(dp->nvmeof_dgid, mad + 80,
-           ERNIC_GID_LEN); /* primary local  = guest */
-    memcpy(dp->nvmeof_sgid, mad + 96, ERNIC_GID_LEN); /* primary remote = us */
+    /* The primary path's local end is the guest, and its remote end us */
+    memcpy(dp->nvmeof_dgid, mad + NVMEOF_CM_REQ_PRIMARY_LGID_OFF,
+           ERNIC_GID_LEN);
+    memcpy(dp->nvmeof_sgid, mad + NVMEOF_CM_REQ_PRIMARY_RGID_OFF,
+           ERNIC_GID_LEN);
 }
 
 /*

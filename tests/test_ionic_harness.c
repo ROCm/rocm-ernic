@@ -57,6 +57,7 @@
 #include "nvmeof/nvmeof.h"
 #include "nvmeof/nvmeof_cm.h"
 #include "nvmeof/nvmeof_target.h"
+#include "test_fmt.h"
 #ifdef ERNIC_HAVE_P4
 #include "ernic_log.h"
 #include "ionic/ionic_datapath_p4.h"
@@ -1733,8 +1734,8 @@ static void spec_bad_formats(const char *T, struct rc *r)
     for (uint16_t fmt = 3; fmt <= 15; fmt++) {
         char what[64];
         char fmt_s[32];
-        snprintf(what, sizeof(what), "SEND in SGE list format %u", fmt);
-        snprintf(fmt_s, sizeof(fmt_s), "format %#x", (unsigned)fmt << 12);
+        (void)snprintf(what, sizeof(what), "SEND in SGE list format %u", fmt);
+        (void)snprintf(fmt_s, sizeof(fmt_s), "format %#x", (unsigned)fmt << 12);
         struct ih_send s = {.op = IH_OP_SEND,
                             .flags = (uint16_t)(fmt << 12),
                             .sge = &from,
@@ -3231,7 +3232,7 @@ static void test_cq_events(void)
     char dir[] = "/tmp/ernic-harness-XXXXXX";
     if (check(T, mkdtemp(dir) != NULL, "mkdtemp: %s", strerror(errno))) {
         char path[sizeof(dir) + 16];
-        snprintf(path, sizeof(path), "%s/stats", dir);
+        test_fmt(path, sizeof(path), "%s/stats", dir);
 
         struct ernic_stats *st = h->dev->stats;
         struct ernic_stats_instance inst = {
@@ -3253,7 +3254,7 @@ static void test_cq_events(void)
         if (check(T, fp != NULL, "no stats file")) {
             size_t n = fread(text, 1, sizeof(text) - 1, fp);
             text[n] = '\0';
-            fclose(fp);
+            (void)fclose(fp);
         }
         check(T, strstr(text, "SEND") != NULL && strstr(text, "connected"),
               "the stats file is missing the traffic");
@@ -4854,20 +4855,20 @@ static char *p4d_read_file(const char *name, size_t *out_len)
     /* No fixture is larger than a program the engine takes. */
     n = fseek(f, 0, SEEK_END) == 0 ? ftell(f) : -1;
     if (n < 0 || (uint64_t)n > P4_PROGRAM_MAX || fseek(f, 0, SEEK_SET) != 0) {
-        fclose(f);
+        (void)fclose(f);
         return NULL;
     }
     buf = malloc((size_t)n);
     if (!buf) {
-        fclose(f);
+        (void)fclose(f);
         return NULL;
     }
     if (fread(buf, 1, (size_t)n, f) != (size_t)n) {
         free(buf);
-        fclose(f);
+        (void)fclose(f);
         return NULL;
     }
-    fclose(f);
+    (void)fclose(f);
     *out_len = (size_t)n;
     return buf;
 }
@@ -7007,8 +7008,8 @@ static void test_nvmeof(void)
     uint8_t data[NVMEOF_CONNECT_DATA_SIZE] = {0};
     memcpy(data + NVMEOF_CONNECT_HOSTID_OFF, "0123456789abcdef", 16);
     ernic_put_le16(data + NVMEOF_CONNECT_CNTLID_OFF, 0xffff);
-    snprintf((char *)data + NVMEOF_CONNECT_SUBNQN_OFF, 256, "%s", NV_NQN);
-    snprintf((char *)data + NVMEOF_CONNECT_HOSTNQN_OFF, 256, "%s",
+    test_fmt((char *)data + NVMEOF_CONNECT_SUBNQN_OFF, 256, "%s", NV_NQN);
+    test_fmt((char *)data + NVMEOF_CONNECT_HOSTNQN_OFF, 256, "%s",
              "nqn.2014-08.org.nvmexpress:uuid:harness");
     ih_mr_write(&h, &mr, mr.va + NV_CONNECT_OFF, data, sizeof(data));
 
@@ -7104,7 +7105,7 @@ static void test_nvmeof_queue_limit(void)
 
     cfg.max_queues = IONIC_MAX_MR_QUEUES + 1;
     err[0] = '\0';
-    snprintf(want, sizeof(want),
+    test_fmt(want, sizeof(want),
              "queues must be 1..%d, one per %d memory regions in a table of "
              "%u (got '%d')",
              IONIC_MAX_MR_QUEUES, IONIC_MR_PER_QUEUE, ERNIC_MAX_MR,
@@ -7438,7 +7439,7 @@ static void test_teardown(void)
     if (!check(T, port != 0, "no free TCP port")) {
         return;
     }
-    snprintf(backend, sizeof(backend), "tcp:manager:listen:%u", (unsigned)port);
+    test_fmt(backend, sizeof(backend), "tcp:manager:listen:%u", (unsigned)port);
     if (!check(T, ih_create(&h, backend), "device for '%s' not created",
                backend)) {
         return;

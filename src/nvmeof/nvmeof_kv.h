@@ -14,7 +14,6 @@
 #define NVMEOF_KV_H
 
 #include <stdbool.h>
-#include <stddef.h>
 #include <stdint.h>
 
 /* The NVM Express Key Value Command Set caps a key at 16 bytes. */

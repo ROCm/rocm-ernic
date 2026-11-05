@@ -89,9 +89,11 @@ enum ionic_qp_state {
 /* Command body lengths, from the struct ionic_admin_* layouts that
  * ionic_adminq.c documents above each handler. */
 #define IONIC_ADMIN_CREATE_AH_IN_V1_LEN   24U
+#define IONIC_ADMIN_CREATE_CQ_IN_V1_LEN   34U
 #define IONIC_ADMIN_DESTROY_AH_IN_V1_LEN  4U
 #define IONIC_ADMIN_CREATE_SRQ_IN_V1_LEN  42U
 #define IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN 5U
+#define IONIC_ADMIN_MODIFY_SRQ_IN_V1_LEN  6U
 #define IONIC_ADMIN_CREATE_MR_IN_V1_LEN   45U
 #define IONIC_ADMIN_DESTROY_MR_IN_V1_LEN  4U
 #define IONIC_ADMIN_DESTROY_CQ_IN_V1_LEN  4U
@@ -236,12 +238,16 @@ struct ionic_adminq_ctx {
  * the counters each table reports.
  * -------------------------------------------------------------------------
  */
-#define STATS_BODY_LEN  17
-#define STAT_HDR_SIZE   32
-#define STAT_NAME_LEN   28
-#define STAT_TYPE_SHIFT 28
-#define STAT_TYPE_LE64  4U
-#define STAT_VAL_SIZE   8
+#define STATS_BODY_LEN     17
+#define STATS_DMA_ADDR_OFF 0
+#define STATS_LENGTH_OFF   8
+#define STATS_ID_VER_OFF   12
+#define STAT_HDR_SIZE      32 /* be32 type_off, then the name */
+#define STAT_NAME_OFF      4
+#define STAT_NAME_LEN      28
+#define STAT_TYPE_SHIFT    28
+#define STAT_TYPE_LE64     4U
+#define STAT_VAL_SIZE      8
 /* The driver accepts up to 128 entries; 64 leaves room to grow. */
 #define STATS_MAX_COUNT 64
 
@@ -325,11 +331,16 @@ _Static_assert(QP_STATS_COUNT <= STATS_MAX_COUNT, "qp_stats too long");
 uint8_t ionic_adminq_dispatch_wqe(struct ionic_adminq_ctx *ctx, uint8_t op,
                                   const uint8_t *body, uint16_t len);
 
-/* An admin completion (struct ionic_v1_cqe) is CQE_SIZE bytes; these are
- * the color and error bits of its be32 qid_type_flags. */
-#define CQE_SIZE      32
-#define CQE_COLOR_BIT 0x01U
-#define CQE_ERROR_BIT 0x02U
+/* An admin completion (struct ionic_v1_cqe) is CQE_SIZE bytes, laid out
+ * above ionic_adminq_post_cqe(); CQE_COLOR_BIT and CQE_ERROR_BIT are bits of
+ * its be32 qid_type_flags. */
+#define CQE_SIZE               32
+#define CQE_CMD_IDX_OFF        0
+#define CQE_CMD_OP_OFF         2
+#define CQE_STATUS_LENGTH_OFF  24
+#define CQE_QID_TYPE_FLAGS_OFF 28
+#define CQE_COLOR_BIT          0x01U
+#define CQE_ERROR_BIT          0x02U
 
 /*
  * Write the admin completion for the WQE at @cmd_idx into @r's CQ and

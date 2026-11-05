@@ -27,6 +27,9 @@
 #include "p4/p4_value.h"
 #include "parse_int.h"
 
+/* Room for a name and the words around it that say where it is */
+#define WHERE_MAX (P4_MAX_NAME + 48)
+
 /* The whole document is handed to json-c in one call. */
 _Static_assert(P4_PROGRAM_MAX <= INT_MAX,
                "json_tokener_parse_ex takes an int length");
@@ -2494,7 +2497,7 @@ static int p4_walk_next_tables(struct p4_walk *w, const struct json_object *t,
     struct json_object *nt;
     struct json_object *v;
     bool by_hit = false, by_action = false;
-    char where[P4_MAX_NAME + 48];
+    char where[WHERE_MAX];
 
     (void)snprintf(where, sizeof(where), "table '%s' next_tables", dst->name);
 
@@ -2742,7 +2745,7 @@ static int p4_walk_pipeline(struct p4_walk *w, const struct json_object *p,
         struct json_object *c = json_object_array_get_idx(conds, i);
         struct p4_conditional *cd = &pl->conditionals[i];
         struct json_object *expr;
-        char where[P4_MAX_NAME + 48];
+        char where[WHERE_MAX];
         p4_idx_t root = P4_IDX_NONE;
 
         if (!c || !json_object_is_type(c, json_type_object)) {
@@ -2799,7 +2802,7 @@ static int p4_walk_pipeline(struct p4_walk *w, const struct json_object *p,
     for (size_t i = 0; i < nc; i++) {
         struct json_object *c = json_object_array_get_idx(conds, i);
         struct p4_conditional *cd = &pl->conditionals[i];
-        char where[P4_MAX_NAME + 48];
+        char where[WHERE_MAX];
 
         (void)snprintf(where, sizeof(where), "condition '%s'", cd->name);
         /* json_object_object_get_ex() writes its output only when it finds

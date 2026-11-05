@@ -767,7 +767,8 @@ bool tcp_manager_recv_register(TcpConnection *conn, const TcpRecvMsg *msg)
      * This is conn's receive thread, started as tcp-recv-new; name it for
      * the node now, as a worker names its receive threads.
      */
-    snprintf(thread_name, sizeof(thread_name), "tcp-recv-%u", adm.node_id);
+    (void)snprintf(thread_name, sizeof(thread_name), "tcp-recv-%u",
+                   adm.node_id);
     qemu_thread_set_name(thread_name);
 
     if (adm.replaced) {
@@ -1393,7 +1394,7 @@ static bool tcp_node_silent(const TcpBackendPrivate *priv,
     TSA_REQUIRES(priv->mesh_table_lock)
 {
     return now_ms - node->last_heartbeat_ms >
-           (uint64_t)priv->health_check_interval_sec * 3000U;
+           3U * ((uint64_t)priv->health_check_interval_sec * 1000U);
 }
 
 /*

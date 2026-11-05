@@ -47,12 +47,12 @@ _Static_assert(P4_PORT_COUNT == 2, "struct p4_rpc_stats hard-codes two ports");
  * comparison of two enumerations' members. clang-tidy calls them
  * redundant because C gives an enumerator the type int.
  */
-/* NOLINTBEGIN(readability-redundant-casting) */
+/* NOLINTBEGIN(readability-redundant-casting,modernize-avoid-c-style-cast) */
 _Static_assert((int)P4_WIRE_UPDATE_INSERT == (int)P4_UPDATE_INSERT &&
                    (int)P4_WIRE_UPDATE_MODIFY == (int)P4_UPDATE_MODIFY &&
                    (int)P4_WIRE_UPDATE_DELETE == (int)P4_UPDATE_DELETE,
                "the wire update types no longer match the engine's");
-/* NOLINTEND(readability-redundant-casting) */
+/* NOLINTEND(readability-redundant-casting,modernize-avoid-c-style-cast) */
 
 /*
  * The most one RPC may move in each direction.
@@ -456,7 +456,7 @@ static uint8_t rpc_entry_update(struct p4_devcmd *pd, const uint8_t *req,
     uint16_t nparams;
     uint32_t need;
     const uint8_t *p;
-    char err[160];
+    char err[P4_ERR_MAX];
     int rc;
 
     if (req_len < sizeof(u)) {

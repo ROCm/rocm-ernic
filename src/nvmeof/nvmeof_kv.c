@@ -15,7 +15,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-#include "nvmeof_kv.h"
+#include "nvmeof/nvmeof_kv.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -72,10 +72,12 @@ static bool kv_key_eq(const struct nvmeof_kv_key *a,
  * at least 16, which also means the mask arithmetic below has a table to
  * work on even for a tiny store.
  */
+#define KV_TABLE_MAX (UINT32_C(1) << 30) /* slots */
+
 static uint32_t kv_table_size(uint32_t max_keys)
 {
     uint32_t want = 16;
-    while (want < max_keys * 2 && want < (UINT32_C(1) << 30)) {
+    while (want < max_keys * 2 && want < KV_TABLE_MAX) {
         want <<= 1;
     }
     return want;

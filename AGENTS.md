@@ -104,6 +104,10 @@ workflow for their environment).
 - **Wait for events, not time**: wait with a deadline for something
   observable (a log line, a counter, a registration), never a fixed
   sleep. For threaded tests, see [below](#testing-threaded-code).
+- **Format what a test acts on with `test_fmt()`**
+  ([`tests/test_fmt.h`](tests/test_fmt.h)), such as a path, a request,
+  or an expected value, which aborts rather than test a truncated one.
+  A failure message, which may be cut short, uses `(void)snprintf()`.
 - **Coverage of `src/` must not fall below `MIN_LINE_COVERAGE`** in
   build-and-test.yml, checked on every PR, so test new and changed code,
   error paths included.

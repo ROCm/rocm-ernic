@@ -157,6 +157,9 @@ int p4_engine_process_rdma(const struct p4_engine *eng,
 int p4_engine_update(struct p4_engine *eng, const struct p4_update *up,
                      char *err, size_t err_len);
 
+/* Room enough for the reason an update or a load was refused */
+#define P4_ERR_MAX 160
+
 /*
  * Why the last load was refused, or NULL if it wasn't.  The string names
  * the offending construct where it can, so a caller can tell a user which

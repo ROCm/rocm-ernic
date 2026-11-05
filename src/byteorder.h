@@ -17,6 +17,9 @@
 
 #include <stdint.h>
 
+/* The shift counts are the bit positions of each byte. */
+/* NOLINTBEGIN(*-magic-numbers) */
+
 /* -------------------------------------------------------------------------
  * Little-endian
  * -------------------------------------------------------------------------
@@ -100,5 +103,7 @@ static inline void ernic_put_be64(uint8_t *p, uint64_t v)
     ernic_put_be32(p, (uint32_t)(v >> 32));
     ernic_put_be32(p + 4, (uint32_t)v);
 }
+
+/* NOLINTEND(*-magic-numbers) */
 
 #endif /* ERNIC_BYTEORDER_H */

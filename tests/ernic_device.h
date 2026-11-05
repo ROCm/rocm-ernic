@@ -80,7 +80,7 @@ static inline int ernic_read_hex_attr(const char *name, const char *suffix,
         return 0;
     }
     got = fgets(line, sizeof(line), attr);
-    fclose(attr);
+    (void)fclose(attr);
     if (!got) {
         return 0;
     }

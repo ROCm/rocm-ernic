@@ -22,6 +22,8 @@ static uint64_t rotl64(uint64_t x, unsigned b)
     return (x << b) | (x >> (64U - b));
 }
 
+/* The rotation counts are SipRound's, as the specification gives them. */
+/* NOLINTBEGIN(*-magic-numbers) */
 static void sipround(uint64_t v[4])
 {
     v[0] += v[1];
@@ -39,6 +41,7 @@ static void sipround(uint64_t v[4])
     v[1] ^= v[2];
     v[2] = rotl64(v[2], 32);
 }
+/* NOLINTEND(*-magic-numbers) */
 
 static void compress(uint64_t v[4], uint64_t m)
 {
@@ -68,7 +71,7 @@ uint64_t ernic_siphash24(const uint8_t key[ERNIC_SIPHASH_KEY_LEN],
 
     /* The last block: the 0 to 7 bytes left over, little-endian, with the
      * input's length (mod 256) in the top byte. */
-    uint64_t last = (uint64_t)(len & 0xff) << 56;
+    uint64_t last = (uint64_t)(len & 0xff) << (7 * 8);
     for (size_t i = 0; i < len % 8; i++) {
         last |= (uint64_t)p[whole + i] << (8 * i);
     }

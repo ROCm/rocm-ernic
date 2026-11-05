@@ -22,6 +22,7 @@
 #include "ionic/ionic_datapath_priv.h"
 #include "ionic/ionic_datapath_s3.h"
 #include "ionic/ionic_eth_emu.h"
+#include "net/net_headers.h"
 #include "s3/s3_tcp.h"
 #include "s3/s3_target.h"
 
@@ -59,9 +60,10 @@ bool ionic_datapath_attach_s3(struct ionic_datapath *dp,
     }
 
     if (!dp->eth_emu) {
-        snprintf(err, errlen,
-                 "the s3 backend needs the Ethernet emulator for its "
-                 "control plane");
+        /* A message for a human; cut short if it must be */
+        (void)snprintf(err, errlen,
+                       "the s3 backend needs the Ethernet emulator for its "
+                       "control plane");
         return false;
     }
 
@@ -82,14 +84,15 @@ bool ionic_datapath_attach_s3(struct ionic_datapath *dp,
 
     ionic_eth_emu_register_tx_filter(dp->eth_emu, dp_s3_tx_filter, dp);
 
+    char addr[IP_ADDR_STR_LEN];
+    char mac[ETH_ADDR_STR_LEN];
+
+    ip_addr_str(cfg->traddr, addr);
+    eth_addr_str(ncfg.mac, mac);
     vfu_log(dp->vfu_ctx, LOG_INFO,
             "ionic_datapath: s3 bucket '%s' %" PRIu64
-            " bytes at http://%u.%u.%u.%u:%u/ mac "
-            "%02x:%02x:%02x:%02x:%02x:%02x",
-            cfg->bucket, cfg->capacity, cfg->traddr >> 24,
-            (cfg->traddr >> 16) & 0xff, (cfg->traddr >> 8) & 0xff,
-            cfg->traddr & 0xff, cfg->trsvcid, ncfg.mac[0], ncfg.mac[1],
-            ncfg.mac[2], ncfg.mac[3], ncfg.mac[4], ncfg.mac[5]);
+            " bytes at http://%s:%u/ mac %s",
+            cfg->bucket, cfg->capacity, addr, cfg->trsvcid, mac);
     return true;
 }
 

@@ -10,12 +10,12 @@
 #include "ionic/ionic_device.h"
 
 #include <stdbool.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <vfio-user/libvfio-user.h>
 
+#include "ernic_err.h"
 #include "ernic_stats.h"
 #include "ernic_time.h"
 #include "ionic/ionic_adminq.h"
@@ -90,7 +90,7 @@ static bool nvmeof_setup(struct ionic_datapath *dp, const char *opts, char *err,
     }
     nvmeof_target_cfg_free(&cfg); /* the target keeps its own copies */
     if (!ok) {
-        snprintf(err, errlen, "nvmeof backend: %s", why);
+        ernic_set_err(err, errlen, "nvmeof backend: %s", why);
     }
     return ok;
 }
@@ -107,7 +107,7 @@ static bool s3_setup(struct ionic_datapath *dp, const char *opts, char *err,
     ok = s3_target_cfg_parse(&cfg, opts, why, sizeof(why)) &&
          (!dp || ionic_datapath_attach_s3(dp, &cfg, why, sizeof(why)));
     if (!ok) {
-        snprintf(err, errlen, "s3 backend: %s", why);
+        ernic_set_err(err, errlen, "s3 backend: %s", why);
     }
     return ok;
 }
@@ -140,7 +140,7 @@ struct ionic_device *ionic_device_create(const struct ionic_device_cfg *cfg,
     struct ionic_device *dev = calloc(1, sizeof(*dev));
 
     if (!dev) {
-        snprintf(err, errlen, "out of memory for the ionic device");
+        ernic_set_err(err, errlen, "out of memory for the ionic device");
         return NULL;
     }
     dev->vfu_ctx = cfg->vfu_ctx;
@@ -152,7 +152,7 @@ struct ionic_device *ionic_device_create(const struct ionic_device_cfg *cfg,
         dev->dp = ionic_datapath_create(cfg->vfu_ctx, dev->emu);
     }
     if (!dev->emu || !dev->rdma || !dev->dp) {
-        snprintf(err, errlen, "out of memory for the ionic device");
+        ernic_set_err(err, errlen, "out of memory for the ionic device");
         ionic_device_destroy(dev);
         return NULL;
     }
@@ -254,7 +254,7 @@ bool ionic_device_attach_p4(struct ionic_device *dev, struct p4_engine *eng,
     struct ionic_eth_p4_upstream upstream;
 
     if (!dev || !eng || dev->p4_engine) {
-        snprintf(err, errlen, "P4 engine missing or already attached");
+        ernic_set_err(err, errlen, "P4 engine missing or already attached");
         return false;
     }
 
@@ -263,7 +263,7 @@ bool ionic_device_attach_p4(struct ionic_device *dev, struct p4_engine *eng,
     dev->eth_p4 =
         ionic_eth_p4_attach(dev->emu, eng, upstream.fn ? &upstream : NULL);
     if (!dev->eth_p4) {
-        snprintf(err, errlen, "failed to attach the P4 engine");
+        ernic_set_err(err, errlen, "failed to attach the P4 engine");
         return false;
     }
     dev->p4_engine = eng;
@@ -275,7 +275,8 @@ bool ionic_device_attach_p4(struct ionic_device *dev, struct p4_engine *eng,
     if (guest_scope != P4_SCOPE_NONE) {
         dev->p4_devcmd = p4_devcmd_create(dev->vfu_ctx, eng, guest_scope);
         if (!dev->p4_devcmd) {
-            snprintf(err, errlen, "failed to create the P4 command surface");
+            ernic_set_err(err, errlen,
+                          "failed to create the P4 command surface");
             return false;
         }
         ionic_eth_emu_register_p4_handler(dev->emu, p4_devcmd_dispatch,

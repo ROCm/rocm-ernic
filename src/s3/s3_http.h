@@ -93,6 +93,25 @@ bool s3_http_query_get(const struct s3_http_request *req, const char *key,
  * -------------------------------------------------------------------------
  */
 
+/* The status codes the S3 target answers with, which s3_http_reason()
+ * names */
+enum s3_http_status {
+    S3_HTTP_OK = 200,
+    S3_HTTP_NO_CONTENT = 204,
+    S3_HTTP_PARTIAL_CONTENT = 206,
+    S3_HTTP_BAD_REQUEST = 400,
+    S3_HTTP_FORBIDDEN = 403,
+    S3_HTTP_NOT_FOUND = 404,
+    S3_HTTP_METHOD_NOT_ALLOWED = 405,
+    S3_HTTP_LENGTH_REQUIRED = 411,
+    S3_HTTP_PAYLOAD_TOO_LARGE = 413,
+    S3_HTTP_RANGE_NOT_SATISFIABLE = 416,
+    S3_HTTP_INTERNAL_ERROR = 500,
+    S3_HTTP_NOT_IMPLEMENTED = 501,
+    S3_HTTP_SERVICE_UNAVAILABLE = 503,
+    S3_HTTP_INSUFFICIENT_STORAGE = 507,
+};
+
 struct s3_http_response {
     int status;
     struct s3_http_header hdr[S3_HTTP_MAX_HEADERS];

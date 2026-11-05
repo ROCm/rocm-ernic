@@ -197,10 +197,13 @@ typedef enum {
     TCP_MSG_NODE_GIDS,
 } TcpMsgType;
 
-/* The ordinals are on the wire; see the reserved ones above. */
+/* The ordinals are on the wire; see the reserved ones above. The literals
+ * are the values the wire has. */
+/* NOLINTBEGIN(*-magic-numbers) */
 _Static_assert(TCP_MSG_REGISTER_NODE == 12 && TCP_MSG_IONIC == 24 &&
                    TCP_MSG_NODE_GIDS == 25,
                "a TcpMsgType ordinal moved");
+/* NOLINTEND(*-magic-numbers) */
 
 /*
  * The message header, TCP_MSG_HDR_LEN bytes:
@@ -351,6 +354,8 @@ _Static_assert(TCP_MESH_NODE_PORT_OFF ==
 #define TCP_TOPOLOGY_NUM_NODES_OFF 0
 #define TCP_TOPOLOGY_NODE_OFF(i)   (4 + ((size_t)(i) * TCP_MESH_NODE_LEN))
 #define TCP_TOPOLOGY_LEN           TCP_TOPOLOGY_NODE_OFF(TCP_MAX_MESH_NODES)
+/* The literal is the size the wire has. */
+/* NOLINTNEXTLINE(*-magic-numbers) */
 _Static_assert(TCP_TOPOLOGY_LEN == 17028,
                "the topology payload is on the wire and has changed size");
 

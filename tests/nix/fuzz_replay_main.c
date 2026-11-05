@@ -91,7 +91,7 @@ static int replay_file(const char *path)
     uint8_t *buf = malloc(FUZZ_REPLAY_MAX_INPUT);
     if (!buf) {
         fprintf(stderr, "fuzz-replay: out of memory\n");
-        fclose(f);
+        (void)fclose(f);
         return -1;
     }
 
@@ -99,10 +99,10 @@ static int replay_file(const char *path)
     if (ferror(f)) {
         fprintf(stderr, "fuzz-replay: error reading %s\n", path);
         free(buf);
-        fclose(f);
+        (void)fclose(f);
         return -1;
     }
-    fclose(f);
+    (void)fclose(f);
 
     printf("fuzz-replay: %s (%zu bytes)\n", path, n);
     int ret = run_one(buf, n);

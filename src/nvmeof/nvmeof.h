@@ -280,6 +280,12 @@ enum {
     NVME_SGL_TYPE_TRANSPORT_DATA = 0x5,
 };
 
+#define NVME_SGL_ADDR_OFF   0
+#define NVME_SGL_LENGTH_OFF 8 /* le32, or le24 in a keyed block */
+#define NVME_SGL_KEY_OFF    11
+#define NVME_SGL_TYPE_OFF   15
+#define NVME_SGL_TYPE_SHIFT 4
+
 /* Subtype 0x1 on a data block means the address is an offset into the
  * capsule rather than a host address: that is in-capsule data. */
 #define NVME_SGL_SUBTYPE_OFFSET 0x1
@@ -293,12 +299,192 @@ enum {
     NVMEOF_PROP_NSSR = 0x20,
 };
 
+/* CAP: MQES in bits 15:0, then these */
+#define NVME_CAP_CQR      (UINT64_C(1) << 16) /* contiguous queues required */
+#define NVME_CAP_TO_SHIFT 24                  /* timeout, in 500 ms units */
+#define NVME_CAP_CSS_NVM  (UINT64_C(1) << 37) /* the NVM command set */
+/* CSS bit 6: one or more other I/O command sets */
+#define NVME_CAP_CSS_OTHER (UINT64_C(1) << 43)
+
+/* VS, and Identify Controller's VER: major, minor, tertiary */
+#define NVME_VERSION_1_4 0x00010400U
+
 #define NVME_CC_ENABLE       0x1U
 #define NVME_CC_SHN_MASK     0xc000U
 #define NVME_CC_SHN_NORMAL   0x4000U
 #define NVME_CSTS_RDY        0x1U
 #define NVME_CSTS_SHST_MASK  0xcU
 #define NVME_CSTS_SHST_CMPLT 0x8U
+
+/* -------------------------------------------------------------------------
+ * Identify Controller data structure (CNS 01h): the fields this controller
+ * sets, which leaves the rest zero.  The ASCII fields are padded with
+ * spaces, not NUL-terminated.
+ *
+ *   [0:1]       le16 vid: PCI vendor id
+ *   [2:3]       le16 ssvid: PCI subsystem vendor id
+ *   [4:23]      sn: serial number, ASCII
+ *   [24:63]     mn: model number, ASCII
+ *   [64:71]     fr: firmware revision, ASCII
+ *   [72]        rab: recommended arbitration burst
+ *   [77]        mdts: maximum data transfer size
+ *   [78:79]     le16 cntlid
+ *   [80:83]     le32 ver
+ *   [111]       cntrltype
+ *   [256:257]   le16 oacs: optional admin commands
+ *   [259]       aerl: asynchronous event request limit
+ *   [261]       lpa: log page attributes
+ *   [262]       elpe: error log page entries
+ *   [320:321]   le16 kas: keep alive granularity, in 100 ms units
+ *   [512]       sqes: SQ entry size, log2 maximum and required
+ *   [513]       cqes: CQ entry size, likewise
+ *   [514:515]   le16 maxcmd
+ *   [516:519]   le32 nn: number of namespaces
+ *   [520:521]   le16 oncs: optional NVM commands
+ *   [524]       fna: format NVM attributes
+ *   [525]       vwc: volatile write cache
+ *   [536:539]   le32 sgls: SGL support
+ *   [768:1023]  subnqn, NUL-terminated
+ *   [1792:1795] le32 ioccsz: I/O command capsule size, in 16 bytes (NVMe-oF)
+ *   [1796:1799] le32 iorcsz: I/O response capsule size, in 16 bytes
+ *   [1800:1801] le16 icdoff: in-capsule data offset
+ *   [1802]      fcatt: fabrics controller attributes
+ *   [1803]      msdbd: maximum SGL data block descriptors
+ * -------------------------------------------------------------------------
+ */
+
+#define NVME_ID_CTRL_VID_OFF       0
+#define NVME_ID_CTRL_SSVID_OFF     2
+#define NVME_ID_CTRL_SN_OFF        4
+#define NVME_ID_CTRL_SN_LEN        20
+#define NVME_ID_CTRL_MN_OFF        24
+#define NVME_ID_CTRL_MN_LEN        40
+#define NVME_ID_CTRL_FR_OFF        64
+#define NVME_ID_CTRL_FR_LEN        8
+#define NVME_ID_CTRL_RAB_OFF       72
+#define NVME_ID_CTRL_MDTS_OFF      77
+#define NVME_ID_CTRL_CNTLID_OFF    78
+#define NVME_ID_CTRL_VER_OFF       80
+#define NVME_ID_CTRL_CNTRLTYPE_OFF 111
+#define NVME_ID_CTRL_OACS_OFF      256
+#define NVME_ID_CTRL_AERL_OFF      259
+#define NVME_ID_CTRL_LPA_OFF       261
+#define NVME_ID_CTRL_ELPE_OFF      262
+#define NVME_ID_CTRL_KAS_OFF       320
+#define NVME_ID_CTRL_SQES_OFF      512
+#define NVME_ID_CTRL_CQES_OFF      513
+#define NVME_ID_CTRL_MAXCMD_OFF    514
+#define NVME_ID_CTRL_NN_OFF        516
+#define NVME_ID_CTRL_ONCS_OFF      520
+#define NVME_ID_CTRL_FNA_OFF       524
+#define NVME_ID_CTRL_VWC_OFF       525
+#define NVME_ID_CTRL_SGLS_OFF      536
+#define NVME_ID_CTRL_SUBNQN_OFF    768
+#define NVME_ID_CTRL_IOCCSZ_OFF    1792
+#define NVME_ID_CTRL_IORCSZ_OFF    1796
+#define NVME_ID_CTRL_ICDOFF_OFF    1800
+#define NVME_ID_CTRL_FCATT_OFF     1802
+#define NVME_ID_CTRL_MSDBD_OFF     1803
+
+enum {
+    NVME_CTRL_TYPE_IO = 1,
+    NVME_CTRL_TYPE_DISCOVERY = 2,
+};
+
+/* LPA: the Commands Supported and Effects log page */
+#define NVME_LPA_CMD_EFFECTS 0x02U
+
+#define NVME_ONCS_WRITE_ZEROES 0x0008U
+
+/* VWC: a volatile write cache, and bits 2:1 = 10b, Flush needs a
+ * namespace's own NSID rather than the broadcast one */
+#define NVME_VWC_PRESENT      0x01U
+#define NVME_VWC_NO_FLUSH_ALL 0x04U
+
+/* SGLS: supported, keyed descriptors, and in-capsule data by offset */
+#define NVME_SGLS_SUPPORTED (1U << 0)
+#define NVME_SGLS_KEYED     (1U << 2)
+#define NVME_SGLS_OFFSET    (1U << 20)
+
+/* SQES and CQES: the log2 entry size, maximum in the high nibble and
+ * required in the low */
+#define NVME_ID_CTRL_SQES ((6U << 4) | 6U) /* 64 bytes */
+#define NVME_ID_CTRL_CQES ((4U << 4) | 4U) /* 16 bytes */
+
+/* -------------------------------------------------------------------------
+ * Identify Namespace data structure (CNS 00h), the fields this controller
+ * sets, with one LBA format
+ *
+ *   [0:7]     le64 nsze: namespace size, in blocks
+ *   [8:15]    le64 ncap: capacity
+ *   [16:23]   le64 nuse: utilization
+ *   [24]      nsfeat
+ *   [25]      nlbaf: number of LBA formats, less one
+ *   [26]      flbas: the LBA format in use
+ *   [27]      mc: metadata capabilities
+ *   [28]      dpc: data protection capabilities
+ *   [29]      dps: data protection settings
+ *   [128:131] lbaf0: le16 metadata size, the log2 block size, and relative
+ *             performance
+ * -------------------------------------------------------------------------
+ */
+
+#define NVME_ID_NS_NSZE_OFF   0
+#define NVME_ID_NS_NCAP_OFF   8
+#define NVME_ID_NS_NUSE_OFF   16
+#define NVME_ID_NS_NSFEAT_OFF 24
+#define NVME_ID_NS_NLBAF_OFF  25
+#define NVME_ID_NS_FLBAS_OFF  26
+#define NVME_ID_NS_MC_OFF     27
+#define NVME_ID_NS_DPC_OFF    28
+#define NVME_ID_NS_DPS_OFF    29
+#define NVME_ID_NS_LBAF0_OFF  128
+#define NVME_LBAF_MS_OFF      0
+#define NVME_LBAF_LBADS_OFF   2
+#define NVME_LBAF_RP_OFF      3
+
+/* -------------------------------------------------------------------------
+ * Namespace Identification Descriptor (CNS 03h)
+ *
+ *   [0]     nidt: the identifier's type
+ *   [1]     nidl: its length
+ *   [4:...] the identifier
+ * -------------------------------------------------------------------------
+ */
+
+#define NVME_NS_DESC_NIDT_OFF 0
+#define NVME_NS_DESC_NIDL_OFF 1
+#define NVME_NS_DESC_NID_OFF  4
+
+#define NVME_NIDL_UUID 16
+#define NVME_NIDL_CSI  1
+
+/* -------------------------------------------------------------------------
+ * I/O Command Set Independent Identify Namespace data structure (CNS 08h)
+ *
+ *   [0]     nsfeat
+ *   [1]     nmic: multipath and sharing
+ *   [2]     rescap: reservation capabilities
+ *   [3]     fpi: format progress indicator
+ *   [4:7]   le32 anagrpid
+ *   [8]     nsattr
+ *   [10:11] le16 nvmsetid
+ *   [12:13] le16 endgid
+ *   [14]    nstat: namespace status
+ * -------------------------------------------------------------------------
+ */
+
+#define NVME_ID_NS_CSI_NSFEAT_OFF   0
+#define NVME_ID_NS_CSI_NMIC_OFF     1
+#define NVME_ID_NS_CSI_RESCAP_OFF   2
+#define NVME_ID_NS_CSI_FPI_OFF      3
+#define NVME_ID_NS_CSI_ANAGRPID_OFF 4
+#define NVME_ID_NS_CSI_NSATTR_OFF   8
+#define NVME_ID_NS_CSI_NVMSETID_OFF 10
+#define NVME_ID_NS_CSI_ENDGID_OFF   12
+#define NVME_ID_NS_CSI_NSTAT_OFF    14
+
+#define NVME_NSTAT_NRDY 0x01U /* the namespace is ready */
 
 /* -------------------------------------------------------------------------
  * Discovery log page (Get Log Page, LID 0x70)

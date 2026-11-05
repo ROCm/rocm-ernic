@@ -559,11 +559,11 @@ static void test_rdma_bytes_directions(void)
         ok = g_file_rdma_bytes == rows[i].want_file &&
              g_lif_rdma_tx == rows[i].want_tx &&
              g_lif_rdma_rx == rows[i].want_rx;
-        snprintf(what, sizeof(what),
-                 "%s: %s; expected: %s; got: file %" PRIu64 ", lif tx %" PRIu64
-                 ", lif rx %" PRIu64,
-                 rows[i].category, rows[i].description, rows[i].expected,
-                 g_file_rdma_bytes, g_lif_rdma_tx, g_lif_rdma_rx);
+        (void)snprintf(what, sizeof(what),
+                       "%s: %s; expected: %s; got: file %" PRIu64
+                       ", lif tx %" PRIu64 ", lif rx %" PRIu64,
+                       rows[i].category, rows[i].description, rows[i].expected,
+                       g_file_rdma_bytes, g_lif_rdma_tx, g_lif_rdma_rx);
         check(ok, what);
     }
 }

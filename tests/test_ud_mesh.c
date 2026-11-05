@@ -338,7 +338,7 @@ static int oob_listen(void)
     }
 
     printf("waiting for the client on port %d\n", OOB_PORT);
-    fflush(stdout);
+    (void)fflush(stdout);
 
     peer = ernic_gnu_accept4(fd, NULL, NULL, 0);
     if (peer < 0) {
@@ -391,7 +391,7 @@ static int oob_connect(const char *peer_ip)
 static void gid_str(const uint8_t *raw, char *out, size_t len)
 {
     if (!inet_ntop(AF_INET6, raw, out, (socklen_t)len)) {
-        snprintf(out, len, "<unprintable>");
+        (void)snprintf(out, len, "<unprintable>");
     }
 }
 

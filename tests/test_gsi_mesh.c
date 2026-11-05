@@ -57,6 +57,7 @@
 #include "parse_int.h"
 #include "pvrdma/pvrdma.h"
 #include "rdma/rdma_backend_tcp_priv.h"
+#include "test_fmt.h"
 
 /* The mesh listens on loopback. Overridable so a CI runner that already has
  * something here can move it rather than fail. */
@@ -423,8 +424,8 @@ int main(void)
     char mgr[64];
     char wrk[64];
 
-    snprintf(mgr, sizeof(mgr), "tcp:manager:listen:%u", (unsigned)port);
-    snprintf(wrk, sizeof(wrk), "tcp:worker:127.0.0.1:%u", (unsigned)port);
+    test_fmt(mgr, sizeof(mgr), "tcp:manager:listen:%u", (unsigned)port);
+    test_fmt(wrk, sizeof(wrk), "tcp:worker:127.0.0.1:%u", (unsigned)port);
 
     struct ih a;
     struct ih b;

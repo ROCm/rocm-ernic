@@ -991,20 +991,20 @@ static char *read_fixture(const char *name, size_t *len)
     /* No fixture is larger than a program the engine takes. */
     n = fseek(f, 0, SEEK_END) == 0 ? ftell(f) : -1;
     if (n < 0 || (uint64_t)n > P4_PROGRAM_MAX || fseek(f, 0, SEEK_SET) != 0) {
-        fclose(f);
+        (void)fclose(f);
         return NULL;
     }
     buf = malloc((size_t)n);
     if (!buf) {
-        fclose(f);
+        (void)fclose(f);
         return NULL;
     }
     if (fread(buf, 1, (size_t)n, f) != (size_t)n) {
         free(buf);
-        fclose(f);
+        (void)fclose(f);
         return NULL;
     }
-    fclose(f);
+    (void)fclose(f);
     *len = (size_t)n;
     return buf;
 }

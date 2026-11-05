@@ -47,6 +47,7 @@
 #include "nvmeof/nvmeof_kv.h"
 #include "nvmeof/nvmeof_target.h"
 #include "nvmeof/nvmeof_target_priv.h"
+#include "net/net_headers.h"
 #include "parse_int.h"
 
 #define NVMEOF_DEFAULT_NQN        "nvmet-test"
@@ -61,6 +62,27 @@
 
 /* Maximum Data Transfer Size, as 2^mdts pages of 4 KiB. */
 #define NVMEOF_MDTS 5
+
+/* What Identify Controller reports; see build_id_ctrl() */
+#define NVMEOF_PCI_VENDOR_ID 0x1dd8 /* AMD Pensando */
+#define NVMEOF_FW_REVISION   "1.0"
+#define NVMEOF_RAB           6
+#define NVMEOF_AERL          3
+#define NVMEOF_KAS           10 /* 1 s, in 100 ms units */
+#define NVMEOF_IOCCSZ        4  /* 64 bytes: no in-capsule data */
+#define NVMEOF_IORCSZ        1  /* 16 bytes */
+#define NVMEOF_MSDBD         1
+
+/* CAP.TO: 7.5 seconds, in 500 ms units */
+#define NVMEOF_CAP_TO 15U
+
+/* A Get Log Page transfer larger than this is refused, 1 MiB */
+#define NVMEOF_LOG_PAGE_MAX ((uint64_t)1 << 20)
+
+/* The namespace UUID: bytes 6 and 8 carry its version and variant */
+#define UUID_LEN         16
+#define UUID_VERSION_OFF 6
+#define UUID_VARIANT_OFF 8
 
 struct nvmeof_ctrl {
     bool active;
@@ -142,9 +164,10 @@ static void ns_cfg_defaults(struct nvmeof_ns_cfg *ns, uint32_t nsid)
 void nvmeof_target_cfg_defaults(struct nvmeof_target_cfg *cfg)
 {
     memset(cfg, 0, sizeof(*cfg));
-    snprintf(cfg->subnqn, sizeof(cfg->subnqn), "%s", NVMEOF_DEFAULT_NQN);
-    snprintf(cfg->serial, sizeof(cfg->serial), "ERNIC0000000000001");
-    snprintf(cfg->model, sizeof(cfg->model), "rocm-ernic NVMe-oF target");
+    /* Each default fits its field. */
+    (void)snprintf(cfg->subnqn, sizeof(cfg->subnqn), "%s", NVMEOF_DEFAULT_NQN);
+    (void)snprintf(cfg->serial, sizeof(cfg->serial), "ERNIC0000000000001");
+    (void)snprintf(cfg->model, sizeof(cfg->model), "rocm-ernic NVMe-oF target");
     cfg->traddr = NVMEOF_DEFAULT_TRADDR;
     cfg->trsvcid = NVMEOF_DEFAULT_PORT;
     cfg->max_queues = NVMEOF_DEFAULT_QUEUES;
@@ -177,7 +200,7 @@ static bool ident_string_ok(const char *s, size_t max)
     }
     for (size_t i = 0; i < n; i++) {
         unsigned char c = (unsigned char)s[i];
-        if (c < 0x20 || c > 0x7e) {
+        if (c < ' ' || c > '~') { /* printable ASCII */
             return false;
         }
     }
@@ -253,7 +276,7 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
                               NVMEOF_NQN_MAX - 1);
                 ok = false;
             } else {
-                snprintf(cfg->subnqn, sizeof(cfg->subnqn), "%s", val);
+                (void)snprintf(cfg->subnqn, sizeof(cfg->subnqn), "%s", val);
             }
         } else if (strcmp(key, "size") == 0) {
             if (!ernic_parse_size(val, &cur->size) || cur->size == 0) {
@@ -367,7 +390,7 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
                               sizeof(cfg->model) - 1);
                 ok = false;
             } else {
-                snprintf(cfg->model, sizeof(cfg->model), "%s", val);
+                (void)snprintf(cfg->model, sizeof(cfg->model), "%s", val);
             }
         } else if (strcmp(key, "serial") == 0) {
             if (!ident_string_ok(val, sizeof(cfg->serial) - 1)) {
@@ -377,7 +400,7 @@ bool nvmeof_target_cfg_parse(struct nvmeof_target_cfg *cfg, const char *opts,
                               sizeof(cfg->serial) - 1);
                 ok = false;
             } else {
-                snprintf(cfg->serial, sizeof(cfg->serial), "%s", val);
+                (void)snprintf(cfg->serial, sizeof(cfg->serial), "%s", val);
             }
         } else {
             ernic_set_err(err, errlen, "unknown nvmeof option '%s'", key);
@@ -525,7 +548,8 @@ static bool ns_create(struct nvmeof_ns *ns, const struct nvmeof_ns_cfg *cfg,
          * open(path, flags, mode) overload, and android-cloexec-open looks
          * for O_CLOEXEC in its mode */
         /* NOLINTBEGIN(android-cloexec-open) */
-        ns->fd = open(ns->cfg.file, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+        ns->fd =
+            open(ns->cfg.file, O_RDWR | O_CREAT | O_CLOEXEC, S_IRUSR | S_IWUSR);
         /* NOLINTEND(android-cloexec-open) */
         if (ns->fd < 0) {
             ernic_set_err(err, errlen, "cannot open %s: %s", ns->cfg.file,
@@ -724,22 +748,22 @@ struct nvmeof_sgl {
 static bool parse_sgl(const uint8_t *sqe, struct nvmeof_sgl *sgl)
 {
     const uint8_t *d = sqe + NVME_SQE_DPTR_OFF;
-    uint8_t type = d[15] >> 4;
-    uint8_t subtype = d[15] & 0xf;
+    uint8_t type = d[NVME_SGL_TYPE_OFF] >> NVME_SGL_TYPE_SHIFT;
+    uint8_t subtype = d[NVME_SGL_TYPE_OFF] & 0xf;
 
     memset(sgl, 0, sizeof(*sgl));
-    sgl->addr = ernic_get_le64(d);
+    sgl->addr = ernic_get_le64(d + NVME_SGL_ADDR_OFF);
 
     switch (type) {
     case NVME_SGL_TYPE_KEYED_DATA:
         sgl->keyed = true;
-        sgl->length =
-            (uint32_t)d[8] | ((uint32_t)d[9] << 8) | ((uint32_t)d[10] << 16);
-        sgl->key = ernic_get_le32(d + 11);
+        /* le24, so the key's first byte is masked off */
+        sgl->length = ernic_get_le32(d + NVME_SGL_LENGTH_OFF) & 0x00ffffffU;
+        sgl->key = ernic_get_le32(d + NVME_SGL_KEY_OFF);
         return true;
     case NVME_SGL_TYPE_DATA_BLOCK:
     case NVME_SGL_TYPE_TRANSPORT_DATA:
-        sgl->length = ernic_get_le32(d + 8);
+        sgl->length = ernic_get_le32(d + NVME_SGL_LENGTH_OFF);
         sgl->in_capsule = (subtype == NVME_SGL_SUBTYPE_OFFSET) ||
                           (type == NVME_SGL_TYPE_TRANSPORT_DATA);
         return true;
@@ -839,31 +863,34 @@ static void build_id_ctrl(const struct nvmeof_target *t, uint8_t *buf)
     const struct nvmeof_target_cfg *c = &t->cfg;
 
     memset(buf, 0, NVME_IDENTIFY_SIZE);
-    ernic_put_le16(buf + 0, 0x1dd8); /* vid: AMD Pensando */
-    ernic_put_le16(buf + 2, 0x1dd8); /* ssvid */
-    ascii_field(buf + 4, 20, c->serial);
-    ascii_field(buf + 24, 40, c->model);
-    ascii_field(buf + 64, 8, "1.0");
-    buf[72] = 6; /* rab */
-    buf[77] = NVMEOF_MDTS;
-    ernic_put_le16(buf + 78, NVMEOF_CNTLID);
-    ernic_put_le32(buf + 80, 0x00010400); /* ver: 1.4.0 */
+    ernic_put_le16(buf + NVME_ID_CTRL_VID_OFF, NVMEOF_PCI_VENDOR_ID);
+    ernic_put_le16(buf + NVME_ID_CTRL_SSVID_OFF, NVMEOF_PCI_VENDOR_ID);
+    ascii_field(buf + NVME_ID_CTRL_SN_OFF, NVME_ID_CTRL_SN_LEN, c->serial);
+    ascii_field(buf + NVME_ID_CTRL_MN_OFF, NVME_ID_CTRL_MN_LEN, c->model);
+    ascii_field(buf + NVME_ID_CTRL_FR_OFF, NVME_ID_CTRL_FR_LEN,
+                NVMEOF_FW_REVISION);
+    buf[NVME_ID_CTRL_RAB_OFF] = NVMEOF_RAB;
+    buf[NVME_ID_CTRL_MDTS_OFF] = NVMEOF_MDTS;
+    ernic_put_le16(buf + NVME_ID_CTRL_CNTLID_OFF, NVMEOF_CNTLID);
+    ernic_put_le32(buf + NVME_ID_CTRL_VER_OFF, NVME_VERSION_1_4);
 
-    buf[111] = t->ctrl.discovery ? 2 : 1; /* cntrltype */
+    buf[NVME_ID_CTRL_CNTRLTYPE_OFF] =
+        t->ctrl.discovery ? NVME_CTRL_TYPE_DISCOVERY : NVME_CTRL_TYPE_IO;
 
-    ernic_put_le16(buf + 256, 0); /* oacs */
-    buf[259] = 3;                 /* aerl */
-    buf[261] = 0x02;              /* lpa: no extended data */
-    buf[262] = 0;                 /* elpe */
+    ernic_put_le16(buf + NVME_ID_CTRL_OACS_OFF, 0);
+    buf[NVME_ID_CTRL_AERL_OFF] = NVMEOF_AERL;
+    /* The effects log, and no extended data */
+    buf[NVME_ID_CTRL_LPA_OFF] = NVME_LPA_CMD_EFFECTS;
+    buf[NVME_ID_CTRL_ELPE_OFF] = 0;
 
     /* Keep Alive is mandatory over fabrics.  KAS is in 100ms units, so this
      * is a 1s granularity, matching what nvmet advertises; the host's default
      * KATO is 5s. */
-    ernic_put_le16(buf + 320, 10); /* kas, in 100ms units */
+    ernic_put_le16(buf + NVME_ID_CTRL_KAS_OFF, NVMEOF_KAS);
 
-    buf[512] = 0x66;                               /* sqes: 64B fixed */
-    buf[513] = 0x44;                               /* cqes: 16B fixed */
-    ernic_put_le16(buf + 514, t->cfg.queue_depth); /* maxcmd */
+    buf[NVME_ID_CTRL_SQES_OFF] = NVME_ID_CTRL_SQES;
+    buf[NVME_ID_CTRL_CQES_OFF] = NVME_ID_CTRL_CQES;
+    ernic_put_le16(buf + NVME_ID_CTRL_MAXCMD_OFF, t->cfg.queue_depth);
 
     /* NN is the largest valid namespace id, not the count: the host uses
      * it to bound its scan, and an id above it is never probed. */
@@ -873,9 +900,9 @@ static void build_id_ctrl(const struct nvmeof_target *t, uint8_t *buf)
             nn = t->ns[i].cfg.nsid;
         }
     }
-    ernic_put_le32(buf + 516, t->ctrl.discovery ? 0 : nn); /* nn */
-    ernic_put_le16(buf + 520, 0x0008); /* oncs: Write Zeroes */
-    buf[524] = 0;                      /* fna */
+    ernic_put_le32(buf + NVME_ID_CTRL_NN_OFF, t->ctrl.discovery ? 0 : nn);
+    ernic_put_le16(buf + NVME_ID_CTRL_ONCS_OFF, NVME_ONCS_WRITE_ZEROES);
+    buf[NVME_ID_CTRL_FNA_OFF] = 0;
 
     /*
      * vwc: a file-backed namespace has one, the host page cache, so say so
@@ -889,28 +916,31 @@ static void build_id_ctrl(const struct nvmeof_target *t, uint8_t *buf)
             file_backed = true;
         }
     }
-    buf[525] = file_backed ? 0x05 : 0;
+    buf[NVME_ID_CTRL_VWC_OFF] =
+        file_backed ? NVME_VWC_PRESENT | NVME_VWC_NO_FLUSH_ALL : 0;
 
     /*
      * sgls: supported (bit 0), keyed SGLs (bit 2, which nvme-rdma treats
      * as mandatory), and SGL address-as-offset (bit 20) for in-capsule.
      */
-    ernic_put_le32(buf + 536, (1U << 0) | (1U << 2) | (1U << 20));
+    ernic_put_le32(buf + NVME_ID_CTRL_SGLS_OFF,
+                   NVME_SGLS_SUPPORTED | NVME_SGLS_KEYED | NVME_SGLS_OFFSET);
 
     /*
      * A discovery association has to name the discovery NQN here.  Linux
      * builds subsys->subnqn from this field and then rejects the controller
      * outright -- "Subsystem %s is not a discovery controller", EINVAL -- if
      * it says CNTRLTYPE is discovery while the NQN is an ordinary subsystem's.
+     * Both fit: configuration refuses a longer NQN.
      */
-    snprintf((char *)buf + 768, 256, "%s",
-             t->ctrl.discovery ? NVMEOF_DISCOVERY_NQN : c->subnqn);
+    (void)snprintf((char *)buf + NVME_ID_CTRL_SUBNQN_OFF, NVMEOF_NQN_FIELD,
+                   "%s", t->ctrl.discovery ? NVMEOF_DISCOVERY_NQN : c->subnqn);
 
-    ernic_put_le32(buf + 1792, 4); /* ioccsz: 64 bytes, no in-capsule data */
-    ernic_put_le32(buf + 1796, 1); /* iorcsz: 16 bytes */
-    ernic_put_le16(buf + 1800, 0); /* icdoff */
-    buf[1802] = 0;                 /* ctrattr */
-    buf[1803] = 1;                 /* msdbd */
+    ernic_put_le32(buf + NVME_ID_CTRL_IOCCSZ_OFF, NVMEOF_IOCCSZ);
+    ernic_put_le32(buf + NVME_ID_CTRL_IORCSZ_OFF, NVMEOF_IORCSZ);
+    ernic_put_le16(buf + NVME_ID_CTRL_ICDOFF_OFF, 0);
+    buf[NVME_ID_CTRL_FCATT_OFF] = 0;
+    buf[NVME_ID_CTRL_MSDBD_OFF] = NVMEOF_MSDBD;
 }
 
 static void build_id_ns(const struct nvmeof_ns *ns, uint8_t *buf)
@@ -918,20 +948,21 @@ static void build_id_ns(const struct nvmeof_ns *ns, uint8_t *buf)
     uint64_t blocks = ns->cfg.size / ns->cfg.block_size;
 
     memset(buf, 0, NVME_IDENTIFY_SIZE);
-    ernic_put_le64(buf + 0, blocks);  /* nsze */
-    ernic_put_le64(buf + 8, blocks);  /* ncap */
-    ernic_put_le64(buf + 16, blocks); /* nuse */
-    buf[24] = 0;                      /* nsfeat */
-    buf[25] = 0;                      /* nlbaf: one format */
-    buf[26] = 0;                      /* flbas: format 0 */
-    buf[27] = 0;                      /* mc */
-    buf[28] = 0;                      /* dpc */
-    buf[29] = 0;                      /* dps */
+    ernic_put_le64(buf + NVME_ID_NS_NSZE_OFF, blocks);
+    ernic_put_le64(buf + NVME_ID_NS_NCAP_OFF, blocks);
+    ernic_put_le64(buf + NVME_ID_NS_NUSE_OFF, blocks);
+    buf[NVME_ID_NS_NSFEAT_OFF] = 0;
+    buf[NVME_ID_NS_NLBAF_OFF] = 0; /* one format */
+    buf[NVME_ID_NS_FLBAS_OFF] = 0; /* format 0 */
+    buf[NVME_ID_NS_MC_OFF] = 0;
+    buf[NVME_ID_NS_DPC_OFF] = 0;
+    buf[NVME_ID_NS_DPS_OFF] = 0;
 
     /* LBA format 0: ms = 0, lbads = log2(block size), rp = best. */
-    ernic_put_le16(buf + 128, 0);
-    buf[130] = lba_shift(ns->cfg.block_size);
-    buf[131] = 0;
+    uint8_t *lbaf = buf + NVME_ID_NS_LBAF0_OFF;
+    ernic_put_le16(lbaf + NVME_LBAF_MS_OFF, 0);
+    lbaf[NVME_LBAF_LBADS_OFF] = lba_shift(ns->cfg.block_size);
+    lbaf[NVME_LBAF_RP_OFF] = 0;
 }
 
 /*
@@ -943,21 +974,25 @@ static void build_ns_desc(const struct nvmeof_target *t,
                           const struct nvmeof_ns *ns, uint8_t *buf)
 {
     memset(buf, 0, NVME_IDENTIFY_SIZE);
-    buf[0] = 3;  /* nidt: UUID */
-    buf[1] = 16; /* nidl */
+    buf[NVME_NS_DESC_NIDT_OFF] = NVME_NIDT_UUID;
+    buf[NVME_NS_DESC_NIDL_OFF] = NVME_NIDL_UUID;
 
-    uint8_t *uuid = buf + 4;
+    uint8_t *uuid = buf + NVME_NS_DESC_NID_OFF;
     uint64_t h = UINT64_C(0xcbf29ce484222325);
     const char *p = t->cfg.subnqn;
     while (*p != '\0') {
         h = (h ^ (uint8_t)*p++) * UINT64_C(0x100000001b3);
     }
     h ^= ns->cfg.nsid;
-    for (int i = 0; i < 16; i++) {
-        uuid[i] = (uint8_t)(h >> ((i % 8) * 8)) ^ (uint8_t)(i * 0x11);
+    for (int i = 0; i < UUID_LEN; i++) {
+        /* The hash's eight bytes, twice over, each mixed with i in both
+         * nibbles */
+        uuid[i] = (uint8_t)(h >> ((i % 8) * 8)) ^ (uint8_t)((i << 4) | i);
     }
-    uuid[6] = (uint8_t)((uuid[6] & 0x0f) | 0x40); /* version 4 */
-    uuid[8] = (uint8_t)((uuid[8] & 0x3f) | 0x80); /* variant 1 */
+    uuid[UUID_VERSION_OFF] =
+        (uint8_t)((uuid[UUID_VERSION_OFF] & 0x0f) | 0x40); /* version 4 */
+    uuid[UUID_VARIANT_OFF] =
+        (uint8_t)((uuid[UUID_VARIANT_OFF] & 0x3f) | 0x80); /* variant 1 */
 
     /*
      * A Command Set Identifier descriptor after the UUID, on EVERY
@@ -977,10 +1012,10 @@ static void build_ns_desc(const struct nvmeof_target *t,
      * is then dropped.  Saying NVM explicitly costs nothing when the
      * controller has no KV namespace at all.
      */
-    uint8_t *csi = buf + 4 + 16;
-    csi[0] = NVME_NIDT_CSI;
-    csi[1] = 1; /* nidl */
-    csi[4] = ns->cfg.kv ? NVME_CSI_KV : NVME_CSI_NVM;
+    uint8_t *csi = uuid + NVME_NIDL_UUID;
+    csi[NVME_NS_DESC_NIDT_OFF] = NVME_NIDT_CSI;
+    csi[NVME_NS_DESC_NIDL_OFF] = NVME_NIDL_CSI;
+    csi[NVME_NS_DESC_NID_OFF] = ns->cfg.kv ? NVME_CSI_KV : NVME_CSI_NVM;
 }
 
 /*
@@ -993,20 +1028,20 @@ static void build_ns_desc(const struct nvmeof_target *t,
 static void build_id_ns_cs_indep(const struct nvmeof_ns *ns, uint8_t *buf)
 {
     memset(buf, 0, NVME_IDENTIFY_SIZE);
-    buf[0] = 0;                  /* nsfeat */
-    buf[1] = 0;                  /* nmic: no multipath */
-    buf[2] = 0;                  /* rescap: no reservations */
-    buf[3] = 0;                  /* fpi */
-    ernic_put_le32(buf + 4, 0);  /* anagrpid */
-    buf[8] = 0;                  /* nsattr */
-    ernic_put_le16(buf + 10, 0); /* nvmsetid */
-    ernic_put_le16(buf + 12, 0); /* endgid */
+    buf[NVME_ID_NS_CSI_NSFEAT_OFF] = 0;
+    buf[NVME_ID_NS_CSI_NMIC_OFF] = 0;   /* no multipath */
+    buf[NVME_ID_NS_CSI_RESCAP_OFF] = 0; /* no reservations */
+    buf[NVME_ID_NS_CSI_FPI_OFF] = 0;
+    ernic_put_le32(buf + NVME_ID_NS_CSI_ANAGRPID_OFF, 0);
+    buf[NVME_ID_NS_CSI_NSATTR_OFF] = 0;
+    ernic_put_le16(buf + NVME_ID_NS_CSI_NVMSETID_OFF, 0);
+    ernic_put_le16(buf + NVME_ID_NS_CSI_ENDGID_OFF, 0);
     /*
      * NSTAT bit 0, NRDY.  A fabrics host treats a namespace that does not
      * say it is ready as one to retry later, so a zero here reads as a
      * device still coming up rather than one that is simply present.
      */
-    buf[14] = 1;
+    buf[NVME_ID_NS_CSI_NSTAT_OFF] = NVME_NSTAT_NRDY;
     (void)ns;
 }
 
@@ -1032,11 +1067,12 @@ static void build_discovery_log(const struct nvmeof_target *t, uint8_t *buf,
     ernic_put_le16(e + NVMEOF_DISC_E_PORTID_OFF, 1);
     ernic_put_le16(e + NVMEOF_DISC_E_CNTLID_OFF, 0xffff); /* dynamic */
     ernic_put_le16(e + NVMEOF_DISC_E_ASQSZ_OFF, t->cfg.queue_depth);
-    snprintf((char *)e + NVMEOF_DISC_E_TRSVCID_OFF, 32, "%u", t->cfg.trsvcid);
-    snprintf((char *)e + NVMEOF_DISC_E_SUBNQN_OFF, 256, "%s", t->cfg.subnqn);
-    snprintf((char *)e + NVMEOF_DISC_E_TRADDR_OFF, 256, "%u.%u.%u.%u",
-             (t->cfg.traddr >> 24) & 0xff, (t->cfg.traddr >> 16) & 0xff,
-             (t->cfg.traddr >> 8) & 0xff, t->cfg.traddr & 0xff);
+    /* A port number and a configured NQN fit. */
+    (void)snprintf((char *)e + NVMEOF_DISC_E_TRSVCID_OFF, 32, "%u",
+                   t->cfg.trsvcid);
+    (void)snprintf((char *)e + NVMEOF_DISC_E_SUBNQN_OFF, 256, "%s",
+                   t->cfg.subnqn);
+    ip_addr_str(t->cfg.traddr, (char *)e + NVMEOF_DISC_E_TRADDR_OFF);
 
     uint8_t *tsas = e + NVMEOF_DISC_E_TSAS_OFF;
     tsas[0] = NVMEOF_RDMA_QPTYPE_CONNECTED;
@@ -1071,19 +1107,17 @@ static uint64_t prop_cap(const struct nvmeof_target *t)
         }
     }
     /*
-     * Bit 0 always: the controller understands the NVM command set whether
-     * or not a namespace currently uses it.  Bit 6 as well once any
-     * namespace speaks another one, which makes Linux select CC.CSS = 110b
-     * ("all supported I/O command sets") and then take each namespace's
-     * command set from its own CSI descriptor.  That per-namespace
-     * selection is what lets block and KV namespaces coexist here; with
-     * bit 6 clear the host would read every namespace as NVM.
+     * The NVM bit always: the controller understands the NVM command set
+     * whether or not a namespace currently uses it.  The other-sets bit as
+     * well once any namespace speaks another one, which makes Linux select
+     * CC.CSS = 110b ("all supported I/O command sets") and then take each
+     * namespace's command set from its own CSI descriptor.  That
+     * per-namespace selection is what lets block and KV namespaces coexist
+     * here; with it clear the host would read every namespace as NVM.
      */
-    uint64_t css = UINT64_C(1) | (any_kv ? UINT64_C(1) << 6 : 0);
-    return mqes |                 /* MQES */
-           (UINT64_C(1) << 16) |  /* CQR: contiguous queues required */
-           (UINT64_C(15) << 24) | /* TO: 7.5 seconds */
-           (css << 37);           /* CSS */
+    uint64_t css = NVME_CAP_CSS_NVM | (any_kv ? NVME_CAP_CSS_OTHER : 0);
+    return mqes | NVME_CAP_CQR |
+           ((uint64_t)NVMEOF_CAP_TO << NVME_CAP_TO_SHIFT) | css;
 }
 
 static uint16_t do_connect(struct nvmeof_queue *q, const uint8_t *sqe,
@@ -1154,7 +1188,8 @@ static uint16_t do_connect(struct nvmeof_queue *q, const uint8_t *sqe,
         t->ctrl.kato = kato;
         t->ctrl.num_io_queues = t->cfg.max_queues;
         memcpy(t->ctrl.hostid, data + NVMEOF_CONNECT_HOSTID_OFF, 16);
-        snprintf(t->ctrl.hostnqn, sizeof(t->ctrl.hostnqn), "%s", hostnqn);
+        /* hostnqn is NUL-terminated within a buffer of the same size. */
+        (void)snprintf(t->ctrl.hostnqn, sizeof(t->ctrl.hostnqn), "%s", hostnqn);
     } else {
         if (!t->ctrl.active) {
             return nvme_status(NVME_SCT_CMD_SPECIFIC,
@@ -1193,7 +1228,7 @@ static uint16_t do_property_get(struct nvmeof_queue *q, const uint8_t *sqe,
         v = prop_cap(t);
         break;
     case NVMEOF_PROP_VS:
-        v = 0x00010400;
+        v = NVME_VERSION_1_4;
         break;
     case NVMEOF_PROP_CC:
         v = t->ctrl.cc;
@@ -1423,7 +1458,7 @@ static uint16_t do_get_log_page(const struct nvmeof_queue *q,
     if (want > sgl.length) {
         want = sgl.length;
     }
-    if (want > (1U << 20)) {
+    if (want > NVMEOF_LOG_PAGE_MAX) {
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_INVALID_FIELD, 1);
     }
 
@@ -1654,11 +1689,18 @@ static bool kv_key_from_capsule(const uint8_t *capsule,
         return false;
     }
 
+    /* The key fills CDW2, CDW3, CDW14 and CDW15, in that order */
+    static const size_t key_dw_off[] = {NVME_SQE_CDW2_OFF, NVME_SQE_CDW3_OFF,
+                                        NVME_SQE_CDW14_OFF, NVME_SQE_CDW15_OFF};
+    _Static_assert(sizeof(key_dw_off) / sizeof(key_dw_off[0]) *
+                           sizeof(uint32_t) ==
+                       NVMEOF_KV_KEY_MAX,
+                   "the key's dwords hold NVMEOF_KV_KEY_MAX bytes");
     uint8_t raw[NVMEOF_KV_KEY_MAX];
-    memcpy(raw, capsule + NVME_SQE_CDW2_OFF, 4);
-    memcpy(raw + 4, capsule + NVME_SQE_CDW3_OFF, 4);
-    memcpy(raw + 8, capsule + NVME_SQE_CDW14_OFF, 4);
-    memcpy(raw + 12, capsule + NVME_SQE_CDW15_OFF, 4);
+    for (size_t i = 0; i < sizeof(key_dw_off) / sizeof(key_dw_off[0]); i++) {
+        memcpy(raw + (i * sizeof(uint32_t)), capsule + key_dw_off[i],
+               sizeof(uint32_t));
+    }
 
     memset(key->bytes, 0, sizeof(key->bytes));
     memcpy(key->bytes, raw, len);

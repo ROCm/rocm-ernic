@@ -110,6 +110,10 @@ static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
 /* Fill dev_info_regs in the BAR0 shadow from the profile's identity.
  * ionic.ko reads signature at offset 0 to confirm the device is alive,
  * and fw_status bit 0 to confirm firmware is running. */
+/* The station MAC until ionic_eth_emu_set_mac(): locally administered */
+static const uint8_t eth_default_mac[ETH_ADDR_LEN] = {0x02, 0xa0, 0xd1,
+                                                      0x00, 0x00, 0x01};
+
 static void write_dev_info(struct ionic_eth_emu *emu)
 {
     uint8_t *info = emu->bar0 + IONIC_BAR0_DEV_INFO_REGS_OFFSET;
@@ -145,7 +149,7 @@ struct ionic_eth_emu *ionic_eth_emu_create(vfu_ctx_t *vfu_ctx, size_t bar2_size)
 
     emu->vfu_ctx = vfu_ctx;
     emu->bar2_size = bar2_size;
-    memcpy(emu->mac, (const uint8_t[]){0x02, 0xa0, 0xd1, 0x00, 0x00, 0x01}, 6);
+    memcpy(emu->mac, eth_default_mac, ETH_ADDR_LEN);
     emu->bar2 = calloc(1, bar2_size);
     emu->dma = ernic_dma_create();
     if (!emu->bar2 || !emu->dma) {
@@ -324,9 +328,10 @@ void ionic_eth_emu_set_stats(struct ionic_eth_emu *emu,
     emu->stats_sink = stats;
 }
 
-void ionic_eth_emu_set_mac(struct ionic_eth_emu *emu, const uint8_t mac[6])
+void ionic_eth_emu_set_mac(struct ionic_eth_emu *emu,
+                           const uint8_t mac[ETH_ADDR_LEN])
 {
-    memcpy(emu->mac, mac, 6);
+    memcpy(emu->mac, mac, ETH_ADDR_LEN);
 }
 
 /* -------------------------------------------------------------------------
@@ -464,22 +469,15 @@ ssize_t ionic_eth_emu_bar2_access(struct ionic_eth_emu *emu, char *buf,
         return (ssize_t)count;
     }
 
-    /* Doorbell write: decode and forward to the appropriate queue.
-     * ionic doorbell layout (8 bytes, little-endian):
-     *   [15:0]  p_index  (producer index)
-     *   [23:16] ring     (0=normal, 1=arm CQ/EQ, 2=arm solicited, 3=SRQ)
-     *   [31:24] qid_lo
-     *   [47:32] qid_hi
-     *   [63:48] reserved
-     */
+    /* Doorbell write: decode (see ionic_bar.h) and forward to the
+     * appropriate queue. */
     memcpy(emu->bar2 + offset, buf, count);
 
     if (count == 8) {
         uint64_t db = ernic_get_le64((const uint8_t *)buf);
-        uint16_t p_index = (uint16_t)(db & 0xffffU);
-        uint8_t ring = (uint8_t)((db >> 16) & 0xffU);
-        uint32_t qid =
-            (uint32_t)(((db >> 24) & 0xffU) | (((db >> 32) & 0xffffU) << 8));
+        uint16_t p_index = ionic_db_p_index(db);
+        uint8_t ring = ionic_db_ring(db);
+        uint32_t qid = ionic_db_qid(db);
 
         /* Doorbell qtype is the slot index within the LIF's doorbell page.
          * ionic_dbell_ring(db_page, qtype, val) writes to &db_page[qtype],
@@ -983,32 +981,59 @@ void ionic_eth_emu_handle_lif_identify(struct ionic_eth_emu *emu,
 
     memcpy(data + LIFID_CONFIG_NAME_OFF, "ernic0", 7);
 
-    ernic_put_le32(data + LIFID_CONFIG_MTU_OFF, 1500);
+    ernic_put_le32(data + LIFID_CONFIG_MTU_OFF, ETH_MTU);
 
     memcpy(data + LIFID_CONFIG_MAC_OFF, emu->mac, sizeof(emu->mac));
 
     /* LIF_ID_RDMA_OFF is worked out in ionic_eth_emu_priv.h. */
     uint8_t *rdma = data + LIF_ID_RDMA_OFF;
 
-    rdma[0] = IONIC_RDMA_VERSION;       /* version       */
-    rdma[1] = IONIC_RDMA_QP_OPCODES;    /* qp_opcodes    */
-    rdma[2] = IONIC_RDMA_ADMIN_OPCODES; /* admin_opcodes  */
-    rdma[3] = 0;                        /* minor_version  */
+    /* Its fields, from the start of the rdma block */
+#define LIFID_RDMA_VERSION_OFF        0
+#define LIFID_RDMA_QP_OPCODES_OFF     1
+#define LIFID_RDMA_ADMIN_OPCODES_OFF  2
+#define LIFID_RDMA_MINOR_VERSION_OFF  3
+#define LIFID_RDMA_NPTS_PER_LIF_OFF   4
+#define LIFID_RDMA_NMRS_PER_LIF_OFF   8
+#define LIFID_RDMA_NAHS_PER_LIF_OFF   12
+#define LIFID_RDMA_MAX_STRIDE_OFF     16
+#define LIFID_RDMA_CL_STRIDE_OFF      17
+#define LIFID_RDMA_PTE_STRIDE_OFF     18
+#define LIFID_RDMA_RRQ_STRIDE_OFF     19
+#define LIFID_RDMA_RSQ_STRIDE_OFF     20
+#define LIFID_RDMA_DCQCN_PROFILES_OFF 21
+#define LIFID_RDMA_UDMA_SHIFT_OFF     22
+#define LIFID_RDMA_UDMA_COUNT_OFF     23 /* rsvd_dimensions */
+#define LIFID_RDMA_PAGE_SIZE_CAP_OFF  24
 
-    ernic_put_le32(rdma + 4, ERNIC_MAX_PAGE_TABLE_ENTRIES); /* npts_per_lif */
-    ernic_put_le32(rdma + 8, IONIC_EMU_NMRS_PER_LIF);       /* nmrs_per_lif */
-    ernic_put_le32(rdma + 12, ERNIC_MAX_AH);                /* nahs_per_lif */
+    /* The log2 strides it reports: a 64-byte cache line, an 8-byte page
+     * table entry, and 64-byte read and atomic queue entries */
+#define LIFID_RDMA_CL_STRIDE      6
+#define LIFID_RDMA_PTE_STRIDE     3
+#define LIFID_RDMA_RRQ_STRIDE     6
+#define LIFID_RDMA_RSQ_STRIDE     6
+#define LIFID_RDMA_DCQCN_PROFILES 8
 
-    rdma[16] = IONIC_MAX_STRIDE;     /* max_stride */
-    rdma[17] = 6;                    /* cl_stride (log2 64B cache line) */
-    rdma[18] = 3;                    /* pte_stride (log2 8B PTE)        */
-    rdma[19] = 6;                    /* rrq_stride                       */
-    rdma[20] = 6;                    /* rsq_stride                       */
-    rdma[21] = 8;                    /* dcqcn_profiles                   */
-    rdma[22] = IONIC_EMU_UDMA_SHIFT; /* udma_shift                  */
-    rdma[23] = IONIC_UDMA_COUNT;     /* rsvd_dimensions (udma_count)     */
+    rdma[LIFID_RDMA_VERSION_OFF] = IONIC_RDMA_VERSION;
+    rdma[LIFID_RDMA_QP_OPCODES_OFF] = IONIC_RDMA_QP_OPCODES;
+    rdma[LIFID_RDMA_ADMIN_OPCODES_OFF] = IONIC_RDMA_ADMIN_OPCODES;
+    rdma[LIFID_RDMA_MINOR_VERSION_OFF] = 0;
 
-    ernic_put_le64(rdma + 24, IONIC_PAGE_SIZE_CAP); /* page_size_cap */
+    ernic_put_le32(rdma + LIFID_RDMA_NPTS_PER_LIF_OFF,
+                   ERNIC_MAX_PAGE_TABLE_ENTRIES);
+    ernic_put_le32(rdma + LIFID_RDMA_NMRS_PER_LIF_OFF, IONIC_EMU_NMRS_PER_LIF);
+    ernic_put_le32(rdma + LIFID_RDMA_NAHS_PER_LIF_OFF, ERNIC_MAX_AH);
+
+    rdma[LIFID_RDMA_MAX_STRIDE_OFF] = IONIC_MAX_STRIDE;
+    rdma[LIFID_RDMA_CL_STRIDE_OFF] = LIFID_RDMA_CL_STRIDE;
+    rdma[LIFID_RDMA_PTE_STRIDE_OFF] = LIFID_RDMA_PTE_STRIDE;
+    rdma[LIFID_RDMA_RRQ_STRIDE_OFF] = LIFID_RDMA_RRQ_STRIDE;
+    rdma[LIFID_RDMA_RSQ_STRIDE_OFF] = LIFID_RDMA_RSQ_STRIDE;
+    rdma[LIFID_RDMA_DCQCN_PROFILES_OFF] = LIFID_RDMA_DCQCN_PROFILES;
+    rdma[LIFID_RDMA_UDMA_SHIFT_OFF] = IONIC_EMU_UDMA_SHIFT;
+    rdma[LIFID_RDMA_UDMA_COUNT_OFF] = IONIC_UDMA_COUNT;
+
+    ernic_put_le64(rdma + LIFID_RDMA_PAGE_SIZE_CAP_OFF, IONIC_PAGE_SIZE_CAP);
 
     /* struct ionic_lif_logical_qtype from ionic_if.h, 12 bytes each:
      *   0  u8     qtype      (hardware qtype number)
@@ -1230,9 +1255,11 @@ void ionic_eth_emu_handle_lif_init(struct ionic_eth_emu *emu,
                                    const uint8_t *cmd, uint8_t *comp)
 {
     /* cmd layout: opcode(1) type(1) index(2) rsvd(4) info_pa(8) rsvd2(48) */
-    uint16_t lif_index = ernic_get_le16(cmd + 2);
+#define LIF_INIT_INDEX_OFF   2
+#define LIF_INIT_INFO_PA_OFF 8
+    uint16_t lif_index = ernic_get_le16(cmd + LIF_INIT_INDEX_OFF);
 
-    uint64_t info_pa = ernic_get_le64(cmd + 8);
+    uint64_t info_pa = ernic_get_le64(cmd + LIF_INIT_INFO_PA_OFF);
 
     /* ionic_link_status_check() reads lif->info->status out of this DMA area
      * and leaves the netdev carrier off unless link_status is
@@ -1240,10 +1267,14 @@ void ionic_eth_emu_handle_lif_init(struct ionic_eth_emu *emu,
      * PORT_DOWN, so publish a permanently-up link here.
      *   struct ionic_lif_info: config[0..255], status at 256
      *   struct ionic_lif_status: link_status at +10, link_speed at +12 */
+#define LIF_STATUS_LINK_STATUS_OFF 10
+#define LIF_STATUS_LINK_SPEED_OFF  12
     if (info_pa) {
         uint8_t status[64] = {0};
-        ernic_put_le16(status + 10, IONIC_PORT_OPER_STATUS_UP);
-        ernic_put_le32(status + 12, emu->profile.link.speed_mbps); /* Mbps */
+        ernic_put_le16(status + LIF_STATUS_LINK_STATUS_OFF,
+                       IONIC_PORT_OPER_STATUS_UP);
+        ernic_put_le32(status + LIF_STATUS_LINK_SPEED_OFF,
+                       emu->profile.link.speed_mbps); /* Mbps */
         if (info_pa >
                 UINT64_MAX - IONIC_LIF_INFO_STATUS_OFF - (sizeof(status) - 1) ||
             ernic_dma_write(emu->dma, emu->vfu_ctx,
@@ -1404,17 +1435,23 @@ void ionic_eth_emu_handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
      *   [8:11]le32 index  ← (lif, qtype) relative queue index
      *   [12:13]le16 pid   ← doorbell page id
      */
-    uint8_t qtype = cmd[4]; /* type field */
-    uint32_t index = ernic_get_le32(cmd + 8);
-
     /* Remaining ionic_q_init_cmd fields (packed): intr_index le16 @14,
      * flags le16 @16, cos @18, ring_size @19 (log2 depth), ring_base le64
-     * @20, cq_ring_base le64 @28. */
-    uint16_t intr_index = ernic_get_le16(cmd + 14);
-    uint8_t ring_size = cmd[19];
-    uint64_t ring_base = ernic_get_le64(cmd + 20);
-    uint64_t cq_ring_base = ernic_get_le64(cmd + 28);
-    uint64_t sg_ring_base = ernic_get_le64(cmd + 36);
+     * @20, cq_ring_base le64 @28, sg_ring_base le64 @36. */
+#define Q_INIT_TYPE_OFF         4
+#define Q_INIT_INDEX_OFF        8
+#define Q_INIT_INTR_INDEX_OFF   14
+#define Q_INIT_RING_SIZE_OFF    19
+#define Q_INIT_RING_BASE_OFF    20
+#define Q_INIT_CQ_RING_BASE_OFF 28
+#define Q_INIT_SG_RING_BASE_OFF 36
+    uint8_t qtype = cmd[Q_INIT_TYPE_OFF];
+    uint32_t index = ernic_get_le32(cmd + Q_INIT_INDEX_OFF);
+    uint16_t intr_index = ernic_get_le16(cmd + Q_INIT_INTR_INDEX_OFF);
+    uint8_t ring_size = cmd[Q_INIT_RING_SIZE_OFF];
+    uint64_t ring_base = ernic_get_le64(cmd + Q_INIT_RING_BASE_OFF);
+    uint64_t cq_ring_base = ernic_get_le64(cmd + Q_INIT_CQ_RING_BASE_OFF);
+    uint64_t sg_ring_base = ernic_get_le64(cmd + Q_INIT_SG_RING_BASE_OFF);
 
     /* ring_size is the guest's exponent, and isn't checked until further
      * down, so it is logged as one rather than shifted by. */
@@ -1817,8 +1854,10 @@ static int eth_rx_deliver(const struct ionic_eth_emu *emu, struct eth_queue *q,
     }
 
     /* struct ionic_rxq_desc: opcode@0, rsvd[5], len le16 @6, addr le64 @8. */
-    uint16_t cap = ernic_get_le16(desc + 6);
-    uint64_t addr = ernic_get_le64(desc + 8);
+#define RXQ_DESC_LEN_OFF  6
+#define RXQ_DESC_ADDR_OFF 8
+    uint16_t cap = ernic_get_le16(desc + RXQ_DESC_LEN_OFF);
+    uint64_t addr = ernic_get_le64(desc + RXQ_DESC_ADDR_OFF);
 
     if (len > cap) {
         return -EMSGSIZE;
@@ -1832,10 +1871,13 @@ static int eth_rx_deliver(const struct ionic_eth_emu *emu, struct eth_queue *q,
      * rss_hash le32 @4, csum le16 @8, vlan_tci le16 @10, len le16 @12,
      * csum_flags@14, pkt_type_color@15.  csum_flags stays zero so the driver
      * marks the skb CHECKSUM_NONE and verifies in software. */
+#define RXQ_COMP_NUM_SG_ELEMS_OFF 1
+#define RXQ_COMP_COMP_INDEX_OFF   2
+#define RXQ_COMP_LEN_OFF          12
     uint8_t comp[ETH_COMP_SIZE] = {0};
-    comp[1] = 0;
-    ernic_put_le16(comp + 2, q->head);
-    ernic_put_le16(comp + 12, (uint16_t)len);
+    comp[RXQ_COMP_NUM_SG_ELEMS_OFF] = 0;
+    ernic_put_le16(comp + RXQ_COMP_COMP_INDEX_OFF, q->head);
+    ernic_put_le16(comp + RXQ_COMP_LEN_OFF, (uint16_t)len);
     comp[ETH_COMP_SIZE - 1] = q->cq_color ? (uint8_t)ADMIN_COMP_COLOR_MASK : 0;
 
     if (ernic_dma_write(emu->dma, emu->vfu_ctx,

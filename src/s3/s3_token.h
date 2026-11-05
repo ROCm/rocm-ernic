@@ -30,16 +30,25 @@
  * Wire layout, in order:
  *
  *   [0]      transport
- *   [1:4]    qp_num
- *   [5:20]   gid
- *   [21:24]  rkey
- *   [25:32]  remote_addr
- *   [33:40]  length
+ *   [1:4]    le32 qp_num
+ *   [5:20]   gid, in network order
+ *   [21:24]  le32 rkey
+ *   [25:32]  le64 remote_addr
+ *   [33:40]  le64 length
  *   [41]     port_num
- *   [42:43]  lid
+ *   [42:43]  le16 lid
  */
-#define S3_TOKEN_BIN_LEN 44
-#define S3_TOKEN_HEX_LEN ((size_t)S3_TOKEN_BIN_LEN * 2)
+#define S3_TOKEN_BIN_LEN         44
+#define S3_TOKEN_TRANSPORT_OFF   0
+#define S3_TOKEN_QP_NUM_OFF      1
+#define S3_TOKEN_GID_OFF         5
+#define S3_TOKEN_GID_LEN         16
+#define S3_TOKEN_RKEY_OFF        21
+#define S3_TOKEN_REMOTE_ADDR_OFF 25
+#define S3_TOKEN_LENGTH_OFF      33
+#define S3_TOKEN_PORT_NUM_OFF    41
+#define S3_TOKEN_LID_OFF         42
+#define S3_TOKEN_HEX_LEN         ((size_t)S3_TOKEN_BIN_LEN * 2)
 
 /*
  * Transport byte.  cuObject requires Dynamic Connection on ConnectX;
@@ -53,7 +62,7 @@ enum {
 
 struct s3_token {
     uint32_t qp_num;
-    uint8_t gid[16];
+    uint8_t gid[S3_TOKEN_GID_LEN];
     uint32_t rkey;
     uint64_t remote_addr;
     uint64_t length;

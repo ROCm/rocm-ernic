@@ -30,6 +30,8 @@
 #include <stdint.h>
 #include <stdio.h> /* FILE, for ernic_stats_section_fn */
 
+#include "net/net_headers.h"
+
 /* Opaque; from ernic_stats_create(). */
 struct ernic_stats;
 
@@ -256,7 +258,7 @@ struct ernic_stats_instance {
     const char *nic_profile; /* chain and hash; NULL: "(not set)" */
     uint16_t pci_vid;        /* both 0 shows "(not set)" */
     uint16_t pci_did;
-    uint8_t mac[6];
+    uint8_t mac[ETH_ADDR_LEN];
 };
 
 /**

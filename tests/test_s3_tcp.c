@@ -41,6 +41,7 @@
 #include "s3/s3_target.h"
 #include "s3/s3_tcp.h"
 #include "s3/s3_token.h"
+#include "test_fmt.h"
 
 #define TARGET_IP   0xc0a8c801U /* 192.168.200.1 */
 #define TARGET_PORT 9000
@@ -88,7 +89,7 @@ static void ok(const char *name)
 #define T_ETH_SRC  6
 #define T_ETH_TYPE 12
 
-#define ARP_LEN          ((size_t)28)
+#define T_ARP_LEN        ((size_t)28)
 #define T_ARP_HW_TYPE    0
 #define T_ARP_PROTO_TYPE 2
 #define T_ARP_HW_LEN     4
@@ -231,7 +232,7 @@ static size_t build_arp_request(uint8_t *out, uint32_t target_ip)
     memcpy(out + T_ETH_SRC, GUEST_MAC, 6);
     put_be(out + T_ETH_TYPE, 2, 0x0806);
 
-    memset(arp, 0, ARP_LEN);
+    memset(arp, 0, T_ARP_LEN);
     put_be(arp + T_ARP_HW_TYPE, 2, 1);
     put_be(arp + T_ARP_PROTO_TYPE, 2, 0x0800);
     arp[T_ARP_HW_LEN] = 6;
@@ -241,7 +242,7 @@ static size_t build_arp_request(uint8_t *out, uint32_t target_ip)
     put_be(arp + T_ARP_SENDER_IP, 4, GUEST_IP);
     put_be(arp + T_ARP_TARGET_IP, 4, target_ip);
 
-    return ETH_LEN + ARP_LEN;
+    return ETH_LEN + T_ARP_LEN;
 }
 
 static void build_ip(uint8_t *out, const uint8_t *dst_mac, uint8_t proto,
@@ -1085,7 +1086,7 @@ static void test_rdma_round_trip(void)
      * the frame fits; the size rule itself is pinned in the HTTP tests.
      */
     mint(hex, 0, len);
-    snprintf(req, sizeof(req),
+    test_fmt(req, sizeof(req),
              "PUT /ernic/roundtrip.bin HTTP/1.1\r\n"
              "Host: 192.168.200.1:9000\r\n"
              "Connection: close\r\n"
@@ -1106,7 +1107,7 @@ static void test_rdma_round_trip(void)
     }
 
     mint(hex, dst, len);
-    snprintf(req, sizeof(req),
+    test_fmt(req, sizeof(req),
              "GET /ernic/roundtrip.bin HTTP/1.1\r\n"
              "Host: 192.168.200.1:9000\r\n"
              "Connection: close\r\n"
@@ -2319,7 +2320,7 @@ static void test_malformed_frames(void)
          4 << 4, 0},
         {"TCP data offset past the segment", BASE_SYN, TCP_FIELD(DATA_OFF), 1,
          6 << 4, 0},
-        {"ARP cut short", BASE_ARP, NO_FIELD, 0, 0, ETH_LEN + ARP_LEN - 1},
+        {"ARP cut short", BASE_ARP, NO_FIELD, 0, 0, ETH_LEN + T_ARP_LEN - 1},
         {"ARP hardware type", BASE_ARP, ARP_FIELD(HW_TYPE), 2, 6, 0},
         {"ARP protocol type", BASE_ARP, ARP_FIELD(PROTO_TYPE), 2, 0x86dd, 0},
         {"ARP hardware length", BASE_ARP, ARP_FIELD(HW_LEN), 1, 8, 0},

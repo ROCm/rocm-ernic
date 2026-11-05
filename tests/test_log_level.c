@@ -54,7 +54,8 @@
 #define NO_LEVEL    (-1)
 
 /* POSIX leaves declaring environ to the program; only _GNU_SOURCE makes
- * <unistd.h> do it */
+ * <unistd.h> do it, and declares it this way.
+ * NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) */
 extern char **environ;
 
 static const char ENV_NAME[] = "ERNIC_LOG_LEVEL";
@@ -168,7 +169,7 @@ static int run_case(const Case *c)
             /* The started threads are waiting at the barrier, so they
              * can't be joined; _exit() rather than hang. */
             printf("FAIL %s: pthread_create failed\n", c->description);
-            fflush(stdout);
+            (void)fflush(stdout);
             _exit(1);
         }
     }
@@ -321,7 +322,7 @@ static bool run_round(size_t index, int round)
     }
 
     /* The child writes to the same stdout. */
-    fflush(stdout);
+    (void)fflush(stdout);
     pid = start_child(index, fds[1]);
     close(fds[1]);
     if (pid < 0) {
@@ -508,16 +509,16 @@ static bool capture(void (*report)(void), char *buf, size_t len)
     if (!tmp) {
         return false;
     }
-    fflush(stdout);
-    fflush(stderr);
+    (void)fflush(stdout);
+    (void)fflush(stderr);
     saved_out = fcntl(STDOUT_FILENO, F_DUPFD_CLOEXEC, 0);
     saved_err = fcntl(STDERR_FILENO, F_DUPFD_CLOEXEC, 0);
     if (saved_out >= 0 && saved_err >= 0 &&
         dup2(fileno(tmp), STDOUT_FILENO) >= 0 &&
         dup2(fileno(tmp), STDERR_FILENO) >= 0) {
         report();
-        fflush(stdout);
-        fflush(stderr);
+        (void)fflush(stdout);
+        (void)fflush(stderr);
         ok = true;
     }
     if (saved_out >= 0) {
@@ -534,7 +535,7 @@ static bool capture(void (*report)(void), char *buf, size_t len)
     } else {
         ok = false;
     }
-    fclose(tmp);
+    (void)fclose(tmp);
     return ok;
 }
 

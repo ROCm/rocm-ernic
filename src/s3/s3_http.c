@@ -460,7 +460,8 @@ void s3_http_response_header(struct s3_http_response *resp, const char *name,
         h = &resp->hdr[resp->nhdr++];
     }
 
-    snprintf(h->name, sizeof(h->name), "%s", name);
+    /* The names are the target's own, all shorter than the field. */
+    (void)snprintf(h->name, sizeof(h->name), "%s", name);
 
     va_list ap;
     va_start(ap, fmt);
@@ -527,8 +528,9 @@ void s3_http_response_printf(struct s3_http_response *resp, const char *fmt,
         resp->oom = true;
         return;
     }
+    /* Sized by the first pass over the same arguments. */
     va_start(ap, fmt);
-    vsnprintf(heap, (size_t)n + 1, fmt, ap);
+    (void)vsnprintf(heap, (size_t)n + 1, fmt, ap);
     va_end(ap);
     s3_http_response_write(resp, heap, (size_t)n);
     free(heap);
@@ -537,33 +539,33 @@ void s3_http_response_printf(struct s3_http_response *resp, const char *fmt,
 const char *s3_http_reason(int status)
 {
     switch (status) {
-    case 200:
+    case S3_HTTP_OK:
         return "OK";
-    case 204:
+    case S3_HTTP_NO_CONTENT:
         return "No Content";
-    case 206:
+    case S3_HTTP_PARTIAL_CONTENT:
         return "Partial Content";
-    case 400:
+    case S3_HTTP_BAD_REQUEST:
         return "Bad Request";
-    case 403:
+    case S3_HTTP_FORBIDDEN:
         return "Forbidden";
-    case 404:
+    case S3_HTTP_NOT_FOUND:
         return "Not Found";
-    case 405:
+    case S3_HTTP_METHOD_NOT_ALLOWED:
         return "Method Not Allowed";
-    case 411:
+    case S3_HTTP_LENGTH_REQUIRED:
         return "Length Required";
-    case 413:
+    case S3_HTTP_PAYLOAD_TOO_LARGE:
         return "Payload Too Large";
-    case 416:
+    case S3_HTTP_RANGE_NOT_SATISFIABLE:
         return "Range Not Satisfiable";
-    case 500:
+    case S3_HTTP_INTERNAL_ERROR:
         return "Internal Server Error";
-    case 501:
+    case S3_HTTP_NOT_IMPLEMENTED:
         return "Not Implemented";
-    case 503:
+    case S3_HTTP_SERVICE_UNAVAILABLE:
         return "Service Unavailable";
-    case 507:
+    case S3_HTTP_INSUFFICIENT_STORAGE:
         return "Insufficient Storage";
     default:
         return "Unknown";

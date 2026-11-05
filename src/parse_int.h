@@ -100,7 +100,7 @@ static inline bool ernic_parse_u64_span(const char *s, size_t len,
     for (size_t i = 0; i < len; i++) {
         /* Unsigned, so a character below '0' wraps to a large value. */
         unsigned d = (unsigned)(unsigned char)s[i] - (unsigned)'0';
-        if (d > 9) {
+        if (d >= 10) {
             return false;
         }
         if (v > (UINT64_MAX - d) / 10) {
@@ -152,19 +152,19 @@ static inline bool ernic_parse_size(const char *s, uint64_t *out)
     switch (*p) {
     case 'k':
     case 'K':
-        shift = 10;
+        shift = 10; /* KiB */
         break;
     case 'm':
     case 'M':
-        shift = 20;
+        shift = 2 * 10; /* MiB */
         break;
     case 'g':
     case 'G':
-        shift = 30;
+        shift = 3 * 10; /* GiB */
         break;
     case 't':
     case 'T':
-        shift = 40;
+        shift = 4 * 10; /* TiB */
         break;
     default:
         break;
@@ -286,7 +286,7 @@ static inline bool ernic_parse_oct_u32(const char *s, uint32_t *out)
     for (const char *p = s; *p; p++) {
         /* Unsigned, so a character below '0' wraps to a large value. */
         unsigned d = (unsigned)(unsigned char)*p - (unsigned)'0';
-        if (d > 7 || v > (UINT32_MAX >> 3)) {
+        if (d >= 8 || v > (UINT32_MAX >> 3)) {
             return false;
         }
         v = (v << 3) | d;
@@ -412,6 +412,10 @@ static inline bool ernic_parse_hexstr(const char *s, uint8_t *out,
     return true;
 }
 
+/* The bytes in a MAC address. This header is copied into guests to build
+ * test programs, so it doesn't include net/net_headers.h for ETH_ADDR_LEN. */
+#define ERNIC_PARSE_MAC_LEN 6
+
 /*
  * Parse a MAC address written as six pairs of hex digits separated by
  * colons, XX:XX:XX:XX:XX:XX, in either case. Rejects anything else, such as
@@ -419,19 +423,20 @@ static inline bool ernic_parse_hexstr(const char *s, uint8_t *out,
  * stores the six bytes in out and returns true; otherwise leaves out
  * untouched and returns false.
  */
-static inline bool ernic_parse_mac(const char *s, uint8_t out[6])
+static inline bool ernic_parse_mac(const char *s,
+                                   uint8_t out[ERNIC_PARSE_MAC_LEN])
 {
-    uint8_t mac[6];
+    uint8_t mac[ERNIC_PARSE_MAC_LEN];
 
     if (!s) {
         return false;
     }
-    for (size_t i = 0; i < 6; i++) {
+    for (size_t i = 0; i < ERNIC_PARSE_MAC_LEN; i++) {
         const char *pair = s + (3 * i);
         if (!ernic_parse_hex(pair, 1, &mac[i])) {
             return false;
         }
-        if (pair[2] != (i < 5 ? ':' : '\0')) {
+        if (pair[2] != (i + 1 < ERNIC_PARSE_MAC_LEN ? ':' : '\0')) {
             return false;
         }
     }

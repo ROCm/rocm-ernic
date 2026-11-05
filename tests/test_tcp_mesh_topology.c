@@ -60,6 +60,7 @@
 #include "qemu/thread.h"
 #include "rdma/rdma_backend_tcp_priv.h"
 #include "rocm-ernic-warnings.h"
+#include "test_fmt.h"
 
 /* ---- Stubs for the TU's external symbols -------------------------------
  * Apart from error_report(), which counts calls so a case can check whether
@@ -263,7 +264,7 @@ static void fill_mesh(GHashTable *mesh_nodes, uint32_t n)
 {
     for (uint32_t i = 0; i < n; i++) {
         char hostname[64];
-        snprintf(hostname, sizeof(hostname), "node-%u.example", i);
+        test_fmt(hostname, sizeof(hostname), "node-%u.example", i);
         MeshNodeInfo *node =
             tcp_mesh_node_info_new(i + 100, hostname, (uint16_t)(9000 + i));
         g_hash_table_insert(mesh_nodes, GUINT_TO_POINTER(i + 100), node);
@@ -503,7 +504,7 @@ static int run_mesh_case(const struct testcase *tc)
             fail = 1;
             continue;
         }
-        snprintf(expect_host, sizeof(expect_host), "node-%u.example", id - 100);
+        test_fmt(expect_host, sizeof(expect_host), "node-%u.example", id - 100);
         /* The terminator too, which the field needn't have */
         if (memcmp(host, expect_host, strlen(expect_host) + 1) != 0) {
             printf("FAIL %-16s: slot %u hostname '%.*s', expected '%s'\n",

@@ -42,8 +42,13 @@ _Static_assert((BIG_LEN / 2 / REGION_SIZE) + 2 <= ERNIC_DMA_SGL_MAX,
 
 static int failures;
 
+/* Each row's context, for the checks and fakes that take no argument
+ * to pass it in. The code under test changes them, so they can't point
+ * to const. */
+/* NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables) */
 static vfu_ctx_t *g_vfu;
 static struct ernic_dma *g_dma;
+/* NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables) */
 
 static void check(bool ok, const char *what)
 {

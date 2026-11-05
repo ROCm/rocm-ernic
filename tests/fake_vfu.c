@@ -219,7 +219,9 @@ bool fake_vfu_read(vfu_ctx_t *ctx, uint64_t gpa, void *buf, size_t len)
 
 bool fake_vfu_write(vfu_ctx_t *ctx, uint64_t gpa, const void *buf, size_t len)
 {
-    /* copy() only reads from buf when copying to the guest. */
+    /* copy() only reads from buf when copying to the guest. Casting
+     * through uintptr_t drops the const without -Wcast-qual.
+     * NOLINTNEXTLINE(performance-no-int-to-ptr) */
     return copy(ctx, gpa, (void *)(uintptr_t)buf, len, true);
 }
 

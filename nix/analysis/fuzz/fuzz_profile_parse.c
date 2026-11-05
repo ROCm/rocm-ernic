@@ -312,7 +312,8 @@ static bool emit_seed(size_t i, const uint8_t *buf, size_t len)
     FILE *f;
     bool ok;
 
-    snprintf(path, sizeof(path), "seed-%02zu", i);
+    /* Fits for any size_t. */
+    (void)snprintf(path, sizeof(path), "seed-%02zu", i);
     /* Never overwrite an existing file or follow a planted symlink.  With
      * _FORTIFY_SOURCE, glibc 2.40 and later give Clang an
      * open(path, flags, mode) overload, and android-cloexec-open looks for
@@ -373,7 +374,7 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
             unwritten++;
         }
     }
-    fflush(stdout);
+    (void)fflush(stdout);
     if (failures || unwritten) {
         /* libFuzzer ignores this function's return value, so a broken
          * seed, or a corpus that could not be written, has to stop the run

@@ -425,7 +425,8 @@ static int tcp_sendq_start(TcpConnection *conn) TSA_REQUIRES(conn->sendq_lock)
         return 0;
     }
     if (conn->node_id != UINT32_MAX) {
-        snprintf(name, sizeof(name), "tcp-send-%u", conn->node_id);
+        /* At most 19 characters; the thread name keeps what it can. */
+        (void)snprintf(name, sizeof(name), "tcp-send-%u", conn->node_id);
     }
     if (qemu_thread_create(&conn->send_thread, name, tcp_send_thread, conn) !=
         0) {
@@ -904,7 +905,7 @@ void *tcp_accept_thread(void *opaque)
             if (priv->is_manager) {
                 tcp_reap_pending_conns(priv);
             }
-            ernic_sleep_us(100000); /* 100 ms */
+            ernic_sleep_us(UINT64_C(100) * 1000U); /* 100 ms */
             continue;
         }
 

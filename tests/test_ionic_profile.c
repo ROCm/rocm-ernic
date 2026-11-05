@@ -25,6 +25,7 @@
 #include <unistd.h>
 
 #include "ionic/ionic_profile.h"
+#include "test_fmt.h"
 
 static int failures;
 
@@ -657,7 +658,7 @@ static void run_text_case(const struct text_case *c)
         char source[16];
         size_t len = strlen(c->layers[i]);
 
-        snprintf(source, sizeof(source), "layer%d", i + 1);
+        test_fmt(source, sizeof(source), "layer%d", i + 1);
         if (ionic_profile_apply_text(&p, source, c->layers[i], len, err,
                                      sizeof(err)) != 0) {
             unchanged = profile_equal(&before, &p);
@@ -716,7 +717,7 @@ static const char *scratch_file(const char *name, const char *text)
     FILE *f;
     bool ok;
 
-    snprintf(path, sizeof(path), "%s/%s", g_tmpdir, name);
+    test_fmt(path, sizeof(path), "%s/%s", g_tmpdir, name);
     f = scratch_open(path);
     if (!f) {
         printf("     setup: cannot create %s\n", path);
@@ -801,12 +802,12 @@ static void run_spec_case(const struct spec_case *c)
             return;
         }
         if (strncmp(c->want_chain, "compat + @", 10) == 0) {
-            snprintf(want_chain, sizeof(want_chain), "compat + %s", spec);
+            test_fmt(want_chain, sizeof(want_chain), "compat + %s", spec);
         } else {
-            snprintf(want_chain, sizeof(want_chain), "%s", c->want_chain);
+            test_fmt(want_chain, sizeof(want_chain), "%s", c->want_chain);
         }
     } else {
-        snprintf(want_chain, sizeof(want_chain), "%s", c->want_chain);
+        test_fmt(want_chain, sizeof(want_chain), "%s", c->want_chain);
     }
     ionic_profile_defaults(&p);
     rc = ionic_profile_apply(&p, spec, err, sizeof(err));
@@ -846,7 +847,7 @@ static void check_builtin_matches_file(const char *name)
     FILE *f;
     bool ok = false;
 
-    snprintf(path, sizeof(path), "%s/%s.ini", ERNIC_PROFILES_DIR, name);
+    test_fmt(path, sizeof(path), "%s/%s.ini", ERNIC_PROFILES_DIR, name);
     f = fopen(path, "rbe");
     if (f && text) {
         size_t len = 0;
@@ -858,10 +859,11 @@ static void check_builtin_matches_file(const char *name)
         ok = file && len == strlen(text) && memcmp(file, text, len) == 0;
     }
     if (f) {
-        fclose(f);
+        (void)fclose(f);
     }
     free(file);
-    snprintf(desc, sizeof(desc), "built-in %s vs profiles/%s.ini", name, name);
+    (void)snprintf(desc, sizeof(desc), "built-in %s vs profiles/%s.ini", name,
+                   name);
     report(ok, "corner", desc,
            "byte-identical, so the shipped file can't drift");
 }
@@ -1178,7 +1180,7 @@ static void check_format_fallbacks(void)
     ionic_profile_defaults(&p);
     p.identity.asic_type = 99;
     p.link.xcvr = 99;
-    snprintf(p.chain, sizeof(p.chain),
+    test_fmt(p.chain, sizeof(p.chain),
              "compat + a\nb\x7f"
              "c\td.ini");
     n = ionic_profile_format(&p, text, sizeof(text));
@@ -1220,7 +1222,7 @@ static void check_file_boundaries(void)
     };
     char path[512];
 
-    snprintf(path, sizeof(path), "%s/boundary.ini", g_tmpdir);
+    test_fmt(path, sizeof(path), "%s/boundary.ini", g_tmpdir);
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         struct ionic_profile p;
         struct ionic_profile before;
@@ -1299,9 +1301,9 @@ int main(void)
     {
         char path[512];
 
-        snprintf(path, sizeof(path), "%s/fast.ini", g_tmpdir);
+        test_fmt(path, sizeof(path), "%s/fast.ini", g_tmpdir);
         unlink(path);
-        snprintf(path, sizeof(path), "%s/bad.ini", g_tmpdir);
+        test_fmt(path, sizeof(path), "%s/bad.ini", g_tmpdir);
         unlink(path);
         rmdir(g_tmpdir);
     }

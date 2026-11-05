@@ -51,6 +51,7 @@
 #include "ionic/ionic_eth_net.h"
 #include "ionic/ionic_fault.h"
 #include "ionic/ionic_profile.h"
+#include "net/net_headers.h"
 #ifdef ERNIC_HAVE_P4
 #include "p4/p4_devcmd.h"
 #include "p4/p4_engine.h"
@@ -433,14 +434,14 @@ static int p4_load_program_file(struct p4_engine *eng, const char *path)
     size = fseek(f, 0, SEEK_END) == 0 ? ftell(f) : -1;
     if (size < 0 || fseek(f, 0, SEEK_SET) != 0) {
         fprintf(stderr, "rocm-ernic: cannot size P4 program '%s'\n", path);
-        fclose(f);
+        (void)fclose(f);
         return -1;
     }
     if ((uint64_t)size == 0 || (uint64_t)size > P4_PROGRAM_MAX) {
         fprintf(stderr,
                 "rocm-ernic: P4 program '%s' is %ld bytes; the limit is %zu\n",
                 path, size, P4_PROGRAM_MAX);
-        fclose(f);
+        (void)fclose(f);
         return -1;
     }
 
@@ -462,7 +463,7 @@ static int p4_load_program_file(struct p4_engine *eng, const char *path)
         rc = p4_engine_load_chunk(eng, total, buf, n);
         total += n;
     }
-    fclose(f);
+    (void)fclose(f);
 
     if (rc == 0) {
         rc = p4_engine_load_commit(eng);
@@ -648,7 +649,7 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, const rocm_ernic_dev_t *dev)
     uint32_t nr_intrs = ionic_profile_intr_vectors(&dev->profile);
 
     /* Message Control: bits [10:0] = Table Size-1 */
-    msix_cap.ctrl = (uint16_t)((nr_intrs - 1U) & 0x7FFU);
+    msix_cap.ctrl = (uint16_t)((nr_intrs - 1U) & PCI_MSIX_FLAGS_QSIZE);
 
     /* The table/PBA must sit above the 32 KB ionic register window: offset
      * 0 is the DEVI signature ionic_dev_setup() probes and 0x2000 is
@@ -657,10 +658,12 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, const rocm_ernic_dev_t *dev)
     uint32_t pba_off = IONIC_BAR0_MSIX_PBA;
 
     /* Table Offset/BIR: bits [2:0] = BIR, bits [31:3] = offset >> 3 */
-    msix_cap.table = (table_off & 0xFFFFFFF8) | (MSIX_TABLE_BIR & 0x7);
+    msix_cap.table = (table_off & PCI_MSIX_TABLE_OFFSET) |
+                     (MSIX_TABLE_BIR & PCI_MSIX_TABLE_BIR);
 
     /* PBA Offset/BIR: bits [2:0] = BIR, bits [31:3] = offset >> 3 */
-    msix_cap.pba = (pba_off & 0xFFFFFFF8) | (MSIX_PBA_BIR & 0x7);
+    msix_cap.pba =
+        (pba_off & PCI_MSIX_PBA_OFFSET) | (MSIX_PBA_BIR & PCI_MSIX_PBA_BIR);
 
     /* Add MSI-X capability to PCI config space at automatic position (pos=0) */
     ret = vfu_pci_add_capability(vfu_ctx, 0, 0, &msix_cap);
@@ -679,8 +682,9 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, const rocm_ernic_dev_t *dev)
         vfu_pci_config_space_t *cfg = vfu_pci_get_config_space(vfu_ctx);
         if (cfg) {
             uint8_t *p = (uint8_t *)cfg;
-            p[0x34] = (uint8_t)ret; /* capability pointer */
-            for (int i = 0x35; i <= 0x3f; i++) {
+            p[PCI_CAPABILITY_LIST] = (uint8_t)ret;
+            for (int i = PCI_CAPABILITY_LIST + 1; i < PCI_STD_HEADER_SIZEOF;
+                 i++) {
                 p[i] = 0;
             }
         }
@@ -1295,7 +1299,8 @@ static int redirect_output(const char *path)
      * Clang an open(path, flags, mode) overload, and android-cloexec-open
      * looks for O_CLOEXEC in its mode */
     /* NOLINTBEGIN(android-cloexec-open) */
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,
+                  S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
     /* NOLINTEND(android-cloexec-open) */
     bool is_std;
 
@@ -1475,8 +1480,10 @@ static int setup_stats_file(rocm_ernic_dev_t *dev, const char *socket_path)
         return 0;
     }
 
-    snprintf(profile_line, sizeof(profile_line), "%s (hash 0x%016" PRIx64 ")",
-             dev->profile.chain, ionic_profile_hash(&dev->profile));
+    /* Sized for the longest chain and the hash. */
+    (void)snprintf(profile_line, sizeof(profile_line),
+                   "%s (hash 0x%016" PRIx64 ")", dev->profile.chain,
+                   ionic_profile_hash(&dev->profile));
     memset(&inst, 0, sizeof(inst));
     inst.socket_path = socket_path;
     inst.backend = dev->backend_type_str;
@@ -1634,11 +1641,10 @@ static int setup_device(rocm_ernic_dev_t *dev, const struct server_opts *opts)
 
     /* Log MAC address if set */
     if (dev->mac_addr_set) {
-        ernic_startup_report("rocm-ernic: Device MAC address: "
-                             "%02x:%02x:%02x:%02x:%02x:%02x",
-                             dev->mac_addr[0], dev->mac_addr[1],
-                             dev->mac_addr[2], dev->mac_addr[3],
-                             dev->mac_addr[4], dev->mac_addr[5]);
+        char mac[ETH_ADDR_STR_LEN];
+
+        eth_addr_str(dev->mac_addr, mac);
+        ernic_startup_report("rocm-ernic: Device MAC address: %s", mac);
     }
 
     /* Attach the host network backend before the first client shows up, so a

@@ -766,8 +766,9 @@ static void check_steer_basic(void)
             lo = hits[q] < lo ? hits[q] : lo;
             hi = hits[q] > hi ? hits[q] : hi;
         }
-        snprintf(desc, sizeof(desc),
-                 "every queue reachable: 4,096 random tuples, n = %" PRIu32, n);
+        (void)snprintf(
+            desc, sizeof(desc),
+            "every queue reachable: 4,096 random tuples, n = %" PRIu32, n);
         report(missing == 0, n == 64 ? "boundary" : "corner", desc,
                "every queue gets at least one frame");
         /* Binomial(4096, 1/n): within 4 sigma, compared as squares. */
@@ -775,10 +776,10 @@ static void check_steer_basic(void)
         double var = mean * (1.0 - (1.0 / n));
         double dlo = (double)lo - mean;
         double dhi = (double)hi - mean;
-        snprintf(desc, sizeof(desc),
-                 "spread of 4,096 random tuples over n = %" PRIu32
-                 " (min %" PRIu32 ", max %" PRIu32 ")",
-                 n, lo, hi);
+        (void)snprintf(desc, sizeof(desc),
+                       "spread of 4,096 random tuples over n = %" PRIu32
+                       " (min %" PRIu32 ", max %" PRIu32 ")",
+                       n, lo, hi);
         report(dlo * dlo <= 16 * var && dhi * dhi <= 16 * var, "statistical",
                desc, "every queue within 4 sigma of 4096 / n");
     }

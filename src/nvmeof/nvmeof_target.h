@@ -75,8 +75,8 @@ struct nvmeof_ns_cfg {
 
 struct nvmeof_target_cfg {
     char subnqn[NVMEOF_NQN_FIELD];
-    char serial[21];
-    char model[41];
+    char serial[NVME_ID_CTRL_SN_LEN + 1];
+    char model[NVME_ID_CTRL_MN_LEN + 1];
     uint32_t traddr;     /* target IPv4, host byte order */
     uint16_t trsvcid;    /* target port */
     uint16_t max_queues; /* I/O queues offered, 1..NVMEOF_MAX_QUEUES */

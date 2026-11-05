@@ -48,7 +48,7 @@ enum s3_conn_state {
 struct s3_conn {
     enum s3_conn_state state;
 
-    uint8_t peer_mac[6];
+    uint8_t peer_mac[ETH_ADDR_LEN];
     uint32_t peer_ip; /* host byte order */
     uint16_t peer_port;
 
@@ -146,12 +146,19 @@ static uint32_t conn_iss(const struct s3_tcp *s, uint32_t peer_ip,
 {
     /* Local address and port, then remote; the order and byte order only
      * have to be the same every time. */
-    uint8_t tuple[12];
+    enum {
+        TUPLE_IP_OFF = 0,
+        TUPLE_PORT_OFF = 4,
+        TUPLE_PEER_IP_OFF = 6,
+        TUPLE_PEER_PORT_OFF = 10,
+        TUPLE_LEN = 12,
+    };
+    uint8_t tuple[TUPLE_LEN];
 
-    ernic_put_be32(tuple, s->cfg.ip);
-    ernic_put_be16(tuple + 4, s->cfg.port);
-    ernic_put_be32(tuple + 6, peer_ip);
-    ernic_put_be16(tuple + 10, peer_port);
+    ernic_put_be32(tuple + TUPLE_IP_OFF, s->cfg.ip);
+    ernic_put_be16(tuple + TUPLE_PORT_OFF, s->cfg.port);
+    ernic_put_be32(tuple + TUPLE_PEER_IP_OFF, peer_ip);
+    ernic_put_be16(tuple + TUPLE_PEER_PORT_OFF, peer_port);
 
     /* Wraps every 4.8 hours */
     uint64_t now_us = s->cfg.now_us ? s->cfg.now_us() : ernic_monotonic_us();
@@ -198,26 +205,26 @@ static void send_frame(struct s3_tcp *s, size_t len)
 {
     /* The guest's receive path expects a minimum-length Ethernet frame;
      * the pad is never interpreted because IP carries its own length. */
-    if (len < 60) {
-        memset(s->frame + len, 0, 60 - len);
-        len = 60;
+    if (len < ETH_MIN_FRAME_LEN) {
+        memset(s->frame + len, 0, ETH_MIN_FRAME_LEN - len);
+        len = ETH_MIN_FRAME_LEN;
     }
     s->stats.frames_tx++;
     s->tx(s->tx_ctx, s->frame, len);
 }
 
-static uint8_t *build_ip(struct s3_tcp *s, const uint8_t dst_mac[6],
+static uint8_t *build_ip(struct s3_tcp *s, const uint8_t dst_mac[ETH_ADDR_LEN],
                          uint32_t dst_ip, uint8_t proto, size_t payload_len)
 {
     uint8_t *eth = s->frame;
     uint8_t *ip = s->frame + ETH_HDR_LEN;
 
-    memcpy(eth + ETH_DST_OFF, dst_mac, 6);
-    memcpy(eth + ETH_SRC_OFF, s->cfg.mac, 6);
+    memcpy(eth + ETH_DST_OFF, dst_mac, ETH_ADDR_LEN);
+    memcpy(eth + ETH_SRC_OFF, s->cfg.mac, ETH_ADDR_LEN);
     ernic_put_be16(eth + ETH_TYPE_OFF, ETH_ETHERTYPE_IP);
 
     memset(ip, 0, IP_HDR_LEN);
-    ip[IP_VERSION_IHL_OFF] = 0x45;
+    ip[IP_VERSION_IHL_OFF] = IP_VERSION_IHL_NO_OPTIONS;
     ernic_put_be16(ip + IP_TOTAL_LEN_OFF, (uint16_t)(IP_HDR_LEN + payload_len));
     ernic_put_be16(ip + IP_ID_OFF, s->ip_id++);
     ernic_put_be16(ip + IP_FRAGMENT_OFF, 0x4000); /* don't fragment */
@@ -285,7 +292,7 @@ static void send_reset(struct s3_tcp *s, const struct s3_peer *to, uint32_t seq,
     struct s3_conn tmp;
 
     memset(&tmp, 0, sizeof(tmp));
-    memcpy(tmp.peer_mac, to->mac, 6);
+    memcpy(tmp.peer_mac, to->mac, ETH_ADDR_LEN);
     tmp.peer_ip = to->ip;
     tmp.peer_port = to->port;
     tmp.rcv_nxt = ack;
@@ -309,7 +316,7 @@ static bool handle_arp(struct s3_tcp *s, const uint8_t *frame, size_t len)
 
     if (ernic_get_be16(arp + ARP_HW_TYPE_OFF) != ARP_HW_TYPE_ETHERNET ||
         ernic_get_be16(arp + ARP_PROTO_TYPE_OFF) != ETH_ETHERTYPE_IP ||
-        arp[ARP_HW_LEN_OFF] != 6 || arp[ARP_PROTO_LEN_OFF] != 4 ||
+        arp[ARP_HW_LEN_OFF] != ETH_ADDR_LEN || arp[ARP_PROTO_LEN_OFF] != 4 ||
         ernic_get_be16(arp + ARP_OP_OFF) != ARP_OP_REQUEST) {
         return false;
     }
@@ -320,18 +327,18 @@ static bool handle_arp(struct s3_tcp *s, const uint8_t *frame, size_t len)
     uint8_t *reth = s->frame;
     uint8_t *rarp = s->frame + ETH_HDR_LEN;
 
-    memcpy(reth + ETH_DST_OFF, arp + ARP_SENDER_MAC_OFF, 6);
-    memcpy(reth + ETH_SRC_OFF, s->cfg.mac, 6);
+    memcpy(reth + ETH_DST_OFF, arp + ARP_SENDER_MAC_OFF, ETH_ADDR_LEN);
+    memcpy(reth + ETH_SRC_OFF, s->cfg.mac, ETH_ADDR_LEN);
     ernic_put_be16(reth + ETH_TYPE_OFF, ETH_ETHERTYPE_ARP);
 
     ernic_put_be16(rarp + ARP_HW_TYPE_OFF, ARP_HW_TYPE_ETHERNET);
     ernic_put_be16(rarp + ARP_PROTO_TYPE_OFF, ETH_ETHERTYPE_IP);
-    rarp[ARP_HW_LEN_OFF] = 6;
+    rarp[ARP_HW_LEN_OFF] = ETH_ADDR_LEN;
     rarp[ARP_PROTO_LEN_OFF] = 4;
     ernic_put_be16(rarp + ARP_OP_OFF, ARP_OP_REPLY);
-    memcpy(rarp + ARP_SENDER_MAC_OFF, s->cfg.mac, 6);
+    memcpy(rarp + ARP_SENDER_MAC_OFF, s->cfg.mac, ETH_ADDR_LEN);
     ernic_put_be32(rarp + ARP_SENDER_IP_OFF, s->cfg.ip);
-    memcpy(rarp + ARP_TARGET_MAC_OFF, arp + ARP_SENDER_MAC_OFF, 6);
+    memcpy(rarp + ARP_TARGET_MAC_OFF, arp + ARP_SENDER_MAC_OFF, ETH_ADDR_LEN);
     memcpy(rarp + ARP_TARGET_IP_OFF, arp + ARP_SENDER_IP_OFF, 4);
 
     s->stats.arp_replies++;
@@ -517,7 +524,8 @@ static bool conn_service(struct s3_tcp *s, struct s3_conn *c)
             break; /* partial request; wait for the rest */
         }
         if (n < 0) {
-            int status = (n == -EMSGSIZE) ? 413 : 400;
+            int status = (n == -EMSGSIZE) ? S3_HTTP_PAYLOAD_TOO_LARGE
+                                          : S3_HTTP_BAD_REQUEST;
             const char *code =
                 (n == -EMSGSIZE) ? "EntityTooLarge" : "InvalidRequest";
             queue_canned(c, status, code,
@@ -659,7 +667,7 @@ static bool handle_tcp(struct s3_tcp *s, const uint8_t *frame, size_t len,
 
         memset(c, 0, sizeof(*c));
         c->state = S3_CONN_SYN_RCVD;
-        memcpy(c->peer_mac, peer_mac, 6);
+        memcpy(c->peer_mac, peer_mac, ETH_ADDR_LEN);
         c->peer_ip = peer_ip;
         c->peer_port = peer_port;
         c->rcv_nxt = seq + 1;
@@ -680,7 +688,7 @@ static bool handle_tcp(struct s3_tcp *s, const uint8_t *frame, size_t len,
     }
 
     c->last_rx_ms = now_ms;
-    memcpy(c->peer_mac, peer_mac, 6);
+    memcpy(c->peer_mac, peer_mac, ETH_ADDR_LEN);
     c->peer_win = window;
     if (c->peer_win == 0) {
         c->peer_win = 1; /* keep the pump probing rather than wedging */
@@ -740,7 +748,7 @@ static bool handle_tcp(struct s3_tcp *s, const uint8_t *frame, size_t len,
                  * over the limit is answered: a second response would be
                  * queued behind a FIN that has already gone out. */
                 if (!c->fin_queued) {
-                    queue_canned(c, 413, "EntityTooLarge",
+                    queue_canned(c, S3_HTTP_PAYLOAD_TOO_LARGE, "EntityTooLarge",
                                  "The request exceeds the server's limit.");
                     c->fin_queued = true;
                 }
@@ -813,11 +821,8 @@ void s3_tcp_cfg_from_target(struct s3_tcp_cfg *cfg,
     /* A locally administered address derived from the IP, so the guest
      * always sees the same MAC for the same endpoint across restarts. */
     cfg->mac[0] = 0x02;
-    cfg->mac[1] = 0x53; /* 'S' */
-    cfg->mac[2] = (uint8_t)(tc->traddr >> 24);
-    cfg->mac[3] = (uint8_t)(tc->traddr >> 16);
-    cfg->mac[4] = (uint8_t)(tc->traddr >> 8);
-    cfg->mac[5] = (uint8_t)tc->traddr;
+    cfg->mac[1] = 'S';
+    ernic_put_be32(cfg->mac + 2, tc->traddr);
 }
 
 struct s3_tcp *s3_tcp_create(const struct s3_tcp_cfg *cfg,
@@ -887,9 +892,10 @@ bool s3_tcp_rx_frame(struct s3_tcp *s, const void *frame, size_t len,
     }
 
     /* Unicast to us or broadcast; anything else is not ours to answer. */
-    static const uint8_t bcast[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
-    if (memcmp(f + ETH_DST_OFF, s->cfg.mac, 6) != 0 &&
-        memcmp(f + ETH_DST_OFF, bcast, 6) != 0) {
+    static const uint8_t bcast[ETH_ADDR_LEN] = {0xff, 0xff, 0xff,
+                                                0xff, 0xff, 0xff};
+    if (memcmp(f + ETH_DST_OFF, s->cfg.mac, ETH_ADDR_LEN) != 0 &&
+        memcmp(f + ETH_DST_OFF, bcast, ETH_ADDR_LEN) != 0) {
         return false;
     }
 

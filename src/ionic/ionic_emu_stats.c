@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "byteorder.h"
+#include "net/net_headers.h"
 
 /* The first counter of each per-class pair, indexed by ionic_emu_mac_class. */
 static const unsigned int rx_bytes_idx[IONIC_EMU_MAC_CLASSES] = {
@@ -35,9 +36,10 @@ static const unsigned int tx_drop_bytes_idx[IONIC_EMU_MAC_CLASSES] = {
 
 int ionic_emu_mac_class(const uint8_t *frame, size_t len)
 {
-    static const uint8_t bcast[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+    static const uint8_t bcast[ETH_ADDR_LEN] = {0xff, 0xff, 0xff,
+                                                0xff, 0xff, 0xff};
 
-    if (!frame || len < 6) {
+    if (!frame || len < ETH_ADDR_LEN) {
         return -1;
     }
     if (memcmp(frame, bcast, sizeof(bcast)) == 0) {
@@ -180,14 +182,14 @@ static int frame_pcp(const uint8_t *frame, size_t len)
 {
     uint16_t tpid;
 
-    if (!frame || len < 16) {
+    if (!frame || len < ETH_VLAN_TCI_OFF + 2) {
         return -1;
     }
-    tpid = ernic_get_be16(frame + 12);
-    if (tpid != 0x8100 && tpid != 0x88a8) {
+    tpid = ernic_get_be16(frame + ETH_TYPE_OFF);
+    if (tpid != ETH_ETHERTYPE_VLAN && tpid != ETH_ETHERTYPE_QINQ) {
         return -1;
     }
-    return frame[14] >> 5;
+    return ernic_get_be16(frame + ETH_VLAN_TCI_OFF) >> ETH_VLAN_PCP_SHIFT;
 }
 
 /* The unicast/multicast/broadcast qwords follow the class order. */

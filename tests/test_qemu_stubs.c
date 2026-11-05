@@ -139,7 +139,7 @@ static void expect_abort(void (*misuse)(void), const char *what)
     int status;
     pid_t pid;
 
-    fflush(stdout);
+    (void)fflush(stdout);
     pid = fork();
     if (pid < 0) {
         printf("FAIL %s: fork failed\n", what);

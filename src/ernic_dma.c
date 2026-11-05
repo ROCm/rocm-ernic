@@ -73,6 +73,8 @@ static int dma_xfer_piece(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx,
     size_t done = 0;
     int cnt;
 
+    /* libvfio-user takes a guest address as a pointer (vfu_dma_addr_t).
+     * NOLINTNEXTLINE(performance-no-int-to-ptr) */
     cnt = vfu_addr_to_sgl(vfu_ctx, (vfu_dma_addr_t)(uintptr_t)gpa, len, dma->sg,
                           ERNIC_DMA_SGL_MAX, write ? PROT_WRITE : PROT_READ);
     /* -(entries needed) - 1, with errno 0: more host mappings than there's
