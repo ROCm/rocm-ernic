@@ -279,7 +279,8 @@ static bool emit_seed(size_t i, const uint8_t *buf, size_t len)
     FILE *f;
     bool ok;
 
-    snprintf(path, sizeof(path), "seed-%02zu", i);
+    /* Fits for any size_t. */
+    (void)snprintf(path, sizeof(path), "seed-%02zu", i);
     /* NOLINTBEGIN(android-cloexec-open) */
     fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
     /* NOLINTEND(android-cloexec-open) */
