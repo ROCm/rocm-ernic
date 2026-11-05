@@ -362,7 +362,7 @@ void ionic_datapath_set_qp_cmb(struct ionic_datapath *dp, uint32_t qp_id,
  * Called by ionic_eth_emu_bar4_access() on every 64-byte write into the CMB.
  * Detects the last write of an EXPDB512 slot and dispatches the WQE.
  *
- * @cmb_offset: byte offset within the 8 MB CMB buffer of the write's start
+ * @param cmb_offset byte offset within the 8 MB CMB buffer of the write's start
  */
 void ionic_datapath_expdb_write(struct ionic_datapath *dp, uint64_t cmb_offset);
 

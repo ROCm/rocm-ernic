@@ -146,6 +146,11 @@ static const char *run_input(const uint8_t *data, size_t size, uint8_t *rc_out)
     body_len = data[1] % BODY_MOD;
 
     ctx_reset();
+    /* Pre-register CQ 0 so positive-path seeds can reference it.  The fake
+     * ernic_rm_alloc_cq always returns handle 1. */
+    g_ctx.cq_map[0].valid = true;
+    g_ctx.cq_map[0].cq_id = VALID_CQ_ID;
+    g_ctx.cq_map[0].handle = 1;
 
     memset(body, 0, sizeof(body));
     size_t avail = size - IN_HDR;
