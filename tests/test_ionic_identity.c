@@ -587,16 +587,18 @@ static void check_discover_cmb(void)
     bool ok = (nregions == 2);
     printf("%s DISCOVER_CMB: num_regions=%u (expected 2)\n",
            ok ? "ok  " : "FAIL", nregions);
-    if (!ok)
+    if (!ok) {
         failures++;
+    }
 
     /* CMB_ID_FLAGS_OFF = 4, le32, IONIC_CMB_FLAG_EXPDB = 1 */
     uint32_t flags = ernic_get_le32(data + CMB_ID_FLAGS_OFF);
     ok = ((flags & IONIC_CMB_FLAG_EXPDB) != 0);
     printf("%s DISCOVER_CMB: flags EXPDB bit set (flags=0x%x)\n",
            ok ? "ok  " : "FAIL", flags);
-    if (!ok)
+    if (!ok) {
         failures++;
+    }
 
     /* region[0] at CMB_ID_REGION_OFF: bar_num=4, type=DEVMEM, offset=0,
      * length=128 */
@@ -612,8 +614,9 @@ static void check_discover_cmb(void)
            r0[CMB_REGION_TYPE_OFF], ernic_get_le32(r0 + CMB_REGION_OFFSET_OFF),
            ernic_get_le32(r0 + CMB_REGION_LENGTH_OFF), IONIC_CMB_TYPE_DEVMEM,
            IONIC_CMB_ENTRY_PAGES);
-    if (!r0_ok)
+    if (!r0_ok) {
         failures++;
+    }
 
     /* region[1] at CMB_ID_REGION_OFF+CMB_ID_REGION_SIZE: bar_num=4,
      * type=EXPDB512 */
@@ -629,8 +632,9 @@ static void check_discover_cmb(void)
            r1[CMB_REGION_TYPE_OFF], ernic_get_le32(r1 + CMB_REGION_OFFSET_OFF),
            ernic_get_le32(r1 + CMB_REGION_LENGTH_OFF), IONIC_CMB_TYPE_EXPDB512,
            IONIC_CMB_ENTRY_PAGES);
-    if (!r1_ok)
+    if (!r1_ok) {
         failures++;
+    }
 }
 
 /*
@@ -661,8 +665,9 @@ static void check_q_identify_expdb(void)
         bool ok = ((features & IONIC_QIDENT_F_EXPDB) != 0);
         printf("%s Q_IDENTIFY qtype=%u: features=0x%" PRIx64 " EXPDB bit set\n",
                ok ? "ok  " : "FAIL", qt, features);
-        if (!ok)
+        if (!ok) {
             failures++;
+        }
     }
 
     /* qtypes that must NOT have EXPDB set */
@@ -677,8 +682,9 @@ static void check_q_identify_expdb(void)
         printf("%s Q_IDENTIFY qtype=%u: features=0x%" PRIx64
                " EXPDB bit clear\n",
                ok ? "ok  " : "FAIL", qt, features);
-        if (!ok)
+        if (!ok) {
             failures++;
+        }
     }
 
     ionic_eth_emu_destroy(emu);

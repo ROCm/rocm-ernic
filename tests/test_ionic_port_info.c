@@ -142,6 +142,7 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
     (void)qtype;
     (void)doorbell_val;
 }
+/* NOLINTNEXTLINE(readability-non-const-parameter) -- stub; real fn stores ptr in dp */
 void ionic_datapath_set_cmb(struct ionic_datapath *dp, uint8_t *cmb_buf)
 {
     (void)dp;

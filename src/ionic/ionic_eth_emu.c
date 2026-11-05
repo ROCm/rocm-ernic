@@ -1431,10 +1431,11 @@ void ionic_eth_emu_handle_q_identify(const struct ionic_eth_emu *emu,
         ernic_put_le16(data + QID_SG_DESC_STRIDE_OFF, TXQ_SG_MAX_ELEMS);
     }
 
-    if (qtype == IONIC_QTYPE_TXQ || qtype == IONIC_QTYPE_RXQ)
+    if (qtype == IONIC_QTYPE_TXQ || qtype == IONIC_QTYPE_RXQ) {
         ernic_put_le64(data + QID_FEATURES_OFF, IONIC_QIDENT_F_EXPDB);
-    else
+    } else {
         ernic_put_le64(data + QID_FEATURES_OFF, 0);
+    }
 #undef QID_SG_DESC_STRIDE_OFF
 #undef QID_MAX_SG_ELEMS_OFF
 #undef QID_SG_DESC_SZ_OFF

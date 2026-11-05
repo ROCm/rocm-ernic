@@ -1898,7 +1898,7 @@ static bool dp_ring_take(struct ionic_datapath *dp, uint32_t *cons,
          * ernic_dma_read() cannot map BAR4 GPAs (PCI device memory, not guest
          * DRAM), so read directly from the shadow buffer.
          */
-        uint64_t off = cmb_offset + (uint64_t)slot * stride;
+        uint64_t off = cmb_offset + ((uint64_t)slot * stride);
         if (off + read_sz > IONIC_BAR4_CMB_SIZE) {
             return false;
         }
@@ -3257,7 +3257,7 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
          * the DMA engine reads them via a GPA, so they will fault (see the
          * IONIC_V1_FLAG_INL branch below).
          */
-        uint64_t cmb_off = q->sq_cmb_buf_offset + (uint64_t)slot * stride;
+        uint64_t cmb_off = q->sq_cmb_buf_offset + ((uint64_t)slot * stride);
         if (!dp->cmb_buf || cmb_off + read_sz > IONIC_BAR4_CMB_SIZE) {
             vfu_log(dp->vfu_ctx, LOG_WARNING,
                     "ionic_datapath: QP %u SQ WQE %u CMB offset %#" PRIx64

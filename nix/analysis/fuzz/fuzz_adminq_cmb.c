@@ -339,7 +339,7 @@ int LLVMFuzzerInitialize(int *argc, char ***argv)
     }
     if (unwritten > 0) {
         fprintf(stderr, "fuzz_adminq_cmb: %d seed(s) not written\n", unwritten);
-        return 1;
+        abort();
     }
     return 0;
 }
