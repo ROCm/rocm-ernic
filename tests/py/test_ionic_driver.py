@@ -429,6 +429,55 @@ def test_send_cmb(suite, fix):
     suite.check_eq(fix.driver.destroy_cq(cq_e), 0, "DESTROY_CQ E")
 
 
+def test_cmb_id_reused(suite, fix):
+    """A QP in guest memory, under the id a QP in the CMB had.
+
+    Its sends must come from its own ring. The old QP's ring in BAR4
+    still holds the SEND it posted, and fetched from there the new QP
+    would send that instead, at the old length.
+    """
+    cq_f = fix.driver.create_cq(5)
+    peer = fix.driver.create_qp(41, ionic.QPT_RC, cq_f, cq_f)
+    hdr = ionic.roce_hdr_v4(ionic.ipv4("192.168.0.1"), ionic.ipv4("192.168.0.2"))
+    fix.driver.connect_qp(peer, 40, hdr)
+
+    for sq_cmb, payload in (
+        (3 * ionic.PAGE_SIZE, b"from the QP whose send ring is in the CMB"),
+        (None, b"from its successor, in guest memory"),
+    ):
+        where = "in the CMB" if sq_cmb is not None else "in guest memory"
+        qp = fix.driver.create_qp(40, ionic.QPT_RC, cq_f, cq_f, sq_cmb=sq_cmb)
+        fix.driver.connect_qp(qp, peer.id, hdr)
+        fix.driver.mr_write(fix.mr_a, VA_A, payload)
+        fix.driver.mr_write(fix.mr_b, VA_B, b"\0" * MR_LEN)
+        fix.driver.post_recv(peer, [ionic.Sge(VA_B, MR_LEN, MR_B)])
+        fix.driver.post_send(
+            qp,
+            ionic.OP_SEND,
+            flags=ionic.WQE_SIGNALLED,
+            sge=[ionic.Sge(VA_A, len(payload), MR_A)],
+        )
+        cqes = [fix.driver.wait_cq(cq_f), fix.driver.wait_cq(cq_f)]
+        recv = [c for c in cqes if c.type == ionic.CQE_TYPE_RECV]
+        suite.check(
+            len(recv) == 1 and not recv[0].error,
+            f"send ring {where}: the peer got a receive completion",
+        )
+        suite.check(
+            len(recv) == 1 and recv[0].status_len == len(payload),
+            f"send ring {where}: the received byte count",
+        )
+        suite.check_eq(
+            fix.driver.mr_read(fix.mr_b, VA_B, len(payload)),
+            payload,
+            f"send ring {where}: the received bytes",
+        )
+        suite.check_eq(fix.driver.destroy_qp(qp), 0, f"DESTROY_QP {where}")
+
+    suite.check_eq(fix.driver.destroy_qp(peer), 0, "DESTROY_QP peer")
+    suite.check_eq(fix.driver.destroy_cq(cq_f), 0, "DESTROY_CQ F")
+
+
 def test_teardown(suite, fix):
     """Every resource comes back."""
     suite.check_eq(fix.driver.destroy_qp(fix.qp_a), 0, "DESTROY_QP A")
@@ -453,6 +502,7 @@ TESTS = (
     ("SEND from an SGE past the end of its region", test_bad_lkey_length),
     ("shared receive queue", test_srq),
     ("SEND between QPs with rings in the CMB", test_send_cmb),
+    ("a QP id reused outside the CMB", test_cmb_id_reused),
     ("teardown", test_teardown),
 )
 

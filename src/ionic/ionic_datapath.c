@@ -650,6 +650,14 @@ int ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
      * never bound to. CREATE_QP's srq field is read after this call. */
     q->has_srq = false;
     q->srq_id = 0;
+    /* Cleared for the same reason: a QP whose rings are in guest memory,
+     * under the id of one whose rings were in the CMB, would fetch its WQEs
+     * from the old QP's ring in BAR4. CREATE_QP places a QP's rings in the
+     * CMB after this call. */
+    q->sq_cmb = false;
+    q->rq_cmb = false;
+    q->sq_cmb_buf_offset = 0;
+    q->rq_cmb_buf_offset = 0;
     memset(q->rdma, 0, sizeof(q->rdma));
     q->valid = true;
 
