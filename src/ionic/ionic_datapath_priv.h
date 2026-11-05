@@ -250,6 +250,14 @@ struct ionic_qp_ring {
     bool has_srq;
     uint32_t srq_id;
 
+    /* CMB (Controller Memory Buffer / express doorbell) rings.  When set,
+     * the ring lives in BAR4 and WQEs are read from dp->cmb_buf rather than
+     * guest DRAM via ernic_dma_read(). */
+    bool sq_cmb;
+    bool rq_cmb;
+    uint64_t sq_cmb_buf_offset; /* byte offset within dp->cmb_buf */
+    uint64_t rq_cmb_buf_offset;
+
     /* This QP's share of ionic_datapath.rdma, zeroed at registration. */
     uint64_t rdma[IONIC_DP_RDMA_COUNT];
 };
@@ -365,6 +373,8 @@ struct ionic_datapath {
     struct ernic_dma *dma;
     struct ionic_eth_emu *eth_emu;
     pvrdma_handle_t pvrdma_handle;
+    /* Shared with ionic_eth_emu::cmb_buf; NULL when CMB is not in use. */
+    uint8_t *cmb_buf;
     /* The server's counters, or NULL */
     struct ernic_stats *stats;
 

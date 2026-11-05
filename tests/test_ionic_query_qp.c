@@ -382,6 +382,17 @@ void ionic_datapath_flush_qp(struct ionic_datapath *dp, uint32_t qp_id)
     (void)dp;
     (void)qp_id;
 }
+void ionic_datapath_set_qp_cmb(struct ionic_datapath *dp, uint32_t qp_id,
+                               bool sq_cmb, uint64_t sq_cmb_offset, bool rq_cmb,
+                               uint64_t rq_cmb_offset)
+{
+    (void)dp;
+    (void)qp_id;
+    (void)sq_cmb;
+    (void)sq_cmb_offset;
+    (void)rq_cmb;
+    (void)rq_cmb_offset;
+}
 
 void ionic_datapath_set_dest(struct ionic_datapath *dp, uint32_t qp_id,
                              uint32_t dest_qp_id, uint32_t dest_node_id)

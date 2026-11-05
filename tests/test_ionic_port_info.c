@@ -142,6 +142,16 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
     (void)qtype;
     (void)doorbell_val;
 }
+void ionic_datapath_set_cmb(struct ionic_datapath *dp, uint8_t *cmb_buf)
+{
+    (void)dp;
+    (void)cmb_buf;
+}
+void ionic_datapath_expdb_write(struct ionic_datapath *dp, uint64_t cmb_offset)
+{
+    (void)dp;
+    (void)cmb_offset;
+}
 
 /* The emulator copies these into the LIF statistics block; this test
  * drives no datapath, so they read as zero. */

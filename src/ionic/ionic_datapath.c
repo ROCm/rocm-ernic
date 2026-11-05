@@ -1877,8 +1877,8 @@ static void dp_src_mac(const struct ionic_datapath *dp, uint32_t src_qp_id,
  */
 static bool dp_ring_take(struct ionic_datapath *dp, uint32_t *cons,
                          uint32_t prod, uint32_t depth, uint8_t stride_log2,
-                         const struct dp_buf *ring_buf, uint64_t *wqe_id,
-                         struct dp_sge_list *dst)
+                         const struct dp_buf *ring_buf, uint64_t cmb_offset,
+                         uint64_t *wqe_id, struct dp_sge_list *dst)
 {
     if (*cons == prod) {
         return false;
@@ -1886,16 +1886,30 @@ static bool dp_ring_take(struct ionic_datapath *dp, uint32_t *cons,
 
     uint32_t stride = 1U << stride_log2;
     uint32_t slot = *cons % depth;
-    uint64_t run;
-    uint64_t gpa = buf_gpa(ring_buf, (uint64_t)slot * stride, &run);
 
     /* Big enough for the largest stride a QP's RQ or an SRQ can have, so
      * the whole WQE is read. */
     uint8_t rwqe[1U << IONIC_WQE_MAX_STRIDE_LOG2];
     uint32_t read_sz = stride < sizeof(rwqe) ? stride : (uint32_t)sizeof(rwqe);
-    if (!run || run < read_sz ||
-        ernic_dma_read(dp->dma, dp->vfu_ctx, gpa, rwqe, read_sz) < 0) {
-        return false;
+
+    if (dp->cmb_buf && cmb_offset != UINT64_MAX) {
+        /*
+         * CMB RQ: WQEs were written by the guest via MOVDIR64B to BAR4.
+         * ernic_dma_read() cannot map BAR4 GPAs (PCI device memory, not guest
+         * DRAM), so read directly from the shadow buffer.
+         */
+        uint64_t off = cmb_offset + (uint64_t)slot * stride;
+        if (off + read_sz > IONIC_BAR4_CMB_SIZE) {
+            return false;
+        }
+        memcpy(rwqe, dp->cmb_buf + off, read_sz);
+    } else {
+        uint64_t run;
+        uint64_t gpa = buf_gpa(ring_buf, (uint64_t)slot * stride, &run);
+        if (!run || run < read_sz ||
+            ernic_dma_read(dp->dma, dp->vfu_ctx, gpa, rwqe, read_sz) < 0) {
+            return false;
+        }
     }
 
     memcpy(wqe_id, rwqe + 0, 8);
@@ -1968,13 +1982,15 @@ int64_t ionic_dp_deliver_recv(struct ionic_datapath *dp,
         /* valid is read only under the lock. The bounds check above is the
          * one thing safe to do outside it, because srq_count never changes
          * after create. */
-        taken = sr->valid &&
-                dp_ring_take(dp, &sr->cons, sr->prod, sr->depth,
-                             sr->stride_log2, &sr->buf, &rq_wqe_id, &dst);
+        taken = sr->valid && dp_ring_take(dp, &sr->cons, sr->prod, sr->depth,
+                                          sr->stride_log2, &sr->buf, UINT64_MAX,
+                                          &rq_wqe_id, &dst);
         qemu_mutex_unlock(&sr->lock);
     } else {
         taken = dp_ring_take(dp, &dq->rq_cons, dq->rq_prod, dq->rq_depth,
-                             dq->rq_stride_log2, &dq->rq_buf, &rq_wqe_id, &dst);
+                             dq->rq_stride_log2, &dq->rq_buf,
+                             dq->rq_cmb ? dq->rq_cmb_buf_offset : UINT64_MAX,
+                             &rq_wqe_id, &dst);
     }
     if (!taken) {
         return -1;
@@ -3221,47 +3237,78 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                            uint32_t qp_id, uint32_t slot)
 {
     uint32_t stride = 1U << q->sq_stride_log2;
-    uint64_t run;
-    uint64_t gpa = buf_gpa(&q->sq_buf, (uint64_t)slot * stride, &run);
 
     /* Big enough for the largest stride an SQ can have, so the whole WQE is
      * read. */
     uint8_t wqe[1U << IONIC_WQE_MAX_STRIDE_LOG2];
     uint32_t read_sz = stride < sizeof(wqe) ? stride : (uint32_t)sizeof(wqe);
-    if (!run || run < read_sz ||
-        ernic_dma_read(dp->dma, dp->vfu_ctx, gpa, wqe, read_sz) < 0) {
+
+    uint64_t gpa = 0;
+
+    if (q->sq_cmb) {
         /*
-         * A WQE the device can't fetch is completed in error, and the QP
-         * goes to Error, as a NIC's does on a fetch fault. Taken as done
-         * without either, the work request vanished: nothing completed it,
-         * and the driver never got its slot back. Retrying it, as the admin
-         * queue does, would wedge the queue on memory the guest may have
-         * unmapped for good.
+         * CMB ring: WQE bytes live in the local cmb_buf shadow, written by
+         * the guest via MOVDIR64B to BAR4.  ernic_dma_read() cannot map
+         * BAR4 GPAs (they are PCI device memory, not guest DRAM), so read
+         * directly from cmb_buf instead.
          *
-         * Its wqe_id is in the WQE, but both drivers set it to the SQ index
-         * the WQE was posted at, and mask it with sq.mask, so the slot names
-         * the same work request. It is an NPG completion whatever the op
-         * was: an MSN one would complete whichever remote op holds the next
-         * MSN, and the driver's ionic_comp_npg() takes an error for a WQE
-         * of either kind. LOCAL_QP_OPER_ERR, IB_WC_LOC_QP_OP_ERR to the
-         * consumer, is IB's error for a work request the QP itself couldn't
-         * process; LOCAL_PROT_ERR is for a buffer an MR doesn't cover, and
-         * the ring isn't one.
-         *
-         * The error goes first: had the driver seen the flush before it, it
-         * could have flushed this work request and lost the cause. For the
-         * same reason both wait for the requests posted before this one to
-         * complete (sq_fault_finish()), and the queue stops here until then.
-         * The flush empties it, so sq_service() has nothing left to run.
+         * gpa remains 0; it is only valid for non-CMB QPs.  Inline CMB
+         * sends are not yet supported: the inline bytes are in wqe[] but
+         * the DMA engine reads them via a GPA, so they will fault (see the
+         * IONIC_V1_FLAG_INL branch below).
          */
-        vfu_log(dp->vfu_ctx, LOG_WARNING,
-                "ionic_datapath: QP %u SQ WQE %u at %#" PRIx64
-                " can't be read; flushing the QP",
-                qp_id, slot, gpa);
-        sq_stall_clear(dp, q);
-        q->sq_fault = true;
-        sq_fault_finish(dp, q, qp_id);
-        return false;
+        uint64_t cmb_off = q->sq_cmb_buf_offset + (uint64_t)slot * stride;
+        if (!dp->cmb_buf || cmb_off + read_sz > IONIC_BAR4_CMB_SIZE) {
+            vfu_log(dp->vfu_ctx, LOG_WARNING,
+                    "ionic_datapath: QP %u SQ WQE %u CMB offset %#" PRIx64
+                    " out of range; flushing the QP",
+                    qp_id, slot, cmb_off);
+            sq_stall_clear(dp, q);
+            q->sq_fault = true;
+            sq_fault_finish(dp, q, qp_id);
+            return false;
+        }
+        memcpy(wqe, dp->cmb_buf + cmb_off, read_sz);
+    } else {
+        uint64_t run;
+        gpa = buf_gpa(&q->sq_buf, (uint64_t)slot * stride, &run);
+
+        if (!run || run < read_sz ||
+            ernic_dma_read(dp->dma, dp->vfu_ctx, gpa, wqe, read_sz) < 0) {
+            /*
+             * A WQE the device can't fetch is completed in error, and the QP
+             * goes to Error, as a NIC's does on a fetch fault. Taken as done
+             * without either, the work request vanished: nothing completed it,
+             * and the driver never got its slot back. Retrying it, as the admin
+             * queue does, would wedge the queue on memory the guest may have
+             * unmapped for good.
+             *
+             * Its wqe_id is in the WQE, but both drivers set it to the SQ index
+             * the WQE was posted at, and mask it with sq.mask, so the slot
+             * names the same work request. It is an NPG completion whatever the
+             * op was: an MSN one would complete whichever remote op holds the
+             * next MSN, and the driver's ionic_comp_npg() takes an error for a
+             * WQE of either kind. LOCAL_QP_OPER_ERR, IB_WC_LOC_QP_OP_ERR to the
+             * consumer, is IB's error for a work request the QP itself couldn't
+             * process; LOCAL_PROT_ERR is for a buffer an MR doesn't cover, and
+             * the ring isn't one.
+             *
+             * The error goes first: had the driver seen the flush before it, it
+             * could have flushed this work request and lost the cause. For the
+             * same reason both wait for the requests posted before this one to
+             * complete (sq_fault_finish()), and the queue stops here until
+             * then. The flush empties it, so sq_service() has nothing left to
+             * run.
+             */
+            vfu_log(dp->vfu_ctx, LOG_WARNING,
+                    "ionic_datapath: QP %u SQ WQE %u at %#" PRIx64
+                    " can't be read; flushing the QP",
+                    qp_id, slot, gpa);
+            sq_stall_clear(dp, q);
+            q->sq_fault = true;
+            sq_fault_finish(dp, q, qp_id);
+            return false;
+        }
     }
 
     uint64_t wqe_id;
@@ -4303,6 +4350,66 @@ static void srq_doorbell(struct ionic_datapath *dp, uint32_t qid,
     if (!posted) {
         vfu_log(dp->vfu_ctx, LOG_WARNING,
                 "ionic_datapath: doorbell for unregistered SRQ %u", qid);
+    }
+}
+
+void ionic_datapath_set_cmb(struct ionic_datapath *dp, uint8_t *cmb_buf)
+{
+    dp->cmb_buf = cmb_buf;
+}
+
+void ionic_datapath_set_qp_cmb(struct ionic_datapath *dp, uint32_t qp_id,
+                               bool sq_cmb, uint64_t sq_cmb_offset, bool rq_cmb,
+                               uint64_t rq_cmb_offset)
+{
+    if (qp_id >= dp->qp_count || !dp->qp[qp_id].valid) {
+        return;
+    }
+    struct ionic_qp_ring *q = &dp->qp[qp_id];
+    q->sq_cmb = sq_cmb;
+    q->sq_cmb_buf_offset = sq_cmb_offset;
+    q->rq_cmb = rq_cmb;
+    q->rq_cmb_buf_offset = rq_cmb_offset;
+}
+
+void ionic_datapath_expdb_write(struct ionic_datapath *dp, uint64_t cmb_offset)
+{
+    for (uint32_t qp_id = 0; qp_id < dp->qp_count; qp_id++) {
+        struct ionic_qp_ring *q = &dp->qp[qp_id];
+        if (!q->valid) {
+            continue;
+        }
+
+        if (q->sq_cmb) {
+            uint32_t stride = 1U << q->sq_stride_log2;
+            uint64_t ring_start = q->sq_cmb_buf_offset;
+            uint64_t ring_size = (uint64_t)q->sq_depth * stride;
+            if (cmb_offset >= ring_start &&
+                cmb_offset - ring_start < ring_size) {
+                uint64_t off_in_ring = cmb_offset - ring_start;
+                /* Trigger is the last 64 bytes of each stride-byte slot. */
+                if (off_in_ring % stride == stride - 64U) {
+                    uint32_t slot = (uint32_t)(off_in_ring / stride);
+                    q->sq_prod = (slot + 1U) % q->sq_depth;
+                    sq_service(dp, q, qp_id);
+                }
+            }
+        }
+
+        if (q->rq_cmb && !q->has_srq) {
+            uint32_t stride = 1U << q->rq_stride_log2;
+            uint64_t ring_start = q->rq_cmb_buf_offset;
+            uint64_t ring_size = (uint64_t)q->rq_depth * stride;
+            if (cmb_offset >= ring_start &&
+                cmb_offset - ring_start < ring_size) {
+                uint64_t off_in_ring = cmb_offset - ring_start;
+                /* Trigger is the last 64 bytes of each stride-byte slot. */
+                if (off_in_ring % stride == stride - 64U) {
+                    uint32_t slot = (uint32_t)(off_in_ring / stride);
+                    q->rq_prod = (slot + 1U) % q->rq_depth;
+                }
+            }
+        }
     }
 }
 

@@ -313,21 +313,16 @@ static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
  * BAR4 (CMB) access callback.
  *
  * The guest writes WQEs directly into the CMB via MOVDIR64B; each aligned
- * 64-byte write is one stride.  Reads are not part of the expdb protocol,
- * but libvfio-user may deliver them; return zeros for reads and log writes
- * at debug level so they are visible under -v without noise in production.
- * Actual WQE dispatch is deferred until the datapath gains a CMB path.
+ * 64-byte write is one stride.  Reads are not part of the expdb protocol
+ * but libvfio-user may deliver them.  Delegate to the eth_emu layer which
+ * holds the shadow buffer and triggers WQE dispatch on completion.
  */
 static ssize_t bar4_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
                            loff_t offset, bool is_write)
 {
-    if (is_write) {
-        vfu_log(vfu_ctx, LOG_DEBUG, "CMB BAR4 write: offset=0x%llx count=%zu",
-                (unsigned long long)(uint64_t)offset, count);
-    } else {
-        memset(buf, 0, count);
-    }
-    return (ssize_t)count;
+    rocm_ernic_dev_t *dev = vfu_get_private(vfu_ctx);
+    struct ionic_eth_emu *emu = ionic_device_eth_emu(dev->ionic);
+    return ionic_eth_emu_bar4_access(emu, buf, count, offset, is_write);
 }
 
 /**

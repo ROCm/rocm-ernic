@@ -343,6 +343,29 @@ void ionic_datapath_set_stats(struct ionic_datapath *dp,
 void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
                              uint64_t doorbell_val);
 
+/**
+ * Set the CMB (Controller Memory Buffer) shadow shared with ionic_eth_emu.
+ * Must be called before any CMB QP can receive a write.  @cmb_buf is
+ * @IONIC_BAR4_CMB_SIZE bytes, owned by the caller.
+ */
+void ionic_datapath_set_cmb(struct ionic_datapath *dp, uint8_t *cmb_buf);
+
+/**
+ * Mark a QP's rings as residing in the CMB and record their byte offsets
+ * within the CMB buffer.  Call after ionic_datapath_register_qp() succeeds.
+ */
+void ionic_datapath_set_qp_cmb(struct ionic_datapath *dp, uint32_t qp_id,
+                               bool sq_cmb, uint64_t sq_cmb_offset, bool rq_cmb,
+                               uint64_t rq_cmb_offset);
+
+/**
+ * Called by ionic_eth_emu_bar4_access() on every 64-byte write into the CMB.
+ * Detects the last write of an EXPDB512 slot and dispatches the WQE.
+ *
+ * @cmb_offset: byte offset within the 8 MB CMB buffer of the write's start
+ */
+void ionic_datapath_expdb_write(struct ionic_datapath *dp, uint64_t cmb_offset);
+
 /*
  * Drain messages that arrived from peer instances and retire work requests
  * whose peer never answered.  Every guest DMA has to happen on the thread

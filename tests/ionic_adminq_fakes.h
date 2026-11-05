@@ -428,6 +428,17 @@ void ionic_datapath_unregister_ah(struct ionic_datapath *dp, uint32_t ah_id)
     (void)dp;
     (void)ah_id;
 }
+void ionic_datapath_set_qp_cmb(struct ionic_datapath *dp, uint32_t qp_id,
+                               bool sq_cmb, uint64_t sq_cmb_offset, bool rq_cmb,
+                               uint64_t rq_cmb_offset)
+{
+    (void)dp;
+    (void)qp_id;
+    (void)sq_cmb;
+    (void)sq_cmb_offset;
+    (void)rq_cmb;
+    (void)rq_cmb_offset;
+}
 
 /*
  * The counter snapshots the handler reads.  Every value is distinct and

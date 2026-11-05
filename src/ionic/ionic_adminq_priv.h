@@ -188,8 +188,10 @@ struct ionic_adminq_ctx {
         uint32_t qpn;
         bool dest_set;
         uint32_t dest_qp_id;
-        bool sq_cmb; /* SQ is in CMB (express doorbell) */
-        bool rq_cmb; /* RQ is in CMB (express doorbell) */
+        bool sq_cmb;            /* SQ is in CMB (express doorbell) */
+        bool rq_cmb;            /* RQ is in CMB (express doorbell) */
+        uint64_t sq_cmb_offset; /* byte offset within cmb_buf */
+        uint64_t rq_cmb_offset;
     } qp_map[MAX_QP_MAP];
 
     /* And for MRs: the driver's mrid vs the backend's handle. Indexed by
@@ -233,6 +235,11 @@ struct ionic_adminq_ctx {
 
     /* Data path that owns the SQ/RQ/CQ rings these commands describe. */
     struct ionic_datapath *dp;
+
+    /* GPA of BAR4 offset 0 as seen by the guest, derived from the first
+     * CMB CREATE_QP (kernel starts allocating from offset 0).  Zero until
+     * the first CMB QP is created. */
+    uint64_t bar4_gpa_base;
 
     /* Injected faults, or NULL; owned by the server. */
     struct ionic_fault_set *faults;

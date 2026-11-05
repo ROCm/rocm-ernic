@@ -424,6 +424,10 @@ struct ionic_eth_emu {
     uint8_t *bar2;
     size_t bar2_size;
 
+    /* CMB buffer: 8 MB shadow of BAR4.  Allocated in ionic_eth_emu_create();
+     * the datapath shares the same pointer via ionic_datapath_set_cmb(). */
+    uint8_t *cmb_buf;
+
     /* True once LIF_INIT has completed. */
     bool lif_initialized;
     uint16_t lif_hw_index;

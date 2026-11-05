@@ -91,6 +91,9 @@ ssize_t ionic_eth_emu_bar0_access(struct ionic_eth_emu *emu, char *buf,
 ssize_t ionic_eth_emu_bar2_access(struct ionic_eth_emu *emu, char *buf,
                                   size_t count, loff_t offset, bool is_write);
 
+ssize_t ionic_eth_emu_bar4_access(struct ionic_eth_emu *emu, char *buf,
+                                  size_t count, loff_t offset, bool is_write);
+
 /* Trigger an MSI-X vector (0 = success, -EINVAL = bad vec, 0 if masked). */
 int ionic_eth_emu_trigger_irq(struct ionic_eth_emu *emu, int vec);
 

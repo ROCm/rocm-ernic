@@ -1359,10 +1359,22 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
     }
 
     if (sq_cmb || rq_cmb) {
-        vfu_log(ctx->vfu_ctx, LOG_WARNING,
-                "ionic_adminq CREATE_QP %u: CMB rings requested (sq_cmb=%d "
-                "rq_cmb=%d); WQE dispatch from CMB not yet implemented",
-                qp_id, (int)sq_cmb, (int)rq_cmb);
+        /*
+         * The kernel CMB allocator starts at BAR4 offset 0.  The first CMB
+         * QP's dma_addr is therefore the GPA of BAR4 offset 0.  Later QPs
+         * offset from it.  bar4_gpa_base stays zero until a CMB QP arrives.
+         */
+        uint64_t sq_dma = sq.buf.dma_addr;
+        uint64_t rq_dma = rq.buf.dma_addr;
+        if (!ctx->bar4_gpa_base) {
+            ctx->bar4_gpa_base = sq_cmb ? sq_dma : rq_dma;
+        }
+        uint64_t sq_cmb_offset = sq_cmb ? sq_dma - ctx->bar4_gpa_base : 0;
+        uint64_t rq_cmb_offset = rq_cmb ? rq_dma - ctx->bar4_gpa_base : 0;
+        entry->sq_cmb_offset = sq_cmb_offset;
+        entry->rq_cmb_offset = rq_cmb_offset;
+        ionic_datapath_set_qp_cmb(ctx->dp, qp_id, sq_cmb, sq_cmb_offset, rq_cmb,
+                                  rq_cmb_offset);
     }
 
     vfu_log(ctx->vfu_ctx, LOG_INFO,

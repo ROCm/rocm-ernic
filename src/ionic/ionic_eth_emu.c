@@ -151,9 +151,11 @@ struct ionic_eth_emu *ionic_eth_emu_create(vfu_ctx_t *vfu_ctx, size_t bar2_size)
     emu->bar2_size = bar2_size;
     memcpy(emu->mac, eth_default_mac, ETH_ADDR_LEN);
     emu->bar2 = calloc(1, bar2_size);
+    emu->cmb_buf = calloc(1, IONIC_BAR4_CMB_SIZE);
     emu->dma = ernic_dma_create();
-    if (!emu->bar2 || !emu->dma) {
+    if (!emu->bar2 || !emu->cmb_buf || !emu->dma) {
         ernic_dma_destroy(emu->dma);
+        free(emu->cmb_buf);
         free(emu->bar2);
         free(emu);
         return NULL;
@@ -203,6 +205,7 @@ void ionic_eth_emu_destroy(struct ionic_eth_emu *emu)
     }
     emu->inbox_tail = NULL;
     ernic_dma_destroy(emu->dma);
+    free(emu->cmb_buf);
     free(emu->bar2);
     free(emu);
 }
@@ -289,6 +292,7 @@ void ionic_eth_emu_register_datapath(struct ionic_eth_emu *emu,
                                      struct ionic_datapath *dp)
 {
     emu->dp = dp;
+    ionic_datapath_set_cmb(dp, emu->cmb_buf);
 }
 
 void ionic_eth_emu_register_tx_filter(struct ionic_eth_emu *emu,
@@ -528,6 +532,36 @@ ssize_t ionic_eth_emu_bar2_access(struct ionic_eth_emu *emu, char *buf,
         }
 
         (void)ring;
+    }
+
+    return (ssize_t)count;
+}
+
+ssize_t ionic_eth_emu_bar4_access(struct ionic_eth_emu *emu, char *buf,
+                                  size_t count, loff_t offset, bool is_write)
+{
+    if (!region_access_ok(offset, count, IONIC_BAR4_CMB_SIZE)) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (!is_write) {
+        memcpy(buf, emu->cmb_buf + offset, count);
+        return (ssize_t)count;
+    }
+
+    memcpy(emu->cmb_buf + offset, buf, count);
+
+    /*
+     * Each MOVDIR64B write is exactly 64 bytes and naturally aligned.
+     * Check whether the write completes a WQE slot and trigger dispatch if
+     * so.  Pass the offset of the last byte written (offset + count - 64 is
+     * the start of the last 64-byte chunk; we pass offset + count - 64 as
+     * the trigger offset for ionic_datapath_expdb_write).
+     */
+    if (emu->dp && count >= 64U && (count % 64U) == 0U) {
+        uint64_t last_chunk = (uint64_t)offset + count - 64U;
+        ionic_datapath_expdb_write(emu->dp, last_chunk);
     }
 
     return (ssize_t)count;
