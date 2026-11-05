@@ -11,10 +11,7 @@
 #ifndef TEST_FMT_H
 #define TEST_FMT_H
 
-#include <stdarg.h>
 #include <stddef.h>
-#include <stdio.h>
-#include <stdlib.h>
 
 #include "ernic_attributes.h"
 
@@ -26,24 +23,16 @@
  * something else. A failure message, which may be cut short, is formatted
  * with snprintf() cast to void.
  *
+ * It's defined in test_fmt.c rather than inline: GCC's
+ * -Wformat-truncation=2 checks an inlined or specialised copy against the
+ * full range of each argument's type, and reports a buffer sized for the
+ * values the test passes.
+ *
  * @param buf where to write the result
  * @param len the size of @p buf
  * @param fmt the printf() format
  */
 ERNIC_PRINTF_FORMAT(3, 4)
-static inline void test_fmt(char *buf, size_t len, const char *fmt, ...)
-{
-    va_list ap;
-    int n;
-
-    va_start(ap, fmt);
-    n = vsnprintf(buf, len, fmt, ap);
-    va_end(ap);
-    if (n < 0 || (size_t)n >= len) {
-        fprintf(stderr, "test_fmt: \"%s\" doesn't fit in %zu bytes\n", fmt,
-                len);
-        abort();
-    }
-}
+void test_fmt(char *buf, size_t len, const char *fmt, ...);
 
 #endif /* TEST_FMT_H */
