@@ -25,7 +25,9 @@
   RXQ (qtype 2) sets the `IONIC_QIDENT_F_EXPDB` feature bit so the guest
   `ionic_rdma` driver may request express-doorbell QPs.  `CREATE_QP` with
   `IONIC_QPF_SQ_CMB` or `IONIC_QPF_RQ_CMB` now fully wires the QP into the
-  CMB path: BAR4 guest writes (MOVDIR64B) are shadowed in a server-side
+  CMB path. Such a ring's address is its offset in BAR4, as the driver
+  gives it, and a ring that does not lie wholly inside the CMB is refused
+  with `ERANGE`. BAR4 guest writes (MOVDIR64B) are shadowed in a server-side
   buffer, the last 64-byte write of each stride-sized slot triggers WQE
   dispatch, and `process_sq_wqe()` reads the WQE from the shadow buffer
   rather than via DMA (BAR4 GPAs are PCI device memory, not guest DRAM, so

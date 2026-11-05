@@ -236,11 +236,6 @@ struct ionic_adminq_ctx {
     /* Data path that owns the SQ/RQ/CQ rings these commands describe. */
     struct ionic_datapath *dp;
 
-    /* GPA of BAR4 offset 0 as seen by the guest, derived from the first
-     * CMB CREATE_QP (kernel starts allocating from offset 0).  Zero until
-     * the first CMB QP is created. */
-    uint64_t bar4_gpa_base;
-
     /* Injected faults, or NULL; owned by the server. */
     struct ionic_fault_set *faults;
 };

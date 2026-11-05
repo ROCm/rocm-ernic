@@ -35,6 +35,7 @@
 #include "ernic_stats.h"
 #include "ionic/ionic_adminq.h"
 #include "ionic/ionic_adminq_priv.h"
+#include "ionic/ionic_bar.h"
 #include "ionic/ionic_datapath.h"
 #include "ionic/ionic_fault.h"
 #include "ionic/ionic_status.h"
@@ -1178,6 +1179,26 @@ static uint8_t handle_destroy_srq_op(struct ionic_adminq_ctx *ctx,
     return IONIC_RC_SUCCESS;
 }
 
+/*
+ * True if a ring CREATE_QP puts in the CMB lies wholly inside it.
+ *
+ * Such a ring is in BAR4, not guest memory, and its dma_addr is its offset
+ * there: the driver passes cmb_pgid << PAGE_SHIFT to ionic_pgtbl_init() as
+ * the only entry of the ring's page table. The data path reads the ring's
+ * WQEs out of the CMB at that offset, so the whole ring, depth times stride,
+ * must fit after it. Written so that no offset can wrap the sum back into
+ * range. The ring's geometry must already have been checked, which bounds
+ * the shift.
+ */
+static bool cmb_ring_ok(const struct ionic_dp_ring_desc *ring)
+{
+    uint64_t span = UINT64_C(1) << (ring->depth_log2 + ring->stride_log2);
+
+    return ring->buf.map_count <= 1 &&
+           ring->buf.dma_addr <= IONIC_BAR4_CMB_SIZE &&
+           span <= IONIC_BAR4_CMB_SIZE - ring->buf.dma_addr;
+}
+
 static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
                                    const uint8_t *body, uint16_t len)
 {
@@ -1303,6 +1324,16 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
                 IONIC_WQE_MIN_STRIDE_LOG2, IONIC_WQE_MAX_STRIDE_LOG2);
         return IONIC_RC_ERANGE;
     }
+    if ((sq_cmb && !cmb_ring_ok(&sq)) || (rq_cmb && !cmb_ring_ok(&rq))) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_QP %u: refusing a CMB ring outside the "
+                "%zu-byte CMB: sq(cmb=%d offset=%#" PRIx64 " map_count=%" PRIu32
+                ") rq(cmb=%d offset=%#" PRIx64 " map_count=%" PRIu32 ")",
+                qp_id, IONIC_BAR4_CMB_SIZE, (int)sq_cmb, sq.buf.dma_addr,
+                sq.buf.map_count, (int)rq_cmb, rq.buf.dma_addr,
+                rq.buf.map_count);
+        return IONIC_RC_ERANGE;
+    }
 
     uint32_t pd_handle;
     int ret = adminq_get_pd(ctx, &pd_handle);
@@ -1359,18 +1390,9 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
     }
 
     if (sq_cmb || rq_cmb) {
-        /*
-         * The kernel CMB allocator starts at BAR4 offset 0.  The first CMB
-         * QP's dma_addr is therefore the GPA of BAR4 offset 0.  Later QPs
-         * offset from it.  bar4_gpa_base stays zero until a CMB QP arrives.
-         */
-        uint64_t sq_dma = sq.buf.dma_addr;
-        uint64_t rq_dma = rq.buf.dma_addr;
-        if (!ctx->bar4_gpa_base) {
-            ctx->bar4_gpa_base = sq_cmb ? sq_dma : rq_dma;
-        }
-        uint64_t sq_cmb_offset = sq_cmb ? sq_dma - ctx->bar4_gpa_base : 0;
-        uint64_t rq_cmb_offset = rq_cmb ? rq_dma - ctx->bar4_gpa_base : 0;
+        /* A CMB ring's dma_addr is its offset in the CMB (cmb_ring_ok()) */
+        uint64_t sq_cmb_offset = sq_cmb ? sq.buf.dma_addr : 0;
+        uint64_t rq_cmb_offset = rq_cmb ? rq.buf.dma_addr : 0;
         entry->sq_cmb_offset = sq_cmb_offset;
         entry->rq_cmb_offset = rq_cmb_offset;
         ionic_datapath_set_qp_cmb(ctx->dp, qp_id, sq_cmb, sq_cmb_offset, rq_cmb,

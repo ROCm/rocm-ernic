@@ -378,6 +378,57 @@ def test_srq(suite, fix):
     suite.check_eq(fix.driver.destroy_srq(srq), 0, "DESTROY_SRQ")
 
 
+def test_send_cmb(suite, fix):
+    """SENDs between QPs whose rings are in the CMB.
+
+    The guest driver puts a QP's rings there once the device offers a
+    CMB, and names each by its offset in BAR4. C's send ring is created
+    first, and D's below it: a ring is where its own offset says, not
+    relative to whichever ring came first.
+    """
+    cq_e = fix.driver.create_cq(4)
+    qp_c = fix.driver.create_qp(30, ionic.QPT_RC, cq_e, cq_e, sq_cmb=ionic.PAGE_SIZE)
+    qp_d = fix.driver.create_qp(
+        31, ionic.QPT_RC, cq_e, cq_e, sq_cmb=0, rq_cmb=2 * ionic.PAGE_SIZE
+    )
+    hdr = ionic.roce_hdr_v4(ionic.ipv4("192.168.0.1"), ionic.ipv4("192.168.0.2"))
+    fix.driver.connect_qp(qp_c, qp_d.id, hdr)
+    fix.driver.connect_qp(qp_d, qp_c.id, hdr)
+
+    for sender, receiver in ((qp_c, qp_d), (qp_d, qp_c)):
+        name = f"QP {sender.id} to QP {receiver.id}"
+        payload = f"from a CMB send ring, {name}".encode()
+        fix.driver.mr_write(fix.mr_a, VA_A, payload)
+        fix.driver.mr_write(fix.mr_b, VA_B, b"\0" * len(payload))
+        fix.driver.post_recv(receiver, [ionic.Sge(VA_B, MR_LEN, MR_B)])
+        fix.driver.post_send(
+            sender,
+            ionic.OP_SEND,
+            flags=ionic.WQE_SIGNALLED,
+            sge=[ionic.Sge(VA_A, len(payload), MR_A)],
+        )
+        cqes = [fix.driver.wait_cq(cq_e), fix.driver.wait_cq(cq_e)]
+        send = [c for c in cqes if c.type == ionic.CQE_TYPE_SEND_MSN]
+        recv = [c for c in cqes if c.type == ionic.CQE_TYPE_RECV]
+        suite.check(
+            len(send) == 1 and not send[0].error,
+            f"{name}: the send completed without error",
+        )
+        suite.check(
+            len(recv) == 1 and recv[0].qid == receiver.id and not recv[0].error,
+            f"{name}: the receiver got a receive completion",
+        )
+        suite.check_eq(
+            fix.driver.mr_read(fix.mr_b, VA_B, len(payload)),
+            payload,
+            f"{name}: the received bytes",
+        )
+
+    suite.check_eq(fix.driver.destroy_qp(qp_c), 0, "DESTROY_QP C")
+    suite.check_eq(fix.driver.destroy_qp(qp_d), 0, "DESTROY_QP D")
+    suite.check_eq(fix.driver.destroy_cq(cq_e), 0, "DESTROY_CQ E")
+
+
 def test_teardown(suite, fix):
     """Every resource comes back."""
     suite.check_eq(fix.driver.destroy_qp(fix.qp_a), 0, "DESTROY_QP A")
@@ -401,6 +452,7 @@ TESTS = (
     ("SEND from an unregistered lkey", test_bad_lkey),
     ("SEND from an SGE past the end of its region", test_bad_lkey_length),
     ("shared receive queue", test_srq),
+    ("SEND between QPs with rings in the CMB", test_send_cmb),
     ("teardown", test_teardown),
 )
 

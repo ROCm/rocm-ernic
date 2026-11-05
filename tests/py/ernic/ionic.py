@@ -26,7 +26,11 @@ import time
 
 from .errors import DeviceError
 from .eth import CMD_Q_INIT, EthQueueMixin
-from .vfu import VFU_PCI_DEV_BAR0_REGION_IDX, VFU_PCI_DEV_BAR2_REGION_IDX
+from .vfu import (
+    VFU_PCI_DEV_BAR0_REGION_IDX,
+    VFU_PCI_DEV_BAR2_REGION_IDX,
+    VFU_PCI_DEV_BAR4_REGION_IDX,
+)
 
 # BAR0 register map (union ionic_dev_regs)
 BAR0_DEVCMD = 0x0800
@@ -192,10 +196,15 @@ DEFAULT_TIMEOUT = 10.0
 
 
 class Ring:
-    """A ring in guest memory, and where the driver is in it."""
+    """A ring, and where the driver is in it.
 
-    def __init__(self, gpa, depth_log2, stride_log2):
+    A ring is in guest memory at @gpa, or, if @cmb, in the CMB on BAR4,
+    and @gpa is its offset there.
+    """
+
+    def __init__(self, gpa, depth_log2, stride_log2, cmb=False):
         self.gpa = gpa
+        self.cmb = cmb
         self.depth_log2 = depth_log2
         self.stride_log2 = stride_log2
         self.prod = 0
@@ -207,7 +216,7 @@ class Ring:
         return 1 << self.depth_log2
 
     def slot(self, index):
-        """The guest physical address of entry @index."""
+        """The address of entry @index, or its offset in the CMB."""
         return self.gpa + ((index % self.depth) << self.stride_log2)
 
     def color(self):
@@ -697,10 +706,23 @@ class IonicDriver(EthQueueMixin):
         return self.admin(ADMIN_DESTROY_CQ, struct.pack("<I", cq.id))[0]
 
     # pylint: disable-next=too-many-arguments,too-many-positional-arguments
-    def create_qp(self, qp_id, qp_type, scq, rcq, srq=None, priv_flags=0):
-        """CREATE_QP. struct ionic_admin_create_qp."""
-        send_ring = self.alloc_ring(QP_DEPTH_LOG2, WQE_STRIDE_LOG2)
-        recv_ring = None if srq else self.alloc_ring(QP_DEPTH_LOG2, WQE_STRIDE_LOG2)
+    def create_qp(
+        self, qp_id, qp_type, scq, rcq, srq=None, *, sq_cmb=None, rq_cmb=None
+    ):
+        """CREATE_QP. struct ionic_admin_create_qp.
+
+        @sq_cmb and @rq_cmb put the send or receive ring in the CMB, at
+        that offset into BAR4, rather than in guest memory. The driver
+        names a CMB ring by that offset (cmb_pgid << PAGE_SHIFT), not by
+        an address.
+        """
+        send_ring = self._qp_ring(sq_cmb)
+        recv_ring = None if srq else self._qp_ring(rq_cmb)
+        priv_flags = 0
+        if sq_cmb is not None:
+            priv_flags |= IONIC_QPF_SQ_CMB
+        if rq_cmb is not None:
+            priv_flags |= IONIC_QPF_RQ_CMB
         body = bytearray(64)
         struct.pack_into(">I", body, 4, priv_flags)
         struct.pack_into("<I", body, 8, scq.id)
@@ -724,6 +746,12 @@ class IonicDriver(EthQueueMixin):
         body[62] = qp_type
         self.admin_ok(ADMIN_CREATE_QP, bytes(body))
         return Qp(qp_id, qp_type, send_ring, recv_ring)
+
+    def _qp_ring(self, cmb_offset):
+        """A send or receive ring, in the CMB at @cmb_offset if not None."""
+        if cmb_offset is None:
+            return self.alloc_ring(QP_DEPTH_LOG2, WQE_STRIDE_LOG2)
+        return Ring(cmb_offset, QP_DEPTH_LOG2, WQE_STRIDE_LOG2, cmb=True)
 
     def destroy_qp(self, qp):
         """DESTROY_QP. Returns the completion status."""
@@ -873,7 +901,7 @@ class IonicDriver(EthQueueMixin):
         inline_data, mr.
         """
         wqe = self._build_send_wqe(qp, op, kwargs)
-        self.mem.write(qp.sq.slot(qp.sq.prod), wqe)
+        self._write_wqe(qp.sq, wqe)
         qp.sq.prod += 1
         self.doorbell(QTYPE_SQ, qp.id, 0, qp.sq.prod % qp.sq.depth)
         return struct.unpack_from("<Q", wqe, 0)[0]
@@ -961,10 +989,19 @@ class IonicDriver(EthQueueMixin):
         struct.pack_into("<Q", wqe, 0, wqe_id)
         wqe[9] = len(sges)
         _put_sges(wqe, sges)
-        self.mem.write(ring.slot(ring.prod), bytes(wqe))
+        self._write_wqe(ring, bytes(wqe))
         ring.prod += 1
         self.doorbell(QTYPE_RQ, qid, 0, ring.prod % ring.depth)
         return wqe_id
+
+    def _write_wqe(self, ring, wqe):
+        """Write @wqe at @ring's producer index, in the CMB if it is there."""
+        if ring.cmb:
+            self.client.write_region(
+                VFU_PCI_DEV_BAR4_REGION_IDX, ring.slot(ring.prod), wqe
+            )
+        else:
+            self.mem.write(ring.slot(ring.prod), wqe)
 
     def poll_cq(self, cq):
         """Take the next completion off @cq, or None if there is none."""

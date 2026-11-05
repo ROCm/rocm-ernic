@@ -452,13 +452,7 @@ def test_cmb(suite, server):
 
         # CREATE_QP with IONIC_QPF_SQ_CMB: must succeed.
         cq = drv.create_cq(cq_id=1)
-        drv.create_qp(
-            qp_id=1,
-            qp_type=ionic.QPT_RC,
-            scq=cq,
-            rcq=cq,
-            priv_flags=ionic.IONIC_QPF_SQ_CMB,
-        )
+        drv.create_qp(qp_id=1, qp_type=ionic.QPT_RC, scq=cq, rcq=cq, sq_cmb=0)
         suite.check(True, "CREATE_QP with SQ_CMB flag succeeded")
     finally:
         client.close()
