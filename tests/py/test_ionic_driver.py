@@ -45,6 +45,9 @@ VA_A = 0x0000_7F00_0000_0100
 VA_B = 0x0000_7F10_0000_0000
 MR_LEN = 3 * ionic.PAGE_SIZE
 
+# A UD receive starts with a GRH, which its byte count includes
+UD_GRH_LEN = 40
+
 
 def send_a_to_b(fix, length):
     """Post a signalled RC SEND of @length bytes from A's region.
@@ -429,6 +432,126 @@ def test_send_cmb(suite, fix):
     suite.check_eq(fix.driver.destroy_cq(cq_e), 0, "DESTROY_CQ E")
 
 
+def test_inline_cmb(suite, fix):
+    """Inline payloads from a send ring in the CMB.
+
+    The payload is in the WQE, which is in BAR4 rather than any guest
+    page, so it has to come from the copy the device read. Taken from
+    the guest address of a ring in guest memory, it came from guest
+    physical address 32, and the peer received the guest's low memory.
+    A RC SEND, a RC WRITE and a UD SEND each take the payload a
+    different way.
+    """
+    hdr = ionic.roce_hdr_v4(ionic.ipv4("192.168.0.1"), ionic.ipv4("192.168.0.2"))
+    cq_g = fix.driver.create_cq(6)
+    rc_c = fix.driver.create_qp(50, ionic.QPT_RC, cq_g, cq_g, sq_cmb=0)
+    rc_d = fix.driver.create_qp(51, ionic.QPT_RC, cq_g, cq_g)
+    fix.driver.connect_qp(rc_c, rc_d.id, hdr)
+    fix.driver.connect_qp(rc_d, rc_c.id, hdr)
+
+    payload = b"inline, from a send ring in the CMB"
+    fix.driver.mr_write(fix.mr_b, VA_B, b"\0" * MR_LEN)
+    fix.driver.post_recv(rc_d, [ionic.Sge(VA_B, MR_LEN, MR_B)])
+    fix.driver.post_send(
+        rc_c,
+        ionic.OP_SEND,
+        flags=ionic.WQE_SIGNALLED | ionic.WQE_INLINE,
+        inline_data=payload,
+    )
+    cqes = [fix.driver.wait_cq(cq_g), fix.driver.wait_cq(cq_g)]
+    suite.check(
+        all(not c.error for c in cqes), "RC SEND: both ends completed without error"
+    )
+    recv = [c for c in cqes if c.type == ionic.CQE_TYPE_RECV]
+    suite.check(
+        len(recv) == 1 and recv[0].status_len == len(payload),
+        "RC SEND: the received byte count",
+    )
+    suite.check_eq(
+        fix.driver.mr_read(fix.mr_b, VA_B, len(payload)),
+        payload,
+        "RC SEND: the received bytes",
+    )
+
+    payload = b"written inline from the CMB"
+    fix.driver.mr_write(fix.mr_b, VA_B, b"\0" * MR_LEN)
+    fix.driver.post_send(
+        rc_c,
+        ionic.OP_RDMA_WRITE,
+        flags=ionic.WQE_SIGNALLED | ionic.WQE_INLINE,
+        remote_va=VA_B,
+        rkey=MR_B,
+        inline_data=payload,
+    )
+    send = fix.driver.wait_cq(cq_g)
+    suite.check(not send.error, "RC WRITE: completed without error")
+    suite.check_eq(
+        fix.driver.mr_read(fix.mr_b, VA_B, len(payload)),
+        payload,
+        "RC WRITE: the bytes at the remote address",
+    )
+
+    # A READ has no payload to send, and would scatter its response into
+    # the copy of the WQE, so one marked inline is refused
+    before = fix.driver.mr_read(fix.mr_b, VA_B, MR_LEN)
+    fix.driver.post_send(
+        rc_c,
+        ionic.OP_RDMA_READ,
+        flags=ionic.WQE_SIGNALLED | ionic.WQE_INLINE,
+        remote_va=VA_B,
+        rkey=MR_B,
+        inline_data=b"\0" * 16,
+    )
+    send = fix.driver.wait_cq(cq_g)
+    suite.check(
+        send.error and send.status == ionic.STS_LOCAL_QP_OPER_ERR,
+        "RC READ marked inline: refused as a local QP operation error",
+    )
+    suite.check_eq(
+        fix.driver.mr_read(fix.mr_b, VA_B, MR_LEN),
+        before,
+        "RC READ marked inline: the remote region is unchanged",
+    )
+
+    ud_c = fix.driver.create_qp(52, ionic.QPT_UD, cq_g, cq_g, sq_cmb=ionic.PAGE_SIZE)
+    ud_d = fix.driver.create_qp(53, ionic.QPT_UD, cq_g, cq_g)
+    for qp in (ud_c, ud_d):
+        for state in (ionic.QPS_INIT, ionic.QPS_RTR, ionic.QPS_RTS):
+            suite.check_eq(
+                fix.driver.modify_qp(qp.id, ionic.QP_STATE, state),
+                0,
+                f"UD QP {qp.id} to state {state}",
+            )
+
+    payload = b"a datagram, inline from the CMB"
+    fix.driver.mr_write(fix.mr_b, VA_B, b"\0" * MR_LEN)
+    fix.driver.post_recv(ud_d, [ionic.Sge(VA_B, MR_LEN, MR_B)])
+    fix.driver.post_send(
+        ud_c,
+        ionic.OP_SEND,
+        flags=ionic.WQE_SIGNALLED | ionic.WQE_INLINE,
+        dest_qpn=ud_d.id,
+        inline_data=payload,
+    )
+    cqes = [fix.driver.wait_cq(cq_g), fix.driver.wait_cq(cq_g)]
+    recv = [c for c in cqes if c.type == ionic.CQE_TYPE_RECV]
+    suite.check(
+        len(recv) == 1
+        and not recv[0].error
+        and recv[0].status_len == UD_GRH_LEN + len(payload),
+        "UD SEND: a receive of the GRH and the payload",
+    )
+    suite.check_eq(
+        fix.driver.mr_read(fix.mr_b, VA_B + UD_GRH_LEN, len(payload)),
+        payload,
+        "UD SEND: the received bytes, after the GRH",
+    )
+
+    for qp in (rc_c, rc_d, ud_c, ud_d):
+        suite.check_eq(fix.driver.destroy_qp(qp), 0, f"DESTROY_QP {qp.id}")
+    suite.check_eq(fix.driver.destroy_cq(cq_g), 0, "DESTROY_CQ G")
+
+
 def test_cmb_id_reused(suite, fix):
     """A QP in guest memory, under the id a QP in the CMB had.
 
@@ -502,6 +625,7 @@ TESTS = (
     ("SEND from an SGE past the end of its region", test_bad_lkey_length),
     ("shared receive queue", test_srq),
     ("SEND between QPs with rings in the CMB", test_send_cmb),
+    ("inline payloads from a send ring in the CMB", test_inline_cmb),
     ("a QP id reused outside the CMB", test_cmb_id_reused),
     ("teardown", test_teardown),
 )

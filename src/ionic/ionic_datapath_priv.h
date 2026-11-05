@@ -320,6 +320,14 @@ struct dp_sge_list {
     uint32_t lkey[ERNIC_MAX_SGE];
     uint32_t count;
     uint32_t total;
+    /*
+     * If not NULL, the list is a source of @total bytes of host memory here,
+     * not guest memory, and count is 0: the inline payload of a WQE read out
+     * of the CMB, which is in no guest page an SGE could name. Only
+     * ionic_dp_gather(), ionic_dp_deliver_recv() and an RDMA WRITE read it;
+     * nothing scatters into one.
+     */
+    const uint8_t *host;
 };
 
 /*

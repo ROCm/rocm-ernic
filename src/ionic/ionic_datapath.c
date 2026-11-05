@@ -1745,6 +1745,7 @@ static enum dp_sgl parse_sges(const uint8_t *wqe, uint32_t wqe_len,
 
     out->count = 0;
     out->total = 0;
+    out->host = NULL;
 
     switch (ernic_get_be16(wqe + WQE_FLAGS_OFF) & IONIC_V1_FLAG_SPEC_MASK) {
     case 0:
@@ -1811,6 +1812,12 @@ uint32_t ionic_dp_gather(struct ionic_datapath *dp, const struct dp_sge_list *l,
                          uint8_t *dst, uint32_t len)
 {
     uint32_t done = 0;
+
+    if (l->host) {
+        done = len < l->total ? len : l->total;
+        memcpy(dst, l->host, done);
+        return done;
+    }
 
     for (uint32_t i = 0; i < l->count && done < len; i++) {
         uint32_t chunk = l->len[i];
@@ -1960,7 +1967,8 @@ static bool dp_ring_take(struct ionic_datapath *dp, uint32_t *cons,
  *
  * @src describes the payload.  For a local send it names guest memory and
  * @src_host is NULL; for one that arrived from a peer instance @src_host
- * points at the received bytes and only @src->total is meaningful.
+ * points at the received bytes and only @src->total is meaningful.  A local
+ * send's payload may be host memory too, @src->host.
  */
 int64_t ionic_dp_deliver_recv(struct ionic_datapath *dp,
                               struct ionic_qp_ring *dq, uint32_t dst_qp_id,
@@ -2006,6 +2014,9 @@ int64_t ionic_dp_deliver_recv(struct ionic_datapath *dp,
 
     uint32_t copied = 0;
 
+    if (!src_host) {
+        src_host = src->host;
+    }
     dp_fault_clear(dp);
 
     if (recv_op == CQE_RECV_OP_RDMA_IMM) {
@@ -2120,6 +2131,15 @@ static uint32_t rdma_xfer(struct ionic_datapath *dp,
                           uint64_t remote_va, uint32_t len, bool to_remote)
 {
     uint32_t done = 0;
+
+    /* Host memory is only ever a WRITE's source: a READ scatters nothing
+     * into it. */
+    if (local->host) {
+        return to_remote ? ionic_dp_host_to_sge(
+                               dp, rkey, remote_va, local->host,
+                               len < local->total ? len : local->total)
+                         : 0;
+    }
 
     for (uint32_t i = 0; i < local->count && done < len; i++) {
         uint32_t chunk = local->len[i];
@@ -2579,6 +2599,7 @@ static enum dp_post remote_post(struct ionic_datapath *dp,
             ernic_get_be32(wqe + WQE_ATOMIC_SGE_OFF + SGE_LKEY_OFF);
         p->local.len[0] = 8;
         p->local.total = 8;
+        p->local.host = NULL;
         p->length = 8;
     }
 
@@ -3114,6 +3135,7 @@ static uint32_t sq_send(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         src_host = udbuf;
         udsrc.count = 0;
         udsrc.total = IB_GRH_SIZE + plen;
+        udsrc.host = NULL;
     }
 
     if (ionic_dp_deliver_recv(dp, dq, dst_id, qp_id, src_host ? &udsrc : src,
@@ -3260,9 +3282,8 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
          * BAR4 GPAs (they are PCI device memory, not guest DRAM), so read
          * directly from cmb_buf instead.
          *
-         * gpa remains 0; it is only valid for non-CMB QPs.  Inline CMB
-         * sends are not yet supported: the inline bytes are in wqe[] but
-         * the DMA engine reads them via a GPA, so they will fault (see the
+         * gpa remains 0, which names no part of this WQE: an inline
+         * payload is taken from the copy in wqe[] (see the
          * IONIC_V1_FLAG_INL branch below).
          */
         uint64_t cmb_off = q->sq_cmb_buf_offset + ((uint64_t)slot * stride);
@@ -3398,9 +3419,11 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
         src.len[0] = 8;
         src.lkey[0] = ernic_get_be32(wqe + WQE_ATOMIC_SGE_OFF + SGE_LKEY_OFF);
         src.total = 8;
+        src.host = NULL;
     } else if (flags & IONIC_V1_FLAG_INL) {
-        /* Inline data lives in the payload area itself; describe it as a
-         * single lkey-0 SGE pointing at the WQE's own guest pages. */
+        /* Inline data lives in the payload area itself. For a ring in guest
+         * memory, describe it as a single lkey-0 SGE pointing at the WQE's
+         * own guest pages. */
         uint32_t inl_len = ernic_get_be32(wqe + WQE_SEND_LEN_OFF);
 
         /*
@@ -3419,11 +3442,35 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
                              IONIC_STS_LOCAL_LEN_ERR);
             return true; /* completed, in error: the WQE is done with */
         }
-        src.count = 1;
-        src.va[0] = gpa + WQE_PLD_OFF;
-        src.len[0] = inl_len;
-        src.lkey[0] = 0;
-        src.total = inl_len;
+        if (!q->sq_cmb) {
+            src.count = 1;
+            src.va[0] = gpa + WQE_PLD_OFF;
+            src.len[0] = inl_len;
+            src.lkey[0] = 0;
+            src.total = inl_len;
+            src.host = NULL;
+        } else if (op == IONIC_V1_OP_SEND || op == IONIC_V1_OP_SEND_INV ||
+                   op == IONIC_V1_OP_SEND_IMM || op == IONIC_V1_OP_RDMA_WRITE ||
+                   op == IONIC_V1_OP_RDMA_WRITE_IMM) {
+            /*
+             * A WQE in the CMB is in BAR4, in no guest page, so its payload
+             * is the copy read into wqe[], which lives until this WQE has
+             * been dispatched. Only a SEND or WRITE has an inline payload
+             * to send, so only they may name host memory: anything else
+             * would scatter into it, or keep it past this call.
+             */
+            src.count = 0;
+            src.total = inl_len;
+            src.host = wqe + WQE_PLD_OFF;
+        } else {
+            vfu_log(dp->vfu_ctx, LOG_WARNING,
+                    "ionic_datapath: QP %u op %u in the CMB is marked inline, "
+                    "which only a SEND or WRITE can be",
+                    qp_id, op);
+            dp_complete_send(dp, q, qp_id, wqe_id, remote,
+                             IONIC_STS_LOCAL_QP_OPER_ERR);
+            return true; /* completed, in error: the WQE is done with */
+        }
     } else {
         /* read_sz, not stride, for the reason given in dp_ring_take(). */
         enum dp_sgl sgl =
