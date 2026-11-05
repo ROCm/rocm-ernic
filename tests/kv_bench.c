@@ -203,7 +203,7 @@ static int sweep_one(int fd, uint32_t nsid, const uint8_t *key, uint32_t len,
      * every other lane in this repo report. */
     printf("%u %.6f %.6f %.3f %.3f\n", len, bytes / store_s / 1e9,
            bytes / retr_s / 1e9, store_s / iters * 1e6, retr_s / iters * 1e6);
-    fflush(stdout);
+    (void)fflush(stdout);
     rc = 0;
 
 out:

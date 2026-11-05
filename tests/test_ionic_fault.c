@@ -27,6 +27,7 @@
 
 #include "ionic/ionic_fault.h"
 #include "ionic/ionic_status.h"
+#include "test_fmt.h"
 
 static int failures;
 
@@ -483,7 +484,7 @@ static bool check_fires(const struct fault_case *c, char *why, size_t len)
     uint64_t want_eligible;
 
     if (ionic_fault_parse(c->spec, &f, err, sizeof(err)) != 0) {
-        snprintf(why, len, "spec rejected: %s", err);
+        (void)snprintf(why, len, "spec rejected: %s", err);
         return false;
     }
     f.eligible = c->start;
@@ -499,19 +500,19 @@ static bool check_fires(const struct fault_case *c, char *why, size_t len)
         bool got = ionic_fault_event(&f);
 
         if (got != want) {
-            snprintf(why, len,
-                     "event %zu (index %" PRIu64 "): fired %d, want %d", i + 1,
-                     k, (int)got, (int)want);
+            (void)snprintf(why, len,
+                           "event %zu (index %" PRIu64 "): fired %d, want %d",
+                           i + 1, k, (int)got, (int)want);
             ionic_fault_clear(&f);
             return false;
         }
     }
     want_eligible = UINT64_MAX - c->start < n ? UINT64_MAX : c->start + n;
     if (f.fired != c->want_fired || f.eligible != want_eligible) {
-        snprintf(why, len,
-                 "fired %" PRIu64 " (want %" PRIu64 "), eligible %" PRIu64
-                 " (want %" PRIu64 ")",
-                 f.fired, c->want_fired, f.eligible, want_eligible);
+        (void)snprintf(why, len,
+                       "fired %" PRIu64 " (want %" PRIu64 "), eligible %" PRIu64
+                       " (want %" PRIu64 ")",
+                       f.fired, c->want_fired, f.eligible, want_eligible);
         ionic_fault_clear(&f);
         return false;
     }
@@ -526,7 +527,7 @@ static bool check_fields(const struct fault_case *c, char *why, size_t len)
     bool ok;
 
     if (ionic_fault_parse(c->spec, &f, err, sizeof(err)) != 0) {
-        snprintf(why, len, "spec rejected: %s", err);
+        (void)snprintf(why, len, "spec rejected: %s", err);
         return false;
     }
     ok = f.site == c->site && f.kind == c->kind && f.n == c->n && f.m == c->m &&
@@ -534,11 +535,11 @@ static bool check_fields(const struct fault_case *c, char *why, size_t len)
          f.status == c->status && f.eligible == 0 && f.fired == 0 &&
          (c->seq_len == 0) == (f.seq == NULL);
     if (!ok) {
-        snprintf(why, len,
-                 "site %d effect %d kind %d n %" PRIu64 " m %" PRIu64
-                 " seq_len %" PRIu32 " status %u",
-                 (int)f.site, (int)f.effect, (int)f.kind, f.n, f.m, f.seq_len,
-                 (unsigned int)f.status);
+        (void)snprintf(why, len,
+                       "site %d effect %d kind %d n %" PRIu64 " m %" PRIu64
+                       " seq_len %" PRIu32 " status %u",
+                       (int)f.site, (int)f.effect, (int)f.kind, f.n, f.m,
+                       f.seq_len, (unsigned int)f.status);
     }
     ionic_fault_clear(&f);
     return ok;
@@ -550,17 +551,17 @@ static bool check_error(const struct fault_case *c, char *why, size_t len)
     char err[256] = "";
 
     if (ionic_fault_parse(c->spec, &f, err, sizeof(err)) == 0) {
-        snprintf(why, len, "accepted");
+        (void)snprintf(why, len, "accepted");
         ionic_fault_clear(&f);
         return false;
     }
     /* A rejected parse owns nothing. */
     if (f.seq != NULL || f.seq_len != 0) {
-        snprintf(why, len, "rejected parse left a sequence behind");
+        (void)snprintf(why, len, "rejected parse left a sequence behind");
         return false;
     }
     if (!strstr(err, c->want_err)) {
-        snprintf(why, len, "message '%s'", err);
+        (void)snprintf(why, len, "message '%s'", err);
         return false;
     }
     return true;
@@ -576,28 +577,28 @@ static bool check_roundtrip(const struct fault_case *c, char *why, size_t len)
     bool ok;
 
     if (ionic_fault_parse(c->spec, &a, err, sizeof(err)) != 0) {
-        snprintf(why, len, "spec rejected: %s", err);
+        (void)snprintf(why, len, "spec rejected: %s", err);
         return false;
     }
     n = ionic_fault_format(&a, text, sizeof(text));
     if (n < 0 || (size_t)n >= sizeof(text)) {
-        snprintf(why, len, "format returned %d", n);
+        (void)snprintf(why, len, "format returned %d", n);
         ionic_fault_clear(&a);
         return false;
     }
     if (c->want_text && strcmp(text, c->want_text) != 0) {
-        snprintf(why, len, "canonical '%.160s'", text);
+        (void)snprintf(why, len, "canonical '%.160s'", text);
         ionic_fault_clear(&a);
         return false;
     }
     if (ionic_fault_parse(text, &b, err, sizeof(err)) != 0) {
-        snprintf(why, len, "canonical form rejected: %s", err);
+        (void)snprintf(why, len, "canonical form rejected: %s", err);
         ionic_fault_clear(&a);
         return false;
     }
     ok = same_fault(&a, &b);
     if (!ok) {
-        snprintf(why, len, "re-parsed fault differs");
+        (void)snprintf(why, len, "re-parsed fault differs");
     }
     ionic_fault_clear(&a);
     ionic_fault_clear(&b);
@@ -619,7 +620,7 @@ static bool check_no_fault(char *why, size_t len)
         }
     }
     if (!ok) {
-        snprintf(why, len, "an empty or NULL set produced a fault");
+        (void)snprintf(why, len, "an empty or NULL set produced a fault");
     }
     ionic_fault_set_free(set);
     ionic_fault_set_free(NULL);
@@ -633,15 +634,15 @@ static bool check_duplicate(const struct fault_case *c, char *why, size_t len)
     bool ok = false;
 
     if (!set) {
-        snprintf(why, len, "no set");
+        (void)snprintf(why, len, "no set");
         return false;
     }
     if (ionic_fault_set_add(set, c->spec, err, sizeof(err)) != 0) {
-        snprintf(why, len, "first add rejected: %s", err);
+        (void)snprintf(why, len, "first add rejected: %s", err);
     } else if (ionic_fault_set_add(set, c->spec, err, sizeof(err)) == 0) {
-        snprintf(why, len, "second add accepted");
+        (void)snprintf(why, len, "second add accepted");
     } else if (!strstr(err, c->want_err)) {
-        snprintf(why, len, "message '%s'", err);
+        (void)snprintf(why, len, "message '%s'", err);
     } else {
         /* The first fault is still the one installed. */
         ok = ionic_fault_set_get(set, c->site) != NULL;
@@ -661,7 +662,7 @@ static bool check_truncate(const struct fault_case *c, char *why, size_t len)
     bool ok;
 
     if (ionic_fault_parse(c->spec, &f, err, sizeof(err)) != 0) {
-        snprintf(why, len, "spec rejected: %s", err);
+        (void)snprintf(why, len, "spec rejected: %s", err);
         return false;
     }
     want = ionic_fault_format(&f, full, sizeof(full));
@@ -675,7 +676,7 @@ static bool check_truncate(const struct fault_case *c, char *why, size_t len)
              small[c->buf_len] == 'Z';
     }
     if (!ok) {
-        snprintf(why, len, "returned %d (want %d)", got, want);
+        (void)snprintf(why, len, "returned %d (want %d)", got, want);
     }
     ionic_fault_clear(&f);
     return ok;
@@ -702,17 +703,17 @@ static bool check_statuses(char *why, size_t len)
         char text[128];
         char err[128] = "";
 
-        snprintf(spec, sizeof(spec), SITE "every 1 effect fail status %s",
+        test_fmt(spec, sizeof(spec), SITE "every 1 effect fail status %s",
                  names[i].name);
         if (ionic_fault_parse(spec, &f, err, sizeof(err)) != 0) {
-            snprintf(why, len, "'%s' rejected: %s", names[i].name, err);
+            (void)snprintf(why, len, "'%s' rejected: %s", names[i].name, err);
             return false;
         }
         if (f.status != names[i].code ||
             ionic_fault_format(&f, text, sizeof(text)) < 0 ||
             strcmp(text, spec) != 0) {
-            snprintf(why, len, "'%s': status %u, canonical '%s'", names[i].name,
-                     (unsigned int)f.status, text);
+            (void)snprintf(why, len, "'%s': status %u, canonical '%s'",
+                           names[i].name, (unsigned int)f.status, text);
             ionic_fault_clear(&f);
             return false;
         }
@@ -741,13 +742,13 @@ static bool check_sites(char *why, size_t len)
         const struct ionic_fault *f;
 
         if (ionic_fault_set_add(set, specs[i], err, sizeof(err)) != 0) {
-            snprintf(why, len, "'%s' rejected: %s", specs[i], err);
+            (void)snprintf(why, len, "'%s' rejected: %s", specs[i], err);
             ok = false;
             break;
         }
         f = ionic_fault_set_get(set, want[i]);
         if (!f || f->site != want[i]) {
-            snprintf(why, len, "'%s' not at its site", specs[i]);
+            (void)snprintf(why, len, "'%s' not at its site", specs[i]);
             ok = false;
         }
     }
@@ -758,12 +759,13 @@ static bool check_sites(char *why, size_t len)
             ionic_fault_set_get(set, IONIC_FAULT_SITE_STATS_VALS)->eligible !=
                 0 ||
             ionic_fault_set_get(set, IONIC_FAULT_SITE_ETH_RX)->eligible != 1) {
-            snprintf(why, len, "an eth_rx event was counted at another site");
+            (void)snprintf(why, len,
+                           "an eth_rx event was counted at another site");
             ok = false;
         }
     }
     if (set == NULL) {
-        snprintf(why, len, "no set");
+        (void)snprintf(why, len, "no set");
     }
     ionic_fault_set_free(set);
     return ok;
@@ -803,7 +805,7 @@ static void run_case(const struct fault_case *c)
         ok = check_sites(why, sizeof(why));
         break;
     default:
-        snprintf(why, sizeof(why), "unknown check");
+        (void)snprintf(why, sizeof(why), "unknown check");
         break;
     }
 

@@ -35,6 +35,8 @@
 #include "pvrdma/rdma_utils.h"
 #include "rdma/rdma_backend_ops.h"
 
+#define QKEY_DEST_QPN_QKEY_SHIFT 24
+
 _Static_assert(sizeof(union ibv_gid) == ERNIC_GID_LEN,
                "a raw GID must fill exactly one union ibv_gid");
 
@@ -373,9 +375,10 @@ int ernic_rm_modify_qp(pvrdma_handle_t handle, uint32_t qpn,
         memset(&dgid, 0, sizeof(dgid));
     }
 
-    /* dest QPN sits in the lower 24 bits of qkey_dest_qpn when sending UD. */
+    /* dest QPN sits in the lower 24 bits of qkey_dest_qpn when sending UD,
+     * and the top byte is taken for the qkey. */
     uint32_t dqpn = attr->qkey_dest_qpn & 0x00ffffffU;
-    uint32_t qkey = attr->qkey_dest_qpn >> 24;
+    uint32_t qkey = attr->qkey_dest_qpn >> QKEY_DEST_QPN_QKEY_SHIFT;
 
     return rdma_rm_modify_qp(&pvrdma->rdma_dev_res, &pvrdma->backend_dev, qpn,
                              attr->attr_mask, 0, /* sgid_idx: use default GID */

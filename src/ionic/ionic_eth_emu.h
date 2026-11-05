@@ -16,6 +16,8 @@
 
 #include <vfio-user/libvfio-user.h>
 
+#include "net/net_headers.h"
+
 /* Opaque emulator state. */
 struct ionic_eth_emu;
 struct ernic_stats;
@@ -118,7 +120,8 @@ void ionic_eth_emu_register_adminq(struct ionic_eth_emu *emu,
  * together must not share one, so the launcher derives it from the instance
  * id; without this every guest on the bridge answers to the same address.
  */
-void ionic_eth_emu_set_mac(struct ionic_eth_emu *emu, const uint8_t mac[6]);
+void ionic_eth_emu_set_mac(struct ionic_eth_emu *emu,
+                           const uint8_t mac[ETH_ADDR_LEN]);
 
 /*
  * Attach the emulated LIF to a host TAP interface, giving the guest a real

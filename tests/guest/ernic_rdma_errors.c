@@ -154,13 +154,13 @@ static int read_counters(const char *device, struct counters *c)
         if (!f || !fgets(text, sizeof(text), f)) {
             fprintf(stderr, "%s: unreadable\n", path);
             if (f) {
-                fclose(f);
+                (void)fclose(f);
             }
             closedir(dir);
             return -1;
         }
         complete = fgetc(f) == EOF && !ferror(f);
-        fclose(f);
+        (void)fclose(f);
         if (!complete || !parse_counter_value(text, &v)) {
             fprintf(stderr, "%s: not a number: %s", path, text);
             closedir(dir);
@@ -496,11 +496,12 @@ static int expect_status(struct pair *p, const struct ibv_qp *qp,
     struct ibv_wc wc;
 
     if (wait_wc(p, qp, &wc) != 0) {
-        snprintf(got, got_len, "no completion on QP %u", qp->qp_num);
+        (void)snprintf(got, got_len, "no completion on QP %u", qp->qp_num);
         return -1;
     }
     if (wc.status != want) {
-        snprintf(got, got_len, "completion %s", ibv_wc_status_str(wc.status));
+        (void)snprintf(got, got_len, "completion %s",
+                       ibv_wc_status_str(wc.status));
         return -1;
     }
     return 0;
@@ -571,7 +572,7 @@ static int run_atomic_bad_rkey(const struct env *env, struct pair *p, char *got,
                                size_t got_len)
 {
     if (!env->atomics) {
-        snprintf(got, got_len, "device has no atomics");
+        (void)snprintf(got, got_len, "device has no atomics");
         return 1;
     }
     if (post_send(p, IBV_WR_ATOMIC_FETCH_AND_ADD, 8, p->req_mr->lkey,

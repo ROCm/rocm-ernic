@@ -27,6 +27,7 @@
 
 #include "ernic_attributes.h"
 #include "s3/s3_token.h"
+#include "test_fmt.h"
 
 static int failures;
 
@@ -192,7 +193,7 @@ static void test_parse_header_three_field(void)
     struct s3_token t;
     char hdr[S3_TOKEN_HEX_LEN + 64];
 
-    snprintf(hdr, sizeof(hdr), "%s:7f2000000000:40000", REF_HEX);
+    test_fmt(hdr, sizeof(hdr), "%s:7f2000000000:40000", REF_HEX);
     if (!s3_token_parse_header(hdr, &t)) {
         fail(name, "rejected a well-formed three-field header");
         return;
@@ -208,7 +209,7 @@ static void test_parse_header_three_field(void)
     }
 
     /* Zero in either field means "keep what the token said". */
-    snprintf(hdr, sizeof(hdr), "%s:0:0", REF_HEX);
+    test_fmt(hdr, sizeof(hdr), "%s:0:0", REF_HEX);
     if (!s3_token_parse_header(hdr, &t)) {
         fail(name, "rejected zero overrides");
         return;
@@ -232,17 +233,17 @@ static void test_parse_header_bare_and_bad(void)
     }
 
     /* One colon is a truncated three-field form, not a bare token. */
-    snprintf(hdr, sizeof(hdr), "%s:7f2000000000", REF_HEX);
+    test_fmt(hdr, sizeof(hdr), "%s:7f2000000000", REF_HEX);
     if (s3_token_parse_header(hdr, &t)) {
         fail(name, "accepted a header missing its length field");
     }
 
-    snprintf(hdr, sizeof(hdr), "%s:zz:40000", REF_HEX);
+    test_fmt(hdr, sizeof(hdr), "%s:zz:40000", REF_HEX);
     if (s3_token_parse_header(hdr, &t)) {
         fail(name, "accepted a non-hex address override");
     }
 
-    snprintf(hdr, sizeof(hdr), "deadbeef:1000:40000");
+    test_fmt(hdr, sizeof(hdr), "deadbeef:1000:40000");
     if (s3_token_parse_header(hdr, &t)) {
         fail(name, "accepted a short token in the three-field form");
     }
@@ -252,34 +253,34 @@ static void test_parse_header_bare_and_bad(void)
     }
 
     /* A token of the right length that isn't hex. */
-    snprintf(hdr, sizeof(hdr), "%.*sg:1000:40000", (int)(S3_TOKEN_HEX_LEN - 1),
+    test_fmt(hdr, sizeof(hdr), "%.*sg:1000:40000", (int)(S3_TOKEN_HEX_LEN - 1),
              REF_HEX);
     if (s3_token_parse_header(hdr, &t)) {
         fail(name, "accepted a non-hex token in the three-field form");
     }
 
-    snprintf(hdr, sizeof(hdr), "%s::40000", REF_HEX);
+    test_fmt(hdr, sizeof(hdr), "%s::40000", REF_HEX);
     if (s3_token_parse_header(hdr, &t)) {
         fail(name, "accepted an empty address override");
     }
 
-    snprintf(hdr, sizeof(hdr), "%s:1000:", REF_HEX);
+    test_fmt(hdr, sizeof(hdr), "%s:1000:", REF_HEX);
     if (s3_token_parse_header(hdr, &t)) {
         fail(name, "accepted an empty length override");
     }
 
-    snprintf(hdr, sizeof(hdr), "%s:1000:4z", REF_HEX);
+    test_fmt(hdr, sizeof(hdr), "%s:1000:4z", REF_HEX);
     if (s3_token_parse_header(hdr, &t)) {
         fail(name, "accepted a non-hex length override");
     }
 
     /* 64 bits is 16 hex digits; a 17th would be lost off the top. */
-    snprintf(hdr, sizeof(hdr), "%s:10000000000000000:40000", REF_HEX);
+    test_fmt(hdr, sizeof(hdr), "%s:10000000000000000:40000", REF_HEX);
     if (s3_token_parse_header(hdr, &t)) {
         fail(name, "accepted a 17-digit address override");
     }
 
-    snprintf(hdr, sizeof(hdr), "%s:ffffffffffffffff:FFFFFFFFFFFFFFFF", REF_HEX);
+    test_fmt(hdr, sizeof(hdr), "%s:ffffffffffffffff:FFFFFFFFFFFFFFFF", REF_HEX);
     if (!s3_token_parse_header(hdr, &t)) {
         fail(name, "rejected 16-digit overrides");
     } else if (t.remote_addr != UINT64_MAX || t.length != UINT64_MAX) {
@@ -409,29 +410,29 @@ static void test_reply_peer_rejects(void)
         fail(name, "accepted a reply of only CR LF");
     }
 
-    snprintf(reply, sizeof(reply), ":%s", hex);
+    test_fmt(reply, sizeof(reply), ":%s", hex);
     if (s3_reply_parse_peer(reply, strlen(reply), &back, &code)) {
         fail(name, "accepted a token with no code");
     }
 
-    snprintf(reply, sizeof(reply), "2x:%s", hex);
+    test_fmt(reply, sizeof(reply), "2x:%s", hex);
     if (s3_reply_parse_peer(reply, strlen(reply), &back, &code)) {
         fail(name, "accepted a code that isn't a number");
     }
 
-    snprintf(reply, sizeof(reply), "200:%.*s", (int)(S3_TOKEN_HEX_LEN - 1),
+    test_fmt(reply, sizeof(reply), "200:%.*s", (int)(S3_TOKEN_HEX_LEN - 1),
              hex);
     if (s3_reply_parse_peer(reply, strlen(reply), &back, &code)) {
         fail(name, "accepted a token one character short");
     }
 
-    snprintf(reply, sizeof(reply), "200:%s0", hex);
+    test_fmt(reply, sizeof(reply), "200:%s0", hex);
     if (s3_reply_parse_peer(reply, strlen(reply), &back, &code)) {
         fail(name, "accepted a token one character long");
     }
 
     hex[0] = 'x';
-    snprintf(reply, sizeof(reply), "200:%s", hex);
+    test_fmt(reply, sizeof(reply), "200:%s", hex);
     if (s3_reply_parse_peer(reply, strlen(reply), &back, &code)) {
         fail(name, "accepted a token that isn't hex");
     }
@@ -508,7 +509,7 @@ static void test_reply_format_codes(void)
             continue;
         }
         /* Comparing the NUL too means @buf is a string once this passes. */
-        snprintf(want, sizeof(want), "%d:%s", cases[i].want, hex);
+        test_fmt(want, sizeof(want), "%d:%s", cases[i].want, hex);
         if (memcmp(buf, want, strlen(want) + 1) != 0) {
             fail(name, "code %d: formatted\n  %.*s\nwant\n  %s", in,
                  (int)S3_REPLY_MAX, buf, want);

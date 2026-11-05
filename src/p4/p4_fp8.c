@@ -21,6 +21,10 @@
 #define FP8_EXP_SHIFT 3
 #define FP8_BIAS      7
 #define FP8_EXP_MAX   15
+/* A subnormal is man * 2^-9: 2^(1 - bias), then the mantissa's 3 bits */
+#define FP8_SUBNORMAL_SHIFT (FP8_BIAS - 1 + FP8_EXP_SHIFT)
+/* The top exponent field's largest mantissa; seven is NaN */
+#define FP8_TOP_MAN_MAX 6U
 
 #define F32_SIGN_MASK 0x80000000U
 #define F32_ABS_MASK  0x7FFFFFFFU
@@ -123,7 +127,9 @@ float p4_fp8_to_float(uint8_t v)
             msb = 0U;
         }
         return bits_float(
-            sign | ((uint32_t)((int32_t)msb - 9 + F32_BIAS) << F32_EXP_SHIFT) |
+            sign |
+            ((uint32_t)((int32_t)msb - FP8_SUBNORMAL_SHIFT + F32_BIAS)
+             << F32_EXP_SHIFT) |
             ((man << (F32_EXP_SHIFT - msb)) & F32_MAN_MASK));
     }
 
@@ -181,7 +187,8 @@ uint8_t p4_fp8_from_float(float v)
     }
 
     /* The top exponent field stops at a mantissa of six: seven is NaN. */
-    if (field > FP8_EXP_MAX || (field == FP8_EXP_MAX && q > 14U)) {
+    if (field > FP8_EXP_MAX ||
+        (field == FP8_EXP_MAX && q > 8U + FP8_TOP_MAN_MAX)) {
         return (uint8_t)(sign | P4_FP8_MAX);
     }
 

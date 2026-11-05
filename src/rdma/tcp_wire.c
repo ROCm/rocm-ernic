@@ -16,6 +16,7 @@
 
 #include "rdma/rdma_backend_tcp_priv.h"
 #include "byteorder.h"
+#include "ernic_gid.h"
 #include "ernic_time.h"
 #include "parse_int.h"
 #include "pvrdma/rdma_utils.h"
@@ -42,6 +43,9 @@ _Static_assert(EWOULDBLOCK == EAGAIN, "EWOULDBLOCK must equal EAGAIN");
 
 /* Tunable default -- overridable via ERNIC_TCP_LISTEN_BACKLOG */
 #define TCP_DEFAULT_LISTEN_BACKLOG 32
+
+/* How long a send or receive that would block waits before trying again */
+#define TCP_WIRE_RETRY_MS 5
 
 /*
  * Size the socket buffers.  Doing nothing is the fast default: Linux autotunes
@@ -218,7 +222,8 @@ int tcp_connect_to_remote(const char *host, uint16_t port,
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
 
-    snprintf(port_str, sizeof(port_str), "%u", port);
+    /* A uint16_t has at most 5 digits. */
+    (void)snprintf(port_str, sizeof(port_str), "%u", port);
 
     int rc = getaddrinfo(host, port_str, &hints, &res);
     if (rc != 0) {
@@ -384,8 +389,8 @@ bool tcp_format_peer_addr(const struct sockaddr_storage *ss, char *host,
 
         in_addr = &sin6->sin6_addr;
         if (IN6_IS_ADDR_V4MAPPED(&sin6->sin6_addr)) {
-            /* The IPv4 address is the last 4 bytes */
-            in_addr = &sin6->sin6_addr.s6_addr[12];
+            /* Where an IPv4-mapped GID keeps it, too */
+            in_addr = &sin6->sin6_addr.s6_addr[ERNIC_GID_V4_OFF];
             family = AF_INET;
         }
         *port = ntohs(sin6->sin6_port);
@@ -584,7 +589,7 @@ int tcp_send_message2(const TcpBackendPrivate *priv, TcpConnection *conn,
                                   conn->node_id, timeout_ms);
                 goto broken;
             }
-            poll(&pfd, 1, 5);
+            poll(&pfd, 1, TCP_WIRE_RETRY_MS);
             continue;
         }
         if (ret < 0) {
@@ -638,7 +643,7 @@ static int tcp_recv_rest(int sockfd, void *buf, size_t len, size_t got,
         if (ret < 0) {
             if (errno == EAGAIN) {
                 struct pollfd pfd = {.fd = sockfd, .events = POLLIN};
-                poll(&pfd, 1, 5);
+                poll(&pfd, 1, TCP_WIRE_RETRY_MS);
                 continue;
             }
             rdma_error_report("TCP: Failed to receive %s: %s", what,

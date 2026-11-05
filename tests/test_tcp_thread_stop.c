@@ -185,6 +185,7 @@
 #include "rdma/rdma_backend_ops.h"
 #include "rdma/rdma_backend_tcp_priv.h"
 #include "rocm-ernic-warnings.h"
+#include "test_fmt.h"
 
 /* ---- Stubs ------------------------------------------------------------- */
 
@@ -1250,7 +1251,7 @@ static bool send_register_from(int fd, const char *hostname, uint16_t port,
     uint8_t host[TCP_HOSTNAME_LEN];
 
     memset(host, 0, sizeof(host));
-    snprintf((char *)host, sizeof(host), "%s", hostname);
+    test_fmt((char *)host, sizeof(host), "%s", hostname);
     return send_register_field(fd, host, port, requested);
 }
 
@@ -1380,7 +1381,7 @@ static int run_fini_case(const struct fini_case *c)
     atomic_store(&g_joins, 0);
     atomic_store(&g_exits, 0);
     memset(&dev, 0, sizeof(dev));
-    snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
+    test_fmt(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
 
     g_current_row = c->description;
     alarm(row_timeout_s());
@@ -1580,7 +1581,7 @@ static int run_create_case(const struct create_case *c)
     atomic_store(&g_joins, 0);
     atomic_store(&g_exits, 0);
     memset(&dev, 0, sizeof(dev));
-    snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
+    test_fmt(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
 
     g_current_row = c->description;
     alarm(row_timeout_s());
@@ -2288,7 +2289,7 @@ static int run_silent_case(const struct sl_case *c)
                atomic_load(&g_creates), atomic_load(&g_joins),
                atomic_load(&g_exits));
     }
-    fflush(stdout);
+    (void)fflush(stdout);
 
     if (lfd >= 0) {
         close(lfd);
@@ -2588,7 +2589,7 @@ static int run_reg_case(const struct reg_case *c)
 
     atomic_store(&g_exits, 0);
     memset(&dev, 0, sizeof(dev));
-    snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
+    test_fmt(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
 
     g_current_row = c->description;
     alarm(row_timeout_s());
@@ -2649,7 +2650,7 @@ static int run_reg_case(const struct reg_case *c)
                entries == 1 ? "y" : "ies", table, pending, nodes, answers);
     }
     /* A connection in the table twice is freed twice, and ASan aborts */
-    fflush(stdout);
+    (void)fflush(stdout);
 
     rdma_backend_ops_tcp.fini(&dev);
     alarm(0);
@@ -3012,7 +3013,7 @@ static void tp_entry(struct tp_topology *topo, uint32_t id, uint16_t port,
     uint8_t *entry = topo->bytes + TCP_TOPOLOGY_NODE_OFF(n);
 
     ernic_put_be32(entry + TCP_MESH_NODE_ID_OFF, id);
-    snprintf((char *)entry + TCP_MESH_NODE_HOSTNAME_OFF, TCP_HOSTNAME_LEN,
+    test_fmt((char *)entry + TCP_MESH_NODE_HOSTNAME_OFF, TCP_HOSTNAME_LEN,
              "127.0.0.1");
     ernic_put_be16(entry + TCP_MESH_NODE_PORT_OFF, port);
     entry[TCP_MESH_NODE_ALIVE_OFF] = alive ? 1 : 0;
@@ -3068,7 +3069,7 @@ static TcpPeerTarget tp_target(uint32_t id, uint16_t port)
 
     memset(&target, 0, sizeof(target));
     target.node_id = id;
-    snprintf(target.host, sizeof(target.host), "127.0.0.1");
+    test_fmt(target.host, sizeof(target.host), "127.0.0.1");
     target.port = port;
     return target;
 }
@@ -3633,7 +3634,7 @@ static int run_tp_case(const struct tp_case *c)
                why, atomic_load(&g_creates), atomic_load(&g_joins),
                atomic_load(&g_exits), took);
     }
-    fflush(stdout);
+    (void)fflush(stdout);
 
     tp_close(&net);
     return ok ? 0 : 1;
@@ -4240,7 +4241,7 @@ static int run_wr_case(const struct wr_case *c)
     if (lfd < 0 || getsockname(lfd, (struct sockaddr *)&addr, &len) < 0) {
         why = "could not open the manager's listener";
     } else {
-        snprintf(in.config, sizeof(in.config), "tcp:worker:127.0.0.1:%u",
+        test_fmt(in.config, sizeof(in.config), "tcp:worker:127.0.0.1:%u",
                  (unsigned)ntohs(addr.sin_port));
         atomic_store(&g_creates_left, creates_left);
         /* Not counted: it isn't one of the worker's threads */
@@ -4283,7 +4284,7 @@ static int run_wr_case(const struct wr_case *c)
                why, in.ret, in.took, atomic_load(&g_creates),
                atomic_load(&g_joins), atomic_load(&g_exits));
     }
-    fflush(stdout);
+    (void)fflush(stdout);
 
     if (peer >= 0) {
         close(peer);
@@ -4988,20 +4989,20 @@ static const char *reap_cap(TcpBackendPrivate *priv, uint16_t port,
      */
     waiting = pending_count(priv);
     if (waiting != TCP_MAX_PENDING_CONNS) {
-        snprintf(why, sizeof(why),
-                 "only %u of the %d peers under the cap are waiting, %d "
-                 "receive thread(s) exited, and they took %" PRIu64
-                 " ms to connect",
-                 waiting, cap, atomic_load(&g_exits),
-                 ernic_monotonic_ms() - start_ms);
+        (void)snprintf(why, sizeof(why),
+                       "only %u of the %d peers under the cap are waiting, %d "
+                       "receive thread(s) exited, and they took %" PRIu64
+                       " ms to connect",
+                       waiting, cap, atomic_load(&g_exits),
+                       ernic_monotonic_ms() - start_ms);
         return why;
     }
     reap_renew(priv);
     if (!closed_within(reap_keep(k, connect_loopback(port)), 2000)) {
-        snprintf(why, sizeof(why),
-                 "the peer past the cap was kept, with %u waiting and %d "
-                 "receive thread(s) exited",
-                 pending_count(priv), atomic_load(&g_exits));
+        (void)snprintf(why, sizeof(why),
+                       "the peer past the cap was kept, with %u waiting and %d "
+                       "receive thread(s) exited",
+                       pending_count(priv), atomic_load(&g_exits));
         return why;
     }
     if (atomic_load(&g_creates) != base + cap) {
@@ -5234,7 +5235,7 @@ static int run_reap_case(const struct reap_case *c)
         printf("skip reap %s: %s; valgrind enforces the descriptor limit "
                "itself, so accept() can't be made to fail as it would\n",
                c->category, c->description);
-        fflush(stdout);
+        (void)fflush(stdout);
         return 0;
     }
 
@@ -5244,7 +5245,7 @@ static int run_reap_case(const struct reap_case *c)
     atomic_store(&g_exits, 0);
     memset(&k, 0, sizeof(k));
     memset(&dev, 0, sizeof(dev));
-    snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
+    test_fmt(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
 
     g_current_row = c->description;
     alarm(row_timeout_s());
@@ -5277,7 +5278,7 @@ static int run_reap_case(const struct reap_case *c)
                why, atomic_load(&g_creates), atomic_load(&g_joins),
                atomic_load(&g_exits), errors, took);
     }
-    fflush(stdout);
+    (void)fflush(stdout);
 
     for (uint32_t i = 0; i < k.n; i++) {
         if (k.fd[i] >= 0) {
@@ -5961,7 +5962,7 @@ static int run_sender_case(const struct sender_case *c)
     atomic_store(&g_joins, 0);
     atomic_store(&g_exits, 0);
     memset(&dev, 0, sizeof(dev));
-    snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
+    test_fmt(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
 
     g_current_row = c->description;
     alarm(row_timeout_s());
@@ -6000,7 +6001,7 @@ static int run_sender_case(const struct sender_case *c)
     if (!ok) {
         printf("     %s\n", why);
     }
-    fflush(stdout);
+    (void)fflush(stdout);
 
     if (w1 >= 0) {
         close(w1);
@@ -6326,7 +6327,7 @@ static int run_ra_case(const struct ra_case *c)
     atomic_store(&g_joins, 0);
     atomic_store(&g_exits, 0);
     memset(&dev, 0, sizeof(dev));
-    snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
+    test_fmt(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
 
     g_current_row = c->description;
     alarm(row_timeout_s());
@@ -6360,7 +6361,7 @@ static int run_ra_case(const struct ra_case *c)
     if (!ok) {
         printf("     %s\n", why);
     }
-    fflush(stdout);
+    (void)fflush(stdout);
 
     if (w1 >= 0) {
         close(w1);
@@ -6473,7 +6474,7 @@ static int run_hn_case(const struct hn_case *c)
     atomic_store(&g_joins, 0);
     atomic_store(&g_exits, 0);
     memset(&dev, 0, sizeof(dev));
-    snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
+    test_fmt(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
 
     g_current_row = c->description;
     alarm(row_timeout_s());
@@ -6502,7 +6503,7 @@ static int run_hn_case(const struct hn_case *c)
     if (!ok) {
         printf("     %s\n", why);
     }
-    fflush(stdout);
+    (void)fflush(stdout);
 
     if (fd >= 0) {
         close(fd);
@@ -7217,7 +7218,7 @@ static int run_ev_case(const struct ev_case *c)
     for (size_t i = 0; i < G_N_ELEMENTS(fx.fresh); i++) {
         fx.fresh[i] = -1;
     }
-    snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
+    test_fmt(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
 
     g_current_row = c->description;
     alarm(row_timeout_s());
@@ -7251,7 +7252,7 @@ static int run_ev_case(const struct ev_case *c)
     if (!ok) {
         printf("     %s\n", why);
     }
-    fflush(stdout);
+    (void)fflush(stdout);
 
     for (uint32_t i = 0; i < TCP_MAX_MESH_NODES; i++) {
         tcp_connection_unref(fx.conn[i]);
@@ -7428,7 +7429,7 @@ static int run_lv_case(const struct lv_case *c)
     atomic_store(&g_joins, 0);
     atomic_store(&g_exits, 0);
     memset(&dev, 0, sizeof(dev));
-    snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
+    test_fmt(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
 
     g_current_row = c->description;
     alarm(row_timeout_s());
@@ -7469,7 +7470,7 @@ static int run_lv_case(const struct lv_case *c)
     if (!ok) {
         printf("     %s\n", why);
     }
-    fflush(stdout);
+    (void)fflush(stdout);
 
     if (w1 >= 0) {
         close(w1);
@@ -7772,7 +7773,7 @@ static const char *lt_register_vs_stop(enum lt_scenario scenario)
     int joins;
 
     memset(&dev, 0, sizeof(dev));
-    snprintf(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
+    test_fmt(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
     if (port == 0 ||
         tcp_init_with_interval(&dev, config, LONG_INTERVAL_S) != 0) {
         return "could not start a manager";
@@ -7917,7 +7918,7 @@ static int run_lt_case(const struct lt_case *c)
                atomic_load(&g_creates), atomic_load(&g_joins),
                atomic_load(&g_exits));
     }
-    fflush(stdout);
+    (void)fflush(stdout);
     return ok ? 0 : 1;
 }
 
@@ -8075,7 +8076,7 @@ static int run_pp_case(const struct pp_case *c)
                atomic_load(&g_creates), atomic_load(&g_joins),
                atomic_load(&g_exits));
     }
-    fflush(stdout);
+    (void)fflush(stdout);
 
     if (ours >= 0) {
         close(ours);
@@ -8164,7 +8165,7 @@ static const char *dc_start(struct dc_worker *w, int lfd, uint16_t port,
 {
     const char *why;
 
-    snprintf(w->in.config, sizeof(w->in.config), "tcp:worker:127.0.0.1:%u",
+    test_fmt(w->in.config, sizeof(w->in.config), "tcp:worker:127.0.0.1:%u",
              (unsigned)port);
     if (pthread_create(&w->in.tid, NULL, wr_init_run, &w->in) != 0) {
         return "could not start tcp_init()";
@@ -8414,7 +8415,7 @@ static int run_dc_case(const struct dc_case *c)
                atomic_load(&g_creates), atomic_load(&g_joins),
                atomic_load(&g_exits));
     }
-    fflush(stdout);
+    (void)fflush(stdout);
 
     if (lfd >= 0) {
         close(lfd);
@@ -9127,7 +9128,7 @@ static int run_wl_case(const struct wl_case *c)
                atomic_load(&g_creates), atomic_load(&g_joins),
                atomic_load(&g_exits));
     }
-    fflush(stdout);
+    (void)fflush(stdout);
 
     for (uint32_t i = 0; i < k.n; i++) {
         close(k.fd[i]);
@@ -9953,7 +9954,7 @@ static int run_st_case(const struct st_case *c)
                atomic_load(&g_creates), atomic_load(&g_joins),
                atomic_load(&g_exits));
     }
-    fflush(stdout);
+    (void)fflush(stdout);
     return ok ? 0 : 1;
 }
 
@@ -9961,7 +9962,10 @@ int main(void)
 {
     int failures = 0;
 
-    signal(SIGALRM, watchdog);
+    if (signal(SIGALRM, watchdog) == SIG_ERR) {
+        perror("signal(SIGALRM)");
+        return 1;
+    }
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         failures += run_case(&cases[i]);
     }

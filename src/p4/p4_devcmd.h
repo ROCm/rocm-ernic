@@ -171,6 +171,8 @@ struct p4_devcmd_ident_cmd {
     uint16_t lif_index;
     uint32_t len; /* little-endian */
     uint64_t ident_pa;
+    /* Pads the command to the 64-byte devcmd buffer, as asserted below */
+    /* NOLINTNEXTLINE(*-magic-numbers) */
     uint8_t rsvd[48];
 };
 _Static_assert(sizeof(struct p4_devcmd_ident_cmd) == 64,
@@ -213,6 +215,8 @@ struct p4_devcmd_query_cmd {
     uint32_t ep; /* when @entity is P4_QUERY_ENDPOINT */
     uint8_t version;
     uint8_t rsvd[3];
+    /* Pads the command to the 64-byte devcmd buffer, as asserted below */
+    /* NOLINTNEXTLINE(*-magic-numbers) */
     uint8_t rsvd2[40];
 };
 _Static_assert(sizeof(struct p4_devcmd_query_cmd) == 64,
@@ -276,6 +280,8 @@ struct p4_devcmd_rpc_cmd {
     uint32_t resp_len;
     uint32_t rsvd2;
     uint64_t resp_pa;
+    /* Pads the command to the 64-byte devcmd buffer, as asserted below */
+    /* NOLINTNEXTLINE(*-magic-numbers) */
     uint8_t rsvd3[24];
 };
 _Static_assert(sizeof(struct p4_devcmd_rpc_cmd) == 64,
@@ -355,7 +361,8 @@ struct p4_rpc_entry_match {
     uint8_t value[P4_DEVCMD_VALUE_MAX];
     uint8_t mask[P4_DEVCMD_VALUE_MAX];
 };
-_Static_assert(sizeof(struct p4_rpc_entry_match) == 36,
+#define P4_RPC_ENTRY_MATCH_LEN 36
+_Static_assert(sizeof(struct p4_rpc_entry_match) == P4_RPC_ENTRY_MATCH_LEN,
                "struct p4_rpc_entry_match has padding");
 
 /*
@@ -367,7 +374,8 @@ struct p4_rpc_entry_param {
     uint16_t rsvd;
     uint8_t value[P4_DEVCMD_VALUE_MAX];
 };
-_Static_assert(sizeof(struct p4_rpc_entry_param) == 20,
+#define P4_RPC_ENTRY_PARAM_LEN 20
+_Static_assert(sizeof(struct p4_rpc_entry_param) == P4_RPC_ENTRY_PARAM_LEN,
                "struct p4_rpc_entry_param has padding");
 
 struct p4_rpc_entry_update {
@@ -381,7 +389,8 @@ struct p4_rpc_entry_update {
     /* followed by @nmatch struct p4_rpc_entry_match, then @nparams
      * struct p4_rpc_entry_param */
 };
-_Static_assert(sizeof(struct p4_rpc_entry_update) == 140,
+#define P4_RPC_ENTRY_UPDATE_LEN 140
+_Static_assert(sizeof(struct p4_rpc_entry_update) == P4_RPC_ENTRY_UPDATE_LEN,
                "struct p4_rpc_entry_update has padding or has changed size");
 
 /*
@@ -404,7 +413,8 @@ struct p4_rpc_stats {
     uint64_t frames_too_big;
     uint64_t parse_errors;
 };
-_Static_assert(sizeof(struct p4_rpc_stats) == 56,
+#define P4_RPC_STATS_LEN 56
+_Static_assert(sizeof(struct p4_rpc_stats) == P4_RPC_STATS_LEN,
                "struct p4_rpc_stats has padding or has changed size");
 
 /* ---- The module --------------------------------------------------------

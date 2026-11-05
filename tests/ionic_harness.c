@@ -946,7 +946,9 @@ static bool mr_copy(struct ih *h, const struct ih_mr *mr, uint64_t va,
 bool ih_mr_write(struct ih *h, const struct ih_mr *mr, uint64_t va,
                  const void *buf, size_t len)
 {
-    /* mr_copy() only reads from buf when copying to the guest. */
+    /* mr_copy() only reads from buf when copying to the guest. Casting
+     * through uintptr_t drops the const without -Wcast-qual.
+     * NOLINTNEXTLINE(performance-no-int-to-ptr) */
     return mr_copy(h, mr, va, (void *)(uintptr_t)buf, len, true);
 }
 

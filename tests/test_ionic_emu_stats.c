@@ -791,8 +791,8 @@ static void test_port_counting(void)
         ok = port_matches(&st, c->want, MAX_PORT_EXPECT, got, sizeof(got));
         if (accepted != c->accepted) {
             ok = false;
-            snprintf(returned, sizeof(returned), " returned %s",
-                     accepted ? "true" : "false");
+            (void)snprintf(returned, sizeof(returned), " returned %s",
+                           accepted ? "true" : "false");
         }
         if (ok) {
             printf("ok %s: %s\n", c->category, c->description);
@@ -844,11 +844,12 @@ static void test_port_buckets(void)
             ionic_emu_stats_reset(&st);
             ionic_emu_port_frame(&st, frame_to(mac_ucast, len), len, false, 0);
             ionic_emu_port_frame(&st, frame_to(mac_ucast, len), len, true, 0);
-            snprintf(desc, sizeof(desc),
-                     "bucket edge: %zu bytes on the wire, rx and tx", wire);
-            snprintf(exp, sizeof(exp), "%s and %s 1",
-                     ionic_emu_port_stat_name(rx),
-                     ionic_emu_port_stat_name(tx));
+            (void)snprintf(desc, sizeof(desc),
+                           "bucket edge: %zu bytes on the wire, rx and tx",
+                           wire);
+            (void)snprintf(exp, sizeof(exp), "%s and %s 1",
+                           ionic_emu_port_stat_name(rx),
+                           ionic_emu_port_stat_name(tx));
             check_u64("positive", desc, exp, 2, st.port[rx] + st.port[tx]);
         }
     }
@@ -963,7 +964,7 @@ static void test_port_inbox_full(void)
                 st.lif[IONIC_LIF_RX_BCAST_DROP_PACKETS];
         if (drops != c->lif_drops) {
             ok = false;
-            snprintf(lif, sizeof(lif), " lif drops %" PRIu64, drops);
+            (void)snprintf(lif, sizeof(lif), " lif drops %" PRIu64, drops);
         }
         if (ok) {
             printf("ok %s: %s\n", c->category, c->description);
@@ -1285,16 +1286,17 @@ static void test_layout(void)
               IONIC_LIF_STATS_BYTES, sizeof(struct kernel_lif_stats));
 
     /* One row per named field: its index, and the name the stats file uses. */
-#define PIN(field, idx)                                                    \
-    do {                                                                   \
-        const char *nm = ionic_emu_lif_stat_name(idx);                     \
-        snprintf(desc, sizeof(desc), "layout pin: %s", #field);            \
-        check_u64("corner", desc, "offsetof(field) / 8",                   \
-                  offsetof(struct kernel_lif_stats, field) / 8, (idx));    \
-        snprintf(desc, sizeof(desc), "name of qword %u", (unsigned)(idx)); \
-        check_u64("corner", desc, "\"" #field "\"", 0,                     \
-                  (uint64_t)(nm == NULL || strcmp(nm, #field) != 0));      \
-        named++;                                                           \
+#define PIN(field, idx)                                                 \
+    do {                                                                \
+        const char *nm = ionic_emu_lif_stat_name(idx);                  \
+        (void)snprintf(desc, sizeof(desc), "layout pin: %s", #field);   \
+        check_u64("corner", desc, "offsetof(field) / 8",                \
+                  offsetof(struct kernel_lif_stats, field) / 8, (idx)); \
+        (void)snprintf(desc, sizeof(desc), "name of qword %u",          \
+                       (unsigned)(idx));                                \
+        check_u64("corner", desc, "\"" #field "\"", 0,                  \
+                  (uint64_t)(nm == NULL || strcmp(nm, #field) != 0));   \
+        named++;                                                        \
     } while (0);
     LIF_FIELDS(PIN)
 #undef PIN
@@ -1518,17 +1520,17 @@ static void test_port_layout(void)
     check_u64("corner", "layout pin: sizeof(struct ionic_port_stats)", "712",
               IONIC_PORT_STATS_BYTES, sizeof(struct kernel_port_stats));
 
-#define PIN(field, idx)                                                  \
-    do {                                                                 \
-        const char *nm = ionic_emu_port_stat_name(idx);                  \
-        snprintf(desc, sizeof(desc), "port layout pin: %s", #field);     \
-        check_u64("corner", desc, "offsetof(field) / 8",                 \
-                  offsetof(struct kernel_port_stats, field) / 8, (idx)); \
-        snprintf(desc, sizeof(desc), "name of port qword %u",            \
-                 (unsigned)(idx));                                       \
-        check_u64("corner", desc, "\"" #field "\"", 0,                   \
-                  (uint64_t)(nm == NULL || strcmp(nm, #field) != 0));    \
-        pinned++;                                                        \
+#define PIN(field, idx)                                                    \
+    do {                                                                   \
+        const char *nm = ionic_emu_port_stat_name(idx);                    \
+        (void)snprintf(desc, sizeof(desc), "port layout pin: %s", #field); \
+        check_u64("corner", desc, "offsetof(field) / 8",                   \
+                  offsetof(struct kernel_port_stats, field) / 8, (idx));   \
+        (void)snprintf(desc, sizeof(desc), "name of port qword %u",        \
+                       (unsigned)(idx));                                   \
+        check_u64("corner", desc, "\"" #field "\"", 0,                     \
+                  (uint64_t)(nm == NULL || strcmp(nm, #field) != 0));      \
+        pinned++;                                                          \
     } while (0);
     PORT_FIELDS(PIN)
 #undef PIN

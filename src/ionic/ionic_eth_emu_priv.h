@@ -27,6 +27,7 @@
 #include "ionic/ionic_eth_emu.h"
 #include "ionic/ionic_eth_net.h"
 #include "ionic/ionic_profile.h"
+#include "net/net_headers.h"
 
 /* -------------------------------------------------------------------------
  * ionic_if.h constants we need without pulling in the full kernel header.
@@ -272,6 +273,7 @@ _Static_assert(ERNIC_MAX_CQ / IONIC_UDMA_COUNT >= 1U << IONIC_EMU_UDMA_SHIFT,
 #define DEVCMD_DONE_OFF     0x04U
 #define DEVCMD_CMD_OFF      0x08U
 #define DEVCMD_COMP_OFF     0x48U
+#define DEVCMD_RSVD_LEN     48U
 #define DEVCMD_DATA_OFF     0x88U
 #define DEVCMD_DATA_SIZE    1912U
 
@@ -286,7 +288,8 @@ _Static_assert(IONIC_BAR0_DEV_CMD_REGS_OFFSET + DEVCMD_DATA_OFF +
                        DEVCMD_DATA_SIZE ==
                    IONIC_BAR0_INTR_STATUS_OFFSET,
                "dev_cmd data window must abut intr_status at 0x1000");
-_Static_assert(DEVCMD_DATA_OFF == DEVCMD_COMP_OFF + IONIC_DEVCMD_COMP_LEN + 48U,
+_Static_assert(DEVCMD_DATA_OFF ==
+                   DEVCMD_COMP_OFF + IONIC_DEVCMD_COMP_LEN + DEVCMD_RSVD_LEN,
                "dev_cmd data must follow comp[16] + rsvd[48]");
 _Static_assert(DEVCMD_COMP_OFF == DEVCMD_CMD_OFF + IONIC_DEVCMD_CMD_LEN,
                "dev_cmd comp must follow cmd[64]");
@@ -436,7 +439,7 @@ struct ionic_eth_emu {
     struct eth_queue eth_q[IONIC_QTYPE_ETH_MAX][IONIC_EMU_ETH_QMAX];
 
     /* Station MAC reported by LIF_IDENTIFY. */
-    uint8_t mac[6];
+    uint8_t mac[ETH_ADDR_LEN];
 
     /* Identity and link shape (ionic_profile.h); compat unless set. */
     struct ionic_profile profile;

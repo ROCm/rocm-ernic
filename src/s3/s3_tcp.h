@@ -35,6 +35,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "net/net_headers.h"
+
 struct s3_dma_ops;
 struct s3_target;
 struct s3_tcp;
@@ -44,7 +46,7 @@ struct s3_tcp;
 struct s3_tcp_cfg {
     uint32_t ip;   /* address the endpoint answers on, host byte order */
     uint16_t port; /* TCP port the S3 control plane listens on */
-    uint8_t mac[6];
+    uint8_t mac[ETH_ADDR_LEN];
     unsigned max_conns; /* 0 selects S3_TCP_MAX_CONNS */
     /*
      * The clock initial sequence numbers are taken from, in microseconds:

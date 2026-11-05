@@ -50,6 +50,7 @@
 #include "qemu/error-report.h"
 #include "qemu/thread.h"
 #include "rdma/rdma_backend_tcp_priv.h"
+#include "test_fmt.h"
 
 /* ---- Stubs for the TU's external symbols -------------------------------
  * Only error_report() is reachable, from tcp_init_with_interval() refusing
@@ -323,7 +324,7 @@ static void test_long_host(void)
         int ret;
 
         memset(s, 'h', len);
-        snprintf(s + len, sizeof(s) - len, ":5000");
+        test_fmt(s + len, sizeof(s) - len, ":5000");
         last_error = NULL;
         ret = tcp_parse_host_port(s, "test", &host, &port);
 

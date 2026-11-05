@@ -17,6 +17,7 @@
 
 #include "rocm_ernic_compat.h"
 #include "ionic/ionic_profile.h"
+#include "net/net_headers.h"
 
 /* Forward declarations */
 typedef struct rocm_ernic_dev rocm_ernic_dev_t;
@@ -74,8 +75,8 @@ struct rocm_ernic_dev {
     struct ionic_fault_set *faults;
 
     /* MAC address */
-    uint8_t mac_addr[6]; /* Device MAC address */
-    bool mac_addr_set;   /* Whether MAC address was explicitly set */
+    uint8_t mac_addr[ETH_ADDR_LEN]; /* Device MAC address */
+    bool mac_addr_set;              /* Whether MAC address was explicitly set */
 
     /* NIC identity and link: compat plus each --nic-profile layer */
     struct ionic_profile profile;

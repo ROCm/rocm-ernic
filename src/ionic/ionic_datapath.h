@@ -8,12 +8,12 @@
 #ifndef IONIC_DATAPATH_H
 #define IONIC_DATAPATH_H
 
-#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <vfio-user/libvfio-user.h>
 
 #include "ernic_limits.h"
+#include "net/net_headers.h"
 #include "rocm_ernic_compat.h"
 
 struct ionic_eth_emu;
@@ -109,7 +109,7 @@ static inline uint8_t ionic_dp_cq_stride_log2(
 #define IONIC_SRQ_QID_BASE ERNIC_MAX_QP
 _Static_assert(IONIC_SRQ_QID_BASE >= ERNIC_MAX_QP,
                "SRQ ids would overlap the guest's QP ids");
-_Static_assert(IONIC_SRQ_QID_BASE + ERNIC_MAX_SRQ <= (1U << 24),
+_Static_assert(IONIC_SRQ_QID_BASE + ERNIC_MAX_SRQ - 1U <= 0x00ffffffU,
                "SRQ ids would not fit a 24-bit qid");
 
 /*
@@ -232,7 +232,7 @@ void ionic_datapath_flush_qp(struct ionic_datapath *dp, uint32_t qp_id);
 void ionic_datapath_register_ah(struct ionic_datapath *dp, uint32_t ah_id,
                                 const uint8_t dgid[ERNIC_GID_LEN],
                                 const uint8_t sgid[ERNIC_GID_LEN],
-                                const uint8_t dmac[6]);
+                                const uint8_t dmac[ETH_ADDR_LEN]);
 void ionic_datapath_unregister_ah(struct ionic_datapath *dp, uint32_t ah_id);
 
 /*

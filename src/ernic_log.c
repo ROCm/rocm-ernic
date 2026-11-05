@@ -117,7 +117,7 @@ ErnicLogLevel ernic_log_get_level(void)
                         "WARN: Ignoring invalid ERNIC_LOG_LEVEL='%s' "
                         "(expected none|error|warn|info|debug)\n",
                         env);
-                fflush(stderr);
+                (void)fflush(stderr);
             }
         }
     }
@@ -160,7 +160,7 @@ void ernic_vlog(ErnicLogLevel lvl, const char *fmt, va_list ap)
     fprintf(fp, "%s: ", prefix);
     vfprintf(fp, fmt, ap);
     fprintf(fp, "\n");
-    fflush(fp);
+    (void)fflush(fp);
 }
 
 void ernic_log(ErnicLogLevel lvl, const char *fmt, ...)
@@ -183,7 +183,7 @@ void ernic_startup_report(const char *fmt, ...)
     vprintf(fmt, ap);
     va_end(ap);
     printf("\n");
-    fflush(stdout);
+    (void)fflush(stdout);
 }
 
 /*

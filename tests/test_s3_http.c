@@ -31,6 +31,7 @@
 #include "ernic_attributes.h"
 #include "s3_alloc_fail.h"
 #include "s3/s3_http.h"
+#include "test_fmt.h"
 
 static int failures;
 
@@ -425,9 +426,9 @@ static void test_parse_field_limits(void)
             fill[len] = '\0';
             char line[S3_HTTP_VALUE_MAX + 16];
             if (fields[f].is_name) {
-                snprintf(line, sizeof(line), "%s: v", fill);
+                test_fmt(line, sizeof(line), "%s: v", fill);
             } else {
-                snprintf(line, sizeof(line), "X-Long: %s", fill);
+                test_fmt(line, sizeof(line), "X-Long: %s", fill);
             }
             int w = snprintf(
                 text, 4096, "GET / HTTP/1.1\r\n%s\r\nX-After: 1\r\n\r\n", line);
@@ -650,7 +651,7 @@ static void test_too_many_headers(void)
     s3_http_response_init(&resp, 200);
     for (unsigned i = 0; i < S3_HTTP_MAX_HEADERS; i++) {
         char hname[16];
-        snprintf(hname, sizeof(hname), "X-Pad-%u", i);
+        test_fmt(hname, sizeof(hname), "X-Pad-%u", i);
         s3_http_response_header(&resp, hname, "%u", i);
     }
     /* Replacing a header needs no new slot, so a full table allows it. */
@@ -1095,7 +1096,7 @@ static void test_response_body_growth(void)
     }
     for (unsigned i = 0; i < chunks; i++) {
         char want[16];
-        snprintf(want, sizeof(want), "<K>%04u</K>", i);
+        test_fmt(want, sizeof(want), "<K>%04u</K>", i);
         if (memcmp(resp.body + ((size_t)i * 11), want, 11) != 0) {
             fail(name, "chunk %u corrupted across a realloc", i);
             s3_http_response_free(&resp);

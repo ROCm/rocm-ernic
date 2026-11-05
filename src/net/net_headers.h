@@ -2,9 +2,9 @@
  * Network Header Layouts
  *
  * Ethernet, ARP, IPv4, ICMP and TCP headers, for the S3 target's TCP/IP
- * endpoint; the size of the RoCEv2 global route header; and the Internet
- * checksum, which the ionic datapath also uses to build a GRH.  Every
- * multi-byte field is big-endian.
+ * endpoint; the IPv6 header and the RoCEv2 global route header, for the
+ * ionic datapath; and the Internet checksum, which the ionic datapath also
+ * uses to build a GRH.  Every multi-byte field is big-endian.
  *
  * Offsets are spelled out as macros rather than packed structs: a frame is
  * a byte buffer, a header in it can start at any alignment, and a struct
@@ -21,6 +21,9 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+
+#include "byteorder.h"
 
 /* -------------------------------------------------------------------------
  * Ethernet header
@@ -28,16 +31,50 @@
  *   [0:5]   destination MAC
  *   [6:11]  source MAC
  *   [12:13] be16 ethertype
+ *
+ * A VLAN tag, where the ethertype is ETH_ETHERTYPE_VLAN or _QINQ, puts
+ * four bytes before the real ethertype:
+ *
+ *   [12:13] be16 tag protocol identifier (the VLAN ethertype)
+ *   [14:15] be16 tag control information: priority (high 3 bits), drop
+ *           eligible, and VLAN id (low 12 bits)
+ *   [16:17] be16 ethertype
  * -------------------------------------------------------------------------
  */
 
 #define ETH_HDR_LEN  14
-#define ETH_DST_OFF  0
-#define ETH_SRC_OFF  6
-#define ETH_TYPE_OFF 12
+#define ETH_ADDR_LEN 6
+#define ETH_MTU      1500 /* the standard payload, without jumbo frames */
+/* The shortest frame, padded to it, without its FCS */
+#define ETH_MIN_FRAME_LEN 60
+#define ETH_DST_OFF       0
+#define ETH_SRC_OFF       6
+#define ETH_TYPE_OFF      12
 
-#define ETH_ETHERTYPE_IP  0x0800
-#define ETH_ETHERTYPE_ARP 0x0806
+#define ETH_VLAN_TAG_LEN   4
+#define ETH_VLAN_TCI_OFF   14
+#define ETH_VLAN_PCP_SHIFT 13
+
+#define ETH_ETHERTYPE_IP   0x0800
+#define ETH_ETHERTYPE_ARP  0x0806
+#define ETH_ETHERTYPE_IPV6 0x86dd
+#define ETH_ETHERTYPE_VLAN 0x8100 /* 802.1Q */
+#define ETH_ETHERTYPE_QINQ 0x88a8 /* 802.1ad */
+
+/* Room for a MAC address as text, xx:xx:xx:xx:xx:xx, and its NUL */
+#define ETH_ADDR_STR_LEN 18
+
+/* Write @mac into @out as xx:xx:xx:xx:xx:xx. */
+static inline void eth_addr_str(const uint8_t *mac, char *out)
+{
+    static const char hex[] = "0123456789abcdef";
+
+    for (size_t i = 0; i < ETH_ADDR_LEN; i++) {
+        out[3 * i] = hex[mac[i] >> 4];
+        out[(3 * i) + 1] = hex[mac[i] & 0xfU];
+        out[(3 * i) + 2] = i + 1 < ETH_ADDR_LEN ? ':' : '\0';
+    }
+}
 
 /* -------------------------------------------------------------------------
  * ARP, for Ethernet and IPv4
@@ -85,21 +122,61 @@
  * -------------------------------------------------------------------------
  */
 
-#define IP_HDR_LEN         20
-#define IP_VERSION_IHL_OFF 0
-#define IP_TOS_OFF         1
-#define IP_TOTAL_LEN_OFF   2
-#define IP_ID_OFF          4
-#define IP_FRAGMENT_OFF    6
-#define IP_TTL_OFF         8
-#define IP_PROTOCOL_OFF    9
-#define IP_CHECKSUM_OFF    10
-#define IP_SRC_OFF         12
-#define IP_DST_OFF         16
+#define IP_HDR_LEN       20
+#define IP_VERSION       4
+#define IP_VERSION_SHIFT 4 /* of the first byte */
+/* Version 4 and a header of five 32-bit words, which has no options */
+#define IP_VERSION_IHL_NO_OPTIONS 0x45
+#define IP_VERSION_IHL_OFF        0
+#define IP_TOS_OFF                1
+#define IP_TOTAL_LEN_OFF          2
+#define IP_ID_OFF                 4
+#define IP_FRAGMENT_OFF           6
+#define IP_TTL_OFF                8
+#define IP_PROTOCOL_OFF           9
+#define IP_CHECKSUM_OFF           10
+#define IP_SRC_OFF                12
+#define IP_DST_OFF                16
 
 #define IP_PROTOCOL_TCP  6
 #define IP_PROTOCOL_UDP  17
 #define IP_PROTOCOL_ICMP 1
+
+/* Room for an IPv4 address as text, 255.255.255.255, and its NUL */
+#define IP_ADDR_STR_LEN 16
+
+/* Write @addr, in host order, into @out as a dotted quad. */
+static inline void ip_addr_str(uint32_t addr, char *out)
+{
+    uint8_t b[4];
+
+    ernic_put_be32(b, addr);
+    /* Four numbers up to 255 and three dots always fit. */
+    (void)snprintf(out, IP_ADDR_STR_LEN, "%u.%u.%u.%u", b[0], b[1], b[2], b[3]);
+}
+
+/* -------------------------------------------------------------------------
+ * IPv6 header
+ *
+ *   [0:3]   be32 version (high 4 bits), traffic class, and flow label
+ *   [4:5]   be16 payload length
+ *   [6]     next header
+ *   [7]     hop limit
+ *   [8:23]  source address
+ *   [24:39] destination address
+ * -------------------------------------------------------------------------
+ */
+
+#define IP6_HDR_LEN       40
+#define IP6_ADDR_LEN      16
+#define IP6_PAYLOAD_OFF   4
+#define IP6_NEXT_HDR_OFF  6
+#define IP6_HOP_LIMIT_OFF 7
+#define IP6_SRC_OFF       8
+#define IP6_DST_OFF       24
+
+#define IP6_VERSION       6
+#define IP6_VERSION_SHIFT 4 /* of the first byte */
 
 /* -------------------------------------------------------------------------
  * ICMP echo header; the echoed data follows it
@@ -164,6 +241,9 @@
  */
 
 #define IB_GRH_SIZE 40
+
+/* The next header a GRH names: InfiniBand's base transport header */
+#define IB_GRH_NEXT_HDR 0x1b
 
 /* -------------------------------------------------------------------------
  * The Internet checksum (RFC 1071)

@@ -16,6 +16,7 @@
 
 #include "rdma/rdma_backend_tcp_priv.h"
 #include "byteorder.h"
+#include "ernic_gid.h"
 #include "pvrdma/rdma_utils.h"
 #include "qemu/thread.h"
 #include "rocm_ernic_compat.h"
@@ -116,10 +117,7 @@ uint32_t tcp_parse_guest_gids(const char *val,
         if (inet_pton(AF_INET6, val_s, &a6) == 1) {
             memcpy(out[n], &a6, ERNIC_GID_LEN);
         } else if (inet_pton(AF_INET, val_s, &a4) == 1) {
-            memset(out[n], 0, ERNIC_GID_LEN);
-            out[n][10] = 0xff;
-            out[n][11] = 0xff;
-            memcpy(out[n] + 12, &a4, 4);
+            ernic_gid_from_ipv4(out[n], (const uint8_t *)&a4.s_addr);
         } else {
             rdma_error_report("TCP: ignoring unparsable GID '%s' in "
                               "ERNIC_TCP_GUEST_GIDS",

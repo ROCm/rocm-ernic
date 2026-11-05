@@ -70,9 +70,11 @@
 #include "byteorder.h"
 #include "ernic_gnu.h"
 #include "parse_int.h"
+#include "test_fmt.h"
 
 /* POSIX leaves declaring environ to the program; only _GNU_SOURCE makes
- * <unistd.h> do it */
+ * <unistd.h> do it, and declares it this way.
+ * NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) */
 extern char **environ;
 
 #define SOCKET_WAIT_MS 20000 /* sanitizer builds start slowly */
@@ -179,9 +181,9 @@ static void group_name(gid_t gid, char *buf, size_t len)
     struct group *found = NULL;
 
     if (getgrgid_r(gid, &grp, grbuf, sizeof(grbuf), &found) == 0 && found) {
-        snprintf(buf, len, "%s", found->gr_name);
+        test_fmt(buf, len, "%s", found->gr_name);
     } else {
-        snprintf(buf, len, "%u", (unsigned)gid);
+        test_fmt(buf, len, "%u", (unsigned)gid);
     }
 }
 
@@ -361,12 +363,12 @@ static char *read_log(const char *path)
     }
     buf = calloc(1, 1 << 20);
     if (!buf) {
-        fclose(f);
+        (void)fclose(f);
         return NULL;
     }
     n = fread(buf, 1, (1 << 20) - 1, f);
     buf[n] = '\0';
-    fclose(f);
+    (void)fclose(f);
     return buf;
 }
 
@@ -428,7 +430,7 @@ static bool fd_inherited(pid_t pid, int fd)
     bool inherited = false;
     FILE *f;
 
-    snprintf(path, sizeof(path), "/proc/%d/fdinfo/%d", (int)pid, fd);
+    test_fmt(path, sizeof(path), "/proc/%d/fdinfo/%d", (int)pid, fd);
     f = fopen(path, "re");
     if (!f) {
         return false;
@@ -448,7 +450,7 @@ static bool fd_inherited(pid_t pid, int fd)
                     (flags & (uint32_t)O_CLOEXEC) == 0;
         break;
     }
-    fclose(f);
+    (void)fclose(f);
     return inherited;
 }
 
@@ -591,7 +593,7 @@ static int lowest_free_fd(pid_t pid)
     struct dirent *e;
     DIR *d;
 
-    snprintf(path, sizeof(path), "/proc/%d/fd", (int)pid);
+    test_fmt(path, sizeof(path), "/proc/%d/fd", (int)pid);
     d = opendir(path);
     if (!d) {
         return -1;
@@ -664,32 +666,35 @@ static bool refuse_fd(pid_t pid, int fd, const char *log, char *why, size_t len)
     int lowest;
 
     if (!negotiate(fd)) {
-        snprintf(why, len, "version negotiation failed");
+        (void)snprintf(why, len, "version negotiation failed");
         return false;
     }
     /* Attached.  The server opens no more descriptors to serve a client. */
     if (!wait_for_log(log, CONNECTED_LINE, 1)) {
-        snprintf(why, len, "the server never logged '%s'", CONNECTED_LINE);
+        (void)snprintf(why, len, "the server never logged '%s'",
+                       CONNECTED_LINE);
         return false;
     }
     lowest = lowest_free_fd(pid);
     if (lowest < 0) {
-        snprintf(why, len, "could not find the server's lowest free fd");
+        (void)snprintf(why, len, "could not find the server's lowest free fd");
         return false;
     }
     if (ernic_gnu_prlimit_nofile(pid, NULL, &lim) < 0) {
-        snprintf(why, len, "could not read the server's RLIMIT_NOFILE: %s",
-                 strerror(errno));
+        (void)snprintf(why, len,
+                       "could not read the server's RLIMIT_NOFILE: %s",
+                       strerror(errno));
         return false;
     }
     lim.rlim_cur = (rlim_t)lowest;
     if (ernic_gnu_prlimit_nofile(pid, &lim, NULL) < 0) {
-        snprintf(why, len, "could not lower the server's RLIMIT_NOFILE: %s",
-                 strerror(errno));
+        (void)snprintf(why, len,
+                       "could not lower the server's RLIMIT_NOFILE: %s",
+                       strerror(errno));
         return false;
     }
     if (send_with_fd(fd) < 0) {
-        snprintf(why, len, "could not send the descriptor");
+        (void)snprintf(why, len, "could not send the descriptor");
         return false;
     }
     return true;
@@ -1562,7 +1567,7 @@ static bool expand_backend(const char *src, uint16_t port, char *dst,
     char port_str[8];
     size_t n = 0;
 
-    snprintf(port_str, sizeof(port_str), "%u", (unsigned)port);
+    test_fmt(port_str, sizeof(port_str), "%u", (unsigned)port);
     while (*src) {
         const char *sub = NULL;
         size_t skip = 1;
@@ -1768,21 +1773,21 @@ static bool socket_perms_ok(const char *sock, uint32_t want_mode,
     uint32_t gid;
 
     if (!path_perms(sock, &mode, &gid)) {
-        snprintf(why, len, "could not stat the socket %s", when);
+        (void)snprintf(why, len, "could not stat the socket %s", when);
         return false;
     }
     if (early && mode == 0600) {
         return true;
     }
     if (mode != want_mode) {
-        snprintf(why, len,
-                 "the socket was mode %04" PRIo32 " %s, not %04" PRIo32, mode,
-                 when, want_mode);
+        (void)snprintf(why, len,
+                       "the socket was mode %04" PRIo32 " %s, not %04" PRIo32,
+                       mode, when, want_mode);
         return false;
     }
     if (want_mode == 0660 && gid != (uint32_t)want_gid) {
-        snprintf(why, len, "the socket had group %" PRIu32 " %s, not %u", gid,
-                 when, (unsigned)want_gid);
+        (void)snprintf(why, len, "the socket had group %" PRIu32 " %s, not %u",
+                       gid, when, (unsigned)want_gid);
         return false;
     }
     return true;
@@ -1869,11 +1874,11 @@ static bool exit_matches(int status, int want)
 static void describe_status(int status, char *buf, size_t len)
 {
     if (WIFEXITED(status)) {
-        snprintf(buf, len, "exited %d", WEXITSTATUS(status));
+        (void)snprintf(buf, len, "exited %d", WEXITSTATUS(status));
     } else if (WIFSIGNALED(status)) {
-        snprintf(buf, len, "killed by signal %d", WTERMSIG(status));
+        (void)snprintf(buf, len, "killed by signal %d", WTERMSIG(status));
     } else {
-        snprintf(buf, len, "status %#x", (unsigned)status);
+        (void)snprintf(buf, len, "status %#x", (unsigned)status);
     }
 }
 
@@ -1927,14 +1932,14 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
         break;
     case SG_MINE_NUMBER:
         want_gid = my_other_group();
-        snprintf(group, sizeof(group), "%u", (unsigned)want_gid);
+        test_fmt(group, sizeof(group), "%u", (unsigned)want_gid);
         want_mode = 0660;
         break;
     case SG_UNKNOWN:
-        snprintf(group, sizeof(group), "ernic-lifecycle-no-such-group");
+        test_fmt(group, sizeof(group), "ernic-lifecycle-no-such-group");
         break;
     case SG_NO_CHANGE:
-        snprintf(group, sizeof(group), "%" PRIu32, UINT32_MAX);
+        test_fmt(group, sizeof(group), "%" PRIu32, UINT32_MAX);
         break;
     case SG_HUGE:
         /* Root can give a file any group, so there's nothing to refuse. */
@@ -1949,7 +1954,7 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
                    c->description, (unsigned)want_gid);
             return 1;
         }
-        snprintf(group, sizeof(group), "%u", (unsigned)want_gid);
+        test_fmt(group, sizeof(group), "%u", (unsigned)want_gid);
         break;
     case SG_FOREIGN:
         /* Root can give a file any group, so there's nothing to refuse. */
@@ -1964,14 +1969,14 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
                    c->category, c->description);
             return 1;
         }
-        snprintf(group, sizeof(group), "%u", (unsigned)want_gid);
+        test_fmt(group, sizeof(group), "%u", (unsigned)want_gid);
         break;
     }
 
     /* A row with an ACL, or with a directory the server can't search or
      * read, gets a directory of its own for the socket. */
     if (c->acl != NO_ACL) {
-        snprintf(dir, sizeof(dir), "%s/row%zu.d", g_dir, idx);
+        test_fmt(dir, sizeof(dir), "%s/row%zu.d", g_dir, idx);
         if (!make_acl_dir(dir, c->acl)) {
             printf("FAIL %s: %s; could not give %s a default ACL: %s\n",
                    c->category, c->description, dir, strerror(errno));
@@ -1979,7 +1984,7 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
         }
         own_dir = true;
     } else if (c->pre == PRE_NO_SEARCH || c->pre == PRE_NO_READ) {
-        snprintf(dir, sizeof(dir), "%s/row%zu.d", g_dir, idx);
+        test_fmt(dir, sizeof(dir), "%s/row%zu.d", g_dir, idx);
         if (mkdir(dir, c->pre == PRE_NO_SEARCH ? 0600 : 0300) < 0) {
             printf("FAIL %s: %s; could not make %s: %s\n", c->category,
                    c->description, dir, strerror(errno));
@@ -1987,17 +1992,17 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
         }
         own_dir = true;
     } else if (c->pre == PRE_NO_DIR) {
-        snprintf(dir, sizeof(dir), "%s/row%zu.none", g_dir, idx);
+        test_fmt(dir, sizeof(dir), "%s/row%zu.none", g_dir, idx);
     } else {
-        snprintf(dir, sizeof(dir), "%s", g_dir);
+        test_fmt(dir, sizeof(dir), "%s", g_dir);
     }
     if (c->pre == PRE_DIR_SLASH) {
-        snprintf(sock, sizeof(sock), "%s/", dir);
+        test_fmt(sock, sizeof(sock), "%s/", dir);
     } else {
-        snprintf(sock, sizeof(sock), "%s/row%zu.sock", dir, idx);
+        test_fmt(sock, sizeof(sock), "%s/row%zu.sock", dir, idx);
     }
-    snprintf(target, sizeof(target), "%s/row%zu.target", g_dir, idx);
-    snprintf(log, sizeof(log), "%s/row%zu.log", g_dir, idx);
+    test_fmt(target, sizeof(target), "%s/row%zu.target", g_dir, idx);
+    test_fmt(log, sizeof(log), "%s/row%zu.log", g_dir, idx);
     unlink(sock);
     if (!place_at_path(c->pre, sock, target)) {
         printf("FAIL %s: %s; could not set up %s: %s\n", c->category,
@@ -2042,13 +2047,13 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
                          &exited)) {
         if (exited) {
             describe_status(status, got, sizeof(got));
-            snprintf(why, sizeof(why),
-                     "the server %s before its socket "
-                     "appeared",
-                     got);
+            (void)snprintf(why, sizeof(why),
+                           "the server %s before its socket "
+                           "appeared",
+                           got);
             pid = -1; /* reaped, so there's nothing to signal or wait for */
         } else {
-            snprintf(why, sizeof(why), "the socket never appeared");
+            (void)snprintf(why, sizeof(why), "the socket never appeared");
         }
         ok = false;
     }
@@ -2063,7 +2068,7 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
     }
 
     if (ok && c->settle && !wait_for_log(log, "waiting for client", 1)) {
-        snprintf(why, sizeof(why), "never reached the attach loop");
+        (void)snprintf(why, sizeof(why), "never reached the attach loop");
         ok = false;
     }
 
@@ -2075,8 +2080,9 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
     if (ok && c->no_stdout &&
         (!fd_inherited(pid, STDOUT_FILENO) ||
          !fd_inherited(pid, STDERR_FILENO))) {
-        snprintf(why, sizeof(why),
-                 "the server's stdout or stderr is closed or close-on-exec");
+        (void)snprintf(
+            why, sizeof(why),
+            "the server's stdout or stderr is closed or close-on-exec");
         ok = false;
     }
 
@@ -2084,12 +2090,13 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
         int fd = connect_unix(sock);
 
         if (fd < 0) {
-            snprintf(why, sizeof(why), "client %d could not connect", i + 1);
+            (void)snprintf(why, sizeof(why), "client %d could not connect",
+                           i + 1);
             ok = false;
             break;
         }
         if (c->action == BAD_HDR && send_bad_header(fd) < 0) {
-            snprintf(why, sizeof(why), "could not send the header");
+            (void)snprintf(why, sizeof(why), "could not send the header");
             ok = false;
         }
         if (c->action == FD_REFUSED &&
@@ -2106,12 +2113,13 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
             !wait_for_log(log, DROPPED_LINE, i + 1)) {
             if (waitpid(pid, &status, WNOHANG) == pid) {
                 describe_status(status, got, sizeof(got));
-                snprintf(why, sizeof(why),
-                         "the server %s instead of logging drop %d", got,
-                         i + 1);
+                (void)snprintf(why, sizeof(why),
+                               "the server %s instead of logging drop %d", got,
+                               i + 1);
                 pid = -1;
             } else {
-                snprintf(why, sizeof(why), "drop %d was never logged", i + 1);
+                (void)snprintf(why, sizeof(why), "drop %d was never logged",
+                               i + 1);
             }
             ok = false;
         }
@@ -2125,7 +2133,7 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
     if (ok && c->want_socket && c->sig != 0 &&
         waitpid(pid, &status, WNOHANG) == pid) {
         describe_status(status, got, sizeof(got));
-        snprintf(why, sizeof(why), "server already gone (%s)", got);
+        (void)snprintf(why, sizeof(why), "server already gone (%s)", got);
         ok = false;
         pid = -1;
     }
@@ -2133,14 +2141,14 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
         int fd = connect_unix(sock);
 
         if (fd < 0) {
-            snprintf(why, sizeof(why), "the socket stopped accepting");
+            (void)snprintf(why, sizeof(why), "the socket stopped accepting");
             ok = false;
         } else {
             close(fd);
             /* That probe is one more drop; wait for it to be logged so it
              * cannot race the signal below. */
             if (!wait_for_log(log, DROPPED_LINE, c->want_dropped + 1)) {
-                snprintf(why, sizeof(why), "probe drop never logged");
+                (void)snprintf(why, sizeof(why), "probe drop never logged");
                 ok = false;
             }
         }
@@ -2154,8 +2162,8 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
             }
         }
         if (wait_exit(pid, &status) < 0) {
-            snprintf(why, sizeof(why), "did not exit within %d ms",
-                     EXIT_WAIT_MS);
+            (void)snprintf(why, sizeof(why), "did not exit within %d ms",
+                           EXIT_WAIT_MS);
             ok = false;
         }
         describe_status(status, got, sizeof(got));
@@ -2168,31 +2176,32 @@ static int run_case(size_t idx, const struct lifecycle_case *c)
     }
 
     if (ok && !exit_matches(status, c->want_exit)) {
-        snprintf(why, sizeof(why), "%s (want %s)", got,
-                 c->want_exit < 0 ? "non-zero" : "exit 0");
+        (void)snprintf(why, sizeof(why), "%s (want %s)", got,
+                       c->want_exit < 0 ? "non-zero" : "exit 0");
         ok = false;
     }
     if (ok && count_in_log(log, SHUTDOWN_LINE) != c->want_shutdown) {
-        snprintf(why, sizeof(why), "%d '%s' line(s) (want %d)",
-                 count_in_log(log, SHUTDOWN_LINE), SHUTDOWN_LINE,
-                 c->want_shutdown);
+        (void)snprintf(why, sizeof(why), "%d '%s' line(s) (want %d)",
+                       count_in_log(log, SHUTDOWN_LINE), SHUTDOWN_LINE,
+                       c->want_shutdown);
         ok = false;
     }
     /* A refused socket must not be left behind: the server closed it. */
     if (ok && c->want_gone && access(sock, F_OK) == 0) {
-        snprintf(why, sizeof(why), "the refused socket is still there");
+        (void)snprintf(why, sizeof(why), "the refused socket is still there");
         ok = false;
     }
     if (ok && !left_alone(c->pre, sock, target)) {
-        snprintf(why, sizeof(why), "what was at the socket's path changed");
+        (void)snprintf(why, sizeof(why),
+                       "what was at the socket's path changed");
         ok = false;
     }
     if (ok && c->want_line && count_in_log(log, c->want_line) == 0) {
-        snprintf(why, sizeof(why), "log lacks '%s'", c->want_line);
+        (void)snprintf(why, sizeof(why), "log lacks '%s'", c->want_line);
         ok = false;
     }
     if (ok && sanitizer_reported(log)) {
-        snprintf(why, sizeof(why), "sanitizer report in %s", log);
+        (void)snprintf(why, sizeof(why), "sanitizer report in %s", log);
         ok = false;
     }
 
@@ -2241,7 +2250,7 @@ int main(int argc, char **argv)
     {
         char ns[320];
 
-        snprintf(ns, sizeof(ns), "%s/ns.img", g_dir);
+        test_fmt(ns, sizeof(ns), "%s/ns.img", g_dir);
         unlink(ns);
     }
     rmdir(g_dir);

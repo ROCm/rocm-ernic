@@ -63,8 +63,18 @@
  *   [32...] payload: struct ionic_sge { be64 va; be32 len; be32 lkey; },
  *           after the speculative length table when the flags name one
  */
-#define WQE_PLD_OFF      32
-#define WQE_SEND_LEN_OFF 28
+#define WQE_OP_OFF           8
+#define WQE_NUM_SGE_KEY_OFF  9
+#define WQE_FLAGS_OFF        10
+#define WQE_IMM_DATA_KEY_OFF 12
+#define WQE_PLD_OFF          32
+#define WQE_SEND_LEN_OFF     28
+
+/* struct ionic_sge */
+#define SGE_SIZE     16
+#define SGE_VA_OFF   0
+#define SGE_LEN_OFF  8
+#define SGE_LKEY_OFF 12
 
 /* The datagram half of the send body: which address handle, and which
  * remote QPN. Connected sends ignore both. */
@@ -96,13 +106,31 @@
 #define WQE_ATOMIC_SGE_OFF      48
 #define WQE_ATOMIC_MIN_SZ       64 /* through the result SGE */
 
-/* struct ionic_v1_cqe (32 bytes) */
-#define CQE_SIZE          32
-#define CQE_COLOR_BIT     0x01U
-#define CQE_ERROR_BIT     0x02U
-#define CQE_TYPE_RECV     (1U << 5)
-#define CQE_TYPE_SEND_MSN (2U << 5)
-#define CQE_TYPE_SEND_NPG (3U << 5)
+/*
+ * struct ionic_v1_cqe (32 bytes). The first 24 depend on the type:
+ *   recv: [0:7] u64 wqe_id (native endian), [8:11] be32 src_qpn_op,
+ *         [12:17] src_mac, [18:19] be16 vlan_tag, [20:23] be32 imm_data_rkey
+ *   send: [4:7] be32 msg_msn, [16:23] u64 npg_wqe_id (native endian)
+ * and the last eight are common:
+ *   [24:27] be32 status_length
+ *   [28:31] be32 qid_type_flags: color[0], error[1], type[7:5], qid[31:8]
+ */
+#define CQE_SIZE                32
+#define CQE_RECV_WQE_ID_OFF     0
+#define CQE_RECV_SRC_QPN_OP_OFF 8
+#define CQE_RECV_SRC_MAC_OFF    12
+#define CQE_RECV_IMM_DATA_OFF   20
+#define CQE_SEND_MSG_MSN_OFF    4
+#define CQE_SEND_NPG_WQE_ID_OFF 16
+#define CQE_STATUS_LENGTH_OFF   24
+#define CQE_QID_TYPE_FLAGS_OFF  28
+#define CQE_COLOR_BIT           0x01U
+#define CQE_ERROR_BIT           0x02U
+#define CQE_TYPE_SHIFT          5
+#define CQE_TYPE_RECV           (1U << CQE_TYPE_SHIFT)
+#define CQE_TYPE_SEND_MSN       (2U << CQE_TYPE_SHIFT)
+#define CQE_TYPE_SEND_NPG       (3U << CQE_TYPE_SHIFT)
+#define CQE_QID_SHIFT           8
 
 /* enum ionic_v1_cqe_src_qpn_bits */
 #define CQE_RECV_OP_SHIFT    24

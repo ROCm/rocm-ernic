@@ -38,6 +38,7 @@
 #include "nvmeof/nvmeof_kv.h"
 #include "nvmeof/nvmeof_target.h"
 #include "nvmeof/nvmeof_target_priv.h"
+#include "test_fmt.h"
 
 #define HOST_BUF_SIZE (UINT64_C(256) * 1024)
 #define HOST_BASE     UINT64_C(0x40000000)
@@ -195,8 +196,8 @@ static void stage_connect_data(struct host_mem *h, uint64_t addr,
     uint8_t *p = h->buf + (addr - HOST_BASE);
     memset(p, 0, NVMEOF_CONNECT_DATA_SIZE);
     memcpy(p + NVMEOF_CONNECT_HOSTID_OFF, "0123456789abcdef", 16);
-    snprintf((char *)p + NVMEOF_CONNECT_SUBNQN_OFF, 256, "%s", subnqn);
-    snprintf((char *)p + NVMEOF_CONNECT_HOSTNQN_OFF, 256, "%s", hostnqn);
+    test_fmt((char *)p + NVMEOF_CONNECT_SUBNQN_OFF, 256, "%s", subnqn);
+    test_fmt((char *)p + NVMEOF_CONNECT_HOSTNQN_OFF, 256, "%s", hostnqn);
 }
 
 /*
@@ -1742,7 +1743,7 @@ static void test_file_backing(void)
     }
 
     char opts[256];
-    snprintf(opts, sizeof(opts), "size=1M,file=%s", path);
+    test_fmt(opts, sizeof(opts), "size=1M,file=%s", path);
 
     /* First instance: connect, write two blocks, shut down. */
     struct nvmeof_target *t = make_target(opts);
@@ -1782,7 +1783,7 @@ static void test_file_backing(void)
      * image's size and see both blocks.  That shows the writes reach the
      * file, not that they reach stable storage, which the host page cache
      * hides here; test_sync() checks that. */
-    snprintf(opts, sizeof(opts), "file=%s", path);
+    test_fmt(opts, sizeof(opts), "file=%s", path);
     t = make_target(opts);
     if (t != NULL) {
         uint8_t rsp[NVME_CQE_SIZE];
@@ -1949,7 +1950,7 @@ static void test_sync(void)
     const uint8_t fua_ops[] = {NVME_CMD_WRITE, NVME_CMD_WRITE_ZEROES};
 
     char opts[256];
-    snprintf(opts, sizeof(opts), "size=1M,file=%s", path);
+    test_fmt(opts, sizeof(opts), "size=1M,file=%s", path);
     struct nvmeof_target *t;
     struct nvmeof_queue *ioq = sync_target(opts, h, &t);
     if (ioq != NULL) {
@@ -2115,7 +2116,7 @@ static void test_image_size(void)
     struct nvmeof_target *t;
 
     /* An empty image is sized to the default. */
-    snprintf(opts, sizeof(opts), "file=%s", path);
+    test_fmt(opts, sizeof(opts), "file=%s", path);
     t = try_target(opts, err, sizeof(err));
     if (t == NULL) {
         fail("image-new", "an empty image was refused: %s", err);
@@ -2128,7 +2129,7 @@ static void test_image_size(void)
           "an empty image was not grown to the default size");
 
     /* A size= smaller than the image is refused, and the image kept. */
-    snprintf(opts, sizeof(opts), "size=1M,file=%s", path);
+    test_fmt(opts, sizeof(opts), "size=1M,file=%s", path);
     t = try_target(opts, err, sizeof(err));
     check("image-shrink", t == NULL,
           "a size= smaller than the image was taken");
@@ -2138,7 +2139,7 @@ static void test_image_size(void)
     check("image-shrink", fd_size(fd) == def, "a refused size= truncated it");
 
     /* A larger one grows it. */
-    snprintf(opts, sizeof(opts), "size=128M,file=%s", path);
+    test_fmt(opts, sizeof(opts), "size=128M,file=%s", path);
     t = try_target(opts, err, sizeof(err));
     if (t == NULL) {
         fail("image-grow", "a size= larger than the image was refused: %s",
@@ -2155,7 +2156,7 @@ static void test_image_size(void)
     if (ftruncate(fd, (off_t)def + 100) != 0) {
         fail("image-partial", "cannot resize %s", path);
     } else {
-        snprintf(opts, sizeof(opts), "file=%s", path);
+        test_fmt(opts, sizeof(opts), "file=%s", path);
         t = try_target(opts, err, sizeof(err));
         check("image-partial", t == NULL,
               "an image of a partial block was taken without size=");
@@ -2168,7 +2169,7 @@ static void test_image_size(void)
 
     /* A size= past what an off_t holds is refused as such, rather than
      * handed to ftruncate() as a negative length. 8388608T is 2^63. */
-    snprintf(opts, sizeof(opts), "size=8388608T,file=%s", path);
+    test_fmt(opts, sizeof(opts), "size=8388608T,file=%s", path);
     t = try_target(opts, err, sizeof(err));
     check("image-too-large", t == NULL, "a size= of 2^63 bytes was taken");
     check("image-too-large", strstr(err, "too large for a file") != NULL,
@@ -2194,7 +2195,7 @@ static void test_image_size(void)
         if (old_handler == SIG_ERR || setrlimit(RLIMIT_FSIZE, &lim) != 0) {
             fail("image-no-room", "cannot limit the file size");
         } else {
-            snprintf(opts, sizeof(opts), "size=2M,file=%s", path);
+            test_fmt(opts, sizeof(opts), "size=2M,file=%s", path);
             t = try_target(opts, err, sizeof(err));
             setrlimit(RLIMIT_FSIZE, &old_lim);
             check("image-no-room", t == NULL,
@@ -2204,7 +2205,7 @@ static void test_image_size(void)
             nvmeof_target_destroy(t);
         }
         if (old_handler != SIG_ERR) {
-            signal(SIGXFSZ, old_handler);
+            (void)signal(SIGXFSZ, old_handler);
         }
     }
 
@@ -2931,7 +2932,7 @@ static void test_mixed_config(void)
     char many[256] = "size=1M";
     for (int i = 2; i <= NVMEOF_MAX_NS + 1; i++) {
         char one[32];
-        snprintf(one, sizeof(one), ",ns=%d,size=1M", i);
+        test_fmt(one, sizeof(one), ",ns=%d,size=1M", i);
         strncat(many, one, sizeof(many) - strlen(many) - 1);
     }
     check("mixed-cfg", !nvmeof_target_cfg_parse(&cfg, many, err, sizeof(err)),

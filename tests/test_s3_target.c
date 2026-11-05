@@ -38,6 +38,7 @@
 #include "s3/s3_http.h"
 #include "s3/s3_target.h"
 #include "s3/s3_token.h"
+#include "test_fmt.h"
 
 #define HOST_BUF_SIZE (1U << 20)
 #define HOST_BASE     UINT64_C(0x40000000)
@@ -788,7 +789,7 @@ static void test_rdma_ranged_get(void)
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         char hdrline[64];
-        snprintf(hdrline, sizeof(hdrline), "Range: %s", cases[i].range);
+        test_fmt(hdrline, sizeof(hdrline), "Range: %s", cases[i].range);
         memset(h->buf + dst, 0xaa, len);
         mint(token, dst, len);
 
@@ -861,7 +862,7 @@ static void test_rdma_put_body_get(void)
     }
     e = hdr(&r, "ETag");
     if (e != NULL) {
-        snprintf(put_etag, sizeof(put_etag), "%s", e);
+        test_fmt(put_etag, sizeof(put_etag), "%s", e);
     }
     reply_free(&r);
 
@@ -950,7 +951,7 @@ static void test_body_ranged_get(void)
     };
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         char hdrline[64];
-        snprintf(hdrline, sizeof(hdrline), "Range: %s", bad[i]);
+        test_fmt(hdrline, sizeof(hdrline), "Range: %s", bad[i]);
         if (!exec_req(t, &r, NULL, NULL, "GET", "/ernic/ranged", NULL, hdrline,
                       NULL, 0)) {
             fail(name, "\"%s\": could not be built", bad[i]);
@@ -1242,7 +1243,7 @@ static void test_routing(void)
         if (id == NULL) {
             fail(name, "no x-amz-request-id");
         } else {
-            snprintf(first, sizeof(first), "%s", id);
+            test_fmt(first, sizeof(first), "%s", id);
         }
         reply_free(&r);
     }
@@ -1271,7 +1272,7 @@ static void test_list_objects(void)
     static const char *const keys[] = {"a/one", "a/two", "b/three", "top"};
     for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
         char target[64];
-        snprintf(target, sizeof(target), "/ernic/%s", keys[i]);
+        test_fmt(target, sizeof(target), "/ernic/%s", keys[i]);
         if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, "x", 1)) {
             reply_free(&r);
         }
@@ -1287,7 +1288,7 @@ static void test_list_objects(void)
         }
         for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
             char want[64];
-            snprintf(want, sizeof(want), "<Key>%s</Key>", keys[i]);
+            test_fmt(want, sizeof(want), "<Key>%s</Key>", keys[i]);
             if (strstr(r.text, want) == NULL) {
                 fail(name, "\"%s\" missing from the listing", keys[i]);
             }
@@ -1387,7 +1388,7 @@ static void test_multipart(void)
     for (unsigned i = 0; i < nparts; i++) {
         unsigned n = order[i];
         char target[128];
-        snprintf(target, sizeof(target), "/ernic/big?partNumber=%u&uploadId=%s",
+        test_fmt(target, sizeof(target), "/ernic/big?partNumber=%u&uploadId=%s",
                  n, upload_id);
         mint(token, (n - 1) * part, part);
         if (!exec_req(t, &r, &host_ops, h, "PUT", target, token, NULL, NULL,
@@ -1409,7 +1410,7 @@ static void test_multipart(void)
     }
 
     char target[128];
-    snprintf(target, sizeof(target), "/ernic/big?uploadId=%s", upload_id);
+    test_fmt(target, sizeof(target), "/ernic/big?uploadId=%s", upload_id);
     if (!exec_req(t, &r, NULL, NULL, "POST", target, NULL, NULL, NULL, 0)) {
         fail(name, "complete could not be built");
         goto out;
@@ -1421,7 +1422,7 @@ static void test_multipart(void)
     }
     /* A multipart ETag is 32 hex digits, a dash, and the part count. */
     char want_suffix[16];
-    snprintf(want_suffix, sizeof(want_suffix), "-%u&quot;", nparts);
+    test_fmt(want_suffix, sizeof(want_suffix), "-%u&quot;", nparts);
     if (strstr(r.text, want_suffix) == NULL) {
         fail(name, "complete ETag is not in multipart form: %s", r.text);
     }
@@ -1484,7 +1485,7 @@ static void test_multipart_errors(void)
 
     char target[128];
 
-    snprintf(target, sizeof(target), "/ernic/x?partNumber=0&uploadId=%s",
+    test_fmt(target, sizeof(target), "/ernic/x?partNumber=0&uploadId=%s",
              upload_id);
     if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, "d", 1)) {
         if (r.resp.status != 400) {
@@ -1493,7 +1494,7 @@ static void test_multipart_errors(void)
         reply_free(&r);
     }
 
-    snprintf(target, sizeof(target), "/ernic/x?partNumber=1&uploadId=nope");
+    test_fmt(target, sizeof(target), "/ernic/x?partNumber=1&uploadId=nope");
     if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, "d", 1)) {
         if (r.resp.status != 404) {
             fail(name, "unknown uploadId gave status %d, want 404",
@@ -1503,7 +1504,7 @@ static void test_multipart_errors(void)
     }
 
     /* A part uploaded against the wrong key is not this upload's part. */
-    snprintf(target, sizeof(target), "/ernic/y?partNumber=1&uploadId=%s",
+    test_fmt(target, sizeof(target), "/ernic/y?partNumber=1&uploadId=%s",
              upload_id);
     if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, "d", 1)) {
         if (r.resp.status != 404) {
@@ -1514,7 +1515,7 @@ static void test_multipart_errors(void)
     }
 
     /* Completing with no parts at all. */
-    snprintf(target, sizeof(target), "/ernic/x?uploadId=%s", upload_id);
+    test_fmt(target, sizeof(target), "/ernic/x?uploadId=%s", upload_id);
     if (exec_req(t, &r, NULL, NULL, "POST", target, NULL, NULL, NULL, 0)) {
         if (r.resp.status != 400) {
             fail(name, "empty complete gave status %d, want 400",
@@ -1571,7 +1572,7 @@ static void test_multipart_part_rejected(void)
     }
     reply_free(&r);
 
-    snprintf(target, sizeof(target), "/ernic/p?partNumber=1&uploadId=%s",
+    test_fmt(target, sizeof(target), "/ernic/p?partNumber=1&uploadId=%s",
              upload_id);
     if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, payload, 2000)) {
         if (r.resp.status != 200) {
@@ -1582,7 +1583,7 @@ static void test_multipart_part_rejected(void)
 
     /* A part that does not fit, then an oversized overwrite of the part
      * that does: neither may disturb what the upload already holds. */
-    snprintf(target, sizeof(target), "/ernic/p?partNumber=2&uploadId=%s",
+    test_fmt(target, sizeof(target), "/ernic/p?partNumber=2&uploadId=%s",
              upload_id);
     if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, payload,
                  sizeof(payload))) {
@@ -1592,7 +1593,7 @@ static void test_multipart_part_rejected(void)
         }
         reply_free(&r);
     }
-    snprintf(target, sizeof(target), "/ernic/p?partNumber=1&uploadId=%s",
+    test_fmt(target, sizeof(target), "/ernic/p?partNumber=1&uploadId=%s",
              upload_id);
     if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, payload,
                  sizeof(payload))) {
@@ -1603,7 +1604,7 @@ static void test_multipart_part_rejected(void)
         reply_free(&r);
     }
 
-    snprintf(target, sizeof(target), "/ernic/p?uploadId=%s", upload_id);
+    test_fmt(target, sizeof(target), "/ernic/p?uploadId=%s", upload_id);
     if (!exec_req(t, &r, NULL, NULL, "POST", target, NULL, NULL, NULL, 0)) {
         fail(name, "complete could not be built");
         goto out;
@@ -1660,7 +1661,7 @@ static void test_overlong_upload_id(void)
         reply_free(&r);
     }
 
-    snprintf(target, sizeof(target), "/ernic/fox.txt?partNumber=1&uploadId=%s",
+    test_fmt(target, sizeof(target), "/ernic/fox.txt?partNumber=1&uploadId=%s",
              id);
     if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, "d", 1)) {
         if (r.resp.status != 404) {
@@ -1682,7 +1683,7 @@ static void test_overlong_upload_id(void)
         reply_free(&r);
     }
 
-    snprintf(target, sizeof(target), "/ernic/fox.txt?uploadId=%s", id);
+    test_fmt(target, sizeof(target), "/ernic/fox.txt?uploadId=%s", id);
     if (exec_req(t, &r, NULL, NULL, "POST", target, NULL, NULL, NULL, 0)) {
         if (r.resp.status != 404) {
             fail(name, "completing an over-long uploadId gave %d, want 404",
@@ -1714,7 +1715,7 @@ static bool initiate(struct s3_target *t, const char *key, char *id,
     char target[128];
     bool got;
 
-    snprintf(target, sizeof(target), "/ernic/%s?uploads", key);
+    test_fmt(target, sizeof(target), "/ernic/%s?uploads", key);
     if (!exec_req(t, &r, NULL, NULL, "POST", target, NULL, NULL, NULL, 0)) {
         fail(name, "initiate %s could not be built", key);
         return false;
@@ -1753,7 +1754,7 @@ static void test_upload_id(void)
     if (!initiate(t, "k", first, sizeof(first), name)) {
         goto out;
     }
-    snprintf(target, sizeof(target), "/ernic/k?uploadId=%s", first);
+    test_fmt(target, sizeof(target), "/ernic/k?uploadId=%s", first);
     if (exec_req(t, &r, NULL, NULL, "DELETE", target, NULL, NULL, NULL, 0)) {
         if (r.resp.status != 204) {
             fail(name, "abort gave status %d, want 204", r.resp.status);
@@ -1844,7 +1845,7 @@ static void test_capacity(void)
     }
     for (int i = 0; i < 3; i++) {
         char target[32];
-        snprintf(target, sizeof(target), "/ernic/s%d", i);
+        test_fmt(target, sizeof(target), "/ernic/s%d", i);
         if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, "x", 1)) {
             int want = i < 2 ? 200 : 507;
             if (r.resp.status != want) {
@@ -1879,7 +1880,7 @@ static void test_multipart_capacity(void)
 
     static const char *const keys[] = {"a", "b"};
     for (int i = 0; i < 2; i++) {
-        snprintf(target, sizeof(target), "/ernic/%s?uploads", keys[i]);
+        test_fmt(target, sizeof(target), "/ernic/%s?uploads", keys[i]);
         if (!exec_req(t, &r, NULL, NULL, "POST", target, NULL, NULL, NULL, 0)) {
             fail(name, "initiate %s could not be built", keys[i]);
             goto out;
@@ -1891,7 +1892,7 @@ static void test_multipart_capacity(void)
         reply_free(&r);
     }
 
-    snprintf(target, sizeof(target), "/ernic/a?partNumber=1&uploadId=%s",
+    test_fmt(target, sizeof(target), "/ernic/a?partNumber=1&uploadId=%s",
              ids[0]);
     if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, payload,
                  sizeof(payload))) {
@@ -1906,7 +1907,7 @@ static void test_multipart_capacity(void)
     }
 
     /* Those 3000 bytes are gone from the 4096 the store has, whoever asks. */
-    snprintf(target, sizeof(target), "/ernic/b?partNumber=1&uploadId=%s",
+    test_fmt(target, sizeof(target), "/ernic/b?partNumber=1&uploadId=%s",
              ids[1]);
     if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, payload,
                  sizeof(payload))) {
@@ -1927,7 +1928,7 @@ static void test_multipart_capacity(void)
 
     /* Complete charges the assembled object once, not twice and not zero
      * times: the part bytes become the object's bytes. */
-    snprintf(target, sizeof(target), "/ernic/a?uploadId=%s", ids[0]);
+    test_fmt(target, sizeof(target), "/ernic/a?uploadId=%s", ids[0]);
     if (exec_req(t, &r, NULL, NULL, "POST", target, NULL, NULL, NULL, 0)) {
         if (r.resp.status != 200) {
             fail(name, "complete status %d: %s", r.resp.status, r.text);
@@ -1953,7 +1954,7 @@ static void test_multipart_capacity(void)
     }
 
     /* An abandoned upload gives its bytes back when it is aborted. */
-    snprintf(target, sizeof(target), "/ernic/b?partNumber=1&uploadId=%s",
+    test_fmt(target, sizeof(target), "/ernic/b?partNumber=1&uploadId=%s",
              ids[1]);
     if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, payload,
                  sizeof(payload))) {
@@ -1963,7 +1964,7 @@ static void test_multipart_capacity(void)
         }
         reply_free(&r);
     }
-    snprintf(target, sizeof(target), "/ernic/b?uploadId=%s", ids[1]);
+    test_fmt(target, sizeof(target), "/ernic/b?uploadId=%s", ids[1]);
     if (exec_req(t, &r, NULL, NULL, "DELETE", target, NULL, NULL, NULL, 0)) {
         if (r.resp.status != 204) {
             fail(name, "abort gave status %d, want 204", r.resp.status);
@@ -2002,7 +2003,7 @@ static void expect_rdma_failure(const char *name, const char *what,
     int reply_code = 0;
     uint64_t bytes_val;
 
-    snprintf(want, sizeof(want), "<Code>%s</Code>", code);
+    test_fmt(want, sizeof(want), "<Code>%s</Code>", code);
     if (r->resp.status != status) {
         fail(name, "%s: status %d, want %d: %s", what, r->resp.status, status,
              r->text);
@@ -2073,7 +2074,7 @@ static void test_rdma_put_failures(void)
         goto out;
     }
 
-    snprintf(target, sizeof(target), "/ernic/mp?partNumber=0&uploadId=%s",
+    test_fmt(target, sizeof(target), "/ernic/mp?partNumber=0&uploadId=%s",
              upload_id);
     if (exec_req(t, &r, &host_ops, h, "PUT", target, token, NULL, NULL, 0)) {
         expect_rdma_failure(name, "partNumber=0", &r, 400, "InvalidPart", 0);
@@ -2088,7 +2089,7 @@ static void test_rdma_put_failures(void)
 
     /* 5000 bytes do not fit a 4K store, as a part or as an object. */
     mint(token, 0, 5000);
-    snprintf(target, sizeof(target), "/ernic/mp?partNumber=1&uploadId=%s",
+    test_fmt(target, sizeof(target), "/ernic/mp?partNumber=1&uploadId=%s",
              upload_id);
     if (exec_req(t, &r, &host_ops, h, "PUT", target, token, NULL, NULL, 0)) {
         expect_rdma_failure(name, "part past capacity", &r, 507,
@@ -2285,7 +2286,7 @@ static void test_upload_table_full(void)
 
     for (unsigned i = 0; i < 16; i++) {
         char key[16];
-        snprintf(key, sizeof(key), "k%u", i);
+        test_fmt(key, sizeof(key), "k%u", i);
         if (!initiate(t, key, id, sizeof(id), name)) {
             goto out;
         }
@@ -2312,7 +2313,7 @@ static void test_upload_table_full(void)
     reply_free(&r);
 
     /* Abort the last upload; its slot takes the next initiate. */
-    snprintf(target, sizeof(target), "/ernic/k15?uploadId=%s", id);
+    test_fmt(target, sizeof(target), "/ernic/k15?uploadId=%s", id);
     if (exec_req(t, &r, NULL, NULL, "DELETE", target, NULL, NULL, NULL, 0)) {
         if (r.resp.status != 204) {
             fail(name, "abort gave status %d, want 204", r.resp.status);
@@ -2351,7 +2352,7 @@ static void test_complete_no_slot(void)
     if (!initiate(t, "y", id, sizeof(id), name)) {
         goto out;
     }
-    snprintf(target, sizeof(target), "/ernic/y?partNumber=1&uploadId=%s", id);
+    test_fmt(target, sizeof(target), "/ernic/y?partNumber=1&uploadId=%s", id);
     if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, "hello", 5)) {
         if (r.resp.status != 200) {
             fail(name, "part status %d, want 200", r.resp.status);
@@ -2359,7 +2360,7 @@ static void test_complete_no_slot(void)
         reply_free(&r);
     }
 
-    snprintf(target, sizeof(target), "/ernic/y?uploadId=%s", id);
+    test_fmt(target, sizeof(target), "/ernic/y?uploadId=%s", id);
     if (exec_req(t, &r, NULL, NULL, "POST", target, NULL, NULL, NULL, 0)) {
         if (r.resp.status != 507 ||
             strstr(r.text, "<Code>EntityTooLarge</Code>") == NULL) {
@@ -2414,7 +2415,7 @@ static void test_bucket_too_long(void)
 
     memset(bucket, 'b', S3_BUCKET_MAX - 1);
     bucket[S3_BUCKET_MAX - 1] = '\0';
-    snprintf(opts, sizeof(opts), "bucket=%s", bucket);
+    test_fmt(opts, sizeof(opts), "bucket=%s", bucket);
 
     struct s3_target *t = make_target(opts);
     if (t == NULL) {
@@ -2422,7 +2423,7 @@ static void test_bucket_too_long(void)
     }
 
     /* One character more, as an object and as a bucket request. */
-    snprintf(target, sizeof(target), "/%sX/key", bucket);
+    test_fmt(target, sizeof(target), "/%sX/key", bucket);
     if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, "x", 1)) {
         if (r.resp.status != 404 ||
             strstr(r.text, "<Code>NoSuchBucket</Code>") == NULL) {
@@ -2431,7 +2432,7 @@ static void test_bucket_too_long(void)
         }
         reply_free(&r);
     }
-    snprintf(target, sizeof(target), "/%sX", bucket);
+    test_fmt(target, sizeof(target), "/%sX", bucket);
     if (exec_req(t, &r, NULL, NULL, "GET", target, NULL, NULL, NULL, 0)) {
         if (r.resp.status != 404) {
             fail(name, "listing a longer bucket: status %d, want 404",
@@ -2451,7 +2452,7 @@ static void test_bucket_too_long(void)
     }
 
     /* The configured name itself, at the longest a name can be, works. */
-    snprintf(target, sizeof(target), "/%s/key", bucket);
+    test_fmt(target, sizeof(target), "/%s/key", bucket);
     if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL, "x", 1)) {
         if (r.resp.status != 200) {
             fail(name, "PUT into the bucket: status %d, want 200",
@@ -2770,7 +2771,7 @@ static void test_request_alloc_failures(void)
                          seed, sizeof(seed))) {
                 reply_free(&r);
             }
-            snprintf(target, sizeof(target), "%s",
+            test_fmt(target, sizeof(target), "%s",
                      cases[c].target ? cases[c].target : "");
             if (cases[c].kind == INJECT_COMPLETES) {
                 /* An upload of one 5-byte part, for the complete. */
@@ -2778,13 +2779,13 @@ static void test_request_alloc_failures(void)
                     s3_target_destroy(t);
                     goto out;
                 }
-                snprintf(target, sizeof(target),
+                test_fmt(target, sizeof(target),
                          "/ernic/mp?partNumber=1&uploadId=%s", id);
                 if (exec_req(t, &r, NULL, NULL, "PUT", target, NULL, NULL,
                              "hello", 5)) {
                     reply_free(&r);
                 }
-                snprintf(target, sizeof(target), "/ernic/mp?uploadId=%s", id);
+                test_fmt(target, sizeof(target), "/ernic/mp?uploadId=%s", id);
             }
 
             /* exec_req() arms the failure around s3_target_exec() alone, so

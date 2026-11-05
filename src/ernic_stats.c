@@ -24,6 +24,9 @@
 #include "ernic_limits.h"
 #include "ernic_log.h"
 #include "ernic_stats.h"
+#include "net/net_headers.h"
+
+#define STATS_FILE_MODE (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH) /* 0644 */
 
 struct qp_stats {
     bool live; /* counted against since it was last forgotten */
@@ -65,7 +68,7 @@ struct ernic_stats {
     char *nic_profile;
     uint16_t pci_vid;
     uint16_t pci_did;
-    uint8_t mac[6];
+    uint8_t mac[ETH_ADDR_LEN];
     const char *connection; /* the caller's literal */
     ernic_stats_section_fn section_fn;
     void *section_opaque;
@@ -412,6 +415,7 @@ static void write_contents(const struct ernic_stats *st, FILE *fp)
         [ERNIC_STAT_WR_SEND_DC] = "SEND_DC",
     };
     bool any_qp = false;
+    char mac[ETH_ADDR_STR_LEN];
 
     /* The per-QP loop below indexes both arrays with one bound. */
     _Static_assert(sizeof(opcode_names) / sizeof(opcode_names[0]) ==
@@ -428,8 +432,8 @@ static void write_contents(const struct ernic_stats *st, FILE *fp)
     } else {
         fprintf(fp, "  %-11s : (not set)\n", "pci");
     }
-    fprintf(fp, "  %-11s : %02x:%02x:%02x:%02x:%02x:%02x\n", "mac", st->mac[0],
-            st->mac[1], st->mac[2], st->mac[3], st->mac[4], st->mac[5]);
+    eth_addr_str(st->mac, mac);
+    fprintf(fp, "  %-11s : %s\n", "mac", mac);
     fprintf(fp, "  %-11s : %s\n", "connection", or_not_set(st->connection));
     fprintf(fp, "  %-11s : %s\n", "nic_profile", or_not_set(st->nic_profile));
     /* The " : " separator is what ernic-exporter splits every stat line on;
@@ -543,7 +547,7 @@ bool ernic_stats_write(struct ernic_stats *st)
         free(tmp_path);
         return false;
     }
-    fp = fchmod(fd, 0644) == 0 ? fdopen(fd, "w") : NULL;
+    fp = fchmod(fd, STATS_FILE_MODE) == 0 ? fdopen(fd, "w") : NULL;
     if (!fp) {
         ernic_log(ERNIC_LOG_ERROR,
                   "stats: failed to open %s for stats file %s: %s", tmp_path,

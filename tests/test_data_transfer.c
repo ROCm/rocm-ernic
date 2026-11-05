@@ -264,7 +264,8 @@ static int poll_completions(struct test_context *ctx, int expected_sends,
         if (n == 0) {
             /* Small delay if no completions */
             const struct timespec delay = {.tv_sec = 0, .tv_nsec = 100000};
-            thrd_sleep(&delay, NULL);
+            /* Waking early only shortens the delay. */
+            (void)thrd_sleep(&delay, NULL);
         }
     }
 

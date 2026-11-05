@@ -538,7 +538,9 @@ static struct PVRDMADev g_fake_pvrdma;
 
 static struct ionic_adminq_ctx g_ctx;
 /* Made by the first ctx_reset() and kept for the whole run: the fuzz
- * harness that shares this file has no main() of its own to make it. */
+ * harness that shares this file has no main() of its own to make it.
+ * The code under test changes it, so it can't point to const.
+ * NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) */
 static struct ernic_dma *g_dma;
 
 /* Two mapped QPs, a poisoned guest memory, and counters that succeed. */

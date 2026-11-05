@@ -32,6 +32,7 @@
 #include "ernic_limits.h"
 #include "ernic_stats.h"
 #include "s3_alloc_fail.h"
+#include "test_fmt.h"
 
 #define DIR_TEMPLATE "/tmp/ernic-stats-XXXXXX"
 #define STATS_NAME   "ernic.stats"
@@ -65,7 +66,7 @@ static bool fixture_init(const char *test, Fixture *f, const char *name)
     if (!check(test, mkdtemp(f->dir) != NULL, "mkdtemp failed")) {
         return false;
     }
-    snprintf(f->path, sizeof(f->path), "%s/%s", f->dir, name);
+    test_fmt(f->path, sizeof(f->path), "%s/%s", f->dir, name);
     f->st = ernic_stats_create();
     if (!check(test, f->st != NULL, "ernic_stats_create() failed") ||
         !check(test, ernic_stats_set_file(f->st, f->path) == 0,
@@ -138,7 +139,7 @@ static bool has_count(const char *text, uint64_t count)
     if (!text || !g_str_has_prefix(text, "=== ROCm ERNIC Statistics ===\n")) {
         return false;
     }
-    snprintf(line, sizeof(line), "\nWrite count : %" PRIu64 "\n", count);
+    test_fmt(line, sizeof(line), "\nWrite count : %" PRIu64 "\n", count);
     return strstr(text, line) != NULL;
 }
 
@@ -337,7 +338,7 @@ static void test_symlink_is_replaced(void)
     if (!fixture_init(T, &f, STATS_NAME)) {
         return;
     }
-    snprintf(other, sizeof(other), "%s/%s", f.dir, OTHER);
+    test_fmt(other, sizeof(other), "%s/%s", f.dir, OTHER);
 
     /* The stats file replaces a symlink at its path; it never writes
      * through one to the file it names */
@@ -560,7 +561,7 @@ static void test_qp_counters(void)
     ernic_stats_write(f.st);
     char *text = read_file(f.path);
     char last_line[32];
-    snprintf(last_line, sizeof(last_line), "  QP %" PRIu32 ":", last);
+    test_fmt(last_line, sizeof(last_line), "  QP %" PRIu32 ":", last);
     const char *qp3 = text ? strstr(text, "\n  QP 3:\n") : NULL;
     const char *qp_last = text ? strstr(text, last_line) : NULL;
     check(T, qp3 && qp_last && qp3 < qp_last, "the QPs aren't listed in order");

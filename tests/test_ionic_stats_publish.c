@@ -283,12 +283,13 @@ static void lif_init_then_publish(char *got, size_t len)
     lif_init(emu, LIF_PA);
     memset(g_mem, POISON, sizeof(g_mem));
     ionic_eth_emu_publish_stats(emu, 5000);
-    snprintf(got, len, "writes %u, block poisoned %zu, before %zu, after %zu",
-             g_nwrites,
-             poisoned(LIF_PA + IONIC_LIF_INFO_STATS_OFF, IONIC_LIF_STATS_BYTES),
-             poisoned(LIF_PA, IONIC_LIF_INFO_STATS_OFF),
-             poisoned(LIF_PA + IONIC_LIF_INFO_STATS_OFF + IONIC_LIF_STATS_BYTES,
-                      64));
+    (void)snprintf(
+        got, len, "writes %u, block poisoned %zu, before %zu, after %zu",
+        g_nwrites,
+        poisoned(LIF_PA + IONIC_LIF_INFO_STATS_OFF, IONIC_LIF_STATS_BYTES),
+        poisoned(LIF_PA, IONIC_LIF_INFO_STATS_OFF),
+        poisoned(LIF_PA + IONIC_LIF_INFO_STATS_OFF + IONIC_LIF_STATS_BYTES,
+                 64));
     ionic_eth_emu_destroy(emu);
 }
 
@@ -303,12 +304,13 @@ static void traffic_then_publish(char *got, size_t len)
     tx_frame(emu, mac_ucast, 200);
     rx_tap(emu, mac_bcast, 60);
     ionic_eth_emu_publish_stats(emu, 5000);
-    snprintf(got, len,
-             "tx_ucast %" PRIu64 "/%" PRIu64 ", rx_bcast %" PRIu64 "/%" PRIu64,
-             guest_qword(LIF_PA, IONIC_LIF_TX_UCAST_PACKETS),
-             guest_qword(LIF_PA, IONIC_LIF_TX_UCAST_BYTES),
-             guest_qword(LIF_PA, IONIC_LIF_RX_BCAST_PACKETS),
-             guest_qword(LIF_PA, IONIC_LIF_RX_BCAST_BYTES));
+    (void)snprintf(got, len,
+                   "tx_ucast %" PRIu64 "/%" PRIu64 ", rx_bcast %" PRIu64
+                   "/%" PRIu64,
+                   guest_qword(LIF_PA, IONIC_LIF_TX_UCAST_PACKETS),
+                   guest_qword(LIF_PA, IONIC_LIF_TX_UCAST_BYTES),
+                   guest_qword(LIF_PA, IONIC_LIF_RX_BCAST_PACKETS),
+                   guest_qword(LIF_PA, IONIC_LIF_RX_BCAST_BYTES));
     ionic_eth_emu_destroy(emu);
 }
 
@@ -330,28 +332,28 @@ static void interval_elapsed(char *got, size_t len)
 {
     static const uint64_t t[] = {5000, 5500, 6000};
 
-    snprintf(got, len, "writes %u", publish_at(1000, t, 3));
+    (void)snprintf(got, len, "writes %u", publish_at(1000, t, 3));
 }
 
 static void interval_9_of_10(char *got, size_t len)
 {
     static const uint64_t t[] = {100, 109};
 
-    snprintf(got, len, "writes %u", publish_at(10, t, 2));
+    (void)snprintf(got, len, "writes %u", publish_at(10, t, 2));
 }
 
 static void interval_10_of_10(char *got, size_t len)
 {
     static const uint64_t t[] = {100, 110};
 
-    snprintf(got, len, "writes %u", publish_at(10, t, 2));
+    (void)snprintf(got, len, "writes %u", publish_at(10, t, 2));
 }
 
 static void clock_jump(char *got, size_t len)
 {
     static const uint64_t t[] = {100, 200};
 
-    snprintf(got, len, "writes %u", publish_at(10, t, 2));
+    (void)snprintf(got, len, "writes %u", publish_at(10, t, 2));
 }
 
 static void before_lif_init(char *got, size_t len)
@@ -360,7 +362,7 @@ static void before_lif_init(char *got, size_t len)
 
     ionic_eth_emu_publish_stats(emu, 0);
     ionic_eth_emu_publish_stats(emu, 1000);
-    snprintf(got, len, "writes %u", g_nwrites);
+    (void)snprintf(got, len, "writes %u", g_nwrites);
     ionic_eth_emu_destroy(emu);
 }
 
@@ -370,7 +372,7 @@ static void lif_init_no_pa(char *got, size_t len)
 
     lif_init(emu, 0);
     ionic_eth_emu_publish_stats(emu, 1000);
-    snprintf(got, len, "writes %u", g_nwrites);
+    (void)snprintf(got, len, "writes %u", g_nwrites);
     ionic_eth_emu_destroy(emu);
 }
 
@@ -384,7 +386,7 @@ static void after_lif_reset(char *got, size_t len)
     g_nwrites = 0;
     ionic_eth_emu_publish_stats(emu, 1000);
     ionic_eth_emu_publish_stats(emu, 2000);
-    snprintf(got, len, "writes %u", g_nwrites);
+    (void)snprintf(got, len, "writes %u", g_nwrites);
     ionic_eth_emu_destroy(emu);
 }
 
@@ -398,8 +400,8 @@ static void after_device_reset(char *got, size_t len)
     devcmd(emu, IONIC_CMD_RESET, 0);
     g_nwrites = 0;
     ionic_eth_emu_publish_stats(emu, 1000);
-    snprintf(got, len, "writes %u, tx_ucast_packets %" PRIu64, g_nwrites,
-             counter(emu, IONIC_LIF_TX_UCAST_PACKETS));
+    (void)snprintf(got, len, "writes %u, tx_ucast_packets %" PRIu64, g_nwrites,
+                   counter(emu, IONIC_LIF_TX_UCAST_PACKETS));
     ionic_eth_emu_destroy(emu);
 }
 
@@ -413,7 +415,7 @@ static void reinit_new_pa(char *got, size_t len)
     memset(g_mem, POISON, sizeof(g_mem));
     /* Within the interval: LIF_INIT makes the next tick write anyway. */
     ionic_eth_emu_publish_stats(emu, 101);
-    snprintf(
+    (void)snprintf(
         got, len, "writes %u, old poisoned %zu, new poisoned %zu", g_nwrites,
         poisoned(LIF_PA + IONIC_LIF_INFO_STATS_OFF, IONIC_LIF_STATS_BYTES),
         poisoned(LIF_PA2 + IONIC_LIF_INFO_STATS_OFF, IONIC_LIF_STATS_BYTES));
@@ -435,12 +437,12 @@ static void write_fails(char *got, size_t len)
     ionic_eth_emu_publish_stats(emu, 100); /* fails, logged */
     ionic_eth_emu_publish_stats(emu, 110); /* fails, not logged again */
     ionic_eth_emu_publish_stats(emu, 120); /* retried: works */
-    snprintf(got, len,
-             "writes %u, warnings %u, counter unchanged %d, guest "
-             "tx_ucast_packets %" PRIu64,
-             g_nwrites, g_nwarnings,
-             counter(emu, IONIC_LIF_TX_UCAST_PACKETS) == before,
-             guest_qword(LIF_PA, IONIC_LIF_TX_UCAST_PACKETS));
+    (void)snprintf(got, len,
+                   "writes %u, warnings %u, counter unchanged %d, guest "
+                   "tx_ucast_packets %" PRIu64,
+                   g_nwrites, g_nwarnings,
+                   counter(emu, IONIC_LIF_TX_UCAST_PACKETS) == before,
+                   guest_qword(LIF_PA, IONIC_LIF_TX_UCAST_PACKETS));
     ionic_eth_emu_destroy(emu);
 }
 
@@ -460,7 +462,7 @@ static void reserved_zero(char *got, size_t len)
             bad++;
         }
     }
-    snprintf(got, len, "nonzero reserved qwords %u", bad);
+    (void)snprintf(got, len, "nonzero reserved qwords %u", bad);
     ionic_eth_emu_destroy(emu);
 }
 
@@ -564,8 +566,9 @@ static void rdma_counters_published(char *got, size_t len)
         in_stats += st->lif[q] == dp_rdma_value(i);
         in_guest += guest_qword(LIF_PA, q) == dp_rdma_value(i);
     }
-    snprintf(got, len, "counters %u, no slot %u, in stats %u, in guest %u",
-             (unsigned int)IONIC_DP_RDMA_COUNT, no_slot, in_stats, in_guest);
+    (void)snprintf(
+        got, len, "counters %u, no slot %u, in stats %u, in guest %u",
+        (unsigned int)IONIC_DP_RDMA_COUNT, no_slot, in_stats, in_guest);
     ionic_eth_emu_destroy(emu);
 }
 
@@ -587,12 +590,12 @@ static void rdma_counters_device_reset(char *got, size_t len)
     cnp = counter(emu, IONIC_LIF_TX_RDMA_CNP_PACKETS);
     lif_init(emu, LIF_PA);
     ionic_eth_emu_publish_stats(emu, 1000);
-    snprintf(got, len,
-             "before %" PRIu64 ", after %" PRIu64 "/%" PRIu64
-             ", guest after re-init %" PRIu64 "/%" PRIu64,
-             before, cqe, cnp,
-             guest_qword(LIF_PA, IONIC_LIF_RDMA_REQ_RX_CQE_ERR),
-             guest_qword(LIF_PA, IONIC_LIF_TX_RDMA_CNP_PACKETS));
+    (void)snprintf(got, len,
+                   "before %" PRIu64 ", after %" PRIu64 "/%" PRIu64
+                   ", guest after re-init %" PRIu64 "/%" PRIu64,
+                   before, cqe, cnp,
+                   guest_qword(LIF_PA, IONIC_LIF_RDMA_REQ_RX_CQE_ERR),
+                   guest_qword(LIF_PA, IONIC_LIF_TX_RDMA_CNP_PACKETS));
     ionic_eth_emu_destroy(emu);
 }
 
@@ -747,12 +750,12 @@ static void port_init_then_publish(char *got, size_t len)
     port_init(emu, PORT_PA);
     memset(g_mem, POISON, sizeof(g_mem));
     ionic_eth_emu_publish_stats(emu, 5000);
-    snprintf(got, len,
-             "writes %u, block poisoned %zu, status poisoned %zu, sprom "
-             "poisoned %zu",
-             g_nwrites, poisoned(PORT_BLOCK, IONIC_PORT_STATS_BYTES),
-             poisoned(PORT_PA, IONIC_PORT_INFO_STATS_OFF),
-             poisoned(PORT_BLOCK + IONIC_PORT_STATS_BYTES, 64));
+    (void)snprintf(got, len,
+                   "writes %u, block poisoned %zu, status poisoned %zu, sprom "
+                   "poisoned %zu",
+                   g_nwrites, poisoned(PORT_BLOCK, IONIC_PORT_STATS_BYTES),
+                   poisoned(PORT_PA, IONIC_PORT_INFO_STATS_OFF),
+                   poisoned(PORT_BLOCK + IONIC_PORT_STATS_BYTES, 64));
     ionic_eth_emu_destroy(emu);
 }
 
@@ -767,13 +770,13 @@ static void port_traffic_then_publish(char *got, size_t len)
     tx_frame(emu, mac_ucast, 200);
     rx_tap(emu, mac_bcast, 42);
     ionic_eth_emu_publish_stats(emu, 5000);
-    snprintf(got, len,
-             "frames_tx_ok %" PRIu64 ", octets_tx_ok %" PRIu64
-             ", frames_rx_broadcast %" PRIu64 ", frames_rx_64b %" PRIu64,
-             guest_port_qword(IONIC_PORT_FRAMES_TX_OK),
-             guest_port_qword(IONIC_PORT_OCTETS_TX_OK),
-             guest_port_qword(IONIC_PORT_FRAMES_RX_BROADCAST),
-             guest_port_qword(IONIC_PORT_FRAMES_RX_64B));
+    (void)snprintf(got, len,
+                   "frames_tx_ok %" PRIu64 ", octets_tx_ok %" PRIu64
+                   ", frames_rx_broadcast %" PRIu64 ", frames_rx_64b %" PRIu64,
+                   guest_port_qword(IONIC_PORT_FRAMES_TX_OK),
+                   guest_port_qword(IONIC_PORT_OCTETS_TX_OK),
+                   guest_port_qword(IONIC_PORT_FRAMES_RX_BROADCAST),
+                   guest_port_qword(IONIC_PORT_FRAMES_RX_64B));
     emu->net = NULL;
     ionic_eth_emu_destroy(emu);
 }
@@ -789,9 +792,9 @@ static void blocks_after(uint8_t opcode, char *got, size_t len)
     memset(g_mem, POISON, sizeof(g_mem));
     g_nwrites = 0;
     ionic_eth_emu_publish_stats(emu, 1000);
-    snprintf(got, len, "writes %u, lif written %d, port written %d", g_nwrites,
-             poisoned(LIF_BLOCK, IONIC_LIF_STATS_BYTES) == 0,
-             poisoned(PORT_BLOCK, IONIC_PORT_STATS_BYTES) == 0);
+    (void)snprintf(got, len, "writes %u, lif written %d, port written %d",
+                   g_nwrites, poisoned(LIF_BLOCK, IONIC_LIF_STATS_BYTES) == 0,
+                   poisoned(PORT_BLOCK, IONIC_PORT_STATS_BYTES) == 0);
     ionic_eth_emu_destroy(emu);
 }
 
@@ -822,8 +825,8 @@ static void before_port_init(char *got, size_t len)
     lif_init(emu, LIF_PA);
     memset(g_mem, POISON, sizeof(g_mem));
     ionic_eth_emu_publish_stats(emu, 1000);
-    snprintf(got, len, "writes %u, port block poisoned %zu", g_nwrites,
-             poisoned(PORT_BLOCK, IONIC_PORT_STATS_BYTES));
+    (void)snprintf(got, len, "writes %u, port block poisoned %zu", g_nwrites,
+                   poisoned(PORT_BLOCK, IONIC_PORT_STATS_BYTES));
     ionic_eth_emu_destroy(emu);
 }
 
@@ -840,12 +843,12 @@ static void port_reset_then_reinit(char *got, size_t len)
     port_init(emu, PORT_PA);
     memset(g_mem, POISON, sizeof(g_mem));
     ionic_eth_emu_publish_stats(emu, 5000);
-    snprintf(got, len,
-             "frames_rx_all %" PRIu64 ", frames_rx_broadcast %" PRIu64
-             ", rx_bcast_packets %" PRIu64,
-             guest_port_qword(IONIC_PORT_FRAMES_RX_ALL),
-             guest_port_qword(IONIC_PORT_FRAMES_RX_BROADCAST),
-             counter(emu, IONIC_LIF_RX_BCAST_PACKETS));
+    (void)snprintf(got, len,
+                   "frames_rx_all %" PRIu64 ", frames_rx_broadcast %" PRIu64
+                   ", rx_bcast_packets %" PRIu64,
+                   guest_port_qword(IONIC_PORT_FRAMES_RX_ALL),
+                   guest_port_qword(IONIC_PORT_FRAMES_RX_BROADCAST),
+                   counter(emu, IONIC_LIF_RX_BCAST_PACKETS));
     emu->net = NULL;
     ionic_eth_emu_destroy(emu);
 }
@@ -918,9 +921,9 @@ static void tx_sink(char *got, size_t len)
 
     setup_txq(emu);
     tx_frame(emu, mac_ucast, 100);
-    snprintf(got, len, "tx_ucast %" PRIu64 "/%" PRIu64,
-             counter(emu, IONIC_LIF_TX_UCAST_PACKETS),
-             counter(emu, IONIC_LIF_TX_UCAST_BYTES));
+    (void)snprintf(got, len, "tx_ucast %" PRIu64 "/%" PRIu64,
+                   counter(emu, IONIC_LIF_TX_UCAST_PACKETS),
+                   counter(emu, IONIC_LIF_TX_UCAST_BYTES));
     ionic_eth_emu_destroy(emu);
 }
 
@@ -933,11 +936,11 @@ static void tx_send_fails(char *got, size_t len)
     emu->net = (struct ionic_eth_net *)&fake_net;
     g_net_send_rc = -EAGAIN;
     tx_frame(emu, mac_ucast, 100);
-    snprintf(got, len,
-             "tx_ucast %" PRIu64 ", tx_ucast_drop %" PRIu64 "/%" PRIu64,
-             counter(emu, IONIC_LIF_TX_UCAST_PACKETS),
-             counter(emu, IONIC_LIF_TX_UCAST_DROP_PACKETS),
-             counter(emu, IONIC_LIF_TX_UCAST_DROP_BYTES));
+    (void)snprintf(got, len,
+                   "tx_ucast %" PRIu64 ", tx_ucast_drop %" PRIu64 "/%" PRIu64,
+                   counter(emu, IONIC_LIF_TX_UCAST_PACKETS),
+                   counter(emu, IONIC_LIF_TX_UCAST_DROP_PACKETS),
+                   counter(emu, IONIC_LIF_TX_UCAST_DROP_BYTES));
     emu->net = NULL;
     ionic_eth_emu_destroy(emu);
 }
@@ -947,8 +950,8 @@ static void tx_disabled(char *got, size_t len)
     struct ionic_eth_emu *emu = new_emu(1000);
 
     tx_doorbell(emu, 1);
-    snprintf(got, len, "tx_queue_disabled %" PRIu64,
-             counter(emu, IONIC_LIF_TX_QUEUE_DISABLED));
+    (void)snprintf(got, len, "tx_queue_disabled %" PRIu64,
+                   counter(emu, IONIC_LIF_TX_QUEUE_DISABLED));
     ionic_eth_emu_destroy(emu);
 }
 
@@ -958,9 +961,9 @@ static void tx_len_zero(char *got, size_t len)
 
     setup_txq(emu);
     tx_one(emu, TX_BUF, 0);
-    snprintf(got, len, "tx_desc_data_error %" PRIu64 ", head %u",
-             counter(emu, IONIC_LIF_TX_DESC_DATA_ERROR),
-             (unsigned)emu->eth_q[IONIC_QTYPE_TXQ][0].head);
+    (void)snprintf(got, len, "tx_desc_data_error %" PRIu64 ", head %u",
+                   counter(emu, IONIC_LIF_TX_DESC_DATA_ERROR),
+                   (unsigned)emu->eth_q[IONIC_QTYPE_TXQ][0].head);
     ionic_eth_emu_destroy(emu);
 }
 
@@ -970,9 +973,9 @@ static void tx_bad_addr(char *got, size_t len)
 
     setup_txq(emu);
     tx_one(emu, GUEST_MEM_SIZE + 0x1000U, 64);
-    snprintf(got, len, "tx_dma_error %" PRIu64 ", tx_ucast %" PRIu64,
-             counter(emu, IONIC_LIF_TX_DMA_ERROR),
-             counter(emu, IONIC_LIF_TX_UCAST_PACKETS));
+    (void)snprintf(got, len, "tx_dma_error %" PRIu64 ", tx_ucast %" PRIu64,
+                   counter(emu, IONIC_LIF_TX_DMA_ERROR),
+                   counter(emu, IONIC_LIF_TX_UCAST_PACKETS));
     ionic_eth_emu_destroy(emu);
 }
 
@@ -982,9 +985,9 @@ static void rx_tap_ok(char *got, size_t len)
 
     setup_rxq(emu, 1, RX_BUF_CAP);
     rx_tap(emu, mac_ucast, 64);
-    snprintf(got, len, "rx_ucast %" PRIu64 "/%" PRIu64,
-             counter(emu, IONIC_LIF_RX_UCAST_PACKETS),
-             counter(emu, IONIC_LIF_RX_UCAST_BYTES));
+    (void)snprintf(got, len, "rx_ucast %" PRIu64 "/%" PRIu64,
+                   counter(emu, IONIC_LIF_RX_UCAST_PACKETS),
+                   counter(emu, IONIC_LIF_RX_UCAST_BYTES));
     emu->net = NULL;
     ionic_eth_emu_destroy(emu);
 }
@@ -995,12 +998,12 @@ static void rx_tap_no_buffer(char *got, size_t len)
 
     setup_rxq(emu, 0, RX_BUF_CAP);
     rx_tap(emu, mac_ucast, 64);
-    snprintf(got, len,
-             "rx_ucast %" PRIu64 ", rx_ucast_drop %" PRIu64
-             ", rx_queue_empty %" PRIu64,
-             counter(emu, IONIC_LIF_RX_UCAST_PACKETS),
-             counter(emu, IONIC_LIF_RX_UCAST_DROP_PACKETS),
-             counter(emu, IONIC_LIF_RX_QUEUE_EMPTY));
+    (void)snprintf(got, len,
+                   "rx_ucast %" PRIu64 ", rx_ucast_drop %" PRIu64
+                   ", rx_queue_empty %" PRIu64,
+                   counter(emu, IONIC_LIF_RX_UCAST_PACKETS),
+                   counter(emu, IONIC_LIF_RX_UCAST_DROP_PACKETS),
+                   counter(emu, IONIC_LIF_RX_QUEUE_EMPTY));
     emu->net = NULL;
     ionic_eth_emu_destroy(emu);
 }
@@ -1011,12 +1014,12 @@ static void rx_tap_too_big(char *got, size_t len)
 
     setup_rxq(emu, 1, 64);
     rx_tap(emu, mac_ucast, 100);
-    snprintf(got, len,
-             "rx_ucast_drop %" PRIu64 "/%" PRIu64
-             ", rx_desc_data_error %" PRIu64,
-             counter(emu, IONIC_LIF_RX_UCAST_DROP_PACKETS),
-             counter(emu, IONIC_LIF_RX_UCAST_DROP_BYTES),
-             counter(emu, IONIC_LIF_RX_DESC_DATA_ERROR));
+    (void)snprintf(got, len,
+                   "rx_ucast_drop %" PRIu64 "/%" PRIu64
+                   ", rx_desc_data_error %" PRIu64,
+                   counter(emu, IONIC_LIF_RX_UCAST_DROP_PACKETS),
+                   counter(emu, IONIC_LIF_RX_UCAST_DROP_BYTES),
+                   counter(emu, IONIC_LIF_RX_DESC_DATA_ERROR));
     emu->net = NULL;
     ionic_eth_emu_destroy(emu);
 }
@@ -1028,11 +1031,11 @@ static void inbox_no_buffer(char *got, size_t len)
     setup_rxq(emu, 0, RX_BUF_CAP);
     ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast), 64);
     ionic_eth_emu_poll_rx(emu);
-    snprintf(got, len,
-             "rx_ucast_drop %" PRIu64 ", rx_queue_empty %" PRIu64
-             ", still queued %u",
-             counter(emu, IONIC_LIF_RX_UCAST_DROP_PACKETS),
-             counter(emu, IONIC_LIF_RX_QUEUE_EMPTY), emu->inbox_count);
+    (void)snprintf(got, len,
+                   "rx_ucast_drop %" PRIu64 ", rx_queue_empty %" PRIu64
+                   ", still queued %u",
+                   counter(emu, IONIC_LIF_RX_UCAST_DROP_PACKETS),
+                   counter(emu, IONIC_LIF_RX_QUEUE_EMPTY), emu->inbox_count);
     ionic_eth_emu_destroy(emu);
 }
 
@@ -1044,12 +1047,13 @@ static void inbox_too_big_then_ok(char *got, size_t len)
     ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast), 100);
     ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast), 60);
     ionic_eth_emu_poll_rx(emu);
-    snprintf(got, len,
-             "rx_ucast %" PRIu64 ", rx_ucast_drop %" PRIu64
-             ", rx_desc_data_error %" PRIu64 ", still queued %u",
-             counter(emu, IONIC_LIF_RX_UCAST_PACKETS),
-             counter(emu, IONIC_LIF_RX_UCAST_DROP_PACKETS),
-             counter(emu, IONIC_LIF_RX_DESC_DATA_ERROR), emu->inbox_count);
+    (void)snprintf(got, len,
+                   "rx_ucast %" PRIu64 ", rx_ucast_drop %" PRIu64
+                   ", rx_desc_data_error %" PRIu64 ", still queued %u",
+                   counter(emu, IONIC_LIF_RX_UCAST_PACKETS),
+                   counter(emu, IONIC_LIF_RX_UCAST_DROP_PACKETS),
+                   counter(emu, IONIC_LIF_RX_DESC_DATA_ERROR),
+                   emu->inbox_count);
     ionic_eth_emu_destroy(emu);
 }
 
@@ -1061,9 +1065,9 @@ static void inbox_full(char *got, size_t len)
     for (unsigned int i = 0; i <= ETH_INBOX_MAX_FRAMES; i++) {
         rc = ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_bcast), 64);
     }
-    snprintf(got, len, "last rc %d, rx_bcast_drop %" PRIu64 "/%" PRIu64, rc,
-             counter(emu, IONIC_LIF_RX_BCAST_DROP_PACKETS),
-             counter(emu, IONIC_LIF_RX_BCAST_DROP_BYTES));
+    (void)snprintf(got, len, "last rc %d, rx_bcast_drop %" PRIu64 "/%" PRIu64,
+                   rc, counter(emu, IONIC_LIF_RX_BCAST_DROP_PACKETS),
+                   counter(emu, IONIC_LIF_RX_BCAST_DROP_BYTES));
     ionic_eth_emu_destroy(emu);
 }
 
@@ -1082,13 +1086,13 @@ static void rx_tap_at(size_t frame_len, char *got, size_t len)
 
     setup_rxq(emu, 1, RX_BUF_CAP);
     rx_tap(emu, mac_ucast, frame_len);
-    snprintf(got, len,
-             "rx_ucast %" PRIu64 ", rx_desc_data_error %" PRIu64
-             ", frames_rx_too_long %" PRIu64 ", frames_rx_ok %" PRIu64,
-             counter(emu, IONIC_LIF_RX_UCAST_PACKETS),
-             counter(emu, IONIC_LIF_RX_DESC_DATA_ERROR),
-             port_counter(emu, IONIC_PORT_FRAMES_RX_TOO_LONG),
-             port_counter(emu, IONIC_PORT_FRAMES_RX_OK));
+    (void)snprintf(got, len,
+                   "rx_ucast %" PRIu64 ", rx_desc_data_error %" PRIu64
+                   ", frames_rx_too_long %" PRIu64 ", frames_rx_ok %" PRIu64,
+                   counter(emu, IONIC_LIF_RX_UCAST_PACKETS),
+                   counter(emu, IONIC_LIF_RX_DESC_DATA_ERROR),
+                   port_counter(emu, IONIC_PORT_FRAMES_RX_TOO_LONG),
+                   port_counter(emu, IONIC_PORT_FRAMES_RX_OK));
     emu->net = NULL;
     ionic_eth_emu_destroy(emu);
 }
@@ -1109,9 +1113,10 @@ static void rx_tap_no_buffer_port(char *got, size_t len)
 
     setup_rxq(emu, 0, RX_BUF_CAP);
     rx_tap(emu, mac_ucast, 64);
-    snprintf(got, len, "frames_rx_ok %" PRIu64 ", frames_rx_dropped %" PRIu64,
-             port_counter(emu, IONIC_PORT_FRAMES_RX_OK),
-             port_counter(emu, IONIC_PORT_FRAMES_RX_DROPPED));
+    (void)snprintf(got, len,
+                   "frames_rx_ok %" PRIu64 ", frames_rx_dropped %" PRIu64,
+                   port_counter(emu, IONIC_PORT_FRAMES_RX_OK),
+                   port_counter(emu, IONIC_PORT_FRAMES_RX_DROPPED));
     emu->net = NULL;
     ionic_eth_emu_destroy(emu);
 }
@@ -1129,12 +1134,12 @@ static void inbox_wait_port(char *got, size_t len)
     waiting = port_counter(emu, IONIC_PORT_FRAMES_RX_ALL);
     setup_rxq(emu, 1, RX_BUF_CAP);
     ionic_eth_emu_poll_rx(emu);
-    snprintf(got, len,
-             "frames_rx_all waiting %" PRIu64 ", after %" PRIu64
-             ", frames_rx_dropped %" PRIu64 ", rx_ucast %" PRIu64,
-             waiting, port_counter(emu, IONIC_PORT_FRAMES_RX_ALL),
-             port_counter(emu, IONIC_PORT_FRAMES_RX_DROPPED),
-             counter(emu, IONIC_LIF_RX_UCAST_PACKETS));
+    (void)snprintf(got, len,
+                   "frames_rx_all waiting %" PRIu64 ", after %" PRIu64
+                   ", frames_rx_dropped %" PRIu64 ", rx_ucast %" PRIu64,
+                   waiting, port_counter(emu, IONIC_PORT_FRAMES_RX_ALL),
+                   port_counter(emu, IONIC_PORT_FRAMES_RX_DROPPED),
+                   counter(emu, IONIC_LIF_RX_UCAST_PACKETS));
     ionic_eth_emu_destroy(emu);
 }
 
@@ -1146,11 +1151,11 @@ static void inbox_too_long_port(char *got, size_t len)
     ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast), 1019);
     ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast), 60);
     ionic_eth_emu_poll_rx(emu);
-    snprintf(got, len,
-             "frames_rx_too_long %" PRIu64 ", rx_ucast %" PRIu64
-             ", still queued %u",
-             port_counter(emu, IONIC_PORT_FRAMES_RX_TOO_LONG),
-             counter(emu, IONIC_LIF_RX_UCAST_PACKETS), emu->inbox_count);
+    (void)snprintf(got, len,
+                   "frames_rx_too_long %" PRIu64 ", rx_ucast %" PRIu64
+                   ", still queued %u",
+                   port_counter(emu, IONIC_PORT_FRAMES_RX_TOO_LONG),
+                   counter(emu, IONIC_LIF_RX_UCAST_PACKETS), emu->inbox_count);
     ionic_eth_emu_destroy(emu);
 }
 
@@ -1163,9 +1168,10 @@ static void tx_send_fails_port(char *got, size_t len)
     g_net_send_rc = -EAGAIN;
     setup_txq(emu);
     tx_frame(emu, mac_ucast, 100);
-    snprintf(got, len, "frames_tx_all %" PRIu64 ", tx_ucast_drop %" PRIu64,
-             port_counter(emu, IONIC_PORT_FRAMES_TX_ALL),
-             counter(emu, IONIC_LIF_TX_UCAST_DROP_PACKETS));
+    (void)snprintf(got, len,
+                   "frames_tx_all %" PRIu64 ", tx_ucast_drop %" PRIu64,
+                   port_counter(emu, IONIC_PORT_FRAMES_TX_ALL),
+                   counter(emu, IONIC_LIF_TX_UCAST_DROP_PACKETS));
     emu->net = NULL;
     ionic_eth_emu_destroy(emu);
 }
@@ -1177,13 +1183,14 @@ static void inbox_full_port(char *got, size_t len)
     for (unsigned int i = 0; i <= ETH_INBOX_MAX_FRAMES; i++) {
         ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_bcast), 64);
     }
-    snprintf(got, len,
-             "frames_rx_all %" PRIu64 ", frames_rx_broadcast %" PRIu64
-             ", frames_rx_65b_127b %" PRIu64 ", frames_rx_dropped %" PRIu64,
-             port_counter(emu, IONIC_PORT_FRAMES_RX_ALL),
-             port_counter(emu, IONIC_PORT_FRAMES_RX_BROADCAST),
-             port_counter(emu, IONIC_PORT_FRAMES_RX_65B_127B),
-             port_counter(emu, IONIC_PORT_FRAMES_RX_DROPPED));
+    (void)snprintf(got, len,
+                   "frames_rx_all %" PRIu64 ", frames_rx_broadcast %" PRIu64
+                   ", frames_rx_65b_127b %" PRIu64
+                   ", frames_rx_dropped %" PRIu64,
+                   port_counter(emu, IONIC_PORT_FRAMES_RX_ALL),
+                   port_counter(emu, IONIC_PORT_FRAMES_RX_BROADCAST),
+                   port_counter(emu, IONIC_PORT_FRAMES_RX_65B_127B),
+                   port_counter(emu, IONIC_PORT_FRAMES_RX_DROPPED));
     ionic_eth_emu_destroy(emu);
 }
 
@@ -1279,14 +1286,14 @@ static void fault_rx_drop(char *got, size_t len)
 
     setup_rxq(emu, 1, RX_BUF_CAP);
     rx_tap(emu, mac_ucast, 64);
-    snprintf(got, len,
-             "rx_ucast %" PRIu64 ", rx_ucast_drop %" PRIu64
-             ", rx_queue_empty %" PRIu64 ", head %u, fired %" PRIu64,
-             counter(emu, IONIC_LIF_RX_UCAST_PACKETS),
-             counter(emu, IONIC_LIF_RX_UCAST_DROP_PACKETS),
-             counter(emu, IONIC_LIF_RX_QUEUE_EMPTY),
-             (unsigned)emu->eth_q[IONIC_QTYPE_RXQ][0].head,
-             site_fault(set, IONIC_FAULT_SITE_ETH_RX)->fired);
+    (void)snprintf(got, len,
+                   "rx_ucast %" PRIu64 ", rx_ucast_drop %" PRIu64
+                   ", rx_queue_empty %" PRIu64 ", head %u, fired %" PRIu64,
+                   counter(emu, IONIC_LIF_RX_UCAST_PACKETS),
+                   counter(emu, IONIC_LIF_RX_UCAST_DROP_PACKETS),
+                   counter(emu, IONIC_LIF_RX_QUEUE_EMPTY),
+                   (unsigned)emu->eth_q[IONIC_QTYPE_RXQ][0].head,
+                   site_fault(set, IONIC_FAULT_SITE_ETH_RX)->fired);
     emu->net = NULL;
     ionic_eth_emu_destroy(emu);
     ionic_fault_set_free(set);
@@ -1300,14 +1307,14 @@ static void fault_rx_nobuf(char *got, size_t len)
 
     setup_rxq(emu, 1, RX_BUF_CAP);
     rx_tap(emu, mac_ucast, 64);
-    snprintf(got, len,
-             "rx_ucast %" PRIu64 ", rx_ucast_drop %" PRIu64 "/%" PRIu64
-             ", rx_queue_empty %" PRIu64 ", head %u",
-             counter(emu, IONIC_LIF_RX_UCAST_PACKETS),
-             counter(emu, IONIC_LIF_RX_UCAST_DROP_PACKETS),
-             counter(emu, IONIC_LIF_RX_UCAST_DROP_BYTES),
-             counter(emu, IONIC_LIF_RX_QUEUE_EMPTY),
-             (unsigned)emu->eth_q[IONIC_QTYPE_RXQ][0].head);
+    (void)snprintf(got, len,
+                   "rx_ucast %" PRIu64 ", rx_ucast_drop %" PRIu64 "/%" PRIu64
+                   ", rx_queue_empty %" PRIu64 ", head %u",
+                   counter(emu, IONIC_LIF_RX_UCAST_PACKETS),
+                   counter(emu, IONIC_LIF_RX_UCAST_DROP_PACKETS),
+                   counter(emu, IONIC_LIF_RX_UCAST_DROP_BYTES),
+                   counter(emu, IONIC_LIF_RX_QUEUE_EMPTY),
+                   (unsigned)emu->eth_q[IONIC_QTYPE_RXQ][0].head);
     emu->net = NULL;
     ionic_eth_emu_destroy(emu);
     ionic_fault_set_free(set);
@@ -1323,13 +1330,13 @@ static void fault_tx_drop(char *got, size_t len)
     setup_txq(emu);
     emu->net = (struct ionic_eth_net *)&fake_net;
     tx_frame(emu, mac_ucast, 100);
-    snprintf(got, len,
-             "tx_ucast %" PRIu64 ", tx_ucast_drop %" PRIu64 "/%" PRIu64
-             ", head %u, sends %u",
-             counter(emu, IONIC_LIF_TX_UCAST_PACKETS),
-             counter(emu, IONIC_LIF_TX_UCAST_DROP_PACKETS),
-             counter(emu, IONIC_LIF_TX_UCAST_DROP_BYTES),
-             (unsigned)emu->eth_q[IONIC_QTYPE_TXQ][0].head, g_net_sends);
+    (void)snprintf(got, len,
+                   "tx_ucast %" PRIu64 ", tx_ucast_drop %" PRIu64 "/%" PRIu64
+                   ", head %u, sends %u",
+                   counter(emu, IONIC_LIF_TX_UCAST_PACKETS),
+                   counter(emu, IONIC_LIF_TX_UCAST_DROP_PACKETS),
+                   counter(emu, IONIC_LIF_TX_UCAST_DROP_BYTES),
+                   (unsigned)emu->eth_q[IONIC_QTYPE_TXQ][0].head, g_net_sends);
     emu->net = NULL;
     ionic_eth_emu_destroy(emu);
     ionic_fault_set_free(set);
@@ -1345,13 +1352,13 @@ static void fault_tx_every_2(char *got, size_t len)
     for (int i = 0; i < 4; i++) {
         tx_frame(emu, mac_ucast, 100);
     }
-    snprintf(got, len,
-             "tx_ucast %" PRIu64 "/%" PRIu64 ", tx_ucast_drop %" PRIu64
-             "/%" PRIu64,
-             counter(emu, IONIC_LIF_TX_UCAST_PACKETS),
-             counter(emu, IONIC_LIF_TX_UCAST_BYTES),
-             counter(emu, IONIC_LIF_TX_UCAST_DROP_PACKETS),
-             counter(emu, IONIC_LIF_TX_UCAST_DROP_BYTES));
+    (void)snprintf(got, len,
+                   "tx_ucast %" PRIu64 "/%" PRIu64 ", tx_ucast_drop %" PRIu64
+                   "/%" PRIu64,
+                   counter(emu, IONIC_LIF_TX_UCAST_PACKETS),
+                   counter(emu, IONIC_LIF_TX_UCAST_BYTES),
+                   counter(emu, IONIC_LIF_TX_UCAST_DROP_PACKETS),
+                   counter(emu, IONIC_LIF_TX_UCAST_DROP_BYTES));
     ionic_eth_emu_destroy(emu);
     ionic_fault_set_free(set);
 }
@@ -1363,8 +1370,8 @@ static void fault_rx_no_queue(char *got, size_t len)
         attach_fault(emu, "eth_rx: every 1 effect drop");
 
     rx_tap(emu, mac_ucast, 64);
-    snprintf(got, len, "eligible %" PRIu64,
-             site_fault(set, IONIC_FAULT_SITE_ETH_RX)->eligible);
+    (void)snprintf(got, len, "eligible %" PRIu64,
+                   site_fault(set, IONIC_FAULT_SITE_ETH_RX)->eligible);
     emu->net = NULL;
     ionic_eth_emu_destroy(emu);
     ionic_fault_set_free(set);
@@ -1378,9 +1385,10 @@ static void fault_tx_len_zero(char *got, size_t len)
 
     setup_txq(emu);
     tx_one(emu, TX_BUF, 0);
-    snprintf(got, len, "eligible %" PRIu64 ", tx_desc_data_error %" PRIu64,
-             site_fault(set, IONIC_FAULT_SITE_ETH_TX)->eligible,
-             counter(emu, IONIC_LIF_TX_DESC_DATA_ERROR));
+    (void)snprintf(got, len,
+                   "eligible %" PRIu64 ", tx_desc_data_error %" PRIu64,
+                   site_fault(set, IONIC_FAULT_SITE_ETH_TX)->eligible,
+                   counter(emu, IONIC_LIF_TX_DESC_DATA_ERROR));
     ionic_eth_emu_destroy(emu);
     ionic_fault_set_free(set);
 }
@@ -1395,11 +1403,11 @@ static void fault_rx_after_2(char *got, size_t len)
     for (int i = 0; i < 3; i++) {
         rx_tap(emu, mac_ucast, 64);
     }
-    snprintf(got, len,
-             "rx_ucast %" PRIu64 ", eligible %" PRIu64 ", fired %" PRIu64,
-             counter(emu, IONIC_LIF_RX_UCAST_PACKETS),
-             site_fault(set, IONIC_FAULT_SITE_ETH_RX)->eligible,
-             site_fault(set, IONIC_FAULT_SITE_ETH_RX)->fired);
+    (void)snprintf(got, len,
+                   "rx_ucast %" PRIu64 ", eligible %" PRIu64 ", fired %" PRIu64,
+                   counter(emu, IONIC_LIF_RX_UCAST_PACKETS),
+                   site_fault(set, IONIC_FAULT_SITE_ETH_RX)->eligible,
+                   site_fault(set, IONIC_FAULT_SITE_ETH_RX)->fired);
     emu->net = NULL;
     ionic_eth_emu_destroy(emu);
     ionic_fault_set_free(set);
@@ -1416,10 +1424,10 @@ static void fault_inbox_held(char *got, size_t len)
     for (int i = 0; i < 3; i++) {
         ionic_eth_emu_poll_rx(emu);
     }
-    snprintf(got, len,
-             "eligible %" PRIu64 ", fired %" PRIu64 ", still queued %u",
-             site_fault(set, IONIC_FAULT_SITE_ETH_RX)->eligible,
-             site_fault(set, IONIC_FAULT_SITE_ETH_RX)->fired, emu->inbox_count);
+    (void)snprintf(
+        got, len, "eligible %" PRIu64 ", fired %" PRIu64 ", still queued %u",
+        site_fault(set, IONIC_FAULT_SITE_ETH_RX)->eligible,
+        site_fault(set, IONIC_FAULT_SITE_ETH_RX)->fired, emu->inbox_count);
     ionic_eth_emu_destroy(emu);
     ionic_fault_set_free(set);
 }
@@ -1433,11 +1441,11 @@ static void fault_inbox_nobuf(char *got, size_t len)
     setup_rxq(emu, 1, RX_BUF_CAP);
     ionic_eth_emu_queue_rx_frame(emu, make_frame(mac_ucast), 64);
     ionic_eth_emu_poll_rx(emu);
-    snprintf(got, len,
-             "rx_ucast_drop %" PRIu64 ", rx_queue_empty %" PRIu64
-             ", still queued %u",
-             counter(emu, IONIC_LIF_RX_UCAST_DROP_PACKETS),
-             counter(emu, IONIC_LIF_RX_QUEUE_EMPTY), emu->inbox_count);
+    (void)snprintf(got, len,
+                   "rx_ucast_drop %" PRIu64 ", rx_queue_empty %" PRIu64
+                   ", still queued %u",
+                   counter(emu, IONIC_LIF_RX_UCAST_DROP_PACKETS),
+                   counter(emu, IONIC_LIF_RX_QUEUE_EMPTY), emu->inbox_count);
     ionic_eth_emu_destroy(emu);
     ionic_fault_set_free(set);
 }
@@ -1452,12 +1460,12 @@ static void fault_other_site(char *got, size_t len)
     setup_rxq(emu, 1, RX_BUF_CAP);
     tx_frame(emu, mac_ucast, 100);
     rx_tap(emu, mac_ucast, 64);
-    snprintf(got, len,
-             "tx_ucast %" PRIu64 ", rx_ucast %" PRIu64
-             ", stats_vals eligible %" PRIu64,
-             counter(emu, IONIC_LIF_TX_UCAST_PACKETS),
-             counter(emu, IONIC_LIF_RX_UCAST_PACKETS),
-             site_fault(set, IONIC_FAULT_SITE_STATS_VALS)->eligible);
+    (void)snprintf(got, len,
+                   "tx_ucast %" PRIu64 ", rx_ucast %" PRIu64
+                   ", stats_vals eligible %" PRIu64,
+                   counter(emu, IONIC_LIF_TX_UCAST_PACKETS),
+                   counter(emu, IONIC_LIF_RX_UCAST_PACKETS),
+                   site_fault(set, IONIC_FAULT_SITE_STATS_VALS)->eligible);
     emu->net = NULL;
     ionic_eth_emu_destroy(emu);
     ionic_fault_set_free(set);
@@ -1485,8 +1493,9 @@ static void fault_tx_filter(char *got, size_t len)
     setup_txq(emu);
     tx_frame(emu, mac_ucast, 100);
     tx_frame(emu, mac_ucast, 100);
-    snprintf(got, len, "filter calls %u, tx_ucast_drop %" PRIu64,
-             g_filter_calls, counter(emu, IONIC_LIF_TX_UCAST_DROP_PACKETS));
+    (void)snprintf(got, len, "filter calls %u, tx_ucast_drop %" PRIu64,
+                   g_filter_calls,
+                   counter(emu, IONIC_LIF_TX_UCAST_DROP_PACKETS));
     ionic_eth_emu_destroy(emu);
     ionic_fault_set_free(set);
 }
@@ -1615,7 +1624,11 @@ static char *stats_text(void *opaque, size_t *len)
         return NULL;
     }
     ionic_eth_emu_write_stats(fp, opaque);
-    fclose(fp);
+    /* fclose() sets buf and len from what was written. */
+    if (fclose(fp) != 0) {
+        free(buf);
+        return NULL;
+    }
     return buf;
 }
 
@@ -1661,9 +1674,10 @@ static void file_traffic(char *got, size_t len)
     tx_frame(emu, mac_ucast, 100);
     tx_frame(emu, mac_ucast, 200);
     text = stats_text(emu, &n);
-    snprintf(got, len, "tx_ucast_packets %" PRIu64 ", tx_ucast_bytes %" PRIu64,
-             stats_value(text, "tx_ucast_packets"),
-             stats_value(text, "tx_ucast_bytes"));
+    (void)snprintf(got, len,
+                   "tx_ucast_packets %" PRIu64 ", tx_ucast_bytes %" PRIu64,
+                   stats_value(text, "tx_ucast_packets"),
+                   stats_value(text, "tx_ucast_bytes"));
     free(text);
     ionic_eth_emu_destroy(emu);
 }
@@ -1683,7 +1697,7 @@ static void file_shape(char *got, size_t len)
     }
     text = stats_text(emu, &n);
     if (!text) {
-        snprintf(got, len, "no stats text");
+        (void)snprintf(got, len, "no stats text");
         ionic_eth_emu_destroy(emu);
         return;
     }
@@ -1697,11 +1711,12 @@ static void file_shape(char *got, size_t len)
             nonzero++;
         }
     }
-    snprintf(got, len,
-             "header %d, lines == named %d, misaligned %u, nonzero %u, "
-             "ends blank %d",
-             !strncmp(text, "LIF Statistics:\n", 16), lines == named,
-             misaligned, nonzero, n >= 2 && !strcmp(text + n - 2, "\n\n"));
+    (void)snprintf(got, len,
+                   "header %d, lines == named %d, misaligned %u, nonzero %u, "
+                   "ends blank %d",
+                   !strncmp(text, "LIF Statistics:\n", 16), lines == named,
+                   misaligned, nonzero,
+                   n >= 2 && !strcmp(text + n - 2, "\n\n"));
     free(text);
     ionic_eth_emu_destroy(emu);
 }
@@ -1717,12 +1732,12 @@ static void file_inbox_full(char *got, size_t len)
     ionic_emu_stats_rx_inbox_full(&emu->stats, make_frame(mac_ucast), 64, 0);
     text = stats_text(emu, &n);
     again = stats_text(emu, &n);
-    snprintf(got, len,
-             "rx_ucast_drop_packets %" PRIu64 ", rx_ucast_drop_bytes %" PRIu64
-             ", second write %" PRIu64,
-             stats_value(text, "rx_ucast_drop_packets"),
-             stats_value(text, "rx_ucast_drop_bytes"),
-             stats_value(again, "rx_ucast_drop_packets"));
+    (void)snprintf(got, len,
+                   "rx_ucast_drop_packets %" PRIu64
+                   ", rx_ucast_drop_bytes %" PRIu64 ", second write %" PRIu64,
+                   stats_value(text, "rx_ucast_drop_packets"),
+                   stats_value(text, "rx_ucast_drop_bytes"),
+                   stats_value(again, "rx_ucast_drop_packets"));
     free(text);
     free(again);
     ionic_eth_emu_destroy(emu);
@@ -1736,8 +1751,8 @@ static void file_max_value(char *got, size_t len)
 
     emu->stats.lif[IONIC_LIF_RX_BCAST_BYTES] = UINT64_MAX;
     text = stats_text(emu, &n);
-    snprintf(got, len, "rx_bcast_bytes %" PRIu64,
-             stats_value(text, "rx_bcast_bytes"));
+    (void)snprintf(got, len, "rx_bcast_bytes %" PRIu64,
+                   stats_value(text, "rx_bcast_bytes"));
     free(text);
     ionic_eth_emu_destroy(emu);
 }
@@ -1747,7 +1762,7 @@ static void file_no_emu(char *got, size_t len)
     size_t n = 1;
     char *text = stats_text(NULL, &n);
 
-    snprintf(got, len, "bytes %zu", n);
+    (void)snprintf(got, len, "bytes %zu", n);
     free(text);
 }
 
@@ -1762,7 +1777,8 @@ static void file_longest_name(char *got, size_t len)
             longest = strlen(name);
         }
     }
-    snprintf(got, len, "longest %zu, width %d", longest, LIF_STAT_NAME_WIDTH);
+    (void)snprintf(got, len, "longest %zu, width %d", longest,
+                   LIF_STAT_NAME_WIDTH);
 }
 
 static void file_port_section(char *got, size_t len)
@@ -1787,11 +1803,12 @@ static void file_port_section(char *got, size_t len)
             }
         }
     }
-    snprintf(got, len,
-             "header %d, lines %u, misaligned %u, frames_tx_ok %" PRIu64
-             ", octets_tx_ok %" PRIu64,
-             sec != NULL, lines, misaligned, stats_value(text, "frames_tx_ok"),
-             stats_value(text, "octets_tx_ok"));
+    (void)snprintf(got, len,
+                   "header %d, lines %u, misaligned %u, frames_tx_ok %" PRIu64
+                   ", octets_tx_ok %" PRIu64,
+                   sec != NULL, lines, misaligned,
+                   stats_value(text, "frames_tx_ok"),
+                   stats_value(text, "octets_tx_ok"));
     free(text);
     ionic_eth_emu_destroy(emu);
 }
@@ -1805,7 +1822,8 @@ static void file_port_longest_name(char *got, size_t len)
             longest = strlen(ionic_emu_port_stat_name(q));
         }
     }
-    snprintf(got, len, "longest %zu, width %d", longest, PORT_STAT_NAME_WIDTH);
+    (void)snprintf(got, len, "longest %zu, width %d", longest,
+                   PORT_STAT_NAME_WIDTH);
 }
 
 static const struct publish_case stats_file_cases[] = {

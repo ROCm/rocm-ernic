@@ -252,6 +252,7 @@ endif()
 ernic_add_test_program(test_nvmeof_target
     SOURCES
         test_nvmeof_target.c
+        test_fmt.c
         ${PROJECT_SOURCE_DIR}/src/nvmeof/nvmeof_kv.c
         ${PROJECT_SOURCE_DIR}/src/nvmeof/nvmeof_target.c
         ${PROJECT_SOURCE_DIR}/src/ernic_log.c
@@ -287,6 +288,7 @@ ernic_add_test_program(test_nvmeof_cm
 ernic_add_test_program(test_s3_token
     SOURCES
         test_s3_token.c
+        test_fmt.c
         ${PROJECT_SOURCE_DIR}/src/s3/s3_token.c
 )
 
@@ -294,6 +296,7 @@ ernic_add_test_program(test_s3_token
 ernic_add_test_program(test_s3_http
     SOURCES
         test_s3_http.c
+        test_fmt.c
         ${PROJECT_SOURCE_DIR}/src/s3/s3_http.c
 )
 
@@ -303,6 +306,7 @@ ernic_add_test_program(test_s3_http
 ernic_add_test_program(test_s3_target
     SOURCES
         test_s3_target.c
+        test_fmt.c
         ${PROJECT_SOURCE_DIR}/src/s3/s3_target.c
         ${PROJECT_SOURCE_DIR}/src/s3/s3_http.c
         ${PROJECT_SOURCE_DIR}/src/s3/s3_token.c
@@ -315,6 +319,7 @@ ernic_add_test_program(test_s3_target
 ernic_add_test_program(test_s3_tcp
     SOURCES
         test_s3_tcp.c
+        test_fmt.c
         ${PROJECT_SOURCE_DIR}/src/ernic_siphash.c
         ${PROJECT_SOURCE_DIR}/src/s3/s3_tcp.c
         ${PROJECT_SOURCE_DIR}/src/s3/s3_target.c
@@ -361,6 +366,7 @@ ernic_add_test_program(test_ionic_port_info
 ernic_add_test_program(test_ionic_profile
     SOURCES
         test_ionic_profile.c
+        test_fmt.c
         ${PROJECT_SOURCE_DIR}/src/ionic/ionic_profile.c
         ${PROJECT_SOURCE_DIR}/src/ionic/ionic_profiles.c
     DEPS glib
@@ -430,6 +436,7 @@ check_include_file(valgrind/valgrind.h ERNIC_HAVE_VALGRIND_H)
 ernic_add_test_program(test_server_lifecycle
     SOURCES
         test_server_lifecycle.c
+        test_fmt.c
         ${PROJECT_SOURCE_DIR}/src/ernic_gnu.c
 )
 target_compile_definitions(test_server_lifecycle PRIVATE
@@ -528,6 +535,7 @@ ernic_add_test_program(test_ionic_srq_adminq
 ernic_add_test_program(ernic-test-ionic-fault
     SOURCES
         test_ionic_fault.c
+        test_fmt.c
         ${PROJECT_SOURCE_DIR}/src/ionic/ionic_fault.c
 )
 
@@ -594,6 +602,7 @@ endif()
 ernic_add_test_program(test_tcp_mesh_topology
     SOURCES
         test_tcp_mesh_topology.c
+        test_fmt.c
         ${ERNIC_TCP_TEST_SOURCES}
     DEPS glib ibverbs pthread
     HEADER_DEPS vfio-user
@@ -633,6 +642,7 @@ ernic_add_test_program(ernic-test-backend-handles
 ernic_add_test_program(ernic-test-tcp-config
     SOURCES
         test_tcp_config.c
+        test_fmt.c
         ${ERNIC_TCP_TEST_SOURCES}
     DEPS glib ibverbs pthread
     HEADER_DEPS vfio-user
@@ -645,6 +655,7 @@ ernic_add_test_program(ernic-test-tcp-config
 ernic_add_test_program(ernic-test-tcp-thread-stop
     SOURCES
         test_tcp_thread_stop.c
+        test_fmt.c
         ${ERNIC_TCP_TEST_SOURCES}
     DEPS glib ibverbs pthread
     HEADER_DEPS vfio-user
@@ -715,6 +726,7 @@ ernic_add_test_program(ernic-test-log-level
 ernic_add_test_program(ernic-test-ernic-stats
     SOURCES
         test_ernic_stats.c
+        test_fmt.c
         s3_alloc_fail.c
         ${PROJECT_SOURCE_DIR}/src/ernic_stats.c
         ${PROJECT_SOURCE_DIR}/src/ernic_log.c
@@ -751,6 +763,7 @@ list(TRANSFORM ERNIC_HARNESS_DEVICE_SOURCES PREPEND "${PROJECT_SOURCE_DIR}/")
 ernic_add_test_program(ernic-test-ionic-harness
     SOURCES
         test_ionic_harness.c
+        test_fmt.c
         ionic_harness.c
         fake_vfu.c
         s3_alloc_fail.c
@@ -776,6 +789,7 @@ endif()
 ernic_add_test_program(ernic-test-gsi-mesh
     SOURCES
         test_gsi_mesh.c
+        test_fmt.c
         ionic_harness.c
         fake_vfu.c
         ${ERNIC_HARNESS_DEVICE_SOURCES}

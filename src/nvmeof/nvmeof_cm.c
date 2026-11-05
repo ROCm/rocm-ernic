@@ -38,7 +38,7 @@ enum {
     MAD_STATUS_OFF = 4,
     MAD_CLASS_SPECIFIC_OFF = 6,
     MAD_TID_OFF = 8,
-    MAD_ATTR_ID_OFF = 16,
+    MAD_ATTR_ID_OFF = NVMEOF_CM_MAD_ATTR_ID_OFF,
     MAD_ATTR_MOD_OFF = 20,
     MAD_HDR_SIZE = 24,
 };
@@ -48,8 +48,18 @@ enum {
 #define IB_CM_CLASS_VERSION  2
 #define IB_MGMT_METHOD_SEND  0x03
 
+/* What the REP offers: a target ack delay of 4.096 us * 2^14, about 67 ms,
+ * and RNR retries without limit */
+#define CM_TARGET_ACK_DELAY   14U
+#define CM_RNR_RETRY_INFINITE 7U
+
+/* The first local communication id; any non-zero value would do */
+#define CM_FIRST_COMM_ID 0x51000001U
+/* Mixed into a connection's communication id to make its starting PSN */
+#define CM_PSN_SCRAMBLE 0x5a5a5aU
+
 enum {
-    CM_ATTR_REQ = 0x0010,
+    CM_ATTR_REQ = NVMEOF_CM_ATTR_REQ,
     CM_ATTR_MRA = 0x0011,
     CM_ATTR_REJ = 0x0012,
     CM_ATTR_REP = 0x0013,
@@ -71,8 +81,8 @@ enum {
     CM_REQ_PKEY = 72,
     CM_REQ_PATH_MTU = 74,    /* mtu(7:4) | rdc_exists(3) | rnr_retry(2:0) */
     CM_REQ_MAX_RETRIES = 75, /* max_cm_retries(7:4) | srq(3) */
-    CM_REQ_PRIMARY_LGID = 80,
-    CM_REQ_PRIMARY_RGID = 96,
+    CM_REQ_PRIMARY_LGID = NVMEOF_CM_REQ_PRIMARY_LGID_OFF,
+    CM_REQ_PRIMARY_RGID = NVMEOF_CM_REQ_PRIMARY_RGID_OFF,
     CM_REQ_PRIVATE_DATA = 164,
     CM_REQ_PRIVATE_SIZE = 92,
 
@@ -86,7 +96,9 @@ enum {
     CM_REP_RESP_RESOURCES = 48,
     CM_REP_INITIATOR_DEPTH = 49,
     CM_REP_TARGET_ACK = 50, /* delay(7:3) | failover(2:1) | flow(0) */
-    CM_REP_RNR_RETRY = 51,  /* rnr_retry_count(7:5) | srq(4) */
+    CM_REP_TARGET_ACK_DELAY_SHIFT = 3,
+    CM_REP_RNR_RETRY = 51, /* rnr_retry_count(7:5) | srq(4) */
+    CM_REP_RNR_RETRY_SHIFT = 5,
     CM_REP_LOCAL_CA_GUID = 52,
     CM_REP_PRIVATE_DATA = 60,
     CM_REP_PRIVATE_SIZE = 196,
@@ -106,7 +118,8 @@ enum {
     CM_REJ_LOCAL_COMM_ID = 24,
     CM_REJ_REMOTE_COMM_ID = 28,
     CM_REJ_MSG_REJECTED = 32, /* message_rejected(7:6) */
-    CM_REJ_INFO_LENGTH = 33,  /* reject_info_length(7:1) */
+    CM_REJ_MSG_REJECTED_SHIFT = 6,
+    CM_REJ_INFO_LENGTH = 33, /* reject_info_length(7:1) */
     CM_REJ_REASON = 34,
     CM_REJ_ARI = 36,
     CM_REJ_PRIVATE_DATA = 108,
@@ -129,6 +142,8 @@ enum {
     CMA_HDR_PORT_OFF = 2,
     CMA_HDR_SRC_ADDR_OFF = 4,
     CMA_HDR_DST_ADDR_OFF = 20,
+    /* An IPv4 address is the last four of the address's sixteen bytes */
+    CMA_HDR_DST_ADDR4_OFF = CMA_HDR_DST_ADDR_OFF + 12,
     CMA_HDR_SIZE = 36,
 
     /* struct nvme_rdma_cm_req / _cm_rep / _cm_rej */
@@ -206,7 +221,7 @@ struct nvmeof_cm *nvmeof_cm_create(struct nvmeof_target *target,
     cm->target = target;
     cm->traddr = traddr;
     cm->trsvcid = trsvcid;
-    cm->next_comm_id = 0x51000001U;
+    cm->next_comm_id = CM_FIRST_COMM_ID;
     cm->next_qpn = NVMEOF_CM_QPN_BASE + 1;
     return cm;
 }
@@ -335,7 +350,8 @@ static size_t build_rej(uint8_t *rsp, const uint8_t *req, uint8_t msg_rejected,
     ernic_put_be32(rsp + CM_REJ_LOCAL_COMM_ID, 0);
     ernic_put_be32(rsp + CM_REJ_REMOTE_COMM_ID,
                    ernic_get_be32(req + CM_REQ_LOCAL_COMM_ID));
-    rsp[CM_REJ_MSG_REJECTED] = (uint8_t)(msg_rejected << 6);
+    rsp[CM_REJ_MSG_REJECTED] =
+        (uint8_t)(msg_rejected << CM_REJ_MSG_REJECTED_SHIFT);
     rsp[CM_REJ_INFO_LENGTH] = 0;
     ernic_put_be16(rsp + CM_REJ_REASON, reason);
 
@@ -387,7 +403,7 @@ static size_t handle_req(struct nvmeof_cm *cm, const uint8_t *req, uint8_t *rsp,
         return build_rej(rsp, req, 0, IB_CM_REJ_UNSUPPORTED, 0);
     }
     uint8_t ip_version = priv[CMA_HDR_IP_VERSION_OFF] >> 4;
-    uint32_t dst = ernic_get_be32(priv + CMA_HDR_DST_ADDR_OFF + 12);
+    uint32_t dst = ernic_get_be32(priv + CMA_HDR_DST_ADDR4_OFF);
     if (ip_version != 4 || dst != cm->traddr) {
         return build_rej(rsp, req, 0, IB_CM_REJ_INVALID_SERVICE_ID, 0);
     }
@@ -444,7 +460,7 @@ static size_t handle_req(struct nvmeof_cm *cm, const uint8_t *req, uint8_t *rsp,
     c->local_comm_id = cm->next_comm_id++;
     c->guest_qpn = guest_qpn;
     c->local_qpn = next_local_qpn(cm);
-    c->start_psn = (c->local_comm_id ^ 0x5a5a5aU) & 0xffffffU;
+    c->start_psn = (c->local_comm_id ^ CM_PSN_SCRAMBLE) & 0xffffffU;
     c->nvme_qid = qid;
 
     /* Build the REP. */
@@ -456,8 +472,10 @@ static size_t handle_req(struct nvmeof_cm *cm, const uint8_t *req, uint8_t *rsp,
     ernic_put_be32(rsp + CM_REP_STARTING_PSN, c->start_psn << 8);
     rsp[CM_REP_RESP_RESOURCES] = initiator_depth;
     rsp[CM_REP_INITIATOR_DEPTH] = responder_resources;
-    rsp[CM_REP_TARGET_ACK] = (uint8_t)(14U << 3); /* target ack delay */
-    rsp[CM_REP_RNR_RETRY] = (uint8_t)(7U << 5);   /* infinite RNR retry */
+    rsp[CM_REP_TARGET_ACK] =
+        (uint8_t)(CM_TARGET_ACK_DELAY << CM_REP_TARGET_ACK_DELAY_SHIFT);
+    rsp[CM_REP_RNR_RETRY] =
+        (uint8_t)(CM_RNR_RETRY_INFINITE << CM_REP_RNR_RETRY_SHIFT);
     ernic_put_be64(rsp + CM_REP_LOCAL_CA_GUID,
                    ernic_get_be64(req + CM_REQ_LOCAL_CA_GUID) ^
                        UINT64_C(0x1dd800000000));

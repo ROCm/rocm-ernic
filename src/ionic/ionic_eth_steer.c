@@ -33,6 +33,7 @@
 #define IPV4_ADDRS_OFF    12U /* source then destination, 4 bytes each */
 #define IPV4_ADDRS_LEN    8U
 
+#define IPV6_VERSION   6U /* the high nibble of the first byte */
 #define IPV6_HDR_LEN   40U
 #define IPV6_NH_OFF    6U
 #define IPV6_ADDRS_OFF 8U /* source then destination, 16 bytes each */
@@ -103,7 +104,7 @@ static bool hash_ipv6(const uint8_t *frame, size_t len, size_t l3,
 {
     const uint8_t *ip = frame + l3;
 
-    if (len - l3 < IPV6_HDR_LEN || (ip[0] >> 4) != 6) {
+    if (len - l3 < IPV6_HDR_LEN || (ip[0] >> 4) != IPV6_VERSION) {
         return false;
     }
     *out = hash_l3(frame, len, l3 + IPV6_ADDRS_OFF, IPV6_ADDRS_LEN,

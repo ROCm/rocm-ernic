@@ -22,6 +22,14 @@
 #include "ernic_log.h"
 #include "parse_int.h"
 
+/* The socket's mode: for its owner alone, or with --socket-group, for that
+ * group too */
+#define SOCKET_MODE       (S_IRUSR | S_IWUSR)                     /* 0600 */
+#define SOCKET_MODE_GROUP (S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP) /* 0660 */
+
+/* The largest buffer getgrnam_r() is given, 1 MiB */
+#define GROUP_BUF_MAX ((size_t)1 << 20)
+
 /* A numeric --socket-group is parsed as a uint32_t, which only fits a gid_t
  * of that width. */
 _Static_assert(sizeof(gid_t) == sizeof(uint32_t) && (gid_t)-1 > 0,
@@ -51,7 +59,7 @@ bool ernic_socket_resolve_group(const char *spec, gid_t *gid)
             return true;
         }
         free(buf);
-        if (rc != ERANGE || len >= ((size_t)1 << 20)) {
+        if (rc != ERANGE || len >= GROUP_BUF_MAX) {
             break;
         }
         len *= 2;
@@ -131,7 +139,7 @@ bool ernic_socket_set_group(const char *path, const char *name, gid_t gid,
         fprintf(stderr, "rocm-ernic: cannot name descriptor %d\n", fd);
         goto out;
     }
-    if (chmod(fd_path, 0660) < 0) {
+    if (chmod(fd_path, SOCKET_MODE_GROUP) < 0) {
         fprintf(stderr,
                 "rocm-ernic: cannot make socket %s mode 0660 through %s: %s\n",
                 path, fd_path, strerror(errno));
@@ -153,7 +161,7 @@ out:
 bool ernic_socket_access_ok(const char *path, const gid_t *want_gid,
                             const struct stat *created, struct stat *st)
 {
-    mode_t want_mode = want_gid ? 0660 : 0600;
+    mode_t want_mode = want_gid ? SOCKET_MODE_GROUP : SOCKET_MODE;
 
     if (lstat(path, st) < 0) {
         fprintf(stderr, "rocm-ernic: cannot stat socket %s: %s\n", path,

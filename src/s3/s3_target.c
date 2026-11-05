@@ -37,7 +37,9 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "byteorder.h"
 #include "ernic_err.h"
+#include "ernic_gid.h"
 #include "parse_int.h"
 #include "s3/s3_http.h"
 #include "s3/s3_target.h"
@@ -54,6 +56,10 @@
 #define S3_MAX_PARTS     1024U
 #define S3_LIST_MAX_KEYS 1000U
 #define S3_ETAG_MAX      48
+/* Room for an upload id, 16 hex digits, and its NUL */
+#define S3_UPLOAD_ID_MAX 24
+/* Room for a query's number, any uint64_t, and its NUL */
+#define S3_NUMBER_MAX 24
 
 #define S3_RDMA_TOKEN_HDR "x-amz-rdma-token"
 #define S3_RDMA_REPLY_HDR "x-amz-rdma-reply"
@@ -76,7 +82,7 @@ struct s3_part {
 
 struct s3_upload {
     bool in_use;
-    char id[24];
+    char id[S3_UPLOAD_ID_MAX];
     char key[S3_KEY_MAX];
     struct s3_part parts[S3_MAX_PARTS];
     unsigned nparts;
@@ -108,6 +114,9 @@ struct s3_target {
  * library: the target must link into a unit test with no dependencies,
  * and this is the only hash it needs.
  */
+
+#define MD5_HEX_LEN 32 /* the digest's 16 bytes in hex */
+
 
 struct md5_ctx {
     uint32_t state[4];
@@ -142,13 +151,13 @@ static uint32_t rotl32(uint32_t v, unsigned n)
     return (v << n) | (v >> (32 - n));
 }
 
+/* The message schedule, the initial state, and the padding are RFC 1321's. */
+/* NOLINTBEGIN(*-magic-numbers) */
 static void md5_block(struct md5_ctx *c, const uint8_t *p)
 {
     uint32_t m[16];
     for (size_t i = 0; i < 16; i++) {
-        m[i] = (uint32_t)p[i * 4] | ((uint32_t)p[(i * 4) + 1] << 8) |
-               ((uint32_t)p[(i * 4) + 2] << 16) |
-               ((uint32_t)p[(i * 4) + 3] << 24);
+        m[i] = ernic_get_le32(p + (i * 4));
     }
 
     uint32_t a = c->state[0];
@@ -239,12 +248,10 @@ static void md5_final(struct md5_ctx *c, uint8_t out[16])
     md5_update(c, tail, 8);
 
     for (size_t i = 0; i < 4; i++) {
-        out[i * 4] = (uint8_t)c->state[i];
-        out[(i * 4) + 1] = (uint8_t)(c->state[i] >> 8);
-        out[(i * 4) + 2] = (uint8_t)(c->state[i] >> 16);
-        out[(i * 4) + 3] = (uint8_t)(c->state[i] >> 24);
+        ernic_put_le32(out + (i * 4), c->state[i]);
     }
 }
+/* NOLINTEND(*-magic-numbers) */
 
 static void md5_buf(const void *data, size_t len, uint8_t out[16])
 {
@@ -261,17 +268,18 @@ static void md5_hex(const uint8_t md5[16], char *out)
         out[i * 2] = HEX[md5[i] >> 4];
         out[(i * 2) + 1] = HEX[md5[i] & 0xf];
     }
-    out[32] = '\0';
+    out[MD5_HEX_LEN] = '\0';
 }
 
 static void etag_of(const void *data, size_t len, char *out)
 {
     uint8_t md5[16];
-    char hex[33];
+    char hex[MD5_HEX_LEN + 1];
 
     md5_buf(data, len, md5);
     md5_hex(md5, hex);
-    snprintf(out, S3_ETAG_MAX, "\"%s\"", hex);
+    /* 32 hex digits and the quotes. */
+    (void)snprintf(out, S3_ETAG_MAX, "\"%s\"", hex);
 }
 
 /* ------------------------------------------------------------------ */
@@ -281,7 +289,7 @@ static void etag_of(const void *data, size_t len, char *out)
 void s3_target_cfg_defaults(struct s3_target_cfg *cfg)
 {
     memset(cfg, 0, sizeof(*cfg));
-    snprintf(cfg->bucket, sizeof(cfg->bucket), "%s", S3_DEFAULT_BUCKET);
+    (void)snprintf(cfg->bucket, sizeof(cfg->bucket), "%s", S3_DEFAULT_BUCKET);
     cfg->capacity = S3_DEFAULT_CAPACITY;
     cfg->max_objects = S3_DEFAULT_OBJECTS;
     cfg->traddr = S3_DEFAULT_TRADDR;
@@ -354,7 +362,7 @@ bool s3_target_cfg_parse(struct s3_target_cfg *cfg, const char *opts, char *err,
                     val, S3_BUCKET_MAX - 1);
                 ok = false;
             } else {
-                snprintf(cfg->bucket, sizeof(cfg->bucket), "%s", val);
+                (void)snprintf(cfg->bucket, sizeof(cfg->bucket), "%s", val);
             }
         } else if (strcmp(key, "size") == 0) {
             if (!ernic_parse_size(val, &cfg->capacity) || cfg->capacity == 0) {
@@ -496,12 +504,11 @@ void s3_target_peer_token(const struct s3_target *t, uint32_t rkey,
     memset(out, 0, sizeof(*out));
     out->transport = S3_TRANSPORT_RC;
     out->qp_num = S3_TARGET_QPN_BASE | 1U;
-    out->gid[10] = 0xff;
-    out->gid[11] = 0xff;
-    out->gid[12] = (uint8_t)(t->cfg.traddr >> 24);
-    out->gid[13] = (uint8_t)(t->cfg.traddr >> 16);
-    out->gid[14] = (uint8_t)(t->cfg.traddr >> 8);
-    out->gid[15] = (uint8_t)t->cfg.traddr;
+
+    uint8_t traddr[ERNIC_GID_V4_LEN];
+
+    ernic_put_be32(traddr, t->cfg.traddr);
+    ernic_gid_from_ipv4(out->gid, traddr);
     out->rkey = rkey;
     out->remote_addr = addr;
     out->length = length;
@@ -561,7 +568,8 @@ static struct s3_object *obj_store(struct s3_target *t, const char *key,
         if (o == NULL) {
             return NULL;
         }
-        snprintf(o->key, sizeof(o->key), "%s", key);
+        /* route() refuses a key too long for the field. */
+        (void)snprintf(o->key, sizeof(o->key), "%s", key);
     } else {
         free(o->data);
     }
@@ -572,7 +580,8 @@ static struct s3_object *obj_store(struct s3_target *t, const char *key,
     o->len = len;
     o->mtime = time(NULL);
     if (etag != NULL) {
-        snprintf(o->etag, sizeof(o->etag), "%s", etag);
+        /* From a buffer of the same size. */
+        (void)snprintf(o->etag, sizeof(o->etag), "%s", etag);
     } else {
         etag_of(data, len, o->etag);
     }
@@ -629,9 +638,10 @@ static struct s3_upload *upload_alloc(struct s3_target *t, const char *key)
          * id a client kept from before a restart all but certain to name
          * no upload in the new run.
          */
-        snprintf(u->id, sizeof(u->id), "%016" PRIx64,
-                 t->upload_base + t->next_upload++);
-        snprintf(u->key, sizeof(u->key), "%s", key);
+        (void)snprintf(u->id, sizeof(u->id), "%016" PRIx64,
+                       t->upload_base + t->next_upload++);
+        /* route() refuses a key too long for the field. */
+        (void)snprintf(u->key, sizeof(u->key), "%s", key);
         return u;
     }
     return NULL;
@@ -663,21 +673,25 @@ static int part_cmp(const void *a, const void *b)
 /* Responses                                                          */
 /* ------------------------------------------------------------------ */
 
+/* Write a string literal, without its NUL */
+#define WRITE_LITERAL(resp, s) \
+    s3_http_response_write((resp), (s), sizeof(s) - 1)
+
 static void xml_escape(struct s3_http_response *resp, const char *s)
 {
     for (const char *p = s; *p != '\0'; p++) {
         switch (*p) {
         case '&':
-            s3_http_response_write(resp, "&amp;", 5);
+            WRITE_LITERAL(resp, "&amp;");
             break;
         case '<':
-            s3_http_response_write(resp, "&lt;", 4);
+            WRITE_LITERAL(resp, "&lt;");
             break;
         case '>':
-            s3_http_response_write(resp, "&gt;", 4);
+            WRITE_LITERAL(resp, "&gt;");
             break;
         case '"':
-            s3_http_response_write(resp, "&quot;", 6);
+            WRITE_LITERAL(resp, "&quot;");
             break;
         default:
             s3_http_response_write(resp, p, 1);
@@ -690,7 +704,8 @@ static void iso8601(time_t t, char *out, size_t outlen)
 {
     struct tm tm;
     gmtime_r(&t, &tm);
-    strftime(out, outlen, "%Y-%m-%dT%H:%M:%S.000Z", &tm);
+    /* 24 characters while the year has four digits. */
+    (void)strftime(out, outlen, "%Y-%m-%dT%H:%M:%S.000Z", &tm);
 }
 
 static void s3_error(struct s3_target *t, struct s3_http_response *resp,
@@ -707,9 +722,9 @@ static void s3_error(struct s3_target *t, struct s3_http_response *resp,
         "</Code><Message>",
         code);
     xml_escape(resp, message);
-    s3_http_response_write(resp, "</Message><Resource>", 20);
+    WRITE_LITERAL(resp, "</Message><Resource>");
     xml_escape(resp, resource != NULL ? resource : "/");
-    s3_http_response_write(resp, "</Resource></Error>\n", 20);
+    WRITE_LITERAL(resp, "</Resource></Error>\n");
 }
 
 /*
@@ -767,10 +782,12 @@ static bool parse_range(const char *v, size_t size, size_t *off, size_t *len)
     uint64_t first;
     uint64_t last;
 
-    if (strncasecmp(v, "bytes=", 6) != 0) {
+    static const char unit[] = "bytes=";
+
+    if (strncasecmp(v, unit, sizeof(unit) - 1) != 0) {
         return false;
     }
-    v += 6;
+    v += sizeof(unit) - 1;
 
     const char *dash = strchr(v, '-');
     if (dash == NULL) {
@@ -856,7 +873,7 @@ static void handle_list_objects(const struct s3_target *t,
                                 struct s3_http_response *resp)
 {
     char prefix[S3_KEY_MAX] = "";
-    char maxkeys[24] = "";
+    char maxkeys[S3_NUMBER_MAX] = "";
     uint32_t limit = S3_LIST_MAX_KEYS;
 
     s3_http_query_get(req, "prefix", prefix, sizeof(prefix));
@@ -899,7 +916,7 @@ static void handle_list_objects(const struct s3_target *t,
         }
         char when[32];
         iso8601(o->mtime, when, sizeof(when));
-        s3_http_response_write(resp, "<Contents><Key>", 15);
+        WRITE_LITERAL(resp, "<Contents><Key>");
         xml_escape(resp, o->key);
         s3_http_response_printf(resp,
                                 "</Key><LastModified>%s</LastModified>"
@@ -911,7 +928,7 @@ static void handle_list_objects(const struct s3_target *t,
                                 o->len);
         n++;
     }
-    s3_http_response_write(resp, "</ListBucketResult>\n", 20);
+    WRITE_LITERAL(resp, "</ListBucketResult>\n");
 }
 
 static void handle_head(struct s3_target *t, const char *key,
@@ -920,8 +937,8 @@ static void handle_head(struct s3_target *t, const char *key,
     struct s3_object *o = obj_find(t, key);
 
     if (o == NULL) {
-        s3_error(t, resp, 404, "NoSuchKey", "The specified key does not exist.",
-                 key);
+        s3_error(t, resp, S3_HTTP_NOT_FOUND, "NoSuchKey",
+                 "The specified key does not exist.", key);
         return; /* s3_target_exec() drops the body, as for every HEAD */
     }
     char when[32];
@@ -942,17 +959,17 @@ static void handle_get(struct s3_target *t, const struct s3_http_request *req,
     bool rdma = have_token(req, &tok, &malformed);
 
     if (malformed) {
-        s3_error(t, resp, 400, "InvalidArgument",
+        s3_error(t, resp, S3_HTTP_BAD_REQUEST, "InvalidArgument",
                  "x-amz-rdma-token is not a valid RDMA token.", key);
         return;
     }
 
     struct s3_object *o = obj_find(t, key);
     if (o == NULL) {
-        s3_error(t, resp, 404, "NoSuchKey", "The specified key does not exist.",
-                 key);
+        s3_error(t, resp, S3_HTTP_NOT_FOUND, "NoSuchKey",
+                 "The specified key does not exist.", key);
         if (rdma) {
-            rdma_reply(t, resp, 404, &tok, 0);
+            rdma_reply(t, resp, S3_HTTP_NOT_FOUND, &tok, 0);
         }
         return;
     }
@@ -963,10 +980,10 @@ static void handle_get(struct s3_target *t, const struct s3_http_request *req,
     const char *range = s3_http_header_get(req, "range");
     if (range != NULL) {
         if (!parse_range(range, o->len, &off, &len)) {
-            s3_error(t, resp, 416, "InvalidRange",
+            s3_error(t, resp, S3_HTTP_RANGE_NOT_SATISFIABLE, "InvalidRange",
                      "The requested range is not satisfiable.", key);
             if (rdma) {
-                rdma_reply(t, resp, 416, &tok, 0);
+                rdma_reply(t, resp, S3_HTTP_RANGE_NOT_SATISFIABLE, &tok, 0);
             }
             return;
         }
@@ -974,7 +991,7 @@ static void handle_get(struct s3_target *t, const struct s3_http_request *req,
     }
 
     if (!rdma) {
-        resp->status = ranged ? 206 : 200;
+        resp->status = ranged ? S3_HTTP_PARTIAL_CONTENT : S3_HTTP_OK;
         s3_http_response_header(resp, "Content-Type",
                                 "application/octet-stream");
         s3_http_response_header(resp, "ETag", "%s", o->etag);
@@ -990,9 +1007,9 @@ static void handle_get(struct s3_target *t, const struct s3_http_request *req,
     }
 
     if (dma == NULL || dma->to_host == NULL) {
-        s3_error(t, resp, 501, "NotImplemented",
+        s3_error(t, resp, S3_HTTP_NOT_IMPLEMENTED, "NotImplemented",
                  "This endpoint has no RDMA data plane attached.", key);
-        rdma_reply(t, resp, 501, &tok, 0);
+        rdma_reply(t, resp, S3_HTTP_NOT_IMPLEMENTED, &tok, 0);
         return;
     }
 
@@ -1002,9 +1019,9 @@ static void handle_get(struct s3_target *t, const struct s3_http_request *req,
         len = (size_t)tok.length;
     }
     if (len > t->cfg.max_part) {
-        s3_error(t, resp, 400, "EntityTooLarge",
+        s3_error(t, resp, S3_HTTP_BAD_REQUEST, "EntityTooLarge",
                  "The transfer exceeds the configured maximum.", key);
-        rdma_reply(t, resp, 400, &tok, 0);
+        rdma_reply(t, resp, S3_HTTP_BAD_REQUEST, &tok, 0);
         return;
     }
 
@@ -1014,13 +1031,13 @@ static void handle_get(struct s3_target *t, const struct s3_http_request *req,
                              (uint32_t)len);
     }
     if (moved != len) {
-        s3_error(t, resp, 500, "InternalError",
+        s3_error(t, resp, S3_HTTP_INTERNAL_ERROR, "InternalError",
                  "The RDMA write to the client buffer did not complete.", key);
-        rdma_reply(t, resp, 500, &tok, moved);
+        rdma_reply(t, resp, S3_HTTP_INTERNAL_ERROR, &tok, moved);
         return;
     }
 
-    resp->status = ranged ? 206 : 200;
+    resp->status = ranged ? S3_HTTP_PARTIAL_CONTENT : S3_HTTP_OK;
     s3_http_response_header(resp, "ETag", "%s", o->etag);
     s3_http_response_header(resp, "Accept-Ranges", "bytes");
     if (ranged) {
@@ -1041,7 +1058,7 @@ static void handle_put(struct s3_target *t, const struct s3_http_request *req,
     bool rdma = have_token(req, &tok, &malformed);
 
     if (malformed) {
-        s3_error(t, resp, 400, "InvalidArgument",
+        s3_error(t, resp, S3_HTTP_BAD_REQUEST, "InvalidArgument",
                  "x-amz-rdma-token is not a valid RDMA token.", key);
         return;
     }
@@ -1051,9 +1068,9 @@ static void handle_put(struct s3_target *t, const struct s3_http_request *req,
 
     if (rdma) {
         if (dma == NULL || dma->from_host == NULL) {
-            s3_error(t, resp, 501, "NotImplemented",
+            s3_error(t, resp, S3_HTTP_NOT_IMPLEMENTED, "NotImplemented",
                      "This endpoint has no RDMA data plane attached.", key);
-            rdma_reply(t, resp, 501, &tok, 0);
+            rdma_reply(t, resp, S3_HTTP_NOT_IMPLEMENTED, &tok, 0);
             return;
         }
         /* Content-Length wins when the client set one, because a token
@@ -1062,41 +1079,43 @@ static void handle_put(struct s3_target *t, const struct s3_http_request *req,
         len =
             req->content_length > 0 ? req->content_length : (size_t)tok.length;
         if (len == 0) {
-            s3_error(t, resp, 411, "MissingContentLength",
+            s3_error(t, resp, S3_HTTP_LENGTH_REQUIRED, "MissingContentLength",
                      "An RDMA PUT needs a length in the token or the header.",
                      key);
-            rdma_reply(t, resp, 411, &tok, 0);
+            rdma_reply(t, resp, S3_HTTP_LENGTH_REQUIRED, &tok, 0);
             return;
         }
         if (len > t->cfg.max_part || (tok.length != 0 && len > tok.length)) {
-            s3_error(t, resp, 400, "EntityTooLarge",
+            s3_error(t, resp, S3_HTTP_BAD_REQUEST, "EntityTooLarge",
                      "The transfer exceeds the client buffer or the "
                      "configured maximum.",
                      key);
-            rdma_reply(t, resp, 400, &tok, 0);
+            rdma_reply(t, resp, S3_HTTP_BAD_REQUEST, &tok, 0);
             return;
         }
         buf = malloc(len);
         if (buf == NULL) {
-            s3_error(t, resp, 500, "InternalError", "Out of memory.", key);
-            rdma_reply(t, resp, 500, &tok, 0);
+            s3_error(t, resp, S3_HTTP_INTERNAL_ERROR, "InternalError",
+                     "Out of memory.", key);
+            rdma_reply(t, resp, S3_HTTP_INTERNAL_ERROR, &tok, 0);
             return;
         }
         uint32_t moved = dma->from_host(dma_ctx, tok.rkey, tok.remote_addr, buf,
                                         (uint32_t)len);
         if (moved != len) {
             free(buf);
-            s3_error(t, resp, 500, "InternalError",
+            s3_error(t, resp, S3_HTTP_INTERNAL_ERROR, "InternalError",
                      "The RDMA read from the client buffer did not complete.",
                      key);
-            rdma_reply(t, resp, 500, &tok, moved);
+            rdma_reply(t, resp, S3_HTTP_INTERNAL_ERROR, &tok, moved);
             return;
         }
     } else {
         len = req->body_len;
         buf = malloc(len > 0 ? len : 1);
         if (buf == NULL) {
-            s3_error(t, resp, 500, "InternalError", "Out of memory.", key);
+            s3_error(t, resp, S3_HTTP_INTERNAL_ERROR, "InternalError",
+                     "Out of memory.", key);
             return;
         }
         if (len > 0) {
@@ -1116,19 +1135,19 @@ static void handle_put(struct s3_target *t, const struct s3_http_request *req,
             !ernic_parse_u32(part_str, &number) || number == 0 ||
             number > S3_MAX_PARTS) {
             free(buf);
-            s3_error(t, resp, 400, "InvalidPart", "partNumber must be 1..1024.",
-                     key);
+            s3_error(t, resp, S3_HTTP_BAD_REQUEST, "InvalidPart",
+                     "partNumber must be 1..1024.", key);
             if (rdma) {
-                rdma_reply(t, resp, 400, &tok, 0);
+                rdma_reply(t, resp, S3_HTTP_BAD_REQUEST, &tok, 0);
             }
             return;
         }
         if (u == NULL || strcmp(u->key, key) != 0) {
             free(buf);
-            s3_error(t, resp, 404, "NoSuchUpload",
+            s3_error(t, resp, S3_HTTP_NOT_FOUND, "NoSuchUpload",
                      "The specified multipart upload does not exist.", key);
             if (rdma) {
-                rdma_reply(t, resp, 404, &tok, 0);
+                rdma_reply(t, resp, S3_HTTP_NOT_FOUND, &tok, 0);
             }
             return;
         }
@@ -1139,10 +1158,10 @@ static void handle_put(struct s3_target *t, const struct s3_http_request *req,
              * the store cannot take must not count towards the ETag. */
             u->nparts = nparts_before;
             free(buf);
-            s3_error(t, resp, 507, "EntityTooLarge",
+            s3_error(t, resp, S3_HTTP_INSUFFICIENT_STORAGE, "EntityTooLarge",
                      "The store has no room for this part.", key);
             if (rdma) {
-                rdma_reply(t, resp, 507, &tok, 0);
+                rdma_reply(t, resp, S3_HTTP_INSUFFICIENT_STORAGE, &tok, 0);
             }
             return;
         }
@@ -1153,11 +1172,11 @@ static void handle_put(struct s3_target *t, const struct s3_http_request *req,
         p->len = len;
         md5_buf(buf, len, p->md5);
 
-        char hex[33];
+        char hex[MD5_HEX_LEN + 1];
         md5_hex(p->md5, hex);
         s3_http_response_header(resp, "ETag", "\"%s\"", hex);
         if (rdma) {
-            rdma_reply(t, resp, 200, &tok, len);
+            rdma_reply(t, resp, S3_HTTP_OK, &tok, len);
         }
         t->stats.puts++;
         t->stats.write_bytes += len;
@@ -1167,17 +1186,17 @@ static void handle_put(struct s3_target *t, const struct s3_http_request *req,
     struct s3_object *o = obj_store(t, key, buf, len, NULL);
     if (o == NULL) {
         free(buf);
-        s3_error(t, resp, 507, "EntityTooLarge",
+        s3_error(t, resp, S3_HTTP_INSUFFICIENT_STORAGE, "EntityTooLarge",
                  "The store is full or has no free object slot.", key);
         if (rdma) {
-            rdma_reply(t, resp, 507, &tok, 0);
+            rdma_reply(t, resp, S3_HTTP_INSUFFICIENT_STORAGE, &tok, 0);
         }
         return;
     }
 
     s3_http_response_header(resp, "ETag", "%s", o->etag);
     if (rdma) {
-        rdma_reply(t, resp, 200, &tok, len);
+        rdma_reply(t, resp, S3_HTTP_OK, &tok, len);
     }
     t->stats.puts++;
     t->stats.write_bytes += len;
@@ -1192,13 +1211,13 @@ static void handle_delete(struct s3_target *t,
     if (upload_id_get(req, upload_id, sizeof(upload_id))) {
         struct s3_upload *u = upload_find(t, upload_id);
         if (u == NULL) {
-            s3_error(t, resp, 404, "NoSuchUpload",
+            s3_error(t, resp, S3_HTTP_NOT_FOUND, "NoSuchUpload",
                      "The specified multipart upload does not exist.", key);
             return;
         }
         t->used -= u->bytes;
         upload_reset(u);
-        resp->status = 204;
+        resp->status = S3_HTTP_NO_CONTENT;
         return;
     }
 
@@ -1208,7 +1227,7 @@ static void handle_delete(struct s3_target *t,
         t->stats.deletes++;
     }
     /* S3 deletes are idempotent: a missing key is still a 204. */
-    resp->status = 204;
+    resp->status = S3_HTTP_NO_CONTENT;
 }
 
 static void handle_initiate(struct s3_target *t, const char *key,
@@ -1217,7 +1236,7 @@ static void handle_initiate(struct s3_target *t, const char *key,
     struct s3_upload *u = upload_alloc(t, key);
 
     if (u == NULL) {
-        s3_error(t, resp, 503, "SlowDown",
+        s3_error(t, resp, S3_HTTP_SERVICE_UNAVAILABLE, "SlowDown",
                  "Too many multipart uploads are in flight.", key);
         return;
     }
@@ -1242,12 +1261,12 @@ static void handle_complete(struct s3_target *t, const char *key,
     struct s3_upload *u = upload_find(t, upload_id);
 
     if (u == NULL || strcmp(u->key, key) != 0) {
-        s3_error(t, resp, 404, "NoSuchUpload",
+        s3_error(t, resp, S3_HTTP_NOT_FOUND, "NoSuchUpload",
                  "The specified multipart upload does not exist.", key);
         return;
     }
     if (u->nparts == 0) {
-        s3_error(t, resp, 400, "InvalidRequest",
+        s3_error(t, resp, S3_HTTP_BAD_REQUEST, "InvalidRequest",
                  "A multipart upload must have at least one part.", key);
         return;
     }
@@ -1256,7 +1275,8 @@ static void handle_complete(struct s3_target *t, const char *key,
 
     uint8_t *buf = malloc(u->bytes > 0 ? u->bytes : 1);
     if (buf == NULL) {
-        s3_error(t, resp, 500, "InternalError", "Out of memory.", key);
+        s3_error(t, resp, S3_HTTP_INTERNAL_ERROR, "InternalError",
+                 "Out of memory.", key);
         return;
     }
 
@@ -1272,11 +1292,12 @@ static void handle_complete(struct s3_target *t, const char *key,
     }
 
     uint8_t digest[16];
-    char hex[33];
+    char hex[MD5_HEX_LEN + 1];
     char etag[S3_ETAG_MAX];
     md5_final(&outer, digest);
     md5_hex(digest, hex);
-    snprintf(etag, sizeof(etag), "\"%s-%u\"", hex, u->nparts);
+    /* 32 hex digits, a part count, and the quotes. */
+    (void)snprintf(etag, sizeof(etag), "\"%s-%u\"", hex, u->nparts);
 
     /* The parts are already charged against capacity, so hand their bytes
      * back before obj_store charges the assembled object -- and take them
@@ -1287,7 +1308,7 @@ static void handle_complete(struct s3_target *t, const char *key,
     if (o == NULL) {
         t->used += u->bytes;
         free(buf);
-        s3_error(t, resp, 507, "EntityTooLarge",
+        s3_error(t, resp, S3_HTTP_INSUFFICIENT_STORAGE, "EntityTooLarge",
                  "The store is full or has no free object slot.", key);
         return;
     }
@@ -1318,14 +1339,14 @@ static void route(struct s3_target *t, const struct s3_http_request *req,
     /* No bucket has a name too long for the buffer: bucket_name_ok()
      * refuses one at configuration. */
     if (!split_path(req->path, bucket, sizeof(bucket), &key)) {
-        s3_error(t, resp, 404, "NoSuchBucket",
+        s3_error(t, resp, S3_HTTP_NOT_FOUND, "NoSuchBucket",
                  "The specified bucket does not exist.", req->path);
         return;
     }
 
     if (strlen(key) >= S3_KEY_MAX) {
-        s3_error(t, resp, 400, "KeyTooLongError", "The key is too long.",
-                 req->path);
+        s3_error(t, resp, S3_HTTP_BAD_REQUEST, "KeyTooLongError",
+                 "The key is too long.", req->path);
         return;
     }
 
@@ -1336,7 +1357,7 @@ static void route(struct s3_target *t, const struct s3_http_request *req,
         if (is_get || is_head) {
             handle_list_buckets(t, resp);
         } else {
-            s3_error(t, resp, 405, "MethodNotAllowed",
+            s3_error(t, resp, S3_HTTP_METHOD_NOT_ALLOWED, "MethodNotAllowed",
                      "That method is not allowed on the service endpoint.",
                      "/");
         }
@@ -1344,7 +1365,7 @@ static void route(struct s3_target *t, const struct s3_http_request *req,
     }
 
     if (strcmp(bucket, t->cfg.bucket) != 0) {
-        s3_error(t, resp, 404, "NoSuchBucket",
+        s3_error(t, resp, S3_HTTP_NOT_FOUND, "NoSuchBucket",
                  "The specified bucket does not exist.", bucket);
         return;
     }
@@ -1357,7 +1378,7 @@ static void route(struct s3_target *t, const struct s3_http_request *req,
             handle_list_objects(t, req, resp);
             return;
         }
-        s3_error(t, resp, 405, "MethodNotAllowed",
+        s3_error(t, resp, S3_HTTP_METHOD_NOT_ALLOWED, "MethodNotAllowed",
                  "That method is not allowed on a bucket.", bucket);
         return;
     }
@@ -1377,11 +1398,11 @@ static void route(struct s3_target *t, const struct s3_http_request *req,
         } else if (upload_id_get(req, upload_id, sizeof(upload_id))) {
             handle_complete(t, key, upload_id, resp);
         } else {
-            s3_error(t, resp, 400, "InvalidRequest",
+            s3_error(t, resp, S3_HTTP_BAD_REQUEST, "InvalidRequest",
                      "POST needs ?uploads or ?uploadId.", key);
         }
     } else {
-        s3_error(t, resp, 405, "MethodNotAllowed",
+        s3_error(t, resp, S3_HTTP_METHOD_NOT_ALLOWED, "MethodNotAllowed",
                  "That method is not allowed on an object.", key);
     }
 }
@@ -1390,7 +1411,7 @@ void s3_target_exec(struct s3_target *t, const struct s3_http_request *req,
                     const struct s3_dma_ops *dma, void *dma_ctx,
                     struct s3_http_response *resp)
 {
-    s3_http_response_init(resp, 200);
+    s3_http_response_init(resp, S3_HTTP_OK);
     resp->keep_alive = req->keep_alive;
     s3_http_response_header(resp, "Server", "rocm-ernic/s3");
     s3_http_response_header(resp, "x-amz-request-id", "%016" PRIx64,

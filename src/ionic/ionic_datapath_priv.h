@@ -268,7 +268,7 @@ struct ionic_ah {
      * a datagram leaving for another instance; see dp_ud_grh(). */
     uint8_t sgid[ERNIC_GID_LEN];
     bool sgid_valid;
-    uint8_t dmac[6];
+    uint8_t dmac[ETH_ADDR_LEN];
 };
 
 /*

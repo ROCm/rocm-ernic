@@ -96,15 +96,19 @@ static const struct schema_key *find_key(const char *group, const char *key)
     return NULL;
 }
 
+/* The compat profile's link, which ionic_profiles.c's text repeats */
+#define COMPAT_SPEED_MBPS 100000U /* 100 Gb/s */
+#define COMPAT_MTU_MAX    9198U
+
 void ionic_profile_defaults(struct ionic_profile *p)
 {
     memset(p, 0, sizeof(*p));
     p->identity.asic_type = IONIC_PROFILE_ASIC_NONE;
     p->identity.asic_rev = 0;
     memcpy(p->identity.fw_version, "rocm-ernic-1.0", sizeof("rocm-ernic-1.0"));
-    p->link.speed_mbps = 100000;
+    p->link.speed_mbps = COMPAT_SPEED_MBPS;
     p->link.xcvr = IONIC_PROFILE_XCVR_COPPER;
-    p->link.mtu_max = 9198;
+    p->link.mtu_max = COMPAT_MTU_MAX;
     p->queues.eth = 4;
     p->queues.rdma_eqs = 32;
     p->queues.intr_vectors = 32;
@@ -342,7 +346,8 @@ static bool fw_version_ok(const char *v)
         return false;
     }
     for (size_t i = 0; i < n; i++) {
-        if ((unsigned char)v[i] < 0x20 || (unsigned char)v[i] > 0x7e ||
+        /* Printable ASCII is ' ' to '~' */
+        if ((unsigned char)v[i] < ' ' || (unsigned char)v[i] > '~' ||
             v[i] == '\\') {
             return false;
         }
@@ -654,8 +659,9 @@ int ionic_profile_apply_text(struct ionic_profile *p, const char *source,
         k = find_key(it->group, it->key);
         raw = g_key_file_get_value(kf, it->group, it->key, NULL);
         str = g_key_file_get_string(kf, it->group, it->key, NULL);
-        snprintf(where, sizeof(where), "%s:%u: %s.%s", source, it->line,
-                 it->group, it->key);
+        /* Only names the value in a message, so it may be cut short. */
+        (void)snprintf(where, sizeof(where), "%s:%u: %s.%s", source, it->line,
+                       it->group, it->key);
         if (k && raw && str) {
             /* GKeyFile keeps a value's trailing blanks, and a stray one
              * at the end of a line is invisible. */
@@ -812,9 +818,11 @@ static int format_values(const struct ionic_profile *p, char *buf, size_t len)
     char vectors[16];
 
     if (p->queues.intr_vectors == IONIC_PROFILE_INTR_VECTORS_AUTO) {
-        snprintf(vectors, sizeof(vectors), "auto");
+        (void)snprintf(vectors, sizeof(vectors), "auto");
     } else {
-        snprintf(vectors, sizeof(vectors), "%" PRIu32, p->queues.intr_vectors);
+        /* A uint32_t has at most 10 digits. */
+        (void)snprintf(vectors, sizeof(vectors), "%" PRIu32,
+                       p->queues.intr_vectors);
     }
     return snprintf(
         buf, len,
@@ -864,8 +872,9 @@ int ionic_profile_format(const struct ionic_profile *p, char *buf, size_t len)
     char values[512];
     int n;
 
-    /* A file name could hold a newline, which would end the comment. */
-    snprintf(chain, sizeof(chain), "%s", p->chain);
+    /* A file name could hold a newline, which would end the comment. The
+     * copy can't be cut short: p->chain is as large as chain. */
+    (void)snprintf(chain, sizeof(chain), "%s", p->chain);
     for (char *c = chain; *c; c++) {
         if ((unsigned char)*c < 0x20 || *c == 0x7f) {
             *c = '?';

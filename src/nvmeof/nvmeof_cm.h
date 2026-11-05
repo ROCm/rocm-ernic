@@ -26,6 +26,16 @@
 #define IB_MAD_SIZE 256
 
 /*
+ * What the ionic data path reads of a CM REQ to learn the guest's GIDs,
+ * as byte offsets from the start of the MAD (see nvmeof_cm.c): the MAD
+ * header's be16 attribute id, and the REQ's primary path GIDs.
+ */
+#define NVMEOF_CM_MAD_ATTR_ID_OFF      16
+#define NVMEOF_CM_ATTR_REQ             0x0010
+#define NVMEOF_CM_REQ_PRIMARY_LGID_OFF 80
+#define NVMEOF_CM_REQ_PRIMARY_RGID_OFF 96
+
+/*
  * QP numbers handed out for the controller side of each connection.
  * They have to be 24-bit values the guest will accept in MODIFY_QP, and
  * they have to be distinguishable from the guest's own QPs, which the

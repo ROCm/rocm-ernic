@@ -49,7 +49,7 @@ struct p4_engine {
      * begin clears it and every failed step sets it, so it never carries
      * an earlier load's reason.
      */
-    char load_err[160];
+    char load_err[P4_ERR_MAX];
 
     struct p4_stats stats;
 };

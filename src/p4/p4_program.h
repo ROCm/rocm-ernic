@@ -40,7 +40,7 @@ static inline bool p4_name_printable(const char *s, size_t n)
          * or not plain char is signed. */
         unsigned char c = (unsigned char)s[i];
 
-        if (c < 0x20 || c > 0x7E) {
+        if (c < ' ' || c > '~') { /* printable ASCII */
             return false;
         }
     }

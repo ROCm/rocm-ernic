@@ -197,6 +197,8 @@ static int g_send_rc;
  * Called by the next ernic_mesh_sendv(), once, if set: how a row acts in the
  * middle of a pass, as a mesh receive thread can.
  */
+/* A function pointer, which can't be to const.
+ * NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) */
 static void (*g_sendv_hook)(void);
 
 int ernic_mesh_sendv(pvrdma_handle_t handle, uint32_t dst_node, const void *hdr,
@@ -254,6 +256,8 @@ struct PVRDMADev {
 static struct PVRDMADev g_mesh;
 static uint32_t g_local_node = UINT32_MAX;
 static ernic_mesh_recv_fn g_recv_fn;
+/* Handed back to g_recv_fn, which takes it non-const.
+ * NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) */
 static void *g_recv_opaque;
 
 uint32_t ernic_mesh_local_node(pvrdma_handle_t handle)
@@ -535,6 +539,8 @@ static const char *const counter_name[IONIC_DP_RDMA_COUNT] = {
  * The data path under test, and what it asked the mesh to cancel: how many
  * times, the last tag and mask, and how many completions CQ_ID had then.
  */
+/* The fakes drive the data path through it, so it can't point to const.
+ * NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) */
 static struct ionic_datapath *g_dp;
 static uint32_t g_ncancel;
 static uint64_t g_cancel_tag;
@@ -1585,11 +1591,11 @@ static void run_sq_case(const struct sq_case *c)
         ok = cqes == c->cqes && delivered == c->delivered &&
              dp->sq_stalled == c->sq_stalled &&
              dp->qp[QP_A].sq_cons == c->sq_cons;
-        snprintf(got, sizeof(got),
-                 "%" PRIu32 " completions, %sdelivered, %" PRIu32
-                 " waiting, sq_cons %" PRIu32,
-                 cqes, delivered ? "" : "not ", dp->sq_stalled,
-                 dp->qp[QP_A].sq_cons);
+        (void)snprintf(got, sizeof(got),
+                       "%" PRIu32 " completions, %sdelivered, %" PRIu32
+                       " waiting, sq_cons %" PRIu32,
+                       cqes, delivered ? "" : "not ", dp->sq_stalled,
+                       dp->qp[QP_A].sq_cons);
         ionic_datapath_destroy(dp);
     }
     printf("%s %s: %s; expected: %s\n", ok ? "ok  " : "FAIL", c->category,
@@ -2932,8 +2938,9 @@ static const char *uw_cqes(const struct ionic_datapath *dp,
     static char why[128];
 
     if (dp->cq[CQ_ID].prod != n) {
-        snprintf(why, sizeof(why), "%" PRIu32 " completions, not %" PRIu32,
-                 dp->cq[CQ_ID].prod, n);
+        (void)snprintf(why, sizeof(why),
+                       "%" PRIu32 " completions, not %" PRIu32,
+                       dp->cq[CQ_ID].prod, n);
         return why;
     }
     for (uint32_t i = 0; i < n; i++) {
@@ -2954,11 +2961,12 @@ static const char *uw_cqes(const struct ionic_datapath *dp,
         if ((qtf & CQE_TYPE_MASK) != want[i].type || qtf >> 8 != QP_A ||
             status != want[i].status || error != want_error ||
             id != want[i].id) {
-            snprintf(why, sizeof(why),
-                     "completion %" PRIu32 " is type %" PRIu32 " qid %" PRIu32
-                     " status %" PRIu32 " (error %d) id %" PRIu64,
-                     i, (qtf & CQE_TYPE_MASK) >> 5, qtf >> 8, status,
-                     (int)error, id);
+            (void)snprintf(why, sizeof(why),
+                           "completion %" PRIu32 " is type %" PRIu32
+                           " qid %" PRIu32 " status %" PRIu32
+                           " (error %d) id %" PRIu64,
+                           i, (qtf & CQE_TYPE_MASK) >> 5, qtf >> 8, status,
+                           (int)error, id);
             return why;
         }
     }

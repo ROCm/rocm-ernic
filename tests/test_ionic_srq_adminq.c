@@ -506,7 +506,9 @@ struct PVRDMADev {
 static struct PVRDMADev g_fake_pvrdma;
 
 static struct ionic_adminq_ctx g_ctx;
-/* Made in main(); outlives every ctx_reset(). */
+/* Made in main(); outlives every ctx_reset(). The code under test
+ * changes it, so it can't point to const.
+ * NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) */
 static struct ernic_dma *g_dma;
 
 #define RESP_GPA       256U

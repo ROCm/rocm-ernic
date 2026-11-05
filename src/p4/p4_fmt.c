@@ -11,6 +11,7 @@
 
 #include <string.h>
 
+#include "byteorder.h"
 #include "p4/p4_fmt.h"
 
 #define F32_SIGN_MASK 0x80000000U
@@ -132,11 +133,9 @@ static uint32_t fmt_load(enum p4_fmt f, const uint8_t *base, size_t i)
     case 8:
         return base[i];
     case 16:
-        return (uint32_t)base[2U * i] | ((uint32_t)base[(2U * i) + 1U] << 8);
+        return ernic_get_le16(base + (2U * i));
     default:
-        return (uint32_t)base[4U * i] | ((uint32_t)base[(4U * i) + 1U] << 8) |
-               ((uint32_t)base[(4U * i) + 2U] << 16) |
-               ((uint32_t)base[(4U * i) + 3U] << 24);
+        return ernic_get_le32(base + (4U * i));
     }
 }
 
@@ -149,21 +148,18 @@ static void fmt_store(enum p4_fmt f, uint8_t *base, size_t i, uint32_t raw)
             base[i / 2U] =
                 (uint8_t)((base[i / 2U] & 0x0FU) | ((raw & 0x0FU) << 4));
         } else {
-            base[i / 2U] = (uint8_t)((base[i / 2U] & 0xF0U) | (raw & 0x0FU));
+            base[i / 2U] =
+                (uint8_t)((base[i / 2U] & (0x0FU << 4)) | (raw & 0x0FU));
         }
         break;
     case 8:
         base[i] = (uint8_t)raw;
         break;
     case 16:
-        base[2U * i] = (uint8_t)(raw & 0xFFU);
-        base[(2U * i) + 1U] = (uint8_t)((raw >> 8) & 0xFFU);
+        ernic_put_le16(base + (2U * i), (uint16_t)raw);
         break;
     default:
-        base[4U * i] = (uint8_t)(raw & 0xFFU);
-        base[(4U * i) + 1U] = (uint8_t)((raw >> 8) & 0xFFU);
-        base[(4U * i) + 2U] = (uint8_t)((raw >> 16) & 0xFFU);
-        base[(4U * i) + 3U] = (uint8_t)((raw >> 24) & 0xFFU);
+        ernic_put_le32(base + (4U * i), raw);
         break;
     }
 }
@@ -327,7 +323,7 @@ static void fmt_enc_init(struct fmt_enc *e, const struct fmt_desc *d)
     step = bits_float(
         (uint32_t)((int32_t)max_exp - d->bias - d->man_bits + F32_BIAS)
         << F32_EXP_SHIFT);
-    e->saturate_f32 = float_bits(max_v + (step * 0.5F));
+    e->saturate_f32 = float_bits(max_v + (step / 2));
 }
 
 /* Shift @v right by @n, rounding to nearest with ties to even. */
@@ -403,7 +399,7 @@ static uint32_t fmt_encode_raw(const struct fmt_enc *e, float v)
     if ((mag >> F32_EXP_SHIFT) == 0) {
         /* float32 subnormal: no implicit leading one. */
         sig = mag;
-        src_e = -126 - (int32_t)F32_MAN_BITS;
+        src_e = 1 - F32_BIAS - (int32_t)F32_MAN_BITS;
     } else {
         sig = (mag & F32_MAN_MASK) | (1U << F32_EXP_SHIFT);
         src_e =

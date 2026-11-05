@@ -28,6 +28,7 @@
 
 #include "byteorder.h"
 #include "ernic_dma.h"
+#include "ernic_gid.h"
 #include "ernic_ib.h"
 #include "ernic_limits.h"
 #include "ernic_rm.h"
@@ -37,6 +38,7 @@
 #include "ionic/ionic_datapath.h"
 #include "ionic/ionic_fault.h"
 #include "ionic/ionic_status.h"
+#include "net/net_headers.h"
 
 /* -------------------------------------------------------------------------
  * ionic_fw.h constants (keep in sync with pinned kernel ref)
@@ -173,8 +175,7 @@ static bool adminq_alloc_srq(struct ionic_adminq_ctx *ctx, uint32_t handle,
         return true;
     }
     vfu_log(ctx->vfu_ctx, LOG_WARNING,
-            "ionic_adminq: SRQ map full at %u SRQs, refusing",
-            (unsigned)MAX_SRQ_MAP);
+            "ionic_adminq: SRQ map full at %u SRQs, refusing", MAX_SRQ_MAP);
     return false;
 }
 
@@ -506,24 +507,25 @@ void ionic_adminq_update_prod(struct ionic_adminq_ctx *ctx, int aq_idx,
 static bool adminq_parse_roce_hdr(const struct ionic_adminq_ctx *ctx,
                                   uint64_t gpa, uint32_t len,
                                   uint8_t dgid[ERNIC_GID_LEN],
-                                  uint8_t sgid[ERNIC_GID_LEN], uint8_t dmac[6])
+                                  uint8_t sgid[ERNIC_GID_LEN],
+                                  uint8_t dmac[ETH_ADDR_LEN])
 {
     uint8_t hdr[128];
 
-    if (len < 14 || len > sizeof(hdr)) {
+    if (len < ETH_HDR_LEN || len > sizeof(hdr)) {
         return false;
     }
     if (ernic_dma_read(ctx->dma, ctx->vfu_ctx, gpa, hdr, len) < 0) {
         return false;
     }
 
-    memcpy(dmac, hdr, 6);
+    memcpy(dmac, hdr + ETH_DST_OFF, ETH_ADDR_LEN);
 
-    uint32_t off = 12;
+    uint32_t off = ETH_TYPE_OFF;
     uint16_t ethertype = ernic_get_be16(hdr + off);
 
-    if (ethertype == 0x8100) { /* 802.1Q tag, ethertype repeats after it */
-        off += 4;
+    if (ethertype == ETH_ETHERTYPE_VLAN) { /* ethertype repeats after it */
+        off += ETH_VLAN_TAG_LEN;
         if (off + 2 > len) {
             return false;
         }
@@ -531,27 +533,21 @@ static bool adminq_parse_roce_hdr(const struct ionic_adminq_ctx *ctx,
     }
     off += 2;
 
-    if (ethertype == 0x0800) { /* IPv4: saddr at +12, daddr at +16 */
-        if (off + 20 > len) {
+    if (ethertype == ETH_ETHERTYPE_IP) {
+        if (off + IP_HDR_LEN > len) {
             return false;
         }
-        memset(dgid, 0, ERNIC_GID_LEN);
-        dgid[10] = 0xff;
-        dgid[11] = 0xff;
-        memcpy(dgid + 12, hdr + off + 16, 4);
-        memset(sgid, 0, ERNIC_GID_LEN);
-        sgid[10] = 0xff;
-        sgid[11] = 0xff;
-        memcpy(sgid + 12, hdr + off + 12, 4);
+        ernic_gid_from_ipv4(dgid, hdr + off + IP_DST_OFF);
+        ernic_gid_from_ipv4(sgid, hdr + off + IP_SRC_OFF);
         return true;
     }
 
-    if (ethertype == 0x86dd) { /* IPv6: saddr at +8, daddr at +24 */
-        if (off + 40 > len) {
+    if (ethertype == ETH_ETHERTYPE_IPV6) {
+        if (off + IP6_HDR_LEN > len) {
             return false;
         }
-        memcpy(dgid, hdr + off + 24, ERNIC_GID_LEN);
-        memcpy(sgid, hdr + off + 8, ERNIC_GID_LEN);
+        memcpy(dgid, hdr + off + IP6_DST_OFF, ERNIC_GID_LEN);
+        memcpy(sgid, hdr + off + IP6_SRC_OFF, ERNIC_GID_LEN);
         return true;
     }
 
@@ -582,8 +578,8 @@ void ionic_adminq_post_cqe(const struct ionic_adminq_ctx *ctx,
     uint8_t cqe[CQE_SIZE];
     memset(cqe, 0, CQE_SIZE);
 
-    ernic_put_be16(cqe + 0, cmd_idx);
-    cqe[2] = cmd_op;
+    ernic_put_be16(cqe + CQE_CMD_IDX_OFF, cmd_idx);
+    cqe[CQE_CMD_OP_OFF] = cmd_op;
 
     /* status_length is one field doing two jobs: the status code itself when
      * the error bit is set, and otherwise the number of response bytes
@@ -594,7 +590,8 @@ void ionic_adminq_post_cqe(const struct ionic_adminq_ctx *ctx,
      * ibv_create_srq() returning "Operation not supported" on a device that
      * had just handled the command. The ops that DMA no response still send
      * 0, which is their correct length. */
-    ernic_put_be32(cqe + 24, status ? (uint32_t)status : resp_len);
+    ernic_put_be32(cqe + CQE_STATUS_LENGTH_OFF,
+                   status ? (uint32_t)status : resp_len);
 
     /* qid_type_flags: bit 0 = color, bit 1 = error, bits[7:5] = type
      * (0 = admin), bits[31:8] = the AQ id, which the driver checks against
@@ -602,7 +599,7 @@ void ionic_adminq_post_cqe(const struct ionic_adminq_ctx *ctx,
     uint32_t qtf = (r->aq_id << 8) |
                    (uint32_t)(r->cq_color ? CQE_COLOR_BIT : 0) |
                    (status ? CQE_ERROR_BIT : 0);
-    ernic_put_be32(cqe + 28, qtf);
+    ernic_put_be32(cqe + CQE_QID_TYPE_FLAGS_OFF, qtf);
 
     /* Write CQE to guest memory */
     uint64_t cqe_gpa =
@@ -670,6 +667,14 @@ static uint8_t adminq_dp_status(int err)
  *   le16 dbid_flags   [32:33]
  * -------------------------------------------------------------------------
  */
+#define CREATE_CQ_EQ_ID_OFF          0
+#define CREATE_CQ_DEPTH_LOG2_OFF     4
+#define CREATE_CQ_STRIDE_LOG2_OFF    5
+#define CREATE_CQ_PAGE_SIZE_LOG2_OFF 7
+#define CREATE_CQ_ID_VER_OFF         12
+#define CREATE_CQ_MAP_COUNT_OFF      20
+#define CREATE_CQ_DMA_ADDR_OFF       24
+
 static uint8_t handle_create_cq_op(struct ionic_adminq_ctx *ctx,
                                    const uint8_t *body, uint16_t len)
 {
@@ -678,13 +683,13 @@ static uint8_t handle_create_cq_op(struct ionic_adminq_ctx *ctx,
                 "ionic_adminq CREATE_CQ: no pvrdma_handle (stub ok)");
         return IONIC_RC_SUCCESS;
     }
-    if (len < 34) {
+    if (len < IONIC_ADMIN_CREATE_CQ_IN_V1_LEN) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
                 "ionic_adminq CREATE_CQ: short body (%u)", len);
         return IONIC_RC_EINVAL;
     }
 
-    uint32_t id_ver = ernic_get_le32(body + 12);
+    uint32_t id_ver = ernic_get_le32(body + CREATE_CQ_ID_VER_OFF);
     uint32_t cq_id = id_ver & 0x00ffffffU;
 
     /*
@@ -699,17 +704,14 @@ static uint8_t handle_create_cq_op(struct ionic_adminq_ctx *ctx,
         return IONIC_RC_EQID;
     }
 
-    /* ionic_admin_create_cq: eq_id[0:3], depth_log2[4], stride_log2[5],
-     * dir_size_log2[6], page_size_log2[7], cq_flags[8:11], id_ver[12:15],
-     * tbl_index[16:19], map_count[20:23], dma_addr[24:31], dbid_flags[32:33] */
-    uint32_t eq_id = ernic_get_le32(body + 0);
+    uint32_t eq_id = ernic_get_le32(body + CREATE_CQ_EQ_ID_OFF);
 
     struct ionic_dp_ring_desc ring = {
-        .buf = {.dma_addr = ernic_get_le64(body + 24),
-                .map_count = ernic_get_le32(body + 20),
-                .page_size_log2 = body[7]},
-        .depth_log2 = body[4],
-        .stride_log2 = body[5],
+        .buf = {.dma_addr = ernic_get_le64(body + CREATE_CQ_DMA_ADDR_OFF),
+                .map_count = ernic_get_le32(body + CREATE_CQ_MAP_COUNT_OFF),
+                .page_size_log2 = body[CREATE_CQ_PAGE_SIZE_LOG2_OFF]},
+        .depth_log2 = body[CREATE_CQ_DEPTH_LOG2_OFF],
+        .stride_log2 = body[CREATE_CQ_STRIDE_LOG2_OFF],
     };
 
     /*
@@ -805,6 +807,22 @@ static uint8_t handle_create_cq_op(struct ionic_adminq_ctx *ctx,
  *   u8   type_state   [62]     qp_type | (state<<4)
  * -------------------------------------------------------------------------
  */
+#define CREATE_QP_SQ_CQ_ID_OFF          8
+#define CREATE_QP_SQ_DEPTH_LOG2_OFF     12
+#define CREATE_QP_SQ_STRIDE_LOG2_OFF    13
+#define CREATE_QP_SQ_PAGE_SIZE_LOG2_OFF 15
+#define CREATE_QP_SQ_MAP_COUNT_OFF      20
+#define CREATE_QP_SQ_DMA_ADDR_OFF       24
+#define CREATE_QP_RQ_CQ_ID_OFF          32
+#define CREATE_QP_RQ_DEPTH_LOG2_OFF     36
+#define CREATE_QP_RQ_STRIDE_LOG2_OFF    37
+#define CREATE_QP_RQ_PAGE_SIZE_LOG2_OFF 39
+#define CREATE_QP_RQ_TBL_INDEX_OFF      40 /* or the SRQ's id */
+#define CREATE_QP_RQ_MAP_COUNT_OFF      44
+#define CREATE_QP_RQ_DMA_ADDR_OFF       48
+#define CREATE_QP_ID_VER_OFF            56
+#define CREATE_QP_TYPE_STATE_OFF        62
+
 /* enum ionic_qp_type is not enum ibv_qp_type, and rdma_rm speaks the latter.
  * The driver also folds GSI into UD, but reserves qpid 1 for it, which is the
  * only way to tell the two apart on the wire. */
@@ -860,6 +878,18 @@ static void adminq_srq_unwind(struct ionic_adminq_ctx *ctx, uint32_t srq_id,
  * The response is DMA'd rather than returned in the completion:
  *   struct ionic_admin_create_srq_resp, 5 bytes: le32 id, u8 udma_idx
  */
+#define CREATE_SRQ_DMA_ADDR_OFF       0
+#define CREATE_SRQ_MAP_COUNT_OFF      8
+#define CREATE_SRQ_LOW_WQES_LIMIT_OFF 22
+#define CREATE_SRQ_DEPTH_LOG2_OFF     26
+#define CREATE_SRQ_STRIDE_LOG2_OFF    27
+#define CREATE_SRQ_PAGE_SIZE_LOG2_OFF 28
+#define CREATE_SRQ_RESP_BUF_LEN_OFF   30
+#define CREATE_SRQ_RESP_DMA_ADDR_OFF  34
+
+#define CREATE_SRQ_RESP_ID_OFF       0
+#define CREATE_SRQ_RESP_UDMA_IDX_OFF 4
+
 static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
                                     const uint8_t *body, uint16_t len)
 {
@@ -874,26 +904,30 @@ static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
         return IONIC_RC_EINVAL;
     }
 
-    uint16_t low_wqes_limit = ernic_get_le16(body + 22);
-    uint32_t resp_buf_len = ernic_get_le32(body + 30);
-    uint64_t resp_dma_addr = ernic_get_le64(body + 34);
+    uint16_t low_wqes_limit =
+        ernic_get_le16(body + CREATE_SRQ_LOW_WQES_LIMIT_OFF);
+    uint32_t resp_buf_len = ernic_get_le32(body + CREATE_SRQ_RESP_BUF_LEN_OFF);
+    uint64_t resp_dma_addr =
+        ernic_get_le64(body + CREATE_SRQ_RESP_DMA_ADDR_OFF);
+    uint8_t depth_log2 = body[CREATE_SRQ_DEPTH_LOG2_OFF];
+    uint8_t stride_log2 = body[CREATE_SRQ_STRIDE_LOG2_OFF];
 
     /*
-     * Bound the ring geometry before anything shifts by it. body[26..28] are
-     * guest bytes: 1u << body[26] with body[26] >= 32 is undefined behaviour
-     * in C, reachable from a single malformed WQE, and body[27] reaches the
-     * receive path as the stride that decides how much of a WQE to walk.
+     * Bound the ring geometry before anything shifts by it. Both are guest
+     * bytes: 1u << depth_log2 with depth_log2 >= 32 is undefined behaviour
+     * in C, reachable from a single malformed WQE, and stride_log2 reaches
+     * the receive path as the stride that decides how much of a WQE to walk.
      * Refuse the command rather than clamping -- a driver that asks for a
      * geometry the device never advertised is wrong, and silently giving it
      * a different one produces a queue neither side agrees about.
      */
-    if (body[26] > IONIC_SRQ_MAX_DEPTH_LOG2 ||
-        body[27] > IONIC_SRQ_MAX_STRIDE_LOG2 ||
-        body[27] < IONIC_SRQ_MIN_STRIDE_LOG2) {
+    if (depth_log2 > IONIC_SRQ_MAX_DEPTH_LOG2 ||
+        stride_log2 > IONIC_SRQ_MAX_STRIDE_LOG2 ||
+        stride_log2 < IONIC_SRQ_MIN_STRIDE_LOG2) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
                 "ionic_adminq CREATE_SRQ: refusing depth_log2=%u "
                 "stride_log2=%u (depth max %u, stride %u..%u)",
-                body[26], body[27], IONIC_SRQ_MAX_DEPTH_LOG2,
+                depth_log2, stride_log2, IONIC_SRQ_MAX_DEPTH_LOG2,
                 IONIC_SRQ_MIN_STRIDE_LOG2, IONIC_SRQ_MAX_STRIDE_LOG2);
         return IONIC_RC_ERANGE;
     }
@@ -908,7 +942,7 @@ static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
 
     /* max_sge is the device's ERNIC_MAX_SRQ_SGE; the ring geometry gives
      * the depth. Bounded above, so the shift is defined. */
-    uint32_t max_wr = 1U << body[26];
+    uint32_t max_wr = 1U << depth_log2;
     uint32_t srq_handle;
     const struct ernic_rm_srq_init_attr srq_attr = {
         .pd_handle = pd_handle,
@@ -948,11 +982,12 @@ static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
      */
     {
         struct ionic_dp_ring_desc srq_ring = {
-            .buf = {.dma_addr = ernic_get_le64(body + 0),
-                    .map_count = ernic_get_le32(body + 8),
-                    .page_size_log2 = body[28]},
-            .depth_log2 = body[26],
-            .stride_log2 = body[27],
+            .buf = {.dma_addr = ernic_get_le64(body + CREATE_SRQ_DMA_ADDR_OFF),
+                    .map_count =
+                        ernic_get_le32(body + CREATE_SRQ_MAP_COUNT_OFF),
+                    .page_size_log2 = body[CREATE_SRQ_PAGE_SIZE_LOG2_OFF]},
+            .depth_log2 = depth_log2,
+            .stride_log2 = stride_log2,
         };
         int reg = ionic_datapath_register_srq(ctx->dp, srq_id, &srq_ring);
         if (reg) {
@@ -990,8 +1025,9 @@ static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
 
     {
         uint8_t resp[IONIC_ADMIN_CREATE_SRQ_OUT_V1_LEN] = {0};
-        ernic_put_le32(resp, srq_id);
-        resp[4] = 0; /* udma_idx: single udma in this emulation */
+        ernic_put_le32(resp + CREATE_SRQ_RESP_ID_OFF, srq_id);
+        /* single udma in this emulation */
+        resp[CREATE_SRQ_RESP_UDMA_IDX_OFF] = 0;
         if (ernic_dma_write(ctx->dma, ctx->vfu_ctx, resp_dma_addr, resp,
                             sizeof(resp)) < 0) {
             vfu_log(ctx->vfu_ctx, LOG_ERR,
@@ -1006,24 +1042,27 @@ static uint8_t handle_create_srq_op(struct ionic_adminq_ctx *ctx,
 
     vfu_log(ctx->vfu_ctx, LOG_INFO,
             "ionic_adminq CREATE_SRQ srq_id=%u handle=%u depth=2^%u limit=%u",
-            srq_id, srq_handle, body[26], low_wqes_limit);
+            srq_id, srq_handle, depth_log2, low_wqes_limit);
     return IONIC_RC_SUCCESS;
 }
 
-/* MODIFY_SRQ (27): le32 qid, le16 low_wqes_limit */
+/* MODIFY_SRQ (27): le32 qid [0:3], le16 low_wqes_limit [4:5] */
+#define MODIFY_SRQ_QID_OFF            0
+#define MODIFY_SRQ_LOW_WQES_LIMIT_OFF 4
+
 static uint8_t handle_modify_srq_op(struct ionic_adminq_ctx *ctx,
                                     const uint8_t *body, uint16_t len)
 {
     if (!ctx->pvrdma_handle) {
         return IONIC_RC_SUCCESS;
     }
-    if (len < 6) {
+    if (len < IONIC_ADMIN_MODIFY_SRQ_IN_V1_LEN) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
                 "ionic_adminq MODIFY_SRQ: short body (%u)", len);
         return IONIC_RC_EINVAL;
     }
 
-    uint32_t qid = ernic_get_le32(body + 0);
+    uint32_t qid = ernic_get_le32(body + MODIFY_SRQ_QID_OFF);
 
     struct ionic_srq_map_entry *e = adminq_srq_entry(ctx, qid);
     if (!e) {
@@ -1032,7 +1071,7 @@ static uint8_t handle_modify_srq_op(struct ionic_adminq_ctx *ctx,
         return IONIC_RC_ENOENT;
     }
 
-    uint32_t limit = ernic_get_le16(body + 4);
+    uint32_t limit = ernic_get_le16(body + MODIFY_SRQ_LOW_WQES_LIMIT_OFF);
 
     /*
      * Zero disables the low-watermark and is a legal value; the resource
@@ -1153,11 +1192,11 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
         return IONIC_RC_EINVAL;
     }
 
-    uint32_t sq_cq_id = ernic_get_le32(body + 8);
-    uint32_t rq_cq_id = ernic_get_le32(body + 32);
-    uint32_t qp_id = ernic_get_le32(body + 56) & 0x00ffffffU;
+    uint32_t sq_cq_id = ernic_get_le32(body + CREATE_QP_SQ_CQ_ID_OFF);
+    uint32_t rq_cq_id = ernic_get_le32(body + CREATE_QP_RQ_CQ_ID_OFF);
+    uint32_t qp_id = ernic_get_le32(body + CREATE_QP_ID_VER_OFF) & 0x00ffffffU;
 
-    uint8_t type_state = body[62];
+    uint8_t type_state = body[CREATE_QP_TYPE_STATE_OFF];
     uint8_t ib_qp_type = ionic_qpt_to_ib(type_state & 0x0fU, qp_id);
 
     /* As for a CQ: the data path holds QP ids below the identity's count. */
@@ -1211,7 +1250,8 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
      * leave qp_id mapped on every rejected command, so a guest could
      * exhaust the table with commands the device is busy refusing.
      */
-    uint32_t rq_tbl_index_srq_id = ernic_get_le32(body + 40);
+    uint32_t rq_tbl_index_srq_id =
+        ernic_get_le32(body + CREATE_QP_RQ_TBL_INDEX_OFF);
     if (rq_tbl_index_srq_id != 0xffffffffU &&
         !adminq_srq_entry(ctx, rq_tbl_index_srq_id)) {
         vfu_log(ctx->vfu_ctx, LOG_ERR,
@@ -1221,18 +1261,18 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
     }
 
     struct ionic_dp_ring_desc sq = {
-        .buf = {.dma_addr = ernic_get_le64(body + 24),
-                .map_count = ernic_get_le32(body + 20),
-                .page_size_log2 = body[15]},
-        .depth_log2 = body[12],
-        .stride_log2 = body[13],
+        .buf = {.dma_addr = ernic_get_le64(body + CREATE_QP_SQ_DMA_ADDR_OFF),
+                .map_count = ernic_get_le32(body + CREATE_QP_SQ_MAP_COUNT_OFF),
+                .page_size_log2 = body[CREATE_QP_SQ_PAGE_SIZE_LOG2_OFF]},
+        .depth_log2 = body[CREATE_QP_SQ_DEPTH_LOG2_OFF],
+        .stride_log2 = body[CREATE_QP_SQ_STRIDE_LOG2_OFF],
     };
     struct ionic_dp_ring_desc rq = {
-        .buf = {.dma_addr = ernic_get_le64(body + 48),
-                .map_count = ernic_get_le32(body + 44),
-                .page_size_log2 = body[39]},
-        .depth_log2 = body[36],
-        .stride_log2 = body[37],
+        .buf = {.dma_addr = ernic_get_le64(body + CREATE_QP_RQ_DMA_ADDR_OFF),
+                .map_count = ernic_get_le32(body + CREATE_QP_RQ_MAP_COUNT_OFF),
+                .page_size_log2 = body[CREATE_QP_RQ_PAGE_SIZE_LOG2_OFF]},
+        .depth_log2 = body[CREATE_QP_RQ_DEPTH_LOG2_OFF],
+        .stride_log2 = body[CREATE_QP_RQ_STRIDE_LOG2_OFF],
     };
 
     /*
@@ -1373,7 +1413,8 @@ static uint8_t stats_write_hdrs(const struct ionic_adminq_ctx *ctx,
         ernic_put_be32(buf + (i * STAT_HDR_SIZE),
                        STAT_TYPE_LE64 << STAT_TYPE_SHIFT |
                            (uint32_t)(i * STAT_VAL_SIZE));
-        memcpy(buf + (i * STAT_HDR_SIZE) + 4, stats[i].name, name_len);
+        memcpy(buf + (i * STAT_HDR_SIZE) + STAT_NAME_OFF, stats[i].name,
+               name_len);
     }
 
     return ernic_dma_write(ctx->dma, ctx->vfu_ctx, dma, buf,
@@ -1424,9 +1465,9 @@ static uint8_t handle_stats_op(struct ionic_adminq_ctx *ctx, uint8_t op,
                 op);
         return IONIC_RC_EINVAL;
     }
-    dma = ernic_get_le64(body);
-    length = ernic_get_le32(body + 8);
-    id_ver = ernic_get_le32(body + 12);
+    dma = ernic_get_le64(body + STATS_DMA_ADDR_OFF);
+    length = ernic_get_le32(body + STATS_LENGTH_OFF);
+    id_ver = ernic_get_le32(body + STATS_ID_VER_OFF);
     if (!dma) {
         vfu_log(ctx->vfu_ctx, LOG_ERR, "ionic_adminq stats op=%u: no buffer",
                 op);
@@ -1512,6 +1553,10 @@ static uint8_t handle_stats_op(struct ionic_adminq_ctx *ctx, uint8_t op,
  * resolve a datagram's destination node without re-reading guest memory on
  * every send.
  */
+#define CREATE_AH_DMA_ADDR_OFF 0
+#define CREATE_AH_LENGTH_OFF   8
+#define CREATE_AH_ID_VER_OFF   16
+
 static uint8_t handle_create_ah_op(const struct ionic_adminq_ctx *ctx,
                                    const uint8_t *body, uint16_t len)
 {
@@ -1521,13 +1566,13 @@ static uint8_t handle_create_ah_op(const struct ionic_adminq_ctx *ctx,
         return IONIC_RC_EINVAL;
     }
 
-    uint64_t hdr_dma = ernic_get_le64(body + 0);
-    uint32_t hdr_len = ernic_get_le32(body + 8);
-    uint32_t ah_id = ernic_get_le32(body + 16) & 0x00ffffffU;
+    uint64_t hdr_dma = ernic_get_le64(body + CREATE_AH_DMA_ADDR_OFF);
+    uint32_t hdr_len = ernic_get_le32(body + CREATE_AH_LENGTH_OFF);
+    uint32_t ah_id = ernic_get_le32(body + CREATE_AH_ID_VER_OFF) & 0x00ffffffU;
 
     uint8_t dgid[ERNIC_GID_LEN] = {0};
     uint8_t sgid[ERNIC_GID_LEN] = {0};
-    uint8_t dmac[6] = {0};
+    uint8_t dmac[ETH_ADDR_LEN] = {0};
     bool dgid_valid = false;
     if (hdr_len && hdr_dma) {
         dgid_valid =
@@ -1585,6 +1630,15 @@ static uint8_t handle_destroy_ah_op(const struct ionic_adminq_ctx *ctx,
     return IONIC_RC_SUCCESS;
 }
 
+/* The fields of CREATE_MR's body that it reads; see the layout below. */
+#define CREATE_MR_VA_OFF             0
+#define CREATE_MR_LENGTH_OFF         8
+#define CREATE_MR_ID_VER_OFF         20
+#define CREATE_MR_MAP_COUNT_OFF      28
+#define CREATE_MR_DMA_ADDR_OFF       32
+#define CREATE_MR_DBID_FLAGS_OFF     40
+#define CREATE_MR_PAGE_SIZE_LOG2_OFF 44
+
 static uint8_t handle_create_mr_op(struct ionic_adminq_ctx *ctx,
                                    const uint8_t *body, uint16_t len)
 {
@@ -1612,12 +1666,13 @@ static uint8_t handle_create_mr_op(struct ionic_adminq_ctx *ctx,
     /* The full mrid, key byte included, is what userspace puts in an SGE
      * lkey; the index above the byte is what we track the MR by, since
      * fast registration rotates the byte. */
-    uint32_t mrid = ernic_get_le32(body + 20);
+    uint32_t mrid = ernic_get_le32(body + CREATE_MR_ID_VER_OFF);
     uint32_t mr_index = mrid >> IONIC_MRID_INDEX_SHIFT;
 
-    uint32_t access = ernic_get_le16(body + 40) & IONIC_MRF_ACCESS_MASK;
-    uint64_t mr_va = ernic_get_le64(body + 0);
-    uint64_t mr_len = ernic_get_le64(body + 8);
+    uint32_t access =
+        ernic_get_le16(body + CREATE_MR_DBID_FLAGS_OFF) & IONIC_MRF_ACCESS_MASK;
+    uint64_t mr_va = ernic_get_le64(body + CREATE_MR_VA_OFF);
+    uint64_t mr_len = ernic_get_le64(body + CREATE_MR_LENGTH_OFF);
 
     /*
      * Refused before anything is allocated: a region that runs past the
@@ -1664,9 +1719,10 @@ static uint8_t handle_create_mr_op(struct ionic_adminq_ctx *ctx,
                 mr_index, ret);
         return IONIC_RC_ERDMA;
     }
-    struct ionic_dp_buf_desc mrbuf = {.dma_addr = ernic_get_le64(body + 32),
-                                      .map_count = ernic_get_le32(body + 28),
-                                      .page_size_log2 = body[44]};
+    struct ionic_dp_buf_desc mrbuf = {
+        .dma_addr = ernic_get_le64(body + CREATE_MR_DMA_ADDR_OFF),
+        .map_count = ernic_get_le32(body + CREATE_MR_MAP_COUNT_OFF),
+        .page_size_log2 = body[CREATE_MR_PAGE_SIZE_LOG2_OFF]};
     if (mr_len == 0) {
         /*
          * No region yet: ib_alloc_mr() and ib_alloc_mw() create the MR
@@ -1701,6 +1757,18 @@ static uint8_t handle_create_mr_op(struct ionic_adminq_ctx *ctx,
             mrbuf.dma_addr, mrbuf.map_count, (unsigned)mrbuf.page_size_log2);
     return IONIC_RC_SUCCESS;
 }
+
+/* The fields of MODIFY_QP's body that it reads; see the layout below. */
+#define MODIFY_QP_ATTR_MASK_OFF     0
+#define MODIFY_QP_RQ_PSN_OFF        8
+#define MODIFY_QP_SQ_PSN_OFF        12
+#define MODIFY_QP_QKEY_DEST_QPN_OFF 16
+#define MODIFY_QP_AH_ID_LEN_OFF     32
+#define MODIFY_QP_TYPE_STATE_OFF    39
+#define MODIFY_QP_DMA_ADDR_OFF      48
+#define MODIFY_QP_ID_VER_OFF        56
+/* ah_id_len: the header template's length is the top byte */
+#define MODIFY_QP_AH_LEN_SHIFT 24
 
 static uint8_t handle_modify_qp_op(struct ionic_adminq_ctx *ctx,
                                    const uint8_t *body, uint16_t len)
@@ -1742,18 +1810,18 @@ static uint8_t handle_modify_qp_op(struct ionic_adminq_ctx *ctx,
 
     /* The kernel's enum ib_qp_attr_mask, whose bits are those of
      * userspace's enum ibv_qp_attr_mask. */
-    uint32_t attr_mask = ernic_get_be32(body + 0);
+    uint32_t attr_mask = ernic_get_be32(body + MODIFY_QP_ATTR_MASK_OFF);
 
     uint32_t rq_psn;
     uint32_t sq_psn;
     uint32_t qkey_dest_qpn;
     uint32_t id_ver;
-    rq_psn = ernic_get_le32(body + 8);
-    sq_psn = ernic_get_le32(body + 12);
-    qkey_dest_qpn = ernic_get_le32(body + 16);
-    id_ver = ernic_get_le32(body + 56);
+    rq_psn = ernic_get_le32(body + MODIFY_QP_RQ_PSN_OFF);
+    sq_psn = ernic_get_le32(body + MODIFY_QP_SQ_PSN_OFF);
+    qkey_dest_qpn = ernic_get_le32(body + MODIFY_QP_QKEY_DEST_QPN_OFF);
+    id_ver = ernic_get_le32(body + MODIFY_QP_ID_VER_OFF);
 
-    uint8_t type_state = body[39];
+    uint8_t type_state = body[MODIFY_QP_TYPE_STATE_OFF];
     uint32_t qp_id = id_ver & 0x00ffffffU;
 
     uint32_t qpn;
@@ -1772,24 +1840,27 @@ static uint8_t handle_modify_qp_op(struct ionic_adminq_ctx *ctx,
     uint8_t dgid[ERNIC_GID_LEN] = {0};
     uint8_t sgid[ERNIC_GID_LEN] = {
         0}; /* parsed but unused here; see CREATE_AH */
-    uint8_t dmac[6] = {0};
+    uint8_t dmac[ETH_ADDR_LEN] = {0};
 
-    ah_id_len = ernic_get_le32(body + 32);
-    ah_dma = ernic_get_le64(body + 48);
+    ah_id_len = ernic_get_le32(body + MODIFY_QP_AH_ID_LEN_OFF);
+    ah_dma = ernic_get_le64(body + MODIFY_QP_DMA_ADDR_OFF);
 
-    uint32_t hdr_len = ah_id_len >> 24;
+    uint32_t hdr_len = ah_id_len >> MODIFY_QP_AH_LEN_SHIFT;
     if (hdr_len && ah_dma) {
         dgid_valid =
             adminq_parse_roce_hdr(ctx, ah_dma, hdr_len, dgid, sgid, dmac);
     }
 
+    char dgid_str[ERNIC_GID_STR_LEN];
+
+    ernic_gid_str(dgid, dgid_str);
     if (dgid_valid) {
+        char dmac_str[ETH_ADDR_STR_LEN];
+
+        eth_addr_str(dmac, dmac_str);
         vfu_log(ctx->vfu_ctx, LOG_DEBUG,
-                "ionic_adminq MODIFY_QP %u: peer %02x:%02x:%02x:%02x:%02x:"
-                "%02x gid %02x%02x:%02x%02x:%02x%02x:%02x%02x",
-                qp_id, dmac[0], dmac[1], dmac[2], dmac[3], dmac[4], dmac[5],
-                dgid[8], dgid[9], dgid[10], dgid[11], dgid[12], dgid[13],
-                dgid[14], dgid[15]);
+                "ionic_adminq MODIFY_QP %u: peer %s gid %s", qp_id, dmac_str,
+                dgid_str);
     }
 
     /* The field as the driver wrote it, before any translation */
@@ -1816,12 +1887,8 @@ static uint8_t handle_modify_qp_op(struct ionic_adminq_ctx *ctx,
             ionic_dp_local_node(ctx->dp) != UINT32_MAX) {
             vfu_log(ctx->vfu_ctx, LOG_ERR,
                     "ionic_adminq MODIFY_QP %u: no mesh node owns "
-                    "destination gid "
-                    "%02x%02x:%02x%02x:%02x%02x:%02x%02x:"
-                    "%02x%02x:%02x%02x:%02x%02x:%02x%02x%s",
-                    qp_id, dgid[0], dgid[1], dgid[2], dgid[3], dgid[4], dgid[5],
-                    dgid[6], dgid[7], dgid[8], dgid[9], dgid[10], dgid[11],
-                    dgid[12], dgid[13], dgid[14], dgid[15],
+                    "destination gid %s%s",
+                    qp_id, dgid_str,
                     dgid_valid ? "" : " (no address in the RoCE header)");
             return IONIC_RC_ENOENT;
         }
@@ -1893,6 +1960,53 @@ static uint8_t handle_modify_qp_op(struct ionic_adminq_ctx *ctx,
     return IONIC_RC_SUCCESS;
 }
 
+/* The fields of QUERY_QP's body that it reads; see the layout below. */
+#define QUERY_QP_SQ_DMA_ADDR_OFF 8
+#define QUERY_QP_RQ_DMA_ADDR_OFF 16
+#define QUERY_QP_ID_VER_OFF      28
+
+/*
+ * The two answers, all big-endian. struct ionic_v1_admin_query_qp_sq,
+ * 20 bytes:
+ *   u8   rnr_timer          [0]
+ *   u8   retry_timeout      [1]
+ *   be16 access_perms_flags [2:3]
+ *   be16 rsvd               [4:5]
+ *   be16 pkey_id            [6:7]
+ *   be32 qkey_dest_qpn      [8:11]
+ *   be32 rate_limit_kbps    [12:15]
+ *   be32 rq_psn             [16:19]
+ */
+#define QUERY_QP_SQ_LEN          20
+#define QUERY_QP_SQ_FLAGS_OFF    2
+#define QUERY_QP_SQ_DEST_QPN_OFF 8
+#define QUERY_QP_SQ_RQ_PSN_OFF   16
+
+/*
+ * struct ionic_v1_admin_query_qp_rq, 12 bytes:
+ *   u8   state_pmtu         [0]  state (high nibble), MTU code (low)
+ *   u8   retry_rnrtry       [1]  retry count (high nibble), RNR retry (low)
+ *   u8   rrq_depth          [2]
+ *   u8   rsq_depth          [3]
+ *   be32 sq_psn             [4:7]
+ *   be16 access_perms_flags [8:9]
+ *   be16 rsvd               [10:11]
+ */
+#define QUERY_QP_RQ_LEN            12
+#define QUERY_QP_RQ_STATE_PMTU_OFF 0
+#define QUERY_QP_RQ_RETRY_OFF      1
+#define QUERY_QP_RQ_RRQ_DEPTH_OFF  2
+#define QUERY_QP_RQ_RSQ_DEPTH_OFF  3
+#define QUERY_QP_RQ_SQ_PSN_OFF     4
+#define QUERY_QP_RQ_FLAGS_OFF      8
+
+/*
+ * The driver recovers enum ibv_mtu by subtracting this from the MTU code,
+ * and takes 7 for retry and RNR retry counts as infinite.
+ */
+#define QUERY_QP_MTU_CODE_BIAS 7U
+#define QUERY_QP_RETRY_MAX     7U
+
 static uint8_t handle_query_qp_op(struct ionic_adminq_ctx *ctx,
                                   const uint8_t *body, uint16_t len)
 {
@@ -1920,9 +2034,9 @@ static uint8_t handle_query_qp_op(struct ionic_adminq_ctx *ctx,
     uint64_t sq_dma;
     uint64_t rq_dma;
     uint32_t id_ver;
-    sq_dma = ernic_get_le64(body + 8);
-    rq_dma = ernic_get_le64(body + 16);
-    id_ver = ernic_get_le32(body + 28);
+    sq_dma = ernic_get_le64(body + QUERY_QP_SQ_DMA_ADDR_OFF);
+    rq_dma = ernic_get_le64(body + QUERY_QP_RQ_DMA_ADDR_OFF);
+    id_ver = ernic_get_le32(body + QUERY_QP_ID_VER_OFF);
 
     uint32_t qp_id = id_ver & 0x00ffffffU;
     const struct ionic_qp_map_entry *qp_entry = adminq_qp_entry(ctx, qp_id);
@@ -1962,8 +2076,7 @@ static uint8_t handle_query_qp_op(struct ionic_adminq_ctx *ctx,
     }
 
     /* ionic numbers its QP states as IB does, so the state needs no
-     * translation; the MTU does, because the driver subtracts 7 from the
-     * low nibble to recover the ibv_mtu enum. */
+     * translation; the MTU does (QUERY_QP_MTU_CODE_BIAS). */
     uint16_t flags = 0;
     if (access & IBV_ACCESS_REMOTE_WRITE) {
         flags |= 1U << 0; /* IONIC_QPF_REMOTE_WRITE */
@@ -1975,23 +2088,24 @@ static uint8_t handle_query_qp_op(struct ionic_adminq_ctx *ctx,
         flags |= 1U << 2; /* IONIC_QPF_REMOTE_ATOMIC */
     }
 
-    /* struct ionic_v1_admin_query_qp_sq, all big-endian (20 bytes). */
-    uint8_t sqbuf[20] = {0};
-    ernic_put_be16(sqbuf + 2, flags);
-    ernic_put_be32(sqbuf + 8, guest_dest);
-    ernic_put_be32(sqbuf + 16, rq_psn & 0xffffffU);
+    uint8_t sqbuf[QUERY_QP_SQ_LEN] = {0};
+    ernic_put_be16(sqbuf + QUERY_QP_SQ_FLAGS_OFF, flags);
+    ernic_put_be32(sqbuf + QUERY_QP_SQ_DEST_QPN_OFF, guest_dest);
+    ernic_put_be32(sqbuf + QUERY_QP_SQ_RQ_PSN_OFF, rq_psn & 0xffffffU);
 
-    /* struct ionic_v1_admin_query_qp_rq (12 bytes).  rrq/rsq depth are
-     * log2 depths: the driver reports BIT(depth) - 1 as the rd_atomic
-     * limits, so 1 is the single outstanding operation ionic_datapath
-     * actually supports. */
-    uint8_t rqbuf[12] = {0};
-    rqbuf[0] = (uint8_t)((state & 0x0fU) << 4 | ((path_mtu + 7U) & 0x0fU));
-    rqbuf[1] = 0x77; /* retry_cnt 7, rnr_retry 7 */
-    rqbuf[2] = 1;
-    rqbuf[3] = 1;
-    ernic_put_be32(rqbuf + 4, sq_psn & 0xffffffU);
-    ernic_put_be16(rqbuf + 8, flags);
+    /* rrq/rsq depth are log2 depths: the driver reports BIT(depth) - 1 as
+     * the rd_atomic limits, so 1 is the single outstanding operation
+     * ionic_datapath actually supports. */
+    uint8_t rqbuf[QUERY_QP_RQ_LEN] = {0};
+    rqbuf[QUERY_QP_RQ_STATE_PMTU_OFF] =
+        (uint8_t)((state & 0x0fU) << 4 |
+                  ((path_mtu + QUERY_QP_MTU_CODE_BIAS) & 0x0fU));
+    rqbuf[QUERY_QP_RQ_RETRY_OFF] =
+        (uint8_t)(QUERY_QP_RETRY_MAX << 4 | QUERY_QP_RETRY_MAX);
+    rqbuf[QUERY_QP_RQ_RRQ_DEPTH_OFF] = 1;
+    rqbuf[QUERY_QP_RQ_RSQ_DEPTH_OFF] = 1;
+    ernic_put_be32(rqbuf + QUERY_QP_RQ_SQ_PSN_OFF, sq_psn & 0xffffffU);
+    ernic_put_be16(rqbuf + QUERY_QP_RQ_FLAGS_OFF, flags);
 
     if (sq_dma && ernic_dma_write(ctx->dma, ctx->vfu_ctx, sq_dma, sqbuf,
                                   sizeof(sqbuf)) < 0) {

@@ -9,8 +9,14 @@
 #include <string.h>
 
 #include "byteorder.h"
+#include "ernic_gid.h"
+#include "net/net_headers.h"
 #include "parse_int.h"
+#include "s3/s3_http.h"
 #include "s3/s3_token.h"
+
+/* The largest code s3_reply_parse_code() reads, three digits */
+#define S3_REPLY_CODE_MAX 999
 
 static const char HEX[] = "0123456789abcdef";
 
@@ -18,14 +24,14 @@ void s3_token_encode(const struct s3_token *tok, char *out)
 {
     uint8_t buf[S3_TOKEN_BIN_LEN];
 
-    buf[0] = tok->transport;
-    ernic_put_le32(buf + 1, tok->qp_num);
-    memcpy(buf + 5, tok->gid, 16);
-    ernic_put_le32(buf + 21, tok->rkey);
-    ernic_put_le64(buf + 25, tok->remote_addr);
-    ernic_put_le64(buf + 33, tok->length);
-    buf[41] = tok->port_num;
-    ernic_put_le16(buf + 42, tok->lid);
+    buf[S3_TOKEN_TRANSPORT_OFF] = tok->transport;
+    ernic_put_le32(buf + S3_TOKEN_QP_NUM_OFF, tok->qp_num);
+    memcpy(buf + S3_TOKEN_GID_OFF, tok->gid, S3_TOKEN_GID_LEN);
+    ernic_put_le32(buf + S3_TOKEN_RKEY_OFF, tok->rkey);
+    ernic_put_le64(buf + S3_TOKEN_REMOTE_ADDR_OFF, tok->remote_addr);
+    ernic_put_le64(buf + S3_TOKEN_LENGTH_OFF, tok->length);
+    buf[S3_TOKEN_PORT_NUM_OFF] = tok->port_num;
+    ernic_put_le16(buf + S3_TOKEN_LID_OFF, tok->lid);
 
     for (size_t i = 0; i < sizeof(buf); i++) {
         out[i * 2] = HEX[(buf[i] >> 4) & 0xf];
@@ -46,14 +52,14 @@ bool s3_token_decode(const char *hex, struct s3_token *out)
     }
 
     memset(out, 0, sizeof(*out));
-    out->transport = buf[0];
-    out->qp_num = ernic_get_le32(buf + 1);
-    memcpy(out->gid, buf + 5, 16);
-    out->rkey = ernic_get_le32(buf + 21);
-    out->remote_addr = ernic_get_le64(buf + 25);
-    out->length = ernic_get_le64(buf + 33);
-    out->port_num = buf[41];
-    out->lid = ernic_get_le16(buf + 42);
+    out->transport = buf[S3_TOKEN_TRANSPORT_OFF];
+    out->qp_num = ernic_get_le32(buf + S3_TOKEN_QP_NUM_OFF);
+    memcpy(out->gid, buf + S3_TOKEN_GID_OFF, S3_TOKEN_GID_LEN);
+    out->rkey = ernic_get_le32(buf + S3_TOKEN_RKEY_OFF);
+    out->remote_addr = ernic_get_le64(buf + S3_TOKEN_REMOTE_ADDR_OFF);
+    out->length = ernic_get_le64(buf + S3_TOKEN_LENGTH_OFF);
+    out->port_num = buf[S3_TOKEN_PORT_NUM_OFF];
+    out->lid = ernic_get_le16(buf + S3_TOKEN_LID_OFF);
     return true;
 }
 
@@ -126,7 +132,7 @@ bool s3_reply_parse_code(const char *reply, size_t len, int *http_code)
     }
 
     if (len >= 2 && reply[0] == 'o' && reply[1] == 'k') {
-        *http_code = 200;
+        *http_code = S3_HTTP_OK;
         return true;
     }
     if (len >= 3 && reply[0] == 'e' && reply[1] == 'r' && reply[2] == 'r') {
@@ -138,7 +144,7 @@ bool s3_reply_parse_code(const char *reply, size_t len, int *http_code)
     const char *colon = memchr(reply, ':', len);
     size_t n = colon != NULL ? (size_t)(colon - reply) : len;
     uint64_t code;
-    if (!ernic_parse_u64_span(reply, n, &code) || code > 999) {
+    if (!ernic_parse_u64_span(reply, n, &code) || code > S3_REPLY_CODE_MAX) {
         return false;
     }
 
@@ -187,8 +193,8 @@ void s3_reply_format(int http_code, const struct s3_token *peer, char *out)
     /* Any other code would be unreadable to the client, and a long
      * enough one would run the token off the end of @out.  A caller
      * passing one is a server bug, which is what 500 says. */
-    if (http_code < 0 || http_code > 999) {
-        http_code = 500;
+    if (http_code < 0 || http_code > S3_REPLY_CODE_MAX) {
+        http_code = S3_HTTP_INTERNAL_ERROR;
     }
 
     int n = snprintf(out, S3_REPLY_MAX, "%d:", http_code);
@@ -204,17 +210,18 @@ bool s3_token_gid_ipv4(const struct s3_token *tok, char *out, size_t outlen)
 
     /* RoCEv2 maps IPv4 into ::ffff:a.b.c.d, so the two 0xff bytes are
      * what says the last four are an address rather than a prefix. */
-    if (tok->gid[10] != 0xff || tok->gid[11] != 0xff) {
+    if (tok->gid[ERNIC_GID_V4_OFF - 2] != 0xff ||
+        tok->gid[ERNIC_GID_V4_OFF - 1] != 0xff) {
         return false;
     }
 
-    char dotted[16];
-    int n = snprintf(dotted, sizeof(dotted), "%u.%u.%u.%u", tok->gid[12],
-                     tok->gid[13], tok->gid[14], tok->gid[15]);
-    if (n <= 0 || (size_t)n >= outlen) {
+    char dotted[IP_ADDR_STR_LEN];
+    ip_addr_str(ernic_get_be32(tok->gid + ERNIC_GID_V4_OFF), dotted);
+    size_t n = strlen(dotted);
+    if (n >= outlen) {
         return false;
     }
 
-    memcpy(out, dotted, (size_t)n + 1);
+    memcpy(out, dotted, n + 1);
     return true;
 }

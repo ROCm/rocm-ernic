@@ -216,7 +216,7 @@ ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_ON
 static _Noreturn void setup_failed(const char *what, const char *arg)
 {
     fprintf(stderr, "FAIL setting up: %s %s: %s\n", what, arg, strerror(errno));
-    fflush(NULL);
+    (void)fflush(NULL);
     _Exit(1);
 }
 
@@ -228,12 +228,14 @@ static _Noreturn void setup_failed(const char *what, const char *arg)
  * so a refusal for the wrong reason fails the row.
  */
 static int saved_stderr = -1;
+/* Written through, so it can't point to const.
+ * NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) */
 static FILE *captured;
 static char said[1024];
 
 static void capture_begin(void)
 {
-    fflush(stderr);
+    (void)fflush(stderr);
     captured = tmpfile();
     saved_stderr = fcntl(STDERR_FILENO, F_DUPFD_CLOEXEC, 0);
     if (!captured || saved_stderr < 0 ||
@@ -247,7 +249,7 @@ static void capture_end(void)
 {
     size_t n;
 
-    fflush(stderr);
+    (void)fflush(stderr);
     if (saved_stderr < 0 || !captured ||
         dup2(saved_stderr, STDERR_FILENO) < 0) {
         setup_failed("restoring", "stderr");
@@ -259,7 +261,7 @@ static void capture_end(void)
     }
     n = fread(said, 1, sizeof(said) - 1, captured);
     said[n] = '\0';
-    fclose(captured);
+    (void)fclose(captured);
     captured = NULL;
     /* Pass it on, so a failing row's log shows what the helper said. */
     fputs(said, stderr);

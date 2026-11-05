@@ -240,8 +240,11 @@ gpointer g_try_malloc0_n(gsize n_blocks, gsize n_block_bytes)
  * before rdma_rm_fini() frees it.
  */
 static RdmaDeviceResources dev_res;
+/* Freed and written through, so they can't point to const. */
+/* NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables) */
 static void *orig_tbl;
 static uint8_t *backing;
+/* NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables) */
 static size_t backing_len;
 static size_t res_sz;
 

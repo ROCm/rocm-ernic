@@ -406,7 +406,8 @@ bool tcp_worker_publish_peer(TcpBackendPrivate *priv,
     bool published = false;
     char thread_name[32];
 
-    snprintf(thread_name, sizeof(thread_name), "tcp-recv-%u", target->node_id);
+    (void)snprintf(thread_name, sizeof(thread_name), "tcp-recv-%u",
+                   target->node_id);
 
     qemu_mutex_lock(&priv->peer_lock);
     qemu_mutex_lock(&priv->conn_table_lock);
@@ -1113,7 +1114,8 @@ void tcp_worker_accept(TcpBackendPrivate *priv, int sockfd, const char *host,
      * Start the receive thread before the connection is published, so a
      * connection without one is never in the table.
      */
-    snprintf(thread_name, sizeof(thread_name), "tcp-recv-%u", remote_node_id);
+    (void)snprintf(thread_name, sizeof(thread_name), "tcp-recv-%u",
+                   remote_node_id);
     if (!tcp_start_recv_thread(conn, thread_name)) {
         qemu_mutex_unlock(&priv->conn_table_lock);
         tcp_connection_unref(conn);

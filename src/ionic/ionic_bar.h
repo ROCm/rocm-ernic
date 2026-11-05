@@ -66,6 +66,34 @@
 #define IONIC_DB_PAGE_SIZE 4096                      /* one 4K page per LIF */
 #define IONIC_KERN_PID     0                         /* kernel doorbell page */
 
+/*
+ * A doorbell, the le64 written to a doorbell page:
+ *   [15:0]  p_index
+ *   [23:16] ring     (0=normal, 1=arm CQ/EQ, 2=arm solicited, 3=SRQ)
+ *   [31:24] qid_lo
+ *   [47:32] qid_hi
+ *   [63:48] reserved
+ */
+#define IONIC_DB_RING_SHIFT   16
+#define IONIC_DB_QID_LO_SHIFT 24
+#define IONIC_DB_QID_HI_SHIFT 32
+
+static inline uint16_t ionic_db_p_index(uint64_t db)
+{
+    return (uint16_t)(db & 0xffffU);
+}
+
+static inline uint8_t ionic_db_ring(uint64_t db)
+{
+    return (uint8_t)((db >> IONIC_DB_RING_SHIFT) & 0xffU);
+}
+
+static inline uint32_t ionic_db_qid(uint64_t db)
+{
+    return (uint32_t)(((db >> IONIC_DB_QID_LO_SHIFT) & 0xffU) |
+                      (((db >> IONIC_DB_QID_HI_SHIFT) & 0xffffU) << 8));
+}
+
 /* ionic MSI-X vectors.  ionic_lif_size() budgets 1 (adminq) + one per Tx/Rx
  * queue pair + one per RDMA EQ, and ionic_create_rdma_admin() hard-fails with
  * -EINVAL below IONIC_EQ_COUNT_MIN = 4 EQs, so a 4-vector table cannot carry
