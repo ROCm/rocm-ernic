@@ -16,11 +16,11 @@
  * writes outside guest memory.
  *
  * Input layout:
- *   byte 0      bits 0-1  flags index (see flags_tab[])
- *               bit  2    inject a duplicate QP id (use QP_ID)
+ *   byte 0      bit  2    inject a duplicate QP id (use QP_ID)
  *               bit  3    use a bad CQ id for the SCQ field
  *   byte 1      body length (mod BODY_MOD)
- *   then        body bytes; missing bytes are zero
+ *   then        body bytes; priv_flags at [4:7] come from the fuzzer
+ *               (seeds encode all four flag combinations via build_body)
  *
  * LLVMFuzzerInitialize() runs a seed table on every startup; a failing
  * seed aborts before fuzzing starts.  With FUZZ_EMIT_SEEDS=1 it writes
@@ -48,30 +48,21 @@
 
 #include "fuzz_harness.h"
 
-#define MAX_BODY  64
-#define IN_HDR    ((size_t)2)
+#define MAX_BODY 64
+#define IN_HDR   ((size_t)2)
 /* Keep body_len mod small so short bodies are exercised frequently. */
-#define BODY_MOD  (MAX_BODY + 1)
+#define BODY_MOD (MAX_BODY + 1)
 
-/* Four flag combinations: none, SQ only, RQ only, both. */
-static const uint32_t flags_tab[4] = {
-    0,
-    IONIC_QPF_SQ_CMB,
-    IONIC_QPF_RQ_CMB,
-    IONIC_QPF_SQ_CMB | IONIC_QPF_RQ_CMB,
-};
-
-#define F_FLAGS_MASK 0x03U
-#define F_DUP_QP     0x04U
-#define F_BAD_SCQ    0x08U
+#define F_DUP_QP  0x04U
+#define F_BAD_SCQ 0x08U
 
 /* A valid CQ id the CREATE_QP can reference.  The fake device starts with
  * no CQs registered, so the handler returns ENOENT/EQID/ERANGE for any
  * CQ id unless we pre-register one; for positive-path seeds we write the
  * CQ id the RDMA back-end would allocate (slot 0 → id 0). */
-#define VALID_CQ_ID  0U
-#define BAD_CQ_ID    0xFFFFFFFFU
-#define NEW_QP_ID    1U
+#define VALID_CQ_ID 0U
+#define BAD_CQ_ID   0xFFFFFFFFU
+#define NEW_QP_ID   1U
 
 /* Build the minimum-valid body for CREATE_QP.  Caller owns buf[MAX_BODY]. */
 static void build_body(uint8_t *buf, uint32_t priv_flags, uint32_t scq_id,
@@ -84,8 +75,8 @@ static void build_body(uint8_t *buf, uint32_t priv_flags, uint32_t scq_id,
     buf[6] = (uint8_t)(priv_flags >> 8);
     buf[7] = (uint8_t)priv_flags;
     /* le32 scq_id at [8:11] */
-    buf[8]  = (uint8_t)scq_id;
-    buf[9]  = (uint8_t)(scq_id >> 8);
+    buf[8] = (uint8_t)scq_id;
+    buf[9] = (uint8_t)(scq_id >> 8);
     buf[10] = (uint8_t)(scq_id >> 16);
     buf[11] = (uint8_t)(scq_id >> 24);
     /* sq depth_log2=6, stride_log2=6, page_size_log2=12 at [12..15] */
@@ -130,10 +121,10 @@ static void build_body(uint8_t *buf, uint32_t priv_flags, uint32_t scq_id,
 static bool is_create_qp_status(uint8_t rc)
 {
     return rc == IONIC_RC_SUCCESS || rc == IONIC_RC_EINVAL ||
-           rc == IONIC_RC_EEXIST  || rc == IONIC_RC_ENOSPC ||
-           rc == IONIC_RC_ENOENT  || rc == IONIC_RC_EQID   ||
-           rc == IONIC_RC_ERANGE  || rc == IONIC_RC_ERDMA   ||
-           rc == IONIC_RC_ENOMEM  || rc == IONIC_RC_EIO;
+           rc == IONIC_RC_EEXIST || rc == IONIC_RC_ENOSPC ||
+           rc == IONIC_RC_ENOENT || rc == IONIC_RC_EQID ||
+           rc == IONIC_RC_ERANGE || rc == IONIC_RC_ERDMA ||
+           rc == IONIC_RC_ENOMEM || rc == IONIC_RC_EIO;
 }
 
 /*
@@ -151,7 +142,7 @@ static const char *run_input(const uint8_t *data, size_t size, uint8_t *rc_out)
     if (size < IN_HDR) {
         return NULL;
     }
-    iflags   = data[0];
+    iflags = data[0];
     body_len = data[1] % BODY_MOD;
 
     ctx_reset();
@@ -175,8 +166,8 @@ static const char *run_input(const uint8_t *data, size_t size, uint8_t *rc_out)
     }
     if (iflags & F_BAD_SCQ) {
         uint32_t bad = BAD_CQ_ID;
-        body[8]  = (uint8_t)bad;
-        body[9]  = (uint8_t)(bad >> 8);
+        body[8] = (uint8_t)bad;
+        body[9] = (uint8_t)(bad >> 8);
         body[10] = (uint8_t)(bad >> 16);
         body[11] = (uint8_t)(bad >> 24);
         body[32] = body[8];
@@ -193,8 +184,7 @@ static const char *run_input(const uint8_t *data, size_t size, uint8_t *rc_out)
         return "status is not a CREATE_QP completion code";
     }
     if (body_len < IONIC_ADMIN_CREATE_QP_IN_V1_LEN) {
-        return rc == IONIC_RC_EINVAL ? NULL
-                                     : "a short body was not EINVAL";
+        return rc == IONIC_RC_EINVAL ? NULL : "a short body was not EINVAL";
     }
     if ((iflags & F_DUP_QP) && rc != IONIC_RC_EEXIST) {
         return "a duplicate QP id was not EEXIST";
@@ -221,37 +211,36 @@ struct seed {
     const char *category;
     const char *description;
     const char *expected;
-    uint8_t  iflags;    /* F_* bits */
+    uint8_t iflags; /* F_* bits */
     uint32_t priv_flags;
     uint32_t scq_id;
     uint32_t qp_id;
     uint16_t body_len;
-    uint8_t  want_rc;
+    uint8_t want_rc;
 };
 
 static const struct seed seeds[] = {
     /* positive */
-    {"positive", "CREATE_QP, no CMB flags",
-     "SUCCESS (0)", 0, 0, VALID_CQ_ID, NEW_QP_ID,
-     IONIC_ADMIN_CREATE_QP_IN_V1_LEN, 0},
-    {"positive", "CREATE_QP with SQ_CMB flag",
-     "SUCCESS (0)", 0, IONIC_QPF_SQ_CMB, VALID_CQ_ID, NEW_QP_ID,
-     IONIC_ADMIN_CREATE_QP_IN_V1_LEN, 0},
-    {"positive", "CREATE_QP with RQ_CMB flag",
-     "SUCCESS (0)", 0, IONIC_QPF_RQ_CMB, VALID_CQ_ID, NEW_QP_ID,
-     IONIC_ADMIN_CREATE_QP_IN_V1_LEN, 0},
-    {"positive", "CREATE_QP with SQ_CMB and RQ_CMB",
-     "SUCCESS (0)", 0, IONIC_QPF_SQ_CMB | IONIC_QPF_RQ_CMB, VALID_CQ_ID,
+    {"positive", "CREATE_QP, no CMB flags", "SUCCESS (0)", 0, 0, VALID_CQ_ID,
      NEW_QP_ID, IONIC_ADMIN_CREATE_QP_IN_V1_LEN, 0},
+    {"positive", "CREATE_QP with SQ_CMB flag", "SUCCESS (0)", 0,
+     IONIC_QPF_SQ_CMB, VALID_CQ_ID, NEW_QP_ID, IONIC_ADMIN_CREATE_QP_IN_V1_LEN,
+     0},
+    {"positive", "CREATE_QP with RQ_CMB flag", "SUCCESS (0)", 0,
+     IONIC_QPF_RQ_CMB, VALID_CQ_ID, NEW_QP_ID, IONIC_ADMIN_CREATE_QP_IN_V1_LEN,
+     0},
+    {"positive", "CREATE_QP with SQ_CMB and RQ_CMB", "SUCCESS (0)", 0,
+     IONIC_QPF_SQ_CMB | IONIC_QPF_RQ_CMB, VALID_CQ_ID, NEW_QP_ID,
+     IONIC_ADMIN_CREATE_QP_IN_V1_LEN, 0},
     /* negative */
-    {"negative", "CREATE_QP, body one byte short",
-     "EINVAL (14)", 0, IONIC_QPF_SQ_CMB, VALID_CQ_ID, NEW_QP_ID,
+    {"negative", "CREATE_QP, body one byte short", "EINVAL (14)", 0,
+     IONIC_QPF_SQ_CMB, VALID_CQ_ID, NEW_QP_ID,
      IONIC_ADMIN_CREATE_QP_IN_V1_LEN - 1, IONIC_RC_EINVAL},
-    {"negative", "CREATE_QP with duplicate QP id",
-     "EEXIST (5)", F_DUP_QP, IONIC_QPF_SQ_CMB, VALID_CQ_ID, QP_ID,
-     IONIC_ADMIN_CREATE_QP_IN_V1_LEN, IONIC_RC_EEXIST},
-    {"negative", "CREATE_QP with zero-length body",
-     "EINVAL (14)", 0, 0, VALID_CQ_ID, NEW_QP_ID, 0, IONIC_RC_EINVAL},
+    {"negative", "CREATE_QP with duplicate QP id", "EEXIST (5)", F_DUP_QP,
+     IONIC_QPF_SQ_CMB, VALID_CQ_ID, QP_ID, IONIC_ADMIN_CREATE_QP_IN_V1_LEN,
+     IONIC_RC_EEXIST},
+    {"negative", "CREATE_QP with zero-length body", "EINVAL (14)", 0, 0,
+     VALID_CQ_ID, NEW_QP_ID, 0, IONIC_RC_EINVAL},
 };
 
 static size_t encode_seed(const struct seed *s, uint8_t *out)
@@ -313,10 +302,10 @@ static bool emit_seed(size_t i, const uint8_t *buf, size_t len)
 /* NOLINTNEXTLINE(readability-non-const-parameter) */
 int LLVMFuzzerInitialize(int *argc, char ***argv)
 {
-    const char *emit   = getenv("FUZZ_EMIT_SEEDS");
-    bool emit_seeds    = emit && strcmp(emit, "1") == 0;
-    int failures       = 0;
-    int unwritten      = 0;
+    const char *emit = getenv("FUZZ_EMIT_SEEDS");
+    bool emit_seeds = emit && strcmp(emit, "1") == 0;
+    int failures = 0;
+    int unwritten = 0;
 
     (void)argc;
     (void)argv;

@@ -1,3 +1,4 @@
+# pylint: disable=too-many-lines  # driver helpers grow with device feature set
 """The ionic driver, as a guest kernel would run it, over vfio-user.
 
 This is the Python counterpart of tests/ionic_harness.c. That harness
@@ -695,6 +696,7 @@ class IonicDriver(EthQueueMixin):
         """DESTROY_CQ. Returns the completion status."""
         return self.admin(ADMIN_DESTROY_CQ, struct.pack("<I", cq.id))[0]
 
+    # pylint: disable-next=too-many-arguments,too-many-positional-arguments
     def create_qp(self, qp_id, qp_type, scq, rcq, srq=None, priv_flags=0):
         """CREATE_QP. struct ionic_admin_create_qp."""
         send_ring = self.alloc_ring(QP_DEPTH_LOG2, WQE_STRIDE_LOG2)

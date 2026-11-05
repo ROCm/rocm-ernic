@@ -394,6 +394,7 @@ def test_hang_up_mid_command(suite, server):
         mem.close()
 
 
+# pylint: disable-next=too-many-locals  # 4 regions × 3 fields each
 def test_cmb(suite, server):
     """CMB/EXPDB: DISCOVER_CMB, Q_IDENTIFY EXPDB feature, and a CMB QP."""
     client = vfu.VfioUserClient(server.socket_path).connect(timeout=30)
@@ -409,7 +410,10 @@ def test_cmb(suite, server):
         data = drv.devcmd_ok(bytes(cmd), 40)
         num_regions = struct.unpack_from("<I", data, 0)[0]
         flags = struct.unpack_from("<I", data, 4)[0]
-        suite.check(num_regions == 2, f"DISCOVER_CMB reports 2 regions, got {num_regions}")
+        suite.check(
+            num_regions == 2,
+            f"DISCOVER_CMB reports 2 regions, got {num_regions}",
+        )
         suite.check(
             bool(flags & ionic.IONIC_CMB_FLAG_EXPDB),
             f"DISCOVER_CMB sets EXPDB flag (flags={flags:#x})",

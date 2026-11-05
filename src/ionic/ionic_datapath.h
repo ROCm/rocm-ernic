@@ -345,8 +345,8 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
 
 /**
  * Set the CMB (Controller Memory Buffer) shadow shared with ionic_eth_emu.
- * Must be called before any CMB QP can receive a write.  @cmb_buf is
- * @IONIC_BAR4_CMB_SIZE bytes, owned by the caller.
+ * Must be called before any CMB QP can receive a write.  @p cmb_buf is
+ * `IONIC_BAR4_CMB_SIZE` bytes, owned by the caller.
  */
 void ionic_datapath_set_cmb(struct ionic_datapath *dp, uint8_t *cmb_buf);
 
