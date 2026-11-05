@@ -58,6 +58,10 @@ let
     { name = "fault_parse";
       extra = [ "src/ionic/ionic_fault.c" ];
       seeds = true; }
+    { name = "adminq_cmb";
+      extra = [ "src/ernic_dma.c" "src/ionic/ionic_adminq.c" ];
+      cflags = "-Itests -I${libvfioUser}/include";
+      seeds = true; }
   ];
 
   names = map (h: h.name) harnesses;

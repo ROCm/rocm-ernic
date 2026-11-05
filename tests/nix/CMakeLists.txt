@@ -118,3 +118,23 @@ add_test(
         $<TARGET_FILE:fuzz_replay_ionic_stats>
 )
 set_tests_properties(fuzz-seed-files-ionic_stats PROPERTIES TIMEOUT 30)
+
+# The CMB/EXPDB CREATE_QP harness shares the fake device with the stats
+# harness (tests/ionic_adminq_fakes.h) and checks its seed table at startup.
+ernic_add_fuzz_replay(adminq_cmb ${ERNIC_TEST_ADMINQ_SOURCES})
+target_include_directories(fuzz_replay_adminq_cmb PRIVATE
+    ${PROJECT_SOURCE_DIR}/tests
+)
+target_include_directories(fuzz_replay_adminq_cmb SYSTEM PRIVATE
+    ${VFIO_USER_INCLUDE_DIRS}
+)
+target_compile_definitions(fuzz_replay_adminq_cmb PRIVATE
+    FUZZ_HARNESS_HAS_INITIALIZE
+)
+
+add_test(
+    NAME fuzz-seed-files-adminq_cmb
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/test_fuzz_seed_files.sh
+        $<TARGET_FILE:fuzz_replay_adminq_cmb>
+)
+set_tests_properties(fuzz-seed-files-adminq_cmb PROPERTIES TIMEOUT 30)

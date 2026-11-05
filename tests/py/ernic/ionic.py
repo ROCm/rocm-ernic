@@ -57,8 +57,15 @@ CMD_PORT_IDENTIFY = 10
 CMD_PORT_INIT = 11
 CMD_LIF_IDENTIFY = 20
 CMD_LIF_INIT = 21
-CMD_Q_IDENTIFY = 60
+CMD_Q_IDENTIFY = 39
 CMD_DISCOVER_CMB = 80
+IONIC_CMB_FLAG_EXPDB = 0x1
+IONIC_CMB_TYPE_DEVMEM = 0x0
+IONIC_CMB_TYPE_EXPDB512 = 0x4
+IONIC_QTYPE_TXQ = 3
+IONIC_QIDENT_F_EXPDB = 0x400
+IONIC_QPF_SQ_CMB = 1 << 13
+IONIC_QPF_RQ_CMB = 1 << 14
 CMD_RDMA_RESET = 50
 CMD_RDMA_EQ = 51
 CMD_RDMA_CQ = 52
@@ -688,11 +695,12 @@ class IonicDriver(EthQueueMixin):
         """DESTROY_CQ. Returns the completion status."""
         return self.admin(ADMIN_DESTROY_CQ, struct.pack("<I", cq.id))[0]
 
-    def create_qp(self, qp_id, qp_type, scq, rcq, srq=None):
+    def create_qp(self, qp_id, qp_type, scq, rcq, srq=None, priv_flags=0):
         """CREATE_QP. struct ionic_admin_create_qp."""
         send_ring = self.alloc_ring(QP_DEPTH_LOG2, WQE_STRIDE_LOG2)
         recv_ring = None if srq else self.alloc_ring(QP_DEPTH_LOG2, WQE_STRIDE_LOG2)
         body = bytearray(64)
+        struct.pack_into(">I", body, 4, priv_flags)
         struct.pack_into("<I", body, 8, scq.id)
         body[12] = QP_DEPTH_LOG2
         body[13] = WQE_STRIDE_LOG2
