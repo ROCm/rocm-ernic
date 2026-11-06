@@ -18,6 +18,13 @@
 
 ### Added
 
+* The device has a PCI Express capability, as every PCI Express function
+  must, and it advertises function-level reset (FLR). A guest can now reset
+  the function with an FLR, which the server treats as it does a device
+  reset: it counts it in the stats file and clears the CMB. The capability
+  describes no link, so the guest still reports the link speed and width as
+  unknown.
+
 * **Express doorbell (CMB / EXPDB) end-to-end support.** The server exposes
   an 8 MB Controller Memory Buffer on BAR4 and responds to `DISCOVER_CMB`
   (opcode 80): two CMB regions are reported — `DEVMEM` and `EXPDB512` —

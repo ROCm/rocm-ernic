@@ -44,6 +44,17 @@ BAR0_SIZE = 64 << 10
 BAR0_REGS_SIZE = 32 << 10
 # BAR4, the CMB
 CMB_SIZE = 8 << 20
+
+# Config space, from linux/pci_regs.h
+PCI_STATUS = 0x06
+PCI_STATUS_CAP_LIST = 0x10
+PCI_CAPABILITY_LIST = 0x34
+PCI_CAP_ID_EXP = 0x10
+PCI_CAP_ID_MSIX = 0x11
+# In the PCI Express capability
+PCI_EXP_DEVCAP_FLR = 0x10000000
+PCI_EXP_DEVCTL = 0x08
+PCI_EXP_DEVCTL_BCR_FLR = 0x8000
 IONIC_DEV_SIG = 0x44455649  # "DEVI"
 
 # struct ionic_lif_info: the status block at 256, link_status at +10.
@@ -57,6 +68,8 @@ LIF_STATS_WRITE_FAILED = "LIF stats write to"
 # What the server logs when it refuses a BAR0 access across the
 # register/MSI-X split.
 BAR0_STRADDLE_REFUSED = "ionic BAR0 access straddling the register/MSI-X split"
+# The stats file's connection state after a function-level reset
+FLR_CONNECTION = "connected (PCI FLR)"
 
 
 def refused(suite, what, func, *expected):
@@ -120,6 +133,24 @@ def test_device_info(suite, client):
     )
 
 
+def find_capability(client, cap_id):
+    """The config-space offset of capability @cap_id, or None.
+
+    Walks the list from its head at 0x34, as a guest does, so a capability
+    the list doesn't reach isn't found. The walk is bounded, since the
+    standard config space has room for at most 48 capabilities.
+    """
+    offset = client.read_config(PCI_CAPABILITY_LIST, 1)[0]
+    for _ in range(48):
+        if offset == 0:
+            return None
+        cap, nxt = client.read_config(offset, 2)
+        if cap == cap_id:
+            return offset
+        offset = nxt
+    return None
+
+
 def test_config_space(suite, client):
     """The PCI identity a guest matches the driver against."""
     cfg = client.read_config(0, 64)
@@ -131,6 +162,20 @@ def test_config_space(suite, client):
     suite.check_eq(subdevice, PCI_SUBDEVICE_ID_ROCM_ERNIC, "subsystem device id")
     suite.check_eq(cfg[0x0B], 0x02, "base class is network")
     suite.check_eq(cfg[0x0E] & 0x7F, 0, "header type is a normal function")
+
+    status = struct.unpack_from("<H", cfg, PCI_STATUS)[0]
+    suite.check(status & PCI_STATUS_CAP_LIST, "status says there is a capability list")
+    px = find_capability(client, PCI_CAP_ID_EXP)
+    suite.check(px is not None, "the PCI Express capability is on the list")
+    suite.check(
+        find_capability(client, PCI_CAP_ID_MSIX) is not None,
+        "the MSI-X capability is on the list",
+    )
+    if px is not None:
+        flags, devcap = struct.unpack("<HI", client.read_config(px + 2, 6))
+        suite.check_eq(flags & 0xF, 2, "PCI Express capability version")
+        suite.check_eq((flags >> 4) & 0xF, 0, "PCI Express device type is Endpoint")
+        suite.check(devcap & PCI_EXP_DEVCAP_FLR, "the device advertises FLR")
 
 
 def test_bar_access(suite, client, server):
@@ -461,16 +506,16 @@ def test_cmb(suite, server):
         mem.close()
 
 
-def test_cmb_cleared(suite, server):
+def test_cmb_cleared(suite, server, stats_path):
     """Nothing written to the CMB outlives a device reset or its client.
 
     A guest's work requests, and their inline data, are written to BAR4.
     The server serves one client after another on the same device, a guest
-    reboots through a device reset, and the driver resets the device with
-    IONIC_CMD_RESET as it loads and unloads, so what one left there must
-    not be readable by the next. Each pattern is read back before the
-    reset, so zeros afterwards mean it was cleared, not that it never
-    landed.
+    reboots through a device reset, Linux resets a function with an FLR,
+    and the driver resets the device with IONIC_CMD_RESET as it loads and
+    unloads, so what one left there must not be readable by the next. Each
+    pattern is read back before the reset, so zeros afterwards mean it was
+    cleared, not that it never landed.
     """
     bar4 = vfu.VFU_PCI_DEV_BAR4_REGION_IDX
     # The first WQE slot, and the last 8 bytes of the CMB
@@ -510,6 +555,23 @@ def test_cmb_cleared(suite, server):
         cmd[0] = ionic.CMD_RESET
         ionic.IonicDriver(client, mem).devcmd_ok(bytes(cmd))
         cleared(client, "IONIC_CMD_RESET")
+
+        # A function-level reset, as Linux's pcie_flr() starts one: Initiate
+        # FLR in Device Control, written as the one word it is
+        fill(client, "an FLR")
+        px = find_capability(client, PCI_CAP_ID_EXP)
+        if suite.check(px is not None, "there is a PCI Express capability"):
+            client.write_config(
+                px + PCI_EXP_DEVCTL, struct.pack("<H", PCI_EXP_DEVCTL_BCR_FLR)
+            )
+            # The reset callback rewrites the stats file before the write
+            # returns, and only an FLR leaves this connection state.
+            with open(stats_path, encoding="utf-8") as stats:
+                suite.check(
+                    FLR_CONNECTION in stats.read(),
+                    "the server took the write as an FLR",
+                )
+            cleared(client, "an FLR")
 
         fill(client, "the client goes")
 
@@ -555,7 +617,10 @@ def main():
             )
             suite.run("CMB/EXPDB discovery and queue setup", test_cmb, server)
             suite.run(
-                "CMB cleared by a reset and between clients", test_cmb_cleared, server
+                "CMB cleared by a reset and between clients",
+                test_cmb_cleared,
+                server,
+                stats_path,
             )
         finally:
             stop_and_check(suite, server)

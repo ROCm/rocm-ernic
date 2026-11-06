@@ -833,5 +833,5 @@ Not yet working:
 
 - Shared receive queues, which the upstream RDMA driver does
   not implement in its ``ib_device_ops``
-- The PCI Express capability is not advertised, so the guest
+- The PCI Express capability describes no link, so the guest
   reports an unknown link speed and width; this is cosmetic
