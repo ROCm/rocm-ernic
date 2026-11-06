@@ -565,6 +565,10 @@ a shutdown deadline, and counting the descriptors they hold</p></li>
 <code class="docutils literal notranslate"><span class="pre">tests/ionic_harness.c</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">mesh.py</span></code> – the TCP mesh wire protocol, a fake manager,
 and a fixture that starts a manager and some workers</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">pci.py</span></code> – the config-space register offsets and fields
+from <code class="docutils literal notranslate"><span class="pre">linux/pci_regs.h</span></code>, which <code class="docutils literal notranslate"><span class="pre">ernic-pci-regs</span></code>
+(<code class="docutils literal notranslate"><span class="pre">tests/pci_regs_dump.c</span></code>) prints from the header rather
+than the tests keeping a copy</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">check.py</span></code> – the small test runner the suites report
 through</p></li>
 </ul>
@@ -623,6 +627,8 @@ through</p></li>
 <span class="w">    </span>--server<span class="w"> </span>build/rocm-ernic<span class="w"> </span>--size<span class="w"> </span><span class="m">5</span>
 </pre></div>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">test_vfu_client.py</span></code> also needs the program that prints the
+config-space values, <code class="docutils literal notranslate"><span class="pre">--pci-regs</span> <span class="pre">build/tests/ernic-pci-regs</span></code>.</p>
 <p>Like the shell suites, they run the server under the command
 in <code class="docutils literal notranslate"><span class="pre">ERNIC_TEST_SERVER_WRAPPER</span></code>, so CI’s valgrind leg
 covers them too.</p>

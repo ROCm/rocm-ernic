@@ -825,5 +825,12 @@ Not yet working:
 
 - Shared receive queues, which the upstream RDMA driver does
   not implement in its ``ib_device_ops``
-- The PCI Express capability is not advertised, so the guest
-  reports an unknown link speed and width; this is cosmetic
+- The link speed and width, which the guest sees only when the
+  device sits behind a ``pcie-root-port``: on the root bus,
+  where the examples here put it, QEMU makes it a Root Complex
+  Integrated Endpoint, which has no link, so the guest reports
+  them as unknown instead of 64 GT/s x16; this is cosmetic
+- Function-level reset (FLR), which the PCI Express
+  capability doesn't advertise, so the guest can't start one:
+  a device reset leaves the RDMA and Ethernet queues, memory
+  registrations and work in flight in place

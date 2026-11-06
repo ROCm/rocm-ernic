@@ -1273,8 +1273,15 @@ always had a responder (see <a class="reference internal" href="nvmeof.html"><sp
 </li>
 <li><p>Shared receive queues, which the upstream RDMA driver does
 not implement in its <code class="docutils literal notranslate"><span class="pre">ib_device_ops</span></code></p></li>
-<li><p>The PCI Express capability is not advertised, so the guest
-reports an unknown link speed and width; this is cosmetic</p></li>
+<li><p>The link speed and width, which the guest sees only when the
+device sits behind a <code class="docutils literal notranslate"><span class="pre">pcie-root-port</span></code>: on the root bus,
+where the examples here put it, QEMU makes it a Root Complex
+Integrated Endpoint, which has no link, so the guest reports
+them as unknown instead of 64 GT/s x16; this is cosmetic</p></li>
+<li><p>Function-level reset (FLR), which the PCI Express
+capability doesn’t advertise, so the guest can’t start one:
+a device reset leaves the RDMA and Ethernet queues, memory
+registrations and work in flight in place</p></li>
 </ul>
 </section>
 </section>
