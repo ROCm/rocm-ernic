@@ -1901,11 +1901,16 @@ static bool dp_cmb_span_ok(uint64_t base, uint64_t rel, uint64_t len)
  * its WQE into *wqe_id and *dst, and advance *cons past it.  Returns false,
  * taking nothing, if the ring is empty or the WQE can't be read.  An SRQ's
  * caller holds its lock.
+ *
+ * The ring is in guest memory at @ring_buf, or, if @cmb, in the CMB at
+ * @cmb_offset. A CMB ring's @ring_buf names its offset in BAR4, not a guest
+ * address, so with no CMB to read it from, nothing is taken.
  */
 static bool dp_ring_take(struct ionic_datapath *dp, uint32_t *cons,
                          uint32_t prod, uint32_t depth, uint8_t stride_log2,
-                         const struct dp_buf *ring_buf, uint64_t cmb_offset,
-                         uint64_t *wqe_id, struct dp_sge_list *dst)
+                         const struct dp_buf *ring_buf, bool cmb,
+                         uint64_t cmb_offset, uint64_t *wqe_id,
+                         struct dp_sge_list *dst)
 {
     if (*cons == prod) {
         return false;
@@ -1919,14 +1924,14 @@ static bool dp_ring_take(struct ionic_datapath *dp, uint32_t *cons,
     uint8_t rwqe[1U << IONIC_WQE_MAX_STRIDE_LOG2];
     uint32_t read_sz = stride < sizeof(rwqe) ? stride : (uint32_t)sizeof(rwqe);
 
-    if (dp->cmb_buf && cmb_offset != UINT64_MAX) {
+    if (cmb) {
         /*
          * CMB RQ: WQEs were written by the guest via MOVDIR64B to BAR4.
          * ernic_dma_read() cannot map BAR4 GPAs (PCI device memory, not guest
          * DRAM), so read directly from the shadow buffer.
          */
         uint64_t rel = (uint64_t)slot * stride;
-        if (!dp_cmb_span_ok(cmb_offset, rel, read_sz)) {
+        if (!dp->cmb_buf || !dp_cmb_span_ok(cmb_offset, rel, read_sz)) {
             return false;
         }
         memcpy(rwqe, dp->cmb_buf + cmb_offset + rel, read_sz);
@@ -2011,14 +2016,13 @@ int64_t ionic_dp_deliver_recv(struct ionic_datapath *dp,
          * one thing safe to do outside it, because srq_count never changes
          * after create. */
         taken = sr->valid && dp_ring_take(dp, &sr->cons, sr->prod, sr->depth,
-                                          sr->stride_log2, &sr->buf, UINT64_MAX,
+                                          sr->stride_log2, &sr->buf, false, 0,
                                           &rq_wqe_id, &dst);
         qemu_mutex_unlock(&sr->lock);
     } else {
         taken = dp_ring_take(dp, &dq->rq_cons, dq->rq_prod, dq->rq_depth,
-                             dq->rq_stride_log2, &dq->rq_buf,
-                             dq->rq_cmb ? dq->rq_cmb_buf_offset : UINT64_MAX,
-                             &rq_wqe_id, &dst);
+                             dq->rq_stride_log2, &dq->rq_buf, dq->rq_cmb,
+                             dq->rq_cmb_buf_offset, &rq_wqe_id, &dst);
     }
     if (!taken) {
         return -1;

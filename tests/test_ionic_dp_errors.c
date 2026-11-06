@@ -3124,6 +3124,12 @@ static void check_unreadable_wqe(void)
  * each row sets its ring's offset on the data path directly, as CREATE_QP
  * would not. A WQE outside the CMB is never written, since it has nowhere
  * to go; only its doorbell is rung.
+ *
+ * Nor may a CMB ring's WQE be read from guest memory, where the ring's
+ * address, an offset in BAR4, would name an arbitrary guest page: not at
+ * offset 2^64 - 1, which is out of range like any other, nor when the data
+ * path has no CMB. Those rows post a receive in guest memory at the ring's
+ * address, which must not be taken.
  */
 #define CMB_GUARD 64U
 static uint8_t g_cmb[CMB_GUARD + IONIC_BAR4_CMB_SIZE];
@@ -3141,6 +3147,8 @@ enum cmb_scenario {
     CMB_RQ_LAST,  /* QP_B's RQ at CMB_LAST */
     CMB_RQ_PAST,
     CMB_RQ_WRAPS,
+    CMB_RQ_AT_MAX, /* at UINT64_MAX */
+    CMB_RQ_NO_CMB, /* at 0, with no CMB on the data path */
 };
 
 /* Whether any completion on CQ_ID is in error */
@@ -3185,6 +3193,18 @@ static const char *cmb_sq_run(struct ionic_datapath *dp, uint64_t off,
     return uw_cqes(dp, want, sizeof(want) / sizeof(want[0]));
 }
 
+/* Whether QP_B's posted receive is still untaken, and nothing completed */
+static const char *rq_untaken(const struct ionic_datapath *dp)
+{
+    if (dp->qp[QP_B].rq_cons != 0) {
+        return "a receive was taken";
+    }
+    if (dp->cq[CQ_ID].prod != 0) {
+        return "something completed";
+    }
+    return NULL;
+}
+
 /* QP_B's RQ in the CMB at @off: a receive posted there, or, if the WQE
  * would be outside the CMB, just counted as posted; then QP_A sends to it */
 static const char *cmb_rq_run(struct ionic_datapath *dp, uint64_t off,
@@ -3211,14 +3231,17 @@ static const char *cmb_rq_run(struct ionic_datapath *dp, uint64_t off,
         }
         return NULL;
     }
+    return rq_untaken(dp);
+}
 
-    if (dp->qp[QP_B].rq_cons != 0) {
-        return "a receive was taken from outside the CMB";
-    }
-    if (dp->cq[CQ_ID].prod != 0) {
-        return "something completed";
-    }
-    return NULL;
+/* QP_B's RQ in the CMB at @off, with a receive posted in guest memory at the
+ * ring's address; then QP_A sends to it */
+static const char *cmb_rq_guest_run(struct ionic_datapath *dp, uint64_t off)
+{
+    post_recv(dp, QP_B, SEND64.len);
+    ionic_datapath_set_qp_cmb(dp, QP_B, false, 0, true, off);
+    post_send(dp, QP_A, &SEND64);
+    return rq_untaken(dp);
 }
 
 static const char *cmb_run(struct ionic_datapath *dp, enum cmb_scenario s)
@@ -3238,8 +3261,13 @@ static const char *cmb_run(struct ionic_datapath *dp, enum cmb_scenario s)
     case CMB_RQ_PAST:
         return cmb_rq_run(dp, CMB_LAST + 1U, false);
     case CMB_RQ_WRAPS:
-    default:
         return cmb_rq_run(dp, CMB_WRAPS, false);
+    case CMB_RQ_AT_MAX:
+        return cmb_rq_guest_run(dp, UINT64_MAX);
+    case CMB_RQ_NO_CMB:
+    default:
+        ionic_datapath_set_cmb(dp, NULL);
+        return cmb_rq_guest_run(dp, 0);
     }
 }
 
@@ -3269,6 +3297,14 @@ static void check_cmb_bounds(void)
         {"negative",
          "a SEND into an RQ WQE whose CMB offset plus its length wraps 2^64",
          "no receive is taken, and nothing completes", CMB_RQ_WRAPS},
+        {"negative",
+         "a SEND into an RQ in the CMB at offset 2^64 - 1, with a receive in "
+         "guest memory at the ring's address",
+         "no receive is taken, and nothing completes", CMB_RQ_AT_MAX},
+        {"negative",
+         "a SEND into an RQ in the CMB with no CMB on the data path, with a "
+         "receive in guest memory at the ring's address",
+         "no receive is taken, and nothing completes", CMB_RQ_NO_CMB},
     };
 
     for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
