@@ -106,6 +106,10 @@ enum ionic_qp_state {
  * still had its QP type taken from three bytes the guest never sent. */
 #define IONIC_ADMIN_CREATE_QP_IN_V1_LEN 63U
 
+/* priv_flags bits in CREATE_QP body[4:7] (big-endian) */
+#define IONIC_QPF_SQ_CMB (1U << 13) /* SQ lives in CMB (express doorbell) */
+#define IONIC_QPF_RQ_CMB (1U << 14) /* RQ lives in CMB (express doorbell) */
+
 /* -------------------------------------------------------------------------
  * Per-AQ ring state
  * -------------------------------------------------------------------------
@@ -184,6 +188,10 @@ struct ionic_adminq_ctx {
         uint32_t qpn;
         bool dest_set;
         uint32_t dest_qp_id;
+        bool sq_cmb;            /* SQ is in CMB (express doorbell) */
+        bool rq_cmb;            /* RQ is in CMB (express doorbell) */
+        uint64_t sq_cmb_offset; /* byte offset within cmb_buf */
+        uint64_t rq_cmb_offset;
     } qp_map[MAX_QP_MAP];
 
     /* And for MRs: the driver's mrid vs the backend's handle. Indexed by

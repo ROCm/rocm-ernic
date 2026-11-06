@@ -42,6 +42,19 @@ PCI_SUBDEVICE_ID_ROCM_ERNIC = 0x5400
 BAR0_SIZE = 64 << 10
 # The ionic register window; the MSI-X table and PBA are above it.
 BAR0_REGS_SIZE = 32 << 10
+# BAR4, the CMB
+CMB_SIZE = 8 << 20
+
+# Config space, from linux/pci_regs.h
+PCI_STATUS = 0x06
+PCI_STATUS_CAP_LIST = 0x10
+PCI_CAPABILITY_LIST = 0x34
+PCI_CAP_ID_EXP = 0x10
+PCI_CAP_ID_MSIX = 0x11
+# In the PCI Express capability
+PCI_EXP_DEVCAP_FLR = 0x10000000
+PCI_EXP_DEVCTL = 0x08
+PCI_EXP_DEVCTL_BCR_FLR = 0x8000
 IONIC_DEV_SIG = 0x44455649  # "DEVI"
 
 # struct ionic_lif_info: the status block at 256, link_status at +10.
@@ -55,6 +68,8 @@ LIF_STATS_WRITE_FAILED = "LIF stats write to"
 # What the server logs when it refuses a BAR0 access across the
 # register/MSI-X split.
 BAR0_STRADDLE_REFUSED = "ionic BAR0 access straddling the register/MSI-X split"
+# The stats file's connection state after a function-level reset
+FLR_CONNECTION = "connected (PCI FLR)"
 
 
 def refused(suite, what, func, *expected):
@@ -99,11 +114,13 @@ def test_device_info(suite, client):
 
     bar0 = client.regions.get(vfu.VFU_PCI_DEV_BAR0_REGION_IDX)
     bar2 = client.regions.get(vfu.VFU_PCI_DEV_BAR2_REGION_IDX)
+    bar4 = client.regions.get(vfu.VFU_PCI_DEV_BAR4_REGION_IDX)
     cfg = client.regions.get(vfu.VFU_PCI_DEV_CFG_REGION_IDX)
     suite.check(bar0 is not None and bar0.size == BAR0_SIZE, "BAR0 is 64 KiB")
     suite.check(bar2 is not None and bar2.size >= 1 << 20, "BAR2 is at least 1 MiB")
+    suite.check(bar4 is not None and bar4.size == 8 << 20, "BAR4 (CMB) is 8 MiB")
     suite.check(cfg is not None and cfg.size >= 256, "config space is present")
-    for region in (bar0, bar2, cfg):
+    for region in (bar0, bar2, bar4, cfg):
         if region is not None:
             suite.check(
                 region.flags & (vfu.VFIO_REGION_INFO_FLAG_READ)
@@ -112,8 +129,26 @@ def test_device_info(suite, client):
             )
     suite.check(
         client.regions.get(1) is None,
-        "BAR1 has no size, as the device sets up only two",
+        "BAR1 has no size (BAR0 and BAR2 are 64-bit, BAR4 is the CMB)",
     )
+
+
+def find_capability(client, cap_id):
+    """The config-space offset of capability @cap_id, or None.
+
+    Walks the list from its head at 0x34, as a guest does, so a capability
+    the list doesn't reach isn't found. The walk is bounded, since the
+    standard config space has room for at most 48 capabilities.
+    """
+    offset = client.read_config(PCI_CAPABILITY_LIST, 1)[0]
+    for _ in range(48):
+        if offset == 0:
+            return None
+        cap, nxt = client.read_config(offset, 2)
+        if cap == cap_id:
+            return offset
+        offset = nxt
+    return None
 
 
 def test_config_space(suite, client):
@@ -127,6 +162,22 @@ def test_config_space(suite, client):
     suite.check_eq(subdevice, PCI_SUBDEVICE_ID_ROCM_ERNIC, "subsystem device id")
     suite.check_eq(cfg[0x0B], 0x02, "base class is network")
     suite.check_eq(cfg[0x0E] & 0x7F, 0, "header type is a normal function")
+
+    status = struct.unpack_from("<H", cfg, PCI_STATUS)[0]
+    suite.check(status & PCI_STATUS_CAP_LIST, "status says there is a capability list")
+    px = find_capability(client, PCI_CAP_ID_EXP)
+    suite.check(px is not None, "the PCI Express capability is on the list")
+    suite.check(
+        find_capability(client, PCI_CAP_ID_MSIX) is not None,
+        "the MSI-X capability is on the list",
+    )
+    if px is not None:
+        flags, devcap = struct.unpack("<HI", client.read_config(px + 2, 6))
+        suite.check_eq(flags & 0xF, 2, "PCI Express capability version")
+        suite.check_eq((flags >> 4) & 0xF, 0, "PCI Express device type is Endpoint")
+        suite.check_eq(
+            devcap & PCI_EXP_DEVCAP_FLR, 0, "the device doesn't advertise FLR"
+        )
 
 
 def test_bar_access(suite, client, server):
@@ -392,6 +443,158 @@ def test_hang_up_mid_command(suite, server):
         mem.close()
 
 
+# pylint: disable-next=too-many-locals  # 4 regions × 3 fields each
+def test_cmb(suite, server):
+    """CMB/EXPDB: DISCOVER_CMB, Q_IDENTIFY EXPDB feature, and a CMB QP."""
+    client = vfu.VfioUserClient(server.socket_path).connect(timeout=30)
+    mem = vfu.GuestMemory(size=1 << 20)
+    try:
+        client.dma_map(mem)
+        drv = ionic.IonicDriver(client, mem)
+        drv.bringup()
+
+        # DISCOVER_CMB (opcode 80): two CMB regions on BAR4.
+        cmd = bytearray(64)
+        cmd[0] = ionic.CMD_DISCOVER_CMB
+        data = drv.devcmd_ok(bytes(cmd), 40)
+        num_regions = struct.unpack_from("<I", data, 0)[0]
+        flags = struct.unpack_from("<I", data, 4)[0]
+        suite.check(
+            num_regions == 2,
+            f"DISCOVER_CMB reports 2 regions, got {num_regions}",
+        )
+        suite.check(
+            bool(flags & ionic.IONIC_CMB_FLAG_EXPDB),
+            f"DISCOVER_CMB sets EXPDB flag (flags={flags:#x})",
+        )
+        # region[0]: DEVMEM on BAR4 at response offset 8
+        r0_bar = data[8]
+        r0_type = data[9]
+        r0_len = struct.unpack_from("<I", data, 8 + 12)[0]
+        suite.check(r0_bar == 4, f"region[0] is on BAR4 (got {r0_bar})")
+        suite.check(
+            r0_type == ionic.IONIC_CMB_TYPE_DEVMEM,
+            f"region[0] is DEVMEM (got {r0_type})",
+        )
+        suite.check(r0_len == 128, f"region[0] is 128 pages (got {r0_len})")
+        # region[1]: EXPDB512 on BAR4, at response offset 24
+        r1_bar = data[24]
+        r1_type = data[25]
+        r1_len = struct.unpack_from("<I", data, 24 + 12)[0]
+        suite.check(r1_bar == 4, f"region[1] is on BAR4 (got {r1_bar})")
+        suite.check(
+            r1_type == ionic.IONIC_CMB_TYPE_EXPDB512,
+            f"region[1] is EXPDB512 (got {r1_type})",
+        )
+        suite.check(r1_len == 128, f"region[1] is 128 pages (got {r1_len})")
+
+        # Q_IDENTIFY (opcode 39) for TXQ (qtype 3): must advertise EXPDB.
+        cmd = bytearray(64)
+        cmd[0] = ionic.CMD_Q_IDENTIFY
+        cmd[3] = ionic.IONIC_QTYPE_TXQ
+        data = drv.devcmd_ok(bytes(cmd), 8 + 8)
+        features = struct.unpack_from("<Q", data, 8)[0]
+        suite.check(
+            bool(features & ionic.IONIC_QIDENT_F_EXPDB),
+            f"Q_IDENTIFY TXQ reports EXPDB (features={features:#x})",
+        )
+
+        # CREATE_QP with IONIC_QPF_SQ_CMB: must succeed.
+        cq = drv.create_cq(cq_id=1)
+        drv.create_qp(qp_id=1, qp_type=ionic.QPT_RC, scq=cq, rcq=cq, sq_cmb=0)
+        suite.check(True, "CREATE_QP with SQ_CMB flag succeeded")
+    finally:
+        client.close()
+        mem.close()
+
+
+def test_cmb_cleared(suite, server, stats_path):
+    """Nothing written to the CMB outlives a device reset or its client.
+
+    A guest's work requests, and their inline data, are written to BAR4.
+    The server serves one client after another on the same device, a guest
+    reboots through a device reset, and the driver resets the device with
+    IONIC_CMD_RESET as it loads and unloads, so what one left there must
+    not be readable by the next. Each pattern is read back before the
+    reset, so zeros afterwards mean it was cleared, not that it never
+    landed.
+
+    An FLR, which the device doesn't advertise, is refused, and leaves the
+    CMB as it was: every reset clears it, so that shows nothing was reset.
+    """
+    bar4 = vfu.VFU_PCI_DEV_BAR4_REGION_IDX
+    # The first WQE slot, and the last 8 bytes of the CMB
+    spots = ((0, bytes(range(1, 65))), (CMB_SIZE - 8, b"\xa5" * 8))
+    zeros = {offset: bytes(len(data)) for offset, data in spots}
+
+    def fill(client, before):
+        for offset, data in spots:
+            client.write_region(bar4, offset, data)
+            suite.check_eq(
+                client.read_region(bar4, offset, len(data)),
+                data,
+                "BAR4 at %#x holds what was written before %s",
+                offset,
+                before,
+            )
+
+    def cleared(client, after):
+        for offset, data in zeros.items():
+            suite.check_eq(
+                client.read_region(bar4, offset, len(data)),
+                data,
+                "BAR4 at %#x is zero after %s",
+                offset,
+                after,
+            )
+
+    with vfu.VfioUserClient(server.socket_path).connect(
+        timeout=30
+    ) as client, vfu.GuestMemory(size=1 << 20) as mem:
+        fill(client, "a device reset")
+        client.reset()
+        cleared(client, "a device reset")
+
+        fill(client, "IONIC_CMD_RESET")
+        cmd = bytearray(64)
+        cmd[0] = ionic.CMD_RESET
+        ionic.IonicDriver(client, mem).devcmd_ok(bytes(cmd))
+        cleared(client, "IONIC_CMD_RESET")
+
+        # A function-level reset, as Linux's pcie_flr() starts one: Initiate
+        # FLR in Device Control, written as the one word it is
+        fill(client, "an FLR is tried")
+        px = find_capability(client, PCI_CAP_ID_EXP)
+        if suite.check(px is not None, "there is a PCI Express capability"):
+            refused(
+                suite,
+                "a write starting an FLR",
+                lambda: client.write_config(
+                    px + PCI_EXP_DEVCTL, struct.pack("<H", PCI_EXP_DEVCTL_BCR_FLR)
+                ),
+                errno.EINVAL,
+            )
+            # The reset callback rewrites the stats file before the write
+            # returns, and only an FLR leaves this connection state.
+            with open(stats_path, encoding="utf-8") as stats:
+                suite.check(
+                    FLR_CONNECTION not in stats.read(),
+                    "the server didn't take the write as an FLR",
+                )
+            for offset, data in spots:
+                suite.check_eq(
+                    client.read_region(bar4, offset, len(data)),
+                    data,
+                    "BAR4 at %#x is unchanged after the refused FLR",
+                    offset,
+                )
+
+        fill(client, "the client goes")
+
+    with vfu.VfioUserClient(server.socket_path).connect(timeout=30) as client:
+        cleared(client, "the first client went")
+
+
 def main():
     """Start a server, run the protocol tests against it, and stop it."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -427,6 +630,13 @@ def main():
                 "a client that hangs up mid-command",
                 test_hang_up_mid_command,
                 server,
+            )
+            suite.run("CMB/EXPDB discovery and queue setup", test_cmb, server)
+            suite.run(
+                "CMB cleared by a reset and between clients",
+                test_cmb_cleared,
+                server,
+                stats_path,
             )
         finally:
             stop_and_check(suite, server)

@@ -81,6 +81,17 @@ upstream driver expects:
      - 4 MB
      - Doorbell pages; the offset within a page encodes the
        queue type, the page index the process ID
+   * - BAR 4
+     - 8 MB
+     - Controller Memory Buffer (CMB); ``DISCOVER_CMB`` (opcode 80)
+       returns two regions here: ``DEVMEM`` (type 0) and ``EXPDB512``
+       (type 4), each 128 × 64 KiB pages.  ``Q_IDENTIFY`` for TXQ
+       and RXQ sets ``IONIC_QIDENT_F_EXPDB`` so the driver may
+       request express-doorbell QPs that write WQEs directly into
+       this memory instead of ringing a separate doorbell.  The
+       write that ends a WQE's slot posts it, whatever its size,
+       since QEMU delivers the guest's stores at most 8 bytes at
+       a time, so the guest must write each WQE front to back.
 
 The MSI-X table has room for 128 vectors; the device
 advertises the profile's ``queues.intr_vectors`` of them (32
@@ -825,5 +836,9 @@ Not yet working:
 
 - Shared receive queues, which the upstream RDMA driver does
   not implement in its ``ib_device_ops``
-- The PCI Express capability is not advertised, so the guest
+- The PCI Express capability describes no link, so the guest
   reports an unknown link speed and width; this is cosmetic
+- Function-level reset (FLR), which the PCI Express
+  capability doesn't advertise, so the guest can't start one:
+  a device reset clears the CMB but leaves the RDMA queues,
+  memory registrations and work in flight in place

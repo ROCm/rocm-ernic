@@ -45,6 +45,9 @@ VA_A = 0x0000_7F00_0000_0100
 VA_B = 0x0000_7F10_0000_0000
 MR_LEN = 3 * ionic.PAGE_SIZE
 
+# A UD receive starts with a GRH, which its byte count includes
+UD_GRH_LEN = 40
+
 
 def send_a_to_b(fix, length):
     """Post a signalled RC SEND of @length bytes from A's region.
@@ -378,6 +381,294 @@ def test_srq(suite, fix):
     suite.check_eq(fix.driver.destroy_srq(srq), 0, "DESTROY_SRQ")
 
 
+def test_send_cmb(suite, fix):
+    """SENDs between QPs whose rings are in the CMB.
+
+    The guest driver puts a QP's rings there once the device offers a
+    CMB, and names each by its offset in BAR4. C's send ring is created
+    first, and D's below it: a ring is where its own offset says, not
+    relative to whichever ring came first.
+    """
+    cq_e = fix.driver.create_cq(4)
+    qp_c = fix.driver.create_qp(30, ionic.QPT_RC, cq_e, cq_e, sq_cmb=ionic.PAGE_SIZE)
+    qp_d = fix.driver.create_qp(
+        31, ionic.QPT_RC, cq_e, cq_e, sq_cmb=0, rq_cmb=2 * ionic.PAGE_SIZE
+    )
+    hdr = ionic.roce_hdr_v4(ionic.ipv4("192.168.0.1"), ionic.ipv4("192.168.0.2"))
+    fix.driver.connect_qp(qp_c, qp_d.id, hdr)
+    fix.driver.connect_qp(qp_d, qp_c.id, hdr)
+
+    for sender, receiver in ((qp_c, qp_d), (qp_d, qp_c)):
+        name = f"QP {sender.id} to QP {receiver.id}"
+        payload = f"from a CMB send ring, {name}".encode()
+        fix.driver.mr_write(fix.mr_a, VA_A, payload)
+        fix.driver.mr_write(fix.mr_b, VA_B, b"\0" * len(payload))
+        fix.driver.post_recv(receiver, [ionic.Sge(VA_B, MR_LEN, MR_B)])
+        fix.driver.post_send(
+            sender,
+            ionic.OP_SEND,
+            flags=ionic.WQE_SIGNALLED,
+            sge=[ionic.Sge(VA_A, len(payload), MR_A)],
+        )
+        cqes = [fix.driver.wait_cq(cq_e), fix.driver.wait_cq(cq_e)]
+        send = [c for c in cqes if c.type == ionic.CQE_TYPE_SEND_MSN]
+        recv = [c for c in cqes if c.type == ionic.CQE_TYPE_RECV]
+        suite.check(
+            len(send) == 1 and not send[0].error,
+            f"{name}: the send completed without error",
+        )
+        suite.check(
+            len(recv) == 1 and recv[0].qid == receiver.id and not recv[0].error,
+            f"{name}: the receiver got a receive completion",
+        )
+        suite.check_eq(
+            fix.driver.mr_read(fix.mr_b, VA_B, len(payload)),
+            payload,
+            f"{name}: the received bytes",
+        )
+
+    suite.check_eq(fix.driver.destroy_qp(qp_c), 0, "DESTROY_QP C")
+    suite.check_eq(fix.driver.destroy_qp(qp_d), 0, "DESTROY_QP D")
+    suite.check_eq(fix.driver.destroy_cq(cq_e), 0, "DESTROY_CQ E")
+
+
+def test_inline_cmb(suite, fix):
+    """Inline payloads from a send ring in the CMB.
+
+    The payload is in the WQE, which is in BAR4 rather than any guest
+    page, so it has to come from the copy the device read. Taken from
+    the guest address of a ring in guest memory, it came from guest
+    physical address 32, and the peer received the guest's low memory.
+    A RC SEND, a RC WRITE and a UD SEND each take the payload a
+    different way.
+    """
+    hdr = ionic.roce_hdr_v4(ionic.ipv4("192.168.0.1"), ionic.ipv4("192.168.0.2"))
+    cq_g = fix.driver.create_cq(6)
+    rc_c = fix.driver.create_qp(50, ionic.QPT_RC, cq_g, cq_g, sq_cmb=0)
+    rc_d = fix.driver.create_qp(51, ionic.QPT_RC, cq_g, cq_g)
+    fix.driver.connect_qp(rc_c, rc_d.id, hdr)
+    fix.driver.connect_qp(rc_d, rc_c.id, hdr)
+
+    payload = b"inline, from a send ring in the CMB"
+    fix.driver.mr_write(fix.mr_b, VA_B, b"\0" * MR_LEN)
+    fix.driver.post_recv(rc_d, [ionic.Sge(VA_B, MR_LEN, MR_B)])
+    fix.driver.post_send(
+        rc_c,
+        ionic.OP_SEND,
+        flags=ionic.WQE_SIGNALLED | ionic.WQE_INLINE,
+        inline_data=payload,
+    )
+    cqes = [fix.driver.wait_cq(cq_g), fix.driver.wait_cq(cq_g)]
+    suite.check(
+        all(not c.error for c in cqes), "RC SEND: both ends completed without error"
+    )
+    recv = [c for c in cqes if c.type == ionic.CQE_TYPE_RECV]
+    suite.check(
+        len(recv) == 1 and recv[0].status_len == len(payload),
+        "RC SEND: the received byte count",
+    )
+    suite.check_eq(
+        fix.driver.mr_read(fix.mr_b, VA_B, len(payload)),
+        payload,
+        "RC SEND: the received bytes",
+    )
+
+    payload = b"written inline from the CMB"
+    fix.driver.mr_write(fix.mr_b, VA_B, b"\0" * MR_LEN)
+    fix.driver.post_send(
+        rc_c,
+        ionic.OP_RDMA_WRITE,
+        flags=ionic.WQE_SIGNALLED | ionic.WQE_INLINE,
+        remote_va=VA_B,
+        rkey=MR_B,
+        inline_data=payload,
+    )
+    send = fix.driver.wait_cq(cq_g)
+    suite.check(not send.error, "RC WRITE: completed without error")
+    suite.check_eq(
+        fix.driver.mr_read(fix.mr_b, VA_B, len(payload)),
+        payload,
+        "RC WRITE: the bytes at the remote address",
+    )
+
+    # A READ has no payload to send, and would scatter its response into
+    # the copy of the WQE, so one marked inline is refused
+    before = fix.driver.mr_read(fix.mr_b, VA_B, MR_LEN)
+    fix.driver.post_send(
+        rc_c,
+        ionic.OP_RDMA_READ,
+        flags=ionic.WQE_SIGNALLED | ionic.WQE_INLINE,
+        remote_va=VA_B,
+        rkey=MR_B,
+        inline_data=b"\0" * 16,
+    )
+    send = fix.driver.wait_cq(cq_g)
+    suite.check(
+        send.error and send.status == ionic.STS_LOCAL_QP_OPER_ERR,
+        "RC READ marked inline: refused as a local QP operation error",
+    )
+    suite.check_eq(
+        fix.driver.mr_read(fix.mr_b, VA_B, MR_LEN),
+        before,
+        "RC READ marked inline: the remote region is unchanged",
+    )
+
+    ud_c = fix.driver.create_qp(52, ionic.QPT_UD, cq_g, cq_g, sq_cmb=ionic.PAGE_SIZE)
+    ud_d = fix.driver.create_qp(53, ionic.QPT_UD, cq_g, cq_g)
+    for qp in (ud_c, ud_d):
+        for state in (ionic.QPS_INIT, ionic.QPS_RTR, ionic.QPS_RTS):
+            suite.check_eq(
+                fix.driver.modify_qp(qp.id, ionic.QP_STATE, state),
+                0,
+                f"UD QP {qp.id} to state {state}",
+            )
+
+    payload = b"a datagram, inline from the CMB"
+    fix.driver.mr_write(fix.mr_b, VA_B, b"\0" * MR_LEN)
+    fix.driver.post_recv(ud_d, [ionic.Sge(VA_B, MR_LEN, MR_B)])
+    fix.driver.post_send(
+        ud_c,
+        ionic.OP_SEND,
+        flags=ionic.WQE_SIGNALLED | ionic.WQE_INLINE,
+        dest_qpn=ud_d.id,
+        inline_data=payload,
+    )
+    cqes = [fix.driver.wait_cq(cq_g), fix.driver.wait_cq(cq_g)]
+    recv = [c for c in cqes if c.type == ionic.CQE_TYPE_RECV]
+    suite.check(
+        len(recv) == 1
+        and not recv[0].error
+        and recv[0].status_len == UD_GRH_LEN + len(payload),
+        "UD SEND: a receive of the GRH and the payload",
+    )
+    suite.check_eq(
+        fix.driver.mr_read(fix.mr_b, VA_B + UD_GRH_LEN, len(payload)),
+        payload,
+        "UD SEND: the received bytes, after the GRH",
+    )
+
+    for qp in (rc_c, rc_d, ud_c, ud_d):
+        suite.check_eq(fix.driver.destroy_qp(qp), 0, f"DESTROY_QP {qp.id}")
+    suite.check_eq(fix.driver.destroy_cq(cq_g), 0, "DESTROY_CQ G")
+
+
+def test_cmb_id_reused(suite, fix):
+    """A QP in guest memory, under the id a QP in the CMB had.
+
+    Its sends must come from its own ring. The old QP's ring in BAR4
+    still holds the SEND it posted, and fetched from there the new QP
+    would send that instead, at the old length.
+    """
+    cq_f = fix.driver.create_cq(5)
+    peer = fix.driver.create_qp(41, ionic.QPT_RC, cq_f, cq_f)
+    hdr = ionic.roce_hdr_v4(ionic.ipv4("192.168.0.1"), ionic.ipv4("192.168.0.2"))
+    fix.driver.connect_qp(peer, 40, hdr)
+
+    for sq_cmb, payload in (
+        (3 * ionic.PAGE_SIZE, b"from the QP whose send ring is in the CMB"),
+        (None, b"from its successor, in guest memory"),
+    ):
+        where = "in the CMB" if sq_cmb is not None else "in guest memory"
+        qp = fix.driver.create_qp(40, ionic.QPT_RC, cq_f, cq_f, sq_cmb=sq_cmb)
+        fix.driver.connect_qp(qp, peer.id, hdr)
+        fix.driver.mr_write(fix.mr_a, VA_A, payload)
+        fix.driver.mr_write(fix.mr_b, VA_B, b"\0" * MR_LEN)
+        fix.driver.post_recv(peer, [ionic.Sge(VA_B, MR_LEN, MR_B)])
+        fix.driver.post_send(
+            qp,
+            ionic.OP_SEND,
+            flags=ionic.WQE_SIGNALLED,
+            sge=[ionic.Sge(VA_A, len(payload), MR_A)],
+        )
+        cqes = [fix.driver.wait_cq(cq_f), fix.driver.wait_cq(cq_f)]
+        recv = [c for c in cqes if c.type == ionic.CQE_TYPE_RECV]
+        suite.check(
+            len(recv) == 1 and not recv[0].error,
+            f"send ring {where}: the peer got a receive completion",
+        )
+        suite.check(
+            len(recv) == 1 and recv[0].status_len == len(payload),
+            f"send ring {where}: the received byte count",
+        )
+        suite.check_eq(
+            fix.driver.mr_read(fix.mr_b, VA_B, len(payload)),
+            payload,
+            f"send ring {where}: the received bytes",
+        )
+        suite.check_eq(fix.driver.destroy_qp(qp), 0, f"DESTROY_QP {where}")
+
+    suite.check_eq(fix.driver.destroy_qp(peer), 0, "DESTROY_QP peer")
+    suite.check_eq(fix.driver.destroy_cq(cq_f), 0, "DESTROY_CQ F")
+
+
+def test_expdb(suite, fix):
+    """SENDs and receives posted by the express doorbell alone.
+
+    Each WQE is written into the CMB 8 bytes at a time, as QEMU delivers
+    a guest's stores, and no BAR2 doorbell is rung: the write that ends
+    a WQE's slot posts it. A device that waited for one 64-byte write
+    never saw one, and nothing completed. One more round than the rings
+    are deep takes both past their last slot and round again.
+
+    Nor may a SEND go before the write ending its slot. A local SEND to
+    a posted receive completes while the device handles the write that
+    posts it, so had an earlier write posted it, its completions would
+    already be on the CQ before the last write. A device that took the
+    first write into a slot's last 64 bytes as the doorbell sent the
+    WQE before the rest of it was written.
+    """
+    cq_h = fix.driver.create_cq(7)
+    sender = fix.driver.create_qp(
+        60, ionic.QPT_RC, cq_h, cq_h, sq_cmb=4 * ionic.PAGE_SIZE
+    )
+    receiver = fix.driver.create_qp(
+        61, ionic.QPT_RC, cq_h, cq_h, rq_cmb=5 * ionic.PAGE_SIZE
+    )
+    hdr = ionic.roce_hdr_v4(ionic.ipv4("192.168.0.1"), ionic.ipv4("192.168.0.2"))
+    fix.driver.connect_qp(sender, receiver.id, hdr)
+    fix.driver.connect_qp(receiver, sender.id, hdr)
+
+    early = []
+
+    def poll_early():
+        early.append(fix.driver.poll_cq(cq_h))
+
+    for n in range(sender.sq.depth + 1):
+        payload = f"posted by the express doorbell, round {n}".encode()
+        fix.driver.mr_write(fix.mr_a, VA_A, payload)
+        fix.driver.mr_write(fix.mr_b, VA_B, b"\0" * len(payload))
+        fix.driver.post_recv(receiver, [ionic.Sge(VA_B, MR_LEN, MR_B)], expdb=True)
+        early.clear()
+        fix.driver.post_send(
+            sender,
+            ionic.OP_SEND,
+            expdb=True,
+            before_last=poll_early,
+            flags=ionic.WQE_SIGNALLED,
+            sge=[ionic.Sge(VA_A, len(payload), MR_A)],
+        )
+        suite.check_eq(
+            early,
+            [None],
+            f"round {n}: completions before the write ending the SEND's slot",
+        )
+        cqes = [fix.driver.wait_cq(cq_h), fix.driver.wait_cq(cq_h)]
+        recv = [c for c in cqes if c.type == ionic.CQE_TYPE_RECV]
+        suite.check(
+            all(not c.error for c in cqes) and len(recv) == 1,
+            f"round {n}: the send and its receive completed without error",
+        )
+        suite.check_eq(
+            fix.driver.mr_read(fix.mr_b, VA_B, len(payload)),
+            payload,
+            f"round {n}: the received bytes",
+        )
+
+    suite.check_eq(fix.driver.destroy_qp(sender), 0, "DESTROY_QP sender")
+    suite.check_eq(fix.driver.destroy_qp(receiver), 0, "DESTROY_QP receiver")
+    suite.check_eq(fix.driver.destroy_cq(cq_h), 0, "DESTROY_CQ H")
+
+
 def test_teardown(suite, fix):
     """Every resource comes back."""
     suite.check_eq(fix.driver.destroy_qp(fix.qp_a), 0, "DESTROY_QP A")
@@ -401,6 +692,10 @@ TESTS = (
     ("SEND from an unregistered lkey", test_bad_lkey),
     ("SEND from an SGE past the end of its region", test_bad_lkey_length),
     ("shared receive queue", test_srq),
+    ("SEND between QPs with rings in the CMB", test_send_cmb),
+    ("inline payloads from a send ring in the CMB", test_inline_cmb),
+    ("a QP id reused outside the CMB", test_cmb_id_reused),
+    ("work posted by the express doorbell alone", test_expdb),
     ("teardown", test_teardown),
 )
 

@@ -30,6 +30,7 @@
 #include <poll.h>
 
 #include <vfio-user/libvfio-user.h>
+#include <vfio-user/pci_caps/px.h>
 #include <vfio-user/pci_defs.h>
 #include <linux/pci_regs.h>
 
@@ -40,6 +41,7 @@
  */
 #include "rocm_ernic_internal.h" // IWYU pragma: keep
 #include "rocm_ernic_compat.h"
+#include "byteorder.h"
 #include "ernic_attributes.h"
 #include "ernic_socket.h"
 #include "ernic_time.h"
@@ -309,6 +311,23 @@ static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
     return ionic_eth_emu_bar2_access(emu, buf, count, offset, is_write);
 }
 
+/*
+ * BAR4 (CMB) access callback.
+ *
+ * The guest writes WQEs directly into the CMB, and QEMU delivers its stores
+ * at most 8 bytes at a time.  Reads are not part of the expdb protocol
+ * but libvfio-user may deliver them.  Delegate to the eth_emu layer which
+ * holds the shadow buffer and posts a WQE once the write ending its slot
+ * arrives.
+ */
+static ssize_t bar4_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
+                           loff_t offset, bool is_write)
+{
+    rocm_ernic_dev_t *dev = vfu_get_private(vfu_ctx);
+    struct ionic_eth_emu *emu = ionic_device_eth_emu(dev->ionic);
+    return ionic_eth_emu_bar4_access(emu, buf, count, offset, is_write);
+}
+
 /**
  * Device reset callback
  *
@@ -321,6 +340,16 @@ static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
     const char *conn_str = NULL;
 
     vfu_log(vfu_ctx, LOG_INFO, "Device reset requested (type=%u)", type);
+
+    /*
+     * Whatever the reset, the CMB doesn't survive it. The server serves one
+     * client after another on the same device, and a guest reboots through
+     * a device reset, so whatever was left in BAR4 -- work requests and
+     * their inline data -- would otherwise be read by the next client or
+     * boot. dev->ionic is NULL during teardown, when destroying the context
+     * resets it.
+     */
+    ionic_eth_emu_clear_cmb(ionic_device_eth_emu(dev->ionic));
 
     switch (type) {
     case VFU_RESET_DEVICE:
@@ -337,7 +366,8 @@ static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
         break;
 
     case VFU_RESET_PCI_FLR:
-        /* Guest requested PCI FLR; client still connected */
+        /* Guest requested PCI FLR; client still connected. Not reached
+         * while the device doesn't advertise FLR: see setup_pci_config(). */
         vfu_log(vfu_ctx, LOG_INFO, "PCI FLR requested");
         conn_str = "connected (PCI FLR)";
         ernic_stats_device_reset(dev->stats);
@@ -551,6 +581,37 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx)
                       0x00,  /* Subclass: Ethernet Controller */
                       0x00); /* Prog-if */
 
+    /*
+     * The PCI Express capability, which every PCI Express function has.
+     * It describes no link, which the device doesn't have, so the guest
+     * reports its speed and width as unknown. libvfio-user links each
+     * capability into the list as it is added, so this one is first.
+     * Version 2 is the full layout, VFIO_USER_PCI_CAP_EXP_SIZEOF bytes.
+     *
+     * Its Device Capabilities are zero, so it doesn't advertise
+     * function-level reset, and libvfio-user refuses a write starting one.
+     * An FLR returns the function to its initial state, and
+     * device_reset_cb() doesn't: it clears the CMB, but the RDMA queues,
+     * memory registrations and work in flight stay, and a late response
+     * could still write data and completions into memory the guest has
+     * freed.
+     */
+    uint8_t px[VFIO_USER_PCI_CAP_EXP_SIZEOF];
+
+    memset(px, 0, sizeof(px));
+    px[PCI_CAP_LIST_ID] = PCI_CAP_ID_EXP;
+    ernic_put_le16(px + PCI_EXP_FLAGS,
+                   (uint16_t)(2U | ((unsigned)PCI_EXP_TYPE_ENDPOINT << 4)));
+    ssize_t px_off = vfu_pci_add_capability(vfu_ctx, 0, 0, px);
+    if (px_off < 0) {
+        warn_errno("vfu_pci_add_capability() failed for PCI Express");
+        return -1;
+    }
+    /* px_off is a non-negative offset here, so the cast to size_t is exact */
+    ernic_startup_report("rocm-ernic: Added PCI Express capability at offset "
+                         "%#zx",
+                         (size_t)px_off);
+
     ernic_startup_report("rocm-ernic: PCI device configured: vendor=%#x "
                          "device=%#x subsystem=%#x:%#x",
                          (unsigned)PCI_VENDOR_ID_PENSANDO, (unsigned)did,
@@ -566,6 +627,7 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx)
  *   BAR0 (64-bit): 32 KB device registers (devcmd + MSI-X ctrl),
  *                  with the MSI-X table/PBA above the register window
  *   BAR2 (64-bit): 4 MB doorbell pages (BAR1 is skipped per ionic spec)
+ *   BAR4 (64-bit): 8 MB Controller Memory Buffer (CMB) for express doorbell
  *
  * Returns 0, or -1 after saying why.
  */
@@ -598,10 +660,19 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
         return -1;
     }
 
-    ernic_startup_report(
-        "rocm-ernic: ionic BARs configured: BAR0=%zu (regs=%zu) BAR2=%zu",
-        (size_t)IONIC_BAR0_TOTAL_SIZE, (size_t)IONIC_BAR0_REGS_SIZE,
-        IONIC_BAR2_DB_SIZE);
+    ret = vfu_setup_region(
+        vfu_ctx, VFU_PCI_DEV_BAR4_REGION_IDX, IONIC_BAR4_CMB_SIZE, bar4_access,
+        VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL, 0, -1, 0);
+    if (ret < 0) {
+        warn_errno("ionic: Failed to setup BAR4 (CMB)");
+        return -1;
+    }
+
+    ernic_startup_report("rocm-ernic: ionic BARs configured: BAR0=%zu "
+                         "(regs=%zu) BAR2=%zu BAR4=%zu (CMB)",
+                         (size_t)IONIC_BAR0_TOTAL_SIZE,
+                         (size_t)IONIC_BAR0_REGS_SIZE, IONIC_BAR2_DB_SIZE,
+                         IONIC_BAR4_CMB_SIZE);
 
     return 0;
 }
@@ -677,12 +748,13 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, const rocm_ernic_dev_t *dev)
     ernic_startup_report("rocm-ernic: Added MSI-X capability at offset %#zx",
                          (size_t)ret);
 
-    /* Ensure standard PCI header tail (0x34-0x3f) is set for config reads */
+    /* Zero the rest of the standard PCI header (0x35-0x3f) for config
+     * reads. The head of the capability list, at 0x34, is libvfio-user's:
+     * it set it when it added the first capability, the PCI Express one. */
     {
         vfu_pci_config_space_t *cfg = vfu_pci_get_config_space(vfu_ctx);
         if (cfg) {
             uint8_t *p = (uint8_t *)cfg;
-            p[PCI_CAPABILITY_LIST] = (uint8_t)ret;
             for (int i = PCI_CAPABILITY_LIST + 1; i < PCI_STD_HEADER_SIZEOF;
                  i++) {
                 p[i] = 0;

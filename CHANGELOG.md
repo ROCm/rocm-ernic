@@ -18,6 +18,32 @@
 
 ### Added
 
+* The device has a PCI Express capability, as every PCI Express function
+  must. It describes no link, so the guest still reports the link speed and
+  width as unknown, and it doesn't advertise function-level reset (FLR), so
+  a guest's attempt at one is refused; see Limitations.
+
+* **Express doorbell (CMB / EXPDB) end-to-end support.** The server exposes
+  an 8 MB Controller Memory Buffer on BAR4 and responds to `DISCOVER_CMB`
+  (opcode 80): two CMB regions are reported — `DEVMEM` and `EXPDB512` —
+  each 128 × 64 KiB pages on BAR4.  `Q_IDENTIFY` for TXQ (qtype 3) and
+  RXQ (qtype 2) sets the `IONIC_QIDENT_F_EXPDB` feature bit so the guest
+  `ionic_rdma` driver may request express-doorbell QPs.  `CREATE_QP` with
+  `IONIC_QPF_SQ_CMB` or `IONIC_QPF_RQ_CMB` now fully wires the QP into the
+  CMB path. Such a ring's address is its offset in BAR4, as the driver
+  gives it, and a ring that does not lie wholly inside the CMB is refused
+  with `ERANGE`. BAR4 guest writes are shadowed in a server-side buffer, the
+  write that ends a stride-sized slot dispatches its WQE, whatever its size
+  (QEMU delivers a guest's stores into BAR4 at most 8 bytes at a time, so a
+  64-byte store arrives as eight writes), and `process_sq_wqe()` reads the
+  WQE from the shadow buffer rather than via DMA (BAR4 GPAs are PCI device
+  memory, not guest DRAM, so `ernic_dma_read()` cannot map them). The CMB is
+  zeroed on every device reset, including the driver's `IONIC_CMD_RESET`,
+  and whenever a client disconnects, so what one guest, boot, or driver load
+  wrote there can't be read by the next. A QP's rings in the CMB are zeroed
+  when it's destroyed, since the driver maps them into the process that
+  created the QP and gives their pages to the next QP as they are.
+
 * `--backend nvmeof:kv=1[,keys=...,maxval=...]` serves the namespace with the
   NVM Express Key Value command set instead of the block one: Store (01h),
   Retrieve (02h), List (06h), Delete (10h) and Exist (14h), with the key
@@ -1635,6 +1661,15 @@
 ### Limitations
 
 * rocm-ernic supports only 64-bit Linux; 32-bit systems aren't supported.
+* The device doesn't support function-level reset (FLR), and doesn't
+  advertise it. A reset of the device clears the CMB, but leaves its RDMA
+  queues, memory registrations and work in flight in place, which an FLR
+  must not.
+* A WQE written into the CMB (BAR4) is dispatched as soon as the write ending
+  its slot arrives, so the guest must write each WQE front to back. One that
+  writes a slot's last bytes first, for example storing the WQE's first word
+  last to publish it, has the WQE dispatched holding whatever the slot held
+  before, and the writes after it post nothing.
 
 ### Known issues
 

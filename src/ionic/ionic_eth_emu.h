@@ -91,6 +91,18 @@ ssize_t ionic_eth_emu_bar0_access(struct ionic_eth_emu *emu, char *buf,
 ssize_t ionic_eth_emu_bar2_access(struct ionic_eth_emu *emu, char *buf,
                                   size_t count, loff_t offset, bool is_write);
 
+ssize_t ionic_eth_emu_bar4_access(struct ionic_eth_emu *emu, char *buf,
+                                  size_t count, loff_t offset, bool is_write);
+
+/*
+ * Zero the CMB, BAR4, so that nothing written there -- work requests and
+ * their inline data -- survives a device reset or the client that wrote it.
+ * The server calls it on every reset libvfio-user reports, which includes
+ * a client's going, and the emulator on the driver's IONIC_CMD_RESET.
+ * @emu may be NULL.  Main loop thread only.
+ */
+void ionic_eth_emu_clear_cmb(struct ionic_eth_emu *emu);
+
 /* Trigger an MSI-X vector (0 = success, -EINVAL = bad vec, 0 if masked). */
 int ionic_eth_emu_trigger_irq(struct ionic_eth_emu *emu, int vec);
 
