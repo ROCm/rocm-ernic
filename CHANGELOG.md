@@ -4,6 +4,14 @@
 
 ### Fixed
 
+* The IWYU workflow could run for an hour or more while Ubuntu's mirror
+  served its 100 MB of LLVM packages slowly. It, clang-tidy and Thread
+  safety now install through `.github/actions/apt-install`, which caches
+  the packages they download and has apt drop a stalled connection and try
+  another mirror, so they no longer download LLVM on every run. Every CI
+  job that runs on its own runner now has a time limit, a few times its
+  longest recent run, rather than GitHub's six hours.
+
 * A KV `List` command whose key-length field (CDW11[07:00]) was nonzero but
   exceeded `NVMEOF_KV_KEY_MAX` (16) was silently accepted and treated as a
   zero-length start-from-beginning; it is now rejected with

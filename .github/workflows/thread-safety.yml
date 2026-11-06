@@ -28,6 +28,7 @@ on:
       - 'nix/analysis/fuzz/**'
       - 'CMakeLists.txt'
       - 'cmake/**'
+      - '.github/actions/apt-install/**'
       - '.github/workflows/thread-safety.yml'
   push:
     branches: [ develop ]
@@ -49,6 +50,7 @@ jobs:
   thread-safety:
     name: Thread-safety analysis (clang 23)
     runs-on: ubuntu-26.04
+    timeout-minutes: 30
 
     env:
       LLVM_VERSION: 23
@@ -67,20 +69,17 @@ jobs:
       # the configure step's -DERNIC_BUILD_P4=ON requires it, and that
       # step only runs on a cache miss.
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libibverbs-dev \
-            librdmacm-dev \
-            libglib2.0-dev \
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            libibverbs-dev
+            librdmacm-dev
+            libglib2.0-dev
             libjson-c-dev
 
       # As in the clang-tidy workflow: apt only trusts the key with the
-      # known fingerprint, and only for this repository. The unit tests
-      # always link with ASan and UBSan (see tests/CMakeLists.txt), whose
-      # runtimes are in libclang-rt, which --no-install-recommends leaves
-      # out.
-      - name: Install clang
+      # known fingerprint, and only for this repository.
+      - name: Add apt.llvm.org
         run: |
           curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
             -o /tmp/llvm.asc
@@ -98,11 +97,21 @@ jobs:
             "https://apt.llvm.org/${UBUNTU_CODENAME}/" \
             "llvm-toolchain-${UBUNTU_CODENAME}-${LLVM_VERSION} main" \
             | sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            "clang-${LLVM_VERSION}" \
-            "libclang-rt-${LLVM_VERSION}-dev"
-          "clang-${LLVM_VERSION}" --version
+
+      # The unit tests always link with ASan and UBSan (see
+      # tests/CMakeLists.txt), whose runtimes are in libclang-rt, which
+      # no-install-recommends leaves out. The packages are about 65 MB
+      # from the one host, which the action caches.
+      - name: Install clang
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            clang-${{ env.LLVM_VERSION }}
+            libclang-rt-${{ env.LLVM_VERSION }}-dev
+          no-install-recommends: 'true'
+
+      - name: Show clang's version
+        run: '"clang-${LLVM_VERSION}" --version'
 
       # The same key and paths as the Build and Test workflow, so the two
       # share the cached build

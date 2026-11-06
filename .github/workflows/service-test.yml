@@ -25,6 +25,7 @@ jobs:
   ernicctl-syntax:
     name: ernicctl Python syntax and imports
     runs-on: ubuntu-26.04
+    timeout-minutes: 10
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
@@ -57,6 +58,7 @@ jobs:
   bash-syntax:
     name: Bash script syntax
     runs-on: ubuntu-26.04
+    timeout-minutes: 10
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
@@ -83,6 +85,7 @@ jobs:
   systemd-unit-lint:
     name: systemd unit file validation
     runs-on: ubuntu-26.04
+    timeout-minutes: 10
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
@@ -99,6 +102,7 @@ jobs:
   env-file-check:
     name: Environment file validation
     runs-on: ubuntu-26.04
+    timeout-minutes: 10
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
@@ -126,6 +130,7 @@ jobs:
   cmake-service-install:
     name: CMake service install targets
     runs-on: ubuntu-26.04
+    timeout-minutes: 15
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
@@ -273,6 +278,7 @@ jobs:
   launcher-unit-test:
     name: Launcher script unit tests
     runs-on: ubuntu-26.04
+    timeout-minutes: 10
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
@@ -440,6 +446,7 @@ jobs:
   ernicctl-status-offline:
     name: ernicctl status without service
     runs-on: ubuntu-26.04
+    timeout-minutes: 10
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:

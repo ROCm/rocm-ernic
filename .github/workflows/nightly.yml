@@ -54,6 +54,7 @@ jobs:
   version:
     name: Version
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       build: ${{ steps.version.outputs.build }}
       release: ${{ steps.version.outputs.release }}
@@ -106,6 +107,7 @@ jobs:
     needs: version
     if: needs.version.outputs.build == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       # Publish nothing unless every package builds, but let every job
       # finish so a failure in one doesn't hide the state of the others
@@ -240,6 +242,7 @@ jobs:
     name: Install (Ubuntu ${{ matrix.ubuntu }})
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -341,6 +344,7 @@ jobs:
       github.event_name != 'pull_request'
       && github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write # create the release and its tag
     steps:

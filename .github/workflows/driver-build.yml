@@ -57,6 +57,7 @@ jobs:
   ionic-patches:
     name: Apply ionic Driver Patches (${{ matrix.series }})
     runs-on: ubuntu-26.04
+    timeout-minutes: 20
 
     strategy:
       fail-fast: false
@@ -267,6 +268,7 @@ jobs:
   rdma-core-patches:
     name: Apply rdma-core ionic Patches
     runs-on: ubuntu-26.04
+    timeout-minutes: 15
 
     steps:
     - name: Checkout code
@@ -389,6 +391,7 @@ jobs:
     name: Driver Build Status
     needs: [ionic-patches, rdma-core-patches]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     if: always()
 
     steps:
