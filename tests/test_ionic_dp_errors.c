@@ -38,6 +38,7 @@
 #include "byteorder.h"
 #include "ernic_mesh.h"
 #include "ernic_stats.h"
+#include "ionic/ionic_bar.h"
 #include "ionic/ionic_datapath.h"
 #include "ionic/ionic_datapath_priv.h"
 #include "ionic/ionic_eth_emu.h"
@@ -682,13 +683,33 @@ struct wqe {
     uint32_t rkey;
 };
 
+/* Slot @slot of a ring at @gpa in guest memory, or at @cmb_offset in the
+ * CMB if @cmb */
+static uint8_t *ring_slot(const struct ionic_datapath *dp, bool cmb,
+                          uint64_t cmb_offset, uint64_t gpa, uint32_t slot)
+{
+    size_t at = (size_t)slot << WQE_STRIDE;
+
+    return cmb ? dp->cmb_buf + cmb_offset + at : g_mem + gpa + at;
+}
+
+/* Ring @qp_id's SQ doorbell for everything posted to it so far. */
+static void sq_doorbell(struct ionic_datapath *dp, uint32_t qp_id)
+{
+    ionic_datapath_doorbell(dp, DP_QTYPE_SQ,
+                            (uint64_t)(g_sq_slot[qp_id] & 0xffffU) |
+                                (uint64_t)(qp_id & 0xffU) << 24 |
+                                (uint64_t)(qp_id >> 8) << 32);
+}
+
 /* Write @w into @qp_id's next SQ slot and ring the SQ doorbell for it. */
 static void post_send(struct ionic_datapath *dp, uint32_t qp_id,
                       const struct wqe *w)
 {
     struct ionic_qp_ring *q = &dp->qp[qp_id];
     uint32_t slot = g_sq_slot[qp_id]++ % q->sq_depth;
-    uint8_t *e = g_mem + SQ_GPA(qp_id) + ((size_t)slot << WQE_STRIDE);
+    uint8_t *e =
+        ring_slot(dp, q->sq_cmb, q->sq_cmb_buf_offset, SQ_GPA(qp_id), slot);
     bool atomic =
         w->op == IONIC_V1_OP_ATOMIC_CS || w->op == IONIC_V1_OP_ATOMIC_FA;
 
@@ -709,10 +730,7 @@ static void post_send(struct ionic_datapath *dp, uint32_t qp_id,
         ernic_put_be32(e + WQE_PLD_OFF + 8, w->len);
         ernic_put_be32(e + WQE_PLD_OFF + 12, w->lkey);
     }
-    ionic_datapath_doorbell(dp, DP_QTYPE_SQ,
-                            (uint64_t)(g_sq_slot[qp_id] & 0xffffU) |
-                                (uint64_t)(qp_id & 0xffU) << 24 |
-                                (uint64_t)(qp_id >> 8) << 32);
+    sq_doorbell(dp, qp_id);
 }
 
 /* Post one key-0 receive of @len bytes on @qp_id. */
@@ -720,7 +738,8 @@ static void post_recv(struct ionic_datapath *dp, uint32_t qp_id, uint32_t len)
 {
     struct ionic_qp_ring *q = &dp->qp[qp_id];
     uint32_t slot = q->rq_prod % q->rq_depth;
-    uint8_t *e = g_mem + RQ_GPA(qp_id) + ((size_t)slot << WQE_STRIDE);
+    uint8_t *e =
+        ring_slot(dp, q->rq_cmb, q->rq_cmb_buf_offset, RQ_GPA(qp_id), slot);
 
     memset(e, 0, 1U << WQE_STRIDE);
     ernic_put_be64(e, 0x100U + slot);
@@ -3093,6 +3112,180 @@ static void check_unreadable_wqe(void)
     }
 }
 
+/*
+ * A send or receive ring in the CMB is read from the device's copy of BAR4,
+ * not from guest memory. CREATE_QP refuses a ring that doesn't lie inside
+ * the CMB, but the data path checks each WQE again before reading it, and
+ * that check must not wrap: an offset just short of 2^64 plus a WQE's length
+ * comes back round to a small sum, which the check used to pass, reading the
+ * WQE from before the start of the copy.
+ *
+ * So the copy is preceded by a guard of zeros, where such a read lands, and
+ * each row sets its ring's offset on the data path directly, as CREATE_QP
+ * would not. A WQE outside the CMB is never written, since it has nowhere
+ * to go; only its doorbell is rung.
+ */
+#define CMB_GUARD 64U
+static uint8_t g_cmb[CMB_GUARD + IONIC_BAR4_CMB_SIZE];
+
+/* The offset of the CMB's last 64-byte WQE */
+#define CMB_LAST ((uint64_t)IONIC_BAR4_CMB_SIZE - (UINT64_C(1) << WQE_STRIDE))
+
+/* An offset whose first 64-byte WQE ends at 2^64 + 1 */
+#define CMB_WRAPS (UINT64_MAX - 62U)
+
+enum cmb_scenario {
+    CMB_SQ_LAST,  /* QP_A's SQ at CMB_LAST */
+    CMB_SQ_PAST,  /* a byte later, so its WQE runs off the end */
+    CMB_SQ_WRAPS, /* at CMB_WRAPS */
+    CMB_RQ_LAST,  /* QP_B's RQ at CMB_LAST */
+    CMB_RQ_PAST,
+    CMB_RQ_WRAPS,
+};
+
+/* Whether any completion on CQ_ID is in error */
+static bool cq_has_error(const struct ionic_datapath *dp)
+{
+    for (uint32_t i = 0; i < dp->cq[CQ_ID].prod; i++) {
+        const uint8_t *c = g_mem + CQ_GPA + ((size_t)i << CQE_STRIDE);
+
+        if (ernic_get_be32(c + CQE_QTF_OFF) & CQE_ERROR_BIT) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* QP_A's SQ in the CMB at @off: a WRITE posted there, or, if the WQE
+ * would be outside the CMB, just its doorbell */
+static const char *cmb_sq_run(struct ionic_datapath *dp, uint64_t off,
+                              bool fits)
+{
+    ionic_datapath_set_qp_cmb(dp, QP_A, true, off, false, 0);
+
+    if (fits) {
+        post_send(dp, QP_A, &WRITE_OK);
+        if (cq_has_error(dp)) {
+            return "the WRITE completed in error";
+        }
+        if (memcmp(g_mem + MR_GPA, g_mem + SRC_GPA, WRITE_OK.len) != 0) {
+            return "the WRITE didn't land";
+        }
+        return NULL;
+    }
+
+    g_sq_slot[QP_A]++;
+    sq_doorbell(dp, QP_A);
+
+    struct uw_cqe want[] = {
+        {CQE_TYPE_SEND_NPG, IONIC_STS_LOCAL_QP_OPER_ERR, 0},
+        {CQE_TYPE_SEND_NPG, IONIC_STS_WQE_FLUSHED_ERR, 0},
+        {CQE_TYPE_RECV, IONIC_STS_WQE_FLUSHED_ERR, 0},
+    };
+    return uw_cqes(dp, want, sizeof(want) / sizeof(want[0]));
+}
+
+/* QP_B's RQ in the CMB at @off: a receive posted there, or, if the WQE
+ * would be outside the CMB, just counted as posted; then QP_A sends to it */
+static const char *cmb_rq_run(struct ionic_datapath *dp, uint64_t off,
+                              bool fits)
+{
+    ionic_datapath_set_qp_cmb(dp, QP_B, false, 0, true, off);
+
+    if (fits) {
+        post_recv(dp, QP_B, SEND64.len);
+    } else {
+        dp->qp[QP_B].rq_prod++;
+    }
+    post_send(dp, QP_A, &SEND64);
+
+    if (fits) {
+        if (dp->qp[QP_B].rq_cons != 1) {
+            return "the receive wasn't taken";
+        }
+        if (cq_has_error(dp)) {
+            return "the SEND or its receive completed in error";
+        }
+        if (memcmp(g_mem + RECV_GPA, g_mem + SRC_GPA, SEND64.len) != 0) {
+            return "the SEND didn't land";
+        }
+        return NULL;
+    }
+
+    if (dp->qp[QP_B].rq_cons != 0) {
+        return "a receive was taken from outside the CMB";
+    }
+    if (dp->cq[CQ_ID].prod != 0) {
+        return "something completed";
+    }
+    return NULL;
+}
+
+static const char *cmb_run(struct ionic_datapath *dp, enum cmb_scenario s)
+{
+    memset(g_cmb, 0, sizeof(g_cmb));
+    ionic_datapath_set_cmb(dp, g_cmb + CMB_GUARD);
+
+    switch (s) {
+    case CMB_SQ_LAST:
+        return cmb_sq_run(dp, CMB_LAST, true);
+    case CMB_SQ_PAST:
+        return cmb_sq_run(dp, CMB_LAST + 1U, false);
+    case CMB_SQ_WRAPS:
+        return cmb_sq_run(dp, CMB_WRAPS, false);
+    case CMB_RQ_LAST:
+        return cmb_rq_run(dp, CMB_LAST, true);
+    case CMB_RQ_PAST:
+        return cmb_rq_run(dp, CMB_LAST + 1U, false);
+    case CMB_RQ_WRAPS:
+    default:
+        return cmb_rq_run(dp, CMB_WRAPS, false);
+    }
+}
+
+static void check_cmb_bounds(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        enum cmb_scenario scenario;
+    } rows[] = {
+        {"boundary", "a WRITE in the last WQE of an SQ in the CMB",
+         "it runs from the CMB", CMB_SQ_LAST},
+        {"negative", "an SQ WQE in the CMB that ends a byte past it",
+         "it completes with LOCAL_QP_OPER_ERR, by its slot, then both queues "
+         "are flushed",
+         CMB_SQ_PAST},
+        {"negative", "an SQ WQE whose CMB offset plus its length wraps 2^64",
+         "it completes with LOCAL_QP_OPER_ERR, by its slot, then both queues "
+         "are flushed",
+         CMB_SQ_WRAPS},
+        {"boundary", "a SEND into the last WQE of an RQ in the CMB",
+         "the receive is taken from the CMB, and the SEND lands", CMB_RQ_LAST},
+        {"negative",
+         "a SEND into an RQ WQE in the CMB that ends a byte past it",
+         "no receive is taken, and nothing completes", CMB_RQ_PAST},
+        {"negative",
+         "a SEND into an RQ WQE whose CMB offset plus its length wraps 2^64",
+         "no receive is taken, and nothing completes", CMB_RQ_WRAPS},
+    };
+
+    for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
+        struct ionic_datapath *dp = setup();
+        const char *why = dp ? cmb_run(dp, rows[row].scenario)
+                             : "could not create a data path";
+
+        ionic_datapath_destroy(dp);
+        printf("%s %s: %s; expected: %s\n", why ? "FAIL" : "ok  ",
+               rows[row].category, rows[row].description, rows[row].expected);
+        if (why) {
+            printf("     %s\n", why);
+            failures++;
+        }
+    }
+}
+
 int main(void)
 {
     check_wire_hdr_layout();
@@ -3105,6 +3298,7 @@ int main(void)
     check_mesh_recv_room();
     check_reply_budget();
     check_unreadable_wqe();
+    check_cmb_bounds();
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         run_case(&cases[i]);
     }

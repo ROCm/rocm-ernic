@@ -1885,6 +1885,18 @@ static void dp_src_mac(const struct ionic_datapath *dp, uint32_t src_qp_id,
 }
 
 /*
+ * Whether the @len bytes @rel past @base, the offset of a ring in the CMB, lie
+ * wholly inside the CMB. Each comparison comes before the subtraction it
+ * guards, so nothing wraps: base + rel + len > size, the obvious test, comes
+ * back round to a small sum for a base just short of 2^64 and passes it.
+ */
+static bool dp_cmb_span_ok(uint64_t base, uint64_t rel, uint64_t len)
+{
+    return base <= IONIC_BAR4_CMB_SIZE && rel <= IONIC_BAR4_CMB_SIZE - base &&
+           len <= IONIC_BAR4_CMB_SIZE - base - rel;
+}
+
+/*
  * Take the next posted receive off a receive ring, a QP's RQ or an SRQ: read
  * its WQE into *wqe_id and *dst, and advance *cons past it.  Returns false,
  * taking nothing, if the ring is empty or the WQE can't be read.  An SRQ's
@@ -1913,11 +1925,11 @@ static bool dp_ring_take(struct ionic_datapath *dp, uint32_t *cons,
          * ernic_dma_read() cannot map BAR4 GPAs (PCI device memory, not guest
          * DRAM), so read directly from the shadow buffer.
          */
-        uint64_t off = cmb_offset + ((uint64_t)slot * stride);
-        if (off + read_sz > IONIC_BAR4_CMB_SIZE) {
+        uint64_t rel = (uint64_t)slot * stride;
+        if (!dp_cmb_span_ok(cmb_offset, rel, read_sz)) {
             return false;
         }
-        memcpy(rwqe, dp->cmb_buf + off, read_sz);
+        memcpy(rwqe, dp->cmb_buf + cmb_offset + rel, read_sz);
     } else {
         uint64_t run;
         uint64_t gpa = buf_gpa(ring_buf, (uint64_t)slot * stride, &run);
@@ -3286,18 +3298,20 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
          * payload is taken from the copy in wqe[] (see the
          * IONIC_V1_FLAG_INL branch below).
          */
-        uint64_t cmb_off = q->sq_cmb_buf_offset + ((uint64_t)slot * stride);
-        if (!dp->cmb_buf || cmb_off + read_sz > IONIC_BAR4_CMB_SIZE) {
+        uint64_t rel = (uint64_t)slot * stride;
+        if (!dp->cmb_buf ||
+            !dp_cmb_span_ok(q->sq_cmb_buf_offset, rel, read_sz)) {
             vfu_log(dp->vfu_ctx, LOG_WARNING,
-                    "ionic_datapath: QP %u SQ WQE %u CMB offset %#" PRIx64
-                    " out of range; flushing the QP",
-                    qp_id, slot, cmb_off);
+                    "ionic_datapath: QP %u SQ WQE %u, %#" PRIx64
+                    " past CMB offset %#" PRIx64
+                    ", is out of range; flushing the QP",
+                    qp_id, slot, rel, q->sq_cmb_buf_offset);
             sq_stall_clear(dp, q);
             q->sq_fault = true;
             sq_fault_finish(dp, q, qp_id);
             return false;
         }
-        memcpy(wqe, dp->cmb_buf + cmb_off, read_sz);
+        memcpy(wqe, dp->cmb_buf + q->sq_cmb_buf_offset + rel, read_sz);
     } else {
         uint64_t run;
         gpa = buf_gpa(&q->sq_buf, (uint64_t)slot * stride, &run);
@@ -4367,13 +4381,17 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
  *
  * Returns false for an index the ring has no slot for, which is a malformed
  * doorbell rather than a wrap.
+ *
+ * An express doorbell's index is the slot after the one written, which in a
+ * ring deeper than 2^16 can be past what a doorbell's 16 bits hold, so the
+ * index is 32 bits here.
  */
-static bool rq_prod_advance(uint32_t *prod, uint32_t depth, uint16_t p_index)
+static bool rq_prod_advance(uint32_t *prod, uint32_t depth, uint32_t p_index)
 {
-    if (depth == 0 || (uint32_t)p_index >= depth) {
+    if (depth == 0 || p_index >= depth) {
         return false;
     }
-    *prod += ((uint32_t)p_index - (*prod % depth)) & (depth - 1U);
+    *prod += (p_index - (*prod % depth)) & (depth - 1U);
     return true;
 }
 
@@ -4458,10 +4476,14 @@ void ionic_datapath_expdb_write(struct ionic_datapath *dp, uint64_t cmb_offset)
             if (cmb_offset >= ring_start &&
                 cmb_offset - ring_start < ring_size) {
                 uint64_t off_in_ring = cmb_offset - ring_start;
-                /* Trigger is the last 64 bytes of each stride-byte slot. */
+                /* Trigger is the last 64 bytes of each stride-byte slot.
+                 * rq_cons runs free, so rq_prod must too: the slot index
+                 * alone would be behind rq_cons after the first lap. An
+                 * index taken modulo the depth is never refused. */
                 if (off_in_ring % stride == stride - 64U) {
                     uint32_t slot = (uint32_t)(off_in_ring / stride);
-                    q->rq_prod = (slot + 1U) % q->rq_depth;
+                    (void)rq_prod_advance(&q->rq_prod, q->rq_depth,
+                                          (slot + 1U) % q->rq_depth);
                 }
             }
         }

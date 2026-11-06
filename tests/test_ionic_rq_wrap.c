@@ -18,7 +18,8 @@
  * sees it.
  *
  * The send queue already read the index the right way. These cover the
- * receive side, for a QP's own RQ and for a shared one.
+ * receive side, for a QP's own RQ and for a shared one, and for an RQ in the
+ * CMB, whose express doorbell names the slot it was written to.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -526,6 +527,88 @@ static void test_rq_rejects_an_index_past_the_depth(void)
 }
 
 /*
+ * An RQ in the CMB is posted to by writing its WQE into BAR4, and the write
+ * of a slot's last 64 bytes, its express doorbell, advances the producer
+ * just as a doorbell naming the next slot would. Setting the producer to
+ * that index instead left it behind the free-running consumer after the
+ * first lap, so the ring looked to hold almost 2^32 receives.
+ */
+
+/* Make RQ_QP_ID's RQ a CMB ring of 64-byte WQEs at offset 0, @depth deep */
+static void rq_in_cmb(struct ionic_datapath *dp, uint32_t depth)
+{
+    dp->qp[RQ_QP_ID].rq_depth = depth;
+    dp->qp[RQ_QP_ID].rq_stride_log2 = 6;
+    dp->qp[RQ_QP_ID].rq_cmb = true;
+    dp->qp[RQ_QP_ID].rq_cmb_buf_offset = 0;
+}
+
+/* The express doorbell for @slot: the write of its last 64 bytes, which
+ * with a 64-byte stride is the whole WQE */
+static void rq_expdb(struct ionic_datapath *dp, uint32_t slot)
+{
+    ionic_datapath_expdb_write(dp, (uint64_t)slot * 64U);
+}
+
+/* The same lap test_rq_survives_the_wrap() makes, posted through BAR4 */
+static void test_rq_expdb_survives_the_wrap(void)
+{
+    struct ionic_datapath *dp = dp_with_recv_rings();
+
+    rq_in_cmb(dp, RQ_DEPTH);
+    for (uint32_t slot = 0; slot < RQ_DEPTH - 1; slot++) {
+        rq_expdb(dp, slot);
+    }
+    check(qp_outstanding(dp) == RQ_DEPTH - 1,
+          "CMB RQ counts each post before the ring wraps");
+    dp->qp[RQ_QP_ID].rq_cons = dp->qp[RQ_QP_ID].rq_prod;
+
+    /* Slot 7 leaves the producer at index 0, and slot 0 at index 1 */
+    rq_expdb(dp, RQ_DEPTH - 1);
+    rq_expdb(dp, 0);
+    check(qp_outstanding(dp) == 2, "CMB RQ reads two posts across the wrap");
+}
+
+/* Several laps, posting and draining one at a time */
+static void test_rq_expdb_survives_many_wraps(void)
+{
+    struct ionic_datapath *dp = dp_with_recv_rings();
+    uint32_t posted = 0;
+
+    rq_in_cmb(dp, RQ_DEPTH);
+    for (uint32_t lap = 0; lap < 5; lap++) {
+        for (uint32_t slot = 0; slot < RQ_DEPTH; slot++) {
+            rq_expdb(dp, slot);
+            posted++;
+            if (qp_outstanding(dp) != 1) {
+                break;
+            }
+            dp->qp[RQ_QP_ID].rq_cons = dp->qp[RQ_QP_ID].rq_prod;
+        }
+    }
+    check(posted == 5 * RQ_DEPTH,
+          "CMB RQ post-and-drain stays at one outstanding across five laps");
+}
+
+/*
+ * A CMB ring can be deeper than a doorbell's 16-bit index reaches: 2^17
+ * WQEs of 64 bytes fill the CMB exactly. Its express doorbell names the
+ * slot by its offset, so the producer must reach past 2^16 rather than
+ * take the index modulo it.
+ */
+static void test_rq_expdb_past_16_bits(void)
+{
+    struct ionic_datapath *dp = dp_with_recv_rings();
+    const uint32_t depth = UINT32_C(1) << 17;
+    const uint32_t slot = 70000;
+
+    rq_in_cmb(dp, depth);
+    rq_expdb(dp, slot);
+    check(qp_outstanding(dp) == slot + 1,
+          "CMB RQ deeper than 2^16 counts a post past slot 65535");
+}
+
+/*
  * map_count is a guest u32 and the page table it describes is allocated
  * here, so without a bound one CREATE command asks the host for up to
  * 2^32 * 8 == 32 GiB, and several hundred are reachable before any table
@@ -782,6 +865,9 @@ int main(void)
     test_rq_survives_the_wrap();
     test_rq_survives_many_wraps();
     test_rq_rejects_an_index_past_the_depth();
+    test_rq_expdb_survives_the_wrap();
+    test_rq_expdb_survives_many_wraps();
+    test_rq_expdb_past_16_bits();
 
     if (g_failures) {
         printf("\n%d check(s) failed\n", g_failures);
