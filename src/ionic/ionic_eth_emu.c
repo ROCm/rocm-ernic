@@ -567,6 +567,13 @@ ssize_t ionic_eth_emu_bar4_access(struct ionic_eth_emu *emu, char *buf,
     return (ssize_t)count;
 }
 
+void ionic_eth_emu_clear_cmb(struct ionic_eth_emu *emu)
+{
+    if (emu) {
+        memset(emu->cmb_buf, 0, IONIC_BAR4_CMB_SIZE);
+    }
+}
+
 /* -------------------------------------------------------------------------
  * Statistics
  *

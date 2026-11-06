@@ -31,7 +31,9 @@
   buffer, the last 64-byte write of each stride-sized slot triggers WQE
   dispatch, and `process_sq_wqe()` reads the WQE from the shadow buffer
   rather than via DMA (BAR4 GPAs are PCI device memory, not guest DRAM, so
-  `ernic_dma_read()` cannot map them).
+  `ernic_dma_read()` cannot map them). The CMB is zeroed on every device
+  reset and whenever a client disconnects, so what one guest, or one boot,
+  wrote there can't be read by the next.
 
 * `--backend nvmeof:kv=1[,keys=...,maxval=...]` serves the namespace with the
   NVM Express Key Value command set instead of the block one: Store (01h),

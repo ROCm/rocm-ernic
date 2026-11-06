@@ -42,6 +42,8 @@ PCI_SUBDEVICE_ID_ROCM_ERNIC = 0x5400
 BAR0_SIZE = 64 << 10
 # The ionic register window; the MSI-X table and PBA are above it.
 BAR0_REGS_SIZE = 32 << 10
+# BAR4, the CMB
+CMB_SIZE = 8 << 20
 IONIC_DEV_SIG = 0x44455649  # "DEVI"
 
 # struct ionic_lif_info: the status block at 256, link_status at +10.
@@ -459,6 +461,51 @@ def test_cmb(suite, server):
         mem.close()
 
 
+def test_cmb_cleared(suite, server):
+    """Nothing written to the CMB outlives a device reset or its client.
+
+    A guest's work requests, and their inline data, are written to BAR4.
+    The server serves one client after another on the same device, and a
+    guest reboots through a device reset, so what one left there must not
+    be readable by the next. Each pattern is read back before the reset,
+    so zeros afterwards mean it was cleared, not that it never landed.
+    """
+    bar4 = vfu.VFU_PCI_DEV_BAR4_REGION_IDX
+    # The first WQE slot, and the last 8 bytes of the CMB
+    spots = ((0, bytes(range(1, 65))), (CMB_SIZE - 8, b"\xa5" * 8))
+    zeros = {offset: bytes(len(data)) for offset, data in spots}
+
+    def fill(client, before):
+        for offset, data in spots:
+            client.write_region(bar4, offset, data)
+            suite.check_eq(
+                client.read_region(bar4, offset, len(data)),
+                data,
+                "BAR4 at %#x holds what was written before %s",
+                offset,
+                before,
+            )
+
+    def cleared(client, after):
+        for offset, data in zeros.items():
+            suite.check_eq(
+                client.read_region(bar4, offset, len(data)),
+                data,
+                "BAR4 at %#x is zero after %s",
+                offset,
+                after,
+            )
+
+    with vfu.VfioUserClient(server.socket_path).connect(timeout=30) as client:
+        fill(client, "a device reset")
+        client.reset()
+        cleared(client, "a device reset")
+        fill(client, "the client goes")
+
+    with vfu.VfioUserClient(server.socket_path).connect(timeout=30) as client:
+        cleared(client, "the first client went")
+
+
 def main():
     """Start a server, run the protocol tests against it, and stop it."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -496,6 +543,9 @@ def main():
                 server,
             )
             suite.run("CMB/EXPDB discovery and queue setup", test_cmb, server)
+            suite.run(
+                "CMB cleared by a reset and between clients", test_cmb_cleared, server
+            )
         finally:
             stop_and_check(suite, server)
     suite.finish()

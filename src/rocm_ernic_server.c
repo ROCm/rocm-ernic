@@ -338,6 +338,16 @@ static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
 
     vfu_log(vfu_ctx, LOG_INFO, "Device reset requested (type=%u)", type);
 
+    /*
+     * Whatever the reset, the CMB doesn't survive it. The server serves one
+     * client after another on the same device, and a guest reboots through
+     * a device reset, so whatever was left in BAR4 -- work requests and
+     * their inline data -- would otherwise be read by the next client or
+     * boot. dev->ionic is NULL during teardown, when destroying the context
+     * resets it.
+     */
+    ionic_eth_emu_clear_cmb(ionic_device_eth_emu(dev->ionic));
+
     switch (type) {
     case VFU_RESET_DEVICE:
         /* Guest requested device reset; client still connected */
