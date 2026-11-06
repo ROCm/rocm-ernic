@@ -175,7 +175,9 @@ def test_config_space(suite, client):
         flags, devcap = struct.unpack("<HI", client.read_config(px + 2, 6))
         suite.check_eq(flags & 0xF, 2, "PCI Express capability version")
         suite.check_eq((flags >> 4) & 0xF, 0, "PCI Express device type is Endpoint")
-        suite.check(devcap & PCI_EXP_DEVCAP_FLR, "the device advertises FLR")
+        suite.check_eq(
+            devcap & PCI_EXP_DEVCAP_FLR, 0, "the device doesn't advertise FLR"
+        )
 
 
 def test_bar_access(suite, client, server):
@@ -511,11 +513,14 @@ def test_cmb_cleared(suite, server, stats_path):
 
     A guest's work requests, and their inline data, are written to BAR4.
     The server serves one client after another on the same device, a guest
-    reboots through a device reset, Linux resets a function with an FLR,
-    and the driver resets the device with IONIC_CMD_RESET as it loads and
-    unloads, so what one left there must not be readable by the next. Each
-    pattern is read back before the reset, so zeros afterwards mean it was
-    cleared, not that it never landed.
+    reboots through a device reset, and the driver resets the device with
+    IONIC_CMD_RESET as it loads and unloads, so what one left there must
+    not be readable by the next. Each pattern is read back before the
+    reset, so zeros afterwards mean it was cleared, not that it never
+    landed.
+
+    An FLR, which the device doesn't advertise, is refused, and leaves the
+    CMB as it was: every reset clears it, so that shows nothing was reset.
     """
     bar4 = vfu.VFU_PCI_DEV_BAR4_REGION_IDX
     # The first WQE slot, and the last 8 bytes of the CMB
@@ -558,20 +563,31 @@ def test_cmb_cleared(suite, server, stats_path):
 
         # A function-level reset, as Linux's pcie_flr() starts one: Initiate
         # FLR in Device Control, written as the one word it is
-        fill(client, "an FLR")
+        fill(client, "an FLR is tried")
         px = find_capability(client, PCI_CAP_ID_EXP)
         if suite.check(px is not None, "there is a PCI Express capability"):
-            client.write_config(
-                px + PCI_EXP_DEVCTL, struct.pack("<H", PCI_EXP_DEVCTL_BCR_FLR)
+            refused(
+                suite,
+                "a write starting an FLR",
+                lambda: client.write_config(
+                    px + PCI_EXP_DEVCTL, struct.pack("<H", PCI_EXP_DEVCTL_BCR_FLR)
+                ),
+                errno.EINVAL,
             )
             # The reset callback rewrites the stats file before the write
             # returns, and only an FLR leaves this connection state.
             with open(stats_path, encoding="utf-8") as stats:
                 suite.check(
-                    FLR_CONNECTION in stats.read(),
-                    "the server took the write as an FLR",
+                    FLR_CONNECTION not in stats.read(),
+                    "the server didn't take the write as an FLR",
                 )
-            cleared(client, "an FLR")
+            for offset, data in spots:
+                suite.check_eq(
+                    client.read_region(bar4, offset, len(data)),
+                    data,
+                    "BAR4 at %#x is unchanged after the refused FLR",
+                    offset,
+                )
 
         fill(client, "the client goes")
 

@@ -838,3 +838,7 @@ Not yet working:
   not implement in its ``ib_device_ops``
 - The PCI Express capability describes no link, so the guest
   reports an unknown link speed and width; this is cosmetic
+- Function-level reset (FLR), which the PCI Express
+  capability doesn't advertise, so the guest can't start one:
+  a device reset clears the CMB but leaves the RDMA queues,
+  memory registrations and work in flight in place

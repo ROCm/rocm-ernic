@@ -366,7 +366,8 @@ static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
         break;
 
     case VFU_RESET_PCI_FLR:
-        /* Guest requested PCI FLR; client still connected */
+        /* Guest requested PCI FLR; client still connected. Not reached
+         * while the device doesn't advertise FLR: see setup_pci_config(). */
         vfu_log(vfu_ctx, LOG_INFO, "PCI FLR requested");
         conn_str = "connected (PCI FLR)";
         ernic_stats_device_reset(dev->stats);
@@ -582,11 +583,18 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx)
 
     /*
      * The PCI Express capability, which every PCI Express function has.
-     * It advertises function-level reset, which device_reset_cb() handles,
-     * and nothing about the link, which the device doesn't have, so the
-     * guest reports its speed and width as unknown. libvfio-user links
-     * each capability into the list as it is added, so this one is first.
+     * It describes no link, which the device doesn't have, so the guest
+     * reports its speed and width as unknown. libvfio-user links each
+     * capability into the list as it is added, so this one is first.
      * Version 2 is the full layout, VFIO_USER_PCI_CAP_EXP_SIZEOF bytes.
+     *
+     * Its Device Capabilities are zero, so it doesn't advertise
+     * function-level reset, and libvfio-user refuses a write starting one.
+     * An FLR returns the function to its initial state, and
+     * device_reset_cb() doesn't: it clears the CMB, but the RDMA queues,
+     * memory registrations and work in flight stay, and a late response
+     * could still write data and completions into memory the guest has
+     * freed.
      */
     uint8_t px[VFIO_USER_PCI_CAP_EXP_SIZEOF];
 
@@ -594,7 +602,6 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx)
     px[PCI_CAP_LIST_ID] = PCI_CAP_ID_EXP;
     ernic_put_le16(px + PCI_EXP_FLAGS,
                    (uint16_t)(2U | ((unsigned)PCI_EXP_TYPE_ENDPOINT << 4)));
-    ernic_put_le32(px + PCI_EXP_DEVCAP, PCI_EXP_DEVCAP_FLR);
     ssize_t px_off = vfu_pci_add_capability(vfu_ctx, 0, 0, px);
     if (px_off < 0) {
         warn_errno("vfu_pci_add_capability() failed for PCI Express");

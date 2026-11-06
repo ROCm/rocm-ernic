@@ -19,11 +19,9 @@
 ### Added
 
 * The device has a PCI Express capability, as every PCI Express function
-  must, and it advertises function-level reset (FLR). A guest can now reset
-  the function with an FLR, which the server treats as it does a device
-  reset: it counts it in the stats file and clears the CMB. The capability
-  describes no link, so the guest still reports the link speed and width as
-  unknown.
+  must. It describes no link, so the guest still reports the link speed and
+  width as unknown, and it doesn't advertise function-level reset (FLR), so
+  a guest's attempt at one is refused; see Limitations.
 
 * **Express doorbell (CMB / EXPDB) end-to-end support.** The server exposes
   an 8 MB Controller Memory Buffer on BAR4 and responds to `DISCOVER_CMB`
@@ -1663,6 +1661,10 @@
 ### Limitations
 
 * rocm-ernic supports only 64-bit Linux; 32-bit systems aren't supported.
+* The device doesn't support function-level reset (FLR), and doesn't
+  advertise it. A reset of the device clears the CMB, but leaves its RDMA
+  queues, memory registrations and work in flight in place, which an FLR
+  must not.
 * A WQE written into the CMB (BAR4) is dispatched as soon as the write ending
   its slot arrives, so the guest must write each WQE front to back. One that
   writes a slot's last bytes first, for example storing the WQE's first word
