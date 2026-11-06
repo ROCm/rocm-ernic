@@ -47,7 +47,7 @@ let
     { name = "ionic_stats";
       extra = [ "src/ernic_dma.c" "src/ionic/ionic_adminq.c"
                 "src/ionic/ionic_fault.c" ];
-      cflags = "-Itests -I${libvfioUser}/include";
+      cflags = "-Itests -isystem ${libvfioUser}/include";
       seeds = true; }
     { name = "profile_parse";
       extra = [ "src/ionic/ionic_profile.c" "src/ionic/ionic_profiles.c" ];
@@ -61,7 +61,7 @@ let
     { name = "adminq_cmb";
       extra = [ "src/ernic_dma.c" "src/ionic/ionic_adminq.c"
                 "src/ionic/ionic_fault.c" ];
-      cflags = "-Itests -I${libvfioUser}/include";
+      cflags = "-Itests -isystem ${libvfioUser}/include";
       seeds = true; }
   ];
 
