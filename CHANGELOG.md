@@ -41,7 +41,9 @@
   `ernic_dma_read()` cannot map them). The CMB is zeroed on every device
   reset, including the driver's `IONIC_CMD_RESET`, and whenever a client
   disconnects, so what one guest, boot, or driver load wrote there can't be
-  read by the next.
+  read by the next. A QP's rings in the CMB are zeroed when it's destroyed,
+  since the driver maps them into the process that created the QP and gives
+  their pages to the next QP as they are.
 
 * `--backend nvmeof:kv=1[,keys=...,maxval=...]` serves the namespace with the
   NVM Express Key Value command set instead of the block one: Store (01h),

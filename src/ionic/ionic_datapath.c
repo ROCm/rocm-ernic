@@ -567,6 +567,36 @@ static void sq_busy_set(struct ionic_datapath *dp, struct ionic_qp_ring *q)
     q->sq_busy = true;
 }
 
+/*
+ * Whether the @len bytes @rel past @base, the offset of a ring in the CMB, lie
+ * wholly inside the CMB. Each comparison comes before the subtraction it
+ * guards, so nothing wraps: base + rel + len > size, the obvious test, comes
+ * back round to a small sum for a base just short of 2^64 and passes it.
+ */
+static bool dp_cmb_span_ok(uint64_t base, uint64_t rel, uint64_t len)
+{
+    return base <= IONIC_BAR4_CMB_SIZE && rel <= IONIC_BAR4_CMB_SIZE - base &&
+           len <= IONIC_BAR4_CMB_SIZE - base - rel;
+}
+
+/*
+ * Zero a ring in the CMB, of @depth entries of 2^@stride_log2 bytes at
+ * @offset. The driver maps a QP's CMB ring into the process that created
+ * it, and gives its pages to the next QP as they are once it's destroyed,
+ * so what one process left in its ring would be readable by whichever
+ * process got them next. A ring outside the CMB, which CREATE_QP refuses,
+ * is left alone.
+ */
+static void dp_cmb_clear_ring(struct ionic_datapath *dp, uint64_t offset,
+                              uint32_t depth, uint8_t stride_log2)
+{
+    uint64_t span = (uint64_t)depth << stride_log2;
+
+    if (dp->cmb_buf && dp_cmb_span_ok(offset, 0, span)) {
+        memset(dp->cmb_buf + offset, 0, span);
+    }
+}
+
 /* Defined with the other pending_* helpers, below the transmit path. */
 static uint32_t pending_cancel_qp(struct ionic_datapath *dp, uint32_t qp_id);
 
@@ -716,10 +746,32 @@ void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id)
      * qp_id next isn't sent this one's completions.
      */
     pending_cancel_qp(dp, qp_id);
-    sq_stall_clear(dp, &dp->qp[qp_id]);
-    ionic_dp_buf_release(&dp->qp[qp_id].sq_buf);
-    ionic_dp_buf_release(&dp->qp[qp_id].rq_buf);
-    dp->qp[qp_id].valid = false;
+
+    struct ionic_qp_ring *q = &dp->qp[qp_id];
+
+    sq_stall_clear(dp, q);
+    ionic_dp_buf_release(&q->sq_buf);
+    ionic_dp_buf_release(&q->rq_buf);
+
+    /*
+     * Only a QP that has rings: DESTROY_QP may name one that is gone or
+     * never was, whose rings, if any, are now another QP's. The placement
+     * is cleared with them, so a stale one can never zero another QP's
+     * ring later. A QP bound to an SRQ has no receive ring of its own.
+     */
+    if (q->valid && q->sq_cmb) {
+        dp_cmb_clear_ring(dp, q->sq_cmb_buf_offset, q->sq_depth,
+                          q->sq_stride_log2);
+    }
+    if (q->valid && q->rq_cmb && !q->has_srq) {
+        dp_cmb_clear_ring(dp, q->rq_cmb_buf_offset, q->rq_depth,
+                          q->rq_stride_log2);
+    }
+    q->sq_cmb = false;
+    q->rq_cmb = false;
+    q->sq_cmb_buf_offset = 0;
+    q->rq_cmb_buf_offset = 0;
+    q->valid = false;
 }
 
 /* Callers name an SRQ by the qid the guest sees, which is
@@ -1882,18 +1934,6 @@ static void dp_src_mac(const struct ionic_datapath *dp, uint32_t src_qp_id,
     mac[0] = 0x02; /* locally administered */
     mac[1] = 0x00;
     ernic_put_be32(mac + 2, src_qp_id);
-}
-
-/*
- * Whether the @len bytes @rel past @base, the offset of a ring in the CMB, lie
- * wholly inside the CMB. Each comparison comes before the subtraction it
- * guards, so nothing wraps: base + rel + len > size, the obvious test, comes
- * back round to a small sum for a base just short of 2^64 and passes it.
- */
-static bool dp_cmb_span_ok(uint64_t base, uint64_t rel, uint64_t len)
-{
-    return base <= IONIC_BAR4_CMB_SIZE && rel <= IONIC_BAR4_CMB_SIZE - base &&
-           len <= IONIC_BAR4_CMB_SIZE - base - rel;
 }
 
 /*

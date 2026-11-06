@@ -3322,6 +3322,157 @@ static void check_cmb_bounds(void)
     }
 }
 
+/*
+ * Destroying a QP zeroes its rings in the CMB. The driver maps a QP's CMB
+ * ring into the process that created it, and gives its pages to the next
+ * QP as they are, so the WQEs one process left there would otherwise be
+ * readable by the next. Only the destroyed QP's rings are zeroed: not the
+ * bytes either side of them, not a ring a QP destroyed earlier had, which
+ * is another QP's by then, and not an RQ a QP bound to an SRQ doesn't have.
+ *
+ * Each ring's bytes are set to CD_RING and the byte either side of it to
+ * CD_EDGE before the destroy.
+ */
+#define CD_SPAN ((size_t)1 << (RING_DEPTH + WQE_STRIDE))
+#define CD_OFF  (UINT64_C(64) << 10) /* page aligned, well inside */
+/* A second ring, a ring's span clear of the first */
+#define CD_OFF2 (CD_OFF + (2 * CD_SPAN))
+#define CD_RING 0xa5U
+#define CD_EDGE 0x5aU
+
+enum cd_scenario {
+    CD_SQ,    /* QP_A's SQ in the CMB, destroyed */
+    CD_RQ,    /* QP_B's RQ in the CMB, destroyed */
+    CD_RESET, /* both, at different offsets, by an RDMA reset */
+    CD_STALE, /* QP_A destroyed again once its ring is QP_B's */
+    CD_SRQ,   /* QP_B bound to an SRQ but flagged RQ_CMB, destroyed */
+};
+
+static uint8_t *cmb_at(uint64_t off)
+{
+    return g_cmb + CMB_GUARD + off;
+}
+
+/* A ring at @off holding CD_RING, between two CD_EDGE bytes */
+static void cd_fill(uint64_t off)
+{
+    memset(cmb_at(off) - 1, (int)CD_EDGE, CD_SPAN + 2);
+    memset(cmb_at(off), (int)CD_RING, CD_SPAN);
+}
+
+/* Whether all @len bytes at @p are @v */
+static bool all_are(const uint8_t *p, size_t len, uint8_t v)
+{
+    for (size_t i = 0; i < len; i++) {
+        if (p[i] != v) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* NULL if the ring at @off is zeroed and the bytes either side are not */
+static const char *cd_cleared(uint64_t off)
+{
+    if (!all_are(cmb_at(off), CD_SPAN, 0)) {
+        return "the ring wasn't zeroed";
+    }
+    if (*(cmb_at(off) - 1) != CD_EDGE || *(cmb_at(off) + CD_SPAN) != CD_EDGE) {
+        return "a byte beside the ring was zeroed";
+    }
+    return NULL;
+}
+
+/* NULL if the ring at @off still holds CD_RING */
+static const char *cd_kept(uint64_t off)
+{
+    return all_are(cmb_at(off), CD_SPAN, CD_RING) ? NULL
+                                                  : "another QP's ring was "
+                                                    "zeroed";
+}
+
+static const char *cd_run(struct ionic_datapath *dp, enum cd_scenario s)
+{
+    const char *why;
+
+    memset(g_cmb, 0, sizeof(g_cmb));
+    ionic_datapath_set_cmb(dp, g_cmb + CMB_GUARD);
+
+    switch (s) {
+    case CD_SQ:
+        ionic_datapath_set_qp_cmb(dp, QP_A, true, CD_OFF, false, 0);
+        cd_fill(CD_OFF);
+        ionic_datapath_unregister_qp(dp, QP_A);
+        return cd_cleared(CD_OFF);
+    case CD_RQ:
+        ionic_datapath_set_qp_cmb(dp, QP_B, false, 0, true, CD_OFF);
+        cd_fill(CD_OFF);
+        ionic_datapath_unregister_qp(dp, QP_B);
+        return cd_cleared(CD_OFF);
+    case CD_RESET:
+        ionic_datapath_set_qp_cmb(dp, QP_A, true, CD_OFF, false, 0);
+        ionic_datapath_set_qp_cmb(dp, QP_B, false, 0, true, CD_OFF2);
+        cd_fill(CD_OFF);
+        cd_fill(CD_OFF2);
+        ionic_datapath_reset_rdma(dp);
+        why = cd_cleared(CD_OFF);
+        return why ? why : cd_cleared(CD_OFF2);
+    case CD_STALE:
+        ionic_datapath_set_qp_cmb(dp, QP_A, true, CD_OFF, false, 0);
+        ionic_datapath_unregister_qp(dp, QP_A);
+        ionic_datapath_set_qp_cmb(dp, QP_B, false, 0, true, CD_OFF);
+        cd_fill(CD_OFF);
+        ionic_datapath_unregister_qp(dp, QP_A);
+        return cd_kept(CD_OFF);
+    case CD_SRQ:
+    default:
+        ionic_datapath_bind_qp_srq(dp, QP_B, IONIC_SRQ_QID_BASE);
+        ionic_datapath_set_qp_cmb(dp, QP_B, false, 0, true, CD_OFF);
+        cd_fill(CD_OFF);
+        ionic_datapath_unregister_qp(dp, QP_B);
+        return cd_kept(CD_OFF);
+    }
+}
+
+static void check_cmb_cleared_on_destroy(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        enum cd_scenario scenario;
+    } rows[] = {
+        {"positive", "a QP with its SQ in the CMB is destroyed",
+         "the SQ is zeroed, and nothing beside it", CD_SQ},
+        {"positive", "a QP with its RQ in the CMB is destroyed",
+         "the RQ is zeroed, and nothing beside it", CD_RQ},
+        {"positive", "an RDMA reset with two QPs' rings in the CMB",
+         "both rings are zeroed", CD_RESET},
+        {"negative",
+         "a destroyed QP is destroyed again once its CMB ring is another "
+         "QP's",
+         "the other QP's ring is kept", CD_STALE},
+        {"negative",
+         "a QP bound to an SRQ, but flagged as having its RQ in the CMB, is "
+         "destroyed",
+         "nothing is zeroed for an RQ it doesn't have", CD_SRQ},
+    };
+
+    for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
+        struct ionic_datapath *dp = setup();
+        const char *why = dp ? cd_run(dp, rows[row].scenario)
+                             : "could not create a data path";
+
+        ionic_datapath_destroy(dp);
+        printf("%s %s: %s; expected: %s\n", why ? "FAIL" : "ok  ",
+               rows[row].category, rows[row].description, rows[row].expected);
+        if (why) {
+            printf("     %s\n", why);
+            failures++;
+        }
+    }
+}
+
 int main(void)
 {
     check_wire_hdr_layout();
@@ -3335,6 +3486,7 @@ int main(void)
     check_reply_budget();
     check_unreadable_wqe();
     check_cmb_bounds();
+    check_cmb_cleared_on_destroy();
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         run_case(&cases[i]);
     }
