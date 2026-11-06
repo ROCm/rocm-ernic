@@ -19,9 +19,13 @@
 ### Added
 
 * The device has a PCI Express capability, as every PCI Express function
-  must. It describes no link, so the guest still reports the link speed and
-  width as unknown, and it doesn't advertise function-level reset (FLR), so
-  a guest's attempt at one is refused; see Limitations.
+  must. It reports a 64 GT/s (PCIe 6.0) x16 link, supporting every slower
+  speed, which the guest sees when the device sits behind a
+  `pcie-root-port`. On QEMU's root bus, where the documented command line
+  puts it, QEMU makes the device a Root Complex Integrated Endpoint, which
+  has no link, so the guest still reports the speed and width as unknown.
+  The capability doesn't advertise function-level reset (FLR), so a guest's
+  attempt at one is refused; see Limitations.
 
 * `--backend nvmeof:kv=1[,keys=...,maxval=...]` serves the namespace with the
   NVM Express Key Value command set instead of the block one: Store (01h),

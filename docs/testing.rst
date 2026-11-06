@@ -154,6 +154,10 @@ The modules under ``tests/py/ernic/`` are:
   ``tests/ionic_harness.c``
 - ``mesh.py`` -- the TCP mesh wire protocol, a fake manager,
   and a fixture that starts a manager and some workers
+- ``pci.py`` -- the config-space register offsets and fields
+  from ``linux/pci_regs.h``, which ``ernic-pci-regs``
+  (``tests/pci_regs_dump.c``) prints from the header rather
+  than the tests keeping a copy
 - ``check.py`` -- the small test runner the suites report
   through
 
@@ -214,6 +218,9 @@ To run one directly, and to vary the mesh:
 
    python3 -I tests/py/test_mesh_stress.py \
        --server build/rocm-ernic --size 5
+
+``test_vfu_client.py`` also needs the program that prints the
+config-space values, ``--pci-regs build/tests/ernic-pci-regs``.
 
 Like the shell suites, they run the server under the command
 in ``ERNIC_TEST_SERVER_WRAPPER``, so CI's valgrind leg

@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # Imported once tests/py is on sys.path: ctest runs this under python3 -I,
 # which leaves the script's directory off it.
 # pylint: disable=wrong-import-position
-from ernic import ionic, vfu
+from ernic import ionic, pci, vfu
 from ernic.check import Suite
 from ernic.server import Server, stop_and_check
 
@@ -42,18 +42,13 @@ PCI_SUBDEVICE_ID_ROCM_ERNIC = 0x5400
 BAR0_SIZE = 64 << 10
 # The ionic register window; the MSI-X table and PBA are above it.
 BAR0_REGS_SIZE = 32 << 10
-
-# Config space, from linux/pci_regs.h
-PCI_STATUS = 0x06
-PCI_STATUS_CAP_LIST = 0x10
-PCI_CAPABILITY_LIST = 0x34
-PCI_CAP_ID_EXP = 0x10
-PCI_CAP_ID_MSIX = 0x11
-# In the PCI Express capability
-PCI_EXP_DEVCAP_FLR = 0x10000000
-PCI_EXP_DEVCTL = 0x08
-PCI_EXP_DEVCTL_BCR_FLR = 0x8000
 IONIC_DEV_SIG = 0x44455649  # "DEVI"
+
+# The PCI base class of a network controller (the kernel's
+# PCI_BASE_CLASS_NETWORK, which no uapi header has)
+PCI_BASE_CLASS_NETWORK = 0x02
+# The PCI Express link's width, in lanes; it runs at 64 GT/s
+PCIE_LINK_WIDTH = 16
 
 # struct ionic_lif_info: the status block at 256, link_status at +10.
 LIF_INFO_LINK_STATUS_OFF = 256 + 10
@@ -129,51 +124,139 @@ def test_device_info(suite, client):
     )
 
 
-def find_capability(client, cap_id):
+def read_config16(client, offset):
+    """The little-endian 16-bit config-space register at @offset."""
+    return struct.unpack("<H", client.read_config(offset, 2))[0]
+
+
+def read_config32(client, offset):
+    """The little-endian 32-bit config-space register at @offset."""
+    return struct.unpack("<I", client.read_config(offset, 4))[0]
+
+
+def find_capability(client, regs, cap_id):
     """The config-space offset of capability @cap_id, or None.
 
-    Walks the list from its head at 0x34, as a guest does, so a capability
-    the list doesn't reach isn't found. The walk is bounded, since the
+    Walks the list from its head, as a guest does, so a capability the
+    list doesn't reach isn't found. The walk is bounded, since the
     standard config space has room for at most 48 capabilities.
     """
-    offset = client.read_config(PCI_CAPABILITY_LIST, 1)[0]
+    offset = client.read_config(regs.PCI_CAPABILITY_LIST, 1)[0]
     for _ in range(48):
         if offset == 0:
             return None
-        cap, nxt = client.read_config(offset, 2)
-        if cap == cap_id:
+        if client.read_config(offset + regs.PCI_CAP_LIST_ID, 1)[0] == cap_id:
             return offset
-        offset = nxt
+        offset = client.read_config(offset + regs.PCI_CAP_LIST_NEXT, 1)[0]
     return None
 
 
-def test_config_space(suite, client):
-    """The PCI identity a guest matches the driver against."""
-    cfg = client.read_config(0, 64)
-    vendor, device = struct.unpack_from("<HH", cfg, 0)
-    subvendor, subdevice = struct.unpack_from("<HH", cfg, 0x2C)
-    suite.check_eq(vendor, PCI_VENDOR_ID_PENSANDO, "vendor id")
-    suite.check_eq(device, PCI_DEVICE_ID_ROCM_ERNIC, "device id")
-    suite.check_eq(subvendor, PCI_VENDOR_ID_PENSANDO, "subsystem vendor id")
-    suite.check_eq(subdevice, PCI_SUBDEVICE_ID_ROCM_ERNIC, "subsystem device id")
-    suite.check_eq(cfg[0x0B], 0x02, "base class is network")
-    suite.check_eq(cfg[0x0E] & 0x7F, 0, "header type is a normal function")
+def check_pcie_link(suite, client, regs, px):
+    """The link in the PCI Express capability at @px: 64 GT/s, x16."""
+    lnkcap = read_config32(client, px + regs.PCI_EXP_LNKCAP)
+    suite.check_eq(
+        pci.field(lnkcap, regs.PCI_EXP_LNKCAP_SLS),
+        regs.PCI_EXP_LNKCAP_SLS_64_0GB,
+        "the maximum link speed is 64 GT/s",
+    )
+    suite.check_eq(
+        pci.field(lnkcap, regs.PCI_EXP_LNKCAP_MLW),
+        PCIE_LINK_WIDTH,
+        "the maximum link width is x16",
+    )
 
-    status = struct.unpack_from("<H", cfg, PCI_STATUS)[0]
-    suite.check(status & PCI_STATUS_CAP_LIST, "status says there is a capability list")
-    px = find_capability(client, PCI_CAP_ID_EXP)
+    # The device has no physical link to train down
+    lnksta = read_config16(client, px + regs.PCI_EXP_LNKSTA)
+    suite.check_eq(
+        pci.field(lnksta, regs.PCI_EXP_LNKSTA_CLS),
+        regs.PCI_EXP_LNKSTA_CLS_64_0GB,
+        "the current link speed is 64 GT/s",
+    )
+    suite.check_eq(
+        pci.field(lnksta, regs.PCI_EXP_LNKSTA_NLW),
+        PCIE_LINK_WIDTH,
+        "the negotiated link width is x16",
+    )
+
+    lnkcap2 = read_config32(client, px + regs.PCI_EXP_LNKCAP2)
+    every_speed = (
+        regs.PCI_EXP_LNKCAP2_SLS_2_5GB
+        | regs.PCI_EXP_LNKCAP2_SLS_5_0GB
+        | regs.PCI_EXP_LNKCAP2_SLS_8_0GB
+        | regs.PCI_EXP_LNKCAP2_SLS_16_0GB
+        | regs.PCI_EXP_LNKCAP2_SLS_32_0GB
+        | regs.PCI_EXP_LNKCAP2_SLS_64_0GB
+    )
+    suite.check_eq(
+        lnkcap2 & regs.PCI_EXP_LNKCAP2_SLS,
+        every_speed,
+        "every speed from 2.5 to 64 GT/s is supported",
+    )
+    lnkctl2 = read_config16(client, px + regs.PCI_EXP_LNKCTL2)
+    suite.check_eq(
+        pci.field(lnkctl2, regs.PCI_EXP_LNKCTL2_TLS),
+        regs.PCI_EXP_LNKCTL2_TLS_64_0GT,
+        "the target link speed is 64 GT/s",
+    )
+
+
+def test_config_space(suite, client, regs):
+    """The PCI identity a guest matches the driver against."""
+    suite.check_eq(
+        read_config16(client, regs.PCI_VENDOR_ID), PCI_VENDOR_ID_PENSANDO, "vendor id"
+    )
+    suite.check_eq(
+        read_config16(client, regs.PCI_DEVICE_ID), PCI_DEVICE_ID_ROCM_ERNIC, "device id"
+    )
+    suite.check_eq(
+        read_config16(client, regs.PCI_SUBSYSTEM_VENDOR_ID),
+        PCI_VENDOR_ID_PENSANDO,
+        "subsystem vendor id",
+    )
+    suite.check_eq(
+        read_config16(client, regs.PCI_SUBSYSTEM_ID),
+        PCI_SUBDEVICE_ID_ROCM_ERNIC,
+        "subsystem device id",
+    )
+    suite.check_eq(
+        read_config16(client, regs.PCI_CLASS_DEVICE) >> 8,
+        PCI_BASE_CLASS_NETWORK,
+        "base class is network",
+    )
+    suite.check_eq(
+        client.read_config(regs.PCI_HEADER_TYPE, 1)[0] & regs.PCI_HEADER_TYPE_MASK,
+        regs.PCI_HEADER_TYPE_NORMAL,
+        "header type is a normal function",
+    )
+
+    suite.check(
+        read_config16(client, regs.PCI_STATUS) & regs.PCI_STATUS_CAP_LIST,
+        "status says there is a capability list",
+    )
+    px = find_capability(client, regs, regs.PCI_CAP_ID_EXP)
     suite.check(px is not None, "the PCI Express capability is on the list")
     suite.check(
-        find_capability(client, PCI_CAP_ID_MSIX) is not None,
+        find_capability(client, regs, regs.PCI_CAP_ID_MSIX) is not None,
         "the MSI-X capability is on the list",
     )
-    if px is not None:
-        flags, devcap = struct.unpack("<HI", client.read_config(px + 2, 6))
-        suite.check_eq(flags & 0xF, 2, "PCI Express capability version")
-        suite.check_eq((flags >> 4) & 0xF, 0, "PCI Express device type is Endpoint")
-        suite.check_eq(
-            devcap & PCI_EXP_DEVCAP_FLR, 0, "the device doesn't advertise FLR"
-        )
+    if px is None:
+        return
+
+    flags = read_config16(client, px + regs.PCI_EXP_FLAGS)
+    suite.check_eq(
+        pci.field(flags, regs.PCI_EXP_FLAGS_VERS), 2, "PCI Express capability version"
+    )
+    suite.check_eq(
+        pci.field(flags, regs.PCI_EXP_FLAGS_TYPE),
+        regs.PCI_EXP_TYPE_ENDPOINT,
+        "PCI Express device type is Endpoint",
+    )
+    suite.check_eq(
+        read_config32(client, px + regs.PCI_EXP_DEVCAP) & regs.PCI_EXP_DEVCAP_FLR,
+        0,
+        "the device doesn't advertise FLR",
+    )
+    check_pcie_link(suite, client, regs, px)
 
 
 def test_bar_access(suite, client, server):
@@ -367,7 +450,7 @@ def read_resets(path):
     return state.group(1), int(count.group(1))
 
 
-def test_flr_refused(suite, client, stats_path):
+def test_flr_refused(suite, client, regs, stats_path):
     """A write starting an FLR, which the device doesn't advertise.
 
     Linux's pcie_flr() starts one by setting Initiate FLR in Device
@@ -375,7 +458,7 @@ def test_flr_refused(suite, client, stats_path):
     without calling the reset callback, which would rewrite the stats file
     before the write returned, counting the reset and saying it was an FLR.
     """
-    px = find_capability(client, PCI_CAP_ID_EXP)
+    px = find_capability(client, regs, regs.PCI_CAP_ID_EXP)
     if not suite.check(px is not None, "there is a PCI Express capability"):
         return
     before = read_resets(stats_path)
@@ -386,7 +469,7 @@ def test_flr_refused(suite, client, stats_path):
         suite,
         "a write starting an FLR",
         lambda: client.write_config(
-            px + PCI_EXP_DEVCTL, struct.pack("<H", PCI_EXP_DEVCTL_BCR_FLR)
+            px + regs.PCI_EXP_DEVCTL, struct.pack("<H", regs.PCI_EXP_DEVCTL_BCR_FLR)
         ),
         errno.EINVAL,
     )
@@ -483,7 +566,11 @@ def main():
     """Start a server, run the protocol tests against it, and stop it."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--server", required=True, help="path to the rocm-ernic binary")
+    parser.add_argument(
+        "--pci-regs", required=True, help="path to the ernic-pci-regs program"
+    )
     args = parser.parse_args()
+    regs = pci.load(args.pci_regs)
 
     suite = Suite("rocm-ernic vfio-user protocol tests")
     with tempfile.TemporaryDirectory(prefix="ernic-vfu-") as run_dir:
@@ -499,12 +586,12 @@ def main():
             client = vfu.VfioUserClient(server.socket_path).connect(timeout=30)
             suite.run("version negotiation", test_negotiation, client)
             suite.run("device and region info", test_device_info, client)
-            suite.run("PCI configuration space", test_config_space, client)
+            suite.run("PCI configuration space", test_config_space, client, regs)
             suite.run("BAR access and its bounds", test_bar_access, client, server)
             suite.run("DMA mapping", test_dma, client)
             suite.run("interrupts", test_irqs, client)
             suite.run("stats file", test_stats_file, stats_path)
-            suite.run("FLR refused", test_flr_refused, client, stats_path)
+            suite.run("FLR refused", test_flr_refused, client, regs, stats_path)
             suite.run(
                 "reset and reconnect",
                 test_reset_and_reconnect,

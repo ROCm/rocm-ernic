@@ -528,6 +528,20 @@ static int device_init(rocm_ernic_dev_t *dev)
     return 0;
 }
 
+/* The PCI Express link's width, in lanes */
+#define PCIE_LINK_WIDTH 16U
+
+/**
+ * @p value placed in the register field @p mask selects, shifted up to the
+ * mask's lowest set bit, as the kernel's FIELD_PREP() does.
+ * @param mask The field, e.g. PCI_EXP_LNKCAP_MLW
+ * @param value What to put in it
+ */
+static uint32_t pci_field(uint32_t mask, uint32_t value)
+{
+    return (value * (mask & (~mask + 1U))) & mask;
+}
+
 /**
  * Setup PCI configuration for the emulated ionic device.  Returns 0, or -1
  * after saying why.
@@ -556,10 +570,17 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx)
 
     /*
      * The PCI Express capability, which every PCI Express function has.
-     * It describes no link, which the device doesn't have, so the guest
-     * reports its speed and width as unknown. libvfio-user links each
-     * capability into the list as it is added, so this one is first.
-     * Version 2 is the full layout, VFIO_USER_PCI_CAP_EXP_SIZEOF bytes.
+     * libvfio-user links each capability into the list as it is added, so
+     * this one is first. Version 2 is the full layout,
+     * VFIO_USER_PCI_CAP_EXP_SIZEOF bytes.
+     *
+     * The link is 64 GT/s (PCIe 6.0) x16, and the device supports every
+     * slower speed. It has no physical link to train, so Link Status
+     * reports the same speed and width as Link Capabilities. QEMU passes
+     * these through to the guest when the device sits behind a PCI Express
+     * root port; on the root bus, it makes the device a Root Complex
+     * Integrated Endpoint, which has no link, and the guest reports the
+     * speed and width as unknown.
      *
      * Its Device Capabilities are zero, so it doesn't advertise
      * function-level reset, and libvfio-user refuses a write starting one.
@@ -572,8 +593,22 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx)
 
     memset(px, 0, sizeof(px));
     px[PCI_CAP_LIST_ID] = PCI_CAP_ID_EXP;
-    ernic_put_le16(px + PCI_EXP_FLAGS,
-                   (uint16_t)(2U | ((unsigned)PCI_EXP_TYPE_ENDPOINT << 4)));
+    ernic_put_le16(
+        px + PCI_EXP_FLAGS,
+        (uint16_t)(pci_field(PCI_EXP_FLAGS_VERS, 2U) |
+                   pci_field(PCI_EXP_FLAGS_TYPE, PCI_EXP_TYPE_ENDPOINT)));
+    ernic_put_le32(px + PCI_EXP_LNKCAP,
+                   PCI_EXP_LNKCAP_SLS_64_0GB |
+                       pci_field(PCI_EXP_LNKCAP_MLW, PCIE_LINK_WIDTH));
+    ernic_put_le16(px + PCI_EXP_LNKSTA,
+                   (uint16_t)(PCI_EXP_LNKSTA_CLS_64_0GB |
+                              pci_field(PCI_EXP_LNKSTA_NLW, PCIE_LINK_WIDTH)));
+    ernic_put_le32(px + PCI_EXP_LNKCAP2,
+                   PCI_EXP_LNKCAP2_SLS_2_5GB | PCI_EXP_LNKCAP2_SLS_5_0GB |
+                       PCI_EXP_LNKCAP2_SLS_8_0GB | PCI_EXP_LNKCAP2_SLS_16_0GB |
+                       PCI_EXP_LNKCAP2_SLS_32_0GB | PCI_EXP_LNKCAP2_SLS_64_0GB);
+    /* Target Link Speed resets to the highest the device supports */
+    ernic_put_le16(px + PCI_EXP_LNKCTL2, PCI_EXP_LNKCTL2_TLS_64_0GT);
     ssize_t px_off = vfu_pci_add_capability(vfu_ctx, 0, 0, px);
     if (px_off < 0) {
         warn_errno("vfu_pci_add_capability() failed for PCI Express");
