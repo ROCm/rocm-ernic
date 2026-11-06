@@ -897,18 +897,19 @@ class IonicDriver(EthQueueMixin):
 
     # ---- work requests and completions ----------------------------------
 
-    def post_send(self, qp, op, *, expdb=False, **kwargs):
+    def post_send(self, qp, op, *, expdb=False, before_last=None, **kwargs):
         """Post one send WQE and ring the SQ doorbell.
 
         With @expdb, the send ring must be in the CMB, and the WQE is
-        posted by the express doorbell alone, as _write_wqe() says.
+        posted by the express doorbell alone, as _write_wqe() says, which
+        calls @before_last, if given, before the WQE's last write.
 
         Keyword arguments, all optional: flags, imm_be, key, ah_id,
         dest_qpn, qkey, remote_va, rkey, length, swap_add, compare, sge,
         inline_data, mr.
         """
         wqe = self._build_send_wqe(qp, op, kwargs)
-        self._write_wqe(qp.sq, wqe, expdb)
+        self._write_wqe(qp.sq, wqe, expdb, before_last)
         qp.sq.prod += 1
         if not expdb:
             self.doorbell(QTYPE_SQ, qp.id, 0, qp.sq.prod % qp.sq.depth)
@@ -1007,13 +1008,15 @@ class IonicDriver(EthQueueMixin):
             self.doorbell(QTYPE_RQ, qid, 0, ring.prod % ring.depth)
         return wqe_id
 
-    def _write_wqe(self, ring, wqe, expdb=False):
+    def _write_wqe(self, ring, wqe, expdb=False, before_last=None):
         """Write @wqe at @ring's producer index, in the CMB if it is there.
 
         With @expdb, @ring must be in the CMB, and @wqe, which fills its
         slot, is written front to back in MMIO_WRITE_MAX pieces, as QEMU
         delivers a guest's stores. The caller rings no doorbell: the
-        write that ends the slot is the express doorbell.
+        write that ends the slot is the express doorbell. @before_last,
+        if given, is called before that write, by when the device has
+        handled the others: it replies to a write once it has.
         """
         if expdb and not ring.cmb:
             raise ValueError("the express doorbell needs a ring in the CMB")
@@ -1022,6 +1025,8 @@ class IonicDriver(EthQueueMixin):
             return
         step = MMIO_WRITE_MAX if expdb else len(wqe)
         for off in range(0, len(wqe), step):
+            if before_last and off + step >= len(wqe):
+                before_last()
             self.client.write_region(
                 VFU_PCI_DEV_BAR4_REGION_IDX,
                 ring.slot(ring.prod) + off,

@@ -609,6 +609,13 @@ def test_expdb(suite, fix):
     a WQE's slot posts it. A device that waited for one 64-byte write
     never saw one, and nothing completed. One more round than the rings
     are deep takes both past their last slot and round again.
+
+    Nor may a SEND go before the write ending its slot. A local SEND to
+    a posted receive completes while the device handles the write that
+    posts it, so had an earlier write posted it, its completions would
+    already be on the CQ before the last write. A device that took the
+    first write into a slot's last 64 bytes as the doorbell sent the
+    WQE before the rest of it was written.
     """
     cq_h = fix.driver.create_cq(7)
     sender = fix.driver.create_qp(
@@ -621,17 +628,29 @@ def test_expdb(suite, fix):
     fix.driver.connect_qp(sender, receiver.id, hdr)
     fix.driver.connect_qp(receiver, sender.id, hdr)
 
+    early = []
+
+    def poll_early():
+        early.append(fix.driver.poll_cq(cq_h))
+
     for n in range(sender.sq.depth + 1):
         payload = f"posted by the express doorbell, round {n}".encode()
         fix.driver.mr_write(fix.mr_a, VA_A, payload)
         fix.driver.mr_write(fix.mr_b, VA_B, b"\0" * len(payload))
         fix.driver.post_recv(receiver, [ionic.Sge(VA_B, MR_LEN, MR_B)], expdb=True)
+        early.clear()
         fix.driver.post_send(
             sender,
             ionic.OP_SEND,
             expdb=True,
+            before_last=poll_early,
             flags=ionic.WQE_SIGNALLED,
             sge=[ionic.Sge(VA_A, len(payload), MR_A)],
+        )
+        suite.check_eq(
+            early,
+            [None],
+            f"round {n}: completions before the write ending the SEND's slot",
         )
         cqes = [fix.driver.wait_cq(cq_h), fix.driver.wait_cq(cq_h)]
         recv = [c for c in cqes if c.type == ionic.CQE_TYPE_RECV]
