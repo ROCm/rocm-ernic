@@ -586,6 +586,13 @@ static bool dp_cmb_span_ok(uint64_t base, uint64_t rel, uint64_t len)
  * so what one process left in its ring would be readable by whichever
  * process got them next. A ring outside the CMB, which CREATE_QP refuses,
  * is left alone.
+ *
+ * Only the ring is zeroed. A ring smaller than a guest page has the rest
+ * of its page to itself, and the process can write there, but the driver
+ * and provider put nothing outside the ring's slots, so anything there was
+ * put there on purpose. Zeroing it would mean guessing the guest's page
+ * size and making sure no other ring shares the page, since CREATE_QP
+ * doesn't require a ring to be page-aligned.
  */
 static void dp_cmb_clear_ring(struct ionic_datapath *dp, uint64_t offset,
                               uint32_t depth, uint8_t stride_log2)
