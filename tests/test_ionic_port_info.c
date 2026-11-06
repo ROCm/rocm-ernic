@@ -148,10 +148,12 @@ void ionic_datapath_set_cmb(struct ionic_datapath *dp, uint8_t *cmb_buf)
     (void)dp;
     (void)cmb_buf;
 }
-void ionic_datapath_expdb_write(struct ionic_datapath *dp, uint64_t cmb_offset)
+void ionic_datapath_expdb_write(struct ionic_datapath *dp, uint64_t cmb_offset,
+                                size_t len)
 {
     (void)dp;
     (void)cmb_offset;
+    (void)len;
 }
 
 /* The emulator copies these into the LIF statistics block; this test

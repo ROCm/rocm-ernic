@@ -88,7 +88,10 @@ upstream driver expects:
        (type 4), each 128 × 64 KiB pages.  ``Q_IDENTIFY`` for TXQ
        and RXQ sets ``IONIC_QIDENT_F_EXPDB`` so the driver may
        request express-doorbell QPs that write WQEs directly into
-       this memory instead of ringing a separate doorbell.
+       this memory instead of ringing a separate doorbell.  The
+       write that ends a WQE's slot posts it, whatever its size,
+       since QEMU delivers the guest's stores at most 8 bytes at
+       a time, so the guest must write each WQE front to back.
 
 The MSI-X table has room for 128 vectors; the device
 advertises the profile's ``queues.intr_vectors`` of them (32

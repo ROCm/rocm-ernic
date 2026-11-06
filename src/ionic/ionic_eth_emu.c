@@ -553,15 +553,14 @@ ssize_t ionic_eth_emu_bar4_access(struct ionic_eth_emu *emu, char *buf,
     memcpy(emu->cmb_buf + offset, buf, count);
 
     /*
-     * Each MOVDIR64B write is exactly 64 bytes and naturally aligned.
-     * Check whether the write completes a WQE slot and trigger dispatch if
-     * so.  Pass the offset of the last byte written (offset + count - 64 is
-     * the start of the last 64-byte chunk; we pass offset + count - 64 as
-     * the trigger offset for ionic_datapath_expdb_write).
+     * Every write goes to the express doorbell, whatever its size: under
+     * QEMU a guest's 64-byte store arrives as writes of at most 8 bytes, and
+     * the one that ends a WQE's slot posts it. See
+     * ionic_datapath_expdb_write(), and why the guest must write a WQE front
+     * to back.
      */
-    if (emu->dp && count >= 64U && (count % 64U) == 0U) {
-        uint64_t last_chunk = (uint64_t)offset + count - 64U;
-        ionic_datapath_expdb_write(emu->dp, last_chunk);
+    if (emu->dp) {
+        ionic_datapath_expdb_write(emu->dp, (uint64_t)offset, count);
     }
 
     return (ssize_t)count;

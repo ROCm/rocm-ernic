@@ -702,9 +702,9 @@ static void sq_doorbell(struct ionic_datapath *dp, uint32_t qp_id)
                                 (uint64_t)(qp_id >> 8) << 32);
 }
 
-/* Write @w into @qp_id's next SQ slot and ring the SQ doorbell for it. */
-static void post_send(struct ionic_datapath *dp, uint32_t qp_id,
-                      const struct wqe *w)
+/* Write @w into @qp_id's next SQ slot, without ringing its doorbell. */
+static void write_send(struct ionic_datapath *dp, uint32_t qp_id,
+                       const struct wqe *w)
 {
     struct ionic_qp_ring *q = &dp->qp[qp_id];
     uint32_t slot = g_sq_slot[qp_id]++ % q->sq_depth;
@@ -730,6 +730,13 @@ static void post_send(struct ionic_datapath *dp, uint32_t qp_id,
         ernic_put_be32(e + WQE_PLD_OFF + 8, w->len);
         ernic_put_be32(e + WQE_PLD_OFF + 12, w->lkey);
     }
+}
+
+/* Write @w into @qp_id's next SQ slot and ring the SQ doorbell for it. */
+static void post_send(struct ionic_datapath *dp, uint32_t qp_id,
+                      const struct wqe *w)
+{
+    write_send(dp, qp_id, w);
     sq_doorbell(dp, qp_id);
 }
 
@@ -3473,6 +3480,92 @@ static void check_cmb_cleared_on_destroy(void)
     }
 }
 
+/*
+ * The express doorbell: with no SQ doorbell rung, a write into the CMB that
+ * ends a WQE's slot posts it. Under QEMU a guest's 64-byte store arrives as
+ * eight writes of 8 bytes, so it's where a write ends that counts, not its
+ * size: a device waiting for one 64-byte write never ran the WQE, and one
+ * taking the first write into a slot's last 64 bytes ran it before the rest
+ * was written. Each row writes QP_A's WRITE into its SQ in the CMB, then
+ * reports writes of its slot to the data path.
+ */
+#define EX_OFF CD_OFF
+
+enum ex_scenario {
+    EX_PIECES, /* the slot in 8-byte writes, in order */
+    EX_WHOLE,  /* the slot in one write */
+    EX_WRAPS,  /* one write whose end wraps 2^64 to the slot's end */
+};
+
+/* Whether QP_A's WRITE has landed */
+static bool write_landed(void)
+{
+    return memcmp(g_mem + MR_GPA, g_mem + SRC_GPA, WRITE_OK.len) == 0;
+}
+
+static const char *ex_run(struct ionic_datapath *dp, enum ex_scenario s)
+{
+    const uint64_t slot_len = UINT64_C(1) << WQE_STRIDE;
+    const uint64_t piece = s == EX_PIECES ? 8U : slot_len;
+
+    memset(g_cmb, 0, sizeof(g_cmb));
+    ionic_datapath_set_cmb(dp, g_cmb + CMB_GUARD);
+    ionic_datapath_set_qp_cmb(dp, QP_A, true, EX_OFF, false, 0);
+    write_send(dp, QP_A, &WRITE_OK);
+
+    if (s == EX_WRAPS) {
+        ionic_datapath_expdb_write(dp, UINT64_MAX - 63U, (size_t)EX_OFF + 128U);
+        return write_landed() ? "the WRITE ran" : NULL;
+    }
+    for (uint64_t off = 0; off < slot_len; off += piece) {
+        if (write_landed()) {
+            return "the WRITE ran before the write ending its slot";
+        }
+        ionic_datapath_expdb_write(dp, EX_OFF + off, (size_t)piece);
+    }
+    if (!write_landed()) {
+        return "the WRITE didn't run";
+    }
+    return cq_has_error(dp) ? "the WRITE completed in error" : NULL;
+}
+
+static void check_cmb_expdb(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        enum ex_scenario scenario;
+    } rows[] = {
+        {"positive",
+         "a WRITE in an SQ in the CMB, its slot written in 8-byte pieces, "
+         "as QEMU delivers a 64-byte store, and no doorbell rung",
+         "it runs on the piece ending the slot, and not before", EX_PIECES},
+        {"positive",
+         "a WRITE in an SQ in the CMB, its slot written in one write, and no "
+         "doorbell rung",
+         "it runs", EX_WHOLE},
+        {"negative",
+         "a write into the CMB whose offset plus its length wraps 2^64 to the "
+         "end of an SQ's slot",
+         "nothing runs", EX_WRAPS},
+    };
+
+    for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
+        struct ionic_datapath *dp = setup();
+        const char *why = dp ? ex_run(dp, rows[row].scenario)
+                             : "could not create a data path";
+
+        ionic_datapath_destroy(dp);
+        printf("%s %s: %s; expected: %s\n", why ? "FAIL" : "ok  ",
+               rows[row].category, rows[row].description, rows[row].expected);
+        if (why) {
+            printf("     %s\n", why);
+            failures++;
+        }
+    }
+}
+
 int main(void)
 {
     check_wire_hdr_layout();
@@ -3487,6 +3580,7 @@ int main(void)
     check_unreadable_wqe();
     check_cmb_bounds();
     check_cmb_cleared_on_destroy();
+    check_cmb_expdb();
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         run_case(&cases[i]);
     }

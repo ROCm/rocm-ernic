@@ -8,6 +8,7 @@
 #ifndef IONIC_DATAPATH_H
 #define IONIC_DATAPATH_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <vfio-user/libvfio-user.h>
@@ -359,12 +360,17 @@ void ionic_datapath_set_qp_cmb(struct ionic_datapath *dp, uint32_t qp_id,
                                uint64_t rq_cmb_offset);
 
 /**
- * Called by ionic_eth_emu_bar4_access() on every 64-byte write into the CMB.
- * Detects the last write of an EXPDB512 slot and dispatches the WQE.
+ * Called by ionic_eth_emu_bar4_access() for every write into the CMB, once
+ * its bytes are in the CMB buffer. A write that ends at the end of a slot of
+ * a CMB ring posts that slot's WQE, whatever its size: the express doorbell.
+ * The WQE is taken to be complete then, so the guest must write it front to
+ * back.
  *
  * @param cmb_offset byte offset within the 8 MB CMB buffer of the write's start
+ * @param len        the write's length in bytes
  */
-void ionic_datapath_expdb_write(struct ionic_datapath *dp, uint64_t cmb_offset);
+void ionic_datapath_expdb_write(struct ionic_datapath *dp, uint64_t cmb_offset,
+                                size_t len);
 
 /*
  * Drain messages that arrived from peer instances and retire work requests

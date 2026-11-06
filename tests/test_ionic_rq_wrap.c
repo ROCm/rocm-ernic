@@ -543,11 +543,10 @@ static void rq_in_cmb(struct ionic_datapath *dp, uint32_t depth)
     dp->qp[RQ_QP_ID].rq_cmb_buf_offset = 0;
 }
 
-/* The express doorbell for @slot: the write of its last 64 bytes, which
- * with a 64-byte stride is the whole WQE */
+/* The express doorbell for @slot: the write of the whole 64-byte WQE */
 static void rq_expdb(struct ionic_datapath *dp, uint32_t slot)
 {
-    ionic_datapath_expdb_write(dp, (uint64_t)slot * 64U);
+    ionic_datapath_expdb_write(dp, (uint64_t)slot * 64U, 64);
 }
 
 /* The same lap test_rq_survives_the_wrap() makes, posted through BAR4 */
@@ -606,6 +605,46 @@ static void test_rq_expdb_past_16_bits(void)
     rq_expdb(dp, slot);
     check(qp_outstanding(dp) == slot + 1,
           "CMB RQ deeper than 2^16 counts a post past slot 65535");
+}
+
+/*
+ * Under QEMU a guest's 64-byte store into BAR4 arrives as eight writes of 8
+ * bytes, and the one that ends the slot is the express doorbell. A device
+ * that waited for a single 64-byte write never saw one, and one that took
+ * the first write of a slot's last 64 bytes posted the WQE before the rest
+ * of it was written.
+ */
+static void test_rq_expdb_in_pieces(void)
+{
+    struct ionic_datapath *dp = dp_with_recv_rings();
+    const uint64_t at = UINT64_C(3) * 64U;
+    bool early = false;
+
+    rq_in_cmb(dp, RQ_DEPTH);
+    for (uint64_t off = 0; off < 64U; off += 8U) {
+        if (qp_outstanding(dp) != 0) {
+            early = true;
+        }
+        ionic_datapath_expdb_write(dp, at + off, 8);
+    }
+    check(!early, "CMB RQ posts nothing before the write ending the slot");
+    check(qp_outstanding(dp) == 4,
+          "CMB RQ posts through slot 3 on the 8-byte write ending it");
+}
+
+/*
+ * The write's end is checked against the CMB before anything is computed
+ * from it: a write starting 64 bytes short of 2^64 and 128 long ends, if
+ * the sum wraps, at the end of slot 0.
+ */
+static void test_rq_expdb_end_wraps(void)
+{
+    struct ionic_datapath *dp = dp_with_recv_rings();
+
+    rq_in_cmb(dp, RQ_DEPTH);
+    ionic_datapath_expdb_write(dp, UINT64_MAX - 63U, 128);
+    check(qp_outstanding(dp) == 0,
+          "CMB RQ posts nothing for a write whose end wraps 2^64");
 }
 
 /*
@@ -868,6 +907,8 @@ int main(void)
     test_rq_expdb_survives_the_wrap();
     test_rq_expdb_survives_many_wraps();
     test_rq_expdb_past_16_bits();
+    test_rq_expdb_in_pieces();
+    test_rq_expdb_end_wraps();
 
     if (g_failures) {
         printf("\n%d check(s) failed\n", g_failures);

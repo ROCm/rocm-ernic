@@ -50,9 +50,9 @@
  * higher indices via mmap.
  *
  * BAR4 (PCI BAR4+5, 64-bit): Controller Memory Buffer (CMB), 8 MB.  The
- * guest driver maps this region and writes WQEs directly into it with
- * MOVDIR64B; the last 64-byte write of a multi-stride WQE triggers dispatch
- * (express doorbell, no separate doorbell ring needed).
+ * guest driver maps this region and writes WQEs directly into it; the write
+ * that ends a WQE's slot, of whatever size, triggers dispatch (express
+ * doorbell, no separate doorbell ring needed).
  * ---------------------------------------------------------------------------
  */
 /* The register window's blocks */

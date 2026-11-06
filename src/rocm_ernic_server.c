@@ -314,10 +314,11 @@ static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
 /*
  * BAR4 (CMB) access callback.
  *
- * The guest writes WQEs directly into the CMB via MOVDIR64B; each aligned
- * 64-byte write is one stride.  Reads are not part of the expdb protocol
+ * The guest writes WQEs directly into the CMB, and QEMU delivers its stores
+ * at most 8 bytes at a time.  Reads are not part of the expdb protocol
  * but libvfio-user may deliver them.  Delegate to the eth_emu layer which
- * holds the shadow buffer and triggers WQE dispatch on completion.
+ * holds the shadow buffer and posts a WQE once the write ending its slot
+ * arrives.
  */
 static ssize_t bar4_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
                            loff_t offset, bool is_write)

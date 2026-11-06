@@ -173,6 +173,10 @@ WQE_PLD_OFF = 32
 PAGE_SIZE = 4096
 GRH_SIZE = 40
 
+# The most QEMU passes on from one guest store into a BAR that isn't
+# mmapped: KVM's MMIO exit carries 8 bytes, however wide the store
+MMIO_WRITE_MAX = 8
+
 # SRQ ids start above the QP id space, and have to: a qtype-7 doorbell
 # carries either a QP id or an SRQ id and the device tells them apart by
 # the number alone (IONIC_SRQ_QID_BASE in src/ionic/ionic_datapath.h).
@@ -893,17 +897,21 @@ class IonicDriver(EthQueueMixin):
 
     # ---- work requests and completions ----------------------------------
 
-    def post_send(self, qp, op, **kwargs):
+    def post_send(self, qp, op, *, expdb=False, **kwargs):
         """Post one send WQE and ring the SQ doorbell.
+
+        With @expdb, the send ring must be in the CMB, and the WQE is
+        posted by the express doorbell alone, as _write_wqe() says.
 
         Keyword arguments, all optional: flags, imm_be, key, ah_id,
         dest_qpn, qkey, remote_va, rkey, length, swap_add, compare, sge,
         inline_data, mr.
         """
         wqe = self._build_send_wqe(qp, op, kwargs)
-        self._write_wqe(qp.sq, wqe)
+        self._write_wqe(qp.sq, wqe, expdb)
         qp.sq.prod += 1
-        self.doorbell(QTYPE_SQ, qp.id, 0, qp.sq.prod % qp.sq.depth)
+        if not expdb:
+            self.doorbell(QTYPE_SQ, qp.id, 0, qp.sq.prod % qp.sq.depth)
         return struct.unpack_from("<Q", wqe, 0)[0]
 
     # One WQE layout with a branch per opcode class; splitting it up would
@@ -971,15 +979,19 @@ class IonicDriver(EthQueueMixin):
                 _put_sges(wqe, sges)
         return bytes(wqe)
 
-    def post_recv(self, qp, sges):
-        """Post one receive on a QP's own receive ring."""
-        return self._post_recv(qp.rq, qp.id, qp, sges)
+    def post_recv(self, qp, sges, *, expdb=False):
+        """Post one receive on a QP's own receive ring.
+
+        With @expdb, the receive ring must be in the CMB, and the WQE is
+        posted by the express doorbell alone, as _write_wqe() says.
+        """
+        return self._post_recv(qp.rq, qp.id, qp, sges, expdb=expdb)
 
     def post_srq_recv(self, srq, sges):
         """Post one receive on a shared receive queue."""
         return self._post_recv(srq.ring, srq.id, srq, sges)
 
-    def _post_recv(self, ring, qid, owner, sges):
+    def _post_recv(self, ring, qid, owner, sges, *, expdb=False):
         stride = 1 << WQE_STRIDE_LOG2
         if len(sges) > (stride - WQE_PLD_OFF) // 16:
             raise ValueError("receive WQE has too many SGEs")
@@ -989,19 +1001,32 @@ class IonicDriver(EthQueueMixin):
         struct.pack_into("<Q", wqe, 0, wqe_id)
         wqe[9] = len(sges)
         _put_sges(wqe, sges)
-        self._write_wqe(ring, bytes(wqe))
+        self._write_wqe(ring, bytes(wqe), expdb)
         ring.prod += 1
-        self.doorbell(QTYPE_RQ, qid, 0, ring.prod % ring.depth)
+        if not expdb:
+            self.doorbell(QTYPE_RQ, qid, 0, ring.prod % ring.depth)
         return wqe_id
 
-    def _write_wqe(self, ring, wqe):
-        """Write @wqe at @ring's producer index, in the CMB if it is there."""
-        if ring.cmb:
-            self.client.write_region(
-                VFU_PCI_DEV_BAR4_REGION_IDX, ring.slot(ring.prod), wqe
-            )
-        else:
+    def _write_wqe(self, ring, wqe, expdb=False):
+        """Write @wqe at @ring's producer index, in the CMB if it is there.
+
+        With @expdb, @ring must be in the CMB, and @wqe, which fills its
+        slot, is written front to back in MMIO_WRITE_MAX pieces, as QEMU
+        delivers a guest's stores. The caller rings no doorbell: the
+        write that ends the slot is the express doorbell.
+        """
+        if expdb and not ring.cmb:
+            raise ValueError("the express doorbell needs a ring in the CMB")
+        if not ring.cmb:
             self.mem.write(ring.slot(ring.prod), wqe)
+            return
+        step = MMIO_WRITE_MAX if expdb else len(wqe)
+        for off in range(0, len(wqe), step):
+            self.client.write_region(
+                VFU_PCI_DEV_BAR4_REGION_IDX,
+                ring.slot(ring.prod) + off,
+                wqe[off : off + step],
+            )
 
     def poll_cq(self, cq):
         """Take the next completion off @cq, or None if there is none."""

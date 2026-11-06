@@ -601,6 +601,55 @@ def test_cmb_id_reused(suite, fix):
     suite.check_eq(fix.driver.destroy_cq(cq_f), 0, "DESTROY_CQ F")
 
 
+def test_expdb(suite, fix):
+    """SENDs and receives posted by the express doorbell alone.
+
+    Each WQE is written into the CMB 8 bytes at a time, as QEMU delivers
+    a guest's stores, and no BAR2 doorbell is rung: the write that ends
+    a WQE's slot posts it. A device that waited for one 64-byte write
+    never saw one, and nothing completed. One more round than the rings
+    are deep takes both past their last slot and round again.
+    """
+    cq_h = fix.driver.create_cq(7)
+    sender = fix.driver.create_qp(
+        60, ionic.QPT_RC, cq_h, cq_h, sq_cmb=4 * ionic.PAGE_SIZE
+    )
+    receiver = fix.driver.create_qp(
+        61, ionic.QPT_RC, cq_h, cq_h, rq_cmb=5 * ionic.PAGE_SIZE
+    )
+    hdr = ionic.roce_hdr_v4(ionic.ipv4("192.168.0.1"), ionic.ipv4("192.168.0.2"))
+    fix.driver.connect_qp(sender, receiver.id, hdr)
+    fix.driver.connect_qp(receiver, sender.id, hdr)
+
+    for n in range(sender.sq.depth + 1):
+        payload = f"posted by the express doorbell, round {n}".encode()
+        fix.driver.mr_write(fix.mr_a, VA_A, payload)
+        fix.driver.mr_write(fix.mr_b, VA_B, b"\0" * len(payload))
+        fix.driver.post_recv(receiver, [ionic.Sge(VA_B, MR_LEN, MR_B)], expdb=True)
+        fix.driver.post_send(
+            sender,
+            ionic.OP_SEND,
+            expdb=True,
+            flags=ionic.WQE_SIGNALLED,
+            sge=[ionic.Sge(VA_A, len(payload), MR_A)],
+        )
+        cqes = [fix.driver.wait_cq(cq_h), fix.driver.wait_cq(cq_h)]
+        recv = [c for c in cqes if c.type == ionic.CQE_TYPE_RECV]
+        suite.check(
+            all(not c.error for c in cqes) and len(recv) == 1,
+            f"round {n}: the send and its receive completed without error",
+        )
+        suite.check_eq(
+            fix.driver.mr_read(fix.mr_b, VA_B, len(payload)),
+            payload,
+            f"round {n}: the received bytes",
+        )
+
+    suite.check_eq(fix.driver.destroy_qp(sender), 0, "DESTROY_QP sender")
+    suite.check_eq(fix.driver.destroy_qp(receiver), 0, "DESTROY_QP receiver")
+    suite.check_eq(fix.driver.destroy_cq(cq_h), 0, "DESTROY_CQ H")
+
+
 def test_teardown(suite, fix):
     """Every resource comes back."""
     suite.check_eq(fix.driver.destroy_qp(fix.qp_a), 0, "DESTROY_QP A")
@@ -627,6 +676,7 @@ TESTS = (
     ("SEND between QPs with rings in the CMB", test_send_cmb),
     ("inline payloads from a send ring in the CMB", test_inline_cmb),
     ("a QP id reused outside the CMB", test_cmb_id_reused),
+    ("work posted by the express doorbell alone", test_expdb),
     ("teardown", test_teardown),
 )
 
