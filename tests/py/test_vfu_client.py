@@ -42,6 +42,17 @@ PCI_SUBDEVICE_ID_ROCM_ERNIC = 0x5400
 BAR0_SIZE = 64 << 10
 # The ionic register window; the MSI-X table and PBA are above it.
 BAR0_REGS_SIZE = 32 << 10
+
+# Config space, from linux/pci_regs.h
+PCI_STATUS = 0x06
+PCI_STATUS_CAP_LIST = 0x10
+PCI_CAPABILITY_LIST = 0x34
+PCI_CAP_ID_EXP = 0x10
+PCI_CAP_ID_MSIX = 0x11
+# In the PCI Express capability
+PCI_EXP_DEVCAP_FLR = 0x10000000
+PCI_EXP_DEVCTL = 0x08
+PCI_EXP_DEVCTL_BCR_FLR = 0x8000
 IONIC_DEV_SIG = 0x44455649  # "DEVI"
 
 # struct ionic_lif_info: the status block at 256, link_status at +10.
@@ -55,6 +66,8 @@ LIF_STATS_WRITE_FAILED = "LIF stats write to"
 # What the server logs when it refuses a BAR0 access across the
 # register/MSI-X split.
 BAR0_STRADDLE_REFUSED = "ionic BAR0 access straddling the register/MSI-X split"
+# The stats file's connection state after a function-level reset
+FLR_CONNECTION = "connected (PCI FLR)"
 
 
 def refused(suite, what, func, *expected):
@@ -116,6 +129,24 @@ def test_device_info(suite, client):
     )
 
 
+def find_capability(client, cap_id):
+    """The config-space offset of capability @cap_id, or None.
+
+    Walks the list from its head at 0x34, as a guest does, so a capability
+    the list doesn't reach isn't found. The walk is bounded, since the
+    standard config space has room for at most 48 capabilities.
+    """
+    offset = client.read_config(PCI_CAPABILITY_LIST, 1)[0]
+    for _ in range(48):
+        if offset == 0:
+            return None
+        cap, nxt = client.read_config(offset, 2)
+        if cap == cap_id:
+            return offset
+        offset = nxt
+    return None
+
+
 def test_config_space(suite, client):
     """The PCI identity a guest matches the driver against."""
     cfg = client.read_config(0, 64)
@@ -127,6 +158,22 @@ def test_config_space(suite, client):
     suite.check_eq(subdevice, PCI_SUBDEVICE_ID_ROCM_ERNIC, "subsystem device id")
     suite.check_eq(cfg[0x0B], 0x02, "base class is network")
     suite.check_eq(cfg[0x0E] & 0x7F, 0, "header type is a normal function")
+
+    status = struct.unpack_from("<H", cfg, PCI_STATUS)[0]
+    suite.check(status & PCI_STATUS_CAP_LIST, "status says there is a capability list")
+    px = find_capability(client, PCI_CAP_ID_EXP)
+    suite.check(px is not None, "the PCI Express capability is on the list")
+    suite.check(
+        find_capability(client, PCI_CAP_ID_MSIX) is not None,
+        "the MSI-X capability is on the list",
+    )
+    if px is not None:
+        flags, devcap = struct.unpack("<HI", client.read_config(px + 2, 6))
+        suite.check_eq(flags & 0xF, 2, "PCI Express capability version")
+        suite.check_eq((flags >> 4) & 0xF, 0, "PCI Express device type is Endpoint")
+        suite.check_eq(
+            devcap & PCI_EXP_DEVCAP_FLR, 0, "the device doesn't advertise FLR"
+        )
 
 
 def test_bar_access(suite, client, server):
@@ -309,6 +356,46 @@ def test_stats_file(suite, stats_path):
     )
 
 
+def read_resets(path):
+    """The stats file's connection state and reset count, or None."""
+    with open(path, encoding="utf-8") as stats:
+        text = stats.read()
+    state = re.search(r"^  connection *: (.*)$", text, re.M)
+    count = re.search(r"^  reset_count *: ([0-9]+)$", text, re.M)
+    if not state or not count:
+        return None
+    return state.group(1), int(count.group(1))
+
+
+def test_flr_refused(suite, client, stats_path):
+    """A write starting an FLR, which the device doesn't advertise.
+
+    Linux's pcie_flr() starts one by setting Initiate FLR in Device
+    Control, written as the one word it is. libvfio-user refuses it
+    without calling the reset callback, which would rewrite the stats file
+    before the write returned, counting the reset and saying it was an FLR.
+    """
+    px = find_capability(client, PCI_CAP_ID_EXP)
+    if not suite.check(px is not None, "there is a PCI Express capability"):
+        return
+    before = read_resets(stats_path)
+    if not suite.check(before is not None, "the stats file has a reset count"):
+        return
+
+    refused(
+        suite,
+        "a write starting an FLR",
+        lambda: client.write_config(
+            px + PCI_EXP_DEVCTL, struct.pack("<H", PCI_EXP_DEVCTL_BCR_FLR)
+        ),
+        errno.EINVAL,
+    )
+    after = read_resets(stats_path)
+    if suite.check(after is not None, "the stats file still has a reset count"):
+        suite.check(after[0] != FLR_CONNECTION, "the server didn't take an FLR")
+        suite.check_eq(after[1], before[1], "the device wasn't reset")
+
+
 def test_reset_and_reconnect(suite, client, socket_path):
     """A device reset, and a second client after the first detaches."""
     client.reset()
@@ -417,6 +504,7 @@ def main():
             suite.run("DMA mapping", test_dma, client)
             suite.run("interrupts", test_irqs, client)
             suite.run("stats file", test_stats_file, stats_path)
+            suite.run("FLR refused", test_flr_refused, client, stats_path)
             suite.run(
                 "reset and reconnect",
                 test_reset_and_reconnect,

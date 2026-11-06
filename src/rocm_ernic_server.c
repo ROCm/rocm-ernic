@@ -30,6 +30,7 @@
 #include <poll.h>
 
 #include <vfio-user/libvfio-user.h>
+#include <vfio-user/pci_caps/px.h>
 #include <vfio-user/pci_defs.h>
 #include <linux/pci_regs.h>
 
@@ -40,6 +41,7 @@
  */
 #include "rocm_ernic_internal.h" // IWYU pragma: keep
 #include "rocm_ernic_compat.h"
+#include "byteorder.h"
 #include "ernic_attributes.h"
 #include "ernic_socket.h"
 #include "ernic_time.h"
@@ -337,7 +339,8 @@ static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
         break;
 
     case VFU_RESET_PCI_FLR:
-        /* Guest requested PCI FLR; client still connected */
+        /* Guest requested PCI FLR; client still connected. Not reached
+         * while the device doesn't advertise FLR: see setup_pci_config(). */
         vfu_log(vfu_ctx, LOG_INFO, "PCI FLR requested");
         conn_str = "connected (PCI FLR)";
         ernic_stats_device_reset(dev->stats);
@@ -551,6 +554,36 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx)
                       0x00,  /* Subclass: Ethernet Controller */
                       0x00); /* Prog-if */
 
+    /*
+     * The PCI Express capability, which every PCI Express function has.
+     * It describes no link, which the device doesn't have, so the guest
+     * reports its speed and width as unknown. libvfio-user links each
+     * capability into the list as it is added, so this one is first.
+     * Version 2 is the full layout, VFIO_USER_PCI_CAP_EXP_SIZEOF bytes.
+     *
+     * Its Device Capabilities are zero, so it doesn't advertise
+     * function-level reset, and libvfio-user refuses a write starting one.
+     * An FLR returns the function to its initial state, and
+     * device_reset_cb() doesn't: the RDMA and Ethernet queues, memory
+     * registrations and work in flight stay, and a late response could
+     * still write data and completions into memory the guest has freed.
+     */
+    uint8_t px[VFIO_USER_PCI_CAP_EXP_SIZEOF];
+
+    memset(px, 0, sizeof(px));
+    px[PCI_CAP_LIST_ID] = PCI_CAP_ID_EXP;
+    ernic_put_le16(px + PCI_EXP_FLAGS,
+                   (uint16_t)(2U | ((unsigned)PCI_EXP_TYPE_ENDPOINT << 4)));
+    ssize_t px_off = vfu_pci_add_capability(vfu_ctx, 0, 0, px);
+    if (px_off < 0) {
+        warn_errno("vfu_pci_add_capability() failed for PCI Express");
+        return -1;
+    }
+    /* px_off is a non-negative offset here, so the cast to size_t is exact */
+    ernic_startup_report("rocm-ernic: Added PCI Express capability at offset "
+                         "%#zx",
+                         (size_t)px_off);
+
     ernic_startup_report("rocm-ernic: PCI device configured: vendor=%#x "
                          "device=%#x subsystem=%#x:%#x",
                          (unsigned)PCI_VENDOR_ID_PENSANDO, (unsigned)did,
@@ -677,12 +710,13 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, const rocm_ernic_dev_t *dev)
     ernic_startup_report("rocm-ernic: Added MSI-X capability at offset %#zx",
                          (size_t)ret);
 
-    /* Ensure standard PCI header tail (0x34-0x3f) is set for config reads */
+    /* Zero the rest of the standard PCI header (0x35-0x3f) for config
+     * reads. The head of the capability list, at 0x34, is libvfio-user's:
+     * it set it when it added the first capability, the PCI Express one. */
     {
         vfu_pci_config_space_t *cfg = vfu_pci_get_config_space(vfu_ctx);
         if (cfg) {
             uint8_t *p = (uint8_t *)cfg;
-            p[PCI_CAPABILITY_LIST] = (uint8_t)ret;
             for (int i = PCI_CAPABILITY_LIST + 1; i < PCI_STD_HEADER_SIZEOF;
                  i++) {
                 p[i] = 0;

@@ -18,6 +18,11 @@
 
 ### Added
 
+* The device has a PCI Express capability, as every PCI Express function
+  must. It describes no link, so the guest still reports the link speed and
+  width as unknown, and it doesn't advertise function-level reset (FLR), so
+  a guest's attempt at one is refused; see Limitations.
+
 * `--backend nvmeof:kv=1[,keys=...,maxval=...]` serves the namespace with the
   NVM Express Key Value command set instead of the block one: Store (01h),
   Retrieve (02h), List (06h), Delete (10h) and Exist (14h), with the key
@@ -1635,6 +1640,9 @@
 ### Limitations
 
 * rocm-ernic supports only 64-bit Linux; 32-bit systems aren't supported.
+* The device doesn't support function-level reset (FLR), and doesn't
+  advertise it. A reset of the device leaves its RDMA and Ethernet queues,
+  memory registrations and work in flight in place, which an FLR must not.
 
 ### Known issues
 

@@ -825,5 +825,9 @@ Not yet working:
 
 - Shared receive queues, which the upstream RDMA driver does
   not implement in its ``ib_device_ops``
-- The PCI Express capability is not advertised, so the guest
+- The PCI Express capability describes no link, so the guest
   reports an unknown link speed and width; this is cosmetic
+- Function-level reset (FLR), which the PCI Express
+  capability doesn't advertise, so the guest can't start one:
+  a device reset leaves the RDMA and Ethernet queues, memory
+  registrations and work in flight in place
