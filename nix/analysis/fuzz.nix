@@ -59,7 +59,8 @@ let
       extra = [ "src/ionic/ionic_fault.c" ];
       seeds = true; }
     { name = "adminq_cmb";
-      extra = [ "src/ernic_dma.c" "src/ionic/ionic_adminq.c" ];
+      extra = [ "src/ernic_dma.c" "src/ionic/ionic_adminq.c"
+                "src/ionic/ionic_fault.c" ];
       cflags = "-Itests -I${libvfioUser}/include";
       seeds = true; }
   ];
@@ -123,7 +124,9 @@ let
     inherit version src;
 
     nativeBuildInputs = [ pkgs.clang pkgs.pkg-config ];
-    buildInputs = [ pkgs.glib ];
+    # rdma-core for <infiniband/verbs.h>, whose IB constants the admin
+    # queue uses; nothing links libibverbs.
+    buildInputs = [ pkgs.glib pkgs.rdma-core ];
 
     dontConfigure = true;
     env.NIX_CFLAGS_COMPILE = compat.string;

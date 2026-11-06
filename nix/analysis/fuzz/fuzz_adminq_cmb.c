@@ -10,7 +10,11 @@
  *   - a short body (< IONIC_ADMIN_CREATE_QP_IN_V1_LEN) completes with EINVAL;
  *   - a duplicate QP id completes with EEXIST;
  *   - a bad CQ id completes with ENOENT, EQID, or ERANGE;
- *   - with valid body and QP/CQ ids, CMB-flagged creates succeed.
+ *   - with valid body and QP/CQ ids, CMB-flagged creates succeed;
+ *   - a create that succeeds with a CMB flag tells the data path, once, for
+ *     that QP, which rings are in the CMB and at what offsets: each one's
+ *     address as given, which lies wholly inside the CMB;
+ *   - a create that fails, or has no CMB flag, tells the data path nothing.
  *
  * A broken promise aborts, which libFuzzer reports as a crash.  ASan catches
  * writes outside guest memory.
@@ -41,7 +45,9 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "byteorder.h"
 #include "ionic/ionic_adminq_priv.h"
+#include "ionic/ionic_bar.h"
 #include "ionic/ionic_status.h"
 
 #include "ionic_adminq_fakes.h"
@@ -64,10 +70,46 @@
 #define BAD_CQ_ID   0xFFFFFFFFU
 #define NEW_QP_ID   1U
 
-/* Build the minimum-valid body for CREATE_QP.  Caller owns buf[MAX_BODY]. */
-static void build_body(uint8_t *buf, uint32_t priv_flags, uint32_t scq_id,
-                       uint32_t qp_id)
+/* Where CREATE_QP's fields are (struct ionic_v1_create_qp) */
+#define PRIV_FLAGS_OFF   4  /* be32 */
+#define SQ_DEPTH_OFF     12 /* u8, log2 */
+#define SQ_STRIDE_OFF    13 /* u8, log2 */
+#define SQ_MAP_COUNT_OFF 20 /* le32 */
+#define SQ_DMA_OFF       24 /* le64 */
+#define RQ_DEPTH_OFF     36
+#define RQ_STRIDE_OFF    37
+#define RQ_MAP_COUNT_OFF 44
+#define RQ_DMA_OFF       48
+#define ID_VER_OFF       56 /* le32: the QP id in the low 24 bits */
+
+/* The span of each ring build_body() describes: 2^6 WQEs of 2^6 bytes */
+#define RING_SPAN (UINT64_C(1) << 12)
+#define CMB_SIZE  ((uint64_t)IONIC_BAR4_CMB_SIZE)
+
+/* A seed: one CREATE_QP, and how it should complete */
+struct seed {
+    const char *category;
+    const char *description;
+    const char *expected;
+    uint8_t iflags; /* F_* bits */
+    uint32_t priv_flags;
+    uint32_t scq_id;
+    uint32_t qp_id;
+    uint64_t sq_dma; /* a guest address, or a CMB offset for a CMB ring */
+    uint64_t rq_dma;
+    uint16_t body_len;
+    uint8_t want_rc;
+};
+
+/* Build the minimum-valid body for CREATE_QP from seed @s, with its SQ and
+ * RQ at s->sq_dma and s->rq_dma: a guest address for a ring in guest
+ * memory, an offset in the CMB for one flagged as in it.  Caller owns
+ * buf[MAX_BODY]. */
+static void build_body(uint8_t *buf, const struct seed *s)
 {
+    uint32_t priv_flags = s->priv_flags;
+    uint32_t scq_id = s->scq_id;
+
     memset(buf, 0, MAX_BODY);
     /* be32 priv_flags at [4:7] */
     buf[4] = (uint8_t)(priv_flags >> 24);
@@ -85,9 +127,8 @@ static void build_body(uint8_t *buf, uint32_t priv_flags, uint32_t scq_id,
     buf[15] = 12;
     /* sq nbufs=1 at [20:23] */
     buf[20] = 1;
-    /* sq dma at [24:31]: BUF_GPA in guest memory */
-    uint64_t gpa = BUF_GPA;
-    memcpy(buf + 24, &gpa, 8);
+    /* sq dma at [24:31] */
+    ernic_put_le64(buf + SQ_DMA_OFF, s->sq_dma);
     /* le32 rcq_id at [32:35]: same as scq */
     buf[32] = (uint8_t)scq_id;
     buf[33] = (uint8_t)(scq_id >> 8);
@@ -104,11 +145,10 @@ static void build_body(uint8_t *buf, uint32_t priv_flags, uint32_t scq_id,
     buf[43] = 0xFF;
     /* rq nbufs=1 at [44:47] */
     buf[44] = 1;
-    /* rq dma at [48:55]: BUF_GPA + 1024 to avoid overlap */
-    gpa = BUF_GPA + 512;
-    memcpy(buf + 48, &gpa, 8);
+    /* rq dma at [48:55] */
+    ernic_put_le64(buf + RQ_DMA_OFF, s->rq_dma);
     /* le32 qp_id | (1<<24) at [56:59] */
-    uint32_t id_ver = qp_id | (1U << 24);
+    uint32_t id_ver = s->qp_id | (1U << 24);
     buf[56] = (uint8_t)id_ver;
     buf[57] = (uint8_t)(id_ver >> 8);
     buf[58] = (uint8_t)(id_ver >> 16);
@@ -125,6 +165,70 @@ static bool is_create_qp_status(uint8_t rc)
            rc == IONIC_RC_ENOENT || rc == IONIC_RC_EQID ||
            rc == IONIC_RC_ERANGE || rc == IONIC_RC_ERDMA ||
            rc == IONIC_RC_ENOMEM || rc == IONIC_RC_EIO;
+}
+
+/* Where a ring's fields are in the body */
+struct ring_fields {
+    size_t depth;
+    size_t stride;
+    size_t map_count;
+    size_t dma;
+};
+
+static const struct ring_fields sq_fields = {SQ_DEPTH_OFF, SQ_STRIDE_OFF,
+                                             SQ_MAP_COUNT_OFF, SQ_DMA_OFF};
+static const struct ring_fields rq_fields = {RQ_DEPTH_OFF, RQ_STRIDE_OFF,
+                                             RQ_MAP_COUNT_OFF, RQ_DMA_OFF};
+
+/*
+ * Whether the data path was told that the ring @f describes in @body is at
+ * @told in the CMB: its address as given, a single span that lies wholly
+ * inside the CMB.
+ */
+static bool ring_placed(const uint8_t *body, const struct ring_fields *f,
+                        uint64_t told)
+{
+    unsigned shift = (unsigned)body[f->depth] + body[f->stride];
+    uint64_t dma = ernic_get_le64(body + f->dma);
+
+    if (told != dma || ernic_get_le32(body + f->map_count) > 1 || shift > 63) {
+        return false;
+    }
+    uint64_t span = UINT64_C(1) << shift;
+    return dma <= CMB_SIZE && span <= CMB_SIZE - dma;
+}
+
+/*
+ * The CMB promises, for a full-length @body that completed with @rc.
+ * Returns NULL when they hold, else what broke.
+ */
+static const char *check_placement(const uint8_t *body, uint8_t rc)
+{
+    uint32_t flags = ernic_get_be32(body + PRIV_FLAGS_OFF);
+    bool sq_cmb = (flags & IONIC_QPF_SQ_CMB) != 0;
+    bool rq_cmb = (flags & IONIC_QPF_RQ_CMB) != 0;
+
+    if (rc != IONIC_RC_SUCCESS || (!sq_cmb && !rq_cmb)) {
+        return g_set_qp_cmb_calls == 0 ? NULL
+                                       : "the data path was told of CMB rings "
+                                         "for a QP with none";
+    }
+    if (g_set_qp_cmb_calls != 1) {
+        return "the data path wasn't told once where the CMB rings are";
+    }
+    if (g_qp_cmb.qp_id != (ernic_get_le32(body + ID_VER_OFF) & 0x00ffffffU)) {
+        return "the data path was told of CMB rings for another QP";
+    }
+    if (g_qp_cmb.sq_cmb != sq_cmb || g_qp_cmb.rq_cmb != rq_cmb) {
+        return "the data path was told the wrong rings are in the CMB";
+    }
+    if (sq_cmb && !ring_placed(body, &sq_fields, g_qp_cmb.sq_offset)) {
+        return "the SQ was placed elsewhere than it said, or outside the CMB";
+    }
+    if (rq_cmb && !ring_placed(body, &rq_fields, g_qp_cmb.rq_offset)) {
+        return "the RQ was placed elsewhere than it said, or outside the CMB";
+    }
+    return NULL;
 }
 
 /*
@@ -195,7 +299,7 @@ static const char *run_input(const uint8_t *data, size_t size, uint8_t *rc_out)
         return "a duplicate QP id was not EEXIST";
     }
 
-    return NULL;
+    return check_placement(body, rc);
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
@@ -212,47 +316,57 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
 /* ---- Seeds ------------------------------------------------------------- */
 
-struct seed {
-    const char *category;
-    const char *description;
-    const char *expected;
-    uint8_t iflags; /* F_* bits */
-    uint32_t priv_flags;
-    uint32_t scq_id;
-    uint32_t qp_id;
-    uint16_t body_len;
-    uint8_t want_rc;
-};
+/* Rings in guest memory, and in the CMB at its start and end */
+#define SQ_GPA   ((uint64_t)BUF_GPA)
+#define RQ_GPA   ((uint64_t)BUF_GPA + RING_SPAN)
+#define CMB_LAST (CMB_SIZE - RING_SPAN)
 
+/* The placement each create should make is checked for every input, seeds
+ * included, by check_placement(); the seeds say only how it completes. */
 static const struct seed seeds[] = {
     /* positive */
-    {"positive", "CREATE_QP, no CMB flags", "SUCCESS (0)", 0, 0, VALID_CQ_ID,
-     NEW_QP_ID, IONIC_ADMIN_CREATE_QP_IN_V1_LEN, 0},
-    {"positive", "CREATE_QP with SQ_CMB flag", "SUCCESS (0)", 0,
-     IONIC_QPF_SQ_CMB, VALID_CQ_ID, NEW_QP_ID, IONIC_ADMIN_CREATE_QP_IN_V1_LEN,
+    {"positive", "CREATE_QP, no CMB flags",
+     "SUCCESS (0), and no ring placed in the CMB", 0, 0, VALID_CQ_ID, NEW_QP_ID,
+     SQ_GPA, RQ_GPA, IONIC_ADMIN_CREATE_QP_IN_V1_LEN, 0},
+    {"positive", "CREATE_QP with SQ_CMB flag",
+     "SUCCESS (0), and the SQ placed at offset 0", 0, IONIC_QPF_SQ_CMB,
+     VALID_CQ_ID, NEW_QP_ID, 0, RQ_GPA, IONIC_ADMIN_CREATE_QP_IN_V1_LEN, 0},
+    {"positive", "CREATE_QP with RQ_CMB flag",
+     "SUCCESS (0), and the RQ placed at its offset", 0, IONIC_QPF_RQ_CMB,
+     VALID_CQ_ID, NEW_QP_ID, SQ_GPA, RING_SPAN, IONIC_ADMIN_CREATE_QP_IN_V1_LEN,
      0},
-    {"positive", "CREATE_QP with RQ_CMB flag", "SUCCESS (0)", 0,
-     IONIC_QPF_RQ_CMB, VALID_CQ_ID, NEW_QP_ID, IONIC_ADMIN_CREATE_QP_IN_V1_LEN,
-     0},
-    {"positive", "CREATE_QP with SQ_CMB and RQ_CMB", "SUCCESS (0)", 0,
-     IONIC_QPF_SQ_CMB | IONIC_QPF_RQ_CMB, VALID_CQ_ID, NEW_QP_ID,
+    {"positive", "CREATE_QP with SQ_CMB and RQ_CMB",
+     "SUCCESS (0), and both placed at their offsets", 0,
+     IONIC_QPF_SQ_CMB | IONIC_QPF_RQ_CMB, VALID_CQ_ID, NEW_QP_ID, 0, RING_SPAN,
      IONIC_ADMIN_CREATE_QP_IN_V1_LEN, 0},
+    /* boundary */
+    {"boundary", "CREATE_QP with its SQ ending at the CMB's last byte",
+     "SUCCESS (0), and the SQ placed there", 0, IONIC_QPF_SQ_CMB, VALID_CQ_ID,
+     NEW_QP_ID, CMB_LAST, RQ_GPA, IONIC_ADMIN_CREATE_QP_IN_V1_LEN, 0},
+    {"boundary", "CREATE_QP with its SQ ending a byte past the CMB",
+     "ERANGE (16), and nothing placed", 0, IONIC_QPF_SQ_CMB, VALID_CQ_ID,
+     NEW_QP_ID, CMB_LAST + 1U, RQ_GPA, IONIC_ADMIN_CREATE_QP_IN_V1_LEN,
+     IONIC_RC_ERANGE},
     /* negative */
+    {"negative", "CREATE_QP with its RQ at a guest address, flagged RQ_CMB",
+     "ERANGE (16), and nothing placed", 0, IONIC_QPF_RQ_CMB, VALID_CQ_ID,
+     NEW_QP_ID, SQ_GPA, CMB_SIZE + BUF_GPA, IONIC_ADMIN_CREATE_QP_IN_V1_LEN,
+     IONIC_RC_ERANGE},
     {"negative", "CREATE_QP, body one byte short", "EINVAL (14)", 0,
-     IONIC_QPF_SQ_CMB, VALID_CQ_ID, NEW_QP_ID,
+     IONIC_QPF_SQ_CMB, VALID_CQ_ID, NEW_QP_ID, 0, RQ_GPA,
      IONIC_ADMIN_CREATE_QP_IN_V1_LEN - 1, IONIC_RC_EINVAL},
-    {"negative", "CREATE_QP with duplicate QP id", "EEXIST (5)", F_DUP_QP,
-     IONIC_QPF_SQ_CMB, VALID_CQ_ID, QP_ID, IONIC_ADMIN_CREATE_QP_IN_V1_LEN,
-     IONIC_RC_EEXIST},
+    {"negative", "CREATE_QP with duplicate QP id", "EEXIST (13)", F_DUP_QP,
+     IONIC_QPF_SQ_CMB, VALID_CQ_ID, QP_ID, 0, RQ_GPA,
+     IONIC_ADMIN_CREATE_QP_IN_V1_LEN, IONIC_RC_EEXIST},
     {"negative", "CREATE_QP with zero-length body", "EINVAL (14)", 0, 0,
-     VALID_CQ_ID, NEW_QP_ID, 0, IONIC_RC_EINVAL},
+     VALID_CQ_ID, NEW_QP_ID, SQ_GPA, RQ_GPA, 0, IONIC_RC_EINVAL},
 };
 
 static size_t encode_seed(const struct seed *s, uint8_t *out)
 {
     uint8_t body[MAX_BODY];
 
-    build_body(body, s->priv_flags, s->scq_id, s->qp_id);
+    build_body(body, s);
 
     memset(out, 0, IN_HDR + MAX_BODY);
     out[0] = s->iflags;
