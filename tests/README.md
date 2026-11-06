@@ -108,8 +108,9 @@ hands to the server, so the real DMA path runs.
 memory), `server.py` (starting server processes and holding them to a
 shutdown deadline), `ionic.py` (the ionic driver, the counterpart of
 `ionic_harness.c`), `mesh.py` (the TCP mesh wire protocol and a fixture
-that starts a manager and some workers), and `check.py` (the test
-runner).
+that starts a manager and some workers), `pci.py` (the config-space
+values from `linux/pci_regs.h`, which `ernic-pci-regs` prints from the
+header), and `check.py` (the test runner).
 
 The suites, each registered with CTest:
 

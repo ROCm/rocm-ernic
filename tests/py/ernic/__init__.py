@@ -17,6 +17,8 @@ hardware, and no root:
     completion rings.
   * :mod:`ernic.mesh` -- the TCP mesh wire protocol, for standing in for
     a peer node or for a manager.
+  * :mod:`ernic.pci` -- the config-space register offsets and fields,
+    from ``linux/pci_regs.h`` rather than a copy.
 
 Copyright (C) Advanced Micro Devices, Inc.
 

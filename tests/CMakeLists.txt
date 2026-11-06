@@ -68,6 +68,11 @@ list(APPEND ERNIC_TCP_TEST_SOURCES ${PROJECT_SOURCE_DIR}/src/ernic_gnu.c)
 # -- test_pci_client (no extra dependencies) ---------------------
 ernic_add_test_program(test_pci_client SOURCES test_pci_client.c)
 
+# -- ernic-pci-regs (no extra dependencies) ----------------------
+# Prints the linux/pci_regs.h values the Python tests read config space
+# with, so they use the header the server is built with, not a copy.
+ernic_add_test_program(ernic-pci-regs SOURCES pci_regs_dump.c)
+
 # -- test_data_transfer (requires libibverbs) --------------------
 ernic_add_test_program(test_data_transfer
     SOURCES test_data_transfer.c
@@ -1244,6 +1249,7 @@ add_test(
     COMMAND ${ERNIC_PY_RUN}
         ${CMAKE_CURRENT_SOURCE_DIR}/py/test_vfu_client.py
         --server $<TARGET_FILE:rocm-ernic>
+        --pci-regs $<TARGET_FILE:ernic-pci-regs>
 )
 set_tests_properties(ernic-vfu-client PROPERTIES
     TIMEOUT 180
