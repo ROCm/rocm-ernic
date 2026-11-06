@@ -11,10 +11,13 @@ description: >-
 # while its indexes still come quickly, and an install of LLVM's 105 MB
 # then takes an hour. So the .debs an install downloads are cached under
 # a key naming the package list, and a run that restores them downloads
-# only what has changed since. apt checks each cached .deb against the
-# hash in the index it has just fetched, and downloads any that don't
-# match, so a stale or altered cache can't install anything the index
-# doesn't name.
+# only what has changed since.
+#
+# apt takes a .deb already in its archive directory on its size alone,
+# without checking its hash, so a restored .deb goes there only once its
+# SHA256 matches the one the signed index gives for that package and
+# version, and then under the file name the index gives it. Anything
+# else in the cache is dropped, and apt downloads the package instead.
 #
 # The apt settings stay for the rest of the job, so they cover every
 # apt-get it runs after this one, too.
@@ -100,10 +103,50 @@ runs:
             ;;
         esac
         sudo mkdir -p "${ARCHIVES}/partial"
-        if compgen -G "${CACHE_DIR}/*.deb" > /dev/null; then
-          sudo cp "${CACHE_DIR}"/*.deb "${ARCHIVES}"/
-        fi
         sudo apt-get update
+
+        # A restored .deb is kept only if the index has a record for the
+        # package, version and architecture its control file names with
+        # the same SHA256. It goes under the name apt gives that package's
+        # download, the version's epoch colon written %3a, so apt finds it.
+        kept=0
+        dropped=0
+        for deb in "${CACHE_DIR}"/*.deb; do
+          [[ -f "${deb}" ]] || continue
+          fmt="\${Package} \${Version} \${Architecture}\n"
+          if ! read -r pkg ver arch < <(dpkg-deb --show --showformat="${fmt}" \
+            "${deb}" 2> /dev/null); then
+            dropped=$((dropped + 1))
+            continue
+          fi
+          sum=$(sha256sum "${deb}" | cut -d' ' -f1)
+          match=$(apt-cache show "${pkg}=${ver}" 2> /dev/null | awk \
+            -v pkg="${pkg}" -v ver="${ver}" -v arch="${arch}" -v sum="${sum}" '
+            BEGIN { RS = ""; FS = "\n" }
+            {
+              p = ""; v = ""; a = ""; s = ""
+              for (i = 1; i <= NF; i++) {
+                if ($i ~ /^Package: /) p = substr($i, 10)
+                else if ($i ~ /^Version: /) v = substr($i, 10)
+                else if ($i ~ /^Architecture: /) a = substr($i, 15)
+                else if ($i ~ /^SHA256: /) s = substr($i, 9)
+              }
+              if (p == pkg && v == ver && a == arch && s == sum) {
+                print "yes"
+                exit
+              }
+            }')
+          name="${pkg}_${ver//:/%3a}_${arch}.deb"
+          if [[ "${match}" == yes &&
+            "${name}" =~ ^[A-Za-z0-9][A-Za-z0-9.+~%_-]*\.deb$ ]]; then
+            sudo cp "${deb}" "${ARCHIVES}/${name}"
+            kept=$((kept + 1))
+          else
+            dropped=$((dropped + 1))
+          fi
+        done
+        echo "${kept} cached packages match the index, ${dropped} dropped"
+
         sudo apt-get install -y "${opts[@]}" "${pkgs[@]}"
         sudo apt-get -o "Dir::Cache::Archives=${ARCHIVES}/" autoclean
 
