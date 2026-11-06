@@ -465,10 +465,12 @@ def test_cmb_cleared(suite, server):
     """Nothing written to the CMB outlives a device reset or its client.
 
     A guest's work requests, and their inline data, are written to BAR4.
-    The server serves one client after another on the same device, and a
-    guest reboots through a device reset, so what one left there must not
-    be readable by the next. Each pattern is read back before the reset,
-    so zeros afterwards mean it was cleared, not that it never landed.
+    The server serves one client after another on the same device, a guest
+    reboots through a device reset, and the driver resets the device with
+    IONIC_CMD_RESET as it loads and unloads, so what one left there must
+    not be readable by the next. Each pattern is read back before the
+    reset, so zeros afterwards mean it was cleared, not that it never
+    landed.
     """
     bar4 = vfu.VFU_PCI_DEV_BAR4_REGION_IDX
     # The first WQE slot, and the last 8 bytes of the CMB
@@ -496,10 +498,19 @@ def test_cmb_cleared(suite, server):
                 after,
             )
 
-    with vfu.VfioUserClient(server.socket_path).connect(timeout=30) as client:
+    with vfu.VfioUserClient(server.socket_path).connect(
+        timeout=30
+    ) as client, vfu.GuestMemory(size=1 << 20) as mem:
         fill(client, "a device reset")
         client.reset()
         cleared(client, "a device reset")
+
+        fill(client, "IONIC_CMD_RESET")
+        cmd = bytearray(64)
+        cmd[0] = ionic.CMD_RESET
+        ionic.IonicDriver(client, mem).devcmd_ok(bytes(cmd))
+        cleared(client, "IONIC_CMD_RESET")
+
         fill(client, "the client goes")
 
     with vfu.VfioUserClient(server.socket_path).connect(timeout=30) as client:

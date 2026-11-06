@@ -787,11 +787,16 @@ static void process_devcmd(struct ionic_eth_emu *emu)
          * counters are the datapath's, and are copied into the LIF block
          * every time it is read, so they are zeroed where they live: the
          * LIF block alone would get its old values back on the next read,
-         * and hw_counters would disagree with it. */
+         * and hw_counters would disagree with it.
+         *
+         * The CMB is cleared as by any other reset. The driver sends this
+         * as it loads and unloads, when nothing it placed in the CMB is
+         * live, and places every CMB ring again afterwards. */
         emu->lif_info_pa = 0;
         emu->port_info_pa = 0;
         ionic_emu_stats_reset(&emu->stats);
         ionic_datapath_reset_rdma_counters(emu->dp);
+        ionic_eth_emu_clear_cmb(emu);
         comp[0] = IONIC_RC_SUCCESS;
         break;
 
