@@ -59,6 +59,7 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       contains(github.event.pull_request.labels.*.name, 'run-dynamic')
     runs-on: ubuntu-26.04
+    timeout-minutes: 10
     outputs:
       tools: ${{ steps.pick.outputs.tools }}
     steps:

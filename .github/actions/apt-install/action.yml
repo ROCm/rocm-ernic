@@ -1,0 +1,176 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+name: Install apt packages
+description: >-
+  apt-get install on a GitHub-hosted runner, with the packages it
+  downloads cached between runs, and apt set to give up on a stalled
+  mirror and try another.
+
+# Ubuntu's Azure mirror sometimes serves packages at a few tens of kB/s
+# while its indexes still come quickly, and an install of LLVM's 105 MB
+# then takes an hour. So the .debs an install downloads are cached under
+# a key naming the package list, and a run that restores them downloads
+# only what has changed since.
+#
+# apt takes a .deb already in its archive directory on its size alone,
+# without checking its hash, so a restored .deb goes there only once its
+# SHA256 matches the one the signed index gives for that package and
+# version, and then under the file name the index gives it. Anything
+# else in the cache is dropped, and apt downloads the package instead.
+#
+# The apt settings stay for the rest of the job, so they cover every
+# apt-get it runs after this one, too.
+
+inputs:
+  packages:
+    description: Packages to install, separated by spaces or newlines
+    required: true
+  no-install-recommends:
+    description: >-
+      'true' to install only what the packages depend on, leaving out
+      what they recommend
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    # A connection that sends nothing for 30 s is dropped and retried,
+    # which moves apt to the next mirror in the runner's mirror list.
+    - name: Configure apt
+      shell: bash
+      run: |
+        sudo tee /etc/apt/apt.conf.d/99ernic-ci > /dev/null <<'EOF'
+        Acquire::Retries "3";
+        Acquire::http::Timeout "30";
+        Acquire::https::Timeout "30";
+        APT::Keep-Downloaded-Packages "true";
+        EOF
+
+    # Sorted, so the order the caller lists the packages in doesn't
+    # matter. ImageOS (e.g. ubuntu26) keeps one release's packages from
+    # another's, and leaving out recommended packages changes what's
+    # downloaded. The name is also the directory's, so each call in a job
+    # caches only its own packages.
+    - name: Name the cache
+      id: name
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+        NO_RECOMMENDS: ${{ inputs.no-install-recommends }}
+      run: |
+        hash=$( (printf '%s\n' "${PACKAGES}" | tr -s '[:space:]' '\n' |
+          sed '/^$/d' | sort -u; echo "no-recommends=${NO_RECOMMENDS}") |
+          sha256sum | cut -c1-16)
+        echo "dir=apt-${ImageOS:-unknown}-${hash}" >> "${GITHUB_OUTPUT}"
+        echo "prefix=apt-${ImageOS:-unknown}-${hash}-" >> "${GITHUB_OUTPUT}"
+
+    # Every saved key has a suffix, so the key itself never matches and
+    # the prefix restores the newest cache for this package list
+    - name: Restore downloaded packages
+      id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/${{ steps.name.outputs.dir }}
+        key: ${{ steps.name.outputs.prefix }}
+        restore-keys: ${{ steps.name.outputs.prefix }}
+
+    # apt downloads into a directory of its own, which nothing on the image
+    # knows to empty. autoclean drops the .debs no index names any more,
+    # so the cache doesn't grow with every package update. The saved key
+    # ends in a hash of the .debs' names, so a run that downloaded nothing
+    # new matches the cache it restored and saves nothing.
+    - name: Install
+      id: install
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+        NO_RECOMMENDS: ${{ inputs.no-install-recommends }}
+        CACHE_DIR: ${{ runner.temp }}/${{ steps.name.outputs.dir }}
+        ARCHIVES: /var/cache/apt/${{ steps.name.outputs.dir }}
+        PREFIX: ${{ steps.name.outputs.prefix }}
+      run: |
+        mapfile -t pkgs < <(printf '%s\n' "${PACKAGES}" |
+          tr -s '[:space:]' '\n' | sed '/^$/d')
+        opts=(-o "Dir::Cache::Archives=${ARCHIVES}/")
+        case "${NO_RECOMMENDS}" in
+          true) opts+=(--no-install-recommends) ;;
+          false) ;;
+          *)
+            echo "::error::no-install-recommends must be 'true' or 'false'"
+            exit 1
+            ;;
+        esac
+        sudo mkdir -p "${ARCHIVES}/partial"
+        sudo apt-get update
+
+        # A restored .deb is kept only if the index has a record for the
+        # package, version and architecture its control file names with
+        # the same SHA256. It goes under the name apt gives that package's
+        # download, the version's epoch colon written %3a, so apt finds it.
+        kept=0
+        dropped=0
+        for deb in "${CACHE_DIR}"/*.deb; do
+          [[ -f "${deb}" ]] || continue
+          fmt="\${Package} \${Version} \${Architecture}\n"
+          if ! read -r pkg ver arch < <(dpkg-deb --show --showformat="${fmt}" \
+            "${deb}" 2> /dev/null); then
+            dropped=$((dropped + 1))
+            continue
+          fi
+          sum=$(sha256sum "${deb}" | cut -d' ' -f1)
+          # apt-cache fails for a package the index no longer lists, which
+          # is just another .deb to drop: the step runs under -e and
+          # pipefail, so its status mustn't reach the assignment.
+          match=$( { apt-cache show "${pkg}=${ver}" 2> /dev/null || true; } |
+            awk \
+            -v pkg="${pkg}" -v ver="${ver}" -v arch="${arch}" -v sum="${sum}" '
+            BEGIN { RS = ""; FS = "\n" }
+            {
+              p = ""; v = ""; a = ""; s = ""
+              for (i = 1; i <= NF; i++) {
+                if ($i ~ /^Package: /) p = substr($i, 10)
+                else if ($i ~ /^Version: /) v = substr($i, 10)
+                else if ($i ~ /^Architecture: /) a = substr($i, 15)
+                else if ($i ~ /^SHA256: /) s = substr($i, 9)
+              }
+              if (p == pkg && v == ver && a == arch && s == sum) {
+                print "yes"
+                exit
+              }
+            }')
+          name="${pkg}_${ver//:/%3a}_${arch}.deb"
+          if [[ "${match}" == yes &&
+            "${name}" =~ ^[A-Za-z0-9][A-Za-z0-9.+~%_-]*\.deb$ ]]; then
+            sudo cp "${deb}" "${ARCHIVES}/${name}"
+            kept=$((kept + 1))
+          else
+            dropped=$((dropped + 1))
+          fi
+        done
+        echo "${kept} cached packages match the index, ${dropped} dropped"
+
+        sudo apt-get install -y "${opts[@]}" "${pkgs[@]}"
+        sudo apt-get -o "Dir::Cache::Archives=${ARCHIVES}/" autoclean
+
+        rm -rf "${CACHE_DIR}"
+        mkdir -p "${CACHE_DIR}"
+        if compgen -G "${ARCHIVES}/*.deb" > /dev/null; then
+          cp "${ARCHIVES}"/*.deb "${CACHE_DIR}"/
+        fi
+        count=$(find "${CACHE_DIR}" -name '*.deb' | wc -l)
+        echo "${count} packages, $(du -sh "${CACHE_DIR}" | cut -f1), to cache"
+        names=$(find "${CACHE_DIR}" -name '*.deb' -printf '%f\n' | sort |
+          sha256sum | cut -c1-16)
+        echo "count=${count}" >> "${GITHUB_OUTPUT}"
+        echo "key=${PREFIX}${names}" >> "${GITHUB_OUTPUT}"
+
+    - name: Save downloaded packages
+      if: >-
+        steps.install.outputs.count != '0' &&
+        steps.install.outputs.key != steps.restore.outputs.cache-matched-key
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/${{ steps.name.outputs.dir }}
+        key: ${{ steps.install.outputs.key }}

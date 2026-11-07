@@ -45,6 +45,7 @@ jobs:
   build-test:
     name: Build and Test on ${{ matrix.os }} (${{ matrix.compiler }}, ${{ matrix.build_type }}, ${{ matrix.sanitizer }}${{ matrix.coverage == 'on' && ', coverage' || '' }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
 
     strategy:
       fail-fast: false
@@ -596,6 +597,7 @@ jobs:
     needs: build-test
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write # push to the badges branch
     # One publish at a time. A newer pending run replaces an older one.

@@ -27,6 +27,7 @@ on:
       - 'CMakeLists.txt'
       - 'cmake/**'
       - 'ci/iwyu/**'
+      - '.github/actions/apt-install/**'
       - '.github/workflows/iwyu.yml'
   push:
     branches: [ develop ]
@@ -48,6 +49,10 @@ jobs:
   iwyu:
     name: include-what-you-use (advisory)
     runs-on: ubuntu-26.04
+    # A run takes a few minutes. A slow mirror can stretch the package
+    # download to an hour, and a stalled one past GitHub's six-hour
+    # default, holding a runner all the while.
+    timeout-minutes: 30
     steps:
       - name: Check out code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -62,14 +67,16 @@ jobs:
       # libjson-c-dev is here, not just in the libvfio-user step, because
       # the configure step's -DERNIC_BUILD_P4=ON requires it, and that
       # step only runs on a cache miss.
+      #
+      # iwyu brings in LLVM, about 100 MB, which the action caches.
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            iwyu \
-            libibverbs-dev \
-            librdmacm-dev \
-            libglib2.0-dev \
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            iwyu
+            libibverbs-dev
+            librdmacm-dev
+            libglib2.0-dev
             libjson-c-dev
 
       # The same key and paths as the Build and Test workflow, so the two

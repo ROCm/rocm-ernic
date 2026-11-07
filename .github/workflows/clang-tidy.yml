@@ -26,6 +26,7 @@ on:
       - 'CMakeLists.txt'
       - 'cmake/**'
       - '.clang-tidy'
+      - '.github/actions/apt-install/**'
       - '.github/workflows/clang-tidy.yml'
   push:
     branches: [ develop ]
@@ -47,6 +48,7 @@ jobs:
   clang-tidy:
     name: clang-tidy (${{ matrix.build_type }})
     runs-on: ubuntu-26.04
+    timeout-minutes: 30
 
     # Release defines NDEBUG and _FORTIFY_SOURCE=3, which change the code
     # that clang-tidy's analyzer sees, so check both
@@ -77,23 +79,19 @@ jobs:
       # the configure step's -DERNIC_BUILD_P4=ON requires it, and that
       # step only runs on a cache miss.
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libibverbs-dev \
-            librdmacm-dev \
-            libglib2.0-dev \
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            libibverbs-dev
+            librdmacm-dev
+            libglib2.0-dev
             libjson-c-dev
 
       # apt only trusts the key with the known fingerprint, and only for
       # this repository. Exporting the key by its fingerprint from a
       # scratch keyring leaves out any other key in the download, and
       # exports nothing if the key isn't there.
-      #
-      # The unit tests always link with ASan and UBSan (see
-      # tests/CMakeLists.txt), whose runtimes are in libclang-rt, which
-      # --no-install-recommends leaves out.
-      - name: Install clang and clang-tidy
+      - name: Add apt.llvm.org
         run: |
           curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
             -o /tmp/llvm.asc
@@ -111,12 +109,22 @@ jobs:
             "https://apt.llvm.org/${UBUNTU_CODENAME}/" \
             "llvm-toolchain-${UBUNTU_CODENAME}-${LLVM_VERSION} main" \
             | sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            "clang-${LLVM_VERSION}" \
-            "clang-tidy-${LLVM_VERSION}" \
-            "libclang-rt-${LLVM_VERSION}-dev"
-          "clang-tidy-${LLVM_VERSION}" --version
+
+      # The unit tests always link with ASan and UBSan (see
+      # tests/CMakeLists.txt), whose runtimes are in libclang-rt, which
+      # no-install-recommends leaves out. The packages are about 75 MB
+      # from the one host, which the action caches.
+      - name: Install clang and clang-tidy
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            clang-${{ env.LLVM_VERSION }}
+            clang-tidy-${{ env.LLVM_VERSION }}
+            libclang-rt-${{ env.LLVM_VERSION }}-dev
+          no-install-recommends: 'true'
+
+      - name: Show clang-tidy's version
+        run: '"clang-tidy-${LLVM_VERSION}" --version'
 
       # The same key and paths as the Build and Test workflow, so the two
       # share the cached build
