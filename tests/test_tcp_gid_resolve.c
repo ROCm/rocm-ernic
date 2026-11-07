@@ -669,10 +669,11 @@ enum hook {
     HOOK_SEND,
     HOOK_HAS_ROOM,
     HOOK_CANCEL,
+    HOOK_DROP,
 };
 
 /* refused is what a hook returns when it has no backend state to use. The
- * callback and cancel rows return nothing. */
+ * callback, cancel and drop rows return nothing. */
 struct hook_case {
     enum hook hook;
     const char *name;
@@ -687,6 +688,7 @@ static const struct hook_case hook_cases[] = {
     {HOOK_SEND, "sendv()", -EINVAL},
     {HOOK_HAS_ROOM, "has_room()", true},
     {HOOK_CANCEL, "cancel()", 0},
+    {HOOK_DROP, "drop_received()", 0},
 };
 
 #define MESH_PEER 2U /* the node the hooks address and the GID's owner */
@@ -730,6 +732,9 @@ static int64_t call_hook(RdmaBackendDev *dev, enum hook hook)
         return mesh->has_room(dev, MESH_PEER, sizeof(hdr)) ? 1 : 0;
     case HOOK_CANCEL:
         mesh->cancel(dev, 0, UINT64_MAX);
+        return 0;
+    case HOOK_DROP:
+        mesh->drop_received(dev);
         return 0;
     default:
         abort(); /* every row names one of the cases above */
@@ -777,6 +782,7 @@ static void test_hooks_on_tcp(void)
     union ibv_gid gid;
     uint8_t raw[16];
     uint32_t node;
+    uint32_t epoch;
     bool stored;
     int rc;
 
@@ -814,6 +820,15 @@ static void test_hooks_on_tcp(void)
     stored = priv->ionic_recv_fn || priv->ionic_recv_opaque;
     qemu_mutex_unlock(&priv->lock);
     CHECK(!stored, "receive callback not cleared");
+
+    qemu_mutex_lock(&priv->lock);
+    epoch = priv->ionic_recv_epoch;
+    qemu_mutex_unlock(&priv->lock);
+    mesh->drop_received(&dev);
+    qemu_mutex_lock(&priv->lock);
+    stored = priv->ionic_recv_epoch == epoch + 1U;
+    qemu_mutex_unlock(&priv->lock);
+    CHECK(stored, "dropping what was received didn't start a new epoch");
 
     rc = mesh->sendv(&dev, MESH_PEER, hdr, sizeof(hdr), NULL, 0, 0, false);
     CHECK(rc == -ENOTCONN,

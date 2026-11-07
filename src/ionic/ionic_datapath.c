@@ -4496,8 +4496,15 @@ void ionic_datapath_reset(struct ionic_datapath *dp)
     ionic_dp_nvmeof_reset(dp);
     ionic_dp_s3_reset(dp);
 
-    /* What peers sent before the reset is for the guest's old QPs and MRs,
-     * which may already have successors under the same ids */
+    /*
+     * What peers sent before the reset is for the guest's old QPs and MRs,
+     * which may soon have successors under the same ids.  The mesh drops
+     * what it has received and not handed over, and waits out the hand-overs
+     * under way, so that what they queued is on the queue drained here.  A
+     * request still on its way from a peer can arrive after; nothing in it
+     * says it was meant for the QP and MR from before the reset.
+     */
+    ernic_mesh_drop_received(dp->pvrdma_handle);
     qemu_mutex_lock(&dp->rx_lock);
     dp_rx_clear(dp);
     qemu_mutex_unlock(&dp->rx_lock);

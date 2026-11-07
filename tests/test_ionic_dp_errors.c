@@ -567,6 +567,28 @@ void ernic_mesh_cancel(pvrdma_handle_t handle, uint64_t tag, uint64_t mask)
     g_cancel_cqes = g_dp ? g_dp->cq[CQ_ID].prod : 0;
 }
 
+/*
+ * How many times the data path asked the mesh to drop what it has received,
+ * and what, if anything, a receive thread already in the callback hands
+ * over while that call waits for it.
+ */
+static uint32_t g_ndrop;
+/* A function pointer, which can't be to const.
+ * NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) */
+static void (*g_drop_hook)(void);
+
+void ernic_mesh_drop_received(pvrdma_handle_t handle)
+{
+    (void)handle;
+    g_ndrop++;
+    if (g_drop_hook) {
+        void (*hook)(void) = g_drop_hook;
+
+        g_drop_hook = NULL;
+        hook();
+    }
+}
+
 static uint32_t g_sq_slot[QP_C + 1];
 
 static void register_qp_as(struct ionic_datapath *dp, uint32_t qp_id,
@@ -624,6 +646,8 @@ static struct ionic_datapath *setup(void)
     g_cancel_tag = 0;
     g_cancel_mask = 0;
     g_cancel_cqes = 0;
+    g_ndrop = 0;
+    g_drop_hook = NULL;
     g_now_ms = T0;
     g_local_node = UINT32_MAX;
     g_recv_fn = NULL;
@@ -2141,6 +2165,7 @@ enum rs_scenario {
     RS_READ_REUSE, /* and after QP_A is made again */
     RS_FADD_REUSE, /* a fetch-and-add, likewise */
     RS_INBOUND,    /* a peer's WRITE queued at the reset, the MR made again */
+    RS_IN_FLIGHT,  /* and one a receive thread hands over during the reset */
     RS_STALLED,    /* QP_A's send queue waiting for room in the mesh */
     RS_COUNTERS,   /* an error counted before the reset */
 };
@@ -2200,13 +2225,11 @@ static const char *rs_reply(struct ionic_datapath *dp, const struct wqe *w,
                : "the answer landed in the consumer's memory";
 }
 
-/* A WRITE from the peer, queued when the reset comes */
-static const char *rs_inbound(struct ionic_datapath *dp)
+/* A peer's WRITE of 64 bytes into the MR, as its receive thread delivers it */
+static void rs_peer_write(void)
 {
     uint8_t msg[IONIC_WIRE_HDR_LEN + 64];
-    uint8_t before[MR_LEN];
     struct ionic_wire_hdr h;
-    uint32_t msgs;
 
     memset(&h, 0, sizeof(h));
     h.magic = IONIC_WIRE_MAGIC;
@@ -2220,8 +2243,26 @@ static const char *rs_inbound(struct ionic_datapath *dp)
     ionic_dp_wire_hdr_put(msg, &h);
     memset(msg + IONIC_WIRE_HDR_LEN, 0xc3, 64);
     mesh_recv(msg, sizeof(msg));
+}
 
+/*
+ * The peer's WRITE, received before the reset: queued when it comes, or,
+ * @in_flight, handed over by a receive thread while the reset waits for it
+ */
+static const char *rs_inbound(struct ionic_datapath *dp, bool in_flight)
+{
+    uint8_t before[MR_LEN];
+    uint32_t msgs;
+
+    if (in_flight) {
+        g_drop_hook = rs_peer_write;
+    } else {
+        rs_peer_write();
+    }
     ionic_datapath_reset(dp);
+    if (g_ndrop != 1 || g_drop_hook) {
+        return "the mesh wasn't asked once to drop what it has received";
+    }
     qemu_mutex_lock(&dp->rx_lock);
     msgs = dp->rx_msgs;
     qemu_mutex_unlock(&dp->rx_lock);
@@ -2271,7 +2312,10 @@ static const char *rs_run(struct ionic_datapath *dp, enum rs_scenario scenario)
         return rs_reply(dp, &FADD_OK, true);
     case RS_INBOUND:
         remote(dp, QP_B);
-        return rs_inbound(dp);
+        return rs_inbound(dp, false);
+    case RS_IN_FLIGHT:
+        remote(dp, QP_B);
+        return rs_inbound(dp, true);
     case RS_STALLED:
         remote(dp, QP_B);
         g_room = false;
@@ -2328,6 +2372,12 @@ static void check_device_reset(void)
          "key",
          "the queue is empty after the reset, and the WRITE never lands",
          RS_INBOUND},
+        {"negative",
+         "a peer's WRITE a receive thread hands over while the reset waits for "
+         "it, and the MR made again under its key",
+         "the mesh is asked once to drop what it has received; the WRITE is "
+         "on the queue the reset then empties, and never lands",
+         RS_IN_FLIGHT},
         {"corner", "a reset while QP_A waits for room in the mesh",
          "no send queue is left waiting", RS_STALLED},
         {"positive", "a reset after a refused WRITE was counted",

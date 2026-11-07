@@ -437,8 +437,9 @@ void ionic_datapath_reset_rdma(struct ionic_datapath *dp);
  * Return the data path to its state before any client attached, for a
  * device reset: take back every request still queued to a peer, forget
  * every resource as ionic_datapath_reset_rdma() does, drop the NVMe-oF and
- * S3 targets' connections and what peers have sent but the data path has
- * not yet applied, and zero the RDMA counters.  Nothing is written to guest
+ * S3 targets' connections and every message the server has received from
+ * a peer and not yet applied, and zero the RDMA counters.  A message still
+ * on its way from a peer can arrive after it.  Nothing is written to guest
  * memory and no interrupt is raised.  @dp may be NULL.  Same thread as the
  * register functions.
  */

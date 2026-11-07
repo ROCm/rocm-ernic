@@ -128,6 +128,10 @@ void ernic_mesh_cancel(pvrdma_handle_t handle, uint64_t tag, uint64_t mask)
     (void)tag;
     (void)mask;
 }
+void ernic_mesh_drop_received(pvrdma_handle_t handle)
+{
+    (void)handle;
+}
 void ernic_mesh_set_recv_cb(pvrdma_handle_t handle, ernic_mesh_recv_fn fn,
                             void *opaque)
 {

@@ -58,7 +58,8 @@
  * them:
  *
  *   lock                     handles, live QPNs, local GIDs, the ionic
- *                            receive callback and the calls to it under way
+ *                            receive callback, the calls to it under way,
+ *                            and its epoch
  *   TcpConnection.lock       a connection's socket
  *   TcpConnection.sendq_lock a connection's send queue
  *   health_check_lock        stopping the health check
@@ -678,12 +679,21 @@ struct TcpBackendPrivate {
      * lock. */
     ernic_mesh_recv_fn ionic_recv_fn TSA_GUARDED_BY(lock);
     void *ionic_recv_opaque TSA_GUARDED_BY(lock);
+    /*
+     * Raised by tcp_mesh_drop_received().  tcp_recv_ionic() notes it when a
+     * message arrives, and gives the message up rather than offer it again
+     * once it has changed.  Protected by lock.
+     */
+    uint32_t ionic_recv_epoch TSA_GUARDED_BY(lock);
     /* How many receive threads are calling ionic_recv_fn, which they do
-     * without lock; ionic_recv_idle is signalled, with lock, when that falls
-     * to 0.  tcp_mesh_set_recv_cb() waits on it, so that once it has
-     * returned nothing is still calling the callback it replaced, and the
-     * data path can free what that callback uses. */
-    uint32_t ionic_recv_calls TSA_GUARDED_BY(lock);
+     * without lock, counted by the parity of the epoch each message arrived
+     * in; ionic_recv_idle is signalled, with lock, when either falls to 0.
+     * tcp_mesh_set_recv_cb() waits for both to, so that once it has returned
+     * nothing is still calling the callback it replaced, and the data path
+     * can free what that callback uses.  tcp_mesh_drop_received() waits only
+     * for the calls from the epoch it ends, which no call can join, so the
+     * wait ends however busy the receive threads are. */
+    uint32_t ionic_recv_calls[2] TSA_GUARDED_BY(lock);
     QemuCond ionic_recv_idle;
 
     /* TCP-layer counters */

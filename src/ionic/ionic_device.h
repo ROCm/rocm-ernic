@@ -105,8 +105,8 @@ bool ionic_device_has_work(struct ionic_device *dev);
  * function-level reset must, so that it does no more DMA into memory the
  * guest may reuse and the next driver finds it idle:
  *
- * - take back every request still queued to a mesh peer, and drop what
- *   peers have sent and the device hasn't yet applied;
+ * - take back every request still queued to a mesh peer, and drop every
+ *   message the server has received from one and not yet applied;
  * - free every EQ, admin queue, QP, SRQ, CQ, AH and MR, as RDMA_RESET_LIF
  *   does, and the NVMe-oF and S3 targets' connections;
  * - put back the operator's P4 program in place of anything the guest

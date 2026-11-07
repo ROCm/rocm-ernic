@@ -515,9 +515,9 @@ def test_reset_and_reconnect(suite, client, socket_path):
     device command no longer reads as done. The first client leaves its
     MAC behind without resetting the device, as a VM that dies does.
     """
-    # The driver model only allocates from it, for devcmds that DMA nothing
-    mem = vfu.GuestMemory(size=1 << 20)
-    try:
+    # The driver model only allocates from it, for devcmds that DMA nothing.
+    # Leaving the block detaches the first client.
+    with client, vfu.GuestMemory(size=1 << 20) as mem:
         driver = ionic.IonicDriver(client, mem)
         station = lif_mac(driver)
         set_lif_mac(driver, GUEST_MAC)
@@ -532,26 +532,22 @@ def test_reset_and_reconnect(suite, client, socket_path):
         )
         suite.check_eq(lif_mac(driver), station, "the MAC after a reset")
         set_lif_mac(driver, GUEST_MAC)
-    finally:
-        client.close()
-        mem.close()
 
-    with vfu.VfioUserClient(socket_path).connect(timeout=30) as second:
+    with (
+        vfu.VfioUserClient(socket_path).connect(timeout=30) as second,
+        vfu.GuestMemory(size=1 << 20) as mem,
+    ):
         suite.check_eq(
             struct.unpack_from("<H", second.read_config(0, 2))[0],
             PCI_VENDOR_ID_PENSANDO,
             "a second client can attach after the first detaches",
         )
-        mem = vfu.GuestMemory(size=1 << 20)
-        try:
-            driver = ionic.IonicDriver(second, mem)
-            suite.check_eq(
-                lif_mac(driver),
-                station,
-                "the MAC a second client finds after the first changed it",
-            )
-        finally:
-            mem.close()
+        driver = ionic.IonicDriver(second, mem)
+        suite.check_eq(
+            lif_mac(driver),
+            station,
+            "the MAC a second client finds after the first changed it",
+        )
 
 
 def test_hang_up_mid_command(suite, server):
