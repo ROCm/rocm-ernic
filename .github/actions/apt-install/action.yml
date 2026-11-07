@@ -120,7 +120,11 @@ runs:
             continue
           fi
           sum=$(sha256sum "${deb}" | cut -d' ' -f1)
-          match=$(apt-cache show "${pkg}=${ver}" 2> /dev/null | awk \
+          # apt-cache fails for a package the index no longer lists, which
+          # is just another .deb to drop: the step runs under -e and
+          # pipefail, so its status mustn't reach the assignment.
+          match=$( { apt-cache show "${pkg}=${ver}" 2> /dev/null || true; } |
+            awk \
             -v pkg="${pkg}" -v ver="${ver}" -v arch="${arch}" -v sum="${sum}" '
             BEGIN { RS = ""; FS = "\n" }
             {
