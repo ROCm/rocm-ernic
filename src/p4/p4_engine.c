@@ -51,6 +51,21 @@ struct p4_engine {
      */
     char load_err[P4_ERR_MAX];
 
+    /*
+     * The program p4_engine_load_commit_baseline() committed, as it arrived,
+     * for p4_engine_reset() to go back to, or NULL.
+     */
+    uint8_t *base_buf;
+    size_t base_len;
+    /* Whether the program or its tables have changed since the baseline was
+     * committed, or since the engine was created if there is none */
+    bool changed;
+    /*
+     * A reset failed to restore the baseline, so every frame is dropped and
+     * every RDMA operation refused until a program is committed.
+     */
+    bool blocked;
+
     struct p4_stats stats;
 };
 
@@ -68,6 +83,7 @@ void p4_engine_destroy(struct p4_engine *eng)
     p4_engine_load_abort(eng);
     p4_entries_destroy(eng->entries);
     p4_json_free(eng->prog);
+    free(eng->base_buf);
     free(eng);
 }
 
@@ -82,6 +98,9 @@ int p4_engine_process_rdma(const struct p4_engine *eng,
         return -EINVAL;
     }
     *suppress = false;
+    if (eng->blocked) {
+        return -EIO;
+    }
     if (!eng->prog) {
         return -ENOENT;
     }
@@ -115,7 +134,12 @@ int p4_engine_update(struct p4_engine *eng, const struct p4_update *up,
         }
         return -ENOENT;
     }
-    return p4_entries_update(eng->entries, eng->prog, up, err, err_len);
+
+    int rc = p4_entries_update(eng->entries, eng->prog, up, err, err_len);
+    if (rc == 0) {
+        eng->changed = true;
+    }
+    return rc;
 }
 
 const char *p4_engine_load_error(const struct p4_engine *eng)
@@ -239,7 +263,51 @@ int p4_engine_load_chunk(struct p4_engine *eng, uint64_t offset,
     return 0;
 }
 
-int p4_engine_load_commit(struct p4_engine *eng)
+/*
+ * Parse the @len bytes at @buf into *@prog, with empty tables for it in
+ * *@entries.  Returns 0, or a negative errno with both left NULL and the
+ * reason in load_err.
+ */
+static int p4_engine_parse(struct p4_engine *eng, const void *buf, size_t len,
+                           struct p4_program **prog,
+                           struct p4_entries **entries)
+{
+    *prog = NULL;
+    *entries = NULL;
+
+    /* The parser writes its reason into load_err on every failure. */
+    int rc =
+        p4_json_parse(buf, len, prog, eng->load_err, sizeof(eng->load_err));
+    if (rc != 0) {
+        return rc;
+    }
+
+    *entries = p4_entries_create(*prog);
+    if (!*entries) {
+        p4_engine_load_fail(eng, "no memory for the program's tables");
+        p4_json_free(*prog);
+        *prog = NULL;
+        return -ENOMEM;
+    }
+    return 0;
+}
+
+/*
+ * Run @prog over @entries from now on, or nothing if both are NULL, and free
+ * what ran before.  A new program invalidates every entry: the tables it
+ * names are not the tables the old entries were written for.
+ */
+static void p4_engine_install(struct p4_engine *eng, struct p4_program *prog,
+                              struct p4_entries *entries)
+{
+    p4_entries_destroy(eng->entries);
+    p4_json_free(eng->prog);
+    eng->prog = prog;
+    eng->entries = entries;
+}
+
+/* p4_engine_load_commit(), keeping the program as the baseline if @baseline */
+static int p4_engine_commit(struct p4_engine *eng, bool baseline)
 {
     if (!eng) {
         return -EINVAL;
@@ -253,33 +321,73 @@ int p4_engine_load_commit(struct p4_engine *eng)
         return -EINVAL;
     }
 
-    /* The parser writes its reason into load_err on every failure. */
-    struct p4_program *prog = NULL;
-    int rc = p4_json_parse(eng->load_buf, eng->load_got, &prog, eng->load_err,
-                           sizeof(eng->load_err));
-
-    p4_engine_load_abort(eng);
-    if (rc != 0) {
-        return rc;
-    }
-
     /* A program that replaces a running one only does so once it has been
      * accepted in full, so a bad load cannot leave the pipeline empty. */
-    struct p4_entries *entries = p4_entries_create(prog);
+    struct p4_program *prog;
+    struct p4_entries *entries;
+    int rc =
+        p4_engine_parse(eng, eng->load_buf, eng->load_got, &prog, &entries);
 
-    if (!entries) {
-        p4_engine_load_fail(eng, "no memory for the program's tables");
-        p4_json_free(prog);
-        return -ENOMEM;
+    if (rc != 0) {
+        p4_engine_load_abort(eng);
+        return rc;
+    }
+    p4_engine_install(eng, prog, entries);
+
+    if (baseline) {
+        free(eng->base_buf);
+        eng->base_buf = eng->load_buf;
+        eng->base_len = eng->load_got;
+        eng->load_buf = NULL;
+    }
+    p4_engine_load_abort(eng);
+    eng->changed = !baseline;
+    eng->blocked = false;
+    return 0;
+}
+
+int p4_engine_load_commit(struct p4_engine *eng)
+{
+    return p4_engine_commit(eng, false);
+}
+
+int p4_engine_load_commit_baseline(struct p4_engine *eng)
+{
+    return p4_engine_commit(eng, true);
+}
+
+int p4_engine_reset(struct p4_engine *eng)
+{
+    struct p4_program *prog = NULL;
+    struct p4_entries *entries = NULL;
+    int rc = 0;
+
+    if (!eng) {
+        return -EINVAL;
     }
 
-    /* A new program invalidates every entry: the tables it names are not
-     * the tables the old entries were written for. */
-    p4_entries_destroy(eng->entries);
-    p4_json_free(eng->prog);
-    eng->prog = prog;
-    eng->entries = entries;
-    return 0;
+    /* A load that was begun and never committed */
+    p4_engine_load_abort(eng);
+    eng->load_err[0] = '\0';
+    if (!eng->changed) {
+        return 0;
+    }
+
+    if (eng->base_buf) {
+        rc =
+            p4_engine_parse(eng, eng->base_buf, eng->base_len, &prog, &entries);
+    }
+
+    /*
+     * On failure the engine runs nothing, but blocked rather than empty:
+     * with no program it forwards everything, and keeping the program the
+     * reset was to remove would hand the guest's policy on to whoever has
+     * the device next.  The next reset tries again.
+     */
+    p4_engine_install(eng, prog, entries);
+    eng->blocked = rc != 0;
+    eng->changed = rc != 0;
+    return rc;
 }
 
 void p4_engine_load_progress(const struct p4_engine *eng, size_t *got,
@@ -321,6 +429,11 @@ int p4_engine_process(struct p4_engine *eng, uint32_t in_port,
     memset(res, 0, sizeof(*res));
     eng->stats.frames_in[in_port]++;
 
+    if (eng->blocked) {
+        eng->stats.frames_dropped++;
+        res->verdict = P4_VERDICT_DROP;
+        return 0;
+    }
     if (eng->prog) {
         struct p4_exec_result er;
         int rc =

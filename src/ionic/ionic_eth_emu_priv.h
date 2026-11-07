@@ -438,8 +438,10 @@ struct ionic_eth_emu {
     /* Ethernet logical queues, indexed by [IONIC_QTYPE_*][queue index]. */
     struct eth_queue eth_q[IONIC_QTYPE_ETH_MAX][IONIC_EMU_ETH_QMAX];
 
-    /* Station MAC reported by LIF_IDENTIFY. */
+    /* Station MAC reported by LIF_IDENTIFY, which LIF_SETATTR may change. */
     uint8_t mac[ETH_ADDR_LEN];
+    /* The MAC @mac starts as, and returns to on a device reset. */
+    uint8_t station_mac[ETH_ADDR_LEN];
 
     /* Identity and link shape (ionic_profile.h); compat unless set. */
     struct ionic_profile profile;

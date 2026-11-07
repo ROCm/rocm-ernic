@@ -63,6 +63,16 @@ LIF_STATS_WRITE_FAILED = "LIF stats write to"
 BAR0_STRADDLE_REFUSED = "ionic BAR0 access straddling the register/MSI-X split"
 # The stats file's connection state after a function-level reset
 FLR_CONNECTION = "connected (PCI FLR)"
+# A MAC the guest gives the LIF, which a device reset takes away
+GUEST_MAC = bytes((0x02, 0x66, 0x77, 0x88, 0x99, 0xAA))
+# LIF_GETATTR and LIF_SETATTR (enum ionic_cmd_opcode), and the MAC
+# attribute (enum ionic_lif_attr), which is at byte 4 of both the command
+# and the completion
+CMD_LIF_GETATTR = 23
+CMD_LIF_SETATTR = 24
+LIF_ATTR_MAC = 3
+LIF_ATTR_OFF = 4
+MAC_LEN = 6
 
 
 def refused(suite, what, func, *expected):
@@ -479,13 +489,52 @@ def test_flr_refused(suite, client, regs, stats_path):
         suite.check_eq(after[1], before[1], "the device wasn't reset")
 
 
+def lif_mac(driver):
+    """The MAC LIF_GETATTR reports."""
+    cmd = bytearray(64)
+    cmd[0] = CMD_LIF_GETATTR
+    cmd[1] = LIF_ATTR_MAC
+    driver.devcmd_ok(bytes(cmd))
+    return driver.bar0_read(ionic.BAR0_DEVCMD_COMP + LIF_ATTR_OFF, MAC_LEN)
+
+
+def set_lif_mac(driver, mac):
+    """Give the LIF @mac, with LIF_SETATTR."""
+    cmd = bytearray(64)
+    cmd[0] = CMD_LIF_SETATTR
+    cmd[1] = LIF_ATTR_MAC
+    cmd[LIF_ATTR_OFF : LIF_ATTR_OFF + MAC_LEN] = mac
+    driver.devcmd_ok(bytes(cmd))
+
+
 def test_reset_and_reconnect(suite, client, socket_path):
-    """A device reset, and a second client after the first detaches."""
-    client.reset()
-    suite.check_eq(
-        client.read_bar32(0, 0), IONIC_DEV_SIG, "the device answers after a reset"
-    )
-    client.close()
+    """A device reset, and a second client after the first detaches.
+
+    Each returns the device to its state before any client attached: the
+    MAC the guest gave the LIF goes back to the station MAC, and the last
+    device command no longer reads as done. The first client leaves its
+    MAC behind without resetting the device, as a VM that dies does.
+    """
+    # The driver model only allocates from it, for devcmds that DMA nothing
+    mem = vfu.GuestMemory(size=1 << 20)
+    try:
+        driver = ionic.IonicDriver(client, mem)
+        station = lif_mac(driver)
+        set_lif_mac(driver, GUEST_MAC)
+        client.reset()
+        suite.check_eq(
+            client.read_bar32(0, 0), IONIC_DEV_SIG, "the device answers after a reset"
+        )
+        suite.check_eq(
+            driver.bar0_read32(ionic.BAR0_DEVCMD_DONE),
+            0,
+            "the last device command reads as done after a reset",
+        )
+        suite.check_eq(lif_mac(driver), station, "the MAC after a reset")
+        set_lif_mac(driver, GUEST_MAC)
+    finally:
+        client.close()
+        mem.close()
 
     with vfu.VfioUserClient(socket_path).connect(timeout=30) as second:
         suite.check_eq(
@@ -493,6 +542,16 @@ def test_reset_and_reconnect(suite, client, socket_path):
             PCI_VENDOR_ID_PENSANDO,
             "a second client can attach after the first detaches",
         )
+        mem = vfu.GuestMemory(size=1 << 20)
+        try:
+            driver = ionic.IonicDriver(second, mem)
+            suite.check_eq(
+                lif_mac(driver),
+                station,
+                "the MAC a second client finds after the first changed it",
+            )
+        finally:
+            mem.close()
 
 
 def test_hang_up_mid_command(suite, server):

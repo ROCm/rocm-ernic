@@ -26,6 +26,9 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -345,6 +348,10 @@ void nvmeof_cm_drop_qp(struct nvmeof_cm *cm, uint32_t guest_qpn)
     (void)cm;
     (void)guest_qpn;
 }
+void nvmeof_cm_reset(struct nvmeof_cm *cm)
+{
+    (void)cm;
+}
 bool nvmeof_cm_handle_mad(struct nvmeof_cm *cm, const void *mad, size_t len,
                           void *rsp, struct nvmeof_cm_result *res)
 {
@@ -421,6 +428,10 @@ bool s3_tcp_has_work(const struct s3_tcp *s)
 {
     (void)s;
     return false;
+}
+void s3_tcp_reset(struct s3_tcp *s)
+{
+    (void)s;
 }
 
 void ionic_eth_emu_register_tx_filter(struct ionic_eth_emu *emu,
@@ -2118,6 +2129,227 @@ static void check_destroyed_qp_replies(void)
 }
 
 /*
+ * A device reset (ionic_datapath_reset()).  Unlike a destroy, it takes back
+ * every request still queued to a peer, and what peers have sent and the
+ * data path hasn't yet applied is dropped: none of it is for anything the
+ * guest has now, though the guest may already have made something under
+ * the same id or key.
+ */
+enum rs_scenario {
+    RS_CANCEL,     /* a remote WRITE still queued in the mesh */
+    RS_READ,       /* a READ answered after the reset */
+    RS_READ_REUSE, /* and after QP_A is made again */
+    RS_FADD_REUSE, /* a fetch-and-add, likewise */
+    RS_INBOUND,    /* a peer's WRITE queued at the reset, the MR made again */
+    RS_STALLED,    /* QP_A's send queue waiting for room in the mesh */
+    RS_COUNTERS,   /* an error counted before the reset */
+};
+
+/* Register what setup() did again, for the guest's driver after a reset */
+static bool rs_reregister(struct ionic_datapath *dp)
+{
+    struct ionic_dp_ring_desc cq = {
+        .buf = {.dma_addr = CQ_GPA, .map_count = 1},
+        .depth_log2 = 6,
+        .stride_log2 = CQE_STRIDE,
+    };
+    struct ionic_dp_buf_desc mr = {.dma_addr = MR_GPA, .map_count = 1};
+
+    if (ionic_datapath_register_cq(dp, CQ_ID, 0, &cq) ||
+        ionic_datapath_register_mr(dp, MR_KEY, MR_GPA, MR_LEN, &mr)) {
+        return false;
+    }
+    register_qp(dp, QP_A, CQ_ID);
+    register_qp(dp, QP_B, CQ_ID);
+    remote(dp, QP_B);
+    return true;
+}
+
+/* A READ or fetch-and-add @w answered by the peer after a reset */
+static const char *rs_reply(struct ionic_datapath *dp, const struct wqe *w,
+                            bool reuse)
+{
+    /* From a READ's landing place through an atomic's */
+    uint8_t before[RESULT_GPA + 8 - SRC_GPA];
+
+    memset(g_mem + RESULT_GPA, 0xa5, 8);
+    post_send(dp, QP_A, w);
+    if (g_nwire != 1 || g_wire_reply[0]) {
+        return "the request wasn't sent";
+    }
+    wire_feed(dp);
+    poll_at(dp, g_now_ms);
+    if (g_nwire != 1 || !g_wire_reply[0]) {
+        return "the peer didn't answer it";
+    }
+
+    ionic_datapath_reset(dp);
+    if (reuse && !rs_reregister(dp)) {
+        return "the resources couldn't be made again";
+    }
+    memcpy(before, g_mem + SRC_GPA, sizeof(before));
+    uint32_t cqes = dp->cq[CQ_ID].prod;
+
+    wire_feed(dp);
+    poll_at(dp, g_now_ms);
+    if (dp->cq[CQ_ID].prod != cqes) {
+        return "the answer was completed";
+    }
+    return memcmp(before, g_mem + SRC_GPA, sizeof(before)) == 0
+               ? NULL
+               : "the answer landed in the consumer's memory";
+}
+
+/* A WRITE from the peer, queued when the reset comes */
+static const char *rs_inbound(struct ionic_datapath *dp)
+{
+    uint8_t msg[IONIC_WIRE_HDR_LEN + 64];
+    uint8_t before[MR_LEN];
+    struct ionic_wire_hdr h;
+    uint32_t msgs;
+
+    memset(&h, 0, sizeof(h));
+    h.magic = IONIC_WIRE_MAGIC;
+    h.op = IONIC_WIRE_WRITE;
+    h.src_qp_id = QP_A;
+    h.dst_qp_id = QP_B;
+    h.req_id = 1;
+    h.rkey = MR_KEY;
+    h.length = 64;
+    h.remote_va = MR_GPA;
+    ionic_dp_wire_hdr_put(msg, &h);
+    memset(msg + IONIC_WIRE_HDR_LEN, 0xc3, 64);
+    mesh_recv(msg, sizeof(msg));
+
+    ionic_datapath_reset(dp);
+    qemu_mutex_lock(&dp->rx_lock);
+    msgs = dp->rx_msgs;
+    qemu_mutex_unlock(&dp->rx_lock);
+    if (msgs != 0) {
+        return "the queued WRITE outlived the reset";
+    }
+    if (!rs_reregister(dp)) {
+        return "the resources couldn't be made again";
+    }
+    memset(g_mem + MR_GPA, 0x5a, MR_LEN);
+    memcpy(before, g_mem + MR_GPA, sizeof(before));
+    poll_at(dp, g_now_ms + 1);
+    return memcmp(before, g_mem + MR_GPA, sizeof(before)) == 0
+               ? NULL
+               : "the WRITE landed in the region made after the reset";
+}
+
+static const char *rs_run(struct ionic_datapath *dp, enum rs_scenario scenario)
+{
+    uint64_t v[IONIC_DP_RDMA_COUNT];
+
+    switch (scenario) {
+    case RS_CANCEL:
+        remote(dp, QP_B);
+        post_send(dp, QP_A, &WRITE_OK);
+        if (g_nwire != 1 || g_wire_reply[0]) {
+            return "the WRITE wasn't sent as a request";
+        }
+        ionic_datapath_reset(dp);
+        if (g_ncancel != 1 || g_cancel_mask != 0) {
+            return "the mesh wasn't asked once to take back every request";
+        }
+        for (int i = 0; i < MAX_PENDING; i++) {
+            if (dp->pending[i].valid) {
+                return "the WRITE is still pending";
+            }
+        }
+        return NULL;
+    case RS_READ:
+        remote(dp, QP_B);
+        return rs_reply(dp, &READ_OK, false);
+    case RS_READ_REUSE:
+        remote(dp, QP_B);
+        return rs_reply(dp, &READ_OK, true);
+    case RS_FADD_REUSE:
+        remote(dp, QP_B);
+        return rs_reply(dp, &FADD_OK, true);
+    case RS_INBOUND:
+        remote(dp, QP_B);
+        return rs_inbound(dp);
+    case RS_STALLED:
+        remote(dp, QP_B);
+        g_room = false;
+        post_send(dp, QP_A, &WRITE_OK);
+        if (dp->sq_stalled != 1) {
+            return "the WRITE didn't wait for room in the mesh";
+        }
+        ionic_datapath_reset(dp);
+        return dp->sq_stalled == 0 ? NULL
+                                   : "a send queue is still waiting for room";
+    case RS_COUNTERS:
+    default:
+        run_write_bad_rkey(dp);
+        ionic_datapath_rdma_counters(dp, IONIC_DP_DEVICE, v);
+        if (v[IONIC_DP_REQ_RX_REMOTE_ACCESS_ERR] == 0) {
+            return "the refused WRITE wasn't counted";
+        }
+        ionic_datapath_reset(dp);
+        ionic_datapath_rdma_counters(dp, IONIC_DP_DEVICE, v);
+        for (size_t i = 0; i < IONIC_DP_RDMA_COUNT; i++) {
+            if (v[i] != 0) {
+                return "a counter outlived the reset";
+            }
+        }
+        return NULL;
+    }
+}
+
+static void check_device_reset(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        enum rs_scenario scenario;
+    } rows[] = {
+        {"positive", "a reset while a remote WRITE is queued in the mesh",
+         "the mesh takes back every request, once, and nothing is pending",
+         RS_CANCEL},
+        {"negative", "a READ answered after a reset",
+         "the result lands nowhere, and nothing completes", RS_READ},
+        {"negative",
+         "a READ answered after a reset and QP_A, its CQ and the MR made "
+         "again",
+         "the result lands nowhere, and the new QP_A completes nothing",
+         RS_READ_REUSE},
+        {"negative",
+         "a fetch-and-add answered after a reset and QP_A made again",
+         "the original value lands nowhere, and the new QP_A completes "
+         "nothing",
+         RS_FADD_REUSE},
+        {"negative",
+         "a peer's WRITE queued at a reset, and the MR made again under its "
+         "key",
+         "the queue is empty after the reset, and the WRITE never lands",
+         RS_INBOUND},
+        {"corner", "a reset while QP_A waits for room in the mesh",
+         "no send queue is left waiting", RS_STALLED},
+        {"positive", "a reset after a refused WRITE was counted",
+         "every counter is zero", RS_COUNTERS},
+    };
+
+    for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
+        struct ionic_datapath *dp = setup();
+        const char *why = dp ? rs_run(dp, rows[row].scenario)
+                             : "could not create a data path";
+
+        ionic_datapath_destroy(dp);
+        printf("%s %s: %s; expected: %s\n", why ? "FAIL" : "ok  ",
+               rows[row].category, rows[row].description, rows[row].expected);
+        if (why) {
+            printf("     %s\n", why);
+            failures++;
+        }
+    }
+}
+
+/*
  * A WRITE from another node is checked before any of it lands: one whose
  * header length isn't its payload's, or whose range runs past the end of the
  * rkey's region, is refused with the region untouched, as sq_rdma() refuses
@@ -3093,6 +3325,82 @@ static void check_unreadable_wqe(void)
     }
 }
 
+/*
+ * A reset while a receive thread delivers.  The mesh's receive threads run
+ * on, and the reset empties the inbound queue under its lock, so a message
+ * that comes in during one is either dropped by it or kept whole for the
+ * next pass.  TSan checks the locking; this checks the queue's accounting
+ * comes out at zero once both are done.
+ */
+#define RR_ROUNDS   20
+#define RR_MESSAGES 200
+
+struct rr_feeder {
+    atomic_bool done;
+};
+
+static void *rr_feed(void *arg)
+{
+    struct rr_feeder *f = arg;
+
+    for (unsigned i = 0; i < RR_MESSAGES; i++) {
+        /* A full queue leaves the message with the mesh: the next try is
+         * the mesh's retry */
+        (void)rq_offer(IONIC_WIRE_HDR_LEN + 16U, true);
+    }
+    atomic_store(&f->done, true);
+    return NULL;
+}
+
+static void check_reset_racing_recv(void)
+{
+    const char *why = NULL;
+
+    for (unsigned round = 0; round < RR_ROUNDS && !why; round++) {
+        struct ionic_datapath *dp = setup();
+        struct rr_feeder f;
+        pthread_t t;
+
+        if (!dp) {
+            why = "could not create a data path";
+            break;
+        }
+        remote(dp, QP_B);
+        atomic_init(&f.done, false);
+        if (pthread_create(&t, NULL, rr_feed, &f) != 0) {
+            ionic_datapath_destroy(dp);
+            why = "could not start the receive thread";
+            break;
+        }
+        while (!atomic_load(&f.done)) {
+            ionic_datapath_reset(dp);
+            ionic_datapath_poll(dp);
+            /* On one CPU, or under valgrind, which runs one thread at a
+             * time, the receive thread would otherwise wait out this
+             * thread's whole time slice between messages */
+            (void)sched_yield();
+        }
+        (void)pthread_join(t, NULL);
+
+        ionic_datapath_reset(dp);
+        qemu_mutex_lock(&dp->rx_lock);
+        if (dp->rx_head || dp->rx_tail || dp->rx_msgs || dp->rx_bytes ||
+            dp->rx_fresh) {
+            why = "the inbound queue isn't empty after the last reset";
+        }
+        qemu_mutex_unlock(&dp->rx_lock);
+        ionic_datapath_destroy(dp);
+    }
+    printf("%s concurrency: resets and passes while a receive thread "
+           "delivers; expected: the inbound queue empty after the last reset, "
+           "with nothing leaked\n",
+           why ? "FAIL" : "ok  ");
+    if (why) {
+        printf("     %s\n", why);
+        failures++;
+    }
+}
+
 int main(void)
 {
     check_wire_hdr_layout();
@@ -3100,9 +3408,11 @@ int main(void)
     check_late_responses();
     check_mesh_cancel();
     check_destroyed_qp_replies();
+    check_device_reset();
     check_remote_write_bounds();
     check_mesh_recv_sizes();
     check_mesh_recv_room();
+    check_reset_racing_recv();
     check_reply_budget();
     check_unreadable_wqe();
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {

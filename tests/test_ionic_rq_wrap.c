@@ -189,6 +189,10 @@ void nvmeof_cm_drop_qp(struct nvmeof_cm *cm, uint32_t guest_qpn)
     (void)cm;
     (void)guest_qpn;
 }
+void nvmeof_cm_reset(struct nvmeof_cm *cm)
+{
+    (void)cm;
+}
 bool nvmeof_cm_handle_mad(struct nvmeof_cm *cm, const void *mad, size_t len,
                           void *rsp, struct nvmeof_cm_result *res)
 {
@@ -265,6 +269,10 @@ bool s3_tcp_has_work(const struct s3_tcp *s)
 {
     (void)s;
     return false;
+}
+void s3_tcp_reset(struct s3_tcp *s)
+{
+    (void)s;
 }
 
 void ionic_eth_emu_register_tx_filter(struct ionic_eth_emu *emu,

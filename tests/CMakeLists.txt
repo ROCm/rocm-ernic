@@ -1097,18 +1097,21 @@ ernic_add_unit_test(ernic-stats-unit ernic-test-ernic-stats TIMEOUT 30)
 # rdma-reset-faults checks that the admin queue made again after
 # RDMA_RESET_LIF still injects the --inject faults. mesh-none checks that
 # only the TCP backend has a mesh, and that the mesh calls on any other
-# backend answer without one.
+# backend answer without one. device-reset and its -nvmeof, -s3 and -p4
+# variants check that a device reset frees everything the guest set up,
+# writes nothing to guest memory, and leaves a device the driver can bring
+# up again.
 set(ERNIC_HARNESS_GROUPS
     devcmds bringup rdma-reset rdma-reset-faults rdma-reset-frees admin
     admin-dma rc spec-sge atomic wrap mr-keys dp-dma tables limits cq-events
     qp-flush qp-flush-srq ud srq srq-rq-ring srq-cq-ring eth eth-dma
-    nvmeof nvmeof-queues s3 mesh-none teardown backend-names none
-    loopback-pair)
+    nvmeof nvmeof-queues s3 device-reset device-reset-nvmeof
+    device-reset-s3 mesh-none teardown backend-names none loopback-pair)
 if(ERNIC_BUILD_P4)
     list(APPEND ERNIC_HARNESS_GROUPS p4-port p4-attach fp8-map fp8-overlap
                                       p4-rdma p4-cvt p4-cvt-map p4-drop-map
                                       p4-deny p4-log-limit p4-devcmd
-                                      p4-devcmd-errors)
+                                      p4-devcmd-errors device-reset-p4)
 endif()
 foreach(ernic_harness_group IN LISTS ERNIC_HARNESS_GROUPS)
     ernic_add_unit_test(ionic-harness-${ernic_harness_group}

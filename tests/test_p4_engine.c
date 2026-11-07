@@ -1597,6 +1597,125 @@ static void test_table_entries(void)
     p4_engine_destroy(eng);
 }
 
+/* load_fixture(), committed as the operator's program */
+static int load_fixture_baseline(struct p4_engine *eng, const char *name)
+{
+    size_t n = 0;
+    char *buf = read_fixture(name, &n);
+    int rc;
+
+    if (!buf) {
+        return -ENOENT;
+    }
+    rc = p4_engine_load_begin(eng, n);
+    if (rc == 0) {
+        rc = p4_engine_load_chunk(eng, 0, buf, n);
+    }
+    if (rc == 0) {
+        rc = p4_engine_load_commit_baseline(eng);
+    }
+    free(buf);
+    return rc;
+}
+
+/* The verdict on @in, a frame from the host port, or -1 if it didn't run */
+static int verdict(struct p4_engine *eng, const uint8_t *in, size_t len)
+{
+    uint8_t out[128];
+    struct p4_result res;
+
+    if (len > sizeof(out) || p4_engine_process(eng, P4_PORT_HOST, in, len, out,
+                                               sizeof(out), &res) != 0) {
+        return -1;
+    }
+    return (int)res.verdict;
+}
+
+/*
+ * A device reset undoes what the guest did: its table entries, its
+ * programs and a load it left unfinished go, and the operator's program
+ * comes back with its tables empty, or no program if there was none. The
+ * statistics stay.
+ */
+static void test_reset(void)
+{
+    struct p4_engine *eng = p4_engine_create();
+    uint8_t in[64];
+    struct p4_update up;
+    struct p4_stats before;
+    struct p4_stats after;
+    size_t got;
+    size_t total;
+    char err[160];
+
+    for (size_t i = 0; i < sizeof(in); i++) {
+        in[i] = (uint8_t)i;
+    }
+
+    check(p4_engine_reset(NULL) == -EINVAL, "a reset of no engine is refused");
+    check(p4_engine_reset(eng) == 0 && !p4_engine_has_program(eng),
+          "a reset of a fresh engine leaves it without a program");
+
+    /* minimal_forward drops every frame its one table has no entry for */
+    check(load_fixture_baseline(eng, "minimal_forward.json") == 0,
+          "the operator's program loads");
+    check(verdict(eng, in, sizeof(in)) == P4_VERDICT_DROP,
+          "the operator's program drops the frame");
+
+    /* An entry the guest adds, forwarding the frame */
+    memset(&up, 0, sizeof(up));
+    up.type = P4_UPDATE_INSERT;
+    (void)snprintf(up.table, sizeof(up.table), "IngressImpl.forward");
+    (void)snprintf(up.action, sizeof(up.action), "IngressImpl.set_egress");
+    up.nmatch = 1;
+    set_spec(&up.match[0], in, 6);
+    up.nparams = 1;
+    up.params[0].len = 1;
+    up.params[0].value[P4_MATCH_BYTES - 1] = 1;
+    checkf(p4_engine_update(eng, &up, err, sizeof(err)) == 0,
+           "the guest's entry is not installed: %s", err);
+    check(verdict(eng, in, sizeof(in)) == P4_VERDICT_FORWARD,
+          "the guest's entry forwards the frame");
+    p4_engine_get_stats(eng, &before);
+    check(p4_engine_reset(eng) == 0, "a reset after a table change failed");
+    p4_engine_get_stats(eng, &after);
+    check(memcmp(&before, &after, sizeof(before)) == 0,
+          "a reset changed the statistics");
+    check(p4_engine_has_program(eng) &&
+              verdict(eng, in, sizeof(in)) == P4_VERDICT_DROP,
+          "the guest's entry outlived a reset");
+    check(p4_engine_update(eng, &up, err, sizeof(err)) == 0,
+          "the entry can't be added again after a reset");
+
+    /* A program the guest loads in place of the operator's */
+    check(load_fixture(eng, "loopback.json") == 0, "the guest's program loads");
+    check(verdict(eng, in, sizeof(in)) == P4_VERDICT_FORWARD,
+          "the guest's program forwards the frame");
+    check(p4_engine_reset(eng) == 0, "a reset after a load failed");
+    check(p4_engine_has_program(eng) &&
+              verdict(eng, in, sizeof(in)) == P4_VERDICT_DROP,
+          "the guest's program outlived a reset");
+
+    /* A load begun and never finished */
+    check(p4_engine_load_begin(eng, 100) == 0, "a load doesn't begin");
+    check(p4_engine_reset(eng) == 0, "a reset during a load failed");
+    p4_engine_load_progress(eng, &got, &total);
+    check(got == 0 && total == 0, "an unfinished load outlived a reset");
+    check(p4_engine_load_chunk(eng, 0, in, 1) == -EINVAL,
+          "a chunk after a reset was taken into the unfinished load");
+    p4_engine_destroy(eng);
+
+    /* With no operator's program, a reset leaves none, which forwards */
+    eng = p4_engine_create();
+    check(load_fixture(eng, "minimal_forward.json") == 0,
+          "the guest's program loads");
+    check(p4_engine_reset(eng) == 0 && !p4_engine_has_program(eng),
+          "with no operator's program, the guest's outlived a reset");
+    check(verdict(eng, in, sizeof(in)) == P4_VERDICT_FORWARD,
+          "with no program after a reset, the frame isn't forwarded");
+    p4_engine_destroy(eng);
+}
+
 static void test_table_entry_errors(void)
 {
     struct p4_engine *eng = p4_engine_create();
@@ -3759,6 +3878,7 @@ int main(void)
     test_execute_wide_field();
     test_table_entries();
     test_table_entry_errors();
+    test_reset();
     test_rdma_metadata();
     test_rdma_execute();
     test_rdma_few_fields();

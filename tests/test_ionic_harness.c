@@ -45,9 +45,11 @@
 #include "ionic/ionic_bar.h"
 #include "ionic/ionic_datapath.h"
 #include "ionic/ionic_datapath_nvmeof.h"
+/* For the data path's tables, which device-reset checks */
+#include "ionic/ionic_datapath_priv.h"
 #include "ionic/ionic_device.h"
 #include "ionic/ionic_eth_emu.h"
-/* For the emulator's admin queue pointer, which rdma-reset checks */
+/* For the emulator's state, which rdma-reset and device-reset check */
 #include "ionic/ionic_eth_emu_priv.h"
 #include "ionic/ionic_fault.h"
 #include "ionic_harness.h"
@@ -57,11 +59,11 @@
 #include "nvmeof/nvmeof.h"
 #include "nvmeof/nvmeof_cm.h"
 #include "nvmeof/nvmeof_target.h"
+#include "qemu/thread.h"
 #include "test_fmt.h"
 #ifdef ERNIC_HAVE_P4
 #include "ernic_log.h"
 #include "ionic/ionic_datapath_p4.h"
-#include "ionic/ionic_datapath_priv.h"
 #include "ionic/ionic_eth_p4.h"
 #include "p4/p4_devcmd.h"
 #include "p4/p4_engine.h"
@@ -82,6 +84,7 @@
  * rocm_ernic_dev_t typedef in rocm_ernic_compat.h, so it would drop this.
  */
 #include "rocm_ernic_internal.h" // IWYU pragma: keep
+#include "s3/s3_tcp.h"
 #include "s3/s3_token.h"
 
 static int failures;
@@ -7314,6 +7317,396 @@ static void test_s3(void)
     teardown(T, &h);
 }
 
+/* ---- Device reset ------------------------------------------------------- */
+
+/* The interrupts raised so far, on every vector */
+static unsigned irq_total(struct ih *h)
+{
+    unsigned n = 0;
+
+    for (uint32_t v = 0; v < FAKE_VFU_MAX_IRQS; v++) {
+        n += fake_vfu_irq_count(h->vfu, v);
+    }
+    return n;
+}
+
+/* What the data path still holds for the guest, or NULL if nothing */
+static const char *dp_leftover(struct ionic_datapath *dp)
+{
+    const char *what = NULL;
+
+    for (uint32_t i = 0; i < dp->qp_count && !what; i++) {
+        what = dp->qp[i].valid ? "a QP" : NULL;
+    }
+    for (uint32_t i = 0; i < dp->cq_count && !what; i++) {
+        what = dp->cq[i].valid ? "a CQ" : NULL;
+    }
+    for (uint32_t i = 0; i < dp->srq_count && !what; i++) {
+        qemu_mutex_lock(&dp->srq[i].lock);
+        what = dp->srq[i].valid ? "an SRQ" : NULL;
+        qemu_mutex_unlock(&dp->srq[i].lock);
+    }
+    for (uint32_t i = 0; i < dp->ah_count && !what; i++) {
+        what = dp->ah[i].valid ? "an AH" : NULL;
+    }
+    for (uint32_t i = 0; i < ERNIC_MAX_MR && !what; i++) {
+        what = dp->mr[i].valid ? "an MR" : NULL;
+    }
+    for (int i = 0; i < MAX_PENDING && !what; i++) {
+        what = dp->pending[i].valid ? "a pending request" : NULL;
+    }
+    if (!what && dp->sq_stalled) {
+        what = "a stalled send queue";
+    }
+    if (!what) {
+        qemu_mutex_lock(&dp->rx_lock);
+        if (dp->rx_head || dp->rx_msgs || dp->rx_bytes) {
+            what = "a mesh message";
+        }
+        qemu_mutex_unlock(&dp->rx_lock);
+    }
+    return what;
+}
+
+/* The MAC LIF_GETATTR reports */
+static bool lif_mac(struct ih *h, uint8_t mac[6])
+{
+    uint8_t cmd[64] = {0};
+    uint8_t comp[16];
+
+    cmd[0] = IH_CMD_LIF_GETATTR;
+    cmd[1] = IH_LIF_ATTR_MAC;
+    if (ih_devcmd(h, cmd, comp, NULL, 0) != 0) {
+        return false;
+    }
+    memcpy(mac, comp + 4, 6);
+    return true;
+}
+
+/* Whether every Ethernet queue is gone */
+static bool eth_queues_gone(const struct ionic_eth_emu *emu)
+{
+    for (unsigned t = 0; t < IONIC_QTYPE_ETH_MAX; t++) {
+        for (unsigned i = 0; i < IONIC_EMU_ETH_QMAX; i++) {
+            if (emu->eth_q[t][i].valid) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+/* Whether every vector is masked, without mask-on-assert or a pending
+ * assertion, as at power-on */
+static bool intrs_at_power_on(const struct ionic_eth_emu *emu)
+{
+    for (unsigned v = 0; v < IONIC_MSIX_MAX_VECTORS; v++) {
+        if (emu->intr_mask[v] != 1 || emu->intr_mask_assert[v] ||
+            emu->intr_pending[v]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/*
+ * A device reset, as QEMU's reset of the device, an FLR or a client going
+ * asks for. Everything the guest set up goes: its RDMA resources, its
+ * Ethernet queues and LIF, its interrupt settings, its MAC, its writes to
+ * the registers, and a frame on its way to it. Nothing is written to guest
+ * memory while it goes, since after a client goes there is none. Then the
+ * driver loads again and finds a working device.
+ */
+static void test_device_reset(void)
+{
+    const char *T = "device-reset";
+    static const uint8_t guest_mac[6] = {0x02, 0x66, 0x77, 0x88, 0x99, 0xaa};
+    struct rc r;
+    struct ih *h = &r.h;
+    struct ih_srq srq;
+    struct ih_qp c;
+    uint8_t station[6];
+    uint8_t mac[6];
+    uint8_t info[IONIC_BAR0_DEV_CMD_REGS_OFFSET];
+    uint8_t info_now[sizeof(info)];
+    uint8_t frame[64];
+    uint8_t got[64];
+    uint8_t desc[16] = {0};
+    uint8_t cmd[64] = {0};
+    uint8_t comp[16];
+
+    if (!rc_setup(T, &r)) {
+        return;
+    }
+
+    PVRDMADev *pvrdma = h->dev->pvrdma_handle;
+    RdmaDeviceResources *res = &pvrdma->rdma_dev_res;
+
+    /* RDMA resources beyond the RC pair: a third QP, an SRQ and an AH */
+    bool ok = ih_qp_create(h, &c, RC_QP_C, IH_QPT_RC, &r.cqa, &r.cqa, NULL) &&
+              ih_qp_connect(h, &c, &r.b) && ih_srq_create(h, &srq, 4) == 0 &&
+              ih_ah_create(h, 5, 0xc0a80001U, 0xc0a80002U) == 0;
+
+    /* An Ethernet Rx queue, with a buffer posted */
+    const uint64_t rxr = fake_vfu_alloc(h->vfu, (size_t)8 * 16, 64);
+    const uint64_t rxc = fake_vfu_alloc(h->vfu, (size_t)8 * 16, 64);
+    const uint64_t rxbuf = fake_vfu_alloc(h->vfu, 2048, 4096);
+    const struct q_init_cmd rxq = {.qtype = IH_QTYPE_ETH_RXQ,
+                                   .intr = RX_INTR,
+                                   .depth_log2 = 3,
+                                   .ring = rxr,
+                                   .cq = rxc};
+
+    ok = ok && rxr && rxc && rxbuf && q_init(h, &rxq) &&
+         q_enable(h, IH_QTYPE_ETH_RXQ, 0);
+    ernic_put_le16(desc + 6, 2048);
+    ernic_put_le64(desc + 8, rxbuf);
+    fake_vfu_write(h->vfu, rxr, desc, sizeof(desc));
+    ih_doorbell(h, IH_QTYPE_ETH_RXQ, 0, 0, 1);
+    ih_intr_mask(h, RX_INTR, false);
+    ih_bar0_write32(h,
+                    IONIC_BAR0_INTR_CTRL_OFFSET + (RX_INTR * INTR_REG_STRIDE) +
+                        INTR_MASK_ASSERT_OFF,
+                    1);
+
+    /* A MAC of the guest's own */
+    ok = ok && lif_mac(h, station);
+    cmd[0] = IH_CMD_LIF_SETATTR;
+    cmd[1] = IH_LIF_ATTR_MAC;
+    memcpy(cmd + 4, guest_mac, sizeof(guest_mac));
+    ok = ok && ih_devcmd(h, cmd, comp, NULL, 0) == 0;
+
+    /* A write over the device's identity, which nothing stops */
+    ih_bar0_read(h, IONIC_BAR0_DEV_INFO_REGS_OFFSET, info, sizeof(info));
+    ih_bar0_write32(h, IONIC_BAR0_DEV_INFO_REGS_OFFSET, 0xdeadbeefU);
+
+    /* And, untaken, a frame for the guest */
+    fill(frame, sizeof(frame), 0x42);
+    ok = ok && ionic_eth_emu_queue_rx_frame(h->emu, frame, sizeof(frame)) == 0;
+    if (!check(T, ok, "setting up the device failed")) {
+        rc_teardown(T, &r);
+        return;
+    }
+
+    const unsigned long maps = fake_vfu_map_count(h->vfu);
+    const unsigned irqs = irq_total(h);
+
+    ionic_device_reset(h->dev->ionic);
+    ionic_device_reset(NULL);
+
+    check(T, fake_vfu_map_count(h->vfu) == maps,
+          "the reset mapped guest memory %lu time(s)",
+          fake_vfu_map_count(h->vfu) - maps);
+    check(T, irq_total(h) == irqs, "the reset raised %u interrupt(s)",
+          irq_total(h) - irqs);
+
+    check(T,
+          res->pd_tbl.used == 0 && res->cq_tbl.used == 0 &&
+              res->qp_tbl.used == 0 && res->mr_tbl.used == 0 &&
+              res->srq_tbl.used == 0 && g_hash_table_size(res->qp_hash) == 0,
+          "%u PD(s), %u CQ(s), %u QP(s), %u QPN(s), %u MR(s) and %u SRQ(s) "
+          "left after the reset",
+          res->pd_tbl.used, res->cq_tbl.used, res->qp_tbl.used,
+          g_hash_table_size(res->qp_hash), res->mr_tbl.used, res->srq_tbl.used);
+    const char *left = dp_leftover(h->dp);
+    check(T, left == NULL, "the data path still has %s", left ? left : "");
+    check(T,
+          ionic_rdma_devcmd_get_adminq_ctx(h->rdma) == NULL &&
+              h->emu->adminq == NULL,
+          "the RDMA admin queue outlived the reset");
+
+    check(T, eth_queues_gone(h->emu), "an Ethernet queue outlived the reset");
+    check(T,
+          !h->emu->lif_initialized && h->emu->lif_info_pa == 0 &&
+              h->emu->port_info_pa == 0,
+          "the LIF or port outlived the reset");
+    check(T, intrs_at_power_on(h->emu),
+          "the interrupts aren't as they were at power-on");
+    check(T, h->emu->inbox_count == 0,
+          "%u frame(s) for the guest outlived the reset", h->emu->inbox_count);
+
+    ih_bar0_read(h, IONIC_BAR0_DEV_INFO_REGS_OFFSET, info_now,
+                 sizeof(info_now));
+    check(T, memcmp(info_now, info, sizeof(info)) == 0,
+          "the device's identity isn't what it was before the guest wrote it");
+    check(T,
+          ih_bar0_read32(h, IONIC_BAR0_DEV_CMD_REGS_OFFSET + DEVCMD_DONE_OFF) ==
+              0,
+          "the last device command still reads as done");
+    check(T,
+          ih_bar0_read32(h, IONIC_BAR0_INTR_CTRL_OFFSET +
+                                (RX_INTR * INTR_REG_STRIDE) +
+                                INTR_MASK_ASSERT_OFF) == 0,
+          "the guest's interrupt control writes outlived the reset");
+
+    /* Nothing lands in memory the guest gave the device before: not the
+     * frame, and not a WRITE from a QP that is gone */
+    uint8_t before_b[64];
+    uint8_t now_b[64];
+    struct ih_sge sge = {.va = VA_A, .len = sizeof(before_b), .lkey = MR_A};
+    struct ih_send w = {.op = IH_OP_RDMA_WRITE,
+                        .flags = IH_WQE_SIGNALLED,
+                        .remote_va = VA_B,
+                        .rkey = MR_B,
+                        .sge = &sge,
+                        .nsge = 1};
+
+    fill(got, sizeof(got), 0x17);
+    ih_mr_write(h, &r.mra, VA_A, got, sizeof(got));
+    ih_mr_read(h, &r.mrb, VA_B, before_b, sizeof(before_b));
+    ih_post_send(h, &c, &w);
+    ih_poll(h);
+    ih_mr_read(h, &r.mrb, VA_B, now_b, sizeof(now_b));
+    check(T, memcmp(before_b, now_b, sizeof(now_b)) == 0,
+          "a QP from before the reset ran a WRITE");
+    check(T, cq_empty(h, &r.cqa), "a QP from before the reset completed");
+    fake_vfu_read(h->vfu, rxbuf, got, sizeof(got));
+    check(T, all_zero(got, sizeof(got)),
+          "a frame queued before the reset reached the guest");
+
+    check(T, lif_mac(h, mac) && memcmp(mac, station, sizeof(mac)) == 0,
+          "the MAC isn't the station MAC after the reset");
+
+    /* The driver loads again, and its traffic flows */
+    ih_mr_free(&r.mra);
+    ih_mr_free(&r.mrb);
+    ok = ih_bringup(h) && ih_cq_create(h, &r.cqa, RC_CQ_A, 6) &&
+         ih_cq_create(h, &r.cqb, RC_CQ_B, 6) &&
+         ih_qp_create(h, &r.a, RC_QP_A, IH_QPT_RC, &r.cqa, &r.cqa, NULL) &&
+         ih_qp_create(h, &r.b, RC_QP_B, IH_QPT_RC, &r.cqb, &r.cqb, NULL) &&
+         ih_qp_connect(h, &r.a, &r.b) &&
+         ih_mr_create(h, &r.mra, MR_A, VA_A, MR_LEN, IH_ACCESS_ALL, true) &&
+         ih_mr_create(h, &r.mrb, MR_B, VA_B, MR_LEN, IH_ACCESS_ALL, false);
+    if (!check(T, ok, "the device didn't come up again after the reset")) {
+        ih_mr_free(&r.mra);
+        ih_mr_free(&r.mrb);
+        teardown(T, h);
+        return;
+    }
+    fill(got, sizeof(got), 0x29);
+    ih_mr_write(h, &r.mra, VA_A, got, sizeof(got));
+    r.msn_a = 1;
+    ih_post_send(h, &r.a, &w);
+    expect_send(T, "RDMA_WRITE after the reset", &r, IH_STS_OK);
+    ih_mr_read(h, &r.mrb, VA_B, now_b, sizeof(now_b));
+    check(T, memcmp(got, now_b, sizeof(now_b)) == 0,
+          "an RDMA_WRITE after the reset didn't land");
+    rc_teardown(T, &r);
+}
+
+/*
+ * A CM REQ the NVMe-oF controller accepted, naming a guest QP that was
+ * never created, so no QP's destroy forgets it: the reset does. With it
+ * go the GIDs the controller learned from the REQ.
+ */
+static void test_device_reset_nvmeof(void)
+{
+    const char *T = "device-reset-nvmeof";
+    struct ih h;
+    struct ih_cq gcq;
+    struct ih_qp gsi;
+    struct ih_mr mr = {0};
+    uint8_t mad[IB_MAD_SIZE];
+    uint8_t reply[IB_MAD_SIZE];
+
+    if (!setup(T, &h, NV_BACKEND)) {
+        return;
+    }
+    bool ok = ih_cq_create(&h, &gcq, NV_GSI_CQ, 5) &&
+              ih_qp_create(&h, &gsi, 1, IH_QPT_UD, &gcq, &gcq, NULL) &&
+              ih_mr_create(&h, &mr, NV_MR, NV_VA, UINT64_C(2) * IH_PAGE_SIZE,
+                           IH_ACCESS_ALL, false);
+    build_req(mad);
+    ok = ok && gsi_exchange(T, &h, &gsi, &gcq, &mr, mad, true, reply);
+    if (!check(T, ok && nvmeof_cm_conn_count(h.dp->nvmeof_cm) == 1,
+               "the controller didn't take the REQ")) {
+        ih_mr_free(&mr);
+        teardown(T, &h);
+        return;
+    }
+
+    ionic_device_reset(h.dev->ionic);
+    check(T, nvmeof_cm_conn_count(h.dp->nvmeof_cm) == 0,
+          "%u controller connection(s) outlived the reset",
+          nvmeof_cm_conn_count(h.dp->nvmeof_cm));
+    check(T,
+          all_zero(h.dp->nvmeof_sgid, sizeof(h.dp->nvmeof_sgid)) &&
+              all_zero(h.dp->nvmeof_dgid, sizeof(h.dp->nvmeof_dgid)),
+          "the GIDs learned from the REQ outlived the reset");
+
+    ih_mr_free(&mr);
+    teardown(T, &h);
+}
+
+/*
+ * A TCP connection to the S3 store, and the SYN-ACK it queued for the
+ * guest, both go with the reset: the guest's end of the connection is gone.
+ */
+static void test_device_reset_s3(void)
+{
+    const char *T = "device-reset-s3";
+    struct ih h;
+    struct s3h_conn c = {.seq = 0x2000U};
+
+    if (!setup(T, &h, S3H_BACKEND)) {
+        return;
+    }
+    ionic_eth_emu_get_tx_filter(h.emu, &c.fn, &c.ctx);
+    if (!check(T, c.fn != NULL && s3h_segment(&c, S3H_TCP_SYN, NULL),
+               "the store passed on a SYN") ||
+        !check(T, s3_tcp_conn_count(h.dp->s3_tcp) == 1,
+               "the store has %u connection(s), not 1",
+               s3_tcp_conn_count(h.dp->s3_tcp)) ||
+        !check(T, h.emu->inbox_count > 0, "the store queued no SYN-ACK")) {
+        teardown(T, &h);
+        return;
+    }
+
+    ionic_device_reset(h.dev->ionic);
+    check(T, s3_tcp_conn_count(h.dp->s3_tcp) == 0,
+          "%u connection(s) to the store outlived the reset",
+          s3_tcp_conn_count(h.dp->s3_tcp));
+    check(T, h.emu->inbox_count == 0,
+          "%u frame(s) from the store outlived the reset", h.emu->inbox_count);
+    teardown(T, &h);
+}
+
+#ifdef ERNIC_HAVE_P4
+/*
+ * A program the guest loaded goes with the reset. The engine's own tests
+ * (test_p4_engine.c) cover what it goes back to; this is that the device
+ * reset asks it to.
+ */
+static void test_device_reset_p4(void)
+{
+    const char *T = "device-reset-p4";
+    struct p4_engine *eng = p4_engine_create();
+    char err[128] = "";
+    struct ih h;
+
+    if (!check(T, eng != NULL, "p4_engine_create failed")) {
+        return;
+    }
+    if (!setup(T, &h, "loopback")) {
+        p4_engine_destroy(eng);
+        return;
+    }
+    if (check(T,
+              ionic_device_attach_p4(h.dev->ionic, eng, P4_SCOPE_LOAD, err,
+                                     sizeof(err)),
+              "attach failed: %s", err) &&
+        check(T,
+              p4r_load(eng, "loopback.json") == 0 && p4_engine_has_program(eng),
+              "the guest's program didn't load")) {
+        ionic_device_reset(h.dev->ionic);
+        check(T, !p4_engine_has_program(eng),
+              "the guest's program outlived the reset");
+    }
+    teardown(T, &h);
+    p4_engine_destroy(eng);
+}
+#endif
+
 /* ---- Backends with no mesh --------------------------------------------- */
 
 /* Never called: no backend here has a mesh to call it from */
@@ -7874,6 +8267,12 @@ static const struct {
     {"nvmeof", test_nvmeof},
     {"nvmeof-queues", test_nvmeof_queue_limit},
     {"s3", test_s3},
+    {"device-reset", test_device_reset},
+    {"device-reset-nvmeof", test_device_reset_nvmeof},
+    {"device-reset-s3", test_device_reset_s3},
+#ifdef ERNIC_HAVE_P4
+    {"device-reset-p4", test_device_reset_p4},
+#endif
     {"mesh-none", test_mesh_none},
     {"teardown", test_teardown},
     {"backend-names", test_backend_names},

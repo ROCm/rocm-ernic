@@ -130,6 +130,25 @@ static void dp_inmsg_free(struct dp_inmsg *m)
     free(m);
 }
 
+/*
+ * Free every message on the inbound queue and zero its accounting.  Only
+ * between passes: a pass holds messages it has taken off the queue, which
+ * the accounting still counts.
+ */
+static void dp_rx_clear(struct ionic_datapath *dp) TSA_REQUIRES(dp->rx_lock)
+{
+    for (struct dp_inmsg *m = dp->rx_head; m;) {
+        struct dp_inmsg *next = m->next;
+        dp_inmsg_free(m);
+        m = next;
+    }
+    dp->rx_head = dp->rx_tail = NULL;
+    dp->rx_fresh = 0;
+    dp->rx_msgs = 0;
+    dp->rx_bytes = 0;
+    dp->rx_waiting = 0;
+}
+
 /* -------------------------------------------------------------------------
  * Byte accounting
  * -------------------------------------------------------------------------
@@ -424,13 +443,7 @@ void ionic_datapath_destroy(struct ionic_datapath *dp)
     ionic_dp_s3_detach(dp);
 
     qemu_mutex_lock(&dp->rx_lock);
-    for (struct dp_inmsg *m = dp->rx_head; m;) {
-        struct dp_inmsg *next = m->next;
-        dp_inmsg_free(m);
-        m = next;
-    }
-    dp->rx_head = dp->rx_tail = NULL;
-    dp->rx_fresh = 0;
+    dp_rx_clear(dp);
     qemu_mutex_unlock(&dp->rx_lock);
     qemu_mutex_destroy(&dp->rx_lock);
 
@@ -4453,4 +4466,43 @@ void ionic_datapath_reset_rdma(struct ionic_datapath *dp)
             dp->mr[i].valid = false;
         }
     }
+}
+
+/*
+ * Unlike a QP's destroy, which lets the requests it has queued to peers go
+ * out, a reset takes them all back: the guest has been told everything in
+ * flight is lost, as on hardware.  Replies stay queued, built from data
+ * copied before the reset, since peers are waiting for them.
+ *
+ * next_mesh_id and next_req_id carry on counting rather than restart, which
+ * is what keeps a reply to a request from before the reset from matching
+ * one made after it, on a QP recreated under the same id.
+ */
+void ionic_datapath_reset(struct ionic_datapath *dp)
+{
+    if (!dp) {
+        return;
+    }
+
+    /* Every tag matches a zero mask; the mesh queues only this data path's
+     * requests */
+    ernic_mesh_cancel(dp->pvrdma_handle, 0, 0);
+    ionic_datapath_reset_rdma(dp);
+    /* Unregistering the QPs dropped their pending requests, so this finds
+     * none, unless one outlived its QP; it can't outlive the reset */
+    for (int i = 0; i < MAX_PENDING; i++) {
+        dp->pending[i].valid = false;
+    }
+    ionic_dp_nvmeof_reset(dp);
+    ionic_dp_s3_reset(dp);
+
+    /* What peers sent before the reset is for the guest's old QPs and MRs,
+     * which may already have successors under the same ids */
+    qemu_mutex_lock(&dp->rx_lock);
+    dp_rx_clear(dp);
+    qemu_mutex_unlock(&dp->rx_lock);
+    dp->rx_crowded = false;
+
+    dp->fault = 0;
+    ionic_datapath_reset_rdma_counters(dp);
 }

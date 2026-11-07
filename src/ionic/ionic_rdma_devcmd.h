@@ -38,6 +38,14 @@ void ionic_rdma_devcmd_dispatch(void *opaque, const uint8_t *cmd,
                                 uint8_t *comp);
 
 /*
+ * What RDMA_RESET_LIF does, for it and for a device reset: forget the EQs
+ * and admin queues, free everything the guest created through them, and
+ * free the admin queue context.  Nothing is written to guest memory.  @s
+ * may be NULL.
+ */
+void ionic_rdma_devcmd_reset(struct ionic_rdma_devcmd_state *s);
+
+/*
  * Supply the emulator used to raise EQ MSI-X vectors.  It is also handed
  * the admin queue context for AQ doorbells, and told when that goes, so it
  * has to outlive @s: ionic_rdma_devcmd_destroy() clears its pointer.

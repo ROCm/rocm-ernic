@@ -123,6 +123,10 @@ Each group of checks is its own CTest test:
 - ``ionic-harness-eth``: Ethernet transmit and receive
 - ``ionic-harness-nvmeof``: the IB CM handshake on GSI, then
   a Fabrics Connect and an Identify on the RC QP it binds
+- ``ionic-harness-device-reset``, ``-nvmeof``, ``-s3``,
+  ``-p4``: a device reset frees everything the guest set up,
+  writes nothing to guest memory, and leaves a device the
+  driver can bring up again
 
 .. code-block:: bash
 
@@ -165,14 +169,16 @@ Five suites are registered with CTest:
 
 - ``ernic-vfu-client``: version negotiation, device and
   region info, PCI configuration space, BAR access, DMA
-  mapping, interrupts, reset and reconnect -- and the
+  mapping, interrupts, a reset and a reconnect each
+  returning the device to its initial state -- and the
   offsets, counts, addresses and vector ranges a client must
   not get away with
 - ``ernic-ionic-driver``: bring-up, connected queue pairs,
   memory regions whose pages are deliberately out of order,
   sends with several SGEs or an inline payload, RDMA reads
-  and writes, shared receive queues, and the keys and lengths
-  that must fail
+  and writes, shared receive queues, the keys and lengths
+  that must fail, and a device reset that stops a QP from
+  before it
 - ``ernic-ionic-hw-stats``: the hardware statistics behind a
   guest's ``hw_counters`` -- the ``STATS_HDRS``,
   ``STATS_VALS``, ``QP_STATS_HDRS`` and ``QP_STATS_VALS``

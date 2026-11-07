@@ -208,13 +208,12 @@ void ionic_rdma_devcmd_destroy(struct ionic_rdma_devcmd_state *s)
  * -------------------------------------------------------------------------
  */
 
-static void handle_rdma_reset(struct ionic_rdma_devcmd_state *s,
-                              const uint8_t *cmd, uint8_t *comp)
+void ionic_rdma_devcmd_reset(struct ionic_rdma_devcmd_state *s)
 {
-    (void)cmd;
-    vfu_log(s->vfu_ctx, LOG_INFO, "ionic_rdma_devcmd: RDMA_RESET_LIF");
+    if (!s) {
+        return;
+    }
 
-    /* Reset state */
     memset(s->eq, 0, sizeof(s->eq));
     s->eq_count = 0;
     memset(s->aq, 0, sizeof(s->aq));
@@ -224,6 +223,15 @@ static void handle_rdma_reset(struct ionic_rdma_devcmd_state *s,
     /* Everything the driver made is gone with it, as on hardware. */
     ionic_adminq_release_all(s->adminq_ctx);
     drop_adminq_ctx(s);
+}
+
+static void handle_rdma_reset(struct ionic_rdma_devcmd_state *s,
+                              const uint8_t *cmd, uint8_t *comp)
+{
+    (void)cmd;
+    vfu_log(s->vfu_ctx, LOG_INFO, "ionic_rdma_devcmd: RDMA_RESET_LIF");
+
+    ionic_rdma_devcmd_reset(s);
 
     comp[0] = 0; /* status OK */
 }

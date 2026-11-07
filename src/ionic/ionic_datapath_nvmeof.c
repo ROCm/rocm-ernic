@@ -116,6 +116,16 @@ void ionic_dp_nvmeof_drop_qp(struct ionic_datapath *dp, uint32_t qp_id)
     }
 }
 
+void ionic_dp_nvmeof_reset(struct ionic_datapath *dp)
+{
+    if (dp->nvmeof_cm) {
+        nvmeof_cm_reset(dp->nvmeof_cm);
+    }
+    /* Learned again from the next REQ */
+    memset(dp->nvmeof_sgid, 0, sizeof(dp->nvmeof_sgid));
+    memset(dp->nvmeof_dgid, 0, sizeof(dp->nvmeof_dgid));
+}
+
 static const struct nvmeof_dma_ops dp_nvmeof_dma_ops = {
     .from_host = ionic_dp_target_from_host,
     .to_host = ionic_dp_target_to_host,

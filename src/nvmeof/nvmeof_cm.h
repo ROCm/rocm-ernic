@@ -87,6 +87,14 @@ bool nvmeof_cm_handle_mad(struct nvmeof_cm *cm, const void *mad, size_t len,
 /* Forget a connection whose guest QP has gone away without a DREQ. */
 void nvmeof_cm_drop_qp(struct nvmeof_cm *cm, uint32_t guest_qpn);
 
+/*
+ * Forget every connection, as nvmeof_cm_drop_qp() does, including one whose
+ * REQ named a QP the guest never made: the guest's device has been reset,
+ * and none of them is its any more.  The ids handed out next keep counting
+ * on, so a late MAD from before the reset matches nothing.
+ */
+void nvmeof_cm_reset(struct nvmeof_cm *cm);
+
 /* Number of connections the responder currently tracks. */
 unsigned nvmeof_cm_conn_count(const struct nvmeof_cm *cm);
 

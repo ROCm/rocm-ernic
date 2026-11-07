@@ -116,3 +116,10 @@ void ionic_dp_s3_poll(struct ionic_datapath *dp)
         s3_tcp_poll(dp->s3_tcp, ionic_dp_now_ms(dp));
     }
 }
+
+void ionic_dp_s3_reset(struct ionic_datapath *dp)
+{
+    if (dp->s3_tcp) {
+        s3_tcp_reset(dp->s3_tcp);
+    }
+}
