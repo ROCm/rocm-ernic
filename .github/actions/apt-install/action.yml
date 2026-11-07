@@ -14,10 +14,11 @@ description: >-
 # only what has changed since.
 #
 # apt takes a .deb already in its archive directory on its size alone,
-# without checking its hash, so a restored .deb goes there only once its
-# SHA256 matches the one the signed index gives for that package and
-# version, and then under the file name the index gives it. Anything
-# else in the cache is dropped, and apt downloads the package instead.
+# without checking its hash. So apt lists the files the install needs,
+# each under the name it will look for and with the SHA256 the signed
+# index gives it, and a restored .deb goes in only under the name of a
+# file whose hash it has. apt downloads every file the cache doesn't
+# match, and the cache saved afterwards holds only what apt used.
 #
 # The apt settings stay for the rest of the job, so they cover every
 # apt-get it runs after this one, too.
@@ -105,51 +106,30 @@ runs:
         sudo mkdir -p "${ARCHIVES}/partial"
         sudo apt-get update
 
-        # A restored .deb is kept only if the index has a record for the
-        # package, version and architecture its control file names with
-        # the same SHA256. It goes under the name apt gives that package's
-        # download, the version's epoch colon written %3a, so apt finds it.
-        kept=0
-        dropped=0
+        # Each file the install will download, as apt prints it:
+        #   'URI' NAME SIZE SHA256:HASH
+        # NAME is the one apt looks for in its archive directory, which on
+        # 26.04 can end in a CPU variant such as _amd64v3, and the hash is
+        # the signed index's. Nothing to download prints nothing.
+        mapfile -t want < <(sudo apt-get install --print-uris -qq -y \
+          -o Acquire::ForceHash=SHA256 "${opts[@]}" "${pkgs[@]}" |
+          grep "^'" || true)
+        declare -A cached=()
         for deb in "${CACHE_DIR}"/*.deb; do
           [[ -f "${deb}" ]] || continue
-          fmt="\${Package} \${Version} \${Architecture}\n"
-          if ! read -r pkg ver arch < <(dpkg-deb --show --showformat="${fmt}" \
-            "${deb}" 2> /dev/null); then
-            dropped=$((dropped + 1))
-            continue
-          fi
-          sum=$(sha256sum "${deb}" | cut -d' ' -f1)
-          # apt-cache fails for a package the index no longer lists, which
-          # is just another .deb to drop: the step runs under -e and
-          # pipefail, so its status mustn't reach the assignment.
-          match=$( { apt-cache show "${pkg}=${ver}" 2> /dev/null || true; } |
-            awk \
-            -v pkg="${pkg}" -v ver="${ver}" -v arch="${arch}" -v sum="${sum}" '
-            BEGIN { RS = ""; FS = "\n" }
-            {
-              p = ""; v = ""; a = ""; s = ""
-              for (i = 1; i <= NF; i++) {
-                if ($i ~ /^Package: /) p = substr($i, 10)
-                else if ($i ~ /^Version: /) v = substr($i, 10)
-                else if ($i ~ /^Architecture: /) a = substr($i, 15)
-                else if ($i ~ /^SHA256: /) s = substr($i, 9)
-              }
-              if (p == pkg && v == ver && a == arch && s == sum) {
-                print "yes"
-                exit
-              }
-            }')
-          name="${pkg}_${ver//:/%3a}_${arch}.deb"
-          if [[ "${match}" == yes &&
+          cached["$(sha256sum "${deb}" | cut -d' ' -f1)"]="${deb}"
+        done
+        found=0
+        for line in "${want[@]}"; do
+          read -r _ name _ hash <<< "${line}"
+          sum="${hash#SHA256:}"
+          if [[ "${hash}" == SHA256:* && -n "${cached[${sum}]:-}" &&
             "${name}" =~ ^[A-Za-z0-9][A-Za-z0-9.+~%_-]*\.deb$ ]]; then
-            sudo cp "${deb}" "${ARCHIVES}/${name}"
-            kept=$((kept + 1))
-          else
-            dropped=$((dropped + 1))
+            sudo cp "${cached[${sum}]}" "${ARCHIVES}/${name}"
+            found=$((found + 1))
           fi
         done
-        echo "${kept} cached packages match the index, ${dropped} dropped"
+        echo "${found} of ${#want[@]} downloads found in the cache"
 
         sudo apt-get install -y "${opts[@]}" "${pkgs[@]}"
         sudo apt-get -o "Dir::Cache::Archives=${ARCHIVES}/" autoclean
