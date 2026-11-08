@@ -1018,21 +1018,32 @@ static void tcp_mesh_set_recv_cb(RdmaBackendDev *backend_dev,
     qemu_mutex_unlock(&priv->lock);
 }
 
+uint32_t tcp_ionic_recv_epoch(TcpBackendPrivate *priv)
+{
+    uint32_t epoch;
+
+    qemu_mutex_lock(&priv->lock);
+    epoch = priv->ionic_recv_epoch;
+    qemu_mutex_unlock(&priv->lock);
+    return epoch;
+}
+
 /*
- * Make every message received so far that the data path hasn't taken be
- * given up rather than offered again: one the data path has refused for want
- * of room, which a receive thread is holding to offer again
- * (tcp_recv_ionic()), and one a receive thread has read but not yet offered.
- * Then wait for the calls to the callback already under way, which are for
+ * Make every message a receive thread has begun to read so far, and the data
+ * path hasn't taken, be given up rather than offered: one being read, one
+ * read and not yet offered, and one the data path has refused for want of
+ * room, which the thread is holding to offer again (tcp_recv_ionic()).  Then
+ * wait for the calls to the callback already under way, which are for
  * messages from before this too: once this returns, each of those messages
  * is either on the data path's queue, for it to empty, or will never be
- * offered.  A message read from now on is offered as usual.
+ * offered.  A message a thread begins to read from now on is offered as
+ * usual, even if its bytes were in the socket before this.
  *
  * The epoch's parity selects the count of calls to wait for.  A call counts
- * itself in the parity of the epoch its message arrived in, under lock, and
- * only if that epoch is still current, so none joins the count this waits
- * on.  The data path calls this only from its main thread, one call at a
- * time, so at most two epochs have calls under way.
+ * itself in the parity of the epoch noted as its message was read, under
+ * lock, and only if that epoch is still current, so none joins the count
+ * this waits on.  The data path calls this only from its main thread, one
+ * call at a time, so at most two epochs have calls under way.
  */
 static void tcp_mesh_drop_received(RdmaBackendDev *backend_dev)
 {
@@ -1062,7 +1073,8 @@ static void tcp_mesh_drop_received(RdmaBackendDev *backend_dev)
  * the peer's, and the peer's send queue stops taking the guest's requests.
  * The data path empties its queue on every pass, so the wait is short; see
  * dp_mesh_recv().  A stopped thread gives the message up, and so does one
- * whose message arrived before tcp_mesh_drop_received() was last called.
+ * that began to read its message before tcp_mesh_drop_received() was last
+ * called (msg->ionic_epoch).
  * The callback is looked up afresh each time, so one the data path has
  * unregistered meanwhile isn't called, and each call is counted in
  * ionic_recv_calls, so that the data path can't be freed while one is under
@@ -1073,7 +1085,7 @@ void tcp_recv_ionic(const TcpConnection *conn, TcpRecvMsg *msg)
     TcpBackendPrivate *priv = conn->priv;
     ernic_mesh_recv_fn fn;
     void *fn_opaque;
-    uint32_t epoch;
+    const uint32_t epoch = msg->ionic_epoch;
 
     if (!priv || !msg->payload || msg->hdr.msg_len == 0) {
         return;
@@ -1086,10 +1098,6 @@ void tcp_recv_ionic(const TcpConnection *conn, TcpRecvMsg *msg)
         }
         return;
     }
-
-    qemu_mutex_lock(&priv->lock);
-    epoch = priv->ionic_recv_epoch;
-    qemu_mutex_unlock(&priv->lock);
 
     for (;;) {
         bool taken;

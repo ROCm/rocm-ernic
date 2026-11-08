@@ -5333,6 +5333,8 @@ enum sender_scenario {
     SENDER_UNREGISTER, /* the callback is cleared while it is being called */
     SENDER_DROPPED, /* the data path, with no room, drops what was received */
     SENDER_DROP_WAITS, /* it drops what was received while the callback runs */
+    SENDER_READ_DROP,  /* it drops what was received after a read, before
+                        * the receive thread hands the message over */
 };
 
 struct sender_case {
@@ -5388,6 +5390,11 @@ static const struct sender_case sender_cases[] = {
      "is in its callback",
      "dropping returns only once the call has, which took the payload",
      SENDER_DROP_WAITS},
+    {"corner",
+     "a receive thread has read an ionic message, but not yet handed it to "
+     "the manager's data path, when the data path drops what was received",
+     "the message is never handed over; one read after the drop is",
+     SENDER_READ_DROP},
 };
 
 /* The payload each retired or ionic message carries */
@@ -5863,6 +5870,84 @@ static const char *sender_dropped(RdmaBackendDev *dev, int w1)
     return why;
 }
 
+/* Fill @m as a receive thread would read worker 1's ionic message */
+static bool read_drop_msg(TcpBackendPrivate *priv, TcpRecvMsg *m)
+{
+    /* Noted before the read, as tcp_recv_thread_per_conn() does */
+    m->ionic_epoch = tcp_ionic_recv_epoch(priv);
+    m->hdr.magic = TCP_PROTOCOL_MAGIC;
+    m->hdr.msg_type = TCP_MSG_IONIC;
+    m->hdr.src_node_id = 1;
+    m->hdr.dst_node_id = tcp_local_node(priv);
+    m->hdr.msg_len = SENDER_LEN;
+    m->payload = malloc(SENDER_LEN);
+    if (!m->payload) {
+        return false;
+    }
+    memset(m->payload, SENDER_BYTE, SENDER_LEN);
+    return true;
+}
+
+/*
+ * SENDER_READ_DROP.  A receive thread that has read a message can be held up
+ * before it hands it over, and the data path can drop what was received
+ * meanwhile.  That window can't be held open on the thread itself, so the row
+ * plays the thread: it notes the epoch and reads the message, as
+ * tcp_recv_thread_per_conn() does, and hands it over through tcp_recv_ionic()
+ * only after the drop.
+ */
+static const char *sender_read_drop(RdmaBackendDev *dev, int w1)
+{
+    TcpBackendPrivate *priv = dev->backend_private;
+    const char *why = NULL;
+    TcpConnection *conn;
+    TcpRecvMsg before;
+    TcpRecvMsg after;
+    uint8_t *buf;
+
+    if (!worker_settled(priv, w1, 1)) {
+        return "worker 1's registration wasn't finished";
+    }
+    conn = tcp_connection_lookup(priv, 1);
+    if (!conn) {
+        return "worker 1 has no connection";
+    }
+
+    memset(&before, 0, sizeof(before));
+    memset(&after, 0, sizeof(after));
+    atomic_store(&g_ionic_calls, 0);
+    atomic_store(&g_ionic_buf, NULL);
+    rdma_backend_ops_tcp.mesh->set_recv_cb(dev, sender_ionic_recv, NULL);
+    if (!read_drop_msg(priv, &before)) {
+        why = "out of memory";
+    }
+    rdma_backend_ops_tcp.mesh->drop_received(dev);
+    if (!why && !read_drop_msg(priv, &after)) {
+        why = "out of memory";
+    }
+
+    if (!why) {
+        tcp_recv_ionic(conn, &before);
+        if (atomic_load(&g_ionic_calls) != 0 || !before.payload) {
+            why = "a message read before the drop was handed over after it";
+        } else {
+            tcp_recv_ionic(conn, &after);
+        }
+    }
+    rdma_backend_ops_tcp.mesh->set_recv_cb(dev, NULL, NULL);
+    tcp_connection_unref(conn);
+
+    buf = atomic_load(&g_ionic_buf);
+    if (!why) {
+        why = sender_ionic_check(buf);
+    }
+    free(buf);
+    /* What tcp_recv_ionic() left, as the receive thread would free it */
+    free(before.payload);
+    free(after.payload);
+    return why;
+}
+
 /*
  * For SENDER_UNREGISTER: whether held_ionic_recv() has been called, whether
  * the row has let it return, whether the call clearing the callback has
@@ -6030,6 +6115,8 @@ static const char *sender_run(RdmaBackendDev *dev, int w1, int w2,
         return sender_dropped(dev, w1);
     case SENDER_DROP_WAITS:
         return sender_unregister(dev, w1, true);
+    case SENDER_READ_DROP:
+        return sender_read_drop(dev, w1);
     default:
         return "unknown scenario";
     }
