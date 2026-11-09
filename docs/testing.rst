@@ -169,16 +169,17 @@ Five suites are registered with CTest:
 
 - ``ernic-vfu-client``: version negotiation, device and
   region info, PCI configuration space, BAR access, DMA
-  mapping, interrupts, a reset and a reconnect each
-  returning the device to its initial state -- and the
-  offsets, counts, addresses and vector ranges a client must
-  not get away with
+  mapping, interrupts, a function-level reset, a reset and a
+  reconnect each returning the device and the configuration
+  registers a driver writes to their initial state -- and
+  the offsets, counts, addresses and vector ranges a client
+  must not get away with
 - ``ernic-ionic-driver``: bring-up, connected queue pairs,
   memory regions whose pages are deliberately out of order,
   sends with several SGEs or an inline payload, RDMA reads
   and writes, shared receive queues, the keys and lengths
-  that must fail, and a device reset that stops a QP from
-  before it
+  that must fail, and a device reset and a function-level
+  reset that each stop a QP from before them
 - ``ernic-ionic-hw-stats``: the hardware statistics behind a
   guest's ``hw_counters`` -- the ``STATS_HDRS``,
   ``STATS_VALS``, ``QP_STATS_HDRS`` and ``QP_STATS_VALS``

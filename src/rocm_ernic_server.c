@@ -311,6 +311,68 @@ static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
     return ionic_eth_emu_bar2_access(emu, buf, count, offset, is_write);
 }
 
+/* Every vector the profile can ask for has an entry in the MSI-X table */
+_Static_assert(IONIC_PROFILE_INTR_VECTORS_MAX <= IONIC_MSIX_MAX_VECTORS,
+               "the profile's vectors must fit the MSI-X table");
+
+/**
+ * Put the server's copy of the MSI-X table and PBA as a reset leaves them:
+ * every vector masked, since an entry's Mask bit resets to 1, and nothing
+ * pending.  QEMU emulates the table and never reads this copy; a client
+ * that doesn't emulate it, such as test_vfu_client.py, does.
+ */
+static void reset_msix_table(rocm_ernic_dev_t *dev)
+{
+    uint8_t *table = (uint8_t *)dev->bar0_mem +
+                     (IONIC_BAR0_MSIX_TABLE - IONIC_BAR0_REGS_SIZE);
+    uint32_t nr_intrs = ionic_profile_intr_vectors(&dev->profile);
+
+    memset(dev->bar0_mem, 0, IONIC_BAR0_TOTAL_SIZE - IONIC_BAR0_REGS_SIZE);
+    for (uint32_t i = 0; i < nr_intrs; i++) {
+        ernic_put_le32(table + ((size_t)i * PCI_MSIX_ENTRY_SIZE) +
+                           PCI_MSIX_ENTRY_VECTOR_CTRL,
+                       PCI_MSIX_ENTRY_CTRL_MASKBIT);
+    }
+}
+
+/**
+ * Write the config-space registers a driver writes back to the values
+ * save_pci_config() took when setup finished.
+ *
+ * The BARs and the ROM BAR are left alone: QEMU emulates them, rewrites
+ * them after a device reset, and a new client programs its own.  So are
+ * Link Control, which libvfio-user never changes, and the Status
+ * registers, whose error bits nothing sets.  libvfio-user only stores the
+ * registers written here, and reads none of them, so writing them behind
+ * its back is safe.
+ *
+ * @param vfu_ctx The context whose config space to reset
+ * @param dev The device, holding the saved values
+ * @param type The reset; an FLR keeps Max_Payload_Size
+ */
+static void reset_pci_config(vfu_ctx_t *vfu_ctx, const rocm_ernic_dev_t *dev,
+                             vfu_reset_type_t type)
+{
+    uint8_t *cfg = (uint8_t *)vfu_pci_get_config_space(vfu_ctx);
+    uint8_t *px = cfg + dev->pci_init.px_off;
+    uint32_t devctl = dev->pci_init.devctl;
+
+    if (type == VFU_RESET_PCI_FLR) {
+        const uint32_t mps = PCI_EXP_DEVCTL_PAYLOAD;
+
+        devctl = (devctl & ~mps) | (ernic_get_le16(px + PCI_EXP_DEVCTL) & mps);
+    }
+
+    ernic_put_le16(cfg + PCI_COMMAND, dev->pci_init.command);
+    cfg[PCI_CACHE_LINE_SIZE] = dev->pci_init.cache_line_size;
+    cfg[PCI_LATENCY_TIMER] = dev->pci_init.latency_timer;
+    cfg[PCI_INTERRUPT_LINE] = dev->pci_init.interrupt_line;
+    ernic_put_le16(px + PCI_EXP_DEVCTL, (uint16_t)devctl);
+    ernic_put_le16(px + PCI_EXP_DEVCTL2, dev->pci_init.devctl2);
+    ernic_put_le16(cfg + dev->pci_init.msix_off + PCI_MSIX_FLAGS,
+                   dev->pci_init.msix_flags);
+}
+
 /**
  * Device reset callback
  *
@@ -319,10 +381,15 @@ static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
  * QEMU's reset of the device, and VFU_RESET_PCI_FLR from the guest's write
  * starting an FLR.
  *
- * Every type resets the whole device. Left in place, its queues, memory
- * registrations and work in flight would go on writing into memory the
- * guest has reused, or that the next client maps at the same addresses.
- * The reset does no DMA, and nothing in it fails the callback.
+ * Every type resets the whole device, and the config space a driver
+ * writes. Left in place, its queues, memory registrations and work in
+ * flight would go on writing into memory the guest has reused, or that the
+ * next client maps at the same addresses. The reset does no DMA, and
+ * nothing in it fails the callback.
+ *
+ * The IRQ eventfds stay: a guest's FLR doesn't reach QEMU's MSI-X
+ * emulation, which keeps MSI-X enabled and sends no new ones.  Every vector
+ * is masked after the reset, so nothing fires until the driver unmasks it.
  */
 static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
 {
@@ -334,10 +401,11 @@ static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
     /* NULL once server_teardown() has destroyed the device, ahead of the
      * ctx, whose destruction calls this */
     ionic_device_reset(dev->ionic);
-    /* The MSI-X table and PBA, as setup_bars() left them */
-    if (dev->bar0_mem) {
-        memset(dev->bar0_mem, 0, IONIC_BAR0_TOTAL_SIZE - IONIC_BAR0_REGS_SIZE);
-    }
+    /* setup_vfu_device() registers this callback only once the MSI-X copy
+     * exists and save_pci_config() has run, and dev_free() comes after the
+     * ctx is destroyed */
+    reset_msix_table(dev);
+    reset_pci_config(vfu_ctx, dev, type);
 
     switch (type) {
     case VFU_RESET_DEVICE:
@@ -354,8 +422,7 @@ static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
         break;
 
     case VFU_RESET_PCI_FLR:
-        /* Guest requested PCI FLR; client still connected. Not reached
-         * while the device doesn't advertise FLR: see setup_pci_config(). */
+        /* Guest requested PCI FLR; client still connected */
         vfu_log(vfu_ctx, LOG_INFO, "PCI FLR requested");
         conn_str = "connected (PCI FLR)";
         ernic_stats_device_reset(dev->stats);
@@ -598,10 +665,11 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx)
      * Integrated Endpoint, which has no link, and the guest reports the
      * speed and width as unknown.
      *
-     * Its Device Capabilities are zero, so it doesn't advertise
-     * function-level reset, and libvfio-user refuses a write starting one.
-     * device_reset_cb() resets the device's own state, but an FLR also
-     * resets config space, which nothing here does yet.
+     * Device Capabilities advertises function-level reset: libvfio-user
+     * calls device_reset_cb() for a write starting one, which resets the
+     * device and the config space a driver writes. Device Control starts
+     * at the spec's defaults, with Relaxed Ordering and No Snoop enabled
+     * and a 512-byte Max_Read_Request_Size.
      */
     uint8_t px[VFIO_USER_PCI_CAP_EXP_SIZEOF];
 
@@ -611,6 +679,10 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx)
         px + PCI_EXP_FLAGS,
         (uint16_t)(pci_field(PCI_EXP_FLAGS_VERS, 2U) |
                    pci_field(PCI_EXP_FLAGS_TYPE, PCI_EXP_TYPE_ENDPOINT)));
+    ernic_put_le32(px + PCI_EXP_DEVCAP, PCI_EXP_DEVCAP_FLR);
+    ernic_put_le16(px + PCI_EXP_DEVCTL, PCI_EXP_DEVCTL_RELAX_EN |
+                                            PCI_EXP_DEVCTL_NOSNOOP_EN |
+                                            PCI_EXP_DEVCTL_READRQ_512B);
     ernic_put_le32(px + PCI_EXP_LNKCAP,
                    PCI_EXP_LNKCAP_SLS_64_0GB |
                        pci_field(PCI_EXP_LNKCAP_MLW, PCIE_LINK_WIDTH));
@@ -663,6 +735,7 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
         warn_errno("ionic: Failed to allocate BAR0 MSI-X shadow");
         return -1;
     }
+    reset_msix_table(dev);
 
     ret = vfu_setup_region(
         vfu_ctx, VFU_PCI_DEV_BAR0_REGION_IDX, IONIC_BAR0_TOTAL_SIZE,
@@ -787,6 +860,37 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, const rocm_ernic_dev_t *dev)
                          (int)nr_intrs, MSIX_TABLE_BIR, (unsigned)table_off,
                          MSIX_PBA_BIR, (unsigned)pba_off);
 
+    return 0;
+}
+
+/**
+ * Save the config-space registers a driver writes, as setup left them, for
+ * reset_pci_config() to write back.  Run once every capability is added.
+ * Returns 0, or -1 after saying why.
+ */
+static int save_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
+{
+    const uint8_t *cfg = (const uint8_t *)vfu_pci_get_config_space(vfu_ctx);
+    size_t px_off = vfu_pci_find_capability(vfu_ctx, false, PCI_CAP_ID_EXP);
+    size_t msix_off = vfu_pci_find_capability(vfu_ctx, false, PCI_CAP_ID_MSIX);
+
+    /* Both are in the standard config space, which libvfio-user checked
+     * they fit when it added them */
+    if (!cfg || px_off == 0 || msix_off == 0) {
+        fprintf(stderr, "rocm-ernic: the PCI Express or MSI-X capability is "
+                        "missing from config space\n");
+        return -1;
+    }
+
+    dev->pci_init.px_off = px_off;
+    dev->pci_init.msix_off = msix_off;
+    dev->pci_init.command = ernic_get_le16(cfg + PCI_COMMAND);
+    dev->pci_init.cache_line_size = cfg[PCI_CACHE_LINE_SIZE];
+    dev->pci_init.latency_timer = cfg[PCI_LATENCY_TIMER];
+    dev->pci_init.interrupt_line = cfg[PCI_INTERRUPT_LINE];
+    dev->pci_init.devctl = ernic_get_le16(cfg + px_off + PCI_EXP_DEVCTL);
+    dev->pci_init.devctl2 = ernic_get_le16(cfg + px_off + PCI_EXP_DEVCTL2);
+    dev->pci_init.msix_flags = ernic_get_le16(cfg + msix_off + PCI_MSIX_FLAGS);
     return 0;
 }
 
@@ -1603,6 +1707,11 @@ static int setup_vfu_device(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     /* Setup interrupts */
     if (setup_interrupts(vfu_ctx, dev) < 0) {
         warn_errno("setup_interrupts() failed");
+        return -1;
+    }
+
+    /* What device_reset_cb() writes back, so before it is registered */
+    if (save_pci_config(vfu_ctx, dev) < 0) {
         return -1;
     }
 

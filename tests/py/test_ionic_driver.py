@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # Imported once tests/py is on sys.path: ctest runs this under python3 -I,
 # which leaves the script's directory off it.
 # pylint: disable=wrong-import-position
-from ernic import ionic
+from ernic import ionic, pci
 from ernic.check import Suite
 from ernic.fixture import BaseFixture
 from ernic.server import run_vfu_suite
@@ -94,10 +94,16 @@ def no_completion(driver, cq, settle=1.0):
 # The pieces a test reaches for; bundling them is the point.
 # pylint: disable-next=too-few-public-methods
 class Fixture(BaseFixture):
-    """Two connected RC queue pairs in one instance, over the loopback backend."""
+    """Two connected RC queue pairs in one instance, over the loopback backend.
 
-    def __init__(self, server):
+    @regs is the linux/pci_regs.h values (ernic.pci.load()), which only
+    test_flr() needs; test_ionic_hw_stats.py, which shares the fixture,
+    passes none.
+    """
+
+    def __init__(self, server, regs=None):
         super().__init__(server)
+        self.regs = regs
         self.make_resources()
 
     def make_resources(self):
@@ -382,8 +388,8 @@ def test_srq(suite, fix):
     suite.check_eq(fix.driver.destroy_srq(srq), 0, "DESTROY_SRQ")
 
 
-def test_device_reset(suite, fix):
-    """A device reset frees what the driver made.
+def check_reset(suite, fix, reset):
+    """Check that @reset, which resets the device, frees what the driver made.
 
     A WRITE posted on a QP from before the reset runs nothing, since its
     rings, its MR and its peer's are memory the guest has back. The
@@ -392,11 +398,11 @@ def test_device_reset(suite, fix):
     payload = bytes((i * 7 + 3) & 0xFF for i in range(64))
     fix.driver.mr_write(fix.mr_a, VA_A, payload)
     before = fix.driver.mr_read(fix.mr_b, VA_B, len(payload))
-    fix.client.reset()
+    reset()
     rdma_a_to_b(fix, ionic.OP_RDMA_WRITE, len(payload))
     suite.check(
         no_completion(fix.driver, fix.cq_a),
-        "a QP from before the reset completed a WRITE",
+        "a QP from before the reset completed no WRITE",
     )
     suite.check_eq(
         fix.driver.mr_read(fix.mr_b, VA_B, len(payload)),
@@ -415,6 +421,22 @@ def test_device_reset(suite, fix):
         payload,
         "the region after a WRITE after the reset",
     )
+
+
+def test_device_reset(suite, fix):
+    """A device reset, as QEMU sends when it resets the VM."""
+    check_reset(suite, fix, fix.client.reset)
+
+
+def test_flr(suite, fix):
+    """A function-level reset, which the guest starts in config space."""
+    if not suite.check(
+        fix.regs is not None, "the fixture has the linux/pci_regs.h values"
+    ):
+        return
+    px = pci.find_capability(fix.client, fix.regs, fix.regs.PCI_CAP_ID_EXP)
+    if suite.check(px is not None, "there is a PCI Express capability"):
+        check_reset(suite, fix, lambda: pci.start_flr(fix.client, fix.regs, px))
 
 
 def test_teardown(suite, fix):
@@ -441,6 +463,7 @@ TESTS = (
     ("SEND from an SGE past the end of its region", test_bad_lkey_length),
     ("shared receive queue", test_srq),
     ("device reset", test_device_reset),
+    ("function-level reset", test_flr),
     ("teardown", test_teardown),
 )
 
@@ -449,10 +472,10 @@ def main():
     """Start a loopback server and run the driver tests against it."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--server", required=True, help="path to the rocm-ernic binary")
-    args = parser.parse_args()
+    args, regs = pci.parse_args(parser)
 
     def make_fixture(server, _run_dir):
-        return Fixture(server)
+        return Fixture(server, regs)
 
     suite = Suite("rocm-ernic ionic driver tests over vfio-user")
     run_vfu_suite(suite, args.server, TESTS, make_fixture)

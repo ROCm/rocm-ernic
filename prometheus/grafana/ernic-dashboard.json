@@ -263,7 +263,7 @@
           "refId": "A"
         }
       ],
-      "description": "Function Level Resets during the selected time range. FLRs occur when a VM reboots or the guest driver reloads."
+      "description": "Device resets during the selected time range: QEMU's reset of the device, as when the VM reboots, and the guest's function-level resets. A client disconnecting isn't counted."
     },
     {
       "datasource": {
@@ -1653,7 +1653,7 @@
           "refId": "A"
         }
       ],
-      "description": "Cumulative FLR reset count per instance over time. Each reset reinitializes the emulated RDMA device."
+      "description": "Cumulative device reset count per instance over time: QEMU's resets of the device and the guest's function-level resets. Each reset reinitializes the emulated RDMA device."
     },
     {
       "datasource": {

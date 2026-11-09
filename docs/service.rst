@@ -378,8 +378,9 @@ concise table with one row per instance:
 Columns: CONN = connection state, RDMA-SR = Send/Recv
 bytes, RDMA-RW = Read/Write bytes, MMIO = register
 reads/writes, CMDS = commands processed, INTS =
-interrupts, QPS = active queue pairs, FLR = Function
-Level Reset count.
+interrupts, QPS = active queue pairs, FLR = device resets:
+QEMU's resets of the device and the guest's function-level
+resets.
 
 Dynamic mesh management
 ^^^^^^^^^^^^^^^^^^^^^^^

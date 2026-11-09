@@ -11,6 +11,7 @@
 #ifndef ROCM_ERNIC_INTERNAL_H
 #define ROCM_ERNIC_INTERNAL_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <vfio-user/libvfio-user.h>
@@ -53,6 +54,23 @@ struct rocm_ernic_dev {
 
     /* BAR memory backing stores */
     void *bar0_mem; /* MSI-X table/PBA shadow, above the ionic register block */
+
+    /*
+     * The config-space registers a driver writes, as setup left them,
+     * which a reset writes back (save_pci_config(), reset_pci_config()).
+     * Only the main thread touches them.
+     */
+    struct {
+        size_t px_off;           /* PCI Express capability */
+        size_t msix_off;         /* MSI-X capability */
+        uint16_t command;        /* PCI_COMMAND */
+        uint8_t cache_line_size; /* PCI_CACHE_LINE_SIZE */
+        uint8_t latency_timer;   /* PCI_LATENCY_TIMER */
+        uint8_t interrupt_line;  /* PCI_INTERRUPT_LINE */
+        uint16_t devctl;         /* PCI_EXP_DEVCTL */
+        uint16_t devctl2;        /* PCI_EXP_DEVCTL2 */
+        uint16_t msix_flags;     /* PCI_MSIX_FLAGS */
+    } pci_init;
 
     /* Backend device configuration */
     char *backend_type_str; /* Backend and options: loopback, nvmeof:size=1G */

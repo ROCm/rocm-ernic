@@ -1267,6 +1267,7 @@ add_test(
     COMMAND ${ERNIC_PY_RUN}
         ${CMAKE_CURRENT_SOURCE_DIR}/py/test_ionic_driver.py
         --server $<TARGET_FILE:rocm-ernic>
+        --pci-regs $<TARGET_FILE:ernic-pci-regs>
 )
 set_tests_properties(ernic-ionic-driver PROPERTIES
     TIMEOUT 300
