@@ -98,6 +98,10 @@ class Fixture(BaseFixture):
 
     def __init__(self, server):
         super().__init__(server)
+        self.make_resources()
+
+    def make_resources(self):
+        """Create the CQs, QPs and MRs, and connect the QPs."""
         self.cq_a = self.driver.create_cq(CQ_A)
         self.cq_b = self.driver.create_cq(CQ_B)
         self.qp_a = self.driver.create_qp(QP_A, ionic.QPT_RC, self.cq_a, self.cq_a)
@@ -378,6 +382,41 @@ def test_srq(suite, fix):
     suite.check_eq(fix.driver.destroy_srq(srq), 0, "DESTROY_SRQ")
 
 
+def test_device_reset(suite, fix):
+    """A device reset frees what the driver made.
+
+    A WRITE posted on a QP from before the reset runs nothing, since its
+    rings, its MR and its peer's are memory the guest has back. The
+    driver then loads again, makes them all again, and its traffic flows.
+    """
+    payload = bytes((i * 7 + 3) & 0xFF for i in range(64))
+    fix.driver.mr_write(fix.mr_a, VA_A, payload)
+    before = fix.driver.mr_read(fix.mr_b, VA_B, len(payload))
+    fix.client.reset()
+    rdma_a_to_b(fix, ionic.OP_RDMA_WRITE, len(payload))
+    suite.check(
+        no_completion(fix.driver, fix.cq_a),
+        "a QP from before the reset completed a WRITE",
+    )
+    suite.check_eq(
+        fix.driver.mr_read(fix.mr_b, VA_B, len(payload)),
+        before,
+        "the region after a WRITE from a QP from before the reset",
+    )
+
+    fix.driver.bringup()
+    fix.make_resources()
+    fix.driver.mr_write(fix.mr_a, VA_A, payload)
+    rdma_a_to_b(fix, ionic.OP_RDMA_WRITE, len(payload))
+    send = fix.driver.wait_cq(fix.cq_a)
+    suite.check(not send.error, "a WRITE after the reset completed without error")
+    suite.check_eq(
+        fix.driver.mr_read(fix.mr_b, VA_B, len(payload)),
+        payload,
+        "the region after a WRITE after the reset",
+    )
+
+
 def test_teardown(suite, fix):
     """Every resource comes back."""
     suite.check_eq(fix.driver.destroy_qp(fix.qp_a), 0, "DESTROY_QP A")
@@ -401,6 +440,7 @@ TESTS = (
     ("SEND from an unregistered lkey", test_bad_lkey),
     ("SEND from an SGE past the end of its region", test_bad_lkey_length),
     ("shared receive queue", test_srq),
+    ("device reset", test_device_reset),
     ("teardown", test_teardown),
 )
 

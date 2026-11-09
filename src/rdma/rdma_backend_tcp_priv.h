@@ -58,7 +58,8 @@
  * them:
  *
  *   lock                     handles, live QPNs, local GIDs, the ionic
- *                            receive callback and the calls to it under way
+ *                            receive callback, the calls to it under way,
+ *                            and its epoch
  *   TcpConnection.lock       a connection's socket
  *   TcpConnection.sendq_lock a connection's send queue
  *   health_check_lock        stopping the health check
@@ -678,12 +679,22 @@ struct TcpBackendPrivate {
      * lock. */
     ernic_mesh_recv_fn ionic_recv_fn TSA_GUARDED_BY(lock);
     void *ionic_recv_opaque TSA_GUARDED_BY(lock);
+    /*
+     * Raised by tcp_mesh_drop_received().  A receive thread notes it as it
+     * begins to read each message (TcpRecvMsg.ionic_epoch), and
+     * tcp_recv_ionic() gives the message up, rather than offer it, once it
+     * has changed.  Protected by lock.
+     */
+    uint32_t ionic_recv_epoch TSA_GUARDED_BY(lock);
     /* How many receive threads are calling ionic_recv_fn, which they do
-     * without lock; ionic_recv_idle is signalled, with lock, when that falls
-     * to 0.  tcp_mesh_set_recv_cb() waits on it, so that once it has
-     * returned nothing is still calling the callback it replaced, and the
-     * data path can free what that callback uses. */
-    uint32_t ionic_recv_calls TSA_GUARDED_BY(lock);
+     * without lock, counted by the parity of the epoch each message arrived
+     * in; ionic_recv_idle is signalled, with lock, when either falls to 0.
+     * tcp_mesh_set_recv_cb() waits for both to, so that once it has returned
+     * nothing is still calling the callback it replaced, and the data path
+     * can free what that callback uses.  tcp_mesh_drop_received() waits only
+     * for the calls from the epoch it ends, which no call can join, so the
+     * wait ends however busy the receive threads are. */
+    uint32_t ionic_recv_calls[2] TSA_GUARDED_BY(lock);
     QemuCond ionic_recv_idle;
 
     /* TCP-layer counters */
@@ -884,11 +895,15 @@ static inline const uint8_t (
  * A message a receive thread has read, as its handler gets it: the header,
  * in host byte order, and the payload, msg_len bytes from malloc(), or NULL
  * if there is none.  A handler may take the payload, setting it to NULL; the
- * receive thread frees what is left.
+ * receive thread frees what is left.  ionic_epoch is the ionic receive epoch
+ * (tcp_ionic_recv_epoch()) as the thread began to read the message, so a
+ * TCP_MSG_IONIC read before tcp_mesh_drop_received() is never handed over,
+ * however late the thread gets to dispatch it.
  */
 typedef struct {
     TcpMsgHeader hdr;
     void *payload;
+    uint32_t ionic_epoch;
 } TcpRecvMsg;
 
 /* 8 groups of 4 hex digits, 7 separators, NUL. */
@@ -934,6 +949,8 @@ bool tcp_start_thread(QemuThread *thread, const char *name, void *(*fn)(void *),
                       void *arg, atomic_bool *running);
 void tcp_stop_threads(TcpBackendPrivate *priv);
 void tcp_recv_ionic(const TcpConnection *conn, TcpRecvMsg *msg);
+/* The ionic receive epoch now, for a TcpRecvMsg about to be read */
+uint32_t tcp_ionic_recv_epoch(TcpBackendPrivate *priv) TSA_EXCLUDES(priv->lock);
 
 /* tcp_wire.c: sockets, and messages on them */
 void tcp_tune_sockbuf(int sockfd);

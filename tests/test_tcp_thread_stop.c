@@ -5331,6 +5331,10 @@ enum sender_scenario {
     SENDER_FULL,       /* and the data path has no room for it, for a while */
     SENDER_FULL_STOP,  /* and never has, and the manager is torn down */
     SENDER_UNREGISTER, /* the callback is cleared while it is being called */
+    SENDER_DROPPED, /* the data path, with no room, drops what was received */
+    SENDER_DROP_WAITS, /* it drops what was received while the callback runs */
+    SENDER_READ_DROP,  /* it drops what was received after a read, before
+                        * the receive thread hands the message over */
 };
 
 struct sender_case {
@@ -5374,6 +5378,23 @@ static const struct sender_case sender_cases[] = {
      "in it, as it does just before it is freed",
      "clearing it returns only once the call has, which took the payload",
      SENDER_UNREGISTER},
+    {"negative",
+     "worker 1 sends an ionic message the manager's data path has no room "
+     "for; the data path drops what was received, as a device reset does, "
+     "then makes room",
+     "the message is given up, never taken; the heartbeat behind it is "
+     "answered, and a message sent after is taken, once, whole",
+     SENDER_DROPPED},
+    {"corner",
+     "the manager's data path drops what was received while a receive thread "
+     "is in its callback",
+     "dropping returns only once the call has, which took the payload",
+     SENDER_DROP_WAITS},
+    {"corner",
+     "a receive thread has read an ionic message, but not yet handed it to "
+     "the manager's data path, when the data path drops what was received",
+     "the message is never handed over; one read after the drop is",
+     SENDER_READ_DROP},
 };
 
 /* The payload each retired or ionic message carries */
@@ -5799,6 +5820,135 @@ static const char *sender_full(RdmaBackendDev *dev, int w1, bool stop)
 }
 
 /*
+ * SENDER_DROPPED.  The receive thread holds a message the data path has
+ * refused, offering it again, when the data path drops what was received,
+ * as a device reset does: the thread gives it up rather than offer it once
+ * there is room, and reads on.  The heartbeat sent after the drop is
+ * answered only once the thread has finished with the message, so by then
+ * the callback has taken it if it ever will.
+ */
+static const char *sender_dropped(RdmaBackendDev *dev, int w1)
+{
+    TcpBackendPrivate *priv = dev->backend_private;
+    const char *why = NULL;
+    uint8_t *buf;
+
+    if (!worker_settled(priv, w1, 1)) {
+        return "worker 1's registration wasn't finished";
+    }
+    count_type(w1, TCP_MSG_HEARTBEAT_RESP);
+
+    atomic_store(&g_ionic_calls, 0);
+    atomic_store(&g_ionic_buf, NULL);
+    atomic_store(&g_ionic_refusals, 0);
+    atomic_store(&g_ionic_full, true);
+    rdma_backend_ops_tcp.mesh->set_recv_cb(dev, full_ionic_recv, NULL);
+    if (!send_payload(w1, TCP_MSG_IONIC, 1)) {
+        why = "could not send the ionic message";
+    } else if (!refusals_reach(2)) {
+        why = "the refused message wasn't offered again";
+    } else {
+        rdma_backend_ops_tcp.mesh->drop_received(dev);
+        atomic_store(&g_ionic_full, false);
+        if (!worker_settled(priv, w1, 1)) {
+            why = "the heartbeat behind the dropped message wasn't answered";
+        } else if (atomic_load(&g_ionic_calls) != 0) {
+            why = "the message received before the drop was taken";
+        } else if (!send_payload(w1, TCP_MSG_IONIC, 1)) {
+            why = "could not send the second ionic message";
+        } else if (!worker_settled(priv, w1, 1)) {
+            why = "the heartbeat after the second message wasn't answered";
+        }
+    }
+    rdma_backend_ops_tcp.mesh->set_recv_cb(dev, NULL, NULL);
+
+    buf = atomic_load(&g_ionic_buf);
+    if (!why) {
+        why = sender_ionic_check(buf);
+    }
+    free(buf);
+    return why;
+}
+
+/* Fill @m as a receive thread would read worker 1's ionic message */
+static bool read_drop_msg(TcpBackendPrivate *priv, TcpRecvMsg *m)
+{
+    /* Noted before the read, as tcp_recv_thread_per_conn() does */
+    m->ionic_epoch = tcp_ionic_recv_epoch(priv);
+    m->hdr.magic = TCP_PROTOCOL_MAGIC;
+    m->hdr.msg_type = TCP_MSG_IONIC;
+    m->hdr.src_node_id = 1;
+    m->hdr.dst_node_id = tcp_local_node(priv);
+    m->hdr.msg_len = SENDER_LEN;
+    m->payload = malloc(SENDER_LEN);
+    if (!m->payload) {
+        return false;
+    }
+    memset(m->payload, SENDER_BYTE, SENDER_LEN);
+    return true;
+}
+
+/*
+ * SENDER_READ_DROP.  A receive thread that has read a message can be held up
+ * before it hands it over, and the data path can drop what was received
+ * meanwhile.  That window can't be held open on the thread itself, so the row
+ * plays the thread: it notes the epoch and reads the message, as
+ * tcp_recv_thread_per_conn() does, and hands it over through tcp_recv_ionic()
+ * only after the drop.
+ */
+static const char *sender_read_drop(RdmaBackendDev *dev, int w1)
+{
+    TcpBackendPrivate *priv = dev->backend_private;
+    const char *why = NULL;
+    TcpConnection *conn;
+    TcpRecvMsg before;
+    TcpRecvMsg after;
+    uint8_t *buf;
+
+    if (!worker_settled(priv, w1, 1)) {
+        return "worker 1's registration wasn't finished";
+    }
+    conn = tcp_connection_lookup(priv, 1);
+    if (!conn) {
+        return "worker 1 has no connection";
+    }
+
+    memset(&before, 0, sizeof(before));
+    memset(&after, 0, sizeof(after));
+    atomic_store(&g_ionic_calls, 0);
+    atomic_store(&g_ionic_buf, NULL);
+    rdma_backend_ops_tcp.mesh->set_recv_cb(dev, sender_ionic_recv, NULL);
+    if (!read_drop_msg(priv, &before)) {
+        why = "out of memory";
+    }
+    rdma_backend_ops_tcp.mesh->drop_received(dev);
+    if (!why && !read_drop_msg(priv, &after)) {
+        why = "out of memory";
+    }
+
+    if (!why) {
+        tcp_recv_ionic(conn, &before);
+        if (atomic_load(&g_ionic_calls) != 0 || !before.payload) {
+            why = "a message read before the drop was handed over after it";
+        } else {
+            tcp_recv_ionic(conn, &after);
+        }
+    }
+    rdma_backend_ops_tcp.mesh->set_recv_cb(dev, NULL, NULL);
+    tcp_connection_unref(conn);
+
+    buf = atomic_load(&g_ionic_buf);
+    if (!why) {
+        why = sender_ionic_check(buf);
+    }
+    free(buf);
+    /* What tcp_recv_ionic() left, as the receive thread would free it */
+    free(before.payload);
+    free(after.payload);
+    return why;
+}
+
+/*
  * For SENDER_UNREGISTER: whether held_ionic_recv() has been called, whether
  * the row has let it return, whether the call clearing the callback has
  * returned, and whether it had already when the callback was let go.
@@ -5833,6 +5983,14 @@ static void *clear_ionic_recv(void *arg)
     return NULL;
 }
 
+/* Drop what was received, as ionic_datapath_reset() does, on its own thread */
+static void *drop_ionic_recv(void *arg)
+{
+    rdma_backend_ops_tcp.mesh->drop_received(arg);
+    atomic_store(&g_ionic_cleared, true);
+    return NULL;
+}
+
 /*
  * SENDER_UNREGISTER.  The data path clears its callback and then frees what
  * the callback uses, so clearing it has to wait for a call already under
@@ -5840,8 +5998,12 @@ static void *clear_ionic_recv(void *arg)
  * thread.  Clearing it can only be seen not to return by waiting, so the row
  * gives it 200 ms, ample for a call that doesn't wait, before letting the
  * callback go; the callback then sees whether it had returned.
+ *
+ * SENDER_DROP_WAITS, with @drop, is the same with the data path dropping
+ * what was received instead, as a device reset does before it empties its
+ * queue, which a call under way may still be putting a message on.
  */
-static const char *sender_unregister(RdmaBackendDev *dev, int w1)
+static const char *sender_unregister(RdmaBackendDev *dev, int w1, bool drop)
 {
     const char *why = NULL;
     pthread_t clearer;
@@ -5868,7 +6030,9 @@ static const char *sender_unregister(RdmaBackendDev *dev, int w1)
             why = "the callback wasn't called";
         }
     }
-    if (why || pthread_create(&clearer, NULL, clear_ionic_recv, dev) != 0) {
+    if (why ||
+        pthread_create(&clearer, NULL,
+                       drop ? drop_ionic_recv : clear_ionic_recv, dev) != 0) {
         if (!why) {
             why = "could not start the thread that clears the callback";
         }
@@ -5887,10 +6051,15 @@ static const char *sender_unregister(RdmaBackendDev *dev, int w1)
     for (int i = 0; i < 500 && atomic_load(&g_ionic_calls) == 0; i++) {
         sleep_ms(10);
     }
+    if (drop) {
+        rdma_backend_ops_tcp.mesh->set_recv_cb(dev, NULL, NULL);
+    }
 
     buf = atomic_load(&g_ionic_buf);
     if (atomic_load(&g_ionic_cleared_early)) {
-        why = "clearing the callback returned while it was being called";
+        why = drop ? "dropping what was received returned while the callback "
+                     "was being called"
+                   : "clearing the callback returned while it was being called";
     } else {
         why = sender_ionic_check(buf);
     }
@@ -5941,7 +6110,13 @@ static const char *sender_run(RdmaBackendDev *dev, int w1, int w2,
     case SENDER_FULL_STOP:
         return sender_full(dev, w1, true);
     case SENDER_UNREGISTER:
-        return sender_unregister(dev, w1);
+        return sender_unregister(dev, w1, false);
+    case SENDER_DROPPED:
+        return sender_dropped(dev, w1);
+    case SENDER_DROP_WAITS:
+        return sender_unregister(dev, w1, true);
+    case SENDER_READ_DROP:
+        return sender_read_drop(dev, w1);
     default:
         return "unknown scenario";
     }

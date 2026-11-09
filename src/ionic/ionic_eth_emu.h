@@ -49,6 +49,17 @@ struct ionic_eth_emu *ionic_eth_emu_create(vfu_ctx_t *vfu_ctx,
 void ionic_eth_emu_destroy(struct ionic_eth_emu *emu);
 
 /*
+ * Return the guest's view of the device to what it was before any client
+ * attached, for a device reset: the BAR0 registers and BAR2 doorbells,
+ * every interrupt masked, no Ethernet queue, no LIF or port info block,
+ * the station MAC, zeroed counters, and no frame queued for the guest.
+ * What the operator configured stays: the profile, faults, network backend
+ * and filters, and the registered handlers.  Nothing is written to guest
+ * memory.  @emu may be NULL.  Main loop thread only.
+ */
+void ionic_eth_emu_reset(struct ionic_eth_emu *emu);
+
+/*
  * Give the device the identity and link of @profile (ionic_profile.h)
  * instead of compat.  Call before any client connects: the guest reads the
  * identity once, at probe.

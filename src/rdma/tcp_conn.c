@@ -825,6 +825,9 @@ void *tcp_recv_thread_per_conn(void *opaque)
         }
 
         if (pfd.revents & POLLIN) {
+            /* Before the read, so a message read before the data path
+             * drops what was received is dropped with it */
+            msg.ionic_epoch = conn->priv ? tcp_ionic_recv_epoch(conn->priv) : 0;
             ret = tcp_recv_message(pfd.fd, &msg.hdr, &msg.payload,
                                    &conn->recv_thread_running, 0);
             if (ret == -EAGAIN) {

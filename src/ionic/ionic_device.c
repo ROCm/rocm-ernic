@@ -30,6 +30,7 @@
 #include "s3/s3_target.h"
 #ifdef ERNIC_HAVE_P4
 #include <inttypes.h>
+#include <syslog.h>
 
 #include "ernic_log.h"
 #include "ionic/ionic_datapath_p4.h"
@@ -285,6 +286,29 @@ bool ionic_device_attach_p4(struct ionic_device *dev, struct p4_engine *eng,
     return true;
 }
 #endif
+
+/* ---- Reset ------------------------------------------------------------- */
+
+void ionic_device_reset(struct ionic_device *dev)
+{
+    if (!dev) {
+        return;
+    }
+
+    /* The data path first, so the mesh takes back what is queued before
+     * anything it names is unregistered */
+    ionic_datapath_reset(dev->dp);
+    ionic_rdma_devcmd_reset(dev->rdma);
+#ifdef ERNIC_HAVE_P4
+    if (dev->p4_engine && p4_engine_reset(dev->p4_engine) != 0) {
+        vfu_log(dev->vfu_ctx, LOG_ERR,
+                "ionic_device: the P4 program couldn't be restored, so every "
+                "frame and RDMA operation is refused: %s",
+                p4_engine_load_error(dev->p4_engine));
+    }
+#endif
+    ionic_eth_emu_reset(dev->emu);
+}
 
 /* ---- The main loop ----------------------------------------------------- */
 

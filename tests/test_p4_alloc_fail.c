@@ -18,11 +18,13 @@
 #include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "p4/p4_engine.h"
+#include "p4/p4_exec.h"
 #include "p4/p4_json.h"
 #include "rocm-ernic-warnings.h"
 #include "s3_alloc_fail.h"
@@ -217,6 +219,82 @@ static void test_commit(const char *doc, size_t len)
     p4_engine_destroy(eng);
 }
 
+/*
+ * A reset that can't restore the operator's program for want of memory.
+ * The engine must not keep the guest's program, nor run none, which
+ * forwards every frame: it is blocked, dropping every frame and refusing
+ * every RDMA operation, until a later reset or a commit succeeds.  A reset
+ * with nothing to undo allocates nothing, so can't fail this way.
+ */
+static void test_reset(const char *doc, size_t len)
+{
+    struct p4_engine *eng = p4_engine_create();
+    const struct p4_rdma_meta meta = {0};
+    uint8_t frame[64] = {0};
+    uint8_t out[128];
+    struct p4_result res;
+    bool suppress;
+    const char *why;
+
+    check(eng != NULL, "no engine");
+    if (!eng) {
+        return;
+    }
+
+    check(stage(eng, doc, len) && p4_engine_load_commit_baseline(eng) == 0,
+          "the operator's program does not load");
+    s3_alloc_fail_arm(0);
+    check(p4_engine_reset(eng) == 0, "a reset with nothing to undo failed");
+    check(!s3_alloc_fail_disarm(), "a reset with nothing to undo allocated");
+
+    /* The guest's program, which a reset must remove */
+    check(stage(eng, doc, len) && p4_engine_load_commit(eng) == 0,
+          "the guest's program does not load");
+    tokener_fails = true;
+    check(p4_engine_reset(eng) == -ENOMEM &&
+              (why = p4_engine_load_error(eng)) != NULL &&
+              strstr(why, "memory") != NULL,
+          "a reset with no memory for the tokener was not refused with a "
+          "reason");
+    tokener_fails = false;
+    check(!p4_engine_has_program(eng), "a failed reset kept a program");
+    check(p4_engine_process(eng, P4_PORT_HOST, frame, sizeof(frame), out,
+                            sizeof(out), &res) == 0 &&
+              res.verdict == P4_VERDICT_DROP,
+          "after a failed reset a frame was forwarded");
+    check(p4_engine_process_rdma(eng, NULL, &meta, &suppress) == -EIO,
+          "after a failed reset an RDMA operation wasn't refused");
+
+    /* The next reset tries again, and its tables can fail too */
+    s3_alloc_fail_arm(1);
+    check(p4_engine_reset(eng) == -ENOMEM &&
+              (why = p4_engine_load_error(eng)) != NULL &&
+              strstr(why, "tables") != NULL,
+          "a reset with no memory for the tables was not refused with a "
+          "reason");
+    check(s3_alloc_fail_disarm(), "the reset allocated too little");
+    check(p4_engine_process_rdma(eng, NULL, &meta, &suppress) == -EIO,
+          "after a second failed reset an RDMA operation wasn't refused");
+
+    check(p4_engine_reset(eng) == 0 && p4_engine_has_program(eng),
+          "a reset with memory didn't restore the operator's program");
+    /* minimal_forward has no rdma_metadata: no decision, not a refusal */
+    check(p4_engine_process_rdma(eng, NULL, &meta, &suppress) == -ENOENT,
+          "after a reset that worked, the engine is still blocked");
+
+    /* A commit unblocks a blocked engine too */
+    check(stage(eng, doc, len) && p4_engine_load_commit(eng) == 0,
+          "the guest's program does not load");
+    tokener_fails = true;
+    check(p4_engine_reset(eng) == -ENOMEM, "the reset didn't fail");
+    tokener_fails = false;
+    check(stage(eng, doc, len) && p4_engine_load_commit(eng) == 0 &&
+              p4_engine_process_rdma(eng, NULL, &meta, &suppress) == -ENOENT,
+          "a commit didn't unblock the engine");
+
+    p4_engine_destroy(eng);
+}
+
 int main(void)
 {
     size_t len = 0;
@@ -227,6 +305,7 @@ int main(void)
         test_parse(doc, len);
         test_begin(len);
         test_commit(doc, len);
+        test_reset(doc, len);
         free(doc);
     }
 

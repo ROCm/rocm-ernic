@@ -882,6 +882,13 @@ void s3_tcp_destroy(struct s3_tcp *s)
     free(s);
 }
 
+void s3_tcp_reset(struct s3_tcp *s)
+{
+    for (unsigned i = 0; i < s->conn_cap; i++) {
+        conn_free(&s->conns[i]);
+    }
+}
+
 bool s3_tcp_rx_frame(struct s3_tcp *s, const void *frame, size_t len,
                      uint64_t now_ms)
 {

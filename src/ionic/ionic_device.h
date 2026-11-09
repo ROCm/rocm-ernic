@@ -101,6 +101,26 @@ void ionic_device_poll(struct ionic_device *dev);
 bool ionic_device_has_work(struct ionic_device *dev);
 
 /*
+ * Return the device to its state before any client attached, as a
+ * function-level reset must, so that it does no more DMA into memory the
+ * guest may reuse and the next driver finds it idle:
+ *
+ * - take back every request still queued to a mesh peer, and drop every
+ *   message the server has received from one and not yet applied;
+ * - free every EQ, admin queue, QP, SRQ, CQ, AH and MR, as RDMA_RESET_LIF
+ *   does, and the NVMe-oF and S3 targets' connections;
+ * - put back the operator's P4 program in place of anything the guest
+ *   loaded or wrote;
+ * - return the registers, interrupts, Ethernet queues, MAC and counters to
+ *   their power-on values.
+ *
+ * What the operator configured stays.  It writes nothing to guest memory
+ * and raises no interrupt, so it is safe after libvfio-user has unmapped
+ * the guest's memory.  Safe with NULL.
+ */
+void ionic_device_reset(struct ionic_device *dev);
+
+/*
  * The parts, for code that works on one directly: the server's BAR
  * callbacks and TAP attach use the Ethernet emulator, and the tests reach
  * into all three.  NULL for a NULL @dev.

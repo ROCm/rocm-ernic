@@ -326,6 +326,15 @@ void nvmeof_cm_drop_qp(struct nvmeof_cm *cm, uint32_t guest_qpn)
     }
 }
 
+void nvmeof_cm_reset(struct nvmeof_cm *cm)
+{
+    for (unsigned i = 0; i < NVMEOF_CM_MAX_CONN; i++) {
+        if (cm->conn[i].in_use) {
+            conn_free(cm, &cm->conn[i]);
+        }
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* MAD construction                                                   */
 /* ------------------------------------------------------------------ */

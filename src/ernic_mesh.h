@@ -92,6 +92,15 @@ bool ernic_mesh_has_room(pvrdma_handle_t handle, uint32_t dst_node, size_t len);
  */
 void ernic_mesh_cancel(pvrdma_handle_t handle, uint64_t tag, uint64_t mask);
 /*
+ * Drop every message the mesh has received for this node and not yet handed
+ * to the receive callback, rather than offer it again, and return once no
+ * call to the callback that began before this is still under way.  Messages
+ * received from now on are handed over as usual.  For a device reset, after
+ * which nothing received before it may be applied.  Never call it from the
+ * callback.  See tcp_mesh_drop_received() in rdma_backend_tcp.c.
+ */
+void ernic_mesh_drop_received(pvrdma_handle_t handle);
+/*
  * Register fn to be called, on a receive thread, with each message for this
  * node, or none for NULL.  Returns once no receive thread is still calling
  * the callback it replaces, so that clearing it lets the caller free what it

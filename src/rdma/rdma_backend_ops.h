@@ -122,6 +122,7 @@ struct RdmaMeshOps {
     bool (*has_room)(RdmaBackendDev *backend_dev, uint32_t dst_node,
                      size_t len);
     void (*cancel)(RdmaBackendDev *backend_dev, uint64_t tag, uint64_t mask);
+    void (*drop_received)(RdmaBackendDev *backend_dev);
     void (*set_recv_cb)(RdmaBackendDev *backend_dev, ernic_mesh_recv_fn fn,
                         void *opaque);
 };

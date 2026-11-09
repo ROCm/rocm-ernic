@@ -140,6 +140,28 @@ static void write_dev_info(struct ionic_eth_emu *emu)
             DEVINFO_SERIAL_BUFLEN);
 }
 
+/* The interrupt state at power-on: every vector masked, none pending. */
+static void eth_intr_init(struct ionic_eth_emu *emu)
+{
+    for (int i = 0; i < IONIC_MSIX_MAX_VECTORS; i++) {
+        emu->intr_mask[i] = 1;
+    }
+    memset(emu->intr_mask_assert, 0, sizeof(emu->intr_mask_assert));
+    memset(emu->intr_pending, 0, sizeof(emu->intr_pending));
+}
+
+/* Free the frames in-process endpoints queued for the guest. */
+static void eth_inbox_clear(struct ionic_eth_emu *emu)
+{
+    while (emu->inbox_head) {
+        struct eth_inbox_frame *f = emu->inbox_head;
+        emu->inbox_head = f->next;
+        free(f);
+    }
+    emu->inbox_tail = NULL;
+    emu->inbox_count = 0;
+}
+
 struct ionic_eth_emu *ionic_eth_emu_create(vfu_ctx_t *vfu_ctx, size_t bar2_size)
 {
     struct ionic_eth_emu *emu = calloc(1, sizeof(*emu));
@@ -150,6 +172,7 @@ struct ionic_eth_emu *ionic_eth_emu_create(vfu_ctx_t *vfu_ctx, size_t bar2_size)
     emu->vfu_ctx = vfu_ctx;
     emu->bar2_size = bar2_size;
     memcpy(emu->mac, eth_default_mac, ETH_ADDR_LEN);
+    memcpy(emu->station_mac, eth_default_mac, ETH_ADDR_LEN);
     emu->bar2 = calloc(1, bar2_size);
     emu->dma = ernic_dma_create();
     if (!emu->bar2 || !emu->dma) {
@@ -161,11 +184,7 @@ struct ionic_eth_emu *ionic_eth_emu_create(vfu_ctx_t *vfu_ctx, size_t bar2_size)
 
     ionic_profile_defaults(&emu->profile);
     write_dev_info(emu);
-
-    /* Mask all interrupts initially. */
-    for (int i = 0; i < IONIC_MSIX_MAX_VECTORS; i++) {
-        emu->intr_mask[i] = 1;
-    }
+    eth_intr_init(emu);
 
     return emu;
 }
@@ -196,15 +215,42 @@ void ionic_eth_emu_destroy(struct ionic_eth_emu *emu)
         return;
     }
     ionic_eth_net_close(emu->net);
-    while (emu->inbox_head) {
-        struct eth_inbox_frame *f = emu->inbox_head;
-        emu->inbox_head = f->next;
-        free(f);
-    }
-    emu->inbox_tail = NULL;
+    eth_inbox_clear(emu);
     ernic_dma_destroy(emu->dma);
     free(emu->bar2);
     free(emu);
+}
+
+void ionic_eth_emu_reset(struct ionic_eth_emu *emu)
+{
+    if (!emu) {
+        return;
+    }
+
+    /* The registers as a driver probing the device first finds them: ready,
+     * with no command under way */
+    memset(emu->bar0, 0, sizeof(emu->bar0));
+    write_dev_info(emu);
+    memset(emu->bar2, 0, emu->bar2_size);
+    eth_intr_init(emu);
+
+    /* The queues' rings and the info blocks are memory the guest may now
+     * use for something else, so nothing here may write to them again */
+    memset(emu->eth_q, 0, sizeof(emu->eth_q));
+    emu->lif_initialized = false;
+    emu->lif_hw_index = 0;
+    emu->lif_info_pa = 0;
+    emu->port_info_pa = 0;
+    memcpy(emu->mac, emu->station_mac, ETH_ADDR_LEN);
+
+    ionic_emu_stats_reset(&emu->stats);
+    emu->stats_publish_now = false;
+    emu->stats_last_ms = 0;
+    emu->stats_write_failed = false;
+    emu->port_stats_write_failed = false;
+
+    /* Frames for the old Rx rings, from the S3 target and the P4 pipeline */
+    eth_inbox_clear(emu);
 }
 
 /* The largest frame the port takes in, FCS excluded: what LIF_IDENTIFY
@@ -332,6 +378,7 @@ void ionic_eth_emu_set_mac(struct ionic_eth_emu *emu,
                            const uint8_t mac[ETH_ADDR_LEN])
 {
     memcpy(emu->mac, mac, ETH_ADDR_LEN);
+    memcpy(emu->station_mac, mac, ETH_ADDR_LEN);
 }
 
 /* -------------------------------------------------------------------------

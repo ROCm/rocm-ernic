@@ -115,6 +115,27 @@ int p4_engine_load_chunk(struct p4_engine *eng, uint64_t offset,
 int p4_engine_load_commit(struct p4_engine *eng);
 void p4_engine_load_abort(struct p4_engine *eng);
 
+/*
+ * p4_engine_load_commit(), for the operator's program: the engine also
+ * keeps the bytes, as the baseline p4_engine_reset() goes back to.
+ */
+int p4_engine_load_commit_baseline(struct p4_engine *eng);
+
+/*
+ * Undo what the guest did to the engine, for a device reset: abort a load
+ * under way, and, if a program has been committed or a table changed since
+ * the baseline, put the baseline back with its tables empty, or no program
+ * if there is no baseline.  What has never changed costs nothing and can't
+ * fail.  The statistics are kept.
+ *
+ * Returns 0, or a negative errno with the reason in p4_engine_load_error()
+ * if the baseline couldn't be restored.  The engine is then blocked rather
+ * than empty, which would forward everything: every frame is dropped and
+ * every RDMA operation refused until a program is committed, or a later
+ * reset succeeds.
+ */
+int p4_engine_reset(struct p4_engine *eng);
+
 struct p4_update;
 struct p4_rdma_meta;
 struct p4_extern_ops;
@@ -130,10 +151,11 @@ struct p4_extern_ops;
  * regions; it may be NULL, which makes any such call fail the operation.
  *
  * Returns 0, -ENOENT when no program is loaded or the loaded one declares
- * no rdma_metadata and so was never meant for this path, or another
- * negative errno when the pipeline could not be run.  A caller that gets
- * an error must fail the operation rather than carry on: the pipeline is
- * the policy, and proceeding past a failed one bypasses it.
+ * no rdma_metadata and so was never meant for this path, -EIO when the
+ * engine is blocked (p4_engine_reset()), or another negative errno when
+ * the pipeline could not be run.  A caller that gets an error must fail
+ * the operation rather than carry on: the pipeline is the policy, and
+ * proceeding past a failed one bypasses it.
  *
  * *@suppress is set on an error too, to whether the program had marked
  * the operation dropped before the pipeline stopped.  A caller that
@@ -183,7 +205,8 @@ void p4_engine_load_progress(const struct p4_engine *eng, size_t *got,
  * success and is only meaningful then.
  *
  * Returns 0, or a negative errno when the frame could not be processed at
- * all -- which is distinct from the pipeline deciding to drop it.
+ * all -- which is distinct from the pipeline deciding to drop it.  A
+ * blocked engine (p4_engine_reset()) drops every frame.
  */
 int p4_engine_process(struct p4_engine *eng, uint32_t in_port,
                       const void *frame, size_t len, void *out, size_t out_cap,

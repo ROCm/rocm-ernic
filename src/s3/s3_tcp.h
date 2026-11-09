@@ -108,6 +108,14 @@ bool s3_tcp_poll(struct s3_tcp *s, uint64_t now_ms);
 /* True when a poll would have something to do right now. */
 bool s3_tcp_has_work(const struct s3_tcp *s);
 
+/*
+ * Drop every connection without a word to the peer: the guest's device has
+ * been reset, so its end of each one is gone, and a RST would only arrive
+ * at a stack that has never heard of it.  The objects and uploads the
+ * target holds are unaffected.
+ */
+void s3_tcp_reset(struct s3_tcp *s);
+
 const struct s3_tcp_stats *s3_tcp_statistics(const struct s3_tcp *s);
 unsigned s3_tcp_conn_count(const struct s3_tcp *s);
 

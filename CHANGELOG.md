@@ -4,6 +4,32 @@
 
 ### Fixed
 
+* A reset of the device, which QEMU sends when it resets the VM, and a
+  client disconnecting, now return the device to its state before any
+  client attached. Before, both left everything the guest had set up in
+  place, so the device could go on writing data and completions into
+  memory the guest had since reused, or, after a disconnect, into the
+  memory of the next VM to attach. Now each:
+  * frees every RDMA queue, memory registration and address handle, and
+    the NVMe-oF and S3 targets' connections to the guest;
+  * takes back every request still queued to a mesh peer, unlike
+    destroying a QP, which lets them go out, and drops every message
+    from a peer that the server had received but not yet delivered,
+    including one the TCP mesh was holding to offer again (see Known
+    issues for those still on their way);
+  * removes the Ethernet queues and LIF, and frames waiting for the
+    guest;
+  * masks every interrupt, and returns the registers, the MAC and the
+    counters to their initial values;
+  * restores the `--p4-program` in place of any program or table entries
+    the guest loaded through `--p4-guest-scope`. If there is no memory to
+    load it, the engine drops every frame and fails every RDMA operation
+    until a program loads, rather than run with none, and the server logs
+    it.
+
+  `ernic_flr_reset_total` and the stats file's reset count go on counting
+  resets as before; a disconnect still isn't counted.
+
 * The IWYU workflow could run for an hour or more while Ubuntu's mirror
   served its 100 MB of LLVM packages slowly. It, clang-tidy and Thread
   safety now install through `.github/actions/apt-install`, which caches
@@ -1653,10 +1679,20 @@
 
 * rocm-ernic supports only 64-bit Linux; 32-bit systems aren't supported.
 * The device doesn't support function-level reset (FLR), and doesn't
-  advertise it. A reset of the device leaves its RDMA and Ethernet queues,
-  memory registrations and work in flight in place, which an FLR must not.
+  advertise it. A reset of the device returns it to its initial state, but
+  not its PCI configuration space, which an FLR must also reset.
 
 ### Known issues
+
+* A request a mesh peer sent before this device was reset, or before the
+  guest destroyed a QP or MR, can still arrive afterwards, and is applied
+  to whatever the guest has made since under the same QP id and MR key:
+  nothing in it says which it was meant for, and the device doesn't check
+  that an RC request comes from the QP's connected peer. A rebooted guest,
+  or the next VM, may well reuse both, so a late WRITE can land in its
+  memory. A reset drops what the server has already received; this covers
+  only what is still on its way, or a peer that goes on using a QP it was
+  connected to.
 
 * The TCP backend still looks up mesh nodes' hostnames with a lookup that
   can't be interrupted or given a deadline. A worker advertises its

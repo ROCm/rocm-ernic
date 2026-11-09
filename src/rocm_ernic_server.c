@@ -314,8 +314,15 @@ static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
 /**
  * Device reset callback
  *
- * Only VFU_RESET_LOST_CONN means the client disconnected. VFU_RESET_DEVICE and
- * VFU_RESET_PCI_FLR are sent by the still-connected client (guest-initiated).
+ * Only VFU_RESET_LOST_CONN means the client disconnected; libvfio-user has
+ * already unmapped its memory. VFU_RESET_DEVICE comes from the client, as
+ * QEMU's reset of the device, and VFU_RESET_PCI_FLR from the guest's write
+ * starting an FLR.
+ *
+ * Every type resets the whole device. Left in place, its queues, memory
+ * registrations and work in flight would go on writing into memory the
+ * guest has reused, or that the next client maps at the same addresses.
+ * The reset does no DMA, and nothing in it fails the callback.
  */
 static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
 {
@@ -324,9 +331,17 @@ static int device_reset_cb(vfu_ctx_t *vfu_ctx, vfu_reset_type_t type)
 
     vfu_log(vfu_ctx, LOG_INFO, "Device reset requested (type=%u)", type);
 
+    /* NULL once server_teardown() has destroyed the device, ahead of the
+     * ctx, whose destruction calls this */
+    ionic_device_reset(dev->ionic);
+    /* The MSI-X table and PBA, as setup_bars() left them */
+    if (dev->bar0_mem) {
+        memset(dev->bar0_mem, 0, IONIC_BAR0_TOTAL_SIZE - IONIC_BAR0_REGS_SIZE);
+    }
+
     switch (type) {
     case VFU_RESET_DEVICE:
-        /* Guest requested device reset; client still connected */
+        /* The client reset the device; it is still connected */
         conn_str = "connected (device reset)";
         ernic_stats_device_reset(dev->stats);
         break;
@@ -468,8 +483,9 @@ static int p4_load_program_file(struct p4_engine *eng, const char *path)
     }
     (void)fclose(f);
 
+    /* The operator's program is what a device reset goes back to */
     if (rc == 0) {
-        rc = p4_engine_load_commit(eng);
+        rc = p4_engine_load_commit_baseline(eng);
     }
 
     if (rc != 0) {
@@ -584,10 +600,8 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx)
      *
      * Its Device Capabilities are zero, so it doesn't advertise
      * function-level reset, and libvfio-user refuses a write starting one.
-     * An FLR returns the function to its initial state, and
-     * device_reset_cb() doesn't: the RDMA and Ethernet queues, memory
-     * registrations and work in flight stay, and a late response could
-     * still write data and completions into memory the guest has freed.
+     * device_reset_cb() resets the device's own state, but an FLR also
+     * resets config space, which nothing here does yet.
      */
     uint8_t px[VFIO_USER_PCI_CAP_EXP_SIZEOF];
 

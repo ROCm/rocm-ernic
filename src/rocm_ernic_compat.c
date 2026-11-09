@@ -536,6 +536,18 @@ void ernic_mesh_cancel(pvrdma_handle_t handle, uint64_t tag, uint64_t mask)
     mesh->cancel(&pvrdma->backend_dev, tag, mask);
 }
 
+void ernic_mesh_drop_received(pvrdma_handle_t handle)
+{
+    PVRDMADev *pvrdma = handle;
+    const RdmaMeshOps *mesh = pvrdma_mesh(pvrdma);
+
+    /* With no mesh nothing is received */
+    if (!mesh) {
+        return;
+    }
+    mesh->drop_received(&pvrdma->backend_dev);
+}
+
 void ernic_mesh_set_recv_cb(pvrdma_handle_t handle, ernic_mesh_recv_fn fn,
                             void *opaque)
 {

@@ -641,6 +641,10 @@ void ionic_dp_nvmeof_detach(struct ionic_datapath *dp);
 /* Forget the controller connection of @qp_id, which is being destroyed. */
 void ionic_dp_nvmeof_drop_qp(struct ionic_datapath *dp, uint32_t qp_id);
 
+/* Forget every controller connection, and the GIDs the guest used, for a
+ * device reset. */
+void ionic_dp_nvmeof_reset(struct ionic_datapath *dp);
+
 /*
  * A SEND @src on the GSI QP @q (@qp_id): if it is a CM MAD for the
  * controller, answer it and return true, so the caller delivers it nowhere
@@ -664,6 +668,9 @@ bool ionic_dp_s3_has_work(struct ionic_datapath *dp);
 
 /* Push the S3 store's pending output: retransmissions and queued replies. */
 void ionic_dp_s3_poll(struct ionic_datapath *dp);
+
+/* Drop the S3 store's TCP connections, for a device reset. */
+void ionic_dp_s3_reset(struct ionic_datapath *dp);
 
 #ifdef ERNIC_HAVE_P4
 /*
