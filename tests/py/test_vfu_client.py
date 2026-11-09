@@ -304,6 +304,7 @@ class ResetRegs:
             "Interrupt Line": client.read_config(regs.PCI_INTERRUPT_LINE, 1)[0],
             "Device Control": pci.read16(client, self.px + regs.PCI_EXP_DEVCTL),
             "Device Control 2": pci.read16(client, self.px + regs.PCI_EXP_DEVCTL2),
+            "Link Control 2": pci.read16(client, self.px + regs.PCI_EXP_LNKCTL2),
             "MSI-X Message Control": pci.read16(client, self.msix + regs.PCI_MSIX_FLAGS)
             & msix_writable,
             "MSI-X vector 0 Vector Control": client.read_bar32(*self.vector_ctrl(0)),
@@ -313,7 +314,8 @@ class ResetRegs:
         """What read() returns before a driver writes, and after a reset.
 
         Device Control has the spec's defaults: Relaxed Ordering and No
-        Snoop enabled, and a 512-byte Max_Read_Request_Size.
+        Snoop enabled, and a 512-byte Max_Read_Request_Size. Link Control
+        2's Target Link Speed is the fastest the device supports.
         """
         regs = self.regs
         return {
@@ -325,6 +327,7 @@ class ResetRegs:
             | regs.PCI_EXP_DEVCTL_NOSNOOP_EN
             | regs.PCI_EXP_DEVCTL_READRQ_512B,
             "Device Control 2": 0,
+            "Link Control 2": regs.PCI_EXP_LNKCTL2_TLS_64_0GT,
             "MSI-X Message Control": 0,
             "MSI-X vector 0 Vector Control": regs.PCI_MSIX_ENTRY_CTRL_MASKBIT,
         }
@@ -334,8 +337,10 @@ class ResetRegs:
 
         Device Control gets a 256-byte Max_Payload_Size, which an FLR
         keeps, with Relaxed Ordering and No Snoop off and a 4096-byte
-        Max_Read_Request_Size. Checks that every register took its new
-        value, or a check that a reset put it back would pass without one.
+        Max_Read_Request_Size. Link Control 2, which an FLR also keeps,
+        gets a 2.5 GT/s Target Link Speed. Checks that every register took
+        its new value, or a check that a reset put it back would pass
+        without one.
         """
         client, regs = self.client, self.regs
         pci.write16(
@@ -353,6 +358,9 @@ class ResetRegs:
             client,
             self.px + regs.PCI_EXP_DEVCTL2,
             regs.PCI_EXP_DEVCTL2_COMP_TMOUT_DIS,
+        )
+        pci.write16(
+            client, self.px + regs.PCI_EXP_LNKCTL2, regs.PCI_EXP_LNKCTL2_TLS_2_5GT
         )
         flags = pci.read16(client, self.msix + regs.PCI_MSIX_FLAGS)
         pci.write16(
@@ -587,7 +595,8 @@ def test_flr(suite, client, regs, stats_path):
     other bits, in one 16-bit write. libvfio-user calls the reset callback
     before it answers, so the stats file already counts the reset, and
     every register a driver wrote is back at its initial value, but for
-    Max_Payload_Size, which an FLR keeps. The device's own state is reset
+    Max_Payload_Size and Link Control 2, the link's state, which an FLR
+    keeps. The device's own state is reset
     too: the MAC the guest gave the LIF goes back to the station MAC, and
     the last device command no longer reads as done.
     """
@@ -611,11 +620,13 @@ def test_flr(suite, client, regs, stats_path):
             suite.check_eq(after[0], FLR_CONNECTION, "the connection state")
             suite.check_eq(after[1], before[1] + 1, "the reset count")
 
-        # dirty() set the 256-byte Max_Payload_Size
+        # What dirty() set: the 256-byte Max_Payload_Size, and the 2.5 GT/s
+        # Target Link Speed
         expected = config.initial()
         expected["Device Control"] = (
             expected["Device Control"] & ~regs.PCI_EXP_DEVCTL_PAYLOAD
         ) | regs.PCI_EXP_DEVCTL_PAYLOAD_256B
+        expected["Link Control 2"] = regs.PCI_EXP_LNKCTL2_TLS_2_5GT
         config.check(suite, expected, "after an FLR")
         suite.check_eq(
             driver.bar0_read32(ionic.BAR0_DEVCMD_DONE),
@@ -650,7 +661,7 @@ def test_reset_and_reconnect(suite, client, regs, socket_path):
     MAC the guest gave the LIF goes back to the station MAC, the last
     device command no longer reads as done, and every config-space
     register a driver wrote is back at its initial value, Max_Payload_Size
-    included. The first client leaves its MAC and registers behind without
+    and Link Control 2 included. The first client leaves its MAC and registers behind without
     resetting the device, as a VM that dies does.
     """
     config = find_reset_regs(suite, client, regs)

@@ -69,6 +69,7 @@ struct rocm_ernic_dev {
         uint8_t interrupt_line;  /* PCI_INTERRUPT_LINE */
         uint16_t devctl;         /* PCI_EXP_DEVCTL */
         uint16_t devctl2;        /* PCI_EXP_DEVCTL2 */
+        uint16_t lnkctl2;        /* PCI_EXP_LNKCTL2 */
         uint16_t msix_flags;     /* PCI_MSIX_FLAGS */
     } pci_init;
 

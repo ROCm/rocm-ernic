@@ -90,6 +90,7 @@ static const struct pci_reg pci_regs[] = {
     PCI_REG(PCI_EXP_LNKCAP2_SLS_64_0GB),
     PCI_REG(PCI_EXP_LNKCTL2),
     PCI_REG(PCI_EXP_LNKCTL2_TLS),
+    PCI_REG(PCI_EXP_LNKCTL2_TLS_2_5GT),
     PCI_REG(PCI_EXP_LNKCTL2_TLS_64_0GT),
 
     /* The MSI-X capability, and an entry in its table */

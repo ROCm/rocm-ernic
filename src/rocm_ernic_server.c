@@ -346,9 +346,14 @@ static void reset_msix_table(rocm_ernic_dev_t *dev)
  * registers written here, and reads none of them, so writing them behind
  * its back is safe.
  *
+ * An FLR keeps the link's state, which it leaves out of what it resets:
+ * Max_Payload_Size in Device Control, and Link Control 2.  A device reset
+ * or a new client resets them too, so the next client finds the link as
+ * setup left it.
+ *
  * @param vfu_ctx The context whose config space to reset
  * @param dev The device, holding the saved values
- * @param type The reset; an FLR keeps Max_Payload_Size
+ * @param type The reset
  */
 static void reset_pci_config(vfu_ctx_t *vfu_ctx, const rocm_ernic_dev_t *dev,
                              vfu_reset_type_t type)
@@ -356,8 +361,9 @@ static void reset_pci_config(vfu_ctx_t *vfu_ctx, const rocm_ernic_dev_t *dev,
     uint8_t *cfg = (uint8_t *)vfu_pci_get_config_space(vfu_ctx);
     uint8_t *px = cfg + dev->pci_init.px_off;
     uint32_t devctl = dev->pci_init.devctl;
+    bool flr = type == VFU_RESET_PCI_FLR;
 
-    if (type == VFU_RESET_PCI_FLR) {
+    if (flr) {
         const uint32_t mps = PCI_EXP_DEVCTL_PAYLOAD;
 
         devctl = (devctl & ~mps) | (ernic_get_le16(px + PCI_EXP_DEVCTL) & mps);
@@ -369,6 +375,9 @@ static void reset_pci_config(vfu_ctx_t *vfu_ctx, const rocm_ernic_dev_t *dev,
     cfg[PCI_INTERRUPT_LINE] = dev->pci_init.interrupt_line;
     ernic_put_le16(px + PCI_EXP_DEVCTL, (uint16_t)devctl);
     ernic_put_le16(px + PCI_EXP_DEVCTL2, dev->pci_init.devctl2);
+    if (!flr) {
+        ernic_put_le16(px + PCI_EXP_LNKCTL2, dev->pci_init.lnkctl2);
+    }
     ernic_put_le16(cfg + dev->pci_init.msix_off + PCI_MSIX_FLAGS,
                    dev->pci_init.msix_flags);
 }
@@ -890,6 +899,7 @@ static int save_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     dev->pci_init.interrupt_line = cfg[PCI_INTERRUPT_LINE];
     dev->pci_init.devctl = ernic_get_le16(cfg + px_off + PCI_EXP_DEVCTL);
     dev->pci_init.devctl2 = ernic_get_le16(cfg + px_off + PCI_EXP_DEVCTL2);
+    dev->pci_init.lnkctl2 = ernic_get_le16(cfg + px_off + PCI_EXP_LNKCTL2);
     dev->pci_init.msix_flags = ernic_get_le16(cfg + msix_off + PCI_MSIX_FLAGS);
     return 0;
 }
