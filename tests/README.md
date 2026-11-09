@@ -110,7 +110,8 @@ shutdown deadline), `ionic.py` (the ionic driver, the counterpart of
 `ionic_harness.c`), `mesh.py` (the TCP mesh wire protocol and a fixture
 that starts a manager and some workers), `pci.py` (the config-space
 values from `linux/pci_regs.h`, which `ernic-pci-regs` prints from the
-header), and `check.py` (the test runner).
+header, and helpers that walk the capability list and start an FLR),
+and `check.py` (the test runner).
 
 The suites, each registered with CTest:
 

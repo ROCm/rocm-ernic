@@ -21,6 +21,12 @@
     guest;
   * masks every interrupt, and returns the registers, the MAC and the
     counters to their initial values;
+  * returns the PCI configuration registers a driver writes (Command,
+    Cache Line Size, Latency Timer, Interrupt Line, Device Control,
+    Device Control 2, Link Control 2 and MSI-X Message Control) to their
+    initial values, so a rebooted guest or the next VM no longer finds
+    what the last driver set, and masks every vector in the server's copy
+    of the MSI-X table, as it now is at startup;
   * restores the `--p4-program` in place of any program or table entries
     the guest loaded through `--p4-guest-scope`. If there is no memory to
     load it, the engine drops every frame and fails every RDMA operation
@@ -58,8 +64,15 @@
   `pcie-root-port`. On QEMU's root bus, where the documented command line
   puts it, QEMU makes the device a Root Complex Integrated Endpoint, which
   has no link, so the guest still reports the speed and width as unknown.
-  The capability doesn't advertise function-level reset (FLR), so a guest's
-  attempt at one is refused; see Limitations.
+
+  The capability advertises function-level reset (FLR), which Linux uses
+  for the device's `reset` file in sysfs and its driver's error recovery.
+  An FLR resets the device as a reset of the VM does, including the PCI
+  configuration registers listed under Fixed, except the link's state,
+  Max_Payload_Size and Link Control 2, which an FLR keeps. Requests a mesh
+  peer sent before the FLR can still arrive after it; see Known issues.
+  Device Control starts at the specification's defaults: Relaxed Ordering
+  and No Snoop enabled, and a 512-byte Max_Read_Request_Size.
 
 * `--backend nvmeof:kv=1[,keys=...,maxval=...]` serves the namespace with the
   NVM Express Key Value command set instead of the block one: Store (01h),
@@ -1678,9 +1691,6 @@
 ### Limitations
 
 * rocm-ernic supports only 64-bit Linux; 32-bit systems aren't supported.
-* The device doesn't support function-level reset (FLR), and doesn't
-  advertise it. A reset of the device returns it to its initial state, but
-  not its PCI configuration space, which an FLR must also reset.
 
 ### Known issues
 

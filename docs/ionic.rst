@@ -830,7 +830,3 @@ Not yet working:
   where the examples here put it, QEMU makes it a Root Complex
   Integrated Endpoint, which has no link, so the guest reports
   them as unknown instead of 64 GT/s x16; this is cosmetic
-- Function-level reset (FLR), which the PCI Express
-  capability doesn't advertise, so the guest can't start one:
-  a device reset returns the device to its initial state, but
-  not its PCI configuration space, which an FLR also resets

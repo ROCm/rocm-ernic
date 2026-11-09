@@ -134,36 +134,9 @@ def test_device_info(suite, client):
     )
 
 
-def read_config16(client, offset):
-    """The little-endian 16-bit config-space register at @offset."""
-    return struct.unpack("<H", client.read_config(offset, 2))[0]
-
-
-def read_config32(client, offset):
-    """The little-endian 32-bit config-space register at @offset."""
-    return struct.unpack("<I", client.read_config(offset, 4))[0]
-
-
-def find_capability(client, regs, cap_id):
-    """The config-space offset of capability @cap_id, or None.
-
-    Walks the list from its head, as a guest does, so a capability the
-    list doesn't reach isn't found. The walk is bounded, since the
-    standard config space has room for at most 48 capabilities.
-    """
-    offset = client.read_config(regs.PCI_CAPABILITY_LIST, 1)[0]
-    for _ in range(48):
-        if offset == 0:
-            return None
-        if client.read_config(offset + regs.PCI_CAP_LIST_ID, 1)[0] == cap_id:
-            return offset
-        offset = client.read_config(offset + regs.PCI_CAP_LIST_NEXT, 1)[0]
-    return None
-
-
 def check_pcie_link(suite, client, regs, px):
     """The link in the PCI Express capability at @px: 64 GT/s, x16."""
-    lnkcap = read_config32(client, px + regs.PCI_EXP_LNKCAP)
+    lnkcap = pci.read32(client, px + regs.PCI_EXP_LNKCAP)
     suite.check_eq(
         pci.field(lnkcap, regs.PCI_EXP_LNKCAP_SLS),
         regs.PCI_EXP_LNKCAP_SLS_64_0GB,
@@ -176,7 +149,7 @@ def check_pcie_link(suite, client, regs, px):
     )
 
     # The device has no physical link to train down
-    lnksta = read_config16(client, px + regs.PCI_EXP_LNKSTA)
+    lnksta = pci.read16(client, px + regs.PCI_EXP_LNKSTA)
     suite.check_eq(
         pci.field(lnksta, regs.PCI_EXP_LNKSTA_CLS),
         regs.PCI_EXP_LNKSTA_CLS_64_0GB,
@@ -188,7 +161,7 @@ def check_pcie_link(suite, client, regs, px):
         "the negotiated link width is x16",
     )
 
-    lnkcap2 = read_config32(client, px + regs.PCI_EXP_LNKCAP2)
+    lnkcap2 = pci.read32(client, px + regs.PCI_EXP_LNKCAP2)
     every_speed = (
         regs.PCI_EXP_LNKCAP2_SLS_2_5GB
         | regs.PCI_EXP_LNKCAP2_SLS_5_0GB
@@ -202,7 +175,7 @@ def check_pcie_link(suite, client, regs, px):
         every_speed,
         "every speed from 2.5 to 64 GT/s is supported",
     )
-    lnkctl2 = read_config16(client, px + regs.PCI_EXP_LNKCTL2)
+    lnkctl2 = pci.read16(client, px + regs.PCI_EXP_LNKCTL2)
     suite.check_eq(
         pci.field(lnkctl2, regs.PCI_EXP_LNKCTL2_TLS),
         regs.PCI_EXP_LNKCTL2_TLS_64_0GT,
@@ -211,25 +184,29 @@ def check_pcie_link(suite, client, regs, px):
 
 
 def test_config_space(suite, client, regs):
-    """The PCI identity a guest matches the driver against."""
+    """The PCI identity, the capabilities, and the registers' initial values.
+
+    The identity is what a guest matches the driver against; the registers
+    are the ones a driver writes, read before any has.
+    """
     suite.check_eq(
-        read_config16(client, regs.PCI_VENDOR_ID), PCI_VENDOR_ID_PENSANDO, "vendor id"
+        pci.read16(client, regs.PCI_VENDOR_ID), PCI_VENDOR_ID_PENSANDO, "vendor id"
     )
     suite.check_eq(
-        read_config16(client, regs.PCI_DEVICE_ID), PCI_DEVICE_ID_ROCM_ERNIC, "device id"
+        pci.read16(client, regs.PCI_DEVICE_ID), PCI_DEVICE_ID_ROCM_ERNIC, "device id"
     )
     suite.check_eq(
-        read_config16(client, regs.PCI_SUBSYSTEM_VENDOR_ID),
+        pci.read16(client, regs.PCI_SUBSYSTEM_VENDOR_ID),
         PCI_VENDOR_ID_PENSANDO,
         "subsystem vendor id",
     )
     suite.check_eq(
-        read_config16(client, regs.PCI_SUBSYSTEM_ID),
+        pci.read16(client, regs.PCI_SUBSYSTEM_ID),
         PCI_SUBDEVICE_ID_ROCM_ERNIC,
         "subsystem device id",
     )
     suite.check_eq(
-        read_config16(client, regs.PCI_CLASS_DEVICE) >> 8,
+        pci.read16(client, regs.PCI_CLASS_DEVICE) >> 8,
         PCI_BASE_CLASS_NETWORK,
         "base class is network",
     )
@@ -240,19 +217,17 @@ def test_config_space(suite, client, regs):
     )
 
     suite.check(
-        read_config16(client, regs.PCI_STATUS) & regs.PCI_STATUS_CAP_LIST,
+        pci.read16(client, regs.PCI_STATUS) & regs.PCI_STATUS_CAP_LIST,
         "status says there is a capability list",
     )
-    px = find_capability(client, regs, regs.PCI_CAP_ID_EXP)
+    px = pci.find_capability(client, regs, regs.PCI_CAP_ID_EXP)
     suite.check(px is not None, "the PCI Express capability is on the list")
-    suite.check(
-        find_capability(client, regs, regs.PCI_CAP_ID_MSIX) is not None,
-        "the MSI-X capability is on the list",
-    )
-    if px is None:
+    msix = pci.find_capability(client, regs, regs.PCI_CAP_ID_MSIX)
+    suite.check(msix is not None, "the MSI-X capability is on the list")
+    if px is None or msix is None:
         return
 
-    flags = read_config16(client, px + regs.PCI_EXP_FLAGS)
+    flags = pci.read16(client, px + regs.PCI_EXP_FLAGS)
     suite.check_eq(
         pci.field(flags, regs.PCI_EXP_FLAGS_VERS), 2, "PCI Express capability version"
     )
@@ -261,12 +236,153 @@ def test_config_space(suite, client, regs):
         regs.PCI_EXP_TYPE_ENDPOINT,
         "PCI Express device type is Endpoint",
     )
-    suite.check_eq(
-        read_config32(client, px + regs.PCI_EXP_DEVCAP) & regs.PCI_EXP_DEVCAP_FLR,
-        0,
-        "the device doesn't advertise FLR",
+    suite.check(
+        pci.read32(client, px + regs.PCI_EXP_DEVCAP) & regs.PCI_EXP_DEVCAP_FLR,
+        "the device advertises FLR",
     )
     check_pcie_link(suite, client, regs, px)
+
+    config = ResetRegs(client, regs, px, msix)
+    config.check(suite, config.initial(), "before any driver")
+    suite.check_eq(config.unmasked(), [], "every MSI-X vector is masked at startup")
+
+
+# What ResetRegs.dirty() writes into the 8-bit header registers a reset
+# puts back: a 64-byte cache line, a latency timer and an INTx line
+DIRTY_CACHE_LINE_SIZE = 16
+DIRTY_LATENCY_TIMER = 0x40
+DIRTY_INTERRUPT_LINE = 11
+
+
+class ResetRegs:
+    """The config-space registers a reset puts back, read through @client.
+
+    @px and @msix are the offsets of the PCI Express and MSI-X
+    capabilities, and @regs the linux/pci_regs.h values.
+    """
+
+    def __init__(self, client, regs, px, msix):
+        self.client = client
+        self.regs = regs
+        self.px = px
+        self.msix = msix
+
+    def vector_ctrl(self, vector):
+        """The BAR and offset of MSI-X table entry @vector's Vector Control."""
+        regs = self.regs
+        table = pci.read32(self.client, self.msix + regs.PCI_MSIX_TABLE)
+        return (
+            table & regs.PCI_MSIX_TABLE_BIR,
+            (table & regs.PCI_MSIX_TABLE_OFFSET)
+            + vector * regs.PCI_MSIX_ENTRY_SIZE
+            + regs.PCI_MSIX_ENTRY_VECTOR_CTRL,
+        )
+
+    def unmasked(self):
+        """The MSI-X vectors whose table entry's Mask bit is clear."""
+        regs = self.regs
+        flags = pci.read16(self.client, self.msix + regs.PCI_MSIX_FLAGS)
+        unmasked = []
+        for vector in range(pci.field(flags, regs.PCI_MSIX_FLAGS_QSIZE) + 1):
+            ctrl = self.client.read_bar32(*self.vector_ctrl(vector))
+            if not ctrl & regs.PCI_MSIX_ENTRY_CTRL_MASKBIT:
+                unmasked.append(vector)
+        return unmasked
+
+    def read(self):
+        """The registers, by name.
+
+        Only the writable bits of MSI-X Message Control are read, and the
+        first MSI-X vector stands for the table.
+        """
+        client, regs = self.client, self.regs
+        msix_writable = regs.PCI_MSIX_FLAGS_ENABLE | regs.PCI_MSIX_FLAGS_MASKALL
+        return {
+            "Command": pci.read16(client, regs.PCI_COMMAND),
+            "Cache Line Size": client.read_config(regs.PCI_CACHE_LINE_SIZE, 1)[0],
+            "Latency Timer": client.read_config(regs.PCI_LATENCY_TIMER, 1)[0],
+            "Interrupt Line": client.read_config(regs.PCI_INTERRUPT_LINE, 1)[0],
+            "Device Control": pci.read16(client, self.px + regs.PCI_EXP_DEVCTL),
+            "Device Control 2": pci.read16(client, self.px + regs.PCI_EXP_DEVCTL2),
+            "Link Control 2": pci.read16(client, self.px + regs.PCI_EXP_LNKCTL2),
+            "MSI-X Message Control": pci.read16(client, self.msix + regs.PCI_MSIX_FLAGS)
+            & msix_writable,
+            "MSI-X vector 0 Vector Control": client.read_bar32(*self.vector_ctrl(0)),
+        }
+
+    def initial(self):
+        """What read() returns before a driver writes, and after a reset.
+
+        Device Control has the spec's defaults: Relaxed Ordering and No
+        Snoop enabled, and a 512-byte Max_Read_Request_Size. Link Control
+        2's Target Link Speed is the fastest the device supports.
+        """
+        regs = self.regs
+        return {
+            "Command": 0,
+            "Cache Line Size": 0,
+            "Latency Timer": 0,
+            "Interrupt Line": 0,
+            "Device Control": regs.PCI_EXP_DEVCTL_RELAX_EN
+            | regs.PCI_EXP_DEVCTL_NOSNOOP_EN
+            | regs.PCI_EXP_DEVCTL_READRQ_512B,
+            "Device Control 2": 0,
+            "Link Control 2": regs.PCI_EXP_LNKCTL2_TLS_64_0GT,
+            "MSI-X Message Control": 0,
+            "MSI-X vector 0 Vector Control": regs.PCI_MSIX_ENTRY_CTRL_MASKBIT,
+        }
+
+    def dirty(self, suite):
+        """Write what a driver might into every register.
+
+        Device Control gets a 256-byte Max_Payload_Size, which an FLR
+        keeps, with Relaxed Ordering and No Snoop off and a 4096-byte
+        Max_Read_Request_Size. Link Control 2, which an FLR also keeps,
+        gets a 2.5 GT/s Target Link Speed. Checks that every register took
+        its new value, or a check that a reset put it back would pass
+        without one.
+        """
+        client, regs = self.client, self.regs
+        pci.write16(
+            client, regs.PCI_COMMAND, regs.PCI_COMMAND_MEMORY | regs.PCI_COMMAND_MASTER
+        )
+        client.write_config(regs.PCI_CACHE_LINE_SIZE, bytes((DIRTY_CACHE_LINE_SIZE,)))
+        client.write_config(regs.PCI_LATENCY_TIMER, bytes((DIRTY_LATENCY_TIMER,)))
+        client.write_config(regs.PCI_INTERRUPT_LINE, bytes((DIRTY_INTERRUPT_LINE,)))
+        pci.write16(
+            client,
+            self.px + regs.PCI_EXP_DEVCTL,
+            regs.PCI_EXP_DEVCTL_PAYLOAD_256B | regs.PCI_EXP_DEVCTL_READRQ_4096B,
+        )
+        pci.write16(
+            client,
+            self.px + regs.PCI_EXP_DEVCTL2,
+            regs.PCI_EXP_DEVCTL2_COMP_TMOUT_DIS,
+        )
+        pci.write16(
+            client, self.px + regs.PCI_EXP_LNKCTL2, regs.PCI_EXP_LNKCTL2_TLS_2_5GT
+        )
+        flags = pci.read16(client, self.msix + regs.PCI_MSIX_FLAGS)
+        pci.write16(
+            client,
+            self.msix + regs.PCI_MSIX_FLAGS,
+            flags | regs.PCI_MSIX_FLAGS_ENABLE | regs.PCI_MSIX_FLAGS_MASKALL,
+        )
+        client.write_bar32(*self.vector_ctrl(0), 0)
+
+        initial = self.initial()
+        for name, value in self.read().items():
+            suite.check(
+                value != initial[name],
+                "%s moved off its initial value, to %#x",
+                name,
+                value,
+            )
+
+    def check(self, suite, expected, when):
+        """Check read() returns @expected, @when (e.g. "after an FLR")."""
+        for name, value in self.read().items():
+            suite.check_eq(value, expected[name], "%s %s", name, when)
 
 
 def test_bar_access(suite, client, server):
@@ -460,33 +576,64 @@ def read_resets(path):
     return state.group(1), int(count.group(1))
 
 
-def test_flr_refused(suite, client, regs, stats_path):
-    """A write starting an FLR, which the device doesn't advertise.
+def find_reset_regs(suite, client, regs):
+    """The ResetRegs for @client, or None without the capabilities."""
+    px = pci.find_capability(client, regs, regs.PCI_CAP_ID_EXP)
+    msix = pci.find_capability(client, regs, regs.PCI_CAP_ID_MSIX)
+    if not suite.check(
+        px is not None and msix is not None,
+        "there are PCI Express and MSI-X capabilities",
+    ):
+        return None
+    return ResetRegs(client, regs, px, msix)
 
-    Linux's pcie_flr() starts one by setting Initiate FLR in Device
-    Control, written as the one word it is. libvfio-user refuses it
-    without calling the reset callback, which would rewrite the stats file
-    before the write returned, counting the reset and saying it was an FLR.
+
+def test_flr(suite, client, regs, stats_path):
+    """A function-level reset, as Linux's pcie_flr() starts it.
+
+    It sets Initiate FLR in Device Control along with the register's
+    other bits, in one 16-bit write. libvfio-user calls the reset callback
+    before it answers, so the stats file already counts the reset, and
+    every register a driver wrote is back at its initial value, but for
+    Max_Payload_Size and Link Control 2, the link's state, which an FLR
+    keeps. The device's own state is reset
+    too: the MAC the guest gave the LIF goes back to the station MAC, and
+    the last device command no longer reads as done.
     """
-    px = find_capability(client, regs, regs.PCI_CAP_ID_EXP)
-    if not suite.check(px is not None, "there is a PCI Express capability"):
-        return
+    config = find_reset_regs(suite, client, regs)
     before = read_resets(stats_path)
-    if not suite.check(before is not None, "the stats file has a reset count"):
+    if config is None or not suite.check(
+        before is not None, "the stats file has a reset count"
+    ):
         return
 
-    refused(
-        suite,
-        "a write starting an FLR",
-        lambda: client.write_config(
-            px + regs.PCI_EXP_DEVCTL, struct.pack("<H", regs.PCI_EXP_DEVCTL_BCR_FLR)
-        ),
-        errno.EINVAL,
-    )
-    after = read_resets(stats_path)
-    if suite.check(after is not None, "the stats file still has a reset count"):
-        suite.check(after[0] != FLR_CONNECTION, "the server didn't take an FLR")
-        suite.check_eq(after[1], before[1], "the device wasn't reset")
+    # The driver model only allocates from it, for devcmds that DMA nothing
+    with vfu.GuestMemory(size=1 << 20) as mem:
+        driver = ionic.IonicDriver(client, mem)
+        station = lif_mac(driver)
+        set_lif_mac(driver, GUEST_MAC)
+        config.dirty(suite)
+
+        pci.start_flr(client, regs, config.px)
+        after = read_resets(stats_path)
+        if suite.check(after is not None, "the stats file still has a reset count"):
+            suite.check_eq(after[0], FLR_CONNECTION, "the connection state")
+            suite.check_eq(after[1], before[1] + 1, "the reset count")
+
+        # What dirty() set: the 256-byte Max_Payload_Size, and the 2.5 GT/s
+        # Target Link Speed
+        expected = config.initial()
+        expected["Device Control"] = (
+            expected["Device Control"] & ~regs.PCI_EXP_DEVCTL_PAYLOAD
+        ) | regs.PCI_EXP_DEVCTL_PAYLOAD_256B
+        expected["Link Control 2"] = regs.PCI_EXP_LNKCTL2_TLS_2_5GT
+        config.check(suite, expected, "after an FLR")
+        suite.check_eq(
+            driver.bar0_read32(ionic.BAR0_DEVCMD_DONE),
+            0,
+            "the last device command no longer reads as done after an FLR",
+        )
+        suite.check_eq(lif_mac(driver), station, "the MAC after an FLR")
 
 
 def lif_mac(driver):
@@ -507,20 +654,27 @@ def set_lif_mac(driver, mac):
     driver.devcmd_ok(bytes(cmd))
 
 
-def test_reset_and_reconnect(suite, client, socket_path):
+def test_reset_and_reconnect(suite, client, regs, socket_path):
     """A device reset, and a second client after the first detaches.
 
     Each returns the device to its state before any client attached: the
-    MAC the guest gave the LIF goes back to the station MAC, and the last
-    device command no longer reads as done. The first client leaves its
-    MAC behind without resetting the device, as a VM that dies does.
+    MAC the guest gave the LIF goes back to the station MAC, the last
+    device command no longer reads as done, and every config-space
+    register a driver wrote is back at its initial value, Max_Payload_Size
+    and Link Control 2 included. The first client leaves its MAC and registers behind without
+    resetting the device, as a VM that dies does.
     """
+    config = find_reset_regs(suite, client, regs)
+    if config is None:
+        return
+
     # The driver model only allocates from it, for devcmds that DMA nothing.
     # Leaving the block detaches the first client.
     with client, vfu.GuestMemory(size=1 << 20) as mem:
         driver = ionic.IonicDriver(client, mem)
         station = lif_mac(driver)
         set_lif_mac(driver, GUEST_MAC)
+        config.dirty(suite)
         client.reset()
         suite.check_eq(
             client.read_bar32(0, 0), IONIC_DEV_SIG, "the device answers after a reset"
@@ -528,10 +682,12 @@ def test_reset_and_reconnect(suite, client, socket_path):
         suite.check_eq(
             driver.bar0_read32(ionic.BAR0_DEVCMD_DONE),
             0,
-            "the last device command reads as done after a reset",
+            "the last device command no longer reads as done after a reset",
         )
         suite.check_eq(lif_mac(driver), station, "the MAC after a reset")
+        config.check(suite, config.initial(), "after a reset")
         set_lif_mac(driver, GUEST_MAC)
+        config.dirty(suite)
 
     with (
         vfu.VfioUserClient(socket_path).connect(timeout=30) as second,
@@ -547,6 +703,10 @@ def test_reset_and_reconnect(suite, client, socket_path):
             lif_mac(driver),
             station,
             "the MAC a second client finds after the first changed it",
+        )
+        config = ResetRegs(second, regs, config.px, config.msix)
+        config.check(
+            suite, config.initial(), "for a second client after the first changed it"
         )
 
 
@@ -621,11 +781,7 @@ def main():
     """Start a server, run the protocol tests against it, and stop it."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--server", required=True, help="path to the rocm-ernic binary")
-    parser.add_argument(
-        "--pci-regs", required=True, help="path to the ernic-pci-regs program"
-    )
-    args = parser.parse_args()
-    regs = pci.load(args.pci_regs)
+    args, regs = pci.parse_args(parser)
 
     suite = Suite("rocm-ernic vfio-user protocol tests")
     with tempfile.TemporaryDirectory(prefix="ernic-vfu-") as run_dir:
@@ -646,11 +802,12 @@ def main():
             suite.run("DMA mapping", test_dma, client)
             suite.run("interrupts", test_irqs, client)
             suite.run("stats file", test_stats_file, stats_path)
-            suite.run("FLR refused", test_flr_refused, client, regs, stats_path)
+            suite.run("function-level reset", test_flr, client, regs, stats_path)
             suite.run(
                 "reset and reconnect",
                 test_reset_and_reconnect,
                 client,
+                regs,
                 server.socket_path,
             )
             suite.run(

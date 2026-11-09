@@ -293,17 +293,17 @@ doesn't exist is refused with its own status.
 What a device reset undoes
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-A device reset -- QEMU resetting the device, or the client
-disconnecting -- takes back whatever the guest did to the
-engine, as it does the guest's queues and memory
-registrations: a load it began and never committed is
-dropped, and if it committed a program or changed a table,
-the program from ``--p4-program`` is loaded again, with its
-tables empty, or the engine is left with no program if the
-operator gave none. The next guest, or the same one after it
-reboots, starts from the operator's program rather than
-running under the packet policy the last one left. The
-engine's counters are kept.
+A device reset -- QEMU resetting the device, the guest's
+function-level reset, or the client disconnecting -- takes
+back whatever the guest did to the engine, as it does the
+guest's queues and memory registrations: a load it began and
+never committed is dropped, and if it committed a program
+or changed a table, the program from ``--p4-program`` is
+loaded again, with its tables empty, or the engine is left
+with no program if the operator gave none. The next guest,
+or the same one after it reboots, starts from the operator's
+program rather than running under the packet policy the last
+one left. The engine's counters are kept.
 
 Loading the program again needs memory. If there is none,
 the engine is left blocked rather than empty, since an empty
