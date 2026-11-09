@@ -380,13 +380,24 @@
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv414rocm_ernic_dev"><code class="docutils literal notranslate"><span class="pre">rocm_ernic_dev</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev16backend_type_strE"><code class="docutils literal notranslate"><span class="pre">backend_type_str</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev8bar0_memE"><code class="docutils literal notranslate"><span class="pre">bar0_mem</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev15cache_line_sizeE"><code class="docutils literal notranslate"><span class="pre">cache_line_size</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev11client_lostE"><code class="docutils literal notranslate"><span class="pre">client_lost</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev7commandE"><code class="docutils literal notranslate"><span class="pre">command</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev6devctlE"><code class="docutils literal notranslate"><span class="pre">devctl</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev7devctl2E"><code class="docutils literal notranslate"><span class="pre">devctl2</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev6faultsE"><code class="docutils literal notranslate"><span class="pre">faults</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev14interrupt_lineE"><code class="docutils literal notranslate"><span class="pre">interrupt_line</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev5ionicE"><code class="docutils literal notranslate"><span class="pre">ionic</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev13latency_timerE"><code class="docutils literal notranslate"><span class="pre">latency_timer</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev7lnkctl2E"><code class="docutils literal notranslate"><span class="pre">lnkctl2</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev8mac_addrE"><code class="docutils literal notranslate"><span class="pre">mac_addr</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev12mac_addr_setE"><code class="docutils literal notranslate"><span class="pre">mac_addr_set</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev10msix_flagsE"><code class="docutils literal notranslate"><span class="pre">msix_flags</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev8msix_offE"><code class="docutils literal notranslate"><span class="pre">msix_off</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev8pci_initE"><code class="docutils literal notranslate"><span class="pre">pci_init</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev7profileE"><code class="docutils literal notranslate"><span class="pre">profile</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev13pvrdma_handleE"><code class="docutils literal notranslate"><span class="pre">pvrdma_handle</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev6px_offE"><code class="docutils literal notranslate"><span class="pre">px_off</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev5statsE"><code class="docutils literal notranslate"><span class="pre">stats</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev15stats_file_pathE"><code class="docutils literal notranslate"><span class="pre">stats_file_path</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev7verboseE"><code class="docutils literal notranslate"><span class="pre">verbose</span></code></a></li>
@@ -836,8 +847,28 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <dd></dd></dl>
 
 <dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N14rocm_ernic_dev15cache_line_sizeE">
+<span id="_CPPv3N14rocm_ernic_dev15cache_line_sizeE"></span><span id="_CPPv2N14rocm_ernic_dev15cache_line_sizeE"></span><span id="rocm_ernic_dev::cache_line_size__uint8_t"></span><span class="target" id="structrocm__ernic__dev_1a2c7170b08842dbcccaaccaaf575bee0f"></span><span class="n"><span class="pre">uint8_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">cache_line_size</span></span></span><a class="headerlink" href="#_CPPv4N14rocm_ernic_dev15cache_line_sizeE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N14rocm_ernic_dev11client_lostE">
 <span id="_CPPv3N14rocm_ernic_dev11client_lostE"></span><span id="_CPPv2N14rocm_ernic_dev11client_lostE"></span><span id="rocm_ernic_dev::client_lost__b"></span><span class="target" id="structrocm__ernic__dev_1a2449b85a2ee9190c0e3c885b291d84ab"></span><span class="kt"><span class="pre">bool</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">client_lost</span></span></span><a class="headerlink" href="#_CPPv4N14rocm_ernic_dev11client_lostE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N14rocm_ernic_dev7commandE">
+<span id="_CPPv3N14rocm_ernic_dev7commandE"></span><span id="_CPPv2N14rocm_ernic_dev7commandE"></span><span id="rocm_ernic_dev::command__uint16_t"></span><span class="target" id="structrocm__ernic__dev_1a3b28995330b90bbaa9602b995b9b3646"></span><span class="n"><span class="pre">uint16_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">command</span></span></span><a class="headerlink" href="#_CPPv4N14rocm_ernic_dev7commandE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N14rocm_ernic_dev6devctlE">
+<span id="_CPPv3N14rocm_ernic_dev6devctlE"></span><span id="_CPPv2N14rocm_ernic_dev6devctlE"></span><span id="rocm_ernic_dev::devctl__uint16_t"></span><span class="target" id="structrocm__ernic__dev_1acda81923b375682bc5e4f30acc45b39b"></span><span class="n"><span class="pre">uint16_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">devctl</span></span></span><a class="headerlink" href="#_CPPv4N14rocm_ernic_dev6devctlE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N14rocm_ernic_dev7devctl2E">
+<span id="_CPPv3N14rocm_ernic_dev7devctl2E"></span><span id="_CPPv2N14rocm_ernic_dev7devctl2E"></span><span id="rocm_ernic_dev::devctl2__uint16_t"></span><span class="target" id="structrocm__ernic__dev_1a8722251e030bf92a51e287e0f4766cf1"></span><span class="n"><span class="pre">uint16_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">devctl2</span></span></span><a class="headerlink" href="#_CPPv4N14rocm_ernic_dev7devctl2E" title="Link to this definition">#</a><br /></dt>
 <dd></dd></dl>
 
 <dl class="cpp var">
@@ -846,8 +877,23 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <dd></dd></dl>
 
 <dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N14rocm_ernic_dev14interrupt_lineE">
+<span id="_CPPv3N14rocm_ernic_dev14interrupt_lineE"></span><span id="_CPPv2N14rocm_ernic_dev14interrupt_lineE"></span><span id="rocm_ernic_dev::interrupt_line__uint8_t"></span><span class="target" id="structrocm__ernic__dev_1ab6aee8dc9439569bc8d0445c02593fba"></span><span class="n"><span class="pre">uint8_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">interrupt_line</span></span></span><a class="headerlink" href="#_CPPv4N14rocm_ernic_dev14interrupt_lineE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N14rocm_ernic_dev5ionicE">
 <span id="_CPPv3N14rocm_ernic_dev5ionicE"></span><span id="_CPPv2N14rocm_ernic_dev5ionicE"></span><span id="rocm_ernic_dev::ionic__ionic_deviceP"></span><span class="target" id="structrocm__ernic__dev_1a3be9390b4ccf3752677458beda68ebae"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ionic_device</span></span><span class="w"> </span><span class="p"><span class="pre">*</span></span><span class="sig-name descname"><span class="n"><span class="pre">ionic</span></span></span><a class="headerlink" href="#_CPPv4N14rocm_ernic_dev5ionicE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N14rocm_ernic_dev13latency_timerE">
+<span id="_CPPv3N14rocm_ernic_dev13latency_timerE"></span><span id="_CPPv2N14rocm_ernic_dev13latency_timerE"></span><span id="rocm_ernic_dev::latency_timer__uint8_t"></span><span class="target" id="structrocm__ernic__dev_1a4d7b3e6271d7c7f8b3ddbc531e4e451b"></span><span class="n"><span class="pre">uint8_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">latency_timer</span></span></span><a class="headerlink" href="#_CPPv4N14rocm_ernic_dev13latency_timerE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N14rocm_ernic_dev7lnkctl2E">
+<span id="_CPPv3N14rocm_ernic_dev7lnkctl2E"></span><span id="_CPPv2N14rocm_ernic_dev7lnkctl2E"></span><span id="rocm_ernic_dev::lnkctl2__uint16_t"></span><span class="target" id="structrocm__ernic__dev_1ad94f5d07cae1a078fdf832780a6c8501"></span><span class="n"><span class="pre">uint16_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">lnkctl2</span></span></span><a class="headerlink" href="#_CPPv4N14rocm_ernic_dev7lnkctl2E" title="Link to this definition">#</a><br /></dt>
 <dd></dd></dl>
 
 <dl class="cpp var">
@@ -861,6 +907,21 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <dd></dd></dl>
 
 <dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N14rocm_ernic_dev10msix_flagsE">
+<span id="_CPPv3N14rocm_ernic_dev10msix_flagsE"></span><span id="_CPPv2N14rocm_ernic_dev10msix_flagsE"></span><span id="rocm_ernic_dev::msix_flags__uint16_t"></span><span class="target" id="structrocm__ernic__dev_1aa8990a437967eebd4560205cd1b945d1"></span><span class="n"><span class="pre">uint16_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">msix_flags</span></span></span><a class="headerlink" href="#_CPPv4N14rocm_ernic_dev10msix_flagsE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N14rocm_ernic_dev8msix_offE">
+<span id="_CPPv3N14rocm_ernic_dev8msix_offE"></span><span id="_CPPv2N14rocm_ernic_dev8msix_offE"></span><span id="rocm_ernic_dev::msix_off__s"></span><span class="target" id="structrocm__ernic__dev_1a8fbff932323c1d220445f9f5ad8ea164"></span><span class="n"><span class="pre">size_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">msix_off</span></span></span><a class="headerlink" href="#_CPPv4N14rocm_ernic_dev8msix_offE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N14rocm_ernic_dev8pci_initE">
+<span id="_CPPv3N14rocm_ernic_dev8pci_initE"></span><span id="_CPPv2N14rocm_ernic_dev8pci_initE"></span><span id="rocm_ernic_dev::pci_init__rocm_ernic_dev"></span><span class="target" id="structrocm__ernic__dev_1a06a9af156ea45ad75be2c1bc3839fc87"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><a class="reference internal" href="#_CPPv414rocm_ernic_dev" title="rocm_ernic_dev"><span class="n"><span class="pre">rocm_ernic_dev</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">pci_init</span></span></span><a class="headerlink" href="#_CPPv4N14rocm_ernic_dev8pci_initE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N14rocm_ernic_dev7profileE">
 <span id="_CPPv3N14rocm_ernic_dev7profileE"></span><span id="_CPPv2N14rocm_ernic_dev7profileE"></span><span id="rocm_ernic_dev::profile__ionic_profile"></span><span class="target" id="structrocm__ernic__dev_1a72701ab2bbe51385ec5504c87255086f"></span><span class="k"><span class="pre">struct</span></span><span class="w"> </span><span class="n"><span class="pre">ionic_profile</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">profile</span></span></span><a class="headerlink" href="#_CPPv4N14rocm_ernic_dev7profileE" title="Link to this definition">#</a><br /></dt>
 <dd></dd></dl>
@@ -868,6 +929,11 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <dl class="cpp var">
 <dt class="sig sig-object cpp" id="_CPPv4N14rocm_ernic_dev13pvrdma_handleE">
 <span id="_CPPv3N14rocm_ernic_dev13pvrdma_handleE"></span><span id="_CPPv2N14rocm_ernic_dev13pvrdma_handleE"></span><span id="rocm_ernic_dev::pvrdma_handle__pvrdma_handle_t"></span><span class="target" id="structrocm__ernic__dev_1a51580ff1137c6d423baae86f12683285"></span><a class="reference internal" href="#_CPPv415pvrdma_handle_t" title="pvrdma_handle_t"><span class="n"><span class="pre">pvrdma_handle_t</span></span></a><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">pvrdma_handle</span></span></span><a class="headerlink" href="#_CPPv4N14rocm_ernic_dev13pvrdma_handleE" title="Link to this definition">#</a><br /></dt>
+<dd></dd></dl>
+
+<dl class="cpp var">
+<dt class="sig sig-object cpp" id="_CPPv4N14rocm_ernic_dev6px_offE">
+<span id="_CPPv3N14rocm_ernic_dev6px_offE"></span><span id="_CPPv2N14rocm_ernic_dev6px_offE"></span><span id="rocm_ernic_dev::px_off__s"></span><span class="target" id="structrocm__ernic__dev_1a794679ea5a692e43b1fde0d7651690f6"></span><span class="n"><span class="pre">size_t</span></span><span class="w"> </span><span class="sig-name descname"><span class="n"><span class="pre">px_off</span></span></span><a class="headerlink" href="#_CPPv4N14rocm_ernic_dev6px_offE" title="Link to this definition">#</a><br /></dt>
 <dd></dd></dl>
 
 <dl class="cpp var">
@@ -3064,13 +3130,24 @@ annotated source headers by Doxygen and rendered via Breathe.</p>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv414rocm_ernic_dev"><code class="docutils literal notranslate"><span class="pre">rocm_ernic_dev</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev16backend_type_strE"><code class="docutils literal notranslate"><span class="pre">backend_type_str</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev8bar0_memE"><code class="docutils literal notranslate"><span class="pre">bar0_mem</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev15cache_line_sizeE"><code class="docutils literal notranslate"><span class="pre">cache_line_size</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev11client_lostE"><code class="docutils literal notranslate"><span class="pre">client_lost</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev7commandE"><code class="docutils literal notranslate"><span class="pre">command</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev6devctlE"><code class="docutils literal notranslate"><span class="pre">devctl</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev7devctl2E"><code class="docutils literal notranslate"><span class="pre">devctl2</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev6faultsE"><code class="docutils literal notranslate"><span class="pre">faults</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev14interrupt_lineE"><code class="docutils literal notranslate"><span class="pre">interrupt_line</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev5ionicE"><code class="docutils literal notranslate"><span class="pre">ionic</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev13latency_timerE"><code class="docutils literal notranslate"><span class="pre">latency_timer</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev7lnkctl2E"><code class="docutils literal notranslate"><span class="pre">lnkctl2</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev8mac_addrE"><code class="docutils literal notranslate"><span class="pre">mac_addr</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev12mac_addr_setE"><code class="docutils literal notranslate"><span class="pre">mac_addr_set</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev10msix_flagsE"><code class="docutils literal notranslate"><span class="pre">msix_flags</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev8msix_offE"><code class="docutils literal notranslate"><span class="pre">msix_off</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev8pci_initE"><code class="docutils literal notranslate"><span class="pre">pci_init</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev7profileE"><code class="docutils literal notranslate"><span class="pre">profile</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev13pvrdma_handleE"><code class="docutils literal notranslate"><span class="pre">pvrdma_handle</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev6px_offE"><code class="docutils literal notranslate"><span class="pre">px_off</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev5statsE"><code class="docutils literal notranslate"><span class="pre">stats</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev15stats_file_pathE"><code class="docutils literal notranslate"><span class="pre">stats_file_path</span></code></a></li>
 <li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#_CPPv4N14rocm_ernic_dev7verboseE"><code class="docutils literal notranslate"><span class="pre">verbose</span></code></a></li>
