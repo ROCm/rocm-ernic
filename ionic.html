@@ -1280,8 +1280,8 @@ Integrated Endpoint, which has no link, so the guest reports
 them as unknown instead of 64 GT/s x16; this is cosmetic</p></li>
 <li><p>Function-level reset (FLR), which the PCI Express
 capability doesn’t advertise, so the guest can’t start one:
-a device reset leaves the RDMA and Ethernet queues, memory
-registrations and work in flight in place</p></li>
+a device reset returns the device to its initial state, but
+not its PCI configuration space, which an FLR also resets</p></li>
 </ul>
 </section>
 </section>

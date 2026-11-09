@@ -832,5 +832,5 @@ Not yet working:
   them as unknown instead of 64 GT/s x16; this is cosmetic
 - Function-level reset (FLR), which the PCI Express
   capability doesn't advertise, so the guest can't start one:
-  a device reset leaves the RDMA and Ethernet queues, memory
-  registrations and work in flight in place
+  a device reset returns the device to its initial state, but
+  not its PCI configuration space, which an FLR also resets

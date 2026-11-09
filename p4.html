@@ -380,6 +380,7 @@
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-guest-s-control-surface">The guest’s control surface</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#what-a-device-reset-undoes">What a device reset undoes</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#shaped-like-pds-fwctl-not-pds-fwctl">Shaped like pds_fwctl, not pds_fwctl</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-capability-bit">The capability bit</a></li>
 </ul>
@@ -681,6 +682,26 @@ operation the grant covers. None of this is secret:
 <code class="docutils literal notranslate"><span class="pre">identify</span></code> reports the grant, <code class="docutils literal notranslate"><span class="pre">query</span></code> lists every
 operation with the scope it needs, and an operation that
 doesn’t exist is refused with its own status.</p>
+<section id="what-a-device-reset-undoes">
+<h3>What a device reset undoes<a class="headerlink" href="#what-a-device-reset-undoes" title="Link to this heading">#</a></h3>
+<p>A device reset – QEMU resetting the device, or the client
+disconnecting – takes back whatever the guest did to the
+engine, as it does the guest’s queues and memory
+registrations: a load it began and never committed is
+dropped, and if it committed a program or changed a table,
+the program from <code class="docutils literal notranslate"><span class="pre">--p4-program</span></code> is loaded again, with its
+tables empty, or the engine is left with no program if the
+operator gave none. The next guest, or the same one after it
+reboots, starts from the operator’s program rather than
+running under the packet policy the last one left. The
+engine’s counters are kept.</p>
+<p>Loading the program again needs memory. If there is none,
+the engine is left blocked rather than empty, since an empty
+engine forwards every frame unexamined: it drops every frame
+and fails every RDMA operation until a later reset, or a
+program the guest commits, succeeds. The server logs the
+failure.</p>
+</section>
 <section id="shaped-like-pds-fwctl-not-pds-fwctl">
 <h3>Shaped like pds_fwctl, not pds_fwctl<a class="headerlink" href="#shaped-like-pds-fwctl-not-pds-fwctl" title="Link to this heading">#</a></h3>
 <p>The opcode numbers are upstream’s
@@ -1263,6 +1284,7 @@ verifies it.</p>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-guest-s-control-surface">The guest’s control surface</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#what-a-device-reset-undoes">What a device reset undoes</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#shaped-like-pds-fwctl-not-pds-fwctl">Shaped like pds_fwctl, not pds_fwctl</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-capability-bit">The capability bit</a></li>
 </ul>
