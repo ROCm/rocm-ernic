@@ -322,6 +322,18 @@ _Static_assert(ADMIN_CMD_SIZE == IONIC_DEVCMD_CMD_LEN &&
 #define TXQ_SG_ELEM_SIZE 16U
 #define TXQ_SG_MAX_ELEMS 8U
 
+/* struct ionic_rxq_sg_desc: 8 of struct ionic_rxq_sg_elem, each le64 addr,
+ * le16 len, le16 rsvd[3].  The driver sizes the SG ring by the struct, so
+ * descriptor i's list is at sg_ring_base + i * RXQ_SG_DESC_SIZE. */
+#define RXQ_SG_ELEM_SIZE 16U
+#define RXQ_SG_MAX_ELEMS 8U
+#define RXQ_SG_DESC_SIZE 128U
+_Static_assert(RXQ_SG_DESC_SIZE == RXQ_SG_MAX_ELEMS * RXQ_SG_ELEM_SIZE,
+               "an Rx SG list is RXQ_SG_MAX_ELEMS elements");
+
+/* ionic_q_init_cmd flags: the queue has an SG ring at sg_ring_base. */
+#define IONIC_QINIT_F_SG 0x04U
+
 /* encode_txq_desc_cmd(): flags[3:0] opcode[7:4] nsge[11:8] addr[63:12]. */
 #define TXQ_DESC_NSGE_SHIFT  8
 #define TXQ_DESC_ADDR_SHIFT  12
@@ -366,6 +378,7 @@ struct eth_queue {
     uint64_t ring_base;
     uint64_t cq_ring_base;
     uint64_t sg_ring_base;
+    bool sg; /* Q_INIT set IONIC_QINIT_F_SG; Rx reads SG lists only then */
     uint16_t depth;
     uint16_t head; /* next descriptor to consume */
     /* Last producer index the driver rang for.  The admin and Tx queues run

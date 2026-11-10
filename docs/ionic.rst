@@ -301,7 +301,12 @@ The transmit path gathers the head fragment plus any
 scatter-gather elements out of guest memory and writes the
 frame to the TAP file descriptor. The receive path drains the
 TAP from the server's main loop and DMAs each frame into a
-descriptor the guest has posted on one of its receive queues.
+descriptor the guest has posted on one of its receive queues:
+into the descriptor's buffer, and, when that is too short, on
+into the buffers of its scatter-gather list in order, filling
+each before starting the next. The completion says how many
+of the list's buffers the frame used. A frame longer than all
+of them together is dropped, and none of it is written.
 Both directions run on the thread that owns the vfio-user
 context, because that is the only thread permitted to DMA
 into guest memory; no extra thread is created.
@@ -326,10 +331,12 @@ has a buffer, and the queued frames behind it wait too.
 
 .. note::
 
-   The emulated LIF advertises no checksum, TSO, or
+   The emulated LIF advertises no checksum, TSO, or transmit
    scatter-gather offloads, so the guest stack always hands
    down linear skbs. This keeps the descriptor handling
-   simple at the cost of transmit throughput.
+   simple at the cost of transmit throughput. Receive
+   scatter-gather is not an offload: the driver posts an SG
+   list whenever a frame may not fit in one buffer.
 
 Statistics
 ^^^^^^^^^^

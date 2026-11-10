@@ -3644,6 +3644,7 @@ struct q_init_cmd {
     uint32_t index;
     uint16_t intr;
     uint8_t depth_log2;
+    uint16_t flags;        /* IONIC_QINIT_F_* */
     uint64_t ring, cq, sg; /* guest addresses; sg 0 for none */
 };
 
@@ -3658,6 +3659,7 @@ static int q_init_status(struct ih *h, const struct q_init_cmd *q)
     cmd[4] = q->qtype;
     ernic_put_le32(cmd + 8, q->index);
     ernic_put_le16(cmd + 14, q->intr);
+    ernic_put_le16(cmd + 16, q->flags);
     cmd[19] = q->depth_log2;
     ernic_put_le64(cmd + 20, q->ring);
     ernic_put_le64(cmd + 28, q->cq);
@@ -3992,6 +3994,232 @@ static void test_eth_dma_faults(void)
     check(T, fake_vfu_mapped(h.vfu) == 0, "guest memory left mapped");
     teardown(T, &h);
     free(seen);
+}
+
+#define RX_SIMPLE 0U /* IONIC_RXQ_DESC_OPCODE_SIMPLE */
+#define RX_SG     1U /* IONIC_RXQ_DESC_OPCODE_SG */
+
+/* What happens to a frame: delivered, or dropped and counted in one of
+ * these lif_stats counters */
+#define RX_OK    (-1)
+#define RX_DATA  IONIC_LIF_RX_DESC_DATA_ERROR
+#define RX_FETCH IONIC_LIF_RX_DESC_FETCH_ERROR
+#define RX_DMA   IONIC_LIF_RX_DMA_ERROR
+
+/* The descriptor's own buffer and the SG list's, a page each */
+#define RX_NBUFS (1U + RXQ_SG_MAX_ELEMS)
+
+/* An SG list of eight 1 KB buffers */
+#define RX_SG_1K                                       \
+    {                                                  \
+        1024, 1024, 1024, 1024, 1024, 1024, 1024, 1024 \
+    }
+
+/*
+ * One Rx descriptor, posted at the queue's head, and a frame of @len bytes
+ * for it. Buffer 0 is the descriptor's own, @head bytes; buffers 1 to 8 are
+ * its SG list, @sg bytes each up to the first 0. @fail is the DMA refused,
+ * counted from the poll (the descriptor, the SG list, the buffers in order,
+ * then the completion), or 0 for none. @nsg is the SG elements the
+ * completion reports when @drop is RX_OK.
+ */
+struct eth_rx_case {
+    const char *what;
+    uint16_t len;
+    uint8_t opcode;
+    uint16_t head;
+    uint16_t sg[RXQ_SG_MAX_ELEMS];
+    unsigned fail;
+    uint8_t nsg;
+    int drop;
+};
+
+static const struct eth_rx_case eth_rx_cases[] = {
+    /* What ionic_rx_fill() posts: MTU + VLAN_ETH_HLEN bytes in all */
+    {"a frame the head buffer holds", 1000, RX_SG, 4096, {4096}, 0, 0, RX_OK},
+    {"a jumbo frame", 9000, RX_SG, 4096, {4096, 826}, 0, 2, RX_OK},
+    {"a full-size frame, reused page", 1514, RX_SG, 1024, {494}, 0, 1, RX_OK},
+    {"a frame in every buffer", 9216, RX_SG, 1024, RX_SG_1K, 0, 8, RX_OK},
+    /* Frames that don't fit */
+    {"a byte too long", 1519, RX_SG, 1024, {494}, 0, 0, RX_DATA},
+    {"past a zero-length element", 2000, RX_SG, 1024, {0, 4096}, 0, 0, RX_DATA},
+    {"a short simple descriptor", 2000, RX_SIMPLE, 1024, {4096}, 0, 0, RX_DATA},
+    {"an unknown opcode", 64, 2, 4096, {0}, 0, 0, RX_DATA},
+    /* DMA the guest refuses */
+    {"an unreadable descriptor", 2000, RX_SG, 1024, {4096}, 1, 0, RX_FETCH},
+    {"an unreadable SG list", 2000, RX_SG, 1024, {4096}, 2, 0, RX_FETCH},
+    {"an unwritable head buffer", 2000, RX_SG, 1024, {4096}, 3, 0, RX_DMA},
+    {"an unwritable SG element", 2000, RX_SG, 1024, {4096}, 4, 0, RX_DMA},
+    {"an unwritable completion", 2000, RX_SG, 1024, {4096}, 5, 0, RX_DMA},
+};
+
+/* Run on a queue set up without scatter/gather, which has no SG list to
+ * read: an SG descriptor is refused, even for a frame its own buffer would
+ * hold */
+static const struct eth_rx_case eth_rx_no_sg[] = {
+    {"SG on a queue without SG", 64, RX_SG, 4096, {4096}, 0, 0, RX_DATA},
+};
+
+/* Run on a queue whose SG ring starts 100 bytes below the top of the
+ * address space: descriptor 0 needs no SG list, and descriptor 1's would
+ * start at address 27, so it is not read */
+static const struct eth_rx_case eth_rx_wrap[] = {
+    {"before a wrapping SG list", 64, RX_SIMPLE, 4096, {0}, 0, 0, RX_OK},
+    {"a wrapping SG list", 2000, RX_SG, 1024, {4096}, 0, 0, RX_FETCH},
+};
+
+/* Guest memory for one Rx queue of eight descriptors */
+struct eth_rx_mem {
+    uint64_t ring, cq, sgl, bufs;
+};
+
+/*
+ * Post @c in the descriptor at the head of Rx queue 0, its SG list
+ * included, and ring the doorbell past it.
+ */
+static void eth_rx_post(struct ih *h, const struct eth_rx_mem *m,
+                        const struct eth_rx_case *c)
+{
+    const uint16_t slot = h->emu->eth_q[IONIC_QTYPE_RXQ][0].head;
+    uint8_t desc[16] = {0};
+    uint8_t sg[RXQ_SG_DESC_SIZE] = {0};
+
+    desc[0] = c->opcode;
+    ernic_put_le16(desc + 6, c->head);
+    ernic_put_le64(desc + 8, m->bufs);
+    fake_vfu_write(h->vfu, m->ring + (UINT64_C(16) * slot), desc, sizeof(desc));
+    for (size_t j = 0; j < RXQ_SG_MAX_ELEMS; j++) {
+        ernic_put_le64(sg + (16 * j), m->bufs + ((j + 1) * IH_PAGE_SIZE));
+        ernic_put_le16(sg + (16 * j) + 8, c->sg[j]);
+    }
+    fake_vfu_write(h->vfu, m->sgl + ((uint64_t)RXQ_SG_DESC_SIZE * slot), sg,
+                   sizeof(sg));
+    ih_doorbell(h, IH_QTYPE_ETH_RXQ, 0, 0, (uint16_t)((slot + 1U) % 8U));
+}
+
+/*
+ * Post @c with eth_rx_post(), hand the device its frame, and check the
+ * frame was delivered or dropped as @c says. @T names the test.
+ */
+static void eth_rx_run(const char *T, struct ih *h, const struct eth_rx_mem *m,
+                       const struct eth_rx_case *c)
+{
+    static uint8_t frame[RX_NBUFS * IH_PAGE_SIZE];
+    static uint8_t want[RX_NBUFS * IH_PAGE_SIZE];
+    static uint8_t got[RX_NBUFS * IH_PAGE_SIZE];
+    const struct eth_queue *q = &h->emu->eth_q[IONIC_QTYPE_RXQ][0];
+    const uint16_t slot = q->head;
+    const uint16_t cq_index = q->cq_index;
+    const uint8_t color = q->cq_color ? 0x80U : 0;
+    const unsigned irqs = fake_vfu_irq_count(h->vfu, RX_INTR);
+    const uint64_t drops = c->drop != RX_OK ? h->emu->stats.lif[c->drop] : 0;
+
+    eth_rx_post(h, m, c);
+
+    /* Every buffer starts out full of 0xee, and the frame lands at the start
+     * of each it fills */
+    fill(frame, c->len, 0x40);
+    memset(want, 0xee, sizeof(want));
+    fake_vfu_write(h->vfu, m->bufs, want, sizeof(want));
+    if (c->drop == RX_OK) {
+        size_t off = 0;
+        for (size_t i = 0; i <= c->nsg; i++) {
+            size_t cap = i == 0 ? c->head : c->sg[i - 1];
+            size_t n = c->len - off < cap ? c->len - off : cap;
+            memcpy(want + (i * IH_PAGE_SIZE), frame + off, n);
+            off += n;
+        }
+    }
+
+    check(T, ionic_eth_emu_queue_rx_frame(h->emu, frame, c->len) == 0,
+          "%s: queueing the frame failed", c->what);
+    fake_vfu_fail_nth_map(h->vfu, c->fail);
+    ih_poll(h);
+    fake_vfu_fail_nth_map(h->vfu, 0);
+
+    /* A DMA failure may leave part of the frame behind */
+    fake_vfu_read(h->vfu, m->bufs, got, sizeof(got));
+    check(T, c->fail != 0 || memcmp(got, want, sizeof(want)) == 0,
+          "%s: the buffers do not hold what they should", c->what);
+
+    if (c->drop != RX_OK) {
+        check(T, q->head == slot && q->cq_index == cq_index,
+              "%s: the dropped frame used the descriptor", c->what);
+        check(T, h->emu->stats.lif[c->drop] == drops + 1,
+              "%s: the drop was counted %" PRIu64 " times", c->what,
+              h->emu->stats.lif[c->drop] - drops);
+        check(T, fake_vfu_irq_count(h->vfu, RX_INTR) == irqs,
+              "%s: the dropped frame raised an interrupt", c->what);
+        return;
+    }
+
+    uint8_t comp[16];
+    fake_vfu_read(h->vfu, m->cq + (UINT64_C(16) * cq_index), comp,
+                  sizeof(comp));
+    check(T, (comp[15] & 0x80U) == color && ernic_get_le16(comp + 2) == slot,
+          "%s: no completion for the descriptor", c->what);
+    check(T,
+          comp[0] == 0 && comp[1] == c->nsg &&
+              ernic_get_le16(comp + 12) == c->len,
+          "%s: the completion has status %u, %u SG elements and length %u",
+          c->what, comp[0], comp[1], ernic_get_le16(comp + 12));
+    check(T, q->head == (slot + 1U) % 8U, "%s: the descriptor was not used",
+          c->what);
+    check(T, fake_vfu_irq_count(h->vfu, RX_INTR) == irqs + 1,
+          "%s: the frame raised %u interrupts", c->what,
+          fake_vfu_irq_count(h->vfu, RX_INTR) - irqs);
+}
+
+static void test_eth_rx_sg(void)
+{
+    const char *T = "eth-rx-sg";
+    struct ih h;
+
+    if (!setup(T, &h, "loopback")) {
+        return;
+    }
+
+    const struct eth_rx_mem m = {
+        .ring = fake_vfu_alloc(h.vfu, (size_t)8 * 16, 64),
+        .cq = fake_vfu_alloc(h.vfu, (size_t)8 * 16, 64),
+        .sgl = fake_vfu_alloc(h.vfu, (size_t)8 * RXQ_SG_DESC_SIZE, 64),
+        .bufs = fake_vfu_alloc(h.vfu, (size_t)RX_NBUFS * IH_PAGE_SIZE,
+                               IH_PAGE_SIZE),
+    };
+    struct q_init_cmd rxq = {.qtype = IH_QTYPE_ETH_RXQ,
+                             .intr = RX_INTR,
+                             .depth_log2 = 3,
+                             .flags = IONIC_QINIT_F_SG,
+                             .ring = m.ring,
+                             .cq = m.cq,
+                             .sg = m.sgl};
+    if (!check(T, q_init(&h, &rxq) && q_enable(&h, IH_QTYPE_ETH_RXQ, 0),
+               "Rx queue setup failed")) {
+        teardown(T, &h);
+        return;
+    }
+    ih_intr_mask(&h, RX_INTR, false);
+
+    for (size_t i = 0; i < sizeof(eth_rx_cases) / sizeof(eth_rx_cases[0]);
+         i++) {
+        eth_rx_run(T, &h, &m, &eth_rx_cases[i]);
+    }
+
+    rxq.flags = 0;
+    check(T, q_init(&h, &rxq) && q_enable(&h, IH_QTYPE_ETH_RXQ, 0),
+          "setting up the Rx queue without SG failed");
+    eth_rx_run(T, &h, &m, &eth_rx_no_sg[0]);
+
+    rxq.flags = IONIC_QINIT_F_SG;
+    rxq.sg = UINT64_MAX - 100;
+    check(T, q_init(&h, &rxq) && q_enable(&h, IH_QTYPE_ETH_RXQ, 0),
+          "setting up the Rx queue with a wrapping SG ring failed");
+    for (size_t i = 0; i < sizeof(eth_rx_wrap) / sizeof(eth_rx_wrap[0]); i++) {
+        eth_rx_run(T, &h, &m, &eth_rx_wrap[i]);
+    }
+
+    check(T, fake_vfu_mapped(h.vfu) == 0, "guest memory left mapped");
+    teardown(T, &h);
 }
 
 /* ---- NVMe-oF over the GSI QP ------------------------------------------- */
@@ -8542,6 +8770,7 @@ static const struct {
     {"srq-cq-ring", test_srq_cq_ring},
     {"eth", test_eth},
     {"eth-dma", test_eth_dma_faults},
+    {"eth-rx-sg", test_eth_rx_sg},
 #ifdef ERNIC_HAVE_P4
     {"p4-port", test_p4_port},
     {"p4-attach", test_p4_attach},
