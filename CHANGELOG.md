@@ -35,6 +35,15 @@
   instead of being answered as an admin queue. The Linux `ionic` driver
   is unaffected: it sets its own scatter-gather limits, and asks only
   about those four queue types.
+* `fetch-ionic-sources.sh`, which the `fetch-ionic-sources` CMake target,
+  the Ansible roles and the guest package use to download the ionic
+  driver sources, now tries a failed download up to four times, waiting
+  10, 20 and then 40 seconds between tries, so a brief outage at
+  git.kernel.org (an HTTP 502) no longer fails a guest's setup or a CI
+  run. When it can't fetch the
+  kernel ref on its own, it now says so and points to git's error, rather
+  than claiming the ref can't be fetched directly, before it falls back
+  to fetching every branch and tag.
 
 * The device now honours Bus Master Enable in its PCI Command register,
   as the PCI Express specification requires. Before, it went on writing

@@ -38,6 +38,11 @@ PATCHES_DIRS=()
 KERNEL_REPO="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git"
 FORCE=false
 
+# How many times git_fetch_retry() tries a fetch, and how long it waits
+# before the first retry; the wait doubles after each one.
+FETCH_ATTEMPTS=4
+FETCH_RETRY_DELAY=10
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --source-dir)  SOURCE_DIR="$2";  shift 2 ;;
@@ -118,6 +123,30 @@ tree_digest() {
 
 SENTINEL="${SOURCE_DIR}/.patches-applied-${KERNEL_REF}-$(tree_digest)"
 
+# Run "git fetch" with the given arguments, trying again if it fails.
+# git.kernel.org answers with an HTTP 502 now and then, and one such
+# answer would otherwise fail the whole run, and with it a CI lane or a
+# guest's provisioning.  git exits 128 for a network error and for a ref
+# the server refuses alike, so every failure is retried; a refusal only
+# costs the waits.  Returns 1 once every attempt has failed.
+git_fetch_retry() {
+    local attempt delay="${FETCH_RETRY_DELAY}"
+    for ((attempt = 1; ; attempt++)); do
+        if git fetch "$@"; then
+            return 0
+        fi
+        if ((attempt >= FETCH_ATTEMPTS)); then
+            echo "   git fetch from ${KERNEL_REPO} failed" \
+                 "${FETCH_ATTEMPTS} times; giving up" >&2
+            return 1
+        fi
+        echo "   git fetch from ${KERNEL_REPO} failed (attempt ${attempt}" \
+             "of ${FETCH_ATTEMPTS}); trying again in ${delay} s" >&2
+        sleep "${delay}"
+        delay=$((delay * 2))
+    done
+}
+
 # The Ansible roles' fetch tasks report a change unless they see "nothing
 # to do" in this message.
 if [ -f "${SENTINEL}" ] && ! ${FORCE}; then
@@ -148,14 +177,17 @@ git sparse-checkout set \
     'include/uapi/rdma'
 
 # "git clone --branch" only accepts a tag or branch, so fetch into an empty
-# repository instead: that also resolves a bare SHA.  Fall back to a full
-# blobless fetch when the server refuses to serve the object directly.
-if git fetch -q --depth 1 --filter=blob:none origin "${KERNEL_REF}"; then
+# repository instead: that also resolves a bare SHA.  If that still fails
+# after its retries -- the server may refuse a SHA it doesn't advertise,
+# or still be failing -- fall back to fetching every branch and tag.  That
+# is far larger: git.kernel.org ignores --filter, so it is the history of
+# the whole repository, file contents included.
+if git_fetch_retry -q --depth 1 --filter=blob:none origin "${KERNEL_REF}"; then
     rev=FETCH_HEAD
 else
-    echo "   ${KERNEL_REF} is not directly fetchable;" \
-         "falling back to a full blobless fetch"
-    git fetch -q --filter=blob:none --tags origin
+    echo "   could not fetch ${KERNEL_REF} on its own (see git's error);" \
+         "fetching every branch and tag instead"
+    git_fetch_retry -q --filter=blob:none --tags origin
     rev="${KERNEL_REF}"
 fi
 git checkout -q --detach "${rev}"
