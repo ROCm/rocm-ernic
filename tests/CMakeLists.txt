@@ -1338,6 +1338,22 @@ set_tests_properties(ernic-mesh-flow PROPERTIES
     RUN_SERIAL TRUE
 )
 
+# A function-level reset on each node of a two-node mesh in turn: the
+# peer's old QP is refused, and the two connect again and pass traffic.
+# Serial, as the other mesh tests are: the manager's port is found free
+# before the manager binds it, and another test could take it between.
+add_test(
+    NAME ernic-mesh-flr
+    COMMAND ${ERNIC_PY_RUN}
+        ${CMAKE_CURRENT_SOURCE_DIR}/py/test_mesh_flr.py
+        --server $<TARGET_FILE:rocm-ernic>
+        --pci-regs $<TARGET_FILE:ernic-pci-regs>
+)
+set_tests_properties(ernic-mesh-flr PROPERTIES
+    TIMEOUT 300
+    RUN_SERIAL TRUE
+)
+
 # ---------------------------------------------------------------
 # Compile checks for the Nix fuzz harnesses
 # ---------------------------------------------------------------
