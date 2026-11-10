@@ -125,7 +125,8 @@ given.
    * - Level
      - Output
    * - ``none``
-     - Nothing at all.
+     - Nothing, unless the server aborts on a bug, which it
+       reports in a ``FATAL:`` line.
    * - ``error``
      - ``ERROR:`` lines only.
    * - ``warn``
@@ -139,6 +140,14 @@ given.
 
 ``-v`` / ``--verbose`` remains as shorthand for
 ``--log-level debug``.
+
+``ERROR:`` and ``WARN:`` lines go to stderr, and the rest to
+stdout; ``--log-file`` sends both to one file.  Each line is
+written whole, so lines from different threads never run into
+each other.  Every message goes through the log, so the level
+applies to all of them, errors included.  The command line is
+checked before ``--log-level`` takes effect, so only
+``ERNIC_LOG_LEVEL`` silences an error about an option.
 
 .. code-block:: bash
 

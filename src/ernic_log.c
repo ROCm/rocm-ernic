@@ -17,7 +17,9 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <strings.h>
+#include <syslog.h>
 
 /*
  * Log level state.  Initialised lazily from ERNIC_LOG_LEVEL so that
@@ -81,6 +83,78 @@ void ernic_log_set_level(ErnicLogLevel lvl)
 }
 
 /*
+ * The longest message formatted on the stack.  A longer one is formatted
+ * into an allocation, so isn't cut short.
+ */
+#define LOG_MSG_INLINE 512
+
+/*
+ * Write @prefix, the message @fmt formats, then ": " and @suffix if it isn't
+ * NULL, to @fp as one line, and flush it.
+ *
+ * The message is formatted first, and the line written and flushed under
+ * stderr's lock, which every line takes, whichever stream it's for.  So no
+ * other line can land in the middle of it, even where stdout and stderr are
+ * the same file.  The lock is POSIX's flockfile() because it needs nothing
+ * set up and can't fail; a QemuMutex aborts through ernic_log_fatal() when
+ * it fails, which takes this lock.
+ *
+ * If the message is too long for the stack and there's no memory for it,
+ * what fit is written, marked as cut short.
+ */
+ERNIC_PRINTF_FORMAT(4, 0)
+static void log_write(FILE *fp, const char *prefix, const char *suffix,
+                      const char *fmt, va_list ap)
+{
+    char buf[LOG_MSG_INLINE];
+    char *big = NULL;
+    const char *msg = buf;
+    bool cut = false;
+    va_list again;
+    int n;
+
+    va_copy(again, ap);
+    n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    if (n < 0) {
+        msg = "(a message that couldn't be formatted)";
+    } else if ((size_t)n >= sizeof(buf)) {
+        big = malloc((size_t)n + 1);
+        if (big && vsnprintf(big, (size_t)n + 1, fmt, again) == n) {
+            msg = big;
+        } else {
+            cut = true;
+        }
+    }
+    va_end(again);
+
+    flockfile(stderr);
+    (void)fputs(prefix, fp);
+    (void)fputs(msg, fp);
+    if (cut) {
+        (void)fputs(" [cut short]", fp);
+    }
+    if (suffix) {
+        (void)fputs(": ", fp);
+        (void)fputs(suffix, fp);
+    }
+    (void)fputc('\n', fp);
+    (void)fflush(fp);
+    funlockfile(stderr);
+    free(big);
+}
+
+/* log_write() with the message's arguments as they are */
+ERNIC_PRINTF_FORMAT(3, 4)
+static void log_line(FILE *fp, const char *prefix, const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    log_write(fp, prefix, NULL, fmt, ap);
+    va_end(ap);
+}
+
+/*
  * Threads that make the first call together all read the environment, but
  * only the one whose compare-exchange stores the result warns about a bad
  * value, and a level that ernic_log_set_level() stored in the meantime
@@ -113,11 +187,10 @@ ErnicLogLevel ernic_log_get_level(void)
         if (atomic_compare_exchange_strong(&g_log_level, &cur, (int)lvl)) {
             cur = (int)lvl;
             if (invalid) {
-                fprintf(stderr,
-                        "WARN: Ignoring invalid ERNIC_LOG_LEVEL='%s' "
-                        "(expected none|error|warn|info|debug)\n",
-                        env);
-                (void)fflush(stderr);
+                log_line(stderr, "WARN: ",
+                         "Ignoring invalid ERNIC_LOG_LEVEL='%s' "
+                         "(expected none|error|warn|info|debug)",
+                         env);
             }
         }
     }
@@ -129,38 +202,44 @@ bool ernic_log_enabled(ErnicLogLevel lvl)
     return ernic_log_get_level() >= lvl;
 }
 
-void ernic_vlog(ErnicLogLevel lvl, const char *fmt, va_list ap)
+/*
+ * Whether a message at @lvl is logged now, and if so, its line's prefix in
+ * *@prefix and its stream in *@fp.
+ */
+static bool level_logged(ErnicLogLevel lvl, const char **prefix, FILE **fp)
 {
-    const char *prefix;
-    FILE *fp = stdout;
-
     switch (lvl) {
     case ERNIC_LOG_ERROR:
-        prefix = "ERROR";
-        fp = stderr;
+        *prefix = "ERROR: ";
+        *fp = stderr;
         break;
     case ERNIC_LOG_WARN:
-        prefix = "WARN";
-        fp = stderr;
+        *prefix = "WARN: ";
+        *fp = stderr;
         break;
     case ERNIC_LOG_INFO:
-        prefix = "INFO";
+        *prefix = "INFO: ";
+        *fp = stdout;
         break;
     case ERNIC_LOG_DEBUG:
-        prefix = "DEBUG";
+        *prefix = "DEBUG: ";
+        *fp = stdout;
         break;
     case ERNIC_LOG_NONE:
     default:
-        return;
+        return false;
     }
+    return ernic_log_enabled(lvl);
+}
 
-    if (!ernic_log_enabled(lvl)) {
-        return;
+void ernic_vlog(ErnicLogLevel lvl, const char *fmt, va_list ap)
+{
+    const char *prefix;
+    FILE *fp;
+
+    if (level_logged(lvl, &prefix, &fp)) {
+        log_write(fp, prefix, NULL, fmt, ap);
     }
-    fprintf(fp, "%s: ", prefix);
-    vfprintf(fp, fmt, ap);
-    fprintf(fp, "\n");
-    (void)fflush(fp);
 }
 
 void ernic_log(ErnicLogLevel lvl, const char *fmt, ...)
@@ -172,6 +251,50 @@ void ernic_log(ErnicLogLevel lvl, const char *fmt, ...)
     va_end(ap);
 }
 
+void ernic_log_errno(ErnicLogLevel lvl, int err, const char *fmt, ...)
+{
+    const char *prefix;
+    FILE *fp;
+    va_list ap;
+
+    if (!level_logged(lvl, &prefix, &fp)) {
+        return;
+    }
+    va_start(ap, fmt);
+    log_write(fp, prefix, strerror(err), fmt, ap);
+    va_end(ap);
+}
+
+_Noreturn void ernic_log_fatal(const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    log_write(stderr, "FATAL: ", NULL, fmt, ap);
+    va_end(ap);
+    abort();
+}
+
+ErnicLogLevel ernic_log_level_from_syslog(int priority)
+{
+    switch (priority) {
+    case LOG_EMERG:
+    case LOG_ALERT:
+    case LOG_CRIT:
+    case LOG_ERR:
+        return ERNIC_LOG_ERROR;
+    case LOG_WARNING:
+        return ERNIC_LOG_WARN;
+    case LOG_NOTICE:
+    case LOG_INFO:
+        return ERNIC_LOG_INFO;
+    case LOG_DEBUG:
+        return ERNIC_LOG_DEBUG;
+    default:
+        return ERNIC_LOG_NONE;
+    }
+}
+
 void ernic_startup_report(const char *fmt, ...)
 {
     va_list ap;
@@ -180,10 +303,8 @@ void ernic_startup_report(const char *fmt, ...)
         return;
     }
     va_start(ap, fmt);
-    vprintf(fmt, ap);
+    log_write(stdout, "", NULL, fmt, ap);
     va_end(ap);
-    printf("\n");
-    (void)fflush(stdout);
 }
 
 /*

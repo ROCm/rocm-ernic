@@ -5,7 +5,13 @@
  * errors and warnings and to stdout for the rest.  What's printed depends
  * on the log level, which --log-level or ERNIC_LOG_LEVEL sets.  QEMU's
  * reporters (qemu/error-report.h), which the QEMU-derived code and the RDMA
- * backends call, print here too.
+ * backends call, and libvfio-user's vfu_log(), print here too.
+ *
+ * Each line is written whole, under a lock every line takes, and flushed at
+ * once, so lines from different threads never run into each other, even
+ * where stdout and stderr are the same file, as with --log-file.  So a
+ * message is one call, with no newline: a line built from several calls
+ * can have another thread's line land in the middle of it.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -50,6 +56,29 @@ void ernic_log(ErnicLogLevel lvl, const char *fmt, ...)
     ERNIC_PRINTF_FORMAT(2, 3);
 void ernic_vlog(ErnicLogLevel lvl, const char *fmt, va_list ap)
     ERNIC_PRINTF_FORMAT(2, 0);
+
+/*
+ * Log one line at @lvl, as ernic_log() does, ending with ": " and the
+ * description of the error number @err, as perror() does.  Pass errno's
+ * value, saved before anything that may change it.
+ */
+void ernic_log_errno(ErnicLogLevel lvl, int err, const char *fmt, ...)
+    ERNIC_PRINTF_FORMAT(3, 4);
+
+/*
+ * Log one line prefixed "FATAL", whatever the log level, then abort().  For
+ * a failure that means a bug, after which carrying on isn't safe.
+ */
+_Noreturn void ernic_log_fatal(const char *fmt, ...) ERNIC_PRINTF_FORMAT(1, 2);
+
+/*
+ * The level that logs a message of syslog priority @priority (LOG_ERR,
+ * LOG_INFO, ...), as libvfio-user gives one: ERNIC_LOG_ERROR for LOG_ERR and
+ * above, ERNIC_LOG_WARN for LOG_WARNING, ERNIC_LOG_INFO for LOG_NOTICE and
+ * LOG_INFO, ERNIC_LOG_DEBUG for LOG_DEBUG, and ERNIC_LOG_NONE, which logs
+ * nothing, for anything else.
+ */
+ErnicLogLevel ernic_log_level_from_syslog(int priority);
 
 /* One-shot startup/shutdown lines: unprefixed, printed at WARN and above. */
 void ernic_startup_report(const char *fmt, ...) ERNIC_PRINTF_FORMAT(1, 2);

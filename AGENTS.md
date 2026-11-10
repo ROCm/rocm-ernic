@@ -205,6 +205,25 @@ workflow for their environment).
     never GLib's, and check every result.
   - Where a buffer crosses between the two, comment which allocator it's
     from, as `TcpQueuedMsg` and `tcp_recv_message()` do.
+- **Log every message through [`src/ernic_log.h`](src/ernic_log.h)**,
+  never with `printf()`, `fprintf(stderr, ...)`, `puts()`, or
+  `perror()`:
+  - `ernic_log()` at a level; `ernic_log_errno()` to end the line with
+    an error's description; `ernic_startup_report()` for startup and
+    shutdown lines; `ernic_log_fatal()` just before a deliberate abort,
+    which prints whatever the level. QEMU-derived code calls
+    `error_report()` and friends (`qemu/error-report.h`), and code with a
+    vfio-user context may call `vfu_log()`; both end up in the same log.
+  - One call per line, with no newline. The log writes and flushes each
+    line whole, under one lock, so lines from different threads never mix,
+    even with stdout and stderr in one file (`--log-file`). A line built
+    from several calls can still have another thread's land in the middle.
+  - Limit a message that a guest, peer, or client can repeat at will with
+    `ernic_log_limit()`.
+  - Only `usage()` and output an option asks for (`--print-profile`)
+    write to stdout or stderr directly.
+  - A program using `qemu/thread.h`'s wrappers links `ernic_log.c`, which
+    they abort through.
 
 ## Thread safety
 

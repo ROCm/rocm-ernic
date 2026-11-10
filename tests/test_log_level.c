@@ -20,7 +20,14 @@
  * first call: which strings parse to a level, each level's name, and that
  * each reporter, ours and QEMU's, prints at its own level and above and
  * nothing below, with its output captured from stdout and stderr, and that
- * a log limit lets lines through and holds them back when it should.
+ * a log limit lets lines through and holds them back when it should.  It
+ * also checks the syslog priorities libvfio-user logs at, that a message
+ * longer than the logger's stack buffer is printed whole, or cut short and
+ * marked so when there's no memory for it, that one vsnprintf() can't
+ * format still leaves a line saying so, that a fatal message is printed
+ * whatever the level before the process aborts, and that lines logged by
+ * several threads at once, to stdout and stderr sharing one file, each come
+ * out whole.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -29,10 +36,12 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
 #include <limits.h>
 #include <pthread.h>
+#include <signal.h>
 #include <spawn.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -42,12 +51,15 @@
 #include <string.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <syslog.h>
 #include <unistd.h>
 
 #include "ernic_gnu.h"
 #include "ernic_log.h"
 #include "parse_int.h"
 #include "qemu/error-report.h"
+#include "s3_alloc_fail.h"
+#include "test_fmt.h"
 
 #define NTHREADS    8
 #define RACE_ROUNDS 200
@@ -595,6 +607,422 @@ static int check_reporters(void)
     return failed ? 1 : 0;
 }
 
+static void log_errno_error(void)
+{
+    ernic_log_errno(ERNIC_LOG_ERROR, ENOENT, "%s", "the message");
+}
+
+static void log_errno_info(void)
+{
+    ernic_log_errno(ERNIC_LOG_INFO, ENOENT, "%s", "the message");
+}
+
+/*
+ * ernic_log_errno() ends its line with ": " and the error's description,
+ * and prints at its own level and above only, as ernic_log() does.
+ * Returns 1 if a check failed, else 0.
+ */
+static int check_log_errno(void)
+{
+    static const struct {
+        const char *name;
+        void (*report)(void);
+        int level;
+        const char *prefix;
+    } rows[] = {
+        {"ernic_log_errno(error)", log_errno_error, ERNIC_LOG_ERROR, "ERROR"},
+        {"ernic_log_errno(info)", log_errno_info, ERNIC_LOG_INFO, "INFO"},
+    };
+    int failed = 0;
+
+    for (int lvl = ERNIC_LOG_NONE; lvl <= ERNIC_LOG_DEBUG; lvl++) {
+        ernic_log_set_level((ErnicLogLevel)lvl);
+        for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+            char want[256] = "";
+            char got[256];
+
+            if (lvl >= rows[i].level) {
+                test_fmt(want, sizeof(want), "%s: the message: %s\n",
+                         rows[i].prefix, strerror(ENOENT));
+            }
+            if (!capture(rows[i].report, got, sizeof(got))) {
+                printf("FAIL %s at %s: can't capture its output\n",
+                       rows[i].name, ernic_log_level_name((ErnicLogLevel)lvl));
+                failed++;
+            } else if (strcmp(got, want) != 0) {
+                printf("FAIL %s at %s: printed '%s', want '%s'\n", rows[i].name,
+                       ernic_log_level_name((ErnicLogLevel)lvl), got, want);
+                failed++;
+            }
+        }
+    }
+    if (!failed) {
+        printf("PASS ernic_log_errno() adds the error's description\n");
+    }
+    return failed ? 1 : 0;
+}
+
+/* Returns 1 if a check failed, else 0. */
+static int check_syslog_levels(void)
+{
+    static const struct {
+        int priority;
+        ErnicLogLevel want;
+    } rows[] = {
+        {LOG_EMERG, ERNIC_LOG_ERROR},  {LOG_ALERT, ERNIC_LOG_ERROR},
+        {LOG_CRIT, ERNIC_LOG_ERROR},   {LOG_ERR, ERNIC_LOG_ERROR},
+        {LOG_WARNING, ERNIC_LOG_WARN}, {LOG_NOTICE, ERNIC_LOG_INFO},
+        {LOG_INFO, ERNIC_LOG_INFO},    {LOG_DEBUG, ERNIC_LOG_DEBUG},
+        {-1, ERNIC_LOG_NONE},          {LOG_DEBUG + 1, ERNIC_LOG_NONE},
+        {INT_MAX, ERNIC_LOG_NONE},
+    };
+    int failed = 0;
+
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        ErnicLogLevel got = ernic_log_level_from_syslog(rows[i].priority);
+
+        if (got != rows[i].want) {
+            printf("FAIL syslog priority %d: level %s, want %s\n",
+                   rows[i].priority, ernic_log_level_name(got),
+                   ernic_log_level_name(rows[i].want));
+            failed++;
+        }
+    }
+    if (!failed) {
+        printf("PASS each syslog priority logs at its level, and any other "
+               "not at all\n");
+    }
+    return failed ? 1 : 0;
+}
+
+/* Longer than the message the logger formats on the stack */
+#define LONG_LEN 4000
+
+static char g_long[LONG_LEN + 1];
+
+static void log_long(void)
+{
+    ernic_log(ERNIC_LOG_WARN, "%s", g_long);
+}
+
+/*
+ * A message too long for the logger's stack buffer is printed whole.
+ * Returns 1 if a check failed, else 0.
+ */
+static int check_long_message(void)
+{
+    char want[LONG_LEN + 16];
+    char got[LONG_LEN + 16];
+
+    for (size_t i = 0; i < LONG_LEN; i++) {
+        g_long[i] = (char)('a' + (i % 26));
+    }
+    g_long[LONG_LEN] = '\0';
+    test_fmt(want, sizeof(want), "WARN: %s\n", g_long);
+
+    ernic_log_set_level(ERNIC_LOG_WARN);
+    if (!capture(log_long, got, sizeof(got))) {
+        printf("FAIL a long message: can't capture its output\n");
+        return 1;
+    }
+    if (strcmp(got, want) != 0) {
+        printf("FAIL a long message: printed %zu bytes, want %zu\n",
+               strlen(got), strlen(want));
+        return 1;
+    }
+    printf("PASS a message longer than the stack buffer is printed whole\n");
+    return 0;
+}
+
+/*
+ * A message too long for the logger's stack buffer, with no memory to
+ * format it into, is printed as far as the buffer holds it, marked as cut
+ * short.  Returns 1 if a check failed, else 0.
+ */
+static int check_long_message_no_memory(void)
+{
+    /* What the logger's 512-byte buffer holds of it */
+    const int kept = 511;
+    char want[LONG_LEN + 32];
+    char got[LONG_LEN + 32];
+    bool captured;
+    bool failed_one;
+
+    test_fmt(want, sizeof(want), "WARN: %.*s [cut short]\n", kept, g_long);
+    ernic_log_set_level(ERNIC_LOG_WARN);
+    s3_alloc_fail_arm(0);
+    captured = capture(log_long, got, sizeof(got));
+    failed_one = s3_alloc_fail_disarm();
+    if (!captured) {
+        printf("FAIL a long message with no memory: can't capture its "
+               "output\n");
+        return 1;
+    }
+    if (!failed_one) {
+        printf("FAIL a long message with no memory: the logger allocated "
+               "nothing\n");
+        return 1;
+    }
+    if (strcmp(got, want) != 0) {
+        printf("FAIL a long message with no memory: printed '%.40s...', "
+               "%zu bytes, want '%.40s...', %zu bytes\n",
+               got, strlen(got), want, strlen(want));
+        return 1;
+    }
+    printf("PASS with no memory, a long message is printed cut short, and "
+           "says so\n");
+    return 0;
+}
+
+static void log_unformattable(void)
+{
+    /* No character above 0x7f has a multibyte form in the C locale, which
+     * this program never leaves, so vsnprintf() fails on it. */
+    static const wchar_t wide[] = {0x100, 0};
+
+    ernic_log(ERNIC_LOG_WARN, "%ls", wide);
+}
+
+/*
+ * A message vsnprintf() can't format still leaves a line saying so.
+ * Returns 1 if a check failed, else 0.
+ */
+static int check_unformattable(void)
+{
+    static const char want[] = "WARN: (a message that couldn't be formatted)\n";
+    char got[256];
+
+    ernic_log_set_level(ERNIC_LOG_WARN);
+    if (!capture(log_unformattable, got, sizeof(got))) {
+        printf("FAIL a message that can't be formatted: can't capture its "
+               "output\n");
+        return 1;
+    }
+    if (strcmp(got, want) != 0) {
+        printf("FAIL a message that can't be formatted: printed '%s', want "
+               "'%s'\n",
+               got, want);
+        return 1;
+    }
+    printf("PASS a message that can't be formatted leaves a line saying so\n");
+    return 0;
+}
+
+/*
+ * ernic_log_fatal() prints its line even with the level at none, then
+ * aborts.  It runs in a child, with its stderr on a pipe.  Returns 1 if a
+ * check failed, else 0.
+ */
+static int check_log_fatal(void)
+{
+    static const char want[] = "FATAL: the message\n";
+    char buf[256];
+    size_t len = 0;
+    int fds[2];
+    int status;
+    pid_t pid;
+
+    if (ernic_gnu_pipe2(fds, 0) != 0) {
+        printf("FAIL ernic_log_fatal: pipe2 failed\n");
+        return 1;
+    }
+    (void)fflush(stdout);
+    pid = fork();
+    if (pid < 0) {
+        printf("FAIL ernic_log_fatal: fork failed\n");
+        close(fds[0]);
+        close(fds[1]);
+        return 1;
+    }
+    if (pid == 0) {
+        close(fds[0]);
+        if (dup2(fds[1], STDERR_FILENO) < 0) {
+            _exit(2);
+        }
+        ernic_log_set_level(ERNIC_LOG_NONE);
+        ernic_log_fatal("%s", "the message");
+    }
+    close(fds[1]);
+    for (;;) {
+        ssize_t n = read(fds[0], buf + len, sizeof(buf) - 1 - len);
+
+        if (n <= 0) {
+            break;
+        }
+        len += (size_t)n;
+        if (len == sizeof(buf) - 1) {
+            break;
+        }
+    }
+    buf[len] = '\0';
+    close(fds[0]);
+
+    if (waitpid(pid, &status, 0) != pid) {
+        printf("FAIL ernic_log_fatal: waitpid failed\n");
+        return 1;
+    }
+    if (!WIFSIGNALED(status) || WTERMSIG(status) != SIGABRT) {
+        printf("FAIL ernic_log_fatal: the child didn't abort (status 0x%x)\n",
+               (unsigned)status);
+        return 1;
+    }
+    if (strcmp(buf, want) != 0) {
+        printf("FAIL ernic_log_fatal: printed '%s', want '%s'\n", buf, want);
+        return 1;
+    }
+    printf("PASS ernic_log_fatal() prints at any level, then aborts\n");
+    return 0;
+}
+
+/*
+ * Threads logging at once.  Even writers log at info, to stdout, and odd
+ * ones at warn, to stderr, and capture() sends both to one file, as
+ * --log-file does.  Each line names its writer and number in fixed-width
+ * fields and carries a tail of the writer's own letter, so a line another
+ * one landed in doesn't match what its writer and number say it should be.
+ */
+#define WRITERS      8
+#define WRITER_LINES 200
+#define WRITER_TAIL  160
+
+static void *writer_thread(void *opaque)
+{
+    int id = *(const int *)opaque;
+    ErnicLogLevel lvl = (id % 2) ? ERNIC_LOG_WARN : ERNIC_LOG_INFO;
+    char tail[WRITER_TAIL + 1];
+
+    memset(tail, 'a' + id, WRITER_TAIL);
+    tail[WRITER_TAIL] = '\0';
+    for (int i = 0; i < WRITER_LINES; i++) {
+        ernic_log(lvl, "writer %02d line %03d %s", id, i, tail);
+    }
+    return NULL;
+}
+
+static int g_writers_started;
+
+static void run_writers(void)
+{
+    static int ids[WRITERS];
+    pthread_t threads[WRITERS];
+
+    g_writers_started = 0;
+    for (int id = 0; id < WRITERS; id++) {
+        ids[id] = id;
+        if (pthread_create(&threads[id], NULL, writer_thread, &ids[id]) != 0) {
+            break;
+        }
+        g_writers_started++;
+    }
+    for (int id = 0; id < g_writers_started; id++) {
+        pthread_join(threads[id], NULL);
+    }
+}
+
+/*
+ * What writer @id's line @i must be, without its newline, in @buf.
+ */
+static void writer_line(char *buf, size_t len, int id, int i)
+{
+    char tail[WRITER_TAIL + 1];
+
+    memset(tail, 'a' + id, WRITER_TAIL);
+    tail[WRITER_TAIL] = '\0';
+    test_fmt(buf, len, "%s: writer %02d line %03d %s",
+             (id % 2) ? "WARN" : "INFO", id, i, tail);
+}
+
+/*
+ * Check one captured line, of @len bytes at @line, against what the writer
+ * and number it names say it must be, and mark it in @seen.  Returns true
+ * if it's whole and not seen before.
+ */
+static bool check_writer_line(const char *line, size_t len,
+                              bool seen[WRITERS][WRITER_LINES])
+{
+    /* "INFO: " and "WARN: " are the same length */
+    static const size_t id_off = sizeof("INFO: writer ") - 1;
+    static const size_t i_off = sizeof("INFO: writer 00 line ") - 1;
+    char want[WRITER_TAIL + 64];
+    uint64_t id;
+    uint64_t i;
+
+    if (len < i_off + 3 || !ernic_parse_u64_span(line + id_off, 2, &id) ||
+        !ernic_parse_u64_span(line + i_off, 3, &i) || id >= WRITERS ||
+        i >= WRITER_LINES) {
+        return false;
+    }
+    writer_line(want, sizeof(want), (int)id, (int)i);
+    if (len != strlen(want) || memcmp(line, want, len) != 0 || seen[id][i]) {
+        return false;
+    }
+    seen[id][i] = true;
+    return true;
+}
+
+/* Returns 1 if a check failed, else 0. */
+static int check_threads_whole_lines(void)
+{
+    const size_t cap = (size_t)WRITERS * WRITER_LINES * (WRITER_TAIL + 64);
+    static bool seen[WRITERS][WRITER_LINES];
+    char *buf = malloc(cap);
+    size_t bad = 0;
+    size_t lines = 0;
+
+    if (!buf) {
+        printf("FAIL lines from threads: out of memory\n");
+        return 1;
+    }
+    memset(seen, 0, sizeof(seen));
+    ernic_log_set_level(ERNIC_LOG_DEBUG);
+    if (!capture(run_writers, buf, cap)) {
+        printf("FAIL lines from threads: can't capture their output\n");
+        free(buf);
+        return 1;
+    }
+    if (g_writers_started != WRITERS) {
+        printf("FAIL lines from threads: started %d writers, want %d\n",
+               g_writers_started, WRITERS);
+        free(buf);
+        return 1;
+    }
+
+    for (const char *p = buf; *p != '\0';) {
+        const char *nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+
+        if (!check_writer_line(p, len, seen)) {
+            if (bad == 0) {
+                printf("FAIL lines from threads: a line isn't one writer's "
+                       "whole line: '%.*s'\n",
+                       (int)(len < 120 ? len : 120), p);
+            }
+            bad++;
+        }
+        lines++;
+        if (!nl) {
+            /* Every line ends with a newline */
+            bad++;
+            break;
+        }
+        p = nl + 1;
+    }
+    free(buf);
+
+    if (bad == 0 && lines != (size_t)WRITERS * WRITER_LINES) {
+        printf("FAIL lines from threads: %zu lines, want %d\n", lines,
+               WRITERS * WRITER_LINES);
+        return 1;
+    }
+    if (bad != 0) {
+        printf("FAIL lines from threads: %zu of %zu lines broken\n", bad,
+               lines);
+        return 1;
+    }
+    printf("PASS lines logged by several threads at once come out whole\n");
+    return 0;
+}
+
 /*
  * ernic_log_limit() at @now: whether it let the line through, and if so,
  * that it reported @want_held lines held back; if not, that it reported 0.
@@ -724,6 +1152,13 @@ int main(int argc, char **argv)
     failures += check_parse_level();
     failures += check_level_names();
     failures += check_reporters();
+    failures += check_log_errno();
+    failures += check_syslog_levels();
+    failures += check_long_message();
+    failures += check_long_message_no_memory();
+    failures += check_unformattable();
+    failures += check_log_fatal();
+    failures += check_threads_whole_lines();
     failures += check_log_limit();
 
     for (size_t i = 0; i < NCASES; i++) {

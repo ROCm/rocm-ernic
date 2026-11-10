@@ -15,10 +15,10 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
+#include "ernic_log.h"
 #include "qemu/clang-tsa.h" // IWYU pragma: export
 
 /*
@@ -47,14 +47,13 @@ typedef struct QemuThread {
  * a mutex the thread doesn't hold, or corrupted memory, so carrying on isn't
  * safe.
  *
- * It's defined here, with the wrappers, so that a program using them needs
- * nothing more than this header.  It writes to stderr itself rather than
- * through error_report(), which a quieter log level would silence.
+ * It reports through ernic_log_fatal() rather than error_report(), which a
+ * quieter log level would silence, so a program using the wrappers links
+ * ernic_log.c.
  */
 static inline _Noreturn void qemu_thread_fatal(int err, const char *what)
 {
-    fprintf(stderr, "%s failed: %s\n", what, strerror(err));
-    abort();
+    ernic_log_fatal("%s failed: %s", what, strerror(err));
 }
 
 /* Aborts through qemu_thread_fatal() unless err, what's result, is 0 */

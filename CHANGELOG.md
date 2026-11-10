@@ -4,6 +4,17 @@
 
 ### Fixed
 
+* Log lines from different threads no longer run into each other. The
+  server wrote a line in pieces, so when the TCP mesh's threads logged at
+  the same moment, one line could land in the middle of another, such as
+  `WARN: INFO: rdma: ...`, worst with `--log-file` or a pipe, where stdout
+  and stderr are the same file. Each line is now written whole.
+* libvfio-user's messages, and the server's own about device resets, such
+  as `PCI FLR requested`, reach a log file or pipe as soon as they're
+  logged. Before, at `--log-level info` or `debug`, they could sit in a
+  buffer until something else flushed it, so they showed up late and out
+  of order with the lines around them.
+
 * The device now honours Bus Master Enable in its PCI Command register,
   as the PCI Express specification requires. Before, it went on writing
   into guest memory, and raising interrupts, after the guest cleared it:
@@ -535,6 +546,20 @@
 
 ### Changed
 
+* **Every message the server prints goes through its log**, so the log
+  level applies to all of them. `--log-level none` now also silences error
+  messages that used to print regardless, such as why the server couldn't
+  create its socket, and `ERNIC_LOG_LEVEL=none` also those about its
+  options, which are checked before `--log-level` takes effect; the exit
+  status still says it failed. Messages look like the rest of the
+  log: an error is one `ERROR: ...` line, without the `Error:` or
+  `rocm-ernic:` it used to start with, and with any advice on the same
+  line rather than the next; libvfio-user's lines start with `INFO:`,
+  `WARN:`, `ERROR:` or `DEBUG:` rather than `rocm-ernic:`; and a failure
+  that aborts the server is printed `FATAL: ...` whatever the level. The
+  usage text, `--print-profile`'s output, and the C library's message
+  about an option it doesn't know are all that's printed outside the log.
+  Update anything that matches the old prefixes.
 * **Breaking:** **The emulated device is always ionic**, `1dd8:1002` with
   subsystem `1dd8:5400`, rather than `1022:8001` (see Removed). A guest
   image built for an older release needs its udev rules updated, and should
