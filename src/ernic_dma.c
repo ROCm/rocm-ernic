@@ -137,13 +137,14 @@ static int dma_xfer(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx, uint64_t gpa,
     if (!ernic_dma_range_ok(gpa, len)) {
         return -EINVAL;
     }
-    if (!ernic_dma_bus_master(vfu_ctx)) {
-        return -EPERM;
-    }
     /* libvfio-user maps a zero length to no entries, and vfu_sgl_get()
-     * can't take none. */
+     * can't take none. Nor does it make a memory request, so it needs no
+     * Bus Master Enable. */
     if (!len) {
         return 0;
+    }
+    if (!ernic_dma_bus_master(vfu_ctx)) {
+        return -EPERM;
     }
 
     /*

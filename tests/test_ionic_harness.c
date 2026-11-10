@@ -7851,6 +7851,38 @@ static void test_bus_master(void)
           "work held for BME ran twice");
     check(T, irq_total(h) == after, "a held interrupt was delivered twice");
 
+    /*
+     * A CQ armed while BME is clear over a completion it already holds:
+     * arming it with BME set would raise its event at once, so with BME
+     * clear the event waits, and comes once BME is set, with no more work
+     * to bring it.
+     */
+    ih_post_send(h, &r.a, &w);
+    check(T, eq_count(h, RC_CQ_A) == 0,
+          "an unarmed CQ's completion raised an event");
+    const unsigned long armed_maps = fake_vfu_map_count(h->vfu);
+    const unsigned armed_irqs = fake_vfu_irq_count(h->vfu, IH_EQ_INTR);
+    fake_vfu_set_bus_master(h->vfu, false);
+    ih_cq_arm(h, &r.cqa);
+    ih_poll(h);
+    check(T, fake_vfu_map_count(h->vfu) == armed_maps,
+          "arming a CQ with BME clear mapped guest memory %lu time(s)",
+          fake_vfu_map_count(h->vfu) - armed_maps);
+    check(T,
+          eq_count(h, RC_CQ_A) == 0 &&
+              fake_vfu_irq_count(h->vfu, IH_EQ_INTR) == armed_irqs,
+          "arming a CQ with BME clear raised its event");
+    fake_vfu_set_bus_master(h->vfu, true);
+    ih_poll(h);
+    check(T, eq_count(h, RC_CQ_A) == 1,
+          "the CQ armed with BME clear raised no event once it was set");
+    check(T, fake_vfu_irq_count(h->vfu, IH_EQ_INTR) == armed_irqs + 1,
+          "the held CQ event raised %u interrupt(s)",
+          fake_vfu_irq_count(h->vfu, IH_EQ_INTR) - armed_irqs);
+    ih_poll(h);
+    check(T, eq_count(h, RC_CQ_A) == 0, "the held CQ event came twice");
+    expect_send(T, "RDMA_WRITE before an arm with BME clear", &r, IH_STS_OK);
+
     rc_teardown(T, &r);
 }
 

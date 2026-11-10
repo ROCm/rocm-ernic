@@ -55,7 +55,8 @@ void ernic_dma_destroy(struct ernic_dma *dma);
  *
  * @gpa and @len are checked with ernic_dma_range_ok() first, so they can
  * be passed on as the guest gave them. A zero @len maps nothing and
- * succeeds.
+ * succeeds, even with Bus Master Enable clear, since it makes no memory
+ * request.
  *
  * Returns 0, or -EINVAL if the range wraps the address space, -EPERM if
  * Bus Master Enable is clear, or -EIO if any of it isn't guest memory the

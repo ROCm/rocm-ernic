@@ -247,6 +247,13 @@ static void test_bus_master(void)
               memcmp(got, want, sizeof(want)) == 0,
           "a write with BME clear changed guest memory");
 
+    /* A zero length makes no memory request, so it still succeeds */
+    check(ernic_dma_read(g_dma, g_vfu, gpa, got, 0) == 0 &&
+              ernic_dma_write(g_dma, g_vfu, gpa, zeros, 0) == 0,
+          "a zero-length transfer with BME clear failed");
+    check(fake_vfu_map_count(g_vfu) == before,
+          "a zero-length transfer with BME clear was mapped");
+
     fake_vfu_set_bus_master(g_vfu, true);
     check(ernic_dma_write(g_dma, g_vfu, gpa, zeros, sizeof(zeros)) == 0 &&
               ernic_dma_read(g_dma, g_vfu, gpa, got, sizeof(got)) == 0 &&
