@@ -1,0 +1,15 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+bugfixes:
+  - >-
+    ``ernic_guest_setup``, ``ernic_srq_dkms`` and ``ernic_p4_dkms`` failed
+    on a single error from git.kernel.org, such as an HTTP 502, while
+    fetching the ionic driver sources.  ``fetch-ionic-sources.sh`` now
+    tries a failed fetch up to four times, waiting 10, 20 and then 40
+    seconds between tries.
+    When it can't fetch the kernel ref on its own, it now says so and
+    points to git's error, rather than claiming the ref can't be fetched
+    directly, before it falls back to fetching every branch and tag.
