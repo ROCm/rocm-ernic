@@ -126,7 +126,12 @@ Each group of checks is its own CTest test:
 - ``ionic-harness-device-reset``, ``-nvmeof``, ``-s3``,
   ``-p4``: a device reset frees everything the guest set up,
   writes nothing to guest memory, and leaves a device the
-  driver can bring up again
+  driver can bring up again; ``-cmd`` checks the same of the
+  driver's ``RESET`` device command
+- ``ionic-harness-lif-reset``: what ``LIF_RESET`` takes
+- ``ionic-harness-bus-master``: with Bus Master Enable clear
+  the device does no DMA and raises no interrupt, and once it
+  is set it does what it held, once
 
 .. code-block:: bash
 
@@ -169,7 +174,8 @@ Five suites are registered with CTest:
 
 - ``ernic-vfu-client``: version negotiation, device and
   region info, PCI configuration space, BAR access, DMA
-  mapping, interrupts, a function-level reset, a reset and a
+  mapping, interrupts, Bus Master Enable stopping and resuming
+  the device's writes, a function-level reset, a reset and a
   reconnect each returning the device and the configuration
   registers a driver writes to their initial state -- and
   the offsets, counts, addresses and vector ranges a client

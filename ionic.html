@@ -825,7 +825,9 @@ without one, transmitted frames are counted and discarded.
 The counters restart at zero on a device reset. After
 <code class="docutils literal notranslate"><span class="pre">LIF_RESET</span></code> or a device reset nothing more is written into
 guest memory until the next <code class="docutils literal notranslate"><span class="pre">LIF_INIT</span></code>, because the driver
-may have freed the block.</p>
+may have freed the block. Nothing is written while the guest
+has Bus Master Enable clear either; the block is rewritten on
+the first interval after it sets it again.</p>
 <p>The stats file (<code class="docutils literal notranslate"><span class="pre">--stats-file</span></code>) carries the same counters
 in a <code class="docutils literal notranslate"><span class="pre">LIF</span> <span class="pre">Statistics</span></code> section, one line per named field of
 <code class="docutils literal notranslate"><span class="pre">struct</span> <span class="pre">ionic_lif_stats</span></code> whether or not it is zero, so a

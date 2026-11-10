@@ -540,7 +540,12 @@ a Fabrics Connect and an Identify on the RC QP it binds</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-device-reset</span></code>, <code class="docutils literal notranslate"><span class="pre">-nvmeof</span></code>, <code class="docutils literal notranslate"><span class="pre">-s3</span></code>,
 <code class="docutils literal notranslate"><span class="pre">-p4</span></code>: a device reset frees everything the guest set up,
 writes nothing to guest memory, and leaves a device the
-driver can bring up again</p></li>
+driver can bring up again; <code class="docutils literal notranslate"><span class="pre">-cmd</span></code> checks the same of the
+driver’s <code class="docutils literal notranslate"><span class="pre">RESET</span></code> device command</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-lif-reset</span></code>: what <code class="docutils literal notranslate"><span class="pre">LIF_RESET</span></code> takes</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-bus-master</span></code>: with Bus Master Enable clear
+the device does no DMA and raises no interrupt, and once it
+is set it does what it held, once</p></li>
 </ul>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>-R<span class="w"> </span>ionic-harness
 </pre></div>
@@ -580,7 +585,8 @@ through</p></li>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">ernic-vfu-client</span></code>: version negotiation, device and
 region info, PCI configuration space, BAR access, DMA
-mapping, interrupts, a function-level reset, a reset and a
+mapping, interrupts, Bus Master Enable stopping and resuming
+the device’s writes, a function-level reset, a reset and a
 reconnect each returning the device and the configuration
 registers a driver writes to their initial state – and
 the offsets, counts, addresses and vector ranges a client

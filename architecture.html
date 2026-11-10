@@ -383,6 +383,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-ionic-front-end">The ionic Front End</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-device-core">The Device Core</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-main-loop">The Main Loop</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#bus-master-enable">Bus Master Enable</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#bringing-the-device-up">Bringing the Device Up</a><ul class="pst-show_toc_level nav section-nav flex-column">
@@ -887,7 +888,8 @@ send queues are executed inside the callback</strong> (see
 <a class="reference internal" href="#the-data-path">The Data Path</a>).</p></li>
 <li><p>Run any GLib idle callbacks.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">ionic_device_poll()</span></code>, the device’s share, which is the
-next three steps.</p></li>
+next three steps, unless the guest has Bus Master Enable
+clear (see <a class="reference internal" href="#bus-master-enable">Bus Master Enable</a>).</p></li>
 <li><p>Move received Ethernet frames from the TAP, and frames an
 in-process endpoint queued for the guest, into the guest’s
 receive rings. Rewrite the Ethernet statistics in guest
@@ -902,6 +904,32 @@ waiting from the mesh or the S3 store, sleep 100 µs.</p></li>
 <p>The server is a polling design. Latency is bounded by the loop
 period, and an idle server still wakes up as often as 10,000
 times a second.</p>
+</section>
+<section id="bus-master-enable">
+<h3>Bus Master Enable<a class="headerlink" href="#bus-master-enable" title="Link to this heading">#</a></h3>
+<p>A PCI function may read or write the host’s memory, and send
+MSI-X messages, which are memory writes, only while the guest
+has Bus Master Enable (BME) set in its Command register. Linux
+sets it when a driver binds (<code class="docutils literal notranslate"><span class="pre">pci_set_master()</span></code>), and clears
+it when one unbinds, before a function-level reset, and before
+kexec starts the next kernel. ionic has no shutdown hook, so
+across a kexec BME is all that stops the device.</p>
+<p>While BME is clear the device holds its work, as hardware that
+can’t get on the bus would, rather than dropping it:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">ionic_device_poll()</span></code> does nothing, and the server doesn’t
+skip its idle sleep for work it may not do.</p></li>
+<li><p>A doorbell only notes its producer index, and arming a CQ
+raises no event.</p></li>
+<li><p>An interrupt is latched, as if its vector were masked.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">PORT_INIT</span></code> and <code class="docutils literal notranslate"><span class="pre">LIF_INIT</span></code> complete, but write their
+blocks later.</p></li>
+</ul>
+<p>Every DMA, however it is reached, also checks the bit
+(<code class="docutils literal notranslate"><span class="pre">ernic_dma_bus_master()</span></code>) and is refused while it is clear.
+The first pass of the loop that finds BME set again writes the
+held blocks, runs each queue up to its last doorbell, raises the
+armed CQs’ events, and delivers the latched interrupts.</p>
 </section>
 </section>
 <section id="bringing-the-device-up">
@@ -956,10 +984,23 @@ so the netdev gets a carrier and the RDMA port goes
 active. The device keeps the LIF statistics in that block
 from then on (see <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>)</p></td>
 </tr>
-<tr class="row-even"><td><p>LIF_RESET, PORT_RESET, RESET</p></td>
-<td><p>Stop writing into the blocks, which the driver may free.
-RESET also zeroes every counter, and PORT_RESET the port
-counters</p></td>
+<tr class="row-even"><td><p>PORT_RESET</p></td>
+<td><p>Stops writing into the port block, which the driver may
+free, and zeroes the port counters</p></td>
+</tr>
+<tr class="row-odd"><td><p>LIF_RESET</p></td>
+<td><p>Takes the LIF’s Ethernet side: its queues, the MAC the
+guest gave it, and the frames waiting for it. It stops
+writing into the LIF block</p></td>
+</tr>
+<tr class="row-even"><td><p>RESET</p></td>
+<td><p>Resets the whole device as a function-level reset does,
+but for the PCI function’s registers and the P4 engine:
+every queue and RDMA resource goes, nothing more is
+written into the blocks, and every counter restarts at
+zero. The driver sends it before it sets Bus Master
+Enable, so a kernel started by kexec finds nothing of
+its predecessor’s still running</p></td>
 </tr>
 <tr class="row-odd"><td><p>Q_INIT</p></td>
 <td><p>Records where an Ethernet queue’s descriptor and
@@ -1062,7 +1103,9 @@ makes the vector mask itself when it fires (so the driver’s
 NAPI poll runs without a second interrupt). An interrupt raised
 while its vector is masked is latched and delivered when the
 driver unmasks it, which it does by writing the mask register
-or by returning “credits” with the unmask bit set.</p>
+or by returning “credits” with the unmask bit set. One raised
+while Bus Master Enable is clear is latched too, and delivered
+once it is set (see <a class="reference internal" href="#bus-master-enable">Bus Master Enable</a>).</p>
 </section>
 </section>
 <section id="the-control-path-the-rdma-admin-queue">
@@ -2101,6 +2144,7 @@ externs</p></td>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-ionic-front-end">The ionic Front End</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-device-core">The Device Core</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-main-loop">The Main Loop</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#bus-master-enable">Bus Master Enable</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#bringing-the-device-up">Bringing the Device Up</a><ul class="pst-show_toc_level nav section-nav flex-column">
