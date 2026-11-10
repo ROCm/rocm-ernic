@@ -49,6 +49,9 @@ IONIC_DEV_SIG = 0x44455649  # "DEVI"
 PCI_BASE_CLASS_NETWORK = 0x02
 # The PCI Express link's width, in lanes; it runs at 64 GT/s
 PCIE_LINK_WIDTH = 16
+# Link Capabilities' ASPM Optionality Compliance bit, which
+# linux/pci_regs.h doesn't name
+PCIE_LNKCAP_ASPM_OPT_COMP = 0x00400000
 
 # struct ionic_lif_info: the status block at 256, link_status at +10.
 LIF_INFO_LINK_STATUS_OFF = 256 + 10
@@ -140,7 +143,7 @@ def test_device_info(suite, client):
 
 
 def check_pcie_link(suite, client, regs, px):
-    """The link in the PCI Express capability at @px: 64 GT/s, x16."""
+    """The link in the PCI Express capability at @px: 64 GT/s, x16, no ASPM."""
     lnkcap = pci.read32(client, px + regs.PCI_EXP_LNKCAP)
     suite.check_eq(
         pci.field(lnkcap, regs.PCI_EXP_LNKCAP_SLS),
@@ -151,6 +154,13 @@ def check_pcie_link(suite, client, regs, px):
         pci.field(lnkcap, regs.PCI_EXP_LNKCAP_MLW),
         PCIE_LINK_WIDTH,
         "the maximum link width is x16",
+    )
+    suite.check_eq(
+        pci.field(lnkcap, regs.PCI_EXP_LNKCAP_ASPMS), 0, "no ASPM is supported"
+    )
+    suite.check(
+        lnkcap & PCIE_LNKCAP_ASPM_OPT_COMP,
+        "ASPM Optionality Compliance is set, as every function must",
     )
 
     # The device has no physical link to train down
@@ -241,9 +251,18 @@ def test_config_space(suite, client, regs):
         regs.PCI_EXP_TYPE_ENDPOINT,
         "PCI Express device type is Endpoint",
     )
+    devcap = pci.read32(client, px + regs.PCI_EXP_DEVCAP)
+    suite.check(devcap & regs.PCI_EXP_DEVCAP_FLR, "the device advertises FLR")
     suite.check(
-        pci.read32(client, px + regs.PCI_EXP_DEVCAP) & regs.PCI_EXP_DEVCAP_FLR,
-        "the device advertises FLR",
+        devcap & regs.PCI_EXP_DEVCAP_RBER,
+        "Role-Based Error Reporting is set, as every function must",
+    )
+    # Required of an endpoint issuing its own non-posted requests, as the
+    # device does in reading guest memory
+    suite.check(
+        pci.read32(client, px + regs.PCI_EXP_DEVCAP2)
+        & regs.PCI_EXP_DEVCAP2_COMP_TMOUT_DIS,
+        "the device supports Completion Timeout Disable",
     )
     check_pcie_link(suite, client, regs, px)
 

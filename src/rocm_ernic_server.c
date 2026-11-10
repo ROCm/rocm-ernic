@@ -576,6 +576,10 @@ static int device_init(rocm_ernic_dev_t *dev)
 /* The PCI Express link's width, in lanes */
 #define PCIE_LINK_WIDTH 16U
 
+/* Link Capabilities' ASPM Optionality Compliance bit, which
+ * linux/pci_regs.h doesn't name */
+#define PCIE_LNKCAP_ASPM_OPT_COMP 0x00400000U
+
 /**
  * @p value placed in the register field @p mask selects, shifted up to the
  * mask's lowest set bit, as the kernel's FIELD_PREP() does.
@@ -632,6 +636,18 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx)
      * device and the config space a driver writes. Device Control starts
      * at the spec's defaults, with Relaxed Ordering and No Snoop enabled
      * and a 512-byte Max_Read_Request_Size.
+     *
+     * The spec (PCIe 6.5, 7.5.3) requires three more bits:
+     * - Role-Based Error Reporting (Device Capabilities), of every
+     *   function since PCIe 1.1.
+     * - ASPM Optionality Compliance (Link Capabilities), of every
+     *   function. It says the device follows the current ASPM rules, under
+     *   which supporting no ASPM, as ASPM Support's 0 says, is allowed.
+     * - Completion Timeout Disable Supported (Device Capabilities 2), of
+     *   an endpoint that issues its own non-posted requests, as this one
+     *   does in reading guest memory. libvfio-user stores Device Control
+     *   2's Completion Timeout Disable bit as written, and nothing in the
+     *   device reads it.
      */
     uint8_t px[VFIO_USER_PCI_CAP_EXP_SIZEOF];
 
@@ -641,16 +657,19 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx)
         px + PCI_EXP_FLAGS,
         (uint16_t)(pci_field(PCI_EXP_FLAGS_VERS, 2U) |
                    pci_field(PCI_EXP_FLAGS_TYPE, PCI_EXP_TYPE_ENDPOINT)));
-    ernic_put_le32(px + PCI_EXP_DEVCAP, PCI_EXP_DEVCAP_FLR);
+    ernic_put_le32(px + PCI_EXP_DEVCAP,
+                   PCI_EXP_DEVCAP_RBER | PCI_EXP_DEVCAP_FLR);
     ernic_put_le16(px + PCI_EXP_DEVCTL, PCI_EXP_DEVCTL_RELAX_EN |
                                             PCI_EXP_DEVCTL_NOSNOOP_EN |
                                             PCI_EXP_DEVCTL_READRQ_512B);
     ernic_put_le32(px + PCI_EXP_LNKCAP,
                    PCI_EXP_LNKCAP_SLS_64_0GB |
-                       pci_field(PCI_EXP_LNKCAP_MLW, PCIE_LINK_WIDTH));
+                       pci_field(PCI_EXP_LNKCAP_MLW, PCIE_LINK_WIDTH) |
+                       PCIE_LNKCAP_ASPM_OPT_COMP);
     ernic_put_le16(px + PCI_EXP_LNKSTA,
                    (uint16_t)(PCI_EXP_LNKSTA_CLS_64_0GB |
                               pci_field(PCI_EXP_LNKSTA_NLW, PCIE_LINK_WIDTH)));
+    ernic_put_le32(px + PCI_EXP_DEVCAP2, PCI_EXP_DEVCAP2_COMP_TMOUT_DIS);
     ernic_put_le32(px + PCI_EXP_LNKCAP2,
                    PCI_EXP_LNKCAP2_SLS_2_5GB | PCI_EXP_LNKCAP2_SLS_5_0GB |
                        PCI_EXP_LNKCAP2_SLS_8_0GB | PCI_EXP_LNKCAP2_SLS_16_0GB |
