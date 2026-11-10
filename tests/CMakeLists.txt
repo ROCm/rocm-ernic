@@ -1122,9 +1122,9 @@ set(ERNIC_HARNESS_GROUPS
     devcmds bringup rdma-reset rdma-reset-faults rdma-reset-frees admin
     admin-dma rc spec-sge atomic wrap mr-keys dp-dma tables limits cq-events
     qp-flush qp-flush-srq ud srq srq-rq-ring srq-cq-ring eth eth-dma
-    nvmeof nvmeof-queues s3 device-reset device-reset-cmd lif-reset
-    bus-master device-reset-nvmeof device-reset-s3 mesh-none teardown
-    backend-names none loopback-pair)
+    eth-rx-sg nvmeof nvmeof-queues s3 device-reset device-reset-cmd
+    lif-reset bus-master device-reset-nvmeof device-reset-s3 mesh-none
+    teardown backend-names none loopback-pair)
 if(ERNIC_BUILD_P4)
     list(APPEND ERNIC_HARNESS_GROUPS p4-port p4-attach fp8-map fp8-overlap
                                       p4-rdma p4-cvt p4-cvt-map p4-drop-map

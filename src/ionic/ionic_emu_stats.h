@@ -268,7 +268,7 @@ enum ionic_emu_mac_class {
 /* Why the datapath dropped a frame; each maps to one queue/ring counter. */
 enum ionic_emu_drop {
     IONIC_EMU_DROP_NO_BUFFER,  /* rx: the guest posted no buffer */
-    IONIC_EMU_DROP_TOO_BIG,    /* rx: frame larger than the buffer */
+    IONIC_EMU_DROP_TOO_BIG,    /* rx: frame larger than the posted buffers */
     IONIC_EMU_DROP_DESC_FETCH, /* the descriptor could not be read */
     IONIC_EMU_DROP_DESC_DATA,  /* the descriptor made no sense */
     IONIC_EMU_DROP_DMA,        /* frame or completion DMA failed */

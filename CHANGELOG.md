@@ -14,6 +14,19 @@
   logged. Before, at `--log-level info` or `debug`, they could sit in a
   buffer until something else flushed it, so they showed up late and out
   of order with the lines around them.
+* Received Ethernet frames now spill over into the receive descriptor's
+  scatter-gather list, as on real ionic hardware. Before, the device used
+  only the descriptor's first buffer and dropped any frame longer than
+  that, counting it in `rx_desc_data_error`. So jumbo frames never
+  arrived, though the device offers an MTU of up to 9198, and even at an
+  MTU of 1500, full-size frames were dropped once the driver had reused
+  part of a buffer's page for an earlier frame. A frame longer than all
+  of a descriptor's buffers together is still dropped, and none of it is
+  written. A receive descriptor with an unknown opcode, or a
+  scatter-gather descriptor on a queue the driver set up without
+  scatter-gather, is now refused and counted in `rx_desc_data_error`.
+  Jumbo frames from the host's TAP device also need its MTU, and its
+  bridge's, raised to match the guest's.
 
 * The device now honours Bus Master Enable in its PCI Command register,
   as the PCI Express specification requires. Before, it went on writing

@@ -1567,6 +1567,7 @@ void ionic_eth_emu_handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
 #define Q_INIT_TYPE_OFF         4
 #define Q_INIT_INDEX_OFF        8
 #define Q_INIT_INTR_INDEX_OFF   14
+#define Q_INIT_FLAGS_OFF        16
 #define Q_INIT_RING_SIZE_OFF    19
 #define Q_INIT_RING_BASE_OFF    20
 #define Q_INIT_CQ_RING_BASE_OFF 28
@@ -1574,6 +1575,7 @@ void ionic_eth_emu_handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
     uint8_t qtype = cmd[Q_INIT_TYPE_OFF];
     uint32_t index = ernic_get_le32(cmd + Q_INIT_INDEX_OFF);
     uint16_t intr_index = ernic_get_le16(cmd + Q_INIT_INTR_INDEX_OFF);
+    uint16_t flags = ernic_get_le16(cmd + Q_INIT_FLAGS_OFF);
     uint8_t ring_size = cmd[Q_INIT_RING_SIZE_OFF];
     uint64_t ring_base = ernic_get_le64(cmd + Q_INIT_RING_BASE_OFF);
     uint64_t cq_ring_base = ernic_get_le64(cmd + Q_INIT_CQ_RING_BASE_OFF);
@@ -1613,6 +1615,7 @@ void ionic_eth_emu_handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
         .ring_base = ring_base,
         .cq_ring_base = cq_ring_base,
         .sg_ring_base = sg_ring_base,
+        .sg = (flags & IONIC_QINIT_F_SG) != 0,
         .depth = (uint16_t)(1U << ring_size),
         /* ionic_cq_init() starts with done_color = 1. */
         .cq_color = 1,
@@ -1966,13 +1969,96 @@ static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid)
 /* -------------------------------------------------------------------------
  * Receive path
  *
- * ionic_rx_fill() posts one descriptor per buffer and rings the Rx doorbell
+ * ionic_rx_fill() posts one descriptor per frame and rings the Rx doorbell
  * with its head index; we treat that as the producer index and consume
- * descriptors from our own tail as frames arrive.  With no offloads
- * advertised the driver never asks for more than IONIC_PAGE_SIZE in the first
- * fragment, so a 1500-byte MTU frame always fits in a single descriptor.
+ * descriptors from our own tail as frames arrive.  A descriptor holds one
+ * buffer, the rest of a page; when that is shorter than MTU + VLAN_ETH_HLEN,
+ * as for a jumbo MTU or a page the driver has partly reused, it is an SG
+ * descriptor and the rest of the frame goes to the elements of its SG list.
  * -------------------------------------------------------------------------
  */
+
+/* One guest buffer a received frame lands in, or part of it. */
+struct eth_rx_buf {
+    uint64_t addr;
+    uint16_t len;
+};
+
+/*
+ * Gather the buffers the descriptor at @q's head posts for a frame of @len
+ * bytes into @bufs: the descriptor's own, then for an SG descriptor the
+ * elements of its SG list in order, as many as the frame needs.  The driver
+ * zeroes the element after the last one it posts, so a zero-length element
+ * ends the list.
+ *
+ * Returns how many buffers the frame fills, or a negative errno: -EFAULT if
+ * the descriptor or its SG list can't be read, -EINVAL for an opcode the
+ * device doesn't know or an SG descriptor on a queue set up without
+ * scatter/gather, -EMSGSIZE if the frame doesn't fit.
+ */
+static int eth_rx_bufs(const struct ionic_eth_emu *emu,
+                       const struct eth_queue *q, size_t len,
+                       struct eth_rx_buf bufs[1 + RXQ_SG_MAX_ELEMS])
+{
+    uint8_t desc[ETH_DESC_SIZE];
+    if (ernic_dma_read(emu->dma, emu->vfu_ctx,
+                       q->ring_base + ((uint64_t)q->head * ETH_DESC_SIZE), desc,
+                       sizeof(desc)) < 0) {
+        return -EFAULT;
+    }
+
+    /* struct ionic_rxq_desc: opcode@0, rsvd[5], len le16 @6, addr le64 @8.
+     * The opcode is IONIC_RXQ_DESC_OPCODE_SIMPLE (0) or _SG (1). */
+#define RXQ_DESC_OPCODE_OFF    0
+#define RXQ_DESC_LEN_OFF       6
+#define RXQ_DESC_ADDR_OFF      8
+#define RXQ_DESC_OPCODE_SIMPLE 0U
+#define RXQ_DESC_OPCODE_SG     1U
+    uint8_t opcode = desc[RXQ_DESC_OPCODE_OFF];
+    if (opcode != RXQ_DESC_OPCODE_SIMPLE &&
+        (opcode != RXQ_DESC_OPCODE_SG || !q->sg)) {
+        return -EINVAL;
+    }
+
+    bufs[0].addr = ernic_get_le64(desc + RXQ_DESC_ADDR_OFF);
+    bufs[0].len = ernic_get_le16(desc + RXQ_DESC_LEN_OFF);
+    if (len <= bufs[0].len) {
+        return 1;
+    }
+    if (opcode != RXQ_DESC_OPCODE_SG) {
+        return -EMSGSIZE;
+    }
+
+    /* The guest chose sg_ring_base, so the list's address may wrap. */
+    uint64_t sg_off = (uint64_t)q->head * RXQ_SG_DESC_SIZE;
+    if (q->sg_ring_base > UINT64_MAX - sg_off) {
+        return -EFAULT;
+    }
+    uint8_t sg[RXQ_SG_DESC_SIZE];
+    if (ernic_dma_read(emu->dma, emu->vfu_ctx, q->sg_ring_base + sg_off, sg,
+                       sizeof(sg)) < 0) {
+        return -EFAULT;
+    }
+
+    /* struct ionic_rxq_sg_elem: addr le64 @0, len le16 @8, rsvd[3]. */
+#define RXQ_SG_ELEM_ADDR_OFF 0
+#define RXQ_SG_ELEM_LEN_OFF  8
+    size_t room = bufs[0].len;
+    int n = 1;
+    for (size_t i = 0; i < RXQ_SG_MAX_ELEMS && room < len; i++) {
+        const uint8_t *e = sg + (i * RXQ_SG_ELEM_SIZE);
+        uint16_t elen = ernic_get_le16(e + RXQ_SG_ELEM_LEN_OFF);
+        if (!elen) {
+            break;
+        }
+        bufs[n].addr = ernic_get_le64(e + RXQ_SG_ELEM_ADDR_OFF);
+        bufs[n].len = elen;
+        n++;
+        room += elen;
+    }
+
+    return room >= len ? n : -EMSGSIZE;
+}
 
 static int eth_rx_deliver(const struct ionic_eth_emu *emu, struct eth_queue *q,
                           uint8_t *frame, size_t len)
@@ -1981,36 +2067,37 @@ static int eth_rx_deliver(const struct ionic_eth_emu *emu, struct eth_queue *q,
         return -ENOBUFS; /* guest has posted no buffers */
     }
 
-    uint8_t desc[ETH_DESC_SIZE];
-    if (ernic_dma_read(emu->dma, emu->vfu_ctx,
-                       q->ring_base + ((uint64_t)q->head * ETH_DESC_SIZE), desc,
-                       sizeof(desc)) < 0) {
-        return -EFAULT;
+    /* Nothing is written until the whole frame is known to fit, so a frame
+     * that is dropped leaves the guest's buffers as they were. */
+    struct eth_rx_buf bufs[1 + RXQ_SG_MAX_ELEMS];
+    int nbufs = eth_rx_bufs(emu, q, len, bufs);
+    if (nbufs < 0) {
+        return nbufs;
     }
 
-    /* struct ionic_rxq_desc: opcode@0, rsvd[5], len le16 @6, addr le64 @8. */
-#define RXQ_DESC_LEN_OFF  6
-#define RXQ_DESC_ADDR_OFF 8
-    uint16_t cap = ernic_get_le16(desc + RXQ_DESC_LEN_OFF);
-    uint64_t addr = ernic_get_le64(desc + RXQ_DESC_ADDR_OFF);
-
-    if (len > cap) {
-        return -EMSGSIZE;
-    }
-
-    if (ernic_dma_write(emu->dma, emu->vfu_ctx, addr, frame, len) < 0) {
-        return -EIO;
+    /* Each buffer is filled before the next is started: the driver splits
+     * the frame by the same rule when it builds the skb. */
+    size_t off = 0;
+    for (int i = 0; i < nbufs; i++) {
+        size_t n = len - off < bufs[i].len ? len - off : bufs[i].len;
+        if (ernic_dma_write(emu->dma, emu->vfu_ctx, bufs[i].addr, frame + off,
+                            n) < 0) {
+            return -EIO;
+        }
+        off += n;
     }
 
     /* struct ionic_rxq_comp: status@0, num_sg_elems@1, comp_index le16 @2,
      * rss_hash le32 @4, csum le16 @8, vlan_tci le16 @10, len le16 @12,
-     * csum_flags@14, pkt_type_color@15.  csum_flags stays zero so the driver
-     * marks the skb CHECKSUM_NONE and verifies in software. */
+     * csum_flags@14, pkt_type_color@15.  num_sg_elems counts the SG
+     * elements the frame filled, not the descriptor's own buffer.
+     * csum_flags stays zero so the driver marks the skb CHECKSUM_NONE and
+     * verifies in software. */
 #define RXQ_COMP_NUM_SG_ELEMS_OFF 1
 #define RXQ_COMP_COMP_INDEX_OFF   2
 #define RXQ_COMP_LEN_OFF          12
     uint8_t comp[ETH_COMP_SIZE] = {0};
-    comp[RXQ_COMP_NUM_SG_ELEMS_OFF] = 0;
+    comp[RXQ_COMP_NUM_SG_ELEMS_OFF] = (uint8_t)(nbufs - 1);
     ernic_put_le16(comp + RXQ_COMP_COMP_INDEX_OFF, q->head);
     ernic_put_le16(comp + RXQ_COMP_LEN_OFF, (uint16_t)len);
     comp[ETH_COMP_SIZE - 1] = q->cq_color ? (uint8_t)ADMIN_COMP_COLOR_MASK : 0;
@@ -2058,6 +2145,8 @@ static enum ionic_emu_drop rx_drop_reason(int rc)
         return IONIC_EMU_DROP_NO_BUFFER;
     case -EMSGSIZE:
         return IONIC_EMU_DROP_TOO_BIG;
+    case -EINVAL:
+        return IONIC_EMU_DROP_DESC_DATA;
     case -EFAULT:
         return IONIC_EMU_DROP_DESC_FETCH;
     default:
@@ -2156,9 +2245,9 @@ void ionic_eth_emu_poll_rx(struct ionic_eth_emu *emu)
     /* Frames queued by in-process endpoints (the S3 control plane, the P4
      * pipeline).  A frame that the guest has no buffer for is put back at
      * the head so ordering holds and the producer keeps seeing
-     * back-pressure; that is not a drop.  A frame
-     * that can never be delivered (too big, or a DMA failure) is dropped
-     * and counted, so it cannot block the queue behind it. */
+     * back-pressure; that is not a drop.  A frame that can never be
+     * delivered (too big, a malformed descriptor, or a DMA failure) is
+     * dropped and counted, so it cannot block the queue behind it. */
     for (unsigned n = 0; n < 64; n++) {
         struct eth_inbox_frame *f = emu->inbox_head;
         if (!f) {
