@@ -4,6 +4,28 @@
 
 ### Fixed
 
+* The device now honours Bus Master Enable in its PCI Command register,
+  as the PCI Express specification requires. Before, it went on writing
+  into guest memory, and raising interrupts, after the guest cleared it:
+  Linux clears it when a driver unbinds and before kexec starts the next
+  kernel, and for ionic, which has no shutdown hook, that is all that
+  stops the device, so the server could write statistics and received
+  frames into the new kernel's memory. While Bus Master Enable is clear
+  the device now does no DMA and raises no interrupt, and holds its work
+  rather than dropping it: queues wait at their last doorbell, interrupts
+  are latched, and the blocks `PORT_INIT` and `LIF_INIT` publish are
+  written once it is set again. A guest driver sets it as it binds, so
+  nothing changes for one; a vfio-user client of your own that drives
+  the device without setting it gets no DMA or interrupts until it does.
+* The `RESET` device command, which the ionic driver sends when it
+  probes, unloads, or recovers firmware, now resets the whole device, as
+  a function-level reset does but for the PCI registers and the P4
+  engine: it frees every queue and RDMA resource, and the device writes
+  nothing more into the guest's info blocks. Before, it only stopped the
+  statistics writes, so a kernel started by kexec found its
+  predecessor's queues still running. `LIF_RESET` now also removes the
+  LIF's Ethernet queues and the frames waiting for it, and puts back the
+  station MAC.
 * A reset of the device, which QEMU sends when it resets the VM, and a
   client disconnecting, now return the device to its state before any
   client attached. Before, both left everything the guest had set up in

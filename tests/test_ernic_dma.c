@@ -211,6 +211,50 @@ static void test_refused(void)
     }
 }
 
+/*
+ * With Bus Master Enable clear the function may issue no memory requests,
+ * so every transfer is refused before anything is mapped, guest memory is
+ * left as it was, and so is the caller's buffer. Setting it again lets
+ * them through.
+ */
+static void test_bus_master(void)
+{
+    static uint8_t want[64];
+    static uint8_t got[64];
+    const uint64_t gpa = FAKE_VFU_GPA_BASE + 64;
+
+    memset(want, 0x5c, sizeof(want));
+    check(fake_vfu_write(g_vfu, gpa, want, sizeof(want)),
+          "can't fill guest memory");
+    check(ernic_dma_bus_master(g_vfu), "a new context lacks Bus Master Enable");
+
+    fake_vfu_set_bus_master(g_vfu, false);
+    check(!ernic_dma_bus_master(g_vfu),
+          "Bus Master Enable reads as set once cleared");
+
+    unsigned long before = fake_vfu_map_count(g_vfu);
+    uint8_t zeros[sizeof(want)] = {0};
+
+    memset(got, 0xee, sizeof(got));
+    check(ernic_dma_read(g_dma, g_vfu, gpa, got, sizeof(got)) == -EPERM,
+          "a read with BME clear wasn't refused with EPERM");
+    check(got[0] == 0xee, "a read with BME clear filled the buffer");
+    check(ernic_dma_write(g_dma, g_vfu, gpa, zeros, sizeof(zeros)) == -EPERM,
+          "a write with BME clear wasn't refused with EPERM");
+    check(fake_vfu_map_count(g_vfu) == before,
+          "a transfer with BME clear reached vfu_addr_to_sgl()");
+    check(fake_vfu_read(g_vfu, gpa, got, sizeof(got)) &&
+              memcmp(got, want, sizeof(want)) == 0,
+          "a write with BME clear changed guest memory");
+
+    fake_vfu_set_bus_master(g_vfu, true);
+    check(ernic_dma_write(g_dma, g_vfu, gpa, zeros, sizeof(zeros)) == 0 &&
+              ernic_dma_read(g_dma, g_vfu, gpa, got, sizeof(got)) == 0 &&
+              memcmp(got, zeros, sizeof(zeros)) == 0,
+          "transfers fail once Bus Master Enable is set again");
+    check_all_put("Bus Master Enable");
+}
+
 static void test_library_failures(void)
 {
     uint8_t buf[100];
@@ -281,6 +325,7 @@ int main(void)
     test_transfers();
     test_zero_length();
     test_refused();
+    test_bus_master();
     test_library_failures();
 
     ernic_dma_destroy(g_dma);

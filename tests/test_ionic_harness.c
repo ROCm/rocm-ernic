@@ -7411,15 +7411,15 @@ static bool intrs_at_power_on(const struct ionic_eth_emu *emu)
 
 /*
  * A device reset, as QEMU's reset of the device, an FLR or a client going
- * asks for. Everything the guest set up goes: its RDMA resources, its
- * Ethernet queues and LIF, its interrupt settings, its MAC, its writes to
- * the registers, and a frame on its way to it. Nothing is written to guest
- * memory while it goes, since after a client goes there is none. Then the
- * driver loads again and finds a working device.
+ * asks for, or, with @by_devcmd, as the driver asks for with
+ * IONIC_CMD_RESET. Everything the guest set up goes: its RDMA resources,
+ * its Ethernet queues and LIF, its interrupt settings, its MAC, its writes
+ * to the registers, and a frame on its way to it. Nothing is written to
+ * guest memory while it goes, since after a client goes there is none. Then
+ * the driver loads again and finds a working device.
  */
-static void test_device_reset(void)
+static void device_reset_case(const char *T, bool by_devcmd)
 {
-    const char *T = "device-reset";
     static const uint8_t guest_mac[6] = {0x02, 0x66, 0x77, 0x88, 0x99, 0xaa};
     struct rc r;
     struct ih *h = &r.h;
@@ -7491,8 +7491,14 @@ static void test_device_reset(void)
     const unsigned long maps = fake_vfu_map_count(h->vfu);
     const unsigned irqs = irq_total(h);
 
-    ionic_device_reset(h->dev->ionic);
-    ionic_device_reset(NULL);
+    if (by_devcmd) {
+        memset(cmd, 0, sizeof(cmd));
+        cmd[0] = IH_CMD_RESET;
+        check(T, ih_devcmd(h, cmd, comp, NULL, 0) == 0, "RESET failed");
+    } else {
+        ionic_device_reset(h->dev->ionic);
+        ionic_device_reset(NULL);
+    }
 
     check(T, fake_vfu_map_count(h->vfu) == maps,
           "the reset mapped guest memory %lu time(s)",
@@ -7529,10 +7535,11 @@ static void test_device_reset(void)
                  sizeof(info_now));
     check(T, memcmp(info_now, info, sizeof(info)) == 0,
           "the device's identity isn't what it was before the guest wrote it");
+    /* RESET itself completes, through the registers it leaves alone */
     check(T,
           ih_bar0_read32(h, IONIC_BAR0_DEV_CMD_REGS_OFFSET + DEVCMD_DONE_OFF) ==
-              0,
-          "the last device command still reads as done");
+              (by_devcmd ? IONIC_DEV_CMD_DONE : 0),
+          "the done bit is %s after the reset", by_devcmd ? "clear" : "set");
     check(T,
           ih_bar0_read32(h, IONIC_BAR0_INTR_CTRL_OFFSET +
                                 (RX_INTR * INTR_REG_STRIDE) +
@@ -7591,6 +7598,259 @@ static void test_device_reset(void)
     ih_mr_read(h, &r.mrb, VA_B, now_b, sizeof(now_b));
     check(T, memcmp(got, now_b, sizeof(now_b)) == 0,
           "an RDMA_WRITE after the reset didn't land");
+    rc_teardown(T, &r);
+}
+
+static void test_device_reset(void)
+{
+    device_reset_case("device-reset", false);
+}
+
+/*
+ * The driver's reset of the device, which ionic_setup() sends before
+ * pci_set_master(): a kernel started by kexec, whose predecessor left the
+ * device running, must find nothing of it when it sets Bus Master Enable.
+ */
+static void test_device_reset_cmd(void)
+{
+    device_reset_case("device-reset-cmd", true);
+}
+
+/*
+ * LIF_RESET takes the LIF's Ethernet side: its queues, its info block, the
+ * MAC the guest gave it, and the frames waiting for its Rx queues. A
+ * doorbell for one of its old queues then does nothing.
+ */
+static void test_lif_reset(void)
+{
+    const char *T = "lif-reset";
+    static const uint8_t guest_mac[6] = {0x02, 0x66, 0x77, 0x88, 0x99, 0xab};
+    struct ih h;
+    uint8_t station[6];
+    uint8_t mac[6];
+    uint8_t frame[64];
+    uint8_t cmd[64] = {0};
+    uint8_t comp[16];
+    uint8_t desc[16] = {0};
+
+    if (!setup(T, &h, "loopback")) {
+        return;
+    }
+
+    const uint64_t txr = fake_vfu_alloc(h.vfu, (size_t)8 * 16, 64);
+    const uint64_t txc = fake_vfu_alloc(h.vfu, (size_t)8 * 16, 64);
+    const uint64_t buf = fake_vfu_alloc(h.vfu, sizeof(frame), 64);
+    const struct q_init_cmd txq = {.qtype = IH_QTYPE_ETH_TXQ,
+                                   .intr = TX_INTR,
+                                   .depth_log2 = 3,
+                                   .ring = txr,
+                                   .cq = txc};
+    bool ok = txr && txc && buf && q_init(&h, &txq) &&
+              q_enable(&h, IH_QTYPE_ETH_TXQ, 0) && lif_mac(&h, station);
+
+    cmd[0] = IH_CMD_LIF_SETATTR;
+    cmd[1] = IH_LIF_ATTR_MAC;
+    memcpy(cmd + 4, guest_mac, sizeof(guest_mac));
+    ok = ok && ih_devcmd(&h, cmd, comp, NULL, 0) == 0;
+    fill(frame, sizeof(frame), 0x42);
+    ok = ok && ionic_eth_emu_queue_rx_frame(h.emu, frame, sizeof(frame)) == 0;
+    if (!check(T, ok, "setting up the LIF failed")) {
+        teardown(T, &h);
+        return;
+    }
+
+    memset(cmd, 0, sizeof(cmd));
+    cmd[0] = IH_CMD_LIF_RESET;
+    check(T, ih_devcmd(&h, cmd, comp, NULL, 0) == 0, "LIF_RESET failed");
+    check(T, eth_queues_gone(h.emu), "an Ethernet queue outlived LIF_RESET");
+    check(T, !h.emu->lif_initialized && h.emu->lif_info_pa == 0,
+          "the LIF outlived LIF_RESET");
+    check(T, h.emu->inbox_count == 0,
+          "%u frame(s) for the guest outlived LIF_RESET", h.emu->inbox_count);
+    check(T, lif_mac(&h, mac) && memcmp(mac, station, sizeof(mac)) == 0,
+          "the MAC isn't the station MAC after LIF_RESET");
+
+    /* A frame posted on the old Tx queue goes nowhere */
+    const unsigned long maps = fake_vfu_map_count(h.vfu);
+    fake_vfu_write(h.vfu, buf, frame, sizeof(frame));
+    ernic_put_le64(desc, buf << 12);
+    ernic_put_le16(desc + 8, sizeof(frame));
+    fake_vfu_write(h.vfu, txr, desc, sizeof(desc));
+    ih_doorbell(&h, IH_QTYPE_ETH_TXQ, 0, 0, 1);
+    ih_poll(&h);
+    check(T, fake_vfu_map_count(h.vfu) == maps,
+          "a doorbell for a Tx queue LIF_RESET took touched guest memory");
+
+    teardown(T, &h);
+}
+
+/* Fill the @len bytes of guest memory at @gpa with @byte. */
+static void guest_fill(struct ih *h, uint64_t gpa, size_t len, uint8_t byte)
+{
+    uint8_t chunk[256];
+
+    memset(chunk, byte, sizeof(chunk));
+    for (size_t done = 0; done < len; done += sizeof(chunk)) {
+        size_t n = len - done < sizeof(chunk) ? len - done : sizeof(chunk);
+
+        fake_vfu_write(h->vfu, gpa + done, chunk, n);
+    }
+}
+
+/* Whether the @len bytes of guest memory at @gpa are all @byte. */
+static bool guest_all(struct ih *h, uint64_t gpa, size_t len, uint8_t byte)
+{
+    uint8_t chunk[256];
+
+    for (size_t done = 0; done < len; done += sizeof(chunk)) {
+        size_t n = len - done < sizeof(chunk) ? len - done : sizeof(chunk);
+
+        fake_vfu_read(h->vfu, gpa + done, chunk, n);
+        for (size_t i = 0; i < n; i++) {
+            if (chunk[i] != byte) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+/*
+ * While the guest has Bus Master Enable clear the function may neither DMA
+ * nor raise an interrupt (PCI Express Base 6.5, 7.5.1.1.3), and nothing it
+ * was asked to do is lost: a send queue, an armed CQ's event, an Ethernet
+ * Tx queue, an interrupt, and what PORT_INIT and LIF_INIT publish all wait,
+ * and happen once, when the guest sets BME again.
+ */
+static void test_bus_master(void)
+{
+    const char *T = "bus-master";
+    struct rc r;
+    struct ih *h = &r.h;
+    uint8_t data[64];
+    uint8_t before_b[sizeof(data)];
+    uint8_t now_b[sizeof(data)];
+    uint8_t cmd[64] = {0};
+    uint8_t comp[16];
+    uint8_t desc[16] = {0};
+    uint8_t txcomp[16];
+
+    if (!rc_setup(T, &r)) {
+        return;
+    }
+
+    /* An Ethernet Tx queue, its interrupt unmasked */
+    const uint64_t txr = fake_vfu_alloc(h->vfu, (size_t)8 * 16, 64);
+    const uint64_t txc = fake_vfu_alloc(h->vfu, (size_t)8 * 16, 64);
+    const uint64_t buf = fake_vfu_alloc(h->vfu, sizeof(data), 64);
+    const struct q_init_cmd txq = {.qtype = IH_QTYPE_ETH_TXQ,
+                                   .intr = TX_INTR,
+                                   .depth_log2 = 3,
+                                   .ring = txr,
+                                   .cq = txc};
+    /* Fresh info blocks for PORT_INIT and LIF_INIT to publish into */
+    const uint64_t port = fake_vfu_alloc(h->vfu, IH_PAGE_SIZE, IH_PAGE_SIZE);
+    const uint64_t lif = fake_vfu_alloc(h->vfu, IH_PAGE_SIZE, IH_PAGE_SIZE);
+    bool ok = txr && txc && buf && port && lif && q_init(h, &txq) &&
+              q_enable(h, IH_QTYPE_ETH_TXQ, 0);
+    if (!check(T, ok, "setting up the Tx queue failed")) {
+        rc_teardown(T, &r);
+        return;
+    }
+    ih_intr_mask(h, TX_INTR, false);
+    guest_fill(h, port, IH_PAGE_SIZE, 0xa5);
+    guest_fill(h, lif, IH_PAGE_SIZE, 0xa5);
+
+    fill(data, sizeof(data), 0x3c);
+    ih_mr_write(h, &r.mra, VA_A, data, sizeof(data));
+    ih_mr_read(h, &r.mrb, VA_B, before_b, sizeof(before_b));
+    struct ih_sge sge = {.va = VA_A, .len = sizeof(data), .lkey = MR_A};
+    struct ih_send w = {.op = IH_OP_RDMA_WRITE,
+                        .flags = IH_WQE_SIGNALLED,
+                        .remote_va = VA_B,
+                        .rkey = MR_B,
+                        .sge = &sge,
+                        .nsge = 1};
+
+    const unsigned long maps = fake_vfu_map_count(h->vfu);
+    const unsigned irqs = irq_total(h);
+    const unsigned eq_irqs = fake_vfu_irq_count(h->vfu, IH_EQ_INTR);
+
+    /* Everything asked of the device while BME is clear */
+    fake_vfu_set_bus_master(h->vfu, false);
+    ih_post_send(h, &r.a, &w);
+    ih_cq_arm(h, &r.cqa);
+    fake_vfu_write(h->vfu, buf, data, sizeof(data));
+    ernic_put_le64(desc, buf << 12);
+    ernic_put_le16(desc + 8, sizeof(data));
+    fake_vfu_write(h->vfu, txr, desc, sizeof(desc));
+    ih_doorbell(h, IH_QTYPE_ETH_TXQ, 0, 0, 1);
+    check(T, ionic_eth_emu_trigger_irq(h->emu, TX_INTR) == 0,
+          "an interrupt raised without BME failed");
+    cmd[0] = IH_CMD_PORT_INIT;
+    ernic_put_le64(cmd + 8, port);
+    check(T, ih_devcmd(h, cmd, comp, NULL, 0) == 0, "PORT_INIT failed");
+    cmd[0] = IH_CMD_LIF_INIT;
+    ernic_put_le64(cmd + 8, lif);
+    check(T, ih_devcmd(h, cmd, comp, NULL, 0) == 0, "LIF_INIT failed");
+    ih_poll(h);
+    ih_poll(h);
+    check(T, !ionic_device_has_work(h->dev->ionic),
+          "the device has work it may not do");
+
+    check(T, fake_vfu_map_count(h->vfu) == maps,
+          "the device mapped guest memory %lu time(s) with BME clear",
+          fake_vfu_map_count(h->vfu) - maps);
+    check(T, irq_total(h) == irqs,
+          "the device raised %u interrupt(s) with BME clear",
+          irq_total(h) - irqs);
+    ih_mr_read(h, &r.mrb, VA_B, now_b, sizeof(now_b));
+    check(T, memcmp(before_b, now_b, sizeof(now_b)) == 0,
+          "an RDMA_WRITE ran with BME clear");
+    fake_vfu_read(h->vfu, txc, txcomp, sizeof(txcomp));
+    check(T, all_zero(txcomp, sizeof(txcomp)),
+          "a Tx completion was written with BME clear");
+    check(T,
+          guest_all(h, port, IH_PAGE_SIZE, 0xa5) &&
+              guest_all(h, lif, IH_PAGE_SIZE, 0xa5),
+          "PORT_INIT or LIF_INIT wrote an info block with BME clear");
+
+    /* BME set: all of it, once */
+    fake_vfu_set_bus_master(h->vfu, true);
+    ih_poll(h);
+
+    expect_send(T, "RDMA_WRITE held for BME", &r, IH_STS_OK);
+    ih_mr_read(h, &r.mrb, VA_B, now_b, sizeof(now_b));
+    check(T, memcmp(data, now_b, sizeof(now_b)) == 0,
+          "the held RDMA_WRITE didn't land");
+    check(T, eq_count(h, RC_CQ_A) == 1, "the armed CQ raised no event");
+    check(T, fake_vfu_irq_count(h->vfu, IH_EQ_INTR) == eq_irqs + 1,
+          "the CQ event raised %u interrupt(s)",
+          fake_vfu_irq_count(h->vfu, IH_EQ_INTR) - eq_irqs);
+    fake_vfu_read(h->vfu, txc, txcomp, sizeof(txcomp));
+    check(T, (txcomp[15] & 0x80U) && ernic_get_le16(txcomp + 2) == 0,
+          "no completion for the held Tx descriptor");
+    check(T, fake_vfu_irq_count(h->vfu, TX_INTR) == 1,
+          "the held Tx interrupts arrived %u time(s), not once",
+          fake_vfu_irq_count(h->vfu, TX_INTR));
+    uint8_t status[2];
+    fake_vfu_read(h->vfu, port + IONIC_PORT_INFO_STATUS_STATUS_OFF, status, 1);
+    check(T, status[0] == IONIC_PORT_OPER_STATUS_UP,
+          "the held port info wasn't written");
+    fake_vfu_read(h->vfu, lif + IONIC_LIF_INFO_STATUS_OFF + 10, status, 2);
+    check(T, ernic_get_le16(status) == IONIC_PORT_OPER_STATUS_UP,
+          "the held LIF status wasn't written");
+
+    /* Nothing runs twice */
+    const unsigned after = irq_total(h);
+    fake_vfu_set_bus_master(h->vfu, false);
+    ih_poll(h);
+    fake_vfu_set_bus_master(h->vfu, true);
+    ih_poll(h);
+    check(T, cq_empty(h, &r.cqa) && eq_count(h, RC_CQ_A) == 0,
+          "work held for BME ran twice");
+    check(T, irq_total(h) == after, "a held interrupt was delivered twice");
+
     rc_teardown(T, &r);
 }
 
@@ -8268,6 +8528,9 @@ static const struct {
     {"nvmeof-queues", test_nvmeof_queue_limit},
     {"s3", test_s3},
     {"device-reset", test_device_reset},
+    {"device-reset-cmd", test_device_reset_cmd},
+    {"lif-reset", test_lif_reset},
+    {"bus-master", test_bus_master},
     {"device-reset-nvmeof", test_device_reset_nvmeof},
     {"device-reset-s3", test_device_reset_s3},
 #ifdef ERNIC_HAVE_P4

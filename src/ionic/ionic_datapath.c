@@ -4350,8 +4350,11 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
         if (ring == 0) {
             c->cons = p_index % c->depth;
         } else if (ring == 1 || ring == 2) {
+            /* The event is a DMA write and an interrupt, so without Bus
+             * Master Enable it waits, armed, for ionic_datapath_resume() */
             c->armed = true;
-            if (c->prod % c->depth != c->cons) {
+            if (c->prod % c->depth != c->cons &&
+                ernic_dma_bus_master(dp->vfu_ctx)) {
                 cq_fire_event(dp, c, qid);
             }
         }
@@ -4394,9 +4397,35 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
 
     struct ionic_qp_ring *q = &dp->qp[qid];
 
-    /* Producer indices are 16-bit and free-running modulo the ring depth. */
+    /* Producer indices are 16-bit and free-running modulo the ring depth.
+     * Running the queue reads WQEs out of guest memory, so without Bus
+     * Master Enable it waits for ionic_datapath_resume(). */
     q->sq_prod = (uint32_t)p_index % q->sq_depth;
-    sq_service(dp, q, qid);
+    if (ernic_dma_bus_master(dp->vfu_ctx)) {
+        sq_service(dp, q, qid);
+    }
+}
+
+void ionic_datapath_resume(struct ionic_datapath *dp)
+{
+    if (!dp) {
+        return;
+    }
+
+    for (uint32_t i = 0; i < dp->qp_count; i++) {
+        struct ionic_qp_ring *q = &dp->qp[i];
+
+        if (q->valid && q->sq_cons % q->sq_depth != q->sq_prod) {
+            sq_service(dp, q, i);
+        }
+    }
+    for (uint32_t i = 0; i < dp->cq_count; i++) {
+        struct ionic_cq_ring *c = &dp->cq[i];
+
+        if (c->valid && c->prod % c->depth != c->cons) {
+            cq_fire_event(dp, c, i);
+        }
+    }
 }
 
 void ionic_datapath_rdma_counters(const struct ionic_datapath *dp,

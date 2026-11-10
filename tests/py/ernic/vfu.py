@@ -97,6 +97,12 @@ VFU_DEV_MSIX_IRQ = 2
 VFU_DEV_ERR_IRQ = 3
 VFU_DEV_REQ_IRQ = 4
 
+# The PCI Command register and the bits a guest's PCI core sets in it
+# (linux/pci_regs.h)
+PCI_COMMAND = 0x04
+PCI_COMMAND_MEMORY = 0x2
+PCI_COMMAND_MASTER = 0x4
+
 PAGE_SIZE = 4096
 
 
@@ -432,6 +438,16 @@ class VfioUserClient:
     def write_config(self, offset, data):
         """Write PCI configuration space."""
         self.write_region(VFU_PCI_DEV_CFG_REGION_IDX, offset, data)
+
+    def set_bus_master(self, enabled):
+        """Set or clear Bus Master Enable, with Memory Space Enable set.
+
+        What the guest's PCI core writes to the Command register for
+        pci_enable_device_mem() and pci_set_master() or pci_clear_master().
+        The device may DMA and raise interrupts only while BME is set.
+        """
+        command = PCI_COMMAND_MEMORY | (PCI_COMMAND_MASTER if enabled else 0)
+        self.write_config(PCI_COMMAND, struct.pack("<H", command))
 
     def read_bar32(self, index, offset):
         """Read one little-endian 32-bit register from a BAR."""

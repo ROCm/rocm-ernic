@@ -98,9 +98,10 @@ static void handle_rdma_cmd(struct ionic_eth_emu *emu, const uint8_t *cmd,
                             uint8_t *comp);
 static void handle_p4_cmd(struct ionic_eth_emu *emu, const uint8_t *cmd,
                           uint8_t *comp);
-static void eth_adminq_service(struct ionic_eth_emu *emu, uint16_t p_index);
-static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
-                            uint16_t p_index);
+static void eth_adminq_service(struct ionic_eth_emu *emu);
+static void eth_txq_doorbell(struct ionic_eth_emu *emu, uint32_t qid,
+                             uint16_t p_index);
+static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid);
 
 /* -------------------------------------------------------------------------
  * Construction / destruction
@@ -221,36 +222,69 @@ void ionic_eth_emu_destroy(struct ionic_eth_emu *emu)
     free(emu);
 }
 
-void ionic_eth_emu_reset(struct ionic_eth_emu *emu)
+/*
+ * What a LIF reset takes away: its Ethernet queues, its info block, the
+ * MAC the guest gave it, and the frames waiting for its Rx queues.  The
+ * rings and the info block are memory the guest may now use for something
+ * else, so nothing here may write to them again.  The counters stay; a
+ * device reset zeroes them.
+ */
+static void eth_lif_reset(struct ionic_eth_emu *emu)
 {
-    if (!emu) {
-        return;
-    }
-
-    /* The registers as a driver probing the device first finds them: ready,
-     * with no command under way */
-    memset(emu->bar0, 0, sizeof(emu->bar0));
-    write_dev_info(emu);
-    memset(emu->bar2, 0, emu->bar2_size);
-    eth_intr_init(emu);
-
-    /* The queues' rings and the info blocks are memory the guest may now
-     * use for something else, so nothing here may write to them again */
     memset(emu->eth_q, 0, sizeof(emu->eth_q));
     emu->lif_initialized = false;
     emu->lif_hw_index = 0;
     emu->lif_info_pa = 0;
-    emu->port_info_pa = 0;
+    emu->lif_status_pending = false;
     memcpy(emu->mac, emu->station_mac, ETH_ADDR_LEN);
+
+    /* Frames for the old Rx rings, from the S3 target and the P4 pipeline */
+    eth_inbox_clear(emu);
+}
+
+/*
+ * Everything ionic_eth_emu_reset() puts back but the dev_cmd registers,
+ * which a reset that is itself a device command is still answering through.
+ */
+static void eth_device_reset(struct ionic_eth_emu *emu)
+{
+    /* The registers as a driver probing the device first finds them */
+    memset(emu->bar0, 0, IONIC_BAR0_DEV_CMD_REGS_OFFSET);
+    memset(emu->bar0 + IONIC_BAR0_INTR_STATUS_OFFSET, 0,
+           sizeof(emu->bar0) - IONIC_BAR0_INTR_STATUS_OFFSET);
+    write_dev_info(emu);
+    memset(emu->bar2, 0, emu->bar2_size);
+    eth_intr_init(emu);
+
+    eth_lif_reset(emu);
+    emu->port_info_pa = 0;
+    emu->port_info_pending = false;
 
     ionic_emu_stats_reset(&emu->stats);
     emu->stats_publish_now = false;
     emu->stats_last_ms = 0;
     emu->stats_write_failed = false;
     emu->port_stats_write_failed = false;
+}
 
-    /* Frames for the old Rx rings, from the S3 target and the P4 pipeline */
-    eth_inbox_clear(emu);
+void ionic_eth_emu_reset(struct ionic_eth_emu *emu)
+{
+    if (!emu) {
+        return;
+    }
+
+    /* No command under way, either */
+    memset(emu->bar0 + IONIC_BAR0_DEV_CMD_REGS_OFFSET, 0,
+           IONIC_BAR0_INTR_STATUS_OFFSET - IONIC_BAR0_DEV_CMD_REGS_OFFSET);
+    eth_device_reset(emu);
+}
+
+void ionic_eth_emu_register_reset_handler(struct ionic_eth_emu *emu,
+                                          ionic_eth_emu_reset_fn_t fn,
+                                          void *opaque)
+{
+    emu->reset_fn = fn;
+    emu->reset_opaque = opaque;
 }
 
 /* The largest frame the port takes in, FCS excluded: what LIF_IDENTIFY
@@ -404,11 +438,12 @@ static int deliver_irq(struct ionic_eth_emu *emu, int vec)
     return ret;
 }
 
-/* Replay an assertion that arrived while the vector was masked. */
+/* Replay an assertion that arrived while the vector was masked, unless an
+ * MSI-X message can't be sent yet. */
 static void unmask_irq(struct ionic_eth_emu *emu, int vec)
 {
     emu->intr_mask[vec] = 0;
-    if (emu->intr_pending[vec]) {
+    if (emu->intr_pending[vec] && ernic_dma_bus_master(emu->vfu_ctx)) {
         deliver_irq(emu, vec);
     }
 }
@@ -547,10 +582,19 @@ ssize_t ionic_eth_emu_bar2_access(struct ionic_eth_emu *emu, char *buf,
          * ionic_admin_cmd descriptors — Tx/Rx doorbells point at packet
          * descriptor rings and must not be fed to the command engine. */
         if (qtype >= 0 && qtype < IONIC_QTYPE_ETH_MAX) {
+            /* The admin and Tx queues note the producer index and run up to
+             * it, unless Bus Master Enable is clear: then they wait for
+             * ionic_eth_emu_resume(). */
             if (qtype == IONIC_QTYPE_ADMINQ) {
-                eth_adminq_service(emu, p_index);
+                struct eth_queue *aq = &emu->eth_q[IONIC_QTYPE_ADMINQ][0];
+                if (aq->valid) {
+                    aq->prod = (uint16_t)(p_index % aq->depth);
+                    if (ernic_dma_bus_master(emu->vfu_ctx)) {
+                        eth_adminq_service(emu);
+                    }
+                }
             } else if (qtype == IONIC_QTYPE_TXQ) {
-                eth_txq_service(emu, qid, p_index);
+                eth_txq_doorbell(emu, qid, p_index);
             } else if (qtype == IONIC_QTYPE_RXQ && qid < eth_qcount(emu)) {
                 /* Rx descriptors are buffers the driver hands us to fill;
                  * record how many are posted and wait for traffic. */
@@ -788,15 +832,25 @@ static void process_devcmd(struct ionic_eth_emu *emu)
         break;
 
     case IONIC_CMD_RESET:
-        /* Firmware zeroes its counters on reset, and the guest may free the
-         * LIF info block once the device is reset.  The RDMA error
-         * counters are the datapath's, and are copied into the LIF block
-         * every time it is read, so they are zeroed where they live: the
-         * LIF block alone would get its old values back on the next read,
-         * and hw_counters would disagree with it. */
-        emu->lif_info_pa = 0;
-        emu->port_info_pa = 0;
-        ionic_emu_stats_reset(&emu->stats);
+        /*
+         * The whole device, as an FLR leaves it but for the PCI function
+         * (config space and the MSI-X table) and the P4 engine: every
+         * queue, RDMA resource and info block the guest set up is gone, and
+         * nothing of them is read or written again.  The driver sends this
+         * from ionic_setup(), before pci_set_master(), so a kernel started
+         * by kexec, whose predecessor left the device running, finds no
+         * queue or info block of the old kernel's when it sets Bus Master
+         * Enable.
+         *
+         * The RDMA error counters are the datapath's, and are copied into
+         * the LIF block every time it is read, so they are zeroed where
+         * they live: the LIF block alone would get its old values back on
+         * the next read, and hw_counters would disagree with it.
+         */
+        if (emu->reset_fn) {
+            emu->reset_fn(emu->reset_opaque);
+        }
+        eth_device_reset(emu);
         ionic_datapath_reset_rdma_counters(emu->dp);
         comp[0] = IONIC_RC_SUCCESS;
         break;
@@ -804,8 +858,10 @@ static void process_devcmd(struct ionic_eth_emu *emu)
     case IONIC_CMD_INIT:
     case IONIC_CMD_GETATTR:
     case IONIC_CMD_SETATTR:
-        /* Device-level init/reset/attrs: nothing to configure in the
-         * emulator, and a zeroed completion reads back as "no features". */
+        /* Device-level init and attrs: nothing to configure in the
+         * emulator, and a zeroed completion reads back as "no features".
+         * INIT clears nothing: the driver sends RESET ahead of it, at
+         * probe and when firmware comes back. */
         comp[0] = IONIC_RC_SUCCESS;
         break;
 
@@ -818,8 +874,9 @@ static void process_devcmd(struct ionic_eth_emu *emu)
         break;
 
     case IONIC_CMD_LIF_RESET:
-        emu->lif_initialized = false;
-        emu->lif_info_pa = 0;
+        /* The LIF's Ethernet side.  Its RDMA side has a reset of its own,
+         * IONIC_CMD_RDMA_RESET_LIF, which ionic_rdma.ko sends. */
+        eth_lif_reset(emu);
         comp[0] = 0;
         break;
 
@@ -851,6 +908,7 @@ static void process_devcmd(struct ionic_eth_emu *emu)
         /* The guest may free the port info block after this, and firmware
          * zeroes the port counters, so a later PORT_INIT starts from 0. */
         emu->port_info_pa = 0;
+        emu->port_info_pending = false;
         ionic_emu_port_clear(&emu->stats);
         comp[0] = 0;
         break;
@@ -1242,6 +1300,43 @@ static uint16_t xcvr_pid(uint8_t xcvr, uint32_t speed_mbps)
     return IONIC_XCVR_PID_UNKNOWN;
 }
 
+/* Write the port's identity and state into the port info block. */
+static void write_port_info(const struct ionic_eth_emu *emu)
+{
+    uint8_t info[IONIC_PORT_INFO_PUBLISHED_LEN];
+    const struct ionic_profile *prof = &emu->profile;
+    uint32_t mtu =
+        prof->link.mtu_max < IONIC_ETH_MTU ? prof->link.mtu_max : IONIC_ETH_MTU;
+
+    memset(info, 0, sizeof(info));
+    ernic_put_le32(info + IONIC_PORT_INFO_CONFIG_SPEED_OFF,
+                   prof->link.speed_mbps);
+    ernic_put_le32(info + IONIC_PORT_INFO_CONFIG_MTU_OFF, mtu);
+    info[IONIC_PORT_INFO_CONFIG_STATE_OFF] = IONIC_PORT_ADMIN_STATE_UP;
+    ernic_put_le32(info + IONIC_PORT_INFO_STATUS_SPEED_OFF,
+                   prof->link.speed_mbps);
+    info[IONIC_PORT_INFO_STATUS_STATUS_OFF] = IONIC_PORT_OPER_STATUS_UP;
+    if (prof->link.xcvr != IONIC_PROFILE_XCVR_NONE) {
+        info[IONIC_PORT_INFO_XCVR_STATE_OFF] = IONIC_XCVR_STATE_INSERTED;
+        info[IONIC_PORT_INFO_XCVR_PHY_OFF] =
+            prof->link.xcvr == IONIC_PROFILE_XCVR_FIBER ? IONIC_PHY_TYPE_FIBER
+                                                        : IONIC_PHY_TYPE_COPPER;
+    } else {
+        info[IONIC_PORT_INFO_XCVR_STATE_OFF] = IONIC_XCVR_STATE_REMOVED;
+        info[IONIC_PORT_INFO_XCVR_PHY_OFF] = IONIC_PHY_TYPE_NONE;
+    }
+    ernic_put_le16(info + IONIC_PORT_INFO_XCVR_PID_OFF,
+                   xcvr_pid(prof->link.xcvr, prof->link.speed_mbps));
+
+    if (ernic_dma_write(emu->dma, emu->vfu_ctx, emu->port_info_pa, info,
+                        sizeof(info)) < 0) {
+        vfu_log(emu->vfu_ctx, LOG_ERR,
+                "ionic_eth_emu: PORT_INIT: port info write to %#" PRIx64
+                " failed",
+                emu->port_info_pa);
+    }
+}
+
 void ionic_eth_emu_handle_port_init(struct ionic_eth_emu *emu,
                                     const uint8_t *cmd, uint8_t *comp)
 {
@@ -1249,42 +1344,15 @@ void ionic_eth_emu_handle_port_init(struct ionic_eth_emu *emu,
     uint64_t info_pa = ernic_get_le64(cmd + 8);
 
     if (info_pa) {
-        uint8_t info[IONIC_PORT_INFO_PUBLISHED_LEN];
-        const struct ionic_profile *prof = &emu->profile;
-        uint32_t mtu = prof->link.mtu_max < IONIC_ETH_MTU ? prof->link.mtu_max
-                                                          : IONIC_ETH_MTU;
-
-        memset(info, 0, sizeof(info));
-        ernic_put_le32(info + IONIC_PORT_INFO_CONFIG_SPEED_OFF,
-                       prof->link.speed_mbps);
-        ernic_put_le32(info + IONIC_PORT_INFO_CONFIG_MTU_OFF, mtu);
-        info[IONIC_PORT_INFO_CONFIG_STATE_OFF] = IONIC_PORT_ADMIN_STATE_UP;
-        ernic_put_le32(info + IONIC_PORT_INFO_STATUS_SPEED_OFF,
-                       prof->link.speed_mbps);
-        info[IONIC_PORT_INFO_STATUS_STATUS_OFF] = IONIC_PORT_OPER_STATUS_UP;
-        if (prof->link.xcvr != IONIC_PROFILE_XCVR_NONE) {
-            info[IONIC_PORT_INFO_XCVR_STATE_OFF] = IONIC_XCVR_STATE_INSERTED;
-            info[IONIC_PORT_INFO_XCVR_PHY_OFF] =
-                prof->link.xcvr == IONIC_PROFILE_XCVR_FIBER
-                    ? IONIC_PHY_TYPE_FIBER
-                    : IONIC_PHY_TYPE_COPPER;
-        } else {
-            info[IONIC_PORT_INFO_XCVR_STATE_OFF] = IONIC_XCVR_STATE_REMOVED;
-            info[IONIC_PORT_INFO_XCVR_PHY_OFF] = IONIC_PHY_TYPE_NONE;
-        }
-        ernic_put_le16(info + IONIC_PORT_INFO_XCVR_PID_OFF,
-                       xcvr_pid(prof->link.xcvr, prof->link.speed_mbps));
-
-        if (ernic_dma_write(emu->dma, emu->vfu_ctx, info_pa, info,
-                            sizeof(info)) < 0) {
-            vfu_log(emu->vfu_ctx, LOG_ERR,
-                    "ionic_eth_emu: PORT_INIT: port info write to %#" PRIx64
-                    " failed",
-                    info_pa);
-        }
         /* The stats tick fills in the MAC counters from here on. */
         emu->port_info_pa = info_pa;
         emu->stats_publish_now = true;
+        /* Without Bus Master Enable the command still completes, and the
+         * block is written once it's set */
+        emu->port_info_pending = !ernic_dma_bus_master(emu->vfu_ctx);
+        if (!emu->port_info_pending) {
+            write_port_info(emu);
+        }
     }
 
     comp[0] = 0; /* status OK */
@@ -1298,6 +1366,37 @@ void ionic_eth_emu_handle_port_init(struct ionic_eth_emu *emu,
  * LIF_INIT (opcode 21)
  * -------------------------------------------------------------------------
  */
+/*
+ * Publish a permanently-up link in the LIF info block.
+ * ionic_link_status_check() reads lif->info->status out of it and leaves the
+ * netdev carrier off unless link_status is IONIC_PORT_OPER_STATUS_UP.
+ * Without a carrier the RDMA port never leaves PORT_DOWN.
+ *   struct ionic_lif_info: config[0..255], status at 256
+ *   struct ionic_lif_status: link_status at +10, link_speed at +12
+ */
+#define LIF_STATUS_LINK_STATUS_OFF 10
+#define LIF_STATUS_LINK_SPEED_OFF  12
+static void write_lif_status(const struct ionic_eth_emu *emu)
+{
+    uint64_t info_pa = emu->lif_info_pa;
+    uint8_t status[64] = {0};
+
+    ernic_put_le16(status + LIF_STATUS_LINK_STATUS_OFF,
+                   IONIC_PORT_OPER_STATUS_UP);
+    ernic_put_le32(status + LIF_STATUS_LINK_SPEED_OFF,
+                   emu->profile.link.speed_mbps); /* Mbps */
+    if (info_pa >
+            UINT64_MAX - IONIC_LIF_INFO_STATUS_OFF - (sizeof(status) - 1) ||
+        ernic_dma_write(emu->dma, emu->vfu_ctx,
+                        info_pa + IONIC_LIF_INFO_STATUS_OFF, status,
+                        sizeof(status)) < 0) {
+        vfu_log(emu->vfu_ctx, LOG_ERR,
+                "ionic_eth_emu: LIF_INIT: link status write for info base "
+                "%#" PRIx64 " failed",
+                info_pa);
+    }
+}
+
 void ionic_eth_emu_handle_lif_init(struct ionic_eth_emu *emu,
                                    const uint8_t *cmd, uint8_t *comp)
 {
@@ -1308,36 +1407,16 @@ void ionic_eth_emu_handle_lif_init(struct ionic_eth_emu *emu,
 
     uint64_t info_pa = ernic_get_le64(cmd + LIF_INIT_INFO_PA_OFF);
 
-    /* ionic_link_status_check() reads lif->info->status out of this DMA area
-     * and leaves the netdev carrier off unless link_status is
-     * IONIC_PORT_OPER_STATUS_UP.  Without a carrier the RDMA port never leaves
-     * PORT_DOWN, so publish a permanently-up link here.
-     *   struct ionic_lif_info: config[0..255], status at 256
-     *   struct ionic_lif_status: link_status at +10, link_speed at +12 */
-#define LIF_STATUS_LINK_STATUS_OFF 10
-#define LIF_STATUS_LINK_SPEED_OFF  12
-    if (info_pa) {
-        uint8_t status[64] = {0};
-        ernic_put_le16(status + LIF_STATUS_LINK_STATUS_OFF,
-                       IONIC_PORT_OPER_STATUS_UP);
-        ernic_put_le32(status + LIF_STATUS_LINK_SPEED_OFF,
-                       emu->profile.link.speed_mbps); /* Mbps */
-        if (info_pa >
-                UINT64_MAX - IONIC_LIF_INFO_STATUS_OFF - (sizeof(status) - 1) ||
-            ernic_dma_write(emu->dma, emu->vfu_ctx,
-                            info_pa + IONIC_LIF_INFO_STATUS_OFF, status,
-                            sizeof(status)) < 0) {
-            vfu_log(emu->vfu_ctx, LOG_ERR,
-                    "ionic_eth_emu: LIF_INIT: link status write for info base "
-                    "%#" PRIx64 " failed",
-                    info_pa);
-        }
-    }
-
     emu->lif_initialized = true;
     emu->lif_hw_index = lif_index;
     emu->lif_info_pa = info_pa;
     emu->stats_publish_now = true;
+    /* As PORT_INIT's port info: written now, or once Bus Master Enable is
+     * set */
+    emu->lif_status_pending = info_pa && !ernic_dma_bus_master(emu->vfu_ctx);
+    if (info_pa && !emu->lif_status_pending) {
+        write_lif_status(emu);
+    }
 
     comp[0] = 0; /* status OK */
     comp[1] = 0; /* rsvd      */
@@ -1663,16 +1742,16 @@ void ionic_eth_emu_process_adminq_cmd(struct ionic_eth_emu *emu,
     }
 }
 
-static void eth_adminq_service(struct ionic_eth_emu *emu, uint16_t p_index)
+/* Run the admin queue up to its last doorbell. */
+static void eth_adminq_service(struct ionic_eth_emu *emu)
 {
     struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_ADMINQ][0];
     if (!q->valid) {
         return;
     }
-    uint16_t prod = (uint16_t)(p_index % q->depth);
 
     /* Bounded so a bogus producer index can never spin the server. */
-    for (unsigned n = 0; q->head != prod && n < q->depth; n++) {
+    for (unsigned n = 0; q->head != q->prod && n < q->depth; n++) {
         uint8_t cmd[ADMIN_CMD_SIZE] = {0};
         uint8_t comp[ADMIN_COMP_SIZE] = {0};
 
@@ -1802,13 +1881,10 @@ static size_t eth_tx_gather(struct ionic_eth_emu *emu, struct eth_queue *q,
     return off;
 }
 
-/* Drain the Tx ring.  A registered filter sees each frame first and may
- * claim it; what it leaves goes to the host network backend when one is
- * attached.  With neither, Tx is a sink, which is still necessary -- without
- * a completion the netdev watchdog fires every five seconds and resets the
- * queues. */
-static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
-                            uint16_t p_index)
+/* A doorbell for Tx queue @qid: note the producer index, and drain the ring
+ * up to it unless Bus Master Enable is clear. */
+static void eth_txq_doorbell(struct ionic_eth_emu *emu, uint32_t qid,
+                             uint16_t p_index)
 {
     if (qid >= eth_qcount(emu)) {
         return;
@@ -1821,10 +1897,22 @@ static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid,
         return;
     }
 
-    uint16_t prod = (uint16_t)(p_index % q->depth);
-    q->prod = prod;
+    q->prod = (uint16_t)(p_index % q->depth);
+    if (ernic_dma_bus_master(emu->vfu_ctx)) {
+        eth_txq_service(emu, qid);
+    }
+}
 
-    for (unsigned n = 0; q->head != prod && n < q->depth; n++) {
+/* Drain Tx queue @qid, which is valid, up to its last doorbell.  A
+ * registered filter sees each frame first and may claim it; what it leaves
+ * goes to the host network backend when one is attached.  With neither, Tx
+ * is a sink, which is still necessary -- without a completion the netdev
+ * watchdog fires every five seconds and resets the queues. */
+static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid)
+{
+    struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_TXQ][qid];
+
+    for (unsigned n = 0; q->head != q->prod && n < q->depth; n++) {
         /* Gathered even when Tx is a sink, so the frame is still counted as
          * sent: a NIC with nothing on the far end of its link counts too. */
         enum ionic_emu_drop why;
@@ -2195,11 +2283,49 @@ int ionic_eth_emu_trigger_irq(struct ionic_eth_emu *emu, int vec)
 
     /* Latch rather than drop: every vector starts masked, so an assertion
      * raised before the driver arms its handler would otherwise be lost and
-     * the queue would wait forever for an interrupt that never comes again. */
-    if (emu->intr_mask[vec]) {
+     * the queue would wait forever for an interrupt that never comes again.
+     * An MSI-X message is a memory write, which the function may not make
+     * while Bus Master Enable is clear, so that holds it too. */
+    if (emu->intr_mask[vec] || !ernic_dma_bus_master(emu->vfu_ctx)) {
         emu->intr_pending[vec] = 1;
         return 0;
     }
 
     return deliver_irq(emu, vec);
+}
+
+void ionic_eth_emu_resume(struct ionic_eth_emu *emu)
+{
+    if (!emu) {
+        return;
+    }
+
+    if (emu->port_info_pending) {
+        emu->port_info_pending = false;
+        write_port_info(emu);
+    }
+    if (emu->lif_status_pending) {
+        emu->lif_status_pending = false;
+        write_lif_status(emu);
+    }
+
+    /* Each runs from where it stopped to its last doorbell, and raises its
+     * interrupt */
+    struct eth_queue *aq = &emu->eth_q[IONIC_QTYPE_ADMINQ][0];
+    if (aq->valid && aq->head != aq->prod) {
+        eth_adminq_service(emu);
+    }
+    for (uint32_t i = 0; i < eth_qcount(emu); i++) {
+        const struct eth_queue *tq = &emu->eth_q[IONIC_QTYPE_TXQ][i];
+
+        if (tq->valid && tq->head != tq->prod) {
+            eth_txq_service(emu, i);
+        }
+    }
+
+    for (int vec = 0; vec < IONIC_MSIX_MAX_VECTORS; vec++) {
+        if (emu->intr_pending[vec] && !emu->intr_mask[vec]) {
+            deliver_irq(emu, vec);
+        }
+    }
 }

@@ -36,6 +36,8 @@
 
 #include "ernic_mesh.h"
 #include "ernic_stats.h"
+/* Defines vfu_pci_get_config_space(), which the code under test calls */
+#include "fake_pci_config.h" // IWYU pragma: keep
 #include "ionic/ionic_datapath.h"
 #include "ionic/ionic_datapath_priv.h"
 #include "ionic/ionic_eth_emu.h"

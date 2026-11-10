@@ -385,7 +385,9 @@ without one, transmitted frames are counted and discarded.
 The counters restart at zero on a device reset. After
 ``LIF_RESET`` or a device reset nothing more is written into
 guest memory until the next ``LIF_INIT``, because the driver
-may have freed the block.
+may have freed the block. Nothing is written while the guest
+has Bus Master Enable clear either; the block is rewritten on
+the first interval after it sets it again.
 
 The stats file (``--stats-file``) carries the same counters
 in a ``LIF Statistics`` section, one line per named field of

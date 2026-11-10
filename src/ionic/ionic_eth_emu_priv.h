@@ -367,8 +367,10 @@ struct eth_queue {
     uint64_t cq_ring_base;
     uint64_t sg_ring_base;
     uint16_t depth;
-    uint16_t head;     /* next descriptor to consume */
-    uint16_t prod;     /* last producer index the driver rang for */
+    uint16_t head; /* next descriptor to consume */
+    /* Last producer index the driver rang for.  The admin and Tx queues run
+     * up to it at once, or on resume if Bus Master Enable is clear. */
+    uint16_t prod;
     uint16_t cq_index; /* next completion slot to fill */
     uint8_t cq_color;  /* colour bit the driver is currently expecting */
 };
@@ -394,6 +396,9 @@ struct ionic_eth_emu {
      * LIF_RESET and device reset: after either the guest may free it, and
      * it must never be written again. */
     uint64_t lif_info_pa;
+    /* LIF_INIT came while Bus Master Enable was clear, so the link status
+     * it publishes is still to be written, by ionic_eth_emu_resume(). */
+    bool lif_status_pending;
 
     /* What struct ionic_lif_stats reports (ionic_emu_stats.h). */
     struct ionic_emu_stats stats;
@@ -410,6 +415,12 @@ struct ionic_eth_emu {
     uint64_t port_info_pa;
     /* As stats_write_failed, for the port block. */
     bool port_stats_write_failed;
+    /* As lif_status_pending, for the port identity PORT_INIT publishes. */
+    bool port_info_pending;
+
+    /* What IONIC_CMD_RESET runs for the rest of the device, or NULL. */
+    ionic_eth_emu_reset_fn_t reset_fn;
+    void *reset_opaque;
 
     /* RDMA devcmd handler (registered after construction). */
     ionic_rdma_devcmd_fn_t rdma_devcmd_fn;
@@ -432,7 +443,8 @@ struct ionic_eth_emu {
     /* Interrupt controller shadow (per-vector: mask, mask-on-assert). */
     uint32_t intr_mask[IONIC_MSIX_MAX_VECTORS];
     uint32_t intr_mask_assert[IONIC_MSIX_MAX_VECTORS];
-    /* Set when a vector asserted while masked; replayed on unmask. */
+    /* Set when a vector asserted while masked, or while Bus Master Enable
+     * was clear; replayed on unmask, or by ionic_eth_emu_resume(). */
     uint32_t intr_pending[IONIC_MSIX_MAX_VECTORS];
 
     /* Ethernet logical queues, indexed by [IONIC_QTYPE_*][queue index]. */

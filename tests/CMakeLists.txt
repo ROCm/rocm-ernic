@@ -1100,13 +1100,17 @@ ernic_add_unit_test(ernic-stats-unit ernic-test-ernic-stats TIMEOUT 30)
 # backend answer without one. device-reset and its -nvmeof, -s3 and -p4
 # variants check that a device reset frees everything the guest set up,
 # writes nothing to guest memory, and leaves a device the driver can bring
-# up again.
+# up again; device-reset-cmd checks the same of the driver's RESET device
+# command, and lif-reset what LIF_RESET takes. bus-master checks that the
+# device does no DMA and raises no interrupt while Bus Master Enable is
+# clear, and does what it held, once, when it is set.
 set(ERNIC_HARNESS_GROUPS
     devcmds bringup rdma-reset rdma-reset-faults rdma-reset-frees admin
     admin-dma rc spec-sge atomic wrap mr-keys dp-dma tables limits cq-events
     qp-flush qp-flush-srq ud srq srq-rq-ring srq-cq-ring eth eth-dma
-    nvmeof nvmeof-queues s3 device-reset device-reset-nvmeof
-    device-reset-s3 mesh-none teardown backend-names none loopback-pair)
+    nvmeof nvmeof-queues s3 device-reset device-reset-cmd lif-reset
+    bus-master device-reset-nvmeof device-reset-s3 mesh-none teardown
+    backend-names none loopback-pair)
 if(ERNIC_BUILD_P4)
     list(APPEND ERNIC_HARNESS_GROUPS p4-port p4-attach fp8-map fp8-overlap
                                       p4-rdma p4-cvt p4-cvt-map p4-drop-map

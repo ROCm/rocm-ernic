@@ -53,6 +53,11 @@ PCIE_LINK_WIDTH = 16
 # struct ionic_lif_info: the status block at 256, link_status at +10.
 LIF_INFO_LINK_STATUS_OFF = 256 + 10
 PORT_OPER_STATUS_UP = 1
+# struct ionic_port_info: the status block at 256, its status byte at +8.
+PORT_INFO_STATUS_OFF = 256 + 8
+# What the guest fills an info block with, to see whether the device wrote it
+INFO_POISON = b"\xa5"
+PAGE_SIZE = vfu.PAGE_SIZE
 
 # What the server logs when a client goes, and when a LIF statistics
 # write to guest memory fails.
@@ -588,6 +593,118 @@ def find_reset_regs(suite, client, regs):
     return ResetRegs(client, regs, px, msix)
 
 
+def wait_for_write_count(stats_path, count, timeout=15.0):
+    """Wait until the stats file's write count reaches @count.
+
+    The server's main loop rewrites the file, about once a second, at the
+    top of a pass that then polls the device, so a count two past one read
+    after a command shows a whole pass ran after it. Returns whether it got
+    there.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        stats = read_stats(stats_path)
+        if stats is not None and stats[1] >= count:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def info_devcmd(driver, opcode, info=0):
+    """Run device command @opcode, with the info block address @info."""
+    cmd = bytearray(64)
+    cmd[0] = opcode
+    struct.pack_into("<Q", cmd, 8, info)
+    driver.devcmd_ok(bytes(cmd))
+
+
+def poison_info(driver):
+    """Fill the port and LIF info blocks with INFO_POISON."""
+    for gpa in (driver.port_info, driver.lif_info):
+        driver.mem.write(gpa, INFO_POISON * PAGE_SIZE)
+
+
+def check_info_untouched(suite, driver, stats_path, passes, what):
+    """Check the info blocks stay poisoned for @passes of the server's loop.
+
+    The server is shown to have made the passes by the stats file's write
+    count, which it raises at the top of each pass that polls the device.
+    """
+    poisoned = INFO_POISON * PAGE_SIZE
+    stats = read_stats(stats_path)
+    if suite.check(stats is not None, "the stats file has a write count"):
+        suite.check(
+            wait_for_write_count(stats_path, stats[1] + passes),
+            f"the server made passes {what}",
+        )
+    suite.check(
+        driver.mem.read(driver.port_info, PAGE_SIZE) == poisoned
+        and driver.mem.read(driver.lif_info, PAGE_SIZE) == poisoned,
+        f"the device left the info blocks alone {what}",
+    )
+
+
+def check_info_written(suite, driver):
+    """Wait for, and check, what PORT_INIT and LIF_INIT publish."""
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline and (
+        driver.mem.read(driver.lif_info + LIF_INFO_LINK_STATUS_OFF, 1)[0]
+        != PORT_OPER_STATUS_UP
+    ):
+        time.sleep(0.05)
+    suite.check_eq(
+        driver.mem.read(driver.port_info + PORT_INFO_STATUS_OFF, 1)[0],
+        PORT_OPER_STATUS_UP,
+        "the port status written once BME is set",
+    )
+    suite.check_eq(
+        driver.mem.read(driver.lif_info + LIF_INFO_LINK_STATUS_OFF, 1)[0],
+        PORT_OPER_STATUS_UP,
+        "the LIF link status written once BME is set",
+    )
+
+
+def test_bus_master(suite, client, regs, stats_path):
+    """Bus Master Enable, which the guest clears to stop the device's DMA.
+
+    Linux clears it when a driver unbinds and before kexec starts the next
+    kernel, and nothing else stops a device whose driver has no shutdown
+    hook. While it is clear the device must not write the guest's memory:
+    not the port info and LIF status PORT_INIT and LIF_INIT publish, and not
+    the statistics it rewrites into them every second. Once BME is set,
+    what was held is written.
+    """
+    command = pci.read16(client, regs.PCI_COMMAND)
+    with vfu.GuestMemory(size=1 << 20) as mem:
+        client.dma_map(mem)
+        driver = ionic.IonicDriver(client, mem)
+        try:
+            client.set_bus_master(False)
+            poison_info(driver)
+            info_devcmd(driver, ionic.CMD_RESET)
+            info_devcmd(driver, ionic.CMD_PORT_INIT, driver.port_info)
+            info_devcmd(driver, ionic.CMD_LIF_INIT, driver.lif_info)
+            check_info_untouched(
+                suite, driver, stats_path, 2, "after LIF_INIT with BME clear"
+            )
+
+            client.set_bus_master(True)
+            check_info_written(suite, driver)
+
+            # Cleared again, it stops again: the statistics, due every
+            # second, aren't rewritten over three passes' worth of seconds
+            client.set_bus_master(False)
+            poison_info(driver)
+            check_info_untouched(
+                suite, driver, stats_path, 3, "once BME was cleared again"
+            )
+        finally:
+            # Nothing of this client's for the device to write to later
+            info_devcmd(driver, ionic.CMD_RESET)
+            pci.write16(client, regs.PCI_COMMAND, command)
+            client.dma_unmap(mem.base, mem.size)
+
+
 def test_flr(suite, client, regs, stats_path):
     """A function-level reset, as Linux's pcie_flr() starts it.
 
@@ -730,6 +847,8 @@ def test_hang_up_mid_command(suite, server):
     try:
         client.dma_map(mem)
         driver = ionic.IonicDriver(client, mem)
+        # Without it, the device would hold the writes this is about
+        client.set_bus_master(True)
         for opcode in (
             ionic.CMD_IDENTIFY,
             ionic.CMD_RESET,
@@ -802,6 +921,7 @@ def main():
             suite.run("DMA mapping", test_dma, client)
             suite.run("interrupts", test_irqs, client)
             suite.run("stats file", test_stats_file, stats_path)
+            suite.run("Bus Master Enable", test_bus_master, client, regs, stats_path)
             suite.run("function-level reset", test_flr, client, regs, stats_path)
             suite.run(
                 "reset and reconnect",
