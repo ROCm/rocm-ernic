@@ -134,7 +134,8 @@ presented, rather than surfacing later as a failed connect:
 .. code-block:: console
 
    $ ./build/rocm-ernic --backend nvmeof:size=bogus
-   Error: nvmeof backend: bad size 'bogus'
+   ERROR: nvmeof backend: bad size 'bogus'; use --backend
+   nvmeof[:size=64M][,file=PATH][,bs=512][,nqn=NAME][,ip=ADDR][,port=4420]
 
 A successful start logs the controller at ``info``:
 

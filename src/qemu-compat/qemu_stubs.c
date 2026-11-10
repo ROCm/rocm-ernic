@@ -15,7 +15,6 @@
 #include <inttypes.h>
 #include <limits.h>
 #include <stdbool.h>
-#include <stdlib.h>
 #include <stdio.h>
 #include <pthread.h>
 #include <signal.h>
@@ -29,6 +28,7 @@
 #include "qemu/bitmap.h"
 
 #include "ernic_gnu.h"
+#include "ernic_log.h"
 
 /*
  * Thread Operations
@@ -175,11 +175,9 @@ bool test_bit(uint32_t nr, const unsigned long *addr)
 uint32_t find_first_zero_bit(const unsigned long *addr, uint64_t size)
 {
     if (size > UINT32_MAX) {
-        fprintf(stderr,
-                "find_first_zero_bit: a %" PRIu64 "-bit map cannot be "
-                "indexed by uint32_t\n",
-                size);
-        abort();
+        ernic_log_fatal("find_first_zero_bit: a %" PRIu64 "-bit map cannot "
+                        "be indexed by uint32_t",
+                        size);
     }
 
     /* The check above bounds size, so this conversion is exact. */

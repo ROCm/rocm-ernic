@@ -60,10 +60,14 @@ set(ERNIC_TEST_P4_FIXTURE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/data/p4)
 
 # The TCP backend's sources. The list comes from the top-level
 # CMakeLists.txt, so the tests keep linking what the server links, plus
-# the GNU extensions it calls.
+# the GNU extensions it calls and the log, which the thread wrappers
+# (qemu/thread.h) abort through. The tests stub QEMU's reporters.
 set(ERNIC_TCP_TEST_SOURCES ${TCP_BACKEND_SOURCES})
 list(TRANSFORM ERNIC_TCP_TEST_SOURCES PREPEND "${PROJECT_SOURCE_DIR}/")
-list(APPEND ERNIC_TCP_TEST_SOURCES ${PROJECT_SOURCE_DIR}/src/ernic_gnu.c)
+list(APPEND ERNIC_TCP_TEST_SOURCES
+    ${PROJECT_SOURCE_DIR}/src/ernic_gnu.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_log.c
+)
 
 # -- test_pci_client (no extra dependencies) ---------------------
 ernic_add_test_program(test_pci_client SOURCES test_pci_client.c)
@@ -696,11 +700,13 @@ ernic_add_test_program(test_rdma_res_tbl
 
 # QEMU utility stubs test: bitmap word boundaries, the oversize-map
 # abort, the signal mask of a new thread, and the mutex wrappers'
-# aborts. It links the stubs translation unit directly.
+# aborts. It links the stubs translation unit directly, and the log they
+# abort through.
 ernic_add_test_program(test_qemu_stubs
     SOURCES
         test_qemu_stubs.c
         ${PROJECT_SOURCE_DIR}/src/ernic_gnu.c
+        ${PROJECT_SOURCE_DIR}/src/ernic_log.c
         ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
     DEPS glib ibverbs pthread
 )
@@ -712,16 +718,24 @@ if(ERNIC_USE_THREAD_SANITIZER)
 endif()
 
 # Log level test: ERNIC_LOG_LEVEL parsing, threads racing the first lookup,
-# what each reporter prints, and the log limit. It links ernic_log.c and
-# error-report.c directly.
+# what each reporter prints, the syslog priorities, long and fatal
+# messages, lines from several threads at once each coming out whole, and
+# the log limit. It links ernic_log.c and error-report.c directly, and
+# fails the allocation for a long message with the S3 tests' wrappers
+# (s3_alloc_fail.h).
 ernic_add_test_program(ernic-test-log-level
     SOURCES
         test_log_level.c
+        test_fmt.c
+        s3_alloc_fail.c
         ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
         ${PROJECT_SOURCE_DIR}/src/ernic_gnu.c
         ${PROJECT_SOURCE_DIR}/src/ernic_log.c
     DEPS pthread
 )
+target_link_options(ernic-test-log-level PRIVATE
+    "LINKER:--wrap=malloc,--wrap=calloc,--wrap=realloc"
+    "LINKER:--wrap=strdup,--wrap=getentropy")
 
 # Statistics test: the counters, and the stats file ernic-exporter reads,
 # which is replaced whole, never seen half written, and a failed write

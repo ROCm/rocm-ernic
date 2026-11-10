@@ -234,8 +234,8 @@ enforces at startup:
 
 .. code-block:: text
 
-   Error: nvmeof backend: queues must be 1..15, one per 128
-   memory regions in a table of 2048 (got '16')
+   ERROR: nvmeof backend: queues must be 1..15, one per 128
+   memory regions in a table of 2048 (got '16'); use ...
 
 The table is not sized for the NVMe maximum of 64 queues on
 purpose: ``dp_reg_mr()`` walks the whole table on every fast

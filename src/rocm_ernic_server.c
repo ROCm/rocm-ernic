@@ -19,7 +19,6 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <signal.h>
-#include <stdarg.h>
 #include <stdbool.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -42,7 +41,6 @@
 #include "rocm_ernic_internal.h" // IWYU pragma: keep
 #include "rocm_ernic_compat.h"
 #include "byteorder.h"
-#include "ernic_attributes.h"
 #include "ernic_socket.h"
 #include "ernic_time.h"
 #include "ernic_log.h"
@@ -76,23 +74,6 @@
 
 /* Socket path for vfio-user communication */
 #define DEFAULT_SOCKET_PATH "/tmp/vfio-user-rocm-ernic.sock"
-
-/*
- * Print "rocm-ernic: <message>: <errno's description>" to stderr, for a
- * failure that left its reason in errno.
- */
-ERNIC_PRINTF_FORMAT(1, 2)
-static void warn_errno(const char *fmt, ...)
-{
-    int e = errno;
-    va_list ap;
-
-    fputs("rocm-ernic: ", stderr);
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    va_end(ap);
-    fprintf(stderr, ": %s\n", strerror(e));
-}
 
 /* Flags shared with signal_handler() */
 static volatile sig_atomic_t g_shutdown_requested = 0;
@@ -184,42 +165,13 @@ static int unblock_shutdown_signals(void)
 }
 
 /**
- * Log callback for libvfio-user
+ * Log callback for libvfio-user: its messages, and the server's own
+ * vfu_log() calls, go to the log at the level of their syslog priority.
  */
 static void vfu_log_cb(vfu_ctx_t *vfu_ctx, int level, const char *msg)
 {
-    const char *prefix = "rocm-ernic";
-
     (void)vfu_ctx;
-
-    switch (level) {
-    case LOG_EMERG:
-    case LOG_ALERT:
-    case LOG_CRIT:
-    case LOG_ERR:
-        if (ernic_log_enabled(ERNIC_LOG_ERROR)) {
-            fprintf(stderr, "%s: ERROR: %s\n", prefix, msg);
-        }
-        break;
-    case LOG_WARNING:
-        if (ernic_log_enabled(ERNIC_LOG_WARN)) {
-            fprintf(stderr, "%s: WARN: %s\n", prefix, msg);
-        }
-        break;
-    case LOG_NOTICE:
-    case LOG_INFO:
-        if (ernic_log_enabled(ERNIC_LOG_INFO)) {
-            printf("%s: %s\n", prefix, msg);
-        }
-        break;
-    case LOG_DEBUG:
-        if (ernic_log_enabled(ERNIC_LOG_DEBUG)) {
-            printf("%s: DEBUG: %s\n", prefix, msg);
-        }
-        break;
-    default:
-        break;
-    }
+    ernic_log(ernic_log_level_from_syslog(level), "%s", msg);
 }
 
 /**
@@ -484,15 +436,16 @@ static int pvrdma_device_init(rocm_ernic_dev_t *dev)
     dev->pvrdma_handle = pvrdma_device_create(dev, dev->backend_type_str);
 
     if (!dev->pvrdma_handle) {
-        fprintf(stderr, "Failed to create PVRDMA device\n");
+        ernic_log(ERNIC_LOG_ERROR, "Failed to create PVRDMA device");
         return -1;
     }
 
     /* Realize the device - this initializes registers and backends */
     ret = pvrdma_device_realize(dev->pvrdma_handle);
     if (ret < 0) {
-        fprintf(stderr, "Failed to realize PVRDMA device with backend '%s'\n",
-                dev->backend_type_str);
+        ernic_log(ERNIC_LOG_ERROR,
+                  "Failed to realize PVRDMA device with backend '%s'",
+                  dev->backend_type_str);
         return -1;
     }
 
@@ -521,20 +474,20 @@ static int p4_load_program_file(struct p4_engine *eng, const char *path)
     int rc;
 
     if (!f) {
-        fprintf(stderr, "rocm-ernic: cannot open P4 program '%s': %s\n", path,
-                strerror(errno));
+        ernic_log_errno(ERNIC_LOG_ERROR, errno, "cannot open P4 program '%s'",
+                        path);
         return -1;
     }
     size = fseek(f, 0, SEEK_END) == 0 ? ftell(f) : -1;
     if (size < 0 || fseek(f, 0, SEEK_SET) != 0) {
-        fprintf(stderr, "rocm-ernic: cannot size P4 program '%s'\n", path);
+        ernic_log(ERNIC_LOG_ERROR, "cannot size P4 program '%s'", path);
         (void)fclose(f);
         return -1;
     }
     if ((uint64_t)size == 0 || (uint64_t)size > P4_PROGRAM_MAX) {
-        fprintf(stderr,
-                "rocm-ernic: P4 program '%s' is %ld bytes; the limit is %zu\n",
-                path, size, P4_PROGRAM_MAX);
+        ernic_log(ERNIC_LOG_ERROR,
+                  "P4 program '%s' is %ld bytes; the limit is %zu", path, size,
+                  P4_PROGRAM_MAX);
         (void)fclose(f);
         return -1;
     }
@@ -567,8 +520,8 @@ static int p4_load_program_file(struct p4_engine *eng, const char *path)
     if (rc != 0) {
         const char *why = p4_engine_load_error(eng);
 
-        fprintf(stderr, "rocm-ernic: P4 program '%s' was refused: %s\n", path,
-                why ? why : strerror(-rc));
+        ernic_log(ERNIC_LOG_ERROR, "P4 program '%s' was refused: %s", path,
+                  why ? why : strerror(-rc));
         return -1;
     }
     return 0;
@@ -589,7 +542,7 @@ static int device_init(rocm_ernic_dev_t *dev)
 
     dev->stats = ernic_stats_create();
     if (!dev->stats) {
-        fprintf(stderr, "Failed to allocate the statistics\n");
+        ernic_log(ERNIC_LOG_ERROR, "Failed to allocate the statistics");
         return -1;
     }
 
@@ -607,12 +560,12 @@ static int device_init(rocm_ernic_dev_t *dev)
     cfg.faults = dev->faults;
     dev->ionic = ionic_device_create(&cfg, err, sizeof(err));
     if (!dev->ionic) {
-        fprintf(stderr, "%s\n", err);
+        ernic_log(ERNIC_LOG_ERROR, "%s", err);
         return -1;
     }
 
-    printf(
-        "ionic emulation initialized (VID:DID %#x:%#x, SSVID:SDID %#x:%#x)\n",
+    ernic_startup_report(
+        "ionic emulation initialized (VID:DID %#x:%#x, SSVID:SDID %#x:%#x)",
         (unsigned)PCI_VENDOR_ID_PENSANDO,
         (unsigned)PCI_DEVICE_ID_AMD_IONIC_ERNIC,
         (unsigned)PCI_VENDOR_ID_PENSANDO,
@@ -646,7 +599,7 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx)
     ret =
         vfu_pci_init(vfu_ctx, VFU_PCI_TYPE_EXPRESS, PCI_HEADER_TYPE_NORMAL, 0);
     if (ret < 0) {
-        warn_errno("vfu_pci_init() failed");
+        ernic_log_errno(ERNIC_LOG_ERROR, errno, "vfu_pci_init() failed");
         return -1;
     }
 
@@ -706,7 +659,8 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx)
     ernic_put_le16(px + PCI_EXP_LNKCTL2, PCI_EXP_LNKCTL2_TLS_64_0GT);
     ssize_t px_off = vfu_pci_add_capability(vfu_ctx, 0, 0, px);
     if (px_off < 0) {
-        warn_errno("vfu_pci_add_capability() failed for PCI Express");
+        ernic_log_errno(ERNIC_LOG_ERROR, errno,
+                        "vfu_pci_add_capability() failed for PCI Express");
         return -1;
     }
     /* px_off is a non-negative offset here, so the cast to size_t is exact */
@@ -741,7 +695,8 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
      * ionic_eth_emu. */
     dev->bar0_mem = calloc(1, IONIC_BAR0_TOTAL_SIZE - IONIC_BAR0_REGS_SIZE);
     if (!dev->bar0_mem) {
-        warn_errno("ionic: Failed to allocate BAR0 MSI-X shadow");
+        ernic_log_errno(ERNIC_LOG_ERROR, errno,
+                        "ionic: Failed to allocate BAR0 MSI-X shadow");
         return -1;
     }
     reset_msix_table(dev);
@@ -750,7 +705,7 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
         vfu_ctx, VFU_PCI_DEV_BAR0_REGION_IDX, IONIC_BAR0_TOTAL_SIZE,
         bar0_access, VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL, 0, -1, 0);
     if (ret < 0) {
-        warn_errno("ionic: Failed to setup BAR0");
+        ernic_log_errno(ERNIC_LOG_ERROR, errno, "ionic: Failed to setup BAR0");
         return -1;
     }
 
@@ -758,7 +713,7 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
         vfu_ctx, VFU_PCI_DEV_BAR2_REGION_IDX, IONIC_BAR2_DB_SIZE, bar2_access,
         VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL, 0, -1, 0);
     if (ret < 0) {
-        warn_errno("ionic: Failed to setup BAR2");
+        ernic_log_errno(ERNIC_LOG_ERROR, errno, "ionic: Failed to setup BAR2");
         return -1;
     }
 
@@ -886,8 +841,8 @@ static int save_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     /* Both are in the standard config space, which libvfio-user checked
      * they fit when it added them */
     if (!cfg || px_off == 0 || msix_off == 0) {
-        fprintf(stderr, "rocm-ernic: the PCI Express or MSI-X capability is "
-                        "missing from config space\n");
+        ernic_log(ERNIC_LOG_ERROR, "the PCI Express or MSI-X capability is "
+                                   "missing from config space");
         return -1;
     }
 
@@ -1136,21 +1091,25 @@ static int validate_backend_options(const rocm_ernic_dev_t *dev)
     char err[512] = "";
 
     if (!name) {
-        fprintf(stderr, "Error: Unknown backend '%s'\n", dev->backend_type_str);
-        fprintf(stderr, "  Expected one of: none, loopback, tcp, nvmeof, s3, "
-                        "optionally followed by ':' and its options\n");
+        ernic_log(ERNIC_LOG_ERROR,
+                  "Unknown backend '%s' (expected one of: none, loopback, "
+                  "tcp, nvmeof, s3, optionally followed by ':' and its "
+                  "options)",
+                  dev->backend_type_str);
         return -1;
     }
 
     if (!ionic_device_target_check(dev->backend_type_str, err, sizeof(err))) {
-        fprintf(stderr, "Error: %s\n", err);
+        const char *use = "";
+
         if (!strcmp(name, "nvmeof")) {
-            fprintf(stderr, "  Use: --backend nvmeof[:size=64M][,file=PATH]"
-                            "[,bs=512][,nqn=NAME][,ip=ADDR][,port=4420]\n");
+            use = "; use --backend nvmeof[:size=64M][,file=PATH][,bs=512]"
+                  "[,nqn=NAME][,ip=ADDR][,port=4420]";
         } else if (!strcmp(name, "s3")) {
-            fprintf(stderr, "  Use: --backend s3[:bucket=NAME][,size=256M]"
-                            "[,objects=256][,ip=ADDR][,port=9000]\n");
+            use = "; use --backend s3[:bucket=NAME][,size=256M]"
+                  "[,objects=256][,ip=ADDR][,port=9000]";
         }
+        ernic_log(ERNIC_LOG_ERROR, "%s%s", err, use);
         return -1;
     }
 
@@ -1168,12 +1127,13 @@ static rocm_ernic_dev_t *dev_new(void)
     rocm_ernic_dev_t *dev = calloc(1, sizeof(*dev));
 
     if (!dev) {
-        warn_errno("Failed to allocate device structure");
+        ernic_log_errno(ERNIC_LOG_ERROR, errno,
+                        "Failed to allocate device structure");
         return NULL;
     }
     dev->backend_type_str = strdup("loopback");
     if (!dev->backend_type_str) {
-        fprintf(stderr, "Error: out of memory\n");
+        ernic_log(ERNIC_LOG_ERROR, "out of memory for the backend's name");
         free(dev);
         return NULL;
     }
@@ -1268,7 +1228,7 @@ static bool print_nic_profile(const struct ionic_profile *profile)
     char *text = need >= 0 ? malloc((size_t)need + 1) : NULL;
 
     if (!text || ionic_profile_format(profile, text, (size_t)need + 1) < 0) {
-        fprintf(stderr, "Error: --print-profile: out of memory\n");
+        ernic_log(ERNIC_LOG_ERROR, "--print-profile: out of memory");
         free(text);
         return false;
     }
@@ -1345,7 +1305,7 @@ static enum parse_result parse_options(int argc, char *argv[],
             free(dev->backend_type_str);
             dev->backend_type_str = strdup(optarg);
             if (!dev->backend_type_str) {
-                fprintf(stderr, "Error: --backend: out of memory\n");
+                ernic_log(ERNIC_LOG_ERROR, "--backend: out of memory");
                 return PARSE_EXIT_FAILURE;
             }
             break;
@@ -1354,9 +1314,10 @@ static enum parse_result parse_options(int argc, char *argv[],
             break;
         case 'L':
             if (!ernic_log_parse_level(optarg, &opts->log_level)) {
-                fprintf(stderr, "Error: Invalid log level: %s\n", optarg);
-                fprintf(stderr,
-                        "  Expected one of: none, error, warn, info, debug\n");
+                ernic_log(ERNIC_LOG_ERROR,
+                          "Invalid log level: %s (expected one of: none, "
+                          "error, warn, info, debug)",
+                          optarg);
                 return PARSE_EXIT_FAILURE;
             }
             opts->log_level_set = true;
@@ -1366,7 +1327,7 @@ static enum parse_result parse_options(int argc, char *argv[],
             free(dev->stats_file_path);
             dev->stats_file_path = strdup(optarg);
             if (!dev->stats_file_path) {
-                fprintf(stderr, "Error: --stats-file: out of memory\n");
+                ernic_log(ERNIC_LOG_ERROR, "--stats-file: out of memory");
                 return PARSE_EXIT_FAILURE;
             }
             break;
@@ -1375,10 +1336,10 @@ static enum parse_result parse_options(int argc, char *argv[],
             break;
         case 'm':
             if (!ernic_parse_mac(optarg, dev->mac_addr)) {
-                fprintf(stderr, "Error: Invalid MAC address format: %s\n",
-                        optarg);
-                fprintf(stderr, "  Expected format: XX:XX:XX:XX:XX:XX\n");
-                fprintf(stderr, "  Example: --mac 02:00:00:00:00:01\n");
+                ernic_log(ERNIC_LOG_ERROR,
+                          "Invalid MAC address format: %s (expected "
+                          "XX:XX:XX:XX:XX:XX, e.g. --mac 02:00:00:00:00:01)",
+                          optarg);
                 return PARSE_EXIT_FAILURE;
             }
             dev->mac_addr_set = true;
@@ -1391,7 +1352,7 @@ static enum parse_result parse_options(int argc, char *argv[],
 
             if (ionic_profile_apply(&dev->profile, optarg, profile_err,
                                     sizeof(profile_err)) != 0) {
-                fprintf(stderr, "Error: --nic-profile: %s\n", profile_err);
+                ernic_log(ERNIC_LOG_ERROR, "--nic-profile: %s", profile_err);
                 return PARSE_EXIT_FAILURE;
             }
             break;
@@ -1416,8 +1377,8 @@ static enum parse_result parse_options(int argc, char *argv[],
             if (!dev->faults ||
                 ionic_fault_set_add(dev->faults, optarg, fault_err,
                                     sizeof(fault_err)) != 0) {
-                fprintf(stderr, "Error: --inject '%s': %s\n", optarg,
-                        dev->faults ? fault_err : "out of memory");
+                ernic_log(ERNIC_LOG_ERROR, "--inject '%s': %s", optarg,
+                          dev->faults ? fault_err : "out of memory");
                 return PARSE_EXIT_FAILURE;
             }
             break;
@@ -1434,10 +1395,10 @@ static enum parse_result parse_options(int argc, char *argv[],
             break;
         case 'Y':
             if (!p4_scope_parse(optarg, &opts->p4_guest_scope)) {
-                fprintf(stderr,
-                        "rocm-ernic: --p4-guest-scope must be one of "
-                        "none, read, write, load (got '%s')\n",
-                        optarg);
+                ernic_log(ERNIC_LOG_ERROR,
+                          "--p4-guest-scope must be one of none, read, "
+                          "write, load (got '%s')",
+                          optarg);
                 return PARSE_EXIT_FAILURE;
             }
             /* Granting the guest a scope without the engine would be a
@@ -1460,7 +1421,7 @@ static enum parse_result parse_options(int argc, char *argv[],
         if (ionic_profile_set_stats_interval(
                 &dev->profile, stats_interval_arg, "--stats-interval-ms",
                 interval_err, sizeof(interval_err)) != 0) {
-            fprintf(stderr, "Error: %s\n", interval_err);
+            ernic_log(ERNIC_LOG_ERROR, "%s", interval_err);
             usage(argv[0]);
             return PARSE_EXIT_FAILURE;
         }
@@ -1472,7 +1433,7 @@ static enum parse_result parse_options(int argc, char *argv[],
         if (ionic_profile_set_eth_queues(&dev->profile, eth_queues_arg,
                                          "--eth-queues", queues_err,
                                          sizeof(queues_err)) != 0) {
-            fprintf(stderr, "Error: %s\n", queues_err);
+            ernic_log(ERNIC_LOG_ERROR, "%s", queues_err);
             usage(argv[0]);
             return PARSE_EXIT_FAILURE;
         }
@@ -1502,7 +1463,8 @@ static int redirect_output(const char *path)
     bool is_std;
 
     if (fd < 0) {
-        warn_errno("Failed to open log file: %s", path);
+        ernic_log_errno(ERNIC_LOG_ERROR, errno, "Failed to open log file: %s",
+                        path);
         return -1;
     }
     /* If the server was started with stdout or stderr closed, the log took
@@ -1515,7 +1477,8 @@ static int redirect_output(const char *path)
      * descriptors as the server was started with them */
     if ((is_std && fcntl(fd, F_SETFD, 0) < 0) || dup2(fd, STDOUT_FILENO) < 0 ||
         dup2(fd, STDERR_FILENO) < 0) {
-        warn_errno("Failed to redirect output to log file: %s", path);
+        ernic_log_errno(ERNIC_LOG_ERROR, errno,
+                        "Failed to redirect output to log file: %s", path);
         close(fd);
         return -1;
     }
@@ -1579,7 +1542,7 @@ static int load_p4_engine(rocm_ernic_dev_t *dev, const char *program)
 {
     dev->p4_engine = p4_engine_create();
     if (!dev->p4_engine) {
-        fprintf(stderr, "rocm-ernic: failed to create the P4 engine\n");
+        ernic_log(ERNIC_LOG_ERROR, "failed to create the P4 engine");
         return -1;
     }
     if (program && p4_load_program_file(dev->p4_engine, program) != 0) {
@@ -1624,7 +1587,7 @@ static vfu_ctx_t *create_socket(const struct server_opts *opts,
                              dev, VFU_DEV_TYPE_PCI);
     umask(old_umask);
     if (!vfu_ctx) {
-        warn_errno("vfu_create_ctx() failed");
+        ernic_log_errno(ERNIC_LOG_ERROR, errno, "vfu_create_ctx() failed");
         return NULL;
     }
 
@@ -1690,7 +1653,7 @@ static int setup_stats_file(rocm_ernic_dev_t *dev, const char *socket_path)
     memcpy(inst.mac, dev->mac_addr, sizeof(inst.mac));
     if (ernic_stats_set_file(dev->stats, dev->stats_file_path) < 0 ||
         ernic_stats_set_instance(dev->stats, &inst) < 0) {
-        fprintf(stderr, "Error: out of memory for the stats file\n");
+        ernic_log(ERNIC_LOG_ERROR, "out of memory for the stats file");
         return -1;
     }
     ernic_startup_report("rocm-ernic: Statistics will be written to: %s "
@@ -1716,7 +1679,7 @@ static int setup_vfu_device(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
 
     /* Setup interrupts */
     if (setup_interrupts(vfu_ctx, dev) < 0) {
-        warn_errno("setup_interrupts() failed");
+        ernic_log_errno(ERNIC_LOG_ERROR, errno, "setup_interrupts() failed");
         return -1;
     }
 
@@ -1733,21 +1696,23 @@ static int setup_vfu_device(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     ret = vfu_setup_device_dma(vfu_ctx, dma_register_cb, dma_unregister_cb);
 #endif
     if (ret < 0) {
-        warn_errno("vfu_setup_device_dma() failed");
+        ernic_log_errno(ERNIC_LOG_ERROR, errno,
+                        "vfu_setup_device_dma() failed");
         return -1;
     }
 
     /* Setup reset callback */
     ret = vfu_setup_device_reset_cb(vfu_ctx, device_reset_cb);
     if (ret < 0) {
-        warn_errno("vfu_setup_device_reset_cb() failed");
+        ernic_log_errno(ERNIC_LOG_ERROR, errno,
+                        "vfu_setup_device_reset_cb() failed");
         return -1;
     }
 
     /* Realize the device */
     ret = vfu_realize_ctx(vfu_ctx);
     if (ret < 0) {
-        warn_errno("vfu_realize_ctx() failed");
+        ernic_log_errno(ERNIC_LOG_ERROR, errno, "vfu_realize_ctx() failed");
         return -1;
     }
 
@@ -1765,19 +1730,16 @@ static int attach_tap(rocm_ernic_dev_t *dev, const char *ifname)
                                        assigned, sizeof(assigned));
 
     if (ret == -ENAMETOOLONG) {
-        fprintf(stderr,
-                "rocm-ernic: TAP name '%s' is too long (at most %d "
-                "characters)\n",
-                ifname, IONIC_ETH_NET_IFNAME_MAX);
+        ernic_log(ERNIC_LOG_ERROR,
+                  "TAP name '%s' is too long (at most %d characters)", ifname,
+                  IONIC_ETH_NET_IFNAME_MAX);
         return -1;
     }
     if (ret < 0) {
-        fprintf(stderr, "rocm-ernic: failed to attach TAP '%s': %s\n", ifname,
-                strerror(-ret));
-        fprintf(stderr,
-                "rocm-ernic: pre-create it with: ip tuntap add dev "
-                "%s mode tap user $USER\n",
-                ifname);
+        ernic_log(ERNIC_LOG_ERROR,
+                  "failed to attach TAP '%s': %s; pre-create it with: ip "
+                  "tuntap add dev %s mode tap user $USER",
+                  ifname, strerror(-ret), ifname);
         return -1;
     }
     ernic_startup_report("rocm-ernic: Ethernet attached to TAP %s", assigned);
@@ -1801,7 +1763,7 @@ static int attach_p4(rocm_ernic_dev_t *dev, const struct server_opts *opts)
 
     if (!ionic_device_attach_p4(dev->ionic, dev->p4_engine,
                                 opts->p4_guest_scope, err, sizeof(err))) {
-        fprintf(stderr, "rocm-ernic: %s\n", err);
+        ernic_log(ERNIC_LOG_ERROR, "%s", err);
         return -1;
     }
 
@@ -1829,7 +1791,7 @@ static int setup_device(rocm_ernic_dev_t *dev, const struct server_opts *opts)
     /* Setup logging */
     if (vfu_setup_log(vfu_ctx, vfu_log_cb,
                       vfu_log_threshold(ernic_log_get_level())) < 0) {
-        warn_errno("vfu_setup_log() failed");
+        ernic_log_errno(ERNIC_LOG_ERROR, errno, "vfu_setup_log() failed");
         return -1;
     }
 
@@ -1979,10 +1941,7 @@ static int run(rocm_ernic_dev_t *dev)
                                      strerror(errno));
                 continue;
             }
-            vfu_log(vfu_ctx, LOG_ERR,
-                    "vfu_attach_ctx() failed with errno=%d: %s", errno,
-                    strerror(errno));
-            warn_errno("vfu_attach_ctx() failed");
+            ernic_log_errno(ERNIC_LOG_ERROR, errno, "vfu_attach_ctx() failed");
             ret = -1;
             break;
         }
@@ -1999,8 +1958,8 @@ static int run(rocm_ernic_dev_t *dev)
          * with EINVAL every time.
          */
         if (!serve_client(dev) && !g_shutdown_requested) {
-            fprintf(stderr, "rocm-ernic: serving the client failed with it "
-                            "still attached; exiting\n");
+            ernic_log(ERNIC_LOG_ERROR, "serving the client failed with it "
+                                       "still attached; exiting");
             ret = -1;
             break;
         }
@@ -2037,6 +1996,12 @@ int main(int argc, char *argv[])
 {
     struct server_opts opts;
     rocm_ernic_dev_t *dev;
+
+    /* A backstop: the log flushes every line itself, but a write that goes
+     * around it should still reach a --log-file or a pipe at the end of its
+     * line, not whenever the buffer fills.  It has to come before anything
+     * is written to stdout. */
+    (void)setvbuf(stdout, NULL, _IOLBF, 0);
 
     memset(&opts, 0, sizeof(opts));
     opts.socket_path = DEFAULT_SOCKET_PATH;
@@ -2081,8 +2046,8 @@ int main(int argc, char *argv[])
      * the log is open, so the reason is in it. */
     if (opts.socket_group &&
         !ernic_socket_resolve_group(opts.socket_group, &opts.socket_gid)) {
-        fprintf(stderr, "Error: --socket-group: no such group: %s\n",
-                opts.socket_group);
+        ernic_log(ERNIC_LOG_ERROR, "--socket-group: no such group: %s",
+                  opts.socket_group);
         dev_free(dev);
         return EXIT_FAILURE;
     }
@@ -2095,7 +2060,8 @@ int main(int argc, char *argv[])
     if (set_signal_handler(SIGINT, signal_handler) == -1 ||
         set_signal_handler(SIGTERM, signal_handler) == -1 ||
         unblock_shutdown_signals() == -1) {
-        warn_errno("Failed to setup signal handlers");
+        ernic_log_errno(ERNIC_LOG_ERROR, errno,
+                        "Failed to setup signal handlers");
         dev_free(dev);
         return EXIT_FAILURE;
     }

@@ -83,10 +83,10 @@ static bool socket_is_created(const char *path, const struct stat *st,
         st->st_ino == created->st_ino) {
         return true;
     }
-    fprintf(stderr,
-            "rocm-ernic: %s is no longer the socket the server created; "
-            "keep the socket out of directories others can write to\n",
-            path);
+    ernic_log(ERNIC_LOG_ERROR,
+              "%s is no longer the socket the server created; keep the "
+              "socket out of directories others can write to",
+              path);
     return false;
 }
 
@@ -111,13 +111,11 @@ bool ernic_socket_set_group(const char *path, const char *name, gid_t gid,
     int fd = ernic_gnu_open_path(path, O_NOFOLLOW);
 
     if (fd < 0) {
-        fprintf(stderr, "rocm-ernic: cannot open socket %s: %s\n", path,
-                strerror(errno));
+        ernic_log_errno(ERNIC_LOG_ERROR, errno, "cannot open socket %s", path);
         return false;
     }
     if (fstat(fd, &st) < 0) {
-        fprintf(stderr, "rocm-ernic: cannot stat socket %s: %s\n", path,
-                strerror(errno));
+        ernic_log_errno(ERNIC_LOG_ERROR, errno, "cannot stat socket %s", path);
         goto out;
     }
     if (!socket_is_created(path, &st, created)) {
@@ -126,23 +124,22 @@ bool ernic_socket_set_group(const char *path, const char *name, gid_t gid,
     if (ernic_gnu_fchown_path(fd, (uid_t)-1, gid) < 0) {
         int e = errno;
 
-        fprintf(stderr, "rocm-ernic: cannot give socket %s the group %s: %s\n",
-                path, name, strerror(e));
-        if (e == EPERM) {
-            fprintf(stderr, "rocm-ernic: the server has to run as root or "
-                            "be a member of that group\n");
-        }
+        ernic_log(ERNIC_LOG_ERROR, "cannot give socket %s the group %s: %s%s",
+                  path, name, strerror(e),
+                  e == EPERM ? "; the server has to run as root or be a "
+                               "member of that group"
+                             : "");
         goto out;
     }
     n = snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
     if (n < 0 || (size_t)n >= sizeof(fd_path)) {
-        fprintf(stderr, "rocm-ernic: cannot name descriptor %d\n", fd);
+        ernic_log(ERNIC_LOG_ERROR, "cannot name descriptor %d", fd);
         goto out;
     }
     if (chmod(fd_path, SOCKET_MODE_GROUP) < 0) {
-        fprintf(stderr,
-                "rocm-ernic: cannot make socket %s mode 0660 through %s: %s\n",
-                path, fd_path, strerror(errno));
+        ernic_log_errno(ERNIC_LOG_ERROR, errno,
+                        "cannot make socket %s mode 0660 through %s", path,
+                        fd_path);
         goto out;
     }
     ok = true;
@@ -164,45 +161,44 @@ bool ernic_socket_access_ok(const char *path, const gid_t *want_gid,
     mode_t want_mode = want_gid ? SOCKET_MODE_GROUP : SOCKET_MODE;
 
     if (lstat(path, st) < 0) {
-        fprintf(stderr, "rocm-ernic: cannot stat socket %s: %s\n", path,
-                strerror(errno));
+        ernic_log_errno(ERNIC_LOG_ERROR, errno, "cannot stat socket %s", path);
         return false;
     }
     if (created && !socket_is_created(path, st, created)) {
         return false;
     }
     if (!S_ISSOCK(st->st_mode)) {
-        fprintf(stderr, "rocm-ernic: %s is not a socket\n", path);
+        ernic_log(ERNIC_LOG_ERROR, "%s is not a socket", path);
         return false;
     }
     if ((st->st_mode & 07777) != want_mode) {
-        fprintf(stderr,
-                "rocm-ernic: socket %s is mode %04o, not %04o; a default ACL "
-                "on its directory can do that, so remove it (setfacl -k) or "
-                "use another directory\n",
-                path, (unsigned)(st->st_mode & 07777), (unsigned)want_mode);
+        ernic_log(ERNIC_LOG_ERROR,
+                  "socket %s is mode %04o, not %04o; a default ACL on its "
+                  "directory can do that, so remove it (setfacl -k) or use "
+                  "another directory",
+                  path, (unsigned)(st->st_mode & 07777), (unsigned)want_mode);
         return false;
     }
     if (want_gid && st->st_gid != *want_gid) {
-        fprintf(stderr, "rocm-ernic: socket %s has group %u, not %u\n", path,
-                (unsigned)st->st_gid, (unsigned)*want_gid);
+        ernic_log(ERNIC_LOG_ERROR, "socket %s has group %u, not %u", path,
+                  (unsigned)st->st_gid, (unsigned)*want_gid);
         return false;
     }
 
     /* A file whose ACL says no more than its mode has no ACL stored, and a
      * file system without ACLs can't have one. */
     if (lgetxattr(path, "system.posix_acl_access", NULL, 0) >= 0) {
-        fprintf(stderr,
-                "rocm-ernic: socket %s has an ACL, from a default ACL on its "
-                "directory, that may let other users connect; remove the "
-                "default ACL (setfacl -k) or use another directory, and let "
-                "QEMU in with --socket-group\n",
-                path);
+        ernic_log(ERNIC_LOG_ERROR,
+                  "socket %s has an ACL, from a default ACL on its directory, "
+                  "that may let other users connect; remove the default ACL "
+                  "(setfacl -k) or use another directory, and let QEMU in "
+                  "with --socket-group",
+                  path);
         return false;
     }
     if (errno != ENODATA && errno != ENOTSUP) {
-        fprintf(stderr, "rocm-ernic: cannot check the ACL of socket %s: %s\n",
-                path, strerror(errno));
+        ernic_log_errno(ERNIC_LOG_ERROR, errno,
+                        "cannot check the ACL of socket %s", path);
         return false;
     }
     return true;
@@ -230,12 +226,11 @@ bool ernic_socket_remove_stale(const char *path)
     bool ok = false;
 
     if (!dir) {
-        fprintf(stderr, "rocm-ernic: out of memory\n");
+        ernic_log(ERNIC_LOG_ERROR, "out of memory for the socket's directory");
         return false;
     }
     if (*name == '\0') {
-        fprintf(stderr, "rocm-ernic: socket path \"%s\" has no file name\n",
-                path);
+        ernic_log(ERNIC_LOG_ERROR, "socket path \"%s\" has no file name", path);
         free(dir);
         return false;
     }
@@ -243,22 +238,20 @@ bool ernic_socket_remove_stale(const char *path)
     int dfd = ernic_gnu_open_path(dir, O_DIRECTORY);
 
     if (dfd < 0) {
-        fprintf(stderr, "rocm-ernic: cannot open socket directory %s: %s\n",
-                dir, strerror(errno));
+        ernic_log_errno(ERNIC_LOG_ERROR, errno,
+                        "cannot open socket directory %s", dir);
     } else if (fstatat(dfd, name, &st, AT_SYMLINK_NOFOLLOW) < 0) {
         if (errno == ENOENT) {
             ok = true;
         } else {
-            fprintf(stderr, "rocm-ernic: cannot check %s: %s\n", path,
-                    strerror(errno));
+            ernic_log_errno(ERNIC_LOG_ERROR, errno, "cannot check %s", path);
         }
     } else if (!S_ISSOCK(st.st_mode)) {
-        fprintf(stderr,
-                "rocm-ernic: %s exists and isn't a socket; not removing it\n",
-                path);
+        ernic_log(ERNIC_LOG_ERROR,
+                  "%s exists and isn't a socket; not removing it", path);
     } else if (unlinkat(dfd, name, 0) < 0 && errno != ENOENT) {
-        fprintf(stderr, "rocm-ernic: cannot remove stale socket %s: %s\n", path,
-                strerror(errno));
+        ernic_log_errno(ERNIC_LOG_ERROR, errno, "cannot remove stale socket %s",
+                        path);
     } else {
         ernic_startup_report("Removed stale socket file: %s", path);
         ok = true;
