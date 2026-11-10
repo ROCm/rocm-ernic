@@ -60,6 +60,26 @@ void ionic_eth_emu_destroy(struct ionic_eth_emu *emu);
 void ionic_eth_emu_reset(struct ionic_eth_emu *emu);
 
 /*
+ * Register what IONIC_CMD_RESET runs for the rest of the device, before it
+ * resets the emulator's own state: the data path and the RDMA queues, which
+ * the emulator doesn't own.  NULL resets only the emulator.  Called before
+ * any client connects.
+ */
+typedef void (*ionic_eth_emu_reset_fn_t)(void *opaque);
+void ionic_eth_emu_register_reset_handler(struct ionic_eth_emu *emu,
+                                          ionic_eth_emu_reset_fn_t fn,
+                                          void *opaque);
+
+/*
+ * Do the work held while Bus Master Enable was clear, now that it is set:
+ * the port info and LIF status that PORT_INIT and LIF_INIT publish, the
+ * Ethernet admin and Tx queues up to their last doorbells, and the
+ * interrupts that asserted on unmasked vectors.  Main loop thread only;
+ * call it once BME is set again.
+ */
+void ionic_eth_emu_resume(struct ionic_eth_emu *emu);
+
+/*
  * Give the device the identity and link of @profile (ionic_profile.h)
  * instead of compat.  Call before any client connects: the guest reads the
  * identity once, at probe.
@@ -102,7 +122,11 @@ ssize_t ionic_eth_emu_bar0_access(struct ionic_eth_emu *emu, char *buf,
 ssize_t ionic_eth_emu_bar2_access(struct ionic_eth_emu *emu, char *buf,
                                   size_t count, loff_t offset, bool is_write);
 
-/* Trigger an MSI-X vector (0 = success, -EINVAL = bad vec, 0 if masked). */
+/*
+ * Trigger an MSI-X vector (0 = success, -EINVAL = bad vec).  One that is
+ * masked, or raised while Bus Master Enable is clear, is held and returns 0:
+ * it is delivered once the vector is unmasked, or by ionic_eth_emu_resume().
+ */
 int ionic_eth_emu_trigger_irq(struct ionic_eth_emu *emu, int vec);
 
 /*

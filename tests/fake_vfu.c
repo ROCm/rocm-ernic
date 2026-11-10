@@ -24,6 +24,10 @@
 #include <string.h>
 #include <sys/uio.h>
 
+#include <linux/pci_regs.h>
+#include <vfio-user/pci_defs.h>
+
+#include "byteorder.h"
 #include "parse_int.h"
 
 /* One scatter/gather entry: a span that lies inside a single region. */
@@ -42,6 +46,9 @@ struct vfu_ctx {
     uint64_t next_free;
 
     unsigned irq_count[FAKE_VFU_MAX_IRQS];
+
+    /* The function's config space; only the Command register is set */
+    uint8_t config[PCI_CFG_SPACE_SIZE];
 
     unsigned long map_calls;
     /* vfu_addr_to_sgl() call that fails, counted like map_calls; 0 = none */
@@ -91,6 +98,8 @@ vfu_ctx_t *fake_vfu_create(size_t region_size, size_t nregions)
             return NULL;
         }
     }
+
+    fake_vfu_set_bus_master(ctx, true);
 
     ctx->log_level = -1;
     const char *lvl = getenv("ERNIC_FAKE_VFU_LOG_LEVEL");
@@ -254,6 +263,16 @@ size_t fake_vfu_mapped(const vfu_ctx_t *ctx)
     return ctx ? ctx->mapped : 0;
 }
 
+void fake_vfu_set_bus_master(vfu_ctx_t *ctx, bool on)
+{
+    uint16_t cmd = PCI_COMMAND_MEMORY;
+
+    if (on) {
+        cmd |= PCI_COMMAND_MASTER;
+    }
+    ernic_put_le16(ctx->config + PCI_COMMAND, cmd);
+}
+
 /* ------------------------------------------------------------------------
  * The libvfio-user entry points
  * ------------------------------------------------------------------------
@@ -364,6 +383,12 @@ void vfu_sgl_mark_dirty(vfu_ctx_t *vfu_ctx, dma_sg_t *sgl, size_t cnt)
     (void)vfu_ctx;
     (void)sgl;
     (void)cnt;
+}
+
+vfu_pci_config_space_t *vfu_pci_get_config_space(vfu_ctx_t *vfu_ctx)
+{
+    /* A byte array, so it is as aligned as the packed struct needs */
+    return (vfu_pci_config_space_t *)vfu_ctx->config;
 }
 
 int vfu_irq_trigger(vfu_ctx_t *vfu_ctx, uint32_t subindex)

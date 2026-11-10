@@ -344,6 +344,14 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
                              uint64_t doorbell_val);
 
 /*
+ * Do the work held while Bus Master Enable was clear, now that it is set:
+ * each send queue up to its last doorbell, and the event of each armed CQ
+ * that has completions.  A doorbell that comes while BME is clear only
+ * notes its index.  Main loop thread only.
+ */
+void ionic_datapath_resume(struct ionic_datapath *dp);
+
+/*
  * Drain messages that arrived from peer instances and retire work requests
  * whose peer never answered.  Every guest DMA has to happen on the thread
  * that owns the vfio-user context, but mesh messages arrive on a backend

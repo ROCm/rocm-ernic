@@ -15,6 +15,7 @@
 
 #include <vfio-user/libvfio-user.h>
 
+#include "ernic_dma.h"
 #include "ernic_err.h"
 #include "ernic_stats.h"
 #include "ernic_time.h"
@@ -50,6 +51,10 @@ struct ionic_device {
     struct ionic_datapath *dp;
     /* ionic_device_cfg.now_ms, or ernic_monotonic_ms() */
     uint64_t (*now_ms)(void);
+    /* Bus Master Enable as ionic_device_poll() last found it, so it can
+     * resume the held work when the guest sets it; clear, as at reset,
+     * until then.  Main loop thread only. */
+    bool bus_master;
 
 #ifdef ERNIC_HAVE_P4
     /* Borrowed from ionic_device_attach_p4()'s caller; set once the ports
@@ -135,6 +140,20 @@ bool ionic_device_target_check(const char *backend, char *err, size_t errlen)
 
 /* ---- Construction / destruction ---------------------------------------- */
 
+/*
+ * What a reset takes back from the data path and the RDMA queues: every
+ * queue, memory registration and request in flight.  The data path first,
+ * so the mesh takes back what is queued before anything it names is
+ * unregistered.  IONIC_CMD_RESET runs this through the emulator.
+ */
+static void reset_queues(void *opaque)
+{
+    struct ionic_device *dev = opaque;
+
+    ionic_datapath_reset(dev->dp);
+    ionic_rdma_devcmd_reset(dev->rdma);
+}
+
 struct ionic_device *ionic_device_create(const struct ionic_device_cfg *cfg,
                                          char *err, size_t errlen)
 {
@@ -171,6 +190,7 @@ struct ionic_device *ionic_device_create(const struct ionic_device_cfg *cfg,
     ionic_eth_emu_register_rdma_handler(dev->emu, ionic_rdma_devcmd_dispatch,
                                         dev->rdma);
     ionic_eth_emu_register_datapath(dev->emu, dev->dp);
+    ionic_eth_emu_register_reset_handler(dev->emu, reset_queues, dev);
 
     /* The handler raises EQ interrupts through the emulator, and hands each
      * admin queue context it creates the rest: the guest's CREATE_CQ, QP
@@ -295,10 +315,7 @@ void ionic_device_reset(struct ionic_device *dev)
         return;
     }
 
-    /* The data path first, so the mesh takes back what is queued before
-     * anything it names is unregistered */
-    ionic_datapath_reset(dev->dp);
-    ionic_rdma_devcmd_reset(dev->rdma);
+    reset_queues(dev);
 #ifdef ERNIC_HAVE_P4
     if (dev->p4_engine && p4_engine_reset(dev->p4_engine) != 0) {
         vfu_log(dev->vfu_ctx, LOG_ERR,
@@ -318,6 +335,22 @@ void ionic_device_poll(struct ionic_device *dev)
         return;
     }
 
+    /*
+     * Everything below reads or writes guest memory, which the function may
+     * not do while the guest has Bus Master Enable clear (PCI Express Base
+     * 6.5, 7.5.1.1.3).  Its work waits instead, as on hardware that can't
+     * get on the bus, and goes on from where it stopped once BME is set.
+     */
+    if (!ernic_dma_bus_master(dev->vfu_ctx)) {
+        dev->bus_master = false;
+        return;
+    }
+    if (!dev->bus_master) {
+        dev->bus_master = true;
+        ionic_eth_emu_resume(dev->emu);
+        ionic_datapath_resume(dev->dp);
+    }
+
     ionic_eth_emu_poll_rx(dev->emu);
     ionic_eth_emu_publish_stats(dev->emu, dev->now_ms());
     ionic_adminq_poll(ionic_rdma_devcmd_get_adminq_ctx(dev->rdma),
@@ -327,7 +360,9 @@ void ionic_device_poll(struct ionic_device *dev)
 
 bool ionic_device_has_work(struct ionic_device *dev)
 {
-    return dev && ionic_datapath_has_work(dev->dp);
+    /* Work held for Bus Master Enable is no reason to skip the idle sleep */
+    return dev && ernic_dma_bus_master(dev->vfu_ctx) &&
+           ionic_datapath_has_work(dev->dp);
 }
 
 /* ---- The parts --------------------------------------------------------- */

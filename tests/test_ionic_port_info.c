@@ -36,6 +36,8 @@
 #include "byteorder.h"
 #include "ernic_limits.h"
 #include "ernic_stats.h"
+/* Defines vfu_pci_get_config_space(), which the code under test calls */
+#include "fake_pci_config.h" // IWYU pragma: keep
 #include "ionic/ionic_adminq.h"
 #include "ionic/ionic_datapath.h"
 #include "ionic/ionic_eth_emu.h"

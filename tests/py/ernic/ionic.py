@@ -613,11 +613,12 @@ class IonicDriver(EthQueueMixin):
         if self.bar0_read32(0) != IONIC_DEV_SIG:
             raise DeviceError("no DEVI signature at BAR0 offset 0")
 
-        for opcode in (CMD_IDENTIFY, CMD_RESET, CMD_PORT_IDENTIFY, CMD_LIF_IDENTIFY):
+        for opcode in (CMD_RESET, CMD_IDENTIFY, CMD_PORT_IDENTIFY, CMD_LIF_IDENTIFY):
             cmd = bytearray(64)
             cmd[0] = opcode
             self.devcmd_ok(bytes(cmd))
 
+        self.client.set_bus_master(True)  # pci_set_master(), ahead of any DMA
         for opcode, info in (
             (CMD_PORT_INIT, self.port_info),
             (CMD_LIF_INIT, self.lif_info),

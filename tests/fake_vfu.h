@@ -2,11 +2,12 @@
  * fake_vfu.h — an in-process stand-in for the libvfio-user DMA and
  * interrupt calls the device code makes
  *
- * The ionic emulator reaches the guest through seven libvfio-user entry
+ * The ionic emulator reaches the guest through eight libvfio-user entry
  * points: dma_sg_size(), vfu_addr_to_sgl(), vfu_sgl_get(), vfu_sgl_put(),
- * vfu_sgl_mark_dirty(), vfu_irq_trigger() and vfu_log(). fake_vfu.c
- * defines all seven, so a test that links it instead of libvfio-user runs
- * the real device code with no client, no socket and no VM.
+ * vfu_sgl_mark_dirty(), vfu_irq_trigger(), vfu_log(), and
+ * vfu_pci_get_config_space() for Bus Master Enable. fake_vfu.c defines all
+ * eight, so a test that links it instead of libvfio-user runs the real
+ * device code with no client, no socket and no VM.
  *
  * Guest memory is a set of separately allocated regions laid end to end in
  * guest physical address (GPA) space, the way a VM's RAM arrives in several
@@ -94,6 +95,14 @@ void fake_vfu_fail_nth_get(vfu_ctx_t *ctx, unsigned long n);
 
 /* Scatter/gather entries currently got and not yet put back. */
 size_t fake_vfu_mapped(const vfu_ctx_t *ctx);
+
+/*
+ * Set or clear Bus Master Enable in the context's config space, as the
+ * guest's Command register write would; vfu_pci_get_config_space() returns
+ * it. A new context has it set, as a driver leaves it after
+ * pci_set_master(), along with Memory Space Enable.
+ */
+void fake_vfu_set_bus_master(vfu_ctx_t *ctx, bool on);
 
 /*
  * vfu_log() keeps what it's given, whether or not ERNIC_FAKE_VFU_LOG_LEVEL

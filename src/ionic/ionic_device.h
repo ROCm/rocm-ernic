@@ -91,12 +91,18 @@ bool ionic_device_target_check(const char *backend, char *err, size_t errlen);
  * mesh.  Call it after vfu_run_ctx() on every pass while a client is
  * connected, and never once libvfio-user has reset the context: the guest
  * memory it would DMA to is gone.
+ *
+ * While the guest has Bus Master Enable clear it does nothing, and doorbells
+ * only note their indices.  On the first pass that finds BME set again it
+ * resumes what was held, first: the queues run up to their last doorbells,
+ * and held interrupts on unmasked vectors are delivered.
  */
 void ionic_device_poll(struct ionic_device *dev);
 
 /*
  * True when work is waiting that the next ionic_device_poll() would do, so
- * the caller can skip its idle sleep.
+ * the caller can skip its idle sleep.  False while Bus Master Enable is
+ * clear.
  */
 bool ionic_device_has_work(struct ionic_device *dev);
 

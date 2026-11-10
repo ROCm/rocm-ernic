@@ -448,7 +448,8 @@ loops:
    `The Data Path`_).
 #. Run any GLib idle callbacks.
 #. ``ionic_device_poll()``, the device's share, which is the
-   next three steps.
+   next three steps, unless the guest has Bus Master Enable
+   clear (see `Bus Master Enable`_).
 #. Move received Ethernet frames from the TAP, and frames an
    in-process endpoint queued for the guest, into the guest's
    receive rings. Rewrite the Ethernet statistics in guest
@@ -463,6 +464,34 @@ loops:
 The server is a polling design. Latency is bounded by the loop
 period, and an idle server still wakes up as often as 10,000
 times a second.
+
+Bus Master Enable
+^^^^^^^^^^^^^^^^^
+
+A PCI function may read or write the host's memory, and send
+MSI-X messages, which are memory writes, only while the guest
+has Bus Master Enable (BME) set in its Command register. Linux
+sets it when a driver binds (``pci_set_master()``), and clears
+it when one unbinds, before a function-level reset, and before
+kexec starts the next kernel. ionic has no shutdown hook, so
+across a kexec BME is all that stops the device.
+
+While BME is clear the device holds its work, as hardware that
+can't get on the bus would, rather than dropping it:
+
+- ``ionic_device_poll()`` does nothing, and the server doesn't
+  skip its idle sleep for work it may not do.
+- A doorbell only notes its producer index, and arming a CQ
+  raises no event.
+- An interrupt is latched, as if its vector were masked.
+- ``PORT_INIT`` and ``LIF_INIT`` complete, but write their
+  blocks later.
+
+Every DMA, however it is reached, also checks the bit
+(``ernic_dma_bus_master()``) and is refused while it is clear.
+The first pass of the loop that finds BME set again writes the
+held blocks, runs each queue up to its last doorbell, raises the
+armed CQs' events, and delivers the latched interrupts.
 
 Bringing the Device Up
 ----------------------
@@ -511,10 +540,21 @@ the data window, and sets ``done``.
        so the netdev gets a carrier and the RDMA port goes
        active. The device keeps the LIF statistics in that block
        from then on (see :doc:`ionic`)
-   * - LIF_RESET, PORT_RESET, RESET
-     - Stop writing into the blocks, which the driver may free.
-       RESET also zeroes every counter, and PORT_RESET the port
-       counters
+   * - PORT_RESET
+     - Stops writing into the port block, which the driver may
+       free, and zeroes the port counters
+   * - LIF_RESET
+     - Takes the LIF's Ethernet side: its queues, the MAC the
+       guest gave it, and the frames waiting for it. It stops
+       writing into the LIF block
+   * - RESET
+     - Resets the whole device as a function-level reset does,
+       but for the PCI function's registers and the P4 engine:
+       every queue and RDMA resource goes, nothing more is
+       written into the blocks, and every counter restarts at
+       zero. The driver sends it before it sets Bus Master
+       Enable, so a kernel started by kexec finds nothing of
+       its predecessor's still running
    * - Q_INIT
      - Records where an Ethernet queue's descriptor and
        completion rings are in guest memory, and its interrupt
@@ -598,7 +638,9 @@ makes the vector mask itself when it fires (so the driver's
 NAPI poll runs without a second interrupt). An interrupt raised
 while its vector is masked is latched and delivered when the
 driver unmasks it, which it does by writing the mask register
-or by returning "credits" with the unmask bit set.
+or by returning "credits" with the unmask bit set. One raised
+while Bus Master Enable is clear is latched too, and delivered
+once it is set (see `Bus Master Enable`_).
 
 The Control Path: the RDMA Admin Queue
 --------------------------------------

@@ -20,6 +20,9 @@
 #include <sys/mman.h> /* PROT_READ, PROT_WRITE */
 #include <sys/uio.h>
 
+#include <linux/pci_regs.h>
+
+#include "byteorder.h"
 #include "dma_range.h"
 
 struct ernic_dma {
@@ -135,9 +138,13 @@ static int dma_xfer(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx, uint64_t gpa,
         return -EINVAL;
     }
     /* libvfio-user maps a zero length to no entries, and vfu_sgl_get()
-     * can't take none. */
+     * can't take none. Nor does it make a memory request, so it needs no
+     * Bus Master Enable. */
     if (!len) {
         return 0;
+    }
+    if (!ernic_dma_bus_master(vfu_ctx)) {
+        return -EPERM;
     }
 
     /*
@@ -179,4 +186,11 @@ int ernic_dma_write(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx, uint64_t gpa,
                     const void *buf, size_t len)
 {
     return dma_xfer(dma, vfu_ctx, gpa, true, NULL, buf, len);
+}
+
+bool ernic_dma_bus_master(vfu_ctx_t *vfu_ctx)
+{
+    const uint8_t *cfg = (const uint8_t *)vfu_pci_get_config_space(vfu_ctx);
+
+    return cfg && (ernic_get_le16(cfg + PCI_COMMAND) & PCI_COMMAND_MASTER);
 }

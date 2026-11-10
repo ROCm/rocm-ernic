@@ -13,6 +13,12 @@
  * the vfio-user context may DMA (libvfio-user's DMA region table is updated
  * on that thread, unlocked), and a transfer finishes before it returns.
  *
+ * A function may issue memory requests only while the guest has Bus Master
+ * Enable set in its Command register (PCI Express Base 6.5, 7.5.1.1.3), and
+ * MSI-X messages are memory writes too. The device holds its work while it
+ * is clear, and these refuse every transfer, so a path that misses the
+ * check still can't reach guest memory.
+ *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -23,6 +29,7 @@
 #ifndef ERNIC_DMA_H
 #define ERNIC_DMA_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -48,16 +55,30 @@ void ernic_dma_destroy(struct ernic_dma *dma);
  *
  * @gpa and @len are checked with ernic_dma_range_ok() first, so they can
  * be passed on as the guest gave them. A zero @len maps nothing and
- * succeeds.
+ * succeeds, even with Bus Master Enable clear, since it makes no memory
+ * request.
  *
- * Returns 0, or -EINVAL if the range wraps the address space, or -EIO if
- * any of it isn't guest memory the device may access that way. A failed
- * read may have filled part of @buf, and a failed write may have written
- * part of the range.
+ * Returns 0, or -EINVAL if the range wraps the address space, -EPERM if
+ * Bus Master Enable is clear, or -EIO if any of it isn't guest memory the
+ * device may access that way. A failed read may have filled part of @buf,
+ * and a failed write may have written part of the range.
  */
 int ernic_dma_read(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx, uint64_t gpa,
                    void *buf, size_t len);
 int ernic_dma_write(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx, uint64_t gpa,
                     const void *buf, size_t len);
+
+/*
+ * Whether the guest has Bus Master Enable set in the function's Command
+ * register, as it is at this moment: the device may DMA and raise MSI-X
+ * only while it is. A context with no config space has no Command register
+ * to set it in, so the answer is no.
+ *
+ * libvfio-user stores the guest's config writes on the thread that runs
+ * the context, between the device's own callbacks, so call this from that
+ * thread, at the point of use: a config write and a doorbell can arrive in
+ * the same vfu_run_ctx() pass.
+ */
+bool ernic_dma_bus_master(vfu_ctx_t *vfu_ctx);
 
 #endif /* ERNIC_DMA_H */
