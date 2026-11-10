@@ -43,17 +43,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ernic import ionic, mesh, pci
 from ernic.check import Suite
 
-# pylint: enable=wrong-import-position
+# Each node's CQ and MR are the stress suite's. A node makes its first QP
+# as QP_BASE, and each QP that replaces one takes the next id.
+from test_mesh_stress import CQ_ID, MR_KEY, MR_LEN, MR_VA, QP_BASE, post_write
 
-# QP and CQ numbering. Ids 0 and 1 belong to the device, so start above
-# them. A node makes its first QP as QP_BASE, and each QP that replaces
-# one takes the next id.
-QP_BASE = 16
-CQ_ID = 1
-# MR index 1 above key byte 1, as the driver's ionic_mrid() builds a key
-MR_KEY = (1 << 8) | 0x01
-MR_VA = 0x0000_7F00_0000_0000
-MR_LEN = 2 * ionic.PAGE_SIZE
+# pylint: enable=wrong-import-position
 
 # Node 0 is the manager and node 1 the worker: the worker is reset first
 RESET_ORDER = (1, 0)
@@ -134,14 +128,7 @@ def check_write(suite, src, dst, when):
     payload = f"WRITE {src.node.index}->{dst.node.index} {when} ".encode() * 8
     src.driver.mr_write(src.mr, MR_VA, payload)
     dst.driver.mr_write(dst.mr, MR_VA, b"\0" * len(payload))
-    src.driver.post_send(
-        src.qp,
-        ionic.OP_RDMA_WRITE,
-        flags=ionic.WQE_SIGNALLED,
-        remote_va=MR_VA,
-        rkey=MR_KEY,
-        sge=[ionic.Sge(MR_VA, len(payload), MR_KEY)],
-    )
+    post_write(src.driver, src.qp, len(payload))
     sent = src.driver.wait_cq(src.cq, timeout=COMPLETION_TIMEOUT)
     landed = dst.driver.mr_read(dst.mr, MR_VA, len(payload))
     suite.check(
@@ -173,14 +160,7 @@ def check_stale_qp(suite, survivor, reset, old_mr):
     before = reset.driver.mr_read(old_mr, MR_VA, len(payload))
     survivor.driver.mr_write(survivor.mr, MR_VA, payload)
 
-    survivor.driver.post_send(
-        survivor.qp,
-        ionic.OP_RDMA_WRITE,
-        flags=ionic.WQE_SIGNALLED,
-        remote_va=MR_VA,
-        rkey=MR_KEY,
-        sge=[ionic.Sge(MR_VA, len(payload), MR_KEY)],
-    )
+    post_write(survivor.driver, survivor.qp, len(payload))
     sent = survivor.driver.wait_cq(survivor.cq, timeout=COMPLETION_TIMEOUT)
     suite.check(sent.error, "a WRITE from the old QP to the reset node fails")
     suite.check_eq(

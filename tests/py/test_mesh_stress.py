@@ -72,6 +72,23 @@ STUCK_SEND_TIMEOUT_MS = 2000
 STS_RETRY_EXCEEDED = 11
 
 
+def post_write(driver, qp, length):
+    """Post a signalled RDMA WRITE of @length bytes on @qp.
+
+    It gathers from the start of the node's MR and lands at the start of
+    the peer's, both at MR_VA under MR_KEY. test_mesh_flr.py posts its
+    WRITEs with this too.
+    """
+    driver.post_send(
+        qp,
+        ionic.OP_RDMA_WRITE,
+        flags=ionic.WQE_SIGNALLED,
+        remote_va=MR_VA,
+        rkey=MR_KEY,
+        sge=[ionic.Sge(MR_VA, length, MR_KEY)],
+    )
+
+
 def bring_up(node, peers):
     """Attach a driver to @node and give it a QP for each peer."""
     driver = node.attach()
@@ -171,14 +188,7 @@ def test_write_matrix(suite, mesh_, state):
             for index in range(mesh_.size):
                 drivers[index].mr_write(mrs[index], MR_VA, b"\0" * len(payload))
             drivers[src].mr_write(mrs[src], MR_VA, payload)
-            drivers[src].post_send(
-                qps[src][dst],
-                ionic.OP_RDMA_WRITE,
-                flags=ionic.WQE_SIGNALLED,
-                remote_va=MR_VA,
-                rkey=MR_KEY,
-                sge=[ionic.Sge(MR_VA, len(payload), MR_KEY)],
-            )
+            post_write(drivers[src], qps[src][dst], len(payload))
             send = drivers[src].wait_cq(cqs[src], timeout=20)
             landed = drivers[dst].mr_read(mrs[dst], MR_VA, len(payload))
             suite.check(
@@ -638,14 +648,7 @@ def test_peer_stops_reading(suite, mesh_):
         )
         connect_side(driver, qp, QP_BASE, to_peer)
         for _ in range(STUCK_WRITES):
-            driver.post_send(
-                qp,
-                ionic.OP_RDMA_WRITE,
-                flags=ionic.WQE_SIGNALLED,
-                remote_va=MR_VA,
-                rkey=MR_KEY,
-                sge=[ionic.Sge(MR_VA, STUCK_WRITE, mr.lkey)],
-            )
+            post_write(driver, qp, STUCK_WRITE)
 
         # Admin commands and a SEND between two of the node's own QPs
         to_self = ionic.roce_hdr_v4(
