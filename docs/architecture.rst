@@ -564,7 +564,9 @@ the data window, and sets ``done``.
      - Enables or disables a queue; received frames are steered
        only to enabled receive queues
    * - Q_IDENTIFY
-     - Reports descriptor sizes; advertises no offloads
+     - Reports descriptor and scatter-gather sizes for the
+       admin, notify, receive and transmit queues; advertises
+       no offloads. Fails for any other queue type
    * - LIF_GETATTR, LIF_SETATTR
      - Read or set the MAC; other attributes succeed without
        effect

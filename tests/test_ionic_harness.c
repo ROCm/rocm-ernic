@@ -266,13 +266,39 @@ static void test_devcmds(void)
           "admin_opcodes %u refuses the SRQ commands",
           rdma[LIFID_RDMA_ADMIN_OPS]);
 
-    /* Q_IDENTIFY for the Tx queue reports its scatter/gather layout */
-    memset(cmd, 0, sizeof(cmd));
-    cmd[0] = IH_CMD_Q_IDENTIFY;
-    cmd[3] = IH_QTYPE_ETH_TXQ;
-    check(T, ih_devcmd(&h, cmd, comp, data, 64) == 0, "Q_IDENTIFY failed");
-    check(T, data[16] == 16 && data[20] == 128,
-          "Tx descriptor sizes are %u and %u", data[16], data[20]);
+    /* Q_IDENTIFY: the Rx and Tx queues report their scatter/gather layout
+     * (sg_desc_sz @20, max_sg_elems @22, sg_desc_stride @24), the adminq and
+     * notifyq none, and any other qtype is refused, its window cleared. */
+    for (uint8_t qt = 0; qt <= IH_QTYPE_ETH_TXQ; qt++) {
+        bool sg = qt == IH_QTYPE_ETH_RXQ || qt == IH_QTYPE_ETH_TXQ;
+        memset(cmd, 0, sizeof(cmd));
+        cmd[0] = IH_CMD_Q_IDENTIFY;
+        cmd[4] = qt;
+        check(T, ih_devcmd(&h, cmd, comp, data, 64) == 0,
+              "Q_IDENTIFY of qtype %u failed", qt);
+        check(T, ernic_get_le16(data + 16) == 16,
+              "qtype %u descriptor size is %u", qt, ernic_get_le16(data + 16));
+        check(T,
+              ernic_get_le16(data + 20) == (sg ? 128 : 0) &&
+                  ernic_get_le16(data + 22) == (sg ? 8 : 0) &&
+                  ernic_get_le16(data + 24) == (sg ? 8 : 0),
+              "qtype %u SG layout is %u bytes, %u elements, stride %u", qt,
+              ernic_get_le16(data + 20), ernic_get_le16(data + 22),
+              ernic_get_le16(data + 24));
+    }
+    static const uint8_t bad_qtypes[] = {4 /* IONIC_QTYPE_EQ */, IH_QTYPE_AQ,
+                                         IH_QTYPE_CQ, 0xff};
+    for (size_t i = 0; i < sizeof(bad_qtypes); i++) {
+        memset(cmd, 0, sizeof(cmd));
+        cmd[0] = IH_CMD_Q_IDENTIFY;
+        cmd[4] = bad_qtypes[i];
+        int rc = ih_devcmd(&h, cmd, comp, data, 64);
+        check(T, rc == IONIC_RC_EQTYPE, "Q_IDENTIFY of qtype %u got status %d",
+              bad_qtypes[i], rc);
+        check(T, data[1] == 0 && ernic_get_le16(data + 16) == 0,
+              "Q_IDENTIFY of qtype %u left an identity in the window",
+              bad_qtypes[i]);
+    }
 
     /* Commands with nothing to configure all succeed */
     static const uint8_t trivial[] = {IH_CMD_NOP,

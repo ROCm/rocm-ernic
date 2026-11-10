@@ -121,7 +121,7 @@ static void capture(struct ionic_eth_emu *emu, struct blocks *out)
     for (uint8_t qt = 0; qt < 4; qt++) {
         memset(cmd, 0, sizeof(cmd));
         memset(comp, 0, sizeof(comp));
-        cmd[3] = qt;
+        cmd[4] = qt; /* ionic_q_identify_cmd.type */
         ionic_eth_emu_handle_q_identify(emu, cmd, comp, data);
         memcpy(out->b[BLK_Q_IDENTITY0 + qt], data, 64);
     }
