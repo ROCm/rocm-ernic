@@ -581,7 +581,7 @@ than the tests keeping a copy</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">check.py</span></code> – the small test runner the suites report
 through</p></li>
 </ul>
-<p>Five suites are registered with CTest:</p>
+<p>Six suites are registered with CTest:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">ernic-vfu-client</span></code>: version negotiation, device and
 region info, PCI configuration space, BAR access, DMA
@@ -631,6 +631,15 @@ then a peer floods a node with SENDs that find no receive,
 and must be slowed rather than cut off, while the node
 holds no more than its limit and another node’s SEND gets
 through</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ernic-mesh-flr</span></code>: a two-node mesh whose guests pass
+traffic, then a function-level reset on the worker and then
+on the manager. The peer’s QP from before the reset must be
+refused, with its RDMA WRITE kept out of the memory the
+reset gave back; the peer then makes a new QP, the reset
+node’s driver loads and makes its QP and region again, and
+the two connect and pass traffic both ways. The reset node
+must keep its place in the mesh: no new registration, the
+same node id, and no dropped connection</p></li>
 </ul>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>-R<span class="w"> </span><span class="s1">'^ernic-(vfu|ionic|mesh)'</span>
 </pre></div>
@@ -640,7 +649,8 @@ through</p></li>
 <span class="w">    </span>--server<span class="w"> </span>build/rocm-ernic<span class="w"> </span>--size<span class="w"> </span><span class="m">5</span>
 </pre></div>
 </div>
-<p><code class="docutils literal notranslate"><span class="pre">test_vfu_client.py</span></code> also needs the program that prints the
+<p><code class="docutils literal notranslate"><span class="pre">test_vfu_client.py</span></code>, <code class="docutils literal notranslate"><span class="pre">test_ionic_driver.py</span></code> and
+<code class="docutils literal notranslate"><span class="pre">test_mesh_flr.py</span></code> also need the program that prints the
 config-space values, <code class="docutils literal notranslate"><span class="pre">--pci-regs</span> <span class="pre">build/tests/ernic-pci-regs</span></code>.</p>
 <p>Like the shell suites, they run the server under the command
 in <code class="docutils literal notranslate"><span class="pre">ERNIC_TEST_SERVER_WRAPPER</span></code>, so CI’s valgrind leg
@@ -765,6 +775,7 @@ cmake<span class="w"> </span>--build<span class="w"> </span>build
 <span class="nv">skip</span><span class="o">+=</span><span class="s1">'|cmake-subproject|ernic-package-deb|ernic-package-deb-config-paths'</span>
 <span class="nv">skip</span><span class="o">+=</span><span class="s1">'|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver'</span>
 <span class="nv">skip</span><span class="o">+=</span><span class="s1">'|ernic-ionic-hw-stats|ernic-mesh-stress|ernic-mesh-flow'</span>
+<span class="nv">skip</span><span class="o">+=</span><span class="s1">'|ernic-mesh-flr'</span>
 <span class="nv">skip</span><span class="o">+=</span><span class="s1">'|ernic-feature-macros'</span>
 <span class="nv">opts</span><span class="o">=</span><span class="s1">'--leak-check=full --track-origins=yes --num-callers=40'</span>
 <span class="nv">opts</span><span class="o">+=</span><span class="s1">' --error-exitcode=1'</span>
@@ -789,7 +800,7 @@ as above:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">srv</span><span class="o">=</span><span class="s1">'pci-config-test|ionic-server-smoke'</span>
 <span class="nv">srv</span><span class="o">+=</span><span class="s1">'|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci'</span>
 <span class="nv">srv</span><span class="o">+=</span><span class="s1">'|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver'</span>
-<span class="nv">srv</span><span class="o">+=</span><span class="s1">'|ernic-ionic-hw-stats|ernic-mesh-flow'</span>
+<span class="nv">srv</span><span class="o">+=</span><span class="s1">'|ernic-ionic-hw-stats|ernic-mesh-flow|ernic-mesh-flr'</span>
 <span class="nv">srv</span><span class="o">+=</span><span class="s1">'|ionic-stats-interval-cli|ionic-eth-queues-cli'</span>
 <span class="nv">logs</span><span class="o">=</span><span class="s2">"</span><span class="nv">$PWD</span><span class="s2">/build/valgrind-server"</span>
 rm<span class="w"> </span>-rf<span class="w"> </span><span class="s2">"</span><span class="nv">$logs</span><span class="s2">"</span>

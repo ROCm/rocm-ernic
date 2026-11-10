@@ -170,7 +170,7 @@ The modules under ``tests/py/ernic/`` are:
 - ``check.py`` -- the small test runner the suites report
   through
 
-Five suites are registered with CTest:
+Six suites are registered with CTest:
 
 - ``ernic-vfu-client``: version negotiation, device and
   region info, PCI configuration space, BAR access, DMA
@@ -220,6 +220,15 @@ Five suites are registered with CTest:
   and must be slowed rather than cut off, while the node
   holds no more than its limit and another node's SEND gets
   through
+- ``ernic-mesh-flr``: a two-node mesh whose guests pass
+  traffic, then a function-level reset on the worker and then
+  on the manager. The peer's QP from before the reset must be
+  refused, with its RDMA WRITE kept out of the memory the
+  reset gave back; the peer then makes a new QP, the reset
+  node's driver loads and makes its QP and region again, and
+  the two connect and pass traffic both ways. The reset node
+  must keep its place in the mesh: no new registration, the
+  same node id, and no dropped connection
 
 .. code-block:: bash
 
@@ -232,7 +241,8 @@ To run one directly, and to vary the mesh:
    python3 -I tests/py/test_mesh_stress.py \
        --server build/rocm-ernic --size 5
 
-``test_vfu_client.py`` also needs the program that prints the
+``test_vfu_client.py``, ``test_ionic_driver.py`` and
+``test_mesh_flr.py`` also need the program that prints the
 config-space values, ``--pci-regs build/tests/ernic-pci-regs``.
 
 Like the shell suites, they run the server under the command
@@ -383,6 +393,7 @@ valgrind would only check the script for:
    skip+='|cmake-subproject|ernic-package-deb|ernic-package-deb-config-paths'
    skip+='|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver'
    skip+='|ernic-ionic-hw-stats|ernic-mesh-stress|ernic-mesh-flow'
+   skip+='|ernic-mesh-flr'
    skip+='|ernic-feature-macros'
    opts='--leak-check=full --track-origins=yes --num-callers=40'
    opts+=' --error-exitcode=1'
@@ -410,7 +421,7 @@ as above:
    srv='pci-config-test|ionic-server-smoke'
    srv+='|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci'
    srv+='|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver'
-   srv+='|ernic-ionic-hw-stats|ernic-mesh-flow'
+   srv+='|ernic-ionic-hw-stats|ernic-mesh-flow|ernic-mesh-flr'
    srv+='|ionic-stats-interval-cli|ionic-eth-queues-cli'
    logs="$PWD/build/valgrind-server"
    rm -rf "$logs"
