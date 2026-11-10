@@ -137,6 +137,10 @@
   Device Control starts at the specification's defaults: Relaxed Ordering
   and No Snoop enabled, and a 512-byte Max_Read_Request_Size.
 
+  It also sets the capability bits the specification requires: Role-Based
+  Error Reporting, ASPM Optionality Compliance (the device supports no
+  ASPM), and Completion Timeout Disable Supported.
+
 * `--backend nvmeof:kv=1[,keys=...,maxval=...]` serves the namespace with the
   NVM Express Key Value command set instead of the block one: Store (01h),
   Retrieve (02h), List (06h), Delete (10h) and Exist (14h), with the key
