@@ -70,22 +70,21 @@ class Side:
         self.cq = None
         self.mr = None
         self.qp = None
-        self.next_qp_id = QP_BASE
-        self.make_resources()
+        self.next_qp_id = QP_BASE + 1
+        self.make_resources(QP_BASE)
 
-    def make_resources(self):
-        """Create the CQ, the MR and a QP, as a driver does once it loads.
+    def make_resources(self, qp_id):
+        """Create the CQ, the MR and QP @qp_id, as a driver does once it loads.
 
         After a reset they come back under the ids they had, which the
         device refuses if the reset left the old ones behind.
         """
         self.cq = self.driver.create_cq(CQ_ID)
         self.mr = self.driver.create_mr(MR_KEY, MR_VA, MR_LEN)
-        self.next_qp_id = QP_BASE
-        self.qp = self.new_qp()
+        self.qp = self.driver.create_qp(qp_id, ionic.QPT_RC, self.cq, self.cq)
 
     def new_qp(self):
-        """Create a QP on the CQ, under the next id."""
+        """Create a QP on the CQ, under an id this node hasn't used."""
         qp = self.driver.create_qp(self.next_qp_id, ionic.QPT_RC, self.cq, self.cq)
         self.next_qp_id += 1
         return qp
@@ -213,17 +212,22 @@ def check_stale_qp(suite, survivor, reset, old_mr):
 def mesh_state(mesh_):
     """What a reset must leave alone in the mesh.
 
-    The manager's registrations and the worker's, which also count a
-    worker that registers again under its own id, every node's id, and
-    the connections the manager has dropped.
+    Every registration, as each side logs it: the manager's of a new
+    node and of a node registering again under its id, which
+    registrations() leaves out, and the worker's, whose "Registered
+    with manager" and "Registered with the manager again" share a
+    prefix. Then every node's id, and the connections the manager has
+    dropped.
     """
+    manager = mesh_.nodes[0].server.log_text()
     return {
         "registrations": mesh_.registrations(),
+        "registrations again": manager.count("registered again"),
         "worker registrations": mesh_.nodes[1]
         .server.log_text()
-        .count("Registered with manager"),
+        .count("TCP: Registered with "),
         "node ids": [mesh_.node_id(i) for i in range(mesh_.size)],
-        "disconnects": mesh_.nodes[0].server.log_text().count("disconnected"),
+        "disconnects": manager.count("disconnected"),
     }
 
 
@@ -263,8 +267,9 @@ def test_flr(suite, mesh_, regs, sides, reset_index):
         survivor.driver.destroy_qp(survivor.qp), 0, "the old QP is destroyed"
     )
     survivor.qp = survivor.new_qp()
-    reset.make_resources()
-    suite.check(True, "the reset node made its CQ, MR and QP under their old ids")
+    old_qp_id = reset.qp.id
+    reset.make_resources(old_qp_id)
+    suite.check(True, "the reset node made its CQ, MR and QP %d again", old_qp_id)
     connect(sides[0], sides[1])
     suite.check(True, "the new QPs connected without waiting for the mesh")
     check_traffic(suite, sides, f"after node {reset_index}'s FLR")
