@@ -1013,7 +1013,9 @@ past the LIF’s queue count, or a ring deeper than 2^15</p></td>
 only to enabled receive queues</p></td>
 </tr>
 <tr class="row-odd"><td><p>Q_IDENTIFY</p></td>
-<td><p>Reports descriptor sizes; advertises no offloads</p></td>
+<td><p>Reports descriptor and scatter-gather sizes for the
+admin, notify, receive and transmit queues; advertises
+no offloads. Fails for any other queue type</p></td>
 </tr>
 <tr class="row-even"><td><p>LIF_GETATTR, LIF_SETATTR</p></td>
 <td><p>Read or set the MAC; other attributes succeed without
