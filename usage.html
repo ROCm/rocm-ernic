@@ -511,7 +511,8 @@ given.</p>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">none</span></code></p></td>
-<td><p>Nothing at all.</p></td>
+<td><p>Nothing, unless the server aborts on a bug, which it
+reports in a <code class="docutils literal notranslate"><span class="pre">FATAL:</span></code> line.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">error</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">ERROR:</span></code> lines only.</p></td>
@@ -532,6 +533,13 @@ QP operations, ARP/ICMP packets, TCP mesh events).</p></td>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">-v</span></code> / <code class="docutils literal notranslate"><span class="pre">--verbose</span></code> remains as shorthand for
 <code class="docutils literal notranslate"><span class="pre">--log-level</span> <span class="pre">debug</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">ERROR:</span></code> and <code class="docutils literal notranslate"><span class="pre">WARN:</span></code> lines go to stderr, and the rest to
+stdout; <code class="docutils literal notranslate"><span class="pre">--log-file</span></code> sends both to one file.  Each line is
+written whole, so lines from different threads never run into
+each other.  Every message goes through the log, so the level
+applies to all of them, errors included.  The command line is
+checked before <code class="docutils literal notranslate"><span class="pre">--log-level</span></code> takes effect, so only
+<code class="docutils literal notranslate"><span class="pre">ERNIC_LOG_LEVEL</span></code> silences an error about an option.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Quiet by default -- only warnings and errors</span>
 ./build/rocm-ernic<span class="w"> </span>--backend<span class="w"> </span>loopback
 

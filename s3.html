@@ -501,7 +501,8 @@ part, accepted in one request.</p></td>
 <p>A malformed option is refused before the device is
 presented, rather than surfacing later as a failed request:</p>
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp">$ </span>./build/rocm-ernic<span class="w"> </span>--backend<span class="w"> </span>s3:size<span class="o">=</span>bogus
-<span class="go">Error: s3 backend: bad size 'bogus'</span>
+<span class="go">ERROR: s3 backend: bad size 'bogus'; use --backend</span>
+<span class="go">s3[:bucket=NAME][,size=256M][,objects=256][,ip=ADDR][,port=9000]</span>
 </pre></div>
 </div>
 <p>A successful start logs the store, its endpoint and the MAC

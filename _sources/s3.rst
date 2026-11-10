@@ -99,7 +99,8 @@ presented, rather than surfacing later as a failed request:
 .. code-block:: console
 
    $ ./build/rocm-ernic --backend s3:size=bogus
-   Error: s3 backend: bad size 'bogus'
+   ERROR: s3 backend: bad size 'bogus'; use --backend
+   s3[:bucket=NAME][,size=256M][,objects=256][,ip=ADDR][,port=9000]
 
 A successful start logs the store, its endpoint and the MAC
 the endpoint will answer ARP with, at ``info``:

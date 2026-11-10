@@ -546,7 +546,8 @@ printable ASCII characters.</p></td>
 <p>A malformed option is refused before the device is
 presented, rather than surfacing later as a failed connect:</p>
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp">$ </span>./build/rocm-ernic<span class="w"> </span>--backend<span class="w"> </span>nvmeof:size<span class="o">=</span>bogus
-<span class="go">Error: nvmeof backend: bad size 'bogus'</span>
+<span class="go">ERROR: nvmeof backend: bad size 'bogus'; use --backend</span>
+<span class="go">nvmeof[:size=64M][,file=PATH][,bs=512][,nqn=NAME][,ip=ADDR][,port=4420]</span>
 </pre></div>
 </div>
 <p>A successful start logs the controller at <code class="docutils literal notranslate"><span class="pre">info</span></code>:</p>

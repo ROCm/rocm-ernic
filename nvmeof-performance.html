@@ -766,8 +766,8 @@ which sizes every table that holds a region and the count the
 guest is told). That puts the ceiling
 at 15 I/O queues, which <code class="docutils literal notranslate"><span class="pre">ionic_datapath_nvmeof_cfg_check()</span></code>
 enforces at startup:</p>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Error: nvmeof backend: queues must be 1..15, one per 128
-memory regions in a table of 2048 (got '16')
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>ERROR: nvmeof backend: queues must be 1..15, one per 128
+memory regions in a table of 2048 (got '16'); use ...
 </pre></div>
 </div>
 <p>The table is not sized for the NVMe maximum of 64 queues on
