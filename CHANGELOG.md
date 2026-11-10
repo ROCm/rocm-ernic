@@ -445,9 +445,12 @@
     statistics commands and the counts they report), `ernic-p4-driver`, and
     `ernic-mesh-stress` (a three-node mesh under traffic, hostile peers, the
     version gate, killed and restarted nodes, paused nodes and a peer that
-    stops reading; `--size N` varies the mesh), and `ernic-mesh-flow` (two
-    nodes writing to each other flat out, and a peer that floods a node).
-    Documented in `docs/testing.rst`.
+    stops reading; `--size N` varies the mesh), `ernic-mesh-flow` (two
+    nodes writing to each other flat out, and a peer that floods a node),
+    and `ernic-mesh-flr` (a function-level reset on each node of a
+    two-node mesh in turn: the peer's QP from before the reset is
+    refused, the two connect again and pass traffic, and the reset node
+    keeps its place in the mesh). Documented in `docs/testing.rst`.
   * `ernic-test-gsi-mesh` (`gsi-mesh`) joins two whole devices in one
     process over the real TCP mesh and checks GID resolution from both
     sides, including across a worker restart. `ERNIC_TEST_MESH_PORT` moves
