@@ -27,6 +27,14 @@
   scatter-gather, is now refused and counted in `rx_desc_data_error`.
   Jumbo frames from the host's TAP device also need its MTU, and its
   bridge's, raised to match the guest's.
+* The `Q_IDENTIFY` device command read the queue type from the wrong
+  byte of the command, so every queue type got the admin queue's answer,
+  and the receive and transmit queues reported no scatter-gather layout.
+  They now report theirs. A queue type other than the admin, notify,
+  receive and transmit queues is now refused with `IONIC_RC_EQTYPE`
+  instead of being answered as an admin queue. The Linux `ionic` driver
+  is unaffected: it sets its own scatter-gather limits, and asks only
+  about those four queue types.
 
 * The device now honours Bus Master Enable in its PCI Command register,
   as the PCI Express specification requires. Before, it went on writing

@@ -1469,15 +1469,26 @@ static void handle_lif_getattr(struct ionic_eth_emu *emu, const uint8_t *cmd,
  *
  * Returns ionic_q_identity for the requested queue type into data[].
  * The driver uses this to learn WQE stride ranges and speculative SGE counts.
+ * Only the four Ethernet logical qtypes have an identity; any other is
+ * refused with IONIC_RC_EQTYPE, which the driver reports as "qtype not
+ * supported" and skips.
  * -------------------------------------------------------------------------
  */
 void ionic_eth_emu_handle_q_identify(const struct ionic_eth_emu *emu,
                                      const uint8_t *cmd, uint8_t *comp,
                                      uint8_t *data)
 {
-    uint8_t qtype = cmd[3]; /* ionic_logical_qtype */
-    vfu_log(emu->vfu_ctx, LOG_DEBUG, "ionic_eth_emu: Q_IDENTIFY qtype=%u",
-            qtype);
+    /* struct ionic_q_identify_cmd (packed): opcode @0, rsvd @1,
+     * le16 lif_type @2, type @4 (ionic_logical_qtype), ver @5 (the highest
+     * version the driver supports; every driver supports the version 0 we
+     * answer). */
+#define QID_CMD_TYPE_OFF 4U
+    uint8_t qtype = cmd[QID_CMD_TYPE_OFF];
+#undef QID_CMD_TYPE_OFF
+    bool known = qtype == IONIC_QTYPE_ADMINQ || qtype == IONIC_QTYPE_NOTIFYQ ||
+                 qtype == IONIC_QTYPE_RXQ || qtype == IONIC_QTYPE_TXQ;
+    vfu_log(emu->vfu_ctx, LOG_DEBUG, "ionic_eth_emu: Q_IDENTIFY qtype=%u%s",
+            qtype, known ? "" : " refused");
 
     /* union ionic_q_identity (packed):
      *   u8   version     @0
@@ -1492,7 +1503,7 @@ void ionic_eth_emu_handle_q_identify(const struct ionic_eth_emu *emu,
      *
      * The union is words[478], the whole data window.  The Linux driver
      * reads only these fields, but all of it is cleared, so that none of
-     * an earlier command's data is left in the answer.
+     * an earlier command's data is left in the answer, or after a refusal.
      *
      * ionic_lif_queue_identify() only asks about the four Ethernet logical
      * qtypes, and it overwrites max_sg_elems with its own per-qtype limit
@@ -1505,23 +1516,33 @@ void ionic_eth_emu_handle_q_identify(const struct ionic_eth_emu *emu,
 #define QID_SG_DESC_STRIDE_OFF 24U
 
     memset(data, 0, DEVCMD_DATA_SIZE);
+    if (!known) {
+        comp[0] = IONIC_RC_EQTYPE;
+        return;
+    }
     data[0] = 0; /* version 0: the base descriptor formats */
     data[1] = 1; /* supported: bit 0 = version 0 */
 
     ernic_put_le16(data + QID_DESC_SZ_OFF, ETH_DESC_SIZE);
     ernic_put_le16(data + QID_COMP_SZ_OFF, ETH_COMP_SIZE);
 
-    if (qtype == IONIC_QTYPE_TXQ || qtype == IONIC_QTYPE_RXQ) {
+    /* sg_desc_stride is the number of elements in one descriptor's SG
+     * list, so it is max_sg_elems here, not a byte stride. */
+    if (qtype == IONIC_QTYPE_TXQ) {
         ernic_put_le16(data + QID_SG_DESC_SZ_OFF,
                        TXQ_SG_MAX_ELEMS * TXQ_SG_ELEM_SIZE);
         ernic_put_le16(data + QID_MAX_SG_ELEMS_OFF, TXQ_SG_MAX_ELEMS);
         ernic_put_le16(data + QID_SG_DESC_STRIDE_OFF, TXQ_SG_MAX_ELEMS);
+    } else if (qtype == IONIC_QTYPE_RXQ) {
+        ernic_put_le16(data + QID_SG_DESC_SZ_OFF, RXQ_SG_DESC_SIZE);
+        ernic_put_le16(data + QID_MAX_SG_ELEMS_OFF, RXQ_SG_MAX_ELEMS);
+        ernic_put_le16(data + QID_SG_DESC_STRIDE_OFF, RXQ_SG_MAX_ELEMS);
     }
 
     /* features stays zero: no CMB, no 2x/4x descriptor rings, no expanded
      * doorbell.  Every one of those changes a ring layout we would then have
      * to decode differently. */
-    ernic_put_le16(data + QID_FEATURES_OFF, 0);
+    ernic_put_le64(data + QID_FEATURES_OFF, 0);
 #undef QID_SG_DESC_STRIDE_OFF
 #undef QID_MAX_SG_ELEMS_OFF
 #undef QID_SG_DESC_SZ_OFF
