@@ -545,7 +545,8 @@ driver’s <code class="docutils literal notranslate"><span class="pre">RESET</s
 <li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-lif-reset</span></code>: what <code class="docutils literal notranslate"><span class="pre">LIF_RESET</span></code> takes</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-bus-master</span></code>: with Bus Master Enable clear
 the device does no DMA and raises no interrupt, and once it
-is set it does what it held, once</p></li>
+is set it does what it held, once; <code class="docutils literal notranslate"><span class="pre">-d3hot</span></code> checks the
+same of D3hot, with BME set</p></li>
 </ul>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>-R<span class="w"> </span>ionic-harness
 </pre></div>
@@ -577,7 +578,8 @@ and a fixture that starts a manager and some workers</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">pci.py</span></code> – the config-space register offsets and fields
 from <code class="docutils literal notranslate"><span class="pre">linux/pci_regs.h</span></code>, which <code class="docutils literal notranslate"><span class="pre">ernic-pci-regs</span></code>
 (<code class="docutils literal notranslate"><span class="pre">tests/pci_regs_dump.c</span></code>) prints from the header rather
-than the tests keeping a copy</p></li>
+than the tests keeping a copy, and the registers a reset
+puts back</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">check.py</span></code> – the small test runner the suites report
 through</p></li>
 </ul>
@@ -585,8 +587,9 @@ through</p></li>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">ernic-vfu-client</span></code>: version negotiation, device and
 region info, PCI configuration space, BAR access, DMA
-mapping, interrupts, Bus Master Enable stopping and resuming
-the device’s writes, a function-level reset, a reset and a
+mapping, interrupts, Bus Master Enable and D3hot each
+stopping and resuming the device’s writes, the power states
+it doesn’t support, a function-level reset, a reset and a
 reconnect each returning the device and the configuration
 registers a driver writes to their initial state – and
 the offsets, counts, addresses and vector ranges a client
