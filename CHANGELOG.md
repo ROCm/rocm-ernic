@@ -1056,6 +1056,10 @@
   also no longer recognises the stress-test CSV, which nothing has
   written since `stress-tests.yml` was removed.
   `ci/report/publish-perf.py --runner` defaults to `github-hosted`.
+* **`scripts/local-vm-test.sh`**, which no longer worked: it built and
+  loaded the `rocm_ernic` driver from `driver/`, both since removed, in a
+  VM it started with one developer's QEMU, VM name and user. To test in a
+  guest, provision one as in `docs/testing.rst`.
 * **The `ERNIC_IONIC_KERNEL_REF` environment hook** (see Fixed: the driver
   pack's ionic baseline).
 * **Breaking:** **The `verbs` backend and the `--device`, `--ethdev` and

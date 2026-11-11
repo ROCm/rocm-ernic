@@ -32,7 +32,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Shared conventions with local-vm-test.sh
+# Configuration
 SOCKET_PATH=${VFIO_USER_SOCKET:-/tmp/vfio-user-rocm-ernic.sock}
 QMP_SOCKET=${QMP_SOCKET:-/tmp/qemu-qmp.sock}
 SERVER_LOG="/tmp/rocm-ernic-server.log"
@@ -218,8 +218,8 @@ sudo rm -f "${SOCKET_PATH}"
 # --- step 5: start new server --------------------------------
 log_step "5/6 Starting new server (backend: ${BACKEND})..."
 # The server runs as root, and the VM may run as the invoking user, as
-# local-vm-test.sh and run-vm start it, so the socket gets that user's group
-# or QEMU couldn't connect to it.
+# run-vm starts it, so the socket gets that user's group or QEMU couldn't
+# connect to it.
 sudo "${PROJECT_ROOT}/build/rocm-ernic" \
     --socket "${SOCKET_PATH}" \
     --socket-group "$(id -g)" \
