@@ -183,8 +183,10 @@ server uses the libvfio-user library. What the protocol gives
 the server:
 
 - **PCI configuration space.** The server declares the vendor
-  and device IDs, class code, and capabilities (MSI-X here).
-  libvfio-user answers config space accesses.
+  and device IDs, class code, and capabilities (PCI Express,
+  MSI-X and Power Management here). libvfio-user answers config
+  space accesses, but for the Power Management capability,
+  which the server answers itself.
 - **BARs.** The server declares memory regions and a callback
   for each. When the guest reads or writes a BAR, QEMU traps
   the access and sends it over the socket, and libvfio-user
@@ -449,7 +451,7 @@ loops:
 #. Run any GLib idle callbacks.
 #. ``ionic_device_poll()``, the device's share, which is the
    next three steps, unless the guest has Bus Master Enable
-   clear (see `Bus Master Enable`_).
+   clear or the function in D3hot (see `Bus Master Enable`_).
 #. Move received Ethernet frames from the TAP, and frames an
    in-process endpoint queued for the guest, into the guest's
    receive rings. Rewrite the Ethernet statistics in guest
@@ -492,6 +494,14 @@ Every DMA, however it is reached, also checks the bit
 The first pass of the loop that finds BME set again writes the
 held blocks, runs each queue up to its last doorbell, raises the
 armed CQs' events, and delivers the latched interrupts.
+
+D3hot stops the device the same way. The guest puts the
+function in it through the Power Management capability's
+PowerState field, before suspending or for runtime power
+management, and a function in D3hot may not use the bus either.
+The device supports only D0 and D3hot, and sets No_Soft_Reset,
+so it keeps its state in D3hot, and going back to D0 lets the
+held work go on as setting BME does. A reset returns it to D0.
 
 Bringing the Device Up
 ----------------------

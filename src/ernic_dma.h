@@ -15,9 +15,11 @@
  *
  * A function may issue memory requests only while the guest has Bus Master
  * Enable set in its Command register (PCI Express Base 6.5, 7.5.1.1.3), and
- * MSI-X messages are memory writes too. The device holds its work while it
- * is clear, and these refuse every transfer, so a path that misses the
- * check still can't reach guest memory.
+ * MSI-X messages are memory writes too. Nor may it in D3hot, the low-power
+ * state the guest can put it in through the Power Management capability
+ * (5.3.1.4.1). The device holds its work while it may not, and these
+ * refuse every transfer, so a path that misses the check still can't reach
+ * guest memory.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -55,13 +57,13 @@ void ernic_dma_destroy(struct ernic_dma *dma);
  *
  * @gpa and @len are checked with ernic_dma_range_ok() first, so they can
  * be passed on as the guest gave them. A zero @len maps nothing and
- * succeeds, even with Bus Master Enable clear, since it makes no memory
- * request.
+ * succeeds, even when ernic_dma_bus_master() says no, since it makes no
+ * memory request.
  *
  * Returns 0, or -EINVAL if the range wraps the address space, -EPERM if
- * Bus Master Enable is clear, or -EIO if any of it isn't guest memory the
- * device may access that way. A failed read may have filled part of @buf,
- * and a failed write may have written part of the range.
+ * ernic_dma_bus_master() says no, or -EIO if any of it isn't guest memory
+ * the device may access that way. A failed read may have filled part of
+ * @buf, and a failed write may have written part of the range.
  */
 int ernic_dma_read(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx, uint64_t gpa,
                    void *buf, size_t len);
@@ -70,14 +72,17 @@ int ernic_dma_write(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx, uint64_t gpa,
 
 /*
  * Whether the guest has Bus Master Enable set in the function's Command
- * register, as it is at this moment: the device may DMA and raise MSI-X
- * only while it is. A context with no config space has no Command register
- * to set it in, so the answer is no.
+ * register, and the function in D0, as they are at this moment: the device
+ * may DMA and raise MSI-X only while both are. A context with no config
+ * space has no Command register to set it in, so the answer is no. Nor is
+ * there a power state without a Power Management capability, so a function
+ * without one, as in the unit tests, is taken to be in D0.
  *
- * libvfio-user stores the guest's config writes on the thread that runs
- * the context, between the device's own callbacks, so call this from that
- * thread, at the point of use: a config write and a doorbell can arrive in
- * the same vfu_run_ctx() pass.
+ * The guest's config writes are stored on the thread that runs the
+ * context, by libvfio-user or the server's config space callback, between
+ * the device's other callbacks, so call this from that thread, at the point
+ * of use: a config write and a doorbell can arrive in the same
+ * vfu_run_ctx() pass.
  */
 bool ernic_dma_bus_master(vfu_ctx_t *vfu_ctx);
 

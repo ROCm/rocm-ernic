@@ -5,9 +5,10 @@
  * The ionic emulator reaches the guest through eight libvfio-user entry
  * points: dma_sg_size(), vfu_addr_to_sgl(), vfu_sgl_get(), vfu_sgl_put(),
  * vfu_sgl_mark_dirty(), vfu_irq_trigger(), vfu_log(), and
- * vfu_pci_get_config_space() for Bus Master Enable. fake_vfu.c defines all
- * eight, so a test that links it instead of libvfio-user runs the real
- * device code with no client, no socket and no VM.
+ * vfu_pci_get_config_space() for Bus Master Enable and the power state.
+ * fake_vfu.c defines all eight, so a test that links it instead of
+ * libvfio-user runs the real device code with no client, no socket and no
+ * VM.
  *
  * Guest memory is a set of separately allocated regions laid end to end in
  * guest physical address (GPA) space, the way a VM's RAM arrives in several
@@ -103,6 +104,14 @@ size_t fake_vfu_mapped(const vfu_ctx_t *ctx);
  * pci_set_master(), along with Memory Space Enable.
  */
 void fake_vfu_set_bus_master(vfu_ctx_t *ctx, bool on);
+
+/*
+ * Put the function in D3hot, or back in D0, as the guest's PMCSR write
+ * would. A new context has no Power Management capability, which the
+ * device takes as D0; the first call adds one, the only one on the list,
+ * with No_Soft_Reset set as the server's has.
+ */
+void fake_vfu_set_d3hot(vfu_ctx_t *ctx, bool on);
 
 /*
  * vfu_log() keeps what it's given, whether or not ERNIC_FAKE_VFU_LOG_LEVEL

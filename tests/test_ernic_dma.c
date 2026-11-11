@@ -22,8 +22,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <linux/pci_regs.h>
 #include <vfio-user/libvfio-user.h>
 
+#include "byteorder.h"
 #include "ernic_dma.h"
 #include "fake_vfu.h"
 
@@ -262,6 +264,88 @@ static void test_bus_master(void)
     check_all_put("Bus Master Enable");
 }
 
+/* Where test_power_state() puts the Power Management capability, after an
+ * MSI-X one, as the server's list ends */
+#define TEST_MSIX_CAP 0x40U
+#define TEST_PM_CAP   0x4cU
+
+/* Set the PowerState field of the capability test_power_state() added */
+static void set_power_state(uint8_t *cfg, uint16_t state)
+{
+    uint16_t pmcsr = ernic_get_le16(cfg + TEST_PM_CAP + PCI_PM_CTRL);
+
+    ernic_put_le16(
+        cfg + TEST_PM_CAP + PCI_PM_CTRL,
+        (uint16_t)((pmcsr & ~(unsigned)PCI_PM_CTRL_STATE_MASK) | state));
+}
+
+/*
+ * Nor may the function issue memory requests in D3hot, which the Power
+ * Management capability's PowerState field puts it in, even with Bus
+ * Master Enable set. Back in D0, transfers go through again. A capability
+ * list that loops, or points into the header, says nothing of the state,
+ * so transfers are refused.
+ */
+static void test_power_state(void)
+{
+    static uint8_t want[64];
+    static uint8_t got[64];
+    const uint64_t gpa = FAKE_VFU_GPA_BASE + 128;
+    uint8_t *cfg = (uint8_t *)vfu_pci_get_config_space(g_vfu);
+    uint8_t zeros[sizeof(want)] = {0};
+
+    memset(want, 0x3a, sizeof(want));
+    check(fake_vfu_write(g_vfu, gpa, want, sizeof(want)),
+          "can't fill guest memory");
+
+    cfg[PCI_CAPABILITY_LIST] = TEST_MSIX_CAP;
+    cfg[TEST_MSIX_CAP + PCI_CAP_LIST_ID] = PCI_CAP_ID_MSIX;
+    cfg[TEST_MSIX_CAP + PCI_CAP_LIST_NEXT] = TEST_PM_CAP;
+    cfg[TEST_PM_CAP + PCI_CAP_LIST_ID] = PCI_CAP_ID_PM;
+    cfg[TEST_PM_CAP + PCI_CAP_LIST_NEXT] = 0;
+    ernic_put_le16(cfg + TEST_PM_CAP + PCI_PM_CTRL, PCI_PM_CTRL_NO_SOFT_RESET);
+    check(ernic_dma_bus_master(g_vfu), "D0 with BME set reads as no");
+
+    set_power_state(cfg, PCI_PM_CTRL_STATE_MASK); /* D3hot */
+    check(!ernic_dma_bus_master(g_vfu), "D3hot reads as yes");
+
+    unsigned long before = fake_vfu_map_count(g_vfu);
+
+    memset(got, 0xee, sizeof(got));
+    check(ernic_dma_read(g_dma, g_vfu, gpa, got, sizeof(got)) == -EPERM,
+          "a read in D3hot wasn't refused with EPERM");
+    check(got[0] == 0xee, "a read in D3hot filled the buffer");
+    check(ernic_dma_write(g_dma, g_vfu, gpa, zeros, sizeof(zeros)) == -EPERM,
+          "a write in D3hot wasn't refused with EPERM");
+    check(fake_vfu_map_count(g_vfu) == before,
+          "a transfer in D3hot reached vfu_addr_to_sgl()");
+    check(fake_vfu_read(g_vfu, gpa, got, sizeof(got)) &&
+              memcmp(got, want, sizeof(want)) == 0,
+          "a write in D3hot changed guest memory");
+
+    set_power_state(cfg, 0); /* D0 */
+    check(ernic_dma_write(g_dma, g_vfu, gpa, zeros, sizeof(zeros)) == 0 &&
+              ernic_dma_read(g_dma, g_vfu, gpa, got, sizeof(got)) == 0 &&
+              memcmp(got, zeros, sizeof(zeros)) == 0,
+          "transfers fail once the function is back in D0");
+
+    /* The PM capability's next pointer back to the MSI-X one, with the PM
+     * one's ID changed so the walk goes round */
+    cfg[TEST_PM_CAP + PCI_CAP_LIST_ID] = PCI_CAP_ID_VNDR;
+    cfg[TEST_PM_CAP + PCI_CAP_LIST_NEXT] = TEST_MSIX_CAP;
+    check(!ernic_dma_bus_master(g_vfu),
+          "a looping capability list reads as yes");
+    /* A pointer into the header */
+    cfg[TEST_MSIX_CAP + PCI_CAP_LIST_NEXT] = PCI_CAPABILITY_LIST;
+    check(!ernic_dma_bus_master(g_vfu),
+          "a capability list into the header reads as yes");
+
+    cfg[PCI_CAPABILITY_LIST] = 0;
+    memset(cfg + TEST_MSIX_CAP, 0, TEST_PM_CAP + PCI_PM_SIZEOF - TEST_MSIX_CAP);
+    check(ernic_dma_bus_master(g_vfu), "no capability list reads as no");
+    check_all_put("power state");
+}
+
 static void test_library_failures(void)
 {
     uint8_t buf[100];
@@ -333,6 +417,7 @@ int main(void)
     test_zero_length();
     test_refused();
     test_bus_master();
+    test_power_state();
     test_library_failures();
 
     ernic_dma_destroy(g_dma);

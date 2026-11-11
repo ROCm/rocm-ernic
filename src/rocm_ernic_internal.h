@@ -17,6 +17,7 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "rocm_ernic_compat.h"
+#include "ernic_log.h"
 #include "ionic/ionic_profile.h"
 #include "net/net_headers.h"
 
@@ -63,6 +64,7 @@ struct rocm_ernic_dev {
     struct {
         size_t px_off;           /* PCI Express capability */
         size_t msix_off;         /* MSI-X capability */
+        size_t pm_off;           /* Power Management capability */
         uint16_t command;        /* PCI_COMMAND */
         uint8_t cache_line_size; /* PCI_CACHE_LINE_SIZE */
         uint8_t latency_timer;   /* PCI_LATENCY_TIMER */
@@ -71,7 +73,12 @@ struct rocm_ernic_dev {
         uint16_t devctl2;        /* PCI_EXP_DEVCTL2 */
         uint16_t lnkctl2;        /* PCI_EXP_LNKCTL2 */
         uint16_t msix_flags;     /* PCI_MSIX_FLAGS */
+        uint16_t pmcsr;          /* PCI_PM_CTRL */
     } pci_init;
+
+    /* Limits the config-space messages a client can have logged as often as
+     * it writes (config_access()).  Only the main thread touches it. */
+    ErnicLogLimit cfg_log_limit;
 
     /* Backend device configuration */
     char *backend_type_str; /* Backend and options: loopback, nvmeof:size=1G */

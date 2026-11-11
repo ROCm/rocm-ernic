@@ -188,9 +188,43 @@ int ernic_dma_write(struct ernic_dma *dma, vfu_ctx_t *vfu_ctx, uint64_t gpa,
     return dma_xfer(dma, vfu_ctx, gpa, true, NULL, buf, len);
 }
 
+/* The most capabilities the list in the standard config space can hold,
+ * at 4 bytes each after the header, so a walk going further has looped */
+#define DMA_CAP_MAX ((PCI_CFG_SPACE_SIZE - PCI_STD_HEADER_SIZEOF) / 4)
+
+/*
+ * Whether the function is in D0, by the PowerState field of the Power
+ * Management capability in config space @cfg. The capability list is walked
+ * as a guest walks it. A function without the capability is always in D0,
+ * as the unit tests' config spaces are. A list that leaves the space after
+ * the header, or loops, says nothing, so the answer is no.
+ */
+static bool dma_in_d0(const uint8_t *cfg)
+{
+    /* The low two bits of a pointer are reserved */
+    unsigned off = cfg[PCI_CAPABILITY_LIST] & ~3U;
+
+    for (unsigned i = 0; i < DMA_CAP_MAX && off != 0; i++) {
+        /* Masked, off is at most PCI_CFG_SPACE_SIZE - 4, so its ID and
+         * next pointer are in the space */
+        if (off < PCI_STD_HEADER_SIZEOF) {
+            return false;
+        }
+        if (cfg[off + PCI_CAP_LIST_ID] == PCI_CAP_ID_PM) {
+            /* D0 is 0 */
+            return off <= PCI_CFG_SPACE_SIZE - PCI_PM_SIZEOF &&
+                   (ernic_get_le16(cfg + off + PCI_PM_CTRL) &
+                    PCI_PM_CTRL_STATE_MASK) == 0;
+        }
+        off = cfg[off + PCI_CAP_LIST_NEXT] & ~3U;
+    }
+    return off == 0;
+}
+
 bool ernic_dma_bus_master(vfu_ctx_t *vfu_ctx)
 {
     const uint8_t *cfg = (const uint8_t *)vfu_pci_get_config_space(vfu_ctx);
 
-    return cfg && (ernic_get_le16(cfg + PCI_COMMAND) & PCI_COMMAND_MASTER);
+    return cfg && (ernic_get_le16(cfg + PCI_COMMAND) & PCI_COMMAND_MASTER) &&
+           dma_in_d0(cfg);
 }

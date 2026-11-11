@@ -47,7 +47,8 @@ struct vfu_ctx {
 
     unsigned irq_count[FAKE_VFU_MAX_IRQS];
 
-    /* The function's config space; only the Command register is set */
+    /* The function's config space: the Command register, and a Power
+     * Management capability once fake_vfu_set_d3hot() adds one */
     uint8_t config[PCI_CFG_SPACE_SIZE];
 
     unsigned long map_calls;
@@ -271,6 +272,24 @@ void fake_vfu_set_bus_master(vfu_ctx_t *ctx, bool on)
         cmd |= PCI_COMMAND_MASTER;
     }
     ernic_put_le16(ctx->config + PCI_COMMAND, cmd);
+}
+
+/* Where fake_vfu_set_d3hot() puts the Power Management capability: the
+ * first place a capability may go */
+#define FAKE_VFU_PM_CAP PCI_STD_HEADER_SIZEOF
+
+void fake_vfu_set_d3hot(vfu_ctx_t *ctx, bool on)
+{
+    /* D3hot is 3, all of PowerState */
+    uint16_t pmcsr = PCI_PM_CTRL_NO_SOFT_RESET;
+
+    if (on) {
+        pmcsr |= PCI_PM_CTRL_STATE_MASK;
+    }
+    ctx->config[PCI_CAPABILITY_LIST] = FAKE_VFU_PM_CAP;
+    ctx->config[FAKE_VFU_PM_CAP + PCI_CAP_LIST_ID] = PCI_CAP_ID_PM;
+    ctx->config[FAKE_VFU_PM_CAP + PCI_CAP_LIST_NEXT] = 0;
+    ernic_put_le16(ctx->config + FAKE_VFU_PM_CAP + PCI_PM_CTRL, pmcsr);
 }
 
 /* ------------------------------------------------------------------------

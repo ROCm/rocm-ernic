@@ -323,12 +323,13 @@ server. Security beats speed and convenience.
   (`= {0}` needn't zero padding). Give new wire structs a
   `_Static_assert` on their size. Valgrind can't check writes into
   guest memory, so this rule is all that covers them.
-- **No DMA or interrupt while Bus Master Enable is clear.** Reach guest
-  memory only through `ernic_dma_read()`/`_write()`, which refuse then,
-  and raise MSI-X only through `ionic_eth_emu_trigger_irq()`, which
-  latches. Work a doorbell or device command starts must note its index
-  and wait while `ernic_dma_bus_master()` is false, and run from the
-  module's `_resume()`, which `ionic_device_poll()` calls once BME is set,
+- **No DMA or interrupt while Bus Master Enable is clear**, or while the
+  guest has the function in D3hot. Reach guest memory only through
+  `ernic_dma_read()`/`_write()`, which refuse then, and raise MSI-X only
+  through `ionic_eth_emu_trigger_irq()`, which latches. Work a doorbell
+  or device command starts must note its index and wait while
+  `ernic_dma_bus_master()` is false, and run from the module's
+  `_resume()`, which `ionic_device_poll()` calls once it is true again,
   rather than fail at the refused DMA.
 - **Never guess a mesh peer.** A GID the TCP mesh can't resolve fails
   the command; sending to a default node is a silent write into another
