@@ -578,10 +578,12 @@ device shape.</p>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">identity.asic_type</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">none</span></code>, <code class="docutils literal notranslate"><span class="pre">capri</span></code>, <code class="docutils literal notranslate"><span class="pre">elba</span></code>, <code class="docutils literal notranslate"><span class="pre">giglio</span></code>, <code class="docutils literal notranslate"><span class="pre">salina</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">none</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">dev_info</span></code> ASIC type. The driver runs its periodic
-doorbell re-check (<code class="docutils literal notranslate"><span class="pre">ionic_doorbell_wa()</span></code>) only for
-<code class="docutils literal notranslate"><span class="pre">none</span></code> and <code class="docutils literal notranslate"><span class="pre">elba</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">salina</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">dev_info</span></code> ASIC type. For <code class="docutils literal notranslate"><span class="pre">none</span></code> and <code class="docutils literal notranslate"><span class="pre">elba</span></code>, the
+driver works around missed doorbells
+(<code class="docutils literal notranslate"><span class="pre">ionic_doorbell_wa()</span></code>): it polls its admin and
+Ethernet queues each second and re-rings idle ones’
+doorbells, which the emulated device doesn’t need</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">identity.asic_rev</span></code></p></td>
 <td><p>0 to 255</p></td>
