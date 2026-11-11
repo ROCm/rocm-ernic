@@ -8,6 +8,7 @@ on:
     branches: [ develop ]
     paths:
       - 'service/**'
+      - 'ci/boot-guest.sh'
       - 'prometheus/ernic-exporter'
       - 'prometheus/ernic-exporter.service'
       - 'cmake/ErnicInstall.cmake'
@@ -72,6 +73,8 @@ jobs:
         echo "rocm-ernic-driver-pack: OK"
         bash -n service/vm-driver-install.sh.in
         echo "vm-driver-install.sh.in: OK"
+        bash -n ci/boot-guest.sh
+        echo "boot-guest.sh: OK"
 
     # shellcheck is preinstalled on the hosted image, so this job needs no
     # apt work at all.
@@ -80,7 +83,8 @@ jobs:
         shellcheck \
           service/rocm-ernic-launcher \
           service/rocm-ernic-driver-pack \
-          service/vm-driver-install.sh.in
+          service/vm-driver-install.sh.in \
+          ci/boot-guest.sh
 
   systemd-unit-lint:
     name: systemd unit file validation
@@ -198,6 +202,8 @@ jobs:
         check_file \
           "${PREFIX}/libexec/rocm-ernic/rocm-ernic-driver-pack"
         check_file \
+          "${PREFIX}/libexec/rocm-ernic/rocm-ernic-boot-guest"
+        check_file \
           "${PREFIX}/etc/rocm-ernic/rocm-ernic.env"
         check_file \
           "${PREFIX}/share/rocm-ernic/vm-driver-install.sh.in"
@@ -219,6 +225,7 @@ jobs:
           "${PREFIX}/bin/ernic-exporter"
           "${PREFIX}/libexec/rocm-ernic/rocm-ernic-launcher"
           "${PREFIX}/libexec/rocm-ernic/rocm-ernic-driver-pack"
+          "${PREFIX}/libexec/rocm-ernic/rocm-ernic-boot-guest"
           "${PREFIX}/etc/rocm-ernic/rocm-ernic.env"
           "${PREFIX}/lib/systemd/system/rocm-ernic.service"
           "${PREFIX}/lib/systemd/system/rocm-ernic-driver-pack.service"

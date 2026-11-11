@@ -302,6 +302,14 @@ if(ERNIC_INSTALL_SERVICE)
     ernic_install_with_paths(PROGRAMS service/rocm-ernic-driver-pack
         ${ERNIC_LIBEXEC_DIR} ernic_server)
 
+    # The guest boot helper that ernicctl vm-launch runs. It names no
+    # install paths, so it's installed as it is.
+    install(PROGRAMS ${PROJECT_SOURCE_DIR}/ci/boot-guest.sh
+        DESTINATION ${ERNIC_LIBEXEC_DIR}
+        RENAME rocm-ernic-boot-guest
+        COMPONENT ernic_server
+    )
+
     # ernicctl CLI
     ernic_install_with_paths(PROGRAMS service/ernicctl
         ${CMAKE_INSTALL_BINDIR} ernic_server)

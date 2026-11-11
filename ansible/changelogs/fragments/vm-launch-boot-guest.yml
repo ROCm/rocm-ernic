@@ -1,0 +1,15 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+trivial:
+  - >-
+    ``ernicctl vm-launch`` no longer runs qemu-minimal's removed
+    ``run-vm``, so ``PLAYBOOKS.md`` no longer lists a qemu-minimal checkout
+    as a prerequisite, and lists ``cloud-image-utils`` and
+    ``openssh-client`` instead, which ``vm-launch`` now uses to give each
+    guest boot its own SSH key.  ``ernic_guest_setup``'s message about a
+    missing guest agent channel, and the comments on
+    ``ernic_vm_backing`` and the multicast group, no longer mention
+    ``run-vm``.

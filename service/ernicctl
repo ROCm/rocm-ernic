@@ -16,12 +16,14 @@ Install: /usr/local/bin/ernicctl
 """
 
 import argparse
+import fcntl
 import glob
 import json
 import math
 import os
 import pathlib
 import pwd
+import re
 import shlex
 import signal
 import stat
@@ -91,6 +93,7 @@ RUN_DIR = CFG["ERNIC_RUN_DIR"]
 LOG_DIR = CFG["ERNIC_LOG_DIR"]
 MANIFEST = os.path.join(RUN_DIR, "instances.json")
 LAUNCHER = "/usr/local/libexec/rocm-ernic/rocm-ernic-launcher"
+BOOT_GUEST = "/usr/local/libexec/rocm-ernic/rocm-ernic-boot-guest"
 
 
 def guest_driver_modules():
@@ -229,6 +232,18 @@ def _effective_vm_ssh_identity():
     return ""
 
 
+def _vm_ssh_identity(vm):
+    """Private key for ssh into this VM.
+
+    The key ``vm-launch`` made for its boot, if this user can read it,
+    else ``_effective_vm_ssh_identity()``.
+    """
+    p = ((vm or {}).get("ssh_identity") or "").strip()
+    if p and os.path.isfile(p) and os.access(p, os.R_OK):
+        return p
+    return _effective_vm_ssh_identity()
+
+
 # ── Manifest helpers ─────────────────────────────
 
 
@@ -255,12 +270,26 @@ def find_instance(manifest, inst_id):
 
 
 def pid_alive(pid):
-    """Return whether a process with this PID exists."""
+    """Return whether a process with this PID is running.
+
+    A zombie isn't: it has exited and only waits to be reaped, which an
+    init that doesn't reap, such as a container's, never does to the
+    QEMU that vm-launch's helper leaves behind.
+    """
     try:
         os.kill(pid, 0)
-        return True
     except (OSError, ProcessLookupError):
         return False
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+            state = fh.read().rsplit(") ", 1)[1].split()[0]
+    except FileNotFoundError:
+        # Gone since kill(), unless there's no /proc to ask
+        return not os.path.isdir("/proc/self")
+    except (OSError, IndexError):
+        # Unreadable: as far as kill() could tell
+        return True
+    return state != "Z"
 
 
 # ── Stats helpers ────────────────────────────────
@@ -625,9 +654,13 @@ def qmp_quit(qmp_socket):
 # ── SSH helper ───────────────────────────────────
 
 
-def guest_ssh(ssh_user, ssh_port, command):
-    """Run command in the guest over SSH and return the CompletedProcess."""
-    ident = _effective_vm_ssh_identity()
+def guest_ssh(ssh_user, ssh_port, command, ident=""):
+    """Run command in the guest over SSH and return the CompletedProcess.
+
+    ``ident`` is the private key, by default
+    ``_effective_vm_ssh_identity()``.
+    """
+    ident = ident or _effective_vm_ssh_identity()
     ssh_cmd = [
         "ssh",
         *_ssh_config_prefix(),
@@ -680,13 +713,12 @@ def _first_float_line(text):
 
 
 # pylint: disable-next=too-many-locals
-def _get_vm_guest_load_ssh(user, port, debug=False, label=""):
+def _get_vm_guest_load_ssh(user, port, ident, debug=False, label=""):
     """Load factor from guest /proc/loadavg over SSH (fallback)."""
     cmd = (
         'n=$(nproc); [ "$n" -lt 1 ] && n=1; '
         'awk -v n="$n" \'NR==1{printf "%.2f\\n", $1/n}\' /proc/loadavg'
     )
-    ident = _effective_vm_ssh_identity()
     primary = _cfg_vm_ssh_host()
     hosts = [primary]
     if primary != "localhost":
@@ -798,6 +830,7 @@ def _get_vm_guest_load(inst, debug=False):
     sf = _get_vm_guest_load_ssh(
         user,
         port,
+        _vm_ssh_identity(vm),
         debug=debug,
         label=label,
     )
@@ -1280,6 +1313,7 @@ def _do_detach(inst, unload_driver=False):
             vm.get("ssh_user", "ubuntu"),
             vm["ssh_port"],
             rmmod,
+            _vm_ssh_identity(vm),
         )
         time.sleep(1)
 
@@ -1446,11 +1480,14 @@ def cmd_hot_reload(args):
         if os.path.isfile(tarball):
             ssh_port = vm_snapshot.get("ssh_port", 2222)
             ssh_user = vm_snapshot.get("ssh_user", "ubuntu")
+            ident = _vm_ssh_identity(vm_snapshot)
+            ident_opts = ["-o", "IdentitiesOnly=yes", "-i", ident] if ident else []
             subprocess.run(
                 [
                     "scp",
                     *_ssh_config_prefix(),
                     *_ssh_vm_host_key_opts(),
+                    *ident_opts,
                     "-P",
                     str(ssh_port),
                     tarball,
@@ -1465,6 +1502,7 @@ def cmd_hot_reload(args):
                 " rocm-ernic-driver.tar.gz"
                 " && cd rocm-ernic-driver"
                 " && ./vm-driver-install.sh",
+                ident,
             )
         else:
             print(f"  Tarball not found: {tarball}")
@@ -1545,9 +1583,191 @@ def cmd_driver_push(args):
 # ── Subcommands: VM management ───────────────────
 
 
+def _boot_guest_helper():
+    """The guest boot helper: the source tree's when this ernicctl is in
+    one, else the installed one."""
+    tree = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        os.pardir,
+        "ci",
+        "boot-guest.sh",
+    )
+    if os.path.isfile(tree):
+        return os.path.normpath(tree)
+    return BOOT_GUEST
+
+
+def _qemu_dir():
+    """``ERNIC_QEMU_PATH``, where QEMU's programs are; empty for PATH."""
+    return (CFG.get("ERNIC_QEMU_PATH") or "").strip()
+
+
+def _parse_extra_hostfwd(extra):
+    """Split ``--extra-hostfwd``'s ``,hostfwd=RULE...`` into its rules."""
+    parts = extra.split(",")
+    if parts[0] or len(parts) < 2:
+        return None
+    rules = []
+    for part in parts[1:]:
+        rule = part.removeprefix("hostfwd=")
+        if rule == part or not rule:
+            return None
+        rules.append(rule)
+    return rules
+
+
+def _vm_launch_files(instance):
+    """The launch lock for instance's VM, and the file that cancels a launch."""
+    base = os.path.join(RUN_DIR, f"vm-{instance}")
+    return f"{base}.lock", f"{base}.cancel"
+
+
+def _open_vm_launch_lock(instance):
+    """Open instance's launch lock, and try to take it.
+
+    Returns the descriptor and whether this took the lock, which it holds
+    until the descriptor is closed or this process exits. The descriptor
+    isn't inherited, so the helper and QEMU don't hold the lock.
+    """
+    lock, _ = _vm_launch_files(instance)
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return fd, False
+    return fd, True
+
+
+def _remove_vm_launch_cancel(instance):
+    """Remove the file that cancels instance's launch, if it's there."""
+    _, cancel = _vm_launch_files(instance)
+    try:
+        os.remove(cancel)
+    except FileNotFoundError:
+        # Missing cancel file is expected when no prior stop left one.
+        pass
+
+
+def _lock_vm_launch(instance):
+    """Take instance's launch lock, or exit if a launch or stop has it.
+
+    Returns the lock's descriptor. Nothing records a VM until it has
+    booted, so without the lock a second launch could pass the manifest's
+    check and replace the first's key, seed and sockets while it boots.
+    """
+    fd, locked = _open_vm_launch_lock(instance)
+    if not locked:
+        os.close(fd)
+        print(
+            f"ERROR: Another vm-launch or vm-stop for instance {instance}"
+            " is running.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    # Left by a vm-stop that gave up waiting, not meant for this launch
+    _remove_vm_launch_cancel(instance)
+    return fd
+
+
+def _stop_vm_launch(instance):
+    """Take instance's launch lock for vm-stop, cancelling a launch.
+
+    A launch records its VM only once the guest is up, so until then
+    vm-stop would find nothing to stop. Instead it makes the file the
+    launch polls for, and waits until the launch has stopped QEMU and let
+    go of the lock. Returns the lock's descriptor, which keeps a new launch
+    from starting until vm-stop is done.
+    """
+    fd, locked = _open_vm_launch_lock(instance)
+    if locked:
+        return fd
+    print(f"Cancelling the vm-launch for instance {instance}, still booting...")
+    _, cancel = _vm_launch_files(instance)
+    os.close(
+        os.open(cancel, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    )
+    deadline = time.monotonic() + 60
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                _remove_vm_launch_cancel(instance)
+                print(
+                    f"ERROR: The vm-launch for instance {instance} didn't"
+                    " stop within 60 seconds.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            time.sleep(0.2)
+    _remove_vm_launch_cancel(instance)
+    return fd
+
+
+def _stop_pid(pid):
+    """Stop a process with SIGTERM, then SIGKILL if it's still there in 10s."""
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + 10
+    while pid_alive(pid):
+        if time.monotonic() >= deadline:
+            os.kill(pid, signal.SIGKILL)
+            return
+        time.sleep(0.2)
+
+
+def _run_boot_helper(cmd, stopping):
+    """Run the boot helper, stopping it if stopping() becomes true.
+
+    The helper's progress goes to stderr, here, and its results to
+    stdout. It prints them only once the guest is up, and from then on
+    leaves QEMU running, even if it's stopped before it exits. So this
+    returns QEMU's PID and the boot's key whenever the helper printed
+    them, including when it was stopped just after the guest came up,
+    when the caller must stop QEMU; and None otherwise, when the helper
+    has stopped QEMU itself.
+    """
+    with subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, text=True, encoding="utf-8"
+    ) as proc:
+        while proc.poll() is None:
+            if stopping():
+                proc.terminate()
+                proc.wait()
+                break
+            time.sleep(0.2)
+        out = proc.stdout.read()
+    info = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+    pid_text = info.get("pid", "")
+    key = info.get("key", "")
+    if not pid_text.isdigit() or not key:
+        return None
+    return int(pid_text), key
+
+
 # pylint: disable-next=too-many-locals,too-many-branches,too-many-statements
 def cmd_vm_launch(args):
-    """Launch a VM for an instance."""
+    """Launch a VM for an instance, and wait until it accepts SSH."""
+    hostfwds = []
+    if args.extra_hostfwd:
+        hostfwds = _parse_extra_hostfwd(args.extra_hostfwd)
+        if hostfwds is None:
+            print(
+                "ERROR: --extra-hostfwd must be one or more ,hostfwd=RULE,"
+                " e.g. ,hostfwd=tcp:127.0.0.1:9150-:9100",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    if args.nvme < 0:
+        print("ERROR: --nvme can't be negative.", file=sys.stderr)
+        sys.exit(1)
+
+    # Held until this returns, through the boot and the manifest's update
+    lock_fd = _lock_vm_launch(args.instance)
+
     m = read_manifest()
     inst = find_instance(m, args.instance)
     if not inst:
@@ -1556,14 +1776,28 @@ def cmd_vm_launch(args):
     if not pid_alive(inst["pid"]):
         print(f"ERROR: Instance {args.instance} is not running.", file=sys.stderr)
         sys.exit(1)
-
-    run_vm = os.path.join(CFG["ERNIC_QEMU_MINIMAL"], "qemu", "run-vm")
-    if not os.path.isfile(run_vm):
-        print(f"ERROR: run-vm not found: {run_vm}", file=sys.stderr)
+    old_vm = inst.get("vm") or {}
+    if old_vm.get("vm_pid") and pid_alive(old_vm["vm_pid"]):
+        print(
+            f"ERROR: Instance {args.instance} already has a VM"
+            f" (PID {old_vm['vm_pid']}); stop it first with"
+            f" 'ernicctl vm-stop {args.instance}'.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     ssh_port = args.ssh_port or (int(CFG["ERNIC_VM_SSH_BASE_PORT"]) + args.instance - 1)
-    vm_name = args.vm_name or CFG["ERNIC_VM_NAME"]
+    ssh_user = args.ssh_user or CFG["ERNIC_VM_SSH_USER"]
+    # One name, and so one overlay, per instance: two guests writing the
+    # same overlay would corrupt it
+    vm_name = args.vm_name or f"{CFG['ERNIC_VM_NAME']}-{args.instance}"
+    if not re.fullmatch(r"[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?", vm_name):
+        print(
+            f"ERROR: The VM name is its hostname, so it must be letters,"
+            f" digits and '-': {vm_name!r}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     vcpus = str(args.vcpus or CFG["ERNIC_VM_VCPUS"])
     mem = str(args.mem or CFG["ERNIC_VM_MEM"])
 
@@ -1572,46 +1806,29 @@ def cmd_vm_launch(args):
     backing = CFG.get("ERNIC_VM_BACKING", "")
     if not os.path.isfile(overlay):
         if backing and os.path.isfile(backing):
-            gen_vm = os.path.join(
-                CFG["ERNIC_QEMU_MINIMAL"],
-                "qemu",
-                "gen-vm",
+            qemu_img = os.path.join(_qemu_dir(), "qemu-img")
+            if not (_qemu_dir() and os.access(qemu_img, os.X_OK)):
+                qemu_img = "qemu-img"
+            print("Creating overlay via qemu-img:")
+            print(f"  backing: {backing}")
+            print(f"  overlay: {overlay}")
+            # Before qemu-img's own output
+            sys.stdout.flush()
+            os.makedirs(image_dir, exist_ok=True)
+            subprocess.run(
+                [
+                    qemu_img,
+                    "create",
+                    "-F",
+                    "qcow2",
+                    "-b",
+                    backing,
+                    "-f",
+                    "qcow2",
+                    overlay,
+                ],
+                check=True,
             )
-            if os.path.isfile(gen_vm):
-                print("Creating overlay via gen-vm:")
-                print(f"  backing: {backing}")
-                print(f"  overlay: {overlay}")
-                gen_env = dict(os.environ)
-                gen_env.update(
-                    {
-                        "VM_NAME": vm_name,
-                        "IMAGES": image_dir,
-                        "BACKING_FILE": backing,
-                    }
-                )
-                subprocess.run(
-                    [gen_vm],
-                    env=gen_env,
-                    check=True,
-                )
-            else:
-                print("Creating overlay via qemu-img:")
-                print(f"  backing: {backing}")
-                print(f"  overlay: {overlay}")
-                subprocess.run(
-                    [
-                        "qemu-img",
-                        "create",
-                        "-F",
-                        "qcow2",
-                        "-b",
-                        backing,
-                        "-f",
-                        "qcow2",
-                        overlay,
-                    ],
-                    check=True,
-                )
         elif backing:
             print(
                 f"ERROR: Backing file not found: {backing}",
@@ -1629,104 +1846,188 @@ def cmd_vm_launch(args):
             )
             sys.exit(1)
 
+    out_dir = os.path.join(RUN_DIR, f"vm-{args.instance}")
     qmp_sock = os.path.join(RUN_DIR, f"qmp-{args.instance}.sock")
-
-    env = dict(os.environ)
-    env.update(
-        {
-            "QEMU_PATH": CFG["ERNIC_QEMU_PATH"],
-            "VM_NAME": vm_name,
-            "IMAGES": CFG["ERNIC_VM_IMAGE_DIR"],
-            "SSH_PORT": str(ssh_port),
-            "VCPUS": vcpus,
-            "VMEM": mem,
-            # "disable" falls back to TCG, which is far
-            # slower but lets functional tests run where
-            # /dev/kvm is unavailable (unprivileged CI,
-            # nested virt without KVM exposed).
-            "KVM": os.environ.get("KVM", "enable"),
-            "VFIO_USERDEV": inst["socket"],
-            "QMP_SOCKET": qmp_sock,
-        }
+    qga_sock = os.path.join(RUN_DIR, f"qga-{args.instance}.sock")
+    console = os.path.join(LOG_DIR, f"vm-{args.instance}.log")
+    device_id = f"ernic{args.instance}"
+    root_port = "pcie-vfu.1"
+    qemu = (
+        os.path.join(_qemu_dir(), "qemu-system-x86_64")
+        if _qemu_dir()
+        else "qemu-system-x86_64"
     )
+    # "disable" falls back to TCG, which is far slower but lets functional
+    # tests run where /dev/kvm is unavailable (unprivileged CI, nested
+    # virt without KVM exposed).
+    accel = "kvm" if os.environ.get("KVM", "enable") == "enable" else "tcg"
+
+    cmd = [
+        _boot_guest_helper(),
+        "--disk",
+        overlay,
+        "--name",
+        vm_name,
+        "--ssh-port",
+        str(ssh_port),
+        "--out",
+        out_dir,
+        "--user",
+        ssh_user,
+        "--accel",
+        accel,
+        "--cpus",
+        vcpus,
+        "--mem",
+        mem,
+        "--timeout",
+        str(args.boot_timeout),
+        "--qemu",
+        qemu,
+        "--console",
+        console,
+        "--qmp",
+        qmp_sock,
+        "--qga",
+        qga_sock,
+        "--vfio-user",
+        inst["socket"],
+        "--vfio-user-id",
+        device_id,
+    ]
+
+    # The helper makes a key for this boot, which ernicctl uses. The
+    # user's own key is authorized too, so they can log in with it.
+    ident = _effective_vm_ssh_identity()
+    authorized = f"{ident}.pub" if ident and os.path.isfile(f"{ident}.pub") else ""
+    if authorized:
+        cmd += ["--authorize", authorized]
 
     if backing:
-        env["BACKING_SHARED"] = "true"
+        cmd.append("--shared-backing")
 
     mcast = CFG.get("ERNIC_VM_MCAST_GROUP", "")
     if mcast:
-        env["MCAST_GROUP"] = mcast
+        cmd += ["--mcast", mcast]
 
-    pci_hostdev = getattr(args, "pci_hostdev", None)
-    if pci_hostdev:
-        env["PCI_HOSTDEV"] = pci_hostdev
+    pci_hostdev = args.pci_hostdev or ""
+    for bdf in pci_hostdev.split(","):
+        if bdf.strip():
+            cmd += ["--pci-hostdev", bdf.strip()]
 
-    pci_mmio_bridge = getattr(args, "pci_mmio_bridge", False)
-    if pci_mmio_bridge:
-        env["PCI_MMIO_BRIDGE"] = "true"
+    if args.pci_mmio_bridge:
+        cmd.append("--pci-mmio-bridge")
 
-    extra_hostfwd = getattr(args, "extra_hostfwd", None)
-    if extra_hostfwd:
-        env["EXTRA_HOSTFWD"] = extra_hostfwd
+    for rule in hostfwds:
+        cmd += ["--hostfwd", rule]
 
-    nvme = getattr(args, "nvme", 0)
-    if nvme > 0:
-        env["NVME"] = str(nvme)
-
-    qemu_aio = getattr(args, "qemu_aio", None)
-    if qemu_aio:
-        env["QEMU_AIO"] = qemu_aio
+    if args.nvme > 0:
+        cmd += ["--nvme", str(args.nvme), "--nvme-dir", image_dir]
+    if args.qemu_aio:
+        cmd += ["--nvme-aio", args.qemu_aio]
 
     print(f"Launching VM for instance {args.instance}:")
     print(f"  VM name:     {vm_name}")
-    print(f"  SSH port:    {ssh_port}")
+    print(f"  SSH port:    {ssh_port} (on 127.0.0.1)")
     print(f"  vfio-user:   {inst['socket']}")
     print(f"  QMP socket:  {qmp_sock}")
+    print(f"  Console:     {console}")
     if mcast:
         print(f"  MCAST group: {mcast}")
     if pci_hostdev:
         print(f"  PCI hostdev: {pci_hostdev}")
-    if pci_mmio_bridge:
+    if args.pci_mmio_bridge:
         print("  MMIO bridge: enabled")
-    if extra_hostfwd:
-        print(f"  Extra fwd:   {extra_hostfwd}")
-    if nvme > 0:
-        print(f"  NVMe SSDs:   {nvme}")
+    if hostfwds:
+        print(f"  Extra fwd:   {', '.join(hostfwds)}")
+    if args.nvme > 0:
+        print(f"  NVMe SSDs:   {args.nvme}")
+    sys.stdout.flush()
 
-    logfile = os.path.join(LOG_DIR, f"vm-{args.instance}.log")
-    with open(logfile, "w", encoding="utf-8") as lf:
-        # The VM outlives this command, so it is not waited for
-        # pylint: disable-next=consider-using-with
-        proc = subprocess.Popen(
-            [run_vm],
-            env=env,
-            stdout=lf,
-            stderr=subprocess.STDOUT,
-        )
+    # Until the VM is in the manifest, this owns stopping it: on a signal,
+    # or the cancel file a vm-stop makes, it stops the helper, which stops
+    # QEMU, or once the helper is done, QEMU itself. The handlers only note
+    # the signal, so nothing is cut off halfway.
+    stop_signals = []
 
-    device_id = f"ernic{args.instance}"
-    root_port = "pcie-vfu.1"
+    def note_signal(signum, _frame):
+        stop_signals.append(signum)
 
-    inst["vm"] = {
-        "qmp_socket": qmp_sock,
-        "device_id": device_id,
-        "root_port": root_port,
-        "ssh_port": ssh_port,
-        "ssh_user": (args.ssh_user or CFG["ERNIC_VM_SSH_USER"]),
-        "attached": True,
-        "vm_pid": proc.pid,
-        "vm_name": vm_name,
-        "launched_at": time.time(),
-        "gpu": pci_hostdev or "",
+    _, cancel = _vm_launch_files(args.instance)
+
+    def stopping():
+        return stop_signals or os.path.exists(cancel)
+
+    old_handlers = {
+        signum: signal.signal(signum, note_signal)
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
     }
-    write_manifest(m)
-    print(f"VM started (PID {proc.pid}).")
-    print(f"Log: {logfile}")
-    print(f"SSH: ssh -p {ssh_port} {_ssh_vm_target(inst['vm']['ssh_user'])}")
+    try:
+        booted = _run_boot_helper(cmd, stopping)
+        # Asked to stop once the guest was up, even as the helper was
+        # stopped: the helper left QEMU running, so it's this one's to stop
+        if booted is not None and stopping():
+            _stop_pid(booted[0])
+            booted = None
+        if booted is None:
+            if stop_signals:
+                why = f"; stopped by {signal.Signals(stop_signals[0]).name}"
+            elif os.path.exists(cancel):
+                why = "; cancelled by vm-stop"
+            else:
+                why = ""
+            print(
+                f"ERROR: The VM for instance {args.instance} didn't come up"
+                f"{why}; see {console} and {out_dir}/qemu.log.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        vm_pid, key = booted
+
+        # Read again, since other commands may have changed it while the
+        # guest booted
+        m = read_manifest()
+        inst = find_instance(m, args.instance)
+        if not inst:
+            print(
+                f"ERROR: Instance {args.instance} was removed while its VM"
+                " booted; stopping the VM.",
+                file=sys.stderr,
+            )
+            _stop_pid(vm_pid)
+            sys.exit(1)
+        inst["vm"] = {
+            "qmp_socket": qmp_sock,
+            "device_id": device_id,
+            "root_port": root_port,
+            "ssh_port": ssh_port,
+            "ssh_user": ssh_user,
+            "ssh_identity": key,
+            "attached": True,
+            "vm_pid": vm_pid,
+            "vm_name": vm_name,
+            "launched_at": time.time(),
+            "gpu": pci_hostdev,
+        }
+        write_manifest(m)
+    finally:
+        for signum, handler in old_handlers.items():
+            signal.signal(signum, handler)
+    print(f"VM started (PID {vm_pid}).")
+    target = _ssh_vm_target(ssh_user)
+    if authorized:
+        print(f"SSH: ssh -p {ssh_port} {target}")
+    else:
+        sudo = "sudo " if os.geteuid() == 0 and os.environ.get("SUDO_USER") else ""
+        print(f"SSH: {sudo}ssh -i {key} -p {ssh_port} {target}")
+    os.close(lock_fd)
 
 
 def cmd_vm_stop(args):
-    """Stop a VM."""
+    """Stop a VM, or cancel a vm-launch still booting one."""
+    # Held until this returns, so no launch starts meanwhile
+    lock_fd = _stop_vm_launch(args.instance)
+
     m = read_manifest()
     inst = find_instance(m, args.instance)
     if not inst:
@@ -1748,14 +2049,12 @@ def cmd_vm_stop(args):
 
     if vm_pid and pid_alive(vm_pid):
         print(f"Killing VM process {vm_pid}...")
-        os.kill(vm_pid, signal.SIGTERM)
-        time.sleep(2)
-        if pid_alive(vm_pid):
-            os.kill(vm_pid, signal.SIGKILL)
+        _stop_pid(vm_pid)
 
     inst["vm"] = None
     write_manifest(m)
     print(f"VM for instance {args.instance} stopped.")
+    os.close(lock_fd)
 
 
 def cmd_vm_list(_args):
@@ -2015,9 +2314,9 @@ def build_parser():
     sp.add_argument(
         "--extra-hostfwd",
         default=None,
-        help="Extra QEMU hostfwd rules appended to"
-        " the user netdev (e.g."
-        " ,hostfwd=tcp::9150-:9100)",
+        help="Extra QEMU hostfwd rules for the user netdev (e.g."
+        " ,hostfwd=tcp:127.0.0.1:9150-:9100); a rule with no host"
+        " address listens on every interface",
     )
     sp.add_argument(
         "--nvme",
@@ -2029,6 +2328,13 @@ def build_parser():
         "--qemu-aio",
         default=None,
         help="Override QEMU AIO backend (native/threads/io_uring)",
+    )
+    sp.add_argument(
+        "--boot-timeout",
+        type=int,
+        default=600,
+        metavar="SECS",
+        help="How long to wait for the guest to accept SSH (default 600)",
     )
 
     sp = sub.add_parser(

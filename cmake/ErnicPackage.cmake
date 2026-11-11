@@ -77,7 +77,9 @@ set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
 # rocm-ernic
 #
 # ernicctl is Python, and uses socat to talk to QEMU, but only for some
-# commands
+# commands. Its vm-launch also needs cloud-localds and ssh, for the
+# guest's per-boot key, and a QEMU with vfio-user, which few distributions
+# build yet.
 set(CPACK_DEBIAN_ERNIC_SERVER_PACKAGE_NAME rocm-ernic)
 set(CPACK_DEBIAN_ERNIC_SERVER_DESCRIPTION
     "The rocm-ernic server, which emulates an RDMA NIC for virtual machines
@@ -85,7 +87,8 @@ over vfio-user, with its systemd service, ernicctl, and the guest driver
 pack.")
 if(ERNIC_INSTALL_SERVICE)
     set(CPACK_DEBIAN_ERNIC_SERVER_PACKAGE_DEPENDS python3)
-    set(CPACK_DEBIAN_ERNIC_SERVER_PACKAGE_RECOMMENDS socat)
+    set(CPACK_DEBIAN_ERNIC_SERVER_PACKAGE_RECOMMENDS
+        "socat, cloud-image-utils, openssh-client")
 
     # The site's configuration, which upgrades mustn't replace
     set(ernic_conffiles "${PROJECT_BINARY_DIR}/ernic-package/conffiles")

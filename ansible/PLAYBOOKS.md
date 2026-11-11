@@ -27,8 +27,8 @@ wrappers around the roles; the test playbooks are repo-local.
   which is too old for `community.general` 13; use `pipx install
   ansible-core` or the Ansible PPA
 - QEMU 10.1+ installed (default `/opt/qemu-v10.1.2/`)
-- The [qemu-minimal](https://github.com/sbates130272/qemu-minimal)
-  checkout at `~/Projects/qemu-minimal`
+- `cloud-image-utils` and `openssh-client`, which `ernicctl
+  vm-launch` uses to give each guest boot its own SSH key
 
 Install dependencies:
 

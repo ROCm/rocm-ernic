@@ -122,7 +122,8 @@ jobs:
       # which finds the packages' dependencies; CPack also needs file to
       # find the programs to run it on. meson and libcmocka-dev
       # build libvfio-user, which needs cmocka even though only its tests
-      # use it.
+      # use it. openssh-client has the ssh-keygen that the ernic-boot-guest
+      # test runs.
       - name: Install dependencies
         env:
           DEBIAN_FRONTEND: noninteractive
@@ -142,6 +143,7 @@ jobs:
             librdmacm-dev \
             meson \
             ninja-build \
+            openssh-client \
             pkg-config \
             python3
 
