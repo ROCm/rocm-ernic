@@ -115,7 +115,7 @@ ansible/playbooks/network-config-*
 
 # Ansible collection build output (ansible-galaxy collection
 # build), ansible-test scratch, and local -p collection installs
-sbates130272-rocm_ernic-*.tar.gz
+rocm-ernic-*.tar.gz
 ansible/tests/output/
 ansible/collections/
 # ansible-lint and ansible-galaxy stage collections here

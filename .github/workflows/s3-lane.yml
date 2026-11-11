@@ -477,9 +477,8 @@ jobs:
       shell: bash
       run: |
         echo "=== Installing the Ansible collection dependencies ==="
-        # The guest is provisioned by the sbates130272.rocm_ernic
-        # collection in this repo, so the same role developers use is
-        # what this job exercises.
+        # The guest is provisioned by the rocm.ernic collection in this
+        # repo, so the same role developers use is what this job exercises.
         ansible --version
         # Galaxy resets connections often enough to fail a lane on its
         # own, and only someone with write access can rerun the job.

@@ -9,8 +9,8 @@
 # Values that are pure role defaults (ernic_bin, ernic_log_dir,
 # ernic_nic_name, ernic_rdma_core_version, the debug switches,
 # ...) are not repeated here.  They live in the roles of the
-# sbates130272.rocm_ernic collection under ansible/roles/;
-# see each role's defaults/main.yml.  Anything set in this file
+# rocm.ernic collection under ansible/roles/; see each role's
+# defaults/main.yml.  Anything set in this file
 # is loaded as a play var and so wins over the role default.
 
 ---

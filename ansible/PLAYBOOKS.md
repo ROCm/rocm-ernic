@@ -13,13 +13,12 @@ That image pins mainline kernel 7.2.6 on Ubuntu 26.04 and bakes
 the RDMA userspace, the DKMS toolchain and `perftest`.
 
 The reusable parts — everything needed to turn that image into a
-rocm-ernic node — are packaged as the
-[`sbates130272.rocm_ernic`](README.md) collection,
-whose roles live in [roles/](roles/). This directory *is* the
-collection: `galaxy.yml` sits here and `build_ignore` excludes
-the repo-local parts (playbooks, inventory, group_vars) from
-the published artifact. The setup playbooks are thin wrappers
-around the roles; the test playbooks are repo-local.
+rocm-ernic node — are packaged as the [`rocm.ernic`](README.md)
+collection, whose roles live in [roles/](roles/). This directory
+*is* the collection: `galaxy.yml` sits here and `build_ignore`
+excludes the repo-local parts (playbooks, inventory, group_vars)
+from the collection artifact. The setup playbooks are thin
+wrappers around the roles; the test playbooks are repo-local.
 
 ## Prerequisites
 
@@ -39,14 +38,14 @@ ansible-galaxy collection install -r requirements.yml
 
 That is one collection, `community.general`.
 
-`sbates130272.rocm_ernic` is *not* in `requirements.yml`:
-`ansible.cfg` sets `roles_path = ./roles:...`, so
-these playbooks reach its roles by short name and always run
-against this checkout. That path is relative, so run
-`ansible-playbook` from this directory.
+`rocm.ernic` is *not* in `requirements.yml`: `ansible.cfg` sets
+`roles_path = ./roles:...`, so these playbooks reach its roles by
+short name and always run against this checkout. That path is
+relative, so run `ansible-playbook` from this directory.
 
-To use the roles from another project, install the collection from a
-pinned git SHA and address them by fully qualified name:
+The collection is not published to Ansible Galaxy. To use the
+roles from another project, install it from a pinned git SHA and
+address them by fully qualified name:
 
 ```bash
 ansible-galaxy collection install \
@@ -55,21 +54,13 @@ ansible-galaxy collection install \
 
 ```yaml
 roles:
-  - role: sbates130272.rocm_ernic.ernic_guest_setup
+  - role: rocm.ernic.ernic_guest_setup
     vars:
       # ernic_source_repo_version has no default — it must be set to the
       # SHA that matches your server build, or set ernic_source_dir to an
       # existing checkout instead.
       ernic_source_repo_version: "<SHA>"
 ```
-
-> **Note on Galaxy**: the only version published to Ansible Galaxy
-> (`sbates130272.rocm_ernic` 0.1.0) was built before the ionic
-> rewrite and will not work with any current server. Versions 0.2.0
-> and 0.3.0 are carried in `galaxy.yml` but have not been published.
-> Install from a pinned SHA as shown above — that is the only
-> supported path. Do not use `ansible-galaxy collection install
-> sbates130272.rocm_ernic` without a version specifier.
 
 ## Quick Start
 
@@ -189,10 +180,10 @@ Per-role defaults (`ernic_bin`, `ernic_nic_name`,
 ```text
 ansible/                  # this directory is the collection
 ├── galaxy.yml            # Collection metadata + build_ignore
-├── README.md             # Galaxy landing page
+├── README.md             # Collection landing page
 ├── meta/runtime.yml      # Minimum ansible-core
 ├── changelogs/           # antsibull-changelog fragments
-├── roles/                # Shipped to Galaxy
+├── roles/                # Shipped in the collection
 │   ├── ernic_source/         # Resolve/clone the checkout
 │   ├── ernic_guest_setup/    # Driver + rdma-core + NIC
 │   └── ernic_host_setup/     # Build, service, vfio-pci

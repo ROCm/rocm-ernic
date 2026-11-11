@@ -93,7 +93,7 @@ into the env file.
 ```yaml
 - hosts: localhost
   roles:
-    - role: sbates130272.rocm_ernic.ernic_host_setup
+    - role: rocm.ernic.ernic_host_setup
       vars:
         ernic_source_dir: /home/me/Projects/rocm-ernic
         ernic_instances: 4

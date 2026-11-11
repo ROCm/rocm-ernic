@@ -45,8 +45,8 @@ set(IONIC_KERNEL_REPO
 set(IONIC_SOURCE_DIR
   "${PROJECT_BINARY_DIR}/ionic-kernel-src")
 # The patch series and the two scripts live in the Ansible collection, so
-# that a consumer installing sbates130272.rocm_ernic gets them at the same
-# ref as the roles that apply them.  See ansible/files/README.md.
+# that a consumer installing rocm.ernic gets them at the same ref as the
+# roles that apply them.  See ansible/files/README.md.
 set(IONIC_PATCHES_DIR
   "${PROJECT_SOURCE_DIR}/ansible/files/patches")
 set(IONIC_DKMS_SCRIPT

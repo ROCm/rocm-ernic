@@ -34,9 +34,9 @@ version number is bumped. The major version number will only be bumped on
 `develop` when making an API/ABI-breaking change.
 
 Project release tags `vX.Y.Z` publish GitHub release assets for the
-`rocm-ernic` server and `ernicctl`. The Ansible collection uses its own
-`ansible-vX.Y.Z` tags, which are validated against `ansible/galaxy.yml` and
-published separately.
+`rocm-ernic` server and `ernicctl`. The Ansible collection is versioned in
+`ansible/galaxy.yml` but is not published; consumers install it from a
+pinned commit.
 
 Release branches are created retroactively and only when it is necessary to
 bugfix supported versions. Bugfixing should take place on `develop` and be

@@ -601,6 +601,12 @@
 
 ### Changed
 
+* **Breaking:** **The Ansible collection is now `rocm.ernic`, and it is not
+  published to Ansible Galaxy.** It was `sbates130272.rocm_ernic`. Address
+  the roles as `rocm.ernic.ernic_guest_setup` and so on, and install the
+  collection from a pinned commit with `ansible-galaxy collection install
+  git+https://github.com/ROCm/rocm-ernic.git#/ansible/,<SHA>`. The
+  repo's own playbooks, which use the roles by short name, are unaffected.
 * **The device reports a Salina ASIC by default** (`asic_type = salina`
   in the `compat` profile), not `none`. For `none` and `elba`, the guest's
   ionic driver works around missed doorbells: it polls its admin and

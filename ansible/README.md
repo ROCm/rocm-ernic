@@ -1,4 +1,4 @@
-# sbates130272.rocm_ernic
+# rocm.ernic
 
 An Ansible collection for [rocm-ernic][ref-rocm-ernic]: roles that turn a
 prepared Ubuntu guest into an RDMA node on the emulated NIC, and prepare the
@@ -41,16 +41,21 @@ lower bound against the running guest.
 
 ## Installing
 
+The collection is not published to Ansible Galaxy. Install it from a pinned
+commit of the rocm-ernic repo, matching the server you run:
+
 ```bash
-ansible-galaxy collection install sbates130272.rocm_ernic
+ansible-galaxy collection install \
+  git+https://github.com/ROCm/rocm-ernic.git#/ansible/,<SHA>
 ```
 
 Or in a `requirements.yml`:
 
 ```yaml
 collections:
-  - name: sbates130272.rocm_ernic
-    version: ">=0.2.0"
+  - name: https://github.com/ROCm/rocm-ernic.git#/ansible/
+    type: git
+    version: <SHA>
 ```
 
 ## Provisioning a guest
@@ -60,7 +65,7 @@ collections:
   hosts: ernic_vms
   become: true
   roles:
-    - role: sbates130272.rocm_ernic.ernic_guest_setup
+    - role: rocm.ernic.ernic_guest_setup
       vars:
         ernic_guest_vm_ip: "192.168.200.{{ 10 * (vm_index | int) }}"
 ```

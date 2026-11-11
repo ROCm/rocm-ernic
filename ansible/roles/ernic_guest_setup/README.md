@@ -144,7 +144,7 @@ list, timeouts).
 - hosts: ernic_vms
   become: true
   roles:
-    - role: sbates130272.rocm_ernic.ernic_guest_setup
+    - role: rocm.ernic.ernic_guest_setup
       vars:
         ernic_source_dir: /home/me/Projects/rocm-ernic
         ernic_gpu_passthrough: false

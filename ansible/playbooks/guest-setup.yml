@@ -7,9 +7,9 @@
 # the emulated NICs.
 #
 # The work lives in the ernic_guest_setup role of the
-# sbates130272.rocm_ernic collection (source in ansible/
-# collection/, published to Galaxy).  Base packages, the pinned
-# kernel and the RDMA userspace are baked into the guest image.
+# rocm.ernic collection (source in ansible/roles/).  Base
+# packages, the pinned kernel and the RDMA userspace are baked
+# into the guest image.
 
 ---
 - name: Guest setup -- driver, rdma-core, NIC config

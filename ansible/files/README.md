@@ -7,9 +7,8 @@ SPDX-License-Identifier: MIT
 # Collection files
 
 The ionic driver patch series and the two scripts that build them, shipped
-inside the collection so that a consumer who installs
-`sbates130272.rocm_ernic` gets everything the SRQ roles need from one
-artifact at one ref.
+inside the collection so that a consumer who installs `rocm.ernic` gets
+everything the SRQ roles need from one artifact at one ref.
 
 ```text
 patches/0002-ionic-allocate-an-address-handle-for-UC-queue-pairs.patch

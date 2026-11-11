@@ -6,13 +6,14 @@
 # Install with: ansible-galaxy collection install -r requirements.yml
 
 #
-# sbates130272.rocm_ernic is not listed here: the playbooks in
-# this directory reach its roles by short name via roles_path in
-# ansible.cfg, so they use the source under ansible/roles/.
-# Consumers outside this repo install it from Galaxy:
+# rocm.ernic is not listed here: the playbooks in this directory
+# reach its roles by short name via roles_path in ansible.cfg, so
+# they use the source under ansible/roles/.  Consumers outside this
+# repo install it from a pinned commit (it is not on Galaxy):
 #
-#   - name: sbates130272.rocm_ernic
-#     version: ">=0.2.0"
+#   - name: https://github.com/ROCm/rocm-ernic.git#/ansible/
+#     type: git
+#     version: <SHA>
 #
 # community.general >=13.3.0 is what sets the ansible-core >=2.18
 # floor in meta/runtime.yml.

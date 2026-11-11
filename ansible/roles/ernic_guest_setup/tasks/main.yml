@@ -10,7 +10,7 @@
 
 ---
 # Short name, not the FQCN: it resolves against the containing
-# collection when installed from Galaxy, and against roles_path
+# collection when installed as one, and against roles_path
 # when run from a checkout of this repo.
 - name: Resolve the rocm-ernic source checkout
   ansible.builtin.include_role:

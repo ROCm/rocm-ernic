@@ -52,7 +52,7 @@ After the role runs, `ernic_source_dir` is set on every host in the play and
 ```yaml
 - hosts: image
   roles:
-    - role: sbates130272.rocm_ernic.ernic_source
+    - role: rocm.ernic.ernic_source
       vars:
         # A full SHA, matching the revision the collection came from.
         ernic_source_repo_version: "9329fbd494142bb57fdaa1993c84308873aebdee"

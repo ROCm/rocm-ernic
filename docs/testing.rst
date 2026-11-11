@@ -643,7 +643,7 @@ neither tears them down nor touches the systemd service.
 6. **performance-tests** -- the TCP and RDMA sweeps.
 
 The setup plays are thin wrappers around the roles of the
-``sbates130272.rocm_ernic`` collection, whose source lives in
+``rocm.ernic`` collection, whose source lives in
 ``ansible/roles/``; see :ref:`ansible-collection` below.
 
 Running individual plays
@@ -808,13 +808,13 @@ GPU rig needs a GPU-flavoured image.
 
 .. _ansible-collection:
 
-The rocm_ernic Ansible collection
+The rocm.ernic Ansible collection
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The reusable parts of the automation are packaged as the
-``sbates130272.rocm_ernic`` Galaxy collection, so any
-suitable guest can be turned into a rocm-ernic RDMA node
-without the playbooks here:
+``rocm.ernic`` Ansible collection, so any suitable guest can
+be turned into a rocm-ernic RDMA node without the playbooks
+here:
 
 ``ernic_guest_setup``
    Installs the DKMS driver, builds rdma-core with the
@@ -830,22 +830,25 @@ without the playbooks here:
    cloning it on the controller when ``ernic_source_dir`` is
    not set.
 
-Consumers outside this repo install it from Galaxy and address
-the roles by their fully qualified name:
+The collection is not published to Ansible Galaxy. Consumers
+outside this repo install it from a pinned commit, matching the
+server they run, and address the roles by their fully qualified
+name:
 
 .. code-block:: bash
 
-   ansible-galaxy collection install sbates130272.rocm_ernic
+   ansible-galaxy collection install \
+     git+https://github.com/ROCm/rocm-ernic.git#/ansible/,<SHA>
 
 .. code-block:: yaml
 
    roles:
-     - role: sbates130272.rocm_ernic.ernic_guest_setup
+     - role: rocm.ernic.ernic_guest_setup
 
 Playbooks in this repo instead reach the same roles by short
 name through ``roles_path`` in ``ansible/ansible.cfg``, so they
-always run against this checkout rather than a published
-version. Because that path is relative, run ``ansible-playbook``
+always run against this checkout rather than an installed
+copy. Because that path is relative, run ``ansible-playbook``
 from the ``ansible/`` directory.
 
 Guest Driver CI

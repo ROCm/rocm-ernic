@@ -52,8 +52,9 @@ Project releases are published from `vX.Y.Z` tags and attach GitHub release
 assets for the `rocm-ernic` server and `ernicctl`; see the
 [Releases page](https://github.com/ROCm/rocm-ernic/releases).
 
-The Ansible collection is published separately from `ansible-vX.Y.Z` tags and
-uses the existing Galaxy release flow under [`ansible/`](ansible/).
+The Ansible collection under [`ansible/`](ansible/) is not published to
+Galaxy; install it from a pinned commit of this repo (see
+[`ansible/README.md`](ansible/README.md)).
 
 ## Documentation
 
