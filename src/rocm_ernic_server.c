@@ -743,7 +743,8 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx)
 {
     int ret;
 
-    /* Initialize PCI device as multi-function (Function 0 = RDMA) */
+    /* A single-function PCI Express endpoint: a Type 0 header with the
+     * Multi-Function Device bit clear. Ethernet and RDMA share function 0. */
     ret =
         vfu_pci_init(vfu_ctx, VFU_PCI_TYPE_EXPRESS, PCI_HEADER_TYPE_NORMAL, 0);
     if (ret < 0) {
