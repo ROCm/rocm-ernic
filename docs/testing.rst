@@ -166,7 +166,8 @@ The modules under ``tests/py/ernic/`` are:
 - ``pci.py`` -- the config-space register offsets and fields
   from ``linux/pci_regs.h``, which ``ernic-pci-regs``
   (``tests/pci_regs_dump.c``) prints from the header rather
-  than the tests keeping a copy
+  than the tests keeping a copy, and the registers a reset
+  puts back
 - ``check.py`` -- the small test runner the suites report
   through
 
@@ -174,8 +175,9 @@ Six suites are registered with CTest:
 
 - ``ernic-vfu-client``: version negotiation, device and
   region info, PCI configuration space, BAR access, DMA
-  mapping, interrupts, Bus Master Enable stopping and resuming
-  the device's writes, a function-level reset, a reset and a
+  mapping, interrupts, Bus Master Enable and D3hot each
+  stopping and resuming the device's writes, the power states
+  it doesn't support, a function-level reset, a reset and a
   reconnect each returning the device and the configuration
   registers a driver writes to their initial state -- and
   the offsets, counts, addresses and vector ranges a client

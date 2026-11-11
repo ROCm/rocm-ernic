@@ -52,6 +52,9 @@ PCIE_LINK_WIDTH = 16
 # Link Capabilities' ASPM Optionality Compliance bit, which
 # linux/pci_regs.h doesn't name
 PCIE_LNKCAP_ASPM_OPT_COMP = 0x00400000
+# The Power Management capability's version, which linux/pci_regs.h
+# doesn't name
+PCI_PM_VERSION = 3
 
 # struct ionic_lif_info: the status block at 256, link_status at +10.
 LIF_INFO_LINK_STATUS_OFF = 256 + 10
@@ -239,7 +242,9 @@ def test_config_space(suite, client, regs):
     suite.check(px is not None, "the PCI Express capability is on the list")
     msix = pci.find_capability(client, regs, regs.PCI_CAP_ID_MSIX)
     suite.check(msix is not None, "the MSI-X capability is on the list")
-    if px is None or msix is None:
+    pm = pci.find_capability(client, regs, regs.PCI_CAP_ID_PM)
+    suite.check(pm is not None, "the Power Management capability is on the list")
+    if px is None or msix is None or pm is None:
         return
 
     flags = pci.read16(client, px + regs.PCI_EXP_FLAGS)
@@ -266,147 +271,26 @@ def test_config_space(suite, client, regs):
     )
     check_pcie_link(suite, client, regs, px)
 
-    config = ResetRegs(client, regs, px, msix)
+    pmc = pci.read16(client, pm + regs.PCI_PM_PMC)
+    suite.check_eq(
+        pci.field(pmc, regs.PCI_PM_CAP_VER_MASK),
+        PCI_PM_VERSION,
+        "Power Management capability version",
+    )
+    suite.check_eq(
+        pmc & ~regs.PCI_PM_CAP_VER_MASK,
+        0,
+        "no D1 or D2, no PME, no auxiliary power, and no special initialization",
+    )
+    suite.check_eq(
+        client.read_config(pm + regs.PCI_PM_DATA_REGISTER, 1)[0],
+        0,
+        "no Power Management Data register",
+    )
+
+    config = pci.ResetRegs(client, regs, px, msix, pm)
     config.check(suite, config.initial(), "before any driver")
     suite.check_eq(config.unmasked(), [], "every MSI-X vector is masked at startup")
-
-
-# What ResetRegs.dirty() writes into the 8-bit header registers a reset
-# puts back: a 64-byte cache line, a latency timer and an INTx line
-DIRTY_CACHE_LINE_SIZE = 16
-DIRTY_LATENCY_TIMER = 0x40
-DIRTY_INTERRUPT_LINE = 11
-
-
-class ResetRegs:
-    """The config-space registers a reset puts back, read through @client.
-
-    @px and @msix are the offsets of the PCI Express and MSI-X
-    capabilities, and @regs the linux/pci_regs.h values.
-    """
-
-    def __init__(self, client, regs, px, msix):
-        self.client = client
-        self.regs = regs
-        self.px = px
-        self.msix = msix
-
-    def vector_ctrl(self, vector):
-        """The BAR and offset of MSI-X table entry @vector's Vector Control."""
-        regs = self.regs
-        table = pci.read32(self.client, self.msix + regs.PCI_MSIX_TABLE)
-        return (
-            table & regs.PCI_MSIX_TABLE_BIR,
-            (table & regs.PCI_MSIX_TABLE_OFFSET)
-            + vector * regs.PCI_MSIX_ENTRY_SIZE
-            + regs.PCI_MSIX_ENTRY_VECTOR_CTRL,
-        )
-
-    def unmasked(self):
-        """The MSI-X vectors whose table entry's Mask bit is clear."""
-        regs = self.regs
-        flags = pci.read16(self.client, self.msix + regs.PCI_MSIX_FLAGS)
-        unmasked = []
-        for vector in range(pci.field(flags, regs.PCI_MSIX_FLAGS_QSIZE) + 1):
-            ctrl = self.client.read_bar32(*self.vector_ctrl(vector))
-            if not ctrl & regs.PCI_MSIX_ENTRY_CTRL_MASKBIT:
-                unmasked.append(vector)
-        return unmasked
-
-    def read(self):
-        """The registers, by name.
-
-        Only the writable bits of MSI-X Message Control are read, and the
-        first MSI-X vector stands for the table.
-        """
-        client, regs = self.client, self.regs
-        msix_writable = regs.PCI_MSIX_FLAGS_ENABLE | regs.PCI_MSIX_FLAGS_MASKALL
-        return {
-            "Command": pci.read16(client, regs.PCI_COMMAND),
-            "Cache Line Size": client.read_config(regs.PCI_CACHE_LINE_SIZE, 1)[0],
-            "Latency Timer": client.read_config(regs.PCI_LATENCY_TIMER, 1)[0],
-            "Interrupt Line": client.read_config(regs.PCI_INTERRUPT_LINE, 1)[0],
-            "Device Control": pci.read16(client, self.px + regs.PCI_EXP_DEVCTL),
-            "Device Control 2": pci.read16(client, self.px + regs.PCI_EXP_DEVCTL2),
-            "Link Control 2": pci.read16(client, self.px + regs.PCI_EXP_LNKCTL2),
-            "MSI-X Message Control": pci.read16(client, self.msix + regs.PCI_MSIX_FLAGS)
-            & msix_writable,
-            "MSI-X vector 0 Vector Control": client.read_bar32(*self.vector_ctrl(0)),
-        }
-
-    def initial(self):
-        """What read() returns before a driver writes, and after a reset.
-
-        Device Control has the spec's defaults: Relaxed Ordering and No
-        Snoop enabled, and a 512-byte Max_Read_Request_Size. Link Control
-        2's Target Link Speed is the fastest the device supports.
-        """
-        regs = self.regs
-        return {
-            "Command": 0,
-            "Cache Line Size": 0,
-            "Latency Timer": 0,
-            "Interrupt Line": 0,
-            "Device Control": regs.PCI_EXP_DEVCTL_RELAX_EN
-            | regs.PCI_EXP_DEVCTL_NOSNOOP_EN
-            | regs.PCI_EXP_DEVCTL_READRQ_512B,
-            "Device Control 2": 0,
-            "Link Control 2": regs.PCI_EXP_LNKCTL2_TLS_64_0GT,
-            "MSI-X Message Control": 0,
-            "MSI-X vector 0 Vector Control": regs.PCI_MSIX_ENTRY_CTRL_MASKBIT,
-        }
-
-    def dirty(self, suite):
-        """Write what a driver might into every register.
-
-        Device Control gets a 256-byte Max_Payload_Size, which an FLR
-        keeps, with Relaxed Ordering and No Snoop off and a 4096-byte
-        Max_Read_Request_Size. Link Control 2, which an FLR also keeps,
-        gets a 2.5 GT/s Target Link Speed. Checks that every register took
-        its new value, or a check that a reset put it back would pass
-        without one.
-        """
-        client, regs = self.client, self.regs
-        pci.write16(
-            client, regs.PCI_COMMAND, regs.PCI_COMMAND_MEMORY | regs.PCI_COMMAND_MASTER
-        )
-        client.write_config(regs.PCI_CACHE_LINE_SIZE, bytes((DIRTY_CACHE_LINE_SIZE,)))
-        client.write_config(regs.PCI_LATENCY_TIMER, bytes((DIRTY_LATENCY_TIMER,)))
-        client.write_config(regs.PCI_INTERRUPT_LINE, bytes((DIRTY_INTERRUPT_LINE,)))
-        pci.write16(
-            client,
-            self.px + regs.PCI_EXP_DEVCTL,
-            regs.PCI_EXP_DEVCTL_PAYLOAD_256B | regs.PCI_EXP_DEVCTL_READRQ_4096B,
-        )
-        pci.write16(
-            client,
-            self.px + regs.PCI_EXP_DEVCTL2,
-            regs.PCI_EXP_DEVCTL2_COMP_TMOUT_DIS,
-        )
-        pci.write16(
-            client, self.px + regs.PCI_EXP_LNKCTL2, regs.PCI_EXP_LNKCTL2_TLS_2_5GT
-        )
-        flags = pci.read16(client, self.msix + regs.PCI_MSIX_FLAGS)
-        pci.write16(
-            client,
-            self.msix + regs.PCI_MSIX_FLAGS,
-            flags | regs.PCI_MSIX_FLAGS_ENABLE | regs.PCI_MSIX_FLAGS_MASKALL,
-        )
-        client.write_bar32(*self.vector_ctrl(0), 0)
-
-        initial = self.initial()
-        for name, value in self.read().items():
-            suite.check(
-                value != initial[name],
-                "%s moved off its initial value, to %#x",
-                name,
-                value,
-            )
-
-    def check(self, suite, expected, when):
-        """Check read() returns @expected, @when (e.g. "after an FLR")."""
-        for name, value in self.read().items():
-            suite.check_eq(value, expected[name], "%s %s", name, when)
 
 
 def test_bar_access(suite, client, server):
@@ -604,12 +488,13 @@ def find_reset_regs(suite, client, regs):
     """The ResetRegs for @client, or None without the capabilities."""
     px = pci.find_capability(client, regs, regs.PCI_CAP_ID_EXP)
     msix = pci.find_capability(client, regs, regs.PCI_CAP_ID_MSIX)
+    pm = pci.find_capability(client, regs, regs.PCI_CAP_ID_PM)
     if not suite.check(
-        px is not None and msix is not None,
-        "there are PCI Express and MSI-X capabilities",
+        px is not None and msix is not None and pm is not None,
+        "there are PCI Express, MSI-X and Power Management capabilities",
     ):
         return None
-    return ResetRegs(client, regs, px, msix)
+    return pci.ResetRegs(client, regs, px, msix, pm)
 
 
 def wait_for_write_count(stats_path, count, timeout=15.0):
@@ -663,8 +548,8 @@ def check_info_untouched(suite, driver, stats_path, passes, what):
     )
 
 
-def check_info_written(suite, driver):
-    """Wait for, and check, what PORT_INIT and LIF_INIT publish."""
+def check_info_written(suite, driver, when):
+    """Wait for, and check, what PORT_INIT and LIF_INIT publish, @when."""
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline and (
         driver.mem.read(driver.lif_info + LIF_INFO_LINK_STATUS_OFF, 1)[0]
@@ -674,13 +559,53 @@ def check_info_written(suite, driver):
     suite.check_eq(
         driver.mem.read(driver.port_info + PORT_INFO_STATUS_OFF, 1)[0],
         PORT_OPER_STATUS_UP,
-        "the port status written once BME is set",
+        f"the port status written {when}",
     )
     suite.check_eq(
         driver.mem.read(driver.lif_info + LIF_INFO_LINK_STATUS_OFF, 1)[0],
         PORT_OPER_STATUS_UP,
-        "the LIF link status written once BME is set",
+        f"the LIF link status written {when}",
     )
+
+
+def check_writes_held(suite, client, regs, stats_path, states):
+    """Check the device writes nothing into guest memory while stopped.
+
+    @states is ((stop, stopped), (go, going)): functions that stop and
+    restart the device, and words for the states they leave it in, for the
+    messages. Stopped, the device must not write the port info and LIF
+    status PORT_INIT and LIF_INIT publish, nor the statistics it rewrites
+    into them every second. Restarted, it writes what it held, and stopped
+    again, it stops again: the statistics aren't rewritten over three
+    passes' worth of seconds. The Command register is put back as it was.
+    """
+    (stop_func, stopped), (go_func, going) = states
+    command = pci.read16(client, regs.PCI_COMMAND)
+    with vfu.GuestMemory(size=1 << 20) as mem:
+        client.dma_map(mem)
+        driver = ionic.IonicDriver(client, mem)
+        try:
+            stop_func()
+            poison_info(driver)
+            info_devcmd(driver, ionic.CMD_RESET)
+            info_devcmd(driver, ionic.CMD_PORT_INIT, driver.port_info)
+            info_devcmd(driver, ionic.CMD_LIF_INIT, driver.lif_info)
+            check_info_untouched(
+                suite, driver, stats_path, 2, f"after LIF_INIT {stopped}"
+            )
+
+            go_func()
+            check_info_written(suite, driver, going)
+
+            stop_func()
+            poison_info(driver)
+            check_info_untouched(suite, driver, stats_path, 3, f"{stopped} again")
+        finally:
+            go_func()
+            # Nothing of this client's for the device to write to later
+            info_devcmd(driver, ionic.CMD_RESET)
+            pci.write16(client, regs.PCI_COMMAND, command)
+            client.dma_unmap(mem.base, mem.size)
 
 
 def test_bus_master(suite, client, regs, stats_path):
@@ -688,40 +613,98 @@ def test_bus_master(suite, client, regs, stats_path):
 
     Linux clears it when a driver unbinds and before kexec starts the next
     kernel, and nothing else stops a device whose driver has no shutdown
-    hook. While it is clear the device must not write the guest's memory:
-    not the port info and LIF status PORT_INIT and LIF_INIT publish, and not
-    the statistics it rewrites into them every second. Once BME is set,
-    what was held is written.
+    hook.
     """
-    command = pci.read16(client, regs.PCI_COMMAND)
-    with vfu.GuestMemory(size=1 << 20) as mem:
-        client.dma_map(mem)
-        driver = ionic.IonicDriver(client, mem)
-        try:
-            client.set_bus_master(False)
-            poison_info(driver)
-            info_devcmd(driver, ionic.CMD_RESET)
-            info_devcmd(driver, ionic.CMD_PORT_INIT, driver.port_info)
-            info_devcmd(driver, ionic.CMD_LIF_INIT, driver.lif_info)
-            check_info_untouched(
-                suite, driver, stats_path, 2, "after LIF_INIT with BME clear"
+    check_writes_held(
+        suite,
+        client,
+        regs,
+        stats_path,
+        (
+            (lambda: client.set_bus_master(False), "with BME clear"),
+            (lambda: client.set_bus_master(True), "once BME is set"),
+        ),
+    )
+
+
+def test_power_state(suite, client, regs):
+    """PowerState, the one field of the Power Management capability a guest
+    writes.
+
+    The device supports D0 and D3hot, which every function must, and no
+    other state: a write of D1 or D2 completes, but is discarded. Every
+    other bit is read-only, so the writes Linux makes, which put back
+    what they read, and the write of 0 its pci_power_up() makes, leave
+    No_Soft_Reset set.
+    """
+    pm = pci.find_capability(client, regs, regs.PCI_CAP_ID_PM)
+    if not suite.check(pm is not None, "there is a Power Management capability"):
+        return
+    pmcsr_off = pm + regs.PCI_PM_CTRL
+    in_d0 = regs.PCI_PM_CTRL_NO_SOFT_RESET | pci.PM_D0
+    in_d3hot = regs.PCI_PM_CTRL_NO_SOFT_RESET | pci.PM_D3HOT
+    # What is written to PMCSR, in turn, and what it then reads
+    writes = (
+        (in_d0 | pci.PM_D1, in_d0, "D1 from D0"),
+        (in_d0 | pci.PM_D2, in_d0, "D2 from D0"),
+        (0xFFFF, in_d3hot, "every bit, which sets D3hot"),
+        (in_d0 | pci.PM_D1, in_d3hot, "D1 from D3hot"),
+        (in_d0 | pci.PM_D2, in_d3hot, "D2 from D3hot"),
+        (0, in_d0, "0"),
+    )
+
+    try:
+        for value, expected, what in writes:
+            pci.write16(client, pmcsr_off, value)
+            suite.check_eq(
+                pci.read16(client, pmcsr_off), expected, "PMCSR after %s", what
             )
 
-            client.set_bus_master(True)
-            check_info_written(suite, driver)
+        # The read-only registers: the capabilities, and PMCSR's bridge
+        # extensions and the Data register written with it in one dword
+        pmc = pci.read16(client, pm + regs.PCI_PM_PMC)
+        pci.write16(client, pm + regs.PCI_PM_PMC, 0xFFFF)
+        suite.check_eq(
+            pci.read16(client, pm + regs.PCI_PM_PMC), pmc, "PMC after a write"
+        )
+        client.write_config(pmcsr_off, struct.pack("<I", 0xFFFFFFFF))
+        suite.check_eq(
+            pci.read32(client, pmcsr_off),
+            in_d3hot,
+            "PMCSR and the Data register after a 32-bit write of every bit",
+        )
+    finally:
+        pci.set_power_state(client, regs, pm, pci.PM_D0)
 
-            # Cleared again, it stops again: the statistics, due every
-            # second, aren't rewritten over three passes' worth of seconds
-            client.set_bus_master(False)
-            poison_info(driver)
-            check_info_untouched(
-                suite, driver, stats_path, 3, "once BME was cleared again"
-            )
-        finally:
-            # Nothing of this client's for the device to write to later
-            info_devcmd(driver, ionic.CMD_RESET)
-            pci.write16(client, regs.PCI_COMMAND, command)
-            client.dma_unmap(mem.base, mem.size)
+
+def test_d3hot(suite, client, regs, stats_path):
+    """D3hot, where the function may do no DMA, Bus Master Enable or not.
+
+    The guest's PCI core puts a function in D3hot before suspending, and
+    for runtime power management. The device holds its work there as with
+    BME clear. No_Soft_Reset is set, so going back to D0 keeps the
+    device's state, and it then writes what it held. A VMM unmaps the
+    BARs in D3hot, so a guest can't send the device commands sent here,
+    but they show that the device would DMA nothing for them.
+    """
+    pm = pci.find_capability(client, regs, regs.PCI_CAP_ID_PM)
+    if not suite.check(pm is not None, "there is a Power Management capability"):
+        return
+
+    def stop():
+        client.set_bus_master(True)
+        pci.set_power_state(client, regs, pm, pci.PM_D3HOT)
+
+    check_writes_held(
+        suite,
+        client,
+        regs,
+        stats_path,
+        (
+            (stop, "in D3hot with BME set"),
+            (lambda: pci.set_power_state(client, regs, pm, pci.PM_D0), "once in D0"),
+        ),
+    )
 
 
 def test_flr(suite, client, regs, stats_path):
@@ -840,7 +823,7 @@ def test_reset_and_reconnect(suite, client, regs, socket_path):
             station,
             "the MAC a second client finds after the first changed it",
         )
-        config = ResetRegs(second, regs, config.px, config.msix)
+        config = pci.ResetRegs(second, regs, config.px, config.msix, config.pm)
         config.check(
             suite, config.initial(), "for a second client after the first changed it"
         )
@@ -941,6 +924,8 @@ def main():
             suite.run("interrupts", test_irqs, client)
             suite.run("stats file", test_stats_file, stats_path)
             suite.run("Bus Master Enable", test_bus_master, client, regs, stats_path)
+            suite.run("power state", test_power_state, client, regs)
+            suite.run("D3hot", test_d3hot, client, regs, stats_path)
             suite.run("function-level reset", test_flr, client, regs, stats_path)
             suite.run(
                 "reset and reconnect",

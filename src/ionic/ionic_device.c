@@ -338,8 +338,9 @@ void ionic_device_poll(struct ionic_device *dev)
     /*
      * Everything below reads or writes guest memory, which the function may
      * not do while the guest has Bus Master Enable clear (PCI Express Base
-     * 6.5, 7.5.1.1.3).  Its work waits instead, as on hardware that can't
-     * get on the bus, and goes on from where it stopped once BME is set.
+     * 6.5, 7.5.1.1.3), or has put it in D3hot.  Its work waits instead, as
+     * on hardware that can't get on the bus, and goes on from where it
+     * stopped once BME is set and the function is back in D0.
      */
     if (!ernic_dma_bus_master(dev->vfu_ctx)) {
         dev->bus_master = false;

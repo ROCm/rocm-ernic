@@ -54,6 +54,7 @@ static const struct pci_reg pci_regs[] = {
     PCI_REG(PCI_CAP_LIST_NEXT),
     PCI_REG(PCI_CAP_ID_EXP),
     PCI_REG(PCI_CAP_ID_MSIX),
+    PCI_REG(PCI_CAP_ID_PM),
 
     /* The PCI Express capability */
     PCI_REG(PCI_EXP_FLAGS),
@@ -108,6 +109,15 @@ static const struct pci_reg pci_regs[] = {
     PCI_REG(PCI_MSIX_ENTRY_SIZE),
     PCI_REG(PCI_MSIX_ENTRY_VECTOR_CTRL),
     PCI_REG(PCI_MSIX_ENTRY_CTRL_MASKBIT),
+
+    /* The Power Management capability */
+    PCI_REG(PCI_PM_PMC),
+    PCI_REG(PCI_PM_CAP_VER_MASK),
+    PCI_REG(PCI_PM_CTRL),
+    PCI_REG(PCI_PM_CTRL_STATE_MASK),
+    PCI_REG(PCI_PM_CTRL_NO_SOFT_RESET),
+    PCI_REG(PCI_PM_DATA_REGISTER),
+    PCI_REG(PCI_PM_SIZEOF),
 };
 
 int main(void)

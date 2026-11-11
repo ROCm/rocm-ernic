@@ -263,6 +263,146 @@ static ssize_t bar2_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
     return ionic_eth_emu_bar2_access(emu, buf, count, offset, is_write);
 }
 
+/* The PowerState values the device supports: D0 and D3hot, which every
+ * function must (PCI Express Base 6.5, 7.5.2) */
+#define PM_STATE_D0    0U
+#define PM_STATE_D3HOT 3U
+
+/**
+ * Whether to log one more config-space message, which a client can cause
+ * with every write, under @p dev's limit.
+ */
+static bool cfg_log_ok(rocm_ernic_dev_t *dev)
+{
+    uint64_t held;
+
+    if (!ernic_log_limit(&dev->cfg_log_limit, ernic_monotonic_ms(), &held)) {
+        return false;
+    }
+    if (held) {
+        vfu_log(dev->vfu_ctx, LOG_WARNING,
+                "%" PRIu64 " more config space messages not logged", held);
+    }
+    return true;
+}
+
+/* The name of PowerState value @p state */
+static const char *pm_state_name(unsigned state)
+{
+    static const char *const names[] = {"D0", "D1", "D2", "D3hot"};
+
+    return names[state & PCI_PM_CTRL_STATE_MASK];
+}
+
+/**
+ * Apply a write to the Power Management capability.
+ *
+ * PowerState is the capability's only writable field. D0 and D3hot are
+ * taken; D1 and D2, which the device doesn't support, are discarded, and
+ * the write completes, as the spec requires (7.5.2.2). Every other bit is
+ * read-only, or hardwired to 0 because the device has no PME and no Data
+ * register, so the rest of the write is ignored. No_Soft_Reset stays set,
+ * so leaving D3hot keeps the device's state: work held while it was there
+ * goes on as it does once Bus Master Enable is set again.
+ *
+ * @param dev The device
+ * @param pm The capability, in config space
+ * @param start Where the write starts, from the start of the capability
+ * @param buf What is written
+ * @param count Bytes written, which fit in the capability from @p start
+ */
+static void pm_write(rocm_ernic_dev_t *dev, uint8_t *pm, size_t start,
+                     const char *buf, size_t count)
+{
+    uint8_t written[PCI_PM_SIZEOF];
+    uint16_t pmcsr = ernic_get_le16(pm + PCI_PM_CTRL);
+    unsigned old = pmcsr & PCI_PM_CTRL_STATE_MASK;
+    unsigned state;
+
+    /* The capability as the write would leave it, so PowerState is read
+     * whichever of PMCSR's bytes the write covers */
+    memcpy(written, pm, sizeof(written));
+    memcpy(written + start, buf, count);
+    state = ernic_get_le16(written + PCI_PM_CTRL) & PCI_PM_CTRL_STATE_MASK;
+    if (state == old) {
+        return;
+    }
+    if (state != PM_STATE_D0 && state != PM_STATE_D3HOT) {
+        if (cfg_log_ok(dev)) {
+            vfu_log(dev->vfu_ctx, LOG_DEBUG,
+                    "power state %s isn't supported; staying in %s",
+                    pm_state_name(state), pm_state_name(old));
+        }
+        return;
+    }
+
+    ernic_put_le16(
+        pm + PCI_PM_CTRL,
+        (uint16_t)((pmcsr & ~(unsigned)PCI_PM_CTRL_STATE_MASK) | state));
+    if (cfg_log_ok(dev)) {
+        vfu_log(dev->vfu_ctx, LOG_INFO, "power state %s -> %s",
+                pm_state_name(old), pm_state_name(state));
+    }
+}
+
+/**
+ * Config space access callback.
+ *
+ * libvfio-user answers the standard header and the capabilities it handles
+ * itself, and passes on the rest: the Power Management capability, whose
+ * own handler would store every bit of a PMCSR write, the read-only ones
+ * included, and the space outside every capability, answered here as
+ * libvfio-user answers it without a callback: read, but not written.
+ *
+ * libvfio-user can pass on an access to a capability that runs past its
+ * end. Only the capability's part is done here; the shorter count returned
+ * has libvfio-user pass on the rest as an access of its own.
+ */
+static ssize_t config_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
+                             loff_t offset, bool is_write)
+{
+    rocm_ernic_dev_t *dev = vfu_get_private(vfu_ctx);
+    uint8_t *cfg = (uint8_t *)vfu_pci_get_config_space(vfu_ctx);
+    size_t pm = dev->pci_init.pm_off;
+    size_t off;
+
+    /* libvfio-user has checked the access lies in the region, which is the
+     * size of its copy of config space */
+    if (!cfg || offset < 0 || (uint64_t)offset > PCI_CFG_SPACE_EXP_SIZE ||
+        count > PCI_CFG_SPACE_EXP_SIZE - (size_t)offset) {
+        errno = EINVAL;
+        return -1;
+    }
+    off = (size_t)offset;
+
+    if (pm != 0 && off >= pm && off - pm < PCI_PM_SIZEOF) {
+        size_t n = PCI_PM_SIZEOF - (off - pm);
+
+        if (n > count) {
+            n = count;
+        }
+        if (is_write) {
+            pm_write(dev, cfg + pm, off - pm, buf, n);
+        } else {
+            memcpy(buf, cfg + off, n);
+        }
+        return (ssize_t)n;
+    }
+
+    if (is_write) {
+        if (cfg_log_ok(dev)) {
+            vfu_log(vfu_ctx, LOG_ERR,
+                    "config space write outside every capability refused: "
+                    "offset=%#zx count=%zu",
+                    off, count);
+        }
+        errno = EINVAL;
+        return -1;
+    }
+    memcpy(buf, cfg + off, count);
+    return (ssize_t)count;
+}
+
 /* Every vector the profile can ask for has an entry in the MSI-X table */
 _Static_assert(IONIC_PROFILE_INTR_VECTORS_MAX <= IONIC_MSIX_MAX_VECTORS,
                "the profile's vectors must fit the MSI-X table");
@@ -296,7 +436,9 @@ static void reset_msix_table(rocm_ernic_dev_t *dev)
  * Link Control, which libvfio-user never changes, and the Status
  * registers, whose error bits nothing sets.  libvfio-user only stores the
  * registers written here, and reads none of them, so writing them behind
- * its back is safe.
+ * its back is safe.  The Power Management capability's PMCSR is the
+ * server's own (config_access()), and every reset returns the function to
+ * D0.
  *
  * An FLR keeps the link's state, which it leaves out of what it resets:
  * Max_Payload_Size in Device Control, and Link Control 2.  A device reset
@@ -332,6 +474,8 @@ static void reset_pci_config(vfu_ctx_t *vfu_ctx, const rocm_ernic_dev_t *dev,
     }
     ernic_put_le16(cfg + dev->pci_init.msix_off + PCI_MSIX_FLAGS,
                    dev->pci_init.msix_flags);
+    ernic_put_le16(cfg + dev->pci_init.pm_off + PCI_PM_CTRL,
+                   dev->pci_init.pmcsr);
 }
 
 /**
@@ -847,6 +991,58 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, const rocm_ernic_dev_t *dev)
 }
 
 /**
+ * Add the PCI Power Management capability, which every PCI Express
+ * function but a VF must have (PCI Express Base 6.5, 7.5.2). Added last, it
+ * is the last on the list. Returns 0, or -1 after saying why.
+ *
+ * It is the least the spec allows: version 3, the D0 and D3hot states that
+ * every function supports and no others, no PME, and no Data register.
+ * No_Soft_Reset is set, so leaving D3hot keeps the device's state. That
+ * also keeps Linux and QEMU from resetting the device by a trip through
+ * D3hot, rather than with the FLR it advertises.
+ *
+ * In D3hot the device does no DMA and raises no interrupt, as with Bus
+ * Master Enable clear (ernic_dma_bus_master()). It still answers BAR
+ * accesses, which the spec says a function in D3hot refuses; QEMU unmaps
+ * the BARs in D3hot, as it does with Memory Space Enable clear, which the
+ * device doesn't check either.
+ *
+ * Accesses to the capability come to config_access(), which takes the
+ * config space region's callback.
+ */
+static int setup_power_management(vfu_ctx_t *vfu_ctx)
+{
+    uint8_t pm[PCI_PM_SIZEOF];
+    ssize_t pm_off;
+
+    if (vfu_setup_region(vfu_ctx, VFU_PCI_DEV_CFG_REGION_IDX,
+                         PCI_CFG_SPACE_EXP_SIZE, config_access,
+                         VFU_REGION_FLAG_RW, NULL, 0, -1, 0) < 0) {
+        ernic_log_errno(ERNIC_LOG_ERROR, errno,
+                        "vfu_setup_region() failed for config space");
+        return -1;
+    }
+
+    memset(pm, 0, sizeof(pm));
+    pm[PCI_CAP_LIST_ID] = PCI_CAP_ID_PM;
+    ernic_put_le16(pm + PCI_PM_PMC,
+                   (uint16_t)pci_field(PCI_PM_CAP_VER_MASK, 3U));
+    ernic_put_le16(pm + PCI_PM_CTRL, PCI_PM_CTRL_NO_SOFT_RESET | PM_STATE_D0);
+    pm_off = vfu_pci_add_capability(vfu_ctx, 0, VFU_CAP_FLAG_CALLBACK, pm);
+    if (pm_off < 0) {
+        ernic_log_errno(ERNIC_LOG_ERROR, errno,
+                        "vfu_pci_add_capability() failed for Power "
+                        "Management");
+        return -1;
+    }
+    /* pm_off is a non-negative offset here, so the cast to size_t is exact */
+    ernic_startup_report("rocm-ernic: Added Power Management capability at "
+                         "offset %#zx",
+                         (size_t)pm_off);
+    return 0;
+}
+
+/**
  * Save the config-space registers a driver writes, as setup left them, for
  * reset_pci_config() to write back.  Run once every capability is added.
  * Returns 0, or -1 after saying why.
@@ -856,17 +1052,20 @@ static int save_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     const uint8_t *cfg = (const uint8_t *)vfu_pci_get_config_space(vfu_ctx);
     size_t px_off = vfu_pci_find_capability(vfu_ctx, false, PCI_CAP_ID_EXP);
     size_t msix_off = vfu_pci_find_capability(vfu_ctx, false, PCI_CAP_ID_MSIX);
+    size_t pm_off = vfu_pci_find_capability(vfu_ctx, false, PCI_CAP_ID_PM);
 
-    /* Both are in the standard config space, which libvfio-user checked
+    /* All are in the standard config space, which libvfio-user checked
      * they fit when it added them */
-    if (!cfg || px_off == 0 || msix_off == 0) {
-        ernic_log(ERNIC_LOG_ERROR, "the PCI Express or MSI-X capability is "
-                                   "missing from config space");
+    if (!cfg || px_off == 0 || msix_off == 0 || pm_off == 0) {
+        ernic_log(ERNIC_LOG_ERROR, "the PCI Express, MSI-X or Power "
+                                   "Management capability is missing from "
+                                   "config space");
         return -1;
     }
 
     dev->pci_init.px_off = px_off;
     dev->pci_init.msix_off = msix_off;
+    dev->pci_init.pm_off = pm_off;
     dev->pci_init.command = ernic_get_le16(cfg + PCI_COMMAND);
     dev->pci_init.cache_line_size = cfg[PCI_CACHE_LINE_SIZE];
     dev->pci_init.latency_timer = cfg[PCI_LATENCY_TIMER];
@@ -875,6 +1074,7 @@ static int save_pci_config(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     dev->pci_init.devctl2 = ernic_get_le16(cfg + px_off + PCI_EXP_DEVCTL2);
     dev->pci_init.lnkctl2 = ernic_get_le16(cfg + px_off + PCI_EXP_LNKCTL2);
     dev->pci_init.msix_flags = ernic_get_le16(cfg + msix_off + PCI_MSIX_FLAGS);
+    dev->pci_init.pmcsr = ernic_get_le16(cfg + pm_off + PCI_PM_CTRL);
     return 0;
 }
 
@@ -1683,9 +1883,9 @@ static int setup_stats_file(rocm_ernic_dev_t *dev, const char *socket_path)
 }
 
 /**
- * Present the device over vfio-user: its PCI identity, BARs and interrupts,
- * and the DMA and reset callbacks; then realize the context.  Returns 0, or
- * -1 after saying why.
+ * Present the device over vfio-user: its PCI identity, BARs, interrupts and
+ * power management, and the DMA and reset callbacks; then realize the
+ * context.  Returns 0, or -1 after saying why.
  */
 static int setup_vfu_device(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
 {
@@ -1699,6 +1899,10 @@ static int setup_vfu_device(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
     /* Setup interrupts */
     if (setup_interrupts(vfu_ctx, dev) < 0) {
         ernic_log_errno(ERNIC_LOG_ERROR, errno, "setup_interrupts() failed");
+        return -1;
+    }
+
+    if (setup_power_management(vfu_ctx) < 0) {
         return -1;
     }
 

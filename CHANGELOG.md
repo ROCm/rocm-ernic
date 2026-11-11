@@ -141,6 +141,17 @@
   Error Reporting, ASPM Optionality Compliance (the device supports no
   ASPM), and Completion Timeout Disable Supported.
 
+* The device has a PCI Power Management capability, which the PCI Express
+  specification requires of every function. It supports the D0 and D3hot
+  power states, and no others, has no PME, and keeps its state in D3hot
+  (No_Soft_Reset). In D3hot, which Linux uses for suspend and runtime power
+  management, the device does no DMA and raises no interrupt, as with Bus
+  Master Enable clear: its work is held, and goes on once the guest puts
+  it back in D0. A write of D1 or D2 is ignored, as the specification
+  requires. A reset or a function-level reset returns the device to D0.
+  Linux and QEMU, seeing No_Soft_Reset, still reset the device with an FLR
+  rather than by a trip through D3hot.
+
 * `--backend nvmeof:kv=1[,keys=...,maxval=...]` serves the namespace with the
   NVM Express Key Value command set instead of the block one: Store (01h),
   Retrieve (02h), List (06h), Delete (10h) and Exist (14h), with the key
