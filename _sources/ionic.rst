@@ -616,8 +616,8 @@ result to DKMS.
 
    The patch series and the two scripts that apply it
    live in the Ansible collection so that a consumer
-   installing ``sbates130272.rocm_ernic`` gets them at
-   the same ref as the roles that apply them; see
+   installing ``rocm.ernic`` gets them at the same ref
+   as the roles that apply them; see
    ``ansible/files/README.md``. The installed layout
    under ``share/rocm-ernic`` is unchanged.
 

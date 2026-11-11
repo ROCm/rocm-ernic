@@ -408,7 +408,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#variable-overrides">Variable overrides</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rdma-tutorial-examples">RDMA-Tutorial examples</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-guest-image">The guest image</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-rocm-ernic-ansible-collection">The rocm_ernic Ansible collection</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-rocm-ernic-ansible-collection">The rocm.ernic Ansible collection</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-driver-ci">Guest Driver CI</a></li>
@@ -1003,8 +1003,8 @@ RDMA-Tutorial and runs each between the two VMs; see
 <li><p><strong>performance-tests</strong> – the TCP and RDMA sweeps.</p></li>
 </ol>
 <p>The setup plays are thin wrappers around the roles of the
-<code class="docutils literal notranslate"><span class="pre">sbates130272.rocm_ernic</span></code> collection, whose source lives in
-<code class="docutils literal notranslate"><span class="pre">ansible/roles/</span></code>; see <a class="reference internal" href="#ansible-collection"><span class="std std-ref">The rocm_ernic Ansible collection</span></a> below.</p>
+<code class="docutils literal notranslate"><span class="pre">rocm.ernic</span></code> collection, whose source lives in
+<code class="docutils literal notranslate"><span class="pre">ansible/roles/</span></code>; see <a class="reference internal" href="#ansible-collection"><span class="std std-ref">The rocm.ernic Ansible collection</span></a> below.</p>
 </section>
 <section id="running-individual-plays">
 <h3>Running individual plays<a class="headerlink" href="#running-individual-plays" title="Link to this heading">#</a></h3>
@@ -1145,11 +1145,11 @@ so <code class="docutils literal notranslate"><span class="pre">ernic_gpu_passth
 GPU rig needs a GPU-flavoured image.</p>
 </section>
 <section id="the-rocm-ernic-ansible-collection">
-<span id="ansible-collection"></span><h3>The rocm_ernic Ansible collection<a class="headerlink" href="#the-rocm-ernic-ansible-collection" title="Link to this heading">#</a></h3>
+<span id="ansible-collection"></span><h3>The rocm.ernic Ansible collection<a class="headerlink" href="#the-rocm-ernic-ansible-collection" title="Link to this heading">#</a></h3>
 <p>The reusable parts of the automation are packaged as the
-<code class="docutils literal notranslate"><span class="pre">sbates130272.rocm_ernic</span></code> Galaxy collection, so any
-suitable guest can be turned into a rocm-ernic RDMA node
-without the playbooks here:</p>
+<code class="docutils literal notranslate"><span class="pre">rocm.ernic</span></code> Ansible collection, so any suitable guest can
+be turned into a rocm-ernic RDMA node without the playbooks
+here:</p>
 <dl class="simple">
 <dt><code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code></dt><dd><p>Installs the DKMS driver, builds rdma-core with the
 <code class="docutils literal notranslate"><span class="pre">rocm_ernic</span></code> provider, applies the udev rules, addresses
@@ -1163,19 +1163,22 @@ cloning it on the controller when <code class="docutils literal notranslate"><sp
 not set.</p>
 </dd>
 </dl>
-<p>Consumers outside this repo install it from Galaxy and address
-the roles by their fully qualified name:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ansible-galaxy<span class="w"> </span>collection<span class="w"> </span>install<span class="w"> </span>sbates130272.rocm_ernic
+<p>The collection is not published to Ansible Galaxy. Consumers
+outside this repo install it from a pinned commit, matching the
+server they run, and address the roles by their fully qualified
+name:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ansible-galaxy<span class="w"> </span>collection<span class="w"> </span>install<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>git+https://github.com/ROCm/rocm-ernic.git#/ansible/,&lt;SHA&gt;
 </pre></div>
 </div>
 <div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">roles</span><span class="p">:</span>
-<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">role</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sbates130272.rocm_ernic.ernic_guest_setup</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">role</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rocm.ernic.ernic_guest_setup</span>
 </pre></div>
 </div>
 <p>Playbooks in this repo instead reach the same roles by short
 name through <code class="docutils literal notranslate"><span class="pre">roles_path</span></code> in <code class="docutils literal notranslate"><span class="pre">ansible/ansible.cfg</span></code>, so they
-always run against this checkout rather than a published
-version. Because that path is relative, run <code class="docutils literal notranslate"><span class="pre">ansible-playbook</span></code>
+always run against this checkout rather than an installed
+copy. Because that path is relative, run <code class="docutils literal notranslate"><span class="pre">ansible-playbook</span></code>
 from the <code class="docutils literal notranslate"><span class="pre">ansible/</span></code> directory.</p>
 </section>
 </section>
@@ -1334,7 +1337,7 @@ the server, uses <code class="docutils literal notranslate"><span class="pre">ad
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#variable-overrides">Variable overrides</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rdma-tutorial-examples">RDMA-Tutorial examples</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-guest-image">The guest image</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-rocm-ernic-ansible-collection">The rocm_ernic Ansible collection</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-rocm-ernic-ansible-collection">The rocm.ernic Ansible collection</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-driver-ci">Guest Driver CI</a></li>
