@@ -895,6 +895,13 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
  * 1. Add MSI-X capability to PCI config space
  * 2. Setup interrupt vectors with vfu_setup_device_nr_irqs()
  * 3. libvfio-user will then manage the table/PBA in BAR0
+ *
+ * The device has no INTx: Interrupt Pin reads 0, which PCI Express
+ * allows of an endpoint (PCI Express Base 6.5, 6.1.2 and 7.5.1.1.13).
+ * ionic asks for MSI-X only. Giving libvfio-user an INTx count would
+ * make it advertise INTA, and QEMU would then route vector 0 to the
+ * guest's INTA whenever MSI-X is off, though nothing here sets Interrupt
+ * Status, honours Interrupt Disable, or deasserts the line.
  */
 static int setup_interrupts(vfu_ctx_t *vfu_ctx, const rocm_ernic_dev_t *dev)
 {
@@ -902,15 +909,6 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, const rocm_ernic_dev_t *dev)
 
 #define MSIX_TABLE_BIR 0 /* Table in BAR 0 */
 #define MSIX_PBA_BIR   0 /* PBA in BAR 0 */
-
-    /* Setup legacy INTx interrupt (required by some guests for PCI compliance)
-     */
-    ret = vfu_setup_device_nr_irqs(vfu_ctx, VFU_DEV_INTX_IRQ, 1);
-    if (ret < 0) {
-        vfu_log(vfu_ctx, LOG_ERR, "Failed to setup INTx interrupt: %s",
-                strerror(errno));
-        return (int)ret;
-    }
 
     /* MSI-X capability structure (12 bytes total) */
     struct {
@@ -960,8 +958,10 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, const rocm_ernic_dev_t *dev)
                          (size_t)ret);
 
     /* Zero the rest of the standard PCI header (0x35-0x3f) for config
-     * reads. The head of the capability list, at 0x34, is libvfio-user's:
-     * it set it when it added the first capability, the PCI Express one. */
+     * reads, Interrupt Pin included: with no INTx count, libvfio-user
+     * leaves it 0. The head of the capability list, at 0x34, is
+     * libvfio-user's: it set it when it added the first capability, the
+     * PCI Express one. */
     {
         vfu_pci_config_space_t *cfg = vfu_pci_get_config_space(vfu_ctx);
         if (cfg) {
@@ -981,7 +981,7 @@ static int setup_interrupts(vfu_ctx_t *vfu_ctx, const rocm_ernic_dev_t *dev)
         return (int)ret;
     }
 
-    ernic_startup_report("rocm-ernic: Interrupts configured: INTx=1, "
+    ernic_startup_report("rocm-ernic: Interrupts configured: "
                          "MSI-X=%d vectors "
                          "(table=BAR%d:0x%x, pba=BAR%d:0x%x)",
                          (int)nr_intrs, MSIX_TABLE_BIR, (unsigned)table_off,

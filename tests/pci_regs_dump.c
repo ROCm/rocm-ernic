@@ -48,6 +48,7 @@ static const struct pci_reg pci_regs[] = {
     PCI_REG(PCI_SUBSYSTEM_ID),
     PCI_REG(PCI_CAPABILITY_LIST),
     PCI_REG(PCI_INTERRUPT_LINE),
+    PCI_REG(PCI_INTERRUPT_PIN),
 
     /* Capabilities */
     PCI_REG(PCI_CAP_LIST_ID),

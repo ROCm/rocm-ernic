@@ -4,6 +4,15 @@
 
 ### Fixed
 
+* The device no longer advertises an INTx interrupt it doesn't
+  implement. Its Interrupt Pin read INTA, but the device never set
+  Interrupt Status or honoured Interrupt Disable, and QEMU then routed
+  the first MSI-X vector's interrupts to the guest's INTA whenever
+  MSI-X was off, where a guest handler would find nothing pending. The
+  Interrupt Pin now reads 0 and the device interrupts with MSI-X only,
+  which is all the `ionic` driver uses, so nothing changes for it. A
+  vfio-user client of your own must enable MSI-X to get interrupts; it
+  can no longer register an INTx eventfd.
 * Log lines from different threads no longer run into each other. The
   server wrote a line in pieces, so when the TCP mesh's threads logged at
   the same moment, one line could land in the middle of another, such as
