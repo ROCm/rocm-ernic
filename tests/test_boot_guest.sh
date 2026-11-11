@@ -517,9 +517,9 @@ mkdir -p "$WORK/tree/service" "$WORK/tree/ci"
 cp "$ERNICCTL" "$WORK/tree/service/ernicctl"
 cat >"$WORK/tree/ci/boot-guest.sh" <<'END_HELPER'
 #!/usr/bin/env bash
-sleep 300 </dev/null >/dev/null 2>&1 &
+sleep 300 >/dev/null 2>&1 &
 qemu=$!
-sleep 300 </dev/null >/dev/null 2>&1 &
+sleep 300 >/dev/null 2>&1 &
 idle=$!
 trap 'kill "$idle"; exit 143' TERM
 printf 'pid=%s\nkey=/dev/null\nuser=ubuntu\nport=2300\n' "$qemu"
