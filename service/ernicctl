@@ -1735,6 +1735,7 @@ def _run_boot_helper(cmd, stopping):
                 proc.wait(timeout=0.2)
                 break
             except subprocess.TimeoutExpired:
+                # Expected while polling for helper completion.
                 pass
             if stopping():
                 # It stops QEMU on its way out
