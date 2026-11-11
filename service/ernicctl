@@ -1644,6 +1644,7 @@ def _remove_vm_launch_cancel(instance):
     try:
         os.remove(cancel)
     except FileNotFoundError:
+        # Missing cancel file is expected when no prior stop left one.
         pass
 
 
