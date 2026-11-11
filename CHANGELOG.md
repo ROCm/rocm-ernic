@@ -225,10 +225,11 @@
   firmware version), link (speed, transceiver, maximum MTU) and queues
   (`[queues]` keys `eth`, `rdma_eqs` and `intr_vectors`, or `--eth-queues`:
   1 to 64 Ethernet queues and up to 128 MSI-X vectors). Profiles are ini
-  files; `compat` (the default, identical to the device before profiles,
-  with 4 queues and 32 vectors) and `small-vm` are built in, with sources in
-  `profiles/`. `--print-profile` prints the resolved profile and exits, and
-  the startup log and stats file name the profile chain and its hash. An
+  files; `compat` (the default, identical to the device before profiles
+  but for its ASIC type, with 4 queues and 32 vectors) and `small-vm` are
+  built in, with sources in `profiles/`. `--print-profile` prints the
+  resolved profile and exits, and the startup log and stats file name the
+  profile chain and its hash. An
   unknown key or out-of-range value is an error naming the file, line and
   key. Every enabled Rx queue is served, steered by a flow hash of the IPv4
   or IPv6 5-tuple (VLAN and QinQ aware); before, only queue 0 received.
@@ -600,6 +601,13 @@
 
 ### Changed
 
+* **The device reports a Salina ASIC by default** (`asic_type = salina`
+  in the `compat` profile), not `none`. For `none` and `elba`, the guest's
+  ionic driver works around missed doorbells: it polls its admin and
+  Ethernet queues each second and re-rings the doorbells of idle ones,
+  each a trap into the server, though the emulated device misses none.
+  `devlink dev info` now shows `asic.id 0x4`. A profile layer with
+  `asic_type = none` restores the old behaviour.
 * **Every message the server prints goes through its log**, so the log
   level applies to all of them. `--log-level none` now also silences error
   messages that used to print regardless, such as why the server couldn't

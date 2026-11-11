@@ -19,14 +19,16 @@
 
 /* profiles/compat.ini */
 static const char compat_ini[] =
-    "# compat: the emulated ionic NIC exactly as rocm-ernic has always "
-    "presented\n"
-    "# it.  It is the base every other profile layers on, so it sets every "
-    "key.\n"
+    "# compat: the emulated ionic NIC as rocm-ernic presents it by default.  "
+    "It is\n"
+    "# the base every other profile layers on, so it sets every key.\n"
     "\n"
     "[identity]\n"
-    "# none, capri, elba, giglio or salina (IONIC_ASIC_TYPE_*)\n"
-    "asic_type = none\n"
+    "# none, capri, elba, giglio or salina (IONIC_ASIC_TYPE_*).  For none and "
+    "elba\n"
+    "# the driver works around missed doorbells by polling its queues each "
+    "second.\n"
+    "asic_type = salina\n"
     "asic_rev = 0\n"
     "# 1 to 31 printable characters; ethtool -i shows it as firmware-version.\n"
     "fw_version = rocm-ernic-1.0\n"

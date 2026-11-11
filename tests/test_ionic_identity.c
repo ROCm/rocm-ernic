@@ -198,7 +198,7 @@ static const struct golden_case golden_cases[] = {
      "every block byte-identical to develop dd8918e", NULL, true},
     {"corner", "the built-in compat text layered on compat",
      "every block byte-identical to develop dd8918e",
-     "[identity]\nasic_type = none\nasic_rev = 0\nfw_version = "
+     "[identity]\nasic_type = salina\nasic_rev = 0\nfw_version = "
      "rocm-ernic-1.0\n[link]\nspeed_mbps = 100000\nxcvr = copper\n"
      "mtu_max = 9198\n",
      true},
@@ -344,6 +344,15 @@ static const struct field_case field_cases[] = {
      DEVINFO_ASIC_TYPE_OFF,
      2,
      {2, 3},
+     0},
+    {"boundary",
+     "identity.asic_type = none",
+     "dev_info asic_type 0 (IONIC_ASIC_TYPE_NONE)",
+     "[identity]\nasic_type = none\n",
+     BLK_DEV_INFO,
+     DEVINFO_ASIC_TYPE_OFF,
+     1,
+     {0},
      0},
     {"boundary",
      "identity.asic_rev = 255",
