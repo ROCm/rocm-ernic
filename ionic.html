@@ -377,6 +377,7 @@
                 <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#starting-the-server">Starting the Server</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#bar-layout">BAR Layout</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#interrupts">Interrupts</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#nic-profiles">NIC Profiles</a></li>
@@ -503,6 +504,19 @@ queue type, the page index the process ID</p></td>
 <p>The MSI-X table has room for 128 vectors; the device
 advertises the profile’s <code class="docutils literal notranslate"><span class="pre">queues.intr_vectors</span></code> of them (32
 under <code class="docutils literal notranslate"><span class="pre">compat</span></code>).</p>
+</section>
+<section id="interrupts">
+<h3>Interrupts<a class="headerlink" href="#interrupts" title="Link to this heading">#</a></h3>
+<p>The device interrupts with MSI-X only. It has <strong>no INTx</strong>:
+its Interrupt Pin reads 0, which PCI Express allows of an
+endpoint, and <code class="docutils literal notranslate"><span class="pre">ionic.ko</span></code> asks for MSI-X alone. A driver,
+or a vfio-user client of your own, has to enable MSI-X
+before the device can interrupt it.</p>
+<p>While MSI-X is off, QEMU gives the device no eventfds to
+signal, so an interrupt the device raises then, on a vector
+the driver has unmasked in the device’s interrupt control,
+is lost rather than held for later, as the specification
+permits. libvfio-user logs <code class="docutils literal notranslate"><span class="pre">no</span> <span class="pre">fd</span> <span class="pre">for</span> <span class="pre">interrupt</span></code> for each.</p>
 </section>
 </section>
 <section id="nic-profiles">
@@ -1340,6 +1354,7 @@ them as unknown instead of 64 GT/s x16; this is cosmetic</p></li>
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#starting-the-server">Starting the Server</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#bar-layout">BAR Layout</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#interrupts">Interrupts</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#nic-profiles">NIC Profiles</a></li>

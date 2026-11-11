@@ -638,7 +638,8 @@ also marks the pages it writes as dirty
 (<code class="docutils literal notranslate"><span class="pre">vfu_sgl_mark_dirty()</span></code>), which is what live migration
 would need.</p></li>
 <li><p><strong>Interrupts.</strong> <code class="docutils literal notranslate"><span class="pre">vfu_irq_trigger()</span></code> signals an eventfd that
-QEMU turns into an MSI-X interrupt in the guest.</p></li>
+QEMU turns into an MSI-X interrupt in the guest. The device
+has no INTx (see <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>).</p></li>
 <li><p><strong>Resets.</strong> libvfio-user tells the server when the guest
 resets the device or the client disconnects.</p></li>
 </ul>
@@ -671,8 +672,8 @@ context.</strong> That rule shapes how the multi-VM code is built (see
 <td><p><code class="docutils literal notranslate"><span class="pre">02:00:00</span></code>, Ethernet controller</p></td>
 </tr>
 <tr class="row-odd"><td><p>Interrupts</p></td>
-<td><p>The NIC profile’s MSI-X vectors (32 under <code class="docutils literal notranslate"><span class="pre">compat</span></code>, at
-most 128), plus INTx</p></td>
+<td><p>MSI-X only: the NIC profile’s vectors (32 under
+<code class="docutils literal notranslate"><span class="pre">compat</span></code>, at most 128). No INTx; Interrupt Pin reads 0</p></td>
 </tr>
 </tbody>
 </table>

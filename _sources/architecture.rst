@@ -204,7 +204,8 @@ the server:
   (``vfu_sgl_mark_dirty()``), which is what live migration
   would need.
 - **Interrupts.** ``vfu_irq_trigger()`` signals an eventfd that
-  QEMU turns into an MSI-X interrupt in the guest.
+  QEMU turns into an MSI-X interrupt in the guest. The device
+  has no INTx (see :doc:`ionic`).
 - **Resets.** libvfio-user tells the server when the guest
   resets the device or the client disconnects.
 
@@ -231,8 +232,8 @@ The server presents one PCIe function:
    * - Class
      - ``02:00:00``, Ethernet controller
    * - Interrupts
-     - The NIC profile's MSI-X vectors (32 under ``compat``, at
-       most 128), plus INTx
+     - MSI-X only: the NIC profile's vectors (32 under
+       ``compat``, at most 128). No INTx; Interrupt Pin reads 0
 
 The upstream ``ionic.ko`` binds to that ID.
 
