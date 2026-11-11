@@ -103,7 +103,11 @@ static const struct schema_key *find_key(const char *group, const char *key)
 void ionic_profile_defaults(struct ionic_profile *p)
 {
     memset(p, 0, sizeof(*p));
-    p->identity.asic_type = IONIC_PROFILE_ASIC_NONE;
+    /* Not none or elba: for those, ionic_doorbell_wa() has the driver poll
+     * its admin and Ethernet queues each second and re-ring idle ones'
+     * doorbells, each a trapped write.  This device misses none: it acts on
+     * each as it is written, or once Bus Master Enable is set again. */
+    p->identity.asic_type = IONIC_PROFILE_ASIC_SALINA;
     p->identity.asic_rev = 0;
     memcpy(p->identity.fw_version, "rocm-ernic-1.0", sizeof("rocm-ernic-1.0"));
     p->link.speed_mbps = COMPAT_SPEED_MBPS;

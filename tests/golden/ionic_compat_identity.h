@@ -3,10 +3,11 @@
  * dd8918e before NIC profiles existed: the blocks the guest driver reads
  * to learn what device it has.  tests/test_ionic_identity.c checks that the
  * compat profile still produces every byte.  Regenerate only for a change
- * that is meant to alter the compat device.  Two have: the resource counts
- * in dev_identity (ndbpgs_per_lif) and lif_identity (nmrs_per_lif and the
- * SQ, RQ and CQ qid_counts) now come from ernic_limits.h and the size of
- * BAR2, and lif_identity's SRQ qid_base is IONIC_SRQ_QID_BASE, not 0.
+ * that is meant to alter the compat device.  Three have: the resource
+ * counts in dev_identity (ndbpgs_per_lif) and lif_identity (nmrs_per_lif
+ * and the SQ, RQ and CQ qid_counts) now come from ernic_limits.h and the
+ * size of BAR2, lif_identity's SRQ qid_base is IONIC_SRQ_QID_BASE, not 0,
+ * and dev_info_regs' asic_type (byte 5) is salina, 4, not none, 0.
  *
  *   dev_info_regs       BAR0 + 0, 0x4c bytes
  *   dev_identity        IDENTIFY data and completion
@@ -28,7 +29,7 @@
 #include <stdint.h>
 
 static const uint8_t golden_dev_info_regs[76] = {
-    0x49, 0x56, 0x45, 0x44, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+    0x49, 0x56, 0x45, 0x44, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00,
     0x00, 0x72, 0x6f, 0x63, 0x6d, 0x2d, 0x65, 0x72, 0x6e, 0x69, 0x63,
     0x2d, 0x31, 0x2e, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,

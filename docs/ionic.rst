@@ -160,10 +160,12 @@ device shape.
      - Guest effect
    * - ``identity.asic_type``
      - ``none``, ``capri``, ``elba``, ``giglio``, ``salina``
-     - ``none``
-     - ``dev_info`` ASIC type. The driver runs its periodic
-       doorbell re-check (``ionic_doorbell_wa()``) only for
-       ``none`` and ``elba``
+     - ``salina``
+     - ``dev_info`` ASIC type. For ``none`` and ``elba``, the
+       driver works around missed doorbells
+       (``ionic_doorbell_wa()``): it polls its admin and
+       Ethernet queues each second and re-rings idle ones'
+       doorbells, which the emulated device doesn't need
    * - ``identity.asic_rev``
      - 0 to 255
      - 0
