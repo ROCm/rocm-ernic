@@ -620,9 +620,8 @@ jobs:
       shell: bash
       run: |
         echo "=== Installing the Ansible collection dependencies ==="
-        # The guest is provisioned by the sbates130272.rocm_ernic
-        # collection in this repo, so the same role developers use is
-        # what these jobs exercise.
+        # The guest is provisioned by the rocm.ernic collection in this
+        # repo, so the same role developers use is what these jobs exercise.
         #
         # The container's ansible-core comes from pipx and searches
         # ~/.ansible/collections, not the dist-packages tree the
@@ -1894,9 +1893,8 @@ jobs:
       shell: bash
       run: |
         echo "=== Installing the Ansible collection dependencies ==="
-        # Both VMs are provisioned by the sbates130272.rocm_ernic
-        # collection in this repo, so these jobs exercise the same role
-        # developers use.
+        # Both VMs are provisioned by the rocm.ernic collection in this
+        # repo, so these jobs exercise the same role developers use.
         #
         # The container's ansible-core comes from pipx and searches
         # ~/.ansible/collections, not the dist-packages tree the

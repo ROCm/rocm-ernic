@@ -6,9 +6,9 @@
 # rocm-ernic systemd service on the local host.
 #
 # The work lives in the ernic_host_setup role of the
-# sbates130272.rocm_ernic collection (source in ansible/
-# collection/, published to Galaxy).  This play only points it
-# at this checkout and at the variables in group_vars/all.yml.
+# rocm.ernic collection (source in ansible/roles/).  This play
+# only points it at this checkout and at the variables in
+# group_vars/all.yml.
 
 ---
 - name: Host setup -- build and install rocm-ernic service

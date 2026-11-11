@@ -1,0 +1,19 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+breaking_changes:
+  - >-
+    The collection is renamed from ``sbates130272.rocm_ernic`` to
+    ``rocm.ernic``.  Address the roles as ``rocm.ernic.ernic_guest_setup``,
+    ``rocm.ernic.ernic_host_setup`` and so on; plays that use the old fully
+    qualified names no longer find them.
+removed_features:
+  - >-
+    The collection is no longer published to Ansible Galaxy, and
+    ``ansible-v*`` tags no longer publish anything.  Install it from a
+    pinned commit with ``ansible-galaxy collection install
+    git+https://github.com/ROCm/rocm-ernic.git#/ansible/,<SHA>``, as the
+    README shows.  The 0.1.0 release that was published under the old name
+    predates the ionic rewrite and does not work with a current server.

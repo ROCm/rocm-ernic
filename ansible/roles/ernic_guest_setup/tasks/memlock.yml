@@ -23,7 +23,7 @@
   ansible.builtin.copy:
     dest: /etc/security/limits.d/90-rdma-memlock.conf
     content: |
-      # Installed by sbates130272.rocm_ernic (ernic_guest_setup).
+      # Installed by rocm.ernic (ernic_guest_setup).
       * soft memlock unlimited
       * hard memlock unlimited
       root soft memlock unlimited
@@ -37,7 +37,7 @@
   ansible.builtin.copy:
     dest: /etc/systemd/system.conf.d/90-rdma-memlock.conf
     content: |
-      # Installed by sbates130272.rocm_ernic (ernic_guest_setup).
+      # Installed by rocm.ernic (ernic_guest_setup).
       [Manager]
       DefaultLimitMEMLOCK=infinity
     owner: root

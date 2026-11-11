@@ -2,12 +2,10 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Sanity-check, lint, build and publish the
-# sbates130272.rocm_ernic Ansible collection.
+# Sanity-check, lint and build the rocm.ernic Ansible collection.
 #
-# Publishing is driven by tags of the form ansible-vX.Y.Z, kept
-# separate from the repo's own release tags.  Bump the version
-# in galaxy.yml in the same commit as the tag.
+# The collection is not published to Galaxy; consumers install it
+# from a pinned git SHA (see ansible/PLAYBOOKS.md).
 
 name: rocm-ernic - Ansible Collection
 
@@ -19,21 +17,16 @@ name: rocm-ernic - Ansible Collection
     paths:
       - 'ansible/**'
       - '.github/workflows/ansible-collection.yml'
-  push:
-    tags:
-      - "ansible-v*"
 
-# Read-only: publishing authenticates to Galaxy with GALAXY_API_KEY,
-# not the workflow token, so nothing here needs to write to the repo.
-# actions: read is for actions/download-artifact@v4, which fetches the
-# built collection through the artifact API rather than the workspace.
+# Read-only: nothing here writes to the repo.  actions: read is for
+# actions/download-artifact, which fetches the built collection
+# through the artifact API rather than the workspace.
 permissions:
   contents: read
   actions: read
 
 env:
   COLLECTION_DIR: ansible
-  COLLECTION_FQCN: sbates130272.rocm_ernic
 
 jobs:
   sanity:
@@ -66,13 +59,13 @@ jobs:
         run: |
           ansible-galaxy collection build "${COLLECTION_DIR}" \
             --force --output-path /tmp
-          mkdir -p /tmp/ac/ansible_collections/sbates130272/rocm_ernic
-          tar xzf /tmp/sbates130272-rocm_ernic-*.tar.gz \
-            -C /tmp/ac/ansible_collections/sbates130272/rocm_ernic
+          mkdir -p /tmp/ac/ansible_collections/rocm/ernic
+          tar xzf /tmp/rocm-ernic-*.tar.gz \
+            -C /tmp/ac/ansible_collections/rocm/ernic
 
       - name: Run sanity tests
         working-directory: >-
-          /tmp/ac/ansible_collections/sbates130272/rocm_ernic
+          /tmp/ac/ansible_collections/rocm/ernic
         run: ansible-test sanity --python 3.12 -v
 
   lint:
@@ -146,7 +139,7 @@ jobs:
 
       # ansible/ is both the collection source and the repo's own
       # test automation, so build_ignore is a denylist: a new file
-      # added there ships to a public Galaxy artifact unless
+      # added there ships to every consumer of the collection unless
       # somebody remembers to exclude it. Assert the contents
       # instead of trusting that they did.
       - name: Assert the artifact ships only collection content
@@ -256,64 +249,15 @@ jobs:
         run: |
           cat > /tmp/consumer.yml <<'EOF'
           ---
-          - name: Consume the rocm_ernic collection by FQCN
+          - name: Consume the rocm.ernic collection by FQCN
             hosts: localhost
             gather_facts: false
             roles:
-              - role: sbates130272.rocm_ernic.ernic_guest_setup
-              - role: sbates130272.rocm_ernic.ernic_host_setup
+              - role: rocm.ernic.ernic_guest_setup
+              - role: rocm.ernic.ernic_host_setup
           EOF
 
       - name: Syntax-check against the installed collection
         env:
           ANSIBLE_COLLECTIONS_PATH: /tmp/consumer-collections
         run: ansible-playbook --syntax-check /tmp/consumer.yml
-
-  publish:
-    name: Publish to Ansible Galaxy
-    needs: consumer
-    if: startsWith(github.ref, 'refs/tags/ansible-v')
-    runs-on: ubuntu-26.04
-    timeout-minutes: 15
-    steps:
-      - name: Set up Python
-        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: "3.12"
-
-      - name: Install ansible-core
-        run: python3 -m pip install ansible-core
-
-      - name: Download collection artifact
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: collection-artifact
-
-      # Galaxy will not let a version be published twice, so a tag
-      # that disagrees with galaxy.yml burns that version number.
-      # Read the version out of the artifact rather than a fresh
-      # checkout: it asserts what is about to be uploaded, and
-      # actions/checkout would clean the tarball out of the
-      # workspace on its way past.
-      - name: Assert the tag matches the collection version
-        run: |
-          ver=$(python3 - <<'EOF'
-          import glob, json, tarfile
-          tar = tarfile.open(glob.glob('*.tar.gz')[0])
-          m = json.load(tar.extractfile('MANIFEST.json'))
-          print(m['collection_info']['version'])
-          EOF
-          )
-          tag="${GITHUB_REF_NAME#ansible-v}"
-          if [ "${tag}" != "${ver}" ]; then
-            echo "::error::tag ansible-v${tag} does not match" \
-              "version ${ver} in ${COLLECTION_DIR}/galaxy.yml"
-            exit 1
-          fi
-          echo "publishing ${COLLECTION_FQCN} ${ver}"
-
-      - name: Publish to Galaxy
-        run: >-
-          ansible-galaxy collection publish
-          --api-key "${{ secrets.GALAXY_API_KEY }}"
-          ./*.tar.gz
