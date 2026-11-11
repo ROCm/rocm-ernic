@@ -680,11 +680,15 @@ CMD=(
 # ── Boot, and wait for SSH ──────────────────────
 
 QEMU_PID=""
+WAIT_PID=""
 BOOTED=false
 
-# Stop QEMU unless the guest came up
+# Stop QEMU unless the guest came up, and whatever the wait was waiting on
 stop_qemu() {
     trap '' INT TERM HUP
+    if [[ -n $WAIT_PID ]]; then
+        kill -TERM "$WAIT_PID" 2>/dev/null || true
+    fi
     if $BOOTED || [[ -z $QEMU_PID ]]; then
         return
     fi
@@ -723,6 +727,20 @@ SSH=(
 
 echo "$PROG: started QEMU (PID $QEMU_PID); waiting up to ${TIMEOUT}s for" \
     "SSH on 127.0.0.1:$SSH_PORT" >&2
+# Run a command in the background and wait for it, returning its status.
+# A signal stops a script only once the command in the foreground has
+# finished, but it stops a wait at once, so a caller stopping this, such
+# as vm-stop cancelling a vm-launch, doesn't wait out a probe.
+#   $@  the command
+wait_for() {
+    "$@" </dev/null &
+    WAIT_PID=$!
+    local status=0
+    wait "$WAIT_PID" || status=$?
+    WAIT_PID=""
+    return "$status"
+}
+
 # Each probe gets at most what's left of the wait, so none ends after it
 DEADLINE=$((SECONDS + TIMEOUT))
 : >"$OUT/ssh.log"
@@ -736,7 +754,7 @@ while :; do
         tail -n 20 -- "$CONSOLE" >&2 || true
         exit 1
     fi
-    if timeout "$((left < 60 ? left : 60))" "${SSH[@]}" </dev/null \
+    if wait_for timeout "$((left < 60 ? left : 60))" "${SSH[@]}" \
         2>"$OUT/ssh.log"; then
         break
     fi
@@ -747,7 +765,7 @@ while :; do
         tail -n 20 -- "$QEMU_LOG" >&2
         exit 1
     fi
-    sleep 2
+    wait_for sleep 2
 done
 BOOTED=true
 

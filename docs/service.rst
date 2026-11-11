@@ -517,7 +517,11 @@ For instance ``N``, ``vm-launch``:
   or QEMU exits, it stops QEMU and fails.
 
 It refuses an instance whose VM is still running, or
-that another ``vm-launch`` is booting.
+that another ``vm-launch`` is booting.  Until the guest
+is up, the launch owns its QEMU: ``vm-stop`` cancels the
+launch and waits for it to stop QEMU, and so does
+stopping ``vm-launch`` itself with ``SIGINT``,
+``SIGTERM`` or ``SIGHUP``.
 
 Driver distribution
 ^^^^^^^^^^^^^^^^^^^

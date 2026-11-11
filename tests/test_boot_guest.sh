@@ -28,6 +28,7 @@ BIN="$WORK/bin"
 SERVER_PID=""
 LOCK_PID=""
 ZOMBIE_PARENT_PID=""
+LAUNCH_PID=""
 
 cleanup() {
     local pid
@@ -36,7 +37,7 @@ cleanup() {
             kill "$pid" 2>/dev/null || true
         done <"$WORK/qemu-pids"
     fi
-    for pid in "$SERVER_PID" "$LOCK_PID" "$ZOMBIE_PARENT_PID"; do
+    for pid in "$SERVER_PID" "$LOCK_PID" "$ZOMBIE_PARENT_PID" "$LAUNCH_PID"; do
         if [[ -n $pid ]]; then
             kill "$pid" 2>/dev/null || true
         fi
@@ -448,13 +449,66 @@ if "$PYTHON" -I "$ERNICCTL" vm-launch 1 --boot-timeout 30 \
     >"$WORK/out-locked" 2>"$WORK/err-locked"; then
     fail "vm-launch ran while another launch for instance 1 was booting"
 fi
-grep -q 'Another vm-launch for instance 1 is running' "$WORK/err-locked" ||
+grep -q 'Another vm-launch or vm-stop for instance 1 is running' "$WORK/err-locked" ||
     fail "a concurrent vm-launch wasn't refused: $(cat "$WORK/err-locked")"
 [[ ! -e $ERNIC_RUN_DIR/vm-1 ]] || fail "a refused vm-launch ran the helper"
 kill "$LOCK_PID"
 wait "$LOCK_PID" || true
 LOCK_PID=""
 pass "vm-launch refuses an instance another launch is booting"
+
+# Start vm-launch 1 in the background, against a guest that never answers,
+# and wait until its QEMU has started.
+#   $1  a name for its files
+#   $@  the environment for it, as NAME=VALUE
+start_launch() {
+    local name=$1 deadline
+    shift
+    export FAKE_QEMU_ARGS="$WORK/qemu-args-$name"
+    cp "$FAKE_QEMU_PIDS" "$FAKE_QEMU_PIDS.before"
+    env "$@" "$PYTHON" -I "$ERNICCTL" vm-launch 1 --boot-timeout 120 \
+        >"$WORK/out-$name" 2>"$WORK/err-$name" &
+    LAUNCH_PID=$!
+    deadline=$((SECONDS + 30))
+    until [[ -s $FAKE_QEMU_ARGS ]]; do
+        ((SECONDS < deadline)) || fail "$name: vm-launch didn't start QEMU"
+        sleep 0.1
+    done
+    LAUNCH_QEMU_PID=$(comm -13 <(sort "$FAKE_QEMU_PIDS.before") \
+        <(sort "$FAKE_QEMU_PIDS"))
+}
+
+# Wait for the background vm-launch, which must fail, saying why.
+#   $1  the name start_launch() had
+#   $2  what it must say
+end_launch() {
+    local status=0
+    wait "$LAUNCH_PID" || status=$?
+    LAUNCH_PID=""
+    ((status != 0)) || fail "$1: vm-launch succeeded though it was stopped"
+    grep -qF -- "$2" "$WORK/err-$1" ||
+        fail "$1: vm-launch said '$(cat "$WORK/err-$1")', not '$2'"
+    ! running "$LAUNCH_QEMU_PID" || fail "$1: QEMU was left running"
+    [[ -z $(vm_field vm_pid) ]] || fail "$1: a stopped launch was recorded"
+}
+
+# Each probe hangs, so this also checks the helper doesn't wait one out
+start_launch cancel FAKE_SSH_HANG=1
+start=$SECONDS
+"$PYTHON" -I "$ERNICCTL" vm-stop 1 >"$WORK/out-stop" 2>"$WORK/err-stop" ||
+    fail "vm-stop of a booting launch failed: $(cat "$WORK/err-stop")"
+grep -q 'Cancelling the vm-launch for instance 1' "$WORK/out-stop" ||
+    fail "vm-stop didn't cancel the launch: $(cat "$WORK/out-stop")"
+end_launch cancel "cancelled by vm-stop"
+((SECONDS - start < 20)) ||
+    fail "cancelling the launch took $((SECONDS - start))s"
+[[ ! -e $ERNIC_RUN_DIR/vm-1.cancel ]] || fail "vm-stop left its cancel file"
+pass "vm-stop cancels a launch that is still booting, and its QEMU"
+
+start_launch term FAKE_SSH_FAIL=1
+kill -TERM "$LAUNCH_PID"
+end_launch term "stopped by SIGTERM"
+pass "a vm-launch stopped by SIGTERM stops its QEMU"
 
 export FAKE_QEMU_ARGS="$WORK/qemu-args-6"
 "$PYTHON" -I "$ERNICCTL" vm-launch 1 --boot-timeout 30 \

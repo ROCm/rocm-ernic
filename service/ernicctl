@@ -1616,27 +1616,137 @@ def _parse_extra_hostfwd(extra):
     return rules
 
 
-def _lock_vm_launch(instance):
-    """Take instance's launch lock, or exit if another launch has it.
+def _vm_launch_files(instance):
+    """The launch lock for instance's VM, and the file that cancels a launch."""
+    base = os.path.join(RUN_DIR, f"vm-{instance}")
+    return f"{base}.lock", f"{base}.cancel"
 
-    Returns the lock's descriptor, which holds the lock until it's closed
-    or this process exits. Nothing records a VM until it has booted, so
-    without the lock a second launch could pass the manifest's check and
-    replace the first's key, seed and sockets while it boots. The
-    descriptor isn't inherited, so the helper and QEMU don't hold the lock.
+
+def _open_vm_launch_lock(instance):
+    """Open instance's launch lock, and try to take it.
+
+    Returns the descriptor and whether this took the lock, which it holds
+    until the descriptor is closed or this process exits. The descriptor
+    isn't inherited, so the helper and QEMU don't hold the lock.
     """
-    path = os.path.join(RUN_DIR, f"vm-{instance}.lock")
-    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    lock, _ = _vm_launch_files(instance)
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
+        return fd, False
+    return fd, True
+
+
+def _remove_vm_launch_cancel(instance):
+    """Remove the file that cancels instance's launch, if it's there."""
+    _, cancel = _vm_launch_files(instance)
+    try:
+        os.remove(cancel)
+    except FileNotFoundError:
+        pass
+
+
+def _lock_vm_launch(instance):
+    """Take instance's launch lock, or exit if a launch or stop has it.
+
+    Returns the lock's descriptor. Nothing records a VM until it has
+    booted, so without the lock a second launch could pass the manifest's
+    check and replace the first's key, seed and sockets while it boots.
+    """
+    fd, locked = _open_vm_launch_lock(instance)
+    if not locked:
         os.close(fd)
         print(
-            f"ERROR: Another vm-launch for instance {instance} is running.",
+            f"ERROR: Another vm-launch or vm-stop for instance {instance}"
+            " is running.",
             file=sys.stderr,
         )
         sys.exit(1)
+    # Left by a vm-stop that gave up waiting, not meant for this launch
+    _remove_vm_launch_cancel(instance)
     return fd
+
+
+def _stop_vm_launch(instance):
+    """Take instance's launch lock for vm-stop, cancelling a launch.
+
+    A launch records its VM only once the guest is up, so until then
+    vm-stop would find nothing to stop. Instead it makes the file the
+    launch polls for, and waits until the launch has stopped QEMU and let
+    go of the lock. Returns the lock's descriptor, which keeps a new launch
+    from starting until vm-stop is done.
+    """
+    fd, locked = _open_vm_launch_lock(instance)
+    if locked:
+        return fd
+    print(f"Cancelling the vm-launch for instance {instance}, still booting...")
+    _, cancel = _vm_launch_files(instance)
+    os.close(
+        os.open(cancel, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    )
+    deadline = time.monotonic() + 60
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                _remove_vm_launch_cancel(instance)
+                print(
+                    f"ERROR: The vm-launch for instance {instance} didn't"
+                    " stop within 60 seconds.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            time.sleep(0.2)
+    _remove_vm_launch_cancel(instance)
+    return fd
+
+
+def _stop_pid(pid):
+    """Stop a process with SIGTERM, then SIGKILL if it's still there in 10s."""
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + 10
+    while pid_alive(pid):
+        if time.monotonic() >= deadline:
+            os.kill(pid, signal.SIGKILL)
+            return
+        time.sleep(0.2)
+
+
+def _run_boot_helper(cmd, stopping):
+    """Run the boot helper, stopping it if stopping() becomes true.
+
+    The helper's progress goes to stderr, here, and its results to
+    stdout. Returns QEMU's PID and the boot's key once the guest is up,
+    or None if it didn't come up or was stopped, when the helper has
+    stopped QEMU.
+    """
+    with subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, text=True, encoding="utf-8"
+    ) as proc:
+        while True:
+            try:
+                proc.wait(timeout=0.2)
+                break
+            except subprocess.TimeoutExpired:
+                pass
+            if stopping():
+                # It stops QEMU on its way out
+                proc.terminate()
+                proc.wait()
+                return None
+        out = proc.stdout.read()
+    info = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+    pid_text = info.get("pid", "")
+    key = info.get("key", "")
+    if proc.returncode != 0 or not pid_text.isdigit() or not key:
+        return None
+    return int(pid_text), key
 
 
 # pylint: disable-next=too-many-locals,too-many-branches,too-many-statements
@@ -1835,54 +1945,74 @@ def cmd_vm_launch(args):
         print(f"  NVMe SSDs:   {args.nvme}")
     sys.stdout.flush()
 
-    # The helper's progress goes to stderr, here; its results to stdout
-    with subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, text=True, encoding="utf-8"
-    ) as proc:
-        try:
-            out, _ = proc.communicate()
-        except KeyboardInterrupt:
-            # The helper had the SIGINT too, and stops QEMU on its way out
-            proc.wait()
-            raise
-    info = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
-    pid_text = info.get("pid", "")
-    key = info.get("key", "")
-    if proc.returncode != 0 or not pid_text.isdigit() or not key:
-        print(
-            f"ERROR: The VM for instance {args.instance} didn't come up;"
-            f" see {console} and {out_dir}/qemu.log.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    vm_pid = int(pid_text)
+    # Until the VM is in the manifest, this owns stopping it: on a signal,
+    # or the cancel file a vm-stop makes, it stops the helper, which stops
+    # QEMU, or once the helper is done, QEMU itself. The handlers only note
+    # the signal, so nothing is cut off halfway.
+    stop_signals = []
 
-    # Read again, since other commands may have changed it while the
-    # guest booted
-    m = read_manifest()
-    inst = find_instance(m, args.instance)
-    if not inst:
-        print(
-            f"ERROR: Instance {args.instance} was removed while its VM"
-            " booted; stopping the VM.",
-            file=sys.stderr,
-        )
-        os.kill(vm_pid, signal.SIGTERM)
-        sys.exit(1)
-    inst["vm"] = {
-        "qmp_socket": qmp_sock,
-        "device_id": device_id,
-        "root_port": root_port,
-        "ssh_port": ssh_port,
-        "ssh_user": ssh_user,
-        "ssh_identity": key,
-        "attached": True,
-        "vm_pid": vm_pid,
-        "vm_name": vm_name,
-        "launched_at": time.time(),
-        "gpu": pci_hostdev,
+    def note_signal(signum, _frame):
+        stop_signals.append(signum)
+
+    _, cancel = _vm_launch_files(args.instance)
+
+    def stopping():
+        return stop_signals or os.path.exists(cancel)
+
+    old_handlers = {
+        signum: signal.signal(signum, note_signal)
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
     }
-    write_manifest(m)
+    try:
+        booted = _run_boot_helper(cmd, stopping)
+        # Asked to stop after the helper finished: QEMU is this one's now
+        if booted is not None and stopping():
+            _stop_pid(booted[0])
+            booted = None
+        if booted is None:
+            if stop_signals:
+                why = f"; stopped by {signal.Signals(stop_signals[0]).name}"
+            elif os.path.exists(cancel):
+                why = "; cancelled by vm-stop"
+            else:
+                why = ""
+            print(
+                f"ERROR: The VM for instance {args.instance} didn't come up"
+                f"{why}; see {console} and {out_dir}/qemu.log.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        vm_pid, key = booted
+
+        # Read again, since other commands may have changed it while the
+        # guest booted
+        m = read_manifest()
+        inst = find_instance(m, args.instance)
+        if not inst:
+            print(
+                f"ERROR: Instance {args.instance} was removed while its VM"
+                " booted; stopping the VM.",
+                file=sys.stderr,
+            )
+            _stop_pid(vm_pid)
+            sys.exit(1)
+        inst["vm"] = {
+            "qmp_socket": qmp_sock,
+            "device_id": device_id,
+            "root_port": root_port,
+            "ssh_port": ssh_port,
+            "ssh_user": ssh_user,
+            "ssh_identity": key,
+            "attached": True,
+            "vm_pid": vm_pid,
+            "vm_name": vm_name,
+            "launched_at": time.time(),
+            "gpu": pci_hostdev,
+        }
+        write_manifest(m)
+    finally:
+        for signum, handler in old_handlers.items():
+            signal.signal(signum, handler)
     print(f"VM started (PID {vm_pid}).")
     target = _ssh_vm_target(ssh_user)
     if authorized:
@@ -1894,7 +2024,10 @@ def cmd_vm_launch(args):
 
 
 def cmd_vm_stop(args):
-    """Stop a VM."""
+    """Stop a VM, or cancel a vm-launch still booting one."""
+    # Held until this returns, so no launch starts meanwhile
+    lock_fd = _stop_vm_launch(args.instance)
+
     m = read_manifest()
     inst = find_instance(m, args.instance)
     if not inst:
@@ -1916,14 +2049,12 @@ def cmd_vm_stop(args):
 
     if vm_pid and pid_alive(vm_pid):
         print(f"Killing VM process {vm_pid}...")
-        os.kill(vm_pid, signal.SIGTERM)
-        time.sleep(2)
-        if pid_alive(vm_pid):
-            os.kill(vm_pid, signal.SIGKILL)
+        _stop_pid(vm_pid)
 
     inst["vm"] = None
     write_manifest(m)
     print(f"VM for instance {args.instance} stopped.")
+    os.close(lock_fd)
 
 
 def cmd_vm_list(_args):

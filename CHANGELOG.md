@@ -155,7 +155,8 @@
   guest accepts the key, printing QEMU's PID and the key. It has options
   for a vfio-user device, QMP and guest agent sockets, a multicast NIC,
   PCI passthrough and emulated NVMe, and stops QEMU if the guest doesn't
-  come up. `ernicctl vm-launch` runs it, installed as
+  come up or it's stopped by a signal, without waiting out an SSH probe.
+  `ernicctl vm-launch` runs it, installed as
   `libexec/rocm-ernic/rocm-ernic-boot-guest`. The `ernic-boot-guest` test
   checks it, and `vm-launch` and `vm-stop` through it, against stand-ins
   for QEMU and ssh.
@@ -656,7 +657,10 @@
   `$ERNIC_LOG_DIR/vm-N.log`. It makes `ERNIC_VM_IMAGE_DIR` if it's
   missing. It refuses an instance whose VM is still running or that
   another `vm-launch` is booting, and a negative `--nvme`, which `run-vm`
-  took as a number of `null_blk` devices.
+  took as a number of `null_blk` devices. Until the guest is up, the
+  launch owns its QEMU: `vm-stop` cancels the launch and waits for it to
+  stop QEMU, and so does stopping `vm-launch` itself with `SIGINT`,
+  `SIGTERM` or `SIGHUP`.
 * **Breaking:** **The Ansible collection is now `rocm.ernic`, and it is not
   published to Ansible Galaxy.** It was `sbates130272.rocm_ernic`. Address
   the roles as `rocm.ernic.ernic_guest_setup` and so on, and install the
