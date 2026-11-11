@@ -131,7 +131,8 @@ Each group of checks is its own CTest test:
 - ``ionic-harness-lif-reset``: what ``LIF_RESET`` takes
 - ``ionic-harness-bus-master``: with Bus Master Enable clear
   the device does no DMA and raises no interrupt, and once it
-  is set it does what it held, once
+  is set it does what it held, once; ``-d3hot`` checks the
+  same of D3hot, with BME set
 
 .. code-block:: bash
 

@@ -7969,16 +7969,33 @@ static bool guest_all(struct ih *h, uint64_t gpa, size_t len, uint8_t byte)
     return true;
 }
 
-/*
- * While the guest has Bus Master Enable clear the function may neither DMA
- * nor raise an interrupt (PCI Express Base 6.5, 7.5.1.1.3), and nothing it
- * was asked to do is lost: a send queue, an armed CQ's event, an Ethernet
- * Tx queue, an interrupt, and what PORT_INIT and LIF_INIT publish all wait,
- * and happen once, when the guest sets BME again.
- */
-static void test_bus_master(void)
+/* How test_held_work() stops the device */
+enum hold_by {
+    HOLD_BY_BME,  /* Bus Master Enable clear */
+    HOLD_BY_D3HOT /* D3hot, with BME set */
+};
+
+/* Stop the device @p by's way if @p held, or let it go on if not */
+static void hold_set(struct ih *h, enum hold_by by, bool held)
 {
-    const char *T = "bus-master";
+    if (by == HOLD_BY_BME) {
+        fake_vfu_set_bus_master(h->vfu, !held);
+    } else {
+        fake_vfu_set_d3hot(h->vfu, held);
+    }
+}
+
+/*
+ * While the guest has Bus Master Enable clear, or the function in D3hot, the
+ * function may neither DMA nor raise an interrupt (PCI Express Base 6.5,
+ * 7.5.1.1.3 and 5.3.1.4.1), and nothing it was asked to do is lost: a send
+ * queue, an armed CQ's event, an Ethernet Tx queue, an interrupt, and what
+ * PORT_INIT and LIF_INIT publish all wait, and happen once, when the guest
+ * sets BME again or puts the function back in D0.
+ */
+static void test_held_work(const char *T, enum hold_by by)
+{
+    const char *held = by == HOLD_BY_BME ? "with BME clear" : "in D3hot";
     struct rc r;
     struct ih *h = &r.h;
     uint8_t data[64];
@@ -8030,8 +8047,8 @@ static void test_bus_master(void)
     const unsigned irqs = irq_total(h);
     const unsigned eq_irqs = fake_vfu_irq_count(h->vfu, IH_EQ_INTR);
 
-    /* Everything asked of the device while BME is clear */
-    fake_vfu_set_bus_master(h->vfu, false);
+    /* Everything asked of the device while it is held */
+    hold_set(h, by, true);
     ih_post_send(h, &r.a, &w);
     ih_cq_arm(h, &r.cqa);
     fake_vfu_write(h->vfu, buf, data, sizeof(data));
@@ -8040,7 +8057,10 @@ static void test_bus_master(void)
     fake_vfu_write(h->vfu, txr, desc, sizeof(desc));
     ih_doorbell(h, IH_QTYPE_ETH_TXQ, 0, 0, 1);
     check(T, ionic_eth_emu_trigger_irq(h->emu, TX_INTR) == 0,
-          "an interrupt raised without BME failed");
+          "an interrupt raised %s failed", held);
+    /* Nor does unmasking the vector send the interrupt it has pending */
+    ih_intr_mask(h, TX_INTR, true);
+    ih_intr_mask(h, TX_INTR, false);
     cmd[0] = IH_CMD_PORT_INIT;
     ernic_put_le64(cmd + 8, port);
     check(T, ih_devcmd(h, cmd, comp, NULL, 0) == 0, "PORT_INIT failed");
@@ -8053,27 +8073,26 @@ static void test_bus_master(void)
           "the device has work it may not do");
 
     check(T, fake_vfu_map_count(h->vfu) == maps,
-          "the device mapped guest memory %lu time(s) with BME clear",
-          fake_vfu_map_count(h->vfu) - maps);
-    check(T, irq_total(h) == irqs,
-          "the device raised %u interrupt(s) with BME clear",
-          irq_total(h) - irqs);
+          "the device mapped guest memory %lu time(s) %s",
+          fake_vfu_map_count(h->vfu) - maps, held);
+    check(T, irq_total(h) == irqs, "the device raised %u interrupt(s) %s",
+          irq_total(h) - irqs, held);
     ih_mr_read(h, &r.mrb, VA_B, now_b, sizeof(now_b));
     check(T, memcmp(before_b, now_b, sizeof(now_b)) == 0,
-          "an RDMA_WRITE ran with BME clear");
+          "an RDMA_WRITE ran %s", held);
     fake_vfu_read(h->vfu, txc, txcomp, sizeof(txcomp));
-    check(T, all_zero(txcomp, sizeof(txcomp)),
-          "a Tx completion was written with BME clear");
+    check(T, all_zero(txcomp, sizeof(txcomp)), "a Tx completion was written %s",
+          held);
     check(T,
           guest_all(h, port, IH_PAGE_SIZE, 0xa5) &&
               guest_all(h, lif, IH_PAGE_SIZE, 0xa5),
-          "PORT_INIT or LIF_INIT wrote an info block with BME clear");
+          "PORT_INIT or LIF_INIT wrote an info block %s", held);
 
-    /* BME set: all of it, once */
-    fake_vfu_set_bus_master(h->vfu, true);
+    /* Let go: all of it, once */
+    hold_set(h, by, false);
     ih_poll(h);
 
-    expect_send(T, "RDMA_WRITE held for BME", &r, IH_STS_OK);
+    expect_send(T, "held RDMA_WRITE", &r, IH_STS_OK);
     ih_mr_read(h, &r.mrb, VA_B, now_b, sizeof(now_b));
     check(T, memcmp(data, now_b, sizeof(now_b)) == 0,
           "the held RDMA_WRITE didn't land");
@@ -8097,47 +8116,59 @@ static void test_bus_master(void)
 
     /* Nothing runs twice */
     const unsigned after = irq_total(h);
-    fake_vfu_set_bus_master(h->vfu, false);
+    hold_set(h, by, true);
     ih_poll(h);
-    fake_vfu_set_bus_master(h->vfu, true);
+    hold_set(h, by, false);
     ih_poll(h);
     check(T, cq_empty(h, &r.cqa) && eq_count(h, RC_CQ_A) == 0,
-          "work held for BME ran twice");
+          "held work ran twice");
     check(T, irq_total(h) == after, "a held interrupt was delivered twice");
 
     /*
-     * A CQ armed while BME is clear over a completion it already holds:
-     * arming it with BME set would raise its event at once, so with BME
-     * clear the event waits, and comes once BME is set, with no more work
-     * to bring it.
+     * A CQ armed while the device is held over a completion it already
+     * holds: arming it otherwise would raise its event at once, so held,
+     * the event waits, and comes once the device is let go, with no more
+     * work to bring it.
      */
     ih_post_send(h, &r.a, &w);
     check(T, eq_count(h, RC_CQ_A) == 0,
           "an unarmed CQ's completion raised an event");
     const unsigned long armed_maps = fake_vfu_map_count(h->vfu);
     const unsigned armed_irqs = fake_vfu_irq_count(h->vfu, IH_EQ_INTR);
-    fake_vfu_set_bus_master(h->vfu, false);
+    hold_set(h, by, true);
     ih_cq_arm(h, &r.cqa);
     ih_poll(h);
     check(T, fake_vfu_map_count(h->vfu) == armed_maps,
-          "arming a CQ with BME clear mapped guest memory %lu time(s)",
+          "arming a CQ %s mapped guest memory %lu time(s)", held,
           fake_vfu_map_count(h->vfu) - armed_maps);
     check(T,
           eq_count(h, RC_CQ_A) == 0 &&
               fake_vfu_irq_count(h->vfu, IH_EQ_INTR) == armed_irqs,
-          "arming a CQ with BME clear raised its event");
-    fake_vfu_set_bus_master(h->vfu, true);
+          "arming a CQ %s raised its event", held);
+    hold_set(h, by, false);
     ih_poll(h);
     check(T, eq_count(h, RC_CQ_A) == 1,
-          "the CQ armed with BME clear raised no event once it was set");
+          "the CQ armed %s raised no event once let go", held);
     check(T, fake_vfu_irq_count(h->vfu, IH_EQ_INTR) == armed_irqs + 1,
           "the held CQ event raised %u interrupt(s)",
           fake_vfu_irq_count(h->vfu, IH_EQ_INTR) - armed_irqs);
     ih_poll(h);
     check(T, eq_count(h, RC_CQ_A) == 0, "the held CQ event came twice");
-    expect_send(T, "RDMA_WRITE before an arm with BME clear", &r, IH_STS_OK);
+    expect_send(T, "RDMA_WRITE before a held arm", &r, IH_STS_OK);
 
     rc_teardown(T, &r);
+}
+
+static void test_bus_master(void)
+{
+    test_held_work("bus-master", HOLD_BY_BME);
+}
+
+/* D3hot holds the device's work as Bus Master Enable clear does, though
+ * BME is set */
+static void test_d3hot(void)
+{
+    test_held_work("d3hot", HOLD_BY_D3HOT);
 }
 
 /*
@@ -8818,6 +8849,7 @@ static const struct {
     {"device-reset-cmd", test_device_reset_cmd},
     {"lif-reset", test_lif_reset},
     {"bus-master", test_bus_master},
+    {"d3hot", test_d3hot},
     {"device-reset-nvmeof", test_device_reset_nvmeof},
     {"device-reset-s3", test_device_reset_s3},
 #ifdef ERNIC_HAVE_P4
