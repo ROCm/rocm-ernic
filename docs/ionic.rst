@@ -86,6 +86,21 @@ The MSI-X table has room for 128 vectors; the device
 advertises the profile's ``queues.intr_vectors`` of them (32
 under ``compat``).
 
+Interrupts
+^^^^^^^^^^
+
+The device interrupts with MSI-X only. It has **no INTx**:
+its Interrupt Pin reads 0, which PCI Express allows of an
+endpoint, and ``ionic.ko`` asks for MSI-X alone. A driver,
+or a vfio-user client of your own, has to enable MSI-X
+before the device can interrupt it.
+
+While MSI-X is off, QEMU gives the device no eventfds to
+signal, so an interrupt the device raises then, on a vector
+the driver has unmasked in the device's interrupt control,
+is lost rather than held for later, as the specification
+permits. libvfio-user logs ``no fd for interrupt`` for each.
+
 NIC Profiles
 ------------
 

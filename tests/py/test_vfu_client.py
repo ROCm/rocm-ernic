@@ -233,6 +233,11 @@ def test_config_space(suite, client, regs):
         regs.PCI_HEADER_TYPE_NORMAL,
         "header type is a normal function",
     )
+    suite.check_eq(
+        client.read_config(regs.PCI_INTERRUPT_PIN, 1)[0],
+        0,
+        "Interrupt Pin says the device has no INTx",
+    )
 
     suite.check(
         pci.read16(client, regs.PCI_STATUS) & regs.PCI_STATUS_CAP_LIST,
@@ -391,10 +396,15 @@ def test_dma(suite, client):
 
 
 def test_irqs(suite, client):
-    """MSI-X, as a VMM sets it up: eventfds the device will signal."""
+    """MSI-X, as a VMM sets it up: eventfds the device will signal.
+
+    The device has no INTx, so a VMM can't give it an INTx eventfd.
+    """
     flags, count = client.irq_info(vfu.VFU_DEV_MSIX_IRQ)
     suite.check(flags & 1, "MSI-X vectors are triggered by eventfd")
     suite.check(count >= 2, f"device has {count} MSI-X vectors")
+    _flags, intx_count = client.irq_info(vfu.VFU_DEV_INTX_IRQ)
+    suite.check_eq(intx_count, 0, "device has no INTx")
 
     refused(
         suite,
@@ -405,6 +415,12 @@ def test_irqs(suite, client):
 
     fds = [os.eventfd(0) for _ in range(2)]
     try:
+        refused(
+            suite,
+            "registering an INTx eventfd",
+            lambda: client.set_irqs(vfu.VFU_DEV_INTX_IRQ, 0, 1, fds[:1]),
+            errno.EINVAL,
+        )
         client.set_irqs(vfu.VFU_DEV_MSIX_IRQ, 0, len(fds), fds)
         suite.check(True, "MSI-X vectors 0 and 1 registered")
         refused(

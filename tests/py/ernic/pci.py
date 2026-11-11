@@ -136,7 +136,9 @@ def set_power_state(client, regs, pm, state):
 
 
 # What ResetRegs.dirty() writes into the 8-bit header registers a reset
-# puts back: a 64-byte cache line, a latency timer and an INTx line
+# puts back: a 64-byte cache line, a latency timer and an Interrupt Line.
+# The device has no INTx, so the spec would let Interrupt Line be
+# hardwired to 0, but libvfio-user keeps it read-write.
 DIRTY_CACHE_LINE_SIZE = 16
 DIRTY_LATENCY_TIMER = 0x40
 DIRTY_INTERRUPT_LINE = 11
