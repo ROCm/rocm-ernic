@@ -26,6 +26,7 @@ PYTHON=$3
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/test-boot-guest-XXXXXX")
 BIN="$WORK/bin"
 SERVER_PID=""
+LOCK_PID=""
 
 cleanup() {
     local pid
@@ -34,9 +35,11 @@ cleanup() {
             kill "$pid" 2>/dev/null || true
         done <"$WORK/qemu-pids"
     fi
-    if [[ -n $SERVER_PID ]]; then
-        kill "$SERVER_PID" 2>/dev/null || true
-    fi
+    for pid in "$SERVER_PID" "$LOCK_PID"; do
+        if [[ -n $pid ]]; then
+            kill "$pid" 2>/dev/null || true
+        fi
+    done
     rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -89,7 +92,8 @@ exec sleep 300
 EOF
 
 # ssh to a guest that is up once QEMU has started, and trusts only the
-# keys in its seed's user-data
+# keys its seed's user-data authorizes for the user logging in.
+# FAKE_SSH_HANG makes it answer, successfully, only after 30 seconds.
 cat >"$BIN/ssh" <<'EOF'
 #!/usr/bin/env bash
 key=""
@@ -104,6 +108,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 echo "$port $*" >>"$FAKE_SSH_LOG"
+if [[ -n ${FAKE_SSH_HANG:-} ]]; then
+    exec sleep 30
+fi
 if [[ -n ${FAKE_SSH_FAIL:-} || ! -s $FAKE_QEMU_ARGS ]]; then
     echo "Connection reset by 127.0.0.1 port $port" >&2
     exit 255
@@ -112,7 +119,9 @@ if [[ $1 != *@127.0.0.1 ]]; then
     echo "not the forwarded port's address: $1" >&2
     exit 255
 fi
-if ! grep -qF -- "$(cut -d' ' -f1,2 "$key.pub")" "$(dirname "$key")/user-data"; then
+user_data="$(dirname "$key")/user-data"
+if ! grep -qx -- "  - name: '${1%@*}'" "$user_data" ||
+    ! grep -qF -- "$(cut -d' ' -f1,2 "$key.pub")" "$user_data"; then
     echo "Permission denied (publickey)." >&2
     exit 255
 fi
@@ -245,6 +254,10 @@ grep -qF -- "$(cut -d' ' -f1,2 "$USER_KEY.pub")" "$OUT/user-data" ||
     fail "user-data doesn't authorize --authorize's key"
 grep -qx 'hostname: test-vm' "$OUT/user-data" ||
     fail "user-data doesn't set the hostname"
+grep -qx '  - default' "$OUT/user-data" ||
+    fail "user-data drops the image's default user"
+grep -qx "  - name: 'ubuntu'" "$OUT/user-data" ||
+    fail "user-data doesn't authorize the keys for --user"
 grep -qx 'instance-id: test-vm-[0-9a-f]\{16\}' "$OUT/meta-data" ||
     fail "meta-data has no instance-id"
 [[ -s $OUT/seed.img ]] || fail "no seed was made"
@@ -258,20 +271,25 @@ kill "$PID"
 first_key=$(cat "$KEY.pub")
 first_id=$(cat "$OUT/meta-data")
 
-# ── Every boot has its own key ──────────────────
+# ── Every boot has its own key, for --user ──────
 
 export FAKE_QEMU_ARGS="$WORK/qemu-args-2"
 "$HELPER" --disk "$DISK" --name test-vm --ssh-port 2299 --out "$OUT" \
-    --qemu "$QEMU" --accel kvm --timeout 30 \
+    --qemu "$QEMU" --accel kvm --timeout 30 --user admin \
     >"$WORK/out-2" 2>"$WORK/err-2" ||
     fail "a second boot failed: $(cat "$WORK/err-2")"
 kill "$(value "$WORK/out-2" pid)"
+[[ $(value "$WORK/out-2" user) == admin ]] || fail "user= isn't admin"
+grep -qx "  - name: 'admin'" "$OUT/user-data" ||
+    fail "user-data doesn't authorize the keys for --user admin"
+grep -q '^2299 admin@127.0.0.1 true$' "$FAKE_SSH_LOG" ||
+    fail "the helper didn't log in as admin"
 [[ $(cat "$KEY.pub") != "$first_key" ]] || fail "the second boot reused the key"
 [[ $(cat "$OUT/meta-data") != "$first_id" ]] ||
     fail "the second boot reused the instance-id"
 has_arg "$FAKE_QEMU_ARGS" "host"
 has_arg "$FAKE_QEMU_ARGS" "file=$DISK,format=qcow2,if=virtio"
-pass "each boot has a new key and instance-id"
+pass "each boot has a new key and instance-id, authorized for --user"
 
 # ── Failures stop QEMU ──────────────────────────
 
@@ -291,6 +309,20 @@ PID=$(comm -13 <(sort "$FAKE_QEMU_PIDS.before") <(sort "$FAKE_QEMU_PIDS"))
 [[ -n $PID ]] || fail "QEMU didn't start"
 ! kill -0 "$PID" 2>/dev/null || fail "QEMU was left running after a timeout"
 pass "a guest that never accepts SSH times out, and QEMU is stopped"
+
+# A probe would answer, successfully, long after the wait ends
+export FAKE_QEMU_ARGS="$WORK/qemu-args-hang"
+start=$SECONDS
+if FAKE_SSH_HANG=1 "$HELPER" --disk "$DISK" --name test-vm --ssh-port 2299 \
+    --out "$WORK/vm-hang" --qemu "$QEMU" --timeout 3 \
+    >"$WORK/out-hang" 2>"$WORK/err-hang"; then
+    fail "the helper took an answer that came after its timeout"
+fi
+((SECONDS - start < 15)) ||
+    fail "the helper waited $((SECONDS - start))s with a 3s timeout"
+grep -q "didn't accept SSH within 3s" "$WORK/err-hang" ||
+    fail "the timeout wasn't reported: $(cat "$WORK/err-hang")"
+pass "an SSH probe is cut off when the wait ends"
 
 export FAKE_QEMU_ARGS="$WORK/qemu-args-4"
 if FAKE_QEMU_FAIL=1 "$HELPER" --disk "$DISK" --name test-vm \
@@ -354,7 +386,8 @@ SERVER_PID=$!
 
 export ERNIC_RUN_DIR="$WORK/run"
 export ERNIC_LOG_DIR="$WORK/log"
-export ERNIC_VM_IMAGE_DIR="$WORK/vm-images"
+# Not made here: vm-launch makes it for the overlay
+export ERNIC_VM_IMAGE_DIR="$WORK/vm-images/new"
 export ERNIC_VM_BACKING="$DISK"
 export ERNIC_QEMU_PATH="$BIN"
 export ERNIC_VM_NAME=ernic-test
@@ -368,7 +401,7 @@ export ERNIC_VM_MCAST_GROUP=""
 export ERNIC_SOCKET_GROUP=""
 export KVM=disable
 unset SUDO_USER
-mkdir -p "$ERNIC_RUN_DIR" "$ERNIC_LOG_DIR" "$ERNIC_VM_IMAGE_DIR"
+mkdir -p "$ERNIC_RUN_DIR" "$ERNIC_LOG_DIR"
 MANIFEST="$ERNIC_RUN_DIR/instances.json"
 cat >"$MANIFEST" <<EOF
 {"instances": [{"id": 1, "role": "manager", "pid": $SERVER_PID,
@@ -385,6 +418,32 @@ print("" if vm is None else vm[sys.argv[2]])
 ' "$MANIFEST" "$1"
 }
 
+# Another launch for instance 1, booting
+"$PYTHON" -I -c '
+import fcntl, os, sys, time
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+open(sys.argv[2], "w").close()
+time.sleep(300)
+' "$ERNIC_RUN_DIR/vm-1.lock" "$WORK/locked" &
+LOCK_PID=$!
+deadline=$((SECONDS + 30))
+until [[ -e $WORK/locked ]]; do
+    ((SECONDS < deadline)) || fail "the stand-in launch didn't take the lock"
+    sleep 0.1
+done
+if "$PYTHON" -I "$ERNICCTL" vm-launch 1 --boot-timeout 30 \
+    >"$WORK/out-locked" 2>"$WORK/err-locked"; then
+    fail "vm-launch ran while another launch for instance 1 was booting"
+fi
+grep -q 'Another vm-launch for instance 1 is running' "$WORK/err-locked" ||
+    fail "a concurrent vm-launch wasn't refused: $(cat "$WORK/err-locked")"
+[[ ! -e $ERNIC_RUN_DIR/vm-1 ]] || fail "a refused vm-launch ran the helper"
+kill "$LOCK_PID"
+wait "$LOCK_PID" || true
+LOCK_PID=""
+pass "vm-launch refuses an instance another launch is booting"
+
 export FAKE_QEMU_ARGS="$WORK/qemu-args-6"
 "$PYTHON" -I "$ERNICCTL" vm-launch 1 --boot-timeout 30 \
     --extra-hostfwd ,hostfwd=tcp:127.0.0.1:9150-:9100 \
@@ -392,7 +451,7 @@ export FAKE_QEMU_ARGS="$WORK/qemu-args-6"
     fail "ernicctl vm-launch failed: $(cat "$WORK/out-6" "$WORK/err-6")"
 
 [[ -f $ERNIC_VM_IMAGE_DIR/ernic-test-1.qcow2 ]] ||
-    fail "vm-launch didn't make instance 1's overlay"
+    fail "vm-launch didn't make instance 1's overlay, and its directory"
 PID=$(vm_field vm_pid)
 kill -0 "$PID" 2>/dev/null || fail "the manifest's vm_pid $PID isn't running"
 grep -qx "$PID" "$FAKE_QEMU_PIDS" || fail "the manifest's vm_pid isn't QEMU's"

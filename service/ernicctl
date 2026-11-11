@@ -16,6 +16,7 @@ Install: /usr/local/bin/ernicctl
 """
 
 import argparse
+import fcntl
 import glob
 import json
 import math
@@ -1601,6 +1602,29 @@ def _parse_extra_hostfwd(extra):
     return rules
 
 
+def _lock_vm_launch(instance):
+    """Take instance's launch lock, or exit if another launch has it.
+
+    Returns the lock's descriptor, which holds the lock until it's closed
+    or this process exits. Nothing records a VM until it has booted, so
+    without the lock a second launch could pass the manifest's check and
+    replace the first's key, seed and sockets while it boots. The
+    descriptor isn't inherited, so the helper and QEMU don't hold the lock.
+    """
+    path = os.path.join(RUN_DIR, f"vm-{instance}.lock")
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        print(
+            f"ERROR: Another vm-launch for instance {instance} is running.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return fd
+
+
 # pylint: disable-next=too-many-locals,too-many-branches,too-many-statements
 def cmd_vm_launch(args):
     """Launch a VM for an instance, and wait until it accepts SSH."""
@@ -1617,6 +1641,9 @@ def cmd_vm_launch(args):
     if args.nvme < 0:
         print("ERROR: --nvme can't be negative.", file=sys.stderr)
         sys.exit(1)
+
+    # Held until this returns, through the boot and the manifest's update
+    lock_fd = _lock_vm_launch(args.instance)
 
     m = read_manifest()
     inst = find_instance(m, args.instance)
@@ -1664,6 +1691,7 @@ def cmd_vm_launch(args):
             print(f"  overlay: {overlay}")
             # Before qemu-img's own output
             sys.stdout.flush()
+            os.makedirs(image_dir, exist_ok=True)
             subprocess.run(
                 [
                     qemu_img,
@@ -1804,18 +1832,16 @@ def cmd_vm_launch(args):
             proc.wait()
             raise
     info = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
-    try:
-        vm_pid = int(info["pid"])
-        key = info["key"]
-    except (KeyError, ValueError):
-        vm_pid = None
-    if proc.returncode != 0 or vm_pid is None:
+    pid_text = info.get("pid", "")
+    key = info.get("key", "")
+    if proc.returncode != 0 or not pid_text.isdigit() or not key:
         print(
             f"ERROR: The VM for instance {args.instance} didn't come up;"
             f" see {console} and {out_dir}/qemu.log.",
             file=sys.stderr,
         )
         sys.exit(1)
+    vm_pid = int(pid_text)
 
     # Read again, since other commands may have changed it while the
     # guest booted
@@ -1850,6 +1876,7 @@ def cmd_vm_launch(args):
     else:
         sudo = "sudo " if os.geteuid() == 0 and os.environ.get("SUDO_USER") else ""
         print(f"SSH: {sudo}ssh -i {key} -p {ssh_port} {target}")
+    os.close(lock_fd)
 
 
 def cmd_vm_stop(args):

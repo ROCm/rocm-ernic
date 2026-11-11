@@ -489,12 +489,15 @@ For instance ``N``, ``vm-launch``:
   is ``--vm-name``, else ``$ERNIC_VM_NAME-N``, so each
   instance has its own disk.  ``NAME`` is also the guest's
   hostname.  With ``ERNIC_VM_BACKING`` set, a missing disk
-  is created as an overlay on it.
+  is created as an overlay on it, and
+  ``ERNIC_VM_IMAGE_DIR`` too if it's missing.
 - Makes an SSH key for this boot in
   ``$ERNIC_RUN_DIR/vm-N/``, and has cloud-init authorize
-  it, through a NoCloud seed disk, together with the
-  public half of the key in ``ERNIC_VM_SSH_IDENTITY`` (or
-  the one ``ernicctl`` finds for ``SUDO_USER``).
+  it for ``ERNIC_VM_SSH_USER``, through a NoCloud seed
+  disk, together with the public half of the key in
+  ``ERNIC_VM_SSH_IDENTITY`` (or the one ``ernicctl`` finds
+  for ``SUDO_USER``).  An account that isn't the image's
+  default user is made, without sudo, if it's missing.
   ``ernicctl`` logs in with the boot's key, and you log in
   with yours.  The guest image must run cloud-init; one
   that doesn't never accepts the boot's key.
@@ -513,7 +516,8 @@ For instance ``N``, ``vm-launch``:
   for SSH.  If the guest doesn't accept the key by then,
   or QEMU exits, it stops QEMU and fails.
 
-It refuses an instance whose VM is still running.
+It refuses an instance whose VM is still running, or
+that another ``vm-launch`` is booting.
 
 Driver distribution
 ^^^^^^^^^^^^^^^^^^^

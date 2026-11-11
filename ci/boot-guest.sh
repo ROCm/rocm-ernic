@@ -11,11 +11,10 @@
 # The key reaches the guest through a NoCloud seed: a small disk labelled
 # cidata holding user-data and meta-data, which cloud-init reads at boot.
 # Each boot has a new instance-id, so cloud-init treats it as a new
-# instance: it authorizes the keys for the image's default user and makes
-# new host keys. The seed sets nothing else, so an image that already
-# trusts a key goes on trusting it. An image without cloud-init ignores
-# the seed, and the wait for SSH times out unless it already trusts a key
-# given with --authorize, which this then can't use itself.
+# instance: it authorizes the keys for --user and makes new host keys. The
+# seed removes no key, so an image that already trusts one goes on
+# trusting it. An image without cloud-init ignores the seed, so it never
+# accepts the boot's key, and the wait for SSH times out.
 #
 # The guest's SSH port is forwarded from 127.0.0.1 only.
 #
@@ -47,7 +46,10 @@ Usage: $PROG --disk FILE --name NAME --ssh-port PORT --out DIR [options]
   --out DIR            where the key, seed and logs go (made mode 0700)
 
 Guest:
-  --user USER          account to log in as (default: ubuntu)
+  --user USER          account the keys are authorized for, and to log
+                       in as (default: ubuntu); one that isn't the image's
+                       default user is made, without sudo, if missing,
+                       unless a group already has its name
   --authorize FILE     also authorize the public keys in FILE (repeatable)
   --accel kvm|tcg      accelerator (default: kvm)
   --cpu MODEL          CPU model (default: host with kvm, qemu64 with tcg)
@@ -480,7 +482,7 @@ add_keys() {
         if [[ ! $line =~ ^(ssh-[a-z0-9-]+|ecdsa-sha2-[a-z0-9-]+|sk-[A-Za-z0-9@.-]+)\ [A-Za-z0-9+/]+=*(\ [^[:cntrl:]]*)?$ ]]; then
             die "$1 holds something other than SSH public keys"
         fi
-        echo "  - '${line//\'/\'\'}'"
+        echo "      - '${line//\'/\'\'}'"
         found=true
     done <"$1"
     if ! $found; then
@@ -488,10 +490,18 @@ add_keys() {
     fi
 }
 
+# The keys go to --user. cloud-init merges an entry named for the image's
+# default user into that user's own settings, so for that user this changes
+# nothing else; another account gets the keys and a locked password, and is
+# created, without sudo, if it doesn't exist. "default" keeps the image's
+# default user, which a users list without it would drop.
 {
     echo '#cloud-config'
     echo "hostname: $NAME"
-    echo 'ssh_authorized_keys:'
+    echo 'users:'
+    echo '  - default'
+    echo "  - name: '$GUEST_USER'"
+    echo '    ssh_authorized_keys:'
     add_keys "$KEY.pub"
     for pub in "${AUTHORIZE[@]}"; do
         if [[ ! -f $pub || ! -r $pub ]]; then
@@ -704,7 +714,7 @@ setsid "${CMD[@]}" </dev/null >>"$QEMU_LOG" 2>&1 &
 QEMU_PID=$!
 
 SSH=(
-    timeout 60 ssh -F /dev/null -i "$KEY" -p "$SSH_PORT"
+    ssh -F /dev/null -i "$KEY" -p "$SSH_PORT"
     -o BatchMode=yes -o IdentitiesOnly=yes
     -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
     -o LogLevel=ERROR -o ConnectTimeout=5
@@ -713,21 +723,28 @@ SSH=(
 
 echo "$PROG: started QEMU (PID $QEMU_PID); waiting up to ${TIMEOUT}s for" \
     "SSH on 127.0.0.1:$SSH_PORT" >&2
+# Each probe gets at most what's left of the wait, so none ends after it
 DEADLINE=$((SECONDS + TIMEOUT))
-until "${SSH[@]}" </dev/null 2>"$OUT/ssh.log"; do
-    if ! kill -0 "$QEMU_PID" 2>/dev/null; then
-        status=0
-        wait "$QEMU_PID" || status=$?
-        echo "$PROG: QEMU exited with status $status. $QEMU_LOG ends:" >&2
-        tail -n 20 -- "$QEMU_LOG" >&2
-        exit 1
-    fi
-    if ((SECONDS >= DEADLINE)); then
+: >"$OUT/ssh.log"
+while :; do
+    left=$((DEADLINE - SECONDS))
+    if ((left <= 0)); then
         echo "$PROG: the guest didn't accept SSH within ${TIMEOUT}s." \
             "ssh said:" >&2
         cat -- "$OUT/ssh.log" >&2
         echo "$PROG: $CONSOLE ends:" >&2
         tail -n 20 -- "$CONSOLE" >&2 || true
+        exit 1
+    fi
+    if timeout "$((left < 60 ? left : 60))" "${SSH[@]}" </dev/null \
+        2>"$OUT/ssh.log"; then
+        break
+    fi
+    if ! kill -0 "$QEMU_PID" 2>/dev/null; then
+        status=0
+        wait "$QEMU_PID" || status=$?
+        echo "$PROG: QEMU exited with status $status. $QEMU_LOG ends:" >&2
+        tail -n 20 -- "$QEMU_LOG" >&2
         exit 1
     fi
     sleep 2

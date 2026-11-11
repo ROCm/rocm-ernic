@@ -144,7 +144,8 @@
 ### Added
 
 * `ci/boot-guest.sh` boots a guest image under QEMU with an SSH key made
-  for that boot, which cloud-init authorizes from a NoCloud seed disk,
+  for that boot, which cloud-init authorizes from a NoCloud seed disk for
+  the `--user` account (made, without sudo, if the image doesn't have it),
   forwards the guest's SSH port from 127.0.0.1 only, and returns once the
   guest accepts the key, printing QEMU's PID and the key. It has options
   for a vfio-user device, QMP and guest agent sockets, a multicast NIC,
@@ -640,15 +641,17 @@
 * `ernicctl vm-launch` waits until the guest accepts SSH, for up to
   `--boot-timeout` seconds (600 by default), and fails, stopping QEMU, if
   it doesn't. It makes an SSH key for each boot, which cloud-init
-  authorizes along with the public half of `ERNIC_VM_SSH_IDENTITY` (or of
-  the key found for `SUDO_USER`), and records it in the manifest as
+  authorizes for `ERNIC_VM_SSH_USER` (or `--ssh-user`) along with the
+  public half of `ERNIC_VM_SSH_IDENTITY` (or of the key found for
+  `SUDO_USER`), and records it in the manifest as
   `ssh_identity`, which `ernicctl` then uses for that guest, as
   `hot-reload --update-driver`'s copy now does too. QEMU's own messages go
   to `$ERNIC_RUN_DIR/vm-N/qemu.log`, and the guest agent's socket is
   `$ERNIC_RUN_DIR/qga-N.sock`; the serial console is still
-  `$ERNIC_LOG_DIR/vm-N.log`. It refuses an instance whose VM is still
-  running, and a negative `--nvme`, which `run-vm` took as a number of
-  `null_blk` devices.
+  `$ERNIC_LOG_DIR/vm-N.log`. It makes `ERNIC_VM_IMAGE_DIR` if it's
+  missing. It refuses an instance whose VM is still running or that
+  another `vm-launch` is booting, and a negative `--nvme`, which `run-vm`
+  took as a number of `null_blk` devices.
 * **Breaking:** **The Ansible collection is now `rocm.ernic`, and it is not
   published to Ansible Galaxy.** It was `sbates130272.rocm_ernic`. Address
   the roles as `rocm.ernic.ernic_guest_setup` and so on, and install the
