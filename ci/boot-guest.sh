@@ -769,6 +769,8 @@ while :; do
 done
 BOOTED=true
 
+# Only now, so a caller that has the results knows QEMU is running, even
+# if this is stopped before it exits
 echo "$PROG: the guest is up" >&2
 printf 'pid=%s\nkey=%s\nuser=%s\nport=%s\n' \
     "$QEMU_PID" "$KEY" "$GUEST_USER" "$SSH_PORT"

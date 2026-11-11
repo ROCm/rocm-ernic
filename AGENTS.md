@@ -390,6 +390,10 @@ new general patterns here when a scanner reports one.
   variable a value on every path, e.g. with `dict.get()` and a default,
   then check the values, as `cmd_vm_launch()` in `service/ernicctl` does
   with the helper's output.
+- **A Python `except` that only passes** (`py/empty-except`): say in a
+  comment why ignoring the exception is right, or avoid it, as
+  `_run_boot_helper()` polls with `proc.poll()` rather than catching
+  `TimeoutExpired`.
 - **`${{ }}` in a workflow `run:` block** (zizmor `template-injection`)
   for any value not fixed in the workflow, even one read from a repo
   file: it's pasted in before the shell parses it. Map it to `env:` and

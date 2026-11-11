@@ -510,6 +510,39 @@ kill -TERM "$LAUNCH_PID"
 end_launch term "stopped by SIGTERM"
 pass "a vm-launch stopped by SIGTERM stops its QEMU"
 
+# A helper whose guest is up, and which is stopped before it exits: the
+# helper leaves QEMU running then, so the launch must stop it. ernicctl
+# runs the helper beside it, so a copy runs with a stand-in.
+mkdir -p "$WORK/tree/service" "$WORK/tree/ci"
+cp "$ERNICCTL" "$WORK/tree/service/ernicctl"
+cat >"$WORK/tree/ci/boot-guest.sh" <<'END_HELPER'
+#!/usr/bin/env bash
+sleep 300 </dev/null >/dev/null 2>&1 &
+qemu=$!
+sleep 300 </dev/null >/dev/null 2>&1 &
+idle=$!
+trap 'kill "$idle"; exit 143' TERM
+printf 'pid=%s\nkey=/dev/null\nuser=ubuntu\nport=2300\n' "$qemu"
+echo "$qemu" >>"$FAKE_QEMU_PIDS"
+wait "$idle"
+END_HELPER
+chmod +x "$WORK/tree/ci/boot-guest.sh"
+cp "$FAKE_QEMU_PIDS" "$FAKE_QEMU_PIDS.before"
+"$PYTHON" -I "$WORK/tree/service/ernicctl" vm-launch 1 --boot-timeout 120 \
+    >"$WORK/out-late" 2>"$WORK/err-late" &
+LAUNCH_PID=$!
+deadline=$((SECONDS + 30))
+until LAUNCH_QEMU_PID=$(comm -13 <(sort "$FAKE_QEMU_PIDS.before") \
+    <(sort "$FAKE_QEMU_PIDS")) && [[ -n $LAUNCH_QEMU_PID ]]; do
+    ((SECONDS < deadline)) || fail "late: the stand-in helper didn't start"
+    sleep 0.1
+done
+"$PYTHON" -I "$ERNICCTL" vm-stop 1 >"$WORK/out-stop-late" \
+    2>"$WORK/err-stop-late" ||
+    fail "vm-stop of a launch whose guest was up failed"
+end_launch late "cancelled by vm-stop"
+pass "a launch stopped just after its guest came up stops its QEMU"
+
 export FAKE_QEMU_ARGS="$WORK/qemu-args-6"
 "$PYTHON" -I "$ERNICCTL" vm-launch 1 --boot-timeout 30 \
     --extra-hostfwd ,hostfwd=tcp:127.0.0.1:9150-:9100 \

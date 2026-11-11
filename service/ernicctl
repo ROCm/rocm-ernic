@@ -1723,30 +1723,27 @@ def _run_boot_helper(cmd, stopping):
     """Run the boot helper, stopping it if stopping() becomes true.
 
     The helper's progress goes to stderr, here, and its results to
-    stdout. Returns QEMU's PID and the boot's key once the guest is up,
-    or None if it didn't come up or was stopped, when the helper has
-    stopped QEMU.
+    stdout. It prints them only once the guest is up, and from then on
+    leaves QEMU running, even if it's stopped before it exits. So this
+    returns QEMU's PID and the boot's key whenever the helper printed
+    them, including when it was stopped just after the guest came up,
+    when the caller must stop QEMU; and None otherwise, when the helper
+    has stopped QEMU itself.
     """
     with subprocess.Popen(
         cmd, stdout=subprocess.PIPE, text=True, encoding="utf-8"
     ) as proc:
-        while True:
-            try:
-                proc.wait(timeout=0.2)
-                break
-            except subprocess.TimeoutExpired:
-                # Expected while polling for helper completion.
-                pass
+        while proc.poll() is None:
             if stopping():
-                # It stops QEMU on its way out
                 proc.terminate()
                 proc.wait()
-                return None
+                break
+            time.sleep(0.2)
         out = proc.stdout.read()
     info = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
     pid_text = info.get("pid", "")
     key = info.get("key", "")
-    if proc.returncode != 0 or not pid_text.isdigit() or not key:
+    if not pid_text.isdigit() or not key:
         return None
     return int(pid_text), key
 
@@ -1967,7 +1964,8 @@ def cmd_vm_launch(args):
     }
     try:
         booted = _run_boot_helper(cmd, stopping)
-        # Asked to stop after the helper finished: QEMU is this one's now
+        # Asked to stop once the guest was up, even as the helper was
+        # stopped: the helper left QEMU running, so it's this one's to stop
         if booted is not None and stopping():
             _stop_pid(booted[0])
             booted = None
