@@ -8,7 +8,7 @@
 #
 # Prerequisites:
 #   - VM launched with QMP + PCIe root port support
-#     (e.g. via ernicctl vm-launch or qemu-minimal run-vm)
+#     (e.g. via ernicctl vm-launch)
 #   - socat installed on the host
 #   - Guest driver (rocm_ernic.ko) already built in the guest
 #
@@ -217,9 +217,8 @@ sudo rm -f "${SOCKET_PATH}"
 
 # --- step 5: start new server --------------------------------
 log_step "5/6 Starting new server (backend: ${BACKEND})..."
-# The server runs as root, and the VM may run as the invoking user, as
-# run-vm starts it, so the socket gets that user's group or QEMU couldn't
-# connect to it.
+# The server runs as root, and the VM may run as the invoking user, so
+# the socket gets that user's group or QEMU couldn't connect to it.
 sudo "${PROJECT_ROOT}/build/rocm-ernic" \
     --socket "${SOCKET_PATH}" \
     --socket-group "$(id -g)" \

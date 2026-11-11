@@ -1293,6 +1293,18 @@ set_tests_properties(ernic-ionic-driver PROPERTIES
     RUN_SERIAL TRUE
 )
 
+# ci/boot-guest.sh, and ernicctl vm-launch and vm-stop through it, against
+# stand-ins for QEMU and ssh: the command line, the per-boot key and seed,
+# the wait for SSH, and the arguments refused. No guest boots.
+add_test(
+    NAME ernic-boot-guest
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_boot_guest.sh
+        ${PROJECT_SOURCE_DIR}/ci/boot-guest.sh
+        ${PROJECT_SOURCE_DIR}/service/ernicctl
+        ${Python3_EXECUTABLE}
+)
+set_tests_properties(ernic-boot-guest PROPERTIES TIMEOUT 120)
+
 # The P4 engine on the live device: guest frames out of the Ethernet Tx
 # ring, through the pipeline, and out the far side. Starts a server per
 # case because the statistics it asserts on are reported at shutdown.

@@ -120,6 +120,7 @@ jobs:
             bin/ernicctl \
             libexec/rocm-ernic/rocm-ernic-launcher \
             libexec/rocm-ernic/rocm-ernic-driver-pack \
+            libexec/rocm-ernic/rocm-ernic-boot-guest \
             lib/systemd/system/rocm-ernic.service \
             lib/systemd/system/rocm-ernic-driver-pack.service \
             etc/rocm-ernic/rocm-ernic.env \

@@ -122,6 +122,7 @@ if(INSTALL_SERVICE)
         ${BINDIR}/ernicctl
         ${LIBEXECDIR}/rocm-ernic/rocm-ernic-launcher
         ${LIBEXECDIR}/rocm-ernic/rocm-ernic-driver-pack
+        ${LIBEXECDIR}/rocm-ernic/rocm-ernic-boot-guest
         ${share_dir}/setup-ionic-dkms.sh
         ${share_dir}/fetch-ionic-sources.sh)
     list(APPEND ${server}_files
@@ -143,7 +144,7 @@ if(INSTALL_SERVICE)
         list(APPEND ${server}_files ${share_dir}/patches/${patch})
     endforeach()
     set(${server}_depends python3)
-    set(${server}_recommends socat)
+    set(${server}_recommends socat cloud-image-utils openssh-client)
     set(${server}_conffiles ${ENV_FILE})
 
     set(exporter rocm-ernic-exporter)

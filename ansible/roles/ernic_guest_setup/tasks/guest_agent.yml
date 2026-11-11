@@ -33,7 +33,8 @@
 
 # The agent unit pulls in a systemd device unit for this path.  If QEMU
 # was started without a virtio-serial org.qemu.guest_agent.0 channel
-# (common until run-vm exposes it), start would fail the whole play.
+# (ernicctl vm-launch adds one; the CI lanes don't), start would fail
+# the whole play.
 - name: Check for the QEMU guest-agent virtio port in the guest
   ansible.builtin.stat:
     path: /dev/virtio-ports/org.qemu.guest_agent.0
@@ -50,8 +51,8 @@
   ansible.builtin.debug:
     msg: >-
       qemu-guest-agent is installed but the virtio-serial channel
-      org.qemu.guest_agent.0 is not present.  Add it in run-vm / QEMU
-      (then re-run this task or: systemctl enable --now
-      qemu-guest-agent).  Until then, ernicctl status VM_LOAD falls
-      back to SSH.
+      org.qemu.guest_agent.0 is not present.  Add it to QEMU, as
+      ernicctl vm-launch does (then re-run this task or: systemctl
+      enable --now qemu-guest-agent).  Until then, ernicctl status
+      VM_LOAD falls back to SSH.
   when: not ernic_qga_virtio_port.stat.exists

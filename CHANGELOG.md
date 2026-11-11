@@ -4,6 +4,19 @@
 
 ### Fixed
 
+* **`ernicctl vm-launch` works again.** It started guests with
+  qemu-minimal's `run-vm` script, which qemu-minimal has since removed, so
+  it failed with `run-vm not found`. It now boots them with
+  `rocm-ernic-boot-guest`, installed in `libexec/rocm-ernic/`
+  (`ci/boot-guest.sh` in the source tree), and no longer needs
+  qemu-minimal: `ERNIC_QEMU_MINIMAL` now only sets the default
+  `ERNIC_VM_IMAGE_DIR`, and an empty `ERNIC_QEMU_PATH` means QEMU is found
+  on `PATH`. It needs `cloud-localds` (from `cloud-image-utils`) and
+  `ssh-keygen`, which the `rocm-ernic` package now recommends, and a guest
+  image that runs cloud-init, as the CI guest does. The device it plugs in
+  now has the QEMU ID `ernicN`, so `detach` and `hot-reload` can unplug it,
+  and the manifest records QEMU's PID rather than a script's, so `vm-stop`
+  stops QEMU itself.
 * The device no longer advertises an INTx interrupt it doesn't
   implement. Its Interrupt Pin read INTA, but the device never set
   Interrupt Status or honoured Interrupt Disable, and QEMU then routed
@@ -130,6 +143,16 @@
 
 ### Added
 
+* `ci/boot-guest.sh` boots a guest image under QEMU with an SSH key made
+  for that boot, which cloud-init authorizes from a NoCloud seed disk,
+  forwards the guest's SSH port from 127.0.0.1 only, and returns once the
+  guest accepts the key, printing QEMU's PID and the key. It has options
+  for a vfio-user device, QMP and guest agent sockets, a multicast NIC,
+  PCI passthrough and emulated NVMe, and stops QEMU if the guest doesn't
+  come up. `ernicctl vm-launch` runs it, installed as
+  `libexec/rocm-ernic/rocm-ernic-boot-guest`. The `ernic-boot-guest` test
+  checks it, and `vm-launch` and `vm-stop` through it, against stand-ins
+  for QEMU and ssh.
 * The device has a PCI Express capability, as every PCI Express function
   must. It reports a 64 GT/s (PCIe 6.0) x16 link, supporting every slower
   speed, which the guest sees when the device sits behind a
@@ -601,6 +624,31 @@
 
 ### Changed
 
+* **Breaking:** **`ernicctl vm-launch` gives each instance's VM its own
+  name and disk.** Every instance's VM was named `ERNIC_VM_NAME`, so
+  `vm-launch 1` and `vm-launch 2` booted two guests on one disk, and with
+  `ERNIC_VM_BACKING` set, the disk wasn't locked, so nothing stopped them
+  corrupting it. Instance N's VM is now `ERNIC_VM_NAME-N`, which is also
+  its hostname, with the disk `ERNIC_VM_NAME-N.qcow2`. Rename an existing
+  disk to match, or let `vm-launch` make a new overlay on
+  `ERNIC_VM_BACKING`. `--vm-name` is used as given, as before.
+* **Breaking:** **`ernicctl vm-launch` forwards a guest's SSH port from
+  127.0.0.1 only.** It listened on every interface, putting the guest on
+  the network. Reach a guest from another machine through the host, as
+  with `ssh -J`. Rules from `--extra-hostfwd` are used as written, so one
+  with no host address still listens on every interface.
+* `ernicctl vm-launch` waits until the guest accepts SSH, for up to
+  `--boot-timeout` seconds (600 by default), and fails, stopping QEMU, if
+  it doesn't. It makes an SSH key for each boot, which cloud-init
+  authorizes along with the public half of `ERNIC_VM_SSH_IDENTITY` (or of
+  the key found for `SUDO_USER`), and records it in the manifest as
+  `ssh_identity`, which `ernicctl` then uses for that guest, as
+  `hot-reload --update-driver`'s copy now does too. QEMU's own messages go
+  to `$ERNIC_RUN_DIR/vm-N/qemu.log`, and the guest agent's socket is
+  `$ERNIC_RUN_DIR/qga-N.sock`; the serial console is still
+  `$ERNIC_LOG_DIR/vm-N.log`. It refuses an instance whose VM is still
+  running, and a negative `--nvme`, which `run-vm` took as a number of
+  `null_blk` devices.
 * **Breaking:** **The Ansible collection is now `rocm.ernic`, and it is not
   published to Ansible Galaxy.** It was `sbates130272.rocm_ernic`. Address
   the roles as `rocm.ernic.ernic_guest_setup` and so on, and install the
@@ -1815,6 +1863,19 @@
 * rocm-ernic supports only 64-bit Linux; 32-bit systems aren't supported.
 
 ### Known issues
+
+* Unplugging the device from a running guest aborts QEMU, taking the
+  guest down, so `ernicctl detach` and `hot-reload` do, and
+  `remove-instance` of an instance with a VM. This happens with Ubuntu's
+  QEMU 10.2.1, with the guest's driver loaded or not, and whether the
+  device was plugged in at boot or by `ernicctl attach`; the abort is
+  `memory_region_del_subregion: Assertion 'subregion->container == mr'
+  failed`, on the thread where QEMU frees the device. QEMU's vfio-user
+  client appears to remove its MSI-X PBA region there after QEMU has
+  already removed it with the device's other children. Upstream QEMU has
+  the same code, as does the `dev/stephen/pci-mmio-bridge-submit` fork
+  that the Ansible host setup's `ernic_qemu_path` points at. Stop and launch the VM again instead, with
+  `ernicctl vm-stop` and `vm-launch`.
 
 * A request a mesh peer sent before this device was reset, or before the
   guest destroyed a QP or MR, can still arrive afterwards, and is applied

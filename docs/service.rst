@@ -23,8 +23,8 @@ capabilities:
   the host's ``/etc/machine-id``.
 - Dynamic mesh scaling -- add or remove worker instances
   at runtime.
-- Launch QEMU VMs via qemu-minimal's ``run-vm`` and
-  hot-plug/unplug vfio-user devices via QMP.
+- Launch QEMU VMs, each with an SSH key made for its
+  boot, and hot-plug/unplug vfio-user devices via QMP.
 - Build and push a self-contained driver tarball to
   guest VMs.
 
@@ -34,12 +34,13 @@ Prerequisites
 - Python 3 (standard library only; no pip packages)
 - ``socat`` (for QMP communication)
 - QEMU 10.1+ with vfio-user support
-- qemu-minimal checkout with ``run-vm`` supporting
-  ``QMP_SOCKET`` and ``VFIO_USERDEV``
+- For ``vm-launch``: ``cloud-localds`` (from
+  ``cloud-image-utils``), ``ssh`` and ``ssh-keygen``, and a
+  guest image that runs cloud-init
 
 .. code-block:: bash
 
-   sudo apt install socat python3
+   sudo apt install socat python3 cloud-image-utils openssh-client
 
 Installation
 ------------
@@ -72,7 +73,8 @@ This installs:
        ``ernic-exporter``
    * - ``/usr/local/libexec/rocm-ernic/``
      - ``rocm-ernic-launcher``,
-       ``rocm-ernic-driver-pack``
+       ``rocm-ernic-driver-pack``,
+       ``rocm-ernic-boot-guest``
    * - ``/usr/local/etc/rocm-ernic/``
      - ``rocm-ernic.env``
    * - ``/usr/local/share/rocm-ernic/``
@@ -228,16 +230,20 @@ VM and QEMU settings
      - Description
    * - ``ERNIC_QEMU_MINIMAL``
      - ``$HOME/Projects/qemu-minimal``
-     - Path to qemu-minimal checkout
+     - Only the default ``ERNIC_VM_IMAGE_DIR``'s parent;
+       ``vm-launch`` no longer runs qemu-minimal
    * - ``ERNIC_QEMU_PATH``
      - ``/opt/qemu-v10.1.2/bin/``
-     - Directory containing ``qemu-system-x86_64``
+     - Directory containing ``qemu-system-x86_64`` and
+       ``qemu-img``.  Empty means search ``PATH``.
    * - ``ERNIC_VM_IMAGE_DIR``
      - ``$ERNIC_QEMU_MINIMAL/images``
      - Directory with qcow2 VM images
    * - ``ERNIC_VM_NAME``
      - ``stebates-test-vm``
-     - Base VM name (qcow2 filename stem)
+     - Base VM name: instance N's VM is
+       ``ERNIC_VM_NAME-N``, its hostname, and
+       ``ERNIC_VM_NAME-N.qcow2`` its disk
    * - ``ERNIC_VM_VCPUS``
      - ``4``
      - vCPUs per VM
@@ -265,19 +271,22 @@ VM and QEMU settings
      - Base SSH port (instance N uses base + N - 1)
    * - ``ERNIC_VM_SSH_IDENTITY``
      - (unset)
-     - SSH private key path for the VM_LOAD column (SSH
-       fallback).  When unset and ``ernicctl`` runs as
-       ``root`` under ``sudo``, a recent ``ernicctl`` may use
-       ``SUDO_USER``'s default ``~/.ssh/id_rsa`` (or
-       ``id_ed25519`` / ``id_ecdsa``) automatically.  ``/root/.ssh``
-       keys are not auto-discovered.  Otherwise set this for
-       ``ERNIC_VM_SSH_USER@ERNIC_VM_SSH_HOST``.
+     - Your SSH private key for guests.  ``vm-launch``
+       authorizes its ``.pub`` beside the key it makes for
+       each boot, and ``ernicctl`` uses it for a VM it
+       didn't launch, or whose key it can't read (the
+       VM_LOAD column run without ``sudo``).  When unset
+       and ``ernicctl`` runs as ``root`` under ``sudo``, it
+       uses ``SUDO_USER``'s ``~/.ssh/id_rsa`` (or
+       ``id_ed25519`` / ``id_ecdsa``).  ``/root/.ssh``
+       keys are not auto-discovered.
    * - ``ERNIC_VM_BACKING``
      - (unset)
      - Golden backing qcow2. When set and a
        per-instance overlay does not exist,
        ``ernicctl vm-launch`` creates one
-       automatically via ``qemu-img create``.
+       automatically via ``qemu-img create``.  The
+       guests don't lock it, so they can share it.
 
 Driver settings
 ^^^^^^^^^^^^^^^
@@ -400,7 +409,16 @@ Live VM attach and detach
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Hot-plug or hot-unplug a server instance's vfio-user
-device into/from a running VM via QMP:
+device into/from a running VM via QMP.
+
+.. warning::
+
+   Unplugging the device aborts QEMU 10.2.1, and upstream
+   QEMU and the ``pci-mmio-bridge`` fork have the same
+   code, so ``detach``, ``hot-reload``
+   and ``remove-instance`` take the guest down with it.
+   Use ``vm-stop`` and ``vm-launch`` instead.  See Known
+   issues in the changelog.
 
 .. code-block:: bash
 
@@ -439,9 +457,10 @@ This is the service-aware equivalent of the standalone
 VM management
 ^^^^^^^^^^^^^
 
-Launch, stop, and list QEMU VMs.  ``vm-launch`` uses
-qemu-minimal's ``run-vm`` script with automatic QMP,
-hotplug, and manifest integration:
+Launch, stop, and list QEMU VMs.  ``vm-launch`` boots an
+instance's guest with ``rocm-ernic-boot-guest``
+(``ci/boot-guest.sh`` in the source tree), records it in
+the manifest, and returns once the guest accepts SSH:
 
 .. code-block:: bash
 
@@ -454,20 +473,47 @@ hotplug, and manifest integration:
      --ssh-port 2223 \
      --vcpus 8 --mem 16384
 
+   # Without KVM, under TCG, which boots far more slowly
+   sudo env KVM=disable ernicctl vm-launch 1 \
+     --boot-timeout 1800
+
    # List running VMs
    ernicctl vm-list
 
    # Stop a VM
    sudo ernicctl vm-stop 1
 
-The ``vm-launch`` command sets the following environment
-variables for ``run-vm``:
+For instance ``N``, ``vm-launch``:
 
-- ``VFIO_USERDEV`` -- the instance's vfio-user socket
-- ``QMP_SOCKET`` -- placed at
-  ``$ERNIC_RUN_DIR/qmp-N.sock``
-- ``QEMU_PATH``, ``VM_NAME``, ``IMAGES``, ``SSH_PORT``,
-  ``VCPUS``, ``VMEM``
+- Boots ``$ERNIC_VM_IMAGE_DIR/NAME.qcow2``, where ``NAME``
+  is ``--vm-name``, else ``$ERNIC_VM_NAME-N``, so each
+  instance has its own disk.  ``NAME`` is also the guest's
+  hostname.  With ``ERNIC_VM_BACKING`` set, a missing disk
+  is created as an overlay on it.
+- Makes an SSH key for this boot in
+  ``$ERNIC_RUN_DIR/vm-N/``, and has cloud-init authorize
+  it, through a NoCloud seed disk, together with the
+  public half of the key in ``ERNIC_VM_SSH_IDENTITY`` (or
+  the one ``ernicctl`` finds for ``SUDO_USER``).
+  ``ernicctl`` logs in with the boot's key, and you log in
+  with yours.  The guest image must run cloud-init; one
+  that doesn't never accepts the boot's key.
+- Forwards the guest's SSH port from ``127.0.0.1`` only.
+  Rules from ``--extra-hostfwd`` are used as written, and
+  one with no host address listens on every interface.
+- Plugs the instance's vfio-user socket in as device
+  ``ernicN`` on root port ``pcie-vfu.1``, which
+  ``detach``, ``attach`` and ``hot-reload`` use, and
+  creates the QMP socket ``$ERNIC_RUN_DIR/qmp-N.sock`` and
+  the guest agent's ``$ERNIC_RUN_DIR/qga-N.sock``.
+- Writes the serial console to
+  ``$ERNIC_LOG_DIR/vm-N.log``, and QEMU's own messages to
+  ``$ERNIC_RUN_DIR/vm-N/qemu.log``.
+- Waits up to ``--boot-timeout`` seconds (600 by default)
+  for SSH.  If the guest doesn't accept the key by then,
+  or QEMU exits, it stops QEMU and fails.
+
+It refuses an instance whose VM is still running.
 
 Driver distribution
 ^^^^^^^^^^^^^^^^^^^
@@ -531,9 +577,10 @@ Example:
            "root_port": "pcie-vfu.1",
            "ssh_port": 2222,
            "ssh_user": "ubuntu",
+           "ssh_identity": "/run/rocm-ernic/vm-1/id_ed25519",
            "attached": true,
            "vm_pid": 67890,
-           "vm_name": "stebates-test-vm"
+           "vm_name": "stebates-test-vm-1"
          }
        }
      ]
