@@ -17,6 +17,11 @@
   now has the QEMU ID `ernicN`, so `detach` and `hot-reload` can unplug it,
   and the manifest records QEMU's PID rather than a script's, so `vm-stop`
   stops QEMU itself.
+* `ernicctl` no longer takes a process that has exited but not been reaped
+  (a zombie) for a running one. In a container whose init doesn't reap,
+  as in a GitHub container job, a stopped QEMU stays a zombie, so
+  `vm-list` and `status` called it running, `vm-stop` sent it a needless
+  `SIGKILL`, and `vm-launch` could refuse an instance whose VM had gone.
 * The device no longer advertises an INTx interrupt it doesn't
   implement. Its Interrupt Pin read INTA, but the device never set
   Interrupt Status or honoured Interrupt Disable, and QEMU then routed

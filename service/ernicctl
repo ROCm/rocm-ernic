@@ -270,12 +270,26 @@ def find_instance(manifest, inst_id):
 
 
 def pid_alive(pid):
-    """Return whether a process with this PID exists."""
+    """Return whether a process with this PID is running.
+
+    A zombie isn't: it has exited and only waits to be reaped, which an
+    init that doesn't reap, such as a container's, never does to the
+    QEMU that vm-launch's helper leaves behind.
+    """
     try:
         os.kill(pid, 0)
-        return True
     except (OSError, ProcessLookupError):
         return False
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+            state = fh.read().rsplit(") ", 1)[1].split()[0]
+    except FileNotFoundError:
+        # Gone since kill(), unless there's no /proc to ask
+        return not os.path.isdir("/proc/self")
+    except (OSError, IndexError):
+        # Unreadable: as far as kill() could tell
+        return True
+    return state != "Z"
 
 
 # ── Stats helpers ────────────────────────────────

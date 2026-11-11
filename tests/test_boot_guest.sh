@@ -27,6 +27,7 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/test-boot-guest-XXXXXX")
 BIN="$WORK/bin"
 SERVER_PID=""
 LOCK_PID=""
+ZOMBIE_PARENT_PID=""
 
 cleanup() {
     local pid
@@ -35,7 +36,7 @@ cleanup() {
             kill "$pid" 2>/dev/null || true
         done <"$WORK/qemu-pids"
     fi
-    for pid in "$SERVER_PID" "$LOCK_PID"; do
+    for pid in "$SERVER_PID" "$LOCK_PID" "$ZOMBIE_PARENT_PID"; do
         if [[ -n $pid ]]; then
             kill "$pid" 2>/dev/null || true
         fi
@@ -171,6 +172,17 @@ SOCK="$WORK/vfu.sock"
 USER_KEY="$WORK/user_key"
 ssh-keygen -q -t ed25519 -N '' -C "user's key" -f "$USER_KEY" </dev/null
 
+# Check that a process is running. A zombie isn't: under an init that
+# doesn't reap, as in a container job, a killed QEMU whose parent has
+# exited stays one, and kill -0 still finds it.
+#   $1  the PID
+running() {
+    local stat
+
+    stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+    [[ ${stat##*) } != Z* ]]
+}
+
 # Check that a QEMU argument is on the command line.
 #   $1  the recorded arguments
 #   $2  the argument
@@ -208,7 +220,7 @@ KEY=$(value "$WORK/out-1" key)
 [[ $KEY == "$OUT/id_ed25519" ]] || fail "key= is '$KEY'"
 [[ $(value "$WORK/out-1" user) == ubuntu ]] || fail "user= isn't ubuntu"
 [[ $(value "$WORK/out-1" port) == 2299 ]] || fail "port= isn't 2299"
-kill -0 "$PID" 2>/dev/null || fail "pid= $PID isn't running"
+running "$PID" || fail "pid= $PID isn't running"
 grep -qx "$PID" "$FAKE_QEMU_PIDS" || fail "pid= $PID isn't QEMU's"
 [[ $(stat -c %a "$OUT") == 700 ]] || fail "--out isn't mode 0700"
 [[ $(stat -c %a "$KEY") == 600 ]] || fail "the key isn't mode 0600"
@@ -307,7 +319,7 @@ grep -q 'Connection reset' "$WORK/err-3" ||
 [[ ! -s $WORK/out-3 ]] || fail "a failed boot printed results"
 PID=$(comm -13 <(sort "$FAKE_QEMU_PIDS.before") <(sort "$FAKE_QEMU_PIDS"))
 [[ -n $PID ]] || fail "QEMU didn't start"
-! kill -0 "$PID" 2>/dev/null || fail "QEMU was left running after a timeout"
+! running "$PID" || fail "QEMU was left running after a timeout"
 pass "a guest that never accepts SSH times out, and QEMU is stopped"
 
 # A probe would answer, successfully, long after the wait ends
@@ -453,7 +465,7 @@ export FAKE_QEMU_ARGS="$WORK/qemu-args-6"
 [[ -f $ERNIC_VM_IMAGE_DIR/ernic-test-1.qcow2 ]] ||
     fail "vm-launch didn't make instance 1's overlay, and its directory"
 PID=$(vm_field vm_pid)
-kill -0 "$PID" 2>/dev/null || fail "the manifest's vm_pid $PID isn't running"
+running "$PID" || fail "the manifest's vm_pid $PID isn't running"
 grep -qx "$PID" "$FAKE_QEMU_PIDS" || fail "the manifest's vm_pid isn't QEMU's"
 [[ $(vm_field vm_name) == ernic-test-1 ]] || fail "vm_name isn't ernic-test-1"
 [[ $(vm_field ssh_port) == 2300 ]] || fail "ssh_port isn't 2300"
@@ -491,8 +503,37 @@ pass "vm-launch refuses a malformed --extra-hostfwd"
 
 "$PYTHON" -I "$ERNICCTL" vm-stop 1 >"$WORK/out-9" 2>"$WORK/err-9" ||
     fail "ernicctl vm-stop failed: $(cat "$WORK/err-9")"
-! kill -0 "$PID" 2>/dev/null || fail "vm-stop left QEMU running"
+! running "$PID" || fail "vm-stop left QEMU running"
 [[ -z $(vm_field vm_pid) ]] || fail "vm-stop left the VM in the manifest"
 pass "vm-stop stops the guest's QEMU"
+
+# A server that has exited, and that its parent hasn't reaped
+"$PYTHON" -I -c '
+import os, sys, time
+pid = os.fork()
+if pid == 0:
+    os._exit(0)
+with open(sys.argv[1] + ".tmp", "w", encoding="utf-8") as f:
+    f.write(str(pid))
+os.rename(sys.argv[1] + ".tmp", sys.argv[1])
+time.sleep(300)
+' "$WORK/zombie" &
+ZOMBIE_PARENT_PID=$!
+deadline=$((SECONDS + 30))
+until [[ -s $WORK/zombie ]] && ! running "$(cat "$WORK/zombie")"; do
+    ((SECONDS < deadline)) || fail "the stand-in server didn't become a zombie"
+    sleep 0.1
+done
+cat >"$MANIFEST" <<EOF
+{"instances": [{"id": 1, "role": "manager", "pid": $(cat "$WORK/zombie"),
+  "mac": "02:00:00:00:00:01", "socket": "$SOCK", "vm": null}]}
+EOF
+if "$PYTHON" -I "$ERNICCTL" vm-launch 1 --boot-timeout 30 \
+    >"$WORK/out-10" 2>"$WORK/err-10"; then
+    fail "vm-launch started a VM for an instance whose server has exited"
+fi
+grep -q 'Instance 1 is not running' "$WORK/err-10" ||
+    fail "a zombie server was taken for a running one: $(cat "$WORK/err-10")"
+pass "ernicctl takes a zombie for an exited process"
 
 echo "All boot-guest tests passed."
