@@ -93,6 +93,59 @@ can't publish an image; if it changes one, `ci-images.yml`
 fails and says so, and a maintainer pushes the branch to
 `ROCm/rocm-ernic` instead.
 
+## Pruning
+
+Each tag stays in GHCR as a version of the image's package,
+and so does each registry cache a build replaced, untagged.
+`.github/workflows/ci-images-prune.yml` deletes the ones
+nothing needs every Monday, with `prune-images.sh`.
+
+The images it prunes are those `ci/guest-image.env` names in
+`ghcr.io/rocm/rocm-ernic`, as `PREFIX_IMAGE` or
+`PREFIX_REPO` with `PREFIX_TAG`; it leaves other packages
+alone. It keeps a version if:
+
+- develop's `ci/guest-image.env` pins it, or the running
+  branch's does;
+- it's one of the 10 newest versions with a tag
+  `image-tag.sh` made;
+- it's under 30 days old;
+- it has any other tag, such as `buildcache`; or
+- a kept version needs it: a manifest a kept index lists, or
+  an artifact attached to a kept version with `oras attach`,
+  found by its subject or, since GHCR has no referrers API,
+  by the `sha256-DIGEST` tag oras uses instead.
+
+It deletes everything else: older tags, the cache manifests
+`buildcache` no longer names, and whatever only those
+needed. A pruned tag that's wanted again, by an old branch
+or a pull request open for weeks, is built again by
+`ensure-image.sh`, as any tag the registry hasn't got is.
+Nothing is deleted until every version of every image has
+been read and every manifest's digest checked, so any
+failure first deletes nothing, and it never deletes every
+version of a package.
+
+Every run lists what it keeps, and why, and what it deletes,
+in the step summary. Only runs on develop delete: the weekly
+one, or one started by hand with `delete` set. A pull request
+changing the script runs its test and lists what it would
+delete. To see the list yourself, with a token that can read
+packages (`gh auth refresh -s read:packages`):
+
+```bash
+ci/images/prune-images.sh ci/guest-image.env
+```
+
+Deleting takes the package's Admin role, which the
+repository that published it has, so `GITHUB_TOKEN` does.
+After a move to another repository, give that repository
+Admin in each package's "Manage Actions access" settings.
+
+`tests/test_prune_images.sh` (the `ernic-prune-images`
+CTest) checks the script against stand-ins for `gh` and the
+registry.
+
 ## Changing a pin
 
 Edit the image's `pins.env`; nowhere else holds them. The

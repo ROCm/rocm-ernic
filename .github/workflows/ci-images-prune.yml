@@ -1,0 +1,121 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Deletes the versions of the CI images in GHCR that nothing needs any
+# more, with ci/images/prune-images.sh: old tags that neither this
+# branch's ci/guest-image.env nor develop's pins and that aren't among
+# the 10 newest, and old untagged versions, such as the registry cache's
+# leftovers, that no kept version needs. Nothing under 30 days old goes.
+# See ci/images/README.md.
+#
+# Every run lists what it would delete. Only a run on develop deletes:
+# the weekly one, or a manual one asking to. A pull request that changes
+# the script runs its test and lists what it would delete, against the
+# real registry.
+name: "rocm-ernic - CI image pruning"
+
+on:
+  # Mondays at 05:37 UTC
+  schedule:
+    - cron: "37 5 * * 1"
+  pull_request:
+    branches: [ develop ]
+    paths:
+      - 'ci/images/prune-images.sh'
+      - 'tests/test_prune_images.sh'
+      - '.github/workflows/ci-images-prune.yml'
+  workflow_dispatch:
+    inputs:
+      delete:
+        description: Delete the versions, rather than only list them (develop only)
+        type: boolean
+        default: false
+
+permissions: {}
+
+# Pull request runs are checks, so a newer commit cancels the older one's
+# run. The rest share one group and aren't cancelled, so two never delete
+# at once.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || 'prune' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  plan:
+    name: List the versions to prune
+    # The images are ROCm's: a fork's token can't touch them
+    if: github.repository_owner == 'ROCm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # develop's pins, kept whichever branch this runs on
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: develop
+          path: develop
+          sparse-checkout: ci/guest-image.env
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      # The script, before it's trusted: the same test as CTest's
+      # ernic-prune-images, which Build and Test doesn't run for a change
+      # only under ci/images/
+      - name: Test the prune script
+        shell: bash
+        run: tests/test_prune_images.sh ci/images/prune-images.sh
+
+      # A pull request from a fork gets a token that can't read ROCm's
+      # packages' versions
+      - name: List what would be deleted
+        if: >-
+          github.event_name != 'pull_request' ||
+          !github.event.pull_request.head.repo.fork
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo '```'
+            ci/images/prune-images.sh ci/guest-image.env \
+              develop/ci/guest-image.env
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+  prune:
+    name: Delete the versions
+    needs: plan
+    # Only develop's reviewed script deletes
+    if: >-
+      github.ref == 'refs/heads/develop' &&
+      (github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_dispatch' && inputs.delete))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # It looks again rather than trusting the plan job's list, which
+      # may be out of date by now
+      - name: Delete the versions nothing needs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo '```'
+            ci/images/prune-images.sh --delete ci/guest-image.env
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"

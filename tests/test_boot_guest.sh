@@ -640,4 +640,38 @@ grep -q 'Instance 1 is not running' "$WORK/err-10" ||
     fail "a zombie server was taken for a running one: $(cat "$WORK/err-10")"
 pass "ernicctl takes a zombie for an exited process"
 
+# ── ernicctl's image directory ──────────────────
+
+# Print the image directory ernicctl settles on, with its warnings in
+# $WORK/err-image-dir. The environment overrides an installed env file.
+#   $@  environment as NAME=VALUE
+image_dir() {
+    env "$@" "$PYTHON" -I -c '
+import importlib.machinery
+import importlib.util
+import sys
+
+loader = importlib.machinery.SourceFileLoader("ernicctl", sys.argv[1])
+module = importlib.util.module_from_spec(
+    importlib.util.spec_from_loader("ernicctl", loader))
+loader.exec_module(module)
+print(module.CFG["ERNIC_VM_IMAGE_DIR"])
+' "$ERNICCTL" 2>"$WORK/err-image-dir"
+}
+
+[[ $(image_dir ERNIC_VM_IMAGE_DIR= ERNIC_QEMU_MINIMAL=) == /opt/qemu-images ]] ||
+    fail "the default image directory isn't /opt/qemu-images"
+dir=$(image_dir ERNIC_VM_IMAGE_DIR= ERNIC_QEMU_MINIMAL="$WORK/qm")
+[[ $dir == /opt/qemu-images ]] ||
+    fail "ERNIC_QEMU_MINIMAL still sets the image directory: $dir"
+grep -q "ERNIC_QEMU_MINIMAL is no longer read" "$WORK/err-image-dir" ||
+    fail "ERNIC_QEMU_MINIMAL was ignored without a warning:" \
+        "$(cat "$WORK/err-image-dir")"
+[[ $(image_dir ERNIC_VM_IMAGE_DIR="$WORK/img" \
+    ERNIC_QEMU_MINIMAL="$WORK/qm") == "$WORK/img" ]] ||
+    fail "ERNIC_VM_IMAGE_DIR wasn't used"
+[[ ! -s $WORK/err-image-dir ]] ||
+    fail "a warning with ERNIC_VM_IMAGE_DIR set: $(cat "$WORK/err-image-dir")"
+pass "the image directory defaults to /opt/qemu-images, not qemu-minimal's"
+
 echo "All boot-guest tests passed."
