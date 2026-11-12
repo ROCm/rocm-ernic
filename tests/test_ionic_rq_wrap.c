@@ -303,12 +303,17 @@ void ernic_stats_qp_cqe(struct ernic_stats *st, uint32_t qp_id)
     (void)st;
     (void)qp_id;
 }
+/* Receive doorbells counted, express doorbells included */
+static unsigned g_db_recv;
+
 void ernic_stats_qp_doorbell(struct ernic_stats *st, uint32_t qp_id,
                              bool is_send)
 {
     (void)st;
     (void)qp_id;
-    (void)is_send;
+    if (!is_send) {
+        g_db_recv++;
+    }
 }
 void ernic_stats_qp_wqe(struct ernic_stats *st, uint32_t qp_id, unsigned int wr)
 {
@@ -504,22 +509,22 @@ static void test_rq_survives_many_wraps(void)
 {
     struct ionic_datapath *dp = dp_with_recv_rings();
     uint32_t posted = 0;
+    bool ok = true;
 
-    for (uint32_t lap = 0; lap < 5; lap++) {
-        for (uint16_t i = 0; i < RQ_DEPTH; i++) {
+    /* Every post is checked, the last of the last lap included */
+    for (uint32_t lap = 0; ok && lap < 5; lap++) {
+        for (uint16_t i = 0; ok && i < RQ_DEPTH; i++) {
             uint16_t idx = (uint16_t)((posted + 1) % RQ_DEPTH);
 
             rq_doorbell(dp, RQ_QP_ID, idx);
             rq_doorbell(dp, SRQ_QID, idx);
             posted++;
-            if (qp_outstanding(dp) != 1 || srq_outstanding(dp) != 1) {
-                break;
-            }
+            ok = qp_outstanding(dp) == 1 && srq_outstanding(dp) == 1;
             dp->qp[RQ_QP_ID].rq_cons = dp->qp[RQ_QP_ID].rq_prod;
             srq_drain(dp);
         }
     }
-    check(posted == 5 * RQ_DEPTH,
+    check(ok && posted == 5 * RQ_DEPTH,
           "post-and-drain stays at one outstanding across five laps");
 }
 
@@ -587,19 +592,19 @@ static void test_rq_expdb_survives_many_wraps(void)
 {
     struct ionic_datapath *dp = dp_with_recv_rings();
     uint32_t posted = 0;
+    bool ok = true;
 
+    /* Every post is checked, the last of the last lap included */
     rq_in_cmb(dp, RQ_DEPTH);
-    for (uint32_t lap = 0; lap < 5; lap++) {
-        for (uint32_t slot = 0; slot < RQ_DEPTH; slot++) {
+    for (uint32_t lap = 0; ok && lap < 5; lap++) {
+        for (uint32_t slot = 0; ok && slot < RQ_DEPTH; slot++) {
             rq_expdb(dp, slot);
             posted++;
-            if (qp_outstanding(dp) != 1) {
-                break;
-            }
+            ok = qp_outstanding(dp) == 1;
             dp->qp[RQ_QP_ID].rq_cons = dp->qp[RQ_QP_ID].rq_prod;
         }
     }
-    check(posted == 5 * RQ_DEPTH,
+    check(ok && posted == 5 * RQ_DEPTH,
           "CMB RQ post-and-drain stays at one outstanding across five laps");
 }
 
@@ -635,8 +640,9 @@ static void test_rq_expdb_in_pieces(void)
     bool early = false;
 
     rq_in_cmb(dp, RQ_DEPTH);
+    g_db_recv = 0;
     for (uint64_t off = 0; off < 64U; off += 8U) {
-        if (qp_outstanding(dp) != 0) {
+        if (qp_outstanding(dp) != 0 || g_db_recv != 0) {
             early = true;
         }
         ionic_datapath_expdb_write(dp, at + off, 8);
@@ -644,6 +650,8 @@ static void test_rq_expdb_in_pieces(void)
     check(!early, "CMB RQ posts nothing before the write ending the slot");
     check(qp_outstanding(dp) == 4,
           "CMB RQ posts through slot 3 on the 8-byte write ending it");
+    check(g_db_recv == 1,
+          "CMB RQ counts one receive doorbell for the slot's eight writes");
 }
 
 /*
@@ -656,8 +664,9 @@ static void test_rq_expdb_end_wraps(void)
     struct ionic_datapath *dp = dp_with_recv_rings();
 
     rq_in_cmb(dp, RQ_DEPTH);
+    g_db_recv = 0;
     ionic_datapath_expdb_write(dp, UINT64_MAX - 63U, 128);
-    check(qp_outstanding(dp) == 0,
+    check(qp_outstanding(dp) == 0 && g_db_recv == 0,
           "CMB RQ posts nothing for a write whose end wraps 2^64");
 }
 

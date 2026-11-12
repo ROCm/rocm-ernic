@@ -251,7 +251,10 @@
   created the QP and gives their pages to the next QP as they are. A WQE
   posted by the express doorbell while Bus Master Enable is clear, or the
   function is in D3hot, waits until the guest sets the bit or returns the
-  function to D0, as one posted by a doorbell does.
+  function to D0, as one posted by a doorbell does. Each WQE posted by the
+  express doorbell counts as one doorbell ring in
+  `ernic_qp_doorbell_send_total` or `ernic_qp_doorbell_recv_total`, and in
+  the guest's `doorbell_send` or `doorbell_recv` hw_counter.
 
 * `--backend nvmeof:kv=1[,keys=...,maxval=...]` serves the namespace with the
   NVM Express Key Value command set instead of the block one: Store (01h),

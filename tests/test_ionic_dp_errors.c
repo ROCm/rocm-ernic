@@ -466,12 +466,17 @@ void ernic_stats_qp_cqe(struct ernic_stats *st, uint32_t qp_id)
     (void)st;
     (void)qp_id;
 }
+/* Send doorbells counted, express doorbells included; setup() zeroes it */
+static unsigned g_db_send;
+
 void ernic_stats_qp_doorbell(struct ernic_stats *st, uint32_t qp_id,
                              bool is_send)
 {
     (void)st;
     (void)qp_id;
-    (void)is_send;
+    if (is_send) {
+        g_db_send++;
+    }
 }
 void ernic_stats_qp_wqe(struct ernic_stats *st, uint32_t qp_id, unsigned int wr)
 {
@@ -652,6 +657,7 @@ static struct ionic_datapath *setup(void)
     g_ndrop = 0;
     g_drop_hook = NULL;
     g_now_ms = T0;
+    g_db_send = 0;
     g_local_node = UINT32_MAX;
     g_recv_fn = NULL;
     g_recv_opaque = NULL;
@@ -3876,6 +3882,9 @@ static const char *ex_run(struct ionic_datapath *dp, enum ex_scenario s)
 
     if (s == EX_WRAPS) {
         ionic_datapath_expdb_write(dp, UINT64_MAX - 63U, (size_t)EX_OFF + 128U);
+        if (g_db_send != 0) {
+            return "a doorbell was counted";
+        }
         return write_landed() ? "the WRITE ran" : NULL;
     }
     if (s == EX_HELD) {
@@ -3890,6 +3899,9 @@ static const char *ex_run(struct ionic_datapath *dp, enum ex_scenario s)
         if (!write_landed()) {
             return "the held WRITE didn't run once Bus Master Enable was set";
         }
+        if (g_db_send != 1) {
+            return "the express doorbell wasn't counted once";
+        }
         return cq_has_error(dp) ? "the held WRITE completed in error" : NULL;
     }
     for (uint64_t off = 0; off < slot_len; off += piece) {
@@ -3900,6 +3912,9 @@ static const char *ex_run(struct ionic_datapath *dp, enum ex_scenario s)
     }
     if (!write_landed()) {
         return "the WRITE didn't run";
+    }
+    if (g_db_send != 1) {
+        return "the express doorbell wasn't counted once";
     }
     return cq_has_error(dp) ? "the WRITE completed in error" : NULL;
 }
@@ -3915,15 +3930,17 @@ static void check_cmb_expdb(void)
         {"positive",
          "a WRITE in an SQ in the CMB, its slot written in 8-byte pieces, "
          "as QEMU delivers a 64-byte store, and no doorbell rung",
-         "it runs on the piece ending the slot, and not before", EX_PIECES},
+         "it runs on the piece ending the slot, and not before, and counts "
+         "one send doorbell",
+         EX_PIECES},
         {"positive",
          "a WRITE in an SQ in the CMB, its slot written in one write, and no "
          "doorbell rung",
-         "it runs", EX_WHOLE},
+         "it runs, and counts one send doorbell", EX_WHOLE},
         {"negative",
          "a write into the CMB whose offset plus its length wraps 2^64 to the "
          "end of an SQ's slot",
-         "nothing runs", EX_WRAPS},
+         "nothing runs, and no doorbell is counted", EX_WRAPS},
         {"positive",
          "a WRITE in an SQ in the CMB, its slot written with Bus Master "
          "Enable clear",

@@ -4572,11 +4572,13 @@ void ionic_datapath_expdb_write(struct ionic_datapath *dp, uint64_t cmb_offset,
             continue;
         }
 
-        /* Running the queue reads and writes guest memory, so without Bus
-         * Master Enable it waits for ionic_datapath_resume(), as after an
-         * SQ doorbell */
+        /* Counted as a doorbell, once for the write ending the slot. Running
+         * the queue reads and writes guest memory, so without Bus Master
+         * Enable it waits for ionic_datapath_resume(), as after an SQ
+         * doorbell */
         if (q->sq_cmb && dp_expdb_slot(end, q->sq_cmb_buf_offset, q->sq_depth,
                                        q->sq_stride_log2, &slot)) {
+            ernic_stats_qp_doorbell(dp->stats, qp_id, true);
             q->sq_prod = (slot + 1U) % q->sq_depth;
             if (ernic_dma_bus_master(dp->vfu_ctx)) {
                 sq_service(dp, q, qp_id);
@@ -4585,12 +4587,14 @@ void ionic_datapath_expdb_write(struct ionic_datapath *dp, uint64_t cmb_offset,
 
         /* rq_cons runs free, so rq_prod must too: the slot index alone
          * would be behind rq_cons after the first lap. An index taken
-         * modulo the depth is never refused. */
+         * modulo the depth is never refused; the express doorbell is
+         * counted once it's taken, as an RQ doorbell is. */
         if (q->rq_cmb && !q->has_srq &&
             dp_expdb_slot(end, q->rq_cmb_buf_offset, q->rq_depth,
-                          q->rq_stride_log2, &slot)) {
-            (void)rq_prod_advance(&q->rq_prod, q->rq_depth,
-                                  (slot + 1U) % q->rq_depth);
+                          q->rq_stride_log2, &slot) &&
+            rq_prod_advance(&q->rq_prod, q->rq_depth,
+                            (slot + 1U) % q->rq_depth)) {
+            ernic_stats_qp_doorbell(dp->stats, qp_id, false);
         }
     }
 }
