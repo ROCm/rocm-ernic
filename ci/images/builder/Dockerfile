@@ -147,6 +147,8 @@ FROM base
 #   qemu-utils          Ubuntu's qemu-img, as the Docker Hub builder had;
 #                       /opt/qemu/bin's comes first on PATH
 #   pipx                ansible-core, below
+#   procps              ps, pgrep and pkill, which the lanes use to watch
+#                       and stop the server and QEMU
 #   sudo                Ansible's become, for the TCP job's host setup,
 #                       which runs here as root
 # and the RDMA headers the server builds against
@@ -160,6 +162,7 @@ RUN apt-get update && \
         librdmacm-dev \
         openssh-client \
         pipx \
+        procps \
         qemu-utils \
         sudo \
         zstd && \

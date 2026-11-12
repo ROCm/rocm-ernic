@@ -62,15 +62,17 @@ if [ "${status}" -gt 1 ]; then
 fi
 
 # Drop the workflows' image: lines naming the pinned builder, and only
-# those: one naming another tag is still a stray
-builder_line="image: ${BUILDER_IMAGE}:${BUILDER_TAG}"
+# those: one naming another tag is still a stray. A line is read as
+# ci/images/image-tag.sh reads it, to be one it rewrites: nothing but
+# `image:`, whitespace and the reference.
+pin_re='^[[:space:]]*image:[[:space:]]+([^[:space:]]+)$'
 kept=""
 while IFS= read -r line; do
     [ -n "${line}" ] || continue
     file=${line%%:*}
     text=${line#*:*:}
-    text=${text#"${text%%[![:space:]]*}"}
-    if [[ ${file} == .github/workflows/* && ${text} == "${builder_line}" ]]; then
+    if [[ ${file} == .github/workflows/* && ${text} =~ ${pin_re} &&
+        ${BASH_REMATCH[1]} == "${BUILDER_IMAGE}:${BUILDER_TAG}" ]]; then
         continue
     fi
     kept+="${line}"$'\n'
