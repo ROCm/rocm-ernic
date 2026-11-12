@@ -10,9 +10,10 @@
 # build, and is never built or pushed again. If the registry says the tag
 # doesn't exist, it builds the image from ci/images/NAME/, with every pin
 # in its pins.env as a build argument, runs NAME/check.sh inside it, and
-# only then pushes it. Any other answer from the registry, such as a
-# refused login or a network error, is a failure rather than a reason to
-# build, so a published tag can't be overwritten by mistake.
+# only then pushes it. An image without a check.sh isn't built at all.
+# Any other answer from the registry, such as a refused login or a
+# network error, is a failure rather than a reason to build, so a
+# published tag can't be overwritten by mistake.
 #
 # The build caches its layers in the registry, as IMAGE:buildcache, so an
 # image whose pins haven't changed rebuilds in minutes.
@@ -84,6 +85,10 @@ REPO=${REF%:*}
 DIR="$IMAGES_DIR/$NAME"
 PINS="$DIR/pins.env"
 
+# Every image is checked before it's published, so one without a check
+# isn't built at all, rather than published unchecked
+[[ -f $DIR/check.sh ]] || die "$DIR/check.sh is missing"
+
 BUILD_ARGS=()
 while IFS= read -r line || [[ -n $line ]]; do
     if [[ -n $line && $line != \#* ]]; then
@@ -123,9 +128,6 @@ fi
 # Run the image's own checks inside it
 check_image() {
     local mount="$DIR/check.sh:/check.sh:ro"
-    if [[ ! -f $DIR/check.sh ]]; then
-        return
-    fi
     if [[ $ENGINE == podman ]]; then
         # Relabel the mount for SELinux, where podman runs confined
         mount+=",z"

@@ -264,6 +264,22 @@ fi
 ! called_with push || fail "an image that failed its check was pushed"
 pass "an image that fails its check isn't pushed"
 
+mv "$IMAGES/builder/check.sh" "$WORK/check.sh"
+for mode in publish build-only; do
+    args=(builder)
+    if [[ $mode == build-only ]]; then
+        args=(--build-only builder)
+    fi
+    if ensure FAKE_INSPECT=missing -- "${args[@]}"; then
+        fail "$mode: an image with no check.sh succeeded"
+    fi
+    grep -q "check.sh is missing" "$WORK/err" ||
+        fail "$mode: it didn't say check.sh is missing: $(cat "$WORK/err")"
+    ! called_with build || fail "$mode: an image with no check.sh was built"
+done
+mv "$WORK/check.sh" "$IMAGES/builder/check.sh"
+pass "an image with no check.sh isn't built, let alone published"
+
 if ensure FAKE_INSPECT=missing CI_IMAGES_CAN_PUSH=false -- builder; then
     fail "a run that can't push succeeded with the image missing"
 fi
