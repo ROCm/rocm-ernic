@@ -155,10 +155,11 @@
   never changes: `ci/images/image-tag.sh` computes it, and
   `ci/images/ensure-image.sh` builds, checks and pushes an image only if
   the registry hasn't got it. `ensure-image.sh --build-only` builds one
-  locally, with Docker or podman. `ci/guest-image.env` pins the builder's
-  tag too: `image-tag.sh --check builder` fails if it isn't the tree's,
-  and `image-tag.sh --write builder` updates it. The `ernic-ci-images`
-  test checks both scripts.
+  locally, with Docker or podman. `ci/guest-image.env` and the lanes'
+  container `image:` lines pin the builder's tag: `image-tag.sh --check
+  builder` fails if any isn't the tree's, and `image-tag.sh --write
+  builder` updates them all. The `ernic-ci-images` test checks both
+  scripts.
 * `ci/boot-guest.sh` boots a guest image under QEMU with an SSH key made
   for that boot, which cloud-init authorizes from a NoCloud seed disk for
   the `--user` account (made, without sudo, if the image doesn't have it),
@@ -695,10 +696,13 @@
   longer install packages into it in every job. System Tests publishes the
   image first, if this tree's definition of it isn't published yet, so a
   pull request that changes the builder runs every lane in the new image.
-  The builder carries libvfio-user 5b9c722, the commit the rest of CI
-  builds against, rather than 8039244. `tools/check-guest-image-tag.sh`
-  now also fails if a builder tag is pinned outside `ci/guest-image.env`,
-  and searches only the files git tracks, so build trees no longer fail it.
+  Runs that need the same new image each build it, and one that finds it
+  published by the time it has built it doesn't push it. The builder
+  carries libvfio-user 5b9c722, the commit the rest of CI builds against,
+  rather than 8039244. `tools/check-guest-image-tag.sh` now also fails if
+  a builder tag appears outside `ci/guest-image.env`, other than a lane's
+  `image:` line naming the pinned one, and searches only the files git
+  tracks, so build trees no longer fail it.
 * **Breaking:** **The Ansible collection is now `rocm.ernic`, and it is not
   published to Ansible Galaxy.** It was `sbates130272.rocm_ernic`. Address
   the roles as `rocm.ernic.ernic_guest_setup` and so on, and install the

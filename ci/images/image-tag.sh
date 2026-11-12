@@ -17,25 +17,31 @@
 # (untracked ones not ignored), read from the working tree, so the tag is
 # the same before and after a commit.
 #
-# ci/guest-image.env is the lockfile: it pins each image defined here, as
-# PREFIX_IMAGE (the image in the default registry) and PREFIX_TAG, and
-# --check fails if it doesn't pin what the tree defines.
+# Two places pin each image defined here, and --check fails unless both
+# name what the tree defines:
+#   - ci/guest-image.env, the lockfile, as PREFIX_IMAGE (the image in the
+#     default registry) and PREFIX_TAG;
+#   - every workflow line that is only `image: IMAGE:TAG`, IMAGE being
+#     the image in the default registry: the lanes' container images,
+#     written out because the security scan can't tell an image named by
+#     an expression is pinned.
 #
 # Usage: image-tag.sh [--ref | --check | --write] NAME
 #   NAME     an image's directory under ci/images/ (builder)
 #   --ref    print the full reference, REGISTRY/IMAGE:TAG, not the tag
-#   --check  fail unless ci/guest-image.env pins the image as the tree
-#            defines it
-#   --write  pin the image in ci/guest-image.env as the tree defines it
+#   --check  fail unless every pin names the image as the tree defines it
+#   --write  make every pin name the image as the tree defines it
 #
 # CI_IMAGES_REGISTRY names the registry and namespace for --ref (default:
-# ghcr.io/rocm/rocm-ernic). The lockfile always names the default.
+# ghcr.io/rocm/rocm-ernic). The pins always name the default.
 
 set -euo pipefail
 
 PROG=$(basename -- "$0")
 IMAGES_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
-LOCKFILE=$(cd -- "$IMAGES_DIR/.." && pwd)/guest-image.env
+REPO_ROOT=$(cd -- "$IMAGES_DIR/../.." && pwd)
+LOCKFILE=$REPO_ROOT/ci/guest-image.env
+WORKFLOWS=$REPO_ROOT/.github/workflows
 DEFAULT_REGISTRY=ghcr.io/rocm/rocm-ernic
 
 die() {
@@ -163,44 +169,72 @@ case $MODE in
         IMAGE_KEY=${LOCK_KEY}_IMAGE
         TAG_KEY=${LOCK_KEY}_TAG
         want_image="$DEFAULT_REGISTRY/$IMAGE"
+        # Each pin naming anything else, as FILE or FILE:LINE
+        stale=()
 
         # The lockfile's lines, and what it pins now. Each key must be
         # there once; --write changes it in place and adds nothing.
         mapfile -t LINES <"$LOCKFILE"
         pinned_image="" pinned_tag="" n_image=0 n_tag=0
-        for line in "${LINES[@]}"; do
-            case $line in
+        for i in "${!LINES[@]}"; do
+            case ${LINES[i]} in
                 "$IMAGE_KEY="*)
-                    pinned_image=${line#*=}
+                    pinned_image=${LINES[i]#*=}
                     n_image=$((n_image + 1))
+                    LINES[i]="$IMAGE_KEY=$want_image"
                     ;;
                 "$TAG_KEY="*)
-                    pinned_tag=${line#*=}
+                    pinned_tag=${LINES[i]#*=}
                     n_tag=$((n_tag + 1))
+                    LINES[i]="$TAG_KEY=$TAG"
                     ;;
             esac
         done
         [[ $n_image -eq 1 && $n_tag -eq 1 ]] ||
             die "$LOCKFILE must set $IMAGE_KEY and $TAG_KEY once each"
+        if [[ $pinned_image != "$want_image" ||
+            $pinned_tag != "$TAG" ]]; then
+            stale+=("${LOCKFILE#"$REPO_ROOT/"}")
+            if [[ $MODE == write ]]; then
+                # Rewritten in place, so it keeps its mode
+                printf '%s\n' "${LINES[@]}" >"$LOCKFILE"
+            fi
+        fi
+
+        # The workflows' image: lines naming the image, whatever the tag.
+        # Only a line that is nothing else is a pin, so --write changes
+        # nothing but the tag.
+        pin_re='^([[:space:]]*image:[[:space:]]+)([^[:space:]]+)$'
+        shopt -s nullglob
+        for wf in "$WORKFLOWS"/*.yml "$WORKFLOWS"/*.yaml; do
+            mapfile -t LINES <"$wf"
+            changed=false
+            for i in "${!LINES[@]}"; do
+                [[ ${LINES[i]} =~ $pin_re ]] || continue
+                indent=${BASH_REMATCH[1]}
+                ref=${BASH_REMATCH[2]}
+                if [[ $ref == "$want_image:"* &&
+                    $ref != "$want_image:$TAG" ]]; then
+                    stale+=("${wf#"$REPO_ROOT/"}:$((i + 1))")
+                    LINES[i]="$indent$want_image:$TAG"
+                    changed=true
+                fi
+            done
+            if [[ $MODE == write ]] && $changed; then
+                printf '%s\n' "${LINES[@]}" >"$wf"
+            fi
+        done
 
         if [[ $MODE == check ]]; then
-            if [[ $pinned_image != "$want_image" ||
-                $pinned_tag != "$TAG" ]]; then
-                die "$LOCKFILE pins $pinned_image:$pinned_tag, but the" \
-                    "tree defines $want_image:$TAG. Run" \
-                    "ci/images/image-tag.sh --write $NAME and commit it."
+            if [[ ${#stale[@]} -gt 0 ]]; then
+                die "the tree defines $want_image:$TAG, but these pin" \
+                    "another: ${stale[*]}. Run ci/images/image-tag.sh" \
+                    "--write $NAME and commit the result."
             fi
-            echo "$PROG: $LOCKFILE pins $want_image:$TAG" >&2
+            echo "$PROG: every pin names $want_image:$TAG" >&2
         else
-            for i in "${!LINES[@]}"; do
-                case ${LINES[i]} in
-                    "$IMAGE_KEY="*) LINES[i]="$IMAGE_KEY=$want_image" ;;
-                    "$TAG_KEY="*) LINES[i]="$TAG_KEY=$TAG" ;;
-                esac
-            done
-            # Rewritten in place, so it keeps its mode
-            printf '%s\n' "${LINES[@]}" >"$LOCKFILE"
-            echo "$PROG: $LOCKFILE now pins $want_image:$TAG" >&2
+            echo "$PROG: $want_image:$TAG now pinned;" \
+                "changed ${stale[*]:-nothing}" >&2
         fi
         ;;
 esac

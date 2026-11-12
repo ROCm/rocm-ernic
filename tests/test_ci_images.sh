@@ -40,11 +40,11 @@ pass() {
 
 command -v git >/dev/null || fail "git is needed and not installed"
 
-# A git repository holding a copy of ci/images/ and a lockfile pinning a
-# stale builder, all committed
+# A git repository holding a copy of ci/images/, and a lockfile and a
+# workflow pinning a stale builder, all committed
 #   $1  where
 make_repo() {
-    mkdir -p "$1/ci"
+    mkdir -p "$1/ci" "$1/.github/workflows"
     cp -R "$SRC" "$1/ci/images"
     cat >"$1/ci/guest-image.env" <<'EOF'
 # The lockfile
@@ -52,6 +52,23 @@ GUEST_ARTIFACT_TAG=guest-tag
 
 BUILDER_IMAGE=ghcr.io/rocm/rocm-ernic/ci-builder
 BUILDER_TAG=stale
+EOF
+    cat >"$1/.github/workflows/lane.yml" <<'EOF'
+jobs:
+  a:
+    container:
+      image: ghcr.io/rocm/rocm-ernic/ci-builder:stale
+  b:
+    container:
+        image:   ghcr.io/rocm/rocm-ernic/ci-builder:older
+  c:
+    container:
+      image: ubuntu:24.04
+      # image: ghcr.io/rocm/rocm-ernic/ci-builder:stale
+      options: ghcr.io/rocm/rocm-ernic/ci-builder:stale
+  d:
+    container:
+      image: docker.io/other/ci-builder:stale
 EOF
     git -C "$1" init -q
     git -C "$1" add -A
@@ -181,6 +198,36 @@ if "$TAG_SH" --check builder 2>/dev/null; then
 fi
 pass "--write pins the tree's image, and --check fails until it's pinned"
 
+LANE="$REPO/.github/workflows/lane.yml"
+[[ $(cat "$LANE") == "jobs:
+  a:
+    container:
+      image: ghcr.io/rocm/rocm-ernic/ci-builder:$TAG
+  b:
+    container:
+        image:   ghcr.io/rocm/rocm-ernic/ci-builder:$TAG
+  c:
+    container:
+      image: ubuntu:24.04
+      # image: ghcr.io/rocm/rocm-ernic/ci-builder:stale
+      options: ghcr.io/rocm/rocm-ernic/ci-builder:stale
+  d:
+    container:
+      image: docker.io/other/ci-builder:stale" ]] ||
+    fail "--write left the workflow as: $(cat "$LANE")"
+git -C "$REPO" checkout -q -- ci/guest-image.env
+"$TAG_SH" --write builder 2>/dev/null || fail "--write failed"
+sed -i "4s|:$TAG\$|:stale|" "$LANE"
+if "$TAG_SH" --check builder 2>"$WORK/err"; then
+    fail "--check passed a workflow pinning a stale tag"
+fi
+grep -qF ".github/workflows/lane.yml:4" "$WORK/err" ||
+    fail "--check didn't name the stale line: $(cat "$WORK/err")"
+grep -qF "ci/guest-image.env" "$WORK/err" &&
+    fail "--check named the lockfile, which was right: $(cat "$WORK/err")"
+git -C "$REPO" checkout -q -- .github ci/guest-image.env
+pass "--write pins the workflows' image: lines, and only those"
+
 # Check that --check and --write refuse a lockfile, and --write leaves it
 # alone.
 #   $1  what's wrong with it
@@ -214,7 +261,8 @@ pass "a lockfile without one pin of each, or none, is refused"
 # ── ensure-image.sh ─────────────────────────────
 
 # docker: records each call, one argument to a line. FAKE_INSPECT says
-# what the registry answers (published, missing, missing-repo, denied);
+# what the registry answers (published, missing, missing-repo, denied),
+# and FAKE_INSPECT_AGAIN, if set, what it answers when asked again;
 # FAKE_CHECK_FAIL makes the image's check fail; FAKE_PODMAN makes it
 # podman-docker's docker.
 BIN="$WORK/bin"
@@ -232,7 +280,12 @@ case "$1 ${2:-}" in
         ;;
     "buildx version") echo "github.com/docker/buildx v0.29.0" ;;
     "buildx imagetools")
-        case $FAKE_INSPECT in
+        answer=$FAKE_INSPECT
+        if [[ -n ${FAKE_INSPECT_AGAIN:-} &&
+            $(grep -cx imagetools "$FAKE_DOCKER_LOG") -gt 1 ]]; then
+            answer=$FAKE_INSPECT_AGAIN
+        fi
+        case $answer in
             published) echo "Name: $4" ;;
             missing)
                 echo "ERROR: $4: not found" >&2
@@ -316,12 +369,27 @@ for answer in missing missing-repo; do
     called_with "$IMAGES/builder/check.sh:/check.sh:ro" ||
         fail "$answer: the image's check wasn't run"
     called_with push || fail "$answer: the image wasn't pushed"
-    # The check comes before the push
-    [[ $(grep -nx run "$WORK/docker.log" | cut -d: -f1) -lt \
-        $(grep -nx push "$WORK/docker.log" | cut -d: -f1) ]] ||
+    # The check, then another look in the registry, come before the push
+    run_at=$(grep -nx run "$WORK/docker.log" | cut -d: -f1)
+    looked_at=$(grep -nx imagetools "$WORK/docker.log" | tail -1 | cut -d: -f1)
+    push_at=$(grep -nx push "$WORK/docker.log" | cut -d: -f1)
+    [[ $run_at -lt $push_at ]] ||
         fail "$answer: the image was pushed before it was checked"
+    [[ $run_at -lt $looked_at && $looked_at -lt $push_at ]] ||
+        fail "$answer: it didn't look in the registry again before pushing"
 done
 pass "a missing image is built, checked, then pushed"
+
+ensure FAKE_INSPECT=missing FAKE_INSPECT_AGAIN=published -- builder ||
+    fail "an image published during the build failed: $(cat "$WORK/err")"
+[[ $(cat "$WORK/out") == "$REF" ]] || fail "it didn't print $REF"
+called_with build || fail "the missing image wasn't built"
+! called_with push || fail "an image published during the build was pushed"
+if ensure FAKE_INSPECT=missing FAKE_INSPECT_AGAIN=denied -- builder; then
+    fail "an unclear answer after the build was taken as missing"
+fi
+! called_with push || fail "an image was pushed on an unclear answer"
+pass "an image published while this run built it isn't pushed again"
 
 if ensure FAKE_INSPECT=denied -- builder; then
     fail "an unclear answer from the registry was taken as missing"

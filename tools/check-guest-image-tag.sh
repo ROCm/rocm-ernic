@@ -7,9 +7,10 @@
 # next person to keep it equal to the others. Nothing checked, so the only
 # way to find a missed copy was a lane quietly testing an older guest --
 # which presents as a flaky backend, not as a stale pin. This is the check
-# that was missing. The builder's tag gets the same treatment: the lanes
-# take the image from the CI images workflow, and anything else reads
-# ci/guest-image.env.
+# that was missing. The builder's tag gets the same treatment, except in
+# a workflow's container `image:` line naming exactly the pinned builder:
+# the security scan wants those written out, and
+# `ci/images/image-tag.sh --write builder` keeps them equal to the pin.
 #
 # Only files git tracks are searched, which is everything CI sees; build
 # trees and notes in a working copy aren't pins.
@@ -60,6 +61,22 @@ if [ "${status}" -gt 1 ]; then
     exit 2
 fi
 
+# Drop the workflows' image: lines naming the pinned builder, and only
+# those: one naming another tag is still a stray
+builder_line="image: ${BUILDER_IMAGE}:${BUILDER_TAG}"
+kept=""
+while IFS= read -r line; do
+    [ -n "${line}" ] || continue
+    file=${line%%:*}
+    text=${line#*:*:}
+    text=${text#"${text%%[![:space:]]*}"}
+    if [[ ${file} == .github/workflows/* && ${text} == "${builder_line}" ]]; then
+        continue
+    fi
+    kept+="${line}"$'\n'
+done <<<"${stray}"
+stray=${kept%$'\n'}
+
 if [ -n "${stray}" ]; then
     echo "error: an image tag is pinned outside ${PIN_FILE}:" >&2
     while IFS= read -r line; do echo "  ${line}" >&2; done <<<"${stray}"
@@ -73,7 +90,8 @@ ${PIN_FILE} is the only place the pins may live. Consumers read it:
   Ansible          lookup('ansible.builtin.ini', '<key> type=properties ...')
 
 If you are adding a lane, use one of those rather than copying the tag. A
-lane workflow takes the builder image as an input, from ci-images.yml.
+lane's container line names the builder in full, as the others do, and
+ci/images/image-tag.sh --write builder updates it with them.
 EOF
     exit 1
 fi

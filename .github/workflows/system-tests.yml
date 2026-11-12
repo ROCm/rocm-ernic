@@ -100,7 +100,9 @@ env:
 jobs:
   # The builder image every job here runs in, defined in
   # ci/images/builder/: published first if this tree's definition isn't
-  # yet, so a pull request that changes it tests the lanes in it.
+  # yet, so a pull request that changes it tests the lanes in it.  Every
+  # job, and each lane workflow, needs it for that reason alone: their
+  # image: lines name the tag themselves.
   images:
     name: CI images
     permissions:
@@ -114,7 +116,11 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     container:
-      image: ${{ needs.images.outputs.builder_image }}
+      # The builder, ci/images/builder/, under the tag naming its
+      # contents.  ci/images/image-tag.sh --write builder keeps this line,
+      # and every other like it, equal to the tree's tag, and the images
+      # job, which checks that, publishes it before this job starts.
+      image: ghcr.io/rocm/rocm-ernic/ci-builder:qemu11.1.1-vfu.5b9c722-89f5ef932479
       # --user root, since the image's default user is ci, and this job
       # is written to run as root.
       #
@@ -1405,7 +1411,6 @@ jobs:
     needs: images
     uses: $/.github/workflows/nvmeof-lane.yml
     with:
-      builder_image: ${{ needs.images.outputs.builder_image }}
       # The same rule the two-VM lane publishes under, so the three
       # badges are fed on identical terms: never from a pull request,
       # and a manual run does whatever the dispatch asked for.
@@ -1432,7 +1437,6 @@ jobs:
     needs: images
     uses: $/.github/workflows/nvmeof-lane.yml
     with:
-      builder_image: ${{ needs.images.outputs.builder_image }}
       mode: mixed
       # The same rule every other publishing lane uses, so the badges
       # are fed on identical terms: never from a pull request, and a
@@ -1461,7 +1465,6 @@ jobs:
     needs: images
     uses: $/.github/workflows/s3-lane.yml
     with:
-      builder_image: ${{ needs.images.outputs.builder_image }}
       # The same rule the other publishing lanes use, so every badge is
       # fed on identical terms: never from a pull request, and a manual
       # run does whatever the dispatch asked for.
@@ -1482,7 +1485,6 @@ jobs:
     needs: images
     uses: $/.github/workflows/p4-lane.yml
     with:
-      builder_image: ${{ needs.images.outputs.builder_image }}
       # The same rule every publishing lane uses, so each series is fed
       # on identical terms: never from a pull request, and a manual run
       # does whatever the dispatch asked for.
@@ -1509,8 +1511,8 @@ jobs:
       PERF_RESULTS: /tmp/ernic-ci-results
       PERF_CSV_DIR: /tmp/ernic-ci-results/perf-csv
     container:
-      image: ${{ needs.images.outputs.builder_image }}
-      # --user root: see the loopback job.
+      # The tag, and --user root: see the loopback job.
+      image: ghcr.io/rocm/rocm-ernic/ci-builder:qemu11.1.1-vfu.5b9c722-89f5ef932479
       #
       # GitHub-hosted Linux runners expose /dev/kvm; pass it through so the
       # guests run accelerated instead of under TCG.

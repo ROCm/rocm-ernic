@@ -24,12 +24,6 @@ name: rocm-ernic - S3 Lane
 on:
   workflow_call:
     inputs:
-      builder_image:
-        description: >-
-          The builder image to run in, as the CI images workflow
-          (ci-images.yml) returns it.
-        type: string
-        required: true
       publish:
         description: >-
           Sweep the client across the tracked object sizes, record the
@@ -46,7 +40,9 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     container:
-      image: ${{ inputs.builder_image }}
+      # ci/images/image-tag.sh --write builder keeps the tag; see the
+      # loopback job in system-tests.yml.
+      image: ghcr.io/rocm/rocm-ernic/ci-builder:qemu11.1.1-vfu.5b9c722-89f5ef932479
       # --user root, since the image's default user is ci, and --init,
       # which makes PID 1 an init that reaps orphans: see the loopback
       # job in system-tests.yml.

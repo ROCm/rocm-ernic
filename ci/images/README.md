@@ -7,11 +7,12 @@ by `.github/workflows/ci-images.yml`:
 | --- | --- | --- |
 | `builder/` | `ghcr.io/rocm/rocm-ernic/ci-builder` | QEMU with the vfio-user client, libvfio-user, and the tools to boot, provision and fetch a guest |
 
-Every VM lane runs in `ci-builder`. `system-tests.yml` calls
-`ci-images.yml` first, which publishes the image if this
-tree's definition of it isn't published yet, and gives each
-lane its reference. So a pull request that changes the
-builder runs the lanes in the new image.
+Every VM lane runs in `ci-builder`, under the tag its
+`container:` `image:` line names. `system-tests.yml` calls
+`ci-images.yml` first, which checks that tag is this tree's
+and publishes the image if it isn't published yet. So a pull
+request that changes the builder runs the lanes in the new
+image.
 
 The image's default user is `ci` (uid 1001), not root.
 Anything needing root asks for it: the VM lanes, which are
@@ -34,30 +35,47 @@ Change any of them and the tag changes. `image-tag.sh NAME`
 prints the tag, and `image-tag.sh --ref NAME` the full
 reference.
 
-A published tag is never built or pushed again, so a tag
-always names one build. `ensure-image.sh NAME` looks for the
-tag in the registry, and only if the registry says it isn't
-there does it build the image, run the image's `check.sh`
-inside it, and push it. Any other answer from the registry
-fails the run rather than risk overwriting a tag.
+A published tag isn't built or pushed again.
+`ensure-image.sh NAME` looks for the tag in the registry,
+and only if the registry says it isn't there does it build
+the image and run the image's `check.sh` inside it. It then
+looks again, and pushes only if the tag still isn't there.
+Any other answer from the registry fails the run rather than
+risk overwriting a tag.
 
 So a pull request that changes an image's definition builds
 and publishes the new image under its new tag, and a run that
 changes nothing only looks. Two runs needing the same new
-image build it once.
+image at once both build it, and the one that finishes second
+doesn't push it. Nothing makes the second look and the push
+one step, so two runs finishing within seconds could both
+push, publishing two checked builds of one definition, one
+after the other, under the tag. A shared concurrency group
+would prevent that, but GitHub keeps only one waiting job per
+group, so a third run would cancel the second's build and
+skip its lanes.
 
-`ci/guest-image.env` pins the builder too, as `BUILDER_IMAGE`
-and `BUILDER_TAG`, for anything outside the workflows that
-wants it. `image-tag.sh --check builder` fails, and so does
-`ci-images.yml`, if it doesn't pin what the tree defines;
-after changing the builder, run
+The builder's tag is pinned in `ci/guest-image.env`, as
+`BUILDER_IMAGE` and `BUILDER_TAG`, and in each lane's
+`container:` `image:` line, written out in full because the
+security scan (zizmor) can't tell an image named by an
+expression is pinned. `image-tag.sh --check builder` fails,
+and so does `ci-images.yml`, if any of them isn't what the
+tree defines; after changing the builder, run
 
 ```bash
 ci/images/image-tag.sh --write builder
 ```
 
 and commit the result. `tools/check-guest-image-tag.sh`
-fails if a builder tag appears anywhere else.
+fails if a builder tag appears anywhere else, or a
+workflow's `image:` line names another.
+
+Every lane names the image in `ghcr.io/rocm/rocm-ernic`,
+while `ci-images.yml` publishes to the running repository's
+owner. So a run in a fork whose builder isn't already
+published by `ROCm/rocm-ernic` publishes it to the fork, and
+its lanes, looking in `ROCm`'s registry, fail.
 
 To rebuild an image whose definition hasn't changed, for
 Ubuntu's updates, bump `REBUILD` in its `pins.env`.

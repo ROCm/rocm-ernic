@@ -7,20 +7,15 @@
 # under its tag isn't built again, so a run that changes no definition
 # only looks. See ci/images/README.md.
 #
-# System Tests calls it first and runs its lanes in the builder image it
-# returns, so a pull request that changes the builder publishes it and
+# System Tests calls it before its lanes, whose container image: lines
+# name the builder's tag (ci/images/image-tag.sh --write builder keeps
+# them), so a pull request that changes the builder publishes it and
 # tests the lanes in it. It has no pull_request trigger of its own:
 # System Tests runs for every change under ci/.
 name: "rocm-ernic - CI images"
 
 on:
   workflow_call:
-    outputs:
-      builder_image:
-        description: >-
-          The builder image's full reference, REGISTRY/ci-builder:TAG,
-          published and checked
-        value: ${{ jobs.builder.outputs.ref }}
   workflow_dispatch:
 
 permissions: {}
@@ -32,8 +27,6 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-    outputs:
-      builder_tag: ${{ steps.tags.outputs.builder_tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -46,19 +39,16 @@ jobs:
         shell: bash
         run: tests/test_ci_images.sh ci/images
 
-      # ci/guest-image.env pins the builder too, for anything outside
-      # these workflows that wants it, so it must name this tree's image
-      - name: Check the lockfile pins the images defined here
+      # ci/guest-image.env and the lanes' image: lines must name this
+      # tree's builder, or the lanes would run in another
+      - name: Check the pins name the images defined here
         shell: bash
         run: ci/images/image-tag.sh --check builder
 
-      - name: Compute the tags
-        id: tags
+      - name: Show the tags
         shell: bash
         run: |
-          tag=$(ci/images/image-tag.sh builder)
-          echo "builder_tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "ci-builder: $tag"
+          echo "ci-builder: $(ci/images/image-tag.sh builder)"
 
   builder:
     name: Builder image
@@ -69,13 +59,10 @@ jobs:
     permissions:
       contents: read
       packages: write
-    # Two runs that need the same image build it once: the second waits,
-    # then finds it published
-    concurrency:
-      group: ci-images-builder-${{ needs.resolve.outputs.builder_tag }}
-      cancel-in-progress: false
-    outputs:
-      ref: ${{ steps.ensure.outputs.ref }}
+    # No concurrency group: GitHub keeps one pending job per group, so a
+    # third run needing the same image would cancel the second's, and skip
+    # its lanes. Runs that build the same new image at once each build it,
+    # and ensure-image.sh pushes only if the registry still hasn't got it.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -95,7 +82,6 @@ jobs:
         run: docker buildx create --name ernic-ci --driver docker-container --use
 
       - name: Publish the builder image if it isn't already
-        id: ensure
         shell: bash
         env:
           OWNER: ${{ github.repository_owner }}
@@ -106,5 +92,4 @@ jobs:
         run: |
           # GHCR names are lowercase, and the owner is "ROCm"
           export CI_IMAGES_REGISTRY="ghcr.io/${OWNER,,}/rocm-ernic"
-          ref=$(ci/images/ensure-image.sh builder)
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          ci/images/ensure-image.sh builder
