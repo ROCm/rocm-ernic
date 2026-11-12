@@ -39,13 +39,14 @@ done
 
 # Each pin's shape rather than its current value, so this keeps working
 # across bumps, and catches a NEW stray copy rather than only the one that
-# exists today:
-#   - a date-prefixed guest artifact tag,
-#     20260916.g2cc8e79-vm.<release>-...-qcow2;
-#   - a builder tag, qemu<version or .sha>-vfu.<sha>-<12 hex digits>, as
-#     ci/images/image-tag.sh makes them.
-PATTERN='[0-9]{8}\.g[0-9a-f]{7,}-vm\.[a-z0-9.-]+-qcow2'
+# exists today. The tags ci/images/image-tag.sh makes:
+#   - the guest's, <release>-k<kernel version>-<12 hex digits>;
+#   - the builder's, qemu<version or .sha>-vfu.<sha>-<12 hex digits>;
+# and the date-prefixed Docker Hub guest tags they replaced,
+# 20260916.g2cc8e79-vm.<release>-...-qcow2.
+PATTERN='[a-z]+-k[0-9]+(\.[0-9]+)+-[0-9a-f]{12}'
 PATTERN+='|qemu([0-9]+(\.[0-9]+)+|\.[0-9a-f]{7})-vfu\.[0-9a-f]{7}-[0-9a-f]{12}'
+PATTERN+='|[0-9]{8}\.g[0-9a-f]{7,}-vm\.[a-z0-9.-]+-qcow2'
 
 # Excluded by path, not by name, so a copy at some-lane/guest-image.env --
 # the stray most likely to be created, since a new lane copies the file it

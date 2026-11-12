@@ -21,13 +21,15 @@ inputs:
     required: false
     default: /guest-image
   info_artifact_type:
-    description: artifactType of the referrer carrying vm-info.json and the keys
+    description: >-
+      artifactType of the referrer carrying vm-info.json. Defaults to
+      GUEST_ARTIFACT_INFO_TYPE in ci/guest-image.env.
     required: false
-    default: application/vnd.batesste.vm-info.v1
+    default: ''
 
 outputs:
   output_dir:
-    description: Directory holding the qcow2, keys and vm-info.json
+    description: Directory holding the qcow2 and vm-info.json
     value: ${{ steps.fetch.outputs.output_dir }}
 
 runs:
@@ -48,7 +50,7 @@ runs:
       # one edit, and a lane cannot keep testing an older guest because its
       # own copy was missed.
       PIN="${GITHUB_WORKSPACE}/ci/guest-image.env"
-      if [ -z "${REPO}" ] || [ -z "${TAG}" ]; then
+      if [ -z "${REPO}" ] || [ -z "${TAG}" ] || [ -z "${INFO_TYPE}" ]; then
         if [ ! -f "${PIN}" ]; then
           echo "::error::ci/guest-image.env not found at ${PIN}." \
                "fetch-guest-vm reads the image pin from there, so the" \
@@ -59,6 +61,7 @@ runs:
         . "${PIN}"
         REPO="${REPO:-${GUEST_ARTIFACT_REPO}}"
         TAG="${TAG:-${GUEST_ARTIFACT_TAG}}"
+        INFO_TYPE="${INFO_TYPE:-${GUEST_ARTIFACT_INFO_TYPE}}"
       fi
       REF="${REPO}:${TAG}"
 
@@ -94,19 +97,7 @@ runs:
         exit 1
       fi
       retry oras pull "${REPO}@${DIGEST}"
-
-      # oras does not preserve modes; OpenSSH refuses a group-readable key.
-      # Take the key name from the metadata for the same reason the disk
-      # name is globbed below: a rename upstream should not abort the job
-      # on a hardcoded filename under set -e.
-      KEY=$(jq -r '.ssh_keys.private_key_path // ""' vm-info.json)
-      KEY=$(basename -- "${KEY:-id_rsa}")
-      if [ ! -f "$KEY" ]; then
-        echo "✗ referrer carries no private key named ${KEY}"
-        ls -la
-        exit 1
-      fi
-      chmod 600 "$KEY"
+      # The image carries no key: ci/boot-guest.sh authorizes one at boot
 
       echo "=== Fetching disk for ${REF} ==="
       retry oras pull "$REF"

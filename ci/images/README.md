@@ -6,15 +6,17 @@ by `.github/workflows/ci-images.yml`:
 | Directory | Image | What it is |
 | --- | --- | --- |
 | `builder/` | `ghcr.io/rocm/rocm-ernic/ci-builder` | QEMU with the vfio-user client, libvfio-user, and the tools to boot, provision and fetch a guest |
+| `guest/` | `ghcr.io/rocm/rocm-ernic/guest-ionic` | The guest disk the lanes boot: Ubuntu on the pinned mainline kernel, for the ionic RDMA driver, as an OCI artifact |
 
 Every VM lane runs in `ci-builder`, under the tag its
-`container:` `image:` line names. `system-tests.yml` calls
-`ci-images.yml` first, which checks that tag is this tree's
-and publishes the image if it isn't published yet. So a pull
-request that changes the builder runs the lanes in the new
-image.
+`container:` `image:` line names, and boots the guest
+`ci/guest-image.env` names. `system-tests.yml` calls
+`ci-images.yml` first, which checks those tags are this
+tree's and publishes each image that isn't published yet. So
+a pull request that changes an image runs the lanes with the
+new one.
 
-The image's default user is `ci` (uid 1001), not root.
+The builder's default user is `ci` (uid 1001), not root.
 Anything needing root asks for it: the VM lanes, which are
 written to run as root, run it with
 `options: --user root ...`.
@@ -27,6 +29,7 @@ defines it, for example:
 
 ```
 ci-builder:qemu11.1.1-vfu.5b9c722-<12 hex digits>
+guest-ionic:resolute-k7.2.6-<12 hex digits>
 ```
 
 The files are those in the image's directory (its
@@ -38,7 +41,7 @@ reference.
 A published tag isn't built or pushed again.
 `ensure-image.sh NAME` looks for the tag in the registry,
 and only if the registry says it isn't there does it build
-the image and run the image's `check.sh` inside it. It then
+the image and run the image's `check.sh` on it. It then
 looks again, and pushes only if the tag still isn't there.
 Any other answer from the registry fails the run rather than
 risk overwriting a tag.
@@ -59,12 +62,18 @@ The builder's tag is pinned in `ci/guest-image.env`, as
 `BUILDER_IMAGE` and `BUILDER_TAG`, and in each lane's
 `container:` `image:` line, written out in full because the
 security scan (zizmor) can't tell an image named by an
-expression is pinned. `image-tag.sh --check builder` fails
-if any of them isn't what the tree defines; after changing
-the builder, run
+expression is pinned. The guest's is pinned there as
+`GUEST_ARTIFACT_REPO` and `GUEST_ARTIFACT_TAG`, beside
+`GUEST_ARTIFACT_INFO_TYPE`, `GUEST_ARTIFACT_DISK` and
+`GUEST_ARTIFACT_USER`, which `guest/push.sh` and the guest's
+pins decide. `image-tag.sh --check NAME` fails if any of
+them isn't what the tree defines, and for the guest, if its
+`KERNEL_REF` isn't `IONIC_KERNEL_REF` in
+`cmake/ErnicKernelModule.cmake`, the ionic sources the lanes
+build into it. After changing an image, run
 
 ```bash
-ci/images/image-tag.sh --write builder
+ci/images/image-tag.sh --write NAME
 ```
 
 and commit the result. Without a NAME, `--check` and
@@ -86,7 +95,8 @@ published by `ROCm/rocm-ernic` publishes it to the fork, and
 its lanes, looking in `ROCm`'s registry, fail.
 
 To rebuild an image whose definition hasn't changed, for
-Ubuntu's updates, bump `REBUILD` in its `pins.env`.
+Ubuntu's updates, or the guest's newer cloud image, bump
+`REBUILD` in its `pins.env`.
 
 A pull request from a fork gets a read-only token, so it
 can't publish an image; if it changes one, `ci-images.yml`
@@ -102,8 +112,8 @@ nothing needs every Monday, with `prune-images.sh`.
 
 The images it prunes are those `ci/guest-image.env` names in
 `ghcr.io/rocm/rocm-ernic`, as `PREFIX_IMAGE` or
-`PREFIX_REPO` with `PREFIX_TAG`; it leaves other packages
-alone. It keeps a version if:
+`PREFIX_REPO` with `PREFIX_TAG`, so the builder and the
+guest; it leaves other packages alone. It keeps a version if:
 
 - develop's `ci/guest-image.env` pins it, or the running
   branch's does;
@@ -148,7 +158,9 @@ registry.
 
 ## Changing a pin
 
-Edit the image's `pins.env`; nowhere else holds them. The
+Edit the image's `pins.env`; nowhere else holds them, except
+that the guest's `KERNEL_REF` must equal `IONIC_KERNEL_REF`,
+so they change together. The
 builder's `LIBVFIO_USER_REPO` and `LIBVFIO_USER_COMMIT` are
 also what every other CI build compiles the server against
 (`build-and-test.yml`, `clang-tidy.yml`, `codeql.yml`,
@@ -175,13 +187,89 @@ CI_IMAGES_ROOT_CA=/usr/local/share/ca-certificates/AMD_RootCA.crt \
 The image then trusts it, so `ensure-image.sh` refuses to
 publish one built that way.
 
+The guest builds in the builder, which has what `build.sh`
+needs, with KVM, into `build-ci-images/guest/` (or
+`CI_IMAGES_OUT`). With rootless podman, TAG being
+`BUILDER_TAG` in `ci/guest-image.env`:
+
+```bash
+podman run --rm --user root --group-add keep-groups \
+    --device /dev/kvm -v "$PWD:/src" -w /src \
+    ghcr.io/rocm/rocm-ernic/ci-builder:TAG \
+    ci/images/ensure-image.sh --build-only guest
+```
+
+Root in the container is you outside it, so it owns the
+checkout, as git wants, and `keep-groups` lets it open
+`/dev/kvm` if you can. With Docker, whose root isn't you,
+also tell git to trust the checkout, with
+`-e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory
+-e GIT_CONFIG_VALUE_0=/src`. The build takes about 25
+minutes, and needs cloud-images.ubuntu.com,
+kernel.ubuntu.com, GitHub and PyPI. `CI_IMAGES_ROOT_CA`, a
+path in the container, works for it too, and the guest then
+trusts the certificate.
+
 `tests/test_ci_images.sh` (the `ernic-ci-images` CTest)
-checks both scripts against a stand-in for Docker, and
+checks both scripts and `guest/push.sh` against stand-ins for
+Docker, oras and the guest's scripts, and
 `tests/test_check_guest_image_tag.sh`
 (`ernic-check-guest-image-tag`) checks
 `tools/check-guest-image-tag.sh`.
 
-## Where it came from
+## The guest
+
+`guest/build.sh` builds the guest in the builder, booting it
+under KVM once for each step:
+
+1. qemu-minimal's `qemu-tool gen-vm`, installed from
+   `QEMU_MINIMAL_COMMIT`, copies Ubuntu's current cloud image
+   for `RELEASE`, checked against its `SHA256SUMS`, and boots
+   it once, while cloud-init installs qemu-minimal's default
+   packages and `packages/ionic.txt`;
+2. a boot takes out unattended-upgrades;
+3. a boot installs the `KERNEL_REF` mainline kernel, checked
+   against its `CHECKSUMS`, and pins grub to it;
+4. `provision/ionic.sh` checks the release's rdma-core is
+   `RDMA_CORE_VERSION`, writes the stamp `ernic_guest_setup`
+   reads to skip building it, refreshes the PCI IDs, raises
+   the memlock limit, keeps ionic out of the initramfs and
+   loads `ionic_rdma` at boot;
+5. `trim/kernel-only.sh` removes the release's kernel, then
+   the disk is compacted;
+6. a boot of a throwaway overlay checks what every boot
+   relies on, and that every package `packages/ionic.txt`
+   names is installed, runs `checks/ionic.sh`, and reads
+   what `vm-info.json` records;
+7. the seal: the build's key and the host keys are removed,
+   the password is locked, sshd refuses passwords, and
+   `cloud-init clean` resets cloud-init and the machine ID.
+
+The image then has no way in. Whatever boots it authorizes a
+key through a NoCloud seed, as `ci/boot-guest.sh` does, for
+`USERNAME`, cloud-init's default user, which keeps its
+passwordless sudo, and each boot is a new instance, which
+makes host keys of its own. `guest/check.sh` boots the
+finished image that way and fails unless only the boot's key
+logs in, sudo needs no password, the password is locked and
+sshd refuses passwords, the guest made host keys, and
+cloud-init finished without an error or a warning.
+
+`guest/push.sh` compresses the disk with zstd and pushes it
+by digest, as `application/vnd.rocm-ernic.vm-image.v1`,
+attaches `vm-info.json` to that digest, and only then tags
+it, so a tag never names a disk without its `vm-info.json`.
+GHCR has no referrers API, so oras attaches it under a
+`sha256-DIGEST` tag, which `oras discover` finds and pruning
+keeps. `vm-info.json` keeps the schema of the images it
+replaced, which the lanes read, as version 10: without the
+password and the `ssh_keys` block, with `login`,
+`cloud_image`, `rdma_core` and `cloud_init`.
+
+`ci/boot-guest.sh` isn't part of the guest's definition, so
+changing it doesn't change the guest's tag.
+
+## Where they came from
 
 The builder replaces Stephen Bates'
 `batesste-ci-images-ubuntu-qemu-libvfio-user`, merging its
@@ -204,5 +292,38 @@ that image's QEMU v11.1.1, and changes:
   cache does that job;
 - it drops the `qemu-tool` CLI, which only building a guest
   needs, so that build will install it from its own pin.
+
+The guest replaces Stephen Bates'
+`batesste-ci-images-ubuntu-qcow2-gen-ionic`, built from
+`ubuntu-qcow2-gen/` in [batesste-ci-images][ref-ci-images]
+at dca6903: `build-vm.sh` became `build.sh`, with
+`probe-guest.sh`, `packages/ionic.txt`, `provision/ionic.sh`,
+`trim/kernel-only.sh` and `checks/ionic.sh` beside it, and
+`ci-images-tool.py push-artifact` became `push.sh`. It keeps
+the pinned image's contents, the `ionic` flavour at 9d2be1e,
+built with qemu-minimal at c079195 (it pins 096ddfe, whose
+`gen-vm` makes the same image), and changes:
+
+- it has no SSH key or password, published or not, and every
+  boot makes its own host keys, where every copy of the old
+  one trusted a key whose private half was published, and
+  shared its host keys;
+- it takes the later provisioning fixes: the memlock limit,
+  the refreshed PCI IDs and `ionic_rdma` at boot;
+- like the pinned image, and unlike its source's `ionic`
+  flavour since e17bb29, it doesn't build the SRQ and P4
+  ionic modules in: the lanes build them from this tree;
+- it checks that the packages `packages/ionic.txt` names are
+  installed, which its source skipped for a trimmed image,
+  and that the kernel is `KERNEL_REF`;
+- it checks the downloads: the cloud image against its
+  `SHA256SUMS`, from its dated directory, and the kernel
+  `.deb`s against their `CHECKSUMS`;
+- it drops the apt cache, the guest compiler cache, the
+  parent-image adoption and the ROCm, amdgpu, fio and SDXI
+  paths, which the `ionic` flavour doesn't use;
+- it's built in the builder, not with buildx's
+  `security.insecure`, and published only as an artifact,
+  not also as a `FROM scratch` image.
 
 [ref-ci-images]: https://github.com/sbates130272/batesste-ci-images

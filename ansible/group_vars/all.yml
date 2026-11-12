@@ -27,13 +27,14 @@ ernic_run_dir: /run/rocm-ernic
 ernic_instances: 2
 
 # ── Guest image ──────────────────────────────────
-# The guest disk is a published OCI artifact from
-# batesste-ci-images, flavour `ionic`.  It is not built here:
-# that flavour pins mainline kernel 7.2.6 (nothing older can
-# carry drivers/infiniband/hw/ionic, merged for 6.18, and
-# nothing below 7.2 can build ionic-ernic, which calls
-# ib_umem_get_va), and bakes the RDMA userspace, the DKMS
-# toolchain and perftest on a resolute userspace.
+# The guest disk is the CI guest image, defined in
+# ci/images/guest/ and published to GHCR as an OCI artifact.  It
+# boots mainline kernel 7.2.6 (nothing older can carry
+# drivers/infiniband/hw/ionic, merged for 6.18, and nothing below
+# 7.2 can build ionic-ernic, which calls ib_umem_get_va), and has
+# the RDMA userspace, the DKMS toolchain and perftest on a
+# resolute userspace.  It has no password and no SSH key:
+# ernicctl vm-launch authorizes yours at each boot.
 #
 # scripts/fetch-guest-image.sh pulls it.
 #
@@ -71,7 +72,7 @@ ernic_vm_image_dir: /opt/qemu-images
 ernic_vm_name_base: rocm-ernic-ionic-vm
 ernic_vm_vcpus: 16
 ernic_vm_mem: 32768
-# The account the artifact bakes.
+# The account the artifact's boots authorize keys for.
 ernic_vm_ssh_user: >-
   {{ lookup('ansible.builtin.ini', 'GUEST_ARTIFACT_USER type=properties
      file=' ~ ernic_project_root ~ '/ci/guest-image.env') }}
@@ -81,33 +82,19 @@ ernic_vm_ssh_host: local-vm
 # ernicctl for VM ssh; use this path or ERNIC_VM_SSH_IDENTITY in env.
 ernic_vm_ssh_config: "{{ ansible_env.HOME }}/.ssh/config"
 # Private key on the target host for ERNIC_VM_SSH_IDENTITY (ernicctl VM_LOAD
-# SSH fallback, guest_ssh, etc.).  Omit it entirely in inventory to skip the
-# line in ``rocm-ernic.env`` and let ernicctl pick the first readable key
-# under SUDO_USER's ``.ssh`` (id_rsa, id_ed25519, id_ecdsa).
-ernic_vm_ssh_identity: "{{ ernic_vm_artifact_dir }}/id_rsa"
+# SSH fallback, guest_ssh, etc.); ernicctl vm-launch authorizes its .pub at
+# each boot.  Empty skips the line in ``rocm-ernic.env``, and ernicctl
+# uses the first readable key under SUDO_USER's ``.ssh`` (id_rsa,
+# id_ed25519, id_ecdsa), which ernic_host_setup checks there is.
+ernic_vm_ssh_identity: ""
 
-# The key the GUEST trusts, used for Ansible's own connection and for
-# the bare-ssh gates.  Distinct from ernic_vm_ssh_identity above, which
-# is the host-side key ernicctl writes into rocm-ernic.env.  Empty
-# means "whatever ssh and ANSIBLE_PRIVATE_KEY_FILE already resolve",
-# which is how the hosted jobs supply it.
-#
-# Gated on the key being on disk.  An inventory
-# ansible_ssh_private_key_file outranks the env var, so a path that
-# only *would* exist after a fetch is worse than no path at all:
-# .github/workflows/system-tests.yml exports ANSIBLE_PRIVATE_KEY_FILE
-# and calls ci-site.yml, and would have had its own key taken away and
-# replaced by an /opt/qemu-images path that does not exist on a hosted
-# runner.  The test re-evaluates per reference, so the key starts being
-# used as soon as the image has been fetched.
-#
-# Defined without ansible_env on purpose: vm-register.yml is
-# gather_facts: false, where a fact-based value silently evaluates to
-# nothing.
-ernic_guest_ssh_identity: >-
-  {{ ernic_vm_artifact_dir ~ '/id_rsa'
-     if ((ernic_vm_artifact_dir ~ '/id_rsa') is exists)
-     else '' }}
+# The key Ansible's own connection and the bare-ssh gates use.  Distinct
+# from ernic_vm_ssh_identity above, which is the host-side key ernicctl
+# writes into rocm-ernic.env.  Empty means "whatever ssh and
+# ANSIBLE_PRIVATE_KEY_FILE already resolve": your own default key, the
+# one vm-launch authorized, or in the hosted jobs, theirs.  Set both to
+# the same key to use another.
+ernic_guest_ssh_identity: ""
 # The same key as ssh(1) flags, for the test plays that build their own
 # ssh command line rather than going through an inventory host.  Empty
 # when there is no key, so those plays fall back to the agent and to

@@ -4,11 +4,11 @@
 #
 # Master playbook for rocm-ernic integration testing.
 #
-# The guest image is not built here.  It is a published
-# artifact from batesste-ci-images -- flavour `ionic`, which
-# bakes the pinned mainline kernel, the RDMA userspace and the
-# build toolchain -- fetched by scripts/fetch-guest-image.sh.
-# This playbook starts from that image.
+# The guest image is not built here.  It is the CI guest image,
+# defined in ci/images/guest/ and published to GHCR, which has the
+# pinned mainline kernel, the RDMA userspace and the build
+# toolchain -- fetched by scripts/fetch-guest-image.sh.  This
+# playbook starts from that image.
 #
 # Phases:
 #   1. Host setup   -- build, install, configure service, TAPs

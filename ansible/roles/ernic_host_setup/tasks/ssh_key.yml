@@ -1,0 +1,57 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# The guest image has no SSH key or password: ernicctl vm-launch
+# authorizes a key at each boot, the .pub beside ERNIC_VM_SSH_IDENTITY,
+# or else beside the first of id_rsa, id_ed25519 and id_ecdsa in the
+# ~/.ssh of the user who runs it with sudo.  Without one, nobody can log
+# in to the guests it boots, so fail now, before anything is built.
+
+---
+- name: List the SSH keys ernicctl vm-launch would look for
+  ansible.builtin.set_fact:
+    ernic_vm_key_candidates: >-
+      {{ [ernic_vm_ssh_identity]
+         if (ernic_vm_ssh_identity | default('') | trim)
+         else [ansible_env.HOME ~ '/.ssh/id_rsa',
+               ansible_env.HOME ~ '/.ssh/id_ed25519',
+               ansible_env.HOME ~ '/.ssh/id_ecdsa'] }}
+
+- name: Look for the private keys
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ ernic_vm_key_candidates }}"
+  register: ernic_vm_private_keys
+
+- name: Look for their public halves
+  ansible.builtin.stat:
+    path: "{{ item }}.pub"
+  loop: "{{ ernic_vm_key_candidates }}"
+  register: ernic_vm_public_keys
+
+# ernicctl takes the first private key it finds, and authorizes its .pub
+- name: Check vm-launch has a key to authorize
+  vars:
+    ernic_vm_key: >-
+      {{ ernic_vm_private_keys.results | selectattr('stat.exists')
+         | map(attribute='item') | first | default('') }}
+    ernic_vm_public: >-
+      {{ ernic_vm_public_keys.results | selectattr('stat.exists')
+         | map(attribute='item') | list }}
+  ansible.builtin.assert:
+    that:
+      - ernic_vm_key | length > 0
+      - ernic_vm_key in ernic_vm_public
+    fail_msg: >-
+      ernicctl vm-launch has no SSH key to authorize in the guests it boots,
+      which have none of their own.
+      {% if ernic_vm_key | length > 0 %}{{ ernic_vm_key }}.pub is missing;
+      make it with: ssh-keygen -y -f {{ ernic_vm_key }} > {{ ernic_vm_key }}.pub
+      {% elif ernic_vm_ssh_identity | default('') | trim %}{{
+      ernic_vm_ssh_identity }} doesn't exist; set ernic_vm_ssh_identity to a
+      private key with its .pub beside it.
+      {% else %}Make one with: ssh-keygen -t ed25519 -f
+      {{ ansible_env.HOME }}/.ssh/id_ed25519
+      {% endif %}
+    quiet: true

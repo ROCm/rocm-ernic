@@ -1,0 +1,56 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# The packages cloud-init installs in the guest, one per line, on top of
+# qemu-minimal's default list: the verbs userspace, and what the lanes
+# need to build rdma-core and the ionic DKMS modules against the guest's
+# kernel. The modules themselves aren't built here: building them from
+# this tree is what the lanes test.
+#
+# Nothing here may name a kernel version: cloud-init runs before the
+# mainline kernel is installed.
+build-essential
+cmake
+ninja-build
+pkg-config
+dkms
+git
+# No linux-headers-generic and no linux-modules-extra. The guest boots a
+# mainline kernel (KERNEL_REF), not the release's, and the -generic
+# metapackages would pull in headers DKMS must not build against. The
+# mainline .debs bring the matching linux-headers-<ver>-generic, and
+# linux-modules-<ver>-generic, which has ib_core, ib_uverbs, rdma_ucm and
+# both halves of ionic.
+#
+# The dependencies of those .debs, installed now so the kernel install
+# needs nothing more from the archive
+linux-base
+kmod
+initramfs-tools
+wireless-regdb
+
+# rdma-core's build dependencies
+libnl-3-dev
+libnl-route-3-dev
+libudev-dev
+libsystemd-dev
+python3-docutils
+
+# The release's rdma-core, whose ibverbs-providers has the ionic provider
+# (libionic-rdmav59.so on 61.0), and ibv_devinfo and friends. The build
+# dependencies above stay for a lane that builds a newer rdma-core.
+rdma-core
+ibverbs-utils
+libibverbs-dev
+
+# ib_send_bw and friends, built without ROCm or CUDA memory support
+perftest
+
+# lspci, and update-pciids, which fetches with curl, for the lanes' checks
+# that the device shows up with its pci.ids names
+curl
+pciutils
+
+pipx
+python3-venv

@@ -1,0 +1,21 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+breaking_changes:
+  - >-
+    The guest image has no SSH key or password, so ``ernic_vm_ssh_identity``
+    and ``ernic_guest_ssh_identity`` in the playbooks' ``group_vars`` no
+    longer default to the old image's published ``id_rsa``, but to nothing:
+    ``ernicctl vm-launch`` authorizes the first of ``id_rsa``,
+    ``id_ed25519`` and ``id_ecdsa`` in your ``~/.ssh`` at each boot, and
+    the plays connect with your default keys.  To use another key, set both
+    to it.
+minor_changes:
+  - >-
+    ``ernic_host_setup`` - when it installs the service, it first checks
+    there's a key for ``ernicctl vm-launch`` to authorize,
+    ``ernic_vm_ssh_identity`` or the first of ``id_rsa``, ``id_ed25519``
+    and ``id_ecdsa`` in your ``~/.ssh``, with its ``.pub`` beside it, and
+    fails, saying how to make one, if there isn't.

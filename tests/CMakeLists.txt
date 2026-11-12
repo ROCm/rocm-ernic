@@ -1305,10 +1305,11 @@ add_test(
 )
 set_tests_properties(ernic-boot-guest PROPERTIES TIMEOUT 120)
 
-# ci/images/image-tag.sh and ensure-image.sh, on a scratch copy of
-# ci/images/ and against a stand-in for docker: what goes into an image's
-# tag, and that only a missing image that passes its checks is pushed.
-# Nothing is built.
+# ci/images/image-tag.sh, ensure-image.sh and guest/push.sh, on a scratch
+# copy of ci/images/ and against stand-ins for docker, oras and the
+# guest's scripts: what goes into an image's tag, that only a missing
+# image that passes its checks is pushed, and that the guest is tagged
+# only once its metadata is attached. Nothing is built. Needs jq.
 add_test(
     NAME ernic-ci-images
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_ci_images.sh

@@ -21,9 +21,10 @@ other over IP.
 
 It does not build a guest image. The base image is expected to carry a kernel
 new enough for the driver and the toolchain to build it — in this repo that is
-the published `ionic` flavour from
-[batesste-ci-images][ref-ci-images], which pins mainline 7.2.6 on Ubuntu 26.04
-(resolute) and bakes the RDMA userspace, DKMS toolchain and `perftest`.
+the CI guest image, defined in [`ci/images/guest/`][ref-guest-image] and
+published to GHCR, which boots mainline 7.2.6 on Ubuntu 26.04 (resolute) and
+has the RDMA userspace, DKMS toolchain and `perftest`. It has no password and
+no SSH key: `ernicctl vm-launch` authorizes yours at each boot.
 
 The kernel floor is not negotiable in either direction:
 `drivers/infiniband/hw/ionic` merged in 6.18, and `ionic-ernic` calls
@@ -99,4 +100,4 @@ with it on that run and on every later one.
 MIT
 
 [ref-rocm-ernic]: https://github.com/ROCm/rocm-ernic
-[ref-ci-images]: https://github.com/sbates130272/batesste-ci-images
+[ref-guest-image]: https://github.com/ROCm/rocm-ernic/tree/develop/ci/images/guest

@@ -160,6 +160,18 @@
   builder` fails if any isn't the tree's, and `image-tag.sh --write
   builder` updates them all. The `ernic-ci-images` test checks both
   scripts.
+* CI defines its guest image too, in `ci/images/guest/`, and `CI images`
+  publishes it to `ghcr.io/rocm/rocm-ernic/guest-ionic` as an OCI artifact,
+  the compressed disk with its `vm-info.json` attached, when a pull request
+  changes it, then runs the lanes on it. `build.sh` builds it in the
+  builder image, under KVM, from Ubuntu's cloud image and the mainline
+  kernel, both checked against their published checksums, then seals it,
+  removing every key and locking the password. `check.sh` boots the result
+  with `ci/boot-guest.sh` and fails unless only that boot's key logs in, and
+  `push.sh` tags it only once its `vm-info.json` is attached.
+  `ci/guest-image.env` pins it, and `image-tag.sh --check` also fails if
+  its kernel isn't `IONIC_KERNEL_REF`. `ernic-ci-images` now tests the
+  guest's tag, publishing and `push.sh`, and needs `jq`.
 * The `Image pins` workflow (`guest-image-pin.yml`, formerly `Guest image
   pin`), which runs on every pull request, now also fails if
   `ci/guest-image.env` or a lane's container `image:` line doesn't name
@@ -663,6 +675,26 @@
 
 ### Changed
 
+* **Breaking:** **The guest image has no password and no SSH key.** The
+  `ionic` guest CI boots, and `scripts/fetch-guest-image.sh` fetches, is
+  now built here, from `ci/images/guest/`, and published to
+  `ghcr.io/rocm/rocm-ernic/guest-ionic`, replacing Stephen Bates' image
+  on Docker Hub, which trusted a key whose private half was published
+  with it and shared one set of host keys among every copy. Log in with
+  your own key: `ernicctl vm-launch` authorizes the public half of
+  `ERNIC_VM_SSH_IDENTITY`, or of the first of `id_rsa`, `id_ed25519`
+  and `id_ecdsa` in the `~/.ssh` of the user running it with `sudo`, at
+  every boot, and each boot makes the guest's host keys. If you have no
+  key, make one (`ssh-keygen -t ed25519`); host setup now fails until
+  you do. Anything else booting the image must authorize a key through
+  a NoCloud seed, as `ci/boot-guest.sh` does. The Ansible defaults no
+  longer point at the old image's `id_rsa`, and `fetch-guest-image.sh`
+  no longer prints `key=` and `pubkey=`. Fetch the new image with
+  `scripts/fetch-guest-image.sh --dest DIR`; `--tag` now defaults to
+  the pinned one. The guest is otherwise the one CI booted before: Ubuntu
+  26.04 on mainline kernel 7.2.6, with rdma-core 61.0, DKMS and
+  `perftest`. It also loads `ionic_rdma` at boot, raises the memlock limit
+  for RDMA, and has a newer PCI ID database.
 * **Breaking:** **`ernicctl`'s default `ERNIC_VM_IMAGE_DIR` is now
   `/opt/qemu-images`**, the directory the Ansible roles already use, and
   `ERNIC_QEMU_MINIMAL` is gone. The default was

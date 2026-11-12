@@ -120,7 +120,7 @@ jobs:
       # contents.  ci/images/image-tag.sh --write builder keeps this line,
       # and every other like it, equal to the tree's tag, and the images
       # job, which checks that, publishes it before this job starts.
-      image: ghcr.io/rocm/rocm-ernic/ci-builder:qemu11.1.1-vfu.5b9c722-d7a8ce172ca8
+      image: ghcr.io/rocm/rocm-ernic/ci-builder:qemu11.1.1-vfu.5b9c722-a25528b96bfc
       # --user root, since the image's default user is ci, and this job
       # is written to run as root.
       #
@@ -236,8 +236,8 @@ jobs:
         out = sys.argv[1]
         d = json.load(open(os.path.join(out, "vm-info.json")))
         here = lambda p: os.path.join(out, os.path.basename(p)) if p else ""
-        # The image's own SSH key isn't read: ci/boot-guest.sh authorizes
-        # the job's key at boot.
+        # The image has no SSH key: ci/boot-guest.sh authorizes the job's
+        # key at boot.
         keys = {
             "VM_USER": d.get("username", "ci"),
             "VM_DISK": here(d.get("image_path", "")),
@@ -391,7 +391,7 @@ jobs:
       shell: bash
       run: |
         echo "=== Making the job's SSH key ==="
-        # The guest image's own key isn't used.  ci/boot-guest.sh
+        # The guest image has no key of its own.  ci/boot-guest.sh
         # authorizes this one, made for the job, through cloud-init when
         # the guest boots (--authorize).  The helper makes a key of its
         # own for each boot too, but uses it only to wait for SSH.
@@ -1512,7 +1512,7 @@ jobs:
       PERF_CSV_DIR: /tmp/ernic-ci-results/perf-csv
     container:
       # The tag, and --user root: see the loopback job.
-      image: ghcr.io/rocm/rocm-ernic/ci-builder:qemu11.1.1-vfu.5b9c722-d7a8ce172ca8
+      image: ghcr.io/rocm/rocm-ernic/ci-builder:qemu11.1.1-vfu.5b9c722-a25528b96bfc
       #
       # GitHub-hosted Linux runners expose /dev/kvm; pass it through so the
       # guests run accelerated instead of under TCG.
@@ -1642,8 +1642,8 @@ jobs:
         out = sys.argv[1]
         d = json.load(open(os.path.join(out, "vm-info.json")))
         here = lambda p: os.path.join(out, os.path.basename(p)) if p else ""
-        # The image's own SSH key isn't read: ci/boot-guest.sh authorizes
-        # the job's key at boot.
+        # The image has no SSH key: ci/boot-guest.sh authorizes the job's
+        # key at boot.
         keys = {
             "VM_USER": d.get("username", "ci"),
             "VM_DISK": here(d.get("image_path", "")),
@@ -1736,7 +1736,7 @@ jobs:
       shell: bash
       run: |
         echo "=== Making the job's SSH key ==="
-        # The guest image's own key isn't used.  ci/boot-guest.sh
+        # The guest image has no key of its own.  ci/boot-guest.sh
         # authorizes this one in both guests, through cloud-init when
         # they boot (--authorize), so one key reaches either.  The helper
         # makes a key of its own for each boot too, but uses it only to

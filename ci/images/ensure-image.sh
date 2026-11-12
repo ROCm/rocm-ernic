@@ -8,25 +8,33 @@
 # Makes sure a CI image is published under the tag image-tag.sh gives it.
 # If the registry already has that tag, it does nothing: a tag names one
 # build, and is never built or pushed again. If the registry says the tag
-# doesn't exist, it builds the image from ci/images/NAME/, with every pin
-# in its pins.env as a build argument, runs NAME/check.sh inside it, and
-# only then pushes it, unless by then the registry has it, which another
-# run building the same image at the same time can cause. An image
-# without a check.sh isn't built at all. Any other answer from the
-# registry, such as a refused login or a network error, is a failure
-# rather than a reason to build or push, so a published tag can't be
-# overwritten by mistake.
+# doesn't exist, it builds the image from ci/images/NAME/, checks it with
+# NAME/check.sh, and only then pushes it, unless by then the registry has
+# it, which another run building the same image at the same time can
+# cause. An image without a check.sh isn't built at all. Any other answer
+# from the registry, such as a refused login or a network error, is a
+# failure rather than a reason to build or push, so a published tag can't
+# be overwritten by mistake.
 #
-# The build caches its layers in the registry, as IMAGE:buildcache, so an
-# image whose pins haven't changed rebuilds in minutes.
+# An image is one of two kinds:
+#   - a container image, defined by NAME/Dockerfile (builder). It's built
+#     with docker buildx, every pin in pins.env a build argument, and
+#     caches its layers in the registry, as IMAGE:buildcache, so an image
+#     whose pins haven't changed rebuilds in minutes. check.sh runs
+#     inside it.
+#   - an artifact, defined by NAME/build.sh and NAME/push.sh (guest).
+#     build.sh builds it into a directory, check.sh checks that, and
+#     push.sh publishes it, each with the pins in its environment. Its
+#     registry is reached with oras. build.sh needs what it says it does,
+#     which the builder image has.
 #
 # On success it prints the image's reference, REGISTRY/IMAGE:TAG.
 #
 # Usage: ensure-image.sh [--build-only] NAME
-#   NAME          an image's directory under ci/images/ (builder)
-#   --build-only  build and check the image locally, under its tag, and
-#                 neither look in the registry nor push; with podman if
-#                 there's no docker with buildx
+#   NAME          an image's directory under ci/images/ (builder, guest)
+#   --build-only  build and check the image locally, and neither look in
+#                 the registry nor push; a container image with podman if
+#                 there's no docker with buildx, and under its tag
 #
 # Environment:
 #   CI_IMAGES_REGISTRY  registry and namespace (default:
@@ -37,10 +45,14 @@
 #   CI_IMAGES_ROOT_CA   with --build-only, a root certificate for the
 #                       build to trust, for a build behind a proxy that
 #                       re-signs TLS, such as the AMD network's
+#   CI_IMAGES_OUT       where an artifact is built: an empty or missing
+#                       directory (default: build-ci-images/NAME in the
+#                       repository, emptied first)
 #
-# Publishing needs docker with buildx and a docker-container builder (the
-# docker driver can't export a registry cache), logged in to the
-# registry.
+# Publishing a container image needs docker with buildx and a
+# docker-container builder (the docker driver can't export a registry
+# cache), logged in to the registry; publishing an artifact needs oras,
+# logged in.
 
 set -euo pipefail
 
@@ -87,68 +99,143 @@ REPO=${REF%:*}
 DIR="$IMAGES_DIR/$NAME"
 PINS="$DIR/pins.env"
 
+if [[ -f $DIR/Dockerfile ]]; then
+    KIND=container
+elif [[ -f $DIR/build.sh && -f $DIR/push.sh ]]; then
+    KIND=artifact
+else
+    die "$DIR has neither a Dockerfile nor a build.sh and push.sh"
+fi
+
 # Every image is checked before it's published, so one without a check
 # isn't built at all, rather than published unchecked
 [[ -f $DIR/check.sh ]] || die "$DIR/check.sh is missing"
 
-BUILD_ARGS=()
+# The pins, each KEY=VALUE, which image-tag.sh has checked
+PIN_LINES=()
 while IFS= read -r line || [[ -n $line ]]; do
     if [[ -n $line && $line != \#* ]]; then
-        BUILD_ARGS+=(--build-arg "$line")
+        PIN_LINES+=("$line")
     fi
 done <"$PINS"
 
 # The image trusts the certificate from then on, so a published image
-# mustn't carry one. Its SHA-256 goes in as a build argument too, because
-# a secret isn't part of the build cache's key, and without it a build
-# could reuse a cached layer made with a different certificate, or none.
-ROOT_CA_SHA256=none
+# mustn't carry one
 if [[ -n ${CI_IMAGES_ROOT_CA:-} ]]; then
     $BUILD_ONLY || die "CI_IMAGES_ROOT_CA is only for --build-only"
     [[ -f $CI_IMAGES_ROOT_CA && -r $CI_IMAGES_ROOT_CA ]] ||
         die "CI_IMAGES_ROOT_CA isn't a readable file: $CI_IMAGES_ROOT_CA"
-    ROOT_CA_SHA256=$(sha256sum <"$CI_IMAGES_ROOT_CA")
-    ROOT_CA_SHA256=${ROOT_CA_SHA256%% *}
-    BUILD_ARGS+=(--secret "id=root-ca,src=$CI_IMAGES_ROOT_CA")
 fi
-BUILD_ARGS+=(--build-arg "ROOT_CA_SHA256=$ROOT_CA_SHA256")
 
-# docker with buildx, or for --build-only, podman. podman-docker's
-# `docker` is podman, whose `buildx` is only an alias of its build, so
-# it's told apart by its version.
-ENGINE=docker
-docker_version=$(docker --version 2>/dev/null) || docker_version=""
-if [[ $docker_version != Docker* ]] ||
-    ! docker buildx version >/dev/null 2>&1; then
-    if $BUILD_ONLY && command -v podman >/dev/null; then
-        ENGINE=podman
+# ── Container images ─────────────────────────────────────────────────
+
+if [[ $KIND == container ]]; then
+    BUILD_ARGS=()
+    for line in "${PIN_LINES[@]}"; do
+        BUILD_ARGS+=(--build-arg "$line")
+    done
+
+    # The certificate's SHA-256 goes in as a build argument too, because
+    # a secret isn't part of the build cache's key, and without it a
+    # build could reuse a cached layer made with a different certificate,
+    # or none.
+    ROOT_CA_SHA256=none
+    if [[ -n ${CI_IMAGES_ROOT_CA:-} ]]; then
+        ROOT_CA_SHA256=$(sha256sum <"$CI_IMAGES_ROOT_CA")
+        ROOT_CA_SHA256=${ROOT_CA_SHA256%% *}
+        BUILD_ARGS+=(--secret "id=root-ca,src=$CI_IMAGES_ROOT_CA")
+    fi
+    BUILD_ARGS+=(--build-arg "ROOT_CA_SHA256=$ROOT_CA_SHA256")
+
+    # docker with buildx, or for --build-only, podman. podman-docker's
+    # `docker` is podman, whose `buildx` is only an alias of its build,
+    # so it's told apart by its version.
+    ENGINE=docker
+    docker_version=$(docker --version 2>/dev/null) || docker_version=""
+    if [[ $docker_version != Docker* ]] ||
+        ! docker buildx version >/dev/null 2>&1; then
+        if $BUILD_ONLY && command -v podman >/dev/null; then
+            ENGINE=podman
+        else
+            die "docker with buildx not found"
+        fi
+    fi
+
+    build_image() {
+        if [[ $ENGINE == podman ]]; then
+            podman build --file "$DIR/Dockerfile" "${BUILD_ARGS[@]}" \
+                --tag "$REF" "$DIR" >&2
+        elif $BUILD_ONLY; then
+            docker buildx build --file "$DIR/Dockerfile" "${BUILD_ARGS[@]}" \
+                --load --tag "$REF" "$DIR" >&2
+        else
+            docker buildx build --file "$DIR/Dockerfile" "${BUILD_ARGS[@]}" \
+                --cache-from "type=registry,ref=$REPO:buildcache" \
+                --cache-to "type=registry,ref=$REPO:buildcache,mode=max" \
+                --load --tag "$REF" "$DIR" >&2
+        fi
+    }
+
+    # Run the image's own checks inside it
+    check_image() {
+        local mount="$DIR/check.sh:/check.sh:ro"
+        if [[ $ENGINE == podman ]]; then
+            # Relabel the mount for SELinux, where podman runs confined
+            mount+=",z"
+        fi
+        "$ENGINE" run --rm --env-file "$PINS" -v "$mount" "$REF" \
+            bash /check.sh >&2
+    }
+
+    push_image() {
+        docker push "$REF" >&2
+    }
+
+    look_up() {
+        docker buildx imagetools inspect "$REF"
+    }
+fi
+
+# ── Artifacts ────────────────────────────────────────────────────────
+
+if [[ $KIND == artifact ]]; then
+    if [[ -n ${CI_IMAGES_OUT:-} ]]; then
+        OUT=$CI_IMAGES_OUT
     else
-        die "docker with buildx not found"
+        OUT=$(cd -- "$IMAGES_DIR/../.." && pwd)/build-ci-images/$NAME
+        rm -rf -- "$OUT"
     fi
+    if ! $BUILD_ONLY; then
+        command -v oras >/dev/null || die "oras not found"
+    fi
+
+    build_image() {
+        env "${PIN_LINES[@]}" "$DIR/build.sh" "$OUT" >&2
+    }
+
+    check_image() {
+        env "${PIN_LINES[@]}" "$DIR/check.sh" "$OUT" >&2
+    }
+
+    push_image() {
+        env "${PIN_LINES[@]}" "$DIR/push.sh" "$OUT" "$REF" >&2
+    }
+
+    look_up() {
+        oras manifest fetch --descriptor "$REF"
+    }
 fi
 
-# Run the image's own checks inside it
-check_image() {
-    local mount="$DIR/check.sh:/check.sh:ro"
-    if [[ $ENGINE == podman ]]; then
-        # Relabel the mount for SELinux, where podman runs confined
-        mount+=",z"
-    fi
-    echo "$PROG: checking $REF" >&2
-    "$ENGINE" run --rm --env-file "$PINS" -v "$mount" "$REF" \
-        bash /check.sh >&2
-}
+# ── Build, check and publish ─────────────────────────────────────────
 
 if $BUILD_ONLY; then
-    echo "$PROG: building $REF locally with $ENGINE" >&2
-    if [[ $ENGINE == podman ]]; then
-        podman build --file "$DIR/Dockerfile" "${BUILD_ARGS[@]}" \
-            --tag "$REF" "$DIR" >&2
-    else
-        docker buildx build --file "$DIR/Dockerfile" "${BUILD_ARGS[@]}" \
-            --load --tag "$REF" "$DIR" >&2
-    fi
+    echo "$PROG: building $REF locally" >&2
+    build_image
+    echo "$PROG: checking $REF" >&2
     check_image
+    if [[ $KIND == artifact ]]; then
+        echo "$PROG: built $REF in $OUT" >&2
+    fi
     printf '%s\n' "$REF"
     exit 0
 fi
@@ -158,7 +245,7 @@ fi
 #   $1  what not to do if the answer is unclear, for the message
 published() {
     local answer status=0
-    answer=$(docker buildx imagetools inspect "$REF" 2>&1) || status=$?
+    answer=$(look_up 2>&1) || status=$?
     if [[ $status -eq 0 ]]; then
         return 0
     fi
@@ -183,10 +270,8 @@ if [[ ${CI_IMAGES_CAN_PUSH:-true} == false ]]; then
 fi
 
 echo "$PROG: $REF isn't published; building it" >&2
-docker buildx build --file "$DIR/Dockerfile" "${BUILD_ARGS[@]}" \
-    --cache-from "type=registry,ref=$REPO:buildcache" \
-    --cache-to "type=registry,ref=$REPO:buildcache,mode=max" \
-    --load --tag "$REF" "$DIR" >&2
+build_image
+echo "$PROG: checking $REF" >&2
 check_image
 # Another run may have published it while this one built. Then the tag
 # already names a checked build, and stays that one. Nothing makes this
@@ -199,6 +284,6 @@ if published pushed; then
     printf '%s\n' "$REF"
     exit 0
 fi
-docker push "$REF" >&2
+push_image
 echo "$PROG: published $REF" >&2
 printf '%s\n' "$REF"

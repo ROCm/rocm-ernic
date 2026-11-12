@@ -9,6 +9,10 @@
 # Short name, not the FQCN: it resolves against the containing
 # collection when installed as one, and against roles_path
 # when run from a checkout of this repo.
+- name: Check there's an SSH key for ernicctl vm-launch
+  ansible.builtin.include_tasks: ssh_key.yml
+  when: ernic_install_service | bool
+
 - name: Resolve the rocm-ernic source checkout
   ansible.builtin.include_role:
     name: ernic_source
