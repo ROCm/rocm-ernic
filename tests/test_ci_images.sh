@@ -40,11 +40,19 @@ pass() {
 
 command -v git >/dev/null || fail "git is needed and not installed"
 
-# A git repository holding a copy of ci/images/, all committed
+# A git repository holding a copy of ci/images/ and a lockfile pinning a
+# stale builder, all committed
 #   $1  where
 make_repo() {
     mkdir -p "$1/ci"
     cp -R "$SRC" "$1/ci/images"
+    cat >"$1/ci/guest-image.env" <<'EOF'
+# The lockfile
+GUEST_ARTIFACT_TAG=guest-tag
+
+BUILDER_IMAGE=ghcr.io/rocm/rocm-ernic/ci-builder
+BUILDER_TAG=stale
+EOF
     git -C "$1" init -q
     git -C "$1" add -A
     git -C "$1" -c user.name=test -c user.email=test@example.com \
@@ -137,6 +145,71 @@ if "$TAG_SH" nosuch >/dev/null 2>&1; then
     fail "image-tag.sh accepted an unknown image"
 fi
 pass "malformed pins and unknown images are refused"
+
+# ── the lockfile, ci/guest-image.env ────────────
+
+LOCK="$REPO/ci/guest-image.env"
+WANT_LOCK="BUILDER_IMAGE=ghcr.io/rocm/rocm-ernic/ci-builder
+BUILDER_TAG=$TAG"
+
+if "$TAG_SH" --check builder 2>"$WORK/err"; then
+    fail "--check passed a lockfile pinning a stale tag"
+fi
+grep -qF -- "--write builder" "$WORK/err" ||
+    fail "--check didn't say how to fix it: $(cat "$WORK/err")"
+
+# The lockfile names the default registry whatever --ref is told
+CI_IMAGES_REGISTRY=ghcr.io/example/proj "$TAG_SH" --write builder 2>/dev/null ||
+    fail "--write failed"
+[[ $(cat "$LOCK") == "# The lockfile
+GUEST_ARTIFACT_TAG=guest-tag
+
+$WANT_LOCK" ]] || fail "--write left the lockfile as: $(cat "$LOCK")"
+"$TAG_SH" --check builder 2>/dev/null ||
+    fail "--check failed right after --write"
+CI_IMAGES_REGISTRY=ghcr.io/example/proj "$TAG_SH" --check builder \
+    2>/dev/null || fail "--check compared against CI_IMAGES_REGISTRY"
+
+echo "# x" >>"$IMAGES/builder/Dockerfile"
+if "$TAG_SH" --check builder 2>/dev/null; then
+    fail "--check passed after the builder's definition changed"
+fi
+git -C "$REPO" checkout -q -- ci/images
+sed -i 's|^BUILDER_IMAGE=.*|BUILDER_IMAGE=docker.io/x/ci-builder|' "$LOCK"
+if "$TAG_SH" --check builder 2>/dev/null; then
+    fail "--check passed a lockfile naming another image"
+fi
+pass "--write pins the tree's image, and --check fails until it's pinned"
+
+# Check that --check and --write refuse a lockfile, and --write leaves it
+# alone.
+#   $1  what's wrong with it
+#   $2  its builder lines
+refuses_lock() {
+    printf '%s\n' "$2" >"$LOCK"
+    for mode in check write; do
+        if "$TAG_SH" "--$mode" builder 2>"$WORK/err"; then
+            fail "--$mode accepted a lockfile with $1"
+        fi
+        grep -qF "must set BUILDER_IMAGE and BUILDER_TAG once each" \
+            "$WORK/err" || fail "--$mode, $1: $(cat "$WORK/err")"
+    done
+    [[ $(cat "$LOCK") == "$2" ]] || fail "--write changed a lockfile with $1"
+}
+
+refuses_lock "no BUILDER_TAG" "BUILDER_IMAGE=ghcr.io/rocm/rocm-ernic/ci-builder"
+refuses_lock "no BUILDER_IMAGE" "BUILDER_TAG=$TAG"
+refuses_lock "BUILDER_TAG twice" "$WANT_LOCK
+BUILDER_TAG=$TAG"
+rm "$LOCK"
+if "$TAG_SH" --check builder 2>/dev/null; then
+    fail "--check passed with no lockfile"
+fi
+git -C "$REPO" checkout -q -- ci/guest-image.env
+if "$TAG_SH" --check --write builder >/dev/null 2>&1; then
+    fail "--check and --write were accepted together"
+fi
+pass "a lockfile without one pin of each, or none, is refused"
 
 # ── ensure-image.sh ─────────────────────────────
 

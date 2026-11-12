@@ -7,13 +7,15 @@ by `.github/workflows/ci-images.yml`:
 | --- | --- | --- |
 | `builder/` | `ghcr.io/rocm/rocm-ernic/ci-builder` | QEMU with the vfio-user client, libvfio-user, and the tools to boot, provision and fetch a guest |
 
-Nothing uses `ci-builder` yet: the VM lanes still run in the
-Docker Hub builder their `container: image:` lines name.
-Moving them onto it is the next step.
+Every VM lane runs in `ci-builder`. `system-tests.yml` calls
+`ci-images.yml` first, which publishes the image if this
+tree's definition of it isn't published yet, and gives each
+lane its reference. So a pull request that changes the
+builder runs the lanes in the new image.
 
 The image's default user is `ci` (uid 1001), not root.
-Anything needing root asks for it: the lanes, which need
-`/dev/kvm`, TAP devices and apt, will run it with
+Anything needing root asks for it: the VM lanes, which are
+written to run as root, run it with
 `options: --user root ...`.
 
 ## Tags name contents
@@ -23,7 +25,7 @@ first 12 hex digits of a SHA-256 over every file that
 defines it, for example:
 
 ```
-ci-builder:qemu11.1.1-vfu.5b9c722-26d15703780c
+ci-builder:qemu11.1.1-vfu.5b9c722-<12 hex digits>
 ```
 
 The files are those in the image's directory (its
@@ -43,6 +45,19 @@ So a pull request that changes an image's definition builds
 and publishes the new image under its new tag, and a run that
 changes nothing only looks. Two runs needing the same new
 image build it once.
+
+`ci/guest-image.env` pins the builder too, as `BUILDER_IMAGE`
+and `BUILDER_TAG`, for anything outside the workflows that
+wants it. `image-tag.sh --check builder` fails, and so does
+`ci-images.yml`, if it doesn't pin what the tree defines;
+after changing the builder, run
+
+```bash
+ci/images/image-tag.sh --write builder
+```
+
+and commit the result. `tools/check-guest-image-tag.sh`
+fails if a builder tag appears anywhere else.
 
 To rebuild an image whose definition hasn't changed, for
 Ubuntu's updates, bump `REBUILD` in its `pins.env`.
@@ -96,8 +111,9 @@ that image's Ubuntu 24.04 and QEMU v11.1.1, and changes:
 
 - libvfio-user is 5b9c722, the commit the rest of CI builds
   against, not 8039244;
-- it adds `libibverbs-dev`, `librdmacm-dev`, `iproute2` and
-  `file`, which the lanes used to install or expect;
+- it adds `libibverbs-dev`, `librdmacm-dev`, `iproute2`,
+  `sudo` and `file`, which the lanes used to install or
+  expect;
 - it drops the Docker CLI, buildx and compose, the
   entrypoint and its `batesste` user, and ccache, whose
   cache mount doesn't outlive a CI runner; the registry

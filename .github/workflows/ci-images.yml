@@ -7,16 +7,20 @@
 # under its tag isn't built again, so a run that changes no definition
 # only looks. See ci/images/README.md.
 #
-# Only the builder image so far, and nothing uses it yet.
+# System Tests calls it first and runs its lanes in the builder image it
+# returns, so a pull request that changes the builder publishes it and
+# tests the lanes in it. It has no pull_request trigger of its own:
+# System Tests runs for every change under ci/.
 name: "rocm-ernic - CI images"
 
 on:
-  pull_request:
-    branches: [ develop ]
-    paths:
-      - 'ci/images/**'
-      - 'tests/test_ci_images.sh'
-      - '.github/workflows/ci-images.yml'
+  workflow_call:
+    outputs:
+      builder_image:
+        description: >-
+          The builder image's full reference, REGISTRY/ci-builder:TAG,
+          published and checked
+        value: ${{ jobs.builder.outputs.ref }}
   workflow_dispatch:
 
 permissions: {}
@@ -29,7 +33,6 @@ jobs:
     permissions:
       contents: read
     outputs:
-      builder_ref: ${{ steps.tags.outputs.builder_ref }}
       builder_tag: ${{ steps.tags.outputs.builder_tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -43,18 +46,19 @@ jobs:
         shell: bash
         run: tests/test_ci_images.sh ci/images
 
+      # ci/guest-image.env pins the builder too, for anything outside
+      # these workflows that wants it, so it must name this tree's image
+      - name: Check the lockfile pins the images defined here
+        shell: bash
+        run: ci/images/image-tag.sh --check builder
+
       - name: Compute the tags
         id: tags
         shell: bash
-        env:
-          OWNER: ${{ github.repository_owner }}
         run: |
-          # GHCR names are lowercase, and the owner is "ROCm"
-          export CI_IMAGES_REGISTRY="ghcr.io/${OWNER,,}/rocm-ernic"
-          ref=$(ci/images/image-tag.sh --ref builder)
-          echo "builder_ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "builder_tag=${ref##*:}" >> "$GITHUB_OUTPUT"
-          echo "ci-builder: $ref"
+          tag=$(ci/images/image-tag.sh builder)
+          echo "builder_tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "ci-builder: $tag"
 
   builder:
     name: Builder image
@@ -70,6 +74,8 @@ jobs:
     concurrency:
       group: ci-images-builder-${{ needs.resolve.outputs.builder_tag }}
       cancel-in-progress: false
+    outputs:
+      ref: ${{ steps.ensure.outputs.ref }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -89,6 +95,7 @@ jobs:
         run: docker buildx create --name ernic-ci --driver docker-container --use
 
       - name: Publish the builder image if it isn't already
+        id: ensure
         shell: bash
         env:
           OWNER: ${{ github.repository_owner }}
@@ -97,5 +104,7 @@ jobs:
             ${{ github.event_name != 'pull_request' ||
                 !github.event.pull_request.head.repo.fork }}
         run: |
+          # GHCR names are lowercase, and the owner is "ROCm"
           export CI_IMAGES_REGISTRY="ghcr.io/${OWNER,,}/rocm-ernic"
-          ci/images/ensure-image.sh builder
+          ref=$(ci/images/ensure-image.sh builder)
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"

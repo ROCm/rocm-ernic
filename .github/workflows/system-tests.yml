@@ -35,6 +35,8 @@ on:
       # image ran no VM lane.
       - 'ci/**'
       - '.github/workflows/system-tests.yml'
+      # Publishes the builder image every job here runs in
+      - '.github/workflows/ci-images.yml'
       # Both the nvmeof and the nvmeof-kv jobs' body: one file, two
       # modes.
       - '.github/workflows/nvmeof-lane.yml'
@@ -96,12 +98,26 @@ env:
   # the build inputs, so a rebuild from the same sources republishes it.
 
 jobs:
+  # The builder image every job here runs in, defined in
+  # ci/images/builder/: published first if this tree's definition isn't
+  # yet, so a pull request that changes it tests the lanes in it.
+  images:
+    name: CI images
+    permissions:
+      contents: read
+      packages: write
+    uses: $/.github/workflows/ci-images.yml
+
   system-test-loopback-vm:
     name: Loopback Backend System Tests
+    needs: images
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     container:
-      image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260918.g7438e48-qemu11.1.1-vfu.8039244
+      image: ${{ needs.images.outputs.builder_image }}
+      # --user root, since the image's default user is ci, and this job
+      # is written to run as root.
+      #
       # GitHub-hosted Linux runners expose /dev/kvm; pass it through so the
       # guests run accelerated instead of under TCG.
       #
@@ -110,7 +126,7 @@ jobs:
       # which outlives the step that starts it, are both reparented to
       # PID 1; without --init that is `tail -f /dev/null`, so one that
       # dies stays a zombie, and kill -0 takes a zombie for a live process.
-      options: --device /dev/kvm --init
+      options: --user root --device /dev/kvm --init
 
     steps:
     - name: Checkout code
@@ -291,48 +307,10 @@ jobs:
           exit 1
         fi
         echo "✓ README kernel badge agrees with the image: $README_KVER"
-    - name: Install dependencies
-      run: |
-        # Only what the container image does not already carry.
-        # build-essential, cmake, meson, ninja-build, pkg-config,
-        # libglib2.0-dev, libjson-c-dev and libcmocka-dev are baked
-        # into the image; re-installing them cost an apt round trip
-        # per job for nothing.  These three are genuinely absent, and
-        # iproute2 in particular is what puts `ss` on PATH for the
-        # TCP job's listener check.
-        apt-get update
-        apt-get install -y \
-          libibverbs-dev \
-          librdmacm-dev \
-          iproute2
 
-    - name: Verify libvfio-user from the image
-      run: |
-        # The image ships libvfio-user under /usr/local, and
-        # CMakeLists.txt falls back to find_library/find_path there
-        # when pkg-config misses, so there is nothing to build here.
-        # What the build actually requires is the max_regions
-        # parameter that f3742ed9 (#835) added to
-        # vfu_setup_device_dma(); assert that rather than assuming
-        # it, so a rebased image fails here with a clear message
-        # instead of part-way through the compile.
-        set -e
-        ldconfig
-        HDR=/usr/local/include/vfio-user/libvfio-user.h
-        LIB=$(find /usr/local/lib/x86_64-linux-gnu -maxdepth 1 -name 'libvfio-user.so*' 2>/dev/null | sort | head -1)
-        if [ ! -f "$HDR" ] || [ -z "$LIB" ]; then
-          echo "✗ libvfio-user missing from the container image"
-          echo "  header: $HDR"
-          ls -la /usr/local/lib/x86_64-linux-gnu/ /usr/local/include/ || true
-          exit 1
-        fi
-        if ! grep -A2 'vfu_setup_device_dma' "$HDR" | grep -q 'max_regions'; then
-          echo "✗ libvfio-user in the image predates the"
-          echo "  vfu_setup_device_dma() max_regions parameter (#835)."
-          exit 1
-        fi
-        echo "✓ libvfio-user present: $LIB"
-
+    # The image has the server's build dependencies, libvfio-user
+    # included, which ci/images/builder/check.sh checked before the
+    # image was published.
     - name: Build rocm-ernic server
       run: |
         echo "=== Building rocm-ernic server ==="
@@ -1424,8 +1402,10 @@ jobs:
       # with this job's own GITHUB_TOKEN is exempt from triggering
       # other workflows, so Pages would otherwise never rebuild.
       actions: write
+    needs: images
     uses: $/.github/workflows/nvmeof-lane.yml
     with:
+      builder_image: ${{ needs.images.outputs.builder_image }}
       # The same rule the two-VM lane publishes under, so the three
       # badges are fed on identical terms: never from a pull request,
       # and a manual run does whatever the dispatch asked for.
@@ -1449,8 +1429,10 @@ jobs:
       # with this job's own GITHUB_TOKEN is exempt from triggering
       # other workflows, so Pages would otherwise never rebuild.
       actions: write
+    needs: images
     uses: $/.github/workflows/nvmeof-lane.yml
     with:
+      builder_image: ${{ needs.images.outputs.builder_image }}
       mode: mixed
       # The same rule every other publishing lane uses, so the badges
       # are fed on identical terms: never from a pull request, and a
@@ -1476,8 +1458,10 @@ jobs:
       # with this job's own GITHUB_TOKEN is exempt from triggering
       # other workflows, so Pages would otherwise never rebuild.
       actions: write
+    needs: images
     uses: $/.github/workflows/s3-lane.yml
     with:
+      builder_image: ${{ needs.images.outputs.builder_image }}
       # The same rule the other publishing lanes use, so every badge is
       # fed on identical terms: never from a pull request, and a manual
       # run does whatever the dispatch asked for.
@@ -1495,8 +1479,10 @@ jobs:
       # with this job's own GITHUB_TOKEN is exempt from triggering
       # other workflows, so Pages would otherwise never rebuild.
       actions: write
+    needs: images
     uses: $/.github/workflows/p4-lane.yml
     with:
+      builder_image: ${{ needs.images.outputs.builder_image }}
       # The same rule every publishing lane uses, so each series is fed
       # on identical terms: never from a pull request, and a manual run
       # does whatever the dispatch asked for.
@@ -1506,6 +1492,7 @@ jobs:
 
   system-test-two-vms:
     name: TCP Mesh Backend System Tests (Two VMs)
+    needs: images
     runs-on: ubuntu-26.04
     timeout-minutes: 90
     # This job is the RDMA and TCP/IP perf source for the README
@@ -1522,7 +1509,9 @@ jobs:
       PERF_RESULTS: /tmp/ernic-ci-results
       PERF_CSV_DIR: /tmp/ernic-ci-results/perf-csv
     container:
-      image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260918.g7438e48-qemu11.1.1-vfu.8039244
+      image: ${{ needs.images.outputs.builder_image }}
+      # --user root: see the loopback job.
+      #
       # GitHub-hosted Linux runners expose /dev/kvm; pass it through so the
       # guests run accelerated instead of under TCG.
       #
@@ -1537,8 +1526,8 @@ jobs:
       # --init makes PID 1 an init that reaps orphans: see the loopback
       # job.
       options: >-
-        --device /dev/kvm --device /dev/net/tun --cap-add=NET_ADMIN
-        --init
+        --user root --device /dev/kvm --device /dev/net/tun
+        --cap-add=NET_ADMIN --init
 
     steps:
     - name: Checkout code
@@ -1605,40 +1594,10 @@ jobs:
         echo "=== Network ==="
         ip addr show || true
 
-    - name: Install dependencies
-      run: |
-        # See the loopback job: everything else in the old list is
-        # already in the container image.  iproute2 is what puts `ss`
-        # on PATH for the listener check below, and `ip` for the TAP
-        # setup.  sudo is here because ernic_host_setup's TAP tasks are
-        # `become: true` and the image ships no sudo; the job is already
-        # uid 0, so this only satisfies the become plugin.
-        apt-get update
-        apt-get install -y \
-          libibverbs-dev \
-          librdmacm-dev \
-          iproute2 \
-          sudo
-
-    - name: Verify libvfio-user from the image
-      run: |
-        # See the loopback job for why this asserts rather than builds.
-        set -e
-        ldconfig
-        HDR=/usr/local/include/vfio-user/libvfio-user.h
-        LIB=$(find /usr/local/lib/x86_64-linux-gnu -maxdepth 1 -name 'libvfio-user.so*' 2>/dev/null | sort | head -1)
-        if [ ! -f "$HDR" ] || [ -z "$LIB" ]; then
-          echo "✗ libvfio-user missing from the container image"
-          ls -la /usr/local/lib/x86_64-linux-gnu/ /usr/local/include/ || true
-          exit 1
-        fi
-        if ! grep -A2 'vfu_setup_device_dma' "$HDR" | grep -q 'max_regions'; then
-          echo "✗ libvfio-user in the image predates the"
-          echo "  vfu_setup_device_dma() max_regions parameter (#835)."
-          exit 1
-        fi
-        echo "✓ libvfio-user present: $LIB"
-
+    # The image has the server's build dependencies (see the loopback
+    # job), iproute2 for `ss` and the TAP setup's `ip`, and sudo, which
+    # ernic_host_setup's `become: true` TAP tasks need although the job is
+    # already root.
     - name: Build project
       run: |
         cmake -B build -G Ninja \

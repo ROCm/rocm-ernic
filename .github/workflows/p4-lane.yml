@@ -28,6 +28,12 @@ name: rocm-ernic - P4 Lane
 on:
   workflow_call:
     inputs:
+      builder_image:
+        description: >-
+          The builder image to run in, as the CI images workflow
+          (ci-images.yml) returns it.
+        type: string
+        required: true
       publish:
         description: >-
           Record this run's conversion sweep in docs/perf-history and
@@ -49,10 +55,11 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     container:
-      image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260918.g7438e48-qemu11.1.1-vfu.8039244
-      # --init makes PID 1 an init that reaps orphans: see the loopback
+      image: ${{ inputs.builder_image }}
+      # --user root, since the image's default user is ci, and --init,
+      # which makes PID 1 an init that reaps orphans: see the loopback
       # job in system-tests.yml.
-      options: --device /dev/kvm --init
+      options: --user root --device /dev/kvm --init
     # One guest, one server, no TAP and no peer.  What this lane
     # covers that no other does: the guest programming the NIC's P4
     # pipeline itself, through /dev/ernic-p4, and then seeing an
@@ -208,39 +215,6 @@ jobs:
           echo "vm_disk=$VM_DISK"
           echo "kernel_release=$KERNEL_RELEASE"
         } >> "$GITHUB_OUTPUT"
-
-    - name: Install dependencies
-      run: |
-        # Only what the container image does not already carry.
-        apt-get update
-        apt-get install -y \
-          libibverbs-dev \
-          librdmacm-dev \
-          iproute2
-
-    - name: Verify libvfio-user from the image
-      run: |
-        # The image ships libvfio-user under /usr/local, and
-        # CMakeLists.txt falls back to find_library/find_path there
-        # when pkg-config misses.  What the build actually requires is
-        # the max_regions parameter that f3742ed9 (#835) added to
-        # vfu_setup_device_dma(); assert that rather than assuming it.
-        set -e
-        ldconfig
-        HDR=/usr/local/include/vfio-user/libvfio-user.h
-        LIB=$(find /usr/local/lib/x86_64-linux-gnu -maxdepth 1 -name 'libvfio-user.so*' 2>/dev/null | sort | head -1)
-        if [ ! -f "$HDR" ] || [ -z "$LIB" ]; then
-          echo "✗ libvfio-user missing from the container image"
-          echo "  header: $HDR"
-          ls -la /usr/local/lib/x86_64-linux-gnu/ /usr/local/include/ || true
-          exit 1
-        fi
-        if ! grep -A2 'vfu_setup_device_dma' "$HDR" | grep -q 'max_regions'; then
-          echo "✗ libvfio-user in the image predates the"
-          echo "  vfu_setup_device_dma() max_regions parameter (#835)."
-          exit 1
-        fi
-        echo "✓ libvfio-user present: $LIB"
 
     # The one line that separates this lane from every other: without
     # it the server has no P4 code at all, no --p4* options, and the

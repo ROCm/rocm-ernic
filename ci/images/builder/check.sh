@@ -30,7 +30,7 @@ fail() {
 
 for tool in ansible-galaxy ansible-playbook cloud-localds cmake curl file \
     gcc git ip jq meson ninja oras pkg-config python3 qemu-img \
-    qemu-system-x86_64 scp setsid ss ssh ssh-keygen timeout zstd; do
+    qemu-system-x86_64 scp setsid ss ssh ssh-keygen sudo timeout zstd; do
     command -v "$tool" >/dev/null || fail "$tool isn't on PATH"
 done
 

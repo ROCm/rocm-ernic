@@ -17,17 +17,26 @@
 # (untracked ones not ignored), read from the working tree, so the tag is
 # the same before and after a commit.
 #
-# Usage: image-tag.sh [--ref] NAME
-#   NAME    an image's directory under ci/images/ (builder)
-#   --ref   print the full reference, REGISTRY/IMAGE:TAG, not the tag
+# ci/guest-image.env is the lockfile: it pins each image defined here, as
+# PREFIX_IMAGE (the image in the default registry) and PREFIX_TAG, and
+# --check fails if it doesn't pin what the tree defines.
 #
-# CI_IMAGES_REGISTRY names the registry and namespace (default:
-# ghcr.io/rocm/rocm-ernic).
+# Usage: image-tag.sh [--ref | --check | --write] NAME
+#   NAME     an image's directory under ci/images/ (builder)
+#   --ref    print the full reference, REGISTRY/IMAGE:TAG, not the tag
+#   --check  fail unless ci/guest-image.env pins the image as the tree
+#            defines it
+#   --write  pin the image in ci/guest-image.env as the tree defines it
+#
+# CI_IMAGES_REGISTRY names the registry and namespace for --ref (default:
+# ghcr.io/rocm/rocm-ernic). The lockfile always names the default.
 
 set -euo pipefail
 
 PROG=$(basename -- "$0")
 IMAGES_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
+LOCKFILE=$(cd -- "$IMAGES_DIR/.." && pwd)/guest-image.env
+DEFAULT_REGISTRY=ghcr.io/rocm/rocm-ernic
 
 die() {
     echo "$PROG: $*" >&2
@@ -35,16 +44,17 @@ die() {
 }
 
 usage() {
-    echo "Usage: $PROG [--ref] NAME" >&2
+    echo "Usage: $PROG [--ref | --check | --write] NAME" >&2
     exit 2
 }
 
-REF=false
+MODE=tag
 NAME=""
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --ref)
-            REF=true
+        --ref | --check | --write)
+            [[ $MODE == tag ]] || usage
+            MODE=${1#--}
             shift
             ;;
         -h | --help) usage ;;
@@ -58,9 +68,13 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n $NAME ]] || usage
 
-# The published image's name for each definition
+# The published image's name for each definition, and its keys' prefix in
+# the lockfile
 case $NAME in
-    builder) IMAGE=ci-builder ;;
+    builder)
+        IMAGE=ci-builder
+        LOCK_KEY=BUILDER
+        ;;
     *) die "no such image: '$NAME'" ;;
 esac
 
@@ -135,11 +149,58 @@ TAG="$PREFIX-${HASH:0:12}"
 # What a registry accepts as a tag
 [[ $TAG =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || die "bad tag: '$TAG'"
 
-if $REF; then
-    REGISTRY=${CI_IMAGES_REGISTRY:-ghcr.io/rocm/rocm-ernic}
-    [[ $REGISTRY =~ ^[a-z0-9][a-z0-9.:-]*(/[a-z0-9][a-z0-9._-]*)*$ ]] ||
-        die "CI_IMAGES_REGISTRY isn't a lowercase registry path: '$REGISTRY'"
-    printf '%s/%s:%s\n' "$REGISTRY" "$IMAGE" "$TAG"
-else
-    printf '%s\n' "$TAG"
-fi
+case $MODE in
+    tag) printf '%s\n' "$TAG" ;;
+    ref)
+        REGISTRY=${CI_IMAGES_REGISTRY:-$DEFAULT_REGISTRY}
+        [[ $REGISTRY =~ ^[a-z0-9][a-z0-9.:-]*(/[a-z0-9][a-z0-9._-]*)*$ ]] ||
+            die "CI_IMAGES_REGISTRY isn't a lowercase registry path:" \
+                "'$REGISTRY'"
+        printf '%s/%s:%s\n' "$REGISTRY" "$IMAGE" "$TAG"
+        ;;
+    check | write)
+        [[ -f $LOCKFILE ]] || die "$LOCKFILE is missing"
+        IMAGE_KEY=${LOCK_KEY}_IMAGE
+        TAG_KEY=${LOCK_KEY}_TAG
+        want_image="$DEFAULT_REGISTRY/$IMAGE"
+
+        # The lockfile's lines, and what it pins now. Each key must be
+        # there once; --write changes it in place and adds nothing.
+        mapfile -t LINES <"$LOCKFILE"
+        pinned_image="" pinned_tag="" n_image=0 n_tag=0
+        for line in "${LINES[@]}"; do
+            case $line in
+                "$IMAGE_KEY="*)
+                    pinned_image=${line#*=}
+                    n_image=$((n_image + 1))
+                    ;;
+                "$TAG_KEY="*)
+                    pinned_tag=${line#*=}
+                    n_tag=$((n_tag + 1))
+                    ;;
+            esac
+        done
+        [[ $n_image -eq 1 && $n_tag -eq 1 ]] ||
+            die "$LOCKFILE must set $IMAGE_KEY and $TAG_KEY once each"
+
+        if [[ $MODE == check ]]; then
+            if [[ $pinned_image != "$want_image" ||
+                $pinned_tag != "$TAG" ]]; then
+                die "$LOCKFILE pins $pinned_image:$pinned_tag, but the" \
+                    "tree defines $want_image:$TAG. Run" \
+                    "ci/images/image-tag.sh --write $NAME and commit it."
+            fi
+            echo "$PROG: $LOCKFILE pins $want_image:$TAG" >&2
+        else
+            for i in "${!LINES[@]}"; do
+                case ${LINES[i]} in
+                    "$IMAGE_KEY="*) LINES[i]="$IMAGE_KEY=$want_image" ;;
+                    "$TAG_KEY="*) LINES[i]="$TAG_KEY=$TAG" ;;
+                esac
+            done
+            # Rewritten in place, so it keeps its mode
+            printf '%s\n' "${LINES[@]}" >"$LOCKFILE"
+            echo "$PROG: $LOCKFILE now pins $want_image:$TAG" >&2
+        fi
+        ;;
+esac

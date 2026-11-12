@@ -147,6 +147,8 @@ FROM base
 #   qemu-utils          Ubuntu's qemu-img, as the Docker Hub builder had;
 #                       /opt/qemu/bin's comes first on PATH
 #   pipx                ansible-core, below
+#   sudo                Ansible's become, for the TCP job's host setup,
+#                       which runs here as root
 # and the RDMA headers the server builds against
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -159,6 +161,7 @@ RUN apt-get update && \
         openssh-client \
         pipx \
         qemu-utils \
+        sudo \
         zstd && \
     rm -rf /var/lib/apt/lists/*
 
