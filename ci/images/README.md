@@ -11,6 +11,11 @@ Nothing uses `ci-builder` yet: the VM lanes still run in the
 Docker Hub builder their `container: image:` lines name.
 Moving them onto it is the next step.
 
+The image's default user is `ci` (uid 1001), not root.
+Anything needing root asks for it: the lanes, which need
+`/dev/kvm`, TAP devices and apt, will run it with
+`options: --user root ...`.
+
 ## Tags name contents
 
 An image's tag is a readable prefix from its pins, then the

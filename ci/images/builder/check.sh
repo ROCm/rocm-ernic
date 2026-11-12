@@ -6,10 +6,10 @@
 # check.sh
 #
 # Checks a freshly built builder image, from inside it, before
-# ci/images/ensure-image.sh publishes it: that the tools the VM lanes use
-# are on PATH, that QEMU has the vfio-user client, and that libvfio-user
-# is the pinned commit with the API the server needs. It fails on the
-# first thing missing.
+# ci/images/ensure-image.sh publishes it: that its default user isn't
+# root, that the tools the VM lanes use are on PATH, that QEMU has the
+# vfio-user client, and that libvfio-user is the pinned commit with the
+# API the server needs. It fails on the first thing wrong.
 #
 # Usage, from ensure-image.sh:
 #   docker run --rm --env-file pins.env -v check.sh:/check.sh:ro IMAGE \
@@ -23,6 +23,10 @@ fail() {
 }
 
 : "${LIBVFIO_USER_COMMIT:?pass pins.env with --env-file}"
+
+# Run as the image's default user, which mustn't be root; the lanes ask
+# for root themselves
+[[ $(id -u) -ne 0 ]] || fail "the image's default user is root"
 
 for tool in ansible-galaxy ansible-playbook cloud-localds cmake curl file \
     gcc git ip jq meson ninja oras pkg-config python3 qemu-img \

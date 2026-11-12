@@ -111,9 +111,8 @@ RUN : "${LIBVFIO_USER_REPO:?}" "${LIBVFIO_USER_COMMIT:?}"
 # Only the library, as the other CI builds do: its tests aren't needed,
 # and don't build with Ubuntu 26.04's cmocka 2. /usr/local, because the
 # VM lanes look for it there.
-RUN git clone --filter=blob:none "${LIBVFIO_USER_REPO}" \
-        /build/libvfio-user && \
-    cd /build/libvfio-user && \
+WORKDIR /build/libvfio-user
+RUN git clone --filter=blob:none "${LIBVFIO_USER_REPO}" . && \
     git checkout "${LIBVFIO_USER_COMMIT}" && \
     meson setup build --prefix=/usr/local -Dwarning_level=0 && \
     meson compile -C build vfio-user && \
@@ -177,5 +176,14 @@ LABEL org.opencontainers.image.source="https://github.com/ROCm/rocm-ernic" \
       org.opencontainers.image.description="rocm-ernic CI builder: QEMU with vfio-user, libvfio-user, and the tools to boot and provision a guest" \
       org.opencontainers.image.licenses="MIT"
 
-WORKDIR /
+# Run unprivileged unless asked otherwise. The VM lanes do need root, for
+# /dev/kvm, the TAP devices and apt, so their container options ask for it
+# with --user root.
+RUN useradd --create-home --uid 1001 --shell /bin/bash ci
+USER ci
+WORKDIR /home/ci
+
+# Nothing here runs as a service, so there's nothing to check
+HEALTHCHECK NONE
+
 CMD ["/bin/bash"]
