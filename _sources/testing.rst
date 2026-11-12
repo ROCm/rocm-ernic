@@ -874,7 +874,7 @@ defined in ``ci/images/builder/``. It first calls
 ``ci-images.yml``, which publishes the image if this tree's
 definition of it isn't published yet, so a pull request that
 changes the builder runs every lane in the new image; see
-``ci/images/README.md``.
+:ref:`ci-images`.
 
 The workflow boots guests under
 KVM on hosted runners with ``ci/boot-guest.sh``, as
@@ -893,6 +893,77 @@ build toolchain before handing over; the mainline kernel
 itself must already be in the guest image, and
 ``ernic_guest_setup`` asserts that it matches the pinned ref
 before it starts the DKMS build.
+
+.. _ci-images:
+
+CI images
+^^^^^^^^^
+
+The images CI runs in are defined under ``ci/images/`` and
+published to GHCR as ``ghcr.io/rocm/rocm-ernic/NAME``, with
+the workflow's ``GITHUB_TOKEN``. Today that's the builder,
+``ci-builder``: QEMU with the vfio-user client,
+libvfio-user, and the tools to boot, provision and fetch a
+guest. The guest image is still pulled from Docker Hub; see
+:ref:`ansible-guest-image`. The packages are public, so
+pulling needs no credentials.
+
+An image's tag names its contents: a readable prefix from
+its pins, then 12 hex digits of a SHA-256 over every file
+defining it. ``ci/images/image-tag.sh NAME`` prints it.
+A tag, once published, isn't built or pushed again, so it
+always names one build, and develop runs exactly what the
+pull request that changed the image tested.
+
+``ci/guest-image.env`` is the lockfile. It pins the
+builder as ``BUILDER_IMAGE`` and ``BUILDER_TAG``, and the
+lanes' ``container:`` ``image:`` lines name it in full,
+because the security scan can't tell that an image named by
+an expression is pinned. After changing an image's
+definition, run
+
+.. code-block:: bash
+
+   ci/images/image-tag.sh --write
+
+and commit the result. Every pull request runs
+``image-tag.sh --check``, which fails if any pin isn't the
+tree's, and ``tools/check-guest-image-tag.sh``, which fails
+if a tag appears anywhere else (the ``Image pins``
+workflow).
+
+``ci-images.yml``, which ``system-tests.yml`` calls before
+its lanes, publishes an image whose tag the registry hasn't
+got, with ``ci/images/ensure-image.sh``. That builds it,
+runs the image's ``check.sh`` inside it, and pushes it only
+if it passes. So a pull request that changes the builder
+publishes it and runs every lane in it. A pull request from
+a fork can't push, so one changing an image fails; a
+maintainer pushes the branch to ``ROCm/rocm-ernic``
+instead.
+
+To rebuild an image whose definition hasn't changed, for
+Ubuntu's updates, bump ``REBUILD`` in its ``pins.env``. To
+build and check one locally, with Docker's buildx or
+podman, without touching the registry:
+
+.. code-block:: bash
+
+   ci/images/ensure-image.sh --build-only builder
+
+``ci-images-prune.yml`` deletes the versions nothing
+needs every Monday, with ``ci/images/prune-images.sh``. It
+keeps the tags develop's lockfile pins, the 10 newest, and
+anything under 30 days old, tagged otherwise (such as the
+registry cache, ``buildcache``), or needed by a version it
+keeps. A pruned tag that's wanted again is rebuilt the next
+time a run needs it. Every run lists what it would delete;
+only runs on develop delete.
+
+The ``ernic-ci-images``, ``ernic-check-guest-image-tag``
+and ``ernic-prune-images`` tests check these scripts
+against stand-ins for Docker, ``gh`` and the registry. For
+the details, see ``ci/images/README.md``.
 
 Adding New Tests
 ----------------

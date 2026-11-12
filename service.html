@@ -709,45 +709,41 @@ To assign explicit MACs, set <code class="docutils literal notranslate"><span cl
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_QEMU_MINIMAL</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">$HOME/Projects/qemu-minimal</span></code></p></td>
-<td><p>Only the default <code class="docutils literal notranslate"><span class="pre">ERNIC_VM_IMAGE_DIR</span></code>’s parent;
-<code class="docutils literal notranslate"><span class="pre">vm-launch</span></code> no longer runs qemu-minimal</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_QEMU_PATH</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_QEMU_PATH</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">/opt/qemu-v10.1.2/bin/</span></code></p></td>
 <td><p>Directory containing <code class="docutils literal notranslate"><span class="pre">qemu-system-x86_64</span></code> and
 <code class="docutils literal notranslate"><span class="pre">qemu-img</span></code>.  Empty means search <code class="docutils literal notranslate"><span class="pre">PATH</span></code>.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_IMAGE_DIR</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">$ERNIC_QEMU_MINIMAL/images</span></code></p></td>
-<td><p>Directory with qcow2 VM images</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_IMAGE_DIR</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/opt/qemu-images</span></code></p></td>
+<td><p>Directory with qcow2 VM images, written out in full:
+<code class="docutils literal notranslate"><span class="pre">ernicctl</span></code> doesn’t expand <code class="docutils literal notranslate"><span class="pre">$VARS</span></code> in the env file</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_NAME</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_NAME</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">stebates-test-vm</span></code></p></td>
 <td><p>Base VM name: instance N’s VM is
 <code class="docutils literal notranslate"><span class="pre">ERNIC_VM_NAME-N</span></code>, its hostname, and
 <code class="docutils literal notranslate"><span class="pre">ERNIC_VM_NAME-N.qcow2</span></code> its disk</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_VCPUS</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_VCPUS</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">4</span></code></p></td>
 <td><p>vCPUs per VM</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_MEM</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_MEM</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">8192</span></code></p></td>
 <td><p>Memory per VM (MB)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_SSH_USER</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_SSH_USER</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">ubuntu</span></code></p></td>
 <td><p>SSH user for guest access</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_SSH_HOST</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_SSH_HOST</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">localhost</span></code></p></td>
 <td><p>SSH destination host for guest commands (use an
 <code class="docutils literal notranslate"><span class="pre">ssh_config</span></code> Host alias when you do not use
 <code class="docutils literal notranslate"><span class="pre">localhost</span></code>).</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_SSH_CONFIG</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_SSH_CONFIG</span></code></p></td>
 <td><p>(unset)</p></td>
 <td><p>Path passed to <code class="docutils literal notranslate"><span class="pre">ssh</span></code>/<code class="docutils literal notranslate"><span class="pre">scp</span></code> as <code class="docutils literal notranslate"><span class="pre">-F</span></code>.  When unset
 and <code class="docutils literal notranslate"><span class="pre">ernicctl</span></code> runs as <code class="docutils literal notranslate"><span class="pre">root</span></code> under <code class="docutils literal notranslate"><span class="pre">sudo</span></code>, the
@@ -756,11 +752,11 @@ if that file exists.  <code class="docutils literal notranslate"><span class="pr
 implicit default; set <code class="docutils literal notranslate"><span class="pre">ERNIC_VM_SSH_CONFIG</span></code> when there is
 no <code class="docutils literal notranslate"><span class="pre">SUDO_USER</span></code> (e.g. a systemd unit or bare <code class="docutils literal notranslate"><span class="pre">su</span> <span class="pre">-</span></code>).</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_SSH_BASE_PORT</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_SSH_BASE_PORT</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">2222</span></code></p></td>
 <td><p>Base SSH port (instance N uses base + N - 1)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_SSH_IDENTITY</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_SSH_IDENTITY</span></code></p></td>
 <td><p>(unset)</p></td>
 <td><p>Your SSH private key for guests.  <code class="docutils literal notranslate"><span class="pre">vm-launch</span></code>
 authorizes its <code class="docutils literal notranslate"><span class="pre">.pub</span></code> beside the key it makes for
@@ -772,7 +768,7 @@ uses <code class="docutils literal notranslate"><span class="pre">SUDO_USER</spa
 <code class="docutils literal notranslate"><span class="pre">id_ed25519</span></code> / <code class="docutils literal notranslate"><span class="pre">id_ecdsa</span></code>).  <code class="docutils literal notranslate"><span class="pre">/root/.ssh</span></code>
 keys are not auto-discovered.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_BACKING</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_BACKING</span></code></p></td>
 <td><p>(unset)</p></td>
 <td><p>Golden backing qcow2. When set and a
 per-instance overlay does not exist,

@@ -411,7 +411,10 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-rocm-ernic-ansible-collection">The rocm.ernic Ansible collection</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-driver-ci">Guest Driver CI</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-driver-ci">Guest Driver CI</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ci-images">CI images</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#adding-new-tests">Adding New Tests</a></li>
 </ul>
             </nav>
@@ -1203,7 +1206,7 @@ defined in <code class="docutils literal notranslate"><span class="pre">ci/image
 <code class="docutils literal notranslate"><span class="pre">ci-images.yml</span></code>, which publishes the image if this tree’s
 definition of it isn’t published yet, so a pull request that
 changes the builder runs every lane in the new image; see
-<code class="docutils literal notranslate"><span class="pre">ci/images/README.md</span></code>.</p>
+<a class="reference internal" href="#ci-images"><span class="std std-ref">CI images</span></a>.</p>
 <p>The workflow boots guests under
 KVM on hosted runners with <code class="docutils literal notranslate"><span class="pre">ci/boot-guest.sh</span></code>, as
 <code class="docutils literal notranslate"><span class="pre">ernicctl</span> <span class="pre">vm-launch</span></code> does, so the vfio-user device sits
@@ -1221,6 +1224,65 @@ build toolchain before handing over; the mainline kernel
 itself must already be in the guest image, and
 <code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code> asserts that it matches the pinned ref
 before it starts the DKMS build.</p>
+<section id="ci-images">
+<span id="id1"></span><h3>CI images<a class="headerlink" href="#ci-images" title="Link to this heading">#</a></h3>
+<p>The images CI runs in are defined under <code class="docutils literal notranslate"><span class="pre">ci/images/</span></code> and
+published to GHCR as <code class="docutils literal notranslate"><span class="pre">ghcr.io/rocm/rocm-ernic/NAME</span></code>, with
+the workflow’s <code class="docutils literal notranslate"><span class="pre">GITHUB_TOKEN</span></code>. Today that’s the builder,
+<code class="docutils literal notranslate"><span class="pre">ci-builder</span></code>: QEMU with the vfio-user client,
+libvfio-user, and the tools to boot, provision and fetch a
+guest. The guest image is still pulled from Docker Hub; see
+<a class="reference internal" href="#ansible-guest-image"><span class="std std-ref">The guest image</span></a>. The packages are public, so
+pulling needs no credentials.</p>
+<p>An image’s tag names its contents: a readable prefix from
+its pins, then 12 hex digits of a SHA-256 over every file
+defining it. <code class="docutils literal notranslate"><span class="pre">ci/images/image-tag.sh</span> <span class="pre">NAME</span></code> prints it.
+A tag, once published, isn’t built or pushed again, so it
+always names one build, and develop runs exactly what the
+pull request that changed the image tested.</p>
+<p><code class="docutils literal notranslate"><span class="pre">ci/guest-image.env</span></code> is the lockfile. It pins the
+builder as <code class="docutils literal notranslate"><span class="pre">BUILDER_IMAGE</span></code> and <code class="docutils literal notranslate"><span class="pre">BUILDER_TAG</span></code>, and the
+lanes’ <code class="docutils literal notranslate"><span class="pre">container:</span></code> <code class="docutils literal notranslate"><span class="pre">image:</span></code> lines name it in full,
+because the security scan can’t tell that an image named by
+an expression is pinned. After changing an image’s
+definition, run</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ci/images/image-tag.sh<span class="w"> </span>--write
+</pre></div>
+</div>
+<p>and commit the result. Every pull request runs
+<code class="docutils literal notranslate"><span class="pre">image-tag.sh</span> <span class="pre">--check</span></code>, which fails if any pin isn’t the
+tree’s, and <code class="docutils literal notranslate"><span class="pre">tools/check-guest-image-tag.sh</span></code>, which fails
+if a tag appears anywhere else (the <code class="docutils literal notranslate"><span class="pre">Image</span> <span class="pre">pins</span></code>
+workflow).</p>
+<p><code class="docutils literal notranslate"><span class="pre">ci-images.yml</span></code>, which <code class="docutils literal notranslate"><span class="pre">system-tests.yml</span></code> calls before
+its lanes, publishes an image whose tag the registry hasn’t
+got, with <code class="docutils literal notranslate"><span class="pre">ci/images/ensure-image.sh</span></code>. That builds it,
+runs the image’s <code class="docutils literal notranslate"><span class="pre">check.sh</span></code> inside it, and pushes it only
+if it passes. So a pull request that changes the builder
+publishes it and runs every lane in it. A pull request from
+a fork can’t push, so one changing an image fails; a
+maintainer pushes the branch to <code class="docutils literal notranslate"><span class="pre">ROCm/rocm-ernic</span></code>
+instead.</p>
+<p>To rebuild an image whose definition hasn’t changed, for
+Ubuntu’s updates, bump <code class="docutils literal notranslate"><span class="pre">REBUILD</span></code> in its <code class="docutils literal notranslate"><span class="pre">pins.env</span></code>. To
+build and check one locally, with Docker’s buildx or
+podman, without touching the registry:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ci/images/ensure-image.sh<span class="w"> </span>--build-only<span class="w"> </span>builder
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">ci-images-prune.yml</span></code> deletes the versions nothing
+needs every Monday, with <code class="docutils literal notranslate"><span class="pre">ci/images/prune-images.sh</span></code>. It
+keeps the tags develop’s lockfile pins, the 10 newest, and
+anything under 30 days old, tagged otherwise (such as the
+registry cache, <code class="docutils literal notranslate"><span class="pre">buildcache</span></code>), or needed by a version it
+keeps. A pruned tag that’s wanted again is rebuilt the next
+time a run needs it. Every run lists what it would delete;
+only runs on develop delete.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">ernic-ci-images</span></code>, <code class="docutils literal notranslate"><span class="pre">ernic-check-guest-image-tag</span></code>
+and <code class="docutils literal notranslate"><span class="pre">ernic-prune-images</span></code> tests check these scripts
+against stand-ins for Docker, <code class="docutils literal notranslate"><span class="pre">gh</span></code> and the registry. For
+the details, see <code class="docutils literal notranslate"><span class="pre">ci/images/README.md</span></code>.</p>
+</section>
 </section>
 <section id="adding-new-tests">
 <h2>Adding New Tests<a class="headerlink" href="#adding-new-tests" title="Link to this heading">#</a></h2>
@@ -1352,7 +1414,10 @@ the server, uses <code class="docutils literal notranslate"><span class="pre">ad
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-rocm-ernic-ansible-collection">The rocm.ernic Ansible collection</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-driver-ci">Guest Driver CI</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#guest-driver-ci">Guest Driver CI</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ci-images">CI images</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#adding-new-tests">Adding New Tests</a></li>
 </ul>
   </nav></div>

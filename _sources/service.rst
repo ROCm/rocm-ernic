@@ -228,17 +228,14 @@ VM and QEMU settings
    * - Variable
      - Default
      - Description
-   * - ``ERNIC_QEMU_MINIMAL``
-     - ``$HOME/Projects/qemu-minimal``
-     - Only the default ``ERNIC_VM_IMAGE_DIR``'s parent;
-       ``vm-launch`` no longer runs qemu-minimal
    * - ``ERNIC_QEMU_PATH``
      - ``/opt/qemu-v10.1.2/bin/``
      - Directory containing ``qemu-system-x86_64`` and
        ``qemu-img``.  Empty means search ``PATH``.
    * - ``ERNIC_VM_IMAGE_DIR``
-     - ``$ERNIC_QEMU_MINIMAL/images``
-     - Directory with qcow2 VM images
+     - ``/opt/qemu-images``
+     - Directory with qcow2 VM images, written out in full:
+       ``ernicctl`` doesn't expand ``$VARS`` in the env file
    * - ``ERNIC_VM_NAME``
      - ``stebates-test-vm``
      - Base VM name: instance N's VM is
