@@ -734,6 +734,9 @@
   a builder tag appears outside `ci/guest-image.env`, other than a lane's
   `image:` line naming the pinned one, and searches only the files git
   tracks, so build trees no longer fail it.
+* The CI builder image is built on Ubuntu 26.04 rather than 24.04, the
+  release the rest of CI builds on, so the system-test lanes compile the
+  server with GCC 15, as Build and Test does, rather than GCC 13.
 * **Breaking:** **The Ansible collection is now `rocm.ernic`, and it is not
   published to Ansible Galaxy.** It was `sbates130272.rocm_ernic`. Address
   the roles as `rocm.ernic.ernic_guest_setup` and so on, and install the

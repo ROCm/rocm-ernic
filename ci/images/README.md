@@ -189,8 +189,10 @@ The builder replaces Stephen Bates'
 `ubuntu-qemu-libvfio-user` Dockerfiles from
 [batesste-ci-images][ref-ci-images] at 7438e48, the commit
 the pinned `20260918.g7438e48` image was built from. It keeps
-that image's Ubuntu 24.04 and QEMU v11.1.1, and changes:
+that image's QEMU v11.1.1, and changes:
 
+- it's built on Ubuntu 26.04, as the rest of CI is, not
+  24.04, so the lanes compile the server with GCC 15;
 - libvfio-user is 5b9c722, the commit the rest of CI builds
   against, not 8039244;
 - it adds `libibverbs-dev`, `librdmacm-dev`, `iproute2`,
