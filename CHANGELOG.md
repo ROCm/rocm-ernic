@@ -70,7 +70,11 @@
   run. When it can't fetch the
   kernel ref on its own, it now says so and points to git's error, rather
   than claiming the ref can't be fetched directly, before it falls back
-  to fetching every branch and tag.
+  to fetching every branch and tag. And it gives up in about 3 minutes,
+  not 13, on a server that doesn't answer, as git.kernel.org sometimes
+  didn't for a CI lane's guest: each try first waits at most 30 seconds
+  for the server to answer at all, and a server that never answered
+  isn't asked again for every branch and tag.
 
 * The device now honours Bus Master Enable in its PCI Command register,
   as the PCI Express specification requires. Before, it went on writing

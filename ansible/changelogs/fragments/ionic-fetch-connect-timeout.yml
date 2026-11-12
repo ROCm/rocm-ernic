@@ -1,0 +1,14 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+bugfixes:
+  - >-
+    ``ernic_guest_setup``, ``ernic_srq_dkms`` and ``ernic_p4_dkms`` took
+    about 13 minutes to fail when the guest couldn't reach git.kernel.org
+    for the ionic driver sources, each of ``fetch-ionic-sources.sh``'s
+    eight tries waiting on git's own connection timeout.  Each try now
+    waits at most 30 seconds for the server to answer, and if it never
+    does, the script doesn't go on to fetch every branch and tag, so it
+    fails in about 3 minutes.

@@ -42,6 +42,12 @@ FORCE=false
 # before the first retry; the wait doubles after each one.
 FETCH_ATTEMPTS=4
 FETCH_RETRY_DELAY=10
+# How long each attempt waits for the server to answer at all, in seconds.
+# git has no connect timeout of its own, and a server it can't reach costs
+# about 77 s an attempt, and 13 minutes in all.
+FETCH_CONNECT_TIMEOUT=30
+# Set once an attempt has reached the server
+REACHED_SERVER=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -123,17 +129,32 @@ tree_digest() {
 
 SENTINEL="${SOURCE_DIR}/.patches-applied-${KERNEL_REF}-$(tree_digest)"
 
+# Whether the server answers within FETCH_CONNECT_TIMEOUT: asked for one
+# ref, its answer is small, so a fetch that's slow but working isn't cut
+# short.
+server_answers() {
+    timeout "${FETCH_CONNECT_TIMEOUT}" \
+        git ls-remote origin HEAD >/dev/null 2>&1
+}
+
 # Run "git fetch" with the given arguments, trying again if it fails.
 # git.kernel.org answers with an HTTP 502 now and then, and one such
 # answer would otherwise fail the whole run, and with it a CI lane or a
 # guest's provisioning.  git exits 128 for a network error and for a ref
 # the server refuses alike, so every failure is retried; a refusal only
-# costs the waits.  Returns 1 once every attempt has failed.
+# costs the waits.  An attempt whose server doesn't answer fails without
+# fetching.  Returns 1 once every attempt has failed.
 git_fetch_retry() {
     local attempt delay="${FETCH_RETRY_DELAY}"
     for ((attempt = 1; ; attempt++)); do
-        if git fetch "$@"; then
-            return 0
+        if ! server_answers; then
+            echo "   ${KERNEL_REPO} didn't answer within" \
+                 "${FETCH_CONNECT_TIMEOUT} s" >&2
+        else
+            REACHED_SERVER=true
+            if git fetch "$@"; then
+                return 0
+            fi
         fi
         if ((attempt >= FETCH_ATTEMPTS)); then
             echo "   git fetch from ${KERNEL_REPO} failed" \
@@ -179,11 +200,15 @@ git sparse-checkout set \
 # "git clone --branch" only accepts a tag or branch, so fetch into an empty
 # repository instead: that also resolves a bare SHA.  If that still fails
 # after its retries -- the server may refuse a SHA it doesn't advertise,
-# or still be failing -- fall back to fetching every branch and tag.  That
+# or still be failing -- fall back to fetching every branch and tag, unless
+# the server never answered, when that would fail the same way.  That
 # is far larger: git.kernel.org ignores --filter, so it is the history of
 # the whole repository, file contents included.
 if git_fetch_retry -q --depth 1 --filter=blob:none origin "${KERNEL_REF}"; then
     rev=FETCH_HEAD
+elif ! ${REACHED_SERVER}; then
+    echo "   ${KERNEL_REPO} never answered; giving up" >&2
+    exit 1
 else
     echo "   could not fetch ${KERNEL_REF} on its own (see git's error);" \
          "fetching every branch and tag instead"
